@@ -14,11 +14,15 @@ ac-api/    纯契约层(零第三方依赖)：AcDefinition/AcStep、AcTool/ToolR
            AcEvent/AcEventListener/ExecutionListener、AcVersionStore
 ac-core/   纯 JVM 实现(仅 Gson)：AcExecutor、AcFingerprint、DefaultToolRegistry、
            AcParamValidator、AcJson、InMemoryAcVersionStore、AcAuthoringService
+rdd-core/  纯 JVM 实现(零第三方)：RDD 资产任务链核心(Goal/PrimaryGoal/Subtask/
+           TaskChain/AssetRegistry/RddRuntime/HardCodedEvaluator) — 2026-08-31
+           从 ac-core 迁出, 消除与 plugins/ac 同装的重复包
 plugins/ac Numen 宿主适配插件(独立部署)：NumenHostAdapter/NumenToolBridge/BridgeResultMapper/
-           NumenSchemaAdapter + ac_execute/ac_status/ac_resume 门面工具
+           NumenSchemaAdapter + ac_execute/ac_status/ac_resume 门面工具；惰性桥接
+plugins/rdd RDD 宿主适配插件(独立部署)：依赖并内嵌 rdd-core, 不再内嵌 ac-core
 ```
 
-`ac-api`、`ac-core` 不依赖 NUMEN/Minecraft/RDD；`plugins/ac` 是 AC 的 NUMEN 宿主面，也只走公开 `NumenPlugins.register`。
+`ac-api`、`ac-core`、`rdd-core` 不依赖 NUMEN/Minecraft/RDD；`plugins/ac` 是 AC 的 NUMEN 宿主面，也只走公开 `NumenPlugins.register`。
 
 ## 2. 五个施工批次（提交可单独回退）
 
@@ -55,8 +59,23 @@ AC 步骤工具 `AcTool.execute` 是同步的；Numen 工具是异步 `ToolCall.
 
 ## 6. 已知限制与待办
 
-- `plugins/ac` 与 `plugins/rdd` 都内嵌 ac-core jar → 同装时可能重复类；部署方应以 `plugins/ac` 为 AC 核心唯一提供方，`plugins/rdd` 移除内嵌。
-- 真机集成 `ac_execute → PAUSED → ac_status → ac_resume → 完成` 需游戏环境可用后验证（当前环境仍在构建）。
+- 真机集成完整链路 `ac_execute → PAUSED → ac_status → ac_resume → 完成` 已在 2026-08-31 验证核心闭环（提交→后台执行→状态如实反映）；断点续跑全链待游戏环境常驻后复验。
 - `plugins/ac` 门面当前无 `ac_cancel`；长任务释放依赖 Numen `task_stop` / `task_status` 轮询，由桥映射为 PAUSED 续跑。
 - `AcJson` 参数数字归一为 Long/Double；`AcFingerprint` 对整数 1/1.0 归一，跨来源稳定。
 - Numen schema → AC ToolSchema 是宽松映射，enum/min/max/嵌套 object 暂不完整表达（宁 ANY 放行不误拒）。
+- 惰性桥接在 ac_execute 时同步工具目录；运行时新增的 Numen 工具（如自编译产出后重启）会在下次 ac_execute 时自动补桥接。
+
+## 7. 真机验证 3 缺口修复（2026-08-31）
+
+验证 AI 发现并已修复（提交 `2c3f004e` / `ebf8e8ed`）：
+
+1. **setup 时序**：AcPlugin.setup 早于 NumenCore 全量工具注册 → 构造期只桥接少数工具。
+   修复：**惰性桥接**，ac_execute 前 `ensureBridged()` 幂等同步（跳过 ac_ 门面、只补未注册工具）。
+2. **裸 JSON 结果**：非身体工具直接 complete 自定义 JSON（如 selfcompile_status 的
+   `{"module":...,"state":...}`，无 success 字段）被误判 FAILED。
+   修复：`BridgeResultMapper` 无 `success` 字段 → 视为工具成功产出的结构化数据 → SUCCESS(data)。
+3. **重复包冲突**：plugins/ac 与 plugins/rdd 都内嵌 ac-core（含并行 AI 放的 rdd 包）
+   → 同装 JPMS ResolutionException。
+   修复：rdd 包机械迁出 ac-core → 独立 `rdd-core` 模块（git R100 rename，零逻辑改动）；
+   plugins/rdd 依赖并内嵌 rdd-core；ac-core 恢复纯 AC 边界。
+   验证：clean 重建后 ac jar 含 rdd 包 = 0，rdd jar 含 ac 包 = 0，隔离成立。
