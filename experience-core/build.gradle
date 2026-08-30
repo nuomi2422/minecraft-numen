@@ -1,0 +1,13 @@
+plugins { id 'java-library' }
+group = 'com.dwinovo.numen.experience'
+java { toolchain.languageVersion = JavaLanguageVersion.of(java_version) }
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+repositories { mavenCentral() }
+dependencies {
+    implementation 'com.google.code.gson:gson:2.10.1'
+    implementation 'org.slf4j:slf4j-api:2.0.9'
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+test { useJUnitPlatform() }
