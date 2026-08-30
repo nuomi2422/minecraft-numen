@@ -149,6 +149,13 @@ public final class AcExecutor {
                 emit(AcEvent.Kind.STEP_FAILED, executionId, attempt, runId, fp, ac, step, i, step.tool(), result.message());
                 break;
             }
+            // 执行前参数校验：AI 生成的参数不经检查不交给宿主工具
+            String paramErr = AcParamValidator.validate(registry.schema(step.tool()).orElse(null), step.parameters());
+            if (paramErr != null) {
+                result = StepResult.failed(step.tool() + " 参数校验失败: " + paramErr);
+                emit(AcEvent.Kind.STEP_FAILED, executionId, attempt, runId, fp, ac, step, i, step.tool(), result.message());
+                break;
+            }
             result = tool.execute(step.parameters(), context);
             if (result.output() != null && !result.output().isEmpty()) {
                 state.putAll(result.output());
