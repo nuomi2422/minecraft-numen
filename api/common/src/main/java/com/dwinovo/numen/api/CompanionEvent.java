@@ -43,6 +43,20 @@ public final class CompanionEvent<T> {
                        net.minecraft.world.damagesource.DamageSource source,
                        float amount) {}
 
+    /**
+     * 主人定了一个长期目标({@code /goal …})。负载给 UUID + 目标正文——身体未必还在,
+     * 所以不带 {@code NumenPlayer},监听者按需自行解析。
+     */
+    public static final CompanionEvent<GoalSet> GOAL_SET = new CompanionEvent<>("goal_set");
+
+    /** {@link #GOAL_SET} 的内容。 */
+    public record GoalSet(java.util.UUID companionId, String objective) {
+        public GoalSet {
+            if (companionId == null) throw new IllegalArgumentException("companionId required");
+            objective = objective == null ? "" : objective;
+        }
+    }
+
     private final String name;
 
     private CompanionEvent(String name) {

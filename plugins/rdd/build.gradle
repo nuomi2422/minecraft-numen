@@ -1,0 +1,31 @@
+plugins { id 'numen-plugin' }
+
+processResources {
+    def props = [
+            version                       : project.version,
+            license                       : license,
+            neoforge_loader_version_range : neoforge_loader_version_range,
+            neoforge_version              : neoforge_version,
+            minecraft_version_range       : minecraft_version_range
+    ]
+    inputs.properties props
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand props
+    }
+}
+
+dependencies {
+    // RDD is independently installable: ship its host-independent core inside
+    // this plugin jar, while keeping the public contracts free of NUMEN/MC types.
+    implementation project(':ac-api')
+    implementation project(':ac-core')
+}
+
+// The numen-plugin convention exposes host APIs as compileOnly. RDD's own
+// runtime must travel with the standalone plugin, otherwise RddRuntime would
+// only work in a development classpath and fail when invoked in a real game.
+tasks.named('jar', Jar) {
+    dependsOn(':ac-api:jar', ':ac-core:jar')
+    from({ project(':ac-api').sourceSets.main.output })
+    from({ project(':ac-core').sourceSets.main.output })
+}

@@ -141,6 +141,7 @@ tasks.register('apiJar', Jar) {
     include 'com/dwinovo/numen/entity/package-info.class'
     include 'com/dwinovo/numen/agent/skill/SkillRegistry*.class' // ship-skills-with-your-jar entry
     include 'com/dwinovo/numen/agent/skill/SkillInfo*.class'
+    include 'com/dwinovo/numen/agent/goal/GoalSinks*.class'      // goal 接管接缝(RDD 等)
     include 'com/dwinovo/numen/platform/Services*.class'          // cross-loader SPI locator
     include 'com/dwinovo/numen/platform/services/**'              // (block caps for storage inspection)
     // Loom 只给"认得出是 mod"的 jar 做重映射,判据就是 fabric.mod.json。瘦 jar 不带

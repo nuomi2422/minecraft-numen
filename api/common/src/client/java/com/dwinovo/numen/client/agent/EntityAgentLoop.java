@@ -604,6 +604,13 @@ public final class EntityAgentLoop {
         if (next == null || paused()) {
             return;
         }
+        // RDD（或其他接管者）在场：把目标交给它，引擎不再注入 initialDirective、
+        // 不留 NUMEN goal、不走评估器续跑——NUMEN 原目标循环被暂时让位。
+        if (com.dwinovo.numen.agent.goal.GoalSinks.dispatch(entityUuid, next.objective())) {
+            this.goal = null;
+            CompanionHome.setGoal(entityUuid, null);
+            return;
+        }
         next.countTurn();
         CompanionHome.setGoal(entityUuid, next);
         submitCommand(echo, com.dwinovo.numen.agent.goal.GoalPrompts.initialDirective(next));
@@ -622,8 +629,11 @@ public final class EntityAgentLoop {
         }
         Constants.LOG.info("[numen-entity#{}] 目标收工({} 轮,{}):{}",
                 entityUuid, goal.turnsExecuted(), why == null ? "主人清掉" : why, goal.objective());
+        String cleared = goal.objective();
         goal = null;
         CompanionHome.setGoal(entityUuid, null);
+        // 通知接管者目标被清掉（RDD 清链等）；无人认领则无事。
+        com.dwinovo.numen.agent.goal.GoalSinks.clear(entityUuid, why == null ? cleared : why);
     }
 
     /**
