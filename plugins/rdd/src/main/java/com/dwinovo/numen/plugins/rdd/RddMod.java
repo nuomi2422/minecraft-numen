@@ -16,7 +16,7 @@ public final class RddMod {
         NeoForge.EVENT_BUS.addListener(this::onServerTick);
     }
 
-    private void onServerTick(ServerTickEvent event) {
+    private void onServerTick(ServerTickEvent.Pre event) {
         if (event.getServer() != null) {
             detector.onServerTick(event.getServer());
         }
