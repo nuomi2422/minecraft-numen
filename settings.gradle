@@ -36,6 +36,8 @@ include('ui')
 // Independent host-agnostic AC execution layer (no Minecraft/NUMEN dependency).
 include('ac-api')
 include('ac-core')
+// Independent host-agnostic RDD task-chain core (no Minecraft/NUMEN dependency).
+include('rdd-core')
 // Independent host-agnostic experience memory core (no Minecraft/NUMEN dependency).
 include('experience-core')
 

@@ -15,10 +15,11 @@ processResources {
 }
 
 dependencies {
-    // RDD is independently installable: ship its host-independent core inside
-    // this plugin jar, while keeping the public contracts free of NUMEN/MC types.
-    implementation project(':ac-api')
-    implementation project(':ac-core')
+    // RDD 核心已独立为 rdd-core 模块；本插件只内嵌 rdd-core，不再内嵌 ac-core，
+    // 避免与 plugins/ac（AC 核心提供方）同装时出现重复包（JPMS ResolutionException）。
+    implementation project(':rdd-core')
+    // RddDecomposer / RddSubmitTool / RddDetector 用 Gson。
+    implementation 'com.google.code.gson:gson:2.10.1'
     // 纯 JVM 容错解析(RddDecomposer.parse)需要 ai 模块的 IToolSpec 参与类加载。
     testImplementation project(':ai')
     testImplementation platform('org.junit:junit-bom:5.11.4')
@@ -32,7 +33,6 @@ test { useJUnitPlatform() }
 // runtime must travel with the standalone plugin, otherwise RddRuntime would
 // only work in a development classpath and fail when invoked in a real game.
 tasks.named('jar', Jar) {
-    dependsOn(':ac-api:jar', ':ac-core:jar')
-    from({ project(':ac-api').sourceSets.main.output })
-    from({ project(':ac-core').sourceSets.main.output })
+    dependsOn(':rdd-core:jar')
+    from({ project(':rdd-core').sourceSets.main.output })
 }
