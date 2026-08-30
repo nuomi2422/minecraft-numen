@@ -9,7 +9,8 @@ public record Subtask(
         Map<String, Object> condition,
         long detectionIntervalSeconds,
         int maxAiChecks,
-        boolean recheckOnUnchanged) {
+        boolean recheckOnUnchanged,
+        BodyInstruction body) {
     public Subtask {
         if (id == null || id.isBlank()) throw new IllegalArgumentException("subtask id required");
         if (description == null || description.isBlank()) throw new IllegalArgumentException("subtask description required");
@@ -23,13 +24,25 @@ public record Subtask(
         }
     }
 
+    /** 无身体指令的便捷构造（body = null）。 */
+    public Subtask(String id, String description, DetectionMode detectionMode, Map<String, Object> condition,
+                   long detectionIntervalSeconds, int maxAiChecks, boolean recheckOnUnchanged) {
+        this(id, description, detectionMode, condition, detectionIntervalSeconds, maxAiChecks, recheckOnUnchanged, null);
+    }
+
     public static Subtask hardCoded(String id, String description, Map<String, Object> condition) {
-        return new Subtask(id, description, DetectionMode.HARD_CODED, condition, 0, 0, false);
+        return new Subtask(id, description, DetectionMode.HARD_CODED, condition, 0, 0, false, null);
+    }
+
+    /** 带身体执行指令的硬编码二级目标（如收集 N 个某物品）。 */
+    public static Subtask hardCoded(String id, String description, Map<String, Object> condition,
+                                    BodyInstruction body) {
+        return new Subtask(id, description, DetectionMode.HARD_CODED, condition, 0, 0, false, body);
     }
 
     public static Subtask aiAssisted(String id, String description, long intervalSeconds, int maxChecks,
                                      boolean recheckOnUnchanged) {
         return new Subtask(id, description, DetectionMode.AI_ASSISTED, Map.of(), intervalSeconds, maxChecks,
-                recheckOnUnchanged);
+                recheckOnUnchanged, null);
     }
 }

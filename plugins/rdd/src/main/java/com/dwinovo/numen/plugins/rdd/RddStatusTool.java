@@ -19,7 +19,13 @@ final class RddStatusTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
-        RddRuntime runtime = RddPlugin.runtime(companion.getUUID());
+        UUID uuid = companion.getUUID();
+        if (RddPlugin.decomposing(uuid)) {
+            reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD is decomposing the goal",
+                    Map.of("active", false, "decomposing", true)).toJson());
+            return;
+        }
+        RddRuntime runtime = RddPlugin.runtime(uuid);
         if (runtime == null) {
             reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD has no active task chain", Map.of("active", false)).toJson());
             return;

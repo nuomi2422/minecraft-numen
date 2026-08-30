@@ -19,7 +19,14 @@ dependencies {
     // this plugin jar, while keeping the public contracts free of NUMEN/MC types.
     implementation project(':ac-api')
     implementation project(':ac-core')
+    // 纯 JVM 容错解析(RddDecomposer.parse)需要 ai 模块的 IToolSpec 参与类加载。
+    testImplementation project(':ai')
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
+
+test { useJUnitPlatform() }
 
 // The numen-plugin convention exposes host APIs as compileOnly. RDD's own
 // runtime must travel with the standalone plugin, otherwise RddRuntime would
