@@ -4,10 +4,10 @@
 
 ## 保留在纯 JVM 层
 
-- `ToolRegistry` / `AcTool`：工具注册契约与参数化同步调用。
-- `AcDefinition` / `AcStep`：名称、顺序步骤、参数和基础构造校验。
+- `ToolRegistry` / `AcTool` / `ToolSchema`：工具注册契约、版本、描述和参数 schema；宿主实现不可见。
+- `AcDefinition` / `AcStep`：名称、版本、顺序步骤、参数和基础构造校验；AI 可生成新实例或替换版本。
 - `AcExecutor`：顺序执行、未知工具失败、PAUSED 终态与从 `completedStepIndex` resume。
-- `ExecutionRecord` / listener：每次执行的状态、断点、输出、时间和消息。
+- `ExecutionRecord` / listener：每次执行的状态、断点、输出、时间和消息；executor 作为 AC 自管的运行记录资料源。
 - `AcJson`：从 JSON 加载并触发基础结构校验。
 
 ## 明确不抽取

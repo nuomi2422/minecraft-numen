@@ -28,8 +28,8 @@ class AcExecutorTest {
         assertEquals(ExecutionRecord.Status.SUCCESS, resumed.status()); assertEquals(3, resumed.completedStepIndex());
     }
     @Test void loadsAndValidatesJson() {
-        var ac = AcJson.load(new StringReader("{\"name\":\"json\",\"steps\":[{\"id\":\"s\",\"tool\":\"ok\",\"parameters\":{\"n\":2}}]}"));
-        assertEquals("json", ac.name()); assertEquals("ok", ac.steps().get(0).tool());
+        var ac = AcJson.load(new StringReader("{\"name\":\"json\",\"version\":\"2\",\"steps\":[{\"id\":\"s\",\"tool\":\"ok\",\"parameters\":{\"n\":2}}]}"));
+        assertEquals("json", ac.name()); assertEquals("2", ac.version()); assertEquals("ok", ac.steps().get(0).tool());
         assertThrows(IllegalArgumentException.class, () -> AcJson.load(new StringReader("{\"name\":\"bad\"}")));
     }
 }

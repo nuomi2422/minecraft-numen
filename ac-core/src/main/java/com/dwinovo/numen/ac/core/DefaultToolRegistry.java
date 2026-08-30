@@ -6,6 +6,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public final class DefaultToolRegistry implements ToolRegistry {
     private final Map<String, AcTool> tools = new ConcurrentHashMap<>();
-    public void register(String name, AcTool tool) { if (name == null || name.isBlank() || tool == null) throw new IllegalArgumentException("tool name and implementation required"); if (tools.putIfAbsent(name, tool) != null) throw new IllegalArgumentException("duplicate tool: " + name); }
+    private final Map<String, ToolSchema> schemas = new ConcurrentHashMap<>();
+    public void register(String name, AcTool tool) { register(name, tool, new ToolSchema(name, "1", "", Map.of())); }
+    public void register(String name, AcTool tool, ToolSchema schema) { if (name == null || name.isBlank() || tool == null || schema == null || !name.equals(schema.name())) throw new IllegalArgumentException("tool name, implementation and matching schema required"); if (tools.putIfAbsent(name, tool) != null) throw new IllegalArgumentException("duplicate tool: " + name); schemas.put(name, schema); }
     public Optional<AcTool> find(String name) { return Optional.ofNullable(tools.get(name)); }
+    public Optional<ToolSchema> schema(String name) { return Optional.ofNullable(schemas.get(name)); }
 }
