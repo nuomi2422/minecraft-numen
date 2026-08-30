@@ -34,36 +34,38 @@ public final class AcPlugin implements NumenPlugin {
 
     @Override
     public void setup(NumenApi numen) {
-        int bridged = 0;
-        int skipped = 0;
+        executor = new AcExecutor(registry);
+        authoring = new AcAuthoringService(registry, new InMemoryAcVersionStore());
+
+        numen.registerTool(new AcExecuteTool(executor, authoring, sessions, this::ensureBridged));
+        numen.registerTool(new AcStatusTool(sessions));
+        numen.registerTool(new AcResumeTool(executor, sessions));
+
+        LOG.info("[ac] plugin ready; Numen tools bridged lazily on first ac_execute");
+    }
+
+    /**
+     * 幂等惰性桥接：插件 setup 时机早于 NumenCore 全量注册工具，不能在构造期全量桥接。
+     * 每次 ac_execute 前调用，从 Numen ToolRegistry 同步尚未注册的工具（跳过 ac_ 门面）。
+     */
+    public synchronized void ensureBridged() {
         for (NumenTool tool : ToolRegistry.all()) {
             String name = tool.name();
-            if (name == null || name.isBlank()) {
-                skipped++;
+            if (name == null || name.isBlank() || name.startsWith("ac_")) {
                 continue;
             }
-            if (name.startsWith("ac_")) {           // 门面工具不注册为 AC 步骤
-                skipped++;
+            if (registry.contains(name)) {
                 continue;
             }
             try {
                 ToolSchema schema = NumenSchemaAdapter.from(tool);
                 AcTool bridge = new NumenToolBridge(new NumenHostAdapter(tool));
                 registry.register(name, bridge, schema);
-                bridged++;
+                LOG.info("[ac] 惰性桥接工具: {}", name);
             } catch (RuntimeException e) {
-                skipped++;
                 LOG.warn("[ac] 跳过工具 {}: {}", name, e.getMessage());
             }
         }
-        executor = new AcExecutor(registry);
-        authoring = new AcAuthoringService(registry, new InMemoryAcVersionStore());
-
-        numen.registerTool(new AcExecuteTool(executor, authoring, sessions));
-        numen.registerTool(new AcStatusTool(sessions));
-        numen.registerTool(new AcResumeTool(executor, sessions));
-
-        LOG.info("[ac] 桥接 {} 个 Numen 工具为 AC 步骤工具, 跳过 {} 个", bridged, skipped);
     }
 
     /** 供调试/外部查询 AC 工具目录。 */

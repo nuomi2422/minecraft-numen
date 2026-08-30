@@ -35,11 +35,14 @@ public final class AcExecuteTool implements NumenTool {
     private final AcExecutor executor;
     private final AcAuthoringService authoring;
     private final AcSessions sessions;
+    private final Runnable refreshBridge;
 
-    public AcExecuteTool(AcExecutor executor, AcAuthoringService authoring, AcSessions sessions) {
+    public AcExecuteTool(AcExecutor executor, AcAuthoringService authoring, AcSessions sessions,
+                         Runnable refreshBridge) {
         this.executor = executor;
         this.authoring = authoring;
         this.sessions = sessions;
+        this.refreshBridge = refreshBridge;
     }
 
     @Override public String name() { return "ac_execute"; }
@@ -56,6 +59,8 @@ public final class AcExecuteTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
+        // 惰性桥接：本工具可能比 NumenCore 全量工具注册更早被调用，先同步工具目录
+        if (refreshBridge != null) refreshBridge.run();
         if (!args.has("ac_json")) {
             reply.accept(TaskResult.fail("缺少必填参数 ac_json").toJson());
             return;

@@ -74,4 +74,15 @@ class NumenToolBridgeTest {
         assertEquals(StepResult.Status.PAUSED, r.status());
         assertTrue(r.message().contains("timeout"), r.message());
     }
+
+    @Test
+    void bareJsonWithoutSuccessMapsToSuccess() {
+        // 非身体工具直接 complete 自定义 JSON（如 selfcompile_status）→ 视为成功产出数据
+        var bridge = new NumenToolBridge(tool(done -> done.accept(
+                "{\"module\":\"selfcompile\",\"state\":\"idle\",\"mode\":\"controlled\"}")));
+        StepResult r = bridge.execute(Map.of(), CTX);
+        assertEquals(StepResult.Status.SUCCESS, r.status());
+        assertEquals("idle", r.output().get("state"));
+        assertEquals("controlled", r.output().get("mode"));
+    }
 }

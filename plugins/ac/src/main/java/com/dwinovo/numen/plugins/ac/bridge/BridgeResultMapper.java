@@ -37,7 +37,14 @@ public final class BridgeResultMapper {
             return StepResult.failed(tool + " 返回非 JSON 结果: " + e.getMessage());
         }
 
-        boolean success = root.has("success") && root.get("success").getAsBoolean();
+        // 裸结构化 JSON（无 success 字段）= 非身体工具直接 complete 的自定义结果
+        // （如 selfcompile_status 返回 {"module":...,"state":...}）。视为工具成功
+        // 产出的数据，整个对象作为 output 交给 AI。
+        if (!root.has("success")) {
+            return StepResult.success(toMap(root));
+        }
+
+        boolean success = root.get("success").getAsBoolean();
         String message = root.has("message") && !root.get("message").isJsonNull()
                 ? root.get("message").getAsString() : "";
         boolean timedOut = root.has("timed_out") && root.get("timed_out").getAsBoolean();
@@ -60,6 +67,14 @@ public final class BridgeResultMapper {
         }
         if (success) return StepResult.success(data);
         return StepResult.failed(message == null || message.isBlank() ? tool + " failed" : message);
+    }
+
+    private static Map<String, Object> toMap(JsonObject obj) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<String, JsonElement> e : obj.entrySet()) {
+            out.put(e.getKey(), toValue(e.getValue()));
+        }
+        return out;
     }
 
     private static Object toValue(JsonElement e) {
