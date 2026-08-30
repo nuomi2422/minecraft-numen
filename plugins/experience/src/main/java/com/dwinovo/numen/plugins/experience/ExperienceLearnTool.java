@@ -85,6 +85,9 @@ final class ExperienceLearnTool implements NumenTool {
                     .build();
 
             ExperienceEntry stored = ExperiencePlugin.memory(companion.getUUID()).learn(entry);
+            ExperienceMonitor.publish("learned", Map.of(
+                    "id", stored.id(), "type", stored.type().name(),
+                    "title", stored.title(), "maturity", stored.maturity().name()));
             reply.accept(TaskResult.ok("experience recorded", Map.of(
                     "id", stored.id(),
                     "type", stored.type().name(),

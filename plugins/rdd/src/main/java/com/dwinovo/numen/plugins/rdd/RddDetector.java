@@ -121,8 +121,12 @@ final class RddDetector {
         try {
             tool.onServerCall(RddPlugin.nextBodyCallId(), args, ap, reply -> { });
             LOG.info("[rdd] 已提交身体任务 {} -> {} {}", current.id(), body.taskType(), body.args());
+            RddMonitor.publish("body_submitted", Map.of(
+                    "subtask", current.id(), "task_type", body.taskType(), "args", body.args()));
         } catch (RuntimeException e) {
             LOG.warn("[rdd] 提交身体任务失败 {}: {}", body.taskType(), e.toString());
+            RddMonitor.publish("body_submit_failed", Map.of(
+                    "subtask", current.id(), "task_type", body.taskType(), "error", String.valueOf(e)));
         }
     }
 
@@ -134,6 +138,8 @@ final class RddDetector {
             return;
         }
         LOG.info("[rdd] 二级目标完成: {} ({})", current.id(), current.description());
+        RddMonitor.publish("subtask_completed", Map.of(
+                "subtask", current.id(), "description", current.description()));
         TaskChain chain = rt.chain();
         if (chain.primaryStatus() == PrimaryGoalStatus.AWAITING_SUPERVISOR) {
             rt.applySupervisor(new SupervisorDecision(
@@ -141,6 +147,8 @@ final class RddDetector {
                     chain.currentPrimary().id(),
                     "all hard-coded conditions met in the real world"));
             LOG.info("[rdd] 一级目标完成: {}", chain.currentPrimary().description());
+            RddMonitor.publish("goal_completed", Map.of(
+                    "goal", chain.currentPrimary().id(), "description", chain.currentPrimary().description()));
             RddPlugin.clearBody(ap.getUUID());
         }
     }
@@ -162,10 +170,14 @@ final class RddDetector {
             RddPlugin.rememberBody(ap.getUUID(), current.id(), state.submitCount() + 1);
             submitBody(ap, current);
             LOG.info("[rdd] 身体任务结束未达成，重试 {} 次: {}", state.submitCount() + 1, current.id());
+            RddMonitor.publish("subtask_retry", Map.of(
+                    "subtask", current.id(), "retry", state.submitCount() + 1, "max", MAX_BODY_RETRIES));
         } else {
             rt.chain().markFailed(current.id(), "body task ended without satisfying condition");
             RddPlugin.clearBody(ap.getUUID());
             LOG.warn("[rdd] 二级目标失败（身体任务结束未达成）: {}", current.id());
+            RddMonitor.publish("subtask_failed", Map.of(
+                    "subtask", current.id(), "reason", "body task ended without satisfying condition"));
         }
     }
 

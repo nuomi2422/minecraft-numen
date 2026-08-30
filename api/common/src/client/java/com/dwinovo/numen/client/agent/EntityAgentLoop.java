@@ -473,6 +473,8 @@ public final class EntityAgentLoop {
                 wasAborted ? " — reset previous abort" : "",
                 deferred ? " — buffered (mid-turn)" : "",
                 truncate(logged, 200));
+        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "user_prompt", java.util.Map.of(
+                "companion_id", entityUuid.toString(), "chars", wire.length(), "text", truncate(logged, 400)));
         tryStartTurn();
         return !awaitingLlmResponse;
     }
@@ -1343,6 +1345,9 @@ public final class EntityAgentLoop {
 
         Constants.LOG.info("[numen-entity#{}] turn {}: convo={} msgs, tools={}",
                 entityUuid, convo.turnCount(), snapshot.size(), tools.size());
+        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "turn", java.util.Map.of(
+                "companion_id", entityUuid.toString(), "turn", convo.turnCount(),
+                "convo_msgs", snapshot.size(), "tools", tools.size()));
 
         // Capture the current generation; if the owner interrupts before this
         // call resolves, handleResponse sees the mismatch and discards it.
@@ -1919,6 +1924,8 @@ public final class EntityAgentLoop {
             if (!turn.content().isEmpty()) {
                 Constants.LOG.info("[numen-entity#{}] assistant (final): {}",
                         entityUuid, turn.content());
+                com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "assistant", java.util.Map.of(
+                        "companion_id", entityUuid.toString(), "text", truncate(turn.content(), 600)));
                 // 双通道落地:头顶气泡是回复的主显示(附近玩家都看得见),
                 // 聊天框回显一份当日志;超长折叠,悬停看全文,完整记录在 G 面板
                 String shown = com.dwinovo.numen.client.chat.ChatDisplayModes.current()
