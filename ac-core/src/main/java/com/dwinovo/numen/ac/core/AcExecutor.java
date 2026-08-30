@@ -1,13 +1,17 @@
 package com.dwinovo.numen.ac.core;
 
 import com.dwinovo.numen.ac.api.AcDefinition;
+import com.dwinovo.numen.ac.api.AcEvent;
+import com.dwinovo.numen.ac.api.AcEventListener;
 import com.dwinovo.numen.ac.api.AcTool;
 import com.dwinovo.numen.ac.api.ExecutionContext;
+import com.dwinovo.numen.ac.api.ExecutionListener;
 import com.dwinovo.numen.ac.api.ExecutionRecord;
 import com.dwinovo.numen.ac.api.ResumeContext;
 import com.dwinovo.numen.ac.api.StepResult;
 import com.dwinovo.numen.ac.api.ToolRegistry;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,26 +20,62 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * AC 执行器 — 顺序执行步骤，PAUSED 后从真实断点 resume。
+ * AC 执行器 — 顺序执行步骤，PAUSED 后从真实断点 resume，并对外发布确定顺序的
+ * 执行事件（{@link AcEvent}）与有界的历史记录。
  *
  * <h3>身份契约</h3>
  * 一次执行绑定 AC 的 {@code name + version + fingerprint}（见 {@link AcFingerprint}）。
  * resume 只接受同一身份的 PAUSED 记录：版本或内容变化一律明确拒绝（需迁移/重规划），
- * 不静默从头重跑。resume 默认<b>重试暂停的那一步</b>（{@code completedStepIndex}
- * 指向它），已完成步骤不重复；原始 input 与已完成输出被保留并沿用。
+ * 不静默从头重跑。resume 默认<b>重试暂停的那一步</b>，已完成步骤不重复；原始 input
+ * 与已完成输出被保留并沿用。
+ *
+ * <h3>旁路观察</h3>
+ * 事件与终态记录是只读的旁路出口：监听器抛异常会被捕获隔离，不破坏执行。
+ * 记录保留最近 {@code maxRecords} 条（默认 1000），按 executionId 可查整条 attempt 链。
  */
 public final class AcExecutor {
 
+    /** 默认保留的最大历史记录条数。 */
+    public static final int DEFAULT_MAX_RECORDS = 1000;
+
     private final ToolRegistry registry;
     private final List<ExecutionRecord> records = new CopyOnWriteArrayList<>();
+    private final List<AcEventListener> eventListeners = new CopyOnWriteArrayList<>();
+    private final List<ExecutionListener> recordListeners = new CopyOnWriteArrayList<>();
+    private final int maxRecords;
 
     public AcExecutor(ToolRegistry registry) {
+        this(registry, DEFAULT_MAX_RECORDS);
+    }
+
+    public AcExecutor(ToolRegistry registry, int maxRecords) {
         this.registry = Objects.requireNonNull(registry, "registry");
+        this.maxRecords = maxRecords > 0 ? maxRecords : DEFAULT_MAX_RECORDS;
     }
 
     /** 本次执行器已产生的结果快照（含每次 attempt 的记录）。 */
     public List<ExecutionRecord> records() {
         return List.copyOf(records);
+    }
+
+    /** 按稳定 executionId 返回整条 attempt 链（含 PAUSED 各次尝试）。 */
+    public List<ExecutionRecord> recordsByExecutionId(String executionId) {
+        Objects.requireNonNull(executionId, "executionId");
+        List<ExecutionRecord> out = new ArrayList<>();
+        for (ExecutionRecord r : records) {
+            if (executionId.equals(r.executionId())) out.add(r);
+        }
+        return List.copyOf(out);
+    }
+
+    /** 注册执行生命周期事件监听（旁路观察）。 */
+    public void addEventListener(AcEventListener listener) {
+        eventListeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
+    /** 注册终态记录监听（兼容旧接口）。 */
+    public void addListener(ExecutionListener listener) {
+        recordListeners.add(Objects.requireNonNull(listener, "listener"));
     }
 
     /** 从头执行一个 AC。 */
@@ -89,6 +129,10 @@ public final class AcExecutor {
                                            Map<String, Object> initialState, int attempt, String parentRunId) {
         long started = System.currentTimeMillis();
         String runId = UUID.randomUUID().toString();
+        String fp = AcFingerprint.of(ac);
+
+        emit(AcEvent.Kind.EXECUTION_STARTED, executionId, attempt, runId, fp, ac, null, -1, null, null);
+
         Map<String, Object> state = new LinkedHashMap<>(initialState);
         int completed = start;
         String current = null;
@@ -97,9 +141,12 @@ public final class AcExecutor {
         for (int i = start; i < ac.steps().size(); i++) {
             AcDefinition.AcStep step = ac.steps().get(i);
             current = step.id();
+            emit(AcEvent.Kind.STEP_STARTED, executionId, attempt, runId, fp, ac, step, i, step.tool(), null);
+
             AcTool tool = registry.find(step.tool()).orElse(null);
             if (tool == null) {
                 result = StepResult.failed("unknown tool: " + step.tool());
+                emit(AcEvent.Kind.STEP_FAILED, executionId, attempt, runId, fp, ac, step, i, step.tool(), result.message());
                 break;
             }
             result = tool.execute(step.parameters(), context);
@@ -108,13 +155,18 @@ public final class AcExecutor {
             }
             if (result.status() == StepResult.Status.SUCCESS) {
                 completed = i + 1;
+                emit(AcEvent.Kind.STEP_SUCCEEDED, executionId, attempt, runId, fp, ac, step, i, step.tool(), result.message());
                 continue;
             }
             if (result.status() == StepResult.Status.PAUSED) {
                 pausedReason = result.message();
+                emit(AcEvent.Kind.STEP_PAUSED, executionId, attempt, runId, fp, ac, step, i, step.tool(), result.message());
+            } else if (result.status() == StepResult.Status.FAILED) {
+                emit(AcEvent.Kind.STEP_FAILED, executionId, attempt, runId, fp, ac, step, i, step.tool(), result.message());
             }
             break;
         }
+
         ExecutionRecord.Status status = switch (result.status()) {
             case SUCCESS -> ExecutionRecord.Status.SUCCESS;
             case PAUSED -> ExecutionRecord.Status.PAUSED;
@@ -122,12 +174,46 @@ public final class AcExecutor {
         };
         ResumeContext rc = (status == ExecutionRecord.Status.PAUSED)
                 ? new ResumeContext(executionId, attempt, ac.name(), ac.version(),
-                        AcFingerprint.of(ac), Map.copyOf(input), Map.copyOf(state),
-                        current, completed, pausedReason)
+                        fp, Map.copyOf(input), Map.copyOf(state), current, completed, pausedReason)
                 : null;
-        ExecutionRecord record = new ExecutionRecord(runId, ac.name(), status, completed, current,
+        ExecutionRecord record = new ExecutionRecord(runId, executionId, ac.name(), status, completed, current,
                 result.message(), Map.copyOf(state), started, System.currentTimeMillis(), rc);
-        records.add(record);
+
+        append(record);
+        for (ExecutionListener l : recordListeners) invoke(() -> l.recorded(record));
+
+        AcEvent.Kind terminal = switch (status) {
+            case SUCCESS -> AcEvent.Kind.EXECUTION_SUCCEEDED;
+            case PAUSED -> AcEvent.Kind.EXECUTION_PAUSED;
+            case FAILED -> AcEvent.Kind.EXECUTION_FAILED;
+        };
+        emit(terminal, executionId, attempt, runId, fp, ac, null, -1, null, result.message());
         return record;
+    }
+
+    /** 有界追加：超出 maxRecords 时淘汰最旧记录。 */
+    private void append(ExecutionRecord record) {
+        records.add(record);
+        while (records.size() > maxRecords) {
+            records.remove(0);
+        }
+    }
+
+    /** 事件发送：监听器异常捕获隔离，不破坏执行。 */
+    private void emit(AcEvent.Kind kind, String executionId, int attempt, String runId, String fp,
+                      AcDefinition ac, AcDefinition.AcStep step, int stepIndex,
+                      String tool, String message) {
+        AcEvent event = new AcEvent(kind, executionId, attempt, runId, ac.name(), ac.version(),
+                fp, step == null ? null : step.id(), stepIndex, tool, message,
+                System.currentTimeMillis());
+        for (AcEventListener l : eventListeners) invoke(() -> l.onEvent(event));
+    }
+
+    private void invoke(Runnable r) {
+        try {
+            r.run();
+        } catch (RuntimeException e) {
+            System.err.println("[ac-executor] listener error isolated: " + e);
+        }
     }
 }
