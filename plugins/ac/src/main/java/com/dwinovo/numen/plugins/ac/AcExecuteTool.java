@@ -1,0 +1,94 @@
+package com.dwinovo.numen.plugins.ac;
+
+import com.dwinovo.numen.ac.api.AcDefinition;
+import com.dwinovo.numen.ac.api.ExecutionContext;
+import com.dwinovo.numen.ac.api.ExecutionRecord;
+import com.dwinovo.numen.ac.core.AcAuthoringService;
+import com.dwinovo.numen.ac.core.AcExecutor;
+import com.dwinovo.numen.ac.core.AcJson;
+import com.dwinovo.numen.agent.tool.NumenTool;
+import com.dwinovo.numen.agent.tool.Schema;
+import com.dwinovo.numen.entity.NumenPlayer;
+import com.dwinovo.numen.plugins.ac.bridge.NumenToolBridge;
+import com.dwinovo.numen.task.TaskResult;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+
+import java.io.StringReader;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
+
+/**
+ * 门面工具 {@code ac_execute}：提交一个 AC（JSON），先同步校验（工具存在+schema），
+ * 通过后在后台线程执行并立即回执 execution_id。主 AI 用 ac_status 查状态、
+ * ac_resume 续跑暂停。
+ *
+ * <p>校验失败当场回失败，不让坏 AC 进入执行；已受理 ≠ 完成，状态由
+ * ac_status 如实反映。
+ */
+public final class AcExecuteTool implements NumenTool {
+
+    private static final Gson GSON = new Gson();
+
+    private final AcExecutor executor;
+    private final AcAuthoringService authoring;
+    private final AcSessions sessions;
+
+    public AcExecuteTool(AcExecutor executor, AcAuthoringService authoring, AcSessions sessions) {
+        this.executor = executor;
+        this.authoring = authoring;
+        this.sessions = sessions;
+    }
+
+    @Override public String name() { return "ac_execute"; }
+    @Override public String description() {
+        return "提交一个 AC 脚本(JSON: name/version/steps，每步 id/tool/parameters)执行。"
+                + "校验通过后后台运行并返回 execution_id；用 ac_status 查进度、ac_resume 续跑暂停。";
+    }
+    @Override public Map<String, Object> parameterSchema() {
+        return Schema.object()
+                .string("ac_json", "AC 定义 JSON")
+                .optionalString("input", "执行输入 JSON 字符串（可选）")
+                .build();
+    }
+
+    @Override
+    public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
+        if (!args.has("ac_json")) {
+            reply.accept(TaskResult.fail("缺少必填参数 ac_json").toJson());
+            return;
+        }
+        String acJson = args.get("ac_json").getAsString();
+        var v = authoring.validateJson(acJson);
+        if (!v.valid()) {
+            reply.accept(TaskResult.fail("AC 校验失败: " + v.reason()).toJson());
+            return;
+        }
+        AcDefinition ac = AcJson.load(new StringReader(acJson));
+        Map<String, Object> input = parseInput(args);
+        ExecutionContext ctx = () -> Map.of(NumenToolBridge.HOST_ENTITY_UUID, companion.getUUID());
+
+        String executionId = UUID.randomUUID().toString();
+        CompletableFuture<ExecutionRecord> future =
+                CompletableFuture.supplyAsync(() -> executor.execute(ac, input, ctx));
+        sessions.put(new AcSessions.SessionEntry(executionId, ac.name(), ac, future));
+
+        reply.accept(TaskResult.ok("AC submitted, running in background", Map.of(
+                "execution_id", executionId,
+                "ac", ac.name(),
+                "ac_version", ac.version(),
+                "status", "RUNNING")).toJson());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> parseInput(JsonObject args) {
+        if (!args.has("input")) return Map.of();
+        try {
+            return (Map<String, Object>) GSON.fromJson(args.get("input").getAsString(), Map.class);
+        } catch (RuntimeException e) {
+            return Map.of();
+        }
+    }
+}

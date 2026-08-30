@@ -1,0 +1,38 @@
+plugins { id 'numen-plugin' }
+
+processResources {
+    def props = [
+            version                       : project.version,
+            license                       : license,
+            neoforge_loader_version_range : neoforge_loader_version_range,
+            neoforge_version              : neoforge_version,
+            minecraft_version_range       : minecraft_version_range
+    ]
+    inputs.properties props
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand props
+    }
+}
+
+dependencies {
+    // AC 是 RDD 五模之一但可独立部署：把宿主无关核心内嵌进本插件 jar，
+    // 公共契约 ac-api 保持零 NUMEN/MC 依赖。
+    implementation project(':ac-api')
+    implementation project(':ac-core')
+    implementation 'com.google.code.gson:gson:2.10.1'
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test { useJUnitPlatform() }
+
+// 独立插件：AC 核心随 jar 一起发（与 plugins:rdd 一致）。
+// 注意：rdd 也内嵌 ac-core，两者同装时会出现重复类；由部署方统一
+// 以本插件为 AC 核心唯一提供方（见 AC_EXECUTION_LAYER_EXTRACTION.md）。
+tasks.named('jar', Jar) {
+    dependsOn(':ac-api:jar', ':ac-core:jar')
+    from({ project(':ac-api').sourceSets.main.output })
+    from({ project(':ac-core').sourceSets.main.output })
+}
