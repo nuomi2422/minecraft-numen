@@ -156,11 +156,23 @@ public final class McpMode {
     }
 
     /**
-     * 外脑此刻是否驱动着身体——内置大脑的开轮闸门、聊天区形态、现场缓冲挂点
-     * 全读这一处口径。模式开着即驱动;仅当失联回退开着且外脑安静超时,才交还内脑。
+     * 外脑此刻是否<b>驾驶</b>着身体——内置大脑的开轮闸门、聊天区形态、现场缓冲挂点
+     * 全读这一处口径。驾驶模式(非 assist)开着即驱动;assist 协助模式不驱动,
+     * 内置 AI 保持执行,外脑只喂目标/提示。仅当失联回退开着且外脑安静超时,才交还内脑。
      */
     public boolean driving() {
-        return enabled && !(config.quietFallback() && quietNow());
+        return enabled && !config.assist() && !(config.quietFallback() && quietNow());
+    }
+
+    /** 协助模式:外脑喂目标/提示,内置 AI 保持执行+说话(不驾驶身体)。 */
+    public boolean assistEnabled() {
+        return enabled && config.assist();
+    }
+
+    /** 拨协助模式开关。协助模式与驾驶模式互斥:开协助则驾驶失效,内置 AI 恢复。 */
+    public void setAssist(boolean on) {
+        config = config.withAssist(on);
+        if (configFile != null) config.save(configFile);
     }
 
     /** 外脑安静超时(或从未有人连过)。 */

@@ -42,7 +42,8 @@ public record McpConfig(
         String token,
         int callTimeoutSeconds,
         List<String> hiddenTools,
-        boolean quietFallback) {
+        boolean quietFallback,
+        boolean assist) {
 
     /** Tools the built-in brain manages for itself — never handed to an external driver. */
     private static final List<String> DEFAULT_HIDDEN = List.of("todowrite", "load_skill");
@@ -56,7 +57,7 @@ public record McpConfig(
      */
     public static McpConfig load(Path file) {
         if (!Files.isRegularFile(file)) {
-            McpConfig def = new McpConfig(false, LOOPBACK, 8765, mintToken(), 300, DEFAULT_HIDDEN, false);
+            McpConfig def = new McpConfig(false, LOOPBACK, 8765, mintToken(), 300, DEFAULT_HIDDEN, false, false);
             writeDefault(file, def);
             return def;
         }
@@ -70,10 +71,11 @@ public record McpConfig(
                     strOr(o, "token", ""),
                     o.has("call_timeout_seconds") ? o.get("call_timeout_seconds").getAsInt() : 300,
                     o.has("hidden_tools") ? strings(o, "hidden_tools") : DEFAULT_HIDDEN,
-                    o.has("quiet_fallback") && o.get("quiet_fallback").getAsBoolean());
+                    o.has("quiet_fallback") && o.get("quiet_fallback").getAsBoolean(),
+                    o.has("assist") && o.get("assist").getAsBoolean());
         } catch (IOException | RuntimeException ex) {
             Constants.LOG.warn("[numen-mcp] unreadable config {} — server disabled: {}", file, ex.toString());
-            return new McpConfig(false, "127.0.0.1", 8765, "", 300, DEFAULT_HIDDEN, false);
+            return new McpConfig(false, "127.0.0.1", 8765, "", 300, DEFAULT_HIDDEN, false, false);
         }
     }
 
@@ -88,30 +90,35 @@ public record McpConfig(
 
     /** 配置文件还没读到时的占位(模式关闭),避免 {@link McpMode} 持 null 配置。 */
     static McpConfig disabledDefault() {
-        return new McpConfig(false, LOOPBACK, 8765, "", 300, DEFAULT_HIDDEN, false);
+        return new McpConfig(false, LOOPBACK, 8765, "", 300, DEFAULT_HIDDEN, false, false);
     }
 
     /** 只改开关的副本——设置面板拨动开关时用,其余字段保持用户手改的值。 */
     McpConfig withEnabled(boolean on) {
-        return new McpConfig(on, host, port, token, callTimeoutSeconds, hiddenTools, quietFallback);
+        return new McpConfig(on, host, port, token, callTimeoutSeconds, hiddenTools, quietFallback, assist);
     }
 
     /** 改端点与超时的副本(设置页保存时用)。 */
     McpConfig withEndpoint(String host, int port, int callTimeoutSeconds) {
-        return new McpConfig(enabled, host, port, token, callTimeoutSeconds, hiddenTools, quietFallback);
+        return new McpConfig(enabled, host, port, token, callTimeoutSeconds, hiddenTools, quietFallback, assist);
     }
 
     McpConfig withToken(String token) {
-        return new McpConfig(enabled, host, port, token, callTimeoutSeconds, hiddenTools, quietFallback);
+        return new McpConfig(enabled, host, port, token, callTimeoutSeconds, hiddenTools, quietFallback, assist);
     }
 
     McpConfig withHiddenTools(List<String> hiddenTools) {
-        return new McpConfig(enabled, host, port, token, callTimeoutSeconds, List.copyOf(hiddenTools), quietFallback);
+        return new McpConfig(enabled, host, port, token, callTimeoutSeconds, List.copyOf(hiddenTools), quietFallback, assist);
     }
 
     /** 拨"失联后内脑接管"的副本。 */
     McpConfig withQuietFallback(boolean on) {
-        return new McpConfig(enabled, host, port, token, callTimeoutSeconds, hiddenTools, on);
+        return new McpConfig(enabled, host, port, token, callTimeoutSeconds, hiddenTools, on, assist);
+    }
+
+    /** 拨"协助模式"的副本——外脑喂目标/提示,内置 AI 保持执行+说话。 */
+    McpConfig withAssist(boolean on) {
+        return new McpConfig(enabled, host, port, token, callTimeoutSeconds, hiddenTools, quietFallback, on);
     }
 
     /** 绑的是所有网卡吗——局域网里别人够得着。 */
@@ -161,6 +168,7 @@ public record McpConfig(
         cfg.hiddenTools().forEach(hidden::add);
         o.add("hidden_tools", hidden);
         o.addProperty("quiet_fallback", cfg.quietFallback());
+        o.addProperty("assist", cfg.assist());
         try {
             Files.createDirectories(file.getParent());
             Files.writeString(file, o.toString(), StandardCharsets.UTF_8);

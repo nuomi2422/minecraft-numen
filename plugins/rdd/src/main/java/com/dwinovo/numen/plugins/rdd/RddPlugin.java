@@ -23,6 +23,8 @@ public final class RddPlugin implements NumenPlugin {
     private static final Set<UUID> DECOMPOSING = ConcurrentHashMap.newKeySet();
     private static final Map<UUID, BodyState> BODY = new ConcurrentHashMap<>();
     private static final AtomicLong BODY_CALLS = new AtomicLong();
+    /** assist 协助模式下暂停自动工具提交(防双驾驶);默认 true = RDD 可自动提交。 */
+    private static volatile boolean bodySubmissionEnabled = true;
 
     record BodyState(String subtaskId, int submitCount) {}
 
@@ -121,6 +123,16 @@ public final class RddPlugin implements NumenPlugin {
             RUNTIMES.remove(companionId);
             BODY.remove(companionId);
         }
+    }
+
+    /** RDD 是否允许自动提交身体工具。assist 协助模式下 false(工具执行交还 NUMEN)。 */
+    public static boolean bodySubmissionEnabled() {
+        return bodySubmissionEnabled;
+    }
+
+    /** 设置 RDD 自动工具提交开关。assist=true 时调用 setBodySubmissionEnabled(false) 防双驾驶。 */
+    public static void setBodySubmissionEnabled(boolean on) {
+        bodySubmissionEnabled = on;
     }
 
     /** XML 转义：描述/条件可能含玩家可输入的 < > & ". */

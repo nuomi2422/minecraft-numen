@@ -79,7 +79,11 @@ final class RddDetector {
                     || chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) {
                 return;
             }
-            maybeSubmitBody(ap, current);
+            // assist 协助模式下暂停自动工具提交(防双驾驶):工具执行交还 NUMEN 内置 AI,
+            // RDD 只保留资产检测 / 目标完成判定 / 异常提醒。
+            if (RddPlugin.bodySubmissionEnabled()) {
+                maybeSubmitBody(ap, current);
+            }
             Map<String, Integer> counts = countInventory(ap);
             if (HardCodedEvaluator.matches(current.condition(), counts)) {
                 completeSubtask(ap, rt, current);
@@ -166,7 +170,8 @@ final class RddDetector {
         if (CompanionTickDispatcher.currentTaskFor(ap.getUUID()) != null) {
             return;
         }
-        if (state.submitCount() < MAX_BODY_RETRIES) {
+        // assist 协助模式下 RDD 不自动提交工具(防双驾驶):重试也跳过,直接判失败提醒。
+        if (state.submitCount() < MAX_BODY_RETRIES && RddPlugin.bodySubmissionEnabled()) {
             RddPlugin.rememberBody(ap.getUUID(), current.id(), state.submitCount() + 1);
             submitBody(ap, current);
             LOG.info("[rdd] 身体任务结束未达成，重试 {} 次: {}", state.submitCount() + 1, current.id());
