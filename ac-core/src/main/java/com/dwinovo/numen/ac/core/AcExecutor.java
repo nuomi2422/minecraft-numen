@@ -156,7 +156,21 @@ public final class AcExecutor {
                 emit(AcEvent.Kind.STEP_FAILED, executionId, attempt, runId, fp, ac, step, i, step.tool(), result.message());
                 break;
             }
-            result = tool.execute(step.parameters(), context);
+            // step 级异常护栏：任何一步抛异常都降级为 FAILED 步骤，绝不把异常冲出去
+            // 使整个 execution future 异常完成（否则 ac_status/ac_resume 的 join() 会以
+            // CompletionException 上抛，正是多步 AC 查询链 NPE 的根因）。
+            try {
+                result = tool.execute(step.parameters(), context);
+            } catch (RuntimeException e) {
+                result = StepResult.failed(step.tool() + " threw: " + e);
+                emit(AcEvent.Kind.STEP_FAILED, executionId, attempt, runId, fp, ac, step, i, step.tool(), result.message());
+                break;
+            }
+            if (result == null) {
+                result = StepResult.failed(step.tool() + " returned null");
+                emit(AcEvent.Kind.STEP_FAILED, executionId, attempt, runId, fp, ac, step, i, step.tool(), result.message());
+                break;
+            }
             if (result.output() != null && !result.output().isEmpty()) {
                 state.putAll(result.output());
             }

@@ -134,6 +134,23 @@ class AcExecutorTest {
     }
 
     @Test
+    void stepThrowingRuntimeExceptionFailsExecutionInsteadOfCrashing() {
+        // 多步 AC 中某步抛 RuntimeException（如 transport 工具 NPE）→ 必须降级为 FAILED 步骤，
+        // 不能让异常冲出 executeSession 使 future 异常完成（ac_status/ac_resume join() 时炸）。
+        DefaultToolRegistry r = new DefaultToolRegistry();
+        r.register("ok", (p, c) -> StepResult.success(Map.of("done", true)));
+        r.register("boom", (p, c) -> { throw new NullPointerException("transport sender NPE"); });
+        var ac = new AcDefinition("npe-demo", List.of(
+                new AcDefinition.AcStep("a", "ok", Map.of()),
+                new AcDefinition.AcStep("b", "boom", Map.of()),
+                new AcDefinition.AcStep("c", "ok", Map.of())));
+        var record = new AcExecutor(r).execute(ac, Map.of(), CTX);
+        assertEquals(ExecutionRecord.Status.FAILED, record.status());
+        assertEquals(1, record.completedStepIndex());
+        assertTrue(record.message().contains("boom"), record.message());
+    }
+
+    @Test
     void loadsAndValidatesJson() {
         var ac = AcJson.load(new StringReader("{\"name\":\"json\",\"version\":\"2\",\"steps\":[{\"id\":\"s\",\"tool\":\"ok\",\"parameters\":{\"n\":2}}]}"));
         assertEquals("json", ac.name());
