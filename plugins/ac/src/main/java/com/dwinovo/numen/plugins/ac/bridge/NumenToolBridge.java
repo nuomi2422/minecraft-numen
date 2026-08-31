@@ -49,7 +49,14 @@ public final class NumenToolBridge implements AcTool {
             if (v instanceof UUID u) anchor = u;
         }
         CompletableFuture<String> done = new CompletableFuture<>();
-        host.invoke(callId, argsJson, anchor, done::complete);
+        // 发起调用必须在 try 内：transport 工具（如 get_self_status 走 ServerToolTransport.ship）
+        // 在 AC 后台线程可能直接抛 RuntimeException，漏掉会让 future 异常完成、查询链炸。
+        try {
+            host.invoke(callId, argsJson, anchor, done::complete);
+        } catch (RuntimeException e) {
+            return StepResult.failed("host tool invoke threw: " + e.getMessage()
+                    + " (tool=" + host.name() + ", callId=" + callId + ")");
+        }
         try {
             String json = done.get(timeoutMs, TimeUnit.MILLISECONDS);
             return BridgeResultMapper.map(host.name(), json);

@@ -76,6 +76,22 @@ class NumenToolBridgeTest {
     }
 
     @Test
+    void invokeThrowingMapsToFailedNotCrash() {
+        // transport 工具（如 get_self_status 走 ServerToolTransport.ship）在 AC 后台线程
+        // 可能直接抛 RuntimeException —— 必须降级 FAILED，绝不把异常漏给调用方
+        // （否则整个 execution future 异常完成，ac_status/ac_resume join() 时 NPE）。
+        var bridge = new NumenToolBridge(new HostTool() {
+            @Override public String name() { return "fake"; }
+            @Override public void invoke(String callId, String argsJson, java.util.UUID anchorUuid, Consumer<String> done) {
+                throw new NullPointerException("platform sender NPE");
+            }
+        });
+        StepResult r = bridge.execute(Map.of(), CTX);
+        assertEquals(StepResult.Status.FAILED, r.status());
+        assertTrue(r.message().contains("invoke threw"), r.message());
+    }
+
+    @Test
     void bareJsonWithoutSuccessMapsToSuccess() {
         // 非身体工具直接 complete 自定义 JSON（如 selfcompile_status）→ 视为成功产出数据
         var bridge = new NumenToolBridge(tool(done -> done.accept(
