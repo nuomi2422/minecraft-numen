@@ -52,13 +52,14 @@ public final class MutationCompiler {
         sources.forEach(path -> args.add(path.toString()));
         Path report = workspace.resolve("reports").resolve("compile.log");
         Files.createDirectories(report.getParent());
-        var output = new StringBuilder();
-        int exit = compiler.run(null, null, new java.io.OutputStream() {
-            @Override public void write(int b) { output.append((char) b); }
-        }, args.toArray(String[]::new));
-        Files.writeString(report, output.toString(), StandardCharsets.UTF_8);
-        return new CompileResult(exit == 0, output.toString().isBlank()
-                ? List.of() : List.of(output.toString()), exit);
+        // 用 ByteArrayOutputStream + UTF-8 解码，而不是 write(int b) 逐字节转 char：
+        // 后者会把多字节 UTF-8 中文拆成乱码字符，MutationErrorParser 匹配不到 `错误:`。
+        var byteOut = new java.io.ByteArrayOutputStream();
+        int exit = compiler.run(null, byteOut, byteOut, args.toArray(String[]::new));
+        String output = byteOut.toString(StandardCharsets.UTF_8);
+        Files.writeString(report, output, StandardCharsets.UTF_8);
+        return new CompileResult(exit == 0, output.isBlank()
+                ? List.of() : List.of(output), exit);
     }
 
     public record CompileResult(boolean success, List<String> diagnostics, int exitCode) {}

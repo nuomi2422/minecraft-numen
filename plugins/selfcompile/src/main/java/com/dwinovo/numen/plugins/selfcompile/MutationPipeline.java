@@ -26,5 +26,33 @@ public final class MutationPipeline {
         return MutationStateMachine.transition(manifest, MutationState.GENERATED, "");
     }
 
+    /**
+     * 编译已生成源码：GENERATED → STATICALLY_CHECKED → COMPILED（自动改码的"编译侧"）。
+     * 失败 → 把 javac 输出解析为结构化错误（file:line:col: message）落盘 reports/errors.json，
+     * 状态 → FAILED。外部 AI / 生成器按结构化错误精确定位修改源码后重试（recordGeneratedSource → compile）。
+     */
+    public MutationManifest compile(MutationManifest manifest) throws java.io.IOException {
+        if (manifest == null) throw new IllegalArgumentException("manifest must not be null");
+        MutationManifest checked = MutationStateMachine.transition(manifest, MutationState.STATICALLY_CHECKED, "");
+        MutationCompiler.CompileResult result = new MutationCompiler().compile(checked);
+        if (result.success()) {
+            return MutationStateMachine.transition(checked, MutationState.COMPILED, "");
+        }
+        java.util.List<MutationErrorParser.CompileError> errors =
+                MutationErrorParser.parse(String.join("\n", result.diagnostics()));
+        java.nio.file.Path workspaceDir = java.nio.file.Path.of(checked.workspace()).toAbsolutePath().normalize();
+        java.nio.file.Path report = workspaceDir.resolve("reports").resolve("errors.json");
+        java.nio.file.Files.createDirectories(report.getParent());
+        // 结构化错误：每行 file:line:col: message（selfcompile 无 Gson 依赖，纯文本足够外部 AI 定位）
+        StringBuilder sb = new StringBuilder();
+        for (MutationErrorParser.CompileError e : errors) {
+            sb.append(e.file()).append(":").append(e.line()).append(":").append(e.column())
+              .append(": ").append(e.message()).append("\n");
+        }
+        java.nio.file.Files.writeString(report, sb.toString(), java.nio.charset.StandardCharsets.UTF_8);
+        return MutationStateMachine.transition(checked, MutationState.FAILED,
+                "compile failed: " + errors.size() + " error(s)");
+    }
+
     public MutationBudget budget() { return budget; }
 }
