@@ -1,5 +1,6 @@
 package com.dwinovo.numen.ac.api;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -27,7 +28,7 @@ public record ExecutionRecord(
     public ExecutionRecord {
         if (runId == null || runId.isBlank()) throw new IllegalArgumentException("runId required");
         if (acName == null || acName.isBlank()) throw new IllegalArgumentException("acName required");
-        output = output == null ? Map.of() : Map.copyOf(output);
+        output = output == null ? Map.of() : new LinkedHashMap<>(output);
     }
 
     /** 兼容：旧 9 字段构造（executionId 默认取 runId，无 resume 上下文）。 */

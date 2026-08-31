@@ -1,5 +1,6 @@
 package com.dwinovo.numen.ac.api;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -32,7 +33,7 @@ public record ResumeContext(
         if (resumeStepId == null || resumeStepId.isBlank())
             throw new IllegalArgumentException("resumeStepId required");
         if (resumeStepIndex < 0) throw new IllegalArgumentException("resumeStepIndex must be >= 0");
-        input = input == null ? Map.of() : Map.copyOf(input);
-        state = state == null ? Map.of() : Map.copyOf(state);
+        input = input == null ? Map.of() : new LinkedHashMap<>(input);
+        state = state == null ? Map.of() : new LinkedHashMap<>(state);
     }
 }

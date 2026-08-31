@@ -1,5 +1,6 @@
 package com.dwinovo.numen.ac.api;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -18,7 +19,7 @@ public record AcDefinition(String name, String version, List<AcStep> steps) {
     public record AcStep(String id, String tool, Map<String,Object> parameters) {
         public AcStep {
             if (id == null || id.isBlank() || tool == null || tool.isBlank()) throw new IllegalArgumentException("step id/tool required");
-            parameters = parameters == null ? Map.of() : Map.copyOf(parameters);
+            parameters = parameters == null ? Map.of() : new LinkedHashMap<>(parameters);
         }
     }
 }
