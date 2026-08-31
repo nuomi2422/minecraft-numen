@@ -54,5 +54,19 @@ public final class MutationPipeline {
                 "compile failed: " + errors.size() + " error(s)");
     }
 
+    /**
+     * 证据链验证：CANDIDATE → 全证据满足 → VERIFIED；缺任一证据 → FAILED。
+     * 收紧 verdict：不再"有事件就 VERIFIED"，必须 source/classes/jar-hash/部署/MCP/世界对撞全链核实。
+     */
+    public MutationManifest verify(MutationManifest manifest) throws java.io.IOException {
+        if (manifest == null) throw new IllegalArgumentException("manifest must not be null");
+        MutationVerification.EvidenceReport report = MutationVerification.verify(manifest);
+        if (report.verified()) {
+            return MutationStateMachine.transition(manifest, MutationState.VERIFIED, "");
+        }
+        return MutationStateMachine.transition(manifest, MutationState.FAILED,
+                "verification missing: " + report.missing());
+    }
+
     public MutationBudget budget() { return budget; }
 }
