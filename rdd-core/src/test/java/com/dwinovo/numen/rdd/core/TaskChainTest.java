@@ -51,6 +51,23 @@ class TaskChainTest {
         assertEquals(SubtaskStatus.FAILED, chain.currentSubtaskStatus());
     }
 
+    @Test void persistsAndRestoresStateAcrossInstances() {
+        var primary = new PrimaryGoal("p", "mine", java.util.List.of(
+                Subtask.hardCoded("s1", "mine diamond", Map.of("item", "diamond")),
+                Subtask.hardCoded("s2", "mine iron", Map.of("item", "iron"))));
+        var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(primary)));
+        chain.startCurrent();
+        chain.markStalled("s1", "stalled");
+        // 导出 → 新实例恢复（模拟游戏重启）
+        var restored = TaskChain.fromJson(chain.toJson());
+        assertEquals(SubtaskStatus.STALLED, restored.currentSubtaskStatus());
+        assertEquals("s1", restored.currentSubtask().id());
+        assertEquals(PrimaryGoalStatus.ACTIVE, restored.primaryStatus());
+        // 恢复后可继续走状态机（STALLED → RUNNING）
+        restored.resumeFromStalled("s1");
+        assertEquals(SubtaskStatus.RUNNING, restored.currentSubtaskStatus());
+    }
+
     @Test void supervisorMustMatchAwaitingPrimary() {
         var primary = new PrimaryGoal("p", "prepare", java.util.List.of(
                 Subtask.hardCoded("s", "get stone", Map.of("item", "stone"))));

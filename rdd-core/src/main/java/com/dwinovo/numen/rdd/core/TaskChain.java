@@ -1,10 +1,17 @@
 package com.dwinovo.numen.rdd.core;
 
 import com.dwinovo.numen.rdd.api.*;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
 import java.util.*;
 
 /** Stateful owner of task progress; adapters may only report into this object. */
 public final class TaskChain {
+    private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
+
     private final Goal goal;
     private final Map<String, SubtaskStatus> statuses = new LinkedHashMap<>();
     private int primaryIndex;
@@ -90,6 +97,36 @@ public final class TaskChain {
 
     public synchronized Map<String, SubtaskStatus> subtaskStatuses() {
         return Map.copyOf(statuses);
+    }
+
+    /** 导出任务链状态为 JSON（持久化用：goal 结构 + 全部状态 + 当前指针）。 */
+    public synchronized String toJson() {
+        JsonObject o = new JsonObject();
+        o.add("goal", GSON.toJsonTree(goal));
+        JsonObject st = new JsonObject();
+        for (Map.Entry<String, SubtaskStatus> e : statuses.entrySet()) {
+            st.addProperty(e.getKey(), e.getValue().name());
+        }
+        o.add("statuses", st);
+        o.addProperty("primaryIndex", primaryIndex);
+        o.addProperty("subtaskIndex", subtaskIndex);
+        o.addProperty("primaryStatus", primaryStatus.name());
+        return GSON.toJson(o);
+    }
+
+    /** 从 JSON 恢复任务链状态（游戏重启后 RECOVERING）。 */
+    public static TaskChain fromJson(String json) {
+        JsonObject o = JsonParser.parseString(json).getAsJsonObject();
+        Goal goal = GSON.fromJson(o.get("goal"), Goal.class);
+        TaskChain chain = new TaskChain(goal);
+        JsonObject st = o.getAsJsonObject("statuses");
+        for (String k : st.keySet()) {
+            chain.statuses.put(k, SubtaskStatus.valueOf(st.get(k).getAsString()));
+        }
+        chain.primaryIndex = o.get("primaryIndex").getAsInt();
+        chain.subtaskIndex = o.get("subtaskIndex").getAsInt();
+        chain.primaryStatus = PrimaryGoalStatus.valueOf(o.get("primaryStatus").getAsString());
+        return chain;
     }
 
     private void advanceOrAwait() {
