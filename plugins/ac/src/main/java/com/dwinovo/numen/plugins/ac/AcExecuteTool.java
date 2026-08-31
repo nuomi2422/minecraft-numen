@@ -52,7 +52,9 @@ public final class AcExecuteTool implements NumenTool {
     }
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .string("ac_json", "AC 定义 JSON")
+                .string("ac_json", "AC 定义 JSON（与 ac_name 二选一；传了优先用 ac_json）")
+                .optionalString("ac_name", "按名执行已发布到 AC 库的脚本（需先用 ac_publish 发布）")
+                .optionalString("ac_version", "指定版本（可选，默认最新）")
                 .optionalString("input", "执行输入 JSON 字符串（可选）")
                 .build();
     }
@@ -61,17 +63,31 @@ public final class AcExecuteTool implements NumenTool {
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
         // 惰性桥接：本工具可能比 NumenCore 全量工具注册更早被调用，先同步工具目录
         if (refreshBridge != null) refreshBridge.run();
+        AcDefinition ac;
         if (!args.has("ac_json")) {
-            reply.accept(TaskResult.fail("缺少必填参数 ac_json").toJson());
-            return;
+            // 按名复用：ac_name（+可选 ac_version）从落盘 AC 库加载
+            String acName = args.has("ac_name") ? args.get("ac_name").getAsString() : "";
+            if (acName.isBlank()) {
+                reply.accept(TaskResult.fail("缺少必填参数 ac_json 或 ac_name").toJson());
+                return;
+            }
+            java.util.Optional<AcDefinition> found = args.has("ac_version")
+                    ? authoring.load(acName, args.get("ac_version").getAsString())
+                    : authoring.loadLatest(acName);
+            if (found.isEmpty()) {
+                reply.accept(TaskResult.fail("AC 库中找不到: " + acName + "（先用 ac_publish 发布）").toJson());
+                return;
+            }
+            ac = found.get();
+        } else {
+            String acJson = args.get("ac_json").getAsString();
+            var v = authoring.validateJson(acJson);
+            if (!v.valid()) {
+                reply.accept(TaskResult.fail("AC 校验失败: " + v.reason()).toJson());
+                return;
+            }
+            ac = AcJson.load(new StringReader(acJson));
         }
-        String acJson = args.get("ac_json").getAsString();
-        var v = authoring.validateJson(acJson);
-        if (!v.valid()) {
-            reply.accept(TaskResult.fail("AC 校验失败: " + v.reason()).toJson());
-            return;
-        }
-        AcDefinition ac = AcJson.load(new StringReader(acJson));
         Map<String, Object> input = parseInput(args);
         ExecutionContext ctx = () -> Map.of(NumenToolBridge.HOST_ENTITY_UUID, companion.getUUID());
 

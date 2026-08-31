@@ -5,7 +5,7 @@ import com.dwinovo.numen.ac.api.ToolSchema;
 import com.dwinovo.numen.ac.core.AcAuthoringService;
 import com.dwinovo.numen.ac.core.AcExecutor;
 import com.dwinovo.numen.ac.core.DefaultToolRegistry;
-import com.dwinovo.numen.ac.core.InMemoryAcVersionStore;
+import com.dwinovo.numen.ac.core.FileAcVersionStore;
 import com.dwinovo.numen.api.NumenApi;
 import com.dwinovo.numen.api.NumenPlugin;
 import com.dwinovo.numen.agent.tool.NumenTool;
@@ -35,7 +35,8 @@ public final class AcPlugin implements NumenPlugin {
     @Override
     public void setup(NumenApi numen) {
         executor = new AcExecutor(registry);
-        authoring = new AcAuthoringService(registry, new InMemoryAcVersionStore());
+        // AC 库落盘：config/numen/ac-library.json，重启恢复，AI 可经 ac_execute 按名复用
+        authoring = new AcAuthoringService(registry, new FileAcVersionStore(numen.configDir().resolve("ac-library.json")));
 
         // AC 执行事件 → 监测台 ac.jsonl（旁路观测，不破坏执行）
         executor.addEventListener(e -> com.dwinovo.numen.plugins.ac.AcMonitor.publish(e));
@@ -43,6 +44,7 @@ public final class AcPlugin implements NumenPlugin {
         numen.registerTool(new AcExecuteTool(executor, authoring, sessions, this::ensureBridged));
         numen.registerTool(new AcStatusTool(sessions));
         numen.registerTool(new AcResumeTool(executor, sessions));
+        numen.registerTool(new AcPublishTool(authoring));
 
         LOG.info("[ac] plugin ready; Numen tools bridged lazily on first ac_execute");
     }
