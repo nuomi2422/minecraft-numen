@@ -10,6 +10,10 @@ import net.minecraft.server.level.ServerPlayer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -27,12 +31,15 @@ public final class RddPlugin implements NumenPlugin {
     private static volatile boolean bodySubmissionEnabled = true;
     /** setup 时保存的插件门面，用于监督拍醒（nudge 注入内置 AI）。 */
     private static volatile NumenApi numenApi;
+    /** 任务链持久化目录 config/numen/rdd-tasks（每个同伴一个 <uuid>.json）。 */
+    private static volatile Path tasksDir;
 
     record BodyState(String subtaskId, int submitCount) {}
 
     @Override
     public void setup(NumenApi numen) {
         numenApi = numen;
+        tasksDir = numen.configDir().resolve("rdd-tasks");
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
         // 接管 /goal：先同步认领，异步分解；分解期间 NUMEN 原生目标循环让位。
@@ -93,6 +100,7 @@ public final class RddPlugin implements NumenPlugin {
         if (companionId == null || goal == null) throw new IllegalArgumentException("companion and goal required");
         BODY.remove(companionId);
         RUNTIMES.put(companionId, new RddRuntime(new TaskChain(goal), new AssetRegistry()));
+        saveRuntimes();
     }
 
     public static RddRuntime runtime(UUID companionId) {
@@ -136,6 +144,47 @@ public final class RddPlugin implements NumenPlugin {
     /** 设置 RDD 自动工具提交开关。assist=true 时调用 setBodySubmissionEnabled(false) 防双驾驶。 */
     public static void setBodySubmissionEnabled(boolean on) {
         bodySubmissionEnabled = on;
+    }
+
+    /** 保存所有活跃任务链到 config/numen/rdd-tasks（原子写 tmp+move）。 */
+    public static void saveRuntimes() {
+        if (tasksDir == null || RUNTIMES.isEmpty()) return;
+        try {
+            Files.createDirectories(tasksDir);
+            for (Map.Entry<UUID, RddRuntime> e : RUNTIMES.entrySet()) {
+                try {
+                    Path tmp = tasksDir.resolve(e.getKey() + ".json.tmp");
+                    Files.writeString(tmp, e.getValue().chain().toJson(), StandardCharsets.UTF_8);
+                    Files.move(tmp, tasksDir.resolve(e.getKey() + ".json"),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException ex) {
+                    LOG.warn("[rdd] 保存任务失败 {}: {}", e.getKey(), ex.toString());
+                }
+            }
+        } catch (IOException ex) {
+            LOG.warn("[rdd] 创建任务目录失败: {}", ex.toString());
+        }
+    }
+
+    /** 游戏重启恢复：磁盘有任务但内存没有 → 加载为 RddRuntime（幂等）。 */
+    public static void restoreRuntimes() {
+        if (tasksDir == null || !Files.isDirectory(tasksDir)) return;
+        try (var stream = Files.list(tasksDir)) {
+            stream.filter(f -> f.getFileName().toString().endsWith(".json")).forEach(f -> {
+                try {
+                    UUID uuid = UUID.fromString(f.getFileName().toString().replace(".json", ""));
+                    if (RUNTIMES.containsKey(uuid)) return;
+                    String json = Files.readString(f, StandardCharsets.UTF_8);
+                    TaskChain chain = TaskChain.fromJson(json);
+                    RUNTIMES.put(uuid, new RddRuntime(chain, new AssetRegistry()));
+                    LOG.info("[rdd] 恢复任务链 {}（当前二级 {}）", uuid, chain.currentSubtask().id());
+                } catch (Exception ex) {
+                    LOG.warn("[rdd] 恢复任务失败 {}: {}", f.getFileName(), ex.toString());
+                }
+            });
+        } catch (IOException ex) {
+            LOG.warn("[rdd] 扫描任务目录失败: {}", ex.toString());
+        }
     }
 
     /**

@@ -70,6 +70,8 @@ final class RddDetector {
             return;
         }
         tickCounter = 0;
+        // 重启恢复：磁盘有任务但内存无 → 加载为 RddRuntime（幂等，RECOVERING）
+        RddPlugin.restoreRuntimes();
         for (ServerPlayer p : server.getPlayerList().getPlayers()) {
             if (!(p instanceof NumenPlayer ap)) {
                 continue;
@@ -80,6 +82,8 @@ final class RddDetector {
             }
             tickRuntime(ap, rt);
         }
+        // 持久化：保存活跃任务链（1 秒一次，文件小，原子写）
+        RddPlugin.saveRuntimes();
     }
 
     private void tickRuntime(NumenPlayer ap, RddRuntime rt) {
