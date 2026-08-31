@@ -51,12 +51,17 @@ final class RddDetector {
     private static final int STALL_RESPONSE_TICKS = 25;
     /** 拍醒上限：超过则判失败（Level 1 恢复兜底）。 */
     private static final int MAX_NUDGES = 2;
+    /** Level 2 重试：失败的当前二级最多自动重跑次数（每次让 AI 换策略再试）。 */
+    private static final int MAX_SUBTASK_RETRIES = 2;
     private static final Gson GSON = new Gson();
 
     /** 卡死监督状态：记录每个同伴当前二级的资产指纹与未变化计数。 */
     private final Map<UUID, StallState> stalls = new ConcurrentHashMap<>();
 
     private record StallState(String subtaskId, String fingerprint, int unchangedTicks, int nudges) {}
+
+    /** Level 2 重试计数：每同伴当前二级失败重跑次数。 */
+    private final Map<UUID, Integer> retries = new ConcurrentHashMap<>();
 
     private int tickCounter;
     /** 资产 populate 节流：每 5 次检测（约 5 秒）把背包物品写进 AssetRegistry。 */
@@ -104,6 +109,11 @@ final class RddDetector {
             // STALLED → 监督恢复分支：行为恢复则回到 RUNNING，多次拍醒无效则升级失败。
             if (status == SubtaskStatus.STALLED) {
                 handleStalled(ap, rt, current);
+                return;
+            }
+            // FAILED → Level 2 局部恢复：预算内自动重跑该二级（AI 换策略再试）。
+            if (status == SubtaskStatus.FAILED) {
+                handleSubtaskFailure(ap, rt, current);
                 return;
             }
             if (status != SubtaskStatus.RUNNING) {
@@ -201,6 +211,20 @@ final class RddDetector {
         stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, st.nudges() + 1));
     }
 
+    /** FAILED 二级的 Level 2 局部恢复：预算内重置重跑 + 拍醒提示换策略；预算耗尽保持失败。 */
+    private void handleSubtaskFailure(NumenPlayer ap, RddRuntime rt, Subtask current) {
+        int n = retries.getOrDefault(ap.getUUID(), 0);
+        if (n >= MAX_SUBTASK_RETRIES) {
+            retries.remove(ap.getUUID());
+            return;
+        }
+        retries.put(ap.getUUID(), n + 1);
+        rt.chain().retrySubtask(current.id());
+        rt.startCurrent();
+        RddPlugin.nudge(ap.getUUID(), "这个目标（" + current.description() + "）失败了，再试一次。换个策略：检查材料、换工具、或换位置。");
+        RddMonitor.publish("subtask_retry", Map.of("subtask", current.id(), "retry", n + 1, "max", MAX_SUBTASK_RETRIES));
+    }
+
     /** 把背包物品写进 AssetRegistry（GLOBAL 作用域，来源=当前二级）。观测证据：inventory_scan。 */
     private void populateAssets(NumenPlayer ap, RddRuntime rt, Subtask current, Map<String, Integer> counts) {
         try {
@@ -269,6 +293,7 @@ final class RddDetector {
     private void completeSubtask(NumenPlayer ap, RddRuntime rt, Subtask current) {
         boolean completed = rt.applyHardCoded(current.id(), true);
         RddPlugin.clearBody(ap.getUUID());
+        retries.remove(ap.getUUID());
         if (!completed) {
             return;
         }
