@@ -60,8 +60,9 @@ final class RddDetector {
 
     private record StallState(String subtaskId, String fingerprint, int unchangedTicks, int nudges) {}
 
-    /** Level 2 重试计数：每同伴当前二级失败重跑次数。 */
-    private final Map<UUID, Integer> retries = new ConcurrentHashMap<>();
+    /** Level 2 重试计数：绑定当前二级（二级变了才重置），避免被误清。 */
+    private final Map<UUID, RetryState> retries = new ConcurrentHashMap<>();
+    private record RetryState(String subtaskId, int count) {}
 
     private int tickCounter;
     /** 资产 populate 节流：每 5 次检测（约 5 秒）把背包物品写进 AssetRegistry。 */
@@ -213,7 +214,8 @@ final class RddDetector {
 
     /** FAILED 二级的 Level 2 局部恢复：预算内重置重跑 + 拍醒提示换策略；预算耗尽 → Level 3。 */
     private void handleSubtaskFailure(NumenPlayer ap, RddRuntime rt, Subtask current) {
-        int n = retries.getOrDefault(ap.getUUID(), 0);
+        RetryState rs = retries.get(ap.getUUID());
+        int n = (rs != null && rs.subtaskId().equals(current.id())) ? rs.count() : 0;
         if (n >= MAX_SUBTASK_RETRIES) {
             // Level 3：多次失败 = 能力不足 → 引导自编译（AI 缺工具调 selfcompile_request 生成）
             retries.remove(ap.getUUID());
@@ -222,7 +224,7 @@ final class RddDetector {
                     "subtask", current.id(), "reason", "retries exhausted, capability gap suspected"));
             return;
         }
-        retries.put(ap.getUUID(), n + 1);
+        retries.put(ap.getUUID(), new RetryState(current.id(), n + 1));
         rt.chain().retrySubtask(current.id());
         rt.startCurrent();
         RddPlugin.nudge(ap.getUUID(), "这个目标（" + current.description() + "）失败了，再试一次。换个策略：检查材料、换工具、或换位置。");
