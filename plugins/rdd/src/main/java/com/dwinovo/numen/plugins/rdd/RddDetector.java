@@ -42,8 +42,13 @@ final class RddDetector {
     private static final int TICKS_PER_CHECK = 20;
     /** 身体任务结束但条件未达成时的最大重试次数。 */
     private static final int MAX_BODY_RETRIES = 3;
-    /** 卡死监督：资产指纹（背包+位置）连续多少次检测无变化即判 STALLED（1 次/秒）。 */
-    private static final int STALL_AFTER_TICKS = 5;
+    /** 卡死监督：资产指纹（背包+位置）连续多少次检测无变化即判 STALLED（1 次/秒）。
+     *  取 15 而非 5：AI 的 LLM 轮次（DeepSeek 思考 + 工具链）可能要 10~15 秒，
+     *  太短会把"正在思考/刚起步"误判成卡死。 */
+    private static final int STALL_AFTER_TICKS = 15;
+    /** 拍醒后的响应窗口：STALLED 后给 AI 这么长时间行动（资产变化则恢复），
+     *  仍未动才 re-nudge / 升级。避免"拍完不到 2 秒就判失败"。 */
+    private static final int STALL_RESPONSE_TICKS = 25;
     /** 拍醒上限：超过则判失败（Level 1 恢复兜底）。 */
     private static final int MAX_NUDGES = 2;
     private static final Gson GSON = new Gson();
@@ -140,7 +145,8 @@ final class RddDetector {
             rt.chain().markStalled(current.id(), "asset fingerprint unchanged for " + STALL_AFTER_TICKS + " checks");
             RddPlugin.nudge(ap.getUUID(), "你的目标「" + current.description() + "」还在，但你的背包和位置已经有一段时间没变化了。你卡住了吗？缺什么工具或材料？缺工具就调 selfcompile_request 请求新工具。");
             RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(), "reason", "asset fingerprint unchanged"));
-            stalls.put(ap.getUUID(), new StallState(current.id(), fp, unchanged, st.nudges() + 1));
+            // 重置响应窗计数：从 STALLED 起给 AI STALL_RESPONSE_TICKS 秒响应时间
+            stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, st.nudges() + 1));
             return true;
         }
         stalls.put(ap.getUUID(), new StallState(current.id(), fp, unchanged, st.nudges()));
@@ -166,6 +172,11 @@ final class RddDetector {
             stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 0));
             return;
         }
+        // 资产仍无变化：先给 AI 一个响应窗口，窗口内不打扰（AI 可能正在思考/规划）
+        if (st.unchangedTicks() + 1 < STALL_RESPONSE_TICKS) {
+            stalls.put(ap.getUUID(), new StallState(current.id(), fp, st.unchangedTicks() + 1, st.nudges()));
+            return;
+        }
         if (st.nudges() >= MAX_NUDGES) {
             // 多次拍醒无效 → Level 1 恢复：判失败（不伪造完成）
             rt.chain().markFailed(current.id(), "stalled after " + MAX_NUDGES + " nudges without progress");
@@ -174,7 +185,7 @@ final class RddDetector {
             LOG.warn("[rdd] 二级目标卡死升级失败: {}", current.id());
             return;
         }
-        // 还在拍醒期、资产仍无变化 → 换措辞再拍一次
+        // 响应窗口已过、资产仍无变化 → 换措辞再拍一次
         RddPlugin.nudge(ap.getUUID(), "你还没动。告诉我你卡在哪一步？如果缺工具，现在就调 selfcompile_request。");
         RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(), "reason", "still stalled, re-nudge"));
         stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, st.nudges() + 1));
