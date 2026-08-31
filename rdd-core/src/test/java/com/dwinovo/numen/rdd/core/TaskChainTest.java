@@ -34,6 +34,23 @@ class TaskChainTest {
         assertEquals(PrimaryGoalStatus.AWAITING_SUPERVISOR, chain.primaryStatus());
     }
 
+    @Test void stalledSubtaskCanResumeAndFail() {
+        var primary = new PrimaryGoal("p", "mine", java.util.List.of(
+                Subtask.hardCoded("s1", "mine diamond", Map.of("item", "diamond"))));
+        var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(primary)));
+        chain.startCurrent();
+        // RUNNING → STALLED（监督检测卡死：资产指纹无变化）
+        chain.markStalled("s1", "asset fingerprint unchanged");
+        assertEquals(SubtaskStatus.STALLED, chain.currentSubtaskStatus());
+        // STALLED → RUNNING（拍醒后行为恢复）
+        chain.resumeFromStalled("s1");
+        assertEquals(SubtaskStatus.RUNNING, chain.currentSubtaskStatus());
+        // STALLED → FAILED（多次拍醒无效，Level 1 恢复兜底）
+        chain.markStalled("s1", "stalled again");
+        chain.markFailed("s1", "stalled after nudges");
+        assertEquals(SubtaskStatus.FAILED, chain.currentSubtaskStatus());
+    }
+
     @Test void supervisorMustMatchAwaitingPrimary() {
         var primary = new PrimaryGoal("p", "prepare", java.util.List.of(
                 Subtask.hardCoded("s", "get stone", Map.of("item", "stone"))));

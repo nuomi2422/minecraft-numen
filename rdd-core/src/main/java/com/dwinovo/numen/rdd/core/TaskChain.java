@@ -67,9 +67,25 @@ public final class TaskChain {
 
     public synchronized void markFailed(String subtaskId, String reason) {
         requireCurrent(subtaskId);
-        if (statuses.get(subtaskId) != SubtaskStatus.RUNNING) throw new IllegalStateException("current subtask is not running");
+        SubtaskStatus st = statuses.get(subtaskId);
+        if (st != SubtaskStatus.RUNNING && st != SubtaskStatus.STALLED) throw new IllegalStateException("current subtask is not running/stalled");
         if (reason == null || reason.isBlank()) throw new IllegalArgumentException("failure reason required");
         statuses.put(subtaskId, SubtaskStatus.FAILED);
+    }
+
+    /** 监督检测到卡死（资产/工具长时间无变化）→ 置 STALLED，等待外部拍醒或升级。 */
+    public synchronized void markStalled(String subtaskId, String reason) {
+        requireCurrent(subtaskId);
+        if (statuses.get(subtaskId) != SubtaskStatus.RUNNING) throw new IllegalStateException("current subtask is not running");
+        if (reason == null || reason.isBlank()) throw new IllegalArgumentException("stall reason required");
+        statuses.put(subtaskId, SubtaskStatus.STALLED);
+    }
+
+    /** 监督拍醒后，检测到行为恢复 → 从 STALLED 回到 RUNNING（任务继续）。 */
+    public synchronized void resumeFromStalled(String subtaskId) {
+        requireCurrent(subtaskId);
+        if (statuses.get(subtaskId) != SubtaskStatus.STALLED) throw new IllegalStateException("current subtask is not stalled");
+        statuses.put(subtaskId, SubtaskStatus.RUNNING);
     }
 
     public synchronized Map<String, SubtaskStatus> subtaskStatuses() {
