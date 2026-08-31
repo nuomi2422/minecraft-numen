@@ -211,11 +211,15 @@ final class RddDetector {
         stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, st.nudges() + 1));
     }
 
-    /** FAILED 二级的 Level 2 局部恢复：预算内重置重跑 + 拍醒提示换策略；预算耗尽保持失败。 */
+    /** FAILED 二级的 Level 2 局部恢复：预算内重置重跑 + 拍醒提示换策略；预算耗尽 → Level 3。 */
     private void handleSubtaskFailure(NumenPlayer ap, RddRuntime rt, Subtask current) {
         int n = retries.getOrDefault(ap.getUUID(), 0);
         if (n >= MAX_SUBTASK_RETRIES) {
+            // Level 3：多次失败 = 能力不足 → 引导自编译（AI 缺工具调 selfcompile_request 生成）
             retries.remove(ap.getUUID());
+            RddPlugin.nudge(ap.getUUID(), "这个目标多次失败，很可能缺一个专门工具。如果你缺工具，现在就调 selfcompile_request 请求生成它，然后告诉我。");
+            RddMonitor.publish("subtask_capability_gap", Map.of(
+                    "subtask", current.id(), "reason", "retries exhausted, capability gap suspected"));
             return;
         }
         retries.put(ap.getUUID(), n + 1);
