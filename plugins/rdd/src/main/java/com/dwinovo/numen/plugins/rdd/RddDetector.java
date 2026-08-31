@@ -19,6 +19,8 @@ import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * RDD 的硬编码检测驱动器 + 身体执行桥：服务端每 tick 跑一次（节流到 1 秒）。
@@ -40,7 +42,16 @@ final class RddDetector {
     private static final int TICKS_PER_CHECK = 20;
     /** 身体任务结束但条件未达成时的最大重试次数。 */
     private static final int MAX_BODY_RETRIES = 3;
+    /** 卡死监督：资产指纹（背包+位置）连续多少次检测无变化即判 STALLED（1 次/秒）。 */
+    private static final int STALL_AFTER_TICKS = 5;
+    /** 拍醒上限：超过则判失败（Level 1 恢复兜底）。 */
+    private static final int MAX_NUDGES = 2;
     private static final Gson GSON = new Gson();
+
+    /** 卡死监督状态：记录每个同伴当前二级的资产指纹与未变化计数。 */
+    private final Map<UUID, StallState> stalls = new ConcurrentHashMap<>();
+
+    private record StallState(String subtaskId, String fingerprint, int unchangedTicks, int nudges) {}
 
     private int tickCounter;
 
@@ -75,8 +86,20 @@ final class RddDetector {
                 rt.startCurrent();
             }
             Subtask current = chain.currentSubtask();
-            if (current.detectionMode() != DetectionMode.HARD_CODED
-                    || chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) {
+            if (current.detectionMode() != DetectionMode.HARD_CODED) {
+                return;
+            }
+            SubtaskStatus status = chain.currentSubtaskStatus();
+            // STALLED → 监督恢复分支：行为恢复则回到 RUNNING，多次拍醒无效则升级失败。
+            if (status == SubtaskStatus.STALLED) {
+                handleStalled(ap, rt, current);
+                return;
+            }
+            if (status != SubtaskStatus.RUNNING) {
+                return;
+            }
+            // 卡死监督：资产指纹（背包+位置）连续未变化 → 判 STALLED 并拍醒将军。
+            if (trackStall(ap, rt, current)) {
                 return;
             }
             // assist 协助模式下暂停自动工具提交(防双驾驶):工具执行交还 NUMEN 内置 AI,
@@ -94,6 +117,74 @@ final class RddDetector {
             // 检测失败不能拖垮服务端 tick。
             LOG.warn("[rdd] 检测 tick 异常: {}", e.toString());
         }
+    }
+
+    /**
+     * 卡死检测：资产指纹（背包计数+位置）连续 {@link #STALL_AFTER_TICKS} 次无变化
+     * → markStalled + 拍醒（nudge）。返回 true 表示本次判定卡死，上层停止推进。
+     */
+    private boolean trackStall(NumenPlayer ap, RddRuntime rt, Subtask current) {
+        String fp = fingerprint(ap);
+        StallState st = stalls.get(ap.getUUID());
+        if (st == null || !st.subtaskId().equals(current.id())) {
+            stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 0));
+            return false;
+        }
+        if (!st.fingerprint().equals(fp)) {
+            // 资产/位置变了 = AI 在动 → 清零未变化计数
+            stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 0));
+            return false;
+        }
+        int unchanged = st.unchangedTicks() + 1;
+        if (unchanged >= STALL_AFTER_TICKS) {
+            rt.chain().markStalled(current.id(), "asset fingerprint unchanged for " + STALL_AFTER_TICKS + " checks");
+            RddPlugin.nudge(ap.getUUID(), "你的目标「" + current.description() + "」还在，但你的背包和位置已经有一段时间没变化了。你卡住了吗？缺什么工具或材料？缺工具就调 selfcompile_request 请求新工具。");
+            RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(), "reason", "asset fingerprint unchanged"));
+            stalls.put(ap.getUUID(), new StallState(current.id(), fp, unchanged, st.nudges() + 1));
+            return true;
+        }
+        stalls.put(ap.getUUID(), new StallState(current.id(), fp, unchanged, st.nudges()));
+        return false;
+    }
+
+    /**
+     * STALLED 监督恢复：行为（资产/位置）恢复 → 回 RUNNING；仍在拍醒期 → 换措辞再拍；
+     * 多次拍醒无效 → 判失败（Level 1 恢复兜底）。
+     */
+    private void handleStalled(NumenPlayer ap, RddRuntime rt, Subtask current) {
+        String fp = fingerprint(ap);
+        StallState st = stalls.get(ap.getUUID());
+        if (st == null) {
+            stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 1));
+            RddPlugin.nudge(ap.getUUID(), "你卡住了吗？缺什么工具或材料？");
+            return;
+        }
+        if (!st.fingerprint().equals(fp)) {
+            // AI 被拍醒后恢复行动 → 回到 RUNNING，任务继续
+            rt.chain().resumeFromStalled(current.id());
+            RddMonitor.publish("subtask_resumed", Map.of("subtask", current.id()));
+            stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 0));
+            return;
+        }
+        if (st.nudges() >= MAX_NUDGES) {
+            // 多次拍醒无效 → Level 1 恢复：判失败（不伪造完成）
+            rt.chain().markFailed(current.id(), "stalled after " + MAX_NUDGES + " nudges without progress");
+            RddMonitor.publish("subtask_failed", Map.of("subtask", current.id(), "reason", "stalled after nudges"));
+            stalls.remove(ap.getUUID());
+            LOG.warn("[rdd] 二级目标卡死升级失败: {}", current.id());
+            return;
+        }
+        // 还在拍醒期、资产仍无变化 → 换措辞再拍一次
+        RddPlugin.nudge(ap.getUUID(), "你还没动。告诉我你卡在哪一步？如果缺工具，现在就调 selfcompile_request。");
+        RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(), "reason", "still stalled, re-nudge"));
+        stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, st.nudges() + 1));
+    }
+
+    /** 资产指纹：背包物品计数 + 方块位置。卡死检测据此判断行为是否在变。 */
+    private String fingerprint(NumenPlayer ap) {
+        String inv = countInventory(ap).toString();
+        var pos = ap.blockPosition();
+        return inv + "|" + pos.getX() + "," + pos.getY() + "," + pos.getZ();
     }
 
     /** 当前二级带 body 且还没提交过 → 提交一次。 */

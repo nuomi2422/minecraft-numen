@@ -25,11 +25,14 @@ public final class RddPlugin implements NumenPlugin {
     private static final AtomicLong BODY_CALLS = new AtomicLong();
     /** assist 协助模式下暂停自动工具提交(防双驾驶);默认 true = RDD 可自动提交。 */
     private static volatile boolean bodySubmissionEnabled = true;
+    /** setup 时保存的插件门面，用于监督拍醒（nudge 注入内置 AI）。 */
+    private static volatile NumenApi numenApi;
 
     record BodyState(String subtaskId, int submitCount) {}
 
     @Override
     public void setup(NumenApi numen) {
+        numenApi = numen;
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
         // 接管 /goal：先同步认领，异步分解；分解期间 NUMEN 原生目标循环让位。
@@ -133,6 +136,21 @@ public final class RddPlugin implements NumenPlugin {
     /** 设置 RDD 自动工具提交开关。assist=true 时调用 setBodySubmissionEnabled(false) 防双驾驶。 */
     public static void setBodySubmissionEnabled(boolean on) {
         bodySubmissionEnabled = on;
+    }
+
+    /**
+     * 卡死监督的"拍醒"：把一句话注入内置 AI（效果和主人亲手打字一样）。
+     * RDD 不抢方向盘，只在将军发愣时提醒它——缺工具会让它自己调 selfcompile_request。
+     */
+    public static void nudge(UUID companionId, String message) {
+        try {
+            if (numenApi != null && companionId != null && message != null && !message.isBlank()) {
+                numenApi.enqueue(companionId, message);
+                LOG.info("[rdd] nudge {}: {}", companionId, message);
+            }
+        } catch (RuntimeException e) {
+            LOG.warn("[rdd] nudge failed: {}", e.toString());
+        }
     }
 
     /** XML 转义：描述/条件可能含玩家可输入的 < > & ". */
