@@ -59,6 +59,8 @@ final class RddDetector {
     private record StallState(String subtaskId, String fingerprint, int unchangedTicks, int nudges) {}
 
     private int tickCounter;
+    /** 资产 populate 节流：每 5 次检测（约 5 秒）把背包物品写进 AssetRegistry。 */
+    private int assetTick;
 
     void onServerTick(MinecraftServer server) {
         if (server == null) {
@@ -113,6 +115,10 @@ final class RddDetector {
                 maybeSubmitBody(ap, current);
             }
             Map<String, Integer> counts = countInventory(ap);
+            // 资产 populate：把背包物品写进 AssetRegistry（节流），rdd_status 据此报真实资产。
+            if (++assetTick % 5 == 0) {
+                populateAssets(ap, rt, current, counts);
+            }
             if (HardCodedEvaluator.matches(current.condition(), counts)) {
                 completeSubtask(ap, rt, current);
                 return;
@@ -189,6 +195,25 @@ final class RddDetector {
         RddPlugin.nudge(ap.getUUID(), "你还没动。告诉我你卡在哪一步？如果缺工具，现在就调 selfcompile_request。");
         RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(), "reason", "still stalled, re-nudge"));
         stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, st.nudges() + 1));
+    }
+
+    /** 把背包物品写进 AssetRegistry（GLOBAL 作用域，来源=当前二级）。观测证据：inventory_scan。 */
+    private void populateAssets(NumenPlayer ap, RddRuntime rt, Subtask current, Map<String, Integer> counts) {
+        try {
+            String envId = ap.level().dimension().location().toString();
+            for (Map.Entry<String, Integer> e : counts.entrySet()) {
+                Map<String, Object> value = new HashMap<>();
+                value.put("count", e.getValue());
+                Observation obs = new Observation(
+                        "obs-" + e.getKey().hashCode() + "-" + System.nanoTime(),
+                        "inventory_scan", "rdd_detector", envId,
+                        System.currentTimeMillis(), value);
+                rt.assets().apply(obs, e.getKey(), AssetScope.GLOBAL, current.id());
+            }
+        } catch (RuntimeException ex) {
+            // 资产 populate 失败不影响检测主流程
+            LOG.warn("[rdd] 资产 populate 异常: {}", ex.toString());
+        }
     }
 
     /** 资产指纹：背包物品计数 + 方块位置。卡死检测据此判断行为是否在变。 */
