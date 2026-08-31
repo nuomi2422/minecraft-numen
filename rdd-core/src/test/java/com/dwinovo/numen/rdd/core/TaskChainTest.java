@@ -68,6 +68,20 @@ class TaskChainTest {
         assertEquals(SubtaskStatus.RUNNING, restored.currentSubtaskStatus());
     }
 
+    @Test void failedSubtaskCanRetry() {
+        var primary = new PrimaryGoal("p", "mine", java.util.List.of(
+                Subtask.hardCoded("s1", "mine diamond", Map.of("item", "diamond"))));
+        var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(primary)));
+        chain.startCurrent();
+        chain.markFailed("s1", "body task ended");
+        assertEquals(SubtaskStatus.FAILED, chain.currentSubtaskStatus());
+        // Level 2 局部恢复：失败二级重置 PENDING → 可重新 startCurrent（AI 换策略再试）
+        chain.retrySubtask("s1");
+        assertEquals(SubtaskStatus.PENDING, chain.currentSubtaskStatus());
+        chain.startCurrent();
+        assertEquals(SubtaskStatus.RUNNING, chain.currentSubtaskStatus());
+    }
+
     @Test void supervisorMustMatchAwaitingPrimary() {
         var primary = new PrimaryGoal("p", "prepare", java.util.List.of(
                 Subtask.hardCoded("s", "get stone", Map.of("item", "stone"))));

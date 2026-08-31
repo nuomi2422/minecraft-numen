@@ -95,6 +95,13 @@ public final class TaskChain {
         statuses.put(subtaskId, SubtaskStatus.RUNNING);
     }
 
+    /** Level 2 局部恢复：失败的当前二级重置为 PENDING，可重新 startCurrent（AI 换策略再试）。 */
+    public synchronized void retrySubtask(String subtaskId) {
+        requireCurrent(subtaskId);
+        if (statuses.get(subtaskId) != SubtaskStatus.FAILED) throw new IllegalStateException("only a FAILED subtask may retry");
+        statuses.put(subtaskId, SubtaskStatus.PENDING);
+    }
+
     public synchronized Map<String, SubtaskStatus> subtaskStatuses() {
         return Map.copyOf(statuses);
     }
