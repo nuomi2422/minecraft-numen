@@ -53,6 +53,8 @@ final class RddDetector {
     private static final int MAX_NUDGES = 2;
     /** Level 2 重试：失败的当前二级最多自动重跑次数（每次让 AI 换策略再试）。 */
     private static final int MAX_SUBTASK_RETRIES = 2;
+    /** Level 3：当前二级累计卡死多少次即判定能力不足（AI 反复拍醒仍无法达成目标资产）。 */
+    private static final int CAPABILITY_GAP_AFTER_STALLS = 3;
     private static final Gson GSON = new Gson();
 
     /** 卡死监督状态：记录每个同伴当前二级的资产指纹与未变化计数。 */
@@ -63,6 +65,9 @@ final class RddDetector {
     /** Level 2 重试计数：绑定当前二级（二级变了才重置），避免被误清。 */
     private final Map<UUID, RetryState> retries = new ConcurrentHashMap<>();
     private record RetryState(String subtaskId, int count) {}
+    /** Level 3 卡死累计：当前二级累计卡死次数（AI 反复拍醒仍无目标资产进展 → 能力不足）。 */
+    private final Map<UUID, StallCount> stallCounts = new ConcurrentHashMap<>();
+    private record StallCount(String subtaskId, int total) {}
 
     private int tickCounter;
     /** 资产 populate 节流：每 5 次检测（约 5 秒）把背包物品写进 AssetRegistry。 */
@@ -163,6 +168,17 @@ final class RddDetector {
         }
         int unchanged = st.unchangedTicks() + 1;
         if (unchanged >= STALL_AFTER_TICKS) {
+            // Level 3 卡死累计：AI 反复拍醒仍无目标资产进展 → 判定能力不足
+            StallCount sc = stallCounts.get(ap.getUUID());
+            int total = (sc != null && sc.subtaskId().equals(current.id())) ? sc.total() + 1 : 1;
+            stallCounts.put(ap.getUUID(), new StallCount(current.id(), total));
+            if (total >= CAPABILITY_GAP_AFTER_STALLS) {
+                // Level 3：反复卡死 = 能力不足 → 引导自编译（缺工具调 selfcompile_request 生成）
+                RddPlugin.nudge(ap.getUUID(), "这个目标反复卡住，很可能缺一个专门工具。如果你缺工具，现在就调 selfcompile_request 请求生成它，然后告诉我。");
+                RddMonitor.publish("subtask_capability_gap", Map.of(
+                        "subtask", current.id(), "reason", "repeated stalls (" + total + "), capability gap suspected"));
+                stallCounts.remove(ap.getUUID());
+            }
             rt.chain().markStalled(current.id(), "asset fingerprint unchanged for " + STALL_AFTER_TICKS + " checks");
             RddPlugin.nudge(ap.getUUID(), "你的目标「" + current.description() + "」还在，但你的背包和位置已经有一段时间没变化了。你卡住了吗？缺什么工具或材料？缺工具就调 selfcompile_request 请求新工具。");
             RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(), "reason", "asset fingerprint unchanged"));
@@ -300,6 +316,7 @@ final class RddDetector {
         boolean completed = rt.applyHardCoded(current.id(), true);
         RddPlugin.clearBody(ap.getUUID());
         retries.remove(ap.getUUID());
+        stallCounts.remove(ap.getUUID());
         if (!completed) {
             return;
         }
