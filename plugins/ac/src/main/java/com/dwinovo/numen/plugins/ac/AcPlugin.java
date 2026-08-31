@@ -37,6 +37,9 @@ public final class AcPlugin implements NumenPlugin {
         executor = new AcExecutor(registry);
         authoring = new AcAuthoringService(registry, new InMemoryAcVersionStore());
 
+        // AC 执行事件 → 监测台 ac.jsonl（旁路观测，不破坏执行）
+        executor.addEventListener(e -> com.dwinovo.numen.plugins.ac.AcMonitor.publish(e));
+
         numen.registerTool(new AcExecuteTool(executor, authoring, sessions, this::ensureBridged));
         numen.registerTool(new AcStatusTool(sessions));
         numen.registerTool(new AcResumeTool(executor, sessions));
