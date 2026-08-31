@@ -272,6 +272,11 @@ public final class McpServer {
                         + "(if one is bound). Use it to answer the owner's <query> events and to narrate what "
                         + "you are doing. Consecutive calls queue up and play in order.",
                 saySchema()));
+        tools.add(toolDef("enqueue",
+                "Assist 模式下把目标/提示注入内置 AI(主人消息效果,触发它自主规划执行)。"
+                        + "与 say 不同:say 只是让同伴说话;enqueue 是让它当作任务去执行。"
+                        + "驾驶模式(非 assist)下内置 AI 停轮,注入会被拒。",
+                enqueueSchema()));
 
         // 全量给外脑,不做渐进披露:那是我们自己请求里的省法,外脑的上下文预算归它自己管,
         // 而且 MCP 客户端(Claude Code 之类)本来就会把借来的工具再延迟一次。
@@ -371,6 +376,16 @@ public final class McpServer {
         return schema;
     }
 
+    private JsonObject enqueueSchema() {
+        JsonObject schema = objectSchema("companion", true);
+        JsonObject text = new JsonObject();
+        text.addProperty("type", "string");
+        text.addProperty("description", "The goal/prompt to inject into the built-in AI (assist mode).");
+        schema.getAsJsonObject("properties").add("text", text);
+        schema.getAsJsonArray("required").add("text");
+        return schema;
+    }
+
     // ---- tools/call ----
 
     /** 派发一次工具调用,并把它记进活动流——面板上那条流就是这里喂的。 */
@@ -412,6 +427,7 @@ public final class McpServer {
                 case "delete_companion" -> handleDelete(args);
                 case "get_events" -> handleGetEvents(args);
                 case "say" -> handleSay(args);
+                case "enqueue" -> handleEnqueue(args);
                 default -> handleToolInvoke(name, args);
             };
         } catch (TimeoutException te) {
@@ -527,6 +543,20 @@ public final class McpServer {
         }
         boolean ok = NumenActuator.say(target, text).get(CONTROL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         return content(ok ? "said" : "could not say — is the companion live?", !ok);
+    }
+
+    private JsonObject handleEnqueue(JsonObject args) throws Exception {
+        UUID target = resolveCompanion(args);
+        if (target == null) {
+            return content("enqueue needs a 'companion' argument (a name or id from list_companions)", true);
+        }
+        String text = args.has("text") && !args.get("text").isJsonNull()
+                ? args.get("text").getAsString().trim() : "";
+        if (text.isEmpty()) {
+            return content("enqueue needs a non-empty 'text'", true);
+        }
+        boolean ok = NumenActuator.enqueue(target, text).get(CONTROL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        return content(ok ? "enqueued" : "could not enqueue — is the companion live or is MCP in driving mode?", !ok);
     }
 
     private JsonObject handleToolInvoke(String toolName, JsonObject args) throws Exception {

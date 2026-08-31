@@ -244,6 +244,24 @@ public final class NumenActuator {
         return f;
     }
 
+    /**
+     * Assist 模式下把目标/提示注入内置 AI（主人消息效果，触发它自主执行）。
+     * 与 say 的区别:say 只是让同伴说话;enqueue 是让它当作任务去规划执行。
+     * 驾驶模式(非 assist)下内置 AI 停轮,注入会被拒(TO_EXTERNAL_BRAIN)。
+     */
+    public static CompletableFuture<Boolean> enqueue(UUID companion, String text) {
+        CompletableFuture<Boolean> f = new CompletableFuture<>();
+        if (companion == null || text == null || text.isBlank()) {
+            f.complete(false);
+            return f;
+        }
+        Minecraft.getInstance().execute(() -> {
+            var d = NumenGateway.enqueue(companion, text);
+            f.complete(d == Delivery.QUEUED || d == Delivery.SEEN || d == Delivery.HANDED_OFF);
+        });
+        return f;
+    }
+
     public static CompletableFuture<String> invoke(UUID companion, String toolName, String argsJson) {
         CompletableFuture<String> f = new CompletableFuture<>();
         if (companion == null || toolName == null || toolName.isBlank()) {
