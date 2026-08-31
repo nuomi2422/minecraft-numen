@@ -4,6 +4,7 @@ import com.dwinovo.numen.Constants;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.ToolRegistry;
 import com.dwinovo.numen.task.TaskResult;
+import com.dwinovo.numen.monitor.MonitoringJournal;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.minecraft.core.UUIDUtil;
@@ -15,6 +16,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.util.UUID;
+import java.util.Map;
 
 /**
  * Client-to-server payload: "the LLM running on my client side decided to
@@ -84,6 +86,9 @@ public record ExecuteToolPayload(UUID entityUuid,
         String who = player.getName().getString();
         Constants.LOG.debug("[numen-net] ← execute_tool from {} entity={} tool={} id={} args_chars={}",
                 who, p.entityUuid(), p.toolName(), p.toolCallId(), p.argumentsJson().length());
+        MonitoringJournal.get().publish("tools", "tool_call", Map.of(
+                "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
+                "tool", p.toolName(), "args_chars", p.argumentsJson().length()));
 
         // -- 0. companion player body (the new architecture). Resolve it (or
         //       respawn it from the registry on a cold start) and run the tool
@@ -138,9 +143,13 @@ public record ExecuteToolPayload(UUID entityUuid,
         // enqueues/dispatches and its result returns via the task lifecycle.
         // onServerCall 是 NumenTool 的接口默认方法——非身体工具的默认实现
         // 兜底出一条清晰失败,这里无需再分岔。
-        java.util.function.Consumer<String> reply = json ->
-                com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
-                        new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
+        java.util.function.Consumer<String> reply = json -> {
+            MonitoringJournal.get().publish("tools", "tool_result", Map.of(
+                    "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
+                    "tool", p.toolName(), "result", truncate(json)));
+            com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
+                    new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
+        };
         try {
             tool.onServerCall(p.toolCallId(), args, companion, reply);
         } catch (RuntimeException ex) {
@@ -160,8 +169,16 @@ public record ExecuteToolPayload(UUID entityUuid,
         Constants.LOG.warn("[numen-net] ✗ execute_tool rejected from {}: tool={} id={} reason={} args={}",
                 player.getName().getString(), p.toolName(), p.toolCallId(), message,
                 p.argumentsJson());
+        MonitoringJournal.get().publish("tools", "tool_rejected", Map.of(
+                "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
+                "tool", p.toolName(), "reason", message));
         String json = TaskResult.fail(message).toJson();
         com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
                 new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
+    }
+
+    private static String truncate(String s) {
+        if (s == null) return "";
+        return s.length() <= 300 ? s : s.substring(0, 300) + "...";
     }
 }
