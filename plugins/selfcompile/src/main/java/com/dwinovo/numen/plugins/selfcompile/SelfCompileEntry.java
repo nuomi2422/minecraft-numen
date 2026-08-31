@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.selfcompile;
 
 import com.dwinovo.numen.api.NumenPlugin;
+import com.dwinovo.numen.plugins.selfcompile.generated.RddGetInventoryTool;
 import com.dwinovo.numen.plugins.selfcompile.generated.RddWhereamiTool;
 import net.neoforged.fml.ModList;
 
@@ -19,6 +20,7 @@ public final class SelfCompileEntry implements NumenPlugin {
         numen.registerTool(new SelfCompileRequestTool(service));
         // Self-Compile 自变异系统生成的工具（每轮变异后更新这里）
         numen.registerTool(new RddWhereamiTool());
+        numen.registerTool(new RddGetInventoryTool());
 
         Path skills = ModList.get().getModFileById(SelfCompileMod.MOD_ID)
                 .getFile().findResource("skills");
