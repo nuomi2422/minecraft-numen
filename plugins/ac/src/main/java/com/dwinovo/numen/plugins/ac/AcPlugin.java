@@ -44,7 +44,7 @@ public final class AcPlugin implements NumenPlugin {
         numen.registerTool(new AcExecuteTool(executor, authoring, sessions, this::ensureBridged));
         numen.registerTool(new AcStatusTool(sessions));
         numen.registerTool(new AcResumeTool(executor, sessions));
-        numen.registerTool(new AcPublishTool(authoring));
+        numen.registerTool(new AcPublishTool(authoring, this::ensureBridged));
 
         LOG.info("[ac] plugin ready; Numen tools bridged lazily on first ac_execute");
     }

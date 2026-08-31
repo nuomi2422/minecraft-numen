@@ -18,9 +18,11 @@ import java.util.function.Consumer;
 public final class AcPublishTool implements NumenTool {
 
     private final AcAuthoringService authoring;
+    private final Runnable refreshBridge;
 
-    public AcPublishTool(AcAuthoringService authoring) {
+    public AcPublishTool(AcAuthoringService authoring, Runnable refreshBridge) {
         this.authoring = authoring;
+        this.refreshBridge = refreshBridge;
     }
 
     @Override public String name() { return "ac_publish"; }
@@ -34,6 +36,8 @@ public final class AcPublishTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
+        // 校验依赖 AC registry 知道 Numen 工具：发布前先惰性桥接（同 ac_execute）
+        if (refreshBridge != null) refreshBridge.run();
         if (!args.has("ac_json")) {
             reply.accept(TaskResult.fail("缺少必填参数 ac_json").toJson());
             return;
