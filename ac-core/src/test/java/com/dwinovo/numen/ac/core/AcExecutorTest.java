@@ -151,6 +151,24 @@ class AcExecutorTest {
     }
 
     @Test
+    void stepOutputWithNullValueDoesNotCrash() {
+        // 工具输出含 null value（如 get_self_status 的 "target": null）→ 旧 Map.copyOf 对
+        // null value 抛 NPE → execution future 异常完成 → ac_status join() 炸（多步 NPE 根因）。
+        DefaultToolRegistry r = new DefaultToolRegistry();
+        java.util.Map<String, Object> nullish = new java.util.LinkedHashMap<>();
+        nullish.put("target", null);
+        nullish.put("hp", 20.0);
+        r.register("nullish", (p, c) -> StepResult.success(nullish));
+        var ac = new AcDefinition("null-value-demo", List.of(
+                new AcDefinition.AcStep("a", "nullish", Map.of()),
+                new AcDefinition.AcStep("b", "nullish", Map.of())));
+        var record = new AcExecutor(r).execute(ac, Map.of(), CTX);
+        assertEquals(ExecutionRecord.Status.SUCCESS, record.status());
+        assertEquals(2, record.completedStepIndex());
+        assertNull(record.output().get("target"));
+    }
+
+    @Test
     void loadsAndValidatesJson() {
         var ac = AcJson.load(new StringReader("{\"name\":\"json\",\"version\":\"2\",\"steps\":[{\"id\":\"s\",\"tool\":\"ok\",\"parameters\":{\"n\":2}}]}"));
         assertEquals("json", ac.name());

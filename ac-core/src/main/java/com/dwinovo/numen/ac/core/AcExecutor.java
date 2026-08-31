@@ -159,9 +159,11 @@ public final class AcExecutor {
             // step 级异常护栏：任何一步抛异常都降级为 FAILED 步骤，绝不把异常冲出去
             // 使整个 execution future 异常完成（否则 ac_status/ac_resume 的 join() 会以
             // CompletionException 上抛，正是多步 AC 查询链 NPE 的根因）。
+            // 用 Throwable 而非 RuntimeException：transport 工具在 AC 后台线程可能抛
+            // NoClassDefFoundError 等 Error（审计实锤：服务端 sendToServer 类加载问题）。
             try {
                 result = tool.execute(step.parameters(), context);
-            } catch (RuntimeException e) {
+            } catch (Throwable e) {
                 result = StepResult.failed(step.tool() + " threw: " + e);
                 emit(AcEvent.Kind.STEP_FAILED, executionId, attempt, runId, fp, ac, step, i, step.tool(), result.message());
                 break;
@@ -193,12 +195,17 @@ public final class AcExecutor {
             case PAUSED -> ExecutionRecord.Status.PAUSED;
             case FAILED -> ExecutionRecord.Status.FAILED;
         };
+        // 用 LinkedHashMap 而非 Map.copyOf：工具输出可含 null value（如 get_self_status 的
+        // "target": null），Map.copyOf 对 null value 抛 NPE，会异常完成 execution future
+        // （join() 时以 CompletionException 上抛 = 多步 AC 查询链 NPE 的真正根因）。
+        Map<String, Object> stateCopy = new LinkedHashMap<>(state);
+        Map<String, Object> inputCopy = new LinkedHashMap<>(input);
         ResumeContext rc = (status == ExecutionRecord.Status.PAUSED)
                 ? new ResumeContext(executionId, attempt, ac.name(), ac.version(),
-                        fp, Map.copyOf(input), Map.copyOf(state), current, completed, pausedReason)
+                        fp, inputCopy, stateCopy, current, completed, pausedReason)
                 : null;
         ExecutionRecord record = new ExecutionRecord(runId, executionId, ac.name(), status, completed, current,
-                result.message(), Map.copyOf(state), started, System.currentTimeMillis(), rc);
+                result.message(), stateCopy, started, System.currentTimeMillis(), rc);
 
         append(record);
         for (ExecutionListener l : recordListeners) invoke(() -> l.recorded(record));
