@@ -105,6 +105,9 @@ final class RddDetector {
         try {
             TaskChain chain = rt.chain();
             PrimaryGoalStatus ps = chain.primaryStatus();
+            // 真实背包先扫+缓存（规划注入数据源）；缓存是女仆属性，收尾/监督态也照常更新。
+            Map<String, Integer> counts = countInventory(ap);
+            RddPlugin.cacheInventory(ap.getUUID(), counts);
             // 监督/收尾态不由检测驱动。
             if (ps == PrimaryGoalStatus.AWAITING_SUPERVISOR
                     || ps == PrimaryGoalStatus.REPLANNING
@@ -112,7 +115,6 @@ final class RddDetector {
                     || ps == PrimaryGoalStatus.FAILED) {
                 return;
             }
-            Map<String, Integer> counts = countInventory(ap);
             // 刚推进到新的当前一级(PENDING/WAITING)：先过依赖门(wait_for)，没过就保持 WAITING 不派给 AI。
             if (ps == PrimaryGoalStatus.PENDING || ps == PrimaryGoalStatus.WAITING) {
                 // 观察行(懒边界)：当前一级到达但未展开 -> 上报目标驱动器(展开权持有者)，Detector 绝不自己展开/调 LLM。
@@ -146,9 +148,20 @@ final class RddDetector {
                 handleStalled(ap, rt, chain.currentSubtask());
                 return;
             }
-            // FAILED → Level 2 局部恢复：预算内自动重跑该二级（AI 换策略再试）。
+            // FAILED → 先重跑真实资产检测：条件此刻已满足(如 AI 失败后自己攒够) → 直接验收推进
+            //（含暂停期，对齐增2"只停主动干预、真实资产检测+推进照常"；FAILED 只表"那次尝试失败"非"目标未达成"）。
+            // 仍未满足 → Level 2 局部恢复：预算内自动重跑该二级（AI 换策略再试）。
             if (status == SubtaskStatus.FAILED) {
-                handleSubtaskFailure(ap, rt, chain.currentSubtask());
+                Subtask cur = chain.currentSubtask();
+                if (cur.detectionMode() == DetectionMode.HARD_CODED
+                        && HardCodedEvaluator.matches(cur.condition(), counts)) {
+                    RddMonitor.publish("early_achievement", Map.of(
+                            "subtask", cur.id(), "description", cur.description(),
+                            "reason", "FAILED but assets now satisfied, completed on real inventory"));
+                    completeSubtask(ap, rt, cur);
+                    return;
+                }
+                handleSubtaskFailure(ap, rt, cur);
                 return;
             }
             if (status != SubtaskStatus.RUNNING) {

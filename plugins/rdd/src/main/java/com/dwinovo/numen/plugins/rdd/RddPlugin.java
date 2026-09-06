@@ -37,6 +37,8 @@ public final class RddPlugin implements NumenPlugin {
     private static volatile boolean supervisionEnabled = true;
     /** 开关文件 config/numen/rdd-supervision.flag：内容含 "pause"(或 "0") → 暂停监督。 */
     private static volatile Path supervisionFlag;
+    /** 最近一次真实背包快照（Detector 每秒写，uuid→物品ID→数量）。规划注入用；不清除=背包是女仆属性与链无关。 */
+    private static final Map<UUID, Map<String, Integer>> LAST_INVENTORY = new ConcurrentHashMap<>();
     /** setup 时保存的插件门面，用于监督拍醒（nudge 注入内置 AI）。 */
     private static volatile NumenApi numenApi;
     /** 任务链持久化目录 config/numen/rdd-tasks（每个同伴一个 <uuid>.json）。 */
@@ -62,7 +64,7 @@ public final class RddPlugin implements NumenPlugin {
                     "companionId", uuid.toString(), "objective", objective,
                     "source", "goal_sink", "target", "rdd"));
             // 两段懒展开：Stage-A 先把整条目标规划成 N 个未展开一级(阶段主题)；失败回落单遍分解(行为不劣化)。
-            RddStagePlanner.planStages(objective, stages -> {
+            RddStagePlanner.planStages(uuid, objective, stages -> {
                 if (!stages.isEmpty()) {
                     try {
                         remove(uuid);
@@ -154,6 +156,21 @@ public final class RddPlugin implements NumenPlugin {
 
     public static RddRuntime runtime(UUID companionId) {
         return RUNTIMES.get(companionId);
+    }
+
+    /** 记录某同伴最近一次背包计数（Detector 心跳写）。null/空安全。 */
+    public static void cacheInventory(UUID companionId, Map<String, Integer> counts) {
+        if (companionId != null) {
+            LAST_INVENTORY.put(companionId, counts == null ? Map.of() : Map.copyOf(counts));
+        }
+    }
+
+    /** 最近一次背包快照（可能为空 = 从未观测到该同伴背包）。不可变。 */
+    public static Map<String, Integer> lastInventory(UUID companionId) {
+        if (companionId == null) {
+            return Map.of();
+        }
+        return LAST_INVENTORY.getOrDefault(companionId, Map.of());
     }
 
     public static boolean decomposing(UUID companionId) {

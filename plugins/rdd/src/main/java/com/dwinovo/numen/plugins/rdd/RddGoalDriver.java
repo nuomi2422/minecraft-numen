@@ -102,9 +102,30 @@ final class RddGoalDriver {
             }
             RddMonitor.publish("expansion_started", Map.of(
                     "primary", cur.id(), "theme", cur.description(), "attempt", attempt + 1));
-            RddDecomposer.decomposeSpecs(cur.description(), attempt, specs -> finish(companionId, specs));
+            // 线性推进：当前一级之前的所有一级都已达成 → 注入给 Stage-B，避免它倒退重规划已完成的资产。
+            List<String> completed = completedStagesBefore(chain);
+            RddDecomposer.decomposeSpecs(companionId, cur.description(), attempt, completed,
+                    specs -> finish(companionId, specs));
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 展开驱动异常: {}", ex.toString());
+        }
+    }
+
+    /** 线性推进：当前一级之前的所有一级都已完成 → 取其描述作 Stage-B 上下文（防倒退重规划）。 */
+    private static List<String> completedStagesBefore(TaskChain chain) {
+        try {
+            List<PrimaryGoal> primaries = chain.goal().primaryGoals();
+            PrimaryGoal cur = chain.currentPrimary();
+            List<String> out = new ArrayList<>();
+            for (PrimaryGoal p : primaries) {
+                if (p == cur) {
+                    break; // 从前往后扫到当前级为止：之前的都已达成
+                }
+                out.add(p.description());
+            }
+            return out;
+        } catch (RuntimeException ex) {
+            return List.of();
         }
     }
 

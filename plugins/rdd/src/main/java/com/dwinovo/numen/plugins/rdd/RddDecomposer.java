@@ -24,8 +24,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * 客户端侧的 LLM 目标分解器：把 {@code /goal} 的自然语言目标拆成多个带真实资产条件
@@ -86,7 +88,8 @@ final class RddDecomposer {
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
         NumenLlmClient.forEndpoint(ep)
-                .chatStreaming(List.of(new ConvoState.Msg.User(decompositionPrompt(objective))),
+                .chatStreaming(List.of(new ConvoState.Msg.User(decompositionPrompt(
+                        objective, RddPlugin.lastInventory(companionId), List.of()))),
                         List.of(DECOMPOSE_TOOL), SYSTEM_PROMPT, null)
                 .whenComplete((result, error) -> Minecraft.getInstance().execute(() -> {
                     if (error != null) {
@@ -122,14 +125,17 @@ final class RddDecomposer {
      * 成功与否由宿主目标驱动器判定并走 §9 恢复，绝不在此回落占位假二级（asset_key="goal"
      * 这类不可执行节点不得冒充"展开成功"）。
      */
-    static void decomposeSpecs(String themeObjective, int attempt, Consumer<List<SubtaskSpec>> done) {
+    static void decomposeSpecs(UUID companionId, String themeObjective, int attempt,
+                               List<String> completedStages, Consumer<List<SubtaskSpec>> done) {
         // §9：重试带上下文修正——再次尝试时把"为何上次不可执行"喂回去，逼 LLM 给可检测的真实物品键。
         String hint = attempt >= 1
                 ? "\n注意：上一次生成的子步骤被判定不可执行——每个 asset_key 必须是完整的小写命名空间 ID"
                 + "（如 minecraft:oak_log），condition 必须有真实可检测物品，minimum 给具体数字，body 可选。"
                 + "不要裸键/占位符/大写，不要用 \"goal\" 冒充物品。宁可少拆，不可拆出跑不动的步骤。"
                 : "";
-        RddDecomposer.llmAsk(decompositionPrompt(themeObjective) + hint, SYSTEM_PROMPT, DECOMPOSE_TOOL,
+        RddDecomposer.llmAsk(decompositionPrompt(themeObjective, RddPlugin.lastInventory(companionId),
+                        completedStages == null ? List.of() : completedStages) + hint,
+                SYSTEM_PROMPT, DECOMPOSE_TOOL,
                 args -> done.accept(parse(args)),
                 () -> done.accept(List.of()));
     }
@@ -261,13 +267,39 @@ final class RddDecomposer {
                     + "minecraft:iron_ingot），数量 minimum 给具体数字。能交给身体执行的一步带上 body 工具调用。"
                     + "无法用物品数量确定性判定的部分不要硬拆，宁可少拆。只输出 decompose_goal 工具调用，不要写多余文字。";
 
-    private static String decompositionPrompt(String objective) {
+    private static String decompositionPrompt(String objective, Map<String, Integer> held,
+                                              List<String> completedStages) {
         return "主人的目标：" + objective + "\n\n"
+                + renderCompletedStages(completedStages)
+                + renderHeldAssets(held)
                 + "请用 decompose_goal 工具给出子步骤。每个子步骤包含：\n"
                 + "- description：这一步要做什么\n"
                 + "- condition：{asset_key: 物品命名空间ID, minimum: 需要数量}\n"
                 + "- body（可选）：{task_type: 身体工具名（如 collect_items / mine_block / move_to / equip）, "
                 + "args: 工具参数（如 collect_items 的 {item, count}）}\n";
+    }
+
+    /** 已完成前置阶段上下文块（空则返回空串）。 */
+    private static String renderCompletedStages(List<String> completed) {
+        if (completed == null || completed.isEmpty()) {
+            return "";
+        }
+        return "【已达成的前置阶段】" + String.join(" → ", completed) + "\n\n";
+    }
+
+    /** 背包上下文块：空背包返回空串（不写"空"误导 LLM），非空按 key 排序保证输出稳定。 */
+    private static String renderHeldAssets(Map<String, Integer> held) {
+        if (held == null || held.isEmpty()) {
+            return "";
+        }
+        String items = new TreeMap<>(held).entrySet().stream()
+                .map(e -> "- " + e.getKey() + " ×" + e.getValue())
+                .collect(Collectors.joining("\n"));
+        return "【你当前已真实持有（背包扫描）：】\n" + items + "\n\n"
+                + "【拆解铁律】站在\"已经拥有上面这些\"继续推进：已持有的装备/工具/设施"
+                + "（如 wooden_pickaxe、crafting_table、stone_axe）不要再拆出\"重新获取/再做一把\"的子步骤，"
+                + "除非后面马上要消耗它。只规划把当前资产推进到本阶段目标还缺的部分；"
+                + "会消耗掉的（食物、合成/烧炼原料如 plank/stick/木炭）才按本阶段真实消耗补量。\n\n";
     }
 
     /** 合成工具：让 LLM 直接以结构化 JSON 返回分解结果（引擎没有 response_format:json_object）。 */

@@ -12,7 +12,10 @@ import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * Stage-A：把整条目标（{@code /goal 通关MC}）先规划成 N 个按序推进的一级发展阶段（主题 + 可选跨级资产门）。
@@ -27,8 +30,9 @@ final class RddStagePlanner {
     private RddStagePlanner() {}
 
     /** 主入口：异步规划一级清单，回调收到可用的 PrimarySpec 列表（失败=空表）。 */
-    static void planStages(String objective, Consumer<List<PrimarySpec>> done) {
-        RddDecomposer.llmAsk(planningPrompt(objective), PLAN_SYSTEM, PLAN_TOOL,
+    static void planStages(UUID companionId, String objective, Consumer<List<PrimarySpec>> done) {
+        // 注入"当前真实背包"：规划师要站在已有资产上推进，不倒退重规划已持有的装备/设施。
+        RddDecomposer.llmAsk(planningPrompt(objective, RddPlugin.lastInventory(companionId)), PLAN_SYSTEM, PLAN_TOOL,
                 args -> done.accept(parse(args)),
                 () -> done.accept(List.of()));
     }
@@ -107,12 +111,27 @@ final class RddStagePlanner {
                     + "（如 minecraft:stone_pickaxe）和 minimum；无法确定的跨级前置不要硬写。"
                     + "只输出 plan_stages 工具调用，不要写多余文字。";
 
-    private static String planningPrompt(String objective) {
+    private static String planningPrompt(String objective, Map<String, Integer> held) {
         return "主人的目标：" + objective + "\n\n"
+                + renderHeldAssets(held)
                 + "请用 plan_stages 工具给出发展阶段清单。每个阶段包含：\n"
                 + "- theme：该阶段要达成的发展主线（可读、自含，能被据此拆出可执行的子步骤）\n"
                 + "- wait_for（可选）：进入该阶段前必须已持有的前置资产，{asset_key: 真实命名空间ID, minimum: 数量}\n"
                 + "阶段间不要遗漏：从现状一路推到主人目标完成。";
+    }
+
+    /** 背包上下文块：空背包返回空串（不写"空"误导 LLM），非空按 key 排序保证输出稳定。 */
+    private static String renderHeldAssets(Map<String, Integer> held) {
+        if (held == null || held.isEmpty()) {
+            return "";
+        }
+        String items = new TreeMap<>(held).entrySet().stream()
+                .map(e -> "- " + e.getKey() + " ×" + e.getValue())
+                .collect(Collectors.joining("\n"));
+        return "【你当前已真实持有（背包扫描）：】\n" + items + "\n\n"
+                + "【规划铁律】站在\"已经拥有上面这些\"继续推进：已持有的装备/工具/设施（如 wooden_pickaxe、crafting_table）"
+                + "不要在任何阶段重复规划重新获取；theme 从现状往下一时代推进，不倒退。"
+                + "只有后续会被消耗掉的东西（食物、合成/烧炼原料）才按需要规划补量。\n\n";
     }
 
     /** 合成工具：LLM 直接以结构化 JSON 返回一级清单（引擎无 response_format:json_object）。 */
