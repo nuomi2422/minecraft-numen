@@ -150,6 +150,7 @@ final class RddDetector {
             }
             // FAILED → 先重跑真实资产检测：条件此刻已满足(如 AI 失败后自己攒够) → 直接验收推进
             //（含暂停期，对齐增2"只停主动干预、真实资产检测+推进照常"；FAILED 只表"那次尝试失败"非"目标未达成"）。
+            // applyHardCodedResult 要求 RUNNING → 先 FAILED→PENDING(retry)→RUNNING(start) 再走正常完成路径。
             // 仍未满足 → Level 2 局部恢复：预算内自动重跑该二级（AI 换策略再试）。
             if (status == SubtaskStatus.FAILED) {
                 Subtask cur = chain.currentSubtask();
@@ -158,7 +159,9 @@ final class RddDetector {
                     RddMonitor.publish("early_achievement", Map.of(
                             "subtask", cur.id(), "description", cur.description(),
                             "reason", "FAILED but assets now satisfied, completed on real inventory"));
-                    completeSubtask(ap, rt, cur);
+                    rt.chain().retrySubtask(cur.id()); // FAILED→PENDING（仅 FAILED 可 retry）
+                    rt.startCurrent();                 // PENDING→RUNNING
+                    completeSubtask(ap, rt, cur);      // applyHardCoded(RUNNING)→COMPLETED+推进
                     return;
                 }
                 handleSubtaskFailure(ap, rt, cur);
