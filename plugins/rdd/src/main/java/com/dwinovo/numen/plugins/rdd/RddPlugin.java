@@ -4,6 +4,7 @@ import com.dwinovo.numen.api.NumenApi;
 import com.dwinovo.numen.api.NumenPlugin;
 import com.dwinovo.numen.rdd.api.*;
 import com.dwinovo.numen.rdd.core.AssetRegistry;
+import com.dwinovo.numen.rdd.core.RddChainFactory;
 import com.dwinovo.numen.rdd.core.RddRuntime;
 import com.dwinovo.numen.rdd.core.TaskChain;
 import net.minecraft.server.level.ServerPlayer;
@@ -43,7 +44,7 @@ public final class RddPlugin implements NumenPlugin {
         tasksDir = numen.configDir().resolve("rdd-tasks");
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
-        // 接管 /goal：先同步认领，异步分解；分解期间 NUMEN 原生目标循环让位。
+        // 接管 /goal：先同步认领，Stage-A 异步规划；规划期间 NUMEN 原生目标循环让位。
         com.dwinovo.numen.agent.goal.GoalSinks.register((uuid, objective) -> {
             if (uuid == null || objective == null || objective.isBlank()) {
                 return false;
@@ -53,24 +54,31 @@ public final class RddPlugin implements NumenPlugin {
             RddMonitor.publish("supervisor_input", Map.of(
                     "companionId", uuid.toString(), "objective", objective,
                     "source", "goal_sink", "target", "rdd"));
-            RddDecomposer.decompose(uuid, objective, goal -> {
-                try {
-                    remove(uuid);
-                    bind(uuid, goal);
-                    RddRuntime runtime = runtime(uuid);
-                    if (runtime != null) {
-                        runtime.startCurrent();
-                        publishTaskSnapshot(uuid, "goal_decomposed");
+            // 两段懒展开：Stage-A 先把整条目标规划成 N 个未展开一级(阶段主题)；失败回落单遍分解(行为不劣化)。
+            RddStagePlanner.planStages(objective, stages -> {
+                if (!stages.isEmpty()) {
+                    try {
+                        remove(uuid);
+                        bind(uuid, RddChainFactory.fromStages(uuid, objective, stages));
+                        RddMonitor.publish("goal_staged", Map.of(
+                                "companionId", uuid.toString(), "objective", objective,
+                                "stages", stages.size()));
+                        RddPlugin.publishTaskSnapshot(uuid, "goal_staged");
+                        // 首级未展开：不 startCurrent(会抛)。懒展开由 Detector 上报 + RddGoalDriver 接手。
+                        LOG.info("[rdd] Stage-A 规划 {} 级已绑定 {}:{}", stages.size(), uuid, objective);
+                    } catch (RuntimeException ex) {
+                        LOG.warn("[rdd] Stage-A 装配失败，回落单遍分解: {}", ex.toString());
+                        decomposeSinglePass(uuid, objective); // DECOMPOSING 由单遍回调释放
+                        return;
+                    } finally {
+                        DECOMPOSING.remove(uuid);
                     }
-                    LOG.info("[rdd] 目标分解完成并启动 {}:{}", uuid, goal.description());
-                } catch (RuntimeException ex) {
-                    LOG.warn("[rdd] 分解结果启动失败，保留原生回落: {}", ex.toString());
-                    remove(uuid);
-                } finally {
-                    DECOMPOSING.remove(uuid);
+                    return;
                 }
+                // Stage-A 退化(无 key/LLM 失败/空/全不可执行) -> 回落今天的单遍 decompose
+                decomposeSinglePass(uuid, objective);
             });
-            LOG.info("[rdd] 接管目标，正在异步分解 {}:{}", uuid, objective);
+            LOG.info("[rdd] 接管目标，Stage-A 规划中 {}:{}", uuid, objective);
             return true;
         });
         com.dwinovo.numen.agent.goal.GoalSinks.registerClear((uuid, reason) -> {
@@ -92,12 +100,40 @@ public final class RddPlugin implements NumenPlugin {
             }
             TaskChain chain = runtime.chain();
             Subtask current = chain.currentSubtask();
+            if (current == null) {
+                // 当前一级已到达但未展开(懒加载)：诚实报阶段主题，不伪造可执行节点
+                return "<rdd><enabled>true</enabled><active>true</active>"
+                        + "<primary_status>" + chain.primaryStatus() + "</primary_status>"
+                        + "<state>stage_reached_expanding</state>"
+                        + "<current_phase>" + escape(chain.currentPrimary().description()) + "</current_phase></rdd>";
+            }
             return "<rdd><enabled>true</enabled><active>true</active>"
                     + "<primary_status>" + chain.primaryStatus() + "</primary_status>"
                     + "<subtask>" + escape(current.id()) + "</subtask>"
                     + "<current_task>" + escape(current.description()) + "</current_task>"
                     + "<done_when>" + escape(String.valueOf(current.condition())) + "</done_when>"
                     + "<subtask_status>" + chain.currentSubtaskStatus() + "</subtask_status></rdd>";
+        });
+    }
+
+    /** Stage-A 退化回落：今天的单遍 decompose -> bind + startCurrent（目标不被吞，行为不劣化）。 */
+    private static void decomposeSinglePass(UUID uuid, String objective) {
+        RddDecomposer.decompose(uuid, objective, goal -> {
+            try {
+                remove(uuid);
+                bind(uuid, goal);
+                RddRuntime runtime = runtime(uuid);
+                if (runtime != null) {
+                    runtime.startCurrent();
+                    publishTaskSnapshot(uuid, "goal_decomposed");
+                }
+                LOG.info("[rdd] 目标分解完成并启动 {}:{}", uuid, goal.description());
+            } catch (RuntimeException ex) {
+                LOG.warn("[rdd] 分解结果启动失败，保留原生回落: {}", ex.toString());
+                remove(uuid);
+            } finally {
+                DECOMPOSING.remove(uuid);
+            }
         });
     }
 
@@ -143,6 +179,7 @@ public final class RddPlugin implements NumenPlugin {
             }
             RUNTIMES.remove(companionId);
             BODY.remove(companionId);
+            RddGoalDriver.clear(companionId); // 目标清/重绑 → 丢掉该同伴的懒展开状态
         }
     }
 
@@ -187,7 +224,11 @@ public final class RddPlugin implements NumenPlugin {
                     String json = Files.readString(f, StandardCharsets.UTF_8);
                     TaskChain chain = TaskChain.fromJson(json);
                     RUNTIMES.put(uuid, new RddRuntime(chain, new AssetRegistry()));
-                    LOG.info("[rdd] 恢复任务链 {}（当前二级 {}）", uuid, chain.currentSubtask().id());
+                    // 懒链可能停靠在未展开一级：currentSubtask()=null，报阶段而非 NPE
+                    Subtask restored = chain.currentSubtask();
+                    String curLabel = restored != null
+                            ? restored.id() : ("unexpanded:" + chain.currentPrimary().id());
+                    LOG.info("[rdd] 恢复任务链 {}（当前二级 {}）", uuid, curLabel);
                 } catch (Exception ex) {
                     LOG.warn("[rdd] 恢复任务失败 {}: {}", f.getFileName(), ex.toString());
                 }

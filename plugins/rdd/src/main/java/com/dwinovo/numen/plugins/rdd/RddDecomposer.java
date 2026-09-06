@@ -122,8 +122,14 @@ final class RddDecomposer {
      * 成功与否由宿主目标驱动器判定并走 §9 恢复，绝不在此回落占位假二级（asset_key="goal"
      * 这类不可执行节点不得冒充"展开成功"）。
      */
-    static void decomposeSpecs(String themeObjective, Consumer<List<SubtaskSpec>> done) {
-        RddDecomposer.llmAsk(decompositionPrompt(themeObjective), SYSTEM_PROMPT, DECOMPOSE_TOOL,
+    static void decomposeSpecs(String themeObjective, int attempt, Consumer<List<SubtaskSpec>> done) {
+        // §9：重试带上下文修正——再次尝试时把"为何上次不可执行"喂回去，逼 LLM 给可检测的真实物品键。
+        String hint = attempt >= 1
+                ? "\n注意：上一次生成的子步骤被判定不可执行——每个 asset_key 必须是完整的小写命名空间 ID"
+                + "（如 minecraft:oak_log），condition 必须有真实可检测物品，minimum 给具体数字，body 可选。"
+                + "不要裸键/占位符/大写，不要用 \"goal\" 冒充物品。宁可少拆，不可拆出跑不动的步骤。"
+                : "";
+        RddDecomposer.llmAsk(decompositionPrompt(themeObjective) + hint, SYSTEM_PROMPT, DECOMPOSE_TOOL,
                 args -> done.accept(parse(args)),
                 () -> done.accept(List.of()));
     }
