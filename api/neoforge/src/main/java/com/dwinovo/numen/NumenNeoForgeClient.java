@@ -88,6 +88,7 @@ public class NumenNeoForgeClient {
         event.register(com.dwinovo.numen.client.NumenKeys.COMPANION_WHEEL);
         event.register(com.dwinovo.numen.client.NumenKeys.TALK_COMPANION);
         event.register(com.dwinovo.numen.client.NumenKeys.QUICK_VOICE);
+        event.register(com.dwinovo.numen.client.NumenKeys.OPEN_MONITOR);
     }
 
     static void registerGuiLayers(net.neoforged.neoforge.client.event.RegisterGuiLayersEvent event) {

@@ -72,6 +72,7 @@ public final class ModLanguageData {
 
         /** Hotkey: open the companion roster panel (shown in Controls settings). */
         public static final String KEY_OPEN_ROSTER = "key.numen.open_roster";
+        public static final String KEY_OPEN_MONITOR = "key.numen.open_monitor";
 
         /** Hotkey: talk to the companion under the crosshair (face-to-face chat). */
         public static final String KEY_TALK_COMPANION = "key.numen.talk_companion";
@@ -228,6 +229,7 @@ public final class ModLanguageData {
         adder.add(Keys.GUI_SETTINGS_SAVED,         "Saved");
 
         adder.add(Keys.KEY_OPEN_ROSTER, "Open Companion Roster");
+        adder.add(Keys.KEY_OPEN_MONITOR, "Open Monitoring Station");
         adder.add(Keys.KEY_TALK_COMPANION, "Talk to Companion");
         adder.add(Keys.KEY_COMPANION_WHEEL, "Companion Wheel (hold)");
         adder.add(Keys.KEY_QUICK_VOICE, "Quick Voice (hold)");
@@ -561,6 +563,7 @@ public final class ModLanguageData {
         adder.add(Keys.GUI_SETTINGS_SAVED,         "已保存");
 
         adder.add(Keys.KEY_OPEN_ROSTER, "打开同伴名册");
+        adder.add(Keys.KEY_OPEN_MONITOR, "打开监测台");
         adder.add(Keys.KEY_TALK_COMPANION, "与同伴对话");
         adder.add(Keys.KEY_COMPANION_WHEEL, "同伴轮盘(按住)");
         adder.add(Keys.KEY_QUICK_VOICE, "快捷语音(按住)");

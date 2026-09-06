@@ -8,6 +8,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import com.dwinovo.numen.monitor.MonitoringJournal;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -110,6 +111,9 @@ public final class CompanionStateWatch {
         everSent = true;
         NumenStatePayload payload = RequestStatePayload.snapshot(companion);
         Services.NETWORK.sendToPlayer(owner, payload);
+        MonitoringJournal.get().publish("state", "companion_state", Map.of(
+                "companion_id", companion.getUUID().toString(), "items", usedSlots(payload),
+                "effects", payload.effects().size(), "vehicle_id", payload.vehicleId()));
         // 一次推送一行。链路是"服务端推 → 客户端缓存 → 渲染进请求",出问题时得能一眼看出
         // 断在哪一节;只记开始不记结果的日志已经害过我们一次。
         com.dwinovo.numen.Constants.LOG.info(

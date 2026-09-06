@@ -6,6 +6,7 @@ import com.dwinovo.numen.client.chat.CompanionWheelScreen;
 import com.dwinovo.numen.client.chat.QuickVoice;
 import com.dwinovo.numen.client.chat.SelectedCompanion;
 import com.dwinovo.numen.client.screen.NumenScreen;
+import com.dwinovo.numen.client.screen.MonitoringScreen;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
@@ -49,6 +50,10 @@ public final class NumenKeys {
             InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_V,
             CATEGORY);
 
+    /** M — open the in-game read-only monitoring station. */
+    public static final KeyMapping OPEN_MONITOR = new KeyMapping(
+            com.dwinovo.numen.data.ModLanguageData.Keys.KEY_OPEN_MONITOR, InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_M, CATEGORY);
+
     private static boolean voiceWasDown;
 
     private NumenKeys() {}
@@ -56,6 +61,9 @@ public final class NumenKeys {
     /** Per-client-tick poll; key presses only register while no screen is open. */
     public static void tick() {
         Minecraft mc = Minecraft.getInstance();
+        while (OPEN_MONITOR.consumeClick()) {
+            if (mc.player != null && mc.screen == null) MonitoringScreen.open();
+        }
         while (OPEN_ROSTER.consumeClick()) {
             if (mc.player != null && mc.screen == null) {
                 NumenScreen.openWorkspace();

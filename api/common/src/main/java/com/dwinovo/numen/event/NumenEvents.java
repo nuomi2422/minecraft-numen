@@ -6,6 +6,7 @@ import com.dwinovo.numen.event.EventTypes;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.network.payload.NumenEventPayload;
 import com.dwinovo.numen.platform.Services;
+import com.dwinovo.numen.monitor.MonitoringJournal;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 
@@ -136,6 +137,8 @@ public final class NumenEvents {
         }
         String xml = compose(server, kind, attrs, text);
         long now = System.currentTimeMillis();
+        MonitoringJournal.get().publish("events", kind.kindName(), Map.of(
+                "urgent", urgent, "companion_id", companion.getUUID().toString(), "message", text == null ? "" : text));
         ServerPlayer owner = companion.resolveOwnerPlayer();
         if (owner != null) {
             Services.NETWORK.sendToPlayer(owner, new NumenEventPayload(
