@@ -55,6 +55,8 @@ final class RddDetector {
     private static final int MAX_SUBTASK_RETRIES = 2;
     /** Level 3：当前二级累计卡死多少次即判定能力不足（AI 反复拍醒仍无法达成目标资产）。 */
     private static final int CAPABILITY_GAP_AFTER_STALLS = 3;
+    /** 资产提前触发：单个 tick 内最多连跳过多少个"资产已满足"的二级（防极端长链死循环）。 */
+    private static final int MAX_INSTANT_PASS = 32;
     private static final Gson GSON = new Gson();
 
     /** 卡死监督状态：记录每个同伴当前二级的资产指纹与未变化计数。 */
@@ -100,30 +102,100 @@ final class RddDetector {
     private void tickRuntime(NumenPlayer ap, RddRuntime rt) {
         try {
             TaskChain chain = rt.chain();
+            PrimaryGoalStatus ps = chain.primaryStatus();
+            // 监督/收尾态不由检测驱动。
+            if (ps == PrimaryGoalStatus.AWAITING_SUPERVISOR
+                    || ps == PrimaryGoalStatus.REPLANNING
+                    || ps == PrimaryGoalStatus.COMPLETED
+                    || ps == PrimaryGoalStatus.FAILED) {
+                return;
+            }
+            Map<String, Integer> counts = countInventory(ap);
+            // 刚推进到新的当前一级(PENDING/WAITING)：先过依赖门(wait_for)，没过就保持 WAITING 不派给 AI。
+            if (ps == PrimaryGoalStatus.PENDING || ps == PrimaryGoalStatus.WAITING) {
+                if (!rt.activateCurrent(counts)) {
+                    RddMonitor.publish("primary_waiting", Map.of(
+                            "primary", chain.currentPrimary().id(),
+                            "reason", "dependency assets not present"));
+                    RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_dependency_waiting");
+                    return;
+                }
+                RddMonitor.publish("dependency_met", Map.of("primary", chain.currentPrimary().id()));
+            }
             if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) {
                 return;
             }
-            // 自动启动当前二级：首个由 sink 启动，推进后由这里继续。
+            // 自动启动当前二级（首个由 sink 启动，推进后由这里继续；AI_ASSISTED 也在内）。
             if (chain.currentSubtaskStatus() == SubtaskStatus.PENDING) {
                 rt.startCurrent();
-            }
-            Subtask current = chain.currentSubtask();
-            if (current.detectionMode() != DetectionMode.HARD_CODED) {
-                return;
             }
             SubtaskStatus status = chain.currentSubtaskStatus();
             // STALLED → 监督恢复分支：行为恢复则回到 RUNNING，多次拍醒无效则升级失败。
             if (status == SubtaskStatus.STALLED) {
-                handleStalled(ap, rt, current);
+                handleStalled(ap, rt, chain.currentSubtask());
                 return;
             }
             // FAILED → Level 2 局部恢复：预算内自动重跑该二级（AI 换策略再试）。
             if (status == SubtaskStatus.FAILED) {
-                handleSubtaskFailure(ap, rt, current);
+                handleSubtaskFailure(ap, rt, chain.currentSubtask());
                 return;
             }
             if (status != SubtaskStatus.RUNNING) {
                 return;
+            }
+            // ==== 资产提前触发(EarlyAchievement)：资产已满足的硬编码二级不拍醒/不派身体，直接过，
+            // 同 tick 连跳一串已满足的二级；到一级边界自动过依赖门进入下一级。 ====
+            int guard = 0;
+            while (chain.primaryStatus() == PrimaryGoalStatus.ACTIVE && guard++ < MAX_INSTANT_PASS) {
+                if (chain.currentSubtaskStatus() == SubtaskStatus.PENDING) {
+                    if (chain.currentSubtask().detectionMode() != DetectionMode.HARD_CODED) {
+                        break;
+                    }
+                    rt.startCurrent();
+                }
+                if (chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) {
+                    break;
+                }
+                Subtask cur = chain.currentSubtask();
+                if (cur.detectionMode() != DetectionMode.HARD_CODED) {
+                    break;
+                }
+                if (!HardCodedEvaluator.matches(cur.condition(), counts)) {
+                    break;
+                }
+                RddMonitor.publish("early_achievement", Map.of(
+                        "subtask", cur.id(), "description", cur.description(),
+                        "reason", "assets already present, skipped AI execution"));
+                completeSubtask(ap, rt, cur);
+                if (chain.primaryStatus() == PrimaryGoalStatus.PENDING) {
+                    // 一级全完成被 CONFIRM → 进入下一级：立即过依赖门
+                    if (rt.activateCurrent(counts)) {
+                        RddMonitor.publish("dependency_met", Map.of("primary", chain.currentPrimary().id()));
+                    } else {
+                        RddMonitor.publish("primary_waiting", Map.of(
+                                "primary", chain.currentPrimary().id(),
+                                "reason", "dependency assets not present"));
+                        RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_dependency_waiting");
+                        break;
+                    }
+                }
+                counts = countInventory(ap);
+            }
+            if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) {
+                return;
+            }
+            Subtask current = chain.currentSubtask();
+            // AI_ASSISTED 二级交还 AI 驱动，不做卡死监督（保持原语义）。
+            if (current.detectionMode() != DetectionMode.HARD_CODED) {
+                return;
+            }
+            if (chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) {
+                return;
+            }
+            // 资产 populate：把背包物品写进 AssetRegistry（节流），rdd_status 据此报真实资产。
+            if (++assetTick % 5 == 0) {
+                populateAssets(ap, rt, current, counts);
+                RddPlugin.publishTaskSnapshot(ap.getUUID(), "periodic_observation");
             }
             // 卡死监督：资产指纹（背包+位置）连续未变化 → 判 STALLED 并拍醒将军。
             if (trackStall(ap, rt, current)) {
@@ -133,12 +205,6 @@ final class RddDetector {
             // RDD 只保留资产检测 / 目标完成判定 / 异常提醒。
             if (RddPlugin.bodySubmissionEnabled()) {
                 maybeSubmitBody(ap, current);
-            }
-            Map<String, Integer> counts = countInventory(ap);
-            // 资产 populate：把背包物品写进 AssetRegistry（节流），rdd_status 据此报真实资产。
-            if (++assetTick % 5 == 0) {
-                populateAssets(ap, rt, current, counts);
-                RddPlugin.publishTaskSnapshot(ap.getUUID(), "periodic_observation");
             }
             if (HardCodedEvaluator.matches(current.condition(), counts)) {
                 completeSubtask(ap, rt, current);
