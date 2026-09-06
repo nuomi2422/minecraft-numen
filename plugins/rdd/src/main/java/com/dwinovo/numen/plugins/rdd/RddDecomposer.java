@@ -117,9 +117,21 @@ final class RddDecomposer {
     }
 
     /**
+     * Stage-B：把"当前一级主题"当迷你目标懒展开成二级规格列表（spec §9：进入一级前必须生成
+     * ≥1 个合法可执行二级）。任何失败（无 key/LLM 错/坏 JSON/解析为空）回调<b>空表</b>——
+     * 成功与否由宿主目标驱动器判定并走 §9 恢复，绝不在此回落占位假二级（asset_key="goal"
+     * 这类不可执行节点不得冒充"展开成功"）。
+     */
+    static void decomposeSpecs(String themeObjective, Consumer<List<SubtaskSpec>> done) {
+        RddDecomposer.llmAsk(decompositionPrompt(themeObjective), SYSTEM_PROMPT, DECOMPOSE_TOOL,
+                args -> done.accept(parse(args)),
+                () -> done.accept(List.of()));
+    }
+
+    /**
      * 容错解析 LLM 的 {@code decompose_goal} 参数 JSON → 规格列表。
-     * 坏 JSON / 缺 subtasks / 字段缺失 / 超上限，一律丢弃对应条目；解析彻底失败返回空列表
-     * （调用方据此回落占位链）。不对称错误代价：宁可回落，不可拿残缺链冒充真分解。
+     * 坏 JSON / 缺 subtasks / 字段缺失 / 资产键不可执行 / 超上限，一律丢弃对应条目；解析彻底失败返回空列表
+     * （调用方据此回落占位链或走 §9 失败恢复）。不对称错误代价：宁可失败，不可拿残缺链冒充真分解。
      */
     static List<SubtaskSpec> parse(String argumentsJson) {
         List<SubtaskSpec> out = new ArrayList<>();
@@ -163,7 +175,9 @@ final class RddDecomposer {
             return null;
         }
         String assetKey = cond.has("asset_key") ? cond.get("asset_key").getAsString() : null;
-        if (assetKey == null || assetKey.isBlank()) {
+        // 资产键形状不可执行(裸键/占位如 goal/大写) 永不匹配背包键 -> 判不可用丢弃，
+        // 宁缺毋滥，不让"合法 JSON 但跑不动"的死条件进任务链造成假卡死。
+        if (!RddKeys.usable(assetKey)) {
             return null;
         }
         Map<String, Object> condition = new LinkedHashMap<>();
