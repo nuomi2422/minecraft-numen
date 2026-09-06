@@ -41,6 +41,15 @@ final class RddBodyTools {
     private static final Pattern RAW_ORE = Pattern.compile("^([a-z0-9_.-]+):raw_([a-z0-9_]+)$");
     private static final Pattern STONE_ORE = Pattern.compile("^([a-z0-9_.-]+):([a-z0-9_]+)_ore$");
 
+    /** 已知"挖矿掉落物"物品 → 产出它的矿石方块路径。这些是物品不是方块，挖矿目标要映射到矿石再挖
+     * （路径与物品名不同的特殊例：lapis_lazuli → lapis_ore）。deepslate 变体由注册校验兜底跳过不存在的。 */
+    private static final Map<String, String> DROP_TO_ORE = Map.of(
+            "diamond", "diamond_ore",
+            "coal", "coal_ore",
+            "redstone", "redstone_ore",
+            "lapis_lazuli", "lapis_ore",
+            "emerald", "emerald_ore");
+
     /** 归一 body.task_type → 真实工具名；臆造且无别名 → null（调用方转 capability_gap）。 */
     static String canonical(String raw) {
         if (raw == null) {
@@ -125,8 +134,11 @@ final class RddBodyTools {
     }
 
     /**
-     * mine 的 target 展开：raw_铁 → 铁矿石 + 深板岩变体；石头级矿石 → 补深板岩变体
-     * （女仆会下探到深板岩层挖 ore）。只收真实注册方块。
+     * mine 的 target 展开：raw_铁 → 铁矿石 + 深板岩变体；挖矿掉落物物品（diamond/coal/redstone/lapis/emerald，
+     * 是物品不是方块）→ 映射到产出它的矿石方块（+deepslate 变体，注册校验自动跳过不存在的）；
+     * 已是矿石/其他真实方块的字面 id → 原样 +（石头级）补深板岩变体。
+     * 非方块且非已知掉落（把合成品/装备当矿挖）= 规划 bug → 空表，调用方转 capability_gap，
+     * 不再把 item 原样当 block_id 透传给 AutoMine 报 "no valid block ids"。
      */
     private static List<String> mineBlockIds(String item) {
         List<String> out = new ArrayList<>();
@@ -137,22 +149,42 @@ final class RddBodyTools {
         if (id.isEmpty()) {
             return out;
         }
+        int colon = id.indexOf(':');
+        String ns = colon < 0 ? "minecraft" : id.substring(0, colon);
+        String path = colon < 0 ? id : id.substring(colon + 1);
         Matcher raw = RAW_ORE.matcher(id);
         if (raw.matches()) {
-            String ns = raw.group(1);
             String metal = raw.group(2);
             addRegistered(out, ns + ":" + metal + "_ore");
             addRegistered(out, ns + ":deepslate_" + metal + "_ore");
             return out;
         }
-        out.add(id);
-        Matcher ore = STONE_ORE.matcher(id);
-        if (ore.matches() && !id.contains(":deepslate_")) {
-            String ns = ore.group(1);
-            String base = ore.group(2);
-            addRegistered(out, ns + ":deepslate_" + base + "_ore");
+        // 挖矿掉落物物品不是方块：挖产出它的矿石
+        String ore = DROP_TO_ORE.get(path);
+        if (ore != null) {
+            addRegistered(out, ns + ":" + ore);
+            addRegistered(out, ns + ":deepslate_" + ore);
+            return out;
+        }
+        // 字面 id：只收真实注册方块（宝石等非方块物品不再透传成 block_id）
+        if (isRegisteredBlock(ns + ":" + path)) {
+            out.add(id);
+            Matcher ore2 = STONE_ORE.matcher(id);
+            if (ore2.matches() && !path.startsWith("deepslate_")) {
+                addRegistered(out, ns + ":deepslate_" + ore2.group(2) + "_ore");
+            }
         }
         return out;
+    }
+
+    private static boolean isRegisteredBlock(String id) {
+        try {
+            ResourceLocation rl = ResourceLocation.tryParse(id);
+            return rl != null && BuiltInRegistries.BLOCK.containsKey(rl);
+        } catch (RuntimeException ignore) {
+            // 个别 tick 注册表异常时按不存在处理，宁可空表走 capability_gap 也不透传坏 id
+            return false;
+        }
     }
 
     private static void addRegistered(List<String> out, String id) {
