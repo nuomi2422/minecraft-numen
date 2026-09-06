@@ -2,6 +2,7 @@ package com.dwinovo.numen.rdd.core;
 
 import com.dwinovo.numen.rdd.api.*;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -29,6 +30,11 @@ public final class RddRuntime {
     /** 激活刚推进到的当前一级；前置资产未到位 → WAITING 并返回 false。 */
     public boolean activateCurrent(Map<String, Integer> counts) {
         return chain.activateCurrent(counts);
+    }
+
+    /** 懒展开注入点：宿主目标驱动器把已生成的当前一级二级注入链（core 纯 JVM 不调 LLM）。 */
+    public void expandCurrentPrimary(List<Subtask> generated) {
+        chain.expandCurrentPrimary(generated);
     }
 
     public boolean applyHardCoded(String subtaskId, boolean satisfied) {

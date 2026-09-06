@@ -3,6 +3,8 @@ package com.dwinovo.numen.rdd.core;
 import com.dwinovo.numen.rdd.api.*;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -12,7 +14,8 @@ import java.util.*;
 public final class TaskChain {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
-    private final Goal goal;
+    // 非 final：懒展开注入二级时需要重建 Goal（把当前未展开一级替换为已展开版本）。
+    private Goal goal;
     private final Map<String, SubtaskStatus> statuses = new LinkedHashMap<>();
     private int primaryIndex;
     private int subtaskIndex;
@@ -24,8 +27,21 @@ public final class TaskChain {
     }
     public Goal goal() { return goal; }
     public synchronized PrimaryGoalStatus primaryStatus() { return primaryStatus; }
-    public synchronized SubtaskStatus currentSubtaskStatus() { return statuses.get(currentSubtask().id()); }
-    public synchronized Subtask currentSubtask() { return currentPrimary().subtasks().get(subtaskIndex); }
+
+    /** 当前二级的状态；当前一级"已到达但未展开"（无二级可运行）时为 null。 */
+    public synchronized SubtaskStatus currentSubtaskStatus() {
+        Subtask s = currentSubtask();
+        return s == null ? null : statuses.get(s.id());
+    }
+
+    /**
+     * 当前指针指向的二级目标。当前一级为未展开（懒加载、0 个二级）时返回 null——
+     * 链上没有可运行的当前二级，宿主应先把已生成二级注入再激活；null 不是合法可执行节点。
+     */
+    public synchronized Subtask currentSubtask() {
+        PrimaryGoal cur = currentPrimary();
+        return cur.unexpanded() ? null : cur.subtasks().get(subtaskIndex);
+    }
     public synchronized PrimaryGoal currentPrimary() { return goal.primaryGoals().get(primaryIndex); }
 
     /** 当前一级的所有前置资产(waitFor)是否都被 counts 满足（无 waitFor → true）。 */
@@ -47,6 +63,11 @@ public final class TaskChain {
         if (primaryStatus != PrimaryGoalStatus.PENDING && primaryStatus != PrimaryGoalStatus.WAITING) {
             throw new IllegalStateException("only a not-yet-started primary may activate: " + primaryStatus);
         }
+        if (currentPrimary().unexpanded()) {
+            // 未展开 ≠ 依赖未满足：绝不能把"该展开了"误判成 WAITING(缺资产)，也不得进 ACTIVE。
+            throw new IllegalStateException("current primary unexpanded; expandCurrentPrimary(...) before activation: "
+                    + currentPrimary().id());
+        }
         if (!currentPrimaryReady(counts)) {
             primaryStatus = PrimaryGoalStatus.WAITING;
             return false;
@@ -59,9 +80,51 @@ public final class TaskChain {
     }
 
     public synchronized void startCurrent() {
+        if (currentPrimary().unexpanded()) {
+            throw new IllegalStateException("current primary unexpanded; expandCurrentPrimary(...) before start: "
+                    + currentPrimary().id());
+        }
         if (primaryStatus == PrimaryGoalStatus.PENDING) primaryStatus = PrimaryGoalStatus.ACTIVE;
         if (primaryStatus != PrimaryGoalStatus.ACTIVE || statuses.get(currentSubtask().id()) != SubtaskStatus.PENDING) throw new IllegalStateException("current subtask cannot start");
         statuses.put(currentSubtask().id(), SubtaskStatus.RUNNING);
+    }
+
+    /**
+     * 懒加载唯一合法的注入点：宿主目标驱动器把已为"当前一级"生成的二级集合注入该一级。
+     * 保持一级的 id/description/waitFor 与 {@link #primaryStatus} 不变，仅 unexpanded→false；
+     * 注入后照常走依赖门/激活/硬检测。当前一级未展开之外的调用一律拒绝（不重写其他任何状态）。
+     */
+    public synchronized void expandCurrentPrimary(List<Subtask> generated) {
+        PrimaryGoal cur = currentPrimary();
+        if (!cur.unexpanded()) {
+            throw new IllegalStateException("current primary already expanded: " + cur.id());
+        }
+        if (primaryStatus != PrimaryGoalStatus.PENDING && primaryStatus != PrimaryGoalStatus.WAITING) {
+            throw new IllegalStateException("only a not-yet-started primary may be expanded: " + primaryStatus);
+        }
+        if (generated == null || generated.isEmpty()) {
+            throw new IllegalArgumentException("expansion requires at least one legal subtask");
+        }
+        Set<String> ids = new HashSet<>();
+        for (Subtask s : generated) {
+            if (s == null) {
+                throw new IllegalArgumentException("null subtask in expansion");
+            }
+            if (!ids.add(s.id())) {
+                throw new IllegalArgumentException("duplicate subtask id in expansion: " + s.id());
+            }
+            if (statuses.containsKey(s.id())) {
+                throw new IllegalArgumentException("subtask id already used in chain: " + s.id());
+            }
+        }
+        List<PrimaryGoal> primaries = new ArrayList<>(goal.primaryGoals());
+        primaries.set(primaryIndex,
+                new PrimaryGoal(cur.id(), cur.description(), List.copyOf(generated), cur.waitFor(), false));
+        goal = new Goal(goal.id(), goal.description(), primaries);
+        for (Subtask s : generated) {
+            statuses.put(s.id(), SubtaskStatus.PENDING);
+        }
+        subtaskIndex = 0;
     }
 
     public synchronized boolean applyHardCodedResult(String subtaskId, boolean satisfied) {
@@ -157,6 +220,7 @@ public final class TaskChain {
             primaryView.put("id", primary.id());
             primaryView.put("description", primary.description());
             primaryView.put("current", p == primaryIndex);
+            primaryView.put("unexpanded", primary.unexpanded());
             if (!primary.waitFor().isEmpty()) {
                 List<Map<String, Object>> wf = new ArrayList<>();
                 for (AssetRequirement r : primary.waitFor()) {
@@ -176,9 +240,11 @@ public final class TaskChain {
         view.put("primaryStatus", primaryStatus.name());
         view.put("primaryIndex", primaryIndex);
         view.put("subtaskIndex", subtaskIndex);
-        view.put("currentPrimaryId", currentPrimary().id());
-        view.put("currentSubtaskId", currentSubtask().id());
-        if (primaryStatus == PrimaryGoalStatus.WAITING && !currentPrimary().waitFor().isEmpty()) {
+        PrimaryGoal current = currentPrimary();
+        view.put("currentPrimaryId", current.id());
+        // 当前一级未展开时诚实报"无当前二级"，而不是伪造占位节点。
+        view.put("currentSubtaskId", current.unexpanded() ? null : currentSubtask().id());
+        if (primaryStatus == PrimaryGoalStatus.WAITING && !current.waitFor().isEmpty()) {
             view.put("waitingFor", currentPrimary().waitFor().stream().map(AssetRequirement::assetKey).toList());
         }
         view.put("primaries", primaries);
@@ -203,7 +269,17 @@ public final class TaskChain {
     /** 从 JSON 恢复任务链状态（游戏重启后 RECOVERING）。 */
     public static TaskChain fromJson(String json) {
         JsonObject o = JsonParser.parseString(json).getAsJsonObject();
-        Goal goal = GSON.fromJson(o.get("goal"), Goal.class);
+        JsonObject goalObj = o.getAsJsonObject("goal");
+        // 旧链兼容（A-1 前无 unexpanded 字段）：解析树里给缺该字段的一级补 false=已展开，
+        // 不依赖 Gson 对缺失原始类型组件的默认行为。waitFor 等引用组件缺失 → 构造器已置空。
+        JsonArray primaries = goalObj.getAsJsonArray("primaryGoals");
+        for (JsonElement el : primaries) {
+            JsonObject pg = el.getAsJsonObject();
+            if (!pg.has("unexpanded")) {
+                pg.addProperty("unexpanded", false);
+            }
+        }
+        Goal goal = GSON.fromJson(goalObj, Goal.class);
         TaskChain chain = new TaskChain(goal);
         JsonObject st = o.getAsJsonObject("statuses");
         for (String k : st.keySet()) {

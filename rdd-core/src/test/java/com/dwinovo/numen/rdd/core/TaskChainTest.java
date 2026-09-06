@@ -147,4 +147,100 @@ class TaskChainTest {
         assertEquals("minecraft:diamond_pickaxe", rp2.waitFor().get(0).assetKey());
         assertEquals(3, rp2.waitFor().get(0).minimum());
     }
+
+    // ===== 批A-2：懒加载未展开一级（V2 懒展开数据模型不变式）=====
+
+    @Test void unexpandedCurrentIsNotRunnableAndReportsCleanly() {
+        var p1 = new PrimaryGoal("p1", "stage one", java.util.List.of(
+                Subtask.hardCoded("s1", "get stone", Map.of("asset_key", "minecraft:stone", "minimum", 1))));
+        var p2 = PrimaryGoal.unexpanded("p2", "stage two", java.util.List.of()); // 未展开，0 二级
+        var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(p1, p2)));
+        chain.startCurrent();
+        assertTrue(chain.applyHardCodedResult("s1", true));
+        chain.applySupervisorDecision(new SupervisorDecision(SupervisorDecisionType.CONFIRM, "p1", "observed"));
+        // 到达 p2 边界：PENDING、unexpanded、无当前二级（诚实空，不伪造占位节点）
+        assertEquals("p2", chain.currentPrimary().id());
+        assertTrue(chain.currentPrimary().unexpanded());
+        assertEquals(PrimaryGoalStatus.PENDING, chain.primaryStatus());
+        assertNull(chain.currentSubtask());
+        assertNull(chain.currentSubtaskStatus());
+        // snapshot 不崩：currentSubtaskId=null、该级 unexpanded=true、subtasks 空
+        var snapshot = chain.snapshot();
+        assertNull(snapshot.get("currentSubtaskId"));
+        var primaries = (java.util.List<?>) snapshot.get("primaries");
+        var p2View = (java.util.Map<?, ?>) primaries.get(1);
+        assertEquals(Boolean.TRUE, p2View.get("unexpanded"));
+        assertEquals(0, ((java.util.List<?>) p2View.get("subtasks")).size());
+        // 未展开 ≠ 依赖未满足：拒绝激活/启动，且绝不误置 WAITING(缺资产语义)
+        assertThrows(IllegalStateException.class, () -> chain.activateCurrent(Map.of()));
+        assertEquals(PrimaryGoalStatus.PENDING, chain.primaryStatus());
+        assertThrows(IllegalStateException.class, chain::startCurrent);
+        assertEquals(PrimaryGoalStatus.PENDING, chain.primaryStatus());
+    }
+
+    @Test void expandInjectsSecondariesThenDependencyGateAndActivationWork() {
+        var p1 = new PrimaryGoal("p1", "stage one", java.util.List.of(
+                Subtask.hardCoded("s1", "get stone", Map.of("asset_key", "minecraft:stone", "minimum", 1))));
+        // p2 未展开且带前置依赖（跨一级 wait_for）——注入后必须保留
+        var p2 = PrimaryGoal.unexpanded("p2", "stage two",
+                java.util.List.of(new AssetRequirement("minecraft:diamond_pickaxe", 1)));
+        var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(p1, p2)));
+        chain.startCurrent();
+        assertTrue(chain.applyHardCodedResult("s1", true));
+        chain.applySupervisorDecision(new SupervisorDecision(SupervisorDecisionType.CONFIRM, "p1", "observed"));
+        // 宿主注入已生成的二级：unexpanded→false、保留 waitFor、状态不被改写
+        chain.expandCurrentPrimary(java.util.List.of(Subtask.hardCoded("s2", "hold obsidian",
+                Map.of("asset_key", "minecraft:obsidian", "minimum", 1))));
+        assertFalse(chain.currentPrimary().unexpanded());
+        assertEquals("s2", chain.currentSubtask().id());
+        assertEquals(SubtaskStatus.PENDING, chain.currentSubtaskStatus());
+        assertEquals(PrimaryGoalStatus.PENDING, chain.primaryStatus());
+        // 依赖门仍在：钻石镐不在背包 → 真 WAITING
+        assertFalse(chain.activateCurrent(Map.of("minecraft:obsidian", 0)));
+        assertEquals(PrimaryGoalStatus.WAITING, chain.primaryStatus());
+        assertEquals(java.util.List.of("minecraft:diamond_pickaxe"), chain.snapshot().get("waitingFor"));
+        // 依赖到位 → 激活、二级 RUNNING → 走既有推进
+        assertTrue(chain.activateCurrent(Map.of("minecraft:obsidian", 0, "minecraft:diamond_pickaxe", 1)));
+        assertEquals(PrimaryGoalStatus.ACTIVE, chain.primaryStatus());
+        assertEquals(SubtaskStatus.RUNNING, chain.currentSubtaskStatus());
+        assertTrue(chain.applyHardCodedResult("s2", true));
+        assertEquals(PrimaryGoalStatus.AWAITING_SUPERVISOR, chain.primaryStatus());
+    }
+
+    @Test void unexpandedChainRoundTripsThroughJson() {
+        var p1 = new PrimaryGoal("p1", "stage one", java.util.List.of(
+                Subtask.hardCoded("s1", "get stone", Map.of("asset_key", "minecraft:stone", "minimum", 1))));
+        var p2 = PrimaryGoal.unexpanded("p2", "stage two", java.util.List.of());
+        var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(p1, p2)));
+        chain.startCurrent();
+        assertTrue(chain.applyHardCodedResult("s1", true));
+        chain.applySupervisorDecision(new SupervisorDecision(SupervisorDecisionType.CONFIRM, "p1", "observed"));
+        // 游戏重启：停靠在未展开 p2 (PENDING) 的链 → 持久化 → 恢复
+        var restored = TaskChain.fromJson(chain.toJson());
+        assertTrue(restored.currentPrimary().unexpanded());
+        assertEquals(PrimaryGoalStatus.PENDING, restored.primaryStatus());
+        assertNull(restored.currentSubtask());
+        // 重启后仍可懒展开 + 激活（重启不吞懒加载能力）
+        restored.expandCurrentPrimary(java.util.List.of(Subtask.hardCoded("s2", "hold obsidian",
+                Map.of("asset_key", "minecraft:obsidian", "minimum", 1))));
+        assertFalse(restored.currentPrimary().unexpanded());
+        assertTrue(restored.activateCurrent(Map.of("minecraft:obsidian", 1)));
+        assertEquals(SubtaskStatus.RUNNING, restored.currentSubtaskStatus());
+    }
+
+    @Test void legacyJsonWithoutUnexpandedFieldLoadsAndRuns() {
+        var primary = new PrimaryGoal("p1", "mine", java.util.List.of(
+                Subtask.hardCoded("s1", "get stone", Map.of("asset_key", "minecraft:stone", "minimum", 1))));
+        var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(primary)));
+        // 模拟 A-1 之前的旧持久化文件（无 unexpanded 字段）
+        String legacyJson = chain.toJson().replace(",\"unexpanded\":false", "");
+        assertFalse(legacyJson.contains("unexpanded"));
+        var restored = TaskChain.fromJson(legacyJson);
+        // 旧链默认按已展开读（unexpanded=false），行为与原实现一致
+        assertFalse(restored.currentPrimary().unexpanded());
+        assertEquals("s1", restored.currentSubtask().id());
+        restored.startCurrent();
+        assertTrue(restored.applyHardCodedResult("s1", true));
+        assertEquals(PrimaryGoalStatus.AWAITING_SUPERVISOR, restored.primaryStatus());
+    }
 }
