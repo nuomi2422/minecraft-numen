@@ -25,6 +25,10 @@ group = 'com.dwinovo.numen'
 base { archivesName = "numen-plugin-${project.name}-${minecraft_version}" }
 java { toolchain.languageVersion = JavaLanguageVersion.of(java_version) }
 
+// 与全树其余模块一致,源文件按 UTF-8 编译;否则中文 Windows 上 javac 默认 GBK,
+// 会把 UTF-8 源里的中文串字面量编成乱码(plugins/rdd 的 nudge/supervisor 消息实测乱码)。
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+
 neoForge {
     version = neoforge_version
     mods { "${mod_id}" { sourceSet sourceSets.main } }
