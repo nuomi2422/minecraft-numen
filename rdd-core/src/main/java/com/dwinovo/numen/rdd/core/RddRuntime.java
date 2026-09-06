@@ -19,6 +19,8 @@ public final class RddRuntime {
     public TaskChain chain() { return chain; }
     public AssetRegistry assets() { return assets; }
 
+    public Map<String, Object> snapshot() { return chain.snapshot(); }
+
     public void startCurrent() {
         chain.startCurrent();
         publish("subtask_started", Map.of("goal", chain.currentPrimary().id(), "subtask", chain.currentSubtask().id()));

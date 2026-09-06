@@ -106,6 +106,42 @@ public final class TaskChain {
         return Map.copyOf(statuses);
     }
 
+    /** Read-only structured view for monitoring; it is derived from the state owner. */
+    public synchronized Map<String, Object> snapshot() {
+        List<Map<String, Object>> primaries = new ArrayList<>();
+        for (int p = 0; p < goal.primaryGoals().size(); p++) {
+            PrimaryGoal primary = goal.primaryGoals().get(p);
+            List<Map<String, Object>> subtasks = new ArrayList<>();
+            for (int s = 0; s < primary.subtasks().size(); s++) {
+                Subtask subtask = primary.subtasks().get(s);
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("id", subtask.id());
+                item.put("description", subtask.description());
+                item.put("status", statuses.get(subtask.id()).name());
+                item.put("detectionMode", subtask.detectionMode().name());
+                item.put("condition", subtask.condition());
+                item.put("current", p == primaryIndex && s == subtaskIndex);
+                subtasks.add(item);
+            }
+            Map<String, Object> primaryView = new LinkedHashMap<>();
+            primaryView.put("id", primary.id());
+            primaryView.put("description", primary.description());
+            primaryView.put("current", p == primaryIndex);
+            primaryView.put("subtasks", subtasks);
+            primaries.add(primaryView);
+        }
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("goalId", goal.id());
+        view.put("description", goal.description());
+        view.put("primaryStatus", primaryStatus.name());
+        view.put("primaryIndex", primaryIndex);
+        view.put("subtaskIndex", subtaskIndex);
+        view.put("currentPrimaryId", currentPrimary().id());
+        view.put("currentSubtaskId", currentSubtask().id());
+        view.put("primaries", primaries);
+        return view;
+    }
+
     /** 导出任务链状态为 JSON（持久化用：goal 结构 + 全部状态 + 当前指针）。 */
     public synchronized String toJson() {
         JsonObject o = new JsonObject();

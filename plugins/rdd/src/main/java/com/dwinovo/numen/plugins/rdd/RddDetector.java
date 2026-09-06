@@ -138,6 +138,7 @@ final class RddDetector {
             // 资产 populate：把背包物品写进 AssetRegistry（节流），rdd_status 据此报真实资产。
             if (++assetTick % 5 == 0) {
                 populateAssets(ap, rt, current, counts);
+                RddPlugin.publishTaskSnapshot(ap.getUUID(), "periodic_observation");
             }
             if (HardCodedEvaluator.matches(current.condition(), counts)) {
                 completeSubtask(ap, rt, current);
@@ -323,6 +324,7 @@ final class RddDetector {
         LOG.info("[rdd] 二级目标完成: {} ({})", current.id(), current.description());
         RddMonitor.publish("subtask_completed", Map.of(
                 "subtask", current.id(), "description", current.description()));
+        RddPlugin.publishTaskSnapshot(ap.getUUID(), "subtask_completed");
         TaskChain chain = rt.chain();
         if (chain.primaryStatus() == PrimaryGoalStatus.AWAITING_SUPERVISOR) {
             rt.applySupervisor(new SupervisorDecision(
@@ -332,6 +334,7 @@ final class RddDetector {
             LOG.info("[rdd] 一级目标完成: {}", chain.currentPrimary().description());
             RddMonitor.publish("goal_completed", Map.of(
                     "goal", chain.currentPrimary().id(), "description", chain.currentPrimary().description()));
+            RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_completed");
             RddPlugin.clearBody(ap.getUUID());
         }
     }

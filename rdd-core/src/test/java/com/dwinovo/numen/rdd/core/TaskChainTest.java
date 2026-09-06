@@ -91,4 +91,21 @@ class TaskChainTest {
         chain.applySupervisorDecision(new SupervisorDecision(SupervisorDecisionType.CONFIRM, "p", "observed"));
         assertEquals(PrimaryGoalStatus.COMPLETED, chain.primaryStatus());
     }
+
+    @Test void snapshotContainsWholeChainAndCurrentPointer() {
+        var primary = new PrimaryGoal("p", "prepare", java.util.List.of(
+                Subtask.hardCoded("s1", "get stone", Map.of("asset_key", "minecraft:stone", "minimum", 1)),
+                Subtask.hardCoded("s2", "get wood", Map.of("asset_key", "minecraft:oak_log", "minimum", 1))));
+        var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(primary)));
+        chain.startCurrent();
+        var snapshot = chain.snapshot();
+        assertEquals("g", snapshot.get("goalId"));
+        assertEquals("s1", snapshot.get("currentSubtaskId"));
+        var primaries = (java.util.List<?>) snapshot.get("primaries");
+        var primaryView = (java.util.Map<?, ?>) primaries.get(0);
+        var subtasks = (java.util.List<?>) primaryView.get("subtasks");
+        assertEquals(2, subtasks.size());
+        assertEquals("RUNNING", ((java.util.Map<?, ?>) subtasks.get(0)).get("status"));
+        assertEquals("PENDING", ((java.util.Map<?, ?>) subtasks.get(1)).get("status"));
+    }
 }

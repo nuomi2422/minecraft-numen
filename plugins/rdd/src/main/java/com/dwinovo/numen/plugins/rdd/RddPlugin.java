@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -49,6 +50,9 @@ public final class RddPlugin implements NumenPlugin {
             }
             DECOMPOSING.add(uuid);
             BODY.remove(uuid);
+            RddMonitor.publish("supervisor_input", Map.of(
+                    "companionId", uuid.toString(), "objective", objective,
+                    "source", "goal_sink", "target", "rdd"));
             RddDecomposer.decompose(uuid, objective, goal -> {
                 try {
                     remove(uuid);
@@ -56,6 +60,7 @@ public final class RddPlugin implements NumenPlugin {
                     RddRuntime runtime = runtime(uuid);
                     if (runtime != null) {
                         runtime.startCurrent();
+                        publishTaskSnapshot(uuid, "goal_decomposed");
                     }
                     LOG.info("[rdd] 目标分解完成并启动 {}:{}", uuid, goal.description());
                 } catch (RuntimeException ex) {
@@ -101,6 +106,7 @@ public final class RddPlugin implements NumenPlugin {
         BODY.remove(companionId);
         RUNTIMES.put(companionId, new RddRuntime(new TaskChain(goal), new AssetRegistry()));
         saveRuntimes();
+        publishTaskSnapshot(companionId, "task_bound");
     }
 
     public static RddRuntime runtime(UUID companionId) {
@@ -131,6 +137,10 @@ public final class RddPlugin implements NumenPlugin {
 
     public static void remove(UUID companionId) {
         if (companionId != null) {
+            RddRuntime previous = RUNTIMES.get(companionId);
+            if (previous != null) {
+                publishTaskSnapshot(companionId, "task_removed");
+            }
             RUNTIMES.remove(companionId);
             BODY.remove(companionId);
         }
@@ -195,11 +205,31 @@ public final class RddPlugin implements NumenPlugin {
         try {
             if (numenApi != null && companionId != null && message != null && !message.isBlank()) {
                 numenApi.enqueue(companionId, message);
+                Map<String, Object> data = new LinkedHashMap<>();
+                data.put("companionId", companionId.toString());
+                data.put("message", message);
+                data.put("source", "supervisor");
+                data.put("target", "numen");
+                RddRuntime runtime = RUNTIMES.get(companionId);
+                if (runtime != null) data.put("taskChain", runtime.snapshot());
+                RddMonitor.publish("supervisor_output", data);
                 LOG.info("[rdd] nudge {}: {}", companionId, message);
             }
         } catch (RuntimeException e) {
             LOG.warn("[rdd] nudge failed: {}", e.toString());
         }
+    }
+
+    /** Emits an observational task-chain snapshot. This never mutates task state. */
+    public static void publishTaskSnapshot(UUID companionId, String reason) {
+        if (companionId == null) return;
+        RddRuntime runtime = RUNTIMES.get(companionId);
+        if (runtime == null) return;
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("companionId", companionId.toString());
+        data.put("reason", reason == null ? "state_observed" : reason);
+        data.put("taskChain", runtime.snapshot());
+        RddMonitor.publish("taskchain_snapshot", data);
     }
 
     /** XML 转义：描述/条件可能含玩家可输入的 < > & ". */
