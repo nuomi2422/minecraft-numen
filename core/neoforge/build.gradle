@@ -19,6 +19,9 @@ dependencies {
     // (它们不发布——没人需要依赖我们的联动代码)。
     compileOnly project(':plugins:ysm')
     compileOnly project(':plugins:tlm')
+    // Self-Compile and RDD remain standalone plugins but travel with the core jar.
+    compileOnly project(':plugins:selfcompile')
+    compileOnly project(':plugins:rdd')
     // Bundle it into core's jar (Jar-in-Jar) so players install one file and get both mods.
     jarJar(project(':api:neoforge'))
 }
@@ -89,6 +92,9 @@ sourceSets.configureEach {
 
 // 联动模组的类与资源平铺进发行 jar——它们本质是独立模组,只是跟车一起发。
 // 目标模组不在时它们一个类都不会被加载,见 com.dwinovo.numen.plugins.Builtin。
+// ysm/tlm 是内嵌联动(有自己的 mod 元数据,但 Builtin 延迟门控、只在目标模组在时装上,
+// 其元数据不需要作为独立 mod 被 FML 扫描,所以可以平铺);
+// selfcompile/rdd 是独立插件,各自带 neoforge.mods.toml,单独部署,不在这里平铺。
 tasks.named('jar', Jar) {
     from({ project(':plugins:ysm').sourceSets.main.output })
     from({ project(':plugins:tlm').sourceSets.main.output })
