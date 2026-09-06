@@ -70,6 +70,8 @@ final class RddDetector {
     /** Level 3 卡死累计：当前二级累计卡死次数（AI 反复拍醒仍无目标资产进展 → 能力不足）。 */
     private final Map<UUID, StallCount> stallCounts = new ConcurrentHashMap<>();
     private record StallCount(String subtaskId, int total) {}
+    /** 已达重试上限被"停车"为 FAILED 的二级（uuid→subtaskId）。停车后不再自动重试/nudge，只留资产检测。 */
+    private final Map<UUID, String> gapParked = new ConcurrentHashMap<>();
 
     private int tickCounter;
     /** 资产 populate 节流：每 5 次检测（约 5 秒）把背包物品写进 AssetRegistry。 */
@@ -352,11 +354,16 @@ final class RddDetector {
         RetryState rs = retries.get(ap.getUUID());
         int n = (rs != null && rs.subtaskId().equals(current.id())) ? rs.count() : 0;
         if (n >= MAX_SUBTASK_RETRIES) {
-            // Level 3：多次失败 = 能力不足 → 引导自编译（AI 缺工具调 selfcompile_request 生成）
-            retries.remove(ap.getUUID());
-            RddPlugin.nudge(ap.getUUID(), "这个目标多次失败，很可能缺一个专门工具。如果你缺工具，现在就调 selfcompile_request 请求生成它，然后告诉我。");
-            RddMonitor.publish("subtask_capability_gap", Map.of(
-                    "subtask", current.id(), "reason", "retries exhausted, capability gap suspected"));
+            // Level 3：多次失败 = 能力不足。只响一次（capability_gap + 引导自编译），然后把这个二级
+            // "停车"为 FAILED：不 retrySubtask、也不清 retries（cap 清零会进 FAILED→重试→RUNNING→
+            // body 重派→失败 的无限循环，每次 nudge ~98k token 空烧）。停车后只留真实资产检测——
+            // AI 或主人真攒够资产，由 FAILED 分支的 early_achievement 自动验收推进，不堵恢复路径。
+            if (!current.id().equals(gapParked.get(ap.getUUID()))) {
+                gapParked.put(ap.getUUID(), current.id());
+                RddPlugin.nudge(ap.getUUID(), "这个目标多次失败，很可能缺一个专门工具。如果你缺工具，现在就调 selfcompile_request 请求生成它，然后告诉我。");
+                RddMonitor.publish("subtask_capability_gap", Map.of(
+                        "subtask", current.id(), "reason", "retries exhausted, capability gap suspected; parked awaiting assets"));
+            }
             return;
         }
         retries.put(ap.getUUID(), new RetryState(current.id(), n + 1));
@@ -475,6 +482,7 @@ final class RddDetector {
         RddPlugin.clearBody(ap.getUUID());
         retries.remove(ap.getUUID());
         stallCounts.remove(ap.getUUID());
+        gapParked.remove(ap.getUUID());
         if (!completed) {
             return;
         }
