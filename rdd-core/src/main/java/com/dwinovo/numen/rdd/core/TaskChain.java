@@ -28,6 +28,36 @@ public final class TaskChain {
     public synchronized Subtask currentSubtask() { return currentPrimary().subtasks().get(subtaskIndex); }
     public synchronized PrimaryGoal currentPrimary() { return goal.primaryGoals().get(primaryIndex); }
 
+    /** 当前一级的所有前置资产(waitFor)是否都被 counts 满足（无 waitFor → true）。 */
+    public synchronized boolean currentPrimaryReady(Map<String, Integer> counts) {
+        List<AssetRequirement> wf = currentPrimary().waitFor();
+        if (wf.isEmpty()) return true;
+        if (counts == null) return false;
+        for (AssetRequirement r : wf) {
+            if (counts.getOrDefault(r.assetKey(), 0) < r.minimum()) return false;
+        }
+        return true;
+    }
+
+    /**
+     * 激活"刚推进到、还没开工"的当前一级（PENDING/WAITING → ACTIVE 并启动其首个二级）。
+     * 前置资产未到位 → 置 WAITING 并返回 false（监督方此时不该把它派给 AI，等资产到了再调）。
+     */
+    public synchronized boolean activateCurrent(Map<String, Integer> counts) {
+        if (primaryStatus != PrimaryGoalStatus.PENDING && primaryStatus != PrimaryGoalStatus.WAITING) {
+            throw new IllegalStateException("only a not-yet-started primary may activate: " + primaryStatus);
+        }
+        if (!currentPrimaryReady(counts)) {
+            primaryStatus = PrimaryGoalStatus.WAITING;
+            return false;
+        }
+        primaryStatus = PrimaryGoalStatus.ACTIVE;
+        if (statuses.get(currentSubtask().id()) == SubtaskStatus.PENDING) {
+            statuses.put(currentSubtask().id(), SubtaskStatus.RUNNING);
+        }
+        return true;
+    }
+
     public synchronized void startCurrent() {
         if (primaryStatus == PrimaryGoalStatus.PENDING) primaryStatus = PrimaryGoalStatus.ACTIVE;
         if (primaryStatus != PrimaryGoalStatus.ACTIVE || statuses.get(currentSubtask().id()) != SubtaskStatus.PENDING) throw new IllegalStateException("current subtask cannot start");
@@ -127,6 +157,16 @@ public final class TaskChain {
             primaryView.put("id", primary.id());
             primaryView.put("description", primary.description());
             primaryView.put("current", p == primaryIndex);
+            if (!primary.waitFor().isEmpty()) {
+                List<Map<String, Object>> wf = new ArrayList<>();
+                for (AssetRequirement r : primary.waitFor()) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("asset_key", r.assetKey());
+                    m.put("minimum", r.minimum());
+                    wf.add(m);
+                }
+                primaryView.put("waitFor", wf);
+            }
             primaryView.put("subtasks", subtasks);
             primaries.add(primaryView);
         }
@@ -138,6 +178,9 @@ public final class TaskChain {
         view.put("subtaskIndex", subtaskIndex);
         view.put("currentPrimaryId", currentPrimary().id());
         view.put("currentSubtaskId", currentSubtask().id());
+        if (primaryStatus == PrimaryGoalStatus.WAITING && !currentPrimary().waitFor().isEmpty()) {
+            view.put("waitingFor", currentPrimary().waitFor().stream().map(AssetRequirement::assetKey).toList());
+        }
         view.put("primaries", primaries);
         return view;
     }

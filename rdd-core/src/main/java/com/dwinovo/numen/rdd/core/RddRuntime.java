@@ -26,6 +26,11 @@ public final class RddRuntime {
         publish("subtask_started", Map.of("goal", chain.currentPrimary().id(), "subtask", chain.currentSubtask().id()));
     }
 
+    /** 激活刚推进到的当前一级；前置资产未到位 → WAITING 并返回 false。 */
+    public boolean activateCurrent(Map<String, Integer> counts) {
+        return chain.activateCurrent(counts);
+    }
+
     public boolean applyHardCoded(String subtaskId, boolean satisfied) {
         boolean completed = chain.applyHardCodedResult(subtaskId, satisfied);
         publish("subtask_detection", Map.of("subtask", subtaskId, "mode", "HARD_CODED", "satisfied", satisfied, "completed", completed));
