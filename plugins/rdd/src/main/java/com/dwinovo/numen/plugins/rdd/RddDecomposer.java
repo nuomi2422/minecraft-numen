@@ -275,8 +275,13 @@ final class RddDecomposer {
                 + "请用 decompose_goal 工具给出子步骤。每个子步骤包含：\n"
                 + "- description：这一步要做什么\n"
                 + "- condition：{asset_key: 物品命名空间ID, minimum: 需要数量}\n"
-                + "- body（可选）：{task_type: 身体工具名（如 collect_items / mine_block / move_to / equip）, "
-                + "args: 工具参数（如 collect_items 的 {item, count}）}\n";
+                + "- body（可选）：把这一步直接交给女仆身体执行。task_type 只能从下面 4 个里选，"
+                + "args 统一用 {item, count}（item=物品/矿石命名空间ID，count=要拿到的数量，尽量与 condition 对齐）：\n"
+                + "    mine：挖矿/采集方块（如 {item: \"minecraft:iron_ore\", count: 3}，可给 minecraft:raw_iron）\n"
+                + "    craft：合成（如 {item: \"minecraft:iron_pickaxe\", count: 1}）\n"
+                + "    equip_item：装备（如 {item: \"minecraft:iron_pickaxe\"}）\n"
+                + "    collect_items：捡起附近掉落物（可选 {item} 限定）\n"
+                + "    严禁用这 4 个之外的工具名——不存在的名字不会被执行，只会拖慢推进。\n";
     }
 
     /** 已完成前置阶段上下文块（空则返回空串）。 */
@@ -335,9 +340,9 @@ final class RddDecomposer {
                                                             "description", "可选的交给身体执行的指令",
                                                             "properties", Map.of(
                                                                     "task_type", Map.of("type", "string",
-                                                                            "description", "NUMEN 身体工具名，如 collect_items / mine_block / move_to / equip"),
+                                                                            "description", "身体工具名，仅限 4 个: mine(挖矿)/craft(合成)/equip_item(装备)/collect_items(捡掉落)。不要用其他名字——不存在的名字不会执行。"),
                                                                     "args", Map.of("type", "object",
-                                                                            "description", "该工具的参数，如 {item, count}")),
+                                                                            "description", "工具参数，统一用 {item, count}（item=物品/矿石命名空间ID, count=数量）。")),
                                                             "required", List.of("task_type")))),
                                     "required", List.of("description", "condition"))),
                     "required", List.of("subtasks"));

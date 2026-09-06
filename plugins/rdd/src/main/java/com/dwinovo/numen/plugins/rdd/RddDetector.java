@@ -406,27 +406,66 @@ final class RddDetector {
         RddPlugin.rememberBody(ap.getUUID(), current.id(), 1);
     }
 
-    /** 直接调身体工具的服务端实现（同 tick 线程，安全）；工具内部走 TaskDispatch.setTask。 */
+    /** 直接调身体工具的服务端实现（同 tick 线程，安全）；工具内部走 TaskDispatch.setTask。
+     *
+     *  <p>入口分三路：
+     *  <ol>
+     *    <li>{@code task_type} 在 RDD 词表/别名内（mine/craft/equip_item/collect_items，含旧臆造名
+     *        mine_block/equip）→ {@link RddBodyTools} 翻译成真实工具参数（mine 要 block_ids 数组 + deepslate 变体）；</li>
+     *    <li>词表外但是真实注册工具（外部 rdd_submit/监测台显式指名驱动）→ 原样派发（操作者负责参数契约）；</li>
+     *    <li>都不是（规划层臆造名）→ 响亮 {@code subtask_capability_gap}，绝不再静默"只检测不执行"空转。</li>
+     *  </ol> */
     private void submitBody(NumenPlayer ap, Subtask current) {
         BodyInstruction body = current.body();
-        NumenTool tool = ToolRegistry.resolve(body.taskType());
-        if (tool == null) {
-            LOG.warn("[rdd] 身体工具 {} 不存在，该二级只检测不执行", body.taskType());
+        String raw = body.taskType();
+        String canonical = RddBodyTools.canonical(raw);
+        if (canonical != null) {
+            NumenTool tool = ToolRegistry.resolve(canonical);
+            if (tool == null) {
+                LOG.error("[rdd] 规范身体工具 {} 未注册（插件与注册表脱节）", canonical);
+                RddMonitor.publish("subtask_capability_gap", Map.of(
+                        "subtask", current.id(), "reason", "canonical body tool unregistered: " + canonical));
+                return;
+            }
+            Object condMin = current.condition().get("minimum");
+            Integer min = condMin instanceof Number num ? num.intValue() : null;
+            JsonObject realArgs = RddBodyTools.buildArgs(canonical, body.args(), min);
+            if (realArgs == null) {
+                LOG.error("[rdd] body {} 的 args 无法翻译成 {} 参数: {}", current.id(), canonical, body.args());
+                RddMonitor.publish("subtask_capability_gap", Map.of(
+                        "subtask", current.id(), "reason", "untranslatable args for " + canonical));
+                return;
+            }
+            dispatchBody(ap, current, canonical, tool, realArgs, body);
             return;
         }
-        JsonObject args = new JsonObject();
-        if (body.args() != null) {
-            body.args().forEach((k, v) -> args.add(k, GSON.toJsonTree(v)));
+        NumenTool explicit = ToolRegistry.resolve(raw);
+        if (explicit == null) {
+            LOG.error("[rdd] body 工具名 {} 不在 RDD 词表 {} 也非真实注册工具 —— 规划层臆造，"
+                    + "该二级只做资产检测不身体执行", raw, RddBodyTools.SUPPORTED);
+            RddMonitor.publish("subtask_capability_gap", Map.of(
+                    "subtask", current.id(), "reason", "unsupported body tool name: " + raw));
+            return;
         }
+        // 外部显式指名驱动任意真实工具：原样透传参数。
+        JsonObject passthrough = new JsonObject();
+        if (body.args() != null) {
+            body.args().forEach((k, v) -> passthrough.add(k, GSON.toJsonTree(v)));
+        }
+        dispatchBody(ap, current, raw, explicit, passthrough, body);
+    }
+
+    private void dispatchBody(NumenPlayer ap, Subtask current, String toolName, NumenTool tool,
+                              JsonObject callArgs, BodyInstruction body) {
         try {
-            tool.onServerCall(RddPlugin.nextBodyCallId(), args, ap, reply -> { });
-            LOG.info("[rdd] 已提交身体任务 {} -> {} {}", current.id(), body.taskType(), body.args());
+            tool.onServerCall(RddPlugin.nextBodyCallId(), callArgs, ap, reply -> { });
+            LOG.info("[rdd] 已提交身体任务 {} -> {} {}", current.id(), toolName, callArgs);
             RddMonitor.publish("body_submitted", Map.of(
-                    "subtask", current.id(), "task_type", body.taskType(), "args", body.args()));
+                    "subtask", current.id(), "task_type", toolName, "args", body.args()));
         } catch (RuntimeException e) {
-            LOG.warn("[rdd] 提交身体任务失败 {}: {}", body.taskType(), e.toString());
+            LOG.warn("[rdd] 提交身体任务失败 {}: {}", toolName, e.toString());
             RddMonitor.publish("body_submit_failed", Map.of(
-                    "subtask", current.id(), "task_type", body.taskType(), "error", String.valueOf(e)));
+                    "subtask", current.id(), "task_type", toolName, "error", String.valueOf(e)));
         }
     }
 
