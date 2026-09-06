@@ -43,6 +43,38 @@ final class RddDecomposer {
 
     private RddDecomposer() {}
 
+    /**
+     * 共享 LLM 单轮 + 单合成工具 传输（客户端主线程）。成功把首个工具调用的 arguments JSON
+     * 交回调；任何失败（无 key/LLM 错/未调工具）交 onFail。两段都在 {@code Minecraft.getInstance().execute}
+     * 弹回主线程——调用方据此决定回落或走 §9 失败恢复，绝不在传输层伪造结果。
+     */
+    static void llmAsk(String userContent, String system, IToolSpec tool,
+                       Consumer<String> onArguments, Runnable onFail) {
+        INumenConfig cfg = Services.CONFIG;
+        if (cfg.getApiKey() == null || cfg.getApiKey().isBlank()) {
+            Minecraft.getInstance().execute(onFail);
+            return;
+        }
+        LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
+                cfg.getBaseUrl(), cfg.getProxy(), "auto");
+        NumenLlmClient.forEndpoint(ep)
+                .chatStreaming(List.of(new ConvoState.Msg.User(userContent)),
+                        List.of(tool), system, null)
+                .whenComplete((result, error) -> Minecraft.getInstance().execute(() -> {
+                    if (error != null) {
+                        onFail.run();
+                        return;
+                    }
+                    AssistantTurn turn = result.turn();
+                    if (turn == null || !turn.hasToolCalls()) {
+                        onFail.run();
+                        return;
+                    }
+                    LlmToolCall call = turn.toolCalls().get(0);
+                    onArguments.accept(call.arguments());
+                }));
+    }
+
     /** 主入口：异步分解目标，回调收到一个可用的 Goal（成功=分解链，失败=占位链）。 */
     static void decompose(UUID companionId, String objective, Consumer<Goal> done) {
         INumenConfig cfg = Services.CONFIG;
