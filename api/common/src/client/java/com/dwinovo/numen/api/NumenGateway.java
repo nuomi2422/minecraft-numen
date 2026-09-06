@@ -2,6 +2,7 @@ package com.dwinovo.numen.api;
 
 import com.dwinovo.numen.client.agent.AgentLoopRegistry;
 import com.dwinovo.numen.client.agent.EntityAgentLoop;
+import com.dwinovo.numen.client.command.ChatCommands;
 import net.minecraft.client.Minecraft;
 
 import java.util.UUID;
@@ -67,16 +68,40 @@ public final class NumenGateway {
         if (!known) return Delivery.REJECTED;
         Minecraft mc = Minecraft.getInstance();
         if (!mc.isSameThread()) {
-            mc.execute(() -> AgentLoopRegistry.getOrCreate(companion).submitPrompt(message));
+            mc.execute(() -> {
+                EntityAgentLoop l = AgentLoopRegistry.getOrCreate(companion);
+                if (!dispatchIfCommand(l, message)) {
+                    l.submitPrompt(message);
+                }
+            });
             return Delivery.HANDED_OFF;
         }
         EntityAgentLoop loop = AgentLoopRegistry.getOrCreate(companion);
+        // 斜杠命令是主人对客户端说的话——外部通道也一样:以 / 开头就本地跑完,不进
+        // "主人说话"队列、不喂模型、不被驾驶闸门拦(命令是主人动作,不是给 AI 的话)。
+        if (dispatchIfCommand(loop, message)) {
+            return Delivery.SEEN;
+        }
         boolean pressed = loop.submitPrompt(message);
         // 外脑<b>驾驶</b>期间内脑恒为停牌,那个 boolean 恒真却什么也不说明——报驾驶席,
         // 判据取自 isExternallyDriven() 这一处真源,不另猜。
         // assist 协助模式不驾驶:外脑喂目标/提示,内置 AI 保持执行,故不拒。
         if (loop.isExternallyDriven()) return Delivery.TO_EXTERNAL_BRAIN;
         return pressed ? Delivery.QUEUED : Delivery.SEEN;
+    }
+
+    /**
+     * 是命令就跑掉并返回 true;不是命令返回 false(调用方照旧当聊天喂)。
+     * 命令回话经 {code ChatCommands.dispatch} 走,和 GUI 手打同一条路。
+     */
+    private static boolean dispatchIfCommand(EntityAgentLoop loop, String message) {
+        String reply = ChatCommands.dispatchIfCommand(loop, message);
+        if (reply == null) {
+            return false;
+        }
+        // 命令回话打给主人看(外脑/桥接侧看日志确认),行为与 GUI 一致。
+        com.dwinovo.numen.Constants.LOG.info("[numen-gw] 命令执行回话: {}", reply);
+        return true;
     }
 
     /**

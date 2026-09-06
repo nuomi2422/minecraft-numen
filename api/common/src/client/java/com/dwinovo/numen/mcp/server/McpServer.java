@@ -380,7 +380,10 @@ public final class McpServer {
         JsonObject schema = objectSchema("companion", true);
         JsonObject text = new JsonObject();
         text.addProperty("type", "string");
-        text.addProperty("description", "The goal/prompt to inject into the built-in AI (assist mode).");
+        text.addProperty("description",
+                "The goal/prompt to inject into the built-in AI (assist mode). "
+                        + "Text starting with '/' is treated as a chat command (e.g. '/goal ...' or '/goal clear') "
+                        + "and runs locally like the owner typed it — use that to set/replace/clear a companion's goal.");
         schema.getAsJsonObject("properties").add("text", text);
         schema.getAsJsonArray("required").add("text");
         return schema;

@@ -228,6 +228,21 @@ public final class ChatCommands {
         }
     }
 
+    /**
+     * 外脑/桥接通道用:把一串输入当命令跑。是命令({@code /} 开头)就本地执行完并返回
+     * 给主人的回话;不是命令返回 {@code null}——调用方照旧走"主人说话"那条路。
+     *
+     * <p>GUI 的 {@code ChatInputBar} 本来就做这层拦截;MCP enqueue 这类外部通道没有
+     * 那条路径,补一个同语义的静态入口,让外部也能发 {@code /goal /clear} 这类命令,
+     * 不必绕道假装成聊天。
+     */
+    public static String dispatchIfCommand(EntityAgentLoop loop, String text) {
+        if (loop == null || !isCommand(text)) {
+            return null;
+        }
+        return dispatch(loop, text);
+    }
+
     // ---- 最近用过 ----
 
     /** 记一笔"刚用过"。最新在前、去重、只留 {@value #RECENT_CAP} 条。 */
