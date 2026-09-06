@@ -83,6 +83,8 @@ final class RddDetector {
             return;
         }
         tickCounter = 0;
+        // 空转止血：每次心跳刷新监督开关（flag 文件由监测台/人写，pause=停拍醒）
+        RddPlugin.refreshSupervisionFlag();
         // 重启恢复：磁盘有任务但内存无 → 加载为 RddRuntime（幂等，RECOVERING）
         RddPlugin.restoreRuntimes();
         for (ServerPlayer p : server.getPlayerList().getPlayers()) {
@@ -215,12 +217,13 @@ final class RddDetector {
                 RddPlugin.publishTaskSnapshot(ap.getUUID(), "periodic_observation");
             }
             // 卡死监督：资产指纹（背包+位置）连续未变化 → 判 STALLED 并拍醒将军。
-            if (trackStall(ap, rt, current)) {
+            // 空转止血：暂停监督 → 跳过卡死检测与身体驱动(不 nudge / 不自动重派)，只留资产检测推进。
+            if (RddPlugin.supervisionEnabled() && trackStall(ap, rt, current)) {
                 return;
             }
             // assist 协助模式下暂停自动工具提交(防双驾驶):工具执行交还 NUMEN 内置 AI,
             // RDD 只保留资产检测 / 目标完成判定 / 异常提醒。
-            if (RddPlugin.bodySubmissionEnabled()) {
+            if (RddPlugin.supervisionEnabled() && RddPlugin.bodySubmissionEnabled()) {
                 maybeSubmitBody(ap, current);
             }
             if (HardCodedEvaluator.matches(current.condition(), counts)) {
@@ -239,6 +242,9 @@ final class RddDetector {
      * → markStalled + 拍醒（nudge）。返回 true 表示本次判定卡死，上层停止推进。
      */
     private boolean trackStall(NumenPlayer ap, RddRuntime rt, Subtask current) {
+        if (!RddPlugin.supervisionEnabled()) {
+            return false; // 空转止血：暂停监督不做卡死检测/拍醒/能力升级，资产推进照常
+        }
         String fp = fingerprint(ap);
         StallState st = stalls.get(ap.getUUID());
         if (st == null || !st.subtaskId().equals(current.id())) {
@@ -281,6 +287,16 @@ final class RddDetector {
     private void handleStalled(NumenPlayer ap, RddRuntime rt, Subtask current) {
         String fp = fingerprint(ap);
         StallState st = stalls.get(ap.getUUID());
+        if (!RddPlugin.supervisionEnabled()) {
+            // 空转止血：暂停监督。AI 自己动了 → 回 RUNNING；否则保持卡住标记，绝不拍醒/绝不判失败。
+            if (st != null && st.subtaskId().equals(current.id()) && st.fingerprint().equals(fp)) {
+                return; // 仍冻结：挂起不动，不打扰 AI
+            }
+            rt.chain().resumeFromStalled(current.id());
+            RddMonitor.publish("subtask_resumed", Map.of("subtask", current.id(), "reason", "progress while supervision paused"));
+            stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 0));
+            return;
+        }
         if (st == null) {
             stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 1));
             RddPlugin.nudge(ap.getUUID(), "你卡住了吗？缺什么工具或材料？");
@@ -314,6 +330,9 @@ final class RddDetector {
 
     /** FAILED 二级的 Level 2 局部恢复：预算内重置重跑 + 拍醒提示换策略；预算耗尽 → Level 3。 */
     private void handleSubtaskFailure(NumenPlayer ap, RddRuntime rt, Subtask current) {
+        if (!RddPlugin.supervisionEnabled()) {
+            return; // 空转止血：暂停监督不自动重跑/不引导自编译，保持 FAILED 等主人
+        }
         RetryState rs = retries.get(ap.getUUID());
         int n = (rs != null && rs.subtaskId().equals(current.id())) ? rs.count() : 0;
         if (n >= MAX_SUBTASK_RETRIES) {
@@ -436,6 +455,11 @@ final class RddDetector {
             return;
         }
         // assist 协助模式下 RDD 不自动提交工具(防双驾驶):重试也跳过,直接判失败提醒。
+        // 空转止血：暂停监督 → 不重派也不判失败，清掉身体状态静置等主人。
+        if (!RddPlugin.supervisionEnabled()) {
+            RddPlugin.clearBody(ap.getUUID());
+            return;
+        }
         if (state.submitCount() < MAX_BODY_RETRIES && RddPlugin.bodySubmissionEnabled()) {
             RddPlugin.rememberBody(ap.getUUID(), current.id(), state.submitCount() + 1);
             submitBody(ap, current);

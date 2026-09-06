@@ -31,6 +31,12 @@ public final class RddPlugin implements NumenPlugin {
     private static final AtomicLong BODY_CALLS = new AtomicLong();
     /** assist 协助模式下暂停自动工具提交(防双驾驶);默认 true = RDD 可自动提交。 */
     private static volatile boolean bodySubmissionEnabled = true;
+    /** 空转止血：是否允许"监督拍醒"主动干预（nudge/自动重试/失败升级/重派身体）。
+     *  默认 true。暂停时 Detector 退化为纯观察——真实资产检测推进 + EarlyAchievement 照常，
+     *  但绝不 nudge 注入 AI / 自动重试 / 升级判失败（LLM 空转止血）。 */
+    private static volatile boolean supervisionEnabled = true;
+    /** 开关文件 config/numen/rdd-supervision.flag：内容含 "pause"(或 "0") → 暂停监督。 */
+    private static volatile Path supervisionFlag;
     /** setup 时保存的插件门面，用于监督拍醒（nudge 注入内置 AI）。 */
     private static volatile NumenApi numenApi;
     /** 任务链持久化目录 config/numen/rdd-tasks（每个同伴一个 <uuid>.json）。 */
@@ -42,6 +48,7 @@ public final class RddPlugin implements NumenPlugin {
     public void setup(NumenApi numen) {
         numenApi = numen;
         tasksDir = numen.configDir().resolve("rdd-tasks");
+        supervisionFlag = numen.configDir().resolve("rdd-supervision.flag");
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
         // 接管 /goal：先同步认领，Stage-A 异步规划；规划期间 NUMEN 原生目标循环让位。
@@ -193,6 +200,32 @@ public final class RddPlugin implements NumenPlugin {
         bodySubmissionEnabled = on;
     }
 
+    /** 监督拍醒是否放行。false = 空转止血：Detector 只观察/推进，不 nudge AI。 */
+    public static boolean supervisionEnabled() {
+        return supervisionEnabled;
+    }
+
+    /** 每次检测心跳(~1s)刷新监督开关：外部(监测台/人)写 config/numen/rdd-supervision.flag=pause 即暂停。 */
+    public static void refreshSupervisionFlag() {
+        if (supervisionFlag == null) {
+            return;
+        }
+        boolean paused;
+        try {
+            String content = Files.exists(supervisionFlag)
+                    ? Files.readString(supervisionFlag, StandardCharsets.UTF_8).trim() : "";
+            // 文件内容 "pause"/"0"/任意非空非 run → 暂停；删文件或写 "run" → 恢复
+            paused = !content.isEmpty() && !content.equalsIgnoreCase("run");
+        } catch (IOException ex) {
+            paused = !supervisionEnabled; // flag 读取失败保持当前状态
+        }
+        if (paused != !supervisionEnabled) {
+            supervisionEnabled = !paused;
+            LOG.info("[rdd] 监督{}: flag={}", supervisionEnabled ? "恢复" : "暂停", supervisionFlag);
+            RddMonitor.publish("supervision_state", Map.of("supervisionEnabled", supervisionEnabled));
+        }
+    }
+
     /** 保存所有活跃任务链到 config/numen/rdd-tasks（原子写 tmp+move）。 */
     public static void saveRuntimes() {
         if (tasksDir == null || RUNTIMES.isEmpty()) return;
@@ -243,6 +276,11 @@ public final class RddPlugin implements NumenPlugin {
      * RDD 不抢方向盘，只在将军发愣时提醒它——缺工具会让它自己调 selfcompile_request。
      */
     public static void nudge(UUID companionId, String message) {
+        if (!supervisionEnabled) {
+            // 空转止血：监督暂停时绝不注入内置 AI（兜底闸；调用方也各自判了暂停）
+            LOG.info("[rdd] 监督暂停,跳过拍醒: {}", message == null ? "" : message);
+            return;
+        }
         try {
             if (numenApi != null && companionId != null && message != null && !message.isBlank()) {
                 numenApi.enqueue(companionId, message);
