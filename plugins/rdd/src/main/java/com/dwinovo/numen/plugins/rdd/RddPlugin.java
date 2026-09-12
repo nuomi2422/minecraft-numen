@@ -100,6 +100,22 @@ public final class RddPlugin implements NumenPlugin {
             return false;
         });
         numen.contributeState(uuid -> {
+            String context = renderStateContext(uuid);
+            if (!context.equals(LAST_CONTEXT.put(uuid, context))) {
+                Map<String, Object> data = observationData(uuid);
+                data.put("source", "rdd_state_contributor");
+                data.put("target", "numen");
+                data.put("context", context);
+                RddMonitor.publish("numen_context", data);
+            }
+            return context;
+        });
+    }
+
+    private static final Map<UUID, String> LAST_CONTEXT = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Exact RDD state block returned to Numen; observation does not own task progress. */
+    private static String renderStateContext(UUID uuid) {
             if (DECOMPOSING.contains(uuid)) {
                 return "<rdd><enabled>true</enabled><active>false</active><decomposing>true</decomposing></rdd>";
             }
@@ -122,7 +138,6 @@ public final class RddPlugin implements NumenPlugin {
                     + "<current_task>" + escape(current.description()) + "</current_task>"
                     + "<done_when>" + escape(String.valueOf(current.condition())) + "</done_when>"
                     + "<subtask_status>" + chain.currentSubtaskStatus() + "</subtask_status></rdd>";
-        });
     }
 
     /** Stage-A 退化回落：今天的单遍 decompose -> bind + startCurrent（目标不被吞，行为不劣化）。 */
@@ -203,6 +218,7 @@ public final class RddPlugin implements NumenPlugin {
             }
             RUNTIMES.remove(companionId);
             BODY.remove(companionId);
+            LAST_CONTEXT.remove(companionId);
             RddGoalDriver.clear(companionId); // 目标清/重绑 → 丢掉该同伴的懒展开状态
         }
     }
@@ -301,7 +317,8 @@ public final class RddPlugin implements NumenPlugin {
         try {
             if (numenApi != null && companionId != null && message != null && !message.isBlank()) {
                 numenApi.enqueue(companionId, message);
-                Map<String, Object> data = new LinkedHashMap<>();
+                Map<String, Object> data = observationData(companionId);
+                data.put("outputId", UUID.randomUUID().toString());
                 data.put("companionId", companionId.toString());
                 data.put("message", message);
                 data.put("source", "supervisor");
@@ -325,7 +342,35 @@ public final class RddPlugin implements NumenPlugin {
         data.put("companionId", companionId.toString());
         data.put("reason", reason == null ? "state_observed" : reason);
         data.put("taskChain", runtime.snapshot());
+        data.put("assets", runtime.assets().snapshot());
+        data.put("taskId", runtime.chain().goal().id());
+        data.put("subtaskId", runtime.snapshot().get("currentSubtaskId"));
         RddMonitor.publish("taskchain_snapshot", data);
+    }
+
+    /** Correlation only; no secondary task state and no reconstructed prompt. */
+    static Map<String, Object> observationData(UUID companionId) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("companionId", companionId.toString());
+        RddRuntime rt = runtime(companionId);
+        if (rt != null) {
+            Map<String, Object> snapshot = rt.snapshot();
+            data.put("taskId", snapshot.get("goalId"));
+            data.put("primaryId", snapshot.get("currentPrimaryId"));
+            data.put("subtaskId", snapshot.get("currentSubtaskId"));
+        }
+        return data;
+    }
+
+    static void publishPlanningContext(UUID companionId, String stage, String user, String system,
+                                       com.dwinovo.numen.agent.provider.IToolSpec tool) {
+        Map<String, Object> data = observationData(companionId);
+        data.put("inputId", UUID.randomUUID().toString());
+        data.put("source", "rdd_" + stage);
+        data.put("target", "supervisor_planner");
+        data.put("context", Map.of("system", system, "user", user,
+                "tool", tool.name(), "parameters", tool.parameterSchema()));
+        RddMonitor.publish("supervisor_context", data);
     }
 
     /** XML 转义：描述/条件可能含玩家可输入的 < > & ". */

@@ -50,7 +50,7 @@ final class RddDecomposer {
      * 交回调；任何失败（无 key/LLM 错/未调工具）交 onFail。两段都在 {@code Minecraft.getInstance().execute}
      * 弹回主线程——调用方据此决定回落或走 §9 失败恢复，绝不在传输层伪造结果。
      */
-    static void llmAsk(String userContent, String system, IToolSpec tool,
+    static void llmAsk(UUID companionId, String stage, String userContent, String system, IToolSpec tool,
                        Consumer<String> onArguments, Runnable onFail) {
         INumenConfig cfg = Services.CONFIG;
         if (cfg.getApiKey() == null || cfg.getApiKey().isBlank()) {
@@ -59,6 +59,7 @@ final class RddDecomposer {
         }
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
+        RddPlugin.publishPlanningContext(companionId, stage, userContent, system, tool);
         NumenLlmClient.forEndpoint(ep)
                 .chatStreaming(List.of(new ConvoState.Msg.User(userContent)),
                         List.of(tool), system, null)
@@ -87,9 +88,10 @@ final class RddDecomposer {
         }
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
+        String userContent = decompositionPrompt(objective, RddPlugin.lastInventory(companionId), List.of());
+        RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
         NumenLlmClient.forEndpoint(ep)
-                .chatStreaming(List.of(new ConvoState.Msg.User(decompositionPrompt(
-                        objective, RddPlugin.lastInventory(companionId), List.of()))),
+                .chatStreaming(List.of(new ConvoState.Msg.User(userContent)),
                         List.of(DECOMPOSE_TOOL), SYSTEM_PROMPT, null)
                 .whenComplete((result, error) -> Minecraft.getInstance().execute(() -> {
                     if (error != null) {
@@ -133,7 +135,7 @@ final class RddDecomposer {
                 + "（如 minecraft:oak_log），condition 必须有真实可检测物品，minimum 给具体数字，body 可选。"
                 + "不要裸键/占位符/大写，不要用 \"goal\" 冒充物品。宁可少拆，不可拆出跑不动的步骤。"
                 : "";
-        RddDecomposer.llmAsk(decompositionPrompt(themeObjective, RddPlugin.lastInventory(companionId),
+        RddDecomposer.llmAsk(companionId, "stage_b", decompositionPrompt(themeObjective, RddPlugin.lastInventory(companionId),
                         completedStages == null ? List.of() : completedStages) + hint,
                 SYSTEM_PROMPT, DECOMPOSE_TOOL,
                 args -> done.accept(parse(args)),

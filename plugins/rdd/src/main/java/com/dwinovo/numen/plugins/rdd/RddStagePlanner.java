@@ -32,7 +32,7 @@ final class RddStagePlanner {
     /** 主入口：异步规划一级清单，回调收到可用的 PrimarySpec 列表（失败=空表）。 */
     static void planStages(UUID companionId, String objective, Consumer<List<PrimarySpec>> done) {
         // 注入"当前真实背包"：规划师要站在已有资产上推进，不倒退重规划已持有的装备/设施。
-        RddDecomposer.llmAsk(planningPrompt(objective, RddPlugin.lastInventory(companionId)), PLAN_SYSTEM, PLAN_TOOL,
+        RddDecomposer.llmAsk(companionId, "stage_a", planningPrompt(objective, RddPlugin.lastInventory(companionId)), PLAN_SYSTEM, PLAN_TOOL,
                 args -> done.accept(parse(args)),
                 () -> done.accept(List.of()));
     }

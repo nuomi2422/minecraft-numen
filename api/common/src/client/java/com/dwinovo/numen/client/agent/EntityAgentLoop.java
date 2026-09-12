@@ -1570,6 +1570,11 @@ public final class EntityAgentLoop {
         // (靠它抓到过一次:任务完成事件和 <current_task> 镜像在同一条请求里打架,
         //  镜像还停在旧进度,于是她照着旧数说"还差一点"。)
         Constants.LOG.debug("[numen-ctx#{}] runtime_state → {}", entityUuid, xml);
+        // Record the exact attached state at request construction, never rebuild
+        // a past prompt using today's inventory. Journal enqueue is non-blocking.
+        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "runtime_state", java.util.Map.of(
+                "companion_id", entityUuid.toString(), "turn", convo.turnCount(),
+                "source", "request_context", "target", "numen", "context", xml));
         return xml;
     }
 

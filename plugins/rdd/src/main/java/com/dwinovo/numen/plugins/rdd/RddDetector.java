@@ -85,6 +85,7 @@ final class RddDetector {
             return;
         }
         tickCounter = 0;
+        assetTick = (assetTick + 1) % 5;
         // 空转止血：每次心跳刷新监督开关（flag 文件由监测台/人写，pause=停拍醒）
         RddPlugin.refreshSupervisionFlag();
         // 重启恢复：磁盘有任务但内存无 → 加载为 RddRuntime（幂等，RECOVERING）
@@ -110,6 +111,9 @@ final class RddDetector {
             // 真实背包先扫+缓存（规划注入数据源）；缓存是女仆属性，收尾/监督态也照常更新。
             Map<String, Integer> counts = countInventory(ap);
             RddPlugin.cacheInventory(ap.getUUID(), counts);
+            // Observe even parked/failed/unexpanded chains. A control-state early
+            // return must not make the monitoring station appear frozen.
+            if (assetTick == 0) populateAssets(ap, rt, chain.currentSubtask(), counts);
             // 监督/收尾态不由检测驱动。
             if (ps == PrimaryGoalStatus.AWAITING_SUPERVISOR
                     || ps == PrimaryGoalStatus.REPLANNING
@@ -230,10 +234,6 @@ final class RddDetector {
                 return;
             }
             // 资产 populate：把背包物品写进 AssetRegistry（节流），rdd_status 据此报真实资产。
-            if (++assetTick % 5 == 0) {
-                populateAssets(ap, rt, current, counts);
-                RddPlugin.publishTaskSnapshot(ap.getUUID(), "periodic_observation");
-            }
             // 卡死监督：资产指纹（背包+位置）连续未变化 → 判 STALLED 并拍醒将军。
             // 空转止血：暂停监督 → 跳过卡死检测与身体驱动(不 nudge / 不自动重派)，只留资产检测推进。
             if (RddPlugin.supervisionEnabled() && trackStall(ap, rt, current)) {
@@ -252,6 +252,8 @@ final class RddDetector {
         } catch (RuntimeException e) {
             // 检测失败不能拖垮服务端 tick。
             LOG.warn("[rdd] 检测 tick 异常: {}", e.toString());
+        } finally {
+            if (assetTick == 0) RddPlugin.publishTaskSnapshot(ap.getUUID(), "periodic_observation");
         }
     }
 
@@ -377,14 +379,19 @@ final class RddDetector {
     private void populateAssets(NumenPlayer ap, RddRuntime rt, Subtask current, Map<String, Integer> counts) {
         try {
             String envId = ap.level().dimension().location().toString();
-            for (Map.Entry<String, Integer> e : counts.entrySet()) {
+            Map<String, Integer> observed = new HashMap<>(counts);
+            // A consumed item is an observed zero, not a permanently held asset.
+            for (var entry : rt.assets().snapshot()) {
+                if ("inventory_scan".equals(entry.observation().type())) observed.putIfAbsent(entry.assetId(), 0);
+            }
+            for (Map.Entry<String, Integer> e : observed.entrySet()) {
                 Map<String, Object> value = new HashMap<>();
                 value.put("count", e.getValue());
                 Observation obs = new Observation(
                         "obs-" + e.getKey().hashCode() + "-" + System.nanoTime(),
                         "inventory_scan", "rdd_detector", envId,
                         System.currentTimeMillis(), value);
-                rt.assets().apply(obs, e.getKey(), AssetScope.GLOBAL, current.id());
+                rt.assets().apply(obs, e.getKey(), AssetScope.GLOBAL, current == null ? null : current.id());
             }
         } catch (RuntimeException ex) {
             // 资产 populate 失败不影响检测主流程
@@ -492,13 +499,15 @@ final class RddDetector {
         RddPlugin.publishTaskSnapshot(ap.getUUID(), "subtask_completed");
         TaskChain chain = rt.chain();
         if (chain.primaryStatus() == PrimaryGoalStatus.AWAITING_SUPERVISOR) {
+            PrimaryGoal completedPrimary = chain.currentPrimary();
             rt.applySupervisor(new SupervisorDecision(
                     SupervisorDecisionType.CONFIRM,
                     chain.currentPrimary().id(),
                     "all hard-coded conditions met in the real world"));
-            LOG.info("[rdd] 一级目标完成: {}", chain.currentPrimary().description());
+            LOG.info("[rdd] 一级目标完成: {}", completedPrimary.description());
             RddMonitor.publish("goal_completed", Map.of(
-                    "goal", chain.currentPrimary().id(), "description", chain.currentPrimary().description()));
+                    "goal", completedPrimary.id(), "description", completedPrimary.description(),
+                    "companionId", ap.getUUID().toString()));
             RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_completed");
             RddPlugin.clearBody(ap.getUUID());
         }
