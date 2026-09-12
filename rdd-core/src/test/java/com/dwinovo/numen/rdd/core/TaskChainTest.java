@@ -243,4 +243,20 @@ class TaskChainTest {
         assertTrue(restored.applyHardCodedResult("s1", true));
         assertEquals(PrimaryGoalStatus.AWAITING_SUPERVISOR, restored.primaryStatus());
     }
+
+    @Test void restoreRejectsOutOfRangePointer() {
+        var primary = new PrimaryGoal("p1", "mine", java.util.List.of(
+                Subtask.hardCoded("s1", "get stone", Map.of("item", "stone"))));
+        var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(primary)));
+        String corrupt = chain.toJson().replace("\"subtaskIndex\":0", "\"subtaskIndex\":9");
+        assertThrows(IllegalArgumentException.class, () -> TaskChain.fromJson(corrupt));
+    }
+
+    @Test void restoreRejectsMissingStatusEntry() {
+        var primary = new PrimaryGoal("p1", "mine", java.util.List.of(
+                Subtask.hardCoded("s1", "get stone", Map.of("item", "stone"))));
+        var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(primary)));
+        String corrupt = chain.toJson().replace("\"s1\":\"PENDING\"", "");
+        assertThrows(IllegalArgumentException.class, () -> TaskChain.fromJson(corrupt));
+    }
 }

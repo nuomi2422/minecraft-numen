@@ -282,12 +282,17 @@ public final class TaskChain {
         Goal goal = GSON.fromJson(goalObj, Goal.class);
         TaskChain chain = new TaskChain(goal);
         JsonObject st = o.getAsJsonObject("statuses");
+        if (st == null) {
+            throw new IllegalArgumentException("restored status table missing");
+        }
+        chain.statuses.clear();
         for (String k : st.keySet()) {
             chain.statuses.put(k, SubtaskStatus.valueOf(st.get(k).getAsString()));
         }
         chain.primaryIndex = o.get("primaryIndex").getAsInt();
         chain.subtaskIndex = o.get("subtaskIndex").getAsInt();
         chain.primaryStatus = PrimaryGoalStatus.valueOf(o.get("primaryStatus").getAsString());
+        chain.validateRestoredState();
         return chain;
     }
 
@@ -296,4 +301,34 @@ public final class TaskChain {
         primaryStatus = PrimaryGoalStatus.AWAITING_SUPERVISOR;
     }
     private void requireCurrent(String id) { if (id == null || !currentSubtask().id().equals(id)) throw new IllegalArgumentException("stale subtask: " + id); }
+
+    /** Reject corrupt handoff state before it can reach a live executor or monitor. */
+    private void validateRestoredState() {
+        if (primaryIndex < 0 || primaryIndex >= goal.primaryGoals().size()) {
+            throw new IllegalArgumentException("primary index out of range: " + primaryIndex);
+        }
+        Set<String> expected = new LinkedHashSet<>();
+        for (PrimaryGoal primary : goal.primaryGoals()) {
+            for (Subtask subtask : primary.subtasks()) {
+                if (!expected.add(subtask.id())) {
+                    throw new IllegalArgumentException("duplicate subtask id in restored goal: " + subtask.id());
+                }
+            }
+        }
+        if (!statuses.keySet().equals(expected)) {
+            Set<String> missing = new LinkedHashSet<>(expected);
+            missing.removeAll(statuses.keySet());
+            Set<String> unknown = new LinkedHashSet<>(statuses.keySet());
+            unknown.removeAll(expected);
+            throw new IllegalArgumentException("restored status table mismatch; missing=" + missing + ", unknown=" + unknown);
+        }
+        PrimaryGoal current = goal.primaryGoals().get(primaryIndex);
+        if (current.unexpanded()) {
+            if (subtaskIndex != 0) {
+                throw new IllegalArgumentException("unexpanded primary must have subtask index 0: " + subtaskIndex);
+            }
+        } else if (subtaskIndex < 0 || subtaskIndex >= current.subtasks().size()) {
+            throw new IllegalArgumentException("subtask index out of range: " + subtaskIndex);
+        }
+    }
 }
