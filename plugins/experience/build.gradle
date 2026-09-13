@@ -17,7 +17,13 @@ processResources {
 dependencies {
     // Experience Memory 独立安装：把纯 JVM 核心内嵌进插件 jar，公共契约不含 NUMEN/MC 类型。
     implementation project(':experience-core')
+    // 规划知识适配器(PlanningKnowledge/GuideKnowledge/ExperienceKnowledgeSource)的纯逻辑单测。
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
+
+test { useJUnitPlatform() }
 
 // numen-plugin 约定只暴露宿主 API（compileOnly）。经验运行时必须随插件一起走，
 // 否则只能在开发类路径里工作、进真游戏缺类。
