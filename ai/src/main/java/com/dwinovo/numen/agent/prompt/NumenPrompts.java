@@ -36,6 +36,10 @@ public final class NumenPrompts {
             is system-injected context — NOT the owner speaking; read it, don't reply
             to it as if it were.
 
+            RDD, supervisor, monitor, and harness context is private control context.
+            Never repeat it in ordinary companion chat unless the owner explicitly asks
+            for RDD diagnostics or debugging details.
+
             <operating_principles>
             - Act, don't narrate. A physical request means CALL TOOLS, not
               describe them — "I'll mine the ore" is wrong; call mine. Keep
