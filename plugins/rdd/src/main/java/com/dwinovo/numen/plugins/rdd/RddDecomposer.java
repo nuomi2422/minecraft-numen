@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.agent.llm.ConvoState;
 import com.dwinovo.numen.agent.llm.LlmEndpoint;
+import com.dwinovo.numen.agent.llm.LlmObservation;
 import com.dwinovo.numen.agent.llm.NumenLlmClient;
 import com.dwinovo.numen.agent.provider.AssistantTurn;
 import com.dwinovo.numen.agent.provider.IToolSpec;
@@ -62,7 +63,8 @@ final class RddDecomposer {
         RddPlugin.publishPlanningContext(companionId, stage, userContent, system, tool);
         NumenLlmClient.forEndpoint(ep)
                 .chatStreaming(List.of(new ConvoState.Msg.User(userContent)),
-                        List.of(tool), system, null)
+                        List.of(tool), system, null,
+                        new LlmObservation("supervisor", companionId.toString(), stage, RddMonitor::publish))
                 .whenComplete((result, error) -> Minecraft.getInstance().execute(() -> {
                     if (error != null) {
                         onFail.run();
@@ -92,7 +94,8 @@ final class RddDecomposer {
         RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
         NumenLlmClient.forEndpoint(ep)
                 .chatStreaming(List.of(new ConvoState.Msg.User(userContent)),
-                        List.of(DECOMPOSE_TOOL), SYSTEM_PROMPT, null)
+                        List.of(DECOMPOSE_TOOL), SYSTEM_PROMPT, null,
+                        new LlmObservation("supervisor", companionId.toString(), "fallback", RddMonitor::publish))
                 .whenComplete((result, error) -> Minecraft.getInstance().execute(() -> {
                     if (error != null) {
                         LOG.warn("[rdd] 分解 LLM 调用失败，回落占位链: {}", error.toString());

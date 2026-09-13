@@ -147,7 +147,15 @@ public final class HttpLlmTransport {
      */
     public CompletableFuture<Void> postSse(String url, String apiKey, JsonObject body,
                                             Consumer<JsonObject> chunkHandler) {
-        return postSseAttempt(url, apiKey, body, chunkHandler, 0);
+        return postSse(url, apiKey, body, chunkHandler, null);
+    }
+
+    /** Called only after sendAsync accepted an attempt, including automatic retries.
+     * This proves local dispatch, not receipt or acceptance by the upstream service. */
+    public CompletableFuture<Void> postSse(String url, String apiKey, JsonObject body,
+                                            Consumer<JsonObject> chunkHandler,
+                                            java.util.function.BiConsumer<Integer, String> onDispatch) {
+        return postSseAttempt(url, apiKey, body, chunkHandler, 0, onDispatch);
     }
 
     /**
@@ -163,7 +171,8 @@ public final class HttpLlmTransport {
      * connection hangs the agent loop forever.
      */
     private CompletableFuture<Void> postSseAttempt(String url, String apiKey, JsonObject body,
-                                                   Consumer<JsonObject> chunkHandler, int attempt) {
+                                                   Consumer<JsonObject> chunkHandler, int attempt,
+                                                   java.util.function.BiConsumer<Integer, String> onDispatch) {
         String requestId = nextRequestId() + (attempt > 0 ? "r" + attempt : "");
         String bodyStr = body.toString();
         long t0 = System.nanoTime();
@@ -186,6 +195,9 @@ public final class HttpLlmTransport {
         };
 
         CompletableFuture<HttpResponse<String>> sendFuture = client.sendAsync(request, handler);
+        if (onDispatch != null) {
+            try { onDispatch.accept(attempt + 1, requestId); } catch (RuntimeException ignored) {}
+        }
         // Idle watchdog: ANY received line (data, keepalive comment, blank) counts as
         // activity. A stream silent past the threshold is a half-dead connection —
         // cancel the exchange; the failure surfaces below tagged as idle.
@@ -212,7 +224,7 @@ public final class HttpLlmTransport {
                 // delivered chunk is the turn layer's decision.
                 if (attempt < MAX_RETRIES && chunkCount.get() == 0) {
                     return retryAfterDelay(url, apiKey, body, chunkHandler, attempt,
-                            computeBackoffMs(attempt), requestId, String.valueOf(cause));
+                            computeBackoffMs(attempt), requestId, String.valueOf(cause), onDispatch);
                 }
                 AiLog.LOG.warn("[numen-http][{}] ✗ {} in {}ms ({} chunks)",
                         requestId, cause, elapsedMs, chunkCount.get());
@@ -235,7 +247,7 @@ public final class HttpLlmTransport {
                         .filter(v -> v > 0 && v <= 60_000)
                         .orElse(computeBackoffMs(attempt));
                 return retryAfterDelay(url, apiKey, body, chunkHandler, attempt,
-                        delay, requestId, "HTTP " + status);
+                        delay, requestId, "HTTP " + status, onDispatch);
             }
             return CompletableFuture.<Void>failedFuture(new LlmHttpException(status, body2));
         }).thenCompose(f -> f);
@@ -243,11 +255,12 @@ public final class HttpLlmTransport {
 
     private CompletableFuture<Void> retryAfterDelay(String url, String apiKey, JsonObject body,
                                                     Consumer<JsonObject> chunkHandler, int attempt,
-                                                    long delayMs, String requestId, String reason) {
+                                                    long delayMs, String requestId, String reason,
+                                                    java.util.function.BiConsumer<Integer, String> onDispatch) {
         AiLog.LOG.warn("[numen-http][{}] retrying in {}ms (attempt {}/{}) — {}",
                 requestId, delayMs, attempt + 1, MAX_RETRIES, reason);
         return CompletableFuture.supplyAsync(
-                        () -> postSseAttempt(url, apiKey, body, chunkHandler, attempt + 1),
+                        () -> postSseAttempt(url, apiKey, body, chunkHandler, attempt + 1, onDispatch),
                         CompletableFuture.delayedExecutor(delayMs, java.util.concurrent.TimeUnit.MILLISECONDS))
                 .thenCompose(f -> f);
     }

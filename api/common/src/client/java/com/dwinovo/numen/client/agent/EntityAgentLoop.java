@@ -688,7 +688,7 @@ public final class EntityAgentLoop {
                                         target, facts, since))),
                         List.of(),
                         com.dwinovo.numen.agent.goal.GoalPrompts.evaluatorSystem(),
-                        null)
+                        null, observeRequest("goal_judging"))
                 .whenComplete((res, err) -> Minecraft.getInstance().execute(
                         () -> finishJudging(gen, target, res, err)));
     }
@@ -1136,6 +1136,11 @@ public final class EntityAgentLoop {
                 com.dwinovo.numen.agent.llm.ProviderLibrary.instance().resolve(providerEntryId));
     }
 
+    private com.dwinovo.numen.agent.llm.LlmObservation observeRequest(String phase) {
+        return new com.dwinovo.numen.agent.llm.LlmObservation("numen", entityUuid.toString(), phase,
+                (type, data) -> com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", type, data));
+    }
+
     /** The provider-library entry id this companion talks through, or null (= global). */
     public String providerEntryId() {
         return providerEntryId;
@@ -1357,7 +1362,8 @@ public final class EntityAgentLoop {
         // 头顶挂思考气泡:从发出请求到回应落地的整个空窗都有反馈
         NumenLlmClient llm = client();
         llm.chatStreaming(snapshot, tools, systemPrompt,
-                        presenter.tapForUi(gen, vt.sink(), llm.provider()::extractReasoningDelta))
+                        presenter.tapForUi(gen, vt.sink(), llm.provider()::extractReasoningDelta),
+                        observeRequest("execution"))
                 .whenComplete((res, err) -> {
                     vt.finish().run();
                     bounceBackToMain(gen, res, err);
@@ -1418,7 +1424,7 @@ public final class EntityAgentLoop {
         client().chatStreaming(request, List.of(), COMPACT_SYSTEM_PROMPT, chunk -> {
             String delta = com.dwinovo.numen.client.voice.VoicePipeline.extractContentDelta(chunk);
             if (delta != null && !delta.isEmpty()) compactChars.addAndGet(delta.length());
-        }).whenComplete((res, err) -> Minecraft.getInstance().execute(
+        }, observeRequest("compaction")).whenComplete((res, err) -> Minecraft.getInstance().execute(
                 () -> finishCompaction(gen, auto, startMs, kept, res, err)));
     }
 
@@ -1885,7 +1891,8 @@ public final class EntityAgentLoop {
                 NumenLlmClient llm2 = client();
                 llm2.chatStreaming(modelContextSnapshot(), ToolRegistry.resident(),
                                 composeSystemPrompt(),
-                                presenter.tapForUi(gen2, vt2.sink(), llm2.provider()::extractReasoningDelta))
+                                presenter.tapForUi(gen2, vt2.sink(), llm2.provider()::extractReasoningDelta),
+                                observeRequest("execution_retry"))
                         .whenComplete((r2, e2) -> {
                             vt2.finish().run();
                             bounceBackToMain(gen2, r2, e2);

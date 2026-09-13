@@ -23,7 +23,7 @@ public final class RddMonitor {
 
     private RddMonitor() {}
 
-    public static void publish(String type, Map<String, ?> data) {
+    public static synchronized void publish(String type, Map<String, ?> data) {
         try {
             Path dir = FMLPaths.GAMEDIR.get().resolve("config").resolve("numen").resolve("monitor");
             Files.createDirectories(dir);

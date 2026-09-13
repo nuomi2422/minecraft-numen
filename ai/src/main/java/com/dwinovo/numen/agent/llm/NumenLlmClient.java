@@ -164,6 +164,15 @@ public final class NumenLlmClient {
                                                        Collection<? extends IToolSpec> tools,
                                                        String systemPrompt,
                                                        Consumer<JsonObject> onChunk) {
+        return chatStreaming(messages, tools, systemPrompt, onChunk, null);
+    }
+
+    /** Opt-in request-local trace; existing consumers retain the same execution behaviour. */
+    public CompletableFuture<ChatResult> chatStreaming(List<ConvoState.Msg> messages,
+                                                       Collection<? extends IToolSpec> tools,
+                                                       String systemPrompt,
+                                                       Consumer<JsonObject> onChunk,
+                                                       LlmObservation observation) {
         // -- 1. Build wire-format messages and tool list via provider.
         List<JsonObject> wire = new ArrayList<>(messages.size());
         for (ConvoState.Msg m : messages) {
@@ -198,17 +207,64 @@ public final class NumenLlmClient {
         // -- 3. Stream the response into an accumulator.
         long t0 = System.nanoTime();
         StreamAccumulator acc = new StreamAccumulator();
-        return transport.postSse(fullUrl, apiKey, body, chunk -> {
-            try {
-                provider.accumulateChunk(chunk, acc);
-                if (onChunk != null) onChunk.accept(chunk);
-            } catch (RuntimeException ex) {
-                AiLog.LOG.warn("[numen-llm] accumulator failed on chunk: {}", ex.getMessage());
-            }
-        }).thenApply(v -> {
+        CompletableFuture<Void> pending;
+        try {
+            pending = transport.postSse(fullUrl, apiKey, body, chunk -> {
+                try {
+                    provider.accumulateChunk(chunk, acc);
+                    if (onChunk != null) onChunk.accept(chunk);
+                } catch (RuntimeException ex) {
+                    AiLog.LOG.warn("[numen-llm] accumulator failed on chunk: {}", ex.getMessage());
+                }
+            }, (attempt, transportId) -> {
+                if (observation != null) observation.publish("llm_request", model, java.util.Map.of(
+                        "status", "dispatched", "attempt", attempt, "transportRequestId", transportId,
+                        "provider", provider.name(), "request", body), apiKey);
+            });
+        } catch (RuntimeException error) {
+            pending = CompletableFuture.failedFuture(error);
+        }
+        return pending.thenApply(v -> {
             AssistantTurn turn = provider.finalizeStream(acc);
             logCallSummary(t0, acc, turn);
             return new ChatResult(turn, provider.usage(acc.usage));
+        }).whenComplete((result, error) -> {
+            if (observation == null) return;
+            try {
+            if (error != null) {
+                Throwable cause = error;
+                while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null)
+                    cause = cause.getCause();
+                // No raw upstream error body/URL: either may echo credentials or private reasoning.
+                java.util.Map<String, Object> failure = new java.util.LinkedHashMap<>();
+                failure.put("status", "failed");
+                failure.put("errorType", cause.getClass().getSimpleName());
+                if (cause instanceof com.dwinovo.numen.agent.http.LlmHttpException http)
+                    failure.put("httpStatus", http.statusCode());
+                observation.publish("llm_failure", model, failure, apiKey);
+            } else {
+                JsonObject response = new JsonObject();
+                // Capture the visible stream before LlmToolCall normalizes malformed arguments.
+                // Invalid output is valuable diagnostic evidence, not an empty-object success.
+                response.addProperty("content", acc.content.toString());
+                response.addProperty("finish_reason", acc.finishReason);
+                JsonArray calls = new JsonArray();
+                for (StreamAccumulator.ToolCallBuilder call : acc.toolCalls.values()) {
+                    JsonObject item = new JsonObject();
+                    item.addProperty("id", call.id);
+                    item.addProperty("name", call.name);
+                    item.addProperty("arguments", call.arguments.toString());
+                    calls.add(item);
+                }
+                response.add("tool_calls", calls);
+                observation.publish("llm_response", model, java.util.Map.of(
+                        "status", "completed", "response", response,
+                        "responseStage", "accumulated_visible_stream",
+                        "promptTokens", result.promptTokens(), "totalTokens", result.totalTokens()), apiKey);
+            }
+            } catch (RuntimeException ignored) {
+                // Formatting/copying is observation-only too: never change the returned future.
+            }
         });
     }
 
