@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import net.neoforged.neoforge.server.ServerLifecycleHooks;
 
 /**
  * 宿主目标驱动器——懒展开"展开权"的所有者（2026-09-06 架构红线）。
@@ -38,6 +39,7 @@ final class RddGoalDriver {
         long cooldownUntil;
         boolean inFlight;
         boolean escalated;
+        Object request;
     }
 
     private RddGoalDriver() {}
@@ -47,7 +49,7 @@ final class RddGoalDriver {
      * 避免服务端每 tick 猛开 LLM。调用方绝不该借此改任何规划结构。
      */
     static void needExpansion(UUID companionId) {
-        if (companionId == null) {
+        if (companionId == null || RddPlugin.decomposing(companionId)) {
             return;
         }
         try {
@@ -64,6 +66,7 @@ final class RddGoalDriver {
             int attempt;
             boolean fire;
             boolean escalatedNow;
+            Object request;
             synchronized (st) {
                 String pid = cur.id();
                 if (!pid.equals(st.primaryId)) { // 换到新一级 → 重置预算/冷却/在途
@@ -79,9 +82,11 @@ final class RddGoalDriver {
                 if (fire) {
                     attempt = st.attempts;
                     st.inFlight = true;
+                    st.request = new Object();
                 } else {
                     attempt = 0;
                 }
+                request = st.request;
                 // 预算耗尽且还没 escalate → 本次 tick 升 escalate（停靠，只报一次）
                 escalatedNow = !st.escalated && RddExpansionPolicy.budgetExhausted(st.attempts);
                 if (escalatedNow) {
@@ -104,8 +109,15 @@ final class RddGoalDriver {
                     "primary", cur.id(), "theme", cur.description(), "attempt", attempt + 1));
             // 线性推进：当前一级之前的所有一级都已达成 → 注入给 Stage-B，避免它倒退重规划已完成的资产。
             List<String> completed = completedStagesBefore(chain);
+            var server = ServerLifecycleHooks.getCurrentServer();
+            if (server == null) {
+                st.inFlight = false;
+                return;
+            }
+            var ticket = RddPlugin.planningTicket(companionId);
             RddDecomposer.decomposeSpecs(companionId, cur.description(), attempt, completed,
-                    specs -> finish(companionId, specs));
+                    specs -> RddPlugin.onServer(server, ticket,
+                            () -> finish(companionId, rt, st, cur.id(), request, specs)));
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 展开驱动异常: {}", ex.toString());
         }
@@ -130,18 +142,19 @@ final class RddGoalDriver {
     }
 
     /** Stage-B 结果回收（MC 线程）：注入或计失败；任何"不可用"都算失败，绝不注入占位假二级。 */
-    private static void finish(UUID companionId, List<SubtaskSpec> specs) {
-        RddRuntime rt = RddPlugin.runtime(companionId);
-        State st = STATES.get(companionId);
-        if (rt == null || st == null) {
+    private static void finish(UUID companionId, RddRuntime rt, State st, String pid,
+                               Object request, List<SubtaskSpec> specs) {
+        // Validate the captured owner before touching a replacement's inFlight or retry budget.
+        if (RddPlugin.runtime(companionId) != rt || STATES.get(companionId) != st
+                || !rt.chain().currentPrimary().id().equals(pid)) {
             return;
         }
         TaskChain chain = rt.chain();
-        String pid = chain.currentPrimary().id();
         boolean ok = false;
         boolean escalatedNow;
         String failure = null;
         synchronized (st) {
+            if (!st.inFlight || st.request != request) return;
             st.inFlight = false;
             if (st.escalated) {
                 return; // 已被另一路 escalate（本路结果作废）
@@ -205,5 +218,10 @@ final class RddGoalDriver {
         if (companionId != null) {
             STATES.remove(companionId);
         }
+    }
+
+    /** Server stopped: no in-flight expansion or cooldown belongs to the next world. */
+    static void clearAll() {
+        STATES.clear();
     }
 }

@@ -8,6 +8,8 @@ import com.dwinovo.numen.rdd.core.RddChainFactory;
 import com.dwinovo.numen.rdd.core.RddRuntime;
 import com.dwinovo.numen.rdd.core.TaskChain;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.MinecraftServer;
+import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,6 +31,11 @@ public final class RddPlugin implements NumenPlugin {
     private static final Set<UUID> DECOMPOSING = ConcurrentHashMap.newKeySet();
     private static final Map<UUID, BodyState> BODY = new ConcurrentHashMap<>();
     private static final AtomicLong BODY_CALLS = new AtomicLong();
+    private static final RddCallbackGuard CALLBACKS = new RddCallbackGuard();
+    static {
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+                (net.neoforged.neoforge.event.server.ServerStoppedEvent event) -> clearWorldState());
+    }
     /** assist 协助模式下暂停自动工具提交(防双驾驶);默认 true = RDD 可自动提交。 */
     private static volatile boolean bodySubmissionEnabled = true;
     /** 空转止血：是否允许"监督拍醒"主动干预（nudge/自动重试/失败升级/重派身体）。
@@ -58,43 +65,16 @@ public final class RddPlugin implements NumenPlugin {
             if (uuid == null || objective == null || objective.isBlank()) {
                 return false;
             }
-            DECOMPOSING.add(uuid);
-            BODY.remove(uuid);
-            RddMonitor.publish("supervisor_input", Map.of(
-                    "companionId", uuid.toString(), "objective", objective,
-                    "source", "goal_sink", "target", "rdd"));
-            // 两段懒展开：Stage-A 先把整条目标规划成 N 个未展开一级(阶段主题)；失败回落单遍分解(行为不劣化)。
-            RddStagePlanner.planStages(uuid, objective, stages -> {
-                if (!stages.isEmpty()) {
-                    try {
-                        remove(uuid);
-                        bind(uuid, RddChainFactory.fromStages(uuid, objective, stages));
-                        RddMonitor.publish("goal_staged", Map.of(
-                                "companionId", uuid.toString(), "objective", objective,
-                                "stages", stages.size()));
-                        RddPlugin.publishTaskSnapshot(uuid, "goal_staged");
-                        // 首级未展开：不 startCurrent(会抛)。懒展开由 Detector 上报 + RddGoalDriver 接手。
-                        LOG.info("[rdd] Stage-A 规划 {} 级已绑定 {}:{}", stages.size(), uuid, objective);
-                    } catch (RuntimeException ex) {
-                        LOG.warn("[rdd] Stage-A 装配失败，回落单遍分解: {}", ex.toString());
-                        decomposeSinglePass(uuid, objective); // DECOMPOSING 由单遍回调释放
-                        return;
-                    } finally {
-                        DECOMPOSING.remove(uuid);
-                    }
-                    return;
-                }
-                // Stage-A 退化(无 key/LLM 失败/空/全不可执行) -> 回落今天的单遍 decompose
-                decomposeSinglePass(uuid, objective);
-            });
-            LOG.info("[rdd] 接管目标，Stage-A 规划中 {}:{}", uuid, objective);
+            MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+            if (server == null) return false;
+            RddCallbackGuard.Ticket ticket = CALLBACKS.replace(uuid);
+            onServer(server, ticket, () -> beginPlanning(server, ticket, objective));
             return true;
         });
         com.dwinovo.numen.agent.goal.GoalSinks.registerClear((uuid, reason) -> {
             if (uuid != null) {
-                DECOMPOSING.remove(uuid);
                 remove(uuid);
-                LOG.info("[rdd] 目标清掉,移除任务链 {}", uuid);
+                LOG.info("[rdd] 已接收目标清除请求 {}", uuid);
                 return true;
             }
             return false;
@@ -113,6 +93,50 @@ public final class RddPlugin implements NumenPlugin {
     }
 
     private static final Map<UUID, String> LAST_CONTEXT = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Disk handoffs survive; in-flight planning and cached world observations do not. */
+    private static void clearWorldState() {
+        CALLBACKS.clear(() -> {
+            DECOMPOSING.clear();
+            RddGoalDriver.clearAll();
+            BODY.clear();
+            RUNTIMES.clear();
+            LAST_CONTEXT.clear();
+            LAST_INVENTORY.clear();
+        });
+    }
+
+    private static void beginPlanning(MinecraftServer server, RddCallbackGuard.Ticket ticket, String objective) {
+        UUID uuid = ticket.companionId();
+        DECOMPOSING.add(uuid);
+        BODY.remove(uuid);
+        RddGoalDriver.clear(uuid);
+        RddMonitor.publish("supervisor_input", Map.of(
+                "companionId", uuid.toString(), "objective", objective,
+                "source", "goal_sink", "target", "rdd"));
+        RddStagePlanner.planStages(uuid, objective, stages -> onServer(server, ticket, () -> {
+            if (!stages.isEmpty()) {
+                try {
+                    bindCurrent(uuid, RddChainFactory.fromStages(uuid, objective, stages));
+                    RddMonitor.publish("goal_staged", Map.of(
+                            "companionId", uuid.toString(), "objective", objective, "stages", stages.size()));
+                    publishTaskSnapshot(uuid, "goal_staged");
+                    // First primary stays unexpanded; Detector reports the boundary to GoalDriver.
+                    LOG.info("[rdd] Stage-A 规划 {} 级已绑定 {}:{}", stages.size(), uuid, objective);
+                } catch (RuntimeException ex) {
+                    LOG.warn("[rdd] Stage-A 装配失败，回落单遍分解: {}", ex.toString());
+                    DECOMPOSING.add(uuid);
+                    decomposeSinglePass(server, ticket, objective);
+                    return;
+                }
+                DECOMPOSING.remove(uuid);
+                return;
+            }
+            // Fallback belongs to this submission too; a later /goal invalidates both callbacks.
+            decomposeSinglePass(server, ticket, objective);
+        }));
+        LOG.info("[rdd] 接管目标，Stage-A 规划中 {}:{}", uuid, objective);
+    }
 
     /** Exact RDD state block returned to Numen; observation does not own task progress. */
     private static String renderStateContext(UUID uuid) {
@@ -141,11 +165,11 @@ public final class RddPlugin implements NumenPlugin {
     }
 
     /** Stage-A 退化回落：今天的单遍 decompose -> bind + startCurrent（目标不被吞，行为不劣化）。 */
-    private static void decomposeSinglePass(UUID uuid, String objective) {
-        RddDecomposer.decompose(uuid, objective, goal -> {
+    private static void decomposeSinglePass(MinecraftServer server, RddCallbackGuard.Ticket ticket, String objective) {
+        UUID uuid = ticket.companionId();
+        RddDecomposer.decompose(uuid, objective, goal -> onServer(server, ticket, () -> {
             try {
-                remove(uuid);
-                bind(uuid, goal);
+                bindCurrent(uuid, goal);
                 RddRuntime runtime = runtime(uuid);
                 if (runtime != null) {
                     runtime.startCurrent();
@@ -154,16 +178,26 @@ public final class RddPlugin implements NumenPlugin {
                 LOG.info("[rdd] 目标分解完成并启动 {}:{}", uuid, goal.description());
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 分解结果启动失败，保留原生回落: {}", ex.toString());
-                remove(uuid);
+                removeCurrent(uuid);
             } finally {
                 DECOMPOSING.remove(uuid);
             }
-        });
+        }));
     }
 
     public static void bind(UUID companionId, Goal goal) {
         if (companionId == null || goal == null) throw new IllegalArgumentException("companion and goal required");
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server == null || !server.isSameThread()) throw new IllegalStateException("RDD bind requires server thread");
+        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+        onServer(server, ticket, () -> bindCurrent(companionId, goal));
+    }
+
+    /** Apply a planning result without invalidating that result's own goal generation. */
+    private static void bindCurrent(UUID companionId, Goal goal) {
         BODY.remove(companionId);
+        DECOMPOSING.remove(companionId);
+        RddGoalDriver.clear(companionId);
         RUNTIMES.put(companionId, new RddRuntime(new TaskChain(goal), new AssetRegistry()));
         saveRuntimes();
         publishTaskSnapshot(companionId, "task_bound");
@@ -211,16 +245,48 @@ public final class RddPlugin implements NumenPlugin {
     }
 
     public static void remove(UUID companionId) {
-        if (companionId != null) {
-            RddRuntime previous = RUNTIMES.get(companionId);
-            if (previous != null) {
-                publishTaskSnapshot(companionId, "task_removed");
-            }
-            RUNTIMES.remove(companionId);
-            BODY.remove(companionId);
-            LAST_CONTEXT.remove(companionId);
-            RddGoalDriver.clear(companionId); // 目标清/重绑 → 丢掉该同伴的懒展开状态
+        if (companionId == null) return;
+        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server != null) onServer(server, ticket, () -> removeCurrent(companionId));
+    }
+
+    private static void removeCurrent(UUID companionId) {
+        if (companionId == null) return;
+        try {
+            RddTaskHandoff.remove(tasksDir, companionId, () -> {
+                DECOMPOSING.remove(companionId);
+                RddRuntime previous = RUNTIMES.get(companionId);
+                if (previous != null) {
+                    publishTaskSnapshot(companionId, "task_removed");
+                }
+                RUNTIMES.remove(companionId);
+                BODY.remove(companionId);
+                LAST_CONTEXT.remove(companionId);
+                RddGoalDriver.clear(companionId); // 目标清/重绑 → 丢掉该同伴的懒展开状态
+                LOG.info("[rdd] 已清除任务及磁盘交接 {}", companionId);
+            });
+        } catch (IOException ex) {
+            // Do not report a successful removal while restoreRuntimes can still reload the file.
+            LOG.error("[rdd] 清除磁盘任务失败，内存任务保留，需处理文件后重试清除 {}: {}", companionId, ex.toString());
+            RddMonitor.publish("task_clear_failed", Map.of(
+                    "companionId", companionId.toString(), "reason", ex.toString(),
+                    "memoryRetained", true));
         }
+    }
+
+    static RddCallbackGuard.Ticket planningTicket(UUID companionId) {
+        return CALLBACKS.current(companionId);
+    }
+
+    /** Revalidate on the original server: an old world's completion never enters a new world. */
+    static void onServer(MinecraftServer server, RddCallbackGuard.Ticket ticket, Runnable callback) {
+        CALLBACKS.dispatch(ticket, action -> {
+            if (server.isSameThread()) action.run();
+            else server.execute(action);
+        }, () -> {
+            if (ServerLifecycleHooks.getCurrentServer() == server) callback.run();
+        });
     }
 
     /** RDD 是否允许自动提交身体工具。assist 协助模式下 false(工具执行交还 NUMEN)。 */

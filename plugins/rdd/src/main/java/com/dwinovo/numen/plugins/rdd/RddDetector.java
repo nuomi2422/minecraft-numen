@@ -278,15 +278,15 @@ final class RddDetector {
         }
         int unchanged = st.unchangedTicks() + 1;
         if (unchanged >= STALL_AFTER_TICKS) {
-            // Level 3 卡死累计：AI 反复拍醒仍无目标资产进展 → 判定能力不足
+            // Repeated stalls are an observation, not proof of missing software capability.
             StallCount sc = stallCounts.get(ap.getUUID());
             int total = (sc != null && sc.subtaskId().equals(current.id())) ? sc.total() + 1 : 1;
             stallCounts.put(ap.getUUID(), new StallCount(current.id(), total));
             if (total >= CAPABILITY_GAP_AFTER_STALLS) {
-                // Level 3：反复卡死 = 能力不足 → 引导自编译（缺工具调 selfcompile_request 生成）
-                RddPlugin.nudge(ap.getUUID(), "这个目标反复卡住，很可能缺一个专门工具。如果你缺工具，现在就调 selfcompile_request 请求生成它，然后告诉我。");
-                RddMonitor.publish("subtask_capability_gap", Map.of(
-                        "subtask", current.id(), "reason", "repeated stalls (" + total + "), capability gap suspected"));
+                RddPlugin.nudge(ap.getUUID(), "这个目标反复没有进展。先核对真实工具结果、附近资源、路径、装备和模型连接；不要仅凭重复失败推断缺软件工具，只有确认能力缺口后再考虑自编译。");
+                RddMonitor.publish("subtask_stall_escalated", Map.of(
+                        "companionId", ap.getUUID().toString(), "subtask", current.id(), "failureClass", "UNKNOWN",
+                        "reason", "repeated stalls (" + total + "); cause requires evidence"));
                 stallCounts.remove(ap.getUUID());
             }
             rt.chain().markStalled(current.id(), "asset fingerprint unchanged for " + STALL_AFTER_TICKS + " checks");
@@ -356,15 +356,16 @@ final class RddDetector {
         RetryState rs = retries.get(ap.getUUID());
         int n = (rs != null && rs.subtaskId().equals(current.id())) ? rs.count() : 0;
         if (n >= MAX_SUBTASK_RETRIES) {
-            // Level 3：多次失败 = 能力不足。只响一次（capability_gap + 引导自编译），然后把这个二级
+            // Exhausted retries do not identify the cause. Report once, then keep this subtask
             // "停车"为 FAILED：不 retrySubtask、也不清 retries（cap 清零会进 FAILED→重试→RUNNING→
             // body 重派→失败 的无限循环，每次 nudge ~98k token 空烧）。停车后只留真实资产检测——
             // AI 或主人真攒够资产，由 FAILED 分支的 early_achievement 自动验收推进，不堵恢复路径。
             if (!current.id().equals(gapParked.get(ap.getUUID()))) {
                 gapParked.put(ap.getUUID(), current.id());
-                RddPlugin.nudge(ap.getUUID(), "这个目标多次失败，很可能缺一个专门工具。如果你缺工具，现在就调 selfcompile_request 请求生成它，然后告诉我。");
-                RddMonitor.publish("subtask_capability_gap", Map.of(
-                        "subtask", current.id(), "reason", "retries exhausted, capability gap suspected; parked awaiting assets"));
+                RddPlugin.nudge(ap.getUUID(), "这个目标已耗尽自动重试次数，当前停车等待真实资产或有证据的新方案。失败原因尚未分类：先查看工具终态、附近资源、路径、装备和模型连接。不要原样重复执行，也不要把资源不足自动升级为自编译请求。");
+                RddMonitor.publish("subtask_parked", Map.of(
+                        "companionId", ap.getUUID().toString(), "subtask", current.id(), "failureClass", "UNKNOWN",
+                        "reason", "retries exhausted; parked awaiting assets; capability gap not established"));
             }
             return;
         }
