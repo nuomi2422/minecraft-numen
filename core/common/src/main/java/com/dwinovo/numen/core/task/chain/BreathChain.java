@@ -66,6 +66,10 @@ public final class BreathChain implements Task, com.dwinovo.numen.task.reflex.Re
 
     @Override
     public boolean canRun(NumenPlayer companion) {
+        if (!companion.fcEnabled()) {
+            resetEpisode();
+            return false;
+        }
         // 无畏画像(创造)不扣氧气,airSupply 恒满——但这条反射是假玩家唯一的
         // 漂浮本能,不能跟着休眠(否则闲置沉底就永远留在水底)。改按
         // "眼在水下持续 N tick"触发,窗口对齐生存的低氧阈值。
@@ -199,6 +203,16 @@ public final class BreathChain implements Task, com.dwinovo.numen.task.reflex.Re
         retargetCooldown = 0;
         trappedNoted = false;
         com.dwinovo.numen.event.NumenEvents.body(companion, "nearly drowned (" + Math.max(0, worst / 20) + "s of air left) — swam up for a breath");
+    }
+
+    /** Clear an interrupted episode without emitting a misleading rescue report. */
+    private void resetEpisode() {
+        episodeActive = false;
+        worstAir = Integer.MAX_VALUE;
+        airColumn = null;
+        retargetCooldown = 0;
+        trappedNoted = false;
+        submergedTicks = 0;
     }
 
     @Override

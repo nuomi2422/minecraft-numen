@@ -38,6 +38,9 @@ public final class UnstuckChain implements Task, com.dwinovo.numen.task.reflex.R
 
     @Override
     public boolean canRun(NumenPlayer companion) {
+        if (!companion.fcEnabled()) {
+            return false;
+        }
         Vec3 pos = companion.position();
         boolean tryingToMove = companion.zza != 0.0f || companion.xxa != 0.0f;
         detector.record(pos.x, pos.z, tryingToMove);

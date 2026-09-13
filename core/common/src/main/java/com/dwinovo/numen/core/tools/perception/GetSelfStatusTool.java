@@ -121,6 +121,16 @@ public final class GetSelfStatusTool implements NumenTool {
         root.addProperty("air", self.getAirSupply() + "/" + self.getMaxAirSupply() + " ticks");
         root.addProperty("in_lava", self.isInLava());
 
+        JsonObject fc = new JsonObject();
+        fc.addProperty("enabled", self.fcEnabled());
+        JsonArray capabilities = new JsonArray();
+        capabilities.add("fall_rescue_water_bucket_or_soft_block");
+        capabilities.add("surface_for_air");
+        capabilities.add("close_hostile_defense_with_combat_shield");
+        capabilities.add("unstuck_burst");
+        fc.add("capabilities", capabilities);
+        root.add("fc", fc);
+
         reply.accept(root.toString());
     }
 }

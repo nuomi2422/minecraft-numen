@@ -66,6 +66,12 @@ public final class MLGChain implements Task, com.dwinovo.numen.task.reflex.Refle
 
     @Override
     public boolean canRun(NumenPlayer companion) {
+        // A switched-off FC must never begin a new body takeover. Finish only
+        // the bounded cleanup for water this chain itself already placed, so a
+        // controlled test does not silently waste the rescue bucket.
+        if (!companion.fcEnabled()) {
+            return reclaiming(companion);
+        }
         if (WorkProfile.of(companion).fearless()) {
             return false;
         }

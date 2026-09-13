@@ -82,6 +82,9 @@ public final class MobDefenseChain implements Task, Reflex {
      */
     @Override
     public boolean canRun(NumenPlayer companion) {
+        if (!companion.fcEnabled()) {
+            return false;
+        }
         long now = companion.level().getGameTime();
         // 有人正在替这条本能干活(模型派的 attack),就别抢 —— 除非她已经扛不住,
         // 那一档只有本能看得见。按住的是本能不是目标,所以会分裂的怪不会让它失效。
@@ -154,6 +157,12 @@ public final class MobDefenseChain implements Task, Reflex {
         if (fight != null) {
             // 被更急的链抢走(摔落、换气):只松开身体,这场仗的状态一个不动,回来接着打。
             fight.stop(companion, why);
+        }
+        if (!companion.fcEnabled()) {
+            // Disable is a real hand-back, not a pause that resumes a stale
+            // autonomous fight if FC is later re-enabled.
+            fight = null;
+            dangerLastSeenTick = NEVER;
         }
         InputDriver.halt(companion);
         companion.setShiftKeyDown(false);

@@ -5,6 +5,7 @@ import com.dwinovo.numen.api.CompanionEvent;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.core.UUIDUtil;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ClientInformation;
 import net.minecraft.server.level.ServerLevel;
@@ -35,6 +36,8 @@ import java.util.UUID;
 public final class NumenPlayer extends ServerPlayer {
 
     private static final String NBT_KEY_OWNER = "NumenOwner";
+    /** Persisted, owner/agent-controlled master switch for the automatic survival layer. */
+    private static final String NBT_KEY_FC_ENABLED = "NumenFcEnabled";
 
     /** Owner's player UUID. Null only transiently before the first assignment. */
     private UUID ownerUuid;
@@ -88,6 +91,13 @@ public final class NumenPlayer extends ServerPlayer {
      * 所以调用方不必显式还。
      */
     private java.util.Set<String> pausedReflexes = java.util.Set.of();
+
+    /**
+     * Whether the FC (fall rescue, air rescue, close-range defense and unstuck)
+     * may take the body automatically. Explicit tasks remain available either way.
+     * Defaults to enabled so existing companions keep their current safe behaviour.
+     */
+    private boolean fcEnabled = true;
 
     public NumenPlayer(MinecraftServer server, ServerLevel level, GameProfile profile,
                         ClientInformation clientInformation) {
@@ -192,6 +202,26 @@ public final class NumenPlayer extends ServerPlayer {
     /** 她闲下来了,全部解除——按住是临时的,不必谁去显式还。 */
     public void resumeAllReflexes() {
         pausedReflexes = java.util.Set.of();
+    }
+
+    /** True when automatic FC survival reflexes are allowed to arbitrate for this body. */
+    public boolean fcEnabled() {
+        return fcEnabled;
+    }
+
+    /**
+     * Enable or disable only the automatic FC layer. This is deliberately not a
+     * task cancellation switch: explicit owner/agent work remains the caller's
+     * responsibility, while an active reflex yields on the next brain tick.
+     */
+    public void setFcEnabled(boolean enabled) {
+        fcEnabled = enabled;
+    }
+
+    /** Package-visible pure read for persistence regression tests. */
+    static boolean fcEnabledFromSaveData(CompoundTag input) {
+        return !input.contains(NBT_KEY_FC_ENABLED, Tag.TAG_BYTE)
+                || input.getBoolean(NBT_KEY_FC_ENABLED);
     }
 
     /** The loaded companion body with this UUID, or {@code null} if not spawned. */
@@ -385,11 +415,15 @@ public final class NumenPlayer extends ServerPlayer {
         if (ownerUuid != null) {
             output.putUUID(NBT_KEY_OWNER, ownerUuid);   // 1.21.4: no CompoundTag.store(Codec)
         }
+        output.putBoolean(NBT_KEY_FC_ENABLED, fcEnabled);
     }
 
     @Override
     public void readAdditionalSaveData(CompoundTag input) {
         super.readAdditionalSaveData(input);
         if (input.hasUUID(NBT_KEY_OWNER)) this.ownerUuid = input.getUUID(NBT_KEY_OWNER);
+        // Old companion playerdata has no key; preserve the safe default rather
+        // than silently disabling FC during the first upgrade.
+        fcEnabled = fcEnabledFromSaveData(input);
     }
 }

@@ -134,6 +134,7 @@ public final class NumenCore {
         ToolRegistry.register(new com.dwinovo.numen.core.tools.perception.InspectBlockTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.perception.InspectBlockStorageTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.perception.GetWorldInfoTool());
+        ToolRegistry.register(new com.dwinovo.numen.core.tools.survival.FcControlTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.agent.TodoWriteTool());   // raw NumenTool
         ToolRegistry.register(new com.dwinovo.numen.core.tools.agent.FindToolsTool());   // raw NumenTool
         ToolRegistry.register(new com.dwinovo.numen.core.tools.agent.LoadSkillTool());   // raw NumenTool
