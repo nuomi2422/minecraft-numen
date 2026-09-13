@@ -14,6 +14,9 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.inventory.AbstractFurnaceMenu;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,7 +48,7 @@ final class RddDetector {
     /** 卡死监督：资产指纹（背包+位置）连续多少次检测无变化即判 STALLED（1 次/秒）。
      *  取 15 而非 5：AI 的 LLM 轮次（DeepSeek 思考 + 工具链）可能要 10~15 秒，
      *  太短会把"正在思考/刚起步"误判成卡死。 */
-    private static final int STALL_AFTER_TICKS = 15;
+    private static final int STALL_AFTER_TICKS = RddStallPolicy.IDLE_GRACE_CHECKS;
     /** 拍醒后的响应窗口：STALLED 后给 AI 这么长时间行动（资产变化则恢复），
      *  仍未动才 re-nudge / 升级。避免"拍完不到 2 秒就判失败"。 */
     private static final int STALL_RESPONSE_TICKS = 25;
@@ -64,6 +67,10 @@ final class RddDetector {
 
     private record StallState(String subtaskId, String fingerprint, int unchangedTicks, int nudges) {}
 
+    /** Keep the last real furnace observation when its GUI closes during cooking. */
+    private final Map<UUID, FurnaceWatch> furnaces = new ConcurrentHashMap<>();
+    private record FurnaceWatch(TaskChain chain, String subtaskId, AbstractFurnaceMenu menu, BlockEntity block) {}
+
     /** Level 2 重试计数：绑定当前二级（二级变了才重置），避免被误清。 */
     private final Map<UUID, RetryState> retries = new ConcurrentHashMap<>();
     private record RetryState(String subtaskId, int count) {}
@@ -76,6 +83,19 @@ final class RddDetector {
     private int tickCounter;
     /** 资产 populate 节流：每 5 次检测（约 5 秒）把背包物品写进 AssetRegistry。 */
     private int assetTick;
+
+    RddDetector() {
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+                (net.neoforged.neoforge.event.server.ServerStoppedEvent event) -> {
+                    furnaces.clear();
+                    stalls.clear();
+                    retries.clear();
+                    stallCounts.clear();
+                    gapParked.clear();
+                    tickCounter = 0;
+                    assetTick = 0;
+                });
+    }
 
     void onServerTick(MinecraftServer server) {
         if (server == null) {
@@ -265,19 +285,28 @@ final class RddDetector {
         if (!RddPlugin.supervisionEnabled()) {
             return false; // 空转止血：暂停监督不做卡死检测/拍醒/能力升级，资产推进照常
         }
-        String fp = fingerprint(ap);
+        RddStallPolicy.Observation observation = observeWork(ap, rt, current);
+        String fp = observation.fingerprint();
         StallState st = stalls.get(ap.getUUID());
         if (st == null || !st.subtaskId().equals(current.id())) {
             stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 0));
             return false;
         }
-        if (!st.fingerprint().equals(fp)) {
-            // 资产/位置变了 = AI 在动 → 清零未变化计数
+        RddStallPolicy.Check check = RddStallPolicy.check(st.fingerprint(), st.unchangedTicks(), observation);
+        if (check.changed()) {
+            // Assets, container output, cooking, or body work counters changed.
             stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 0));
             return false;
         }
-        int unchanged = st.unchangedTicks() + 1;
-        if (unchanged >= STALL_AFTER_TICKS) {
+        int unchanged = check.unchanged();
+        if (observation.waiting() && unchanged >= STALL_AFTER_TICKS
+                && unchanged % STALL_AFTER_TICKS == 0 && !check.stalled()) {
+            RddMonitor.publish("subtask_work_wait", Map.of(
+                    "companionId", ap.getUUID().toString(), "subtask", current.id(),
+                    "source", observation.source(), "unchangedChecks", unchanged,
+                    "graceRemainingSeconds", check.remaining(), "graceLimitSeconds", check.limit()));
+        }
+        if (check.stalled()) {
             // Repeated stalls are an observation, not proof of missing software capability.
             StallCount sc = stallCounts.get(ap.getUUID());
             int total = (sc != null && sc.subtaskId().equals(current.id())) ? sc.total() + 1 : 1;
@@ -289,9 +318,11 @@ final class RddDetector {
                         "reason", "repeated stalls (" + total + "); cause requires evidence"));
                 stallCounts.remove(ap.getUUID());
             }
-            rt.chain().markStalled(current.id(), "asset fingerprint unchanged for " + STALL_AFTER_TICKS + " checks");
-            RddPlugin.nudge(ap.getUUID(), "你的目标「" + current.description() + "」还在，但你的背包和位置已经有一段时间没变化了。你卡住了吗？缺什么工具或材料？缺工具就调 selfcompile_request 请求新工具。");
-            RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(), "reason", "asset fingerprint unchanged"));
+            rt.chain().markStalled(current.id(), "observed work unchanged for " + check.limit() + " checks");
+            RddPlugin.nudge(ap.getUUID(), "你的目标「" + current.description() + "」还在，但可见资产、容器生产和身体进度在观察窗口内没有变化。请核对真实工具结果、材料和生产条件，再决定下一步。");
+            RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(),
+                    "reason", "observed work unchanged", "source", observation.source(),
+                    "graceRemainingSeconds", 0, "graceLimitSeconds", check.limit()));
             // 重置响应窗计数：从 STALLED 起给 AI STALL_RESPONSE_TICKS 秒响应时间
             stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, st.nudges() + 1));
             return true;
@@ -305,7 +336,7 @@ final class RddDetector {
      * 多次拍醒无效 → 判失败（Level 1 恢复兜底）。
      */
     private void handleStalled(NumenPlayer ap, RddRuntime rt, Subtask current) {
-        String fp = fingerprint(ap);
+        String fp = observeWork(ap, rt, current).fingerprint();
         StallState st = stalls.get(ap.getUUID());
         if (!RddPlugin.supervisionEnabled()) {
             // 空转止血：暂停监督。AI 自己动了 → 回 RUNNING；否则保持卡住标记，绝不拍醒/绝不判失败。
@@ -323,7 +354,7 @@ final class RddDetector {
             return;
         }
         if (!st.fingerprint().equals(fp)) {
-            // AI 被拍醒后恢复行动 → 回到 RUNNING，任务继续
+            // Real production can recover a stalled task without moving items into inventory yet.
             rt.chain().resumeFromStalled(current.id());
             RddMonitor.publish("subtask_resumed", Map.of("subtask", current.id()));
             stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 0));
@@ -358,7 +389,7 @@ final class RddDetector {
         if (n >= MAX_SUBTASK_RETRIES) {
             // Exhausted retries do not identify the cause. Report once, then keep this subtask
             // "停车"为 FAILED：不 retrySubtask、也不清 retries（cap 清零会进 FAILED→重试→RUNNING→
-            // body 重派→失败 的无限循环，每次 nudge ~98k token 空烧）。停车后只留真实资产检测——
+            // body 重派→失败 的无限循环，每次 nudge 都会触发额外模型调用）。停车后只留真实资产检测——
             // AI 或主人真攒够资产，由 FAILED 分支的 early_achievement 自动验收推进，不堵恢复路径。
             if (!current.id().equals(gapParked.get(ap.getUUID()))) {
                 gapParked.put(ap.getUUID(), current.id());
@@ -405,6 +436,49 @@ final class RddDetector {
         String inv = countInventory(ap).toString();
         var pos = ap.blockPosition();
         return inv + "|" + pos.getX() + "," + pos.getY() + "," + pos.getZ();
+    }
+
+    /** Server-thread observation only. Fuel/elapsed/deadline/task-id changes are not work progress. */
+    private RddStallPolicy.Observation observeWork(NumenPlayer ap, RddRuntime rt, Subtask current) {
+        UUID uuid = ap.getUUID();
+        FurnaceWatch watch = furnaces.get(uuid);
+        if (watch != null && (watch.chain() != rt.chain() || !watch.subtaskId().equals(current.id())
+                || watch.block().isRemoved() || watch.block().getLevel() != ap.level())) {
+            furnaces.remove(uuid);
+            watch = null;
+        }
+        AbstractContainerMenu menu = ap.containerMenu;
+        if (menu instanceof AbstractFurnaceMenu furnace && !menu.slots.isEmpty()
+                && menu.slots.getFirst().container instanceof BlockEntity block) {
+            watch = new FurnaceWatch(rt.chain(), current.id(), furnace, block);
+            furnaces.put(uuid, watch);
+        }
+        StringBuilder progress = new StringBuilder();
+        if (menu != null && menu != ap.inventoryMenu) appendContainer(progress, menu, ap);
+        boolean production = false;
+        if (watch != null) {
+            if (watch.menu() != menu) appendContainer(progress, watch.menu(), ap);
+            // Vanilla getBurnProgress is cooking progress; getLitProgress is only fuel countdown.
+            progress.append("|cooking=").append(watch.menu().getBurnProgress());
+            production = watch.menu().isLit() && !watch.menu().getSlot(0).getItem().isEmpty();
+        }
+        var body = CompanionTickDispatcher.currentTaskFor(uuid);
+        boolean active = body != null && !body.getState().isTerminal();
+        if (active) progress.append("|body=").append(body.getToolName()).append(':').append(body.describe());
+        String source = production ? "furnace_production" : active ? "body_task:" + body.publicId() : "idle";
+        return new RddStallPolicy.Observation(fingerprint(ap), progress.toString(), production || active, source);
+    }
+
+    private static void appendContainer(StringBuilder progress, AbstractContainerMenu menu, NumenPlayer ap) {
+        progress.append("|container=").append(menu.getClass().getName());
+        for (var slot : menu.slots) {
+            if (slot.container == ap.getInventory()) continue;
+            // Burning fuel does not prove that a recipe is producing anything.
+            if (menu instanceof AbstractFurnaceMenu && slot.index == AbstractFurnaceMenu.FUEL_SLOT) continue;
+            ItemStack item = slot.getItem();
+            progress.append('|').append(slot.index).append(':')
+                    .append(BuiltInRegistries.ITEM.getKey(item.getItem())).append('=').append(item.getCount());
+        }
     }
 
     /** 当前二级带 body 且还没提交过 → 提交一次。 */
@@ -491,6 +565,7 @@ final class RddDetector {
         retries.remove(ap.getUUID());
         stallCounts.remove(ap.getUUID());
         gapParked.remove(ap.getUUID());
+        furnaces.remove(ap.getUUID());
         if (!completed) {
             return;
         }
