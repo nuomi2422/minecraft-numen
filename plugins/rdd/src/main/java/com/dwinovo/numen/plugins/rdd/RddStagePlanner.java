@@ -32,8 +32,20 @@ final class RddStagePlanner {
     /** 主入口：异步规划一级清单，回调收到可用的 PrimarySpec 列表（失败=空表）。 */
     static void planStages(UUID companionId, String objective, Consumer<List<PrimarySpec>> done) {
         // 注入"当前真实背包"：规划师要站在已有资产上推进，不倒退重规划已持有的装备/设施。
-        RddDecomposer.llmAsk(companionId, "stage_a", planningPrompt(objective, RddPlugin.lastInventory(companionId)), PLAN_SYSTEM, PLAN_TOOL,
-                args -> done.accept(parse(args)),
+        // 再贴上经验知识（无知识时与原来逐字相同）。
+        String base = RddPlanningKnowledge.attach(
+                planningPrompt(objective, RddPlugin.lastInventory(companionId)),
+                RddPlanningPolicy.block(objective, "stage_a"));
+        String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
+                base, objective, "stage_a", List.of());
+        RddDecomposer.llmAsk(companionId, "stage_a", userContent, PLAN_SYSTEM, PLAN_TOOL,
+                args -> {
+                    RddPlanGuard.Stages guarded = RddPlanGuard.filterStages(parse(args), objective);
+                    RddPlanningKnowledge.publishPolicy(companionId, "stage_a",
+                            RddPlanningPolicy.appliedRules(objective, "stage_a"),
+                            guarded.dropped(), List.of());
+                    done.accept(guarded.allowed());
+                },
                 () -> done.accept(List.of()));
     }
 
@@ -111,7 +123,7 @@ final class RddStagePlanner {
                     + "（如 minecraft:stone_pickaxe）和 minimum；无法确定的跨级前置不要硬写。"
                     + "只输出 plan_stages 工具调用，不要写多余文字。";
 
-    private static String planningPrompt(String objective, Map<String, Integer> held) {
+    static String planningPrompt(String objective, Map<String, Integer> held) {
         return "主人的目标：" + objective + "\n\n"
                 + renderHeldAssets(held)
                 + "请用 plan_stages 工具给出发展阶段清单。每个阶段包含：\n"

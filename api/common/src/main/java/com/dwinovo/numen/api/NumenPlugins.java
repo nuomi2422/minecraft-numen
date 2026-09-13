@@ -100,6 +100,88 @@ public final class NumenPlugins {
     private static final List<Runnable> PENDING = new ArrayList<>();
     private static final List<Path> PENDING_SKILLS = new ArrayList<>();
 
+    /**
+     * 插件挂在任务链规划请求上的知识片段。见 {@link NumenApi#contributePlanningKnowledge}。
+     * 与 {@link #STATE} 同样的读多写少,同样在加载期登记、每次规划读。
+     */
+    private static final List<PlanningKnowledgeContributor> PLANNING = new CopyOnWriteArrayList<>();
+
+    /** 各贡献者结果之间的稳定分隔符:两条知识必须能被分开读,不能粘成一段。 */
+    public static final String PLANNING_KNOWLEDGE_SEPARATOR = "\n";
+
+    /**
+     * 宿主聚合层的知识总字符上限。<b>不能只信任各贡献者自觉限流</b>——
+     * 插件是第三方代码,它们的预算只对它们自己负责。
+     */
+    public static final int MAX_PLANNING_KNOWLEDGE_CHARS = 2000;
+
+    /**
+     * 汇总所有插件为这次规划贡献的知识正文。<b>引擎/规划器调用</b>。
+     *
+     * <p>三重兜底都在这一层,不依赖贡献者自律:
+     * <ul>
+     *   <li><b>稳定分隔符</b>——非空片段之间固定用 {@link #PLANNING_KNOWLEDGE_SEPARATOR},
+     *       首尾不加,拼出来逐字节可预期。</li>
+     *   <li><b>总字符上限</b>——超过 {@link #MAX_PLANNING_KNOWLEDGE_CHARS} 就截断,
+     *       后面的贡献者不再追加。</li>
+     *   <li><b>故障隔离</b>——某个插件算炸了(含 {@code Error},例如缺类)只丢它自己那段,
+     *       其余贡献者与整条规划请求都不受影响。</li>
+     * </ul>
+     *
+     * <p>没有任何贡献者(比如知识插件没装)时返回空串,规划器据此走无知识路径。
+     */
+    public static String planningKnowledge(PlanningQuery query) {
+        return aggregatePlanningKnowledge(PLANNING, query);
+    }
+
+    /**
+     * 聚合本体（纯函数，注册表由调用方传入）。抽出来的唯一目的是可单测——
+     * {@link #PLANNING} 是静态全局表，测试没法隔离它。
+     *
+     * @param contributors 贡献者列表（可为 null / 空）
+     * @param query        本次规划背景（null → 视为没有知识可取）
+     */
+    public static String aggregatePlanningKnowledge(List<PlanningKnowledgeContributor> contributors,
+                                                    PlanningQuery query) {
+        if (contributors == null || contributors.isEmpty() || query == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        int accepted = 0;
+        int failed = 0;
+        int truncated = 0;
+        for (PlanningKnowledgeContributor c : contributors) {
+            String fragment;
+            try {
+                fragment = c.knowledgeFor(query);
+            } catch (Throwable e) {
+                failed++;
+                Constants.LOG.error("[numen] 插件的规划知识算不出来,这一段跳过", e);
+                continue;
+            }
+            if (fragment == null || fragment.isBlank()) {
+                continue;
+            }
+            String piece = sb.length() == 0 ? fragment : PLANNING_KNOWLEDGE_SEPARATOR + fragment;
+            int room = MAX_PLANNING_KNOWLEDGE_CHARS - sb.length();
+            if (piece.length() > room) {
+                if (room > 0) {
+                    sb.append(piece, 0, room);
+                }
+                truncated++;
+                break; // 预算已满,后面的贡献者不再追加
+            }
+            sb.append(piece);
+            accepted++;
+        }
+        if (truncated > 0 || failed > 0) {
+            // 简短观测:只报计数与预算,不含任何正文
+            Constants.LOG.info("[numen] planning knowledge aggregated: contributors={} failed={} truncated={} chars={}/{}",
+                    accepted, failed, truncated, sb.length(), MAX_PLANNING_KNOWLEDGE_CHARS);
+        }
+        return sb.toString();
+    }
+
     private static void runClientBlock(Runnable r) {
         try {
             r.run();
@@ -136,6 +218,11 @@ public final class NumenPlugins {
         @Override
         public void contributeState(Function<UUID, String> fragment) {
             if (fragment != null) STATE.add(fragment);
+        }
+
+        @Override
+        public void contributePlanningKnowledge(PlanningKnowledgeContributor contributor) {
+            if (contributor != null) PLANNING.add(contributor);
         }
 
         @Override

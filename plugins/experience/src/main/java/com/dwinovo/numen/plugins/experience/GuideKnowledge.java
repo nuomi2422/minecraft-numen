@@ -75,6 +75,10 @@ public final class GuideKnowledge {
                 List.of(title)));
     }
 
+    /** 缓存：攻略每轮规划都要读，按 mtime+size 失效，避免在规划线程上反复读盘。 */
+    private static volatile List<PlanningKnowledge.Item> cache = List.of();
+    private static volatile long cachedStamp = -1L;
+
     /**
      * 从 {@code config/numen/knowledge/mc-guide.md} 读攻略。读不到返回空列表（不是异常）。
      */
@@ -84,8 +88,14 @@ public final class GuideKnowledge {
             if (!Files.isRegularFile(file)) {
                 return List.of();
             }
-            String text = Files.readString(file, StandardCharsets.UTF_8);
-            return parse(text, file.toString());
+            long stamp = Files.getLastModifiedTime(file).toMillis() * 31 + Files.size(file);
+            if (stamp == cachedStamp) {
+                return cache;
+            }
+            List<PlanningKnowledge.Item> parsed = parse(Files.readString(file, StandardCharsets.UTF_8), file.toString());
+            cache = parsed;
+            cachedStamp = stamp;
+            return parsed;
         } catch (Throwable ignored) {
             // 缺失/权限/编码/宿主环境缺类都按“没有攻略知识”处理，规划照常进行
             return List.of();

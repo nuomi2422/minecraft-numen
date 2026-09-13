@@ -105,4 +105,25 @@ public interface NumenApi {
      */
     Delivery enqueue(UUID companion, String message);
 
+    /**
+     * 每次<b>任务链规划请求</b>现算一段参考资料,拼进真正发给模型的请求正文。
+     *
+     * <p>与 {@link #contributeState} 同构,只是消费方不同:那份进同伴每轮的
+     * {@code <runtime_state>},这份进任务链规划器(Stage-A 首次规划 / Stage-B 阶段展开 /
+     * 回退重规划)的 user 请求。
+     *
+     * <p>为什么要有这条缝:规划器和知识提供方是<b>两个互不可见的插件</b>——联动之间
+     * 只看得见这扇门,不能互相 import。没有这条缝,规划器就只能自己再实现一遍检索,
+     * 或者把别人的核心模块再打包一份进自己的 jar(那会撞重复包)。
+     *
+     * <pre>{@code
+     * numen.contributePlanningKnowledge(q ->
+     *         q.objective().contains("钻石") ? "<experience>…</experience>" : "");
+     * }</pre>
+     *
+     * <p>实现方要自己保证预算受限、只读、不抛异常;算炸了只丢这一段,规划照常进行。
+     * 返回值不会改变任务结构,也不授予任何工具权限——它只是参考资料。
+     */
+    void contributePlanningKnowledge(PlanningKnowledgeContributor contributor);
+
 }

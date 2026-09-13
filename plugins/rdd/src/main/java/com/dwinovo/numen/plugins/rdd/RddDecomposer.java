@@ -90,7 +90,10 @@ final class RddDecomposer {
         }
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
-        String userContent = decompositionPrompt(objective, RddPlugin.lastInventory(companionId), List.of());
+        // 经验知识贴进最终请求正文（无知识时与原来逐字相同）
+        String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
+                decompositionPrompt(objective, RddPlugin.lastInventory(companionId), List.of()),
+                objective, "fallback", List.of());
         RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
         NumenLlmClient.forEndpoint(ep)
                 .chatStreaming(List.of(new ConvoState.Msg.User(userContent)),
@@ -109,7 +112,13 @@ final class RddDecomposer {
                         return;
                     }
                     LlmToolCall call = turn.toolCalls().get(0);
-                    List<SubtaskSpec> specs = parse(call.arguments());
+                    // 守门：硬规则由代码执行，模型不听也要拦住（未要求的可选升级、已持有的资产）
+                    RddPlanGuard.Filtered guarded = RddPlanGuard.filterSubtasks(
+                            parse(call.arguments()), objective, RddPlugin.lastInventory(companionId));
+                    RddPlanningKnowledge.publishPolicy(companionId, "fallback",
+                            RddPlanningPolicy.appliedRules(objective, "fallback"),
+                            guarded.dropped(), guarded.reused());
+                    List<SubtaskSpec> specs = guarded.allowed();
                     if (specs.isEmpty()) {
                         LOG.warn("[rdd] 分解结果不可用，回落占位链");
                         done.accept(RddChainFactory.fromObjective(companionId, objective));
@@ -138,10 +147,26 @@ final class RddDecomposer {
                 + "（如 minecraft:oak_log），condition 必须有真实可检测物品，minimum 给具体数字，body 可选。"
                 + "不要裸键/占位符/大写，不要用 \"goal\" 冒充物品。宁可少拆，不可拆出跑不动的步骤。"
                 : "";
-        RddDecomposer.llmAsk(companionId, "stage_b", decompositionPrompt(themeObjective, RddPlugin.lastInventory(companionId),
+        // 上一次被判定不可执行 → 把该失败事实一并交给知识侧，召回「这类失败该怎么办」的经验
+        List<String> knownFailures = attempt >= 1
+                ? List.of("上一次生成的子步骤被判定不可执行")
+                : List.of();
+        String base = RddPlanningKnowledge.attach(
+                decompositionPrompt(themeObjective, RddPlugin.lastInventory(companionId),
                         completedStages == null ? List.of() : completedStages) + hint,
+                RddPlanningPolicy.block(themeObjective, "stage_b"));
+        String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
+                base, themeObjective, "stage_b", knownFailures);
+        RddDecomposer.llmAsk(companionId, "stage_b", userContent,
                 SYSTEM_PROMPT, DECOMPOSE_TOOL,
-                args -> done.accept(parse(args)),
+                args -> {
+                    RddPlanGuard.Filtered guarded = RddPlanGuard.filterSubtasks(parse(args), themeObjective,
+                            RddPlugin.lastInventory(companionId));
+                    RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
+                            RddPlanningPolicy.appliedRules(themeObjective, "stage_b"),
+                            guarded.dropped(), guarded.reused());
+                    done.accept(guarded.allowed());
+                },
                 () -> done.accept(List.of()));
     }
 
@@ -272,8 +297,8 @@ final class RddDecomposer {
                     + "minecraft:iron_ingot），数量 minimum 给具体数字。能交给身体执行的一步带上 body 工具调用。"
                     + "无法用物品数量确定性判定的部分不要硬拆，宁可少拆。只输出 decompose_goal 工具调用，不要写多余文字。";
 
-    private static String decompositionPrompt(String objective, Map<String, Integer> held,
-                                              List<String> completedStages) {
+    static String decompositionPrompt(String objective, Map<String, Integer> held,
+                                      List<String> completedStages) {
         return "主人的目标：" + objective + "\n\n"
                 + renderCompletedStages(completedStages)
                 + renderHeldAssets(held)
