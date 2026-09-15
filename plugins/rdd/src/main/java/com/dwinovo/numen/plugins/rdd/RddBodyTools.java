@@ -50,6 +50,20 @@ final class RddBodyTools {
             "lapis_lazuli", "lapis_ore",
             "emerald", "emerald_ore");
 
+    /**
+     * 村庄补给常见的作物掉落物 → 实际可破坏的作物方块。它们不是矿石，但 RDD 的
+     * {@code mine} 语义同样是“取得此物品”；若不在这张小白名单内，非方块物品仍必须
+     * 走 capability_gap，不能猜一个不存在的 {@code *_ore}。
+     *
+     * <p>只覆盖原版成熟作物。规划提示仍要求优先收成熟作物；这个映射只修正
+     * {@code minecraft:carrot} 这类“掉落物 ID 不等于方块 ID”的参数边界。
+     */
+    private static final Map<String, String> CROP_DROP_TO_BLOCK = Map.of(
+            "carrot", "carrots",
+            "potato", "potatoes",
+            "wheat", "wheat",
+            "beetroot", "beetroots");
+
     /** 归一 body.task_type → 真实工具名；臆造且无别名 → null（调用方转 capability_gap）。 */
     static String canonical(String raw) {
         if (raw == null) {
@@ -166,6 +180,13 @@ final class RddBodyTools {
             addRegistered(out, ns + ":deepslate_" + ore);
             return out;
         }
+        // 村庄农田：carrot/potato/beetroot 是掉落物，真实方块名称是复数形式。
+        // AutoMine 已负责寻路、破坏和统计新获得物品，复用它而不另造一套收获任务。
+        String crop = cropBlockPath(path);
+        if (crop != null) {
+            addRegistered(out, ns + ":" + crop);
+            return out;
+        }
         // 字面 id：只收真实注册方块（宝石等非方块物品不再透传成 block_id）
         if (isRegisteredBlock(ns + ":" + path)) {
             out.add(id);
@@ -175,6 +196,11 @@ final class RddBodyTools {
             }
         }
         return out;
+    }
+
+    /** 纯映射，单测不依赖 NeoForge 的注册表运行时。 */
+    static String cropBlockPath(String itemPath) {
+        return itemPath == null ? null : CROP_DROP_TO_BLOCK.get(itemPath);
     }
 
     private static boolean isRegisteredBlock(String id) {
