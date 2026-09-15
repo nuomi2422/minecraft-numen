@@ -66,6 +66,12 @@ public final class MobDefenseChain implements Task, Reflex {
 
     /** 自动开的这场仗。null = 这一刻没在打。 */
     private AttackCompanionTask fight;
+    /** 反射战斗最多独占身体多久；超时必须把身体还给显式任务。 */
+    static final long MAX_REFLEX_FIGHT_TICKS = 20L * 20L;
+    /** 这一场反射战斗的起点。 */
+    private long fightStartedTick = NEVER;
+    /** 预算用尽后，同一批危险没消失前不再次抢占身体。 */
+    private boolean yieldedForCurrentDanger;
     /** 最后一刻还看得见危险的游戏时间。 */
     private long dangerLastSeenTick = NEVER;
 
@@ -86,15 +92,26 @@ public final class MobDefenseChain implements Task, Reflex {
             return false;
         }
         long now = companion.level().getGameTime();
+        boolean threat = !dangersNear(companion).isEmpty();
+        if (!threat) {
+            yieldedForCurrentDanger = false;
+        }
+        if (yieldedForCurrentDanger) {
+            return false;
+        }
+        if (fight != null && reflexFightBudgetExhausted(fightStartedTick, now)) {
+            yieldFight(companion, now);
+            return false;
+        }
         // 有人正在替这条本能干活(模型派的 attack),就别抢 —— 除非她已经扛不住,
         // 那一档只有本能看得见。按住的是本能不是目标,所以会分裂的怪不会让它失效。
         if (fight == null && companion.reflexPaused(ID) && !Menace.outmatched(companion)) {
             return false;
         }
         if (fight != null) {
-            return true;   // 打着呢,打完再说
+            return threat; // 打着呢,但危险已经消失就立刻交还身体
         }
-        if (SurvivalDecisions.mobDefenseTriggered(!dangersNear(companion).isEmpty())) {
+        if (SurvivalDecisions.mobDefenseTriggered(threat)) {
             return true;
         }
         // 宽限期内不撒手:怪刚出半径不代表没事了,这一刻放手下一刻就得重来。
@@ -131,6 +148,7 @@ public final class MobDefenseChain implements Task, Reflex {
         AttackTaskRecord record = new AttackTaskRecord(
                 "reflex-" + now, now + NO_DEADLINE, List.of(), true);
         fight = new AttackCompanionTask(companion, record);
+        fightStartedTick = now;
         fight.start(companion);
         com.dwinovo.numen.Constants.LOG.info("[numen-defense] 自动接管 —— 身边 {} 个危险",
                 dangersNear(companion).size());
@@ -142,6 +160,7 @@ public final class MobDefenseChain implements Task, Reflex {
     private void end(NumenPlayer companion, TaskState state) {
         String line = fight.result(state).message();
         fight = null;
+        fightStartedTick = NEVER;
         dangerLastSeenTick = NEVER;
         InputDriver.halt(companion);
         companion.setShiftKeyDown(false);
@@ -162,10 +181,36 @@ public final class MobDefenseChain implements Task, Reflex {
             // Disable is a real hand-back, not a pause that resumes a stale
             // autonomous fight if FC is later re-enabled.
             fight = null;
+            fightStartedTick = NEVER;
             dangerLastSeenTick = NEVER;
         }
         InputDriver.halt(companion);
         companion.setShiftKeyDown(false);
+    }
+
+    /** 反射战斗到预算仍未收场时的单向让位，防止无限占住 goto/mine/build。 */
+    private void yieldFight(NumenPlayer companion, long now) {
+        if (fight != null) {
+            fight.stop(companion, StopReason.PREEMPTED);
+            // stop() deliberately preserves navigation for ordinary preemption;
+            // this terminal hand-back discards the reflex, so release its nav too.
+            fight.result(TaskState.CANCELLED);
+        }
+        fight = null;
+        fightStartedTick = NEVER;
+        dangerLastSeenTick = now;
+        yieldedForCurrentDanger = true;
+        InputDriver.halt(companion);
+        companion.setShiftKeyDown(false);
+        com.dwinovo.numen.Constants.LOG.warn(
+                "[numen-defense] 反射战斗达到 {} tick 预算，让位给显式任务；危险解除前不重复抢占",
+                MAX_REFLEX_FIGHT_TICKS);
+    }
+
+    /** Pure boundary used by tests: an unstarted reflex can never time out. */
+    static boolean reflexFightBudgetExhausted(long startedTick, long now) {
+        return startedTick != NEVER && now >= startedTick
+                && now - startedTick >= MAX_REFLEX_FIGHT_TICKS;
     }
 
     @Override
