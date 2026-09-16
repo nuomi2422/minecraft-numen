@@ -387,6 +387,17 @@ final class RddDetector {
         RetryState rs = retries.get(ap.getUUID());
         int n = (rs != null && rs.subtaskId().equals(current.id())) ? rs.count() : 0;
         if (n >= MAX_SUBTASK_RETRIES) {
+            if (isOptionalFood(current)) {
+                String reason = "optional food unavailable or unreachable; continue mainline";
+                rt.skipSubtask(current.id(), reason);
+                RddPlugin.clearBody(ap.getUUID());
+                retries.remove(ap.getUUID());
+                gapParked.remove(ap.getUUID());
+                RddMonitor.publish("subtask_skipped", Map.of(
+                        "companionId", ap.getUUID().toString(), "subtask", current.id(), "reason", reason));
+                RddPlugin.publishTaskSnapshot(ap.getUUID(), "optional_food_skipped");
+                return;
+            }
             // Exhausted retries do not identify the cause. Report once, then keep this subtask
             // "停车"为 FAILED：不 retrySubtask、也不清 retries（cap 清零会进 FAILED→重试→RUNNING→
             // body 重派→失败 的无限循环，每次 nudge 都会触发额外模型调用）。停车后只留真实资产检测——
@@ -405,6 +416,17 @@ final class RddDetector {
         rt.startCurrent();
         RddPlugin.nudge(ap.getUUID(), "这个目标（" + current.description() + "）失败了，再试一次。换个策略：检查材料、换工具、或换位置。");
         RddMonitor.publish("subtask_retry", Map.of("subtask", current.id(), "retry", n + 1, "max", MAX_SUBTASK_RETRIES));
+    }
+
+    /** Optional nutrition is useful but never a reason to park the Minecraft mainline. */
+    private static boolean isOptionalFood(Subtask current) {
+        Object key = current.condition().get("asset_key");
+        if (!(key instanceof String s)) return false;
+        return switch (s.toLowerCase(java.util.Locale.ROOT)) {
+            case "minecraft:carrot", "minecraft:potato", "minecraft:beetroot",
+                    "minecraft:baked_potato", "minecraft:bread" -> true;
+            default -> false;
+        };
     }
 
     /** 把背包物品写进 AssetRegistry（GLOBAL 作用域，来源=当前二级）。观测证据：inventory_scan。 */

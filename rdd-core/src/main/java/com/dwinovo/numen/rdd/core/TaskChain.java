@@ -195,6 +195,22 @@ public final class TaskChain {
         statuses.put(subtaskId, SubtaskStatus.PENDING);
     }
 
+    /**
+     * Mark an explicitly optional current step as intentionally skipped and advance.
+     * Skipping is different from failure: it is a deliberate replanning outcome and
+     * must not trigger the retry/capability-gap loop.
+     */
+    public synchronized void skipSubtask(String subtaskId, String reason) {
+        requireCurrent(subtaskId);
+        SubtaskStatus st = statuses.get(subtaskId);
+        if (st != SubtaskStatus.RUNNING && st != SubtaskStatus.FAILED && st != SubtaskStatus.STALLED) {
+            throw new IllegalStateException("current subtask cannot be skipped from " + st);
+        }
+        if (reason == null || reason.isBlank()) throw new IllegalArgumentException("skip reason required");
+        statuses.put(subtaskId, SubtaskStatus.COMPLETED);
+        advanceOrAwait();
+    }
+
     public synchronized Map<String, SubtaskStatus> subtaskStatuses() {
         return Map.copyOf(statuses);
     }

@@ -44,6 +44,11 @@ public final class RddRuntime {
         return completed;
     }
 
+    public void skipSubtask(String subtaskId, String reason) {
+        chain.skipSubtask(subtaskId, reason);
+        publish("subtask_skipped", Map.of("subtask", subtaskId, "reason", reason));
+    }
+
     public void applySupervisor(SupervisorDecision decision) {
         chain.applySupervisorDecision(decision);
         publish("supervisor_decision", Map.of("target", decision.targetNodeId(), "decision", decision.type().name(), "reason", decision.reason()));
