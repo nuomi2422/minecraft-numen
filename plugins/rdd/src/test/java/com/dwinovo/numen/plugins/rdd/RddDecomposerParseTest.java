@@ -11,6 +11,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** RddDecomposer.parse 纯容错解析的单测（不触 LLM/网络/MC）。 */
 class RddDecomposerParseTest {
+    @Test void parsesGroupWithoutInventingSingleItemRequirement() {
+        var specs = RddDecomposer.parse("{\"subtasks\":[{\"description\":\"food supply\",\"condition\":{\"group\":\"food\",\"minimum\":16}}]}");
+        assertEquals(1, specs.size());
+        assertEquals("food", specs.getFirst().condition().get("group"));
+        assertFalse(specs.getFirst().condition().containsKey("asset_key"));
+        assertDoesNotThrow(() -> com.dwinovo.numen.rdd.core.RddChainFactory.fromSpec(java.util.UUID.randomUUID(), "food", specs));
+    }
+    @Test void parsesWorldEvidenceAndRejectsFractionalKillThreshold() {
+        assertEquals(1, RddDecomposer.parse("{\"subtasks\":[{\"description\":\"base\",\"condition\":{\"type\":\"base\"}}]}").size());
+        assertTrue(RddDecomposer.parse("{\"subtasks\":[{\"description\":\"dragon\",\"condition\":{\"type\":\"entity_killed\",\"entity\":\"minecraft:ender_dragon\",\"minimum\":1.5}}]}").isEmpty());
+    }
 
     @Test void parsesValidSubtasksWithBody() {
         String json = """

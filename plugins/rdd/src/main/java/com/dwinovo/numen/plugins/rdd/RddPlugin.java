@@ -94,22 +94,35 @@ public final class RddPlugin implements NumenPlugin {
     }
 
     /** Model-requested task correction: only explicitly optional food may be skipped. */
-    static String skipOptionalCurrent(UUID companionId, String reason) {
+    static String skipOptionalCurrent(UUID companionId, String expectedSubtaskId, String reason) {
         RddRuntime runtime = RUNTIMES.get(companionId);
         if (runtime == null || runtime.chain().currentSubtask() == null) return "no active executable RDD subtask";
         Subtask current = runtime.chain().currentSubtask();
-        Object key = current.condition().get("asset_key");
-        if (!(key instanceof String s) || !switch (s.toLowerCase(java.util.Locale.ROOT)) {
-            case "minecraft:carrot", "minecraft:potato", "minecraft:beetroot", "minecraft:baked_potato", "minecraft:bread" -> true;
-            default -> false;
-        }) return "refused: only optional food subtasks can be skipped";
+        if (!current.id().equals(expectedSubtaskId)) return "refused: stale subtask id; read rdd_status again";
+        if (!RddOptionalFood.canSkip(current, lastInventory(companionId)))
+            return "refused: only extra food variety with at least 16 alternative ready-to-eat foods can be skipped";
+        if (com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companionId) != null)
+            return "refused: body is busy; wait for the current action to stop";
         runtime.chain().skipSubtask(current.id(), reason == null || reason.isBlank() ? "optional food unavailable" : reason);
         clearBody(companionId);
+        finishResolvedPrimary(companionId, runtime);
         publishTaskSnapshot(companionId, "model_requested_optional_skip");
         RddMonitor.publish("subtask_skipped", Map.of("companionId", companionId.toString(),
                 "subtask", current.id(), "reason", reason == null ? "optional food unavailable" : reason,
                 "source", "numen_model"));
         return "optional food subtask skipped; continue with the next RDD step";
+    }
+
+    /** A terminal optional step must not leave the chain parked at AWAITING_SUPERVISOR. */
+    static void finishResolvedPrimary(UUID companionId, RddRuntime runtime) {
+        var chain = runtime.chain();
+        if (chain.primaryStatus() != com.dwinovo.numen.rdd.api.PrimaryGoalStatus.AWAITING_SUPERVISOR) return;
+        String primary = chain.currentPrimary().id();
+        runtime.applySupervisor(new com.dwinovo.numen.rdd.api.SupervisorDecision(
+                com.dwinovo.numen.rdd.api.SupervisorDecisionType.CONFIRM, primary,
+                "required conditions verified; optional omissions remain SKIPPED, not world achievements"));
+        RddMonitor.publish("primary_resolved", Map.of("companionId", companionId.toString(), "primary", primary,
+                "reason", "verified required steps; optional steps may be skipped"));
     }
 
     private static final Map<UUID, String> LAST_CONTEXT = new java.util.concurrent.ConcurrentHashMap<>();

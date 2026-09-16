@@ -17,6 +17,7 @@ public final class TaskChain {
     // 非 final：懒展开注入二级时需要重建 Goal（把当前未展开一级替换为已展开版本）。
     private Goal goal;
     private final Map<String, SubtaskStatus> statuses = new LinkedHashMap<>();
+    private final Map<String, String> skipReasons = new LinkedHashMap<>();
     private int primaryIndex;
     private int subtaskIndex;
     private PrimaryGoalStatus primaryStatus = PrimaryGoalStatus.PENDING;
@@ -202,12 +203,14 @@ public final class TaskChain {
      */
     public synchronized void skipSubtask(String subtaskId, String reason) {
         requireCurrent(subtaskId);
+        if (primaryStatus != PrimaryGoalStatus.ACTIVE) throw new IllegalStateException("primary not active");
         SubtaskStatus st = statuses.get(subtaskId);
         if (st != SubtaskStatus.RUNNING && st != SubtaskStatus.FAILED && st != SubtaskStatus.STALLED) {
             throw new IllegalStateException("current subtask cannot be skipped from " + st);
         }
         if (reason == null || reason.isBlank()) throw new IllegalArgumentException("skip reason required");
-        statuses.put(subtaskId, SubtaskStatus.COMPLETED);
+        statuses.put(subtaskId, SubtaskStatus.SKIPPED);
+        skipReasons.put(subtaskId, reason);
         advanceOrAwait();
     }
 
@@ -227,6 +230,7 @@ public final class TaskChain {
                 item.put("id", subtask.id());
                 item.put("description", subtask.description());
                 item.put("status", statuses.get(subtask.id()).name());
+                if (skipReasons.containsKey(subtask.id())) item.put("skipReason", skipReasons.get(subtask.id()));
                 item.put("detectionMode", subtask.detectionMode().name());
                 item.put("condition", subtask.condition());
                 item.put("current", p == primaryIndex && s == subtaskIndex);
@@ -276,6 +280,7 @@ public final class TaskChain {
             st.addProperty(e.getKey(), e.getValue().name());
         }
         o.add("statuses", st);
+        o.add("skipReasons", GSON.toJsonTree(skipReasons));
         o.addProperty("primaryIndex", primaryIndex);
         o.addProperty("subtaskIndex", subtaskIndex);
         o.addProperty("primaryStatus", primaryStatus.name());
@@ -308,6 +313,12 @@ public final class TaskChain {
         chain.primaryIndex = o.get("primaryIndex").getAsInt();
         chain.subtaskIndex = o.get("subtaskIndex").getAsInt();
         chain.primaryStatus = PrimaryGoalStatus.valueOf(o.get("primaryStatus").getAsString());
+        if (o.has("skipReasons") && o.get("skipReasons").isJsonObject()) {
+            for (var entry : o.getAsJsonObject("skipReasons").entrySet()) {
+                if (chain.statuses.get(entry.getKey()) == SubtaskStatus.SKIPPED)
+                    chain.skipReasons.put(entry.getKey(), entry.getValue().getAsString());
+            }
+        }
         chain.validateRestoredState();
         return chain;
     }
@@ -316,7 +327,7 @@ public final class TaskChain {
         if (subtaskIndex + 1 < currentPrimary().subtasks().size()) { subtaskIndex++; return; }
         primaryStatus = PrimaryGoalStatus.AWAITING_SUPERVISOR;
     }
-    private void requireCurrent(String id) { if (id == null || !currentSubtask().id().equals(id)) throw new IllegalArgumentException("stale subtask: " + id); }
+    private void requireCurrent(String id) { if (id == null || currentSubtask() == null || !currentSubtask().id().equals(id)) throw new IllegalArgumentException("stale subtask: " + id); }
 
     /** Reject corrupt handoff state before it can reach a live executor or monitor. */
     private void validateRestoredState() {

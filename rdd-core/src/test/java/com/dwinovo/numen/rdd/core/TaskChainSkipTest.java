@@ -21,6 +21,22 @@ class TaskChainSkipTest {
         chain.skipSubtask("food", "optional food unavailable");
         assertEquals("next", chain.currentSubtask().id());
         assertEquals(SubtaskStatus.PENDING, chain.currentSubtaskStatus());
-        assertEquals(SubtaskStatus.COMPLETED, chain.subtaskStatuses().get("food"));
+        assertEquals(SubtaskStatus.SKIPPED, chain.subtaskStatuses().get("food"));
+        var restored = TaskChain.fromJson(chain.toJson());
+        assertEquals(SubtaskStatus.SKIPPED, restored.subtaskStatuses().get("food"));
+        assertTrue(restored.toJson().contains("optional food unavailable"));
+        assertThrows(IllegalArgumentException.class, () -> restored.skipSubtask("food", "duplicate"));
+    }
+
+    @Test void lastSkipRemainsExplicitUntilSupervisorResolves() {
+        var step = Subtask.hardCoded("s", "optional", Map.of("asset_key", "minecraft:potato"));
+        var chain = new TaskChain(new Goal("g", "goal", List.of(new PrimaryGoal("p", "phase", List.of(step)))));
+        chain.startCurrent();
+        chain.skipSubtask("s", "bread reserve verified");
+        assertEquals(PrimaryGoalStatus.AWAITING_SUPERVISOR, chain.primaryStatus());
+        assertThrows(IllegalStateException.class, () -> chain.skipSubtask("s", "again"));
+        chain.applySupervisorDecision(new SupervisorDecision(SupervisorDecisionType.CONFIRM, "p", "optional resolved"));
+        assertEquals(PrimaryGoalStatus.COMPLETED, chain.primaryStatus());
+        assertEquals(SubtaskStatus.SKIPPED, chain.subtaskStatuses().get("s"));
     }
 }

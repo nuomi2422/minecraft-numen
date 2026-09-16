@@ -55,7 +55,7 @@ final class RddBodyTools {
      * {@code mine} 语义同样是“取得此物品”；若不在这张小白名单内，非方块物品仍必须
      * 走 capability_gap，不能猜一个不存在的 {@code *_ore}。
      *
-     * <p>只覆盖原版成熟作物。规划提示仍要求优先收成熟作物；这个映射只修正
+     * <p>只覆盖原版作物 ID；本映射不检查成熟度，不能据此宣称只采成熟作物。这个映射只修正
      * {@code minecraft:carrot} 这类“掉落物 ID 不等于方块 ID”的参数边界。
      */
     private static final Map<String, String> CROP_DROP_TO_BLOCK = Map.of(

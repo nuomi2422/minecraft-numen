@@ -79,6 +79,7 @@ final class RddDetector {
     private record StallCount(String subtaskId, int total) {}
     /** 已达重试上限被"停车"为 FAILED 的二级（uuid→subtaskId）。停车后不再自动重试/nudge，只留资产检测。 */
     private final Map<UUID, String> gapParked = new ConcurrentHashMap<>();
+    private final RddSurplus surplus = new RddSurplus();
 
     private int tickCounter;
     /** 资产 populate 节流：每 5 次检测（约 5 秒）把背包物品写进 AssetRegistry。 */
@@ -92,6 +93,7 @@ final class RddDetector {
                     retries.clear();
                     stallCounts.clear();
                     gapParked.clear();
+                    surplus.clear();
                     tickCounter = 0;
                     assetTick = 0;
                 });
@@ -130,6 +132,7 @@ final class RddDetector {
             PrimaryGoalStatus ps = chain.primaryStatus();
             // 真实背包先扫+缓存（规划注入数据源）；缓存是女仆属性，收尾/监督态也照常更新。
             Map<String, Integer> counts = countInventory(ap);
+            surplus.inspect(ap, chain, counts);
             RddPlugin.cacheInventory(ap.getUUID(), counts);
             // Observe even parked/failed/unexpanded chains. A control-state early
             // return must not make the monitoring station appear frozen.
@@ -181,7 +184,7 @@ final class RddDetector {
             if (status == SubtaskStatus.FAILED) {
                 Subtask cur = chain.currentSubtask();
                 if (cur.detectionMode() == DetectionMode.HARD_CODED
-                        && HardCodedEvaluator.matches(cur.condition(), counts)) {
+                        && conditionMatches(ap, cur, counts)) {
                     RddMonitor.publish("early_achievement", Map.of(
                             "subtask", cur.id(), "description", cur.description(),
                             "reason", "FAILED but assets now satisfied, completed on real inventory"));
@@ -213,13 +216,14 @@ final class RddDetector {
                 if (cur.detectionMode() != DetectionMode.HARD_CODED) {
                     break;
                 }
-                if (!HardCodedEvaluator.matches(cur.condition(), counts)) {
+                if (!conditionMatches(ap, cur, counts)) {
                     break;
                 }
                 RddMonitor.publish("early_achievement", Map.of(
                         "subtask", cur.id(), "description", cur.description(),
                         "reason", "assets already present, skipped AI execution"));
                 completeSubtask(ap, rt, cur);
+                if (chain.currentSubtask() == cur && chain.primaryStatus() == PrimaryGoalStatus.ACTIVE) return;
                 if (chain.primaryStatus() == PrimaryGoalStatus.PENDING) {
                     // 一级全完成被 CONFIRM → 进入下一级：下一级可能未展开(懒边界)→ 只上报驱动器，绝不 activate(会抛)
                     if (chain.currentPrimary().unexpanded()) {
@@ -264,7 +268,7 @@ final class RddDetector {
             if (RddPlugin.supervisionEnabled() && RddPlugin.bodySubmissionEnabled()) {
                 maybeSubmitBody(ap, current);
             }
-            if (HardCodedEvaluator.matches(current.condition(), counts)) {
+            if (conditionMatches(ap, current, counts)) {
                 completeSubtask(ap, rt, current);
                 return;
             }
@@ -387,12 +391,17 @@ final class RddDetector {
         RetryState rs = retries.get(ap.getUUID());
         int n = (rs != null && rs.subtaskId().equals(current.id())) ? rs.count() : 0;
         if (n >= MAX_SUBTASK_RETRIES) {
-            if (isOptionalFood(current)) {
+            if (RddOptionalFood.canSkip(current, countInventory(ap))
+                    && CompanionTickDispatcher.currentTaskFor(ap.getUUID()) == null) {
                 String reason = "optional food unavailable or unreachable; continue mainline";
                 rt.skipSubtask(current.id(), reason);
                 RddPlugin.clearBody(ap.getUUID());
                 retries.remove(ap.getUUID());
                 gapParked.remove(ap.getUUID());
+                stalls.remove(ap.getUUID());
+                stallCounts.remove(ap.getUUID());
+                furnaces.remove(ap.getUUID());
+                RddPlugin.finishResolvedPrimary(ap.getUUID(), rt);
                 RddMonitor.publish("subtask_skipped", Map.of(
                         "companionId", ap.getUUID().toString(), "subtask", current.id(), "reason", reason));
                 RddPlugin.publishTaskSnapshot(ap.getUUID(), "optional_food_skipped");
@@ -418,16 +427,6 @@ final class RddDetector {
         RddMonitor.publish("subtask_retry", Map.of("subtask", current.id(), "retry", n + 1, "max", MAX_SUBTASK_RETRIES));
     }
 
-    /** Optional nutrition is useful but never a reason to park the Minecraft mainline. */
-    private static boolean isOptionalFood(Subtask current) {
-        Object key = current.condition().get("asset_key");
-        if (!(key instanceof String s)) return false;
-        return switch (s.toLowerCase(java.util.Locale.ROOT)) {
-            case "minecraft:carrot", "minecraft:potato", "minecraft:beetroot",
-                    "minecraft:baked_potato", "minecraft:bread" -> true;
-            default -> false;
-        };
-    }
 
     /** 把背包物品写进 AssetRegistry（GLOBAL 作用域，来源=当前二级）。观测证据：inventory_scan。 */
     private void populateAssets(NumenPlayer ap, RddRuntime rt, Subtask current, Map<String, Integer> counts) {
@@ -582,6 +581,7 @@ final class RddDetector {
 
     /** 世界真身满足条件 → 推进；二级全完成 → 简化 Supervisor CONFIRM。 */
     private void completeSubtask(NumenPlayer ap, RddRuntime rt, Subtask current) {
+        if (surplus.hold(ap, rt.chain(), current, countInventory(ap))) return;
         boolean completed = rt.applyHardCoded(current.id(), true);
         RddPlugin.clearBody(ap.getUUID());
         retries.remove(ap.getUUID());
@@ -593,7 +593,10 @@ final class RddDetector {
         }
         LOG.info("[rdd] 二级目标完成: {} ({})", current.id(), current.description());
         RddMonitor.publish("subtask_completed", Map.of(
-                "subtask", current.id(), "description", current.description()));
+                "subtask", current.id(), "description", current.description(), "condition", current.condition(),
+                "companionId", ap.getUUID().toString(), "evidenceSource",
+                com.dwinovo.numen.rdd.core.WorldFactConditions.knownType(current.condition().get("type"))
+                        ? "server_world_fact" : "server_inventory"));
         RddPlugin.publishTaskSnapshot(ap.getUUID(), "subtask_completed");
         TaskChain chain = rt.chain();
         if (chain.primaryStatus() == PrimaryGoalStatus.AWAITING_SUPERVISOR) {
@@ -645,8 +648,15 @@ final class RddDetector {
         }
     }
 
+    static boolean conditionMatches(NumenPlayer ap, Subtask task, Map<String, Integer> counts) {
+        if (task.condition().containsKey("type") && !"inventory".equals(task.condition().get("type")))
+            return com.dwinovo.numen.rdd.core.WorldFactConditions.valid(task.condition())
+                    && RddWorldFacts.matches(ap, task.condition());
+        return HardCodedEvaluator.matches(task.condition(), counts);
+    }
+
     /** 统计背包里每种物品的数量，用命名空间 ID（minecraft:oak_log）作 key。 */
-    private Map<String, Integer> countInventory(NumenPlayer ap) {
+    static Map<String, Integer> countInventory(NumenPlayer ap) {
         Map<String, Integer> counts = new HashMap<>();
         var inv = ap.getInventory();
         for (int i = 0; i < inv.getContainerSize(); i++) {

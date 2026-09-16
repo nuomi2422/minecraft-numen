@@ -12,14 +12,23 @@ import java.util.function.Consumer;
 final class RddSkipTool implements NumenTool {
     @Override public String name() { return "rdd_skip_optional"; }
     @Override public String description() {
-        return "Skip the current optional food subtask (carrot/potato/beetroot/baked_potato/bread) when it is unavailable or unreachable, preserving completed progress and continuing the mainline. Refuses equipment, mining, Nether, End, and architecture steps.";
+        return "Challenge an unreachable extra carrot/potato/beetroot/baked_potato step. Requires 16 alternative ready-to-eat foods and idle body. Read rdd_status for expected_subtask_id first. Records SKIPPED, never COMPLETED. Refuses bread, equipment and progression goals.";
     }
     @Override public Map<String, Object> parameterSchema() {
-        return Schema.object().optionalString("reason", "Visible reason for skipping this optional food step.").build();
+        return Schema.object().string("expected_subtask_id", "Current subtask ID from rdd_status.")
+                .string("reason", "Observed reason why this optional food is unavailable.").build();
     }
     @Override public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
-        String reason = args != null && args.has("reason") ? args.get("reason").getAsString() : "optional food unavailable";
-        reply.accept(com.dwinovo.numen.task.TaskResult.ok(
-                RddPlugin.skipOptionalCurrent(companion.getUUID(), reason), Map.of()).toJson());
+        try {
+            String reason = args.get("reason").getAsString();
+            String expected = args.get("expected_subtask_id").getAsString();
+            if (reason.isBlank() || expected.isBlank()) throw new IllegalArgumentException("id and reason required");
+            String result = RddPlugin.skipOptionalCurrent(companion.getUUID(), expected, reason);
+            reply.accept((result.startsWith("optional food subtask skipped")
+                    ? com.dwinovo.numen.task.TaskResult.ok(result, Map.of())
+                    : com.dwinovo.numen.task.TaskResult.fail(result)).toJson());
+        } catch (RuntimeException ex) {
+            reply.accept(com.dwinovo.numen.task.TaskResult.fail("skip refused: " + ex.getMessage()).toJson());
+        }
     }
 }

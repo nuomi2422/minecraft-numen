@@ -151,6 +151,8 @@ final class RddPlanGuard {
     }
 
     private static boolean alreadyHeld(SubtaskSpec spec, Map<String, Integer> held) {
+        if (spec != null && spec.condition().containsKey("group"))
+            return com.dwinovo.numen.rdd.core.HardCodedEvaluator.matches(spec.condition(), held);
         String key = assetKeyOf(spec);
         if (key.isEmpty() || held == null || held.isEmpty()) {
             return false;

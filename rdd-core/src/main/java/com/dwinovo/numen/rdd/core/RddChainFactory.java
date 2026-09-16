@@ -131,6 +131,17 @@ public final class RddChainFactory {
 
     /** 确定性条件必须可被 {@link HardCodedEvaluator} 判定：asset_key 非空；minimum（若有）非负。 */
     private static void validateCondition(Map<String, Object> condition, int index) {
+        if (condition.containsKey("type") && !"inventory".equals(condition.get("type"))) {
+            if (!WorldFactConditions.valid(condition)) throw new IllegalArgumentException("invalid world fact condition at " + index);
+            return;
+        }
+        if (condition.containsKey("group")) {
+            Object min = condition.get("minimum");
+            if (!InventoryGroups.known(condition.get("group")) || condition.containsKey("asset_key")
+                    || !(min instanceof Number n) || n.intValue() <= 0 || n.doubleValue() != n.intValue())
+                throw new IllegalArgumentException("invalid inventory group condition at " + index);
+            return;
+        }
         Object assetKey = condition.get("asset_key");
         if (!(assetKey instanceof String key) || key.isBlank()) {
             throw new IllegalArgumentException("spec " + index + " lacks a non-blank asset_key");
