@@ -60,6 +60,7 @@ public final class RddPlugin implements NumenPlugin {
         supervisionFlag = numen.configDir().resolve("rdd-supervision.flag");
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
+        numen.registerTool(new RddSkipTool());
         // 接管 /goal：先同步认领，Stage-A 异步规划；规划期间 NUMEN 原生目标循环让位。
         com.dwinovo.numen.agent.goal.GoalSinks.register((uuid, objective) -> {
             if (uuid == null || objective == null || objective.isBlank()) {
@@ -90,6 +91,25 @@ public final class RddPlugin implements NumenPlugin {
             }
             return context;
         });
+    }
+
+    /** Model-requested task correction: only explicitly optional food may be skipped. */
+    static String skipOptionalCurrent(UUID companionId, String reason) {
+        RddRuntime runtime = RUNTIMES.get(companionId);
+        if (runtime == null || runtime.chain().currentSubtask() == null) return "no active executable RDD subtask";
+        Subtask current = runtime.chain().currentSubtask();
+        Object key = current.condition().get("asset_key");
+        if (!(key instanceof String s) || !switch (s.toLowerCase(java.util.Locale.ROOT)) {
+            case "minecraft:carrot", "minecraft:potato", "minecraft:beetroot", "minecraft:baked_potato", "minecraft:bread" -> true;
+            default -> false;
+        }) return "refused: only optional food subtasks can be skipped";
+        runtime.chain().skipSubtask(current.id(), reason == null || reason.isBlank() ? "optional food unavailable" : reason);
+        clearBody(companionId);
+        publishTaskSnapshot(companionId, "model_requested_optional_skip");
+        RddMonitor.publish("subtask_skipped", Map.of("companionId", companionId.toString(),
+                "subtask", current.id(), "reason", reason == null ? "optional food unavailable" : reason,
+                "source", "numen_model"));
+        return "optional food subtask skipped; continue with the next RDD step";
     }
 
     private static final Map<UUID, String> LAST_CONTEXT = new java.util.concurrent.ConcurrentHashMap<>();

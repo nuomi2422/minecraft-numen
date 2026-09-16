@@ -14,7 +14,7 @@ import java.util.function.Consumer;
 /** Small diagnostic/status tool for the RDD host adapter. */
 final class RddStatusTool implements NumenTool {
     @Override public String name() { return "rdd_status"; }
-    @Override public String description() { return "Read the RDD asset task-chain status. No arguments."; }
+    @Override public String description() { return "Read the RDD asset task-chain status. If the current optional food step is unavailable, use rdd_skip_optional to preserve progress and continue; do not replace the whole chain."; }
     @Override public Map<String, Object> parameterSchema() { return Schema.none(); }
 
     @Override
@@ -30,12 +30,20 @@ final class RddStatusTool implements NumenTool {
             reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD has no active task chain", Map.of("active", false)).toJson());
             return;
         }
+        var current = runtime.chain().currentSubtask();
+        if (current == null) {
+            reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain is awaiting expansion", Map.of(
+                    "active", true, "goal", runtime.chain().goal().id(),
+                    "primary_goal", runtime.chain().currentPrimary().id(),
+                    "primary_status", runtime.chain().primaryStatus().name())).toJson());
+            return;
+        }
         reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain is active", Map.of(
                 "active", true,
                 "goal", runtime.chain().goal().id(),
                 "primary_goal", runtime.chain().currentPrimary().id(),
                 "primary_status", runtime.chain().primaryStatus().name(),
-                "subtask", runtime.chain().currentSubtask().id(),
+                "subtask", current.id(),
                 "subtask_status", runtime.chain().currentSubtaskStatus().name(),
                 "assets", runtime.assets().snapshot().size())).toJson());
     }
