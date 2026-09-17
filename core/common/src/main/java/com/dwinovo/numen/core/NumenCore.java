@@ -127,6 +127,8 @@ public final class NumenCore {
         ToolRegistry.register(new com.dwinovo.numen.core.tools.interact.InspectGuiTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.inventory.TransferTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.interact.CloseGuiTool());
+        // 菜单按钮/选项（附魔档位、村民交易、织布机图案…）——自编译闭环按智能体自报的缺口补上。
+        ToolRegistry.register(new com.dwinovo.numen.core.tools.interact.ClickGuiTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.perception.GetSelfStatusTool());   // SAMPLE: raw NumenTool
         ToolRegistry.register(new com.dwinovo.numen.core.tools.perception.GetOwnerStatusTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.inventory.LookupRecipeTool());
