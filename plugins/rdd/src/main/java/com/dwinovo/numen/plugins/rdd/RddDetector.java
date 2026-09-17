@@ -60,6 +60,15 @@ final class RddDetector {
     private static final int CAPABILITY_GAP_AFTER_STALLS = 3;
     /** 资产提前触发：单个 tick 内最多连跳过多少个"资产已满足"的二级（防极端长链死循环）。 */
     private static final int MAX_INSTANT_PASS = 32;
+    /**
+     * 停车守望：停车（{@code gapParked}）本意是"别再自动重试烧 token"，但 tickRuntime 在 FAILED
+     * 分支就 return，trackStall 只在 RUNNING 跑——结果停车 = 永远没人拍醒，AI 结束当前回合后
+     * 无人喂目标即永久静默，且外部看不见（实测冻结 15 分钟零活动）。这里补一层低频率守望。
+     * 连续这么多次检测（1 次/秒）资产指纹无变化才再拍一次。
+     */
+    private static final int PARKED_WATCH_CHECKS = 300;
+    /** 同一个停车二级最多再拍醒几次；之后只发可见事件，不再烧模型调用。 */
+    private static final int MAX_PARKED_NUDGES = 3;
     private static final Gson GSON = new Gson();
 
     /** 卡死监督状态：记录每个同伴当前二级的资产指纹与未变化计数。 */
@@ -79,6 +88,9 @@ final class RddDetector {
     private record StallCount(String subtaskId, int total) {}
     /** 已达重试上限被"停车"为 FAILED 的二级（uuid→subtaskId）。停车后不再自动重试/nudge，只留资产检测。 */
     private final Map<UUID, String> gapParked = new ConcurrentHashMap<>();
+    /** 停车守望状态（uuid→指纹/未变化计数/已拍醒次数）：停车也不能静默死掉。 */
+    private final Map<UUID, ParkedWatch> parkedWatches = new ConcurrentHashMap<>();
+    private record ParkedWatch(String subtaskId, String fingerprint, int unchanged, int nudges) {}
     private final RddSurplus surplus = new RddSurplus();
 
     private int tickCounter;
@@ -95,6 +107,7 @@ final class RddDetector {
                     retries.clear();
                     stallCounts.clear();
                     gapParked.clear();
+                    parkedWatches.clear();
                     surplus.clear();
                     tickCounter = 0;
                     assetTick = 0;
@@ -403,6 +416,7 @@ final class RddDetector {
                 RddPlugin.clearBody(ap.getUUID());
                 retries.remove(ap.getUUID());
                 gapParked.remove(ap.getUUID());
+                parkedWatches.remove(ap.getUUID());
                 stalls.remove(ap.getUUID());
                 stallCounts.remove(ap.getUUID());
                 furnaces.remove(ap.getUUID());
@@ -418,11 +432,13 @@ final class RddDetector {
             // AI 或主人真攒够资产，由 FAILED 分支的 early_achievement 自动验收推进，不堵恢复路径。
             if (!current.id().equals(gapParked.get(ap.getUUID()))) {
                 gapParked.put(ap.getUUID(), current.id());
+                parkedWatches.remove(ap.getUUID());
                 RddPlugin.nudge(ap.getUUID(), "这个目标已耗尽自动重试次数，当前停车等待真实资产或有证据的新方案。失败原因尚未分类：先查看工具终态、附近资源、路径、装备和模型连接。不要原样重复执行，也不要把资源不足自动升级为自编译请求。");
                 RddMonitor.publish("subtask_parked", Map.of(
                         "companionId", ap.getUUID().toString(), "subtask", current.id(), "failureClass", "UNKNOWN",
                         "reason", "retries exhausted; parked awaiting assets; capability gap not established"));
             }
+            watchParked(ap, rt, current);
             return;
         }
         retries.put(ap.getUUID(), new RetryState(current.id(), n + 1));
@@ -432,6 +448,48 @@ final class RddDetector {
         RddMonitor.publish("subtask_retry", Map.of("subtask", current.id(), "retry", n + 1, "max", MAX_SUBTASK_RETRIES));
     }
 
+
+    /**
+     * 停车守望：停车不等于可以静默死掉。低频看资产指纹，长期无变化就再拍一次；
+     * 拍醒预算耗尽后只发可见事件（{@code subtask_parked_silent}），把"需要人或外部介入"
+     * 明确暴露出来，而不是让整条链无声冻结。
+     */
+    private void watchParked(NumenPlayer ap, RddRuntime rt, Subtask current) {
+        UUID uuid = ap.getUUID();
+        String fp = observeWork(ap, rt, current).fingerprint();
+        ParkedWatch w = parkedWatches.get(uuid);
+        if (w == null || !w.subtaskId().equals(current.id())) {
+            parkedWatches.put(uuid, new ParkedWatch(current.id(), fp, 0, 0));
+            return;
+        }
+        if (!w.fingerprint().equals(fp)) {
+            // 仍有变化（AI 自己在推进 / 资产真被攒够）→ 重置窗口，不打扰
+            parkedWatches.put(uuid, new ParkedWatch(current.id(), fp, 0, w.nudges()));
+            return;
+        }
+        int unchanged = w.unchanged() + 1;
+        if (unchanged < PARKED_WATCH_CHECKS) {
+            parkedWatches.put(uuid, new ParkedWatch(current.id(), fp, unchanged, w.nudges()));
+            return;
+        }
+        int nudged = w.nudges() + 1;
+        parkedWatches.put(uuid, new ParkedWatch(current.id(), fp, 0, nudged));
+        if (w.nudges() >= MAX_PARKED_NUDGES) {
+            if (w.nudges() == MAX_PARKED_NUDGES) {
+                RddMonitor.publish("subtask_parked_silent", Map.of(
+                        "companionId", uuid.toString(), "subtask", current.id(),
+                        "reason", "parked and unchanged after " + MAX_PARKED_NUDGES
+                                + " nudges; needs external intervention"));
+            }
+            return; // 预算耗尽：只报一次，不再烧模型调用
+        }
+        RddPlugin.nudge(uuid, "你的目标「" + current.description() + "」还在，但停车后一直没被判出进展。"
+                + "先确认真实卡点：查看工具终态、附近资源、路径和装备；"
+                + "方向不对就换一条路（换地点、换材料来源、换工具），不要原样重复。");
+        RddMonitor.publish("subtask_parked_renudge", Map.of(
+                "companionId", uuid.toString(), "subtask", current.id(),
+                "nudge", nudged, "max", MAX_PARKED_NUDGES, "reason", "parked with no progress"));
+    }
 
     /** 把背包物品写进 AssetRegistry（GLOBAL 作用域，来源=当前二级）。观测证据：inventory_scan。 */
     private void populateAssets(NumenPlayer ap, RddRuntime rt, Subtask current, Map<String, Integer> counts) {
@@ -592,6 +650,7 @@ final class RddDetector {
         retries.remove(ap.getUUID());
         stallCounts.remove(ap.getUUID());
         gapParked.remove(ap.getUUID());
+        parkedWatches.remove(ap.getUUID());
         furnaces.remove(ap.getUUID());
         if (!completed) {
             return;
