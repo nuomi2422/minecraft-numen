@@ -34,7 +34,8 @@ final class RddStagePlanner {
         // 注入"当前真实背包"：规划师要站在已有资产上推进，不倒退重规划已持有的装备/设施。
         // 再贴上经验知识（无知识时与原来逐字相同）。
         String base = RddPlanningKnowledge.attach(
-                planningPrompt(objective, RddPlugin.lastInventory(companionId)),
+                planningPrompt(objective, RddPlugin.lastInventory(companionId),
+                        RddPlugin.planningAssets(companionId)),
                 RddPlanningPolicy.block(objective, "stage_a"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 base, objective, "stage_a", List.of());
@@ -124,8 +125,13 @@ final class RddStagePlanner {
                     + "只输出 plan_stages 工具调用，不要写多余文字。";
 
     static String planningPrompt(String objective, Map<String, Integer> held) {
+        return planningPrompt(objective, held, "");
+    }
+
+    static String planningPrompt(String objective, Map<String, Integer> held, String worldAssets) {
         return "主人的目标：" + objective + "\n\n"
                 + renderHeldAssets(held)
+                + (worldAssets == null || worldAssets.isBlank() ? "" : worldAssets + "\n\n")
                 + "请用 plan_stages 工具给出发展阶段清单。每个阶段包含：\n"
                 + "- theme：该阶段要达成的发展主线（可读、自含，能被据此拆出可执行的子步骤）\n"
                 + "- wait_for（可选）：进入该阶段前必须已持有的前置资产，{asset_key: 真实命名空间ID, minimum: 数量}\n"

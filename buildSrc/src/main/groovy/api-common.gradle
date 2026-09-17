@@ -135,6 +135,7 @@ tasks.register('apiJar', Jar) {
     include 'com/dwinovo/numen/NumenPaths*.class'  // config/numen/ 的唯一答案(NumenApi.configDir 背后那个)
     include 'com/dwinovo/numen/agent/tool/api/**'  // per-call tool context
     include 'com/dwinovo/numen/agent/tool/**'      // tool contract + registration + Schema/ToolArgs
+    include 'com/dwinovo/numen/agent/FunctionalBlockTypes*.class' // shared durable workstation classification
     include 'com/dwinovo/numen/task/**'            // task contract + the registration points a pack drives
     include 'com/dwinovo/numen/entity/NumenPlayer*.class'   // the body a tool acts on
     include 'com/dwinovo/numen/entity/InputDriver*.class'   // ...and its input surface (look/press keys)

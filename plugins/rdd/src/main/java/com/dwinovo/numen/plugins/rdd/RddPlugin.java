@@ -28,6 +28,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class RddPlugin implements NumenPlugin {
     private static final Logger LOG = LoggerFactory.getLogger(RddPlugin.class);
     private static final Map<UUID, RddRuntime> RUNTIMES = new ConcurrentHashMap<>();
+    /** Reusable world assets survive task replacement and are attached to the next task runtime. */
+    private static final Map<UUID, AssetRegistry> ASSETS = new ConcurrentHashMap<>();
     private static final Set<UUID> DECOMPOSING = ConcurrentHashMap.newKeySet();
     private static final Map<UUID, BodyState> BODY = new ConcurrentHashMap<>();
     private static final AtomicLong BODY_CALLS = new AtomicLong();
@@ -50,6 +52,8 @@ public final class RddPlugin implements NumenPlugin {
     private static volatile NumenApi numenApi;
     /** 任务链持久化目录 config/numen/rdd-tasks（每个同伴一个 <uuid>.json）。 */
     private static volatile Path tasksDir;
+    /** Independent world-asset store; clearing a task must not erase a base or known structure. */
+    private static volatile Path assetsDir;
 
     record BodyState(String subtaskId, int submitCount) {}
 
@@ -57,10 +61,12 @@ public final class RddPlugin implements NumenPlugin {
     public void setup(NumenApi numen) {
         numenApi = numen;
         tasksDir = numen.configDir().resolve("rdd-tasks");
+        assetsDir = numen.configDir().resolve("rdd-assets");
         supervisionFlag = numen.configDir().resolve("rdd-supervision.flag");
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
         numen.registerTool(new RddSkipTool());
+        numen.registerTool(new RddAssetsTool());
         // 接管 /goal：先同步认领，Stage-A 异步规划；规划期间 NUMEN 原生目标循环让位。
         com.dwinovo.numen.agent.goal.GoalSinks.register((uuid, objective) -> {
             if (uuid == null || objective == null || objective.isBlank()) {
@@ -134,6 +140,7 @@ public final class RddPlugin implements NumenPlugin {
             RddGoalDriver.clearAll();
             BODY.clear();
             RUNTIMES.clear();
+            ASSETS.clear();
             LAST_CONTEXT.clear();
             LAST_INVENTORY.clear();
         });
@@ -174,27 +181,32 @@ public final class RddPlugin implements NumenPlugin {
     /** Exact RDD state block returned to Numen; observation does not own task progress. */
     private static String renderStateContext(UUID uuid) {
             if (DECOMPOSING.contains(uuid)) {
-                return "<rdd><enabled>true</enabled><active>false</active><decomposing>true</decomposing></rdd>";
+                return withAssets(uuid, "<rdd><enabled>true</enabled><active>false</active><decomposing>true</decomposing></rdd>");
             }
             RddRuntime runtime = RUNTIMES.get(uuid);
             if (runtime == null) {
-                return "<rdd><enabled>true</enabled><active>false</active></rdd>";
+                return withAssets(uuid, "<rdd><enabled>true</enabled><active>false</active></rdd>");
             }
             TaskChain chain = runtime.chain();
             Subtask current = chain.currentSubtask();
             if (current == null) {
                 // 当前一级已到达但未展开(懒加载)：诚实报阶段主题，不伪造可执行节点
-                return "<rdd><enabled>true</enabled><active>true</active>"
+                return withAssets(uuid, "<rdd><enabled>true</enabled><active>true</active>"
                         + "<primary_status>" + chain.primaryStatus() + "</primary_status>"
                         + "<state>stage_reached_expanding</state>"
-                        + "<current_phase>" + escape(chain.currentPrimary().description()) + "</current_phase></rdd>";
+                        + "<current_phase>" + escape(chain.currentPrimary().description()) + "</current_phase></rdd>");
             }
-            return "<rdd><enabled>true</enabled><active>true</active>"
+            return withAssets(uuid, "<rdd><enabled>true</enabled><active>true</active>"
                     + "<primary_status>" + chain.primaryStatus() + "</primary_status>"
                     + "<subtask>" + escape(current.id()) + "</subtask>"
                     + "<current_task>" + escape(current.description()) + "</current_task>"
                     + "<done_when>" + escape(String.valueOf(current.condition())) + "</done_when>"
-                    + "<subtask_status>" + chain.currentSubtaskStatus() + "</subtask_status></rdd>";
+                    + "<subtask_status>" + chain.currentSubtaskStatus() + "</subtask_status></rdd>");
+    }
+
+    private static String withAssets(UUID companionId, String rddContext) {
+        String worldAssets = RddAssetContext.render(assets(companionId), 1200);
+        return worldAssets.isBlank() ? rddContext : rddContext + "\n" + worldAssets;
     }
 
     /** Stage-A 退化回落：今天的单遍 decompose -> bind + startCurrent（目标不被吞，行为不劣化）。 */
@@ -231,13 +243,22 @@ public final class RddPlugin implements NumenPlugin {
         BODY.remove(companionId);
         DECOMPOSING.remove(companionId);
         RddGoalDriver.clear(companionId);
-        RUNTIMES.put(companionId, new RddRuntime(new TaskChain(goal), new AssetRegistry()));
+        RUNTIMES.put(companionId, new RddRuntime(new TaskChain(goal), assets(companionId)));
         saveRuntimes();
         publishTaskSnapshot(companionId, "task_bound");
     }
 
     public static RddRuntime runtime(UUID companionId) {
         return RUNTIMES.get(companionId);
+    }
+
+    public static AssetRegistry assets(UUID companionId) {
+        if (companionId == null) return new AssetRegistry();
+        return ASSETS.computeIfAbsent(companionId, id -> RddAssetStore.load(assetsDir, id));
+    }
+
+    static String planningAssets(UUID companionId) {
+        return RddAssetContext.render(assets(companionId), 2000);
     }
 
     /** 记录某同伴最近一次背包计数（Detector 心跳写）。null/空安全。 */
@@ -388,7 +409,7 @@ public final class RddPlugin implements NumenPlugin {
                     if (RUNTIMES.containsKey(uuid)) return;
                     String json = Files.readString(f, StandardCharsets.UTF_8);
                     TaskChain chain = TaskChain.fromJson(json);
-                    RUNTIMES.put(uuid, new RddRuntime(chain, new AssetRegistry()));
+                    RUNTIMES.put(uuid, new RddRuntime(chain, assets(uuid)));
                     // 懒链可能停靠在未展开一级：currentSubtask()=null，报阶段而非 NPE
                     Subtask restored = chain.currentSubtask();
                     String curLabel = restored != null
@@ -400,6 +421,15 @@ public final class RddPlugin implements NumenPlugin {
             });
         } catch (IOException ex) {
             LOG.warn("[rdd] 扫描任务目录失败: {}", ex.toString());
+        }
+    }
+
+    static void saveAssets(UUID companionId) {
+        if (companionId == null) return;
+        try {
+            RddAssetStore.save(assetsDir, companionId, assets(companionId));
+        } catch (IOException ex) {
+            LOG.warn("[rdd] 保存世界资产失败 {}: {}", companionId, ex.toString());
         }
     }
 
@@ -445,6 +475,22 @@ public final class RddPlugin implements NumenPlugin {
         data.put("taskId", runtime.chain().goal().id());
         data.put("subtaskId", runtime.snapshot().get("currentSubtaskId"));
         RddMonitor.publish("taskchain_snapshot", data);
+    }
+
+    static void publishAssetSnapshot(UUID companionId, String reason, RddWorldAssetObserver.Result observed) {
+        if (companionId == null) return;
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("companionId", companionId.toString());
+        data.put("reason", reason == null ? "lazy_world_observation" : reason);
+        data.put("assets", RddAssetContext.worldAssets(assets(companionId)));
+        data.put("observed", Map.of("bases", observed.bases(), "structures", observed.structures(),
+                "machines", observed.machines(), "entityGroups", observed.entityGroups(), "total", observed.total()));
+        data.put("dataFlow", Map.of(
+                "source", "loaded_world_and_respawn_base",
+                "registry", "rdd-assets/<companion>.json",
+                "consumers", java.util.List.of("numen_context", "supervisor_context", "monitoring_station"),
+                "refresh", "lazy_30s_no_chunk_force_load"));
+        RddMonitor.publish("asset_snapshot", data);
     }
 
     /** Correlation only; no secondary task state and no reconstructed prompt. */

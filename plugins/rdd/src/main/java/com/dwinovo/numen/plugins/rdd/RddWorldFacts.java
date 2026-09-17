@@ -1,5 +1,6 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import com.dwinovo.numen.agent.FunctionalBlockTypes;
 import com.dwinovo.numen.entity.NumenPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -7,6 +8,8 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.stats.Stats;
+import net.minecraft.world.Container;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Blocks;
@@ -14,7 +17,10 @@ import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /** Read-only, server-thread world evidence. Unknown/unloaded facts never pass. */
 public final class RddWorldFacts {
@@ -97,19 +103,25 @@ public final class RddWorldFacts {
     }
 
     private static boolean base(NumenPlayer ap, Map<String, Object> condition) {
+        BaseSnapshot snapshot = inspectBase(ap, condition);
+        return snapshot != null && snapshot.complete();
+    }
+
+    /** A valid personal respawn bed is a reusable base asset even before every facility is complete. */
+    static BaseSnapshot inspectBase(NumenPlayer ap, Map<String, Object> condition) {
         BlockPos spawn = ap.getRespawnPosition();
         ServerLevel level = ap.getServer().getLevel(ap.getRespawnDimension());
         if (spawn == null || level == null || !dimension(level, condition) || !BedBlock.canSetSpawn(level)) {
-            return false;
+            return null;
         }
         // A tiny bounded area, preflighted before any block/collision query. No chunk generation.
         for (int x = (spawn.getX() - 8) >> 4; x <= (spawn.getX() + 8) >> 4; x++) {
             for (int z = (spawn.getZ() - 8) >> 4; z <= (spawn.getZ() + 8) >> 4; z++) {
-                if (level.getChunkSource().getChunkNow(x, z) == null) return false;
+                if (level.getChunkSource().getChunkNow(x, z) == null) return null;
             }
         }
         var bed = level.getBlockState(spawn);
-        if (!(bed.getBlock() instanceof BedBlock)) return false;
+        if (!(bed.getBlock() instanceof BedBlock)) return null;
         var facing = bed.getValue(BedBlock.FACING);
         BlockPos otherPos = spawn.relative(bed.getValue(BedBlock.PART) == BedPart.HEAD
                 ? facing.getOpposite() : facing);
@@ -117,16 +129,34 @@ public final class RddWorldFacts {
         if (!other.is(bed.getBlock()) || other.getValue(BedBlock.PART) == bed.getValue(BedBlock.PART)
                 || other.getValue(BedBlock.FACING) != facing
                 || BedBlock.findStandUpPosition(ap.getType(), level, spawn, facing, ap.getRespawnAngle()).isEmpty()) {
-            return false;
+            return null;
         }
         boolean chest = false;
         boolean furnace = false;
+        List<String> facilities = new ArrayList<>();
+        Map<String, Integer> storedItems = new TreeMap<>();
         for (BlockPos pos : BlockPos.betweenClosed(spawn.offset(-8, -4, -8), spawn.offset(8, 4, 8))) {
             var block = level.getBlockState(pos);
             chest |= block.is(Blocks.CHEST) || block.is(Blocks.TRAPPED_CHEST);
             furnace |= block.is(Blocks.FURNACE);
-            if (chest && furnace) return true;
+            String blockId = BuiltInRegistries.BLOCK.getKey(block.getBlock()).toString();
+            if (FunctionalBlockTypes.isTracked(blockId)) {
+                facilities.add(blockId + "@" + pos.getX() + "," + pos.getY() + "," + pos.getZ());
+            }
+            if (level.getBlockEntity(pos) instanceof Container container) {
+                for (int slot = 0; slot < container.getContainerSize(); slot++) {
+                    ItemStack stack = container.getItem(slot);
+                    if (!stack.isEmpty()) {
+                        storedItems.merge(BuiltInRegistries.ITEM.getKey(stack.getItem()).toString(),
+                                stack.getCount(), Integer::sum);
+                    }
+                }
+            }
         }
-        return false;
+        return new BaseSnapshot(level.dimension().location().toString(), spawn.immutable(),
+                chest && furnace, List.copyOf(facilities), Map.copyOf(storedItems));
     }
+
+    record BaseSnapshot(String dimension, BlockPos spawn, boolean complete,
+                        List<String> facilities, Map<String, Integer> storedItems) {}
 }

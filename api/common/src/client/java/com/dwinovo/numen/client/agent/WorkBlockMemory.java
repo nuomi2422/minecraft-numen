@@ -1,6 +1,7 @@
 package com.dwinovo.numen.client.agent;
 
 import com.dwinovo.numen.Constants;
+import com.dwinovo.numen.agent.FunctionalBlockTypes;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -18,7 +19,6 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -47,14 +47,6 @@ import java.util.UUID;
  */
 public final class WorkBlockMemory {
 
-    /** Block id paths worth remembering — interaction infrastructure, not decoration. */
-    private static final Set<String> TRACKED_TYPES = Set.of(
-            "crafting_table", "furnace", "blast_furnace", "smoker",
-            "chest", "barrel", "ender_chest",
-            "anvil", "chipped_anvil", "damaged_anvil",
-            "grindstone", "stonecutter", "smithing_table",
-            "enchanting_table", "brewing_stand", "lodestone");
-
     /** Cap on remembered blocks: oldest-touched entries fall off first. */
     private static final int MAX_ENTRIES = 16;
 
@@ -78,15 +70,12 @@ public final class WorkBlockMemory {
      * 记录与自愈对账都过这一个口——两边永远同一口径,不会自己记的自己认不出。
      */
     static String stationType(String blockId) {
-        int colon = blockId.indexOf(':');
-        String path = colon >= 0 ? blockId.substring(colon + 1) : blockId;
-        int slash = path.lastIndexOf('/');
-        return slash >= 0 ? path.substring(slash + 1) : path;
+        return FunctionalBlockTypes.stationType(blockId);
     }
 
     /** Is this block id a type we remember at all? Any id form works — see {@link #stationType}. */
     public static boolean isTracked(String blockId) {
-        return TRACKED_TYPES.contains(stationType(blockId));
+        return FunctionalBlockTypes.isTracked(blockId);
     }
 
     /** Remember (or refresh the recency of) a tracked block. Untracked types are ignored. */

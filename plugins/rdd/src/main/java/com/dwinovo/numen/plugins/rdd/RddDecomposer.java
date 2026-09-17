@@ -92,7 +92,8 @@ final class RddDecomposer {
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
         // 经验知识贴进最终请求正文（无知识时与原来逐字相同）
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
-                decompositionPrompt(objective, RddPlugin.lastInventory(companionId), List.of()),
+                decompositionPrompt(objective, RddPlugin.lastInventory(companionId), List.of(),
+                        RddPlugin.planningAssets(companionId)),
                 objective, "fallback", List.of());
         RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
         NumenLlmClient.forEndpoint(ep)
@@ -153,7 +154,8 @@ final class RddDecomposer {
                 : List.of();
         String base = RddPlanningKnowledge.attach(
                 decompositionPrompt(themeObjective, RddPlugin.lastInventory(companionId),
-                        completedStages == null ? List.of() : completedStages) + hint,
+                        completedStages == null ? List.of() : completedStages,
+                        RddPlugin.planningAssets(companionId)) + hint,
                 RddPlanningPolicy.block(themeObjective, "stage_b"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 base, themeObjective, "stage_b", knownFailures);
@@ -313,9 +315,15 @@ final class RddDecomposer {
 
     static String decompositionPrompt(String objective, Map<String, Integer> held,
                                       List<String> completedStages) {
+        return decompositionPrompt(objective, held, completedStages, "");
+    }
+
+    static String decompositionPrompt(String objective, Map<String, Integer> held,
+                                      List<String> completedStages, String worldAssets) {
         return "主人的目标：" + objective + "\n\n"
                 + renderCompletedStages(completedStages)
                 + renderHeldAssets(held)
+                + (worldAssets == null || worldAssets.isBlank() ? "" : worldAssets + "\n\n")
                 + "请用 decompose_goal 工具给出子步骤。每个子步骤包含：\n"
                 + "- description：这一步要做什么\n"
                 + "- condition：{asset_key: 物品命名空间ID, minimum: 需要数量}\n"

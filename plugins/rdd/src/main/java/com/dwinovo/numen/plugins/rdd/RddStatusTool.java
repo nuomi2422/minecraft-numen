@@ -14,7 +14,7 @@ import java.util.function.Consumer;
 /** Small diagnostic/status tool for the RDD host adapter. */
 final class RddStatusTool implements NumenTool {
     @Override public String name() { return "rdd_status"; }
-    @Override public String description() { return "Read the RDD asset task-chain status. If the current optional food step is unavailable, use rdd_skip_optional to preserve progress and continue; do not replace the whole chain."; }
+    @Override public String description() { return "Read the RDD asset task-chain status. Use rdd_assets for reusable bases, locations, machines and entity sightings. If the current optional food step is unavailable, use rdd_skip_optional to preserve progress and continue; do not replace the whole chain."; }
     @Override public Map<String, Object> parameterSchema() { return Schema.none(); }
 
     @Override

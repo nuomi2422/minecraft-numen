@@ -84,6 +84,8 @@ final class RddDetector {
     private int tickCounter;
     /** 资产 populate 节流：每 5 次检测（约 5 秒）把背包物品写进 AssetRegistry。 */
     private int assetTick;
+    /** 世界资产只观察已加载范围；每 30 秒一次，避免把“资产库”变成全图扫描器。 */
+    private int worldAssetTick;
 
     RddDetector() {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
@@ -96,6 +98,7 @@ final class RddDetector {
                     surplus.clear();
                     tickCounter = 0;
                     assetTick = 0;
+                    worldAssetTick = 0;
                 });
     }
 
@@ -108,6 +111,7 @@ final class RddDetector {
         }
         tickCounter = 0;
         assetTick = (assetTick + 1) % 5;
+        worldAssetTick = (worldAssetTick + 1) % 30;
         // 空转止血：每次心跳刷新监督开关（flag 文件由监测台/人写，pause=停拍醒）
         RddPlugin.refreshSupervisionFlag();
         // 重启恢复：磁盘有任务但内存无 → 加载为 RddRuntime（幂等，RECOVERING）
@@ -137,6 +141,11 @@ final class RddDetector {
             // Observe even parked/failed/unexpanded chains. A control-state early
             // return must not make the monitoring station appear frozen.
             if (assetTick == 0) populateAssets(ap, rt, chain.currentSubtask(), counts);
+            if (worldAssetTick == 0) {
+                RddWorldAssetObserver.Result observed = RddWorldAssetObserver.observe(ap, rt.assets());
+                RddPlugin.saveAssets(ap.getUUID());
+                RddPlugin.publishAssetSnapshot(ap.getUUID(), "lazy_world_observation", observed);
+            }
             // 监督/收尾态不由检测驱动。
             if (ps == PrimaryGoalStatus.AWAITING_SUPERVISOR
                     || ps == PrimaryGoalStatus.REPLANNING

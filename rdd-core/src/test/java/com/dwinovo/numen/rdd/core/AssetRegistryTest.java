@@ -20,4 +20,26 @@ class AssetRegistryTest {
         registry.invalidate("stone");
         assertTrue(registry.history().size() >= 2);
     }
+
+    @Test void currentAssetsRoundTripWithoutPersistingAnUnboundedHistory() {
+        var registry = new AssetRegistry();
+        for (int i = 0; i < 600; i++) {
+            registry.apply(new Observation("o" + i, "world_machine", "test", "world", i,
+                    Map.of("count", i)), "machine", AssetScope.GLOBAL, null);
+        }
+
+        assertEquals(512, registry.history().size());
+        var restored = AssetRegistry.fromJson(registry.toJson());
+        var entry = restored.get("machine").orElseThrow();
+        assertEquals(599.0, ((Number) entry.observation().value().get("count")).doubleValue());
+        assertEquals(AssetStatus.OBSERVED, entry.status());
+    }
+
+    @Test void forgetIsIdempotent() {
+        var registry = new AssetRegistry();
+        registry.apply(new Observation("o", "world_base", "test", "world", 1, Map.of()),
+                "base", AssetScope.GLOBAL, null);
+        assertTrue(registry.forget("base"));
+        assertFalse(registry.forget("base"));
+    }
 }

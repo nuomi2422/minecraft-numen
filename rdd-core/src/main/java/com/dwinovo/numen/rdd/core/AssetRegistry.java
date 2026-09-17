@@ -1,9 +1,13 @@
 package com.dwinovo.numen.rdd.core;
 
 import com.dwinovo.numen.rdd.api.*;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import java.util.*;
 
 public final class AssetRegistry {
+    private static final int MAX_HISTORY = 512;
+    private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
     private final Map<String, AssetEntry> current = new LinkedHashMap<>();
     private final List<Observation> history = new ArrayList<>();
 
@@ -13,9 +17,26 @@ public final class AssetRegistry {
         Objects.requireNonNull(scope);
         if (assetId.isBlank()) throw new IllegalArgumentException("assetId required");
         AssetEntry next = new AssetEntry(assetId, observation, AssetStatus.OBSERVED, scope, originTaskNodeId);
-        AssetEntry previous = current.put(assetId, next);
+        AssetEntry previous = current.remove(assetId);
+        current.put(assetId, next);
         history.add(observation);
+        if (history.size() > MAX_HISTORY) history.removeFirst();
         return !next.equals(previous);
+    }
+
+    /** Restore one persisted current-state entry without inventing a new observation. */
+    public synchronized boolean restore(AssetEntry entry) {
+        Objects.requireNonNull(entry);
+        AssetEntry previous = current.remove(entry.assetId());
+        current.put(entry.assetId(), entry);
+        history.add(entry.observation());
+        if (history.size() > MAX_HISTORY) history.removeFirst();
+        return !entry.equals(previous);
+    }
+
+    public synchronized boolean forget(String assetId) {
+        if (assetId == null || assetId.isBlank()) return false;
+        return current.remove(assetId) != null;
     }
 
     public synchronized void markUnknown(String assetId) {
@@ -33,6 +54,23 @@ public final class AssetRegistry {
     public synchronized List<Observation> history() { return List.copyOf(history); }
     public synchronized List<AssetEntry> usable() {
         return current.values().stream().filter(e -> e.status() == AssetStatus.OBSERVED).toList();
+    }
+
+    /** Current state only. Observation history is deliberately not persisted. */
+    public synchronized String toJson() {
+        return GSON.toJson(current.values());
+    }
+
+    public static AssetRegistry fromJson(String json) {
+        if (json == null || json.isBlank()) return new AssetRegistry();
+        AssetEntry[] entries = GSON.fromJson(json, AssetEntry[].class);
+        AssetRegistry registry = new AssetRegistry();
+        if (entries != null) {
+            for (AssetEntry entry : entries) {
+                if (entry != null) registry.restore(entry);
+            }
+        }
+        return registry;
     }
 
     private AssetEntry require(String assetId) {
