@@ -64,7 +64,7 @@ public final class NumenCore {
     }
 
     /**
-     * 把 core 的五条生存本能链插进引擎的竞价调度(链登记口)。运输包与
+     * 把 core 的六条生存本能链插进引擎的竞价调度(链登记口)。运输包与
      * 生命周期对接已随排程机器归引擎,不再是 core 的事。
      */
     private static void registerReflexes() {
@@ -77,6 +77,10 @@ public final class NumenCore {
         // 打架或吃饭 —— 这条排序是有单测守着的(ReflexOrderTest)。
         com.dwinovo.numen.task.BrainChains.register(10,
                 com.dwinovo.numen.core.task.chain.MLGChain::new);
+        com.dwinovo.numen.task.BrainChains.register(12,
+                com.dwinovo.numen.core.task.chain.LavaEscapeChain::new);
+        com.dwinovo.numen.task.BrainChains.register(15,
+                com.dwinovo.numen.core.task.chain.SuffocationEscapeChain::new);
         com.dwinovo.numen.task.BrainChains.register(20,
                 com.dwinovo.numen.core.task.chain.BreathChain::new);
         com.dwinovo.numen.task.BrainChains.register(30,

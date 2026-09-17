@@ -20,6 +20,8 @@ public final class FcControlTool implements NumenTool {
     private static final Gson GSON = new Gson();
     private static final List<String> CAPABILITIES = List.of(
             "fall_rescue_water_bucket_or_soft_block",
+            "escape_lava_toward_nearest_dry_foothold",
+            "break_suffocating_block",
             "surface_for_air",
             "close_hostile_defense_with_combat_shield",
             "unstuck_burst");
@@ -34,7 +36,8 @@ public final class FcControlTool implements NumenTool {
     @Override
     public String description() {
         return "Inspect or switch the automatic FC survival layer. FC normally saves a fast fall "
-                + "with a water bucket/soft block, surfaces for air, handles a nearby hostile "
+                + "with a water bucket/soft block, escapes lava, digs out of suffocating blocks, "
+                + "surfaces for air, handles a nearby hostile "
                 + "through the normal combat-and-shield path, and attempts a short unstuck burst. "
                 + "Call with action=status (or omit it) to inspect. action=disable is only for a "
                 + "controlled experiment or an explicit owner instruction: it makes every automatic "

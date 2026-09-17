@@ -389,21 +389,58 @@ public final class MovementHelper {
      * 硬禁挖的唯一真源是那个标签。
      */
     public static boolean avoidBreaking(CalculationContext context, int x, int y, int z, BlockState state) {
-        if (context.worldBorder != null
-                && !(x > context.worldBorder.getMinX()
-                        && x + 1 < context.worldBorder.getMaxX()
-                        && z > context.worldBorder.getMinZ()
-                        && z + 1 < context.worldBorder.getMaxZ())) {
+        return avoidBreaking(context, x, y, z, state, false);
+    }
+
+    /**
+     * True when the ordinary break veto is caused only by adjacent water. This
+     * is intentionally narrower than "ignore liquids": the world border,
+     * infested blocks, falling-block updates and every non-water fluid keep
+     * their veto. The cell below is included for lava because mining an
+     * obsidian floor can drop the body straight into it even though lava below
+     * cannot flow upward into the broken cell.
+     */
+    public static boolean onlyWaterPreventsBreaking(CalculationContext context,
+                                                     int x, int y, int z,
+                                                     BlockState state) {
+        return onlyWaterPreventsBreaking(
+                context.view, context.worldBorder, x, y, z, state);
+    }
+
+    private static boolean avoidBreaking(CalculationContext context, int x, int y, int z,
+                                         BlockState state, boolean ignoreWater) {
+        return avoidBreaking(context.view, context.worldBorder,
+                x, y, z, state, ignoreWater);
+    }
+
+    /** Package-visible pure seam used by the liquid-safety regression tests. */
+    static boolean onlyWaterPreventsBreaking(BlockGetter view,
+                                             net.minecraft.world.level.border.WorldBorder border,
+                                             int x, int y, int z, BlockState state) {
+        return avoidBreaking(view, border, x, y, z, state, false)
+                && !avoidBreaking(view, border, x, y, z, state, true)
+                && !isLava(view.getBlockState(new BlockPos(x, y - 1, z)));
+    }
+
+    private static boolean avoidBreaking(BlockGetter view,
+                                         net.minecraft.world.level.border.WorldBorder border,
+                                         int x, int y, int z, BlockState state,
+                                         boolean ignoreWater) {
+        if (border != null
+                && !(x > border.getMinX()
+                        && x + 1 < border.getMaxX()
+                        && z > border.getMinZ()
+                        && z + 1 < border.getMaxZ())) {
             return true;
         }
         Block b = state.getBlock();
         return b == Blocks.ICE
                 || b instanceof InfestedBlock
-                || avoidAdjacentBreaking(context, x, y + 1, z, true)
-                || avoidAdjacentBreaking(context, x + 1, y, z, false)
-                || avoidAdjacentBreaking(context, x - 1, y, z, false)
-                || avoidAdjacentBreaking(context, x, y, z + 1, false)
-                || avoidAdjacentBreaking(context, x, y, z - 1, false);
+                || avoidAdjacentBreaking(view, x, y + 1, z, true, ignoreWater)
+                || avoidAdjacentBreaking(view, x + 1, y, z, false, ignoreWater)
+                || avoidAdjacentBreaking(view, x - 1, y, z, false, ignoreWater)
+                || avoidAdjacentBreaking(view, x, y, z + 1, false, ignoreWater)
+                || avoidAdjacentBreaking(view, x, y, z - 1, false, ignoreWater);
     }
 
     /**
@@ -414,15 +451,28 @@ public final class MovementHelper {
      * (会向水平流)→ 禁。
      */
     public static boolean avoidAdjacentBreaking(CalculationContext context, int x, int y, int z, boolean directlyAbove) {
-        BlockState state = context.get(x, y, z);
+        return avoidAdjacentBreaking(context, x, y, z, directlyAbove, false);
+    }
+
+    private static boolean avoidAdjacentBreaking(CalculationContext context, int x, int y, int z,
+                                                  boolean directlyAbove, boolean ignoreWater) {
+        return avoidAdjacentBreaking(context.view, x, y, z, directlyAbove, ignoreWater);
+    }
+
+    private static boolean avoidAdjacentBreaking(BlockGetter view, int x, int y, int z,
+                                                  boolean directlyAbove, boolean ignoreWater) {
+        BlockState state = view.getBlockState(new BlockPos(x, y, z));
         Block block = state.getBlock();
         if (!directlyAbove
                 && block instanceof FallingBlock
                 && NavSettings.get().avoidUpdatingFallingBlocks
-                && FallingBlock.isFree(context.get(x, y - 1, z))) {
+                && FallingBlock.isFree(view.getBlockState(new BlockPos(x, y - 1, z)))) {
             return true;
         }
         // 只按纯液体方块判(含水方块可能有封闭底面,不算)
+        if (ignoreWater && isWater(state)) {
+            return false;
+        }
         if (block instanceof LiquidBlock) {
             if (directlyAbove || NavSettings.get().strictLiquidCheck) {
                 return true;
@@ -431,7 +481,8 @@ public final class MovementHelper {
             if (level == 0) {
                 return true; // 源方块爱水平漫延
             }
-            return !(context.getBlock(x, y - 1, z) instanceof LiquidBlock);
+            return !(view.getBlockState(new BlockPos(x, y - 1, z)).getBlock()
+                    instanceof LiquidBlock);
         }
         return !state.getFluidState().isEmpty();
     }

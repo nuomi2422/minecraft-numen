@@ -1,8 +1,10 @@
 package com.dwinovo.numen.core.task;
 
 import com.dwinovo.numen.core.task.chain.BreathChain;
+import com.dwinovo.numen.core.task.chain.LavaEscapeChain;
 import com.dwinovo.numen.core.task.chain.MLGChain;
 import com.dwinovo.numen.core.task.chain.MobDefenseChain;
+import com.dwinovo.numen.core.task.chain.SuffocationEscapeChain;
 import com.dwinovo.numen.core.task.chain.UnstuckChain;
 import com.dwinovo.numen.task.reflex.Reflex;
 import org.junit.jupiter.api.Test;
@@ -25,6 +27,8 @@ class ReflexOrderTest {
     /** {@code NumenCore.registerReflexes} 注册的顺序,先注册的先被问到。 */
     private static final List<Reflex> ORDER = List.of(
             new MLGChain(),          // 10 — 正在坠落是最迫近的死法
+            new LavaEscapeChain(),   // 12 — 已在岩浆里会持续掉血
+            new SuffocationEscapeChain(), // 15 — 墙内窒息同样是硬计时
             new BreathChain(),       // 20 — 淹水是硬计时:先浮上去,打架等会儿
             new MobDefenseChain(),   // 30
             new UnstuckChain());     // 50 — 卡住只是烦人,绝不该压过打架或吃饭
@@ -39,6 +43,13 @@ class ReflexOrderTest {
     void breathOutranksFighting() {
         // 淹水是一个走完就死的计时器,而打架可以边退边打
         assertTrue(indexOf("breath") < indexOf("mob_defense"));
+    }
+
+    @Test
+    void hardEnvironmentHazardsOutrankBreathAndFighting() {
+        assertTrue(indexOf("lava_escape") < indexOf("suffocation_escape"));
+        assertTrue(indexOf("suffocation_escape") < indexOf("breath"));
+        assertTrue(indexOf("lava_escape") < indexOf("mob_defense"));
     }
 
     @Test
@@ -57,7 +68,7 @@ class ReflexOrderTest {
     void theWholeOrderMatchesTheRetiredPriorityNumbers() {
         // 旧的浮点排序:MLG 10 > 换气 6 > 自卫 5 > 脱困 2
         // (进食那一条退役了 —— 她不再自己吃,饿了发 urgent 让主人管)
-        assertEquals(List.of("mlg", "breath", "mob_defense", "unstuck"),
+        assertEquals(List.of("mlg", "lava_escape", "suffocation_escape", "breath", "mob_defense", "unstuck"),
                 ORDER.stream().map(Reflex::id).toList());
     }
 

@@ -29,6 +29,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
@@ -454,11 +455,25 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
      *  (冰/虫蚀/贴液体/悬空落沙邻格/世界边界)、或上下都被基岩封死的都不算。
      *  包内共享:goto 的 FIND 候选入册走同一道剪枝。 */
     public static boolean plausibleToBreak(CalculationContext ctx, BlockPos pos, BlockState state) {
+        boolean safeWaterCoveredObsidian = state.is(Blocks.OBSIDIAN)
+                && MovementHelper.onlyWaterPreventsBreaking(
+                        ctx, pos.getX(), pos.getY(), pos.getZ(), state)
+                && ctx.breakCostMultiplierAt(
+                        pos.getX(), pos.getY(), pos.getZ(), state) < ActionCosts.COST_INF;
         if (MovementHelper.getMiningDurationTicks(ctx, pos.getX(), pos.getY(), pos.getZ(),
-                state, true) >= ActionCosts.COST_INF) {
+                state, true) >= ActionCosts.COST_INF && !safeWaterCoveredObsidian) {
             return false;
         }
-        if (MovementHelper.avoidBreaking(ctx, pos.getX(), pos.getY(), pos.getZ(), state)) {
+        // Obsidian formed under a water stream is a normal safe mining case.
+        // The global route planner must keep its strict liquid veto; only this
+        // explicit mining target gets a narrow exception, and never when lava
+        // lies below (breaking the floor would drop body + item into it).
+        if (state.is(Blocks.OBSIDIAN)
+                && MovementHelper.isLava(ctx.get(pos.below()))) {
+            return false;
+        }
+        if (MovementHelper.avoidBreaking(ctx, pos.getX(), pos.getY(), pos.getZ(), state)
+                && !safeWaterCoveredObsidian) {
             return false;
         }
         return !(ctx.get(pos.getX(), pos.getY() + 1, pos.getZ()).getBlock()

@@ -5,11 +5,13 @@ import com.dwinovo.numen.task.reflex.ReflexRegistry;
 import com.dwinovo.numen.task.reflex.PolicyReflex;
 
 import com.dwinovo.numen.core.task.chain.MLGChain;
+import com.dwinovo.numen.core.task.chain.LavaEscapeChain;
 import com.dwinovo.numen.core.task.chain.MobDefenseChain;
+import com.dwinovo.numen.core.task.chain.SuffocationEscapeChain;
 import com.dwinovo.numen.core.task.chain.UnstuckChain;
 
 /**
- * numen-core's reflex roster: the four survival chains (which implement
+ * numen-core's reflex roster: the six survival chains (which implement
  * {@link Reflex} themselves — chain shape untouched) plus one pure policy,
  * registered once at {@code NumenCore.init}. The chain instances enlisted here
  * are roster representatives only (id/describe are constants); the live,
@@ -21,6 +23,8 @@ public final class CoreReflexes {
 
     public static void registerAll() {
         ReflexRegistry.register(new MLGChain());
+        ReflexRegistry.register(new LavaEscapeChain());
+        ReflexRegistry.register(new SuffocationEscapeChain());
         ReflexRegistry.register(new com.dwinovo.numen.core.task.chain.BreathChain());
         ReflexRegistry.register(new MobDefenseChain());
         ReflexRegistry.register(new UnstuckChain());

@@ -125,6 +125,8 @@ public final class GetSelfStatusTool implements NumenTool {
         fc.addProperty("enabled", self.fcEnabled());
         JsonArray capabilities = new JsonArray();
         capabilities.add("fall_rescue_water_bucket_or_soft_block");
+        capabilities.add("escape_lava_toward_nearest_dry_foothold");
+        capabilities.add("break_suffocating_block");
         capabilities.add("surface_for_air");
         capabilities.add("close_hostile_defense_with_combat_shield");
         capabilities.add("unstuck_burst");
