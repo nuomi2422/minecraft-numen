@@ -115,6 +115,17 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
      * 只有"站着不动又什么都没挖出来"才是卡住,而那种状态没有出口,只能收工报给主人。
      */
     private static final int STALL_TICKS = 400;
+    /**
+     * nav 报 FAILED 之后，重建导航前至少等这么多刻。
+     *
+     * <p>失败分支的设计是"不拉黑、重新规划"（半张图上的无路不算证据），但重建本身没有冷却：
+     * {@code stopNav(); return RUNNING;} 下一 tick 就重新编译目标并再跑一次 A*。当目标真的
+     * 到不了时（实测：废弃传送门的黑曜石在正下方 91 格，96 格内无路），这会在 Server thread 上
+     * 以约 2.7 次/秒持续烧完整搜索预算，并在 141 秒里刷出 395 行日志，而 STALL 安全网要
+     * {@link #STALL_TICKS} 刻后才收工。加一秒的最小间隔，把这段窗口的无效搜索压掉约 20 倍，
+     * 同时保证地图一更新就能重新尝试。
+     */
+    private static final int NAV_REPLAN_MIN_GAP_TICKS = 20;
 
     /** 挪出这么远就算"她在动",进度计时重新起算。 */
     private static final double STALL_MOVE = 2.0;
@@ -159,6 +170,8 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
     private int branchY;
     /** 距下一次允许查询的冷却(tick)。 */
     private int queryCooldown;
+    /** 距下一次允许重建导航的冷却(tick)——见 {@link #NAV_REPLAN_MIN_GAP_TICKS}。 */
+    private int navReplanCooldown;
     /** 距慢心跳强制刷新的剩余 tick。 */
     private int heartbeatTimer;
     /** 上一次查询时同伴所在 chunk(打包 long)——跨 chunk 视为看到新地形,触发补查。 */
@@ -299,6 +312,11 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
             if (stalled != null) {
                 return stalled;
             }
+            // nav 刚失败过：先等冷却。否则下一 tick 就会重新编译目标、再跑一次注定失败的完整搜索。
+            if (nav == null && !navIsBranch && navReplanCooldown > 0) {
+                --navReplanCooldown;
+                return TaskState.RUNNING;
+            }
             if (nav == null || navIsBranch) {
                 stopNav();
                 // Compiled front door: one composite over every known ore's stance plus nearby
@@ -354,6 +372,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
                         }
                         stopNav();
                         queryCooldown = 0;   // 下一刻就接着建图，别干等冷却
+                        navReplanCooldown = NAV_REPLAN_MIN_GAP_TICKS;
                         return TaskState.RUNNING;
                     }
                     // [ANCHOR nav-failed] 完整图上真的没路。
@@ -367,6 +386,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
                             nav.failType(), nav.failReason(), knownOres.size(), nearestOreInfo());
                     coldMapFails = 0;
                     stopNav();
+                    navReplanCooldown = NAV_REPLAN_MIN_GAP_TICKS;
                     return TaskState.RUNNING;
                 }
             }
