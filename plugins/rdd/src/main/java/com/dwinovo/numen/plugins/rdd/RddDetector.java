@@ -158,10 +158,8 @@ final class RddDetector {
                 // 观察行(懒边界)：当前一级到达但未展开 -> 上报目标驱动器(展开权持有者)，Detector 绝不自己展开/调 LLM。
                 if (chain.currentPrimary().unexpanded()) {
                     RddGoalDriver.needExpansion(ap.getUUID());
-                    RddMonitor.publish("expansion_needed", Map.of(
-                            "primary", chain.currentPrimary().id(),
-                            "theme", chain.currentPrimary().description()));
-                    RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_reached_unexpanded");
+                    RddPlugin.reportExpansionNeeded(ap.getUUID(),
+                            chain.currentPrimary().id(), chain.currentPrimary().description());
                     return;
                 }
                 if (!rt.activateCurrent(counts)) {
@@ -237,10 +235,8 @@ final class RddDetector {
                     // 一级全完成被 CONFIRM → 进入下一级：下一级可能未展开(懒边界)→ 只上报驱动器，绝不 activate(会抛)
                     if (chain.currentPrimary().unexpanded()) {
                         RddGoalDriver.needExpansion(ap.getUUID());
-                        RddMonitor.publish("expansion_needed", Map.of(
-                                "primary", chain.currentPrimary().id(),
-                                "theme", chain.currentPrimary().description()));
-                        RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_reached_unexpanded");
+                        RddPlugin.reportExpansionNeeded(ap.getUUID(),
+                                chain.currentPrimary().id(), chain.currentPrimary().description());
                         break;
                     }
                     if (rt.activateCurrent(counts)) {

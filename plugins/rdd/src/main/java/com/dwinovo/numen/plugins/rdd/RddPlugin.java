@@ -34,6 +34,8 @@ public final class RddPlugin implements NumenPlugin {
     private static final Map<UUID, BodyState> BODY = new ConcurrentHashMap<>();
     private static final AtomicLong BODY_CALLS = new AtomicLong();
     private static final RddCallbackGuard CALLBACKS = new RddCallbackGuard();
+    /** 懒边界上报去重：uuid → 最近一次已上报的未展开一级 id（避免每秒刷 expansion_needed）。 */
+    private static final Map<UUID, String> LAST_EXPANSION_REPORT = new ConcurrentHashMap<>();
     static {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
                 (net.neoforged.neoforge.event.server.ServerStoppedEvent event) -> clearWorldState());
@@ -143,6 +145,7 @@ public final class RddPlugin implements NumenPlugin {
             ASSETS.clear();
             LAST_CONTEXT.clear();
             LAST_INVENTORY.clear();
+            LAST_EXPANSION_REPORT.clear();
         });
     }
 
@@ -242,6 +245,8 @@ public final class RddPlugin implements NumenPlugin {
     private static void bindCurrent(UUID companionId, Goal goal) {
         BODY.remove(companionId);
         DECOMPOSING.remove(companionId);
+        // 新目标在同一同伴上会复用同样的 primary-<uuid8>-N 命名，必须清掉去重记忆，否则首个懒边界漏报。
+        LAST_EXPANSION_REPORT.remove(companionId);
         RddGoalDriver.clear(companionId);
         RUNTIMES.put(companionId, new RddRuntime(new TaskChain(goal), assets(companionId)));
         saveRuntimes();
@@ -317,6 +322,7 @@ public final class RddPlugin implements NumenPlugin {
                 RUNTIMES.remove(companionId);
                 BODY.remove(companionId);
                 LAST_CONTEXT.remove(companionId);
+                LAST_EXPANSION_REPORT.remove(companionId);
                 RddGoalDriver.clear(companionId); // 目标清/重绑 → 丢掉该同伴的懒展开状态
                 LOG.info("[rdd] 已清除任务及磁盘交接 {}", companionId);
             });
@@ -462,7 +468,14 @@ public final class RddPlugin implements NumenPlugin {
         }
     }
 
-    /** Emits an observational task-chain snapshot. This never mutates task state. */
+    /**
+     * Emits an observational task-chain snapshot. This never mutates task state.
+     *
+     * <p>刻意<b>不</b>内嵌全量资产表：单条快照曾因此达 69 KB，其中 88% 是每 5 秒重复的同一批
+     * 资产条目（每件还带完整 Observation 对象），实测把 rdd.jsonl 推到 288 MB。资产本体由
+     * 30 秒一次的 {@link #publishAssetSnapshot}（{@code RddAssetContext.worldAssets} 渲染形状）
+     * 提供，监测台优先读它；这里只留一个计数供页面显示规模。
+     */
     public static void publishTaskSnapshot(UUID companionId, String reason) {
         if (companionId == null) return;
         RddRuntime runtime = RUNTIMES.get(companionId);
@@ -471,10 +484,28 @@ public final class RddPlugin implements NumenPlugin {
         data.put("companionId", companionId.toString());
         data.put("reason", reason == null ? "state_observed" : reason);
         data.put("taskChain", runtime.snapshot());
-        data.put("assets", runtime.assets().snapshot());
+        data.put("assetCount", runtime.assets().snapshot().size());
         data.put("taskId", runtime.chain().goal().id());
         data.put("subtaskId", runtime.snapshot().get("currentSubtaskId"));
         RddMonitor.publish("taskchain_snapshot", data);
+    }
+
+    /**
+     * 懒边界上报（已去重）：当前一级到达但未展开时，Detector 每秒都会走到这个分支，
+     * 若不去重就会每秒写一条 expansion_needed + 一份任务链快照。
+     * 同一个一级只上报一次；换到新一级才再报。
+     */
+    static void reportExpansionNeeded(UUID companionId, String primaryId, String theme) {
+        if (companionId == null || primaryId == null) {
+            return;
+        }
+        if (primaryId.equals(LAST_EXPANSION_REPORT.put(companionId, primaryId))) {
+            return; // 同一一级已上报过
+        }
+        RddMonitor.publish("expansion_needed", Map.of(
+                "primary", primaryId,
+                "theme", theme == null ? "" : theme));
+        publishTaskSnapshot(companionId, "primary_reached_unexpanded");
     }
 
     static void publishAssetSnapshot(UUID companionId, String reason, RddWorldAssetObserver.Result observed) {
