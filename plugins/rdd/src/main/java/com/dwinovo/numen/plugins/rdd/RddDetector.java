@@ -674,12 +674,16 @@ final class RddDetector {
                         ? "server_world_fact" : "server_inventory"));
         RddPlugin.publishTaskSnapshot(ap.getUUID(), "subtask_completed");
         TaskChain chain = rt.chain();
+        // P0 辅助留档：二级完成细节（不用于恢复，供后续 Context/Planner 参考）
+        RddPlugin.recordSubtaskFact(ap.getUUID(), chain.goal(), chain.currentPrimary().description(), current.description());
         if (chain.primaryStatus() == PrimaryGoalStatus.AWAITING_SUPERVISOR) {
             PrimaryGoal completedPrimary = chain.currentPrimary();
             rt.applySupervisor(new SupervisorDecision(
                     SupervisorDecisionType.CONFIRM,
                     chain.currentPrimary().id(),
                     "all hard-coded conditions met in the real world"));
+            // P0：把"该阶段已完成"记为可靠事实（跨重绑/跨重启继承，防已达成阶段被重跑）
+            RddPlugin.recordStageFact(ap.getUUID(), chain.goal(), completedPrimary.description());
             LOG.info("[rdd] 一级目标完成: {}", completedPrimary.description());
             RddMonitor.publish("goal_completed", Map.of(
                     "goal", completedPrimary.id(), "description", completedPrimary.description(),

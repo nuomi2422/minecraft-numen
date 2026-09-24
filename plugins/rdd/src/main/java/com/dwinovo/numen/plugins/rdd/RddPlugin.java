@@ -7,6 +7,7 @@ import com.dwinovo.numen.rdd.core.AssetRegistry;
 import com.dwinovo.numen.rdd.core.RddChainFactory;
 import com.dwinovo.numen.rdd.core.RddRuntime;
 import com.dwinovo.numen.rdd.core.TaskChain;
+import com.dwinovo.numen.rdd.fact.CompletedFactStore;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.MinecraftServer;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
@@ -56,6 +57,10 @@ public final class RddPlugin implements NumenPlugin {
     private static volatile Path tasksDir;
     /** Independent world-asset store; clearing a task must not erase a base or known structure. */
     private static volatile Path assetsDir;
+    /** P0 完成事实目录 config/numen/rdd-facts（每个同伴一个 <uuid>.json）；跨重绑/跨重启保留。 */
+    private static volatile Path factsDir;
+    /** 内存完成事实仓库（uuid→store）；磁盘为真身，清世界状态只清内存。 */
+    private static final Map<UUID, CompletedFactStore> FACTS = new ConcurrentHashMap<>();
 
     record BodyState(String subtaskId, int submitCount) {}
 
@@ -64,6 +69,7 @@ public final class RddPlugin implements NumenPlugin {
         numenApi = numen;
         tasksDir = numen.configDir().resolve("rdd-tasks");
         assetsDir = numen.configDir().resolve("rdd-assets");
+        factsDir = numen.configDir().resolve("rdd-facts");
         supervisionFlag = numen.configDir().resolve("rdd-supervision.flag");
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
@@ -126,9 +132,11 @@ public final class RddPlugin implements NumenPlugin {
         var chain = runtime.chain();
         if (chain.primaryStatus() != com.dwinovo.numen.rdd.api.PrimaryGoalStatus.AWAITING_SUPERVISOR) return;
         String primary = chain.currentPrimary().id();
+        String primaryDesc = chain.currentPrimary().description();
         runtime.applySupervisor(new com.dwinovo.numen.rdd.api.SupervisorDecision(
                 com.dwinovo.numen.rdd.api.SupervisorDecisionType.CONFIRM, primary,
                 "required conditions verified; optional omissions remain SKIPPED, not world achievements"));
+        recordStageFact(companionId, chain.goal(), primaryDesc);
         RddMonitor.publish("primary_resolved", Map.of("companionId", companionId.toString(), "primary", primary,
                 "reason", "verified required steps; optional steps may be skipped"));
     }
@@ -143,6 +151,7 @@ public final class RddPlugin implements NumenPlugin {
             BODY.clear();
             RUNTIMES.clear();
             ASSETS.clear();
+            FACTS.clear();
             LAST_CONTEXT.clear();
             LAST_INVENTORY.clear();
             LAST_EXPANSION_REPORT.clear();
@@ -248,7 +257,9 @@ public final class RddPlugin implements NumenPlugin {
         // 新目标在同一同伴上会复用同样的 primary-<uuid8>-N 命名，必须清掉去重记忆，否则首个懒边界漏报。
         LAST_EXPANSION_REPORT.remove(companionId);
         RddGoalDriver.clear(companionId);
-        RUNTIMES.put(companionId, new RddRuntime(new TaskChain(goal), assets(companionId)));
+        // P0：把该目标血缘下"已可靠完成"的阶段事实注入新链 → 已达成一级直接跳过、不再重复规划
+        RUNTIMES.put(companionId, new RddRuntime(
+                new TaskChain(goal, facts(companionId).satisfiedStageKeys(goal)), assets(companionId)));
         saveRuntimes();
         publishTaskSnapshot(companionId, "task_bound");
     }
@@ -260,6 +271,30 @@ public final class RddPlugin implements NumenPlugin {
     public static AssetRegistry assets(UUID companionId) {
         if (companionId == null) return new AssetRegistry();
         return ASSETS.computeIfAbsent(companionId, id -> RddAssetStore.load(assetsDir, id));
+    }
+
+    /** P0 完成事实仓库（磁盘为真身，内存缓存）。 */
+    public static CompletedFactStore facts(UUID companionId) {
+        if (companionId == null) return new CompletedFactStore();
+        return FACTS.computeIfAbsent(companionId, id -> RddFactStore.load(factsDir, id));
+    }
+
+    /** 记录"某战略阶段已被可靠完成"并落盘（P0）。失败只记日志，不影响主流程。 */
+    static void recordStageFact(UUID companionId, Goal goal, String primaryDescription) {
+        if (companionId == null || goal == null || primaryDescription == null) return;
+        try {
+            CompletedFactStore store = facts(companionId);
+            store.recordStage(goal, primaryDescription, System.currentTimeMillis(), "primary confirmed");
+            RddFactStore.save(factsDir, companionId, store);
+        } catch (IOException ex) {
+            LOG.warn("[rdd] 保存完成事实失败 {}: {}", companionId, ex.toString());
+        }
+    }
+
+    /** 留档一条二级完成细节（辅助，不用于恢复）；随阶段落盘一起持久化。 */
+    static void recordSubtaskFact(UUID companionId, Goal goal, String primaryDescription, String subtaskDescription) {
+        if (companionId == null || goal == null) return;
+        facts(companionId).recordSubtask(goal, primaryDescription, subtaskDescription, System.currentTimeMillis());
     }
 
     static String planningAssets(UUID companionId) {
