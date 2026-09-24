@@ -94,8 +94,9 @@ final class RddDecomposer {
         // 经验知识贴进最终请求正文（无知识时与原来逐字相同）
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
-                decompositionPrompt(objective, snapshot, List.of(),
-                        RddPlugin.planningAssets(companionId)),
+                RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
+                        + decompositionPrompt(objective, snapshot, List.of(),
+                                RddPlugin.planningAssets(companionId)),
                 objective, "fallback", List.of());
         RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
         NumenLlmClient.forEndpoint(ep)
@@ -156,7 +157,8 @@ final class RddDecomposer {
                 : List.of();
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         String base = RddPlanningKnowledge.attach(
-                decompositionPrompt(themeObjective, snapshot,
+                RddRiskPlanning.prepHint(themeObjective, snapshot.availableCounts())
+                        + decompositionPrompt(themeObjective, snapshot,
                         completedStages == null ? List.of() : completedStages,
                         RddPlugin.planningAssets(companionId)) + hint,
                 RddPlanningPolicy.block(themeObjective, "stage_b"));

@@ -36,18 +36,20 @@ final class RddStagePlanner {
         // 再贴上经验知识（无知识时与原来逐字相同）。
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         String base = RddPlanningKnowledge.attach(
-                planningPrompt(objective, snapshot,
-                        RddPlugin.planningAssets(companionId)),
+                RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
+                        + planningPrompt(objective, snapshot, RddPlugin.planningAssets(companionId)),
                 RddPlanningPolicy.block(objective, "stage_a"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 base, objective, "stage_a", List.of());
         RddDecomposer.llmAsk(companionId, "stage_a", userContent, PLAN_SYSTEM, PLAN_TOOL,
                 args -> {
                     RddPlanGuard.Stages guarded = RddPlanGuard.filterStages(parse(args), objective);
+                    // P2.2：高风险阶段自动补 wait_for 硬门（提前备装，由依赖门强制）
+                    List<PrimarySpec> planned = RddRiskPlanning.injectWaitFor(guarded.allowed(), snapshot.availableCounts());
                     RddPlanningKnowledge.publishPolicy(companionId, "stage_a",
                             RddPlanningPolicy.appliedRules(objective, "stage_a"),
                             guarded.dropped(), List.of());
-                    done.accept(guarded.allowed());
+                    done.accept(planned);
                 },
                 () -> done.accept(List.of()));
     }
