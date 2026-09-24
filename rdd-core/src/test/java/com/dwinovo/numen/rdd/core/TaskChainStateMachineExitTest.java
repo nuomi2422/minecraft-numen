@@ -46,8 +46,8 @@ class TaskChainStateMachineExitTest {
         chain.applyHardCodedResult("s2", true);
         chain.applySupervisorDecision(new SupervisorDecision(SupervisorDecisionType.REJECT, "p", "wrong approach"));
         assertEquals(PrimaryGoalStatus.REPLANNING, chain.primaryStatus());
-        // REPLAN 出口 A：宿主注入全新替换计划（保留一级 id/desc/waitFor）
         chain.replaceCurrentSubtasks(List.of(hc("s1r"), hc("s2r")));
+        // REPLAN 出口 B：宿主注入全新替换计划（沿用一级 id/desc/waitFor）
         assertEquals(PrimaryGoalStatus.PENDING, chain.primaryStatus());
         assertEquals("s1r", chain.currentSubtask().id());
         assertEquals(SubtaskStatus.PENDING, chain.currentSubtaskStatus());
@@ -229,5 +229,73 @@ class TaskChainStateMachineExitTest {
         var obs = new Observation("o-" + assetId.replace(':', '-') + "-" + System.nanoTime(),
                 "inventory_scan", "test", "env", System.currentTimeMillis(), Map.of("count", count));
         assets.apply(obs, assetId, AssetScope.GLOBAL, "test-node");
+    }
+
+    // ===== Phase 1-2：resume* 一律作废执行元数据（activeExecutionId / lastStartedAtMillis） =====
+
+    @Test void resumeReplanningClearsExecutionMetadata() {
+        var chain = chain(new PrimaryGoal("p", "a", List.of(hc("s1"))));
+        chain.startCurrent();
+        chain.bindExecution("s1", "exec-old");
+        chain.applyHardCodedResult("s1", true);
+        chain.applySupervisorDecision(new SupervisorDecision(SupervisorDecisionType.REPLAN, "p", "redo"));
+        chain.resumeFromReplanning();
+        assertNull(chain.activeExecutionId());
+    }
+
+    @Test void replaceSubtasksClearsExecutionMetadata() {
+        var chain = chain(new PrimaryGoal("p", "a", List.of(hc("s1"))));
+        chain.startCurrent();
+        chain.bindExecution("s1", "exec-old");
+        chain.applyHardCodedResult("s1", true);
+        chain.applySupervisorDecision(new SupervisorDecision(SupervisorDecisionType.REJECT, "p", "no"));
+        chain.replaceCurrentSubtasks(List.of(hc("s1r")));
+        assertNull(chain.activeExecutionId());
+    }
+
+    @Test void resumeRecoveringClearsExecutionMetadata() {
+        var chain = chain(new PrimaryGoal("p", "a", List.of(hc("s1"))));
+        chain.startCurrent();
+        chain.bindExecution("s1", "exec-old");
+        var restored = TaskChain.fromJson(chain.toJson());
+        assertEquals(PrimaryGoalStatus.RECOVERING, restored.primaryStatus());
+        restored.resumeFromRecovering();
+        assertNull(restored.activeExecutionId());
+    }
+
+    @Test void recoveredChainNeverKeepsStaleExecutionIdAcrossReboots() {
+        var chain = chain(new PrimaryGoal("p", "a", List.of(hc("s1"))));
+        chain.startCurrent();
+        chain.bindExecution("s1", "exec-first-reboot");
+        var reboot1 = TaskChain.fromJson(chain.toJson()); // ACTIVE+RUNNING → RECOVERING，清 id
+        assertNull(reboot1.activeExecutionId());
+        // 即使磁盘 JSON 被宿主在 RECOVERING 期间写回一个残留 id，恢复到本地也必须清
+        String jsonWithResidue = reboot1.toJson()
+                .replaceFirst("\"activeExecutionId\"[^,]*", "\"activeExecutionId\":\"stale-residue\"");
+        var reboot2 = TaskChain.fromJson(jsonWithResidue);
+        assertNull(reboot2.activeExecutionId());
+    }
+
+    // ===== Phase 1-4：restored state 非法组合拦截 =====
+
+    @Test void restoreRejectsActiveUnexpandedCombination() {
+        var unexpanded = new PrimaryGoal("p", "unexpanded", List.of(), List.of(
+                new AssetRequirement("minecraft:iron_ingot", 1)), true);
+        var chain = new TaskChain(new Goal("g", "goal", List.of(unexpanded)));
+        // 模拟损坏 JSON：只把 primaryStatus 硬塞成 ACTIVE（正常情况下未展开绝不 ACTIVE）
+        String corrupt = chain.toJson().replace("\"primaryStatus\":\"PENDING\"", "\"primaryStatus\":\"ACTIVE\"");
+        assertThrows(IllegalArgumentException.class, () -> TaskChain.fromJson(corrupt));
+    }
+
+    @Test void restoreRejectsUnknownAttemptSubtask() {
+        var chain = chain(new PrimaryGoal("p", "a", List.of(hc("s1"))));
+        String corrupt = chain.toJson().replace("\"attempts\":{}", "\"attempts\":{\"ghost\":5}");
+        assertThrows(IllegalArgumentException.class, () -> TaskChain.fromJson(corrupt));
+    }
+
+    @Test void restoreRejectsSkipReasonOnNonSkipped() {
+        var chain = chain(new PrimaryGoal("p", "a", List.of(hc("s1"))));
+        String corrupt = chain.toJson().replace("\"skipReasons\":{}", "\"skipReasons\":{\"s1\":\"nope\"}");
+        assertThrows(IllegalArgumentException.class, () -> TaskChain.fromJson(corrupt));
     }
 }

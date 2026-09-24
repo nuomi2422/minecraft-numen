@@ -42,4 +42,45 @@ class AssetRegistryTest {
         assertTrue(registry.forget("base"));
         assertFalse(registry.forget("base"));
     }
+
+    // Phase 1-3：usableCounts 契约 —— 非整数/负值/NaN/Infinity 一概不算可用，且返回不可变视图。
+    @Test void usableCountsRejectsNonIntegerNegativeNaNInfinity() {
+        var registry = new AssetRegistry();
+        applyInv(registry, "fraction", 1.5);
+        applyInv(registry, "negative", -3);
+        applyInv(registry, "nan", Double.NaN);
+        applyInv(registry, "infinite", Double.POSITIVE_INFINITY);
+        applyInv(registry, "good", 4);
+        var counts = registry.usableCounts();
+        // 只有良好整数算数；其余既不在 count 里、也不该污染
+        assertEquals(1, counts.size());
+        assertEquals(4, counts.get("good"));
+        assertNull(counts.get("fraction"));
+        assertNull(counts.get("negative"));
+        assertNull(counts.get("nan"));
+        assertNull(counts.get("infinite"));
+        // 不可变视图：任何写入都必须抛
+        assertThrows(UnsupportedOperationException.class, () -> counts.put("hack", 9));
+    }
+
+    @Test void usableCountsUnmodifiable() {
+        var registry = new AssetRegistry();
+        applyInv(registry, "stick", 2);
+        assertThrows(UnsupportedOperationException.class, () -> registry.usableCounts().put("x", 1));
+    }
+
+    @Test void usableCountsOnlyInventoryScanObserved() {
+        var registry = new AssetRegistry();
+        registry.apply(new Observation("o", "world_machine", "test", "world", 1, Map.of("count", 5)),
+                "machine", AssetScope.GLOBAL, null);
+        registry.apply(new Observation("o2", "inventory_scan", "test", "world", 2, Map.of("count", 5)),
+                "iron", AssetScope.GLOBAL, null);
+        registry.markUnknown("iron");
+        assertTrue(registry.usableCounts().isEmpty()); // UNKNOWN 被排除
+    }
+
+    private static void applyInv(AssetRegistry registry, String assetId, Number count) {
+        registry.apply(new Observation("o-" + assetId, "inventory_scan", "test", "world", System.nanoTime(),
+                Map.of("count", count)), assetId, AssetScope.GLOBAL, null);
+    }
 }

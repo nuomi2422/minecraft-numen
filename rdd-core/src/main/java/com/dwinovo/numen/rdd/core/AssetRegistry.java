@@ -60,6 +60,8 @@ public final class AssetRegistry {
      * 当前可用资产按计数折叠成 {@code assetId -> count}，供依赖门与完成判定接入真实注册表。
      * 只有 OBSERVED 且观测为 {@code inventory_scan}（值里有整数 count）的条目才算数；
      * UNKNOWN/INVALID/消耗量为 0 的条目不贡献数量（缺 key 走缺省 0）。
+     * 非有限/负值/非整数 count 一概不算可用（与 {@code RddChainFactory#isNonNegativeInteger} 口径一致）。
+     * 返回不可变视图，防止调用方污染注册表折叠口径。
      */
     public synchronized Map<String, Integer> usableCounts() {
         Map<String, Integer> counts = new HashMap<>();
@@ -71,11 +73,19 @@ public final class AssetRegistry {
                 continue;
             }
             Object count = entry.observation().value().get("count");
-            if (count instanceof Number n && Double.isFinite(n.doubleValue()) && n.doubleValue() >= 0) {
-                counts.put(entry.assetId(), n.intValue());
+            if (isNonNegativeIntegerCount(count)) {
+                counts.put(entry.assetId(), ((Number) count).intValue());
             }
         }
-        return counts;
+        return Collections.unmodifiableMap(counts);
+    }
+
+    /** 与 {@code RddChainFactory#isNonNegativeInteger} 同口径：有限、≥0、整数值；1.5/NaN/Infinity/负数全拒。 */
+    private static boolean isNonNegativeIntegerCount(Object count) {
+        return count instanceof Number n
+                && Double.isFinite(n.doubleValue())
+                && n.doubleValue() >= 0
+                && n.doubleValue() == (double) n.intValue();
     }
 
     /** Current state only. Observation history is deliberately not persisted. */

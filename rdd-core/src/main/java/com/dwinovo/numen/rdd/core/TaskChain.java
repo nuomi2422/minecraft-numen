@@ -228,6 +228,7 @@ public final class TaskChain {
         }
         subtaskIndex = 0;
         primaryStatus = PrimaryGoalStatus.PENDING;
+        clearExecutionMetadata(); // 重跑 = 旧执行身份/启动时间作废
     }
 
     /**
@@ -262,12 +263,20 @@ public final class TaskChain {
         }
         subtaskIndex = 0;
         primaryStatus = PrimaryGoalStatus.PENDING;
+        clearExecutionMetadata(); // 换计划 = 旧执行身份/启动时间作废
     }
 
     /** RECOVERING 出口：停机恢复后宿主核实当前二级可继续 → 回到 ACTIVE，照常跑监督/完成判定。 */
     public synchronized void resumeFromRecovering() {
         if (primaryStatus != PrimaryGoalStatus.RECOVERING) throw new IllegalStateException("not recovering: " + primaryStatus);
         primaryStatus = PrimaryGoalStatus.ACTIVE;
+        clearExecutionMetadata(); // 恢复续跑不是"同一执行"：旧执行身份/启动时间作废
+    }
+
+    /** 执行元数据作废（离开在途执行的统一清点）：二级身份与启动时间只属于一个在途执行。 */
+    private void clearExecutionMetadata() {
+        activeExecutionId = null;
+        lastStartedAtMillis = 0;
     }
 
     /** 查询某一级包含某二级 id（replaceCurrentSubtasks 校验用，避免误删其它一级）。 */
@@ -439,9 +448,10 @@ public final class TaskChain {
         chain.subtaskIndex = o.get("subtaskIndex").getAsInt();
         chain.primaryStatus = PrimaryGoalStatus.valueOf(o.get("primaryStatus").getAsString());
         if (o.has("skipReasons") && o.get("skipReasons").isJsonObject()) {
+            // 全量载入（不做加载期过滤）：skipReason 指向非 SKIPPED/未知二级属于损坏数据，
+            // 交由 validateRestoredState 大声拒绝，而不是悄悄丢进 /dev/null。
             for (var entry : o.getAsJsonObject("skipReasons").entrySet()) {
-                if (chain.statuses.get(entry.getKey()) == SubtaskStatus.SKIPPED)
-                    chain.skipReasons.put(entry.getKey(), entry.getValue().getAsString());
+                chain.skipReasons.put(entry.getKey(), entry.getValue().getAsString());
             }
         }
         if (o.has("attempts") && o.get("attempts").isJsonObject()) {
@@ -464,6 +474,11 @@ public final class TaskChain {
                 chain.primaryStatus = PrimaryGoalStatus.RECOVERING;
                 chain.activeExecutionId = null; // 停机作废：宿主执行实例身份不跨重启
             }
+        }
+        // 幂等清：已是 RECOVERING（二次重启读到自己刚存的 RECOVERING）也一样作废执行身份，
+        // 防"休眠期间宿主编入过 bindExecution 的残留 id"被第三次原样恢复。
+        if (chain.primaryStatus == PrimaryGoalStatus.RECOVERING) {
+            chain.activeExecutionId = null;
         }
         chain.validateRestoredState();
         return chain;
@@ -496,10 +511,27 @@ public final class TaskChain {
             unknown.removeAll(expected);
             throw new IllegalArgumentException("restored status table mismatch; missing=" + missing + ", unknown=" + unknown);
         }
+        for (String id : attempts.keySet()) {
+            if (!expected.contains(id)) {
+                throw new IllegalArgumentException("restored attempts table references unknown subtask: " + id);
+            }
+        }
+        for (String id : skipReasons.keySet()) {
+            if (!expected.contains(id)) {
+                throw new IllegalArgumentException("restored skipReason references unknown subtask: " + id);
+            }
+            if (statuses.get(id) != SubtaskStatus.SKIPPED) {
+                throw new IllegalArgumentException("restored skipReason on non-skipped subtask: " + id);
+            }
+        }
         PrimaryGoal current = goal.primaryGoals().get(primaryIndex);
         if (current.unexpanded()) {
             if (subtaskIndex != 0) {
                 throw new IllegalArgumentException("unexpanded primary must have subtask index 0: " + subtaskIndex);
+            }
+            if (primaryStatus == PrimaryGoalStatus.ACTIVE) {
+                // ACTIVE+未展开 = 永远 return 的静默卡死（当前二级为 null，走状态分支全部落空）。
+                throw new IllegalArgumentException("ACTIVE primary cannot be unexpanded; must be PENDING/WAITING until expansion");
             }
         } else if (subtaskIndex < 0 || subtaskIndex >= current.subtasks().size()) {
             throw new IllegalArgumentException("subtask index out of range: " + subtaskIndex);
