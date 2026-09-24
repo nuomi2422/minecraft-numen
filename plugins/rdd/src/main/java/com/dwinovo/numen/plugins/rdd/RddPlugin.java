@@ -15,6 +15,7 @@ import com.dwinovo.numen.rdd.policy.ResourceBudget;
 import com.dwinovo.numen.rdd.policy.RiskGate;
 import com.dwinovo.numen.rdd.replan.ReplanContextBuilder;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import org.slf4j.Logger;
@@ -70,6 +71,8 @@ public final class RddPlugin implements NumenPlugin {
     /** P4 重规划预算：每（同伴|一级）最多自动重规划次数；超限回落停车，防无限烧 LLM。 */
     private static final int MAX_REPLAN_PER_PRIMARY = 3;
     private static final Map<String, Integer> REPLAN_COUNTS = new ConcurrentHashMap<>();
+    /** 同伴床边复活偏好：companionId → owner的床位 BlockPos。有值则在复活时 TP 到床旁。 */
+    private static final Map<UUID, BlockPos> BED_RESPAWN_PREFERENCE = new ConcurrentHashMap<>();
 
     record BodyState(String subtaskId, int submitCount) {}
 
@@ -107,6 +110,26 @@ public final class RddPlugin implements NumenPlugin {
         // 规划输入 LAST_INVENTORY 同步清空；世界资产（基地/结构）不受影响，重新观测会恢复 OBSERVED。
         numen.on(CompanionEvent.DEATH, body -> onCompanionDeath(body.getUUID()));
         numen.on(CompanionEvent.REMOVE, body -> LAST_INVENTORY.remove(body.getUUID()));
+        // 床边复活偏好：如果该同伴有设定的床位偏好，则在 SPAWN 后将其 TP 到床旁（偏移 0.5 防止卡壁）
+        numen.on(CompanionEvent.SPAWN, body -> {
+            UUID uuid = body.getUUID();
+            if (uuid == null) {
+                LOG.warn("[rdd] SPAWN event missing companion UUID");
+                return;
+            }
+            BlockPos bedPos = BED_RESPAWN_PREFERENCE.get(uuid);
+            if (bedPos != null) {
+                try {
+                    // 把同伴移到床的旁边（X/Z 偏移 0.5），Y 保持不变
+                    body.moveTo(bedPos.getX() + 0.5, bedPos.getY(), bedPos.getZ() + 0.5, body.getYRot(), body.getXRot());
+                    // 执行一次后清除偏好，避免每次生效都 TP
+                    BED_RESPAWN_PREFERENCE.remove(uuid);
+                    LOG.info("[rdd] {} 复活后自动 TP 到床旁: {}", uuid, bedPos);
+                } catch (Exception e) {
+                    LOG.warn("[rdd] 床边复活 TP 失败 {}: {}", uuid, e.toString());
+                }
+            }
+        });
         numen.contributeState(uuid -> {
             String context = renderStateContext(uuid);
             if (!context.equals(LAST_CONTEXT.put(uuid, context))) {
@@ -419,6 +442,22 @@ public final class RddPlugin implements NumenPlugin {
         if (companionId == null) return;
         String prefix = companionId + "|";
         REPLAN_COUNTS.keySet().removeIf(k -> k.startsWith(prefix));
+    }
+
+    /** 设置某同伴的床边复活偏好（owner 当前的床位）。 */
+    public static void setBedRespawnPreference(UUID companionId, BlockPos bedPos) {
+        if (companionId == null || bedPos == null) {
+            return;
+        }
+        BED_RESPAWN_PREFERENCE.put(companionId, bedPos);
+        LOG.info("[rdd] 设置 {} 的床边复活偏好: {}", companionId, bedPos);
+    }
+
+    /** 清除某同伴的床边复活偏好。 */
+    public static void clearBedRespawnPreference(UUID companionId) {
+        if (companionId == null) return;
+        BED_RESPAWN_PREFERENCE.remove(companionId);
+        LOG.info("[rdd] 清除 {} 的床边复活偏好", companionId);
     }
 
     /** 记录某同伴最近一次背包计数（Detector 心跳写）。null/空安全。 */
