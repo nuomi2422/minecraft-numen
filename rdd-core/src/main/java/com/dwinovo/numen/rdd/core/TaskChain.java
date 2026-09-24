@@ -176,6 +176,10 @@ public final class TaskChain {
      */
     public synchronized void expandCurrentPrimary(List<Subtask> generated) {
         PrimaryGoal cur = currentPrimary();
+        if (isSatisfied(primaryIndex)) {
+            // 防御：被完成事实命中的一级必须跳过，绝不能被展开重跑（正常路径 currentPrimary 已跳过）
+            throw new IllegalStateException("current primary is fact-satisfied and must be skipped, not expanded: " + cur.id());
+        }
         if (!cur.unexpanded()) {
             throw new IllegalStateException("current primary already expanded: " + cur.id());
         }

@@ -1,7 +1,9 @@
 package com.dwinovo.numen.rdd.core;
 
 import com.dwinovo.numen.rdd.api.Goal;
+import com.dwinovo.numen.rdd.api.AssetRequirement;
 import com.dwinovo.numen.rdd.api.PrimaryGoal;
+import com.dwinovo.numen.rdd.api.PrimarySpec;
 import com.dwinovo.numen.rdd.api.Subtask;
 import com.dwinovo.numen.rdd.api.SubtaskStatus;
 import com.dwinovo.numen.rdd.fact.CompletedFactStore;
@@ -153,5 +155,92 @@ class CompletedFactStoreTest {
         String json = legacy.toJson().replaceAll(",\"satisfiedStages\":\\[[^\\]]*\\]", "");
         TaskChain restored = TaskChain.fromJson(json);
         assertTrue(restored.satisfiedStages().isEmpty());
+    }
+
+    // ===== GPT-A：已满足一级被跳过，展开作用在下一个（A 不被碰） =====
+    @Test
+    void satisfiedStageIsSkippedNotExpanded() {
+        Goal goal = stagedGoal("goal-abc12345", "击败末影龙", "阶段A", "阶段B");
+        CompletedFactStore store = new CompletedFactStore();
+        store.recordStage(goal, "阶段A", 1L, "confirmed");
+        TaskChain chain = new TaskChain(goal, store.satisfiedStageKeys(goal));
+        assertEquals("阶段B", chain.currentPrimary().description());
+        chain.expandCurrentPrimary(List.of(Subtask.hardCoded("s-b", "做B", Map.of("asset_key", "goal"), null)));
+        assertEquals("阶段B", chain.currentPrimary().description());
+        assertTrue(chain.satisfiedStages().contains(StageKeyNormalizer.normalize("阶段A")));
+    }
+
+    // ===== GPT-B：已满足一级不参与 WAITING（事实优先，直接看下一个） =====
+    @Test
+    void satisfiedStageDoesNotWaitOnAssets() {
+        java.util.UUID uuid = java.util.UUID.fromString("00000000-0000-0000-0000-0000000000ab");
+        Goal goal = RddChainFactory.fromStages(uuid, "击败末影龙", List.of(
+                new PrimarySpec("阶段A", List.of()),
+                new PrimarySpec("阶段B", List.of(new AssetRequirement("wood")))));
+        CompletedFactStore store = new CompletedFactStore();
+        store.recordStage(goal, "阶段A", 1L, "confirmed");
+        TaskChain chain = new TaskChain(goal, store.satisfiedStageKeys(goal));
+        chain.expandCurrentPrimary(List.of(Subtask.hardCoded("s-b", "做B", Map.of("asset_key", "wood"), null)));
+        assertFalse(chain.activateCurrent(Map.of()));
+        assertEquals(com.dwinovo.numen.rdd.api.PrimaryGoalStatus.WAITING, chain.primaryStatus());
+        assertEquals("阶段B", chain.currentPrimary().description());
+    }
+
+    // ===== 跨同伴同目标不互相命中（goalId 不同 → 血缘不同） =====
+    @Test
+    void differentCompanionDoesNotInherit() {
+        Goal c1 = stagedGoal("goal-aaaa1111", "击败末影龙", "击败末影龙阶段");
+        Goal c2 = stagedGoal("goal-bbbb2222", "击败末影龙", "击败末影龙阶段");
+        CompletedFactStore store = new CompletedFactStore();
+        store.recordStage(c1, "击败末影龙阶段", 1L, "confirmed");
+        assertTrue(store.satisfiedStageKeys(c2).isEmpty());
+    }
+
+    // ===== DS 反例：相似目标但阶段不同，不得误跳 =====
+    @Test
+    void similarObjectiveMustNotWronglySkipDifferentStage() {
+        Goal wood = stagedGoal("goal-abc12345", "采集10个木头", "采集木头");
+        Goal stone = stagedGoal("goal-abc12345", "采集10个石头", "采集石头");
+        CompletedFactStore store = new CompletedFactStore();
+        store.recordStage(wood, "采集木头", 1L, "confirmed");
+        assertFalse(store.satisfiedStageKeys(stone).contains(StageKeyNormalizer.normalize("采集石头")));
+        TaskChain chain = new TaskChain(stone, store.satisfiedStageKeys(stone));
+        assertEquals("采集石头", chain.currentPrimary().description());
+    }
+
+    // ===== 全停用词/纯标点：归一为空 → 原文哈希，不同输入不同键 =====
+    @Test
+    void allStopwordDescriptionsFallBackToDistinctHashes() {
+        assertNotEquals(StageKeyNormalizer.normalize("完成"), StageKeyNormalizer.normalize("进行"));
+        assertTrue(StageKeyNormalizer.normalize("！！！").startsWith("raw:"));
+    }
+
+    // ===== 未知阶段键被忽略（不崩、不误跳） =====
+    @Test
+    void unknownSatisfiedKeyIsIgnored() {
+        Goal goal = stagedGoal("goal-abc12345", "击败末影龙", "阶段A");
+        TaskChain chain = new TaskChain(goal, java.util.Set.of("不存在的阶段键"));
+        assertEquals("阶段A", chain.currentPrimary().description());
+        assertTrue(chain.satisfiedStages().isEmpty());
+    }
+
+    // ===== 坏 JSON → 空仓库，不抛 =====
+    @Test
+    void corruptedFactsJsonYieldsEmptyStore() {
+        assertEquals(0, CompletedFactStore.fromJson("{broken").stageCount());
+        assertEquals(0, CompletedFactStore.fromJson("not json").stageCount());
+    }
+
+    // ===== 全阶段命中（COMPLETED）时 snapshot()/toJson() 不越界不抛 =====
+    @Test
+    void completedChainSnapshotAndJsonDoNotThrow() {
+        Goal goal = stagedGoal("goal-abc12345", "击败末影龙", "阶段A", "阶段B");
+        CompletedFactStore store = new CompletedFactStore();
+        store.recordStage(goal, "阶段A", 1L, "c");
+        store.recordStage(goal, "阶段B", 2L, "c");
+        TaskChain chain = new TaskChain(goal, store.satisfiedStageKeys(goal));
+        assertEquals(com.dwinovo.numen.rdd.api.PrimaryGoalStatus.COMPLETED, chain.primaryStatus());
+        assertDoesNotThrow(chain::snapshot);
+        assertDoesNotThrow(chain::toJson);
     }
 }
