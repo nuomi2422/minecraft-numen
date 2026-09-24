@@ -11,6 +11,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.phys.AABB;
 
@@ -44,6 +45,7 @@ final class RddWorldAssetObserver {
                 || !companion.getServer().isSameThread()) return new Result(0, 0, 0, 0);
         int bases = observeBase(companion, registry);
         int structures = observeStructures(companion, registry);
+        observeVillages(companion, registry);   // P2.3：村庄资源节点（供规划查“这村庄有啥”）
         int machines = observeMachines(companion, registry);
         int entities = observeEntities(companion, registry);
         trim(registry);
@@ -149,6 +151,48 @@ final class RddWorldAssetObserver {
             count++;
         }
         return count;
+    }
+
+    private static int observeVillages(NumenPlayer companion, AssetRegistry registry) {
+        if (!(companion.level() instanceof ServerLevel level)) return 0;
+        BlockPos pos = companion.blockPosition();
+        var structureRegistry = level.registryAccess().registryOrThrow(Registries.STRUCTURE);
+        String villageId = null;
+        for (Structure structure : level.structureManager().getAllStructuresAt(pos).keySet()) {
+            var id = structureRegistry.getKey(structure);
+            if (id != null && id.toString().startsWith("minecraft:village")) { villageId = id.toString(); break; }
+        }
+        if (villageId == null) return 0;
+        // 有界资源扫描（半径内，不强制加载远处区块）：村民/铁傀儡（实体）+ 箱子/作物/书架（方块）。
+        int villagers = 0, golems = 0;
+        AABB area = companion.getBoundingBox().inflate(24, 12, 24);
+        for (Entity e : level.getEntities(companion, area, ent -> true)) {
+            String id = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
+            if ("minecraft:villager".equals(id)) villagers++;
+            else if ("minecraft:iron_golem".equals(id)) golems++;
+        }
+        int chests = 0, crops = 0, bookshelves = 0;
+        final int R = 16, RY = 6, MAX_STEPS = 40000;
+        int steps = 0;
+        outer:
+        for (BlockPos c : BlockPos.betweenClosed(pos.offset(-R, -RY, -R), pos.offset(R, RY, R))) {
+            if (++steps > MAX_STEPS) break outer;
+            var b = level.getBlockState(c).getBlock();
+            if (b == Blocks.CHEST || b == Blocks.TRAPPED_CHEST || b == Blocks.BARREL) chests++;
+            else if (b == Blocks.BOOKSHELF) bookshelves++;
+            else if (b == Blocks.WHEAT || b == Blocks.CARROTS || b == Blocks.POTATOES || b == Blocks.BEETROOTS) crops++;
+        }
+        Map<String, Object> value = common("village", villageId,
+                level.dimension().location().toString(), pos, "LAZY");
+        value.put("structure", villageId);
+        value.put("state", "SCANNED");
+        value.put("resources", Map.of("villagers", villagers, "iron_golem", golems,
+                "chests", chests, "crops", crops, "bookshelves", bookshelves));
+        value.put("summary", "village scanned: villagers=" + villagers + " golems=" + golems
+                + " chests=" + chests + " crops=" + crops + " bookshelves=" + bookshelves);
+        String key = "village|" + value.get("dimension") + "|" + (pos.getX() >> 4) + "," + (pos.getZ() >> 4);
+        apply(registry, key, "world_village", String.valueOf(value.get("dimension")), value);
+        return 1;
     }
 
     private static Map<String, Object> common(String kind, String label, String dimension,
