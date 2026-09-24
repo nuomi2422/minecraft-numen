@@ -67,6 +67,9 @@ public final class RddPlugin implements NumenPlugin {
     private static volatile Path factsDir;
     /** 内存完成事实仓库（uuid→store）；磁盘为真身，清世界状态只清内存。 */
     private static final Map<UUID, CompletedFactStore> FACTS = new ConcurrentHashMap<>();
+    /** P4 重规划预算：每（同伴|一级）最多自动重规划次数；超限回落停车，防无限烧 LLM。 */
+    private static final int MAX_REPLAN_PER_PRIMARY = 3;
+    private static final Map<String, Integer> REPLAN_COUNTS = new ConcurrentHashMap<>();
 
     record BodyState(String subtaskId, int submitCount) {}
 
@@ -267,6 +270,7 @@ public final class RddPlugin implements NumenPlugin {
         // 新目标在同一同伴上会复用同样的 primary-<uuid8>-N 命名，必须清掉去重记忆，否则首个懒边界漏报。
         LAST_EXPANSION_REPORT.remove(companionId);
         RddGoalDriver.clear(companionId);
+        clearReplanCounts(companionId);   // 新目标 = 新阶段标识，重规划预算清零
         // P0：把该目标血缘下"已可靠完成"的阶段事实注入新链 → 已达成一级直接跳过、不再重复规划
         RUNTIMES.put(companionId, new RddRuntime(
                 new TaskChain(goal, facts(companionId).satisfiedStageKeys(goal)), assets(companionId)));
@@ -279,22 +283,33 @@ public final class RddPlugin implements NumenPlugin {
      * 重分解当前一级；成功则 {@code replaceCurrentSubtasks} 换新计划，失败/空则 {@code resumeFromReplanning} 回落重跑现有。
      * 这是 REPLANNING 在生产里的**活触发器**（此前只有测试构造 REPLAN）。
      */
-    static void requestReplan(UUID companionId, String reason) {
+    static boolean requestReplan(UUID companionId, String reason) {
         RddRuntime rt = RUNTIMES.get(companionId);
-        if (rt == null) return;
+        if (rt == null) return false;
         TaskChain chain = rt.chain();
+        // 预算：同一(同伴|一级)最多自动重规划 MAX_REPLAN_PER_PRIMARY 次；超限不再重规划（回落停车）
+        String primaryId = chain.currentPrimary().id();
+        String key = companionId + "|" + primaryId;
+        int used = REPLAN_COUNTS.getOrDefault(key, 0);
+        if (used >= MAX_REPLAN_PER_PRIMARY) {
+            RddMonitor.publish("replan_exhausted", Map.of(
+                    "companionId", companionId.toString(), "primary", primaryId,
+                    "attempts", used, "reason", "replan budget exhausted; park instead"));
+            LOG.warn("[rdd] 重规划预算耗尽，回落停车 {}:{}", companionId, primaryId);
+            return false;
+        }
+        REPLAN_COUNTS.merge(key, 1, Integer::sum);
         try {
             chain.enterReplanningFromStuck(reason);
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 无法进入重规划 {}: {}", companionId, ex.toString());
-            return;
+            return false;
         }
         String theme = chain.currentPrimary().description();
-        String primaryId = chain.currentPrimary().id();
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
         if (server == null) {
             chain.resumeFromReplanning();
-            return;
+            return true;
         }
         var snap = planningSnapshot(companionId);
         var level = RiskGate.levelForText(theme);
@@ -330,6 +345,7 @@ public final class RddPlugin implements NumenPlugin {
                         try { chain.resumeFromReplanning(); } catch (RuntimeException ignore) { }
                     }
                 }));
+        return true;
     }
 
     public static RddRuntime runtime(UUID companionId) {
@@ -398,6 +414,13 @@ public final class RddPlugin implements NumenPlugin {
         return com.dwinovo.numen.rdd.core.PlanningAssetSnapshot.from(lastInventory(companionId), assets(companionId));
     }
 
+    /** 清某同伴的重规划预算计数（重绑/清任务时调用）。 */
+    private static void clearReplanCounts(UUID companionId) {
+        if (companionId == null) return;
+        String prefix = companionId + "|";
+        REPLAN_COUNTS.keySet().removeIf(k -> k.startsWith(prefix));
+    }
+
     /** 记录某同伴最近一次背包计数（Detector 心跳写）。null/空安全。 */
     public static void cacheInventory(UUID companionId, Map<String, Integer> counts) {
         if (companionId != null) {
@@ -456,6 +479,7 @@ public final class RddPlugin implements NumenPlugin {
                 LAST_CONTEXT.remove(companionId);
                 LAST_EXPANSION_REPORT.remove(companionId);
                 RddGoalDriver.clear(companionId); // 目标清/重绑 → 丢掉该同伴的懒展开状态
+                clearReplanCounts(companionId);
                 LOG.info("[rdd] 已清除任务及磁盘交接 {}", companionId);
             });
         } catch (IOException ex) {

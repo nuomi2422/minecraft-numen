@@ -471,11 +471,12 @@ final class RddDetector {
                         "companionId", ap.getUUID().toString(), "subtask", current.id(),
                         "failureClass", fe.kind().name(), "recovery", rd.outcome().name(),
                         "action", plan.action().name(), "auto", rd.auto(), "reason", rd.reason()));
-                if (plan.action() == RecoveryAction.REQUEST_REPLAN) {
+                if (plan.action() == RecoveryAction.REQUEST_REPLAN
+                        && RddPlugin.requestReplan(ap.getUUID(), fe.reason())) {
                     // P4：转入重规划流程（进入 REPLANNING + 带真实状态重分解），不再 parking 守望
-                    RddPlugin.requestReplan(ap.getUUID(), fe.reason());
                     return;
                 }
+                // 预算耗尽等导致未能重规划 → 回落停车守望（下面继续）
             }
             watchParked(ap, rt, current);
             return;
