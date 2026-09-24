@@ -18,9 +18,14 @@ public final class TaskChain {
     private Goal goal;
     private final Map<String, SubtaskStatus> statuses = new LinkedHashMap<>();
     private final Map<String, String> skipReasons = new LinkedHashMap<>();
+    private final Map<String, Integer> attempts = new LinkedHashMap<>();
     private int primaryIndex;
     private int subtaskIndex;
     private PrimaryGoalStatus primaryStatus = PrimaryGoalStatus.PENDING;
+    /** 当前二级最近一次绑定的宿主执行实例 id（P0-3 执行身份）；无执行绑定时为 null。 */
+    private String activeExecutionId;
+    /** 当前二级最近一次启动的 tick 时间戳（执行审计/重启恢复判定用）；从未启动为 0。 */
+    private long lastStartedAtMillis;
 
     public TaskChain(Goal goal) {
         this.goal = Objects.requireNonNull(goal);
@@ -57,6 +62,15 @@ public final class TaskChain {
     }
 
     /**
+     * 依赖门接入真实注册表（P0-2）：以 {@link AssetRegistry#usableCounts()} 折叠的
+     * 可用资产为准判定当前一级是否已满足前置。只算 OBSERVED 且有 inventory_scan 计数的条目，
+     * UNKNOWN/INVALID 状态资产天然不满足依赖门。
+     */
+    public synchronized boolean currentPrimaryReady(AssetRegistry registry) {
+        return currentPrimaryReady(registry == null ? null : registry.usableCounts());
+    }
+
+    /**
      * 激活"刚推进到、还没开工"的当前一级（PENDING/WAITING → ACTIVE 并启动其首个二级）。
      * 前置资产未到位 → 置 WAITING 并返回 false（监督方此时不该把它派给 AI，等资产到了再调）。
      */
@@ -80,6 +94,26 @@ public final class TaskChain {
         return true;
     }
 
+    /** 同 {@link #activateCurrent(Map)}，但依赖门以真实注册表为准（P0-2 接线）。 */
+    public synchronized boolean activateCurrentWithRegistry(AssetRegistry registry) {
+        if (primaryStatus != PrimaryGoalStatus.PENDING && primaryStatus != PrimaryGoalStatus.WAITING) {
+            throw new IllegalStateException("only a not-yet-started primary may activate: " + primaryStatus);
+        }
+        if (currentPrimary().unexpanded()) {
+            throw new IllegalStateException("current primary unexpanded; expandCurrentPrimary(...) before activation: "
+                    + currentPrimary().id());
+        }
+        if (!currentPrimaryReady(registry)) {
+            primaryStatus = PrimaryGoalStatus.WAITING;
+            return false;
+        }
+        primaryStatus = PrimaryGoalStatus.ACTIVE;
+        if (statuses.get(currentSubtask().id()) == SubtaskStatus.PENDING) {
+            statuses.put(currentSubtask().id(), SubtaskStatus.RUNNING);
+        }
+        return true;
+    }
+
     public synchronized void startCurrent() {
         if (currentPrimary().unexpanded()) {
             throw new IllegalStateException("current primary unexpanded; expandCurrentPrimary(...) before start: "
@@ -88,7 +122,22 @@ public final class TaskChain {
         if (primaryStatus == PrimaryGoalStatus.PENDING) primaryStatus = PrimaryGoalStatus.ACTIVE;
         if (primaryStatus != PrimaryGoalStatus.ACTIVE || statuses.get(currentSubtask().id()) != SubtaskStatus.PENDING) throw new IllegalStateException("current subtask cannot start");
         statuses.put(currentSubtask().id(), SubtaskStatus.RUNNING);
+        attempts.merge(currentSubtask().id(), 1, Integer::sum);
+        activeExecutionId = null; // 新一轮执行，旧的宿主执行实例身份作废
+        lastStartedAtMillis = System.currentTimeMillis();
     }
+
+    /** P0-3 执行身份：宿主开始执行后把真实执行实例 id 绑到当前二级；重复绑定会置换旧 id。 */
+    public synchronized void bindExecution(String subtaskId, String executionId) {
+        if (executionId == null || executionId.isBlank()) throw new IllegalArgumentException("execution id required");
+        requireCurrent(subtaskId);
+        if (statuses.get(subtaskId) != SubtaskStatus.RUNNING) throw new IllegalStateException("current subtask is not running");
+        activeExecutionId = executionId;
+    }
+
+    /** P0-3 执行身份：当前二级绑定的宿主执行实例 id；未绑定/未运行时为 null。 */
+    public synchronized String activeExecutionId() { return activeExecutionId; }
+    public synchronized int attempts(String subtaskId) { return attempts.getOrDefault(subtaskId, 0); }
 
     /**
      * 懒加载唯一合法的注入点：宿主目标驱动器把已为"当前一级"生成的二级集合注入该一级。
@@ -162,8 +211,73 @@ public final class TaskChain {
                 }
             }
             case REJECT, REPLAN -> primaryStatus = PrimaryGoalStatus.REPLANNING;
-            case NEED_MORE_EVIDENCE, DEFER -> primaryStatus = PrimaryGoalStatus.WAITING;
+            // NEED_MORE_EVIDENCE/DEFER 是"证据不足暂缓"，特意停回 AWAITING_SUPERVISOR：
+            // 绝不落到 WAITING——WAITING 是"缺前置资产"语义，二者的退出通道完全不同。
+            case NEED_MORE_EVIDENCE, DEFER -> { /* 停在监督等待，等新的 CONFIRM/REJECT/REPLAN */ }
         }
+    }
+
+    /** REPLANNING 出口：宿主决定沿用现有二级计划 → 本级二级全量重置 PENDING，回到 PENDING 走依赖门/激活重跑。 */
+    public synchronized void resumeFromReplanning() {
+        if (primaryStatus != PrimaryGoalStatus.REPLANNING) throw new IllegalStateException("not replanning: " + primaryStatus);
+        PrimaryGoal cur = currentPrimary();
+        if (cur.unexpanded()) throw new IllegalStateException("unexpanded primary cannot resume replanning: " + cur.id());
+        for (Subtask s : cur.subtasks()) {
+            statuses.put(s.id(), SubtaskStatus.PENDING);
+            skipReasons.remove(s.id());
+        }
+        subtaskIndex = 0;
+        primaryStatus = PrimaryGoalStatus.PENDING;
+    }
+
+    /**
+     * REPLANNING 出口：宿主为当前一级换了新二级计划 → 原位替换成 generated（保留一级
+     * id/description/waitFor），旧二级状态作废、新二级全置 PENDING，subtask 指针归零回到 PENDING。
+     */
+    public synchronized void replaceCurrentSubtasks(List<Subtask> generated) {
+        if (primaryStatus != PrimaryGoalStatus.REPLANNING) throw new IllegalStateException("only a REPLANNING primary may have its plan replaced: " + primaryStatus);
+        if (generated == null || generated.isEmpty()) throw new IllegalArgumentException("replacement requires at least one legal subtask");
+        PrimaryGoal cur = currentPrimary();
+        Set<String> ids = new HashSet<>();
+        for (Subtask s : generated) {
+            if (s == null) throw new IllegalArgumentException("null subtask in replacement");
+            if (!ids.add(s.id())) throw new IllegalArgumentException("duplicate subtask id in replacement: " + s.id());
+            // 只允许替换当前一级的二级：新 id 不得与其它一级已有的二级冲突。
+            if (statuses.containsKey(s.id()) && !wasInPrimary(cur.id(), s.id()))
+                throw new IllegalArgumentException("subtask id used outside the replaced primary: " + s.id());
+        }
+        List<Subtask> old = cur.subtasks();
+        Set<String> freed = new HashSet<>();
+        for (Subtask s : old) freed.add(s.id());
+        List<PrimaryGoal> primaries = new ArrayList<>(goal.primaryGoals());
+        primaries.set(primaryIndex, new PrimaryGoal(cur.id(), cur.description(), List.copyOf(generated), cur.waitFor(), false));
+        goal = new Goal(goal.id(), goal.description(), primaries);
+        for (String freedId : freed) {
+            statuses.remove(freedId);
+            skipReasons.remove(freedId);
+            attempts.remove(freedId);
+        }
+        for (Subtask s : generated) {
+            statuses.put(s.id(), SubtaskStatus.PENDING);
+        }
+        subtaskIndex = 0;
+        primaryStatus = PrimaryGoalStatus.PENDING;
+    }
+
+    /** RECOVERING 出口：停机恢复后宿主核实当前二级可继续 → 回到 ACTIVE，照常跑监督/完成判定。 */
+    public synchronized void resumeFromRecovering() {
+        if (primaryStatus != PrimaryGoalStatus.RECOVERING) throw new IllegalStateException("not recovering: " + primaryStatus);
+        primaryStatus = PrimaryGoalStatus.ACTIVE;
+    }
+
+    /** 查询某一级包含某二级 id（replaceCurrentSubtasks 校验用，避免误删其它一级）。 */
+    private boolean wasInPrimary(String primaryId, String subtaskId) {
+        for (PrimaryGoal primary : goal.primaryGoals()) {
+            if (primary.id().equals(primaryId)) {
+                for (Subtask s : primary.subtasks()) if (s.id().equals(subtaskId)) return true;
+            }
+        }
+        return false;
     }
 
     public synchronized void markFailed(String subtaskId, String reason) {
@@ -172,6 +286,7 @@ public final class TaskChain {
         if (st != SubtaskStatus.RUNNING && st != SubtaskStatus.STALLED) throw new IllegalStateException("current subtask is not running/stalled");
         if (reason == null || reason.isBlank()) throw new IllegalArgumentException("failure reason required");
         statuses.put(subtaskId, SubtaskStatus.FAILED);
+        activeExecutionId = null; // 二级离开 RUNNING：宿主执行身份作废
     }
 
     /** 监督检测到卡死（资产/工具长时间无变化）→ 置 STALLED，等待外部拍醒或升级。 */
@@ -271,7 +386,7 @@ public final class TaskChain {
         return view;
     }
 
-    /** 导出任务链状态为 JSON（持久化用：goal 结构 + 全部状态 + 当前指针）。 */
+    /** 导出任务链状态为 JSON（持久化用：goal 结构 + 全部状态 + 当前指针 + 执行元数据）。 */
     public synchronized String toJson() {
         JsonObject o = new JsonObject();
         o.add("goal", GSON.toJsonTree(goal));
@@ -281,13 +396,23 @@ public final class TaskChain {
         }
         o.add("statuses", st);
         o.add("skipReasons", GSON.toJsonTree(skipReasons));
+        o.add("attempts", GSON.toJsonTree(attempts));
         o.addProperty("primaryIndex", primaryIndex);
         o.addProperty("subtaskIndex", subtaskIndex);
         o.addProperty("primaryStatus", primaryStatus.name());
+        o.addProperty("lastStartedAtMillis", lastStartedAtMillis);
+        if (activeExecutionId != null) o.addProperty("activeExecutionId", activeExecutionId);
         return GSON.toJson(o);
     }
 
-    /** 从 JSON 恢复任务链状态（游戏重启后 RECOVERING）。 */
+    /**
+     * 从 JSON 恢复任务链状态（游戏重启后 RECOVERING）。
+     *
+     * <p>恢复规则（P0-4）：磁盘上正 ACTIVE/RUNNING 的链不等于重启后真的能不告而续——
+     * 停机期间的执行身份、身体任务全部作废。这里把「ACTIVE + 当前二级 RUNNING/STALLED」
+     * 归一为 RECOVERING，由宿主核实当前二级可继续后再 {@link #resumeFromRecovering()}。
+     * 其余状态原样恢复（未开始的 PENDING/WAITING、已停的 AWAITING_SUPERVISOR 等都不算在途执行）。
+     */
     public static TaskChain fromJson(String json) {
         JsonObject o = JsonParser.parseString(json).getAsJsonObject();
         JsonObject goalObj = o.getAsJsonObject("goal");
@@ -319,11 +444,33 @@ public final class TaskChain {
                     chain.skipReasons.put(entry.getKey(), entry.getValue().getAsString());
             }
         }
+        if (o.has("attempts") && o.get("attempts").isJsonObject()) {
+            JsonObject att = o.getAsJsonObject("attempts");
+            for (String k : att.keySet()) {
+                chain.attempts.put(k, att.get(k).getAsInt());
+            }
+        }
+        if (o.has("lastStartedAtMillis")) {
+            chain.lastStartedAtMillis = o.get("lastStartedAtMillis").getAsLong();
+        }
+        if (o.has("activeExecutionId") && !o.get("activeExecutionId").isJsonNull()) {
+            chain.activeExecutionId = o.get("activeExecutionId").getAsString();
+        }
+        // 在途执行归一（P0-4）：必须基于恢复后的状态表判，不能基于未恢复的链。
+        if (chain.primaryStatus == PrimaryGoalStatus.ACTIVE) {
+            Subtask cur = chain.currentSubtask();
+            SubtaskStatus curStatus = cur == null ? null : chain.statuses.get(cur.id());
+            if (curStatus == SubtaskStatus.RUNNING || curStatus == SubtaskStatus.STALLED) {
+                chain.primaryStatus = PrimaryGoalStatus.RECOVERING;
+                chain.activeExecutionId = null; // 停机作废：宿主执行实例身份不跨重启
+            }
+        }
         chain.validateRestoredState();
         return chain;
     }
 
     private void advanceOrAwait() {
+        activeExecutionId = null; // 二级离开 RUNNING：宿主执行身份作废
         if (subtaskIndex + 1 < currentPrimary().subtasks().size()) { subtaskIndex++; return; }
         primaryStatus = PrimaryGoalStatus.AWAITING_SUPERVISOR;
     }

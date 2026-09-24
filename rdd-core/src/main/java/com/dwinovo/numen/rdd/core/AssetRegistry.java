@@ -56,6 +56,28 @@ public final class AssetRegistry {
         return current.values().stream().filter(e -> e.status() == AssetStatus.OBSERVED).toList();
     }
 
+    /**
+     * 当前可用资产按计数折叠成 {@code assetId -> count}，供依赖门与完成判定接入真实注册表。
+     * 只有 OBSERVED 且观测为 {@code inventory_scan}（值里有整数 count）的条目才算数；
+     * UNKNOWN/INVALID/消耗量为 0 的条目不贡献数量（缺 key 走缺省 0）。
+     */
+    public synchronized Map<String, Integer> usableCounts() {
+        Map<String, Integer> counts = new HashMap<>();
+        for (AssetEntry entry : current.values()) {
+            if (entry.status() != AssetStatus.OBSERVED) {
+                continue;
+            }
+            if (!"inventory_scan".equals(entry.observation().type())) {
+                continue;
+            }
+            Object count = entry.observation().value().get("count");
+            if (count instanceof Number n && Double.isFinite(n.doubleValue()) && n.doubleValue() >= 0) {
+                counts.put(entry.assetId(), n.intValue());
+            }
+        }
+        return counts;
+    }
+
     /** Current state only. Observation history is deliberately not persisted. */
     public synchronized String toJson() {
         return GSON.toJson(current.values());

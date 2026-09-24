@@ -27,9 +27,19 @@ public final class RddRuntime {
         publish("subtask_started", Map.of("goal", chain.currentPrimary().id(), "subtask", chain.currentSubtask().id()));
     }
 
+    /** 在途执行恢复拍板（P0-4）：RECOVERING → ACTIVE。 */
+    public void resumeFromRecovering() {
+        chain.resumeFromRecovering();
+    }
+
     /** 激活刚推进到的当前一级；前置资产未到位 → WAITING 并返回 false。 */
     public boolean activateCurrent(Map<String, Integer> counts) {
         return chain.activateCurrent(counts);
+    }
+
+    /** 依赖门走真实注册表（P0-2）：用 {@link AssetRegistry#usableCounts()} 判定前置是否就位。 */
+    public boolean activateCurrentFromRegistry() {
+        return chain.activateCurrentWithRegistry(assets);
     }
 
     /** 懒展开注入点：宿主目标驱动器把已生成的当前一级二级注入链（core 纯 JVM 不调 LLM）。 */

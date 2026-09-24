@@ -166,6 +166,17 @@ final class RddDetector {
                     || ps == PrimaryGoalStatus.FAILED) {
                 return;
             }
+            // P0-4 重启恢复：在途链恢复为 RECOVERING 后不许静默瞒报续跑——先发恢复事件，
+            // 再按真实资产检测照常推进（资产已满足会走 early-achievement 直接验收；
+            // 未满足就恢复监督/卡死/重试，与 FAILED 的"真实资产推进照常"哲学一致）。
+            if (ps == PrimaryGoalStatus.RECOVERING) {
+                RddPlugin.publishTaskSnapshot(ap.getUUID(), "chain_recovering");
+                RddMonitor.publish("chain_recovering", Map.of(
+                        "companionId", ap.getUUID().toString(),
+                        "primary", chain.currentPrimary().id(),
+                        "reason", "in-flight chain restored after restart; resuming under live observation"));
+                rt.resumeFromRecovering();
+            }
             // 刚推进到新的当前一级(PENDING/WAITING)：先过依赖门(wait_for)，没过就保持 WAITING 不派给 AI。
             if (ps == PrimaryGoalStatus.PENDING || ps == PrimaryGoalStatus.WAITING) {
                 // 观察行(懒边界)：当前一级到达但未展开 -> 上报目标驱动器(展开权持有者)，Detector 绝不自己展开/调 LLM。

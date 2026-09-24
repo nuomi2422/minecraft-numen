@@ -129,8 +129,11 @@ public final class RddChainFactory {
                 List.of(new PrimaryGoal("primary-" + suffix, obj, subtasks)));
     }
 
-    /** 确定性条件必须可被 {@link HardCodedEvaluator} 判定：asset_key 非空；minimum（若有）非负。 */
+    /** 确定性条件必须可被 {@link HardCodedEvaluator} 判定：asset_key 非空；minimum（若有）非负且是非负整数。 */
     private static void validateCondition(Map<String, Object> condition, int index) {
+        if (condition == null) {
+            throw new IllegalArgumentException("spec " + index + " condition required");
+        }
         if (condition.containsKey("type") && !"inventory".equals(condition.get("type"))) {
             if (!WorldFactConditions.valid(condition)) throw new IllegalArgumentException("invalid world fact condition at " + index);
             return;
@@ -138,7 +141,7 @@ public final class RddChainFactory {
         if (condition.containsKey("group")) {
             Object min = condition.get("minimum");
             if (!InventoryGroups.known(condition.get("group")) || condition.containsKey("asset_key")
-                    || !(min instanceof Number n) || n.intValue() <= 0 || n.doubleValue() != n.intValue())
+                    || !isNonNegativeInteger(min) || (min instanceof Number mn && mn.intValue() <= 0))
                 throw new IllegalArgumentException("invalid inventory group condition at " + index);
             return;
         }
@@ -147,8 +150,18 @@ public final class RddChainFactory {
             throw new IllegalArgumentException("spec " + index + " lacks a non-blank asset_key");
         }
         Object minimum = condition.get("minimum");
-        if (minimum instanceof Number n && n.intValue() < 0) {
-            throw new IllegalArgumentException("spec " + index + " minimum must be non-negative");
+        if (minimum != null && !isNonNegativeInteger(minimum)) {
+            // 与 HardCodedEvaluator:34-37 对齐：minimum 必须是有限非负整数，
+            // 否则 1.5/NaN/Infinity 建链能过、判定永久 false，任务卡死不产生失败。
+            throw new IllegalArgumentException("spec " + index + " minimum must be a finite non-negative integer");
         }
+    }
+
+    /** minimum 必须是有限且整数值 ≥ 0（double/float 小数、NaN/Infinity 一律拒绝）。 */
+    private static boolean isNonNegativeInteger(Object minimum) {
+        return minimum instanceof Number n
+                && Double.isFinite(n.doubleValue())
+                && n.doubleValue() >= 0
+                && n.doubleValue() == (double) n.intValue();
     }
 }

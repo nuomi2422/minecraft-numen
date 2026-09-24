@@ -62,8 +62,11 @@ class TaskChainTest {
         var restored = TaskChain.fromJson(chain.toJson());
         assertEquals(SubtaskStatus.STALLED, restored.currentSubtaskStatus());
         assertEquals("s1", restored.currentSubtask().id());
+        // P0-4：在途执行(ACTIVE+RUNNING/STALLED)重启后归一为 RECOVERING，不默认续跑
+        assertEquals(PrimaryGoalStatus.RECOVERING, restored.primaryStatus());
+        // 宿主核实后拍板续跑 → 回到 ACTIVE → STALLED → RUNNING
+        restored.resumeFromRecovering();
         assertEquals(PrimaryGoalStatus.ACTIVE, restored.primaryStatus());
-        // 恢复后可继续走状态机（STALLED → RUNNING）
         restored.resumeFromStalled("s1");
         assertEquals(SubtaskStatus.RUNNING, restored.currentSubtaskStatus());
     }
