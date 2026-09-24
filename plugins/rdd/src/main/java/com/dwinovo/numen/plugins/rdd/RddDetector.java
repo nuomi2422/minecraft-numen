@@ -24,9 +24,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.inventory.AbstractFurnaceMenu;
 import net.minecraft.world.inventory.AbstractContainerMenu;
-import net.minecraft.world.level.block.entity.BlockEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -87,9 +85,8 @@ final class RddDetector {
 
     private record StallState(String subtaskId, String fingerprint, int unchangedTicks, int nudges) {}
 
-    /** Keep the last real furnace observation when its GUI closes during cooking. */
-    private final Map<UUID, FurnaceWatch> furnaces = new ConcurrentHashMap<>();
-    private record FurnaceWatch(TaskChain chain, String subtaskId, AbstractFurnaceMenu menu, BlockEntity block) {}
+    /** 熔炉/容器观测：GUI 关闭后保留快照 + 容器内容指纹（燃料不算产出）。 */
+    private final RddFurnaceWatch furnaceWatch = new RddFurnaceWatch();
 
     /** Level 2 重试计数：绑定当前二级（二级变了才重置），避免被误清。 */
     private final Map<UUID, RetryState> retries = new ConcurrentHashMap<>();
@@ -113,7 +110,7 @@ final class RddDetector {
     RddDetector() {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
                 (net.neoforged.neoforge.event.server.ServerStoppedEvent event) -> {
-                    furnaces.clear();
+                    furnaceWatch.clear();
                     stalls.clear();
                     retries.clear();
                     stallCounts.clear();
@@ -441,7 +438,7 @@ final class RddDetector {
                 parkedWatches.remove(ap.getUUID());
                 stalls.remove(ap.getUUID());
                 stallCounts.remove(ap.getUUID());
-                furnaces.remove(ap.getUUID());
+                furnaceWatch.remove(ap.getUUID());
                 RddPlugin.finishResolvedPrimary(ap.getUUID(), rt);
                 RddMonitor.publish("subtask_skipped", Map.of(
                         "companionId", ap.getUUID().toString(), "subtask", current.id(), "reason", reason));
@@ -594,23 +591,13 @@ final class RddDetector {
     /** Server-thread observation only. Fuel/elapsed/deadline/task-id changes are not work progress. */
     private RddStallPolicy.Observation observeWork(NumenPlayer ap, RddRuntime rt, Subtask current) {
         UUID uuid = ap.getUUID();
-        FurnaceWatch watch = furnaces.get(uuid);
-        if (watch != null && (watch.chain() != rt.chain() || !watch.subtaskId().equals(current.id())
-                || watch.block().isRemoved() || watch.block().getLevel() != ap.level())) {
-            furnaces.remove(uuid);
-            watch = null;
-        }
+        RddFurnaceWatch.FurnaceWatch watch = furnaceWatch.track(ap, rt, current);
         AbstractContainerMenu menu = ap.containerMenu;
-        if (menu instanceof AbstractFurnaceMenu furnace && !menu.slots.isEmpty()
-                && menu.slots.getFirst().container instanceof BlockEntity block) {
-            watch = new FurnaceWatch(rt.chain(), current.id(), furnace, block);
-            furnaces.put(uuid, watch);
-        }
         StringBuilder progress = new StringBuilder();
-        if (menu != null && menu != ap.inventoryMenu) appendContainer(progress, menu, ap);
+        if (menu != null && menu != ap.inventoryMenu) RddFurnaceWatch.appendContainer(progress, menu, ap);
         boolean production = false;
         if (watch != null) {
-            if (watch.menu() != menu) appendContainer(progress, watch.menu(), ap);
+            if (watch.menu() != menu) RddFurnaceWatch.appendContainer(progress, watch.menu(), ap);
             // Vanilla getBurnProgress is cooking progress; getLitProgress is only fuel countdown.
             progress.append("|cooking=").append(watch.menu().getBurnProgress());
             production = watch.menu().isLit() && !watch.menu().getSlot(0).getItem().isEmpty();
@@ -620,18 +607,6 @@ final class RddDetector {
         if (active) progress.append("|body=").append(body.getToolName()).append(':').append(body.describe());
         String source = production ? "furnace_production" : active ? "body_task:" + body.publicId() : "idle";
         return new RddStallPolicy.Observation(fingerprint(ap), progress.toString(), production || active, source);
-    }
-
-    private static void appendContainer(StringBuilder progress, AbstractContainerMenu menu, NumenPlayer ap) {
-        progress.append("|container=").append(menu.getClass().getName());
-        for (var slot : menu.slots) {
-            if (slot.container == ap.getInventory()) continue;
-            // Burning fuel does not prove that a recipe is producing anything.
-            if (menu instanceof AbstractFurnaceMenu && slot.index == AbstractFurnaceMenu.FUEL_SLOT) continue;
-            ItemStack item = slot.getItem();
-            progress.append('|').append(slot.index).append(':')
-                    .append(BuiltInRegistries.ITEM.getKey(item.getItem())).append('=').append(item.getCount());
-        }
     }
 
     /** 当前二级带 body 且还没提交过 → 提交一次。 */
@@ -720,7 +695,7 @@ final class RddDetector {
         stallCounts.remove(ap.getUUID());
         gapParked.remove(ap.getUUID());
         parkedWatches.remove(ap.getUUID());
-        furnaces.remove(ap.getUUID());
+        furnaceWatch.remove(ap.getUUID());
         if (!completed) {
             return;
         }
