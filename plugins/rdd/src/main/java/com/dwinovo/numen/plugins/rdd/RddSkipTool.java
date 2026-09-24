@@ -12,7 +12,7 @@ import java.util.function.Consumer;
 final class RddSkipTool implements NumenTool {
     @Override public String name() { return "rdd_skip_optional"; }
     @Override public String description() {
-        return "Challenge an unreachable extra carrot/potato/beetroot/baked_potato step. Requires 16 alternative ready-to-eat foods and idle body. Read rdd_status for expected_subtask_id first. Records SKIPPED, never COMPLETED. Refuses bread, equipment and progression goals.";
+        return "Skip an unreachable optional FOOD step (any food item, or condition group=food) so a food step never deadlocks the chain. Refuses non-food equipment/progression steps and steps explicitly marked optional=false. Requires idle body. Read rdd_status for expected_subtask_id first. Records SKIPPED, never COMPLETED.";
     }
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object().string("expected_subtask_id", "Current subtask ID from rdd_status.")

@@ -119,7 +119,7 @@ public final class RddPlugin implements NumenPlugin {
         Subtask current = runtime.chain().currentSubtask();
         if (!current.id().equals(expectedSubtaskId)) return "refused: stale subtask id; read rdd_status again";
         if (!RddOptionalFood.canSkip(current, lastInventory(companionId)))
-            return "refused: only extra food variety with at least 16 alternative ready-to-eat foods can be skipped";
+            return "refused: only an optional food step (food item or group=food, not marked required) can be skipped";
         if (com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companionId) != null)
             return "refused: body is busy; wait for the current action to stop";
         runtime.chain().skipSubtask(current.id(), reason == null || reason.isBlank() ? "optional food unavailable" : reason);
