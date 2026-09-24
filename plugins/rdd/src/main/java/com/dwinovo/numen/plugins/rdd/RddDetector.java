@@ -11,8 +11,12 @@ import com.dwinovo.numen.rdd.fail.FailureClassifier;
 import com.dwinovo.numen.rdd.fail.FailureContext;
 import com.dwinovo.numen.rdd.fail.FailureEvent;
 import com.dwinovo.numen.rdd.fail.FailureKind;
+import com.dwinovo.numen.rdd.fail.RecoveryAction;
 import com.dwinovo.numen.rdd.fail.RecoveryDecision;
-import com.dwinovo.numen.rdd.fail.RecoveryOutcome;
+import com.dwinovo.numen.rdd.fail.RecoveryPlan;
+import com.dwinovo.numen.rdd.fail.RecoveryPolicy;
+import com.dwinovo.numen.rdd.policy.ResourceBudget;
+import com.dwinovo.numen.rdd.policy.RiskGate;
 import com.dwinovo.numen.task.CompanionTickDispatcher;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -27,6 +31,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -457,11 +462,15 @@ final class RddDetector {
                         FailureKind.UNKNOWN, "auto-retries exhausted; root cause not established");
                 FailureContext fc = new FailureContext(hasBackupEquipment(inv), hasBase(rt), true, false);
                 RecoveryDecision rd = FailureClassifier.classify(fe, fc);
-                RddPlugin.nudge(ap.getUUID(), nudgeForOutcome(rd, current.description()));
+                // P3：把出口落成“恢复动作 + 步骤骨架”（具体方案仍交 AI/Planner）
+                List<String> gaps = ResourceBudget.missingFor(
+                        RiskGate.levelForText(current.description()), inv);
+                RecoveryPlan plan = RecoveryPolicy.plan(rd, gaps);
+                RddPlugin.nudge(ap.getUUID(), nudgeForPlan(plan, current.description()));
                 RddMonitor.publish("subtask_parked", Map.of(
                         "companionId", ap.getUUID().toString(), "subtask", current.id(),
                         "failureClass", fe.kind().name(), "recovery", rd.outcome().name(),
-                        "auto", rd.auto(), "reason", rd.reason()));
+                        "action", plan.action().name(), "auto", rd.auto(), "reason", rd.reason()));
             }
             watchParked(ap, rt, current);
             return;
@@ -491,14 +500,16 @@ final class RddDetector {
         }
     }
 
-    /** 按诊断出口给定向提醒（不自动改链状态；REPLAN 交主人/上层决定）。 */
-    private static String nudgeForOutcome(RecoveryDecision rd, String desc) {
-        return switch (rd.outcome()) {
-            case RECOVER -> "「" + desc + "」失败但你有备用装备与基地：回基地取备用装备后再继续，不要重规划。";
-            case REPAIR -> "「" + desc + "」失败：先分诊（资源不存在/路径受阻/工具调用问题），补准备或换路线后重试，不要原样重复。";
-            case REPLAN -> "「" + desc + "」反复失败且原因未知：不要原样重复；把卡点连同已有资产一起报告，考虑请主人重下 /goal 重规划。";
-            case SELF_COMPILE -> "「" + desc + "」疑似工具/代码缺陷：用 selfcompile_request 报出具体现象与复现步骤。";
-        };
+    /** 按恢复计划给定向提醒（含动作与有序步骤；不改链状态，REPLAN 交主人/上层）。 */
+    private static String nudgeForPlan(RecoveryPlan plan, String desc) {
+        StringBuilder sb = new StringBuilder("「" + desc + "」失败诊断：" + plan.action().name() + "。");
+        if (!plan.steps().isEmpty()) {
+            sb.append("按顺序：").append(String.join(" → ", plan.steps())).append("。");
+        }
+        if (plan.action() == RecoveryAction.REQUEST_REPLAN) {
+            sb.append("（原地重试无效，报告卡点请主人重下 /goal）");
+        }
+        return sb.toString();
     }
 
     /**
