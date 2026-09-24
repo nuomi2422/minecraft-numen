@@ -15,16 +15,23 @@ public interface ToolRegistry {
     /** 注册工具（无显式 schema → 生成宽松默认 schema）。重复注册抛异常。 */
     void register(String name, AcTool tool);
 
-    /**
-     * 注册工具并绑定显式 schema。schema.name() 必须与 name 一致。
+/**
+     * 注册工具并绑定显式 schema；schema 非空且 schema.name() 必须与 name 一致（否则实现层抛
+     * {@link IllegalArgumentException}）。
      *
-     * <p>默认实现<b>不静默吞掉 schema</b>：不会 schema 绑定的实现必须自行覆盖此方法，
-     * 否则抛 {@link UnsupportedOperationException} 硬失败——静默丢 schema 会让 AI 读到
-     * 的参数校验/目录失真，属于契约破坏，宁可当场报错。
+     * <p><b>实现契约：实现类必须覆写本方法。</b>默认实现抛
+     * {@link UnsupportedOperationException}。早期版本的默认实现会把 schema 静默丢弃（委托给两参
+     * 重载），而 schema 丢失会让 {@link com.dwinovo.numen.ac.core.AcParamValidator} 对一切工具直接
+     * 放行，等于 AI 参数校验与工具目录整体失效——属契约级损坏，宁可硬失败也不静默降级。
+     *
+     * <p>schema 为 null 时默认实现也抛 UOE（诊断字符串自带 null 防御，不会先 NPE），与本接口
+     * "schema 非空"的文字契约一致；null/重名/空名由覆写的实现统一按 IAE 拒绝。
      */
     default void register(String name, AcTool tool, ToolSchema schema) {
         throw new UnsupportedOperationException(
-                "schema binding not supported by this ToolRegistry; override register(name, tool, schema)");
+                "ToolRegistry 实现必须覆写 register(name, tool, schema)；默认实现会丢弃 schema，"
+                        + "使 AcParamValidator 对一切工具放行（AI 参数校验失效）。"
+                        + " name=" + name + " schema=" + (schema == null ? "<null>" : schema.name()));
     }
 
     Optional<AcTool> find(String name);

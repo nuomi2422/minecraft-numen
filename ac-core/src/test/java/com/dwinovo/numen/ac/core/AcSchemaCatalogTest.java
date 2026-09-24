@@ -61,7 +61,8 @@ class AcSchemaCatalogTest {
 
     @Test
     void defaultImplMustNotSilentlyDropSchemaBinding() {
-        // 只覆盖 2 参注册/查找的最小实现：3 参注册不许静默丢 schema，必须硬失败
+        // 只覆盖 2 参注册/查找的最小实现：3 参注册不许静默丢 schema，必须硬失败，
+        // 且诊断消息带工具名（排查定位），null schema 也必须是 UOE 而不是 NPE
         ToolRegistry minimal = new ToolRegistry() {
             @Override
             public void register(String name, AcTool tool) {
@@ -72,9 +73,17 @@ class AcSchemaCatalogTest {
                 return Optional.empty();
             }
         };
-        assertThrows(UnsupportedOperationException.class,
+        UnsupportedOperationException ex = assertThrows(UnsupportedOperationException.class,
                 () -> minimal.register("mine", (p, c) -> StepResult.success(Map.of()),
                         schema("mine", ToolSchema.Param.req("target", ToolSchema.Type.STRING))));
+        assertTrue(ex.getMessage().contains("mine"), ex.getMessage());
+        assertFalse(ex.getMessage().contains("<null>"), ex.getMessage());
+
+        // schema==null：仍是 UOE（诊断自带 null 防御），不是 NPE——调用方没传 null 却拿到 NPE
+        // 会把"实现没覆写三参"的责任错误归到调用方
+        UnsupportedOperationException nullEx = assertThrows(UnsupportedOperationException.class,
+                () -> minimal.register("mine", (p, c) -> StepResult.success(Map.of()), null));
+        assertTrue(nullEx.getMessage().contains("<null>"), nullEx.getMessage());
     }
 
     @Test
