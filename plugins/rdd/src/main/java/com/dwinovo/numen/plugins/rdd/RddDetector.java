@@ -1,6 +1,5 @@
 package com.dwinovo.numen.plugins.rdd;
 
-import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.ToolRegistry;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.rdd.api.*;
@@ -18,8 +17,6 @@ import com.dwinovo.numen.rdd.fail.RecoveryPolicy;
 import com.dwinovo.numen.rdd.policy.ResourceBudget;
 import com.dwinovo.numen.rdd.policy.RiskGate;
 import com.dwinovo.numen.task.CompanionTickDispatcher;
-import com.google.gson.Gson;
-import com.google.gson.JsonObject;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
@@ -57,7 +54,6 @@ final class RddDetector {
     private static final int MAX_SUBTASK_RETRIES = 2;
     /** 资产提前触发：单个 tick 内最多连跳过多少个"资产已满足"的二级（防极端长链死循环）。 */
     private static final int MAX_INSTANT_PASS = 32;
-    private static final Gson GSON = new Gson();
 
     /** 熔炉/容器观测：GUI 关闭后保留快照 + 容器内容指纹（燃料不算产出）。 */
     private final RddFurnaceWatch furnaceWatch = new RddFurnaceWatch();
@@ -276,7 +272,7 @@ final class RddDetector {
             // assist 协助模式下暂停自动工具提交(防双驾驶):工具执行交还 NUMEN 内置 AI,
             // RDD 只保留资产检测 / 目标完成判定 / 异常提醒。
             if (RddPlugin.supervisionEnabled() && RddPlugin.bodySubmissionEnabled()) {
-                maybeSubmitBody(ap, current);
+                RddBodyDispatcher.maybeSubmit(ap, current);
             }
             if (conditionMatches(ap, current, counts)) {
                 completeSubtask(ap, rt, current);
@@ -408,83 +404,6 @@ final class RddDetector {
             LOG.warn("[rdd] 资产 populate 异常: {}", ex.toString());
         }
     }
-    /** 当前二级带 body 且还没提交过 → 提交一次。 */
-    private void maybeSubmitBody(NumenPlayer ap, Subtask current) {
-        BodyInstruction body = current.body();
-        if (body == null) {
-            return;
-        }
-        var state = RddPlugin.bodyState(ap.getUUID());
-        if (state != null && state.subtaskId().equals(current.id())) {
-            return;
-        }
-        submitBody(ap, current);
-        RddPlugin.rememberBody(ap.getUUID(), current.id(), 1);
-    }
-
-    /** 直接调身体工具的服务端实现（同 tick 线程，安全）；工具内部走 TaskDispatch.setTask。
-     *
-     *  <p>入口分三路：
-     *  <ol>
-     *    <li>{@code task_type} 在 RDD 词表/别名内（mine/craft/equip_item/collect_items，含旧臆造名
-     *        mine_block/equip）→ {@link RddBodyTools} 翻译成真实工具参数（mine 要 block_ids 数组 + deepslate 变体）；</li>
-     *    <li>词表外但是真实注册工具（外部 rdd_submit/监测台显式指名驱动）→ 原样派发（操作者负责参数契约）；</li>
-     *    <li>都不是（规划层臆造名）→ 响亮 {@code subtask_capability_gap}，绝不再静默"只检测不执行"空转。</li>
-     *  </ol> */
-    private void submitBody(NumenPlayer ap, Subtask current) {
-        BodyInstruction body = current.body();
-        String raw = body.taskType();
-        String canonical = RddBodyTools.canonical(raw);
-        if (canonical != null) {
-            NumenTool tool = ToolRegistry.resolve(canonical);
-            if (tool == null) {
-                LOG.error("[rdd] 规范身体工具 {} 未注册（插件与注册表脱节）", canonical);
-                RddMonitor.publish("subtask_capability_gap", Map.of(
-                        "subtask", current.id(), "reason", "canonical body tool unregistered: " + canonical));
-                return;
-            }
-            Object condMin = current.condition().get("minimum");
-            Integer min = condMin instanceof Number num ? num.intValue() : null;
-            JsonObject realArgs = RddBodyTools.buildArgs(canonical, body.args(), min);
-            if (realArgs == null) {
-                LOG.error("[rdd] body {} 的 args 无法翻译成 {} 参数: {}", current.id(), canonical, body.args());
-                RddMonitor.publish("subtask_capability_gap", Map.of(
-                        "subtask", current.id(), "reason", "untranslatable args for " + canonical));
-                return;
-            }
-            dispatchBody(ap, current, canonical, tool, realArgs, body);
-            return;
-        }
-        NumenTool explicit = ToolRegistry.resolve(raw);
-        if (explicit == null) {
-            LOG.error("[rdd] body 工具名 {} 不在 RDD 词表 {} 也非真实注册工具 —— 规划层臆造，"
-                    + "该二级只做资产检测不身体执行", raw, RddBodyTools.SUPPORTED);
-            RddMonitor.publish("subtask_capability_gap", Map.of(
-                    "subtask", current.id(), "reason", "unsupported body tool name: " + raw));
-            return;
-        }
-        // 外部显式指名驱动任意真实工具：原样透传参数。
-        JsonObject passthrough = new JsonObject();
-        if (body.args() != null) {
-            body.args().forEach((k, v) -> passthrough.add(k, GSON.toJsonTree(v)));
-        }
-        dispatchBody(ap, current, raw, explicit, passthrough, body);
-    }
-
-    private void dispatchBody(NumenPlayer ap, Subtask current, String toolName, NumenTool tool,
-                              JsonObject callArgs, BodyInstruction body) {
-        try {
-            tool.onServerCall(RddPlugin.nextBodyCallId(), callArgs, ap, reply -> { });
-            LOG.info("[rdd] 已提交身体任务 {} -> {} {}", current.id(), toolName, callArgs);
-            RddMonitor.publish("body_submitted", Map.of(
-                    "subtask", current.id(), "task_type", toolName, "args", body.args()));
-        } catch (RuntimeException e) {
-            LOG.warn("[rdd] 提交身体任务失败 {}: {}", toolName, e.toString());
-            RddMonitor.publish("body_submit_failed", Map.of(
-                    "subtask", current.id(), "task_type", toolName, "error", String.valueOf(e)));
-        }
-    }
-
     /** 世界真身满足条件 → 推进；二级全完成 → 简化 Supervisor CONFIRM。 */
     private void completeSubtask(NumenPlayer ap, RddRuntime rt, Subtask current) {
         if (surplus.hold(ap, rt.chain(), current, countInventory(ap))) return;
@@ -546,7 +465,7 @@ final class RddDetector {
         }
         if (state.submitCount() < MAX_BODY_RETRIES && RddPlugin.bodySubmissionEnabled()) {
             RddPlugin.rememberBody(ap.getUUID(), current.id(), state.submitCount() + 1);
-            submitBody(ap, current);
+            RddBodyDispatcher.resubmit(ap, current);
             LOG.info("[rdd] 身体任务结束未达成，重试 {} 次: {}", state.submitCount() + 1, current.id());
             RddMonitor.publish("subtask_retry", Map.of(
                     "subtask", current.id(), "retry", state.submitCount() + 1, "max", MAX_BODY_RETRIES));
