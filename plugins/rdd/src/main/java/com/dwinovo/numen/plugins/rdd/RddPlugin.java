@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.api.NumenApi;
 import com.dwinovo.numen.api.NumenPlugin;
+import com.dwinovo.numen.api.CompanionEvent;
 import com.dwinovo.numen.rdd.api.*;
 import com.dwinovo.numen.rdd.core.AssetRegistry;
 import com.dwinovo.numen.rdd.core.RddChainFactory;
@@ -94,6 +95,10 @@ public final class RddPlugin implements NumenPlugin {
             }
             return false;
         });
+        // P1 资产真相层：同伴死亡/掉装备 → 背包类资产立即失效（不再拿旧装备当"还持有"），
+        // 规划输入 LAST_INVENTORY 同步清空；世界资产（基地/结构）不受影响，重新观测会恢复 OBSERVED。
+        numen.on(CompanionEvent.DEATH, body -> onCompanionDeath(body.getUUID()));
+        numen.on(CompanionEvent.REMOVE, body -> LAST_INVENTORY.remove(body.getUUID()));
         numen.contributeState(uuid -> {
             String context = renderStateContext(uuid);
             if (!context.equals(LAST_CONTEXT.put(uuid, context))) {
@@ -271,6 +276,27 @@ public final class RddPlugin implements NumenPlugin {
     public static AssetRegistry assets(UUID companionId) {
         if (companionId == null) return new AssetRegistry();
         return ASSETS.computeIfAbsent(companionId, id -> RddAssetStore.load(assetsDir, id));
+    }
+
+    /**
+     * P1：同伴死亡（含掉装备）→ 立刻让该同伴的背包类资产失效，避免规划/依赖门继续按旧装备放行。
+     * 只失效 {@code inventory_scan}，不碰 world_ 基地/结构；下一次背包扫描会把还在身上的重新观测回 OBSERVED。
+     */
+    private static void onCompanionDeath(UUID companionId) {
+        if (companionId == null) return;
+        try {
+            int lost = assets(companionId).invalidateByType("inventory_scan");
+            LAST_INVENTORY.remove(companionId);   // 规划输入立即不再按旧背包
+            saveAssets(companionId);              // 失效态落盘，跨重启也保持
+            BODY.remove(companionId);
+            RddMonitor.publish("companion_assets_invalidated", Map.of(
+                    "companionId", companionId.toString(),
+                    "reason", "companion_death",
+                    "invalidatedInventoryEntries", lost));
+            LOG.info("[rdd] 同伴死亡：背包资产失效 {} 项 {}", companionId, lost);
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 死亡资产失效处理失败 {}: {}", companionId, ex.toString());
+        }
     }
 
     /** P0 完成事实仓库（磁盘为真身，内存缓存）。 */
