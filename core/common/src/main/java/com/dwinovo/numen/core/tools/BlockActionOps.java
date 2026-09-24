@@ -73,9 +73,18 @@ String item_id,
             aim = new BlockPos(x, y, z);
         }
         Item item = item_id == null ? null : ToolArgs.parseItem(item_id);
-        String bodyBound = InteractAtTaskRecord.bodyBoundReason(item);
-        if (bodyBound != null) {
-            throw new IllegalArgumentException(bodyBound);
+        // 末影珍珠任何情况都拒：投掷即传送，对 fake player 未定义。
+        if (item == net.minecraft.world.item.Items.ENDER_PEARL) {
+            throw new IllegalArgumentException(InteractAtTaskRecord.bodyBoundReason(item));
+        }
+        // 消耗品只在“无目标、朝前自用”时拒（那是会喂到自己的吃/投喂场景）；
+        // 对着方块用消耗品是合法原版交互（营火烤肉、熔炉投料、喂动物、堆肥桶），
+        // 交给执行层按真实射线命中再判——命中空气才拒（见 InteractAtCompanionTask）。
+        if (aim == null) {
+            String bodyBound = InteractAtTaskRecord.bodyBoundReason(item);
+            if (bodyBound != null) {
+                throw new IllegalArgumentException(bodyBound);
+            }
         }
         return new InteractAtTaskRecord(ctx.toolCallId(), ctx.deadline(INTERACT_AT_TIMEOUT_TICKS), buttonVal, aim, holdTicks, item);
     }
