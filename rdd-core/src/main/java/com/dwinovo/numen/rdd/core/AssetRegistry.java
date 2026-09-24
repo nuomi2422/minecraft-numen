@@ -49,6 +49,25 @@ public final class AssetRegistry {
         current.put(assetId, entry.withStatus(AssetStatus.INVALID));
     }
 
+    /**
+     * 批量失效某一观测类型的 OBSERVED 资产（P1 死亡/掉落失效用）：置 INVALID，返回失效条数。
+     * 已是非 OBSERVED 的条目不重复计数；非该类型（如 world_ 基地）不受影响——死亡掉的是背包，
+     * 不该抹掉已知基地/结构。重新观测同一条目会在 {@link #apply} 里恢复 OBSERVED。
+     */
+    public synchronized int invalidateByType(String observationType) {
+        if (observationType == null || observationType.isBlank()) {
+            return 0;
+        }
+        int changed = 0;
+        for (AssetEntry entry : current.values()) {
+            if (entry.status() == AssetStatus.OBSERVED && observationType.equals(entry.observation().type())) {
+                current.put(entry.assetId(), entry.withStatus(AssetStatus.INVALID));
+                changed++;
+            }
+        }
+        return changed;
+    }
+
     public synchronized Optional<AssetEntry> get(String assetId) { return Optional.ofNullable(current.get(assetId)); }
     public synchronized List<AssetEntry> snapshot() { return List.copyOf(current.values()); }
     public synchronized List<Observation> history() { return List.copyOf(history); }

@@ -83,4 +83,31 @@ class AssetRegistryTest {
         registry.apply(new Observation("o-" + assetId, "inventory_scan", "test", "world", System.nanoTime(),
                 Map.of("count", count)), assetId, AssetScope.GLOBAL, null);
     }
+
+    // ===== P1：死亡/掉落失效 —— 只失效背包类，不碰世界资产；重新观测可恢复 =====
+    @Test void invalidateByTypeMarksOnlyMatchingObservedEntries() {
+        var registry = new AssetRegistry();
+        applyInv(registry, "iron", 5);                       // inventory_scan OBSERVED
+        registry.apply(new Observation("b", "world_base", "test", "world", 1, Map.of()),
+                "base", AssetScope.GLOBAL, null);            // world_base OBSERVED（基地不该被死亡抹掉）
+
+        assertEquals(1, registry.invalidateByType("inventory_scan"));
+        assertEquals(AssetStatus.INVALID, registry.get("iron").orElseThrow().status());
+        assertEquals(AssetStatus.OBSERVED, registry.get("base").orElseThrow().status());
+        assertTrue(registry.usableCounts().isEmpty());       // 失效后不再被依赖门算作可用
+
+        assertEquals(0, registry.invalidateByType("inventory_scan")); // 已失效不重复计数
+
+        applyInv(registry, "iron", 2);                       // 重新观测 → 恢复
+        assertEquals(AssetStatus.OBSERVED, registry.get("iron").orElseThrow().status());
+        assertEquals(2, registry.usableCounts().get("iron"));
+    }
+
+    @Test void invalidateByTypeIgnoresBlank() {
+        var registry = new AssetRegistry();
+        applyInv(registry, "iron", 5);
+        assertEquals(0, registry.invalidateByType(null));
+        assertEquals(0, registry.invalidateByType("  "));
+        assertEquals(AssetStatus.OBSERVED, registry.get("iron").orElseThrow().status());
+    }
 }
