@@ -171,9 +171,14 @@ public final class CraftOps {
                         (pos, state) -> opensFittingGrid(level, pos, state, self, recipe));
             }
             if (table == null) {
+                // hint 扫描同样要问行为：模组工作台类型认不出时，5~16 格的台若只按类型扫就会
+                // 误报 "None within 16"，与 goto/build 的"就在附近"口径打架。这里也带 opensFittingGrid，
+                // 找到就给坐标、真没有才报 None。仅在失败路径跑一次；opensFittingGrid 先查 MenuProvider，
+                // 非工作站方块直接返回，代价有界。
                 BlockPos hintPos = BlockScanner.nearestBlock(level, self.blockPosition(),
                         self.getEyePosition(), HINT_H, HINT_V, Double.MAX_VALUE,
-                        (pos, state) -> state.getBlock() instanceof CraftingTableBlock);
+                        (pos, state) -> state.getBlock() instanceof CraftingTableBlock
+                                || opensFittingGrid(level, pos, state, self, recipe));
                 return TaskResult.fail(name + " is a 3x3 recipe — it needs a crafting table within reach "
                         + "(~4 blocks). " + (hintPos != null
                                 ? "Nearest one is at " + hintPos.getX() + "," + hintPos.getY() + ","

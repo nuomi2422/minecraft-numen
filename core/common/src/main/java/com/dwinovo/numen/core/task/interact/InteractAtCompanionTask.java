@@ -198,6 +198,12 @@ public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTask
     private String settle() {
         changes = receipt == null ? List.of() : receipt.diff(player);
         if (changes.isEmpty()) {
+            // “打开界面”不是世界状态变化，但它是右键成功的真实结果。旧逻辑把这它也归进
+            // “什么都没变”，模型会以为右键没生效而反复重试（实测同一台右键 7 次）。
+            // 这里显式把“已打开某工作站界面”当作有效结果上报。
+            if (activatedBlock != null && player.containerMenu != player.inventoryMenu) {
+                return " — opened the " + activatedBlockId + " interface (use inspect_gui, then transfer).";
+            }
             return " — but nothing visibly changed (hands, aimed block, nearby entities all "
                     + "as before). If you expected an effect, reposition or rethink.";
         }
