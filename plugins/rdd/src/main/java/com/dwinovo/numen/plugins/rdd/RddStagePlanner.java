@@ -3,6 +3,7 @@ package com.dwinovo.numen.plugins.rdd;
 import com.dwinovo.numen.agent.provider.IToolSpec;
 import com.dwinovo.numen.rdd.api.AssetRequirement;
 import com.dwinovo.numen.rdd.api.PrimarySpec;
+import com.dwinovo.numen.rdd.core.PlanningAssetSnapshot;
 import com.dwinovo.numen.rdd.core.RddChainFactory;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -33,8 +34,9 @@ final class RddStagePlanner {
     static void planStages(UUID companionId, String objective, Consumer<List<PrimarySpec>> done) {
         // 注入"当前真实背包"：规划师要站在已有资产上推进，不倒退重规划已持有的装备/设施。
         // 再贴上经验知识（无知识时与原来逐字相同）。
+        PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         String base = RddPlanningKnowledge.attach(
-                planningPrompt(objective, RddPlugin.lastInventory(companionId),
+                planningPrompt(objective, snapshot,
                         RddPlugin.planningAssets(companionId)),
                 RddPlanningPolicy.block(objective, "stage_a"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
@@ -124,18 +126,30 @@ final class RddStagePlanner {
                     + "（如 minecraft:stone_pickaxe）和 minimum；无法确定的跨级前置不要硬写。"
                     + "只输出 plan_stages 工具调用，不要写多余文字。";
 
+    private static final String PLAN_BODY_TAIL =
+            "请用 plan_stages 工具给出发展阶段清单。每个阶段包含：\n"
+                    + "- theme：该阶段要达成的发展主线（可读、自含，能被据此拆出可执行的子步骤）\n"
+                    + "- wait_for（可选）：进入该阶段前必须已持有的前置资产，{asset_key: 真实命名空间ID, minimum: 数量}\n"
+                    + "阶段间不要遗漏：从现状一路推到主人目标完成。";
+
     static String planningPrompt(String objective, Map<String, Integer> held) {
         return planningPrompt(objective, held, "");
     }
 
     static String planningPrompt(String objective, Map<String, Integer> held, String worldAssets) {
+        return composePlanningPrompt(objective, renderHeldAssets(held), worldAssets);
+    }
+
+    /** P1.5：Planner 直接吃统一资产快照（含"已失去/不确定"显式告知）。 */
+    static String planningPrompt(String objective, PlanningAssetSnapshot snapshot, String worldAssets) {
+        return composePlanningPrompt(objective, renderHeldAssets(snapshot), worldAssets);
+    }
+
+    private static String composePlanningPrompt(String objective, String heldBlock, String worldAssets) {
         return "主人的目标：" + objective + "\n\n"
-                + renderHeldAssets(held)
+                + heldBlock
                 + (worldAssets == null || worldAssets.isBlank() ? "" : worldAssets + "\n\n")
-                + "请用 plan_stages 工具给出发展阶段清单。每个阶段包含：\n"
-                + "- theme：该阶段要达成的发展主线（可读、自含，能被据此拆出可执行的子步骤）\n"
-                + "- wait_for（可选）：进入该阶段前必须已持有的前置资产，{asset_key: 真实命名空间ID, minimum: 数量}\n"
-                + "阶段间不要遗漏：从现状一路推到主人目标完成。";
+                + PLAN_BODY_TAIL;
     }
 
     /** 背包上下文块：空背包返回空串（不写"空"误导 LLM），非空按 key 排序保证输出稳定。 */
@@ -150,6 +164,29 @@ final class RddStagePlanner {
                 + "【规划铁律】站在\"已经拥有上面这些\"继续推进：已持有的装备/工具/设施（如 wooden_pickaxe、crafting_table）"
                 + "不要在任何阶段重复规划重新获取；theme 从现状往下一时代推进，不倒退。"
                 + "只有后续会被消耗掉的东西（食物、合成/烧炼原料）才按需要规划补量。\n\n";
+    }
+
+    /** P1.5：来自统一快照的背包块——可持有 + 显式告知"已失去/不确定"。 */
+    private static String renderHeldAssets(PlanningAssetSnapshot snap) {
+        StringBuilder sb = new StringBuilder();
+        if (snap != null && !snap.availableCounts().isEmpty()) {
+            String items = snap.availableCounts().entrySet().stream()
+                    .map(e -> "- " + e.getKey() + " ×" + e.getValue())
+                    .collect(Collectors.joining("\n"));
+            sb.append("【你当前已真实持有（背包扫描）：】\n").append(items).append("\n\n")
+                    .append("【规划铁律】站在\"已经拥有上面这些\"继续推进：已持有的装备/工具/设施（如 wooden_pickaxe、crafting_table）")
+                    .append("不要在任何阶段重复规划重新获取；theme 从现状往下一时代推进，不倒退。")
+                    .append("只有后续会被消耗掉的东西（食物、合成/烧炼原料）才按需要规划补量。\n\n");
+        }
+        if (snap != null && !snap.lostIds().isEmpty()) {
+            sb.append("【已失去（死亡/掉落判定失效，绝不要假设还持有，需要就重新获取）：】")
+                    .append(String.join("、", snap.lostIds())).append("\n\n");
+        }
+        if (snap != null && !snap.unknownIds().isEmpty()) {
+            sb.append("【状态不确定（先核实再依赖）：】")
+                    .append(String.join("、", snap.unknownIds())).append("\n\n");
+        }
+        return sb.toString();
     }
 
     /** 合成工具：LLM 直接以结构化 JSON 返回一级清单（引擎无 response_format:json_object）。 */

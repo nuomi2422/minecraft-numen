@@ -12,6 +12,7 @@ import com.dwinovo.numen.platform.services.INumenConfig;
 import com.dwinovo.numen.rdd.api.BodyInstruction;
 import com.dwinovo.numen.rdd.api.Goal;
 import com.dwinovo.numen.rdd.api.SubtaskSpec;
+import com.dwinovo.numen.rdd.core.PlanningAssetSnapshot;
 import com.dwinovo.numen.rdd.core.RddChainFactory;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -91,8 +92,9 @@ final class RddDecomposer {
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
         // 经验知识贴进最终请求正文（无知识时与原来逐字相同）
+        PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
-                decompositionPrompt(objective, RddPlugin.lastInventory(companionId), List.of(),
+                decompositionPrompt(objective, snapshot, List.of(),
                         RddPlugin.planningAssets(companionId)),
                 objective, "fallback", List.of());
         RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
@@ -115,7 +117,7 @@ final class RddDecomposer {
                     LlmToolCall call = turn.toolCalls().get(0);
                     // 守门：硬规则由代码执行，模型不听也要拦住（未要求的可选升级、已持有的资产）
                     RddPlanGuard.Filtered guarded = RddPlanGuard.filterSubtasks(
-                            parse(call.arguments()), objective, RddPlugin.lastInventory(companionId));
+                            parse(call.arguments()), objective, snapshot.availableCounts());
                     RddPlanningKnowledge.publishPolicy(companionId, "fallback",
                             RddPlanningPolicy.appliedRules(objective, "fallback"),
                             guarded.dropped(), guarded.reused());
@@ -152,8 +154,9 @@ final class RddDecomposer {
         List<String> knownFailures = attempt >= 1
                 ? List.of("上一次生成的子步骤被判定不可执行")
                 : List.of();
+        PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         String base = RddPlanningKnowledge.attach(
-                decompositionPrompt(themeObjective, RddPlugin.lastInventory(companionId),
+                decompositionPrompt(themeObjective, snapshot,
                         completedStages == null ? List.of() : completedStages,
                         RddPlugin.planningAssets(companionId)) + hint,
                 RddPlanningPolicy.block(themeObjective, "stage_b"));
@@ -163,7 +166,7 @@ final class RddDecomposer {
                 SYSTEM_PROMPT, DECOMPOSE_TOOL,
                 args -> {
                     RddPlanGuard.Filtered guarded = RddPlanGuard.filterSubtasks(parse(args), themeObjective,
-                            RddPlugin.lastInventory(companionId));
+                            snapshot.availableCounts());
                     RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
                             RddPlanningPolicy.appliedRules(themeObjective, "stage_b"),
                             guarded.dropped(), guarded.reused());
@@ -320,9 +323,20 @@ final class RddDecomposer {
 
     static String decompositionPrompt(String objective, Map<String, Integer> held,
                                       List<String> completedStages, String worldAssets) {
+        return composeDecompositionPrompt(objective, completedStages, renderHeldAssets(held), worldAssets);
+    }
+
+    /** P1.5：Planner 直接吃统一资产快照（含"已失去/不确定"显式告知）。 */
+    static String decompositionPrompt(String objective, PlanningAssetSnapshot snapshot,
+                                      List<String> completedStages, String worldAssets) {
+        return composeDecompositionPrompt(objective, completedStages, renderHeldAssets(snapshot), worldAssets);
+    }
+
+    private static String composeDecompositionPrompt(String objective, List<String> completedStages,
+                                                      String heldBlock, String worldAssets) {
         return "主人的目标：" + objective + "\n\n"
                 + renderCompletedStages(completedStages)
-                + renderHeldAssets(held)
+                + heldBlock
                 + (worldAssets == null || worldAssets.isBlank() ? "" : worldAssets + "\n\n")
                 + "请用 decompose_goal 工具给出子步骤。每个子步骤包含：\n"
                 + "- description：这一步要做什么\n"
@@ -360,6 +374,30 @@ final class RddDecomposer {
                 + "（如 wooden_pickaxe、crafting_table、stone_axe）不要再拆出\"重新获取/再做一把\"的子步骤，"
                 + "除非后面马上要消耗它。只规划把当前资产推进到本阶段目标还缺的部分；"
                 + "会消耗掉的（食物、合成/烧炼原料如 plank/stick/木炭）才按本阶段真实消耗补量。\n\n";
+    }
+
+    /** P1.5：来自统一快照的背包块——可持有 + 显式告知"已失去/不确定"。 */
+    private static String renderHeldAssets(PlanningAssetSnapshot snap) {
+        StringBuilder sb = new StringBuilder();
+        if (snap != null && !snap.availableCounts().isEmpty()) {
+            String items = snap.availableCounts().entrySet().stream()
+                    .map(e -> "- " + e.getKey() + " ×" + e.getValue())
+                    .collect(Collectors.joining("\n"));
+            sb.append("【你当前已真实持有（背包扫描）：】\n").append(items).append("\n\n")
+                    .append("【拆解铁律】站在\"已经拥有上面这些\"继续推进：已持有的装备/工具/设施")
+                    .append("（如 wooden_pickaxe、crafting_table、stone_axe）不要再拆出\"重新获取/再做一把\"的子步骤，")
+                    .append("除非后面马上要消耗它。只规划把当前资产推进到本阶段目标还缺的部分；")
+                    .append("会消耗掉的（食物、合成/烧炼原料如 plank/stick/木炭）才按本阶段真实消耗补量。\n\n");
+        }
+        if (snap != null && !snap.lostIds().isEmpty()) {
+            sb.append("【已失去（死亡/掉落判定失效，绝不要假设还持有，需要就重新获取）：】")
+                    .append(String.join("、", snap.lostIds())).append("\n\n");
+        }
+        if (snap != null && !snap.unknownIds().isEmpty()) {
+            sb.append("【状态不确定（先核实再依赖）：】")
+                    .append(String.join("、", snap.unknownIds())).append("\n\n");
+        }
+        return sb.toString();
     }
 
     /** 合成工具：让 LLM 直接以结构化 JSON 返回分解结果（引擎没有 response_format:json_object）。 */

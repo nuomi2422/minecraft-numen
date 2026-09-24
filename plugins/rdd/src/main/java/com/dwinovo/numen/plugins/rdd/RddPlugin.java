@@ -327,6 +327,14 @@ public final class RddPlugin implements NumenPlugin {
         return RddAssetContext.render(assets(companionId), 2000);
     }
 
+    /**
+     * P1.5 唯一规划资产口径：缓存背包为底 + 注册表真相覆盖（死亡失效的背包条目移除）。
+     * Planner 提示词与 PlanGuard 都从这里取数，不再各读各的缓存/注册表。
+     */
+    public static com.dwinovo.numen.rdd.core.PlanningAssetSnapshot planningSnapshot(UUID companionId) {
+        return com.dwinovo.numen.rdd.core.PlanningAssetSnapshot.from(lastInventory(companionId), assets(companionId));
+    }
+
     /** 记录某同伴最近一次背包计数（Detector 心跳写）。null/空安全。 */
     public static void cacheInventory(UUID companionId, Map<String, Integer> counts) {
         if (companionId != null) {
