@@ -145,6 +145,16 @@ final class RddDecomposer {
      */
     static void decomposeSpecs(UUID companionId, String themeObjective, int attempt,
                                List<String> completedStages, Consumer<List<SubtaskSpec>> done) {
+        decomposeSpecsWithHint(companionId, themeObjective, attempt, completedStages, "", done);
+    }
+
+    /**
+     * Stage-B 带额外提示重载（P4 重规划用）：把重规划上下文（失败原因/真实资产/完成事实/风险缺口）
+     * 追加进提示词，让本次重分解站在真实状态上换计划。
+     */
+    static void decomposeSpecsWithHint(UUID companionId, String themeObjective, int attempt,
+                                       List<String> completedStages, String extraHint,
+                                       Consumer<List<SubtaskSpec>> done) {
         // §9：重试带上下文修正——再次尝试时把"为何上次不可执行"喂回去，逼 LLM 给可检测的真实物品键。
         String hint = attempt >= 1
                 ? "\n注意：上一次生成的子步骤被判定不可执行——每个 asset_key 必须是完整的小写命名空间 ID"
@@ -160,7 +170,8 @@ final class RddDecomposer {
                 RddRiskPlanning.prepHint(themeObjective, snapshot.availableCounts())
                         + decompositionPrompt(themeObjective, snapshot,
                         completedStages == null ? List.of() : completedStages,
-                        RddPlugin.planningAssets(companionId)) + hint,
+                        RddPlugin.planningAssets(companionId)) + hint
+                        + (extraHint == null || extraHint.isBlank() ? "" : "\n\n" + extraHint),
                 RddPlanningPolicy.block(themeObjective, "stage_b"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 base, themeObjective, "stage_b", knownFailures);

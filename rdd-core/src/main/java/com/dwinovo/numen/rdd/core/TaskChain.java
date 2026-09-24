@@ -273,6 +273,33 @@ public final class TaskChain {
     }
 
     /**
+     * REPLANNING 缺口 P4：从“卡死”进入 REPLANNING 的显式出口。
+     *
+     * <p>旧链只有 {@code AWAITING_SUPERVISOR + applySupervisorDecision(REPLAN)} 一个入口，
+     * 导致生产里 REPLANNING 长期休眠。本方法允许：链 ACTIVE，且**当前二级 FAILED/STALLED**（确有卡死）
+     * 时，由宿主/上层显式进入 REPLANNING；之后照旧走 {@link #replaceCurrentSubtasks(List)}（换新计划）
+     * 或 {@link #resumeFromReplanning()}（重跑现有）。
+     */
+    public synchronized void enterReplanningFromStuck(String reason) {
+        if (primaryStatus != PrimaryGoalStatus.ACTIVE) {
+            throw new IllegalStateException("only an ACTIVE primary may enter replanning from stuck: " + primaryStatus);
+        }
+        if (currentPrimary().unexpanded()) {
+            throw new IllegalStateException("unexpanded primary cannot enter replanning from stuck: " + currentPrimary().id());
+        }
+        Subtask cur = currentSubtask();
+        if (cur == null) {
+            throw new IllegalStateException("no current subtask to replan");
+        }
+        SubtaskStatus st = statuses.get(cur.id());
+        if (st != SubtaskStatus.FAILED && st != SubtaskStatus.STALLED) {
+            throw new IllegalStateException("current subtask is not stuck: " + st);
+        }
+        primaryStatus = PrimaryGoalStatus.REPLANNING;
+        clearExecutionMetadata();
+    }
+
+    /**
      * REPLANNING 出口：宿主为当前一级换了新二级计划 → 原位替换成 generated（保留一级
      * id/description/waitFor），旧二级状态作废、新二级全置 PENDING，subtask 指针归零回到 PENDING。
      */

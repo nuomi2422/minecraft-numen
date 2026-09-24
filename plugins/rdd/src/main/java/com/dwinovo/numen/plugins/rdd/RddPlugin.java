@@ -9,6 +9,11 @@ import com.dwinovo.numen.rdd.core.RddChainFactory;
 import com.dwinovo.numen.rdd.core.RddRuntime;
 import com.dwinovo.numen.rdd.core.TaskChain;
 import com.dwinovo.numen.rdd.fact.CompletedFactStore;
+import com.dwinovo.numen.rdd.fail.FailureEvent;
+import com.dwinovo.numen.rdd.fail.FailureKind;
+import com.dwinovo.numen.rdd.policy.ResourceBudget;
+import com.dwinovo.numen.rdd.policy.RiskGate;
+import com.dwinovo.numen.rdd.replan.ReplanContextBuilder;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.MinecraftServer;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
@@ -267,6 +272,64 @@ public final class RddPlugin implements NumenPlugin {
                 new TaskChain(goal, facts(companionId).satisfiedStageKeys(goal)), assets(companionId)));
         saveRuntimes();
         publishTaskSnapshot(companionId, "task_bound");
+    }
+
+    /**
+     * P4：对一个“卡死”的同伴显式发起重规划——进入 REPLANNING，用真实状态（失败事实+资产+完成事实+风险缺口）
+     * 重分解当前一级；成功则 {@code replaceCurrentSubtasks} 换新计划，失败/空则 {@code resumeFromReplanning} 回落重跑现有。
+     * 这是 REPLANNING 在生产里的**活触发器**（此前只有测试构造 REPLAN）。
+     */
+    static void requestReplan(UUID companionId, String reason) {
+        RddRuntime rt = RUNTIMES.get(companionId);
+        if (rt == null) return;
+        TaskChain chain = rt.chain();
+        try {
+            chain.enterReplanningFromStuck(reason);
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 无法进入重规划 {}: {}", companionId, ex.toString());
+            return;
+        }
+        String theme = chain.currentPrimary().description();
+        String primaryId = chain.currentPrimary().id();
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server == null) {
+            chain.resumeFromReplanning();
+            return;
+        }
+        var snap = planningSnapshot(companionId);
+        var level = RiskGate.levelForText(theme);
+        var gaps = ResourceBudget.missingFor(level, snap.availableCounts());
+        Goal goal = chain.goal();
+        var ctx = ReplanContextBuilder.build(goal.description(), primaryId,
+                chain.currentSubtask() == null ? null : chain.currentSubtask().id(),
+                FailureEvent.of(null, primaryId, FailureKind.UNKNOWN, reason == null ? "" : reason),
+                new java.util.ArrayList<>(chain.satisfiedStages()),
+                snap.availableCounts(), level, gaps, java.util.List.of());
+        String hint = ReplanContextBuilder.render(ctx);
+        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+        RddDecomposer.decomposeSpecsWithHint(companionId, theme, 1, java.util.List.of(), hint,
+                specs -> onServer(server, ticket, () -> {
+                    try {
+                        if (specs == null || specs.isEmpty()) {
+                            chain.resumeFromReplanning();
+                            publishTaskSnapshot(companionId, "replan_fallback_resume");
+                            return;
+                        }
+                        java.util.List<Subtask> subs = new java.util.ArrayList<>();
+                        for (int i = 0; i < specs.size(); i++) {
+                            SubtaskSpec sp = specs.get(i);
+                            subs.add(Subtask.hardCoded(primaryId + "-r" + i, sp.description(), sp.condition(), sp.body()));
+                        }
+                        chain.replaceCurrentSubtasks(subs);
+                        saveRuntimes();
+                        publishTaskSnapshot(companionId, "replanned");
+                        RddMonitor.publish("replanned", Map.of("companionId", companionId.toString(),
+                                "primary", primaryId, "theme", theme, "subtasks", subs.size()));
+                    } catch (RuntimeException ex) {
+                        LOG.warn("[rdd] 重规划替换失败，回落重跑现有 {}: {}", companionId, ex.toString());
+                        try { chain.resumeFromReplanning(); } catch (RuntimeException ignore) { }
+                    }
+                }));
     }
 
     public static RddRuntime runtime(UUID companionId) {

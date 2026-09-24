@@ -471,6 +471,11 @@ final class RddDetector {
                         "companionId", ap.getUUID().toString(), "subtask", current.id(),
                         "failureClass", fe.kind().name(), "recovery", rd.outcome().name(),
                         "action", plan.action().name(), "auto", rd.auto(), "reason", rd.reason()));
+                if (plan.action() == RecoveryAction.REQUEST_REPLAN) {
+                    // P4：转入重规划流程（进入 REPLANNING + 带真实状态重分解），不再 parking 守望
+                    RddPlugin.requestReplan(ap.getUUID(), fe.reason());
+                    return;
+                }
             }
             watchParked(ap, rt, current);
             return;
