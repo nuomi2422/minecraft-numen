@@ -1,15 +1,18 @@
 package com.dwinovo.numen.ac.core;
 
 import com.dwinovo.numen.ac.api.AcDefinition;
+import com.dwinovo.numen.ac.api.AcTool;
 import com.dwinovo.numen.ac.api.ExecutionContext;
 import com.dwinovo.numen.ac.api.ExecutionRecord;
 import com.dwinovo.numen.ac.api.StepResult;
+import com.dwinovo.numen.ac.api.ToolRegistry;
 import com.dwinovo.numen.ac.api.ToolSchema;
 import org.junit.jupiter.api.Test;
 
 import java.io.StringReader;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -54,6 +57,24 @@ class AcSchemaCatalogTest {
         var rec2 = new AcExecutor(r).execute(ac2, Map.of(), CTX);
         assertEquals(ExecutionRecord.Status.FAILED, rec2.status());
         assertTrue(rec2.message().contains("缺少必填参数"), rec2.message());
+    }
+
+    @Test
+    void defaultImplMustNotSilentlyDropSchemaBinding() {
+        // 只覆盖 2 参注册/查找的最小实现：3 参注册不许静默丢 schema，必须硬失败
+        ToolRegistry minimal = new ToolRegistry() {
+            @Override
+            public void register(String name, AcTool tool) {
+            }
+
+            @Override
+            public Optional<AcTool> find(String name) {
+                return Optional.empty();
+            }
+        };
+        assertThrows(UnsupportedOperationException.class,
+                () -> minimal.register("mine", (p, c) -> StepResult.success(Map.of()),
+                        schema("mine", ToolSchema.Param.req("target", ToolSchema.Type.STRING))));
     }
 
     @Test

@@ -15,9 +15,16 @@ public interface ToolRegistry {
     /** 注册工具（无显式 schema → 生成宽松默认 schema）。重复注册抛异常。 */
     void register(String name, AcTool tool);
 
-    /** 注册工具并绑定显式 schema。schema.name() 必须与 name 一致。 */
+    /**
+     * 注册工具并绑定显式 schema。schema.name() 必须与 name 一致。
+     *
+     * <p>默认实现<b>不静默吞掉 schema</b>：不会 schema 绑定的实现必须自行覆盖此方法，
+     * 否则抛 {@link UnsupportedOperationException} 硬失败——静默丢 schema 会让 AI 读到
+     * 的参数校验/目录失真，属于契约破坏，宁可当场报错。
+     */
     default void register(String name, AcTool tool, ToolSchema schema) {
-        register(name, tool);
+        throw new UnsupportedOperationException(
+                "schema binding not supported by this ToolRegistry; override register(name, tool, schema)");
     }
 
     Optional<AcTool> find(String name);
