@@ -1,6 +1,7 @@
 package com.dwinovo.numen.rdd.core;
 
 import com.dwinovo.numen.rdd.api.*;
+import com.dwinovo.numen.rdd.fact.StageKeyNormalizer;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -26,10 +27,39 @@ public final class TaskChain {
     private String activeExecutionId;
     /** 当前二级最近一次启动的 tick 时间戳（执行审计/重启恢复判定用）；从未启动为 0。 */
     private long lastStartedAtMillis;
+    /**
+     * P0 完成事实继承层：历史可靠完成过的一级"阶段键"集合（归一化主题，见
+     * {@link StageKeyNormalizer}）。命中的一级视为已达成、在 currentPrimary()/推进时跳过；
+     * 它<b>不</b>写进 statuses（懒展开一级本无二级，也绝不伪造二级完成）。
+     * 全部阶段命中 → 链直接 COMPLETED。跨重绑继承由 {@code CompletedFactStore} 查询后注入。
+     */
+    private final Set<String> satisfiedStages = new LinkedHashSet<>();
 
     public TaskChain(Goal goal) {
+        this(goal, Set.of());
+    }
+
+    /** @param satisfiedStageKeys 历史已完成的阶段键集合（归一键）；命中一级跳过。空集等价旧构造。 */
+    public TaskChain(Goal goal, Set<String> satisfiedStageKeys) {
         this.goal = Objects.requireNonNull(goal);
         for (PrimaryGoal primary : goal.primaryGoals()) for (Subtask subtask : primary.subtasks()) statuses.put(subtask.id(), SubtaskStatus.PENDING);
+        if (satisfiedStageKeys != null) {
+            for (PrimaryGoal primary : goal.primaryGoals()) {
+                String key = StageKeyNormalizer.normalize(primary.description());
+                if (satisfiedStageKeys.contains(key)) {
+                    satisfiedStages.add(key);
+                }
+            }
+        }
+        int first = firstUnsatisfiedFrom(0);
+        if (first < 0) {
+            // 全部阶段都有历史完成事实：链直接终态（一级本无二级，不伪造完成）
+            primaryIndex = goal.primaryGoals().size() - 1;
+            primaryStatus = PrimaryGoalStatus.COMPLETED;
+        } else {
+            primaryIndex = first;
+            primaryStatus = PrimaryGoalStatus.PENDING;
+        }
     }
     public Goal goal() { return goal; }
     public synchronized PrimaryGoalStatus primaryStatus() { return primaryStatus; }
@@ -203,11 +233,18 @@ public final class TaskChain {
         if (primaryStatus != PrimaryGoalStatus.AWAITING_SUPERVISOR || !currentPrimary().id().equals(decision.targetNodeId())) throw new IllegalStateException("supervisor decision does not match current primary goal");
         switch (decision.type()) {
             case CONFIRM -> {
-                primaryStatus = PrimaryGoalStatus.COMPLETED;
                 if (primaryIndex + 1 < goal.primaryGoals().size()) {
-                    primaryIndex++;
+                    // 推进到下一个"未被完成事实命中"的一级；中间被事实命中的阶段直接跳过。
+                    int next = firstUnsatisfiedFrom(primaryIndex + 1);
                     subtaskIndex = 0;
-                    primaryStatus = PrimaryGoalStatus.PENDING;
+                    if (next < 0) {
+                        primaryStatus = PrimaryGoalStatus.COMPLETED;
+                    } else {
+                        primaryIndex = next;
+                        primaryStatus = PrimaryGoalStatus.PENDING;
+                    }
+                } else {
+                    primaryStatus = PrimaryGoalStatus.COMPLETED;
                 }
             }
             case REJECT, REPLAN -> primaryStatus = PrimaryGoalStatus.REPLANNING;
@@ -287,6 +324,26 @@ public final class TaskChain {
             }
         }
         return false;
+    }
+
+    /** 该一级是否被完成事实命中（归一主题键在 satisfiedStages 中）。 */
+    private boolean isSatisfied(int index) {
+        return satisfiedStages.contains(StageKeyNormalizer.normalize(goal.primaryGoals().get(index).description()));
+    }
+
+    /** 从 start 起找第一个未被完成事实命中的一级下标；全部命中返回 -1。 */
+    private int firstUnsatisfiedFrom(int start) {
+        for (int i = Math.max(0, start); i < goal.primaryGoals().size(); i++) {
+            if (!isSatisfied(i)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** 只读：当前链继承的已完成阶段键集合。 */
+    public synchronized Set<String> satisfiedStages() {
+        return Set.copyOf(satisfiedStages);
     }
 
     public synchronized void markFailed(String subtaskId, String reason) {
@@ -381,6 +438,7 @@ public final class TaskChain {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("goalId", goal.id());
         view.put("description", goal.description());
+        view.put("satisfiedStages", List.copyOf(satisfiedStages));
         view.put("primaryStatus", primaryStatus.name());
         view.put("primaryIndex", primaryIndex);
         view.put("subtaskIndex", subtaskIndex);
@@ -406,6 +464,11 @@ public final class TaskChain {
         o.add("statuses", st);
         o.add("skipReasons", GSON.toJsonTree(skipReasons));
         o.add("attempts", GSON.toJsonTree(attempts));
+        JsonArray sat = new JsonArray();
+        for (String k : satisfiedStages) {
+            sat.add(k);
+        }
+        o.add("satisfiedStages", sat);
         o.addProperty("primaryIndex", primaryIndex);
         o.addProperty("subtaskIndex", subtaskIndex);
         o.addProperty("primaryStatus", primaryStatus.name());
@@ -462,6 +525,12 @@ public final class TaskChain {
         }
         if (o.has("lastStartedAtMillis")) {
             chain.lastStartedAtMillis = o.get("lastStartedAtMillis").getAsLong();
+        }
+        // 完成事实继承层（P0）：旧链无此字段 → 空集（向后兼容）
+        if (o.has("satisfiedStages") && o.get("satisfiedStages").isJsonArray()) {
+            for (JsonElement el : o.getAsJsonArray("satisfiedStages")) {
+                chain.satisfiedStages.add(el.getAsString());
+            }
         }
         if (o.has("activeExecutionId") && !o.get("activeExecutionId").isJsonNull()) {
             chain.activeExecutionId = o.get("activeExecutionId").getAsString();
@@ -525,6 +594,10 @@ public final class TaskChain {
             }
         }
         PrimaryGoal current = goal.primaryGoals().get(primaryIndex);
+        // 完成事实层自洽：非终态的当前一级不得是被事实命中的阶段（否则永远停在已达成阶段）
+        if (primaryStatus != PrimaryGoalStatus.COMPLETED && isSatisfied(primaryIndex)) {
+            throw new IllegalArgumentException("current primary is fact-satisfied but chain is not COMPLETED: " + current.id());
+        }
         if (current.unexpanded()) {
             if (subtaskIndex != 0) {
                 throw new IllegalArgumentException("unexpanded primary must have subtask index 0: " + subtaskIndex);
