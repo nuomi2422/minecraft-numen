@@ -7,6 +7,12 @@ import com.dwinovo.numen.rdd.api.*;
 import com.dwinovo.numen.rdd.core.HardCodedEvaluator;
 import com.dwinovo.numen.rdd.core.RddRuntime;
 import com.dwinovo.numen.rdd.core.TaskChain;
+import com.dwinovo.numen.rdd.fail.FailureClassifier;
+import com.dwinovo.numen.rdd.fail.FailureContext;
+import com.dwinovo.numen.rdd.fail.FailureEvent;
+import com.dwinovo.numen.rdd.fail.FailureKind;
+import com.dwinovo.numen.rdd.fail.RecoveryDecision;
+import com.dwinovo.numen.rdd.fail.RecoveryOutcome;
 import com.dwinovo.numen.task.CompanionTickDispatcher;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -444,10 +450,18 @@ final class RddDetector {
             if (!current.id().equals(gapParked.get(ap.getUUID()))) {
                 gapParked.put(ap.getUUID(), current.id());
                 parkedWatches.remove(ap.getUUID());
-                RddPlugin.nudge(ap.getUUID(), "这个目标已耗尽自动重试次数，当前停车等待真实资产或有证据的新方案。失败原因尚未分类：先查看工具终态、附近资源、路径、装备和模型连接。不要原样重复执行，也不要把资源不足自动升级为自编译请求。");
+                // P2.0 接线：把“原因未分类的耗尽失败”交给硬分类器，按出口给可审计事件 + 定向提醒。
+                // 仍只停车、不自动改链状态（REPLAN 交上层/主人决定），避免无限循环。
+                Map<String, Integer> inv = countInventory(ap);
+                FailureEvent fe = FailureEvent.of(current.id(), rt.chain().currentPrimary().id(),
+                        FailureKind.UNKNOWN, "auto-retries exhausted; root cause not established");
+                FailureContext fc = new FailureContext(hasBackupEquipment(inv), hasBase(rt), true, false);
+                RecoveryDecision rd = FailureClassifier.classify(fe, fc);
+                RddPlugin.nudge(ap.getUUID(), nudgeForOutcome(rd, current.description()));
                 RddMonitor.publish("subtask_parked", Map.of(
-                        "companionId", ap.getUUID().toString(), "subtask", current.id(), "failureClass", "UNKNOWN",
-                        "reason", "retries exhausted; parked awaiting assets; capability gap not established"));
+                        "companionId", ap.getUUID().toString(), "subtask", current.id(),
+                        "failureClass", fe.kind().name(), "recovery", rd.outcome().name(),
+                        "auto", rd.auto(), "reason", rd.reason()));
             }
             watchParked(ap, rt, current);
             return;
@@ -459,6 +473,33 @@ final class RddDetector {
         RddMonitor.publish("subtask_retry", Map.of("subtask", current.id(), "retry", n + 1, "max", MAX_SUBTASK_RETRIES));
     }
 
+
+    /** 是否有“备用装备”：至少两件铁/钻石胸甲（一件在穿 + 一件备用）——保守近似。 */
+    private static boolean hasBackupEquipment(Map<String, Integer> inv) {
+        int chest = inv.getOrDefault("minecraft:iron_chestplate", 0)
+                + inv.getOrDefault("minecraft:diamond_chestplate", 0);
+        return chest >= 2;
+    }
+
+    /** 是否已有基地（world_base 观测）。 */
+    private static boolean hasBase(RddRuntime rt) {
+        try {
+            return rt.assets().snapshot().stream()
+                    .anyMatch(e -> "world_base".equals(e.observation().type()));
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    /** 按诊断出口给定向提醒（不自动改链状态；REPLAN 交主人/上层决定）。 */
+    private static String nudgeForOutcome(RecoveryDecision rd, String desc) {
+        return switch (rd.outcome()) {
+            case RECOVER -> "「" + desc + "」失败但你有备用装备与基地：回基地取备用装备后再继续，不要重规划。";
+            case REPAIR -> "「" + desc + "」失败：先分诊（资源不存在/路径受阻/工具调用问题），补准备或换路线后重试，不要原样重复。";
+            case REPLAN -> "「" + desc + "」反复失败且原因未知：不要原样重复；把卡点连同已有资产一起报告，考虑请主人重下 /goal 重规划。";
+            case SELF_COMPILE -> "「" + desc + "」疑似工具/代码缺陷：用 selfcompile_request 报出具体现象与复现步骤。";
+        };
+    }
 
     /**
      * 停车守望：停车不等于可以静默死掉。低频看资产指纹，长期无变化就再拍一次；
