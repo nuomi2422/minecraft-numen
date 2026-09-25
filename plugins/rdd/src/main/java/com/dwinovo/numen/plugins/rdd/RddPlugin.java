@@ -643,11 +643,60 @@ public final class RddPlugin implements NumenPlugin {
     }
 
     /**
-     * P2-A 唯一规划资产口径：<b>实时扫描（lastInventory）是"当前持有"的唯一真相</b>；
-     * 注册表的 inventory_scan 仅作 lost/unknown 提示（背包资产不持久化）。
-     * Planner 提示词与 PlanGuard 都从这里取数，不再各读各的缓存/注册表。
+     * P2-A【A+C 统一入口】唯一规划资产口径：先<b>同步刷新实时背包</b>再生成快照。
+     *
+     * <p>修的是首次 /goal 时序：`/goal → beginPlanning → planStages` 早于链建立，Detector 的
+     * tickRuntime（要求 rt!=null）还没跑过 → lastInventory 为空 → 规划/判定都读到空背包。
+     * 这里若拿得到当前 server，就在规划前用同伴实体直接 countInventory 刷新一次；
+     * 拿不到（非服务端线程/无 server）则回落到缓存口径（不劣化）。
+     *
+     * <p>注意：本方法可能被客户端决策线程调用，故刷新全部包在 try-catch 内，任何异常都不影响主流程。
      */
     public static com.dwinovo.numen.rdd.core.PlanningAssetSnapshot planningSnapshot(UUID companionId) {
+        refreshInventoryFromLive(companionId);
+        return com.dwinovo.numen.rdd.core.PlanningAssetSnapshot.from(
+                lastInventory(companionId), lastInventoryAtMillis(companionId), assets(companionId));
+    }
+
+    /** 【A】规划/判定前同步刷新实时背包（拿得到 server 就刷；失败静默回落缓存）。 */
+    private static void refreshInventoryFromLive(UUID companionId) {
+        if (companionId == null) return;
+        try {
+            MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+            if (server == null) return;
+            NumenPlayer ap = NumenPlayer.findByUuid(server, companionId);
+            if (ap != null) {
+                cacheInventory(companionId, RddDetector.countInventory(ap));
+            }
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 规划前实时刷新背包失败 {}: {}", companionId, ex.toString());
+        }
+    }
+
+    /**
+     * 【A+C 统一入口】带 server 的规划快照：先<b>同步刷新实时背包</b>再生成快照。
+     *
+     * <p>修的是首次 /goal 时序：`/goal → beginPlanning → planStages` 早于链建立，Detector 的
+     * tickRuntime（要求 rt!=null）还没跑过 → lastInventory 为空 → 规划/判定都读到空背包。
+     * 这里在规划前用同伴实体直接 countInventory 刷新，保证「规划此刻」的持有真相可用。
+     * 找不到同伴/缺少 server 时回落到缓存口径（不劣化）。
+     */
+    /**
+     * 【A+C 统一入口·显式 server 版】供已知 server 的调用点（如 beginPlanning）使用：
+     * 先按给定 server 同步刷新实时背包，再生成快照。等价于无参重载（其内部自动取当前 server）。
+     */
+    public static com.dwinovo.numen.rdd.core.PlanningAssetSnapshot planningSnapshot(UUID companionId,
+                                                                                   MinecraftServer server) {
+        if (companionId != null && server != null) {
+            try {
+                NumenPlayer ap = NumenPlayer.findByUuid(server, companionId);
+                if (ap != null) {
+                    cacheInventory(companionId, RddDetector.countInventory(ap));
+                }
+            } catch (RuntimeException ex) {
+                LOG.warn("[rdd] 规划前实时刷新背包失败 {}: {}", companionId, ex.toString());
+            }
+        }
         return com.dwinovo.numen.rdd.core.PlanningAssetSnapshot.from(
                 lastInventory(companionId), lastInventoryAtMillis(companionId), assets(companionId));
     }

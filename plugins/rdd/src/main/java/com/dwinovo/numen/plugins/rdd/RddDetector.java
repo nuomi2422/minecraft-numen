@@ -110,6 +110,14 @@ final class RddDetector {
             if (!(p instanceof NumenPlayer ap)) {
                 continue;
             }
+            // P2-A【B】背包感知不依赖任务链：先无条件缓存实时背包，再判是否有 Runtime。
+            // （感知世界 与 任务运行 不是一个生命周期；/goal 首次规划早于链建立，旧代码要求 rt!=null
+            //  才扫背包 → 首次规划/判定读到空背包。）
+            try {
+                RddPlugin.cacheInventory(ap.getUUID(), countInventory(ap));
+            } catch (RuntimeException ex) {
+                LOG.warn("[rdd] 无条件背包缓存失败 {}: {}", ap.getUUID(), ex.toString());
+            }
             RddRuntime rt = RddPlugin.runtime(ap.getUUID());
             if (rt == null) {
                 continue;

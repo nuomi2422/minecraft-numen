@@ -196,6 +196,9 @@ final class RddStagePlanner {
                     .append("【规划铁律】站在\"已经拥有上面这些\"继续推进：已持有的装备/工具/设施（如 wooden_pickaxe、crafting_table）")
                     .append("不要在任何阶段重复规划重新获取；theme 从现状往下一时代推进，不倒退。")
                     .append("只有后续会被消耗掉的东西（食物、合成/烧炼原料）才按需要规划补量。\n\n");
+        } else {
+            // 【C-补】空背包也要显式告知，避免"没块"与"空背包"无法区分（正是难查的根因）。
+            sb.append("【你当前已真实持有（背包扫描）：】（背包为空或尚未观测到——按空背包规划）\n\n");
         }
         if (snap != null && !snap.lostIds().isEmpty()) {
             sb.append("【已失去（死亡/掉落判定失效，绝不要假设还持有，需要就重新获取）：】")
