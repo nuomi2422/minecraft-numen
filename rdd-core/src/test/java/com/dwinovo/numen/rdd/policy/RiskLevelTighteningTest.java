@@ -18,6 +18,14 @@ class RiskLevelTighteningTest {
         assertEquals(RiskLevel.NORMAL, RiskGate.levelForText("在村庄附近建立据点"));
     }
 
+    /** 2026-09-25 二次收紧：含"备用装备/回退路线"的早期阶段绝不能被"备"字误判为高危。 */
+    @Test void wordingWithAmbiguousCharsIsNotHighRisk() {
+        assertEquals(RiskLevel.NORMAL,
+                RiskGate.levelForText("对照当前状态盘点，核对基地设施与备用装备，规划回退路线"));
+        assertEquals(RiskLevel.NORMAL, RiskGate.levelForText("准备食物与背包整理（备用装备）"));
+        assertEquals(RiskLevel.NORMAL, RiskGate.levelForText("去打猎取肉，顺路捡树枝"));
+    }
+
     /** 验收4：真正的下界/末地准备才判高危。 */
     @Test void realHighRiskStagesAreDetected() {
         assertEquals(RiskLevel.NETHER, RiskGate.levelForText("进入下界"));

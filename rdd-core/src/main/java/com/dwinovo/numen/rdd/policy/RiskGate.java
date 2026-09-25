@@ -77,16 +77,20 @@ public final class RiskGate {
     }
 
     /**
-     * 是否出现"行动/准备"短语：目标词出现在 进入/前往/去/打/击杀/采集/探索/准备/备/攻略 等
-     * 动词附近（同一短窗口内）。避免"提到即高危"的裸子串误判。
+     * 是否出现"行动/准备"短语：目标词出现在**明确的多字行动词**附近（同一短窗口内）。
+     *
+     * <p><b>2026-09-25 二次收紧</b>：动词表**不得**含单字/歧义词——`备`（备用/设备/背包）、
+     * `去`（过去/上去）、`打`（打听/打扮）会把"……备用装备的回退路线"误判成下界行动。
+     * 只保留语义明确的多字动词。
      */
     private static boolean actionFor(String text, String... targets) {
-        String[] verbs = {"进入", "前往", "去", "打", "击杀", "采集", "探索", "准备", "备", "攻略", "挑战", "进军"};
+        String[] verbs = {"进入", "前往", "击杀", "采集", "探索", "攻略", "挑战", "进军",
+                "下矿", "挖矿", "筹备", "准备进入", "预备"};
         for (String target : targets) {
             int idx = text.indexOf(target);
             while (idx >= 0) {
-                int from = Math.max(0, idx - 6);
-                int to = Math.min(text.length(), idx + target.length() + 6);
+                int from = Math.max(0, idx - 4);
+                int to = Math.min(text.length(), idx + target.length() + 4);
                 String window = text.substring(from, to);
                 for (String v : verbs) {
                     if (window.contains(v)) return true;
