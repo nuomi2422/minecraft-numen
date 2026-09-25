@@ -99,12 +99,16 @@ P2-E  Cost/Risk 评分（依赖前四项）
 ## 7. P2 明细与状态
 
 - [x] **P2.0** 已完成（历史能力，本账本建立前）
-- [x] **P2.1 资产历史/恢复语义** `AssetHistory`（Lost≠Gone；CURRENT/LOST/UNKNOWN/DESTROYED + Purpose + 最后已知位置）— core 已提交 `c668892b`；**接线待做**
-- [ ] **P2-A 资产判定 bug（地基）** — 见 §8
-- [ ] **P2.2 / P2-C AssetRole + ResourceBudget** — 角色可多值（combat/backup/recovery），含资产派生等价
-- [ ] **P2.3 / P2-D VillageObservation** — 先事实节点
-- [ ] **P2.4 / P2-E Cost/Risk 评分** — `TaskValue = progress − time − risk + future_reuse`
-- [ ] **P2.5 / P2-B Supervisor 反馈通道（只读上报）**
+- [x] **P2.1 资产历史/恢复语义** `AssetHistory`（Lost≠Gone）— core `c668892b`；接线待做
+- [x] **P2-A 资产判定 bug（地基）** — `c6d0cf33` + `ace04e4e`（实时扫描为唯一真相；背包不落盘为设计不变量）
+- [x] **P2-C AssetRole + ResourceBudget + 资产派生** — `AssetPurposeStore`/`AssetRole`（既有）+ `AssetDerivation`(`5f839ea4`) + 接线 food 等价(`1019434c`)
+- [x] **P2-D VillageNode** — `8569ce69`（先事实；Stage-A/B 注入 `known_villages`）
+- [x] **P2-E TaskCostModel** — `7ed8cd0d` + 接线(`d611f0fe`)（时间刻度 + 省时优先序注入提示词）
+- [x] **P2-B TaskQualityReport 只读上报** — `2e9f7121`（执行层→监督层单向事件，不做双向）
+- [ ] **P2.1 接线**：`AssetHistory` 接进 `RddPlugin`（死亡 recordLost / 观测 recordCurrent / 落盘）+ 规划注入可恢复线索
+- [ ] **P2.5 / 双向 Supervisor 对话**：需升档、人工正式批准，暂缓
+
+> 验收：`rdd-core + plugins:rdd` **230 测 / 0 失败**；`plugins:selfcompile` 全绿（2026-09-25）。
 
 ---
 
