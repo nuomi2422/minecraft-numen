@@ -20,6 +20,28 @@ public final class MutationPipeline {
         return workspace.create(requirement);
     }
 
+    /**
+     * P5 提案：只登记需求 + 建隔离工作区（PROPOSED），<b>不占执行预算、不生成代码</b>。
+     * 审批通过（{@link #approve}）才转入执行链；否则 {@link #reject} 归档。
+     */
+    public MutationManifest propose(String requirement) throws java.io.IOException {
+        return workspace.propose(requirement);
+    }
+
+    /** 审批通过：PROPOSED → WORKSPACE_CREATED，并在此时占用一次执行预算（提案阶段不占）。 */
+    public MutationManifest approve(MutationManifest manifest) throws java.io.IOException {
+        if (manifest == null) throw new IllegalArgumentException("manifest must not be null");
+        if (!budget.tryAcquire()) throw new IllegalStateException("mutation budget exhausted");
+        return MutationStateMachine.transition(manifest, MutationState.WORKSPACE_CREATED, "");
+    }
+
+    /** 审批否决：PROPOSED → ARCHIVED（终态留档，日后可重开），不占预算。 */
+    public MutationManifest reject(MutationManifest manifest, String reason) throws java.io.IOException {
+        if (manifest == null) throw new IllegalArgumentException("manifest must not be null");
+        return MutationStateMachine.transition(manifest, MutationState.ARCHIVED,
+                reason == null || reason.isBlank() ? "proposal rejected" : reason);
+    }
+
     public MutationManifest recordGeneratedSource(MutationManifest manifest,
                                                    String fileName, String source) throws java.io.IOException {
         sources.write(manifest, fileName, source);
