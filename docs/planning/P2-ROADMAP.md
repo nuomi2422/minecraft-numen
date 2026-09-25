@@ -107,7 +107,22 @@ P2-E  Cost/Risk 评分（依赖前四项）
 - [x] **P2-B TaskQualityReport 只读上报** — `2e9f7121`（执行层→监督层单向事件，不做双向）
 - [x] **P2.1 接线**：`AssetHistory` 接进 `RddPlugin`（死亡 recordLost / 观测 recordCurrent / 落盘 `rdd-history/`）+ 规划注入可恢复线索 — `d05fdf23`
 - [x] **P2.6 埋点五件事 + 资产声明元字段** — 见 §10（2026-09-25，本批次）
+- [x] **P2.2+ RiskGate 恢复点**：高风险准入要求已绑床（`RiskGate.checkWithRecovery` + Stage-A wait_for 追加 `minecraft:white_bed`）— `a4156b63`
 - [ ] **P2.5 / 双向 Supervisor 对话**：需升档、人工正式批准，暂缓
+
+## 12. 阶段纪律（2026-09-25 · 外脑+人工，务必遵守）
+
+P2 到此收尾，**不再加 P3/P4 新大模块，直接进游戏长跑**（真实死亡/迷路/资源浪费/规划失败会把下一批需求"打出来"）。
+
+1. **不让 Asset 变万能模块**：Asset=我知道世界有什么；TaskChain=我要做什么；Knowledge=为什么这么做；
+   RiskGate=现在敢不敢做；Recovery=失败怎么办。各层不融合。
+2. **不让自编译直接改核心**。
+3. **埋点只观察，不控制行为**。
+4. **尽快开始长跑测试**。
+
+已知待补（运行驱动，非现在做）：
+- **世界资产假象**：地点不消失、里面有什么会变 → `VillageNode` 后续拆 `position/exists`（稳）+ `resources`（带 last_seen/last_checked）（变）。
+- **完整资源图**：bug3 第一版只记"消耗/产出来源"，不做完整生产规划。
 
 > 验收：`rdd-core + plugins:rdd` **230 测 / 0 失败**；`plugins:selfcompile` 全绿（2026-09-25）。
 
