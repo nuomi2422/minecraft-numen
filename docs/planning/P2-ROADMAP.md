@@ -105,7 +105,7 @@ P2-E  Cost/Risk 评分（依赖前四项）
 - [x] **P2-D VillageNode** — `8569ce69`（先事实；Stage-A/B 注入 `known_villages`）
 - [x] **P2-E TaskCostModel** — `7ed8cd0d` + 接线(`d611f0fe`)（时间刻度 + 省时优先序注入提示词）
 - [x] **P2-B TaskQualityReport 只读上报** — `2e9f7121`（执行层→监督层单向事件，不做双向）
-- [ ] **P2.1 接线**：`AssetHistory` 接进 `RddPlugin`（死亡 recordLost / 观测 recordCurrent / 落盘）+ 规划注入可恢复线索
+- [x] **P2.1 接线**：`AssetHistory` 接进 `RddPlugin`（死亡 recordLost / 观测 recordCurrent / 落盘 `rdd-history/`）+ 规划注入可恢复线索 — `d05fdf23`
 - [ ] **P2.5 / 双向 Supervisor 对话**：需升档、人工正式批准，暂缓
 
 > 验收：`rdd-core + plugins:rdd` **230 测 / 0 失败**；`plugins:selfcompile` 全绿（2026-09-25）。
