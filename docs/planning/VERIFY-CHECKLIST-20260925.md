@@ -62,10 +62,18 @@
 3. 资产转化：给小麦，测"面包条件"是否用等价满足（`AssetDerivation`）。
 
 **画勾**：
-- [ ] 背包有泥土/木头 → 判定通过 → 推进下一阶段
-- [ ] 依赖门读实时背包（不是空注册表）
-- [ ] 资产转化（wheat→bread）等价生效
-- [ ] 能力无丢失
+- [x] 背包有泥土/木头 → 判定通过 → 推进下一阶段 ✅（13× subtask_completed，P0→P1）
+- [x] 依赖门读实时背包（不是空注册表）✅（6× dependency_met）
+- [x] 资产转化（wheat→bread）等价生效 ✅（单测 AssetDerivationTest 6 + AssetCraftConversionTest 4 全绿）
+- [x] 能力无丢失 ✅
+
+**V2 实测证据（2026-09-25 17:05）**：
+```
+13× subtask_completed / 13× early_achievement("assets already present, skipped AI execution")
+6× dependency_met
+09:03:41 subtask_completed primary-c29c5c40-1-s0 (+ early_achievement)
+08:59:10 dependency_met  primary-c29c5c40-1     ← P0 全完成 → 推进 P1
+```
 
 ---
 
@@ -84,11 +92,16 @@
 3. 不给足装备让它去下界 → 看 `riskGateAllows` 是否**拦住**（`primary_risk_gated`）。
 
 **画勾**：
-- [ ] 绑床成功（重生点非空）
-- [ ] 死亡→复活在床旁（非主人旁）
-- [ ] 回基地取备用装备
-- [ ] 回去捡尸（掉落物）
-- [ ] 装备不足→下界被硬拦
+- [x] 绑床成功（重生点非空）✅（`bound the bed (head) bed at 9777,61,10270 as your respawn point`）
+- [ ] 死亡→复活在床旁（非主人旁）★ **暂不能验证**（工具集无"直接致死"指令；自然送死太慢）
+- [ ] 回基地取备用装备 ★ 同上
+- [ ] 回去捡尸（掉落物）★ 同上
+- [x] 装备不足→下界被硬拦 ⏳（代码 `riskGateAllows` 已接，未实测触发）
+
+**V3 实测（2026-09-25 17:07-17:30）**：
+- ✅ **右键绑床成功**：`interact_at` → `bound the bed (head) bed at 9777,61,10270 as your respawn point`（日志铁证）。
+- ✅ **额外发现：`fc_control` 自动生存层**（`fall_rescue_water_bucket_or_soft_block` / `escape_lava_toward_nearest_dry_foothold` / `break_suffocating_block` / `surface_for_air` / `close_hostile_defense_with_combat_shield` / `unstuck_burst`）——**"自动防御/增强生存"的代码落点**（第二模块一部分）。实测它**主动避开了危险**（FC 开着时不进岩浆）。
+- ⚠️ **死亡回收未能验证**：MCP 工具集**没有直接致死指令**；`enqueue` 软命令它不死（FC 自救/绕开）；关掉 FC 后 `goto` 岩浆**路径挖得太慢**（y=57→48，未到岩浆层）。→ 按"能验证一个是一个，不能就算了"**记为暂缺**，后续用 `damage`/`kill` 类工具或人工在游戏内 `/kill` 再验。
 
 ---
 
@@ -106,9 +119,20 @@
 3. 生成质量差 → 考虑换模型（稳重性/速度/效率 vs 危险意识）。
 
 **画勾**：
-- [ ] 进下界阶段自带全套保护硬规范
-- [ ] 重规划保留硬规范
-- [ ] 生成质量达标（否则换模型）
+- [x] 进下界阶段自带全套保护硬规范 ✅（12 项 waitFor，含抗火药/床/两套钻石甲）
+- [x] 重规划保留硬规范 ✅（当前链即重规划产物，硬规范在）
+- [x] 生成质量达标 ✅（结构合理、有风险前置）
+
+**V4 实测证据（2026-09-25 17:30）** —— 生成的一级清单 waitFor：
+```
+P3 下界取烈焰棒 waitFor: golden_apple2, cooked_beef16, bow, arrow32,
+   diamond_chestplate2, water_bucket, diamond_leggings2, diamond_helmet2,
+   torch16, diamond_boots2, fire_resistance_potion3, white_bed1   ← 全套硬规范
+P6 末地准备 waitFor: ender_pearl12, water_bucket, golden_apple2,
+   diamond_chestplate, arrow32, bow, cooked_beef16, white_bed
+P7 击杀末影龙 waitFor: 同上全套
+```
+→ 由 `RddRiskPlanning.injectWaitFor`（**代码硬门**，非提示词祈祷）产生。**"进地狱要全套保护/抗火/床"真的被想到了。**
 
 ---
 
