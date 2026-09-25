@@ -14,9 +14,14 @@ import com.dwinovo.numen.rdd.fail.FailureKind;
 import com.dwinovo.numen.rdd.policy.ResourceBudget;
 import com.dwinovo.numen.rdd.policy.RiskGate;
 import com.dwinovo.numen.rdd.replan.ReplanContextBuilder;
-import net.minecraft.server.level.ServerPlayer;
+import com.dwinovo.numen.entity.NumenPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.block.BedBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -108,26 +113,26 @@ public final class RddPlugin implements NumenPlugin {
         });
         // P1 资产真相层：同伴死亡/掉装备 → 背包类资产立即失效（不再拿旧装备当"还持有"），
         // 规划输入 LAST_INVENTORY 同步清空；世界资产（基地/结构）不受影响，重新观测会恢复 OBSERVED。
-        numen.on(CompanionEvent.DEATH, body -> onCompanionDeath(body.getUUID()));
+        numen.on(CompanionEvent.DEATH, body -> onCompanionDeath(body));
         numen.on(CompanionEvent.REMOVE, body -> LAST_INVENTORY.remove(body.getUUID()));
-        // 床边复活偏好：如果该同伴有设定的床位偏好，则在 SPAWN 后将其 TP 到床旁（偏移 0.5 防止卡壁）
+        // 床边复活偏好：死亡时记下主人床位（见 onCompanionDeath），SPAWN 时把同伴 TP 到床旁安全落点。
+        // 只消费一次（take-and-clear）；首建/休眠恢复没有偏好，不会触发。
         numen.on(CompanionEvent.SPAWN, body -> {
             UUID uuid = body.getUUID();
             if (uuid == null) {
                 LOG.warn("[rdd] SPAWN event missing companion UUID");
                 return;
             }
-            BlockPos bedPos = BED_RESPAWN_PREFERENCE.get(uuid);
-            if (bedPos != null) {
-                try {
-                    // 把同伴移到床的旁边（X/Z 偏移 0.5），Y 保持不变
-                    body.moveTo(bedPos.getX() + 0.5, bedPos.getY(), bedPos.getZ() + 0.5, body.getYRot(), body.getXRot());
-                    // 执行一次后清除偏好，避免每次生效都 TP
-                    BED_RESPAWN_PREFERENCE.remove(uuid);
-                    LOG.info("[rdd] {} 复活后自动 TP 到床旁: {}", uuid, bedPos);
-                } catch (Exception e) {
-                    LOG.warn("[rdd] 床边复活 TP 失败 {}: {}", uuid, e.toString());
-                }
+            BlockPos bedPos = BED_RESPAWN_PREFERENCE.remove(uuid);
+            if (bedPos == null) return;
+            try {
+                ServerLevel level = body.serverLevel();
+                if (level == null || !(level.getBlockState(bedPos).getBlock() instanceof BedBlock)) return;
+                Vec3 stand = bedStandPos(level, bedPos, body);
+                body.moveTo(stand.x, stand.y, stand.z, body.getYRot(), body.getXRot());
+                LOG.info("[rdd] {} 复活后 TP 到床旁: {}", uuid, bedPos);
+            } catch (RuntimeException e) {
+                LOG.warn("[rdd] 床边复活 TP 失败 {}: {}", uuid, e.toString());
             }
         });
         numen.contributeState(uuid -> {
@@ -383,8 +388,14 @@ public final class RddPlugin implements NumenPlugin {
     /**
      * P1：同伴死亡（含掉装备）→ 立刻让该同伴的背包类资产失效，避免规划/依赖门继续按旧装备放行。
      * 只失效 {@code inventory_scan}，不碰 world_ 基地/结构；下一次背包扫描会把还在身上的重新观测回 OBSERVED。
+     *
+     * <p>同时记录"床边复活偏好"：死亡瞬间主人若设了有效床（同维度），把床位存进
+     * {@link #BED_RESPAWN_PREFERENCE}，等该同伴 SPAWN（复活）时 TP 到床旁。首建/休眠恢复不走这里，
+     * 因此不会误触发。
      */
-    private static void onCompanionDeath(UUID companionId) {
+    private static void onCompanionDeath(NumenPlayer body) {
+        if (body == null) return;
+        UUID companionId = body.getUUID();
         if (companionId == null) return;
         try {
             int lost = assets(companionId).invalidateByType("inventory_scan");
@@ -399,6 +410,43 @@ public final class RddPlugin implements NumenPlugin {
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 死亡资产失效处理失败 {}: {}", companionId, ex.toString());
         }
+        recordOwnerBedPreference(body, companionId);
+    }
+
+    /** 死亡瞬间记录主人当前床位；仅当同伴与主人同维度且该处确为床时才记录（避免跨维度误 TP）。 */
+    private static void recordOwnerBedPreference(NumenPlayer body, UUID companionId) {
+        try {
+            ServerPlayer owner = body.resolveOwnerPlayer();
+            if (owner == null) return;
+            BlockPos bed = owner.getRespawnPosition();
+            if (bed == null || bed.equals(BlockPos.ZERO)) return;
+            ServerLevel ownerLevel = owner.serverLevel();
+            ServerLevel companionLevel = body.serverLevel();
+            if (ownerLevel == null || companionLevel == null
+                    || !ownerLevel.dimension().equals(companionLevel.dimension())) {
+                return;
+            }
+            if (!(ownerLevel.getBlockState(bed).getBlock() instanceof BedBlock)) return;
+            BED_RESPAWN_PREFERENCE.put(companionId, bed.immutable());
+            LOG.info("[rdd] 记录 {} 床边复活偏好: {}", companionId, bed);
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 记录床边复活偏好失败 {}: {}", companionId, ex.toString());
+        }
+    }
+
+    /** 床边安全落点：优先 BedBlock 标准站立位，异常/无解时回落床心（X/Z 偏移 0.5）。 */
+    private static Vec3 bedStandPos(ServerLevel level, BlockPos bed, NumenPlayer body) {
+        try {
+            BlockState state = level.getBlockState(bed);
+            if (state.getBlock() instanceof BedBlock) {
+                var facing = state.getValue(BedBlock.FACING);
+                var stand = BedBlock.findStandUpPosition(body.getType(), level, bed, facing, body.getRespawnAngle());
+                if (stand.isPresent()) return stand.get();
+            }
+        } catch (RuntimeException ignore) {
+            // 落回下面的兜底坐标
+        }
+        return new Vec3(bed.getX() + 0.5, bed.getY(), bed.getZ() + 0.5);
     }
 
     /** P0 完成事实仓库（磁盘为真身，内存缓存）。 */
