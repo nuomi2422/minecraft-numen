@@ -99,6 +99,31 @@ public final class RiskGate {
         return check(level, available).allowed();
     }
 
+    /**
+     * P2.2+ 高风险准入（§6③）：在最低储备之上，额外要求"恢复点"证据——即已绑定的床/重生锚点。
+     *
+     * <p>依据我们自己的发现：床边复活锚点（床）是高风险活动（下界/末地/深矿）的**恢复能力**核心。
+     * 没有恢复点就进高风险维度，一旦死亡即"从零"，正是要避免的。
+     *
+     * @param hasRecoveryPoint 是否已绑定床/重生锚点（由宿主查同伴 respawn 判定）
+     * @return 与 {@link #check} 同构的裁决；未绑恢复点则 allowed=false 并追加准备任务
+     */
+    public static Verdict checkWithRecovery(RiskLevel level, Map<String, Integer> available,
+                                            boolean hasRecoveryPoint) {
+        RiskLevel lv = level == null ? RiskLevel.NORMAL : level;
+        Verdict base = check(lv, available);
+        // 仅对高风险级别（下界/末地）要求恢复点；NORMAL/MINING 不强制。
+        boolean risky = lv == RiskLevel.NETHER || lv == RiskLevel.END;
+        if (!risky || hasRecoveryPoint) {
+            return base;
+        }
+        List<String> missing = new ArrayList<>(base.missing());
+        missing.add("recovery_point need 1 have 0（未绑定床/重生锚点）");
+        List<String> prep = new ArrayList<>(base.prepTasks());
+        prep.add("先找床绑定重生点（interact_at 右键床即绑），再进" + lv.name().toLowerCase() + "；否则死亡即从零");
+        return new Verdict(false, lv, List.copyOf(missing), List.copyOf(prep));
+    }
+
     /** 供测试/宿主使用的已知风险关键词集合（保持与 {@link #levelForText} 一致）。 */
     public static Set<String> knownRiskKeywords() {
         return Set.of("下界", "地狱", "nether", "末地", "末影龙", "the_end", "下矿", "挖矿", "洞穴", "废弃矿井");

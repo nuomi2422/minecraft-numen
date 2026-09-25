@@ -48,7 +48,12 @@ final class RddRiskPlanning {
             sb.append("当前缺口：").append(String.join("; ", missing)).append("\n");
         }
         sb.append("请把这些准备安排在该风险阶段**之前**的独立阶段（或该阶段开头）**提前完成**，"
-                + "不要等到了现场才临时准备；下界/末地还需临时据点/回退路线与相应药水。\n\n");
+                + "不要等到了现场才临时准备；下界/末地还需临时据点/回退路线与相应药水。\n");
+        if (level == RiskLevel.NETHER || level == RiskLevel.END) {
+            sb.append("【恢复点】进下界/末地前必须已有可用床并绑定为重生点（interact_at 右键床即绑）——"
+                    + "没有恢复点就进高风险维度，死亡即从零。\n");
+        }
+        sb.append("\n");
         return sb.toString();
     }
 
@@ -77,6 +82,10 @@ final class RddRiskPlanning {
             }
             for (Map.Entry<String, Integer> e : required.entrySet()) {
                 merged.merge(e.getKey(), e.getValue(), Math::max);
+            }
+            // §6③ 恢复点：下界/末地阶段追加"床"作为硬门（携带即视为有恢复点能力的保守代理）。
+            if (level == RiskLevel.NETHER || level == RiskLevel.END) {
+                merged.merge("minecraft:white_bed", 1, Math::max);
             }
             List<AssetRequirement> wf = new ArrayList<>();
             for (Map.Entry<String, Integer> e : merged.entrySet()) {

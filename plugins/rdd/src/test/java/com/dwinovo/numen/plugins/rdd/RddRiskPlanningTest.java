@@ -39,6 +39,15 @@ class RddRiskPlanningTest {
                 .filter(r -> r.assetKey().equals("minecraft:diamond_chestplate"))
                 .findFirst().orElseThrow().minimum();
         assertEquals(2, chest, "下界要求两套钻石甲");
+        // §6③：下界阶段追加"床"作为恢复点硬门
+        assertTrue(keys.contains("minecraft:white_bed"), "下界阶段应有床（恢复点）硬门");
+    }
+
+    @Test void prepHintMentionsRecoveryPointForHighRisk() {
+        assertTrue(RddRiskPlanning.prepHint("进入下界", Map.of()).contains("恢复点"));
+        assertTrue(RddRiskPlanning.prepHint("击杀末影龙", Map.of()).contains("恢复点"));
+        assertFalse(RddRiskPlanning.prepHint("下矿采钻石", Map.of()).contains("恢复点"),
+                "下矿不要求恢复点");
     }
 
     @Test void injectWaitForMergesWithExistingTakingMax() {
