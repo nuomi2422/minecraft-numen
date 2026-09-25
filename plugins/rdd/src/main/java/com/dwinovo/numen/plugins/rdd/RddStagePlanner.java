@@ -164,6 +164,10 @@ final class RddStagePlanner {
                 + heldBlock
                 + (worldAssets == null || worldAssets.isBlank() ? "" : worldAssets + "\n\n")
                 + (villageBlock == null || villageBlock.isBlank() ? "" : villageBlock + "\n\n")
+                + "【P2-E 时间成本权衡】优先「省时高收益」路线：能拿现成（村庄箱子/掉落物/猎取）就不要从零生产；"
+                + "不要把「种田等作物生长」排进主线（FARM_AND_WAIT 是最贵且不可压缩的等待）；"
+                + "多做一套备用装备这种「未来复用」高的投入值得。\n"
+                + com.dwinovo.numen.rdd.policy.TaskCostModel.explain() + "\n\n"
                 + PLAN_BODY_TAIL;
     }
 
