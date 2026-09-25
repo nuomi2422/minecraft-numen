@@ -479,7 +479,8 @@ public final class RddPlugin implements NumenPlugin {
     }
 
     /**
-     * P1.5 唯一规划资产口径：缓存背包为底 + 注册表真相覆盖（死亡失效的背包条目移除）。
+     * P2-A 唯一规划资产口径：<b>实时扫描（lastInventory）是"当前持有"的唯一真相</b>；
+     * 注册表的 inventory_scan 仅作 lost/unknown 提示（背包资产不持久化）。
      * Planner 提示词与 PlanGuard 都从这里取数，不再各读各的缓存/注册表。
      */
     public static com.dwinovo.numen.rdd.core.PlanningAssetSnapshot planningSnapshot(UUID companionId) {
