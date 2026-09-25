@@ -61,11 +61,6 @@ public final class RddPlugin implements NumenPlugin {
     private static volatile NumenApi numenApi;
     /** 任务链持久化目录 config/numen/rdd-tasks（每个同伴一个 <uuid>.json）。 */
     private static volatile Path tasksDir;
-    /** P4 重规划预算：每（同伴|一级）最多自动重规划次数；超限回落停车，防无限烧 LLM。 */
-    private static final int MAX_REPLAN_PER_PRIMARY = 3;
-    /** 协商驱动改单的独立预算（与失败驱动分开；士兵的反馈不该被 REPLAN 预算回绝）。 */
-    private static final int MAX_NEGOTIATION_REPLANS_PER_PRIMARY = 3;
-    private static final Map<String, Integer> REPLAN_COUNTS = new ConcurrentHashMap<>();
 
     record BodyState(String subtaskId, int submitCount) {}
 
@@ -109,6 +104,7 @@ public final class RddPlugin implements NumenPlugin {
         numen.on(CompanionEvent.REMOVE, body -> {
             RddAssetFacade.remove(body.getUUID());
             RddFactFacade.remove(body.getUUID());
+            RddReplanBudget.remove(body.getUUID());
         });
         // 床边复活：死亡记锚点（见 onCompanionDeath），SPAWN 时 TP 到床旁安全落点（逻辑在 RddBedAnchor）。
         numen.on(CompanionEvent.SPAWN, RddBedAnchor::applyOnSpawn);
@@ -174,6 +170,7 @@ public final class RddPlugin implements NumenPlugin {
         CALLBACKS.clear(() -> {
             RddAssetFacade.clearWorldState();
             RddFactFacade.clearWorldState();
+            RddReplanBudget.clearWorldState();
             DECOMPOSING.clear();
             RddGoalDriver.clearAll();
             BODY.clear();
@@ -285,7 +282,7 @@ public final class RddPlugin implements NumenPlugin {
         // 新目标在同一同伴上会复用同样的 primary-<uuid8>-N 命名，必须清掉去重记忆，否则首个懒边界漏报。
         LAST_EXPANSION_REPORT.remove(companionId);
         RddGoalDriver.clear(companionId);
-        clearReplanCounts(companionId);   // 新目标 = 新阶段标识，重规划预算清零
+        RddReplanBudget.clearReplanCounts(companionId);   // 新目标 = 新阶段标识，重规划预算清零
         // P0：把该目标血缘下"已可靠完成"的阶段事实注入新链 → 已达成一级直接跳过、不再重复规划
         RUNTIMES.put(companionId, new RddRuntime(
                 new TaskChain(goal, RddFactFacade.facts(companionId).satisfiedStageKeys(goal)), RddAssetFacade.assets(companionId)));
@@ -310,33 +307,11 @@ public final class RddPlugin implements NumenPlugin {
         RddRuntime rt = RUNTIMES.get(companionId);
         if (rt == null) return false;
         TaskChain chain = rt.chain();
-        // 预算：失败驱动按 (同伴|一级) 最多 MAX_REPLAN_PER_PRIMARY 次；协商驱动用独立 key+上限。
+        // 预算（F 簇，见 RddReplanBudget）：失败驱动按 (同伴|一级) 最多 3 次；协商驱动用独立 key+上限。
         String primaryId = chain.currentPrimary().id();
-        String key = fromNegotiation
-                ? companionId + "|" + primaryId + "|nego"
-                : companionId + "|" + primaryId;
-        int limit = fromNegotiation ? MAX_NEGOTIATION_REPLANS_PER_PRIMARY : MAX_REPLAN_PER_PRIMARY;
-        int used = REPLAN_COUNTS.getOrDefault(key, 0);
-        if (used >= limit) {
-            long gt = RddInstrumentation.currentGameTimeTicks();
-            Map<String, Object> loopData = new LinkedHashMap<>();
-            loopData.put("companionId", companionId.toString());
-            loopData.put("task", primaryId);
-            loopData.put("reason", (fromNegotiation ? "negotiation" : "failure") + " replan budget exhausted (loop)");
-            loopData.put("context", Map.of("attempts", used, "threshold", limit, "fromNegotiation", fromNegotiation));
-            RddInstrumentation.publishAt(RddInstrumentation.LOOP_DETECTED, loopData, gt);
-            if (RddInstrumentation.recentDeath(companionId, gt)) {
-                Map<String, Object> recData = new LinkedHashMap<>(loopData);
-                recData.put("reason", "recovery attempt after death stalled on replan budget; parking instead");
-                RddInstrumentation.publishAt(RddInstrumentation.RECOVERY_FAILED, recData, gt);
-            }
-            RddMonitor.publish("replan_exhausted", Map.of(
-                    "companionId", companionId.toString(), "primary", primaryId,
-                    "attempts", used, "reason", "replan budget exhausted; park instead"));
-            LOG.warn("[rdd] 重规划预算耗尽，回落停车 {}:{}", companionId, primaryId);
-            return false;
+        if (!RddReplanBudget.tryConsume(companionId, primaryId, fromNegotiation)) {
+            return false; // 预算耗尽已发停车事件，回落
         }
-        REPLAN_COUNTS.merge(key, 1, Integer::sum);
         try {
             chain.enterReplanningFromStuck(reason);
         } catch (RuntimeException ex) {
@@ -458,13 +433,6 @@ public final class RddPlugin implements NumenPlugin {
         return "";
     }
 
-    /** 清某同伴的重规划预算计数（重绑/清任务时调用）。 */
-    private static void clearReplanCounts(UUID companionId) {
-        if (companionId == null) return;
-        String prefix = companionId + "|";
-        REPLAN_COUNTS.keySet().removeIf(k -> k.startsWith(prefix));
-    }
-
     public static boolean decomposing(UUID companionId) {
         return companionId != null && DECOMPOSING.contains(companionId);
     }
@@ -508,7 +476,7 @@ public final class RddPlugin implements NumenPlugin {
                 LAST_CONTEXT.remove(companionId);
                 LAST_EXPANSION_REPORT.remove(companionId);
                 RddGoalDriver.clear(companionId); // 目标清/重绑 → 丢掉该同伴的懒展开状态
-                clearReplanCounts(companionId);
+                RddReplanBudget.clearReplanCounts(companionId);
                 LOG.info("[rdd] 已清除任务及磁盘交接 {}", companionId);
             });
         } catch (IOException ex) {
