@@ -29,7 +29,8 @@ logs
 .vfox
 
 # datagen output — regenerated via ./gradlew :fabric:runDatagen + :neoforge:runData
-**/generated/
+# 收窄到 datagen 树（<module>/src/generated/），别用裸的 **/generated/ 以免吞源码包
+**/src/generated/
 
 # Claude local tooling (skills, settings, etc.) — not mod source
 .claude/

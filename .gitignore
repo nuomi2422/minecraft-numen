@@ -33,7 +33,10 @@ logs
 .vfox
 
 # datagen output — regenerated via ./gradlew :fabric:runDatagen + :neoforge:runData
-**/generated/
+# 收窄到 datagen 树（<module>/src/generated/）。别写裸的 **/generated/：那会连源码包
+# ...plugins.selfcompile.generated/ 下自编译产出的工具（如 RddGetInventoryTool.java）一起吞掉——
+# 本机盘上有文件照常编译，干净 clone 直接编译失败。
+**/src/generated/
 
 # Claude local tooling (skills, settings, etc.) — not mod source
 .claude/
