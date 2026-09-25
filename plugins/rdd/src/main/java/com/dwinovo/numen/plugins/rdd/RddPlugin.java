@@ -540,47 +540,12 @@ public final class RddPlugin implements NumenPlugin {
 
     /** 保存所有活跃任务链到 config/numen/rdd-tasks（原子写 tmp+move）。 */
     public static void saveRuntimes() {
-        if (tasksDir == null || RUNTIMES.isEmpty()) return;
-        try {
-            Files.createDirectories(tasksDir);
-            for (Map.Entry<UUID, RddRuntime> e : RUNTIMES.entrySet()) {
-                try {
-                    Path tmp = tasksDir.resolve(e.getKey() + ".json.tmp");
-                    Files.writeString(tmp, e.getValue().chain().toJson(), StandardCharsets.UTF_8);
-                    Files.move(tmp, tasksDir.resolve(e.getKey() + ".json"),
-                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                } catch (IOException ex) {
-                    LOG.warn("[rdd] 保存任务失败 {}: {}", e.getKey(), ex.toString());
-                }
-            }
-        } catch (IOException ex) {
-            LOG.warn("[rdd] 创建任务目录失败: {}", ex.toString());
-        }
+        RddRuntimeStore.save(RUNTIMES, tasksDir);
     }
 
     /** 游戏重启恢复：磁盘有任务但内存没有 → 加载为 RddRuntime（幂等）。 */
     public static void restoreRuntimes() {
-        if (tasksDir == null || !Files.isDirectory(tasksDir)) return;
-        try (var stream = Files.list(tasksDir)) {
-            stream.filter(f -> f.getFileName().toString().endsWith(".json")).forEach(f -> {
-                try {
-                    UUID uuid = UUID.fromString(f.getFileName().toString().replace(".json", ""));
-                    if (RUNTIMES.containsKey(uuid)) return;
-                    String json = Files.readString(f, StandardCharsets.UTF_8);
-                    TaskChain chain = TaskChain.fromJson(json);
-                    RUNTIMES.put(uuid, new RddRuntime(chain, RddAssetFacade.assets(uuid)));
-                    // 懒链可能停靠在未展开一级：currentSubtask()=null，报阶段而非 NPE
-                    Subtask restored = chain.currentSubtask();
-                    String curLabel = restored != null
-                            ? restored.id() : ("unexpanded:" + chain.currentPrimary().id());
-                    LOG.info("[rdd] 恢复任务链 {}（当前二级 {}）", uuid, curLabel);
-                } catch (Exception ex) {
-                    LOG.warn("[rdd] 恢复任务失败 {}: {}", f.getFileName(), ex.toString());
-                }
-            });
-        } catch (IOException ex) {
-            LOG.warn("[rdd] 扫描任务目录失败: {}", ex.toString());
-        }
+        RddRuntimeStore.restore(RUNTIMES, tasksDir);
     }
 
     /**
