@@ -82,8 +82,6 @@ public final class RddPlugin implements NumenPlugin {
     /** 协商驱动改单的独立预算（与失败驱动分开；士兵的反馈不该被 REPLAN 预算回绝）。 */
     private static final int MAX_NEGOTIATION_REPLANS_PER_PRIMARY = 3;
     private static final Map<String, Integer> REPLAN_COUNTS = new ConcurrentHashMap<>();
-    /** 同伴自绑床位复活锚点：companionId → 同伴自己的 respawn 床位（成功 sleep 时由原版写入）。复活(SPAWN)时 TP 到床旁。 */
-    private static final Map<UUID, BlockPos> BED_RESPAWN_PREFERENCE = new ConcurrentHashMap<>();
     /** P2.1 资产历史目录 config/numen/rdd-history（每个同伴一个 <uuid>.json）；Lost≠Gone 的长期线索。 */
     private static volatile Path historyDir;
     /** 内存资产历史（uuid→history）；磁盘为真身，清世界状态只清内存。 */
@@ -133,38 +131,8 @@ public final class RddPlugin implements NumenPlugin {
             LAST_INVENTORY.remove(body.getUUID());
             LAST_INVENTORY_AT.remove(body.getUUID());
         });
-        // 床边复活：死亡时记下同伴"自己绑的"床位（见 onCompanionDeath），SPAWN 时 TP 到床旁安全落点。
-        // 只消费一次（take-and-clear）；首建/休眠恢复没有锚点，不会触发。
-        numen.on(CompanionEvent.SPAWN, body -> {
-            UUID uuid = body.getUUID();
-            if (uuid == null) {
-                LOG.warn("[rdd] SPAWN event missing companion UUID");
-                return;
-            }
-            // 优先用内存锚点（死亡时记的）；重启后内存已清 → 回落读同伴**自己的** live respawn 点位
-            // （原版持久化在 .dat，重启不丢）——修 V3 实测的"重启后死亡落世界出生点"。
-            BlockPos bedPos = BED_RESPAWN_PREFERENCE.remove(uuid);
-            if (bedPos == null || bedPos.equals(BlockPos.ZERO)) {
-                try {
-                    BlockPos live = body.getRespawnPosition();
-                    if (live != null && !live.equals(BlockPos.ZERO)) {
-                        bedPos = live;
-                    }
-                } catch (RuntimeException ignore) {
-                    // 读不到就不 TP
-                }
-            }
-            if (bedPos == null) return;
-            try {
-                ServerLevel level = body.serverLevel();
-                if (level == null || !(level.getBlockState(bedPos).getBlock() instanceof BedBlock)) return;
-                Vec3 stand = bedStandPos(level, bedPos, body);
-                body.moveTo(stand.x, stand.y, stand.z, body.getYRot(), body.getXRot());
-                LOG.info("[rdd] {} 复活后 TP 到床旁: {}", uuid, bedPos);
-            } catch (RuntimeException e) {
-                LOG.warn("[rdd] 床边复活 TP 失败 {}: {}", uuid, e.toString());
-            }
-        });
+        // 床边复活：死亡记锚点（见 onCompanionDeath），SPAWN 时 TP 到床旁安全落点（逻辑在 RddBedAnchor）。
+        numen.on(CompanionEvent.SPAWN, RddBedAnchor::applyOnSpawn);
         numen.contributeState(uuid -> {
             String context = renderStateContext(uuid);
             if (!context.equals(LAST_CONTEXT.put(uuid, context))) {
@@ -454,7 +422,7 @@ public final class RddPlugin implements NumenPlugin {
      * 只失效 {@code inventory_scan}，不碰 world_ 基地/结构；下一次背包扫描会把还在身上的重新观测回 OBSERVED。
      *
      * <p>同时记录"床边复活锚点"：死亡瞬间读<b>同伴自己</b>的 respawn 床位（成功 sleep 时由原版写入，
-     * 即它自己绑的基地床；同维度且该处确为床），存进 {@link #BED_RESPAWN_PREFERENCE}，
+     * 即它自己绑的基地床；同维度且该处确为床），存进 {@link RddBedAnchor} 的锚点表，
      * 等该同伴 SPAWN（复活）时 TP 到床旁。首建/休眠恢复不走这里，因此不会误触发。
      */
     private static void onCompanionDeath(NumenPlayer body) {
@@ -491,7 +459,7 @@ public final class RddPlugin implements NumenPlugin {
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 死亡资产失效处理失败 {}: {}", companionId, ex.toString());
         }
-        recordSelfBedAnchor(body, companionId);
+        RddBedAnchor.record(body, companionId);
     }
 
     /** 死亡即饿死代理判据（埋点）：死亡瞬间食物条为 0 → 判 starvation。best-effort，失败回落 false。 */
@@ -515,41 +483,6 @@ public final class RddPlugin implements NumenPlugin {
             // fall through
         }
         return "";
-    }
-
-    /**
-     * 记录同伴<b>自己绑的</b>床（不是主人的）：读同伴自己的 respawn 床位——成功 sleep 时原版
-     * {@code ServerPlayer.startSleepInBed} 会把它设成自己的重生点，即"自由绑定自己的基地"。
-     * 仅当该床位与同伴当前维度一致、且该处确为床时才记录（避免跨维度误 TP）。
-     */
-    private static void recordSelfBedAnchor(NumenPlayer body, UUID companionId) {
-        try {
-            BlockPos bed = body.getRespawnPosition();
-            if (bed == null || bed.equals(BlockPos.ZERO)) return;
-            var bedDimension = body.getRespawnDimension();
-            ServerLevel level = body.serverLevel();
-            if (bedDimension == null || level == null || !level.dimension().equals(bedDimension)) return;
-            if (!(level.getBlockState(bed).getBlock() instanceof BedBlock)) return;
-            BED_RESPAWN_PREFERENCE.put(companionId, bed.immutable());
-            LOG.info("[rdd] 记录 {} 自绑床位: {} @ {}", companionId, bed, bedDimension.location());
-        } catch (RuntimeException ex) {
-            LOG.warn("[rdd] 记录自绑床位失败 {}: {}", companionId, ex.toString());
-        }
-    }
-
-    /** 床边安全落点：优先 BedBlock 标准站立位，异常/无解时回落床心（X/Z 偏移 0.5）。 */
-    private static Vec3 bedStandPos(ServerLevel level, BlockPos bed, NumenPlayer body) {
-        try {
-            BlockState state = level.getBlockState(bed);
-            if (state.getBlock() instanceof BedBlock) {
-                var facing = state.getValue(BedBlock.FACING);
-                var stand = BedBlock.findStandUpPosition(body.getType(), level, bed, facing, body.getRespawnAngle());
-                if (stand.isPresent()) return stand.get();
-            }
-        } catch (RuntimeException ignore) {
-            // 落回下面的兜底坐标
-        }
-        return new Vec3(bed.getX() + 0.5, bed.getY(), bed.getZ() + 0.5);
     }
 
     /** P0 完成事实仓库（磁盘为真身，内存缓存）。 */
@@ -742,22 +675,6 @@ public final class RddPlugin implements NumenPlugin {
         if (companionId == null) return;
         String prefix = companionId + "|";
         REPLAN_COUNTS.keySet().removeIf(k -> k.startsWith(prefix));
-    }
-
-    /** 设置某同伴的床边复活锚点（同伴自绑床位；一般由死亡路径自动写入，也可手动设）。 */
-    public static void setBedRespawnPreference(UUID companionId, BlockPos bedPos) {
-        if (companionId == null || bedPos == null) {
-            return;
-        }
-        BED_RESPAWN_PREFERENCE.put(companionId, bedPos);
-        LOG.info("[rdd] 设置 {} 的床边复活偏好: {}", companionId, bedPos);
-    }
-
-    /** 清除某同伴的床边复活偏好。 */
-    public static void clearBedRespawnPreference(UUID companionId) {
-        if (companionId == null) return;
-        BED_RESPAWN_PREFERENCE.remove(companionId);
-        LOG.info("[rdd] 清除 {} 的床边复活偏好", companionId);
     }
 
     /** 记录某同伴最近一次背包计数（Detector 心跳写）。null/空安全。 */
