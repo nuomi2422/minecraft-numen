@@ -37,14 +37,31 @@
 
 ## 三、拆解顺序（低风险优先，每步可回滚 + 跑全测）
 
-1. **D 资产门面**（最独立）→ `RddAssetFacade`
-2. **E 事实门面** → `RddFactFacade`
-3. **F 重规划预算** → `RddReplanBudget`
-4. **C 死亡/生存** → `RddSurvivalHandler`
-5. **B 状态渲染** → `RddStateContext`
-6. **A 规划编排** → `RddPlanningFlow`（最后，最核心）
+1. **D 资产门面**（最独立）→ `RddAssetFacade` ✅ `9aa007cf`
+2. **E 事实门面** → `RddFactFacade` ✅ `f39a0882`
+3. **F 重规划预算** → `RddReplanBudget` ✅ `e22113ce`
+4. **C 死亡/生存**（床边复活锚点部分）→ `RddBedAnchor` ✅ `08a8f279`
+5. **副簇：任务链持久化** → `RddRuntimeStore` ✅ `63d38b8c`
+6. **B 状态渲染** / **A 规划编排** 🛑 **评估后保留在 RddPlugin**（见下方"保留理由"）
 
 每步：**不破红线**（RL-1..7）、273 测全绿、独立 commit。
+
+---
+
+## 三-b、执行结果与保留理由
+
+### 实际行数变化
+- `RddPlugin`：**1008 → 623 行**（-385）
+- 新增独立类：`RddAssetFacade`(262)、`RddFactFacade`(73)、`RddReplanBudget`(83)、`RddRuntimeStore`(75)
+
+### B/A 簇保留理由（不是漏拆，是正确边界）
+- **A 规划编排**（beginPlanning/decomposeSinglePass/bind/bindCurrent/requestReplan/remove/removeCurrent）：全部直接操作 `RUNTIMES`/`DECOMPOSING`/`CALLBACKS`/`BODY` 与链状态，**跨文件调用者在 Detector/GoalDriver/SkipTool/ConcernTool**，是核心状态机操作面。强拆 = 把一坨状态引用搬进新类，**收益 < 风险**（尤其 TaskChain 是红线不可动）。
+- **B 状态/上下文渲染**（renderStateContext/withAssets/observationData/escape）：无跨文件调用者，纯内部；与 RUNTIMES/snapshot 紧耦合，强拆无收益。
+- **C 剩余编排**（onCompanionDeath/isStarvingDeath/currentTaskId）：死亡事件编排骨架，已委托 Asset/BedAnchor，剩下的 51 行无独立数据。
+- **原则**：拆"数据持有者"（本次 D/E/F/持久化），保留"状态编排者"在门面内——避免产生"传递 RUNTIMES 的伪门面"式更坏耦合。
+
+### 文档 E 簇修正
+原把 `saveRuntimes/restoreRuntimes` 归入 E 事实门面——**修正**：那是"任务链持久化"（rdd-tasks），与完成事实（rdd-facts）无关，已按独立副簇拆成 `RddRuntimeStore`。
 
 ---
 
