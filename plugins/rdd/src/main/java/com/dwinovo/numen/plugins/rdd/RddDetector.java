@@ -364,8 +364,8 @@ final class RddDetector {
                 "companionId", ap.getUUID().toString(),
                 "subtask", current.id(), "kind", n.kind().name(),
                 "hasSuggestion", n.hasSuggestion(), "reason", n.reason()));
-        // 协商改单：优先用士兵建议重规划当前一级（P4 requestReplan 已带预算上限）。
-        if (RddPlugin.requestReplan(ap.getUUID(), "soldier " + n.kind().name() + ": " + n.reason())) {
+        // 协商改单：优先用士兵建议重规划当前一级（用**独立协商预算**，不被失败预算回绝）。
+        if (RddPlugin.requestReplan(ap.getUUID(), "soldier " + n.kind().name() + ": " + n.reason(), true)) {
             return true;
         }
         // 重规划预算耗尽 → 停车守望（不无限协商）。

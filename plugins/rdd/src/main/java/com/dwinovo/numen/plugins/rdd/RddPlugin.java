@@ -79,6 +79,8 @@ public final class RddPlugin implements NumenPlugin {
     private static final Map<UUID, CompletedFactStore> FACTS = new ConcurrentHashMap<>();
     /** P4 重规划预算：每（同伴|一级）最多自动重规划次数；超限回落停车，防无限烧 LLM。 */
     private static final int MAX_REPLAN_PER_PRIMARY = 3;
+    /** 协商驱动改单的独立预算（与失败驱动分开；士兵的反馈不该被 REPLAN 预算回绝）。 */
+    private static final int MAX_NEGOTIATION_REPLANS_PER_PRIMARY = 3;
     private static final Map<String, Integer> REPLAN_COUNTS = new ConcurrentHashMap<>();
     /** 同伴自绑床位复活锚点：companionId → 同伴自己的 respawn 床位（成功 sleep 时由原版写入）。复活(SPAWN)时 TP 到床旁。 */
     private static final Map<UUID, BlockPos> BED_RESPAWN_PREFERENCE = new ConcurrentHashMap<>();
@@ -337,20 +339,31 @@ public final class RddPlugin implements NumenPlugin {
      * 这是 REPLANNING 在生产里的**活触发器**（此前只有测试构造 REPLAN）。
      */
     static boolean requestReplan(UUID companionId, String reason) {
+        return requestReplan(companionId, reason, false);
+    }
+
+    /**
+     * 重规划（带来源标记）：{@code fromNegotiation=true} 时用**独立的协商预算**——
+     * 士兵的反馈不该被"失败驱动的重规划预算"一口回绝（V1 实测：士兵报 COUNTER 时 REPLAN 预算已耗尽 → 直接停车）。
+     */
+    static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation) {
         RddRuntime rt = RUNTIMES.get(companionId);
         if (rt == null) return false;
         TaskChain chain = rt.chain();
-        // 预算：同一(同伴|一级)最多自动重规划 MAX_REPLAN_PER_PRIMARY 次；超限不再重规划（回落停车）
+        // 预算：失败驱动按 (同伴|一级) 最多 MAX_REPLAN_PER_PRIMARY 次；协商驱动用独立 key+上限。
         String primaryId = chain.currentPrimary().id();
-        String key = companionId + "|" + primaryId;
+        String key = fromNegotiation
+                ? companionId + "|" + primaryId + "|nego"
+                : companionId + "|" + primaryId;
+        int limit = fromNegotiation ? MAX_NEGOTIATION_REPLANS_PER_PRIMARY : MAX_REPLAN_PER_PRIMARY;
         int used = REPLAN_COUNTS.getOrDefault(key, 0);
-        if (used >= MAX_REPLAN_PER_PRIMARY) {
+        if (used >= limit) {
             long gt = RddInstrumentation.currentGameTimeTicks();
             Map<String, Object> loopData = new LinkedHashMap<>();
             loopData.put("companionId", companionId.toString());
             loopData.put("task", primaryId);
-            loopData.put("reason", "same primary restarted beyond replan budget (loop)");
-            loopData.put("context", Map.of("attempts", used, "threshold", MAX_REPLAN_PER_PRIMARY));
+            loopData.put("reason", (fromNegotiation ? "negotiation" : "failure") + " replan budget exhausted (loop)");
+            loopData.put("context", Map.of("attempts", used, "threshold", limit, "fromNegotiation", fromNegotiation));
             RddInstrumentation.publishAt(RddInstrumentation.LOOP_DETECTED, loopData, gt);
             if (RddInstrumentation.recentDeath(companionId, gt)) {
                 Map<String, Object> recData = new LinkedHashMap<>(loopData);
