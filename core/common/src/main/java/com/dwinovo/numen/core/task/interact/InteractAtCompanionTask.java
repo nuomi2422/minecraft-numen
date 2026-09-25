@@ -13,7 +13,11 @@ import com.dwinovo.numen.core.act.PressReceipt;
 import com.dwinovo.numen.core.pathing.execute.PlayerNav;
 import com.dwinovo.numen.core.task.base.GoToThenDoTask;
 import com.dwinovo.numen.core.task.base.Precondition;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.block.BedBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
@@ -148,12 +152,12 @@ public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTask
         // A fixed-duration hold ends when its window elapses: release the button.
         if (holdUntil >= 0 && player.level().getGameTime() >= holdUntil) {
             interaction.stop();
-            successMsg = describeDone() + settle();
+            successMsg = bindBedIfClicked() + describeDone() + settle();
             return TaskState.SUCCESS;
         }
         return switch (interaction.tick()) {
             case DONE -> {
-                successMsg = describeDone() + settle();
+                successMsg = bindBedIfClicked() + describeDone() + settle();
                 yield TaskState.SUCCESS;
             }
             case FAILED -> {
@@ -170,6 +174,38 @@ public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTask
         return type == FailureType.NO_PATH || type == FailureType.TERRAIN_BLOCKED
                 || type == FailureType.BOXED_IN
                 || type == FailureType.OUT_OF_REACH || type == FailureType.STANCE_DUD;
+    }
+
+    /**
+     * 右键一块床 = 把这块床绑成自己的重生点（显式绑床，无需睡觉；同伴在替主人铺自己的基地）。
+     * 原版右键床在无睡眠意图时不写重生点，所以这一步在这里显式补上。仅 USE + 单击床生效。
+     *
+     * @return 成功绑定时附加的一句回执；否则空串
+     */
+    private String bindBedIfClicked() {
+        try {
+            if (interaction == null || interaction.buttonTarget() != Interaction.Button.USE) return "";
+            BlockPos target = interaction.blockTarget();
+            if (target == null) return "";
+            BlockState state = player.level().getBlockState(target);
+            if (!(state.getBlock() instanceof BedBlock)
+                    || !state.hasProperty(BedBlock.PART) || !state.hasProperty(BedBlock.FACING)) {
+                return "";
+            }
+            BlockPos head = state.getValue(BedBlock.PART) == BedPart.HEAD
+                    ? target : target.relative(state.getValue(BedBlock.FACING));
+            var facing = state.getValue(BedBlock.FACING);
+            if (BedBlock.findStandUpPosition(player.getType(), player.level(), head, facing,
+                    player.getRespawnAngle()).isEmpty()) {
+                return "";   // 床不可用
+            }
+            player.setRespawnPosition(player.level().dimension(), head, player.getRespawnAngle(), true, false);
+            return " — bound " + (head.equals(target) ? "the" : "the bed (head)")
+                    + " bed at " + head.getX() + "," + head.getY() + "," + head.getZ()
+                    + " as your respawn point.";
+        } catch (RuntimeException ex) {
+            return "";   // 绑定失败不应让一次成功的右键变成报错
+        }
     }
 
     private Interaction.Button button() {

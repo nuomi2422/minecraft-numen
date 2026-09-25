@@ -253,6 +253,20 @@ public final class Interaction {
         return failReason;
     }
 
+    /**
+     * The resolved interaction target, for callers that need to observe WHAT was clicked
+     * (e.g. bind a clicked bed as respawn). A non-null {@code block} with {@code USE} + once
+     * is a right-click on exactly that block.
+     */
+    public BlockPos blockTarget() {
+        return block;
+    }
+
+    /** The button this interaction presses (ATTACK / USE). */
+    public Button buttonTarget() {
+        return button;
+    }
+
     /** Structured cause of a {@link Status#FAILED}, for the reactive task layer to branch on. */
     public FailureType failType() {
         return failType;
