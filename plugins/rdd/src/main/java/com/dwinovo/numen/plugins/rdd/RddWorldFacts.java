@@ -110,8 +110,13 @@ public final class RddWorldFacts {
     /** A valid personal respawn bed is a reusable base asset even before every facility is complete. */
     static BaseSnapshot inspectBase(NumenPlayer ap, Map<String, Object> condition) {
         BlockPos spawn = ap.getRespawnPosition();
+        // 未绑床时 getRespawnPosition() 可能返回 BlockPos.ZERO（哨兵）而非 null——
+        // 必须显式挡掉，否则会拿 (0,0,0) 当"重生床"去查（语义错，且恰好在原点有床时会误判成功）。
+        if (spawn == null || spawn.equals(BlockPos.ZERO)) {
+            return null;
+        }
         ServerLevel level = ap.getServer().getLevel(ap.getRespawnDimension());
-        if (spawn == null || level == null || !dimension(level, condition) || !BedBlock.canSetSpawn(level)) {
+        if (level == null || !dimension(level, condition) || !BedBlock.canSetSpawn(level)) {
             return null;
         }
         // A tiny bounded area, preflighted before any block/collision query. No chunk generation.

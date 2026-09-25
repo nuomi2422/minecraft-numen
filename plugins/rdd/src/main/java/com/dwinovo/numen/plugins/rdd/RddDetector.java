@@ -177,6 +177,13 @@ final class RddDetector {
                             chain.currentPrimary().id(), chain.currentPrimary().description());
                     return;
                 }
+                if (!riskGateAllows(ap, chain.currentPrimary().description())) {
+                    RddMonitor.publish("primary_waiting", Map.of(
+                            "primary", chain.currentPrimary().id(),
+                            "reason", "risk gate: high-risk stage not prepared (equipment/potion/recovery point)"));
+                    RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_risk_gated");
+                    return;
+                }
                 if (!rt.activateCurrentFromSnapshot(RddPlugin.planningSnapshot(ap.getUUID()))) {
                     RddMonitor.publish("primary_waiting", Map.of(
                             "primary", chain.currentPrimary().id(),
@@ -298,6 +305,39 @@ final class RddDetector {
             LOG.warn("[rdd] 检测 tick 异常: {}", e.toString());
         } finally {
             if (assetTick == 0) RddPlugin.publishTaskSnapshot(ap.getUUID(), "periodic_observation");
+        }
+    }
+
+    /**
+     * 高风险准入**硬门**（防"铁套进下界"式死亡循环）：
+     * 当前一级若是下界/末地级，用 {@link RiskGate#checkWithRecovery}（物资+药水+恢复点）硬判；
+     * 不达标 → 不激活、不派工（保持 WAITING）。NORMAL/MINING 直接放行。
+     */
+    static boolean riskGateAllows(NumenPlayer ap, String primaryDescription) {
+        try {
+            com.dwinovo.numen.rdd.policy.RiskLevel level =
+                    com.dwinovo.numen.rdd.policy.RiskGate.levelForText(primaryDescription);
+            if (level != com.dwinovo.numen.rdd.policy.RiskLevel.NETHER
+                    && level != com.dwinovo.numen.rdd.policy.RiskLevel.END) {
+                return true;   // 非高风险级不拦
+            }
+            Map<String, Integer> inv = countInventory(ap);
+            boolean hasRecovery = hasBoundRespawn(ap);
+            var verdict = com.dwinovo.numen.rdd.policy.RiskGate.checkWithRecovery(level, inv, hasRecovery);
+            return verdict.allowed();
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 风险门判定异常（保守放行）: {}", ex.toString());
+            return true;   // 判定异常不误拦（避免因 bug 卡死主线）
+        }
+    }
+
+    /** 同伴是否已绑有效重生点（床/重生锚点）：respawn 非空且非哨兵 ZERO。 */
+    static boolean hasBoundRespawn(NumenPlayer ap) {
+        try {
+            var pos = ap.getRespawnPosition();
+            return pos != null && !pos.equals(net.minecraft.core.BlockPos.ZERO);
+        } catch (RuntimeException ex) {
+            return false;
         }
     }
 
