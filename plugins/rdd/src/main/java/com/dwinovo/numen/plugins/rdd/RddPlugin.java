@@ -399,7 +399,9 @@ public final class RddPlugin implements NumenPlugin {
         if (companionId == null) return;
         try {
             int lost = assets(companionId).invalidateByType("inventory_scan");
-            LAST_INVENTORY.remove(companionId);   // 规划输入立即不再按旧背包
+            // 修正（2026-09-25）：不再 LAST_INVENTORY.remove()。清空缓存会让"死亡后、重扫回 OBSERVED 之前"
+            // 触发的重规划读到空背包 → 把已有全套铁装的人重新规划回铁器时代。缓存由 Detector 下一 tick
+            // 用复活后的真实背包覆盖（那才是真相）；INVALID 只作为提示（见 PlanningAssetSnapshot）。
             saveAssets(companionId);              // 失效态落盘，跨重启也保持
             BODY.remove(companionId);
             RddMonitor.publish("companion_assets_invalidated", Map.of(

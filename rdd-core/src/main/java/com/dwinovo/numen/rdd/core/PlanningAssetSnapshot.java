@@ -10,10 +10,15 @@ import java.util.TreeMap;
  * P1.5 唯一规划资产口径（Planner 提示词 + PlanGuard 共用）。
  *
  * <p>背景：以前规划读"最近一次背包扫描缓存"(1s)，依赖门读 {@link AssetRegistry}（5s），两口径不一致；
- * 死亡掉装备后缓存还会残留旧装备。这里合成一个快照：**以缓存背包为底，用注册表真相覆盖**——
+ * 死亡掉装备后缓存还会残留旧装备。这里合成一个快照。
+ *
+ * <p><b>口径（2026-09-25 修正）</b>：缓存背包是"最后一次真实扫描"的底，
+ * <b>注册表只做加法/修正，不做减法清空</b>——
  * <ul>
- *   <li>OBSERVED 的 {@code inventory_scan} 条目按注册表计数覆盖（含补零后的 0）；</li>
- *   <li>INVALID / UNKNOWN 的条目从可用中移除，分别记入 lost / unknown，供提示词显式告知"已失去/不确定"；</li>
+ *   <li>OBSERVED 的 {@code inventory_scan} 条目按注册表计数覆盖（含补零后的 0）——新观测胜过旧缓存；</li>
+ *   <li>INVALID / UNKNOWN 记入 lost / unknown 供提示词显式告知，但<b>不</b>从可用中移除缓存仍持有的条目：
+ *       失效往往是"死亡/掉落"的一种过时判定，而缓存是最后一次真实扫描；贸然清空会让重规划在
+ *       重扫回 OBSERVED 之前误以为"两手空空"，把已有全套铁装的人重新规划回铁器时代。</li>
  *   <li>world_ 世界资产不参与"背包持有"计数（另由 world 资产渲染块提供）。</li>
  * </ul>
  * 注册表为空（尚未扫描）时退化为缓存背包，不会把"尚未观测"误判成"两手空空"。
@@ -54,17 +59,17 @@ public final class PlanningAssetSnapshot {
                         Object count = entry.observation().value().get("count");
                         if (isNonNegativeInteger(count)) {
                             available.put(id, ((Number) count).intValue());
-                        } else {
-                            available.remove(id);
                         }
+                        // 计数缺失时保留缓存原值，不清空（新观测胜过旧缓存的加法语义）
                     }
                     case INVALID -> {
-                        available.remove(id);
                         lost.add(id);
+                        // 修正（2026-09-25）：不再 available.remove(id)。INVALID 只是提示，
+                        // 缓存（最后一次真实扫描）仍持有的条目照常算可用，避免重规划倒退。
                     }
                     case UNKNOWN -> {
-                        available.remove(id);
                         unknown.add(id);
+                        // 同上：UNKNOWN 只提示"先核实"，不移除缓存里仍持有的条目。
                     }
                 }
             }
