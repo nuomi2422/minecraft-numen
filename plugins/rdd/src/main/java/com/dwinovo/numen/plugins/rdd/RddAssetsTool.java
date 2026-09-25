@@ -36,7 +36,7 @@ final class RddAssetsTool implements NumenTool {
         // ByteBufCodecs 编码时抛 EncoderException，主人掉线、单人服务端因登出而停止，
         // 整场自主跑就这么死掉（日志里只剩一串 netty 栈）。
         // 现在按「条数 + 字符」双上限裁剪；worldAssets 已按观测时间倒序，保留最新的那批。
-        List<AssetRegistry.AssetEntry> all = RddAssetContext.worldAssets(RddPlugin.assets(companion.getUUID()));
+        List<AssetRegistry.AssetEntry> all = RddAssetContext.worldAssets(RddAssetFacade.assets(companion.getUUID()));
         List<AssetRegistry.AssetEntry> shown = new ArrayList<>();
         int chars = 0;
         for (AssetRegistry.AssetEntry entry : all) {

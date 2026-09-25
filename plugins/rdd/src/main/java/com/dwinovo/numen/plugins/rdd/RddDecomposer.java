@@ -92,11 +92,11 @@ final class RddDecomposer {
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
         // 经验知识贴进最终请求正文（无知识时与原来逐字相同）
-        PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
+        PlanningAssetSnapshot snapshot = RddAssetFacade.planningSnapshot(companionId);
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
                         + decompositionPrompt(objective, snapshot, List.of(),
-                                RddPlugin.planningAssets(companionId)),
+                                RddAssetFacade.planningAssets(companionId)),
                 objective, "fallback", List.of());
         RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
         NumenLlmClient.forEndpoint(ep)
@@ -165,13 +165,13 @@ final class RddDecomposer {
         List<String> knownFailures = attempt >= 1
                 ? List.of("上一次生成的子步骤被判定不可执行")
                 : List.of();
-        PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
+        PlanningAssetSnapshot snapshot = RddAssetFacade.planningSnapshot(companionId);
         String base = RddPlanningKnowledge.attach(
                 RddRiskPlanning.prepHint(themeObjective, snapshot.availableCounts())
                         + decompositionPrompt(themeObjective, snapshot,
                         completedStages == null ? List.of() : completedStages,
-                        RddPlugin.planningAssets(companionId),
-                        RddPlugin.villageContext(companionId) + RddPlugin.recoverableContext(companionId)) + hint
+                        RddAssetFacade.planningAssets(companionId),
+                        RddAssetFacade.villageContext(companionId) + RddAssetFacade.recoverableContext(companionId)) + hint
                         + (extraHint == null || extraHint.isBlank() ? "" : "\n\n" + extraHint),
                 RddPlanningPolicy.block(themeObjective, "stage_b"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,

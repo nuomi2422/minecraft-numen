@@ -4,9 +4,6 @@ import com.dwinovo.numen.api.NumenApi;
 import com.dwinovo.numen.api.NumenPlugin;
 import com.dwinovo.numen.api.CompanionEvent;
 import com.dwinovo.numen.rdd.api.*;
-import com.dwinovo.numen.rdd.core.AssetHistory;
-import com.dwinovo.numen.rdd.core.AssetHistory;
-import com.dwinovo.numen.rdd.core.AssetRegistry;
 import com.dwinovo.numen.rdd.core.RddChainFactory;
 import com.dwinovo.numen.rdd.core.RddRuntime;
 import com.dwinovo.numen.rdd.core.TaskChain;
@@ -43,8 +40,6 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class RddPlugin implements NumenPlugin {
     private static final Logger LOG = LoggerFactory.getLogger(RddPlugin.class);
     private static final Map<UUID, RddRuntime> RUNTIMES = new ConcurrentHashMap<>();
-    /** Reusable world assets survive task replacement and are attached to the next task runtime. */
-    private static final Map<UUID, AssetRegistry> ASSETS = new ConcurrentHashMap<>();
     private static final Set<UUID> DECOMPOSING = ConcurrentHashMap.newKeySet();
     private static final Map<UUID, BodyState> BODY = new ConcurrentHashMap<>();
     private static final AtomicLong BODY_CALLS = new AtomicLong();
@@ -63,16 +58,10 @@ public final class RddPlugin implements NumenPlugin {
     private static volatile boolean supervisionEnabled = true;
     /** 开关文件 config/numen/rdd-supervision.flag：内容含 "pause"(或 "0") → 暂停监督。 */
     private static volatile Path supervisionFlag;
-    /** 最近一次真实背包快照（Detector 每秒写，uuid→物品ID→数量）。规划注入用；不清除=背包是女仆属性与链无关。 */
-    private static final Map<UUID, Map<String, Integer>> LAST_INVENTORY = new ConcurrentHashMap<>();
-    /** 最近一次真实背包扫描时刻（系统毫秒），供规划声明的 verified_at 元字段。 */
-    private static final Map<UUID, Long> LAST_INVENTORY_AT = new ConcurrentHashMap<>();
     /** setup 时保存的插件门面，用于监督拍醒（nudge 注入内置 AI）。 */
     private static volatile NumenApi numenApi;
     /** 任务链持久化目录 config/numen/rdd-tasks（每个同伴一个 <uuid>.json）。 */
     private static volatile Path tasksDir;
-    /** Independent world-asset store; clearing a task must not erase a base or known structure. */
-    private static volatile Path assetsDir;
     /** P0 完成事实目录 config/numen/rdd-facts（每个同伴一个 <uuid>.json）；跨重绑/跨重启保留。 */
     private static volatile Path factsDir;
     /** 内存完成事实仓库（uuid→store）；磁盘为真身，清世界状态只清内存。 */
@@ -82,10 +71,6 @@ public final class RddPlugin implements NumenPlugin {
     /** 协商驱动改单的独立预算（与失败驱动分开；士兵的反馈不该被 REPLAN 预算回绝）。 */
     private static final int MAX_NEGOTIATION_REPLANS_PER_PRIMARY = 3;
     private static final Map<String, Integer> REPLAN_COUNTS = new ConcurrentHashMap<>();
-    /** P2.1 资产历史目录 config/numen/rdd-history（每个同伴一个 <uuid>.json）；Lost≠Gone 的长期线索。 */
-    private static volatile Path historyDir;
-    /** 内存资产历史（uuid→history）；磁盘为真身，清世界状态只清内存。 */
-    private static final Map<UUID, AssetHistory> HISTORY = new ConcurrentHashMap<>();
 
     record BodyState(String subtaskId, int submitCount) {}
 
@@ -93,9 +78,8 @@ public final class RddPlugin implements NumenPlugin {
     public void setup(NumenApi numen) {
         numenApi = numen;
         tasksDir = numen.configDir().resolve("rdd-tasks");
-        assetsDir = numen.configDir().resolve("rdd-assets");
+        RddAssetFacade.init(numen.configDir());
         factsDir = numen.configDir().resolve("rdd-facts");
-        historyDir = numen.configDir().resolve("rdd-history");
         supervisionFlag = numen.configDir().resolve("rdd-supervision.flag");
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
@@ -128,8 +112,7 @@ public final class RddPlugin implements NumenPlugin {
         // 规划输入 LAST_INVENTORY 同步清空；世界资产（基地/结构）不受影响，重新观测会恢复 OBSERVED。
         numen.on(CompanionEvent.DEATH, body -> onCompanionDeath(body));
         numen.on(CompanionEvent.REMOVE, body -> {
-            LAST_INVENTORY.remove(body.getUUID());
-            LAST_INVENTORY_AT.remove(body.getUUID());
+            RddAssetFacade.remove(body.getUUID());
         });
         // 床边复活：死亡记锚点（见 onCompanionDeath），SPAWN 时 TP 到床旁安全落点（逻辑在 RddBedAnchor）。
         numen.on(CompanionEvent.SPAWN, RddBedAnchor::applyOnSpawn);
@@ -152,15 +135,15 @@ public final class RddPlugin implements NumenPlugin {
         if (runtime == null || runtime.chain().currentSubtask() == null) return "no active executable RDD subtask";
         Subtask current = runtime.chain().currentSubtask();
         if (!current.id().equals(expectedSubtaskId)) return "refused: stale subtask id; read rdd_status again";
-        if (!RddOptionalFood.canSkip(current, lastInventory(companionId)))
+        if (!RddOptionalFood.canSkip(current, RddAssetFacade.lastInventory(companionId)))
             return "refused: only an optional food step (food item or group=food, not marked required) can be skipped";
-        if (RddOptionalFood.foodAlreadyCovered(current, lastInventory(companionId))) {
+        if (RddOptionalFood.foodAlreadyCovered(current, RddAssetFacade.lastInventory(companionId))) {
             // 埋点：重复采集已充足的资源（模型主动跳过前，背包/派生等价已覆盖该食物目标）
             RddInstrumentation.publish(RddInstrumentation.REPEAT_GATHER, Map.of(
                     "companionId", companionId.toString(),
                     "task", current.id(),
                     "reason", "optional food gather already covered by inventory; model requested skip",
-                    "context", Map.of("lastObservedInventory", lastInventory(companionId))));
+                    "context", Map.of("lastObservedInventory", RddAssetFacade.lastInventory(companionId))));
         }
         if (com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companionId) != null)
             return "refused: body is busy; wait for the current action to stop";
@@ -193,14 +176,13 @@ public final class RddPlugin implements NumenPlugin {
     /** Disk handoffs survive; in-flight planning and cached world observations do not. */
     private static void clearWorldState() {
         CALLBACKS.clear(() -> {
+            RddAssetFacade.clearWorldState();
             DECOMPOSING.clear();
             RddGoalDriver.clearAll();
             BODY.clear();
             RUNTIMES.clear();
-            ASSETS.clear();
             FACTS.clear();
             LAST_CONTEXT.clear();
-            LAST_INVENTORY.clear();
             LAST_EXPANSION_REPORT.clear();
         });
     }
@@ -267,7 +249,7 @@ public final class RddPlugin implements NumenPlugin {
     }
 
     private static String withAssets(UUID companionId, String rddContext) {
-        String worldAssets = RddAssetContext.render(assets(companionId), 1200);
+        String worldAssets = RddAssetContext.render(RddAssetFacade.assets(companionId), 1200);
         return worldAssets.isBlank() ? rddContext : rddContext + "\n" + worldAssets;
     }
 
@@ -310,7 +292,7 @@ public final class RddPlugin implements NumenPlugin {
         clearReplanCounts(companionId);   // 新目标 = 新阶段标识，重规划预算清零
         // P0：把该目标血缘下"已可靠完成"的阶段事实注入新链 → 已达成一级直接跳过、不再重复规划
         RUNTIMES.put(companionId, new RddRuntime(
-                new TaskChain(goal, facts(companionId).satisfiedStageKeys(goal)), assets(companionId)));
+                new TaskChain(goal, facts(companionId).satisfiedStageKeys(goal)), RddAssetFacade.assets(companionId)));
         saveRuntimes();
         publishTaskSnapshot(companionId, "task_bound");
     }
@@ -371,7 +353,7 @@ public final class RddPlugin implements NumenPlugin {
             chain.resumeFromReplanning();
             return true;
         }
-        var snap = planningSnapshot(companionId);
+        var snap = RddAssetFacade.planningSnapshot(companionId);
         var level = RiskGate.levelForText(theme);
         var gaps = ResourceBudget.missingFor(level, snap.availableCounts());
         Goal goal = chain.goal();
@@ -412,11 +394,6 @@ public final class RddPlugin implements NumenPlugin {
         return RUNTIMES.get(companionId);
     }
 
-    public static AssetRegistry assets(UUID companionId) {
-        if (companionId == null) return new AssetRegistry();
-        return ASSETS.computeIfAbsent(companionId, id -> RddAssetStore.load(assetsDir, id));
-    }
-
     /**
      * P1：同伴死亡（含掉装备）→ 立刻让该同伴的背包类资产失效，避免规划/依赖门继续按旧装备放行。
      * 只失效 {@code inventory_scan}，不碰 world_ 基地/结构；下一次背包扫描会把还在身上的重新观测回 OBSERVED。
@@ -430,11 +407,11 @@ public final class RddPlugin implements NumenPlugin {
         UUID companionId = body.getUUID();
         if (companionId == null) return;
         try {
-            int lost = assets(companionId).invalidateByType("inventory_scan");
+            int lost = RddAssetFacade.assets(companionId).invalidateByType("inventory_scan");
             // 修正（2026-09-25）：不再 LAST_INVENTORY.remove()。清空缓存会让"死亡后、重扫回 OBSERVED 之前"
             // 触发的重规划读到空背包 → 把已有全套铁装的人重新规划回铁器时代。缓存由 Detector 下一 tick
             // 用复活后的真实背包覆盖（那才是真相）；INVALID 只作为提示（见 PlanningAssetSnapshot）。
-            saveAssets(companionId);              // 失效态落盘，跨重启也保持
+            RddAssetFacade.saveAssets(companionId);              // 失效态落盘，跨重启也保持
             BODY.remove(companionId);
             RddMonitor.publish("companion_assets_invalidated", Map.of(
                     "companionId", companionId.toString(),
@@ -450,12 +427,12 @@ public final class RddPlugin implements NumenPlugin {
             deathData.put("task", currentTaskId(companionId));
             deathData.put("reason", starving ? "starvation" : "other");
             deathData.put("context", Map.of(
-                    "lastObservedInventory", lastInventory(companionId),
+                    "lastObservedInventory", RddAssetFacade.lastInventory(companionId),
                     "invalidatedEntries", lost));
             RddInstrumentation.publishAt(starving ? RddInstrumentation.STARVATION_DEATH : RddInstrumentation.DEATH,
                     deathData, deathTick);
             // P2.1：把死亡瞬间身上"值得记住"的资产记为 LOST（保留最后位置），供重规划判断"能否回去取"。
-            recordDeathLostHistory(companionId, body);
+            RddAssetFacade.recordDeathLostHistory(companionId, body);
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 死亡资产失效处理失败 {}: {}", companionId, ex.toString());
         }
@@ -491,98 +468,6 @@ public final class RddPlugin implements NumenPlugin {
         return FACTS.computeIfAbsent(companionId, id -> RddFactStore.load(factsDir, id));
     }
 
-    /** P2.1 资产历史仓库（磁盘为真身，内存缓存）；Lost≠Gone 的长期恢复线索。 */
-    public static AssetHistory history(UUID companionId) {
-        if (companionId == null) return new AssetHistory();
-        return HISTORY.computeIfAbsent(companionId, id -> RddHistoryStore.load(historyDir, id));
-    }
-
-    /** 落盘资产历史（失败只记日志，不影响主流程）。 */
-    static void saveHistory(UUID companionId) {
-        if (companionId == null || historyDir == null) return;
-        try {
-            RddHistoryStore.save(historyDir, companionId, history(companionId));
-        } catch (IOException ex) {
-            LOG.warn("[rdd] 保存资产历史失败 {}: {}", companionId, ex.toString());
-        }
-    }
-
-    /**
-     * P2.1：把当前背包里"值得记住"的条目记为 CURRENT（观测到=还持有）。
-     * 只记有恢复价值的（装备/工具/食物），过滤泥土等杂物。
-     */
-    static void recordHistoryCurrent(UUID companionId, Map<String, Integer> inventory) {
-        if (companionId == null || inventory == null || inventory.isEmpty()) return;
-        try {
-            AssetHistory h = history(companionId);
-            long now = System.currentTimeMillis();
-            for (Map.Entry<String, Integer> e : inventory.entrySet()) {
-                if (!AssetHistory.worthRemembering(e.getKey(), AssetHistory.Purpose.UNKNOWN)) continue;
-                if (e.getValue() == null || e.getValue() <= 0) continue;
-                h.recordCurrent(e.getKey(), AssetHistory.Purpose.UNKNOWN, e.getValue(),
-                        null, 0, 0, 0, now);
-            }
-            saveHistory(companionId);
-        } catch (RuntimeException ex) {
-            LOG.warn("[rdd] 记录资产历史(CURRENT)失败 {}: {}", companionId, ex.toString());
-        }
-    }
-
-    /**
-     * P2.1：死亡/掉落时把一件有意义资产记为 LOST，保留最后已知位置（供恢复线索）。
-     */
-    static void recordHistoryLost(UUID companionId, String assetId, Integer lastCount,
-                                  String dimension, BlockPos pos) {
-        if (companionId == null || assetId == null || !AssetHistory.worthRemembering(assetId, AssetHistory.Purpose.UNKNOWN)) {
-            return;
-        }
-        try {
-            history(companionId).recordLost(assetId, AssetHistory.Purpose.UNKNOWN, lastCount,
-                    dimension, pos == null ? 0 : pos.getX(), pos == null ? 0 : pos.getY(),
-                    pos == null ? 0 : pos.getZ(), System.currentTimeMillis());
-        } catch (RuntimeException ex) {
-            LOG.warn("[rdd] 记录资产历史(LOST)失败 {}: {}", companionId, ex.toString());
-        }
-    }
-
-    /**
-     * P2.1：死亡时把身上值得记住的资产逐条记为 LOST（带最后位置），并落盘一次。
-     * 位置取死亡瞬间的同伴坐标（最近一次已知地点）。
-     */
-    private static void recordDeathLostHistory(UUID companionId, NumenPlayer body) {
-        // 用"死亡瞬间的真实背包"（body 还在）；缓存可能为空（V3 实测 LOST 未新增的根因）。
-        Map<String, Integer> inv = RddDetector.countInventory(body);
-        if (inv.isEmpty()) {
-            inv = lastInventory(companionId);
-        }
-        if (inv.isEmpty()) return;
-        String dimension = null;
-        BlockPos pos = null;
-        try {
-            if (body.serverLevel() != null) dimension = body.serverLevel().dimension().location().toString();
-            pos = body.blockPosition();
-        } catch (RuntimeException ignore) {
-            // 位置不可得则记 null 位置（仍保留"曾拥有"事实）
-        }
-        for (Map.Entry<String, Integer> e : inv.entrySet()) {
-            recordHistoryLost(companionId, e.getKey(), e.getValue(), dimension, pos);
-        }
-        saveHistory(companionId);
-    }
-
-    /** P2.1：渲染"可恢复线索"块供规划提示词（无则空串）。 */
-    static String recoverableContext(UUID companionId) {
-        try {
-            var rec = history(companionId).recoverable();
-            if (rec.isEmpty()) return "";
-            StringBuilder sb = new StringBuilder("【可恢复线索（曾拥有、暂不可用；优先判断能否回去取，而不是从零重造）】\n");
-            for (var e : rec) sb.append("- ").append(e.render()).append('\n');
-            return sb.toString();
-        } catch (RuntimeException ex) {
-            return "";
-        }
-    }
-
     /** 记录"某战略阶段已被可靠完成"并落盘（P0）。失败只记日志，不影响主流程。 */
     static void recordStageFact(UUID companionId, Goal goal, String primaryDescription) {
         if (companionId == null || goal == null || primaryDescription == null) return;
@@ -601,101 +486,11 @@ public final class RddPlugin implements NumenPlugin {
         facts(companionId).recordSubtask(goal, primaryDescription, subtaskDescription, System.currentTimeMillis());
     }
 
-    static String planningAssets(UUID companionId) {
-        return RddAssetContext.render(assets(companionId), 2000);
-    }
-
-    /** P2-D：已观测村庄的事实块（先事实，不含策略）；补给规划提示词用。 */
-    static String villageContext(UUID companionId) {
-        return com.dwinovo.numen.rdd.core.VillageNode.render(
-                com.dwinovo.numen.rdd.core.VillageNode.extract(assets(companionId)));
-    }
-
-    /**
-     * P2-A【A+C 统一入口】唯一规划资产口径：先<b>同步刷新实时背包</b>再生成快照。
-     *
-     * <p>修的是首次 /goal 时序：`/goal → beginPlanning → planStages` 早于链建立，Detector 的
-     * tickRuntime（要求 rt!=null）还没跑过 → lastInventory 为空 → 规划/判定都读到空背包。
-     * 这里若拿得到当前 server，就在规划前用同伴实体直接 countInventory 刷新一次；
-     * 拿不到（非服务端线程/无 server）则回落到缓存口径（不劣化）。
-     *
-     * <p>注意：本方法可能被客户端决策线程调用，故刷新全部包在 try-catch 内，任何异常都不影响主流程。
-     */
-    public static com.dwinovo.numen.rdd.core.PlanningAssetSnapshot planningSnapshot(UUID companionId) {
-        refreshInventoryFromLive(companionId);
-        return com.dwinovo.numen.rdd.core.PlanningAssetSnapshot.from(
-                lastInventory(companionId), lastInventoryAtMillis(companionId), assets(companionId));
-    }
-
-    /** 【A】规划/判定前同步刷新实时背包（拿得到 server 就刷；失败静默回落缓存）。 */
-    private static void refreshInventoryFromLive(UUID companionId) {
-        if (companionId == null) return;
-        try {
-            MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-            if (server == null) return;
-            NumenPlayer ap = NumenPlayer.findByUuid(server, companionId);
-            if (ap != null) {
-                cacheInventory(companionId, RddDetector.countInventory(ap));
-            }
-        } catch (RuntimeException ex) {
-            LOG.warn("[rdd] 规划前实时刷新背包失败 {}: {}", companionId, ex.toString());
-        }
-    }
-
-    /**
-     * 【A+C 统一入口】带 server 的规划快照：先<b>同步刷新实时背包</b>再生成快照。
-     *
-     * <p>修的是首次 /goal 时序：`/goal → beginPlanning → planStages` 早于链建立，Detector 的
-     * tickRuntime（要求 rt!=null）还没跑过 → lastInventory 为空 → 规划/判定都读到空背包。
-     * 这里在规划前用同伴实体直接 countInventory 刷新，保证「规划此刻」的持有真相可用。
-     * 找不到同伴/缺少 server 时回落到缓存口径（不劣化）。
-     */
-    /**
-     * 【A+C 统一入口·显式 server 版】供已知 server 的调用点（如 beginPlanning）使用：
-     * 先按给定 server 同步刷新实时背包，再生成快照。等价于无参重载（其内部自动取当前 server）。
-     */
-    public static com.dwinovo.numen.rdd.core.PlanningAssetSnapshot planningSnapshot(UUID companionId,
-                                                                                   MinecraftServer server) {
-        if (companionId != null && server != null) {
-            try {
-                NumenPlayer ap = NumenPlayer.findByUuid(server, companionId);
-                if (ap != null) {
-                    cacheInventory(companionId, RddDetector.countInventory(ap));
-                }
-            } catch (RuntimeException ex) {
-                LOG.warn("[rdd] 规划前实时刷新背包失败 {}: {}", companionId, ex.toString());
-            }
-        }
-        return com.dwinovo.numen.rdd.core.PlanningAssetSnapshot.from(
-                lastInventory(companionId), lastInventoryAtMillis(companionId), assets(companionId));
-    }
-
     /** 清某同伴的重规划预算计数（重绑/清任务时调用）。 */
     private static void clearReplanCounts(UUID companionId) {
         if (companionId == null) return;
         String prefix = companionId + "|";
         REPLAN_COUNTS.keySet().removeIf(k -> k.startsWith(prefix));
-    }
-
-    /** 记录某同伴最近一次背包计数（Detector 心跳写）。null/空安全。 */
-    public static void cacheInventory(UUID companionId, Map<String, Integer> counts) {
-        if (companionId != null) {
-            LAST_INVENTORY.put(companionId, counts == null ? Map.of() : Map.copyOf(counts));
-            LAST_INVENTORY_AT.put(companionId, System.currentTimeMillis());
-        }
-    }
-
-    /** 最近一次背包快照（可能为空 = 从未观测到该同伴背包）。不可变。 */
-    public static Map<String, Integer> lastInventory(UUID companionId) {
-        if (companionId == null) {
-            return Map.of();
-        }
-        return LAST_INVENTORY.getOrDefault(companionId, Map.of());
-    }
-
-    /** 最近一次背包扫描时刻（系统毫秒）；从未扫描过 → null。规划声明 verified_at 用。 */
-    public static Long lastInventoryAtMillis(UUID companionId) {
-        return companionId == null ? null : LAST_INVENTORY_AT.get(companionId);
     }
 
     public static boolean decomposing(UUID companionId) {
@@ -833,7 +628,7 @@ public final class RddPlugin implements NumenPlugin {
                     if (RUNTIMES.containsKey(uuid)) return;
                     String json = Files.readString(f, StandardCharsets.UTF_8);
                     TaskChain chain = TaskChain.fromJson(json);
-                    RUNTIMES.put(uuid, new RddRuntime(chain, assets(uuid)));
+                    RUNTIMES.put(uuid, new RddRuntime(chain, RddAssetFacade.assets(uuid)));
                     // 懒链可能停靠在未展开一级：currentSubtask()=null，报阶段而非 NPE
                     Subtask restored = chain.currentSubtask();
                     String curLabel = restored != null
@@ -845,15 +640,6 @@ public final class RddPlugin implements NumenPlugin {
             });
         } catch (IOException ex) {
             LOG.warn("[rdd] 扫描任务目录失败: {}", ex.toString());
-        }
-    }
-
-    static void saveAssets(UUID companionId) {
-        if (companionId == null) return;
-        try {
-            RddAssetStore.save(assetsDir, companionId, assets(companionId));
-        } catch (IOException ex) {
-            LOG.warn("[rdd] 保存世界资产失败 {}: {}", companionId, ex.toString());
         }
     }
 
@@ -924,22 +710,6 @@ public final class RddPlugin implements NumenPlugin {
                 "primary", primaryId,
                 "theme", theme == null ? "" : theme));
         publishTaskSnapshot(companionId, "primary_reached_unexpanded");
-    }
-
-    static void publishAssetSnapshot(UUID companionId, String reason, RddWorldAssetObserver.Result observed) {
-        if (companionId == null) return;
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("companionId", companionId.toString());
-        data.put("reason", reason == null ? "lazy_world_observation" : reason);
-        data.put("assets", RddAssetContext.worldAssets(assets(companionId)));
-        data.put("observed", Map.of("bases", observed.bases(), "structures", observed.structures(),
-                "machines", observed.machines(), "entityGroups", observed.entityGroups(), "total", observed.total()));
-        data.put("dataFlow", Map.of(
-                "source", "loaded_world_and_respawn_base",
-                "registry", "rdd-assets/<companion>.json",
-                "consumers", java.util.List.of("numen_context", "supervisor_context", "monitoring_station"),
-                "refresh", "lazy_30s_no_chunk_force_load"));
-        RddMonitor.publish("asset_snapshot", data);
     }
 
     /** Correlation only; no secondary task state and no reconstructed prompt. */

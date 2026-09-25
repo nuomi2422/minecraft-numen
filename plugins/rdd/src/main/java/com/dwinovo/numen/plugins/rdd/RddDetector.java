@@ -114,7 +114,7 @@ final class RddDetector {
             // （感知世界 与 任务运行 不是一个生命周期；/goal 首次规划早于链建立，旧代码要求 rt!=null
             //  才扫背包 → 首次规划/判定读到空背包。）
             try {
-                RddPlugin.cacheInventory(ap.getUUID(), countInventory(ap));
+                RddAssetFacade.cacheInventory(ap.getUUID(), countInventory(ap));
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 无条件背包缓存失败 {}: {}", ap.getUUID(), ex.toString());
             }
@@ -135,16 +135,16 @@ final class RddDetector {
             // 真实背包先扫+缓存（规划注入数据源）；缓存是女仆属性，收尾/监督态也照常更新。
             Map<String, Integer> counts = countInventory(ap);
             surplus.inspect(ap, chain, counts);
-            RddPlugin.cacheInventory(ap.getUUID(), counts);
+            RddAssetFacade.cacheInventory(ap.getUUID(), counts);
             // P2.1：观测到即记资产历史 CURRENT（只记装备/工具/食物等有恢复价值者），供 Lost≠Gone 线索。
-            RddPlugin.recordHistoryCurrent(ap.getUUID(), counts);
+            RddAssetFacade.recordHistoryCurrent(ap.getUUID(), counts);
             // Observe even parked/failed/unexpanded chains. A control-state early
             // return must not make the monitoring station appear frozen.
             if (assetTick == 0) populateAssets(ap, rt, chain.currentSubtask(), counts);
             if (worldAssetTick == 0) {
                 RddWorldAssetObserver.Result observed = RddWorldAssetObserver.observe(ap, rt.assets());
-                RddPlugin.saveAssets(ap.getUUID());
-                RddPlugin.publishAssetSnapshot(ap.getUUID(), "lazy_world_observation", observed);
+                RddAssetFacade.saveAssets(ap.getUUID());
+                RddAssetFacade.publishAssetSnapshot(ap.getUUID(), "lazy_world_observation", observed);
             }
             // Supervisor ↔ Numen 双向协商：士兵对命令回了 REJECT/COUNTER → 指挥官改单/重规划。
             if (tickNegotiation(ap, rt, chain)) {
@@ -184,7 +184,7 @@ final class RddDetector {
                     RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_risk_gated");
                     return;
                 }
-                if (!rt.activateCurrentFromSnapshot(RddPlugin.planningSnapshot(ap.getUUID()))) {
+                if (!rt.activateCurrentFromSnapshot(RddAssetFacade.planningSnapshot(ap.getUUID()))) {
                     RddMonitor.publish("primary_waiting", Map.of(
                             "primary", chain.currentPrimary().id(),
                             "reason", "dependency assets not present"));
@@ -261,7 +261,7 @@ final class RddDetector {
                                 chain.currentPrimary().id(), chain.currentPrimary().description());
                         break;
                     }
-                    if (rt.activateCurrentFromSnapshot(RddPlugin.planningSnapshot(ap.getUUID()))) {
+                    if (rt.activateCurrentFromSnapshot(RddAssetFacade.planningSnapshot(ap.getUUID()))) {
                         RddMonitor.publish("dependency_met", Map.of("primary", chain.currentPrimary().id()));
                     } else {
                         RddMonitor.publish("primary_waiting", Map.of(
@@ -656,7 +656,7 @@ final class RddDetector {
     /** 注册表里最近一次 inventory_scan 宣称的持有量（OBSERVED 才作数）。 */
     private static int declaredInventoryCount(NumenPlayer ap, String item) {
         try {
-            for (var entry : RddPlugin.assets(ap.getUUID()).snapshot()) {
+            for (var entry : RddAssetFacade.assets(ap.getUUID()).snapshot()) {
                 if (entry.status() == com.dwinovo.numen.rdd.api.AssetStatus.OBSERVED
                         && "inventory_scan".equals(entry.observation().type())
                         && item.equals(entry.assetId())) {

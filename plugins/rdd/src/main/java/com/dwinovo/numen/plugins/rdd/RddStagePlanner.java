@@ -34,11 +34,11 @@ final class RddStagePlanner {
     static void planStages(UUID companionId, String objective, Consumer<List<PrimarySpec>> done) {
         // 注入"当前真实背包"：规划师要站在已有资产上推进，不倒退重规划已持有的装备/设施。
         // 再贴上经验知识（无知识时与原来逐字相同）。
-        PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
+        PlanningAssetSnapshot snapshot = RddAssetFacade.planningSnapshot(companionId);
         String base = RddPlanningKnowledge.attach(
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
-                        + planningPrompt(objective, snapshot, RddPlugin.planningAssets(companionId),
-                                RddPlugin.villageContext(companionId) + RddPlugin.recoverableContext(companionId)),
+                        + planningPrompt(objective, snapshot, RddAssetFacade.planningAssets(companionId),
+                                RddAssetFacade.villageContext(companionId) + RddAssetFacade.recoverableContext(companionId)),
                 RddPlanningPolicy.block(objective, "stage_a"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 base, objective, "stage_a", List.of());
