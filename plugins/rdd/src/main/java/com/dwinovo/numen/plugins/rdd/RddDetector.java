@@ -146,6 +146,10 @@ final class RddDetector {
                 RddPlugin.saveAssets(ap.getUUID());
                 RddPlugin.publishAssetSnapshot(ap.getUUID(), "lazy_world_observation", observed);
             }
+            // Supervisor ↔ Numen 双向协商：士兵对命令回了 REJECT/COUNTER → 指挥官改单/重规划。
+            if (tickNegotiation(ap, rt, chain)) {
+                return;   // 已按士兵反馈处理（改单/重规划/停车），本 tick 不再照旧推进
+            }
             // 监督/收尾态不由检测驱动。
             if (ps == PrimaryGoalStatus.AWAITING_SUPERVISOR
                     || ps == PrimaryGoalStatus.REPLANNING
@@ -295,6 +299,43 @@ final class RddDetector {
         } finally {
             if (assetTick == 0) RddPlugin.publishTaskSnapshot(ap.getUUID(), "periodic_observation");
         }
+    }
+
+    /**
+     * 指挥官处理士兵回执（双向协商）：取出待处理 REJECT/COUNTER →
+     * 带「原命令 + 士兵理由 + 士兵建议」触发重规划（协商改单）；预算耗尽则停车守望。
+     *
+     * @return true = 本 tick 已处理（调用方应 return，不再照旧推进）
+     */
+    private boolean tickNegotiation(NumenPlayer ap, RddRuntime rt, TaskChain chain) {
+        com.dwinovo.numen.rdd.fail.TaskNegotiation n = RddNegotiationInbox.peek(ap.getUUID());
+        if (n == null || !n.needsSupervisorAction()) {
+            return false;
+        }
+        if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE
+                || chain.currentSubtaskStatus() != SubtaskStatus.RUNNING
+                && chain.currentSubtaskStatus() != SubtaskStatus.STALLED) {
+            return false;   // 只在当前二级活跃/卡住时处理协商
+        }
+        Subtask current = chain.currentSubtask();
+        RddNegotiationInbox.takePending(ap.getUUID());   // 消费
+        String hint = RddNegotiationInbox.negotiationHint(n, current);
+        RddMonitor.publish("negotiation_handled", Map.of(
+                "companionId", ap.getUUID().toString(),
+                "subtask", current.id(), "kind", n.kind().name(),
+                "hasSuggestion", n.hasSuggestion(), "reason", n.reason()));
+        // 协商改单：优先用士兵建议重规划当前一级（P4 requestReplan 已带预算上限）。
+        if (RddPlugin.requestReplan(ap.getUUID(), "soldier " + n.kind().name() + ": " + n.reason())) {
+            return true;
+        }
+        // 重规划预算耗尽 → 停车守望（不无限协商）。
+        rt.chain().markFailed(current.id(), "negotiation could not replan: " + n.reason());
+        RddPlugin.clearBody(ap.getUUID());
+        parkedWatcher.watch(ap, rt, current);
+        RddMonitor.publish("negotiation_parked", Map.of(
+                "companionId", ap.getUUID().toString(), "subtask", current.id(),
+                "reason", "replan budget exhausted after soldier " + n.kind().name()));
+        return true;
     }
 
     /** FAILED 二级的 Level 2 局部恢复：预算内重置重跑 + 拍醒提示换策略；预算耗尽 → Level 3。 */

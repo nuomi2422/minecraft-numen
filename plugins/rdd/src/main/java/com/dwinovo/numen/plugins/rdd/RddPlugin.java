@@ -101,6 +101,8 @@ public final class RddPlugin implements NumenPlugin {
         numen.registerTool(new RddSubmitTool());
         numen.registerTool(new RddSkipTool());
         numen.registerTool(new RddAssetsTool());
+        // Supervisor ↔ Numen 双向协商：士兵可对命令结构化回执（ACCEPT/REJECT/COUNTER）。
+        numen.registerTool(new RddConcernTool());
         // 接管 /goal：先同步认领，Stage-A 异步规划；规划期间 NUMEN 原生目标循环让位。
         com.dwinovo.numen.agent.goal.GoalSinks.register((uuid, objective) -> {
             if (uuid == null || objective == null || objective.isBlank()) {
@@ -1012,6 +1014,14 @@ public final class RddPlugin implements NumenPlugin {
         data.put("context", Map.of("system", system, "user", user,
                 "tool", tool.name(), "parameters", tool.parameterSchema()));
         RddMonitor.publish("supervisor_context", data);
+        // 逐字落盘：把「规划器实际收到的 user 正文」单独写一份，供监测台/人一眼核对
+        // 「背包块/世界资产/经验」是否真的到了规划器（数据链断点定位用；只观测不改行为）。
+        RddMonitor.publish("planning_input_verbatim", Map.of(
+                "companionId", companionId == null ? "" : companionId.toString(),
+                "stage", stage == null ? "" : stage,
+                "system", system == null ? "" : system,
+                "user", user == null ? "" : user,
+                "tool", tool == null ? "" : tool.name()));
     }
 
     /** XML 转义：描述/条件可能含玩家可输入的 < > & ". */
