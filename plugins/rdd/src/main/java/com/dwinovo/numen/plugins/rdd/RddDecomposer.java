@@ -170,7 +170,7 @@ final class RddDecomposer {
                 RddRiskPlanning.prepHint(themeObjective, snapshot.availableCounts())
                         + decompositionPrompt(themeObjective, snapshot,
                         completedStages == null ? List.of() : completedStages,
-                        RddPlugin.planningAssets(companionId)) + hint
+                        RddPlugin.planningAssets(companionId), RddPlugin.villageContext(companionId)) + hint
                         + (extraHint == null || extraHint.isBlank() ? "" : "\n\n" + extraHint),
                 RddPlanningPolicy.block(themeObjective, "stage_b"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
@@ -342,15 +342,28 @@ final class RddDecomposer {
     /** P1.5：Planner 直接吃统一资产快照（含"已失去/不确定"显式告知）。 */
     static String decompositionPrompt(String objective, PlanningAssetSnapshot snapshot,
                                       List<String> completedStages, String worldAssets) {
-        return composeDecompositionPrompt(objective, completedStages, renderHeldAssets(snapshot), worldAssets);
+        return composeDecompositionPrompt(objective, completedStages, renderHeldAssets(snapshot), worldAssets, "");
+    }
+
+    /** P2-D：带已观测村庄事实块。 */
+    static String decompositionPrompt(String objective, PlanningAssetSnapshot snapshot,
+                                      List<String> completedStages, String worldAssets, String villageBlock) {
+        return composeDecompositionPrompt(objective, completedStages, renderHeldAssets(snapshot),
+                worldAssets, villageBlock);
     }
 
     private static String composeDecompositionPrompt(String objective, List<String> completedStages,
                                                       String heldBlock, String worldAssets) {
+        return composeDecompositionPrompt(objective, completedStages, heldBlock, worldAssets, "");
+    }
+
+    private static String composeDecompositionPrompt(String objective, List<String> completedStages,
+                                                      String heldBlock, String worldAssets, String villageBlock) {
         return "主人的目标：" + objective + "\n\n"
                 + renderCompletedStages(completedStages)
                 + heldBlock
                 + (worldAssets == null || worldAssets.isBlank() ? "" : worldAssets + "\n\n")
+                + (villageBlock == null || villageBlock.isBlank() ? "" : villageBlock + "\n\n")
                 + "请用 decompose_goal 工具给出子步骤。每个子步骤包含：\n"
                 + "- description：这一步要做什么\n"
                 + "- condition：{asset_key: 物品命名空间ID, minimum: 需要数量}\n"

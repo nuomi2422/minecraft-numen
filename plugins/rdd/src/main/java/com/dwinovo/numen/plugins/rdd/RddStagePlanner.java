@@ -37,7 +37,8 @@ final class RddStagePlanner {
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         String base = RddPlanningKnowledge.attach(
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
-                        + planningPrompt(objective, snapshot, RddPlugin.planningAssets(companionId)),
+                        + planningPrompt(objective, snapshot, RddPlugin.planningAssets(companionId),
+                                RddPlugin.villageContext(companionId)),
                 RddPlanningPolicy.block(objective, "stage_a"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 base, objective, "stage_a", List.of());
@@ -147,10 +148,22 @@ final class RddStagePlanner {
         return composePlanningPrompt(objective, renderHeldAssets(snapshot), worldAssets);
     }
 
+    /** P2-D：附带已观测村庄事实块（先事实，策略留给规划师评价）。 */
+    static String planningPrompt(String objective, PlanningAssetSnapshot snapshot,
+                                 String worldAssets, String villageBlock) {
+        return composePlanningPrompt(objective, renderHeldAssets(snapshot), worldAssets, villageBlock);
+    }
+
     private static String composePlanningPrompt(String objective, String heldBlock, String worldAssets) {
+        return composePlanningPrompt(objective, heldBlock, worldAssets, "");
+    }
+
+    private static String composePlanningPrompt(String objective, String heldBlock,
+                                                String worldAssets, String villageBlock) {
         return "主人的目标：" + objective + "\n\n"
                 + heldBlock
                 + (worldAssets == null || worldAssets.isBlank() ? "" : worldAssets + "\n\n")
+                + (villageBlock == null || villageBlock.isBlank() ? "" : villageBlock + "\n\n")
                 + PLAN_BODY_TAIL;
     }
 

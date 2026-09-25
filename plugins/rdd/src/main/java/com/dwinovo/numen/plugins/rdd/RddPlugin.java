@@ -478,6 +478,12 @@ public final class RddPlugin implements NumenPlugin {
         return RddAssetContext.render(assets(companionId), 2000);
     }
 
+    /** P2-D：已观测村庄的事实块（先事实，不含策略）；补给规划提示词用。 */
+    static String villageContext(UUID companionId) {
+        return com.dwinovo.numen.rdd.core.VillageNode.render(
+                com.dwinovo.numen.rdd.core.VillageNode.extract(assets(companionId)));
+    }
+
     /**
      * P2-A 唯一规划资产口径：<b>实时扫描（lastInventory）是"当前持有"的唯一真相</b>；
      * 注册表的 inventory_scan 仅作 lost/unknown 提示（背包资产不持久化）。
