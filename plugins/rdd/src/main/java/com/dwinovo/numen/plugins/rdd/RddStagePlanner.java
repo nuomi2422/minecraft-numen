@@ -38,7 +38,7 @@ final class RddStagePlanner {
         String base = RddPlanningKnowledge.attach(
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
                         + planningPrompt(objective, snapshot, RddPlugin.planningAssets(companionId),
-                                RddPlugin.villageContext(companionId)),
+                                RddPlugin.villageContext(companionId) + RddPlugin.recoverableContext(companionId)),
                 RddPlanningPolicy.block(objective, "stage_a"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 base, objective, "stage_a", List.of());

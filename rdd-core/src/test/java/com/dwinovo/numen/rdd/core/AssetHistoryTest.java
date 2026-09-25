@@ -67,4 +67,28 @@ class AssetHistoryTest {
         h.record(null);
         assertEquals(0, h.size());
     }
+
+    @Test void jsonRoundTripPreservesEntries() {
+        AssetHistory h = new AssetHistory();
+        h.recordLost("minecraft:diamond_chestplate", AssetHistory.Purpose.BACKUP_EQUIPMENT, 2,
+                "minecraft:overworld", -51, 65, -496, 1234L);
+        h.recordCurrent("minecraft:iron_pickaxe", AssetHistory.Purpose.TOOL, 1,
+                "minecraft:overworld", 1, 2, 3, 5678L);
+
+        AssetHistory back = AssetHistory.fromJson(h.toJson());
+        assertEquals(2, back.size());
+        var e = back.get("minecraft:diamond_chestplate");
+        assertEquals(AssetHistory.Purpose.BACKUP_EQUIPMENT, e.purpose());
+        assertEquals(AssetHistory.State.LOST, e.state());
+        assertEquals(2, e.lastCount());
+        assertEquals(-51, e.x());
+        assertEquals(1234L, e.lastSeenMillis());
+        assertEquals(1, back.recoverable().size());
+    }
+
+    @Test void badJsonFallsBackToEmpty() {
+        assertEquals(0, AssetHistory.fromJson("{not json").size());
+        assertEquals(0, AssetHistory.fromJson("[{\"assetId\":\"\"}]").size());
+        assertEquals(0, AssetHistory.fromJson(null).size());
+    }
 }

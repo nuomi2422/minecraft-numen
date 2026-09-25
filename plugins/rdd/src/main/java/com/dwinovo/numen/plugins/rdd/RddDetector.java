@@ -128,6 +128,8 @@ final class RddDetector {
             Map<String, Integer> counts = countInventory(ap);
             surplus.inspect(ap, chain, counts);
             RddPlugin.cacheInventory(ap.getUUID(), counts);
+            // P2.1：观测到即记资产历史 CURRENT（只记装备/工具/食物等有恢复价值者），供 Lost≠Gone 线索。
+            RddPlugin.recordHistoryCurrent(ap.getUUID(), counts);
             // Observe even parked/failed/unexpanded chains. A control-state early
             // return must not make the monitoring station appear frozen.
             if (assetTick == 0) populateAssets(ap, rt, chain.currentSubtask(), counts);
@@ -298,6 +300,14 @@ final class RddDetector {
             if (RddOptionalFood.canSkip(current, countInventory(ap))
                     && CompanionTickDispatcher.currentTaskFor(ap.getUUID()) == null) {
                 String reason = "optional food unavailable or unreachable; continue mainline";
+                if (RddOptionalFood.foodAlreadyCovered(current, countInventory(ap))) {
+                    // 埋点：重复采集已充足的资源（食物目标已被背包/派生等价覆盖，仍派了采集）
+                    RddInstrumentation.publish(RddInstrumentation.REPEAT_GATHER, Map.of(
+                            "companionId", ap.getUUID().toString(),
+                            "task", current.id(),
+                            "reason", "gather step for already-covered food reached retry limit",
+                            "context", Map.of("lastObservedInventory", countInventory(ap))));
+                }
                 rt.skipSubtask(current.id(), reason);
                 RddPlugin.clearBody(ap.getUUID());
                 retries.remove(ap.getUUID());
@@ -318,6 +328,13 @@ final class RddDetector {
             if (!current.id().equals(gapParked.get(ap.getUUID()))) {
                 gapParked.put(ap.getUUID(), current.id());
                 parkedWatcher.clear(ap.getUUID());
+                // 埋点：同一任务重启 ≥N 次仍失败 → loop_detected（记录一次，停车即出）
+                RddInstrumentation.publish(RddInstrumentation.LOOP_DETECTED, Map.of(
+                        "companionId", ap.getUUID().toString(),
+                        "task", current.id(),
+                        "reason", "same subtask restarted beyond retry budget",
+                        "context", Map.of("attempts", n, "threshold", MAX_SUBTASK_RETRIES,
+                                "lastObservedInventory", countInventory(ap))));
                 // P2.0 接线：把“原因未分类的耗尽失败”交给硬分类器，按出口给可审计事件 + 定向提醒。
                 // 仍只停车、不自动改链状态（REPLAN 交上层/主人决定），避免无限循环。
                 Map<String, Integer> inv = countInventory(ap);
@@ -475,6 +492,12 @@ final class RddDetector {
             RddMonitor.publish("subtask_retry", Map.of(
                     "subtask", current.id(), "retry", state.submitCount() + 1, "max", MAX_BODY_RETRIES));
         } else {
+            // 埋点：身体任务被反复重启仍失败 → loop_detected（同任务重启超过 MAX_BODY_RETRIES）
+            RddInstrumentation.publish(RddInstrumentation.LOOP_DETECTED, Map.of(
+                    "companionId", ap.getUUID().toString(),
+                    "task", current.id(),
+                    "reason", "body task restarted beyond retry budget without satisfying condition",
+                    "context", Map.of("attempts", state.submitCount(), "threshold", MAX_BODY_RETRIES)));
             rt.chain().markFailed(current.id(), "body task ended without satisfying condition");
             RddPlugin.clearBody(ap.getUUID());
             LOG.warn("[rdd] 二级目标失败（身体任务结束未达成）: {}", current.id());
@@ -510,7 +533,52 @@ final class RddDetector {
         // P2-C：食物类条件允许"资产派生等价"兜底——目标面包不够时，若背包里的小麦（等价表
         // wheat→bread）折算后够，则视为已满足，避免合成后又被要求重复耕作。只对"食物"放宽，
         // 不触碰装备/工具/进度类硬门。
-        return foodEquivalentSatisfied(task, counts);
+        if (foodEquivalentSatisfied(task, counts)) {
+            return true;
+        }
+        // 埋点：此声明（condition）与真实背包不符（系统以为有、真身没有）→ asset_mismatch（限流）
+        detectAssetMismatch(ap, task, counts);
+        return false;
+    }
+
+    /**
+     * 埋点：资产声明与实际背包不符（挂 countInventory 与声明比对处）。
+     * 定义：当前子步的 condition 声明 asset_key K（minimum M），注册表最近一次 inventory_scan
+     * 仍宣称 K 为 OBSERVED（declared>0），但这一拍真身背包计数低于声明 → mismatch。
+     * 只记录，不改判定；噪音型事件已由 RddInstrumentation 限流。
+     */
+    private static void detectAssetMismatch(NumenPlayer ap, Subtask task, Map<String, Integer> counts) {
+        Object key = task.condition().get("asset_key");
+        if (!(key instanceof String item) || item.isBlank()) return;
+        int live = counts.getOrDefault(item, 0);
+        int declared = declaredInventoryCount(ap, item);
+        if (declared <= 0 || live >= declared) return;
+        RddInstrumentation.publish(RddInstrumentation.ASSET_MISMATCH, Map.of(
+                "companionId", ap.getUUID().toString(),
+                "task", task.id(),
+                "reason", "declared inventory asset does not match live backpack",
+                "context", Map.of(
+                        "asset", item,
+                        "declared", declared,
+                        "actual", live,
+                        "minimum", task.condition().get("minimum"))));
+    }
+
+    /** 注册表里最近一次 inventory_scan 宣称的持有量（OBSERVED 才作数）。 */
+    private static int declaredInventoryCount(NumenPlayer ap, String item) {
+        try {
+            for (var entry : RddPlugin.assets(ap.getUUID()).snapshot()) {
+                if (entry.status() == com.dwinovo.numen.rdd.api.AssetStatus.OBSERVED
+                        && "inventory_scan".equals(entry.observation().type())
+                        && item.equals(entry.assetId())) {
+                    Object c = entry.observation().value().get("count");
+                    if (c instanceof Number n) return n.intValue();
+                }
+            }
+        } catch (RuntimeException ignore) {
+            // 资产表不可读 → 无声明，不误报
+        }
+        return 0;
     }
 
     /** P2-C：仅对食物子步做派生等价兜底（安全放宽，只增不减）。 */

@@ -7,6 +7,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
 /**
  * P2.1 资产历史/恢复语义（GPT 外脑建议 · 2026-09-25）。
  *
@@ -138,4 +145,74 @@ public final class AssetHistory {
             "minecraft:bread", "minecraft:cooked_beef", "minecraft:cooked_porkchop",
             "minecraft:cooked_chicken", "minecraft:cooked_mutton", "minecraft:golden_apple",
             "minecraft:cooked_cod", "minecraft:cooked_salmon", "minecraft:apple");
+
+    // ---- JSON 往返（磁盘持久化用；坏数据安全回退空仓库） ----
+
+    private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
+
+    public String toJson() {
+        JsonArray arr = new JsonArray();
+        for (Entry e : entries.values()) {
+            JsonObject o = new JsonObject();
+            o.addProperty("assetId", e.assetId());
+            o.addProperty("purpose", e.purpose().name());
+            o.addProperty("state", e.state().name());
+            if (e.lastCount() != null) o.addProperty("lastCount", e.lastCount());
+            if (e.dimension() != null) o.addProperty("dimension", e.dimension());
+            o.addProperty("x", e.x());
+            o.addProperty("y", e.y());
+            o.addProperty("z", e.z());
+            o.addProperty("lastSeenMillis", e.lastSeenMillis());
+            arr.add(o);
+        }
+        return GSON.toJson(arr);
+    }
+
+    public static AssetHistory fromJson(String json) {
+        AssetHistory h = new AssetHistory();
+        if (json == null || json.isBlank()) return h;
+        try {
+            JsonElement root = JsonParser.parseString(json);
+            if (!root.isJsonArray()) return h;
+            for (JsonElement el : root.getAsJsonArray()) {
+                JsonObject o = el.getAsJsonObject();
+                String id = str(o, "assetId");
+                if (id == null || id.isBlank()) continue;
+                Purpose purpose = purposeOf(str(o, "purpose"));
+                State state = stateOf(str(o, "state"));
+                Integer count = o.has("lastCount") && !o.get("lastCount").isJsonNull()
+                        ? o.get("lastCount").getAsInt() : null;
+                h.record(new Entry(id, purpose, state, count,
+                        str(o, "dimension"), num(o, "x"), num(o, "y"), num(o, "z"),
+                        o.has("lastSeenMillis") ? o.get("lastSeenMillis").getAsLong() : 0L));
+            }
+        } catch (RuntimeException ex) {
+            return new AssetHistory();   // 坏文件安全回退
+        }
+        return h;
+    }
+
+    private static String str(JsonObject o, String key) {
+        return o.has(key) && !o.get(key).isJsonNull() ? o.get(key).getAsString() : null;
+    }
+
+    private static int num(JsonObject o, String key) {
+        return o.has(key) && !o.get(key).isJsonNull() ? o.get(key).getAsInt() : 0;
+    }
+
+    private static Purpose purposeOf(String name) {
+        try {
+            return name == null ? Purpose.UNKNOWN : Purpose.valueOf(name);
+        } catch (IllegalArgumentException ex) {
+            return Purpose.UNKNOWN;
+        }
+    }
+
+    private static State stateOf(String name) {
+        try {
+            return name == null ? State.UNKNOWN : State.valueOf(name);
+        } catch (IllegalArgumentException ex) {
+            return State.UNKNOWN;
+        }
+    }
 }

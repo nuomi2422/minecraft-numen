@@ -170,7 +170,8 @@ final class RddDecomposer {
                 RddRiskPlanning.prepHint(themeObjective, snapshot.availableCounts())
                         + decompositionPrompt(themeObjective, snapshot,
                         completedStages == null ? List.of() : completedStages,
-                        RddPlugin.planningAssets(companionId), RddPlugin.villageContext(companionId)) + hint
+                        RddPlugin.planningAssets(companionId),
+                        RddPlugin.villageContext(companionId) + RddPlugin.recoverableContext(companionId)) + hint
                         + (extraHint == null || extraHint.isBlank() ? "" : "\n\n" + extraHint),
                 RddPlanningPolicy.block(themeObjective, "stage_b"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
