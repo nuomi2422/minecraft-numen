@@ -105,6 +105,8 @@ public final class RddPlugin implements NumenPlugin {
         numen.registerTool(new RddAssetsTool());
         // Supervisor ↔ Numen 双向协商：士兵可对命令结构化回执（ACCEPT/REJECT/COUNTER）。
         numen.registerTool(new RddConcernTool());
+        // 验证专用：debug_kill（需 confirm=true）——验证死亡回收闭环（V3）。
+        numen.registerTool(new RddDebugKillTool());
         // 接管 /goal：先同步认领，Stage-A 异步规划；规划期间 NUMEN 原生目标循环让位。
         com.dwinovo.numen.agent.goal.GoalSinks.register((uuid, objective) -> {
             if (uuid == null || objective == null || objective.isBlank()) {
