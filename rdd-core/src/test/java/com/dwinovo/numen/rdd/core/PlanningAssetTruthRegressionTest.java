@@ -62,4 +62,26 @@ class PlanningAssetTruthRegressionTest {
         assertEquals(4, snap.availableCounts().get("minecraft:bread"));
         assertFalse(snap.availableCounts().containsKey("world:village"));
     }
+
+    /**
+     * 死亡 invalidate hook 的验收断言（埋点工单）：DEATH → 旧背包声明全部失效 → 下一次
+     * PlanningSnapshot 里<b>已丢失</b>的旧声明绝不能再出现。区别于
+     * {@code afterDeathInvalidationPlanningStillSeesRealHeldAssets}：那条测"仍在身上"的不能丢，
+     * 这条测"死掉没捡回"的必须消失。
+     */
+    @Test void afterDeathLostClaimsNeverAppearInNextPlan() {
+        AssetRegistry r = new AssetRegistry();
+        inv(r, "minecraft:diamond_chestplate", 1);
+        inv(r, "minecraft:iron_sword", 1);
+        r.invalidateByType("inventory_scan");          // 死亡：注册表全标 INVALID（含没捡回的那件）
+
+        // 复活后实时扫描：铁剑捡回了，钻石胸甲没捡回（真实世界已失）
+        Map<String, Integer> liveScan = Map.of("minecraft:iron_sword", 1, "minecraft:wheat", 20);
+
+        var snap = PlanningAssetSnapshot.from(liveScan, 9000L, r);
+        assertTrue(snap.availableCounts().containsKey("minecraft:iron_sword"), "真的持有的要保留");
+        assertFalse(snap.availableCounts().containsKey("minecraft:diamond_chestplate"),
+                "死亡丢失且未重新观测的旧声明绝不能再进下一次规划快照");
+        assertTrue(snap.lostIds().contains("minecraft:diamond_chestplate"), "丢失项只许作为 lost 提示");
+    }
 }

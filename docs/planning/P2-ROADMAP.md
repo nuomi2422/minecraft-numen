@@ -106,6 +106,7 @@ P2-E  Cost/Risk 评分（依赖前四项）
 - [x] **P2-E TaskCostModel** — `7ed8cd0d` + 接线(`d611f0fe`)（时间刻度 + 省时优先序注入提示词）
 - [x] **P2-B TaskQualityReport 只读上报** — `2e9f7121`（执行层→监督层单向事件，不做双向）
 - [x] **P2.1 接线**：`AssetHistory` 接进 `RddPlugin`（死亡 recordLost / 观测 recordCurrent / 落盘 `rdd-history/`）+ 规划注入可恢复线索 — `d05fdf23`
+- [x] **P2.6 埋点五件事 + 资产声明元字段** — 见 §10（2026-09-25，本批次）
 - [ ] **P2.5 / 双向 Supervisor 对话**：需升档、人工正式批准，暂缓
 
 > 验收：`rdd-core + plugins:rdd` **230 测 / 0 失败**；`plugins:selfcompile` 全绿（2026-09-25）。
@@ -149,3 +150,38 @@ RddDetector.tickRuntime(每20tick)
 - 不改 `TaskChain` 状态转移（satisfiedStages / CONFIRM / RECOVERING 硬约束）。
 - 不重写 REPLAN；`FailureClassifier/RecoveryPolicy/ReplanContextBuilder` 保留并增强。
 - 后续每次改动登记：`E:\新建文件夹\rdd架构\测试日志.md` + `自变异系统v3\08-更新日志.md`。
+
+---
+
+## 10. P2.6 埋点五件事 + 资产声明元字段（2026-09-25 完成）
+
+来源：埋点工单（只观测、不决策；边界与验收先定死）。本批次=当前批收尾，随后开长跑。
+
+### 落地件
+- **统一事件通道** `RddInstrumentation`（插件）：`config/numen/monitor/instrumentation.jsonl` 单一 JSONL append-only；
+  每行带 `schema_version` + `game_time`（游戏 tick）；信封拼装/解析在纯 JVM 的 `InstrumentationEvents`（rdd-core，可单测，验收"零坏行"）。
+  try-catch fail-silent + `dropped_events` 自报告（挂下次成功事件）；噪音型事件按类型限流（磁盘算账）；
+  单文件 16MB 轮转+清理；游戏时钟可注入（测试桩）。**全程无 `if(counter>X)` 行为分支**——阈值只决定"记不记"，不回注 Agent 决策。
+- **六事件 + death + 修埋点事件**：`starvation_death`（死亡瞬间食物条=0 判据）/ `death`、`loop_detected`（二级重试耗尽 / body 重试耗尽 / 重规划预算耗尽）、
+  `repeat_gather`（可选食物已被背包/派生等价覆盖仍采集；余量干草 minimum 已达仍采集）、`resource_waste`（余量采集中途被放弃；best-effort）、
+  `asset_mismatch`（condition 声明与真身背包不符：清理声明比对处 detectAssetMismatch）、`recovery_failed`（死亡窗内重规划预算耗尽）、
+  `instrumentation_change`（修埋点本身记账）。
+- **资产声明元字段** `AssetClaim`（rdd-core）：`source`（live_scan / world_registry / history）+ `verified_at`；不加 confidence（P3 再说）。
+  `PlanningAssetSnapshot.claims()`=持背（live_scan + 扫描时刻）；`worldClaims()`=世界（world_registry + observedAt）；`RddAssetContext.render` 注入提示词。
+- **死亡 invalidate hook 验收**：`afterDeathLostClaimsNeverAppearInNextPlan`（rdd-core 集成）——模拟死亡 → 丢失未捡回的旧声明绝不再进下一次 PlanningSnapshot。
+
+### 分级规则（修埋点本身）
+- **丢数据类**（记录器坏了、事件没落盘）→ **随时修**，丢数据比口径不一致严重。
+- **格式/语义类** → **段间修**，不中途动；改了必记一条 `instrumentation_change`（what/when），分析端知道数据从哪个时刻换了尺子。
+- 对应文档：`RddInstrumentation` 类注释 + 本表。
+
+### 验收卡（6/6 已过，引擎级）
+- [x] 模拟死亡 → invalidate + 死亡事件落盘（单测：event 文件可 parse + lost claims 不进快照）
+- [x] 事件文件可 parse、零坏行（`InstrumentationEventsTest` + `RddInstrumentationTest`：publishesParseableJsonlLines）
+- [x] fail-silent：坏目录计数 dropped 而非抛异常；`dropped_events_since_previous` 自报告
+- [x] 限流：高频同型事件不刷盘（suppressed 计数）
+- [x] 死亡→恢复失败窗口 `recentDeath`
+- [ ] **实机验收**（长跑时做）：30 分钟事件文件无坏行、主循环 tick 无感、一次真实死亡触发 invalidate+重扫
+
+### 测试数
+`rdd-core + plugins:rdd` **250 测 / 0 失败**（含新增：InstrumentationEventsTest 8、RddInstrumentationTest 5、PlanningAssetSnapshot claims 4、TruthRegression 死亡丢失断言 1）。
