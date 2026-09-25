@@ -97,3 +97,26 @@
 - **不违架构宪法**（`ARCHITECTURE-CONSTITUTION-7CORE.md`）。
 - **每步独立 commit + 全测 + 可回滚**。
 - **TaskChain.java 核心状态机不在本轮拆**（红线，需专项+人工）。
+
+---
+
+## 七、维护说明（下一步接手的人/AI 必读）
+
+### 本轮改动文件与职责
+| 类 | 职责 | 关键静态方法 | 谁调它 |
+|---|---|---|---|
+| `RddAssetFacade`(新) | 资产门面：世界资产/背包缓存/历史/规划快照/落盘 | `assets/history/planningSnapshot/lastInventory/cacheInventory/saveAssets/recordHistory*` | RddPlugin/RddDetector/RddDecomposer/RddStagePlanner/RddAssetsTool |
+| `RddFactFacade`(新) | 事实门面：完成阶段事实 | `facts/recordStageFact/recordSubtaskFact` | RddPlugin/RddDetector |
+| `RddReplanBudget`(新) | 重规划预算：失败/协商独立上限 | `tryConsume/clearReplanCounts/clearWorldState` | RddPlugin.requestReplan |
+| `RddRuntimeStore`(新) | 任务链持久化：rdd-tasks 原子写盘/重启恢复 | `save/restore`（传 live RUNTIMES 引用 + tasksDir） | RddPlugin(委托, 签名不变) |
+| `RddBedAnchor`(早前) | 床边复活锚点 | `record/applyOnSpawn` | RddPlugin |
+
+### 入口与依赖
+- 所有门面在 `RddPlugin.setup` 里 `RddPlugin.xxx.init(configDir)` 初始化目录。
+- `RddAssetFacade` / `RddFactFacade` / `RddReplanBudget` 都提供 `clearWorldState()`（ServerStopped 清内存）与 `remove(uuid)`（REMOVE 清单同伴），由 `RddPlugin.clearWorldState`/REMOVE 回调统一调用。
+- `RddRuntimeStore.save/restore` 需要**live RUNTIMES Map 引用**（不复制），从 RddPlugin 传 `RUNTIMES`。
+
+### 行为保证与红线
+- 全部为**行为逐字不变**的重构（先搬后跑 273→314 测全绿）；红线 RL-1/2/6(资产)、RL-5(协商预算) 由对应门面承载。
+- **不要**把 B/A 状态编排簇强行搬出（见 §三-b），会产生"传 RUNTIMES 的伪门面"更坏耦合。
+- TaskChain.java 仍是红线，动它需专项+人工。
