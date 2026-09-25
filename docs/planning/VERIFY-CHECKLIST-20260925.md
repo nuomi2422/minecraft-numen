@@ -115,6 +115,30 @@
 3. 无"死亡→取备用→捡尸"流程（LONGRUN-ISSUES #5）。
 - 工具：`debug_kill`（需 confirm=true）已加并可用（`9505c602`）。
 
+### V3 复测（2026-09-25 23:06）—— 修复验证通过 ✅
+- **#7 床边复活**：绑床 `9848,64,10164` → `debug_kill` → **复活在 (9849.5,64,10164.5) = 床旁安全落点** ✅
+- **#8 死亡记 LOST**：`rdd-history` LOST 1→3，新增条目**带死亡坐标**（`wooden_pickaxe/stone_pickaxe @ overworld(9773,59,10324)`）✅
+- 复活 body entity_id 191→598→1202（确实换了身体）
+- #3 早期阶段无 NETHER 门：P0 `waitFor=[]` ✅
+- 仍未测：死亡后自动取备用/捡尸（缓办）。
+
+**V3 已通过项**：
+- [x] 绑床成功（重生点非空）
+- [x] 死亡→复活在床旁（非主人旁）✅
+- [x] 死亡记 LOST（带坐标）✅
+- [ ] 回基地取备用装备（缓办）
+- [ ] 回去捡尸（缓办）
+
+### V3-B 给装备→点死 全链复测（2026-09-25 23:14）
+- **资产失效 ✅**：`companion_assets_invalidated invalidatedInventoryEntries=31`（随装备增多：5→9→17→31）
+- **LOST 记录 ✅（含"直接给的"装备）**：`diamond_chestplate/leggings/helmet/sword/boots` + `iron_*` 全记 `LOST @ overworld(9802,62,10290)`（=死亡坐标）
+- **复活点 ✅**：(9849.5,64,10164.5) = 床旁（第二次通过）
+- ⚠️ **`replanned` 本次未新增**（5→5）→ 死亡后走"复活继续"而非"重规划"，是设计还是缺触发待确认。
+- ⚠️ **新发现（用户提出，待解决）**：**"不是同伴自己捡的、而是直接给的装备，感知/规划可能没看到"**——本次证明**死亡时能捕捉**（#8 修复后用真实背包），但**活着时是否进规划持有**未验证。→ 记为后续问题。
+- 仍未做：死亡后**自动取备用 / 捡尸**（LONGRUN #5）。
+- 工具：`debug_kill`（confirm=true）。
+- 基线计数：`replanned=5, replan_exhausted=3, negotiation_handled=4, subtask_parked=7/8`。
+
 **V3 实测（2026-09-25 17:07-17:30）**：
 - ✅ **右键绑床成功**：`interact_at` → `bound the bed (head) bed at 9777,61,10270 as your respawn point`（日志铁证）。
 - ✅ **额外发现：`fc_control` 自动生存层**（`fall_rescue_water_bucket_or_soft_block` / `escape_lava_toward_nearest_dry_foothold` / `break_suffocating_block` / `surface_for_air` / `close_hostile_defense_with_combat_shield` / `unstuck_burst`）——**"自动防御/增强生存"的代码落点**（第二模块一部分）。实测它**主动避开了危险**（FC 开着时不进岩浆）。
