@@ -7,7 +7,6 @@ import com.dwinovo.numen.rdd.api.*;
 import com.dwinovo.numen.rdd.core.RddChainFactory;
 import com.dwinovo.numen.rdd.core.RddRuntime;
 import com.dwinovo.numen.rdd.core.TaskChain;
-import com.dwinovo.numen.rdd.fact.CompletedFactStore;
 import com.dwinovo.numen.rdd.fail.FailureEvent;
 import com.dwinovo.numen.rdd.fail.FailureKind;
 import com.dwinovo.numen.rdd.policy.ResourceBudget;
@@ -62,10 +61,6 @@ public final class RddPlugin implements NumenPlugin {
     private static volatile NumenApi numenApi;
     /** 任务链持久化目录 config/numen/rdd-tasks（每个同伴一个 <uuid>.json）。 */
     private static volatile Path tasksDir;
-    /** P0 完成事实目录 config/numen/rdd-facts（每个同伴一个 <uuid>.json）；跨重绑/跨重启保留。 */
-    private static volatile Path factsDir;
-    /** 内存完成事实仓库（uuid→store）；磁盘为真身，清世界状态只清内存。 */
-    private static final Map<UUID, CompletedFactStore> FACTS = new ConcurrentHashMap<>();
     /** P4 重规划预算：每（同伴|一级）最多自动重规划次数；超限回落停车，防无限烧 LLM。 */
     private static final int MAX_REPLAN_PER_PRIMARY = 3;
     /** 协商驱动改单的独立预算（与失败驱动分开；士兵的反馈不该被 REPLAN 预算回绝）。 */
@@ -79,7 +74,7 @@ public final class RddPlugin implements NumenPlugin {
         numenApi = numen;
         tasksDir = numen.configDir().resolve("rdd-tasks");
         RddAssetFacade.init(numen.configDir());
-        factsDir = numen.configDir().resolve("rdd-facts");
+        RddFactFacade.init(numen.configDir());
         supervisionFlag = numen.configDir().resolve("rdd-supervision.flag");
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
@@ -113,6 +108,7 @@ public final class RddPlugin implements NumenPlugin {
         numen.on(CompanionEvent.DEATH, body -> onCompanionDeath(body));
         numen.on(CompanionEvent.REMOVE, body -> {
             RddAssetFacade.remove(body.getUUID());
+            RddFactFacade.remove(body.getUUID());
         });
         // 床边复活：死亡记锚点（见 onCompanionDeath），SPAWN 时 TP 到床旁安全落点（逻辑在 RddBedAnchor）。
         numen.on(CompanionEvent.SPAWN, RddBedAnchor::applyOnSpawn);
@@ -166,7 +162,7 @@ public final class RddPlugin implements NumenPlugin {
         runtime.applySupervisor(new com.dwinovo.numen.rdd.api.SupervisorDecision(
                 com.dwinovo.numen.rdd.api.SupervisorDecisionType.CONFIRM, primary,
                 "required conditions verified; optional omissions remain SKIPPED, not world achievements"));
-        recordStageFact(companionId, chain.goal(), primaryDesc);
+        RddFactFacade.recordStageFact(companionId, chain.goal(), primaryDesc);
         RddMonitor.publish("primary_resolved", Map.of("companionId", companionId.toString(), "primary", primary,
                 "reason", "verified required steps; optional steps may be skipped"));
     }
@@ -177,11 +173,11 @@ public final class RddPlugin implements NumenPlugin {
     private static void clearWorldState() {
         CALLBACKS.clear(() -> {
             RddAssetFacade.clearWorldState();
+            RddFactFacade.clearWorldState();
             DECOMPOSING.clear();
             RddGoalDriver.clearAll();
             BODY.clear();
             RUNTIMES.clear();
-            FACTS.clear();
             LAST_CONTEXT.clear();
             LAST_EXPANSION_REPORT.clear();
         });
@@ -292,7 +288,7 @@ public final class RddPlugin implements NumenPlugin {
         clearReplanCounts(companionId);   // 新目标 = 新阶段标识，重规划预算清零
         // P0：把该目标血缘下"已可靠完成"的阶段事实注入新链 → 已达成一级直接跳过、不再重复规划
         RUNTIMES.put(companionId, new RddRuntime(
-                new TaskChain(goal, facts(companionId).satisfiedStageKeys(goal)), RddAssetFacade.assets(companionId)));
+                new TaskChain(goal, RddFactFacade.facts(companionId).satisfiedStageKeys(goal)), RddAssetFacade.assets(companionId)));
         saveRuntimes();
         publishTaskSnapshot(companionId, "task_bound");
     }
@@ -460,30 +456,6 @@ public final class RddPlugin implements NumenPlugin {
             // fall through
         }
         return "";
-    }
-
-    /** P0 完成事实仓库（磁盘为真身，内存缓存）。 */
-    public static CompletedFactStore facts(UUID companionId) {
-        if (companionId == null) return new CompletedFactStore();
-        return FACTS.computeIfAbsent(companionId, id -> RddFactStore.load(factsDir, id));
-    }
-
-    /** 记录"某战略阶段已被可靠完成"并落盘（P0）。失败只记日志，不影响主流程。 */
-    static void recordStageFact(UUID companionId, Goal goal, String primaryDescription) {
-        if (companionId == null || goal == null || primaryDescription == null) return;
-        try {
-            CompletedFactStore store = facts(companionId);
-            store.recordStage(goal, primaryDescription, System.currentTimeMillis(), "primary confirmed");
-            RddFactStore.save(factsDir, companionId, store);
-        } catch (IOException ex) {
-            LOG.warn("[rdd] 保存完成事实失败 {}: {}", companionId, ex.toString());
-        }
-    }
-
-    /** 留档一条二级完成细节（辅助，不用于恢复）；随阶段落盘一起持久化。 */
-    static void recordSubtaskFact(UUID companionId, Goal goal, String primaryDescription, String subtaskDescription) {
-        if (companionId == null || goal == null) return;
-        facts(companionId).recordSubtask(goal, primaryDescription, subtaskDescription, System.currentTimeMillis());
     }
 
     /** 清某同伴的重规划预算计数（重绑/清任务时调用）。 */
