@@ -339,6 +339,11 @@ final class RddDetector {
                     // P4：转入重规划流程（进入 REPLANNING + 带真实状态重分解），不再 parking 守望
                     return;
                 }
+                // P2-B：把"这个任务值不值得/做不做得到"的判断结构化上报给 Supervisor（只读，不改链）。
+                // 触发条件=资源耗尽停车；建议动作取自恢复计划，供监督层重新决策。
+                RddTaskQualityReporter.report(ap, current,
+                        failureKindToQuality(fe.kind()), rsSafeCount(ap), "",
+                        plan.action().name());
                 // 预算耗尽等导致未能重规划 → 回落停车守望（下面继续）
             }
             parkedWatcher.watch(ap, rt, current);
@@ -476,6 +481,23 @@ final class RddDetector {
             RddMonitor.publish("subtask_failed", Map.of(
                     "subtask", current.id(), "reason", "body task ended without satisfying condition"));
         }
+    }
+
+    /** P2-B：把失败硬分类映射到任务质量类别（供只读上报）。 */
+    private static com.dwinovo.numen.rdd.fail.TaskQualityReport.Reason failureKindToQuality(FailureKind kind) {
+        if (kind == null) return com.dwinovo.numen.rdd.fail.TaskQualityReport.Reason.OTHER;
+        return switch (kind) {
+            case RESOURCE_MISSING -> com.dwinovo.numen.rdd.fail.TaskQualityReport.Reason.ASSET_UNREACHABLE;
+            case TARGET_LOST -> com.dwinovo.numen.rdd.fail.TaskQualityReport.Reason.ASSET_UNREACHABLE;
+            case SOFTWARE_DEFECT -> com.dwinovo.numen.rdd.fail.TaskQualityReport.Reason.SUSPECTED_PLAN_DEFECT;
+            default -> com.dwinovo.numen.rdd.fail.TaskQualityReport.Reason.OTHER;
+        };
+    }
+
+    /** 已发生的失败重试次数（安全读，供上报）。 */
+    private int rsSafeCount(NumenPlayer ap) {
+        RetryState rs = retries.get(ap.getUUID());
+        return rs == null ? 0 : rs.count();
     }
 
     static boolean conditionMatches(NumenPlayer ap, Subtask task, Map<String, Integer> counts) {
