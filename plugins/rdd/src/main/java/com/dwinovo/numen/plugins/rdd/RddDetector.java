@@ -504,7 +504,31 @@ final class RddDetector {
         if (task.condition().containsKey("type") && !"inventory".equals(task.condition().get("type")))
             return com.dwinovo.numen.rdd.core.WorldFactConditions.valid(task.condition())
                     && RddWorldFacts.matches(ap, task.condition());
-        return HardCodedEvaluator.matches(task.condition(), counts);
+        if (HardCodedEvaluator.matches(task.condition(), counts)) {
+            return true;
+        }
+        // P2-C：食物类条件允许"资产派生等价"兜底——目标面包不够时，若背包里的小麦（等价表
+        // wheat→bread）折算后够，则视为已满足，避免合成后又被要求重复耕作。只对"食物"放宽，
+        // 不触碰装备/工具/进度类硬门。
+        return foodEquivalentSatisfied(task, counts);
+    }
+
+    /** P2-C：仅对食物子步做派生等价兜底（安全放宽，只增不减）。 */
+    private static boolean foodEquivalentSatisfied(Subtask task, Map<String, Integer> counts) {
+        if (task == null || task.condition() == null || counts == null) return false;
+        Object group = task.condition().get("group");
+        Object key = task.condition().get("asset_key");
+        String target = null;
+        if (group instanceof String g && "food".equals(g)) {
+            return false;   // group=food 已由组计数覆盖，无需等价兜底
+        } else if (key instanceof String k && com.dwinovo.numen.rdd.core.InventoryGroups.contains("food", k)) {
+            target = k;
+        }
+        if (target == null) return false;
+        Object min = task.condition().get("minimum");
+        int minimum = min instanceof Number n ? n.intValue() : 1;
+        if (minimum <= 0) return true;
+        return com.dwinovo.numen.rdd.policy.AssetDerivation.equivalentCount(target, counts) >= minimum;
     }
 
     /** 统计背包里每种物品的数量，用命名空间 ID（minecraft:oak_log）作 key。 */
