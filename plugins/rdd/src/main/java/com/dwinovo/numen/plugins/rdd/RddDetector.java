@@ -165,7 +165,7 @@ final class RddDetector {
                             chain.currentPrimary().id(), chain.currentPrimary().description());
                     return;
                 }
-                if (!rt.activateCurrentFromRegistry()) {
+                if (!rt.activateCurrentFromSnapshot(RddPlugin.planningSnapshot(ap.getUUID()))) {
                     RddMonitor.publish("primary_waiting", Map.of(
                             "primary", chain.currentPrimary().id(),
                             "reason", "dependency assets not present"));
@@ -242,7 +242,7 @@ final class RddDetector {
                                 chain.currentPrimary().id(), chain.currentPrimary().description());
                         break;
                     }
-                    if (rt.activateCurrentFromRegistry()) {
+                    if (rt.activateCurrentFromSnapshot(RddPlugin.planningSnapshot(ap.getUUID()))) {
                         RddMonitor.publish("dependency_met", Map.of("primary", chain.currentPrimary().id()));
                     } else {
                         RddMonitor.publish("primary_waiting", Map.of(

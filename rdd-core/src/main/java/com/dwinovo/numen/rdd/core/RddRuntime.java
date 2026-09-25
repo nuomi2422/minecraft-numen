@@ -42,6 +42,14 @@ public final class RddRuntime {
         return chain.activateCurrentWithRegistry(assets);
     }
 
+    /**
+     * 依赖门统一入口（P2-A 修正）：走 {@link PlanningAssetSnapshot}（实时扫描为持有真相）。
+     * 背包不落盘，注册表没有 inventory_scan → 旧入口对物品类 wait_for 恒不满足。
+     */
+    public boolean activateCurrentFromSnapshot(PlanningAssetSnapshot snapshot) {
+        return chain.activateCurrentWithSnapshot(snapshot);
+    }
+
     /** 懒展开注入点：宿主目标驱动器把已生成的当前一级二级注入链（core 纯 JVM 不调 LLM）。 */
     public void expandCurrentPrimary(List<Subtask> generated) {
         chain.expandCurrentPrimary(generated);

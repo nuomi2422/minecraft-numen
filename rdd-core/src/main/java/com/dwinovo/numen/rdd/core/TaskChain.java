@@ -144,6 +144,34 @@ public final class TaskChain {
         return true;
     }
 
+    /**
+     * 依赖门统一入口（P2-A 修正）：以 {@link PlanningAssetSnapshot} 为准。
+     *
+     * <p>为什么不是 {@code activateCurrentWithRegistry}：背包资产**不落盘**（P2-A 决策），
+     * 注册表里没有 {@code inventory_scan} 条目 → {@code registry.usableCounts()} 恒空 →
+     * 任何物品类 wait_for 永不满足（"背包明明有却不判定"）。快照的 {@code availableCounts()}
+     * 才是「实时扫描」的持有真相；world 资产仍由注册表另行提供（二级 world 条件走 RddWorldFacts）。
+     */
+    public synchronized boolean activateCurrentWithSnapshot(PlanningAssetSnapshot snapshot) {
+        if (primaryStatus != PrimaryGoalStatus.PENDING && primaryStatus != PrimaryGoalStatus.WAITING) {
+            throw new IllegalStateException("only a not-yet-started primary may activate: " + primaryStatus);
+        }
+        if (currentPrimary().unexpanded()) {
+            throw new IllegalStateException("current primary unexpanded; expandCurrentPrimary(...) before activation: "
+                    + currentPrimary().id());
+        }
+        Map<String, Integer> counts = snapshot == null ? null : snapshot.availableCounts();
+        if (!currentPrimaryReady(counts)) {
+            primaryStatus = PrimaryGoalStatus.WAITING;
+            return false;
+        }
+        primaryStatus = PrimaryGoalStatus.ACTIVE;
+        if (statuses.get(currentSubtask().id()) == SubtaskStatus.PENDING) {
+            statuses.put(currentSubtask().id(), SubtaskStatus.RUNNING);
+        }
+        return true;
+    }
+
     public synchronized void startCurrent() {
         if (currentPrimary().unexpanded()) {
             throw new IllegalStateException("current primary unexpanded; expandCurrentPrimary(...) before start: "

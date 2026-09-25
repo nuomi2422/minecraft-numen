@@ -51,22 +51,50 @@ public final class RiskGate {
         return RiskLevel.NORMAL;
     }
 
-    /** 由阶段主题/文本判定风险级别（关键词，保守：认不出=NORMAL）。 */
+    /**
+     * 由阶段主题/文本判定风险级别。
+     *
+     * <p><b>P2-A 收紧</b>：不再「文本包含某词即高危」——早期据点阶段曾因描述里**提到**高风险词
+     * 被误判成 NETHER，`injectWaitFor` 于是给它挂了钻石甲/抗火药硬门 → 永久 WAITING 死锁。
+     * 现在只在**明确的行动短语**上判高危（如「进入下界」「击杀末影龙」「下矿采集」），
+     * 或**准备类短语**（如「下界准备/备抗火」）——那本就是该备装的阶段。认不出=NORMAL（保守）。
+     */
     public static RiskLevel levelForText(String text) {
         if (text == null || text.isBlank()) {
             return RiskLevel.NORMAL;
         }
         String t = text.toLowerCase();
-        if (t.contains("末地") || t.contains("末影龙") || t.contains("the_end")) {
+        if (actionFor(t, "末地", "末影龙", "the_end")) {
             return RiskLevel.END;
         }
-        if (t.contains("下界") || t.contains("地狱") || t.contains("nether")) {
+        if (actionFor(t, "下界", "地狱", "nether")) {
             return RiskLevel.NETHER;
         }
-        if (t.contains("下矿") || t.contains("挖矿") || t.contains("洞穴") || t.contains("废弃矿井")) {
+        if (actionFor(t, "下矿", "挖矿", "洞穴", "废弃矿井")) {
             return RiskLevel.MINING;
         }
         return RiskLevel.NORMAL;
+    }
+
+    /**
+     * 是否出现"行动/准备"短语：目标词出现在 进入/前往/去/打/击杀/采集/探索/准备/备/攻略 等
+     * 动词附近（同一短窗口内）。避免"提到即高危"的裸子串误判。
+     */
+    private static boolean actionFor(String text, String... targets) {
+        String[] verbs = {"进入", "前往", "去", "打", "击杀", "采集", "探索", "准备", "备", "攻略", "挑战", "进军"};
+        for (String target : targets) {
+            int idx = text.indexOf(target);
+            while (idx >= 0) {
+                int from = Math.max(0, idx - 6);
+                int to = Math.min(text.length(), idx + target.length() + 6);
+                String window = text.substring(from, to);
+                for (String v : verbs) {
+                    if (window.contains(v)) return true;
+                }
+                idx = text.indexOf(target, idx + 1);
+            }
+        }
+        return false;
     }
 
     /**
