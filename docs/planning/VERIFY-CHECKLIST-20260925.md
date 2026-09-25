@@ -98,6 +98,23 @@
 - [ ] 回去捡尸（掉落物）★ 同上
 - [x] 装备不足→下界被硬拦 ⏳（代码 `riskGateAllows` 已接，未实测触发）
 
+**V3 死亡回收实测（2026-09-25 17:44，用 debug_kill）**：
+```
+17:44:10 body died  →  17:44:20 respawned（10秒复活）
+```
+| 项 | 观察 | 判定 |
+|---|---|---|
+| 复活位置 | (9874,79,10208) = **世界出生点**，非床旁(9777,61,10270)、非主人旁(主人在下界) | ❌ **床边复活没生效** |
+| `recordSelfBedAnchor` 日志 | **无** | ❌ 绑床没记进锚点（**内存 map 重启即丢**） |
+| rdd-history LOST | 仍 1（死亡后未新增） | ❌ `recordDeathLostHistory` 未生效 |
+| 复活后背包 | 只剩 oak_log×2（装备掉光） | ⚠️ 无自动取备用/捡尸 |
+
+**V3 挖出的真问题（待修）**：
+1. **`BED_RESPAWN_PREFERENCE` 是内存 map，重启即丢** → 重启后死亡无锚点 → 落世界出生点。→ **需持久化**（同 `rdd-history` 落盘模式）。
+2. 死亡没记 LOST 到 history（`recordDeathLostHistory` 疑似未跑/空）。
+3. 无"死亡→取备用→捡尸"流程（LONGRUN-ISSUES #5）。
+- 工具：`debug_kill`（需 confirm=true）已加并可用（`9505c602`）。
+
 **V3 实测（2026-09-25 17:07-17:30）**：
 - ✅ **右键绑床成功**：`interact_at` → `bound the bed (head) bed at 9777,61,10270 as your respawn point`（日志铁证）。
 - ✅ **额外发现：`fc_control` 自动生存层**（`fall_rescue_water_bucket_or_soft_block` / `escape_lava_toward_nearest_dry_foothold` / `break_suffocating_block` / `surface_for_air` / `close_hostile_defense_with_combat_shield` / `unstuck_burst`）——**"自动防御/增强生存"的代码落点**（第二模块一部分）。实测它**主动避开了危险**（FC 开着时不进岩浆）。

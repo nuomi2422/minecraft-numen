@@ -141,7 +141,19 @@ public final class RddPlugin implements NumenPlugin {
                 LOG.warn("[rdd] SPAWN event missing companion UUID");
                 return;
             }
+            // 优先用内存锚点（死亡时记的）；重启后内存已清 → 回落读同伴**自己的** live respawn 点位
+            // （原版持久化在 .dat，重启不丢）——修 V3 实测的"重启后死亡落世界出生点"。
             BlockPos bedPos = BED_RESPAWN_PREFERENCE.remove(uuid);
+            if (bedPos == null || bedPos.equals(BlockPos.ZERO)) {
+                try {
+                    BlockPos live = body.getRespawnPosition();
+                    if (live != null && !live.equals(BlockPos.ZERO)) {
+                        bedPos = live;
+                    }
+                } catch (RuntimeException ignore) {
+                    // 读不到就不 TP
+                }
+            }
             if (bedPos == null) return;
             try {
                 ServerLevel level = body.serverLevel();
@@ -605,7 +617,11 @@ public final class RddPlugin implements NumenPlugin {
      * 位置取死亡瞬间的同伴坐标（最近一次已知地点）。
      */
     private static void recordDeathLostHistory(UUID companionId, NumenPlayer body) {
-        Map<String, Integer> inv = lastInventory(companionId);
+        // 用"死亡瞬间的真实背包"（body 还在）；缓存可能为空（V3 实测 LOST 未新增的根因）。
+        Map<String, Integer> inv = RddDetector.countInventory(body);
+        if (inv.isEmpty()) {
+            inv = lastInventory(companionId);
+        }
         if (inv.isEmpty()) return;
         String dimension = null;
         BlockPos pos = null;
