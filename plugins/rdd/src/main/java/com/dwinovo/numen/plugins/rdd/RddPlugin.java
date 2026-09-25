@@ -276,7 +276,10 @@ public final class RddPlugin implements NumenPlugin {
                     + "<subtask>" + escape(current.id()) + "</subtask>"
                     + "<current_task>" + escape(current.description()) + "</current_task>"
                     + "<done_when>" + escape(String.valueOf(current.condition())) + "</done_when>"
-                    + "<subtask_status>" + chain.currentSubtaskStatus() + "</subtask_status></rdd>");
+                    + "<subtask_status>" + chain.currentSubtaskStatus() + "</subtask_status>"
+                    + "<instruction>current_task 是你必须执行的当前目标（优先于自由活动）；"
+                    + "若你认为它不合理/不可达/与目标冲突，用 report_task_concern 上报（REJECT/COUNTER+建议），"
+                    + "指挥官会据此改单或重规划；不要默默无视。</instruction></rdd>");
     }
 
     private static String withAssets(UUID companionId, String rddContext) {
