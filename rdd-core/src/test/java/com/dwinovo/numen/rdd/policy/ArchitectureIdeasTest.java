@@ -148,4 +148,32 @@ class ArchitectureIdeasTest {
         assertEquals(LocalRepairTask.Guard.Decision.SUPPRESS,
                 guard.evaluate(t, LocalRepairTask.Trigger.DEATH, 120, LocalRepairTask.Priority.CRITICAL));
     }
+
+    // ---------- 检测事实裁决（检测!=重规划的另一半）----------
+
+    @Test void arbitrationConfirmsWhenSatisfied() {
+        var f = new DetectionArbitration.Facts(true, 0, false, true);
+        assertEquals(com.dwinovo.numen.rdd.api.SupervisorDecisionType.CONFIRM,
+                DetectionArbitration.arbitrate(f));
+        assertFalse(DetectionArbitration.changesPlan(com.dwinovo.numen.rdd.api.SupervisorDecisionType.CONFIRM));
+    }
+
+    @Test void arbitrationReconsOnGapWhenReconAvailable() {
+        var f = new DetectionArbitration.Facts(false, 2, true, true);
+        assertEquals(com.dwinovo.numen.rdd.api.SupervisorDecisionType.NEED_MORE_EVIDENCE,
+                DetectionArbitration.arbitrate(f));
+    }
+
+    @Test void arbitrationReplansWhenGapNoRecon() {
+        var f = new DetectionArbitration.Facts(false, 2, false, true);
+        assertEquals(com.dwinovo.numen.rdd.api.SupervisorDecisionType.REPLAN,
+                DetectionArbitration.arbitrate(f));
+        assertTrue(DetectionArbitration.changesPlan(com.dwinovo.numen.rdd.api.SupervisorDecisionType.REPLAN));
+    }
+
+    @Test void arbitrationDefersWhenNotSettled() {
+        var f = new DetectionArbitration.Facts(true, 0, false, false);
+        assertEquals(com.dwinovo.numen.rdd.api.SupervisorDecisionType.DEFER,
+                DetectionArbitration.arbitrate(f));
+    }
 }

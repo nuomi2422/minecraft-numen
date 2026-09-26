@@ -48,11 +48,23 @@ final class RddRequirementDetector {
     static boolean detectAndPublish(java.util.UUID companionId, PrimaryGoal primary, Map<String, Integer> held) {
         RequirementManifest.Manifest manifest = forPrimary(primary);
         RequirementManifest.Detection d = manifest.detect(held);
+        // \u3010\u67b6\u6784 2/4 \u88c1\u51b3\u534a\u3011\u68c0\u6d4b\u4e8b\u5b9e -> Supervisor \u88c1\u51b3\uff08\u68c0\u6d4b != \u91cd\u89c4\u5212\uff09
+        RequirementManifest.Manifest m = manifest;
+        com.dwinovo.numen.rdd.api.SupervisorDecisionType verdict;
+        boolean reconable = !m.requirements().isEmpty();
+        verdict = com.dwinovo.numen.rdd.policy.DetectionArbitration.arbitrate(
+                com.dwinovo.numen.rdd.policy.DetectionArbitration.Facts.of(d, reconable, true));
+        RddMonitor.publish("requirement_verdict", Map.of(
+                "companionId", String.valueOf(companionId),
+                "primary", m.goalId(),
+                "decision", verdict.name(),
+                "changesPlan", String.valueOf(
+                        com.dwinovo.numen.rdd.policy.DetectionArbitration.changesPlan(verdict))));
         if (d.satisfied()) {
             RddMonitor.publish("requirements_met", Map.of(
                     "companionId", String.valueOf(companionId),
-                    "primary", manifest.goalId(),
-                    "requirements", String.valueOf(manifest.requirements().size())));
+                    "primary", m.goalId(),
+                    "requirements", String.valueOf(m.requirements().size())));
             return true;
         }
         return false;
