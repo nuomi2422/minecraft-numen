@@ -176,4 +176,28 @@ class ArchitectureIdeasTest {
         assertEquals(com.dwinovo.numen.rdd.api.SupervisorDecisionType.DEFER,
                 DetectionArbitration.arbitrate(f));
     }
+
+    // ---------- 可用谓词（满足 != 可用）----------
+
+    @Test void availableTrueOnlyWhenAllConditionsHold() {
+        var ok = new AvailablePredicate.Facts(true, 3, 3, true, true, true, true, true);
+        assertTrue(AvailablePredicate.available(ok));
+        assertTrue(AvailablePredicate.check(ok).reasons().isEmpty());
+    }
+
+    @Test void availableFalseAndReasonsListed() {
+        // 有 3 个木头但不可达 -> 满足但不可用
+        var f = new AvailablePredicate.Facts(true, 3, 3, false, true, true, true, true);
+        var v = AvailablePredicate.check(f);
+        assertFalse(v.available());
+        assertTrue(v.reasons().contains("unreachable"));
+    }
+
+    @Test void availableFalseOnInsufficientCountAndNoSpace() {
+        var f = new AvailablePredicate.Facts(true, 1, 2, true, true, true, false, true);
+        var v = AvailablePredicate.check(f);
+        assertFalse(v.available());
+        assertTrue(v.reasons().stream().anyMatch(s -> s.startsWith("not_enough")));
+        assertTrue(v.reasons().contains("no_inventory_space"));
+    }
 }
