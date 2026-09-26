@@ -51,12 +51,23 @@ class RddRiskPlanningTest {
     }
 
     @Test void injectWaitForMergesWithExistingTakingMax() {
+        // 高风险阶段需为非首个阶段（第一个一级目标不加跨级硬门，防自锁）。
         List<PrimarySpec> stages = List.of(
+                new PrimarySpec("石器起步", List.of()),
                 new PrimarySpec("进入下界", List.of(new AssetRequirement("minecraft:torch", 4))));
         List<PrimarySpec> out = RddRiskPlanning.injectWaitFor(stages, Map.of());
-        int torch = out.get(0).waitFor().stream()
+        int torch = out.get(1).waitFor().stream()
                 .filter(r -> r.assetKey().equals("minecraft:torch"))
                 .findFirst().orElseThrow().minimum();
         assertEquals(16, torch, "同 key 取较大 minimum");
+    }
+
+    @Test void firstStageNeverGetsInjectedWaitFor() {
+        // 真机 bug 回归：第一个一级目标（如"就地挖石头/采集木头"被判 MINING）不得加 wait_for，
+        // 否则要求 torch/bread 而该阶段本身就产出它们 → 永久 WAITING 自锁。
+        List<PrimarySpec> stages = List.of(
+                new PrimarySpec("石器起步：就地挖石头、采集木头做石斧石镐", List.of()));
+        List<PrimarySpec> out = RddRiskPlanning.injectWaitFor(stages, Map.of());
+        assertTrue(out.get(0).waitFor().isEmpty(), "first stage must not get injected wait_for");
     }
 }
