@@ -507,6 +507,15 @@ public final class RddPlugin implements NumenPlugin {
                     deathData, deathTick);
             // P2.1：把死亡瞬间身上"值得记住"的资产记为 LOST（保留最后位置），供重规划判断"能否回去取"。
             recordDeathLostHistory(companionId, body);
+            // 【架构概念 1/4 接线】死亡 -> 生成"支线任务"（取备用/捡包），不整链重规划。
+            // 存在的理由（用户 2026-09-28 点名）：小问题不该去烧重规划预算（每级只有 3 次，烧完就停车）。
+            try {
+                RddRuntime rt = RUNTIMES.get(companionId);
+                String goalId = (rt != null && rt.chain().goal() != null) ? rt.chain().goal().id() : null;
+                RddRepairDispatch.onDeath(companionId, goalId);
+            } catch (RuntimeException ex) {
+                LOG.warn("[rdd] 支线任务生成失败 {}: {}", companionId, ex.toString());
+            }
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 死亡资产失效处理失败 {}: {}", companionId, ex.toString());
         }
