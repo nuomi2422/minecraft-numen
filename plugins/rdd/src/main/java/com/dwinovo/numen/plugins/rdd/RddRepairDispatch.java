@@ -44,7 +44,7 @@ final class RddRepairDispatch {
         }
         String id = "repair-" + companionId + "-" + ID_SEQ.incrementAndGet();
         String parent = (goalId == null || goalId.isBlank()) ? ("goal-" + companionId) : goalId;
-        LocalRepairTask.Task task = new LocalRepairTask.Task(id, parent, "death-event",
+        LocalRepairTask.Task task = LocalRepairTask.Task.of(id, parent, "death-event",
                 LocalRepairTask.Trigger.DEATH, pri, 5 * 60 * 20,
                 LocalRepairTask.ResumePolicy.RESEARCH_TARGET,
                 "\u53d6\u56de\u5907\u7528\u88c5\u5907\uff1b\u8d70\u5230\u6b7b\u4ea1\u70b9\u6361\u56de\u6389\u843d\uff1b\u6062\u590d\u539f\u4e3b\u94fe",

@@ -45,9 +45,16 @@ public final class Deliberation {
         }
     }
 
-    /** 选择结果：选定方案 or 无可行（发重规划事件）。合法出口只有这两个。 */
+    /**
+     * 选择结果。三个合法出口（W 审核补第三出口，防信息缺口一律升级重规划）：
+     * <ul>
+     *   <li>{@code EXECUTE} —— 选定方案执行</li>
+     *   <li>{@code INSERT_RECON} —— 信息不足（无候选但可去侦察）→ 插侦察任务，不升级重规划</li>
+     *   <li>{@code REPLAN_NEEDED} —— 确无可行方案 → 发重规划事件</li>
+     * </ul>
+     */
     public record Decision(Kind kind, Candidate chosen, List<String> trace) {
-        public enum Kind { EXECUTE, REPLAN_NEEDED }
+        public enum Kind { EXECUTE, INSERT_RECON, REPLAN_NEEDED }
     }
 
     /** 按权重打分（越高越优）。 */
@@ -59,15 +66,22 @@ public final class Deliberation {
                 + c.timeCost() * w.timeCost();
     }
 
+    /** 缺省最低可接受分：低于此分（含全负分场景）不硬选，改插侦察/重规划。 */
+    public static final double MIN_ACCEPTABLE_SCORE = 0.0;
+
     /**
-     * 审议：硬过滤 -> 快路径 -> 打分择优 -> 必然终结。
+     * 审议：硬过滤 -> 快路径 -> 打分择优 -> 必然终结（三出口）。
      *
      * @param candidates 策略表枚举的候选（可能为空）
-     * @param hardFilter 快照二值硬过滤（工具/可达/足够/安全）；null 表示不过滤
+     * @param hardFilter 快照二值硬过滤（工具/可达/足够/安全）；null 表示不过滤。
+     *                   <b>必须与执行前置校验共用一份实现</b>，否则快路径执行会失败（W 审核）。
      * @param weights    评分权重；null 用 defaults
-     * @return 决策（EXECUTE 选定方案 / REPLAN_NEEDED 发重规划事件），带决策 trace
+     * @param minAcceptable 最低可接受分；低于它不硬选（&lt;0 表示不设限）。用 {@link #MIN_ACCEPTABLE_SCORE} 为缺省
+     * @param reconAvailable 信息不足时是否可插侦察任务（true=插侦察，false=直接重规划）
+     * @return 决策（EXECUTE / INSERT_RECON / REPLAN_NEEDED），带决策 trace
      */
-    public static Decision deliberate(List<Candidate> candidates, Predicate<Candidate> hardFilter, Weights weights) {
+    public static Decision deliberate(List<Candidate> candidates, Predicate<Candidate> hardFilter,
+                                      Weights weights, double minAcceptable, boolean reconAvailable) {
         List<String> trace = new ArrayList<>();
         Weights w = weights == null ? Weights.defaults() : weights;
 
@@ -83,7 +97,12 @@ public final class Deliberation {
         }
 
         if (viable.isEmpty()) {
-            trace.add("无可行方案 -> 发重规划事件（合法出口之一）");
+            // 第三出口：信息不足（可侦察）→ 插侦察任务，不升级整链重规划
+            if (reconAvailable) {
+                trace.add("无可行方案但可侦察 -> INSERT_RECON（第三出口，防抖动回潮）");
+                return new Decision(Decision.Kind.INSERT_RECON, null, trace);
+            }
+            trace.add("无可行方案且不可侦察 -> REPLAN_NEEDED");
             return new Decision(Decision.Kind.REPLAN_NEEDED, null, trace);
         }
 
@@ -100,7 +119,39 @@ public final class Deliberation {
         for (Candidate c : viable) {
             trace.add(String.format("候选 %s 得分 %.3f", c.id(), score(c, w)));
         }
+        // 最低分数线：全负分/低于阈值时不硬选最烂的（W 审核）
+        double bestScore = score(best, w);
+        if (minAcceptable >= 0 && bestScore < minAcceptable) {
+            if (reconAvailable) {
+                trace.add(String.format("最优 %.3f 低于可接受 %.3f -> INSERT_RECON", bestScore, minAcceptable));
+                return new Decision(Decision.Kind.INSERT_RECON, null, trace);
+            }
+            trace.add(String.format("最优 %.3f 低于可接受 %.3f 且不可侦察 -> REPLAN_NEEDED", bestScore, minAcceptable));
+            return new Decision(Decision.Kind.REPLAN_NEEDED, null, trace);
+        }
         trace.add("选定 " + best.id() + "（合法出口之一：执行选定方案）");
+        return new Decision(Decision.Kind.EXECUTE, best, trace);
+    }
+
+    /** 便捷重载：保留旧两出口语义（无最低分数线、不可侦察）。 */
+    public static Decision deliberate(List<Candidate> candidates, Predicate<Candidate> hardFilter, Weights weights) {
+        List<String> trace = new ArrayList<>();
+        Weights w = weights == null ? Weights.defaults() : weights;
+        List<Candidate> viable = new ArrayList<>();
+        if (candidates != null) {
+            for (Candidate c : candidates) {
+                if (hardFilter == null || hardFilter.test(c)) viable.add(c);
+                else trace.add("过滤 " + c.id() + "：不满足硬条件");
+            }
+        }
+        if (viable.isEmpty()) {
+            trace.add("无可行方案 -> 发重规划事件");
+            return new Decision(Decision.Kind.REPLAN_NEEDED, null, trace);
+        }
+        viable.sort(Comparator.comparingDouble((Candidate c) -> score(c, w)).reversed());
+        Candidate best = viable.get(0);
+        trace.add(viable.size() == 1 ? "仅 1 个可行方案 -> 快路径" : "多方案打分择优");
+        trace.add("选定 " + best.id());
         return new Decision(Decision.Kind.EXECUTE, best, trace);
     }
 }

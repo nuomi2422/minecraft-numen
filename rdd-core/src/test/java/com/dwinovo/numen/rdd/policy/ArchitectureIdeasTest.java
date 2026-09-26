@@ -51,12 +51,13 @@ class ArchitectureIdeasTest {
     }
 
     @Test void taskRequiresParentLinkAndPreemptiveByPriority() {
-        LocalRepairTask.Task death = new LocalRepairTask.Task("t1", "goal-x", "death-event",
+        LocalRepairTask.Task death = LocalRepairTask.Task.of("t1", "goal-x", "death-event",
                 LocalRepairTask.Trigger.DEATH, LocalRepairTask.Priority.CRITICAL, 100,
                 LocalRepairTask.ResumePolicy.RESUME_CHECKPOINT, "recover gear", "ESCALATE", "get backup gear");
         assertTrue(death.preemptive());
+        assertFalse(death.hasCheckpoint());
         assertThrows(IllegalArgumentException.class,
-                () -> new LocalRepairTask.Task("t2", "", "c", LocalRepairTask.Trigger.MANUAL,
+                () -> LocalRepairTask.Task.of("t2", "", "c", LocalRepairTask.Trigger.MANUAL,
                         LocalRepairTask.Priority.LOW, 100, LocalRepairTask.ResumePolicy.RESUME_CHECKPOINT, "s", "f", "d"));
     }
 
@@ -111,5 +112,40 @@ class ArchitectureIdeasTest {
                 c("a", 0.9, 0.1), c("b", 0.4, 0.8)), null, Deliberation.Weights.defaults());
         assertEquals(Deliberation.Decision.Kind.EXECUTE, d.kind());
         assertEquals("a", d.chosen().id());
+    }
+
+    @Test void thirdExitReconWhenNoCandidateAndReconAvailable() {
+        // W 审核补：无候选但可侦察 -> INSERT_RECON（不升级重规划）
+        Deliberation.Decision d = Deliberation.deliberate(List.of(),
+                null, Deliberation.Weights.defaults(), Deliberation.MIN_ACCEPTABLE_SCORE, true);
+        assertEquals(Deliberation.Decision.Kind.INSERT_RECON, d.kind());
+    }
+
+    @Test void minAcceptableRejectsNegativeBest() {
+        // 全负分方案 + 有最低分数线 -> 不硬选最烂的，走侦察
+        // 构造：可行0 效率0 工具0 风险1 耗时1 -> 得分 -0.20 -0.10 = -0.30
+        Deliberation.Candidate bad1 = new Deliberation.Candidate("x", "x", 0, 0, 0, 1.0, 1.0);
+        Deliberation.Candidate bad2 = new Deliberation.Candidate("y", "y", 0, 0, 0, 0.9, 0.9);
+        Deliberation.Decision d = Deliberation.deliberate(List.of(bad1, bad2),
+                null, Deliberation.Weights.defaults(), Deliberation.MIN_ACCEPTABLE_SCORE, true);
+        assertEquals(Deliberation.Decision.Kind.INSERT_RECON, d.kind());
+    }
+
+    @Test void minAcceptablePassesPositiveBest() {
+        Deliberation.Decision d = Deliberation.deliberate(List.of(
+                c("a", 1.0, 0.0), c("b", 0.3, 0.5)),
+                null, Deliberation.Weights.defaults(), Deliberation.MIN_ACCEPTABLE_SCORE, true);
+        assertEquals(Deliberation.Decision.Kind.EXECUTE, d.kind());
+    }
+
+    @Test void criticalStillSubjectToRateLimit() {
+        // W 审核修：critical 不受冷却，但持续 critical 源仍受每分钟上限
+        LocalRepairTask.Guard guard = new LocalRepairTask.Guard(10 * 20, 2, 100);
+        LocalRepairTask.Guard.Tracker t = new LocalRepairTask.Guard.Tracker();
+        t.recordFire(LocalRepairTask.Trigger.DEATH, 100);
+        t.recordFire(LocalRepairTask.Trigger.DEATH, 110);
+        // 已达 2 次/分钟上限 -> critical 也被压掉
+        assertEquals(LocalRepairTask.Guard.Decision.SUPPRESS,
+                guard.evaluate(t, LocalRepairTask.Trigger.DEATH, 120, LocalRepairTask.Priority.CRITICAL));
     }
 }
