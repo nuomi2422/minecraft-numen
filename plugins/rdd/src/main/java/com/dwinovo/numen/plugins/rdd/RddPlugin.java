@@ -344,6 +344,19 @@ public final class RddPlugin implements NumenPlugin {
         // P0：把该目标血缘下"已可靠完成"的阶段事实注入新链 → 已达成一级直接跳过、不再重复规划
         RUNTIMES.put(companionId, new RddRuntime(
                 new TaskChain(goal, facts(companionId).satisfiedStageKeys(goal)), assets(companionId)));
+        // 【架构概念 2/4 接线】一级目标生成时同步产出"需求清单"（元件检测的需求侧）。
+        // 只产"事实"，不在这里做裁决（裁决归 DetectionArbitration），更不在这里改规划。
+        try {
+            RddRuntime justBound = RUNTIMES.get(companionId);
+            var primary = justBound == null ? null : justBound.chain().currentPrimary();
+            var manifest = RddRequirementDetector.forPrimary(primary);
+            RddMonitor.publish("requirement_manifest", Map.of(
+                    "companionId", companionId.toString(),
+                    "primary", manifest.goalId(),
+                    "requirements", String.valueOf(manifest.requirements().size())));
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 需求清单生成失败 {}: {}", companionId, ex.toString());
+        }
         saveRuntimes();
         publishTaskSnapshot(companionId, "task_bound");
     }
