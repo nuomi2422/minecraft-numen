@@ -66,8 +66,18 @@ final class RddRiskPlanning {
             return stages == null ? List.of() : stages;
         }
         List<PrimarySpec> out = new ArrayList<>(stages.size());
+        int index = 0;
         for (PrimarySpec stage : stages) {
+            // 第一个一级目标从零起步，绝不给它加跨级前置硬门——否则"就地挖石头/采集木头"
+            // 这类描述被判 MINING 后会要求 torch/bread，而该阶段本身正是产出它们的阶段 → 自锁死等。
+            // （真机验证抓到：primary-0 waitFor=bread4+torch16 → 永久 WAITING。）
+            boolean isFirstStage = (index == 0);
+            index++;
             if (stage == null) {
+                continue;
+            }
+            if (isFirstStage) {
+                out.add(stage);
                 continue;
             }
             RiskLevel level = RiskGate.levelForText(stage.description());
