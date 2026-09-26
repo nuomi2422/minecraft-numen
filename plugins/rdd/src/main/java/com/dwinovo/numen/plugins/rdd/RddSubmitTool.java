@@ -44,6 +44,13 @@ final class RddSubmitTool implements NumenTool {
                         "rdd_submit requires goal, primary_goal, subtask, asset_key and non-negative minimum").toJson());
                 return;
             }
+            // RL-8 风险门：rdd_submit 直建链会跳过 Detector 的 PENDING/WAITING 风险门，
+            // 若目标是下界/末地级且装备/恢复点不足，必须拒绝提交（防"铁套进下界"式死亡循环）。
+            if (!RddDetector.riskGateAllows(companion, input.primary_goal())) {
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail(
+                        "rl8 risk gate: 高风险目标不满足装备/恢复点准入，已拒绝提交（不绑定不派工）").toJson());
+                return;
+            }
             String primaryId = "primary-" + companion.getUUID();
             String subtaskId = "subtask-" + companion.getUUID();
             var subtask = Subtask.hardCoded(subtaskId, input.subtask(),
