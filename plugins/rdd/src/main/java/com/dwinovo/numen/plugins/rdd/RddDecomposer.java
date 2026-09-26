@@ -365,6 +365,7 @@ final class RddDecomposer {
                 + heldBlock
                 + (worldAssets == null || worldAssets.isBlank() ? "" : worldAssets + "\n\n")
                 + (villageBlock == null || villageBlock.isBlank() ? "" : villageBlock + "\n\n")
+                + RddV32Directives.annexTaskSpec() + "\n\n"
                 + "【P2-E 时间成本】优先省时路线：现成物 > 猎取/合成 > 采集 > 深挖 > 种田等待；"
                 + "别把等待作物生长排进主线。时间刻度：" + com.dwinovo.numen.rdd.policy.TaskCostModel.explain() + "\n\n"
                 + "请用 decompose_goal 工具给出子步骤。每个子步骤包含：\n"
