@@ -1,5 +1,7 @@
 plugins { id 'numen-plugin' }
 
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+
 processResources {
     def props = [
             version                       : project.version,

@@ -168,6 +168,7 @@ final class RddStagePlanner {
                 + "不要把「种田等作物生长」排进主线（FARM_AND_WAIT 是最贵且不可压缩的等待）；"
                 + "多做一套备用装备这种「未来复用」高的投入值得。\n"
                 + com.dwinovo.numen.rdd.policy.TaskCostModel.explain() + "\n\n"
+                + RddV32Directives.annexTaskSpec() + "\n\n"
                 + PLAN_BODY_TAIL;
     }
 
