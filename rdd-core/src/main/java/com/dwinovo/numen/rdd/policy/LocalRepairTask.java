@@ -44,12 +44,14 @@ public final class LocalRepairTask {
      * @param priority      优先级通道
      * @param timeoutTicks  本任务超时 tick
      * @param resumePolicy  恢复策略
+     * @param checkpoint    断点数据（被打断后据此续跑；null=无断点，从头）
      * @param successCondition 成功条件的人类可读描述（机器判定由宿主映射）
      * @param failurePolicy 失败策略（如 ESCALATE/ABORT）
      * @param description   任务描述（给执行体的可读说明）
      */
     public record Task(String id, String parentLink, String causationId, Trigger trigger,
                        Priority priority, long timeoutTicks, ResumePolicy resumePolicy,
+                       String checkpoint,
                        String successCondition, String failurePolicy, String description) {
         public Task {
             if (id == null || id.isBlank()) throw new IllegalArgumentException("id required");
@@ -63,6 +65,19 @@ public final class LocalRepairTask {
         /** 该支线是否可抢占当前动作（critical/high 才抢占）。 */
         public boolean preemptive() {
             return priority == Priority.CRITICAL || priority == Priority.HIGH;
+        }
+
+        /** 是否带断点（可续跑）。 */
+        public boolean hasCheckpoint() {
+            return checkpoint != null && !checkpoint.isBlank();
+        }
+
+        /** 便捷构造：无断点。 */
+        public static Task of(String id, String parentLink, String causationId, Trigger trigger,
+                              Priority priority, long timeoutTicks, ResumePolicy resumePolicy,
+                              String successCondition, String failurePolicy, String description) {
+            return new Task(id, parentLink, causationId, trigger, priority, timeoutTicks, resumePolicy,
+                    null, successCondition, failurePolicy, description);
         }
     }
 
@@ -132,7 +147,7 @@ public final class LocalRepairTask {
          * @param tracker 该触发类的追踪状态
          * @param trigger 触发来源
          * @param nowTick 当前游戏 tick
-         * @param priority 优先级（CRITICAL 绕过冷却直通抢占）
+         * @param priority 优先级（CRITICAL 不受冷却，但仍受每分钟上限——防持续 critical 源无限抢占）
          */
         public Decision evaluate(Tracker tracker, Trigger trigger, long nowTick, Priority priority) {
             if (tracker == null) return Decision.ALLOW;
@@ -140,8 +155,14 @@ public final class LocalRepairTask {
             if (tracker.consecutiveFailures(trigger) >= escalateAfterConsecutiveFailures) {
                 return Decision.ESCALATE;
             }
-            // critical 绕过冷却/频率（生死攸关）
-            if (priority == Priority.CRITICAL) return Decision.ALLOW;
+            // critical 不受冷却（生死攸关直通），但【仍受每分钟上限】——W 审核：
+            // 持续 critical 源（持续掉血/岩浆边）否则会连发事件无限抢占。
+            if (priority == Priority.CRITICAL) {
+                if (tracker.firesLastMinute(trigger, nowTick) >= maxPerMinute) {
+                    return Decision.SUPPRESS;
+                }
+                return Decision.ALLOW;
+            }
             // 冷却内重复 -> 压掉
             long last = tracker.lastFireTick(trigger);
             if (last != Long.MIN_VALUE && nowTick - last < cooldownTicks) {
