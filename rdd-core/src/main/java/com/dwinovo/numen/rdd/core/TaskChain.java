@@ -80,15 +80,16 @@ public final class TaskChain {
     }
     public synchronized PrimaryGoal currentPrimary() { return goal.primaryGoals().get(primaryIndex); }
 
-    /** 当前一级的所有前置资产(waitFor)是否都被 counts 满足（无 waitFor → true）。 */
+    /**
+     * 当前一级的所有前置资产(waitFor)是否都被 counts 满足（无 waitFor → true）。
+     *
+     * <p>⚠️ 2026-09-27（用户指示）：**依赖门被临时删除**——一律返回 true，不再用 waitFor 拦一级。
+     * 理由：waitFor 一直牵制、影响推进，且逻辑不自洽（中间产物被消耗后门恒不满足 → 静默停）。
+     * waitFor 数据仍保留在链上（未删字段 / injectWaitFor 仍写），**需要时可恢复本方法原逻辑**
+     * （见 git 历史 / 经验库 issue/waiting-gate-silent-stall-no-supervision）。
+     */
     public synchronized boolean currentPrimaryReady(Map<String, Integer> counts) {
-        List<AssetRequirement> wf = currentPrimary().waitFor();
-        if (wf.isEmpty()) return true;
-        if (counts == null) return false;
-        for (AssetRequirement r : wf) {
-            if (counts.getOrDefault(r.assetKey(), 0) < r.minimum()) return false;
-        }
-        return true;
+        return true; // dependency gate TEMPORARILY DISABLED (2026-09-27) -- restore to waitFor check if needed
     }
 
     /**

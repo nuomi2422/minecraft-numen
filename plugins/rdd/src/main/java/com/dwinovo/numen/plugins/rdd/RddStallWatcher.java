@@ -165,6 +165,22 @@ final class RddStallWatcher {
         return inv + "|" + pos.getX() + "," + pos.getY() + "," + pos.getZ();
     }
 
+    /**
+     * 停车守望专用的"抗抖动"进展指纹（背包 + 8 格区域桶），与 {@link #fingerprint} 分开。
+     *
+     * <p>为什么单独一套（2026-09-27 实机教训）：原指纹含**精确坐标**，AI 在两点之间横跳
+     * （寻路打转/到不了目标）时坐标每 tick 都变 → "无进展"窗口被无限重置 → 催工永不触发，
+     * 表现为"它自己一直重复走、任务永远完不成、也没人拍醒"。这里把坐标量化成 8 格粗桶：
+     * 区域内抖动/横跳不再重置窗口（照常催工），只有真换区域才算有新进展。
+     *
+     * <p>不影响卡死检测：{@link RddStallPolicy} 那条路径继续用精确坐标（走路本身算进展）。
+     */
+    String parkedFingerprint(NumenPlayer ap) {
+        String inv = RddDetector.countInventory(ap).toString();
+        var pos = ap.blockPosition();
+        return inv + "|" + RddStallPolicy.parkedBucket(pos.getX(), pos.getY(), pos.getZ());
+    }
+
     /** Server-thread observation only. Fuel/elapsed/deadline/task-id changes are not work progress. */
     RddStallPolicy.Observation observe(NumenPlayer ap, RddRuntime rt, Subtask current) {
         UUID uuid = ap.getUUID();

@@ -155,6 +155,14 @@ final class RddDetector {
                     || ps == PrimaryGoalStatus.REPLANNING
                     || ps == PrimaryGoalStatus.COMPLETED
                     || ps == PrimaryGoalStatus.FAILED) {
+                // 监督扩面（2026-09-27）：REPLANNING/FAILED 原先直接 return，卡住时无人拍醒 → 静默停。
+                // 复用 RddParkedWatcher：长期无进展就催 AI（不动状态机，只补"催工"）。
+                if (ps == PrimaryGoalStatus.REPLANNING || ps == PrimaryGoalStatus.FAILED) {
+                    try {
+                        Subtask parked = chain.currentSubtask();
+                        if (parked != null) parkedWatcher.watch(ap, rt, parked);
+                    } catch (RuntimeException ignored) { /* fail-soft: 监督异常不得拖垮 tick */ }
+                }
                 return;
             }
             // P0-4 重启恢复：在途链恢复为 RECOVERING 后不许静默瞒报续跑——先发恢复事件，
@@ -182,6 +190,7 @@ final class RddDetector {
                             "primary", chain.currentPrimary().id(),
                             "reason", "risk gate: high-risk stage not prepared (equipment/potion/recovery point)"));
                     RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_risk_gated");
+                    watchParkedIfStuck(ap, rt, chain); // 监督扩面：缺料/风险门长时间没过也催工
                     return;
                 }
                 if (!rt.activateCurrentFromSnapshot(RddPlugin.planningSnapshot(ap.getUUID()))) {
@@ -189,6 +198,7 @@ final class RddDetector {
                             "primary", chain.currentPrimary().id(),
                             "reason", "dependency assets not present"));
                     RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_dependency_waiting");
+                    watchParkedIfStuck(ap, rt, chain); // 监督扩面：依赖门长时间没过也催工
                     return;
                 }
                 RddMonitor.publish("dependency_met", Map.of("primary", chain.currentPrimary().id()));
@@ -376,6 +386,17 @@ final class RddDetector {
                 "companionId", ap.getUUID().toString(), "subtask", current.id(),
                 "reason", "replan budget exhausted after soldier " + n.kind().name()));
         return true;
+    }
+
+    /**
+     * 监督扩面（2026-09-27）：非 ACTIVE 的停滞态（WAITING 待料 / REPLANNING / FAILED）也走停泊守望，
+     * 长时间无进展就催 AI（复用 RddParkedWatcher），不再静默停。fail-soft，不改变状态机。
+     */
+    private void watchParkedIfStuck(NumenPlayer ap, RddRuntime rt, TaskChain chain) {
+        try {
+            Subtask cur = chain.currentSubtask();
+            if (cur != null) parkedWatcher.watch(ap, rt, cur);
+        } catch (RuntimeException ignored) { /* fail-soft */ }
     }
 
     /** FAILED 二级的 Level 2 局部恢复：预算内重置重跑 + 拍醒提示换策略；预算耗尽 → Level 3。 */

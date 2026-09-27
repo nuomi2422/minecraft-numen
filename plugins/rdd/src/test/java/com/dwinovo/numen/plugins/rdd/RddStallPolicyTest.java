@@ -13,6 +13,21 @@ class RddStallPolicyTest {
                 previous == null ? 0 : previous.unchanged(), observation);
     }
 
+    @Test void parkedBucketAbsorbsJitterButSeparatesRealTravel() {
+        // 回归（2026-09-27 实机）：AI 在两点之间横跳时，原精确坐标指纹每 tick 变化，
+        // "无进展"窗口被无限重置 -> 催工永不触发（表现为重复走且任务永不完成）。
+        // 修法是停车守望改用 8 格粗桶：同区域抖动同桶（窗口不被重置），跨区域才算新进展。
+        String a = RddStallPolicy.parkedBucket(100, 64, 100);
+        assertEquals(a, RddStallPolicy.parkedBucket(100, 64, 101));
+        assertEquals(a, RddStallPolicy.parkedBucket(103, 64, 97));
+        assertEquals(a, RddStallPolicy.parkedBucket(103, 64, 103));
+        assertNotEquals(a, RddStallPolicy.parkedBucket(108, 64, 100));
+        assertNotEquals(a, RddStallPolicy.parkedBucket(100, 72, 100));
+        // 负坐标也要正确分桶（Math.floorDiv 而非截断）
+        assertEquals("-1,0,-1", RddStallPolicy.parkedBucket(-1, 0, -1));
+        assertEquals("-2,0,-2", RddStallPolicy.parkedBucket(-9, 0, -9));
+    }
+
     @Test void idleStillEscalatesAfterFifteenUnchangedChecks() {
         var frame = observation("", false, "idle");
         var check = next(null, frame);
