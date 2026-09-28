@@ -939,6 +939,13 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         data.put("target", r.label);
         data.put("requested", r.count);
         data.put("gathered", r.getMined());
+        // 「扫完了」不等于「够了」。这个工具的契约是"附近尽量采一些,采到部分也算成功"
+        // (见 onTick 里 no-more-in-range 那一支),所以 SUCCESS 本身说明不了目标达成。
+        // 上层以前只能看到 SUCCESS 就打勾,"干草挖一半离开"就是这样被当成完成的。
+        // 这里把缺口显式化,让上层不必去解析文案就能判;判定逻辑见 PartialGather。
+        data.put("partial", PartialGather.isPartial(r.getMined(), r.count));
+        data.put("shortfall", PartialGather.shortfall(r.getMined(), r.count));
+        data.put("note", progressNote);
         return data;
     }
 

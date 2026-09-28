@@ -26,6 +26,12 @@ public final class CollectItemsTaskRecord extends TaskRecord {
 
     /** Live progress, updated by the goal as items are absorbed. */
     private int collected = 0;
+    /** 目标消失但背包没涨的件数(被烧/被抢/despawn)——不算战果,但必须报出来。 */
+    private int vanished = 0;
+    /** 寻路失败够不着的件数。 */
+    private int unreachable = 0;
+    /** 走到了却没吸上、被本轮跳过的件数。 */
+    private int leftBehind = 0;
 
     public CollectItemsTaskRecord(String toolCallId, long deadlineGameTime,
                                   Set<Item> filter, int radius, String label) {
@@ -43,12 +49,48 @@ public final class CollectItemsTaskRecord extends TaskRecord {
         this.collected++;
     }
 
+    /** 记一次"东西没了但不是我们拿的",让上层看得见缺口而不是只看到一个 SUCCESS。 */
+    public void noteVanished() {
+        this.vanished++;
+    }
+
+    public int getVanished() {
+        return vanished;
+    }
+
+    /** 记一次"寻路够不着"。 */
+    public void noteUnreachable() {
+        this.unreachable++;
+    }
+
+    public int getUnreachable() {
+        return unreachable;
+    }
+
+    /** 记一次"走到了却没吸上"。 */
+    public void noteLeftBehind() {
+        this.leftBehind++;
+    }
+
+    public int getLeftBehind() {
+        return leftBehind;
+    }
+
+    /**
+     * 这一趟是不是干净完成:没有在到达前消失的、没有够不着的、没有走到却丢下的。
+     * 与"扫完了"(SCAN 再也找不到候选)不是一回事——这正是"黑曜石挖了不捡"能被
+     * 误判成完成的缺口。
+     */
+    public boolean isSweepComplete() {
+        return CollectDecisions.sweepComplete(vanished, unreachable, leftBehind);
+    }
+
     @Override
     /**
-     * 一行人话 —— 这是<b>给主人看的</b>:头顶气泡、面板、task_status 印的都是它。
-     * 工具 id 不写进来,需要它的地方(运行时状态的 tool 属性、派发回执)本来就有。
+     * 一行摘要——这是<b>给主人看</b>的:头顶气泡、面板、task_status 印的都是它。
+     * 工具 id 不写进来,需要它的地盘(运行时状态的 tool 属性、派发回路)本来就有。
      */
     public String describe() {
-        return "捣东西 " + label + " x" + collected;
+        return "收集 " + label + " x" + collected;
     }
 }

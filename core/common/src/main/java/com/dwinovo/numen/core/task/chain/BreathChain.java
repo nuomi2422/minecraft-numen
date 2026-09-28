@@ -61,6 +61,15 @@ public final class BreathChain implements Task, com.dwinovo.numen.task.reflex.Re
     /** 没顶多久后开始上浮——对齐生存端低氧窗口的量级(300-240=60 tick,3 秒)。 */
     private static final int FEARLESS_FLOAT_DELAY_TICKS = 60;
 
+    /**
+     * 反复上浮的账(判据见 {@link BreathEpisodeRules})。这条反射做完之后被打断的任务
+     * 会恢复,然后很可能再做一遍同样的事——用户案例是"下水捡东西→浮上来→又下水"。
+     * 救命不能关,但循环必须<b>可见</b>:同一片水里反复上浮就把"这儿做不成"报给上层。
+     */
+    private int episodesInWindow;
+    private BlockPos lastEpisodePos;
+    private long lastEpisodeTick;
+
     public BreathChain() {
     }
 
@@ -202,7 +211,42 @@ public final class BreathChain implements Task, com.dwinovo.numen.task.reflex.Re
         airColumn = null;
         retargetCooldown = 0;
         trappedNoted = false;
+        noteRepeatedRescue(companion);
         com.dwinovo.numen.event.NumenEvents.body(companion, "nearly drowned (" + Math.max(0, worst / 20) + "s of air left) — swam up for a breath");
+    }
+
+    /**
+     * 记一次上浮,并在"同一片水里连续反复"时把结论报给上层。
+     *
+     * <p>只报告、不阻断:氧气见底就得浮,这条没有商量。真正被治的是<b>循环本身</b>——
+     * 以前这条链做完就休眠,被打断的任务恢复后再做一遍同样的事,于是左右横跳而资产
+     * 一件没进包,还没有任何一句话说清原因。现在第 N 次会在日志里留一句"这儿做不成"。
+     */
+    private void noteRepeatedRescue(NumenPlayer companion) {
+        long now = companion.level().getGameTime();
+        BlockPos here = companion.blockPosition();
+        int apart = Integer.MAX_VALUE;
+        if (lastEpisodePos != null) {
+            long delta = now - lastEpisodeTick;
+            apart = delta < 0 ? -1 : (int) Math.min(Integer.MAX_VALUE, delta);
+        }
+        if (lastEpisodePos != null
+                && BreathEpisodeRules.sameArea(lastEpisodePos.getX(), lastEpisodePos.getY(), lastEpisodePos.getZ(),
+                        here.getX(), here.getY(), here.getZ(), apart)) {
+            episodesInWindow++;
+        } else {
+            episodesInWindow = 1;
+        }
+        lastEpisodePos = here;
+        lastEpisodeTick = now;
+        if (BreathEpisodeRules.onEpisodeEnd(episodesInWindow)
+                == BreathEpisodeRules.Verdict.REPORT_REPEATED_RESCUE) {
+            com.dwinovo.numen.event.NumenEvents.body(companion,
+                    "that is " + episodesInWindow + " times I have had to surface for air in this same spot ("
+                            + here.toShortString() + ") — whatever I am trying here keeps needing my head under."
+                            + " Do it where there is air to breathe, or without going under at all;"
+                            + " swimming down for it and popping back up is not getting anywhere");
+        }
     }
 
     /** Clear an interrupted episode without emitting a misleading rescue report. */
@@ -213,6 +257,9 @@ public final class BreathChain implements Task, com.dwinovo.numen.task.reflex.Re
         retargetCooldown = 0;
         trappedNoted = false;
         submergedTicks = 0;
+        episodesInWindow = 0;
+        lastEpisodePos = null;
+        lastEpisodeTick = 0L;
     }
 
     @Override
