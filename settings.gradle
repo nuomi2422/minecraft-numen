@@ -48,3 +48,8 @@ include('plugins:selfcompile')
 include('plugins:rdd')
 include('plugins:experience')
 include('plugins:ac')
+// Learner (batch 2): memo queue + LLM review, plan-only. Own plugin because
+// experience is a passive store and rdd-core is a zero-dependency pure-JVM module
+// that must not gain an LLM dependency. No embedded core: cross-plugin work goes
+// through the NumenApi door only (see 28-第二批-学习者携带器记忆库.md).
+include('plugins:learner')
