@@ -104,6 +104,8 @@ public final class CollectItemsCompanionTask extends AbstractCompanionTask<Colle
         if (best == null) {
             // Nothing left within radius — this sweep is over. Whether it actually GOT
             // everything is a separate question, answered by the tallies, not by this state.
+            // 打上"真的走完一圈"的印记:超时/取消时走不到这里,于是不会被误报成 all_picked_up。
+            r.markReachedEnd();
             noteShortfallOnce();
             return TaskState.SUCCESS;
         }

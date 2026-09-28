@@ -66,23 +66,31 @@ class CollectDecisionsTest {
 
     @Test
     void nothingShortMeansSweepComplete() {
-        assertTrue(CollectDecisions.sweepComplete(0, 0, 0));
+        assertTrue(CollectDecisions.sweepComplete(true, 0, 0, 0));
     }
 
     @Test
     void anyShortfallMeansNotComplete() {
         // 三种缺口任何一种非零,"扫完了"就都不能读成"都拿到了"
-        assertFalse(CollectDecisions.sweepComplete(1, 0, 0));
-        assertFalse(CollectDecisions.sweepComplete(0, 1, 0));
-        assertFalse(CollectDecisions.sweepComplete(0, 0, 1));
-        assertFalse(CollectDecisions.sweepComplete(3, 2, 1));
+        assertFalse(CollectDecisions.sweepComplete(true, 1, 0, 0));
+        assertFalse(CollectDecisions.sweepComplete(true, 0, 1, 0));
+        assertFalse(CollectDecisions.sweepComplete(true, 0, 0, 1));
+        assertFalse(CollectDecisions.sweepComplete(true, 3, 2, 1));
+    }
+
+    @Test
+    void notReachedEndIsNeverComplete() {
+        // 超时/被取消:三个缺口计数都还是 0,但一件都没拿到。
+        // 只看缺口就会报 all_picked_up=true —— 恰好是这一类要治的病。
+        assertFalse(CollectDecisions.sweepComplete(false, 0, 0, 0));
+        assertFalse(CollectDecisions.sweepComplete(false, 0, 0, 0));
     }
 
     @Test
     void negativeTalliesDoNotFakeACompleteSweep() {
         // 账本只增不减;真出现负数说明别处有 bug,这里不能因此报"干净完成"
-        assertFalse(CollectDecisions.sweepComplete(-1, 0, 0));
-        assertFalse(CollectDecisions.sweepComplete(0, 0, -1));
+        assertFalse(CollectDecisions.sweepComplete(true, -1, 0, 0));
+        assertFalse(CollectDecisions.sweepComplete(true, 0, 0, -1));
     }
 
     // ---- 多数据:一整趟的分类不会互相污染 ----
@@ -101,6 +109,6 @@ class CollectDecisionsTest {
         assertEquals(5, credited);      // deltas 1,2,1,5,1
         assertEquals(5, vanished);      // deltas 0,-1,0,0,0
         assertEquals(0, stillThere);
-        assertFalse(CollectDecisions.sweepComplete(vanished, 0, stillThere));
+        assertFalse(CollectDecisions.sweepComplete(true, vanished, 0, stillThere));
     }
 }

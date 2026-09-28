@@ -70,4 +70,29 @@ public final class TempResourceRules {
     public static boolean keepLedgerOnStop(boolean waterStillThere) {
         return waterStillThere;
     }
+
+    /**
+     * 清理窗口<b>能不能占住身体</b>。
+     *
+     * <h3>这一条是被一次真实回归逼出来的</h3>
+     * {@code MLGChain} 的注册号是 10,压过岩浆逃逸(12)、窒息逃逸(15)、换气(20)、自卫(30)——
+     * {@code NumenCore.registerReflexes} 写明"注册号小的先问",而
+     * {@code TaskSelector.select} 取**第一个 canRun 为真的**就返回。
+     *
+     * <p>所以清理窗口只要让 {@code canRun()} 一直为真,就等于把上面四条救命反射
+     * 全部压掉整整一个清理窗口(约 10 秒)。在岩浆洞里这足以致死——为了收一摊水
+     * 而害死同伴,是本末倒置得离谱。
+     *
+     * <p>因此判据很直白:<b>只要此刻有任何一条救命反射该触发,就立刻让路。</b>
+     * 清理是家务,命是命。
+     *
+     * @param deadOrDying 正在死
+     * @param inLava 在岩浆里(LavaEscapeChain 该管)
+     * @param inWall 卡在方块里(SuffocationEscapeChain 该管)
+     * @param drowning 头在水下且氧气见底(BreathChain 该管)
+     */
+    public static boolean cleanupMayYield(boolean deadOrDying, boolean inLava,
+                                          boolean inWall, boolean drowning) {
+        return !deadOrDying && !inLava && !inWall && !drowning;
+    }
 }

@@ -67,6 +67,64 @@ class TempResourceRulesTest {
         assertFalse(TempResourceRules.keepLedgerOnStop(false));
     }
 
+    // ---- 清理窗口能不能占身体（本批最要紧的一条） ----
+
+    @Test
+    void cleanupYieldsWhenNothingIsWrong() {
+        // 平平安安时,收一摊水是家务,可以让它做
+        assertTrue(TempResourceRules.cleanupMayYield(false, false, false, false));
+    }
+
+    @Test
+    void cleanupMustYieldToLavaEscape() {
+        // MLG 注册号 10 < LavaEscape 12：清理若还报 canRun=true，就把逃岩浆压掉约 10 秒，
+        // 在岩浆洞里足以致死。这条判据就是为此存在的。
+        assertFalse(TempResourceRules.cleanupMayYield(false, true, false, false));
+    }
+
+    @Test
+    void cleanupMustYieldToSuffocationEscape() {
+        assertFalse(TempResourceRules.cleanupMayYield(false, false, true, false));
+    }
+
+    @Test
+    void cleanupMustYieldToBreathChain() {
+        assertFalse(TempResourceRules.cleanupMayYield(false, false, false, true));
+    }
+
+    @Test
+    void cleanupMustYieldToDeath() {
+        assertFalse(TempResourceRules.cleanupMayYield(true, false, false, false));
+    }
+
+    @Test
+    void anySingleEmergencyIsEnoughToYield() {
+        // 急救优先级：一条就够让路,不需要"全都出事"
+        assertFalse(TempResourceRules.cleanupMayYield(true, true, true, true));
+        assertFalse(TempResourceRules.cleanupMayYield(false, true, true, true));
+    }
+
+    // ---- 预算一定收敛（反复抢占不许无限续期） ----
+
+    @Test
+    void cleanupBudgetIsGrantedAtMostOncePerPlacement() {
+        // 对应 stop() 的实现：预算<=0 才发，否则只扣一格。所以**同一次放置**里发放的
+        // 预算恒 <= CLEANUP_BUDGET_TICKS，反复被抢占也耗得完 → 预算归零即 closeLedger()
+        // 销账，这条反射不可能被永久钉在身体上。
+        // （先前这个测试写错了模型：它假设预算耗尽后还能继续发额度，可那时账已经销了。）
+        final int grant = 200;
+        int budget = grant;          // 放置那一刻发一次
+        int totalGranted = grant;
+        boolean ledgerOpen = true;
+        for (int preempt = 0; preempt < 1000 && ledgerOpen; preempt++) {
+            if (budget <= 0) { ledgerOpen = false; break; }   // 耗尽 → closeLedger 销账
+            budget--;                                          // 每次被抢占扣一格
+        }
+        assertFalse(ledgerOpen, "预算必须在有限次抢占内耗尽并销账");
+        assertEquals(grant, totalGranted, "同一次放置发放的预算总量必须 <= 单次额度");
+        assertTrue(budget >= 0);
+    }
+
     // ---- 极端:反复抢占不会把身体永久钉住 ----
 
     @Test

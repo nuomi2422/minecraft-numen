@@ -62,13 +62,17 @@ public final class CollectDecisions {
      *
      * <p>给上层一个不用去解析文案就能判的布尔:有东西在到达前消失、够不着、或者走到了
      * 却没吸上,这一趟就<b>不是</b>干净完成。终态仍是 SUCCESS(工具契约没改),但这个
-     * 标志和 {@code resultData} 里的分项计数让"扫完了"和"拿到了"能被分开看。
+     * 标志和 {@code resultData} 里的分项计数让"扫完了"和"拿到了"能被上层分开看。
      *
+     * @param reachedEnd 是否真的扫到了"再没有候选"那一步。
+     *                   <b>必须有这一条</b>:超时或被取消时任务根本没走完一圈,
+     *                   三个缺口计数都还是 0,只看缺口就会把"一件都没拿"报成
+     *                   {@code all_picked_up=true} —— 恰好是本类要治的那个病。
      * @param vanished 消失但不是我们拿到的件数
      * @param unreachable 寻路够不着的件数
      * @param leftBehind 走到了却没吸上、被本轮跳过的件数
      */
-    public static boolean sweepComplete(int vanished, int unreachable, int leftBehind) {
-        return vanished == 0 && unreachable == 0 && leftBehind == 0;
+    public static boolean sweepComplete(boolean reachedEnd, int vanished, int unreachable, int leftBehind) {
+        return reachedEnd && vanished == 0 && unreachable == 0 && leftBehind == 0;
     }
 }

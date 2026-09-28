@@ -32,6 +32,11 @@ public final class CollectItemsTaskRecord extends TaskRecord {
     private int unreachable = 0;
     /** 走到了却没吸上、被本轮跳过的件数。 */
     private int leftBehind = 0;
+    /**
+     * 是否真的扫到了"再没有候选"那一步。超时/取消时任务根本没走完一圈,
+     * 三个缺口计数都还是 0 —— 没有这条,「一件都没拿到」会被报成 all_picked_up=true。
+     */
+    private boolean reachedEnd = false;
 
     public CollectItemsTaskRecord(String toolCallId, long deadlineGameTime,
                                   Set<Item> filter, int radius, String label) {
@@ -76,13 +81,22 @@ public final class CollectItemsTaskRecord extends TaskRecord {
         return leftBehind;
     }
 
+    /** 扫到"再没有候选"时打一个印记——只有真的走完一圈才允许说"都拿到了"。 */
+    public void markReachedEnd() {
+        this.reachedEnd = true;
+    }
+
+    public boolean reachedEnd() {
+        return reachedEnd;
+    }
+
     /**
-     * 这一趟是不是干净完成:没有在到达前消失的、没有够不着的、没有走到却丢下的。
-     * 与"扫完了"(SCAN 再也找不到候选)不是一回事——这正是"黑曜石挖了不捡"能被
-     * 误判成完成的缺口。
+     * 这一趟是不是干净完成:真的走完一圈,且没有在到达前消失的、没有够不着的、
+     * 没有走到却丢下的。与"扫完了"(SCAN 再也找不到候选)不是一回事——这正是
+     * "黑曜石挖了不捡"能被误判成完成的缺口。
      */
     public boolean isSweepComplete() {
-        return CollectDecisions.sweepComplete(vanished, unreachable, leftBehind);
+        return CollectDecisions.sweepComplete(reachedEnd, vanished, unreachable, leftBehind);
     }
 
     @Override

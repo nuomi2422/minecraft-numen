@@ -8,10 +8,12 @@ import com.dwinovo.numen.core.task.survival.SurvivalDecisions;
 import com.dwinovo.numen.entity.InputDriver;
 import com.dwinovo.numen.entity.NumenPlayer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LiquidBlockContainer;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.ClipContext;
@@ -99,7 +101,30 @@ public final class MLGChain implements Task, com.dwinovo.numen.task.reflex.Refle
         if (WorkProfile.of(companion).fearless()) {
             return false;
         }
-        return falling(companion) || reclaiming(companion);
+        if (falling(companion)) {
+            return true;
+        }
+        if (!reclaiming(companion)) {
+            return false;
+        }
+        // 快窗口还是自救本身的一部分,照旧可以占身体(与改动前同性质)。
+        if (reclaimTicks > 0) {
+            return true;
+        }
+        // 清理阶段【绝不能压过救命反射】:本链注册号 10,压过岩浆逃逸(12)、
+        // 窒息逃逸(15)、换气(20)、自卫(30),而 TaskSelector 取第一个 canRun 为真的。
+        // 清理一旦在紧急情况期间仍报 true,就把那四条全压掉约 10 秒——在岩浆洞里足以致死。
+        return cleanupMayYield(companion);
+    }
+
+    /** 此刻有没有救命反射该接手:有任何一条就让路。判据见 TempResourceRules。 */
+    private static boolean cleanupMayYield(NumenPlayer companion) {
+        return TempResourceRules.cleanupMayYield(
+                companion.isDeadOrDying(),
+                companion.isInLava(),
+                companion.isInWall(),
+                SurvivalDecisions.breathTriggered(
+                        companion.isEyeInFluid(FluidTags.WATER), companion.getAirSupply()));
     }
 
     /** 正在快速下落,而且身上有能救自己的东西。 */
@@ -241,22 +266,44 @@ public final class MLGChain implements Task, com.dwinovo.numen.task.reflex.Refle
         int block = softBlockSlot(companion);
         if (block >= 0) {
             companion.holdInHand(block);
+            // 记下"软方块会落在哪一格"要在点之前算:点完 world 就变了。
+            // 以前这里记的是 ground(射线打到的支撑方块),而 useBlock 是贴面放置的,
+            // 真正留在世界里的是它上面那一格 —— 记错坐标等于给后续收尾指错地方。
+            BlockPos softAt = softBlockLandsAt(companion, aim);
             Interaction.useBlock(companion, aim, InteractionHand.MAIN_HAND).tick();
-            noteSoftLeftBehind(companion, ground);
+            noteSoftLeftBehind(companion, softAt, softPlacedOk(companion, softAt));
             noteSave(companion, "a soft block");
         }
         return TaskState.RUNNING;
     }
 
     /**
+     * 软方块会落在哪一格 —— 与原版 {@code BlockItem.place} 同一算法:
+     * 点到的格子若可被替换就就地放,否则贴住那个面(正下方看落点时就是它上面一格)。
+     */
+    private static BlockPos softBlockLandsAt(NumenPlayer companion, BlockHitResult hit) {
+        BlockState state = companion.level().getBlockState(hit.getBlockPos());
+        return state.canBeReplaced() ? hit.getBlockPos() : hit.getBlockPos().relative(hit.getDirection());
+    }
+
+    /** 回读那一格,确认真的垫上去了 —— 放不成功就别把坐标说得那么肯定。 */
+    private static boolean softPlacedOk(NumenPlayer companion, BlockPos at) {
+        BlockState s = companion.level().getBlockState(at);
+        return s.is(Blocks.HAY_BLOCK) || s.is(Blocks.SLIME_BLOCK);
+    }
+
+    /**
      * 垫下去的软方块留在世界里,但只记一笔、<b>不自动拆</b>——她可能正站在上面,
      * 为了收尾把救命物抽走比留着更危险。要不要拆由上层决定。
+     *
+     * @param landedAt 真正放下方块的那一格(贴面放置,不是射线打到的支撑方块)
+     * @param placedOk 回读确认：false 表示这一格并没有干草/史莱姆,别把坐标说得太肯定
      */
-    private void noteSoftLeftBehind(NumenPlayer companion, BlockPos at) {
+    private void noteSoftLeftBehind(NumenPlayer companion, BlockPos landedAt, boolean placedOk) {
         com.dwinovo.numen.event.NumenEvents.body(companion,
-                "padded a fall with a soft block at " + at.toShortString()
-                        + "; it is still in the world and I am not breaking it back up"
-                        + " because I may be standing on it");
+                "padded a fall with a soft block at " + landedAt.toShortString()
+                        + (placedOk ? "" : " (I could not confirm it is there")
+                        + "; I am not breaking it back up because I may be standing on it");
     }
 
     /** 落进自己那摊水:等沉稳了,换空桶把水收回来。 */
@@ -293,16 +340,38 @@ public final class MLGChain implements Task, com.dwinovo.numen.task.reflex.Refle
         }
         companion.setXRot(0.0f);   // stop staring straight down; the resumed task re-aims as needed
         notedThisFall = false;     // the fall episode is over — the next fall diaries anew
-        // 关键修复:以前这里无条件 placed=null。被更高优先级的反射抢占一次,那摊水
-        // 就既没收回、也没留下任何记录,永久留在世界里(用户案例:落地水不回收)。
-        // 现在水还在就留账,交给清理窗口去销。
-        if (placed != null && TempResourceRules.keepLedgerOnStop(placedWaterStillThere(companion))) {
+        if (placed == null) {
+            cleanupTicks = 0;
             reclaimTicks = 0;
-            cleanupTicks = CLEANUP_BUDGET_TICKS;
-        } else {
+            return;
+        }
+        // 收不回来就别留陈账。旧实现在这里无条件 placed=null(那是"落地水不回收"的成因),
+        // 而单纯改成"有水就留"又会留下一个永远没人销的挂账:桶没了的时候 reclaiming()
+        // 为 false → canRun() 为 false → tick() 永不执行 → 没人扣预算、也没人报放弃,
+        // 一直挂到将来某个刻桶又回来了才复活(绕过 ABANDON_NO_BUCKET)。所以这里必须闭环:
+        //   水没了        → 自然结清,销账
+        //   没桶可装      → 收不回来,报一笔并销账
+        //   水在且桶在    → 留账进清理窗口
+        if (!placedWaterStillThere(companion)) {
             placed = null;
             reclaimTicks = 0;
             cleanupTicks = 0;
+            return;
+        }
+        if (!canReclaimNow(companion)) {
+            reportUnreclaimed(companion, "no empty bucket was left to scoop it back up");
+            placed = null;
+            reclaimTicks = 0;
+            cleanupTicks = 0;
+            return;
+        }
+        reclaimTicks = 0;
+        // 预算只发一次,且每次被抢占都扣一格 —— 保证一定收敛,不会因为反复抢占
+        // 而无限续期把这条反射永久钉在身体上(见 TempResourceRules 的说明)。
+        if (cleanupTicks <= 0) {
+            cleanupTicks = CLEANUP_BUDGET_TICKS;
+        } else {
+            cleanupTicks--;
         }
     }
 
