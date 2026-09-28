@@ -7,8 +7,11 @@ import com.dwinovo.numen.task.TaskState;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.core.pathing.calc.NavGoal;
 import com.dwinovo.numen.core.pathing.execute.PlayerNav;
+import com.dwinovo.numen.core.pathing.execute.OscillationPolicy;
 import com.dwinovo.numen.core.task.base.AbstractCompanionTask;
 import net.minecraft.core.BlockPos;
+import java.util.ArrayList;
+import java.util.List;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -45,6 +48,58 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
     /** 解析目标列地表时相对同伴当前高度的扫描窗口（格）。 */
     private static final int COLUMN_SCAN_UP = 48;
     private static final int COLUMN_SCAN_DOWN = 96;
+    /** 横跳判据：采样间隔（tick，1 秒一次）、窗口长度、净位移上限、总路程下限、反转角与次数。 */
+    private static final int OSC_SAMPLE_TICKS = 20;
+    private static final int OSC_WINDOW = 12;
+    private static final double OSC_NET_BLOCKS = 3.0;
+    private static final double OSC_TRAVEL_BLOCKS = 10.0;
+    private static final double OSC_REVERSAL_DEG = 120.0;
+    private static final int OSC_MIN_REVERSALS = 4;
+
+    /** 水平采样环形缓冲（x,z）：给 {@link OscillationPolicy} 判横跳用。 */
+    private final List<double[]> oscSamples = new ArrayList<>();
+    private int oscTick;
+
+    private static double round1(double v) {
+        return Math.round(v * 10.0) / 10.0;
+    }
+
+    /** 每 {@link #OSC_SAMPLE_TICKS} 采一个点；命中横跳判据则返回 true。 */
+    private boolean oscillating() {
+        if (++oscTick < OSC_SAMPLE_TICKS) {
+            return false;
+        }
+        oscTick = 0;
+        var pos = player.blockPosition();
+        oscSamples.add(new double[]{pos.getX() + 0.5, pos.getZ() + 0.5});
+        while (oscSamples.size() > OSC_WINDOW) {
+            oscSamples.remove(0);
+        }
+        if (player.isInWater()) {
+            // 在水里是"游泳/上浮"的正常行为，判据会误伤；浮出水面后窗口自然滑出。
+            return false;
+        }
+        return OscillationPolicy.oscillating(oscSamples, OSC_WINDOW, OSC_NET_BLOCKS,
+                OSC_TRAVEL_BLOCKS, OSC_REVERSAL_DEG, OSC_MIN_REVERSALS);
+    }
+
+    private double walkedBlocks() {
+        double sum = 0;
+        for (int i = 1; i < oscSamples.size(); i++) {
+            sum += Math.hypot(oscSamples.get(i)[0] - oscSamples.get(i - 1)[0],
+                    oscSamples.get(i)[1] - oscSamples.get(i - 1)[1]);
+        }
+        return sum;
+    }
+
+    private double netDisplacement() {
+        if (oscSamples.size() < 2) {
+            return 0;
+        }
+        double[] a = oscSamples.get(0);
+        double[] b = oscSamples.get(oscSamples.size() - 1);
+        return Math.hypot(b[0] - a[0], b[1] - a[1]);
+    }
     /** Progress lease: while the journey is consuming its plan, the deadline is kept
      *  this far ahead — a healthy multi-minute dig route never times out mid-stride,
      *  and a stalled one still returns the body within one lease. */
@@ -305,6 +360,17 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         if (nav.stallTicks() <= PROGRESS_GRACE_TICKS && leaseCapGameTime > 0) {
             long now = player.level().getGameTime();
             r.extendDeadlineTo(Math.min(now + PROGRESS_LEASE_TICKS, leaseCapGameTime));
+        }
+        // 原地横跳熔断（2026-09-28）：实机反复出现「规划路不进水、身体却走进水→浮起来→
+        // 再走进水→再浮起来」，也能在树/墙边出现。表现为零净位移 + 方向来回反转，
+        // 但路径层不报错、卡死检测也不认，于是能这样磨几十分钟。这里直接放弃这条路，
+        // 交回上层换一条（宁可换个目标点，也别原地磨）。
+        if (oscillating()) {
+            fail("route unusable: no net progress, direction keeps reversing"
+                    + " (walked " + round1(walkedBlocks()) + " blocks, net "
+                    + round1(netDisplacement()) + ") -- pick another route or another target",
+                    FailureType.NO_PATH);
+            return TaskState.FAILED;
         }
         // Track passive progress toward the goal: the planner stops at the water surface
         // above an underwater target, but the body keeps drifting toward it on its own (it

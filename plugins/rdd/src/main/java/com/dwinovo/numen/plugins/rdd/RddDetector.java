@@ -446,7 +446,9 @@ final class RddDetector {
                 "subtask", current.id(), "kind", n.kind().name(),
                 "hasSuggestion", n.hasSuggestion(), "reason", n.reason()));
         // 协商改单：优先用士兵建议重规划当前一级（用**独立协商预算**，不被失败预算回绝）。
-        if (RddPlugin.requestReplan(ap.getUUID(), "soldier " + n.kind().name() + ": " + n.reason(), true)) {
+        // 2026-09-28：把 negotiationHint（士兵的 COUNTER 具体选项）**真正送进规划器输入** ——
+        // 旧实现算出来只用于打日志，士兵的建议被整段丢弃，实机表现为"说了好几次指挥官仍照原计划"。
+        if (RddPlugin.requestReplan(ap.getUUID(), "soldier " + n.kind().name() + ": " + n.reason(), true, hint)) {
             return true;
         }
         // 重规划预算耗尽 → 停车守望（不无限协商）。

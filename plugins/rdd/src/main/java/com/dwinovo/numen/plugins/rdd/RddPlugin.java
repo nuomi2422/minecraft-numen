@@ -354,14 +354,26 @@ public final class RddPlugin implements NumenPlugin {
      * 这是 REPLANNING 在生产里的**活触发器**（此前只有测试构造 REPLAN）。
      */
     static boolean requestReplan(UUID companionId, String reason) {
-        return requestReplan(companionId, reason, false);
+        return requestReplan(companionId, reason, false, null);
+    }
+
+    static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation) {
+        return requestReplan(companionId, reason, fromNegotiation, null);
     }
 
     /**
-     * 重规划（带来源标记）：{@code fromNegotiation=true} 时用**独立的协商预算**——
-     * 士兵的反馈不该被"失败驱动的重规划预算"一口回绝（V1 实测：士兵报 COUNTER 时 REPLAN 预算已耗尽 → 直接停车）。
+     * 重规划（带来源标记 + **士兵的具体建议**）。
+     *
+     * <p>{@code fromNegotiation=true} 时用**独立的协商预算**——士兵的反馈不该被"失败驱动的
+     * 重规划预算"一口回绝（V1 实测：士兵报 COUNTER 时 REPLAN 预算已耗尽 → 直接停车）。
+     *
+     * <p>{@code soldierHint} 是 2026-09-28 补的关键一环：士兵（执行 AI）会带着**具体方案**
+     * 上报（例如"三选一：按总铁量算 25 / 给我一处干燥矿点 / 让我转去收废弃传送门"），
+     * 但旧实现只把 {@code reason}（"soldier COUNTER: …"）送进规划上下文，**建议本身被丢掉了** ——
+     * 实机表现就是"干活的说了好几次原因，指挥官照原计划执行，像听不到"。
+     * 现在建议会原样进入规划器的输入，规划器才可能"听懂并变通"。
      */
-    static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation) {
+    static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation, String soldierHint) {
         RddRuntime rt = RUNTIMES.get(companionId);
         if (rt == null) return false;
         TaskChain chain = rt.chain();
@@ -414,6 +426,12 @@ public final class RddPlugin implements NumenPlugin {
                 new java.util.ArrayList<>(chain.satisfiedStages()),
                 snap.availableCounts(), level, gaps, java.util.List.of());
         String hint = ReplanContextBuilder.render(ctx);
+        if (soldierHint != null && !soldierHint.isBlank()) {
+            // 士兵的具体建议（COUNTER 的可选项 / REJECT 的理由）必须进规划器输入，
+            // 否则规划器只看到"士兵报了 COUNTER"却拿不到它建议怎么改 → 只能原样重规划。
+            hint = hint + "\n\n## 执行层（士兵）明确上报的方案（必须采纳其一或给出不同方案，不要原样重规划）\n"
+                    + soldierHint.strip();
+        }
         RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
         RddDecomposer.decomposeSpecsWithHint(companionId, theme, 1, java.util.List.of(), hint,
                 specs -> onServer(server, ticket, () -> {
