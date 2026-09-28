@@ -28,10 +28,17 @@ final class RddRepairDispatch {
     private static final LocalRepairTask.Guard GUARD = LocalRepairTask.Guard.defaults();
 
     /**
-     * \u751f\u6210\u5e76\uff08\u7ecf\u62a4\u680f\uff09\u6295\u653e\u4e00\u6761\u6b7b\u4ea1\u652f\u7ebf\u4efb\u52a1\u3002\u8fd4\u56de true = \u5df2\u6295\u653e\uff08nudge \u6ce8\u5165\uff09\u3002
-     * \u6b7b\u4ea1\u89e6\u53d1\u4f18\u5148\u7ea7 CRITICAL\uff08\u62a4\u680f\u653e\u884c\uff09\uff0c\u76ee\u6807\uff1a\u53d6\u5907\u7528\u88c5\u5907 / \u6361\u56de\u6389\u843d / \u56de\u4e3b\u94fe\u3002
+     * 生成并（经护栏）投放一条死亡支线任务。返回 true = 已投放（nudge 注入）。
+     * 死亡触发优先级 CRITICAL（护栏放行）。
+     *
+     * <p><b>顺序是"先捡包、后取备用"（2026-09-29 用户实测纠正）</b>：
+     * 掉落物约 <b>5 分钟</b>就 despawn，而"先回基地取备用装备"很容易把这段限时窗口耗光——
+     * 那样就只捡回一部分、其余刷没了（用户原话：剪了，只剪了一部分，过 5 分钟有些就没了）。
+     * 所以捡包**限时优先**，备用装备排后面；且必须把**死亡坐标**给它，否则它不知道去哪捡。
+     *
+     * @param deathAt 死亡点坐标文本（如 "425, 75, -298"），可空
      */
-    static boolean onDeath(UUID companionId, String goalId) {
+    static boolean onDeath(UUID companionId, String goalId, String deathAt) {
         if (companionId == null) return false;
         long now = RddInstrumentation.currentGameTimeTicks();
         LocalRepairTask.Priority pri = LocalRepairTask.defaultPriority(LocalRepairTask.Trigger.DEATH);
@@ -42,19 +49,24 @@ final class RddRepairDispatch {
                     "companionId", companionId.toString(), "trigger", "DEATH", "decision", d.name()));
             return false;
         }
+        String at = (deathAt == null || deathAt.isBlank()) ? "死亡点" : deathAt;
         String id = "repair-" + companionId + "-" + ID_SEQ.incrementAndGet();
         String parent = (goalId == null || goalId.isBlank()) ? ("goal-" + companionId) : goalId;
         LocalRepairTask.Task task = LocalRepairTask.Task.of(id, parent, "death-event",
                 LocalRepairTask.Trigger.DEATH, pri, 5 * 60 * 20,
                 LocalRepairTask.ResumePolicy.RESEARCH_TARGET,
-                "\u53d6\u56de\u5907\u7528\u88c5\u5907\uff1b\u8d70\u5230\u6b7b\u4ea1\u70b9\u6361\u56de\u6389\u843d\uff1b\u6062\u590d\u539f\u4e3b\u94fe",
+                "\u5148\u53bb " + at + " \u6361\u56de\u6389\u843d\u7269\uff08\u9650\u65f6\uff01\u7ea6 5 \u5206\u949f\u6d88\u5931\uff09\uff1b\u518d\u53d6\u5907\u7528\u88c5\u5907\uff1b\u7136\u540e\u56de\u4e3b\u94fe",
                 "ESCALATE",
-                "\u6b7b\u4ea1\u652f\u7ebf\uff1a\u5148\u5904\u7406\u773c\u524d(\u53d6\u5907\u7528/\u6361\u5305)\uff0c\u4e0d\u6574\u94fe\u91cd\u89c4\u5212\uff1b\u5b8c\u6210\u540e\u56de\u4e3b\u94fe");
+                "\u6b7b\u4ea1\u652f\u7ebf\uff1a\u6361\u5305\u9650\u65f6\u4f18\u5148\uff08\u5148\u6361\u540e\u53d6\u5907\u7528\uff09\uff0c\u4e0d\u6574\u94fe\u91cd\u89c4\u5212\uff1b\u5b8c\u6210\u540e\u56de\u4e3b\u94fe");
         LAST_REPAIR.put(companionId, task);
         tr.recordFire(LocalRepairTask.Trigger.DEATH, now);
         RddMonitor.publish("repair_task_dispatched", Map.of(
-                "companionId", companionId.toString(), "repairId", id, "priority", pri.name()));
-        RddPlugin.nudge(companionId, "[\u652f\u7ebf\u4efb\u52a1] \u4f60\u521a\u6b7b\u8fc7\uff1a\u5148\u5904\u7406\u773c\u524d\u2014\u2014\u4f18\u5148\u53d6\u56de\u5907\u7528\u88c5\u5907/\u6361\u56de\u6389\u843d\u7269\uff0c\u4e0d\u8981\u4e3a\u8fd9\u4ef6\u4e8b\u91cd\u89c4\u5212\u6574\u6761\u4e3b\u94fe\uff1b\u5904\u7406\u5b8c\u56de\u4e3b\u94fe\u7ee7\u7eed\u3002");
+                "companionId", companionId.toString(), "repairId", id, "priority", pri.name(),
+                "deathAt", at));
+        RddPlugin.nudge(companionId, "[\u652f\u7ebf\u4efb\u52a1/\u6b7b\u4ea1] \u4f60\u521a\u6b7b\u4e00\u6b21\u3002\u6389\u843d\u7269\u5728 "
+                + at + " \u9644\u8fd1\u2014\u2014\u6ce8\u610f\uff1a**\u6389\u843d\u7269\u7ea6 5 \u5206\u949f\u5c31\u4f1a\u6d88\u5931**\u3002"
+                + "\u6240\u4ee5\u987a\u5e8f\u662f\uff1a\u5148\u7acb\u523b\u56de " + at + " \u628a\u6389\u843d\u7269\u6361\u56de\u6765\uff08\u9650\u65f6\u4f18\u5148\uff09\uff0c"
+                + "\u518d\u53bb\u53d6\u5907\u7528\u88c5\u5907\uff0c\u6700\u540e\u56de\u4e3b\u94fe\u7ee7\u7eed\u3002\u4e0d\u8981\u4e3a\u8fd9\u4ef6\u4e8b\u91cd\u89c4\u5212\u6574\u6761\u4e3b\u94fe\u3002");
         return true;
     }
 

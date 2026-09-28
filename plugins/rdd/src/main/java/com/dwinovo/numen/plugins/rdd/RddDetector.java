@@ -77,6 +77,13 @@ final class RddDetector {
      * 免得"早就没人管了"这件事静默消失。
      */
     private final Map<UUID, String> waitingNotice = new ConcurrentHashMap<>();
+    /**
+     * 背包快满提醒的去重状态（用户 2026-09-28 点名要的功能：满之前就提醒，别等捡不起来才报错）。
+     * 记「上次提醒时刻」与「上次提醒时的剩余格数」，供 {@link com.dwinovo.numen.rdd.policy.BackpackSpace#shouldWarn}
+     * 判断：首次/更紧/过冷却才发，防刷屏（本项目有等待类事件每 tick 重发过的前科）。
+     */
+    private final Map<UUID, Long> backpackWarnedAt = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> backpackWarnedFree = new ConcurrentHashMap<>();
 
     /**
      * 等待类事件的边沿去重发布。
@@ -147,6 +154,8 @@ final class RddDetector {
         worldAssetTick = (worldAssetTick + 1) % 30;
         // 空转止血：每次心跳刷新监督开关（flag 文件由监测台/人写，pause=停拍醒）
         RddPlugin.refreshSupervisionFlag();
+        // 单驾驶员：同一心跳刷新"是否允许 RDD 自动提交身体工具"（默认关；见 RddPlugin 字段注释）。
+        RddPlugin.refreshBodyDispatchFlag();
         // 重启恢复：磁盘有任务但内存无 → 加载为 RddRuntime（幂等，RECOVERING）
         RddPlugin.restoreRuntimes();
         for (ServerPlayer p : server.getPlayerList().getPlayers()) {
@@ -177,6 +186,9 @@ final class RddDetector {
             PrimaryGoalStatus ps = chain.primaryStatus();
             // 真实背包先扫+缓存（规划注入数据源）；缓存是女仆属性，收尾/监督态也照常更新。
             Map<String, Integer> counts = countInventory(ap);
+            // 背包快满主动提醒（用户点名）：放在这里是因为它在**任何链状态**（停车/失败/未展开）
+            // 都该生效——满了就是满了，跟目标推到第几级无关。see BackpackSpace。
+            maybeWarnBackpackFull(ap);
             surplus.inspect(ap, chain, counts);
             RddPlugin.cacheInventory(ap.getUUID(), counts);
             // P2.1：观测到即记资产历史 CURRENT（只记装备/工具/食物等有恢复价值者），供 Lost≠Gone 线索。
@@ -844,5 +856,58 @@ final class RddDetector {
             counts.merge(key, stack.getCount(), Integer::sum);
         }
         return counts;
+    }
+
+    /**
+     * 主背包区（可被拾取填充的那部分）剩余空格数。
+     *
+     * <p>只数前 {@link #MAIN_INV_SLOTS} 格：盔甲/副手槽（41-36）拾取塞不进去，
+     * 把它们算成"空格"会高估可用空间，于是提醒永远不触发。
+     */
+    static int freeMainSlots(NumenPlayer ap) {
+        var inv = ap.getInventory();
+        int free = 0;
+        int main = Math.min(MAIN_INV_SLOTS, inv.getContainerSize());
+        for (int i = 0; i < main; i++) {
+            if (inv.getItem(i).isEmpty()) {
+                free++;
+            }
+        }
+        return free;
+    }
+
+    /** 主背包区格数（36 = 9 快捷栏 + 27 主格）。 */
+    static final int MAIN_INV_SLOTS = 36;
+
+    /** 背包快满提醒的冷却（刻）。10 秒量级：够它去开箱卸货，又不至于整趟只提醒一次。 */
+    private static final long BACKPACK_WARN_COOLDOWN_TICKS = 200;
+
+    /**
+     * 背包快满就主动提醒它去卸货。
+     *
+     * <p>用户点名的痛点：它"老是背包满"，满了之后采集/拾取才失败——<b>事前没人说</b>。
+     * 这里在每 tick 监督入口做一次判断，靠 {@link com.dwinovo.numen.rdd.policy.BackpackSpace}
+     * 去重（首次/更紧/过冷却才发），再走既有的 {@code RddPlugin.nudge} 通道注入提醒。
+     */
+    private void maybeWarnBackpackFull(NumenPlayer ap) {
+        try {
+            int free = freeMainSlots(ap);
+            UUID id = ap.getUUID();
+            long now = RddInstrumentation.currentGameTimeTicks();
+            long lastAt = backpackWarnedAt.getOrDefault(id, 0L);
+            int lastFree = backpackWarnedFree.getOrDefault(id, -1);
+            if (!com.dwinovo.numen.rdd.policy.BackpackSpace.shouldWarn(
+                    free, lastAt, lastFree, now, BACKPACK_WARN_COOLDOWN_TICKS)) {
+                return;
+            }
+            backpackWarnedAt.put(id, now);
+            backpackWarnedFree.put(id, free);
+            RddPlugin.nudge(id, com.dwinovo.numen.rdd.policy.BackpackSpace.warnMessage(free, MAIN_INV_SLOTS));
+            RddMonitor.publish("backpack_near_full", Map.of(
+                    "companionId", id.toString(), "freeSlots", free, "mainSlots", MAIN_INV_SLOTS));
+        } catch (RuntimeException ex) {
+            // 提醒是增益功能，出错绝不能影响主链推进
+            LOG.warn("[rdd] 背包提醒失败 {}: {}", ap.getUUID(), ex.toString());
+        }
     }
 }

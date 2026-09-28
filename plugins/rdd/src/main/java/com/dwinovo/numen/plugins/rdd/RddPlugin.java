@@ -55,8 +55,20 @@ public final class RddPlugin implements NumenPlugin {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
                 (net.neoforged.neoforge.event.server.ServerStoppedEvent event) -> clearWorldState());
     }
-    /** assist 协助模式下暂停自动工具提交(防双驾驶);默认 true = RDD 可自动提交。 */
-    private static volatile boolean bodySubmissionEnabled = true;
+    /**
+     * RDD 是否允许"自动提交身体工具"。
+     *
+     * <p><b>默认 false（2026-09-29 由 true 改回 false）</b>——用户硬要求：「RDD 只负责规划/管理，
+     * 绝对不能跟执行方抢方向盘」。此前默认 true 且 {@code setBodySubmissionEnabled} 从未被任何
+     * 地方调用，于是"防双驾驶"只是注释没接线：RDD 自动派 mine/goto，AI 模型自己也派，
+     * 两个方向盘互抢 → 表现为<b>原地左右横跳</b>。用户原话：「这根本就不是执行层的问题」。
+     *
+     * <p>要临时开回来：写 {@code config/numen/rdd-bodydispatch.flag}（内容 on/run/1），
+     * 与监督那套 flag 一致，无需重编译。
+     */
+    private static volatile boolean bodySubmissionEnabled = false;
+    /** 开关文件 config/numen/rdd-bodydispatch.flag：内容含 "on"/"run"/"1" → 允许自动提交身体工具。 */
+    private static volatile Path bodyDispatchFlag;
     /** 空转止血：是否允许"监督拍醒"主动干预（nudge/自动重试/失败升级/重派身体）。
      *  默认 true。暂停时 Detector 退化为纯观察——真实资产检测推进 + EarlyAchievement 照常，
      *  但绝不 nudge 注入 AI / 自动重试 / 升级判失败（LLM 空转止血）。 */
@@ -98,7 +110,8 @@ public final class RddPlugin implements NumenPlugin {
         assetsDir = numen.configDir().resolve("rdd-assets");
         factsDir = numen.configDir().resolve("rdd-facts");
         historyDir = numen.configDir().resolve("rdd-history");
-        supervisionFlag = numen.configDir().resolve("rdd-supervision.flag");
+            supervisionFlag = numen.configDir().resolve("rdd-supervision.flag");
+            bodyDispatchFlag = numen.configDir().resolve("rdd-bodydispatch.flag");
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
         numen.registerTool(new RddSkipTool());
@@ -525,7 +538,10 @@ public final class RddPlugin implements NumenPlugin {
             try {
                 RddRuntime rt = RUNTIMES.get(companionId);
                 String goalId = (rt != null && rt.chain().goal() != null) ? rt.chain().goal().id() : null;
-                RddRepairDispatch.onDeath(companionId, goalId);
+                // 把死亡点传下去：掉落物约 5 分钟就 despawn，不告诉它坐标它就不知道去哪捡
+                // （用户 2026-09-29 实测：只捡回一部分，过 5 分钟有些就没了）。
+                String deathAt = body.blockPosition().toShortString();
+                RddRepairDispatch.onDeath(companionId, goalId, deathAt);
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 支线任务生成失败 {}: {}", companionId, ex.toString());
             }
@@ -899,6 +915,33 @@ public final class RddPlugin implements NumenPlugin {
     /** 设置 RDD 自动工具提交开关。assist=true 时调用 setBodySubmissionEnabled(false) 防双驾驶。 */
     public static void setBodySubmissionEnabled(boolean on) {
         bodySubmissionEnabled = on;
+    }
+
+    /**
+     * 每次检测心跳刷新"自动提交身体工具"开关，与监督 flag 同一套机制。
+     *
+     * <p>为什么必须有这个（2026-09-29）：此前只有 {@link #setBodySubmissionEnabled} 这个 setter，
+     * **而且从没被任何地方调用过** —— 于是"防双驾驶"永远停在默认值。用户明确要求把这个自主权
+     * 关掉：RDD 只做规划/管理，执行权完全归 AI。给个文件开关是为了不重编译也能临时开回来，
+     * 但**默认必须是关的**。
+     */
+    public static void refreshBodyDispatchFlag() {
+        if (bodyDispatchFlag == null) {
+            return;
+        }
+        boolean on;
+        try {
+            String content = Files.exists(bodyDispatchFlag)
+                    ? Files.readString(bodyDispatchFlag, StandardCharsets.UTF_8).trim() : "";
+            on = content.equalsIgnoreCase("on") || content.equalsIgnoreCase("run") || content.equals("1");
+        } catch (IOException ex) {
+            on = bodySubmissionEnabled; // 读失败保持当前
+        }
+        if (on != bodySubmissionEnabled) {
+            bodySubmissionEnabled = on;
+            LOG.info("[rdd] 自动提交身体工具{}: flag={}", on ? "开启" : "关闭", bodyDispatchFlag);
+            RddMonitor.publish("body_dispatch_state", Map.of("bodySubmissionEnabled", on));
+        }
     }
 
     /** 监督拍醒是否放行。false = 空转止血：Detector 只观察/推进，不 nudge AI。 */
