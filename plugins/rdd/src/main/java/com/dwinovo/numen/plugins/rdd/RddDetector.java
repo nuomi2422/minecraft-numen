@@ -68,6 +68,47 @@ final class RddDetector {
     private final Map<UUID, String> gapParked = new ConcurrentHashMap<>();
     /** 已因「停车态条件已达成」自动回退过的一级（uuid->primaryId）：同级只回退一次，防停车/回退乒乓。 */
     private final Map<UUID, String> earlyAcceptResumed = new ConcurrentHashMap<>();
+    /**
+     * 已发过的等待类事件（uuid -> "原因|一级id"），2026-09-28。
+     *
+     * <p>实测教训：{@code primary_waiting} / {@code subtask_parked_silent} 原本**每 tick 重发**，
+     * 一次卡死就刷出 90+ 条几乎相同的记录，把监测台和日志淹掉，真正的新事件反而看不见。
+     * 现在同一状态只发一次（边沿去重），**状态变化或换一级才会再发**；间隔 5 分钟兜底重播一次，
+     * 免得"早就没人管了"这件事静默消失。
+     */
+    private final Map<UUID, String> waitingNotice = new ConcurrentHashMap<>();
+
+    /**
+     * 等待类事件的边沿去重发布。
+     *
+     * @return true 表示这次真的发出去了（调用方可据此决定要不要做后续动作）
+     */
+    private boolean publishWaitingOnce(NumenPlayer ap, String key, String event, Map<String, ?> data) {
+        long now = System.currentTimeMillis();
+        String prev = waitingNotice.put(ap.getUUID(), key + "@" + now);
+        if (prev != null && prev.startsWith(key + "@")) {
+            long then = 0;
+            try {
+                then = Long.parseLong(prev.substring(key.length() + 1));
+            } catch (NumberFormatException ignored) {
+                // 解析不了就当新的，发出去
+            }
+            if (now - then < WAITING_NOTICE_REPEAT_MS) {
+                return false;   // 同一状态、间隔内：不再刷屏
+            }
+            return true;        // 超过兜底间隔：重播一次，提醒仍然卡着
+        }
+        RddMonitor.publish(event, castMap(data));
+        return true;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> castMap(Map<String, ?> m) {
+        return (Map<String, Object>) m;
+    }
+
+    /** 同一等待状态的重播间隔（5 分钟）：既不刷屏，又不让"没人管"静默。 */
+    private static final long WAITING_NOTICE_REPEAT_MS = 5 * 60 * 1000L;
     /** 停车守望：停车后长期无进展要能再拍醒，拍醒预算耗尽要发可见事件（不能无声冻结）。 */
     private final RddParkedWatcher parkedWatcher = new RddParkedWatcher(stallWatcher);
 
@@ -191,7 +232,7 @@ final class RddDetector {
                     return;
                 }
                 if (!riskGateAllows(ap, chain.currentPrimary().description())) {
-                    RddMonitor.publish("primary_waiting", Map.of(
+                    publishWaitingOnce(ap, "riskgate|" + chain.currentPrimary().id(), "primary_waiting", Map.of(
                             "primary", chain.currentPrimary().id(),
                             "reason", "risk gate: high-risk stage not prepared (equipment/potion/recovery point)"));
                     RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_risk_gated");
@@ -199,7 +240,7 @@ final class RddDetector {
                     return;
                 }
                 if (!rt.activateCurrentFromSnapshot(RddPlugin.planningSnapshot(ap.getUUID()))) {
-                    RddMonitor.publish("primary_waiting", Map.of(
+                    publishWaitingOnce(ap, "dependency|" + chain.currentPrimary().id(), "primary_waiting", Map.of(
                             "primary", chain.currentPrimary().id(),
                             "reason", "dependency assets not present"));
                     RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_dependency_waiting");
@@ -328,7 +369,32 @@ final class RddDetector {
      * 当前一级若是下界/末地级，用 {@link RiskGate#checkWithRecovery}（物资+药水+恢复点）硬判；
      * 不达标 → 不激活、不派工（保持 WAITING）。NORMAL/MINING 直接放行。
      */
+    /**
+     * 风险门开关（2026-09-28 用户指示：关）。
+     *
+     * <p>默认关＝行为上等同"删掉"，但实现与契约测试仍���树内：{@code -Drdd.riskGate=true}
+     * 或 {@code RddDetector.setRiskGateEnabled(true)} 即可恢复，避免红线能力被顺手删没。
+     */
+    private static volatile boolean riskGateEnabled = Boolean.getBoolean("rdd.riskGate");
+
+    /** 运行时开关风险门（默认关）。 */
+    public static void setRiskGateEnabled(boolean enabled) {
+        riskGateEnabled = enabled;
+    }
+
+    /** 风险门当前是否生效（诊断用）。 */
+    public static boolean riskGateActive() {
+        return riskGateEnabled;
+    }
+
     static boolean riskGateAllows(NumenPlayer ap, String primaryDescription) {
+        // 2026-09-28 用户指示：风险门先关掉。它在真实任务里净添乱——把「也绝不进入下界」
+        // 这种**禁止项**当成要去下界，给"原地待命"阶段挂下界准备硬门，任务永远派不下去。
+        // 做法与依赖门一致：**从运行路径关掉，不删能力**（RiskGate 类与其契约测试全部保留，
+        // 打开开关立刻恢复），并保留诊断读数，避免"为什么没拦"变成灵异事件。
+        if (!riskGateEnabled) {
+            return true;
+        }
         try {
             com.dwinovo.numen.rdd.policy.RiskLevel level =
                     com.dwinovo.numen.rdd.policy.RiskGate.levelForText(primaryDescription);
