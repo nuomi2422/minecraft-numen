@@ -14,4 +14,9 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-test { useJUnitPlatform() }
+test {
+    useJUnitPlatform()
+    // 依赖门在生产里按用户决定(2026-09-27)默认关闭，但**拦截能力本身必须持续被验证**，
+    // 否则"关门"会悄悄退化成"删能力"。所以单测一律把门打开跑历史契约。
+    systemProperty 'rdd.dependencyGate', 'true'
+}

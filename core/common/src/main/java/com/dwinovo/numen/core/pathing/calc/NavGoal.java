@@ -99,6 +99,17 @@ public interface NavGoal {
     }
 
     /**
+     * 到达指定高度的列（2026-09-28）：搜索仍按水平列走（保持"猜的 Y 不会让目标不可达"），
+     * 但**到达判定**要求落在 {@code refY ± tolerance} 内。
+     *
+     * <p>为什么需要：只给 x+z 的 goto 若不约束高度，AI 在树冠/屋顶/悬崖边就会对地面目标
+     * 判「已到达」，随即被派下一个相邻目标 —— 实测表现为原地左右横跳且任务永不完成。
+     */
+    static NavGoal columnAt(int x, int z, int refY, int tolerance) {
+        return new Column(x, z, refY, tolerance);
+    }
+
+    /**
      * Reach a Y level at ANY X/Z: "change elevation to this height" (climb to the surface,
      * descend to a mining depth). Heuristic is the pure vertical term — up costs
      * {@link #JUMP_ONE_BLOCK} per block, down {@link #DESCEND_ONE_BLOCK}.
@@ -283,18 +294,38 @@ public interface NavGoal {
         }
     }
 
-    /** {@link #column} 的产物:任意高度的 XZ 列。 */
+    /**
+     * {@link #column} 的产物:XZ 列，默认任意高度；给了 refY 则要求落在该高度 ±tolerance 内
+     * （2026-09-28：COLUMN 到达判定不看 Y 会导致「在树冠上就算到了地面目标」→ 原地左右横跳）。
+     */
     final class Column implements NavGoal {
         public final int x;
         public final int z;
+        /** 地表参考高度；{@link Integer#MIN_VALUE} = 不约束。 */
+        public final int refY;
+        public final int tolerance;
 
         Column(int x, int z) {
+            this(x, z, Integer.MIN_VALUE, 0);
+        }
+
+        Column(int x, int z, int refY, int tolerance) {
             this.x = x;
             this.z = z;
+            this.refY = refY;
+            this.tolerance = Math.max(0, tolerance);
+        }
+
+        /** 垂直是否已被约束（供测试与调试用）。 */
+        public boolean verticalConstrained() {
+            return refY != Integer.MIN_VALUE;
         }
 
         @Override public boolean isAt(BlockPos feet) {
-            return feet.getX() == x && feet.getZ() == z;
+            if (feet.getX() != x || feet.getZ() != z) {
+                return false;
+            }
+            return !verticalConstrained() || Math.abs(feet.getY() - refY) <= tolerance;
         }
 
         @Override public double heuristic(BlockPos from) {

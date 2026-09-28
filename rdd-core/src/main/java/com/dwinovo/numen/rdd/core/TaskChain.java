@@ -89,7 +89,40 @@ public final class TaskChain {
      * （见 git 历史 / 经验库 issue/waiting-gate-silent-stall-no-supervision）。
      */
     public synchronized boolean currentPrimaryReady(Map<String, Integer> counts) {
-        return true; // dependency gate TEMPORARILY DISABLED (2026-09-27) -- restore to waitFor check if needed
+        if (!dependencyGateEnabled) {
+            return true; // gate off (owner decision 2026-09-27): the chain must not self-lock
+        }
+        return dependencyGateSatisfied(counts);
+    }
+
+    /**
+     * 依赖门开关（2026-09-27 用户决定：先关掉，别让链自锁）。
+     *
+     * <p>做成开关而不是删代码：关掉只是**运行时行为**变了，拦截能力本身与它的契约测试
+     * 都还在（测试里 {@link #setDependencyGateEnabled(boolean)} 打开后照样验证"缺料就拦"）。
+     * 哪天要恢复门，只要把默认值改回 true 或在启动处打开，能力立刻回来。
+     */
+    private static volatile boolean dependencyGateEnabled = Boolean.getBoolean("rdd.dependencyGate");
+
+    /** 运行时开关依赖门（生产默认关；单测用它验证拦截能力仍在）。 */
+    public static void setDependencyGateEnabled(boolean enabled) {
+        dependencyGateEnabled = enabled;
+    }
+
+    /** 当前依赖门是否生效（诊断用：监测台/日志可读，避免"为什么没拦"变成灵异事件）。 */
+    public static boolean dependencyGateActive() {
+        return dependencyGateEnabled;
+    }
+
+    /** 依赖门本体（原本的判定逻辑；开关打开时才会被调用）。 */
+    private synchronized boolean dependencyGateSatisfied(Map<String, Integer> counts) {
+        List<AssetRequirement> wf = currentPrimary().waitFor();
+        if (wf.isEmpty()) return true;
+        if (counts == null) return false;
+        for (AssetRequirement r : wf) {
+            if (counts.getOrDefault(r.assetKey(), 0) < r.minimum()) return false;
+        }
+        return true;
     }
 
     /**

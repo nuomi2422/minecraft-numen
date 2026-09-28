@@ -66,6 +66,8 @@ final class RddDetector {
     private record RetryState(String subtaskId, int count) {}
     /** 已达重试上限被"停车"为 FAILED 的二级（uuid→subtaskId）。停车后不再自动重试/nudge，只留资产检测。 */
     private final Map<UUID, String> gapParked = new ConcurrentHashMap<>();
+    /** 已因「停车态条件已达成」自动回退过的一级（uuid->primaryId）：同级只回退一次，防停车/回退乒乓。 */
+    private final Map<UUID, String> earlyAcceptResumed = new ConcurrentHashMap<>();
     /** 停车守望：停车后长期无进展要能再拍醒，拍醒预算耗尽要发可见事件（不能无声冻结）。 */
     private final RddParkedWatcher parkedWatcher = new RddParkedWatcher(stallWatcher);
 
@@ -158,6 +160,9 @@ final class RddDetector {
                 // 监督扩面（2026-09-27）：REPLANNING/FAILED 原先直接 return，卡住时无人拍醒 → 静默停。
                 // 复用 RddParkedWatcher：长期无进展就催 AI（不动状态机，只补"催工"）。
                 if (ps == PrimaryGoalStatus.REPLANNING || ps == PrimaryGoalStatus.FAILED) {
+                    // 停车态「已达成」先裁决：条件早就满足却停在 REPLANNING 时（实测 cond=true
+                    // 仍原地不动、AI 白干），退回正常流程让既有 EarlyAchievement 接管。
+                    tryAcceptSatisfiedWhileParked(ap, rt, chain, ps);
                     try {
                         Subtask parked = chain.currentSubtask();
                         if (parked != null) parkedWatcher.watch(ap, rt, parked);
@@ -386,6 +391,55 @@ final class RddDetector {
                 "companionId", ap.getUUID().toString(), "subtask", current.id(),
                 "reason", "replan budget exhausted after soldier " + n.kind().name()));
         return true;
+    }
+
+    /**
+     * 停车态「条件已达成」裁决（2026-09-28）：REPLANNING 罚站但硬编码条件已满足时，
+     * 报出事件；是否真的退回正常流程由开关 {@code rdd.parkedEarlyAccept} 决定。
+     *
+     * <p><b>为什么默认只报不动手</b>：实机出现口径冲突 —— 链的 condition 没有 {@code type} 字段，
+     * 于是 {@link #conditionMatches} 按**背包计数**判（小麦 19>=12，cond=true），
+     * 而执行 AI 理解成"地里站着的小麦"（world facts）在种田。两者不一致时自动退回
+     * 会顺着链的口径**误判完成**（假阳性比继续罚站更坏：会伪造"任务达成"）。
+     * 口径归谁说了算要人拍板，所以这里先只发事件，开关默认关。
+     *
+     * <p>修的是"能力够不着"而不是"能力缺失"：验收逻辑本来就有，但挂在 ACTIVE 之后，
+     * 停车态提前 return 就永远走不到。
+     */
+    private void tryAcceptSatisfiedWhileParked(NumenPlayer ap, RddRuntime rt, TaskChain chain,
+                                                PrimaryGoalStatus ps) {
+        try {
+            Subtask cur = chain.currentSubtask();
+            if (cur == null) {
+                return;
+            }
+            String primaryId = chain.currentPrimary() != null ? chain.currentPrimary().id() : null;
+            boolean hardCoded = cur.detectionMode() == DetectionMode.HARD_CODED;
+            boolean met = hardCoded && conditionMatches(ap, cur, countInventory(ap));
+            boolean resumedBefore = primaryId != null && primaryId.equals(earlyAcceptResumed.get(ap.getUUID()));
+            if (!RddParkedAcceptPolicy.shouldResume(ps == PrimaryGoalStatus.REPLANNING, true,
+                    hardCoded, met, resumedBefore)) {
+                return;
+            }
+            boolean enabled = Boolean.parseBoolean(System.getProperty("rdd.parkedEarlyAccept", "false"));
+            RddMonitor.publish("parked_early_achievement", Map.of(
+                    "companionId", ap.getUUID().toString(),
+                    "primary", primaryId,
+                    "subtask", cur.id(),
+                    "description", cur.description(),
+                    "action", enabled ? "resume" : "report-only",
+                    "reason", "parked in " + ps + " but hard-coded condition already satisfied;"
+                            + (enabled ? " resuming normal flow" : " parkedEarlyAccept is off, waiting for owner decision")));
+            if (!enabled) {
+                return;
+            }
+            earlyAcceptResumed.put(ap.getUUID(), primaryId);
+            chain.resumeFromReplanning();
+        } catch (RuntimeException e) { // fail-soft：裁决失败也只是继续罚站，不拖垮 tick
+            RddMonitor.publish("parked_early_achievement_error", Map.of(
+                    "companionId", ap.getUUID().toString(),
+                    "reason", String.valueOf(e)));
+        }
     }
 
     /**

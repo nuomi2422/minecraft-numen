@@ -40,6 +40,11 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
 
     private static final long TICKS_PER_BLOCK = 20;
     private static final long MAX_EXTRA_TICKS = 5 * 60 * 20;
+    /** COLUMN 到达判定的垂直容差（格，2026-09-28 修横跳）：容差外的"到了"就是假到达。 */
+    private static final int COLUMN_Y_TOLERANCE = 2;
+    /** 解析目标列地表时相对同伴当前高度的扫描窗口（格）。 */
+    private static final int COLUMN_SCAN_UP = 48;
+    private static final int COLUMN_SCAN_DOWN = 96;
     /** Progress lease: while the journey is consuming its plan, the deadline is kept
      *  this far ahead — a healthy multi-minute dig route never times out mid-stride,
      *  and a stalled one still returns the body within one lease. */
@@ -169,10 +174,47 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
     private NavGoal goal() {
         return switch (r.kind) {
             case BLOCK -> blockGoal();
-            case COLUMN -> NavGoal.column(bx, bz);
+            case COLUMN -> columnGoal();
             case YLEVEL -> NavGoal.yLevel(by);
             case FIND -> finder.contract() == null ? null : finder.contract().goal();
         };
+    }
+
+    /**
+     * COLUMN 目标（2026-09-28 修横跳）：搜索仍按水平列走（猜 Y 不会让目标不可达），
+     * 但到达判定要求落在**目标列实际地表高度**附近。
+     *
+     * <p>修的现象：AI 在丛林树冠 y=62 对 y=47 的地面目标被判「已到达」
+     * （ARRIVED-IN-PLACE feet=425,62,-305 goal-center=424,47,-301），
+     * 于是「到了」→被派下一个相邻目标→原地左右横跳→永不完成。
+     *
+     * <p>取地表：先从同伴当前高度附近往上找该列最高的可站立方；找不到就往下找。
+     * 都取不到就退回不约束高度（旧行为），绝不因此把目标判成不可达。
+     */
+    private NavGoal columnGoal() {
+        int refY = resolveColumnSurfaceY();
+        return refY == Integer.MIN_VALUE
+                ? NavGoal.column(bx, bz)
+                : NavGoal.columnAt(bx, bz, refY, COLUMN_Y_TOLERANCE);
+    }
+
+    /** 目标列的可站地表情面 Y；找不到返回 {@link Integer#MIN_VALUE}（保持不约束）。 */
+    private int resolveColumnSurfaceY() {
+        var level = player.level();
+        int startY = player.blockPosition().getY();
+        int top = Math.min(startY + COLUMN_SCAN_UP, level.getMaxBuildHeight() - 3);
+        int bottom = Math.max(level.getMinBuildHeight() + 2, startY - COLUMN_SCAN_DOWN);
+        for (int y = top; y >= bottom; y--) {
+            BlockPos stand = new BlockPos(bx, y, bz);
+            if (!level.getBlockState(stand).getCollisionShape(level, stand).isEmpty()) {
+                BlockPos above = stand.above();
+                if (level.getBlockState(above).getCollisionShape(level, above).isEmpty()
+                        && !level.getBlockState(above.above()).getCollisionShape(level, above.above()).isEmpty()) {
+                    return y + 1;   // 站在该方块顶上
+                }
+            }
+        }
+        return Integer.MIN_VALUE;
     }
 
     /**

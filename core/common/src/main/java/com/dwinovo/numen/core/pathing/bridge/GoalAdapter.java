@@ -72,7 +72,10 @@ public final class GoalAdapter {
             return new GoalBlock(g.goal);
         }
         if (goal instanceof NavGoal.Column g) {
-            return new GoalXZ(g.x, g.z);
+            // 垂直容差透传（2026-09-28）：不约束会在空中/树冠上误判到达 -> 原地横跳
+            return g.verticalConstrained()
+                    ? new GoalXZ(g.x, g.z, g.refY, g.tolerance)
+                    : new GoalXZ(g.x, g.z);
         }
         if (goal instanceof NavGoal.YLevel g) {
             return new GoalYLevel(g.level);
