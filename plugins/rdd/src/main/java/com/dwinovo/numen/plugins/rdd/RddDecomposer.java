@@ -460,7 +460,12 @@ final class RddDecomposer {
                                                                     "asset_key", Map.of("type", "string",
                                                                             "description", "minecraft 物品命名空间ID，如 minecraft:oak_log"),
                                                                     "group", Map.of("type", "string", "enum", List.of("food", "wood", "blocks")),
-                                                                    "optional", Map.of("type", "boolean", "description", "仅明确可省略的补充食物标true"),
+                                                                    "optional", Map.of("type", "boolean", "description",
+                        // 2026-09-29 放宽：旧描述只说「补充食物」，于是模型只会给食物标 optional，
+                        // 而判定层原本也只放行食物 → 「顺手砍几棵橡木」这类非必需目标永远卡死链。
+                        // 现在 optional=true 对任何类型生效（判定层已同步放宽），模型请如实标注。
+                        "标 true 表示这个目标达成与否都不影响主线（可跳过，不会阻塞整条任务链）。"
+                                + "只要不是必需物资/关键装备/主线进度，就标 true；不要滥用，必需项保持 false 或不标。"),
                                                                     "minimum", Map.of("type", "integer",
                                                                             "description", "需要的最少数量")),
                                                             "required", List.of()),

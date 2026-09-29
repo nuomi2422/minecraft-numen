@@ -431,7 +431,15 @@ public final class RddPlugin implements NumenPlugin {
         }
         REPLAN_COUNTS.merge(key, 1, Integer::sum);
         try {
-            chain.enterReplanningFromStuck(reason);
+            // 2026-09-29 断线修复：协商（士兵在干活途中上报）与卡死是**两种不同来源**，
+            // 必须走不同入口。旧代码一律用 enterReplanningFromStuck，它要求当前二级
+            // FAILED/STALLED；而士兵唯一合理的上报时机是 RUNNING → 抛异常 → return false
+            // → soldierHint（在下方才拼装）永远送不到规划器。实机症状：军师不听士兵。
+            if (fromNegotiation) {
+                chain.enterReplanningFromNegotiation(reason);
+            } else {
+                chain.enterReplanningFromStuck(reason);
+            }
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 无法进入重规划 {}: {}", companionId, ex.toString());
             return false;
@@ -448,7 +456,12 @@ public final class RddPlugin implements NumenPlugin {
         Goal goal = chain.goal();
         var ctx = ReplanContextBuilder.build(goal.description(), primaryId,
                 chain.currentSubtask() == null ? null : chain.currentSubtask().id(),
-                FailureEvent.of(null, primaryId, FailureKind.UNKNOWN, reason == null ? "" : reason),
+                // 2026-09-29：协商不等于"上一版不可执行"。硬编码 UNKNOWN 会让
+                // decomposeSpecsWithHint(attempt>=1) 注入「上一版被判不可执行」的假话，
+                // 还会把该假话喂进经验召回查询串 → 召回"改 asset_key 形状"类经验（方向错）。
+                FailureEvent.of(null, primaryId,
+                        fromNegotiation ? FailureKind.NEGOTIATION : FailureKind.UNKNOWN,
+                        reason == null ? "" : reason),
                 new java.util.ArrayList<>(chain.satisfiedStages()),
                 snap.availableCounts(), level, gaps, java.util.List.of());
         String hint = ReplanContextBuilder.render(ctx);
@@ -458,8 +471,18 @@ public final class RddPlugin implements NumenPlugin {
             hint = hint + "\n\n## 执行层（士兵）明确上报的方案（必须采纳其一或给出不同方案，不要原样重规划）\n"
                     + soldierHint.strip();
         }
+        // 2026-09-29「重规划没变化」修复之一：规划器此前**从未看到上一版的完整二级清单**，
+        // 它只拿到一个 theme，在同一个信息集上再推一次 → 必然得到同一个结果。
+        // 把旧计划显式给它，才能"做出不同的计划"。
+        String previous = renderPreviousPlanForReplan(chain);
+        if (!previous.isBlank()) {
+            hint = hint + "\n\n## 上一版的二级计划（**不要原样重复**，指出它的错处并给出不同做法）\n" + previous;
+        }
         RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
-        RddDecomposer.decomposeSpecsWithHint(companionId, theme, 1, java.util.List.of(), hint,
+        // attempt：协商不是"上一版被判不可执行"，故传 0，让 prompt 走非失败分支。
+        // completedStages 也不能丢（重规划与懒展开在这一项上曾不一致）。
+        RddDecomposer.decomposeSpecsWithHint(companionId, theme, fromNegotiation ? 0 : 1,
+                new java.util.ArrayList<>(chain.satisfiedStages()), hint,
                 specs -> onServer(server, ticket, () -> {
                     try {
                         if (specs == null || specs.isEmpty()) {
@@ -895,6 +918,57 @@ public final class RddPlugin implements NumenPlugin {
 
     static RddCallbackGuard.Ticket planningTicket(UUID companionId) {
         return CALLBACKS.current(companionId);
+    }
+
+    /**
+     * 把「上一版的二级清单」渲染给规划器（2026-09-29「重规划没变化」修复）。
+     *
+     * <p>为什么需要：重规划时规划器只拿到一级 theme，**从未看到旧计划长什么样**。
+     * 在同一个信息集上再推一次，必然得到同一个结果 —— 实机就是「重规划和之前
+     * 基本没什么区别」。显式给出旧计划后，它才有对照物可说「这里不对，换个做法」。
+     *
+     * <p>有界：最多 {@value #REPLAN_PLAN_ECHO_MAX} 条、每条描述截断，避免把规划
+     * prompt 撑爆（这本身也是「上下文瘦身」要管的量）。
+     */
+    private static final int REPLAN_PLAN_ECHO_MAX = 12;
+    private static final int REPLAN_PLAN_DESC_MAX = 120;
+
+    private static String renderPreviousPlanForReplan(TaskChain chain) {
+        try {
+            PrimaryGoal primary = chain.currentPrimary();
+            if (primary == null || primary.subtasks() == null || primary.subtasks().isEmpty()) {
+                return "";
+            }
+            StringBuilder sb = new StringBuilder();
+            int shown = 0;
+            for (Subtask s : primary.subtasks()) {
+                if (s == null || shown >= REPLAN_PLAN_ECHO_MAX) {
+                    break;
+                }
+                String desc = s.description() == null ? "" : s.description().trim();
+                if (desc.length() > REPLAN_PLAN_DESC_MAX) {
+                    desc = desc.substring(0, REPLAN_PLAN_DESC_MAX) + "…";
+                }
+                sb.append("  ").append(shown + 1).append(". ").append(desc);
+                java.util.Map<String, Object> cond = s.condition();
+                if (cond != null && !cond.isEmpty()) {
+                    sb.append("  [条件 ").append(cond.keySet()).append("]");
+                }
+                sb.append('\n');
+                shown++;
+            }
+            if (shown == 0) {
+                return "";
+            }
+            if (primary.subtasks().size() > shown) {
+                sb.append("  …（另有 ").append(primary.subtasks().size() - shown).append(" 条未列）\n");
+            }
+            return sb.toString().strip();
+        } catch (RuntimeException e) {
+            // 渲染旧计划失败不该阻断重规划：没有对照物只是质量下降，不是功能中断
+            LOG.warn("[rdd] 渲染上一版计划失败: {}", e.toString());
+            return "";
+        }
     }
 
     /** Revalidate on the original server: an old world's completion never enters a new world. */

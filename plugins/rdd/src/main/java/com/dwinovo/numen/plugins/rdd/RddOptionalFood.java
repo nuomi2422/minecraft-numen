@@ -55,7 +55,19 @@ final class RddOptionalFood {
         return AssetDerivation.equivalentCount(item, inventory) >= minimum;
     }
 
-    /** 当前子步是否“可跳过的食物”：group=food 或 asset_key 为食物；显式 optional=false 否决。 */
+    /**
+     * 当前子步是否可跳过。
+     *
+     * <p><b>2026-09-29 放宽（用户报告：「主任务里有些目标其实不重要，可以跳过，判定层不放过」）</b>：
+     * 旧逻辑只认「食物」（{@code group=food} 或 asset_key 属 food 组），
+     * 于是规划器在别处标的 {@code optional=true}（如「顺手砍几棵橡木」「带上火把」）
+     * <b>完全不生效</b> —— 判定层照样重试到耗尽 → {@code markFailed} → 整条链卡死，
+     * 而 {@code rdd_skip_optional} 也会被同一处限制拒绝。
+     *
+     * <p>现在规则：<b>显式 {@code optional=true} 直接放行（任何类型）</b>；
+     * {@code optional=false} 一律否决；未标注时回落到原有的「食物」宽松策略。
+     * 仍不伪造完成：跳过只记 SKIPPED（{@code TaskChain.skipSubtask}）。
+     */
     static boolean isOptionalFood(Subtask task) {
         if (task == null || task.condition() == null) {
             return false;
@@ -63,6 +75,11 @@ final class RddOptionalFood {
         if (Boolean.FALSE.equals(task.condition().get("optional"))) {
             return false;
         }
+        // 显式声明可选 → 放行（不限类型）
+        if (Boolean.TRUE.equals(task.condition().get("optional"))) {
+            return true;
+        }
+        // 未声明：保持原有「食物」宽松策略
         Object group = task.condition().get("group");
         if (group instanceof String g && "food".equals(g)) {
             return true;

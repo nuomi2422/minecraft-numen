@@ -342,6 +342,41 @@ public final class TaskChain {
      * 时，由宿主/上层显式进入 REPLANNING；之后照旧走 {@link #replaceCurrentSubtasks(List)}（换新计划）
      * 或 {@link #resumeFromReplanning()}（重跑现有）。
      */
+    /**
+     * REPLANNING 入口（协商用）：士兵在**干活途中**（当前二级仍 RUNNING）认为计划不对、
+     * 主动上报 COUNTER/REJECT 时走这里。
+     *
+     * <p><b>为什么要有这个方法</b>（2026-09-29 定位到的真断点）：
+     * {@link #enterReplanningFromStuck(String)} 要求当前二级是 FAILED/STALLED，
+     * 但士兵唯一合理的上报时机恰恰是 <b>RUNNING</b>（还在干、觉得方向不对）。
+     * 于是协商请求走到 {@code RddPlugin.requestReplan} 时被
+     * {@code enterReplanningFromStuck} 抛异常挡掉，{@code return false}，
+     * 而 {@code soldierHint} 是在那之后才拼装的 —— 结果
+     * <b>士兵的建议永远送不到规划器</b>，实机表现为「说了好几次指挥官仍照原计划」。
+     * 更糟的是回执已被 {@code RddDetector.tickNegotiation} 先行消费，失败后无法恢复。
+     *
+     * <p><b>语义选择</b>：这里<b>不</b>把当前二级强转 FAILED（那会伪造一个"失败"事实、
+     * 污染达成判定与埋点），而是直接进入 REPLANNING。
+     * 当前二级状态在 {@link #replaceCurrentSubtasks(List)} / {@link #resumeFromReplanning()}
+     * 时按既有逻辑处理，行为与「从卡死进入」保持一致。
+     *
+     * @param reason 协商原因（原样进埋点与规划上下文）
+     * @throws IllegalStateException 链不处于可重规划状态时（与既有入口一致的失败语义）
+     */
+    public synchronized void enterReplanningFromNegotiation(String reason) {
+        if (primaryStatus != PrimaryGoalStatus.ACTIVE) {
+            throw new IllegalStateException("only an ACTIVE primary may enter replanning from negotiation: " + primaryStatus);
+        }
+        if (currentPrimary().unexpanded()) {
+            throw new IllegalStateException("unexpanded primary cannot enter replanning from negotiation: " + currentPrimary().id());
+        }
+        if (currentSubtask() == null) {
+            throw new IllegalStateException("no current subtask to replan from negotiation");
+        }
+        primaryStatus = PrimaryGoalStatus.REPLANNING;
+        clearExecutionMetadata();
+    }
+
     public synchronized void enterReplanningFromStuck(String reason) {
         if (primaryStatus != PrimaryGoalStatus.ACTIVE) {
             throw new IllegalStateException("only an ACTIVE primary may enter replanning from stuck: " + primaryStatus);
