@@ -20,6 +20,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.NetherPortalBlock;
 import net.minecraft.world.phys.BlockHitResult;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -187,12 +188,13 @@ public final class UsePortalCompanionTask extends AbstractCompanionTask<UsePorta
         if (player.level().getGameTime() - approachSince > approachBudget) {
             stopNav();
             fail("could not walk into the portal at " + door.toShortString()
-                    + " — still out of reach after " + (approachBudget / 20) + "s."
-                    + " It is probably too far (search reaches " + SEARCH_RADIUS
-                    + " blocks but walking is capped at " + (APPROACH_MAX_TICKS / 20)
-                    + "s — walk closer first) or walled off."
-                    + " mine/break whatever blocks is in the way, or build a fresh frame with 10"
-                    + " obsidian and flint&steel next to you.", FailureType.OUT_OF_REACH);
+                    + " — still out of reach after " + (approachBudget / 20) + "s. "
+                    + describeBlockers(door)
+                    + (describeBlockers(door).isEmpty() ? "" : " — mine/break those first. ")
+                    + "It may also simply be too far (search reaches " + SEARCH_RADIUS
+                    + " blocks, walking is capped at " + (APPROACH_MAX_TICKS / 20)
+                    + "s — walk closer first and call this again).",
+                    FailureType.OUT_OF_REACH);
             return TaskState.FAILED;
         }
         return driveNav();
@@ -287,11 +289,80 @@ public final class UsePortalCompanionTask extends AbstractCompanionTask<UsePorta
                 if (insidePortal()) {
                     yield TaskState.RUNNING;   // 已经站进去了，别被寻路口径判死
                 }
-                fail("could not walk into the portal at " + door.toShortString() + ": " + why,
-                        FailureType.NO_PATH);
+                fail(portalBlockedHint(door, why), FailureType.NO_PATH);
                 yield TaskState.FAILED;
             }
         };
+    }
+
+    /**
+     * 寻路打不通时给出**能照着做的**诊断，而不是干巴巴一句 "no path"（2026-09-30 实机）。
+     *
+     * <p>实机：主人随手在上界搭了个下界门（415,71,-300），门只有 <b>2 格高</b>（标准是 4 格）、
+     * 且 416,71,-300 是黑曜石把路堵死。同伴在 418 处报告
+     * "no path to target (about 3 blocks away)" —— 事实正确但**完全不可执行**：
+     * 模型/主人不知道该挖哪、也不知道门根本不合格。
+     *
+     * <p>所以这里把三件事说清：门到哪、有没有东西挡着、门本身完不完整。
+     */
+    private String portalBlockedHint(BlockPos door, String navWhy) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("could not walk into the portal at ").append(door.toShortString())
+          .append(": ").append(navWhy).append(". ");
+        // 门周围一圈：谁挡着路
+        String blockers = describeBlockers(door);
+        if (!blockers.isEmpty()) {
+            sb.append("The way in is blocked by ").append(blockers).append(". ");
+        }
+        // 门框完整性：竖井至少 2 格、横向至少 3 格才算合格
+        if (!portalFrameLooksComplete(door)) {
+            sb.append("This portal also looks INCOMPLETE: a nether portal needs a 4x5 obsidian"
+                    + " frame with a 3-wide by 4-tall opening (only obsidian may touch the"
+                    + " inside). A partial frame like this one will not carry you through."
+                    + " Rebuild it properly, or dig out the blocked side.");
+        } else {
+            sb.append("The frame looks complete, so the obstacle is physical: dig or build your way in.");
+        }
+        return sb.toString();
+    }
+
+    /** 门周围一圈里挡住通路的方块（人话，限 3 个）。 */
+    private String describeBlockers(BlockPos door) {
+        List<String> out = new ArrayList<>();
+        for (var d : new net.minecraft.core.Direction[]{
+                net.minecraft.core.Direction.NORTH, net.minecraft.core.Direction.SOUTH,
+                net.minecraft.core.Direction.EAST, net.minecraft.core.Direction.WEST,
+                net.minecraft.core.Direction.UP, net.minecraft.core.Direction.DOWN}) {
+            var p = door.relative(d);
+            var st = player.level().getBlockState(p);
+            if (st.isAir() || st.getBlock() instanceof NetherPortalBlock) continue;
+            out.add(net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                    .getKey(st.getBlock()).toString() + " at " + p.getX() + "," + p.getY() + "," + p.getZ());
+            if (out.size() >= 3) break;
+        }
+        return String.join("; ", out);
+    }
+
+    /**
+     * 门框看着完整吗：门内竖井 ≥2 格、横向 ≥3 格门格。
+     *
+     * <p>不够严谨（不解析 obsidian 框架的角），但足以抓实机里那种"随手 2 格高的假门" ——
+     * 那种门本来就走不通，报"不完整"比报"没路"有用。
+     */
+    private boolean portalFrameLooksComplete(BlockPos door) {
+        var level = player.level();
+        int horizontal = 0;
+        for (var d : new net.minecraft.core.Direction[]{
+                net.minecraft.core.Direction.EAST, net.minecraft.core.Direction.WEST,
+                net.minecraft.core.Direction.NORTH, net.minecraft.core.Direction.SOUTH}) {
+            if (level.getBlockState(door.relative(d)).getBlock() instanceof NetherPortalBlock) horizontal++;
+        }
+        if (horizontal < 2) return false;
+        int vertical = 0;
+        for (int dy = -1; dy <= 1; dy++) {
+            if (level.getBlockState(door.above(dy)).getBlock() instanceof NetherPortalBlock) vertical++;
+        }
+        return vertical >= 2;
     }
 
     @Override
