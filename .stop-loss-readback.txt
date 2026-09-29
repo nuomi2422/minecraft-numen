@@ -1,0 +1,11 @@
+﻿TS 19:58:12
+== 第3批(DS R1/R8/R7 三处 diff)——磁盘真证据盘点 ==
+.batch3-src 快照目录:
+   AcParamValidator.txt 4693B
+   FileAcVersionStore.txt 4733B
+   ToolRegistry.txt 1859B
+三目标文件 BOM 状态(编译塌陷根因):
+   ToolRegistry.java BOM=False first4=70 61 63 6B
+   AcParamValidator.java BOM=False first4=70 61 63 6B
+   FileAcVersionStore.java BOM=False first4=70 61 63 6B
+gradlew compile 出口(ac-api/ac-core 真实字节):

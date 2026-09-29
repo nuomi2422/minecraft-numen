@@ -78,6 +78,27 @@ final class RddStallWatcher {
             return false;
         }
         int unchanged = check.unchanged();
+        // LLM 空转提前拍醒：身体零工具调用持续到阈值就先喊一次，不等 IDLE_GRACE_CHECKS，也不改状态机。
+        if (RddStallPolicy.shouldNudgeLlmIdle(unchanged, observation.source())) {
+            // 话术三条铁律（2026-09-29 GLM 审稿后重写，旧版实测无效）：
+            //  1) 必须**点名当前子目标**——泛泛的「调用一个工具」是 content-free 紧迫感，
+            //     模型按 recency 服从它 → 挑任意工具 → 覆盖原计划。旧版就是这么把同伴逼去 build 的。
+            //  2) 必须给**合规的不作为出口**（BLOCKED）——否则「现在正确地什么都不做」无法表达，
+            //     耐心会被转成随机动作；尤其"等规划器批"时拍醒会产生**未授权动作**，比卡住更糟。
+            //  3) 必须**允许报错**——工具被拒是契约失败，不是注意力不集中，催只会加剧幻觉。
+            RddPlugin.nudge(ap.getUUID(), "当前子目标「" + current.description() + "」"
+                    + "已连续 " + RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS + " 秒没有任何工具调用。请按下面**三选一**回，不要空转："
+                    + "① 立刻为这个子目标调一个工具（先 scan_nearby_entities / rdd_get_inventory 核对真实情况，"
+                    + "再选 mine/collect_items/build/interact_at 中**真正对应本目标**的那个）；"
+                    + "② 如果做不到，用 report_task_concern 上报，kind=PAUSE 并写明原因"
+                    + "（能做到别的办法就用 COUNTER + suggestion，别用 PAUSE 顶替）；"
+                    + "③ 如果任务本身已经完成或没必要做，直接说明，不必调工具。");
+            RddMonitor.publish("llm_idle_stall", Map.of(
+                    "companionId", ap.getUUID().toString(), "subtask", current.id(),
+                    "reason", "no tool call for " + RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS + " checks",
+                    "source", observation.source(),
+                    "action", "nudge-only; state machine untouched"));
+        }
         if (observation.waiting() && unchanged >= STALL_AFTER_TICKS
                 && unchanged % STALL_AFTER_TICKS == 0 && !check.stalled()) {
             RddMonitor.publish("subtask_work_wait", Map.of(

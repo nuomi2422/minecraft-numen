@@ -26,15 +26,19 @@ final class RddConcernTool implements NumenTool {
     @Override public String description() {
         return "对当前 RDD 任务链命令结构化回执，与指挥官(Supervisor)协商。" +
                 "kind: ACCEPT=接单照做; REJECT=命令本身不对(与目标冲突/信息错误), 附 reason; " +
-                "COUNTER=做不到或成本过高, 附 reason + suggestion(替代方案)。" +
-                "当你认为当前 current_task 不合理/不可达/与目标不符时, 用它上报, 不要默默无视。";
+                "COUNTER=做不到或成本过高, 附 reason + suggestion(替代方案); " +
+                "PAUSE=这件事现在做不了但先别废掉(留着以后开), 附 reason, 不要用 COUNTER 代替。" +
+                "当你认为当前 current_task 不合理/不可达/与目标不符时, 用它上报, 不要默默无视。" +
+                "选择依据: 你能想到**别的做法**就用 COUNTER; " +
+                "你**根本做不到且短期也不会变**(例如要求去 300 格外的地方、要求在末地拿东西)" +
+                "就用 PAUSE——COUNTER 会让指挥官换计划并继续消耗你的重试预算, 而 PAUSE 只是把它按住。";
     }
 
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .string("kind", "ACCEPT / REJECT / COUNTER")
+                .string("kind", "ACCEPT / REJECT / COUNTER / PAUSE")
                 .string("expected_subtask_id", "Current subtask ID from rdd_status.")
-                .string("reason", "为什么这样回执（REJECT/COUNTER 必填）。")
+                .string("reason", "为什么这样回执（REJECT/COUNTER/PAUSE 必填）。")
                 .string("suggestion", "COUNTER 时的替代方案（人话）。")
                 .build();
     }

@@ -31,10 +31,13 @@ final class RddNegotiationInbox {
     static void accept(java.util.UUID companionId, TaskNegotiation n) {
         if (companionId == null || n == null) return;
         RddMonitor.publish("task_negotiation", n.toEventData(companionId.toString()));
-        if (n.needsSupervisorAction()) {
+        // 入队条件必须与 RddDetector.tickNegotiation 的消费条件**同时**满足。
+        // 2026-09-29 实测踩过：只改了消费侧（认 isPauseRequest），这里仍只判 needsSupervisorAction
+        // → PAUSE 落进 else 分支被当场删除，事件还发了（看着像成功），但指挥官永远收不到。
+        if (n.needsSupervisorAction() || n.isPauseRequest()) {
             PENDING.put(companionId, n);
         } else {
-            PENDING.remove(companionId);
+            PENDING.remove(companionId);   // ACCEPT：只是回执，无需指挥官动作，清掉免得残留
         }
     }
 
@@ -50,6 +53,15 @@ final class RddNegotiationInbox {
 
     static void clear(java.util.UUID companionId) {
         if (companionId != null) PENDING.remove(companionId);
+    }
+
+    /**
+     * Server stopped：队列里全是上一个世界的回执，一个都不能带到新世界。
+     *
+     * <p>2026-09-30 深审 R05 补：原先只有按同伴清，跨世界时残留会作用到新世界的链上。
+     */
+    static void clearAll() {
+        PENDING.clear();
     }
 
     /** 渲染"协商上下文"给重规划用：原命令 + 士兵理由 + 士兵建议。 */

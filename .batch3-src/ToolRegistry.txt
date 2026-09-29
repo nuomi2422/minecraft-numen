@@ -1,0 +1,45 @@
+﻿FILE=E:\restart developing doer\minecraft-numen\ac-api\src\main\java\com\dwinovo\numen\ac\api\ToolRegistry.java
+LINES=43
+   1: package com.dwinovo.numen.ac.api;
+   2: 
+   3: import java.util.List;
+   4: import java.util.Optional;
+   5: 
+   6: /**
+   7:  * AC 自己的原子工具注册表。宿主或自编译产出的工具在此注册；主 AI / AI authoring
+   8:  * 经 {@link #toolNames()} / {@link #schemas()} 读取稳定目录后再生成 AC。
+   9:  *
+  10:  * <p>这是 AC 的 registry，<b>不是</b> Numen 的 {@code agent.tool.ToolRegistry}。
+  11:  * 二者语义不同，未来通过外部 adapter 转换，不在本接口混用。
+  12:  */
+  13: public interface ToolRegistry {
+  14: 
+  15:     /** 注册工具（无显式 schema → 生成宽松默认 schema）。重复注册抛异常。 */
+  16:     void register(String name, AcTool tool);
+  17: 
+  18:     /** 注册工具并绑定显式 schema。schema.name() 必须与 name 一致。 */
+  19:     default void register(String name, AcTool tool, ToolSchema schema) {
+  20:         register(name, tool);
+  21:     }
+  22: 
+  23:     Optional<AcTool> find(String name);
+  24: 
+  25:     /** 工具 schema；未注册或未绑定 schema 返回 empty。 */
+  26:     default Optional<ToolSchema> schema(String name) {
+  27:         return Optional.empty();
+  28:     }
+  29: 
+  30:     /** 全部工具名（稳定排序）。 */
+  31:     default List<String> toolNames() {
+  32:         return List.of();
+  33:     }
+  34: 
+  35:     /** 全部工具 schema 目录（稳定排序，与 {@link #toolNames()} 一致）。 */
+  36:     default List<ToolSchema> schemas() {
+  37:         return List.of();
+  38:     }
+  39: 
+  40:     default boolean contains(String name) {
+  41:         return find(name).isPresent();
+  42:     }
+  43: }

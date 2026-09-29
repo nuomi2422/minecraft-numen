@@ -34,12 +34,25 @@ final class RddDebugKillTool implements NumenTool {
                 reply.accept(com.dwinovo.numen.task.TaskResult.fail("debug_kill refused: confirm=true required").toJson());
                 return;
             }
-            // 走原版死亡：直接造成致命伤害（伤害源=虚空，避免归因混淆）
-            var level = companion.level();
-            var src = level.damageSources().genericKill();
-            companion.hurt(src, Float.MAX_VALUE);
+            // 走原版"指令 /kill"的死亡通道，而不是 hurt(genericKill, MAX_VALUE)。
+            //
+            // 2026-09-30 实测（用户报"怎么打都打不死、进入假死"）：旧写法
+            // `companion.hurt(genericKill, Float.MAX_VALUE)` 在同伴身上**不生效** ——
+            // 血量纹丝不动(20.0)，而工具照样回 "lethal damage applied"，
+            // 主人看着像调试器成功、实际人还活着（= 静默说谎的调试工具）。
+            // entity.kill() 是 LivingEntity 的终局入口（内部 hurt(die, MAX_VALUE)），
+            // 不经过 invulnerable / hurtTime 判定，是让"调试死亡"确定生效的那条路。
+            companion.kill();
+            boolean died = !companion.isAlive() || companion.getHealth() <= 0f;
+            // 如实回报：死没死、当前维度与坐标。静默"成功"比失败更糟 ——
+            // 它会让人以为死亡链路验过了，其实一次都没触发。
             reply.accept(com.dwinovo.numen.task.TaskResult.ok(
-                    "debug_kill executed (lethal damage applied)", Map.of("hp", companion.getHealth())).toJson());
+                    died ? "debug_kill executed (entity.kill(); death resolves this tick)"
+                         : "debug_kill FAILED: entity.kill() ran but the companion is still alive",
+                    Map.of("hp", companion.getHealth(),
+                            "alive", companion.isAlive(),
+                            "dimension", companion.level().dimension().location().toString(),
+                            "position", companion.blockPosition().toShortString())).toJson());
         } catch (RuntimeException ex) {
             reply.accept(com.dwinovo.numen.task.TaskResult.fail("debug_kill failed: " + ex.getMessage()).toJson());
         }

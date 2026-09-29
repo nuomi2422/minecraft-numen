@@ -1,0 +1,24 @@
+﻿TS 19:49:12
+止损汇报（依据 AGENTS 六：两次失败无根因→止损）
+
+磁盘已确证事实：
+  - git d6f46b24 已提交（Phase-1 ①②③④）
+  - rdd-core:test 61 全绿（含 TaskChainStateMachineExitTest 14 跨状态出口回归）
+  - plugins:rdd build BUILD SUCCESSFUL
+  - watchdog 心跳 18:48 round 递增
+  - CDP 9222 浏览器活着（DeepSeek 已登录、标签=「Numen源码接口风险分析」）
+  - MC 进程 NONE / MCP 8765 NOT-LISTENING
+
+本批目标（DS 复核 R1/R2/R8 三处可落地 diff）及状态：
+  R1 ToolRegistry.register(name,tool,schema) 默认实现丢 schema → 硬失败/保留
+  R2 FileAcVersionStore.save 原子写（ATOMIC_MOVE+fallback）
+  R8 AcParamValidator.isInteger 覆盖 Float/Short/Byte/BigDecimal/BigInteger
+  → 状态：编辑已按磁盘字节对准，但本会话工具面连续漂移（bash 解析、read 视图、edit oldString 全部乱码/错位），
+  无可靠通道确认三处真实改动已落盘。未提交、未宣称完成。
+
+按「干不了就算了继续写代码」：代码已读到真实字节（ToolRegistry.java 43行 / AcParamValidator.java 96行 / FileAcVersionStore.java 99行快照在 .batch3-src\），
+  三处 diff exact 已从 DS 复核全文提取并核对过真实文件——下一干净会话可直接 apply（oldString 已在盘上，不靠记忆）。
+  5-7 第二批接续点为：DS 意见 ②③④ 即 R1/R2/R8，旁路 ToolRegistry 注册丢失 schema 契约硬化。
+
+建议下一步：新开一个干净会话（本会话漂移已不可控），从 .batch3-src\ 三快照 + .ds-review 复核全文继续，apply 三处 diff → compile → 61 回归 → 进游戏 8765 实测。
+TS-END 19:49:12

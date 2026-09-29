@@ -1,0 +1,23 @@
+﻿EXIT=0 ELAPSED=17s
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/9.2.0/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :buildSrc:extractPluginRequests UP-TO-DATE
+> Task :buildSrc:generatePluginAdapters UP-TO-DATE
+> Task :buildSrc:compileJava UP-TO-DATE
+> Task :buildSrc:compileGroovy NO-SOURCE
+> Task :buildSrc:compileGroovyPlugins UP-TO-DATE
+> Task :buildSrc:pluginDescriptors UP-TO-DATE
+> Task :buildSrc:processResources UP-TO-DATE
+> Task :buildSrc:classes UP-TO-DATE
+> Task :buildSrc:jar UP-TO-DATE
+
+> Configure project :api:fabric
+Fabric Loom: 1.14.10
+
+> Configure project :core:fabric
+Fabric Loom: 1.14.10
+
+> Task :ac-api:compileJava UP-TO-DATE
+> Task :ac-core:compileJava
+
+[Incubating] Problems report is

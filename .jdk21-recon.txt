@@ -1,0 +1,4 @@
+﻿TS 19:53:40
+JDK21 E:\restart developing doer\rdd-selfcompile\ai-bridge\.jdk21 exists=False
+JAVAC E:\restart developing doer\rdd-selfcompile\ai-bridge\.jdk21\bin\javac.exe exists=False
+TASKS 

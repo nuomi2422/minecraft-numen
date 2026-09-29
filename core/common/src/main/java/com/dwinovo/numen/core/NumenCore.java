@@ -116,6 +116,8 @@ public final class NumenCore {
         ToolRegistry.register(new com.dwinovo.numen.core.tools.work.BlueprintTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.perception.BlueprintReadTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.interact.InteractAtTool());
+        // 跨维度专用：goto 只负责"走到旁边"，传送门必须 USE 才生效（2026-09-29 实机死循环修复）
+        ToolRegistry.register(new com.dwinovo.numen.core.tools.interact.UsePortalTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.interact.SleepTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.interact.InteractEntityTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.inventory.EatItemTool());
@@ -162,6 +164,8 @@ public final class NumenCore {
         TaskFactory.register(FishTaskRecord.class, (p, r) -> new FishCompanionTask(p, r));
         TaskFactory.register(BuildTaskRecord.class, (p, r) -> new BuildCompanionTask(p, r));
         TaskFactory.register(InteractAtTaskRecord.class, (p, r) -> new InteractAtCompanionTask(p, r));
+        TaskFactory.register(com.dwinovo.numen.core.task.interact.UsePortalTaskRecord.class,
+                (p, r) -> new com.dwinovo.numen.core.task.interact.UsePortalCompanionTask(p, r));
         TaskFactory.register(InteractEntityTaskRecord.class, (p, r) -> new InteractEntityCompanionTask(p, r));
         TaskFactory.register(LocateStructureTaskRecord.class, (p, r) -> new LocateStructureCompanionTask(p, r));
         TaskFactory.register(LocateBiomeTaskRecord.class, (p, r) -> new LocateBiomeCompanionTask(p, r));

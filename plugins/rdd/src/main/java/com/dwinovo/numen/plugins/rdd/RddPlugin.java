@@ -118,6 +118,9 @@ public final class RddPlugin implements NumenPlugin {
         numen.registerTool(new RddAssetsTool());
         // Supervisor ↔ Numen 双向协商：士兵可对命令结构化回执（ACCEPT/REJECT/COUNTER）。
         numen.registerTool(new RddConcernTool());
+        // 主人待命控制面：owner 暂停与士兵 PAUSE 治理不同（主人待命永不过期/不被自动恢复），
+        // 必须有独立入口 —— 否则"主人暂停"的保护逻辑是死代码（深审 R04/codex P1-2）。
+        numen.registerTool(new RddStandbyTool());
         // 验证专用：debug_kill（需 confirm=true）——验证死亡回收闭环（V3）。
         numen.registerTool(new RddDebugKillTool());
         // 接管 /goal：先同步认领，Stage-A 异步规划；规划期间 NUMEN 原生目标循环让位。
@@ -247,6 +250,11 @@ public final class RddPlugin implements NumenPlugin {
             LAST_CONTEXT.clear();
             LAST_INVENTORY.clear();
             LAST_EXPANSION_REPORT.clear();
+            // 2026-09-30 深审 R05：世界态必须清干净。
+            // 计划代次的真源在 TaskChain 里（随链持久化），这里不用管；
+            // 但「上一个世界的回执」一个都不能带到新世界。
+            RddNegotiationInbox.clearAll();
+            com.dwinovo.numen.rdd.core.RddDeathLedger.clearAll();
         });
     }
 
@@ -350,6 +358,17 @@ public final class RddPlugin implements NumenPlugin {
     private static void bindCurrent(UUID companionId, Goal goal) {
         BODY.remove(companionId);
         DECOMPOSING.remove(companionId);
+        // 深审 R05：新目标 = 上一轮的回执全部作废。
+        // 否则士兵对旧计划说的 COUNTER/PAUSE 会滞留到新链的下一个 tick 被消费，
+        // 去改一个它根本没被派过的任务。深审已在消费侧加了 taskId 二次核对（RddDetector.tickNegotiation），
+        // 这里从生产侧断根：换目标/清目标就不再有旧回执可泄漏。
+        RddNegotiationInbox.clear(companionId);
+        // 2026-09-30 codex 审稿 P2-4：**只清"属于这个目标"的支线追踪，不清死亡事实**。
+        // 换目标时，地上的掉落物照样还在，删掉台账会让下一次死亡的时间表漏掉上一个仍可回收的掉落点。
+        RddRepairDispatch.remove(companionId);
+        // RddDeathLedger 刻意**不清**（死亡是"同伴在这个世界发生了什么"，不是"这个目标的事"）。
+        // 换目标 = 换一条新链，它的 planRevision 从 0 开始；
+        // 新 id 前缀含"新链自己的 id"，跨目标天然隔离（不必再加代号次）。
         // 新目标在同一同伴上会复用同样的 primary-<uuid8>-N 命名，必须清掉去重记忆，否则首个懒边界漏报。
         LAST_EXPANSION_REPORT.remove(companionId);
         RddGoalDriver.clear(companionId);
@@ -491,15 +510,23 @@ public final class RddPlugin implements NumenPlugin {
                             return;
                         }
                         java.util.List<Subtask> subs = new java.util.ArrayList<>();
+                        // 2026-09-30 深审 R05/codex 两轮：二级 id 原来恒为 `primaryId-rN`，
+                        // 每次重规划都复用同一批名字 → 上一轮的 PAUSE/COUNTER 回执
+                        // 即使 taskId 相同也能通过消费侧校验，作用到新计划的同 id 二级上。
+                        // 计划代次进 id（代次本体在 TaskChain，随链持久化，重启不撞号）。
+                        int rev = nextPlanRevision(companionId, chain);
                         for (int i = 0; i < specs.size(); i++) {
                             SubtaskSpec sp = specs.get(i);
-                            subs.add(Subtask.hardCoded(primaryId + "-r" + i, sp.description(), sp.condition(), sp.body()));
+                            subs.add(Subtask.hardCoded(primaryId + "-r" + rev + "-" + i,
+                                    sp.description(), sp.condition(), sp.body()));
                         }
                         chain.replaceCurrentSubtasks(subs);
+                        RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废
                         saveRuntimes();
                         publishTaskSnapshot(companionId, "replanned");
                         RddMonitor.publish("replanned", Map.of("companionId", companionId.toString(),
-                                "primary", primaryId, "theme", theme, "subtasks", subs.size()));
+                                "primary", primaryId, "theme", theme,
+                                "subtasks", subs.size(), "planRevision", rev));
                     } catch (RuntimeException ex) {
                         LOG.warn("[rdd] 重规划替换失败，回落重跑现有 {}: {}", companionId, ex.toString());
                         try { chain.resumeFromReplanning(); } catch (RuntimeException ignore) { }
@@ -536,10 +563,30 @@ public final class RddPlugin implements NumenPlugin {
             // 用复活后的真实背包覆盖（那才是真相）；INVALID 只作为提示（见 PlanningAssetSnapshot）。
             saveAssets(companionId);              // 失效态落盘，跨重启也保持
             BODY.remove(companionId);
-            RddMonitor.publish("companion_assets_invalidated", Map.of(
-                    "companionId", companionId.toString(),
-                    "reason", "companion_death",
-                    "invalidatedInventoryEntries", lost));
+            // 死亡台账：每一次死亡单独一行，带掉落物到期时刻（游戏时间，与 despawn 同口径）。
+            // 2026-09-29 实机：旧实现只发"失效 N 项"，她因此以为东西已经没了，
+            // 而掉落物其实还有 5 分钟在地上；连死两次时更分不清哪一次过期了。
+            com.dwinovo.numen.rdd.core.RddDeathLedger.Death death = null;
+            try {
+                death = com.dwinovo.numen.rdd.core.RddDeathLedger.record(
+                        companionId, RddInstrumentation.currentGameTimeTicks(),
+                        System.currentTimeMillis(), body.blockPosition().toShortString(), lost);
+            } catch (RuntimeException ledgerFail) {
+                LOG.warn("[rdd] 死亡台账写入失败 {}: {}", companionId, ledgerFail.toString());
+            }
+            Map<String, Object> invalidatedData = new LinkedHashMap<>();
+            invalidatedData.put("companionId", companionId.toString());
+            invalidatedData.put("reason", "companion_death");
+            invalidatedData.put("invalidatedInventoryEntries", lost);
+            if (death != null) {
+                invalidatedData.put("deathSeq", death.seq());
+                invalidatedData.put("deathAt", death.deathAt());
+                invalidatedData.put("dropsDespawnInSeconds",
+                        death.secondsLeft(RddInstrumentation.currentGameTimeTicks()));
+                // 这一条最关键：**东西还没丢**，只是掉在地上。
+                invalidatedData.put("dropsStillOnGround", true);
+            }
+            RddMonitor.publish("companion_assets_invalidated", invalidatedData);
             LOG.info("[rdd] 同伴死亡：背包资产失效 {} 项 {}", companionId, lost);
             // 埋点：死亡事件（starvation 判据=死亡瞬间食物条为 0，连带 recovery 追踪时间窗）
             long deathTick = RddInstrumentation.currentGameTimeTicks();
@@ -564,7 +611,14 @@ public final class RddPlugin implements NumenPlugin {
                 // 把死亡点传下去：掉落物约 5 分钟就 despawn，不告诉它坐标它就不知道去哪捡
                 // （用户 2026-09-29 实测：只捡回一部分，过 5 分钟有些就没了）。
                 String deathAt = body.blockPosition().toShortString();
-                RddRepairDispatch.onDeath(companionId, goalId, deathAt);
+                // 传整张台账而不是单个坐标：连死两次时两个掉落点的到期时刻不同，
+                // 只给最后一个坐标就分不清"哪一次还来得及捡"。
+                String dropTimeline = "";
+                try {
+                    dropTimeline = com.dwinovo.numen.rdd.core.RddDeathLedger.render(
+                            companionId, RddInstrumentation.currentGameTimeTicks());
+                } catch (RuntimeException ignored) { /* 台账不可用不阻断死亡支线 */ }
+                RddRepairDispatch.onDeath(companionId, goalId, deathAt, dropTimeline);
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 支线任务生成失败 {}: {}", companionId, ex.toString());
             }
@@ -822,6 +876,17 @@ public final class RddPlugin implements NumenPlugin {
         if (companionId == null) return;
         String prefix = companionId + "|";
         REPLAN_COUNTS.keySet().removeIf(k -> k.startsWith(prefix));
+    }
+
+    /**
+     * 每个同伴的<b>计划代次</b>的唯一真源是 {@link TaskChain#nextPlanRevision()}（随链持久化）。
+     *
+     * <p>2026-09-30 深审 R05/codex 两轮抓出：宿主内存里另存一份计数是错的 ——
+     * 停服即清空，而磁盘链里的 id 仍带旧 rev，重启后第一次重规划会**撞号**。
+     * 所以这里只保留一个取数口，代次本体在 TaskChain 里。
+     */
+    private static int nextPlanRevision(UUID companionId, TaskChain chain) {
+        return chain == null ? 1 : chain.nextPlanRevision();
     }
 
     /** 设置某同伴的床边复活锚点（同伴自绑床位；一般由死亡路径自动写入，也可手动设）。 */

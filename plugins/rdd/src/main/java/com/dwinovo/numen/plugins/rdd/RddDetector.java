@@ -180,12 +180,129 @@ final class RddDetector {
         RddPlugin.saveRuntimes();
     }
 
+    /**
+     * 暂停中的二级：条件一旦满足立刻开回来，否则到期强制她复评。
+     *
+     * <p>2026-09-30 实机：PAUSE 触发两次（16:31 雪块在 4189 格外、16:49 河边高度不对），
+     * 两次都卡死在 PAUSED —— 因为 {@code resumeFromPaused} 全仓只有单测在调。
+     * 军师其实已经改好单了（grass_block>=1 → dirt>=1，通道里就有 dirt），链却不动。
+     */
+    private void handlePaused(NumenPlayer ap, RddRuntime rt, TaskChain chain,
+                              Map<String, Integer> counts) {
+        Subtask cur = chain.currentSubtask();
+        if (cur == null) return;
+        long now = ap.level().getGameTime();
+        // 深审 R03：没有起点就补一个（重启恢复出的 PAUSED 链会走这里）。
+        // 有了起点只读不消费，所以不会像旧实现那样"第一次问就把起点删了"。
+        if (!rt.hasPausedMark(cur.id())) {
+            rt.markPaused(cur.id(), now);
+        }
+        long pausedFor = rt.pausedTicks(cur.id(), now);
+
+        // 主人暂停（OWNER_PAUSE）：**永不过期、绝不自动恢复**。
+        // 深审 R04：主人说"原地待命"，60 秒后被系统当成"卡住"强行拉去干活，
+        // 是把主人的明确指令当成故障 —— 后果比永远暂停更糟。
+        if (isOwnerPause(chain, cur)) {
+            return;
+        }
+
+        // ① 条件其实已经满足了（规划器改过单、或她其实能做到）→ 通融：立刻开回来。
+        if (conditionMatches(ap, cur, counts)) {
+            try {
+                chain.resumeFromPaused(cur.id());
+                rt.clearPaused(cur.id());
+                RddMonitor.publish("subtask_resumed", Map.of(
+                        "subtask", cur.id(), "reason", "paused condition now satisfied"));
+                RddPlugin.nudge(ap.getUUID(),
+                        "「" + cur.description() + "」的暂停已经解除——条件现在满足了，开干。");
+            } catch (RuntimeException ignored) { /* 状态刚变，交给下一 tick */ }
+            return;
+        }
+        // ② 到期强制复评：暂停不是"永远停"（但主人暂停在上面已经提前返回了）。
+        if (pausedFor >= PAUSE_RECHECK_TICKS) {
+            RddMonitor.publish("subtask_pause_recheck", Map.of(
+                    "subtask", cur.id(), "pausedSeconds", pausedFor / 20,
+                    "reason", "paused too long without the condition becoming satisfiable"));
+            RddPlugin.nudge(ap.getUUID(),
+                    "「" + cur.description() + "」你已经暂停 " + (pausedFor / 20) + " 秒了，"
+                    + "条件仍然不满足。两条路二选一：① 找一条真正可行的替代做法（说明是什么）；"
+                    + "② 用 report_task_concern 上报，把这个目标从当前计划里移出去。"
+                    + "不要无限期停在一个做不了的事上。");
+            try {
+                chain.resumeFromPaused(cur.id());
+                // 2026-09-30 深审 R03/codex：这里原本是 clear+markPaused 重新起算，
+                // 结果"恢复 RUNNING"之后起点还留着 —— 稍后再次 PAUSE 时 putIfAbsent
+                // 会沿用**上次复评**的时间，于是没重新暂停满 60 秒就被催。
+                // 正确做法：退出暂停就清干净（真正再次进入暂停时 markPaused 会重新记）。
+                // 催促冷却若要，那是另一件事，不该借用暂停起点。
+                rt.clearPaused(cur.id());
+                RddMonitor.publish("subtask_resumed", Map.of(
+                        "subtask", cur.id(), "reason", "pause recheck; back to running for a verdict"));
+            } catch (RuntimeException ignored) { /* 下一 tick 再试 */ }
+        }
+    }
+
+    /**
+     * 这条暂停是不是主人下的（而不是士兵/规划器自己报的）。
+     *
+     * <p>深审 R04：两类暂停的意图完全不同 ——
+     * 士兵 PAUSE 是"我做不了，等条件变"，到期该催她换办法；
+     * 主人暂停是"原地待命"，**多久都不该被系统推翻**。
+     * 判据是暂停原因前缀（TaskChain 只存字符串，没有独立的 PauseKind 字段——
+     * 那是下一轮"RddRuntime 与 TaskChain 归一到同一份暂停元数据"要收敛的）。
+     */
+    private static boolean isOwnerPause(TaskChain chain, Subtask cur) {
+        return chain != null && cur != null && chain.isOwnerPause(cur.id());
+    }
+
+    /**
+     * 暂停多久强制复评：60 秒。
+     *
+     * <p>够她真的去试一条替代路线（跑一趟、问一次军师），又不会让一个做不了的目标
+     * 无限期挂着占住整条链。实机 2026-09-30 两次 PAUSE 都因为"没人会把它开回来"卡死，
+     * 这条就是兜底闸。
+     */
+    private static final long PAUSE_RECHECK_TICKS = 60L * 20L;
+
+    /**
+     * 背包里是否重新出现了<b>死亡时丢掉的那些东西</b>（死亡支线完成判据，深审 R08）。
+     *
+     * <p>判据来源用 {@link com.dwinovo.numen.rdd.core.AssetHistory} 的
+     * {@code LOST → CURRENT} 转移，而不是问 AI"你捡回来了吗"——自报不可信，实物可信。
+     * （不能用 LAST_INVENTORY：死亡时 {@code CompanionEvent.REMOVE} 会把它清空，
+     * 正好把"当初丢了什么"这份对照也一起删了。）
+     *
+     * <p>宽松判定：只要<b>有任何一件</b>当初标 LOST 的装备/工具/食物回到背包就算有进展
+     * （不要求全捡回，那不该由这一处判）。
+     */
+    private static boolean deathDropsBackInInventory(NumenPlayer ap, Map<String, Integer> counts) {
+        try {
+            var history = RddPlugin.history(ap.getUUID());
+            for (var e : history.recoverable()) {
+                if (e.lastCount() != null && e.lastCount() > 0
+                        && counts.getOrDefault(e.assetId(), 0) > 0) {
+                    return true;
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // 资产历史读不到就判"没进展"，绝不让判据本身拖垮 tick
+        }
+        return false;
+    }
+
     private void tickRuntime(NumenPlayer ap, RddRuntime rt) {
         try {
             TaskChain chain = rt.chain();
             PrimaryGoalStatus ps = chain.primaryStatus();
             // 真实背包先扫+缓存（规划注入数据源）；缓存是女仆属性，收尾/监督态也照常更新。
             Map<String, Integer> counts = countInventory(ap);
+            // 死亡支线收尾（深审 R08）：背包里重新出现了死亡时丢的资产 = "捡回来了"的真实证据。
+            // 这是 onRepairSuccess 唯一可信的触发点（比"AI 说自己捡了"可靠）——
+            // 之前它零生产调用，支线派出去就没人管，连续失败只增不减。
+            if (RddRepairDispatch.lastRepair(ap.getUUID()) != null
+                    && deathDropsBackInInventory(ap, counts)) {
+                RddRepairDispatch.onRepairSuccess(ap.getUUID());
+            }
             // 背包快满主动提醒（用户点名）：放在这里是因为它在**任何链状态**（停车/失败/未展开）
             // 都该生效——满了就是满了，跟目标推到第几级无关。see BackpackSpace。
             maybeWarnBackpackFull(ap);
@@ -269,6 +386,20 @@ final class RddDetector {
                 rt.startCurrent();
             }
             SubtaskStatus status = chain.currentSubtaskStatus();
+            // PAUSED = 士兵说"这个现在做不了，先放着"（2026-09-30 两次实战触发）。
+            //
+            // 这里必须有处理，否则是**单向门**：`resumeFromPaused` 全仓只有单测在调，
+            // 生产零调用 → 暂停一次就永久卡死。实机 00:31 与 00:49 两次都卡在这里，
+            // 而规划器其实已经改好单了（grass_block >= 1 → dirt >= 1），链却不动。
+            //
+            // 语义不是"永远停"，而是"停到有理由再开"：
+            //   ① 条件已经满足（规划器改过单、目标其实可行了）→ 立刻开回来，这是通融主路径；
+            //   ② 条件仍不满足 → 到期强制复评（{@link #PAUSE_RECHECK_TICKS}），
+            //      提示她「要么找到办法，要么把这个目标移出去」，不让她无限期停在做不了的事上。
+            if (status == SubtaskStatus.PAUSED) {
+                handlePaused(ap, rt, chain, counts);
+                return;
+            }
             // STALLED → 监督恢复分支：行为恢复则回到 RUNNING，多次拍醒无效则升级失败。
             if (status == SubtaskStatus.STALLED) {
                 stallWatcher.handleStalled(ap, rt, chain.currentSubtask());
@@ -442,16 +573,83 @@ final class RddDetector {
      */
     private boolean tickNegotiation(NumenPlayer ap, RddRuntime rt, TaskChain chain) {
         com.dwinovo.numen.rdd.fail.TaskNegotiation n = RddNegotiationInbox.peek(ap.getUUID());
-        if (n == null || !n.needsSupervisorAction()) {
+        if (n == null || (!n.needsSupervisorAction() && !n.isPauseRequest())) {
             return false;
         }
         if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE
                 || chain.currentSubtaskStatus() != SubtaskStatus.RUNNING
-                && chain.currentSubtaskStatus() != SubtaskStatus.STALLED) {
-            return false;   // 只在当前二级活跃/卡住时处理协商
+                && chain.currentSubtaskStatus() != SubtaskStatus.STALLED
+                // 2026-09-30 codex 审稿 P2-6：士兵暂停后若找到了替代办法（COUNTER/REJECT），
+                // 旧守卫只放行 RUNNING/STALLED → 那条回执会一直挂到自动恢复之后。
+                // 「暂停着但想到了别的做法」正是最该被听到的时刻。
+                && chain.currentSubtaskStatus() != SubtaskStatus.PAUSED) {
+            return false;   // 只在当前二级活跃/卡住/暂停时处理协商
+        }
+        // 2026-09-30 codex 复审 P1-3：**主人暂停是命令，不是建议。**
+        // 士兵在主人暂停期间上报的 COUNTER/REJECT 不能把它推翻成"重规划 → 继续跑"，
+        // 否则"原地待命"这个明确指令会被执行层的建议悄悄作废。
+        // 处理：明确丢弃并留事件，让主人知道"士兵有话想说，但要你先解除暂停"。
+        if (chain.currentSubtaskStatus() == SubtaskStatus.PAUSED && isOwnerPause(chain, chain.currentSubtask())) {
+            RddNegotiationInbox.takePending(ap.getUUID());
+            RddMonitor.publish("negotiation_deferred_to_owner", Map.of(
+                    "companionId", ap.getUUID().toString(),
+                    "kind", n.kind().name(), "reason", n.reason(),
+                    "suggestion", n.suggestion(),
+                    "note", "owner paused this step; only the owner may resume it"));
+            return true;   // 已处理（= 拦住），本 tick 不照旧推进
+        }
+        // 深审 R05：消费前**二次核对 taskId**。
+        // 入队时（工具侧）只做可选校验，换目标/重规划后那次回执会滞留；
+        // 而二级 id 在重规划里反复复用 `primaryId-r0/r1`（RddPlugin:496），
+        // 于是上一轮的 PAUSE 可能作用到新一轮的同 id 二级上。
+        // 消费侧再核一次，是最后一道闸：不匹配就丢弃并留事件，不让它改单。
+        Subtask currentNow = chain.currentSubtask();
+        if (!n.taskId().isBlank() && (currentNow == null || !currentNow.id().equals(n.taskId()))) {
+            RddNegotiationInbox.takePending(ap.getUUID());   // 明确丢弃
+            RddMonitor.publish("negotiation_discarded", Map.of(
+                    "companionId", ap.getUUID().toString(),
+                    "reason", "stale subtask id; the plan moved on",
+                    "reportedTaskId", n.taskId(),
+                    "currentTaskId", currentNow == null ? "?" : currentNow.id(),
+                    "kind", n.kind().name()));
+            return false;
         }
         Subtask current = chain.currentSubtask();
         RddNegotiationInbox.takePending(ap.getUUID());   // 消费
+        // 「先放着」：不重规划、不换计划，直接把当前二级按住。留在这里等条件变了再开。
+        if (n.isPauseRequest()) {
+                RddPlugin.clearBody(ap.getUUID());
+                // 已经在暂停中（士兵又报了一次 PAUSE）：不是错误，别再走一遍按停逻辑，
+                // 更别把它当失败。刷新一下起点，让复评预算从这次上报重新算。
+                if (chain.currentSubtaskStatus() == SubtaskStatus.PAUSED) {
+                    rt.clearPaused(current.id());
+                    rt.markPaused(current.id(), ap.level().getGameTime());
+                    return true;
+                }
+                try {
+                    chain.pauseSubtask(current.id(), "soldier PAUSE: " + n.reason()
+                            + (n.hasSuggestion() ? " | suggestion: " + n.suggestion() : ""));
+                    // 记下暂停起点：没有它，handlePaused 拿不到"已经停多久"，
+                    // 复评闸就永远不触发（这正是实机两次卡死的直接原因）。
+                    // 时钟必须与读取侧同源：都用 level().getGameTime()（20 tick/s）。
+                    // 2026-09-30 深审 R03：我第一版只改了读取侧，漏了这里，还写着
+                    // nanoTime/20_000_000（50/s）—— 起点大于游戏时间 → Math.max(0,…) 恒为 0，
+                    // 60 秒复评闸照样不触发。codex 审稿抓出，两个时钟必须一起改。
+                    rt.markPaused(current.id(), ap.level().getGameTime());
+                    RddMonitor.publish("subtask_paused", Map.of(
+                        "companionId", ap.getUUID().toString(), "subtask", current.id(),
+                        "kind", n.kind().name(), "reason", n.reason(),
+                        "suggestion", n.suggestion(),
+                        "note", "kept for later; retry budget untouched"));
+                return true;
+            } catch (RuntimeException pauseFailed) {
+                // 按不住不能吞掉：退回重规划路径，让军师换计划（fail-soft，但不留孤儿上报）
+                RddMonitor.publish("subtask_pause_rejected", Map.of(
+                        "companionId", ap.getUUID().toString(), "subtask", current.id(),
+                        "reason", pauseFailed.toString(),
+                        "fallback", "replan"));
+            }
+        }
         String hint = RddNegotiationInbox.negotiationHint(n, current);
         RddMonitor.publish("negotiation_handled", Map.of(
                 "companionId", ap.getUUID().toString(),
@@ -464,6 +662,19 @@ final class RddDetector {
             return true;
         }
         // 重规划预算耗尽 → 停车守望（不无限协商）。
+        // 2026-09-30 codex 复审 P1-3：原来直接 markFailed，但那只接受 RUNNING/STALLED ——
+        // 在 PAUSED 状态（士兵暂停后又报 COUNTER 的路径）会抛 IllegalStateException，
+        // 异常向上冒到 tickRuntime 的 catch，把整条支线变成"检测异常"并静默停摆。
+        // 正确做法：PAUSED 就让它**继续暂停**（它本来就不在跑），只发事件。
+        if (rt.chain().currentSubtaskStatus() == SubtaskStatus.PAUSED) {
+            RddPlugin.clearBody(ap.getUUID());
+            RddMonitor.publish("negotiation_parked", Map.of(
+                    "companionId", ap.getUUID().toString(), "subtask", current.id(),
+                    "kind", n.kind().name(),
+                    "reason", "replan budget exhausted; step stays PAUSED (it is not running anyway)",
+                    "suggestion", n.suggestion()));
+            return true;
+        }
         rt.chain().markFailed(current.id(), "negotiation could not replan: " + n.reason());
         RddPlugin.clearBody(ap.getUUID());
         parkedWatcher.watch(ap, rt, current);

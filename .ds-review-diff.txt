@@ -1,0 +1,44 @@
+﻿d6f46b24 [rdd-core][plugins:rdd] Phase-1 鈶犫憽鈶細鍙敤璧勪骇鍙ｅ緞缁熶竴璧版敞鍐岃〃锛圖etector 鍙岄棬鎺?usableCounts銆佹縺娲婚棬 registry-only锛夈€丷EPLAN/RECOVER 鍑哄彛娓呮墽琛岃韩浠藉厓鏁版嵁銆乽sableCounts 涓嶅彲鍙?闈炶礋鏁存暟濂戠害
+
+ .../com/dwinovo/numen/plugins/rdd/RddDetector.java |  4 +-
+ .../com/dwinovo/numen/rdd/core/AssetRegistry.java  | 16 ++++-
+ .../java/com/dwinovo/numen/rdd/core/TaskChain.java | 36 ++++++++++-
+ .../dwinovo/numen/rdd/core/AssetRegistryTest.java  | 41 +++++++++++++
+ .../rdd/core/TaskChainStateMachineExitTest.java    | 70 +++++++++++++++++++++-
+ 5 files changed, 159 insertions(+), 8 deletions(-)
+===实际改动(精简)===
+--- a/rdd-core/src/main/java/com/dwinovo/numen/rdd/core/TaskChain.java
++++ b/rdd-core/src/main/java/com/dwinovo/numen/rdd/core/TaskChain.java
++        clearExecutionMetadata(); // 閲嶈窇 = 鏃ф墽琛岃韩浠?鍚姩鏃堕棿浣滃簾
++        clearExecutionMetadata(); // 鎹㈣鍒?= 鏃ф墽琛岃韩浠?鍚姩鏃堕棿浣滃簾
++        clearExecutionMetadata(); // 鎭㈠缁窇涓嶆槸"鍚屼竴鎵ц"锛氭棫鎵ц韬唤/鍚姩鏃堕棿浣滃簾
++    }
++
++    /** 鎵ц鍏冩暟鎹綔搴燂紙绂诲紑鍦ㄩ€旀墽琛岀殑缁熶竴娓呯偣锛夛細浜岀骇韬唤涓庡惎鍔ㄦ椂闂村彧灞炰簬涓€涓湪閫旀墽琛屻€?*/
++    private void clearExecutionMetadata() {
++        activeExecutionId = null;
++        lastStartedAtMillis = 0;
++            // 鍏ㄩ噺杞藉叆锛堜笉鍋氬姞杞芥湡杩囨护锛夛細skipReason 鎸囧悜闈?SKIPPED/鏈煡浜岀骇灞炰簬鎹熷潖鏁版嵁锛?+            // 浜ょ敱 validateRestoredState 澶у０鎷掔粷锛岃€屼笉鏄倓鎮勪涪杩?/dev/null銆?             for (var entry : o.getAsJsonObject("skipReasons").entrySet()) {
+-                if (chain.statuses.get(entry.getKey()) == SubtaskStatus.SKIPPED)
+-                    chain.skipReasons.put(entry.getKey(), entry.getValue().getAsString());
++                chain.skipReasons.put(entry.getKey(), entry.getValue().getAsString());
++        // 骞傜瓑娓咃細宸叉槸 RECOVERING锛堜簩娆￠噸鍚鍒拌嚜宸卞垰瀛樼殑 RECOVERING锛変篃涓€鏍蜂綔搴熸墽琛岃韩浠斤紝
++        // 闃?浼戠湢鏈熼棿瀹夸富缂栧叆杩?bindExecution 鐨勬畫鐣?id"琚涓夋鍘熸牱鎭㈠銆?+        if (chain.primaryStatus == PrimaryGoalStatus.RECOVERING) {
++            chain.activeExecutionId = null;
++        }
++        for (String id : attempts.keySet()) {
++            if (!expected.contains(id)) {
++                throw new IllegalArgumentException("restored attempts table references unknown subtask: " + id);
++            }
++        }
++        for (String id : skipReasons.keySet()) {
++            if (!expected.contains(id)) {
++                throw new IllegalArgumentException("restored skipReason references unknown subtask: " + id);
++            }
++            if (statuses.get(id) != SubtaskStatus.SKIPPED) {
++                throw new IllegalArgumentException("restored skipReason on non-skipped subtask: " + id);
++            }
++        }
++            if (primaryStatus == PrimaryGoalStatus.ACTIVE) {
++                // ACTIVE+鏈睍寮€ = 姘歌繙 return 鐨勯潤榛樺崱姝伙紙褰撳墠浜岀骇涓?null锛岃蛋鐘舵€佸垎鏀叏閮ㄨ惤绌猴級銆?+                throw new IllegalArgumentException("ACTIVE primary cannot be unexpanded; must be PENDING/WAITING until expansion");
++            }

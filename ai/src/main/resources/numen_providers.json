@@ -28,6 +28,25 @@
       ]
     },
     {
+      "id": "opencode-go", "name": "OpenCode Go", "baseUrl": "https://opencode.ai/zen/go/v1", "thinkingFormat": "effort",
+      "headers": {
+        "User-Agent": "numen-minecraft-agent/1.0",
+        "x-opencode-session": "numen-minecraft"
+      },
+      "models": [
+        { "id": "deepseek-v4.1-flash", "ctx": 1000000, "reasoning": true },
+        { "id": "deepseek-v4-flash", "ctx": 1000000, "reasoning": true },
+        { "id": "deepseek-v4-pro", "ctx": 1000000, "reasoning": true },
+        { "id": "glm-5.3-flash", "ctx": 202752, "reasoning": true },
+        { "id": "glm-5.3", "ctx": 202752, "reasoning": true },
+        { "id": "kimi-k3", "ctx": 262144, "reasoning": true },
+        { "id": "mimo-v2.6-flash", "ctx": 262144, "reasoning": true },
+        { "id": "minimax-m3", "ctx": 204800, "reasoning": true },
+        { "id": "longcat-2.0", "ctx": 262144, "reasoning": true },
+        { "id": "space-bunny-free", "ctx": 200000, "reasoning": true }
+      ]
+    },
+    {
       "id": "moonshot", "name": "Kimi", "baseUrl": "https://api.moonshot.ai/v1", "thinkingFormat": "none",
       "models": [
         { "id": "kimi-k2.6", "ctx": 262144, "reasoning": true },

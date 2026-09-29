@@ -1,0 +1,7 @@
+﻿TS 19:27:45
+DSTARGET   pg <BRAIN>Numen源码接口风险分析 - DeepSeek | https://chat.deepseek.com/a/chat/s/f0791612-ae66-4a67-8aeb-b60c1f692bb
+BRAINDRIVE E:\restart developing doer\rdd-selfcompile\scripts\brain-drive.js exists=True
+SCRIPTS-NM E:\restart developing doer\rdd-selfcompile\scripts\node_modules exists=False
+AIBRIDGE-NM E:\restart developing doer\rdd-selfcompile\ai-bridge\node_modules exists=True
+  playwright=False ws=True
+NODE D:\nodejs\node.exe

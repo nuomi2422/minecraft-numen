@@ -1,0 +1,9 @@
+﻿TS 19:12:46
+HB NOFILE
+MCP8765 
+MCP8765 NOT-LISTENING
+CDP9222 LocalAddress LocalPort
+------------ ---------
+127.0.0.1         9222
+MCPROC NONE
+MCPSRV 

@@ -1,0 +1,5 @@
+﻿TS 19:27:18
+scripts=E:\restart developing doer\rdd-selfcompile\scripts
+pw-path=E:\restart developing doer\rdd-selfcompile\scripts\node_modules\playwright
+pw-exists=False
+scripts-match=brain-drive.js

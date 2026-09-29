@@ -1,0 +1,101 @@
+﻿FILE=E:\restart developing doer\minecraft-numen\ac-core\src\main\java\com\dwinovo\numen\ac\core\FileAcVersionStore.java
+LINES=99
+   1: package com.dwinovo.numen.ac.core;
+   2: 
+   3: import com.dwinovo.numen.ac.api.AcDefinition;
+   4: import com.dwinovo.numen.ac.api.AcVersionStore;
+   5: import com.google.gson.Gson;
+   6: import com.google.gson.GsonBuilder;
+   7: import com.google.gson.JsonObject;
+   8: import com.google.gson.JsonParser;
+   9: 
+  10: import java.io.IOException;
+  11: import java.nio.charset.StandardCharsets;
+  12: import java.nio.file.Files;
+  13: import java.nio.file.Path;
+  14: import java.nio.file.StandardCopyOption;
+  15: import java.util.ArrayList;
+  16: import java.util.List;
+  17: import java.util.Map;
+  18: import java.util.Optional;
+  19: import java.util.TreeMap;
+  20: import java.util.concurrent.ConcurrentHashMap;
+  21: 
+  22: /**
+  23:  * 落盘版 AC 版本仓储：JSON 持久化到文件，重启恢复。写为原子替换（tmp + move），
+  24:  * 崩溃不损坏库。纯 JVM（仅 java.nio + Gson 2.10 原生 record 序列化），路径由宿主提供。
+  25:  */
+  26: public final class FileAcVersionStore implements AcVersionStore {
+  27: 
+  28:     private final Path file;
+  29:     private final Map<String, Map<String, AcDefinition>> byName = new ConcurrentHashMap<>();
+  30:     private final Gson gson = new GsonBuilder().disableHtmlEscaping().create();
+  31: 
+  32:     public FileAcVersionStore(Path file) {
+  33:         this.file = file;
+  34:         load();
+  35:     }
+  36: 
+  37:     private void load() {
+  38:         try {
+  39:             if (file == null || !Files.exists(file)) return;
+  40:             String text = Files.readString(file, StandardCharsets.UTF_8);
+  41:             JsonObject root = JsonParser.parseString(text).getAsJsonObject();
+  42:             for (String name : root.keySet()) {
+  43:                 JsonObject versions = root.getAsJsonObject(name);
+  44:                 TreeMap<String, AcDefinition> map = new TreeMap<>();
+  45:                 for (String ver : versions.keySet()) {
+  46:                     map.put(ver, gson.fromJson(versions.getAsJsonObject(ver), AcDefinition.class));
+  47:                 }
+  48:                 byName.put(name, map);
+  49:             }
+  50:         } catch (Exception e) {
+  51:             System.err.println("[ac-store] 加载失败，从空开始: " + e);
+  52:         }
+  53:     }
+  54: 
+  55:     private void save() {
+  56:         try {
+  57:             if (file == null) return;
+  58:             if (file.getParent() != null) Files.createDirectories(file.getParent());
+  59:             JsonObject root = new JsonObject();
+  60:             for (Map.Entry<String, Map<String, AcDefinition>> e : byName.entrySet()) {
+  61:                 JsonObject versions = new JsonObject();
+  62:                 for (Map.Entry<String, AcDefinition> v : e.getValue().entrySet()) {
+  63:                     versions.add(v.getKey(), gson.toJsonTree(v.getValue()));
+  64:                 }
+  65:                 root.add(e.getKey(), versions);
+  66:             }
+  67:             Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+  68:             Files.writeString(tmp, gson.toJson(root), StandardCharsets.UTF_8);
+  69:             Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+  70:         } catch (IOException e) {
+  71:             System.err.println("[ac-store] 保存失败: " + e);
+  72:         }
+  73:     }
+  74: 
+  75:     @Override
+  76:     public void put(String name, String version, AcDefinition ac) {
+  77:         byName.computeIfAbsent(name, k -> new TreeMap<>()).put(version, ac);
+  78:         save();
+  79:     }
+  80: 
+  81:     @Override
+  82:     public Optional<AcDefinition> get(String name, String version) {
+  83:         Map<String, AcDefinition> versions = byName.get(name);
+  84:         return versions == null ? Optional.empty() : Optional.ofNullable(versions.get(version));
+  85:     }
+  86: 
+  87:     @Override
+  88:     public Optional<AcDefinition> latest(String name) {
+  89:         Map<String, AcDefinition> versions = byName.get(name);
+  90:         if (versions == null || versions.isEmpty()) return Optional.empty();
+  91:         return Optional.of(versions.get(versions.keySet().stream().reduce((a, b) -> b).orElseThrow()));
+  92:     }
+  93: 
+  94:     @Override
+  95:     public List<String> versions(String name) {
+  96:         Map<String, AcDefinition> versions = byName.get(name);
+  97:         return versions == null ? List.of() : List.copyOf(new ArrayList<>(versions.keySet()));
+  98:     }
+  99: }

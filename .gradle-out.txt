@@ -1,0 +1,66 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/9.2.0/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :buildSrc:extractPluginRequests UP-TO-DATE
+> Task :buildSrc:generatePluginAdapters UP-TO-DATE
+> Task :buildSrc:compileJava UP-TO-DATE
+> Task :buildSrc:compileGroovy NO-SOURCE
+> Task :buildSrc:compileGroovyPlugins UP-TO-DATE
+> Task :buildSrc:pluginDescriptors UP-TO-DATE
+> Task :buildSrc:processResources UP-TO-DATE
+> Task :buildSrc:classes UP-TO-DATE
+> Task :buildSrc:jar UP-TO-DATE
+
+> Configure project :api:fabric
+Fabric Loom: 1.14.10
+
+> Configure project :core:fabric
+Fabric Loom: 1.14.10
+
+> Task :ac-api:compileJava FAILED
+E:\restart developing doer\minecraft-numen\ac-api\src\main\java\com\dwinovo\numen\ac\api\ToolRegistry.java:1: 错误: 非法字符: '\ufeff'
+﻿package com.dwinovo.numen.ac.api;
+^
+E:\restart developing doer\minecraft-numen\ac-api\src\main\java\com\dwinovo\numen\ac\api\ToolRegistry.java:1: 错误: 需要 class、interface、enum 或 record
+﻿package com.dwinovo.numen.ac.api;
+         ^
+E:\restart developing doer\minecraft-numen\ac-api\src\main\java\com\dwinovo\numen\ac\api\ToolRegistry.java:3: 错误: 需要 class、interface、enum 或 record
+import java.util.List;
+^
+E:\restart developing doer\minecraft-numen\ac-api\src\main\java\com\dwinovo\numen\ac\api\ToolRegistry.java:4: 错误: 需要 class、interface、enum 或 record
+import java.util.Optional;
+^
+4 个错误
+
+[Incubating] Problems report is available at: file:///E:/restart%20developing%20doer/minecraft-numen/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':ac-api:compileJava'.
+> Compilation failed; see the compiler output below.
+  E:\restart developing doer\minecraft-numen\ac-api\src\main\java\com\dwinovo\numen\ac\api\ToolRegistry.java:1: 错误: 需要 class、interface、enum 或 record
+  ﻿package com.dwinovo.numen.ac.api;
+           ^
+  E:\restart developing doer\minecraft-numen\ac-api\src\main\java\com\dwinovo\numen\ac\api\ToolRegistry.java:3: 错误: 需要 class、interface、enum 或 record
+  import java.util.List;
+  ^
+  E:\restart developing doer\minecraft-numen\ac-api\src\main\java\com\dwinovo\numen\ac\api\ToolRegistry.java:4: 错误: 需要 class、interface、enum 或 record
+  import java.util.Optional;
+  ^
+  E:\restart developing doer\minecraft-numen\ac-api\src\main\java\com\dwinovo\numen\ac\api\ToolRegistry.java:1: 错误: 非法字符: '\ufeff'
+  ﻿package com.dwinovo.numen.ac.api;
+  ^
+  4 个错误
+
+* Try:
+> Check your code and dependencies to fix the compilation error(s)
+> Run with --scan to generate a Build Scan (powered by Develocity).
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 10.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/9.2.0/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD FAILED in 12s
+8 actionable tasks: 1 executed, 7 up-to-date

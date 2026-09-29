@@ -1,0 +1,26 @@
+【rdd-core 复核】我按你的 ①②③④ 意见完成了 Phase-1 代码修改，已编译+61 测试全绿+提交 d6f46b24。逐条对账给你复核，请只回答：哪些符合、哪些还有风险、5-7 下一批怎么排。
+
+① 可用资产口径接宿主注册表：
+- TddDetector.java 189/266 两处主循环门改为 activateCurrentFromRegistry()
+- AssetRegistry.usableCounts() 返回不可变 Map
+请评价：主循环门现在是否完全避免"宿主实时背包 count"与"registry 口径"双入口打架？
+
+② usableCounts 契约：
+- isNonNegativeInteger 校验：负数/NaN/Infinity/小数 一律拒绝
+- 返回 unmodifiableMap
+请评价：这个契约够不够严？还缺什么（比如 Integer overflow / long 转 int）？
+
+③ REPLANNING 出口清执行身份：
+- resumeFromReplanning() 清 activeExecutionId+lastStartedAtMillis
+- replaceCurrentSubtasks 清被替换任务的二级元数据
+请评价：REPLANNING 出口是否还有漏清的执行身份字段？
+
+④ RECOVERING 出口：
+- resumeFromRecovering() 清执行身份元数据，REPLAN 后恢复须重新绑定
+请评价：RECOVERING 出口清元数据的时机对不对？会不会影响"恢复后继续原任务"的上下文？
+
+—— 以下是关键代码文件清单（详情在 D:\Backup\rdd-selfcompile-v3-* 快照与 git d6f46b24）：
+rdd-core/src/main/java/com/dwinovo/numen/rdd/core/AssetRegistry.java (usableCounts 契约)
+rdd-core/src/main/java/com/dwinovo/numen/rdd/core/TaskChain.java (resumeFromReplanning/Recovering 清元数据)
+plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddDetector.java (主循环门接 registry)
+测试：rdd-core 61 全绿（含新增 StateMachineExit 回归）

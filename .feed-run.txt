@@ -1,0 +1,2 @@
+﻿FOCUS {"found":true,"tag":"TEXTAREA"}
+ERR ENOENT: no such file or directory, open ''

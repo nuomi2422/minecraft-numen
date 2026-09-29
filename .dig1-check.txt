@@ -1,0 +1,5 @@
+﻿TS 19:16:35
+HB NOFILE
+MCP8765 NOT-LISTENING
+MCPROC NONE
+LAUNCH E:\restart developing doer\rdd-selfcompile\scripts\launch-mc.ps1

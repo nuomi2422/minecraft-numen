@@ -24,12 +24,15 @@ class TaskNegotiationTest {
         assertTrue(ctr.render().contains("先采铁矿"));
     }
 
-    @Test void parseIsLenient() {
-        assertEquals(TaskNegotiation.Kind.COUNTER, TaskNegotiation.parse("counter", "s", "r", "g").kind());
-        assertEquals(TaskNegotiation.Kind.REJECT, TaskNegotiation.parse("REJECT", "s", "r", "").kind());
-        assertEquals(TaskNegotiation.Kind.ACCEPT, TaskNegotiation.parse("garbage", "s", "", "").kind());
-        assertEquals(TaskNegotiation.Kind.ACCEPT, TaskNegotiation.parse(null, "s", "", "").kind());
-    }
+  @Test void parseNormalisesButRejectsUnknownKinds() {
+  assertEquals(TaskNegotiation.Kind.COUNTER, TaskNegotiation.parse("counter", "s", "r", "g").kind());
+  assertEquals(TaskNegotiation.Kind.REJECT, TaskNegotiation.parse("REJECT", "s", "r", "").kind());
+  assertEquals(TaskNegotiation.Kind.ACCEPT, TaskNegotiation.parse(null, "s", "", "").kind());
+  // 2026-09-30 深审 R05：未知 kind 不再降级成 ACCEPT。
+  // 旧行为下一次拼写错误会清掉 inbox 里之前合法的待处理回执（ACCEPT 走 remove 分支）。
+  assertThrows(IllegalArgumentException.class,
+        () -> TaskNegotiation.parse("garbage", "s", "", ""));
+  }
 
     @Test void eventDataIsFlatAndComplete() {
         var n = new TaskNegotiation(TaskNegotiation.Kind.COUNTER, "s1", "做不到", "换方案");
@@ -49,7 +52,10 @@ class TaskNegotiationTest {
     }
 
     @Test void kindsListed() {
-        assertEquals(3, TaskNegotiation.kinds().size());
+        // 2026-09-29 新增 PAUSE（原为 3）。这条断言的作用是"改接口必须被看见"：
+        // 它真的挡下了一次漏改 —— 加了 PAUSE 却没更新 kinds() 就会红在这里。
+        assertEquals(4, TaskNegotiation.kinds().size());
         assertTrue(TaskNegotiation.kinds().contains("COUNTER"));
+        assertTrue(TaskNegotiation.kinds().contains("PAUSE"));
     }
 }

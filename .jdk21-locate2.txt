@@ -1,0 +1,4 @@
+﻿TS 19:54:35
+ROOT-OK E:\jdk21
+  JAVAC E:\jdk21\jdk-21.0.11+10\bin\javac.exe
+=== gradle.properties org.gradle.java.home 现状 ===

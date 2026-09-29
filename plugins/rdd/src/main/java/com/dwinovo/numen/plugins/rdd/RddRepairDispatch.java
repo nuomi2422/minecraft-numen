@@ -37,8 +37,11 @@ final class RddRepairDispatch {
      * 所以捡包**限时优先**，备用装备排后面；且必须把**死亡坐标**给它，否则它不知道去哪捡。
      *
      * @param deathAt 死亡点坐标文本（如 "425, 75, -298"），可空
+     * @param dropTimeline 死亡台账渲染出的整张表（每次死亡一行 + 各自还剩多少秒），
+     *                     可空。2026-09-29 起必传：连死两次时两个掉落点的到期时刻不同，
+     *                     只给一个坐标她分不清"哪一次还来得及捡"，会按"东西已经没了"重新规划。
      */
-    static boolean onDeath(UUID companionId, String goalId, String deathAt) {
+    static boolean onDeath(UUID companionId, String goalId, String deathAt, String dropTimeline) {
         if (companionId == null) return false;
         long now = RddInstrumentation.currentGameTimeTicks();
         LocalRepairTask.Priority pri = LocalRepairTask.defaultPriority(LocalRepairTask.Trigger.DEATH);
@@ -50,6 +53,8 @@ final class RddRepairDispatch {
             return false;
         }
         String at = (deathAt == null || deathAt.isBlank()) ? "死亡点" : deathAt;
+        // 台账原样拼进 nudge：倒计时必须在**她眼前**，规划器看不到就等于没有。
+        String timeline = (dropTimeline == null || dropTimeline.isBlank()) ? "" : ("\n" + dropTimeline);
         String id = "repair-" + companionId + "-" + ID_SEQ.incrementAndGet();
         String parent = (goalId == null || goalId.isBlank()) ? ("goal-" + companionId) : goalId;
         LocalRepairTask.Task task = LocalRepairTask.Task.of(id, parent, "death-event",
@@ -62,11 +67,11 @@ final class RddRepairDispatch {
         tr.recordFire(LocalRepairTask.Trigger.DEATH, now);
         RddMonitor.publish("repair_task_dispatched", Map.of(
                 "companionId", companionId.toString(), "repairId", id, "priority", pri.name(),
-                "deathAt", at));
+                "deathAt", at, "dropTimeline", dropTimeline == null ? "" : dropTimeline));
         RddPlugin.nudge(companionId, "[\u652f\u7ebf\u4efb\u52a1/\u6b7b\u4ea1] \u4f60\u521a\u6b7b\u4e00\u6b21\u3002\u6389\u843d\u7269\u5728 "
                 + at + " \u9644\u8fd1\u2014\u2014\u6ce8\u610f\uff1a**\u6389\u843d\u7269\u7ea6 5 \u5206\u949f\u5c31\u4f1a\u6d88\u5931**\u3002"
                 + "\u6240\u4ee5\u987a\u5e8f\u662f\uff1a\u5148\u7acb\u523b\u56de " + at + " \u628a\u6389\u843d\u7269\u6361\u56de\u6765\uff08\u9650\u65f6\u4f18\u5148\uff09\uff0c"
-                + "\u518d\u53bb\u53d6\u5907\u7528\u88c5\u5907\uff0c\u6700\u540e\u56de\u4e3b\u94fe\u7ee7\u7eed\u3002\u4e0d\u8981\u4e3a\u8fd9\u4ef6\u4e8b\u91cd\u89c4\u5212\u6574\u6761\u4e3b\u94fe\u3002");
+                + "\u518d\u53bb\u53d6\u5907\u7528\u88c5\u5907\uff0c\u6700\u540e\u56de\u4e3b\u94fe\u7ee7\u7eed\u3002\u4e0d\u8981\u4e3a\u8fd9\u4ef6\u4e8b\u91cd\u89c4\u5212\u6574\u6761\u4e3b\u94fe\u3002" + timeline);
         return true;
     }
 
@@ -74,7 +79,26 @@ final class RddRepairDispatch {
     static void onRepairSuccess(UUID companionId) {
         LocalRepairTask.Guard.Tracker tr = TRACKERS.get(companionId);
         if (tr != null) tr.recordSuccess(LocalRepairTask.Trigger.DEATH);
-        LAST_REPAIR.remove(companionId);
+        LocalRepairTask.Task done = LAST_REPAIR.remove(companionId);
+        if (done != null) {
+            RddMonitor.publish("repair_task_succeeded", Map.of(
+                    "companionId", companionId.toString(), "repairId", done.id(),
+                    "reason", "death drops observed back in the real inventory"));
+            // 深审 R08：把"这次死亡已回收"落到台账，规划器才不会继续把它当待办。
+            com.dwinovo.numen.rdd.core.RddDeathLedger.confirmRecovered(companionId, -1,
+                    "drops observed back in inventory");
+        }
+    }
+
+    /**
+     * 死亡掉落是否已经被观测到回收（决定死亡支线算不算完成）。
+     *
+     * <p>深审 R08（codex）：旧实现 \`onRepairSuccess\` **零生产调用**，支线派出去就没人管，
+     * \`Guard.Tracker\` 的成功复位不可达 → "连续失败"只增不减，迟早把后续死亡支线全压掉。
+     * 接在 \`RddDetector\` 观测到「背包重新出现死亡时丢的资产」处 —— 那是"捡回来了"唯一可靠的证据。
+     */
+    static boolean dropObservedRecovered(UUID companionId) {
+        return !com.dwinovo.numen.rdd.core.RddDeathLedger.recovered(companionId).isEmpty();
     }
 
     /** \u652f\u7ebf\u5931\u8d25\uff1a\u7d2f\u8ba1\u8fde\u7eed\u5931\u8d25\uff08\u8fbe\u9608\u503c\u89e6\u53d1\u5347\u7ea7\u91cd\u89c4\u5212\uff09\u3002 */

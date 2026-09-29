@@ -1,0 +1,98 @@
+﻿FILE=E:\restart developing doer\minecraft-numen\ac-core\src\main\java\com\dwinovo\numen\ac\core\AcParamValidator.java
+LINES=96
+   1: package com.dwinovo.numen.ac.core;
+   2: 
+   3: import com.dwinovo.numen.ac.api.ToolSchema;
+   4: 
+   5: import java.util.List;
+   6: import java.util.Map;
+   7: 
+   8: /**
+   9:  * 执行前参数校验。保证 AI / AI authoring 生成的参数不经检查就交给宿主工具：
+  10:  * 校验 required / 类型 / 未知参数 / 枚举 / 嵌套深度 / 字符串与数组大小上限。
+  11:  * 返回 {@code null} 表示通过，否则返回人类可读的失败原因。
+  12:  */
+  13: public final class AcParamValidator {
+  14: 
+  15:     /** 最大嵌套深度（Map/List 递归）。 */
+  16:     public static final int MAX_DEPTH = 8;
+  17:     /** 单个字符串参数的最大长度。 */
+  18:     public static final int MAX_STRING_LEN = 4096;
+  19:     /** 单个数组参数的最大元素数。 */
+  20:     public static final int MAX_LIST_SIZE = 1024;
+  21: 
+  22:     private AcParamValidator() {}
+  23: 
+  24:     /**
+  25:      * 校验参数。通过返回 {@code null}；失败返回失败原因（含参数名）。
+  26:      */
+  27:     public static String validate(ToolSchema schema, Map<String, Object> raw) {
+  28:         if (schema == null) return null;
+  29:         Map<String, Object> params = raw == null ? Map.of() : raw;
+  30: 
+  31:         if (!schema.allowUnknown()) {
+  32:             for (String key : params.keySet()) {
+  33:                 if (schema.parameters().stream().noneMatch(p -> p.name().equals(key))) {
+  34:                     return "未知参数: " + key;
+  35:                 }
+  36:             }
+  37:         }
+  38:         for (ToolSchema.Param p : schema.parameters()) {
+  39:             boolean present = params.containsKey(p.name());
+  40:             if (!present) {
+  41:                 if (p.required()) return "缺少必填参数: " + p.name();
+  42:                 continue;
+  43:             }
+  44:             Object v = params.get(p.name());
+  45:             if (v == null) {
+  46:                 if (p.nullable()) continue;
+  47:                 return "参数 " + p.name() + " 不能为 null";
+  48:             }
+  49:             if (!p.allowedValues().isEmpty() && !p.allowedValues().contains(v)) {
+  50:                 return "参数 " + p.name() + " 值不在允许列表: " + v;
+  51:             }
+  52:             String typeErr = checkType(p.type(), v);
+  53:             if (typeErr != null) return "参数 " + p.name() + typeErr;
+  54:             String boundErr = checkBounds(v, 0);
+  55:             if (boundErr != null) return "参数 " + p.name() + boundErr;
+  56:         }
+  57:         return null;
+  58:     }
+  59: 
+  60:     private static String checkType(ToolSchema.Type type, Object v) {
+  61:         if (type == null || type == ToolSchema.Type.ANY) return null;
+  62:         return switch (type) {
+  63:             case STRING -> v instanceof String ? null : " 应为字符串";
+  64:             case INTEGER -> isInteger(v) ? null : " 应为整数";
+  65:             case NUMBER -> v instanceof Number ? null : " 应为数字";
+  66:             case BOOLEAN -> v instanceof Boolean ? null : " 应为布尔值";
+  67:             case OBJECT -> v instanceof Map<?, ?> ? null : " 应为对象";
+  68:             case ARRAY -> v instanceof List<?> ? null : " 应为数组";
+  69:             case ANY -> null;
+  70:         };
+  71:     }
+  72: 
+  73:     private static boolean isInteger(Object v) {
+  74:         if (v instanceof Integer || v instanceof Long) return true;
+  75:         if (v instanceof Double d) return d == Math.floor(d) && Double.isFinite(d);
+  76:         return false;
+  77:     }
+  78: 
+  79:     private static String checkBounds(Object v, int depth) {
+  80:         if (depth > MAX_DEPTH) return " 嵌套过深";
+  81:         if (v instanceof String s && s.length() > MAX_STRING_LEN) return " 字符串过长";
+  82:         if (v instanceof List<?> list) {
+  83:             if (list.size() > MAX_LIST_SIZE) return " 数组过大";
+  84:             for (Object item : list) {
+  85:                 String e = checkBounds(item, depth + 1);
+  86:                 if (e != null) return e;
+  87:             }
+  88:         } else if (v instanceof Map<?, ?> m) {
+  89:             for (Object val : m.values()) {
+  90:                 String e = checkBounds(val, depth + 1);
+  91:                 if (e != null) return e;
+  92:             }
+  93:         }
+  94:         return null;
+  95:     }
+  96: }

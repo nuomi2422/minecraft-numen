@@ -1,0 +1,17 @@
+﻿TS 19:36:22
+FOUND C:\Users\lenovo\AppData\Local\Temp\opencode\ds-review-full.txt
+LEN=146296
+=== ⑤⑥⑦ / 5.6.7 位置 ===
+  [⑤] idx=19837
+  [⑥] idx=20261
+  [⑦] idx=20655
+  [5.] idx=-1
+  [6.] idx=-1
+  [7.] idx=-1
+  [第二阶段] idx=-1
+  [第二批] idx=-1
+  [后续] idx=9592
+=== 命中型内容摘录(各95字) ===
+  ⑤: ⑤ FileAcVersionStore.save() 不是原子替换 ac-core/.../FileAcVersionStore.java（save 方法内） java 复制 下载 Files.writeString(tmp, gson.toJson(root), StandardCharsets.UTF_8); Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING); // ← 没有 ATOMIC_MOVE 类
+  ⑥: ⑥ FileAcVersionStore / InMemoryAcVersionStore 的 TreeMap 非线程安全 同文件顶部： java 复制 下载 private final Map<String, Map<String, AcDefinition>> byName = new ConcurrentHashMap<>(); ... byName.computeIfAbsent(name, k -> new TreeMap<>()).put(version, ac)
+  ⑦: ⑦ AcExecutor.append 的 O(n²) ac-core/.../AcExecutor.java java 复制 下载 private void append(ExecutionRecord record) { records.add(record); while (records.size() > maxRecords) { records.remove(0); // CopyOnWriteArrayList 的 remove(0) 是整体拷贝 } } 

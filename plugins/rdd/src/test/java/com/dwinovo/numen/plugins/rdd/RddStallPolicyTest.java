@@ -94,4 +94,55 @@ class RddStallPolicyTest {
         assertTrue(check.stalled());
         assertEquals(RddStallPolicy.IDLE_GRACE_CHECKS, check.limit());
     }
+
+    // ---- LLM 空转提前拍醒（2026-09-29 实机：chat done in 35625ms, tool_calls=[]）----
+
+    @Test void llmIdleFiresOnceAtTheThresholdAndNotBefore() {
+        int threshold = RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS;
+        for (int n = 0; n < threshold - 1; n++) {
+            assertFalse(RddStallPolicy.shouldNudgeLlmIdle(n, "idle"), "must stay quiet at " + n);
+        }
+        assertTrue(RddStallPolicy.shouldNudgeLlmIdle(threshold, "idle"));
+        // 一次性：越过阈值后不连发，否则会变成每 tick 刷屏（曾有 subtask_parked_silent 刷 90+ 条的事故）
+        assertFalse(RddStallPolicy.shouldNudgeLlmIdle(threshold + 1, "idle"));
+        assertFalse(RddStallPolicy.shouldNudgeLlmIdle(threshold * 3, "idle"));
+    }
+
+    @Test void llmIdleNeverNudgesWorkThatIsActuallyRunning() {
+        // 回归风险：mine/build 这类多步身体任务内部会连跑几十秒且不发新工具调用，
+        // 拿 5 秒阈值去拍它等于打断正常工作。判据必须与「有没有进展」分开。
+        int threshold = RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS;
+        for (String busy : new String[]{"body_task:mine", "body_task:build", "furnace_production"}) {
+            assertFalse(RddStallPolicy.llmIdle(busy), busy + " must not count as llm-idle");
+            for (int n = 0; n <= threshold + 5; n++) {
+                assertFalse(RddStallPolicy.shouldNudgeLlmIdle(n, busy), busy + " must never be nudged");
+            }
+        }
+    }
+
+    @Test void llmIdleNudgeIsEarlierThanTheStallGrace() {
+        // 提前拍醒的意义就在于早：必须显著早于 IDLE_GRACE_CHECKS，否则等于没加。
+        assertTrue(RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS < RddStallPolicy.IDLE_GRACE_CHECKS,
+                "必须早于既有 idle 判据，否则这道信号不产生增量");
+        // 回归（GLM 2026-09-29 审稿）：实测最短有效轮次是 5.5s，阈值不得低于 6s，
+        // 否则对每一轮都拍一次 —— 那是"每轮税"不是检测器。
+        assertTrue(RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS >= 6,
+                "阈值低于实测最短有效轮次(5.5s)，会对所有回合触发");
+        // 诚实边界：纯时间阈值无法区分「空转」与「慢」——实测空转 35.6s 比有效 44.0s 还短。
+        // 真正的判据在响应本身(finish=stop && tool_calls=[])，属 :ai 层改动，本轮未做。
+        // 这条断言的作用是：若将来有人把阈值再往下调，这里会响。
+        assertTrue(RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS <= 15,
+                "超过 15s 就与既有判据重合，失去提前量");
+    }
+
+    @Test void llmIdleNudgeDoesNotChangeTheCheckOutcome() {
+        // 契约：这条信号只拍醒，不改状态机 —— 同一串 observation 走 check() 的结果必须与判据无关。
+        var a = next(null, observation("", false, "idle"));
+        for (int i = 0; i < RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS; i++) {
+            a = next(a, observation("", false, "idle"));
+        }
+        assertEquals(RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS, a.unchanged());
+        assertFalse(a.stalled(), "拍醒不等于判卡死：状态机必须仍然认为没到 stalled");
+        assertEquals(RddStallPolicy.IDLE_GRACE_CHECKS, a.limit());
+    }
 }

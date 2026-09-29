@@ -1,0 +1,27 @@
+﻿TS 19:37:32
+GITLOG d6f46b24 [rdd-core][plugins:rdd] Phase-1 鈶犫憽鈶細鍙敤璧勪骇鍙ｅ緞缁熶竴璧版敞鍐岃〃锛圖etector 鍙岄棬鎺?usableCounts銆佹縺娲婚棬 registry-only锛夈€丷EPLAN/RECOVER 鍑哄彛娓呮墽琛岃韩浠藉厓鏁版嵁銆乽sableCounts 涓嶅彲鍙?闈炶礋鏁存暟濂戠害
+GIT 未提交残余:
+  ?? .brain-recon.txt
+  ?? .browser-targets.txt
+  ?? .cdp-connect.txt
+  ?? .dig1-check.txt
+  ?? .dig1-prereq.txt
+  ?? .ds-feed-probe.txt
+  ?? .ds-feed-run.txt
+  ?? .ds-full-probe.txt
+  ?? .ds-q-phase1.txt
+  ?? .ds-review-diff.txt
+  ?? .feed-head.txt
+  ?? .feed-run.txt
+  ?? .phase1-evidence.txt
+  ?? .pw-check.txt
+  ?? .replan-persist-probe.txt
+  ?? docs/data-flow-review.md
+  ?? plugins/rdd-feeds-ds.js
+TESTLOG 尾3:
+  |- 事实证据：new_session(platform=chatgpt) 返回真实会话且 GPT 回复"通了"，sessionUrl=https://chatgpt.com/c/6ab507a1-07f4-83ec-aff2-708f03fe2614。闭环成立。
+  |- 未完成项：claude.ai 平台枚举已在 server 代码加好（z.enum 含 claude），但需 opencode 重启才能生效；Claude 页面 content script 注入未实测。
+  |- 下一步：回到主线——把 DS 的 P0/P1 审查意见交 GPT 复核（会话 6ab50276），GPT 输出《架构改进计划》。
+DS-REPLY 目:
+WATCHDOG 心跳:
+  NO-HEARTBEAT

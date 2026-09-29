@@ -1,0 +1,10 @@
+﻿TS 19:49:50
+APPLIED R1-ToolRegistry-schema
+APPLIED R7-FileAcVersionStore-atomic
+APPLIED R2-AcParamValidator-isInteger
+编译验证:
+
+For more on this, please refer to https://docs.gradle.org/9.2.0/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+System.Management.Automation.RemoteException
+BUILD FAILED in 15s
+8 actionable tasks: 1 executed, 7 up-to-date

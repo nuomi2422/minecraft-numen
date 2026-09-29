@@ -1,0 +1,14 @@
+﻿=== git log -1 ===
+d6f46b24 [rdd-core][plugins:rdd] Phase-1 鈶犫憽鈶細鍙敤璧勪骇鍙ｅ緞缁熶竴璧版敞鍐岃〃锛圖etector 鍙岄棬鎺?usableCounts銆佹縺娲婚棬 registry-only锛夈€丷EPLAN/RECOVER 鍑哄彛娓呮墽琛岃韩浠藉厓鏁版嵁銆乽sableCounts 涓嶅彲鍙?闈炶礋鏁存暟濂戠害
+=== git status --short ===
+?? docs/data-flow-review.md
+=== rdd-core 测试统计(上次成功) ===
+rdd-core BUILD SUCCESSFUL in 41s / 61 tests 全绿 (TaskChainStateMachineExitTest + TaskChainStateMachineExitTestPhase1 已并入)
+=== plugins:rdd build ===
+BUILD SUCCESSFUL in 1m 5s
+=== watchdog heartbeat(最新3) ===
+NO heartbeat log @ E:\restart developing doer\minecraft-numen\scripts\watchdog\drive-heartbeat.log
+=== MCP 8765 ===
+NOT listening
+=== MC 玩家会话 (watchdog feed 探测) ===
+(待实际游戏会话)

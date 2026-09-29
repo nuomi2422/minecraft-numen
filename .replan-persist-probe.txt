@@ -1,0 +1,11 @@
+﻿TS 19:37:10
+FILES:
+  AssetRegistry.java
+  HardCodedEvaluator.java
+  InventoryGroups.java
+  RddChainFactory.java
+  RddRuntime.java
+  TaskChain.java
+  WorldFactConditions.java
+契约探测:
+  [Preserv|preserv|retryPersistence|persistFail|suspendable|Suspendable|Recoverable|onFailure|failureHandle|attemptCount|nextAttempt|resumeFail|durable] NONE
