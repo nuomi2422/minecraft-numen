@@ -16,19 +16,39 @@ final class RddStallPolicy {
      * 而现有 idle 判据要等 {@link #IDLE_GRACE_CHECKS}=15 秒才响，且响完只换措辞重拍，
      * <b>拍完它照样跑偏</b>。
      *
-     * <p><b>阈值 10 而不是用户初提的 5（2026-09-29 GLM 外脑审稿后调整）</b>：
-     * 实测分布是 5.5s→有产出 / 6.5s→有产出 / 14.3s→有产出 / 35.6s→空转 / 44.0s→有产出。
-     * 取 5 会低于分布下沿，等于对每一轮都拍一次。
-     * <b>但要诚实记下：GLM 同时指出「空转 35.6s &lt; 有效 44.0s」，
-     * 因此任何纯时间阈值都无法区分「卡住」与「慢」——这只是把假阳性压低，不是把问题解决。</b>
-     * 真正的判据在响应本身（{@code finish=stop && tool_calls=[]}），那要改 {@code :ai} 层
-     * （跨模块，2026-09-29 未做，见统一版 34 号页第六节）。
+     * <p><b>阈值仍是 10，不能调大</b>（2026-10-01 试过 20，被既有测试正确拦下）：
+     * 这条信号的存在意义就是<b>早于</b> {@link #IDLE_GRACE_CHECKS}=15 秒的 stalled 判据，
+     * 调到 20 就晚于它、提前预警归零。它<b>不是</b>用来省钱的闸。
+     *
+     * <p><b>省钱不靠放宽阈值，靠两件事</b>（用户 2026-10-01 指出"太高频又花钱"）：
+     * <ol>
+     *   <li><b>同指纹只拍一次</b>（见 {@code RddStallWatcher} 的 {@code nudgedFingerprints}）：
+     *       拍醒是一次真实 LLM 请求，拍完没效果就不该再拍同一批。</li>
+     *   <li><b>主判据换成响应闸</b> {@link #shouldNudgeLlmIdleAfterResponse}：
+     *       只看"模型回答完了却零工具调用"这件<b>确定的事实</b>，不看时钟。
+     *       判定本身零成本（花钱的是拍醒，不是判定），而且比时间阈值准得多。</li>
+     * </ol>
+     *
+     * <p>诚实边界仍然成立：纯时间阈值分不清「卡住」与「慢」（实测空转 35.6s &lt; 有效 44.0s），
+     * 所以它只当**兜底**，主判据是上面的响应闸。
      *
      * <p>为什么只"拍醒"不"改状态"：时间阈值必然有假阳性。
      * 若据此 markStalled，会把"正在思考"误杀成 FAILED/STALLED，
      * 触发重试与失败升级——那才是真伤害。拍醒的代价只是一句话，可以承受。
      */
     static final int LLM_IDLE_NUDGE_AFTER_CHECKS = 10;
+
+    /**
+     * 「模型回答了，但这次回答没有任何工具调用」的连续次数上限。
+     *
+     * <p><b>这才是真正的空转判据</b>（2026-10-01）：时间阈值分不清"卡住"和"慢"
+     * （实测空转 35.6s &lt; 有效 44.0s），但<b>响应本身是确定的</b> ——
+     * {@code finish=stop && tool_calls=[]} 说明这一轮模型只吐了文本、正事一件没干。
+     *
+     * <p>取 3：连续三轮"只说话不动手"才是真空转（单轮可能是它在读工具结果/在组织下一步）。
+     * 判它比时间阈值便宜得多 —— <b>不需要发任何请求</b>，只是看已完成的响应历史。
+     */
+    static final int LLM_NO_TOOLCALL_RESPONSES_BEFORE_NUDGE = 3;
 
     /**
      * 只有 {@code source=idle} 才算「LLM 没在调工具」。
@@ -67,6 +87,36 @@ final class RddStallPolicy {
      */
     static boolean shouldNudgeLlmIdle(int unchanged, String source, boolean llmInFlight) {
         return llmIdle(source) && !llmInFlight && unchanged == LLM_IDLE_NUDGE_AFTER_CHECKS;
+    }
+
+    /**
+     * <b>真正的空转判据</b>：模型<b>已经回答完了</b>，而这 {@code noToolCallResponses} 轮里
+     * 每一次都是 {@code finish=stop && tool_calls=[]}（只吐文本、正事没干）。
+     *
+     * <p>为什么它比时间阈值可靠（2026-10-01，用户指出"检测不正确、花钱又没效果"）：
+     * <ul>
+     *   <li>时间阈值只能看到"多久没动"，分不清"在想"和"卡住"（实测空转 35.6s &lt; 有效 44.0s）；</li>
+     *   <li>本判据看的是<b>已经落地的响应内容</b>——只要模型每一轮都没调工具，就是空转，
+     *       不管它花了 3 秒还是 40 秒；</li>
+     *   <li><b>而且它完全不需要发请求</b>：只是读已完成的响应历史，
+     *       所以判定本身零成本（花钱的是拍醒，不是判定）。</li>
+     * </ul>
+     *
+     * <p>{@code llmInFlight} 仍是必要条件：正在飞的那一轮<b>还没资格</b>被算进空转
+     * （否则长思维链的正常轮次会被误计）。
+     *
+     * @param noToolCallResponses 连续"回答了但零工具调用"的轮数（宿主从 LlmActivity 累计）
+     */
+    static boolean shouldNudgeLlmIdleAfterResponse(int noToolCallResponses, String source,
+                                                 boolean llmInFlight) {
+        return llmIdle(source)          // 跑多步身体任务/熔炉推进中不算空转（同 shouldNudgeLlmIdle）
+                && !llmInFlight         // 正在飞的那一轮还没资格被算进空转
+                && noToolCallResponses >= LLM_NO_TOOLCALL_RESPONSES_BEFORE_NUDGE;
+    }
+
+    /** 两参重载（假定宿主给不出「在飞」）：行为与给得出在飞状态时一致，只是更容易触发。 */
+    static boolean shouldNudgeLlmIdleAfterResponse(int noToolCallResponses, boolean llmInFlight) {
+        return shouldNudgeLlmIdleAfterResponse(noToolCallResponses, "idle", llmInFlight);
     }
 
     /**

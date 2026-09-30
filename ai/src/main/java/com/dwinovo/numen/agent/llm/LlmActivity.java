@@ -55,21 +55,26 @@ public final class LlmActivity {
      * @param inFlightCount      在飞请求数（&gt;1 = 这个同伴有并发请求，排查时有用）
      * @param oldestInFlightNanos 最老那个在飞请求已飞多久（单调纳秒）；无在飞时为 0
      * @param phase              最近一次调用的相位（execution / goal_judging / compaction / …）
-     * @param lastFinish         最近一次落地的 {@code finish_reason}（失败时 null）
+* @param lastFinish         最近一次落地的 {@code finish_reason}（失败时 null）
      * @param lastToolCalls      最近一次落地带的工具调用数；<b>-1 = 失败落地</b>
      * @param reportedStaleToken 已就「在飞过久」告警过的那个最老在飞 token；0 = 从没告警过
+     * @param consecutiveNoToolCallResponses <b>连续「回答完了但零工具调用」的轮数</b>
+     *        （2026-10-01 新增）。这是真正能区分「卡住」与「想得慢」的信号：
+     *        只看响应内容，不看时钟，所以判定本身<b>零成本</b>（花钱的是拍醒，不是判定）。
+     *        任何一次带了工具调用就归零。
      */
     public record Snapshot(boolean known, boolean inFlight, int inFlightCount,
                            long oldestInFlightToken, long oldestInFlightNanos, boolean stale,
-                           String phase, String lastFinish, int lastToolCalls, long reportedStaleToken) {
+                           String phase, String lastFinish, int lastToolCalls, long reportedStaleToken,
+                           int consecutiveNoToolCallResponses) {
         public static final Snapshot UNKNOWN =
-                new Snapshot(false, false, 0, 0L, 0L, false, null, null, -1, 0L);
+                new Snapshot(false, false, 0, 0L, 0L, false, null, null, -1, 0L, 0);
 
         /**
          * 这次「在飞过久」还没告警过 → 该发一条。
          *
          * <p>去重用的是 {@link #oldestInFlightToken}（<b>飞行期间稳定的身份</b>），
-         * 不是年龄 —— ���龄每 tick 都在变，拿它去重等于没去重。
+         * 不是年龄 —— 年龄每 tick 都在变，拿它去重等于没去重。
          * 不去重的话 {@code RddStallWatcher.track()} 每秒发一条，挂死几小时就是几万条日志。
          */
         public boolean staleUnreported() {
@@ -82,6 +87,8 @@ public final class LlmActivity {
         String phase;
         volatile String lastFinish;
         volatile int lastToolCalls = -1;
+        /** 连续「回答完但零工具调用」的轮数；带工具调用即归零。 */
+        volatile int consecutiveNoToolCallResponses;
         volatile long reportedStaleToken;
 
         State(String phase) { this.phase = phase; }
@@ -126,6 +133,13 @@ public final class LlmActivity {
         TOKEN_NANOS.remove(token);
         st.lastFinish = finish;
         st.lastToolCalls = toolCalls;
+        // 连续「回答完但零工具调用」计数（2026-10-01）：这是真正能区分卡住/想得慢的信号。
+        // 只有**成功落地**（toolCalls >= 0）才算数 —— 失败落地不是模型的判断，混进去会虚高。
+        if (toolCalls == 0) {
+            st.consecutiveNoToolCallResponses++;
+        } else if (toolCalls > 0) {
+            st.consecutiveNoToolCallResponses = 0;   // 真动手了就归零
+        }
     }
 
     /**
@@ -154,7 +168,8 @@ public final class LlmActivity {
         int count = st.inFlight.size();
         if (count == 0) {
             return new Snapshot(true, false, 0, 0L, 0L, false, st.phase,
-                    st.lastFinish, st.lastToolCalls, st.reportedStaleToken);
+                    st.lastFinish, st.lastToolCalls, st.reportedStaleToken,
+                    st.consecutiveNoToolCallResponses);
         }
         long oldestToken = 0L;
         long oldestAge = 0L;
@@ -166,7 +181,8 @@ public final class LlmActivity {
         }
         boolean stale = oldestAge > MAX_INFLIGHT_NANOS;
         return new Snapshot(true, true, count, oldestToken, oldestAge, stale, st.phase,
-                st.lastFinish, st.lastToolCalls, st.reportedStaleToken);
+                st.lastFinish, st.lastToolCalls, st.reportedStaleToken,
+                st.consecutiveNoToolCallResponses);
     }
 
     /** 同伴下线/换存档时清掉它的行，别让快照在内存里过夜。 */

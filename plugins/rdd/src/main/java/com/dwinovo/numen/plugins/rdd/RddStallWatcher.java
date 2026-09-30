@@ -8,6 +8,7 @@ import net.minecraft.world.inventory.AbstractContainerMenu;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -46,6 +47,26 @@ final class RddStallWatcher {
     private final Map<UUID, StallState> stalls = new ConcurrentHashMap<>();
 
     private record StallState(String subtaskId, String fingerprint, int unchangedTicks, int nudges) {}
+
+    /**
+     * 每个同伴「最近一次拍醒时所处的指纹」（2026-10-01 新增）。
+     *
+     * <p>为什么：用户明确指出"老是花钱"。拍醒是一次<b>真实 LLM 请求</b>，
+     * 而"拍完没效果"时如果还按同样的条件再拍，就是纯浪费。
+     * 现在规则是：<b>同一指纹只拍一次</b>；指纹一变（资产/位置真的动了）就允许再拍 ——
+     * 那本来就说明它动过了，不该被旧记录挡住。
+     *
+     * <p>不按"永久集合"记，是为了让指纹变化后自然放行，也顺带避免无界增长。
+     */
+    private final Map<UUID, String> nudgedFingerprints = new ConcurrentHashMap<>();
+
+    private boolean alreadyNudgedFor(java.util.UUID companionId, String fingerprint) {
+        return fingerprint.equals(nudgedFingerprints.get(companionId));
+    }
+
+    private void markNudgedFor(java.util.UUID companionId, String fingerprint) {
+        nudgedFingerprints.put(companionId, fingerprint);
+    }
 
     /** Level 3 卡死累计：当前二级累计卡死次数（AI 反复拍醒仍无目标资产进展 → 能力不足）。 */
     private final Map<UUID, StallCount> stallCounts = new ConcurrentHashMap<>();
@@ -95,8 +116,21 @@ final class RddStallWatcher {
             com.dwinovo.numen.agent.llm.LlmActivity.markStaleReported(
                     ap.getUUID().toString(), llm.oldestInFlightToken());
         }
-        // LLM 空转提前拍醒：身体零工具调用持续到阈值就先喊一次，不等 IDLE_GRACE_CHECKS，也不改状态机。
-        if (RddStallPolicy.shouldNudgeLlmIdle(unchanged, observation.source(), llmInFlight)) {
+        // LLM 空转拍醒（2026-10-01 重做）。用户指出："太高频又花钱，而且并不是真真正正的监督，
+        // 检测也不正确；我进游戏了它又完成任务了" —— 三个问题分别对应下面三条：
+        //
+        //  ① 太高频 → 阈值 10 → 20（LLM_IDLE_NUDGE_AFTER_CHECKS），真正空转是 35.6s，
+        //     10~35s 那段基本是在拍"想得慢"，白花钱还把模型从正确轨道拽下来。
+        //  ② 不是真监督 → 新增**响应闸**（shouldNudgeLlmIdleAfterResponse）：
+        //     连续 N 轮"模型回答完了但零工具调用"才是真空转。判定只读已完成的响应，**零成本**。
+        //  ③ 不看效果 → 同一批（同一 subtask 同一指纹）**只拍一次**，拍完等它 45 秒，
+        //     没动作就直接跳到 STALLED 判定，不再重复花钱。
+        boolean noToolCallStreak = RddStallPolicy.shouldNudgeLlmIdleAfterResponse(
+                llm.consecutiveNoToolCallResponses(), observation.source(), llmInFlight);
+        boolean timeBasedIdle = RddStallPolicy.shouldNudgeLlmIdle(unchanged, observation.source(), llmInFlight);
+
+        if ((noToolCallStreak || timeBasedIdle) && !alreadyNudgedFor(ap.getUUID(), fp)) {
+            markNudgedFor(ap.getUUID(), fp);
             // 话术三条铁律（2026-09-29 GLM 审稿后重写，旧版实测无效）：
             //  1) 必须**点名当前子目标**——泛泛的「调用一个工具」是 content-free 紧迫感，
             //     模型按 recency 服从它 → 挑任意工具 → 覆盖原计划。旧版就是这么把同伴逼去 build 的。
@@ -104,21 +138,34 @@ final class RddStallWatcher {
             //     耐心会被转成随机动作；尤其"等规划器批"时拍醒会产生**未授权动作**，比卡住更糟。
             //  3) 必须**允许报错**——工具被拒是契约失败，不是注意力不集中，催只会加剧幻觉。
             RddPlugin.nudge(ap.getUUID(), "当前子目标「" + current.description() + "」"
-                    + "已连续 " + RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS + " 秒没有任何工具调用。请按下面**三选一**回，不要空转："
+                    + (noToolCallStreak
+                       ? "你已经连着 " + llm.consecutiveNoToolCallResponses() + " 轮只回话、一个工具都没调"
+                       : "已连续 " + RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS + " 秒没有任何工具调用")
+                    + "。请按下面**三选一**回，不要空转："
                     + "① 立刻为这个子目标调一个工具（先 scan_nearby_entities / rdd_get_inventory 核对真实情况，"
                     + "再选 mine/collect_items/build/interact_at 中**真正对应本目标**的那个）；"
                     + "② 如果做不到，用 report_task_concern 上报，kind=PAUSE 并写明原因"
                     + "（能做到别的办法就用 COUNTER + suggestion，别用 PAUSE 顶替）；"
                     + "③ 如果任务本身已经完成或没必要做，直接说明，不必调工具。");
-            RddMonitor.publish("llm_idle_stall", Map.of(
-                    "companionId", ap.getUUID().toString(), "subtask", current.id(),
-                    "reason", "no tool call for " + RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS + " checks",
-                    "source", observation.source(),
-                    "llmKnown", llm.known(), "llmInFlight", llmInFlight,
-                    "llmInFlightCount", llm.inFlightCount(),
-                    "llmLastFinish", String.valueOf(llm.lastFinish()),
-                    "llmLastToolCalls", llm.lastToolCalls(),
-                    "action", "nudge-only; state machine untouched"));
+            // Map.of 最多支持 10 对，这里字段多于 10 → 用 LinkedHashMap（监测台按插入序渲染）
+            Map<String, Object> idleData = new LinkedHashMap<>();
+            idleData.put("companionId", ap.getUUID().toString());
+            idleData.put("subtask", current.id());
+            idleData.put("trigger", noToolCallStreak ? "no_toolcall_response_streak" : "time_based_idle");
+            idleData.put("noToolCallResponses", llm.consecutiveNoToolCallResponses());
+            idleData.put("unchangedChecks", unchanged);
+            idleData.put("reason", noToolCallStreak
+                    ? "model answered " + llm.consecutiveNoToolCallResponses()
+                      + " consecutive turns with zero tool calls"
+                    : "no tool call for " + RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS + " checks");
+            idleData.put("source", observation.source());
+            idleData.put("llmKnown", llm.known());
+            idleData.put("llmInFlight", llmInFlight);
+            idleData.put("llmInFlightCount", llm.inFlightCount());
+            idleData.put("llmLastFinish", String.valueOf(llm.lastFinish()));
+            idleData.put("llmLastToolCalls", llm.lastToolCalls());
+            idleData.put("action", "nudge-once-per-fingerprint; no repeat spend without progress");
+            RddMonitor.publish("llm_idle_stall", idleData);
         }
         if (observation.waiting() && unchanged >= STALL_AFTER_TICKS
                 && unchanged % STALL_AFTER_TICKS == 0 && !check.stalled()) {

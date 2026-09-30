@@ -129,10 +129,46 @@ class RddStallPolicyTest {
         assertTrue(RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS >= 6,
                 "阈值低于实测最短有效轮次(5.5s)，会对所有回合触发");
         // 诚实边界：纯时间阈值无法区分「空转」与「慢」——实测空转 35.6s 比有效 44.0s 还短。
-        // 真正的判据在响应本身(finish=stop && tool_calls=[])，属 :ai 层改动，本轮未做。
-        // 这条断言的作用是：若将来有人把阈值再往下调，这里会响。
-        assertTrue(RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS <= 15,
-                "超过 15s 就与既有判据重合，失去提前量");
+        // 2026-10-01 已补真正的判据（响应闸 shouldNudgeLlmIdleAfterResponse），
+        // 时间阈值退回兜底角色。
+        // 这条断言的作用是：若将来有人把阈值往上调到 >= IDLE_GRACE_CHECKS，这里会响
+        // ——因为"提前预警"一旦不早于 stalled 判据就失去意义（20 就被它拦下过）。
+        assertTrue(RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS < RddStallPolicy.IDLE_GRACE_CHECKS,
+                "兜底时间阈值必须早于 stalled 判据，否则提前预警没有意义");
+    }
+
+    // ---- 响应闸（2026-10-01 新增）：真正的空转判据 ----
+
+    @Test void responseGateFiresOnConsecutiveZeroToolCallTurns() {
+        int n = RddStallPolicy.LLM_NO_TOOLCALL_RESPONSES_BEFORE_NUDGE;
+        assertFalse(RddStallPolicy.shouldNudgeLlmIdleAfterResponse(n - 1, "idle", false),
+                "未到连续轮数不得拍");
+        assertTrue(RddStallPolicy.shouldNudgeLlmIdleAfterResponse(n, "idle", false),
+                "连续 N 轮只回话不调工具 = 真空转");
+        assertTrue(RddStallPolicy.shouldNudgeLlmIdleAfterResponse(n + 5, "idle", false),
+                "超过阈值仍应成立");
+    }
+
+    @Test void responseGateNeverFiresWhileLlmIsInFlight() {
+        int n = RddStallPolicy.LLM_NO_TOOLCALL_RESPONSES_BEFORE_NUDGE;
+        assertFalse(RddStallPolicy.shouldNudgeLlmIdleAfterResponse(n + 10, "idle", true),
+                "正在飞的那一轮还没资格算空转（长思维链会被误杀）");
+    }
+
+    @Test void responseGateIgnoresBusySources() {
+        int n = RddStallPolicy.LLM_NO_TOOLCALL_RESPONSES_BEFORE_NUDGE;
+        for (String busy : new String[]{"body_task:mine", "body_task:build", "furnace_production"}) {
+            assertFalse(RddStallPolicy.shouldNudgeLlmIdleAfterResponse(n + 10, busy, false),
+                    busy + " 是正常干活，响应闸也不该拍它");
+        }
+    }
+
+    @Test void responseGateIsIndependentOfTheClock() {
+        // 同一个"零工具调用轮数"，不管时钟走了多久都该判空转 —— 这正是它比时间阈值强的地方：
+        // 时间阈值永远分不清"想得慢"和"卡住"，响应闸不用看时钟。
+        int n = RddStallPolicy.LLM_NO_TOOLCALL_RESPONSES_BEFORE_NUDGE;
+        assertTrue(RddStallPolicy.shouldNudgeLlmIdleAfterResponse(n, "idle", false));
+        assertTrue(RddStallPolicy.shouldNudgeLlmIdleAfterResponse(n, "idle", false));
     }
 
     @Test void llmIdleNudgeDoesNotChangeTheCheckOutcome() {
