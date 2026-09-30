@@ -169,13 +169,29 @@ public final class NumenLlmClient {
             java.util.Map<String, String> overrides =
                     com.dwinovo.numen.agent.provider.SessionHeaderResolver.resolve(siteHeaders, companion);
             if (!overrides.isEmpty()) {
-                AiLog.LOG.debug("[numen-llm] session-scoped headers for {}: {}", companion, overrides.keySet());
+                // INFO 而不是 DEBUG（2026-09-30）：这条是 F3「多同伴是否真的分到不同会话」的
+                // **唯一**可观测量，而默认日志级别看不到 debug → 实机根本没法验。
+                // 只打头名 + 截短后的会话值（不打印完整 uuid、不涉及任何密钥）。
+                AiLog.LOG.info("[numen-llm] session-scoped: companion={} headers={} values={}",
+                        shortId(companion), overrides.keySet(), shortValues(overrides));
             }
             return overrides;
         } catch (RuntimeException ex) {
             AiLog.LOG.warn("[numen-llm] session header resolution failed: {}", ex.getMessage());
             return java.util.Map.of();
         }
+    }
+
+    /** uuid 缩到前 8 位：够区分同伴，又不把完整身份写进日志。 */
+    private static String shortId(String companionId) {
+        if (companionId == null || companionId.isBlank()) return "none";
+        return companionId.length() > 8 ? companionId.substring(0, 8) : companionId;
+    }
+
+    private static java.util.Map<String, String> shortValues(java.util.Map<String, String> headers) {
+        java.util.Map<String, String> out = new java.util.LinkedHashMap<>();
+        headers.forEach((k, v) -> out.put(k, v.length() > 40 ? v.substring(0, 40) + "…" : v));
+        return out;
     }
 
     /**
