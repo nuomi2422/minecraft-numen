@@ -23,6 +23,20 @@ public final class TaskChain {
     /** 暂停原因：与 {@link #skipReasons} 对称，但语义相反（留着可开，不是放弃）。 */
     private final Map<String, String> pauseReasons = new LinkedHashMap<>();
     private final Map<String, Integer> attempts = new LinkedHashMap<>();
+    /**
+     * {@code mode=acquire} 二级的<b>进入时基线</b>：二级 id → 该时刻各物品的持有量。
+     *
+     * <p>为什么挂在链上而不是 {@link Subtask} record：{@code Subtask} 是<b>计划规格</b>
+     * （由规划器生成、要进 prompt、能被 JSON 序列化）；baseline 是<b>运行时观察事实</b>，
+     * 宿主在二级真正激活的那一刻才知道。混进 record 会让"计划"被"执行观察"污染，
+     * 并把构造器/JSON/旧存档兼容面一次性放大。
+     *
+     * <p>为什么必须随链持久化：代次 {@code planRevision} 已经吃过一次"只在宿主内存里 →
+     * 重启撞号"的亏（见 {@link #adoptRevisionFromIds}）。baseline 若同样只活在内存，
+     * 重启后 {@code acquire} 会拿不到基线 —— 此时 {@link HardCodedEvaluator} 一律判 false，
+     * 已完成的二级会在重启后重新变成"没达成"。
+     */
+    private final Map<String, Map<String, Integer>> acquireBaselines = new LinkedHashMap<>();
     private int primaryIndex;
     private int subtaskIndex;
     /**
@@ -261,6 +275,8 @@ public final class TaskChain {
         primaryStatus = PrimaryGoalStatus.ACTIVE;
         if (statuses.get(currentSubtask().id()) == SubtaskStatus.PENDING) {
             statuses.put(currentSubtask().id(), SubtaskStatus.RUNNING);
+            captureAcquireBaseline(currentSubtask().id(),
+                    registry == null ? null : registry.usableCounts());   // F5：激活即锁基线
         }
         return true;
     }
@@ -289,6 +305,7 @@ public final class TaskChain {
         primaryStatus = PrimaryGoalStatus.ACTIVE;
         if (statuses.get(currentSubtask().id()) == SubtaskStatus.PENDING) {
             statuses.put(currentSubtask().id(), SubtaskStatus.RUNNING);
+            captureAcquireBaseline(currentSubtask().id(), counts);   // F5：激活即锁基线
         }
         return true;
     }
@@ -304,6 +321,29 @@ public final class TaskChain {
         attempts.merge(currentSubtask().id(), 1, Integer::sum);
         activeExecutionId = null; // 新一轮执行，旧的宿主执行实例身份作废
         lastStartedAtMillis = System.currentTimeMillis();
+    }
+
+    // ---- acquire baseline (mode=acquire 的运行时基线；见字段注释) ----
+
+    /**
+     * 捕获某二级的 {@code acquire} 基线（宿主在二级激活、开始派活**之前**调）。
+     *
+     * <p>幂等：已有基线时**不覆盖**（重试同一个二级不该把基线推到"已经做完"的位置，
+     * 否则 retry 后 {@code acquire} 永远判未达成）。
+     */
+    public synchronized void captureAcquireBaseline(String subtaskId, Map<String, Integer> counts) {
+        if (subtaskId == null || acquireBaselines.containsKey(subtaskId)) return;
+        acquireBaselines.put(subtaskId, counts == null ? Map.of() : Map.copyOf(counts));
+    }
+
+    /** 该二级的基线；没有则 null（宿主据此让 acquire 判未达成，而不是假装达成）。 */
+    public synchronized Map<String, Integer> acquireBaseline(String subtaskId) {
+        return subtaskId == null ? null : acquireBaselines.get(subtaskId);
+    }
+
+    /** 二级离开本轮生命周期（换计划/作废）时连同它的基线一起清掉，避免内存与存档堆积。 */
+    private void forgetAcquireBaseline(String subtaskId) {
+        acquireBaselines.remove(subtaskId);
     }
 
     /** P0-3 执行身份：宿主开始执行后把真实执行实例 id 绑到当前二级；重复绑定会置换旧 id。 */
@@ -416,6 +456,7 @@ public final class TaskChain {
             statuses.put(s.id(), SubtaskStatus.PENDING);
             skipReasons.remove(s.id());
             pauseReasons.remove(s.id());
+            forgetAcquireBaseline(s.id());   // 重跑 = 上一轮的基线作废，否则 acquire 会永远判未达成
         }
         subtaskIndex = 0;
         primaryStatus = PrimaryGoalStatus.PENDING;
@@ -511,6 +552,7 @@ public final class TaskChain {
             skipReasons.remove(freedId);
             pauseReasons.remove(freedId);
             attempts.remove(freedId);
+            forgetAcquireBaseline(freedId);
         }
         for (Subtask s : generated) {
             statuses.put(s.id(), SubtaskStatus.PENDING);
@@ -730,6 +772,7 @@ public final class TaskChain {
         o.add("skipReasons", GSON.toJsonTree(skipReasons));
         o.add("pauseReasons", GSON.toJsonTree(pauseReasons));
         o.add("attempts", GSON.toJsonTree(attempts));
+        o.add("acquireBaselines", GSON.toJsonTree(acquireBaselines));
         JsonArray sat = new JsonArray();
         for (String k : satisfiedStages) {
             sat.add(k);
@@ -799,6 +842,24 @@ public final class TaskChain {
         if (o.has("attempts") && o.get("attempts").isJsonObject()) {
             JsonObject att = o.getAsJsonObject("attempts");            for (String k : att.keySet()) {
                 chain.attempts.put(k, att.get(k).getAsInt());
+            }
+        }
+        // acquire 基线（2026-09-30）：旧存档没有这个键 = 从没捕获过基线 → 空。
+        // 语义后果是"acquire 判未达成"，**不是**损坏：重启后由宿主重新捕获，
+        // 而不是拿一个错的基线判出假的完成。
+        if (o.has("acquireBaselines") && o.get("acquireBaselines").isJsonObject()) {
+            for (var entry : o.getAsJsonObject("acquireBaselines").entrySet()) {
+                JsonObject counts = entry.getValue().isJsonObject() ? entry.getValue().getAsJsonObject() : null;
+                if (counts == null) continue;
+                Map<String, Integer> baseline = new LinkedHashMap<>();
+                for (var c : counts.entrySet()) {
+                    try {
+                        baseline.put(c.getKey(), c.getValue().getAsInt());
+                    } catch (RuntimeException malformed) {
+                        throw new IllegalArgumentException("malformed acquireBaseline for " + entry.getKey(), malformed);
+                    }
+                }
+                chain.acquireBaselines.put(entry.getKey(), Map.copyOf(baseline));
             }
         }
         if (o.has("lastStartedAtMillis")) {
@@ -877,6 +938,13 @@ public final class TaskChain {
             }
             if (statuses.get(id) != SubtaskStatus.PAUSED) {
                 throw new IllegalArgumentException("restored pauseReason on non-paused subtask: " + id);
+            }
+        }
+        // 基线表只做"引用完整性"校验：不许指向不存在的二级（那会让基线永远查不到、acquire 卡死）。
+        // 注意**不**校验"该二级必须正在跑"——重试/暂停期间基线继续存在是合法的。
+        for (String id : acquireBaselines.keySet()) {
+            if (!expected.contains(id)) {
+                throw new IllegalArgumentException("restored acquireBaseline references unknown subtask: " + id);
             }
         }
         PrimaryGoal current = goal.primaryGoals().get(primaryIndex);

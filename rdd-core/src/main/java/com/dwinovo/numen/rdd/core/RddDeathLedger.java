@@ -64,11 +64,23 @@ public final class RddDeathLedger {
      */
     public record Death(int seq, long gameTime, long wallClockMillis,
                         String deathAt, int lostEntries,
-                        State state, String evidence) {
+                        State state, String evidence,
+                        Map<String, Integer> lostItems) {
 
         public Death(int seq, long gameTime, long wallClockMillis,
                      String deathAt, int lostEntries) {
-            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, State.UNVERIFIED, "");
+            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, State.UNVERIFIED, "", null);
+        }
+
+        /** 旧构造器 + 证据状态（2026-09-30 深审 R07 之前写出的调用点形状，保持可用）。 */
+        public Death(int seq, long gameTime, long wallClockMillis,
+                     String deathAt, int lostEntries, State state, String evidence) {
+            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, state, evidence, null);
+        }
+
+        /** 本次死亡丢了哪些、各多少（可能为 null = 本次改动前的旧批次，无法逐项核对）。 */
+        public Map<String, Integer> lostItems() {
+            return lostItems == null ? Map.of() : lostItems;
         }
 
         /** 这一次的掉落物在 {@code nowGameTime} 时是否<b>可能</b>还在地上（纯估计）。 */
@@ -88,12 +100,12 @@ public final class RddDeathLedger {
 
         public Death confirmedLost(String reason) {
             return new Death(seq, gameTime, wallClockMillis, deathAt, lostEntries,
-                    State.CONFIRMED_LOST, reason);
+                    State.CONFIRMED_LOST, reason, lostItems);
         }
 
         public Death recovered(String reason) {
             return new Death(seq, gameTime, wallClockMillis, deathAt, lostEntries,
-                    State.RECOVERED, reason);
+                    State.RECOVERED, reason, lostItems);
         }
     }
 
@@ -101,6 +113,68 @@ public final class RddDeathLedger {
     private static final Map<UUID, Integer> SEQ = new ConcurrentHashMap<>();
 
     private RddDeathLedger() {}
+
+    // ---- persistence contract (rdd-core stays IO-free; the host owns the disk) ----
+
+    /**
+     * 一个 UUID 的台账全量快照，供宿主落盘。纯数据，无 IO。
+     *
+     * <p>本类刻意<b>不</b>自己写文件：rdd-core 是纯 JVM 模块，不该出现 {@code Path}/JSON。
+     * 宿主（plugins:rdd）负责加载 → {@link #restore}、变更后 → {@link #snapshot} 保存。
+     *
+     * @param nextSeq <b>下一次 record() 将要用的 seq</b>（不是"已用到的最大值"）。
+     *                定义成前者是为了让 {@link #restore} 不必再猜偏移：
+     *                {@code SEQ = nextSeq - 1} 就够了。
+     */
+    public record LedgerSnapshot(int nextSeq, List<Death> deaths) {
+        public LedgerSnapshot {
+            deaths = deaths == null ? List.of() : List.copyOf(deaths);
+            nextSeq = Math.max(1, nextSeq);
+        }
+    }
+
+    /**
+     * 导出某同伴的台账（无记录时 {@code nextSeq=1}、空列表 —— 不是 null）。
+     *
+     * <p>空台账也必须能导出：宿主要在同伴首次出现时写出一个"空账本"文件，
+     * 否则「有没有落过盘」和「本来就没死过」会混成同一个状态。
+     */
+    public static LedgerSnapshot snapshot(UUID companionId) {
+        UUID id = companionId == null ? new UUID(0, 0) : companionId;
+        // SEQ 存的是"已用到的最大值"，对外一律 +1 变成"下一个"。
+        return new LedgerSnapshot(SEQ.getOrDefault(id, 0) + 1, all(id));
+    }
+
+    /**
+     * 用快照覆盖某同伴的台账（宿主启动/世界载入时调）。
+     *
+     * <p><b>必须先 restore 再让死亡事件进来</b>：反过来（先 record 后 restore）会用旧账
+     * 覆盖掉本次运行刚记的死亡，那比丢账更坏（假"没死过"）。宿主侧用 per-UUID
+     * loaded guard 保证只在首次接入时 restore 一次。
+     *
+     * <p>{@code nextSeq} 取 {@code max(快照值, 现有最大 seq + 1)}：宁可 seq 跳号，
+     * 也不允许下一条记录复用磁盘上已有的 seq（seq 是批次身份，撞号 = 判据串批）。
+     * 内部 {@code SEQ} 存"已用到的最大值"，所以写入 {@code nextSeq - 1}。
+     */
+    public static void restore(UUID companionId, LedgerSnapshot snapshot) {
+        UUID id = companionId == null ? new UUID(0, 0) : companionId;
+        if (snapshot == null) return;
+        List<Death> restored = snapshot.deaths().stream()
+                .filter(java.util.Objects::nonNull)
+                .sorted(Comparator.comparingInt(Death::seq))
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        while (restored.size() > MAX_ENTRIES) {
+            restored.remove(0);
+        }
+        List<Death> current = LEDGER.get(id);
+        int nextSeq = snapshot.nextSeq();
+        if (current != null && !current.isEmpty()) {
+            int afterCurrent = current.stream().mapToInt(Death::seq).max().orElse(0) + 1;
+            nextSeq = Math.max(nextSeq, afterCurrent);
+        }
+        LEDGER.put(id, restored);
+        SEQ.put(id, Math.max(0, nextSeq - 1));
+    }
 
     /**
      * 记一次死亡，返回新写入的那条。
@@ -111,10 +185,27 @@ public final class RddDeathLedger {
      */
     public static Death record(UUID companionId, long gameTime, long wallClockMillis,
                                String deathAt, int lostEntries) {
+        return record(companionId, gameTime, wallClockMillis, deathAt, lostEntries, null);
+    }
+
+    /**
+     * 记一次死亡，<b>并带上这一次真正掉了哪些、各多少</b>（F6 的批次身份来源）。
+     *
+     * <p>{@code lostItems} 必须是<b>死亡瞬间</b>的背包计数，而不是缓存：
+     * 上一轮实机之所以"LOST 没新增"，就是因为读了已被清空的缓存。
+     * null/空 = 无法逐项核对（该批次不会自动判回收，需宿主显式 confirmLost/confirmRecovered）。
+     */
+    public static Death record(UUID companionId, long gameTime, long wallClockMillis,
+                               String deathAt, int lostEntries, Map<String, Integer> lostItems) {
         UUID id = companionId == null ? new UUID(0, 0) : companionId;
         int seq = SEQ.merge(id, 1, Integer::sum);
+        Map<String, Integer> items = null;
+        if (lostItems != null && !lostItems.isEmpty()) {
+            items = java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(lostItems));
+        }
         Death d = new Death(seq, gameTime, wallClockMillis,
-                deathAt == null ? "?" : deathAt, Math.max(0, lostEntries));
+                deathAt == null ? "?" : deathAt, Math.max(0, lostEntries),
+                State.UNVERIFIED, "", items);
         List<Death> list = LEDGER.computeIfAbsent(id, k -> new ArrayList<>());
         synchronized (list) {
             list.add(d);
@@ -228,6 +319,143 @@ public final class RddDeathLedger {
     public static Death latest(UUID companionId) {
         List<Death> a = all(companionId);
         return a.isEmpty() ? null : a.get(0);
+    }
+
+    /**
+     * 某一次死亡的<b>未闭合</b>记录（按 seq 精确取），没有则 null。
+     *
+     * <p>已判定 RECOVERED / CONFIRMED_LOST 的记录算闭合。闭合的批次**不允许**再被回收判据
+     * 命中 —— 否则「上一批的物品回来了」会替「这一批」结账（串批，F6 的根因）。
+     */
+    public static Death openDeath(UUID companionId, int seq) {
+        for (Death d : all(companionId)) {
+            if (d.seq() == seq) {
+                return d.state() == State.UNVERIFIED ? d : null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 最新一条<b>未闭合</b>死亡记录；全部闭合时返回 null。回收判据只认它。
+     *
+     * <p>为什么要"只认最新未闭合"而不是"扫描任意一条"：连死两次时两个批次的
+     * {@code lostItems} 完全不同（实机 19:22 丢 32 格 / 19:23 又丢 32 格）。
+     * 判据若能匹配任意批次，就会出现"第二次死亡还没捡，第一次的掉落还在，
+     * 于是判第二次已回收"这种假完成。
+     */
+    public static Death latestOpen(UUID companionId) {
+        for (Death d : all(companionId)) {   // all() 已按 gameTime 倒序
+            if (d.state() == State.UNVERIFIED) return d;
+        }
+        return null;
+    }
+
+    /**
+     * 一次死亡批次的回收核对结果（纯函数，无 IO）。
+     *
+     * @param seq        该批次 seq；不匹配任何未闭合记录时 {@code matched=false}
+     * @param outstanding 该批次里"当前背包里仍然没有"的条目数（>0 = 还没捡回来）
+     * @param tracked    该批次可核对的条目数（lostItems 非空才有核对意义）
+     * @param satisfied  是否达到"全部可核对条目都已回到背包"
+     */
+    public record BatchRecovery(int seq, boolean matched, int outstanding, int tracked, boolean satisfied) {
+        public boolean anyBack() { return matched && tracked > 0 && outstanding < tracked; }
+
+        /** 0..1 的回收比例（无可核对条目时 0，绝不假装 100%）。 */
+        public double fraction() {
+            return tracked <= 0 ? 0d : (double) (tracked - outstanding) / (double) tracked;
+        }
+    }
+
+    /**
+     * 核对某一批次的掉落是否真的捡回来了（按 {@code deathSeq} 关联，F6 的修法）。
+     *
+     * <p><b>旧判据错在哪</b>：宿主原来只问"背包里<b>任何一件</b>当初标 LOST 的东西是不是 &gt;0"，
+     * 于是 33 格掉落里捡回 1 格就判整个死亡支线成功。更糟的是那一件可能根本不是这一批丢的
+     * —— {@code AssetHistory} 是长期累积表，旧批次的物品回来会替新批次结账。
+     *
+     * <p><b>现在的判据</b>：逐项按批次自己的 {@code lostItems} 核对，
+     * {@code min(当前持有, 当次丢失数)} 累加；只有<b>全部可核对条目都回到背包</b>才算满足。
+     * 部分找回由宿主发 progress 事件，不在这里下成功结论。
+     *
+     * <p><b>为什么不是比例法定数</b>（如 80%）：那是个没被验证过的策略常数。
+     * 本轮只把"任意一件"换成"本批次逐项核对"；比例策略要单独一批、有实机数据再定。
+     *
+     * <p>{@code lostItems} 为空的老批次（本次改动前写下的）→ {@code tracked=0}、
+     * {@code satisfied=false}：宁可要求宿主显式 {@link #confirmLost}，也不假装已核对。
+     *
+     * @param counts 当前真实背包计数（宿主提供）
+     */
+    public static BatchRecovery checkBatchRecovery(UUID companionId, int seq, Map<String, Integer> counts) {
+        Death open = openDeath(companionId, seq);
+        if (open == null || open.lostItems() == null || open.lostItems().isEmpty()) {
+            return new BatchRecovery(seq, open != null, 0, 0, false);
+        }
+        Map<String, Integer> current = counts == null ? Map.of() : counts;
+        int outstanding = 0;
+        int tracked = 0;
+        for (Map.Entry<String, Integer> e : open.lostItems().entrySet()) {
+            if (e.getKey() == null || e.getKey().isBlank()) continue;
+            int lost = e.getValue() == null ? 0 : Math.max(0, e.getValue());
+            if (lost <= 0) continue;          // 当时就没这玩意，不算待回收
+            tracked++;
+            int back = Math.min(current.getOrDefault(e.getKey(), 0), lost);
+            if (back < lost) outstanding++;
+        }
+        return new BatchRecovery(seq, true, outstanding, tracked, tracked > 0 && outstanding == 0);
+    }
+
+    /**
+     * 重复死亡判据：短时间 + 小半径内<b>上一次</b>又死一次（实机 #3→#4 只隔 62s、坐标差 1 格）。
+     *
+     * <p>纯函数。宿主用它决定死亡支线的<b>顺序</b>（先撤离/补给再回收），
+     * 不改 5 分钟掉落窗口本身。
+     *
+     * <p>⚠️ <b>必须排除本次死亡自己</b>（2026-09-30 实机抓到的真缺陷）：
+     * 宿主是「先 record 再问判据」，所以刚写下的那条记录就在台账里，
+     * 而它与自己的距离是 0、时间差是 0 —— 会被自己判成"重复死亡"。
+     * 实机症状：只杀一次就发出 {@code repeat_death_nearby}，
+     * {@code previousDeathSeq} 等于 {@code nowAt}、{@code secondsSincePrevious=0}。
+     * 于是每一次死亡都会被误当成"同一点连死"，恢复顺序永远走保守分支。
+     * 传 {@code excludeSeq = 本次死亡的 seq} 即可排除；传负数 = 不排除（测试用）。
+     *
+     * @param atX/atY/atZ 本次死亡坐标（{@link #deathAt()} 只是一段文本，靠不住，这里要真坐标）
+     * @param excludeSeq 本次死亡自己的 seq，必须排除
+     * @return 命中的上一次死亡记录；不构成"重复"返回 null
+     */
+    public static Death repeatDeathWithin(UUID companionId, long nowGameTime,
+                                          int atX, int atY, int atZ,
+                                          long windowTicks, double radiusBlocks,
+                                          int excludeSeq) {
+        for (Death d : all(companionId)) {
+            if (excludeSeq >= 0 && d.seq() == excludeSeq) continue;   // 不跟自己比
+            if (nowGameTime - d.gameTime() > windowTicks) continue;
+            if (isNear(d.deathAt(), atX, atY, atZ, radiusBlocks)) return d;
+        }
+        return null;
+    }
+
+    /** 不排除任何记录的版本（只给单测与"事后统计"用；生产路径请用带 excludeSeq 的重载）。 */
+    public static Death repeatDeathWithin(UUID companionId, long nowGameTime,
+                                          int atX, int atY, int atZ,
+                                          long windowTicks, double radiusBlocks) {
+        return repeatDeathWithin(companionId, nowGameTime, atX, atY, atZ, windowTicks, radiusBlocks, -1);
+    }
+
+    /** {@link #deathAt()} 是 {@code "x, y, z"} 短文本；解析不了就当"距离未知"→ false。 */
+    private static boolean isNear(String deathAt, int x, int y, int z, double radius) {
+        if (deathAt == null || radius <= 0) return false;
+        String[] parts = deathAt.split("[,\\s]+");
+        if (parts.length != 3) return false;
+        try {
+            double dx = Double.parseDouble(parts[0].trim()) - x;
+            double dy = Double.parseDouble(parts[1].trim()) - y;
+            double dz = Double.parseDouble(parts[2].trim()) - z;
+            return Math.sqrt(dx * dx + dy * dy + dz * dz) <= radius;
+        } catch (NumberFormatException notCoordinates) {
+            return false;
+        }
     }
 
     /** 死亡次数（台账内计数）。 */
