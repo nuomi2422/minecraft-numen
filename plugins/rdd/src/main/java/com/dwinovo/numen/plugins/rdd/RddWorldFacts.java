@@ -158,8 +158,32 @@ public final class RddWorldFacts {
                 }
             }
         }
+        // 2026-10-01 修（实机抓到的真死锁，用户第 5 轮实机观察）：
+        // 原 complete = chest && furnace（床周围 8 格内必须同时有箱子+熔炉）。
+        // 实机后果：规划器把 type=base 排成**第一个**二级 → 判据要求"基地已建成"
+        // → 但造箱子/熔炉的二级排在它**后面** → base 永远不满足 → 第一个二级永远 STALLED
+        // → 后面 5 个二级永远 PENDING → 整条链停摆（RL-2「依赖门不得死锁」的另一种形态：
+        // 不是 WAITING 卡住，是**第一个目标自身不可达**）。
+        //
+        // 改法：让 complete 与本方法自己的注释一致 —— **一张已验证可用的重生床就是基地**
+        //（上面已经把床本身完整校验过：双格齐全、朝向一致、旁边站得下人）。
+        // 箱子/熔炉不再当硬门，但**继续扫、继续报**：缺了就写进 facilities 说明，
+        // 让监测台能看出"基地还很空"，而不是只看到一个布尔值。
+        //
+        // 治本项另记（A2）：规划器不该把 base 排成第一个二级 —— 那是排期约束问题，
+        // 要改规划器，下一批做。
+        if (!chest || !furnace) {
+            StringBuilder missing = new StringBuilder();
+            if (!chest) missing.append("no chest within 8 blocks of the respawn bed");
+            if (!furnace) {
+                if (missing.length() > 0) missing.append("; ");
+                missing.append("no furnace within 8 blocks of the respawn bed");
+            }
+            facilities.add("(missing) " + missing);
+        }
+        boolean complete = true;
         return new BaseSnapshot(level.dimension().location().toString(), spawn.immutable(),
-                chest && furnace, List.copyOf(facilities), Map.copyOf(storedItems));
+                complete, List.copyOf(facilities), Map.copyOf(storedItems));
     }
 
     record BaseSnapshot(String dimension, BlockPos spawn, boolean complete,
