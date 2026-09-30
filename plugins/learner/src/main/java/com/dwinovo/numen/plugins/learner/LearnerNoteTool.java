@@ -63,67 +63,88 @@ final class LearnerNoteTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
+        // 读世界状态必须在服务端主线程（框架用 dispatchAsync 触发，不保证在主线程）。
+        // 解析入参不碰世界，可以先做；采集与入队整体放进主线程。
+        Input in;
         try {
-            Input in = GSON.fromJson(args, Input.class);
-            if (in == null || blank(in.problem()) || blank(in.tried())) {
-                reply.accept(TaskResult.fail("learner_note requires problem and tried").toJson());
-                return;
-            }
-            UUID id = companion.getUUID();
-            MemoQueue q = LearnerPlugin.queue(id);
-            String memoId = "m-" + System.currentTimeMillis() + "-" + Math.abs(in.problem().hashCode() % 1000);
-            Memo memo = new Memo(memoId, in.problem().trim(), nz(in.stage()), in.tried().trim(),
-                    nz(in.snapshot()), System.currentTimeMillis());
-
-            if (!q.append(memo)) {
-                // 分不清是「满了」还是「字段太长」时不猜：两种都如实报，并给出当前深度
-                int depthNow;
-                try {
-                    depthNow = q.size();
-                } catch (RuntimeException e) {
-                    depthNow = -1;
-                }
-                reply.accept(TaskResult.fail("memo not queued: queue full (" + MemoQueue.MAX_QUEUE
-                        + ") or field too long (" + MemoQueue.MAX_FIELD_CHARS
-                        + " chars); run learner_review to drain first; current depth=" + depthNow).toJson());
-                return;
-            }
-
-            int depth = q.size();
-
-            // B21（缺失的表达方式）：缺失就是缺失，不许用哨兵值伪装成数据。
-            // 契约与实现都下沉到 core 的 Memo.carrierSignal()，那里是纯 JVM，单测跑得到。
-            // 本类只负责「把信号拼进事件 + 把提示回给调用方」。
-            boolean snapshotPresent = memo.hasSnapshot();
-            Map<String, Object> ev = new LinkedHashMap<>();
-            ev.put("memo_id", memoId);
-            ev.put("companion", id.toString());
-            ev.put("queue_depth", depth);
-            ev.putAll(memo.carrierSignal());
-            LearnerMonitor.publish("noted", ev);
-
-            Map<String, Object> data = new LinkedHashMap<>();
-            data.put("memo_id", memoId);
-            data.put("queue_depth", depth);
-            data.put("snapshot_present", snapshotPresent);
-            if (snapshotPresent) {
-                data.put("carrier_preview", memo.carrierPreview());
-                data.put("carry_list", memo.carrierSignal().get("carry_list"));
-            } else {
-                // 不回传内部措辞（"无法分级"），改成对调用方可执行的提示
-                data.put("carry_list", java.util.List.of());
-                data.put("carry_list_meaning", "UNKNOWN_NO_SNAPSHOT");
-                data.put("review_degraded", true);
-                data.put("snapshot_hint",
-                        "you did not hand over the environment, so the learner cannot grade this memo. "
-                                + "Next time pass snapshot=\"hp=<n>/20, armor=none|iron_chestplate, "
-                                + "weapon=none|iron_sword, nearby=<entity>, dim=<dimension>\".");
-            }
-            reply.accept(TaskResult.ok("memo queued for learner review", data).toJson());
-        } catch (RuntimeException ex) {
-            // 队列读失败会抛 IllegalStateException（刻意不按空队列覆盖，见 MemoQueue.readAll）
-            reply.accept(TaskResult.fail("learner_note failed: " + ex.getMessage()).toJson());
+            in = GSON.fromJson(args, Input.class);
+        } catch (RuntimeException e) {
+            reply.accept(TaskResult.fail("learner_note bad arguments: " + e.getMessage()).toJson());
+            return;
         }
+        if (in == null || blank(in.problem()) || blank(in.tried())) {
+            reply.accept(TaskResult.fail("learner_note requires problem and tried").toJson());
+            return;
+        }
+
+        EnvSnapshot.onServerThread(companion, () -> {
+            try {
+                UUID id = companion.getUUID();
+                MemoQueue q = LearnerPlugin.queue(id);
+                String memoId = "m-" + System.currentTimeMillis() + "-" + Math.abs(in.problem().hashCode() % 1000);
+
+                // 合并策略（38号v3 §2.2 实现约束 4）：**调用方传的优先**，为空才自动采集。
+                // 「固化环境」是系统的义务，但系统不能覆盖调用方已经知道并写下来的真值。
+                String snapshot = nz(in.snapshot()).trim();
+                boolean autoCollected = false;
+                if (snapshot.isEmpty() && companion != null) {
+                    snapshot = EnvSnapshot.capture(companion).trim();
+                    autoCollected = !snapshot.isEmpty();
+                }
+
+                Memo memo = new Memo(memoId, in.problem().trim(), nz(in.stage()), in.tried().trim(),
+                        snapshot, System.currentTimeMillis());
+
+                if (!q.append(memo)) {
+                    // 分不清是「满了」还是「字段太长」时不猜：两种都如实报，并给出当前深度
+                    int depthNow;
+                    try {
+                        depthNow = q.size();
+                    } catch (RuntimeException e) {
+                        depthNow = -1;
+                    }
+                    reply.accept(TaskResult.fail("memo not queued: queue full (" + MemoQueue.MAX_QUEUE
+                            + ") or field too long (" + MemoQueue.MAX_FIELD_CHARS
+                            + " chars); run learner_review to drain first; current depth=" + depthNow).toJson());
+                    return;
+                }
+
+                int depth = q.size();
+
+                // B21（缺失的表达方式）：缺失就是缺失，不许用哨兵值伪装成数据。
+                // 契约与实现都下沉到 core 的 Memo.carrierSignal()，那里是纯 JVM，单测跑得到。
+                boolean snapshotPresent = memo.hasSnapshot();
+                Map<String, Object> ev = new LinkedHashMap<>();
+                ev.put("memo_id", memoId);
+                ev.put("companion", id.toString());
+                ev.put("queue_depth", depth);
+                ev.put("snapshot_source", snapshotPresent ? (autoCollected ? "auto" : "caller") : "none");
+                ev.putAll(memo.carrierSignal());
+                LearnerMonitor.publish("noted", ev);
+
+                Map<String, Object> data = new LinkedHashMap<>();
+                data.put("memo_id", memoId);
+                data.put("queue_depth", depth);
+                data.put("snapshot_present", snapshotPresent);
+                data.put("snapshot_source", snapshotPresent ? (autoCollected ? "auto" : "caller") : "none");
+                if (snapshotPresent) {
+                    data.put("carrier_preview", memo.carrierPreview());
+                    data.put("carry_list", memo.carrierSignal().get("carry_list"));
+                } else {
+                    // 不回传内部措辞（"无法分级"），改成对调用方可执行的提示
+                    data.put("carry_list", java.util.List.of());
+                    data.put("carry_list_meaning", "UNKNOWN_NO_SNAPSHOT");
+                    data.put("review_degraded", true);
+                    data.put("snapshot_hint",
+                            "the learner could not read the environment either, so this memo cannot be graded. "
+                                    + "The companion may be unloaded or the world still loading.");
+                }
+                reply.accept(TaskResult.ok("memo queued for learner review", data).toJson());
+            } catch (RuntimeException ex) {
+                // 队列读失败会抛 IllegalStateException（刻意不按空队列覆盖，见 MemoQueue.readAll）
+                reply.accept(TaskResult.fail("learner_note failed: " + ex.getMessage()).toJson());
+            }
+        });
     }
 
     private static boolean blank(String s) {
