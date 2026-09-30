@@ -49,6 +49,8 @@ import java.util.function.Consumer;
 public final class NumenLlmClient {
 
     private final HttpLlmTransport transport;
+    /** The site's static headers (kept so session placeholders can be resolved per request). */
+    private final java.util.Map<String, String> siteHeaders;
     private final LlmProvider provider;
     private final String fullUrl;
     private final String apiKey;
@@ -64,8 +66,9 @@ public final class NumenLlmClient {
         String siteBase = com.dwinovo.numen.agent.provider.ProviderRegistry.baseUrl(endpoint.provider());
         this.fullUrl = composeUrl(endpoint.baseUrl(), siteBase, provider);
         this.apiKey = endpoint.apiKey();
+        this.siteHeaders = com.dwinovo.numen.agent.provider.ProviderRegistry.headers(endpoint.provider());
         this.transport = new HttpLlmTransport(endpoint.proxy(),
-                com.dwinovo.numen.agent.provider.ProviderRegistry.headers(endpoint.provider()),
+                this.siteHeaders,
                 provider.authHeaders(endpoint.apiKey()));
         String configured = endpoint.model();
         this.model = (configured == null || configured.isBlank()) ? "gpt-5.4-mini" : configured;
@@ -145,6 +148,33 @@ public final class NumenLlmClient {
         /** 这一轮真正新处理的量:缓存读不计。 */
         public long freshTokens() {
             return usage.fresh();
+        }
+    }
+
+    /**
+     * Per-call session identity, derived from the **request's own caller**.
+     *
+     * <p>Why: {@code x-opencode-session} is a static per-provider header, so every companion
+     * sharing an endpoint looked like one session to the gateway. The session value therefore
+     * comes from {@link LlmObservation#companionId()} — the one identity already threaded
+     * through this call — and is applied as a <b>request-local</b> override, so concurrent
+     * companions on one shared transport cannot see each other's value.
+     *
+     * <p>Calls with no observation (settings-screen ping, provider connectivity test) keep the
+     * configured static value: no identity to derive from, so nothing is invented.
+     */
+    private java.util.Map<String, String> perRequestSessionHeaders(LlmObservation observation) {
+        try {
+            String companion = observation == null ? null : observation.companionId();
+            java.util.Map<String, String> overrides =
+                    com.dwinovo.numen.agent.provider.SessionHeaderResolver.resolve(siteHeaders, companion);
+            if (!overrides.isEmpty()) {
+                AiLog.LOG.debug("[numen-llm] session-scoped headers for {}: {}", companion, overrides.keySet());
+            }
+            return overrides;
+        } catch (RuntimeException ex) {
+            AiLog.LOG.warn("[numen-llm] session header resolution failed: {}", ex.getMessage());
+            return java.util.Map.of();
         }
     }
 
@@ -232,7 +262,7 @@ public final class NumenLlmClient {
                 if (observation != null) observation.publish("llm_request", model, java.util.Map.of(
                         "status", "dispatched", "attempt", attempt, "transportRequestId", transportId,
                         "provider", provider.name(), "request", body), apiKey);
-            });
+            }, perRequestSessionHeaders(observation));
         } catch (RuntimeException error) {
             pending = CompletableFuture.failedFuture(error);
         }

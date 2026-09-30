@@ -155,7 +155,25 @@ public final class HttpLlmTransport {
     public CompletableFuture<Void> postSse(String url, String apiKey, JsonObject body,
                                             Consumer<JsonObject> chunkHandler,
                                             java.util.function.BiConsumer<Integer, String> onDispatch) {
-        return postSseAttempt(url, apiKey, body, chunkHandler, 0, onDispatch);
+        return postSseAttempt(url, apiKey, body, chunkHandler, 0, onDispatch, java.util.Map.of());
+    }
+
+    /**
+     * SSE with <b>request-local</b> headers (F3: per-companion session isolation).
+     *
+     * <p>Why per-request and not on {@code extraHeaders}: this transport (and the
+     * {@code HttpClient} inside it) is <b>shared</b> by every companion that resolves to
+     * the same endpoint, and extra headers are fixed at construction. Mutating them would
+     * let one companion's session id leak into a concurrent request from another.
+     * {@code perRequest} is applied to the single {@link HttpRequest} being built, so
+     * concurrent sends cannot see each other's values.
+     */
+    public CompletableFuture<Void> postSse(String url, String apiKey, JsonObject body,
+                                            Consumer<JsonObject> chunkHandler,
+                                            java.util.function.BiConsumer<Integer, String> onDispatch,
+                                            java.util.Map<String, String> perRequest) {
+        return postSseAttempt(url, apiKey, body, chunkHandler, 0, onDispatch,
+                perRequest == null ? java.util.Map.of() : perRequest);
     }
 
     /**
@@ -172,7 +190,8 @@ public final class HttpLlmTransport {
      */
     private CompletableFuture<Void> postSseAttempt(String url, String apiKey, JsonObject body,
                                                    Consumer<JsonObject> chunkHandler, int attempt,
-                                                   java.util.function.BiConsumer<Integer, String> onDispatch) {
+                                                   java.util.function.BiConsumer<Integer, String> onDispatch,
+                                                   java.util.Map<String, String> perRequest) {
         String requestId = nextRequestId() + (attempt > 0 ? "r" + attempt : "");
         String bodyStr = body.toString();
         long t0 = System.nanoTime();
@@ -182,7 +201,7 @@ public final class HttpLlmTransport {
         AiLog.LOG.debug("[numen-http][{}] POST {} ({} bytes, streaming)",
                 requestId, url, bodyStr.length());
 
-        HttpRequest request = baseRequest(url, apiKey, "text/event-stream", bodyStr);
+        HttpRequest request = baseRequest(url, apiKey, "text/event-stream", bodyStr, perRequest);
 
         // Branch on status: 2xx → SSE subscriber; non-2xx → buffer to string so
         // we can surface the (typically JSON) error body in LlmHttpException.
@@ -224,7 +243,7 @@ public final class HttpLlmTransport {
                 // delivered chunk is the turn layer's decision.
                 if (attempt < MAX_RETRIES && chunkCount.get() == 0) {
                     return retryAfterDelay(url, apiKey, body, chunkHandler, attempt,
-                            computeBackoffMs(attempt), requestId, String.valueOf(cause), onDispatch);
+                            computeBackoffMs(attempt), requestId, String.valueOf(cause), onDispatch, perRequest);
                 }
                 AiLog.LOG.warn("[numen-http][{}] ✗ {} in {}ms ({} chunks)",
                         requestId, cause, elapsedMs, chunkCount.get());
@@ -247,20 +266,21 @@ public final class HttpLlmTransport {
                         .filter(v -> v > 0 && v <= 60_000)
                         .orElse(computeBackoffMs(attempt));
                 return retryAfterDelay(url, apiKey, body, chunkHandler, attempt,
-                        delay, requestId, "HTTP " + status, onDispatch);
+                        delay, requestId, "HTTP " + status, onDispatch, perRequest);
             }
             return CompletableFuture.<Void>failedFuture(new LlmHttpException(status, body2));
         }).thenCompose(f -> f);
     }
 
     private CompletableFuture<Void> retryAfterDelay(String url, String apiKey, JsonObject body,
-                                                    Consumer<JsonObject> chunkHandler, int attempt,
-                                                    long delayMs, String requestId, String reason,
-                                                    java.util.function.BiConsumer<Integer, String> onDispatch) {
+Consumer<JsonObject> chunkHandler, int attempt,
+                                                     long delayMs, String requestId, String reason,
+                                                     java.util.function.BiConsumer<Integer, String> onDispatch,
+                                                     java.util.Map<String, String> perRequest) {
         AiLog.LOG.warn("[numen-http][{}] retrying in {}ms (attempt {}/{}) — {}",
                 requestId, delayMs, attempt + 1, MAX_RETRIES, reason);
         return CompletableFuture.supplyAsync(
-                        () -> postSseAttempt(url, apiKey, body, chunkHandler, attempt + 1, onDispatch),
+                        () -> postSseAttempt(url, apiKey, body, chunkHandler, attempt + 1, onDispatch, perRequest),
                         CompletableFuture.delayedExecutor(delayMs, java.util.concurrent.TimeUnit.MILLISECONDS))
                 .thenCompose(f -> f);
     }
@@ -324,6 +344,16 @@ public final class HttpLlmTransport {
     // ---- internals ----
 
     private HttpRequest baseRequest(String url, String apiKey, String accept, String body) {
+        return baseRequest(url, apiKey, accept, body, java.util.Map.of());
+    }
+
+    /**
+     * Build one request. {@code perRequest} headers are applied <b>last</b> so a
+     * request-local value (F3 session id) wins over the site's static value, and so
+     * nothing on this instance is mutated.
+     */
+    private HttpRequest baseRequest(String url, String apiKey, String accept, String body,
+                                    java.util.Map<String, String> perRequest) {
         HttpRequest.Builder b = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(REQUEST_TIMEOUT);
@@ -332,6 +362,13 @@ public final class HttpLlmTransport {
             authHeaders.forEach(b::header);            // provider 的鉴权方言
         } else {
             b.header("Authorization", "Bearer " + apiKey);  // 传统缺省
+        }
+        if (perRequest != null) {
+            for (java.util.Map.Entry<String, String> e : perRequest.entrySet()) {
+                if (e.getKey() == null || e.getKey().isBlank() || e.getValue() == null) continue;
+                // setHeader (not header): 同名头只保留这一个值，避免重复行被网关读成两个会话
+                b.setHeader(e.getKey(), e.getValue());
+            }
         }
         return b.header("Content-Type", "application/json; charset=utf-8")
                 .header("Accept", accept)

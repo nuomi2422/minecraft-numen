@@ -1,5 +1,5 @@
 {
-  "_comment": "Numen LLM sites (OpenAI-compatible). Per site: base URL + optional custom headers + known models with their context window (tokens, fed into auto-compaction). Model lists refreshed from each provider's own docs (2026-06); ids/context windows are best-effort and may drift — USER-EDITABLE: this is copied to config/numen/models.json on first run; edit that file to add your own sites/models or override URLs. Every model field also accepts a custom id via the settings 'custom' escape hatch. thinkingFormat = 思考开关方言(effort|effort-nested|thinking-type|enable-bool|budget|none, 缺省 effort), 见 LlmProvider.THINKING_*. protocol = 线协议(缺省 openai 兼容; anthropic = Anthropic Messages, 兼容站同享). 模型上可选 temperature(小数)/maxTokens(整数): 缺省不发该参数,吃服务器默认——在用户文件里按模型设置生成参数.",
+  "_comment": "Numen LLM sites (OpenAI-compatible). Per site: base URL + optional custom headers + known models with their context window (tokens, fed into auto-compaction). A header value containing ${session} is resolved PER REQUEST into a per-companion value (e.g. x-opencode-session: numen-minecraft-${session} -> numen-minecraft-<companion id prefix>); values without the placeholder stay exactly as written. Calls without a companion identity (settings-screen ping, connectivity test) keep the literal configured value. Model lists refreshed from each provider's own docs (2026-06); ids/context windows are best-effort and may drift — USER-EDITABLE: this is copied to config/numen/models.json on first run; edit that file to add your own sites/models or override URLs. Every model field also accepts a custom id via the settings 'custom' escape hatch. thinkingFormat = 思考开关方言(effort|effort-nested|thinking-type|enable-bool|budget|none, 缺省 effort), 见 LlmProvider.THINKING_*. protocol = 线协议(缺省 openai 兼容; anthropic = Anthropic Messages, 兼容站同享). 模型上可选 temperature(小数)/maxTokens(整数): 缺省不发该参数,吃服务器默认——在用户文件里按模型设置生成参数.",
   "providers": [
     {
       "id": "openai", "name": "OpenAI", "baseUrl": "https://api.openai.com/v1", "thinkingFormat": "effort",
@@ -31,7 +31,7 @@
       "id": "opencode-go", "name": "OpenCode Go", "baseUrl": "https://opencode.ai/zen/go/v1", "thinkingFormat": "effort",
       "headers": {
         "User-Agent": "numen-minecraft-agent/1.0",
-        "x-opencode-session": "numen-minecraft"
+        "x-opencode-session": "numen-minecraft-${session}"
       },
       "models": [
         { "id": "deepseek-v4.1-flash", "ctx": 1000000, "reasoning": true },
