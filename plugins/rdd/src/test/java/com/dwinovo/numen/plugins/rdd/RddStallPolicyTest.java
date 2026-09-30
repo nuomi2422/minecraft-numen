@@ -145,4 +145,55 @@ class RddStallPolicyTest {
         assertFalse(a.stalled(), "拍醒不等于判卡死：状态机必须仍然认为没到 stalled");
         assertEquals(RddStallPolicy.IDLE_GRACE_CHECKS, a.limit());
     }
+
+    // ---- 在飞闸（2026-09-30 盲点①：纯时间阈值分不清「卡住」与「慢」）----
+
+    @Test void llmInFlightSuppressesTheNudgeAtTheThreshold() {
+        // 验收判据①：LLM 在飞 30s、资产零变化 → 绝不能拍醒。
+        // 依据：实测「有效但慢」44.0s 比「空转」35.6s 还长，纯时间阈值会误拍正在思考的模型，
+        // 而拍醒措辞会覆盖原计划（见 RddStallWatcher 三条话术铁律）。
+        int threshold = RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS;
+        for (int n = 0; n <= threshold + 30; n++) {
+            assertFalse(RddStallPolicy.shouldNudgeLlmIdle(n, "idle", true),
+                    "在飞时 n=" + n + " 绝不能拍 —— 会把模型从正确轨道上拽下来");
+        }
+    }
+
+    @Test void llmNotInFlightStillNudgesExactlyAtTheThreshold() {
+        // 验收判据②：LLM 已返回（不在飞）→ 必须还能拍。这是加闸不许引入新盲区。
+        int threshold = RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS;
+        assertFalse(RddStallPolicy.shouldNudgeLlmIdle(threshold - 1, "idle", false));
+        assertTrue(RddStallPolicy.shouldNudgeLlmIdle(threshold, "idle", false),
+                "已落地却不敢拍 = 卡死监督被静默关掉，比误拍更糟");
+        assertFalse(RddStallPolicy.shouldNudgeLlmIdle(threshold + 1, "idle", false), "仍然只拍一次");
+    }
+
+    @Test void theTwoArgOverloadIsByteForByteTheOldBehaviour() {
+        // fail-open 契约：宿主给不出在飞状态时，行为与加闸之前必须逐字相同。
+        int threshold = RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS;
+        for (int n = 0; n <= threshold + 3; n++) {
+            assertEquals(RddStallPolicy.shouldNudgeLlmIdle(n, "idle", false),
+                    RddStallPolicy.shouldNudgeLlmIdle(n, "idle"),
+                    "n=" + n + " 两参重载必须等于三参的 false 分支");
+        }
+        for (String busy : new String[]{"body_task:mine", "body_task:build", "furnace_production"}) {
+            assertEquals(RddStallPolicy.shouldNudgeLlmIdle(threshold, busy, true),
+                    RddStallPolicy.shouldNudgeLlmIdle(threshold, busy),
+                    "在飞闸不许碰 source 那一维的既有行为");
+        }
+    }
+
+    @Test void inFlightGateDoesNotTouchTheStateMachineOutcome() {
+        // 加闸只许改「拍不拍」，不许改 check() 的结论。
+        var inFlight = next(null, observation("", false, "idle"));
+        var idle = next(null, observation("", false, "idle"));
+        for (int i = 0; i < RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS; i++) {
+            inFlight = next(inFlight, observation("", false, "idle"));
+            idle = next(idle, observation("", false, "idle"));
+        }
+        assertEquals(idle.fingerprint(), inFlight.fingerprint());
+        assertEquals(idle.unchanged(), inFlight.unchanged());
+        assertEquals(idle.limit(), inFlight.limit());
+        assertEquals(idle.stalled(), inFlight.stalled());
+    }
 }

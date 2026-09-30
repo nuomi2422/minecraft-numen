@@ -208,6 +208,18 @@ public final class NumenLlmClient {
         long t0 = System.nanoTime();
         StreamAccumulator acc = new StreamAccumulator();
         CompletableFuture<Void> pending;
+        // 认领身份,让卡死监督看得见"这个同伴的 LLM 正在飞"。
+        // token 必须原样带到底下两处 markSettled —— 并发请求时按 token 精确销账(Codex 审稿 P0)。
+        // 先算进一个可变中转再赋 final:lambda 只能引用 effectively final 的局部变量。
+        long dispatched;
+        try {
+            dispatched = observation != null
+                    ? LlmActivity.markDispatched(observation.companionId(), observation.phase())
+                    : 0L;
+        } catch (RuntimeException ignored) {
+            dispatched = 0L; // 观测层不许影响请求
+        }
+        final long activityToken = dispatched;
         try {
             pending = transport.postSse(fullUrl, apiKey, body, chunk -> {
                 try {
@@ -227,8 +239,25 @@ public final class NumenLlmClient {
         return pending.thenApply(v -> {
             AssistantTurn turn = provider.finalizeStream(acc);
             logCallSummary(t0, acc, turn);
+            try {
+                if (observation != null) {
+                    LlmActivity.markSettled(observation.companionId(), activityToken,
+                            acc.finishReason, turn.toolCalls().size());
+                }
+            } catch (RuntimeException ignored) {
+                // 观测层不许影响返回值
+            }
             return new ChatResult(turn, provider.usage(acc.usage));
         }).whenComplete((result, error) -> {
+            // 失败落地也必须按 token 销账,否则挂死/取消的请求会让卡死监督永远不敢拍醒。
+            // 成功路径可能已经销过一次;remove 幂等,这里只是兜底(比如 finalizeStream 抛异常)。
+            try {
+                if (observation != null) {
+                    LlmActivity.markSettled(observation.companionId(), activityToken, null, -1);
+                }
+            } catch (RuntimeException ignored) {
+                // 观测层不许影响完成回调
+            }
             if (observation == null) return;
             try {
             if (error != null) {

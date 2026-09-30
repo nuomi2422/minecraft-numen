@@ -78,8 +78,25 @@ final class RddStallWatcher {
             return false;
         }
         int unchanged = check.unchanged();
+        // LLM 在飞快照（2026-09-30 盲点①）：纯时间阈值分不清「卡住」与「慢」
+        // （实测空转 35.6s < 有效 44.0s），所以先问宿主「它是不是正在飞」再决定拍不拍。
+        // stale（在飞超上界 = future 挂死/被取消）当不在飞用，但**只告警一次**
+        // （不去重的话 track() 每秒发一条，挂死几小时就是几万条日志 —— Codex 审稿 P1-4）。
+        com.dwinovo.numen.agent.llm.LlmActivity.Snapshot llm =
+                com.dwinovo.numen.agent.llm.LlmActivity.snapshot(ap.getUUID().toString());
+        boolean llmInFlight = llm.inFlight() && !llm.stale();
+        if (llm.staleUnreported()) {
+            RddMonitor.publish("llm_activity_stale", Map.of(
+                    "companionId", ap.getUUID().toString(), "subtask", current.id(),
+                    "phase", String.valueOf(llm.phase()),
+                    "inFlightCount", llm.inFlightCount(),
+                    "oldestInFlightMs", llm.oldestInFlightNanos() / 1_000_000L,
+                    "action", "treat as not-in-flight so supervision stays alive"));
+            com.dwinovo.numen.agent.llm.LlmActivity.markStaleReported(
+                    ap.getUUID().toString(), llm.oldestInFlightToken());
+        }
         // LLM 空转提前拍醒：身体零工具调用持续到阈值就先喊一次，不等 IDLE_GRACE_CHECKS，也不改状态机。
-        if (RddStallPolicy.shouldNudgeLlmIdle(unchanged, observation.source())) {
+        if (RddStallPolicy.shouldNudgeLlmIdle(unchanged, observation.source(), llmInFlight)) {
             // 话术三条铁律（2026-09-29 GLM 审稿后重写，旧版实测无效）：
             //  1) 必须**点名当前子目标**——泛泛的「调用一个工具」是 content-free 紧迫感，
             //     模型按 recency 服从它 → 挑任意工具 → 覆盖原计划。旧版就是这么把同伴逼去 build 的。
@@ -97,6 +114,10 @@ final class RddStallWatcher {
                     "companionId", ap.getUUID().toString(), "subtask", current.id(),
                     "reason", "no tool call for " + RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS + " checks",
                     "source", observation.source(),
+                    "llmKnown", llm.known(), "llmInFlight", llmInFlight,
+                    "llmInFlightCount", llm.inFlightCount(),
+                    "llmLastFinish", String.valueOf(llm.lastFinish()),
+                    "llmLastToolCalls", llm.lastToolCalls(),
                     "action", "nudge-only; state machine untouched"));
         }
         if (observation.waiting() && unchanged >= STALL_AFTER_TICKS

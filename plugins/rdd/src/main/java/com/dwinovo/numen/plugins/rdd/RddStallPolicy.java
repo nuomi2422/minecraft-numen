@@ -44,9 +44,29 @@ final class RddStallPolicy {
     /**
      * 是否该在这一个检查点拍醒。纯函数便于单测锁住两条边界：
      * 干活的 source 永不触发；空转到阈值的那一次触发（不重复触发）。
+     *
+     * <p><b>两参重载 = 旧行为</b>（假定宿主给不出「在飞」）。给得出就必须用三参那版。
      */
     static boolean shouldNudgeLlmIdle(int unchanged, String source) {
-        return llmIdle(source) && unchanged == LLM_IDLE_NUDGE_AFTER_CHECKS;
+        return shouldNudgeLlmIdle(unchanged, source, false);
+    }
+
+    /**
+     * 同上，多一个 {@code llmInFlight} 闸（2026-09-30 加，见统一版 38 号页 §2 盲点①）。
+     *
+     * <p><b>这个闸为什么必须加</b>：{@link #LLM_IDLE_NUDGE_AFTER_CHECKS} 是<b>纯时间</b>阈值，
+     * 而实测分布里空转 35.6s <b>&lt;</b> 有效 44.0s —— 也就是说
+     * <b>「有效但慢」比「空转」还慢，纯阈值天生就会误拍正在思考的模型</b>。
+     * 拍醒的措辞会覆盖原计划（见 {@code RddStallWatcher} 的三条话术铁律），
+     * 所以误拍不是「多喊一句」，是<b>把模型从正确的轨道上拽下来</b>。
+     *
+     * <p><b>闸是 fail-open 的</b>：宿主给不出在飞状态（{@code llmInFlight=false}）时，
+     * 行为与加闸之前<b>逐字相同</b> —— 加闸只允许<b>少</b>误拍，不许引入新误判。
+     * 反向的 stale 保护在 {@code LlmActivity.Snapshot.stale} 那一侧：
+     * 在飞太久（future 挂死）就不认在飞，<b>宁可误催，不可静默失明</b>。
+     */
+    static boolean shouldNudgeLlmIdle(int unchanged, String source, boolean llmInFlight) {
+        return llmIdle(source) && !llmInFlight && unchanged == LLM_IDLE_NUDGE_AFTER_CHECKS;
     }
 
     /**
