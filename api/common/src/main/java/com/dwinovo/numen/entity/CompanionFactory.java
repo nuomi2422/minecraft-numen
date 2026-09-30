@@ -66,6 +66,18 @@ public final class CompanionFactory {
         if (pos != null) {
             player.moveTo(pos.x, pos.y, pos.z, player.getYRot(), player.getXRot());
         }
+        // ★ 补上注册表写入（2026-09-30 修"同伴死而不复生"）
+        //
+        // 为什么要在这里：CompanionRegistry 是"谁拥有哪些同伴 + 死亡计时"的持久索引，
+        // 而 markDead / markAlive 都以"条目已存在"为前提（`if (e == null) return;`）。
+        // 全仓此前**没有任何地方创建过条目**（put() 零调用）→ 注册表永远是空的
+        // → markDead 静默跳过 → pendingDead() 空 → tickRespawns 什么都不做
+        // → **同伴死了就永久消失**，而实机表现是"她刚死了，正在复活途中"卡住不动。
+        //
+        // 放在 pos 落地之后、事件之前：此刻位置/维度/owner 都已是最终值。
+        // 复活路径（Companions.respawnDead）随后会 markAlive()，死亡状态正好被清掉。
+        CompanionRegistry.get(server).put(companionUuid, new CompanionRegistry.Entry(
+                name, ownerUuid, level.dimension(), player.blockPosition()));
         // 假玩家没有客户端上报的模型定制:点亮全部皮肤覆盖层与披风,否则只显示单层基础皮肤。
         // 每次 spawn(首建与重生)都重设——该字节是同步实体数据、不随 .dat 存取。
         player.showAllSkinLayers();

@@ -111,6 +111,8 @@ public final class RddPlugin implements NumenPlugin {
         factsDir = numen.configDir().resolve("rdd-facts");
         historyDir = numen.configDir().resolve("rdd-history");
             supervisionFlag = numen.configDir().resolve("rdd-supervision.flag");
+        // 暂停开关：文件存在 = 禁用 PAUSE（2026-09-30 用户要求可随时关，防误伤实验）
+        setPauseDisabledFlagPath(numen.configDir().resolve("rdd-pause-disabled.flag"));
             bodyDispatchFlag = numen.configDir().resolve("rdd-bodydispatch.flag");
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
@@ -1086,6 +1088,39 @@ public final class RddPlugin implements NumenPlugin {
     /** 监督拍醒是否放行。false = 空转止血：Detector 只观察/推进，不 nudge AI。 */
     public static boolean supervisionEnabled() {
         return supervisionEnabled;
+    }
+
+    /**
+     * 暂停(PAUSE)功能开关（2026-09-30 用户要求：怕误伤实验，要能随时关掉）。
+     *
+     * <p>做法照抄 {@code rdd-supervision.flag} 的形态 —— <b>运行时文件开关</b>，
+     * 不用重新编译就能切：建出 <code>config/numen/rdd-pause-disabled.flag</code> 即禁用，
+     * 删掉即恢复。
+     *
+     * <p>为什么需要独立于 supervision：supervision 关掉会连带停掉卡死检测/拍醒/重试，
+     * 那是"整套监督都停"；而用户只想<b>单独停暂停</b>，其余照常。
+     */
+    private static volatile Path pauseDisabledFlag;
+    private static volatile boolean pauseEnabled = true;
+
+    public static void setPauseDisabledFlagPath(Path p) { pauseDisabledFlag = p; }
+
+    public static boolean pauseEnabled() { return pauseEnabled; }
+
+    /** 每次检测心跳刷新：文件存在 = 禁用暂停。 */
+    public static void refreshPauseFlag() {
+        if (pauseDisabledFlag == null) return;
+        boolean disabled;
+        try {
+            disabled = Files.exists(pauseDisabledFlag);
+        } catch (RuntimeException ex) {
+            disabled = !pauseEnabled;
+        }
+        if (disabled != !pauseEnabled) {
+            pauseEnabled = !disabled;
+            LOG.warn("[rdd] 暂停(PAUSE)功能已{}（{}）", pauseEnabled ? "启用" : "禁用",
+                    pauseDisabledFlag);
+        }
     }
 
     /** 每次检测心跳(~1s)刷新监督开关：外部(监测台/人)写 config/numen/rdd-supervision.flag=pause 即暂停。 */

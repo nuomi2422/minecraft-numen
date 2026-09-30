@@ -154,6 +154,7 @@ final class RddDetector {
         worldAssetTick = (worldAssetTick + 1) % 30;
         // 空转止血：每次心跳刷新监督开关（flag 文件由监测台/人写，pause=停拍醒）
         RddPlugin.refreshSupervisionFlag();
+        RddPlugin.refreshPauseFlag();   // 暂停开关（2026-09-30 用户要求可随时关，防误伤实验）
         // 单驾驶员：同一心跳刷新"是否允许 RDD 自动提交身体工具"（默认关；见 RddPlugin 字段注释）。
         RddPlugin.refreshBodyDispatchFlag();
         // 重启恢复：磁盘有任务但内存无 → 加载为 RddRuntime（幂等，RECOVERING）
@@ -616,8 +617,21 @@ final class RddDetector {
         }
         Subtask current = chain.currentSubtask();
         RddNegotiationInbox.takePending(ap.getUUID());   // 消费
+
         // 「先放着」：不重规划、不换计划，直接把当前二级按住。留在这里等条件变了再开。
-        if (n.isPauseRequest()) {
+        //
+        // ★ 开关（2026-09-30 用户要求：怕误伤实验，要能随时关）：
+        //   建 config/numen/rdd-pause-disabled.flag 即禁用 PAUSE；
+        //   关掉后 PAUSE 回执**落到下面的普通重规划路径**（= 当作 COUNTER 处理），
+        //   至少不会把链按住不动。删掉 flag 即恢复。运行时生效，不用重编。
+        boolean pauseOff = !RddPlugin.pauseEnabled();
+        if (n.isPauseRequest() && pauseOff) {
+            RddMonitor.publish("pause_skipped_disabled", Map.of(
+                    "companionId", ap.getUUID().toString(),
+                    "reason", n.reason(), "suggestion", n.suggestion(),
+                    "note", "rdd-pause-disabled.flag exists; PAUSE handled as a plain replan request"));
+        }
+        if (n.isPauseRequest() && !pauseOff) {
                 RddPlugin.clearBody(ap.getUUID());
                 // 已经在暂停中（士兵又报了一次 PAUSE）：不是错误，别再走一遍按停逻辑，
                 // 更别把它当失败。刷新一下起点，让复评预算从这次上报重新算。
