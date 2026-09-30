@@ -204,10 +204,27 @@ final class LearnerReviewTool implements NumenTool {
 
             // 携带器只携带不存储：把三段分级结论写进观测，不落任何状态文件
             batch.stream().filter(m -> v.memoId().equals(m.id())).findFirst().ifPresent(m -> {
-                Memo.CarrierAssessment a = m.assessCarrier();
-                LearnerMonitor.publish("carrier_assessment", Map.of(
-                        "memo_id", m.id(), "target", a.target(), "why", a.why(),
-                        "carry", a.carryList(), "hp", a.hp()));
+                // B21（缺失的表达方式）：与 LearnerNoteTool 同一个边界的两处泄漏，一起修。
+                // 契约在 core 的 Memo.carrierSignal()（纯 JVM，单测跑得到），本类只做拼装 + 换键名。
+                // 旧写法无条件发 hp=-1 / target="UNKNOWN" / carry=[]，
+                // 下游分不清「真判出 UNKNOWN」与「压根没快照可判」。
+                Map<String, Object> sig = m.carrierSignal();
+                Map<String, Object> ev = new java.util.LinkedHashMap<>();
+                ev.put("memo_id", m.id());
+                ev.put("snapshot_present", sig.get("snapshot_present"));
+                if (Boolean.TRUE.equals(sig.get("snapshot_present"))) {
+                    ev.put("target", sig.get("carrier_target"));
+                    ev.put("carry", sig.get("carry_list"));
+                    if (sig.containsKey("carrier_hp")) {
+                        ev.put("hp", sig.get("carrier_hp"));
+                    }
+                    ev.put("why", m.carrierPreview());
+                } else {
+                    // 刻意不发 why：它含内部措辞「无环境快照，无法分级」，对下游没有可执行信息
+                    ev.put("carry", sig.get("carry_list"));
+                    ev.put("carry_meaning", sig.get("carry_list_meaning"));
+                }
+                LearnerMonitor.publish("carrier_assessment", ev);
             });
         }
 

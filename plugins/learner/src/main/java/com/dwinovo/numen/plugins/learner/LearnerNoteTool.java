@@ -9,6 +9,7 @@ import com.dwinovo.numen.task.TaskResult;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -33,7 +34,16 @@ final class LearnerNoteTool implements NumenTool {
         return "Record a raw memo about a problem you hit, for the learner to review later. "
                 + "Call this when you are STUCK: a tool failed, you retried repeatedly, an action had "
                 + "no effect, or you had to abandon a sub-task. "
-                + "Required: problem, tried. Optional: stage, snapshot (JSON-ish text with hp/armor/nearby). "
+                + "Required: problem, tried. "
+                + "IMPORTANT - snapshot: when you are stuck you MUST also hand over the environment "
+                + "you were stuck in, otherwise the learner cannot tell a real 'no extra gear needed' "
+                + "from 'we had no idea what the world looked like'. Write it as key=value pairs "
+                + "separated by commas, e.g. "
+                + "hp=6/20, armor=none, weapon=none, nearby=zombie, dim=overworld. "
+                + "Keys it understands: hp (or health), armor/chestplate/helmet/leggings/boots, "
+                + "weapon/sword/axe/bow, nearby (entity names), dim, hostile (true/false). "
+                + "If you truly cannot read the environment, pass snapshot=\"unavailable\" and the "
+                + "reply will tell you the review was degraded. "
                 + "This only appends to a queue; it does NOT fix anything by itself.";
     }
 
@@ -43,7 +53,11 @@ final class LearnerNoteTool implements NumenTool {
                 .string("problem", "What went wrong or blocked you (concrete, one or two sentences).")
                 .string("tried", "What you already tried before giving up on this.")
                 .optionalString("stage", "Which stage/phase this happened in.")
-                .optionalString("snapshot", "Environment snapshot as text, e.g. hp=6/20, armor=none, nearby=zombie,dim=overworld.")
+                .optionalString("snapshot", "REQUIRED WHEN STUCK. Environment as key=value pairs separated by commas, "
+                        + "e.g. hp=6/20, armor=none, weapon=none, nearby=zombie, dim=overworld. "
+                        + "Keys: hp|health, armor|chestplate|helmet|leggings|boots, weapon|sword|axe|bow, "
+                        + "nearby (entity names), dim, hostile (true|false). "
+                        + "Pass \"unavailable\" only if you genuinely cannot read it - the reply will say so.")
                 .build();
     }
 
@@ -76,19 +90,36 @@ final class LearnerNoteTool implements NumenTool {
             }
 
             int depth = q.size();
-            Memo.CarrierAssessment assess = memo.assessCarrier();
-            LearnerMonitor.publish("noted", Map.of(
-                    "memo_id", memoId,
-                    "companion", id.toString(),
-                    "queue_depth", depth,
-                    "carrier_target", assess.target(),
-                    "carrier_hp", assess.hp()));
 
-            reply.accept(TaskResult.ok("memo queued for learner review", Map.of(
-                    "memo_id", memoId,
-                    "queue_depth", depth,
-                    "carrier_preview", assess.why(),
-                    "carry_list", assess.carryList())).toJson());
+            // B21（缺失的表达方式）：缺失就是缺失，不许用哨兵值伪装成数据。
+            // 契约与实现都下沉到 core 的 Memo.carrierSignal()，那里是纯 JVM，单测跑得到。
+            // 本类只负责「把信号拼进事件 + 把提示回给调用方」。
+            boolean snapshotPresent = memo.hasSnapshot();
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("memo_id", memoId);
+            ev.put("companion", id.toString());
+            ev.put("queue_depth", depth);
+            ev.putAll(memo.carrierSignal());
+            LearnerMonitor.publish("noted", ev);
+
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("memo_id", memoId);
+            data.put("queue_depth", depth);
+            data.put("snapshot_present", snapshotPresent);
+            if (snapshotPresent) {
+                data.put("carrier_preview", memo.carrierPreview());
+                data.put("carry_list", memo.carrierSignal().get("carry_list"));
+            } else {
+                // 不回传内部措辞（"无法分级"），改成对调用方可执行的提示
+                data.put("carry_list", java.util.List.of());
+                data.put("carry_list_meaning", "UNKNOWN_NO_SNAPSHOT");
+                data.put("review_degraded", true);
+                data.put("snapshot_hint",
+                        "you did not hand over the environment, so the learner cannot grade this memo. "
+                                + "Next time pass snapshot=\"hp=<n>/20, armor=none|iron_chestplate, "
+                                + "weapon=none|iron_sword, nearby=<entity>, dim=<dimension>\".");
+            }
+            reply.accept(TaskResult.ok("memo queued for learner review", data).toJson());
         } catch (RuntimeException ex) {
             // 队列读失败会抛 IllegalStateException（刻意不按空队列覆盖，见 MemoQueue.readAll）
             reply.accept(TaskResult.fail("learner_note failed: " + ex.getMessage()).toJson());
