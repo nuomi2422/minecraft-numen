@@ -266,29 +266,27 @@ final class RddDetector {
     private static final long PAUSE_RECHECK_TICKS = 60L * 20L;
 
     /**
-     * 背包里是否重新出现了<b>死亡时丢掉的那些东西</b>（死亡支线完成判据，深审 R08）。
+     * 背包里是否<b>把这一批死亡掉落真的捡回来了</b>（死亡支线完成判据，F6）。
      *
-     * <p>判据来源用 {@link com.dwinovo.numen.rdd.core.AssetHistory} 的
-     * {@code LOST → CURRENT} 转移，而不是问 AI"你捡回来了吗"——自报不可信，实物可信。
-     * （不能用 LAST_INVENTORY：死亡时 {@code CompanionEvent.REMOVE} 会把它清空，
-     * 正好把"当初丢了什么"这份对照也一起删了。）
+     * <p><b>旧判据的错在哪</b>（2026-09-30 实机 + 深审 R08）：它只问
+     * "背包里<b>任何一件</b>当初标 LOST 的东西是不是 &gt;0"，于是
+     * ① 33 格掉落里捡回 1 格就算整条支线成功；
+     * ② {@code AssetHistory} 是长期累积表，上一批的物品回来会替这一批结账。
      *
-     * <p>宽松判定：只要<b>有任何一件</b>当初标 LOST 的装备/工具/食物回到背包就算有进展
-     * （不要求全捡回，那不该由这一处判）。
+     * <p><b>现在的判据</b>：只认<b>当前支线对应的那一次死亡</b>，
+     * 按该批次自己记录的 {@code lostItems} 逐项核对（逻辑在
+     * {@link com.dwinovo.numen.rdd.core.RddDeathLedger#checkBatchRecovery}，纯 JVM 可单测）。
+     * 部分找回只发 {@code repair_task_progress}，<b>不</b>在这里结账。
      */
     private static boolean deathDropsBackInInventory(NumenPlayer ap, Map<String, Integer> counts) {
         try {
-            var history = RddPlugin.history(ap.getUUID());
-            for (var e : history.recoverable()) {
-                if (e.lastCount() != null && e.lastCount() > 0
-                        && counts.getOrDefault(e.assetId(), 0) > 0) {
-                    return true;
-                }
-            }
+            RddPlugin.ensureLedgerLoaded(ap.getUUID());
+            RddRepairDispatch.reportBatchProgress(ap.getUUID(), counts);
+            return RddRepairDispatch.checkBatchRecovered(ap.getUUID(), counts);
         } catch (RuntimeException ignored) {
-            // 资产历史读不到就判"没进展"，绝不让判据本身拖垮 tick
+            // 台账读不到就判"没进展"，绝不让判据本身拖垮 tick
+            return false;
         }
-        return false;
     }
 
     private void tickRuntime(NumenPlayer ap, RddRuntime rt) {
@@ -996,7 +994,10 @@ final class RddDetector {
         if (task.condition().containsKey("type") && !"inventory".equals(task.condition().get("type")))
             return com.dwinovo.numen.rdd.core.WorldFactConditions.valid(task.condition())
                     && RddWorldFacts.matches(ap, task.condition());
-        if (HardCodedEvaluator.matches(task.condition(), counts)) {
+        // F5：mode=acquire 的二级按"进入时的基线 + 当前增量"判（hold 走两参重载，行为逐字不变）。
+        // 基线缺失 → evaluator 判 false → 不算达成（宁可漏判，不许假完成）。
+        Map<String, Integer> baseline = acquireBaselineFor(ap, task);
+        if (HardCodedEvaluator.matches(task.condition(), counts, baseline)) {
             return true;
         }
         // P2-C：食物类条件允许"资产派生等价"兜底——目标面包不够时，若背包里的小麦（等价表
@@ -1008,6 +1009,26 @@ final class RddDetector {
         // 埋点：此声明（condition）与真实背包不符（系统以为有、真身没有）→ asset_mismatch（限流）
         detectAssetMismatch(ap, task, counts);
         return false;
+    }
+
+    /**
+     * 取该二级的 acquire 基线（F5）。
+     *
+     * <p>只有 {@code mode=acquire} 才需要基线；{@code hold} 直接返回 null，
+     * 让 evaluator 走与改动前完全相同的路径。
+     * 链不在内存（未建立/已清理）时也返回 null → 判未达成，不猜。
+     */
+    private static Map<String, Integer> acquireBaselineFor(NumenPlayer ap, Subtask task) {
+        try {
+            if (!com.dwinovo.numen.rdd.core.HardCodedEvaluator.MODE_ACQUIRE.equals(
+                    com.dwinovo.numen.rdd.core.HardCodedEvaluator.modeOf(task.condition()))) {
+                return null;
+            }
+            RddRuntime rt = RddPlugin.runtime(ap.getUUID());
+            return rt == null ? null : rt.chain().acquireBaseline(task.id());
+        } catch (RuntimeException ignored) {
+            return null;   // 拿不到基线 = 判未达成
+        }
     }
 
     /**

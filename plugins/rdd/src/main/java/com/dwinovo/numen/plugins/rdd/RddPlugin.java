@@ -8,6 +8,7 @@ import com.dwinovo.numen.rdd.core.AssetHistory;
 import com.dwinovo.numen.rdd.core.AssetHistory;
 import com.dwinovo.numen.rdd.core.AssetRegistry;
 import com.dwinovo.numen.rdd.core.RddChainFactory;
+import com.dwinovo.numen.rdd.core.RddDeathLedger;
 import com.dwinovo.numen.rdd.core.RddRuntime;
 import com.dwinovo.numen.rdd.core.TaskChain;
 import com.dwinovo.numen.rdd.fact.CompletedFactStore;
@@ -95,13 +96,44 @@ public final class RddPlugin implements NumenPlugin {
     private static final int MAX_NEGOTIATION_REPLANS_PER_PRIMARY = 3;
     private static final Map<String, Integer> REPLAN_COUNTS = new ConcurrentHashMap<>();
     /** 同伴自绑床位复活锚点：companionId → 同伴自己的 respawn 床位（成功 sleep 时由原版写入）。复活(SPAWN)时 TP 到床旁。 */
-    private static final Map<UUID, BlockPos> BED_RESPAWN_PREFERENCE = new ConcurrentHashMap<>();
+    private static final Map<UUID, BedAnchor> BED_RESPAWN_PREFERENCE = new ConcurrentHashMap<>();
+    /**
+     * 床锚点 = 位置 + 所在维度（F4b）。
+     *
+     * <p>为什么必须带维度：原版 {@code getRespawnPosition()} 只给坐标，
+     * 而"在主世界记下的床"与"在下界记下的床"坐标可以完全重合。
+     * 旧实现只存 {@code BlockPos}，靠"当前维度 == 床所在维度"当场推断，
+     * 推断失败就<b>静默 return</b> —— 于是"床偏好为什么没生效"永远查不出来。
+     */
+    record BedAnchor(BlockPos pos, String dimension) {}
+    /** F2 死亡台账目录 config/numen/rdd-ledger（每个同伴一个 <uuid>.json）。 */
+    private static volatile Path ledgerDir;
+    /**
+     * 台账已从磁盘恢复过的同伴（F2 加载时序护栏）。
+     *
+     * <p><b>为什么必须先 restore 再 record</b>：反过来会用旧账覆盖本次运行刚记的死亡，
+     * 那是比丢账更坏的结果（假"没死过"）。这里用一次性 guard 保证每个同伴只恢复一次。
+     */
+    private static final Set<UUID> LEDGER_LOADED = ConcurrentHashMap.newKeySet();
     /** P2.1 资产历史目录 config/numen/rdd-history（每个同伴一个 <uuid>.json）；Lost≠Gone 的长期线索。 */
     private static volatile Path historyDir;
     /** 内存资产历史（uuid→history）；磁盘为真身，清世界状态只清内存。 */
     private static final Map<UUID, AssetHistory> HISTORY = new ConcurrentHashMap<>();
 
     record BodyState(String subtaskId, int submitCount) {}
+
+    /**
+     * F4a：判定「同一点连死」的窗口与半径。
+     *
+     * <p>实机依据（2026-09-30 19:22:13 与 19:23:15，gpt 实例，用户目视确认）：
+     * 两次死亡相隔 62 秒、坐标 {@code (700,64,671)} 与 {@code (700,65,671)}，只差 1 格。
+     * 那次她复活后没补给没撤离，直接回了同一个危险点，于是又死。
+     *
+     * <p>取 3 分钟 / 8 格：足够覆盖"死 → 复活 → 走回原处再死"这一整段，
+     * 又不至于把"很久之后在同一个矿洞口第二次死"也算成连续送命（那属于正常探索）。
+     */
+    static final long REPEAT_DEATH_WINDOW_TICKS = 180L * 20L;
+    static final double REPEAT_DEATH_RADIUS_BLOCKS = 8.0d;
 
     @Override
     public void setup(NumenApi numen) {
@@ -110,6 +142,7 @@ public final class RddPlugin implements NumenPlugin {
         assetsDir = numen.configDir().resolve("rdd-assets");
         factsDir = numen.configDir().resolve("rdd-facts");
         historyDir = numen.configDir().resolve("rdd-history");
+        ledgerDir = numen.configDir().resolve("rdd-ledger");
             supervisionFlag = numen.configDir().resolve("rdd-supervision.flag");
         // 暂停开关：文件存在 = 禁用 PAUSE（2026-09-30 用户要求可随时关，防误伤实验）
         setPauseDisabledFlagPath(numen.configDir().resolve("rdd-pause-disabled.flag"));
@@ -159,9 +192,10 @@ public final class RddPlugin implements NumenPlugin {
                 LOG.warn("[rdd] SPAWN event missing companion UUID");
                 return;
             }
-            // 优先用内存锚点（死亡时记的）；重启后内存已清 → 回落读同伴**自己的** live respawn 点位
+            // 优先用内存锚点（死亡时记的，带维度）；重启后内存已清 → 回落读同伴**自己的** live respawn 点位
             // （原版持久化在 .dat，重启不丢）——修 V3 实测的"重启后死亡落世界出生点"。
-            BlockPos bedPos = BED_RESPAWN_PREFERENCE.remove(uuid);
+            BedAnchor anchor = BED_RESPAWN_PREFERENCE.remove(uuid);
+            BlockPos bedPos = anchor == null ? null : anchor.pos();
             if (bedPos == null || bedPos.equals(BlockPos.ZERO)) {
                 try {
                     BlockPos live = body.getRespawnPosition();
@@ -176,6 +210,16 @@ public final class RddPlugin implements NumenPlugin {
             try {
                 ServerLevel level = body.serverLevel();
                 if (level == null || !(level.getBlockState(bedPos).getBlock() instanceof BedBlock)) return;
+                // F4b：锚点带了维度 → 跨维度时**明确不发 TP**（此前只能靠坐标猜）。
+                if (anchor != null && !level.dimension().location().toString().equals(anchor.dimension())) {
+                    RddMonitor.publish("bed_respawn_skipped_dimension", Map.of(
+                            "companionId", uuid.toString(),
+                            "bed", bedPos.toShortString(),
+                            "bedDimension", anchor.dimension(),
+                            "currentDimension", level.dimension().location().toString(),
+                            "note", "the companion respawns with its owner; a bed in another dimension is not used"));
+                    return;
+                }
                 Vec3 stand = bedStandPos(level, bedPos, body);
                 body.moveTo(stand.x, stand.y, stand.z, body.getYRot(), body.getXRot());
                 LOG.info("[rdd] {} 复活后 TP 到床旁: {}", uuid, bedPos);
@@ -558,6 +602,8 @@ public final class RddPlugin implements NumenPlugin {
         if (body == null) return;
         UUID companionId = body.getUUID();
         if (companionId == null) return;
+        // F2：任何写台账之前先恢复磁盘上的旧账（顺序反了会用旧账覆盖本次记录）
+        ensureLedgerLoaded(companionId);
         try {
             int lost = assets(companionId).invalidateByType("inventory_scan");
             // 修正（2026-09-25）：不再 LAST_INVENTORY.remove()。清空缓存会让"死亡后、重扫回 OBSERVED 之前"
@@ -565,16 +611,20 @@ public final class RddPlugin implements NumenPlugin {
             // 用复活后的真实背包覆盖（那才是真相）；INVALID 只作为提示（见 PlanningAssetSnapshot）。
             saveAssets(companionId);              // 失效态落盘，跨重启也保持
             BODY.remove(companionId);
-            // 死亡台账：每一次死亡单独一行，带掉落物到期时刻（游戏时间，与 despawn 同口径）。
-            // 2026-09-29 实机：旧实现只发"失效 N 项"，她因此以为东西已经没了，
-            // 而掉落物其实还有 5 分钟在地上；连死两次时更分不清哪一次过期了。
+            // F6：本次死亡**真正掉了哪些、各多少**。必须读死亡瞬间的真实背包（body 还在），
+            // 不能读 LAST_INVENTORY —— 上一轮实机"LOST 没新增"就是读了缓存的锅。
+            // 这份 lostItems 是回收判据的批次身份：没有它就只能"任意一件回来即算成功"（假完成）。
+            Map<String, Integer> lostItems = deathInstantCounts(body);
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death death = null;
             try {
                 death = com.dwinovo.numen.rdd.core.RddDeathLedger.record(
                         companionId, RddInstrumentation.currentGameTimeTicks(),
-                        System.currentTimeMillis(), body.blockPosition().toShortString(), lost);
+                        System.currentTimeMillis(), body.blockPosition().toShortString(), lost, lostItems);
             } catch (RuntimeException ledgerFail) {
                 LOG.warn("[rdd] 死亡台账写入失败 {}: {}", companionId, ledgerFail.toString());
+            }
+            if (death != null) {
+                saveLedger(companionId);          // F2：写完立刻落盘，死亡记录不留在纯内存里
             }
             Map<String, Object> invalidatedData = new LinkedHashMap<>();
             invalidatedData.put("companionId", companionId.toString());
@@ -587,9 +637,11 @@ public final class RddPlugin implements NumenPlugin {
                         death.secondsLeft(RddInstrumentation.currentGameTimeTicks()));
                 // 这一条最关键：**东西还没丢**，只是掉在地上。
                 invalidatedData.put("dropsStillOnGround", true);
+                // 本批次可逐项核对的物品种类数（0 = 旧形状，只能靠 confirmLost/confirmRecovered 显式收口）
+                invalidatedData.put("trackedItemKinds", death.lostItems().size());
             }
             RddMonitor.publish("companion_assets_invalidated", invalidatedData);
-            LOG.info("[rdd] 同伴死亡：背包资产失效 {} 项 {}", companionId, lost);
+            LOG.info("[rdd] 同伴死亡：背包资产失效 {} 项", companionId, lost);
             // 埋点：死亡事件（starvation 判据=死亡瞬间食物条为 0，连带 recovery 追踪时间窗）
             long deathTick = RddInstrumentation.currentGameTimeTicks();
             RddInstrumentation.recordDeathTick(companionId, deathTick);
@@ -620,7 +672,11 @@ public final class RddPlugin implements NumenPlugin {
                     dropTimeline = com.dwinovo.numen.rdd.core.RddDeathLedger.render(
                             companionId, RddInstrumentation.currentGameTimeTicks());
                 } catch (RuntimeException ignored) { /* 台账不可用不阻断死亡支线 */ }
-                RddRepairDispatch.onDeath(companionId, goalId, deathAt, dropTimeline);
+                // F4a：短时间同点又死一次 → 死亡支线顺序改成"先撤离/补给再回收"。
+                // 5 分钟掉落窗口本身不变（那是原版事实），只改她先去哪。
+                // currentSeq 必须传进去排除本次死亡自己（否则刚记的那条与自己距离 0 = 自我匹配）。
+                boolean repeat = publishRepeatDeathHint(body, companionId, death == null ? -1 : death.seq());
+                RddRepairDispatch.onDeath(companionId, goalId, deathAt, dropTimeline, repeat, death);
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 支线任务生成失败 {}: {}", companionId, ex.toString());
             }
@@ -628,16 +684,6 @@ public final class RddPlugin implements NumenPlugin {
             LOG.warn("[rdd] 死亡资产失效处理失败 {}: {}", companionId, ex.toString());
         }
         recordSelfBedAnchor(body, companionId);
-    }
-
-    /** 死亡即饿死代理判据（埋点）：死亡瞬间食物条为 0 → 判 starvation。best-effort，失败回落 false。 */
-    private static boolean isStarvingDeath(NumenPlayer body) {
-        try {
-            var food = body.getFoodData();
-            return food != null && food.getFoodLevel() == 0;
-        } catch (RuntimeException ignore) {
-            return false;
-        }
     }
 
     /** 当前执行中的二级/任务 id（无链或异常 → 空串），埋点关联任务字段用。 */
@@ -653,10 +699,102 @@ public final class RddPlugin implements NumenPlugin {
         return "";
     }
 
+    /** 死亡即饿死代理判据（埋点）：死亡瞬间食物条为 0 → 判 starvation。best-effort，失败回落 false。 */
+    private static boolean isStarvingDeath(NumenPlayer body) {
+        try {
+            var food = body.getFoodData();
+            return food != null && food.getFoodLevel() == 0;
+        } catch (RuntimeException ignore) {
+            return false;
+        }
+    }
+
+    /**
+     * 死亡瞬间的真实背包计数（F6 批次身份的数据源）。
+     *
+     * <p><b>2026-09-30 实机修正：光读 body 拿不到</b>。第一次实现只读
+     * {@code RddDetector.countInventory(body)}，实机事件里 {@code trackedItemKinds=0}
+     * —— 死亡事件触发时身体的物品栏已经被原版处理掉了，逐项核对因此完全失效
+     * （判据退化成"不可核对"，F6 等于没修）。
+     *
+     * <p>所以改成**先读 body，读空则回落到最后一次真实扫描的缓存**
+     * （{@code LAST_INVENTORY} 由 Detector 每次 tick 写入，死亡那一刻仍然有效）。
+     * 上一轮笔记担心的"REMOVE 会清空缓存"针对的是稍后的 {@code CompanionEvent.REMOVE}，
+     * 而这里跑在更早的 {@code DEATH} 上，实测缓存仍在。
+     *
+     * <p>两者都空才返回空表 —— 那一批不可逐项核对，判据只会更保守，不会更松。
+     */
+    private static Map<String, Integer> deathInstantCounts(NumenPlayer body) {
+        try {
+            Map<String, Integer> live = RddDetector.countInventory(body);
+            if (live != null && !live.isEmpty()) return Map.copyOf(live);
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 读死亡瞬间背包失败，回落到缓存: {}", ex.toString());
+        }
+        try {
+            Map<String, Integer> cached = lastInventory(body.getUUID());
+            if (!cached.isEmpty()) {
+                LOG.info("[rdd] 死亡瞬间背包用缓存兜底：{} 项（cachedAt={}）",
+                        cached.size(), lastInventoryAtMillis(body.getUUID()));
+                return cached;
+            }
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 读死亡背包缓存失败 {}: {}", ex.toString());
+        }
+        return Map.of();
+    }
+
+    /**
+     * F4a：短时间、同一点附近<b>上一次</b>又死一次 → 本次死亡支线改成"先撤离/补给再回收"。
+     *
+     * <p>实机依据（2026-09-30 19:22 / 19:23）：#3 与 #4 只隔 62 秒、坐标差 1 格，
+     * 复活后没补给没撤离就又回了同一个危险点。
+     *
+     * <p>判据本身在 rdd-core（纯函数、可单测），这里只负责取坐标 + 发事件。
+     * <b>不改</b> 5 分钟掉落窗口 —— 那是原版事实，不是决策。
+     *
+     * @param currentSeq 本次死亡自己的 seq（必须传给判据排除，见 {@code repeatDeathWithin} 的说明）
+     */
+    private static boolean publishRepeatDeathHint(NumenPlayer body, UUID companionId, int currentSeq) {
+        try {
+            BlockPos at = body.blockPosition();
+            com.dwinovo.numen.rdd.core.RddDeathLedger.Death previous =
+                    com.dwinovo.numen.rdd.core.RddDeathLedger.repeatDeathWithin(
+                            companionId, RddInstrumentation.currentGameTimeTicks(),
+                            at.getX(), at.getY(), at.getZ(),
+                            REPEAT_DEATH_WINDOW_TICKS, REPEAT_DEATH_RADIUS_BLOCKS,
+                            currentSeq);
+            if (previous == null) return false;
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("companionId", companionId.toString());
+            data.put("previousDeathSeq", previous.seq());
+            data.put("previousDeathAt", previous.deathAt());
+            data.put("nowAt", at.toShortString());
+            data.put("secondsSincePrevious",
+                    (RddInstrumentation.currentGameTimeTicks() - previous.gameTime()) / 20L);
+            data.put("windowSeconds", REPEAT_DEATH_WINDOW_TICKS / 20L);
+            data.put("radiusBlocks", REPEAT_DEATH_RADIUS_BLOCKS);
+            data.put("action", "recover_self_first_then_collect_drops");
+            data.put("note", "same spot, twice in a row: resupply and get clear BEFORE going back for drops");
+            RddMonitor.publish("repeat_death_nearby", data);
+            LOG.warn("[rdd] 重复死亡 {}（上次 {}，{} 秒前）→ 恢复顺序改为先撤离/补给",
+                    companionId, previous.deathAt(),
+                    (RddInstrumentation.currentGameTimeTicks() - previous.gameTime()) / 20L);
+            return true;
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 重复死亡判定失败 {}: {}", companionId, ex.toString());
+            return false;
+        }
+    }
+
     /**
      * 记录同伴<b>自己绑的</b>床（不是主人的）：读同伴自己的 respawn 床位——成功 sleep 时原版
      * {@code ServerPlayer.startSleepInBed} 会把它设成自己的重生点，即"自由绑定自己的基地"。
-     * 仅当该床位与同伴当前维度一致、且该处确为床时才记录（避免跨维度误 TP）。
+     *
+     * <p>F4b：维度不再靠"当场推断后静默 return"。
+     * <b>语义不变</b>（仍只在同维度使用床锚点，真跨维度复活不在本轮），
+     * 改的是可诊断性：床在别的维度 → 发 {@code bed_anchor_dimension_mismatch}，
+     * 而不是让"床偏好为什么没生效"永远查不出来。
      */
     private static void recordSelfBedAnchor(NumenPlayer body, UUID companionId) {
         try {
@@ -664,10 +802,24 @@ public final class RddPlugin implements NumenPlugin {
             if (bed == null || bed.equals(BlockPos.ZERO)) return;
             var bedDimension = body.getRespawnDimension();
             ServerLevel level = body.serverLevel();
-            if (bedDimension == null || level == null || !level.dimension().equals(bedDimension)) return;
+            if (bedDimension == null || level == null) return;
+            String bedDimensionId = bedDimension.location().toString();
+            if (!level.dimension().equals(bedDimension)) {
+                Map<String, Object> data = new LinkedHashMap<>();
+                data.put("companionId", companionId.toString());
+                data.put("bed", bed.toShortString());
+                data.put("bedDimension", bedDimensionId);
+                data.put("currentDimension", level.dimension().location().toString());
+                data.put("note", "bed anchor kept but not used while the companion is in another dimension; "
+                        + "cross-dimension respawn is not implemented (by design: the companion respawns with its owner)");
+                RddMonitor.publish("bed_anchor_dimension_mismatch", data);
+                LOG.info("[rdd] {} 床锚点在 {}，同伴当前在 {} → 仅记录不启用（跨维度复活不在本轮范围）",
+                        companionId, bedDimensionId, level.dimension().location().toString());
+                return;
+            }
             if (!(level.getBlockState(bed).getBlock() instanceof BedBlock)) return;
-            BED_RESPAWN_PREFERENCE.put(companionId, bed.immutable());
-            LOG.info("[rdd] 记录 {} 自绑床位: {} @ {}", companionId, bed, bedDimension.location());
+            BED_RESPAWN_PREFERENCE.put(companionId, new BedAnchor(bed.immutable(), bedDimensionId));
+            LOG.info("[rdd] 记录 {} 自绑床位: {} @ {}", companionId, bed, bedDimensionId);
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 记录自绑床位失败 {}: {}", companionId, ex.toString());
         }
@@ -707,6 +859,63 @@ public final class RddPlugin implements NumenPlugin {
             RddHistoryStore.save(historyDir, companionId, history(companionId));
         } catch (IOException ex) {
             LOG.warn("[rdd] 保存资产历史失败 {}: {}", companionId, ex.toString());
+        }
+    }
+
+    // ---- F2 死亡台账落盘（磁盘为真身） ----
+
+    /**
+     * 确保某同伴的死亡台账已从磁盘恢复，<b>只恢复一次</b>。
+     *
+     * <p>调用时机：任何接触台账的入口之前（死亡回调、判据查询、渲染）。
+     * 必须"先恢复后使用" —— 反过来会用旧账覆盖本次运行刚记的死亡，
+     * 那是比丢账更坏的假"没死过"。
+     */
+    static void ensureLedgerLoaded(UUID companionId) {
+        if (companionId == null) return;
+        if (!LEDGER_LOADED.add(companionId)) return;   // 已恢复过：绝不二次覆盖
+        try {
+            RddDeathLedger.LedgerSnapshot loaded = RddDeathLedgerStore.load(ledgerDir, companionId);
+            RddDeathLedger.restore(companionId, loaded);
+            if (!loaded.deaths().isEmpty()) {
+                LOG.info("[rdd] 恢复 {} 的死亡台账 {} 条", companionId, loaded.deaths().size());
+            }
+        } catch (RuntimeException ex) {
+            // 恢复失败 = 按"没死过"处理，但必须留痕（静默丢账正是本项要消灭的缺陷）
+            warnLedgerStore("ledger_load_failed", Map.of(
+                    "companionId", companionId.toString(), "error", String.valueOf(ex)));
+        }
+    }
+
+    /** 台账变更后落盘（死亡记录写入 / 判为已回收 / 已确认丢失后各调一次）。 */
+    static void saveLedger(UUID companionId) {
+        if (companionId == null || ledgerDir == null) return;
+        try {
+            RddDeathLedgerStore.save(ledgerDir, companionId, RddDeathLedger.snapshot(companionId));
+        } catch (IOException | RuntimeException ex) {
+            warnLedgerStore("ledger_save_failed", Map.of(
+                    "companionId", companionId.toString(), "error", String.valueOf(ex)));
+        }
+    }
+
+    /**
+     * 台账落盘异常的<b>唯一</b>出口：日志 + 监测台事件（fail-soft 但绝不无声）。
+     *
+     * <p>注意这里 catch 的是 {@link Throwable}，不是 {@code RuntimeException}：
+     * 单测/裁剪 classpath 下 {@code RddMonitor} 会抛 {@link NoClassDefFoundError}，
+     * 那是 {@code Error} —— 用 {@code RuntimeException} 的话"fail-soft 的兜底自己会炸"，
+     * 正好把最该保住的死亡路径带崩（单测 {@code RddDeathLedgerStoreTest} 已实测到这个形状）。
+     */
+    static void warnLedgerStore(String event, Map<String, ?> data) {
+        try {
+            LOG.warn("[rdd] 死亡台账落盘异常 {}: {}", event, data);
+        } catch (Throwable ignored) {
+            // 日志都不可用就只剩静默：仍不得把异常抛给调用方
+        }
+        try {
+            RddMonitor.publish(event, new java.util.LinkedHashMap<>(data));
+        } catch (Throwable ignored) {
+            // 监测台不可用（无 MC 运行时/类路径裁剪）时只留日志，绝不让埋点把主流程带崩
         }
     }
 
@@ -891,13 +1100,30 @@ public final class RddPlugin implements NumenPlugin {
         return chain == null ? 1 : chain.nextPlanRevision();
     }
 
-    /** 设置某同伴的床边复活锚点（同伴自绑床位；一般由死亡路径自动写入，也可手动设）。 */
+    /**
+     * 设置某同伴的床边复活锚点（同伴自绑床位；一般由死亡路径自动写入，也可手动设）。
+     *
+     * <p>F4b：锚点必须带维度。手动设置时用同伴<b>当前所在</b>的维度；
+     * 维度不匹配的锚点在 SPAWN 时会被显式跳过并埋 {@code bed_respawn_skipped_dimension}。
+     */
     public static void setBedRespawnPreference(UUID companionId, BlockPos bedPos) {
         if (companionId == null || bedPos == null) {
             return;
         }
-        BED_RESPAWN_PREFERENCE.put(companionId, bedPos);
-        LOG.info("[rdd] 设置 {} 的床边复活偏好: {}", companionId, bedPos);
+        String dimensionId = "unknown";
+        try {
+            MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+            if (server != null) {
+                NumenPlayer body = NumenPlayer.findByUuid(server, companionId);
+                if (body != null && body.serverLevel() != null) {
+                    dimensionId = body.serverLevel().dimension().location().toString();
+                }
+            }
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 设置床锚点时读维度失败 {}: {}", companionId, ex.toString());
+        }
+        BED_RESPAWN_PREFERENCE.put(companionId, new BedAnchor(bedPos.immutable(), dimensionId));
+        LOG.info("[rdd] 设置 {} 的床边复活偏好: {} @ {}", companionId, bedPos, dimensionId);
     }
 
     /** 清除某同伴的床边复活偏好。 */
