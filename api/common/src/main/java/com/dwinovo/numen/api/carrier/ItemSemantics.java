@@ -1,4 +1,4 @@
-package com.dwinovo.numen.plugins.learner.core;
+package com.dwinovo.numen.api.carrier;
 
 import java.util.List;
 import java.util.Locale;

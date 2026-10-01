@@ -27,6 +27,12 @@ dependencies {
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // 2026-10-01：CarrierChain / ItemSemantics 搬到 api:common（com.dwinovo.numen.api.carrier），
+    // 因为 plugins/rdd 也要用同一份判断链 —— 跨插件 import 被 numen-plugin.gradle:37-44 封死，
+    // 重建一份必然语义漂移。
+    // ⚠️ 主编译靠 compileOnly 就够，但 **compileOnly 不会被 testCompileClasspath 继承**，
+    //    所以测试要显式加 api jar，否则 CarrierChainTest 报「找不到 com.dwinovo.numen.api.carrier」。
+    testImplementation files(project(':api:neoforge').tasks.named('apiJar'))
 }
 
 test { useJUnitPlatform() }

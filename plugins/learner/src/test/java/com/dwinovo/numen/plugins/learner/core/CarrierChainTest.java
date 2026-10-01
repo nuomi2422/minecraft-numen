@@ -1,5 +1,7 @@
 package com.dwinovo.numen.plugins.learner.core;
 
+import com.dwinovo.numen.api.carrier.CarrierChain;
+import com.dwinovo.numen.api.carrier.ItemSemantics;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

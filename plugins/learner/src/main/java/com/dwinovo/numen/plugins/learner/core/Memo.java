@@ -1,5 +1,6 @@
 package com.dwinovo.numen.plugins.learner.core;
 
+import com.dwinovo.numen.api.carrier.CarrierChain;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;

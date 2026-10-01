@@ -1,4 +1,4 @@
-package com.dwinovo.numen.plugins.learner.core;
+package com.dwinovo.numen.api.carrier;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -255,8 +255,18 @@ public final class CarrierChain {
                 facts.evaluatedLevels(), facts.skippedLevels());
     }
 
-    /** 供 {@link Memo} 构造 facts（core 内部用，不给插件层）。 */
-    static Facts factsOf(Map<String, String> kv, String rawLower) {
+    /**
+     * 构造一份待求值的事实集。
+     *
+     * <p><b>2026-10-01 从包级改为 public</b>：本类搬到 {@code api:common} 之后，
+     * {@code plugins/learner} 与 {@code plugins/rdd} 都要用它 ——
+     * 跨插件 import 被 {@code numen-plugin.gradle:37-44} 封死，
+     * <b>共享同一份判断链是唯一不让语义漂移的做法</b>（两份实现必然漂）。
+     *
+     * @param kv        快照解析出的键值（小写、已清洗）
+     * @param rawLower  快照原文（小写），供实体名片段匹配
+     */
+    public static Facts factsOf(Map<String, String> kv, String rawLower) {
         return new Facts(kv, rawLower == null ? "" : rawLower.toLowerCase(Locale.ROOT));
     }
 }
