@@ -87,9 +87,19 @@ final class LearnerFeedbackTool implements NumenTool {
             }
             Path jsonl = dir.resolve(RDD_JSONL);
             // 存档级代际：存档名 + session.lock mtime。换档 → 代际变 → 旧游标自动失效（v3.2 §2）
-            Path saves = dir.getParent() == null ? null : dir.getParent().resolve("saves");
-            Path saveDir = saves == null ? null : saves.resolve(currentSaveName(dir));
-            String generation = FeedbackChannel.generationOf(saveDir, saveDir == null ? null : saveDir.resolve("session.lock"));
+            //
+            // ⚠️ 2026-10-01 实机踩到（**修了一次只修一半**）：
+            //   configDir = <实例>/config/numen → getParent() = <实例>/config
+            //   → <实例>/config/saves **不存在**，真身在 <实例>/saves（要再上一级）。
+            //   我第一版只改了 currentSaveName() 里的路径，调用处这行还指着旧的，
+            //   结果存档名对了但 session.lock 读不到 → generation 变成 "live@-1"。
+            //   → 一处路径推导**必须只写一次**，两处各算一遍就会半修。
+            Path instanceDir = dir.getParent() == null ? null : dir.getParent().getParent();
+            Path savesDir = instanceDir == null ? null : instanceDir.resolve("saves");
+            String saveName = savesDir == null ? "unknown" : currentSaveName(savesDir);
+            Path saveDir = savesDir == null ? null : savesDir.resolve(saveName);
+            String generation = FeedbackChannel.generationOf(saveDir,
+                    saveDir == null ? null : saveDir.resolve("session.lock"));
 
             var pull = new FeedbackChannel.Pull();
             List<FeedbackEvent> events;
@@ -101,13 +111,28 @@ final class LearnerFeedbackTool implements NumenTool {
                 return;
             }
 
+            Map<String, Object> data = new LinkedHashMap<>();
             int cap = Math.min(limit, events.size());
             List<Map<String, Object>> out = new ArrayList<>(cap);
+            int payloadChars = 0;
+            String stopReason = null;
             for (int i = 0; i < cap; i++) {
-                out.add(events.get(i).toMap());
+                // ⚠️ 2026-10-01 实机踩到：5 条事件的 observation 就有 83496 字符，
+                // 撞 MCP 的 16384 字符包上限 → 整条回包被丢弃。
+                // 所以这里**再加一道总量闸**，超了就停并如实说 stop_reason=payload_budget。
+                Map<String, Object> one = events.get(i).toMap();
+                int sz = String.valueOf(one).length();
+                if (payloadChars + sz > FeedbackChannel.MAX_OBSERVATION_CHARS) {
+                    stopReason = "payload_budget";
+                    break;
+                }
+                payloadChars += sz;
+                out.add(one);
+            }
+            if (out.isEmpty() && !events.isEmpty() && stopReason == null) {
+                stopReason = "payload_budget";
             }
 
-            Map<String, Object> data = new LinkedHashMap<>();
             data.put("source", RDD_JSONL);
             // readable=false 是**诚实的失败**（文件不在/读不了），与「读到 0 条」是不同的事
             data.put("readable", pull.readable);
@@ -119,6 +144,11 @@ final class LearnerFeedbackTool implements NumenTool {
             // skipped 如实报「坏行被跳过」，不许静默丢（对齐 experience-guard 的写入闸精神）
             data.put("skipped_lines", pull.skipped);
             data.put("events", out);
+            if (stopReason != null) {
+                data.put("stop_reason", stopReason);
+                data.put("payload_budget_chars", FeedbackChannel.MAX_OBSERVATION_CHARS);
+                data.put("payload_hint", "narrow it with kinds= (task/combat/death/asset/planning) and a smaller cursor window");
+            }
             data.put("note", "observation_summary is intentionally absent in this batch: "
                     + "the learner has not learned to summarise yet (38号v3 B14). "
                     + "observation fields are the source event's own values.");
@@ -131,16 +161,15 @@ final class LearnerFeedbackTool implements NumenTool {
         }
     }
 
-    /** 存档名：从 {@code …/saves/<name>/session.lock} 里挑最后修改时间最新的那个。 */
-    private static String currentSaveName(Path configDir) {
+    /** 在**给定的 saves 目录**里挑 session.lock 最后修改时间最新的那个存档名。 */
+    private static String currentSaveName(Path savesDir) {
         try {
-            Path saves = configDir.getParent().resolve("saves");
-            if (!Files2.exists(saves)) {
+            if (!Files2.exists(savesDir)) {
                 return "unknown";
             }
             Path newest = null;
             long newestT = -1L;
-            for (Path p : Files2.listDirs(saves)) {
+            for (Path p : Files2.listDirs(savesDir)) {
                 Path lock = p.resolve("session.lock");
                 if (Files2.exists(lock)) {
                     long t = Files2.mtime(lock);

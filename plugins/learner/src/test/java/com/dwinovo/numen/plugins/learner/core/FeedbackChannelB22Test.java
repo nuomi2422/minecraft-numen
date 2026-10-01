@@ -271,4 +271,89 @@ class FeedbackChannelB22Test {
         var pull = FeedbackChannel.pull(f, "live@1", 0L, null, new FeedbackChannel.Pull());
         assertFalse(pull.events.get(0).hasSubstance(), "空观测 + 空 subjectRef = 没有实质内容的壳事件");
     }
+
+    // ---------- 压平 + 体积闸（2026-10-01 实机踩到 83496 字符撞 MCP 包上限后加）----------
+
+    @Test
+    void nestedDataIsFlattenedToDotPathsNotDumpedAsTree() {
+        // 实机教训：rdd.jsonl 的 data 里嵌着整条 taskChain，原样 dump 会让一条事件占掉整个 MCP 包
+        var j = com.google.gson.JsonParser.parseString(
+                "{\"taskChain\":{\"currentSubtaskId\":\"primary-7-r4-0\",\"primaries\":[{\"id\":\"p0\"}]}}")
+                .getAsJsonObject();
+        Map<String, Object> flat = FeedbackChannel.flatten(j, 0);
+        assertTrue(flat.containsKey("taskChain.currentSubtaskId"), "一层嵌套要能点到：" + flat);
+        assertFalse(flat.containsKey("taskChain"), "不该保留整棵子树本身");
+    }
+
+    @Test
+    void arraysBecomeCountPlusFirstFewScalars() {
+        var j = com.google.gson.JsonParser.parseString("{\"steps\":[\"a\",\"b\",\"c\",\"d\",\"e\",\"f\",\"g\"]}")
+                .getAsJsonObject();
+        Map<String, Object> flat = FeedbackChannel.flatten(j, 0);
+        assertEquals("7", flat.get("steps.count"));
+        assertEquals("a", flat.get("steps[0]"));
+        assertFalse(flat.containsKey("steps[5]"), "超过 5 个就不该再展开");
+        assertEquals("true", String.valueOf(flat.get(FeedbackChannel.OBS_TRUNCATED)),
+                "丢掉了后面的元素 → 必须标截断");
+    }
+
+    @Test
+    void objectArraysAreCountedButTheirContentDroppedAndSaysSo() {
+        // rdd.jsonl 里 assets 是**对象数组**（每个箱子/熔炉一条）。整棵展开会爆体积，
+        // 所以只给 count。**但丢掉内容必须标截断** —— 默默丢 = 让下游以为那就是全部（B21）。
+        var j = com.google.gson.JsonParser.parseString(
+                "{\"assets\":[{\"assetId\":\"a\"},{\"assetId\":\"b\"}]}").getAsJsonObject();
+        Map<String, Object> flat = FeedbackChannel.flatten(j, 0);
+        assertEquals("2", flat.get("assets.count"));
+        assertNull(flat.get("assets[0]"), "对象元素不展开");
+        assertEquals("true", String.valueOf(flat.get(FeedbackChannel.OBS_TRUNCATED)),
+                "对象数组内容被丢掉 → 必须标截断");
+    }
+
+    @Test
+    void longValuesAreCutAndSaysSo() {
+        String big = "x".repeat(1000);
+        var j = com.google.gson.JsonParser.parseString("{\"summary\":\"" + big + "\"}").getAsJsonObject();
+        Map<String, Object> flat = FeedbackChannel.flatten(j, 0);
+        String v = String.valueOf(flat.get("summary"));
+        assertTrue(v.length() < big.length(), "超长值必须被裁");
+        assertTrue(v.contains("[cut"), "裁了必须说出来：" + v);
+        assertEquals("true", String.valueOf(flat.get(FeedbackChannel.OBS_TRUNCATED)));
+    }
+
+    @Test
+    void depthLimitStopsExpansionAndSaysSo() {
+        var j = com.google.gson.JsonParser.parseString(
+                "{\"a\":{\"b\":{\"c\":{\"d\":{\"e\":\"deep\"}}}}}").getAsJsonObject();
+        Map<String, Object> flat = FeedbackChannel.flatten(j, 0);
+        assertTrue(flat.containsKey("a.b.c.<depth>"), "深度超限只留「有 N 个子键」：" + flat);
+        assertEquals("true", String.valueOf(flat.get(FeedbackChannel.OBS_TRUNCATED)));
+    }
+
+    @Test
+    void smallDataIsNotMarkedTruncated() {
+        // 反向护栏：没截断时**不许**出现截断标记，否则下游会白丢数据
+        var j = com.google.gson.JsonParser.parseString("{\"subtask\":\"s1\",\"reason\":\"stalled\"}").getAsJsonObject();
+        Map<String, Object> flat = FeedbackChannel.flatten(j, 0);
+        assertFalse(flat.containsKey(FeedbackChannel.OBS_TRUNCATED), "小数据不该被标截断：" + flat);
+        assertEquals(2, flat.size());
+    }
+
+    @Test
+    void budgetCapStopsEmittingKeysAndSaysSo() {
+        StringBuilder sb = new StringBuilder("{");
+        for (int i = 0; i < 400; i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append("\"k").append(i).append("\":\"").append("y".repeat(200)).append("\"");
+        }
+        sb.append('}');
+        var j = com.google.gson.JsonParser.parseString(sb.toString()).getAsJsonObject();
+        Map<String, Object> flat = FeedbackChannel.flatten(j, 0);
+        assertEquals("true", String.valueOf(flat.get(FeedbackChannel.OBS_TRUNCATED)), "撞预算必须标截断");
+        int total = flat.entrySet().stream().mapToInt(e -> e.getKey().length() + String.valueOf(e.getValue()).length()).sum();
+        assertTrue(total <= FeedbackChannel.MAX_OBSERVATION_CHARS * 2,
+                "压平后体积应受控，实际 " + total);
+    }
 }

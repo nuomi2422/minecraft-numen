@@ -45,6 +45,26 @@ public final class FeedbackChannel {
     public static final int MAX_LINES_PER_PULL = 200;
 
     /**
+     * 单次拉取的**体积**上限（近似字符数）。
+     *
+     * <p><b>为什么加这个（2026-10-01 实机踩到）</b>：首次拉取时 {@code observation} 直接放事件
+     * {@code data} 原样，而 {@code rdd.jsonl} 的 data 里嵌着<b>整条 taskChain</b>（全部 primary/subtask/condition）
+     * 与<b>全量资产快照</b>（每个箱子/熔炉的完整槽位摘要）。实测单次返回 <b>83496 字符</b>，
+     * <b>直接撞 MCP 的 16384 字符包上限</b>，整条回包被丢弃。
+     *
+     * <p>→ 所以：不是「原样 dump」，而是<b>压平 + 限量 + 显式标截断</b>。
+     * 截断必须<b>说出来</b>（{@code observation_truncated:true}）——
+     * 默默给一半比给全更危险（B21 的同一类：让下游以为那就是全部）。
+     */
+    public static final int MAX_OBSERVATION_CHARS = 6000;
+
+    /** 嵌套深度上限：超过就不带（而不是整棵子树塞进来）。 */
+    private static final int MAX_DEPTH = 2;
+
+    /** 单个字符串值的长度上限。 */
+    private static final int MAX_VALUE_CHARS = 300;
+
+    /**
      * 算当前的存档级代际。
      *
      * @param saveDir     当前存档目录（其父目录名即存档名）
@@ -148,6 +168,103 @@ public final class FeedbackChannel {
         return out;
     }
 
+    /** 截断标记键。出现即代表 observation **不完整**，下游必须知道。 */
+    public static final String OBS_TRUNCATED = "observation_truncated";
+
+    /**
+     * 把 {@code data} 压平成「点路径 → 标量」的一层。
+     *
+     * <p><b>为什么压平而不是嵌套</b>：学习者要判断的是「发生了什么」，
+     * 例如 {@code taskChain.currentSubtaskId=...}、{@code assets.0.value.block=...}。
+     * 把整棵子树原样塞进返回值，会让<b>一条事件占掉整个 MCP 包</b>（实测 83496 字符），
+     * 而真正被读到的往往只是最上面两三层。
+     *
+     * <p><b>截断必须说出来</b>：超限时置 {@link #OBS_TRUNCATED}=true。
+     * 默默给一半，比明确说「这里还有更多」危险得多。
+     */
+    static Map<String, Object> flatten(JsonObject data, int depth) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (data == null) {
+            return out;
+        }
+        int budget = MAX_OBSERVATION_CHARS;
+        boolean truncated = false;
+        for (Map.Entry<String, JsonElement> e : data.entrySet()) {
+            if (budget <= 0) {
+                truncated = true;
+                break;
+            }
+            JsonElement v = e.getValue();
+            String key = e.getKey();
+            if (v == null || v.isJsonNull()) {
+                continue;
+            }
+            if (v.isJsonPrimitive()) {
+                String s = v.getAsString();
+                if (s.length() > MAX_VALUE_CHARS) {
+                    s = s.substring(0, MAX_VALUE_CHARS) + "…[cut " + (v.getAsString().length() - MAX_VALUE_CHARS) + " chars]";
+                    truncated = true;
+                }
+                out.put(key, s);
+                budget -= key.length() + s.length();
+            } else if (v.isJsonArray()) {
+                // 数组只取「长度 + 前几个**标量**元素」，不整棵展开
+                int n = v.getAsJsonArray().size();
+                out.put(key + ".count", String.valueOf(n));
+                budget -= key.length() + 12;
+                if (depth < MAX_DEPTH) {
+                    int taken = 0;
+                    boolean droppedObjects = false;
+                    for (JsonElement item : v.getAsJsonArray()) {
+                        if (taken >= 5) {
+                            truncated = true;
+                            break;
+                        }
+                        if (item != null && item.isJsonPrimitive()) {
+                            String s = item.getAsString();
+                            if (s.length() > MAX_VALUE_CHARS) {
+                                s = s.substring(0, MAX_VALUE_CHARS) + "…[cut]";
+                                truncated = true;
+                            }
+                            out.put(key + "[" + taken + "]", s);
+                            budget -= key.length() + s.length();
+                            taken++;
+                        } else if (item != null && item.isJsonObject()) {
+                            // 对象元素整棵丢掉 → **必须标截断**（B21：默默丢内容 = 让下游以为那就是全部）
+                            droppedObjects = true;
+                        }
+                    }
+                    if (droppedObjects) {
+                        truncated = true;
+                    }
+                } else {
+                    truncated = true;
+                }
+            } else if (v.isJsonObject()) {
+                if (depth < MAX_DEPTH) {
+                    Map<String, Object> child = flatten(v.getAsJsonObject(), depth + 1);
+                    for (Map.Entry<String, Object> ce : child.entrySet()) {
+                        String ck = key + "." + ce.getKey();
+                        out.put(ck, ce.getValue());
+                        budget -= ck.length() + String.valueOf(ce.getValue()).length();
+                    }
+                    if (child.containsKey(OBS_TRUNCATED)) {
+                        truncated = true;
+                    }
+                } else {
+                    // 深度超限：只留「这个键存在，有 N 个子键」，不展开
+                    out.put(key + ".<depth>", String.valueOf(v.getAsJsonObject().size()));
+                    budget -= key.length() + 8;
+                    truncated = true;
+                }
+            }
+        }
+        if (truncated) {
+            out.put(OBS_TRUNCATED, "true");
+        }
+        return out;
+    }
+
     /** 单行解析。坏行返回 {@code null}（由调用方计入 skipped）。 */
     static FeedbackEvent parseLine(String line, String generation) {
         try {
@@ -171,8 +288,12 @@ public final class FeedbackChannel {
                     subject.put(k, v);
                 }
             }
-            Map<String, Object> observation = GSON.fromJson(data, new com.google.gson.reflect.TypeToken<Map<String, Object>>() {
-            }.getType());
+            Map<String, Object> flat = flatten(data, 0);
+            Map<String, Object> observation = new LinkedHashMap<>(flat);
+            if (flat.containsKey(OBS_TRUNCATED)) {
+                observation.remove(OBS_TRUNCATED);
+                observation.put(OBS_TRUNCATED, true);
+            }
 
             // eventId 优先取源里的，其次用「类型+时间」派生（保证同一条不会重复）
             String id = str(o, "event_id");
