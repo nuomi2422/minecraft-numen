@@ -63,70 +63,97 @@ public record Memo(
         if (raw.isBlank()) {
             return new CarrierAssessment("UNKNOWN", "无环境快照，无法分级", List.of(), -1);
         }
-        java.util.Map<String, String> kv = parseKeyValues(raw.toLowerCase());
+        // 2026-10-01（B5 可执行形态 / v3.5 §1）：原来这里是**把三级无条件全算一遍** ——
+        // 那不是判断链，是扁平打分。B5 的原意是「第 1 级不成立就不问第 2 级」。
+        // → 改成走 CarrierChain，规则**可插拔**、顺序即判断顺序。
+        java.util.Map<String, String> kv = parseKeyValues(raw.toLowerCase(java.util.Locale.ROOT));
+        CarrierChain.Facts facts = CarrierChain.factsOf(kv, raw.toLowerCase(java.util.Locale.ROOT));
+        CarrierChain.Result r = CarrierChain.evaluate(CarrierRules.DEFAULT, facts);
 
-        // 1. 指向谁：只看明确出现的敌对实体名，或 hostile=true
-        String target = "NONE";
-        boolean hostileFlag = isTrue(kv.get("hostile"));
-        if (hostileFlag || containsAny(raw.toLowerCase(), "zombie", "skeleton", "creeper", "spider", "enderman")) {
+        String target;
+        if (!facts.has("target") && !facts.hostileNearby() && !facts.passiveNearby()) {
+            // 「认不出来」→ UNKNOWN，不编一个看起来对的家族（B21 同族）
+            target = r.shortCircuited() && r.carry().isEmpty() ? "UNKNOWN" : "NONE";
+        } else if (facts.hostileNearby()) {
             target = "HOSTILE_NEARBY";
-        } else if (containsAny(raw.toLowerCase(), "cow", "pig", "sheep", "chicken")) {
+        } else {
             target = "PASSIVE_ONLY";
         }
-
-        // 2. 装备：看 armor 槽位是否有真值；negative 明确视为「无」
-        boolean hasArmor = truthy(kv.get("armor"))
-                || truthy(kv.get("chestplate"))
-                || truthy(kv.get("helmet"))
-                || truthy(kv.get("leggings"))
-                || truthy(kv.get("boots"));
-        boolean hasWeapon = truthy(kv.get("weapon"))
-                || truthy(kv.get("sword"))
-                || truthy(kv.get("axe"))
-                || truthy(kv.get("bow"));
-
-        // 3. 血量：从 hp=12 / "hp":12 / 12/20 里抓一个粗分档；抓不到就是 UNKNOWN
-        int hp = extractHp(raw.toLowerCase());
-        String hpBand = "UNKNOWN";
-        if (hp >= 0) {
-            if (hp <= 4) {
-                hpBand = "CRITICAL";
-            } else if (hp <= 10) {
-                hpBand = "LOW";
-            } else if (hp <= 15) {
-                hpBand = "MID";
-            } else {
-                hpBand = "HIGH";
-            }
-        }
-
-        // 携带清单：只说「该带什么」，不执行
-        List<String> carry = new ArrayList<>();
-        if ("HOSTILE_NEARBY".equals(target)) {
-            carry.add("战斗相关经验");
-            if (!hasWeapon) {
-                carry.add("武器获取类工具");
-            }
-        }
-        if (!hasArmor && !"HIGH".equals(hpBand)) {
-            carry.add("护甲获取类工具");
-        }
-        if ("CRITICAL".equals(hpBand) || "LOW".equals(hpBand)) {
-            carry.add("食物/治疗类经验");
-        }
-        if ("CRITICAL".equals(hpBand)) {
-            carry.add("撤退/避险类经验");
-        }
-        if (carry.isEmpty()) {
-            carry.add("无额外携带需求");
-        }
-
-        String why = "指向=" + target
-                + " 护甲=" + (hasArmor ? "有" : "无")
-                + " 武器=" + (hasWeapon ? "有" : "无")
-                + " 血量=" + hpBand
+        int hp = facts.hasHp() ? facts.hp() : -1;
+        // ★ why 保留**旧的三段判据摘要**（指向/护甲/武器/血量）**再追加链路轨迹**。
+        //   理由：2026-09-29 那几个测试守的是**真实回归**（armor=none 曾被 contains 判成有护甲），
+        //   不能因为换了实现就把它们改掉 —— 那是「为了绿而改测试」。
+        //   所以格式是「旧摘要 + 新轨迹」，两套断言同时成立。
+        String summary = "指向=" + target
+                + " 护甲=" + (facts.hasRealArmor() ? "有" : "无")
+                + " 武器=" + (facts.hasRealWeapon() ? "有" : "无")
+                + " 血量=" + facts.hpBand()
                 + (hp >= 0 ? "(" + hp + ")" : "");
-        return new CarrierAssessment(target, why, List.copyOf(carry), hp);
+        return new CarrierAssessment(target, summary + "  " + r.why(), r.carry(), hp);
+    }
+
+    /**
+     * 携带器的默认规则链（B5：<b>级数仍留白</b>，这里落结构 + 可插拔）。
+     *
+     * <p><b>短路语义</b>：每级是<b>闸</b> —— 不成立就停，后续级<b>不求值</b>，
+     * 且 {@code why} 会标出「后续级未求值」（B21：让没做的事看起来像做过 = 同一种错）。
+     *
+     * <p><b>可插拔</b>：加一条规则<b>不改动</b>既有规则的判定结果（单测守这条）。
+     */
+    public static final class CarrierRules {
+        private CarrierRules() {
+        }
+
+        /** 顺序即判断顺序；短路在前一级触发时，后面的<b>不被调用</b>。 */
+        public static final java.util.List<CarrierChain.Rule> DEFAULT = java.util.List.of(
+                // 第 1 级：这一轮到底该不该动 —— 目标是谁。
+                // 不成立 → fix 只带「先弄清目标」，不带任何装备/血量类内容（B5：不问不该问的）
+                new CarrierChain.Rule("指向谁",
+                        f -> f.has("target") || f.hostileNearby() || f.passiveNearby() || f.hasHp(),
+                        java.util.List.of("战斗相关经验（附近有敌对）"),
+                        java.util.List.of("先弄清这轮的目标是谁")),
+
+                // 第 2 级：装备够不够 —— ★ 按<b>语义</b>判，不是「非空」。
+                // 不成立 → fix 就是「补什么才成立」，这才是携带器存在的意义
+                new CarrierChain.Rule("装备",
+                        f -> {
+                            if (f.hostileNearby() && !f.hasRealWeapon()) {
+                                return false;
+                            }
+                            if (!f.hasRealArmor() && !"HIGH".equals(f.hpBand())) {
+                                return false;
+                            }
+                            return true;
+                        },
+                        java.util.List.of(),
+                        buildEquipFix()),
+
+                // 第 3 级：血量撑不撑得住
+                new CarrierChain.Rule("血量",
+                        f -> !"CRITICAL".equals(f.hpBand()),
+                        java.util.List.of(),
+                        java.util.List.of("食物/治疗类经验", "撤退/避险类经验")),
+
+                // 第 4 级：认不出语义时的兜底 —— **只留，不猜**
+                new CarrierChain.Rule("兜底",
+                        f -> true,
+                        java.util.List.of("撤退/避险类经验"),
+                        java.util.List.of("撤退/避险类经验"))
+        );
+
+        /**
+         * 「装备」这一级不成立时，缺什么 —— <b>按语义</b>，不是按「非空」。
+         *
+         * <p>这一段是本轮实测抓到的：原实现用 {@code truthy()}，
+         * 于是 {@code weapon=smart_slab_init}（台阶方块）被判成「有武器」、
+         * {@code armor=dirt} 被判成「有护甲」→ 携带器<b>建议错的东西</b>。
+         */
+        private static java.util.List<String> buildEquipFix() {
+            // 注意：这里拿不到 facts（fix 是无参构造），所以按**通用**缺项列出。
+            // 具体「到底缺武器还是缺护甲」由 Facts 层的语义判定决定，
+            // 调用方结合 why 里的 武器=无/护甲=无 自行取用。
+            return java.util.List.of("武器获取类工具", "护甲获取类工具");
+        }
     }
 
     /**
