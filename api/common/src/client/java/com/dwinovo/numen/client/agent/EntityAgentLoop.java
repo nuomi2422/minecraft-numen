@@ -1611,7 +1611,8 @@ public final class EntityAgentLoop {
      */
     private int replayWindowTokens() {
         return com.dwinovo.numen.agent.provider.ProviderRegistry.replayWindowTokens(
-                client().providerId(), client().modelId());
+                com.dwinovo.numen.platform.Services.CONFIG.getProvider(),
+                com.dwinovo.numen.platform.Services.CONFIG.getModel());
     }
 
     private List<ConvoState.Msg> replayWindow() {

@@ -18,13 +18,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class CompactSplitTest {
 
+    /**
+     * 造一条「<b>计价器认为</b>约 {@code approxTokens} token」的消息。
+     *
+     * <p>2026-10-01 第 3 轮：计价口径校准后（{@code CompactSplit.LIMIT_SAFETY_FACTOR=1.5}），
+     * 同样的字符数会被计出 1.5 倍。这里按新口径反推字符数，
+     * <b>让本文件的断言与「刀口落在哪一条」保持原意不被计价器改动带偏</b>。
+     */
+    private static int charsFor(int approxTokens) {
+        return Math.max(0, (int) Math.round((approxTokens - 8) / CompactSplit.LIMIT_SAFETY_FACTOR));
+    }
+
     private static ConvoState.Msg user(int approxTokens) {
-        return new ConvoState.Msg.User("字".repeat(Math.max(0, approxTokens - 8)));
+        return new ConvoState.Msg.User("字".repeat(charsFor(approxTokens)));
     }
 
     private static ConvoState.Msg assistant(int approxTokens) {
         return new ConvoState.Msg.Assistant(new AssistantTurn(
-                "字".repeat(Math.max(0, approxTokens - 8)), List.of(), null));
+                "字".repeat(charsFor(approxTokens)), List.of(), null));
     }
 
     private static ConvoState.Msg assistantWithCall(String id) {
@@ -93,8 +104,15 @@ class CompactSplitTest {
     void estimatorCountsCjkHeavierThanAscii() {
         var cjk = new ConvoState.Msg.User("字".repeat(400));
         var ascii = new ConvoState.Msg.User("a".repeat(400));
-        assertTrue(CompactSplit.estimateTokens(cjk) > CompactSplit.estimateTokens(ascii) * 3,
-                "CJK 每字约 1 token,ASCII 约 4 字符/token");
+        // 2026-10-01 第 3 轮：老口径 ascii/4 让 CJK:ASCII ≈ 4:1，这里原来断言 > 3×。
+        // 校准后散文类 ASCII 密度实测为 0.80 token/字符（867 对实测拟合），
+        // CJK 仍是 1.0 → 比值降到 1.25。**「3×」是老口径的产物，不是设计意图**；
+        // 真正的意图是「CJK 不能被当成和散文一样便宜」，所以改成断言权重的真实比值。
+        assertTrue(CompactSplit.estimateTokens(cjk) > CompactSplit.estimateTokens(ascii) * 1.2,
+                "CJK 每字约 1 token,散文类 ASCII 约 0.80 token/字符（实测拟合）");
+        // 反向也要钉住：别哪天把散文权重又调回 0.25
+        assertTrue(CompactSplit.estimateTokens(ascii) * 2 > CompactSplit.estimateTokens(cjk),
+                "散文类 ASCII 不应比 CJK 贵一倍以上");
         // 列表求和 = 逐条之和
         var list = new ArrayList<ConvoState.Msg>(List.of(cjk, ascii));
         assertEquals(CompactSplit.estimateTokens(cjk) + CompactSplit.estimateTokens(ascii),

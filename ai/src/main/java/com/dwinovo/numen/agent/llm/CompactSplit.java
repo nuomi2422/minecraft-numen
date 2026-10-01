@@ -63,12 +63,30 @@ public final class CompactSplit {
     static final int MESSAGE_OVERHEAD_TOKENS = 8;
 
     /**
+     * <b>★ P95 安全系数（限额用途必须偏保守）</b>
+     *
+     * <p>867 对实测的 {@code real/v2} 分位：{@code P50=0.99 P80=1.16 P90=1.23
+     * P95=1.51 P99=1.69 max=1.79}。
+     *
+     * <p><b>为什么不取 k=1.0</b>：k=1.0 时整体很准（平均 0.98），
+     * 但<b>40% 的样本低估</b>（预测/真实 &lt; 0.9）。对「账单」来说平均准就行；
+     * 对<b>限额</b>来说低估是危险方向 —— 你以为没超，实际超了。
+     * k=1.5 时低估降到 <b>1%</b>。
+     *
+     * <p><b>代价（如实说）：窗口会比标称值更紧。</b>
+     * 标称 20,000 的预算，真实发出约 <b>13,300</b> token。
+     * 这是「宁可少发不可超发」的取舍；需要更宽就调大 provider 的
+     * {@code replayWindowTokens}（它是可配置的，别再写死）。
+     */
+    static final double LIMIT_SAFETY_FACTOR = 1.5;
+
+    /**
      * <b>一条消息的 token 估（2026-10-01 第 3 轮校准）——限额计价的尺子</b>
      *
-     * <p><b>老口径 {@code cjk + ascii/4} 低估 2.95×</b>。实测 833 对请求/响应
+     * <p><b>老口径 {@code cjk + ascii/4} 低估 2.6×</b>。实测 867 对请求/响应
      * （live 实例 monitor 目录下 12 个 {@code context*.jsonl}，按 {@code requestId} 配对）：
      * <pre>
-     *   老口径预测 / 服务端真实 promptTokens = 0.339
+     *   老口径预测 / 服务端真实 promptTokens = 0.380   （99% 的样本低估）
      *   → 声明 20_000「token」实际发出 ≈ 59_000（实测最大 117_379）
      *   字符成分：CJK 9.2% / 散文 74.7% / 结构标点 16.2%
      * </pre>
@@ -79,21 +97,25 @@ public final class CompactSplit {
      * 每个基本各占一个 token，密度接近 <b>1.0/字符</b>，不是 0.25。
      * 两类字符被并成同一类，<b>尺子就废了，限额就成了装饰</b>。
      *
-     * <p><b>校准方式：按字符类别分别给权，对 833 对实测做网格拟合</b>
+     * <p><b>校准方式：按字符类别分别给权，对 867 对实测做网格拟合</b>
      * <pre>
-     *   prose=0.75 punct=1.0 → 预测/真实 平均 0.955
-     *   prose=0.80 punct=1.0 → 预测/真实 平均 0.997   ← 采用
-     *   prose=0.85 punct=1.0 → 预测/真实 平均 1.040
+     *   老口径 ascii/4     → 预测/真实 平均 0.380
+     *   prose=0.75 punct=1 → 预测/真实 平均 0.955
+     *   prose=0.80 punct=1 → 预测/真实 平均 0.986   ← 权重采用
      * </pre>
-     * 取 {@code 0.80}：既贴合实测，又落在<b>略偏保守</b>的一侧
-     * —— 限额宁可略高估，也别让「省 token 的手段」变成「超额的手段」。
      *
-     * <p>⚠️ 剩余误差：单条样本区间仍有 {@code [0.60, 2.86]} 的离散度，主要来自
-     * 「很短的请求被固定 8 token 放大」。<b>可用于限额，不可当账单。</b>
+     * <p>再乘 {@link #LIMIT_SAFETY_FACTOR}（P95 安全系数，见其注释）：
+     * 权重拟合追求的是「整体准」，而<b>限额要的是「不低估」</b>，两件事。
+     *
+     * <p>⚠️ <b>已知残留：权重本身对中小载荷偏高</b>（15K–30K 字符档 2.69×、
+     * 30K–60K 档 1.95×），因为那里的 CJK 占比高于全局平均。
+     * 乘 1.5 之后中小载荷会<b>明显高估</b>（窗口偏紧）。
+     * 这是<b>刻意取舍</b>：高估的代价是「少发一点历史」，
+     * 低估的代价是「限额形同虚设」。收紧方向是安全的。
      * 校准回归见 {@code TokenEstimateCalibrationTest}。
      */
     public static int estimateTokens(ConvoState.Msg msg) {
-        return tokensOf(rawTextOf(msg));
+        return (int) Math.round(tokensOf(rawTextOf(msg)) * LIMIT_SAFETY_FACTOR);
     }
 
     private static String rawTextOf(ConvoState.Msg msg) {
