@@ -676,10 +676,35 @@ private static String withAssets(UUID companionId, String rddContext) {
             long deathTick = RddInstrumentation.currentGameTimeTicks();
             RddInstrumentation.recordDeathTick(companionId, deathTick);
             boolean starving = isStarvingDeath(body);
-            Map<String, Object> deathData = new LinkedHashMap<>();
+Map<String, Object> deathData = new LinkedHashMap<>();
             deathData.put("companionId", companionId.toString());
             deathData.put("task", currentTaskId(companionId));
-            deathData.put("reason", starving ? "starvation" : "other");
+            // ── 死因结构化（2026-10-01 本轮新增）────────────────────────────
+            // 老字段 reason 只有 starvation/other 二值，把「掉岩浆里/淹死/摔死/被怪打死/
+            // 被玩家打死」全塌缩成 other —— 而"被玩家打死"和"被怪打死"归因方向相反
+            // （前者是主人插手，后者是战斗经验不足），混在一起就没法写经验。
+            //
+            // 现在三样都带上：
+            //   deathCauseId     原版 msgId，与语言无关，可直接聚合（本轮的根治点）
+            //   deathCauseMsg    渲染后的中文句子，给人/AI 看
+            //   deathKind        归类后的短标签，机器可聚合
+            //   deathAttacker    凶手名字（玩家名或怪物名），用于区分"谁杀的"
+            //
+            // 为什么要 id + 归类两样：只有句子时 48% 是「rdd被杀死了」这种无凶手兜底
+            // （原版拿不到凶手时的降级文案），拿它归因等于一半死亡天生没法总结经验；
+            // NumenPlayer.die() 里现成的 cause.getMsgId() 不受那个清空影响。
+            String deathCauseId = safeDeathCauseId(body);
+            String deathCauseMsg = safeDeathMessage(body);
+            String deathKind = com.dwinovo.numen.rdd.core.DeathCauseClassifier
+                    .classify(deathCauseId, deathCauseMsg);
+            deathData.put("deathCauseId", deathCauseId);
+            deathData.put("deathCauseMsg", deathCauseMsg);
+            deathData.put("deathKind", deathKind);
+            String deathAttacker = safeDeathAttacker(body);
+            deathData.put("deathAttacker", deathAttacker);
+            // reason 保持老语义（starvation 优先，事件选择逻辑 publishAt 依赖它），
+            // 其余情况改用归类结果 —— 这样 reason 自己也变得可聚合了。
+            deathData.put("reason", starving ? "starvation" : deathKind);
             deathData.put("context", Map.of(
                     "lastObservedInventory", lastInventory(companionId),
                     "invalidatedEntries", lost));
@@ -730,6 +755,42 @@ private static String withAssets(UUID companionId, String rddContext) {
     }
 
     /** 死亡即饿死代理判据（埋点）：死亡瞬间食物条为 0 → 判 starvation。best-effort，失败回落 false。 */
+    /**
+     * 读死因的三个 best-effort 取值器（2026-10-01 新增）。
+ *
+ * <p><b>为什么统一成「失败回空串」而不是抛异常</b>：它们在 {@code onCompanionDeath} 的死亡处理链上，
+ * 而那个链一抛异常会连带丢掉 {@code RddRepairDispatch.onDeath} 生成的捡包支线
+ * （掉落物只有约 5 分钟存活窗口，捡包支线丢了就是真丢东西）。
+ * → <b>死因拿不到不能影响「去把东西捡回来」。</b>
+ */
+private static String safeDeathCauseId(NumenPlayer body) {
+    try {
+        String v = (body == null) ? null : body.deathCauseId();
+        return v == null ? "" : v;
+    } catch (RuntimeException ignore) {
+        return "";
+    }
+}
+
+private static String safeDeathMessage(NumenPlayer body) {
+    try {
+        String v = (body == null) ? null : body.deathMessage();
+        return v == null ? "" : v;
+    } catch (RuntimeException ignore) {
+        return "";
+    }
+}
+
+private static String safeDeathAttacker(NumenPlayer body) {
+    try {
+        String v = (body == null) ? null : body.deathCauseAttacker();
+        return v == null ? "" : v;
+    } catch (RuntimeException ignore) {
+        return "";
+    }
+}
+
+/** 死亡即饿死代理判据（埋点）：死亡瞬间食物条为 0 → starvation。best-effort，失败回 false */
     private static boolean isStarvingDeath(NumenPlayer body) {
         try {
             var food = body.getFoodData();

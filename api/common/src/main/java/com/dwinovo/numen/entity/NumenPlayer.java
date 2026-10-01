@@ -57,6 +57,27 @@ public final class NumenPlayer extends ServerPlayer {
     private String deathMessage;
 
     /**
+     * 结构化死因 id（{@code DamageSource#getMsgId()}，如 {@code lava}/{@code drown}/
+     * {@code player_attack}），与语言无关、可直接聚合。
+     *
+     * <p><b>为什么必须单独存</b>：本类上方那段注释说清了老路的病 —— 战斗记录会被原版清空，
+     * {@code getDeathMessage()} 只能退回 {@code death.attack.generic}（「她死了」，没凶手）。
+     * 2026-10-01 实测印证了这个退化：日志里死因只有 5 种形态，<b>48% 是「被杀死了」这种无凶手
+     * 兜底</b>，岩浆/淹死/摔死 <b>0 条</b>。拿这种句子做归因，一半死亡天生总结不出经验。
+     *
+     * <p>{@code getMsgId()} 不依赖战斗记录，所以不受那个清空影响。
+     */
+    private String deathCauseId;
+
+    /**
+     * 凶手名字（{@code DamageSource#getEntity()}）：玩家攻击时是玩家名，怪物攻击时是怪物名。
+     *
+     * <p>单独存它是有意的：<b>「被玩家杀掉」和「被怪杀掉」归因完全相反</b> ——
+     * 实测里「被玩家杀」占 38%（465/1214），那是主人插手的信号，
+     * 不能和「怪打死了她」一起算成「战斗经验不足」。
+     */
+    private String deathCauseAttacker;
+    /**
      * 上一刻她在不在床上,{@link #pollWokeUp} 用它比出"刚醒"这一刻。
      *
      * <p><b>跟着身体走,不进静态表</b>:她休眠再回来是一具新身体,这一位天然是 false,
@@ -333,16 +354,54 @@ public final class NumenPlayer extends ServerPlayer {
     /**
      * 死因在这里抄下来——原版广播死亡消息也是在这一刻(清空战斗记录之前)。
      * 抄的是同一句话,所以她知道的和聊天里广播的一字不差。
+     *
+     * <p><b>2026-10-01 修正：{@code cause} 参数不能扔。</b>原来只抄了渲染后的中文消息串，
+     * 于是下游拿不到任何可聚合的东西：
+     * <ul>
+     *   <li>实测日志里死因形态只有 5 种，全是渲染后的中文：{@code rdd被杀死了}(579)、
+     *       {@code rdd被maoshao2422杀死了}(465)、{@code rdd被骷髅射杀}(102)、
+     *       {@code rdd被苦力怕炸死了}(34)、{@code rdd被女巫使用的魔法杀死了}(34)；
+     *       <b>岩浆/淹死/摔死 0 条</b>。</li>
+     *   <li><b>48% 是「被杀死了」这种无凶手兜底</b> —— 那不是原版事实，是原版在拿不到凶手时
+     *       广播的降级文案。拿它做归因，意味着一半死亡天生无法总结经验。</li>
+     * </ul>
+     * 所以这里额外抄下 {@link DamageSource#getMsgId()}（与语言无关的稳定 id）与攻击者名字。
+     * 这两样在 {@code die()} 里是现成的（{@code super.die(cause)} 一调，原版就会清掉战斗记录），
+     * <b>这是全流程唯一一次能拿到结构化死因的时刻</b>。
+     * 渲染后的消息串仍然保留：它给人和 AI 看（{@code <event>「你刚才死了(cause)」}）。
      */
     @Override
     public void die(net.minecraft.world.damagesource.DamageSource cause) {
         this.deathMessage = getCombatTracker().getDeathMessage().getString();
+        // ↓ 结构化死因：与语言无关的下游靠它，归因/聚合全靠这两个字段。
+        if (cause != null) {
+            this.deathCauseId = cause.getMsgId();
+            // getEntity() 是"直接攻击者"（玩家/怪物本体），getDirectEntity() 可能是投射物本体
+            // （箭/火球）。玩家攻击走 getEntity() 就是玩家，优先级最高。
+            net.minecraft.world.entity.Entity attacker = cause.getEntity();
+            if (attacker != null) {
+                this.deathCauseAttacker = attacker.getName().getString();
+            }
+        }
         super.die(cause);
     }
 
     /** 上一次的死因(原版死亡消息原文);还没死过则 null。 */
     public String deathMessage() {
         return deathMessage;
+    }
+
+    /**
+     * 上一次死亡的结构化死因 id（如 {@code lava} / {@code drown} / {@code player_attack}），
+     * 与语言无关，可直接聚合；还没死过、或原版没给 id 则 null。
+     */
+    public String deathCauseId() {
+        return deathCauseId;
+    }
+
+    /** 上一次死亡的凶手名字（玩家名或怪物名）；无凶手则 null。 */
+    public String deathCauseAttacker() {
+        return deathCauseAttacker;
     }
 
     @Override

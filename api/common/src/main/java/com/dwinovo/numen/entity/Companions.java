@@ -245,11 +245,24 @@ public final class Companions {
         if (owner != null) {   // immediate, same-session
             Services.NETWORK.sendToPlayer(owner, new NumenDeathPayload(uuid, cause));
         }
-        CompanionEvents.fire(CompanionEvent.DEATH, body);   // 不发工具结果:那条 tool_call 已由死因结算
+// ★ 2026-10-01 顺序修（死因结构化）：markDead 必须**在 fire 之前**。
+        //
+        // 为什么：CompanionEvent.DEATH 的 payload 是 NumenPlayer，**不带 cause**；cause 的唯一
+        // 主线程可读处是 CompanionRegistry.Entry.deathCause。原本 markDead 排在 fire 之后，
+        // 于是监听器（RddPlugin.onCompanionDeath）执行时 cause 还没落盘 —— 读到的永远是空，
+        // 只能退化成 deathData.reason = starving ? "starvation" : "other"，把"掉岩浆里/淹死/
+        // 摔死"全塌缩成 other，**静默丢掉了唯一可用于归因的信息**。
+        //
+        // 与本轮已修的 RddCarryHint.refresh（时间戳先写、线程后判 → 读到永远是空）是同一形状。
+        //
+        // 为什么提前是安全的：markDead 只做 entries.put + setDirty()，**不发网络包、不重入**；
+        // 名册同步 syncRosterToOwner 仍留在原位（在 markDead 之后），时序不变。
+        //
         // Persist the death (cause + game-time) in the world-saved registry so it survives a logout during
         // the respawn window — without this, a relog lost the pending state and the body silently respawned
         // "alive" with an empty inventory and no idea it had died.
         CompanionRegistry.get(server).markDead(uuid, cause, server.overworld().getGameTime());
+        CompanionEvents.fire(CompanionEvent.DEATH, body);   // 不发工具结果:那条 tool_call 已由死因结算
         // 死亡状态进了注册表,名册才说得出"她还在,只是躺着"——面板的倒计时读这个。
         // 少了这一推,主人在死亡窗口里重登就会看见她凭空消失。
         if (owner != null) {
