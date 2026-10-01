@@ -1,6 +1,8 @@
 package com.dwinovo.numen.plugins.learner.core;
 
 import com.dwinovo.numen.api.carrier.CarrierChain;
+import com.dwinovo.numen.api.carrier.CarrierChain;
+import com.dwinovo.numen.api.carrier.CarrierRules;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -91,70 +93,6 @@ public record Memo(
                 + " 血量=" + facts.hpBand()
                 + (hp >= 0 ? "(" + hp + ")" : "");
         return new CarrierAssessment(target, summary + "  " + r.why(), r.carry(), hp);
-    }
-
-    /**
-     * 携带器的默认规则链（B5：<b>级数仍留白</b>，这里落结构 + 可插拔）。
-     *
-     * <p><b>短路语义</b>：每级是<b>闸</b> —— 不成立就停，后续级<b>不求值</b>，
-     * 且 {@code why} 会标出「后续级未求值」（B21：让没做的事看起来像做过 = 同一种错）。
-     *
-     * <p><b>可插拔</b>：加一条规则<b>不改动</b>既有规则的判定结果（单测守这条）。
-     */
-    public static final class CarrierRules {
-        private CarrierRules() {
-        }
-
-        /** 顺序即判断顺序；短路在前一级触发时，后面的<b>不被调用</b>。 */
-        public static final java.util.List<CarrierChain.Rule> DEFAULT = java.util.List.of(
-                // 第 1 级：这一轮到底该不该动 —— 目标是谁。
-                // 不成立 → fix 只带「先弄清目标」，不带任何装备/血量类内容（B5：不问不该问的）
-                new CarrierChain.Rule("指向谁",
-                        f -> f.has("target") || f.hostileNearby() || f.passiveNearby(),
-                        java.util.List.of("战斗相关经验（附近有敌对）"),
-                        java.util.List.of("先弄清这轮的目标是谁")),
-
-                // 第 2 级：装备够不够 —— ★ 按<b>语义</b>判，不是「非空」。
-                // 不成立 → fix 就是「补什么才成立」，这才是携带器存在的意义
-                new CarrierChain.Rule("装备",
-                        f -> {
-                            if (f.hostileNearby() && !f.hasRealWeapon()) {
-                                return false;
-                            }
-                            if (!f.hasRealArmor() && !"HIGH".equals(f.hpBand())) {
-                                return false;
-                            }
-                            return true;
-                        },
-                        java.util.List.of(),
-                        buildEquipFix()),
-
-                // 第 3 级：血量撑不撑得住
-                new CarrierChain.Rule("血量",
-                        f -> !"CRITICAL".equals(f.hpBand()),
-                        java.util.List.of(),
-                        java.util.List.of("食物/治疗类经验", "撤退/避险类经验")),
-
-                // 第 4 级：认不出语义时的兜底 —— **只留，不猜**
-                new CarrierChain.Rule("兜底",
-                        f -> true,
-                        java.util.List.of("撤退/避险类经验"),
-                        java.util.List.of("撤退/避险类经验"))
-        );
-
-        /**
-         * 「装备」这一级不成立时，缺什么 —— <b>按语义</b>，不是按「非空」。
-         *
-         * <p>这一段是本轮实测抓到的：原实现用 {@code truthy()}，
-         * 于是 {@code weapon=smart_slab_init}（台阶方块）被判成「有武器」、
-         * {@code armor=dirt} 被判成「有护甲」→ 携带器<b>建议错的东西</b>。
-         */
-        private static java.util.List<String> buildEquipFix() {
-            // 注意：这里拿不到 facts（fix 是无参构造），所以按**通用**缺项列出。
-            // 具体「到底缺武器还是缺护甲」由 Facts 层的语义判定决定，
-            // 调用方结合 why 里的 武器=无/护甲=无 自行取用。
-            return java.util.List.of("武器获取类工具", "护甲获取类工具");
-        }
     }
 
     /**
