@@ -42,7 +42,7 @@ final class LearnerReviewer {
         }
     }
 
-    private static final String SYSTEM = """
+    private static final String SYSTEM_TEMPLATE = """
             你是 Numen 的「学习者」。你的唯一职责是复盘干活 AI 留下的原始备忘录，判断这些经历
             以后该不该沉淀成经验、该不该用原子编排(AC)重做一遍、要不要先做携带分级、要不要自编译出新工具，
             或者根本不需要动作。
@@ -56,12 +56,23 @@ final class LearnerReviewer {
             5. SELF_COMPILE 只在「明确缺少工具能力」时给；能靠现有工具解决就不要给。
             6. confidence 取 0 到 1。
             7. rewritten_query 给出 1 到 3 个用于检索经验库的改写检索词（这是替代向量检索的检索键）。
+            8. ★ 经验必须是**结构化对象**，不是一段话。%s
+            9. 给 WRITE_EXPERIENCE 就**必须**同时给出 experience 对象；给 NO_ACTION 时不要给。
+            10. 不要输出 experience_draft 这个键（旧格式，已废弃；一段散文不算经验）。
 
             输出格式：
             {"verdicts":[{"memo_id":"...","actions":["WRITE_EXPERIENCE"],"confidence":0.7,
-              "reasoning":"...","experience_draft":"...","ac_script_draft":"",
+              "reasoning":"...","experience":{"mechanism":"...","preconditions":"...",
+              "failureConditions":"...","observableSignal":"...","derivation":"...",
+              "efficiency":"...","evidence":"..."},"ac_script_draft":"",
               "rewritten_query":["..."]}]}
             """;
+
+    // 2026-10-01：把七字段格式说明（%s）填进 SYSTEM。**格式不要求，模型就不会给** ——
+    // V4 实机失败的直接原因就是 prompt 里只说了 "experience_draft":"..."，
+    // 模型于是交了一段散文。这里把格式说明作为 prompt 的一部分显式注入。
+    private static final String SYSTEM = SYSTEM_TEMPLATE
+            .formatted(com.dwinovo.numen.plugins.learner.core.Experience.promptSpec());
 
     private LearnerReviewer() {}
 

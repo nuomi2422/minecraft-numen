@@ -191,8 +191,23 @@ final class LearnerReviewTool implements NumenTool {
             one.put("actions", v.actions().stream().map(Enum::name).toList());
             one.put("confidence", v.confidence());
             one.put("reasoning", v.reasoning());
-            if (!v.experienceDraft().isBlank()) {
-                one.put("experience_draft", v.experienceDraft());
+            if (v.experience() != null) {
+                // B21：只放真值；缺失的字段不出现；关键字段不齐要**说出来**
+                Map<String, Object> ex = new java.util.LinkedHashMap<>();
+                for (String f : com.dwinovo.numen.plugins.learner.core.Experience.FIELDS) {
+                    String val = v.experience().field(f);
+                    if (!val.isBlank()) {
+                        ex.put(f, val);
+                    }
+                }
+                one.put("experience", ex);
+                one.put("experience_fields_filled", v.experience().filledCount());
+                one.put("experience_acceptable", v.experience().acceptable());
+                if (!v.experience().acceptable()) {
+                    one.put("experience_unacceptable_reason", v.experience().unacceptableReason());
+                    one.put("experience_missing_fields",
+                            String.join(",", v.experience().missingFields()));
+                }
             }
             if (!v.acScriptDraft().isBlank()) {
                 one.put("ac_script_draft", v.acScriptDraft());

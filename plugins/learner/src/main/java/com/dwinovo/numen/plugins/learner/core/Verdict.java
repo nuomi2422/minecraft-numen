@@ -25,7 +25,7 @@ public record Verdict(
         List<Action> actions,
         double confidence,
         String reasoning,
-        String experienceDraft,
+        Experience experience,
         String acScriptDraft,
         List<String> rewrittenQuery
 ) {
@@ -112,7 +112,11 @@ public record Verdict(
             confidence = Math.max(0.0, Math.min(1.0, confidence));
 
             String reasoning = optString(obj, "reasoning");
-            String expDraft = optString(obj, "experience_draft");
+            // 2026-10-01：experienceDraft(String) → experience(Experience)。
+            // 实机证据：老格式给的是一段散文，七字段一个都没结构化。
+            // ⚠️ **刻意不把老的 experience_draft 字符串塞进 mechanism 蒙过去** ——
+            // 那样会让「格式已落地」看起来成立，而实际仍然是一段散文。
+            Experience exp = Experience.parse(obj);
             String acDraft = optString(obj, "ac_script_draft");
 
             List<String> queries = new ArrayList<>();
@@ -137,7 +141,7 @@ public record Verdict(
             }
 
             return new Verdict(memoId, List.copyOf(actions), confidence, reasoning,
-                    expDraft, acDraft, List.copyOf(queries));
+                    exp, acDraft, List.copyOf(queries));
         } catch (RuntimeException e) {
             // 不是合法 JSON：如实返回 null，让调用方报 UNPARSEABLE
             return null;
@@ -178,7 +182,23 @@ public record Verdict(
         o.add("actions", acts);
         o.addProperty("confidence", confidence);
         o.addProperty("reasoning", reasoning);
-        o.addProperty("experience_draft", experienceDraft);
+        // B21：experience 为 null 时**不放这个键**，而不是放 "" 或 null —— 缺失就缺失
+        if (experience != null) {
+            JsonObject ex = new JsonObject();
+            for (String f : Experience.FIELDS) {
+                String v = experience.field(f);
+                if (!v.isBlank()) {
+                    ex.addProperty(f, v);
+                }
+            }
+            o.add("experience", ex);
+            o.addProperty("experience_fields_filled", experience.filledCount());
+            // 关键字段不齐要**说出来**：调用方才知道这条经验不能直接入库
+            o.addProperty("experience_acceptable", experience.acceptable());
+            if (!experience.acceptable()) {
+                o.addProperty("experience_unacceptable_reason", experience.unacceptableReason());
+            }
+        }
         o.addProperty("ac_script_draft", acScriptDraft);
         JsonArray qs = new JsonArray();
         for (String q : rewrittenQuery) {
