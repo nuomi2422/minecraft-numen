@@ -171,13 +171,16 @@ final class RddDetector {
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 无条件背包缓存失败 {}: {}", ap.getUUID(), ex.toString());
             }
+// 38号v3.6 B24：携带器缓存**只在主线程刷新**（这里就是 tick，已在服务端线程）。
+            // 上下文构建那边只读缓存 —— contributeState 不保证在主线程，不能在那里读世界。
+            // ⚠️ 2026-10-01 实机抓到：**必须放在 rt == null 的判断之前**。
+            //    原来放在后面，于是「同伴没有活动任务链」时直接 continue → 永远不刷新，
+            //    而那恰恰是最需要携带提醒的时刻（无任务 = 更该自己决定要不要先准备）。
+            RddCarryHint.refresh(ap.serverLevel().getServer(), ap.getUUID());
             RddRuntime rt = RddPlugin.runtime(ap.getUUID());
             if (rt == null) {
                 continue;
             }
-            // 38号v3.6 B24：携带器缓存**只在主线程刷新**（这里就是 tick，已在服务端线程）。
-            // 上下文构建那边只读缓存 —— contributeState 不保证在主线程，不能在那里读世界。
-            RddCarryHint.refresh(ap.serverLevel().getServer(), ap.getUUID());
             tickRuntime(ap, rt);
         }
         // 持久化：保存活跃任务链（1 秒一次，文件小，原子写）

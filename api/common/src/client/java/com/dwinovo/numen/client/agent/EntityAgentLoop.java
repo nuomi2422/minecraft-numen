@@ -92,6 +92,22 @@ public final class EntityAgentLoop {
      * keepRecentTokens:摘要只替换更早的部分,主人刚说的话逐字跨过压缩边界。
      */
     private static final int KEEP_RECENT_TOKENS = 20_000;
+
+    /**
+     * <b>发给模型的会话窗口上限</b>（2026-10-01 新增）。
+     *
+     * <p><b>与 {@link #KEEP_RECENT_TOKENS} 同一个值，但用途不同</b>：
+     * <ul>
+     *   <li>{@code KEEP_RECENT_TOKENS} = <b>压缩后</b>保留多少（摘要只替换更早的部分）</li>
+     *   <li>{@code REPLAY_WINDOW_TOKENS} = <b>压缩前</b>每轮最多发多少</li>
+     * </ul>
+     * 此前只有前者，且只在压缩路径里用；而压缩阈值取自模型 {@code ctx}
+     * （实测 ctx=1,000,000 → 阈值 987,000，实际只用 ~90,000）→ <b>压缩永不触发</b>，
+     * 于是 {@code KEEP_RECENT_TOKENS} 这个正确的设计<b>从来没在压缩之前生效过</b>。
+     *
+     * <p>本值是<b>策略</b>，不是能力。模型能力仍以 {@code ctx} 为准，两者解耦。
+     */
+    private static final int REPLAY_WINDOW_TOKENS = 20_000;
     /** 自动整理的下限:短于这个数不值得自己动手。手动 {@code /compact} 不看它。 */
     private static final int MIN_COMPACT_MESSAGES = 8;
     /** 给目标评估器看的对话上限。够装下整个目标期间,又不至于把整段会话都发一遍。 */
@@ -1557,7 +1573,60 @@ public final class EntityAgentLoop {
      * "历史上那条消息 + 此刻的状态"——一条从未被发送过的消息。
      */
     private List<ConvoState.Msg> modelContextSnapshot() {
-        return AgentRequestContext.attach(convo.snapshot(), runtimeStateXml());
+        return AgentRequestContext.attach(replayWindow(), runtimeStateXml());
+    }
+
+    /**
+     * 发给模型的<b>会话窗口</b>：只保留最近 {@link #REPLAY_WINDOW_TOKENS} token。
+     *
+     * <p><b>为什么加这道（2026-10-01 实测）</b>：压缩闸是
+     * {@code contextTokens >= window - AUTO_COMPACT_BUFFER_TOKENS}，
+     * 而 {@code window} 取自模型的 {@code ctx}。本项目实测：{@code ctx=1,000,000}
+     * → 阈值 <b>987,000</b>；而单轮实际只用 <b>~90,000</b>
+     * → <b>压缩永远不触发</b>，replay 一直发全量（实测 205 条消息 / 89,996 字符 = <b>单轮 78%</b>）。
+     *
+     * <p><b>关键区分（这是本次改动的全部意义）</b>：
+     * <ul>
+     *   <li>{@code ctx} 是<b>模型能力</b>（deepseek-v4-flash 真支持 100 万）—— <b>不动</b>；</li>
+     *   <li>「我们每轮用多少」是<b>策略</b> —— <b>它此前被隐式绑定在能力上</b>，
+     *       于是「我有个 1M 模型」直接变成「我必须发 90K」，而用户没有手段说
+     *       「我这个游戏每轮只需要 2 万」。<b>本方法就是把两个旋钮拆开。</b></li>
+     * </ul>
+     *
+     * <p><b>为什么丢掉更早的历史不损失记忆</b>：RDD 任务链就是结构化记忆
+     * （一级/二级目标、{@code done_when}、状态、资产账），它<b>整轮都在上下文里</b>
+     * （{@code <runtime_state>}/{@code <current_task>}）。
+     * 丢掉的是<b>对话流水</b>，不是「我做了什么、下一步是什么」。
+     *
+     * <p><b>⚠️ 这只是「视图」限流，源数据一个字不动</b> —— 与本方法原注释的精神一致：
+     * 会话历史与落盘日志仍然完整，{@code /compact} 的完整摘要能力也不受影响。
+     *
+     * <p><b>⚠️ 截断不静默</b>（B21）：每次真的裁掉了，就在 {@code replayWindow} 日志里
+     * 如实报出丢了多少条 / 多少 token。
+     */
+    private List<ConvoState.Msg> replayWindow() {
+        List<ConvoState.Msg> all = convo.snapshot();
+        CompactSplit.Split split = CompactSplit.byRecentBudget(all, REPLAY_WINDOW_TOKENS);
+        if (split.toSummarize().isEmpty()) {
+            return all;                      // 没超预算 → 原样，不做任何无谓裁剪
+        }
+        // ★ 2026-10-01 单测抓到的边界：若**单条**消息自己就超预算，byRecentBudget 会返回 kept=[]。
+        //   那等于「把历史清零」—— 比原来全量回灌更糟（AI 直接失忆，连当前这轮都看不见）。
+        //   → 兜底：**至少保留最后一条**。窗口是「省 token 的手段」，不是「让 AI 失忆的手段」。
+        List<ConvoState.Msg> kept = split.kept();
+        if (kept.isEmpty() && !all.isEmpty()) {
+            kept = List.of(all.get(all.size() - 1));
+            Constants.LOG.warn("[numen-entity#{}] replay 窗口过小（单条消息 {} token 就超了 {}）→ 兜底只保留最后一条；"
+                            + "调大 REPLAY_WINDOW_TOKENS 或压缩该条工具结果",
+                    entityUuid, CompactSplit.estimateTokens(all.get(all.size() - 1)), REPLAY_WINDOW_TOKENS);
+        }
+        int dropped = all.size() - kept.size();
+        int droppedTokens = CompactSplit.estimateTokens(split.toSummarize());
+        Constants.LOG.info("[numen-entity#{}] replay 窗口限流：{} 条 / {} token 超出 {} → 只发最近 {} 条 / {} token"
+                        + "（源历史与 /compact 摘要不受影响；任务链仍在上下文里）",
+                entityUuid, dropped, droppedTokens, REPLAY_WINDOW_TOKENS,
+                kept.size(), CompactSplit.estimateTokens(kept));
+        return kept;
     }
 
     /**

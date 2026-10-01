@@ -96,18 +96,25 @@ final class RddCarryHint {
         if (at != null && now - at < REFRESH_MS) {
             return;
         }
+        // ⚠️ 2026-10-01 实机抓到（0 命中 <carry> 的真凶）：**时间戳必须先判断线程、再写**。
+        //    原来我在判 isSameThread 之前就 CARRY_HINT_AT.put(...)，于是
+        //    「在非主线程被调」→ 写完时间戳就 return → 缓存永远填不上，
+        //    而 findByUuid 根本没执行，而且**不报错**。
+        //    这是我今天第三次犯「兜底加到把功能关掉」—— 顺序错了，兜底就变成永久 no-op。
+        if (!server.isSameThread()) {
+            // 非主线程：**不写时间戳**（否则下次在主线程也会被节流窗口挡住），只丢掉过期的
+            if (at != null && now - at > REFRESH_MS * 4) {
+                CARRY_HINT.remove(companionId);
+                CARRY_HINT_AT.remove(companionId);
+            }
+            return;
+        }
         CARRY_HINT_AT.put(companionId, now);
         try {
-            if (!server.isSameThread()) {
-                // 不是主线程就不读世界：把过期值丢掉，等下一次主线程刷新
-                if (at == null || now - at > REFRESH_MS * 4) {
-                    CARRY_HINT.remove(companionId);
-                }
-                return;
-            }
             NumenPlayer body = NumenPlayer.findByUuid(server, companionId);
             if (body == null || body.serverLevel() == null) {
                 CARRY_HINT.remove(companionId);
+                CARRY_HINT_AT.remove(companionId);
                 return;
             }
             String hint = render(body);
@@ -117,8 +124,10 @@ final class RddCarryHint {
                 CARRY_HINT.put(companionId, hint);
             }
         } catch (Throwable t) {
-            // 携带器是「锦上添花」，任何问题都不许影响主链路
+            // 携带器是「锦上添花」，任何问题都不许影响主链路。
+            // ⚠️ 这里也**不写时间戳** —— 失败了要让下次还能重试，不能被节流锁死。
             CARRY_HINT.remove(companionId);
+            CARRY_HINT_AT.remove(companionId);
         }
     }
 

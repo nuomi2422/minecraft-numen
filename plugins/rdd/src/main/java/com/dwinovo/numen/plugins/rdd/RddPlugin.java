@@ -387,7 +387,16 @@ public final class RddPlugin implements NumenPlugin {
             return "";
         }
     }
-    private static String withAssets(UUID companionId, String rddContext) {
+private static String withAssets(UUID companionId, String rddContext) {
+        // 38号v3.6 B24：携带器提醒放在**这里**，而不是 renderStateContext 的主分支。
+        // ⚠️ 2026-10-01 实机抓到：renderStateContext 有**三个提前返回分支**
+        //    （decomposing / runtime==null / current==null），只有主分支会走到我最初加 carryHint 的位置。
+        //    而「没有活动任务」恰恰走提前返回 —— 也就是**最该自己决定要不要先准备的时候看不到携带提醒**。
+        //    withAssets 是**全部分支的共同出口**，放这里才真的每轮都带得上。
+        String carry = carryHint(companionId);
+        if (!carry.isEmpty()) {
+            rddContext = rddContext.replace("</rdd>", carry + "</rdd>");
+        }
         String worldAssets = RddAssetContext.render(assets(companionId), 1200);
         return worldAssets.isBlank() ? rddContext : rddContext + "\n" + worldAssets;
     }
