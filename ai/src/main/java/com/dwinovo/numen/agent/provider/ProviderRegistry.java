@@ -30,13 +30,28 @@ public final class ProviderRegistry {
 
     /** {@code temperature} null = 不发(吃服务器默认);{@code maxTokens} 0 = 不发/协议默认。 */
     public record Model(String id, int ctx, boolean reasoning,
-                        Double temperature, int maxTokens) {}
+                        Double temperature, int maxTokens, int replayWindowTokens) {
+        /** 兼容旧构造:不指定 replayWindowTokens 时用 {@link #DEFAULT_REPLAY_WINDOW_TOKENS}。 */
+        public Model(String id, int ctx, boolean reasoning, Double temperature, int maxTokens) {
+            this(id, ctx, reasoning, temperature, maxTokens, DEFAULT_REPLAY_WINDOW_TOKENS);
+        }
+    }
     public record Provider(String id, String name, String baseUrl, boolean custom,
                            Map<String, String> headers, List<Model> models,
                            String thinkingFormat, String protocol) {}
 
     /** Fallback context window for an unknown model (e.g. a custom one). */
     public static final int DEFAULT_CTX = 64_000;
+
+    /**
+     * 每轮发给模型的历史窗口上限(tokens),未配置时用这个值。
+     *
+     * <p><b>这是策略,不是能力</b> —— 与 {@link #DEFAULT_CTX} 分开的原因同源:
+     * 模型能吃多少是给定的,我们每轮发多少是可以调的。
+     * 2026-10-01 第 3 轮把它从写死常量提成配置项,
+     * 免得把一个「当时测出来的数」当成「最优值」留给下一个人。
+     */
+    public static final int DEFAULT_REPLAY_WINDOW_TOKENS = 20_000;
 
     private static final List<Provider> PROVIDERS = load();
 
@@ -73,7 +88,9 @@ public final class ProviderRegistry {
                                 m.has("ctx") ? m.get("ctx").getAsInt() : DEFAULT_CTX,
                                 m.has("reasoning") && m.get("reasoning").getAsBoolean(),
                                 m.has("temperature") ? m.get("temperature").getAsDouble() : null,
-                                m.has("maxTokens") ? m.get("maxTokens").getAsInt() : 0));
+                                m.has("maxTokens") ? m.get("maxTokens").getAsInt() : 0,
+                                m.has("replayWindowTokens") ? m.get("replayWindowTokens").getAsInt()
+                                        : DEFAULT_REPLAY_WINDOW_TOKENS));
                     }
                 }
                 Map<String, String> headers = new LinkedHashMap<>();
@@ -166,6 +183,18 @@ public final class ProviderRegistry {
     public static int contextWindow(String providerId, String modelId) {
         Model m = model(providerId, modelId);
         return m == null ? DEFAULT_CTX : m.ctx();
+    }
+
+    /**
+     * 每轮发给模型的历史窗口上限(tokens)。
+     *
+     * <p>值 &lt;= 0 一律回落到 {@link #DEFAULT_REPLAY_WINDOW_TOKENS}
+     * —— 配错不该让窗口变成 0(那等于让 AI 失明,见 B21)。
+     */
+    public static int replayWindowTokens(String providerId, String modelId) {
+        Model m = model(providerId, modelId);
+        int v = (m == null) ? DEFAULT_REPLAY_WINDOW_TOKENS : m.replayWindowTokens();
+        return v > 0 ? v : DEFAULT_REPLAY_WINDOW_TOKENS;
     }
 
     /** (provider, model) 的注册条目,查无(自定义/未收录)为 null。生成参数从这里取。 */

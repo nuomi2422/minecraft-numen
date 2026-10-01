@@ -107,7 +107,7 @@ public final class EntityAgentLoop {
      *
      * <p>本值是<b>策略</b>，不是能力。模型能力仍以 {@code ctx} 为准，两者解耦。
      */
-    private static final int REPLAY_WINDOW_TOKENS = 20_000;
+    /** 每轮历史窗口上限：策略值，来自 provider 配置 {@code replayWindowTokens}（缺省 20_000）。 */
     /** 自动整理的下限:短于这个数不值得自己动手。手动 {@code /compact} 不看它。 */
     private static final int MIN_COMPACT_MESSAGES = 8;
     /** 给目标评估器看的对话上限。够装下整个目标期间,又不至于把整段会话都发一遍。 */
@@ -1604,9 +1604,19 @@ public final class EntityAgentLoop {
      * <p><b>⚠️ 截断不静默</b>（B21）：每次真的裁掉了，就在 {@code replayWindow} 日志里
      * 如实报出丢了多少条 / 多少 token。
      */
+    /**
+     * 本轮生效的历史窗口上限。<b>策略值</b>：来自 provider 配置的
+     * {@code replayWindowTokens}，缺省 {@link com.dwinovo.numen.agent.provider.ProviderRegistry#DEFAULT_REPLAY_WINDOW_TOKENS}。
+     * 与模型能力 {@code ctx} 分开取 —— 能力是给定的，策略是可调的。
+     */
+    private int replayWindowTokens() {
+        return com.dwinovo.numen.agent.provider.ProviderRegistry.replayWindowTokens(
+                client().providerId(), client().modelId());
+    }
+
     private List<ConvoState.Msg> replayWindow() {
         List<ConvoState.Msg> all = convo.snapshot();
-        CompactSplit.Split split = CompactSplit.byRecentBudget(all, REPLAY_WINDOW_TOKENS);
+        CompactSplit.Split split = CompactSplit.byRecentBudget(all, replayWindowTokens());
         if (split.toSummarize().isEmpty()) {
             return all;                      // 没超预算 → 原样，不做任何无谓裁剪
         }
@@ -1617,14 +1627,14 @@ public final class EntityAgentLoop {
         if (kept.isEmpty() && !all.isEmpty()) {
             kept = List.of(all.get(all.size() - 1));
             Constants.LOG.warn("[numen-entity#{}] replay 窗口过小（单条消息 {} token 就超了 {}）→ 兜底只保留最后一条；"
-                            + "调大 REPLAY_WINDOW_TOKENS 或压缩该条工具结果",
-                    entityUuid, CompactSplit.estimateTokens(all.get(all.size() - 1)), REPLAY_WINDOW_TOKENS);
+                            + "调大 provider 的 replayWindowTokens 或压缩该条工具结果",
+                    entityUuid, CompactSplit.estimateTokens(all.get(all.size() - 1)), replayWindowTokens());
         }
         int dropped = all.size() - kept.size();
         int droppedTokens = CompactSplit.estimateTokens(split.toSummarize());
         Constants.LOG.info("[numen-entity#{}] replay 窗口限流：{} 条 / {} token 超出 {} → 只发最近 {} 条 / {} token"
                         + "（源历史与 /compact 摘要不受影响；任务链仍在上下文里）",
-                entityUuid, dropped, droppedTokens, REPLAY_WINDOW_TOKENS,
+                entityUuid, dropped, droppedTokens, replayWindowTokens(),
                 kept.size(), CompactSplit.estimateTokens(kept));
         return kept;
     }
