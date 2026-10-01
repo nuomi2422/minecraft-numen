@@ -38,6 +38,17 @@ public final class LearnerPlugin implements NumenPlugin {
     private static final int MAX_REVIEW_RECORDS = 32;
 
     private static volatile Path configDir;
+
+    /** B16：产物投放口。第 1 批是 {@code UnsupportedArtifactSink}（三个方法都显式抛错）。 */
+    private static volatile com.dwinovo.numen.plugins.learner.core.ArtifactSink artifactSink;
+
+    static Path configDir() {
+        return configDir;
+    }
+
+    static com.dwinovo.numen.plugins.learner.core.ArtifactSink artifactSink() {
+        return artifactSink;
+    }
     private static volatile String lastReviewAt = "";
     private static volatile int lastVerdictCount;
 
@@ -51,6 +62,13 @@ public final class LearnerPlugin implements NumenPlugin {
         numen.registerTool(new LearnerNoteTool());
         numen.registerTool(new LearnerReviewTool());
         numen.registerTool(new LearnerStatusTool());
+        // 第 4 个工具：只读反馈通道（38号v3 B14 / v3.2 B22）。**纯只读**——
+        // B2 约束的是「不得发身体指令」不是工具总数；tools/list 里仍无 mine/goto/attack/build。
+        // 结果**不进 contributeState**（那是主 AI 的上下文，注进去就变成「叙述变授权」）。
+        numen.registerTool(new LearnerFeedbackTool());
+        // B16：AC 写入口只留接口、本批不做 AC。默认是**显式抛错**的占位实现，
+        // 不许静默 no-op —— 否则「接了但什么都没做」会变成查不到根因的哑故障。
+        artifactSink = new com.dwinovo.numen.plugins.learner.core.UnsupportedArtifactSink();
         // 运行时状态：让主 AI 知道「有多少条待复盘的备忘录」，从而自己决定何时调 learner_review
         numen.contributeState(companion -> {
             MemoQueue q = QUEUES.get(companion);
