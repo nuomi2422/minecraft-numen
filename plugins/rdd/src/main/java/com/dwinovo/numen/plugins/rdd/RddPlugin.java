@@ -183,6 +183,8 @@ public final class RddPlugin implements NumenPlugin {
         numen.on(CompanionEvent.REMOVE, body -> {
             LAST_INVENTORY.remove(body.getUUID());
             LAST_INVENTORY_AT.remove(body.getUUID());
+            // 38号v3.6 B24：携带器缓存与 LAST_INVENTORY 同生命周期，不清就是泄漏
+            RddCarryHint.invalidate(body.getUUID());
         });
         // 床边复活：死亡时记下同伴"自己绑的"床位（见 onCompanionDeath），SPAWN 时 TP 到床旁安全落点。
         // 只消费一次（take-and-clear）；首建/休眠恢复没有锚点，不会触发。
@@ -295,6 +297,7 @@ public final class RddPlugin implements NumenPlugin {
             FACTS.clear();
             LAST_CONTEXT.clear();
             LAST_INVENTORY.clear();
+            RddCarryHint.invalidateAll();
             LAST_EXPANSION_REPORT.clear();
             // 2026-09-30 深审 R05：世界态必须清干净。
             // 计划代次的真源在 TaskChain 里（随链持久化），这里不用管；
@@ -363,9 +366,27 @@ public final class RddPlugin implements NumenPlugin {
                     + "<instruction>current_task 是你必须执行的当前目标（优先于自由活动）；"
                     + "若你认为它不合理/不可达/与目标冲突，用 report_task_concern 上报（REJECT/COUNTER+建议），"
                     + "指挥官会据此改单或重规划；不要默默无视。</instruction>"
-                    + RddV32Directives.harnessHints() + "</rdd>");
+                    + RddV32Directives.harnessHints()
+                    // 38号v3.6 B24：携带器提醒。**只加一段文本，不改任何判定**（38 §3 划界）。
+                    + carryHint(uuid)
+                    + "</rdd>");
     }
 
+    /**
+     * 携带器提醒（{@code 38} v3.6 B24）。**读缓存，永不读世界** ——
+     * 上下文构建不该有副作用；读世界只在 {@link RddCarryHint#refresh} 的主线程路径里做。
+     *
+     * <p>缺快照时返回空串 → {@code <carry>} 整块不出现（B21：缺失就缺失，不写空标签）。
+     */
+    private static String carryHint(UUID companionId) {
+        try {
+            String hint = RddCarryHint.current(companionId);
+            return hint.isEmpty() ? "" : hint;
+        } catch (Throwable t) {
+            // 携带器是锦上添花，绝不能拖崩主链路
+            return "";
+        }
+    }
     private static String withAssets(UUID companionId, String rddContext) {
         String worldAssets = RddAssetContext.render(assets(companionId), 1200);
         return worldAssets.isBlank() ? rddContext : rddContext + "\n" + worldAssets;

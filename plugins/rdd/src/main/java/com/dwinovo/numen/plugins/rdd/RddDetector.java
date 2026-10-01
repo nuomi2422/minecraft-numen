@@ -175,6 +175,9 @@ final class RddDetector {
             if (rt == null) {
                 continue;
             }
+            // 38号v3.6 B24：携带器缓存**只在主线程刷新**（这里就是 tick，已在服务端线程）。
+            // 上下文构建那边只读缓存 —— contributeState 不保证在主线程，不能在那里读世界。
+            RddCarryHint.refresh(ap.serverLevel().getServer(), ap.getUUID());
             tickRuntime(ap, rt);
         }
         // 持久化：保存活跃任务链（1 秒一次，文件小，原子写）
