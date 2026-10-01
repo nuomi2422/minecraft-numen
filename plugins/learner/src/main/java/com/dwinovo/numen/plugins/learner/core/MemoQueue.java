@@ -32,7 +32,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public final class MemoQueue {
 
     /** 队列上限：超出拒收并回报，不静默丢。 */
-    public static final int MAX_QUEUE = 63;
+    public static final int MAX_QUEUE = 64;
 
     /** 单条正文字段上限（problem/tried/snapshot 各算一份），防一条爆量把全量重写拖垮。 */
     public static final int MAX_FIELD_CHARS = 4000;
