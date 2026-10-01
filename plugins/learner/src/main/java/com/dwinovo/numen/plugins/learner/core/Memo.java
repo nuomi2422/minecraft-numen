@@ -109,7 +109,7 @@ public record Memo(
                 // 第 1 级：这一轮到底该不该动 —— 目标是谁。
                 // 不成立 → fix 只带「先弄清目标」，不带任何装备/血量类内容（B5：不问不该问的）
                 new CarrierChain.Rule("指向谁",
-                        f -> f.has("target") || f.hostileNearby() || f.passiveNearby() || f.hasHp(),
+                        f -> f.has("target") || f.hostileNearby() || f.passiveNearby(),
                         java.util.List.of("战斗相关经验（附近有敌对）"),
                         java.util.List.of("先弄清这轮的目标是谁")),
 

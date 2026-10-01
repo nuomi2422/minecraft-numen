@@ -227,13 +227,27 @@ class FeedbackChannelB22Test {
     void pullIsCappedAndSaysSo(@TempDir Path tmp) throws IOException {
         Path f = tmp.resolve("rdd.jsonl");
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < FeedbackChannel.MAX_LINES_PER_PULL + 30; i++) {
+        // ★ 200 是字面量（契约：单次拉取上限 200 行），刻意不用常量。
+        //   变异测试实测：写成常量时改掉上限本测试不会红——期望值跟着被测值一起变。
+        for (int i = 0; i < 200 + 30; i++) {
             sb.append(line("subtask_completed", "{\"i\":\"" + i + "\"}")).append('\n');
         }
         Files.write(f, sb.toString().getBytes(StandardCharsets.UTF_8));
         var pull = FeedbackChannel.pull(f, "live@1", 0L, null, new FeedbackChannel.Pull());
-        assertEquals(FeedbackChannel.MAX_LINES_PER_PULL, pull.events.size(), "必须封顶，否则一次调用能吐爆返回值");
+        assertEquals(200, pull.events.size(), "必须封顶，否则一次调用能吐爆返回值");
         assertTrue(pull.truncated, "被截断要**如实说**，不能装作给全了");
+    }
+
+    /**
+     * ★ 契约钉死点：封顶与预算的「应该是多少」写成独立断言。
+     *
+     * <p>意义同 {@code MemoQueueTest.capacityConstantIsPinnedTo64}：
+     * 改常量会立刻红，逼人 consciously 确认，而不是让行为测试的期望值跟着漂。
+     */
+    @Test
+    void capsArePinnedToContractValues() {
+        assertEquals(200, FeedbackChannel.MAX_LINES_PER_PULL, "单次拉取上限契约是 200 行");
+        assertEquals(6000, FeedbackChannel.MAX_OBSERVATION_CHARS, "observation 体积预算契约是 6000 字符");
     }
 
     @Test
@@ -353,7 +367,7 @@ class FeedbackChannelB22Test {
         Map<String, Object> flat = FeedbackChannel.flatten(j, 0);
         assertEquals("true", String.valueOf(flat.get(FeedbackChannel.OBS_TRUNCATED)), "撞预算必须标截断");
         int total = flat.entrySet().stream().mapToInt(e -> e.getKey().length() + String.valueOf(e.getValue()).length()).sum();
-        assertTrue(total <= FeedbackChannel.MAX_OBSERVATION_CHARS * 2,
+        assertTrue(total <= 6000 * 2,
                 "压平后体积应受控，实际 " + total);
     }
 }

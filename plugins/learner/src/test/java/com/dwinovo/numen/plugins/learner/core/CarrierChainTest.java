@@ -215,6 +215,26 @@ class CarrierChainTest {
     }
 
     @Test
+    void defaultChainShortCircuitsWhenNoTargetCanBeIdentified() {
+        // 2026-10-01 实机抓到：第 1 级原本把 hasHp() 也算成「目标明确」，
+        // 于是只有 hp/food/dim/pos 的快照会让第 1 级成立 → 后面全判完，**短路没机会发生**。
+        // 但 B5 第 1 级问的是「目标是谁」，血量答不了这个问题。
+        Memo m = new Memo("m", "p", "s", "t", "hp=20/20, food=20, dim=overworld, pos=0,64,0", 1L);
+        Memo.CarrierAssessment a = m.assessCarrier();
+        assertTrue(a.why().contains("未求值"), "第 1 级不成立就该短路：" + a.why());
+        // ⚠️ 「缺什么」在 carryList 里（fix），不在 why 里 —— 断言要打对地方
+        assertTrue(a.carryList().contains("先弄清这轮的目标是谁"),
+                "失败的级要说出缺什么（携带清单里）: " + a.carryList());
+    }
+
+    @Test
+    void defaultChainDoesNotShortCircuitWhenTargetIsKnown() {
+        Memo m = new Memo("m", "p", "s", "t", "hp=20/20, armor=iron_chestplate, nearby=cow, dim=overworld", 1L);
+        Memo.CarrierAssessment a = m.assessCarrier();
+        assertFalse(a.why().contains("未求值"), "有 nearby=cow → 第 1 级成立，不该短路：" + a.why());
+    }
+
+    @Test
     void blankSnapshotStillReturnsUnknownWithoutAskingAnything() {
         Memo m = new Memo("m", "p", "s", "t", "", 1L);
         Memo.CarrierAssessment a = m.assessCarrier();

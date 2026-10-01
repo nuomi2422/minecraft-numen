@@ -82,23 +82,40 @@ class MemoQueueTest {
     @Test
     void queueRespectsCapacity(@TempDir Path dir) {
         MemoQueue q = new MemoQueue(dir.resolve("m.json"));
-        for (int i = 0; i < MemoQueue.MAX_QUEUE; i++) {
+        // ★ 下面的 64 是【字面量】，刻意不写 MemoQueue.MAX_QUEUE。
+        //   变异测试实测：写成常量时把 MAX_QUEUE 改成 63，本测试【不会红】——
+        //   期望值和被测值一起变，断言成了「队列遵守它自己的容量」而不是「容量是 64」。
+        //   要改容量：先改这里（让它红，确认你知道在改契约），再改常量。
+        for (int i = 0; i < 64; i++) {
             assertTrue(q.append(memo("m-" + i, "p" + i)));
         }
         assertFalse(q.append(memo("overflow", "one too many")), "超出上限必须拒收，不能静默丢");
-        assertEquals(MemoQueue.MAX_QUEUE, q.size());
+        assertEquals(64, q.size());
     }
 
     /** Codex 审出的 P1：restore 原本无上限，可能突破 MAX_QUEUE。 */
     @Test
     void restoreDoesNotExceedCapacity(@TempDir Path dir) {
         MemoQueue q = new MemoQueue(dir.resolve("m.json"));
-        for (int i = 0; i < MemoQueue.MAX_QUEUE; i++) {
+        for (int i = 0; i < 64; i++) {
             q.append(memo("m-" + i, "p" + i));
         }
         List<Memo> all = q.all();
         int depth = q.restore(all);
-        assertTrue(depth <= MemoQueue.MAX_QUEUE, "restore 后深度不得超过上限，实际 " + depth);
+        assertTrue(depth <= 64, "restore 后深度不得超过上限，实际 " + depth);
+    }
+
+    /**
+     * ★ 契约钉死点：把「容量常量应该是多少」写成一条独立断言。
+     *
+     * <p>有了这条，任何人改 {@link MemoQueue#MAX_QUEUE} 都会立刻红，
+     * 逼他 consciously 确认「64 是不是该改」，而不是悄悄改掉、
+     * 让上面两个行为测试的期望值跟着一起漂移。
+     */
+    @Test
+    void capacityConstantIsPinnedTo64() {
+        assertEquals(64, MemoQueue.MAX_QUEUE, "队列容量契约是 64。要改就改这里并同步改行为测试里的字面量");
+        assertEquals(4000, MemoQueue.MAX_FIELD_CHARS, "单条最大长度契约是 4000");
     }
 
     @Test

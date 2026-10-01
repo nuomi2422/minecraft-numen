@@ -125,15 +125,16 @@ class LearnerContractStressTest {
         Path file = dir.resolve("q.json");
         MemoQueue q = new MemoQueue(file);
         String big = "x".repeat(MemoQueue.MAX_FIELD_CHARS);
-        for (int i = 0; i < MemoQueue.MAX_QUEUE; i++) {
+        // ★ 64 与 4000 都是字面量，刻意不用常量（理由见 MemoQueueTest.queueRespectsCapacity 的注释）
+        for (int i = 0; i < 64; i++) {
             q.append(new Memo("m-" + i, big, "s", big, big, 1L));
         }
-        assertEquals(MemoQueue.MAX_QUEUE, q.size());
+        assertEquals(64, q.size());
         long bytes = Files.size(file);
         // 64 × ~12KB ≈ 0.8MB 上限量级；超过 4MB 说明上限没生效
         assertTrue(bytes < 4_000_000L, "最坏体积应受字段上限约束，实际 " + bytes + " bytes");
         // 仍能整体读回
-        assertEquals(MemoQueue.MAX_QUEUE, new MemoQueue(file).size());
+        assertEquals(64, new MemoQueue(file).size());
     }
 
     /** 压力：并发 append —— 服务端 tick 与 AI 线程可能同时写。 */
@@ -168,7 +169,7 @@ class LearnerContractStressTest {
         pool.shutdownNow();
 
         int size = q.size();
-        assertTrue(size <= MemoQueue.MAX_QUEUE, "并发下不得突破上限，实际 " + size);
+        assertTrue(size <= 64, "并发下不得突破上限，实际 " + size);
         assertEquals(size, accepted.get(), "accepted 计数与最终深度必须一致（无丢失/无幻影）");
         // 落盘内容必须可解析且 id 唯一
         long distinct = new MemoQueue(dir.resolve("q.json")).all().stream().map(Memo::id).distinct().count();
