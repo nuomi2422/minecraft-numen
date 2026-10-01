@@ -241,9 +241,15 @@ public final class CarrierChain {
             }
         }
 
+        // ⚠️ 2026-10-01 实机抓到：这里原来写的是 facts.skippedLevels().size()，
+        //    而 skippedLevels 每短路一次只塞**一条**（名字+「以及其后」），
+        //    于是 4 条规则在第 1 级短路时它报「后续 1 项未求值」——**实际是 3 项**。
+        //    报了个不对的数 = 让「没做的事」看起来像只做了一件 → B21 同一类。
+        //    正确算法：剩余规则数 = 总数 - 已走过的 - 1。
+        int notEvaluated = stoppedAt >= 0 ? Math.max(0, rules.size() - stoppedAt - 1) : 0;
         String stoppedNote = stoppedAt >= 0
-                ? "（在第 " + (stoppedAt + 1) + " 级短路，后续 " + facts.skippedLevels().size() + " 项未求值）"
-                : "（全部级已求值）";
+                ? "（在第 " + (stoppedAt + 1) + " 级短路，后续 " + notEvaluated + " 项未求值）"
+                : "（全部 " + rules.size() + " 级已求值）";
 
         return new Result(List.copyOf(carry), why + "  " + stoppedNote, stoppedAt,
                 facts.evaluatedLevels(), facts.skippedLevels());

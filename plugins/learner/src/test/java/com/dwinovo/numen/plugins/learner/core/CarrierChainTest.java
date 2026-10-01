@@ -51,6 +51,32 @@ class CarrierChainTest {
     // ---------- C1 短路真的发生 ----------
 
     @Test
+    void whyReportsTheRealNumberOfUnEvaluatedRules() {
+        // 2026-10-01 实机抓到：原来用 skippedLevels().size()，而它每次短路只塞一条
+        // → 4 条规则在第 1 级短路时报「后续 1 项未求值」，**实际是 3 项**。
+        // 报不对的数 = 让「没做的事」看起来像只做了一件 → B21 同一类。
+        List<CarrierChain.Rule> rules = List.of(
+                new CarrierChain.Rule("一", f -> false, List.of(), List.of("缺一")),
+                new CarrierChain.Rule("二", f -> true, List.of()),
+                new CarrierChain.Rule("三", f -> true, List.of()),
+                new CarrierChain.Rule("四", f -> true, List.of()));
+        CarrierChain.Facts f = CarrierChain.factsOf(java.util.Map.of(), "");
+        CarrierChain.Result r = CarrierChain.evaluate(rules, f);
+        assertEquals(0, r.stoppedAt());
+        assertTrue(r.why().contains("后续 3 项未求值"), "4 条规则第 1 级短路 = 后续 3 项：" + r.why());
+    }
+
+    @Test
+    void whySaysAllRulesEvaluatedWhenNoneShortCircuits() {
+        List<CarrierChain.Rule> rules = List.of(
+                new CarrierChain.Rule("一", f -> true, List.of()),
+                new CarrierChain.Rule("二", f -> true, List.of()));
+        CarrierChain.Facts f = CarrierChain.factsOf(java.util.Map.of(), "");
+        CarrierChain.Result r = CarrierChain.evaluate(rules, f);
+        assertTrue(r.why().contains("全部 2 级已求值"), r.why());
+    }
+
+    @Test
     void laterRuleIsNotInvokedWhenEarlierOneFails() {
         List<String> invoked = new ArrayList<>();
         List<CarrierChain.Rule> rules = List.of(
@@ -110,7 +136,7 @@ class CarrierChainTest {
         CarrierChain.Result r = CarrierChain.evaluate(rules, f);
         assertFalse(r.shortCircuited());
         assertEquals(List.of("x", "y"), r.carry());
-        assertTrue(r.why().contains("全部级已求值"), r.why());
+        assertTrue(r.why().contains("全部 2 级已求值"), "未短路时要说清**几级都求值了**：" + r.why());
     }
 
     @Test
