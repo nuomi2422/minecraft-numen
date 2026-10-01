@@ -41,8 +41,10 @@ class RddDeathLedgerTest {
         // 4 分 59 秒：还在
         assertTrue(d.stillRecoverable(1000L + (20 * 60 * 4) + 19));
         // 正好 5 分钟：过期（与原版 despawn 同口径）
-        assertFalse(d.stillRecoverable(1000L + RddDeathLedger.DROPS_LIVE_TICKS));
-        assertEquals(0, d.ticksLeft(1000L + RddDeathLedger.DROPS_LIVE_TICKS));
+        // ★ 6000 是字面量（20 tick × 60 秒 × 5 分钟 = 6000 tick），刻意不用 DROPS_LIVE_TICKS。
+        //   变异测试实测：写成常量时改掉窗口本测试不会红。详见 RddRedlineContractPinTest。
+        assertFalse(d.stillRecoverable(1000L + 6000L));
+        assertEquals(0, d.ticksLeft(1000L + 6000L));
     }
 
     @Test void twoDeathsSixteenSecondsApartKeepSeparateCountdowns() {
@@ -123,13 +125,15 @@ class RddDeathLedgerTest {
     }
 
     @Test void ledgerIsBoundedSoACrashLoopCannotInflateThePayload() {
-        for (int i = 0; i < RddDeathLedger.MAX_ENTRIES * 3; i++) {
+        // ★ 8 与 24 都是字面量（上限 8 条 / 灌 24 条逼出封顶），刻意不用 MAX_ENTRIES。
+        //   变异测试实测：写成常量时把上限改成 64，本测试仍然绿——循环也跟着变成灌 192 条，
+        //   于是「封顶到 64」照样成立，测不出「上限其实是 8」。
+        for (int i = 0; i < 24; i++) {
             RddDeathLedger.record(id, 1000L + i * 20L, 0L, "P" + i, 1);
         }
-        assertEquals(RddDeathLedger.MAX_ENTRIES, RddDeathLedger.deathsRecorded(id));
+        assertEquals(8, RddDeathLedger.deathsRecorded(id));
         // 保留的是最新的那几条
-        assertEquals("P" + (RddDeathLedger.MAX_ENTRIES * 3 - 1),
-                RddDeathLedger.latest(id).deathAt());
+        assertEquals("P23", RddDeathLedger.latest(id).deathAt());
     }
 
     @Test void ledgersArePerCompanionAndClearable() {

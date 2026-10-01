@@ -92,7 +92,10 @@ class RddDecomposerParseTest {
         }
         sb.append("]}");
         List<SubtaskSpec> specs = RddDecomposer.parse(sb.toString());
-        assertEquals(RddChainFactory.MAX_SUBTASKS, specs.size());
+        // ★ 8 是字面量（契约：二级上限 8 条），刻意不用 RddChainFactory.MAX_SUBTASKS。
+        //   变异测试实测：写成常量时把上限改成 20 本测试仍绿——上面循环本来灌 20 条，
+        //   封顶到 20 照样成立。详见 RddRedlineContractPinTest。
+        assertEquals(8, specs.size());
         // 最早的有效条目保留
         assertEquals("s0", specs.get(0).description());
     }

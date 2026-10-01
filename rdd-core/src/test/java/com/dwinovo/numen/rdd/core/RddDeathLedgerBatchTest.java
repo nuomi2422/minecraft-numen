@@ -239,7 +239,7 @@ class RddDeathLedgerBatchTest {
         RddDeathLedger.restore(ID, saved);
 
         List<RddDeathLedger.Death> all = RddDeathLedger.all(ID);
-        assertTrue(all.size() <= RddDeathLedger.MAX_ENTRIES, "有界：不得无限增长");
+        assertTrue(all.size() <= 8, "有界：不得无限增长（契约上限 8，用字面量钉，见 RddRedlineContractPinTest）");
         assertEquals(saved.deaths().size(), all.size());
         for (int i = 0; i < all.size() - 1; i++) {
             assertTrue(all.get(i).gameTime() >= all.get(i + 1).gameTime(), "仍按时间倒序");
