@@ -12,6 +12,7 @@
   ],
   "client": [
     "ChatComponentAccessor",
+    "MixinCamera",
     "MixinKeyboardInput",
     "MixinPlayerRenderer"
   ],

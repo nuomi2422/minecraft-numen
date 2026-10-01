@@ -106,6 +106,8 @@ public class NumenNeoForgeClient {
         com.dwinovo.numen.client.NumenKeys.tick();
         com.dwinovo.numen.client.agent.AgentLoopRegistry.tickAll();
         com.dwinovo.numen.mcp.server.McpMode.instance().clientTick();
+        // 相机机位配置热重载（cam.json 每 20 tick 读一次）；OFF 时是空转
+        com.dwinovo.numen.client.cam.CameraRig.tick();
     }
 
     static void onLoggingOut(net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
