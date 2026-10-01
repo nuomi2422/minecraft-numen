@@ -50,6 +50,24 @@ public final class ProviderRegistry {
      * 模型能吃多少是给定的,我们每轮发多少是可以调的。
      * 2026-10-01 第 3 轮把它从写死常量提成配置项,
      * 免得把一个「当时测出来的数」当成「最优值」留给下一个人。
+     *
+     * <p><b>★ 标称 20,000 的真实含义（2026-10-01 实测，别再把它当成「就是 2 万 token」）</b>：
+     * <pre>
+     *   计价含 P95 安全系数 1.5（见 CompactSplit.LIMIT_SAFETY_FACTOR）
+     *     → 标称 20,000 的「历史窗口」，真实发出的历史流水约 13,300 token
+     *   且**不含** system(约 12,938 字符) + tools 声明(约 11,913 字符) + runtime_state
+     *     这三样每轮现算挂载，不进 history 预算，合计约 8,000 token 固定开销
+     *   实测稳态 promptTokens = 26,162
+     *     （第 2 轮未校准时同一份代码实测最大 117,379）
+     * </pre>
+     * <b>所以「20000」既不是 20,000 也不是 13,300，是「流水窗口 + 约 8,000 固定」。</b>
+     *
+     * <p><b>配置写在哪（2026-10-01 核实，别写错地方）</b>：
+     * 本类读的是 <b>classpath 内置</b> {@code /numen_providers.json}
+     * （{@code ai/src/main/resources/numen_providers.json}），
+     * <b>不是</b>用户目录 {@code config/numen/providers.json}
+     * —— 后者由 {@code ProviderLibrary} 读，schema 是 {@code entries[]} 平铺，
+     * <b>在这里写不会生效</b>。{@code ctx} 同样只认内置 catalog。
      */
     public static final int DEFAULT_REPLAY_WINDOW_TOKENS = 20_000;
 

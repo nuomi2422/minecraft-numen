@@ -10,9 +10,15 @@ import java.util.Map;
 public final class SelfCompileRequestTool implements NumenTool {
 
     private final SelfCompileService service;
+    private final SelfCompilePolicy policy;
 
     public SelfCompileRequestTool(SelfCompileService service) {
+        this(service, SelfCompilePolicy.of(false));
+    }
+
+    public SelfCompileRequestTool(SelfCompileService service, SelfCompilePolicy policy) {
         this.service = service;
+        this.policy = policy == null ? SelfCompilePolicy.of(false) : policy;
     }
 
     @Override public String name() { return "selfcompile_request"; }
@@ -51,6 +57,14 @@ public final class SelfCompileRequestTool implements NumenTool {
     }
 
     @Override public void invoke(ToolCall call) {
+        // ★ RL-19 硬约束（2026-10-01 第 4 轮）：**先查门，再看参数**。
+        //   顺序很重要 —— 参数校验放在门后面，门才是唯一出口。
+        if (!policy.allowInGameRequest()) {
+            SelfCompileMonitor.publish("selfcompile_request",
+                    Map.of("state", "DENIED", "reason", "internal-channel"));
+            call.complete(SelfCompilePolicy.denialJson());
+            return;
+        }
         try {
             String requirement = call.args().has("requirement")
                     ? call.args().get("requirement").getAsString().trim() : "";

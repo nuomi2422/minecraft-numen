@@ -34,9 +34,9 @@
         "x-opencode-session": "numen-minecraft-${session}"
       },
       "models": [
-        { "id": "deepseek-v4.1-flash", "ctx": 1000000, "reasoning": true },
-        { "id": "deepseek-v4-flash", "ctx": 1000000, "reasoning": true },
-        { "id": "deepseek-v4-pro", "ctx": 1000000, "reasoning": true },
+        { "id": "deepseek-v4.1-flash", "ctx": 1000000, "reasoning": true, "replayWindowTokens": 20000 },
+        { "id": "deepseek-v4-flash", "ctx": 1000000, "reasoning": true, "replayWindowTokens": 20000 },
+        { "id": "deepseek-v4-pro", "ctx": 1000000, "reasoning": true, "replayWindowTokens": 20000 },
         { "id": "glm-5.3-flash", "ctx": 202752, "reasoning": true },
         { "id": "glm-5.3", "ctx": 202752, "reasoning": true },
         { "id": "kimi-k3", "ctx": 262144, "reasoning": true },

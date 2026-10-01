@@ -12,12 +12,14 @@ import java.nio.file.Path;
  *
  * <h2>★ 这个插件现在真正负责什么（2026-10-01 核实）</h2>
  *
- * <p><b>活的只有前两个工具，是「需求登记口」，不是改码通道：</b>
+ * <p><b>前两个工具：一个是查状态的闸门，一个默认关门（2026-10-01 第 4 轮核实后的准确描述）</b>
  * <ul>
- *   <li>{@code selfcompile_request} —— 把游戏内 AI 的需求写进一个审计目录，
- *       <b>不生成代码、不执行命令、不编译、不部署</b>（工具描述原话）。
- *       它的实际角色 = <b>工程流 stager 里「进游戏监督 AI」那个小流程的落地面</b>：
- *       游戏里的 AI 用它把「想改什么」落到盘上，外层工程流读取并排期。</li>
+ *   <li>{@code selfcompile_request} —— <b>默认关门</b>（见 {@link SelfCompilePolicy}）。
+ *       它<b>不是</b>给游戏内 AI 的通道：外层 {@code run-mutation.ps1} 有自己的一套
+ *       （生成 MutationId → 编译 → 验证 → 预算止损 → 部署 → 写证据），
+ *       <b>根本不经过这个工具</b> —— 所以这个工具<b>当前没有任何合法调用方</b>。
+ *       <b>没有合法调用方，就不需要识别「谁合法」，只需要默认关门。</b>
+ *       游戏内 AI 要记需求请用 {@code learner_note}，外层读那些记录去做。</li>
  *   <li>{@code selfcompile_status} —— 查状态（idle / controlled）。</li>
  * </ul>
  *
@@ -37,7 +39,11 @@ public final class SelfCompileEntry implements NumenPlugin {
         Path root = numen.configDir().resolve("selfcompile").resolve("mutations");
         SelfCompileService service = new SelfCompileService(root);
         numen.registerTool(new SelfCompileStatusTool(service));
-        numen.registerTool(new SelfCompileRequestTool(service));
+        // ★ RL-19 硬约束（2026-10-01 第 4 轮）：**默认关门**。
+        //   策略文件 config/numen/selfcompile_policy.json 里写 {"allowInGameRequest":true} 才开门。
+        //   外层 run-mutation.ps1 走自己的通道（不经过这个工具），所以关门不影响它。
+        numen.registerTool(new SelfCompileRequestTool(
+                service, SelfCompilePolicy.load(numen.configDir())));
         // Self-Compile 自变异系统生成的工具（每轮变异后更新这里）
         numen.registerTool(new RddWhereamiTool());
         numen.registerTool(new RddGetInventoryTool());
