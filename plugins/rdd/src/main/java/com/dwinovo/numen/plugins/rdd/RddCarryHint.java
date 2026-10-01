@@ -1,5 +1,6 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import com.dwinovo.numen.ai.AiLog;
 import com.dwinovo.numen.api.carrier.CarrierChain;
 import com.dwinovo.numen.api.carrier.CarrierRules;
 import com.dwinovo.numen.api.carrier.ItemSemantics;
@@ -107,6 +108,7 @@ final class RddCarryHint {
                 CARRY_HINT.remove(companionId);
                 CARRY_HINT_AT.remove(companionId);
             }
+            AiLog.LOG.debug("[rdd] carry refresh 跳过：不在服务端主线程 {}", companionId);
             return;
         }
         CARRY_HINT_AT.put(companionId, now);
@@ -115,19 +117,24 @@ final class RddCarryHint {
             if (body == null || body.serverLevel() == null) {
                 CARRY_HINT.remove(companionId);
                 CARRY_HINT_AT.remove(companionId);
+                AiLog.LOG.info("[rdd] carry refresh：同伴不在世界里（body={}），本轮不注入 <carry> {}",
+                        body == null ? "null" : "level-null", companionId);
                 return;
             }
             String hint = render(body);
             if (hint.isEmpty()) {
                 CARRY_HINT.remove(companionId);
+                AiLog.LOG.info("[rdd] carry refresh：快照或分级结果为空（无 <carry> 可注入）{}", companionId);
             } else {
                 CARRY_HINT.put(companionId, hint);
+                AiLog.LOG.info("[rdd] carry refresh：已注入 <carry> {} 字符 {}", hint.length(), companionId);
             }
         } catch (Throwable t) {
             // 携带器是「锦上添花」，任何问题都不许影响主链路。
             // ⚠️ 这里也**不写时间戳** —— 失败了要让下次还能重试，不能被节流锁死。
             CARRY_HINT.remove(companionId);
             CARRY_HINT_AT.remove(companionId);
+            AiLog.LOG.info("[rdd] carry refresh 异常（本轮不注入）: {}", t.toString());
         }
     }
 
