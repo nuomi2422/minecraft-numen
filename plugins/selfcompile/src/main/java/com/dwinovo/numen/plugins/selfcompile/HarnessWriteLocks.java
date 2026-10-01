@@ -21,6 +21,11 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>纯逻辑、线程安全（{@link ConcurrentHashMap}），无外部依赖，便于单测与之后接入
  * 执行/部署链。
+ *
+ * <p><b>★ 2026-10-01：本类在生产代码里 0 处引用，当前未接线（只有单测调它）。</b>
+ * 它服务于 {@link MutationPipeline}，而那条流水线同样从未接上线。
+ * 保留作设计留档；接线前先读 {@link MutationPipeline} 的停用说明——
+ * 真正的改码通道是外层 {@code run-mutation.ps1}，两套并存必然漂移。
  */
 public final class HarnessWriteLocks {
 
