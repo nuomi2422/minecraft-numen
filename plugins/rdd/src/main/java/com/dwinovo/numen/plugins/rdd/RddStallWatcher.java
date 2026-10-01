@@ -242,7 +242,13 @@ final class RddStallWatcher {
             return;
         }
         // 响应窗口已过、资产仍无变化 → 换措辞再拍一次
-        RddPlugin.nudge(ap.getUUID(), "你还没动。告诉我你卡在哪一步？如果缺工具，现在就调 selfcompile_request。");
+        // 2026-10-01 RL-19（38号v3.4 §1）：这里原来写的是「如果缺工具，现在就调 selfcompile_request」。
+        // **点名教唆本身就是漏洞** —— 干活 AI 是照着 nudge 学的，nudge 点了工具名就等于在派活，
+        // 而 RL-19 要求游戏内 AI 只能往待办目录写一条（唯一的合法 caller 是**外层**，不是游戏内任何 AI）。
+        // → 改成指向待办目录。
+        RddPlugin.nudge(ap.getUUID(), "你还没动。告诉我你卡在哪一步？"
+                + "如果缺工具或能力，把「缺什么 + 你试过什么 + 你所处环境的快照」"
+                + "用 learner_note 写一条待办，学习者会看到；**不要自己请求代码变更**。");
         RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(), "reason", "still stalled, re-nudge"));
         stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, st.nudges() + 1));
     }
