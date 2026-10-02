@@ -97,6 +97,40 @@ public final class AcxValueResolver {
     }
 
     /**
+    /**
+     * 沿点路径在对象里下钻；段命中 {@link List} 时按数字下标取值。
+     * <p>数组下标这条是 2026-10-02 真机实测逼出来的：Numen 的 {@code scan_blocks} 输出是
+     * {@code {matches:[{x,y,z,block,distance}]}}，脚本要判「有没有矿」只能写
+     * {@code $scan.matches.0.block}，原来只认 Map 的点路径取不到。</p>
+     * <p>取不到返回 null（不抛、不保留原串），由调用方决定是记警告还是退回。</p>
+     */
+    public static Object resolvePath(Object root, String path) {
+        if (root == null || path == null || path.isEmpty()) {
+            return null;
+        }
+        Object cur = root;
+        for (String seg : path.split("\\.")) {
+            if (cur instanceof Map<?, ?> m) {
+                cur = m.get(seg);
+            } else if (cur instanceof List<?> l) {
+                int idx = -1;
+                try {
+                    idx = Integer.parseInt(seg);
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+                cur = (idx >= 0 && idx < l.size()) ? l.get(idx) : null;
+            } else {
+                return null;
+            }
+            if (cur == null) {
+                return null;
+            }
+        }
+        return cur;
+    }
+
+    /**
      * 字段查找：先整体查，再按点路径逐层下钻。
      *
      * <p>点路径是 Numen 适配层加的需求：{@code get_self_status} 这类工具的输出是
@@ -109,21 +143,12 @@ public final class AcxValueResolver {
             return v;
         }
         if (key.indexOf('.') >= 0) {
-            Object cur = root;
-            for (String seg : key.split("\\.")) {
-                if (!(cur instanceof Map<?, ?> m)) {
-                    cur = null;
-                    break;
-                }
-                cur = m.get(seg);
-                if (cur == null) {
-                    break;
-                }
-            }
+            Object cur = resolvePath(root, key);
             if (cur != null) {
                 return cur;
             }
         }
+
         LOG.warning(label + " 引用的字段不存在，保留原字串");
         return original;
     }

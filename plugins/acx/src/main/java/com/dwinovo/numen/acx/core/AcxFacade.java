@@ -198,11 +198,12 @@ public final class AcxFacade {
                 return err("发布需要 ac_json（完整 AC 定义）");
             }
             AcxDefinition def = AcxLoader.parseJson(s, blocks);
-            List<String> problems = library.validate(def);
+            List<String> problems = library.validate(def, new java.util.HashSet<>(library.names()));
             if (!problems.isEmpty()) {
                 return err("校验不通过: " + String.join("; ", problems));
             }
-            String version = library.publish(def, strOr(req.get("note"), ""));
+            String version = library.publish(def, strOr(req.get("note"), ""),
+                    new java.util.HashSet<>(library.names()));
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("name", def.name());
             data.put("version", version);
@@ -265,12 +266,23 @@ public final class AcxFacade {
             return err("本门面未挂载版本库");
         }
         Map<String, Object> active = new LinkedHashMap<>();
+        Map<String, Object> pending = new LinkedHashMap<>();
         for (String name : library.names()) {
-            active.put(name, library.activeVersion(name));
+            // 观测接口必须容错：某条 AC 只有未批准版本时只是「没上线」，不是整体失败
+            if (!library.isOnline(name)) {
+                pending.put(name, "未上线（等人工批准）");
+                continue;
+            }
+            try {
+                active.put(name, library.activeVersion(name));
+            } catch (RuntimeException e) {
+                pending.put(name, e.getMessage());
+            }
         }
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("names", library.names());
         data.put("active", active);
+        data.put("not_online", pending);
         return ok("版本库状态", data);
     }
 

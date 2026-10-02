@@ -18,6 +18,7 @@ import java.util.logging.Logger;
 import com.dwinovo.numen.acx.api.AcxCondition;
 import com.dwinovo.numen.acx.api.AcxDefinition;
 import com.dwinovo.numen.acx.api.AcxPrecondition;
+import com.dwinovo.numen.acx.api.AcxLimitsSpec;
 import com.dwinovo.numen.acx.api.AcxStep;
 import com.dwinovo.numen.acx.api.AcxToolRegistry;
 import com.dwinovo.numen.acx.api.Operator;
@@ -300,8 +301,50 @@ public final class AcxLoader {
             }
             throw new IllegalArgumentException("step id 重复（含 children）: " + String.join(", ", dup));
         }
+        // 单份 AC 自己的运行上限：只认三个键、写错就拒（静默忽略上限等于熔断失效）
+        AcxLimitsSpec spec = parseLimits(raw.get("limits"));
+
         return new AcxDefinition(name, version, description, tags, steps, plannerNotes, safetyNotes,
-                preconditions);
+                preconditions, spec);
+    }
+
+    private static AcxLimitsSpec parseLimits(Object raw) {
+        if (raw == null) {
+            return AcxLimitsSpec.of();
+        }
+        if (!(raw instanceof Map<?, ?> m)) {
+            throw new IllegalArgumentException("limits 必须是对象");
+        }
+        Integer maxSteps = null;
+        Integer maxTimeout = null;
+        Integer maxDepth = null;
+        for (Map.Entry<?, ?> e : m.entrySet()) {
+            String k = str(e.getKey());
+            Object v = e.getValue();
+            int n;
+            if (v instanceof Number num) {
+                n = num.intValue();
+            } else if (v instanceof String s) {
+                try {
+                    n = Integer.parseInt(s.trim());
+                } catch (NumberFormatException ex) {
+                    throw new IllegalArgumentException("limits." + k + " 不是整数: " + s);
+                }
+            } else {
+                throw new IllegalArgumentException("limits." + k + " 必须是整数");
+            }
+            if (n <= 0) {
+                throw new IllegalArgumentException("limits." + k + " 必须为正整数（<=0 会让熔断立即触发）");
+            }
+            switch (k) {
+                case "max_steps" -> maxSteps = n;
+                case "max_timeout_ms" -> maxTimeout = n;
+                case "max_depth" -> maxDepth = n;
+                default -> throw new IllegalArgumentException("limits 未知键: " + k
+                        + "（可写 max_steps / max_timeout_ms / max_depth）");
+            }
+        }
+        return AcxLimitsSpec.of(maxSteps, maxTimeout == null ? null : (long) maxTimeout, maxDepth);
     }
 
     @SuppressWarnings("unchecked")
@@ -486,13 +529,35 @@ public final class AcxLoader {
         return Set.of();
     }
 
+    /**
+     * 字段命中判定。只比第一段：运行时才知道嵌套/列表形状，加载期不该猜。
+     * <p>输出字段本身可以是点路径（get_self_status 声明 position.x），所以引用只写头（position）也算命中。
+     * 例：{@code $scan.matches.0.block} → 首段 matches；{@code $read.position} → 首段 position。
+     */
+    private static boolean hasField(Set<String> fields, String path) {
+        if (fields.contains(path)) {
+            return true;
+        }
+        int dot = path.indexOf('.');
+        String head = dot < 0 ? path : path.substring(0, dot);
+        if (fields.contains(head)) {
+            return true;
+        }
+        for (String f : fields) {
+            if (f.startsWith(head + ".")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static void checkValue(String acName, AcxStep step, Object value,
                                    Set<String> prevFields, Map<String, Set<String>> stepFields,
                                    List<String> warnings, List<String> hardErrors) {
         if (value instanceof String s) {
             if (s.startsWith("$prev.")) {
                 String key = s.substring("$prev.".length());
-                if (!prevFields.isEmpty() && !prevFields.contains(key)) {
+                if (!prevFields.isEmpty() && !hasField(prevFields, key)) {
                     warnings.add(acName + " step " + step.id() + " 引用 $prev." + key + " 但上一步无此输出字段");
                 }
             } else if (s.startsWith("$input.")) {
@@ -504,7 +569,7 @@ public final class AcxLoader {
                 Set<String> fields = stepFields.get(stepId);
                 if (fields == null) {
                     hardErrors.add("step " + step.id() + " 引用 $" + stepId + " 但 AC 内无此步骤 id");
-                } else if (!fields.isEmpty() && !fields.contains(key)) {
+                } else if (!fields.isEmpty() && !hasField(fields, key)) {
                     warnings.add(acName + " step " + step.id() + " 引用 $" + stepId + "." + key
                             + " 但步骤 " + stepId + " 无此输出字段");
                 }

@@ -1,5 +1,6 @@
 package com.dwinovo.numen.plugins.acx;
 
+import com.dwinovo.numen.acx.api.AcxDefinition;
 import com.dwinovo.numen.acx.api.AcxToolPort;
 import com.dwinovo.numen.acx.core.AcxFacade;
 import com.dwinovo.numen.acx.core.AcxHostBridge;
@@ -46,13 +47,14 @@ public final class AcxPlugin implements NumenPlugin {
     /** jar 内 stable 脚本（与 resources/acx-lib/stable 同步；缺文件只告警）。 */
     private static final String[] STABLE_SCRIPTS = {
             "numen_smoke_read_move_read.ac",
-            "ore_survey.ac",
-            "survey_iron.ac",
-            "survey_diamond.ac",
-            "guarded_ore_survey.ac",
-            "defend_self_v2.ac",
-            "iron_armor_surface_v2.ac",
-            "mine_smelt_craft_iron_pickaxe.ac"
+            "ore_scan_inspect.ac",
+            "ore_goto_mine.ac",
+            "hp_guard_goto.ac",
+            "timeout_demo.ac",
+            "subac_nesting.ac",
+            "inventory_if.ac",
+            "ignore_failure_demo.ac",
+            "do_while_scan.ac"
     };
 
     private NumenApi api;
@@ -118,9 +120,13 @@ public final class AcxPlugin implements NumenPlugin {
             store = new JsonlRecordStore(base.resolve("records.jsonl"));
             FileAcxLibrary library = new FileAcxLibrary(base.resolve("library.json"), registry);
             library.load();
+            autoApproveBundled(library, load);
 
             runner = AcxRunner.builder()
                     .tools(registry)
+                    // ★ 子 AC 委托靠它：没有 catalog，step.block 写成别的 AC 名就会「找不到积木或 AC」。
+                    //   真机实测踩过（subac_nesting FAIL），loader 那时明明已经加载成功了。
+                    .catalog(load.catalog())
                     .events(AcxMonitor::publish)
                     .store(store)
                     .build();
@@ -148,23 +154,106 @@ public final class AcxPlugin implements NumenPlugin {
         }
     }
 
+    /**
+     * jar 自带脚本自动进版本库并上线（AC-B6）。
+     *
+     * <p>策略：<b>只对「版本库里从没见过的 jar 自带脚本」</b>做 publish + approve。
+     * 理由：随 jar 发布的脚本等价于随插件版本发布的代码，天然已审；自动批准省掉每次发版
+     * 都要人点一次。但玩家/学习者在游戏里改过的脚本<b>不</b>自动批准 —— 它已经进过库，
+     * 走 GENERATED/PENDING，必须 {@code acx_approve} 人工放行，人工批准那道闸才不形同虚设。
+     * 用户自己放进 config 的 .ac 不在 {@link #STABLE_SCRIPTS} 名单里，同样不自动批准。</p>
+     */
+    private void autoApproveBundled(FileAcxLibrary library, AcxLoader.LoadReport load) {
+        List<String> approved = new ArrayList<>();
+        for (AcxDefinition def : load.registered().values()) {
+            if (!isBundled(def.name())) {
+                continue;
+            }
+            // 判据是「库里的生效版本是不是还等于 jar 里这份」，不是「库里有这个名字没有」。
+            // 只判名字的话，插件升版后内置脚本改了内容、库里旧定义还在，就会一直跑旧版本
+            // （真机踩过：timeout_demo 换了循环体，跑起来还是旧的 set_timer 版本）。
+            if (library.hasAnyVersion(def.name())) {
+                AcxDefinition online = null;
+                try {
+                    online = library.active(def.name());
+                } catch (RuntimeException ignored) {
+                    // 没上线 / active 状态异常 → 视为需要更新
+                }
+                if (online != null
+                        && com.dwinovo.numen.acx.core.AcxFingerprint.of(online)
+                                .equals(com.dwinovo.numen.acx.core.AcxFingerprint.of(def))) {
+                    continue;
+                }
+            }
+            try {
+                // 子 AC 委托要过静态校验，得把同批已加载的 AC 名交给版本库
+                String version = library.publish(def, "jar 内置脚本，随插件版本发布",
+                        new java.util.HashSet<>(load.registered().keySet()));
+                library.approve(def.name(), version, "acx-builtin",
+                        "随 jar 发布视为已审；此后任何修改都需人工 acx_approve");
+                approved.add(def.name() + "@" + version);
+            } catch (RuntimeException e) {
+                LOG.warn("[acx] 内置脚本未能上线（不影响其余）: {} -> {}", def.name(), e.getMessage());
+            }
+        }
+        if (!approved.isEmpty()) {
+            library.persist();
+            LOG.info("[acx] 内置脚本已上线（发布即已审）: {}", approved);
+        }
+    }
+
+    private static boolean isBundled(String acName) {
+        for (String file : STABLE_SCRIPTS) {
+            if (file.equals(acName + ".ac")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** jar 内 stable 脚本铺到 config；已存在不覆盖（游戏内修订优先）。 */
     private void materializeStable(Path libRoot) throws IOException {
         Path stable = libRoot.resolve("stable");
         Files.createDirectories(stable);
         for (String name : STABLE_SCRIPTS) {
-            Path target = stable.resolve(name);
-            if (Files.exists(target)) {
-                continue;
-            }
             try (InputStream in = AcxPlugin.class.getResourceAsStream("/acx-lib/stable/" + name)) {
                 if (in == null) {
                     LOG.warn("[acx] jar 内脚本缺失: /acx-lib/stable/{}", name);
                     continue;
                 }
-                Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+                byte[] bundled = in.readAllBytes();
+                Path target = stable.resolve(name);
+                if (Files.exists(target)) {
+                    byte[] onDisk = Files.readAllBytes(target);
+                    if (java.util.Arrays.equals(bundled, onDisk)) {
+                        continue;
+                    }
+                    // jar 拥有的脚本：内容变了说明插件升版了。lib/stable 是 jar 的物料区，
+                    // 玩家要改自己的 AC 应该走 acx_publish 进版本库，所以这里以 jar 为准，
+                    // 旧内容留一份 .stale-<ts> 存档而不是静默覆盖。
+                    Path stale = stable.resolve(name + ".stale-" + System.currentTimeMillis());
+                    Files.move(target, stale, StandardCopyOption.REPLACE_EXISTING);
+                    LOG.info("[acx] 内置脚本随插件升版已更新（旧内容存档 {}）: {}", stale.getFileName(), name);
+                }
+                Files.write(target, bundled);
             }
         }
+        // 不在 jar 名单里的 .ac 一律当玩家脚本处理（只提醒，不动它）
+        try (var files = Files.list(stable)) {
+            files.filter(p -> p.toString().endsWith(".ac"))
+                    .map(p -> p.getFileName().toString())
+                    .filter(n -> !isBundledFile(n))
+                    .forEach(n -> LOG.warn("[acx] lib/stable/{} 不在 jar 内置名单，按玩家脚本处理", n));
+        }
+    }
+
+    private static boolean isBundledFile(String fileName) {
+        for (String n : STABLE_SCRIPTS) {
+            if (n.equals(fileName)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ── 门面壳用的访问口 ────────────────────────────────────────────────

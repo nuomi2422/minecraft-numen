@@ -65,6 +65,7 @@ public final class AcxParamBinder {
     public static final String PICK = "$pick";
     public static final String ORIGIN = "$origin";
     public static final String PICK_FIELDS = "$pick_fields";
+    public static final String TAKE = "$take";
 
     private AcxParamBinder() { }
 
@@ -153,6 +154,11 @@ public final class AcxParamBinder {
         if (pick != null && resolved instanceof List<?> list) {
             resolved = applyPick(path, list, String.valueOf(pick), m, resolver,
                     input, allOutputs, warnings);
+        }
+
+        Object take = m.get(TAKE);
+        if (take != null) {
+            resolved = applyTake(path, resolved, take, warnings);
         }
 
         Object as = m.get(AS);
@@ -333,6 +339,44 @@ public final class AcxParamBinder {
             return out;
         }
         return null;
+    }
+
+
+    // ── $take ─────────────────────────────────────────────────────────
+
+    /**
+     * 从已筛已选的对象里按字段取叶子值（{@code $take:"x"}），或投影多个字段（{@code $take:["x","y","z"]}）。
+     * <p>为什么必须有它：{@code $filter}+{@code $pick} 选出的是<b>元素对象</b>（Numen 的 scan_blocks
+     * 每条 match 是 {@code {x,y,z,block,distance}}），而 {@code goto}/{@code inspect_block} 要的是
+     * {@code x/y/z} 三个标量参数。没有 $take，筛选链路就到工具门口断掉。</p>
+     */
+    private static Object applyTake(String path, Object value, Object take,
+                                     List<Warning> warnings) {
+        if (take instanceof String s) {
+            Object got = AcxValueResolver.resolvePath(value, s);
+            if (got == null) {
+                warnings.add(new Warning(path, "$take=" + s,
+                        "$take 取不到字段（值类型 " + typeName(value) + "）", ""));
+            }
+            return got;
+        }
+        if (take instanceof List<?> fields && value instanceof Map<?, ?> m) {
+            Map<String, Object> out = new java.util.LinkedHashMap<>();
+            for (Object f : fields) {
+                if (f == null) {
+                    continue;
+                }
+                String key = String.valueOf(f);
+                out.put(key, AcxValueResolver.resolvePath(value, key));
+            }
+            return out;
+        }
+        warnings.add(new Warning(path, "$take", "$take 写法无法识别（要字段名或字段名数组）", ""));
+        return value;
+    }
+
+    private static String typeName(Object v) {
+        return v == null ? "null" : v.getClass().getSimpleName();
     }
 
     // ── $as ─────────────────────────────────────────────────────────

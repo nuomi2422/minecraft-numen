@@ -10,6 +10,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Logger;
 
 import com.dwinovo.numen.acx.api.AcxDefinition;
@@ -88,6 +89,18 @@ public final class FileAcxLibrary {
 
     /** 返回问题列表，空列表 = 通过。 */
     public List<String> validate(AcxDefinition def) {
+        return validate(def, Set.of());
+    }
+
+    /**
+     * 静态校验（发布前），可显式给出「库里已有哪些 AC」。
+     *
+     * <p>子 AC 委托（{@code step.block} 写另一个 AC 的名）是合法写法，但它的样子像积木名。
+     * 真机实测踩过：loader 那边按「积木 ∪ 已加载 AC」放行了 {@code subac_nesting}，
+     * 版本库这边只查积木表 → 「未注册的积木」把发布挡下，<b>两边判据不一致</b>，
+     * 于是内置脚本自动上线时唯独子 AC 那条上不去。给它一份名单就一致了。</p>
+     */
+    public List<String> validate(AcxDefinition def, Set<String> knownAcNames) {
         List<String> problems = new ArrayList<>();
         if (def.name().isBlank()) {
             problems.add("name 为空");
@@ -113,9 +126,10 @@ public final class FileAcxLibrary {
             if (s.isControl() && (s.children() == null || s.children().isEmpty())) {
                 problems.add("控制块 " + s.id() + " 缺少 children");
             }
-            if (!s.isControl() && !s.isGuard() && blocks != null && !blocks.contains(s.block())) {
-                // 子 AC 引用在发布期查不到很正常，只提示不阻断
-                problems.add("step " + s.id() + " 的 block " + s.block() + " 未注册（若是子 AC 请确认已发布）");
+            if (!s.isControl() && !s.isGuard() && blocks != null && !blocks.contains(s.block())
+                    && !knownAcNames.contains(s.block())) {
+                problems.add("step " + s.id() + " 的 block " + s.block()
+                        + " 既不是已注册积木也不是库里的 AC");
             }
         }
         int depth = 0;
@@ -149,7 +163,12 @@ public final class FileAcxLibrary {
      * @throws IllegalArgumentException 静态校验不过时抛出，且不动任何已有状态
      */
     public String publish(AcxDefinition def, String note) {
-        List<String> problems = validate(def);
+        return publish(def, note, Set.of());
+    }
+
+    /** 发布（可给出「同批已加载的 AC 名」：子 AC 委托需要它才能过静态校验）。 */
+    public String publish(AcxDefinition def, String note, Set<String> knownAcNames) {
+        List<String> problems = validate(def, knownAcNames);
         if (!problems.isEmpty()) {
             throw new IllegalArgumentException("静态校验未通过: " + String.join("; ", problems));
         }
@@ -290,6 +309,23 @@ public final class FileAcxLibrary {
         return e != null && e.activeVersion != null;
     }
 
+    /** 该名字是否已有任何版本（未知名字返回 false，<b>不抛</b>：<b>versions(name)</b> 对未知名字是抛的，
+     *  拿来判「首次见到」会炸）。 */
+    public boolean hasAnyVersion(String name) {
+        Entry e = entries.get(name);
+        return e != null && !e.versions.isEmpty();
+    }
+
+    /** 该名字当前是否已上线（active 且状态 STABLE）。 */
+    public boolean isOnline(String name) {
+        Entry e = entries.get(name);
+        if (e == null || e.activeVersion == null) {
+            return false;
+        }
+        Version v = e.versions.get(e.activeVersion);
+        return v != null && v.status.isActive();
+    }
+
     public List<String> names() {
         return new ArrayList<>(entries.keySet());
     }
@@ -415,30 +451,17 @@ public final class FileAcxLibrary {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private static AcxDefinition definitionFromMap(Object o) {
-        Map<String, Object> m = (Map<String, Object>) o;
-        List<AcxStep> steps = new ArrayList<>();
-        Object rawSteps = m.get("steps");
-        if (rawSteps instanceof List<?> l) {
-            for (Object s : l) {
-                steps.add(stepFromMap((Map<String, Object>) s));
-            }
+        // 走 loader 的完整解析器，不在这里手工重建字段。
+        // 真机踩过：手工重建只填了 7 个构造参数，preconditions / limits 直接消失 ——
+        // 于是「发布 → 落盘 → 按名执行」这条路拿回来的定义丢了限额，回落成全局默认值，
+        // 表现为 timeout_demo 明明写了 max_timeout_ms=300 却按 200 步熔断。
+        String json = JsonlRecordStore.toJson(o);
+        try {
+            return AcxLoader.parseJson(json, null);
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("版本库里的定义无法解析（存档损坏）: " + e.getMessage(), e);
         }
-        List<String> tags = new ArrayList<>();
-        if (m.get("tags") instanceof List<?> l) {
-            for (Object t : l) {
-                tags.add(String.valueOf(t));
-            }
-        }
-        return new AcxDefinition(
-                m.get("name") == null ? "" : String.valueOf(m.get("name")),
-                m.get("version") == null ? "1" : String.valueOf(m.get("version")),
-                m.get("description") == null ? "" : String.valueOf(m.get("description")),
-                tags,
-                steps,
-                m.get("planner_notes") == null ? "" : String.valueOf(m.get("planner_notes")),
-                m.get("safety_notes") == null ? "" : String.valueOf(m.get("safety_notes")));
     }
 
     @SuppressWarnings("unchecked")

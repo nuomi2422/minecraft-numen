@@ -26,6 +26,7 @@ public final class AcxDefinition {
     private final String plannerNotes;
     private final String safetyNotes;
     private final List<AcxPrecondition> preconditions;
+    private final AcxLimitsSpec limits;
 
     public AcxDefinition(String name,
                          String version,
@@ -45,6 +46,19 @@ public final class AcxDefinition {
                          String plannerNotes,
                          String safetyNotes,
                          List<AcxPrecondition> preconditions) {
+        this(name, version, description, tags, steps, plannerNotes, safetyNotes, preconditions,
+                AcxLimitsSpec.of());
+    }
+
+    public AcxDefinition(String name,
+                         String version,
+                         String description,
+                         List<String> tags,
+                         List<AcxStep> steps,
+                         String plannerNotes,
+                         String safetyNotes,
+                         List<AcxPrecondition> preconditions,
+                         AcxLimitsSpec limits) {
         this.name = Objects.requireNonNull(name, "name");
         this.version = version == null ? "1" : version;
         this.description = description == null ? "" : description;
@@ -55,6 +69,7 @@ public final class AcxDefinition {
         this.preconditions = preconditions == null
                 ? List.of()
                 : Collections.unmodifiableList(new ArrayList<>(preconditions));
+        this.limits = limits == null ? AcxLimitsSpec.of() : limits;
     }
 
     public String name() {
@@ -88,6 +103,11 @@ public final class AcxDefinition {
     /** 起跑前置条件；空表示没有门槛。求值语义见 {@link AcxPrecondition}。 */
     public List<AcxPrecondition> preconditions() {
         return preconditions;
+    }
+
+    /** 本 AC 自己声明的运行上限；{@link AcxLimitsSpec#isEmpty()} 表示全用全局默认。 */
+    public AcxLimitsSpec limits() {
+        return limits;
     }
 
     /** 全部步骤 id（含嵌套 children），用于查重。 */
@@ -131,6 +151,9 @@ public final class AcxDefinition {
         m.put("steps", steps.stream().map(AcxDefinition::stepToMap).toList());
         if (!preconditions.isEmpty()) {
             m.put("preconditions", preconditions.stream().map(AcxPrecondition::toMap).toList());
+        }
+        if (limits != null && !limits.isEmpty()) {
+            m.put("limits", limits.toMap());
         }
         if (!plannerNotes.isEmpty()) {
             m.put("planner_notes", plannerNotes);

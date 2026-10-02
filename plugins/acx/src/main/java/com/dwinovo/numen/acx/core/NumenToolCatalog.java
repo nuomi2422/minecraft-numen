@@ -118,6 +118,53 @@ public final class NumenToolCatalog {
                 s().param("after_s", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER))
                     .param("reason", AcxPortSchema.Param.req(AcxPortSchema.Type.STRING))
                     .output("timer_id", "after_s", "reason")
+                    .build()),
+
+            // ── 2026-10-02 真机实测补录（形状与 DD 完全不同，按实测写）──
+
+            new ToolSpec("scan_blocks",
+                "球形范围内扫描方块。实测输出是 {matches:[{x,y,z,block,distance}]}，"
+                + "没有 DD 那种 done/count/target_absX 扁平字段；筛选最近目标用 $filter+$pick+$take。",
+                s().param("radius", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).range(1, 192)
+                        .desc("球形搜索半径（1-192）"))
+                    .param("block_ids", AcxPortSchema.Param.req(AcxPortSchema.Type.STRING_ARRAY)
+                        .desc("带命名空间的方块 id 列表"))
+                    .output("matches")
+                    .build()),
+
+            new ToolSpec("inspect_block",
+                "查单个方块（同步裸 JSON）。",
+                s().param("x", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER)
+                        .desc("方块 X"))
+                    .param("y", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER)
+                        .desc("方块 Y"))
+                    .param("z", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER)
+                        .desc("方块 Z"))
+                    .output("x", "y", "z", "block", "properties", "is_air", "is_solid",
+                            "is_liquid", "hardness", "unbreakable", "needs_correct_tool",
+                            "current_hand_correct_tool", "estimated_mining_ticks",
+                            "distance_to_me", "in_reach")
+                    .build()),
+
+            new ToolSpec("get_world_info",
+                "维度/游戏时间/天气（同步裸 JSON）。",
+                s().output("dimension", "game_time", "is_bright_outside", "is_dark_outside",
+                        "weather")
+                    .build()),
+
+            new ToolSpec("scan_nearby_entities",
+                "扫描附近实体。参数实测确认；输出字段未实测，故意不声明 outputs（宁缺毋滥）。",
+                s().param("radius", AcxPortSchema.Param.req(AcxPortSchema.Type.NUMBER).range(1, 64)
+                        .desc("搜索半径（1-64）"))
+                    .param("type_filter", AcxPortSchema.Param.req(AcxPortSchema.Type.STRING)
+                        .withEnum("hostile", "passive", "player", "all")
+                        .desc("实体筛选"))
+                    .build()),
+
+            new ToolSpec("attack",
+                "开打。省略 entity_ids 就是清场所有附近敌对实体。异步任务。",
+                s().param("entity_ids", AcxPortSchema.Param.opt(AcxPortSchema.Type.INTEGER)
+                        .desc("scan_nearby_entities 给的运行时实体 id（1-20 个）；省略=打所有"))
                     .build())
         );
     }

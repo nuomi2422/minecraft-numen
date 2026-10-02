@@ -123,7 +123,7 @@ public final class AcxRunner {
     public AcxRunRecord runFrom(AcxDefinition def, Map<String, Object> input,
                                 int startStepIndex, AcxRuntimeLimits lim, String runIdOverride) {
         long start = System.currentTimeMillis();
-        AcxRuntimeLimits effective = lim == null ? limits : lim;
+        AcxRuntimeLimits effective = AcxRuntimeLimits.merged(lim == null ? limits : lim, def.limits());
         long deadline = start + effective.maxTimeoutMs();
         String runId = (runIdOverride == null || runIdOverride.isBlank())
                 ? AcxRunRecord.shortUuid() : runIdOverride;
