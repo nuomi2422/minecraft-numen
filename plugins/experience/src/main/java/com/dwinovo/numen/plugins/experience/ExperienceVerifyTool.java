@@ -52,7 +52,12 @@ final class ExperienceVerifyTool implements NumenTool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .optionalString("id", "The experience id to verify. Omit to just list pending reports.")
-                .bool("success", "true if the experience held up in the real world, false otherwise.")
+                // ★ B9 实机修：原来这里是必填的 .bool(...)。后果是「只读列清单」这条路
+                //   在 schema 层也被堵死：schema 说 success 必填，AI 想看一眼待回报清单
+                //   就必须先编一个 success 出来 —— 等于逼它为了读而撒谎。
+                //   现在 success 只在**真的给了 id 要落数据时**才需要。
+                .optionalBool("success", "true if the experience held up in the real world, false otherwise. "
+                        + "Required only when you pass an id; omit both id and success to list pending reports.")
                 .optionalString("note", "Short note on what happened (kept as a counterexample on failure; "
                         + "on success it is recorded in monitor/expmem.jsonl instead of the entry).")
                 .build();
@@ -62,15 +67,19 @@ final class ExperienceVerifyTool implements NumenTool {
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
         try {
             Input in = GSON.fromJson(args, Input.class);
-            if (in == null || in.success() == null) {
-                reply.accept(TaskResult.fail("experience_verify requires success").toJson());
-                return;
-            }
             ExperienceMemory memory = ExperiencePlugin.memory(companion.getUUID());
             PresentationReceipt receipts = memory.receipts();
-            String id = in.id() == null ? "" : in.id().trim();
+            String id = in == null || in.id() == null ? "" : in.id().trim();
 
             // ★ E7 第一段：不给 id = 只读清单，一个字都不写。
+            //
+            // ★ B9 实机修：这段原来排在 `success == null` 的校验**之后**，于是
+            //   「只读列清单」被一个跟它毫无关系的必填参数挡死 —— 实机调
+            //   experience_verify（不带任何参数）拿回的是 "requires success"，
+            //   整条只读路径根本走不到。而且要走到它就必须先编一个 success 出来，
+            //   那等于逼调用方为了看一眼清单而撒谎。
+            //   顺序反过来：**先看有没有 id**（id 才是「要不要落数据」的决定项），
+            //   没有 id 就直接只读返回；只有真的要落数据时才要求 success。
             if (id.isEmpty()) {
                 List<PresentationReceipt.Shown> pending = receipts.pendingReports();
                 List<Map<String, Object>> rows = new ArrayList<>();
@@ -85,6 +94,13 @@ final class ExperienceVerifyTool implements NumenTool {
                         "listed_only", true,
                         "pending", rows,
                         "receipt", receipts.readout())).toJson());
+                return;
+            }
+
+            // 第二段：给了 id 才落数据 —— 这时才要求 success。
+            if (in == null || in.success() == null) {
+                reply.accept(TaskResult.fail("experience_verify requires success"
+                        + " (or omit id entirely to just list what is waiting for a verdict)").toJson());
                 return;
             }
 

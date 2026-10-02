@@ -64,9 +64,40 @@ class FeedbackChannelB22Test {
                 line("subtask_failed", "{\"subtask\":\"s2\",\"reason\":\"stalled\"}"));
         var p2 = FeedbackChannel.pull(f, "live@1", c, null, new FeedbackChannel.Pull());
         assertEquals(1, p2.events.size(), "只该返回新增的那一条");
-        assertEquals("subtask_failed", p2.events.get(0).observation().containsKey("subtask")
-                ? "subtask_failed" : "subtask_failed");
+        // ★ B9 修：这条断言原来写成 `containsKey("subtask") ? "subtask_failed" : "subtask_failed"`
+        //   —— 两个分支同值，恒真，所以「返回的是新增那条」从没被验证过。
+        //   而 FeedbackChannel.pull 又确实一直没 seek（见那边注释），两个 bug 互相掩护。
+        assertEquals("subtask_failed", p2.events.get(0).sourceType(),
+                "必须真的是新增那条，不是文件头那条");
+        assertTrue(p2.events.get(0).observation().containsKey("reason"),
+                "新增那条带 reason；文件头那条没有");
         assertTrue(p2.nextCursor > c, "游标必须前进");
+    }
+
+    /**
+     * ★ B9 回归测试：非零游标必须真的 seek。
+     *
+     * <p>旧代码把游标只用来算「读多少字节」、字节仍从文件头读，于是这里会返回
+     * {@code [subtask_completed, death]}（文件头两条 + 一条读残的）而不是
+     * {@code [death, subtask_failed]}。断言钉的是<b>事件身份</b>不是条数，
+     * 因为条数在旧代码下也会碰巧对上。</p>
+     */
+    @Test
+    void nonZeroCursorReallySeeksInsteadOfRereadingTheHead(@TempDir Path tmp) throws IOException {
+        Path f = tmp.resolve("rdd.jsonl");
+        String l1 = line("subtask_completed", "{\"subtask\":\"s1\"}");
+        String l2 = line("death", "{\"reason\":\"lava\"}");
+        String l3 = line("subtask_failed", "{\"subtask\":\"s3\",\"reason\":\"stalled\"}");
+        write(f, l1, l2, l3);
+
+        long afterFirst = l1.getBytes(StandardCharsets.UTF_8).length + 1L;
+        var pull = FeedbackChannel.pull(f, "live@1", afterFirst, null, new FeedbackChannel.Pull());
+
+        assertEquals(2, pull.events.size(), "游标之后应恰好剩两条");
+        assertEquals("death", pull.events.get(0).sourceType(),
+                "第一条必须是 death —— 旧代码这里返回的是文件头的 subtask_completed");
+        assertEquals("subtask_failed", pull.events.get(1).sourceType());
+        assertEquals(0, pull.skipped, "游标落在行首就不该有读残的行");
     }
 
     @Test

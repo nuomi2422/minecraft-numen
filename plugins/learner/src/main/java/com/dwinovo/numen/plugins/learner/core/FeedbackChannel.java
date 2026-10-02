@@ -182,11 +182,36 @@ public final class FeedbackChannel {
             cursorByte = 0L;
         }
 
+        // ★ B9 实机抓到的真 bug（2026-10-03）：原来这段**只把游标用来算「读多少字节」，
+        //   却从来没真的跳过** —— 字节永远从文件头读起。结果：任何非零游标都被静默忽略，
+        //   每次都返回**文件里最老的那批事件**，AI 推进游标也永远看不到新事件。
+        //   两条通道（learner_feedback / learner_intake）从上线起就是这个行为。
+        //   为什么单测没抓到：唯一测「第二次拉只返回新增」的那条断言写成了恒真式
+        //   （两个分支返回同一个字符串），见 FeedbackChannelB22Test 同名测试。
+        long start = Math.max(0L, cursorByte);
+        if (start > 0) {
+            // 先探一次能不能真的跳到那个位置。跳不满 = 文件在读的过程中被换档/截断了，
+            // 宁可退回从头读，也不能把「从错误位置读到的字节」当成新增事件报出去。
+            long actually;
+            try (var probe = Files.newInputStream(jsonl)) {
+                actually = skipFully(probe, start);
+            } catch (IOException e) {
+                out.readable = false;
+                return out;
+            }
+            if (actually != start) {
+                start = 0L;
+            }
+        }
+
         byte[] bytes;
         try (var in = Files.newInputStream(jsonl)) {
-            long skip = Math.max(0L, cursorByte);
-            long remaining = size - skip;
+            long remaining = size - start;
             if (remaining <= 0) {
+                return out;
+            }
+            if (start > 0 && skipFully(in, start) != start) {
+                out.readable = false;
                 return out;
             }
             bytes = in.readNBytes((int) Math.min(remaining, 8L * 1024 * 1024));
@@ -196,7 +221,7 @@ public final class FeedbackChannel {
         }
 
         String text = new String(bytes, StandardCharsets.UTF_8);
-        long consumed = cursorByte;
+        long consumed = start;
         for (String line : text.split("\n")) {
             if (line.isBlank()) {
                 continue;
@@ -223,6 +248,30 @@ public final class FeedbackChannel {
         }
         out.nextCursor = Math.min(consumed, size);
         return out;
+    }
+
+    /**
+     * 一直跳到 {@code target} 字节或跳不动为止，返回真正跳过的字节数。
+     *
+     * <p><b>为什么不能只调一次 {@code skip}</b>：{@link java.io.InputStream#skip(long)}
+     * 允许只跳一部分（无缓冲的流一次最多跳到缓冲区边界），跳少了就得接着跳 ——
+     * 静默跳少了就会读到「错误位置上的字节」，也就是 B9 修的那个 bug 的另一种形态。</p>
+     *
+     * <p>⚠️ 顺带记一个我自己踩的坑：{@code skipNBytes(long)} 的返回值是
+     * <b>void</b>，不是 long（返回 long 的是 {@code skip(long)}）。写
+     * {@code long x = in.skipNBytes(n);} 编译不过。</p>
+     */
+    private static long skipFully(java.io.InputStream in, long target) throws IOException {
+        long done = 0L;
+        while (done < target) {
+            long n = in.skip(target - done);
+            if (n <= 0L) {
+                // skip 返回 0 不代表到头，但也不能再推进了 —— 交给调用方当「跳不满」处理。
+                break;
+            }
+            done += n;
+        }
+        return done;
     }
 
     /** 截断标记键。出现即代表 observation **不完整**，下游必须知道。 */
