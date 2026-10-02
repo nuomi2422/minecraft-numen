@@ -93,6 +93,20 @@ public final class ExperienceDirectory {
      */
     public static Block render(List<ExperienceHit> hits, int total, int verified, int generalized,
                                ExperienceStore.LoadStats stats, int maxRows, int maxChars) {
+        return render(hits, total, verified, generalized, stats, null, maxRows, maxChars);
+    }
+
+    /**
+     * ★ E8 增强签名：多带一个 {@link ExperienceStats}（撤回/取代的读数）。
+     *
+     * <p>保留上面那个 7 参重载是有意的 —— 它让「不知道 E8 状态」的调用方
+     * <b>照旧能编译</b>，代价是那三个键不出现（如实表现为「没测到」而不是「0」）。
+     * 消掉重载、逼所有调用方都补 E8 读数，也可以，但那是把一个<b>可选项</b>
+     * 变成<b>必填项</b>：现存调用方里有一半拿不到 E8 状态，会逼它们编 0。</p>
+     */
+    public static Block render(List<ExperienceHit> hits, int total, int verified, int generalized,
+                               ExperienceStore.LoadStats stats, ExperienceStats estats,
+                               int maxRows, int maxChars) {
         if (hits == null || hits.isEmpty() || total <= 0) {
             return new Block("", List.of(), false);
         }
@@ -106,13 +120,24 @@ public final class ExperienceDirectory {
         sb.append("<verified>").append(verified).append("</verified>");
         sb.append("<generalized>").append(generalized).append("</generalized>");
         if (stats != null) {
-            // ★ 代码自己的读数，不是按磁盘形状猜的（那是监测台原来干的事）
             sb.append("<readable>").append(stats.total()).append("</readable>");
             sb.append("<rekeyed>").append(stats.rekeyed()).append("</rekeyed>");
             sb.append("<duplicate>").append(stats.duplicate()).append("</duplicate>");
             sb.append("<degraded>").append(stats.degraded()).append("</degraded>");
         }
         sb.append("\n");
+
+        // ★ E8：把「有多少条已经不能用了」一起报出来。
+        //   不报的话 <total>22</total> 会让同伴以为 22 条都能用，
+        //   而其中可能有几条已被撤回/已被取代 —— 那是假事实。
+        //   ⚠️ 取不到 estats（null）时这几个键**不出现**，而不是报 0 冒充「一条都没撤回」——
+        //   「没测到」和「确实是 0」必须能分开（B21 同一条纪律）。
+        if (estats != null) {
+            sb.append("<usable>").append(estats.usable()).append("</usable>");
+            sb.append("<retracted>").append(estats.retracted()).append("</retracted>");
+            sb.append("<superseded>").append(estats.superseded()).append("</superseded>");
+            sb.append("\n");
+        }
 
         List<Row> out = new ArrayList<>();
         boolean truncated = false;

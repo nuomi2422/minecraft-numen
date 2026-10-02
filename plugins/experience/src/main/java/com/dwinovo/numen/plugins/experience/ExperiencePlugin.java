@@ -33,6 +33,7 @@ public final class ExperiencePlugin implements NumenPlugin {
         numen.registerTool(new ExperienceLearnTool());
         numen.registerTool(new ExperienceRecallTool());
         numen.registerTool(new ExperienceVerifyTool());
+        numen.registerTool(new ExperienceRetractTool());
         // 规划知识：让任务链规划器(Stage-A/Stage-B/回退)真正拿到 guide + builtin + 该同伴经验。
         // 规划器与本插件互不可见，只能通过这扇宿主门通信；知识只是参考资料，不改任务结构。
         numen.contributePlanningKnowledge(query -> {
@@ -60,7 +61,8 @@ public final class ExperiencePlugin implements NumenPlugin {
                 ExperienceDirectory.Block block = ExperienceDirectory.render(
                         m.recall("", ExperienceDirectory.DEFAULT_MAX_ROWS, null, java.util.List.of()),
                         m.size(), m.stats().verified(), m.stats().generalized(),
-                        m.loadStats(), ExperienceDirectory.DEFAULT_MAX_ROWS,
+                        m.loadStats(), m.stats(),
+                        ExperienceDirectory.DEFAULT_MAX_ROWS,
                         ExperienceDirectory.DEFAULT_MAX_CHARS);
                 return block.text();
             } catch (Throwable t) {

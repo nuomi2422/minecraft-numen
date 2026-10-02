@@ -46,6 +46,24 @@ public final class ExperienceStore {
     /** 反例最多保留几条，防列表无限膨胀。 */
     public static final int MAX_COUNTEREXAMPLES = 5;
 
+    /**
+     * ★ E8：<b>连续</b>失败多少次才降一级成熟度。
+     *
+     * <p><b>⚠️ 这个 3 未经实测，是按 {@link #GENERALIZED_THRESHOLD} 对称取的，不是量出来的。</b>
+     * 仓里没有任何「几次失败该降级」的观测数据（live 实例 22 条里
+     * {@code verified=1 / generalized=0}，失败样本几乎为零）⇒ 取 3 只是为了
+     * 「不太容易抖、也不太难降」的中间值。</p>
+     *
+     * <p><b>它可被校准</b>：真实的降级次数会落在 {@code consecutive_failures} 这个
+     * 公开读数上（{@link ExperienceEntry#consecutiveFailures()}）⇒ 攒够样本后回来改这个常数，
+     * 而不是再去猜一个「更准的」数。</p>
+     *
+     * <p><b>为什么按「连续」而不是「累计」</b>：累计失败里混着「后来被成功推翻」的旧失败，
+     * 拿它降级会误伤；连续失败问的是「最近这一段有多不对」，两者判据不同
+     * （{@code counterexamples} 保留全部证据，不参与降级判定）。</p>
+     */
+    public static final int DEMOTE_AFTER_CONSECUTIVE_FAILURES = 3;
+
     private final Path file;
     private final List<ExperienceEntry> mirror = new ArrayList<>();
     private boolean loaded;
@@ -156,12 +174,17 @@ public final class ExperienceStore {
         ExperienceMaturity maturity = old.maturity();
         int verifiedCount = old.verifiedCount();
         long verifiedAt = old.verifiedAt();
+        int consecutiveFailures = old.consecutiveFailures();
+        boolean demoted = false;
 
         if (success) {
             verifiedCount++;
             verifiedAt = System.currentTimeMillis();
             maturity = maturityFor(verifiedCount);
-            // 永不降级：新证据只升不降。
+            // 成功不清旧反例（那是证据），但「连续」这个计数归零：
+            // 一次成功之后，下一次失败不该和上上次的失败被算成连续。
+            consecutiveFailures = 0;
+            // 成功这一侧仍然只升不降（这里才加这句 —— 失败那一侧见下）
             if (maturity.level() < old.maturity().level()) {
                 maturity = old.maturity();
             }
@@ -173,15 +196,189 @@ public final class ExperienceStore {
                 seen.remove(seen.iterator().next());
             }
             counterexamples = List.copyOf(seen);
-            if (old.maturity().level() < ExperienceMaturity.ATTEMPTED.level()) {
+            consecutiveFailures++;
+            // ★ E8 修的真洞：老代码这里只有下面那句 `if (old < ATTEMPTED) maturity = ATTEMPTED;`
+            //   ⇒ 只有 OBSERVED 会被标成 ATTEMPTED，VERIFIED/GENERALIZED **完全不受失败影响**。
+            //   实测后果：一条被证伪 10 次的 GENERALIZED 经验成熟度永不下降，
+            //   注入侧照样报 <verified>N</verified> 当它可信 —— 那是假事实。
+            if (consecutiveFailures >= DEMOTE_AFTER_CONSECUTIVE_FAILURES
+                    && maturity.level() > ExperienceMaturity.ATTEMPTED.level()) {
+                maturity = demote(maturity);
+                consecutiveFailures = 0;
+                demoted = true;
+            } else if (maturity.level() < ExperienceMaturity.ATTEMPTED.level()) {
+                // OBSERVED 被证伪一次就至少是 ATTEMPTED（老行为，保留）
                 maturity = ExperienceMaturity.ATTEMPTED;
             }
         }
 
-        ExperienceEntry updated = old.withEvidence(maturity, verifiedCount, verifiedAt, counterexamples);
+        ExperienceEntry updated = old.withEvidence(maturity, verifiedCount, verifiedAt, counterexamples)
+                .withConsecutiveFailures(consecutiveFailures);
         mirror.set(index, updated);
         persist();
+        if (demoted) {
+            LOG.info("[experience] '{}' demoted to {} after {} consecutive failures",
+                    updated.title(), updated.maturity(), DEMOTE_AFTER_CONSECUTIVE_FAILURES);
+        }
         return updated;
+    }
+
+    /**
+     * 成熟度降一级（E8）。
+     *
+     * <p>⚠️ 只在失败那一侧调用；<b>不会降到 OBSERVED 以下</b>。
+     * 已撤回的条目不靠降级来处理 —— 撤回是更强的信号（「这条根本不该用」），
+     * 降级反而是弱化表述；撤回状态由 {@link ExperienceEntry#unusableReason(boolean)} 在过滤侧表达。</p>
+     */
+    private static ExperienceMaturity demote(ExperienceMaturity m) {
+        ExperienceMaturity[] order = ExperienceMaturity.values();
+        int i = m.ordinal();
+        return (i > 0) ? order[i - 1] : m;
+    }
+
+    // ============================================================
+    // E8：撤回 / 修订链
+    // ============================================================
+
+    /**
+     * 撤回一条经验（E8）——<b>标记，不删数据</b>。
+     *
+     * <p>⚠️ 为什么是标记而不是删除：删了就没有「它曾经存在过、为什么被撤」的证据，
+     * 而这个项目要的正是「整个链路都要冻结」（与 B6 同源）。
+     * 撤回后 {@link #usable()} 不再收它，注入侧也会如实说它已撤回。</p>
+     *
+     * @param reason <b>必填且不许空</b> —— 撤回一条经验而不写理由，等于让别人猜
+     * @return 撤回后的条目；id 不存在时返回 {@code null}（不静默成功）
+     */
+    public synchronized ExperienceEntry retract(String id, String reason) {
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("retract requires a reason: id=" + id);
+        }
+        ensureLoaded();
+        int index = indexOf(id);
+        if (index < 0) {
+            return null;
+        }
+        ExperienceEntry old = mirror.get(index);
+        if (old.retracted()) {
+            // 幂等：已撤回再撤一次 = 改理由（误撤回能纠正），不报错也不静默丢弃
+            LOG.info("[experience] '{}' already retracted; reason updated", old.title());
+        }
+        ExperienceEntry updated = old.retracted(reason.trim());
+        mirror.set(index, updated);
+        persist();
+        LOG.info("[experience] retracted '{}' ({})", updated.title(), reason.trim());
+        return updated;
+    }
+
+    /**
+     * 撤销撤回（E8）：误撤回要能救回来。
+     *
+     * <p>⚠️ 撤销会清掉 {@code retractedAt/Reason}（{@code unretracted()}）——
+     * 保留「曾被撤回过」需要另一个字段，那不在这一批的范围。这一批的取舍是：
+     * <b>状态干净优先</b>，所以清掉；要留痕就靠 {@link #retractLog} 之外的审计日志。</p>
+     */
+    public synchronized ExperienceEntry reinstate(String id) {
+        ensureLoaded();
+        int index = indexOf(id);
+        if (index < 0) {
+            return null;
+        }
+        ExperienceEntry old = mirror.get(index);
+        if (!old.retracted()) {
+            return old;
+        }
+        ExperienceEntry updated = old.unretracted();
+        mirror.set(index, updated);
+        persist();
+        LOG.info("[experience] reinstated '{}'", updated.title());
+        return updated;
+    }
+
+    /**
+     * 标注「新条目取代了旧条目」（E8 修订链）。
+     *
+     * <p><b>只存单向</b>：新条目记 {@code supersedes=旧id}。「旧的被取代了」
+     * 用 {@link #supersededIds()} 现算 ⇒ 不存第二份「被取代」状态，
+     * 也就不会出现两份数据互相矛盾。</p>
+     *
+     * @return 被更新的旧条目；旧 id / 新 id 任一不存在，或新条目已撤回 ⇒ {@code null}
+     */
+    public synchronized ExperienceEntry supersede(String olderId, String newerId) {
+        ensureLoaded();
+        if (olderId == null || olderId.isBlank() || newerId == null || newerId.isBlank()) {
+            throw new IllegalArgumentException("supersede requires both ids");
+        }
+        if (olderId.equals(newerId)) {
+            throw new IllegalArgumentException("an entry cannot supersede itself: " + newerId);
+        }
+        int newerIndex = indexOf(newerId);
+        if (newerIndex < 0) {
+            return null;
+        }
+        if (indexOf(olderId) < 0) {
+            // 指向不存在的旧条目 = 说谎，直接拒绝（否则这条链永远是断的）
+            LOG.info("[experience] reject supersede: older id '{}' not found (newer='{}')",
+                    olderId, newerId);
+            return null;
+        }
+        ExperienceEntry newer = mirror.get(newerIndex);
+        if (newer.retracted()) {
+            LOG.info("[experience] reject supersede: newer '{}' is retracted", newerId);
+            return null;
+        }
+        ExperienceEntry updated = newer.supersedes(olderId);
+        mirror.set(newerIndex, updated);
+        persist();
+        LOG.info("[experience] '{}' now supersedes '{}'", updated.title(), olderId);
+        return mirror.get(indexOf(olderId));
+    }
+
+    /** 已撤回的条数（E8）。 */
+    public synchronized int retractedCount() {
+        ensureLoaded();
+        int n = 0;
+        for (ExperienceEntry e : mirror) {
+            if (e.retracted()) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** 已被更新条目取代的条数（E8）。 */
+    public synchronized int supersededCount() {
+        return supersededIds().size();
+    }
+
+    /** 当前被取代掉的 id 集合（E8 修订链，由 {@code supersedes} 现算，不落盘）。 */
+    public synchronized java.util.Set<String> supersededIds() {
+        ensureLoaded();
+        java.util.Set<String> out = new LinkedHashSet<>();
+        for (ExperienceEntry e : mirror) {
+            String s = e.supersedes();
+            if (s != null && !s.isBlank()) {
+                out.add(s);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 还能当可信经验用的那些（E8）：<b>排除已撤回与已被取代的</b>。
+     *
+     * <p>⚠️ 默认<b>收窄</b>是故意的：要「全量视图」（监测台要看到已撤回的那些）请用 {@link #all()}。</p>
+     */
+    public synchronized List<ExperienceEntry> usable() {
+        ensureLoaded();
+        java.util.Set<String> dead = supersededIds();
+        java.util.List<ExperienceEntry> out = new java.util.ArrayList<>();
+        for (ExperienceEntry e : mirror) {
+            if (e.unusableReason(dead.contains(e.id())).isEmpty()) {
+                out.add(e);
+            }
+        }
+        return List.copyOf(out);
     }
 
     // ---- internals ----

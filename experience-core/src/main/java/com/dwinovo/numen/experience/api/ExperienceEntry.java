@@ -42,7 +42,16 @@ public record ExperienceEntry(
         List<String> counterexamples,
         long createdAt,
         long verifiedAt,
-        long lastAccessedAt
+        long lastAccessedAt,
+        // ---- E8：验证状态变化（撤回 / 修订 / 降级）----
+        // ⚠️ 这五个都是**元数据**，一律不参与 stableKey(type,title) ——
+        //   改成熟度、撤回、标注取代关系都不该换掉这条经验的身份。
+        //   否则「验证一次」就会变成「新的一条」，历史全断。
+        boolean retracted,
+        long retractedAt,
+        String retractedReason,
+        String supersedes,
+        int consecutiveFailures
 ) {
 
     /** 经验条目 JSONL 的文件格式版本；记录模型变了就 +1。 */
@@ -131,6 +140,97 @@ public record ExperienceEntry(
                 .build();
     }
 
+    // ============================================================
+    // E8：验证状态变化 —— 撤回 / 修订 / 降级
+    // ============================================================
+
+    /** 这条经验是否已被撤回（撤回是**标记**，不是删除 —— 证据要留着可审计）。 */
+    public boolean isRetracted() {
+        return retracted;
+    }
+
+    /** 这条经验是否已被**更新的条目取代**（由 {@link #supersedes()} 反查索引得出）。 */
+    public boolean isSupersededBy(List<ExperienceEntry> allEntries) {
+        if (allEntries == null || supersedes == null || supersedes.isBlank()) {
+            return false;
+        }
+        for (ExperienceEntry e : allEntries) {
+            if (e != null && supersedes.equals(e.supersedes())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 「这条经验现在还能不能当可信的用」的**如实读数**。
+     *
+     * <p>⚠️ 调用方<b>必须</b>把这个当门禁用，不能只看 {@link #maturity()}：
+     * 成熟度只会往上走（见 {@code ExperienceStore.maturityFor}），所以一条被证伪过、
+     * 甚至已被撤回的 {@code GENERALIZED} 经验，光看成熟度仍然「可信」。</p>
+     *
+     * @param supersededByNewer 传入 {@link #isSupersededBy(List)} 的结果（避免每个调用方自己扫）
+     * @return 空串 = 可以当可信的；非空 = <b>不可信的确切原因</b>（可注入给人看）
+     */
+    public String unusableReason(boolean supersededByNewer) {
+        if (retracted) {
+            return "已撤回"
+                    + (retractedReason == null || retractedReason.isBlank() ? "（没写理由）" : "：" + retractedReason)
+                    + (retractedAt > 0 ? "（" + retractedAt + "）" : "");
+        }
+        if (supersededByNewer) {
+            return "已被更新的条目取代（supersedes 链上的后继者存在）";
+        }
+        return "";
+    }
+
+    /** 标记撤回（E8）。已撤回的再撤一次会**覆盖理由**而不是报错（幂等）。 */
+    public ExperienceEntry retracted(String reason) {
+        return builder().from(this)
+                .retracted(true)
+                .retractedAt(System.currentTimeMillis())
+                .retractedReason(reason)
+                .lastAccessedAt(System.currentTimeMillis())
+                .build();
+    }
+
+    /** 撤销撤回（E8）：误撤回要能救回来，且**如实记录它被救回来过**。 */
+    public ExperienceEntry unretracted() {
+        return builder().from(this)
+                .retracted(false)
+                .retractedAt(0L)
+                .retractedReason("")
+                .lastAccessedAt(System.currentTimeMillis())
+                .build();
+    }
+
+    /** 标注本条目取代了哪一条（E8 修订链）。空 = 不取代任何东西。 */
+    public ExperienceEntry supersedes(String olderId) {
+        return builder().from(this)
+                .supersedes(olderId)
+                .lastAccessedAt(System.currentTimeMillis())
+                .build();
+    }
+
+    /**
+     * 连续失败计数（E8 降级的判据）。
+     *
+     * <p>为什么不用 {@code counterexamples.size()}：那个是<b>累计证据</b>，成功一次
+     * 也仍然留着（那是对「在什么条件下不成立」的记录，丢了才是丢证据）。
+     * 而「该不该降级」问的是<b>最近这一段连续有多不对</b> —— 判据不同，不能混用。</p>
+     */
+    public int consecutiveFailures() {
+        return Math.max(0, consecutiveFailures);
+    }
+
+    /** 成功一次：连续失败归零（但<b>不清</b> counterexamples —— 那是证据）。 */
+    public ExperienceEntry withConsecutiveFailures(int v) {
+        return builder().from(this)
+                .consecutiveFailures(Math.max(0, v))
+                .lastAccessedAt(System.currentTimeMillis())
+                .build();
+    }
+
     public static Builder builder() {
         return new Builder();
     }
@@ -155,6 +255,13 @@ public record ExperienceEntry(
         o.addProperty("created_at", createdAt);
         o.addProperty("verified_at", verifiedAt);
         o.addProperty("last_accessed_at", lastAccessedAt);
+        // E8 五个字段。retracted=false / retractedAt=0 / supersedes="" / consecutiveFailures=0
+        // 是「没发生过」—— 照样写出来，让「从没被验证过」和「文件里没这个键」能区分开。
+        o.addProperty("retracted", retracted);
+        o.addProperty("retracted_at", retractedAt);
+        o.addProperty("retracted_reason", retractedReason == null ? "" : retractedReason);
+        o.addProperty("supersedes", supersedes == null ? "" : supersedes);
+        o.addProperty("consecutive_failures", Math.max(0, consecutiveFailures));
         return o;
     }
 
@@ -178,6 +285,12 @@ public record ExperienceEntry(
                 .createdAt(longVal(o, "created_at"))
                 .verifiedAt(longVal(o, "verified_at"))
                 .lastAccessedAt(longVal(o, "last_accessed_at"))
+                // E8：缺字段一律当「没发生过」（旧数据一条都没这些键，必须照常读）
+                .retracted(boolVal(o, "retracted"))
+                .retractedAt(longVal(o, "retracted_at"))
+                .retractedReason(str(o, "retracted_reason"))
+                .supersedes(str(o, "supersedes"))
+                .consecutiveFailures(intVal(o, "consecutive_failures"))
                 .build();
     }
 
@@ -223,6 +336,20 @@ public record ExperienceEntry(
         return el == null || el.isJsonNull() ? 0L : el.getAsLong();
     }
 
+    private static boolean boolVal(JsonObject o, String key) {
+        JsonElement el = o.get(key);
+        if (el == null || el.isJsonNull()) {
+            return false;
+        }
+        try {
+            return el.getAsBoolean();
+        } catch (RuntimeException e) {
+            // ⚠️ 坏值不抛：这份数据可能手改过，「读不出真假」不该让整个文件被跳过
+            //   （那正是 B1 那条断链的成因：一条坏行把整个经验库变成 0 条）。
+            return false;
+        }
+    }
+
     private static <T extends Enum<T>> T parseEnum(Class<T> type, String name) {
         if (name == null || name.isBlank()) {
             return null;
@@ -255,6 +382,11 @@ public record ExperienceEntry(
         private long createdAt;
         private long verifiedAt;
         private long lastAccessedAt;
+        private boolean retracted;
+        private long retractedAt;
+        private String retractedReason = "";
+        private String supersedes = "";
+        private int consecutiveFailures;
 
         public Builder from(ExperienceEntry e) {
             if (e == null) {
@@ -276,7 +408,13 @@ public record ExperienceEntry(
                     .counterexamples(e.counterexamples())
                     .createdAt(e.createdAt())
                     .verifiedAt(e.verifiedAt())
-                    .lastAccessedAt(e.lastAccessedAt());
+                    .lastAccessedAt(e.lastAccessedAt())
+                    // E8 元数据必须一起搬，否则 withEvidence()/retracted() 走一遍就把它们抹成默认值
+                    .retracted(e.retracted())
+                    .retractedAt(e.retractedAt())
+                    .retractedReason(e.retractedReason())
+                    .supersedes(e.supersedes())
+                    .consecutiveFailures(e.consecutiveFailures());
         }
 
         public Builder id(String v) {
@@ -364,6 +502,31 @@ public record ExperienceEntry(
             return this;
         }
 
+        public Builder retracted(boolean v) {
+            this.retracted = v;
+            return this;
+        }
+
+        public Builder retractedAt(long v) {
+            this.retractedAt = v;
+            return this;
+        }
+
+        public Builder retractedReason(String v) {
+            this.retractedReason = v;
+            return this;
+        }
+
+        public Builder supersedes(String v) {
+            this.supersedes = v;
+            return this;
+        }
+
+        public Builder consecutiveFailures(int v) {
+            this.consecutiveFailures = v;
+            return this;
+        }
+
         public ExperienceEntry build() {
             long now = System.currentTimeMillis();
             long created = createdAt > 0 ? createdAt : now;
@@ -389,7 +552,12 @@ public record ExperienceEntry(
                     copy(counterexamples),
                     created,
                     verifiedAt,
-                    lastAccessedAt > 0 ? lastAccessedAt : created
+                    lastAccessedAt > 0 ? lastAccessedAt : created,
+                    retracted,
+                    retractedAt > 0 ? retractedAt : 0L,
+                    nz(retractedReason),
+                    nz(supersedes),
+                    Math.max(0, consecutiveFailures)
             );
         }
 

@@ -43,9 +43,53 @@ public final class ExperienceMemory {
         return store.recordEvidence(id, success, note);
     }
 
+    // ---- E8：撤回 / 修订链（薄转发，真逻辑在 ExperienceStore）----
+
+    /** 撤回一条经验（标记不删）。reason 必填且不许空。id 不存在返回 {@code null}。 */
+    public ExperienceEntry retract(String id, String reason) {
+        return store.retract(id, reason);
+    }
+
+    /** 撤销撤回（误撤回救回来）。id 不存在返回 {@code null}。 */
+    public ExperienceEntry reinstate(String id) {
+        return store.reinstate(id);
+    }
+
+    /**
+     * 标注 {@code newerId} 取代了 {@code olderId}（E8 修订链，单向）。
+     *
+     * @return 被更新的旧条目；旧/新任一不存在或新条目已撤回 ⇒ {@code null}
+     */
+    public ExperienceEntry supersede(String olderId, String newerId) {
+        return store.supersede(olderId, newerId);
+    }
+
     /** 查经验：按当前任务/失败/异常的自然语言检索相关经验。 */
     public List<ExperienceHit> recall(String text, int limit, ExperienceMaturity minMaturity, List<String> tags) {
-        return retriever.retrieve(new ExperienceQuery(text, limit, minMaturity, tags), store.all());
+        // ★ E8：检索**只收 usable()**（排除已撤回 / 已被取代）。
+        //   理由：recall 的下游是注入 —— 把一条判错的经验重新喂给同伴，
+        //   比「少一条经验」危害大得多。而监测台要看全量视图，它走的是 all()。
+        return retriever.retrieve(new ExperienceQuery(text, limit, minMaturity, tags), store.usable());
+    }
+
+    /**
+     * 还能当可信经验用的条目（E8：已撤回 / 已被取代的都不算）。
+     *
+     * <p>注入侧（{@code ExperienceDirectory}）与检索侧同用这一个读数，
+     * 免得出现「检索不到但目录里列着」这种自相矛盾。</p>
+     */
+    public List<ExperienceEntry> usable() {
+        return store.usable();
+    }
+
+    /** E8：已撤回的条数（供监测台/目录层如实报告，不让「有 22 条」掩盖「其中 3 条已撤回」）。 */
+    public int retractedCount() {
+        return store.retractedCount();
+    }
+
+    /** E8：被更新的条目取代掉的条数。 */
+    public int supersededCount() {
+        return store.supersededCount();
     }
 
     /** 全量经验（调试/交接用）。 */
@@ -73,7 +117,13 @@ public final class ExperienceMemory {
     public ExperienceStats stats() {
         int verified = 0;
         int generalized = 0;
-        for (ExperienceEntry e : store.all()) {
+        // ★ E8：这里必须数 **usable()** 而不是 all()。
+        //   这两个数会被 ExperienceDirectory 当 <verified>/<generalized> 注入给同伴看 ——
+        //   把一条已被撤回/已被取代的经验算进「可信」，注入侧就在对同伴**报假事实**。
+        //   total 仍用 store.size()（全量），于是 <total> 与 <verified> 的口径差是可查的：
+        //   差值 = 已撤回 + 已被取代的条数，监测台能一眼看出来「22 条里只有 19 条还能用」。
+        List<ExperienceEntry> usable = store.usable();
+        for (ExperienceEntry e : usable) {
             if (e.maturity() == ExperienceMaturity.GENERALIZED) {
                 generalized++;
             }
@@ -81,6 +131,7 @@ public final class ExperienceMemory {
                 verified++;
             }
         }
-        return new ExperienceStats(store.size(), verified, generalized);
+        return new ExperienceStats(store.size(), verified, generalized,
+                usable.size(), retractedCount(), supersededCount());
     }
 }
