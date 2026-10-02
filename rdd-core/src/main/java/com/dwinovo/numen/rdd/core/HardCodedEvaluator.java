@@ -73,11 +73,17 @@ public final class HardCodedEvaluator {
         if (!(assetKey instanceof String key) || key.isBlank()) return false;
         if (MODE_ACQUIRE.equals(modeOf(condition))) {
             if (baseline == null) {
-                // 兜底（2026-10-02 实测事故）：缺基线时**不要**把子目标判成永远做不到。
-                // acquire 的本意是「防她早就有了、算假完成」，但基线缺失时它挡的不只是假完成，
-                // 连真完成一起挡 —— 东西真在背包里也判不出成功，然后被看门狗当卡死、逼模型重做。
-                // 宁可直接按持有量判（最多放过一次「早就有了」），也不要让子目标不可完成。
-                return holdSatisfied(key, minimum, counts);
+                // 2026-10-02 改过一次又撤回：曾在这里降级成 hold 语义，理由是「别让子目标不可完成」。
+                // 但那是在**掩盖上游 bug** —— 真正的病根是 rdd_submit 走的 startCurrent() 不拍基线，
+                // 已在 TaskChain.startCurrentWithCounts + RddSubmitTool 那一层从源头修掉。
+                //
+                // 这里必须保持「无基线 = 判未达成」（旧存档场景，守护
+                // HardCodedEvaluatorModeTest.acquireWithoutBaselineIsNeverSatisfied 与
+                // TaskChainAcquireBaselineTest.oldSaveWithoutBaselineKeyLoadsAsNoBaseline）：
+                // acquire 的职责是「防她早就有了、算假完成」，一旦无基线就放行，
+                // 旧存档里「她背包有 99 个种子 + 任务是 gather seeds」会**瞬间假完成**。
+                // 宁可漏判，也不假完成 —— 这是本条守卫的原意，不要动。
+                return false;
             }
             int gained = counts.getOrDefault(key, 0) - baseline.getOrDefault(key, 0);
             return gained >= minimum;
@@ -88,9 +94,6 @@ public final class HardCodedEvaluator {
 
     /**
      * {@code hold} 语义：背包/持有量达到 {@code minimum} 就算满足（硬指标，不猜）。
-     *
-     * <p>抽出来给两条路径共用：{@code mode=hold} 直接用它，
-     * {@code mode=acquire} 但基线缺失时降级到它。
      */
     private static boolean holdSatisfied(String key, int minimum, Map<String, Integer> counts) {
         Integer count = counts.get(key);

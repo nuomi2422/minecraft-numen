@@ -73,6 +73,41 @@ class TaskChainAcquireBaselineTest {
     }
 
     @Test
+    void startCurrentWithCountsCapturesBaselineSoTheNeverSatisfiedGuardIsNeverHit() {
+        // 2026-10-02 事故：rdd_submit 走的是 startCurrent()（不拍基线），
+        // 于是 mode=acquire 恒判未达成 → AI 做出东西被判失败 → 被看门狗逼着重做一遍。
+        // 修法是在这条路上也拍基线（TaskChain.startCurrentWithCounts）。
+        // 这条单测守住「从 PENDING 直接开跑也必须有基线」——
+        // 没有它，HardCodedEvaluator 的「无基线 = 判未达成」守卫会在正常路径上被触发。
+        TaskChain chain = new TaskChain(goal());   // 二级还是 PENDING，能 start
+        assertNull(chain.acquireBaseline("p0-r1-0"), "开跑前不该有基线");
+
+        chain.startCurrentWithCounts(Map.of("minecraft:wheat_seeds", 33, "minecraft:stone", 5));
+
+        assertEquals(Map.of("minecraft:wheat_seeds", 33, "minecraft:stone", 5),
+                chain.acquireBaseline("p0-r1-0"), "startCurrentWithCounts 必须把基线拍下来");
+        // 有了基线，acquire 就能正常判：净增 10 才算达成
+        assertFalse(HardCodedEvaluator.matches(chain.currentSubtask().condition(),
+                Map.of("minecraft:wheat_seeds", 33), chain.acquireBaseline("p0-r1-0")),
+                "净增 0 不算达成");
+        assertTrue(HardCodedEvaluator.matches(chain.currentSubtask().condition(),
+                Map.of("minecraft:wheat_seeds", 43), chain.acquireBaseline("p0-r1-0")),
+                "净增 10 算达成");
+    }
+
+    @Test
+    void captureAcquireBaselineKeepsTheFirstSnapshot() {
+        // activateCurrent / activateCurrentWithSnapshot / startCurrentWithCounts 可能对同一个
+        // 子任务先后被调到。基线只能拍一次：后到的不能覆盖，
+        // 否则「接活那一刻她有多少」这个事实就丢了，acquire 会拿更晚的量当基线、净增算错。
+        TaskChain chain = runningChain();
+        chain.captureAcquireBaseline("p0-r1-0", Map.of("minecraft:wheat_seeds", 33));
+        chain.captureAcquireBaseline("p0-r1-0", Map.of("minecraft:wheat_seeds", 99));
+        assertEquals(Map.of("minecraft:wheat_seeds", 33), chain.acquireBaseline("p0-r1-0"),
+                "基线必须是接活那一刻的量，后来的快照不得覆盖");
+    }
+
+    @Test
     void oldSaveWithoutBaselineKeyLoadsAsNoBaseline() {
         TaskChain chain = activeChain();
         String json = chain.toJson();

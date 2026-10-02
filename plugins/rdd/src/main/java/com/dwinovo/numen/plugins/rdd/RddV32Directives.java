@@ -1,9 +1,5 @@
 package com.dwinovo.numen.plugins.rdd;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-
 /**
  * RDD v3.2 \u7b2c\u4e00\u6279\u6536\u5c3e\u7684\u5168\u91cf\u6ce8\u5165\u6587\u6848\uff08\u4e34\u65f6\u65b9\u6848\uff0c\u6cbb\u6807\uff1b\u4e8c\u6279\u6cbb\u672c\uff09\u3002
  *
@@ -59,69 +55,21 @@ final class RddV32Directives {
      * 11 \u6761\u5747\u4e3a\u5b9e\u6d4b\u6536\u96c6\u7684\u6267\u884c\u95ee\u9898\u4e0e\u6b63\u786e\u505a\u6cd5\u3002
      */
     static String harnessHints() {
-        return harnessHints(null);
+        return "\u3010\u6267\u884c\u63d0\u793a\u00b7\u5b9e\u6d4b\u6536\u96c6\uff08\u7167\u505a\uff0c\u6cbb\u6807\u4fdd\u8bc1\u957f\u7ebf\u53ef\u8dd1\uff09\u3011\n"
+                + "1) \u6316\u81ea\u5df1\u7684\u65b9\u5757\u65f6\u82e5\u653e\u4e86\u6c34\u6321\u8def/\u6321\u4f4f\u4e86\u6389\u843d\uff1a\u5148\u5835\u4f4f\u6c34\u6e90\uff08\u7528\u65b9\u5757\u586b\u6e90\u5934\uff09\uff0c\u518d\u53bb\u62fe\u53d6\u6389\u843d\u7269\uff1b"
+                + "\u6316\u4e0d\u6389\u5c31\u5148\u6e05\u969c\u518d\u6316\u3002\n"
+                + "2) \u80cc\u5305\u6ee1\u4e86\u8981\u53ca\u65f6\u6e05\u7406\u6216\u628a\u591a\u4f59\u4e1c\u897f\u653e\u56de\u57fa\u5730\u7bb1\u5b50\uff0c\u5426\u5219\u6361\u4e0d\u8d77\u65b0\u6389\u843d\u7269\u3002\n"
+                + "3) \u6316\u9ed1\u66dc\u77f3/\u94bb\u77f3\u8981\u5c01\u95ed\u7740\u5b89\u5168\u6316\uff1a\u5148\u505a\u9c7c\u9aa8\u901a\u9053\u3001\u5206\u6bb5\u63a8\u8fdb\u3001\u5c0f\u5fc3\u5730\u4e0b\u6c34\uff1b"
+                + "\u9047\u5230\u6c34\u5148\u8bd5\u4e00\u4e0b\uff08\u80fd\u5835\u5c31\u5835\uff0c\u4e0d\u80fd\u5c31\u6362\u6bb5\uff09\u3002\n"
+                + "4) \u9ad8\u7a7a\u4e0b\u843d\u65f6\u53ef\u7528\u65b9\u5757/\u843d\u5730\u6c34\u7f13\u51b2\uff1b\u6ce8\u610f\u522b\u628a\u81ea\u5df1\u57ab\u811a\u7684\u65b9\u5757\u6536\u6389\uff08\u4f1a\u6454\u6b7b/\u6389\u4e0b\u53bb\uff09\u3002\n"
+                + "5) \u5bfb\u8def\u8981\u4fdd\u62a4\u5e8a\u548c\u5237\u602a\u7b3c\uff1a\u4e0d\u8981\u628a\u5b83\u4eec\u6316\u6389\uff08\u5e8a=\u91cd\u751f\u70b9\uff0c\u5237\u602a\u7b3c=\u5237\u602a\u673a\u6838\u5fc3\uff09\u3002\n"
+                + "6) \u77e5\u9053\u53f3\u952e\u5e8a\u53ef\u7ed1\u5b9a\u51fa\u751f\u70b9\uff08\u91cd\u751f\u70b9\uff09\uff0c\u8fdb\u9ad8\u98ce\u9669\u524d\u5148\u7ed1\u5b9a\u3002\n"
+                + "7) \u5237\u602a\u673a\u9760\u6c34\u6d41\u805a\u602a\uff1b\u4e0d\u63d2\u706b\u628a\u6291\u5236\u5237\u602a\uff08\u706b\u628a\u662f\u7ed9\u57fa\u5730\u9632\u5237\u602a\u7528\u7684\uff0c\u522b\u63d2\u5230\u5237\u602a\u673a\u91cc\uff09\u3002\n"
+                + "8) \u4e0d\u8981\u8ba9\u81ea\u5df1\u7f3a\u8840/\u997f\u5230\u53d1\u865a\uff0c\u53ca\u65f6\u5403\u6ee1\uff08\u98df\u7269\u5145\u8db3\u5c31\u5403\u6ee1\uff0c\u522b\u7701\uff09\u3002\n"
+                + "9) \u9047\u5230\u602a\u7269\u8981\u4f1a\u4fee\u5899\u63a8\u8fdb\uff08\u7528\u65b9\u5757\u5c01\u8def/\u642d\u63a9\u4f53\u9010\u6bb5\u6253\uff09\uff0c\u522b\u786c\u51b2\u3002\n"
+                + "10) \u591a\u4f59\u7684\u7269\u54c1\u4e5f\u662f\u6709\u7528\u7269\u8d44\uff0c\u522b\u4e71\u4e22\uff08\u53ef\u80fd\u6b63\u662f\u540e\u9762\u8981\u7684\u539f\u6599\uff09\u3002\n"
+                + "11) \u6218\u6597\u4f18\u5148\u4e3e\u76fe\u9632\u5fa1\uff08\u76fe\u5f88\u91cd\u8981\uff0c\u80fd\u4fdd\u547d\uff09\uff0c\u522b\u53ea\u7528\u5251\u83bd\u3002";
     }
-
-    /**
-     * 按任务描述筛选后的执行提示。{@code task} 为 null/空 -> 只发无条件那几条。
-     *
-     * <p>2026-10-01 从「恒定全量注入」改成「按当前任务关键词筛选」：实机请求体实测这 11 条
-     * 实占约 500 token/请求，且每轮原样重发，哪怕当前在挖矿、跟战斗毫无关系——本文件原注释
-     * 自己写的就是「全量注入，治标」。现在只发「无条件该知道的」+「命中当前任务描述的」。
-     *
-     * <p><b>已知代价（写清楚，不藏着）</b>：关键词匹配是字面的，模型用隐喻描述任务时可能命中
-     * 不到，那时只剩无条件那几条。它治标——真正的护栏是工具自己的报错文案（见 ToolArgs /
-     * ToolCallLoopWatch），不是这 11 条。
-     */
-    static String harnessHints(String task) {
-        List<String> lines = new ArrayList<>();
-        for (Hint h : HINTS) {
-            if (h.keywords == null || matches(task, h.keywords)) {
-                lines.add(h.text);
-            }
-        }
-        if (lines.isEmpty()) return "";
-        StringBuilder sb = new StringBuilder("【执行提示·按当前任务挑选（照做，治标）】\n");
-        for (int i = 0; i < lines.size(); i++) {
-            sb.append(i + 1).append(") ").append(lines.get(i));
-            sb.append(i == lines.size() - 1 ? "" : "\n");
-        }
-        return sb.toString();
-    }
-
-    private static boolean matches(String task, String[] keywords) {
-        if (task == null || task.isBlank()) return false;
-        String lower = task.toLowerCase(Locale.ROOT);
-        for (String k : keywords) {
-            if (lower.contains(k)) return true;
-        }
-        return false;
-    }
-
-    /** 一条执行提示。{@code keywords == null} = 无条件，每轮都发。 */
-    private record Hint(String text, String[] keywords) {}
-
-    private static final Hint[] HINTS = {
-            new Hint("保护床和刷怪笼：不要把它们挖掉（床=重生点，刷怪笼=刷怪机核心）。", null),
-            new Hint("背包满了要及时清理或把多余东西放回基地箱子，否则捡不起新掉落物。",
-                    new String[] {"捡", "背包", "掉落", "箱子", "满", "拾"}),
-            new Hint("多余的物品也是有用物资，别乱丢（可能正是后面要的原料）。",
-                    new String[] {"扔", "丢", "清理", "仓库", "存", "material"}),
-            new Hint("不要让自己缺血/饿到发虚，及时吃满（食物充足就吃满，别省）。",
-                    new String[] {"食物", "吃", "饥饿", "血", "血量", "生命", "战斗", "怪", "刷怪"}),
-            new Hint("战斗优先举盾防御（盾很重要，能保命），别只用剑莽；遇怪要修墙推进，别硬冲。",
-                    new String[] {"战斗", "打", "杀", "怪", "僵尸", "刷怪", "守卫", "攻击", "护甲"}),
-            new Hint("刷怪机靠水流聚怪；不插火把抑制刷怪（火把是给基地防刷怪用的，别插到刷怪机里）。",
-                    new String[] {"刷怪", "刷怪笼", "刷怪机", "水流", "水", "火把", "聚怪"}),
-            new Hint("挖黑曜石/钻石要封闭着安全挖：先做鱼骨通道、分段推进、小心地下水；遇到水先试一下（能堵就堵，不能就换段）。",
-                    new String[] {"黑曜石", "钻石", "挖", "矿", "鱼骨", "采"}),
-            new Hint("挖自己的方块时若放了水挡路/挡住了掉落：先堵住水源（用方块填源头），再去拾取掉落物；挖不掉就先清障再挖。",
-                    new String[] {"挖", "水", "掉落", "挡住", "堵", "清障"}),
-            new Hint("寻路/搭方块时别把自己垫脚的方块收掉（会摔死/掉下去）；高空下落可用方块或落地水缓冲。",
-                    new String[] {"搭", "建", "塔", "柱", "垫", "下落", "摔", "路"}),
-            new Hint("知道右键床可绑定出生点（重生点），进高风险前先绑定。",
-                    new String[] {"重生", "床", "死亡", "spawn", "基地"}),
-    };
 
     /** \u628a\u6267\u884c\u63d0\u793a\u62fc\u5230\u4efb\u4e00\u6ce8\u5165\u6587\u672c\u5c3e\u90e8\uff08\u7a7a\u6587\u672c/\u63d0\u793a\u672c\u8eab\u4e3a\u7a7a\u65f6\u539f\u6837\u8fd4\u56de\uff09\u3002 */
     static String attachHarness(String text) {
