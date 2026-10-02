@@ -3,6 +3,7 @@ package com.dwinovo.numen.plugins.experience;
 import com.dwinovo.numen.experience.api.ExperienceEntry;
 import com.dwinovo.numen.experience.api.ExperienceHit;
 import com.dwinovo.numen.experience.api.ExperienceMaturity;
+import com.dwinovo.numen.experience.core.TaskFingerprint;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -149,6 +150,54 @@ public final class ExperienceKnowledgeSource {
         return sb.toString().trim();
     }
 
+    /**
+     * ★ B4：这次规划的<b>任务指纹</b>（任务侧，不是经验条目的去重键 —— 那是 stableKey）。
+     *
+     * <p>把 objective / stage / knownFailures 一起喂进去算一个指纹：同一类任务再次发生
+     * ⇒ 指纹相同 ⇒ 可以拿它核对「那条经验是不是又被命中了」（60 号 A6 判据）。
+     * 修之前 {@link #buildQuery} 只是整句拼起来做字面匹配，<b>没有任何稳定标识</b>，
+     * 于是「命中了」与「碰巧命中」分不开。</p>
+     *
+     * <p>⚠️ 指纹相同<b>只代表「大概同一类场景」</b>，不代表经验一定适用 ——
+     * 所以它只进观测（{@code planning_knowledge} 事件），不参与命中判定。</p>
+     */
+    static String taskFingerprint(PlanningKnowledge.Request req) {
+        if (req == null) {
+            return TaskFingerprint.UNKNOWN;
+        }
+        List<String> parts = new ArrayList<>();
+        if (req.objective() != null && !req.objective().isBlank()) {
+            parts.add(req.objective());
+        }
+        if (req.stage() != null && !req.stage().isBlank()) {
+            parts.add(req.stage());
+        }
+        if (req.knownFailures() != null) {
+            parts.addAll(req.knownFailures());
+        }
+        return TaskFingerprint.of(parts);
+    }
+
+    /**
+     * 本次规划涉及的几类场景指纹（每个片段各算一个，去重排序）。
+     *
+     * <p>用途：一次规划往往同时涉及挖矿 / 搭桥 / 搬箱子，合并后能看出「这次跨了几类场景」，
+     * 而不是糊成一个说不清的串。</p>
+     */
+    static List<String> sceneFingerprints(PlanningKnowledge.Request req) {
+        if (req == null) {
+            return List.of();
+        }
+        List<String> parts = new ArrayList<>();
+        if (req.objective() != null && !req.objective().isBlank()) {
+            parts.add(req.objective());
+        }
+        if (req.stage() != null && !req.stage().isBlank()) {
+            parts.add(req.stage());
+        }
+        return TaskFingerprint.sceneFingerprints(parts);
+    }
+
     private static PlanningKnowledge.Selection withExtraGap(PlanningKnowledge.Selection base, String gap) {
         List<String> gaps = new ArrayList<>(base.gaps());
         if (!gaps.contains(gap)) {
@@ -170,6 +219,11 @@ public final class ExperienceKnowledgeSource {
             data.put("stage", req.stage());
             data.put("objective_chars", req.objective().length());
             data.put("known_failures", req.knownFailures().size());
+            // ★ B4：任务指纹 + 场景指纹进观测。A6 判据「同类任务再次发生 → 同一条经验
+            //   被再次命中」需要靠它才判得出来；之前这里只有一个 objective_chars，
+            //   压根没法回答「这次和上次是不是同一类任务」。
+            data.put("task_fingerprint", taskFingerprint(req));
+            data.put("scene_fingerprints", sceneFingerprints(req));
             data.put("chosen", selection.chosen().size());
             data.put("text_chars", selection.text().length());
             data.put("gaps", List.copyOf(selection.gaps()));
