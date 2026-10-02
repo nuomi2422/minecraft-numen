@@ -28,7 +28,9 @@ import net.minecraft.client.resources.language.I18n;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -245,6 +247,20 @@ public final class EntityAgentLoop {
     private String deathCause;
     /** Tool calls that were in flight when the body died — resolved on respawn, not before. */
     private List<String> deathInterruptedCalls = List.of();
+
+    // ---- B12:「这一轮为什么开不起来」的可观测读数 ----
+    // 这两个字段只服务 brain.jsonl 的边沿触发（原因变了才写），不参与任何判定。
+
+    /** {@code brain.jsonl} 上一条读数的 blocker；null = 还没发过第一条。 */
+    private String lastGateBlocker;
+    /** 上一条 {@code brain.jsonl} 的时刻（毫秒）。 */
+    private long lastGateAtMs;
+
+    /**
+     * 闸门读数的心跳间隔。原因不变时也至少这么久写一条 ——
+     * 一个只在出事时才更新的观测面，坏掉的时候和没接一样分不出来。
+     */
+    private static final long GATE_HEARTBEAT_MS = 300_000L;
 
     /**
      * Bumped every time the owner interrupts a turn ({@link #abort}). Each LLM
@@ -1290,7 +1306,54 @@ public final class EntityAgentLoop {
         return dead || isExternallyDriven();
     }
 
+    /**
+     * 「这一轮为什么开不起来」的输入快照。
+     *
+     * <p>取数在这里，判定在 {@link BrainGate} —— 那边是纯函数、能在没有 Minecraft
+     * 的情况下单测。B12 加它的理由：这道闸门链原来只写进游戏日志，而游戏日志在
+     * {@code launch-mc.ps1} 脱离启动下是 0 字节，于是「她怎么不动」从外面问不出来。
+     */
+    public BrainGate.State brainGateState() {
+        List<ConvoState.Msg> snapshot = convo.snapshot();
+        int window = modelWindow();
+        long tokens = lastPromptTokens > 0 ? lastPromptTokens : estimateContextTokens(snapshot);
+        return new BrainGate.State(dead, isExternallyDriven(), turnPause.name(),
+                awaitingLlmResponse, compacting, dispatcher.busy(),
+                snapshot.size(), endpointProblem(), tokens, window, compactFailures);
+    }
+
+    /**
+     * 读数口：给工具/面板/测试用，<b>零副作用</b>（不发布、不改状态）。
+     * 埋点那条路走 {@link #publishBrainGate()}。
+     */
+    public Map<String, Object> brainGateReadout() {
+        return BrainGate.readout(brainGateState());
+    }
+
+    /**
+     * 把闸门读数写进 {@code monitor/brain.jsonl}。
+     *
+     * <p><b>边沿触发 + 心跳</b>：只在「原因变了」或超过 {@link #GATE_HEARTBEAT_MS}
+     * 时写一条。原因是每 tick 都调用，无脑写会把观测文件变成第二个日志坟场；
+     * 心跳那条则是为了能证明「读数本身还活着」——一个只在出事时才更新的观测面，
+     * 坏掉的时候和没接一样 indistinguishable。
+     */
+    private void publishBrainGate() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("companion_id", entityUuid.toString());
+        m.putAll(BrainGate.readout(brainGateState()));
+        String blocker = String.valueOf(m.get("blocker"));
+        long now = System.currentTimeMillis();
+        if (blocker.equals(lastGateBlocker) && now - lastGateAtMs < GATE_HEARTBEAT_MS) {
+            return;
+        }
+        lastGateBlocker = blocker;
+        lastGateAtMs = now;
+        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("brain", "gate", m);
+    }
+
     private void tryStartTurn() {
+        publishBrainGate();
         if (paused()) {
             Constants.LOG.debug("[numen-entity#{}] tryStartTurn skipped: 停牌 (dead={}, external={})",
                     entityUuid, dead, isExternallyDriven());
