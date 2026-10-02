@@ -70,6 +70,14 @@ public final class RddInstrumentation {
     private static final long RECENT_DEATH_WINDOW_TICKS = 6_000L;   // 5 分钟 @ 20tps
     private static final Map<UUID, Long> RECENT_DEATH_TICKS = new ConcurrentHashMap<>();
 
+    /**
+     * ★ B6：<b>每同伴一个</b>事件链环形缓冲（死亡那一刻冻结快照用）。
+     *
+     * <p>⚠️ 为什么按同伴分组而不是全局一个：全局窗口会把不同同伴的事件混在一起，
+     * 冻结出来的「怎么走到死的」就<b>掺了别人的因果</b>—— 那比没有更糟。</p>
+     */
+    private static final Map<String, TraceRing> TRACE_RINGS = new ConcurrentHashMap<>();
+
     private static final AtomicLong DROPPED = new AtomicLong();
     private static final AtomicLong SUPPRESSED = new AtomicLong();
     private static final AtomicLong WRITTEN = new AtomicLong();
@@ -99,13 +107,73 @@ public final class RddInstrumentation {
             if (Files.exists(file) && Files.size(file) >= MAX_FILE_BYTES) {
                 rotate(dir, file);
             }
+            long seq = EVENT_SEQ.incrementAndGet();
+            // ★ B6：死亡类事件先把「这个同伴最近发生了什么」冻结进同一行（快照本身不入窗口）。
+            //   快照在推进窗口**之前**取，所以里面只有「死亡之前」的事 —— 这才是「怎么走到死的」。
+            String companion = companionOf(data);
+            TraceRing ring = ringFor(companion);
             Map<String, Object> dataWithDropped = enrich(data);
-            String line = InstrumentationEvents.line("instr-" + EVENT_SEQ.incrementAndGet(), type, gameTimeTicks, dataWithDropped);
+            if (isDeathType(type) && ring != null) {
+                dataWithDropped.putAll(ring.snapshot().toMap());
+            }
+            String line = InstrumentationEvents.line("instr-" + seq, type, gameTimeTicks, dataWithDropped);
             Files.writeString(file, line + "\n", StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             WRITTEN.incrementAndGet();
+            // ⚠️ 写成功才推进：缓冲回答的是「**已记录**的链」。
+            //   写失败也推进会让快照里出现 jsonl 里查不到的事件（与落盘不一致，比少一条更糟）。
+            if (ring != null) {
+                ring.push(seq, type, gameTimeTicks, data);
+            }
         } catch (Exception ignored) {
             DROPPED.incrementAndGet();   // fail-silent：观测崩了绝不影响主循环
+        }
+    }
+
+    // ------------------------------------------------------------------ B6：事件链环形缓冲
+
+    /** 哪些事件类型要冻结快照（死亡的那一刻）。 */
+    private static boolean isDeathType(String type) {
+        return DEATH.equals(type) || STARVATION_DEATH.equals(type);
+    }
+
+    /**
+     * 从 event data 里取同伴标识；<b>取不到就返回 null</b>。
+     *
+     * <p>⚠️ 不做任何猜测/兜底（比如「拿 task 当同伴」）—— 猜出来的分组会让「这条链属于谁」
+     * 变成假事实，而那正是这条链路要表达的东西。</p>
+     */
+    private static String companionOf(Map<String, ?> data) {
+        if (data == null) return null;
+        Object v = data.get("companionId");
+        if (v == null) return null;
+        String s = String.valueOf(v).trim();
+        return s.isEmpty() ? null : s;
+    }
+
+    private static TraceRing ringFor(String companion) {
+        if (companion == null) return null;
+        return TRACE_RINGS.computeIfAbsent(companion, k -> new TraceRing());
+    }
+
+    /** 该同伴当前窗口里的条目数（诊断/测试读数；无窗口 = 0）。 */
+    public static int traceRingSize(String companion) {
+        TraceRing r = TRACE_RINGS.get(companion);
+        return r == null ? 0 : r.size();
+    }
+
+    /** 取该同伴窗口的冻结快照（诊断/测试用；不消耗窗口）。 */
+    public static TraceRing.Snapshot traceSnapshot(String companion) {
+        TraceRing r = TRACE_RINGS.get(companion);
+        return r == null ? TraceRing.Snapshot.empty() : r.snapshot();
+    }
+
+    /** 清掉某个同伴（或全部）的窗口 —— 换存档 / 测试隔离用。 */
+    public static void clearTraceRings(String companion) {
+        if (companion == null) {
+            TRACE_RINGS.clear();
+        } else {
+            TRACE_RINGS.remove(companion);
         }
     }
 
@@ -211,6 +279,7 @@ public final class RddInstrumentation {
         EVENT_SEQ.set(0);
         LAST_EMIT_MS.clear();
         RECENT_DEATH_TICKS.clear();
+        TRACE_RINGS.clear();   // ★ B6：漏掉这条会让「上一个测试的链」漏进下一个测试的快照
         dirOverride = null;
         gameTimeSource = RddInstrumentation::serverGameTime;
     }
