@@ -90,4 +90,16 @@ public final class ExperiencePlugin implements NumenPlugin {
                         dir.resolve("experience-" + uuid + ".jsonl"),
                         new LexicalExperienceRetriever()));
     }
+
+    /**
+     * {@code config/numen/} 目录；未 setup 时为 null。
+     *
+     * <p><b>E7：{@code ExperienceVerifyTool} 只读列待回报清单时要读
+     * {@code monitor/events.jsonl}（任务收尾结果）来给每条呈现配上判据，
+     * 那是纯只读旁路，不经过 {@link #memory}。</b>返 null 而不是抛异常：
+     * 读不到结果源时如实报「读不到」，不该让整个工具挂掉。</p>
+     */
+    static Path configDir() {
+        return configDir;
+    }
 }
