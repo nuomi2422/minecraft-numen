@@ -87,19 +87,11 @@ final class LearnerFeedbackTool implements NumenTool {
             }
             Path jsonl = dir.resolve(RDD_JSONL);
             // 存档级代际：存档名 + session.lock mtime。换档 → 代际变 → 旧游标自动失效（v3.2 §2）
-            //
-            // ⚠️ 2026-10-01 实机踩到（**修了一次只修一半**）：
-            //   configDir = <实例>/config/numen → getParent() = <实例>/config
-            //   → <实例>/config/saves **不存在**，真身在 <实例>/saves（要再上一级）。
-            //   我第一版只改了 currentSaveName() 里的路径，调用处这行还指着旧的，
+            // ⚠️ 这段路径推导**只写一次**，在 FeedbackChannel.generationForConfigDir 里。
+            //   2026-10-01 实测教训（改一次只改一半）：configDir=<实例>/config/numen，
+            //   要上两级才到 <实例>/saves；当时只改了这里的一处、别处没跟着改，
             //   结果存档名对了但 session.lock 读不到 → generation 变成 "live@-1"。
-            //   → 一处路径推导**必须只写一次**，两处各算一遍就会半修。
-            Path instanceDir = dir.getParent() == null ? null : dir.getParent().getParent();
-            Path savesDir = instanceDir == null ? null : instanceDir.resolve("saves");
-            String saveName = savesDir == null ? "unknown" : currentSaveName(savesDir);
-            Path saveDir = savesDir == null ? null : savesDir.resolve(saveName);
-            String generation = FeedbackChannel.generationOf(saveDir,
-                    saveDir == null ? null : saveDir.resolve("session.lock"));
+            String generation = FeedbackChannel.generationForConfigDir(dir);
 
             var pull = new FeedbackChannel.Pull();
             List<FeedbackEvent> events;
@@ -161,30 +153,6 @@ final class LearnerFeedbackTool implements NumenTool {
         }
     }
 
-    /** 在**给定的 saves 目录**里挑 session.lock 最后修改时间最新的那个存档名。 */
-    private static String currentSaveName(Path savesDir) {
-        try {
-            if (!Files2.exists(savesDir)) {
-                return "unknown";
-            }
-            Path newest = null;
-            long newestT = -1L;
-            for (Path p : Files2.listDirs(savesDir)) {
-                Path lock = p.resolve("session.lock");
-                if (Files2.exists(lock)) {
-                    long t = Files2.mtime(lock);
-                    if (t > newestT) {
-                        newestT = t;
-                        newest = p;
-                    }
-                }
-            }
-            return newest == null ? "unknown" : newest.getFileName().toString();
-        } catch (java.io.IOException | RuntimeException e) {
-            return "unknown";
-        }
-    }
-
     private static List<String> parseKinds(String raw) {
         if (raw == null || raw.isBlank()) {
             return List.of();
@@ -211,33 +179,4 @@ final class LearnerFeedbackTool implements NumenTool {
     }
 
     private record Input(String companion, String cursor, String kinds, String limit) {}
-
-    /** 只用 JDK 的小工具，避免为一个目录扫描引入更多依赖面。 */
-    private static final class Files2 {
-        static boolean exists(Path p) {
-            return java.nio.file.Files.exists(p);
-        }
-
-        static long mtime(Path p) {
-            try {
-                return java.nio.file.Files.getLastModifiedTime(p).toMillis();
-            } catch (java.io.IOException e) {
-                return -1L;
-            }
-        }
-
-        static boolean isDir(Path p) {
-            return java.nio.file.Files.isDirectory(p);
-        }
-
-        static List<Path> listDirs(Path dir) throws java.io.IOException {
-            List<Path> out = new ArrayList<>();
-            try (var s = java.nio.file.Files.list(dir)) {
-                for (Path p : (Iterable<Path>) s.filter(Files2::isDir)::iterator) {
-                    out.add(p);
-                }
-            }
-            return out;
-        }
-    }
 }

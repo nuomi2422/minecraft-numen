@@ -18,11 +18,16 @@ import java.util.Map;
  *       「留空」是诚实的表达，编一句「看起来像结论」的话不是（GPT-6：叫 verdict 会诱导夹带评价）。</li>
  * </ul>
  *
- * @param eventId            幂等标识；去重靠它
+* @param eventId            幂等标识；去重靠它
  * @param generation         世界代际。<b>注意</b>：只读通道拿不到宿主，
  *                           这里用「存档名 + session.lock mtime」作为<b>存档级代际</b>，
  *                           <b>不是</b> {@code ServerLifecycleHooks} 的真代际（v3.2 §2 已如实标注）
  * @param ts                 事件时间（源文件里的原值，不做时区换算，避免换算错）
+ * @param sourceType         <b>源事件的原始 {@code type} 字符串</b>。2026-10-03（E1 批次）新增：
+ *                           只有 {@link #kind} 家族时「饿死」与「被打死」长得一样，
+ *                           而 {@code RddPlugin.java:684-696} 特意把两者拆成两个 type
+ *                           就是因为「归因方向相反」—— 压成同一个 kind 等于把那个信息扔掉。
+ *                           kind 回答「属于哪一族」，sourceType 回答「到底发生了什么」。
  * @param kind               归类：任务链 / 战斗 / 死亡 / 资产 / 规划
  * @param subjectRef         <b>批次身份 + 数量</b>（{@code RL-15} 的纪律）。键缺失就是缺失，不填默认值
  * @param observation        世界可查事实（源事件 {@code data} 原样）
@@ -32,6 +37,7 @@ public record FeedbackEvent(
         String eventId,
         String generation,
         String ts,
+        String sourceType,
         String kind,
         Map<String, Object> subjectRef,
         Map<String, Object> observation,
@@ -42,6 +48,7 @@ public record FeedbackEvent(
         eventId = eventId == null ? "" : eventId;
         generation = generation == null ? "" : generation;
         ts = ts == null ? "" : ts;
+        sourceType = sourceType == null ? "" : sourceType;
         kind = kind == null ? "UNKNOWN" : kind;
         subjectRef = subjectRef == null ? Map.of() : Map.copyOf(subjectRef);
         observation = observation == null ? Map.of() : Map.copyOf(observation);
@@ -53,6 +60,9 @@ public record FeedbackEvent(
         m.put("event_id", eventId);
         m.put("generation", generation);
         m.put("ts", ts);
+        // sourceType 恒在（缺就是空串）：「是哪一类事件」和「属于哪一族」是两件事，
+        // 只给 kind 会让 starvation_death 与 death 在下游长成同一条。
+        m.put("source_type", sourceType);
         m.put("kind", kind);
         m.put("subject_ref", subjectRef);
         m.put("observation", observation);

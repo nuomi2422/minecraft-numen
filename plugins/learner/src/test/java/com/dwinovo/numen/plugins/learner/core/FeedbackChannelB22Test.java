@@ -190,6 +190,26 @@ class FeedbackChannelB22Test {
         assertEquals("death", pull.events.get(0).kind());
     }
 
+    /**
+     * 2026-10-03（E1 批次）：kind 家族会把「饿死」与「被打死」压成同一个 death，
+     * 而入队判定必须分得开 —— {@code RddPlugin.java:684-696} 特意拆成两个 type
+     * 就是因为归因方向相反。所以源事件的原始 {@code type} 必须一路带下来。
+     */
+    @Test
+    void theRawSourceTypeSurvivesTheKindCollapse(@TempDir Path tmp) throws IOException {
+        Path f = tmp.resolve("instrumentation.jsonl");
+        write(f, line("death", "{\"a\":1}"), line("starvation_death", "{\"a\":1}"));
+        var pull = FeedbackChannel.pull(f, "live@1", 0L, null, new FeedbackChannel.Pull());
+        assertEquals(2, pull.events.size());
+        List<String> kinds = pull.events.stream().map(FeedbackEvent::kind).toList();
+        assertEquals(List.of("death", "death"), kinds, "kind collapses them ...");
+        List<String> sourceTypes = pull.events.stream().map(FeedbackEvent::sourceType).toList();
+        assertEquals(List.of("death", "starvation_death"), sourceTypes, "... but sourceType must not");
+        assertEquals("death", pull.events.get(0).toMap().get("source_type"),
+                "and it must reach the rendered map, not just the record component");
+        assertEquals("starvation_death", pull.events.get(1).toMap().get("source_type"));
+    }
+
     // ---------- 代际 ----------
 
     @Test

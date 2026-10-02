@@ -66,6 +66,11 @@ public final class LearnerPlugin implements NumenPlugin {
         // B2 约束的是「不得发身体指令」不是工具总数；tools/list 里仍无 mine/goto/attack/build。
         // 结果**不进 contributeState**（那是主 AI 的上下文，注进去就变成「叙述变授权」）。
         numen.registerTool(new LearnerFeedbackTool());
+        // 第 5 个工具：入队判定（E1，59 §4.1 的 T1–T7）。读 instrumentation.jsonl（只读），
+        // 用 CandidateGate 判「该不该记经验」——这段判定过去只活在提示词里，
+        // 60 号 §3.2 记的 E1 就是「有记录，无判定」。
+        // **纯只读事件源 + 只写学习者自己的队列**：不碰世界、不写经验库（同 59 D3）。
+        numen.registerTool(new LearnerIntakeTool());
         // B16：AC 写入口只留接口、本批不做 AC。默认是**显式抛错**的占位实现，
         // 不许静默 no-op —— 否则「接了但什么都没做」会变成查不到根因的哑故障。
         artifactSink = new com.dwinovo.numen.plugins.learner.core.UnsupportedArtifactSink();

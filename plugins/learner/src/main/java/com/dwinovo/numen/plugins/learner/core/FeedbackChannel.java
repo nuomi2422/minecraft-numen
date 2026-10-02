@@ -17,12 +17,19 @@ import java.util.Map;
 /**
  * 「执行结果 → 学习者」的<b>只读</b>通道（{@code 38} v3 §2.4 / v3.2 B22）。
  *
- * <p><b>数据源：只读 {@code config/numen/monitor/rdd.jsonl} 一个已知名</b>，
+ * <p><b>数据源：只读 {@code config/numen/monitor/} 下的<b>已知名</b>，
+ * 由调用方以 {@link #pull} 的 {@code jsonl} 参数传入</b>，
  * 不新建文件、不新增写入点、不改 {@code plugins/rdd}（理由见 v3.2 §1）。
+ *
+ * <p><b>2026-10-03（E1 批次）扩到第二个已知名</b>：{@code monitor/instrumentation.jsonl}
+ * （{@code LearnerIntakeTool} 用来做入队判定）。原来这里写的是「只读 rdd.jsonl 一个已知名」，
+ * 现在是<b>两个</b>——如实改掉，不让注释比代码更乐观。两个名字都是既有文件，
+ * <b>仍然没有新增任何写入点</b>。
  *
  * <p><b>只读是编译期保证</b>：本类<b>只以 {@code Read} 方式</b>打开文件，
  * 整个类<b>没有任何</b> {@code write} / {@code append} / {@code delete} 调用。
  * 验收 V8 就是 grep 本文件里有没有写方法 —— 必须是 0。
+ * （新增的 {@link #generationForConfigDir} 只推导路径，不碰文件内容。）
  *
  * <p><b>形态：拉取式游标</b>。工具被调用时才读<b>新增行</b>，不全量重读
  * （一个存档的 rdd.jsonl 能到几 MB，全量读会拖慢每次调用）。
@@ -84,6 +91,56 @@ public final class FeedbackChannel {
             stamp = -1L;
         }
         return saveName + "@" + stamp;
+    }
+
+    /**
+     * 从插件拿到的 {@code configDir} 直接算出存档级代际。
+     *
+     * <p><b>为什么单独抽出来（2026-10-03，E1 批次）</b>：这段路径推导原来写在
+     * {@code LearnerFeedbackTool} 的调用处，而它的注释里记着一条实测教训 ——
+     * 2026-10-01「改了一次只修一半」：{@code configDir = <实例>/config/numen}，
+     * 要上两级才到 {@code <实例>/saves}，当时只改了工具里的推导、没改别处，
+     * 结果存档名对了但 {@code session.lock} 读不到 → generation 变成 {@code "live@-1"}。
+     * <b>⇒ 同一段路径推导只许写一次</b>。现在只有这里写，两个工具都调它。
+     *
+     * @param configDir {@code NumenApi.configDir()}，即 {@code <实例>/config/numen}；可为 null
+     * @return 形如 {@code live@1759276800000}；<b>任何一环推不出来就返回 {@code "unknown"}</b>，不编造
+     */
+    public static String generationForConfigDir(Path configDir) {
+        if (configDir == null) {
+            return "unknown";
+        }
+        Path configParent = configDir.getParent();
+        Path instanceDir = configParent == null ? null : configParent.getParent();
+        Path savesDir = instanceDir == null ? null : instanceDir.resolve("saves");
+        if (savesDir == null || !Files.exists(savesDir)) {
+            return "unknown";
+        }
+        String saveName = newestSaveName(savesDir);
+        Path saveDir = savesDir.resolve(saveName);
+        return generationOf(saveDir, saveDir.resolve("session.lock"));
+    }
+
+    /** 在给定的 saves 目录里挑 {@code session.lock} 最后修改时间最新的那个存档名。 */
+    private static String newestSaveName(Path savesDir) {
+        try (var s = Files.list(savesDir)) {
+            Path newest = null;
+            long newestT = -1L;
+            for (Path p : (Iterable<Path>) s.filter(Files::isDirectory)::iterator) {
+                Path lock = p.resolve("session.lock");
+                if (!Files.exists(lock)) {
+                    continue;
+                }
+                long t = Files.getLastModifiedTime(lock).toMillis();
+                if (t > newestT) {
+                    newestT = t;
+                    newest = p;
+                }
+            }
+            return newest == null ? "unknown" : newest.getFileName().toString();
+        } catch (IOException | RuntimeException e) {
+            return "unknown";
+        }
     }
 
     /**
@@ -302,7 +359,7 @@ public final class FeedbackChannel {
                 id = type + "@" + (ts == null ? "?" : ts);
             }
             String ts = firstNonBlank(str(o, "timestamp"), str(o, "game_time"));
-            return new FeedbackEvent(id, generation, ts, kindOf(type), subject, observation, null);
+            return new FeedbackEvent(id, generation, ts, type, kindOf(type), subject, observation, null);
         } catch (RuntimeException e) {
             return null;
         }
