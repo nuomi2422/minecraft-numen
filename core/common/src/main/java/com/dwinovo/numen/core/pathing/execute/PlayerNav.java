@@ -19,6 +19,7 @@ import com.dwinovo.numen.core.pathing.goals.Goal;
 import com.dwinovo.numen.core.pathing.moves.CalculationContext;
 import com.dwinovo.numen.core.pathing.moves.TerrainPermit;
 import com.dwinovo.numen.core.pathing.settings.NavSettings;
+import com.dwinovo.numen.core.pathing.settings.ScaffoldMaterials;
 import com.dwinovo.numen.core.pathing.util.NavProfiler;
 import com.dwinovo.numen.core.FailureType;
 import com.dwinovo.numen.entity.InputDriver;
@@ -580,7 +581,21 @@ public final class PlayerNav {
                         + " the search burned its whole budget without finding a route",
                 feet.toShortString(), center.toShortString(), dist));
         if (lastSearchContext != null && !lastSearchContext.hasThrowaway) {
-            r.append("; carrying no scaffolding blocks to bridge or pillar with");
+            // hasThrowaway=false does NOT mean she is carrying nothing. It is equally false when
+            // placement was never permitted this call (may_alter_terrain unset), and then not a
+            // single block could have been placed however full her pockets were. Telling the
+            // model "carrying no scaffolding blocks" there sends it off to mine -- or into the
+            // same doomed retry -- for a problem one flag would have solved, so ask the inventory
+            // instead of inferring it from a capability flag.
+            String shortage = ScaffoldMaterials.shortageAdvice(player);
+            if (shortage != null) {
+                r.append(';').append(shortage);
+            } else {
+                r.append("; she IS carrying usable blocks, but this search was never allowed to"
+                        + " place any (may_alter_terrain was not granted), so nothing could be"
+                        + " pillared or bridged -- retry with may_alter_terrain=true if altering"
+                        + " terrain is acceptable, or pick a target reachable on foot");
+            }
         }
         if (!deniedPlace.isEmpty()) {
             r.append("; ").append(deniedPlace.size())

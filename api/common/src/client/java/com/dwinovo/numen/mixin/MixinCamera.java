@@ -19,8 +19,6 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import javax.annotation.Nullable;
-
 /**
  * 接管原版第三人称相机:实体跟着谁、镜头站哪、怎么防穿墙,全部由 {@link CameraRig} 定。
  *
@@ -56,7 +54,7 @@ public abstract class MixinCamera {
 
     @Shadow private boolean initialized;
     @Shadow private BlockGetter level;
-    @Shadow @Nullable private Entity entity;
+    @Shadow private Entity entity;
     @Shadow private boolean detached;
     @Shadow private float partialTickTime;
     @Shadow private Vec3 position;

@@ -564,16 +564,20 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
                 if (feet().equals(blockTarget)) {
                     yield "reached the exact cell " + bx + "," + by + "," + bz + ".";
                 }
-                // Got to the column but not the exact y (the usual "guessed Y was in
-                // the air" case) — teach the model to drop Y for a location.
+                // 2026-10-02（stage 20261002-104007 候选2）：旧文案首词是 "arrived at location"，
+                // 可 closeEnoughToSucceed() 对 BLOCK 只看**水平**距离（:498），于是「站在目标正
+                // 下方 24 格」也算成功 → 模型读到 "arrived" 就以为到了，不会再抬头想办法。
+                // 现在首词如实说「只到水平位置」，并把垂直差顶到最前面。
                 int dy = by - gy;
-                yield "arrived at location x=" + bx + " z=" + bz + ", standing on the ground at y=" + gy
-                        + ". The exact cell y=" + by + " wasn't reachable (" + Math.abs(dy) + " blocks "
-                        + (dy > 0 ? "up — likely mid-air" : "down — likely blocked")
-                        + "); for a location, omit y and I resolve the surface.";
+                yield "reached the HORIZONTAL position x=" + bx + " z=" + bz
+                        + ", but the target cell is y=" + by + " — " + Math.abs(dy) + " blocks "
+                        + (dy > 0 ? "ABOVE you (it is up in the air: pillar/stack up, or interact with a ladder, "
+                                  + "or re-issue goto with may_alter_terrain=true to build a way up)"
+                                  : "BELOW you (it is down a shaft: dig down or find another approach)")
+                        + ". I did NOT reach it.";
             }
-            case COLUMN -> "arrived at location x=" + bx + " z=" + bz
-                    + ", standing on the ground at y=" + gy + ".";
+            case COLUMN -> "reached the location x=" + bx + " z=" + bz
+                    + " (standing on the ground at y=" + gy + ").";
             case YLEVEL -> "reached elevation y=" + gy
                     + (gy == by ? "." : " (requested y=" + by + ").");
             case FIND -> {
@@ -631,11 +635,36 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
      *  the base's {@code cleanup()} releases the nav. */
     private String blockedMessage(String failReason) {
         int gy = player.blockPosition().getY();
-        double remaining = repDistance();
         String where = switch (r.kind) {
             case BLOCK, COLUMN -> "location x=" + bx + " z=" + bz;
             case YLEVEL -> "elevation y=" + by;
             case FIND -> "the nearest " + r.block;
+        };
+        // 2026-10-02 实测修正（stage 20261002-104007 候选2）：
+        // 旧文案只有一个数 "got within 24.2 blocks of location x=-878 z=-908"，而那个 24.2
+        // 来自 repDistance() 的**三维欧氏距离**，where 却写的是**水平** location —— 语境杂交。
+        // 真实案例：目标刷怪笼在 (-878,14,-908)，同伴站在 (-878,-10,-908)，**x/z 完全相同、
+        // 差 24 格高**。模型把 24.2 读成「离目标还有 24 格远、中间有东西挡着」，
+        // 于是 45 分钟后重试同一个目标、吃同一句话。**她要的其实是「抬头 24 格」的信息。**
+        //
+        // 所以这里把水平/垂直**拆成两个数**，垂直为主因时明说是垂直。判定用的还是同一份
+        // repDistance()，只是不再让一个垂直主导的三维数冒充水平距离。
+        String geometry = switch (r.kind) {
+            case BLOCK, COLUMN -> {
+                double h = Math.sqrt(horizontalDistSqr(bx, bz));
+                int dy = by - gy;
+                yield String.format("stopped %.1f blocks short horizontally and %d blocks %s you",
+                        h, Math.abs(dy), dy > 0 ? "above" : "below");
+            }
+            case YLEVEL -> String.format("stopped at elevation y=%d, %d blocks short",
+                    gy, Math.abs(gy - by));
+            case FIND -> {
+                BlockPos n = finder.nearest();
+                yield n == null
+                        ? "found no " + r.block
+                        : String.format("nearest %s is at %d,%d,%d, %.1f blocks away",
+                                r.block, n.getX(), n.getY(), n.getZ(), repDistance());
+            }
         };
         // 地形封路的验尸自带下一步(清单 + 重发提示),不再叠几何建议;其余无路才是
         // 几何问题:换近一点的路点或扫描。除非她只是没有垫路的料——读起来同样是死路,
@@ -647,7 +676,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
                 advice = " Try a nearer waypoint or scan_blocks for a way through.";
             }
         }
-        return "blocked: got within " + String.format("%.1f", remaining) + " blocks of " + where
-                + " (now on the ground at y=" + gy + "). " + failReason + "." + advice;
+        return "blocked: " + geometry + " — target is " + where
+                + " (I'm on the ground at y=" + gy + "). " + failReason + "." + advice;
     }
 }

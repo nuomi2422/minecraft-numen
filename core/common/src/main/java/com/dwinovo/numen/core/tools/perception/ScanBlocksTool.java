@@ -1,6 +1,7 @@
 package com.dwinovo.numen.core.tools.perception;
 import com.dwinovo.numen.core.tools.ScanOps;
 
+import com.dwinovo.numen.agent.tool.ToolArgs;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.entity.NumenPlayer;
@@ -54,7 +55,7 @@ public final class ScanBlocksTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer self, Consumer<String> reply) {
-        Args a = GSON.fromJson(args, Args.class);
+        Args a = ToolArgs.fromJson(args, Args.class);
         impl.scanBlocks(a.radius(), a.block_ids(), self, reply);   // replies later via the callback
     }
 }

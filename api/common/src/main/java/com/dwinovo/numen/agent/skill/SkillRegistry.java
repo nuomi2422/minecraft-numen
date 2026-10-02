@@ -319,6 +319,10 @@ public final class SkillRegistry {
         sb.append("Use the load_skill tool to load a skill when a task matches its description.\n");
         sb.append("<available_skills>\n");
         for (SkillInfo s : described) {
+            // 2026-10-02 回退：2026-10-01 我在这里加过 catalogDigest() 截断到 200 字，
+            // 实测只省 51 token/请求，却把 skill 的**触发条件**截断了 ——
+            // 而这段描述唯一的用途就是让模型判断「该不该 load 它」。
+            // 按用户裁决「原作者为让模型用对而写的东西不能为省 token 砍」，恢复完整描述。
             sb.append("  <skill>\n");
             sb.append("    <name>").append(escapeXml(s.name())).append("</name>\n");
             sb.append("    <description>").append(escapeXml(s.description())).append("</description>\n");
@@ -327,6 +331,23 @@ public final class SkillRegistry {
         sb.append("</available_skills>");
         return sb.toString();
     }
+
+    /**
+     * 目录用的描述摘要：取第一段、限长、截断加省略号。
+     *
+     * @deprecated 2026-10-02 已回退。截断 skill 描述 = 砍掉模型判断「该不该 load」的依据，
+     * 实测只省 51 token 却让执行层变笨。保留方法仅为不在本轮大改里删掉它；
+     * 任何新的调用点都应视为 bug。理由见 {@code 30-主要功能不回退清单.md}。
+     */
+    @Deprecated(forRemoval = true)
+    private static String catalogDigest(String description) {
+        String flat = description.strip().replaceAll("\\s*\\R\\s*", " ");
+        if (flat.length() <= CATALOG_DIGEST_MAX) return flat;
+        return flat.substring(0, CATALOG_DIGEST_MAX - 1).strip() + "…";
+    }
+
+    /** 目录里单个技能描述的上限。2026-10-01 从「不限」收到 200，2026-10-02 回退为不再使用。 */
+    private static final int CATALOG_DIGEST_MAX = 200;
 
     private static SkillInfo loadFile(Path skillFile) throws IOException {
         SkillInfo info = parse(Files.readString(skillFile), skillFile.toAbsolutePath());

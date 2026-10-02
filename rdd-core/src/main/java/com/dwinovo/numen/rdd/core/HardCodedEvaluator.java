@@ -72,11 +72,27 @@ public final class HardCodedEvaluator {
         Object assetKey = condition.get("asset_key");
         if (!(assetKey instanceof String key) || key.isBlank()) return false;
         if (MODE_ACQUIRE.equals(modeOf(condition))) {
-            if (baseline == null) return false;                 // 无基线 = 未达成，绝不假装达成
+            if (baseline == null) {
+                // 兜底（2026-10-02 实测事故）：缺基线时**不要**把子目标判成永远做不到。
+                // acquire 的本意是「防她早就有了、算假完成」，但基线缺失时它挡的不只是假完成，
+                // 连真完成一起挡 —— 东西真在背包里也判不出成功，然后被看门狗当卡死、逼模型重做。
+                // 宁可直接按持有量判（最多放过一次「早就有了」），也不要让子目标不可完成。
+                return holdSatisfied(key, minimum, counts);
+            }
             int gained = counts.getOrDefault(key, 0) - baseline.getOrDefault(key, 0);
             return gained >= minimum;
         }
         if (!MODE_HOLD.equals(modeOf(condition))) return false; // 未知/畸形 mode：显式不满足
+        return holdSatisfied(key, minimum, counts);
+    }
+
+    /**
+     * {@code hold} 语义：背包/持有量达到 {@code minimum} 就算满足（硬指标，不猜）。
+     *
+     * <p>抽出来给两条路径共用：{@code mode=hold} 直接用它，
+     * {@code mode=acquire} 但基线缺失时降级到它。
+     */
+    private static boolean holdSatisfied(String key, int minimum, Map<String, Integer> counts) {
         Integer count = counts.get(key);
         return count != null ? Math.max(0, count) >= minimum : minimum == 0;
     }

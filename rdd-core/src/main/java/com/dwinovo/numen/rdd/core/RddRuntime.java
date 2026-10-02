@@ -85,6 +85,17 @@ public final class RddRuntime {
         publish("subtask_started", Map.of("goal", chain.currentPrimary().id(), "subtask", chain.currentSubtask().id()));
     }
 
+    /**
+     * {@link #startCurrent()} + 在同一次迁移里锁 {@code acquire} 基线。
+     *
+     * <p>2026-10-02 实测事故：{@code rdd_submit} 走无参的 {@link #startCurrent()}，不锁基线 →
+     * {@code mode=acquire} 恒 false → 做出来也判不出成功。派活方<b>必须</b>用这个带 counts 的版本。
+     */
+    public void startCurrentWithCounts(Map<String, Integer> counts) {
+        chain.startCurrentWithCounts(counts);
+        publish("subtask_started", Map.of("goal", chain.currentPrimary().id(), "subtask", chain.currentSubtask().id()));
+    }
+
     /** 在途执行恢复拍板（P0-4）：RECOVERING → ACTIVE。 */
     public void resumeFromRecovering() {
         chain.resumeFromRecovering();

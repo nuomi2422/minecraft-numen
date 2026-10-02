@@ -3,6 +3,7 @@ package com.dwinovo.numen.agent.tool;
 import com.dwinovo.numen.agent.llm.ConvoState;
 import com.dwinovo.numen.agent.provider.IToolSpec;
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
@@ -35,7 +36,20 @@ public final class ToolDisclosure {
     private static final String OPEN_SUFFIX = "\">";
     private static final String CLOSE = "</functions>";
 
-    /** 目录里一行摘要的长度上限——超了截断加省略号,目录是索引不是文档。 */
+    /**
+     * 目录里一行摘要的长度上限——超了截断加省略号,目录是索引不是文档。
+     *
+     * <p><b>★ 2026-10-02 已从 40 回退到 96（用户裁决，原为 96）</b>：
+     * 2026-10-01 我把这个数砍到 40，实测发现把 59 行目录里 42 行截成了半句话
+     * （{@code build "Construct or clear blocks as ONE backgr…"}）。
+     * <p><b>为什么必须回到 96</b>：这张目录的唯一职责是让模型判断「要不要展开这个工具」。
+     * 说明变半句话 = 目录失去判别力 = 模型猜错、多展开、每次多几千 token；
+     * <b>省下的钱远小于多展开的代价，而且实测是负收益</b>。
+     * <p><b>这是本仓库的一条红线</b>：原作者为让模型**用得对**而写的 description / schema
+     * 是执行层的一部分，不是待优化的冗余。详见 {@code 30-主要功能不回退清单.md}。
+     * 想省这里的 token，只能走「让目录一行同时带上参数名 + 完整首句」的改写，
+     * <b>不能靠砍字数</b>——砍字数就是砍模型的理解能力。
+     */
     static final int SUMMARY_MAX = 96;
 
     private static final Gson GSON = new Gson();
@@ -93,6 +107,95 @@ public final class ToolDisclosure {
                 if (!name.isEmpty()) out.add(name);
             }
             from = end + OPEN_SUFFIX.length();
+        }
+    }
+
+    /** 文中是否含展开块首行标记。压不压之前先问这个,不扫正文。 */
+    public static boolean hasExpandedBlock(String text) {
+        return text != null && text.contains(OPEN_PREFIX);
+    }
+
+    /**
+     * 把展开块压成一行「已展开过 + 参数名」的索引。
+     *
+     * <p><b>为什么</b>：2026-10-02 实机请求体实测，一次 {@code find_tools} 展开的完整
+     * schema（实测 {@code build} 一条就 8,708 字符 ≈ 2,177 token）会<b>永久留在历史里</b>，
+     * 每轮原样重发，占单次请求 19% —— 比 system prompt 里 {@code ENTITY_PROMPT} 整段还大。
+     * schema 是<b>可再生的</b>（{@code find_tools} 随时能再展开一次），留���历史里纯浪费。
+     *
+     * <p><b>刻意不保留 {@code <functions expanded=…>} 首行标记</b>：那行是
+     * {@link #expandedIn} 判定「已展开、目录里不必再列」的凭据。留着它 = 目录不再列这几个
+     * 工具 + 历史里又没���完整 schema = 模型照着记忆瞎填（本类原注释警告过的坑）。
+     * 去掉它，{@code <deferred_tools>} 目录照常列着它们，{@code find_tools} 随时能取回
+     * 完整定义 —— <b>恢复链路闭环</b>。
+     *
+     * <p><b>参数名必须留</b>：不留的话模型连「这工具要哪些参数」都记不住，只能瞎编。
+     * 留参数名 + 留「需要就重新 find_tools」这句，压才有意义。
+     *
+     * <p><b>原件不进历史但没丢</b>：{@code tool_result} 原文本来就落 {@code monitor/tools.jsonl}
+     * （外部审计副本），这里只是<b>组装请求时</b>换一份发给模型，不改会话历史本体。
+     */
+    public static String slimExpanded(String text) {
+        if (!hasExpandedBlock(text)) return text;
+        StringBuilder out = new StringBuilder();
+        int from = 0;
+        while (true) {
+            int open = text.indexOf(OPEN_PREFIX, from);
+            if (open < 0) { out.append(text, from, text.length()); break; }
+            int nameEnd = text.indexOf(OPEN_SUFFIX, open + OPEN_PREFIX.length());
+            if (nameEnd < 0) { out.append(text, from, text.length()); break; }
+            int bodyStart = nameEnd + OPEN_SUFFIX.length();
+            int close = text.indexOf(CLOSE, bodyStart);
+            if (close < 0) { out.append(text, from, text.length()); break; }
+            out.append(text, from, open);
+            out.append(slimBlock(text.substring(open + OPEN_PREFIX.length(), nameEnd),
+                    text.substring(bodyStart, close)));
+            from = close + CLOSE.length();
+        }
+        return out.toString();
+    }
+
+    private static String slimBlock(String names, String body) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<functions-slimmed expanded=\"").append(names).append("\">");
+        int from = 0;
+        int n = 0;
+        while (true) {
+            int open = body.indexOf("<function>", from);
+            if (open < 0) break;
+            int close = body.indexOf("</function>", open);
+            if (close < 0) break;
+            if (n++ > 0) sb.append("; ");
+            sb.append(oneLine(body.substring(open + "<function>".length(), close)));
+            from = close + "</function>".length();
+        }
+        if (n == 0) sb.append(names);
+        sb.append(" — full schemas are NOT in context any more.")
+                .append(" Call find_tools again to re-expand before using these tools.");
+        return sb.append("</functions-slimmed>").toString();
+    }
+
+    /** {@code {"name":"build","parameters":{"properties":{...}}}} → {@code build(ops)}。 */
+    private static String oneLine(String json) {
+        try {
+            JsonObject fn = GSON.fromJson(json, JsonObject.class);
+            if (fn == null || !fn.has("name")) return "?";
+            String name = fn.get("name").getAsString();
+            JsonElement params = fn.get("parameters");
+            if (params == null || !params.isJsonObject()) return name + "()";
+            JsonObject props = params.getAsJsonObject().getAsJsonObject("properties");
+            if (props == null) return name + "()";
+            StringBuilder sb = new StringBuilder(name).append('(');
+            boolean first = true;
+            for (String key : props.keySet()) {
+                if (!first) sb.append(',');
+                first = false;
+                sb.append(key);
+            }
+            return sb.append(')').toString();
+        } catch (RuntimeException e) {
+            // 解析不了就只写个占位：宁可少信息，也**绝不**把整块原文放回去
+            return "?";
         }
     }
 

@@ -147,6 +147,7 @@ public record ExecuteToolPayload(UUID entityUuid,
             MonitoringJournal.get().publish("tools", "tool_result", Map.of(
                     "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
                     "tool", p.toolName(), "result", truncate(json)));
+            com.dwinovo.numen.agent.tool.ToolCallLoopWatch.onSucceeded(p.entityUuid(), p.toolName());
             com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
                     new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
         };
@@ -166,13 +167,18 @@ public record ExecuteToolPayload(UUID entityUuid,
      * 信息倒推。失败是稀有事件,把这一条打全不会淹没日志。
      */
     public static void replyError(ServerPlayer player, ExecuteToolPayload p, String message) {
+        // 同一工具同一种错误反复失败 → 除了埋点,还要把「你已经这样失败 N 次了」塞进回复里。
+        // 模型看不见自己的失败计数,不给这句话它就会逐字重发同一个坏 payload(实测连拒 4 次)。
+        String loopAdvice = com.dwinovo.numen.agent.tool.ToolCallLoopWatch.onRejected(
+                p.entityUuid(), p.toolName(), message, p.argumentsJson());
         Constants.LOG.warn("[numen-net] ✗ execute_tool rejected from {}: tool={} id={} reason={} args={}",
                 player.getName().getString(), p.toolName(), p.toolCallId(), message,
                 p.argumentsJson());
         MonitoringJournal.get().publish("tools", "tool_rejected", Map.of(
                 "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
                 "tool", p.toolName(), "reason", message));
-        String json = TaskResult.fail(message).toJson();
+        String shown = loopAdvice == null ? message : message + "\n" + loopAdvice;
+        String json = TaskResult.fail(shown).toJson();
         com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
                 new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
     }

@@ -18,12 +18,42 @@ class RddV32DirectivesTest {
         assertTrue(spec.contains("\u4f9d\u8d56") || spec.contains("\u5148\u4e8e"), "dependency rule present");
     }
 
-    @Test void harnessHintsHasElevenHints() {
+    /**
+     * 2026-10-01 语义变了：无参 {@code harnessHints()} 不再是「11 条全量」，
+     * 而是「无条件该知道的那几条」（省约 500 token/请求，见 RddV32Directives 的类注释）。
+     * 所以这里断言的是「无条件条数」而不是 11。
+     */
+    @Test void harnessHintsWithoutTaskOnlyKeepsUnconditionalOnes() {
         String hints = RddV32Directives.harnessHints();
         assertNotNull(hints);
-        for (int i = 1; i <= 11; i++) {
-            assertTrue(hints.contains(i + ") "), "missing hint " + i);
-        }
+        // 无条件只有 1 条（保护床/刷怪笼），编号从 1 起连续
+        assertTrue(hints.contains("1) "), "unconditional hint kept");
+        assertFalse(hints.contains("2) "), "keyword-gated hints must NOT appear without a task");
+        assertTrue(hints.contains("刷怪笼"), "the unconditional one is the bed/spawner guard");
+    }
+
+    /** 给了任务描述就只发命中的那几条 + 无条件那条，且编号重新连续。 */
+    @Test void harnessHintsSelectsByTaskKeywords() {
+        String mining = RddV32Directives.harnessHints("挖黑曜石并做鱼骨通道");
+        assertTrue(mining.contains("黑曜石") || mining.contains("鱼骨"), "mining hint matched");
+        String fighting = RddV32Directives.harnessHints("击杀僵尸验证刷怪机");
+        assertTrue(fighting.contains("盾") || fighting.contains("硬冲"), "combat hint matched");
+        // 无论命中什么，无条件那条永远在
+        assertTrue(mining.contains("刷怪笼"), "unconditional always present");
+        assertTrue(fighting.contains("刷怪笼"), "unconditional always present");
+    }
+
+    /** 任务描述为空 -> 退化成无参版，不 NPE、不返回 null。 */
+    @Test void harnessHintsBlankTaskDegradesToUnconditional() {
+        assertEquals(RddV32Directives.harnessHints(), RddV32Directives.harnessHints(null));
+        assertEquals(RddV32Directives.harnessHints(), RddV32Directives.harnessHints(""));
+    }
+
+    /** 全 11 条仍在表里（只是不再无条件发）——防止「筛着筛着把提示删丢了」。 */
+    @Test void allHintsStillPresentInTheTable() {
+        String all = String.join("\n", RddV32Directives.harnessHints("挖 矿 水 火把 战斗 刷怪 重生 床 搭塔 捡掉落 背包 丢"));
+        int numbered = all.split("\\d+\\) ", -1).length - 1;
+        assertEquals(11, numbered, "all 11 hints must be reachable via a matching task");
     }
 
     @Test void annexObjectiveMentionsNoNetherEntry() {

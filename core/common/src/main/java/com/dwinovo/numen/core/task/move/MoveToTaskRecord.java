@@ -62,10 +62,26 @@ public final class MoveToTaskRecord extends TaskRecord {
         boolean hasX = x != null, hasY = y != null, hasZ = z != null;
         if (block != null) {
             if (hasX || hasY || hasZ) {
+                // 2026-10-02（stage 20261002-104007 候选1）：旧文案只说 "goto its location (x+z)"，
+                // **漏了 y 的后果**——实测模型照做后带着 y=14 走到悬在半空的刷怪笼正下方 24 格，
+                // 撞上候选2（到达判定只算水平距离），空转两轮。互斥规则本身是对的、也确实在
+                // 教模型（它后来真的改成裸坐标了），所以这里保留规则，只把「改成什么」讲全：
+                // x+z = 走到那一列的**地表**；x+y+z = 站进那个**格子**（会掏掉里面的方块）。
                 throw new IllegalArgumentException(
-                        "block means 'walk to the nearest one of these' — no coordinates with"
-                        + " it. To reach one specific block you know the position of, goto its"
-                        + " location (x+z) and interact there.");
+                        "block means 'walk to the nearest one of these' — so it cannot be combined"
+                                + " with coordinates. You asked for block=" + block
+                                + " AND a position, which is the one combination I cannot express."
+                                + " Pick the one you actually mean:"
+                                + " (a) I want the NEAREST such block, let her choose → send block=\""
+                                + block + "\" alone, no coordinates;"
+                                + " (b) I want THAT specific one at " + coords(x, y, z)
+                                + " → send its location. Use x+z ONLY to walk to that column's"
+                                + " surface (y auto-resolves to the ground); if that block is up in"
+                                + " the air, surface-walking lands you UNDER it and you will need"
+                                + " interact or a vertical move, not a plain goto;"
+                                + " send x+y+z ONLY if you want her standing IN that exact cell"
+                                + " (whatever occupies it gets dug out — never aim this at something"
+                                + " you want kept, like a chest or a spawner).");
             }
             return Kind.FIND;
         }
@@ -80,6 +96,21 @@ public final class MoveToTaskRecord extends TaskRecord {
                 + "surface), x+y+z (one exact cell), y alone (a target height), "
                 + "or block alone (walk to the nearest block of that kind). "
                 + "Got " + (hasX ? "x" : "") + (hasY ? "y" : "") + (hasZ ? "z" : ""));
+    }
+
+    /**
+     * 坐标串，只拼<b>实际给了</b>的那几轴。
+     *
+     * <p>2026-10-02 实机抓到：直接把 boxed {@code Double} 拼进文案，没给 y 时会印出字面量
+     * {@code -878.0,null,-908.0}——把「y 会自动解析到地表」这个意思变成了一个假坐标，
+     * 模型照抄这个字符串就会去 y=0。**报错文案里出现 null 就是在教模型填错值。**
+     */
+    private static String coords(Double x, Double y, Double z) {
+        StringBuilder sb = new StringBuilder();
+        if (x != null) sb.append(x);
+        if (y != null) { if (sb.length() > 0) sb.append(','); sb.append(y); }
+        if (z != null) { if (sb.length() > 0) sb.append(','); sb.append(z); }
+        return sb.toString();
     }
 
     @Override

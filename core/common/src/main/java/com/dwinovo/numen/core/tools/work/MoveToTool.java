@@ -5,8 +5,8 @@ import static com.dwinovo.numen.task.TaskDispatch.*;
 
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.agent.tool.NumenTool;
+import com.dwinovo.numen.agent.tool.ToolArgs;
 import com.dwinovo.numen.entity.NumenPlayer;
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
 import java.util.Map;
@@ -15,7 +15,6 @@ import java.util.function.Consumer;
 /** World-action tool (raw NumenTool): travel with full terrain-traversing navigation. */
 public final class MoveToTool implements NumenTool {
 
-    private static final Gson GSON = new Gson();
     private final MovementOps impl = new MovementOps();
 
     private record Args(Double x, Double y, Double z, String block, Boolean may_alter_terrain) {}
@@ -66,7 +65,7 @@ public final class MoveToTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
-        Args a = GSON.fromJson(args, Args.class);
+        Args a = ToolArgs.fromJson(args, Args.class);
         setTask(companion, impl.moveTo(a.x(), a.y(), a.z(),
                 a.block(), a.may_alter_terrain(), ctx(toolCallId, companion)), args, reply);
     }

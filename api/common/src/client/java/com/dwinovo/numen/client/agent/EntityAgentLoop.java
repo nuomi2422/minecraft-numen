@@ -1619,7 +1619,7 @@ public final class EntityAgentLoop {
         List<ConvoState.Msg> all = convo.snapshot();
         CompactSplit.Split split = CompactSplit.byRecentBudget(all, replayWindowTokens());
         if (split.toSummarize().isEmpty()) {
-            return all;                      // 没超预算 → 原样，不做任何无谓裁剪
+            return slimStaleExpansions(all);   // 没超预算 → 不做无谓裁剪，但仍压陈旧展开块
         }
         // ★ 2026-10-01 单测抓到的边界：若**单条**消息自己就超预算，byRecentBudget 会返回 kept=[]。
         //   那等于「把历史清零」—— 比原来全量回灌更糟（AI 直接失忆，连当前这轮都看不见）。
@@ -1637,7 +1637,68 @@ public final class EntityAgentLoop {
                         + "（源历史与 /compact 摘要不受影响；任务链仍在上下文里）",
                 entityUuid, dropped, droppedTokens, replayWindowTokens(),
                 kept.size(), CompactSplit.estimateTokens(kept));
-        return kept;
+        return slimStaleExpansions(kept);
+    }
+
+    /**
+     * 把「不是最后一次」的 {@code find_tools} 展开块压成索引行。
+     *
+     * <p><b>为什么只压陈旧的、留最后一次</b>：最后一次展开的 schema 正是模型这一轮正要
+     * 用的东西，压掉它等于让它拿不到参数定义。往前的那些已经用过好几轮了，
+     * {@code find_tools} 随时能再取回来。
+     *
+     * <p><b>不改会话历史本体</b>：这里返回的是新列表，原 {@code ConvoState} 一个字没动；
+     * 展开块原文也一直在 {@code monitor/tools.jsonl} 里。
+     */
+    private List<ConvoState.Msg> slimStaleExpansions(List<ConvoState.Msg> msgs) {
+        int last = -1;
+        for (int i = msgs.size() - 1; i >= 0; i--) {
+            if (msgs.get(i) instanceof ConvoState.Msg.Tool t
+                    && com.dwinovo.numen.agent.tool.ToolDisclosure.hasExpandedBlock(t.content())) {
+                last = i;
+                break;
+            }
+        }
+        if (last < 0) return msgs;
+        List<ConvoState.Msg> out = new ArrayList<>(msgs.size());
+        int slimmed = 0;
+        int saved = 0;
+        for (int i = 0; i < msgs.size(); i++) {
+            ConvoState.Msg m = msgs.get(i);
+            if (i != last && m instanceof ConvoState.Msg.Tool t) {
+                String slim = com.dwinovo.numen.agent.tool.ToolDisclosure.slimExpanded(t.content());
+                if (!slim.equals(t.content())) {
+                    saved += estimateTokensOfText(t.content()) - estimateTokensOfText(slim);
+                    slimmed++;
+                    out.add(new ConvoState.Msg.Tool(t.toolCallId(), slim));
+                    continue;
+                }
+            }
+            out.add(m);
+        }
+        if (slimmed > 0) {
+            Constants.LOG.info("[numen-entity#{}] 压掉 {} 条陈旧 find_tools 展开块，省约 {} token/请求"
+                            + "（最后一次展开保留；原件仍在 monitor/tools.jsonl；需要时 find_tools 可再取回）",
+                    entityUuid, slimmed, saved);
+        }
+        return out;
+    }
+
+    /**
+     * 一段纯文本的 token 估计。
+     *
+     * <p><b>为什么不直接调 {@code CompactSplit.estimateTokens(String)}</b>：那个重载
+     * <b>不存在</b>（只有 {@code (Msg)} 和 {@code (List<Msg>)}）。2026-10-02 我按直觉写了
+     * {@code estimateTokens(text)}，编译不过；而 {@code build-jar.ps1} 用 {@code *> $logFile}
+     * 吞掉 Gradle 全部输出，进程一死缓冲区全丢 ⇒ 表现成「无任何报错的静默死亡」，
+     * 白排查了代理/内存/看门狗/磁盘/事件日志一整轮。
+     *
+     * <p>这里包一个 {@link ConvoState.Msg.Tool} 而不是自己写公式：{@code CompactSplit} 的
+     * {@code rawTextOf} 对 {@code Msg.Tool} 就是返回 {@code content()}，走的是**完全相同
+     * 的一条分支**，与这条消息在历史里的口径一致——不新造估计器，避免与它漂移。
+     */
+    private static int estimateTokensOfText(String text) {
+        return CompactSplit.estimateTokens(new ConvoState.Msg.Tool("", text));
     }
 
     /**
@@ -1779,23 +1840,39 @@ public final class EntityAgentLoop {
         return out.toString();
     }
 
-    static String renderInventory(ClientNumenState.Snapshot snapshot) {
+/**
+ * 目录里最多列多少种物品，超出的合并成一行溢出标记。
+ *
+ * @deprecated 2026-10-02 已回退：实测背包有 27 种物品，截到 20 会把模型当轮可能要用的
+ * 料（andesite/calcite/tuff 都是曾被任务点名要挖的）藏起来。列出全部 > 省几百 token。
+ * 保留常量仅为不在本轮大改里删掉它；任何新的调用点都应视为 bug。
+ */
+@Deprecated(forRemoval = true)
+private static final int INVENTORY_CATALOG_MAX = 20;
+
+static String renderInventory(ClientNumenState.Snapshot snapshot) {
         java.util.Map<String, Integer> totals = new java.util.TreeMap<>();
         for (net.minecraft.world.item.ItemStack stack : snapshot.items()) {
             if (!stack.isEmpty()) {
                 totals.merge(itemId(stack), stack.getCount(), Integer::sum);
             }
         }
+        // 2026-10-02 保留的唯一一处改动：按数量降序。原来的字母序（TreeMap 顺序）让
+        // 「只有 1 个的低价值堆」和「113 个圆石」混在一起看不出轻重；降序不丢任何信息，
+        // 只是把「手上主要有什么」放到一眼能看见的位置。**不截断**（见上方 @deprecated）。
+        List<java.util.Map.Entry<String, Integer>> ranked = new java.util.ArrayList<>(totals.entrySet());
+        ranked.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+
         StringBuilder items = new StringBuilder();
-        totals.forEach((id, count) -> {
+        for (java.util.Map.Entry<String, Integer> e : ranked) {
             if (items.length() > 0) items.append(", ");
-            items.append(id).append(" x").append(count);
-        });
+            items.append(e.getKey()).append(" x").append(e.getValue());
+        }
         // 手上那份不带数量,是刻意的:它本来就是 carrying 里的一堆,写上数量她会当成另一堆
         // 加起来(实测她把主手 64 个熔炉和清单里同一批数成了 128)。总数只有一处,手只指
         // 向它,结构上就没什么可重复计的。
-        return "<inventory>Everything your body carries right now, totalled across all 36 backpack "
-                + "slots — trust it and do not spend a call on get_self_status to rediscover it. "
+        return "<inventory>Your backpack right now, totalled across all 36 backpack slots — trust it, "
+                + "do not spend a call on get_self_status to rediscover it. "
                 + "Call inspect_gui only when exact slots matter. A newer tool result wins over this."
                 + "\ncarrying=" + (items.length() == 0 ? "nothing" : items)
                 + "\nholding (already counted above)=main " + describe(snapshot.mainHand())

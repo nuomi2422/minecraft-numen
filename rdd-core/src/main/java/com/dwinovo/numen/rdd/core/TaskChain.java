@@ -323,6 +323,29 @@ public final class TaskChain {
         lastStartedAtMillis = System.currentTimeMillis();
     }
 
+    /**
+     * 同 {@link #startCurrent()}，但在同一次 PENDING→RUNNING 迁移里额外锁一次 {@code acquire} 基线。
+     *
+     * <p><b>为什么必须有这个重载（2026-10-02 实测事故）。</b>基线原先只在
+     * {@link #activateCurrentWithSnapshot}（和 {@link #activateCurrentWithRegistry}）里拍，
+     * 而 {@code rdd_submit} 派活走的是 {@link #startCurrent()} 这条路 —— 那边一次都不拍。
+     * 后果：{@code rdd_submit} 建出来的链永远没有基线 →
+     * {@link HardCodedEvaluator} 的「无基线 = 未达成」分支让 {@code mode=acquire} <b>恒 false</b> →
+     * 合成/采集类任务<b>真的把东西做出来了也判不出成功</b> → 被 {@code RddStallWatcher} 当成卡死 →
+     * 判失败并逼模型把整件事重做一遍（实测：13:11:41 合成出石镐，13:12:45 判「stalled after nudges」，
+     * 13:13:04 又合成一把，背包里最后有 2 把）。
+     *
+     * <p>「激活」和「开跑」是同一个"派活之前"的时刻，两条路都必须锁基线。
+     * {@link #captureAcquireBaseline} 幂等（已有则不覆盖），所以重复调用安全。
+     *
+     * @param counts 此刻同伴的持有量；{@code null} 记空表（等价于「什么都有」，
+     *               后续 acquire 只能靠净增满足，比缺基线的恒 false 宽松）
+     */
+    public synchronized void startCurrentWithCounts(Map<String, Integer> counts) {
+        startCurrent();
+        captureAcquireBaseline(currentSubtask().id(), counts);
+    }
+
     // ---- acquire baseline (mode=acquire 的运行时基线；见字段注释) ----
 
     /**

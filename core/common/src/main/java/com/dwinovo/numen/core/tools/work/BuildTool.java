@@ -248,7 +248,7 @@ public final class BuildTool implements NumenTool {
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion,
                              Consumer<String> reply) {
-        Args parsed = GSON.fromJson(args, Args.class);
+        Args parsed = ToolArgs.fromJson(args, Args.class);
         if (parsed.ops() == null || parsed.ops().isEmpty()) {
             throw new IllegalArgumentException("ops must contain at least one instruction");
         }

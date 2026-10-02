@@ -1,6 +1,7 @@
 package com.dwinovo.numen.core.tools.agent;
 import com.dwinovo.numen.core.tools.AgentOps;
 
+import com.dwinovo.numen.agent.tool.ToolArgs;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.ToolCall;
 import com.dwinovo.numen.agent.tool.Schema;
@@ -49,7 +50,7 @@ public final class TodoWriteTool implements NumenTool {
     @Override
     public void invoke(ToolCall call) {
         try {
-            Args a = GSON.fromJson(call.rawArgs(), Args.class);
+            Args a = ToolArgs.fromJson(call.rawArgs(), Args.class);
             call.complete(impl.todowrite(a.todos()));
         } catch (RuntimeException ex) {
             call.complete(TaskResult.fail(ex.getMessage()).toJson());

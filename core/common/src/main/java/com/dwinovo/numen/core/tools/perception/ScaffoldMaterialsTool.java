@@ -1,5 +1,6 @@
 package com.dwinovo.numen.core.tools.perception;
 
+import com.dwinovo.numen.agent.tool.ToolArgs;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.core.tools.ScaffoldOps;
@@ -57,7 +58,7 @@ public final class ScaffoldMaterialsTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer self, Consumer<String> reply) {
-        Args a = GSON.fromJson(args, Args.class);
+        Args a = ToolArgs.fromJson(args, Args.class);
         reply.accept(impl.apply(
                 a == null ? null : a.action(),
                 a == null ? null : a.block_ids(),

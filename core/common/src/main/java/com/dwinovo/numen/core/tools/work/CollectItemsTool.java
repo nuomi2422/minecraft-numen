@@ -3,6 +3,7 @@ import com.dwinovo.numen.core.tools.InventoryOps;
 
 import static com.dwinovo.numen.task.TaskDispatch.*;
 
+import com.dwinovo.numen.agent.tool.ToolArgs;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.entity.NumenPlayer;
@@ -47,7 +48,7 @@ public final class CollectItemsTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
-        Args a = GSON.fromJson(args, Args.class);
+        Args a = ToolArgs.fromJson(args, Args.class);
         setTask(companion, impl.collectItems(a.item_ids(), a.radius(),
                 ctx(toolCallId, companion)), args, reply);
     }

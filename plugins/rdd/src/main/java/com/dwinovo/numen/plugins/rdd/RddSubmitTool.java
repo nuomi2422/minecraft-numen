@@ -21,9 +21,13 @@ final class RddSubmitTool implements NumenTool {
     @Override public String description() {
         return "Submit a bounded RDD asset task chain. Required: goal, primary_goal, subtask, asset_key, minimum. "
                 + "Optional task_type + args also drive the maid's body for this subtask. "
-                + "Optional mode decides how asset_key is judged: hold (default) = she must HOLD minimum now; "
-                + "acquire = she must GAIN minimum during this subtask (use this for collect/farm tasks, "
-                + "otherwise a subtask like 'gather 10 seeds' completes instantly when she already holds 33).";
+                + "Optional mode decides how asset_key is judged. DEFAULT (omit mode entirely) = hold: "
+                + "she must HOLD minimum right now -- a hard reading of her inventory, satisfied the moment "
+                + "the item is really there. Use hold for anything she MAKES or PRODUCES (craft/equip/build): "
+                + "making the thing IS the achievement, so 'she has it' is the real completion. "
+                + "acquire = she must GAIN minimum during this subtask; use it ONLY for collect/farm style "
+                + "tasks where she may already be holding a pile ('gather 10 more seeds' would otherwise "
+                + "complete instantly when she already holds 33). Do NOT use acquire for craft/produce goals.";
     }
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object()
@@ -33,9 +37,11 @@ final class RddSubmitTool implements NumenTool {
                 .string("asset_key", "Asset key used by the hard-coded observation condition.")
                 .integer("minimum", "Minimum observed count required.", 0, Integer.MAX_VALUE)
                 .optionalEnum("mode",
-                        "How asset_key is judged. hold (default, unchanged): current count >= minimum. "
-                                + "acquire: gain relative to the count when this subtask started. "
-                                + "Use acquire for anything she must COLLECT, or a satisfied holding is a fake completion.",
+                        "How asset_key is judged. OMIT IT unless you truly need acquire: the default hold is a "
+                                + "hard inventory reading (count >= minimum) and is right for craft/equip/build "
+                                + "goals, where making the thing IS the achievement. "
+                                + "acquire counts only the GAIN since this subtask started; use it for collect/farm "
+                                + "tasks where she may already hold a pile. Never use acquire for craft/produce.",
                         com.dwinovo.numen.rdd.core.HardCodedEvaluator.MODE_HOLD,
                         com.dwinovo.numen.rdd.core.HardCodedEvaluator.MODE_ACQUIRE)
                 .optionalString("task_type", "Optional body tool to drive. RDD 词表内(mine/craft/equip_item/collect_items)会被自动翻译参数; 也可指名任意真实注册 NUMEN 工具原样驱动.")
@@ -77,7 +83,16 @@ final class RddSubmitTool implements NumenTool {
                     java.util.List.of(primary));
             RddPlugin.bind(companion.getUUID(), goal);
             RddRuntime runtime = RddPlugin.runtime(companion.getUUID());
-            runtime.startCurrent();
+            // 必须用带 counts 的重载锁 acquire 基线（2026-10-02 实测事故）：
+            // 无参 startCurrent() 不锁基线 → mode=acquire 恒 false → 真做出来也判不出成功
+            // → 被 RddStallWatcher 当卡死 → 判失败并逼模型重做一遍。详见 TaskChain.startCurrentWithCounts。
+            Map<String, Integer> baselineCounts = null;
+            try {
+                baselineCounts = RddPlugin.planningSnapshot(companion.getUUID()).availableCounts();
+            } catch (RuntimeException ignored) {
+                // 拿不到背包不阻断派活：基线记空表，判定会退化成"按持有量算"，不会卡死任务
+            }
+            runtime.startCurrentWithCounts(baselineCounts);
             reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain accepted and started",
                     Map.of("goal", goal.id(), "primary_goal", primaryId, "subtask", subtaskId,
                             "detection_mode", "HARD_CODED",

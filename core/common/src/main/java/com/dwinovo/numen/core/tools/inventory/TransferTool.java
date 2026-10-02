@@ -1,6 +1,7 @@
 package com.dwinovo.numen.core.tools.inventory;
 import com.dwinovo.numen.core.tools.ContainerOps;
 
+import com.dwinovo.numen.agent.tool.ToolArgs;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.entity.NumenPlayer;
@@ -46,7 +47,7 @@ public final class TransferTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer self, Consumer<String> reply) {
-        Args a = GSON.fromJson(args, Args.class);
+        Args a = ToolArgs.fromJson(args, Args.class);
         reply.accept(impl.transfer(a.moves(), self));
     }
 }
