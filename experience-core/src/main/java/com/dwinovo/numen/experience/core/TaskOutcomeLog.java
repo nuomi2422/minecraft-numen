@@ -278,10 +278,6 @@ public final class TaskOutcomeLog {
             if (line.isBlank()) {
                 continue;
             }
-            if (acc.scanned >= cap) {
-                truncated = true;
-                break;
-            }
             acc.scanned++;
             JsonObject env;
             try {
@@ -298,6 +294,15 @@ public final class TaskOutcomeLog {
             if (!TYPE_TASK_FINISHED.equals(str(env, "type"))) {
                 continue;
             }
+            // ★ 上限只数「本同伴的 task_finished」。
+            //   B11 实机抓到的：events.jsonl 里别人同伴的 task_finished 占了大头
+            //   （120 行里 97 行是别人的），原先按「所有行」计数会让上限被别人的行吃光，
+            //   自己同伴的行被挤出窗口 —— 而读数上只显示 truncated:true，
+            //   看起来像「本来就没有结果」。
+            if (acc.mineSeen >= cap) {
+                truncated = true;
+                break;
+            }
             JsonObject data = obj(env, "data");
             if (data == null) {
                 acc.skipped++;
@@ -307,6 +312,7 @@ public final class TaskOutcomeLog {
                 acc.other++;
                 continue;
             }
+            acc.mineSeen++;
             String status = str(data, "status");
             if (status == null || status.isBlank()) {
                 // ★ B10 之前的老行就是这样：attrs 整块被埋点丢掉。
@@ -334,6 +340,8 @@ public final class TaskOutcomeLog {
     private static final class Acc {
         private long consumed;
         private int scanned;
+        /** 本同伴的 task_finished 行数（上限只数它，不数别人的）。 */
+        private int mineSeen;
         private int other;
         private int statusAbsent;
         private int unknownStatus;

@@ -219,6 +219,28 @@ class TaskOutcomeLogTest {
     }
 
     @Test
+    void theLineCapCountsMyOwnTasksSoOthersCannotStarveTheWindow() throws IOException {
+        // B11 实机抓到的：events.jsonl 里别人同伴的 task_finished 占大头。
+        List<String> ls = new ArrayList<>();
+        for (int i = 0; i < 500; i++) {
+            ls.add(taskFinished(OTHER, 1_000L + i, "done", "other-" + i, "goto"));
+        }
+        for (int i = 0; i < 5; i++) {
+            ls.add(taskFinished(ME, 9_000L + i, "done", "mine-" + i, "goto"));
+        }
+        Path f = write(lines(ls.toArray(new String[0])));
+
+        // 上限 3 行：只数我自己的，不该被前面 500 行别人的吃掉。
+        TaskOutcomeLog.Pull p = TaskOutcomeLog.pull(f, ME, 0, 3);
+
+        assertEquals(3, p.outcomes().size(), "上限只数本同伴的 task_finished");
+        assertEquals("mine-0", p.outcomes().get(0).taskId());
+        assertEquals(500, p.otherCompanionEvents());
+        assertTrue(p.truncated(), "超上限要如实报");
+        assertTrue(p.linesScanned() >= 503, "实际扫过的行数要如实报出来（读了 503 行才截断）");
+    }
+
+    @Test
     void aBrokenJsonLineIsCountedAndDoesNotStopTheScan() throws IOException {
         Path f = write(lines(
                 "{ this is not json",
