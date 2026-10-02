@@ -46,11 +46,13 @@ class WorldFactConditionsPinTest {
 
     // ── ① 合法 type 清单（核心 pin）─────────────────────────────────
 
-    /** 本仓当前<b>唯一</b>合法的 4 个世界事实类型。加新 type 时本清单必须同步改。 */
-    private static final List<String> PINNED_TYPES = List.of("advancement", "structure", "entity_killed", "base");
+    /** 本仓合法的 7 个世界事实类型（2026-10-02 从 4 个扩到 7 个）。加新 type 时本清单必须同步改。 */
+    private static final List<String> PINNED_TYPES = List.of(
+            "advancement", "structure", "entity_killed", "base",
+            "biome", "block_nearby", "container_nearby");
 
     @Test
-    void knownTypesArePinnedToExactlyFour() {
+    void knownTypesArePinnedToExactlySeven() {
         for (String t : PINNED_TYPES) {
             assertTrue(WorldFactConditions.knownType(t), "'" + t + "' 必须是已知世界事实类型");
         }
@@ -58,7 +60,7 @@ class WorldFactConditionsPinTest {
         for (String notKnown : List.of(
                 "inventory",              // 背包类，走 HardCodedEvaluator，不走这里
                 "item_held", "block_placed", "dimension_entered", "time_elapsed", "chat_said",
-                "biome", "weather", "entity_seen", "recipe_known", "damage_taken",
+                "weather", "entity_seen", "recipe_known", "damage_taken",
                 "Advancement", "BASE", "")) {
             assertFalse(WorldFactConditions.knownType(notKnown),
                     "'" + notKnown + "' 不在合法清单里。knownType 决定监测台的 evidenceSource 分流，"
@@ -73,9 +75,9 @@ class WorldFactConditionsPinTest {
         // 「合法但没实现」与「拼错了」在 schema 层都只能表现为 false —— 这正是危险之处：
         // parseOne 拿到 false 会静默丢弃整条二级。本类至少把「必须为 false」钉死，
         // 让想加新 type 的人一定会撞到这里。
-        assertFalse(WorldFactConditions.valid(c("type", "biome", "biome", "minecraft:plains")),
+        assertFalse(WorldFactConditions.valid(c("type", "item_held", "item", "minecraft:stone")),
                 "未知 type 必须判非法（加了新 type 请同步本类 + RddWorldFacts.matches + RddDecomposer 提示词，三处缺一不可）");
-        assertFalse(WorldFactConditions.valid(c("type", "item_held", "asset_key", "minecraft:stone")));
+        assertFalse(WorldFactConditions.valid(c("type", "nearby_mob")));
         assertFalse(WorldFactConditions.valid(c("type", "chat_said")));
     }
 
@@ -118,6 +120,94 @@ class WorldFactConditionsPinTest {
         assertFalse(WorldFactConditions.valid(c("type", "structure")));
         assertFalse(WorldFactConditions.valid(c("type", "structure", "structure", "village_plains")));
         assertFalse(WorldFactConditions.valid(c("type", "structure", "structure", "minecraft:")));
+    }
+
+    // ── ④ 2026-10-02 新增：精确 id 与 #tag 同等支持 ────────────────────
+    // 原版里「一个东西好几个变体」是常态：村庄五个 id、海底废墟冷暖两版、
+    // 「任意森林」是一整个 biome tag。规划器逐个枚举变体必漏，漏一个就静默判假。
+
+    @Test
+    void structureAcceptsTagsAsWellAsExactIds() {
+        assertTrue(WorldFactConditions.valid(c("type", "structure", "structure", "#minecraft:village")),
+                "「到了任意村庄」必须能用一个 tag 表达，否则规划器要枚举五个变体");
+        assertTrue(WorldFactConditions.valid(c("type", "structure", "structure", "#minecraft:ruined_portal")));
+        assertFalse(WorldFactConditions.valid(c("type", "structure", "structure", "#")),
+                "只有 # 没有 id = 空 tag");
+        assertFalse(WorldFactConditions.valid(c("type", "structure", "structure", "#village")),
+                "tag 也必须带命名空间");
+        assertFalse(WorldFactConditions.valid(c("type", "structure", "structure", "#Minecraft:Village")));
+    }
+
+    @Test
+    void biomeRequiresABiomeIdOrTag() {
+        assertTrue(WorldFactConditions.valid(c("type", "biome", "biome", "minecraft:desert")));
+        assertTrue(WorldFactConditions.valid(c("type", "biome", "biome", "#minecraft:is_forest")));
+        assertFalse(WorldFactConditions.valid(c("type", "biome")), "biome 没有 id = 不知道查哪片地形");
+        assertFalse(WorldFactConditions.valid(c("type", "biome", "biome", "desert")),
+                "群系必须带命名空间（和结构一样）");
+        assertFalse(WorldFactConditions.valid(c("type", "biome", "biome", "#Minecraft:is_forest")));
+        // 多余键一律容忍：advancement / base / entity_killed 历史上都不拒额外键，
+        // 只给 biome 加严会造成「同类条件宽严不一」，而且 parseOne 丢弃时不报错，模型无从排查。
+        assertTrue(WorldFactConditions.valid(c("type", "biome", "biome", "minecraft:plains", "minimum", 1)),
+                "★ 多余键容忍是全 type 一致的契约，biome 也不例外");
+    }
+
+    @Test
+    void blockNearbyNeedsABlockAndABoundedRadius() {
+        assertTrue(WorldFactConditions.valid(c("type", "block_nearby", "block", "minecraft:diamond_ore")));
+        assertTrue(WorldFactConditions.valid(c("type", "block_nearby", "block", "#minecraft:ores", "radius", 16)));
+        assertFalse(WorldFactConditions.valid(c("type", "block_nearby")),
+                "block_nearby 没有 block = 不知道找什么方块");
+        assertFalse(WorldFactConditions.valid(c("type", "block_nearby", "block", "diamond_ore")));
+        assertFalse(WorldFactConditions.valid(c("type", "block_nearby", "block", "minecraft:diamond_ore", "radius", 0)),
+                "半径 0 只能判自己脚下一格");
+        assertFalse(WorldFactConditions.valid(c("type", "block_nearby", "block", "minecraft:diamond_ore", "radius", 64)),
+                "★ 半径必须被硬顶住：判定每秒跑一次，放开就是每秒扫两百万格");
+        assertFalse(WorldFactConditions.valid(c("type", "block_nearby", "block", "minecraft:diamond_ore", "radius", 8.5)));
+    }
+
+    @Test
+    void containerNearbyNeedsAnItemAndPositiveMinimum() {
+        assertTrue(WorldFactConditions.valid(c("type", "container_nearby", "item", "minecraft:wheat")));
+        assertTrue(WorldFactConditions.valid(c("type", "container_nearby", "item", "minecraft:wheat", "minimum", 16)));
+        assertTrue(WorldFactConditions.valid(c("type", "container_nearby", "item", "#minecraft:planks", "radius", 4)));
+        assertFalse(WorldFactConditions.valid(c("type", "container_nearby")));
+        assertFalse(WorldFactConditions.valid(c("type", "container_nearby", "item", "minecraft:wheat", "minimum", 0)),
+                "★ minimum 必须为正：0 个 = 一开始就假完成");
+        assertFalse(WorldFactConditions.valid(c("type", "container_nearby", "item", "minecraft:wheat", "minimum", -3)));
+        assertFalse(WorldFactConditions.valid(c("type", "container_nearby", "item", "minecraft:wheat", "radius", 32)));
+    }
+
+    // ── ⑤ 宿主侧读取用的解析器（宿主不做形状校验，只取默认值）──────────
+
+    @Test
+    void tagHelpersStripTheHashAndRejectGarbage() {
+        assertEquals("minecraft:village", WorldFactConditions.tagId("#minecraft:village"));
+        assertEquals("minecraft:village", WorldFactConditions.tagId("minecraft:village"));
+        assertNull(WorldFactConditions.tagId("#"));
+        assertNull(WorldFactConditions.tagId(null));
+        assertNull(WorldFactConditions.tagId(7));
+        assertTrue(WorldFactConditions.isTag("#minecraft:village"));
+        assertFalse(WorldFactConditions.isTag("minecraft:village"));
+        assertFalse(WorldFactConditions.isTag(null));
+    }
+
+    @Test
+    void radiusAndMinimumFallBackInsteadOfThrowing() {
+        Map<String, Object> noRadius = c("type", "block_nearby", "block", "minecraft:stone");
+        assertEquals(7, WorldFactConditions.radiusOf(noRadius, 7),
+                "缺省值由调用方给 —— 宿主按 type 自己选 DEFAULT_BLOCK_RADIUS 还是 DEFAULT_CONTAINER_RADIUS");
+        assertEquals(WorldFactConditions.DEFAULT_BLOCK_RADIUS, WorldFactConditions.radiusOf(noRadius, WorldFactConditions.DEFAULT_BLOCK_RADIUS));
+        assertEquals(4, WorldFactConditions.radiusOf(c("radius", 4), 8));
+        assertEquals(8, WorldFactConditions.radiusOf(c("radius", 999), 8), "越界半径回落，不许放任扫描");
+        assertEquals(8, WorldFactConditions.radiusOf(c("radius", 0), 8), "半径 0 回落");
+        assertEquals(8, WorldFactConditions.radiusOf(c("radius", "big"), 8));
+        assertEquals(8, WorldFactConditions.radiusOf(null, 8));
+
+        assertEquals(1, WorldFactConditions.minimumOf(c(), 1));
+        assertEquals(12, WorldFactConditions.minimumOf(c("minimum", 12), 1));
+        assertEquals(1, WorldFactConditions.minimumOf(c("minimum", 0), 1));
+        assertEquals(1, WorldFactConditions.minimumOf(null, 1));
     }
 
     @Test
@@ -188,8 +278,9 @@ class WorldFactConditionsPinTest {
         // 实现内部是一个内联 Set.of(...)，这里通过逐项探测 + 排除常见误加项来锁定。
         Set<String> accepted = new java.util.HashSet<>();
         for (String candidate : List.of("advancement", "structure", "entity_killed", "base",
-                "inventory", "asset", "item", "block", "entity", "biome", "dimension", "recipe",
-                "effect", "stat", "weather", "time", "damage", "xp", "level")) {
+                "biome", "block_nearby", "container_nearby",
+                "inventory", "asset", "item", "block", "entity", "dimension", "recipe",
+                "effect", "stat", "weather", "time", "damage", "xp", "level", "mob_nearby")) {
             if (WorldFactConditions.knownType(candidate)) accepted.add(candidate);
         }
         assertEquals(Set.copyOf(PINNED_TYPES), accepted,

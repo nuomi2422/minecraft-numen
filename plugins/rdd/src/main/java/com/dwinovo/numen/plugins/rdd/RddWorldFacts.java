@@ -2,25 +2,37 @@ package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.agent.FunctionalBlockTypes;
 import com.dwinovo.numen.entity.NumenPlayer;
+import com.dwinovo.numen.rdd.core.WorldFactConditions;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.stats.Stats;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.Container;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.BedBlock;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.function.Predicate;
 
 /** Read-only, server-thread world evidence. Unknown/unloaded facts never pass. */
 public final class RddWorldFacts {
@@ -36,6 +48,9 @@ public final class RddWorldFacts {
                 case "entity_killed" -> killed(ap, condition);
                 case "structure" -> structure(ap, condition);
                 case "base" -> base(ap, condition);
+                case "biome" -> biome(ap, condition);
+                case "block_nearby" -> blockNearby(ap, condition);
+                case "container_nearby" -> containerNearby(ap, condition);
                 default -> false;
             };
         } catch (IllegalArgumentException exception) {
@@ -78,12 +93,32 @@ public final class RddWorldFacts {
 
     private static boolean structure(NumenPlayer ap, Map<String, Object> condition) {
         ServerLevel level = ap.serverLevel();
-        ResourceLocation key = id(condition, "structure");
-        if (key == null || !dimension(level, condition)) return false;
-        var registry = level.registryAccess().registryOrThrow(Registries.STRUCTURE);
-        if (!registry.containsKey(key)) return false;
-        var wanted = registry.get(key);
+        if (!dimension(level, condition)) return false;
+        Object raw = condition.get("structure");
+        // 先剥 # 再解析：#minecraft:village 直接喂给 ResourceLocation.tryParse 会炸。
+        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+        if (key == null) return false;
+        var registry = level.registryAccess().lookupOrThrow(Registries.STRUCTURE);
         BlockPos pos = ap.blockPosition();
+        var here = level.structureManager().getAllStructuresAt(pos);
+
+        // #tag：原版里「一个东西好几个变体」是常态（五个村庄 id、冷/暖两种海底废墟…）。
+        // 规划器逐个枚举变体必漏，漏一个就静默判假 → 所以 tag 与精确 id 同等支持。
+        if (WorldFactConditions.isTag(raw)) {
+            var set = registry.get(TagKey.create(Registries.STRUCTURE, key));
+            if (set.isEmpty()) return false;
+            Set<Structure> members = new HashSet<>();
+            set.get().forEach(holder -> members.add(holder.value()));
+            for (Structure found : here.keySet()) {
+                if (members.contains(found)) return true;
+            }
+            return false;
+        }
+
+        var holder = registry.get(ResourceKey.create(Registries.STRUCTURE, key));
+        if (holder.isEmpty()) return false;
+        var wanted = holder.get().value();
+        if (here.containsKey(wanted)) return true;
         LevelChunk current = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
         if (current == null) return false;
         if (contains(current.getStartForStructure(wanted), pos)) return true;
@@ -96,6 +131,116 @@ public final class RddWorldFacts {
             if (origin != null && contains(origin.getStartForStructure(wanted), pos)) return true;
         }
         return false;
+    }
+
+    /** 站在什么群系里。原版「任何森林/任何海洋/任何山地」都是 biome tag，不是具体 id。 */
+    private static boolean biome(NumenPlayer ap, Map<String, Object> condition) {
+        ServerLevel level = ap.serverLevel();
+        if (!dimension(level, condition)) return false;
+        Object raw = condition.get("biome");
+        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+        if (key == null || !dimension(level, condition)) return false;
+        Holder<Biome> here = level.getBiome(ap.blockPosition());
+        if (WorldFactConditions.isTag(raw)) {
+            // 「任何森林/任何海洋/任何山地」在原版是 biome tag，不是具体 id。
+            TagKey<Biome> tag = TagKey.create(Registries.BIOME, key);
+            var registry = level.registryAccess().lookupOrThrow(Registries.BIOME);
+            if (registry.get(tag).isEmpty()) return false;
+            return here.is(tag);
+        }
+        return key.equals(here.unwrapKey().map(k -> k.location()).orElse(null));
+    }
+
+    /** 附近有没有某类方块。矿石 / 刷怪笼 / 干草捆 都不带方块实体，观察器看不见它们，这里能。 */
+    private static boolean blockNearby(NumenPlayer ap, Map<String, Object> condition) {
+        ServerLevel level = ap.serverLevel();
+        if (!dimension(level, condition)) return false;
+        Object raw = condition.get("block");
+        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+        if (key == null || !dimension(level, condition)) return false;
+        int radius = WorldFactConditions.radiusOf(condition, WorldFactConditions.DEFAULT_BLOCK_RADIUS);
+        Predicate<BlockState> hit;
+        if (WorldFactConditions.isTag(raw)) {
+            // 直接问状态本身「你在不在这个 tag 里」，不自己遍历注册表成员 ——
+            // BlockState#is(TagKey) 是原版原生判定，#minecraft:ores / #minecraft:logs 都能用。
+            TagKey<Block> tag = TagKey.create(Registries.BLOCK, key);
+            hit = state -> state.is(tag);
+        } else {
+            var wanted = BuiltInRegistries.BLOCK.get(key);
+            if (wanted == null || !BuiltInRegistries.BLOCK.containsKey(key)) return false;
+            hit = state -> state.is(wanted);
+        }
+        return scanNeighbourhood(level, ap.blockPosition(), radius, hit);
+    }
+
+    /**
+     * 附近容器里有没有某物 —— 就是 voyager 的 chest_memory：观测「那边有个箱子，里面有干草块」，
+     * 摆到执行 AI 眼前让它自己决定要不要去拿。只读不派工，不改规划。
+     */
+    private static boolean containerNearby(NumenPlayer ap, Map<String, Object> condition) {
+        ServerLevel level = ap.serverLevel();
+        if (!dimension(level, condition)) return false;
+        Object raw = condition.get("item");
+        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+        if (key == null || !dimension(level, condition)) return false;
+        int minimum = WorldFactConditions.minimumOf(condition, 1);
+        int radius = WorldFactConditions.radiusOf(condition, WorldFactConditions.DEFAULT_CONTAINER_RADIUS);
+        Predicate<ItemStack> hit;
+        if (WorldFactConditions.isTag(raw)) {
+            TagKey<Item> tag = TagKey.create(Registries.ITEM, key);
+            hit = stack -> stack.is(tag);
+        } else {
+            var wanted = BuiltInRegistries.ITEM.get(key);
+            if (wanted == null || !BuiltInRegistries.ITEM.containsKey(key)) return false;
+            hit = stack -> stack.is(wanted);
+        }
+        return countInNeighbourhood(level, ap.blockPosition(), radius, hit, minimum) >= minimum;
+    }
+
+    /**
+     * 有界邻域扫描：只读已加载 chunk，绝不触发生成。判定每秒跑一次，所以半径被
+     * {@link WorldFactConditions#MAX_NEARBY_RADIUS} 硬顶住。
+     */
+    private static boolean scanNeighbourhood(ServerLevel level, BlockPos origin, int radius,
+                                             Predicate<BlockState> hit) {
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        int squared = radius * radius;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    int planar = dx * dx + dz * dz;
+                    if (planar > squared || planar + dy * dy > squared) continue;
+                    cursor.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
+                    if (!level.hasChunkAt(cursor)) continue;
+                    if (hit.test(level.getBlockState(cursor))) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static int countInNeighbourhood(ServerLevel level, BlockPos origin, int radius,
+                                            Predicate<ItemStack> hit, int stopAt) {
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        int squared = radius * radius;
+        int total = 0;
+        for (int dx = -radius; dx <= radius && total < stopAt; dx++) {
+            for (int dy = -radius; dy <= radius && total < stopAt; dy++) {
+                for (int dz = -radius; dz <= radius && total < stopAt; dz++) {
+                    int planar = dx * dx + dz * dz;
+                    if (planar > squared || planar + dy * dy > squared) continue;
+                    cursor.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
+                    if (!level.hasChunkAt(cursor)) continue;
+                    if (!(level.getBlockEntity(cursor) instanceof Container container)) continue;
+                    for (int slot = 0; slot < container.getContainerSize() && total < stopAt; slot++) {
+                        ItemStack stack = container.getItem(slot);
+                        if (stack.isEmpty()) continue;
+                        if (hit.test(stack)) total += stack.getCount();
+                    }
+                }
+            }
+        }
+        return total;
     }
 
     private static boolean contains(StructureStart start, BlockPos pos) {

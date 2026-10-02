@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * 它是三个手写的硬编码白名单：
  *
  * <ul>
- *   <li>FOOD：24 项（熟食、生食、甜点、汤类）</li>
+ *   <li>FOOD：32 项（熟食、生肉与腐肉、甜点、汤类）</li>
  *   <li>WOOD：8 个树种 × (log/wood/planks + stripped×2) = 40，加下界 2 种 × 5 = 10，
  *       加 bamboo_planks = <b>51 项</b></li>
  *   <li>BLOCKS：17 项，且额外通过「任何以 {@code _planks} 结尾且在 WOOD 里」的兜底吃下全部木板</li>
@@ -40,8 +40,8 @@ class InventoryGroupsPinTest {
     /** 本仓当前的三种分组。要加第四种请同步本类 + RddDecomposer 提示词 + HardCodedEvaluator。 */
     private static final List<String> PINNED_GROUPS = List.of("food", "wood", "blocks");
 
-    /** 当前白名单的规模（改动前实测：FOOD 24 / WOOD 51 / BLOCKS 17）。 */
-    private static final int FOOD_SIZE = 24;
+    /** 当前白名单的规模（2026-10-02 起 FOOD 32 / WOOD 51 / BLOCKS 17）。 */
+    private static final int FOOD_SIZE = 32;
     private static final int WOOD_SIZE = 51;
     private static final int BLOCKS_SIZE = 17;
 
@@ -78,8 +78,8 @@ class InventoryGroupsPinTest {
     // ── ② 三组白名单的规模（核心 pin）──────────────────────────────
 
     @Test
-    void foodGroupHasExactly24Members() {
-        // 24 项熟食/生食/甜点/汤类，逐个列出来只为凑一次 count —— 这比逐项断言 contains 更耐维护
+    void foodGroupHasExactly32Members() {
+        // 32 项 = 熟食/甜点/汤类 24 + 生肉与腐肉 8。逐个列出来只为凑一次 count。
         Map<String, Integer> all = inv(
                 "minecraft:bread", 1, "minecraft:carrot", 1, "minecraft:baked_potato", 1, "minecraft:beetroot", 1,
                 "minecraft:apple", 1, "minecraft:golden_apple", 1, "minecraft:enchanted_golden_apple", 1,
@@ -88,10 +88,25 @@ class InventoryGroupsPinTest {
                 "minecraft:cooked_cod", 1, "minecraft:cooked_salmon", 1, "minecraft:melon_slice", 1,
                 "minecraft:sweet_berries", 1, "minecraft:glow_berries", 1, "minecraft:pumpkin_pie", 1,
                 "minecraft:mushroom_stew", 1, "minecraft:beetroot_soup", 1, "minecraft:rabbit_stew", 1,
-                "minecraft:cookie", 1, "minecraft:dried_kelp", 1);
+                "minecraft:cookie", 1, "minecraft:dried_kelp", 1,
+                "minecraft:beef", 1, "minecraft:porkchop", 1, "minecraft:chicken", 1, "minecraft:mutton", 1,
+                "minecraft:rabbit", 1, "minecraft:cod", 1, "minecraft:salmon", 1, "minecraft:rotten_flesh", 1);
         assertEquals(FOOD_SIZE, InventoryGroups.count("food", all),
                 "★ food 组规模契约是 " + FOOD_SIZE + " 项。少一项 = 那个食物永远判不到"
                         + "（建链能过、判定恒假、静默卡死）；多一项 = 白名单被悄悄放宽。");
+    }
+
+    @Test
+    void rawMeatCountsAsFoodSoTheAiCanTellWhyItPassed() {
+        // 2026-10-02 修的真 bug：白名单里一个生肉都没有，AI 捡了生牛肉 → 组计数纹丝不动
+        // → 判定恒假 → AI 完全不知道为什么。捡回来就该算数。
+        for (String raw : List.of("beef", "porkchop", "chicken", "mutton", "rabbit",
+                "cod", "salmon", "rotten_flesh")) {
+            assertTrue(InventoryGroups.contains("food", "minecraft:" + raw),
+                    raw + " 是生肉，捡回来确实推进续航目标，必须算数");
+            assertEquals(1L, InventoryGroups.count("food", inv("minecraft:" + raw, 1)),
+                    raw + " 单独 1 件必须让 food 计数动起来");
+        }
     }
 
     @Test
@@ -164,11 +179,21 @@ class InventoryGroupsPinTest {
             assertTrue(InventoryGroups.contains("food", "minecraft:" + staple),
                     staple + " 是生存必需品，必须在 food 组里");
         }
-        for (String notFood : List.of("wheat", "raw_beef", "raw_porkchop", "rotten_flesh", "spider_eye",
+        for (String notFood : List.of("wheat", "spider_eye", "raw_chickenfish",
                 "poisonous_potato", "dirt", "oak_log", "stone")) {
             assertFalse(InventoryGroups.contains("food", "minecraft:" + notFood),
                     notFood + " 不在 food 白名单里（故意如此：它要么需要加工，要么是废料）。"
                             + "要加请先问：加了它「搞点吃的」就会拿它凑数");
+        }
+    }
+
+    @Test
+    void seedAndPlantStuffsStayOutEvenThoughTheyGrowIntoFood() {
+        // 种下去会长成食物，但背包里的是种子/作物本身 —— 计进去会让「种田」变成「收种子」
+        for (String notFood : List.of("wheat_seeds", "potato", "beetroot_seeds",
+                "melon_seeds", "pumpkin_seeds", "sugar_cane", "nether_wart", "kelp", "wheat")) {
+            assertFalse(InventoryGroups.contains("food", "minecraft:" + notFood),
+                    notFood + " 虽能种出食物，但背包里这份不是食物本身");
         }
     }
 
