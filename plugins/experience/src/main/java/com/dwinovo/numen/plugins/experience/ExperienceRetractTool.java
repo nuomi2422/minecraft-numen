@@ -81,10 +81,10 @@ final class ExperienceRetractTool implements NumenTool {
             String action = in.action().trim().toLowerCase(java.util.Locale.ROOT);
 
             switch (action) {
-                case "status" -> reply.accept(TaskResult.ok(statusReport(mem)).toJson());
-                case "retract" -> reply.accept(TaskResult.ok(retract(mem, in)).toJson());
-                case "reinstate" -> reply.accept(TaskResult.ok(reinstate(mem, in)).toJson());
-                case "supersede" -> reply.accept(TaskResult.ok(supersede(mem, in)).toJson());
+                case "status" -> reply.accept(TaskResult.ok("experience status", statusReport(mem)).toJson());
+                case "retract" -> reply.accept(TaskResult.ok("experience retracted", retract(mem, in)).toJson());
+                case "reinstate" -> reply.accept(TaskResult.ok("experience reinstated", reinstate(mem, in)).toJson());
+                case "supersede" -> reply.accept(TaskResult.ok("experience superseded", supersede(mem, in)).toJson());
                 default -> reply.accept(TaskResult.fail(
                         "unknown action '" + in.action() + "' (want retract|reinstate|supersede|status)").toJson());
             }

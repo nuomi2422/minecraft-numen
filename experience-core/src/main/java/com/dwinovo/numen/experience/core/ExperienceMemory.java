@@ -64,6 +64,11 @@ public final class ExperienceMemory {
         return store.supersede(olderId, newerId);
     }
 
+    /** 当前被取代掉的 id 集合（E8 修订链；转发，供工具侧列出「哪些已过时」）。 */
+    public java.util.Set<String> supersededIds() {
+        return store.supersededIds();
+    }
+
     /** 查经验：按当前任务/失败/异常的自然语言检索相关经验。 */
     public List<ExperienceHit> recall(String text, int limit, ExperienceMaturity minMaturity, List<String> tags) {
         // ★ E8：检索**只收 usable()**（排除已撤回 / 已被取代）。
