@@ -139,6 +139,12 @@ public final class ExperienceDirectory {
             out.add(row);
         }
 
+        // ★ 实测抓到的洞：调用方（contributeState）传进来的 hits 本身就是 recall(..., maxRows) 的
+        // 结果，被预算砍掉的那部分**根本不在 hits 里** ⇒ 循环里永远看不到「还有更多」，
+        // 于是 22 条只列 6 条时 truncated 竟然报 false（AI 会以为这就是全部）。
+        // 判据改成「列出来的条数 < 库里的总条数 ⇒ 一定截断过」，不依赖调用方给不给得全。
+        truncated = truncated || out.size() < total;
+
         sb.append("<listed>").append(out.size()).append("</listed>");
         sb.append("<truncated>").append(truncated).append("</truncated>");
         // ★ 明说「这不是按当前任务筛的」——否则 AI 会把顺序读成相关性

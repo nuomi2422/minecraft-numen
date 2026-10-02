@@ -152,6 +152,35 @@ class ExperienceDirectoryTest {
     // ---------- 不超预算 ----------
 
     @Test
+    void fewerCandidatesThanTotalStillCountsAsTruncated() {
+        // ★ 实测洞的回归：调用方传进来的 hits 已经被 recall 的 maxRows 砍过一轮，
+        // 22 条库里只给 6 条候选 —— 循环里看不到「还有更多」，但库里确实还有 16 条没列。
+        // 2026-10-02 20:15 实机注入就是这样报出了 truncated=false（错的）。
+        ExperienceEntry[] six = new ExperienceEntry[6];
+        for (int i = 0; i < six.length; i++) {
+            six[i] = entry("policy|条目" + i, "条目" + i, ExperienceMaturity.OBSERVED, 50, List.of());
+        }
+        ExperienceDirectory.Block b = ExperienceDirectory.render(
+                hits(six), 22, 1, 0, STATS, 6, 700);
+        assertEquals(6, b.rows().size());
+        assertTrue(b.truncated(), "列 6 条而库里有 22 条 ⇒ 必须报 truncated");
+        assertTrue(b.text().contains("<truncated>true</truncated>"), b.text());
+        assertTrue(b.text().contains("<listed>6</listed>"), b.text());
+        assertTrue(b.text().contains("<total>22</total>"), b.text());
+    }
+
+    @Test
+    void allRowsListedIsNotReportedAsTruncated() {
+        // 反面：候选数 == 库里条数且都列出来了 ⇒ 不能冤报 truncated
+        ExperienceDirectory.Block b = ExperienceDirectory.render(
+                hits(entry("policy|a", "a", ExperienceMaturity.OBSERVED, 50, List.of()),
+                        entry("policy|b", "b", ExperienceMaturity.OBSERVED, 50, List.of())),
+                2, 0, 0, STATS, 6, 700);
+        assertFalse(b.truncated(), "全部列出时不该报截断");
+        assertTrue(b.text().contains("<truncated>false</truncated>"), b.text());
+    }
+
+    @Test
     void rowBudgetIsEnforcedAndTruncationIsReported() {
         ExperienceEntry[] many = new ExperienceEntry[20];
         for (int i = 0; i < many.length; i++) {
