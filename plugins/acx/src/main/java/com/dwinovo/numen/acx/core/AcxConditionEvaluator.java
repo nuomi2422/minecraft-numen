@@ -23,11 +23,29 @@ public final class AcxConditionEvaluator {
 
     private AcxConditionEvaluator() { }
 
+    /** AC-B10：带变量上下文的条件求值。 */
+    public static boolean evaluate(AcxCondition condition,
+                                   Map<String, Object> lastOutput,
+                                   Map<String, Object> input,
+                                   Map<String, Map<String, Object>> allOutputs,
+                                   Map<String, Object> vars) {
+        return evaluate0(condition, lastOutput, input, allOutputs, vars);
+    }
+
     public static boolean evaluate(AcxCondition condition,
                                    Map<String, Object> lastOutput,
                                    Map<String, Object> input,
                                    Map<String, Map<String, Object>> allOutputs) {
-        AcxValueResolver resolver = new AcxValueResolver(lastOutput, input, allOutputs);
+        return evaluate0(condition, lastOutput, input, allOutputs, null);
+    }
+
+    private static boolean evaluate0(AcxCondition condition,
+                                        Map<String, Object> lastOutput,
+                                        Map<String, Object> input,
+                                        Map<String, Map<String, Object>> allOutputs,
+                                        Map<String, Object> vars) {
+        // AC-B10：变量感知（循环靠 $var / $loop 收敛时必需）
+        AcxValueResolver resolver = new AcxValueResolver(lastOutput, input, allOutputs, vars);
         try {
             Object fieldVal = resolver.resolve(condition.field());
             Object expected = resolver.resolve(condition.value());

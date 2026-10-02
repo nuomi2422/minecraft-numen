@@ -28,6 +28,8 @@ public final class AcxValueResolver {
     public static final String INPUT = "input";
     /** AC-B9：运行期变量（由 {@code set} 步写入，落在 AcxRunRecord.vars 里跨断点存活）。 */
     public static final String VAR = "var";
+    /** AC-B10：循环状态别名（{@code $loop.iter} / {@code $loop.count} / index / total）。 */
+    public static final String LOOP = "loop";
 
     private final Map<String, Object> vars;
     private final Map<String, Object> lastOutput;
@@ -96,6 +98,12 @@ public final class AcxValueResolver {
                 }
                 if (INPUT.equals(head)) {
                     return lookup(input, key, "$input." + key, s);
+                }
+                if (LOOP.equals(head) && (key.startsWith("iter") || key.startsWith("index")
+                        || key.startsWith("count") || key.startsWith("total"))) {
+                    String v = "iter".equals(key) || "index".equals(key)
+                            ? "loop_iter" : "loop_count";
+                    return lookup(vars, v, "$loop." + key, s);
                 }
                 if (VAR.equals(head)) {
                     // 顶层未知名要响亮失败：变量名是作者自己起的，拼错还留原串会让

@@ -420,7 +420,7 @@ public final class AcxRunner {
         }
 
         for (AcxCondition cond : checks) {
-            if (AcxConditionEvaluator.evaluate(cond, Map.of(), Map.of(), Map.of())) {
+            if (AcxConditionEvaluator.evaluate(cond, Map.of(), Map.of(), Map.of(), c.vars)) {
                 continue;
             }
             String desc = AcxConditionEvaluator.describe("guard", cond, Map.of(), Map.of(), Map.of());
@@ -483,6 +483,7 @@ public final class AcxRunner {
                                       Map<String, Object> lastOutput,
                                       Map<String, Map<String, Object>> allOutputs, Ctx c) {
         c.detailScratch = new LinkedHashMap<>();
+        c.lastStepChangedVar = false;
         // ★ 嵌套控制块派发：children 里可以再套 if / while（真实 .ac 就有两层嵌套）。
         //   runFrame 只在顶层派发，execLinear 不派发的话嵌套控制块会被当成
         //   「引用了不存在的积木 if」而 FAIL。
@@ -513,6 +514,18 @@ public final class AcxRunner {
 
         // ★ AC-B9 变量写回：内置块，不查子 AC / 积木表。params 已解析完（含 $var 读取）。
         if (step.isSet()) {
+            // 只有「值真的变了」才算进展：否则 while 里反复 set 同一个值会被停滞判定打断，
+            // 而那正是「变量在往目标收敛」的正常写法。
+            boolean changed = false;
+            for (Map.Entry<String, Object> e : params.entrySet()) {
+                Object old = c.vars.get(e.getKey());
+                Object nv = e.getValue();
+                if (nv == null ? old != null : !String.valueOf(nv).equals(String.valueOf(old))) {
+                    changed = true;
+                    break;
+                }
+            }
+            c.lastStepChangedVar = changed;
             c.vars.putAll(params);
             Map<String, Object> written = new LinkedHashMap<>(params);
             return AcxStepOutcome.success(Map.of("_set", written));
@@ -604,6 +617,36 @@ public final class AcxRunner {
     // 控制块：if 一次 / while 循环（循环三终点）
     // ═══════════════════════════════════════════════════════════════════
 
+    /**
+     * 每轮重算条件：把原始 condition 里的 {@code $} 引用按当轮的 lastOutput / vars 解析。
+     * 原文不是 Map（例如 conditions 列表）时退回已解析的那份。
+     */
+    private AcxCondition condEachRound(Object condRaw, AcxCondition fallback,
+                                       Map<String, Object> cur, Map<String, Object> input,
+                                       Map<String, Map<String, Object>> allOutputs, Ctx c) {
+        if (!(condRaw instanceof Map<?, ?> raw)) {
+            return fallback;
+        }
+        AcxValueResolver r = new AcxValueResolver(cur, input, allOutputs, c.vars);
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> e : raw.entrySet()) {
+            String k = String.valueOf(e.getKey());
+            Object v = e.getValue();
+            if (("field".equals(k) || "value".equals(k)) && v instanceof String sv && sv.startsWith("$")) {
+                m.put(k, r.resolve(sv));
+            } else if ("value".equals(k) && v instanceof List<?> lst) {
+                List<Object> out = new ArrayList<>(lst.size());
+                for (Object o : lst) {
+                    out.add(o instanceof String os && os.startsWith("$") ? r.resolve(os) : o);
+                }
+                m.put(k, out);
+            } else {
+                m.put(k, v);
+            }
+        }
+        return parseCondition(m);
+    }
+
     private AcxStepOutcome execControl(AcxStep step, AcxDefinition def, Map<String, Object> input,
                                        Map<String, Object> lastOutput,
                                        Map<String, Map<String, Object>> allOutputs, Ctx c) {
@@ -617,6 +660,12 @@ public final class AcxRunner {
         Map<String, Object> condSpec = resolved.get("condition") instanceof Map
                 ? castMap(resolved.get("condition")) : null;
         AcxCondition cond = parseCondition(condSpec);
+        // AC-B10：condition 里若含 $var / $loop / $prev 引用，必须每轮重新求值 ——
+        // bind 在进循环前只做一次，那会把「变量在收敛」的循环钉死成常量条件。
+        Object condRaw = step.params() == null ? null : step.params().get("condition");
+        if (!(condRaw instanceof Map)) {
+            condRaw = step.params() == null ? null : step.params().get("conditions");
+        }
 
         int maxIters = isWhile
                 ? AcxValueResolver.toInt(resolved.get("max_iters"), AcxLimits.DEFAULT_MAX_ITERS)
@@ -642,10 +691,10 @@ public final class AcxRunner {
             // do_while：第 1 轮无条件执行（条件源由本轮 body 刷新，第 2 轮起才读得到）
             boolean condTrue = (doWhile && iters == 0)
                     || cond == null
-                    || AcxConditionEvaluator.evaluate(cond, cur, input, allOutputs);
+                    || AcxConditionEvaluator.evaluate(condEachRound(condRaw, cond, cur, input, allOutputs, c), cur, input, allOutputs, c.vars);
             if (!condTrue) {
                 if (!isWhile && condSpec != null) {
-                    ifUnmatched = AcxConditionEvaluator.describeUnmatched(cond, cur, input, allOutputs);
+                    ifUnmatched = AcxConditionEvaluator.describeUnmatched(condEachRound(condRaw, cond, cur, input, allOutputs, c), cur, input, allOutputs);
                     emit(c, AcxEvent.Kind.IF_UNMATCHED, step.id(), null, Map.of("note", ifUnmatched));
                 }
                 break;
@@ -655,6 +704,9 @@ public final class AcxRunner {
                 break;
             }
             iters++;
+            // AC-B10：循环状态写进变量 → children 里能用 $loop.iter / $loop.count
+            c.vars.put("loop_iter", (long) iters);
+            c.vars.put("loop_count", (long) iters);
 
             boolean roundHasProgress = false;
             for (AcxStep child : children) {
@@ -665,7 +717,7 @@ public final class AcxRunner {
                 if (r.isSuccess()) {
                     allOutputs.put(child.id(), r.output());
                     cur = r.output();
-                    if (AcxProgress.hasRealProgress(r.output())) {
+                    if (AcxProgress.hasRealProgress(r.output()) || c.lastStepChangedVar) {
                         roundHasProgress = true;
                     }
                     // 嵌套控制块自己停摆（停滞/超限）→ 整条 AC 就此暂停，
@@ -917,6 +969,8 @@ public final class AcxRunner {
         final Map<String, Object> progress = new LinkedHashMap<>();
         /** AC-B9：set 步写入的运行期变量。进 AcxRunRecord → resume 后仍在（解 L-06 跨断点引用）。 */
         final Map<String, Object> vars = new LinkedHashMap<>();
+        /** 本步是否真的改变了某个变量（AC-B10：变量在收敛时不该被判「停滞」）。 */
+        boolean lastStepChangedVar;
 
         int completedStepIndex;
         int loopCount;

@@ -66,6 +66,10 @@ public final class AcxParamBinder {
     public static final String ORIGIN = "$origin";
     public static final String PICK_FIELDS = "$pick_fields";
     public static final String TAKE = "$take";
+    /** AC-B10：算术表达式，值是表达式文本（可含 $var.* / $prev.* 引用）。 */
+    public static final String CALC = "$calc";
+    /** AC-B10：取列表/映射长度（"$len": "$scan.matches"）。 */
+    public static final String LEN = "$len";
 
     private AcxParamBinder() { }
 
@@ -107,6 +111,17 @@ public final class AcxParamBinder {
             Map<String, Object> m = cast(raw);
             if (m.containsKey(FROM)) {
                 return bindDescriptor(path, m, resolver, lastOutput, input, allOutputs, warnings);
+            }
+            // AC-B10：算术 / 取长度。解析失败一律抛（runner 转 STEP_FAILED），不返回 0 假装成功。
+            if (m.containsKey(CALC)) {
+                return AcxExpr.eval(String.valueOf(m.get(CALC)), resolver);
+            }
+            if (m.containsKey(LEN)) {
+                Object lenArg = m.get(LEN);
+                Object v = (lenArg instanceof String sv && sv.startsWith("$"))
+                        ? resolver.resolve(sv)
+                        : lenArg;
+                return AcxExpr.len(v);
             }
             Map<String, Object> out = new LinkedHashMap<>();
             for (Map.Entry<String, Object> e : m.entrySet()) {
