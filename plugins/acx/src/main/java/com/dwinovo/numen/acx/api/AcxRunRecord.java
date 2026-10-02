@@ -31,6 +31,8 @@ public final class AcxRunRecord {
     private final String errorMessage;
     private final String pausedReason;
     private final Map<String, Object> progress;
+    /** AC-B9：运行期变量快照（set 步写入的内容）。resume 时从这里恢复。 */
+    private final Map<String, Object> vars;
     private final long elapsedMs;
     private final long timestamp;
 
@@ -49,12 +51,18 @@ public final class AcxRunRecord {
         this.errorMessage = b.errorMessage;
         this.pausedReason = b.pausedReason;
         this.progress = unmodifiable(b.progress);
+        this.vars = unmodifiable(b.vars);
         this.elapsedMs = b.elapsedMs;
         this.timestamp = b.timestamp;
     }
 
     private static Map<String, Object> unmodifiable(Map<String, Object> m) {
         return m == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(m));
+    }
+
+    /** AC-B9：变量快照。空 map 表示这条记录来自还没写变量的旧版本。 */
+    public Map<String, Object> vars() {
+        return vars;
     }
 
     public String runId() {
@@ -148,6 +156,9 @@ public final class AcxRunRecord {
         m.put("error_message", errorMessage);
         m.put("paused_reason", pausedReason);
         m.put("progress", progress);
+        if (vars != null && !vars.isEmpty()) {
+            m.put("vars", vars);
+        }
         m.put("elapsed_ms", elapsedMs);
         m.put("timestamp", timestamp);
         return m;
@@ -177,6 +188,8 @@ public final class AcxRunRecord {
         private String errorMessage;
         private String pausedReason;
         private Map<String, Object> progress;
+        /** AC-B9 */
+        private Map<String, Object> vars;
         private long elapsedMs;
         private long timestamp;
 
@@ -194,6 +207,9 @@ public final class AcxRunRecord {
         public Builder errorMessage(String v) { this.errorMessage = v; return this; }
         public Builder pausedReason(String v) { this.pausedReason = v; return this; }
         public Builder progress(Map<String, Object> v) { this.progress = v; return this; }
+
+        /** AC-B9 */
+        public Builder vars(Map<String, Object> v) { this.vars = v; return this; }
         public Builder elapsedMs(long v) { this.elapsedMs = v; return this; }
         public Builder timestamp(long v) { this.timestamp = v; return this; }
 

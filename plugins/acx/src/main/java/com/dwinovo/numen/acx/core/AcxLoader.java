@@ -393,6 +393,15 @@ public final class AcxLoader {
             }
             validateGuardConditions(stepId, params);
         }
+        // AC-B9：set 步 = 变量写回，params 必须非空（没东西可写就是写错了）
+        if (AcxStep.BLOCK_SET.equals(blockName)) {
+            if (children != null && !children.isEmpty()) {
+                throw new IllegalArgumentException("set step " + stepId + " 不接受 children");
+            }
+            if (params == null || params.isEmpty()) {
+                throw new IllegalArgumentException("set step " + stepId + " 需要 params，形如 {\"变量名\": 值}");
+            }
+        }
 
         // ★ DD 的硬校验：控制块必须有非空 children（AcLoader.java:193-195）
         if (control && (children == null || children.isEmpty())) {
@@ -465,7 +474,7 @@ public final class AcxLoader {
                                        Map<String, AcxDefinition> loaded, Set<String> bad) {
         for (AcxStep s : steps) {
             // 控制块是执行器内置，不查注册表（DD :85-86 / :165 同样处理）
-            if (s.isControl() || s.isGuard()) {
+            if (s.isControl() || s.isGuard() || s.isSet()) {
                 if (s.children() != null) {
                     collectBadRefs(s.children(), blocks, loaded, bad);
                 }
@@ -516,6 +525,9 @@ public final class AcxLoader {
         if (AcxStep.BLOCK_GUARD.equals(blockName)) {
             return Set.of("_guard_passed");
         }
+        if (AcxStep.BLOCK_SET.equals(blockName)) {
+            return Set.of("_set");
+        }
         if (blocks != null) {
             var tool = blocks.find(blockName);
             if (tool.isPresent()) {
@@ -560,6 +572,8 @@ public final class AcxLoader {
                 if (!prevFields.isEmpty() && !hasField(prevFields, key)) {
                     warnings.add(acName + " step " + step.id() + " 引用 $prev." + key + " 但上一步无此输出字段");
                 }
+            } else if (s.startsWith("$var.")) {
+                // 运行期变量（AC-B9）：set 步写出来的，加载期还没有，只能跳过
             } else if (s.startsWith("$input.")) {
                 // 外部输入，无法静态校验，跳过
             } else if (s.startsWith("$") && s.indexOf('.') > 1) {

@@ -69,16 +69,27 @@ public final class AcxParamBinder {
 
     private AcxParamBinder() { }
 
+    /** 兼容入口：没有变量上下文（AC-B9 之前的所有调用点）。 */
+    public static Map<String, Object> bind(Map<String, Object> params,
+                                         Map<String, Object> lastOutput,
+                                         Map<String, Object> input,
+                                         Map<String, Map<String, Object>> allOutputs,
+                                         List<Warning> warnings) {
+        return bind(params, lastOutput, input, allOutputs, Map.of(), warnings);
+    }
+
+/** 变量感知入口（AC-B9）：{@code $from} 描述符内部也能引用 {@code $var.*}。 */
     public static Map<String, Object> bind(Map<String, Object> params,
                                            Map<String, Object> lastOutput,
                                            Map<String, Object> input,
                                            Map<String, Map<String, Object>> allOutputs,
+                                           Map<String, Object> vars,
                                            List<Warning> warnings) {
         Map<String, Object> out = new LinkedHashMap<>();
         if (params == null) {
             return out;
         }
-        AcxValueResolver resolver = new AcxValueResolver(lastOutput, input, allOutputs);
+        AcxValueResolver resolver = new AcxValueResolver(lastOutput, input, allOutputs, vars);
         for (Map.Entry<String, Object> e : params.entrySet()) {
             out.put(e.getKey(), bindValue(e.getKey(), e.getValue(), resolver,
                     lastOutput, input, allOutputs, warnings));

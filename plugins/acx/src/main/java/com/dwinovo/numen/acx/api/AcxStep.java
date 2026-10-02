@@ -23,6 +23,8 @@ public final class AcxStep {
     public static final String BLOCK_WHILE = "while";
     /** 步骤级守卫：不调积木，只做前置检测（见 {@code AcxRunner.execGuard}）。 */
     public static final String BLOCK_GUARD = "guard";
+    /** 变量写回步：{@code {"block":"set","params":{"名":值}}}（AC-B9）。 */
+    public static final String BLOCK_SET = "set";
 
     private final String id;
     private final String block;
@@ -70,6 +72,11 @@ public final class AcxStep {
     }
 
     /** 步骤级守卫（内置，不查积木注册表，不接受 children）。 */
+    /** AC-B9：变量写回步。内置块，不查积木表。 */
+    public boolean isSet() {
+        return BLOCK_SET.equals(block);
+    }
+
     public boolean isGuard() {
         return BLOCK_GUARD.equals(block);
     }

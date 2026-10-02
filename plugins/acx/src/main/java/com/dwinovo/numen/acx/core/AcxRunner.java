@@ -102,7 +102,7 @@ public final class AcxRunner {
      * 所以允许外部预生成；传空则退回 {@link AcxRunRecord#shortUuid()}。</p>
      */
     public AcxRunRecord run(AcxDefinition def, Map<String, Object> input, String runId) {
-        return runFrom(def, input, 0, limits, runId);
+        return runFrom(def, input, 0, limits, runId, null);
     }
 
     /**
@@ -113,7 +113,7 @@ public final class AcxRunner {
      */
     public AcxRunRecord runFrom(AcxDefinition def, Map<String, Object> input,
                                 int startStepIndex, AcxRuntimeLimits lim) {
-        return runFrom(def, input, startStepIndex, lim, null);
+        return runFrom(def, input, startStepIndex, lim, null, null);
     }
 
     /**
@@ -121,7 +121,8 @@ public final class AcxRunner {
      * 但允许外部指定 runId —— 会话层用稳定 run_id 串起 start/status/resume/cancel。
      */
     public AcxRunRecord runFrom(AcxDefinition def, Map<String, Object> input,
-                                int startStepIndex, AcxRuntimeLimits lim, String runIdOverride) {
+                                int startStepIndex, AcxRuntimeLimits lim, String runIdOverride,
+                                Map<String, Object> seedVars) {
         long start = System.currentTimeMillis();
         AcxRuntimeLimits effective = AcxRuntimeLimits.merged(lim == null ? limits : lim, def.limits());
         long deadline = start + effective.maxTimeoutMs();
@@ -131,6 +132,9 @@ public final class AcxRunner {
         cancels.put(runId, cancelFlag);
 
         Ctx c = new Ctx(runId, start, deadline, cancelFlag, effective, events, def.name(), startStepIndex);
+        if (seedVars != null) {
+            c.vars.putAll(seedVars);
+        }
         c.rec = AcxRunRecord.builder()
                 .runId(runId)
                 .acName(def.name())
@@ -159,7 +163,8 @@ public final class AcxRunner {
                 .errorMessage(outcome.message())
                 .pausedReason(c.pausedReason)
                 .progress(AcxProgress.extractProgress(c.progress))
-                .elapsedMs(System.currentTimeMillis() - start);
+                .elapsedMs(System.currentTimeMillis() - start)
+                .vars(new LinkedHashMap<>(c.vars));
 
         AcxRunRecord record = c.rec.build();
         if (store != null) {
@@ -210,7 +215,8 @@ public final class AcxRunner {
             int at = checkResumable(def, prior);
             emitDetached(AcxEvent.Kind.RESUME_STARTED, def.name(), at);
             // 复用原 runId：会话层的 status/cancel 靠一个稳定 id 串起整条续跑链
-            return runFrom(def, newInput, at, limits, prior.runId());
+            // ★ AC-B9：变量从记录恢复 → 跨断点仍能读 $var.*（真机限制 L-06 就靠这条解掉）
+        return runFrom(def, newInput, at, limits, prior.runId(), prior.vars());
         } catch (RuntimeException e) {
             emitDetached(AcxEvent.Kind.RESUME_REJECTED, def.name(), -1,
                     Map.of("reason", String.valueOf(e.getMessage())));
@@ -458,7 +464,7 @@ public final class AcxRunner {
                                               Map<String, Map<String, Object>> allOutputs, Ctx c) {
         List<AcxParamBinder.Warning> warnings = new ArrayList<>();
         Map<String, Object> resolved = AcxParamBinder.bind(
-                step.params(), lastOutput, input, allOutputs, warnings);
+                step.params(), lastOutput, input, allOutputs, c.vars, warnings);
         for (AcxParamBinder.Warning w : warnings) {
             emit(c, AcxEvent.Kind.REF_UNRESOLVED, step.id(), null, Map.of(
                     "param", w.param(),
@@ -483,7 +489,18 @@ public final class AcxRunner {
         if (step.isControl()) {
             return execControl(step, def, input, lastOutput, allOutputs, c);
         }
-        Map<String, Object> params = resolveParams(step, input, lastOutput, allOutputs, c);
+        Map<String, Object> params;
+        try {
+            params = resolveParams(step, input, lastOutput, allOutputs, c);
+        } catch (RuntimeException e) {
+            // 参数解析里的响亮失败（AC-B9：$var 拼错、未知名）要变成一条 FAIL 记录，
+            // 不能把异常甩到宿主线程 —— 甩出去的话 run() 直接崩，门面那边什么都看不到。
+            AcxStepOutcome r = AcxStepOutcome.failed(
+                    step.id() + " 参数解析失败: " + e.getMessage());
+            emit(c, AcxEvent.Kind.STEP_FAILED, step.id(), AcxStatus.FAIL,
+                    Map.of("reason", String.valueOf(r.message())));
+            return r;
+        }
         // 仅为 ignore_failure 黑名单回调复用已解析参数，避免二次解析；每次入口覆盖
         c.lastResolvedParams = params;
 
@@ -492,6 +509,13 @@ public final class AcxRunner {
         // ★ 步骤级守卫：内置块，不查子 AC / 积木注册表
         if (step.isGuard()) {
             return execGuard(step, params, c);
+        }
+
+        // ★ AC-B9 变量写回：内置块，不查子 AC / 积木表。params 已解析完（含 $var 读取）。
+        if (step.isSet()) {
+            c.vars.putAll(params);
+            Map<String, Object> written = new LinkedHashMap<>(params);
+            return AcxStepOutcome.success(Map.of("_set", written));
         }
 
         // 顺序照 DD：先查子 AC，再查原子积木。控制块不查表（见 execControl）
@@ -891,6 +915,8 @@ public final class AcxRunner {
         final Deque<String> callStack = new ArrayDeque<>();
         final int[] stepCounter = { 0 };
         final Map<String, Object> progress = new LinkedHashMap<>();
+        /** AC-B9：set 步写入的运行期变量。进 AcxRunRecord → resume 后仍在（解 L-06 跨断点引用）。 */
+        final Map<String, Object> vars = new LinkedHashMap<>();
 
         int completedStepIndex;
         int loopCount;

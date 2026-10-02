@@ -26,7 +26,10 @@ public final class AcxValueResolver {
 
     public static final String PREV = "prev";
     public static final String INPUT = "input";
+    /** AC-B9：运行期变量（由 {@code set} 步写入，落在 AcxRunRecord.vars 里跨断点存活）。 */
+    public static final String VAR = "var";
 
+    private final Map<String, Object> vars;
     private final Map<String, Object> lastOutput;
     private final Map<String, Object> input;
     private final Map<String, Map<String, Object>> allOutputs;
@@ -34,9 +37,18 @@ public final class AcxValueResolver {
     public AcxValueResolver(Map<String, Object> lastOutput,
                             Map<String, Object> input,
                             Map<String, Map<String, Object>> allOutputs) {
+        this(lastOutput, input, allOutputs, null);
+    }
+
+    /** 变量感知构造（AC-B9）。vars 可以就地传入 Ctx.vars，写入立刻对后续步骤可见。 */
+    public AcxValueResolver(Map<String, Object> lastOutput,
+                            Map<String, Object> input,
+                            Map<String, Map<String, Object>> allOutputs,
+                            Map<String, Object> vars) {
         this.lastOutput = lastOutput == null ? Map.of() : lastOutput;
         this.input = input == null ? Map.of() : input;
         this.allOutputs = allOutputs == null ? Map.of() : allOutputs;
+        this.vars = vars == null ? Map.of() : vars;
     }
 
     /** 递归解析 params 里所有 {@code $} 引用。 */
@@ -84,6 +96,15 @@ public final class AcxValueResolver {
                 }
                 if (INPUT.equals(head)) {
                     return lookup(input, key, "$input." + key, s);
+                }
+                if (VAR.equals(head)) {
+                    // 顶层未知名要响亮失败：变量名是作者自己起的，拼错还留原串会让
+                    // 后面每一步都拿着字面串去跑（真机上就这么踩过）。带点的走点路径。
+                    if (key.indexOf('.') < 0 && !vars.containsKey(key)) {
+                        throw new IllegalArgumentException("变量未定义: $var." + key
+                                + "（本次已定义: " + vars.keySet() + "）");
+                    }
+                    return lookup(vars, key, "$var." + key, s);
                 }
                 Map<String, Object> stepOutput = allOutputs.get(head);
                 if (stepOutput != null) {
