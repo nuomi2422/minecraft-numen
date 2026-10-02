@@ -5,6 +5,8 @@ import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.experience.api.ExperienceHit;
 import com.dwinovo.numen.experience.api.ExperienceMaturity;
+import com.dwinovo.numen.experience.core.ExperienceMemory;
+import com.dwinovo.numen.experience.core.PresentationReceipt;
 import com.dwinovo.numen.task.TaskResult;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -21,6 +23,22 @@ import java.util.function.Consumer;
 final class ExperienceRecallTool implements NumenTool {
 
     private static final Gson GSON = new Gson();
+
+    /**
+     * ★ E7：把「这批需要回报」讲给 AI 听。
+     *
+     * <p>此前 AI 拿到这批经验就结束了，<b>没有任何地方告诉它「用完了要回来报告」</b>
+     * —— 于是 {@code experience_verify} 永远等不到调用，回流通道形同虚设。
+     * 这句话是整条回流链路的最后一环。</p>
+     *
+     * <p>⚠️ 刻意<b>不</b>在这里做批量确认：一次召回可能带回 10 条，
+     * 而 AI 往往只对其中两条有结论 ⇒ 自动全应用会给不相干的经验加反例甚至降级。</p>
+     */
+    private static final String REPORT_HINT =
+            "These experiences were presented to you now, so the library can record whether they held up. "
+                    + "When you know the real-world outcome of one of them, call experience_verify with that id "
+                    + "and success=true/false. Only report the ones you actually tried - a call with no id "
+                    + "just lists what is still waiting for a verdict.";
 
     @Override
     public String name() {
@@ -58,8 +76,14 @@ final class ExperienceRecallTool implements NumenTool {
             ExperienceMaturity min = parseMaturity(in == null ? null : in.min_maturity());
             List<String> tags = in != null && in.tags() != null ? in.tags() : List.of();
 
-            List<ExperienceHit> hits = ExperiencePlugin.memory(companion.getUUID())
-                    .recall(query, limit, min, tags);
+// ★ E7：reportable=true —— 这是唯一「AI 主动要」的召回点，
+            //   只有它进待回报清单（L0 目录与规划知识是每轮自动印的，AI 可能压根没看，
+            //   让它们进清单会产出满屏「本任务没有结论」的噪音）。
+            ExperienceMemory memory = ExperiencePlugin.memory(companion.getUUID());
+            PresentationReceipt receipts = memory.receipts();
+            int before = receipts.pendingCount();
+            List<ExperienceHit> hits = memory.recall(
+                    query, limit, min, tags, PresentationReceipt.SURFACE_RECALL_TOOL, true);
             List<Map<String, Object>> results = new ArrayList<>();
             for (ExperienceHit hit : hits) {
                 Map<String, Object> item = new LinkedHashMap<>();
@@ -73,10 +97,20 @@ final class ExperienceRecallTool implements NumenTool {
                 item.put("description", hit.entry().description());
                 item.put("root_cause", hit.entry().rootCause());
                 item.put("recommended_response", hit.entry().recommendedResponse());
+                // 之前被呈现过几次 —— 让 AI 知道这条是老相识还是这次新翻出来的。
+                item.put("presented_before", receipts.presentedCount(hit.entry().id()));
                 results.add(item);
             }
+            ExperienceMonitor.publish("recalled", Map.of(
+                    "companion", companion.getUUID().toString(),
+                    "query_chars", query.length(),
+                    "hits", hits.size(),
+                    "pending_before", before,
+                    "pending_after", receipts.pendingCount()));
             reply.accept(TaskResult.ok("experience recall returned " + results.size() + " hit(s)",
-                    Map.of("hits", results)).toJson());
+                    Map.of("hits", results,
+                            "receipt", receipts.readout(),
+                            "report_hint", REPORT_HINT)).toJson());
         } catch (RuntimeException ex) {
             reply.accept(TaskResult.fail("experience_recall failed: " + ex.getMessage()).toJson());
         }

@@ -68,6 +68,15 @@ public final class ExperienceStore {
     private final List<ExperienceEntry> mirror = new ArrayList<>();
     private boolean loaded;
 
+    /**
+     * 「这条经验被呈现过」的回执表（E7 前半段）。
+     *
+     * <p>放在 store 里而不是另开一个类持有，是因为它<b>天生按同伴隔离</b>：
+     * 每个 store 就对应一只同伴的一个文件，天然没有跨同伴串台的风险。
+     * 不落盘（跨重启的那次任务早就结束，回报已无意义）。</p>
+     */
+    private final PresentationReceipt receipts = new PresentationReceipt();
+
     private ExperienceStore(Path file) {
         this.file = file;
     }
@@ -78,6 +87,16 @@ public final class ExperienceStore {
 
     public Path file() {
         return file;
+    }
+
+    /**
+     * 本同伴的呈现回执表（E7：让「这条经验被用过」有连接键）。
+     *
+     * <p>此前三个召回点（召回工具 / L0 目录 / 规划知识）都不记「谁被用过」，
+     * 于是 AI 没有理由知道该回报哪一条 ⇒ {@link #recordEvidence} 一直等不到调用。</p>
+     */
+    public PresentationReceipt receipts() {
+        return receipts;
     }
 
     /** 全部经验（插入序快照）。 */
@@ -158,6 +177,9 @@ public final class ExperienceStore {
      */
     public synchronized ExperienceEntry recordEvidence(String id, boolean success, String note) {
         ensureLoaded();
+        // ★ E7：一次「回报」不管成没成都算数 —— 连 id 打不中也要清掉待回报，
+        //   否则 AI 会一遍遍看到同一条根本不存在的 id，反复来问同一个问题。
+        receipts.report(id);
         int index = indexOf(id);
         if (index < 0) {
             index = indexByLegacyId(id);
@@ -188,6 +210,14 @@ public final class ExperienceStore {
             if (maturity.level() < old.maturity().level()) {
                 maturity = old.maturity();
             }
+            // ⚠️ note 在成功侧**不落进条目**（失败侧才进 counterexamples，见下）。
+            //   59 号 §6.2 要求每条经验带证据引用，成功时那句 note 就是证据 ——
+            //   丢掉它等于「知道对了，但不知道为什么对」。
+            //   ★ 为什么不加字段补上：ExperienceEntry.toJson 是 21 键的跨插件契约，
+            //   learner 侧的 ExperienceDraft.ENTRY_KEYS 与
+            //   ExperienceDraftKeysBindToRealEntryTest 都钉着这个数，加一键要三处同步改，
+            //   风险远大于收益。成功侧的 note 改为进 expmem.jsonl 的 verified 埋点
+            //   （证据可查回，只是不在条目里）。已记进记忆图谱的待办。
         } else {
             String reason = (note == null || note.isBlank()) ? "unconfirmed" : note;
             Set<String> seen = new LinkedHashSet<>(counterexamples);

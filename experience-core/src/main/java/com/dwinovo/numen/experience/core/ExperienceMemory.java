@@ -71,10 +71,44 @@ public final class ExperienceMemory {
 
     /** 查经验：按当前任务/失败/异常的自然语言检索相关经验。 */
     public List<ExperienceHit> recall(String text, int limit, ExperienceMaturity minMaturity, List<String> tags) {
+        return recall(text, limit, minMaturity, tags, PresentationReceipt.SURFACE_UNSPECIFIED, false);
+    }
+
+    /**
+     * 查经验，<b>并记下「这批被呈现过」</b>（E7 前半段）。
+     *
+     * <p><b>为什么所有召回都必须走这一个方法</b>：三个召回点（召回工具 / L0 目录注入 /
+     * 规划知识）此前都不记「谁被用过」，所以「使用结果回流」没有连接键 ——
+     * {@code recordEvidence} 等不到人调。现在这一个方法就是汇聚点，
+     * 谁走它谁留痕，不必逐个调用点各写一遍。</p>
+     *
+     * <p><b>⚠️ {@code reportable} 只有「AI 主动召回」才为 true。</b>
+     * L0 目录与规划知识是每轮自动印在 prompt 里的，同伴很可能压根没看；
+     * 让它们进待回报清单会产出满屏「本任务没有结论」的噪音。</p>
+     */
+    public List<ExperienceHit> recall(String text, int limit, ExperienceMaturity minMaturity,
+                                      List<String> tags, String surface, boolean reportable) {
         // ★ E8：检索**只收 usable()**（排除已撤回 / 已被取代）。
         //   理由：recall 的下游是注入 —— 把一条判错的经验重新喂给同伴，
         //   比「少一条经验」危害大得多。而监测台要看全量视图，它走的是 all()。
-        return retriever.retrieve(new ExperienceQuery(text, limit, minMaturity, tags), store.usable());
+        List<ExperienceHit> hits = retriever.retrieve(new ExperienceQuery(text, limit, minMaturity, tags), store.usable());
+        store.receipts().record(hits, surface, reportable);
+        return hits;
+    }
+
+    /** 本同伴的呈现回执表（E7：待回报清单 / 被用过次数）。 */
+    public PresentationReceipt receipts() {
+        return store.receipts();
+    }
+
+    /** E7：还没被回报过的呈现（只读清单，不写盘 —— 见 PresentationReceipt 类注释）。 */
+    public List<PresentationReceipt.Shown> pendingReports() {
+        return store.receipts().pendingReports();
+    }
+
+    /** E7：待回报条数（0 = 本局还没有 AI 主动召回过任何经验）。 */
+    public int pendingCount() {
+        return store.receipts().pendingCount();
     }
 
     /**

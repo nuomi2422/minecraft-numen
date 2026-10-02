@@ -5,6 +5,7 @@ import com.dwinovo.numen.api.NumenPlugin;
 import com.dwinovo.numen.experience.core.ExperienceDirectory;
 import com.dwinovo.numen.experience.core.ExperienceMemory;
 import com.dwinovo.numen.experience.core.LexicalExperienceRetriever;
+import com.dwinovo.numen.experience.core.PresentationReceipt;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -58,8 +59,12 @@ public final class ExperiencePlugin implements NumenPlugin {
                 // 「可信度兜底序」（经验库 recall("", …) 的 fallbackScore 路径：
                 // 成熟度 × 优先级 × 近期性），**不是**按当前任务筛的；
                 // 块里的 <note> 明说了这一点，别让 AI 把顺序读成相关性。
+                // ★ E7：reportable=false —— 目录是每轮自动印的，同伴很可能压根没看；
+                //   让它进待回报清单会产出满屏「本任务没有结论」的噪音。
+                //   它仍然计入「被呈现过几次」那个长期读数。
                 ExperienceDirectory.Block block = ExperienceDirectory.render(
-                        m.recall("", ExperienceDirectory.DEFAULT_MAX_ROWS, null, java.util.List.of()),
+                        m.recall("", ExperienceDirectory.DEFAULT_MAX_ROWS, null, java.util.List.of(),
+                                PresentationReceipt.SURFACE_DIRECTORY, false),
                         m.size(), m.stats().verified(), m.stats().generalized(),
                         m.loadStats(), m.stats(),
                         ExperienceDirectory.DEFAULT_MAX_ROWS,

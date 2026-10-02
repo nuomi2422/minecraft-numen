@@ -3,6 +3,7 @@ package com.dwinovo.numen.plugins.experience;
 import com.dwinovo.numen.experience.api.ExperienceEntry;
 import com.dwinovo.numen.experience.api.ExperienceHit;
 import com.dwinovo.numen.experience.api.ExperienceMaturity;
+import com.dwinovo.numen.experience.core.PresentationReceipt;
 import com.dwinovo.numen.experience.core.TaskFingerprint;
 
 import java.util.ArrayList;
@@ -98,8 +99,11 @@ public final class ExperienceKnowledgeSource {
         if (companionId == null || query.isBlank()) {
             return List.of();
         }
+        // ★ E7：reportable=false —— 规划知识也是每轮自动取用的，
+        //   同伴不一定照做 ⇒ 不进待回报清单（只计「被呈现过」）。
         List<ExperienceHit> hits = ExperiencePlugin.memory(companionId)
-                .recall(query, req.maxItems(), null, req.tags());
+                .recall(query, req.maxItems(), null, req.tags(),
+                        PresentationReceipt.SURFACE_PLANNING, false);
         List<PlanningKnowledge.Item> out = new ArrayList<>();
         for (ExperienceHit hit : hits) {
             PlanningKnowledge.Item item = toItem(hit, companionId);
