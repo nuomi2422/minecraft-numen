@@ -2,8 +2,8 @@ package com.dwinovo.numen.plugins.experience;
 
 import com.dwinovo.numen.api.NumenApi;
 import com.dwinovo.numen.api.NumenPlugin;
+import com.dwinovo.numen.experience.core.ExperienceDirectory;
 import com.dwinovo.numen.experience.core.ExperienceMemory;
-import com.dwinovo.numen.experience.core.ExperienceStats;
 import com.dwinovo.numen.experience.core.LexicalExperienceRetriever;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,13 +51,23 @@ public final class ExperiencePlugin implements NumenPlugin {
             if (m == null) {
                 return "";
             }
-            ExperienceStats s = m.stats();
-            if (s.total() == 0) {
+            try {
+                // ★ E6：不再是「只有三个计数」，而是 L0 目录层（59 号 §8.1）。
+                // contributeState 只拿得到同伴 UUID —— 拿不到当前任务，所以这里排的是
+                // 「可信度兜底序」（经验库 recall("", …) 的 fallbackScore 路径：
+                // 成熟度 × 优先级 × 近期性），**不是**按当前任务筛的；
+                // 块里的 <note> 明说了这一点，别让 AI 把顺序读成相关性。
+                ExperienceDirectory.Block block = ExperienceDirectory.render(
+                        m.recall("", ExperienceDirectory.DEFAULT_MAX_ROWS, null, java.util.List.of()),
+                        m.size(), m.stats().verified(), m.stats().generalized(),
+                        m.loadStats(), ExperienceDirectory.DEFAULT_MAX_ROWS,
+                        ExperienceDirectory.DEFAULT_MAX_CHARS);
+                return block.text();
+            } catch (Throwable t) {
+                // 目录是可选增强：坏了就这段留空，每轮上下文照常
+                LOG.warn("[expmem] experience directory unavailable: {}", t.toString());
                 return "";
             }
-            return "<experience><total>" + s.total() + "</total>"
-                    + "<verified>" + s.verified() + "</verified>"
-                    + "<generalized>" + s.generalized() + "</generalized></experience>";
         });
         LOG.info("[expmem] experience memory plugin ready");
     }

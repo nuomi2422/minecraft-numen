@@ -57,6 +57,19 @@ public final class ExperienceMemory {
         return store.size();
     }
 
+    /**
+     * 本次加载的读数（{@code loadedLine/loadedLegacy/loadedFailed/rekeyed/duplicate}）。
+     *
+     * <p><b>为什么要透传</b>：{@code store} 是 private，外部拿不到加载统计 ⇒
+     * 注入侧与监测台此前只能<b>自己按磁盘形状猜</b>「能读出多少条」
+     * （监测台 {@code chain-view.mjs} 就是这么干的），那不是代码的读数。
+     * E6 的验收判据 A5 要求「注入侧报的条数 = store 条数」，
+     * 面板要核这个数就得从代码里拿，而不是猜。</p>
+     */
+    public ExperienceStore.LoadStats loadStats() {
+        return store.loadStats();
+    }
+
     public ExperienceStats stats() {
         int verified = 0;
         int generalized = 0;
