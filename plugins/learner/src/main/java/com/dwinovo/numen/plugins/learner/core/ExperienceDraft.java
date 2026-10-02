@@ -36,6 +36,22 @@ import java.util.Set;
  *   <li><b>不截断 {@code title}</b>。title 是 id 的一部分，截断会让两条本该不同的长标题
  *       撞成一条（Codex 审核 P1-4）。展示用的短版另放 {@code title_display}。</li>
  * </ul>
+ *
+ * <p><b>★ B5：{@code rewritten_query} 现在接进检索了（此前它是僵尸字段）</b>。
+ * 断点 {@code gap-rewritten-query-unused} 记的是「解析了但零调用方」。真因不是架构上
+ * 没法参与，而是<b>映射里少了一行</b> —— 写端（{@code LearnerReviewer} §7 要 LLM 给
+ * 「1 到 3 个改写检索词，替代向量检索的检索键」）和读端（{@code LexicalExperienceRetriever}
+ * 读 {@code triggerStrings}，+3.0/词 = 全字段最强信号）<b>两端都是通的</b>，
+ * 断的只是中间。和类注释里 B2 那句「映射代码从来没写过」是同一族洞。</p>
+ *
+ * <p><b>⚠️ 诚实边界：它注定帮不到「触发它的那次检索」。</b>
+ * {@code rewritten_query} 是<b>回顾性</b>的（学完之后才产出），而检索是<b>前瞻性</b>的
+ * （规划期就要召回）。所以它只能让**下一次**同类场景命中，让不了当时那一次 ——
+ * 这是「学习」本身的性质，不是缺陷。判据 A6（触发得回来）要的就是这个「下一次」，
+ * 仍然欠一条实机证据（见 60 号文档 A6）。</p>
+ *
+ * <p><b>不改身份</b>：{@code stableKey}/{@code fingerprint} 只用 {@code (type, title)}，
+ * {@code trigger_strings} 不参与 ⇒ 补检索线索<b>不会</b>让任何老条目换 id、重新去重。</p>
  */
 public record ExperienceDraft(
         JsonObject entry,
@@ -43,7 +59,9 @@ public record ExperienceDraft(
         String suggestedTypeWhy,
         String titleDisplay,
         String evidenceNote,
-        String typeResolution
+        String typeResolution,
+        int rewrittenQueryIntoTriggers,
+        int rewrittenQueryDuplicates
 ) {
 
     /**
@@ -51,12 +69,26 @@ public record ExperienceDraft(
      *
      * <p>真源是 {@code experience-core/.../api/ExperienceEntry.java} 的 {@code toJson()}。
      * 本列表与它的一致性由 {@code ExperienceDraftKeysBindToRealEntryTest} 读源文件核对。</p>
+     *
+     * <p>⚠️ <b>末尾 5 个 E8 键是「声明但刻意不写」的</b>（{@code retracted} / {@code retracted_at} /
+     * {@code retracted_reason} / {@code supersedes} / {@code consecutive_failures}）。
+     * 声明它们是为了满足「键集合相等」这道契约门；<b>不许</b>因为「在列表里」就去
+     * {@link #from} 里写它们 —— 一条刚产出的经验<b>本来就没被验证过、没被撤回过</b>，
+     * 写出来等于宣称「这些事发生过」。{@code ExperienceEntry.Builder} 的默认值就是
+     * 「没发生过」，草稿省掉这几个键由落盘层补默认值，语义完全一样。</p>
+     *
+     * <p>★ 这 5 个键是 E8（{@code aba150dc}）加进 {@code toJson()} 后补进来的。
+     * 漏补的后果不是这条测试变红那么简单：<b>整个 {@code :plugins:learner:test} 从 E8 那批次起
+     * 一直是红的</b>，而 E8 的验收记录写的是「全绿」—— 说明那批只跑了 experience 侧，
+     * 没跑 learner 侧。</p>
      */
     public static final List<String> ENTRY_KEYS = List.of(
             "type", "title", "description", "rationale", "root_cause", "recommended_response",
             "trigger_strings", "tool_names", "tags",
             "maturity", "verified_count", "priority", "counterexamples",
-            "created_at", "verified_at", "last_accessed_at");
+            "created_at", "verified_at", "last_accessed_at",
+            // ↓ E8 五个：见上面那段说明 —— 声明是为了契约门，不是为了写。
+            "retracted", "retracted_at", "retracted_reason", "supersedes", "consecutive_failures");
 
     /** 本映射实际会写的键（其余由记录层落盘时补，或刻意不写）。 */
     public static final List<String> WRITTEN_KEYS = List.of(
@@ -65,6 +97,20 @@ public record ExperienceDraft(
 
     /** 展示用标题上限（<b>只影响展示，不影响落盘</b>）。 */
     public static final int DISPLAY_TITLE_CHARS = 60;
+
+    /**
+     * {@code trigger_strings} 里每个检索线索的字符上限（B5）。
+     *
+     * <p>⚠️ <b>截断只会少召回，不会造错命中</b>，方向是安全的：线索变短 ⇒
+     * {@code LexicalExperienceRetriever.containsAny} 更不容易命中 ⇒ 打分只降不升。
+     * 反向的「整串出现在查询里 +2.0」在截断后会失效，那也只是丢一个加分项，
+     * 不是把不相干的经验拉进来。
+     *
+     * <p>为什么不整句留着：{@code trigger_strings} 的契约是<b>短线索</b>，
+     * LLM 偶尔会把检索词写成整句话；一条 200 字的「触发词」会盖掉其余线索，
+     * 也会让人在面板上读不出这条经验到底靠什么被找到。</p>
+     */
+    public static final int TRIGGER_CLIP_CHARS = 40;
 
     /**
      * 从判定 + 备忘录产出草稿。
@@ -127,6 +173,43 @@ public record ExperienceDraft(
         if (m != null) {
             addIfPresent(tset, m.stage());
         }
+        // ★ B5：rewritten_query 此前解析了、也渲染进 reviewed 输出了，但**没有落进这里**
+        //   ⇒ 检索侧永远看不到它。通道两端本来都通：
+        //     写端：LearnerReviewer §7 明确要 LLM 给「1 到 3 个改写检索词（替代向量检索的检索键）」
+        //     读端：LexicalExperienceRetriever 读 triggerStrings，给 +3.0/词（全字段最强信号）
+        //           外加「整串出现在查询里」再 +2.0/个
+        //   断的是中间这行映射。跟 B2（映射代码从来没写过）同一族洞，不是架构问题。
+        //
+        // ⚠️ 顺序刻意放最后：它是**回顾性**的检索键（学完之后才产出），
+        //   而 preconditions / observableSignal 是**当场就成立**的条件。
+        //   前者更具体、后者更稳定，冲突时让稳定的有优先解释权。
+        //   LinkedHashSet 按插入序去重，所以先来的那条会挡住后来的重复值。
+        int rewrittenIn = 0;
+        int rewrittenDupes = 0;
+        if (v.rewrittenQuery() != null) {
+            for (String q : v.rewrittenQuery()) {
+                // 逐个收而不是整表 addAll：clip 要按条做。
+                // ⚠️ 这个 null/blank 守卫对**当前唯一的生产者是死代码** ——
+                //   Verdict.parse（Verdict.java:129-132）已经把 null 与 blank 全滤掉了，
+                //   到这里拿到的每条都非空。留着是因为 Verdict 是 record：
+                //   任何调用方都能 new 出来绕过 parse 塞个 null 进来。
+                //   写清楚它当下防的是什么，别让人以为「实测拦到过 null」。
+                //   真要防的那件事是：clip(null) 返回空串，add("") 会把**空线索**塞进
+                //   trigger_strings —— 检索器那边 containsAny(field, "") 恒 true，
+                //   等于给每个查询白送 +3.0。空串比缺线索更坏。
+                // ⚠️ 计数用 add() 的返回值（**真正新增**的条数），不是「处理了几条」——
+                //   tset 是 LinkedHashSet，检索词和 preconditions 撞了就该只留一条；
+                //   若按处理条数计，面板会在有重复时**高报**「接进了 2 条」而实际只新增 1 条。
+                if (q == null || q.isBlank()) {
+                    continue;
+                }
+                if (tset.add(clip(q.trim(), TRIGGER_CLIP_CHARS))) {
+                    rewrittenIn++;
+                } else {
+                    rewrittenDupes++;
+                }
+            }
+        }
         for (String t : tset) {
             triggers.add(t);
         }
@@ -148,7 +231,7 @@ public record ExperienceDraft(
         //   type 的去处在上面：学习者交了才写，没交就是没有。
         String resolution = describeTypeResolution(x, tn);
         return new ExperienceDraft(o, suggestType(v), describeSuggestion(v),
-                clip(x.mechanism(), DISPLAY_TITLE_CHARS), x.evidence(), resolution);
+                clip(x.mechanism(), DISPLAY_TITLE_CHARS), x.evidence(), resolution, rewrittenIn, rewrittenDupes);
     }
 
     /**
@@ -253,6 +336,11 @@ public record ExperienceDraft(
         o.addProperty("suggested_type", suggestedType);
         o.addProperty("suggested_type_why", suggestedTypeWhy);
         o.addProperty("title_display_truncated_to", DISPLAY_TITLE_CHARS);
+        // B5 可观测：rewritten_query 到底有没有真的进检索槽位。报 0 时人能一眼看出
+        //   「学习者这轮没给检索词」，而不是以为接上了但检索侧一直没反应。
+        o.addProperty("rewritten_query_into_triggers", rewrittenQueryIntoTriggers);
+        o.addProperty("rewritten_query_duplicates", rewrittenQueryDuplicates);
+        o.addProperty("trigger_clip_chars", TRIGGER_CLIP_CHARS);
         if (evidenceNote != null && !evidenceNote.isBlank()) {
             o.addProperty("experience_evidence", evidenceNote);
         }

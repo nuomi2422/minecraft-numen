@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -57,6 +58,19 @@ class ExperienceDraftGateTest {
     }
 
     private static Verdict verdict(String experienceJson, String... actions) {
+        return verdictRaw(experienceJson, null, actions);
+    }
+
+    /**
+     * B5：能带 {@code rewritten_query} 的判定。
+     *
+     * @param rewrittenJson 整个 JSON 数组字面量（含 {@code null} 形式），或 {@code null} = 不给这个键
+     */
+    private static Verdict verdictWithRewritten(String experienceJson, String rewrittenJson, String... actions) {
+        return verdictRaw(experienceJson, rewrittenJson, actions);
+    }
+
+    private static Verdict verdictRaw(String experienceJson, String rewrittenJson, String... actions) {
         StringBuilder acts = new StringBuilder("[");
         for (int i = 0; i < actions.length; i++) {
             if (i > 0) {
@@ -65,9 +79,11 @@ class ExperienceDraftGateTest {
             acts.append('"').append(actions[i]).append('"');
         }
         acts.append(']');
+        String rewritten = rewrittenJson == null ? "" : ",\"rewritten_query\":" + rewrittenJson;
         Verdict v = Verdict.parse("m-1",
                 "{\"memo_id\":\"m-1\",\"actions\":" + acts + ",\"confidence\":0.8,"
-                        + "\"reasoning\":\"r\",\"experience\":" + experienceJson + "}");
+                        + "\"reasoning\":\"r\"" + rewritten
+                        + ",\"experience\":" + experienceJson + "}");
         assertNotNull(v, "判定本身要能解析出来");
         return v;
     }
@@ -218,6 +234,120 @@ class ExperienceDraftGateTest {
         assertNotNull(d.toJson().get("title"));
         assertFalse(d.toJson().get("tags").getAsJsonArray().toString().contains("memo:"),
                 "没有 memo 就不该编一个 memo: 标签");
+    }
+
+    // ---------- B5：rewritten_query 接进检索（此前是僵尸字段） ----------
+
+    /** 把 trigger_strings 读成 List<String>，读不出来就让测试炸（别拿空跑当过）。 */
+    private static List<String> triggersOf(ExperienceDraft d) {
+        List<String> out = new ArrayList<>();
+        d.toJson().getAsJsonArray("trigger_strings").forEach(e -> out.add(e.getAsString()));
+        return out;
+    }
+
+    /**
+     * ★ B5 本体：{@code rewritten_query} 必须落进 {@code trigger_strings}。
+     *
+     * <p>断言的是<b>槽位</b>而不是「JSON 里出现过这个词」—— 检索器
+     * （{@code LexicalExperienceRetriever:87}）只读 {@code triggerStrings}，
+     * 落在别处的字段对它等于不存在。</p>
+     */
+    @Test
+    void rewrittenQueryLandsInTheSlotTheRetrieverActuallyReads() {
+        ExperienceDraft d = draftOf(
+                verdictWithRewritten(GOOD, "[\"垂直竖井下潜\",\"铺水回撤\",\"血量低于六格\"]", "WRITE_EXPERIENCE"),
+                fullMemo("hp=12/20, armor=none"));
+        List<String> ts = triggersOf(d);
+        assertTrue(ts.contains("垂直竖井下潜"), ts.toString());
+        assertTrue(ts.contains("铺水回撤"), ts.toString());
+        assertTrue(ts.contains("血量低于六格"), ts.toString());
+        assertEquals(3, d.explain().get("rewritten_query_into_triggers").getAsInt(),
+                "面板要能如实看到接进去了几条");
+    }
+
+    /** 检索词是 LLM 自由文本，会写成整句 ⇒ 截到契约上限，并说清上限是多少。 */
+    @Test
+    void aSentenceShapedQueryIsClippedToTheTriggerContract() {
+        String sentence = "在".repeat(200);
+        ExperienceDraft d = draftOf(
+                verdictWithRewritten(GOOD, "[\"" + sentence + "\"]", "WRITE_EXPERIENCE"),
+                fullMemo("hp=12/20"));
+        List<String> ts = triggersOf(d);
+        for (String t : ts) {
+            assertTrue(t.length() <= ExperienceDraft.TRIGGER_CLIP_CHARS + 1,
+                    "trigger_strings 契约是短线索，这条有 " + t.length() + " 字：" + t);
+        }
+        assertEquals(ExperienceDraft.TRIGGER_CLIP_CHARS,
+                d.explain().get("trigger_clip_chars").getAsInt());
+        assertEquals(1, d.explain().get("rewritten_query_into_triggers").getAsInt());
+    }
+
+    /** 没给检索词就报 0，不许编一条出来充数。 */
+    @Test
+    void noRewrittenQueryReportsZeroRatherThanInventingOne() {
+        ExperienceDraft d = draftOf(verdict(GOOD, "WRITE_EXPERIENCE"), fullMemo("hp=12/20"));
+        assertEquals(0, d.explain().get("rewritten_query_into_triggers").getAsInt(),
+                "学习者没交检索词 ⇒ 如实报 0，面板上能一眼看出「这轮没给」");
+    }
+
+    /**
+     * ★ 反证：补检索线索<b>不许</b>动身份。
+     *
+     * <p>{@code ExperienceEntry.stableKey} / {@code fingerprint} 是 {@code (type, title)}
+     * 的纯函数（已读源确认），{@code trigger_strings} 不参与 ⇒ 加检索词不该让任何老条目
+     * 换 id、重新去重、并条目。这条红了就说明有人把检索键接到了标题或类型上。</p>
+     */
+    @Test
+    void addingRetrievalKeysDoesNotChangeEntryIdentity() {
+        ExperienceDraft without = draftOf(verdict(GOOD, "WRITE_EXPERIENCE"), fullMemo("hp=12/20"));
+        ExperienceDraft with = draftOf(
+                verdictWithRewritten(GOOD, "[\"垂直竖井下潜\",\"铺水回撤\"]", "WRITE_EXPERIENCE"),
+                fullMemo("hp=12/20"));
+        assertEquals(without.toJson().get("title").getAsString(), with.toJson().get("title").getAsString());
+        assertEquals(without.toJson().get("type").getAsString(), with.toJson().get("type").getAsString(),
+                "stableKey 只吃 (type, title)：这两个一样 ⇒ 同一条经验，不会被重新去重");
+        assertNotEquals(triggersOf(without), triggersOf(with),
+                "前提是线索真的变了，否则这条断言没有区分力");
+    }
+
+    /**
+     * 计数诚实性：检索词与 preconditions 撞车时<b>只算一次新增</b>，并把丢掉的那次报出来。
+     *
+     * <p>GOOD 的 preconditions 就是「y&lt;=-12 且垂直通道」，这里拿它当检索词。</p>
+     */
+    @Test
+    void aQueryDuplicatingAPreconditionIsNotDoubleCounted() {
+        ExperienceDraft d = draftOf(
+                verdictWithRewritten(GOOD, "[\"y<=-12 且垂直通道\",\"铺水回撤\"]", "WRITE_EXPERIENCE"),
+                fullMemo("hp=12/20"));
+        assertEquals(1, d.explain().get("rewritten_query_into_triggers").getAsInt(),
+                "撞上 preconditions 的那条不算新增");
+        assertEquals(1, d.explain().get("rewritten_query_duplicates").getAsInt(),
+                "丢掉的那次必须报出来，否则「接了 1 条」会读成「只给了 1 条」");
+        assertEquals(1, triggersOf(d).stream().filter("y<=-12 且垂直通道"::equals).count(),
+                "同一条线索不许在 trigger_strings 里出现两次");
+    }
+
+    /**
+     * ⚠️ 这条守卫<b>只能靠绕过 {@code Verdict.parse} 才测得到</b>。
+     *
+     * <p>{@code Verdict.parse}（Verdict.java:129-132）已经滤掉 null/blank，
+     * 所以经它产出的判定里不会有空串。{@code Verdict} 是 record，
+     * 直接 new 就能塞 null 进来 —— 那正是这条守卫当下防的东西：
+     * 空线索落进 {@code trigger_strings} 后，检索器里
+     * {@code containsAny(field, "")} 恒为真，等于给每个查询白送 +3.0。</p>
+     */
+    @Test
+    void aDirectlyBuiltVerdictWithNullQueryNeverInjectsAnEmptyTrigger() {
+        Verdict v = new Verdict("m-1", List.of(Verdict.Action.WRITE_EXPERIENCE), 0.8, "r",
+                sevenFields(), "", java.util.Arrays.asList(null, "   ", "铺水回撤"));
+        ExperienceDraft d = ExperienceDraft.from(v, fullMemo("hp=12/20"));
+        for (String t : triggersOf(d)) {
+            assertFalse(t.isBlank(), "trigger_strings 里不许有空线索：" + triggersOf(d));
+        }
+        assertEquals(1, d.explain().get("rewritten_query_into_triggers").getAsInt());
+        assertEquals(0, d.explain().get("rewritten_query_duplicates").getAsInt(),
+                "null 与空白是「没给」，不是「重复」");
     }
 
     // ---------- 质量门 ----------
