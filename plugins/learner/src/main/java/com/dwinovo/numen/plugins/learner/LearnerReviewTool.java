@@ -216,6 +216,14 @@ final class LearnerReviewTool implements NumenTool {
                 one.put("experience", ex);
                 one.put("experience_fields_filled", v.experience().filledCount());
                 one.put("experience_acceptable", v.experience().acceptable());
+                // ★ E4：分类**不进** experience 那个 map（那是七字段视图，混进去就看不出
+                //   「这是正文还是分类」）。原样值与归一后值都放：原样才能看出它交了什么、
+                //   归一后才能直接和 ExperienceType 对得上。
+                one.put("experience_type_raw", v.experience().experienceType());
+                one.put("experience_type", v.experience().typeName());
+                if (!v.experience().typeComplete()) {
+                    one.put("experience_type_problem", v.experience().typeProblem());
+                }
                 if (!v.experience().acceptable()) {
                     one.put("experience_unacceptable_reason", v.experience().unacceptableReason());
                     one.put("experience_missing_fields",

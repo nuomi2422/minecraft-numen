@@ -21,16 +21,20 @@ import java.util.Set;
  * {@code ExperienceDraftKeysBindToRealEntryTest} 会<b>直接读 experience-core 的源文件</b>
  * 提取 {@code toJson()} 的真实键做集合相等断言 —— 那边改键名，这边会红。</p>
  *
- * <p><b>刻意不编造的字段</b>（B21 / Codex 审核 P1-1）：
+* <p><b>刻意不编造的字段</b>（B21 / Codex 审核 P1-1）：
  * <ul>
- *   <li><b>没有 {@code type}</b>。七字段里根本没有「类型」这一项；早先从
- *       {@code actions} 推断（USE_CARRIER ⇒ POLICY）是<b>把操作建议当成分类事实</b> ——
- *       同一条经验仅因附带建议不同就会换分类，进而换掉 {@code stableKey} 与指纹。
- *       现在只给 {@link #suggestedType()} 当<b>建议</b>，并标 {@code needs_classification}，
- *       分类由发布方（AI 调 {@code experience_learn}，那里 type 是必填）明确补齐。</li>
+ *   <li><b>{@code type} 只在<b>学习者自己交了</b> {@code experienceType} 时才写</b>
+ *       （E4）。七字段里没有「类型」这一项，所以从 {@code actions} 推断是
+ *       <b>把操作建议当成分类事实</b> —— 同一条经验仅因附带建议不同就会换分类，
+ *       进而换掉 {@code stableKey} 与指纹。红线不变：<b>没交就不写</b>，
+ *       {@link #suggestedType()} 永远只是建议。
+ *       E4 之前这里是「永远不写」；改动的理由是实测它<b>会</b>交（2026-10-02 查
+ *       live 实例 {@code learner.jsonl}：3/3 七字段满且 acceptable=true，
+ *       {@code evidence} 引的是真实 memo id 与数字），
+ *       而 {@code ExperienceStore.learn()} 对 type==null 直接抛 ⇒ 不接住就一条都落不了库。</li>
  *   <li><b>没有 {@code tool_names}</b>。映射不出来就不放这个键，不用「无」「未知」冒充。</li>
  *   <li><b>不截断 {@code title}</b>。title 是 id 的一部分，截断会让两条本该不同的长标题
- *       撞成同一条（Codex 审核 P1-4）。展示用的短版另放 {@code title_display}。</li>
+ *       撞成一条（Codex 审核 P1-4）。展示用的短版另放 {@code title_display}。</li>
  * </ul>
  */
 public record ExperienceDraft(
@@ -38,7 +42,8 @@ public record ExperienceDraft(
         String suggestedType,
         String suggestedTypeWhy,
         String titleDisplay,
-        String evidenceNote
+        String evidenceNote,
+        String typeResolution
 ) {
 
     /**
@@ -55,7 +60,7 @@ public record ExperienceDraft(
 
     /** 本映射实际会写的键（其余由记录层落盘时补，或刻意不写）。 */
     public static final List<String> WRITTEN_KEYS = List.of(
-            "title", "description", "rationale", "root_cause", "recommended_response",
+            "type", "title", "description", "rationale", "root_cause", "recommended_response",
             "trigger_strings", "tags", "maturity", "priority");
 
     /** 展示用标题上限（<b>只影响展示，不影响落盘</b>）。 */
@@ -74,7 +79,17 @@ public record ExperienceDraft(
         Experience x = v.experience();
         JsonObject o = new JsonObject();
 
-        // ★ 不写 type。完整标题也不截断 —— 两者都会影响身份键。
+        // ★ E4：type 现在由**学习者自己交**（experienceType），不是由 actions 推断。
+        //   实测依据 2026-10-02（live 实例 learner.jsonl）：七字段那条链 3/3
+        //   filled=7 acceptable=true，evidence 引的是真实 memo id 与真实数字 ——
+        //   它**会判断**。所以「替它判」是多余的，「把它交的接住」才是缺的。
+        //   ⚠️ 红线不变：**没交就不写**（不许拿 actions 猜，见类注释 Codex P1-1）。
+        String tn = x.typeName();
+        if (!tn.isEmpty()) {
+            o.addProperty("type", tn);
+        }
+
+        // 完整标题**不截断** —— title 是 id 的一部分，截断会让两条本该不同的长标题撞成一条。
         o.addProperty("title", x.mechanism());
         o.addProperty("title_display", clip(x.mechanism(), DISPLAY_TITLE_CHARS));
 
@@ -129,17 +144,39 @@ public record ExperienceDraft(
         o.addProperty("maturity", "OBSERVED");
         o.addProperty("priority", priorityFrom(v.confidence()));
 
-        // 刻意不写 type / tool_names / counterexamples / *_at（见类注释）
+        // ★ tool_names / counterexamples / *_at 依旧刻意不写（见类注释）
+        //   type 的去处在上面：学习者交了才写，没交就是没有。
+        String resolution = describeTypeResolution(x, tn);
         return new ExperienceDraft(o, suggestType(v), describeSuggestion(v),
-                clip(x.mechanism(), DISPLAY_TITLE_CHARS), x.evidence());
+                clip(x.mechanism(), DISPLAY_TITLE_CHARS), x.evidence(), resolution);
     }
 
     /**
-     * <b>建议</b>类型，不是结论 —— 交给发布方定。
+     * type 是怎么定下来的 —— 如实说出来，别让下游以为「反正有 type」。
+     *
+     * <p>三种情况：学习者交了合法的 / 交了但不是合法值 / 压根没交。
+     * 第三种时草稿<b>没有 type 键</b>，送进 {@code experience_learn} 必被
+     * {@code ExperienceStore.learn()} 拒（它对 type==null 直接抛）——
+     * 这是<b>有意的</b>：让缺失在还有上下文的地方暴露，而不是落库后才炸。</p>
+     */
+    private static String describeTypeResolution(Experience x, String normalizedType) {
+        if (!normalizedType.isEmpty()) {
+            return "由学习者自己交的经验分类定：" + normalizedType;
+        }
+        return "学习者没交（或交的不是合法分类）⇒ 草稿**没有 type**，不能直接落库；"
+                + x.typeProblem();
+    }
+
+    /**
+     * <b>建议</b>类型，不是结论 —— 它<b>永远不进 {@code entry}</b>。
      *
      * <p>七字段整套围绕「某条件下会出什么问题 / 怎么判断 / 怎么应对」，
      * 形状上更接近失败经验；同时建议用携带器时更像一条「以后怎么办」的规则。
      * 但这只是形状线索，<b>不足以断言分类</b>，所以只进 {@code mapping.suggested_type}。</p>
+     *
+     * <p><b>E4 之后它更没用了</b>：学习者自己会交 {@code experienceType}，
+     * 交了就以它为准。这条建议只在<b>它没交</b>时有参考价值，
+     * 而那时 {@code entry} 本来就没有 type ⇒ 它进不了库，只给人看。</p>
      */
     private static String suggestType(Verdict v) {
         if (v.actions() != null && v.actions().contains(Verdict.Action.USE_CARRIER)) {
@@ -155,7 +192,8 @@ public record ExperienceDraft(
                 names.add(a.name());
             }
         }
-        return "只是建议，来自 actions=" + names + "（七字段里没有类型这一项，分类请由发布方定）";
+        return "只是建议，来自 actions=" + names + "（分类事实以学习者交的 experienceType 为准；"
+                + "它没交时这条才作参考，且**不会**被写进 entry）";
     }
 
     /**
@@ -207,7 +245,11 @@ public record ExperienceDraft(
     /** 给监测台/人看的映射决策（不含 ExperienceEntry 字段）。 */
     public JsonObject explain() {
         JsonObject o = new JsonObject();
-        o.addProperty("needs_classification", true);
+        // needs_classification 现在说的是「**type 键有没有**」，不是「有没有人该去分」。
+        // E4 之前它的意思是「type 只能由发布方来分」；现在学习者自己交了就是定了。
+        o.addProperty("needs_classification", !entry.has("type"));
+        o.addProperty("entry_ready_for_store", entry.has("type"));
+        o.addProperty("type_resolution", typeResolution);
         o.addProperty("suggested_type", suggestedType);
         o.addProperty("suggested_type_why", suggestedTypeWhy);
         o.addProperty("title_display_truncated_to", DISPLAY_TITLE_CHARS);

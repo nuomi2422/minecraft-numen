@@ -32,7 +32,12 @@ class ExperienceSevenFieldsTest {
             + "\"observableSignal\":\"HUD 血量<6 且无食物 → 停止下潜\","
             + "\"derivation\":\"血量<6 → 上岸 → 找食物 → 血量≥8 再回\","
             + "\"efficiency\":\"一次下潜 12 格 vs 3 格×4 次；时间 -70%\","
-            + "\"evidence\":\"ep7 t2000 commentary 原话 + 截图路径\"}";
+            + "\"evidence\":\"ep7 t2000 commentary 原话 + 截图路径\","
+            // E4：分类是第 2 批的必填项。这条讲「怎么做」⇒ EXECUTION。
+            + "\"experienceType\":\"EXECUTION\"}";
+
+    /** E4：同一条正文，但**故意不给分类**（用来验证「没交就不许当合格」）。 */
+    private static final String GOOD_WITHOUT_TYPE = GOOD.replace(",\"experienceType\":\"EXECUTION\"}", "}");
 
     private static JsonObject obj(String json) {
         return JsonParser.parseString(json).getAsJsonObject();
@@ -177,11 +182,63 @@ class ExperienceSevenFieldsTest {
         assertFalse(parsed.toJson().contains("experience_acceptable"));
     }
 
-    @Test
+@Test
     void promptSpecDemandsTheTwoCriticalFields() {
         String spec = Experience.promptSpec();
         assertTrue(spec.contains("failureConditions"), spec);
         assertTrue(spec.contains("observableSignal"), spec);
-        assertTrue(spec.contains("NO_ACTION"), "必须告诉模型「填不出关键字段就给 NO_ACTION」而不是硬凑");
+        assertTrue(spec.contains("NO_ACTION"), "填不出关键字段就别硬凑，应当反回 NO_ACTION（这条别删）");
+    }
+
+    // ---------- E4：分类 ----------
+
+    @Test
+    void promptSpecNowDemandsAClassification() {
+        String spec = Experience.promptSpec();
+        assertTrue(spec.contains("experienceType"), "第 2 批起分类是必填项，prompt 必须写明");
+        for (String t : Experience.EXPERIENCE_TYPES) {
+            assertTrue(spec.contains(t), "prompt 里少了可选值 " + t + "，它只能靠猜");
+        }
+        assertTrue(spec.contains("正好这 8 个键"), "键数说 7 就会让人交 7 个键的旧格式");
+    }
+
+    @Test
+    void typeIsNormalizedButNeverGuessed() {
+        assertEquals("FAILURE", parseWithType("FAILURE").typeName());
+        assertEquals("FAILURE", parseWithType("  failure  ").typeName(), "大小写与空白该归一");
+        assertEquals("TOOL_DEFECT", parseWithType("tool_defect").typeName());
+        // ★ 这些必须判非法：type 决定 stableKey / fingerprint，也就是条目的身份键。
+        //   猜错 = 真实的一条被劈成两条，或两条不同的被并成一条。
+        assertEquals("", parseWithType("失败经验").typeName(), "中文近义词不是分类");
+        assertEquals("", parseWithType("FAILURE_TYPE").typeName());
+        assertEquals("", parseWithType("").typeName());
+    }
+
+    @Test
+    void missingOrInvalidTypeIsReportedNotHidden() {
+        Experience noType = parse(GOOD_WITHOUT_TYPE);
+        assertFalse(noType.typeComplete());
+        assertFalse(noType.acceptable(), "七字段全填但没分类 ⇒ 仍不合格（不然落库时才炸）");
+        assertTrue(noType.unacceptableReason().contains("experienceType"),
+                "要说清缺的是分类：" + noType.unacceptableReason());
+
+        Experience bad = parseWithType("失败经验");
+        assertFalse(bad.acceptable());
+        assertTrue(bad.typeProblem().contains("失败经验"),
+                "要把它**交的那个值**原样说出来，不能只说「非法」：" + bad.typeProblem());
+    }
+
+    @Test
+    void validTypeMakesAFullExperienceAcceptable() {
+        assertTrue(parse(GOOD).acceptable());
+        assertTrue(parseWithType("EXECUTION").typeComplete());
+    }
+
+    private static Experience parse(String experienceJson) {
+        return Experience.parse(obj("{\"experience\":" + experienceJson + "}"));
+    }
+
+    private static Experience parseWithType(String type) {
+        return parse(GOOD.replace("\"EXECUTION\"", "\"" + type + "\""));
     }
 }

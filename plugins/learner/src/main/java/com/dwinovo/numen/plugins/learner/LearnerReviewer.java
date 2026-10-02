@@ -59,12 +59,14 @@ final class LearnerReviewer {
             8. ★ 经验必须是**结构化对象**，不是一段话。%s
             9. 给 WRITE_EXPERIENCE 就**必须**同时给出 experience 对象；给 NO_ACTION 时不要给。
             10. 不要输出 experience_draft 这个键（旧格式，已废弃；一段散文不算经验）。
+            11. ★ experienceType 是**分类事实**，从 5 个里挑**一个**；挑不出来说明还没想清楚
+            这是哪一类 → 给 NO_ACTION，**不要拿近义词顶**（分类错等于把这条经验劈成两条）。
 
             输出格式：
             {"verdicts":[{"memo_id":"...","actions":["WRITE_EXPERIENCE"],"confidence":0.7,
               "reasoning":"...","experience":{"mechanism":"...","preconditions":"...",
               "failureConditions":"...","observableSignal":"...","derivation":"...",
-              "efficiency":"...","evidence":"..."},"ac_script_draft":"",
+              "efficiency":"...","evidence":"...","experienceType":"FAILURE"},"ac_script_draft":"",
               "rewritten_query":["..."]}]}
             """;
 

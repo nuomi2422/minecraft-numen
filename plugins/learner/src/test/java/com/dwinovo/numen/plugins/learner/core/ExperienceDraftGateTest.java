@@ -30,7 +30,13 @@ class ExperienceDraftGateTest {
             + "\"observableSignal\":\"HUD 血量<6 且无食物 → 停止下潜\","
             + "\"derivation\":\"血量<6 → 上岸 → 找食物 → 血量≥8 再回\","
             + "\"efficiency\":\"一次下潜 12 格 vs 3 格×4 次；时间 -70%\","
-            + "\"evidence\":\"ep7 t2000 commentary 原话\"}";
+            + "\"evidence\":\"ep7 t2000 commentary 原话\","
+            // E4：分类是第 2 批必填项（这条讲「怎么做」⇒ EXECUTION）。
+            //   少了它，草稿就没有 type 键 ⇒ 进不了 ExperienceStore（learn() 对 type==null 抛）。
+            + "\"experienceType\":\"EXECUTION\"}";
+
+    /** E4：同一条正文，**故意不给分类** —— 用来验「没交就不许编 type」这条红线。 */
+    private static final String GOOD_NO_TYPE = GOOD.replace(",\"experienceType\":\"EXECUTION\"}", "}");
 
     private static JsonObject obj(String json) {
         return JsonParser.parseString(json).getAsJsonObject();
@@ -88,15 +94,45 @@ class ExperienceDraftGateTest {
         }
     }
 
-    /** ★ Codex P1-1：type 是编造的，必须不写。 */
+    /**
+     * ★ Codex P1-1 的红线，<b>E4 之后原样保留</b>：<b>没交就不许写 type</b>。
+     *
+     * <p>变的是 type 的<b>来源</b>（从 {@code actions} 推断 → 学习者自己交），
+     * 没变的是<b>不许编</b>：{@code actions} 含 {@code USE_CARRIER} 也<b>证明不了</b>
+     * 分类是 POLICY —— 那还是「把操作建议当成分类事实」。</p>
+     */
     @Test
-    void draftDoesNotInventAType() {
-        ExperienceDraft d = draftOf(verdict(GOOD, "WRITE_EXPERIENCE", "USE_CARRIER"), fullMemo("hp=12/20"));
+    void draftDoesNotInventATypeWhenLearnerDidNotGiveOne() {
+        ExperienceDraft d = draftOf(verdict(GOOD_NO_TYPE, "WRITE_EXPERIENCE", "USE_CARRIER"),
+                fullMemo("hp=12/20"));
         assertFalse(d.toJson().has("type"),
-                "七字段里没有类型这一项，actions 也证明不了分类 ⇒ entry.type 不许出现");
+                "学习者没交 experienceType ⇒ entry.type 不许出现（哪怕 actions 里有 USE_CARRIER）");
         assertEquals("POLICY", d.suggestedType(), "只能作为建议给出");
         assertTrue(d.explain().get("needs_classification").getAsBoolean());
+        assertFalse(d.explain().get("entry_ready_for_store").getAsBoolean(),
+                "没有 type 的草稿进不了库，必须如实说");
+        assertTrue(d.explain().get("type_resolution").getAsString().contains("没有 type"));
         assertTrue(d.explain().get("suggested_type_why").getAsString().contains("只是建议"));
+    }
+
+    /** ★ E4：学习者交了合法分类 ⇒ 草稿就带 type，真的能落库了（这是断链被接上的那一环）。 */
+    @Test
+    void draftCarriesTheTypeTheLearnerGave() {
+        ExperienceDraft d = draftOf(verdict(GOOD, "WRITE_EXPERIENCE"), fullMemo("hp=12/20"));
+        assertTrue(d.toJson().has("type"), "交了就要写 —— 否则 learn() 会因 type==null 抛异常");
+        assertEquals("EXECUTION", d.toJson().get("type").getAsString());
+        assertFalse(d.explain().get("needs_classification").getAsBoolean());
+        assertTrue(d.explain().get("entry_ready_for_store").getAsBoolean());
+        assertTrue(d.explain().get("type_resolution").getAsString().contains("学习者自己交"));
+    }
+
+    /** E4：交的是近义词/中文 ⇒ 判为非法，**不许猜一个**（type 决定身份键，猜错会并/劈条目）。 */
+    @Test
+    void draftRefusesANearSynonymAsType() {
+        String near = GOOD.replace("\"experienceType\":\"EXECUTION\"", "\"experienceType\":\"失败经验\"");
+        ExperienceDraft d = draftOf(verdict(near, "WRITE_EXPERIENCE"), fullMemo("hp=12/20"));
+        assertFalse(d.toJson().has("type"), "「失败经验」不是 FAILURE ⇒ 不许当成 type 落库");
+        assertTrue(d.explain().get("type_resolution").getAsString().contains("失败经验"));
     }
 
     @Test
