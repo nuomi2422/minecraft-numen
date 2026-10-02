@@ -3,10 +3,14 @@ package com.dwinovo.numen.plugins.learner;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.entity.NumenPlayer;
+import com.dwinovo.numen.plugins.learner.core.Experience;
+import com.dwinovo.numen.plugins.learner.core.ExperienceDraft;
+import com.dwinovo.numen.plugins.learner.core.ExperienceQualityGate;
 import com.dwinovo.numen.plugins.learner.core.Memo;
 import com.dwinovo.numen.plugins.learner.core.MemoQueue;
 import com.dwinovo.numen.plugins.learner.core.Verdict;
 import com.dwinovo.numen.task.TaskResult;
+import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import net.minecraft.server.MinecraftServer;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
@@ -24,8 +28,15 @@ import java.util.function.Consumer;
  * {@code learner_review}：学习者领取队列里的备忘录、逐条复盘、出结构化判定。
  *
  * <p><b>plan-only</b>：判定是「建议」，本工具不执行任何身体动作
- * （不调 AC、不写经验库、不自编译）。写经验由 AI 调既有 experience_learn，
- * 调 AC 由 AI 调既有 ac_execute。这样学习者不会成为第二个驾驶员（红线 RL-9）。
+ * （不调 AC、不写经验库、不自编译）。调 AC 由 AI 调既有 ac_execute
+ * —— 这样学习者不会成为第二个驾驶员（红线 RL-9 / RL-20）。
+ *
+ * <p><b>但它<b>产出</b>可直接落库的草稿</b>（2026-10-02 B2/E3）：每条判定多给两个键 ——
+ * {@code experience_draft}（七字段映射成的 {@code ExperienceEntry} 形状）+
+ * {@code quality_gate}（硬质量门结论）。此前只给七字段原文，
+ * 下游得自己猜怎么变成 {@code experience_learn} 的参数，
+ * 而<b>那段映射代码从来没写过</b>（这就是 {@code 60} 号 B2）。
+ * 映射做了 ≠ 有权发布：<b>落盘仍由 AI 调 experience_learn 决定</b>（doc 59 D3）。
  *
  * <p><b>必须异步</b>（2026-09-29 P0 修复）：本工具在 body tool 的
  * {@code onServerCall} 里跑，而那是 <b>服务器主线程入口</b>
@@ -43,6 +54,7 @@ import java.util.function.Consumer;
  */
 final class LearnerReviewTool implements NumenTool {
 
+    private static final Gson GSON = new Gson();
     private static final int DEFAULT_MAX = 5;
     private static final int HARD_MAX = 20;
     private static final int LLM_TIMEOUT_SEC = 120;
@@ -191,10 +203,11 @@ final class LearnerReviewTool implements NumenTool {
             one.put("actions", v.actions().stream().map(Enum::name).toList());
             one.put("confidence", v.confidence());
             one.put("reasoning", v.reasoning());
+            Memo source = batch.stream().filter(m -> v.memoId().equals(m.id())).findFirst().orElse(null);
             if (v.experience() != null) {
                 // B21：只放真值；缺失的字段不出现；关键字段不齐要**说出来**
                 Map<String, Object> ex = new java.util.LinkedHashMap<>();
-                for (String f : com.dwinovo.numen.plugins.learner.core.Experience.FIELDS) {
+                for (String f : Experience.FIELDS) {
                     String val = v.experience().field(f);
                     if (!val.isBlank()) {
                         ex.put(f, val);
@@ -208,6 +221,35 @@ final class LearnerReviewTool implements NumenTool {
                     one.put("experience_missing_fields",
                             String.join(",", v.experience().missingFields()));
                 }
+            }
+            // ★ B2/E3：七字段 → 经验库条目形状的映射 + 硬质量门。
+            //   之前这里只给七字段原文，下游要自己猜怎么变成 experience_learn 的参数
+            //   —— 「映射代码从来没写过」。现在直接给出可落库的条目形状与门禁结论，
+            //   发布权仍在 AI/门禁（RL-20：学习者不自己执行，见类注释）。
+            ExperienceDraft draft = null;
+            String body = null;
+            if (v.experience() != null) {
+                try {
+                    draft = ExperienceDraft.from(v, source);
+                    body = draft.toJson().get("description").getAsString();
+                    one.put("experience_draft", draftJson(draft));
+                } catch (RuntimeException ex) {
+                    one.put("experience_draft_error", "mapping failed: " + ex.getMessage());
+                }
+            } else if (v.actions().contains(Verdict.Action.WRITE_EXPERIENCE)) {
+                // 说了要写经验却没交草稿 —— 明说出来，不给一个空壳
+                one.put("experience_draft_missing", "actions 含 WRITE_EXPERIENCE 但没有结构化 experience");
+            }
+            // ⚠️ 门禁**无条件**跑（Codex 审核 P1-4）：「WRITE_EXPERIENCE 但没交七字段」
+            //   必须被门禁拒绝，跳过它等于这种判定永远拿不到拒绝意见。
+            //   body 传的是**映射后的 description**（机制+步骤+判据）而不是只 mechanism，
+            //   否则「长机制 + derivation 写空话」能绕过去。
+            ExperienceQualityGate.Result gate =
+                    ExperienceQualityGate.evaluate(v.experience(), source, body);
+            one.put("quality_gate", GSON.fromJson(gate.toMap(), Map.class));
+            // 映射失败/无草稿 ⇒ 即使门禁没硬失败，也不给「可直接发布」的入口形态
+            if (draft == null) {
+                one.put("publishable", false);
             }
             if (!v.acScriptDraft().isBlank()) {
                 one.put("ac_script_draft", v.acScriptDraft());
@@ -253,5 +295,16 @@ final class LearnerReviewTool implements NumenTool {
                 "reviewed", rendered.size(), "committed", removed, "restored", restored,
                 "queue_depth", depth, "verdicts", rendered));
         LearnerPlugin.setReviewVerdicts(reviewId, rendered);
+    }
+
+/**
+     * 草稿的对外形状：{@code {entry, mapping}}。
+     * 映射失败在调用处已经单独记了 {@code experience_draft_error}，这里不重复包装。
+     */
+    private static Map<String, Object> draftJson(ExperienceDraft draft) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("entry", GSON.fromJson(draft.toJson(), Map.class));
+        out.put("mapping", GSON.fromJson(draft.explain(), Map.class));
+        return out;
     }
 }
