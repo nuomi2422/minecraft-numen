@@ -2,6 +2,7 @@ package com.dwinovo.numen.experience.core;
 
 import com.dwinovo.numen.experience.api.ExperienceEntry;
 import com.dwinovo.numen.experience.api.ExperienceMaturity;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.slf4j.Logger;
@@ -207,34 +208,209 @@ public final class ExperienceStore {
         return List.copyOf(seen);
     }
 
+    /**
+     * 加载统计。
+     *
+     * <p><b>三个数必须分开</b>，因为它们对应三种不同的病：
+     * <ul>
+     *   <li>{@code loadedLine} —— 逐行 JSONL 读出的（正常）</li>
+     *   <li>{@code loadedLegacy} —— <b>形状与文件名不自洽</b>读出的
+     *       （整个文件是一个 JSON 数组，或整个文件只有一条）。
+     *       这些文件本该是「一行一条」，需要迁移。</li>
+     *   <li>{@code loadedFailed} —— <b>真的解析失败</b>的（代码问题或数据被截断）。</li>
+     * </ul>
+     *
+     * <p>⚠️ 历史教训：原先 {@link RuntimeException} 被 catch 后只记一行日志，
+     * 于是「文件存在但一条都读不进来」表现为 {@code size()==0} ——
+     * <b>不报错，只是不工作</b>。现在这三个数是公开读数，异常可见。
+     */
+    public record LoadStats(int loadedLine, int loadedLegacy, int loadedFailed) {
+        /** 成功读出的总条数（不含失败）。 */
+        public int total() {
+            return loadedLine + loadedLegacy;
+        }
+
+        /** 是否有形状与后缀不自洽、需要迁移的文件。 */
+        public boolean needsMigrate() {
+            return loadedLegacy > 0;
+        }
+
+        /** 是否有真正解析失败的条目 —— 需要人看。 */
+        public boolean degraded() {
+            return loadedFailed > 0;
+        }
+    }
+
+    private LoadStats loadStats = new LoadStats(0, 0, 0);
+
+    /** 本次加载过程中的三个计数器（{@link #ensureLoaded()} 内部累加）。 */
+    private int statLine;
+    private int statLegacy;
+    private int statFailed;
+
+    /** 本次加载的统计（只读）。未加载过时是全 0。 */
+    public synchronized LoadStats loadStats() {
+        ensureLoaded();
+        return loadStats;
+    }
+
+    /**
+     * 加载磁盘经验，<b>兼容三种文件形状</b>。
+     *
+     * <p>为什么需要兼容：早期版本曾把整个 JSON 数组写进 {@code .jsonl} 后缀的文件
+     * （一个文件只有 1 行、内容是数组）。读取端原先只认「逐行 JSONL」，
+     * 对数组调 {@code getAsJsonObject()} 会抛 {@code IllegalStateException}，
+     * 那唯一一行被静默跳过 ⇒ mirror 为空 ⇒ 注入侧 {@code total()==0} ⇒
+     * <b>经验正文一条都进不了上下文</b>。
+     *
+     * <p>同类的坑学习者队列在 2026-09-29 已修（{@code MemoQueue} 改成非 {@code .jsonl}
+     * 后缀），经验库当时漏了。
+     */
     private void ensureLoaded() {
         if (loaded) {
             return;
         }
         if (Files.isRegularFile(file)) {
+            String text;
             try {
-                for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+                text = Files.readString(file, StandardCharsets.UTF_8);
+            } catch (IOException ex) {
+                LOG.warn("[experience] failed to read {}: {}", file, ex.toString());
+                loaded = true;
+                return;
+            }
+            statLine = 0;
+            statLegacy = 0;
+            statFailed = 0;
+
+            // 先判形状：整个文件是一个 JSON 值时走兼容路径。
+            JsonElement root = tryParse(text);
+            if (root != null && root.isJsonArray()) {
+                // 遗留：整个文件是一个 JSON 数组（.jsonl 后缀，但内容不是行分隔）
+                for (JsonElement el : root.getAsJsonArray()) {
+                    if (el.isJsonObject()) {
+                        countLegacyOrFail(el.getAsJsonObject());
+                    } else {
+                        statFailed++;
+                    }
+                }
+            } else if (root != null && root.isJsonObject()) {
+                // 遗留：整个文件只有一条
+                statLegacy++;
+                addFromObject(root.getAsJsonObject());
+            } else {
+                // 正常路径：一行一条
+                for (String line : text.split("\n")) {
                     if (line.isBlank()) {
                         continue;
                     }
-                    try {
-                        JsonObject o = JsonParser.parseString(line).getAsJsonObject();
-                        ExperienceEntry e = ExperienceEntry.fromJson(o);
-                        if (e.id() == null || e.id().isBlank() || e.title() == null || e.title().isBlank()) {
-                            continue;
-                        }
-                        if (indexOf(e.id()) < 0) {
-                            mirror.add(e);
-                        }
-                    } catch (RuntimeException ex) {
-                        LOG.warn("[experience] skipping unparsable line in {}: {}", file.getFileName(), ex.toString());
+                    statLine++;
+                    JsonObject o = tryParseObject(line);
+                    if (o == null) {
+                        statFailed++;
+                        continue;
                     }
+                    addFromObject(o);
                 }
-            } catch (IOException ex) {
-                LOG.warn("[experience] failed to read {}: {}", file, ex.toString());
+            }
+            loadStats = new LoadStats(statLine, statLegacy, statFailed);
+            if (loadStats.needsMigrate()) {
+                LOG.warn("[experience] {} is not line-delimited JSONL (loaded {} via legacy shape); "
+                        + "call migrateLegacyShape() to convert it", file, statLegacy);
+            }
+            if (loadStats.degraded()) {
+                LOG.warn("[experience] {}: {} entries failed to parse (store is degraded, not empty)",
+                        file, statFailed);
             }
         }
         loaded = true;
+    }
+
+    private static JsonElement tryParse(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        try {
+            return JsonParser.parseString(text);
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    /** 逐行路径用：必须顶层是 object 才是「一条经验」。 */
+    private static JsonObject tryParseObject(String line) {
+        try {
+            JsonElement e = JsonParser.parseString(line);
+            return e != null && e.isJsonObject() ? e.getAsJsonObject() : null;
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    /** 遗留路径用：能加进镜像算 legacy，加不进算 failed。 */
+    private void countLegacyOrFail(JsonObject o) {
+        if (addFromObject(o)) {
+            statLegacy++;
+        } else {
+            statFailed++;
+        }
+    }
+
+    /**
+     * 把一条 JSON object 加进镜像，按 id 去重。
+     *
+     * @return 是否真的加进去了（重复 id、缺 id/title、解析失败都算没加）
+     */
+    private boolean addFromObject(JsonObject o) {
+        try {
+            ExperienceEntry e = ExperienceEntry.fromJson(o);
+            if (e.id() == null || e.id().isBlank() || e.title() == null || e.title().isBlank()) {
+                return false;
+            }
+            if (indexOf(e.id()) < 0) {
+                mirror.add(e);
+                return true;
+            }
+            return false;
+        } catch (RuntimeException ex) {
+            LOG.warn("[experience] unparsable entry in {}: {}", file.getFileName(), ex.toString());
+            return false;
+        }
+    }
+
+    /**
+     * 一次性迁移「形状与文件名不自洽」的遗留文件：整个 JSON 数组 → 逐行 JSONL。
+     *
+     * <p>安全约束（用户存档不可再丢）：
+     * <ol>
+     *   <li><b>先备份</b>，且<b>仅当备份不存在时</b>才建（否则反复迁移会刷一堆备份）</li>
+     *   <li><b>原子替换</b>，走与 {@link #persist()} 同一条 temp + {@code ATOMIC_MOVE} 路径</li>
+     *   <li><b>幂等</b>：迁完再读，走正常逐行路径，{@code loadedLegacy} 变 0</li>
+     * </ol>
+     *
+     * @return 迁移后的条数；本来就不需要迁移时返回 {@code loadStats().total()}
+     */
+    public synchronized int migrateLegacyShape() {
+        ensureLoaded();
+        if (!loadStats.needsMigrate()) {
+            return loadStats.total();
+        }
+        Path backup = file.resolveSibling(file.getFileName() + ".pre-migrate-" + System.currentTimeMillis() + ".bak");
+        try {
+            if (!Files.exists(backup)) {
+                Files.copy(file, backup, StandardCopyOption.COPY_ATTRIBUTES);
+                LOG.info("[experience] backed up legacy-shaped {} to {}", file, backup.getFileName());
+            }
+            persist();   // 逐行 JSONL + temp + ATOMIC_MOVE
+            int n = loadStats.total();
+            LOG.info("[experience] migrated {} from legacy array shape to line-delimited JSONL ({} entries)",
+                    file.getFileName(), n);
+            loaded = false;      // 让下一次读走正常路径，loadStats 随之刷新
+            return n;
+        } catch (IOException ex) {
+            LOG.warn("[experience] failed to migrate {}: {}", file, ex.toString());
+            return loadStats.total();
+        }
     }
 
     /** 全量原子重写：temp 文件 → ATOMIC_MOVE 替换。 */
