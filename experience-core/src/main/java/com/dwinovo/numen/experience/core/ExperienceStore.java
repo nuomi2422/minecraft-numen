@@ -2,6 +2,7 @@ package com.dwinovo.numen.experience.core;
 
 import com.dwinovo.numen.experience.api.ExperienceEntry;
 import com.dwinovo.numen.experience.api.ExperienceMaturity;
+import com.dwinovo.numen.experience.api.ExperienceType;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -76,6 +77,16 @@ public final class ExperienceStore {
      * 写入或合并一条经验。同 {@code id} 已存在时合并：描述类字段取新值、触发词/工具/标签
      * 并集、成熟度与验证次数取更高者——合并绝不清掉已积累的证据。
      *
+     * <p><b>去重是两级的</b>，缺一不可：
+     * <ol>
+     *   <li><b>id 归一</b>：不管调用方给的 id 是什么，一律按
+     *       {@link ExperienceEntry#stableKey(type, title)} 重算。
+     *       否则调用方（或历史数据）换个拼写就绕过去重。</li>
+     *   <li><b>指纹兜底</b>：id 没撞上但 {@link ExperienceEntry#fingerprint} 撞上了
+     *       （同一个标题的不同写法：多空格/全角半角/首尾标点），也算同一条。
+     *       这一层吸收「同一条经验被重写一遍」的漂移。</li>
+     * </ol>
+     *
      * @return 实际落库的那条（可能是合并结果）
      */
     public synchronized ExperienceEntry learn(ExperienceEntry entry) {
@@ -84,12 +95,22 @@ public final class ExperienceStore {
             throw new IllegalArgumentException("experience requires type, title and description");
         }
         ensureLoaded();
-        ExperienceEntry normalized = entry.id() == null || entry.id().isBlank()
-                ? ExperienceEntry.builder().from(entry)
-                .id(ExperienceEntry.stableKey(entry.type(), entry.title())).build()
-                : entry;
+        ExperienceEntry normalized = canonicalize(entry);
 
         int index = indexOf(normalized.id());
+        if (index < 0) {
+            // ★ 空标题不许走指纹兜底：空归一 + 空标题会命中别的空标题条目，
+            //   而 learn() 已经要求 title 非空，所以这里只能是「归一后为空的边界输入」。
+            String fp = ExperienceEntry.fingerprint(normalized.type(), normalized.title());
+            if (!fp.endsWith("|")) {
+                int byPrint = indexOfFingerprint(fp);
+                if (byPrint >= 0) {
+                    index = byPrint;
+                    LOG.info("[experience] title drifted but fingerprint matches existing '{}' -> merging as same entry",
+                            mirror.get(byPrint).title());
+                }
+            }
+        }
         ExperienceEntry stored;
         if (index < 0) {
             stored = normalized;
@@ -113,11 +134,20 @@ public final class ExperienceStore {
      * success=false：追加反例（封顶 MAX_COUNTEREXAMPLES）；OBSERVED→ATTEMPTED；不降级
      * }</pre>
      *
+     * @param id 经验 id。**认不出就按旧拼写兜底**（把 {@code '|'} 后半段当 title 比对），
+     *           否则归一化之前流出去的旧 id 会永远打不中。
      * @return 更新后的经验；id 不存在返回 {@code null}
      */
     public synchronized ExperienceEntry recordEvidence(String id, boolean success, String note) {
         ensureLoaded();
         int index = indexOf(id);
+        if (index < 0) {
+            index = indexByLegacyId(id);
+            if (index >= 0) {
+                LOG.info("[experience] legacy id '{}' resolved to '{}' by title",
+                        id, mirror.get(index).id());
+            }
+        }
         if (index < 0) {
             return null;
         }
@@ -176,11 +206,90 @@ public final class ExperienceStore {
         return -1;
     }
 
+    /**
+     * 把一条经验的 id 强制按 {@code stableKey(type,title)} 重算。
+     *
+     * <p><b>磁盘上的 id 一律不可信</b> —— 它是历史遗留物，可能来自旧拼写、
+     * 手工 seed 或别的写入方。留着它就等于给去重开后门。</p>
+     */
+    private static ExperienceEntry canonicalize(ExperienceEntry e) {
+        String canonical = ExperienceEntry.stableKey(e.type(), e.title());
+        if (canonical.equals(e.id())) {
+            return e;
+        }
+        return ExperienceEntry.builder().from(e).id(canonical).build();
+    }
+
+    /**
+     * 按指纹找「同一条经验」（同一个标题的不同写法）。
+     *
+     * <p>线性扫 —— 经验是小数据量（实测 22 条），{@link #indexOf(String)} 本来也是线性的，
+     * 保持同一复杂度不引入第二套索引。</p>
+     */
+    private int indexOfFingerprint(String fingerprint) {
+        for (int i = 0; i < mirror.size(); i++) {
+            if (mirror.get(i).fingerprint().equals(fingerprint)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * 旧拼写 id 的兜底查找：<b>解析前缀 → 认别名 → 按 canonical id 找</b>。
+     *
+     * <p>存在的理由：归一化之前已经流出去的 id（比如写进过日志、监测台、人工记录的
+     * {@code tooldefect|xxx}）在磁盘条目被重写后不再是 id，直接返回「找不到」会让那些调用方静默失败。</p>
+     *
+     * <p>⚠️ <b>绝不能只比对 {@code '|'} 后半段</b>：那样 {@code recordEvidence("tooldefect|t")}
+     * 会命中镜像里第一条同名经验，哪怕它是 {@code POLICY} —— 证据就记到错的类型上，
+     * 还会把它误升成 VERIFIED。未知前缀一律拒绝，宁可返回「找不到」。</p>
+     */
+    private int indexByLegacyId(String id) {
+        if (id == null) {
+            return -1;
+        }
+        int bar = id.indexOf('|');
+        if (bar <= 0 || bar == id.length() - 1) {
+            return -1;
+        }
+        ExperienceType prefix = resolveTypePrefix(id.substring(0, bar));
+        if (prefix == null) {
+            return -1;
+        }
+        return indexOf(ExperienceEntry.stableKey(prefix, id.substring(bar + 1)));
+    }
+
+    /**
+     * id 前缀 → 枚举值。认 canonical 名（大小写不敏感）与已知旧别名；其余一律 {@code null}。
+     *
+     * <p>别名表只收<b>实测见过</b>的拼写，不做「去掉下划线」这种通配 ——
+     * 通配会把任意未知前缀变成合法类型，那比不兜底更危险。</p>
+     */
+    private static ExperienceType resolveTypePrefix(String prefix) {
+        String p = prefix.trim().toLowerCase();
+        for (ExperienceType t : ExperienceType.values()) {
+            if (t.name().toLowerCase().equals(p)) {
+                return t;
+            }
+        }
+        return switch (p) {
+            case "tooldefect" -> ExperienceType.TOOL_DEFECT;
+            case "worldrelation" -> ExperienceType.WORLD_RELATION;
+            default -> null;
+        };
+    }
+
     private ExperienceEntry merge(ExperienceEntry old, ExperienceEntry fresh) {
+        ExperienceType type = fresh.type() == null ? old.type() : fresh.type();
+        String title = fresh.title();
+        // ★ id 必须跟着 title 走：留着 old.id() 会出现「id 与 title 不自洽」——
+        //   stableKey(type,title) 算不出这个 id，下次重载时 addFromObject 会再归一一次，
+        //   于是同一个条目在两次重载之间 id 漂移，归一化前流出去的旧引用全部失效。
         return ExperienceEntry.builder()
-                .id(old.id())
-                .type(fresh.type() == null ? old.type() : fresh.type())
-                .title(fresh.title())
+                .id(ExperienceEntry.stableKey(type, title))
+                .type(type)
+                .title(title)
                 .description(fresh.description())
                 .rationale(blank(fresh.rationale()) ? old.rationale() : fresh.rationale())
                 .rootCause(blank(fresh.rootCause()) ? old.rootCause() : fresh.rootCause())
@@ -191,11 +300,27 @@ public final class ExperienceStore {
                 .maturity(ExperienceMaturity.max(old.maturity(), fresh.maturity()))
                 .verifiedCount(Math.max(old.verifiedCount(), fresh.verifiedCount()))
                 .priority(Math.max(old.priority(), fresh.priority()))
-                .counterexamples(fresh.counterexamples().isEmpty() ? old.counterexamples() : fresh.counterexamples())
+                .counterexamples(cappedUnion(old.counterexamples(), fresh.counterexamples()))
                 .createdAt(old.createdAt())
                 .verifiedAt(fresh.verifiedAt() > 0 ? fresh.verifiedAt() : old.verifiedAt())
                 .lastAccessedAt(System.currentTimeMillis())
                 .build();
+    }
+
+    /**
+     * 反例<b>并集</b>，再按 {@link #MAX_COUNTEREXAMPLES} 截断。
+     *
+     * <p>⚠️ 原来是 {@code fresh.isEmpty() ? old : fresh} —— 后来者赢。
+     * 读时合并（两条原本 id 不同、归一后撞车的记录）会走到这里，
+     * 于是先那条的反例被整条顶掉，persist 一下就永久没了。
+     * <b>反例是「证明这条经验不总是对的」的唯一记录，宁可多留。</b></p>
+     */
+    private static List<String> cappedUnion(List<String> a, List<String> b) {
+        List<String> all = union(a, b);
+        if (all.size() <= MAX_COUNTEREXAMPLES) {
+            return all;
+        }
+        return List.copyOf(all.subList(all.size() - MAX_COUNTEREXAMPLES, all.size()));
     }
 
     private static boolean blank(String s) {
@@ -211,23 +336,47 @@ public final class ExperienceStore {
     /**
      * 加载统计。
      *
-     * <p><b>三个数必须分开</b>，因为它们对应三种不同的病：
+     * <p><b>五个数必须分开</b>，因为它们对应五种不同的病：
      * <ul>
      *   <li>{@code loadedLine} —— 逐行 JSONL 读出的（正常）</li>
      *   <li>{@code loadedLegacy} —— <b>形状与文件名不自洽</b>读出的
      *       （整个文件是一个 JSON 数组，或整个文件只有一条）。
      *       这些文件本该是「一行一条」，需要迁移。</li>
      *   <li>{@code loadedFailed} —— <b>真的解析失败</b>的（代码问题或数据被截断）。</li>
+     *   <li>{@code rekeyed} —— <b>磁盘上的 id 与 (type,title) 对不上、被重算过</b>的。
+     *       实测存量数据里有 {@code tooldefect|…} 这种无下划线的旧拼写，
+     *       而 {@link ExperienceEntry#stableKey} 产出 {@code tool_defect|…} ——
+     *       不归一的话它们永远匹配不上新写入，重复 learn 只会堆条目而不是合并。</li>
+     *   <li>{@code duplicate} —— <b>归一后撞上同一条</b>、被合并掉的。
+     *       原先这里是 {@code return false} 静默丢弃：证据被扔掉，
+     *       而 {@code loadedLine} 照样 +1 ⇒ 报出来的条数比真有的多。</li>
      * </ul>
+     *
+     * <p><b>口径</b>：{@code loadedLine} / {@code loadedLegacy} 数的是
+     * <b>成功解析进镜像的条目（含重复）</b>，解析失败的<b>只</b>进 {@code loadedFailed}；
+     * 重复另外计在 {@code duplicate} 里，{@link #total()} 统一扣一次。
+     * 这样三者相加减永远等于 {@code size()}，面板上的数不会自相矛盾。</p>
      *
      * <p>⚠️ 历史教训：原先 {@link RuntimeException} 被 catch 后只记一行日志，
      * 于是「文件存在但一条都读不进来」表现为 {@code size()==0} ——
-     * <b>不报错，只是不工作</b>。现在这三个数是公开读数，异常可见。
+     * <b>不报错，只是不工作</b>。现在这几个数是公开读数，异常可见。
      */
-    public record LoadStats(int loadedLine, int loadedLegacy, int loadedFailed) {
-        /** 成功读出的总条数（不含失败）。 */
+    public record LoadStats(int loadedLine, int loadedLegacy, int loadedFailed,
+                            int rekeyed, int duplicate) {
+        /** 只关心前三个数的调用方（向后兼容）。 */
+        public LoadStats(int loadedLine, int loadedLegacy, int loadedFailed) {
+            this(loadedLine, loadedLegacy, loadedFailed, 0, 0);
+        }
+
+        /**
+         * 成功读出、且真的进了镜像的总条数（已扣掉被合并的重复）。
+         *
+         * <p>⚠️ 与 {@code size()} 的口径差：这几个数描述的是「<b>从磁盘读进来</b>多少」。
+         * 新建库（磁盘上还没有文件）时它们全 0，而 {@code size()} 已经 ≥1 —— 那 1 条是本次写进去的。
+         * 这是有意的，不是 bug；面板上要说清楚「读入 N 条」而不是含糊的「共 N 条」。
+         */
         public int total() {
-            return loadedLine + loadedLegacy;
+            return loadedLine + loadedLegacy - duplicate;
         }
 
         /** 是否有形状与后缀不自洽、需要迁移的文件。 */
@@ -243,10 +392,12 @@ public final class ExperienceStore {
 
     private LoadStats loadStats = new LoadStats(0, 0, 0);
 
-    /** 本次加载过程中的三个计数器（{@link #ensureLoaded()} 内部累加）。 */
+    /** 本次加载过程中的五个计数器（{@link #ensureLoaded()} 内部累加）。 */
     private int statLine;
     private int statLegacy;
     private int statFailed;
+    private int statRekeyed;
+    private int statDuplicate;
 
     /** 本次加载的统计（只读）。未加载过时是全 0。 */
     public synchronized LoadStats loadStats() {
@@ -282,6 +433,12 @@ public final class ExperienceStore {
             statLine = 0;
             statLegacy = 0;
             statFailed = 0;
+            statRekeyed = 0;
+            statDuplicate = 0;
+            // ★ 必须先清空：ensureLoaded() 可能被第二次调用（migrateLegacyShape() 走完会把
+            //   loaded 置回 false）。不清的话每条都会撞上「自己那条」，被当成重复合并，
+            //   于是 loadedLine=2 而 duplicate=2，total() 算成 0 —— 条数凭空消失。
+            mirror.clear();
 
             // 先判形状：整个文件是一个 JSON 值时走兼容路径。
             JsonElement root = tryParse(text);
@@ -296,24 +453,32 @@ public final class ExperienceStore {
                 }
             } else if (root != null && root.isJsonObject()) {
                 // 遗留：整个文件只有一条
-                statLegacy++;
-                addFromObject(root.getAsJsonObject());
+                countLegacyOrFail(root.getAsJsonObject());
             } else {
                 // 正常路径：一行一条
                 for (String line : text.split("\n")) {
                     if (line.isBlank()) {
                         continue;
                     }
-                    statLine++;
                     JsonObject o = tryParseObject(line);
                     if (o == null) {
                         statFailed++;
                         continue;
                     }
-                    addFromObject(o);
+                    int rc = addFromObject(o);
+                    if (rc == ADD_BAD) {
+                        statFailed++;
+                        continue;
+                    }
+                    // ★ 只有真的解析进镜像的才算「读出」——坏行不该混进 total()，
+                    //   否则面板上的条数里混着解析失败的数量。
+                    statLine++;
+                    if (rc == ADD_DUP) {
+                        statDuplicate++;
+                    }
                 }
             }
-            loadStats = new LoadStats(statLine, statLegacy, statFailed);
+            loadStats = new LoadStats(statLine, statLegacy, statFailed, statRekeyed, statDuplicate);
             if (loadStats.needsMigrate()) {
                 LOG.warn("[experience] {} is not line-delimited JSONL (loaded {} via legacy shape); "
                         + "call migrateLegacyShape() to convert it", file, statLegacy);
@@ -321,6 +486,15 @@ public final class ExperienceStore {
             if (loadStats.degraded()) {
                 LOG.warn("[experience] {}: {} entries failed to parse (store is degraded, not empty)",
                         file, statFailed);
+            }
+            if (statRekeyed > 0) {
+                LOG.info("[experience] {}: re-keyed {} entries to stableKey(type,title) "
+                                + "(legacy id spelling no longer matches writes)",
+                        file.getFileName(), statRekeyed);
+            }
+            if (statDuplicate > 0) {
+                LOG.info("[experience] {}: merged {} duplicate entries (same canonical id)",
+                        file.getFileName(), statDuplicate);
             }
         }
         loaded = true;
@@ -347,34 +521,68 @@ public final class ExperienceStore {
         }
     }
 
-    /** 遗留路径用：能加进镜像算 legacy，加不进算 failed。 */
+    /** {@link #addFromObject} 的结果码：三条路径要分开计数，混在一起就看不出是哪一种病。 */
+    private static final int ADD_OK = 0;
+    private static final int ADD_DUP = 1;
+    private static final int ADD_BAD = 2;
+
+    /** 遗留路径用：成功解析的都算 legacy（<b>含重复</b>），撞 id 另计 duplicate。 */
     private void countLegacyOrFail(JsonObject o) {
-        if (addFromObject(o)) {
+        int rc = addFromObject(o);
+        if (rc != ADD_BAD) {
             statLegacy++;
-        } else {
-            statFailed++;
+        }
+        if (rc == ADD_DUP) {
+            statDuplicate++;
         }
     }
 
     /**
-     * 把一条 JSON object 加进镜像，按 id 去重。
+     * 把一条 JSON object 加进镜像，<b>先按 (type,title) 归一 id</b>，再按 id 去重。
      *
-     * @return 是否真的加进去了（重复 id、缺 id/title、解析失败都算没加）
+     * <p>为什么必须归一：磁盘上的 {@code id} 是历史遗留物，不是可信来源。
+     * 实测存量条目里有 {@code tooldefect|…} 这种无下划线的旧拼写，
+     * 而 {@link ExperienceEntry#stableKey} 产出 {@code tool_defect|…} ——
+     * 两套拼写并存时，重复写入一条已有经验<b>不会合并，而是变成新的一条</b>。
+     * 归一之后 {@code indexOf} 才有意义。</p>
+     *
+     * <p>撞 id 时<b>合并</b>而不是丢弃：原先 {@code return false} 会把后来那条的
+     * 反例/触发词/更成熟的 maturity 一起扔掉，而 {@code loadedLine} 照样 +1，
+     * 于是「磁盘 59 条 / 代码可读 0 条」这类口径偏差无法被发现。</p>
+     *
+     * <p>⚠️ {@code type} 解析不出来（未知枚举）时<b>不归一</b>：{@code stableKey(null, …)}
+     * 会产出 {@code unknown|title}，把一条本来 id 正确的未知类型条目改成另一个 id，
+     * 还会和另一条同标题的未知类型条目撞车合并 —— 那是在删数据。保留原 id 并记警告。</p>
+     *
+     * @return {@link #ADD_OK} / {@link #ADD_DUP} / {@link #ADD_BAD}
      */
-    private boolean addFromObject(JsonObject o) {
+    private int addFromObject(JsonObject o) {
         try {
             ExperienceEntry e = ExperienceEntry.fromJson(o);
             if (e.id() == null || e.id().isBlank() || e.title() == null || e.title().isBlank()) {
-                return false;
+                return ADD_BAD;
             }
-            if (indexOf(e.id()) < 0) {
+            if (e.type() == null) {
+                LOG.warn("[experience] entry '{}' has an unknown/absent type — keeping id '{}' as-is, "
+                                + "not canonicalized (would collapse into unknown|title)",
+                        e.title(), e.id());
+            } else {
+                String canonical = ExperienceEntry.stableKey(e.type(), e.title());
+                if (!canonical.equals(e.id())) {
+                    statRekeyed++;
+                    e = canonicalize(e);
+                }
+            }
+            int i = indexOf(e.id());
+            if (i < 0) {
                 mirror.add(e);
-                return true;
+                return ADD_OK;
             }
-            return false;
+            mirror.set(i, merge(mirror.get(i), e));
+            return ADD_DUP;
         } catch (RuntimeException ex) {
             LOG.warn("[experience] unparsable entry in {}: {}", file.getFileName(), ex.toString());
-            return false;
+            return ADD_BAD;
         }
     }
 

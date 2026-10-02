@@ -54,6 +54,71 @@ public record ExperienceEntry(
         return (type == null ? "UNKNOWN" : type.name()).toLowerCase() + "|" + t;
     }
 
+    /**
+     * <p><b>指纹</b>：比 {@link #stableKey} 再收紧一层的「是不是同一条经验」判定。</p>
+     *
+     * <p>{@link #stableKey} 只做 trim + 小写，所以同一个标题换个空格宽度/全角半角/大小写
+     * 就会被当成两条 —— companion 重写同一条经验时确实会这样漂。指纹把这类
+     * <b>人读起来是同一个标题</b>的差异吸收掉，只做四件事：</p>
+     *
+     * <ul>
+     *   <li><b>连续空白折叠成单个空格</b>（不删除 —— 见下）</li>
+     *   <li>全角 ASCII（{@code U+FF01–U+FF5E}）折成半角</li>
+     *   <li>小写</li>
+     *   <li>首尾空白裁掉</li>
+     * </ul>
+     *
+     * <p><b>刻意不做</b>的事，理由是它们都会造成假合并（把两条真经验并成一条 = 丢证据，
+     * 比多一条更糟）：</p>
+     * <ul>
+     *   <li><b>不删除内部空白</b>：{@code "1 23"} 与 {@code "12 3"} 都是坐标/参数，
+     *       删掉空白后两者都变成 {@code "123"}。</li>
+     *   <li><b>不剥首尾标点</b>：{@code "-64"} 与 {@code "64"}、{@code "C#"} 与 {@code "C"}、
+     *       {@code "[0,1)"} 与 {@code "(0,1]"} 指的不是一回事，括号和连字符在标题里带语义。</li>
+     *   <li><b>不删词、不排序、不同义改写、不截断长度</b>。</li>
+     * </ul>
+     */
+    public static String fingerprint(ExperienceType type, String title) {
+        return (type == null ? "UNKNOWN" : type.name()).toLowerCase() + "|" + normalizeForFingerprint(title);
+    }
+
+    /** 本条的指纹（便捷方法，供 store 做同一条判定）。 */
+    public String fingerprint() {
+        return fingerprint(type, title);
+    }
+
+    /**
+     * title 的指纹归一：连续空白折叠 + 全角折半角 + 小写 + trim。
+     *
+     * <p>NBSP（{@code U+00A0}）等 {@code Character.isWhitespace()} 不认的空格<b>不</b>折叠 ——
+     * 保守优先，漏合并只是多一条，误合并是丢证据。</p>
+     *
+     * <p>包可见，便于单测直接钉住每一档归一行为。</p>
+     */
+    static String normalizeForFingerprint(String title) {
+        if (title == null || title.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(title.length());
+        boolean pendingSpace = false;
+        for (int i = 0; i < title.length(); i++) {
+            char c = title.charAt(i);
+            if (Character.isWhitespace(c)) {
+                pendingSpace = sb.length() > 0;   // 前导空白直接丢，词中间的留一个
+                continue;
+            }
+            if (c >= '！' && c <= '～') {
+                c = (char) (c - 0xFEE0);   // 全角 ASCII(U+FF01..U+FF5E) → 半角
+            }
+            if (pendingSpace) {
+                sb.append(' ');
+                pendingSpace = false;
+            }
+            sb.append(Character.toLowerCase(c));
+        }
+        return sb.toString();
+    }
+
     /** 复制一条并替换证据字段（evidence 更新专用，保留其它内容）。 */
     public ExperienceEntry withEvidence(ExperienceMaturity newMaturity, int newVerifiedCount,
                                         long newVerifiedAt, List<String> newCounterexamples) {
