@@ -1,0 +1,475 @@
+package com.dwinovo.numen.acx.core;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Logger;
+
+import com.dwinovo.numen.acx.api.AcxCondition;
+import com.dwinovo.numen.acx.api.Operator;
+
+/**
+ * 参数绑定层 —— 声明式「字段映射 / 类型转换 / 默认值 / 筛选 / 最近选择」。
+ *
+ * <p>积木参数有两种写法，两者可以混用：</p>
+ * <ol>
+ *   <li><b>普通值</b>：与原来一样，字符串里的 {@code $prev.x / $stepId.x / $input.x}
+ *       直接解析，解析不到保留原串 + 提示事件（{@code REF_UNRESOLVED}）。</li>
+ *   <li><b>绑定描述符</b>：值是一个带 {@code $from} 键的对象，做一次参数加工：</li>
+ * </ol>
+ *
+ * <pre>
+ * {"x": {"$from":"$scan.nearest_x", "$as":"int",  "$default":0},
+ *  "y": {"$from":"$scan.nearest_y", "$as":"int",  "$default":0},
+ *  "target": {"$from":"$scan.blocks",
+ *             "$filter":{"field":"type","op":"==","value":"iron_ore"},
+ *             "$pick":"nearest",
+ *             "$origin":"$input.position",
+ *             "$pick_fields":"x,y,z"},
+ *  "count": {"$from":"$prev.gathered", "$as":"string"}}
+ * </pre>
+ *
+ * <table>
+ *   <caption>描述符键</caption>
+ *   <tr><th>键</th><th>作用</th></tr>
+ *   <tr><td>{@code $from}</td><td>来源：引用串或字面量（字符串引用解析失败时走 {@code $default}）</td></tr>
+ *   <tr><td>{@code $as}</td><td>类型转换：{@code int / number / string / bool / string_array / int_array}</td></tr>
+ *   <tr><td>{@code $default}</td><td>{@code $from} 解析不到时的兜底值（不产生 unresolved 提示）</td></tr>
+ *   <tr><td>{@code $filter}</td><td>对列表做元素筛选：{@code {field,op,value}}，field 相对元素本身；
+ *       可用列表表示多条件（全过才留下）</td></tr>
+ *   <tr><td>{@code $pick}</td><td>从列表选一个：{@code first}（默认）/ {@code last} / {@code nearest}</td></tr>
+ *   <tr><td>{@code $origin}</td><td>{@code nearest} 的距离原点（{@code {x,y,z}} 映射或 {@code [x,y,z]} 列表），
+ *       通常引 {@code $input.position} 或 {@code $prev}</td></tr>
+ *   <tr><td>{@code $pick_fields}</td><td>元素里的坐标字段名，默认 {@code x,y,z}（逗号分隔）</td></tr>
+ * </table>
+ *
+ * <p><b>提示而不炸</b>：任何一步加工失败都只记 warning（runner 转成事件）并让值尽量保持原样，
+ * 由积木自己的参数校验去响亮拒绝 —— 保持与 {@link AcxValueResolver} 相同的失败哲学。</p>
+ */
+public final class AcxParamBinder {
+
+    private static final Logger LOG = Logger.getLogger(AcxParamBinder.class.getName());
+
+    /** 一条「引用解析不到」提示。runner 会把它转成 REF_UNRESOLVED 事件。 */
+    public record Warning(String param, String ref, String reason, String hint) { }
+
+    /** 提示里最多列几个可用字段（防止把一个巨大的输出全塞进事件）。 */
+    private static final int MAX_HINT_FIELDS = 12;
+
+    public static final String FROM = "$from";
+    public static final String AS = "$as";
+    public static final String DEFAULT = "$default";
+    public static final String FILTER = "$filter";
+    public static final String PICK = "$pick";
+    public static final String ORIGIN = "$origin";
+    public static final String PICK_FIELDS = "$pick_fields";
+
+    private AcxParamBinder() { }
+
+    public static Map<String, Object> bind(Map<String, Object> params,
+                                           Map<String, Object> lastOutput,
+                                           Map<String, Object> input,
+                                           Map<String, Map<String, Object>> allOutputs,
+                                           List<Warning> warnings) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (params == null) {
+            return out;
+        }
+        AcxValueResolver resolver = new AcxValueResolver(lastOutput, input, allOutputs);
+        for (Map.Entry<String, Object> e : params.entrySet()) {
+            out.put(e.getKey(), bindValue(e.getKey(), e.getValue(), resolver,
+                    lastOutput, input, allOutputs, warnings));
+        }
+        return out;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+
+    private static Object bindValue(String path, Object value, AcxValueResolver resolver,
+                                    Map<String, Object> lastOutput, Map<String, Object> input,
+                                    Map<String, Map<String, Object>> allOutputs,
+                                    List<Warning> warnings) {
+        if (value instanceof Map<?, ?> raw) {
+            Map<String, Object> m = cast(raw);
+            if (m.containsKey(FROM)) {
+                return bindDescriptor(path, m, resolver, lastOutput, input, allOutputs, warnings);
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> e : m.entrySet()) {
+                out.put(e.getKey(), bindValue(path + "." + e.getKey(), e.getValue(), resolver,
+                        lastOutput, input, allOutputs, warnings));
+            }
+            return out;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> out = new ArrayList<>(list.size());
+            int i = 0;
+            for (Object item : list) {
+                out.add(bindValue(path + "[" + i + "]", item, resolver,
+                        lastOutput, input, allOutputs, warnings));
+                i++;
+            }
+            return out;
+        }
+        if (value instanceof String s && s.startsWith("$")) {
+            Object resolved = resolver.resolve(s);
+            if (isUnresolved(s, resolved)) {
+                warnings.add(new Warning(path, s, "引用解析不到，已保留原串",
+                        hintFor(s, lastOutput, input, allOutputs)));
+            }
+            return resolved;
+        }
+        return value;
+    }
+
+    private static Object bindDescriptor(String path, Map<String, Object> m, AcxValueResolver resolver,
+                                         Map<String, Object> lastOutput, Map<String, Object> input,
+                                         Map<String, Map<String, Object>> allOutputs,
+                                         List<Warning> warnings) {
+        Object from = m.get(FROM);
+        Object resolved;
+        if (from instanceof String fs && fs.startsWith("$")) {
+            resolved = resolver.resolve(fs);
+            if (isUnresolved(fs, resolved)) {
+                if (m.containsKey(DEFAULT)) {
+                    resolved = resolver.resolve(m.get(DEFAULT));
+                } else {
+                    warnings.add(new Warning(path, fs, "引用解析不到，已保留原串",
+                            hintFor(fs, lastOutput, input, allOutputs)));
+                }
+            }
+        } else {
+            resolved = resolver.resolve(from);
+        }
+
+        Object filter = m.get(FILTER);
+        if (filter != null && resolved instanceof List<?> list) {
+            resolved = applyFilter(path, list, filter, resolver, input, allOutputs, warnings);
+        }
+
+        Object pick = m.get(PICK);
+        if (pick != null && resolved instanceof List<?> list) {
+            resolved = applyPick(path, list, String.valueOf(pick), m, resolver,
+                    input, allOutputs, warnings);
+        }
+
+        Object as = m.get(AS);
+        if (as != null) {
+            resolved = convert(path, resolved, String.valueOf(as), warnings);
+        }
+        return resolved;
+    }
+
+    // ── $filter ─────────────────────────────────────────────────────
+
+    private static Object applyFilter(String path, List<?> list, Object filter,
+                                      AcxValueResolver resolver, Map<String, Object> input,
+                                      Map<String, Map<String, Object>> allOutputs,
+                                      List<Warning> warnings) {
+        List<Map<String, Object>> specs = new ArrayList<>();
+        if (filter instanceof Map<?, ?> m) {
+            specs.add(cast(m));
+        } else if (filter instanceof List<?> l) {
+            for (Object o : l) {
+                if (o instanceof Map<?, ?> m) {
+                    specs.add(cast(m));
+                }
+            }
+        }
+        if (specs.isEmpty()) {
+            warnings.add(new Warning(path, "$filter", "$filter 写法无法识别，未筛选", ""));
+            return list;
+        }
+        List<Object> out = new ArrayList<>();
+        boolean warnedNonMap = false;
+        for (Object elem : list) {
+            if (!(elem instanceof Map<?, ?> em)) {
+                if (!warnedNonMap) {
+                    warnings.add(new Warning(path, "$filter", "列表里有非对象元素，已跳过", ""));
+                    warnedNonMap = true;
+                }
+                continue;
+            }
+            boolean keep = true;
+            for (Map<String, Object> spec : specs) {
+                if (!matchesSpec(spec, cast(em), resolver, input, allOutputs)) {
+                    keep = false;
+                    break;
+                }
+            }
+            if (keep) {
+                out.add(elem);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 单条件匹配一个元素。
+     *
+     * <p>field 相对元素本身（{@code "type"} 取元素里的 type），也可以继续用 {@code $} 引用；
+     * 比较复用 {@link AcxConditionEvaluator} —— 把实际值转成字符串当 field、
+     * 期望值保持原类型，于是三种比较路径（数值 / 布尔 / 字符串）与主求值器完全一致。</p>
+     */
+    private static boolean matchesSpec(Map<String, Object> spec, Map<String, Object> element,
+                                       AcxValueResolver outerResolver, Map<String, Object> input,
+                                       Map<String, Map<String, Object>> allOutputs) {
+        Object field = spec.get("field");
+        if (field == null) {
+            return false;
+        }
+        Operator op = Operator.fromSymbol(String.valueOf(spec.getOrDefault("op", "==")));
+        if (op == null) {
+            op = Operator.UNKNOWN;
+        }
+        Object value = spec.get("value");
+        AcxValueResolver elemResolver = new AcxValueResolver(element, input, allOutputs);
+        Object actual = field instanceof String fs && fs.startsWith("$")
+                ? elemResolver.resolve(fs)
+                : (field instanceof String fs ? element.get(fs) : field);
+        Object expected = value instanceof String vs && vs.startsWith("$")
+                ? outerResolver.resolve(vs)
+                : value;
+        AcxCondition synthetic = new AcxCondition(String.valueOf(actual), op, expected);
+        return AcxConditionEvaluator.evaluate(synthetic, element, input, allOutputs);
+    }
+
+    // ── $pick ───────────────────────────────────────────────────────
+
+    private static Object applyPick(String path, List<?> list, String pick, Map<String, Object> m,
+                                    AcxValueResolver resolver, Map<String, Object> input,
+                                    Map<String, Map<String, Object>> allOutputs,
+                                    List<Warning> warnings) {
+        if (list.isEmpty()) {
+            return list;
+        }
+        String mode = pick.trim().toLowerCase(java.util.Locale.ROOT);
+        switch (mode) {
+            case "last":
+                return list.get(list.size() - 1);
+            case "nearest": {
+                int idx = nearestIndex(path, list, m, resolver, warnings);
+                return list.get(idx);
+            }
+            case "first":
+            default:
+                return list.get(0);
+        }
+    }
+
+    private static int nearestIndex(String path, List<?> list, Map<String, Object> m,
+                                    AcxValueResolver resolver, List<Warning> warnings) {
+        Object originRaw = m.get(ORIGIN);
+        if (originRaw == null) {
+            warnings.add(new Warning(path, "$pick", "$pick=nearest 缺少 $origin，退回第一个", ""));
+            return 0;
+        }
+        Object origin = resolver.resolve(originRaw);
+        if (isUnresolvedValue(originRaw, origin)) {
+            warnings.add(new Warning(path, String.valueOf(originRaw),
+                    "$origin 解析不到，退回第一个", ""));
+            return 0;
+        }
+        double[] o = coords(origin, splitFields(m.get(PICK_FIELDS), "x,y,z"));
+        if (o == null) {
+            warnings.add(new Warning(path, String.valueOf(originRaw),
+                    "$origin 不是 {x,y,z} 或 [x,y,z]，退回第一个", ""));
+            return 0;
+        }
+        String[] fields = splitFields(m.get(PICK_FIELDS), "x,y,z");
+        int best = 0;
+        double bestDist = Double.MAX_VALUE;
+        for (int i = 0; i < list.size(); i++) {
+            Object elem = list.get(i);
+            double[] p = coords(elem, fields);
+            if (p == null) {
+                continue;
+            }
+            double d = Math.sqrt(Math.pow(p[0] - o[0], 2) + Math.pow(p[1] - o[1], 2)
+                    + Math.pow(p[2] - o[2], 2));
+            if (d < bestDist) {
+                bestDist = d;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    private static String[] splitFields(Object pickFields, String fallback) {
+        String s = pickFields == null ? fallback : String.valueOf(pickFields);
+        String[] parts = s.split(",");
+        if (parts.length != 3) {
+            return fallback.split(",");
+        }
+        for (int i = 0; i < 3; i++) {
+            parts[i] = parts[i].trim();
+        }
+        return parts;
+    }
+
+    /** 从 {@code {x,y,z}} 映射或 {@code [x,y,z]} 列表取三坐标；取不到返回 null。 */
+    private static double[] coords(Object v, String[] fields) {
+        if (v instanceof Map<?, ?> m) {
+            double[] out = new double[3];
+            for (int i = 0; i < 3; i++) {
+                Object c = m.get(fields[i]);
+                if (!(c instanceof Number n)) {
+                    return null;
+                }
+                out[i] = n.doubleValue();
+            }
+            return out;
+        }
+        if (v instanceof List<?> l && l.size() >= 3) {
+            double[] out = new double[3];
+            for (int i = 0; i < 3; i++) {
+                if (!(l.get(i) instanceof Number n)) {
+                    return null;
+                }
+                out[i] = n.doubleValue();
+            }
+            return out;
+        }
+        return null;
+    }
+
+    // ── $as ─────────────────────────────────────────────────────────
+
+    private static Object convert(String path, Object v, String as, List<Warning> warnings) {
+        String kind = as.trim().toLowerCase(java.util.Locale.ROOT);
+        if (v == null) {
+            return null;
+        }
+        switch (kind) {
+            case "int":
+            case "integer": {
+                Double d = toNumber(v);
+                if (d == null) {
+                    warnings.add(new Warning(path, as, "int 转换失败，保留原值", ""));
+                    return v;
+                }
+                return (int) Math.round(d);
+            }
+            case "number":
+            case "double":
+            case "float": {
+                Double d = toNumber(v);
+                if (d == null) {
+                    warnings.add(new Warning(path, as, "number 转换失败，保留原值", ""));
+                    return v;
+                }
+                return d;
+            }
+            case "string":
+                return String.valueOf(v);
+            case "bool":
+            case "boolean": {
+                if (v instanceof Boolean b) {
+                    return b;
+                }
+                if (v instanceof Number n) {
+                    return n.doubleValue() != 0;
+                }
+                String s = String.valueOf(v).trim();
+                return "true".equalsIgnoreCase(s) || "1".equals(s);
+            }
+            case "string_array": {
+                List<Object> out = new ArrayList<>();
+                if (v instanceof List<?> l) {
+                    for (Object o : l) {
+                        out.add(String.valueOf(o));
+                    }
+                } else {
+                    out.add(String.valueOf(v));
+                }
+                return out;
+            }
+            case "int_array": {
+                List<Object> out = new ArrayList<>();
+                if (v instanceof List<?> l) {
+                    for (Object o : l) {
+                        Double d = toNumber(o);
+                        out.add(d == null ? o : (int) Math.round(d));
+                    }
+                } else {
+                    Double d = toNumber(v);
+                    out.add(d == null ? v : (int) Math.round(d));
+                }
+                return out;
+            }
+            default:
+                warnings.add(new Warning(path, as, "未知的 $as 类型，保留原值",
+                        "可用: int / number / string / bool / string_array / int_array"));
+                return v;
+        }
+    }
+
+    private static Double toNumber(Object v) {
+        if (v instanceof Number n) {
+            return n.doubleValue();
+        }
+        if (v instanceof Boolean b) {
+            return b ? 1.0 : 0.0;
+        }
+        try {
+            return Double.parseDouble(String.valueOf(v).trim());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // ── 提示 ─────────────────────────────────────────────────────────
+
+    private static boolean isUnresolved(Object ref, Object resolved) {
+        return ref instanceof String s && s.startsWith("$")
+                && resolved instanceof String r && r.equals(s);
+    }
+
+    private static boolean isUnresolvedValue(Object ref, Object resolved) {
+        return isUnresolved(ref, resolved);
+    }
+
+    /** 给出该引用「本可以取哪些字段」的提示。 */
+    private static String hintFor(String ref, Map<String, Object> lastOutput,
+                                  Map<String, Object> input,
+                                  Map<String, Map<String, Object>> allOutputs) {
+        String head;
+        Set<String> fields = Set.of();
+        if (ref.startsWith("$prev.")) {
+            head = "$prev";
+            fields = lastOutput == null ? Set.of() : lastOutput.keySet();
+        } else if (ref.startsWith("$input.")) {
+            head = "$input";
+            fields = input == null ? Set.of() : input.keySet();
+        } else if (ref.startsWith("$")) {
+            int dot = ref.indexOf('.');
+            head = dot > 1 ? "$" + ref.substring(1, dot) : ref;
+            Map<String, Object> out = allOutputs == null ? null : allOutputs.get(ref.substring(1, dot));
+            fields = out == null ? Set.of() : out.keySet();
+        } else {
+            return "";
+        }
+        if (fields.isEmpty()) {
+            return head + " 当前没有输出字段";
+        }
+        List<String> list = new ArrayList<>(fields);
+        StringBuilder sb = new StringBuilder("可用字段: ");
+        for (int i = 0; i < list.size() && i < MAX_HINT_FIELDS; i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(list.get(i));
+        }
+        if (list.size() > MAX_HINT_FIELDS) {
+            sb.append(" …(共 ").append(list.size()).append(" 个)");
+        }
+        return sb.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> cast(Map<?, ?> m) {
+        return (Map<String, Object>) m;
+    }
+}

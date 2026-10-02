@@ -1,0 +1,129 @@
+package com.dwinovo.numen.acx.core;
+
+import java.util.List;
+
+import com.dwinovo.numen.acx.api.AcxPortSchema;
+
+/**
+ * Numen 执行层工具的<b>参考目录</b>（纯数据，不执行）。
+ *
+ * <p>用途：① 迁入时按此实现真正的 {@code AcxToolPort} 壳；
+ * ② 离线测试用它当夹具，保证 .ac 引用的是真名字、真字段。</p>
+ *
+ * <p>字段来源（2026-10-02 只读实测 minecraft-numen，行号当时 HEAD）：</p>
+ * <ul>
+ *   <li>{@code get_self_status}：{@code GetSelfStatusTool.java:61-136}（裸 JSON，无 success 包裹）</li>
+ *   <li>{@code goto}：{@code MoveToTool.java:48-71}（x/y/z nullable 必填；异步 setTask）</li>
+ *   <li>{@code mine}：{@code AutoMineTool.java:46-59}（block_ids[] + count 必填；完成 data 见 MineCompanionTask.java:939-948）</li>
+ *   <li>{@code collect_items}：{@code CollectItemsTool.java:42-54}</li>
+ *   <li>{@code craft}：{@code CraftTool.java:40-51}（当场同步返回 data.crafted/carrying）</li>
+ *   <li>{@code rdd_get_inventory}：{@code RddGetInventoryTool.java:40-56}</li>
+ *   <li>{@code task_status / task_stop / set_timer}：{@code TaskStatusTool.java:57-84} 等</li>
+ *   <li>受理信封形状：{@code TaskDispatch.java:82,100-106}（success=true 但 data.async=true）</li>
+ * </ul>
+ *
+ * <p><b>目录故意不全</b>：没有实测到参数形状的工具（如 {@code scan_blocks}、
+ * {@code attack}）宁缺毋滥 —— 迁入时按实际源码补齐，禁止臆造 schema。</p>
+ */
+public final class NumenToolCatalog {
+
+    public record ToolSpec(String name, String description, AcxPortSchema schema) { }
+
+    private NumenToolCatalog() { }
+
+    public static ToolSpec find(String name) {
+        for (ToolSpec t : core()) {
+            if (t.name().equals(name)) {
+                return t;
+            }
+        }
+        return null;
+    }
+
+    public static List<ToolSpec> core() {
+        return List.of(
+            new ToolSpec("get_self_status",
+                "读取自身状态（位置/生命/饥饿/维度/装备/背包用量）。裸 JSON，无 success 包裹。",
+                s().output("position.x", "position.y", "position.z",
+                        "hp", "max_hp", "hunger", "saturation",
+                        "dimension", "biome", "on_ground", "in_water", "in_lava", "air",
+                        "backpack_slots.used", "backpack_slots.total", "target")
+                    .build()),
+
+            new ToolSpec("rdd_whereami",
+                "取当前维度与坐标。",
+                s().output("dimension", "x", "y", "z", "yaw", "on_ground").build()),
+
+            new ToolSpec("goto",
+                "寻路移动到目标坐标。异步任务：先回受理回执（data.async=true），完成走 task_finished。",
+                s().param("x", AcxPortSchema.Param.req(AcxPortSchema.Type.NUMBER).nullable()
+                        .desc("目标 X（必填但可为 null）"))
+                    .param("y", AcxPortSchema.Param.req(AcxPortSchema.Type.NUMBER).nullable()
+                        .desc("目标 Y（必填但可为 null）"))
+                    .param("z", AcxPortSchema.Param.req(AcxPortSchema.Type.NUMBER).nullable()
+                        .desc("目标 Z（必填但可为 null）"))
+                    .param("block", AcxPortSchema.Param.opt(AcxPortSchema.Type.STRING)
+                        .desc("目标方块名（可选）"))
+                    .param("may_alter_terrain", AcxPortSchema.Param.opt(AcxPortSchema.Type.BOOLEAN)
+                        .desc("是否允许破坏/放置地形"))
+                    .output("final_x", "final_y", "final_z", "ground_y", "task_id")
+                    .build()),
+
+            new ToolSpec("mine",
+                "按方块 id 列表挖到指定数量。异步任务。",
+                s().param("block_ids", AcxPortSchema.Param.req(AcxPortSchema.Type.STRING_ARRAY)
+                        .desc("目标方块 id 列表（含 deepslate 变体）"))
+                    .param("count", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).range(1, 256)
+                        .desc("目标数量"))
+                    .output("target", "requested", "gathered", "partial", "shortfall", "note", "task_id")
+                    .build()),
+
+            new ToolSpec("collect_items",
+                "捡起周围掉落物。异步任务。",
+                s().param("item_ids", AcxPortSchema.Param.opt(AcxPortSchema.Type.STRING_ARRAY)
+                        .desc("限定物品 id；缺省捡全部"))
+                    .param("radius", AcxPortSchema.Param.opt(AcxPortSchema.Type.INTEGER).range(1, 48)
+                        .desc("搜索半径"))
+                    .output("collected", "task_id")
+                    .build()),
+
+            new ToolSpec("craft",
+                "按配方合成物品（当场同步返回）。",
+                s().param("item_id", AcxPortSchema.Param.req(AcxPortSchema.Type.STRING))
+                    .param("count", AcxPortSchema.Param.opt(AcxPortSchema.Type.INTEGER).range(1, 256)
+                        .desc("默认 1"))
+                    .output("crafted", "carrying")
+                    .build()),
+
+            new ToolSpec("lookup_recipe",
+                "查询配方文本（无结构化 data，仅 message）。",
+                s().param("item_id", AcxPortSchema.Param.req(AcxPortSchema.Type.STRING)).build()),
+
+            new ToolSpec("rdd_get_inventory",
+                "读背包：总槽位 + 物品 id→数量。",
+                s().output("total_slots", "items").build()),
+
+            new ToolSpec("task_status",
+                "查当前身体任务 / 计时器状态。",
+                s().output("task_id", "task", "state", "elapsed_s", "budget_left_s").build()),
+
+            new ToolSpec("task_stop",
+                "停止身体任务（缺省停当前）。",
+                s().param("task_id", AcxPortSchema.Param.opt(AcxPortSchema.Type.STRING))
+                    .output("task_id")
+                    .build()),
+
+            new ToolSpec("set_timer",
+                "登记一个到点提醒（不占身体）。",
+                s().param("after_s", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER))
+                    .param("reason", AcxPortSchema.Param.req(AcxPortSchema.Type.STRING))
+                    .output("timer_id", "after_s", "reason")
+                    .build())
+        );
+    }
+
+    private static AcxPortSchema.Builder s() {
+        // Numen 的 Schema.object() 是 additionalProperties=false，这里对齐
+        return AcxPortSchema.builder().allowUnknown(false);
+    }
+}

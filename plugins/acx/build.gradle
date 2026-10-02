@@ -1,0 +1,22 @@
+plugins { id 'numen-plugin' }
+
+processResources {
+    def props = [
+            version                       : project.version,
+            license                       : license,
+            neoforge_loader_version_range : neoforge_loader_version_range,
+            neoforge_version              : neoforge_version,
+            minecraft_version_range       : minecraft_version_range
+    ]
+    inputs.properties props
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand props
+    }
+}
+
+dependencies {
+    // ACX 本体（acx-api + acx-core 源码）在本模块内一起编译，无内嵌模块依赖。
+    // 插件只经瘦 api jar 看 NUMEN（见 buildSrc 的 numen-plugin.gradle）。
+    // gson 由 Minecraft 运行期自带的库提供，声明只为编译期解析。
+    implementation 'com.google.code.gson:gson:2.10.1'
+}
