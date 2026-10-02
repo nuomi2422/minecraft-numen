@@ -3,7 +3,6 @@ package com.dwinovo.numen.experience.core;
 import com.dwinovo.numen.experience.api.ExperienceEntry;
 import com.dwinovo.numen.experience.api.ExperienceHit;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -70,12 +69,29 @@ public final class PresentationReceipt {
         }
     }
 
-    /** id → 最近一次呈现（插入序 = 首次呈现序，待回报清单按它排）。 */
+    /** id → 最近一次呈现（任何 surface；插入序 = 首次呈现序）。 */
     private final Map<String, Shown> shown = new LinkedHashMap<>();
     /** id → 被呈现次数（跨 surface 累加，长期读数）。 */
     private final Map<String, Integer> presentedCount = new LinkedHashMap<>();
-    /** 进过待回报、还没被回报的 id。 */
-    private final Set<String> pending = new LinkedHashSet<>();
+    /**
+     * 进过待回报、还没被回报的 id → <b>最近一次「AI 主动要」的那次呈现</b>。
+     *
+     * <p>★ 为什么不能只留一个 {@code shown} 然后按 id 查（2026-10-03 B13 实机抓到的坑）：
+     * {@code shown} 每次呈现都被覆写，<b>包括 L0 目录那种每轮自动重印的非回报性呈现</b>。
+     * 于是待回报清单里那一行的 surface 与时间戳会被改成 {@code directory_l0}：
+     * <ol>
+     *   <li>读的人以为「这是自动印出来的，不必回报」；</li>
+     *   <li>更致命：{@code OutcomeCorrelator} 的配对锚点被推到最新一次 L0 时间戳，
+     *       于是「主动召回 → 那次任务收尾」这段窗口里的结果<b>永远配不上</b>，
+     *       {@code OUTCOME_KNOWN} 实际上不可达。</li>
+     * </ol>
+     * <p>所以这里存的是<b>另一份</b>记录：只在 {@code reportable} 时写入，被动重印碰不到它。
+     * {@code shown} 继续表示「最近一次呈现（任何 surface）」，
+     * 供 {@code lastShown} 与「被呈现过几次」使用 —— 两份记录各司其职。
+     * <p>用 {@code LinkedHashMap} 而不是 {@code Set + 另开一张表}：键的插入序就是
+     * 「首次呈现序」，而值天然带着 surface 与时间戳，两边不可能走散。
+     */
+    private final Map<String, Shown> pending = new LinkedHashMap<>();
     /** 因为清单满了而**没**被收下的 id —— 如实报出来，不静默丢。 */
     private int pendingRejected;
     /** 因超过 MAX_TRACKED 而停止计数的 id 数。 */
@@ -108,14 +124,16 @@ public final class PresentationReceipt {
             if (presentedCount.size() > MAX_TRACKED) {
                 trackingSaturated++;
             }
-            if (reportable && !pending.contains(id)) {
-                if (pending.size() >= MAX_PENDING) {
+            if (reportable) {
+                // 已经在清单里就只刷新时间锚点（AI 又主动要了一次 = 又一个机会）；
+                // 不在清单里才需要占名额。被动呈现（reportable=false）永远不碰这一行。
+                if (!pending.containsKey(id) && pending.size() >= MAX_PENDING) {
                     // ★ 拒收而不是丢：清单满了要说出来，否则 AI 回报了一条
                     //   「系统从没收到过」的 id，回来只会得到 "no experience with id"。
                     pendingRejected++;
                     continue;
                 }
-                pending.add(id);
+                pending.put(id, shown.get(id));
             }
             recorded++;
         }
@@ -133,19 +151,14 @@ public final class PresentationReceipt {
         }
     }
 
-    /** 待回报清单（首次呈现序）。空 = 本局还没有 AI 主动召回过任何经验。 */
+    /** 待回报清单（首次主动召回序）。空 = 本局还没有 AI 主动召回过任何经验。 */
     public synchronized List<Shown> pendingReports() {
         if (pending.isEmpty()) {
             return List.of();
         }
-        List<Shown> out = new ArrayList<>(pending.size());
-        for (String id : pending) {
-            Shown s = shown.get(id);
-            if (s != null) {
-                out.add(s);
-            }
-        }
-        return List.copyOf(out);
+        // ★ 直接返回 pending 里的值，不再回 shown 查 —— shown 会被 L0 那种
+        //   被动重印覆写，回查等于把 surface 与时间锚点一起弄丢（见字段注释）。
+        return List.copyOf(pending.values());
     }
 
     /** 待回报条数。 */

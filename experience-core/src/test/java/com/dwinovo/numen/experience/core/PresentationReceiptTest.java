@@ -198,6 +198,42 @@ class PresentationReceiptTest {
                 "回报清单要能直接序列化进工具返回值");
     }
 
+    /**
+     * ★ 实机抓到的 bug（2026-10-03 B13）：L0 目录每轮都重印一遍，它会把待回报清单里
+     * 那一行的 surface 与时间戳<b>一起换掉</b>。两个后果都已在游戏里看到：
+     * <ol>
+     *   <li>行显示 {@code surface=directory_l0}，而真正让这条进入清单的是
+     *       {@code recall_tool} —— 读的人会以为「这是被自动印出来的，不必回报」；</li>
+     *   <li>更致命：配对锚点被推到最新的 L0 时间戳，于是「主动召回之后、那次任务
+     *       收尾之前」这段窗口里的结果<b>永远配不上</b>，
+     *       {@code OutcomeCorrelator} 的 {@code OUTCOME_KNOWN} 实际上够不着。</li>
+     * </ol>
+     * 单测抓不到它，因为老测试每条 id 只呈现过一次、只有一种 surface。
+     */
+    @Test
+    void aPassiveRedrawDoesNotStealThePendingRowsSurfaceOrTimestamp() {
+        ExperienceMemory m = memory();
+        ExperienceEntry e = entry("熔岩湖挖矿先铺水");
+        m.learn(e);
+        m.recall("熔岩湖", 5, null, List.of(), PresentationReceipt.SURFACE_RECALL_TOOL, true);
+        PresentationReceipt.Shown before = m.pendingReports().get(0);
+        assertEquals(PresentationReceipt.SURFACE_RECALL_TOOL, before.surface());
+
+        // L0 目录下一轮又把它印了一遍（非回报性呈现）
+        m.recall("", 6, null, List.of(), PresentationReceipt.SURFACE_DIRECTORY, false);
+
+        PresentationReceipt.Shown after = m.pendingReports().get(0);
+        assertEquals(PresentationReceipt.SURFACE_RECALL_TOOL, after.surface(),
+                "★ 待回报这一行必须记住「是主动要来的」，不能被自动重印改写成被动呈现");
+        assertTrue(after.reportable(), "被动重印不该把一条待回报变成不可回报");
+        assertEquals(before.atMillis(), after.atMillis(),
+                "★ 时间戳被刷新 ⇒ 主动召回与任务收尾之间的那段窗口配不上，OUTCOME_KNOWN 永远出不来");
+        assertEquals(2, m.receipts().presentedCount(e.id()),
+                "「被呈现过几次」照旧要算全部 surface，只有待回报那一行走 reportable 那次");
+        assertEquals(PresentationReceipt.SURFACE_DIRECTORY, m.receipts().lastShown(e.id()).surface(),
+                "最近一次呈现是 L0 —— 这是 lastShown 的语义，与待回报清单互不干扰");
+    }
+
     /** 空库时清单必须是空列表而不是 null（工具侧直接遍历它）。 */
     @Test
     void anEmptyReceiptHasAnEmptyPendingListNotNull() {
