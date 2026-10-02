@@ -24,7 +24,7 @@ public final class AcxPortSchema {
         INTEGER,
         NUMBER,
         BOOLEAN,
-        STRING_ARRAY,
+        STRING_ARRAY, INT_ARRAY,
         OBJECT,
         OBJECT_ARRAY,
         ANY
@@ -138,13 +138,26 @@ public final class AcxPortSchema {
             if (!p.enumValues().isEmpty() && !p.enumValues().contains(String.valueOf(val))) {
                 errors.add("参数 " + name + " 的取值 " + val + " 不在允许枚举 " + p.enumValues());
             }
+            boolean arrayType = p.type() == Type.STRING_ARRAY || p.type() == Type.INT_ARRAY
+                    || p.type() == Type.OBJECT_ARRAY;
             Double d = asNumber(val);
-            if (d != null) {
+            if (d != null && !arrayType) {
                 if (p.min() != null && d < p.min()) {
                     errors.add("参数 " + name + " = " + val + " 小于下限 " + p.min());
                 }
                 if (p.max() != null && d > p.max()) {
                     errors.add("参数 " + name + " = " + val + " 超过上限 " + p.max());
+                }
+            } else if (arrayType && (p.min() != null || p.max() != null)) {
+                if (val instanceof List<?> lst) {
+                    if (p.min() != null && lst.size() < p.min()) {
+                        errors.add("参数 " + name + " 至少要 " + fmt(p.min()) + " 个（实际 " + lst.size() + "）");
+                    }
+                    if (p.max() != null && lst.size() > p.max()) {
+                        errors.add("参数 " + name + " 至多 " + fmt(p.max()) + " 个（实际 " + lst.size() + "）");
+                    }
+                } else {
+                    errors.add("参数 " + name + " 是数组类型，需要 List 才能校验长度（实际 " + val + "）");
                 }
             }
         }
@@ -187,6 +200,19 @@ public final class AcxPortSchema {
                     errors.add("参数 " + name + " 应为数组（实际 " + val + "）");
                 }
             }
+            case INT_ARRAY -> {
+                if (!(val instanceof List<?> lst)) {
+                    errors.add("参数 " + name + " 应为整数数组（实际 " + val + "）");
+                } else {
+                    for (Object o : lst) {
+                        Double od = asNumber(o);
+                        if (od == null || od % 1 != 0) {
+                            errors.add("参数 " + name + " 的元素应为整数（实际 " + o + "）");
+                            break;
+                        }
+                    }
+                }
+            }
             case OBJECT -> {
                 if (!(val instanceof Map)) {
                     errors.add("参数 " + name + " 应为对象（实际 " + val + "）");
@@ -202,6 +228,10 @@ public final class AcxPortSchema {
             }
             default -> throw new IllegalStateException("未覆盖的类型: " + p.type());
         }
+    }
+
+    private static String fmt(Double d) {
+        return d == null ? "?" : (d % 1 == 0 ? String.valueOf(d.longValue()) : String.valueOf(d));
     }
 
     public static Double asNumber(Object v) {

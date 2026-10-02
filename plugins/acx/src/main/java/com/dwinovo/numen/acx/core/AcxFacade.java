@@ -220,7 +220,7 @@ public final class AcxFacade {
         if (library == null) {
             return err("本门面未挂载版本库，不能批准");
         }
-        String name = str(req.get("name"));
+        String name = strOr(req.get("ac_name"), str(req.get("name")));
         String version = str(req.get("version"));
         if (name == null || version == null) {
             return err("需要 name 和 version");
@@ -229,6 +229,7 @@ public final class AcxFacade {
             library.approve(name, version, strOr(req.get("approver"), "unknown"), strOr(req.get("note"), ""));
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("name", name);
+            data.put("ac_name", name);
             data.put("version", version);
             data.put("status", library.status(name, version).name());
             data.put("active_version", library.activeVersion(name));
@@ -243,7 +244,7 @@ public final class AcxFacade {
         if (library == null) {
             return err("本门面未挂载版本库，不能回滚");
         }
-        String name = str(req.get("name"));
+        String name = strOr(req.get("ac_name"), str(req.get("name")));
         String version = str(req.get("version"));
         if (name == null || version == null) {
             return err("需要 name 和 version");
@@ -252,6 +253,7 @@ public final class AcxFacade {
             library.rollback(name, version, strOr(req.get("reason"), ""));
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("name", name);
+            data.put("ac_name", name);
             data.put("version", version);
             data.put("active_version", library.activeVersion(name));
             return ok("已回滚", data);

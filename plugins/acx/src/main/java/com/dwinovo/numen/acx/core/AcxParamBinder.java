@@ -356,7 +356,8 @@ public final class AcxParamBinder {
             Object got = AcxValueResolver.resolvePath(value, s);
             if (got == null) {
                 warnings.add(new Warning(path, "$take=" + s,
-                        "$take 取不到字段（值类型 " + typeName(value) + "）", ""));
+                        "$take 取不到字段（值类型 " + typeName(value) + "，可用键 " + availableKeys(value) + "）",
+                        "字段藏在下层就写点路径，例如 $take=\"position.x\"；元素本身是列表要先用 `$pick` 取出单个（`$filter` 只筛不选）"));
             }
             return got;
         }
@@ -367,7 +368,13 @@ public final class AcxParamBinder {
                     continue;
                 }
                 String key = String.valueOf(f);
-                out.put(key, AcxValueResolver.resolvePath(value, key));
+                Object got = AcxValueResolver.resolvePath(value, key);
+                if (got == null) {
+                    warnings.add(new Warning(path, "$take=" + key,
+                            "$take 取不到字段（可用键 " + availableKeys(value) + "）",
+                            "字段藏在下层就写点路径，例如 $take=\"position.x\""));
+                }
+                out.put(key, got);
             }
             return out;
         }
@@ -377,6 +384,28 @@ public final class AcxParamBinder {
 
     private static String typeName(Object v) {
         return v == null ? "null" : v.getClass().getSimpleName();
+    }
+
+    /** 失败提示里列出实际可用的键 —— 真机撞出来的形状（平铺 vs 嵌套）不一眼列出来没法自诊断。 */
+    private static String availableKeys(Object v) {
+        if (v instanceof Map<?, ?> m) {
+            StringBuilder sb = new StringBuilder();
+            for (Object k : m.keySet()) {
+                if (sb.length() > 0) {
+                    sb.append('/');
+                }
+                sb.append(k);
+                if (sb.length() > 120) {
+                    sb.append("...");
+                    break;
+                }
+            }
+            return sb.length() == 0 ? "(空)" : sb.toString();
+        }
+        if (v instanceof List<?> l) {
+            return "List(" + l.size() + " 项)";
+        }
+        return "无键";
     }
 
     // ── $as ─────────────────────────────────────────────────────────

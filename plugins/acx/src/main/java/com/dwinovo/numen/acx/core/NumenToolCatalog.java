@@ -163,7 +163,7 @@ public final class NumenToolCatalog {
 
             new ToolSpec("attack",
                 "开打。省略 entity_ids 就是清场所有附近敌对实体。异步任务。",
-                s().param("entity_ids", AcxPortSchema.Param.opt(AcxPortSchema.Type.INTEGER)
+                s().param("entity_ids", AcxPortSchema.Param.opt(AcxPortSchema.Type.INT_ARRAY).range(1, 20)
                         .desc("scan_nearby_entities 给的运行时实体 id（1-20 个）；省略=打所有"))
                     .build())
         );

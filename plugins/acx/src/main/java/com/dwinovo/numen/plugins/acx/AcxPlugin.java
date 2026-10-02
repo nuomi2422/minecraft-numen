@@ -44,18 +44,159 @@ public final class AcxPlugin implements NumenPlugin {
 
     private static final Logger LOG = LoggerFactory.getLogger(AcxPlugin.class);
 
-    /** jar 内 stable 脚本（与 resources/acx-lib/stable 同步；缺文件只告警）。 */
-    private static final String[] STABLE_SCRIPTS = {
-            "numen_smoke_read_move_read.ac",
-            "ore_scan_inspect.ac",
-            "ore_goto_mine.ac",
-            "hp_guard_goto.ac",
-            "timeout_demo.ac",
-            "subac_nesting.ac",
-            "inventory_if.ac",
-            "ignore_failure_demo.ac",
-            "do_while_scan.ac"
-    };
+    /** jar 内脚本目录（前缀，与 resources/acx-lib/stable 同步）。 */
+    private static final String RES_PREFIX = "/acx-lib/stable/";
+    private static final String RES_DIR = "acx-lib/stable/";
+
+    /**
+     * jar 内置脚本清单，<b>从 jar 现场枚举</b>，不再硬编码。
+     *
+     * <p>为什么改：硬编码名单在真机踩过——往 jar 里加了
+     * {@code mine_nearest_ore.ac}、jar 也确实打进去了，但名单没同步，
+     * 脚本既没铺到 config 也没进版本库，表现为「按名执行说库里没有」。
+     * 加脚本必须只改 resources 目录、不改 Java。</p>
+     */
+    /** jar 内脚本清单的缓存：枚举一次就够，别每步重算（原来日志被同样的 warn 刷了几十行）。 */
+    private static volatile java.util.List<String> BUNDLED_CACHE;
+
+    private static List<String> bundledScripts() {
+        java.util.List<String> cached = BUNDLED_CACHE;
+        if (cached != null) {
+            return cached;
+        }
+        List<String> names = new ArrayList<>();
+        // ① classloader 资源枚举。不能按协议分派：NeoForge 的 union 类加载器给的是
+        //    union:/E:/…/mods/xxx.jar（没有 !/ 段），普通 jar 类加载器给 jar:file:/…!/acx-lib/stable，
+        //    dev 环境给 file:…/acx-lib/stable。统一走 jarFromUrl() 剥协议再判断。
+        try {
+            java.util.Enumeration<java.net.URL> urls =
+                    AcxPlugin.class.getClassLoader().getResources(RES_DIR);
+            while (urls.hasMoreElements()) {
+                java.net.URL u = urls.nextElement();
+                try {
+                    if ("file".equals(u.getProtocol())) {
+                        Path dir = Path.of(u.toURI());
+                        if (Files.isDirectory(dir)) {
+                            try (java.util.stream.Stream<Path> s = Files.list(dir)) {
+                                s.map(f -> f.getFileName().toString())
+                                        .filter(n -> n.endsWith(".ac"))
+                                        .sorted()
+                                        .forEach(names::add);
+                            }
+                        } else {
+                            names.addAll(acNamesInJar(dir));
+                        }
+                    } else {
+                        Path jar = jarFromUrl(u);
+                        if (jar != null) {
+                            names.addAll(acNamesInJar(jar));
+                        } else {
+                            LOG.warn("[acx] 看不懂的资源 URL（协议 {}，剥完不像 jar）: {}", u.getProtocol(), u);
+                        }
+                    }
+                } catch (Exception inner) {
+                    LOG.warn("[acx] 资源 {} 枚举失败: {}", u, inner.toString());
+                }
+            }
+        } catch (Exception e) {
+            LOG.warn("[acx] classloader 资源枚举失败: {}", e.toString());
+        }
+        // ② 兜底：code source。NeoForge 下是 union:/…，所以同样走 jarFromUrl，并把 URL 打进日志便于诊断
+        if (names.isEmpty()) {
+            try {
+                java.net.URL loc = AcxPlugin.class.getProtectionDomain().getCodeSource().getLocation();
+                LOG.info("[acx] code source = {}", loc);
+                Path jar = jarFromUrl(loc);
+                if (jar != null) {
+                    names.addAll(acNamesInJar(jar));
+                } else {
+                    LOG.warn("[acx] code source 剥协议后不是常规 jar: {}", loc);
+                }
+            } catch (Exception e) {
+                LOG.warn("[acx] code source 兜底失败: {}", e.toString());
+            }
+        }
+        // ③ 再兜底：classloader 容器根（union:/…/x.jar 或 jar:file:/…!/ 或 file:…/）
+        if (names.isEmpty()) {
+            try {
+                java.net.URL root = AcxPlugin.class.getResource("/");
+                LOG.info("[acx] classloader root = {}", root);
+                if (root != null) {
+                    Path jar = jarFromUrl(root);
+                    if (jar != null) {
+                        names.addAll(acNamesInJar(jar));
+                    }
+                }
+            } catch (Exception e) {
+                LOG.warn("[acx] classloader root 兜底失败: {}", e.toString());
+            }
+        }
+        if (names.isEmpty()) {
+            LOG.warn("[acx] ★ 枚举不出 jar 内置脚本（内置脚本不会自动上线）："
+                    + "往 resources/acx-lib/stable/ 放 .ac 后请检查这行日志");
+        }
+        java.util.List<String> deduped = names.stream().distinct().sorted().collect(java.util.stream.Collectors.toList());
+        BUNDLED_CACHE = deduped;
+        return deduped;
+    }
+
+    /**
+     * 把任意协议的资源 URL 还原成本地 jar 路径；不是常规 .jar 文件就返回 {@code null}。
+     *
+     * <p>为什么要这么写（真机踩过两轮）：jar 里是 {@code jar:file:/E:/…/x.jar!/acx-lib/stable}，
+     * 而 NeoForge 的 union 类加载器给的是 {@code union:/E:/…/mods/x.jar}（没有 {@code !/} 段、
+     * 空格被 URL 编码成 {@code %20}）。所以顺序固定是：剥协议头 → URL 解码 → 砍 {@code #} 补丁标记 → 剥 {@code !/} 之后
+     * → 剥前导斜杠 → 必须以 .jar 结尾且 isRegularFile。</p>
+     */
+    private static Path jarFromUrl(java.net.URL u) {
+        String spec = u.toString();
+        int colon = spec.indexOf(':');
+        if (colon > 0) {
+            spec = spec.substring(colon + 1);
+        }
+        try {
+            spec = java.net.URLDecoder.decode(spec, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception ignore) {
+            // 解码失败就按原样试
+        }
+        // NeoForge 的 union 类加载器会在 jar 名后面插 %23<数字>!（解出来形如 "xxx.jar#240"），
+        // 必须在判 .jar 之前砍掉这个补丁标记，否则永远认不出 jar ——真机日志：
+        // union:/E:/.../mods/numen-plugin-acx-...jar%23240!/acx-lib/stable
+        int hash = spec.indexOf('#');
+        if (hash >= 0) {
+            spec = spec.substring(0, hash);
+        }
+        int bang = spec.indexOf("!/");
+        if (bang >= 0) {
+            spec = spec.substring(0, bang);
+        }
+        while (spec.startsWith("/")) {
+            spec = spec.substring(1);
+        }
+        if (!spec.toLowerCase(java.util.Locale.ROOT).endsWith(".jar")) {
+            return null;
+        }
+        try {
+            Path path = Path.of(spec);
+            return Files.isRegularFile(path) ? path : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 列出 jar 里 {@code acx-lib/stable/*.ac} 的文件名。 */
+    private static List<String> acNamesInJar(Path jar) throws IOException {
+        List<String> out = new ArrayList<>();
+        try (java.util.jar.JarFile jf = new java.util.jar.JarFile(jar.toFile())) {
+            jf.stream()
+                    .map(java.util.jar.JarEntry::getName)
+                    .filter(n -> n.startsWith(RES_DIR) && n.endsWith(".ac"))
+                    .map(n -> n.substring(RES_DIR.length()))
+                    .sorted()
+                    .forEach(out::add);
+        }
+        return out;
+    }
 
     private NumenApi api;
     private AcxHostGate gate;
@@ -161,7 +302,7 @@ public final class AcxPlugin implements NumenPlugin {
      * 理由：随 jar 发布的脚本等价于随插件版本发布的代码，天然已审；自动批准省掉每次发版
      * 都要人点一次。但玩家/学习者在游戏里改过的脚本<b>不</b>自动批准 —— 它已经进过库，
      * 走 GENERATED/PENDING，必须 {@code acx_approve} 人工放行，人工批准那道闸才不形同虚设。
-     * 用户自己放进 config 的 .ac 不在 {@link #STABLE_SCRIPTS} 名单里，同样不自动批准。</p>
+     * 用户自己放进 config 的 .ac 不在 jar 内置脚本名单 名单里，同样不自动批准。</p>
      */
     private void autoApproveBundled(FileAcxLibrary library, AcxLoader.LoadReport load) {
         List<String> approved = new ArrayList<>();
@@ -203,7 +344,7 @@ public final class AcxPlugin implements NumenPlugin {
     }
 
     private static boolean isBundled(String acName) {
-        for (String file : STABLE_SCRIPTS) {
+        for (String file : bundledScripts()) {
             if (file.equals(acName + ".ac")) {
                 return true;
             }
@@ -215,8 +356,10 @@ public final class AcxPlugin implements NumenPlugin {
     private void materializeStable(Path libRoot) throws IOException {
         Path stable = libRoot.resolve("stable");
         Files.createDirectories(stable);
-        for (String name : STABLE_SCRIPTS) {
-            try (InputStream in = AcxPlugin.class.getResourceAsStream("/acx-lib/stable/" + name)) {
+        List<String> bundledNames = bundledScripts();
+        LOG.info("[acx] jar 内置脚本 {} 个: {}", bundledNames.size(), bundledNames);
+        for (String name : bundledNames) {
+            try (InputStream in = AcxPlugin.class.getResourceAsStream(RES_PREFIX + name)) {
                 if (in == null) {
                     LOG.warn("[acx] jar 内脚本缺失: /acx-lib/stable/{}", name);
                     continue;
@@ -239,7 +382,7 @@ public final class AcxPlugin implements NumenPlugin {
             }
         }
         // 不在 jar 名单里的 .ac 一律当玩家脚本处理（只提醒，不动它）
-        try (var files = Files.list(stable)) {
+        try (java.util.stream.Stream<Path> files = Files.list(stable)) {
             files.filter(p -> p.toString().endsWith(".ac"))
                     .map(p -> p.getFileName().toString())
                     .filter(n -> !isBundledFile(n))
@@ -248,12 +391,7 @@ public final class AcxPlugin implements NumenPlugin {
     }
 
     private static boolean isBundledFile(String fileName) {
-        for (String n : STABLE_SCRIPTS) {
-            if (n.equals(fileName)) {
-                return true;
-            }
-        }
-        return false;
+        return bundledScripts().contains(fileName);
     }
 
     // ── 门面壳用的访问口 ────────────────────────────────────────────────
