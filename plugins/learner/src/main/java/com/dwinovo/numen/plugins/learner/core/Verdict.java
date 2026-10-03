@@ -27,6 +27,23 @@ public record Verdict(
         String reasoning,
         Experience experience,
         String acScriptDraft,
+        // ---- 2026-10-03（架构 owner 拍板「多产物要改载荷形状」后补的两个载荷位）----
+        //
+        // ★ 更正：我曾说过「Verdict 只解析 experience 一个结构化对象、载荷形状要改」—— **那是错的**。
+        //   `actions` 本来就是 `List<Action>`（可多选），`acScriptDraft` 本来就有。
+        //   真正缺的只有下面两个：**声明了 USE_CARRIER / SELF_COMPILE，却没有地方放草稿**。
+        //   声明与载荷对不上 = 学习者说「我要写携带器」但写不出内容，
+        //   而回执里也不会有任何线索说明它本该写什么 —— 那正是「僵尸字段」的形状。
+        //
+        // ⚠️ 为什么不复用 acScriptDraft 装三种东西：载荷混在一个字段里，
+        //   消费侧就得分字符串猜哪段是 AC、哪段是携带器 —— 而 62 号 §2 已经明写
+        //   「`why` 保持原文不要改写，保持可检索」，同一原则：各载荷位分开、可分别检索。
+        //
+        // ⚠️ SELF_COMPILE 这一位**不直接喂 `selfcompile_request` 工具**：按 B11，
+        //   「学习者请求 → 落成结构化待办 → 写码由外层 agent 接手」，下游**不自动化**。
+        //   它只是草稿的落点，落地是外层的事。
+        String carrierDraft,
+        String selfCompileRequest,
         List<String> rewrittenQuery
 ) {
 
@@ -118,6 +135,9 @@ public record Verdict(
             // 那样会让「格式已落地」看起来成立，而实际仍然是一段散文。
             Experience exp = Experience.parse(obj);
             String acDraft = optString(obj, "ac_script_draft");
+            // 2026-10-03：携带器实现与自编译请求的草稿位（声明了 actions 却没有载荷位 = 僵尸声明）
+            String carrierDraft = optString(obj, "carrier_draft");
+            String selfCompile = optString(obj, "self_compile_request");
 
             List<String> queries = new ArrayList<>();
             if (obj.has("rewritten_query")) {
@@ -141,7 +161,7 @@ public record Verdict(
             }
 
             return new Verdict(memoId, List.copyOf(actions), confidence, reasoning,
-                    exp, acDraft, List.copyOf(queries));
+                    exp, acDraft, carrierDraft, selfCompile, List.copyOf(queries));
         } catch (RuntimeException e) {
             // 不是合法 JSON：如实返回 null，让调用方报 UNPARSEABLE
             return null;
@@ -200,6 +220,10 @@ public record Verdict(
             }
         }
         o.addProperty("ac_script_draft", acScriptDraft);
+        // 2026-10-03：两个新载荷位也进 toJson —— 回执里看不到载荷，
+        // 学习者就以为「声明了但没写出来」，而调用方也无从知道该不该再问一次。
+        o.addProperty("carrier_draft", carrierDraft);
+        o.addProperty("self_compile_request", selfCompileRequest);
         JsonArray qs = new JsonArray();
         for (String q : rewrittenQuery) {
             qs.add(q);

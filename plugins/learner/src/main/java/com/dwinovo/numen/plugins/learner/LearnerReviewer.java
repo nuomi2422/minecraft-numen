@@ -61,13 +61,21 @@ final class LearnerReviewer {
             10. 不要输出 experience_draft 这个键（旧格式，已废弃；一段散文不算经验）。
             11. ★ experienceType 是**分类事实**，从 5 个里挑**一个**；挑不出来说明还没想清楚
             这是哪一类 → 给 NO_ACTION，**不要拿近义词顶**（分类错等于把这条经验劈成两条）。
+            12. ★ 2026-10-03 补了三个载荷位。声明了就必须给，可以给空串表示「这次不写」，
+            但**不许声明了又不给理由**：声明 USE_AC 必须给 ac_script_draft，
+            声明 USE_CARRIER 必须给 carrier_draft，声明 SELF_COMPILE 必须给 self_compile_request。
+            （以前「声明了却没地方写」——学习者说要写却交不出内容，回执里也没线索说明它本该写什么。）
+            13. 同一条记录可以**同时**给多种产物（如既 WRITE_EXPERIENCE 又 USE_AC）。
+            它们是**并列**的，不是流水线（架构 owner 2026-10-03 明确）。
+            14. self_compile_request 写的是**现象 + 最小复现 + 环境快照**（结构化待办），
+            不是写代码 —— 下游不自动写码，由外层工程流接手（B11）。
 
             输出格式：
             {"verdicts":[{"memo_id":"...","actions":["WRITE_EXPERIENCE"],"confidence":0.7,
               "reasoning":"...","experience":{"mechanism":"...","preconditions":"...",
               "failureConditions":"...","observableSignal":"...","derivation":"...",
               "efficiency":"...","evidence":"...","experienceType":"FAILURE"},"ac_script_draft":"",
-              "rewritten_query":["..."]}]}
+              "carrier_draft":"","self_compile_request":"","rewritten_query":["..."]}]}
             """;
 
     // 2026-10-01：把七字段格式说明（%s）填进 SYSTEM。**格式不要求，模型就不会给** ——

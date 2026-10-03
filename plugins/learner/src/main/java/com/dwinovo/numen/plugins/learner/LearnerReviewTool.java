@@ -262,6 +262,34 @@ final class LearnerReviewTool implements NumenTool {
             if (!v.acScriptDraft().isBlank()) {
                 one.put("ac_script_draft", v.acScriptDraft());
             }
+            // ★ 2026-10-03：另两个载荷位也进回执。
+            //   形状照 ac_script_draft：**非空才写键**（空串写进去等于说「这里有个空的」，
+            //   而实际是「这次没写」—— 两者含义不同，别混）。
+            //   ⚠️ 与 ac_script_draft 的区别：**这两个的下游都还不存在**
+            //   （USE_AC 归 AC 线的 acx_publish；SELF_COMPILE 按 B11 落成待办由外层接手）。
+            //   所以现在只保证「学习者写出来了、调用方看得见」，**不假装已经落地**。
+            if (!v.carrierDraft().isBlank()) {
+                one.put("carrier_draft", v.carrierDraft());
+            }
+            if (!v.selfCompileRequest().isBlank()) {
+                one.put("self_compile_request", v.selfCompileRequest());
+            }
+            // 声明了某个产物却没给载荷位 —— 显式报出来，不让调用方以为「它写了」
+            List<String> declaredButEmpty = new ArrayList<>();
+            if (v.actions() != null) {
+                if (v.actions().contains(Verdict.Action.USE_AC) && v.acScriptDraft().isBlank()) {
+                    declaredButEmpty.add("USE_AC/ac_script_draft");
+                }
+                if (v.actions().contains(Verdict.Action.USE_CARRIER) && v.carrierDraft().isBlank()) {
+                    declaredButEmpty.add("USE_CARRIER/carrier_draft");
+                }
+                if (v.actions().contains(Verdict.Action.SELF_COMPILE) && v.selfCompileRequest().isBlank()) {
+                    declaredButEmpty.add("SELF_COMPILE/self_compile_request");
+                }
+            }
+            if (!declaredButEmpty.isEmpty()) {
+                one.put("declared_but_no_draft", declaredButEmpty);
+            }
             if (!v.rewrittenQuery().isEmpty()) {
                 one.put("rewritten_query", v.rewrittenQuery());
             }

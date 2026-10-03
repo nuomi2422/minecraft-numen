@@ -340,7 +340,7 @@ class ExperienceDraftGateTest {
     @Test
     void aDirectlyBuiltVerdictWithNullQueryNeverInjectsAnEmptyTrigger() {
         Verdict v = new Verdict("m-1", List.of(Verdict.Action.WRITE_EXPERIENCE), 0.8, "r",
-                sevenFields(), "", java.util.Arrays.asList(null, "   ", "铺水回撤"));
+                sevenFields(), "", "", "", java.util.Arrays.asList(null, "   ", "铺水回撤"));
         ExperienceDraft d = ExperienceDraft.from(v, fullMemo("hp=12/20"));
         for (String t : triggersOf(d)) {
             assertFalse(t.isBlank(), "trigger_strings 里不许有空线索：" + triggersOf(d));

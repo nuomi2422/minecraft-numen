@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -109,10 +110,77 @@ class VerdictTest {
     @Test
     void toJsonKeepsActions() {
         Verdict v = Verdict.parse("", """
-                {"memo_id":"m-3","actions":["USE_CARRIER"],"confidence":0.4,"rewritten_query":["hp"]}""");
+{"memo_id":"m-3","actions":["USE_CARRIER"],"confidence":0.4,"rewritten_query":["hp"]}""");
         assertNotNull(v);
         String json = v.toJson();
         assertTrue(json.contains("m-3"), json);
         assertTrue(json.contains("USE_CARRIER"), json);
+    }
+
+    // ---------- 2026-10-03：两个新载荷位（架构 owner 拍板「多产物要改载荷形状」） ----------
+
+    /**
+     * ★ 钉的是「声明了 {@code USE_CARRIER} / {@code SELF_COMPILE} 就有地方放草稿」。
+     *
+     * <p>改之前这两种产物<b>声明了却没有任何载荷位</b> —— 学习者说要写，却交不出内容，
+     * 而回执里也没有任何线索说明它本该写什么。那正是「僵尸声明」的形状。
+     */
+    @Test
+    void carrierAndSelfCompileDraftsLandInTheirOwnSlots() {
+        String json = """
+{"memo_id":"m-4","actions":["USE_CARRIER","SELF_COMPILE"],"confidence":0.6,
+ "carrier_draft":"进入战斗前检查血量低于 8 就先撤退",
+ "self_compile_request":"现象：连续挖矿时血量掉了但没触发撤退｜最小复现：站在矿脉里直挖 12 格"}""";
+        Verdict v = Verdict.parse("", json);
+        assertNotNull(v);
+        assertEquals("进入战斗前检查血量低于 8 就先撤退", v.carrierDraft());
+        assertTrue(v.selfCompileRequest().contains("最小复现"), v.selfCompileRequest());
+        // 两个位必须**分开**：混在一个字段里消费侧就得靠分字符串猜
+        assertFalse(v.carrierDraft().contains("最小复现"), "★ 两个载荷位不许互相污染");
+        assertFalse(v.selfCompileRequest().contains("血量低于 8 就先撤退"), "★ 两个载荷位不许互相污染");
+    }
+
+    /** 没给草稿位就是空串（不是 null、不是缺键）—— 下游能一眼分出「没写」与「解析失败」。 */
+    @Test
+    void anAbsentDraftSlotIsAnEmptyStringRatherThanNull() {
+        Verdict v = Verdict.parse("", """
+{"memo_id":"m-5","actions":["WRITE_EXPERIENCE"],"confidence":0.5}""");
+        assertNotNull(v);
+        assertEquals("", v.carrierDraft());
+        assertEquals("", v.selfCompileRequest());
+        assertEquals("", v.acScriptDraft());
+    }
+
+    /** toJson 也要带上这两个 —— 回执里看不到载荷，调用方就以为「它写了」。 */
+    @Test
+    void toJsonCarriesTheNewDraftSlots() {
+        Verdict v = Verdict.parse("", """
+{"memo_id":"m-6","actions":["USE_CARRIER"],"confidence":0.4,
+ "carrier_draft":"低血量先撤退"}""");
+        String json = v.toJson();
+        assertTrue(json.contains("carrier_draft"), json);
+        assertTrue(json.contains("低血量先撤退"), json);
+        assertTrue(json.contains("self_compile_request"), "★ 空位也要出现（值可空），键不能缺");
+    }
+
+    /**
+     * ★ 更正我自己：多产物并列<b>本来就能表达</b>，这条钉住它没被改坏。
+     *
+     * <p>我曾说「{@code Verdict.action} 是单值、只解析 experience、跨三处要改形状」——
+     * 那是错的（{@code actions} 一直是 {@code List<Action>}，类注释也写着「可多选」）。
+     * ⇒ 这条测试的作用是：日后谁把 {@code actions} 改成单值，本条会红。
+     */
+    @Test
+    void multipleProductsStayParallelAndNotAPipeline() {
+        String json = """
+{"memo_id":"m-7","actions":["WRITE_EXPERIENCE","USE_AC","USE_CARRIER","SELF_COMPILE"],
+ "confidence":0.7,"ac_script_draft":"a","carrier_draft":"b","self_compile_request":"c"}""";
+        Verdict v = Verdict.parse("", json);
+        assertNotNull(v);
+        assertEquals(4, v.actions().size(), "★ 四种产物要能同时声明（并列，不是流水线）");
+        // 四样载荷各归各位：谁也不许被塞进别的位
+        assertEquals("a", v.acScriptDraft());
+        assertEquals("b", v.carrierDraft());
+        assertEquals("c", v.selfCompileRequest());
     }
 }
