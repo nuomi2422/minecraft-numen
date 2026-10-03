@@ -6,6 +6,7 @@ import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.plugins.learner.core.Experience;
 import com.dwinovo.numen.plugins.learner.core.ExperienceDraft;
 import com.dwinovo.numen.plugins.learner.core.ExperienceQualityGate;
+import com.dwinovo.numen.plugins.learner.core.PriorRound;
 import com.dwinovo.numen.plugins.learner.core.Memo;
 import com.dwinovo.numen.plugins.learner.core.MemoQueue;
 import com.dwinovo.numen.plugins.learner.core.Verdict;
@@ -132,17 +133,27 @@ final class LearnerReviewTool implements NumenTool {
         final String reviewId = "rev-" + System.currentTimeMillis() + "-" + Math.abs(batch.get(0).id().hashCode() % 1000);
         LearnerPlugin.beginReview(reviewId, id, "RUNNING", batch.size());
 
+        // ★ 上轮回顾（架构 owner 2026-10-03 第 3 条 + 答 (a)）：
+        //   「循环由 AI 自己在下一轮 learner_review 里看着上轮结果再改」。
+        //   在**回执之前**读 —— 这样回执里就带得上「上轮回顾读到了没有 / 几轮 / 几件产物」，
+        //   观测侧不必猜它到底看没看上轮（又是那种「从外面问不出来」的观测缺口）。
+        final PriorRoundReader.Read priorRead = PriorRoundReader.read(
+                PriorRound.DEFAULT_ROUNDS, PriorRound.DEFAULT_PRODUCT_CHARS);
+
         // 立刻回执，绝不在主线程等 LLM
-        reply.accept(TaskResult.ok("learner review started; it runs in background", Map.of(
-                "review_id", reviewId,
-                "status", "RUNNING",
-                "reviewing", batch.size(),
-                "queue_depth_after", queue.size(),
-                "next", "poll learner_status with review_id=" + reviewId)).toJson());
+        java.util.Map<String, Object> ack = new java.util.LinkedHashMap<>();
+        ack.put("review_id", reviewId);
+        ack.put("status", "RUNNING");
+        ack.put("reviewing", batch.size());
+        ack.put("queue_depth_after", queue.size());
+        ack.putAll(priorRead.toMap());
+        ack.put("next", "poll learner_status with review_id=" + reviewId);
+        reply.accept(TaskResult.ok("learner review started; it runs in background", ack).toJson());
 
         // 后台线程做 LLM 复盘（阻塞等待只发生在这里，不在服务器主线程）
         Thread.ofVirtual().name("learner-review-" + reviewId).start(() -> {
-            LearnerReviewer.ReviewOutcome outcome = LearnerReviewer.review(batch, LLM_TIMEOUT_SEC).join();
+            LearnerReviewer.ReviewOutcome outcome =
+                    LearnerReviewer.withPriorRound(batch, priorRead.summary(), LLM_TIMEOUT_SEC).join();
 
             // 回主线程前校验世界代际：换档后迟到结果直接丢弃
             MinecraftServer current = ServerLifecycleHooks.getCurrentServer();
@@ -153,13 +164,13 @@ final class LearnerReviewTool implements NumenTool {
                         "review_id", reviewId, "companion", id.toString(), "restored", batch.size()));
                 return;
             }
-            capturedServer.execute(() -> completeOnServer(queue, id, reviewId, batch, outcome));
-        });
-    }
+        capturedServer.execute(() -> completeOnServer(queue, id, reviewId, batch, outcome, priorRead));
+    });
+}
 
-    /** 在服务器主线程上收尾：commit 或 restore，然后把结果挂到可查询的状态里。 */
+/** 在主线程收尾：commit 或 restore，然后把可查状态交给 learner_status。 */
     private void completeOnServer(MemoQueue queue, UUID id, String reviewId,
-                                  List<Memo> batch, LearnerReviewer.ReviewOutcome outcome) {
+            List<Memo> batch, LearnerReviewer.ReviewOutcome outcome, PriorRoundReader.Read priorRead) {
         if (!outcome.ok()) {
             int restored = queue.restore(batch);
             LearnerPlugin.finishReview(reviewId, outcome.reason(), 0);
@@ -326,10 +337,18 @@ final class LearnerReviewTool implements NumenTool {
         LearnerPlugin.finishReview(reviewId, state, rendered.size());
         LearnerPlugin.recordReview(at, rendered.size());
 
-        LearnerMonitor.publish("reviewed", Map.of(
-                "review_id", reviewId, "companion", id.toString(),
-                "reviewed", rendered.size(), "committed", removed, "restored", restored,
-                "queue_depth", depth, "verdicts", rendered));
+        java.util.Map<String, Object> reviewedEv = new java.util.LinkedHashMap<>();
+        reviewedEv.put("review_id", reviewId);
+        reviewedEv.put("companion", id.toString());
+        reviewedEv.put("reviewed", rendered.size());
+        reviewedEv.put("committed", removed);
+        reviewedEv.put("restored", restored);
+        reviewedEv.put("queue_depth", depth);
+        reviewedEv.put("verdicts", rendered);
+        // ★ 上轮回读的读数也进这条事件：E2 那次「它到底有没有去看」的判断之所以要靠人工翻日志，
+        //   就是因为观测侧完全看不到这一步。现在它在 learner.jsonl 里就有。
+        reviewedEv.put("prior_round", priorRead.toMap());
+        LearnerMonitor.publish("reviewed", reviewedEv);
         LearnerPlugin.setReviewVerdicts(reviewId, rendered);
     }
 

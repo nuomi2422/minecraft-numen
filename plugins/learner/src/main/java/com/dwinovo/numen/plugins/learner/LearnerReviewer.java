@@ -87,12 +87,32 @@ final class LearnerReviewer {
     private LearnerReviewer() {}
 
     /**
-     * 复盘一批备忘录。
+     * 复盘一批备忘录。<b>不带</b>上轮回顾的入口（见 {@link #withPriorRound}）。
      *
      * <p>不阻塞调用线程：返回的 future 完成后才算完。失败时
      * {@link ReviewOutcome#ok} 为 false，队列条目应被 restore。
      */
     static CompletableFuture<ReviewOutcome> review(List<Memo> memos, int timeoutSeconds) {
+        return withPriorRound(memos, null, timeoutSeconds);
+    }
+
+    /**
+     * 复盘一批备忘录，<b>并把上轮产出摆进 prompt</b>。
+     *
+     * <p>架构 owner 2026-10-03 第 3 条 + 答 (a)：「循环由 AI 自己在下一轮
+     * {@code learner_review} 里看着上轮结果再改」。那「上轮结果」就得在 prompt 里看得见 ——
+     * 否则每轮都被当成第一次见面，改的其实是不同的东西。
+     *
+     * <p>★ <b>两段文本的先后是有意的</b>：上轮回顾放在<b>本轮备忘录之前</b>。
+     * 放后面会被本轮那批备忘录的细节冲淡，而它恰恰是本轮判断的<b>参照系</b>
+     * （「这条跟上轮那条说的是同一件事吗」这个问题，只在先看到上轮时才问得出来）。
+     *
+     * @param prior 上轮回顾；{@code null} 或「没有上轮」都走同一句明确的话，
+     *              <b>不留空</b> —— 复盘方必须知道「没有上轮」是一条结论，不是消息漏了
+     */
+    static CompletableFuture<ReviewOutcome> withPriorRound(List<Memo> memos,
+                                                           com.dwinovo.numen.plugins.learner.core.PriorRound.Summary prior,
+                                                           int timeoutSeconds) {
         INumenConfig cfg;
         try {
             cfg = Services.CONFIG;
@@ -103,11 +123,9 @@ final class LearnerReviewer {
             return CompletableFuture.completedFuture(ReviewOutcome.fail("LLM_UNAVAILABLE: no apiKey configured"));
         }
 
-        StringBuilder user = new StringBuilder();
-        user.append("复盘以下 ").append(memos.size()).append(" 条备忘录，逐条输出判定：\n\n");
-        for (Memo m : memos) {
-            user.append(m.toPromptBlock()).append('\n');
-        }
+        // ★ 拼装下沉到 core.PriorRound：这条要能用单测钉住（见那边的方法注释）。
+        //   本方法只负责拿到配置、发出请求、解析回复。
+        String user = com.dwinovo.numen.plugins.learner.core.PriorRound.buildUserPrompt(memos, prior);
 
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
@@ -115,7 +133,7 @@ final class LearnerReviewer {
         String system = SYSTEM;
         try {
             return NumenLlmClient.forEndpoint(ep)
-                    .chatStreaming(List.of(new ConvoState.Msg.User(user.toString())),
+                    .chatStreaming(List.of(new ConvoState.Msg.User(user)),
                             List.of(), system, null)
                     .orTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
                     .handle((res, err) -> {
