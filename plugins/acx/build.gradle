@@ -31,11 +31,27 @@ dependencies {
 // $scan.matches on resume) and says so in a TODO(AC-B12) comment. We therefore
 // set ignoreExitValue = true so `check` is not blocked by a known-open bug;
 // read the task output, not just the exit code.
+// The offline suite self-checks the ac-lib we actually ship (its group 17 looks
+// for a directory named 'ac-lib', while the shipped one is 'acx-lib' because
+// that is the jar path AcxPlugin enumerates). Sync mirrors the real library into
+// the build dir under the name the suite expects, so editing the shipped library
+// is picked up on the next run instead of silently testing a stale copy.
+//
+// ac-lib/reference/ holds the DD originals as archive only. AcxPlugin enumerates
+// /acx-lib/stable/ alone, so nothing under reference/ is ever materialised into
+// the game config dir.
+def acxFixture = tasks.register('acxFixture', Sync) {
+    into layout.buildDirectory.dir('acx-fixture')
+    from(file('src/main/resources/acx-lib')) { into 'ac-lib' }
+}
+
 tasks.register('acxOfflineTest', JavaExec) {
     group = 'verification'
     description = 'ACX offline self-check (206 checks, 2 known-red per TODO AC-B12)'
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.dwinovo.numen.acx.test.AcxTestMain'
+    dependsOn tasks.named('acxFixture')
+    workingDir = layout.buildDirectory.dir('acx-fixture').get().asFile
     ignoreExitValue = true
 }
 
