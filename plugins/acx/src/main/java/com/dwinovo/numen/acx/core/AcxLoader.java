@@ -393,6 +393,14 @@ public final class AcxLoader {
             }
             validateGuardConditions(stepId, params);
         }
+        // AC-B11：for 必须给 list（不然无从遍历）
+        if (AcxStep.BLOCK_FOR.equals(blockName)) {
+            if (params == null || !params.containsKey("list")) {
+                throw new IllegalArgumentException(
+                        "for step " + stepId + " 需要 params.list（要遍历的列表）");
+            }
+        }
+
         // AC-B9：set 步 = 变量写回，params 必须非空（没东西可写就是写错了）
         if (AcxStep.BLOCK_SET.equals(blockName)) {
             if (children != null && !children.isEmpty()) {
@@ -474,7 +482,7 @@ public final class AcxLoader {
                                        Map<String, AcxDefinition> loaded, Set<String> bad) {
         for (AcxStep s : steps) {
             // 控制块是执行器内置，不查注册表（DD :85-86 / :165 同样处理）
-            if (s.isControl() || s.isGuard() || s.isSet()) {
+            if (s.isControl() || s.isGuard() || s.isSet() || s.isFor()) {
                 if (s.children() != null) {
                     collectBadRefs(s.children(), blocks, loaded, bad);
                 }
@@ -527,6 +535,9 @@ public final class AcxLoader {
         }
         if (AcxStep.BLOCK_SET.equals(blockName)) {
             return Set.of("_set");
+        }
+        if (AcxStep.BLOCK_FOR.equals(blockName)) {
+            return Set.of("_for_iterated", "_for_var");
         }
         if (blocks != null) {
             var tool = blocks.find(blockName);

@@ -126,7 +126,7 @@ public final class FileAcxLibrary {
             if (s.isControl() && (s.children() == null || s.children().isEmpty())) {
                 problems.add("控制块 " + s.id() + " 缺少 children");
             }
-            if (!s.isControl() && !s.isGuard() && !s.isSet() && blocks != null && !blocks.contains(s.block())
+            if (!s.isControl() && !s.isGuard() && !s.isSet() && !s.isFor() && blocks != null && !blocks.contains(s.block())
                     && !knownAcNames.contains(s.block())) {
                 problems.add("step " + s.id() + " 的 block " + s.block()
                         + " 既不是已注册积木也不是库里的 AC");

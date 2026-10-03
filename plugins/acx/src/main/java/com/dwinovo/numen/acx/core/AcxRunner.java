@@ -667,9 +667,28 @@ public final class AcxRunner {
             condRaw = step.params() == null ? null : step.params().get("conditions");
         }
 
+        // AC-B11：for 的迭代上限来自列表长度（也可显式 max_iters 截断）
+        boolean isFor = step.isFor();
+        List<Object> forItems = null;
+        String forVar = "item";
+        if (isFor) {
+            Object raw = resolved.get("list");
+            if (!(raw instanceof List<?> l)) {
+                return AcxStepOutcome.failed(step.id()
+                        + " (for) 的 list 必须指向一个列表，实际是: " + raw);
+            }
+            forItems = new ArrayList<>(l);
+            Object asRaw = resolved.get("as");
+            if (asRaw != null && !String.valueOf(asRaw).isBlank()) {
+                forVar = String.valueOf(asRaw);
+            }
+        }
         int maxIters = isWhile
                 ? AcxValueResolver.toInt(resolved.get("max_iters"), AcxLimits.DEFAULT_MAX_ITERS)
-                : 1;
+                : (isFor ? Math.max(1, Math.min(forItems.size(),
+                        (resolved.get("max_iters") == null ? Integer.MAX_VALUE
+                                : AcxValueResolver.toInt(resolved.get("max_iters"), Integer.MAX_VALUE))))
+                : 1);
         int stagnantLimit = isWhile
                 ? AcxValueResolver.toInt(resolved.get("stagnant_limit"), AcxLimits.DEFAULT_STAGNANT_LIMIT)
                 : AcxLimits.DEFAULT_STAGNANT_LIMIT;
@@ -689,7 +708,8 @@ public final class AcxRunner {
                 return breaker;
             }
             // do_while：第 1 轮无条件执行（条件源由本轮 body 刷新，第 2 轮起才读得到）
-            boolean condTrue = (doWhile && iters == 0)
+            boolean condTrue = isFor ? iters < forItems.size()
+                    : (doWhile && iters == 0)
                     || cond == null
                     || AcxConditionEvaluator.evaluate(condEachRound(condRaw, cond, cur, input, allOutputs, c), cur, input, allOutputs, c.vars);
             if (!condTrue) {
@@ -697,6 +717,11 @@ public final class AcxRunner {
                     ifUnmatched = AcxConditionEvaluator.describeUnmatched(condEachRound(condRaw, cond, cur, input, allOutputs, c), cur, input, allOutputs);
                     emit(c, AcxEvent.Kind.IF_UNMATCHED, step.id(), null, Map.of("note", ifUnmatched));
                 }
+                break;
+            }
+            if (isFor && iters >= maxIters) {
+                // 撞上显式 max_iters 截断 → 与 while 同语义：停下等续跑，不算成功
+                stoppedByMaxIters = true;
                 break;
             }
             if (isWhile && iters >= maxIters) {
@@ -707,6 +732,11 @@ public final class AcxRunner {
             // AC-B10：循环状态写进变量 → children 里能用 $loop.iter / $loop.count
             c.vars.put("loop_iter", (long) iters);
             c.vars.put("loop_count", (long) iters);
+            if (isFor) {
+                // 元素写进变量 → children 里用 $var.<as> 取；$loop.total 给总数
+                c.vars.put(forVar, forItems.get(iters - 1));
+                c.vars.put("loop_total", (long) forItems.size());
+            }
 
             boolean roundHasProgress = false;
             for (AcxStep child : children) {
@@ -766,7 +796,7 @@ public final class AcxRunner {
                 break;
             }
             // ── 终点2：连续 stagnantLimit 轮无实质进展 → 判定此路不通 ──
-            if (!roundHasProgress) {
+            if (!roundHasProgress && isWhile) {
                 stagnantRounds++;
                 if (stagnantRounds >= stagnantLimit) {
                     stoppedByStagnation = true;

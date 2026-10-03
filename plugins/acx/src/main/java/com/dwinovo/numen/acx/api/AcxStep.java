@@ -25,6 +25,8 @@ public final class AcxStep {
     public static final String BLOCK_GUARD = "guard";
     /** 变量写回步：{@code {"block":"set","params":{"名":值}}}（AC-B9）。 */
     public static final String BLOCK_SET = "set";
+    /** AC-B11：遍历列表的控制块 {@code {"block":"for","params":{"list":"$scan.matches","as":"item"}}}。 */
+    public static final String BLOCK_FOR = "for";
 
     private final String id;
     private final String block;
@@ -64,11 +66,16 @@ public final class AcxStep {
     }
 
     public boolean isControl() {
-        return BLOCK_IF.equals(block) || BLOCK_WHILE.equals(block);
+        return BLOCK_IF.equals(block) || BLOCK_WHILE.equals(block) || BLOCK_FOR.equals(block);
+    }
+
+    public boolean isFor() {
+        return BLOCK_FOR.equals(block);
     }
 
     public boolean isLoop() {
-        return BLOCK_WHILE.equals(block);
+        // for 也是循环：熔断 / 停滞 / 断点三套机制要共用
+        return BLOCK_WHILE.equals(block) || BLOCK_FOR.equals(block);
     }
 
     /** 步骤级守卫（内置，不查积木注册表，不接受 children）。 */
