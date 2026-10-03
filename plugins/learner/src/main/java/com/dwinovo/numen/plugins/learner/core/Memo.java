@@ -21,8 +21,28 @@ public record Memo(
         String stage,
         String tried,
         String snapshot,
-        long createdAt
+        long createdAt,
+        /**
+         * ★ 类别（2026-10-03，架构 owner 拍板「同入口但加类别字段」）。
+         *
+         * <p>{@code learning} = 想学/想记住什么（默认，缺省就是它）；
+         * {@code timing} = 时序类（「先挖三格再回头看」）—— 这类最终应该变成 AC 脚本，
+         * 而不是变成一条经验。</p>
+         *
+         * <p>★ 为什么放进 Memo 而不是另开一个队列：owner 原话是「同入口」，
+         * 而 {@code MemoQueue} 的容量/原子重写/复盘失败不丢队列这一整套都已经调过，
+         * 另开一个队列等于把这些重做一遍，还多一处「两个队列哪个满了」的判断。</p>
+         *
+         * <p>★ 默认值给 {@code "learning"} 而不是空串：这样
+         * 「调用方没传类别」与「调用方显式传了 learning」落在同一个值上，
+         * 下游按 {@code learning} 判就够，不必先判空再判值（两段判断必有一段漏）。</p>
+         */
+        String category
 ) {
+    /** 未声明类别时的缺省值；也是 {@code LearnerNoteTool} 的缺省。 */
+    public static final String CATEGORY_LEARNING = "learning";
+    /** 时序类：最终应变成 AC 脚本。 */
+    public static final String CATEGORY_TIMING = "timing";
 
     public Memo {
         Objects.requireNonNull(id, "id");
@@ -30,12 +50,29 @@ public record Memo(
         stage = stage == null ? "" : stage;
         tried = tried == null ? "" : tried;
         snapshot = snapshot == null ? "" : snapshot;
+        // ⚠️ 不认识的值原样留着，不静默改成 learning ——
+        //   「它说了个我没听过的类别」是一条要让人看见的事实，悄悄改掉就查不到了。
+        category = category == null || category.isBlank() ? CATEGORY_LEARNING : category.trim();
+    }
+
+    /** 老条目 / 程序化构造（投料侧）用：类别缺省 learning。 */
+    public Memo(String id, String problem, String stage, String tried, String snapshot, long createdAt) {
+        this(id, problem, stage, tried, snapshot, createdAt, CATEGORY_LEARNING);
     }
 
     /** 供 LLM 复盘用的紧凑文本：只给判断所需，不给无关字段。 */
     public String toPromptBlock() {
         StringBuilder sb = new StringBuilder();
         sb.append("[memo ").append(id).append("]\n");
+        // ★ 类别给复盘的 LLM 看（2026-10-03）：时序类待办该出 AC 脚本而不是经验，
+        //   不告诉它类别，它就只能把「先挖三格再回头」也写成一条经验 —— 那正是 owner
+        //   要避免的（「有些时序的问题可以拿这个来写…写 AC」）。
+        //   ⚠️ learning 是缺省值，**不印出来**：每轮都印一行「类别: learning」是噪音，
+        //   而且会把「显式声明」与「缺省」这两种情形在文本上混成一样。
+        if (!CATEGORY_LEARNING.equals(category)) {
+            sb.append("类别: ").append(category)
+                    .append("（timing = 时序类，考虑写成 AC 脚本而不是经验）\n");
+        }
         if (!stage.isBlank()) {
             sb.append("阶段: ").append(stage).append('\n');
         }

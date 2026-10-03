@@ -24,6 +24,34 @@ final class LearnerNoteTool implements NumenTool {
 
     private static final Gson GSON = new Gson();
 
+    /** 待办的两种类别（架构 owner 2026-10-03 拍板：同入口但分开处理）。 */
+    static final String CAT_LEARNING = "learning";
+    static final String CAT_TIMING = "timing";
+
+    /**
+     * ★ 常驻（架构 owner 2026-10-03 定：「待办学习队列，执行 AI 要一直都知道这件事」）。
+     *
+     * <p>改之前这里是默认的 {@code DEFERRED} —— 每轮只在系统提示的
+     * {@code <deferred_tools>} 目录里留一行摘要，模型得<b>自己想到去调 {@code find_tools}</b>
+     * 才拿得到完整定义。
+     *
+     * <p><b>为什么必须是常驻</b>：2026-10-03 实测（E2 调查）——
+     * 内脑的 {@code find_tools} 在对话里出现 52 次，但它<b>取的是 {@code experience_*} 那几个</b>，
+     * <b>一次都没取过 {@code learner_intake}</b>；而 {@code learner_intake} 当时也拿不到。
+     * ⇒ 整条「遇事写待办 → 学习者沉淀」的链，<b>从没被走通过</b>。
+     * 这不是「AI 不愿调」，是<b>它压根不知道有这回事</b>（或者知道了也没觉得与自己有关）。
+     * ⇒ 常驻是让它<b>不可能不知道</b>，而不是指望它自己想起来。
+     *
+     * <p>⚠️ 代价（所以描述里必须写分寸）：常驻工具的描述<b>每轮都进 prompt</b>，
+     * 一句「遇到卡住就写一条」等于<b>每轮都在暗示它写待办</b> ⇒ 可能把噪音当素材投料，
+     * 而 {@code MemoQueue.MAX_QUEUE=64} 满了之后按 B12 契约<b>不静默丢</b>（会开始拒收）。
+     * ⇒ 对策见 {@link #description()} 里的「不是每件事都要写」与回执里的 {@code queue_slots_left}。
+     */
+    @Override
+    public NumenTool.Residency residency() {
+        return NumenTool.Residency.RESIDENT;
+    }
+
     @Override
     public String name() {
         return "learner_note";
@@ -34,6 +62,20 @@ final class LearnerNoteTool implements NumenTool {
         return "Record a raw memo about a problem you hit, for the learner to review later. "
                 + "Call this when you are STUCK: a tool failed, you retried repeatedly, an action had "
                 + "no effect, or you had to abandon a sub-task. "
+                // ★ 2026-10-03：分寸约束。这一段是「改常驻」的必要配套 ——
+                //   常驻意味着每轮都看得见这句描述，如果不写清楚分寸，
+                //   「遇事就写一条」会变成默认动作，学习者复盘时收到一堆低价值待办。
+                //   与 59 号 §4.2「经验库最怕的就是什么都能记」是同一条原则，
+                //   只是这里对**投料侧**说（那边是对产出侧说）。
+                + "WHEN NOT TO WRITE: do not write a memo for routine steps, for things that just "
+                + "worked out, or for anything you did not actually get stuck on. A day with no memo "
+                + "is normal; a day with thirty is a bug in your judgement, not a sign of diligence. "
+                + "Also do NOT write a memo for something you already solved in the same turn - "
+                + "just say what you did. "
+                // ★ 类别：同入口但分开处理（owner 拍板）。时序类最终走 USE_AC 产物。
+                + "category: use \"timing\" for ordering/sequencing problems (this task needs X first, "
+                + "wait for Y before Z, this step must happen before that one) - those usually become "
+                + "an AC script. Use \"learning\" (the default) for anything else. "
                 + "Required: problem, tried. "
                 + "IMPORTANT - snapshot: when you are stuck you MUST also hand over the environment "
                 + "you were stuck in, otherwise the learner cannot tell a real 'no extra gear needed' "
@@ -44,7 +86,10 @@ final class LearnerNoteTool implements NumenTool {
                 + "weapon/sword/axe/bow, nearby (entity names), dim, hostile (true/false). "
                 + "If you truly cannot read the environment, pass snapshot=\"unavailable\" and the "
                 + "reply will tell you the review was degraded. "
-                + "This only appends to a queue; it does NOT fix anything by itself.";
+                + "This only appends to a queue; it does NOT fix anything by itself. "
+                // ★ 回执里有这个：让 AI 自己能判断该不该再写（而不是写满了才知道）
+                + "The reply tells you how many slots are left in the queue - stop writing when it "
+                + "runs low, and prefer writing the one memo that mattered most over three that did not.";
     }
 
     @Override
@@ -53,6 +98,12 @@ final class LearnerNoteTool implements NumenTool {
                 .string("problem", "What went wrong or blocked you (concrete, one or two sentences).")
                 .string("tried", "What you already tried before giving up on this.")
                 .optionalString("stage", "Which stage/phase this happened in.")
+                // ★ 2026-10-03 新增（owner 拍板「同入口但分开处理」）。
+                //   不做成必填：常驻工具每轮都占 prompt，一个必填参数会诱使它每次都得填；
+                //   缺省 learning，走 62 号 §2 的 source=experience 那一侧。
+                .optionalString("category", "learning (default) or timing. "
+                        + "Use \"timing\" for ordering/sequencing problems (needs X first, wait for Y "
+                        + "before Z) - those usually become an AC script. Use \"learning\" for anything else.")
                 .optionalString("snapshot", "REQUIRED WHEN STUCK. Environment as key=value pairs separated by commas, "
                         + "e.g. hp=6/20, armor=none, weapon=none, nearby=zombie, dim=overworld. "
                         + "Keys: hp|health, armor|chestplate|helmet|leggings|boots, weapon|sword|axe|bow, "
@@ -93,7 +144,7 @@ final class LearnerNoteTool implements NumenTool {
                 }
 
                 Memo memo = new Memo(memoId, in.problem().trim(), nz(in.stage()), in.tried().trim(),
-                        snapshot, System.currentTimeMillis());
+                        snapshot, System.currentTimeMillis(), nz(in.category()));
 
                 if (!q.append(memo)) {
                     // 分不清是「满了」还是「字段太长」时不猜：两种都如实报，并给出当前深度
@@ -118,6 +169,8 @@ final class LearnerNoteTool implements NumenTool {
                 ev.put("memo_id", memoId);
                 ev.put("companion", id.toString());
                 ev.put("queue_depth", depth);
+                ev.put("category", memo.category());
+                ev.put("queue_slots_left", Math.max(0, MemoQueue.MAX_QUEUE - depth));
                 ev.put("snapshot_source", snapshotPresent ? (autoCollected ? "auto" : "caller") : "none");
                 ev.putAll(memo.carrierSignal());
                 LearnerMonitor.publish("noted", ev);
@@ -125,6 +178,8 @@ final class LearnerNoteTool implements NumenTool {
                 Map<String, Object> data = new LinkedHashMap<>();
                 data.put("memo_id", memoId);
                 data.put("queue_depth", depth);
+                data.put("queue_slots_left", Math.max(0, MemoQueue.MAX_QUEUE - depth));
+                data.put("category", memo.category());
                 data.put("snapshot_present", snapshotPresent);
                 data.put("snapshot_source", snapshotPresent ? (autoCollected ? "auto" : "caller") : "none");
                 if (snapshotPresent) {
@@ -155,5 +210,13 @@ final class LearnerNoteTool implements NumenTool {
         return s == null ? "" : s;
     }
 
-    private record Input(String problem, String tried, String stage, String snapshot) {}
+    /**
+     * ★ {@code category} 刻意做成<b>可选</b>（缺省 {@code learning}），不做成必填：
+     * 这个工具刚变成常驻（每轮都进 prompt），必填参数会诱使它每轮都填一次 ——
+     * 而「分类」这件事只在真的要写待办时才需要想。
+     *
+     * <p>而且 {@link Memo} 的规范构造器会把 null/空白也归成 {@code learning}，
+     * 所以「没传」与「传了 learning」不需要在下游分两种情形处理。</p>
+     */
+    private record Input(String problem, String tried, String stage, String snapshot, String category) {}
 }

@@ -219,4 +219,76 @@ class MemoQueueTest {
         String why = m.assessCarrier().why();
         return why.split("血量=")[1].split("\\(")[0];
     }
+
+    // ---------- 类别（2026-10-03，架构 owner 拍板「同入口但加类别字段」） ----------
+
+    /**
+     * ★ 不给类别与显式给 {@code learning} 必须落在<b>同一个值</b>上。
+     *
+     * <p>这条是给下游省事的：否则每个读 {@code category} 的地方都得先判空再判值，
+     * 而两段判断必有一段会漏。六个分量那个老构造器就是「调用方没这概念」的入口。</p>
+     */
+    @Test
+    void anAbsentCategoryIsLearningRatherThanBlank() {
+        assertEquals(Memo.CATEGORY_LEARNING, new Memo("a", "p", "s", "t", "hp=1/20", 1L).category());
+        assertEquals(Memo.CATEGORY_LEARNING,
+                new Memo("b", "p", "s", "t", "hp=1/20", 1L, null).category());
+        assertEquals(Memo.CATEGORY_LEARNING,
+                new Memo("c", "p", "s", "t", "hp=1/20", 1L, "   ").category());
+        assertEquals(Memo.CATEGORY_LEARNING,
+                new Memo("d", "p", "s", "t", "hp=1/20", 1L, "learning").category());
+    }
+
+    /**
+     * ★ 不认识的值原样留着，<b>不静默改成 learning</b>。
+     *
+     * <p>「它说了个我没听过的类别」是要让人看见的事实；悄悄改掉，下次查「为什么这条
+     * 没按脚本走」就没线索了。</p>
+     */
+    @Test
+    void anUnknownCategoryIsKeptSoItCanBeLookedAt() {
+        Memo m = new Memo("m", "p", "s", "t", "hp=1/20", 1L, "ac_carrier_v2");
+        assertEquals("ac_carrier_v2", m.category());
+    }
+
+    /**
+     * ★ 类别必须<b>穿过队列</b>落到复盘看到的文本里。
+     *
+     * <p>这一条钉的是「时序类该出 AC 脚本而不是经验」这条意图的最后一环：
+     * 类别只存在 Memo 对象里、没进 {@code toPromptBlock} 的话，
+     * 复盘的 LLM 根本看不见，时序待办就会照样被写成一条经验。</p>
+     */
+    @Test
+    void theTimingCategoryReachesTheReviewersPrompt() {
+        String block = new Memo("m", "p", "s", "t", "hp=1/20", 1L, Memo.CATEGORY_TIMING)
+                .toPromptBlock();
+        assertTrue(block.contains(Memo.CATEGORY_TIMING),
+                "★ 时序类必须出现在复盘文本里，否则学习者看不出它该写成 AC 脚本");
+        assertTrue(block.contains("AC"),
+                "要顺带告诉复盘方「这类该出脚本」，只印一个英文类别名它是猜不到的");
+    }
+
+    /**
+     * 反证：缺省类别<b>不许</b>印进复盘文本。
+     *
+     * <p>learning 是绝大多数；每条都印一行「类别: learning」是纯噪音，
+     * 而且会把「显式声明」与「缺省」在文本上混成一样。</p>
+     */
+    @Test
+    void theDefaultCategoryStaysOutOfTheReviewersPrompt() {
+        String block = new Memo("m", "p", "s", "t", "hp=1/20", 1L).toPromptBlock();
+        assertFalse(block.contains("类别"), "缺省类别每条都印就是噪音：" + block);
+    }
+
+    /** 类别要跟着 memo 一起进队列、再一起读回来（不许只在内存里活着）。 */
+    @Test
+    void theCategorySurvivesTheQueueRoundTrip(@TempDir Path dir) throws Exception {
+        MemoQueue q = new MemoQueue(dir.resolve("learner-memos-x.json"));
+        assertTrue(q.append(new Memo("timing-1", "先挖三格再回头看", "s", "t", "hp=1/20", 1L,
+                Memo.CATEGORY_TIMING)));
+        Memo back = q.all().stream().filter(m -> "timing-1".equals(m.id())).findFirst()
+                .orElseThrow(() -> new AssertionError("memo lost in the queue"));
+        assertEquals(Memo.CATEGORY_TIMING, back.category(),
+                "★ 类别只活在内存里的话，重启后它就没了 —— 而队列本来就要落盘");
+    }
 }
