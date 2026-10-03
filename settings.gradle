@@ -50,6 +50,10 @@ include('plugins:experience')
 include('plugins:ac')
 // ACX：AC 执行层新代（非线性控制流/前置条件/参数映射/生命周期），随插件独立部署。
 include('plugins:acx')
+// numencam：客户端相机模块（2026-10-04 新增）。从 api/common 的 client 源码集搬出来的
+// CameraRig + MixinCamera 现在归它，外加游戏内 /cam 指令、绑定+自动传送、移动加速、录像。
+// 它**不**注册进 NumenPlugins、也不依赖 api jar —— 只依赖 Minecraft 客户端 + NeoForge。
+include('plugins:camera')
 // 2026-10-01 第二批第 0 步：从 tag batch2-learner-20260929 恢复 learner 到主干。
 // 之前这段 include 只存在于悬空 commit 1054f153（不在 redline-1 祖先链），导致 learner 模块
 // 在主干上从未被构建，那 25 项测试一项都不跑 —— 30 号文档记的「752 tests / 新增 25」是失效证据。

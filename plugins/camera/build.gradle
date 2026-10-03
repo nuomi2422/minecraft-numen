@@ -1,0 +1,28 @@
+plugins { id 'numen-plugin' }
+
+// numencam：纯客户端模块。与 plugins/ 下其余插件最大的不同 —— 它不注册进
+// NumenPlugins、也不 import 任何 com.dwinovo.numen.* 类型，只依赖 Minecraft 客户端 +
+// NeoForge 事件。理由是它必须在「专用服务端不存在这些类」的场合也能安全加载：
+// Camera / LocalPlayer / ClientTickEvent 全是客户端独有类。
+//
+// 编译期不需要瘦 api jar（父约定 numen-plugin.gradle 已经给了，给着也无害），
+// 但混合需要 mixin 注解处理器，所以单独声明一遍 —— 父约定没声明它。
+dependencies {
+    compileOnly group: 'org.spongepowered', name: 'mixin', version: '0.8.5'
+}
+
+processResources {
+    def props = [
+            version                       : project.version,
+            license                       : license,
+            neoforge_loader_version_range : neoforge_loader_version_range,
+            neoforge_version              : neoforge_version,
+            minecraft_version_range       : minecraft_version_range
+    ]
+    inputs.properties props
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand props
+    }
+    // ★ 混合配置**不能**走 expand：里面的 ${...} 会被 Groovy 的 SimpleTemplateEngine
+    // 当模板求值。这里刻意全部写字面值，父约定也不展开 *.mixins.json。
+}
