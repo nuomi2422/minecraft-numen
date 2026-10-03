@@ -34,7 +34,7 @@ dependencies {
 // acx/api + acx/core are Minecraft-free, so the suite runs on a plain JDK with
 // only gson on the classpath - no gradle, no game, no devlaunch.
 //
-// NOTE: 3 of the 207 checks are deliberately RED. Two of them come from
+// NOTE: 4 of the 208 checks are deliberately RED. Two of them come from
 // AcxTestMain.ctrlSnapshot(), which documents an unfixed bug (for-loop across
 // a breakpoint cannot see $scan.matches on resume) and says so in a
 // TODO(AC-B12) comment. The third one is the 2026-10-03 hardening regression
@@ -45,12 +45,31 @@ dependencies {
 // Measured, not guessed: Fake.calls.count("gate") == 2 where it should be 1.
 // That is the "会不会重复挖、重复走" risk in its most concrete form.
 //
+// The fourth is "取消后迟到的成功回执不得把这次运行翻回成功 (TODO AC-B19)".
+// The cancel flag is only consulted in checkCircuit(), which runs *before*
+// each step. If the host cancels while the LAST step is in flight and that
+// step then reports success, the loop exits normally and runFrame() returns
+// AcxStepOutcome.success(...) with no further cancel check (AcxRunner:350-352,
+// and nothing after it either) -- the run reports SUCCESS. Measured:
+// 期望 <PAUSED> 实际 <SUCCESS>.
+//
+// ★ Why only the last step leaks: with an outer while/if the *next* iteration
+//   calls checkCircuit() again and catches it. That is why the pre-existing
+//   test "取消是协作式的" passes -- it was rescued by the surrounding loop, not
+//   by the main loop's own guarantee.
+//
+// ★ Second-order consequence, worse than the status being wrong: AcxRunner:180
+//   feeds SUCCESS runs into experienceSink.onSuccess(...). A cancelled run that
+//   reports SUCCESS therefore gets recorded as a successful experience sample,
+//   i.e. it pollutes the very evidence chain we are trying to keep honest.
+//
 // We keep the gate honest by asserting the failure count is EXACTLY these
-// three (see AcxOfflineSuiteTest) instead of setting ignoreExitValue here:
+// four (see AcxOfflineSuiteTest) instead of setting ignoreExitValue here:
 // ignoreExitValue makes *new* problems just as silent as the known ones.
 //
-// ⚠️ The fix (moving when completedStepIndex advances) is a FUNCTIONAL change
-//   and was deliberately NOT done while the owner has the code frozen.
+// ⚠️ The fixes (moving when completedStepIndex advances; checking the cancel
+//   flag once more before reporting success) are FUNCTIONAL changes and were
+//   deliberately NOT done while the owner has the code frozen.
 // The offline suite self-checks the ac-lib we actually ship (its group 17 looks
 // for a directory named 'ac-lib', while the shipped one is 'acx-lib' because
 // that is the jar path AcxPlugin enumerates). Sync mirrors the real library into
@@ -67,7 +86,7 @@ def acxFixture = tasks.register('acxFixture', Sync) {
 
 tasks.register('acxOfflineTest', JavaExec) {
     group = 'verification'
-    description = 'ACX offline self-check (207 checks, 3 known-red: TODO AC-B12 x2 + TODO AC-B18 x1) -- console copy only'
+    description = 'ACX offline self-check (208 checks, 4 known-red: TODO AC-B12 x2 + TODO AC-B18 x1 + TODO AC-B19 x1) -- console copy only'
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.dwinovo.numen.acx.test.AcxTestMain'
     dependsOn tasks.named('acxFixture')

@@ -878,6 +878,26 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             eq("killer", seen.get("step_id"), "AcxCallContext 给了 stepId");
         });
 
+        // 上面那条之所以拿到 PAUSED，靠的是 while 的下一次迭代又走了一次 checkCircuit。
+        // 换句话说：现有覆盖是被外层循环「顺带」救回来的，主循环自己并不保证这件事。
+        T.test("取消后迟到的成功回执不得把这次运行翻回成功（TODO AC-B19，当前会翻回成功）", () -> {
+            Fake.resetCalls();
+            Fake.Canceller canceller = new Fake.Canceller();
+            Map<String, Object> seen = new LinkedHashMap<>();
+            Fake.Registry reg = new Fake.Registry().add(Fake.cancelThenCheck("late", canceller, seen));
+            AcxRunner r = runner(reg).build();
+            canceller.runner = r;
+            // ★ 关键：单步平铺脚本。上一条有 while 包着，取消标志会被下一轮迭代的
+            //   checkCircuit 拦下来；这里没有外层循环帮我们再查一次，所以这条测的是
+            //   主循环自己在「最后一步」上的真实行为。
+            AcxRunRecord rec = r.run(def(step("late", "late", Map.of())), Map.of());
+
+            eq(true, seen.get("saw_cancel"), "前置事实：积木执行期间确实看见了取消标志");
+            eq(AcxStatus.PAUSED, rec.status(),
+                    "★ 取消之后才到的成功回执不得把这次运行翻回 SUCCESS（实际 " + rec.status() + "）");
+            eq("host_cancelled", rec.pausedReason(), "应说明是宿主取消，而不是报告完成");
+        });
+
         T.test("deadline 到了必然停下（TIMEOUT 或协作式 PAUSED，两者都不推进断点）", () -> {
             Fake.resetCalls();
             Fake.Registry reg = new Fake.Registry().add(Fake.spin("s"));
