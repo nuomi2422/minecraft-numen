@@ -34,11 +34,23 @@ dependencies {
 // acx/api + acx/core are Minecraft-free, so the suite runs on a plain JDK with
 // only gson on the classpath - no gradle, no game, no devlaunch.
 //
-// NOTE: 2 of the 206 checks are deliberately RED. AcxTestMain.ctrlSnapshot()
-// documents an unfixed bug (for-loop across a breakpoint cannot see
-// $scan.matches on resume) and says so in a TODO(AC-B12) comment. We therefore
-// set ignoreExitValue = true so `check` is not blocked by a known-open bug;
-// read the task output, not just the exit code.
+// NOTE: 3 of the 207 checks are deliberately RED. Two of them come from
+// AcxTestMain.ctrlSnapshot(), which documents an unfixed bug (for-loop across
+// a breakpoint cannot see $scan.matches on resume) and says so in a
+// TODO(AC-B12) comment. The third one is the 2026-10-03 hardening regression
+// "恢复不能重复发已受理的动作 (TODO AC-B18)": a step that was *accepted* (async,
+// still running in the world) does not advance completedStepIndex -- AcxRunner
+// only calls markStepCompleted on isSuccess() and returns early on PAUSED --
+// so resume() restarts at that same step and **re-sends the accepted action**.
+// Measured, not guessed: Fake.calls.count("gate") == 2 where it should be 1.
+// That is the "会不会重复挖、重复走" risk in its most concrete form.
+//
+// We keep the gate honest by asserting the failure count is EXACTLY these
+// three (see AcxOfflineSuiteTest) instead of setting ignoreExitValue here:
+// ignoreExitValue makes *new* problems just as silent as the known ones.
+//
+// ⚠️ The fix (moving when completedStepIndex advances) is a FUNCTIONAL change
+//   and was deliberately NOT done while the owner has the code frozen.
 // The offline suite self-checks the ac-lib we actually ship (its group 17 looks
 // for a directory named 'ac-lib', while the shipped one is 'acx-lib' because
 // that is the jar path AcxPlugin enumerates). Sync mirrors the real library into
@@ -55,7 +67,7 @@ def acxFixture = tasks.register('acxFixture', Sync) {
 
 tasks.register('acxOfflineTest', JavaExec) {
     group = 'verification'
-    description = 'ACX offline self-check (206 checks, 2 known-red per TODO AC-B12) -- console copy only'
+    description = 'ACX offline self-check (207 checks, 3 known-red: TODO AC-B12 x2 + TODO AC-B18 x1) -- console copy only'
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.dwinovo.numen.acx.test.AcxTestMain'
     dependsOn tasks.named('acxFixture')

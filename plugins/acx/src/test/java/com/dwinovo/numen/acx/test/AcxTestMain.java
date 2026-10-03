@@ -721,6 +721,42 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             eq(AcxStatus.SUCCESS, resumed.status(), "续跑成功");
             T.isTrue(evs.has(AcxEvent.Kind.RESUME_STARTED), "应发 RESUME_STARTED");
         });
+
+        // ★★ TODO(AC-B18) 已知红 —— 69 号文档「第 1 组红线」第 4 条：**恢复不能重复发出已受理的动作**
+        //
+        // 机理（逐行可核）：AcxRunner.java:328-332 只在 `r.isSuccess()` 时 `markStepCompleted(c, i)`；
+        // 而 335-338 的 PAUSED 分支**直接 return，不推进已完成步数**。
+        // 于是「异步动作已受理、还没做完」的运行会停在**那一步**，
+        // 而 resume 的起点 `at = prior.completedStepIndex()`（:248）就指着**同一步** ⇒ 那个动作被再发一次。
+        //
+        // 后果 = **重复挖、重复走、重复消耗资源**（owner 原话「会不会重复挖、重复走」）。
+        //
+        // ⚠️ 为什么原有 206 项一条都抓不到它：本组上一条用 `pauserOnce`（只暂停一次），
+        //   于是恢复时那一步不再暂停 ⇒ **恰好掩盖了「重发」**；
+        //   别的检查测的是拒绝门（版本/内容/名字/无记录），不是「恢复后动作发了几次」。
+        //
+        // ★ 断言写的是**应该怎样**（只发一次），所以它现在必然红。
+        //   按本仓库既有约定（build.gradle 的「N of the checks are deliberately RED」+ TODO 标记），
+        //   它被登记进 AcxOfflineSuiteTest.KNOWN_RED。**本轮不修** —— 修它要改 markStepCompleted
+        //   的调用时机，那是功能改动，属 owner 冻结的范围。
+        T.test("恢复不能重复发已受理的动作（TODO AC-B18，当前会重发）", () -> {
+            Fake.resetCalls();
+            Fake.PauseOnce once = new Fake.PauseOnce();
+            Fake.Registry reg = new Fake.Registry()
+                    .add(Fake.pauserOnce("gate", once, "已受理但未完成"))
+                    .add(Fake.fixed("good", Map.of()));
+            Fake.Events evs = new Fake.Events();
+            AcxRunner r = runner(reg).events(evs).build();
+            AcxDefinition d = def(step("s1", "gate", Map.of()), step("s2", "good", Map.of()));
+            AcxRunRecord prior = r.run(d, Map.of());
+            eq(AcxStatus.PAUSED, prior.status(), "第一次应停在「已受理未完成」那一步");
+            eq(1, Fake.calls.count("gate"), "暂停之前那一步只该被发一次");
+            AcxRunRecord resumed = r.resume(d, prior);
+            eq(AcxStatus.SUCCESS, resumed.status(), "恢复后应跑完");
+            eq(1, Fake.calls.count("gate"),
+                    "★ 恢复不能重复发出已受理的动作：那一步 run+resume 合起来只该被发一次");
+            eq(1, Fake.calls.count("good"), "后半步不该被重复发");
+        });
     }
 
     // ── 8. 熔断 ────────────────────────────────────────────────────

@@ -50,11 +50,33 @@ import static org.junit.jupiter.api.Assertions.fail;
  */
 class AcxOfflineSuiteTest {
 
-    /** 已知红项数。修好那个 for/resume 缺陷后可以改小，但必须同时改下面的两条身份断言。 */
-    private static final int KNOWN_RED = 2;
+    /**
+     * 已知红项数。修好其中任何一个都可以改小，但必须同时改下面的判定片段。
+     *
+     * <p>三个已知缺陷：for/断点的两个（TODO AC-B12）+ 恢复重发已受理动作（TODO AC-B18）。
+     */
+    private static final int KNOWN_RED = 3;
 
-    /** 已知的两条红的判定片段 —— 「for 循环」+「断点」。 */
-    private static final String[] KNOWN_RED_MARKERS = {"for", "断点"};
+    /**
+     * 已知的 3 项红的判定片段 —— <b>刻意全用 ASCII</b>。
+     *
+     * <p>对应关系（判定只匹配<b>测试名</b>，分组名不参与，见 {@link #testNameOf}）：
+     * <ul>
+     *   <li>{@code "for"} → {@code for 循环；断点 pause 后 resume 看不见变量元组}</li>
+     *   <li>{@code "64"}  → {@code 应绑定的 64 变量记录表}（同属 for/断点那个缺陷）</li>
+     *   <li>{@code "AC-B18"} → {@code 恢复不能重复发已受理的动作（TODO AC-B18，当前会重发）}</li>
+     * </ul>
+     *
+     * <p>★ <b>为什么不用中文</b>：本工程在 Windows 上改含中文的文件时，
+     * PowerShell 的码点构造与控制台回读<b>都不可信</b>（实测同一个「应绑定」
+     * 在两处显示成不同的码点），而判定词一旦写错就会<b>静默失去承重作用</b> ——
+     * 同一组里任何新的失败都会被当成已知缺陷放过。ASCII 片段写盘读盘都不可能被代码页弄坏。
+     *
+     * <p>⚠️ <b>代价（必须知道）</b>：{@code "64"} <b>不够唯一</b>。
+     * 将来若出现名字里带「64」的新失败项，它会被误判成已知缺陷。
+     * ⇒ 那种情况要<b>显式改这里</b>，别默默放过。
+     */
+    private static final String[] KNOWN_RED_MARKERS = {"for", "64", "AC-B18"};
 
     @Test
     void theOfflineSuiteRunsAndItsKnownRedStaysVisible() throws Exception {
@@ -118,32 +140,59 @@ class AcxOfflineSuiteTest {
         int failed = failedField(json);
 
         // ① 总数不许悄悄变 —— 有人删检查项时这里会红
-        assertEquals(206, total, "离线自检的检查项数变了。少项多半是有人删了检查项，"
+        assertEquals(207, total, "离线自检的检查项数变了。少项多半是有人删了检查项，"
                 + "那等于把覆盖度悄悄拿走了。结果文件：" + json);
 
-        // ② ★ 最关键的一条：失败数必须「恰好」是已知的 2 项。
+        // ② ★ 最关键的一条：失败数必须「恰好」是已知的 3 项。
         //    原来 ignoreExitValue=true 的后果就是：新问题也一样静默。
         assertEquals(KNOWN_RED, failed,
                 "离线自检的失败数不是已知的 " + KNOWN_RED + " 项。"
                         + "多了 = 出了新问题（这正是原来被静默掉的那类）；"
-                        + "少了 = 那个 for/断点缺陷被修好了或被跳过了，两种都要显式处理。\n"
+                        + "少了 = 某个已知缺陷被修好了或被跳过了，两种都要显式处理。\n"
                         + "失败明细：" + failures(json) + "\n结果文件：" + json);
 
-        // ③ 那 2 项必须还是「for 循环跨断点」那一个缺陷
+        // ③ 那 3 项必须还是那两个已知缺陷（for/断点 ×2 + 重复发 ×1）
+        //
+        // ★★ 判定必须**只看测试名**，不能看整条文本。
+        //   变异验证抓出来的：早先这里匹配的是整条失败文本，而失败文本的格式是
+        //   `group + " / " + name + "  →  " + e` —— 于是**分组名也参与判定**。
+        //   新缺陷那条在第 7 组「7 断点续跑契约」里，文本含「断点」二字，
+        //   于是它被 {"for","断点"} 认成了那个 for/断点缺陷 ⇒ 我新加的判定词根本不承重，
+        //   而且**同一组里以后任何新的失败都会被静默放过** ——
+        //   而「新问题静默」正是这轮收口要消灭的东西。
+        //   ⇒ 现在只取最后一个 " / " 之后、"  →  " 之前那截（就是测试名）来匹配。
         List<String> fails = failures(json);
         assertEquals(KNOWN_RED, fails.size(), "失败条数与 failed 字段不一致：" + json);
         for (String f : fails) {
+            String name = testNameOf(f);
             boolean isTheKnownOne = false;
             for (String marker : KNOWN_RED_MARKERS) {
-                if (f.contains(marker)) {
+                if (name.contains(marker)) {
                     isTheKnownOne = true;
                 }
             }
             assertTrue(isTheKnownOne,
-                    "出现了一条不是已知缺陷的失败项：" + f
-                            + "\n★ 已知缺陷只有「for 循环里的变量跨断点看不见」这一个。"
+                    "出现了一条不是已知缺陷的失败项：\n  测试名 = " + name + "\n  整条 = " + f
+                            + "\n★ 已知的缺陷只有两个：「for 循环里的变量跨断点看不见」（TODO AC-B12）"
+                            + "与「恢复会重发已受理的动作」（TODO AC-B18）。"
                             + "新的失败项要先当真问题查，别直接改 KNOWN_RED。");
         }
+    }
+
+    /**
+     * 从失败文本里取出<b>测试名</b>（不含分组名）。
+     *
+     * <p>格式由 {@code T.test} 决定：{@code group + " / " + name + "  →  " + e}。
+     * 取<b>最后一个</b> {@code " / "} 之后、{@code "  →  "} 之前那截。
+     *
+     * <p>★ 为什么必须剥掉分组名：分组名里常有「断点」这种词，会让判定词误命中 ——
+     * 那是变异验证实测出来的（去掉新加的判定词后仍然全绿）。
+     */
+    private static String testNameOf(String failureText) {
+        int arrow = failureText.indexOf("  →  ");
+        String head = arrow < 0 ? failureText : failureText.substring(0, arrow);
+        int slash = head.lastIndexOf(" / ");
+        return slash < 0 ? head : head.substring(slash + 3);
     }
 
     // ---- 极简 JSON 取值（这机器可读文件是我们自己写的，形状固定，不必引依赖） ----
