@@ -103,6 +103,11 @@ public final class BrainGate {
      * @param contextTokens 上一轮真实用量，或本地估算
      * @param modelWindow 模型上下文窗口；<b>0 = 取不到绑定</b>（不是「窗口为零」）
      * @param compactFailures 整理连续失败次数
+     * @param externalTakes 本会话里<b>外脑取走过事件的总次数</b>（{@code takeEventsForExternal}
+     *        真的取到东西才计）。这是本读数新增的第 11 个维度，理由见
+     *        {@link #problems} 里那条 {@code external_event_takeover}。
+     * @param msSinceLastExternalTake 距上次被外脑取走事件过了多少毫秒；<b>-1 = 本会话一次都没被取走</b>
+     *        （不是「刚被取走」——这两种不能混，混了下游会把「从来没发生过」读成「正在发生」）
      */
     public record State(boolean dead,
                         boolean externallyDriven,
@@ -114,7 +119,9 @@ public final class BrainGate {
                         String endpointProblem,
                         long contextTokens,
                         int modelWindow,
-                        int compactFailures) {
+                        int compactFailures,
+                        long externalTakes,
+                        long msSinceLastExternalTake) {
 
         /**
          * 八道闸全开的干净状态，测判定顺序时拿它当基线。
@@ -123,9 +130,13 @@ public final class BrainGate {
          * 的值（这里 20），否则这个「全开」基线自己就被自动整理闸挡住 ——
          * 我第一版给的是 4，结果六条测试一起红，而红的理由是「基线起手就错」，
          * 不是被测代码有问题。基线不干净，后面每一条断言都在替一个错的起点说话。
+         *
+         * <p>★ 同理 {@code externalTakes} 给 0：这个基线代表「没人来抢」，
+         * 给了非 0 它就会带一条 problem 出来，基线就不干净了。
          */
         public static State open() {
-            return new State(false, false, "NONE", false, false, false, 20, null, 1_000L, 1_000_000, 0);
+            return new State(false, false, "NONE", false, false, false, 20, null,
+                    1_000L, 1_000_000, 0, 0, -1L);
         }
 
         /** 改一个字段造新状态（record 没有 withX，全部走这里，免得十几行复制粘贴）。 */
@@ -141,7 +152,9 @@ public final class BrainGate {
                     field.equals("endpointProblem") ? (String) value : endpointProblem,
                     field.equals("contextTokens") ? ((Number) value).longValue() : contextTokens,
                     field.equals("modelWindow") ? ((Number) value).intValue() : modelWindow,
-                    field.equals("compactFailures") ? ((Number) value).intValue() : compactFailures);
+                    field.equals("compactFailures") ? ((Number) value).intValue() : compactFailures,
+                    field.equals("externalTakes") ? ((Number) value).longValue() : externalTakes,
+                    field.equals("msSinceLastExternalTake") ? ((Number) value).longValue() : msSinceLastExternalTake);
         }
 
         private static boolean truthy(Object v) {
@@ -215,6 +228,12 @@ public final class BrainGate {
         m.put("auto_compact_armed", autoCompactArmed(s));
         m.put("compact_failures", s.compactFailures());
         m.put("compact_failures_budget", MAX_COMPACT_FAILURES);
+        // ★ 第 11 个维度：外脑取件。externally_taken 一眼能看出「事件是不是被人拿走了」——
+        //   这件事在这份读数里原本完全不存在，于是「内脑没事做」和「内脑被饿着」
+        //   在下游看来是同一句话（就是 blocker=none）。2026-10-03 B14 查出来的那条。
+        m.put("externally_taken", s.externalTakes() > 0);
+        m.put("external_takes", s.externalTakes());
+        m.put("ms_since_last_external_take", s.msSinceLastExternalTake());
         m.put("problems", problems(s));
         return m;
     }
@@ -241,6 +260,36 @@ public final class BrainGate {
             out.add("turn_pause_latched:BLOCKED 只能被显式解除（afterWakeEvent 只清 RECOVERABLE_FAILURE），"
                     + "不会自行恢复");
         }
+        // ★ 本条是 B12 那个读数口最大的一处盲区，靠这条补上（2026-10-03 B14 实测定案）：
+        //   内脑 drainInbox() 与外脑 takeEventsForExternal() 跑的是字面同一行
+        //   queue.takeWhile(e -> !isControlEntry(e.type()), now)，同一个 queue 字段、
+        //   都是破坏性取走、链路上没有任何仲裁。而 McpMode.driving() 那道闸管的是
+        //   「谁驾驶身体」，管不到「事件被谁拿走」—— assist 模式下闸是开的，事件照样被拿。
+        //   于是「内脑安静」和「内脑被饿着」在 blocker 上都是 none，一模一样。
+        //   ⚠️ 这里只报事实（被取走过几次、最后一次多久前），**不声称因果**：
+        //   同一个伴侣完全可能一边被外脑取件一边正常开轮，光看这条不能定案。
+        if (s.externalTakes() > 0) {
+            out.add("external_event_takeover:外脑在本会话取走过事件 " + s.externalTakes()
+                    + " 次，最后一次在 " + describeAge(s.msSinceLastExternalTake())
+                    + "前。内脑与外脑共用同一份 takeWhile 队列且无仲裁，"
+                    + "所以内脑「长时间没事做」有可能只是「事件被别人拿走了」，而不是它自己不想动");
+        }
         return out;
+    }
+
+    /** 把「多久前」写成人能一眼看懂的样子；{@code -1}（从没发生过）不许说成「刚刚」。 */
+    private static String describeAge(long millis) {
+        if (millis < 0) {
+            return "（无记录）";
+        }
+        long sec = millis / 1000L;
+        if (sec < 60L) {
+            return sec + " 秒";
+        }
+        long min = sec / 60L;
+        if (min < 60L) {
+            return min + " 分钟";
+        }
+        return (min / 60L) + " 小时";
     }
 }

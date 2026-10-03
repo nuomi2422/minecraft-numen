@@ -262,6 +262,18 @@ public final class EntityAgentLoop {
      */
     private static final long GATE_HEARTBEAT_MS = 300_000L;
 
+    // ---- B15:「事件被外脑取走了」这个事实也要留痕 ----
+    // B14 实测定案：内脑 drainInbox 与外脑 takeEventsForExternal 跑的是字面同一行
+    // queue.takeWhile(...)、同一个 queue 字段、都是破坏性取走、链路上没有任何仲裁。
+    // driving() 那道闸管的是「谁驾驶身体」，管不到「事件被谁拿走」，assist 下闸是开的、
+    // 事件照样被拿。于是「内脑安静」与「内脑被饿着」在 blocker 上都是 none。
+    // 这两个字段就是为了让那种情况下读数能开口。它们只被读，不参与任何判定。
+
+    /** 本会话里外脑真的取走过事件的次数（{@link #takeEventsForExternal} 取到东西才计）。 */
+    private long externalTakes;
+    /** 上一次被外脑取走事件的时刻；0 = 本会话一次都没被取走。 */
+    private long lastExternalTakeAtMs;
+
     /**
      * Bumped every time the owner interrupts a turn ({@link #abort}). Each LLM
      * dispatch captures the value at send time; when the streamed response
@@ -967,6 +979,14 @@ public final class EntityAgentLoop {
      * 和内脑一字不差。控制条目(整理/清空)是对内脑说的,留在队里等模式关闭,
      * 与 drainInbox 同一条 takeWhile 规则。
      *
+     * <p>⚠️ <b>这条与内脑共用队列、共用同一行 {@code takeWhile}、且没有任何仲裁</b>
+     * （{@code drainInbox} 的注释自己就写着「先到先得」）。{@link #isExternallyDriven()}
+     * 那道闸管的是「谁驾驶身体」，<b>管不到「事件被谁拿走」</b>：{@code assist} 模式下
+     * 闸是开的，事件照样被取走，于是内脑会静默饿死而 {@code blocker} 仍然是
+     * {@code none}。这不是本次改动要修的（改它属于产品决策：assist 到底该不该共存），
+     * 本次只做两件事：① 把「被取走过几次」做成可读数（{@link BrainGate}）；
+     * ② 在取件这一刻发一条 {@code external_take}，让那种静默饿死<b>留下证据</b>。
+     *
      * @return 取走的事件拼段;这次没取到返回 null(继续等或如实说没有)
      */
     public String takeEventsForExternal(boolean urgentOnly) {
@@ -974,6 +994,11 @@ public final class EntityAgentLoop {
         long now = System.currentTimeMillis();
         List<EventQueue.Entry> taken = queue.takeWhile(e -> !isControlEntry(e.type()), now);
         if (taken.isEmpty()) return null;
+        // ★ 记账放在「真的取到了」之后：长轮询空转不计数，否则一个挂着的空闲客户端
+        //   就能把「被取走过」这件事刷成假的（B12 那条假绿的同族：信号必须来自真实动作）。
+        externalTakes++;
+        lastExternalTakeAtMs = now;
+        publishExternalTake(taken.size());
         List<String> parts = EventQueue.render(taken, now);
         return parts.isEmpty() ? null : String.join("\n\n", parts);
     }
@@ -1317,9 +1342,13 @@ public final class EntityAgentLoop {
         List<ConvoState.Msg> snapshot = convo.snapshot();
         int window = modelWindow();
         long tokens = lastPromptTokens > 0 ? lastPromptTokens : estimateContextTokens(snapshot);
+        // -1 = 从没被外脑取走过。给 0 会被读成「刚刚被取走」，这两种不能混。
+        long since = lastExternalTakeAtMs <= 0L ? -1L
+                : Math.max(0L, System.currentTimeMillis() - lastExternalTakeAtMs);
         return new BrainGate.State(dead, isExternallyDriven(), turnPause.name(),
                 awaitingLlmResponse, compacting, dispatcher.busy(),
-                snapshot.size(), endpointProblem(), tokens, window, compactFailures);
+                snapshot.size(), endpointProblem(), tokens, window, compactFailures,
+                externalTakes, since);
     }
 
     /**
@@ -1336,7 +1365,7 @@ public final class EntityAgentLoop {
      * <p><b>边沿触发 + 心跳</b>：只在「原因变了」或超过 {@link #GATE_HEARTBEAT_MS}
      * 时写一条。原因是每 tick 都调用，无脑写会把观测文件变成第二个日志坟场；
      * 心跳那条则是为了能证明「读数本身还活着」——一个只在出事时才更新的观测面，
-     * 坏掉的时候和没接一样 indistinguishable。
+     * 坏掉的时候和没接一样分不出来。
      */
     private void publishBrainGate() {
         Map<String, Object> m = new LinkedHashMap<>();
@@ -1350,6 +1379,30 @@ public final class EntityAgentLoop {
         lastGateBlocker = blocker;
         lastGateAtMs = now;
         com.dwinovo.numen.monitor.MonitoringJournal.get().publish("brain", "gate", m);
+    }
+
+    /**
+     * 外脑真的取走了事件时写一条 {@code type=external_take} —— <b>不走边沿触发，无条件写</b>。
+     *
+     * <p>★ 为什么这条必须由「取件」来触发，而不是等 {@code tryStartTurn}：
+     * 被饿死的时候 {@code drainInbox()} 返回 false，{@code tryStartTurn} 走完八道闸
+     * 就静默返回了 —— <b>它根本不会被调用，也就没有任何读数</b>。也就是说
+     * 「读数只在有事时说」，而「最需要它说话的那种情况恰好没事可说」。
+     * 由取件那一侧开口，才拿得到「外脑拿走 N 条、这一刻内脑的闸是 none」这份证据。
+     *
+     * <p>频次不用担心：只在<b>真的取到东西</b>时写，而那需要外脑客户端在轮询
+     * 且队里有事件 —— 也就是本来就有事发生的时候。
+     *
+     * <p>⚠️ 主线程假设：本方法由 {@code takeEventsForExternal} 调用，而它被
+     * {@code NumenActuator} 包在 {@code Minecraft.execute(...)} 里（急件 listener
+     * 也跑在事件落地的那一线程），所以读 {@code convo}/{@code dispatcher} 是安全的。
+     */
+    private void publishExternalTake(int taken) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("companion_id", entityUuid.toString());
+        m.put("taken_events", taken);
+        m.putAll(BrainGate.readout(brainGateState()));
+        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("brain", "external_take", m);
     }
 
     private void tryStartTurn() {

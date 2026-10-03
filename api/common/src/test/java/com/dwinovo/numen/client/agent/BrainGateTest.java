@@ -34,7 +34,7 @@ class BrainGateTest {
         // 这条钉的是「第一个原因」的意义 —— 下游要靠它决定「等什么」，
         // 若顺序一改，「等主人复活」就会变成「等端点修好」，而两者都不成立。
         BrainGate.State s = new BrainGate.State(true, true, "BLOCKED", true, true, true,
-                50, "key missing", 999_999L, 0, 0);
+                50, "key missing", 999_999L, 0, 0, 0L, -1L);
         assertEquals(BrainGate.Blocker.DEAD, BrainGate.first(s));
     }
 
@@ -230,5 +230,95 @@ class BrainGateTest {
             ids.add(b.id());
         }
         assertEquals(BrainGate.Blocker.values().length, ids.size());
+    }
+
+    // ---- B15:事件被外脑取走（第 11 个维度）----
+
+    /**
+     * ★ 本条钉的是 B12 那个读数口<b>最大的一处盲区</b>：
+     * 内脑 {@code drainInbox} 与外脑 {@code takeEventsForExternal} 跑的是字面同一行
+     * {@code queue.takeWhile(...)}，同一个 {@code queue}、都是破坏性取走、
+     * 链路上没有任何仲裁，而 {@code McpMode.driving()} 管的是「谁驾驶身体」、
+     * 管不到「事件被谁拿走」⇒ assist 下闸是开的、事件照样被拿 ⇒ 内脑静默饿死而
+     * {@code blocker} 仍然是 {@code none}。
+     *
+     * <p>所以「内脑安静」与「内脑被饿着」在这份读数里原本是同一句话。这条测试
+     * 要求它们必须能分开。
+     */
+    @Test
+    void aStarvedBrainAndACalmBrainNoLongerLookTheSame() {
+        BrainGate.State calm = BrainGate.State.open();
+        BrainGate.State starved = BrainGate.State.open()
+                .with("externalTakes", 7L).with("msSinceLastExternalTake", 2_000L);
+
+        // blocker 刻意不变：取走事件不是一道拒绝闸（它不挡这一轮，它让这一轮没东西可做）。
+        // 把它算成闸是错的 —— 那会让读数凭空多一种原因。
+        assertEquals("none", BrainGate.readout(calm).get("blocker"));
+        assertEquals("none", BrainGate.readout(starved).get("blocker"),
+                "★ 取走事件不是一道闸：闸是开的，只是队列被拿空了");
+
+        assertEquals(Boolean.FALSE, BrainGate.readout(calm).get("externally_taken"));
+        assertEquals(Boolean.TRUE, BrainGate.readout(starved).get("externally_taken"));
+        assertEquals(0L, BrainGate.readout(calm).get("external_takes"));
+        assertEquals(7L, BrainGate.readout(starved).get("external_takes"));
+        assertEquals(2_000L, BrainGate.readout(starved).get("ms_since_last_external_take"));
+
+        assertTrue(BrainGate.problems(starved).stream().anyMatch(p -> p.startsWith("external_event_takeover:")),
+                "★ 被取走过这件事必须自己开口，否则读数与「一切正常」无从区分");
+        assertTrue(BrainGate.problems(calm).stream().noneMatch(p -> p.startsWith("external_event_takeover:")),
+                "没被取走过就不许报这条 —— 报了就等于凭空造一个原因");
+    }
+
+    /**
+     * 「从来没被取走过」必须与「刚刚被取走过」分得开。
+     *
+     * <p>两者都可能被写成 {@code ms_since_last_external_take = 0}，而下游看到 0
+     * 会读成「正在被抢」—— 一个从未发生的事被读成正在发生，比不报更坏。
+     */
+    @Test
+    void neverTakenIsNotTheSameAsJustTaken() {
+        BrainGate.State never = BrainGate.State.open();
+        assertEquals(-1L, never.msSinceLastExternalTake(), "open() 的默认必须是「无记录」而不是 0");
+        assertEquals(-1L, BrainGate.readout(never).get("ms_since_last_external_take"));
+
+        BrainGate.State just = BrainGate.State.open()
+                .with("externalTakes", 1L).with("msSinceLastExternalTake", 0L);
+        assertEquals(0L, BrainGate.readout(just).get("ms_since_last_external_take"));
+        assertTrue(BrainGate.problems(just).stream()
+                        .anyMatch(p -> p.contains("0 秒")),
+                "0 毫秒要读成「0 秒」而不是「无记录」");
+        assertTrue(BrainGate.problems(never).stream().noneMatch(p -> p.contains("无记录")),
+                "没发生过就压根不该报这条，不该出现「无记录」这种措辞");
+    }
+
+    /** 距上次取走多久要写成人能一眼看懂的样子，且不许出现「-1 秒」这种话。 */
+    @Test
+    void theAgeOfTheLastTakeIsReadableAndNeverNegative() {
+        assertTrue(BrainGate.problems(BrainGate.State.open()
+                .with("externalTakes", 1L).with("msSinceLastExternalTake", 900L))
+                .stream().anyMatch(p -> p.contains("0 秒")), "900ms 算 0 秒，不许四舍五入成 1 秒");
+        assertTrue(BrainGate.problems(BrainGate.State.open()
+                .with("externalTakes", 1L).with("msSinceLastExternalTake", 125_000L))
+                .stream().anyMatch(p -> p.contains("2 分钟")));
+        assertTrue(BrainGate.problems(BrainGate.State.open()
+                .with("externalTakes", 1L).with("msSinceLastExternalTake", 7_200_000L))
+                .stream().anyMatch(p -> p.contains("2 小时")));
+    }
+
+    /**
+     * 计数只在「真的取到了东西」之后加 —— 长轮询空转不计数。
+     *
+     * <p>这条钉的是取件那一侧的记账位置（B12 那条假绿的同族问题：信号必须来自
+     * 真实动作，不然一个挂着的空闲客户端就能把「被取走过」刷成假的）。
+     */
+    @Test
+    void aTakeThatGotNothingDoesNotCountAsATakeover() {
+        // BrainGate 这一侧只能验语义：0 次就是没发生过，读数里不许有任何痕迹。
+        Map<String, Object> r = BrainGate.readout(BrainGate.State.open());
+        assertEquals(0L, r.get("external_takes"));
+        assertEquals(Boolean.FALSE, r.get("externally_taken"));
+        assertTrue(BrainGate.problems(BrainGate.State.open()).stream()
+                .noneMatch(p -> p.contains("external_event_takeover")),
+                "空转不得留下任何「被取走」的痕迹");
     }
 }
