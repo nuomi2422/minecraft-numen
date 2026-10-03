@@ -85,15 +85,28 @@ public record ExperienceDraft(
     public static final List<String> ENTRY_KEYS = List.of(
             "type", "title", "description", "rationale", "root_cause", "recommended_response",
             "trigger_strings", "tool_names", "tags",
+            // ★ 任务 4（2026-10-03）：七字段专用槽位。
+            //   之前七字段被拼成散文塞进 description/rationale/recommended_response，
+            //   于是「门禁判七字段全填」与「落盘找不到七个独立位置」对不上，
+            //   消费侧也只能按自然语言猜哪句是前置条件、哪句是失效条件。
+            //   **键名必须与 ExperienceEntry.toJson() 逐字相同** ——
+            //   ExperienceDraftKeysBindToRealEntryTest 直接读源文件做集合相等断言。
+            "mechanism", "preconditions", "failure_conditions", "observable_signal",
+            "derivation", "efficiency", "evidence",
             "maturity", "verified_count", "priority", "counterexamples",
             "created_at", "verified_at", "last_accessed_at",
-            // ↓ E8 五个：见上面那段说明 —— 声明是为了契约门，不是为了写。
+            // 和 E8 五个键一样声明，**但刻意不写**：刚产出的经验本来就没被验证过/撤回过，
+            // 写出来等于宣称这些事发生过；Builder 的默认值就是「没发生过」。
             "retracted", "retracted_at", "retracted_reason", "supersedes", "consecutive_failures");
 
     /** 本映射实际会写的键（其余由记录层落盘时补，或刻意不写）。 */
     public static final List<String> WRITTEN_KEYS = List.of(
             "type", "title", "description", "rationale", "root_cause", "recommended_response",
-            "trigger_strings", "tags", "maturity", "priority");
+            "trigger_strings", "tags", "maturity", "priority",
+            // ★ 任务 4：七字段槽位现在**真的写**（之前是拼进散文里，槽位是空的）。
+            //   两者同时保留：槽位给机器按字段取，散文给人读。
+            "mechanism", "preconditions", "failure_conditions", "observable_signal",
+            "derivation", "efficiency", "evidence");
 
     /** 展示用标题上限（<b>只影响展示，不影响落盘</b>）。 */
     public static final int DISPLAY_TITLE_CHARS = 60;
@@ -162,6 +175,24 @@ public record ExperienceDraft(
                 x.failureConditions().isBlank() ? "" : "禁用条件：" + x.failureConditions(),
                 x.derivation().isBlank() ? "" : "应对步骤：" + x.derivation());
         o.addProperty("recommended_response", recommended);
+
+        // ★ 任务 4（2026-10-03）：七字段**原值进槽位**，一个都不改写。
+        //
+        //   上面那三段散文**全部保留** —— 它们是给人读的（目录层、L1/L2 展开、监测台肉眼核对），
+        //   而下面是给机器按字段取的。两条路并存，不是二选一：
+        //     · 消费侧要判「这条经验的前置条件是什么」⇒ 读槽位，不用在自然语言里找分句；
+        //     · 检索侧按 trigger_strings 计分 ⇒ 散文里重复出现的机制/推导步骤会重复命中，
+        //       但那已经是既有行为（E4 起就是这样），本次不趁机改打分口径。
+        //
+        //   ★ 为什么**原值**而不是裁剪过的：`Experience.acceptable()` 判的是这七个原值非空，
+        //   槽位里放裁剪版就会与门禁判据对不上（那正是本任务要修的毛病本身）。
+        o.addProperty("mechanism", nz(x.mechanism()));
+        o.addProperty("preconditions", nz(x.preconditions()));
+        o.addProperty("failure_conditions", nz(x.failureConditions()));
+        o.addProperty("observable_signal", nz(x.observableSignal()));
+        o.addProperty("derivation", nz(x.derivation()));
+        o.addProperty("efficiency", nz(x.efficiency()));
+        o.addProperty("evidence", nz(x.evidence()));
 
         // trigger_strings 只承担「检索线索」，不承担「适用条件校验」（Codex 审核 P1-3）。
         // 所以这里放的是短线索，不放整句正文。
@@ -294,6 +325,16 @@ public record ExperienceDraft(
         if (s != null && !s.isBlank()) {
             into.add(s.trim());
         }
+    }
+
+    /**
+     * null → 空串，别的原样 trim 一下（任务 4 的七字段槽位用）。
+     *
+     * <p>★ 为什么不复用 {@link #clip}：那个是展示用的、带省略号，
+     * 落到槽位里就会与 {@code Experience.acceptable()} 的「非空即算填」判据对不上。</p>
+     */
+    private static String nz(String s) {
+        return s == null ? "" : s.trim();
     }
 
     private static String joinNonBlank(String sep, String... parts) {

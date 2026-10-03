@@ -36,6 +36,37 @@ public record ExperienceEntry(
         List<String> triggerStrings,
         List<String> toolNames,
         List<String> tags,
+        // ---- 七字段专用槽位（doc 45 §2 用户 2026-10-01 口述定的格式） ----
+        //
+        // ★ 为什么开槽位（任务 4，2026-10-03）：
+        //   `ExperienceDraft.from()` 原来把七字段**拼成散文**塞进三个既有字段 ——
+        //   description = 「机制：X 应该这样：Y 可观察：Z」、
+        //   rationale = 「效率：E 证据：F」、recommended_response = 「前置条件：P 禁用条件：Q …」。
+        //   后果三条：
+        //     ① **字段被压扁**：「前置条件」和「失效条件」变成一段话里的两个分句，
+        //        消费侧（携带器 / 规划知识 / L1·L2 展开）没法按字段取，只能按自然语言猜。
+        //     ② **同一份内容写三遍**（机制同时进 title/description/root_cause）⇒ 索引里算重复。
+        //     ③ **两侧判据对不上**：`Experience.acceptable()` 判「七字段全填」，
+        //        而落盘后找不到七个独立位置可以核对 —— 门禁判的是 A，存的是 B。
+        //   ⇒ 开槽位后门禁判据与落盘形状一致；**散文字段全部保留**（人读的那份不丢）。
+        //
+        // ★ 为什么紧跟 tags 而不是追加到末尾：**record 是位置契约**，
+        //   加在末尾就得让 build() 把它排在 maturity 之后，混进「成熟度/计数/时间戳」那一堆里；
+        //   放在 tags 之后则是「全部内容字段聚在一起、元数据字段聚在一起」，两组各自连续。
+        //   （第一次就写在了末尾，编译报 `String 无法转换为 ExperienceMaturity` ——
+        //     正是这个错位，注解没跟上。）
+        // ★ 默认空串而不是 null：与 `build()` 已有的 `nz()` 约定一致，
+        //   且这些字段在 `Experience` 那侧的语义本来就是「blank 就算没填」。
+        // ★ **不动 stableKey/fingerprint**（仍只吃 `type,title`）：
+        //   给老条目补槽位不能让它换 id、重新去重、并条目（B5 同款理由，有反证测试钉着）。
+        String mechanism,
+        String preconditions,
+        String failureConditions,
+        String observableSignal,
+        String derivation,
+        String efficiency,
+        String evidence,
+        // ---- 以下是成熟度 / 计数 / 时间戳：不是「这条经验讲了什么」，是「它现在算什么」 ----
         ExperienceMaturity maturity,
         int verifiedCount,
         int priority,
@@ -43,8 +74,9 @@ public record ExperienceEntry(
         long createdAt,
         long verifiedAt,
         long lastAccessedAt,
+
         // ---- E8：验证状态变化（撤回 / 修订 / 降级）----
-        // ⚠️ 这五个都是**元数据**，一律不参与 stableKey(type,title) ——
+        // ⚠️ 下面这五个都是**元数据**，一律不参与 stableKey(type,title) ——
         //   改成熟度、撤回、标注取代关系都不该换掉这条经验的身份。
         //   否则「验证一次」就会变成「新的一条」，历史全断。
         boolean retracted,
@@ -248,6 +280,16 @@ public record ExperienceEntry(
         o.add("trigger_strings", strArray(triggerStrings));
         o.add("tool_names", strArray(toolNames));
         o.add("tags", strArray(tags));
+        // ---- 七字段槽位（任务 4）----
+        // ★ 一律写出来，**哪怕是空串**：写出来才能区分「这条经验声明了七字段槽位但没填」
+        //   与「这是老条目、产生时还没有槽位」。少写一个键，这两种就长得一模一样。
+        o.addProperty("mechanism", nzForJson(mechanism));
+        o.addProperty("preconditions", nzForJson(preconditions));
+        o.addProperty("failure_conditions", nzForJson(failureConditions));
+        o.addProperty("observable_signal", nzForJson(observableSignal));
+        o.addProperty("derivation", nzForJson(derivation));
+        o.addProperty("efficiency", nzForJson(efficiency));
+        o.addProperty("evidence", nzForJson(evidence));
         o.addProperty("maturity", maturity == null ? null : maturity.name());
         o.addProperty("verified_count", verifiedCount);
         o.addProperty("priority", priority);
@@ -278,6 +320,14 @@ public record ExperienceEntry(
                 .triggerStrings(strList(o, "trigger_strings"))
                 .toolNames(strList(o, "tool_names"))
                 .tags(strList(o, "tags"))
+                // 七字段槽位：老条目没有这些键 ⇒ str() 返空串 ⇒ **读得回来，不用迁移文件**
+                .mechanism(str(o, "mechanism"))
+                .preconditions(str(o, "preconditions"))
+                .failureConditions(str(o, "failure_conditions"))
+                .observableSignal(str(o, "observable_signal"))
+                .derivation(str(o, "derivation"))
+                .efficiency(str(o, "efficiency"))
+                .evidence(str(o, "evidence"))
                 .maturity(parseEnum(ExperienceMaturity.class, str(o, "maturity")))
                 .verifiedCount(intVal(o, "verified_count"))
                 .priority(intVal(o, "priority"))
@@ -375,6 +425,14 @@ public record ExperienceEntry(
         private List<String> triggerStrings = List.of();
         private List<String> toolNames = List.of();
         private List<String> tags = List.of();
+        // 七字段槽位（任务 4）：默认空串 = 「没填」，与 Experience.acceptable() 的判据同口径
+        private String mechanism = "";
+        private String preconditions = "";
+        private String failureConditions = "";
+        private String observableSignal = "";
+        private String derivation = "";
+        private String efficiency = "";
+        private String evidence = "";
         private ExperienceMaturity maturity = ExperienceMaturity.OBSERVED;
         private int verifiedCount;
         private int priority = 50;
@@ -402,6 +460,14 @@ public record ExperienceEntry(
                     .triggerStrings(e.triggerStrings())
                     .toolNames(e.toolNames())
                     .tags(e.tags())
+                    // 七字段槽位必须一起搬，否则 withEvidence()/retracted() 走一遍就把正文抹成空串
+                    .mechanism(e.mechanism())
+                    .preconditions(e.preconditions())
+                    .failureConditions(e.failureConditions())
+                    .observableSignal(e.observableSignal())
+                    .derivation(e.derivation())
+                    .efficiency(e.efficiency())
+                    .evidence(e.evidence())
                     .maturity(e.maturity())
                     .verifiedCount(e.verifiedCount())
                     .priority(e.priority())
@@ -469,6 +535,45 @@ public record ExperienceEntry(
 
         public Builder maturity(ExperienceMaturity v) {
             this.maturity = v;
+            return this;
+        }
+
+        // ---- 七字段槽位的 setter（任务 4）----
+        // ⚠️ 全部走 nz()：null 与 "" 在这里没有区别，而「没有区别」正是
+        //   Experience.acceptable() 判「七字段全填」时依赖的前提。
+
+        public Builder mechanism(String v) {
+            this.mechanism = nz(v);
+            return this;
+        }
+
+        public Builder preconditions(String v) {
+            this.preconditions = nz(v);
+            return this;
+        }
+
+        public Builder failureConditions(String v) {
+            this.failureConditions = nz(v);
+            return this;
+        }
+
+        public Builder observableSignal(String v) {
+            this.observableSignal = nz(v);
+            return this;
+        }
+
+        public Builder derivation(String v) {
+            this.derivation = nz(v);
+            return this;
+        }
+
+        public Builder efficiency(String v) {
+            this.efficiency = nz(v);
+            return this;
+        }
+
+        public Builder evidence(String v) {
+            this.evidence = nz(v);
             return this;
         }
 
@@ -543,10 +648,18 @@ public record ExperienceEntry(
                     nz(rationale),
                     nz(rootCause),
                     nz(recommendedResponse),
-                    copy(triggerStrings),
-                    copy(toolNames),
-                    copy(tags),
-                    maturity == null ? ExperienceMaturity.OBSERVED : maturity,
+                copy(triggerStrings),
+                copy(toolNames),
+                copy(tags),
+                // 七字段槽位（任务 4）：走 nz()，null 与空串同义
+                nz(mechanism),
+                nz(preconditions),
+                nz(failureConditions),
+                nz(observableSignal),
+                nz(derivation),
+                nz(efficiency),
+                nz(evidence),
+                maturity == null ? ExperienceMaturity.OBSERVED : maturity,
                     verifiedCount,
                     priority <= 0 ? 50 : priority,
                     copy(counterexamples),
@@ -577,5 +690,19 @@ public record ExperienceEntry(
             }
             return List.copyOf(seen);
         }
+    }
+
+    /**
+     * null → 空串（<b>record 层面的</b>；Builder 里另有一个同名的私有版本）。
+     *
+     * <p>★ 为什么要两个：{@code toJson()} 是 record 的实例方法，
+     * {@code Builder.nz()} 是 Builder 的私有静态方法 —— 两者互不可见，
+     * 而 {@code toJson()} 需要把七字段槽位（任务 4）写成非 null。
+     * <b>同名是刻意的</b>：语义完全相同（null 与空串在这里没有区别，
+     * 而这正是 {@code Experience.acceptable()} 判「七字段全填」依赖的前提），
+     * 不同名反而会让人以为有两个不同口径。</p>
+     */
+    private static String nzForJson(String s) {
+        return s == null ? "" : s;
     }
 }

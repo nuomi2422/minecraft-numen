@@ -508,4 +508,135 @@ class ExperienceDraftGateTest {
         assertEquals(7, m.getAsJsonArray("checks").size(), "Q0..Q6 七条都在，缺一条就看不见");
         assertNotNull(m.getAsJsonArray("checks").get(0).getAsJsonObject().get("why"));
     }
+
+    // ---------- 任务 4：七字段槽位（2026-10-03） ----------
+
+    /**
+     * ★ 本条钉的是「七字段**各占一个槽位**」，不是「JSON 里出现过这七个词」。
+     *
+     * <p>改之前它们被拼成散文塞进 {@code description}/{@code rationale}/{@code recommended_response}：
+     * 「前置条件」和「失效条件」变成一段话里的两个分句，消费侧没法按字段取。
+     */
+    @Test
+    void theSevenFieldsLandInTheirOwnSlotsUnchanged() {
+        Experience seven = sevenFields();
+        JsonObject e = draftOf(verdict(GOOD, "WRITE_EXPERIENCE"), fullMemo("hp=12/20")).toJson();
+
+        assertEquals(seven.mechanism(), e.get("mechanism").getAsString(), "机制槽位");
+        assertEquals(seven.preconditions(), e.get("preconditions").getAsString(), "前置条件槽位");
+        assertEquals(seven.failureConditions(), e.get("failure_conditions").getAsString(), "失效条件槽位");
+        assertEquals(seven.observableSignal(), e.get("observable_signal").getAsString(), "可观察信号槽位");
+        assertEquals(seven.derivation(), e.get("derivation").getAsString(), "推导步骤槽位");
+        assertEquals(seven.efficiency(), e.get("efficiency").getAsString(), "效率槽位");
+        assertEquals(seven.evidence(), e.get("evidence").getAsString(), "证据槽位");
+    }
+
+    /**
+     * ★ 反证：槽位里放的是<b>裁剪过的</b>或<b>加标签的</b>值就是错的。
+     *
+     * <p>{@code Experience.acceptable()} 判的是这七个<b>原值</b>非空；
+     * 槽位里若放裁剪版或「适用条件：X」这种带标签的，门禁判据与落盘形状就对不上 ——
+     * 那正是本任务要修的毛病本身，不能换个形式再犯一次。
+     */
+    @Test
+    void theSlotsCarryTheRawValuesNotTheLabelledProse() {
+        JsonObject e = draftOf(verdict(GOOD, "WRITE_EXPERIENCE"), fullMemo("hp=12/20")).toJson();
+        for (String slot : new String[]{"mechanism", "preconditions", "failure_conditions",
+                "observable_signal", "derivation", "efficiency", "evidence"}) {
+            String v = e.get(slot).getAsString();
+            assertFalse(v.startsWith("适用条件："), slot + " 带上了散文标签，消费侧就没法直接当条件用");
+            assertFalse(v.startsWith("禁用条件："), slot + " 带上了散文标签");
+            assertFalse(v.startsWith("证据："), slot + " 带上了散文标签");
+            assertFalse(v.endsWith("…"), slot + " 是裁剪过的展示值，不是原值");
+        }
+    }
+
+    /**
+     * ★ 开槽位<b>不是</b>把散文删掉 —— 散文是给人读的那份（目录层 / L1·L2 展开 / 监测台肉眼核对）。
+     *
+     * <p>所以槽位与散文必须同时存在。少一边就有一类读者拿不到东西，
+     * 而那类读者不会报错，只会「读不到」。
+     */
+    @Test
+    void theProseKeptExistingAndTheSlotsDoNotReplaceIt() {
+        JsonObject e = draftOf(verdict(GOOD, "WRITE_EXPERIENCE"), fullMemo("hp=12/20")).toJson();
+        String description = e.get("description").getAsString();
+        assertTrue(description.contains("应对步骤："), "散文里的因果链标签还在（人读的那份不丢）");
+        assertTrue(description.contains("判据："), "散文里的判据标签还在");
+        assertTrue(e.get("recommended_response").getAsString().contains("适用条件："),
+                "散文里的适用/禁用条件标签还在");
+        assertTrue(e.get("rationale").getAsString().contains("收益："), "散文里的收益/证据标签还在");
+    }
+
+    /**
+     * 七字段<b>部分</b>为空时，空的那几个槽位写空串、<b>不是</b>缺键。
+     *
+     * <p>少写一个键，「这条经验声明了槽位但没填」与「这是老条目、产生时还没有槽位」
+     * 就长得一模一样 —— 而这两种要区别对待：前者是质量问题，后者是历史包袱。
+     *
+     * <p>★ 为什么是「部分空」而不是「全空」：{@code Experience.parse:279} 有
+     * {@code filledCount() == 0 → null} —— 七字段全空的判定**在解析层就被丢掉**，
+     * 根本到不了 draft。所以「全空但仍出 draft」这种输入不存在，
+     * 我第一版拿 {@link #GOOD_NO_TYPE} 当样本是**样本选错了**（它只少了
+     * {@code experienceType}，七字段照样是满的）。
+     * 「全空即丢弃」是既有正确行为，本任务不改它，这里也钉一条反证免得日后有人当成 bug 修。
+     */
+    @Test
+    void aPartlyEmptySlotIsAnEmptyStringRatherThanAMissingKey() {
+        JsonObject g = obj(GOOD);
+        g.addProperty("efficiency", "");   // 只掏空一个：其余六个仍非空 ⇒ 仍算「产出了经验」
+        g.addProperty("evidence", "");
+        JsonObject e = draftOf(verdict(g.toString(), "WRITE_EXPERIENCE"), fullMemo("hp=12/20")).toJson();
+
+        for (String slot : new String[]{"mechanism", "preconditions", "failure_conditions",
+                "observable_signal", "derivation", "efficiency", "evidence"}) {
+            assertTrue(e.has(slot), "★ 槽位 " + slot + " 必须写出来，哪怕空串；缺键就分不出「没填」与「老条目」");
+        }
+        assertEquals("", e.get("efficiency").getAsString(), "被掏空的那个槽位应是空串");
+        assertEquals("", e.get("evidence").getAsString());
+        assertTrue(e.get("mechanism").getAsString().length() > 0, "没掏空的槽位照常有内容");
+    }
+
+    /** ★ 反证：七字段<b>全空</b>的判定在解析层就被丢弃（既有行为，不是本任务引入的）。 */
+    @Test
+    void anAllBlankExperienceNeverReachesTheDraftAtAll() {
+        JsonObject g = obj(GOOD);
+        for (String k : new String[]{"mechanism", "preconditions", "failureConditions",
+                "observableSignal", "derivation", "efficiency", "evidence"}) {
+            g.addProperty(k, "");
+        }
+        Verdict v = verdict(g.toString(), "WRITE_EXPERIENCE");
+        assertNull(v.experience(),
+                "★ Experience.parse 的 filledCount()==0 → null 是既有正确行为：全空即「没产出经验」，"
+                        + "不该产出一条空草稿进库。谁要改它，得先说清空草稿进库会造成什么。");
+    }
+
+    /**
+     * ★ 反证：槽位的加入<b>不许</b>改这条经验的身份。
+     *
+     * <p>{@code stableKey} 只吃 {@code (type,title)}。若哪天有人顺手把七字段也塞进去，
+     * 老条目会换 id、重新去重、并条目 —— 历史全断。
+     *
+     * <p>⚠️ 这里比的是 <b>{@code title}</b> 而不是 id：同一条草稿的 id 由
+     * {@code ExperienceStore.stableKey(type,title)} 现算，而 learner 侧<b>刻意不依赖</b>
+     * experience-core（split-package），拿不到那个函数。
+     * 「七字段变了而身份没变」能钉住的是「键没被拿去做身份的一部分」，
+     * 真正算 id 相等的那道判据在 {@code ExperienceEntry} 侧的测试里。
+     */
+    @Test
+    void theSevenSlotsDoNotChangeTheIdentityOfAnEntry() {
+        JsonObject g = obj(GOOD);
+        g.addProperty("efficiency", "");   // 只掏空一个，其余仍非空 ⇒ 仍算产出了经验
+        g.addProperty("evidence", "");
+        ExperienceDraft full = draftOf(verdict(GOOD, "WRITE_EXPERIENCE"), fullMemo("hp=12/20"));
+        ExperienceDraft fewer = draftOf(verdict(g.toString(), "WRITE_EXPERIENCE"), fullMemo("hp=12/20"));
+        // 身份键的输入只有 (type,title) —— 两份草稿的这两个键必须逐字相同
+        assertEquals(full.toJson().get("title").getAsString(), fewer.toJson().get("title").getAsString(),
+                "标题是 id 的组成部分，七字段不该影响它");
+        assertEquals(full.toJson().get("type").getAsString(), fewer.toJson().get("type").getAsString(),
+                "type 是身份键的另一半，也不该被七字段影响");
+        assertNotEquals(full.toJson().get("efficiency").getAsString(),
+                fewer.toJson().get("efficiency").getAsString(),
+                "★ 反证前提：效率字段确实变了 —— 上面那两条断言不是恒真");
+    }
 }
