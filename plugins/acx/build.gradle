@@ -19,6 +19,14 @@ dependencies {
     // 插件只经瘦 api jar 看 NUMEN（见 buildSrc 的 numen-plugin.gradle）。
     // gson 由 Minecraft 运行期自带的库提供，声明只为编译期解析。
     implementation 'com.google.code.gson:gson:2.10.1'
+
+    // ★ 2026-10-03 收口：ACX 原来**一个 JUnit 测试都没有**（那 206 项是 main() 手工台），
+    //   于是 :plugins:acx:test 因「有测试源码但一个都没发现」而一直失败。
+    //   现在用 AcxOfflineSuiteTest 把那 206 项接成真门禁，所以必须引 JUnit。
+    //   版本与其它模块一致（junit-bom 5.11.4），避免多套 JUnit 版本在同一个构建里打架。
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 // ---------------------------------------------------------------------------
@@ -47,14 +55,34 @@ def acxFixture = tasks.register('acxFixture', Sync) {
 
 tasks.register('acxOfflineTest', JavaExec) {
     group = 'verification'
-    description = 'ACX offline self-check (206 checks, 2 known-red per TODO AC-B12)'
+    description = 'ACX offline self-check (206 checks, 2 known-red per TODO AC-B12) -- console copy only'
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.dwinovo.numen.acx.test.AcxTestMain'
     dependsOn tasks.named('acxFixture')
     workingDir = layout.buildDirectory.dir('acx-fixture').get().asFile
+    // ★ 2026-10-03：这个任务**不再是门禁**，只是给人看的那份控制台输出。
+    //   真正的门禁是 JUnit 的 AcxOfflineSuiteTest（它把那 206 项接进测试报告，
+    //   并且断言「失败数必须恰好等于已知的 2 项」）。
+    //   为什么不再靠 ignoreExitValue：它会让**新问题也一样静默** ——
+    //   而那正是我们这轮收口要消灭的东西。
     ignoreExitValue = true
+}
+
+// ★ 收口（2026-10-03）：把 206 项离线自检接成真正的门禁。
+//   1) test 必须先有 fixture —— 否则 AcxOfflineSuiteTest 会在不存在的目录里找脚本库；
+//   2) failOnNoDiscoveredTests 保持默认 true：**「没发现任何测试」必须报错**。
+//      本模块以前一个 JUnit 测试都没有，:plugins:acx:test 因此一直是红的。
+//      现在有了 AcxOfflineSuiteTest，这个问题才真正解决（而不是把它关掉）。
+test {
+    dependsOn tasks.named('acxFixture')
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'failed', 'skipped'
+        showStandardStreams = false
+    }
 }
 
 tasks.named('check') {
     dependsOn 'acxOfflineTest'
 }
+
