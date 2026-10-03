@@ -75,7 +75,18 @@ class PlanningKnowledgeTest {
         assertFalse(sel.empty());
         assertTrue(sel.text().contains("exp:diamond"));
         assertTrue(sel.text().contains("VERIFIED"));
-        assertTrue(sel.text().contains("experience-abc.jsonl"), "必须带出处，供监测台核对");
+        /* ★ 这条断言原先写的是 contains("experience-abc.jsonl")，注释说「必须带出处，供监测台核对」。
+           2026-10-03 改掉了：**prompt 里不再渲染裸 UUID 文件名**（任务 3）。
+           而「供监测台核对」这件事本来就不靠 prompt 文本 ——
+           监测台读的是 planning_knowledge **事件**里的 sources[].origin
+           （ExperienceKnowledgeSource 里 src.put("origin", item.origin())），
+           那里仍然是原始文件名、仍能区分跨同伴串味。
+           ⇒ 这里改成断言「出处仍在，只是换成人话名」，观测侧那条由下面的
+             「观测那一侧仍保留原始文件名」钉住。 */
+        assertTrue(sel.text().contains("origin=该同伴亲历经验"),
+                "出处必须仍在正文里（换成人话名），实际：\n" + sel.text());
+        assertFalse(sel.text().contains("experience-abc.jsonl"),
+                "★ prompt 里不该再出现裸文件名，实际：\n" + sel.text());
         assertTrue(sel.text().contains("-58"));
     }
 
@@ -263,5 +274,66 @@ class PlanningKnowledgeTest {
 
         assertNotNull(sel);
         assertTrue(sel.text().isEmpty());
+    }
+
+    // ---------- 出处的人话名（任务 3） ----------
+
+    /**
+     * ★ 本条钉的是「prompt 里不再出现裸 UUID 文件名」。
+     *
+     * <p>为什么这是问题：模型看到 {@code origin=experience-8d8d379b-…-307e22581f1f.jsonl}
+     * 既读不出信息、又占预算，还会让「这只同伴的经验」和「内置层」看起来像同类 ——
+     * 而它们的可信度完全不同。
+     */
+    @Test
+    void 出处渲染成人话名_prompt里不再出现裸UUID文件名() {
+        UUID mine = UUID.fromString("11111111-1111-1111-1111-111111111111");
+        ExperienceKnowledgeSource.ItemSupplier supplier = (companion, query, req) ->
+                List.of(item("exp:1", PlanningKnowledge.Kind.EXPERIENCE,
+                        "钻石经验", "VERIFIED", "钻石", "实测",
+                        "experience-" + mine + ".jsonl", 1.0, "钻石"));
+
+        PlanningKnowledge.Selection sel = ExperienceKnowledgeSource.recall(
+                mine, request("钻石", "stage_b"), supplier, List.of());
+
+        assertTrue(sel.text().contains("origin=该同伴亲历经验"),
+                "prompt 里的出处必须是人话名，实际：\n" + sel.text());
+        assertFalse(sel.text().contains(mine.toString()),
+                "★ prompt 里不该再出现裸 UUID 文件名，实际：\n" + sel.text());
+    }
+
+    /**
+     * ★ 反证：<b>观测那一侧必须还留着原始文件名</b>。
+     *
+     * <p>因为跨同伴串味时，监测台要靠 UUID 一眼看出是哪只同伴的经验库 ——
+     * 在数据层就换成「该同伴亲历经验」的话，两只同伴的来源会变得一模一样，
+     * 那个判据就一起没了。
+     */
+    @Test
+    void 观测那一侧仍保留原始文件名_否则监测台分不出跨同伴串味() {
+        UUID mine = UUID.fromString("11111111-1111-1111-1111-111111111111");
+        String raw = "experience-" + mine + ".jsonl";
+
+        /* 这一条钉的是「只改渲染层，没改数据层」：
+           ExperienceKnowledgeSource 造 Item 时仍把原始文件名放进 origin
+           （那里 src.put("origin", item.origin()) 写进 planning_knowledge 事件），
+           人话名只在 renderOne 里套一层。 */
+        assertEquals("该同伴亲历经验", PlanningKnowledge.humanOrigin(raw),
+                "渲染层要翻译");
+        /* 反证：humanOrigin 是纯函数，不改传入的字符串，也没有任何写回。 */
+        String copy = new String(raw.toCharArray());
+        PlanningKnowledge.humanOrigin(copy);
+        assertEquals(raw, copy, "humanOrigin 不许就地改参数");
+    }
+
+    /** 已经读得懂的来源名原样留着：不扩大改动面，builtin/mc-guide.md 不是噪音。 */
+    @Test
+    void 本来就读得懂的出处原样留着() {
+        assertEquals("builtin", PlanningKnowledge.humanOrigin("builtin"));
+        assertEquals("mc-guide.md", PlanningKnowledge.humanOrigin("mc-guide.md"));
+        /* 不认识的形状原样返回 —— 不编一个像模像样的名字。 */
+        assertEquals("some-future-source", PlanningKnowledge.humanOrigin("some-future-source"));
+        assertEquals("", PlanningKnowledge.humanOrigin(""));
+        assertEquals(null, PlanningKnowledge.humanOrigin(null));
     }
 }

@@ -314,7 +314,7 @@ public final class PlanningKnowledge {
         sb.append("・[").append(item.kind() == Kind.GUIDE ? "攻略" : "经验")
                 .append(" id=").append(item.id())
                 .append(" maturity=").append(item.maturity())
-                .append(" origin=").append(item.origin())
+                .append(" origin=").append(humanOrigin(item.origin()))
                 .append("]\n");
         if (!item.title().isBlank()) {
             sb.append("  标题：").append(clip(item.title())).append('\n');
@@ -326,6 +326,37 @@ public final class PlanningKnowledge {
             sb.append("  推荐处理：").append(clip(item.response())).append('\n');
         }
         return sb.toString();
+    }
+
+    /**
+     * 出处的**人话名**，只用于渲染进 prompt。
+     *
+     * <p>★ 为什么只在渲染时换、而不在 {@link Item} 里换：
+     * {@code origin} 同时喂给监测台观测（{@code ExperienceKnowledgeSource} 把它写进
+     * {@code planning_knowledge} 事件的 {@code sources[].origin}），而那里**必须留原始
+     * 文件名** —— 跨同伴串味时监测台要靠 UUID 一眼看出是哪只同伴的经验库。
+     * 在数据层换名会把那个判据一起换掉。
+     *
+     * <p>★ 为什么只映射 UUID 那一类、{@code builtin} / {@code mc-guide.md} 原样留着：
+     * 那两个本来就读得懂，不构成噪音；而
+     * {@code RddPlanningKnowledgeTest} 钉住了 {@code origin=builtin} 的渲染形状。
+     * 需求是「prompt 里不再出现裸 UUID 文件名」，那就只动真的吵的那一类，
+     * 不扩大改动面。
+     *
+     * @param raw {@code Item.origin()} 原文
+     * @return prompt 里显示的来源名；不认识的形状原样返回（不编一个像模像样的名字）
+     */
+    static String humanOrigin(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return raw;
+        }
+        // experience-<uuid>.jsonl：同伴亲历的经验库。UUID 对模型没有意义，
+        // 对监测台有意义 —— 所以只在这一层把它翻译掉。
+        String lower = raw.toLowerCase(java.util.Locale.ROOT);
+        if (lower.startsWith("experience-") && lower.endsWith(".jsonl")) {
+            return "该同伴亲历经验";
+        }
+        return raw;
     }
 
     /** 单条裁剪，防止一条超长经验独占预算。 */
