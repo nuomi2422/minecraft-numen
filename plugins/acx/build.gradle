@@ -34,7 +34,7 @@ dependencies {
 // acx/api + acx/core are Minecraft-free, so the suite runs on a plain JDK with
 // only gson on the classpath - no gradle, no game, no devlaunch.
 //
-// NOTE: 4 of the 208 checks are deliberately RED. Two of them come from
+// NOTE: 5 of the 209 checks are deliberately RED. Two of them come from
 // AcxTestMain.ctrlSnapshot(), which documents an unfixed bug (for-loop across
 // a breakpoint cannot see $scan.matches on resume) and says so in a
 // TODO(AC-B12) comment. The third one is the 2026-10-03 hardening regression
@@ -63,12 +63,31 @@ dependencies {
 //   reports SUCCESS therefore gets recorded as a successful experience sample,
 //   i.e. it pollutes the very evidence chain we are trying to keep honest.
 //
+// The fifth is "「动作已受理、还在世界里跑」不许被记成 STEP_FAILED (TODO AC-B20)"
+// -- the 69-doc group-1 red line "脚本在等 ≠ 身体动作已停" (a waiting script does not
+// mean the body stopped). AcxRunner:567-572 emits STEP_FAILED for EVERY non-success
+// outcome of a linear step, PAUSED included, and its detail carries only
+// reason + elapsed_ms -- the task_id / _accepted / _completed that
+// PortToolAdapter.acceptedOutput produced are dropped. So "she is walking there"
+// is logged as "this step failed", and the in-flight task id survives only as text
+// inside `reason` ("...后台执行中: taskId=t1"), unreadable by machine.
+// MEASURED on the live instance (config/numen/monitor/acx.jsonl, 2539 lines):
+//   STEP_FAILED|PAUSED = 53   <- actions still in flight, logged as failures
+//   STEP_FAILED|FAIL   = 29   <- real failures
+//   STEP_PAUSED|PAUSED =  1   <- the only kind actually meant for "waiting"
+// i.e. counting failures by `kind` counts more fakes than real ones (53 vs 29),
+// and the monitoring station's ACX page shows exactly that wrong number.
+// ★ Note why the earlier async tests missed it: they only assert
+//   AcxRunRecord.status(), which IS correct (PAUSED). The record was right and the
+//   LOG was wrong -- and a wrong log is harder to notice than a wrong record.
+//
 // We keep the gate honest by asserting the failure count is EXACTLY these
-// four (see AcxOfflineSuiteTest) instead of setting ignoreExitValue here:
+// five (see AcxOfflineSuiteTest) instead of setting ignoreExitValue here:
 // ignoreExitValue makes *new* problems just as silent as the known ones.
 //
 // ⚠️ The fixes (moving when completedStepIndex advances; checking the cancel
-//   flag once more before reporting success) are FUNCTIONAL changes and were
+//   flag once more before reporting success; splitting PAUSED out of STEP_FAILED
+//   and carrying task_id into the event detail) are FUNCTIONAL changes and were
 //   deliberately NOT done while the owner has the code frozen.
 // The offline suite self-checks the ac-lib we actually ship (its group 17 looks
 // for a directory named 'ac-lib', while the shipped one is 'acx-lib' because
@@ -86,7 +105,7 @@ def acxFixture = tasks.register('acxFixture', Sync) {
 
 tasks.register('acxOfflineTest', JavaExec) {
     group = 'verification'
-    description = 'ACX offline self-check (208 checks, 4 known-red: TODO AC-B12 x2 + TODO AC-B18 x1 + TODO AC-B19 x1) -- console copy only'
+    description = 'ACX offline self-check (209 checks, 5 known-red: TODO AC-B12 x2 + TODO AC-B18 x1 + TODO AC-B19 x1 + TODO AC-B20 x1) -- console copy only'
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.dwinovo.numen.acx.test.AcxTestMain'
     dependsOn tasks.named('acxFixture')

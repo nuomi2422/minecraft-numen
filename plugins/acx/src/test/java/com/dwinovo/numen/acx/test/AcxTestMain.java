@@ -1591,6 +1591,70 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             eq(1, adapter.pendingCount(), "挂了账");
         });
 
+        // ═══════════════════════════════════════════════════════════════════
+        // TODO(AC-B20)：69 号文档第 1 组红线最后一条「脚本在等 ≠ 身体动作已停」
+        //
+        // 实机读数（live config/numen/monitor/acx.jsonl，2539 行，2026-10-03 核）：
+        //     STEP_FAILED|PAUSED = 53   ← 「动作正在世界里执行」被记成了失败
+        //     STEP_FAILED|FAIL   = 29   ← 真正失败的
+        //     STEP_PAUSED|PAUSED =  1   ← 真正「暂停等结果」的
+        //   样本：{"kind":"STEP_FAILED","step_id":"move","status":"PAUSED",
+        //          "reason":"goto 已受理，后台执行中: taskId=t1"}
+        // ⇒ 「她正在走过去」在日志里长成「这一步失败了」。按 kind 统计失败，
+        //   假失败（53）比真失败（29）还多 1.8 倍。
+        //
+        // 机理（AcxRunner.java:567-572）：execLinear 对任何 !out.isSuccess() 的
+        // 结局一律 emit STEP_FAILED，PAUSED 也在内；detail 只有 reason + elapsed_ms，
+        // PortToolAdapter.acceptedOutput 里的 task_id / _accepted / _completed
+        // 全被丢掉 ⇒ 实机 53 条里带 task_id 的是 0 条，taskId 只以文本混在 reason 里，
+        // 机器读不出来。
+        // ⇒ 观测面没法把「脚本在等」与「身体已停」分开 —— 正是这条红线要防的那件事。
+        //
+        // ⚠️ 为什么上面几条测试抓不到：它们只断言 AcxRunRecord.status()（确实是 PAUSED，
+        //   那一层是对的），没有一个去看事件流 —— 记录对了、日志错了，比记录错更难发现。
+        //
+        // 修它是功能改动（要在 emit 里带上 task_id 并把 PAUSED 从 STEP_FAILED 里摘出去），
+        // owner 2026-10-03 已冻结功能代码 ⇒ 这里只钉住，让它可见、可数、新增问题会炸。
+        // ═══════════════════════════════════════════════════════════════════
+        T.test("「动作已受理、还在世界里跑」不许被记成 STEP_FAILED（TODO AC-B20，当前会）", () -> {
+            Fake.resetCalls();
+            FakePorts.Scripted port = FakePorts.Scripted.of("goto")
+                    .thenAccepted("t9", Fake.params("moving", true));
+            PortToolAdapter adapter = PortToolAdapter.builder(port).build();
+            Fake.Registry reg = new Fake.Registry()
+                    .add(adapter)
+                    .add(Fake.fixed("after", Fake.params("done", true)));
+            Fake.Events evs = new Fake.Events();
+            AcxRunner r = runner(reg).events(evs).build();
+
+            AcxRunRecord rec = r.run(def(
+                    step("move", "goto", Map.of()),
+                    step("after", "after", Map.of())), Map.of());
+
+            // ── 前置事实：这一步确实只是「在等」，身体还在动（这几条现在是对的）──
+            eq(AcxStatus.PAUSED, rec.status(), "受理即暂停（不是成功）");
+            eq("async_accepted", rec.pausedReason(), "暂停原因=已受理仍在跑");
+            eq(0, Fake.calls.count("after"), "后续步还没轮到");
+
+            // ── ★ 红线本体 ──
+            // 只用一个断言，让失败信息里同时带着两个数字（诊断信息比断言数量值钱）
+            int failedLike = 0;
+            String taskIdField = "";
+            for (AcxEvent e : evs.all) {
+                if (e.kind() == AcxEvent.Kind.STEP_FAILED) {
+                    failedLike++;
+                }
+                Object v = e.detail().get("task_id");
+                if (v != null && taskIdField.isEmpty()) {
+                    taskIdField = String.valueOf(v);
+                }
+            }
+            T.isTrue(failedLike == 0 && "t9".equals(taskIdField),
+                    "★ 脚本在等 ≠ 身体动作已停：动作还在飞时不许记成 STEP_FAILED"
+                            + "（实际记了 " + failedLike + " 条），"
+                            + "且在飞的任务 id 必须是一个可读字段（实际读到 \"" + taskIdField + "\"）");
+        });
+
         T.test("resume 探针 RUNNING → 保持 PAUSED、不重发", () -> {
             FakePorts.Scripted port = FakePorts.Scripted.of("mine")
                     .thenAccepted("t42", Map.of());

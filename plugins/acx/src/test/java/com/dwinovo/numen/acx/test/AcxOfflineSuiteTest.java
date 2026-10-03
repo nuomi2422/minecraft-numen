@@ -14,10 +14,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * ★ 把 ACX 的 206 项离线自检接成 <b>真正的门禁</b>（2026-10-03 收口第 1 步）。
+ * ★ 把 ACX 的 209 项离线自检接成 <b>真正的门禁</b>（2026-10-03 收口第 1 步）。
  *
  * <h3>为什么需要这个类</h3>
- * <p>{@code AcxTestMain}（3500+ 行 / 208 项检查）是一个 {@code main()} 手工台，
+ * <p>{@code AcxTestMain}（3590+ 行 / 209 项检查）是一个 {@code main()} 手工台，
  * 靠 Gradle 的 {@code JavaExec}（{@code acxOfflineTest}）跑，而那个任务写着
  * {@code ignoreExitValue = true} ⇒ <b>它的失败不会让构建失败</b>，
  * 而且结果只打在控制台、<b>不落在测试报告里</b>。
@@ -27,27 +27,29 @@ import static org.junit.jupiter.api.Assertions.fail;
  *   <li>本模块的 {@code :plugins:acx:test}（JUnit）<b>一个测试都没有</b>，
  *       Gradle 9 遇到「有测试源码但一个都没发现」直接<b>让任务失败</b>
  *       ⇒ 模块的 test 任务本来就是红的。</li>
- *   <li>更坏的是：任何「本模块测试全绿」的结论都<b>不包含这 208 项</b>
+ *   <li>更坏的是：任何「本模块测试全绿」的结论都<b>不包含这 209 项</b>
  *       —— 我们按惯例「从测试报告 XML 汇总数字」时永远看不到它。</li>
  * </ol>
  *
  * <h3>本类做的事</h3>
- * <p>在一个<b>子进程</b>里真跑那 208 项（必须子进程：{@code main} 结尾是
+ * <p>在一个<b>子进程</b>里真跑那 209 项（必须子进程：{@code main} 结尾是
  * {@code System.exit}，同进程跑会把测试 JVM 一起带走），
  * 然后用 {@code -Dacx.resultFile} 让它写出机器可读的 JSON，再断言三件事：
  * <ol>
  *   <li><b>总数不许悄悄变</b>（少了说明有人删了检查项）。</li>
- *   <li><b>失败数必须恰好等于已知的 4 项</b> —— 多了说明出了新问题（这才是关键：
+ *   <li><b>失败数必须恰好等于已知的 5 项</b> —— 多了说明出了新问题（这才是关键：
  *       原来的 {@code ignoreExitValue} 让新问题也照样静默）。</li>
- *   <li><b>那 4 项必须还是那 4 个已知缺陷</b>（见 {@link #KNOWN_RED_MARKERS}）——
+ *   <li><b>那 5 项必须还是那 5 个已知缺陷</b>（见 {@link #KNOWN_RED_MARKERS}）——
  *       修好了要改这里，但<b>必须显式改</b>，不许它悄悄变红或悄悄变绿。</li>
  * </ol>
  *
- * <h3>已知的 4 项红（全部是<b>引擎真缺陷</b>，不是测试写错）</h3>
+ * <h3>已知的 5 项红（全部是<b>引擎真缺陷</b>，不是测试写错）</h3>
  * <ul>
  *   <li>TODO(AC-B12) ×2：{@code for} 循环里的变量，在<b>断点暂停后 resume</b> 之后看不到了。</li>
  *   <li>TODO(AC-B18)：<b>恢复会重发已受理的动作</b>（实测 {@code Fake.calls.count("gate") == 2}）。</li>
  *   <li>TODO(AC-B19)：<b>取消后迟到的成功回执会把这次运行翻回 SUCCESS</b>。</li>
+ *   <li>TODO(AC-B20)：<b>「动作已受理、还在世界里跑」被记成 STEP_FAILED</b>
+ *       （实机 acx.jsonl：{@code STEP_FAILED|PAUSED = 53} vs {@code STEP_FAILED|FAIL = 29}）。</li>
  * </ul>
  */
 class AcxOfflineSuiteTest {
@@ -55,12 +57,13 @@ class AcxOfflineSuiteTest {
     /**
      * 已知红项数。修好其中任何一个都可以改小，但必须同时改下面的判定片段。
      *
-     * <p>三个已知缺陷：for/断点的两个（TODO AC-B12）+ 恢复重发已受理动作（TODO AC-B18）。
+     * <p>五个已知缺陷：for/断点的两个（TODO AC-B12）、恢复重发已受理动作（TODO AC-B18）、
+     * 取消后迟到回执翻回成功（TODO AC-B19）、在飞动作被记成 STEP_FAILED（TODO AC-B20）。
      */
-    private static final int KNOWN_RED = 4;
+    private static final int KNOWN_RED = 5;
 
     /**
-     * 已知的 4 项红的判定片段 —— <b>刻意全用 ASCII</b>。
+     * 已知的 5 项红的判定片段 —— <b>刻意全用 ASCII</b>。
      *
      * <p>对应关系（判定只匹配<b>测试名</b>，分组名不参与，见 {@link #testNameOf}）：
      * <ul>
@@ -68,6 +71,7 @@ class AcxOfflineSuiteTest {
      *   <li>{@code "64"}  → {@code 应绑定的 64 变量记录表}（同属 for/断点那个缺陷）</li>
      *   <li>{@code "AC-B18"} → {@code 恢复不能重复发已受理的动作（TODO AC-B18，当前会重发）}</li>
      *   <li>{@code "AC-B19"} → {@code 取消后迟到的成功回执不得把这次运行翻回成功（TODO AC-B19…）}</li>
+     *   <li>{@code "AC-B20"} → {@code 「动作已受理、还在世界里跑」不许被记成 STEP_FAILED（TODO AC-B20…）}</li>
      * </ul>
      *
      * <p>★ <b>为什么不用中文</b>：本工程在 Windows 上改含中文的文件时，
@@ -79,7 +83,7 @@ class AcxOfflineSuiteTest {
      * 将来若出现名字里带「64」的新失败项，它会被误判成已知缺陷。
      * ⇒ 那种情况要<b>显式改这里</b>，别默默放过。
      */
-    private static final String[] KNOWN_RED_MARKERS = {"for", "64", "AC-B18", "AC-B19"};
+    private static final String[] KNOWN_RED_MARKERS = {"for", "64", "AC-B18", "AC-B19", "AC-B20"};
 
     @Test
     void theOfflineSuiteRunsAndItsKnownRedStaysVisible() throws Exception {
@@ -102,7 +106,7 @@ class AcxOfflineSuiteTest {
         //   ⇒ 经典的管道缓冲死锁：子进程把 64KB 管道写满就阻塞在 write，
         //   而我在等它退出才去读 ⇒ 双方互等。
         //   实测症状：子进程只烧了 1 秒 CPU 却 500 秒不退出（卡住，不是慢）。
-        //   206 项每项一行输出早就超过 64KB，所以这个死锁是必然的，不是偶发。
+        //   209 项每项一行输出早就超过 64KB，所以这个死锁是必然的，不是偶发。
         //   重定向到文件没有缓冲区上限，代价是要落一个临时文件（跑完删掉）。
         Path outFile = Files.createTempFile("acx-out", ".log");
         ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -143,10 +147,10 @@ class AcxOfflineSuiteTest {
         int failed = failedField(json);
 
         // ① 总数不许悄悄变 —— 有人删检查项时这里会红
-        assertEquals(208, total, "离线自检的检查项数变了。少项多半是有人删了检查项，"
+        assertEquals(209, total, "离线自检的检查项数变了。少项多半是有人删了检查项，"
                 + "那等于把覆盖度悄悄拿走了。结果文件：" + json);
 
-        // ② ★ 最关键的一条：失败数必须「恰好」是已知的 4 项。
+        // ② ★ 最关键的一条：失败数必须「恰好」是已知的 5 项。
         //    原来 ignoreExitValue=true 的后果就是：新问题也一样静默。
         assertEquals(KNOWN_RED, failed,
                 "离线自检的失败数不是已知的 " + KNOWN_RED + " 项。"
@@ -154,7 +158,8 @@ class AcxOfflineSuiteTest {
                         + "少了 = 某个已知缺陷被修好了或被跳过了，两种都要显式处理。\n"
                         + "失败明细：" + failures(json) + "\n结果文件：" + json);
 
-        // ③ 那 4 项必须还是那 4 个已知缺陷（for/断点 ×2 + 重复发 ×1 + 迟到回执 ×1）
+        // ③ 那 5 项必须还是那 5 个已知缺陷
+        //    （for/断点 ×2 + 重复发 ×1 + 迟到回执 ×1 + 在飞动作记成失败 ×1）
         //
         // ★★ 判定必须**只看测试名**，不能看整条文本。
         //   变异验证抓出来的：早先这里匹配的是整条失败文本，而失败文本的格式是
@@ -178,7 +183,8 @@ class AcxOfflineSuiteTest {
                     "出现了一条不是已知缺陷的失败项：\n  测试名 = " + name + "\n  整条 = " + f
                             + "\n★ 已知的缺陷只有这些：「for 循环里的变量跨断点看不见」（TODO AC-B12 ×2）"
                             + "、「恢复会重发已受理的动作」（TODO AC-B18）"
-                            + "、「取消后迟到的成功回执把运行翻回成功」（TODO AC-B19）。"
+                            + "、「取消后迟到的成功回执把运行翻回成功」（TODO AC-B19）"
+                            + "、「动作还在飞却被记成 STEP_FAILED」（TODO AC-B20）。"
                             + "新的失败项要先当真问题查，别直接改 KNOWN_RED。");
         }
     }
