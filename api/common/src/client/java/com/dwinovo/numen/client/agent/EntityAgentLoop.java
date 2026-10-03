@@ -262,6 +262,26 @@ public final class EntityAgentLoop {
      */
     private static final long GATE_HEARTBEAT_MS = 300_000L;
 
+    // ---- B16:外脑的只读通道（tap）—— 不再与内脑抢队列 ----
+    //
+    // 2026-10-03 定案：assist 的定位是「外脑只用来校验自己改的代码对内脑有没有影响」，
+    //   也就是**纯只读观察**，跟「监测台负责观察，不替代 Runtime 做逻辑决策」是同一句话。
+    //   而旧实现（`takeEventsForExternal` 调 `queue.takeWhile`，与 `drainInbox` 字面同一行、
+    //   同一个 entries、都会 `subList(0,n).clear()`）是一个**消费型接口** ⇒
+    //   外脑停在长轮询上时，内脑的队列永远是空的，而 `isExternallyDriven()` 那道闸
+    //   管的是「谁驾驶身体」、**管不到「事件被谁拿走」** ⇒ 内脑静默饿死且 `blocker=none`。
+    //
+    // ⇒ 修法不是加一层判断，是**把通道本身改成非消费型**：内脑那份队列原封不动，
+    //   外脑从下面这份**只读镜像**里读。它有界（满了丢最旧的并在读数里说丢了多少），
+    //   控制条目（整理/清空）**不进镜像**（那些是对内脑说的，与旧语义一致）。
+
+    /** 外脑只读镜像的容量。 */
+    private static final int EXTERNAL_TAP_CAP = 64;
+
+    private final java.util.ArrayDeque<EventQueue.Entry> externalTap = new java.util.ArrayDeque<>();
+    /** 镜像因为满而丢掉的最旧条目数 —— 满了必须说丢了多少，不能静默截断。 */
+    private int externalTapDropped;
+
     // ---- B15:「事件被外脑取走了」这个事实也要留痕 ----
     // B14 实测定案：内脑 drainInbox 与外脑 takeEventsForExternal 跑的是字面同一行
     // queue.takeWhile(...)、同一个 queue 字段、都是破坏性取走、链路上没有任何仲裁。
@@ -506,7 +526,7 @@ public final class EntityAgentLoop {
         // Wrap the owner's words in <query> so the model can always tell real user input apart from
         // anything else numen injects into the same user turn (events, and future world-state/reminders).
         // 主人的话恒为急件:人说话了就该有回应。队列不区分类型,只看这个标记。
-        queue.push(EventTypes.QUERY, wire, System.currentTimeMillis(), true);
+        enqueueBothQueues(EventTypes.QUERY, wire, System.currentTimeMillis(), true);
         // 外脑驱动期间面板画的是现场缓冲——主人的话得当场可见,不能等谁取走才出现。
         // 这里是所有主人话的单一咽喉(面板/快捷对话/语音/桥接),挂点只此一处。
         if (McpMode.instance().driving()) {
@@ -777,7 +797,7 @@ public final class EntityAgentLoop {
         long now = System.currentTimeMillis();
         goal.countTurn();
         CompanionHome.setGoal(entityUuid, goal);
-        queue.push(EventTypes.GOAL,
+        enqueueBothQueues(EventTypes.GOAL,
                 com.dwinovo.numen.agent.goal.GoalPrompts.progress(verdict.reason(), goal, now),
                 now, true);
         maybeDrain();
@@ -844,7 +864,7 @@ public final class EntityAgentLoop {
             Constants.LOG.info("[numen-entity#{}] manual clear refused: {}", entityUuid, problem);
             return problem;
         }
-        queue.push(EventTypes.CLEAR, "清空上下文", System.currentTimeMillis(), true);
+        enqueueBothQueues(EventTypes.CLEAR, "清空上下文", System.currentTimeMillis(), true);
         maybeDrain();
         return null;
     }
@@ -973,26 +993,48 @@ public final class EntityAgentLoop {
     }
 
     /**
-     * 外接大脑收件(get_events 的取货口):{@code urgentOnly} 时只在队里有急件才取,
-     * 长轮询靠它省着等;到点了不管急不急有什么给什么。渲染与内脑
-     * {@code drainInbox} 同一份 {@link EventQueue#render}——外脑看到的事件文本
-     * 和内脑一字不差。控制条目(整理/清空)是对内脑说的,留在队里等模式关闭,
-     * 与 drainInbox 同一条 takeWhile 规则。
+     * 一条事件同时进两份：内脑的队列（{@code queue}，内脑用
+     * {@link EventQueue#takeWhile} 取）与外脑的只读镜像（{@link #externalTap}）。
      *
-     * <p>⚠️ <b>这条与内脑共用队列、共用同一行 {@code takeWhile}、且没有任何仲裁</b>
-     * （{@code drainInbox} 的注释自己就写着「先到先得」）。{@link #isExternallyDriven()}
-     * 那道闸管的是「谁驾驶身体」，<b>管不到「事件被谁拿走」</b>：{@code assist} 模式下
-     * 闸是开的，事件照样被取走，于是内脑会静默饿死而 {@code blocker} 仍然是
-     * {@code none}。这不是本次改动要修的（改它属于产品决策：assist 到底该不该共存），
-     * 本次只做两件事：① 把「被取走过几次」做成可读数（{@link BrainGate}）；
-     * ② 在取件这一刻发一条 {@code external_take}，让那种静默饿死<b>留下证据</b>。
+     * <p>★ 全部入队都必须走这里。漏一处 = 那类事件外脑永远看不见，
+     * 而「看不见」在这套接口下与「没发生过」长得一模一样。
      *
-     * @return 取走的事件拼段;这次没取到返回 null(继续等或如实说没有)
+     * <p>控制条目（整理/清空）**只进内脑那份** —— 它们是对内脑说的，
+     * 旧实现也显式排除（{@code isControlEntry}），语义保持一致。
+     */
+    private void enqueueBothQueues(String type, String text, long now, boolean urgent) {
+        queue.push(type, text, now, urgent);
+        if (isControlEntry(type)) {
+            return;
+        }
+        externalTap.addLast(new EventQueue.Entry(type, text, now, urgent));
+        while (externalTap.size() > EXTERNAL_TAP_CAP) {
+            externalTap.removeFirst();
+            externalTapDropped++;
+        }
+    }
+
+    /**
+     * 外接大脑收件（`get_events` 的取货口）—— ★ **非消费型**：读的是
+     * {@link #externalTap} 这份只读镜像，<b>不碰内脑那份队列</b>。
+     *
+     * <p>{@code urgentOnly} 时只在镜像里有急件才取，长轮询靠它省着等；
+     * 到点了不管急不急有什么给什么。渲染走 {@link EventQueue#render}，
+     * 外脑看到的事件文本和内脑一字不差。
+     *
+     * <p>★ 为什么不再 {@code queue.takeWhile}：那会从内脑的队列里删条目，
+     * 于是外脑一挂长轮询内脑就饿死，而 {@code isExternallyDriven()} 管不到这件事。
+     * 实测那次内脑整整 24 小时不开轮、{@code blocker} 一直是 {@code none}。
+     *
+     * @return 取走的事件拼段；这次没取到返回 null（继续等或如实说没有）
      */
     public String takeEventsForExternal(boolean urgentOnly) {
-        if (urgentOnly && !queue.hasUrgent()) return null;
+        if (urgentOnly && !externalTapHasUrgent()) return null;
         long now = System.currentTimeMillis();
-        List<EventQueue.Entry> taken = queue.takeWhile(e -> !isControlEntry(e.type()), now);
+        List<EventQueue.Entry> taken = new ArrayList<>(externalTap.size());
+        while (!externalTap.isEmpty()) {
+            taken.add(externalTap.pollFirst());
+        }
         if (taken.isEmpty()) return null;
         // ★ 记账放在「真的取到了」之后：长轮询空转不计数，否则一个挂着的空闲客户端
         //   就能把「被取走过」这件事刷成假的（B12 那条假绿的同族：信号必须来自真实动作）。
@@ -1001,6 +1043,26 @@ public final class EntityAgentLoop {
         publishExternalTake(taken.size());
         List<String> parts = EventQueue.render(taken, now);
         return parts.isEmpty() ? null : String.join("\n\n", parts);
+    }
+
+    /** 镜像里此刻有没有急件（只读，不动镜像）。 */
+    private boolean externalTapHasUrgent() {
+        for (EventQueue.Entry e : externalTap) {
+            if (e.urgent()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 外脑只读镜像的读数：此刻还剩几条、累计丢了几条。零副作用。 */
+    public Map<String, Object> externalTapReadout() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("pending", externalTap.size());
+        m.put("capacity", EXTERNAL_TAP_CAP);
+        m.put("dropped", externalTapDropped);
+        m.put("consumes_inner_queue", false);
+        return m;
     }
 
     /** 急件叫醒挂点直通(get_events 长轮询停靠用)。主线程调用。 */
@@ -1121,7 +1183,7 @@ public final class EntityAgentLoop {
      * <p>死着也照收:每条都盖着真实时间戳,复活后模型看得出哪些发生在死亡之前。
      */
     public void pushEvent(String type, String text, long ts, boolean urgent) {
-        queue.push(type, text, ts > 0 ? ts : System.currentTimeMillis(), urgent);
+        enqueueBothQueues(type, text, ts > 0 ? ts : System.currentTimeMillis(), urgent);
         Constants.LOG.info("[numen-entity#{}] queued {}{}: {}",
                 entityUuid, type, urgent ? " URGENT" : "", truncate(text, 120));
         if (urgent) {
@@ -1348,8 +1410,18 @@ public final class EntityAgentLoop {
         return new BrainGate.State(dead, isExternallyDriven(), turnPause.name(),
                 awaitingLlmResponse, compacting, dispatcher.busy(),
                 snapshot.size(), endpointProblem(), tokens, window, compactFailures,
-                externalTakes, since);
+                externalTakes, since, EXTERNAL_TAP_CONSUMES_INNER_QUEUE);
     }
+
+    /**
+     * ★ 回归哨兵：外脑取件<b>必须</b>是非消费型的（读 {@link #externalTap} 只读镜像）。
+     *
+     * <p>B16 修之前这里是 {@code true}（从 {@code queue.takeWhile} 取，会删掉内脑队列里的条目）。
+     * 现在写死 {@code false}，而 {@link BrainGate} 会拿它当<b>回归警报的判据</b> ——
+     * 谁把取件改回消费型，读数里立刻出现 {@code external_take_mode=consumes_inner_queue}
+     * 与 {@code external_event_takeover} 那条 problem，而不会静默回到「内脑饿死且 blocker=none」。
+     */
+    private static final boolean EXTERNAL_TAP_CONSUMES_INNER_QUEUE = false;
 
     /**
      * 读数口：给工具/面板/测试用，<b>零副作用</b>（不发布、不改状态）。
@@ -1520,7 +1592,7 @@ public final class EntityAgentLoop {
             return problem;
         }
         // 恒为急件:主人明确要求的事不该跟世界事件一起攒着等阈值。
-        queue.push(EventTypes.COMPACT, "整理记忆", System.currentTimeMillis(), true);
+        enqueueBothQueues(EventTypes.COMPACT, "整理记忆", System.currentTimeMillis(), true);
         maybeDrain();
         return null;
     }

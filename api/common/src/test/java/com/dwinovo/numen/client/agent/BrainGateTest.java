@@ -34,7 +34,7 @@ class BrainGateTest {
         // 这条钉的是「第一个原因」的意义 —— 下游要靠它决定「等什么」，
         // 若顺序一改，「等主人复活」就会变成「等端点修好」，而两者都不成立。
         BrainGate.State s = new BrainGate.State(true, true, "BLOCKED", true, true, true,
-                50, "key missing", 999_999L, 0, 0, 0L, -1L);
+                50, "key missing", 999_999L, 0, 0, 0L, -1L, false);
         assertEquals(BrainGate.Blocker.DEAD, BrainGate.first(s));
     }
 
@@ -235,38 +235,51 @@ class BrainGateTest {
     // ---- B15:事件被外脑取走（第 11 个维度）----
 
     /**
-     * ★ 本条钉的是 B12 那个读数口<b>最大的一处盲区</b>：
-     * 内脑 {@code drainInbox} 与外脑 {@code takeEventsForExternal} 跑的是字面同一行
+     * ★ 本条钉的是 B12 那个读数口<b>最大的一处盲区</b>，以及 B16 的修法边界：
+     * 内脑 {@code drainInbox} 与外脑旧实现 {@code takeEventsForExternal} 跑的是字面同一行
      * {@code queue.takeWhile(...)}，同一个 {@code queue}、都是破坏性取走、
-     * 链路上没有任何仲裁，而 {@code McpMode.driving()} 管的是「谁驾驶身体」、
-     * 管不到「事件被谁拿走」⇒ assist 下闸是开的、事件照样被拿 ⇒ 内脑静默饿死而
-     * {@code blocker} 仍然是 {@code none}。
+     * 链路上没有任何仲裁 ⇒ 静默饿死时 {@code blocker} 仍是 {@code none}。
      *
-     * <p>所以「内脑安静」与「内脑被饿着」在这份读数里原本是同一句话。这条测试
-     * 要求它们必须能分开。
+     * <p>B16 把外脑取件改成<b>非消费型 tap</b>（只读镜像）之后，抢不动内脑了 ⇒
+     * {@code external_event_takeover} 就从「常态告警」变成<b>回归警报</b>：
+     * 平时<b>必须不响</b>（一条永远在响的假警报会让人忽略真警报，那更坏），
+     * 只在有人把取件改回 {@code queue.takeWhile} 时才响。
      */
     @Test
-    void aStarvedBrainAndACalmBrainNoLongerLookTheSame() {
-        BrainGate.State calm = BrainGate.State.open();
-        BrainGate.State starved = BrainGate.State.open()
-                .with("externalTakes", 7L).with("msSinceLastExternalTake", 2_000L);
+    void theTakeoverAlarmOnlyRingsWhenTheChannelRegressesToConsuming() {
+        // B16 之后：非消费型 tap，取过很多次也<b>不许</b>报
+        BrainGate.State healthyButBusy = BrainGate.State.open()
+                .with("externalTakes", 7L).with("msSinceLastExternalTake", 2_000L)
+                .with("externalTakeConsumesQueue", false);
+        assertEquals(Boolean.TRUE, BrainGate.readout(healthyButBusy).get("externally_taken"),
+                "外脑确实取过东西（这是事实，读数要承认）");
+        assertTrue(BrainGate.problems(healthyButBusy).stream()
+                        .noneMatch(p -> p.startsWith("external_event_takeover")),
+                "★ 非消费型 tap 抢不动内脑 ⇒ 这条不许再报。永远在响的假警报比不报更坏");
 
-        // blocker 刻意不变：取走事件不是一道拒绝闸（它不挡这一轮，它让这一轮没东西可做）。
-        // 把它算成闸是错的 —— 那会让读数凭空多一种原因。
-        assertEquals("none", BrainGate.readout(calm).get("blocker"));
-        assertEquals("none", BrainGate.readout(starved).get("blocker"),
-                "★ 取走事件不是一道闸：闸是开的，只是队列被拿空了");
+        // 回归：有人把取件改回 queue.takeWhile ⇒ 必须立刻开口
+        BrainGate.State regressed = BrainGate.State.open()
+                .with("externalTakes", 7L).with("msSinceLastExternalTake", 2_000L)
+                .with("externalTakeConsumesQueue", true);
+        assertTrue(BrainGate.problems(regressed).stream().anyMatch(p -> p.startsWith("external_event_takeover:")),
+                "★ 取件一旦退回消费型，这条必须第一时间响 —— 它就是为那一刻存在的");
+        assertTrue(String.valueOf(BrainGate.problems(regressed).get(0)).contains("回归警告"),
+                "这条现在是一次回归警报，措辞必须让人一眼看出「这不是常态」");
 
-        assertEquals(Boolean.FALSE, BrainGate.readout(calm).get("externally_taken"));
-        assertEquals(Boolean.TRUE, BrainGate.readout(starved).get("externally_taken"));
-        assertEquals(0L, BrainGate.readout(calm).get("external_takes"));
-        assertEquals(7L, BrainGate.readout(starved).get("external_takes"));
-        assertEquals(2_000L, BrainGate.readout(starved).get("ms_since_last_external_take"));
+        // blocker 在两种情况下都不变：取件不是一道拒绝闸
+        assertEquals("none", BrainGate.readout(healthyButBusy).get("blocker"));
+        assertEquals("none", BrainGate.readout(regressed).get("blocker"),
+                "★ 取件不是一道闸：闸是开的，只是队列可能被拿空了");
+    }
 
-        assertTrue(BrainGate.problems(starved).stream().anyMatch(p -> p.startsWith("external_event_takeover:")),
-                "★ 被取走过这件事必须自己开口，否则读数与「一切正常」无从区分");
-        assertTrue(BrainGate.problems(calm).stream().noneMatch(p -> p.startsWith("external_event_takeover:")),
-                "没被取走过就不许报这条 —— 报了就等于凭空造一个原因");
+    /** 读数要能自证「现在走的是哪条通道」——只有结论没有模式名，等于让人猜。 */
+    @Test
+    void theReadoutSaysWhichChannelItIsOn() {
+        assertEquals("non_consumptive_tap",
+                BrainGate.readout(BrainGate.State.open()).get("external_take_mode"));
+        assertEquals("consumes_inner_queue",
+                BrainGate.readout(BrainGate.State.open().with("externalTakeConsumesQueue", true))
+                        .get("external_take_mode"));
     }
 
     /**
@@ -282,7 +295,8 @@ class BrainGateTest {
         assertEquals(-1L, BrainGate.readout(never).get("ms_since_last_external_take"));
 
         BrainGate.State just = BrainGate.State.open()
-                .with("externalTakes", 1L).with("msSinceLastExternalTake", 0L);
+                .with("externalTakes", 1L).with("msSinceLastExternalTake", 0L)
+                .with("externalTakeConsumesQueue", true);
         assertEquals(0L, BrainGate.readout(just).get("ms_since_last_external_take"));
         assertTrue(BrainGate.problems(just).stream()
                         .anyMatch(p -> p.contains("0 秒")),
@@ -294,26 +308,26 @@ class BrainGateTest {
     /** 距上次取走多久要写成人能一眼看懂的样子，且不许出现「-1 秒」这种话。 */
     @Test
     void theAgeOfTheLastTakeIsReadableAndNeverNegative() {
-        assertTrue(BrainGate.problems(BrainGate.State.open()
-                .with("externalTakes", 1L).with("msSinceLastExternalTake", 900L))
-                .stream().anyMatch(p -> p.contains("0 秒")), "900ms 算 0 秒，不许四舍五入成 1 秒");
-        assertTrue(BrainGate.problems(BrainGate.State.open()
-                .with("externalTakes", 1L).with("msSinceLastExternalTake", 125_000L))
-                .stream().anyMatch(p -> p.contains("2 分钟")));
-        assertTrue(BrainGate.problems(BrainGate.State.open()
-                .with("externalTakes", 1L).with("msSinceLastExternalTake", 7_200_000L))
-                .stream().anyMatch(p -> p.contains("2 小时")));
+        java.util.function.LongFunction<String> age = ms -> {
+            BrainGate.State s = BrainGate.State.open()
+                    .with("externalTakes", 1L).with("msSinceLastExternalTake", ms)
+                    .with("externalTakeConsumesQueue", true);
+            return String.join("|", BrainGate.problems(s));
+        };
+        assertTrue(age.apply(900L).contains("0 秒"), "900ms 算 0 秒，不许四舍五入成 1 秒");
+        assertTrue(age.apply(125_000L).contains("2 分钟"));
+        assertTrue(age.apply(7_200_000L).contains("2 小时"));
+        assertFalse(age.apply(-1L).contains("-1 秒"), "★ 「无记录」不许被写成 -1 秒");
     }
 
     /**
      * 计数只在「真的取到了东西」之后加 —— 长轮询空转不计数。
      *
      * <p>这条钉的是取件那一侧的记账位置（B12 那条假绿的同族问题：信号必须来自
-     * 真实动作，不然一个挂着的空闲客户端就能把「被取走过」刷成假的）。
+     * 真实动作，不然一个挂着的空闲客户端就能把计数刷成假的）。
      */
     @Test
     void aTakeThatGotNothingDoesNotCountAsATakeover() {
-        // BrainGate 这一侧只能验语义：0 次就是没发生过，读数里不许有任何痕迹。
         Map<String, Object> r = BrainGate.readout(BrainGate.State.open());
         assertEquals(0L, r.get("external_takes"));
         assertEquals(Boolean.FALSE, r.get("externally_taken"));
