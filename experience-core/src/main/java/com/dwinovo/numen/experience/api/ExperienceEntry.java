@@ -160,6 +160,43 @@ public record ExperienceEntry(
         return sb.toString();
     }
 
+    // ============================================================
+    // 七字段槽位（任务 4 / 45 号文档 §2）：结构化读数
+    // ============================================================
+
+    /**
+     * 七个结构化槽位里<b>非空</b>的个数（0–7）。
+     *
+     * <p>空串与纯空白都算「没填」—— 与 {@code toJson()} 用 {@code nzForJson} 写出的形状一致，
+     * 也与 {@code plugins/learner} 侧 {@code Experience.acceptable()} 的判据同口径。
+     *
+     * <p><b>为什么这个计数要住在持有槽位的这个类里</b>（2026-10-04）：
+     * 2026-10-04 之前七字段只有「写端」（{@code ExperienceDraft} 往 {@code entry} 里写原值）
+     * 与「合并端」（{@code ExperienceStore.merge} 不抹），<b>没有读数</b>。
+     * 于是断掉的「值通路」（{@code ExperienceLearnTool} 的 schema 与 {@code Input} 都不收这七项，
+     * Gson 静默丢弃 ⇒ 落库条目七槽全空）在两边都测不出来：
+     * 写端测试全绿、合并端测试全绿，而库里没有一条七项填齐。
+     * <b>没有一个数字能让人看见这件事</b>，所以它藏了很久。
+     *
+     * <p>计数放在这里而不是工具里，是为了让它跟槽位声明在一起：
+     * 将来增删槽位时，计数与字段不可能各改一处而互不知情。
+     */
+    public int sevenFieldsFilled() {
+        int n = 0;
+        n += filled(mechanism);
+        n += filled(preconditions);
+        n += filled(failureConditions);
+        n += filled(observableSignal);
+        n += filled(derivation);
+        n += filled(efficiency);
+        n += filled(evidence);
+        return n;
+    }
+
+    private static int filled(String s) {
+        return s != null && !s.isBlank() ? 1 : 0;
+    }
+
     /** 复制一条并替换证据字段（evidence 更新专用，保留其它内容）。 */
     public ExperienceEntry withEvidence(ExperienceMaturity newMaturity, int newVerifiedCount,
                                         long newVerifiedAt, List<String> newCounterexamples) {
