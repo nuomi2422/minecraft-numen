@@ -120,6 +120,66 @@ class ExperienceFingerprintTest {
         assertEquals(1000, merged.createdAt(), "合并必须保留首次 createdAt");
     }
 
+    /**
+     * ★★ 合并不许抹掉七字段与撤回状态（2026-10-04 修的真洞）。
+     *
+     * <p>为什么这条最要紧：{@code ExperienceStore.merge()} 原来从零 {@code builder()}
+     * 逐个 setter 拼，<b>不走 {@code Builder.from()}</b>，于是七字段槽位与 E8 元数据
+     * 在<b>所有去重路径</b>上被静默清空。而
+     * {@code ExperienceEntry.Builder.from()}（:449-484）本来就搬全了这两组，
+     * {@code ExperienceEntry} 的注释（:463/:478）也写着「必须一起搬」——
+     * 它守住了 withEvidence/retracted/unretracted/supersedes/withConsecutiveFailures
+     * 五条变异路径，唯独漏了 merge()。
+     *
+     * <p>第二段尤其严重：<b>一条被人工撤回的经验会复活并重新进入 usable()</b>。
+     * 「撤回」是主人/学习者表达「这条不可信」的唯一手段，被一次后续 learn 撤销掉，
+     * 等于把「已撤回」这个状态变成无效。
+     */
+    @Test
+    void mergeKeepsSevenSlotsAndRetractionInsteadOfErasingThem() {
+        ExperienceStore s = store();
+
+        // ── ① 七字段：先写满，再 learn 同一条但七字段全空
+        ExperienceEntry full = ExperienceEntry.builder()
+                .type(ExperienceType.FAILURE).title("挖矿前先探路").description("D")
+                .mechanism("MECH").preconditions("PRE").failureConditions("FAIL")
+                .observableSignal("SIG").derivation("DER").efficiency("EFF").evidence("EVI")
+                .build();
+        s.learn(full);
+        s.learn(ExperienceEntry.builder()
+                .type(ExperienceType.FAILURE).title("挖矿前先探路").description("D2").build());
+
+        ExperienceEntry kept = s.all().get(0);
+        assertEquals("MECH", kept.mechanism(), "★ 机制不能被一次空 learn 抹掉");
+        assertEquals("PRE", kept.preconditions(), "★ 前置条件不能被抹掉");
+        assertEquals("FAIL", kept.failureConditions(), "★ 失效条件不能被抹掉");
+        assertEquals("SIG", kept.observableSignal(), "★ 可观察信号不能被抹掉");
+        assertEquals("DER", kept.derivation(), "★ 推导步骤不能被抹掉");
+        assertEquals("EFF", kept.efficiency(), "★ 效率不能被抹掉");
+        assertEquals("EVI", kept.evidence(), "★ 证据不能被抹掉");
+        assertEquals("D2", kept.description(), "★ 而正文该更新的还是要更新（这一条防「无脑保留旧值」）");
+
+        // ── ② 撤回不可逆：retract 之后一次 learn 不许把它复活
+        ExperienceStore r = store();
+        r.learn(ExperienceEntry.builder()
+                .type(ExperienceType.POLICY).title("不要在地形边缘跳").description("D").build());
+        String id = r.all().get(0).id();
+        r.retract(id, "主人说这条不适用");
+        assertTrue(r.all().get(0).retracted(), "前置：撤回生效");
+        assertEquals("主人说这条不适用", r.all().get(0).retractedReason());
+
+        int usableBefore = r.usable().size();
+        r.learn(ExperienceEntry.builder()
+                .type(ExperienceType.POLICY).title("不要在地形边缘跳").description("D 又写了一遍").build());
+
+        ExperienceEntry after = r.all().get(0);
+        assertTrue(after.retracted(),
+                "★★ 被撤回的经验不许因为一次 learn 而复活 —— 撤回是不可逆的，只有显式 unretract 能恢复");
+        assertEquals("主人说这条不适用", after.retractedReason(), "撤回理由不能被空值抹掉");
+        assertEquals(usableBefore, r.usable().size(),
+                "★ 被撤回的经验不许重新进入 usable() —— 那等于「撤回」这个状态失效");
+    }
+
     @Test
     void duplicateMergeKeepsIdSelfConsistentWithTitle() {
         ExperienceStore s = store();

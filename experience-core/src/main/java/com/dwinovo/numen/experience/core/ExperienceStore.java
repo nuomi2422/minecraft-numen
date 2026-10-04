@@ -513,7 +513,18 @@ public final class ExperienceStore {
         // ★ id 必须跟着 title 走：留着 old.id() 会出现「id 与 title 不自洽」——
         //   stableKey(type,title) 算不出这个 id，下次重载时 addFromObject 会再归一一次，
         //   于是同一个条目在两次重载之间 id 漂移，归一化前流出去的旧引用全部失效。
+        //
+        // ★★ 起手必须是 `from(old)` 而不是空 builder（2026-10-04 修的真洞）。
+        //   这一版原来从零逐个 setter 拼，于是**七字段槽位与 E8 元数据全部被静默清空**：
+        //   可复现后果①learn(有七字段) → learn(同 type/title、七字段空) ⇒ 七槽位全变 ""；
+        //   可复现后果②**retract(id,"理由") → learn(同 type/title) ⇒ retracted() 变回 false，
+        //   一条被人工撤回的经验复活并重新进入 usable()**。
+        //   而 `ExperienceEntry.Builder.from()`（:449-484）本来就搬全了这两组，
+        //   `ExperienceEntry` 的注释（:463/:478）也写着「必须一起搬」——
+        //   它守住了 withEvidence/retracted/unretracted/supersedes/withConsecutiveFailures
+        //   五条变异路径，唯独漏了 merge() 这条。
         return ExperienceEntry.builder()
+                .from(old)
                 .id(ExperienceEntry.stableKey(type, title))
                 .type(type)
                 .title(title)
@@ -521,6 +532,15 @@ public final class ExperienceStore {
                 .rationale(blank(fresh.rationale()) ? old.rationale() : fresh.rationale())
                 .rootCause(blank(fresh.rootCause()) ? old.rootCause() : fresh.rootCause())
                 .recommendedResponse(blank(fresh.recommendedResponse()) ? old.recommendedResponse() : fresh.recommendedResponse())
+                // ★ 七字段沿用与 rationale/rootCause 同一套「新的非空则新的，否则留旧的」。
+                //   不做「新的永远覆盖」：那会把一次空草稿变成抹掉别人写好的正文。
+                .mechanism(blank(fresh.mechanism()) ? old.mechanism() : fresh.mechanism())
+                .preconditions(blank(fresh.preconditions()) ? old.preconditions() : fresh.preconditions())
+                .failureConditions(blank(fresh.failureConditions()) ? old.failureConditions() : fresh.failureConditions())
+                .observableSignal(blank(fresh.observableSignal()) ? old.observableSignal() : fresh.observableSignal())
+                .derivation(blank(fresh.derivation()) ? old.derivation() : fresh.derivation())
+                .efficiency(blank(fresh.efficiency()) ? old.efficiency() : fresh.efficiency())
+                .evidence(blank(fresh.evidence()) ? old.evidence() : fresh.evidence())
                 .triggerStrings(union(old.triggerStrings(), fresh.triggerStrings()))
                 .toolNames(union(old.toolNames(), fresh.toolNames()))
                 .tags(union(old.tags(), fresh.tags()))
@@ -531,6 +551,16 @@ public final class ExperienceStore {
                 .createdAt(old.createdAt())
                 .verifiedAt(fresh.verifiedAt() > 0 ? fresh.verifiedAt() : old.verifiedAt())
                 .lastAccessedAt(System.currentTimeMillis())
+                // ★★ 撤回是**不可逆**的：一次 learn 不许把它撤销。
+                //   这里用 or 而不是「新的优先」——后者就是「撤回的经验复活」那个洞。
+                //   要恢复一条被撤回的经验只有一条路：显式 unretract()。
+                .retracted(old.retracted() || fresh.retracted())
+                .retractedAt(old.retractedAt() > 0 ? old.retractedAt() : fresh.retractedAt())
+                .retractedReason(!blank(old.retractedReason()) ? old.retractedReason() : fresh.retractedReason())
+                // supersedes 是「我取代了谁」的指针，learn 不该把它抹掉
+                .supersedes(!blank(old.supersedes()) ? old.supersedes() : fresh.supersedes())
+                // 累计失败数取大：一次新 learn 不该把三次连败的记录清零
+                .consecutiveFailures(Math.max(old.consecutiveFailures(), fresh.consecutiveFailures()))
                 .build();
     }
 
