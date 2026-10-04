@@ -1,6 +1,7 @@
 package com.dwinovo.numen.agent.tool;
 
 import com.google.gson.JsonObject;
+import com.dwinovo.numen.entity.NumenPlayer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -22,8 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class LocalToolCallLogTest {
 
-    /** 不覆写 invoke ⇒ 默认走 ServerToolTransport.ship ⇒ 服务端那一跳会记。 */
-    private static final class ServerSide implements NumenTool {
+    /** 不覆写 invoke ⇒ 默认走 ServerToolTransport.ship ⇒ 服务端那一跳会记。
+     *  ★ 刻意**不能是 final**：`inheritanceDoesNotFakeALocalTool` 要继承它，
+     *    而 Java 不允许继承 final 类（编译器报的是「无法解析为类」，非常误导）。 */
+    private static class ServerSide implements NumenTool {
         @Override public String name() { return "server_side"; }
         @Override public Map<String, Object> parameterSchema() { return Map.of(); }
         @Override public String description() { return "走服务端"; }
@@ -57,8 +60,8 @@ class LocalToolCallLogTest {
             @Override public Map<String, Object> parameterSchema() { return Map.of(); }
             @Override public String description() { return "两边都碰"; }
             @Override public void invoke(ToolCall call) { call.complete("{}"); }
-            @Override public void onServerCall(String id, JsonObject a, Object c, java.util.function.Consumer<String> r) {
-                r.accept("{}");
+            @Override public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, java.util.function.Consumer<String> reply) {
+                reply.accept("{}");
             }
         }
         assertTrue(LocalToolCallLog.runsLocally(new Mixed()));

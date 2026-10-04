@@ -1,6 +1,6 @@
 package com.dwinovo.numen.agent.tool;
 
-import com.dwinovo.numen.event.MonitoringJournal;
+import com.dwinovo.numen.monitor.MonitoringJournal;
 
 import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
