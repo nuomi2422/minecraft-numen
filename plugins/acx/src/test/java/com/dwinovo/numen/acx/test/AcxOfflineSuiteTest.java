@@ -37,19 +37,24 @@ import static org.junit.jupiter.api.Assertions.fail;
  * 然后用 {@code -Dacx.resultFile} 让它写出机器可读的 JSON，再断言三件事：
  * <ol>
  *   <li><b>总数不许悄悄变</b>（少了说明有人删了检查项）。</li>
- *   <li><b>失败数必须恰好等于已知的 5 项</b> —— 多了说明出了新问题（这才是关键：
+ *   <li><b>失败数必须恰好等于已知的 7 项</b> —— 多了说明出了新问题（这才是关键：
  *       原来的 {@code ignoreExitValue} 让新问题也照样静默）。</li>
- *   <li><b>那 5 项必须还是那 5 个已知缺陷</b>（见 {@link #KNOWN_RED_MARKERS}）——
+ *   <li><b>那 7 项必须还是那 7 个已知缺陷</b>（见 {@link #KNOWN_RED_MARKERS}）——
  *       修好了要改这里，但<b>必须显式改</b>，不许它悄悄变红或悄悄变绿。</li>
  * </ol>
  *
- * <h3>已知的 5 项红（全部是<b>引擎真缺陷</b>，不是测试写错）</h3>
+ * <h3>已知的 7 项红（全部是<b>引擎真缺陷</b>，不是测试写错）</h3>
  * <ul>
  *   <li>TODO(AC-B12) ×2：{@code for} 循环里的变量，在<b>断点暂停后 resume</b> 之后看不到了。</li>
  *   <li>TODO(AC-B18)：<b>恢复会重发已受理的动作</b>（实测 {@code Fake.calls.count("gate") == 2}）。</li>
  *   <li>TODO(AC-B19)：<b>取消后迟到的成功回执会把这次运行翻回 SUCCESS</b>。</li>
  *   <li>TODO(AC-B20)：<b>「动作已受理、还在世界里跑」被记成 STEP_FAILED</b>
  *       （实机 acx.jsonl：{@code STEP_FAILED|PAUSED = 53} vs {@code STEP_FAILED|FAIL = 29}）。</li>
+ *   <li>TODO(AC-B21)：<b>记录里没有指纹就整体绕过了指纹门</b>
+ *       （{@code checkResumable} 的 {@code prior.fingerprint() != null &&}）。</li>
+ *   <li>TODO(AC-B22)：<b>会话层续跑时从不重新解析 AC 定义</b> ⇒ 那三道「内容」门
+ *       （名/版本/指纹）在生产路径上<b>恒为真</b>，脚本在暂停期间被改过会静默按旧定义跑完
+ *       （实测：库里指纹与记录里指纹不同，回包仍是「已受理，从断点续跑」）。</li>
  * </ul>
  */
 class AcxOfflineSuiteTest {
@@ -57,13 +62,14 @@ class AcxOfflineSuiteTest {
     /**
      * 已知红项数。修好其中任何一个都可以改小，但必须同时改下面的判定片段。
      *
-     * <p>五个已知缺陷：for/断点的两个（TODO AC-B12）、恢复重发已受理动作（TODO AC-B18）、
-     * 取消后迟到回执翻回成功（TODO AC-B19）、在飞动作被记成 STEP_FAILED（TODO AC-B20）。
+     * <p>七个已知缺陷：for/断点的两个（TODO AC-B12）、恢复重发已受理动作（TODO AC-B18）、
+     * 取消后迟到回执翻回成功（TODO AC-B19）、在飞动作被记成 STEP_FAILED（TODO AC-B20）、
+     * 没有指纹就绕过指纹门（TODO AC-B21）、会话层续跑不重新解析定义（TODO AC-B22）。
      */
-    private static final int KNOWN_RED = 6;
+    private static final int KNOWN_RED = 7;
 
     /**
-     * 已知的 5 项红的判定片段 —— <b>刻意全用 ASCII</b>。
+     * 已知的 7 项红的判定片段 —— <b>刻意全用 ASCII</b>。
      *
      * <p>对应关系（判定只匹配<b>测试名</b>，分组名不参与，见 {@link #testNameOf}）：
      * <ul>
@@ -72,6 +78,8 @@ class AcxOfflineSuiteTest {
      *   <li>{@code "AC-B18"} → {@code 恢复不能重复发已受理的动作（TODO AC-B18，当前会重发）}</li>
      *   <li>{@code "AC-B19"} → {@code 取消后迟到的成功回执不得把这次运行翻回成功（TODO AC-B19…）}</li>
      *   <li>{@code "AC-B20"} → {@code 「动作已受理、还在世界里跑」不许被记成 STEP_FAILED（TODO AC-B20…）}</li>
+     *   <li>{@code "AC-B21"} → {@code 记录里没有指纹 → 拒绝续跑（TODO AC-B21，当前会放行）}</li>
+     *   <li>{@code "AC-B22"} → {@code 会话层：暂停期间脚本被改过 → 续跑必须被拒…（TODO AC-B22…）}</li>
      * </ul>
      *
      * <p>★ <b>为什么不用中文</b>：本工程在 Windows 上改含中文的文件时，
@@ -83,7 +91,7 @@ class AcxOfflineSuiteTest {
      * 将来若出现名字里带「64」的新失败项，它会被误判成已知缺陷。
      * ⇒ 那种情况要<b>显式改这里</b>，别默默放过。
      */
-    private static final String[] KNOWN_RED_MARKERS = {"for", "64", "AC-B18", "AC-B19", "AC-B20", "AC-B21"};
+    private static final String[] KNOWN_RED_MARKERS = {"for", "64", "AC-B18", "AC-B19", "AC-B20", "AC-B21", "AC-B22"};
 
     @Test
     void theOfflineSuiteRunsAndItsKnownRedStaysVisible() throws Exception {
@@ -147,10 +155,10 @@ class AcxOfflineSuiteTest {
         int failed = failedField(json);
 
         // ① 总数不许悄悄变 —— 有人删检查项时这里会红
-        assertEquals(210, total, "离线自检的检查项数变了。少项多半是有人删了检查项，"
+        assertEquals(211, total, "离线自检的检查项数变了。少项多半是有人删了检查项，"
                 + "那等于把覆盖度悄悄拿走了。结果文件：" + json);
 
-        // ② ★ 最关键的一条：失败数必须「恰好」是已知的 5 项。
+        // ② ★ 最关键的一条：失败数必须「恰好」是已知的 7 项。
         //    原来 ignoreExitValue=true 的后果就是：新问题也一样静默。
         assertEquals(KNOWN_RED, failed,
                 "离线自检的失败数不是已知的 " + KNOWN_RED + " 项。"
@@ -158,8 +166,9 @@ class AcxOfflineSuiteTest {
                         + "少了 = 某个已知缺陷被修好了或被跳过了，两种都要显式处理。\n"
                         + "失败明细：" + failures(json) + "\n结果文件：" + json);
 
-        // ③ 那 5 项必须还是那 5 个已知缺陷
-        //    （for/断点 ×2 + 重复发 ×1 + 迟到回执 ×1 + 在飞动作记成失败 ×1）
+        // ③ 那 7 项必须还是那 7 个已知缺陷
+        //    （for/断点 ×2 + 重复发 ×1 + 迟到回执 ×1 + 在飞动作记成失败 ×1
+        //      + 没有指纹绕门 ×1 + 会话层不重新解析定义 ×1）
         //
         // ★★ 判定必须**只看测试名**，不能看整条文本。
         //   变异验证抓出来的：早先这里匹配的是整条失败文本，而失败文本的格式是
@@ -184,7 +193,9 @@ class AcxOfflineSuiteTest {
                             + "\n★ 已知的缺陷只有这些：「for 循环里的变量跨断点看不见」（TODO AC-B12 ×2）"
                             + "、「恢复会重发已受理的动作」（TODO AC-B18）"
                             + "、「取消后迟到的成功回执把运行翻回成功」（TODO AC-B19）"
-                            + "、「动作还在飞却被记成 STEP_FAILED」（TODO AC-B20）。"
+                            + "、「动作还在飞却被记成 STEP_FAILED」（TODO AC-B20）"
+                            + "、「记录里没有指纹就绕过了指纹门」（TODO AC-B21）"
+                            + "、「会话层续跑从不重新解析定义，脚本改过会静默按旧版跑完」（TODO AC-B22）。"
                             + "新的失败项要先当真问题查，别直接改 KNOWN_RED。");
         }
     }

@@ -56,6 +56,7 @@ import com.dwinovo.numen.acx.core.AcxSessionManager;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * ACX 全部离线单测。纯 JDK，不需要 Minecraft、不需要 gradle。
@@ -2513,6 +2514,72 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             T.eq(AcxStatus.SUCCESS, rec.status(), "续跑完成");
             T.eq(id, rec.runId(), "runId 不变");
             T.isTrue(!sm.resume(id, Map.of()), "已结束不能再续");
+        });
+
+        // ★★ TODO(AC-B22) 已知红 —— 69 号文档「第 1 组红线 / 第 2 组红线：任务与版本关联」
+        //
+        // 缺陷：**会话层续跑时从不重新解析 AC 定义**，于是 AcxRunner.checkResumable
+        // 的三道「内容」门在生产路径上**恒为真**，整条校验链只剩一道「断点越界」还有效。
+        //
+        // 机理（三行，都是生产代码）：
+        //   AcxSessionManager.Session.definition 是 final、只在 start() 时赋值（:46/:57/:124）
+        //   AcxSessionManager.resume 用 s.definition 校验并续跑（:165 / :169）
+        //   AcxRunner.runFrom 把记录的 fingerprint 取成 AcxFingerprint.of(def)（:142），
+        //       而 checkResumable 里的 fp 也是 AcxFingerprint.of(def)（:244）
+        // ⇒ 传给校验的 def 与当初算出 prior.fingerprint() 的 def 是**同一个对象**，
+        //   所以 name / version / fingerprint 三道门**怎么比都相等**。
+        //   而 AcxFacade.execute 每次都经 resolve() 重新查库（:79/:294-324），
+        //   唯独 resume 只收 run_id + input（:133-136），**没有再查一次当前生效的定义**。
+        //
+        // 后果比「校验不触发」更重：暂停期间有人改了脚本（改了内容但忘了升版本号），
+        // 续跑会**静默按旧定义跑完**——改动对这条会话永远不生效，且没有任何一处提示。
+        // AcxRunner 的类注释（:199-202）写着「定义变了还静默从旧断点续跑会产出无法解释的结果」，
+        // 这条链本来就是为拦住它写的；AC-B21（prior.fingerprint()==null 整道门跳过）
+        // 与本条是同一扇门的两个洞，本条是门后那一整条路都没走到。
+        //
+        // 为什么现有的 210 项抓不到：resumeContract 组测的是**执行器层** checkResumable
+        // 被传入一个**不同的**定义（:679），那道门在执行器层是有效的；
+        // 缺的是**会话/门面层**——没人验证过「续跑时用的定义是不是当前生效的那一份」。
+        T.test("会话层：暂停期间脚本被改过 → 续跑必须被拒，不得静默按旧定义跑完"
+                + "（TODO AC-B22，当前会静默按旧定义跑完）", () -> {
+            Fake.resetCalls();
+            Fake.PauseOnce once = new Fake.PauseOnce();
+            Fake.Registry blocks = new Fake.Registry()
+                    .add(Fake.pauserOnce("p", once, "等"))
+                    .add(Fake.fixed("ok", Map.of()));
+            AcxRunner r = runner(blocks).build();
+            AcxSessionManager sm = new AcxSessionManager(r, Runnable::run);
+            // 库里当前生效的定义（AcxFacade.execute 每次都会重新查它）
+            AtomicReference<AcxDefinition> live = new AtomicReference<>(
+                    defN("t", step("s", "p", Map.of())));
+            AcxFacade facade = new AcxFacade(sm, n -> live.get(), blocks, null);
+
+            Map<String, Object> started = facade.execute(Map.of("ac_name", "t"));
+            T.isTrue(Boolean.TRUE.equals(started.get("success")), "首跑受理");
+            String runId = String.valueOf(castData(started).get("run_id"));
+            T.eq("PAUSED", castData(facade.status(Map.of("run_id", runId))).get("state"), "首跑暂停");
+            String fpBefore = AcxFingerprint.of(live.get());
+            String idBefore = sm.session(runId).record().fingerprint();
+
+            // ★ 暂停期间有人改了脚本：内容变了（多了一步），版本号忘了升 —— 最常见的手滑。
+            //   注意门面的 resolve() 现在会返回这份新定义；resume 却没有再查一次。
+            live.set(defN("t", step("s", "p", Map.of()), step("s2", "ok", Map.of())));
+            T.isTrue(!AcxFingerprint.of(live.get()).equals(fpBefore), "★ 前置事实：库里那份指纹确实变了");
+
+            Map<String, Object> resp = facade.resume(Map.of("run_id", runId));
+
+            // 三条断言合成一个失败信息：读的人能同时看到「它改了什么」与「现在跑的是什么」。
+            T.isTrue(!Boolean.TRUE.equals(resp.get("success")),
+                    "★ 脚本在暂停期间变了，续跑必须被明确拒绝（不能静默按旧定义跑）"
+                            + " —— 当前库里的指纹=" + AcxFingerprint.of(live.get())
+                            + " / 记录里的指纹=" + idBefore
+                            + " / 实际回包=" + resp.get("message"));
+            T.contains(String.valueOf(resp.get("message")), "变",
+                    "★ 拒绝文案必须点明是「变了」这一项 ——"
+                            + "「脚本被改过」与「会话不存在」处置不同：前者要人重跑，后者直接放弃");
+            // 拒绝之后状态不许被推进：仍然 PAUSED、仍然停在同一步。
+            T.eq("PAUSED", castData(facade.status(Map.of("run_id", runId))).get("state"),
+                    "被拒后不许偷偷跑起来");
         });
 
         T.test("会话层：协作式取消（真线程 + 等待积木）", () -> {

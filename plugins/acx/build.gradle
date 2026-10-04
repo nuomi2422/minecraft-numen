@@ -34,7 +34,7 @@ dependencies {
 // acx/api + acx/core are Minecraft-free, so the suite runs on a plain JDK with
 // only gson on the classpath - no gradle, no game, no devlaunch.
 //
-// NOTE: 6 of the 210 checks are deliberately RED. Two of them come from
+// NOTE: 7 of the 211 checks are deliberately RED. Two of them come from
 // AcxTestMain.ctrlSnapshot(), which documents an unfixed bug (for-loop across
 // a breakpoint cannot see $scan.matches on resume) and says so in a
 // TODO(AC-B12) comment. The third one is the 2026-10-03 hardening regression
@@ -55,6 +55,28 @@ dependencies {
 // Semantics chosen: **null is not a pass, null is a reject** -- "验不了 ≠ 验过了".
 // Fixing it is a behaviour change (owner froze functional code), so it stays RED
 // on purpose until that freeze lifts.
+//
+// ★ The seventh is "会话层：暂停期间脚本被改过 → 续跑必须被拒 (TODO AC-B22)"
+// (added 2026-10-04). This one is worse than AC-B21 -- AC-B21 was a hole in
+// one gate, this is the whole road behind the gate never being reached.
+// AcxSessionManager.Session.definition is `final` and only assigned in
+// start() (:46/:57/:124); resume() validates and continues with **that**
+// captured definition (:165/:169). AcxRunner.runFrom stamps the record's
+// fingerprint with AcxFingerprint.of(def) (:142) -- the *same object* -- and
+// checkResumable recomputes fp from the same def (:244). So on the production
+// path all three content gates (name / version / fingerprint) compare a value
+// against itself and are **always true**; only the "断点越界" gate can fire.
+// AcxFacade.execute re-resolves the definition every call (:79/:294-324),
+// but AcxFacade.resume only takes run_id + input (:133-136) and never asks
+// again. Consequence: if someone edits the script while a run is PAUSED,
+// resume silently finishes the run with the OLD definition and the edit never
+// takes effect for that session -- exactly what the runner's class comment
+// (:199-202) was written to prevent.
+// Measured, not inferred: the two fingerprints differ (2956b6e1... vs
+// b47bc3fb...) and the reply was still "已受理，从断点续跑: success: true".
+// Fixing it means deciding what resume should do with a changed script
+// (refuse is the only reading consistent with the runner's own contract), so
+// it stays RED on purpose.
 //
 // The fourth is "取消后迟到的成功回执不得把这次运行翻回成功 (TODO AC-B19)".
 // The cancel flag is only consulted in checkCircuit(), which runs *before*
@@ -116,7 +138,7 @@ def acxFixture = tasks.register('acxFixture', Sync) {
 
 tasks.register('acxOfflineTest', JavaExec) {
     group = 'verification'
-    description = 'ACX offline self-check (210 checks, 6 known-red: TODO AC-B12 x2 + TODO AC-B18 x1 + TODO AC-B19 x1 + TODO AC-B20 x1 + TODO AC-B21 x1) -- console copy only'
+    description = 'ACX offline self-check (211 checks, 7 known-red: TODO AC-B12 x2 + TODO AC-B18 x1 + TODO AC-B19 x1 + TODO AC-B20 x1 + TODO AC-B21 x1 + TODO AC-B22 x1) -- console copy only'
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.dwinovo.numen.acx.test.AcxTestMain'
     dependsOn tasks.named('acxFixture')
