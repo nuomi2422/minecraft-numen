@@ -27,6 +27,11 @@ class MemoQueueTest {
         return new Memo(id, problem, "stage-a", "tried something", "hp=10/20", 1L);
     }
 
+    /** 取一批 memo 的 id 列表 —— 断言「轮到谁」要按 id 看，按对象比看不出顺序。 */
+    private static List<String> idsOf(List<Memo> memos) {
+        return memos.stream().map(Memo::id).toList();
+    }
+
     @Test
     void appendAndDrainRoundTrip(@TempDir Path dir) {
         MemoQueue q = new MemoQueue(dir.resolve("m.json"));
@@ -77,6 +82,48 @@ class MemoQueueTest {
         q.restore(taken);
         q.restore(taken);
         assertEquals(1, q.size(), "restore 两次不该产生重复条目");
+    }
+
+    /**
+     * ★ 钉住「{@code drain} 不删除」这条契约（2026-10-04）。
+     *
+     * <p>起因是我在这里连错两次：先判「restore 追加尾部 + drain 取头部 ⇒ 反复失败的
+     * memo 被<b>永久饿死</b>」，自己推翻成「那是公平轮转」，实测下来<b>两次都错</b>。
+     *
+     * <p>真相：{@code drain()}（{@code MemoQueue.java:99-110}）<b>根本不删除</b> ——
+     * {@code :102 readAll()} 之后 {@code :106 return List.copyOf(all.subList(0, …))}，
+     * <b>既没改 {@code all} 也没 {@code writeAll}</b>。它只是<b>取看一眼</b>；
+     * 真正把它从队列里拿走的只有 {@code commitDrain()}（{@code :113}）。
+     *
+     * <p>⇒ <b>「饿死」不可能发生</b>：失败的 memo 一直还在队列里，下一轮照样会被取到。
+     * ⇒ 而 {@code restore()}（{@code :144}）对<b>仍在队列里</b>的 memo 是 no-op
+     * （{@code :147 readAll()} 已含它们，{@code :160 if (present) continue} 直接跳过）。
+     *
+     * <p>★ 本测试的作用是<b>保护这条契约</b>：如果将来有人把 {@code drain}
+     * 「优化」成真正删除（那样它就能与 commitDrain 合成一步，看起来很干净），
+     * 下面两条会立刻红 —— 因为那时「取看一眼」这个语义就没了，
+     * 而 {@code LearnerReviewTool} 依赖它做「取出 → 复盘 → 再决定 commit 还是 restore」。
+     */
+    @Test
+    void drainOnlyLooksAtTheHeadAndDoesNotRemove(@TempDir Path dir) {
+        MemoQueue q = new MemoQueue(dir.resolve("m.json"));
+        for (int i = 0; i < 6; i++) {
+            q.append(memo("m-" + i, "p" + i));
+        }
+
+        List<Memo> first = q.drain(3);
+        assertEquals(List.of("m-0", "m-1", "m-2"), idsOf(first), "第一轮取的是队首三条");
+        assertEquals(6, q.size(), "★ drain 不许删除 —— 它只是取看一眼");
+        assertEquals(0, q.commitDrain(List.of()), "commit 空列表也不该改变队列");
+
+        List<Memo> again = q.drain(3);
+        assertEquals(idsOf(first), idsOf(again),
+                "★ 队列没被改动，所以再取一次拿到的是同一批 —— 这正是「不会饿死」的原因");
+        assertEquals(6, q.size());
+
+        // restore 对「仍在队列里」的这些必须是 no-op（否则会产生重复条目）
+        assertEquals(6, q.restore(first), "★ restore 已存在的条目必须什么都不做");
+        assertEquals(6, q.size(), "restore 不许产生重复");
     }
 
     @Test
