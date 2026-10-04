@@ -211,7 +211,18 @@ public final class ChatCommands {
         }
         ChatCommand command = find(loop, p.name());
         if (command == null) {
-            return "没有 " + PREFIX + p.name() + " 这条命令。输入 " + PREFIX + " 看看有哪些。";
+            // ★ B0 实测加的回落（2026-10-04）：不认得的 /命令转给服务器。
+            //
+            // 为什么必须回落：本类在客户端**拦下所有 / 开头的输入**，原版命令都在这一层之下。
+            // 不回落 ⇒ /give、/time set、/gamemode、/tp、/summon、/drop 全打不进去，
+            // 也就是「从外部布置夹具」整条没有入口（实测：只有一句「没有 /give 这条命令」）。
+            //
+            // ⚠️ 这**不是**类注释反对的那种兜底。那条反对的是「把打错的命令当成一句话发给模型」；
+            // 这里是转给服务器，由服务器解析：真命令就执行，不是命令就回「未知命令」。
+            // 「打错 ⇒ 报错」这条纪律一点没松 —— 我们仍然不会把命令当聊天发出去。
+            forwardToServerCommand(text);
+            return "没有 " + PREFIX + p.name() + " 这条内置命令，已按原版命令转给服务器"
+                    + "（回话看聊天；服务器不认就会说未知命令）。";
         }
         String why = command.unavailable(loop);
         if (why != null) {
@@ -241,6 +252,36 @@ public final class ChatCommands {
             return null;
         }
         return dispatch(loop, text);
+    }
+
+    /**
+     * 把不认识的 {@code /}命令转给<b>服务器</b>执行。
+     *
+     * <p><b>为什么必须回落</b>（2026-10-04 实机证据）：本类在客户端<b>拦下所有 {@code /} 开头的输入</b>，
+     * 而原版/NeoForge 的命令都在这一层之下。实测：按 {@code t} 打开的 numen 聊天里打
+     * {@code /give}、{@code /time set} 只得到「没有 /give 这条命令」；
+     * 而 OpenClaw 送不出 {@code shift+T}（原版命令屏），所以<b>外部没有任何别的入口</b>
+     * ⇒ 从游戏外布置夹具（发物品、换时间、换模式、传送、召唤）整条没有路。
+     *
+     * <p><b>为什么走 {@code connection.sendCommand}</b>：这就是客户端发原版命令的正路
+     * （{@code numencam} 自己的 {@code /cam tp} 与 {@code CompanionTether} 都用它）。
+     * ⚠️ 它<b>只能跑服务端命令</b>；客户端本地命令（如 numencam 的 {@code /cam bind}）
+     * 走这条路服务器会回「未知命令」—— 那些要靠各自的外部接口
+     * （numencam 的机位就是改 {@code config\numen_api\cam.json}，已实测有效）。
+     *
+     * <p>⚠️ 这里<b>不会</b>把命令当成一句话发给模型：仍然只发给服务器，
+     * 服务器不认就回「未知命令」。「打错 ⇒ 报错」这条纪律一点没松。
+     *
+     * @return {@code null} = 没转出去（没有玩家 / 没连服），调用方照旧报「没有这条命令」
+     */
+    private static String forwardToServerCommand(String text) {
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc == null || mc.player == null || mc.player.connection == null) {
+            return null;   // 没进世界/没连服/客户端已关：如实说不知道，别假装试过了
+        }
+        mc.player.connection.sendCommand(text.stripLeading().substring(1));
+        // 回话由服务器发进聊天（成功或「未知命令」），这里只如实说明已经转出去了。
+        return null;
     }
 
     // ---- 最近用过 ----
