@@ -1,6 +1,7 @@
 package com.dwinovo.numen.api;
 
 import com.dwinovo.numen.agent.tool.ClientToolContext;
+import com.dwinovo.numen.agent.tool.LocalToolCallLog;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.ToolCall;
 import com.dwinovo.numen.agent.tool.ToolRegistry;
@@ -281,6 +282,11 @@ public final class NumenActuator {
                 ToolCall call = new ToolCall(id, toolName, args,
                         new ClientToolContext(body, companion),
                         f::complete);
+                // ★ 客户端本地执行的工具（覆写了 invoke 的那些）在服务端那条路上
+                //   压根不产生 ExecuteToolPayload ⇒ tools.jsonl 里一个字都没有。
+                //   实测漏掉 12 个（find_tools 内脑真调 118 次 / todowrite 33 次 / load_skill …），
+                //   后果是监测台答不出「内脑到底调了什么工具」。这里补上，判据见 LocalToolCallLog。
+                LocalToolCallLog.publishCall(tool, companion, id, args.length());
                 tool.invoke(call);
             } catch (RuntimeException ex) {
                 f.complete(TaskResult.fail(ex.getMessage()).toJson());

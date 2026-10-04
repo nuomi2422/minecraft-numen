@@ -2,6 +2,7 @@ package com.dwinovo.numen.client.agent;
 
 import com.dwinovo.numen.Constants;
 import com.dwinovo.numen.agent.tool.ClientToolContext;
+import com.dwinovo.numen.agent.tool.LocalToolCallLog;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.ToolCall;
 import com.dwinovo.numen.agent.tool.ToolInvocation;
@@ -166,6 +167,10 @@ public final class ToolDispatcher {
                             entityUuid, inv.name(), inv.id());
                     sink.onResult(inv, TaskResult.fail(
                             com.dwinovo.numen.agent.tool.ToolDisclosure.notExpanded(tool.name())).toJson());
+                    // ★ 「她试过但用不了」是唯一能证明「去取过定义」的痕迹，
+                    //   而监测台此前连这个都看不见（这一段在服务端那条路之前就返回了）。
+                    LocalToolCallLog.publishRejected(tool, entityUuid, inv.id(),
+                            com.dwinovo.numen.agent.tool.ToolDisclosure.notExpanded(tool.name()));
                     continue;
                 }
                 if (tool == null) {
@@ -181,6 +186,11 @@ public final class ToolDispatcher {
                         json -> complete(inv, json));
                 Constants.LOG.info("[numen-dispatch#{}] dispatch tool={} id={} args={}",
                         entityUuid, inv.name(), inv.id(), truncate(inv.argsJson()));
+                // ★ 客户端本地执行的工具（覆写了 invoke 的那些）不经过服务端，
+                //   所以 ExecuteToolPayload 那一跳压根不发生 ⇒ tools.jsonl 里没有它们。
+                //   实测漏掉 12 个（find_tools 内脑真调 118 次 / todowrite 33 次 / load_skill …）。
+                //   判据（反射 invoke 的声明类）与「为什么不用接口标记方法」见 LocalToolCallLog。
+                LocalToolCallLog.publishCall(tool, entityUuid, inv.id(), inv.argsJson().length());
                 try {
                     tool.invoke(call);
                 } catch (RuntimeException ex) {
