@@ -34,7 +34,7 @@ dependencies {
 // acx/api + acx/core are Minecraft-free, so the suite runs on a plain JDK with
 // only gson on the classpath - no gradle, no game, no devlaunch.
 //
-// NOTE: 5 of the 209 checks are deliberately RED. Two of them come from
+// NOTE: 6 of the 210 checks are deliberately RED. Two of them come from
 // AcxTestMain.ctrlSnapshot(), which documents an unfixed bug (for-loop across
 // a breakpoint cannot see $scan.matches on resume) and says so in a
 // TODO(AC-B12) comment. The third one is the 2026-10-03 hardening regression
@@ -44,6 +44,17 @@ dependencies {
 // so resume() restarts at that same step and **re-sends the accepted action**.
 // Measured, not guessed: Fake.calls.count("gate") == 2 where it should be 1.
 // That is the "会不会重复挖、重复走" risk in its most concrete form.
+//
+// ★ The sixth is "记录里没有指纹 → 拒绝续跑 (TODO AC-B21)" (added 2026-10-04).
+// AcxRunner:245 reads `if (prior.fingerprint() != null && !fp.equals(...))`,
+// so a record whose fingerprint is null **skips that whole gate** while name
+// and version still pass -- resume() then continues from a checkpoint whose
+// content may have changed. That contradicts the runner's own class comment
+// (:199 "AC 名 / 版本 / 指纹三者任一不符就拒绝 ... 不静默续跑"):
+// "no fingerprint" was being treated as "fingerprint matches".
+// Semantics chosen: **null is not a pass, null is a reject** -- "验不了 ≠ 验过了".
+// Fixing it is a behaviour change (owner froze functional code), so it stays RED
+// on purpose until that freeze lifts.
 //
 // The fourth is "取消后迟到的成功回执不得把这次运行翻回成功 (TODO AC-B19)".
 // The cancel flag is only consulted in checkCircuit(), which runs *before*
@@ -105,7 +116,7 @@ def acxFixture = tasks.register('acxFixture', Sync) {
 
 tasks.register('acxOfflineTest', JavaExec) {
     group = 'verification'
-    description = 'ACX offline self-check (209 checks, 5 known-red: TODO AC-B12 x2 + TODO AC-B18 x1 + TODO AC-B19 x1 + TODO AC-B20 x1) -- console copy only'
+    description = 'ACX offline self-check (210 checks, 6 known-red: TODO AC-B12 x2 + TODO AC-B18 x1 + TODO AC-B19 x1 + TODO AC-B20 x1 + TODO AC-B21 x1) -- console copy only'
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.dwinovo.numen.acx.test.AcxTestMain'
     dependsOn tasks.named('acxFixture')

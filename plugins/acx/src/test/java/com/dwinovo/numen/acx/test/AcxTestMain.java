@@ -722,6 +722,37 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             T.isTrue(evs.has(AcxEvent.Kind.RESUME_STARTED), "应发 RESUME_STARTED");
         });
 
+        // ★★ 记录里没有指纹（TODO AC-B21，当前会放行）：null 不等于「指纹一致」
+        //   AcxRunner.java:245 写的是 `if (prior.fingerprint() != null && !fp.equals(...))`
+        //   ⇒ 指纹为 null 时**整道门被跳过**，而名字与版本仍然通过
+        //   ⇒ resume 拿着一份「内容可能早已改过」的旧断点静默续跑。
+        //   而 AcxRunner 自己的类注释（:199）承诺「AC 名 / 版本 / 指纹三者任一不符就拒绝」，
+        //   还写着「定义变了还静默从旧断点续跑会产出无法解释的结果」——
+        //   「没有指纹」被当成了「指纹一致」，与那条契约直接矛盾。
+        //   语义：**验不了 ≠ 验过了**。指纹算不出来时我们无法证明内容没变，
+        //   而这道门的全部意义就是「无法证明就不许续跑」。
+        //   现有 resumeContract 只测了非 null 的不匹配，没有 null 反例 ⇒ 改坏了不会红。
+        T.test("记录里没有指纹 → 拒绝续跑（TODO AC-B21，当前会放行）", () -> {
+            Fake.Registry reg = new Fake.Registry().add(Fake.fixed("a", Map.of()));
+            AcxRunner r = runner(reg).build();
+            AcxDefinition d = def(step("s", "a", Map.of()));
+            AcxRunRecord prior = r.run(d, Map.of());
+            // ★ AcxRunRecord 只有私有构造器（收 Builder）⇒ 只能走 Builder。
+            //   这里刻意只给 runId/name/version/status，其它一律不给 ⇒ 指纹是 null。
+            AcxRunRecord noFp = AcxRunRecord.builder()
+                    .runId(prior.runId())
+                    .acName(d.name())
+                    .acVersion(d.version())
+                    .status(AcxStatus.PAUSED)
+                    .completedStepIndex(0)
+                    .timestamp(1L)
+                    .build();
+            var e = throwsA(IllegalArgumentException.class, () -> r.resume(d, noFp));
+            contains(e.getMessage(), "指纹",
+                    "★ 报错文案必须点明是「指纹」这一项 ——「没有指纹」与「指纹不一致」处置不同："
+                            + "前者可能要迁移旧记录，后者必须重规划");
+        });
+
         // ★★ TODO(AC-B18) 已知红 —— 69 号文档「第 1 组红线」第 4 条：**恢复不能重复发出已受理的动作**
         //
         // 机理（逐行可核）：AcxRunner.java:328-332 只在 `r.isSuccess()` 时 `markStepCompleted(c, i)`；

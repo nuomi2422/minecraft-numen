@@ -60,7 +60,7 @@ class AcxOfflineSuiteTest {
      * <p>五个已知缺陷：for/断点的两个（TODO AC-B12）、恢复重发已受理动作（TODO AC-B18）、
      * 取消后迟到回执翻回成功（TODO AC-B19）、在飞动作被记成 STEP_FAILED（TODO AC-B20）。
      */
-    private static final int KNOWN_RED = 5;
+    private static final int KNOWN_RED = 6;
 
     /**
      * 已知的 5 项红的判定片段 —— <b>刻意全用 ASCII</b>。
@@ -83,7 +83,7 @@ class AcxOfflineSuiteTest {
      * 将来若出现名字里带「64」的新失败项，它会被误判成已知缺陷。
      * ⇒ 那种情况要<b>显式改这里</b>，别默默放过。
      */
-    private static final String[] KNOWN_RED_MARKERS = {"for", "64", "AC-B18", "AC-B19", "AC-B20"};
+    private static final String[] KNOWN_RED_MARKERS = {"for", "64", "AC-B18", "AC-B19", "AC-B20", "AC-B21"};
 
     @Test
     void theOfflineSuiteRunsAndItsKnownRedStaysVisible() throws Exception {
@@ -147,7 +147,7 @@ class AcxOfflineSuiteTest {
         int failed = failedField(json);
 
         // ① 总数不许悄悄变 —— 有人删检查项时这里会红
-        assertEquals(209, total, "离线自检的检查项数变了。少项多半是有人删了检查项，"
+        assertEquals(210, total, "离线自检的检查项数变了。少项多半是有人删了检查项，"
                 + "那等于把覆盖度悄悄拿走了。结果文件：" + json);
 
         // ② ★ 最关键的一条：失败数必须「恰好」是已知的 5 项。
