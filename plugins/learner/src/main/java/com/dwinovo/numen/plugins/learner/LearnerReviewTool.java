@@ -166,8 +166,10 @@ final class LearnerReviewTool implements NumenTool {
             var ob = LearnerPlugin.outbox();
             boolean readable = ob != null;
             var rej = com.dwinovo.numen.plugins.learner.core.RejectionFeedback.scan(ob, readable);
+            // S3：上轮产物的使用结果也进 prompt —— 不接这段，学习只在自我循环里打转
+            var usage = LearnerPlugin.usageLedger();
             LearnerReviewer.ReviewOutcome outcome =
-                    LearnerReviewer.withPriorRound(batch, priorRead.summary(), rej, LLM_TIMEOUT_SEC).join();
+                    LearnerReviewer.withPriorRound(batch, priorRead.summary(), rej, usage, LLM_TIMEOUT_SEC).join();
 
             // 回主线程前校验世界代际：换档后迟到结果直接丢弃
             MinecraftServer current = ServerLifecycleHooks.getCurrentServer();

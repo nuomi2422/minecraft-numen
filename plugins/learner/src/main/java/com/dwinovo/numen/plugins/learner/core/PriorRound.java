@@ -242,7 +242,7 @@ public final class PriorRound {
      * @param prior 上轮回顾；{@code null} 等同于「没有上轮」，<b>不留空</b>
      */
     public static String buildUserPrompt(List<Memo> memos, Summary prior) {
-        return buildUserPrompt(memos, prior, null);
+        return buildUserPrompt(memos, prior, null, null);
     }
 
     /**
@@ -254,11 +254,15 @@ public final class PriorRound {
      *（「上轮发生了什么」），而本轮备忘录是「现在要判什么」。
      */
     public static String buildUserPrompt(List<Memo> memos, Summary prior,
-                                         com.dwinovo.numen.plugins.learner.core.RejectionFeedback rejections) {
+                                         com.dwinovo.numen.plugins.learner.core.RejectionFeedback rejections,
+                                         com.dwinovo.numen.plugins.learner.core.UsageLedger usage) {
         StringBuilder user = new StringBuilder();
         user.append((prior == null ? Summary.none() : prior).promptBlock()).append('\n');
         if (rejections != null) {
             user.append(rejections.promptBlock()).append('\n');
+        }
+        if (usage != null) {
+            user.append(usage.promptBlock()).append('\n');
         }
         List<Memo> batch = memos == null ? List.of() : memos;
         user.append("复盘以下 ").append(batch.size()).append(" 条备忘录，逐条输出判定：\n\n");

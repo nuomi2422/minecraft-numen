@@ -70,6 +70,12 @@ public final class LearnerPlugin implements NumenPlugin {
      */
     private static volatile com.dwinovo.numen.plugins.learner.core.CarrierArtifactAdopter carrierAdopter;
 
+    /**
+     * S3：产物<b>使用账本</b>（2026-10-05）。产出被下游用了吗、用成了吗 —— 不接这段，
+     * 学习就只在自我循环里打转。
+     */
+    private static volatile com.dwinovo.numen.plugins.learner.core.UsageLedger usageLedger;
+
     static Path configDir() {
         return configDir;
     }
@@ -84,6 +90,10 @@ public final class LearnerPlugin implements NumenPlugin {
 
     static com.dwinovo.numen.plugins.learner.core.CarrierArtifactAdopter carrierAdopter() {
         return carrierAdopter;
+    }
+
+    static com.dwinovo.numen.plugins.learner.core.UsageLedger usageLedger() {
+        return usageLedger;
     }
     private static volatile String lastReviewAt = "";
     private static volatile int lastVerdictCount;
@@ -129,6 +139,10 @@ public final class LearnerPlugin implements NumenPlugin {
         }
         // 第 6 个工具：携带器审批流（submit/list/approve/reject）。**approve 必须给理由**。
         numen.registerTool(new LearnerCarrierTool());
+        // S3：使用账本（record/report/claim_validity）。**claim_validity 必须给理由**，
+        // 且刻意没有「自动判定有效性」的口子。
+        usageLedger = new com.dwinovo.numen.plugins.learner.core.UsageLedger(configDir);
+        numen.registerTool(new LearnerUsageTool());
         // 运行时状态：让主 AI 知道「有多少条待复盘的备忘录」，从而自己决定何时调 learner_review
         numen.contributeState(companion -> {
             MemoQueue q = QUEUES.get(companion);
