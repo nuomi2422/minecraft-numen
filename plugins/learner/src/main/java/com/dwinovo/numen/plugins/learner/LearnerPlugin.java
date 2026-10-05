@@ -143,6 +143,8 @@ public final class LearnerPlugin implements NumenPlugin {
         // 且刻意没有「自动判定有效性」的口子。
         usageLedger = new com.dwinovo.numen.plugins.learner.core.UsageLedger(configDir);
         numen.registerTool(new LearnerUsageTool());
+        // 回话：默认开（用户明确要「不是一直裸着写」），但必须能一键闭嘴 ⇒ 做成工具。
+        numen.registerTool(new LearnerAnnounceTool());
         // 运行时状态：让主 AI 知道「有多少条待复盘的备忘录」，从而自己决定何时调 learner_review
         numen.contributeState(companion -> {
             MemoQueue q = QUEUES.get(companion);

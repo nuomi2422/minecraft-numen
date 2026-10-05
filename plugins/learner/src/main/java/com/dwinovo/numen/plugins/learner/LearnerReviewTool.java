@@ -380,6 +380,96 @@ final class LearnerReviewTool implements NumenTool {
         reviewedEv.put("prior_round", priorRead.toMap());
         LearnerMonitor.publish("reviewed", reviewedEv);
         LearnerPlugin.setReviewVerdicts(reviewId, rendered);
+
+        // ★ 2026-10-05：把上面这些数字**说给主人听**。
+        //   此前学习者一直在写、从不说话（用户原话「不是一直裸着写」）。
+        //   措辞与限频都在 Announce/AnnounceText 里，那两个类是纯 Java、可离线测；
+        //   这里只在服务端线程收尾处喊一句（发字必须走 resolveOwnerPlayer）。
+        //   ★ 只说事实（学了几条/落了什么/拒了什么），不写「我学会了」这类自评 ——
+        //     学习者自己打分会立刻变成自我印证。
+        announceToOwner(id, rendered.size(), removed, restored);
+    }
+
+    /**
+     * 复审收尾时说一句。
+     *
+     * <p><b>失败不许影响复审</b>：说话只是锦上添花，绝不能因为发字失败把一次
+     * 已经成功的复审判成失败 —— 那是把观测手段当成业务逻辑。
+     */
+    private static void announceToOwner(java.util.UUID companionId, int verdictCount,
+                                        int committed, int restored) {
+        try {
+            var server = ServerLifecycleHooks.getCurrentServer();
+            if (server == null) {
+                return;
+            }
+            NumenPlayer companion = NumenPlayer.findByUuid(server, companionId);
+            if (companion == null) {
+                // 换档/同伴已卸载：明说不能，不静默假装说过
+                LearnerMonitor.publish("announce_skipped", java.util.Map.of(
+                        "reason", "COMPANION_NOT_FOUND",
+                        "companion", companionId.toString()));
+                return;
+            }
+            int acLanded = 0;
+            int acRejected = 0;
+            int acAdopted = 0;
+            int carrierPending = 0;
+            var ob = LearnerPlugin.outbox();
+            if (ob != null) {
+                // ★ 刻意不用 stats().get("AC_SCRIPT")：那是**文件总数**，
+                //   把已采纳的、已拒收的全算进来。发出去的话会说成「5 条已落箱待采纳」
+                //   而实际只有一部分在等 —— **措辞不诚实比不说更坏**。
+                //   这里按状态分开数：还在等的 / 已被拒的。
+                for (var o : ob.list(ArtifactOutbox.Kind.AC_SCRIPT)) {
+                    String st = o.has("status") ? o.get("status").getAsString() : "";
+                    if (ArtifactOutbox.Status.REJECTED.name().equals(st)) {
+                        acRejected++;
+                    } else if (ArtifactOutbox.Status.ADOPTED.name().equals(st)) {
+                        acAdopted++;
+                    } else {
+                        acLanded++;
+                    }
+                }
+                for (var o : ob.list(ArtifactOutbox.Kind.CARRIER)) {
+                    String st = o.has("status") ? o.get("status").getAsString() : "";
+                    if (!ArtifactOutbox.Status.REJECTED.name().equals(st)
+                            && !ArtifactOutbox.Status.ADOPTED.name().equals(st)) {
+                        carrierPending++;
+                    }
+                }
+            }
+            boolean said = com.dwinovo.numen.plugins.learner.core.Announce.announceReview(
+                    companion, verdictCount, committed, restored, acLanded, carrierPending, acRejected,
+                    acAdopted);
+            // ★ 说出去 / 被限频吞掉 / 被关掉 —— 三种都要落到监测台。
+            //   否则「它到底说了没有」又变成一件查不到的事。
+            java.util.Map<String, Object> annEv = new java.util.LinkedHashMap<>();
+            annEv.put("companion", companionId.toString());
+            annEv.put("said", said);
+            annEv.put("enabled", com.dwinovo.numen.plugins.learner.core.Announce.enabled());
+            annEv.put("min_gap_seconds",
+                    com.dwinovo.numen.plugins.learner.core.Announce.minGapSeconds());
+            annEv.put("reason", said ? "OK"
+                    : (com.dwinovo.numen.plugins.learner.core.Announce.enabled()
+                    ? "RATE_LIMITED_OR_OWNER_OFFLINE" : "DISABLED"));
+            annEv.put("verdicts", verdictCount);
+            annEv.put("committed", committed);
+            annEv.put("restored", restored);
+            annEv.put("ac_landed", acLanded);
+            annEv.put("ac_adopted", acAdopted);
+            annEv.put("carrier_pending", carrierPending);
+            annEv.put("ac_rejected", acRejected);
+            LearnerMonitor.publish("announce", annEv);
+        } catch (RuntimeException e) {
+            LearnerMonitor.publish("announce_failed", java.util.Map.of(
+                    "companion", companionId.toString(),
+                    "error", String.valueOf(e.getMessage())));
+        }
+    }
+
+    private static long longOf(Object o) {
+        return o instanceof Number n ? n.longValue() : 0L;
     }
 
     /**
