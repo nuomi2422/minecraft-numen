@@ -119,14 +119,39 @@ final class RddStallPolicy {
         return shouldNudgeLlmIdleAfterResponse(noToolCallResponses, "idle", llmInFlight);
     }
 
-    /**
-     * 坐标量化成 8 格粗桶（纯函数，无 MC 依赖，便于单测锁住"区域内抖动同桶、跨区域换桶"）。
-     *
-     * <p>2026-09-27 实机教训：停车守望原用**精确坐标**判进展，AI 在两点之间横跳（寻路打转、
-     * 到不了目标）时坐标每 tick 变化 -> "无进展"窗口被无限重置 -> 催工永不触发，
-     * 表现为"它自己一直重复走、任务永远完不成、也没人拍醒"。粗桶让区域内抖动不再重置窗口。
-     */
-    static String parkedBucket(int x, int y, int z) {
+/**
+ * 「车没动 + 姿态没动 + 无生产」持续到这么多次检测（1 次/秒）就升级催工（能力缺口方向）。
+ *
+ * <p><b>为什么这条阈值单独存在</b>（2026-10-03 实测教训）：真正的死任务（车不走、姿态不变、
+ * 熔炉没在烤、工具零进展）落不进上面任何一条判据 ——
+ * {@link #llmIdle} 认的是 {@code body_task:*}/{@code furnace_production} 那些「正在推进」的
+ * source，压根不会触发；{@code check.stalled()} 还要等窗口累积，而 {@code waiting()} 为真时
+ * 上限是 {@link #WORK_GRACE_CHECKS}=<b>120 秒</b>。结果就是同伴真的死掉了、连续十几分钟盯着
+ * 她看，日志里<b>一条拍醒都没有</b> —— 这才是「检测不正确」的另一半。取 45 秒：远小于 120 秒的
+ * busy 窗口，保证「busy 但没进展」在 busy 窗口耗尽<b>之前</b>就被拍一次。
+ */
+static final int DEAD_TASK_NUDGE_AFTER_CHECKS = 45;
+
+/**
+ * 是否是「死任务」：source 是 {@code body_task:*}（车在动）但 <b>身体进度一个 tick 都没前进</b>。
+ *
+ * <p>这是「busy 但真没进展」的唯一入口：{@code waiting()} 为真时上限 120 秒，
+ * 单靠它这条死任务要等两分钟才被拍一次；而 {@link #llmIdle} 又不管 {@code body_task:*}。
+ * 取 45 秒：在 busy 窗口耗尽之前先拍一次，钱花在「它真的卡住了」上而不是「白等」。
+ */
+static boolean isDeadTask(int unchanged, String source) {
+    return source != null && source.startsWith("body_task:")
+            && unchanged >= DEAD_TASK_NUDGE_AFTER_CHECKS;
+}
+
+/**
+ * 坐标量化成 8 格粗桶（纯函数，无 MC 依赖，便于单测锁住"区域内抖动同桶、跨区域换桶"）。
+ *
+ * <p>2026-09-27 实机教训：停车守望原用**精确坐标**判进展，AI 在两点之间横跳（寻路打转、
+ * 到不了目标）时坐标每 tick 变化 -> "无进展"窗口被无限重置 -> 催工永不触发，
+ * 表现为"它自己一直重复走、任务永远完不成、也没人拍醒"。粗桶让区域内抖动不再重置窗口。
+ */
+static String parkedBucket(int x, int y, int z) {
         return Math.floorDiv(x, 8) + "," + Math.floorDiv(y, 8) + "," + Math.floorDiv(z, 8);
     }
 

@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -46,27 +47,56 @@ final class RddStallWatcher {
     /** 卡死监督状态：记录每个同伴当前二级的资产指纹与未变化计数。 */
     private final Map<UUID, StallState> stalls = new ConcurrentHashMap<>();
 
-    private record StallState(String subtaskId, String fingerprint, int unchangedTicks, int nudges) {}
+    /**
+     * 卡死监督状态。<b>两个指纹分开放</b>，因为它们回答的是两个不同的问题。
+     *
+     * <ul>
+     *   <li>{@code windowFingerprint}（精确坐标）：喂给 {@link RddStallPolicy#check} 的
+     *       <b>无进展窗口</b> —— <b>走路本身算进展</b>，否则正在赶路的同伴会被误判成卡死
+     *       （2026-09-30 定的口径，保留不动）。</li>
+     *   <li>{@code stateFingerprint}（8 格粗桶）：给 STALLED 期间判「<b>真</b>进展」用。
+     *       同伴在两点之间来回走时坐标每 tick 都变，用精确坐标会让 {@link #handleStalled}
+     *       的「变了 → resumeFromStalled + 计数归零」被反复触发，响应窗和 {@link #MAX_NUDGES}
+     *       被无限重置 —— 2026-10-03 实测：同一条催工话术在 16:49~17:05 一字不变地刷了 42 次，
+     *       永远走不到判失败那一步（粗桶口径与 {@link #parkedFingerprint} 一致）。</li>
+     * </ul>
+     */
+    private record StallState(String subtaskId, String windowFingerprint, String stateFingerprint,
+                              int unchangedTicks, int nudges) {}
 
     /**
-     * 每个同伴「最近一次拍醒时所处的指纹」（2026-10-01 新增）。
+     * 「同一状态 × 同一类催工只发一次」的记录（uuid → 已发过的键集合）。
      *
-     * <p>为什么：用户明确指出"老是花钱"。拍醒是一次<b>真实 LLM 请求</b>，
-     * 而"拍完没效果"时如果还按同样的条件再拍，就是纯浪费。
-     * 现在规则是：<b>同一指纹只拍一次</b>；指纹一变（资产/位置真的动了）就允许再拍 ——
-     * 那本来就说明它动过了，不该被旧记录挡住。
-     *
-     * <p>不按"永久集合"记，是为了让指纹变化后自然放行，也顺带避免无界增长。
+     * <p>2026-10-01 只把去重门挂在 LLM 空转那一处，实测**完全挡不住刷屏**：
+     * {@code check.stalled()} 和 {@link #handleStalled} 两个分支各自每轮照发，
+     * 而键又是<b>精确坐标</b> —— 同伴原地挪一格就换键，去重永远命中不了。
+     * 2026-10-03 三处一起改：键换成抗抖动的 {@link #stateKey}、加<b>类别前缀</b>
+     * （三类催工的"一次"各算各的，否则 escalate 会被 stall 的记录顶掉）。
      */
-    private final Map<UUID, String> nudgedFingerprints = new ConcurrentHashMap<>();
+    private final Map<UUID, Set<String>> nudgedStates = new ConcurrentHashMap<>();
 
-    private boolean alreadyNudgedFor(java.util.UUID companionId, String fingerprint) {
-        return fingerprint.equals(nudgedFingerprints.get(companionId));
+    private static String nudgeKey(String kind, String stateKey) {
+        return kind + "|" + stateKey;
     }
 
-    private void markNudgedFor(java.util.UUID companionId, String fingerprint) {
-        nudgedFingerprints.put(companionId, fingerprint);
+    /** 这一类催工在这个状态下是不是已经花过钱了。 */
+    private boolean alreadyNudgedFor(java.util.UUID companionId, String kind, String stateKey) {
+        Set<String> sent = nudgedStates.get(companionId);
+        return sent != null && sent.contains(nudgeKey(kind, stateKey));
     }
+
+    private void markNudgedFor(java.util.UUID companionId, String kind, String stateKey) {
+        Set<String> sent = nudgedStates.computeIfAbsent(companionId,
+                k -> ConcurrentHashMap.newKeySet());
+        // 键是"状态"的函数，状态随同伴跑动不断变；不封顶就会无界增长（38号页同类教训）。
+        if (sent.size() >= NUDGE_KEY_CAP) {
+            sent.clear();
+        }
+        sent.add(nudgeKey(kind, stateKey));
+    }
+
+    /** 已发过的催工键上限：超了整组清掉（宁可偶尔多拍一次，也不泄漏）。 */
+    private static final int NUDGE_KEY_CAP = 64;
 
     /** Level 3 卡死累计：当前二级累计卡死次数（AI 反复拍醒仍无目标资产进展 → 能力不足）。 */
     private final Map<UUID, StallCount> stallCounts = new ConcurrentHashMap<>();
@@ -87,15 +117,16 @@ final class RddStallWatcher {
         }
         RddStallPolicy.Observation observation = observe(ap, rt, current);
         String fp = observation.fingerprint();
+        String stateKey = stateKey(ap, observation);
         StallState st = stalls.get(ap.getUUID());
         if (st == null || !st.subtaskId().equals(current.id())) {
-            stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 0));
+            stalls.put(ap.getUUID(), new StallState(current.id(), fp, stateKey, 0, 0));
             return false;
         }
-        RddStallPolicy.Check check = RddStallPolicy.check(st.fingerprint(), st.unchangedTicks(), observation);
+        RddStallPolicy.Check check = RddStallPolicy.check(st.windowFingerprint(), st.unchangedTicks(), observation);
         if (check.changed()) {
             // Assets, container output, cooking, or body work counters changed.
-            stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 0));
+            stalls.put(ap.getUUID(), new StallState(current.id(), fp, stateKey, 0, 0));
             return false;
         }
         int unchanged = check.unchanged();
@@ -129,8 +160,8 @@ final class RddStallWatcher {
                 llm.consecutiveNoToolCallResponses(), observation.source(), llmInFlight);
         boolean timeBasedIdle = RddStallPolicy.shouldNudgeLlmIdle(unchanged, observation.source(), llmInFlight);
 
-        if ((noToolCallStreak || timeBasedIdle) && !alreadyNudgedFor(ap.getUUID(), fp)) {
-            markNudgedFor(ap.getUUID(), fp);
+        if ((noToolCallStreak || timeBasedIdle) && !alreadyNudgedFor(ap.getUUID(), "idle", stateKey)) {
+            markNudgedFor(ap.getUUID(), "idle", stateKey);
             // 话术三条铁律（2026-09-29 GLM 审稿后重写，旧版实测无效）：
             //  1) 必须**点名当前子目标**——泛泛的「调用一个工具」是 content-free 紧迫感，
             //     模型按 recency 服从它 → 挑任意工具 → 覆盖原计划。旧版就是这么把同伴逼去 build 的。
@@ -167,6 +198,30 @@ final class RddStallWatcher {
             idleData.put("action", "nudge-once-per-fingerprint; no repeat spend without progress");
             RddMonitor.publish("llm_idle_stall", idleData);
         }
+        // 死任务兜底：source=body_task:* 说明「车在动」，但身体进度一个 tick 都没前进。
+        // 上面的 idle 判据不管 body_task（正常干活），check.stalled() 又要等 120 秒 busy 窗口 ——
+        // 真的死掉了就会<b>一条拍醒都没有</b>。这里在 busy 窗口耗尽之前先拍一次。
+        // 同状态只拍一次（类别 "dead"），配合 RddPlugin 的 3 分钟总闸。
+        boolean deadTask = RddStallPolicy.isDeadTask(unchanged, observation.source());
+        if (deadTask && !alreadyNudgedFor(ap.getUUID(), "dead", stateKey)) {
+            markNudgedFor(ap.getUUID(), "dead", stateKey);
+            RddPlugin.nudge(ap.getUUID(), "你正在跑「" + current.description() + "」但**进度一个都没前进**"
+                    + "（已经 " + unchanged + " 秒）。别重复发同一个工具请求："
+                    + "① 先 rdd_get_inventory / scan_nearby_entities 核对真实情况；"
+                    + "② 报告工具终态没回来/目标到不了，就用 report_task_concern 上报"
+                    + "（kind=BLOCKED 或 PAUSE，写清卡在哪一步）；"
+                    + "③ 换一条完全不同的做法，不要原样重试。");
+            Map<String, Object> deadData = new LinkedHashMap<>();
+            deadData.put("companionId", ap.getUUID().toString());
+            deadData.put("subtask", current.id());
+            deadData.put("source", observation.source());
+            deadData.put("unchangedChecks", unchanged);
+            deadData.put("graceLimitSeconds", check.limit());
+            deadData.put("reason", "busy but body progress frozen (dead task)");
+            deadData.put("action", "nudge-once-per-state; busy grace limit is "
+                    + RddStallPolicy.WORK_GRACE_CHECKS + "s");
+            RddMonitor.publish("dead_task_stall", deadData);
+        }
         if (observation.waiting() && unchanged >= STALL_AFTER_TICKS
                 && unchanged % STALL_AFTER_TICKS == 0 && !check.stalled()) {
             RddMonitor.publish("subtask_work_wait", Map.of(
@@ -180,22 +235,31 @@ final class RddStallWatcher {
             int total = (sc != null && sc.subtaskId().equals(current.id())) ? sc.total() + 1 : 1;
             stallCounts.put(ap.getUUID(), new StallCount(current.id(), total));
             if (total >= CAPABILITY_GAP_AFTER_STALLS) {
-                RddPlugin.nudge(ap.getUUID(), "这个目标反复没有进展。先核对真实工具结果、附近资源、路径、装备和模型连接；不要仅凭重复失败推断缺软件工具，只有确认能力缺口后再考虑自编译。");
+                // 类别前缀 "escalate"：这一类的一次独立算，不被下面 "stall" 的记录顶掉。
+                if (!alreadyNudgedFor(ap.getUUID(), "escalate", stateKey)) {
+                    markNudgedFor(ap.getUUID(), "escalate", stateKey);
+                    RddPlugin.nudge(ap.getUUID(), "这个目标反复没有进展。先核对真实工具结果、附近资源、路径、装备和模型连接；不要仅凭重复失败推断缺软件工具，只有确认能力缺口后再考虑自编译。");
+                }
                 RddMonitor.publish("subtask_stall_escalated", Map.of(
                         "companionId", ap.getUUID().toString(), "subtask", current.id(), "failureClass", "UNKNOWN",
                         "reason", "repeated stalls (" + total + "); cause requires evidence"));
                 stallCounts.remove(ap.getUUID());
             }
             rt.chain().markStalled(current.id(), "observed work unchanged for " + check.limit() + " checks");
-            RddPlugin.nudge(ap.getUUID(), "你的目标「" + current.description() + "」还在，但可见资产、容器生产和身体进度在观察窗口内没有变化。请核对真实工具结果、材料和生产条件，再决定下一步。");
+            // ★ 这一句是 2026-10-03 实测最大的刷屏源（42 次，话术一字不变）。同一状态下只发一次：
+            // 没真进展就别把同一句话说第二遍，状态机照样往下走（响应窗 / 判失败不受影响）。
+            if (!alreadyNudgedFor(ap.getUUID(), "stall", stateKey)) {
+                markNudgedFor(ap.getUUID(), "stall", stateKey);
+                RddPlugin.nudge(ap.getUUID(), "你的目标「" + current.description() + "」还在，但可见资产、容器生产和身体进度在观察窗口内没有变化。请核对真实工具结果、材料和生产条件，再决定下一步。");
+            }
             RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(),
                     "reason", "observed work unchanged", "source", observation.source(),
                     "graceRemainingSeconds", 0, "graceLimitSeconds", check.limit()));
             // 重置响应窗计数：从 STALLED 起给 AI STALL_RESPONSE_TICKS 秒响应时间
-            stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, st.nudges() + 1));
+            stalls.put(ap.getUUID(), new StallState(current.id(), fp, stateKey, 0, st.nudges() + 1));
             return true;
         }
-        stalls.put(ap.getUUID(), new StallState(current.id(), fp, unchanged, st.nudges()));
+        stalls.put(ap.getUUID(), new StallState(current.id(), fp, stateKey, unchanged, st.nudges()));
         return false;
     }
 
@@ -204,33 +268,41 @@ final class RddStallWatcher {
      * 多次拍醒无效 → 判失败（Level 1 恢复兜底）。
      */
     void handleStalled(NumenPlayer ap, RddRuntime rt, Subtask current) {
-        String fp = observe(ap, rt, current).fingerprint();
+        // ★ 用抗抖动状态键（8 格粗桶），不用精确坐标 —— 见 StallState.stateFingerprint 的注释。
+        //   原来用精确坐标时，同伴原地挪一格就算「真进展」→ resume + 计数归零 → 拍醒上限
+        //   永远触发不到 → 同一条话术无限重播（2026-10-03 实测 42 次）。
+        // observe() 只调一次：它有副作用（furnaceWatch.track 在记账），调两次等于记两次。
+        RddStallPolicy.Observation observation = observe(ap, rt, current);
+        String stateKey = stateKey(ap, observation);
+        String windowFp = observation.fingerprint();
         StallState st = stalls.get(ap.getUUID());
         if (!RddPlugin.supervisionEnabled()) {
             // 空转止血：暂停监督。AI 自己动了 → 回 RUNNING；否则保持卡住标记，绝不拍醒/绝不判失败。
-            if (st != null && st.subtaskId().equals(current.id()) && st.fingerprint().equals(fp)) {
+            if (st != null && st.subtaskId().equals(current.id())
+                    && st.stateFingerprint().equals(stateKey)) {
                 return; // 仍冻结：挂起不动，不打扰 AI
             }
             rt.chain().resumeFromStalled(current.id());
             RddMonitor.publish("subtask_resumed", Map.of("subtask", current.id(), "reason", "progress while supervision paused"));
-            stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 0));
+            stalls.put(ap.getUUID(), new StallState(current.id(), windowFp, stateKey, 0, 0));
             return;
         }
         if (st == null) {
-            stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 1));
+            stalls.put(ap.getUUID(), new StallState(current.id(), windowFp, stateKey, 0, 1));
             RddPlugin.nudge(ap.getUUID(), "你卡住了吗？缺什么工具或材料？");
             return;
         }
-        if (!st.fingerprint().equals(fp)) {
+        if (!st.stateFingerprint().equals(stateKey)) {
             // Real production can recover a stalled task without moving items into inventory yet.
             rt.chain().resumeFromStalled(current.id());
             RddMonitor.publish("subtask_resumed", Map.of("subtask", current.id()));
-            stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, 0));
+            stalls.put(ap.getUUID(), new StallState(current.id(), windowFp, stateKey, 0, 0));
             return;
         }
         // 资产仍无变化：先给 AI 一个响应窗口，窗口内不打扰（AI 可能正在思考/规划）
         if (st.unchangedTicks() + 1 < STALL_RESPONSE_TICKS) {
-            stalls.put(ap.getUUID(), new StallState(current.id(), fp, st.unchangedTicks() + 1, st.nudges()));
+            stalls.put(ap.getUUID(), new StallState(current.id(), st.windowFingerprint(), stateKey,
+                    st.unchangedTicks() + 1, st.nudges()));
             return;
         }
         if (st.nudges() >= MAX_NUDGES) {
@@ -246,11 +318,35 @@ final class RddStallWatcher {
         // **点名教唆本身就是漏洞** —— 干活 AI 是照着 nudge 学的，nudge 点了工具名就等于在派活，
         // 而 RL-19 要求游戏内 AI 只能往待办目录写一条（唯一的合法 caller 是**外层**，不是游戏内任何 AI）。
         // → 改成指向待办目录。
+        // 2026-10-03：同一状态下这一类只发一次（类别前缀 "renudge"，与 "stall" 各算各的一次机会）。
+        if (alreadyNudgedFor(ap.getUUID(), "renudge", stateKey)) {
+            // 这一类已经花过钱了：不再注入，但计数照走 —— 保证 MAX_NUDGES 能推到判失败，
+            // 而不是卡成「永远不花钱也永远不判失败」的死循环。
+            stalls.put(ap.getUUID(), new StallState(current.id(), st.windowFingerprint(), stateKey,
+                    0, st.nudges() + 1));
+            return;
+        }
+        markNudgedFor(ap.getUUID(), "renudge", stateKey);
         RddPlugin.nudge(ap.getUUID(), "你还没动。告诉我你卡在哪一步？"
                 + "如果缺工具或能力，把「缺什么 + 你试过什么 + 你所处环境的快照」"
                 + "用 learner_note 写一条待办，学习者会看到；**不要自己请求代码变更**。");
         RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(), "reason", "still stalled, re-nudge"));
-        stalls.put(ap.getUUID(), new StallState(current.id(), fp, 0, st.nudges() + 1));
+        stalls.put(ap.getUUID(), new StallState(current.id(), st.windowFingerprint(), stateKey,
+                0, st.nudges() + 1));
+    }
+
+    /**
+     * STALLED 期间判「<b>真</b>进展」用的状态键：背包 + <b>8 格区域桶</b> + 容器/熔炉/身体进度。
+     *
+     * <p>与 {@link #fingerprint} 的唯一区别就是坐标那一项（精确 → 粗桶），理由见
+     * {@link StallState#stateFingerprint}。粗桶口径与 {@link #parkedFingerprint} 完全一致，
+     * 不另造第二套。
+     */
+    private String stateKey(NumenPlayer ap, RddStallPolicy.Observation observation) {
+        String inv = RddDetector.countInventory(ap).toString();
+        var pos = ap.blockPosition();
+        return inv + "|" + RddStallPolicy.parkedBucket(pos.getX(), pos.getY(), pos.getZ())
+                + "|work=" + observation.workProgress();
     }
 
     /** 当前二级的资产指纹（背包计数 + 位置），供卡死监督与停车守望共用。 */
@@ -301,10 +397,13 @@ final class RddStallWatcher {
     void clear(UUID uuid) {
         stalls.remove(uuid);
         stallCounts.remove(uuid);
+        // 2026-10-03：原来只清这两个，nudgedFingerprints 成了纯泄漏（换二级也不清）。
+        nudgedStates.remove(uuid);
     }
 
     void clearAll() {
         stalls.clear();
         stallCounts.clear();
+        nudgedStates.clear();
     }
 }

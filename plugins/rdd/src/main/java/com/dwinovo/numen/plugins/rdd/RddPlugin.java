@@ -76,6 +76,14 @@ public final class RddPlugin implements NumenPlugin {
     private static volatile boolean supervisionEnabled = true;
     /** 开关文件 config/numen/rdd-supervision.flag：内容含 "pause"(或 "0") → 暂停监督。 */
     private static volatile Path supervisionFlag;
+    /**
+     * 同一同伴两次拍醒的最小间隔（毫秒）。2026-10-03 实测：单小时 46 次、同一条话术 15 分钟内
+     * 刷 42 次 —— 催工有六七个独立来源，单来源去重挡不住叠加，所以要一个跨来源的总闸。
+     * 取 3 分钟：够 AI 读完上一条并真的动手（判据变了自然会放行），又不会把话重复说 40 遍。
+     */
+    private static final long MIN_NUDGE_INTERVAL_MS = 3L * 60L * 1000L;
+    /** 最近一次**真的注入出去**的拍醒时刻（uuid→系统毫秒），节流判据。 */
+    private static final Map<UUID, Long> LAST_NUDGE_AT = new ConcurrentHashMap<>();
     /** 最近一次真实背包快照（Detector 每秒写，uuid→物品ID→数量）。规划注入用；不清除=背包是女仆属性与链无关。 */
     private static final Map<UUID, Map<String, Integer>> LAST_INVENTORY = new ConcurrentHashMap<>();
     /** 最近一次真实背包扫描时刻（系统毫秒），供规划声明的 verified_at 元字段。 */
@@ -170,12 +178,27 @@ public final class RddPlugin implements NumenPlugin {
             return true;
         });
         com.dwinovo.numen.agent.goal.GoalSinks.registerClear((uuid, reason) -> {
-            if (uuid != null) {
-                remove(uuid);
-                LOG.info("[rdd] 已接收目标清除请求 {}", uuid);
-                return true;
+            if (uuid == null) {
+                return false;
             }
-            return false;
+            // ⚠️ 2026-10-03 实机 bug：这里原来对任何非 null uuid 都 return true，于是
+            // `/goal clear` 在同伴根本没有链时也回「清掉了同伴正在跑的任务链。」——假成功。
+            // 这个 boolean 的契约是「真的清掉了东西吗」（GoalCommand 据它决定回哪句话），
+            // 跟 removeCurrent 失败时宁可保留内存也要发 task_clear_failed 是同一个纪律。
+            boolean had = hasTaskState(uuid);
+            remove(uuid);
+            LOG.info("[rdd] 已接收目标清除请求 {} hadState={}", uuid, had);
+            return had;
+        });
+        // /goal 无参要如实报出「RDD 手里正在跑什么」：接管后引擎侧 goal 被置空，
+        // 引擎只能看到 null → 原来一律回答「还没有目标」（主人给了目标却说没有）。
+        com.dwinovo.numen.agent.goal.GoalSinks.registerStatus(uuid -> {
+            RddRuntime rt = uuid == null ? null : RUNTIMES.get(uuid);
+            if (rt == null) return null;
+            Subtask cur = rt.chain().currentSubtask();
+            return rt.chain().goal().description()
+                    + "（当前二级: " + (cur == null ? "未展开" : cur.description())
+                    + " · 状态 " + rt.chain().currentSubtaskStatus() + "）";
         });
         // P1 资产真相层：同伴死亡/掉装备 → 背包类资产立即失效（不再拿旧装备当"还持有"），
         // 规划输入 LAST_INVENTORY 同步清空；世界资产（基地/结构）不受影响，重新观测会恢复 OBSERVED。
@@ -1268,6 +1291,13 @@ private static String safeDeathAttacker(NumenPlayer body) {
         return "rdd-" + BODY_CALLS.incrementAndGet();
     }
 
+    /** 这个同伴身上还有没有 RDD 的任务状态（内存里的任何一样）。/goal clear 据它如实回报。 */
+    static boolean hasTaskState(UUID companionId) {
+        return companionId != null && (RUNTIMES.containsKey(companionId)
+                || DECOMPOSING.contains(companionId)
+                || BODY.containsKey(companionId));
+    }
+
     public static void remove(UUID companionId) {
         if (companionId == null) return;
         RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
@@ -1288,6 +1318,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
                 BODY.remove(companionId);
                 LAST_CONTEXT.remove(companionId);
                 LAST_EXPANSION_REPORT.remove(companionId);
+                clearNudgeThrottle(companionId); // 链都收了，节流记录跟着走（否则新目标开局就被节流）
                 RddGoalDriver.clear(companionId); // 目标清/重绑 → 丢掉该同伴的懒展开状态
                 clearReplanCounts(companionId);
                 LOG.info("[rdd] 已清除任务及磁盘交接 {}", companionId);
@@ -1519,30 +1550,66 @@ private static String safeDeathAttacker(NumenPlayer body) {
     /**
      * 卡死监督的"拍醒"：把一句话注入内置 AI（效果和主人亲手打字一样）。
      * RDD 不抢方向盘，只在将军发愣时提醒它——缺工具会让它自己调 selfcompile_request。
+     *
+     * <h2>全局节流（2026-10-03）</h2>
+     * 拍醒是一次<b>真实 LLM 请求</b>，而催工有六七个互相独立的来源（卡死/重试/暂停复评/
+     * 停车/装备/死亡），<b>单来源的去重挡不住它们叠加</b>。实测 10-03 16 点那一小时就拍了
+     * 46 次，16:49~17:05 之间同一条话术一字不变地刷了 42 次 —— 全是钱。
+     * 所以这里放一个 per-companion 的<b>最小间隔</b>总闸：无论哪个分支想拍，3 分钟内只放一次。
+     * 间隔到了之后状态真变了（判据变了）自然会再拍，所以这不是"降低监督强度"，
+     * 是"不把同一句话说 40 遍"。
+     *
+     * @return 真的注入出去 → {@code true}；被闸挡下（暂停/限流/参数无效）→ {@code false}
      */
-    public static void nudge(UUID companionId, String message) {
+    public static boolean nudge(UUID companionId, String message) {
         if (!supervisionEnabled) {
             // 空转止血：监督暂停时绝不注入内置 AI（兜底闸；调用方也各自判了暂停）
             LOG.info("[rdd] 监督暂停,跳过拍醒: {}", message == null ? "" : message);
-            return;
+            return false;
+        }
+        if (numenApi == null || companionId == null || message == null || message.isBlank()) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        Long last = LAST_NUDGE_AT.get(companionId);
+        long since = last == null ? Long.MAX_VALUE : now - last;
+        if (since < MIN_NUDGE_INTERVAL_MS) {
+            RddMonitor.publish("nudge_throttled", Map.of(
+                    "companionId", companionId.toString(),
+                    "sinceLastNudgeMs", since,
+                    "minIntervalMs", MIN_NUDGE_INTERVAL_MS,
+                    "message", message.length() > 120 ? message.substring(0, 120) : message,
+                    "reason", "global per-companion nudge throttle; no repeat spend without progress"));
+            LOG.info("[rdd] nudge 节流({}ms < {}ms) {}: {}", since, MIN_NUDGE_INTERVAL_MS, companionId, message);
+            return false;
         }
         try {
-            if (numenApi != null && companionId != null && message != null && !message.isBlank()) {
-                numenApi.enqueue(companionId, message);
-                Map<String, Object> data = observationData(companionId);
-                data.put("outputId", UUID.randomUUID().toString());
-                data.put("companionId", companionId.toString());
-                data.put("message", message);
-                data.put("source", "supervisor");
-                data.put("target", "numen");
-                RddRuntime runtime = RUNTIMES.get(companionId);
-                if (runtime != null) data.put("taskChain", runtime.snapshot());
-                RddMonitor.publish("supervisor_output", data);
-                LOG.info("[rdd] nudge {}: {}", companionId, message);
-            }
+            numenApi.enqueue(companionId, message);
+            LAST_NUDGE_AT.put(companionId, now);
+            Map<String, Object> data = observationData(companionId);
+            data.put("outputId", UUID.randomUUID().toString());
+            data.put("companionId", companionId.toString());
+            data.put("message", message);
+            data.put("source", "supervisor");
+            data.put("target", "numen");
+            RddRuntime runtime = RUNTIMES.get(companionId);
+            if (runtime != null) data.put("taskChain", runtime.snapshot());
+            RddMonitor.publish("supervisor_output", data);
+            LOG.info("[rdd] nudge {}: {}", companionId, message);
+            return true;
         } catch (RuntimeException e) {
             LOG.warn("[rdd] nudge failed: {}", e.toString());
+            return false;
         }
+    }
+
+    /** 清掉某同伴的节流记录（任务清除时调用）。 */
+    static void clearNudgeThrottle(UUID companionId) {
+        if (companionId != null) LAST_NUDGE_AT.remove(companionId);
+    }
+
+    static void clearNudgeThrottleAll() {
+        LAST_NUDGE_AT.clear();
     }
 
     /**

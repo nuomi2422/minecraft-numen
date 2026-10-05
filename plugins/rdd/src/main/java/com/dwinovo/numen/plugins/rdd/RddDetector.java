@@ -136,6 +136,7 @@ final class RddDetector {
                     gapParked.clear();
                     parkedWatcher.clearAll();
                     surplus.clear();
+                    RddPlugin.clearNudgeThrottleAll();
                     tickCounter = 0;
                     assetTick = 0;
                     worldAssetTick = 0;
