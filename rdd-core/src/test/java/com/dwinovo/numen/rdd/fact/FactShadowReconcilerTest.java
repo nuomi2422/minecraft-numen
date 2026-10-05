@@ -173,13 +173,16 @@ class FactShadowReconcilerTest {
 
     @Test
     void failureWithoutCancel_isNotAContradiction() throws Exception {
+        // ★ 注意：这条要有**事实基线**才算「可比」；没有基线时 clean 恒为 false
+        //   （那是「没得比」，见 absentFacts_isNotACleanBillOfHealth），不是矛盾。
         Path d = tmp("contra3");
-        Path f = realFacts(d);
+        Path f = realFacts(d, "some_stage");
         Path u = usage(d,
                 "{\"artifact_id\":\"a1\",\"phase\":\"RESULT\",\"outcome\":\"FAIL\"}",
                 "{\"artifact_id\":\"a1\",\"phase\":\"RESULT\",\"outcome\":\"FAIL\"}");
         var r = FactShadowReconciler.reconcile(f, u);
-        assertTrue(r.clean(), "重复记同一结论不是矛盾，不该报（否则会成噪声）");
+        assertTrue(r.comparable(), "有基线才可比");
+        assertTrue(r.clean(), "重复记同一结论不是矛盾，不该报（否则会成噪声）: " + r.divergences());
     }
 
     // ── 读不到 / 读不出：三种状态要分得开 ─────────────────────────────────────
@@ -227,6 +230,30 @@ class FactShadowReconcilerTest {
         Path u = usage(d);
         var r = FactShadowReconciler.reconcile(f, u);
         assertFalse(r.trustworthy(), "stages 为空数组 = 没有事实，不该报成「一致」");
+    }
+
+    @Test
+    void absentFacts_isNotACleanBillOfHealth() throws Exception {
+        // ★ UNKNOWN ≠ ZERO 的落点：没有事实基线时**不能**报 clean
+        Path d = tmp("absentclean");
+        Path u = usage(d);
+        var r = FactShadowReconciler.reconcile(d.resolve("nope.json"), u);
+        assertFalse(r.comparable(), "没有事实记录 ⇒ 没有可比基线");
+        assertFalse(r.clean(),
+                "★ 没得比的时候 clean 必须是 false —— 报 true 等于把「不知道」说成「没问题」");
+        assertTrue(String.valueOf(r.toMap().get("warning")).contains("没得比"),
+                "要说清是「没得比」: " + r.toMap().get("warning"));
+        assertTrue(r.trustworthy(), "同时它不是故障（事实侧只是还没启用），不该报不可信");
+    }
+
+    @Test
+    void withRealFactBaseline_cleanIsMeaningful() throws Exception {
+        Path d = tmp("meaningful");
+        Path f = realFacts(d, "collect_wood");
+        Path u = usage(d);
+        var r = FactShadowReconciler.reconcile(f, u);
+        assertTrue(r.comparable(), "有事实记录 ⇒ 可比");
+        assertTrue(r.clean(), "可比且无矛盾 ⇒ clean=true 此时才有意义");
     }
 
     @Test

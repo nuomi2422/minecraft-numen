@@ -95,8 +95,27 @@ public final class FactShadowReconciler {
             return factsReadable && !"ABSENT".equals(factsShape) && factKeys == 0;
         }
 
+        /**
+         * ★ 有没有<b>可比的事实基线</b>。
+         *
+         * <p>事实侧没有记录时（{@code ABSENT}，即这个同伴还没跑过 rdd 目标），
+         * 本次<b>没有可比的对象</b> —— 那不是「一致」，是「没得比」。
+         *
+         * <p>这条就是 {@code UNKNOWN ≠ ZERO} 那条红线在对账这里的落点：
+         * 没有基线时把 {@code clean} 报成 {@code true}，等于把「不知道」说成「没问题」。
+         */
+        public boolean comparable() {
+            return factKeys > 0;
+        }
+
+        /**
+         * 是否「干净」。
+         *
+         * <p>★ <b>没有基线时返回 false</b>：不是「有问题」，而是「没得比」——
+         * 具体区分看 {@link #comparable()} 与 {@link #factsShape()}。
+         */
         public boolean clean() {
-            return divergences.isEmpty();
+            return comparable() && divergences.isEmpty();
         }
 
         /**
@@ -118,7 +137,16 @@ public final class FactShadowReconciler {
             m.put("facts_shape", factsShape);
             m.put("facts_parsed", factsParsed());
             m.put("facts_broken", factsBroken());
+            m.put("comparable", comparable());
             m.put("usage_readable", usageReadable);
+            if (!comparable()) {
+                // ★ 没有基线 ≠ 一致。必须显式说，否则 clean=true 会被读成「核对通过」
+                String reason = "ABSENT".equals(factsShape)
+                        ? "这个同伴还没有任何共同事实记录（多半没跑过 rdd 目标）⇒ **没得比**，不是「没问题」"
+                        : "事实侧读得到但一条都没解析出来（形状=" + factsShape + "）⇒ 这次是故障，没得比";
+                String prev = String.valueOf(m.get("warning") == null ? "" : m.get("warning"));
+                m.put("warning", prev + (prev.isEmpty() ? "" : "；") + "★ " + reason);
+            }
             if (!trustworthy()) {
                 StringBuilder why = new StringBuilder("★ 本报告不可当结论用");
                 if (factsBroken()) {

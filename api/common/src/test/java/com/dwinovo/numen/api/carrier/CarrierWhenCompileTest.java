@@ -3,6 +3,7 @@ package com.dwinovo.numen.api.carrier;
 import com.dwinovo.numen.api.carrier.CarrierChain;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -23,6 +24,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 这两类都不抛异常，只在<b>真值</b>上错 —— 所以测试必须断言每个输入的每个取值。
  */
 class CarrierWhenCompileTest {
+
+    private static Path tmp(String n) {
+        return Path.of(System.getProperty("java.io.tmpdir"), "when-" + n + "-" + System.nanoTime());
+    }
 
     private static CarrierChain.Facts facts(String hp) {
         return CarrierChain.factsOf(Map.of("hp", hp), "hp=" + hp);
@@ -144,10 +149,61 @@ class CarrierWhenCompileTest {
     }
 
     @Test
-    void numericCompareOnNonHpKey_isRejectedExplicitly() {
+    void numericCompareOnNonNumericKey_isRejectedExplicitly() {
         var e = assertThrows(IllegalArgumentException.class, () -> CarrierRuleStore.compile("level<=3"));
         assertTrue(e.getMessage().contains("hp"),
-                "非 hp 的数值比较必须明说（要人工定），不许静默按字符串比: " + e.getMessage());
+                "非数值键必须明说（要人工定），不许静默按字符串比: " + e.getMessage());
+    }
+
+    // ── food：饱食度（不是背包食物数）────────────────────────────────────
+
+    private static CarrierChain.Facts foodFacts(String level) {
+        return CarrierChain.factsOf(Map.of("food", level), "food=" + level);
+    }
+
+    @Test
+    void foodComparisons_workAndAreDocumentedAsSatiation() {
+        // food<=5 的语义是「快饿死了」，**不是**「没东西吃了」——
+        // 快照里的 food 来自 PlayerFoodData.getFoodLevel()，与背包内容无关。
+        var low = CarrierRuleStore.compile("food<=5");
+        assertTrue(low.test(foodFacts("3")), "food=3 应满足 food<=5");
+        assertFalse(low.test(foodFacts("12")), "food=12 不该满足");
+        assertTrue(CarrierRuleStore.compile("food>=15").test(foodFacts("18")));
+        assertTrue(CarrierRuleStore.compile("food<5").test(foodFacts("4")));
+        assertFalse(CarrierRuleStore.compile("food<5").test(foodFacts("5")));
+    }
+
+    @Test
+    void missingFood_isFalseNotZero() {
+        // ★ 取不到 food 时必须「不成立」，不能当成 0 —— 0 是合法饱食度（饿到极限）
+        var low = CarrierRuleStore.compile("food<=5");
+        assertFalse(low.test(CarrierChain.factsOf(Map.of(), "nothing here")),
+                "food 缺失时不能被当成 food=0（那样会误判成「快饿死了」）");
+    }
+
+    @Test
+    void unknownToken_mentionsThatFoodIsSatiationNotInventory() {
+        var e = assertThrows(IllegalArgumentException.class,
+                () -> CarrierRuleStore.compile("no_food_left"));
+        assertTrue(e.getMessage().contains("饱食度"),
+                "★ 报错要澄清 food 是饱食度，避免有人以为它代表背包食物: " + e.getMessage());
+    }
+
+    // ── 已批准规则的顺序 ──────────────────────────────────────────────────
+    // 「已批准规则排在默认链之前」这条不变量由 learner 侧 CarrierApprovalFlowTest
+    // 断言（它才能走完整 approve 写盘链路）。这里只锁纯函数部分：
+    // 装上之后 effective() 至少要把已批准规则接进链里，且默认链仍在。
+
+    @Test
+    void effective_chain_containsDefaultsAndIsUsable() {
+        Path dir = tmp("chain");
+        CarrierRuleStore.install(dir);
+        var chain = CarrierRuleStore.effective();
+        assertTrue(chain.size() >= CarrierRules.DEFAULT.size(),
+                "生效链至少要有内置默认规则");
+        // 未装任何已批准规则时，链就是默认链本身
+        assertEquals(CarrierRules.DEFAULT.size(), chain.size(),
+                "没有已批准规则时不应凭空多出规则");
     }
 
     @Test

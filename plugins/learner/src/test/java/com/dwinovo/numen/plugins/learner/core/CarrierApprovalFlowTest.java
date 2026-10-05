@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.learner.core;
 
 import com.dwinovo.numen.api.carrier.CarrierChain;
 import com.dwinovo.numen.api.carrier.CarrierRuleStore;
+import com.dwinovo.numen.api.carrier.CarrierRules;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -169,5 +170,57 @@ class CarrierApprovalFlowTest {
         var e = assertThrows(IllegalStateException.class,
                 () -> ad.approve(rep.rows().get(0).artifactId(), "再批一次"));
         assertTrue(e.getMessage().contains("已批准过"), "重复批准要点名原因: " + e.getMessage());
+    }
+
+    // ── ★ 已批准规则必须真的被求值（2026-10-05 核查发现的实机缺口）────────────
+    //
+    // 默认链前几级（「指向谁」「装备」…）在多数实况下不成立，
+    // 而 CarrierChain.evaluate 遇 !ok 就 break。
+    // ⇒ 若把已批准规则追加在默认链**之后**，它**永远不会被求值**，
+    //   而审批界面与报告都显示「已批准」。
+
+    @Test
+    void approvedRule_isActuallyEvaluated_afterDefaultChainWouldShortCircuit() {
+        Path dir = tmp("order");
+        CarrierRuleStore.install(dir);
+        CarrierRuleStore.submitCandidate(dir, "a1", "{\"name\":\"bring_food\","
+                + "\"when\":\"food<=5\",\"carry\":[\"cooked_beef\"]}", "rev", "m-1");
+        CarrierRuleStore.approve(dir, "a1", "低饱食度时带吃的");
+
+        var facts = CarrierChain.factsOf(Map.of("food", "3"), "food=3");
+        var r = CarrierChain.evaluate(CarrierRuleStore.effective(), facts);
+
+        assertTrue(facts.evaluatedLevels().contains("bring_food"),
+                "★ 已批准的规则必须真的被求值；若排在默认链之后就会被短路吃掉。"
+                        + "evaluated=" + facts.evaluatedLevels());
+        assertTrue(r.why().contains("bring_food"), "why 里要能看到它: " + r.why());
+        assertTrue(r.carry().contains("cooked_beef"),
+                "它带的东西要真的进 carry: " + r.carry());
+    }
+
+    @Test
+    void approvedRule_goesBeforeDefaults() {
+        Path dir = tmp("order2");
+        CarrierRuleStore.install(dir);
+        CarrierRuleStore.submitCandidate(dir, "a1", "{\"name\":\"bring_food\","
+                + "\"when\":\"food<=5\",\"carry\":[\"cooked_beef\"]}", "rev", "m-1");
+        CarrierRuleStore.approve(dir, "a1", "低饱食度时带吃的");
+
+        var chain = CarrierRuleStore.effective();
+        int ours = -1;
+        int firstDefault = -1;
+        for (int i = 0; i < chain.size(); i++) {
+            if ("bring_food".equals(chain.get(i).name())) {
+                ours = i;
+            }
+            if (firstDefault < 0
+                    && chain.get(i).name().equals(CarrierRules.DEFAULT.get(0).name())) {
+                firstDefault = i;
+            }
+        }
+        assertTrue(ours >= 0, "已批准的规则必须在链里");
+        assertTrue(firstDefault >= 0, "默认链第一级必须在链里");
+        assertTrue(ours < firstDefault,
+                "★ 已批准规则必须排在默认链之前（人工批准 = 以这条为准）");
     }
 }

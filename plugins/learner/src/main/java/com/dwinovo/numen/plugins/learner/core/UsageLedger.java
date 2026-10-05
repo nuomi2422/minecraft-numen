@@ -77,10 +77,66 @@ public final class UsageLedger {
         SUCCESS, FAIL, CANCELED, UNKNOWN
     }
 
+    /**
+     * 证据等级 —— <b>三个概念刻意不共用一个布尔值</b>（DL-10，2026-10-05）。
+     *
+     * <p><b>为什么</b>：原先只有一个 {@code validity_claimed}，
+     * 而声明入口 {@code learner_usage claim_validity} 是<b>模型可调用</b>的。
+     * 那就意味着「模型可以自己说这条已经审核过」—— 一旦这样，信任链整个塌掉：
+     * 看起来有人审过，实际是自证。
+     *
+     * <p>三个等级各自的含义与产生方式：
+     * <ul>
+     *   <li>{@link #MACHINE_VERIFIED} —— 有<b>非自报</b>的执行证据（run_id 可回溯到
+     *       监测台）。由 {@link AcxExecutionReflector} 产生，<b>不需要任何人声明</b>。</li>
+     *   <li>{@link #HUMAN_REVIEWED} —— <b>人</b>看过并签了字。
+     *       ★ <b>当前没有任何工具能产生它</b>：claim_validity 由模型调用，
+     *       所以它的产物只记为 {@link #MODEL_ASSERTED}。</li>
+     *   <li>{@link #PRODUCTION_VERIFIED} —— 真实世界长期有效。
+     *       ★ <b>当前没有任何数据源能产生它</b>（需要长期实机统计），保留占位以免
+     *       以后有人拿 MACHINE_VERIFIED 冒充它。</li>
+     * </ul>
+     */
+    public enum EvidenceLevel {
+        /** 什么都没有。 */
+        NONE,
+        /** 有非自报的执行证据（run_id 可回溯）。 */
+        MACHINE_VERIFIED,
+        /**
+         * ★ 模型声称「已审核」。<b>它不是人审</b>，只说明有个模型说过这句话。
+         * 保留这个等级是为了让「自证」这件事<b>可见</b>，而不是被抹掉。
+         */
+        MODEL_ASSERTED,
+        /** 人审过（当前无产生入口）。 */
+        HUMAN_REVIEWED,
+        /** 生产长期验证过（当前无数据源）。 */
+        PRODUCTION_VERIFIED;
+
+        /**
+         * 这个等级能否当作「人审过」用。
+         *
+         * <p>★ 只有 {@link #HUMAN_REVIEWED} 和 {@link #PRODUCTION_VERIFIED} 为 true。
+         * {@link #MODEL_ASSERTED} 明确为 false —— 这就是防止自证塌陷的那道闸。
+         */
+        public boolean countsAsHumanReview() {
+            return this == HUMAN_REVIEWED || this == PRODUCTION_VERIFIED;
+        }
+    }
+
     /** 一条账。 */
     public record Entry(String artifactId, String kind, String name, Phase phase, Outcome outcome,
                          String detail, String source, String at, boolean validityClaimed,
-                         String companionId) {
+                         String companionId, EvidenceLevel evidence) {
+
+        /**
+         * 便捷判定：这条是否<b>可以</b>算作人工审核过。
+         *
+         * <p>委托给 {@link EvidenceLevel#countsAsHumanReview()}，避免各处自己写
+         * {@code validityClaimed == true} —— 那正是塌陷的入口。
+         */
+        public boolean humanReviewed() {
+            return evidence != null && evidence.countsAsHumanReview();
+        }
     }
 
     /** 阶段只能前进：早于已记录阶段的 arriving 事件算「迟到」。 */
@@ -150,7 +206,10 @@ public final class UsageLedger {
             lateAfterCancel = true;
         }
         Entry e = new Entry(artifactId, nz(kind), nz(name), phase, recorded,
-                nz(detail), nz(source), java.time.Instant.now().toString(), false, nz(companionId));
+                nz(detail), nz(source), java.time.Instant.now().toString(), false, nz(companionId),
+                // ★ 有 run_id 可回溯 = 机器可验证；这不需要任何人声明
+                source != null && source.startsWith(AcxExecutionReflector.SOURCE_PREFIX)
+                        ? EvidenceLevel.MACHINE_VERIFIED : EvidenceLevel.NONE);
         writeLine(e, lateAfterCancel
                 ? "迟到成功：已按取消结论记账，不翻转（AC-B19 同款病的预防）"
                 : "");
@@ -176,7 +235,11 @@ public final class UsageLedger {
         }
         Entry marked = new Entry(latest.artifactId(), latest.kind(), latest.name(), latest.phase(),
                 latest.outcome(), latest.detail(), latest.source(), java.time.Instant.now().toString(), true,
-                latest.companionId());
+                latest.companionId(),
+                // ★ 关键：claim_validity 由**模型**调用，所以只记 MODEL_ASSERTED，
+                //   绝不记 HUMAN_REVIEWED —— 那道闸就是防「模型自己给自己签审核通过」
+                latest.evidence() == EvidenceLevel.MACHINE_VERIFIED
+                        ? EvidenceLevel.MACHINE_VERIFIED : EvidenceLevel.MODEL_ASSERTED);
         writeLine(marked, "显式声明有效性：" + reason.trim() + "（by " + nz(byWho) + "）");
     }
 
@@ -220,7 +283,7 @@ public final class UsageLedger {
                 out.add(new Entry(str(o, "artifact_id"), str(o, "kind"), str(o, "name"), p,
                         outcomeOf(str(o, "outcome")), str(o, "detail"), str(o, "source"),
                         str(o, "at"), o.has("validity_claim") && o.get("validity_claim").getAsBoolean(),
-                        str(o, "companion_id")));
+                        str(o, "companion_id"), parseEvidence(o, source0(o))));
             }
         } catch (IOException e) {
             return out;
@@ -322,6 +385,8 @@ public final class UsageLedger {
         o.addProperty("source", e.source());
         o.addProperty("at", e.at());
         o.addProperty("validity_claim", e.validityClaimed());
+        // ★ 证据等级单独落盘（布尔是历史字段，不能靠它推导等级）
+        o.addProperty("evidence", e.evidence() == null ? EvidenceLevel.NONE.name() : e.evidence().name());
         // ★ 同伴 id 必须落盘：隔离全靠它（共享账本文件里混着所有同伴的记录）
         o.addProperty("companion_id", nz(e.companionId()));
         if (extra != null && !extra.isBlank()) {
@@ -387,6 +452,9 @@ public final class UsageLedger {
                 one.put("phase", v.phase().name());
                 one.put("outcome", v.outcome().name());
                 one.put("validity_claimed", v.validityClaimed());
+                one.put("evidence", v.evidence() == null ? EvidenceLevel.NONE.name() : v.evidence().name());
+                one.put("counts_as_human_review",
+                        v.evidence() != null && v.evidence().countsAsHumanReview());
                 if (v.companionId() != null && !v.companionId().isBlank()) {
                     one.put("companion_id", v.companionId());
                 }
@@ -407,6 +475,34 @@ public final class UsageLedger {
             }
         }
         return n;
+    }
+
+        /**
+     * 从账本行还原证据等级。
+     *
+     * <p>★ 兼容历史行：老行只有 {@code validity_claim} 布尔、没有 {@code evidence}。
+     * 那种行按「来源是否有 run_id」判定：有 ⇒ 机器可验证；
+     * 只有布尔 ⇒ {@link EvidenceLevel#MODEL_ASSERTED}
+     *（<b>刻意不还原成 HUMAN_REVIEWED</b> —— 那正是塌陷的入口）。
+     */
+    private static EvidenceLevel parseEvidence(JsonObject o, String source) {
+        JsonElement e = o.get("evidence");
+        if (e != null && e.isJsonPrimitive()) {
+            for (EvidenceLevel v : EvidenceLevel.values()) {
+                if (v.name().equalsIgnoreCase(e.getAsString())) {
+                    return v;
+                }
+            }
+        }
+        if (source != null && source.startsWith(AcxExecutionReflector.SOURCE_PREFIX)) {
+            return EvidenceLevel.MACHINE_VERIFIED;
+        }
+        boolean claimed = o.has("validity_claim") && o.get("validity_claim").getAsBoolean();
+        return claimed ? EvidenceLevel.MODEL_ASSERTED : EvidenceLevel.NONE;
+    }
+
+    private static String source0(JsonObject o) {
+        return str(o, "source");
     }
 
     private static String nz(String s) {
@@ -435,6 +531,9 @@ public final class UsageLedger {
             one.put("phase", e.phase().name());
             one.put("outcome", e.outcome().name());
             one.put("validity_claimed", e.validityClaimed());
+            one.put("evidence", e.evidence() == null ? EvidenceLevel.NONE.name() : e.evidence().name());
+            one.put("counts_as_human_review",
+                    e.evidence() != null && e.evidence().countsAsHumanReview());
             if (!e.detail().isBlank()) {
                 one.put("detail", e.detail());
             }

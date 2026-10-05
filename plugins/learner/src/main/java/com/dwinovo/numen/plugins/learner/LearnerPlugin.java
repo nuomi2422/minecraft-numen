@@ -76,6 +76,15 @@ public final class LearnerPlugin implements NumenPlugin {
      */
     private static volatile com.dwinovo.numen.plugins.learner.core.UsageLedger usageLedger;
 
+    /**
+     * 自编译请求的<b>取件契约</b>（B6/S2 收口，2026-10-05）。
+     *
+     * <p>此前 {@code SELF_COMPILE_REQUEST} 只有落点、没有下游：既没人领，
+     * 也没人知道是否被处理过。现在有列出 / 认领 / 标注三步，且都留痕。
+     * ★ 它<b>不写代码</b> —— 写码仍归外层工程流（B11）。
+     */
+    private static volatile com.dwinovo.numen.plugins.learner.core.SelfCompileRequests selfCompileRequests;
+
     static Path configDir() {
         return configDir;
     }
@@ -94,6 +103,10 @@ public final class LearnerPlugin implements NumenPlugin {
 
     static com.dwinovo.numen.plugins.learner.core.UsageLedger usageLedger() {
         return usageLedger;
+    }
+
+    static com.dwinovo.numen.plugins.learner.core.SelfCompileRequests selfCompileRequests() {
+        return selfCompileRequests;
     }
 
     /**
@@ -173,6 +186,10 @@ public final class LearnerPlugin implements NumenPlugin {
         // 且刻意没有「自动判定有效性」的口子。
         usageLedger = new com.dwinovo.numen.plugins.learner.core.UsageLedger(configDir);
         numen.registerTool(new LearnerUsageTool());
+        // 自编译请求的取件契约：把「没人消费」这条边补上。
+        // ★ 只做流程（列出/认领/标注），**不写代码** —— 写码归外层工程流（B11）。
+        selfCompileRequests = new com.dwinovo.numen.plugins.learner.core.SelfCompileRequests(outbox, configDir);
+        numen.registerTool(new LearnerRequestTool());
         // B1：ACX 真实执行结果 → 使用账本。**只回流能从投递箱追到自己产物的运行**。
         //   这是「自己写的东西到底跑成没成」第一次有了非自报的事实源。
         //   启动时先反射一次；ACX 运行是异步的，之后由 learner_usage reflect 触发。

@@ -101,8 +101,19 @@ public final class CarrierRuleStore {
     }
 
     private static List<CarrierChain.Rule> append(List<CarrierChain.Rule> extra) {
-        List<CarrierChain.Rule> all = new ArrayList<>(CarrierRules.DEFAULT);
-        all.addAll(extra);
+        // ★★ 顺序：已批准规则放在**默认链之前**，不是之后。
+        //
+        // 原因（2026-10-05 核查发现）：CarrierChain.evaluate 遇���某一级不成立就
+        // break（短路，stoppedAt=i）。默认链前面几级（「指向谁」「装备」「血量」）
+        // 在多数实况下**本来就不成立** ⇒ 若把已批准规则追加在后面，
+        // 它们**永远不会被求值** ⇒ 「我批了一条携带器规则，它却从不生效」，
+        // 而报告与审批界面都显示「已批准」。
+        //
+        // 语义后果（刻意如此）：人工批准的规则**优先于**内置默认规则。
+        // 这是对的 —— 批准的动作本身就意味着「以这条为准」。
+        // 若某条已批准规则不成立，仍会短路后面的（含默认链），并在 why 里说明。
+        List<CarrierChain.Rule> all = new ArrayList<>(extra);
+        all.addAll(CarrierRules.DEFAULT);
         return List.copyOf(all);
     }
 
@@ -472,22 +483,22 @@ private static String toJson(String name, String when, List<String> carry, List<
             }
             String key = tok.substring(0, i).trim();
             String val = tok.substring(i + op.length()).trim();
-            if (!"hp".equals(key)) {
+            if (!isNumericKey(key)) {
                 // 明确报错，不静默猜：'foo<=3' 该不该支持要人工定，不能默认按字符串比
-                throw new IllegalArgumentException("只有 hp 支持数值比较（" + "<= >= < >" + "），收到: '"
-                        + tok + "'。其他条件用相等式，如 has=weapon / band=LOW。");
+                throw new IllegalArgumentException("数值比较只认这几个键: hp / food，收到 '"
+                        + tok + "'。其他条件用相等式，如 has=weapon / band=LOW / hostile=1。");
             }
             int n;
             try {
                 n = Integer.parseInt(val);
             } catch (NumberFormatException e) {
-                throw new IllegalArgumentException("hp 比较的右边不是整数: " + tok);
+                throw new IllegalArgumentException("数值比较的右边不是整数: " + tok);
             }
             return switch (op) {
-                case "<=" -> f -> f.hasHp() && f.hp() <= n;
-                case ">=" -> f -> f.hasHp() && f.hp() >= n;
-                case "<" -> f -> f.hasHp() && f.hp() < n;
-                default -> f -> f.hasHp() && f.hp() > n;
+                case "<=" -> f -> num(f, key) >= 0 && num(f, key) <= n;
+                case ">=" -> f -> num(f, key) >= 0 && num(f, key) >= n;
+                case "<" -> f -> num(f, key) >= 0 && num(f, key) < n;
+                default -> f -> num(f, key) >= 0 && num(f, key) > n;
             };
         }
 
@@ -509,9 +520,46 @@ private static String toJson(String name, String when, List<String> carry, List<
                 return hasItem("hand");
             default:
                 throw new IllegalArgumentException("不认识的 when 条件: '" + tok + "'。"
-                        + "支持: hp<=N / hp>=N / hp<N / hp>N / band=X / hostile=1 / passive=1 /"
+                        + "支持: hp<=N / hp>=N / hp<N / hp>N / food<=N / food>=N / food<N / food>N /"
+                        + " band=X / hostile=1 / passive=1 /"
                         + " has=weapon|armor|hand / hostile / passive / low_hp / critical /"
-                        + " has_weapon / has_armor / unknown_hand（用 , 连接）");
+                        + " has_weapon / has_armor / unknown_hand（用 , 连接）"
+                        + "｜" + FOOD_IS_SATIATION_NOT_INVENTORY);
+        }
+    }
+
+    /**
+     * ★ <b>food 是饱食度，不是「背包里还有多少吃的」</b>。
+     *
+     * <p>这一点很容易被误读并导致「缺食物提醒」这类规则被高估：
+     * 快照里的 {@code food=} 来自 {@code PlayerFoodData.getFoodLevel()}（0..20 饥饿条），
+     * 与背包里的食物数量<b>毫无关系</b>。真正的「背包食物数」目前<b>没有被采集</b>。
+     *
+     * <p>所以 {@code food<=5} 的语义是「快饿死了」，**不是**「没东西吃了」。
+     * 要做「没食物」的判断，快照端先得采到背包食物数 —— 那是另一个采集缺口，不在本类范围。
+     */
+    public static final String FOOD_IS_SATIATION_NOT_INVENTORY =
+            "food 是饱食度(饥饿条 0..20)，**不是**背包里的食物数量。"
+                    + "food<=5 是「快饿死了」而不是「没东西吃了」；后者需要先采集背包食物数。";
+
+    private static boolean isNumericKey(String key) {
+        return "hp".equals(key) || "food".equals(key);
+    }
+
+    /** 取数值事实；取不到返回 -1（**不是 0** —— 0 是个合法的饱食度值）。 */
+    private static int num(CarrierChain.Facts f, String key) {
+        if ("hp".equals(key)) {
+            return f.hasHp() ? f.hp() : -1;
+        }
+        // food：快照里是纯数字（EnvSnapshot 写 food=<level>），不是 "6/20" 那种
+        String raw = f.get("food");
+        if (raw == null || raw.isBlank()) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            return -1;
         }
     }
 
