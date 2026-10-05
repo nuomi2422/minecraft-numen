@@ -37,6 +37,7 @@ final class LearnerUsageTool implements NumenTool {
     public String description() {
         return "产物使用账本：学习产出被下游拿去用之后，把「呈现→采用→执行→结果」记下来，"
                 + "让下一轮复审看得见上轮产出到底有没有用、结果如何。"
+                + "★ reflect=从 ACX 运行记录反射**真实执行结果**（非自报的事实源，优先用这个）。"
                 + "★ 被用过且成功**只是候选关联，不构成有效性证据** —— "
                 + "只有 claim_validity（必须给理由）才算证据。";
     }
@@ -49,8 +50,8 @@ final class LearnerUsageTool implements NumenTool {
     @Override
     public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .optionalEnum("action", "record | report | claim_validity",
-                        "record", "report", "claim_validity")
+                .optionalEnum("action", "record | report | claim_validity | reflect",
+                        "record", "report", "claim_validity", "reflect")
                 .optionalString("artifact_id", "Which artifact (from report). Required except for report.")
                 .optionalEnum("kind", "Artifact kind: AC_SCRIPT | CARRIER | SELF_COMPILE_REQUEST | EXPERIENCE",
                         "AC_SCRIPT", "CARRIER", "SELF_COMPILE_REQUEST", "EXPERIENCE")
@@ -136,8 +137,21 @@ final class LearnerUsageTool implements NumenTool {
                     data.putAll(ul.toMap(List.of(ul.latestOf(id))));
                     reply.accept(TaskResult.ok("validity claimed: " + id, data).toJson());
                 }
+                case "REFLECT" -> {
+                    // B1：把 ACX 的真实运行结果读进账本。**这是非自报的事实源**，
+                    //   与 record（AI 自己写）性质不同，回执里要说清。
+                    var r = LearnerPlugin.reflectAcxRunsOnce("TOOL");
+                    if (r == null) {
+                        reply.accept(TaskResult.fail(
+                                "反射不可用：投递箱或账本未初始化（插件 setup 没跑完？）").toJson());
+                        return;
+                    }
+                    data.putAll(r.toMap());
+                    data.put("source_of_truth", "ACX config/numen/acx/records.jsonl");
+                    reply.accept(TaskResult.ok("已反射 ACX 运行结果", data).toJson());
+                }
                 default -> reply.accept(TaskResult.fail(
-                        "action 只认 record/report/claim_validity，收到: " + action).toJson());
+                        "action 只认 record/report/claim_validity/reflect，收到: " + action).toJson());
             }
         } catch (UsageLedger.LateArrival e) {
             // 迟到事件要**显式**告诉调用方，别让它看起来像普通失败

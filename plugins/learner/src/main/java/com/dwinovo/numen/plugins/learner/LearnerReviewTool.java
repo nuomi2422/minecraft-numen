@@ -165,6 +165,10 @@ final class LearnerReviewTool implements NumenTool {
             //   RejectionFeedback 会**明说「读不到」**，不假装「没有拒收」。
             var ob = LearnerPlugin.outbox();
             boolean readable = ob != null;
+            // ★ 先反射一次再回喂：ACX 的运行是异步的，复审这一刻可能有刚跑完的结果，
+            //   而 prompt 里「上轮产出跑成没成」的价值全靠这些**非自报**的事实。
+            //   反射失败只丢事实、不影响复审（Reflector 内部已 catch 并留痕）。
+            LearnerPlugin.reflectAcxRunsOnce("REVIEW");
             var rej = com.dwinovo.numen.plugins.learner.core.RejectionFeedback.scan(ob, readable, id);
             // S3：本同伴产物的使用结果也进 prompt —— 不接这段，学习只在自我循环里打转。
             // ★ 必须传 id：投递箱与账本都是所有同伴共享的文件，不过滤就把别人的成败当成自己的。

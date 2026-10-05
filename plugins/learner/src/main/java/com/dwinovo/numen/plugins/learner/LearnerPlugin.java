@@ -95,6 +95,36 @@ public final class LearnerPlugin implements NumenPlugin {
     static com.dwinovo.numen.plugins.learner.core.UsageLedger usageLedger() {
         return usageLedger;
     }
+
+    /**
+     * 从 ACX 的运行记录反射一次真实执行结果到使用账本（B1）。
+     *
+     * <p>★ <b>失败不许影响插件启动</b>：反射只是「补充事实」，不是主功能。
+     * 但必须留痕 —— 否则「为什么账本一直是空的」会变成无头案。
+     *
+     * @param when 触发时机（写进日志，便于分辨是启动时还是手动触发的）
+     * @return 反射报告；不可用时返回 null（调用方要能区分「没反射」与「没有可反射的」）
+     */
+    static com.dwinovo.numen.plugins.learner.core.AcxExecutionReflector.Report reflectAcxRunsOnce(String when) {
+        var ob = outbox;
+        var ul = usageLedger;
+        var dir = configDir;
+        if (ob == null || ul == null || dir == null) {
+            return null;
+        }
+        try {
+            var refl = new com.dwinovo.numen.plugins.learner.core.AcxExecutionReflector(ob, ul);
+            var r = refl.reflect(dir.resolve("monitor").resolve("acx.jsonl"), true);
+            if (r.reflected() > 0) {
+                LOG.info("[learner] 从 ACX 运行记录反射 {} 条结果（{}；扫到 {} 条运行，{} 条不属于我们）",
+                        r.reflected(), when, r.runsSeen(), r.skippedUnmatched());
+            }
+            return r;
+        } catch (RuntimeException e) {
+            LOG.warn("[learner] ACX 运行反射失败（{}，不影响其他功能）: {}", when, e.toString());
+            return null;
+        }
+    }
     private static volatile String lastReviewAt = "";
     private static volatile int lastVerdictCount;
 
@@ -143,6 +173,10 @@ public final class LearnerPlugin implements NumenPlugin {
         // 且刻意没有「自动判定有效性」的口子。
         usageLedger = new com.dwinovo.numen.plugins.learner.core.UsageLedger(configDir);
         numen.registerTool(new LearnerUsageTool());
+        // B1：ACX 真实执行结果 → 使用账本。**只回流能从投递箱追到自己产物的运行**。
+        //   这是「自己写的东西到底跑成没成」第一次有了非自报的事实源。
+        //   启动时先反射一次；ACX 运行是异步的，之后由 learner_usage reflect 触发。
+        reflectAcxRunsOnce("STARTUP");
         // 回话：默认开（用户明确要「不是一直裸着写」），但必须能一键闭嘴 ⇒ 做成工具。
         numen.registerTool(new LearnerAnnounceTool());
         // N1：共同事实 vs 使用账本的只读对账（事实文件归 rdd、账本归 learner，
