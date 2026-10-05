@@ -33,6 +33,16 @@ dependencies {
     // ⚠️ 主编译靠 compileOnly 就够，但 **compileOnly 不会被 testCompileClasspath 继承**，
     //    所以测试要显式加 api jar，否则 CarrierChainTest 报「找不到 com.dwinovo.numen.api.carrier」。
     testImplementation files(project(':api:neoforge').tasks.named('apiJar'))
+    // 2026-10-05：共同事实的 shadow 对账器在 rdd-core（事实归 rdd，账本归 learner）。
+    // 为什么是 compileOnly 而不是 implementation：
+    //   implementation 会把 rdd-core 的类**内嵌进 learner jar**，而 plugins/rdd 已经
+    //   用 from({project(':rdd-core').sourceSets.main.output}) 内嵌了同一份
+    //   ⇒ 两个 jar 各带一份同名类，正是历史上 ac-core「撞重复包/JPMS ResolutionException」那类坑。
+    // 代价（必须知道）：**运行时由 rdd 插件提供**。所以 learner_fact_shadow
+    //   对 LinkageError/NoClassDefFoundError 做**显式降级并说明**，不许崩、也不许假装可用。
+    // ⚠️ 同上：compileOnly 不会被 testCompileClasspath 继承，所以测试要显式加。
+    compileOnly project(':rdd-core')
+    testImplementation project(':rdd-core')
 }
 
 test { useJUnitPlatform() }

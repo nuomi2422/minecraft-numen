@@ -145,6 +145,9 @@ public final class LearnerPlugin implements NumenPlugin {
         numen.registerTool(new LearnerUsageTool());
         // 回话：默认开（用户明确要「不是一直裸着写」），但必须能一键闭嘴 ⇒ 做成工具。
         numen.registerTool(new LearnerAnnounceTool());
+        // N1：共同事实 vs 使用账本的只读对账（事实文件归 rdd、账本归 learner，
+        // 两边都是共享 configDir 下的普通文件，所以只靠路径就能读，无需跨插件 import）。
+        numen.registerTool(new LearnerFactShadowTool());
         // 运行时状态：让主 AI 知道「有多少条待复盘的备忘录」，从而自己决定何时调 learner_review
         numen.contributeState(companion -> {
             MemoQueue q = QUEUES.get(companion);
