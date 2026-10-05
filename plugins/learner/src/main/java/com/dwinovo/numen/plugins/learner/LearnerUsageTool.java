@@ -50,8 +50,9 @@ final class LearnerUsageTool implements NumenTool {
     @Override
     public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .optionalEnum("action", "record | report | claim_validity | reflect",
-                        "record", "report", "claim_validity", "reflect")
+                .optionalEnum("action",
+                        "record | report | claim_validity | reflect | by_memo",
+                        "record", "report", "claim_validity", "reflect", "by_memo")
                 .optionalString("artifact_id", "Which artifact (from report). Required except for report.")
                 .optionalEnum("kind", "Artifact kind: AC_SCRIPT | CARRIER | SELF_COMPILE_REQUEST | EXPERIENCE",
                         "AC_SCRIPT", "CARRIER", "SELF_COMPILE_REQUEST", "EXPERIENCE")
@@ -62,6 +63,8 @@ final class LearnerUsageTool implements NumenTool {
                         "SUCCESS", "FAIL", "CANCELED", "UNKNOWN")
                 .optionalString("detail", "Short factual note. Facts only, no conclusions.")
                 .optionalString("reason", "REQUIRED for claim_validity: why you call it valid evidence.")
+                .optionalString("memo_id",
+                        "REQUIRED for by_memo: which verdict's memo_id (from learner_review / learner_status).")
                 .build();
     }
 
@@ -150,8 +153,34 @@ final class LearnerUsageTool implements NumenTool {
                     data.put("source_of_truth", "ACX config/numen/acx/records.jsonl");
                     reply.accept(TaskResult.ok("已反射 ACX 运行结果", data).toJson());
                 }
+                case "BY_MEMO" -> {
+                    // ★ 为什么需要这个动作：判定一旦复审完，memo 就已从队列 commit 掉，
+                    //   再想复审同一条是做不到的（队列里没有它了）。
+                    //   而「这条判定产出的东西后来跑成没成」恰恰是**事后**才发生的事 ——
+                    //   没有这个只读查询，正向的挂载就永远只能在单测里看到。
+                    String memoId = str(args, "memo_id", "").trim();
+                    if (memoId.isBlank()) {
+                        reply.accept(TaskResult.fail("by_memo 需要 memo_id").toJson());
+                        return;
+                    }
+                    var rows = com.dwinovo.numen.plugins.learner.core.UsageLedger.usageByMemo(
+                            ul, memoId, java.util.EnumSet.of(
+                                    com.dwinovo.numen.plugins.learner.core.ArtifactOutbox.Kind.AC_SCRIPT,
+                                    com.dwinovo.numen.plugins.learner.core.ArtifactOutbox.Kind.CARRIER));
+                    // usageByMemo 返回的是**已渲染好的行**（Map），不是 Entry ——
+                    // 直接塞回 data，别再过一次 toMap（那是给 Entry 用的）
+                    data.put("memo_id", memoId);
+                    data.put("rows", rows);
+                    if (rows.isEmpty()) {
+                        data.put("usage_outcome_note",
+                                "这条判定的产物没有执行记录（未执行、或已被清理）");
+                    } else {
+                        data.put("note", "★ 这些是**事实**（跑成/跑挂），不代表已被判为有效");
+                    }
+                    reply.accept(TaskResult.ok("learner_usage by_memo", data).toJson());
+                }
                 default -> reply.accept(TaskResult.fail(
-                        "action 只认 record/report/claim_validity/reflect，收到: " + action).toJson());
+                        "action 只认 record/report/claim_validity/reflect/by_memo，收到: " + action).toJson());
             }
         } catch (UsageLedger.LateArrival e) {
             // 迟到事件要**显式**告诉调用方，别让它看起来像普通失败
