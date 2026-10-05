@@ -148,20 +148,38 @@ public final class FactShadowReconciler {
         }
     }
 
+    /**
+     * 事实侧复合键的分隔符，<b>必须与 {@code CompletedFactStore.COMPOSITE_SEP} 一致</b>。
+     *
+     * <p>那是个 {@code U+0001} 字符（不打印）。这里写死同一常量而不是去反射读，
+     * 是因为：反射读私有常量在模块化/重命名下会<b>静默拿到 null</b>，
+     * 而键分隔符错了只会让计数对不上——更难查。
+     */
+    private static final String FACT_SEP = "\u0001";
+
     private FactShadowReconciler() {
     }
 
     /**
      * 对账。
      *
-     * <p><b>⚠️ 键空间不同源，这里只能做「弱对账」</b>：
-     * 事实侧的键是 <b>stageKey</b>（来自 rdd 目标分解），使用侧的键是 <b>artifact_id</b>
-     * （形如 {@code AC_SCRIPT-<companion>-<memoId>-<hash>}）。两者<b>没有任何关联关系</b>，
-     * 所以「同一个 key」几乎永远是巧合。
+     * <p><b>⚠️ 键空间说明（本类最重要的一段）</b>：
+     * <ul>
+     *   <li><b>事实侧</b>：{@code CompletedFactStore} 的键是
+     *       {@code lineageId + SEP + stageKey}（见该类 {@code fromJson}），
+     *       来源是<b>目标分解</b>；</li>
+     *   <li><b>使用侧</b>：{@code artifact_id}，形状
+     *       {@code <kind>-<companion>-<memoId>-<hash>}。</li>
+     * </ul>
+     * 两者<b>本来不同源</b>，所以本报告<b>只报单侧内部的矛盾</b>
+     * （同键「完成 vs 失败」、账本里「取消后被翻成成功」），
+     * <b>不</b>把「key 相同」当成因果证据。
      *
-     * <p>⇒ 因此本报告只输出<b>两侧各自的体量与各自内部的矛盾</b>
-     * （完成却失败 / 取消后被当成成功），<b>不</b>把「key 相同」当成因果证据。
-     * 真正的关联要等 B1 把 usage 挂到具体判定/产物链上（那时才有共同 id）。
+     * <p><b>2026-10-05 更新</b>：B1 已经把「判定 ↔ 产物 ↔ 执行」串起来
+     * （{@code Verdict.usageOutcome} 按 memoId 反查填入）。于是
+     * <b>「这条判定产出的东西跑成没成」现在可查了</b> ——
+     * 那属于 learner 侧的自查（见 {@code LearnerReviewTool} 的 usage_outcome），
+     * 不在本类的职责内。本类继续只做「事实库 vs 账本」两侧的体量与矛盾对照。
      *
      * @param factsFile 共同事实文件（{@code rdd-facts/<uuid>.json}）
      * @param usageLedger 使用账本（{@code usage-ledger.jsonl}）；可为 null（当未接）
@@ -243,15 +261,23 @@ public final class FactShadowReconciler {
             if (e.isJsonObject()) {
                 JsonElement stages = e.getAsJsonObject().get("stages");
                 if (stages != null && stages.isJsonArray()) {
-                    shape = "ARRAY(stageKey)";
+                    // ★ 键必须按生产语义拼：CompletedFactStore 用的是
+                    //   lineageId + COMPOSITE_SEP(\u0001) + stageKey。
+                    //   只取 stageKey 会让**不同 lineage 的同名阶段互相覆盖** ——
+                    //   那是又一处「读得出来但读错了」，比读不出来更危险。
+                    shape = "ARRAY(lineage+stageKey)";
                     for (JsonElement el : stages.getAsJsonArray()) {
                         if (!el.isJsonObject()) {
                             continue;
                         }
-                        String key = str(el.getAsJsonObject(), "stageKey");
-                        if (!key.isBlank()) {
-                            out.put(key, "COMPLETED");
+                        JsonObject so = el.getAsJsonObject();
+                        String lineage = str(so, "lineageId");
+                        String stageKey = str(so, "stageKey");
+                        if (stageKey.isBlank()) {
+                            continue;
                         }
+                        out.put(lineage.isBlank() ? stageKey : lineage + FACT_SEP + stageKey,
+                                "COMPLETED");
                     }
                 } else if (stages != null && stages.isJsonObject()) {
                     shape = "OBJECT(status)";

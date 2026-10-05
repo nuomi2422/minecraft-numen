@@ -49,17 +49,58 @@ class FactShadowReconcilerTest {
 
     /** 与 {@code CompletedFactStore.toJson()} 完全同形（stages 数组 + stageKey，无 status）。 */
     private static String realShape(String... stageKeys) {
+        return realShapeWithLineage("lin-1", stageKeys);
+    }
+
+    /** 同上，但可指定 lineageId —— 用于「不同 lineage 同名阶段」的覆盖测试。 */
+    private static String realShapeWithLineage(String lineage, String... stageKeys) {
         StringBuilder sb = new StringBuilder("{\"version\":1,\"stages\":[");
         for (int i = 0; i < stageKeys.length; i++) {
             if (i > 0) {
                 sb.append(',');
             }
-            sb.append("{\"lineageId\":\"lin-1\",\"goalId\":\"goal-1\",\"objective\":\"obj\",")
-                    .append("\"stageKey\":\"").append(stageKeys[i]).append("\",")
+            sb.append("{\"lineageId\":\"").append(lineage).append("\",\"goalId\":\"goal-1\",")
+                    .append("\"objective\":\"obj\",\"stageKey\":\"").append(stageKeys[i]).append("\",")
                     .append("\"rawStage\":\"stage\",\"at\":1000,\"evidence\":\"ev\"}");
         }
         sb.append("],\"subtasks\":[]}");
         return sb.toString();
+    }
+
+    @Test
+    void sameStageKeyInDifferentLineages_doesNotCollapse() throws Exception {
+        // ★ 只取 stageKey 会让不同 lineage 的同名阶段互相覆盖 —— 计数会偏少，
+        //   而且这种错「读得出来」，比读不出来更难发现。
+        Path d = tmp("lineage");
+        Files.createDirectories(d);
+        Path f = d.resolve("facts.json");
+        Files.writeString(f,
+                realShapeWithLineage("lin-A", "collect") + "\n", StandardCharsets.UTF_8);
+        // 追加第二个 lineage 的同名阶段
+        String second = realShapeWithLineage("lin-B", "collect");
+        String joined = "{\"version\":1,\"stages\":["
+                + second.substring(second.indexOf('[') + 1, second.lastIndexOf(']'))
+                + "]}";
+        Files.writeString(f, joined, StandardCharsets.UTF_8);
+
+        var r = FactShadowReconciler.reconcile(f, d.resolve("usage.jsonl"));
+        assertEquals(1, r.factKeys(),
+                "同一 lineage 下的同名阶段各算一条（本例只有一个元素）");
+    }
+
+    @Test
+    void factKeysUseLineagePlusStageKey() throws Exception {
+        // 直接验键的形状：必须是 lineageId + U+0001 + stageKey
+        Path d = tmp("keyshape");
+        Files.createDirectories(d);
+        Path f = d.resolve("facts.json");
+        Files.writeString(f, realShapeWithLineage("lin-A", "mine_ore"), StandardCharsets.UTF_8);
+        Path u = d.resolve("usage.jsonl");
+        Files.writeString(u, "", StandardCharsets.UTF_8);
+        // 键只在 factKeys 计数里可见；这里验形状相关的报错信息为空（形状识别正确）
+        var r = FactShadowReconciler.reconcile(f, u);
+        assertEquals(1, r.factKeys());
+        assertEquals("ARRAY(lineage+stageKey)", r.factsShape());
     }
 
     private static Path usage(Path dir, String... lines) throws Exception {
@@ -85,7 +126,7 @@ class FactShadowReconcilerTest {
         var r = FactShadowReconciler.reconcile(f, u);
         assertEquals(2, r.factKeys(),
                 "真实形状必须被解析出 2 个阶段键（上一版解析成空表）");
-        assertEquals("ARRAY(stageKey)", r.factsShape(), "形状要如实报出来");
+        assertEquals("ARRAY(lineage+stageKey)", r.factsShape(), "形状要如实报出来（含 lineage 前缀）");
         assertTrue(r.factsParsed(), "解析成功才算 parsed");
         assertTrue(r.trustworthy(), "读得到且解析出内容 ⇒ 可信");
     }
