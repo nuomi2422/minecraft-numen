@@ -242,8 +242,24 @@ public final class PriorRound {
      * @param prior 上轮回顾；{@code null} 等同于「没有上轮」，<b>不留空</b>
      */
     public static String buildUserPrompt(List<Memo> memos, Summary prior) {
+        return buildUserPrompt(memos, prior, null);
+    }
+
+    /**
+     * 同上，但<b>额外把「上轮被拒收的产物 + 原因」摆进 prompt</b>（2026-10-05 实机教训）。
+     *
+     * <p>{@code rejections} 传 {@code null} 时退化成原行为（老调用方不受影响）。
+     *
+     * <p><b>位置</b>：放在上轮回顾之后、本轮备忘录之前 —— 它和上轮回顾是同一类东西
+     *（「上轮发生了什么」），而本轮备忘录是「现在要判什么」。
+     */
+    public static String buildUserPrompt(List<Memo> memos, Summary prior,
+                                         com.dwinovo.numen.plugins.learner.core.RejectionFeedback rejections) {
         StringBuilder user = new StringBuilder();
         user.append((prior == null ? Summary.none() : prior).promptBlock()).append('\n');
+        if (rejections != null) {
+            user.append(rejections.promptBlock()).append('\n');
+        }
         List<Memo> batch = memos == null ? List.of() : memos;
         user.append("复盘以下 ").append(batch.size()).append(" 条备忘录，逐条输出判定：\n\n");
         for (Memo m : batch) {

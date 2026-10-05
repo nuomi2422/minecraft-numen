@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.acx;
 
 import com.dwinovo.numen.acx.api.AcxDefinition;
 import com.dwinovo.numen.acx.api.AcxToolPort;
+import com.dwinovo.numen.acx.core.AcxArtifactAdopter;
 import com.dwinovo.numen.acx.core.AcxFacade;
 import com.dwinovo.numen.acx.core.AcxHostBridge;
 import com.dwinovo.numen.acx.core.AcxLoader;
@@ -23,7 +24,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -209,6 +213,8 @@ public final class AcxPlugin implements NumenPlugin {
     private volatile NumenPlayer companion;
     private volatile boolean ready;
     private String readySummary = "尚未初始化";
+    /** B6/S2：学习者 AC 草稿的采纳口（只 publish 成 GENERATED，永不 approve）。 */
+    private volatile AcxArtifactAdopter artifactAdopter;
 
     @Override
     public void setup(NumenApi numen) {
@@ -222,7 +228,10 @@ public final class AcxPlugin implements NumenPlugin {
         numen.registerTool(new AcxFacadeTools.Approve(this));
         numen.registerTool(new AcxFacadeTools.Rollback(this));
         numen.registerTool(new AcxFacadeTools.Library(this));
-        LOG.info("[acx] 8 个门面已注册（惰性初始化：首次调用时桥接工具并加载脚本）");
+        // 第 9 个工具（B6/S2）：采纳学习者 AC 草稿。默认路径已在 ensureReady 跑过一次，
+        // 这里给「立刻问出草稿有没有被接住」的口子 —— 否则「投递了但没被接」没有观测面。
+        numen.registerTool(new AcxAdoptDraftsTool(this));
+        LOG.info("[acx] 8 个门面 + acx_adopt_drafts 已注册（惰性初始化：首次调用时桥接工具并加载脚本）");
     }
 
     /** 幂等惰性初始化；失败会抛出，由门面壳转成失败回执。 */
@@ -263,6 +272,27 @@ public final class AcxPlugin implements NumenPlugin {
             library.load();
             autoApproveBundled(library, load);
 
+            // ★ B6/S2：把学习者产出的 AC 草稿接进来（此前 Verdict.acScriptDraft 只进回执，无人消费）。
+            //   采纳 = publish 成 GENERATED，**不 approve** —— 上线仍需人工 acx_approve，
+            //   与 63 §8「游戏内可以写 AC，发布要过闸」一致。
+            //   放在 autoApproveBundled 之后：jar 内置脚本的自动批准只认 jar 里那份，
+            //   学习者草稿绝不能借那条路自动上线。
+            Set<String> known = new HashSet<>(load.registered().keySet());
+            known.addAll(library.names());
+            artifactAdopter = new AcxArtifactAdopter(api.configDir(), library, known);
+            AcxArtifactAdopter.Report adopted;
+            try {
+                adopted = artifactAdopter.adoptAll();
+                if (adopted.adopted() > 0 || adopted.rejected() > 0) {
+                    LOG.info("[acx] 学习者 AC 草稿采纳: 采纳 " + adopted.adopted()
+                            + " 拒收 " + adopted.rejected() + " 待处理 " + adopted.scanned()
+                            + "（GENERATED，需人工 acx_approve 才上线）");
+                }
+            } catch (RuntimeException e) {
+                // 采纳失败不许拖垮 acx 初始化：草稿还在投递箱里，下次启动或手工调工具再试
+                LOG.warn("[acx] 学习者 AC 草稿采纳异常（不影响 acx 本身）: " + e.getMessage());
+            }
+
             runner = AcxRunner.builder()
                     .tools(registry)
                     // ★ 子 AC 委托靠它：没有 catalog，step.block 写成别的 AC 名就会「找不到积木或 AC」。
@@ -289,8 +319,13 @@ public final class AcxPlugin implements NumenPlugin {
                     + " 警告 " + load.warnings().size();
             LOG.info("[acx] ready: {}", readySummary);
         } catch (IOException e) {
+            // ★ 顺手把堆栈打进日志：工具回执只带 getMessage()，而这里的消息会被截断，
+            //   实测「Index 75 out of bounds for length 75」就是**定位不到**的那种失败。
+            //   失败要能定位，否则每次都得重新构建一轮才能猜。
+            LOG.error("[acx] 初始化 IO 失败（堆栈见此）", e);
             throw new IllegalStateException("ACX 初始化 IO 失败: " + e.getMessage(), e);
         } catch (RuntimeException e) {
+            LOG.error("[acx] 初始化失败（堆栈见此）", e);
             throw new IllegalStateException("ACX 初始化失败: " + e.getMessage(), e);
         }
     }
@@ -395,6 +430,22 @@ public final class AcxPlugin implements NumenPlugin {
     }
 
     // ── 门面壳用的访问口 ────────────────────────────────────────────────
+
+    /**
+     * B6/S2：再跑一次学习者 AC 草稿采纳（工具入口用）。
+     *
+     * <p>必须先 {@link #ensureReady()}：采纳口是在初始化里连同版本库一起建的，
+     * 没 ready 就调等于对着空引用操作。
+     */
+    public Map<String, Object> adoptLearnerDrafts() {
+        ensureReady();
+        AcxArtifactAdopter adopter = artifactAdopter;
+        if (adopter == null) {
+            // 走到这里说明初始化路径变了（不是「没有草稿」）—— 两者含义不同，必须能分辨
+            throw new IllegalStateException("ACX 已初始化但没有草稿采纳口：artifactAdopter 为 null");
+        }
+        return adopter.adoptAll().toMap();
+    }
 
     /** 每个 acx_* 调用入口先绑一次当前同伴（桥接派发要用）。 */
     public void bindCompanion(NumenPlayer player) {

@@ -27,12 +27,12 @@ import static org.junit.jupiter.api.Assertions.fail;
  *   <li>本模块的 {@code :plugins:acx:test}（JUnit）<b>一个测试都没有</b>，
  *       Gradle 9 遇到「有测试源码但一个都没发现」直接<b>让任务失败</b>
  *       ⇒ 模块的 test 任务本来就是红的。</li>
- *   <li>更坏的是：任何「本模块测试全绿」的结论都<b>不包含这 209 项</b>
+ *   <li>更坏的是：任何「本模块测试全绿」的结论都<b>不包含这 217 项</b>
  *       —— 我们按惯例「从测试报告 XML 汇总数字」时永远看不到它。</li>
  * </ol>
  *
  * <h3>本类做的事</h3>
- * <p>在一个<b>子进程</b>里真跑那 209 项（必须子进程：{@code main} 结尾是
+ * <p>在一个<b>子进程</b>里真跑那 217 项（必须子进程：{@code main} 结尾是
  * {@code System.exit}，同进程跑会把测试 JVM 一起带走），
  * 然后用 {@code -Dacx.resultFile} 让它写出机器可读的 JSON，再断言三件事：
  * <ol>
@@ -56,6 +56,14 @@ import static org.junit.jupiter.api.Assertions.fail;
  *       （名/版本/指纹）在生产路径上<b>恒为真</b>，脚本在暂停期间被改过会静默按旧定义跑完
  *       （实测：库里指纹与记录里指纹不同，回包仍是「已受理，从断点续跑」）。</li>
  * </ul>
+ *
+ * <h3>检查项数 211 → 217 的来历（2026-10-05 第二批接线）</h3>
+ * <p>为了让「learner 复审出的 AC 草稿」有<b>真实下游</b>，新增
+ * {@code AcxArtifactAdopter}（扫 outbox → 解析 → 校验 → 发布为 {@code GENERATED} → 回写状态）
+ * 及配套 6 项检查：采纳成功、拒收散文、坏 JSON、重复采纳幂等、状态回写、不越权上线。
+ * <p>★ 这 6 项<b>全绿</b>，红项仍是原来那 7 个 —— 所以 {@link #KNOWN_RED} 仍是 7，
+ * 只有「总数」这一条被显式从 211 改成 217。<b>总数是硬断言，涨了必须显式改这里</b>，
+ * 这正是它存在的意义：有人加检查项时会被迫承认，覆盖度变化不会静默通过。
  */
 class AcxOfflineSuiteTest {
 
@@ -155,7 +163,7 @@ class AcxOfflineSuiteTest {
         int failed = failedField(json);
 
         // ① 总数不许悄悄变 —— 有人删检查项时这里会红
-        assertEquals(211, total, "离线自检的检查项数变了。少项多半是有人删了检查项，"
+        assertEquals(217, total, "离线自检的检查项数变了。少项多半是有人删了检查项，"
                 + "那等于把覆盖度悄悄拿走了。结果文件：" + json);
 
         // ② ★ 最关键的一条：失败数必须「恰好」是已知的 7 项。

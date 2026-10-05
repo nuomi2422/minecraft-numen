@@ -66,6 +66,18 @@ public final class FileAcxLibrary {
         this.blocks = blocks;
     }
 
+    /**
+     * 可用 block 注册表（只读）。
+     *
+     * <p>2026-10-05 加：写 AC 草稿的模型需要知道<b>合法 block 名单</b>，
+     * 而这份名单只有运行时知道。ACX 把它放进拒收原因回喂给模型，
+     * 否则模型只能自创 block 名（实测连错三轮：{@code move} 之类）。
+     * 写死一份名单在这里是错的 —— 必然与运行时漂移。
+     */
+    public AcxToolRegistry blocks() {
+        return blocks;
+    }
+
     static final class Version {
         AcxDefinition definition;
         long publishedAt;

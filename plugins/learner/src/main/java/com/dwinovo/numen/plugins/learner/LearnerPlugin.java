@@ -14,18 +14,22 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 学习者插件（第二批 v1，plan-only）。
+ * 学习者插件（第二批）。
  *
- * <p>宿主适配器：注册三个工具、按同伴隔离备忘录队列、把队列深度挂进运行时状态。
+ * <p>宿主适配器：注册工具、按同伴隔离备忘录队列、把队列深度挂进运行时状态。
  *
- * <p><b>v1 不执行任何身体动作</b>——只写队列 + 只读复盘 + 出建议。
- * 依据是红线 RL-9「单驾驶员」：RDD 规划/监督层不得自动提交身体工具
- * （bodySubmissionEnabled 默认 false，RddPlugin.java:69）。学习者若自动调 AC
- * 就成了第二个发指令主体 = 破线（详见 28 号文档 §2）。
+ * <p><b>红线不变（RL-9 单驾驶员）</b>：学习者<b>不执行任何身体动作</b>，
+ * 不发 mine/goto/attack/build 指令，也不自动提交身体工具
+ * （bodySubmissionEnabled 默认 false，RddPlugin.java:69）。
+ *
+ * <p><b>但「只出建议」已经过时了（B6/S2，2026-10-05）</b>：现在复审产出的三类载荷
+ * 会真的落到 {@code config/numen/artifact-outbox/}，其中 <b>AC 已由 acx 插件真实消费</b>
+ * （发布为 {@code GENERATED}，<b>仍要人工 approve 才会真跑</b>）。
+ * 落地 ≠ 生效：只有落点没有下游的那几类，在状态里会如实标出来，不假装已生效。
  *
  * <p>跨插件通信：与 rdd / experience / ac 三个插件互不可见（numen-plugin.gradle:37-44
  * 刻意封死跨插件 import）。所以学习者<b>不写经验库</b>，只把「建议写经验」的草稿
- * 交给 AI，由 AI 调既有的 experience_learn 落库。
+ * 交给 AI，由 AI 调既有的 experience_learn 落库；AC/携带器则走<b>共享文件契约</b>。
  */
 public final class LearnerPlugin implements NumenPlugin {
 
@@ -39,8 +43,32 @@ public final class LearnerPlugin implements NumenPlugin {
 
     private static volatile Path configDir;
 
-    /** B16：产物投放口。第 1 批是 {@code UnsupportedArtifactSink}（三个方法都显式抛错）。 */
+    /**
+     * B16：产物投放口。第 1 批是 {@code UnsupportedArtifactSink}（三个方法都显式抛错）；
+     * <b>B6/S2 起换成 {@link com.dwinovo.numen.plugins.learner.core.OutboxArtifactSink}</b> ——
+     * AC 与携带器真落地（只进投递箱，不自动上线），经验仍显式抛错并指向既有
+     * {@code experience_learn}，不另开第二条写库通道。
+     */
     private static volatile com.dwinovo.numen.plugins.learner.core.ArtifactSink artifactSink;
+
+    /**
+     * B6/S2（2026-10-04）：三个载荷位的<b>真实落点</b>。
+     *
+     * <p>此前 {@code acScriptDraft}/{@code carrierDraft}/{@code selfCompileRequest}
+     * 只出现在回执与 learner.jsonl 里，没有任何下游 —— 「学习者说要写，写完就没下文」。
+     * 现在它们进 {@code config/numen/artifact-outbox/}，下游插件按文件契约读取。
+     */
+    private static volatile com.dwinovo.numen.plugins.learner.core.ArtifactOutbox outbox;
+
+    /**
+     * B6/S2：携带器审批流（B6/CARRIER，2026-10-05）。
+     *
+     * <p>草稿 → 候选 → <b>显式 approve</b> → 进 {@code CarrierRuleStore} 生效链。
+     * 运行时携带提示（rdd 的 {@code RddCarryHint}）与复审 what-if
+     * （{@code Memo.assessCarrier()}）读的是<b>同一处</b>生效链，
+     * 所以「批准了却没生效」这种状态在结构上就不可能悄悄发生。
+     */
+    private static volatile com.dwinovo.numen.plugins.learner.core.CarrierArtifactAdopter carrierAdopter;
 
     static Path configDir() {
         return configDir;
@@ -48,6 +76,14 @@ public final class LearnerPlugin implements NumenPlugin {
 
     static com.dwinovo.numen.plugins.learner.core.ArtifactSink artifactSink() {
         return artifactSink;
+    }
+
+    static com.dwinovo.numen.plugins.learner.core.ArtifactOutbox outbox() {
+        return outbox;
+    }
+
+    static com.dwinovo.numen.plugins.learner.core.CarrierArtifactAdopter carrierAdopter() {
+        return carrierAdopter;
     }
     private static volatile String lastReviewAt = "";
     private static volatile int lastVerdictCount;
@@ -71,9 +107,28 @@ public final class LearnerPlugin implements NumenPlugin {
         // 60 号 §3.2 记的 E1 就是「有记录，无判定」。
         // **纯只读事件源 + 只写学习者自己的队列**：不碰世界、不写经验库（同 59 D3）。
         numen.registerTool(new LearnerIntakeTool());
-        // B16：AC 写入口只留接口、本批不做 AC。默认是**显式抛错**的占位实现，
-        // 不许静默 no-op —— 否则「接了但什么都没做」会变成查不到根因的哑故障。
-        artifactSink = new com.dwinovo.numen.plugins.learner.core.UnsupportedArtifactSink();
+        // B6/S2：投递箱放在共享 configDir 下 —— 跨插件不能 import（见 NumenApi 的 javadoc），
+        // 文件是这三条既有通道里唯一「不依赖谁记得调用」的一条。
+        outbox = new com.dwinovo.numen.plugins.learner.core.ArtifactOutbox(
+                configDir.resolve("artifact-outbox"));
+        // B16 的投放口换成基于投递箱的真实现。顺序有讲究：sink 依赖 outbox，先建 outbox。
+        artifactSink = new com.dwinovo.numen.plugins.learner.core.OutboxArtifactSink(outbox);
+        // 携带器审批流。顺序讲究：store 先装目录（生效链 = DEFAULT + 已批准），
+        // adopter 再建（它读写 <configDir>/carriers/），最后扫一次草稿登记成候选。
+        com.dwinovo.numen.api.carrier.CarrierRuleStore.install(configDir);
+        carrierAdopter = new com.dwinovo.numen.plugins.learner.core.CarrierArtifactAdopter(configDir, outbox);
+        try {
+            var rep = carrierAdopter.adoptAll();
+            if (rep.scanned() > 0) {
+                LOG.info("携带器草稿登记成候选 {} 条（待显式审批，未生效）: {}",
+                        rep.submitted(), rep.rows());
+            }
+        } catch (RuntimeException e) {
+            // 登记失败不许静默：学习者写了携带器却没人看见 = 哑故障
+            LOG.warn("携带器草稿登记失败（不影响其他功能）: {}", e.toString());
+        }
+        // 第 6 个工具：携带器审批流（submit/list/approve/reject）。**approve 必须给理由**。
+        numen.registerTool(new LearnerCarrierTool());
         // 运行时状态：让主 AI 知道「有多少条待复盘的备忘录」，从而自己决定何时调 learner_review
         numen.contributeState(companion -> {
             MemoQueue q = QUEUES.get(companion);
@@ -92,7 +147,10 @@ public final class LearnerPlugin implements NumenPlugin {
             }
             return "<learner><pending_memos>" + depth + "</pending_memos></learner>";
         });
-        LOG.info("[learner] plugin ready; plan-only v1 (no auto-execute)");
+        // ★ 这行日志以前写「plan-only v1」——已经不诚实了（现在有投递箱 + 携带器审批流）。
+        //   日志撒谎比注释撒谎更坏：出事时第一个被查的就是它。
+        LOG.info("[learner] plugin ready; 不执行身体动作（RL-9 单驾驶员），"
+                + "但三类草稿真落 config/numen/artifact-outbox，携带器走显式审批（learner_carrier approve）");
     }
 
     /** 取（或惰性创建）某同伴的备忘录队列。 */

@@ -108,7 +108,10 @@ public record Memo(
         // → 改成走 CarrierChain，规则**可插拔**、顺序即判断顺序。
         java.util.Map<String, String> kv = parseKeyValues(raw.toLowerCase(java.util.Locale.ROOT));
         CarrierChain.Facts facts = CarrierChain.factsOf(kv, raw.toLowerCase(java.util.Locale.ROOT));
-        CarrierChain.Result r = CarrierChain.evaluate(CarrierRules.DEFAULT, facts);
+        // B6/S2：用 effective() 而不是写死的 DEFAULT —— 否则经审批的携带器规则在复审里看不到，
+        // 「AI 评估说该带 X」与「运行时真的带 X」会长期不一致（而这类不一致极难从外部看出来）。
+        CarrierChain.Result r = CarrierChain.evaluate(
+                com.dwinovo.numen.api.carrier.CarrierRuleStore.effective(), facts);
 
         String target;
         if (!facts.has("target") && !facts.hostileNearby() && !facts.passiveNearby()) {

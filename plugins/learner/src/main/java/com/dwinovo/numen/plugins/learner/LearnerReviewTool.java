@@ -3,6 +3,7 @@ package com.dwinovo.numen.plugins.learner;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.entity.NumenPlayer;
+import com.dwinovo.numen.plugins.learner.core.ArtifactOutbox;
 import com.dwinovo.numen.plugins.learner.core.Experience;
 import com.dwinovo.numen.plugins.learner.core.ExperienceDraft;
 import com.dwinovo.numen.plugins.learner.core.ExperienceQualityGate;
@@ -28,9 +29,17 @@ import java.util.function.Consumer;
 /**
  * {@code learner_review}：学习者领取队列里的备忘录、逐条复盘、出结构化判定。
  *
- * <p><b>plan-only</b>：判定是「建议」，本工具不执行任何身体动作
- * （不调 AC、不写经验库、不自编译）。调 AC 由 AI 调既有 ac_execute
- * —— 这样学习者不会成为第二个驾驶员（红线 RL-9 / RL-20）。
+ * <p><b>plan-only 的是「身体动作」，不是「落盘」（B6/S2 已放开落盘，2026-10-05）</b>：
+ * 本工具<b>不执行任何身体动作</b>，也不自己写经验库、<b>不自编译</b>
+ * —— 那是为了不成为第二个驾驶员（红线 RL-9 / RL-20）。
+ * 但它现在会把三类草稿真的落进 {@code config/numen/artifact-outbox/}：
+ * <ul>
+ *   <li><b>AC 草稿</b> —— 已有真实下游（acx 插件采纳后发布为 {@code GENERATED}，
+ *       仍需人工 approve）；</li>
+ *   <li><b>携带器草稿</b> / <b>自编译请求</b> —— <b>目前只有落点、没有消费者</b>，
+ *       回执与状态里如实标 {@code LANDED} 并注明无下游，不假装已生效。</li>
+ * </ul>
+ * <b>落地 ≠ 上线</b>：AC 那条链路也只到 {@code GENERATED} 为止。
  *
  * <p><b>但它<b>产出</b>可直接落库的草稿</b>（2026-10-02 B2/E3）：每条判定多给两个键 ——
  * {@code experience_draft}（七字段映射成的 {@code ExperienceEntry} 形状）+
@@ -152,8 +161,13 @@ final class LearnerReviewTool implements NumenTool {
 
         // 后台线程做 LLM 复盘（阻塞等待只发生在这里，不在服务器主线程）
         Thread.ofVirtual().name("learner-review-" + reviewId).start(() -> {
+            // ★ 拒收回喂（2026-10-05 实机教训）：投递箱读得到吗？读不到就传 null，
+            //   RejectionFeedback 会**明说「读不到」**，不假装「没有拒收」。
+            var ob = LearnerPlugin.outbox();
+            boolean readable = ob != null;
+            var rej = com.dwinovo.numen.plugins.learner.core.RejectionFeedback.scan(ob, readable);
             LearnerReviewer.ReviewOutcome outcome =
-                    LearnerReviewer.withPriorRound(batch, priorRead.summary(), LLM_TIMEOUT_SEC).join();
+                    LearnerReviewer.withPriorRound(batch, priorRead.summary(), rej, LLM_TIMEOUT_SEC).join();
 
             // 回主线程前校验世界代际：换档后迟到结果直接丢弃
             MinecraftServer current = ServerLifecycleHooks.getCurrentServer();
@@ -204,8 +218,16 @@ final class LearnerReviewTool implements NumenTool {
         int depth = queue.size();
 
         List<Map<String, Object>> rendered = new ArrayList<>();
+        // ★★ 实机抓到的 bug（2026-10-05）：这里原来写的是
+        //    `if (v.memoId() == null || !v.memoId().startsWith("m-")) continue;`
+        //    用意是挡掉 "?" 这类占位 id —— 但它把 **learner_intake 造的 `ci-*` memo 全挡掉了**。
+        //    后果：摄入来的材料被复审、被 commit（真从队列删了），
+        //    而 reviewed 事件里 `reviewed:0 / verdicts:[]`，监测台与 learner_status 全看不见
+        //    ⇒ 「看起来成功、实际丢了」，本工程最怕的那一类。
+        //    正确判据不是前缀猜测，而是**是不是这批里的真实 memo id** —— 直接复用上面那个
+        //    `judged`（它就是本批真实 id 集合）。"?" 不在其中，仍会被挡住。
         for (Verdict v : outcome.verdicts()) {
-            if (v.memoId() == null || !v.memoId().startsWith("m-")) {
+            if (v.memoId() == null || !judged.contains(v.memoId())) {
                 // 防御：绝不允许 "?" 这类占位 id 流进监测台/下游
                 continue;
             }
@@ -276,9 +298,10 @@ final class LearnerReviewTool implements NumenTool {
             // ★ 2026-10-03：另两个载荷位也进回执。
             //   形状照 ac_script_draft：**非空才写键**（空串写进去等于说「这里有个空的」，
             //   而实际是「这次没写」—— 两者含义不同，别混）。
-            //   ⚠️ 与 ac_script_draft 的区别：**这两个的下游都还不存在**
-            //   （USE_AC 归 AC 线的 acx_publish；SELF_COMPILE 按 B11 落成待办由外层接手）。
-            //   所以现在只保证「学习者写出来了、调用方看得见」，**不假装已经落地**。
+            //   ⚠️ 与 ac_script_draft 的区别：**这两类的下游仍然不存在**
+            //   （USE_AC 已归 AC 线消费；携带器与自编译请求**只有落点没有消费者**）。
+            //   所以回执只保证「学习者写出来了、且落盘了、调用方看得见」，
+            //   **不假装已经生效** —— 真要生效得等下游接上。
             if (!v.carrierDraft().isBlank()) {
                 one.put("carrier_draft", v.carrierDraft());
             }
@@ -304,6 +327,11 @@ final class LearnerReviewTool implements NumenTool {
             if (!v.rewrittenQuery().isEmpty()) {
                 one.put("rewritten_query", v.rewrittenQuery());
             }
+            // ★ B6/S2（2026-10-04 夜间施工）：三个载荷位**落进投递箱**。
+            //   此前它们只出现在这个 map 与 learner.jsonl 里，没有任何下游读 ——
+            //   「学习者说要写，写完就没下文」。现在写盘 + 逐条投递回执。
+            //   ⚠️ 投递 ≠ 生效：采纳/否决由下游回填 status，这里绝不写成「已上线」。
+            one.put("artifact_delivery", deliverArtifacts(id, reviewId, v));
             rendered.add(one);
 
             // 携带器只携带不存储：把三段分级结论写进观测，不落任何状态文件
@@ -352,7 +380,93 @@ final class LearnerReviewTool implements NumenTool {
         LearnerPlugin.setReviewVerdicts(reviewId, rendered);
     }
 
-/**
+    /**
+     * 把这条判定的产物投进投递箱（B6/S2）。
+     *
+     * <p>逐产物独立成败：某一类投失败<b>不</b>影响其余两类，也不影响本轮 review 的 commit —
+     * 「全成功或全失败」在这里是错的语义（回滚会把已经投出去的东西变成没投过）。
+     *
+     * <p><b>经验不在这里投</b>：学习者不自己落经验库（RL-20 / 59 D3），仍由 AI 调
+     * {@code experience_learn}。这里显式记一条 {@code DELEGATED}，免得观测侧以为
+     * 「投递箱里有四条产物」或「经验这条没交」——两种误读都会把问题引到错的地方。
+     */
+    private static List<Map<String, Object>> deliverArtifacts(UUID companionId, String reviewId, Verdict v) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        ArtifactOutbox ob = LearnerPlugin.outbox();
+        if (ob == null) {
+            out.add(deliveryRow("OUTBOX", "FAILED", "学习者插件未完成 setup，投递箱不存在（产物只留在回执里）", ""));
+        } else {
+            submit(ob, out, ArtifactOutbox.Kind.AC_SCRIPT, companionId, reviewId, v,
+                    v.acScriptDraft(), Verdict.Action.USE_AC);
+            submit(ob, out, ArtifactOutbox.Kind.CARRIER, companionId, reviewId, v,
+                    v.carrierDraft(), Verdict.Action.USE_CARRIER);
+            submit(ob, out, ArtifactOutbox.Kind.SELF_COMPILE_REQUEST, companionId, reviewId, v,
+                    v.selfCompileRequest(), Verdict.Action.SELF_COMPILE);
+        }
+        if (v.experience() != null || v.actions().contains(Verdict.Action.WRITE_EXPERIENCE)) {
+            out.add(deliveryRow("EXPERIENCE", "DELEGATED",
+                    "学习者不自己落经验库（RL-20 / 59 D3）：experience_draft 由 AI 调 experience_learn 落库，投递箱不代投",
+                    ""));
+        }
+        return out;
+    }
+
+    private static void submit(ArtifactOutbox ob, List<Map<String, Object>> out, ArtifactOutbox.Kind kind,
+                               UUID companionId, String reviewId, Verdict v, String body,
+                               Verdict.Action declaredBy) {
+        String memoId = v.memoId();
+        if (body == null || body.isBlank()) {
+            if (v.actions().contains(declaredBy)) {
+                // 声明了却没内容：这不是投递失败，是学习者交不出东西，必须看得见
+                out.add(deliveryRow(kind.wire(), "REJECTED",
+                        "声明了 " + declaredBy + " 但 " + kind.wire() + " 为空，没有可投的内容", ""));
+            }
+            return;
+        }
+        try {
+            String name = kind == ArtifactOutbox.Kind.AC_SCRIPT ? acName(body) : kind.wire();
+            ArtifactOutbox.Delivery d = ob.submit(kind, companionId, reviewId, memoId, name, body);
+            out.add(deliveryRow(kind.wire(), d.status(), d.detail(), d.path()));
+        } catch (RuntimeException e) {
+            // 一类产物投失败不许连坐别的，也不许把整轮 review 变成「失败」
+            out.add(deliveryRow(kind.wire(), "FAILED",
+                    "投递箱写入异常: " + e.getClass().getSimpleName() + ": " + e.getMessage(), ""));
+        }
+    }
+
+    /** AC 草稿名：能解析出 name 就用它（便于下游按名字归档），解析不出就用摘要占位。 */
+    private static String acName(String body) {
+        try {
+            var e = com.google.gson.JsonParser.parseString(body);
+            if (e.isJsonObject()) {
+                var o = e.getAsJsonObject();
+                for (String k : new String[]{"name", "ac_name", "script_name"}) {
+                    if (o.has(k) && o.get(k).isJsonPrimitive()) {
+                        String n = o.get(k).getAsString().trim();
+                        if (!n.isEmpty()) {
+                            return n;
+                        }
+                    }
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // 不是 JSON 是合法情况（模型可能交了散文）：名字退化不影响下游校验
+        }
+        return "ac-draft";
+    }
+
+    private static Map<String, Object> deliveryRow(String kind, String status, String detail, String path) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("kind", kind);
+        m.put("status", status);
+        m.put("detail", detail);
+        if (path != null && !path.isBlank()) {
+            m.put("path", path);
+        }
+        return m;
+    }
+
+    /**
      * 草稿的对外形状：{@code {entry, mapping}}。
      * 映射失败在调用处已经单独记了 {@code experience_draft_error}，这里不重复包装。
      */

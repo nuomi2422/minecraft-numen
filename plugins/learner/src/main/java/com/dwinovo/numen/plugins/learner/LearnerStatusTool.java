@@ -64,6 +64,25 @@ final class LearnerStatusTool implements NumenTool {
             data.put("last_review_at", LearnerPlugin.lastReviewAt());
             data.put("last_verdict_count", LearnerPlugin.lastVerdictCount());
 
+            // B6/S2：投递箱现状。**「落地 ≠ 生效」**，所以把消费者情况一并说清楚：
+            // 只有计数的话，AI 会把「有一堆 LANDED」误读成「都已被下游采纳」。
+            var ob = LearnerPlugin.outbox();
+            if (ob != null) {
+                Map<String, Object> box = new LinkedHashMap<>(ob.stats());
+                box.put("root", ob.root().toString());
+                box.put("AC_SCRIPT_consumer", "acx.AcxArtifactAdopter（发布为 GENERATED，仍需人工 approve）");
+                // ★ 这行以前写「NONE_YET（只有落点，无消费者）」—— 那是审批流还没建时写的，
+                //   审批流建好后它就成了**撒谎的状态**：草稿其实有人接了。
+                //   状态项撒谎比注释撒谎更坏（出事时第一个查的就是它），所以必须跟着实现一起改。
+                box.put("CARRIER_consumer",
+                        "learner.CarrierArtifactAdopter → 登记为候选；**要 learner_carrier approve 才进生效链**");
+                box.put("SELF_COMPILE_REQUEST_consumer", "NONE_YET（只有落点，无消费者）");
+                box.put("note", "落地 ≠ 生效：以 *_consumer 为准，别把 LANDED 当成已被采纳");
+                data.put("artifact_outbox", box);
+            } else {
+                data.put("artifact_outbox", "UNSET（插件 setup 没跑完？）");
+            }
+
             String reviewId = null;
             try {
                 if (args != null && args.has("review_id") && args.get("review_id").isJsonPrimitive()) {

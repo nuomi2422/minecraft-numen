@@ -39,6 +39,7 @@ import com.dwinovo.numen.acx.core.JsonlRecordStore;
 import com.dwinovo.numen.acx.api.AcxPortSchema;
 import com.dwinovo.numen.acx.api.AcxToolPort;
 import com.dwinovo.numen.acx.core.AcxAliases;
+import com.dwinovo.numen.acx.core.AcxArtifactAdopter;
 import com.dwinovo.numen.acx.core.AcxHostBridge;
 import com.dwinovo.numen.acx.core.NumenToolCatalog;
 import com.dwinovo.numen.acx.core.PortToolAdapter;
@@ -99,6 +100,7 @@ public final class AcxTestMain {
         subAcPublishing();
         versionStoreRoundTrip();
         hostFacade();
+        learnerDraftAdoption();
         System.exit(T.summary());
     }
 
@@ -1453,6 +1455,149 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             var e = throwsA(IllegalArgumentException.class, () -> lib.rollback("t", "9", "瞎写"));
             contains(e.getMessage(), "可回滚的版本", "应列出可选版本");
         });
+    }
+
+    // ── 19. 学习者 AC 草稿采纳（B6/S2）────────────────────────────────
+
+    /**
+     * 钉的是<b>上线闸门</b>与<b>失败可见</b>两件事：
+     * 采纳只 publish 成 GENERATED（绝不 approve），坏草稿要写回 REJECTED + 原因，
+     * 重复采纳不产生第二份，已采纳的不再被当成待处理。
+     */
+    private static void learnerDraftAdoption() {
+        T.group("19 学习者 AC 草稿采纳：只进库不上线，坏草稿写回原因");
+
+        T.test("合法草稿 → 进版本库但**未上线**（active 取不到）", () -> {
+            Path cfg = tmpDir();
+            Fake.Registry reg = new Fake.Registry().add(Fake.fixed("blk", Map.of()));
+            FileAcxLibrary lib = new FileAcxLibrary(cfg.resolve("acx/library.json"), reg);
+            lib.load();
+            AcxArtifactAdopter adopter = new AcxArtifactAdopter(cfg, lib, Set.of());
+            writeDraft(cfg, "AC_SCRIPT-c1-m1-abc", "eat_when_hungry",
+                    "{\"name\":\"eat_when_hungry\",\"version\":\"1\",\"steps\":[{\"id\":\"s1\",\"block\":\"blk\",\"params\":{}}]}");
+
+            var rep = adopter.adoptAll();
+            eq(1, rep.adopted(), "采纳数");
+            eq(0, rep.rejected(), "不该有拒收");
+            T.isTrue(lib.hasAnyVersion("eat_when_hungry"), "版本已写进库");
+            T.isTrue(!lib.isApproved("eat_when_hungry"), "**没有**被批准上线");
+            var e = throwsA(IllegalStateException.class, () -> lib.active("eat_when_hungry"));
+            contains(e.getMessage(), "未人工批准上线", "拒绝理由要说明白");
+        });
+
+        T.test("回填 ADOPTED 并留下 consumer_ref；再扫一次不再重复采纳", () -> {
+            Path cfg = tmpDir();
+            Fake.Registry reg = new Fake.Registry().add(Fake.fixed("blk", Map.of()));
+            FileAcxLibrary lib = new FileAcxLibrary(cfg.resolve("acx/library.json"), reg);
+            lib.load();
+            AcxArtifactAdopter adopter = new AcxArtifactAdopter(cfg, lib, Set.of());
+            writeDraft(cfg, "AC_SCRIPT-c1-m1-def", "eat_when_hungry",
+                    "{\"name\":\"eat_when_hungry\",\"version\":\"1\",\"steps\":[{\"id\":\"s1\",\"block\":\"blk\",\"params\":{}}]}");
+
+            eq(1, adopter.adoptAll().adopted(), "首次采纳");
+            eq(0, adopter.adoptAll().adopted(), "第二次不该再采纳（幂等）");
+            eq("ADOPTED", outboxStatus(cfg, "AC_SCRIPT-c1-m1-def"), "记录状态已回填");
+            contains(readOutbox(cfg, "AC_SCRIPT-c1-m1-def"), "eat_when_hungry@1", "回填了可引用标识");
+            eq(0, adopter.pendingCount(), "待处理队列已清空");
+        });
+
+        T.test("不是 ACX JSON → REJECTED + 原因，原文保留", () -> {
+            Path cfg = tmpDir();
+            Fake.Registry reg = new Fake.Registry().add(Fake.fixed("blk", Map.of()));
+            FileAcxLibrary lib = new FileAcxLibrary(cfg.resolve("acx/library.json"), reg);
+            lib.load();
+            AcxArtifactAdopter adopter = new AcxArtifactAdopter(cfg, lib, Set.of());
+            writeDraft(cfg, "AC_SCRIPT-c1-m2-ghi", "prose", "先看看情况再说");
+
+            var rep = adopter.adoptAll();
+            eq(0, rep.adopted(), "散文不该被采纳");
+            eq(1, rep.rejected(), "应拒收");
+            eq("REJECTED", outboxStatus(cfg, "AC_SCRIPT-c1-m2-ghi"), "写回拒收");
+            contains(readOutbox(cfg, "AC_SCRIPT-c1-m2-ghi"), "先看看情况再说", "原文保留等人改");
+            T.isTrue(lib.names().isEmpty(), "库里不该留下任何东西");
+        });
+
+        T.test("静态校验不过（用了没注册的积木）→ REJECTED 且带明文问题", () -> {
+            Path cfg = tmpDir();
+            Fake.Registry reg = new Fake.Registry().add(Fake.fixed("blk", Map.of()));
+            FileAcxLibrary lib = new FileAcxLibrary(cfg.resolve("acx/library.json"), reg);
+            lib.load();
+            AcxArtifactAdopter adopter = new AcxArtifactAdopter(cfg, lib, Set.of());
+            writeDraft(cfg, "AC_SCRIPT-c1-m3-jkl", "ghost_user",
+                    "{\"name\":\"ghost_user\",\"version\":\"1\",\"steps\":[{\"id\":\"s1\",\"block\":\"no_such_block\",\"params\":{}}]}");
+
+            var rep = adopter.adoptAll();
+            eq(0, rep.adopted(), "不该采纳");
+            eq(1, rep.rejected(), "应拒收");
+            String rec = readOutbox(cfg, "AC_SCRIPT-c1-m3-jkl");
+            contains(rec, "静态校验未通过", "原因写进记录");
+            contains(rec, "no_such_block", "具体是哪个积木有问题");
+        });
+
+        T.test("坏文件（截断 JSON）被跳过且不删，不影响同目录其它草稿", () -> {
+            Path cfg = tmpDir();
+            Fake.Registry reg = new Fake.Registry().add(Fake.fixed("blk", Map.of()));
+            FileAcxLibrary lib = new FileAcxLibrary(cfg.resolve("acx/library.json"), reg);
+            lib.load();
+            AcxArtifactAdopter adopter = new AcxArtifactAdopter(cfg, lib, Set.of());
+            Path dir = cfg.resolve("artifact-outbox/AC_SCRIPT/c1");
+            write(dir.resolve("broken.json"), "{\"status\": \"PEND");
+            writeDraft(cfg, "AC_SCRIPT-c1-m4-mno", "eat_when_hungry",
+                    "{\"name\":\"eat_when_hungry\",\"version\":\"1\",\"steps\":[{\"id\":\"s1\",\"block\":\"blk\",\"params\":{}}]}");
+
+            var rep = adopter.adoptAll();
+            eq(1, rep.adopted(), "好草稿照常采纳");
+            T.isTrue(Files.exists(dir.resolve("broken.json")), "坏文件不许被删");
+        });
+
+        T.test("没有投递箱目录 → 0 条，不是异常", () -> {
+            Path cfg = tmpDir();
+            Fake.Registry reg = new Fake.Registry();
+            FileAcxLibrary lib = new FileAcxLibrary(cfg.resolve("acx/library.json"), reg);
+            lib.load();
+            AcxArtifactAdopter adopter = new AcxArtifactAdopter(cfg, lib, Set.of());
+            var rep = adopter.adoptAll();
+            eq(0, rep.scanned(), "扫到 0 条");
+            eq(0, rep.adopted(), "采纳 0 条");
+        });
+    }
+
+    /** 按上游契约写一条「学习者已投递」的草稿记录。 */
+    private static void writeDraft(Path configDir, String artifactId, String name, String body) {
+        write(configDir.resolve("artifact-outbox/AC_SCRIPT/c1").resolve(artifactId + ".json"),
+                "{\n"
+                        + "  \"artifact_id\": \"" + artifactId + "\",\n"
+                        + "  \"kind\": \"AC_SCRIPT\",\n"
+                        + "  \"companion_id\": \"c1\",\n"
+                        + "  \"review_id\": \"rev-1\",\n"
+                        + "  \"memo_id\": \"m-1\",\n"
+                        + "  \"name\": \"" + name + "\",\n"
+                        + "  \"body\": " + quote(body) + ",\n"
+                        + "  \"content_hash\": \"deadbeef\",\n"
+                        + "  \"status\": \"PENDING\",\n"
+                        + "  \"status_detail\": \"已交出，等下游表态\",\n"
+                        + "  \"consumer_ref\": \"\",\n"
+                        + "  \"history\": [ { \"at\": \"2026-10-04T00:00:00Z\", \"status\": \"PENDING\", \"detail\": \"submitted\" } ]\n"
+                        + "}");
+    }
+
+    private static String readOutbox(Path configDir, String artifactId) {
+        Path f = configDir.resolve("artifact-outbox/AC_SCRIPT/c1").resolve(artifactId + ".json");
+        try {
+            return Files.readString(f, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /** 读回投递记录的状态字段：走解析而不是字符串找，避免被 JSON 空格格式绊倒。 */
+    private static String outboxStatus(Path configDir, String artifactId) {
+        return String.valueOf(JsonlRecordStore.toMap(readOutbox(configDir, artifactId)).get("status"));
+    }
+
+    /** 极简 JSON 字符串转义（只处理本测试用到的引号与换行）。 */
+    private static String quote(String s) {
+        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\"";
     }
 
     // ── 16. 记录落盘 ───────────────────────────────────────────────

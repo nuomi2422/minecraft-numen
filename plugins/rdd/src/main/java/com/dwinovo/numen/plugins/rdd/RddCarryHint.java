@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.ai.AiLog;
 import com.dwinovo.numen.api.carrier.CarrierChain;
+import com.dwinovo.numen.api.carrier.CarrierRuleStore;
 import com.dwinovo.numen.api.carrier.CarrierRules;
 import com.dwinovo.numen.api.carrier.ItemSemantics;
 import com.dwinovo.numen.entity.NumenPlayer;
@@ -153,7 +154,10 @@ final class RddCarryHint {
             }
         }
         CarrierChain.Facts facts = CarrierChain.factsOf(kv, snapshot.toLowerCase(Locale.ROOT));
-        CarrierChain.Result r = CarrierChain.evaluate(CarrierRules.DEFAULT, facts);
+        // B6/S2：走 effective()（DEFAULT + 已批准的携带器规则），不再写死 DEFAULT。
+        // 「已批准但运行时不生效」是最坏的一种状态：审批界面显示成功，游戏里没变化，
+        // 没人查得出来。所以生效链必须与审批落点读同一处。
+        CarrierChain.Result r = CarrierChain.evaluate(CarrierRuleStore.effective(), facts);
         if (r.carry().isEmpty()) {
             return "";
         }
@@ -186,7 +190,7 @@ final class RddCarryHint {
     }
 
     private static String basisNote(CarrierChain.Result r) {
-        int notEvaluated = Math.max(0, CarrierRules.DEFAULT.size() - r.stoppedAt() - 1);
+        int notEvaluated = Math.max(0, CarrierRuleStore.effective().size() - r.stoppedAt() - 1);
         return "第 " + (r.stoppedAt() + 1) + " 级不成立，后续 " + notEvaluated + " 项未求值";
     }
 

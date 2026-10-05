@@ -69,6 +69,25 @@ final class LearnerReviewer {
             它们是**并列**的，不是流水线（架构 owner 2026-10-03 明确）。
             14. self_compile_request 写的是**现象 + 最小复现 + 环境快照**（结构化待办），
             不是写代码 —— 下游不自动写码，由外层工程流接手（B11）。
+            14b. ★★ ac_script_draft **必须是 ACX 库的 JSON**，不是散文（2026-10-05 实机教训）。
+                 下游 AcxArtifactAdopter 会解析 + 静态校验，失败就**显式 REJECTED** 并把原文
+                 留在投递箱里等人改。实测两种真实失败：交散文 ⇒ JSON 解析失败整条被拒；
+                 交 JSON 但字段名猜错 ⇒ 校验失败被拒。材料都被复审、被 commit，
+                 却什么产物都没留下 —— 看起来成功、实际白跑。
+                 ★ 字段名**不许自创**，照抄这个形状（真实 .ac 脚本就是这样）：
+                 {"name":"low_hp_disengage","version":"1","description":"...",
+                  "steps":[{"id":"read","block":"get_self_status","params":{}},
+                           {"id":"gate","block":"guard",
+                            "params":{"conditions":[{"field":"$read.hp","op":"<","value":4}]}},
+                           {"id":"retreat","block":"move","params":{"x":0,"y":0,"z":0}}]}
+                 硬要求：
+                   - 每个 step 必须有 **id**（唯一）、**block**（工具名）、**params**（对象）
+                   - 用的是 block/params，**不是** action/args
+                   - **没有 trigger 字段**：条件写成 `block:"guard"` 的 step，
+                     conditions 里用 `$<上一步 id>.<字段>` 引用上一步的输出
+                   - version 固定 "1"；name 用小写下划线
+                 不确定时交**最小可解析**版本（name/version/steps，steps 只放一个 get_self_status）
+                 并在 reasoning 里写清意图，也比交散文强得多。
 
             输出格式：
             {"verdicts":[{"memo_id":"...","actions":["WRITE_EXPERIENCE"],"confidence":0.7,
@@ -113,6 +132,19 @@ final class LearnerReviewer {
     static CompletableFuture<ReviewOutcome> withPriorRound(List<Memo> memos,
                                                            com.dwinovo.numen.plugins.learner.core.PriorRound.Summary prior,
                                                            int timeoutSeconds) {
+        return withPriorRound(memos, prior, null, timeoutSeconds);
+    }
+
+    /**
+     * 再加一条通道：把<b>被下游拒收的产物 + 拒收原因</b>也摆进 prompt。
+     *
+     * <p>★ 这是 2026-10-05 实机三轮踩出来的：AI 连拒三次且<b>每次都不知道自己错在哪</b>，
+     * 因为拒收原因只写在投递箱里、没人回喂给它。详见 {@link com.dwinovo.numen.plugins.learner.core.RejectionFeedback}。
+     */
+    static CompletableFuture<ReviewOutcome> withPriorRound(List<Memo> memos,
+                                                           com.dwinovo.numen.plugins.learner.core.PriorRound.Summary prior,
+                                                           com.dwinovo.numen.plugins.learner.core.RejectionFeedback rejections,
+                                                           int timeoutSeconds) {
         INumenConfig cfg;
         try {
             cfg = Services.CONFIG;
@@ -125,7 +157,7 @@ final class LearnerReviewer {
 
         // ★ 拼装下沉到 core.PriorRound：这条要能用单测钉住（见那边的方法注释）。
         //   本方法只负责拿到配置、发出请求、解析回复。
-        String user = com.dwinovo.numen.plugins.learner.core.PriorRound.buildUserPrompt(memos, prior);
+        String user = com.dwinovo.numen.plugins.learner.core.PriorRound.buildUserPrompt(memos, prior, rejections);
 
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
