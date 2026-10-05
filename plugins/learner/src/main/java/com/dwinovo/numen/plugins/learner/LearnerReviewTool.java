@@ -242,6 +242,24 @@ final class LearnerReviewTool implements NumenTool {
             }
             Map<String, Object> one = new LinkedHashMap<>();
             one.put("memo_id", v.memoId());
+            // ★ B1：把这条判定产物的**使用结果**挂回来（从账本按 memoId 反查）。
+            //   这是把「判定」与「执行事实」缝在一起的唯一键 —— 产物 id 里带 memoId。
+            //   ★ 只挂事实：不含任何有效性判断（有效性仍要人显式声明）。
+            var ul0 = LearnerPlugin.usageLedger();
+            if (ul0 != null) {
+                var usageRows = com.dwinovo.numen.plugins.learner.core.UsageLedger.usageByMemo(
+                        ul0, v.memoId(), java.util.EnumSet.of(
+                                ArtifactOutbox.Kind.AC_SCRIPT,
+                                ArtifactOutbox.Kind.CARRIER));
+                if (!usageRows.isEmpty()) {
+                    one.put("usage_outcome", usageRows);
+                } else {
+                    // ★ 空与「查不到」要分开：没有产物 ≠ 查不到账本
+                    one.put("usage_outcome_note", "该判定的产物尚无使用记录（未执行或账本里没有）");
+                }
+            } else {
+                one.put("usage_outcome_note", "使用账本未初始化，查不到执行结果");
+            }
             one.put("actions", v.actions().stream().map(Enum::name).toList());
             one.put("confidence", v.confidence());
             one.put("reasoning", v.reasoning());

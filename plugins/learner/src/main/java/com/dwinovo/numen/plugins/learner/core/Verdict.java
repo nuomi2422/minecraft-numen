@@ -8,6 +8,7 @@ import com.google.gson.JsonParser;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 
 /**
@@ -44,6 +45,25 @@ public record Verdict(
         //   它只是草稿的落点，落地是外层的事。
         String carrierDraft,
         String selfCompileRequest,
+        /**
+         * ★ B1（2026-10-05）：这条判定里各产物的<b>使用结果</b>。
+         *
+         * <p><b>为什么加这个字段</b>：使用账本按 {@code artifact_id} 记事实，
+         * 而产物 id 里带 {@code memoId}（{@code ArtifactOutbox} 的
+         * {@code artifact_id = kind + 同伴 + memoId + 摘要}）。
+         * ⇒ 只要把这个字段从账本里<b>按 memoId 反查</b>填进来，
+         * 「这条判定 → 它产出的东西 → 那东西跑成没成」就串成了一条链，
+         * 两边终于有共同键（memoId），对账才有意义。
+         *
+         * <p><b>形状</b>：{@code [{"kind":"AC_SCRIPT","name":"...","phase":"RESULT",
+         * "outcome":"SUCCESS","artifact_id":"...","run_count":1}]}。
+         * <b>只读事实</b>：{@code outcome} 来自执行记录，
+         * <b>不含任何「所以有效」的判断</b> —— 有效性仍然只能由人显式声明。
+         *
+         * <p><b>缺省空列表</b>：没有产物、或产物还没被执行过，都是空。
+         * 空列表与「查不到」要分开：查不到时由调用方写 {@code usage_lookup} 说明。
+         */
+        List<Map<String, Object>> usageOutcome,
         List<String> rewrittenQuery
 ) {
 
@@ -160,8 +180,10 @@ public record Verdict(
                 }
             }
 
+            // usageOutcome **不由 LLM 给**：LLM 手里没有执行事实，
+            // 让它填就是让它编。解析时一律空，由 LearnerReviewTool 从账本按 memoId 反查填入。
             return new Verdict(memoId, List.copyOf(actions), confidence, reasoning,
-                    exp, acDraft, carrierDraft, selfCompile, List.copyOf(queries));
+                    exp, acDraft, carrierDraft, selfCompile, List.of(), List.copyOf(queries));
         } catch (RuntimeException e) {
             // 不是合法 JSON：如实返回 null，让调用方报 UNPARSEABLE
             return null;

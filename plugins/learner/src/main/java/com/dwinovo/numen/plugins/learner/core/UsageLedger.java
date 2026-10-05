@@ -346,6 +346,69 @@ public final class UsageLedger {
         return Outcome.UNKNOWN;
     }
 
+    /**
+ * 按 <b>memoId</b> 反查该判定产出物的使用结果（B1 的另一半）。
+ *
+ * <p><b>为什么这是关键的一步</b>：两侧键空间本来不同源
+ * （事实侧 {@code stageKey} vs 使用侧 {@code artifact_id}），
+ * 而 {@code ArtifactOutbox} 的 {@code artifact_id = kind + 同伴 + memoId + 摘要}
+ * <b>本身含 memoId</b> ⇒ 从 artifact 反推 memo 就能把使用结果挂回具体判定，
+ * 于是「判定 → 产物 → 执行结果」有了共同键。
+ *
+ * <p><b>只给事实</b>：每项只含 kind/name/phase/outcome/artifact_id/run 计数，
+ * <b>不含有效性判断</b>。
+ *
+ * @param ledger   账本
+ * @param memoId   要查的判定对应的 memoId
+ * @param kinds    只查这几类产物
+ * @return 没查到时返回空列表（<b>调用方要区分「没产物」与「查不到账本」</b>）
+ */
+    public static List<Map<String, Object>> usageByMemo(UsageLedger ledger, String memoId,
+                                                        java.util.Set<ArtifactOutbox.Kind> kinds) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (ledger == null || memoId == null || memoId.isBlank() || kinds == null || kinds.isEmpty()) {
+            return out;
+        }
+        // artifact_id 形如 <kind>-<companion>-<memoId>-<hash>：
+        // memoId 前面隔着同伴 UUID，所以判据是「以 kind 开头」+「含 -<memoId>- 片段」。
+        // 用带横线的片段而不是裸 memoId ⇒ m-1 不会命中 m-10 的产物（裸包含会串）。
+        for (Map.Entry<String, Entry> e : ledger.conclusions().entrySet()) {
+            String artifactId = e.getKey();
+            String needle = "-" + memoId + "-";
+            for (ArtifactOutbox.Kind k : kinds) {
+                if (!artifactId.startsWith(k.wire() + "-") || !artifactId.contains(needle)) {
+                    continue;
+                }
+                Entry v = e.getValue();
+                Map<String, Object> one = new LinkedHashMap<>();
+                one.put("artifact_id", artifactId);
+                one.put("kind", k.wire());
+                one.put("name", v.name());
+                one.put("phase", v.phase().name());
+                one.put("outcome", v.outcome().name());
+                one.put("validity_claimed", v.validityClaimed());
+                if (v.companionId() != null && !v.companionId().isBlank()) {
+                    one.put("companion_id", v.companionId());
+                }
+                out.add(one);
+                break;
+            }
+        }
+        return out;
+    }
+
+    /** 某个产物在账本里出现过几个不同来源的执行（粗略的「跑过几次」）。 */
+    public int runCountOf(String artifactId) {
+        int n = 0;
+        for (Entry e : all()) {
+            if (artifactId.equals(e.artifactId()) && e.source() != null
+                    && e.source().startsWith(AcxExecutionReflector.SOURCE_PREFIX)) {
+                n++;
+            }
+        }
+        return n;
+    }
+
     private static String nz(String s) {
         return s == null ? "" : s;
     }
