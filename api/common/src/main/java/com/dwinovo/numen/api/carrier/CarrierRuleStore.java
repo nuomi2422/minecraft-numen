@@ -415,51 +415,83 @@ private static String toJson(String name, String when, List<String> carry, List<
         };
     }
 
+/**
+     * 编译<b>一个</b>条件词。
+     *
+     * <p>★★ 修复前这段有<b>两个静默算错</b>的 bug（都是「文档写着支持、代码其实不支持」）：
+     * <ol>
+     *   <li>第一层把 {@code "="} 与 {@code "<=" ">=" "<" ">"} 放<b>同一个数组</b>里循环。
+     *       对 {@code "hp<=4"}，{@code indexOf("=")} 会命中那个等号 —— 于是它被当成相等式
+     *       「键 {@code hp<=} 等于 4」，而 {@code f.get("hp<=")} 恒为空串 ⇒
+     *       <b>条件恒为假，规则永不生效</b>（静默失灵，比报错危险）。
+     *       同时下面专门处理 {@code hostile=1 / passive=1 / has=weapon} 的分支<b>永远到不了</b>，
+     *       它们全被上面的相等分支截走。</li>
+     *   <li>比较类没有 {@code ">" 分支 ⇒ {@code hp>4} 落到
+     *       {@code default -> f.hp() == n}，变成 <b>「血量正好等于 4」</b>。</li>
+     * </ol>
+     * 修法（按语义分三段，段与段互不吞并）：
+     * <ol>
+     *   <li><b>相等/开关</b>：只认<b>单个</b>等号（{@link #indexOfPlainEquals} 排除
+     *       {@code <=} {@code >=}），含 {@code band=X} {@code hostile=1} {@code has=weapon}；</li>
+     *   <li><b>数值比较</b>：{@code hp<=N >=N <N >N}，四个算子各有分支，
+     *       <b>非 hp 键明确报错</b>，不猜「别的东西也支持比较」；</li>
+     *   <li><b>开关单词</b>：{@code hostile} {@code low_hp} …，不认识就抛错。</li>
+     * </ol>
+     */
     private static Predicate<CarrierChain.Facts> compileOne(String tok) {
-        // hp<=4 / hp>=10 / hp<4 / hp>10
-        for (String op : new String[]{"<=", ">=", "<", ">", "="}) {
-            int i = tok.indexOf(op);
-            if (i > 0) {
-                String key = tok.substring(0, i).trim();
-                String val = tok.substring(i + op.length()).trim();
-                if ("hp".equals(key)) {
-                    int n;
-                    try {
-                        n = Integer.parseInt(val);
-                    } catch (NumberFormatException e) {
-                        throw new IllegalArgumentException("hp 比较的右边不是整数: " + tok);
-                    }
-                    return switch (op) {
-                        case "<=" -> f -> f.hasHp() && f.hp() <= n;
-                        case ">=" -> f -> f.hasHp() && f.hp() >= n;
-                        case "<" -> f -> f.hasHp() && f.hp() < n;
-                        default -> f -> f.hasHp() && f.hp() == n;
-                    };
-                }
-                if ("band".equals(key)) {
-                    String want = val.toUpperCase(Locale.ROOT);
-                    return f -> f.hpBand().equals(want);
-                }
-                return f -> f.get(key).equalsIgnoreCase(val);
-            }
-        }
-        int eq = tok.indexOf('=');
+        // ── 1) 相等/开关类（先判，且只认单个等号）
+        int eq = indexOfPlainEquals(tok);
         if (eq > 0) {
             String key = tok.substring(0, eq).trim();
             String val = tok.substring(eq + 1).trim();
             switch (key) {
                 case "band":
                     return f -> f.hpBand().equalsIgnoreCase(val);
-                case "hostile":
-                    return f -> truthy(val) == f.hostileNearby();
-                case "passive":
-                    return f -> truthy(val) == f.passiveNearby();
+                case "hostile": {
+                    // ★ 立即求值：把 truthy 放进 lambda 会让非法值在**编译期**不报错，
+                    //   而那时规则已经批准进生效链了 —— 报错来得太晚。
+                    boolean want = truthy(val);
+                    return f -> want == f.hostileNearby();
+                }
+                case "passive": {
+                    boolean want = truthy(val);
+                    return f -> want == f.passiveNearby();
+                }
                 case "has":
                     return hasItem(val);
                 default:
                     return f -> f.get(key).equalsIgnoreCase(val);
             }
         }
+
+        // ── 2) 数值比较类：四个算子各自成支，hp>4 不再退化成 hp==4
+        for (String op : new String[]{"<=", ">=", "<", ">"}) {
+            int i = tok.indexOf(op);
+            if (i <= 0) {
+                continue;
+            }
+            String key = tok.substring(0, i).trim();
+            String val = tok.substring(i + op.length()).trim();
+            if (!"hp".equals(key)) {
+                // 明确报错，不静默猜：'foo<=3' 该不该支持要人工定，不能默认按字符串比
+                throw new IllegalArgumentException("只有 hp 支持数值比较（" + "<= >= < >" + "），收到: '"
+                        + tok + "'。其他条件用相等式，如 has=weapon / band=LOW。");
+            }
+            int n;
+            try {
+                n = Integer.parseInt(val);
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("hp 比较的右边不是整数: " + tok);
+            }
+            return switch (op) {
+                case "<=" -> f -> f.hasHp() && f.hp() <= n;
+                case ">=" -> f -> f.hasHp() && f.hp() >= n;
+                case "<" -> f -> f.hasHp() && f.hp() < n;
+                default -> f -> f.hasHp() && f.hp() > n;
+            };
+        }
+
+        // ── 3) 开关型单词
         switch (tok) {
             case "hostile":
                 return CarrierChain.Facts::hostileNearby;
@@ -477,9 +509,30 @@ private static String toJson(String name, String when, List<String> carry, List<
                 return hasItem("hand");
             default:
                 throw new IllegalArgumentException("不认识的 when 条件: '" + tok + "'。"
-                        + "支持: hp<=N / hp>=N / band=X / hostile=1 / passive=1 / has=weapon|armor|hand /"
-                        + " hostile / passive / low_hp / critical / has_weapon / has_armor / unknown_hand（用 , 连接）");
+                        + "支持: hp<=N / hp>=N / hp<N / hp>N / band=X / hostile=1 / passive=1 /"
+                        + " has=weapon|armor|hand / hostile / passive / low_hp / critical /"
+                        + " has_weapon / has_armor / unknown_hand（用 , 连接）");
         }
+    }
+
+    /**
+     * 找<b>单个</b>等号的位置；跳过 {@code <=} {@code >=} 里的等号。没有则返回 -1。
+     *
+     * <p>★ 单独立一个方法的原因：把「相等」和「比较」混在一次 {@code indexOf} 里，
+     * 就会让 {@code hp<=4} 的等号被当成相等号 —— 条件恒为假、规则静默永不生效。
+     */
+    private static int indexOfPlainEquals(String tok) {
+        for (int i = 0; i < tok.length(); i++) {
+            if (tok.charAt(i) != '=') {
+                continue;
+            }
+            boolean prevIsCompare = i > 0 && (tok.charAt(i - 1) == '<' || tok.charAt(i - 1) == '>');
+            boolean nextIsCompare = i + 1 < tok.length() && tok.charAt(i + 1) == '=';
+            if (!prevIsCompare && !nextIsCompare) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static Predicate<CarrierChain.Facts> hasItem(String what) {

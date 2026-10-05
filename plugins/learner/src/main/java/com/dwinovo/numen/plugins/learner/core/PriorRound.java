@@ -255,14 +255,17 @@ public final class PriorRound {
      */
     public static String buildUserPrompt(List<Memo> memos, Summary prior,
                                          com.dwinovo.numen.plugins.learner.core.RejectionFeedback rejections,
-                                         com.dwinovo.numen.plugins.learner.core.UsageLedger usage) {
+                                         String usageText) {
         StringBuilder user = new StringBuilder();
         user.append((prior == null ? Summary.none() : prior).promptBlock()).append('\n');
         if (rejections != null) {
             user.append(rejections.promptBlock()).append('\n');
         }
-        if (usage != null) {
-            user.append(usage.promptBlock()).append('\n');
+        // ★ 传的是**已按同伴过滤好的文本**，不是账本对象：
+        //   过滤责任在调用方（它才知道同伴 id），这里只负责排版。
+        //   传对象进来容易被「忘了过滤就全塞进去」，那等于跨同伴污染。
+        if (usageText != null && !usageText.isBlank()) {
+            user.append(usageText).append('\n');
         }
         List<Memo> batch = memos == null ? List.of() : memos;
         user.append("复盘以下 ").append(batch.size()).append(" 条备忘录，逐条输出判定：\n\n");

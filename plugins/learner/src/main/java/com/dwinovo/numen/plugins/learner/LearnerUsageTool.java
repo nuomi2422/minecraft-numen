@@ -88,8 +88,10 @@ final class LearnerUsageTool implements NumenTool {
                         return;
                     }
                     UsageLedger.Outcome outcome = outcome(str(args, "outcome", ""));
+                    // ★ 同伴 id 由服务端取，不接受调用方传（传了也无法验证）
+                    String companionId = companion == null ? "" : companion.getUUID().toString();
                     UsageLedger.Entry e = ul.append(id, str(args, "kind", ""), str(args, "name", ""),
-                            phase, outcome, str(args, "detail", ""), "learner_usage");
+                            phase, outcome, str(args, "detail", ""), "learner_usage", companionId);
                     data.putAll(ul.toMap(List.of(e)));
                     if (outcome == UsageLedger.Outcome.SUCCESS) {
                         data.put("note", "★ 成功只记为**候选关联**；要算有效性证据请另调 claim_validity（要给理由）");
@@ -97,11 +99,26 @@ final class LearnerUsageTool implements NumenTool {
                     reply.accept(TaskResult.ok("usage recorded: " + id + " " + e.phase() + "/" + e.outcome(), data).toJson());
                 }
                 case "REPORT" -> {
-                    data.putAll(ul.toMap(List.copyOf(ul.conclusions().values())));
+                    // ★ 只列本同伴的：账本是共享文件，列出别人的会让 AI 以为那是自己的成败
+                    String cid = companion == null ? "" : companion.getUUID().toString();
+                    java.util.List<UsageLedger.Entry> mine = new java.util.ArrayList<>();
+                    for (UsageLedger.Entry e : ul.conclusions().values()) {
+                        if (cid.equals(e.companionId())) {
+                            mine.add(e);
+                        }
+                    }
+                    data.putAll(ul.toMap(List.copyOf(mine)));
                     List<UsageLedger.Entry> cands = ul.associationCandidates();
-                    data.put("association_candidates", cands.size());
+                    int mineCands = 0;
+                    for (UsageLedger.Entry e : cands) {
+                        if (cid.equals(e.companionId())) {
+                            mineCands++;
+                        }
+                    }
+                    data.put("association_candidates", mineCands);
                     data.put("association_candidates_meaning",
                             "成功但还没人声明有效性 —— 待审清单，**不是**证据");
+                    data.put("scope", "只列本同伴（账本是所有同伴共享的文件）");
                     reply.accept(TaskResult.ok("learner usage report", data).toJson());
                 }
                 case "CLAIM_VALIDITY" -> {

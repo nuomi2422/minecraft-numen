@@ -38,16 +38,28 @@ public final class RejectionFeedback {
     }
 
     /**
-     * 从投递箱里挑出<b>最近</b>的拒收记录。
+     * 从投递箱里挑出<b>本同伴</b>最近的拒收记录。
+     *
+     * <p>★ <b>同伴隔离是硬要求，不是优化</b>（2026-10-05 加固）：
+     * 投递箱在 {@code config/numen/artifact-outbox/} 下<b>混着所有同伴</b>的记录。
+     * 若不过滤，A 的失败原因会作为「上轮情况」喂给 B，而每类只留 N 条 ——
+     * <b>A 的拒收记录会挤掉 B 自己的</b>。
+     *
+     * <p>过滤按记录里的 {@code companion_id} 字段（{@link ArtifactOutbox} 写入），
+     * <b>不靠路径/文件名猜</b>。
      *
      * @param readable 投递箱是否读得到；读不到时 {@link #promptBlock()} 会明说，
      *                 <b>不假装「没有拒收」</b>
+     * @param companionId 只看这个同伴的；{@code null} ⇒ <b>什么都看不到</b>
+     *                     （不退化成「把全部都喂出去」，那等于没隔离）
      */
-    public static RejectionFeedback scan(ArtifactOutbox outbox, boolean readable) {
+    public static RejectionFeedback scan(ArtifactOutbox outbox, boolean readable,
+                                         java.util.UUID companionId) {
         RejectionFeedback fb = new RejectionFeedback();
-        if (!readable || outbox == null) {
+        if (!readable || outbox == null || companionId == null) {
             return fb;
         }
+        String want = companionId.toString();
         for (ArtifactOutbox.Kind kind : ArtifactOutbox.Kind.values()) {
             List<Item> items = new ArrayList<>();
             List<JsonObject> all;
@@ -60,12 +72,19 @@ public final class RejectionFeedback {
                 if (!ArtifactOutbox.Status.REJECTED.name().equals(str(o, "status"))) {
                     continue;
                 }
+                if (!want.equals(str(o, "companion_id"))) {
+                    // ★ 别的同伴的拒收不进这一份回喂
+                    continue;
+                }
                 items.add(new Item(str(o, "name"), str(o, "status_detail"), str(o, "updated_at")));
             }
             if (items.isEmpty()) {
                 continue;
             }
-            // list() 按文件名有序 ⇒ 取尾部即「最近」
+            // 按<b>更新时间</b>排序后取尾部 —— 旧实现是「文件名有序取尾部」，
+            // 而文件名含 memoId/摘要，<b>顺序与时间无关</b>，取出来的「最近 N 条」是随机的。
+            items.sort(java.util.Comparator.comparing(Item::when, java.util.Comparator.nullsFirst(
+                    java.util.Comparator.naturalOrder())));
             int from = Math.max(0, items.size() - MAX_PER_KIND);
             fb.byKind.put(kind, List.copyOf(items.subList(from, items.size())));
         }

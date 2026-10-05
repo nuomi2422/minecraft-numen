@@ -79,7 +79,8 @@ public final class UsageLedger {
 
     /** 一条账。 */
     public record Entry(String artifactId, String kind, String name, Phase phase, Outcome outcome,
-                         String detail, String source, String at, boolean validityClaimed) {
+                         String detail, String source, String at, boolean validityClaimed,
+                         String companionId) {
     }
 
     /** 阶段只能前进：早于已记录阶段的 arriving 事件算「迟到」。 */
@@ -108,11 +109,24 @@ public final class UsageLedger {
     /**
      * 追加一条。
      *
+     * <p><b>⚠️ 慎用无同伴的重载</b>：那会写出 {@code companionId=""} 的记录，
+     * 之后按同伴过滤时它<b>对任何同伴都不可见</b> —— 症状是「明明记了，AI 却说没记过」。
+     * 生产路径请用带 {@code companionId} 的重载（{@link LearnerUsageTool} 已接上）。
+     *
      * @throws LateArrival       阶段回退（迟到事件）
      * @throws IllegalArgumentException 阶段/结果自相矛盾（如 RESULT 却带 UNKNOWN 的成功）
      */
     public synchronized Entry append(String artifactId, String kind, String name,
                                      Phase phase, Outcome outcome, String detail, String source) {
+        return append(artifactId, kind, name, phase, outcome, detail, source, "");
+    }
+
+    /**
+     * 追加一条，并记下<b>哪个同伴</b>的（隔离靠它，见 {@link #promptBlock(UsageLedger, java.util.UUID)}）。
+     */
+    public synchronized Entry append(String artifactId, String kind, String name,
+                                     Phase phase, Outcome outcome, String detail, String source,
+                                     String companionId) {
         if (artifactId == null || artifactId.isBlank()) {
             throw new IllegalArgumentException("artifact_id 不能为空：账本条目必须能追到具体产物");
         }
@@ -136,7 +150,7 @@ public final class UsageLedger {
             lateAfterCancel = true;
         }
         Entry e = new Entry(artifactId, nz(kind), nz(name), phase, recorded,
-                nz(detail), nz(source), java.time.Instant.now().toString(), false);
+                nz(detail), nz(source), java.time.Instant.now().toString(), false, nz(companionId));
         writeLine(e, lateAfterCancel
                 ? "迟到成功：已按取消结论记账，不翻转（AC-B19 同款病的预防）"
                 : "");
@@ -161,7 +175,8 @@ public final class UsageLedger {
                     + latest.outcome() + "（不许拿失败/取消/未知当有效证据）");
         }
         Entry marked = new Entry(latest.artifactId(), latest.kind(), latest.name(), latest.phase(),
-                latest.outcome(), latest.detail(), latest.source(), java.time.Instant.now().toString(), true);
+                latest.outcome(), latest.detail(), latest.source(), java.time.Instant.now().toString(), true,
+                latest.companionId());
         writeLine(marked, "显式声明有效性：" + reason.trim() + "（by " + nz(byWho) + "）");
     }
 
@@ -204,7 +219,8 @@ public final class UsageLedger {
                 }
                 out.add(new Entry(str(o, "artifact_id"), str(o, "kind"), str(o, "name"), p,
                         outcomeOf(str(o, "outcome")), str(o, "detail"), str(o, "source"),
-                        str(o, "at"), o.has("validity_claim") && o.get("validity_claim").getAsBoolean()));
+                        str(o, "at"), o.has("validity_claim") && o.get("validity_claim").getAsBoolean(),
+                        str(o, "companion_id")));
             }
         } catch (IOException e) {
             return out;
@@ -245,12 +261,34 @@ public final class UsageLedger {
      * <p>措辞是刻意的：只说「用过、成没成」，<b>不说「所以有效」</b>。
      */
     public String promptBlock() {
-        Map<String, Entry> cs = conclusions();
+        return promptBlock(this, null);
+    }
+
+    /**
+     * 摆进复审 prompt 的一段：<b>本同伴</b>产物的使用结果。
+     *
+     * <p>措辞是刻意的：只说「用过、成没成」，<b>不说「所以有效」</b>。
+     *
+     * @param companionId 只看这个同伴的；<b>null ⇒ 一条都不给</b>
+     *                    （不退化成「把全部都喂出去」—— 账本是共享文件，
+     *                    那样等于把别的同伴的成败当成自己的经验）
+     */
+    public static String promptBlock(UsageLedger ledger, java.util.UUID companionId) {
+        if (ledger == null || companionId == null) {
+            return "（没有本同伴的使用记录可参考。）\n";
+        }
+        String want = companionId.toString();
+        Map<String, Entry> cs = new LinkedHashMap<>();
+        for (Entry e : ledger.conclusions().values()) {
+            if (want.equals(e.companionId())) {
+                cs.put(e.artifactId(), e);
+            }
+        }
         if (cs.isEmpty()) {
-            return "（账本里还没有产物使用记录。）\n";
+            return "（本同伴还没有产物使用记录。）\n";
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("== 上轮产物的使用情况（事实，不是结论）==\n");
+        sb.append("== 你自己产物的使用情况（事实，不是结论）==\n");
         int n = 0;
         for (Entry e : cs.values()) {
             if (n++ >= 8) {
@@ -260,7 +298,7 @@ public final class UsageLedger {
             sb.append("  - [").append(e.kind()).append(' ').append(e.name()).append("] ");
             sb.append("阶段=").append(e.phase()).append(" 结果=").append(e.outcome());
             if (e.validityClaimed()) {
-                sb.append("（已有人工声明有效性）");
+                sb.append("（已显式声明有效性）");
             } else if (e.outcome() == Outcome.SUCCESS) {
                 sb.append("（★只是候选关联，**不等于有效**；要算证据得有人显式声明）");
             }
@@ -284,6 +322,8 @@ public final class UsageLedger {
         o.addProperty("source", e.source());
         o.addProperty("at", e.at());
         o.addProperty("validity_claim", e.validityClaimed());
+        // ★ 同伴 id 必须落盘：隔离全靠它（共享账本文件里混着所有同伴的记录）
+        o.addProperty("companion_id", nz(e.companionId()));
         if (extra != null && !extra.isBlank()) {
             o.addProperty("note", extra);
         }

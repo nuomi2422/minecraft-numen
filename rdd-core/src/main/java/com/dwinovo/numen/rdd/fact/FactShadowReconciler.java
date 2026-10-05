@@ -43,12 +43,12 @@ public final class FactShadowReconciler {
      * 而且这里只需要顺序，不需要额外数据。
      */
     public enum Severity {
-        /** 事实说完成、账本说失败过：最可疑，优先看。 */
-        COMPLETED_BUT_FAILED,
-        /** 事实说完成、账本里完全没有使用记录：可能真做了但没消费。 */
-        COMPLETED_BUT_UNUSED,
-        /** 事实说没完成、账本说用过：事实没更新，会导致重复劳动。 */
-        USED_BUT_NOT_RECORDED
+        /**
+         * 同一个产物/键上出现自相矛盾的记录：事实说完成但账本说失败，
+         * 或账本里取消之后又被记成成功。<b>这类是本报告唯一敢报的「真问题」</b>，
+         * 因为它只依赖单侧内部的矛盾，不依赖两侧 key 是否真的对应。
+         */
+        SELF_CONTRADICTION
     }
 
     /**
@@ -62,26 +62,73 @@ public final class FactShadowReconciler {
 
     /** 一次对账的完整结果。 */
     public record Report(boolean factsReadable, boolean usageReadable,
-                         int factKeys, int usageKeys, List<Divergence> divergences) {
+                         int factKeys, int usageKeys, String factsShape,
+                         List<Divergence> divergences) {
+
+        /**
+         * 事实文件<b>读到了但一条都没解析出来</b>。
+         *
+         * <p>★ 这是修复前那个 bug 的核心：真实文件可读、但被解析成空表，
+         * 而旧判断只看「可不可读」⇒ 报告说「一致」。现在必须显式区分：
+         * <b>可读 ≠ 解析成功 ≠ 一致</b>，三者要分开报。
+         */
+        /**
+         * 事实文件<b>读到了但一条都没解析出来</b>。
+         *
+         * <p>★ 这是修复前那个 bug 的核心：真实文件可读、但被解析成空表，
+         * 而旧判断只看「可不可读」⇒ 报告说「一致」。现在必须显式区分：
+         * <b>可读 ≠ 解析成功 ≠ 一致</b>，三者要分开报。
+         *
+         * <p><b>三种情况要分清</b>：
+         * <ul>
+         *   <li>文件不存在（{@code ABSENT}）⇒ 事实侧还没启用，<b>不是故障</b>；</li>
+         *   <li>读到了但解析不出内容 ⇒ <b>故障</b>（形状不认识或文件坏了）；</li>
+         *   <li>读到且解析出内容 ⇒ 正常。</li>
+         * </ul>
+         */
+        public boolean factsParsed() {
+            return "ABSENT".equals(factsShape) || factKeys > 0;
+        }
+
+        /** 事实侧是否处于「应当有内容却读不出」的故障态。 */
+        public boolean factsBroken() {
+            return factsReadable && !"ABSENT".equals(factsShape) && factKeys == 0;
+        }
 
         public boolean clean() {
             return divergences.isEmpty();
         }
 
-        /** 两侧读不到时**必须**让人知道 —— 空报告会被误读成「一致」。 */
+        /**
+         * 两侧都「可用」才可信。
+         *
+         * <p><b>注意与 {@link #factsParsed()} 的区别</b>：事实侧<b>不存在</b>时
+         * （{@code ABSENT}，即还没跑过目标、事实库是空的）判为可信 ——
+         * 那不是故障。若把它判成不可信，一个全新存档会永远报「不可信」，
+         * 久了就没人看这个信号了（狼来了）。
+         */
         public boolean trustworthy() {
-            return factsReadable && usageReadable;
+            return usageReadable && !factsBroken();
         }
 
         public Map<String, Object> toMap() {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("trustworthy", trustworthy());
             m.put("facts_readable", factsReadable);
+            m.put("facts_shape", factsShape);
+            m.put("facts_parsed", factsParsed());
+            m.put("facts_broken", factsBroken());
             m.put("usage_readable", usageReadable);
             if (!trustworthy()) {
-                m.put("warning", "★ 有一侧读不到，本报告**不可当结论用**："
-                        + "读不到 ≠ 一致。缺哪侧："
-                        + (!factsReadable ? "facts(共同事实)" : "usage(使用账本)"));
+                StringBuilder why = new StringBuilder("★ 本报告不可当结论用");
+                if (factsBroken()) {
+                    why.append("：事实文件读得到但**一条都没解析出来**（形状=")
+                            .append(factsShape).append("），这是故障，不是「没有问题」");
+                }
+                if (!usageReadable) {
+                    why.append("；使用账本读不到");
+                }
+                m.put("warning", why.toString());
             }
             m.put("fact_keys", factKeys);
             m.put("usage_keys", usageKeys);
@@ -107,49 +154,55 @@ public final class FactShadowReconciler {
     /**
      * 对账。
      *
+     * <p><b>⚠️ 键空间不同源，这里只能做「弱对账」</b>：
+     * 事实侧的键是 <b>stageKey</b>（来自 rdd 目标分解），使用侧的键是 <b>artifact_id</b>
+     * （形如 {@code AC_SCRIPT-<companion>-<memoId>-<hash>}）。两者<b>没有任何关联关系</b>，
+     * 所以「同一个 key」几乎永远是巧合。
+     *
+     * <p>⇒ 因此本报告只输出<b>两侧各自的体量与各自内部的矛盾</b>
+     * （完成却失败 / 取消后被当成成功），<b>不</b>把「key 相同」当成因果证据。
+     * 真正的关联要等 B1 把 usage 挂到具体判定/产物链上（那时才有共同 id）。
+     *
      * @param factsFile 共同事实文件（{@code rdd-facts/<uuid>.json}）
      * @param usageLedger 使用账本（{@code usage-ledger.jsonl}）；可为 null（当未接）
      */
     public static Report reconcile(Path factsFile, Path usageLedger) {
-        Map<String, String> factOutcomes = readFacts(factsFile);
+        FactsRead fr = readFacts(factsFile);
         boolean factsReadable = factsFile != null && Files.isReadable(factsFile);
         Map<String, String> usageOutcomes = readUsage(usageLedger);
         boolean usageReadable = usageLedger == null || Files.isReadable(usageLedger);
 
         List<Divergence> ds = new ArrayList<>();
-        for (Map.Entry<String, String> e : factOutcomes.entrySet()) {
-            String key = e.getKey();
-            String factSide = e.getValue();
-            String usageSide = usageOutcomes.get(key);
+        // 事实侧内部：有完成记录但同时被账本记成失败/取消的（同一个键，两侧同时有记录）
+        for (Map.Entry<String, String> e : fr.keys.entrySet()) {
+            String usageSide = usageOutcomes.get(e.getKey());
             if (usageSide == null) {
-                if ("COMPLETED".equals(factSide)) {
-                    ds.add(new Divergence(Severity.COMPLETED_BUT_UNUSED, "facts", key,
-                            "事实侧记为已完成，使用账本里没有任何使用记录"));
-                }
-                // 事实侧没完成 + 账本也没记录 ⇒ 真没做，不是问题，不报
                 continue;
             }
-            if ("COMPLETED".equals(factSide) && "FAIL".equals(usageSide)) {
-                ds.add(new Divergence(Severity.COMPLETED_BUT_FAILED, "facts", key,
-                        "事实侧记为已完成，使用账本里却是失败：" + usageSide));
-            } else if (!"COMPLETED".equals(factSide) && "SUCCESS".equals(usageSide)) {
-                ds.add(new Divergence(Severity.USED_BUT_NOT_RECORDED, "usage", key,
-                        "使用账本记为成功，事实侧却没有完成记录（下一轮可能重复劳动）"));
+            if ("COMPLETED".equals(e.getValue()) && "FAIL".equals(usageSide)) {
+                ds.add(new Divergence(Severity.SELF_CONTRADICTION, "facts", e.getKey(),
+                        "同一个键：事实侧记为已完成，使用账本记为失败"));
             }
         }
-        // ★ 反方向也要扫：只遍历事实侧的话，「用过但事实没记」这类差异<b>永远看不到</b>
-        //   （键根本不在事实侧里）。单测 `usedButNotRecorded_isReported` 就是钉这一条的。
-        for (Map.Entry<String, String> e : usageOutcomes.entrySet()) {
-            if (factOutcomes.containsKey(e.getKey())) {
-                continue;
+        // 使用侧内部：取消之后又被记成成功 —— 结论不该被迟到回执翻转
+        for (Map.Entry<String, EntryView> e : usageEntries(usageLedger).entrySet()) {
+            EntryView v = e.getValue();
+            if (v.sawCanceled && "SUCCESS".equals(v.outcome)) {
+                ds.add(new Divergence(Severity.SELF_CONTRADICTION, "usage", e.getKey(),
+                        "账本里出现过 CANCELED，之后又记了 SUCCESS —— 结论不应被迟到回执翻转"));
             }
-            ds.add(new Divergence(Severity.USED_BUT_NOT_RECORDED, "usage", e.getKey(),
-                    "使用账本记为 " + e.getValue() + "，事实侧完全没有这个键的记录"
-                            + "（下一轮可能重复劳动）"));
         }
         ds.sort((a, b) -> Integer.compare(a.severity().ordinal(), b.severity().ordinal()));
-        return new Report(factsReadable, usageReadable, factOutcomes.size(), usageOutcomes.size(),
-                List.copyOf(ds));
+        return new Report(factsReadable, usageReadable, fr.keys.size(), usageOutcomes.size(),
+                fr.shape, List.copyOf(ds));
+    }
+
+    /** 读事实的结果：键表 + 形状（用于区分「没读到」与「读到了但解析不出」）。 */
+    private record FactsRead(Map<String, String> keys, String shape) {
+    }
+
+    /** 一个产物在账本里的汇总视图（取最新阶段，并记住是否出现过取消）。 */
+    private record EntryView(String outcome, boolean sawCanceled) {
     }
 
     /**
@@ -159,33 +212,94 @@ public final class FactShadowReconciler {
      * 并由 {@link Report#trustworthy()} 标出「读到了但没解析出内容」——
      * 宁可显式说「没解析出来」，也不把空表当成「事实侧没有完成项」。
      */
-    private static Map<String, String> readFacts(Path file) {
+    /**
+     * 读事实侧的「完成键」。
+     *
+     * <p>★★ 这一段修复前<b>读不懂真实数据</b>：{@code CompletedFactStore.toJson()}（见该类 114–140 行）
+     * 写出的是 <b>stages 数组</b>，元素字段为
+     * {@code lineageId / goalId / objective / stageKey / rawStage / at / evidence}，
+     * <b>根本没有 status 字段</b>。而旧实现按「stages 是对象映射 + 读 status」解析，
+     * 于是真实文件被解析成<b>空表</b>，而 {@code trustworthy()} 只看「文件可不可读」，
+     * 文件可读 ⇒ 报告被标成<b>可信的「一致」</b>。
+     * ⇒ 一句话：<b>旧实现对真实数据永远报「没有问题」，而实际是「一条都没读进来」</b>。
+     *
+     * <p>现在的规则：
+     * <ul>
+     *   <li>兼容两种形状：{@code stages} 是<b>数组</b>（真实形状）或对象映射（历史/测试形状）；</li>
+     *   <li>键统一用 <b>stageKey</b>（真实数据里就是它），对象映射形状则用它的键；</li>
+     *   <li>状态一律视为 {@code COMPLETED} —— 因为「进这个文件」本身就意味着该阶段被记为完成
+     *       （{@code CompletedFactStore} 只在完成时写入）；没有 status 就<b>不猜</b>，
+     *       而是按事实语义记 COMPLETED，并在 {@link Report#factsShape} 里说明用的是哪种形状。</li>
+     * </ul>
+     */
+    private static FactsRead readFacts(Path file) {
         Map<String, String> out = new LinkedHashMap<>();
+        if (file == null || !Files.isRegularFile(file)) {
+            return new FactsRead(out, "ABSENT");
+        }
+        String shape = "UNPARSEABLE";
+        try {
+            JsonElement e = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8));
+            if (e.isJsonObject()) {
+                JsonElement stages = e.getAsJsonObject().get("stages");
+                if (stages != null && stages.isJsonArray()) {
+                    shape = "ARRAY(stageKey)";
+                    for (JsonElement el : stages.getAsJsonArray()) {
+                        if (!el.isJsonObject()) {
+                            continue;
+                        }
+                        String key = str(el.getAsJsonObject(), "stageKey");
+                        if (!key.isBlank()) {
+                            out.put(key, "COMPLETED");
+                        }
+                    }
+                } else if (stages != null && stages.isJsonObject()) {
+                    shape = "OBJECT(status)";
+                    for (Map.Entry<String, JsonElement> en : stages.getAsJsonObject().entrySet()) {
+                        String st = en.getValue().isJsonObject()
+                                ? str(en.getValue().getAsJsonObject(), "status") : "";
+                        out.put(en.getKey(), st.isBlank() ? "COMPLETED" : st);
+                    }
+                } else {
+                    shape = "NO_STAGES_KEY";
+                }
+            }
+        } catch (IOException | RuntimeException ex) {
+            shape = "IO_OR_PARSE_ERROR";
+        }
+        return new FactsRead(out, shape);
+    }
+
+    /** 账本按产物汇总，并记住「是否出现过取消」。 */
+    private static Map<String, EntryView> usageEntries(Path file) {
+        Map<String, EntryView> out = new LinkedHashMap<>();
         if (file == null || !Files.isRegularFile(file)) {
             return out;
         }
         try {
-            JsonElement e = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8));
-            if (!e.isJsonObject()) {
-                return out;
-            }
-            JsonObject root = e.getAsJsonObject();
-            JsonObject stages = obj(root, "stages");
-            if (stages != null) {
-                for (Map.Entry<String, JsonElement> en : stages.entrySet()) {
-                    out.put(en.getKey(), en.getValue().isJsonObject()
-                            ? str(en.getValue().getAsJsonObject(), "status") : "");
+            for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+                String s = line.trim();
+                if (s.isEmpty()) {
+                    continue;
                 }
-                return out;
-            }
-            JsonObject facts = obj(root, "facts");
-            if (facts != null) {
-                for (Map.Entry<String, JsonElement> en : facts.entrySet()) {
-                    out.put(en.getKey(), en.getValue().isJsonObject()
-                            ? str(en.getValue().getAsJsonObject(), "status") : "");
+                JsonObject o;
+                try {
+                    o = JsonParser.parseString(s).getAsJsonObject();
+                } catch (RuntimeException ex) {
+                    continue;
                 }
+                String id = str(o, "artifact_id");
+                String outcome = str(o, "outcome");
+                if (id.isBlank() || outcome.isBlank() || "UNKNOWN".equals(outcome)) {
+                    continue;
+                }
+                EntryView prev = out.get(id);
+                boolean sawCanceled = (prev != null && prev.sawCanceled())
+                        || "CANCELED".equals(outcome);
+                // 最新写入覆盖（同 key 后写即最新）
+                out.put(id, new EntryView(outcome, sawCanceled));
             }
-        } catch (IOException | RuntimeException ex) {
+        } catch (IOException ex) {
             return out;
         }
         return out;

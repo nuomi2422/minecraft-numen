@@ -34,7 +34,7 @@ class RejectionFeedbackTest {
         ob.mark(d.artifactId(), ArtifactOutbox.Status.REJECTED,
                 "学习者交来的是散文，无法解析成 ACX 脚本 JSON", null);
 
-        RejectionFeedback fb = RejectionFeedback.scan(ob, true);
+        RejectionFeedback fb = RejectionFeedback.scan(ob, true, C);
         assertFalse(fb.isEmpty(), "有拒收记录时不能是空的");
         assertTrue(fb.count() >= 1, "至少要数到 1 条");
 
@@ -47,7 +47,7 @@ class RejectionFeedbackTest {
     @Test
     void unreadableOutbox_saysSo_insteadOfPretendingClean() {
         // 读不到 ⇒ 必须说出来。返回空串会被当成「没有拒收」，那就是把故障伪装成没问题。
-        RejectionFeedback fb = RejectionFeedback.scan(null, false);
+        RejectionFeedback fb = RejectionFeedback.scan(null, false, C);
         String block = fb.promptBlock();
         assertTrue(block.contains("读不到"),
                 "读不到投递箱时必须明说，不许静默: " + block);
@@ -61,7 +61,7 @@ class RejectionFeedbackTest {
                     "draft-" + i, "{\"name\":\"draft-" + i + "\"}");
             ob.mark(d.artifactId(), ArtifactOutbox.Status.REJECTED, "原因-" + i, null);
         }
-        RejectionFeedback fb = RejectionFeedback.scan(ob, true);
+        RejectionFeedback fb = RejectionFeedback.scan(ob, true, C);
         assertTrue(fb.count() <= RejectionFeedback.MAX_PER_KIND,
                 "每类最多带 " + RejectionFeedback.MAX_PER_KIND + " 条，别把 prompt 撑爆: " + fb.count());
         String block = fb.promptBlock();
@@ -77,7 +77,7 @@ class RejectionFeedbackTest {
                 "good_draft", "{\"name\":\"good_draft\"}");
         ob.mark(ok.artifactId(), ArtifactOutbox.Status.ADOPTED, "已进版本库", "acx#1");
 
-        RejectionFeedback fb = RejectionFeedback.scan(ob, true);
+        RejectionFeedback fb = RejectionFeedback.scan(ob, true, C);
         assertFalse(fb.promptBlock().contains("good_draft"),
                 "已采纳的产物不该出现在拒收清单里");
     }

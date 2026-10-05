@@ -165,11 +165,14 @@ final class LearnerReviewTool implements NumenTool {
             //   RejectionFeedback 会**明说「读不到」**，不假装「没有拒收」。
             var ob = LearnerPlugin.outbox();
             boolean readable = ob != null;
-            var rej = com.dwinovo.numen.plugins.learner.core.RejectionFeedback.scan(ob, readable);
-            // S3：上轮产物的使用结果也进 prompt —— 不接这段，学习只在自我循环里打转
+            var rej = com.dwinovo.numen.plugins.learner.core.RejectionFeedback.scan(ob, readable, id);
+            // S3：本同伴产物的使用结果也进 prompt —— 不接这段，学习只在自我循环里打转。
+            // ★ 必须传 id：投递箱与账本都是所有同伴共享的文件，不过滤就把别人的成败当成自己的。
             var usage = LearnerPlugin.usageLedger();
             LearnerReviewer.ReviewOutcome outcome =
-                    LearnerReviewer.withPriorRound(batch, priorRead.summary(), rej, usage, LLM_TIMEOUT_SEC).join();
+                    LearnerReviewer.withPriorRound(batch, priorRead.summary(), rej,
+                            com.dwinovo.numen.plugins.learner.core.UsageLedger.promptBlock(usage, id),
+                            LLM_TIMEOUT_SEC).join();
 
             // 回主线程前校验世界代际：换档后迟到结果直接丢弃
             MinecraftServer current = ServerLifecycleHooks.getCurrentServer();

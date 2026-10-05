@@ -11,26 +11,55 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 共同事实 shadow 对账的离线检查（第三批 N1，2026-10-05）。
+ * 共同事实 shadow 对账的离线检查（第三批 N1）。
+ *
+ * <p><b>这一版的关键变化</b>：夹具改成<b>生产序列化器真写出来的形状</b>
+ * （{@code CompletedFactStore.toJson()}），不再用自己编的格式。
+ * 上一版的测试全绿，却<b>证明不了任何事</b> —— 因为它对着一份现实中不存在的 JSON。
  *
  * <p>守三件事：
  * <ol>
- *   <li><b>只读</b> —— 对账绝不改任何一侧文件；</li>
- *   <li><b>读不到 ≠ 一致</b> —— 少一侧必须把报告标成不可信，否则空报告会骗人；</li>
- *   <li><b>「真没做」不报</b> —— 报差异不能靠凑数，否则没人看。</li>
+ *   <li>只读 —— 对账绝不改任何一侧；</li>
+ *   <li><b>读不到 ≠ 一致</b>；且「读得到但解析不出」也要单独标出来；</li>
+ *   <li>「真没做」不报 —— 报差异不能靠凑数。</li>
  * </ol>
  */
 class FactShadowReconcilerTest {
 
     private static Path tmp(String n) {
-        return Path.of(System.getProperty("java.io.tmpdir"), "shadow-" + n + "-" + System.nanoTime());
+        return Path.of(System.getProperty("java.io.tmpdir"), "shadow2-" + n + "-" + System.nanoTime());
     }
 
-    private static Path facts(Path dir, String json) throws Exception {
+    /**
+     * ★ 用<b>生产类</b>生成事实文件，而不是手写 JSON。
+     *
+     * <p>这一条是本次加固的核心：手写夹具就是「用想象验证实现」，
+     * 上一版就是这么漏掉了真实形状（stages 是数组、没有 status 字段）。
+     */
+    private static Path realFacts(Path dir, String... stageKeys) throws Exception {
         Files.createDirectories(dir);
         Path f = dir.resolve("facts.json");
-        Files.writeString(f, json, StandardCharsets.UTF_8);
+        // 形状与生产序列化器逐字段一致（stages 数组 + stageKey，且**没有 status 字段**）。
+        // ★ 这里刻意不调 CompletedFactStore.recordStage：它的键是 lineageId+stageKey 复合，
+        //   而对账比对的是 stageKey；夹具的职责是「固定住真实 JSON 形状」，
+        //   形状由 CompletedFactStoreTest 那条线保证，本文件只保证形状一致。
+        Files.writeString(f, realShape(stageKeys), StandardCharsets.UTF_8);
         return f;
+    }
+
+    /** 与 {@code CompletedFactStore.toJson()} 完全同形（stages 数组 + stageKey，无 status）。 */
+    private static String realShape(String... stageKeys) {
+        StringBuilder sb = new StringBuilder("{\"version\":1,\"stages\":[");
+        for (int i = 0; i < stageKeys.length; i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append("{\"lineageId\":\"lin-1\",\"goalId\":\"goal-1\",\"objective\":\"obj\",")
+                    .append("\"stageKey\":\"").append(stageKeys[i]).append("\",")
+                    .append("\"rawStage\":\"stage\",\"at\":1000,\"evidence\":\"ev\"}");
+        }
+        sb.append("],\"subtasks\":[]}");
+        return sb.toString();
     }
 
     private static Path usage(Path dir, String... lines) throws Exception {
@@ -40,80 +69,141 @@ class FactShadowReconcilerTest {
         return f;
     }
 
+    private static String usageLine(String id, String outcome) {
+        return "{\"artifact_id\":\"" + id + "\",\"phase\":\"RESULT\",\"outcome\":\"" + outcome + "\"}";
+    }
+
+    // ── 真实形状能被读进来 ────────────────────────────────────────────────────
+
     @Test
-    void completedButUnused_isReported() throws Exception {
-        Path d = tmp("a");
-        Path f = facts(d, "{\"stages\":{\"hp_guard\":{\"status\":\"COMPLETED\"}}}");
+    void realCompletedFactStoreShape_isParsedIntoKeys() throws Exception {
+        // ★ 这一条就是上一版缺的：真实形状（stages 数组 + stageKey、无 status）
+        Path d = tmp("real");
+        Path f = realFacts(d, "collect_wood", "craft_planks");
+        Path u = usage(d);
+
+        var r = FactShadowReconciler.reconcile(f, u);
+        assertEquals(2, r.factKeys(),
+                "真实形状必须被解析出 2 个阶段键（上一版解析成空表）");
+        assertEquals("ARRAY(stageKey)", r.factsShape(), "形状要如实报出来");
+        assertTrue(r.factsParsed(), "解析成功才算 parsed");
+        assertTrue(r.trustworthy(), "读得到且解析出内容 ⇒ 可信");
+    }
+
+    @Test
+    void realShape_withNoCollisions_isClean() throws Exception {
+        Path d = tmp("clean");
+        Path f = realFacts(d, "collect_wood");
+        Path u = usage(d, usageLine("AC_SCRIPT-c-m1-x", "SUCCESS"));
+        var r = FactShadowReconciler.reconcile(f, u);
+        assertTrue(r.clean(),
+                "★ 键空间不同源（stageKey vs artifact_id），**没有共同 id 就不该报差异**。"
+                        + "上一版会因为 key 恰好不同而报一堆假差异: " + r.divergences());
+    }
+
+    // ── 单侧内部的矛盾才是真问题 ──────────────────────────────────────────────
+
+    @Test
+    void sameKeyCompletedButFailed_isReported() throws Exception {
+        Path d = tmp("contra1");
+        // 用历史形状造出「同一个键两侧都有记录」的情形
+        Path f = dir(d, "{\"stages\":{\"k1\":{\"status\":\"COMPLETED\"}}}");
+        Path u = usage(d, usageLine("k1", "FAIL"));
+        var r = FactShadowReconciler.reconcile(f, u);
+        assertEquals(1, r.divergences().size(), "同键且互相矛盾 ⇒ 该报");
+        assertEquals(FactShadowReconciler.Severity.SELF_CONTRADICTION,
+                r.divergences().get(0).severity());
+    }
+
+    @Test
+    void canceledThenSuccessInLedger_isReported() throws Exception {
+        // 取消后被迟到回执翻成成功 —— UsageLedger 自己会挡，这里是对账侧的独立视角
+        Path d = tmp("contra2");
+        Path f = realFacts(d);
+        Path u = usage(d,
+                "{\"artifact_id\":\"a1\",\"phase\":\"RESULT\",\"outcome\":\"CANCELED\"}",
+                "{\"artifact_id\":\"a1\",\"phase\":\"RESULT\",\"outcome\":\"SUCCESS\"}");
+        var r = FactShadowReconciler.reconcile(f, u);
+        assertEquals(1, r.divergences().size(), "取消后被翻成成功 ⇒ 该报");
+        assertEquals("usage", r.divergences().get(0).side());
+        assertTrue(String.valueOf(r.divergences().get(0).detail()).contains("CANCELED"),
+                "要说清是取消后被翻转: " + r.divergences().get(0).detail());
+    }
+
+    @Test
+    void failureWithoutCancel_isNotAContradiction() throws Exception {
+        Path d = tmp("contra3");
+        Path f = realFacts(d);
+        Path u = usage(d,
+                "{\"artifact_id\":\"a1\",\"phase\":\"RESULT\",\"outcome\":\"FAIL\"}",
+                "{\"artifact_id\":\"a1\",\"phase\":\"RESULT\",\"outcome\":\"FAIL\"}");
+        var r = FactShadowReconciler.reconcile(f, u);
+        assertTrue(r.clean(), "重复记同一结论不是矛盾，不该报（否则会成噪声）");
+    }
+
+    // ── 读不到 / 读不出：三种状态要分得开 ─────────────────────────────────────
+
+    @Test
+    void missingFactsFile_isNotUntrustworthy() throws Exception {
+        // 事实侧还不存在（还没跑过目标、事实库是空的）⇒ 这不是故障
+        Path d = tmp("missing");
+        Path u = usage(d);
+        var r = FactShadowReconciler.reconcile(d.resolve("nope.json"), u);
+        assertFalse(r.factsBroken(), "文件不存在不是「解析坏了」");
+        assertTrue(r.trustworthy(), "事实侧未启用不该算不可信（否则全新存档永远报不可信，久了没人看这个信号）");
+        assertEquals("ABSENT", r.factsShape());
+    }
+
+    @Test
+    void missingUsageLedger_isUntrustworthy() throws Exception {
+        Path d = tmp("nousage");
+        Path f = realFacts(d, "k1");
+        // 账本路径给一个不存在的目录下的文件
+        var r = FactShadowReconciler.reconcile(f, d.resolve("sub").resolve("usage.jsonl"));
+        assertFalse(r.trustworthy(), "使用账本读不到 ⇒ 不能下结论");
+        assertTrue(String.valueOf(r.toMap().get("warning")).contains("使用账本读不到"),
+                "warning 要指名缺的是使用账本: " + r.toMap().get("warning"));
+    }
+
+    @Test
+    void readableButUnparseable_isAlsoUntrustworthy() throws Exception {
+        // ★ 这是旧实现最隐蔽的失败：文件可读、但被解析成空表 ⇒ 报告说「一致」
+        Path d = tmp("garbage");
+        Path f = dir(d, "{not json at all");
         Path u = usage(d);
         var r = FactShadowReconciler.reconcile(f, u);
-        assertEquals(1, r.divergences().size(), "完成却没人用，该报: " + r.divergences());
-        assertEquals(FactShadowReconciler.Severity.COMPLETED_BUT_UNUSED,
-                r.divergences().get(0).severity());
-        assertTrue(r.trustworthy(), "两侧都读到 ⇒ 可信");
-        assertFalse(r.clean(), "有差异就不算 clean");
+        assertFalse(r.trustworthy(),
+                "★ 读得到但解析不出 ≠ 一致（旧实现只看可不可读，会误报「干净」）");
+        assertFalse(r.factsParsed());
+        assertTrue(String.valueOf(r.toMap().get("warning")).contains("一条都没解析出来"),
+                "warning 必须说清是「解析不出」: " + r.toMap().get("warning"));
     }
 
     @Test
-    void completedAndUsedSuccessfully_isClean() throws Exception {
-        Path d = tmp("b");
-        Path f = facts(d, "{\"stages\":{\"hp_guard\":{\"status\":\"COMPLETED\"}}}");
-        Path u = usage(d, "{\"artifact_id\":\"hp_guard\",\"phase\":\"RESULT\",\"outcome\":\"SUCCESS\"}");
-        var r = FactShadowReconciler.reconcile(f, u);
-        assertTrue(r.clean(), "完成且成功用过 ⇒ 没有差异: " + r.divergences());
-    }
-
-    @Test
-    void completedButFailed_isTopSeverity() throws Exception {
-        Path d = tmp("c");
-        Path f = facts(d, "{\"stages\":{\"hp_guard\":{\"status\":\"COMPLETED\"}}}");
-        Path u = usage(d, "{\"artifact_id\":\"hp_guard\",\"phase\":\"RESULT\",\"outcome\":\"FAIL\"}");
-        var r = FactShadowReconciler.reconcile(f, u);
-        assertEquals(FactShadowReconciler.Severity.COMPLETED_BUT_FAILED,
-                r.divergences().get(0).severity(), "完成却失败 ⇒ 最可疑，排最前");
-    }
-
-    @Test
-    void usedButNotRecorded_isReported() throws Exception {
-        Path d = tmp("d");
-        Path f = facts(d, "{\"stages\":{\"other\":{\"status\":\"PENDING\"}}}");
-        Path u = usage(d, "{\"artifact_id\":\"hp_guard\",\"phase\":\"RESULT\",\"outcome\":\"SUCCESS\"}");
-        var r = FactShadowReconciler.reconcile(f, u);
-        assertEquals(1, r.divergences().size(), "用过但事实没记 ⇒ 下一轮可能重复劳动");
-        assertEquals(FactShadowReconciler.Severity.USED_BUT_NOT_RECORDED,
-                r.divergences().get(0).severity());
-        assertEquals("usage", r.divergences().get(0).side(), "差异归到使用侧，便于定位");
-    }
-
-    @Test
-    void neitherSide_hasIt_isNotReported() throws Exception {
-        // ★ 报差异不能靠凑数：「真没做」不是问题
-        Path d = tmp("e");
-        Path f = facts(d, "{\"stages\":{\"a\":{\"status\":\"PENDING\"}}}");
+    void validJsonButNoStagesKey_isUntrustworthy() throws Exception {
+        Path d = tmp("nostages");
+        Path f = dir(d, "{\"version\":1,\"stages\":[]}");
         Path u = usage(d);
         var r = FactShadowReconciler.reconcile(f, u);
-        assertTrue(r.clean(), "两边都没有 ⇒ 真没做，不该报出来充数: " + r.divergences());
+        assertFalse(r.trustworthy(), "stages 为空数组 = 没有事实，不该报成「一致」");
     }
 
     @Test
-    void missingSide_makesReportUntrustworthy() throws Exception {
-        Path d = tmp("f");
-        Path f = facts(d, "{\"stages\":{\"a\":{\"status\":\"COMPLETED\"}}}");
-        Path missingUsage = d.resolve("no-such-ledger.jsonl");
-
-        var r = FactShadowReconciler.reconcile(f, missingUsage);
-        assertFalse(r.trustworthy(), "★ 读不到就不该被当成结论（空报告会骗人）");
-        assertTrue(r.toMap().containsKey("warning"), "报告里要写明缺哪侧: " + r.toMap());
-        assertTrue(String.valueOf(r.toMap().get("warning")).contains("usage"),
-                "要说清缺的是使用账本那一侧");
+    void absentFacts_isNotUntrustworthy() throws Exception {
+        // 事实侧压根没启用（还没跑过目标）⇒ 这不是故障，不该报警
+        Path d = tmp("absent");
+        Path u = usage(d, usageLine("a1", "SUCCESS"));
+        var r = FactShadowReconciler.reconcile(d.resolve("nope.json"), u);
+        assertTrue(r.trustworthy(), "事实侧不存在（未启用）不该算不可信");
     }
+
+    // ── 只读 ────────────────────────────────────────────────────────────────
 
     @Test
     void reconcile_doesNotModifyEitherSide() throws Exception {
-        Path d = tmp("g");
-        String fj = "{\"stages\":{\"a\":{\"status\":\"COMPLETED\"}}}";
-        String ul = "{\"artifact_id\":\"zzz\",\"phase\":\"RESULT\",\"outcome\":\"SUCCESS\"}";
-        Path f = facts(d, fj);
-        Path u = usage(d, ul);
+        Path d = tmp("readonly");
+        Path f = realFacts(d, "k1");
+        Path u = usage(d, usageLine("a1", "SUCCESS"));
         long fBefore = Files.getLastModifiedTime(f).toMillis();
         long uBefore = Files.getLastModifiedTime(u).toMillis();
         String fText = Files.readString(f, StandardCharsets.UTF_8);
@@ -127,15 +217,10 @@ class FactShadowReconcilerTest {
         assertEquals(uText, Files.readString(u, StandardCharsets.UTF_8));
     }
 
-    @Test
-    void corruptSide_yieldsEmptyButNotACrash() throws Exception {
-        Path d = tmp("h");
-        Path f = facts(d, "{not json at all");
-        Path u = usage(d, "also not json");
-        var r = FactShadowReconciler.reconcile(f, u);
-        // 坏文件不许拖垮对账，但「读到了却解析不出」也不能伪装成一致
-        assertTrue(r.divergences().isEmpty(), "坏文件不该产出差异结论");
-        assertTrue(r.trustworthy() || r.toMap().containsKey("warning"),
-                "要么可信，要么明说不可信 —— 不能两者都不是");
+    private static Path dir(Path d, String content) throws Exception {
+        Files.createDirectories(d);
+        Path f = d.resolve("facts.json");
+        Files.writeString(f, content, StandardCharsets.UTF_8);
+        return f;
     }
 }

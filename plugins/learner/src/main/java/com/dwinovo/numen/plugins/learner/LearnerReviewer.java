@@ -144,7 +144,7 @@ final class LearnerReviewer {
     static CompletableFuture<ReviewOutcome> withPriorRound(List<Memo> memos,
                                                            com.dwinovo.numen.plugins.learner.core.PriorRound.Summary prior,
                                                            com.dwinovo.numen.plugins.learner.core.RejectionFeedback rejections,
-                                                           com.dwinovo.numen.plugins.learner.core.UsageLedger usage,
+                                                           String usageText,
                                                            int timeoutSeconds) {
         INumenConfig cfg;
         try {
@@ -158,7 +158,8 @@ final class LearnerReviewer {
 
         // ★ 拼装下沉到 core.PriorRound：这条要能用单测钉住（见那边的方法注释）。
         //   本方法只负责拿到配置、发出请求、解析回复。
-        String user = com.dwinovo.numen.plugins.learner.core.PriorRound.buildUserPrompt(memos, prior, rejections, usage);
+        String user = com.dwinovo.numen.plugins.learner.core.PriorRound.buildUserPrompt(
+                memos, prior, rejections, usageText);
 
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
