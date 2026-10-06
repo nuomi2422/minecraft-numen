@@ -50,7 +50,8 @@ public final class RequirementView {
 
     public record Row(String requirementKey, int minimum, Integer held, int heldGap,
                       String heldVerdict, int factCount, String factMatchedBy,
-                      Attention attention) {
+                      Attention attention,
+                      List<Map<String, Object>> usage) {
 
         public Map<String, Object> toMap() {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -62,6 +63,7 @@ public final class RequirementView {
             m.put("fact_count", factCount);
             m.put("fact_matched_by", factMatchedBy);
             m.put("attention", attention.name());
+            m.put("usage", usage == null ? List.of() : usage);
             return m;
         }
     }
@@ -105,16 +107,23 @@ public final class RequirementView {
      *
      * <p>实现上<b>直接复用</b>两个已验证的对账类，而不是自己再解析一遍事实/资产 ——
      * 重复实现同一套口径，迟早两份会漂移，而漂移会表现成「两份报告互相矛盾」。
+     *
+     * @param manifest     需求清单（必需）
+     * @param facts        共同事实（可空）
+     * @param registry     资产登记（可空）
+     * @param usageByReq   可选：需求键 → 用量行（来自 {@link UsageLedger#usageByMemo}）。
+     *                     为 null 时不附带用量信息。
      */
     public static View build(RequirementManifest.Manifest manifest,
-                             CompletedFactStore facts, AssetRegistry registry) {
+                             CompletedFactStore facts, AssetRegistry registry,
+                             Map<String, List<Map<String, Object>>> usageByReq) {
         List<String> notes = new ArrayList<>();
         if (manifest == null || manifest.requirements() == null || manifest.requirements().isEmpty()) {
             notes.add("HAS_NO_MANIFEST");
             return new View(manifest == null ? "" : manifest.goalId(), List.of(), List.copyOf(notes));
         }
         var fa = RequirementFactAudit.audit(manifest, facts);
-        var aa = RequirementAssetAudit.audit(manifest, facts, registry);
+        var aa = RequirementAssetAudit.audit(manifest, facts, registry, usageByReq);
         notes.addAll(fa.notes());
         notes.addAll(aa.notes());
 
@@ -146,7 +155,7 @@ public final class RequirementView {
                     a.verdict().name(), factCount,
                     // 口径要如实且可读：事实侧只做**阶段键**比对（资产键≠阶段键），
                     // 所以只说「有没有比中」，不说 EXACT/PREFIX —— 那是事实侧内部的口径。
-                    factCount > 0 ? "MATCHED" : "NO_MATCH", at));
+                    factCount > 0 ? "MATCHED" : "NO_MATCH", at, a.usage()));
         }
         // 关注项排在前面（枚举声明顺序 = 可疑程度降序，NONE 在最后）
         rows.sort((x, y) -> x.attention().ordinal() - y.attention().ordinal());

@@ -114,7 +114,7 @@ public final class PreparationGapView {
             notes.add("NO_HELD_DATA：资产登记表为空（多半是没扫过背包）"
                     + " ⇒ 不产出准备缺口。RiskGate 在没有持有数据时会把所有准备都判成 missing，"
                     + "直接报出去会让人去准备一堆其实已经有的东西。");
-            int attention = RequirementView.build(manifest, facts, registry).attentionCount();
+int attention = RequirementView.build(manifest, facts, registry, null).attentionCount();
             return new View(manifest.goalId(), HeldState.UNKNOWN_HELD, List.of(),
                     attention, List.copyOf(notes));
         }
@@ -141,7 +141,7 @@ public final class PreparationGapView {
         gaps.sort((a, b) -> Integer.compare(
                 b.missing() < 0 ? Integer.MIN_VALUE : b.missing(),
                 a.missing() < 0 ? Integer.MIN_VALUE : a.missing()));
-        int attention = RequirementView.build(manifest, facts, registry).attentionCount();
+        int attention = RequirementView.build(manifest, facts, registry, null).attentionCount();
         notes.add("risk_level=" + verdict.level() + " allowed=" + verdict.allowed());
         if (!verdict.allowed()) {
             notes.add("RiskGate 建议的备料任务（本次不执行，仅记录）："

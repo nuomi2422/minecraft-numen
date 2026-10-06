@@ -138,7 +138,7 @@ class RealDataSemanticsTest {
         // 拿真实文件里第一个 stageKey 当需求键 ⇒ 事实侧必然命中，资产侧给足
         String key = store.stageFacts().get(0).stageKey();
         var v = RequirementView.build(manifest(store.stageFacts().get(0).goalId(), 2, key),
-                store, registryWith(key, 9));
+                store, registryWith(key, 9), null);
         assertEquals(RequirementView.Attention.NONE, v.rows().get(0).attention(),
                 "已完成且资产足够 ⇒ 不需要关注: " + v.rows());
     }
@@ -154,7 +154,7 @@ class RealDataSemanticsTest {
                 Files.readString(f, StandardCharsets.UTF_8));
         String key = store.stageFacts().get(0).stageKey();
         var v = RequirementView.build(manifest(store.stageFacts().get(0).goalId(), 3, key),
-                store, registryWith(key, 1));
+                store, registryWith(key, 1), null);
         assertEquals(RequirementView.Attention.DONE_BUT_NOT_HELD, v.rows().get(0).attention(),
                 "★ 「做完」与「在手」对不上必须被挑出来: " + v.rows());
         assertEquals(2, v.rows().get(0).heldGap());
@@ -171,7 +171,7 @@ class RealDataSemanticsTest {
                 Files.readString(f, StandardCharsets.UTF_8));
         String key = store.stageFacts().get(0).stageKey();
         var v = RequirementView.build(manifest(store.stageFacts().get(0).goalId(), 2, key),
-                store, new AssetRegistry());
+                store, new AssetRegistry(), null);
         var row = v.rows().get(0);
         assertEquals("UNKNOWN_HELD", row.heldVerdict(),
                 "★ 没有登记 = 不知道，不是「一个都没有」");

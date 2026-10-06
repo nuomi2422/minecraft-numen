@@ -55,7 +55,8 @@ public final class RequirementAssetAudit {
 
     public record Item(String requirementKey, int minimum, List<String> alternatives,
                        Integer held, int gap, Verdict verdict,
-                       int factCount, String factMatchedBy) {
+                       int factCount, String factMatchedBy,
+                       List<Map<String, Object>> usage) {
 
         public Map<String, Object> toMap() {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -67,6 +68,7 @@ public final class RequirementAssetAudit {
             m.put("verdict", verdict.name());
             m.put("fact_count", factCount);
             m.put("fact_matched_by", factMatchedBy);
+            m.put("usage", usage == null ? List.of() : usage);
             return m;
         }
     }
@@ -103,12 +105,15 @@ public final class RequirementAssetAudit {
     /**
      * 对账。
      *
-     * @param manifest 需求清单（必需；{@code null} ⇒ 空报告 + 说明）
-     * @param facts    共同事实（可空，只作参考列）
-     * @param registry 资产登记表（可空 ⇒ 全部 {@code UNKNOWN_HELD}）
+     * @param manifest      需求清单（必需；{@code null} ⇒ 空报告 + 说明）
+     * @param facts         共同事实（可空，只作参考列）
+     * @param registry      资产登记表（可空 ⇒ 全部 {@code UNKNOWN_HELD}）
+     * @param usageByReq    可选：需求键 → 用量行（来自 {@link UsageLedger#usageByMemo}）。
+     *                      为 null 时不附带用量信息。
      */
     public static Report audit(RequirementManifest.Manifest manifest,
-                               CompletedFactStore facts, AssetRegistry registry) {
+                               CompletedFactStore facts, AssetRegistry registry,
+                               Map<String, List<Map<String, Object>>> usageByReq) {
         List<String> notes = new ArrayList<>();
         if (manifest == null || manifest.requirements() == null || manifest.requirements().isEmpty()) {
             notes.add("HAS_NO_MANIFEST");
@@ -177,9 +182,11 @@ public final class RequirementAssetAudit {
                 notes.add("需求 '" + r.key() + "' 是资产键，事实侧是阶段键，"
                         + "两者语义不同 ⇒ 本次不做 join（只并列展示）");
             }
+            List<Map<String, Object>> usage = usageByReq == null ? List.of() : 
+                    usageByReq.getOrDefault(r.key(), List.of());
             items.add(new Item(r.key(), min,
                     r.alternatives() == null ? List.of() : List.copyOf(r.alternatives()),
-                    h, gap, v, fc, matchedBy));
+                    h, gap, v, fc, matchedBy, usage));
         }
         return new Report(manifest.goalId(), items.size(), List.copyOf(items),
                 heldKnown, List.copyOf(notes));

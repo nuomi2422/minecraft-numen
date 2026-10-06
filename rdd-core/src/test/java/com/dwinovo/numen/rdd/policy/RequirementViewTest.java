@@ -65,7 +65,7 @@ class RequirementViewTest {
         f.recordStage(g, "diamond", 1000L, "ev");
         // 需求 minimum=2，持有 1
         var v = RequirementView.build(manifest("goal-1", 2, "diamond"), f,
-                registryWith(Map.of("diamond", 1)));
+                registryWith(Map.of("diamond", 1)), null);
 
         assertEquals(1, v.rows().size());
         var row = v.rows().get(0);
@@ -81,7 +81,7 @@ class RequirementViewTest {
         CompletedFactStore f = new CompletedFactStore();
         f.recordStage(g, "other_stage", 1000L, "ev");
         var v = RequirementView.build(manifest("goal-1", 2, "diamond"), f,
-                registryWith(Map.of("diamond", 0)));
+                registryWith(Map.of("diamond", 0)), null);
         assertEquals(RequirementView.Attention.NOT_DONE_AND_NOT_HELD, v.rows().get(0).attention());
     }
 
@@ -91,7 +91,7 @@ class RequirementViewTest {
         CompletedFactStore f = new CompletedFactStore();
         f.recordStage(g, "diamond", 1000L, "ev");
         var v = RequirementView.build(manifest("goal-1", 2, "diamond"), f,
-                registryWith(Map.of("diamond", 5)));
+                registryWith(Map.of("diamond", 5)), null);
         assertEquals(RequirementView.Attention.NONE, v.rows().get(0).attention());
         assertEquals(0, v.attentionCount());
     }
@@ -102,7 +102,7 @@ class RequirementViewTest {
         Goal g = goal("goal-1", "mine");
         CompletedFactStore f = new CompletedFactStore();
         var v = RequirementView.build(manifest("goal-1", 1, "diamond"), f,
-                registryWith(Map.of("diamond", 2)));
+                registryWith(Map.of("diamond", 2)), null);
         assertEquals(RequirementView.Attention.HELD_BUT_NO_FACT, v.rows().get(0).attention());
     }
 
@@ -112,7 +112,7 @@ class RequirementViewTest {
         Goal g = goal("goal-1", "mine");
         CompletedFactStore f = new CompletedFactStore();
         f.recordStage(g, "diamond", 1000L, "ev");
-        var v = RequirementView.build(manifest("goal-1", 2, "diamond"), f, new AssetRegistry());
+        var v = RequirementView.build(manifest("goal-1", 2, "diamond"), f, new AssetRegistry(), null);
         var row = v.rows().get(0);
         assertEquals("UNKNOWN_HELD", row.heldVerdict());
         assertEquals(RequirementView.Attention.NONE, row.attention());
@@ -129,7 +129,7 @@ class RequirementViewTest {
         CompletedFactStore f = new CompletedFactStore();
         f.recordStage(g, "diamond", 1000L, "ev");
         var v = RequirementView.build(manifest("goal-1", 2, "diamond", "emerald"), f,
-                registryWith(Map.of("diamond", 5, "emerald", 1)));
+                registryWith(Map.of("diamond", 5, "emerald", 1)), null);
         assertEquals(2, v.rows().size(), "rows=" + v.rows());
         assertEquals(RequirementView.Attention.NOT_DONE_AND_NOT_HELD, v.rows().get(0).attention(),
                 "关注项（emerald 不足）在前；rows=" + v.rows());
@@ -139,7 +139,7 @@ class RequirementViewTest {
 
     @Test
     void noManifest_givesEmptyViewAndSaysSo() {
-        var v = RequirementView.build(null, null, null);
+        var v = RequirementView.build(null, null, null, null);
         assertEquals(0, v.rows().size());
         assertTrue(String.valueOf(v.notes()).contains("HAS_NO_MANIFEST"));
         assertNotNull(v.toMap().get("column_meaning"));
@@ -154,7 +154,7 @@ class RequirementViewTest {
         int facts = f.stageCount();
         int held = reg.usableCounts().size();
 
-        RequirementView.build(manifest("goal-1", 3, "diamond", "emerald"), f, reg);
+        RequirementView.build(manifest("goal-1", 3, "diamond", "emerald"), f, reg, null);
 
         assertEquals(facts, f.stageCount(), "★ 视图不改事实");
         assertEquals(held, reg.usableCounts().size(), "★ 视图不改资产登记");
