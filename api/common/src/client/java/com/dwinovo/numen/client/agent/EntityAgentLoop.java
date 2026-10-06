@@ -2012,13 +2012,28 @@ public final class EntityAgentLoop {
         }
         // ★ 2026-10-01 单测抓到的边界：若**单条**消息自己就超预算，byRecentBudget 会返回 kept=[]。
         //   那等于「把历史清零」—— 比原来全量回灌更糟（AI 直接失忆，连当前这轮都看不见）。
-        //   → 兜底：**至少保留最后一条**。窗口是「省 token 的手段」，不是「让 AI 失忆的手段」。
+        //   → 兜底：**至少保留最近一条**。窗口是「省 token 的手段」，不是「让 AI 失忆的手段」。
+        //
+        // ★★ 2026-10-06 实机 400 修复：兜底不能只保一条 —— 若最后一条正是大工具结果
+        //   （find_tools 的 <functions expanded=…> 展开块可以单条超预算），
+        //   请求会变成 [system, Tool, user]（孤儿工具结果），端点 HTTP 400、重试同样 400。
+        //   live context.jsonl 实测：15:39 / 18:51 / 19:00 / 19:03 / 19:08 与重启后
+        //   03:11 / 03:12 / 03:15 循环复现，正是「合成木镐卡 16 分钟」背后真正的 400 源。
+        //   ⇒ 改用 CompactSplit.validTail：带上该工具结果的调用方（Assistant）；
+        //     整段历史都是 Tool（坏数据）时宁可不带，也不发必然 400 的请求。
         List<ConvoState.Msg> kept = split.kept();
         if (kept.isEmpty() && !all.isEmpty()) {
-            kept = List.of(all.get(all.size() - 1));
-            Constants.LOG.warn("[numen-entity#{}] replay 窗口过小（单条消息 {} token 就超了 {}）→ 兜底只保留最后一条；"
-                            + "调大 provider 的 replayWindowTokens 或压缩该条工具结果",
-                    entityUuid, CompactSplit.estimateTokens(all.get(all.size() - 1)), replayWindowTokens());
+            kept = com.dwinovo.numen.agent.llm.CompactSplit.validTail(all);
+            if (kept.isEmpty()) {
+                Constants.LOG.warn("[numen-entity#{}] replay 兜底失败：最近历史全是工具结果（无调用方），"
+                        + "本轮不带历史（宁缺勿发非法请求）", entityUuid);
+            } else {
+                Constants.LOG.info("[numen-entity#{}] replay 窗口过小（单条消息 {} token 就超了 {}）→ "
+                                + "兜底保留最近合法块 {} 条（含工具结果的调用方）；"
+                                + "调大 provider 的 replayWindowTokens 或压缩该条工具结果",
+                        entityUuid, CompactSplit.estimateTokens(all.get(all.size() - 1)),
+                        replayWindowTokens(), kept.size());
+            }
         }
         int dropped = all.size() - kept.size();
         int droppedTokens = CompactSplit.estimateTokens(split.toSummarize());

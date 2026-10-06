@@ -15,6 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 压缩切分的回归钉:切点只能落在 User(首选)或 Assistant(劈轮),工具结果永远
  * 跟着它的调用;预算装得下整段时不切;一条都装不下时保留段为空(退化全量总结)。
+ * 兜底窗口（调用方在空段时用）见 {@link CompactSplit#validTail}：
+ * 绝不以 Tool 开头 —— 2026-10-06 实机 400 的根因就是它。
  */
 class CompactSplitTest {
 
@@ -98,6 +100,36 @@ class CompactSplitTest {
         var split = CompactSplit.byRecentBudget(h, 100);
         assertTrue(split.kept().isEmpty());
         assertEquals(3, split.toSummarize().size());
+    }
+
+    /**
+     * ★ 2026-10-06 实机 400 根因回归：兜底窗口绝不许以 Tool 开头。
+     *
+     * <p>{@code find_tools} 展开块可单条超预算 → kept 空 → 旧兜底只保最后一条 = 大 Tool
+     * → 请求 [system, Tool, user] → 端点 400 且重试同样 400（live context.jsonl 实测
+     * roles=stu、assistantIdx=-1）。
+     */
+    @Test
+    void tailFallbackNeverStartsWithATool() {
+        List<ConvoState.Msg> h = List.of(user(100), assistantWithCall("x"), tool("x", 5000));
+        var split = CompactSplit.byRecentBudget(h, 100);
+        assertTrue(split.kept().isEmpty(), "设计如此：一条都装不下 → 交给调用方兜底");
+
+        var tail = CompactSplit.validTail(h);
+        assertFalse(tail.isEmpty(), "不能返回空（那等于让 AI 失忆）");
+        assertTrue(tail.get(0) instanceof ConvoState.Msg.Assistant,
+                "兜底必须带上工具结果的调用方，绝不能以 Tool 开头：" + tail);
+        assertEquals(2, tail.size(), "assistant 调用 + 它的工具结果");
+
+        // 连续多条工具结果：一路退到调用方
+        List<ConvoState.Msg> multi = List.of(user(100), assistantWithCall("x"),
+                tool("x", 10), tool("x", 10));
+        var tail2 = CompactSplit.validTail(multi);
+        assertTrue(tail2.get(0) instanceof ConvoState.Msg.Assistant);
+
+        // 整段历史都是 Tool（坏数据）→ 宁可不带，也不发必然 400 的请求
+        assertEquals(0, CompactSplit.validTail(List.of(tool("a", 10))).size());
+        assertEquals(0, CompactSplit.validTail(List.of()).size());
     }
 
     @Test

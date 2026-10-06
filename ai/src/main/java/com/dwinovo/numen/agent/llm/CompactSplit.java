@@ -53,6 +53,34 @@ public final class CompactSplit {
                 List.copyOf(history.subList(cut, history.size())));
     }
 
+    /**
+     * 「预算内一条都装不下」时调用方的兜底窗口：取最近一条，且<b>绝不让保留段以 Tool 开头</b>。
+     *
+     * <p>★ 2026-10-06 实机 400 根因（live {@code context.jsonl} 逐条实测）：
+     * {@code find_tools} 的展开块（{@code <functions expanded=…>}）可以<b>单条就超预算</b>，
+     * 于是 {@link #byRecentBudget} 返回空段，而旧兜底「至少保最后一条」保的正是那条 Tool ⇒
+     * 请求变成 {@code [system, Tool, user]}（roles=stu、整份日志里找不到该 tool 的
+     * assistant 调用，assistantIdx=-1）⇒ 端点 <b>HTTP 400</b>，同 payload 重试同样 400。
+     * 实机时间线：15:39 / 18:51 / 19:00 / 19:03 / 19:08 与重启后 03:11 / 03:12 / 03:15
+     * <b>循环复现</b> —— 每次模型调 {@code find_tools} 就会触发一轮。
+     *
+     * <p>规则：为保住这条工具结果，把它最近的调用方（Assistant）一起带上；
+     * 整段历史都是 Tool（坏数据）时返回空——<b>宁可不带，也不发一个必然 400 的请求</b>。
+     */
+    public static List<ConvoState.Msg> validTail(List<ConvoState.Msg> all) {
+        if (all == null || all.isEmpty()) {
+            return List.of();
+        }
+        int start = all.size() - 1;
+        while (start > 0 && all.get(start) instanceof ConvoState.Msg.Tool) {
+            start--;
+        }
+        if (all.get(start) instanceof ConvoState.Msg.Tool) {
+            return List.of();
+        }
+        return List.copyOf(all.subList(start, all.size()));
+    }
+
     /** 散文类 ASCII 字符的 token 密度（2026-10-01 实测拟合值，见类注释）。 */
     static final double PROSE_TOKENS_PER_CHAR = 0.80;
     /** CJK 字符的 token 密度：约 1 字 1 token。 */
