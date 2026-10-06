@@ -323,6 +323,9 @@ final class RddDetector {
                 RddWorldAssetObserver.Result observed = RddWorldAssetObserver.observe(ap, rt.assets());
                 RddPlugin.saveAssets(ap.getUUID());
                 RddPlugin.publishAssetSnapshot(ap.getUUID(), "lazy_world_observation", observed);
+                // 第三批 N1 消费：共同事实快照 + 需求检测（30 秒一拍；只产事实与事件，不做裁决）。
+                // 用本拍真实背包 counts（不是注册表缓存）—— 规划侧文档定调"实时扫描是持有唯一真相"。
+                RddFactContext.tick(ap.getUUID(), ap.level().dimension().location().toString(), rt, counts);
             }
             // Supervisor ↔ Numen 双向协商：士兵对命令回了 REJECT/COUNTER → 指挥官改单/重规划。
             if (tickNegotiation(ap, rt, chain)) {

@@ -421,6 +421,12 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!carry.isEmpty()) {
             rddContext = rddContext.replace("</rdd>", carry + "</rdd>");
         }
+        // 第三批 N1 消费：当前一级还没凑齐的需求（只读缓存；从未扫过背包时整块不出现）。
+        // 放在这里的原因与 carry 相同：withAssets 是**全部分支的共同出口**。
+        String needs = RddFactContext.executorBlock(companionId);
+        if (!needs.isEmpty()) {
+            rddContext = rddContext.replace("</rdd>", needs + "</rdd>");
+        }
         String worldAssets = RddAssetContext.render(assets(companionId), 1200);
         return worldAssets.isBlank() ? rddContext : rddContext + "\n" + worldAssets;
     }
@@ -478,14 +484,12 @@ private static String withAssets(UUID companionId, String rddContext) {
                 new TaskChain(goal, facts(companionId).satisfiedStageKeys(goal)), assets(companionId)));
         // 【架构概念 2/4 接线】一级目标生成时同步产出"需求清单"（元件检测的需求侧）。
         // 只产"事实"，不在这里做裁决（裁决归 DetectionArbitration），更不在这里改规划。
+        // 2026-10-06：清单不再"算完即丢"——RddFactContext 缓存它，并在检测 tick 里持续对账；
+        // goalId 传真 Goal.id（事实库用的就是它，见 RddRequirementDetector 的注释）。
         try {
             RddRuntime justBound = RUNTIMES.get(companionId);
             var primary = justBound == null ? null : justBound.chain().currentPrimary();
-            var manifest = RddRequirementDetector.forPrimary(primary);
-            RddMonitor.publish("requirement_manifest", Map.of(
-                    "companionId", companionId.toString(),
-                    "primary", manifest.goalId(),
-                    "requirements", String.valueOf(manifest.requirements().size())));
+            RddFactContext.onPrimaryBound(companionId, primary, goal.id());
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 需求清单生成失败 {}: {}", companionId, ex.toString());
         }
@@ -596,6 +600,16 @@ private static String withAssets(UUID companionId, String rddContext) {
         String previous = renderPreviousPlanForReplan(chain);
         if (!previous.isBlank()) {
             hint = hint + "\n\n## 上一版的二级计划（**不要原样重复**，指出它的错处并给出不同做法）\n" + previous;
+        }
+        // 第三批 N1 消费：把「需求 × 持有对账 + 近期阶段事实」作为只读事实块送进规划器输入。
+        // 只陈述事实（缺口数字 ≠「没做」），生成失败绝不影响重规划本身。
+        try {
+            String factsBlock = RddFactContext.replanBlock(companionId);
+            if (!factsBlock.isBlank()) {
+                hint = hint + "\n\n" + factsBlock;
+            }
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 重规划事实块生成失败 {}: {}", companionId, ex.toString());
         }
         RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
         // attempt：协商不是"上一版被判不可执行"，故传 0，让 prompt 走非失败分支。
@@ -1321,6 +1335,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
                 clearNudgeThrottle(companionId); // 链都收了，节流记录跟着走（否则新目标开局就被节流）
                 RddGoalDriver.clear(companionId); // 目标清/重绑 → 丢掉该同伴的懒展开状态
                 clearReplanCounts(companionId);
+                RddFactContext.forget(companionId); // 任务清空 → 事实接线缓存一并清（防缓慢增长）
                 LOG.info("[rdd] 已清除任务及磁盘交接 {}", companionId);
             });
         } catch (IOException ex) {

@@ -1,31 +1,50 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import com.dwinovo.numen.rdd.api.AssetRequirement;
 import com.dwinovo.numen.rdd.api.PrimaryGoal;
 import com.dwinovo.numen.rdd.api.Subtask;
 import com.dwinovo.numen.rdd.policy.RequirementManifest;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * \u5143\u4ef6\u68c0\u6d4b \u00b7 \u4e00\u7ea7\u76ee\u6807\u8d44\u4ea7\u8981\u6c42\u68c0\u6d4b\uff08\u63d2\u4ef6\u4fa7\u63a5\u7ebf\uff09\u3002
+ * 元件检测 · 一级目标资产要求提取（插件侧接线）。
  *
- * <p>\u3010\u7528\u6237\u67b6\u6784\u6982\u5ff5 2/4 \u7684\u63a5\u7ebf\u3011\u4e00\u7ea7\u5927\u76ee\u6807\u751f\u6210\u65f6\u540c\u6b65\u4ea7\u51fa"\u9700\u6c42\u6e05\u5355"\uff08RequirementManifest\uff09\uff0c
- * \u6301\u7eed\u7c97\u7c92\u5ea6\u68c0\u6d4b\u662f\u5426\u6ee1\u8db3\uff1b\u6ee1\u8db3\u5219\u4ea7<b>\u4e8b\u5b9e</b>\uff08\u4e0d\u51b3\u5b9a\u662f\u5426\u91cd\u89c4\u5212\u2014\u2014\u90a3\u662f Supervisor\uff09\u3002
+ * <p>【架构概念 2/4】一级大目标生成时同步产出"需求清单"（{@link RequirementManifest}）。
+ * 提取范围：{@code waitFor} 前置 + 各二级 condition 的 {@code asset_key}。
+ * <b>group 条件不在此列</b> —— 组计数的语义是"组内件数之和"，由
+ * {@code RddFactContext} 的检测通道单独跟踪（本清单只承载逐物品的资产要求）。
  *
- * <p>\u4ece\u4e00\u7ea7\u76ee\u6807\u7684 subtasks \u7684 condition\uff08asset_key/minimum \u6216 group\uff09\u63d0\u53d6\u9700\u6c42\u3002
- * \u7eaf\u903b\u8f91\u5728 rdd-core \u7684 {@link RequirementManifest}\uff1b\u672c\u7c7b\u53ea\u505a\u5bbf\u4e3b\u4fa7\u63d0\u53d6\u4e0e\u68c0\u6d4b\u3002
- * \u4e0d\u6539 TaskChain \u6838\u5fc3\u3002
+ * <p><b>★ goalId 必须是真 {@code Goal.id}</b>：事实库（{@code StageFact.goalId}）用的就是它。
+ * 2026-10-06 接线时核实：旧实现把 {@code primary.id}（{@code "primary-<uuid>"}）填进 goalId，
+ * 而 {@code RequirementFactAudit} / {@code RequirementAssetAudit} 都按
+ * {@code manifest.goalId == fact.goalId} 对账 ⇒ <b>生产里永远 join 不上</b>
+ * （单测夹具用了同一 id，所以红不了）。这里修正，并把这个口径写死在签名上。
+ *
+ * <p>（曾经的 {@code detectAndPublish} 是死代码：生产零调用。已由
+ * {@code RddFactContext.tick} 的「只在状态变化时上报」检测取代。）
  */
 final class RddRequirementDetector {
 
     private RddRequirementDetector() {}
 
-    /** \u4ece\u4e00\u7ea7\u76ee\u6807\u63d0\u53d6\u9700\u6c42\u6e05\u5355\uff08\u9700\u6c42\u4fa7\uff1bgroup \u6761\u4ef6\u6682\u4e0d\u8ba1\uff0c\u7b2c\u4e8c\u6279\u6269\u5c55\uff09\u3002 */
-    static RequirementManifest.Manifest forPrimary(PrimaryGoal primary) {
-        List<RequirementManifest.Requirement> reqs = new ArrayList<>();
+    /**
+     * 从一级目标提取需求清单。
+     *
+     * @param goalId 真 {@code Goal.id}；null/空串时回落 {@code primary.id}
+     *               （回落只为不崩，调用方应总是给真 id —— 否则对账列会静默失配）
+     */
+    static RequirementManifest.Manifest forPrimary(PrimaryGoal primary, String goalId) {
+        Map<String, RequirementManifest.Requirement> byKey = new LinkedHashMap<>();
         if (primary != null) {
+            for (AssetRequirement w : primary.waitFor()) {
+                if (w != null && w.assetKey() != null && !w.assetKey().isBlank()) {
+                    merge(byKey, w.assetKey(), w.minimum());
+                }
+            }
             for (Subtask s : primary.subtasks()) {
                 Map<String, Object> c = s.condition();
                 Object key = c == null ? null : c.get("asset_key");
@@ -33,28 +52,21 @@ final class RddRequirementDetector {
                     int min = 1;
                     Object m = c.get("minimum");
                     if (m instanceof Number n) min = Math.max(0, n.intValue());
-                    reqs.add(new RequirementManifest.Requirement(ks, min, List.of()));
+                    merge(byKey, ks, min);
                 }
             }
         }
-        String goalId = primary == null ? "unknown" : primary.id();
-        return new RequirementManifest.Manifest(goalId, reqs);
+        String gid = goalId == null || goalId.isBlank()
+                ? (primary == null ? "unknown" : primary.id())
+                : goalId;
+        return new RequirementManifest.Manifest(gid, new ArrayList<>(byKey.values()));
     }
 
-    /**
-     * \u68c0\u6d4b\u4e00\u7ea7\u9700\u6c42\u662f\u5426\u6ee1\u8db3\uff0c\u4ea7\u4e8b\u5b9e\u5e76\u4e0a\u62a5\uff08\u4e0d\u91cd\u89c4\u5212\uff09\u3002
-     * @return true = \u5168\u90e8\u6ee1\u8db3\uff08\u5df2\u4e0a\u62a5 requirements_met\uff09
-     */
-    static boolean detectAndPublish(java.util.UUID companionId, PrimaryGoal primary, Map<String, Integer> held) {
-        RequirementManifest.Manifest manifest = forPrimary(primary);
-        RequirementManifest.Detection d = manifest.detect(held);
-        if (d.satisfied()) {
-            RddMonitor.publish("requirements_met", Map.of(
-                    "companionId", String.valueOf(companionId),
-                    "primary", manifest.goalId(),
-                    "requirements", String.valueOf(manifest.requirements().size())));
-            return true;
+    /** 同键取更大的 minimum（同一级的两个二级分别要 2 个和 5 个，清单报 5 个才诚实）。 */
+    private static void merge(Map<String, RequirementManifest.Requirement> byKey, String key, int minimum) {
+        RequirementManifest.Requirement prev = byKey.get(key);
+        if (prev == null || minimum > prev.minimum()) {
+            byKey.put(key, new RequirementManifest.Requirement(key, minimum, List.of()));
         }
-        return false;
     }
 }
