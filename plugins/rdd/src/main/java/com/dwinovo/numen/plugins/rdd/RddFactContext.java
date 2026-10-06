@@ -288,9 +288,15 @@ final class RddFactContext {
             if (row.factCount() > 0) {
                 sb.append("｜事实记录 ").append(row.factCount()).append(" 条");
             }
-            String attention = attentionText(row.attention());
-            if (!attention.isEmpty()) {
-                sb.append("｜").append(attention);
+            // ★ 持有未知时**不能**再渲染 attention 文案：RequirementView 对 UNKNOWN_HELD
+            //   刻意给 NONE（"判断不了 ≠ 不用看"），而 attentionText(NONE) 是"持有已达标" ——
+            //   实机抓到的错标：同一行同时写「持有未知」与「持有已达标」。
+            //   未知行只保留上面那句"持有未知（登记表没这个键，不等于 0）"。
+            if (row.held() != null) {
+                String attention = attentionText(row.attention());
+                if (!attention.isEmpty()) {
+                    sb.append("｜").append(attention);
+                }
             }
             sb.append('\n');
         }

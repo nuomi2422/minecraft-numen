@@ -114,6 +114,10 @@ class RddFactContextTest {
 
         assertTrue(block.contains("minecraft:crafting_table 需要 1，现有 0 → 缺口 1"), block);
         assertTrue(block.contains("minecraft:oak_log 需要 16，持有未知"), "没登记的键是「未知」不是 0：" + block);
+        // ★ 2026-10-06 实机抓到的错标：未知行同时被渲染成「持有已达标」（attention=NONE 的文案）。
+        //   未知行只许说未知，不许出现任何达标断言。
+        String unknownLine = block.lines().filter(l -> l.contains("minecraft:oak_log")).findFirst().orElse("");
+        assertFalse(unknownLine.contains("持有已达标"), "未知行不许渲染成达标：" + unknownLine);
         assertTrue(block.contains("只读陈述"), block);
         assertTrue(block.contains("刚刚采样"), "采样时间按注入的 now 渲染：" + block);
 
