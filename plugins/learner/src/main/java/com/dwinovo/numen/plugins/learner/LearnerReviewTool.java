@@ -176,7 +176,7 @@ final class LearnerReviewTool implements NumenTool {
             LearnerReviewer.ReviewOutcome outcome =
                     LearnerReviewer.withPriorRound(batch, priorRead.summary(), rej,
                             com.dwinovo.numen.plugins.learner.core.UsageLedger.promptBlock(usage, id),
-                            LLM_TIMEOUT_SEC).join();
+                            id, LLM_TIMEOUT_SEC).join();
 
             // 回主线程前校验世界代际：换档后迟到结果直接丢弃
             MinecraftServer current = ServerLifecycleHooks.getCurrentServer();

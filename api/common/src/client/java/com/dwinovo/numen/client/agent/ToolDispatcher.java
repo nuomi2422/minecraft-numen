@@ -61,6 +61,8 @@ public final class ToolDispatcher {
     private final Deque<ToolInvocation> queue = new ArrayDeque<>();
     /** The single in-flight call (id → invocation); ≤1 under the serial model. */
     private final Map<String, ToolInvocation> inFlight = new HashMap<>();
+    /** 在飞调用的开始时刻（墙钟毫秒）；结果事件里的 duration_ms 由它算出。 */
+    private final Map<String, Long> startedAtMillis = new HashMap<>();
     /** Reentrancy guard so a synchronously-completing tool keeps the drain iterative. */
     /** 本批允许调用的工具名(见 {@link #dispatch})。 */
     private java.util.Set<String> callable = java.util.Set.of();
@@ -129,6 +131,7 @@ public final class ToolDispatcher {
         List<String> ids = new ArrayList<>(inFlight.keySet());
         for (ToolInvocation inv : queue) ids.add(inv.id());
         inFlight.clear();
+        startedAtMillis.clear();
         queue.clear();
         deadlineMillis = 0;
         advancing = false;
@@ -180,6 +183,7 @@ public final class ToolDispatcher {
                     continue;   // nothing in flight — drain the next queued call
                 }
                 inFlight.put(inv.id(), inv);
+                startedAtMillis.put(inv.id(), System.currentTimeMillis());
                 deadlineMillis = System.currentTimeMillis() + TOOL_BACKSTOP_MILLIS;
                 ToolCall call = new ToolCall(inv.id(), inv.name(), inv.argsJson(),
                         new ClientToolContext(sink.entity(), entityUuid),
@@ -211,6 +215,13 @@ public final class ToolDispatcher {
             return;   // already settled by cancel/timeout, or a duplicate/late reply
         }
         deadlineMillis = 0;
+        Long startedAt = startedAtMillis.remove(inv.id());
+        if (startedAt != null) {
+            // ★ 2026-10-06 E0：本地工具的结果/耗时补报。服务端工具在 ExecuteToolPayload
+            //   那一跳已经记过 tool_result，本调用内部按 runsLocally 判据对服务端工具是空操作。
+            LocalToolCallLog.publishResult(ToolRegistry.resolve(inv.name()), entityUuid, inv.id(),
+                    System.currentTimeMillis() - startedAt, resultJson);
+        }
         Constants.LOG.info("[numen-dispatch#{}] tool_result id={} tool={} (queued={}) → {}",
                 entityUuid, inv.id(), inv.name(), queue.size(), truncate(resultJson));
         sink.onResult(inv, resultJson);

@@ -125,6 +125,48 @@ public final class LocalToolCallLog {
     }
 
     /**
+     * 本地工具的结果。**只为本地工具记**（判据同 {@link #publishCall}）：服务端那条路
+     * 由 {@code ExecuteToolPayload} 记，两个地方都发会重复。
+     *
+     * <p>★ 2026-10-06 E0（工具耗时可见）：为什么必须补它 —— 本地工具
+     * （find_tools / todowrite / load_skill …）此前**只有 tool_call 没有 tool_result**，
+     * 监测台看得见「它调了」却看不见「耗了多久、成没成」。补上 duration_ms 与 success 后，
+     * 「一直选工具 / 工具执行慢」这类问题才可能被读数定位，而不是靠猜。
+     *
+     * @param durationMs 从 dispatch 到结果落地的墙钟毫秒（含工具内部等待）
+     * @param resultJson 结果原文；只用于取 {@code success} 标记，不整段落盘
+     */
+    public static void publishResult(NumenTool tool, UUID companionId,
+                                     String toolCallId, long durationMs, String resultJson) {
+        if (!runsLocally(tool)) {
+            return;
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("companion_id", companionId == null ? "" : companionId.toString());
+        data.put("tool_call_id", toolCallId == null ? "" : toolCallId);
+        data.put("tool", tool.name());
+        data.put("duration_ms", durationMs);
+        data.put("success", successOf(resultJson));
+        data.put("journaled_by", "client-local");
+        publish("tool_result", data);
+    }
+
+    /** 从结果 JSON 读 {@code success}；读不到返回 "UNKNOWN"（不把「不知道」写成 false）。 */
+    private static Object successOf(String resultJson) {
+        try {
+            com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(resultJson);
+            if (root.isJsonObject()
+                    && root.getAsJsonObject().has("success")
+                    && root.getAsJsonObject().get("success").isJsonPrimitive()) {
+                return root.getAsJsonObject().get("success").getAsBoolean();
+            }
+        } catch (RuntimeException ignored) {
+            // 结果不是 JSON / 格式意外：按 UNKNOWN 处理
+        }
+        return "UNKNOWN";
+    }
+
+    /**
      * 观测层不许影响同伴干活 —— 日志写失败只 debug 记一行，绝不抛。
      * （这是本类唯一允许吞异常的地方，理由同上：观测面坏了不该让她停手。）
      */

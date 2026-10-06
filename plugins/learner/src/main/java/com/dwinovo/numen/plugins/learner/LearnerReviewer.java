@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.learner;
 
 import com.dwinovo.numen.agent.llm.LlmEndpoint;
+import com.dwinovo.numen.agent.llm.LlmObservation;
 import com.dwinovo.numen.agent.llm.NumenLlmClient;
 import com.dwinovo.numen.agent.llm.ConvoState;
 import com.dwinovo.numen.platform.Services;
@@ -155,6 +156,22 @@ final class LearnerReviewer {
                                                            com.dwinovo.numen.plugins.learner.core.RejectionFeedback rejections,
                                                            String usageText,
                                                            int timeoutSeconds) {
+        return withPriorRound(memos, prior, rejections, usageText, null, timeoutSeconds);
+    }
+
+    /**
+     * 同上，外加<b>归属同伴</b>（只为观测计量用；{@code null} = 不知道，不编造）。
+     *
+     * <p>★ 2026-10-06 E0：学习者的 LLM 调用此前**没有挂 observation** ——
+     * 三个脑里只有它花钱不留痕（llm_usage 事件缺失）。补传后 learner.jsonl 里
+     * 同样能看到每次复盘的耗时与四元用量。
+     */
+    static CompletableFuture<ReviewOutcome> withPriorRound(List<Memo> memos,
+                                                           com.dwinovo.numen.plugins.learner.core.PriorRound.Summary prior,
+                                                           com.dwinovo.numen.plugins.learner.core.RejectionFeedback rejections,
+                                                           String usageText,
+                                                           java.util.UUID companionId,
+                                                           int timeoutSeconds) {
         INumenConfig cfg;
         try {
             cfg = Services.CONFIG;
@@ -181,10 +198,14 @@ final class LearnerReviewer {
                 //   所以「AI 看到的」与「执行器认的」不可能漂。
                 + com.dwinovo.numen.plugins.learner.core.AcxBlockReference
                         .promptBlock(LearnerPlugin.configDir());
+        // E0 观测：actor=learner，相位=review；同伴未知时空串（不编造身份）。
+        LlmObservation observation = new LlmObservation("learner",
+                companionId == null ? "" : companionId.toString(), "review",
+                LearnerMonitor::publish);
         try {
             return NumenLlmClient.forEndpoint(ep)
                     .chatStreaming(List.of(new ConvoState.Msg.User(user)),
-                            List.of(), system, null)
+                            List.of(), system, null, observation)
                     .orTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
                     .handle((res, err) -> {
                         if (err != null) {

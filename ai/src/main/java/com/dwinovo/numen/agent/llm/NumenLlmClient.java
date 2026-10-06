@@ -266,6 +266,8 @@ public final class NumenLlmClient {
             dispatched = 0L; // 观测层不许影响请求
         }
         final long activityToken = dispatched;
+        // 实际发出过几次尝试(传输层重试会 >1)。只进观测事件,不参与任何控制逻辑。
+        final java.util.concurrent.atomic.AtomicInteger attempts = new java.util.concurrent.atomic.AtomicInteger();
         try {
             pending = transport.postSse(fullUrl, apiKey, body, chunk -> {
                 try {
@@ -275,6 +277,7 @@ public final class NumenLlmClient {
                     AiLog.LOG.warn("[numen-llm] accumulator failed on chunk: {}", ex.getMessage());
                 }
             }, (attempt, transportId) -> {
+                attempts.set(Math.max(attempts.get(), attempt));
                 if (observation != null) observation.publish("llm_request", model, java.util.Map.of(
                         "status", "dispatched", "attempt", attempt, "transportRequestId", transportId,
                         "provider", provider.name(), "request", body), apiKey);
@@ -336,6 +339,41 @@ public final class NumenLlmClient {
                         "status", "completed", "response", response,
                         "responseStage", "accumulated_visible_stream",
                         "promptTokens", result.promptTokens(), "totalTokens", result.totalTokens()), apiKey);
+            }
+            // ★ 2026-10-06 E0（经济计量）：每次调用一条 llm_usage —— 成功与失败都发。
+            //   四元用量(输入/输出/缓存读/缓存写)与 durationMs 只在这条事件里给全；
+            //   聚合按角色(actor)/相位(phase)/模型(model)只解析这一条，不必从 llm_response 反推。
+            //   失败且没有 usage 帧 → usageState=UNKNOWN，**不写 0**（「没拿到」和「真的是 0」不是一回事）。
+            {
+                java.util.Map<String, Object> usageEvent = new java.util.LinkedHashMap<>();
+                usageEvent.put("status", error == null ? "ok" : "failed");
+                usageEvent.put("durationMs", (System.nanoTime() - t0) / 1_000_000);
+                usageEvent.put("attempts", attempts.get());
+                usageEvent.put("provider", provider.name());
+                boolean usagePresent = acc.usage != null && !acc.usage.isJsonNull()
+                        && !acc.usage.entrySet().isEmpty();
+                if (usagePresent) {
+                    Usage u = provider.usage(acc.usage);
+                    usageEvent.put("input", u.input());
+                    usageEvent.put("output", u.output());
+                    usageEvent.put("cacheRead", u.cacheRead());
+                    usageEvent.put("cacheWrite", u.cacheWrite());
+                    usageEvent.put("promptTokens", u.promptTokens());
+                    usageEvent.put("totalTokens", u.total());
+                    usageEvent.put("freshTokens", u.fresh());
+                } else {
+                    usageEvent.put("usageState", "UNKNOWN");
+                }
+                if (error == null && result != null) {
+                    usageEvent.put("finish", acc.finishReason == null ? "" : acc.finishReason);
+                    usageEvent.put("toolCalls", result.turn() == null ? 0 : result.turn().toolCalls().size());
+                } else if (error != null) {
+                    Throwable cause = error;
+                    while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null)
+                        cause = cause.getCause();
+                    usageEvent.put("errorType", cause.getClass().getSimpleName());
+                }
+                observation.publish("llm_usage", model, usageEvent, apiKey);
             }
             } catch (RuntimeException ignored) {
                 // Formatting/copying is observation-only too: never change the returned future.
