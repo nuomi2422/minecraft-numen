@@ -1,13 +1,13 @@
 package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.ai.AiLog;
+import com.dwinovo.numen.api.CompanionAlerts;
 import com.dwinovo.numen.api.carrier.CarrierAlarms;
 import com.dwinovo.numen.api.carrier.CarrierChain;
 import com.dwinovo.numen.api.carrier.CarrierRuleStore;
 import com.dwinovo.numen.api.carrier.CarrierRules;
 import com.dwinovo.numen.api.carrier.ItemSemantics;
 import com.dwinovo.numen.entity.NumenPlayer;
-
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.server.MinecraftServer;
@@ -61,6 +61,10 @@ final class RddCarryHint {
     /** 上次已发布的闹钟状态（rule → prio）。只在边沿（新增/解除/升级）发事件，平稳期不刷。 */
     private static final Map<UUID, Map<String, String>> ALARM_STATE = new ConcurrentHashMap<>();
 
+    /** 主动唤醒限频（E2.2）：同一条闹钟在冷却内不重复叫，防 P0/P1 震荡刷屏。 */
+    private static final Map<UUID, Map<String, Long>> WAKE_AT = new ConcurrentHashMap<>();
+    private static final long WAKE_COOLDOWN_MS = 30_000L;
+
     /** 刷新间隔：快照级变化不需要每 tick（比这更频繁只是白读世界）。 */
     private static final long REFRESH_MS = 2000L;
 
@@ -80,6 +84,7 @@ final class RddCarryHint {
         CARRY_HINT.clear();
         CARRY_HINT_AT.clear();
         ALARM_STATE.clear();
+        WAKE_AT.clear();
     }
 
     /** 拆卸同伴时必须一起清（与 {@code RddPlugin} 清 {@code LAST_INVENTORY} 同处理，防泄漏）。 */
@@ -90,6 +95,7 @@ final class RddCarryHint {
         CARRY_HINT.remove(companionId);
         CARRY_HINT_AT.remove(companionId);
         ALARM_STATE.remove(companionId);
+        WAKE_AT.remove(companionId);
     }
 
     /**
@@ -133,7 +139,7 @@ final class RddCarryHint {
                 return;
             }
             Rendered rendered = render(body);
-            publishAlarmEdges(companionId, rendered.alarms());
+            publishAlarmEdges(body, rendered.alarms());
             String hint = rendered.xml();
             if (hint.isEmpty()) {
                 CARRY_HINT.remove(companionId);
@@ -220,9 +226,15 @@ final class RddCarryHint {
     /**
      * 闹钟边沿埋点（E2「边沿触发、恢复解除、紧急升级应可观测」）：
      * 只在状态变化时发 {@code carrier_alarm} 事件（新增/解除/升级），平稳期不刷。
+     *
+     * <p><b>E2.2 主动唤醒</b>：P0 危险闹钟（点燃/贴脸的苦力怕、危急血量）的
+     * added/escalated 边沿 → {@link CompanionAlerts#danger} 急件（忙/长任务时进客户端队列，
+     * 等下一个可插入时机随攒下的一切一起走）。同一规则 {@code WAKE_COOLDOWN_MS} 内不重复叫；
+     * 同伴已死（isAlive=false）不叫 —— 事件照旧进队列，但死了不该再被险情吵。
      */
-    private static void publishAlarmEdges(UUID companionId, List<CarrierAlarms.Hit> alarms) {
+    private static void publishAlarmEdges(NumenPlayer body, List<CarrierAlarms.Hit> alarms) {
         try {
+            UUID companionId = body.getUUID();
             Map<String, String> nowState = new LinkedHashMap<>();
             for (CarrierAlarms.Hit h : alarms) {
                 nowState.put(h.rule(), h.prio());
@@ -248,12 +260,35 @@ final class RddCarryHint {
                 }
             }
             ALARM_STATE.put(companionId, nowState);
+            // E2.2：危险边沿 → 主动唤醒（urgent 事件）。冷却防震荡，死亡不叫。
+            int woke = 0;
+            if (body.isAlive()) {
+                long nowMs = System.currentTimeMillis();
+                Map<String, Long> wakeAt = WAKE_AT.computeIfAbsent(companionId, k -> new LinkedHashMap<>());
+                for (CarrierAlarms.Hit h : alarms) {
+                    String old = prev.get(h.rule());
+                    String edge = old == null ? "added" : (old.equals(h.prio()) ? "active" : "escalated");
+                    if (!CarrierAlarms.wakeWorthy(edge, h)) {
+                        continue;
+                    }
+                    Long last = wakeAt.get(h.rule());
+                    if (last != null && nowMs - last < WAKE_COOLDOWN_MS) {
+                        continue;
+                    }
+                    wakeAt.put(h.rule(), nowMs);
+                    CompanionAlerts.danger(body, h.rule(), h.prio(), h.facts(), h.advice());
+                    woke++;
+                }
+            }
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("companionId", companionId.toString());
             data.put("added", String.join(",", added));
             data.put("escalated", String.join(",", escalated));
             data.put("removed", String.join(",", removed));
             data.put("active", String.join(",", nowState.keySet()));
+            if (woke > 0) {
+                data.put("woke", woke);
+            }
             RddMonitor.publish("carrier_alarm", data);
         } catch (RuntimeException ignored) {
             // 埋点是锦上添花，不许影响主链路

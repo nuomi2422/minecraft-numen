@@ -4,6 +4,7 @@ import com.dwinovo.numen.api.carrier.CarrierChain.Facts;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -74,6 +75,27 @@ public final class CarrierAlarms {
     /** 全部闹钟。顺序仅影响渲染顺序，<b>不影响求值</b>（全部独立算）。 */
     public static final List<Alarm> ALL = List.of(
             hungry(), lowHp(), night(), creeper());
+
+    /** 值得主动唤醒执行者的紧急闹钟（E2.2）：会立刻出事的两个。 */
+    private static final Set<String> WAKE_RULES = Set.of("creeper", "low_hp");
+
+    /**
+     * 边沿 → 是否主动唤醒执行者（E2.2：危险事件在 LLM 忙 / 长任务执行时也能送达）。
+     *
+     * <p>只在 {@code added} / {@code escalated} 且 <b>P0</b> 时唤醒；{@code night} 是信息
+     * 不是险情、{@code hungry} 已有 {@code NumenEvents.gotHungry} 的 urgent 通道，都不重复叫。
+     * 平稳期（{@code active}）与解除（{@code removed}）不叫。纯函数 ——
+     * 唤醒的冷却/限频在调用方（{@code RddCarryHint}）。
+     */
+    public static boolean wakeWorthy(String edge, Hit hit) {
+        if (hit == null || !"P0".equals(hit.prio())) {
+            return false;
+        }
+        if (!"added".equals(edge) && !"escalated".equals(edge)) {
+            return false;
+        }
+        return WAKE_RULES.contains(hit.rule());
+    }
 
     /**
      * 独立求值：把所有闹钟各算一遍，<b>没有短路</b>，返回全部命中。

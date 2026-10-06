@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -121,5 +122,23 @@ class CarrierAlarmsTest {
     void allMissingFactsProduceNoAlarms() {
         assertTrue(CarrierAlarms.evaluate(facts("dim=overworld")).isEmpty(),
                 "缺事实不许猜：应 0 命中");
+    }
+
+    @Test
+    void wakeOnlyForCriticalCreeperOrLowHpEdges() {
+        // E2.2：主动唤醒只在「会立刻出事」的 P0 边沿
+        assertTrue(CarrierAlarms.wakeWorthy("added", hitOf("creeper", "P0")));
+        assertTrue(CarrierAlarms.wakeWorthy("escalated", hitOf("creeper", "P0")));
+        assertTrue(CarrierAlarms.wakeWorthy("added", hitOf("low_hp", "P0")));
+        assertFalse(CarrierAlarms.wakeWorthy("active", hitOf("creeper", "P0")), "平稳期不重复叫");
+        assertFalse(CarrierAlarms.wakeWorthy("removed", hitOf("creeper", "P0")), "解除不叫");
+        assertFalse(CarrierAlarms.wakeWorthy("added", hitOf("creeper", "P1")), "还远不叫");
+        assertFalse(CarrierAlarms.wakeWorthy("added", hitOf("night", "P1")), "夜间是信息不是险情");
+        assertFalse(CarrierAlarms.wakeWorthy("added", hitOf("hungry", "P1")), "饥饿已有自己的 urgent 通道");
+        assertFalse(CarrierAlarms.wakeWorthy("added", null));
+    }
+
+    private static CarrierAlarms.Hit hitOf(String rule, String prio) {
+        return new CarrierAlarms.Hit(rule, 1, prio, "facts", "advice");
     }
 }

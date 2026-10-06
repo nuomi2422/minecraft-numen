@@ -74,7 +74,14 @@ public final class NumenEvents {
         /** 饿了 —— 她不会自己吃,得主人给或者叫她去弄。 */
         HUNGRY("hungry"),
         /** 主人挨打了(只报实体攻击)。急不急按主人血线分档,见 {@code ownerHurt}。 */
-        OWNER_HURT("owner_hurt");
+        OWNER_HURT("owner_hurt"),
+        /**
+         * 携带器独立闹钟的危险送达（E2.2）。只有「现在就可能出后果」的 P0
+         * （点燃/贴脸的苦力怕、危急血量）才发，且 {@code urgent=true} ——
+         * 她不知道就会做错事；忙/长任务时进客户端队列，等下一个可插入时机随攒下的一切一起走。
+         * <p>attrs：{@code rule} / {@code pri} / {@code facts}。
+         */
+        ALARM("alarm");
 
         private final String kind;
 
@@ -124,6 +131,19 @@ public final class NumenEvents {
                         + Math.round(maxHp) + " HP, about " + Math.round(distance)
                         + " blocks from you) — they can likely handle it; your call";
         emit(companion, Kind.OWNER_HURT, attrs, text, urgent);
+    }
+
+    /**
+     * 携带器独立闹钟（E2.2）。只给「会立刻出事」的 P0 用（点燃/贴脸的苦力怕、危急血量）——
+     * 她不知道就会做错事，所以是急件；非 P0 走 {@code <alarms>} 被动上下文即可，不走这里。
+     * 去抖/限频在发出方（{@code RddCarryHint} 边沿 + 冷却），这里只负责送达。
+     */
+    public static void alarm(NumenPlayer companion, String rule, String prio, String facts, String advice) {
+        Map<String, String> attrs = new LinkedHashMap<>();
+        attrs.put("rule", rule);
+        attrs.put("pri", prio);
+        attrs.put("facts", facts);
+        emit(companion, Kind.ALARM, attrs, advice, true);
     }
 
     /**
