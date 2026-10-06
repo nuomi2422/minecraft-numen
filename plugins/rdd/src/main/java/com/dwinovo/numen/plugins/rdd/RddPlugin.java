@@ -155,6 +155,8 @@ public final class RddPlugin implements NumenPlugin {
         // 暂停开关：文件存在 = 禁用 PAUSE（2026-09-30 用户要求可随时关，防误伤实验）
         setPauseDisabledFlagPath(numen.configDir().resolve("rdd-pause-disabled.flag"));
             bodyDispatchFlag = numen.configDir().resolve("rdd-bodydispatch.flag");
+        // E1 shadow：规划角色的预算策略（与客户端同一份文件，幂等）。
+        com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
         numen.registerTool(new RddSkipTool());

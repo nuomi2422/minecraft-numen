@@ -75,6 +75,18 @@ public final class EntityAgentLoop {
      */
     private static final String ENTITY_PROMPT = com.dwinovo.numen.agent.prompt.NumenPrompts.ENTITY_PROMPT;
 
+    /**
+     * 经济预算策略（E1 shadow）：客户端类加载时装一次 {@code config/numen/budget-policy.json}。
+     * 只读一次、失败退回默认；策略与计量见 {@link com.dwinovo.numen.agent.llm.BudgetPolicy}。
+     */
+    static {
+        try {
+            com.dwinovo.numen.agent.llm.BudgetPolicy.install(com.dwinovo.numen.NumenPaths.config());
+        } catch (RuntimeException ignored) {
+            // 预算策略是建议层：初始化失败绝不影响引擎。
+        }
+    }
+
     // ---- context compaction (mirrors Claude Code's /compact machinery) ----
 
     /**

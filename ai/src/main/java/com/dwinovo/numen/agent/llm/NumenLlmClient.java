@@ -250,6 +250,31 @@ public final class NumenLlmClient {
                     systemPrompt == null ? 0 : systemPrompt.length());
         }
 
+        // -- 2b. 经济预算（E1 shadow）：只发 budget_advice 建议，绝不拦截调用。
+        if (observation != null) {
+            try {
+                BudgetPolicy.Advice advice = BudgetPolicy.advice(
+                        observation.phase(), CompactSplit.estimateTokens(messages));
+                if (advice != null) {
+                    java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
+                    ev.put("status", "advise");
+                    ev.put("mode", advice.mode());
+                    ev.put("role", advice.role());
+                    ev.put("exceeded", advice.exceeded());
+                    ev.put("usedCalls", advice.used().calls());
+                    ev.put("usedTokens", advice.used().tokens());
+                    ev.put("usedMillis", advice.used().millis());
+                    ev.put("projectedTokens", advice.projectedTokens());
+                    ev.put("limitTokens", advice.limit().tokensPerWindow());
+                    ev.put("limitCalls", advice.limit().callsPerWindow());
+                    ev.put("limitMinutes", advice.limit().minutesPerWindow());
+                    observation.publish("budget_advice", model, ev, apiKey);
+                }
+            } catch (RuntimeException ignored) {
+                // 观测层不许影响请求
+            }
+        }
+
         // -- 3. Stream the response into an accumulator.
         long t0 = System.nanoTime();
         StreamAccumulator acc = new StreamAccumulator();
@@ -345,15 +370,20 @@ public final class NumenLlmClient {
             //   聚合按角色(actor)/相位(phase)/模型(model)只解析这一条，不必从 llm_response 反推。
             //   失败且没有 usage 帧 → usageState=UNKNOWN，**不写 0**（「没拿到」和「真的是 0」不是一回事）。
             {
+                long durationMs = (System.nanoTime() - t0) / 1_000_000;
                 java.util.Map<String, Object> usageEvent = new java.util.LinkedHashMap<>();
                 usageEvent.put("status", error == null ? "ok" : "failed");
-                usageEvent.put("durationMs", (System.nanoTime() - t0) / 1_000_000);
+                usageEvent.put("durationMs", durationMs);
                 usageEvent.put("attempts", attempts.get());
                 usageEvent.put("provider", provider.name());
                 boolean usagePresent = acc.usage != null && !acc.usage.isJsonNull()
                         && !acc.usage.entrySet().isEmpty();
+                long meterTokens = 0;
+                long outputTokens = -1;
                 if (usagePresent) {
                     Usage u = provider.usage(acc.usage);
+                    meterTokens = u.total();
+                    outputTokens = u.output();
                     usageEvent.put("input", u.input());
                     usageEvent.put("output", u.output());
                     usageEvent.put("cacheRead", u.cacheRead());
@@ -367,12 +397,19 @@ public final class NumenLlmClient {
                 if (error == null && result != null) {
                     usageEvent.put("finish", acc.finishReason == null ? "" : acc.finishReason);
                     usageEvent.put("toolCalls", result.turn() == null ? 0 : result.turn().toolCalls().size());
+                    // E1：截断可见（finish_reason=length 时工具调用 JSON 可能不完整）。
+                    if ("length".equals(acc.finishReason)) {
+                        usageEvent.put("truncated", true);
+                        AiLog.LOG.warn("[numen-llm] 响应被截断(finish_reason=length): phase={}, model={}, outputTokens={}",
+                                observation.phase(), model, outputTokens);
+                    }
                 } else if (error != null) {
                     Throwable cause = error;
                     while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null)
                         cause = cause.getCause();
                     usageEvent.put("errorType", cause.getClass().getSimpleName());
                 }
+                BudgetPolicy.record(observation.phase(), meterTokens, durationMs);
                 observation.publish("llm_usage", model, usageEvent, apiKey);
             }
             } catch (RuntimeException ignored) {
