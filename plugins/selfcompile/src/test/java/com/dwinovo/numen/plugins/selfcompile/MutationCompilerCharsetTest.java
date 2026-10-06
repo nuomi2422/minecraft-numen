@@ -19,27 +19,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 2026-09-30 实测修掉的 P1：编译失败时 {@code reports/errors.json} 写成 0 字节。
  *
- * <p>根因：javac 的诊断文本用 <b>native.encoding</b>（本机 GBK）输出，代码却硬按 UTF-8 解码，
- * 于是 {@code 错误:} 变成乱码，{@link MutationErrorParser} 中英文两种写法都匹配不上。
- * 后果不是"日志不好看"，而是<b>自编译的失败侧整个失效</b> ——
+ * <p>根因：javac 的诊断字节是<b>平台默认字符集</b>（{@code Charset.defaultCharset()}）写的，
+ * 代码却硬按 UTF-8 解码，于是 {@code 错误:} 变成乱码，{@link MutationErrorParser}
+ * 中英文两种写法都匹配不上。后果不是"日志不好看"，而是<b>自编译的失败侧整个失效</b> ——
  * 外部 AI 拿不到 file:line:col，就只能整段盲目重写。
  *
- * <p>本机实测（JDK 21.0.11，中文 Windows）：
- * {@code file.encoding=UTF-8}、{@code native.encoding=GBK}、{@code defaultCharset=UTF-8}；
- * 同一段 javac 字节按 GBK 解才是 {@code 错误: 进行语法分析时已到达文件结尾}。
+ * <p><b>2026-10-06 修正口径（探针实测）</b>：解码必须跟 {@code defaultCharset}，
+ * <b>不是</b> {@code native.encoding}。两种环境的对照（见 {@code MutationCompiler} 同款注释）：
+ * 游戏 JVM {@code -Dfile.encoding=COMPAT} 时两者都是 GBK（口径重合，看不出差别）；
+ * JDK21 默认 {@code file.encoding=UTF-8} 时分离 —— javac 吐 UTF-8 而按 GBK 解 → errors.json 又空。
+ * 同一段 Broken 源在三种 JVM 参数下的字节实测都在 {@code MutationCompiler.diagnosticCharset()} 里。
  */
 class MutationCompilerCharsetTest {
 
-    /** javac 诊断字符集 = {@code native.encoding}（JDK 17+），不是 file.encoding / defaultCharset。 */
+    /** javac 诊断字符集 = {@code Charset.defaultCharset()}（=file.encoding）；不是 native.encoding。 */
     private static Charset diagnosticCharset() {
-        String nativeEncoding = System.getProperty("native.encoding");
-        if (nativeEncoding != null && !nativeEncoding.isBlank()) {
-            try {
-                return Charset.forName(nativeEncoding);
-            } catch (RuntimeException ignored) {
-                // 回落
-            }
-        }
         Charset fallback = Charset.defaultCharset();
         return fallback == null ? StandardCharsets.UTF_8 : fallback;
     }

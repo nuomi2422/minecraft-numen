@@ -64,8 +64,10 @@ class MutationCompileErrorVisibilityTest {
     }
 
     /**
-     * 反向锁定：按错误字符集解码会得到乱码，解析器一条都认不出 ——
-     * 这正是修复前的状态。这里用 native.encoding 复现该形状，防止有人把解码改回 UTF-8 硬编码。
+     * 反向锁定：解析器对「英文 javac」的诊断必须能解析。
+     *
+     * <p>（2026-10-06 注：本测试原来写成"用 native.encoding 复现乱码形状"，实际只测了英文样本；
+     * 解码口径的校准测试见 {@link MutationCompilerCharsetTest} —— 结论是跟 defaultCharset。）
      */
     @Test
     void chineseDiagnosticsStillParseOnThisMachine() {
