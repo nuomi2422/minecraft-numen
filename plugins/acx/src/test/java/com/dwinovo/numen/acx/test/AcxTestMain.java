@@ -725,17 +725,13 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             T.isTrue(evs.has(AcxEvent.Kind.RESUME_STARTED), "应发 RESUME_STARTED");
         });
 
-        // ★★ 记录里没有指纹（TODO AC-B21，当前会放行）：null 不等于「指纹一致」
-        //   AcxRunner.java:245 写的是 `if (prior.fingerprint() != null && !fp.equals(...))`
+        // ★★ 记录里没有指纹（AC-B21，2026-10-06 已修）：null 不等于「指纹一致」
+        //   （原缺陷）AcxRunner.checkResumable 写的是 `prior.fingerprint() != null && !fp.equals(...)`
         //   ⇒ 指纹为 null 时**整道门被跳过**，而名字与版本仍然通过
         //   ⇒ resume 拿着一份「内容可能早已改过」的旧断点静默续跑。
-        //   而 AcxRunner 自己的类注释（:199）承诺「AC 名 / 版本 / 指纹三者任一不符就拒绝」，
-        //   还写着「定义变了还静默从旧断点续跑会产出无法解释的结果」——
-        //   「没有指纹」被当成了「指纹一致」，与那条契约直接矛盾。
-        //   语义：**验不了 ≠ 验过了**。指纹算不出来时我们无法证明内容没变，
-        //   而这道门的全部意义就是「无法证明就不许续跑」。
-        //   现有 resumeContract 只测了非 null 的不匹配，没有 null 反例 ⇒ 改坏了不会红。
-        T.test("记录里没有指纹 → 拒绝续跑（TODO AC-B21，当前会放行）", () -> {
+        //   语义：**验不了 ≠ 验过了**。修法：null 直接拒绝（文案点明「记录里没有指纹」）。
+        //   现有 resumeContract 只测了非 null 的不匹配，本测试补上 null 反例。
+        T.test("记录里没有指纹 → 拒绝续跑（AC-B21，2026-10-06 已修）", () -> {
             Fake.Registry reg = new Fake.Registry().add(Fake.fixed("a", Map.of()));
             AcxRunner r = runner(reg).build();
             AcxDefinition d = def(step("s", "a", Map.of()));
@@ -914,7 +910,8 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
 
         // 上面那条之所以拿到 PAUSED，靠的是 while 的下一次迭代又走了一次 checkCircuit。
         // 换句话说：现有覆盖是被外层循环「顺带」救回来的，主循环自己并不保证这件事。
-        T.test("取消后迟到的成功回执不得把这次运行翻回成功（TODO AC-B19，当前会翻回成功）", () -> {
+        // （AC-B19，2026-10-06 已修：成功收下前复查取消标志 → AcxRunner.cancelled 单源出口。）
+        T.test("取消后迟到的成功回执不得把这次运行翻回成功（AC-B19，2026-10-06 已修）", () -> {
             Fake.resetCalls();
             Fake.Canceller canceller = new Fake.Canceller();
             Map<String, Object> seen = new LinkedHashMap<>();
@@ -1790,10 +1787,10 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
         // ⚠️ 为什么上面几条测试抓不到：它们只断言 AcxRunRecord.status()（确实是 PAUSED，
         //   那一层是对的），没有一个去看事件流 —— 记录对了、日志错了，比记录错更难发现。
         //
-        // 修它是功能改动（要在 emit 里带上 task_id 并把 PAUSED 从 STEP_FAILED 里摘出去），
-        // owner 2026-10-03 已冻结功能代码 ⇒ 这里只钉住，让它可见、可数、新增问题会炸。
+        // 修法（AC-B20，2026-10-06 已修）：execLinear 里 PAUSED 单发 STEP_PAUSED，
+        // 并把适配层 task_id/_accepted/_completed/_standing 原样带进 detail（carryAcceptedFields）。
         // ═══════════════════════════════════════════════════════════════════
-        T.test("「动作已受理、还在世界里跑」不许被记成 STEP_FAILED（TODO AC-B20，当前会）", () -> {
+        T.test("「动作已受理、还在世界里跑」不许被记成 STEP_FAILED（AC-B20，2026-10-06 已修）", () -> {
             Fake.resetCalls();
             FakePorts.Scripted port = FakePorts.Scripted.of("goto")
                     .thenAccepted("t9", Fake.params("moving", true));
@@ -2685,8 +2682,10 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
         // 为什么现有的 210 项抓不到：resumeContract 组测的是**执行器层** checkResumable
         // 被传入一个**不同的**定义（:679），那道门在执行器层是有效的；
         // 缺的是**会话/门面层**——没人验证过「续跑时用的定义是不是当前生效的那一份」。
+        // （AC-B22，2026-10-06 已修：AcxFacade.resume 按名字重查当前定义再走校验链；
+        //   AcxSessionManager.resume 新增带 currentDefinition 的重载。）
         T.test("会话层：暂停期间脚本被改过 → 续跑必须被拒，不得静默按旧定义跑完"
-                + "（TODO AC-B22，当前会静默按旧定义跑完）", () -> {
+                + "（AC-B22，2026-10-06 已修）", () -> {
             Fake.resetCalls();
             Fake.PauseOnce once = new Fake.PauseOnce();
             Fake.Registry blocks = new Fake.Registry()

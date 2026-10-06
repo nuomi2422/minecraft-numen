@@ -37,31 +37,39 @@ import static org.junit.jupiter.api.Assertions.fail;
  * 然后用 {@code -Dacx.resultFile} 让它写出机器可读的 JSON，再断言三件事：
  * <ol>
  *   <li><b>总数不许悄悄变</b>（少了说明有人删了检查项）。</li>
- *   <li><b>失败数必须恰好等于已知的 7 项</b> —— 多了说明出了新问题（这才是关键：
+ *   <li><b>失败数必须恰好等于已知的 3 项</b> —— 多了说明出了新问题（这才是关键：
  *       原来的 {@code ignoreExitValue} 让新问题也照样静默）。</li>
- *   <li><b>那 7 项必须还是那 7 个已知缺陷</b>（见 {@link #KNOWN_RED_MARKERS}）——
+ *   <li><b>那 3 项必须还是那 3 个已知缺陷</b>（见 {@link #KNOWN_RED_MARKERS}）——
  *       修好了要改这里，但<b>必须显式改</b>，不许它悄悄变红或悄悄变绿。</li>
  * </ol>
  *
- * <h3>已知的 7 项红（全部是<b>引擎真缺陷</b>，不是测试写错）</h3>
+ * <h3>已知红项的历史（7 → 3，全部是引擎真缺陷，不是测试写错）</h3>
+ * <p><b>2026-10-06 修好 4 项</b>（测试断言逐字保留，只把登记数改小）：
  * <ul>
- *   <li>TODO(AC-B12) ×2：{@code for} 循环里的变量，在<b>断点暂停后 resume</b> 之后看不到了。</li>
- *   <li>TODO(AC-B18)：<b>恢复会重发已受理的动作</b>（实测 {@code Fake.calls.count("gate") == 2}）。</li>
- *   <li>TODO(AC-B19)：<b>取消后迟到的成功回执会把这次运行翻回 SUCCESS</b>。</li>
- *   <li>TODO(AC-B20)：<b>「动作已受理、还在世界里跑」被记成 STEP_FAILED</b>
- *       （实机 acx.jsonl：{@code STEP_FAILED|PAUSED = 53} vs {@code STEP_FAILED|FAIL = 29}）。</li>
- *   <li>TODO(AC-B21)：<b>记录里没有指纹就整体绕过了指纹门</b>
- *       （{@code checkResumable} 的 {@code prior.fingerprint() != null &&}）。</li>
- *   <li>TODO(AC-B22)：<b>会话层续跑时从不重新解析 AC 定义</b> ⇒ 那三道「内容」门
- *       （名/版本/指纹）在生产路径上<b>恒为真</b>，脚本在暂停期间被改过会静默按旧定义跑完
- *       （实测：库里指纹与记录里指纹不同，回包仍是「已受理，从断点续跑」）。</li>
+ *   <li>TODO(AC-B19)：取消后迟到的成功回执会把这次运行翻回 SUCCESS ⇒
+ *       成功收下前复查取消标志（{@code AcxRunner.cancelled} 单源出口）。</li>
+ *   <li>TODO(AC-B20)：「动作已受理、还在世界里跑」被记成 STEP_FAILED ⇒
+ *       PAUSED 单发 {@code STEP_PAUSED} 并带上 {@code task_id} 等机器可读字段
+ *       （实机旧读数：{@code STEP_FAILED|PAUSED = 53} vs {@code STEP_FAILED|FAIL = 29}）。</li>
+ *   <li>TODO(AC-B21)：记录里没有指纹就整体绕过指纹门 ⇒ null 现在也是<b>拒绝</b>
+ *       （验不了 ≠ 验过了）。</li>
+ *   <li>TODO(AC-B22)：会话层续跑时从不重新解析 AC 定义 ⇒ 门面续跑前按名字重查
+ *       「当前生效定义」再走校验链（改过没升版本的脚本会被指纹门拦下）。</li>
+ * </ul>
+ * <p><b>剩余 3 项</b>（未修，原因见各自测试注释）：
+ * <ul>
+ *   <li>TODO(AC-B12) ×2：{@code for} 循环跨断点的参数快照/游标尚未实现
+ *       （需要一整块状态机特性：列表快照 + 迭代游标 + 轮内子步定位）。</li>
+ *   <li>TODO(AC-B18)：恢复会重发已受理的动作 —— 与 {@code PortToolAdapter}
+ *       的「挂账 + resume 时探针」设计强耦合（适配器正是靠引擎重执行该步来查账），
+ *       修它需要先设计「已受理步」在记录里的表示，不能只挪 {@code markStepCompleted}。</li>
  * </ul>
  *
  * <h3>检查项数 211 → 217 的来历（2026-10-05 第二批接线）</h3>
  * <p>为了让「learner 复审出的 AC 草稿」有<b>真实下游</b>，新增
  * {@code AcxArtifactAdopter}（扫 outbox → 解析 → 校验 → 发布为 {@code GENERATED} → 回写状态）
  * 及配套 6 项检查：采纳成功、拒收散文、坏 JSON、重复采纳幂等、状态回写、不越权上线。
- * <p>★ 这 6 项<b>全绿</b>，红项仍是原来那 7 个 —— 所以 {@link #KNOWN_RED} 仍是 7，
+ * <p>★ 这 6 项<b>全绿</b>；红项随后从原来 7 个修到 3 个（见上）。
  * 只有「总数」这一条被显式从 211 改成 217。<b>总数是硬断言，涨了必须显式改这里</b>，
  * 这正是它存在的意义：有人加检查项时会被迫承认，覆盖度变化不会静默通过。
  */
@@ -70,24 +78,19 @@ class AcxOfflineSuiteTest {
     /**
      * 已知红项数。修好其中任何一个都可以改小，但必须同时改下面的判定片段。
      *
-     * <p>七个已知缺陷：for/断点的两个（TODO AC-B12）、恢复重发已受理动作（TODO AC-B18）、
-     * 取消后迟到回执翻回成功（TODO AC-B19）、在飞动作被记成 STEP_FAILED（TODO AC-B20）、
-     * 没有指纹就绕过指纹门（TODO AC-B21）、会话层续跑不重新解析定义（TODO AC-B22）。
+     * <p>2026-10-06 从 7 改为 3（修好 AC-B19/B20/B21/B22，见类注释）。
+     * 剩余三个已知缺陷：for/断点的两个（TODO AC-B12）、恢复重发已受理动作（TODO AC-B18）。
      */
-    private static final int KNOWN_RED = 7;
+    private static final int KNOWN_RED = 3;
 
     /**
-     * 已知的 7 项红的判定片段 —— <b>刻意全用 ASCII</b>。
+     * 已知的 3 项红的判定片段 —— <b>刻意全用 ASCII</b>。
      *
      * <p>对应关系（判定只匹配<b>测试名</b>，分组名不参与，见 {@link #testNameOf}）：
      * <ul>
      *   <li>{@code "for"} → {@code for 循环；断点 pause 后 resume 看不见变量元组}</li>
      *   <li>{@code "64"}  → {@code 应绑定的 64 变量记录表}（同属 for/断点那个缺陷）</li>
      *   <li>{@code "AC-B18"} → {@code 恢复不能重复发已受理的动作（TODO AC-B18，当前会重发）}</li>
-     *   <li>{@code "AC-B19"} → {@code 取消后迟到的成功回执不得把这次运行翻回成功（TODO AC-B19…）}</li>
-     *   <li>{@code "AC-B20"} → {@code 「动作已受理、还在世界里跑」不许被记成 STEP_FAILED（TODO AC-B20…）}</li>
-     *   <li>{@code "AC-B21"} → {@code 记录里没有指纹 → 拒绝续跑（TODO AC-B21，当前会放行）}</li>
-     *   <li>{@code "AC-B22"} → {@code 会话层：暂停期间脚本被改过 → 续跑必须被拒…（TODO AC-B22…）}</li>
      * </ul>
      *
      * <p>★ <b>为什么不用中文</b>：本工程在 Windows 上改含中文的文件时，
@@ -99,7 +102,7 @@ class AcxOfflineSuiteTest {
      * 将来若出现名字里带「64」的新失败项，它会被误判成已知缺陷。
      * ⇒ 那种情况要<b>显式改这里</b>，别默默放过。
      */
-    private static final String[] KNOWN_RED_MARKERS = {"for", "64", "AC-B18", "AC-B19", "AC-B20", "AC-B21", "AC-B22"};
+    private static final String[] KNOWN_RED_MARKERS = {"for", "64", "AC-B18"};
 
     @Test
     void theOfflineSuiteRunsAndItsKnownRedStaysVisible() throws Exception {
@@ -198,12 +201,9 @@ class AcxOfflineSuiteTest {
             }
             assertTrue(isTheKnownOne,
                     "出现了一条不是已知缺陷的失败项：\n  测试名 = " + name + "\n  整条 = " + f
-                            + "\n★ 已知的缺陷只有这些：「for 循环里的变量跨断点看不见」（TODO AC-B12 ×2）"
-                            + "、「恢复会重发已受理的动作」（TODO AC-B18）"
-                            + "、「取消后迟到的成功回执把运行翻回成功」（TODO AC-B19）"
-                            + "、「动作还在飞却被记成 STEP_FAILED」（TODO AC-B20）"
-                            + "、「记录里没有指纹就绕过了指纹门」（TODO AC-B21）"
-                            + "、「会话层续跑从不重新解析定义，脚本改过会静默按旧版跑完」（TODO AC-B22）。"
+                            + "\n★ 已知的缺陷只剩这些：「for 循环里的变量跨断点看不见」（TODO AC-B12 ×2）"
+                            + "、「恢复会重发已受理的动作」（TODO AC-B18）。"
+                            + "（AC-B19/B20/B21/B22 已于 2026-10-06 修复并转绿。）"
                             + "新的失败项要先当真问题查，别直接改 KNOWN_RED。");
         }
     }

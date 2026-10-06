@@ -242,7 +242,15 @@ public final class AcxRunner {
                     "AC 版本已变（" + prior.acVersion() + " → " + def.version() + "），需迁移/重规划，不静默续跑");
         }
         String fp = AcxFingerprint.of(def);
-        if (prior.fingerprint() != null && !fp.equals(prior.fingerprint())) {
+        // ★ TODO AC-B21 修复（2026-10-06）：验不了 ≠ 验过了。
+        //   旧写 `prior.fingerprint() != null && !fp.equals(...)` ⇒ 记录没有指纹时
+        //   **整道门被跳过**（名/版本仍通过），拿着内容可能早已改过的旧断点静默续跑。
+        //   这道门的全部意义就是「无法证明内容未变就不许续跑」，所以 null 是拒绝，不是放行。
+        if (prior.fingerprint() == null || prior.fingerprint().isBlank()) {
+            throw new IllegalArgumentException(
+                    "记录里没有指纹，无法证明 AC 内容未变（需迁移旧记录或重跑，不静默续跑）");
+        }
+        if (!fp.equals(prior.fingerprint())) {
             throw new IllegalArgumentException("AC 内容已变（指纹不一致），需迁移/重规划，不静默续跑");
         }
         int at = prior.completedStepIndex();
@@ -312,6 +320,11 @@ public final class AcxRunner {
                     if (r.status() != AcxStatus.SUCCESS) {
                         return r;
                     }
+                    // ★ TODO AC-B19 修复（2026-10-06）：控制块跑完时若宿主已取消，
+                    //   迟到的成功不许把整次运行翻回 SUCCESS（见线性分支同注释）。
+                    if (c.cancelFlag.get()) {
+                        return cancelled(c);
+                    }
                     allOutputs.put(step.id(), r.output());
                     if (isPausedControl(r.output())) {
                         // ★ 断点停在控制块自身：不 markStepCompleted，resume 重跑这个 while
@@ -326,6 +339,13 @@ public final class AcxRunner {
                 c.stepCounter[0]++;
                 AcxStepOutcome r = execLinear(step, def, in, lastOutput, allOutputs, c);
                 if (r.isSuccess()) {
+                    // ★ TODO AC-B19 修复（2026-10-06）：取消标志只在 checkCircuit（每步**之前**）看，
+                    //   于是「宿主在最后一步在飞时取消、该步随后成功」的迟到回执会把终态翻回 SUCCESS。
+                    //   实机危害：取消的运行会被 experienceSink.onSuccess 记成一条成功样本。
+                    //   这里在收下成功之前复查一次；断点**不推进**（取消=停下等人工决定，不做隐含进度）。
+                    if (c.cancelFlag.get()) {
+                        return cancelled(c);
+                    }
                     allOutputs.put(step.id(), r.output());
                     lastOutput = r.output();
                     mergeProgress(c, r.output());
@@ -565,9 +585,21 @@ public final class AcxRunner {
             return r;
         }
         if (!out.isSuccess()) {
-            emit(c, AcxEvent.Kind.STEP_FAILED, step.id(), out.status(),
-                    Map.of("reason", String.valueOf(out.message()),
-                           "elapsed_ms", System.currentTimeMillis() - stepStart));
+            // ★ TODO AC-B20 修复（2026-10-06）：脚本在等 ≠ 身体动作已停（69 号第 1 组红线）。
+            //   旧实现把 PAUSED 也记成 STEP_FAILED，且 detail 只有 reason+elapsed_ms ——
+            //   实机读数（2593 行 acx.jsonl）：STEP_FAILED|PAUSED=53（在飞动作）vs
+            //   STEP_FAILED|FAIL=29（真失败），按 kind 统计失败比真失败多 1.8 倍；
+            //   在飞任务的 task_id 只以文本混在 reason 里，机器读不出来。
+            //   现在：PAUSED 单发 STEP_PAUSED，并把适配层给的机器可读字段原样带上。
+            Map<String, Object> detail = new LinkedHashMap<>();
+            detail.put("reason", String.valueOf(out.message()));
+            detail.put("elapsed_ms", System.currentTimeMillis() - stepStart);
+            if (out.status() == AcxStatus.PAUSED) {
+                carryAcceptedFields(out.output(), detail);
+                emit(c, AcxEvent.Kind.STEP_PAUSED, step.id(), AcxStatus.PAUSED, detail);
+            } else {
+                emit(c, AcxEvent.Kind.STEP_FAILED, step.id(), out.status(), detail);
+            }
             return out;
         }
 
@@ -840,13 +872,7 @@ public final class AcxRunner {
     /** 每步执行前的三道熔断检查。返回非 null 表示该结束整次执行了。 */
     private AcxStepOutcome checkCircuit(Ctx c, AcxDefinition def, int i) {
         if (c.cancelFlag.get()) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            out.put("_cancelled", true);
-            out.put("_pause_reason", "host_cancelled");
-            c.pausedReason = "host_cancelled";
-            emit(c, AcxEvent.Kind.STEP_PAUSED, c.currentStepId, AcxStatus.PAUSED,
-                    Map.of("cancelled", true));
-            return AcxStepOutcome.paused("已被宿主取消（断点保留，可 resume）", out);
+            return cancelled(c);
         }
         long now = System.currentTimeMillis();
         if (now > c.deadline) {
@@ -865,6 +891,22 @@ public final class AcxRunner {
                     "AC 熔断: 已达最大总步数 " + c.limits.maxSteps() + "（当前 AC: " + def.name() + "）");
         }
         return null;
+    }
+
+    /**
+     * 取消的统一出口（单源）：checkCircuit 与「成功回执前的复查」（AC-B19）共用。
+     *
+     * <p>断点保留在当前位置，pausedReason = {@code host_cancelled}；resume 可原地再来
+     * （取消是宿主决定，不代表已完成的步骤不可重看）。</p>
+     */
+    private AcxStepOutcome cancelled(Ctx c) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("_cancelled", true);
+        out.put("_pause_reason", "host_cancelled");
+        c.pausedReason = "host_cancelled";
+        emit(c, AcxEvent.Kind.STEP_PAUSED, c.currentStepId, AcxStatus.PAUSED,
+                Map.of("cancelled", true));
+        return AcxStepOutcome.paused("已被宿主取消（断点保留，可 resume）", out);
     }
 
     private void markStepCompleted(Ctx c, int topIndex) {
@@ -887,6 +929,18 @@ public final class AcxRunner {
     private static boolean isPausedControl(Map<String, Object> out) {
         return Boolean.TRUE.equals(out.get("_stagnated"))
                 || Boolean.TRUE.equals(out.get("_reached_max_iters"));
+    }
+
+    /** 在飞任务的机器可读字段（适配层 {@code acceptedOutput} 的约定）：原样带进事件 detail。 */
+    private static void carryAcceptedFields(Map<String, Object> output, Map<String, Object> detail) {
+        if (output == null) {
+            return;
+        }
+        for (String key : new String[]{"task_id", "_accepted", "_completed", "_standing"}) {
+            if (output.containsKey(key)) {
+                detail.put(key, output.get(key));
+            }
+        }
     }
 
     /**

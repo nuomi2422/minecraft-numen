@@ -34,94 +34,26 @@ dependencies {
 // acx/api + acx/core are Minecraft-free, so the suite runs on a plain JDK with
 // only gson on the classpath - no gradle, no game, no devlaunch.
 //
-// NOTE: 7 of the 211 checks are deliberately RED. Two of them come from
-// AcxTestMain.ctrlSnapshot(), which documents an unfixed bug (for-loop across
-// a breakpoint cannot see $scan.matches on resume) and says so in a
-// TODO(AC-B12) comment. The third one is the 2026-10-03 hardening regression
-// "恢复不能重复发已受理的动作 (TODO AC-B18)": a step that was *accepted* (async,
-// still running in the world) does not advance completedStepIndex -- AcxRunner
-// only calls markStepCompleted on isSuccess() and returns early on PAUSED --
-// so resume() restarts at that same step and **re-sends the accepted action**.
-// Measured, not guessed: Fake.calls.count("gate") == 2 where it should be 1.
-// That is the "会不会重复挖、重复走" risk in its most concrete form.
+// NOTE（2026-10-06 更新）: 原 7 红 → 现 3 红。
+//   AC-B19（取消迟到回执翻回成功）/ AC-B20（在飞动作记成 STEP_FAILED）/
+//   AC-B21（无指纹绕过指纹门）/ AC-B22（会话层不重解析定义）**已修复转绿**，
+//   测试断言逐字保留，只改了 AcxOfflineSuiteTest.KNOWN_RED 登记（7 → 3）。
 //
-// ★ The sixth is "记录里没有指纹 → 拒绝续跑 (TODO AC-B21)" (added 2026-10-04).
-// AcxRunner:245 reads `if (prior.fingerprint() != null && !fp.equals(...))`,
-// so a record whose fingerprint is null **skips that whole gate** while name
-// and version still pass -- resume() then continues from a checkpoint whose
-// content may have changed. That contradicts the runner's own class comment
-// (:199 "AC 名 / 版本 / 指纹三者任一不符就拒绝 ... 不静默续跑"):
-// "no fingerprint" was being treated as "fingerprint matches".
-// Semantics chosen: **null is not a pass, null is a reject** -- "验不了 ≠ 验过了".
-// Fixing it is a behaviour change (owner froze functional code), so it stays RED
-// on purpose until that freeze lifts.
+// 当前剩余 3 红（都要先做设计决策，不是挪一行的事）:
+//   · AC-B12 ×2 —— for 跨断点的参数快照 + 迭代游标（一整块状态机特性；见
+//     AcxTestMain.ctrlSnapshot() 的 TODO 注释）。
+//   · AC-B18 —— 恢复会重发已受理的动作。它与 PortToolAdapter 的「挂账 + resume
+//     时探针」设计强耦合：适配器正是靠引擎重执行该步来查账（同参数命中旧账 →
+//     查探针而不是重发）。修它必须先设计「已受理步」在运行记录里的表示，
+//     不能只挪 markStepCompleted 的调用时机。实测 Fake.calls.count("gate") == 2。
 //
-// ★ The seventh is "会话层：暂停期间脚本被改过 → 续跑必须被拒 (TODO AC-B22)"
-// (added 2026-10-04). This one is worse than AC-B21 -- AC-B21 was a hole in
-// one gate, this is the whole road behind the gate never being reached.
-// AcxSessionManager.Session.definition is `final` and only assigned in
-// start() (:46/:57/:124); resume() validates and continues with **that**
-// captured definition (:165/:169). AcxRunner.runFrom stamps the record's
-// fingerprint with AcxFingerprint.of(def) (:142) -- the *same object* -- and
-// checkResumable recomputes fp from the same def (:244). So on the production
-// path all three content gates (name / version / fingerprint) compare a value
-// against itself and are **always true**; only the "断点越界" gate can fire.
-// AcxFacade.execute re-resolves the definition every call (:79/:294-324),
-// but AcxFacade.resume only takes run_id + input (:133-136) and never asks
-// again. Consequence: if someone edits the script while a run is PAUSED,
-// resume silently finishes the run with the OLD definition and the edit never
-// takes effect for that session -- exactly what the runner's class comment
-// (:199-202) was written to prevent.
-// Measured, not inferred: the two fingerprints differ (2956b6e1... vs
-// b47bc3fb...) and the reply was still "已受理，从断点续跑: success: true".
-// Fixing it means deciding what resume should do with a changed script
-// (refuse is the only reading consistent with the runner's own contract), so
-// it stays RED on purpose.
+// 历史读数（修 AC-B20 前）: live config/numen/monitor/acx.jsonl 2539 行里
+//   STEP_FAILED|PAUSED = 53（在飞动作）/ STEP_FAILED|FAIL = 29（真失败）
+//   ⇒ 按 kind 统计失败比真失败多 1.8 倍。修后 PAUSED 单发 STEP_PAUSED 且带 task_id。
 //
-// The fourth is "取消后迟到的成功回执不得把这次运行翻回成功 (TODO AC-B19)".
-// The cancel flag is only consulted in checkCircuit(), which runs *before*
-// each step. If the host cancels while the LAST step is in flight and that
-// step then reports success, the loop exits normally and runFrame() returns
-// AcxStepOutcome.success(...) with no further cancel check (AcxRunner:350-352,
-// and nothing after it either) -- the run reports SUCCESS. Measured:
-// 期望 <PAUSED> 实际 <SUCCESS>.
-//
-// ★ Why only the last step leaks: with an outer while/if the *next* iteration
-//   calls checkCircuit() again and catches it. That is why the pre-existing
-//   test "取消是协作式的" passes -- it was rescued by the surrounding loop, not
-//   by the main loop's own guarantee.
-//
-// ★ Second-order consequence, worse than the status being wrong: AcxRunner:180
-//   feeds SUCCESS runs into experienceSink.onSuccess(...). A cancelled run that
-//   reports SUCCESS therefore gets recorded as a successful experience sample,
-//   i.e. it pollutes the very evidence chain we are trying to keep honest.
-//
-// The fifth is "「动作已受理、还在世界里跑」不许被记成 STEP_FAILED (TODO AC-B20)"
-// -- the 69-doc group-1 red line "脚本在等 ≠ 身体动作已停" (a waiting script does not
-// mean the body stopped). AcxRunner:567-572 emits STEP_FAILED for EVERY non-success
-// outcome of a linear step, PAUSED included, and its detail carries only
-// reason + elapsed_ms -- the task_id / _accepted / _completed that
-// PortToolAdapter.acceptedOutput produced are dropped. So "she is walking there"
-// is logged as "this step failed", and the in-flight task id survives only as text
-// inside `reason` ("...后台执行中: taskId=t1"), unreadable by machine.
-// MEASURED on the live instance (config/numen/monitor/acx.jsonl, 2539 lines):
-//   STEP_FAILED|PAUSED = 53   <- actions still in flight, logged as failures
-//   STEP_FAILED|FAIL   = 29   <- real failures
-//   STEP_PAUSED|PAUSED =  1   <- the only kind actually meant for "waiting"
-// i.e. counting failures by `kind` counts more fakes than real ones (53 vs 29),
-// and the monitoring station's ACX page shows exactly that wrong number.
-// ★ Note why the earlier async tests missed it: they only assert
-//   AcxRunRecord.status(), which IS correct (PAUSED). The record was right and the
-//   LOG was wrong -- and a wrong log is harder to notice than a wrong record.
-//
-// We keep the gate honest by asserting the failure count is EXACTLY these
-// five (see AcxOfflineSuiteTest) instead of setting ignoreExitValue here:
+// We keep the gate honest by asserting the failure count is EXACTLY the known
+// three (see AcxOfflineSuiteTest) instead of setting ignoreExitValue here:
 // ignoreExitValue makes *new* problems just as silent as the known ones.
-//
-// ⚠️ The fixes (moving when completedStepIndex advances; checking the cancel
-//   flag once more before reporting success; splitting PAUSED out of STEP_FAILED
-//   and carrying task_id into the event detail) are FUNCTIONAL changes and were
-//   deliberately NOT done while the owner has the code frozen.
 // The offline suite self-checks the ac-lib we actually ship (its group 17 looks
 // for a directory named 'ac-lib', while the shipped one is 'acx-lib' because
 // that is the jar path AcxPlugin enumerates). Sync mirrors the real library into
@@ -138,7 +70,7 @@ def acxFixture = tasks.register('acxFixture', Sync) {
 
 tasks.register('acxOfflineTest', JavaExec) {
     group = 'verification'
-    description = 'ACX offline self-check (211 checks, 7 known-red: TODO AC-B12 x2 + TODO AC-B18 x1 + TODO AC-B19 x1 + TODO AC-B20 x1 + TODO AC-B21 x1 + TODO AC-B22 x1) -- console copy only'
+    description = 'ACX offline self-check (217 checks, 3 known-red: TODO AC-B12 x2 + TODO AC-B18 x1; AC-B19/B20/B21/B22 fixed 2026-10-06) -- console copy only'
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.dwinovo.numen.acx.test.AcxTestMain'
     dependsOn tasks.named('acxFixture')

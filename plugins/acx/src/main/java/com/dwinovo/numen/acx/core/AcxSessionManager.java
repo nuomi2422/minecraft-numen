@@ -151,8 +151,21 @@ public final class AcxSessionManager {
      * @return false = 会话不存在 / 还在跑 / 不是 PAUSED
      */
     public boolean resume(String runId, Map<String, Object> newInput) {
+        return resume(runId, newInput, null);
+    }
+
+    /**
+     * 同 {@link #resume(String, Map)}，但允许调用方传入<b>重新解析过的当前定义</b>。
+     *
+     * <p>★ TODO AC-B22 修复（2026-10-06）：会话手里的 {@code s.definition} 是 start() 时的旧对象，
+     * 拿它做校验等于同一份内容自己比自己 —— 名/版本/指纹三道内容门<b>恒真</b>，
+     * 改过脚本（没升版本）的续跑会静默按旧定义跑完。门面现在按名字重新查库并把
+     * 当前定义传进来；传 null 时保持旧行为（内联 ac_json 执行的会话没有库条目）。</p>
+     */
+    public boolean resume(String runId, Map<String, Object> newInput, AcxDefinition currentDefinition) {
         Session s;
         AcxRunRecord prior;
+        AcxDefinition use;
         synchronized (sessions) {
             s = sessions.get(runId);
             if (s == null || s.inFlight) {
@@ -162,11 +175,13 @@ public final class AcxSessionManager {
             if (prior == null || prior.status() != AcxStatus.PAUSED) {
                 return false;
             }
-            runner.checkResumable(s.definition, prior);
+            use = currentDefinition == null ? s.definition : currentDefinition;
+            runner.checkResumable(use, prior);
             s.inFlight = true;
         }
         Map<String, Object> in = newInput == null ? prior.input() : newInput;
-        schedule(s, () -> runner.resume(s.definition, prior, in));
+        final AcxDefinition def = use;
+        schedule(s, () -> runner.resume(def, prior, in));
         return true;
     }
 
