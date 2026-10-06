@@ -10,14 +10,15 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 预算策略（E1 shadow）的离线回归：角色映射、窗口计量与滑动过期、
- * 建议只在超限且过冷却时发出、配置损坏/缺失退回默认、enforce 请求按 shadow 执行、
- * 0 = 不限、示例文件不覆盖。
+ * 预算策略（E1）的离线回归：角色映射、窗口计量与滑动过期、
+ * 建议只在超限且过冷却时发出、配置损坏/缺失退回默认、enforce 拦截求值与通知限频、
+ * shadow 永不拦截、0 = 不限、示例文件不覆盖。
  */
 class BudgetPolicyTest {
 
@@ -107,15 +108,56 @@ class BudgetPolicyTest {
     }
 
     @Test
-    void enforceRequestIsRecordedButStillShadow() throws Exception {
+    void enforceBlocksWhenExceededAndIsPure() throws Exception {
         installWithClock("""
-                { "mode": "enforce", "roles": { "learning": { "callsPerWindow": 1 } } }
+                { "mode": "enforce", "roles": { "execution": { "tokensPerWindow": 1000 } } }
+                """);
+        assertEquals("enforce", BudgetPolicy.policyForTest().mode());
+        BudgetPolicy.record("execution", 900, 1000);
+        BudgetPolicy.Advice b = BudgetPolicy.checkBlock("execution", 200);
+        assertNotNull(b);
+        assertEquals("execution", b.role());
+        assertEquals(List.of("tokens"), b.exceeded());
+        assertEquals("enforce", b.mode());
+        assertNotNull(BudgetPolicy.checkBlock("execution", 200), "checkBlock 是纯求值，不受冷却限制");
+        assertNull(BudgetPolicy.checkBlock("execution", 50), "预估后仍在上限内 → 放行");
+        assertNull(BudgetPolicy.checkBlock("planning", 999_999), "没限额的角色不拦");
+    }
+
+    @Test
+    void enforceSuppressesAdviceAndNotifyRespectsCooldown() throws Exception {
+        installWithClock("""
+                { "mode": "enforce", "adviceCooldownMinutes": 5,
+                  "roles": { "learning": { "callsPerWindow": 1 } } }
                 """);
         BudgetPolicy.record("review", 0, 1000);
-        BudgetPolicy.Advice a = BudgetPolicy.advice("review", 0);
-        assertNotNull(a);
-        assertEquals("shadow", a.mode(), "enforce 尚未实现 → 生效模式仍是 shadow");
-        assertTrue(a.exceeded().contains("calls"));
+        assertNull(BudgetPolicy.advice("review", 0), "enforce 模式不发 shadow 建议");
+        BudgetPolicy.Advice b = BudgetPolicy.checkBlock("review", 0);
+        assertNotNull(b);
+        assertTrue(b.exceeded().contains("calls"));
+        assertTrue(BudgetPolicy.notifyBlock(b), "首次拦截通知");
+        assertFalse(BudgetPolicy.notifyBlock(b), "冷却内不重复通知");
+        now += 6 * 60_000L;
+        assertTrue(BudgetPolicy.notifyBlock(b), "冷却过后可再通知");
+    }
+
+    @Test
+    void shadowModeNeverBlocks() throws Exception {
+        installWithClock("""
+                { "mode": "shadow", "roles": { "execution": { "tokensPerWindow": 1000 } } }
+                """);
+        BudgetPolicy.record("execution", 5000, 1000);
+        assertNull(BudgetPolicy.checkBlock("execution", 0), "shadow 模式永不拦截");
+    }
+
+    @Test
+    void unknownModeFallsBackToShadow() throws Exception {
+        installWithClock("""
+                { "mode": "yolo", "roles": { "execution": { "tokensPerWindow": 1000 } } }
+                """);
+        assertEquals("shadow", BudgetPolicy.policyForTest().mode());
+        BudgetPolicy.record("execution", 5000, 1000);
+        assertNull(BudgetPolicy.checkBlock("execution", 0));
     }
 
     @Test

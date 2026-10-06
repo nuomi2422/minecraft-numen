@@ -17,11 +17,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 
 /**
- * 经济调控（E1 第一步）：按角色（执行/规划/学习）的滑动窗口预算策略。
+ * 经济调控（E1）：按角色（执行/规划/学习）的滑动窗口预算策略。
  *
- * <p><b>本版本只 shadow：只发 {@code budget_advice} 建议事件，绝不拦截任何调用。</b>
- * 配置里写 {@code mode:"enforce"} 也会按 shadow 执行并在日志/事件里如实标注——
- * 真正的拦截（DEFERRED/BLOCKED_BUDGET 等明确原因）是 E1 第二步，需要先跑出基线。
+ * <p><b>两种模式</b>：{@code shadow}（默认）只发 {@code budget_advice} 建议事件，
+ * 绝不拦截任何调用；{@code enforce} 在角色限额用尽时<b>拦截该角色的新调用</b>——
+ * 拦截由调用点执行（{@link #checkBlock} 是纯求值，调用点据此决定：
+ * 执行=不开下一轮并给出明确状态、规划=回落占位链、学习=推迟复盘并恢复队列），
+ * 拦截通知走 {@link #notifyBlock} 限频，绝无静默停。0 = 不限的角色永不拦截。
+ *
+ * <p><b>安全边界</b>：拦截只管「要不要再发新调用」；一轮收尾的判定调用（goal_judging）
+ * 与已发出的重试不拦——最后一轮成果必须判完（沿用引擎既有原则）。学习预算只拦学习调用，
+ * 不影响执行/生存路径；确定性生存反射（不等远程 LLM）属 E2，不在此机制内。
  *
  * <p>配置：{@code <configDir>/budget-policy.json}（不存在 = 默认策略：shadow、全部不限），
  * 首次 install 时另写一份 {@code budget-policy.example.json} 供参考，不覆盖已有示例。
@@ -66,7 +72,7 @@ public final class BudgetPolicy {
         }
     }
 
-    /** 生效策略快照。{@code mode} 当前只会是 {@code shadow}（enforce 尚未实现，见类注释）。 */
+    /** 生效策略快照。{@code mode} = {@code shadow}（只建议）或 {@code enforce}（超限拦截）。 */
     public record Policy(int version, String mode, int windowMinutes, int adviceCooldownMinutes,
                          Map<String, Limit> roles) {}
 
@@ -89,7 +95,10 @@ public final class BudgetPolicy {
         public static final WindowUsage EMPTY = new WindowUsage(0, 0, 0);
     }
 
-    /** 一条预算建议（只建议不拦截）。 */
+    /**
+     * 一条预算求值结果：shadow 模式 = 建议事件内容；enforce 模式 = 拦截依据
+     * （{@link #checkBlock} 的返回值）。{@code projectedTokens} 是「已用 + 本次预估」。
+     */
     public record Advice(String role, List<String> exceeded, long usedTokens, long projectedTokens,
                          WindowUsage used, Limit limit, String mode) {}
 
@@ -131,32 +140,78 @@ public final class BudgetPolicy {
     }
 
     /**
-     * 发出建议前的求值：超限返回一条 {@link Advice}（调用方发 {@code budget_advice} 事件），
-     * 否则 null。同一角色在 {@code adviceCooldownMinutes} 内最多建议一次（平稳心跳限频）。
+     * 发出建议前的求值（仅 {@code shadow} 模式；enforce 模式返回 null，拦截走
+     * {@link #checkBlock}）：超限返回一条 {@link Advice}（调用方发 {@code budget_advice}
+     * 事件），否则 null。同一角色在 {@code adviceCooldownMinutes} 内最多建议一次（平稳心跳限频）。
      */
     public static Advice advice(String phase, long estimatedPromptTokens) {
         try {
             Policy p = policy;
-            String role = roleOf(phase);
-            Limit limit = p.roles().get(role);
-            if (limit == null || limit.isNone()) return null;
-            WindowUsage used = windowUsage(role);
-            long projected = used.tokens() + Math.max(0, estimatedPromptTokens);
-            List<String> exceeded = new ArrayList<>();
-            if (limit.tokensPerWindow() > 0 && projected > limit.tokensPerWindow()) exceeded.add("tokens");
-            if (limit.callsPerWindow() > 0 && used.calls() + 1 > limit.callsPerWindow()) exceeded.add("calls");
-            if (limit.minutesPerWindow() > 0 && used.millis() > limit.minutesPerWindow() * 60_000L) {
-                exceeded.add("minutes");
-            }
-            if (exceeded.isEmpty()) return null;
+            if (!"shadow".equals(p.mode())) return null;
+            Advice a = evaluate(p, phase, estimatedPromptTokens);
+            if (a == null) return null;
             long now = clock.getAsLong();
-            Long last = LAST_ADVICE_MS.get(role);
+            Long last = LAST_ADVICE_MS.get(a.role());
             if (last != null && now - last < p.adviceCooldownMinutes() * 60_000L) return null;
-            LAST_ADVICE_MS.put(role, now);
-            return new Advice(role, List.copyOf(exceeded), used.tokens(), projected, used, limit, p.mode());
+            LAST_ADVICE_MS.put(a.role(), now);
+            return a;
         } catch (RuntimeException ex) {
             AiLog.LOG.warn("[numen-econ] 预算求值失败(不影响请求): {}", ex.toString());
             return null;
+        }
+    }
+
+    /**
+     * 拦截求值（仅 {@code enforce} 模式）：该角色限额用尽 → 返回 {@link Advice}
+     * （调用方据此拦截本次调用），否则 null。
+     *
+     * <p><b>纯函数：无冷却、无副作用</b>——调用点可能每个唤醒事件都查一次（零成本），
+     * 事件/聊天栏通知的限频由 {@link #notifyBlock} 负责，二者分开。
+     */
+    public static Advice checkBlock(String phase, long estimatedPromptTokens) {
+        try {
+            Policy p = policy;
+            if (!"enforce".equals(p.mode())) return null;
+            return evaluate(p, phase, estimatedPromptTokens);
+        } catch (RuntimeException ex) {
+            AiLog.LOG.warn("[numen-econ] 拦截求值失败(放行本次): {}", ex.toString());
+            return null;
+        }
+    }
+
+    /** 超限判定（两种模式共用的纯求值，不带冷却）。 */
+    private static Advice evaluate(Policy p, String phase, long estimatedPromptTokens) {
+        String role = roleOf(phase);
+        Limit limit = p.roles().get(role);
+        if (limit == null || limit.isNone()) return null;
+        WindowUsage used = windowUsage(role);
+        long projected = used.tokens() + Math.max(0, estimatedPromptTokens);
+        List<String> exceeded = new ArrayList<>();
+        if (limit.tokensPerWindow() > 0 && projected > limit.tokensPerWindow()) exceeded.add("tokens");
+        if (limit.callsPerWindow() > 0 && used.calls() + 1 > limit.callsPerWindow()) exceeded.add("calls");
+        if (limit.minutesPerWindow() > 0 && used.millis() > limit.minutesPerWindow() * 60_000L) {
+            exceeded.add("minutes");
+        }
+        if (exceeded.isEmpty()) return null;
+        return new Advice(role, List.copyOf(exceeded), used.tokens(), projected, used, limit, p.mode());
+    }
+
+    /**
+     * 拦截通知限频：同一角色在 {@code adviceCooldownMinutes} 内最多通知一次
+     * （事件 + 聊天栏）。返回 true = 这次该通知，已记账；false = 冷却内，静默放行到下一轮。
+     */
+    public static boolean notifyBlock(Advice block) {
+        if (block == null) return false;
+        try {
+            Policy p = policy;
+            long now = clock.getAsLong();
+            Long last = LAST_ADVICE_MS.get(block.role());
+            if (last != null && now - last < p.adviceCooldownMinutes() * 60_000L) return false;
+            LAST_ADVICE_MS.put(block.role(), now);
+            return true;
+        } catch (RuntimeException ex) {
+            AiLog.LOG.warn("[numen-econ] 拦截通知限频失败(按通知处理): {}", ex.toString());
+            return true;
         }
     }
 
@@ -198,12 +253,14 @@ public final class BudgetPolicy {
         JsonObject root = JsonParser.parseString(text).getAsJsonObject();
         int version = (int) longOr(root, "version", 1);
         String requestedMode = strOr(root, "mode", "shadow").trim().toLowerCase();
-        String mode = "shadow";
+        String mode;
         if ("enforce".equals(requestedMode)) {
-            AiLog.LOG.warn("[numen-econ] budget-policy.json 请求 mode=enforce，但本版本只实现 shadow"
-                    + "（只建议不拦截）→ 按 shadow 执行");
-        } else if (!"shadow".equals(requestedMode)) {
-            AiLog.LOG.warn("[numen-econ] 未知 mode '{}' → 按 shadow 执行", requestedMode);
+            mode = "enforce";
+        } else {
+            mode = "shadow";
+            if (!"shadow".equals(requestedMode)) {
+                AiLog.LOG.warn("[numen-econ] 未知 mode '{}' → 按 shadow 执行", requestedMode);
+            }
         }
         int window = (int) clamp(longOr(root, "windowMinutes", 60), 5, 1440);
         int cooldown = (int) clamp(longOr(root, "adviceCooldownMinutes", 5), 1, 60);
@@ -316,11 +373,15 @@ public final class BudgetPolicy {
                 "learning":  { "tokensPerWindow": 0, "callsPerWindow": 0, "minutesPerWindow": 0 }
               },
               "_readme": [
-                "0 = 不限（缺省即不限，不会给出任何建议）。",
+                "0 = 不限（缺省即不限，不会给出任何建议、也不会拦截）。",
                 "tokensPerWindow 计 totalTokens（输入+输出+缓存，按模型上报）；callsPerWindow 计调用次数；minutesPerWindow 计调用耗时（分钟）。",
-                "mode: shadow = 只发 budget_advice 建议事件、不拦截任何调用；enforce 本版本尚未实现（会按 shadow 执行并在日志说明）。",
-                "窗口是滑动窗口（最近 windowMinutes 分钟）；计量只在内存、重启清零，跨重启对账请看 monitor 的 llm_usage 事件。",
+                "mode: shadow = 只发 budget_advice 建议事件、不拦截任何调用；enforce = 超限拦截对应角色的新调用。",
+                "enforce 拦截行为（绝不静默停）：执行=不开下一轮，状态行/聊天栏/事件给出明确原因，等窗口重置或主人唤醒再查；规划=回落占位链并记事件；学习=复盘推迟并恢复队列。",
+                "enforce 不拦：一轮收尾的目标判定调用、已发出的重试（最后一轮成果必须判完）；0=不限的角色永不拦截。",
+                "拦截通知（事件+聊天栏）受 adviceCooldownMinutes 限频；窗口是滑动窗口（最近 windowMinutes 分钟）。",
+                "计量只在内存、重启清零，跨重启对账请看 monitor 的 llm_usage / budget_block 事件。",
                 "角色按相位归并：execution=execution/execution_retry/goal_judging/compaction；planning=stage_a/stage_b/fallback；learning=review；其余=unknown（只计量不建策）。",
+                "确定性生存反射不在此机制内（不等远程 LLM，属 E2 缺口）。",
                 "此文件是示例；要生效请复制为 budget-policy.json 再改（本示例不会被读取）。"
               ]
             }

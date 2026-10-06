@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.learner;
 
 import com.dwinovo.numen.agent.llm.LlmEndpoint;
+import com.dwinovo.numen.agent.llm.BudgetPolicy;
 import com.dwinovo.numen.agent.llm.LlmObservation;
 import com.dwinovo.numen.agent.llm.NumenLlmClient;
 import com.dwinovo.numen.agent.llm.ConvoState;
@@ -180,6 +181,32 @@ final class LearnerReviewer {
         }
         if (cfg == null || cfg.getApiKey() == null || cfg.getApiKey().isBlank()) {
             return CompletableFuture.completedFuture(ReviewOutcome.fail("LLM_UNAVAILABLE: no apiKey configured"));
+        }
+        // 预算闸（E1 enforce）：learning 限额用尽 → 本轮复盘推迟，返回 fail
+        // （fail 语义 = 队列条目 restore，下一轮唤醒时重查预算，窗口一过自动恢复）。
+        // shadow 模式恒为 null；学习预算只拦学习调用，不影响执行/生存路径。
+        BudgetPolicy.Advice block = BudgetPolicy.checkBlock("review", 0);
+        if (block != null) {
+            if (BudgetPolicy.notifyBlock(block)) {
+                LOG.warn("[learner] 预算拦截: role={} exceeded={} usedTokens={} limitTokens={}",
+                        block.role(), block.exceeded(), block.used().tokens(), block.limit().tokensPerWindow());
+                LearnerMonitor.publish("budget_block", java.util.Map.ofEntries(
+                        java.util.Map.entry("actor", "learner"),
+                        java.util.Map.entry("companionId", companionId == null ? "" : companionId.toString()),
+                        java.util.Map.entry("status", "blocked"),
+                        java.util.Map.entry("role", block.role()),
+                        java.util.Map.entry("exceeded", String.join("+", block.exceeded())),
+                        java.util.Map.entry("usedTokens", block.used().tokens()),
+                        java.util.Map.entry("usedCalls", block.used().calls()),
+                        java.util.Map.entry("usedMillis", block.used().millis()),
+                        java.util.Map.entry("projectedTokens", block.projectedTokens()),
+                        java.util.Map.entry("limitTokens", block.limit().tokensPerWindow()),
+                        java.util.Map.entry("limitCalls", block.limit().callsPerWindow()),
+                        java.util.Map.entry("limitMinutes", block.limit().minutesPerWindow()),
+                        java.util.Map.entry("mode", block.mode())));
+            }
+            return CompletableFuture.completedFuture(
+                    ReviewOutcome.fail("BUDGET_BLOCKED: learning 预算已用尽，本轮复盘推迟"));
         }
 
         // ★ 拼装下沉到 core.PriorRound：这条要能用单测钉住（见那边的方法注释）。

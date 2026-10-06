@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.agent.llm.ConvoState;
+import com.dwinovo.numen.agent.llm.BudgetPolicy;
 import com.dwinovo.numen.agent.llm.LlmEndpoint;
 import com.dwinovo.numen.agent.llm.LlmObservation;
 import com.dwinovo.numen.agent.llm.NumenLlmClient;
@@ -59,6 +60,14 @@ final class RddDecomposer {
             Minecraft.getInstance().execute(onFail);
             return;
         }
+        // 预算闸（E1 enforce）：planning 限额用尽 → 本次分解不发出，走 onFail
+        // （调用方据此回落占位链，绝不被吞）。shadow 模式恒为 null。
+        BudgetPolicy.Advice block = BudgetPolicy.checkBlock(stage, 0);
+        if (block != null) {
+            notifyPlanningBlock(stage, block);
+            Minecraft.getInstance().execute(onFail);
+            return;
+        }
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
         RddPlugin.publishPlanningContext(companionId, stage, userContent, system, tool);
@@ -81,11 +90,44 @@ final class RddDecomposer {
                 }));
     }
 
+    /**
+     * enforce 预算拦截的通知（限频，同角色冷却内只发一次）：日志 + rdd.jsonl 的
+     * {@code budget_block} 事件。拦截本身由调用点执行，这里只负责「不静默」。
+     */
+    private static void notifyPlanningBlock(String stage, BudgetPolicy.Advice block) {
+        if (!BudgetPolicy.notifyBlock(block)) return;
+        LOG.warn("[rdd] 预算拦截: stage={} role={} exceeded={} usedTokens={} limitTokens={}",
+                stage, block.role(), block.exceeded(), block.used().tokens(), block.limit().tokensPerWindow());
+        RddMonitor.publish("budget_block", Map.ofEntries(
+                Map.entry("actor", "supervisor"),
+                Map.entry("stage", stage),
+                Map.entry("status", "blocked"),
+                Map.entry("role", block.role()),
+                Map.entry("exceeded", String.join("+", block.exceeded())),
+                Map.entry("usedTokens", block.used().tokens()),
+                Map.entry("usedCalls", block.used().calls()),
+                Map.entry("usedMillis", block.used().millis()),
+                Map.entry("projectedTokens", block.projectedTokens()),
+                Map.entry("limitTokens", block.limit().tokensPerWindow()),
+                Map.entry("limitCalls", block.limit().callsPerWindow()),
+                Map.entry("limitMinutes", block.limit().minutesPerWindow()),
+                Map.entry("mode", block.mode())));
+    }
+
     /** 主入口：异步分解目标，回调收到一个可用的 Goal（成功=分解链，失败=占位链）。 */
     static void decompose(UUID companionId, String objective, Consumer<Goal> done) {
         INumenConfig cfg = Services.CONFIG;
         if (cfg.getApiKey() == null || cfg.getApiKey().isBlank()) {
             LOG.warn("[rdd] 未配置 LLM key，跳过分解，回落占位链");
+            Minecraft.getInstance().execute(() -> done.accept(RddChainFactory.fromObjective(companionId, objective)));
+            return;
+        }
+        // 预算闸（E1 enforce）：planning 限额用尽 → 不发出分解请求，直接回落占位链
+        // （目标绝不被吞；明确记事件与日志，不静默）。shadow 模式恒为 null。
+        BudgetPolicy.Advice block = BudgetPolicy.checkBlock("fallback", 0);
+        if (block != null) {
+            notifyPlanningBlock("fallback", block);
+            LOG.warn("[rdd] planning 预算已用尽，跳过分解，回落占位链");
             Minecraft.getInstance().execute(() -> done.accept(RddChainFactory.fromObjective(companionId, objective)));
             return;
         }

@@ -9,6 +9,7 @@ import com.dwinovo.numen.event.EventQueue;
 import com.dwinovo.numen.event.EventTypes;
 import com.dwinovo.numen.event.JsonlJournal;
 import com.dwinovo.numen.agent.llm.CompactSplit;
+import com.dwinovo.numen.agent.llm.BudgetPolicy;
 import com.dwinovo.numen.agent.llm.ConvoState;
 import com.dwinovo.numen.agent.provider.AssistantTurn;
 import com.dwinovo.numen.agent.provider.LlmToolCall;
@@ -247,6 +248,12 @@ public final class EntityAgentLoop {
      * 判定仍以 {@link #turnRetried} 为准。新轮开出去时清、进重跑分支时置。
      */
     private volatile boolean retryingTurn = false;
+    /**
+     * enforce 预算拦截生效时的角色名（execution/planning/learning），null = 未被预算挡。
+     * 只给状态行看（「预算用尽（execution），等窗口重置」）。与 turnPause 不同，它**不粘**：
+     * 每个唤醒事件都会重查预算（纯求值、零成本），窗口一过自动放行——同端点熔断的教训。
+     */
+    private volatile String budgetBlockedRole = null;
 
     /**
      * Set while an external driver (an MCP client / Claude) holds this body via
@@ -676,7 +683,7 @@ public final class EntityAgentLoop {
      *
      * <p>只读已有状态,不做任何推断与采样——「等熔炼/生长」这类世界进程由服务端
      * {@code currentTask} 的描述带进来,这里不为它另造计时器。遮挡优先级:
-     * 身体没了 &gt; 外脑驾驶 &gt; 整理记忆 &gt; 手上有活 &gt; 等模型(重试/较慢) &gt; 端点问题 &gt; 被叫停。
+     * 身体没了 &gt; 外脑驾驶 &gt; 整理记忆 &gt; 手上有活 &gt; 等模型(重试/较慢) &gt; 端点问题 &gt; 被叫停 &gt; 预算用尽。
      */
     public String statusHint() {
         if (dead) return "身体不在了，等复活";
@@ -695,7 +702,7 @@ public final class EntityAgentLoop {
             case OWNER_INTERRUPT -> "已暂停（主人叫停）";
             case RECOVERABLE_FAILURE -> "已暂停（上一轮失败，等唤醒）";
             case BLOCKED -> "已暂停（端点被拒，等处理）";
-            case NONE -> null;
+            case NONE -> budgetBlockedRole == null ? null : "预算用尽（" + budgetBlockedRole + "），等窗口重置";
         };
     }
 
@@ -1768,16 +1775,50 @@ public final class EntityAgentLoop {
             return false;
         }
 
+        // 预算闸（E1 enforce）：角色限额用尽 → 不开新轮（含自动整理）。纯求值、不粘：
+        // 每个唤醒事件都会走到这里重查（窗口一过自动放行）；判定/重试不在此拦
+        // （最后一轮的成果必须判完）。shadow 模式恒为 null，此段零影响。
+        int window = modelWindow();
+        long contextTokens = lastPromptTokens > 0
+                ? lastPromptTokens
+                : estimateContextTokens(convo.snapshot());
+        var budgetBlock = BudgetPolicy.checkBlock("execution", contextTokens);
+        if (budgetBlock != null) {
+            budgetBlockedRole = budgetBlock.role();
+            if (BudgetPolicy.notifyBlock(budgetBlock)) {
+                Constants.LOG.warn("[numen-entity#{}] 预算拦截: role={} exceeded={} usedTokens={} limitTokens={}",
+                        entityUuid, budgetBlock.role(), budgetBlock.exceeded(),
+                        budgetBlock.used().tokens(), budgetBlock.limit().tokensPerWindow());
+                // 预算问题不能静默:聊天栏警示行是快捷键用户的唯一出口
+                com.dwinovo.numen.client.chat.ChatLines.notice(presenter.speakerName(),
+                        "预算用尽（" + budgetBlock.role() + "），等窗口重置或主人唤醒");
+                com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "budget_block",
+                        java.util.Map.ofEntries(
+                                java.util.Map.entry("actor", "numen"),
+                                java.util.Map.entry("companionId", entityUuid.toString()),
+                                java.util.Map.entry("status", "blocked"),
+                                java.util.Map.entry("role", budgetBlock.role()),
+                                java.util.Map.entry("exceeded", String.join("+", budgetBlock.exceeded())),
+                                java.util.Map.entry("usedTokens", budgetBlock.used().tokens()),
+                                java.util.Map.entry("usedCalls", budgetBlock.used().calls()),
+                                java.util.Map.entry("usedMillis", budgetBlock.used().millis()),
+                                java.util.Map.entry("projectedTokens", budgetBlock.projectedTokens()),
+                                java.util.Map.entry("limitTokens", budgetBlock.limit().tokensPerWindow()),
+                                java.util.Map.entry("limitCalls", budgetBlock.limit().callsPerWindow()),
+                                java.util.Map.entry("limitMinutes", budgetBlock.limit().minutesPerWindow()),
+                                java.util.Map.entry("mode", budgetBlock.mode())));
+            }
+            com.dwinovo.numen.client.hud.SpeechBubbles.clear(entityUuid);
+            return false;
+        }
+        budgetBlockedRole = null;
+
         // Auto-compaction gate: the last request's true context size (as the
         // API counted it) is within the buffer of the window — summarize FIRST,
         // then this method re-runs and dispatches the turn on the compacted
         // history. Mirrors Claude Code's autoCompactIfNeeded. Backends that
         // never send a usage frame leave lastPromptTokens at 0 — fall back to
         // a local estimate so the gate still fires instead of never.
-        int window = modelWindow();
-        long contextTokens = lastPromptTokens > 0
-                ? lastPromptTokens
-                : estimateContextTokens(convo.snapshot());
         if (contextTokens >= window - AUTO_COMPACT_BUFFER_TOKENS
                 && convo.snapshot().size() >= MIN_COMPACT_MESSAGES
                 && compactFailures < MAX_COMPACT_FAILURES) {
