@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.ai.AiLog;
+import com.dwinovo.numen.api.carrier.CarrierAlarms;
 import com.dwinovo.numen.api.carrier.CarrierChain;
 import com.dwinovo.numen.api.carrier.CarrierRuleStore;
 import com.dwinovo.numen.api.carrier.CarrierRules;
@@ -12,7 +13,9 @@ import net.minecraft.core.component.DataComponents;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.item.BedItem;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
@@ -55,6 +58,9 @@ final class RddCarryHint {
     private static final Map<UUID, String> CARRY_HINT = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> CARRY_HINT_AT = new ConcurrentHashMap<>();
 
+    /** 上次已发布的闹钟状态（rule → prio）。只在边沿（新增/解除/升级）发事件，平稳期不刷。 */
+    private static final Map<UUID, Map<String, String>> ALARM_STATE = new ConcurrentHashMap<>();
+
     /** 刷新间隔：快照级变化不需要每 tick（比这更频繁只是白读世界）。 */
     private static final long REFRESH_MS = 2000L;
 
@@ -73,6 +79,7 @@ final class RddCarryHint {
     static void invalidateAll() {
         CARRY_HINT.clear();
         CARRY_HINT_AT.clear();
+        ALARM_STATE.clear();
     }
 
     /** 拆卸同伴时必须一起清（与 {@code RddPlugin} 清 {@code LAST_INVENTORY} 同处理，防泄漏）。 */
@@ -82,6 +89,7 @@ final class RddCarryHint {
         }
         CARRY_HINT.remove(companionId);
         CARRY_HINT_AT.remove(companionId);
+        ALARM_STATE.remove(companionId);
     }
 
     /**
@@ -119,17 +127,20 @@ final class RddCarryHint {
             if (body == null || body.serverLevel() == null) {
                 CARRY_HINT.remove(companionId);
                 CARRY_HINT_AT.remove(companionId);
+                ALARM_STATE.remove(companionId);
                 AiLog.LOG.info("[rdd] carry refresh：同伴不在世界里（body={}），本轮不注入 <carry> {}",
                         body == null ? "null" : "level-null", companionId);
                 return;
             }
-            String hint = render(body);
+            Rendered rendered = render(body);
+            publishAlarmEdges(companionId, rendered.alarms());
+            String hint = rendered.xml();
             if (hint.isEmpty()) {
                 CARRY_HINT.remove(companionId);
-                AiLog.LOG.info("[rdd] carry refresh：快照或分级结果为空（无 <carry> 可注入）{}", companionId);
+                AiLog.LOG.info("[rdd] carry refresh：快照或分级结果为空（无 <carry>/<alarms> 可注入）{}", companionId);
             } else {
                 CARRY_HINT.put(companionId, hint);
-                AiLog.LOG.info("[rdd] carry refresh：已注入 <carry> {} 字符 {}", hint.length(), companionId);
+                AiLog.LOG.info("[rdd] carry refresh：已注入提醒 {} 字符 {}", hint.length(), companionId);
             }
         } catch (Throwable t) {
             // 携带器是「锦上添花」，任何问题都不许影响主链路。
@@ -140,11 +151,22 @@ final class RddCarryHint {
         }
     }
 
-    /** 把携带器结论渲染成 {@code <carry>…</carry>}。快照缺失 → 返回空串（B21：不写空标签）。 */
-    private static String render(NumenPlayer body) {
+    /** 一次渲染的产物：注入文本 + 本次命中的独立闹钟（供边沿埋点）。 */
+    private record Rendered(String xml, List<CarrierAlarms.Hit> alarms) {
+    }
+
+    /**
+     * 把携带器结论渲染成 {@code <carry>…</carry>} 与独立闹钟 {@code <alarms>…</alarms>}。
+     * 快照缺失 / 两条通道都空 → 返回空串（B21：不写空标签）。
+     *
+     * <p><b>E2</b>：{@code <carry>} 是旧串行链（语义不动，短路照旧）；{@code <alarms>} 是
+     * 独立闹钟（{@link CarrierAlarms}，互不短路）。两条通道各自独立判空 ——
+     * 旧链短路不再压掉闹钟，闹钟也不改写旧链的 basis。
+     */
+    private static Rendered render(NumenPlayer body) {
         String snapshot = snapshot(body);
         if (snapshot.isEmpty()) {
-            return "";
+            return new Rendered("", List.of());
         }
         Map<String, String> kv = new LinkedHashMap<>();
         for (String part : snapshot.split("[,;]")) {
@@ -159,26 +181,83 @@ final class RddCarryHint {
         // 「已批准但运行时不生效」是最坏的一种状态：审批界面显示成功，游戏里没变化，
         // 没人查得出来。所以生效链必须与审批落点读同一处。
         CarrierChain.Result r = CarrierChain.evaluate(CarrierRuleStore.effective(), facts);
-        if (r.carry().isEmpty()) {
-            return "";
+        List<CarrierAlarms.Hit> alarms = CarrierAlarms.evaluate(facts);
+        if (r.carry().isEmpty() && alarms.isEmpty()) {
+            return new Rendered("", alarms);
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("<carry>");
-        sb.append("<basis>").append(esc(shorten(basisOf(facts, r), 200))).append("</basis>");
-        if (r.shortCircuited()) {
-            // ★ 短路信息必须让执行 AI 看到 —— 不说的话它会以为全部级都判过了
-            sb.append("<basis_note>").append(esc(basisNote(r))).append("</basis_note>");
-        }
-        int n = 0;
-        for (String item : r.carry()) {
-            if (n++ >= MAX_ITEMS) {
-                break;
+        if (!r.carry().isEmpty()) {
+            sb.append("<carry>");
+            sb.append("<basis>").append(esc(shorten(basisOf(facts, r), 200))).append("</basis>");
+            if (r.shortCircuited()) {
+                // ★ 短路信息必须让执行 AI 看到 —— 不说的话它会以为全部级都判过了
+                sb.append("<basis_note>").append(esc(basisNote(r))).append("</basis_note>");
             }
-            sb.append("<item>").append(esc(item)).append("</item>");
+            int n = 0;
+            for (String item : r.carry()) {
+                if (n++ >= MAX_ITEMS) {
+                    break;
+                }
+                sb.append("<item>").append(esc(item)).append("</item>");
+            }
+            sb.append("<note>这些是建议，不是指令。是否采纳由你按当前任务判断；**不要为了携带而中断当前目标**。</note>");
+            sb.append("</carry>");
         }
-        sb.append("<note>这些是建议，不是指令。是否采纳由你按当前任务判断；**不要为了携带而中断当前目标**。</note>");
-        sb.append("</carry>");
-        return sb.toString();
+        if (!alarms.isEmpty()) {
+            sb.append("<alarms scope=\"nearby16\">");
+            for (CarrierAlarms.Hit h : alarms) {
+                sb.append("<alarm rule=\"").append(esc(h.rule())).append("\" v=\"").append(h.version())
+                        .append("\" pri=\"").append(esc(h.prio())).append("\" facts=\"")
+                        .append(esc(shorten(h.facts(), 120))).append("\">")
+                        .append(esc(shorten(h.advice(), 200))).append("</alarm>");
+            }
+            sb.append("<note>这些是提醒，不是指令；是否处理由你按当前任务判断，**不要为了提醒中断当前目标**。</note>");
+            sb.append("</alarms>");
+        }
+        return new Rendered(sb.toString(), alarms);
+    }
+
+    /**
+     * 闹钟边沿埋点（E2「边沿触发、恢复解除、紧急升级应可观测」）：
+     * 只在状态变化时发 {@code carrier_alarm} 事件（新增/解除/升级），平稳期不刷。
+     */
+    private static void publishAlarmEdges(UUID companionId, List<CarrierAlarms.Hit> alarms) {
+        try {
+            Map<String, String> nowState = new LinkedHashMap<>();
+            for (CarrierAlarms.Hit h : alarms) {
+                nowState.put(h.rule(), h.prio());
+            }
+            Map<String, String> prev = ALARM_STATE.getOrDefault(companionId, Map.of());
+            if (prev.equals(nowState)) {
+                return;
+            }
+            List<String> added = new ArrayList<>();
+            List<String> escalated = new ArrayList<>();
+            for (Map.Entry<String, String> e : nowState.entrySet()) {
+                String old = prev.get(e.getKey());
+                if (old == null) {
+                    added.add(e.getKey() + ":" + e.getValue());
+                } else if (!old.equals(e.getValue())) {
+                    escalated.add(e.getKey() + ":" + old + "->" + e.getValue());
+                }
+            }
+            List<String> removed = new ArrayList<>();
+            for (String k : prev.keySet()) {
+                if (!nowState.containsKey(k)) {
+                    removed.add(k);
+                }
+            }
+            ALARM_STATE.put(companionId, nowState);
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("companionId", companionId.toString());
+            data.put("added", String.join(",", added));
+            data.put("escalated", String.join(",", escalated));
+            data.put("removed", String.join(",", removed));
+            data.put("active", String.join(",", nowState.keySet()));
+            RddMonitor.publish("carrier_alarm", data);
+        } catch (RuntimeException ignored) {
+            // 埋点是锦上添花，不许影响主链路
+        }
     }
 
     private static String basisOf(CarrierChain.Facts f, CarrierChain.Result r) {
@@ -241,9 +320,14 @@ final class RddCarryHint {
             } else {
                 sb.append(", weapon=").append(main);
             }
+            // ★ E2：床（睡觉可行性）。按 BedItem 语义判（模组床只要继承 BedItem 就算），
+            //   读不到写 -1（未知）**不写 0**。注意：非主世界闹钟不看这个键（见 night 的采样保证）。
+            sb.append(", bed=").append(bedCount(body));
 
             List<String> names = new ArrayList<>();
             boolean hostile = false;
+            int nearestCreeper = -1;
+            boolean creeperIgnited = false;
             try {
                 for (Entity e : body.serverLevel().getEntities(body,
                         body.getBoundingBox().inflate(NEARBY_RADIUS), x -> true)) {
@@ -252,6 +336,16 @@ final class RddCarryHint {
                     }
                     if (e instanceof Enemy) {
                         hostile = true;
+                    }
+                    // ★ E2：苦力怕（闹钟数据）。距离 + 点燃态（getSwellDir()>0 = 引信已响）。
+                    if (e instanceof Creeper c) {
+                        int d = (int) Math.round(Math.sqrt(body.distanceToSqr(c)));
+                        if (nearestCreeper < 0 || d < nearestCreeper) {
+                            nearestCreeper = d;
+                        }
+                        if (c.isIgnited() || c.getSwellDir() > 0) {
+                            creeperIgnited = true;
+                        }
                     }
                     if (names.size() < 6) {
                         String n = safeName(e);
@@ -267,7 +361,23 @@ final class RddCarryHint {
                 sb.append(", nearby=").append(String.join("+", names));
             }
             sb.append(", hostile=").append(hostile);
+            // ★ E2：只有范围内有苦力怕才写这两个键；没有 = 键缺失 = 闹钟不触发（脱离即恢复）。
+            if (nearestCreeper >= 0) {
+                sb.append(", creeper=").append(nearestCreeper)
+                  .append(", ignited=").append(creeperIgnited);
+            }
             sb.append(", dim=").append(body.serverLevel().dimension().location().toString());
+            // ★ E2：时间/夜晚。night 只在有昼夜循环的维度写（下界/末地不写 →
+            //   闹钟不会错误建议睡觉；这是「非主世界不错误睡觉」的采样端保证）。
+            try {
+                var level = body.serverLevel();
+                sb.append(", time=").append((int) (level.getDayTime() % 24000L));
+                if (!level.dimensionType().hasFixedTime()) {
+                    sb.append(", night=").append(level.isNight() ? "1" : "0");
+                }
+            } catch (RuntimeException ignored) {
+                // 时间拿不到就不写，不编造
+            }
         } catch (RuntimeException e) {
             return "";
         }
@@ -304,6 +414,29 @@ final class RddCarryHint {
             return n;
         } catch (RuntimeException e) {
             // 世界卸载 / 区块未加载：缺这一项不该让整份快照失败，但也**不许**写成 0
+            return -1;
+        }
+    }
+
+    /**
+     * 背包里<b>床</b>的总个数（E2 夜晚闹钟的「有床可睡」判据）。
+     *
+     * <p>按 {@code BedItem} 判（模组床只要继承它就一并覆盖）；数个数不数槽位。
+     *
+     * @return 床总数；读世界失败返回 <b>-1</b>（未知，不是 0）
+     */
+    private static int bedCount(NumenPlayer body) {
+        try {
+            var inv = body.getInventory();
+            int n = 0;
+            for (int i = 0; i < inv.getContainerSize(); i++) {
+                ItemStack st = inv.getItem(i);
+                if (!st.isEmpty() && st.getItem() instanceof BedItem) {
+                    n += st.getCount();
+                }
+            }
+            return n;
+        } catch (RuntimeException e) {
             return -1;
         }
     }

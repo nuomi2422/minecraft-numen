@@ -6,7 +6,9 @@ import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.item.BedItem;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
@@ -121,9 +123,14 @@ final class EnvSnapshot {
             sb.append(", weapon=").append(main);
         }
 
+        // ★ E2：床（睡觉可行性）。按 BedItem 语义判；读不到写 -1（未知）**不写 0**。
+        sb.append(", bed=").append(bedCount(p));
+
         // 附近实体：只列名字；有没有敌对单独给 hostile 标志
         List<String> names = new ArrayList<>();
         boolean hostile = false;
+        int nearestCreeper = -1;
+        boolean creeperIgnited = false;
         try {
             var box = p.getBoundingBox().inflate(NEARBY_RADIUS);
             for (Entity e : p.level().getEntities(p, box, x -> true)) {
@@ -132,6 +139,16 @@ final class EnvSnapshot {
                 }
                 if (e instanceof Enemy) {
                     hostile = true;
+                }
+                // ★ E2：苦力怕（闹钟数据）。距离 + 点燃态（getSwellDir()>0 = 引信已响）。
+                if (e instanceof Creeper c) {
+                    int d = (int) Math.round(Math.sqrt(p.distanceToSqr(c)));
+                    if (nearestCreeper < 0 || d < nearestCreeper) {
+                        nearestCreeper = d;
+                    }
+                    if (c.isIgnited() || c.getSwellDir() > 0) {
+                        creeperIgnited = true;
+                    }
                 }
                 if (names.size() < NEARBY_MAX) {
                     String n = safeName(e);
@@ -147,6 +164,11 @@ final class EnvSnapshot {
             sb.append(", nearby=").append(String.join("+", names));
         }
         sb.append(", hostile=").append(hostile);
+        // ★ E2：只有范围内有苦力怕才写这两个键；没有 = 键缺失 = 闹钟不触发（脱离即恢复）。
+        if (nearestCreeper >= 0) {
+            sb.append(", creeper=").append(nearestCreeper)
+              .append(", ignited=").append(creeperIgnited);
+        }
 
         // 维度与位置：position 便于复现「在哪出的问题」
         try {
@@ -154,6 +176,16 @@ final class EnvSnapshot {
             sb.append(", pos=").append((int) p.getX()).append(',').append((int) p.getY()).append(',').append((int) p.getZ());
         } catch (RuntimeException ignored) {
             // 同上：维度信息拿不到就不写，不编造
+        }
+        // ★ E2：时间/夜晚。night 只在有昼夜循环的维度写（下界/末地不写 →
+        //   闹钟不会错误建议睡觉；这是「非主世界不错误睡觉」的采样端保证）。
+        try {
+            sb.append(", time=").append((int) (p.level().getDayTime() % 24000L));
+            if (!p.level().dimensionType().hasFixedTime()) {
+                sb.append(", night=").append(p.level().isNight() ? "1" : "0");
+            }
+        } catch (RuntimeException ignored) {
+            // 时间拿不到就不写，不编造
         }
         return sb.toString();
     }
@@ -176,6 +208,29 @@ final class EnvSnapshot {
             for (int i = 0; i < inv.getContainerSize(); i++) {
                 ItemStack st = inv.getItem(i);
                 if (!st.isEmpty() && st.get(DataComponents.FOOD) != null) {
+                    n += st.getCount();
+                }
+            }
+            return n;
+        } catch (RuntimeException e) {
+            return -1;
+        }
+    }
+
+    /**
+     * 背包里<b>床</b>的总个数（E2 夜晚闹钟的「有床可睡」判据）。
+     *
+     * <p>按 {@code BedItem} 判（模组床只要继承它就一并覆盖）；数个数不数槽位。
+     *
+     * @return 床总数；读世界失败返回 <b>-1</b>（未知，不是 0）
+     */
+    private static int bedCount(NumenPlayer p) {
+        try {
+            var inv = p.getInventory();
+            int n = 0;
+            for (int i = 0; i < inv.getContainerSize(); i++) {
+                ItemStack st = inv.getItem(i);
+                if (!st.isEmpty() && st.getItem() instanceof BedItem) {
                     n += st.getCount();
                 }
             }
