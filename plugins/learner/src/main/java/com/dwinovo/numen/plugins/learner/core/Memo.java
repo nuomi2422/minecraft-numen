@@ -116,7 +116,19 @@ public record Memo(
         String target;
         if (!facts.has("target") && !facts.hostileNearby() && !facts.passiveNearby()) {
             // 「认不出来」→ UNKNOWN，不编一个看起来对的家族（B21 同族）
-            target = r.shortCircuited() && r.carry().isEmpty() ? "UNKNOWN" : "NONE";
+            //
+            // ★ 2026-10-06 修：这里原来判的是 `r.shortCircuited() && r.carry().isEmpty()` ——
+            //   拿「链短路且没带出东西」当「快照读不懂」的代理。这个代理**会被
+            //   已批准的携带器规则污染**：``CarrierRuleStore`` 把已批准规则排在默认链
+            //   **之前**（`append()` 的有意设计），只要有一条已批准规则不成立且它的
+            //   `fix` 为空，链就在第 0 级短路且 carry 为空 ⇒ 一份**完全可读**的快照
+            //   （`hostile=false`、`armor=none`…）被判成 UNKNOWN。
+            //   实测症状：批准一条规则后，所有同伴的携带器目标全变 UNKNOWN。
+            //
+            //   改用**可读性**判据（与 `carrierSignal()` 的 `snapshot_parsed` 同一个方法），
+            //   于是两个出口口径一致：`snapshot_parsed=false` ⟺ 这里 UNKNOWN。
+            //   「链短路」是规则语义，「读不懂」是数据语义 —— 两者不是一回事，不能互相代理。
+            target = hasReadableKeys() ? "NONE" : "UNKNOWN";
         } else if (facts.hostileNearby()) {
             target = "HOSTILE_NEARBY";
         } else {

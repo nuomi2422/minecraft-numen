@@ -243,4 +243,29 @@ public final class AcxFacadeTools {
             return facade.library(req);
         }
     }
+
+    /**
+     * {@code acx_blocks}：列出当前真的可用的积木（名字 + 参数 + 输出）。
+     *
+     * <p><b>为什么要有它</b>（2026-10-06 用户实机验收）：干活 AI 写 AC 时看不到积木清单，
+     * 只能照抄提示词里的示例，而那个示例里写着<b>不存在的</b> {@code block:"move"}
+     * （真名 {@code goto}）。实测后果：照抄被拒 → 连拒之后学会交「最小可解析空壳」
+     * （只读状态、零动作），而那个空壳会真的被执行、真的报 SUCCESS。
+     *
+     * <p><b>写 AC 之前先调它</b>：清单外的 block 名一律不存在，别猜。
+     */
+    public static final class Blocks extends FacadeTool {
+        public Blocks(AcxPlugin plugin) {
+            super(plugin, "acx_blocks",
+                    "列出当前真的可用的 AC 积木（名字 / 参数 / 输出字段）以及别名。"
+                            + "★ 写 AC 的 step.block 之前先调它：清单外的名字 = 不存在，不要猜、不要自创"
+                            + "（会被静态校验拒收）；只放只读积木的「动作脚本」是空壳，也会被拒。",
+                    Schema.none());
+        }
+
+        @Override
+        Map<String, Object> invoke(AcxFacade facade, Map<String, Object> req) {
+            return facade.blocks(req);
+        }
+    }
 }

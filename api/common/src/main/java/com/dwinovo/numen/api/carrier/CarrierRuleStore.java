@@ -69,8 +69,13 @@ public final class CarrierRuleStore {
 
     /** 重读已批准规则（批准/拒收之后调；不必重启游戏就能生效）。 */
     public static synchronized void reload() {
-        List<CarrierChain.Rule> extra = loadApproved();
-        OVERRIDE = extra.isEmpty() ? null : append(extra);
+        // ★ 2026-10-06：改用 loadApprovedDetailed 并把诊断留下来 ——
+        //   原来坏行被静默跳过，而 approve() 的文案还教用户「要改就手工编辑这个文件」，
+        //   于是手改打错一个词 ⇒ 规则静默消失、界面仍显示「已批准」。
+        Loaded loaded = loadApprovedDetailed(configDir);
+        lastLoad = new LoadReport(loaded.lines(), loaded.rules().size(),
+                loaded.broken(), loaded.reasons());
+        OVERRIDE = loaded.rules().isEmpty() ? null : append(loaded.rules());
     }
 
     /**
@@ -312,10 +317,57 @@ private static String toJson(String name, String when, List<String> carry, List<
     }
 
     private static List<CarrierChain.Rule> loadApproved(Path base) {
+        return loadApprovedDetailed(base).rules();
+    }
+
+    /**
+     * 最近一次 {@link #reload()} 的加载诊断。
+     *
+     * <p><b>为什么必须有它</b>（2026-10-06，DL-14/DL-15）：原实现跳过坏行时
+     * <b>不计数、不留痕、不报告</b> —— 三处 {@code continue} 全是静默。
+     * 而 {@link #approve} 的报错文案还<b>主动教用户</b>「要改就人工编辑 approved.jsonl」，
+     * 于是「照提示手改 → 打错一个 when 词 → 规则静默从生效链消失 → 审批界面仍显示已批准」。
+     *
+     * <p><b>这类失败是本工程最怕的一种：不报错、不崩溃，只是安静地没有生效。</b>
+     *
+     * @param lines  有效数据行数（空行与 {@code #} 注释不算）
+     * @param loaded 真的进了生效链的规则数
+     * @param broken 被跳过的坏行数
+     * @param reasons 每条坏行的原因（带行号与规则名，可直接给人看）
+     */
+    public record LoadReport(int lines, int loaded, int broken, List<String> reasons) {
+
+        public LoadReport {
+            reasons = reasons == null ? List.of() : List.copyOf(reasons);
+        }
+
+        public String summary() {
+            return broken == 0
+                    ? "approved=" + loaded + " broken=0"
+                    : "approved=" + loaded + " / broken=" + broken
+                      + "（有已批准的规则没生效！）";
+        }
+    }
+
+    private record Loaded(List<CarrierChain.Rule> rules, int lines, int broken, List<String> reasons) {
+    }
+
+    private static volatile LoadReport lastLoad = new LoadReport(0, 0, 0, List.of());
+
+    /** 最近一次加载诊断（供 {@code learner_carrier list} 等只读出口展示）。 */
+    public static LoadReport lastLoad() {
+        return lastLoad;
+    }
+
+    private static Loaded loadApprovedDetailed(Path base) {
         List<CarrierChain.Rule> out = new ArrayList<>();
+        List<String> reasons = new ArrayList<>();
+        int lines = 0;
+        int broken = 0;
         Path f = approvedFile(base);
         if (!Files.isRegularFile(f)) {
-            return out;
+            // 文件不存在 ≠ 文件是空的；这里如实返回 0/0（调用方按「还没批过」理解）。
+            return new Loaded(List.of(), 0, 0, List.of());
         }
         try {
             for (String line : Files.readAllLines(f, StandardCharsets.UTF_8)) {
@@ -323,10 +375,13 @@ private static String toJson(String name, String when, List<String> carry, List<
                 if (s.isEmpty() || s.startsWith("#")) {
                     continue;
                 }
+                lines++;
                 JsonObject o;
                 try {
                     o = JsonParser.parseString(s).getAsJsonObject();
                 } catch (RuntimeException ex) {
+                    broken++;
+                    reasons.add("第 " + lines + " 行不是 JSON 对象: " + clip(ex.getMessage()));
                     continue;
                 }
                 String name = str(o, "name");
@@ -334,21 +389,37 @@ private static String toJson(String name, String when, List<String> carry, List<
                 List<String> carry = lines(o, "carry");
                 List<String> fix = lines(o, "fix");
                 if (name.isBlank() || carry.isEmpty()) {
+                    broken++;
+                    reasons.add("第 " + lines + " 行缺 " + (name.isBlank() ? "name" : "carry")
+                            + "（规则名: " + (name.isBlank() ? "(无)" : name) + "）");
                     continue;
                 }
                 Predicate<CarrierChain.Facts> p;
                 try {
                     p = compile(when);
                 } catch (RuntimeException ex) {
+                    // ★ 这里原来是一条完全静默的 continue：用户照 approve() 的提示手改文件、
+                    //   打错一个词，规则就从生效链消失，而界面仍显示「已批准」。
+                    broken++;
+                    reasons.add("第 " + lines + " 行 when 编译失败（" + name + "，when=\"" + when
+                            + "\"）: " + clip(ex.getMessage()));
                     continue;
                 }
-                CarrierChain.Rule r = new CarrierChain.Rule(name, p, carry, fix);
-                out.add(r);
+                out.add(new CarrierChain.Rule(name, p, carry, fix));
             }
         } catch (IOException e) {
-            return out;
+            // 读不到 ≠ 空。如实报告，别把「读不到」当「没有规则」。
+            return new Loaded(List.of(), lines, broken, List.of("approved.jsonl 读取失败: " + e));
         }
-        return out;
+        return new Loaded(List.copyOf(out), lines, broken, List.copyOf(reasons));
+    }
+
+    private static String clip(String s) {
+        if (s == null) {
+            return "";
+        }
+        String t = s.trim().replaceAll("\\s+", " ");
+        return t.length() <= 160 ? t : t.substring(0, 160) + "…";
     }
 
     // ── when 表达式：编译成谓词 ─────────────────────────────────────────────
@@ -485,7 +556,7 @@ private static String toJson(String name, String when, List<String> carry, List<
             String val = tok.substring(i + op.length()).trim();
             if (!isNumericKey(key)) {
                 // 明确报错，不静默猜：'foo<=3' 该不该支持要人工定，不能默认按字符串比
-                throw new IllegalArgumentException("数值比较只认这几个键: hp / food，收到 '"
+                throw new IllegalArgumentException("数值比较只认这几个键: hp / food / food_items，收到 '"
                         + tok + "'。其他条件用相等式，如 has=weapon / band=LOW / hostile=1。");
             }
             int n;
@@ -520,7 +591,9 @@ private static String toJson(String name, String when, List<String> carry, List<
                 return hasItem("hand");
             default:
                 throw new IllegalArgumentException("不认识的 when 条件: '" + tok + "'。"
-                        + "支持: hp<=N / hp>=N / hp<N / hp>N / food<=N / food>=N / food<N / food>N /"
+                        + "支持: hp<=N / hp>=N / hp<N / hp>N /"
+                        + " food<=N / food>=N / food<N / food>N /"
+                        + " food_items<=N / food_items>=N / food_items<N / food_items>N /"
                         + " band=X / hostile=1 / passive=1 /"
                         + " has=weapon|armor|hand / hostile / passive / low_hp / critical /"
                         + " has_weapon / has_armor / unknown_hand（用 , 连接）"
@@ -543,16 +616,20 @@ private static String toJson(String name, String when, List<String> carry, List<
                     + "food<=5 是「快饿死了」而不是「没东西吃了」；后者需要先采集背包食物数。";
 
     private static boolean isNumericKey(String key) {
-        return "hp".equals(key) || "food".equals(key);
+        // ★ 2026-10-06 加 food_items：**饱食度（food）≠ 背包里有没有吃的（food_items）**。
+        //   「饿了」要提醒吃东西、「没食物了」要提醒去找食物 —— 两件事，两个键。
+        //   food_items 由快照生产端写（RddCarryHint / EnvSnapshot），读不到时是 -1（未知），
+        //   而 num() 的 -1 不满足任何比较 ⇒ 不会在「读不到」时误触发。
+        return "hp".equals(key) || "food".equals(key) || "food_items".equals(key);
     }
 
-    /** 取数值事实；取不到返回 -1（**不是 0** —— 0 是个合法的饱食度值）。 */
+    /** 取数值事实；取不到返回 -1（**不是 0** —— 0 是个合法的饱食度/库存值）。 */
     private static int num(CarrierChain.Facts f, String key) {
         if ("hp".equals(key)) {
             return f.hasHp() ? f.hp() : -1;
         }
-        // food：快照里是纯数字（EnvSnapshot 写 food=<level>），不是 "6/20" 那种
-        String raw = f.get("food");
+        // food / food_items：快照里都是纯数字（写 <key>=<int>），不是 "6/20" 那种
+        String raw = f.get(key);
         if (raw == null || raw.isBlank()) {
             return -1;
         }

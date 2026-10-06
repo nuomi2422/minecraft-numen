@@ -2,7 +2,9 @@ package com.dwinovo.numen.plugins.acx;
 
 import com.dwinovo.numen.acx.api.AcxDefinition;
 import com.dwinovo.numen.acx.api.AcxToolPort;
+import com.dwinovo.numen.acx.core.AcxAliases;
 import com.dwinovo.numen.acx.core.AcxArtifactAdopter;
+import com.dwinovo.numen.acx.core.AcxBlockCatalog;
 import com.dwinovo.numen.acx.core.AcxFacade;
 import com.dwinovo.numen.acx.core.AcxHostBridge;
 import com.dwinovo.numen.acx.core.AcxLoader;
@@ -216,6 +218,15 @@ public final class AcxPlugin implements NumenPlugin {
     /** B6/S2：学习者 AC 草稿的采纳口（只 publish 成 GENERATED，永不 approve）。 */
     private volatile AcxArtifactAdopter artifactAdopter;
 
+    /**
+     * 当前积木清单文本（{@link #writeBlockCatalog} 写出时一并留在这里）。
+     *
+     * <p>留一份的理由：{@code acx_blocks} 工具与 {@code blocks.txt} 文件必须给 AI
+     * <b>完全一样</b>的内容 —— 学习者读文件、游戏内 AI 调工具，两条路漂了就会出现
+     * 「一边说这个积木能用、另一边说没有」这种最难查的不一致。
+     */
+    private volatile String blockCatalogText;
+
     @Override
     public void setup(NumenApi numen) {
         this.api = numen;
@@ -228,10 +239,14 @@ public final class AcxPlugin implements NumenPlugin {
         numen.registerTool(new AcxFacadeTools.Approve(this));
         numen.registerTool(new AcxFacadeTools.Rollback(this));
         numen.registerTool(new AcxFacadeTools.Library(this));
-        // 第 9 个工具（B6/S2）：采纳学习者 AC 草稿。默认路径已在 ensureReady 跑过一次，
+        // 第 9 个门面（2026-10-06）：列出当前真的可用的积木。
+        // 干活 AI 此前写 AC 只能猜 block 名（提示词示例里还写着不存在的 "move"），
+        // 连拒之后学会交只读空壳 —— 给一个能问的口子比让它猜便宜得多。
+        numen.registerTool(new AcxFacadeTools.Blocks(this));
+        // 再加一个（B6/S2）：采纳学习者 AC 草稿。默认路径已在 ensureReady 跑过一次，
         // 这里给「立刻问出草稿有没有被接住」的口子 —— 否则「投递了但没被接」没有观测面。
         numen.registerTool(new AcxAdoptDraftsTool(this));
-        LOG.info("[acx] 8 个门面 + acx_adopt_drafts 已注册（惰性初始化：首次调用时桥接工具并加载脚本）");
+        LOG.info("[acx] 9 个门面 + acx_adopt_drafts 已注册（惰性初始化：首次调用时桥接工具并加载脚本）");
     }
 
     /** 幂等惰性初始化；失败会抛出，由门面壳转成失败回执。 */
@@ -258,6 +273,16 @@ public final class AcxPlugin implements NumenPlugin {
             }
             AcxHostBridge.Report bridge = AcxHostBridge.registerAll(
                     registry, ports, NumenToolBridgeX.probeFor(this::currentCompanion));
+
+            // ★ 2026-10-06：把「真的注册了哪些积木」写成文件，供跨插件的 AI 照抄。
+            //
+            // 为什么必须自动化：学习者（plugins/learner）与 acx 之间不能 import
+            // （numen-plugin.gradle:37-44 封死），于是它此前**没有任何积木清单**，
+            // 只能照抄提示词里那个手写示例 —— 而那个示例写着不存在的 block "move"。
+            // 后果实测：连拒三次后 AI 学会交「最小可解析空壳」（只读状态、零动作），
+            // 却真的被执行、真的报 SUCCESS。
+            // 跨插件沿用既有做法：投料方写文件、消费方只读（见 63 号 §3）。
+            writeBlockCatalog(base, ports, bridge);
 
             AcxLoader.LoadReport load = AcxLoader.loadAll(libRoot, registry, false, true);
             for (String err : load.errors()) {
@@ -307,7 +332,10 @@ public final class AcxPlugin implements NumenPlugin {
                 return t;
             });
             sessions = new AcxSessionManager(runner, executor);
-            facade = new AcxFacade(sessions, library::active, library::version, registry, library);
+            facade = new AcxFacade(sessions, library::active, library::version, registry, library,
+                    // ★ 单一真源：acx_blocks 与 blocks.txt 用**同一段文本**（学习者读文件、
+                    //   游戏内 AI 调工具，两条路不可能漂）。
+                    () -> blockCatalogText);
 
             ready = true;
             readySummary = "桥接工具 " + bridge.registered().size()
@@ -339,6 +367,35 @@ public final class AcxPlugin implements NumenPlugin {
      * 走 GENERATED/PENDING，必须 {@code acx_approve} 人工放行，人工批准那道闸才不形同虚设。
      * 用户自己放进 config 的 .ac 不在 jar 内置脚本名单 名单里，同样不自动批准。</p>
      */
+    /**
+     * 把当前注册表里的积木渲染成 {@code <config>/acx/blocks.txt}，供跨插件的 AI 只读照抄。
+     *
+     * <p><b>为什么是文件而不是接口</b>：{@code numen-plugin.gradle:37-44} 把跨插件 import
+     * 在编译期封死，{@code plugins/learner} 看不见 {@code plugins/acx} 的任何类。
+     * 既有先例就是「投料方写文件 + 消费方只读」（见 63 号 §3）。
+     *
+     * <p><b>写失败不许拖垮 acx</b>：它只是参考资料，执行链不依赖它 —— 但必须留日志，
+     * 否则「AI 看不到清单」会退化成查不到根因的哑故障。
+     */
+    private void writeBlockCatalog(Path base, List<AcxToolPort> ports, AcxHostBridge.Report bridge) {
+        try {
+            String text = AcxBlockCatalog.render(ports, AcxAliases.all());
+            blockCatalogText = text;
+            Path f = base.resolve("blocks.txt");
+            Path tmp = base.resolve("blocks.txt.tmp");
+            Files.writeString(tmp, text, java.nio.charset.StandardCharsets.UTF_8);
+            try {
+                Files.move(tmp, f, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(tmp, f, StandardCopyOption.REPLACE_EXISTING);
+            }
+            LOG.info("[acx] 积木清单已写出（{} 真名 / {} 别名）: {}",
+                    bridge.registered().size(), bridge.aliasNames().size(), f);
+        } catch (Exception e) {
+            LOG.warn("[acx] 积木清单写出失败（不影响执行，但 AI 会看不到可用积木）: {}", e.toString());
+        }
+    }
+
     private void autoApproveBundled(FileAcxLibrary library, AcxLoader.LoadReport load) {
         List<String> approved = new ArrayList<>();
         for (AcxDefinition def : load.registered().values()) {

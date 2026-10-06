@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.learner.core;
 
 import com.dwinovo.numen.api.carrier.CarrierChain;
 import com.dwinovo.numen.api.carrier.ItemSemantics;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -20,6 +21,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 「后续级<b>确实没被调用</b>」。
  */
 class CarrierChainTest {
+
+    /**
+     * ★ 进程级生效链必须每个用例刷回 DEFAULT。
+     *
+     * <p>不刷的后果（2026-10-06 实测）：别的测试类批准过的规则留在静态
+     * {@code OVERRIDE} 里，本类「默认链的整体行为」那几条会读到它 ——
+     * 短路位置整体前移，{@code why()} 里冒出陌生规则名、{@code carryList()} 变空。
+     */
+    @BeforeEach
+    void isolateCarrierStore() {
+        CarrierStoreIsolation.installEmpty();
+    }
 
     /** 直接跑链并把 facts 的日志带出来。 */
     private record Run(CarrierChain.Result r, CarrierChain.Facts facts) {}

@@ -5,6 +5,7 @@ import com.dwinovo.numen.api.carrier.CarrierRuleStore;
 import com.dwinovo.numen.api.carrier.CarrierRules;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.UUID;
@@ -222,5 +223,68 @@ class CarrierApprovalFlowTest {
         assertTrue(firstDefault >= 0, "默认链第一级必须在链里");
         assertTrue(ours < firstDefault,
                 "★ 已批准规则必须排在默认链之前（人工批准 = 以这条为准）");
+    }
+
+    // ── ★ 已批准规则不得污染「读不懂 / 没有目标」的判据（2026-10-06）──────────
+
+    /**
+     * 回归护栏：{@code Memo.assessCarrier} 曾拿「链短路且 carry 为空」当
+     * 「快照读不懂」的代理。已批准规则排在默认链之前 ⇒ 一条不成立且 {@code fix}
+     * 为空的已批准规则会让链在第 0 级短路且 carry 为空 ⇒
+     * <b>一份完全可读的快照被判成 UNKNOWN</b>（所有同伴的携带器目标一起变）。
+     *
+     * <p>症状最早以「假红」形式暴露：{@code CarrierChainTest} /
+     * {@code CarrierSignalB21Test} / {@code EnvSnapshotFormatTest} 单跑全绿、
+     * 与 {@code CarrierApprovalFlowTest} 合跑 6 条红（见 {@code CarrierStoreIsolation}）。
+     */
+    @Test
+    void approvedRuleWithEmptyFix_doesNotFlipReadableSnapshotToUnknown() {
+        Path dir = tmp("unknown-flip");
+        CarrierRuleStore.install(dir);
+        CarrierRuleStore.submitCandidate(dir, "a1", "{\"name\":\"bring_food\","
+                + "\"when\":\"food<=5\",\"carry\":[\"cooked_beef\"]}", "rev", "m-1");
+        CarrierRuleStore.approve(dir, "a1", "低饱食度时带吃的");
+
+        // 该规则在 food=20 时不成立，草稿的 fix 为空 ⇒ 链在第 0 级短路且 carry 为空。
+        Memo m = new Memo("m-1", "p", "s", "t",
+                "hp=20/20, food=20, armor=none, weapon=none, hostile=false", 1L);
+        Memo.CarrierAssessment a = m.assessCarrier();
+
+        assertEquals("NONE", a.target(),
+                "快照可读（hostile=false 是有效观测）⇒ 必须 NONE，"
+                        + "不许被「已批准规则短路」污染成 UNKNOWN。why=" + a.why());
+    }
+
+    // ── ★ 坏行不许静默跳过（DL-14 / DL-15，2026-10-06）──────────────────────
+
+    /**
+     * 那条路是 {@code approve()} 的报错文案<b>自己指过去</b>的：
+     * 「要改就人工编辑 approved.jsonl」。用户照做、打错一个 when 词
+     * （{@code low_hp} 写成 {@code lowhp}）⇒ 原实现静默 {@code continue} ⇒
+     * 规则从生效链消失，而候选表里它仍显示 {@code APPROVED}。
+     */
+    @Test
+    void brokenApprovedLine_isCountedAndNamed_notSilentlyDropped() throws Exception {
+        Path dir = tmp("broken-approved");
+        CarrierRuleStore.install(dir);
+        CarrierRuleStore.submitCandidate(dir, "a1",
+                "{\"name\":\"good_rule\",\"when\":\"hostile\",\"carry\":[\"战斗经验\"]}", "rev", "m-1");
+        CarrierRuleStore.approve(dir, "a1", "先批一条好的");
+
+        // 手工追加一行坏 when —— 正是 approve() 文案指引用户去做的那件事。
+        Path f = dir.resolve("carriers").resolve("approved.jsonl");
+        Files.writeString(f, "{\"name\":\"typo_rule\",\"when\":\"lowhp\",\"carry\":[\"食物\"]}\n",
+                java.nio.charset.StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
+        CarrierRuleStore.reload();
+
+        var rep = CarrierRuleStore.lastLoad();
+        assertEquals(1, rep.broken(), "坏行必须被计数（原来完全静默）: " + rep.reasons());
+        assertEquals(1, rep.loaded(), "好的那条仍要生效 —— 一条坏行不许拖垮别的");
+        assertTrue(String.valueOf(rep.reasons()).contains("typo_rule"),
+                "要点名是哪条规则坏了: " + rep.reasons());
+        assertTrue(String.valueOf(rep.reasons()).contains("lowhp"),
+                "要点名是哪个词不认（否则用户不知道改哪里）: " + rep.reasons());
+        assertTrue(CarrierRuleStore.effective().stream().anyMatch(r -> "good_rule".equals(r.name())),
+                "好规则必须还在生效链里");
     }
 }

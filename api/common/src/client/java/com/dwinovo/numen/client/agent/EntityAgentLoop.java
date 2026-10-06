@@ -119,6 +119,23 @@ public final class EntityAgentLoop {
     /** Circuit breaker: stop auto-retrying after this many consecutive failures. */
     private static final int MAX_COMPACT_FAILURES = 3;
 
+    /**
+     * 连续多少个<b>回合</b>被端点以 4xx 拒收后，把它升格成「端点故障」并停止开新轮。
+     *
+     * <p>为什么是「回合」而不是「次」：一个回合里有多步工具循环，失败发生在某一步上；
+     * 计「次」会把同一回合的尝试+重试算两次，阈值就失去意义。
+     *
+     * <p>为什么要有这条（2026-10-06 实机）：某局 18:51 / 18:57 / 19:00 / 19:03 / 19:08
+     * 连续 4 个回合全部以 HTTP 400 收场（body 为空、同 payload 重试同样 400），
+     * 而 {@link #endpointProblem()} 原来只认「没绑 / 没 key」⇒ BrainGate 一直报「可以开轮」
+     * ⇒ 每一轮催工都触发一次注定失败的调用，烧光 3 次重规划预算、卡了 16 分钟。
+     *
+     * <p>判据与冷却的真实实现在
+     * {@link com.dwinovo.numen.agent.http.EndpointRejectionGuard}（纯策略、可离线单测）。
+     */
+    private static final int MAX_CONSECUTIVE_REJECTED_TURNS =
+            com.dwinovo.numen.agent.http.EndpointRejectionGuard.DEFAULT_MAX_TURNS;
+
     private static final String COMPACT_SYSTEM_PROMPT =
             "You are a helpful AI assistant tasked with summarizing conversations "
             + "between a Minecraft companion entity (the Numen) and its owner.";
@@ -691,6 +708,9 @@ public final class EntityAgentLoop {
      */
     public void clearGoal(String why) {
         if (goal == null) {
+            // 引擎侧本来就没目标。但**接管者那边可能正跑着链**（它接管时把 goal 置空了），
+            // 所以这条路径绝不能顺手去通知接管者 —— 只有 {@link #clearGoalEverything} 有权通知。
+            Constants.LOG.debug("[numen-entity#{}] 目标收工：无引擎侧目标，跳过", entityUuid);
             return;
         }
         Constants.LOG.info("[numen-entity#{}] 目标收工({} 轮,{}):{}",
@@ -700,6 +720,39 @@ public final class EntityAgentLoop {
         CompanionHome.setGoal(entityUuid, null);
         // 通知接管者目标被清掉（RDD 清链等）；无人认领则无事。
         com.dwinovo.numen.agent.goal.GoalSinks.clear(entityUuid, why == null ? cleared : why);
+    }
+
+    /**
+     * <b>主人喊停</b>：清的是「全部」——不管目标挂在引擎自己手里，还是挂在接管者（RDD 任务链）手里。
+     *
+     * <h2>为什么必须单开一条路（2026-10-03 实机 bug：{@code /goal clear} 根本不生效）</h2>
+     * 接管者在 {@code GoalSinks.dispatch} 返回 true 后会把 {@link #goal} <b>置空</b> —— 目标整个
+     * 活在接管者的任务链里。而 {@code /goal clear} 原来先判 {@code goal == null} 就
+     * 「本来就没有目标。」返回，{@code clearGoal} 又在第一行同样判 {@code goal == null} 返回，
+     * <b>两处短路把 {@link GoalSinks#clear} 整条通路掐断了</b>：RDD 的 RUNTIMES / DECOMPOSING /
+     * 磁盘交接文件一个都没清，同伴照旧跑、照旧被催。实机日志里搜「已接收目标清除请求」0 命中，
+     * 印证了这条命令从来没成功过一次。
+     *
+     * @return 真的清掉了东西（引擎侧有目标，或接管者认领了这次清除）→ {@code true}；
+     *         确实什么都没有 → {@code false}（这时才回「本来就没有目标」）
+     */
+    public boolean clearGoalEverything(String why) {
+        if (goal != null) {
+            clearGoal(why); // 内部已通知接管者
+            return true;
+        }
+        Constants.LOG.info("[numen-entity#{}] 目标收工({}): 引擎侧无目标，转交接管者",
+                entityUuid, why == null ? "主人清掉" : why);
+        return com.dwinovo.numen.agent.goal.GoalSinks.clear(entityUuid, why == null ? "主人清掉" : why);
+    }
+
+    /**
+     * 接管者（RDD 等）当前持有的目标描述，供 {@code /goal} 无参时如实显示；没人接管 → {@code null}。
+     *
+     * @see GoalSinks#describe(UUID)
+     */
+    public String externalGoalDescription() {
+        return com.dwinovo.numen.agent.goal.GoalSinks.describe(entityUuid);
     }
 
     /**
@@ -895,6 +948,72 @@ public final class EntityAgentLoop {
         return isBusy() || hasQueuedPrompts();
     }
 
+    /** {@code /stop} 干了什么，如实报给主人看。 */
+    public record StopReport(boolean wasBusy, int queuedDropped, int overflowDropped) {}
+
+    /**
+     * 主人彻底喊停（{@code /stop}）——<b>止血</b>用的一条。
+     *
+     * <h2>为什么光有「停止」键和 {@code /goal clear} 还不够（2026-10-04 实机 bug）</h2>
+     * 两者都只管<b>目标</b>，不管<b>输入队列</b>。而同伴的身体感知层（{@code body_log}：
+     * 溺水、掉血、位置变化…）不受目标约束，它照样源源不断往队列里塞事件；队列一到
+     * 阈值 {@code shouldDrain} 就恒真，于是每一 tick 都在开轮、开轮就调 LLM。
+     * 实机抓到：清掉 RDD 任务链之后，同伴仍在 (560,59,14x) 反复溺水
+     * （"214 times I have had to surface for air in this same spot"），队列涨到 200 条
+     * （{@link com.dwinovo.numen.event.EventQueue#DEFAULT_CAP}），
+     * {@code ai.jsonl} 45 秒涨 2501 字节——<b>链清了，钱没停</b>。
+     *
+     * <p>所以这条命令做三件事：{@link #abort()}（作废在飞的 LLM 回应、取消未决工具调用、
+     * 连带 {@link com.dwinovo.numen.agent.goal.GoalSinks} 清掉接管者的链）、
+     * <b>把队列整条倒掉</b>（含溢出丢弃的记账）、以及靠 {@code abort} 已经上的
+     * {@link AgentTurnPause#OWNER_INTERRUPT} 闩住后续。
+     * 那个闩是关键：{@link AgentTurnPause#afterWakeEvent} 只把
+     * {@link AgentTurnPause#RECOVERABLE_FAILURE} 复位成 {@code NONE}，
+     * <b>事件叫不醒 {@code OWNER_INTERRUPT}</b>——所以「她又掉水里了」这种急件
+     * 也不会把她重新叫起来烧钱。
+     *
+     * @return 如实报出：当时在不在忙、倒掉几条、其中几条是溢出丢的
+     */
+    public StopReport ownerStop() {
+        boolean wasBusy = isBusy();
+        int dropped = queue.droppedCount();
+        abort();
+        int queued = queue.size();
+        // takeEntries 走的是 EventQueue 自己的口径：取走全部并清空，顺带把溢出记账
+        // 折成一条说明（我们只要计数，所以拿它的返回值不用）。
+        queue.takeEntries(System.currentTimeMillis());
+        Constants.LOG.info("[numen-entity#{}] owner stop: busy={}, drained {} queued (+{} overflow-dropped)",
+                entityUuid, wasBusy, queued, dropped);
+        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "owner_stop", java.util.Map.of(
+                "companion_id", entityUuid.toString(),
+                "was_busy", wasBusy,
+                "drained", queued,
+                "overflow_dropped", dropped));
+        return new StopReport(wasBusy, queued, dropped);
+    }
+
+    /**
+     * 解除 {@link AgentTurnPause#OWNER_INTERRUPT} 闩（{@code /stop resume}）。
+     *
+     * <p>跟 {@link #enqueueOwnerWords} 那条复位是同一个动作，所以「主人说一句话」
+     * 本来就能把她叫回来——这条命令只是让主人不必先想一句废话。
+     *
+     * @return 之前是不是真的被闩着（{@code false} = 本来就在跑，不用恢复）
+     */
+    public boolean ownerResume() {
+        boolean wasLatched = turnPause == AgentTurnPause.OWNER_INTERRUPT;
+        turnPause = AgentTurnPause.NONE;
+        if (wasLatched) {
+            Constants.LOG.info("[numen-entity#{}] owner resumed (OWNER_INTERRUPT latch cleared)", entityUuid);
+        }
+        return wasLatched;
+    }
+
+    /** 此刻是不是被 {@code /stop} 闩住了（面板/命令的判据，不另存副本）。 */
+    public boolean stoppedByOwner() {
+        return turnPause == AgentTurnPause.OWNER_INTERRUPT;
+    }
+
     /**
      * Owner-triggered interrupt — the chat GUI's "Stop" button. Mirrors Claude
      * Code's {@code handleCancel} (useCancelRequest.ts) two-priority rule:
@@ -926,7 +1045,19 @@ public final class EntityAgentLoop {
     private void abort(boolean stopBody) {
         // 主人按停止 = 不要她接着跑了。目标跟着收工,否则这一轮刚断下一轮又自己续上,
         // 停止键就成了摆设。想接着做再说一次 /goal,成本就是一句话。
-        clearGoal(goal == null ? null : "按停止收工了:" + goal.objective());
+        //
+        // ⚠️ 2026-10-04 实机 bug（钱）：这里原来调的是 {@code clearGoal}，而接管者
+        // （RDD 任务链）在 {@code GoalSinks.dispatch} 返回 true 后把 {@link #goal} 置空了，
+        // {@code clearGoal} 第一行就 return、**不通知 sink** ⇒ 面板上那个「停止」键
+        // 按下去，引擎侧目标收工了，RDD 的链照跑、LLM 照调，钱照烧。
+        // 主人按停止的语义就是「全部停」，所以走 {@link #clearGoalEverything} 去问接管者。
+        // 断线路径（{@code quiesce} → {@code abort(false)}）保持原样：它明写「不叫停身体」，
+        // 也不该顺手把盘上的任务链删掉（下次开游戏还要恢复它接着干）。
+        if (stopBody) {
+            clearGoalEverything(goal == null ? null : "按停止收工了:" + goal.objective());
+        } else {
+            clearGoal(goal == null ? null : "主人断开:" + goal.objective());
+        }
         // 语音无条件先闭嘴:不管打断的是在飞的 turn 还是排队的 prompt,
         // 主人按下 Stop 时还在播/待播的语音都不该继续。
         presenter.interruptVoice();
@@ -1214,13 +1345,22 @@ public final class EntityAgentLoop {
         if (!queue.shouldDrain(now, level)) {
             return;
         }
+        // ⚠️ 2026-10-04：这条日志原来打在 tryStartTurn() **之前**，于是队列一不空就无条件刷
+        // —— 实机一局 8913 条 / 11 分钟（每 295ms 一条），而轮子一次都没真转起来。
+        // 现在只在真开出去时才记，且三个计数必须**在开轮之前**抓：开轮会把队列排空，
+        // 事后再问 size() 只会读到 0，日志就成了一句假话。
+        int size = queue.size();
+        boolean urgent = queue.hasUrgent();
+        long oldestAge = queue.oldestAgeMs(now);
+        int threshold = EventQueue.thresholdOf(level);
+        if (!tryStartTurn()) {
+            return;
+        }
         Constants.LOG.info("[numen-queue#{}] 主动开轮:{}(攒了 {} 条/阈值 {},最老 {}s/上限 {}s,档位 {})",
                 entityUuid,
-                queue.hasUrgent() ? "有急件"
-                        : (queue.size() >= EventQueue.thresholdOf(level) ? "攒够了" : "攒久了"),
-                queue.size(), EventQueue.thresholdOf(level),
-                queue.oldestAgeMs(now) / 1000L, EventQueue.maxWaitMsOf(level) / 1000L, level);
-        tryStartTurn();
+                urgent ? "有急件" : (size >= threshold ? "攒够了" : "攒久了"),
+                size, threshold,
+                oldestAge / 1000L, EventQueue.maxWaitMsOf(level) / 1000L, level);
     }
 
 
@@ -1278,6 +1418,25 @@ public final class EntityAgentLoop {
         }
         if (!lib.resolve(providerEntryId).hasApiKey()) {
             return I18n.get(ModLanguageData.Keys.ENDPOINT_NO_KEY, lib.get(providerEntryId).name());
+        }
+        // ★ 2026-10-06：端点<b>能连上但连续拒收</b>（HTTP 4xx）也要算端点故障。
+        //   原来只认「没绑 / 没 key」⇒ 一直报「可以开轮」⇒ 每轮催工都白烧一次注定失败的调用，
+        //   实测烧光 3 次重规划预算、卡 16 分钟。冷却期一过自动放行（见 EndpointRejectionGuard）。
+        if (rejectionGuard.rejecting(System.currentTimeMillis())) {
+            int status = rejectionGuard.lastStatus();
+            int turns = rejectionGuard.consecutiveTurns();
+            String localized = I18n.get(ModLanguageData.Keys.ENDPOINT_REJECTING,
+                    String.valueOf(status), String.valueOf(turns));
+            // ★ 2026-10-06 实测：这个键在运行时解析不出来，聊天栏显示成原始 key
+            //   （`numen.endpoint.rejecting`）。根因不在这一条 —— **整个 ModLanguageData
+            //   目录都没有随 jar 发布 lang JSON**（8 个 numen jar 逐个查过，全都没有
+            //   `assets/*/lang/*.json`）⇒ 所有 `I18n.get(Keys.*)` 都返回 key 本身。
+            //   这里兜一段明文：datagen 修好后译文会自动生效，没修好时主人也不会看到 key。
+            if (localized.startsWith("numen.")) {
+                localized = "端点连续拒收请求（HTTP " + status + "，已连拒 " + turns + " 个回合）"
+                        + "——检查模型名/基址，或换个 provider。恢复前不再开新轮。";
+            }
+            return localized;
         }
         return null;
     }
@@ -1477,35 +1636,49 @@ public final class EntityAgentLoop {
         com.dwinovo.numen.monitor.MonitoringJournal.get().publish("brain", "external_take", m);
     }
 
-    private void tryStartTurn() {
+    /**
+     * 试开一轮。
+     *
+     * <p><b>2026-10-04 改签名：{@code void} → {@code boolean}（真的开出去才 {@code true}）。</b>
+     * 原因：{@link #maybeDrain()} 原来在调本方法<b>之前</b>就打 INFO「主动开轮」，而这里有
+     * 六个静默 return 闸（停牌/pause/在飞/整理中/工具未决/对话空），全是 DEBUG 级。
+     * 结果同伴只要队列不空就一直刷那条 INFO —— 实机一局 <b>8913 条 / 11 分钟</b>
+     * （每分钟 204 条 = 每 295ms 一条），队列涨到 {@link com.dwinovo.numen.event.EventQueue#DEFAULT_CAP}
+     * 上限、最老那条躺了 <b>681 秒</b>没被消费，轮子其实一次都没转起来。
+     * 日志要报的是「开了一轮」，不是「问了一次」。
+     *
+     * @return 真的把这一轮开出去了（含 drainInbox 接管、自动整理记忆这两种自己也算开出去）
+     */
+    private boolean tryStartTurn() {
         publishBrainGate();
         if (paused()) {
             Constants.LOG.debug("[numen-entity#{}] tryStartTurn skipped: 停牌 (dead={}, external={})",
                     entityUuid, dead, isExternallyDriven());
-            return;
+            return false;
         }
         if (turnPause.isPaused()) {
             Constants.LOG.debug("[numen-entity#{}] tryStartTurn skipped: pause={}", entityUuid, turnPause);
-            return;
+            return false;
         }
         if (awaitingLlmResponse) {
             Constants.LOG.debug("[numen-entity#{}] tryStartTurn skipped: awaitingLlmResponse", entityUuid);
-            return;
+            return false;
         }
         if (compacting) {
             Constants.LOG.debug("[numen-entity#{}] tryStartTurn skipped: compacting", entityUuid);
-            return;
+            return false;
         }
         if (dispatcher.busy()) {
             Constants.LOG.debug("[numen-entity#{}] tryStartTurn skipped: tool call(s) outstanding", entityUuid);
-            return;
+            return false;
         }
         // Safe point: no assistant reply in flight and no tool results
         // outstanding, so the conversation ends with either a tool result or a
         // final assistant message — a user message can now be appended legally.
         // 排空可能自己接管这一次(整理记忆):那就到此为止,别再叠一次普通请求上去。
-        if (drainInbox()) return;
-        if (convo.snapshot().isEmpty()) return;
+        // 它把这次机会用掉了，所以对调用方来说跟"开出去一轮"是一回事 → true。
+        if (drainInbox()) return true;
+        if (convo.snapshot().isEmpty()) return false;
         // No hard cap on tool-call turns and no loop guard — a capable agent
         // legitimately chains many tasks, and resuming a timed-out move_to
         // repeats the exact same call. Runaways are stopped by the owner's
@@ -1515,12 +1688,31 @@ public final class EntityAgentLoop {
         // exactly what to do (same words the chat screen shows via endpointProblem()).
         String problem = endpointProblem();
         if (problem != null) {
+            if (rejectionGuard.rejecting(System.currentTimeMillis())) {
+                // ★ 2026-10-06：端点「连续拒收」这条**不设 turnPause**。
+                //
+                //   为什么：turnPause 一旦置成 BLOCKED 就是**粘性**的 ——
+                //   {@link AgentTurnPause#afterWakeEvent} 只清 RECOVERABLE_FAILURE，
+                //   而 BLOCKED 要等主人 abort 才清。置了它，第 1659 行的早退闸就会在
+                //   本检查**之前**把每一轮都挡掉 ⇒ 冷却期永远没机会生效 ⇒ 从「熔断」
+                //   变成「永久锁死」，把一个只是偶尔拒收的同伴按死。
+                //   不置它：每个唤醒事件都会走到这里再查一次（零成本，不发请求），
+                //   冷却期一过自动放行。
+                if (rejectionGuard.markOwnerTold()) {
+                    Constants.LOG.warn("[numen-entity#{}] can't start turn: {}", entityUuid, problem);
+                    // 配置问题不能静默:快捷键用户不开面板,聊天栏警示行是唯一出口
+                    com.dwinovo.numen.client.chat.ChatLines.notice(presenter.speakerName(),
+                            truncate(problem, 160));
+                }
+                com.dwinovo.numen.client.hud.SpeechBubbles.clear(entityUuid);
+                return false;
+            }
             Constants.LOG.warn("[numen-entity#{}] can't start turn: {}", entityUuid, problem);
             // 配置问题不能静默:快捷键用户不开面板,聊天栏警示行是唯一出口
             com.dwinovo.numen.client.chat.ChatLines.notice(presenter.speakerName(), truncate(problem, 160));
             com.dwinovo.numen.client.hud.SpeechBubbles.clear(entityUuid);
             turnPause = AgentTurnPause.BLOCKED;
-            return;
+            return false;
         }
 
         // Auto-compaction gate: the last request's true context size (as the
@@ -1540,7 +1732,7 @@ public final class EntityAgentLoop {
                     entityUuid, lastPromptTokens > 0 ? "measured" : "estimated",
                     contextTokens, window, AUTO_COMPACT_BUFFER_TOKENS);
             startCompaction(true);
-            return;
+            return true;
         }
 
         convo.incrementTurn();
@@ -1572,6 +1764,7 @@ public final class EntityAgentLoop {
                     vt.finish().run();
                     bounceBackToMain(gen, res, err);
                 });
+        return true;
     }
 
     // ---- compaction ----
@@ -1798,8 +1991,16 @@ public final class EntityAgentLoop {
      * 与模型能力 {@code ctx} 分开取 —— 能力是给定的，策略是可调的。
      */
     private int replayWindowTokens() {
+        // ★ 2026-10-04 与 modelWindow() 统一口径：真源是这只同伴绑定的档案。
+        // 原先这里只看旧的全局 CONFIG —— 「发请求用档案、算预算用全局」的双源，
+        // 正是 ProviderLibrary.contextWindow() 当初修掉的那个病；同一个坑在窗口上留了一份。
+        var entry = com.dwinovo.numen.agent.llm.ProviderLibrary.instance().get(providerEntryId);
+        if (entry != null) {
+            return entry.replayWindow();
+        }
         return com.dwinovo.numen.agent.provider.ProviderRegistry.replayWindowTokens(
-                com.dwinovo.numen.platform.Services.CONFIG.getProvider(),
+                com.dwinovo.numen.client.screen.LlmProviders.normalize(
+                        com.dwinovo.numen.platform.Services.CONFIG.getProvider()),
                 com.dwinovo.numen.platform.Services.CONFIG.getModel());
     }
 
@@ -2160,6 +2361,16 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
     /** 最近一次回合失败的人话原因(驱动聊天栏的警示行)。 */
     private String lastTurnError;
 
+    /**
+     * 连续被端点以 4xx 拒收的<b>回合</b>数（成功一回合即清零）—— 判据与冷却都在
+     * {@link com.dwinovo.numen.agent.http.EndpointRejectionGuard}（纯策略、可离线单测）。
+     *
+     * <p>与 {@link #lastTurnError} 分开：那个是「给主人看的一句话」，这个是「机器判据」。
+     * 拿文字当判据会让措辞一改熔断就失效。
+     */
+    private final com.dwinovo.numen.agent.http.EndpointRejectionGuard rejectionGuard =
+            new com.dwinovo.numen.agent.http.EndpointRejectionGuard();
+
     private void failTurnKeepQueue() {
         // The failed turn is over. Any fresh turn started now or by a later wake event gets its own
         // one-retry allowance rather than inheriting the exhausted budget from this turn.
@@ -2244,9 +2455,22 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                         });
                 return;
             }
+            // ★ 2026-10-06：这一回合已经用掉重试额度 ⇒ 真的失败了。
+            //   端点 4xx = 「请求本身不被接受」，重发同样形状不会好 —— 计进熔断。
+            //   429（限流）与 5xx / 网络类不算：前者是暂时，后者传输层自己会退避。
+            int rejectedStatus = LlmErrorWords.httpStatus(err);
+            if (rejectionGuard.noteTurnFailure(rejectedStatus, System.currentTimeMillis())
+                    && rejectionGuard.consecutiveTurns() == MAX_CONSECUTIVE_REJECTED_TURNS) {
+                // 只在「刚好跨过阈值」那一次喊一声，之后每轮都喊就是刷屏。
+                Constants.LOG.warn("[numen-entity#{}] endpoint rejected {} turns in a row (HTTP {}) "
+                        + "— treating as an endpoint problem and pausing new turns",
+                        entityUuid, rejectionGuard.consecutiveTurns(), rejectedStatus);
+            }
             failTurnKeepQueue();
             return;
         }
+        // ★ 一回合成功就清零：熔断只针对「连续」被拒，不针对「历史上被拒过」。
+        rejectionGuard.clear();
         turnRetried = false;   // a response landed — the next failure gets a fresh retry
         if (res == null || res.turn() == null) {
             Constants.LOG.warn("[numen-entity#{}] LLM returned null turn", entityUuid);

@@ -1571,9 +1571,8 @@ private static String safeDeathAttacker(NumenPlayer body) {
             return false;
         }
         long now = System.currentTimeMillis();
-        Long last = LAST_NUDGE_AT.get(companionId);
-        long since = last == null ? Long.MAX_VALUE : now - last;
-        if (since < MIN_NUDGE_INTERVAL_MS) {
+        if (!nudgeAllowed(companionId)) {
+            long since = msSinceLastNudge(companionId);
             RddMonitor.publish("nudge_throttled", Map.of(
                     "companionId", companionId.toString(),
                     "sinceLastNudgeMs", since,
@@ -1603,9 +1602,34 @@ private static String safeDeathAttacker(NumenPlayer body) {
         }
     }
 
+    /**
+     * 总闸现在放不放行 —— <b>只读，不消费</b>。
+     *
+     * <p><b>为什么调用方需要它</b>（2026-10-06 核实）：{@code RddStallWatcher} 原来
+     * <b>先</b>{@code markNudgedFor}（记「这个状态拍过了」）<b>再</b>调 {@link #nudge}，
+     * 而 {@code nudge} 在监督暂停 / 本条总闸 / 参数无效时都会返回 {@code false} ⇒
+     * <b>一次都没发出去，却把那个状态永久判成「已提醒」</b>。
+     * 实测形态：判据 10 秒就报，总闸 180 秒挡下，于是 {@code nudge_throttled} 15 次
+     * 而 {@code supervisor_output} 只有 9 次 —— 六成提醒被自己的记账顺序吃掉。
+     *
+     * <p>调用方正确姿势：<b>闸放行 → 发送 → 发送成功才记账</b>。
+     */
+    static boolean nudgeAllowed(UUID companionId) {
+        return supervisionEnabled && numenApi != null && companionId != null
+                && msSinceLastNudge(companionId) >= MIN_NUDGE_INTERVAL_MS;
+    }
+
+    /** 距上次<b>成功</b>拍醒过去了多久；从没拍过 ⇒ {@code Long.MAX_VALUE}。 */
+    private static long msSinceLastNudge(UUID companionId) {
+        Long last = LAST_NUDGE_AT.get(companionId);
+        return last == null ? Long.MAX_VALUE : System.currentTimeMillis() - last;
+    }
+
     /** 清掉某同伴的节流记录（任务清除时调用）。 */
     static void clearNudgeThrottle(UUID companionId) {
-        if (companionId != null) LAST_NUDGE_AT.remove(companionId);
+        if (companionId != null) {
+            LAST_NUDGE_AT.remove(companionId);
+        }
     }
 
     static void clearNudgeThrottleAll() {

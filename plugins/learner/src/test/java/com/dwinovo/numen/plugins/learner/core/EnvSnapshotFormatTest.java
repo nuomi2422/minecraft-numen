@@ -1,5 +1,6 @@
 package com.dwinovo.numen.plugins.learner.core;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -25,6 +26,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * ③ 血量写成 {@code hp=n/max}，两种取法都能解析
  */
 class EnvSnapshotFormatTest {
+
+    /** 生效链是进程级静态（{@code Memo.assessCarrier} 会读它）：先刷回 DEFAULT 再断言。 */
+    @BeforeEach
+    void isolateCarrierStore() {
+        CarrierStoreIsolation.installEmpty();
+    }
 
     /** 一条按 capture() 的真实规则拼出来的快照（各项都取过值）。 */
     private static final String FULL =

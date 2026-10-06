@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * 宿主门面的「业务层」：Map→Map 协议，宿主插件只需包一层 NumenTool 转发。
@@ -39,6 +40,8 @@ public final class AcxFacade {
     private final BiFunction<String, String, AcxDefinition> lookupVersion;
     private final AcxToolRegistry blocks;
     private final FileAcxLibrary library;
+    /** 积木清单文本的提供者；{@code null} = 未接（{@code acx_blocks} 会如实回拒）。 */
+    private final Supplier<String> blockCatalogText;
 
     /**
      * @param sessions     会话层（必填）
@@ -52,18 +55,61 @@ public final class AcxFacade {
                      BiFunction<String, String, AcxDefinition> lookupVersion,
                      AcxToolRegistry blocks,
                      FileAcxLibrary library) {
+        this(sessions, lookupActive, lookupVersion, blocks, library, null);
+    }
+
+    /**
+     * @param blockCatalogText 积木清单文本的提供者（见 {@link #blocks}）；
+     *                         {@code null} = 没接，这时 {@code acx_blocks} 会<b>如实回拒</b>
+     *                         而不是返回空清单（空清单＝「没有积木」，那是假事实）
+     */
+    public AcxFacade(AcxSessionManager sessions,
+                     Function<String, AcxDefinition> lookupActive,
+                     BiFunction<String, String, AcxDefinition> lookupVersion,
+                     AcxToolRegistry blocks,
+                     FileAcxLibrary library,
+                     Supplier<String> blockCatalogText) {
         this.sessions = Objects.requireNonNull(sessions, "sessions 不能为 null");
         this.lookupActive = Objects.requireNonNull(lookupActive, "lookupActive 不能为 null");
         this.lookupVersion = lookupVersion;
         this.blocks = Objects.requireNonNull(blocks, "blocks 不能为 null");
         this.library = library;
+        this.blockCatalogText = blockCatalogText;
     }
 
     public AcxFacade(AcxSessionManager sessions,
                      Function<String, AcxDefinition> lookupActive,
                      AcxToolRegistry blocks,
                      FileAcxLibrary library) {
-        this(sessions, lookupActive, null, blocks, library);
+        this(sessions, lookupActive, null, blocks, library, null);
+    }
+
+    /**
+     * 列出<b>当前真的可用的积木</b>（2026-10-06，用户实机验收）。
+     *
+     * <p><b>为什么必须有这个口子</b>：干活 AI 写 AC 时看不到积木清单，只能猜 ——
+     * 而提示词里那个手写示例写着<b>不存在的</b> {@code block:"move"}（真名 {@code goto}）。
+     * 实测后果：它照抄被拒 → 连拒之后学会只交「最小可解析空壳」
+     * （{@code steps} 里只放一个 {@code get_self_status}），
+     * 结果脚本真的被执行、真的报 {@code RUN_FINISHED SUCCESS}，而世界一点没变。
+     *
+     * <p>返回的文本与写进 {@code <config>/acx/blocks.txt} 的<b>是同一份</b>
+     * （由 {@link AcxBlockCatalog} 从注册表现场渲染）—— 学习者读文件、游戏内 AI 调本工具，
+     * 两条路不可能漂。
+     */
+    public Map<String, Object> blocks(Map<String, Object> req) {
+        String text = blockCatalogText == null ? null : blockCatalogText.get();
+        if (text == null || text.isBlank()) {
+            return err("积木清单还没生成（ACX 惰性初始化尚未跑过，或写出失败）。"
+                    + "先随便调一次别的 acx_* 工具让它初始化；"
+                    + "★ 拿不到清单时**不要猜 block 名** —— 猜出来的会被静态校验拒收。");
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("blocks", text);
+        data.put("names", List.copyOf(blocks.names()));
+        data.put("note", "step.block 只能从这个清单里挑；清单外的名字 = 不存在。"
+                + "别名与它指向的真名完全等价。");
+        return ok("ACX 可用积木（" + blocks.names().size() + " 个）", data);
     }
 
     // ── 执行门面 ────────────────────────────────────────────────────────

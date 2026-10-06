@@ -124,8 +124,9 @@ public final class RejectionFeedback {
         }
         sb.append("★ 注意：AC 草稿的形状以真实的 .ac 脚本为准（每个 step 有 id/block/params，"
                 + "没有 trigger 字段，条件写成 block:\"guard\" 的 step）；"
-                + "block 名**不许自创** —— 上面拒收原因里若附了「可用 block」名单，就只能从里面挑；"
-                + "拿不准就交**最小可解析**的版本，别编字段名。\n");
+                + "block 名**不许自创**，只能从 system 里的【可用积木】表挑；"
+                + "凑不出**可执行的动作序列**时不要声明 USE_AC —— "
+                + "交只读空壳比不交更坏：它会真的被执行、真的报 SUCCESS，而世界一点没变。\n");
         return sb.toString();
     }
 

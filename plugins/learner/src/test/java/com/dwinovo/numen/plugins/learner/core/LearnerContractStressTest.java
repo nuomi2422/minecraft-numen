@@ -1,5 +1,6 @@
 package com.dwinovo.numen.plugins.learner.core;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -30,6 +31,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * </ul>
  */
 class LearnerContractStressTest {
+
+    /** C4 断言「同输入同输出」—— 生效链是进程级静态，不刷就会把别的测试类的规则算进去。 */
+    @BeforeEach
+    void isolateCarrierStore() {
+        CarrierStoreIsolation.installEmpty();
+    }
 
     private static Memo memo(String id) {
         return new Memo(id, "problem " + id, "stage", "tried " + id, "hp=10/20, armor=none", 1L);

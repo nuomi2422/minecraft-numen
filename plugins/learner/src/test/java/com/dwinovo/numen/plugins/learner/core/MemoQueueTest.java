@@ -1,5 +1,6 @@
 package com.dwinovo.numen.plugins.learner.core;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -22,6 +23,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * ③armor=none 被 contains 判成「有护甲」
  */
 class MemoQueueTest {
+
+    /** 生效链是进程级静态：每个用例先刷回 DEFAULT（否则复用别的测试类批准的规则）。 */
+    @BeforeEach
+    void isolateCarrierStore() {
+        CarrierStoreIsolation.installEmpty();
+    }
 
     private static Memo memo(String id, String problem) {
         return new Memo(id, problem, "stage-a", "tried something", "hp=10/20", 1L);

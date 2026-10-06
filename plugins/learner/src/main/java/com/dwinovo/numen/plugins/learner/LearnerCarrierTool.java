@@ -40,9 +40,20 @@ final class LearnerCarrierTool implements NumenTool {
     @Override
     public String description() {
         return "携带器规则的审批流。submit=把投递箱里的携带器草稿登记成待审批候选；"
-                + "list=看候选与生效链；approve=批准（理由必填，批准后规则才在运行时生效）；"
-                + "reject=拒收（留记录）。"
-                + "★ 没有自动批准：每一次生效都必须是一次显式的 approve 调用。";
+                + "list=看候选与生效链（含「已批准但加载失败」的诊断）；"
+                + "approve=批准（理由必填，批准后规则才在运行时生效）；reject=拒收（留记录）。"
+                + "★ 没有自动批准：每一次生效都必须是一次显式的 approve 调用。\n"
+                + "★ 草稿形状（JSON，别自创字段）："
+                + "{\"name\":\"低血带食物\",\"when\":\"hp<=6\","
+                + "\"carry\":[\"食物/治疗类经验\"],\"fix\":[\"先找食物\"]}。"
+                + "when 只认这些写法（用「,」连接表示 AND）："
+                + "hp<=N / hp>=N / hp<N / hp>N（N 为整数）；band=CRITICAL|LOW|MID|HIGH；"
+                + "hostile=1 / passive=1（附近有无敌对/被动实体）；has=weapon|armor|hand；"
+                + "hostile / passive / low_hp / critical / has_weapon / has_armor / unknown_hand。"
+                + "★ 不认识的词会被**拒收**（不忽略）—— 忽略一个条件会让规则在本该不生效时生效。"
+                + "★ carry 是真正要带的东西（写具体经验/物品名，不要写「带食物」这种同义反复）。"
+                + "★ 已批准规则**排在默认链之前**：它不成立时会短路掉后面的默认级，"
+                + "所以一条规则要么写准 when，要么把 fix 写全（不成立时缺什么）。";
     }
 
     @Override
@@ -84,6 +95,18 @@ final class LearnerCarrierTool implements NumenTool {
                 case "list" -> {
                     data.put("candidates", candidateRows(adopter));
                     data.put("effective_rules", effectiveNames());
+                    // ★ 2026-10-06（DL-14/DL-15）：把「有几条已批准但加载失败」摆出来。
+                    //   原实现跳过坏行是静默的，而 approve() 的文案还教用户手工编辑
+                    //   approved.jsonl —— 手改打错一个词，规则静默消失而界面仍显示「已批准」。
+                    var load = com.dwinovo.numen.api.carrier.CarrierRuleStore.lastLoad();
+                    data.put("approved_loaded", load.loaded());
+                    data.put("approved_broken", load.broken());
+                    if (load.broken() > 0) {
+                        data.put("approved_issues", load.reasons());
+                        data.put("approved_note",
+                                "★ 有 " + load.broken() + " 行已批准规则**没能加载**（下面 approved_issues 有点名）。"
+                                + "在修好之前它们不会生效，而候选表里它们的状态仍然显示 APPROVED。");
+                    }
                     reply.accept(TaskResult.ok("learner_carrier list", data).toJson());
                 }
                 case "approve" -> {

@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.learner;
 
 import com.dwinovo.numen.entity.NumenPlayer;
 
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
@@ -84,6 +85,13 @@ final class EnvSnapshot {
         // 饥饿：D1「饿」的客观信号。用户 2026-10-30 口述的 D1 死因就是它
         sb.append(", food=").append(p.getFoodData().getFoodLevel());
 
+        // ★ 2026-10-06 补：背包（含副手）里**可食用**物品的总个数。
+        //   food（饱食度 0-20）≠ food_items（背包里有没有吃的）：
+        //   饱食度高也可能一颗都没有（刚吃完），饱食度低也可能塞满面包。
+        //   取不到写 -1（未知）**不写 0** —— 0 是「真的没有」这个真值（DL-4：UNKNOWN ≠ 0）。
+        //   按 Item.isEdible() 判而不是按名字：这是模组整合包，食物大多不叫 *_food。
+        sb.append(", food_items=").append(edibleCount(p));
+
         // 护甲：有哪件算什么；四件全空才写 none（这正是 2026-09-29 修过的「armor=none 被 contains 判成有护甲」的反面）
         String chest = itemPath(p.getItemBySlot(EquipmentSlot.CHEST));
         String legs = itemPath(p.getItemBySlot(EquipmentSlot.LEGS));
@@ -148,6 +156,33 @@ final class EnvSnapshot {
             // 同上：维度信息拿不到就不写，不编造
         }
         return sb.toString();
+    }
+
+    /**
+     * 背包（含副手）里<b>可食用</b>物品的总个数。
+     *
+     * <p>按食物数据组件（{@code DataComponents.FOOD}）判，不按名字判 ——
+     * 模组食物大多不叫 {@code *_food} / {@code bread}，按名字猜会漏掉一整片，
+     * 而漏掉的后果是「系统说没食物，其实有一背包」。
+     *
+     * <p>范围：{@code getContainerSize()} 覆盖快捷栏 + 主背包 + 盔甲 + <b>副手</b>。
+     *
+     * @return 可食用物品总数；读世界失败返回 <b>-1</b>（未知，不是 0）
+     */
+    private static int edibleCount(NumenPlayer p) {
+        try {
+            var inv = p.getInventory();
+            int n = 0;
+            for (int i = 0; i < inv.getContainerSize(); i++) {
+                ItemStack st = inv.getItem(i);
+                if (!st.isEmpty() && st.get(DataComponents.FOOD) != null) {
+                    n += st.getCount();
+                }
+            }
+            return n;
+        } catch (RuntimeException e) {
+            return -1;
+        }
     }
 
     private static String itemPath(ItemStack stack) {

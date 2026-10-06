@@ -138,6 +138,39 @@ class AcxExecutionReflectorTest {
         assertTrue(ul.all().isEmpty(), "歧义时账本不该被写");
     }
 
+    /**
+     * ★ P0 回归（2026-10-06）：两条已采纳产物拿到<b>同一个 {@code consumer_ref}</b> 时，
+     * 必须报歧义 —— 不许因为「按 ref 折成 Map」而让后者覆盖前者。
+     *
+     * <p>原实现的 {@code Map<ref, artifact_id>} 会让同 ref 的候选只剩 1 个，
+     * 于是上面那条 {@code candidates.size() > 1} 的歧义守卫<b>永远进不去</b> ⇒
+     * <b>别人的 AC 运行成败被静默记到自己账本上</b>，而报告一切正常。
+     *
+     * <p>这条路在生产里可达（三步都在代码里）：{@code AcxLoader} 对缺失的
+     * {@code version} 一律落到 {@code "1"}；{@code FileAcxLibrary.publish} 的
+     * {@code versions.put(version, v)} 无重载保护 ⇒ 两次同名草稿拿到同一个 {@code "X@1"}。
+     */
+    @Test
+    void twoAdoptedArtifactsWithSameRef_areReportedAsAmbiguous_notSilentlyOverwritten() throws Exception {
+        Path d = tmp("same-ref");
+        ArtifactOutbox ob = new ArtifactOutbox(d.resolve("outbox"));
+        ArtifactOutbox.Delivery a1 = ob.submit(ArtifactOutbox.Kind.AC_SCRIPT, C, "r", "m-1",
+                "dup", "{\"name\":\"dup\",\"round\":1}");
+        ob.mark(a1.artifactId(), ArtifactOutbox.Status.ADOPTED, "第一次采纳", "dup@1");
+        ArtifactOutbox.Delivery a2 = ob.submit(ArtifactOutbox.Kind.AC_SCRIPT, C, "r", "m-2",
+                "dup", "{\"name\":\"dup\",\"round\":2}");
+        ob.mark(a2.artifactId(), ArtifactOutbox.Status.ADOPTED, "第二次也被采纳", "dup@1");
+
+        UsageLedger ul = new UsageLedger(d);
+        Path rec = records(d, run("rDup", "dup", "1", "SUCCESS", "null"));
+
+        var rep = new AcxExecutionReflector(ob, ul).reflect(rec, true);
+        assertEquals(1, rep.ambiguous(),
+                "★ 同一个 ref 下的两条产物必须报歧义 —— 覆盖掉一条等于「猜了一个」: " + rep.toMap());
+        assertEquals(0, rep.reflected(), "歧义时跳过，不猜");
+        assertTrue(ul.all().isEmpty(), "歧义时账本不该被写: " + ul.all());
+    }
+
     @Test
     void reflectIsIdempotent() throws Exception {
         Path d = tmp("idem");

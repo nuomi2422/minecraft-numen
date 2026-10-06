@@ -149,6 +149,16 @@ public final class ModLanguageData {
         // Endpoint problems surfaced in chat (EntityAgentLoop#endpointProblem).
         public static final String ENDPOINT_UNBOUND = "numen.endpoint.unbound";
         public static final String ENDPOINT_NO_KEY  = "numen.endpoint.no_key";
+        /**
+         * 端点<b>能连上但一直拒收请求</b>（HTTP 4xx）—— 与「没绑/没 key」是两回事。
+         *
+         * <p>为什么单独一条（2026-10-06 实机）：某局连续 4 个回合全部被端点以 HTTP 400 拒收
+         * （body 为空、同 payload 重试同样 400），而 {@code endpointProblem()} 原来只认
+         * 「没绑 provider / 没 key」⇒ BrainGate 一直报「可以开轮」⇒ 每一轮催工都触发一次
+         * 注定失败的调用，最后烧光 3 次重规划预算、卡了 16 分钟。
+         * 参数：%1$s = HTTP 状态码，%2$s = 连续被拒的回合数。
+         */
+        public static final String ENDPOINT_REJECTING = "numen.endpoint.rejecting";
 
         // Voice (TTS) section: nav label, global switch, entry list/form, preview, bindings.
         public static final String VOICE_TITLE          = "numen.voice.title";
@@ -473,6 +483,9 @@ public final class ModLanguageData {
         // Endpoint problems (chat warn line)
         adder.add(Keys.ENDPOINT_UNBOUND, "This companion has no model config bound — pick or create one in Settings → Model Configs");
         adder.add(Keys.ENDPOINT_NO_KEY,  "Model config \"%s\" has no API Key yet — add it in Settings → Model Configs");
+        adder.add(Keys.ENDPOINT_REJECTING,
+                "The endpoint keeps rejecting requests (HTTP %s, %s turns in a row). "
+                + "Check the model name / base URL, or switch provider. No new turns until it recovers.");
 
         // Voice (TTS) section
         adder.add(Keys.VOICE_TITLE,          "Voice");
@@ -801,6 +814,8 @@ public final class ModLanguageData {
         // Endpoint problems (chat warn line)
         adder.add(Keys.ENDPOINT_UNBOUND, "这个同伴还没有绑定模型配置——到 设置 → 模型配置 新建/选择一条");
         adder.add(Keys.ENDPOINT_NO_KEY,  "模型配置「%s」还没填 API Key——到 设置 → 模型配置 补上");
+        adder.add(Keys.ENDPOINT_REJECTING,
+                "端点连续拒收请求（HTTP %s，已连拒 %s 个回合）——检查模型名/基址，或换个 provider。恢复前不再开新轮。");
 
         // Voice (TTS) section
         adder.add(Keys.VOICE_TITLE,          "语音");

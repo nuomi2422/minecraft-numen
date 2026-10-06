@@ -99,10 +99,18 @@ public final class AcxExecutionReflector {
             return new Report(0, 0, 0, 0, 0, 0, 0, List.copyOf(notes));
         }
 
-        Map<String, String> refToArtifact = adoptableRefs();
-        if (refToArtifact.isEmpty()) {
+        // ★ 2026-10-06：一次扫描建索引（原来这里只判空、下面每条 run 都重扫一遍投递箱）。
+        List<Adopted> adopted = adoptedAc();
+        if (adopted.isEmpty()) {
             notes.add("投递箱里没有已采纳的 AC 产物 ⇒ 无从把运行归属到自己的产物"
                     + "（这不是「没有运行」）");
+        }
+        // name → 全部候选 artifactId；artifact_id → 产物来源同伴（执行者可能不是它）。
+        Map<String, List<String>> idsByName = new LinkedHashMap<>();
+        Map<String, String> companionById = new LinkedHashMap<>();
+        for (Adopted a : adopted) {
+            idsByName.computeIfAbsent(a.name(), k -> new ArrayList<>()).add(a.artifactId());
+            companionById.putIfAbsent(a.artifactId(), a.companionId());
         }
         Set<String> knownSources = knownRunSources();
 
@@ -117,7 +125,11 @@ public final class AcxExecutionReflector {
             // 监测台的 RUN_FINISHED **不带 ac_version**（实机核实），只有 ac_name。
             // ⇒ 只能按名字归属。这里<b>刻意不猜版本</b>：同名命中多个已采纳产物时
             // 记成「歧义」并跳过 —— 猜错一次就会把别人的成败记到自己头上。
-            List<String> candidates = artifactIdsByName(r.acName());
+            //
+            // ★ 2026-10-06：`idsByName` 用**一次扫描**建，且同名下面**保留全部**产物。
+            //   原来按 `consumer_ref` 折成单值 Map ⇒ 同一个 ref 的后一个产物覆盖前一个 ⇒
+            //   这里永远只拿到 1 个候选 ⇒ 下面那段歧义守卫**永远进不去**（见 adoptedAc 的注释）。
+            List<String> candidates = idsByName.getOrDefault(r.acName(), List.of());
             if (candidates.isEmpty()) {
                 unmatched++;
                 continue;
@@ -168,7 +180,7 @@ public final class AcxExecutionReflector {
             }
             String detail = buildDetail(r);
             ledger.append(artifactId, "AC_SCRIPT", r.acName(), phase, outcome, detail, source,
-                    companionOf(artifactId));
+                    companionById.getOrDefault(artifactId, ""));
             knownSources.add(source);
             reflected++;
         }
@@ -177,13 +189,36 @@ public final class AcxExecutionReflector {
     }
 
     /**
-     * 可归属的 {@code consumer_ref → artifact_id}。
+     * 一条已采纳的 AC 产物（<b>一次扫描</b>出来的事实，供建索引）。
      *
-     * <p><b>只取 ADOPTED 的</b>：被拒的草稿没有对应 AC，不可能被执行；
-     * 还在 PENDING 的也还没有版本可运行。取错会让「别人的运行」进账本。
+     * @param artifactId 产物 id（账本主键）
+     * @param name       脚本名（从 {@code consumer_ref = "<name>@<version>"} 里取）
+     * @param companionId 产物<b>来源</b>同伴；执行它的同伴不一定相同
      */
-    private Map<String, String> adoptableRefs() {
-        Map<String, String> out = new LinkedHashMap<>();
+    private record Adopted(String artifactId, String name, String companionId) {
+    }
+
+    /**
+     * 一次扫描读出所有已采纳的 AC 产物。
+     *
+     * <p><b>★ 为什么必须保留「同 ref 的全部产物」</b>（2026-10-06 修，P0）：
+     * 原实现建的是 {@code Map<consumer_ref, artifact_id>}，第 196 行
+     * {@code out.put(ref, id)} —— <b>同一个 ref 的后一个产物会覆盖前一个</b>。
+     * 于是同一个脚本名被采纳两次时，按名字查只得到 <b>1</b> 个候选，
+     * {@code candidates.size() > 1} 的<b>歧义守卫永远进不去</b> ⇒
+     * <b>别人的 AC 运行成败被静默记到自己账本上</b>，而报告一切正常。
+     * （最坏的一类：守卫存在、还有一条测试，而那条测试测的恰好是<b>能工作的那一种</b>。）
+     *
+     * <p>触发路径三步在代码里都现成：{@code AcxLoader} 对缺失的 {@code version}
+     * 一律落到 {@code "1"}（不报错、不递增）⇒ 两次同名草稿拿到同一个
+     * {@code consumer_ref = "X@1"} ⇒ {@code FileAcxLibrary.publish} 的
+     * {@code versions.put(def.version(), v)} 没有重载保护。
+     *
+     * <p>顺带去掉「每条 run 重扫一遍投递箱」（原 {@code artifactIdsByName} 每次调用
+     * 都全量 {@code outbox.list()}，2000 条 run 就是 2000 次目录遍历）。
+     */
+    private List<Adopted> adoptedAc() {
+        List<Adopted> out = new ArrayList<>();
         for (JsonObject o : outbox.list(ArtifactOutbox.Kind.AC_SCRIPT)) {
             if (!ArtifactOutbox.Status.ADOPTED.name().equals(str(o, "status"))) {
                 continue;
@@ -193,36 +228,15 @@ public final class AcxExecutionReflector {
             if (ref.isBlank() || id.isBlank()) {
                 continue;
             }
-            out.put(ref, id);
+            out.add(new Adopted(id, nameOfRef(ref), str(o, "companion_id")));
         }
         return out;
     }
 
-    /**
-     * 按脚本名找已采纳的产物（监测台不带版本号 ⇒ 只能按名）。
-     *
-     * @return 0 个 = 不属于我们；1 个 = 唯一归属；&gt;1 个 = <b>歧义，调用方必须跳过</b>
-     */
-    private List<String> artifactIdsByName(String acName) {
-        List<String> out = new ArrayList<>();
-        for (Map.Entry<String, String> e : adoptableRefs().entrySet()) {
-            String ref = e.getKey();
-            int at = ref.lastIndexOf('@');
-            String name = at > 0 ? ref.substring(0, at) : ref;
-            if (name.equals(acName)) {
-                out.add(e.getValue());
-            }
-        }
-        return out;
-    }
-
-    private String companionOf(String artifactId) {
-        for (JsonObject o : outbox.list(ArtifactOutbox.Kind.AC_SCRIPT)) {
-            if (artifactId.equals(str(o, "artifact_id"))) {
-                return str(o, "companion_id");
-            }
-        }
-        return "";
+    /** {@code consumer_ref = "<name>@<version>"} → 脚本名；没有 {@code @} 时整串就是名字。 */
+    private static String nameOfRef(String ref) {
+        int at = ref.lastIndexOf('@');
+        return at > 0 ? ref.substring(0, at) : ref;
     }
 
     /** 账本里已入过的 run source（幂等依据）。 */

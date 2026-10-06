@@ -8,6 +8,7 @@ import com.dwinovo.numen.api.carrier.ItemSemantics;
 import com.dwinovo.numen.entity.NumenPlayer;
 
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
@@ -204,7 +205,15 @@ final class RddCarryHint {
         try {
             sb.append("hp=").append((int) Math.ceil(body.getHealth()))
               .append('/').append((int) Math.ceil(body.getMaxHealth()));
+            // ★ food = **饱食度**（0-20），不是「背包里有没有吃的」。
+            //   两者是两件事：饱食度高也可能一颗食物都没有（刚吃完），
+            //   饱食度低也可能背包塞满面包。想让规则按「有没有吃的」判，
+            //   用 food_items（下面那个），别把 food 当库存读。
             sb.append(", food=").append(body.getFoodData().getFoodLevel());
+            // ★ 2026-10-06 补：背包（含副手）里**可食用**物品的总个数。
+            //   取不到写 -1（= 未知），**不写 0** —— 0 是「真的没有」这个真值，
+            //   把「没读到」写成 0 会让规则在「其实有食物」时也触发（DL-4：UNKNOWN ≠ 0）。
+            sb.append(", food_items=").append(edibleCount(body));
 
             String chest = itemPath(body.getItemBySlot(EquipmentSlot.CHEST));
             String legs = itemPath(body.getItemBySlot(EquipmentSlot.LEGS));
@@ -263,6 +272,40 @@ final class RddCarryHint {
             return "";
         }
         return sb.toString();
+    }
+
+    /**
+     * 背包（含副手）里<b>可食用</b>物品的总个数。
+     *
+     * <p><b>为什么按食物数据组件判而不是按名字</b>：这是模组整合包
+     * （暮色森林等），食物大多不叫 {@code *_food} / {@code bread}。
+     * 按名字猜会漏掉一整片模组食物，而漏掉的后果是「系统说没有食物，其实有一背包」——
+     * 正是 DL-4 要禁的那类假事实。{@code DataComponents.FOOD} 走的是物品自己注册的
+     * {@code FoodProperties}，模组食物只要正常注册就一并覆盖。
+     *
+     * <p>数的是<b>个数</b>（{@code getCount()} 累加），不是槽位数 ——
+     * 「还剩 3 个面包」和「还剩 1 格面包」对「有没有得吃」是两回事。
+     *
+     * <p>范围：{@code getContainerSize()} 覆盖快捷栏 + 主背包 + 盔甲 + <b>副手</b>
+     * （见 {@code PlayerInv} 的注释），所以副手里的食物也算得到。
+     *
+     * @return 可食用物品总数；读世界失败返回 <b>-1</b>（未知，不是 0）
+     */
+    private static int edibleCount(NumenPlayer body) {
+        try {
+            var inv = body.getInventory();
+            int n = 0;
+            for (int i = 0; i < inv.getContainerSize(); i++) {
+                ItemStack st = inv.getItem(i);
+                if (!st.isEmpty() && st.get(DataComponents.FOOD) != null) {
+                    n += st.getCount();
+                }
+            }
+            return n;
+        } catch (RuntimeException e) {
+            // 世界卸载 / 区块未加载：缺这一项不该让整份快照失败，但也**不许**写成 0
+            return -1;
+        }
     }
 
     private static String itemPath(ItemStack stack) {

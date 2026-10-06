@@ -98,6 +98,38 @@ final class RddStallWatcher {
     /** 已发过的催工键上限：超了整组清掉（宁可偶尔多拍一次，也不泄漏）。 */
     private static final int NUDGE_KEY_CAP = 64;
 
+    /**
+     * 发一条催工，并<b>只在真的注入出去之后</b>记「这个状态 × 这一类已经拍过」。
+     *
+     * <p><b>为什么不许先记再发</b>（2026-10-06 核实）：{@link RddPlugin#nudge} 在
+     * 监督暂停 / 3 分钟总闸 / 参数无效时都返回 {@code false}，而原实现<b>在调用它之前</b>
+     * 就 {@code markNudgedFor} ⇒ <b>一次也没发出去，却把这一状态永久判成「已提醒」</b>。
+     * 实测形态：判据 10 秒就报 → 总闸 180 秒挡下 → 该状态从此不再提醒
+     * （{@code nudge_throttled} 15 次 vs {@code supervisor_output} 9 次）。
+     *
+     * <p><b>为什么不只是「去掉 mark」</b>：{@code track()} 每个检查周期都跑，
+     * 去掉 mark 会在总闸窗口内每个周期都调一次 {@link RddPlugin#nudge}，
+     * 把 {@code nudge_throttled} 刷成周期一条。所以先问只读的
+     * {@link RddPlugin#nudgeAllowed}：<b>放行才发送、发送成功才记账</b>；
+     * 闸没放行 ⇒ 不发送也不记账，下个周期自然重试。
+     *
+     * @return 真的注入出去了 → {@code true}
+     */
+    private boolean nudgeOnce(java.util.UUID companionId, String kind, String stateKey, String message) {
+        if (alreadyNudgedFor(companionId, kind, stateKey)) {
+            return false;
+        }
+        if (!RddPlugin.nudgeAllowed(companionId)) {
+            return false;
+        }
+        if (!RddPlugin.nudge(companionId, message)) {
+            // 闸放行了却仍失败（参数无效/注入抛异常）⇒ 不记账，下个周期重试
+            return false;
+        }
+        markNudgedFor(companionId, kind, stateKey);
+        return true;
+    }
+
     /** Level 3 卡死累计：当前二级累计卡死次数（AI 反复拍醒仍无目标资产进展 → 能力不足）。 */
     private final Map<UUID, StallCount> stallCounts = new ConcurrentHashMap<>();
 
@@ -161,14 +193,17 @@ final class RddStallWatcher {
         boolean timeBasedIdle = RddStallPolicy.shouldNudgeLlmIdle(unchanged, observation.source(), llmInFlight);
 
         if ((noToolCallStreak || timeBasedIdle) && !alreadyNudgedFor(ap.getUUID(), "idle", stateKey)) {
-            markNudgedFor(ap.getUUID(), "idle", stateKey);
             // 话术三条铁律（2026-09-29 GLM 审稿后重写，旧版实测无效）：
             //  1) 必须**点名当前子目标**——泛泛的「调用一个工具」是 content-free 紧迫感，
             //     模型按 recency 服从它 → 挑任意工具 → 覆盖原计划。旧版就是这么把同伴逼去 build 的。
             //  2) 必须给**合规的不作为出口**（BLOCKED）——否则「现在正确地什么都不做」无法表达，
             //     耐心会被转成随机动作；尤其"等规划器批"时拍醒会产生**未授权动作**，比卡住更糟。
             //  3) 必须**允许报错**——工具被拒是契约失败，不是注意力不集中，催只会加剧幻觉。
-            RddPlugin.nudge(ap.getUUID(), "当前子目标「" + current.description() + "」"
+            //
+            // ★ 2026-10-06：记账不再在发送之前 —— 走 nudgeOnce（闸放行 + 注入成功才记）。
+            //   原来先 mark 后 nudge，总闸一挡就「一次没发、永不再发」。
+            boolean idleSent = nudgeOnce(ap.getUUID(), "idle", stateKey,
+                    "当前子目标「" + current.description() + "」"
                     + (noToolCallStreak
                        ? "你已经连着 " + llm.consecutiveNoToolCallResponses() + " 轮只回话、一个工具都没调"
                        : "已连续 " + RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS + " 秒没有任何工具调用")
@@ -178,25 +213,28 @@ final class RddStallWatcher {
                     + "② 如果做不到，用 report_task_concern 上报，kind=PAUSE 并写明原因"
                     + "（能做到别的办法就用 COUNTER + suggestion，别用 PAUSE 顶替）；"
                     + "③ 如果任务本身已经完成或没必要做，直接说明，不必调工具。");
-            // Map.of 最多支持 10 对，这里字段多于 10 → 用 LinkedHashMap（监测台按插入序渲染）
-            Map<String, Object> idleData = new LinkedHashMap<>();
-            idleData.put("companionId", ap.getUUID().toString());
-            idleData.put("subtask", current.id());
-            idleData.put("trigger", noToolCallStreak ? "no_toolcall_response_streak" : "time_based_idle");
-            idleData.put("noToolCallResponses", llm.consecutiveNoToolCallResponses());
-            idleData.put("unchangedChecks", unchanged);
-            idleData.put("reason", noToolCallStreak
-                    ? "model answered " + llm.consecutiveNoToolCallResponses()
-                      + " consecutive turns with zero tool calls"
-                    : "no tool call for " + RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS + " checks");
-            idleData.put("source", observation.source());
-            idleData.put("llmKnown", llm.known());
-            idleData.put("llmInFlight", llmInFlight);
-            idleData.put("llmInFlightCount", llm.inFlightCount());
-            idleData.put("llmLastFinish", String.valueOf(llm.lastFinish()));
-            idleData.put("llmLastToolCalls", llm.lastToolCalls());
-            idleData.put("action", "nudge-once-per-fingerprint; no repeat spend without progress");
-            RddMonitor.publish("llm_idle_stall", idleData);
+            // 只有真的发出去了才记这条监测事件 —— 否则闸没放行时它会每个周期重发一遍（刷屏）。
+            if (idleSent) {
+                // Map.of 最多支持 10 对，这里字段多于 10 → 用 LinkedHashMap（监测台按插入序渲染）
+                Map<String, Object> idleData = new LinkedHashMap<>();
+                idleData.put("companionId", ap.getUUID().toString());
+                idleData.put("subtask", current.id());
+                idleData.put("trigger", noToolCallStreak ? "no_toolcall_response_streak" : "time_based_idle");
+                idleData.put("noToolCallResponses", llm.consecutiveNoToolCallResponses());
+                idleData.put("unchangedChecks", unchanged);
+                idleData.put("reason", noToolCallStreak
+                        ? "model answered " + llm.consecutiveNoToolCallResponses()
+                          + " consecutive turns with zero tool calls"
+                        : "no tool call for " + RddStallPolicy.LLM_IDLE_NUDGE_AFTER_CHECKS + " checks");
+                idleData.put("source", observation.source());
+                idleData.put("llmKnown", llm.known());
+                idleData.put("llmInFlight", llmInFlight);
+                idleData.put("llmInFlightCount", llm.inFlightCount());
+                idleData.put("llmLastFinish", String.valueOf(llm.lastFinish()));
+                idleData.put("llmLastToolCalls", llm.lastToolCalls());
+                idleData.put("action", "nudge-once-per-fingerprint; no repeat spend without progress");
+                RddMonitor.publish("llm_idle_stall", idleData);
+            }
         }
         // 死任务兜底：source=body_task:* 说明「车在动」，但身体进度一个 tick 都没前进。
         // 上面的 idle 判据不管 body_task（正常干活），check.stalled() 又要等 120 秒 busy 窗口 ——
@@ -204,23 +242,26 @@ final class RddStallWatcher {
         // 同状态只拍一次（类别 "dead"），配合 RddPlugin 的 3 分钟总闸。
         boolean deadTask = RddStallPolicy.isDeadTask(unchanged, observation.source());
         if (deadTask && !alreadyNudgedFor(ap.getUUID(), "dead", stateKey)) {
-            markNudgedFor(ap.getUUID(), "dead", stateKey);
-            RddPlugin.nudge(ap.getUUID(), "你正在跑「" + current.description() + "」但**进度一个都没前进**"
+            // ★ 2026-10-06：记账挪到 nudgeOnce（闸放行 + 注入成功才记）。
+            boolean deadSent = nudgeOnce(ap.getUUID(), "dead", stateKey,
+                    "你正在跑「" + current.description() + "」但**进度一个都没前进**"
                     + "（已经 " + unchanged + " 秒）。别重复发同一个工具请求："
                     + "① 先 rdd_get_inventory / scan_nearby_entities 核对真实情况；"
                     + "② 报告工具终态没回来/目标到不了，就用 report_task_concern 上报"
                     + "（kind=BLOCKED 或 PAUSE，写清卡在哪一步）；"
                     + "③ 换一条完全不同的做法，不要原样重试。");
-            Map<String, Object> deadData = new LinkedHashMap<>();
-            deadData.put("companionId", ap.getUUID().toString());
-            deadData.put("subtask", current.id());
-            deadData.put("source", observation.source());
-            deadData.put("unchangedChecks", unchanged);
-            deadData.put("graceLimitSeconds", check.limit());
-            deadData.put("reason", "busy but body progress frozen (dead task)");
-            deadData.put("action", "nudge-once-per-state; busy grace limit is "
-                    + RddStallPolicy.WORK_GRACE_CHECKS + "s");
-            RddMonitor.publish("dead_task_stall", deadData);
+            if (deadSent) {
+                Map<String, Object> deadData = new LinkedHashMap<>();
+                deadData.put("companionId", ap.getUUID().toString());
+                deadData.put("subtask", current.id());
+                deadData.put("source", observation.source());
+                deadData.put("unchangedChecks", unchanged);
+                deadData.put("graceLimitSeconds", check.limit());
+                deadData.put("reason", "busy but body progress frozen (dead task)");
+                deadData.put("action", "nudge-once-per-state; busy grace limit is "
+                        + RddStallPolicy.WORK_GRACE_CHECKS + "s");
+                RddMonitor.publish("dead_task_stall", deadData);
+            }
         }
         if (observation.waiting() && unchanged >= STALL_AFTER_TICKS
                 && unchanged % STALL_AFTER_TICKS == 0 && !check.stalled()) {
@@ -236,10 +277,8 @@ final class RddStallWatcher {
             stallCounts.put(ap.getUUID(), new StallCount(current.id(), total));
             if (total >= CAPABILITY_GAP_AFTER_STALLS) {
                 // 类别前缀 "escalate"：这一类的一次独立算，不被下面 "stall" 的记录顶掉。
-                if (!alreadyNudgedFor(ap.getUUID(), "escalate", stateKey)) {
-                    markNudgedFor(ap.getUUID(), "escalate", stateKey);
-                    RddPlugin.nudge(ap.getUUID(), "这个目标反复没有进展。先核对真实工具结果、附近资源、路径、装备和模型连接；不要仅凭重复失败推断缺软件工具，只有确认能力缺口后再考虑自编译。");
-                }
+                // ★ 2026-10-06：记账走 nudgeOnce（闸放行 + 注入成功才记）。
+                nudgeOnce(ap.getUUID(), "escalate", stateKey, "这个目标反复没有进展。先核对真实工具结果、附近资源、路径、装备和模型连接；不要仅凭重复失败推断缺软件工具，只有确认能力缺口后再考虑自编译。");
                 RddMonitor.publish("subtask_stall_escalated", Map.of(
                         "companionId", ap.getUUID().toString(), "subtask", current.id(), "failureClass", "UNKNOWN",
                         "reason", "repeated stalls (" + total + "); cause requires evidence"));
@@ -248,10 +287,10 @@ final class RddStallWatcher {
             rt.chain().markStalled(current.id(), "observed work unchanged for " + check.limit() + " checks");
             // ★ 这一句是 2026-10-03 实测最大的刷屏源（42 次，话术一字不变）。同一状态下只发一次：
             // 没真进展就别把同一句话说第二遍，状态机照样往下走（响应窗 / 判失败不受影响）。
-            if (!alreadyNudgedFor(ap.getUUID(), "stall", stateKey)) {
-                markNudgedFor(ap.getUUID(), "stall", stateKey);
-                RddPlugin.nudge(ap.getUUID(), "你的目标「" + current.description() + "」还在，但可见资产、容器生产和身体进度在观察窗口内没有变化。请核对真实工具结果、材料和生产条件，再决定下一步。");
-            }
+            // ★ 2026-10-06：记账走 nudgeOnce —— 闸放行且真的注入出去才记；
+            //   被总闸挡下时**不记**，下一个检查周期（闸开了）会重试，而不是永久沉默。
+            nudgeOnce(ap.getUUID(), "stall", stateKey,
+                    "你的目标「" + current.description() + "」还在，但可见资产、容器生产和身体进度在观察窗口内没有变化。请核对真实工具结果、材料和生产条件，再决定下一步。");
             RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(),
                     "reason", "observed work unchanged", "source", observation.source(),
                     "graceRemainingSeconds", 0, "graceLimitSeconds", check.limit()));
@@ -289,7 +328,9 @@ final class RddStallWatcher {
         }
         if (st == null) {
             stalls.put(ap.getUUID(), new StallState(current.id(), windowFp, stateKey, 0, 1));
-            RddPlugin.nudge(ap.getUUID(), "你卡住了吗？缺什么工具或材料？");
+            // ★ 2026-10-06：走 nudgeOnce —— 闸没放行就不发（原来直接调 nudge，
+            //   被挡时只会在监测台留一条 nudge_throttled，提醒本身丢了）。
+            nudgeOnce(ap.getUUID(), "stalled_entry", stateKey, "你卡住了吗？缺什么工具或材料？");
             return;
         }
         if (!st.stateFingerprint().equals(stateKey)) {
@@ -319,18 +360,18 @@ final class RddStallWatcher {
         // 而 RL-19 要求游戏内 AI 只能往待办目录写一条（唯一的合法 caller 是**外层**，不是游戏内任何 AI）。
         // → 改成指向待办目录。
         // 2026-10-03：同一状态下这一类只发一次（类别前缀 "renudge"，与 "stall" 各算各的一次机会）。
-        if (alreadyNudgedFor(ap.getUUID(), "renudge", stateKey)) {
-            // 这一类已经花过钱了：不再注入，但计数照走 —— 保证 MAX_NUDGES 能推到判失败，
-            // 而不是卡成「永远不花钱也永远不判失败」的死循环。
-            stalls.put(ap.getUUID(), new StallState(current.id(), st.windowFingerprint(), stateKey,
-                    0, st.nudges() + 1));
-            return;
-        }
-        markNudgedFor(ap.getUUID(), "renudge", stateKey);
-        RddPlugin.nudge(ap.getUUID(), "你还没动。告诉我你卡在哪一步？"
+        //
+        // ★ 2026-10-06：改成 nudgeOnce —— 只有闸放行且真的注入出去才记「这一类花过了」。
+        //   原来先 mark 再发（还被外层 alreadyNudgedFor 提前 return），被总闸挡下时
+        //   这一次机会**白花掉**：计数照样推进到判失败，提醒却一次没送到。
+        //   两条分支的 `stalls.put(...)` 本来就完全一样，所以合并成一条。
+        if (nudgeOnce(ap.getUUID(), "renudge", stateKey, "你还没动。告诉我你卡在哪一步？"
                 + "如果缺工具或能力，把「缺什么 + 你试过什么 + 你所处环境的快照」"
-                + "用 learner_note 写一条待办，学习者会看到；**不要自己请求代码变更**。");
-        RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(), "reason", "still stalled, re-nudge"));
+                + "用 learner_note 写一条待办，学习者会看到；**不要自己请求代码变更**。")) {
+            RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(), "reason", "still stalled, re-nudge"));
+        }
+        // 计数照走（无论这次有没有真的发出去）—— 保证 MAX_NUDGES 能推到判失败，
+        // 而不是卡成「永远不花钱也永远不判失败」的死循环。
         stalls.put(ap.getUUID(), new StallState(current.id(), st.windowFingerprint(), stateKey,
                 0, st.nudges() + 1));
     }

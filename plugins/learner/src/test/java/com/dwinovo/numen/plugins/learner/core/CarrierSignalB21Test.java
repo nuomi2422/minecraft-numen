@@ -1,5 +1,6 @@
 package com.dwinovo.numen.plugins.learner.core;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -25,6 +26,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 原先这段逻辑长在插件层的工具类里，单测根本够不着。
  */
 class CarrierSignalB21Test {
+
+    /** 生效链是进程级静态：每个用例先刷回 DEFAULT，否则读到别的测试类批准的规则。 */
+    @BeforeEach
+    void isolateCarrierStore() {
+        CarrierStoreIsolation.installEmpty();
+    }
 
     private static Memo memo(String snapshot) {
         return new Memo("m-1", "problem", "stage", "tried", snapshot, 1L);

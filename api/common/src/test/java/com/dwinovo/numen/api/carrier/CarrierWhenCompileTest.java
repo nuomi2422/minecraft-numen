@@ -1,12 +1,14 @@
 package com.dwinovo.numen.api.carrier;
 
 import com.dwinovo.numen.api.carrier.CarrierChain;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -24,6 +26,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 这两类都不抛异常，只在<b>真值</b>上错 —— 所以测试必须断言每个输入的每个取值。
  */
 class CarrierWhenCompileTest {
+
+    /**
+     * 生效链是<b>进程级静态</b>（{@code CarrierRuleStore.OVERRIDE}）：
+     * 先刷回「已安装、无已批准规则」再断言，否则 {@code effective()} 的结果
+     * 取决于本类里别的用例（或别的测试类）跑没跑过。
+     */
+    @BeforeEach
+    void isolateCarrierStore() {
+        CarrierRuleStore.install(tmp("isolation"));
+    }
 
     private static Path tmp(String n) {
         return Path.of(System.getProperty("java.io.tmpdir"), "when-" + n + "-" + System.nanoTime());
@@ -179,6 +191,48 @@ class CarrierWhenCompileTest {
         var low = CarrierRuleStore.compile("food<=5");
         assertFalse(low.test(CarrierChain.factsOf(Map.of(), "nothing here")),
                 "food 缺失时不能被当成 food=0（那样会误判成「快饿死了」）");
+    }
+
+    // ── food_items：背包里**可食用物品个数**（2026-10-06 补）─────────────────
+    //
+    // 用户实机要的是「没食物了要提醒」—— 而 food（饱食度）答不了这个问题：
+    // 饱食度高也可能一颗都没有（刚吃完），饱食度低也可能塞满面包。
+    // ★ 这个键的**生产端**（RddCarryHint / EnvSnapshot）在**没有数据时写 -1**，
+    //   所以这里必须钉住「-1 / 缺失 ⇒ 不成立」，否则「读不到」会被当成「没有」。
+
+    private static CarrierChain.Facts foodItemsFacts(String n) {
+        return CarrierChain.factsOf(Map.of("food_items", n), "food_items=" + n);
+    }
+
+    @Test
+    void foodItemsComparisons_work() {
+        var none = CarrierRuleStore.compile("food_items<=0");
+        assertTrue(none.test(foodItemsFacts("0")), "0 个食物是真值，必须触发");
+        assertFalse(none.test(foodItemsFacts("3")), "3 个食物不该触发");
+        assertFalse(none.test(foodItemsFacts("64")), "一整组食物不该触发");
+
+        assertTrue(CarrierRuleStore.compile("food_items<5").test(foodItemsFacts("4")));
+        assertFalse(CarrierRuleStore.compile("food_items<5").test(foodItemsFacts("5")));
+        assertTrue(CarrierRuleStore.compile("food_items>=1").test(foodItemsFacts("1")));
+    }
+
+    @Test
+    void unknownFoodItems_neverSatisfiesAnyComparison() {
+        // ★ -1 是生产端写的「未知」哨兵（读世界失败），不是「一个都没有」。
+        //   把它当成 0 会让规则在「其实有一背包食物」时也触发 —— DL-4 要禁的假事实。
+        var none = CarrierRuleStore.compile("food_items<=0");
+        assertFalse(none.test(foodItemsFacts("-1")), "未知（-1）不许满足 food_items<=0");
+        assertFalse(none.test(CarrierChain.factsOf(Map.of(), "hp=20/20")),
+                "键缺失时不许满足");
+    }
+
+    @Test
+    void foodAndFoodItemsAreDifferentKeys_notSilentlyTheSame() {
+        // 快照同时带两个键时，各读各的 —— 别让一个悄悄顶替另一个
+        var f = CarrierChain.factsOf(Map.of("food", "20", "food_items", "0"),
+                "food=20, food_items=0");
+        assertTrue(CarrierRuleStore.compile("food_items<=0").test(f), "库存为 0 ⇒ 触发");
+        assertFalse(CarrierRuleStore.compile("food<=5").test(f), "饱食度 20 ⇒ 不触发");
     }
 
     @Test

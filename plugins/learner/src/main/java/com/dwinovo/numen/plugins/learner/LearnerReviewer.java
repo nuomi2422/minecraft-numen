@@ -79,15 +79,24 @@ final class LearnerReviewer {
                   "steps":[{"id":"read","block":"get_self_status","params":{}},
                            {"id":"gate","block":"guard",
                             "params":{"conditions":[{"field":"$read.hp","op":"<","value":4}]}},
-                           {"id":"retreat","block":"move","params":{"x":0,"y":0,"z":0}}]}
+                           {"id":"retreat","block":"goto","params":{"x":0,"y":0,"z":0}}]}
                  硬要求：
                    - 每个 step 必须有 **id**（唯一）、**block**（工具名）、**params**（对象）
                    - 用的是 block/params，**不是** action/args
                    - **没有 trigger 字段**：条件写成 `block:"guard"` 的 step，
                      conditions 里用 `$<上一步 id>.<字段>` 引用上一步的输出
                    - version 固定 "1"；name 用小写下划线
-                 不确定时交**最小可解析**版本（name/version/steps，steps 只放一个 get_self_status）
-                 并在 reasoning 里写清意图，也比交散文强得多。
+                 ★★ **不许交「看起来能过、其实什么都不做」的空壳**：
+                   若这条脚本的意图是移动 / 采集 / 战斗 / 合成这类**动作**，
+                   它的 steps 里就必须有对应的**动作积木**；只放一个 get_self_status 的动作脚本
+                   就是空壳 —— 它会真的被执行、真的报 SUCCESS，而世界一点没变。
+                   实测踩过：名字叫「低血量逃跑再喝奶」，跑了 1 步读状态就 RUN_FINISHED SUCCESS。
+                   （**纯诊断/观察**意图的脚本只放只读积木是对的，不受这条限制。）
+                 ★★ 积木名只能从下面【可用积木】表里挑。**表里没有的名字 = 不存在**，
+                   不许猜、不许自创、不许照抄别的项目的名字（旧提示词的示例里写过不存在的
+                   `block:"move"`，AI 照抄 ⇒ 必然被拒 ⇒ 连拒之后学会只交空壳）。
+                   凑不出可执行的动作序列时，**不要**声明 USE_AC ——
+                   改给 NO_ACTION / NEEDS_HUMAN 并写清缺哪一项能力，那比交空壳诚实得多。
 
             输出格式：
             {"verdicts":[{"memo_id":"...","actions":["WRITE_EXPERIENCE"],"confidence":0.7,
@@ -164,7 +173,14 @@ final class LearnerReviewer {
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
 
-        String system = SYSTEM;
+        String system = SYSTEM + "\n\n"
+                // ★ 2026-10-06：把「真的有哪些积木」摆进 system。
+                //   此前 AI 只能照抄模板里那个手写示例，而示例里写着不存在的 block "move"；
+                //   连拒三次后它学会交只读空壳（实测：low_hp_flee_before_drink 只跑 1 步就 SUCCESS）。
+                //   清单由 acx 插件从**真实注册表**生成（见 AcxPlugin.writeBlockCatalog），
+                //   所以「AI 看到的」与「执行器认的」不可能漂。
+                + com.dwinovo.numen.plugins.learner.core.AcxBlockReference
+                        .promptBlock(LearnerPlugin.configDir());
         try {
             return NumenLlmClient.forEndpoint(ep)
                     .chatStreaming(List.of(new ConvoState.Msg.User(user)),
