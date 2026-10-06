@@ -15,8 +15,9 @@ import java.util.UUID;
  * 说话和干活是同时发生的两件事,凭什么互相遮挡:
  * <ul>
  *   <li><b>正文行</b>:她说的最后一句,有自己的生命周期(按字数),到点消失。</li>
- *   <li><b>状态行</b>:此刻在干什么——有工具在跑就是「正在 xxx」,只是在等
- *       模型回复就是「正在思考中」,都没有就没有这一行。</li>
+ *   <li><b>状态行</b>:此刻在干什么/被什么挡着——手上有活就是「正在 xxx」,
+ *       没有活时给中文短状态(等模型回复/整理记忆中/已暂停…,见
+ *       {@code EntityAgentLoop.statusHint()}),都没有就没有这一行。</li>
  * </ul>
  * 两条线独立:话还在时来了工具,气泡就是"话 + 正在挖矿";话过期了工具还没完,
  * 只剩状态行;工具先完而话还没过期,状态行消失、话继续待着。两条都空 = 不显示。
@@ -39,17 +40,18 @@ public final class SpeechBubbles {
      * 渲染方要画的东西——两条线可同时在场。
      *
      * @param text     未过期的正文;null = 这会儿没话
-     * @param activity 正在执行的工具名;null = 没有工具在跑
-     * @param waiting  在等模型回复(且没有工具在跑)——画「正在思考中」
+     * @param activity 手上那件活的人话名(工具/长任务);null = 没有活
+     * @param status   没有活时的中文短状态(等模型回复/整理记忆中/已暂停…);null = 没有
+     * @param pulsing  状态是「等模型回复」这类在飞等待——画脉冲点证明她还活着
      */
-    public record View(String text, String activity, boolean waiting) {
+    public record View(String text, String activity, String status, boolean pulsing) {
         public boolean hasText() {
             return text != null && !text.isEmpty();
         }
 
-        /** 有状态行要画吗(正在 xxx / 正在思考中)。 */
+        /** 有状态行要画吗(正在 xxx / 中文短状态)。 */
         public boolean hasStatus() {
-            return activity != null || waiting;
+            return activity != null || status != null;
         }
     }
 
@@ -107,18 +109,22 @@ public final class SpeechBubbles {
             }
         }
 
-        // 第二条线:此刻在干什么(工具优先于"在等回复"——具体的事比笼统的忙有信息量)
+        // 第二条线:此刻在干什么/被什么挡着(手上有活优先于笼统状态——具体的事更有信息量)
         String activity = null;
-        boolean waiting = false;
+        String status = null;
+        boolean pulsing = false;
         var loop = AgentLoopRegistry.get(entityUuid).orElse(null);
         if (loop != null) {
             activity = loop.currentActivity();
-            waiting = activity == null && loop.isBusy();
+            if (activity == null) {
+                status = loop.statusHint();
+                pulsing = status != null && loop.isAwaitingLlmResponse();
+            }
         }
 
-        if (text == null && activity == null && !waiting) {
+        if (text == null && activity == null && status == null) {
             return null;   // 话说完了、活干完了:头顶就该干净
         }
-        return new View(text, activity, waiting);
+        return new View(text, activity, status, pulsing);
     }
 }

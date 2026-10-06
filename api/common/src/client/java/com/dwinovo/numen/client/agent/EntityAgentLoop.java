@@ -230,6 +230,11 @@ public final class EntityAgentLoop {
     private AgentTurnPause turnPause = AgentTurnPause.NONE;
     /** One turn-level re-run per failure has been spent (reset when that turn settles). */
     private boolean turnRetried = false;
+    /**
+     * 此刻飞的这一次是「失败后的整轮重跑」。只给状态行看（「重试中」）——
+     * 判定仍以 {@link #turnRetried} 为准。新轮开出去时清、进重跑分支时置。
+     */
+    private volatile boolean retryingTurn = false;
 
     /**
      * Set while an external driver (an MCP client / Claude) holds this body via
@@ -638,12 +643,48 @@ public final class EntityAgentLoop {
             String d = currentTask.describe();
             return d != null && !d.isBlank() ? d : currentTask.tool();
         }
-        return dispatcher.currentToolName();
+        String tool = dispatcher.currentToolName();
+        // 短工具同理过一遍译名:numen.tool.* 约定(与聊天栏工具 chip 同一套),
+        // 没有译文的(MCP 外部工具)原样显示——不猜、不编。
+        return tool == null ? null : ToolLabels.label(tool);
     }
 
     /** A summarization call is currently in flight (drives the GUI status line). */
     public boolean isCompacting() {
         return compacting;
+    }
+
+    /** 上一次 LLM 请求还在飞——气泡的脉冲点拿它当「还活着」的证据。 */
+    public boolean isAwaitingLlmResponse() {
+        return awaitingLlmResponse;
+    }
+
+    /**
+     * 短中文状态行:此刻她在干什么、或被什么挡着。{@code null} = 空闲。
+     *
+     * <p>只读已有状态,不做任何推断与采样——「等熔炼/生长」这类世界进程由服务端
+     * {@code currentTask} 的描述带进来,这里不为它另造计时器。遮挡优先级:
+     * 身体没了 &gt; 外脑驾驶 &gt; 整理记忆 &gt; 手上有活 &gt; 等模型(重试/较慢) &gt; 端点问题 &gt; 被叫停。
+     */
+    public String statusHint() {
+        if (dead) return "身体不在了，等复活";
+        if (isExternallyDriven()) return "外接大脑驱动中";
+        if (compacting) return "整理记忆中";
+        String activity = currentActivity();
+        if (activity != null) return "正在" + activity;
+        if (awaitingLlmResponse) {
+            if (retryingTurn) return "重试中";
+            var snap = com.dwinovo.numen.agent.llm.LlmActivity.snapshot(entityUuid.toString());
+            return snap.inFlight() && snap.stale() ? "等模型回复（较慢）" : "等模型回复";
+        }
+        String problem = endpointProblem();
+        if (problem != null && !problem.isBlank()) return "模型端点有问题：" + problem;
+        return switch (turnPause) {
+            case OWNER_INTERRUPT -> "已暂停（主人叫停）";
+            case RECOVERABLE_FAILURE -> "已暂停（上一轮失败，等唤醒）";
+            case BLOCKED -> "已暂停（端点被拒，等处理）";
+            case NONE -> null;
+        };
     }
 
     /** 已经流回来的摘要字数。流式回调在网络线程上加,渲染在主线程上读。 */
@@ -1737,6 +1778,7 @@ public final class EntityAgentLoop {
 
         convo.incrementTurn();
         awaitingLlmResponse = true;
+        retryingTurn = false;   // 新开的一轮永远不是「重试中」
 
         // 只发常驻工具:其余的在系统提示的 <deferred_tools> 目录里留一行摘要,
         // 模型调 find_tools 才取回完整定义(见 ToolDisclosure)。
@@ -2456,6 +2498,7 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                 turnRetried = true;
                 Constants.LOG.info("[numen-entity#{}] re-running failed turn once", entityUuid);
                 awaitingLlmResponse = true;
+                retryingTurn = true;
                 final int gen2 = turnGeneration;
                 final TurnPresenter.VoiceTurn vt2 = presenter.beginVoiceTurn(ownerSpokeThisTurn);   // 重跑也重新开口(失败那次的半截语音随 beginTurn 作废)
                 presenter.clearPartial();                 // 失败那次的半截文字同理作废

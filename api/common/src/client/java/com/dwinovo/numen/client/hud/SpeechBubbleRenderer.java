@@ -30,7 +30,7 @@ import java.util.List;
  * 当前 {@link UiTheme}(奶油底深字),底部一枚小方尾指向说话者。
  *
  * <p>一只气泡里可以同时有两条线(见 {@link SpeechBubbles}):正文在上、
- * 状态行(正在 xxx / 正在思考中)在下且暗一档——它是旁白,不是她说的话。
+ * 状态行(正在 xxx / 等模型回复…)在下且暗一档——它是旁白,不是她说的话。
  * 只剩状态行时底色退成纸面,一眼能分出"她在说话"还是"她在忙"。
  */
 public final class SpeechBubbleRenderer {
@@ -98,9 +98,12 @@ public final class SpeechBubbleRenderer {
         // 没区别——"她在说话"和"她在干活"是两种东西,得看得出来。
         int statusFrom = lines.size();
         if (bubble.hasStatus()) {
-            lines.add(bubble.activity() != null
-                    ? I18n.get("numen.bubble.doing", bubble.activity())
-                    : I18n.get("numen.bubble.thinking") + thinkingDots());
+            if (bubble.activity() != null) {
+                lines.add(I18n.get("numen.bubble.doing", bubble.activity()));
+            } else {
+                // 短状态自带 ✦ 记号;在飞等待加脉冲点(静止的「等模型回复」看着像卡死)
+                lines.add("✦ " + bubble.status() + (bubble.pulsing() ? thinkingDots() : ""));
+            }
         }
         if (lines.isEmpty()) {
             return;

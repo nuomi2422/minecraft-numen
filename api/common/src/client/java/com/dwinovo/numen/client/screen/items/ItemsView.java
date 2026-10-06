@@ -180,13 +180,13 @@ public final class ItemsView {
                 where = "距离 不在附近";
             }
             Nb.text(g, font, clip(font, where, lw), c2, ly + 12, th.textDim());
-            // 状态行:呼吸圆点 + 文案
+            // 状态行:呼吸圆点 + 文案(statusHint 是短中文状态的唯一出口:
+            // 外脑驾驶/整理记忆/手上活/等模型/被挡都从那里来,面板不再各写各的)
             String state;
             int stateColor;
             boolean alive;
-            if (loop.isExternallyDriven()) { state = "外接大脑驱动中"; stateColor = th.run(); alive = true; }
-            else if (loop.isCompacting())  { state = "整理记忆中"; stateColor = th.run(); alive = true; }
-            else if (loop.isBusy())        { state = "忙碌中"; stateColor = th.run(); alive = true; }
+            String hint = loop.statusHint();
+            if (hint != null) { state = hint; stateColor = th.run(); alive = true; }
             else if (loop.hasQueuedPrompts()) {
                 state = "积压 " + loop.queuedPrompts().size() + " 条"; stateColor = th.run(); alive = true;
             } else { state = "空闲"; stateColor = th.ok(); alive = false; }

@@ -651,10 +651,9 @@ public final class ChatView {
         return args.isEmpty() ? toolLabel(tc.name()) : toolLabel(tc.name()) + "  " + args;
     }
 
-    /** 工具名 → 人话:约定键 {@code numen.tool.<name>};没有译文的(MCP 外部工具)原样显示。 */
+    /** 工具名 → 人话:唯一出口 {@link com.dwinovo.numen.client.agent.ToolLabels}(约定键 {@code numen.tool.<name>})。 */
     private static String toolLabel(String name) {
-        String key = "numen.tool." + name;
-        return I18n.exists(key) ? I18n.get(key) : name;
+        return com.dwinovo.numen.client.agent.ToolLabels.label(name);
     }
 
     /** 参数 JSON → 人读摘要:抓最能说明这一步的名词(物品/方块/目标)、坐标、数量,
