@@ -6,9 +6,10 @@ import java.util.Set;
 /**
  * Schema only. Actual evidence is read by the Minecraft host, never by the core.
  *
- * <h2>加一个 type 必须同步三处</h2>
+ * <h2>加一个 type 必须同步四处</h2>
  * <pre>
  *   ① 本类（schema）        ② {@code RddWorldFacts.matches}（真身）        ③ {@code RddDecomposer} 提示词（告知规划器）
+ *   ④ {@code WorldFactConditionsPinTest}（钉死清单，防漏）
  * </pre>
  * 漏任何一处都会得到 RL-18 同族事故：规划器生成了一个永远判不出来的条件，
  * 整条链静默卡死且不产生失败。更隐蔽的是 {@code RddDecomposer.parseOne}
@@ -25,7 +26,9 @@ public final class WorldFactConditions {
     /** 本构建认识的世界事实类型全集。加 type 时本清单必须同步改。 */
     private static final Set<String> TYPES = Set.of(
             "advancement", "structure", "entity_killed", "base",
-            "biome", "block_nearby", "container_nearby");
+            "biome", "block_nearby", "container_nearby",
+            // A 组：原版 Stats（服务器权威、跨重启、每同伴终身）——判“真的做了 N 次”
+            "block_mined", "item_crafted", "item_used", "item_picked_up");
 
     /** 判定半径上限。判定只读一个邻域，永不遍历世界 —— 这是它能每秒跑一次的前提。 */
     public static final int MAX_NEARBY_RADIUS = 16;
@@ -47,6 +50,9 @@ public final class WorldFactConditions {
             case "container_nearby" -> tag(condition.get("item"))
                     && radius(condition.get("radius"), MAX_NEARBY_RADIUS)
                     && positive(condition.getOrDefault("minimum", 1));
+            case "block_mined" -> tag(condition.get("block")) && optionalPositive(condition.get("minimum"));
+            case "item_crafted", "item_used", "item_picked_up" ->
+                    tag(condition.get("item")) && optionalPositive(condition.get("minimum"));
             default -> false;
         };
     }
@@ -92,6 +98,11 @@ public final class WorldFactConditions {
 
     private static boolean positive(Object value) {
         return value instanceof Number n && n.intValue() > 0 && n.doubleValue() == n.intValue();
+    }
+
+    /** 可选 minimum：缺省合法；给了必须是 >0 整数。 */
+    private static boolean optionalPositive(Object value) {
+        return value == null || positive(value);
     }
 
     private static boolean radius(Object value, int cap) {

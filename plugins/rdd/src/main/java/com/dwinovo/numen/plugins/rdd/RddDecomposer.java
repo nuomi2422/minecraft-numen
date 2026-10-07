@@ -378,7 +378,9 @@ final class RddDecomposer {
                     + "世界条件可用type=advancement(advancement ID)、entity_killed(entity ID,minimum)、structure(structure ID 或 #tag，可选dimension)、base(可选dimension)。"
                     + "另外三种读周围环境：type=biome(biome ID 或 #tag) 判「站在什么群系」；"
                     + "type=block_nearby(block ID 或 #tag, radius) 判「附近有没有这类方块」（矿石/刷怪笼/草捆这类没方块实体的也能查到，默认半径8，上限16）；"
-                    + "type=container_nearby(item ID 或 #tag, minimum, radius) 判「附近箱子里有没有这种东西」（默认半径8，上限16）。"
+                    + "type=container_nearby(item ID 或 #tag, minimum, radius) 判「附近箱子里有没有这种东西」（默认半径8，上限16）；"
+                    + "type=block_mined(block ID 或 #tag, minimum) 与 item_crafted/item_used/item_picked_up(item ID 或 #tag, minimum) 判「本人终身统计真的做了 N 次」"
+                    + "（服务器权威、跨重启；挖矿/合成/使用/拾取各对应一个）。"
                     + "精确 ID 与 #tag 都接受：村庄要写 minecraft:village_plains 等五个之一，或直接用 #minecraft:village；海底神殿是 minecraft:monument 不是 ocean_monument。"
                     + "base只要求本人已绑定的可重生床完整可用；附近箱子和熔炉不再当硬门（建成它们会另排步骤，不要塞进 base）。structure须本人到达已加载结构，击杀须本人统计，不以实体消失当击败。"
                     + "没有对应验收器的部分不要伪造物品替代。只输出 decompose_goal 工具调用，不要写多余文字。";
@@ -434,10 +436,14 @@ final class RddDecomposer {
                 + "  世界事实：{type:base}；{type:advancement,advancement:minecraft:story/...}；"
                 + "{type:structure,structure:'#minecraft:village'}（或 minecraft:village_plains 等具体 ID）；"
                 + "{type:biome,biome:'#minecraft:is_forest'}（或 minecraft:desert 等具体 ID）；"
-                + "{type:block_nearby,block:'#minecraft:ores',radius:8}；"
-                + "{type:container_nearby,item:minecraft:wheat,minimum:16,radius:8}；"
-                + "{type:entity_killed,entity:minecraft:ender_dragon,minimum:1}。\n"
-                + "  只用下面这七种类型，写别的一律会被丢掉（整条步骤消失且不报错）。ID 不确定就用 #tag。\n"
+                    + "{type:block_nearby,block:'#minecraft:ores',radius:8}；"
+                    + "{type:container_nearby,item:minecraft:wheat,minimum:16,radius:8}；"
+                    + "{type:entity_killed,entity:minecraft:ender_dragon,minimum:1}；"
+                    + "{type:block_mined,block:minecraft:stone,minimum:32}；"
+                    + "{type:item_crafted,item:minecraft:bread,minimum:3}。\n"
+                    + "  只用下面这十一种类型：advancement/structure/entity_killed/base/biome/block_nearby/container_nearby/"
+                    + "block_mined/item_crafted/item_used/item_picked_up，"
+                    + "写别的一律会被丢掉（整条步骤消失且不报错）。ID 不确定就用 #tag。\n"
                 + "  你只负责给「完成条件」，不要给身体动作指令 —— 身体只有一个驾驶员（执行 AI），"
                 + "派活是它的事，不是规划器的事。\n";
     }
@@ -501,7 +507,9 @@ final class RddDecomposer {
             // 2026-09-29 放宽：optional=true 对任何类型生效（判定层已同步放宽），不只是补充食物。
             Map<String, Object> conditionProps = Map.ofEntries(
                     Map.entry("type", Map.of("type", "string", "enum",
-                            List.of("inventory", "advancement", "structure", "entity_killed", "base"))),
+                            List.of("inventory", "advancement", "structure", "entity_killed", "base",
+                                    "biome", "block_nearby", "container_nearby",
+                                    "block_mined", "item_crafted", "item_used", "item_picked_up"))),
                     Map.entry("advancement", Map.of("type", "string")),
                     Map.entry("structure", Map.of("type", "string")),
                     Map.entry("entity", Map.of("type", "string")),

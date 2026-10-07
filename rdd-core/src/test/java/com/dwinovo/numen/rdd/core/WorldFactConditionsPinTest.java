@@ -46,13 +46,14 @@ class WorldFactConditionsPinTest {
 
     // ── ① 合法 type 清单（核心 pin）─────────────────────────────────
 
-    /** 本仓合法的 7 个世界事实类型（2026-10-02 从 4 个扩到 7 个）。加新 type 时本清单必须同步改。 */
+    /** 本仓合法的世界事实类型全集（2026-10-02 从 4 扩到 7；2026-10-08 A 组再扩 4 个）。加新 type 时本清单必须同步改。 */
     private static final List<String> PINNED_TYPES = List.of(
             "advancement", "structure", "entity_killed", "base",
-            "biome", "block_nearby", "container_nearby");
+            "biome", "block_nearby", "container_nearby",
+            "block_mined", "item_crafted", "item_used", "item_picked_up");
 
     @Test
-    void knownTypesArePinnedToExactlySeven() {
+    void knownTypesArePinnedToTheFullSet() {
         for (String t : PINNED_TYPES) {
             assertTrue(WorldFactConditions.knownType(t), "'" + t + "' 必须是已知世界事实类型");
         }
@@ -76,9 +77,28 @@ class WorldFactConditionsPinTest {
         // parseOne 拿到 false 会静默丢弃整条二级。本类至少把「必须为 false」钉死，
         // 让想加新 type 的人一定会撞到这里。
         assertFalse(WorldFactConditions.valid(c("type", "item_held", "item", "minecraft:stone")),
-                "未知 type 必须判非法（加了新 type 请同步本类 + RddWorldFacts.matches + RddDecomposer 提示词，三处缺一不可）");
+                "未知 type 必须判非法（加了新 type 请同步本类 + RddWorldFacts.matches + RddDecomposer 提示词 + 本 pin，四处缺一不可）");
         assertFalse(WorldFactConditions.valid(c("type", "nearby_mob")));
         assertFalse(WorldFactConditions.valid(c("type", "chat_said")));
+    }
+
+    // ── ③ 2026-10-08 A 组（Stats）schema ──────────────────────────
+
+    @Test
+    void statsWorldFactTypesSchemaIsValid() {
+        assertTrue(WorldFactConditions.valid(c("type", "block_mined", "block", "minecraft:stone", "minimum", 32)));
+        assertTrue(WorldFactConditions.valid(c("type", "block_mined", "block", "#minecraft:ores")));
+        assertTrue(WorldFactConditions.valid(c("type", "item_crafted", "item", "minecraft:bread", "minimum", 3)));
+        assertTrue(WorldFactConditions.valid(c("type", "item_used", "item", "minecraft:bread")));
+        assertTrue(WorldFactConditions.valid(c("type", "item_picked_up", "item", "#minecraft:planks")));
+    }
+
+    @Test
+    void statsWorldFactTypesRejectMalformed() {
+        assertFalse(WorldFactConditions.valid(c("type", "block_mined")), "缺 block");
+        assertFalse(WorldFactConditions.valid(c("type", "block_mined", "block", "not_an_id")));
+        assertFalse(WorldFactConditions.valid(c("type", "item_crafted")), "缺 item");
+        assertFalse(WorldFactConditions.valid(c("type", "block_mined", "block", "minecraft:stone", "minimum", 0)), "minimum 必须 >0");
     }
 
     @Test
@@ -279,6 +299,7 @@ class WorldFactConditionsPinTest {
         Set<String> accepted = new java.util.HashSet<>();
         for (String candidate : List.of("advancement", "structure", "entity_killed", "base",
                 "biome", "block_nearby", "container_nearby",
+                "block_mined", "item_crafted", "item_used", "item_picked_up",
                 "inventory", "asset", "item", "block", "entity", "dimension", "recipe",
                 "effect", "stat", "weather", "time", "damage", "xp", "level", "mob_nearby")) {
             if (WorldFactConditions.knownType(candidate)) accepted.add(candidate);

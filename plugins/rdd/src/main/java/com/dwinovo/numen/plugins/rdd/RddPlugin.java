@@ -161,6 +161,8 @@ public final class RddPlugin implements NumenPlugin {
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
+        // 2026-10-08 只读世界事实探针：逐组验证世界判定用（不改状态）。
+        numen.registerTool(new WorldFactProbeTool());
         numen.registerTool(new RddSkipTool());
         numen.registerTool(new RddAssetsTool());
         // Supervisor ↔ Numen 双向协商：士兵可对命令结构化回执（ACCEPT/REJECT/COUNTER）。

@@ -5,11 +5,13 @@ import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.rdd.core.WorldFactConditions;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
+import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.stats.StatType;
 import net.minecraft.stats.Stats;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.Container;
@@ -51,6 +53,10 @@ public final class RddWorldFacts {
                 case "biome" -> biome(ap, condition);
                 case "block_nearby" -> blockNearby(ap, condition);
                 case "container_nearby" -> containerNearby(ap, condition);
+                case "block_mined" -> statBlockMined(ap, condition);
+                case "item_crafted" -> statItem(ap, Stats.ITEM_CRAFTED, condition);
+                case "item_used" -> statItem(ap, Stats.ITEM_USED, condition);
+                case "item_picked_up" -> statItem(ap, Stats.ITEM_PICKED_UP, condition);
                 default -> false;
             };
         } catch (IllegalArgumentException exception) {
@@ -241,6 +247,56 @@ public final class RddWorldFacts {
             }
         }
         return total;
+    }
+
+    // ---- A 组：原版 Stats（判“真的做了 N 次”，不是“此刻背包里有”） ----
+
+    private static boolean statBlockMined(NumenPlayer ap, Map<String, Object> condition) {
+        ServerLevel level = ap.serverLevel();
+        if (!dimension(level, condition)) return false;
+        Object raw = condition.get("block");
+        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+        if (key == null) return false;
+        int minimum = WorldFactConditions.minimumOf(condition, 1);
+        return sumStat(ap, Stats.BLOCK_MINED, BuiltInRegistries.BLOCK, key,
+                WorldFactConditions.isTag(raw)) >= minimum;
+    }
+
+    private static boolean statItem(NumenPlayer ap, StatType<Item> stat, Map<String, Object> condition) {
+        ServerLevel level = ap.serverLevel();
+        if (!dimension(level, condition)) return false;
+        Object raw = condition.get("item");
+        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+        if (key == null) return false;
+        int minimum = WorldFactConditions.minimumOf(condition, 1);
+        return sumStat(ap, stat, BuiltInRegistries.ITEM, key,
+                WorldFactConditions.isTag(raw)) >= minimum;
+    }
+
+    /** 汇总某注册表对象（或整个 #tag 成员）在该统计类型上的终身值。 */
+    private static <T> int sumStat(NumenPlayer ap, StatType<T> stat, Registry<T> registry,
+                                   ResourceLocation key, boolean isTag) {
+        int total = 0;
+        if (isTag) {
+            var members = registry.getTag(TagKey.create(registry.key(), key));
+            if (members.isEmpty()) return 0;
+            for (Holder<T> holder : members.get()) {
+                total += statValue(ap, stat, holder.value());
+            }
+        } else {
+            T value = registry.get(key);
+            if (value == null || !registry.containsKey(key)) return 0;
+            total += statValue(ap, stat, value);
+        }
+        return total;
+    }
+
+    private static <T> int statValue(NumenPlayer ap, StatType<T> stat, T key) {
+        try {
+            return ap.getStats().getValue(stat, key);
+        } catch (RuntimeException ignored) {
+            return 0;
+        }
     }
 
     private static boolean contains(StructureStart start, BlockPos pos) {
