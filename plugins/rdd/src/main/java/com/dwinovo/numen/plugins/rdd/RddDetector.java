@@ -178,6 +178,9 @@ final class RddDetector {
             //    原来放在后面，于是「同伴没有活动任务链」时直接 continue → 永远不刷新，
             //    而那恰恰是最需要携带提醒的时刻（无任务 = 更该自己决定要不要先准备）。
             RddCarryHint.refresh(ap.serverLevel().getServer(), ap.getUUID());
+            // 2026-10-08 正式睡觉支线：不要求必须有主线链——睡觉是基本的夜间行为，
+            // 无链时也能触发（主线恢复令牌为空即可）。先驱动支线，再走主线检测（支线 active 时主线冻结）。
+            SideTaskHost.tick(server, ap);
             RddRuntime rt = RddPlugin.runtime(ap.getUUID());
             if (rt == null) {
                 continue;
@@ -326,6 +329,12 @@ final class RddDetector {
                 // 第三批 N1 消费：共同事实快照 + 需求检测（30 秒一拍；只产事实与事件，不做裁决）。
                 // 用本拍真实背包 counts（不是注册表缓存）—— 规划侧文档定调"实时扫描是持有唯一真相"。
                 RddFactContext.tick(ap.getUUID(), ap.level().dimension().location().toString(), rt, counts);
+            }
+            // 2026-10-08 支线接管：支线 active 时主线冻结——不推进当前二级、不累计 stall、
+            // 不消耗 retry/replan 预算，只保留上面已完成的背包/世界被动观测。监督跟着支线走
+            // （支线自己的 deadline 已在 SideTaskHost 内处理）。
+            if (SideTaskHost.isActive(ap.getUUID())) {
+                return;
             }
             // Supervisor ↔ Numen 双向协商：士兵对命令回了 REJECT/COUNTER → 指挥官改单/重规划。
             if (tickNegotiation(ap, rt, chain)) {

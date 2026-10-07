@@ -155,6 +155,8 @@ public final class RddPlugin implements NumenPlugin {
         // 暂停开关：文件存在 = 禁用 PAUSE（2026-09-30 用户要求可随时关，防误伤实验）
         setPauseDisabledFlagPath(numen.configDir().resolve("rdd-pause-disabled.flag"));
             bodyDispatchFlag = numen.configDir().resolve("rdd-bodydispatch.flag");
+        // 2026-10-08 正式睡觉支线：通用支线引擎（rdd-core）+ 宿主接线（加载类时注册 tick 监听）。
+        SideTaskHost.setup(numen.configDir());
         // E1 shadow：规划角色的预算策略（与客户端同一份文件，幂等）。
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
         numen.registerTool(new RddStatusTool());
@@ -329,6 +331,7 @@ public final class RddPlugin implements NumenPlugin {
             // 但「上一个世界的回执」一个都不能带到新世界。
             RddNegotiationInbox.clearAll();
             com.dwinovo.numen.rdd.core.RddDeathLedger.clearAll();
+            SideTaskHost.onServerStopped(); // 上一个世界的支线实例不带进新世界
         });
     }
 
@@ -366,6 +369,11 @@ public final class RddPlugin implements NumenPlugin {
 
     /** Exact RDD state block returned to Numen; observation does not own task progress. */
     private static String renderStateContext(UUID uuid) {
+            // 2026-10-08 支线接管：支线 active 时当前目标投影为睡觉支线，主线上下文让位。
+            String sideContext = SideTaskHost.contextFor(uuid);
+            if (sideContext != null) {
+                return withAssets(uuid, sideContext);
+            }
             if (DECOMPOSING.contains(uuid)) {
                 return withAssets(uuid, "<rdd><enabled>true</enabled><active>false</active><decomposing>true</decomposing></rdd>");
             }
@@ -465,6 +473,8 @@ private static String withAssets(UUID companionId, String rddContext) {
     private static void bindCurrent(UUID companionId, Goal goal) {
         BODY.remove(companionId);
         DECOMPOSING.remove(companionId);
+        // 换目标 = 旧支线作废：立即取消，且不恢复旧主线（新链自己重新选择）。
+        SideTaskHost.cancel(companionId, "mainline goal replaced");
         // 深审 R05：新目标 = 上一轮的回执全部作废。
         // 否则士兵对旧计划说的 COUNTER/PAUSE 会滞留到新链的下一个 tick 被消费，
         // 去改一个它根本没被派过的任务。深审已在消费侧加了 taskId 二次核对（RddDetector.tickNegotiation），
@@ -1333,6 +1343,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
                 BODY.remove(companionId);
                 LAST_CONTEXT.remove(companionId);
                 LAST_EXPANSION_REPORT.remove(companionId);
+                SideTaskHost.cancel(companionId, "task cleared"); // 清目标 = 支线作废
                 clearNudgeThrottle(companionId); // 链都收了，节流记录跟着走（否则新目标开局就被节流）
                 RddGoalDriver.clear(companionId); // 目标清/重绑 → 丢掉该同伴的懒展开状态
                 clearReplanCounts(companionId);
