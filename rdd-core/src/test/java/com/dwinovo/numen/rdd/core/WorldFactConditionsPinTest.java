@@ -51,7 +51,8 @@ class WorldFactConditionsPinTest {
             "advancement", "structure", "entity_killed", "base",
             "biome", "block_nearby", "container_nearby",
             "block_mined", "item_crafted", "item_used", "item_picked_up",
-            "dimension", "position_at", "y_below");
+            "dimension", "position_at", "y_below",
+            "entity_nearby", "block_at", "container_at");
 
     @Test
     void knownTypesArePinnedToTheFullSet() {
@@ -118,6 +119,24 @@ class WorldFactConditionsPinTest {
         assertFalse(WorldFactConditions.valid(c("type", "y_below", "y", 1.5)), "y 必须整数");
         assertFalse(WorldFactConditions.valid(c("type", "position_at", "x", 1, "y", 2, "block", "minecraft:stone")), "缺 z");
         assertFalse(WorldFactConditions.valid(c("type", "position_at", "x", 1, "y", 2, "z", 3, "radius", 64)), "半径越界");
+    }
+
+    @Test
+    void coordWorldFactTypesSchemaIsValid() {
+        assertTrue(WorldFactConditions.valid(c("type", "entity_nearby", "entity", "minecraft:cow", "radius", 8)));
+        assertTrue(WorldFactConditions.valid(c("type", "entity_nearby", "entity", "#minecraft:raiders", "minimum", 2)));
+        assertTrue(WorldFactConditions.valid(c("type", "block_at", "x", 100, "y", 64, "z", 200, "block", "minecraft:crafting_table")));
+        assertTrue(WorldFactConditions.valid(c("type", "block_at", "x", 1, "y", 2, "z", 3, "block", "#minecraft:logs")));
+        assertTrue(WorldFactConditions.valid(c("type", "container_at", "x", 100, "y", 64, "z", 200, "item", "minecraft:diamond", "minimum", 1)));
+    }
+
+    @Test
+    void coordWorldFactTypesRejectMalformed() {
+        assertFalse(WorldFactConditions.valid(c("type", "entity_nearby")), "缺 entity");
+        assertFalse(WorldFactConditions.valid(c("type", "entity_nearby", "entity", "minecraft:cow", "radius", 64)), "半径越界");
+        assertFalse(WorldFactConditions.valid(c("type", "block_at", "x", 1, "y", 2, "block", "minecraft:stone")), "缺 z");
+        assertFalse(WorldFactConditions.valid(c("type", "block_at", "x", 1, "y", 2, "z", 3)), "缺 block");
+        assertFalse(WorldFactConditions.valid(c("type", "container_at", "x", 1, "y", 2, "z", 3)), "缺 item");
     }
 
     @Test
@@ -320,6 +339,7 @@ class WorldFactConditionsPinTest {
                 "biome", "block_nearby", "container_nearby",
                 "block_mined", "item_crafted", "item_used", "item_picked_up",
                 "dimension", "position_at", "y_below",
+                "entity_nearby", "block_at", "container_at",
                 "inventory", "asset", "item", "block", "entity", "recipe",
                 "effect", "stat", "weather", "time", "damage", "xp", "level", "mob_nearby")) {
             if (WorldFactConditions.knownType(candidate)) accepted.add(candidate);

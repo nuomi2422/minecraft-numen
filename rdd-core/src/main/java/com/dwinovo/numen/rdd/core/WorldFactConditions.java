@@ -30,7 +30,9 @@ public final class WorldFactConditions {
             // A 组：原版 Stats（服务器权威、跨重启、每同伴终身）——判“真的做了 N 次”
             "block_mined", "item_crafted", "item_used", "item_picked_up",
             // B 组：位置 / 维度
-            "dimension", "position_at", "y_below");
+            "dimension", "position_at", "y_below",
+            // C 组：实体 / 精确坐标
+            "entity_nearby", "block_at", "container_at");
 
     /** 判定半径上限。判定只读一个邻域，永不遍历世界 —— 这是它能每秒跑一次的前提。 */
     public static final int MAX_NEARBY_RADIUS = 16;
@@ -60,6 +62,12 @@ public final class WorldFactConditions {
             case "dimension" -> id(condition.get("dimension"));
             case "y_below" -> integer(condition.get("y"));
             case "position_at" -> coord(condition) && radius(condition.get("radius"), MAX_NEARBY_RADIUS);
+            case "entity_nearby" -> tag(condition.get("entity"))
+                    && radius(condition.get("radius"), MAX_NEARBY_RADIUS)
+                    && optionalPositive(condition.get("minimum"));
+            case "block_at" -> coord(condition) && tag(condition.get("block"));
+            case "container_at" -> coord(condition) && tag(condition.get("item"))
+                    && optionalPositive(condition.get("minimum"));
             default -> false;
         };
     }

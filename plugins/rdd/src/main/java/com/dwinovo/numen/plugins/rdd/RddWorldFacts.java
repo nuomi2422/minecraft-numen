@@ -15,6 +15,8 @@ import net.minecraft.stats.StatType;
 import net.minecraft.stats.Stats;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.Container;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ChunkPos;
@@ -60,6 +62,9 @@ public final class RddWorldFacts {
                 case "dimension" -> dimensionReached(ap, condition);
                 case "y_below" -> yBelow(ap, condition);
                 case "position_at" -> positionAt(ap, condition);
+                case "entity_nearby" -> entityNearby(ap, condition);
+                case "block_at" -> blockAt(ap, condition);
+                case "container_at" -> containerAt(ap, condition);
                 default -> false;
             };
         } catch (IllegalArgumentException exception) {
@@ -340,6 +345,85 @@ public final class RddWorldFacts {
             return new BlockPos(nx.intValue(), ny.intValue(), nz.intValue());
         }
         return null;
+    }
+
+    // ---- C 组：实体 / 精确坐标 ----
+
+    private static boolean entityNearby(NumenPlayer ap, Map<String, Object> condition) {
+        ServerLevel level = ap.serverLevel();
+        if (!dimension(level, condition)) return false;
+        Object raw = condition.get("entity");
+        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+        if (key == null) return false;
+        int radius = WorldFactConditions.radiusOf(condition, WorldFactConditions.DEFAULT_BLOCK_RADIUS);
+        boolean isTag = WorldFactConditions.isTag(raw);
+        Set<EntityType<?>> tagMembers = null;
+        EntityType<?> exact = null;
+        if (isTag) {
+            var set = BuiltInRegistries.ENTITY_TYPE.getTag(TagKey.create(Registries.ENTITY_TYPE, key));
+            if (set.isEmpty()) return false;
+            tagMembers = new HashSet<>();
+            for (Holder<EntityType<?>> holder : set.get()) tagMembers.add(holder.value());
+        } else {
+            exact = BuiltInRegistries.ENTITY_TYPE.get(key);
+            if (exact == null || !BuiltInRegistries.ENTITY_TYPE.containsKey(key)) return false;
+        }
+        final Set<EntityType<?>> members = tagMembers;
+        final EntityType<?> exactType = exact;
+        var box = ap.getBoundingBox().inflate(radius);
+        for (Entity entity : level.getEntities(ap, box, e -> e != ap && e.isAlive())) {
+            if (isTag ? members.contains(entity.getType()) : entity.getType() == exactType) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean blockAt(NumenPlayer ap, Map<String, Object> condition) {
+        ServerLevel level = ap.serverLevel();
+        if (!dimension(level, condition)) return false;
+        BlockPos pos = coordOf(condition);
+        if (pos == null || !level.hasChunkAt(pos)) return false;
+        Object raw = condition.get("block");
+        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+        if (key == null) return false;
+        BlockState state = level.getBlockState(pos);
+        if (WorldFactConditions.isTag(raw)) {
+            return state.is(TagKey.create(Registries.BLOCK, key));
+        }
+        Block wanted = BuiltInRegistries.BLOCK.get(key);
+        return wanted != null && BuiltInRegistries.BLOCK.containsKey(key) && state.is(wanted);
+    }
+
+    private static boolean containerAt(NumenPlayer ap, Map<String, Object> condition) {
+        ServerLevel level = ap.serverLevel();
+        if (!dimension(level, condition)) return false;
+        BlockPos pos = coordOf(condition);
+        if (pos == null || !level.hasChunkAt(pos)) return false;
+        if (!(level.getBlockEntity(pos) instanceof Container container)) return false;
+        Object raw = condition.get("item");
+        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+        if (key == null) return false;
+        Predicate<ItemStack> hit = itemHit(raw, key);
+        if (hit == null) return false;
+        int minimum = WorldFactConditions.minimumOf(condition, 1);
+        int total = 0;
+        for (int slot = 0; slot < container.getContainerSize() && total < minimum; slot++) {
+            ItemStack stack = container.getItem(slot);
+            if (!stack.isEmpty() && hit.test(stack)) total += stack.getCount();
+        }
+        return total >= minimum;
+    }
+
+    /** 物品匹配谓词（精确 id 或 #tag）；非法返回 null。 */
+    private static Predicate<ItemStack> itemHit(Object raw, ResourceLocation key) {
+        if (WorldFactConditions.isTag(raw)) {
+            TagKey<Item> tag = TagKey.create(Registries.ITEM, key);
+            return stack -> stack.is(tag);
+        }
+        Item wanted = BuiltInRegistries.ITEM.get(key);
+        if (wanted == null || !BuiltInRegistries.ITEM.containsKey(key)) return null;
+        return stack -> stack.is(wanted);
     }
 
     private static boolean contains(StructureStart start, BlockPos pos) {

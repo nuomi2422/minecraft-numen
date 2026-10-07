@@ -382,7 +382,10 @@ final class RddDecomposer {
                     + "type=block_mined(block ID 或 #tag, minimum) 与 item_crafted/item_used/item_picked_up(item ID 或 #tag, minimum) 判「本人终身统计真的做了 N 次」"
                     + "（服务器权威、跨重启；挖矿/合成/使用/拾取各对应一个）；"
                     + "type=dimension(dimension ID) 判「本人在某维度」；type=y_below(y, 可选dimension) 判「本人 Y≤y」；"
-                    + "type=position_at(x,y,z, 可选radius) 判「本人在该点附近」（默认半径4，上限16）。"
+                    + "type=position_at(x,y,z, 可选radius) 判「本人在该点附近」（默认半径4，上限16）；"
+                    + "type=entity_nearby(entity ID 或 #tag, radius) 判「附近有这种实体」；"
+                    + "type=block_at(x,y,z,block ID 或 #tag) 判「指定坐标是某方块」；"
+                    + "type=container_at(x,y,z,item ID 或 #tag, minimum) 判「指定坐标容器里有某物」。"
                     + "精确 ID 与 #tag 都接受：村庄要写 minecraft:village_plains 等五个之一，或直接用 #minecraft:village；海底神殿是 minecraft:monument 不是 ocean_monument。"
                     + "base只要求本人已绑定的可重生床完整可用；附近箱子和熔炉不再当硬门（建成它们会另排步骤，不要塞进 base）。structure须本人到达已加载结构，击杀须本人统计，不以实体消失当击败。"
                     + "没有对应验收器的部分不要伪造物品替代。只输出 decompose_goal 工具调用，不要写多余文字。";
@@ -444,9 +447,12 @@ final class RddDecomposer {
                     + "{type:block_mined,block:minecraft:stone,minimum:32}；"
                     + "{type:item_crafted,item:minecraft:bread,minimum:3}；"
                     + "{type:dimension,dimension:minecraft:the_nether}；{type:y_below,y:0}；"
-                    + "{type:position_at,x:100,y:64,z:200,radius:4}。\n"
-                    + "  只用下面这十四种类型：advancement/structure/entity_killed/base/biome/block_nearby/container_nearby/"
-                    + "block_mined/item_crafted/item_used/item_picked_up/dimension/position_at/y_below，"
+                    + "{type:position_at,x:100,y:64,z:200,radius:4}；"
+                    + "{type:entity_nearby,entity:minecraft:cow,radius:8}；"
+                    + "{type:block_at,x:100,y:64,z:200,block:minecraft:crafting_table}；"
+                    + "{type:container_at,x:100,y:64,z:200,item:minecraft:diamond,minimum:1}。\n"
+                    + "  只用下面这十七种类型：advancement/structure/entity_killed/base/biome/block_nearby/container_nearby/"
+                    + "block_mined/item_crafted/item_used/item_picked_up/dimension/position_at/y_below/entity_nearby/block_at/container_at，"
                     + "写别的一律会被丢掉（整条步骤消失且不报错）。ID 不确定就用 #tag。\n"
                 + "  你只负责给「完成条件」，不要给身体动作指令 —— 身体只有一个驾驶员（执行 AI），"
                 + "派活是它的事，不是规划器的事。\n";
@@ -514,7 +520,8 @@ final class RddDecomposer {
                             List.of("inventory", "advancement", "structure", "entity_killed", "base",
                                     "biome", "block_nearby", "container_nearby",
                                     "block_mined", "item_crafted", "item_used", "item_picked_up",
-                                    "dimension", "position_at", "y_below"))),
+                                    "dimension", "position_at", "y_below",
+                                    "entity_nearby", "block_at", "container_at"))),
                     Map.entry("advancement", Map.of("type", "string")),
                     Map.entry("structure", Map.of("type", "string")),
                     Map.entry("entity", Map.of("type", "string")),
