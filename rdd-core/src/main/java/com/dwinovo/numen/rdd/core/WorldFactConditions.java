@@ -28,12 +28,16 @@ public final class WorldFactConditions {
             "advancement", "structure", "entity_killed", "base",
             "biome", "block_nearby", "container_nearby",
             // A 组：原版 Stats（服务器权威、跨重启、每同伴终身）——判“真的做了 N 次”
-            "block_mined", "item_crafted", "item_used", "item_picked_up");
+            "block_mined", "item_crafted", "item_used", "item_picked_up",
+            // B 组：位置 / 维度
+            "dimension", "position_at", "y_below");
 
     /** 判定半径上限。判定只读一个邻域，永不遍历世界 —— 这是它能每秒跑一次的前提。 */
     public static final int MAX_NEARBY_RADIUS = 16;
     public static final int DEFAULT_BLOCK_RADIUS = 8;
     public static final int DEFAULT_CONTAINER_RADIUS = 8;
+    /** position_at 的默认容差半径（格）。 */
+    public static final int DEFAULT_POSITION_RADIUS = 4;
 
     public static boolean valid(Map<String, Object> condition) {
         if (condition == null || condition.containsKey("asset_key") || condition.containsKey("group")) return false;
@@ -53,6 +57,9 @@ public final class WorldFactConditions {
             case "block_mined" -> tag(condition.get("block")) && optionalPositive(condition.get("minimum"));
             case "item_crafted", "item_used", "item_picked_up" ->
                     tag(condition.get("item")) && optionalPositive(condition.get("minimum"));
+            case "dimension" -> id(condition.get("dimension"));
+            case "y_below" -> integer(condition.get("y"));
+            case "position_at" -> coord(condition) && radius(condition.get("radius"), MAX_NEARBY_RADIUS);
             default -> false;
         };
     }
@@ -103,6 +110,16 @@ public final class WorldFactConditions {
     /** 可选 minimum：缺省合法；给了必须是 >0 整数。 */
     private static boolean optionalPositive(Object value) {
         return value == null || positive(value);
+    }
+
+    /** 任意整数（可为负），用于坐标 / 高度。 */
+    private static boolean integer(Object value) {
+        return value instanceof Number n && n.doubleValue() == n.intValue();
+    }
+
+    /** 必须有整数 x/y/z 三元。 */
+    private static boolean coord(Map<String, Object> condition) {
+        return integer(condition.get("x")) && integer(condition.get("y")) && integer(condition.get("z"));
     }
 
     private static boolean radius(Object value, int cap) {

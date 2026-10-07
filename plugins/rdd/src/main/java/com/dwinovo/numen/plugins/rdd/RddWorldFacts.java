@@ -57,6 +57,9 @@ public final class RddWorldFacts {
                 case "item_crafted" -> statItem(ap, Stats.ITEM_CRAFTED, condition);
                 case "item_used" -> statItem(ap, Stats.ITEM_USED, condition);
                 case "item_picked_up" -> statItem(ap, Stats.ITEM_PICKED_UP, condition);
+                case "dimension" -> dimensionReached(ap, condition);
+                case "y_below" -> yBelow(ap, condition);
+                case "position_at" -> positionAt(ap, condition);
                 default -> false;
             };
         } catch (IllegalArgumentException exception) {
@@ -297,6 +300,46 @@ public final class RddWorldFacts {
         } catch (RuntimeException ignored) {
             return 0;
         }
+    }
+
+    // ---- B 组：位置 / 维度 ----
+
+    private static boolean dimensionReached(NumenPlayer ap, Map<String, Object> condition) {
+        ResourceLocation wanted = id(condition, "dimension");
+        return wanted != null && ap.serverLevel().dimension().location().equals(wanted);
+    }
+
+    private static boolean yBelow(NumenPlayer ap, Map<String, Object> condition) {
+        ServerLevel level = ap.serverLevel();
+        if (!dimension(level, condition)) return false;
+        Object raw = condition.get("y");
+        if (!(raw instanceof Number number)) return false;
+        return ap.getY() <= number.doubleValue();
+    }
+
+    private static boolean positionAt(NumenPlayer ap, Map<String, Object> condition) {
+        ServerLevel level = ap.serverLevel();
+        if (!dimension(level, condition)) return false;
+        BlockPos pos = coordOf(condition);
+        if (pos == null) return false;
+        int radius = WorldFactConditions.radiusOf(condition, WorldFactConditions.DEFAULT_POSITION_RADIUS);
+        BlockPos me = ap.blockPosition();
+        long dx = (long) me.getX() - pos.getX();
+        long dy = (long) me.getY() - pos.getY();
+        long dz = (long) me.getZ() - pos.getZ();
+        return dx * dx + dy * dy + dz * dz <= (long) radius * radius;
+    }
+
+    private static BlockPos coordOf(Map<String, Object> condition) {
+        Object x = condition.get("x");
+        Object y = condition.get("y");
+        Object z = condition.get("z");
+        if (x instanceof Number nx && y instanceof Number ny && z instanceof Number nz
+                && nx.doubleValue() == nx.intValue() && ny.doubleValue() == ny.intValue()
+                && nz.doubleValue() == nz.intValue()) {
+            return new BlockPos(nx.intValue(), ny.intValue(), nz.intValue());
+        }
+        return null;
     }
 
     private static boolean contains(StructureStart start, BlockPos pos) {

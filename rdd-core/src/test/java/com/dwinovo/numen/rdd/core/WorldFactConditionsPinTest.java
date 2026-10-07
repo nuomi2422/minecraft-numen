@@ -50,7 +50,8 @@ class WorldFactConditionsPinTest {
     private static final List<String> PINNED_TYPES = List.of(
             "advancement", "structure", "entity_killed", "base",
             "biome", "block_nearby", "container_nearby",
-            "block_mined", "item_crafted", "item_used", "item_picked_up");
+            "block_mined", "item_crafted", "item_used", "item_picked_up",
+            "dimension", "position_at", "y_below");
 
     @Test
     void knownTypesArePinnedToTheFullSet() {
@@ -99,6 +100,24 @@ class WorldFactConditionsPinTest {
         assertFalse(WorldFactConditions.valid(c("type", "block_mined", "block", "not_an_id")));
         assertFalse(WorldFactConditions.valid(c("type", "item_crafted")), "缺 item");
         assertFalse(WorldFactConditions.valid(c("type", "block_mined", "block", "minecraft:stone", "minimum", 0)), "minimum 必须 >0");
+    }
+
+    @Test
+    void positionWorldFactTypesSchemaIsValid() {
+        assertTrue(WorldFactConditions.valid(c("type", "dimension", "dimension", "minecraft:the_nether")));
+        assertTrue(WorldFactConditions.valid(c("type", "y_below", "y", 0)));
+        assertTrue(WorldFactConditions.valid(c("type", "y_below", "y", -59, "dimension", "minecraft:overworld")));
+        assertTrue(WorldFactConditions.valid(c("type", "position_at", "x", 100, "y", 64, "z", 200)));
+        assertTrue(WorldFactConditions.valid(c("type", "position_at", "x", 100, "y", 64, "z", 200, "radius", 8)));
+    }
+
+    @Test
+    void positionWorldFactTypesRejectMalformed() {
+        assertFalse(WorldFactConditions.valid(c("type", "dimension")), "缺 dimension");
+        assertFalse(WorldFactConditions.valid(c("type", "y_below")), "缺 y");
+        assertFalse(WorldFactConditions.valid(c("type", "y_below", "y", 1.5)), "y 必须整数");
+        assertFalse(WorldFactConditions.valid(c("type", "position_at", "x", 1, "y", 2, "block", "minecraft:stone")), "缺 z");
+        assertFalse(WorldFactConditions.valid(c("type", "position_at", "x", 1, "y", 2, "z", 3, "radius", 64)), "半径越界");
     }
 
     @Test
@@ -300,7 +319,8 @@ class WorldFactConditionsPinTest {
         for (String candidate : List.of("advancement", "structure", "entity_killed", "base",
                 "biome", "block_nearby", "container_nearby",
                 "block_mined", "item_crafted", "item_used", "item_picked_up",
-                "inventory", "asset", "item", "block", "entity", "dimension", "recipe",
+                "dimension", "position_at", "y_below",
+                "inventory", "asset", "item", "block", "entity", "recipe",
                 "effect", "stat", "weather", "time", "damage", "xp", "level", "mob_nearby")) {
             if (WorldFactConditions.knownType(candidate)) accepted.add(candidate);
         }
