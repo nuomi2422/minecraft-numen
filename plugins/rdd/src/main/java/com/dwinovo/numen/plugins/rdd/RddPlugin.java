@@ -391,7 +391,6 @@ public final class RddPlugin implements NumenPlugin {
                     + "<instruction>current_task 是你必须执行的当前目标（优先于自由活动）；"
                     + "若你认为它不合理/不可达/与目标冲突，用 report_task_concern 上报（REJECT/COUNTER+建议），"
                     + "指挥官会据此改单或重规划；不要默默无视。</instruction>"
-                    + RddV32Directives.harnessHints()
                     // 38号v3.6 B24：携带器提醒由 withAssets 统一挂（它是全部分支的共同出口）。
                     // ⚠️ 2026-10-01 实机请求体抓到重复：这里加一次、withAssets 又 replace 一次，
                     //    <carry> 在 <rdd> 里出现两遍（白送 ~130 token/请求）。故此处不再加。

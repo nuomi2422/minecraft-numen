@@ -68,8 +68,9 @@ public class OpenAIProvider implements LlmProvider {
 
     /**
      * 力度 → 本站方言的翻译。{@code off} 只有带开关的方言能表达;effort
-     * 形态对 off 静默(没有"关"的线格式)。{@code none} 家族永不发参数——
-     * 思考型号常开/不可控的站点,多发只会 400 或被无视。
+     * 形态对 off 静默(没有"关"的线格式);{@code effort-none} 变体例外——
+     * off 翻译成 {@code reasoning_effort:"none"}(网关实测接受,真能关掉思考)。
+     * {@code none} 家族永不发参数——思考型号常开/不可控的站点,多发只会 400 或被无视。
      */
     @Override
     public void applyReasoning(JsonObject body, String effort) {
@@ -87,6 +88,10 @@ public class OpenAIProvider implements LlmProvider {
                 JsonObject r = new JsonObject();
                 r.addProperty("effort", effort);
                 body.add("reasoning", r);
+            }
+            case LlmProvider.THINKING_EFFORT_NONE -> {
+                // effort 族的"可关"变体：off 用 reasoning_effort:"none" 明说（实测网关接受）。
+                body.addProperty("reasoning_effort", off ? "none" : effort);
             }
             default -> {
                 if (off) return;

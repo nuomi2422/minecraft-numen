@@ -28,7 +28,7 @@
       ]
     },
     {
-      "id": "opencode-go", "name": "OpenCode Go", "baseUrl": "https://opencode.ai/zen/go/v1", "thinkingFormat": "effort",
+      "id": "opencode-go", "name": "OpenCode Go", "baseUrl": "https://opencode.ai/zen/go/v1", "thinkingFormat": "effort-none",
       "headers": {
         "User-Agent": "numen-minecraft-agent/1.0",
         "x-opencode-session": "numen-minecraft-${session}"

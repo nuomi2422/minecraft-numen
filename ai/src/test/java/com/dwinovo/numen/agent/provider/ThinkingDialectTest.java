@@ -31,6 +31,16 @@ class ThinkingDialectTest {
     }
 
     @Test
+    void effortNoneFormatExpressesOffAsReasoningEffortNone() {
+        // effort 族的"可关"变体（OpenCode 网关）：off → reasoning_effort:"none"，
+        // 实测真能关掉思考（completion 只剩答案 token，无 reasoning_content）。
+        assertEquals("none", apply(LlmProvider.THINKING_EFFORT_NONE, "off")
+                .get("reasoning_effort").getAsString());
+        assertEquals("high", apply(LlmProvider.THINKING_EFFORT_NONE, "high")
+                .get("reasoning_effort").getAsString());
+    }
+
+    @Test
     void effortNestedFormatWrapsInReasoningObject() {
         JsonObject body = apply(LlmProvider.THINKING_EFFORT_NESTED, "low");
         assertEquals("low", body.getAsJsonObject("reasoning").get("effort").getAsString());

@@ -43,6 +43,8 @@ public interface LlmProvider {
     String THINKING_EFFORT = "effort";
     /** 嵌套 {@code reasoning: {effort: ...}}(聚合网关常用)。 */
     String THINKING_EFFORT_NESTED = "effort-nested";
+    /** 顶层 {@code reasoning_effort},且支持用 {@code "none"} 明确关闭（OpenCode 网关实测接受）。 */
+    String THINKING_EFFORT_NONE = "effort-none";
     /** 对象开关 {@code thinking: {type: "enabled"|"disabled"}}。 */
     String THINKING_TYPE = "thinking-type";
     /** 布尔开关 {@code enable_thinking: true|false}。 */

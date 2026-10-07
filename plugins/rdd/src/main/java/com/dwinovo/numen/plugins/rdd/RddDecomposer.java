@@ -46,6 +46,31 @@ final class RddDecomposer {
     private static final Logger LOG = LoggerFactory.getLogger(RddDecomposer.class);
     private static final Gson GSON = new Gson();
 
+    /**
+     * 规划层的"思考力度"（2026-10-07 用户裁决：生成太慢，思维过程不再需要）。
+     *
+     * <p>能表达"关"的站点（thinking 开关型 / enable-bool / budget / effort-none 方言）
+     * 直接 {@code off}；effort 族站点没有"关"的线格式（off 会被静默丢掉 = 等于没改），
+     * 退回 {@code low} 至少把思考量压下来。opencode-go 当前是 effort 族（今天发 low，
+     * 实测明显变快）；等 api jar 带上 effort-none 方言后这里自动升级成真正的 off，
+     * 不需要再改这段代码。
+     */
+    private static String plannerReasoningEffort() {
+        String format = "";
+        try {
+            format = com.dwinovo.numen.agent.provider.ProviderRegistry
+                    .thinkingFormat(Services.CONFIG.getProvider());
+        } catch (Throwable ignored) {
+            // 读不到站点方言就按 effort 族兜底
+        }
+        if (format == null || format.isBlank()
+                || com.dwinovo.numen.agent.provider.LlmProvider.THINKING_EFFORT.equals(format)
+                || com.dwinovo.numen.agent.provider.LlmProvider.THINKING_EFFORT_NESTED.equals(format)) {
+            return "low";
+        }
+        return "off";
+    }
+
     private RddDecomposer() {}
 
     /**
@@ -69,7 +94,7 @@ final class RddDecomposer {
             return;
         }
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
-                cfg.getBaseUrl(), cfg.getProxy(), "auto");
+                cfg.getBaseUrl(), cfg.getProxy(), plannerReasoningEffort());
         RddPlugin.publishPlanningContext(companionId, stage, userContent, system, tool);
         NumenLlmClient.forEndpoint(ep)
                 .chatStreaming(List.of(new ConvoState.Msg.User(userContent)),
@@ -132,7 +157,7 @@ final class RddDecomposer {
             return;
         }
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
-                cfg.getBaseUrl(), cfg.getProxy(), "auto");
+                cfg.getBaseUrl(), cfg.getProxy(), plannerReasoningEffort());
         // 经验知识贴进最终请求正文（无知识时与原来逐字相同）
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,

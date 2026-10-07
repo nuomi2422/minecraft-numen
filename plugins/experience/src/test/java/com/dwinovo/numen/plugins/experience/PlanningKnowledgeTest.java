@@ -146,21 +146,32 @@ class PlanningKnowledgeTest {
         assertTrue(sel.chosen().size() <= 3, "条目数不得超过预算，实际 " + sel.chosen().size());
     }
 
-    // ---------- 排序：可信的优先 ----------
+    // ---------- 排序：相关度优先，同分才比成熟度 ----------
 
     @Test
-    void 成熟度高的排在前面() {
+    void 相关度高的排在前面_同分时成熟度高的在前() {
+        // 2026-10-07 用户实测缺陷：成熟度一票优先会把主人亲授路线（OBSERVED、高相关）
+        // 永远压在通用内建（GENERALIZED、弱相关）之后，短目标下挤不进预算 ——
+        // 表现就是"我注入的经验没用"。检索侧得分本身已按成熟度加权，故改为得分优先。
         List<PlanningKnowledge.Item> hits = List.of(
                 item("exp:observed", PlanningKnowledge.Kind.EXPERIENCE, "钻石观察", "OBSERVED",
                         "钻石", "听说", "experience-abc.jsonl", 99.0, "钻石"),
                 item("exp:verified", PlanningKnowledge.Kind.EXPERIENCE, "钻石验证", "VERIFIED",
                         "钻石", "实测可行", "experience-abc.jsonl", 1.0, "钻石"));
-        PlanningKnowledge.Request two = new PlanningKnowledge.Request(
+        PlanningKnowledge.Request one = new PlanningKnowledge.Request(
                 "钻石", "stage_b", List.of(), List.of(), 1, PlanningKnowledge.DEFAULT_MAX_CHARS);
 
-        PlanningKnowledge.Selection sel = PlanningKnowledge.select(two, List.of(), hits);
+        PlanningKnowledge.Selection byScore = PlanningKnowledge.select(one, List.of(), hits);
+        assertEquals("exp:observed", byScore.chosen().get(0).id(), "相关度优先于成熟度");
 
-        assertEquals("exp:verified", sel.chosen().get(0).id(), "成熟度优先于原始得分");
+        // 得分相同时，成熟度仍做裁决（信任没有被丢掉）
+        List<PlanningKnowledge.Item> tie = List.of(
+                item("exp:plain", PlanningKnowledge.Kind.EXPERIENCE, "钻石观察", "OBSERVED",
+                        "钻石", "听说", "experience-abc.jsonl", 5.0, "钻石"),
+                item("exp:trusted", PlanningKnowledge.Kind.EXPERIENCE, "钻石验证", "GENERALIZED",
+                        "钻石", "实测可行", "experience-abc.jsonl", 5.0, "钻石"));
+        PlanningKnowledge.Selection sameScore = PlanningKnowledge.select(one, List.of(), tie);
+        assertEquals("exp:trusted", sameScore.chosen().get(0).id(), "同分时成熟度高的在前");
     }
 
     @Test

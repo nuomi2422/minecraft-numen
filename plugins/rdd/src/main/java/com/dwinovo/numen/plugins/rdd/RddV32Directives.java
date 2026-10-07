@@ -16,6 +16,12 @@ package com.dwinovo.numen.plugins.rdd;
  * <p>\u7eaa\u5f8b\uff1a\u7eaf\u6587\u672c\u5e38\u91cf\uff0c\u4e0d\u78b0 Minecraft\uff1b\u4e0d\u6539\u4efb\u52a1\u94fe\u72b6\u6001\u673a\uff1b\u7ea2\u7ebf\u4e0d\u52a8\u3002\u6587\u6848\u968f\u7528\u6237\u53e3\u4ee4\u6f14\u8fdb\uff0c
  * \u6539\u8fd9\u91cc\u5373\u53ef\uff08\u4e0d\u6563\u843d\u5728\u5404\u5904\uff09\u3002
  */
+// 2026-10-07 (user ruling): the two full-injection call sites were removed --
+// RddStagePlanner no longer appends annexTaskSpec() and RddPlugin no longer
+// appends harnessHints(). The first-batch fixed flow (mine-to-diamonds /
+// obsidian / enchanting / spawner) is retired; planning is driven by the goal
+// plus the companion's injected owner-route experience. Class + tests kept for
+// reference (revert = re-add the two one-line call sites).
 final class RddV32Directives {
 
     private RddV32Directives() {}
