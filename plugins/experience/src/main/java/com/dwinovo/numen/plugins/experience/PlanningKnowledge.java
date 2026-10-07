@@ -26,10 +26,19 @@ import java.util.Set;
  */
 public final class PlanningKnowledge {
 
-    /** 默认最多注入的条目数（含攻略）。 */
-    public static final int DEFAULT_MAX_ITEMS = 4;
-    /** 默认知识正文的字符预算。 */
-    public static final int DEFAULT_MAX_CHARS = 1200;
+    /**
+     * 「强制注入」标记：带这个 tag 的条目不做字面相关性过滤。
+     *
+     * <p>2026-10-07 用户裁决：知识源已收窄成「只注入主人自己写的经验」，库很小；
+     * 主人要求这几条每次都全注入 —— 否则 4 个字的目标（如「安身立命」）字面命中不到，
+     * 规划器又会空手猜（实测 chosen=0）。
+     */
+    public static final String ALWAYS_TAG = "__owner_route__";
+
+    /** 默认最多注入的条目数（含攻略）。2026-10-07 由 4 提到 8：主人路线一次全带上。 */
+    public static final int DEFAULT_MAX_ITEMS = 8;
+    /** 默认知识正文的字符预算。2026-10-07 由 1200 提到 2400：容得下主人路线 8 条。 */
+    public static final int DEFAULT_MAX_CHARS = 2400;
     /** 单条目的字符上限，防止一条超长经验吃光整个预算。 */
     public static final int DEFAULT_MAX_CHARS_PER_ITEM = 400;
 
@@ -143,13 +152,24 @@ public final class PlanningKnowledge {
         }
 
         List<Item> chosen = new ArrayList<>();
-        // 攻略是通用背景，最多一条，避免挤占同伴经验的位置。
+        // 1) 主人亲授（ALWAYS_TAG）：**无条件全部注入** —— 不看字面命中、不占条目预算。
+        //    用户 2026-10-07 裁决：这几条主人路线每次规划都必须带上。
+        for (Item item : expHits) {
+            if (item.tags().contains(ALWAYS_TAG)) {
+                chosen.add(item);
+            }
+        }
+        // 2) 攻略是通用背景，最多一条，避免挤占同伴经验的位置。
         if (!guideHits.isEmpty()) {
             chosen.add(guideHits.get(0));
         }
+        // 3) 其余经验按相关度补到条目预算（主人亲授的已经加过，跳过）。
         for (Item item : expHits) {
             if (chosen.size() >= r.maxItems()) {
                 break;
+            }
+            if (item.tags().contains(ALWAYS_TAG)) {
+                continue;
             }
             chosen.add(item);
         }
@@ -186,6 +206,10 @@ public final class PlanningKnowledge {
     }
 
     private static boolean relevant(Item item, Set<String> terms) {
+        // 主人亲授：无条件保留（不参与字面相关性过滤）
+        if (item.tags().contains(ALWAYS_TAG)) {
+            return true;
+        }
         String haystack = (item.title() + " " + item.problem() + " " + item.response() + " "
                 + String.join(" ", item.tags())).toLowerCase(Locale.ROOT);
         for (String term : terms) {

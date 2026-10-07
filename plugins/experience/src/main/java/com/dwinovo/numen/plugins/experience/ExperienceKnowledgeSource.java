@@ -99,20 +99,39 @@ public final class ExperienceKnowledgeSource {
         return selection;
     }
 
-    /** 生产用经验来源：走经验插件的既有召回契约。 */
+    /**
+     * 生产用经验来源：走经验插件的召回契约，<b>外加主人亲授条目无条件补全</b>。
+     *
+     * <p>2026-10-07 用户裁决：主人亲授的条目「直接全部注入，无条件」—— 不看字面命中、
+     * 不占条目预算。兜底理由：4 个字的目标（如「安身立命」）字面命中不到任何条目，
+     * 旧的召回会给 0 条，规划器只能空手猜（实测 chosen=0）。
+     */
     private static List<PlanningKnowledge.Item> fromMemory(UUID companionId, String query,
                                                            PlanningKnowledge.Request req) {
         if (companionId == null || query.isBlank()) {
             return List.of();
         }
+        var mem = ExperiencePlugin.memory(companionId);
         // ★ E7：reportable=false —— 规划知识也是每轮自动取用的，
         //   同伴不一定照做 ⇒ 不进待回报清单（只计「被呈现过」）。
-        List<ExperienceHit> hits = ExperiencePlugin.memory(companionId)
-                .recall(query, req.maxItems(), null, req.tags(),
-                        PresentationReceipt.SURFACE_PLANNING, false);
+        List<ExperienceHit> hits = mem.recall(query, req.maxItems(), null, req.tags(),
+                PresentationReceipt.SURFACE_PLANNING, false);
         List<PlanningKnowledge.Item> out = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
         for (ExperienceHit hit : hits) {
-            PlanningKnowledge.Item item = toItem(hit, companionId);
+            PlanningKnowledge.Item item = itemOf(hit.entry(), companionId, hit.score());
+            if (item != null && seen.add(item.id())) {
+                out.add(item);
+            }
+        }
+        // 兜底：主人亲授的条目全部补进来（按 priority 降序，读起来就是路线顺序）。
+        List<ExperienceEntry> usable = new ArrayList<>(mem.usable());
+        usable.sort((a, b) -> Integer.compare(b.priority(), a.priority()));
+        for (ExperienceEntry e : usable) {
+            if (e == null || !seen.add(e.id()) || !ownerTaught(e)) {
+                continue;
+            }
+            PlanningKnowledge.Item item = itemOf(e, companionId, e.priority());
             if (item != null) {
                 out.add(item);
             }
@@ -120,9 +139,15 @@ public final class ExperienceKnowledgeSource {
         return out;
     }
 
+    /** 主人亲授判定：标题 / 标签 / 触发词里带主人路线标记（2026-10-07 用户口径）。 */
+    private static boolean ownerTaught(ExperienceEntry e) {
+        String blob = e.title() + " " + String.join(" ", e.tags()) + " " + String.join(" ", e.triggerStrings());
+        return blob.contains("owner-taught") || blob.contains("主人亲授")
+                || blob.contains("主人指定") || blob.contains("主人路线");
+    }
+
     /** 单条经验 → 候选知识；字段缺失时用现象兜底，仍无内容则丢弃（不注入空壳）。 */
-    private static PlanningKnowledge.Item toItem(ExperienceHit hit, UUID companionId) {
-        ExperienceEntry entry = hit.entry();
+    private static PlanningKnowledge.Item itemOf(ExperienceEntry entry, UUID companionId, double score) {
         if (entry == null) {
             return null;
         }
@@ -133,6 +158,9 @@ public final class ExperienceKnowledgeSource {
         ExperienceMaturity maturity = entry.maturity();
         List<String> tags = new ArrayList<>(entry.tags());
         tags.addAll(entry.triggerStrings());
+        if (ownerTaught(entry)) {
+            tags.add(PlanningKnowledge.ALWAYS_TAG);
+        }
         return new PlanningKnowledge.Item(
                 entry.id(),
                 PlanningKnowledge.Kind.EXPERIENCE,
@@ -142,7 +170,7 @@ public final class ExperienceKnowledgeSource {
                 entry.recommendedResponse(),
                 // 出处带上同伴 UUID：跨同伴串味时能在监测台一眼看出来
                 "experience-" + companionId + ".jsonl",
-                hit.score(),
+                score,
                 tags);
     }
 

@@ -121,12 +121,17 @@ class PlanningKnowledgeTest {
                 item("exp:huge", PlanningKnowledge.Kind.EXPERIENCE, huge.toString(), "VERIFIED",
                         huge.toString(), huge.toString(), "experience-abc.jsonl", 1.0, "钻石"));
 
+        // 2026-10-07：默认字符预算提到 2400 后，单条 3×400 撑不满全局预算；
+        // 这里显式给一个 600 的小预算，继续验证「超预算 → 截断 + 标记」这条路径。
+        int budget = 600;
+        PlanningKnowledge.Request tight = new PlanningKnowledge.Request(
+                "钻石", "stage_b", List.of(), List.of(), PlanningKnowledge.DEFAULT_MAX_ITEMS, budget);
+
         // 检索词必须真能命中所选条目（否则会被相关性过滤挡掉，压根走不到截断这一步）
-        PlanningKnowledge.Selection sel = PlanningKnowledge.select(
-                request("钻石", "stage_b"), List.of(), hits);
+        PlanningKnowledge.Selection sel = PlanningKnowledge.select(tight, List.of(), hits);
 
         assertTrue(sel.gaps().contains("truncated"), "截断必须如实标记");
-        assertTrue(sel.text().length() <= PlanningKnowledge.DEFAULT_MAX_CHARS + TRUNCATION_MARKER_SLACK,
+        assertTrue(sel.text().length() <= budget + TRUNCATION_MARKER_SLACK,
                 "正文不得超出字符预算（含截断标记余量），实际 " + sel.text().length());
         assertTrue(sel.text().contains("已截断"));
     }
