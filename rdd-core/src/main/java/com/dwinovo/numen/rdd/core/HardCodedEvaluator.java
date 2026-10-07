@@ -85,7 +85,7 @@ public final class HardCodedEvaluator {
                 // 宁可漏判，也不假完成 —— 这是本条守卫的原意，不要动。
                 return false;
             }
-            int gained = counts.getOrDefault(key, 0) - baseline.getOrDefault(key, 0);
+            int gained = countOf(key, counts) - countOf(key, baseline);
             return gained >= minimum;
         }
         if (!MODE_HOLD.equals(modeOf(condition))) return false; // 未知/畸形 mode：显式不满足
@@ -96,8 +96,57 @@ public final class HardCodedEvaluator {
      * {@code hold} 语义：背包/持有量达到 {@code minimum} 就算满足（硬指标，不猜）。
      */
     private static boolean holdSatisfied(String key, int minimum, Map<String, Integer> counts) {
-        Integer count = counts.get(key);
-        return count != null ? Math.max(0, count) >= minimum : minimum == 0;
+        if (minimum == 0) return true;
+        return countOf(key, counts) >= minimum;
+    }
+
+    /**
+     * 计数：精确键优先；精确键<b>不存在</b>时，对「裸名」做<b>变体族兜底</b>再数。
+     *
+     * <p>2026-10-07 用户实测缺陷：模型会写 {@code minecraft:bed} —— 但 1.13+ 的床是按颜色拆开的
+     * （{@code white_bed}/{@code red_bed}…），根本没有 {@code minecraft:bed} 这个物品；羊毛/木板/
+     * 台阶/树苗同理。于是条件永远对不上、二级卡在 STALLED（实测「合成床」卡死，而背包里明明有
+     * {@code minecraft:white_bed}）。
+     *
+     * <p>兜底只在【精确键不存在】且【键名是不带下划线的裸名（如 bed/wool/planks）】时生效：
+     * 把 {@code minecraft:<裸名>} 当成「该族的任意变体」，把 {@code *_<裸名>} 全部加总。
+     * 精确键在的时候一律走精确，不改变既有语义。
+     */
+    static int countOf(String key, Map<String, Integer> counts) {
+        if (key == null || counts == null) {
+            return 0;
+        }
+        Integer exact = counts.get(key);
+        if (exact != null) {
+            return Math.max(0, exact);
+        }
+        String suffix = bareVariantSuffix(key);
+        if (suffix == null) {
+            return 0;
+        }
+        int total = 0;
+        for (Map.Entry<String, Integer> e : counts.entrySet()) {
+            String k = e.getKey();
+            if (k == null || e.getValue() == null || e.getValue() <= 0) {
+                continue;
+            }
+            if (k.endsWith(suffix)) {
+                total += e.getValue();
+            }
+        }
+        return total;
+    }
+
+    /** {@code minecraft:bed} → {@code "_bed"}；带下划线 / 非 minecraft 命名空间 / 空名 → null（不兜底）。 */
+    private static String bareVariantSuffix(String key) {
+        if (!key.startsWith("minecraft:")) {
+            return null;
+        }
+        String name = key.substring("minecraft:".length());
+        if (name.isEmpty() || name.indexOf('_') >= 0) {
+            return null;
+        }
+        return "_" + name;
     }
 
     /**

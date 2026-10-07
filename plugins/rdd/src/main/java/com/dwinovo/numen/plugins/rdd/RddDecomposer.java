@@ -10,7 +10,6 @@ import com.dwinovo.numen.agent.provider.IToolSpec;
 import com.dwinovo.numen.agent.provider.LlmToolCall;
 import com.dwinovo.numen.platform.Services;
 import com.dwinovo.numen.platform.services.INumenConfig;
-import com.dwinovo.numen.rdd.api.BodyInstruction;
 import com.dwinovo.numen.rdd.api.Goal;
 import com.dwinovo.numen.rdd.api.SubtaskSpec;
 import com.dwinovo.numen.rdd.core.PlanningAssetSnapshot;
@@ -224,7 +223,7 @@ final class RddDecomposer {
         // §9：重试带上下文修正——再次尝试时把"为何上次不可执行"喂回去，逼 LLM 给可检测的真实物品键。
         String hint = attempt >= 1
                 ? "\n注意：上一次生成的子步骤被判定不可执行——每个 asset_key 必须是完整的小写命名空间 ID"
-                + "（如 minecraft:oak_log），condition 必须有真实可检测物品，minimum 给具体数字，body 可选。"
+                + "（如 minecraft:oak_log），condition 必须有真实可检测物品，minimum 给具体数字。"
                 + "不要裸键/占位符/大写，不要用 \"goal\" 冒充物品。宁可少拆，不可拆出跑不动的步骤。"
                 : "";
         // 上一次被判定不可执行 → 把该失败事实一并交给知识侧，召回「这类失败该怎么办」的经验
@@ -288,7 +287,12 @@ final class RddDecomposer {
         return out;
     }
 
-    /** 单条规格：description 非空、condition 含 asset_key（+可选非负 minimum）；body 可选。非法返回 null。 */
+    /**
+     * 单条规格：description 非空、condition 含 asset_key（+可选非负 minimum）。非法返回 null。
+     *
+     * <p>2026-10-07 用户裁决（单驾驶员）：规划器<b>不给身体动作</b>，body 一律忽略（传 null）。
+     * 身体只有一个驾驶员（执行 AI），派活是它的事。
+     */
     private static SubtaskSpec parseOne(JsonObject o) {
         String description = o.has("description") ? o.get("description").getAsString() : null;
         if (description == null || description.isBlank()) {
@@ -303,7 +307,7 @@ final class RddDecomposer {
             Map<String, Object> fact = new LinkedHashMap<>();
             for (var entry : cond.entrySet()) fact.put(entry.getKey(), toPlain(entry.getValue()));
             return com.dwinovo.numen.rdd.core.WorldFactConditions.valid(fact)
-                    ? new SubtaskSpec(description, fact, parseBody(o.get("body"))) : null;
+                    ? new SubtaskSpec(description, fact, null) : null;
         }
         String assetKey = cond.has("asset_key") ? cond.get("asset_key").getAsString() : null;
         // 资产键形状不可执行(裸键/占位如 goal/大写) 永不匹配背包键 -> 判不可用丢弃，
@@ -326,26 +330,7 @@ final class RddDecomposer {
         if (cond.has("optional") && cond.get("optional").isJsonPrimitive()
                 && cond.getAsJsonPrimitive("optional").isBoolean())
             condition.put("optional", cond.get("optional").getAsBoolean());
-        return new SubtaskSpec(description, condition, parseBody(o.get("body")));
-    }
-
-    /** body 可选；task_type 非空才认，否则视为检测-only。 */
-    private static BodyInstruction parseBody(JsonElement bodyEl) {
-        if (bodyEl == null || !bodyEl.isJsonObject()) {
-            return null;
-        }
-        JsonObject b = bodyEl.getAsJsonObject();
-        String taskType = b.has("task_type") ? b.get("task_type").getAsString() : null;
-        if (taskType == null || taskType.isBlank()) {
-            return null;
-        }
-        Map<String, Object> args = new LinkedHashMap<>();
-        if (b.has("args") && b.get("args").isJsonObject()) {
-            for (var entry : b.getAsJsonObject("args").entrySet()) {
-                args.put(entry.getKey(), toPlain(entry.getValue()));
-            }
-        }
-        return new BodyInstruction(taskType, args);
+        return new SubtaskSpec(description, condition, null);
     }
 
     /** Gson JsonElement → 纯 JVM 值（String/Number/Boolean/null/Map/List）。 */
@@ -387,7 +372,7 @@ final class RddDecomposer {
     private static final String SYSTEM_PROMPT =
             "你是 MC 女仆的目标分解器。把主人的目标拆成 1~8 个具体、按依赖顺序排列、可逐步检测的子步骤。"
                     + "每个子步骤的 condition 必须用真实的 minecraft 物品命名空间 ID（如 minecraft:oak_log、"
-                    + "minecraft:iron_ingot），数量 minimum 给具体数字。能交给身体执行的一步带上 body 工具调用。"
+                    + "minecraft:iron_ingot），数量 minimum 给具体数字。只给完成条件，不要派身体动作。"
                     + "通用食物/木头/垫脚方块需求优先用 condition:{group:food|wood|blocks,minimum:数量}，组内按物品总数相加，禁止同时给asset_key。"
                     + "food只计直接可食用的东西，生肉/腐肉也计（捡回来就算推进），不计小麦/干草/生土豆/种子；wood原木和木板按件计，不换算配方。指定合成原料仍用asset_key。"
                     + "世界条件可用type=advancement(advancement ID)、entity_killed(entity ID,minimum)、structure(structure ID 或 #tag，可选dimension)、base(可选dimension)。"
@@ -444,20 +429,17 @@ final class RddDecomposer {
                 + "- description：这一步要做什么\n"
                 + "- condition：{asset_key: 物品命名空间ID, minimum: 需要数量}\n"
                 + "  或 {group: food|wood|blocks, minimum: 组内最低总数}；不要强求食物品种齐全。\n"
+                + "  床/羊毛/木板这类有颜色或树种变体的物品，写具体 ID（如 minecraft:white_bed）；"
+                + "写裸名（minecraft:bed）会按同族任意变体兜底，但优先写具体 ID。\n"
                 + "  世界事实：{type:base}；{type:advancement,advancement:minecraft:story/...}；"
                 + "{type:structure,structure:'#minecraft:village'}（或 minecraft:village_plains 等具体 ID）；"
                 + "{type:biome,biome:'#minecraft:is_forest'}（或 minecraft:desert 等具体 ID）；"
                 + "{type:block_nearby,block:'#minecraft:ores',radius:8}；"
                 + "{type:container_nearby,item:minecraft:wheat,minimum:16,radius:8}；"
                 + "{type:entity_killed,entity:minecraft:ender_dragon,minimum:1}。\n"
-                + "  只用下面这七种 type，写别的一律会被丢掉（整条步骤消失且不报错）。ID 不确定就用 #tag。\n"
-                + "- body（可选）：把这一步直接交给女仆身体执行。task_type 只能从下面 4 个里选，"
-                + "args 统一用 {item, count}（item=物品/矿石命名空间ID，count=要拿到的数量，尽量与 condition 对齐）：\n"
-                + "    mine：挖矿/采集方块（如 {item: \"minecraft:iron_ore\", count: 3}，可给 minecraft:raw_iron）\n"
-                + "    craft：合成（如 {item: \"minecraft:iron_pickaxe\", count: 1}）\n"
-                + "    equip_item：装备（如 {item: \"minecraft:iron_pickaxe\"}）\n"
-                + "    collect_items：捡起附近掉落物（可选 {item} 限定）\n"
-                + "    严禁用这 4 个之外的工具名——不存在的名字不会被执行，只会拖慢推进。\n";
+                + "  只用下面这七种类型，写别的一律会被丢掉（整条步骤消失且不报错）。ID 不确定就用 #tag。\n"
+                + "  你只负责给「完成条件」，不要给身体动作指令 —— 身体只有一个驾驶员（执行 AI），"
+                + "派活是它的事，不是规划器的事。\n";
     }
 
     /** 已完成前置阶段上下文块（空则返回空串）。 */
@@ -511,52 +493,42 @@ final class RddDecomposer {
     private static final IToolSpec DECOMPOSE_TOOL = new IToolSpec() {
         @Override public String name() { return "decompose_goal"; }
         @Override public String description() {
-            return "把主人的目标拆成可逐步检测、可逐步执行的子步骤列表。"
+            return "把主人的目标拆成可逐步检测的子步骤列表。"
                     + "每个子步骤必须能被世界状态确定性判定：condition 里给 asset_key（minecraft 物品命名空间 ID）"
-                    + "和 minimum（数量）。可选的 body 指定把这步交给哪个身体工具执行（task_type + args）。";
+                    + "和 minimum（数量）。只给完成条件，不给身体动作（身体只有一个驾驶员）。";
         }
         @Override public Map<String, Object> parameterSchema() {
+            // 2026-09-29 放宽：optional=true 对任何类型生效（判定层已同步放宽），不只是补充食物。
+            Map<String, Object> conditionProps = Map.ofEntries(
+                    Map.entry("type", Map.of("type", "string", "enum",
+                            List.of("inventory", "advancement", "structure", "entity_killed", "base"))),
+                    Map.entry("advancement", Map.of("type", "string")),
+                    Map.entry("structure", Map.of("type", "string")),
+                    Map.entry("entity", Map.of("type", "string")),
+                    Map.entry("dimension", Map.of("type", "string")),
+                    Map.entry("asset_key", Map.of("type", "string",
+                            "description", "minecraft 物品命名空间ID，如 minecraft:oak_log")),
+                    Map.entry("group", Map.of("type", "string", "enum", List.of("food", "wood", "blocks"))),
+                    Map.entry("optional", Map.of("type", "boolean", "description",
+                            "标 true 表示这个目标达成与否都不影响主线（可跳过，不会阻塞整条任务链）。"
+                                    + "只要不是必需物资/关键装备/主线进度，就标 true；不要滥用，必需项保持 false 或不标。")),
+                    Map.entry("minimum", Map.of("type", "integer", "description", "需要的最少数量")));
+            Map<String, Object> subtaskItem = Map.of(
+                    "type", "object",
+                    "properties", Map.of(
+                            "description", Map.of("type", "string", "description", "这一步做什么（给主人的可读说明）"),
+                            "condition", Map.of(
+                                    "type", "object",
+                                    "description", "确定性完成条件",
+                                    "properties", conditionProps,
+                                    "required", List.of())),
+                    "required", List.of("description", "condition"));
             return Map.of(
                     "type", "object",
                     "properties", Map.of(
                             "subtasks", Map.of(
                                     "type", "array",
-                                    "items", Map.of(
-                                            "type", "object",
-                                            "properties", Map.of(
-                                                    "description", Map.of("type", "string",
-                                                            "description", "这一步做什么（给主人的可读说明）"),
-                                                    "condition", Map.of(
-                                                            "type", "object",
-                                                            "description", "确定性完成条件",
-                                                            "properties", Map.of(
-                                                                    "type", Map.of("type", "string", "enum", List.of("inventory", "advancement", "structure", "entity_killed", "base")),
-                                                                    "advancement", Map.of("type", "string"),
-                                                                    "structure", Map.of("type", "string"),
-                                                                    "entity", Map.of("type", "string"),
-                                                                    "dimension", Map.of("type", "string"),
-                                                                    "asset_key", Map.of("type", "string",
-                                                                            "description", "minecraft 物品命名空间ID，如 minecraft:oak_log"),
-                                                                    "group", Map.of("type", "string", "enum", List.of("food", "wood", "blocks")),
-                                                                    "optional", Map.of("type", "boolean", "description",
-                        // 2026-09-29 放宽：旧描述只说「补充食物」，于是模型只会给食物标 optional，
-                        // 而判定层原本也只放行食物 → 「顺手砍几棵橡木」这类非必需目标永远卡死链。
-                        // 现在 optional=true 对任何类型生效（判定层已同步放宽），模型请如实标注。
-                        "标 true 表示这个目标达成与否都不影响主线（可跳过，不会阻塞整条任务链）。"
-                                + "只要不是必需物资/关键装备/主线进度，就标 true；不要滥用，必需项保持 false 或不标。"),
-                                                                    "minimum", Map.of("type", "integer",
-                                                                            "description", "需要的最少数量")),
-                                                            "required", List.of()),
-                                                    "body", Map.of(
-                                                            "type", "object",
-                                                            "description", "可选的交给身体执行的指令",
-                                                            "properties", Map.of(
-                                                                    "task_type", Map.of("type", "string",
-                                                                            "description", "身体工具名，仅限 4 个: mine(挖矿)/craft(合成)/equip_item(装备)/collect_items(捡掉落)。不要用其他名字——不存在的名字不会执行。"),
-                                                                    "args", Map.of("type", "object",
-                                                                            "description", "工具参数，统一用 {item, count}（item=物品/矿石命名空间ID, count=数量）。")),
-                                                            "required", List.of("task_type")))),
-                                    "required", List.of("description", "condition"))),
+                                    "items", subtaskItem)),
                     "required", List.of("subtasks"));
         }
     };
