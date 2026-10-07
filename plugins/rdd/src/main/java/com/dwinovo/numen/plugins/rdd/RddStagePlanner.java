@@ -37,8 +37,7 @@ final class RddStagePlanner {
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         String base = RddPlanningKnowledge.attach(
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
-                        + planningPrompt(objective, snapshot, RddPlugin.planningAssets(companionId),
-                                RddPlugin.villageContext(companionId) + RddPlugin.recoverableContext(companionId)),
+                        + planningPrompt(objective, snapshot),
                 RddPlanningPolicy.block(objective, "stage_a"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 base, objective, "stage_a", List.of());
@@ -148,6 +147,11 @@ final class RddStagePlanner {
         return composePlanningPrompt(objective, renderHeldAssets(snapshot), worldAssets);
     }
 
+    /** 规划主路径（2026-10-07 起）：目标 + 当前持有 + 策略，不再贴世界资产/村庄/时间成本。 */
+    static String planningPrompt(String objective, PlanningAssetSnapshot snapshot) {
+        return composePlanningPrompt(objective, renderHeldAssets(snapshot), "", "");
+    }
+
     /** P2-D：附带已观测村庄事实块（先事实，策略留给规划师评价）。 */
     static String planningPrompt(String objective, PlanningAssetSnapshot snapshot,
                                  String worldAssets, String villageBlock) {
@@ -160,14 +164,11 @@ final class RddStagePlanner {
 
     private static String composePlanningPrompt(String objective, String heldBlock,
                                                 String worldAssets, String villageBlock) {
+        // 2026-10-07 用户裁决：世界资产块 / 村庄事实列表 / 可恢复线索 / P2-E 时间成本刻度 不再注入
+        // 规划 prompt —— 固定旧债，白烧 token（烧钱），还会盖过主人写进经验库的路线。
+        // 参数保留只为不动一串签名（调用点已不再传真值）。
         return "主人的目标：" + objective + "\n\n"
                 + heldBlock
-                + (worldAssets == null || worldAssets.isBlank() ? "" : worldAssets + "\n\n")
-                + (villageBlock == null || villageBlock.isBlank() ? "" : villageBlock + "\n\n")
-                + "【P2-E 时间成本权衡】优先「省时高收益」路线：能拿现成（村庄箱子/掉落物/猎取）就不要从零生产；"
-                + "不要把「种田等作物生长」排进主线（FARM_AND_WAIT 是最贵且不可压缩的等待）；"
-                + "多做一套备用装备这种「未来复用」高的投入值得。\n"
-                + com.dwinovo.numen.rdd.policy.TaskCostModel.explain() + "\n\n"
                 + PLAN_BODY_TAIL;
     }
 

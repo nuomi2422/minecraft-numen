@@ -162,8 +162,7 @@ final class RddDecomposer {
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
-                        + decompositionPrompt(objective, snapshot, List.of(),
-                                RddPlugin.planningAssets(companionId)),
+                        + decompositionPrompt(objective, snapshot, List.of()),
                 objective, "fallback", List.of());
         RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
         NumenLlmClient.forEndpoint(ep)
@@ -236,9 +235,7 @@ final class RddDecomposer {
         String base = RddPlanningKnowledge.attach(
                 RddRiskPlanning.prepHint(themeObjective, snapshot.availableCounts())
                         + decompositionPrompt(themeObjective, snapshot,
-                        completedStages == null ? List.of() : completedStages,
-                        RddPlugin.planningAssets(companionId),
-                        RddPlugin.villageContext(companionId) + RddPlugin.recoverableContext(companionId)) + hint
+                        completedStages == null ? List.of() : completedStages) + hint
                         + (extraHint == null || extraHint.isBlank() ? "" : "\n\n" + extraHint),
                 RddPlanningPolicy.block(themeObjective, "stage_b"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
@@ -412,6 +409,12 @@ final class RddDecomposer {
     }
 
     /** P1.5：Planner 直接吃统一资产快照（含"已失去/不确定"显式告知）。 */
+    /** 拆解主路径（2026-10-07 起）：目标 + 已完成阶段 + 当前持有，不再贴世界资产/村庄/时间成本。 */
+    static String decompositionPrompt(String objective, PlanningAssetSnapshot snapshot,
+                                      List<String> completedStages) {
+        return composeDecompositionPrompt(objective, completedStages, renderHeldAssets(snapshot), "", "");
+    }
+
     static String decompositionPrompt(String objective, PlanningAssetSnapshot snapshot,
                                       List<String> completedStages, String worldAssets) {
         return composeDecompositionPrompt(objective, completedStages, renderHeldAssets(snapshot), worldAssets, "");
@@ -431,13 +434,12 @@ final class RddDecomposer {
 
     private static String composeDecompositionPrompt(String objective, List<String> completedStages,
                                                       String heldBlock, String worldAssets, String villageBlock) {
+        // 2026-10-07 用户裁决：世界资产块 / 村庄事实列表 / 可恢复线索 / P2-E 时间成本刻度 不再注入
+        // 规划 prompt —— 固定旧债，白烧 token（烧钱），还会盖过主人写进经验库的路线。
+        // 参数保留只为不动一串签名（调用点已不再传真值）；这些事实执行侧仍会按需观察。
         return "主人的目标：" + objective + "\n\n"
                 + renderCompletedStages(completedStages)
                 + heldBlock
-                + (worldAssets == null || worldAssets.isBlank() ? "" : worldAssets + "\n\n")
-                + (villageBlock == null || villageBlock.isBlank() ? "" : villageBlock + "\n\n")
-                + "【P2-E 时间成本】优先省时路线：现成物 > 猎取/合成 > 采集 > 深挖 > 种田等待；"
-                + "别把等待作物生长排进主线。时间刻度：" + com.dwinovo.numen.rdd.policy.TaskCostModel.explain() + "\n\n"
                 + "请用 decompose_goal 工具给出子步骤。每个子步骤包含：\n"
                 + "- description：这一步要做什么\n"
                 + "- condition：{asset_key: 物品命名空间ID, minimum: 需要数量}\n"

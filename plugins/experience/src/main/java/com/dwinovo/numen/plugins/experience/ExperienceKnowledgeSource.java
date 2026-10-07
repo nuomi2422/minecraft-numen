@@ -37,9 +37,15 @@ public final class ExperienceKnowledgeSource {
 
     private ExperienceKnowledgeSource() {}
 
-    /** 生产路径：读攻略 + 内置只读层 + 召回该同伴经验。 */
+    /**
+     * 生产路径（2026-10-07 用户裁决）：只召回<b>该同伴自己写的经验</b>（主人路线）。
+     *
+     * <p>内置出厂经验 + 静态攻略（mc-guide）不再默认注入 —— 固定旧债，白烧 token（烧钱），
+     * 而且在几个字的短目标上会抢走主人的路线条目。要恢复：把下面换回
+     * {@code fromBuiltinAndMemory} + {@code GuideKnowledge.load()}。
+     */
     public static PlanningKnowledge.Selection recall(UUID companionId, PlanningKnowledge.Request req) {
-        return recall(companionId, req, ExperienceKnowledgeSource::fromBuiltinAndMemory, GuideKnowledge.load());
+        return recall(companionId, req, ExperienceKnowledgeSource::fromMemory, List.of());
     }
 
     /**
