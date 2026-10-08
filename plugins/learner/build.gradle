@@ -21,7 +21,7 @@ dependencies {
     // 学习者不需要内嵌任何 core：不依赖 experience-core（那会与 plugins/experience 撞重复包），
     // 也不依赖 ac-core（历史上 rdd 内嵌 ac-core 直接撞 JPMS ResolutionException）。
     // 跨插件协作一律走 NumenApi 这扇门。
-    // MemoQueue / Verdict / 备忘录工具都要 Gson；同 plugins/ac、plugins/rdd。
+    // MemoQueue / Verdict / 备忘录工具都要 Gson；同 plugins/rdd。
     // implementation（非 compileOnly）：队列要在运行时随插件走，否则进真游戏缺类。
     implementation 'com.google.code.gson:gson:2.10.1'
     testImplementation platform('org.junit:junit-bom:5.11.4')

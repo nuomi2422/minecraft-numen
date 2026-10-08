@@ -17,8 +17,9 @@ processResources {
 }
 
 dependencies {
-    // RDD 核心已独立为 rdd-core 模块；本插件只内嵌 rdd-core，不再内嵌 ac-core，
-    // 避免与 plugins/ac（AC 核心提供方）同装时出现重复包（JPMS ResolutionException）。
+    // RDD 核心已独立为 rdd-core 模块；本插件只内嵌 rdd-core，不内嵌任何 AC 核心
+    // （第一代 plugins/ac + ac-api + ac-core 已于 2026-10-08 删除，AC 执行层现为 plugins:acx）。
+    // 不内嵌共享 core 是为了避免同装时出现重复包（历史 JPMS ResolutionException）。
     implementation project(':rdd-core')
     // RddDecomposer / RddSubmitTool / RddDetector 用 Gson。
     implementation 'com.google.code.gson:gson:2.10.1'

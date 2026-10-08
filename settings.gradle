@@ -33,9 +33,6 @@ include('api:neoforge')
 // numen-ai:LLM 连接层,纯 JVM、与 MC 版本无关(详见 ai/build.gradle 头注)。
 include('ai')
 include('ui')
-// Independent host-agnostic AC execution layer (no Minecraft/NUMEN dependency).
-include('ac-api')
-include('ac-core')
 // Independent host-agnostic RDD task-chain core (no Minecraft/NUMEN dependency).
 include('rdd-core')
 // Independent host-agnostic experience memory core (no Minecraft/NUMEN dependency).
@@ -47,7 +44,8 @@ include('plugins:tlm')
 include('plugins:selfcompile')
 include('plugins:rdd')
 include('plugins:experience')
-include('plugins:ac')
+// 第一代 AC（plugins:ac + ac-api + ac-core）已于 2026-10-08 删除：
+// 当年源码在但 jar 从未部署，且与 ACX 两代并存。ACX 是从零重写，不 import 旧代。
 // ACX：AC 执行层新代（非线性控制流/前置条件/参数映射/生命周期），随插件独立部署。
 include('plugins:acx')
 // numencam：客户端相机模块（2026-10-04 新增）。从 api/common 的 client 源码集搬出来的
