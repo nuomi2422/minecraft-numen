@@ -182,8 +182,8 @@ private static void realAcLib() {
             eq(0, rep.warnings().size(), "warning: " + rep.warnings());
         });
 
-        T.test("9 个 stable 全注册、0 个 beta", () -> {
-            eq(10, rep.registered().size(), "stable 数: " + rep.registered().keySet());
+        T.test("11 个 stable 全注册、0 个 beta", () -> {
+            eq(11, rep.registered().size(), "stable 数: " + rep.registered().keySet());
             eq(0, rep.betaOnly().size(), "beta 数: " + rep.betaOnly().keySet());
             T.isTrue(rep.registered().containsKey("ore_scan_inspect"), "实测形状脚本在");
             T.isTrue(rep.registered().containsKey("timeout_demo"), "按 AC 限额脚本在");

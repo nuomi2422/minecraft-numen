@@ -55,6 +55,24 @@ public final class AcxPlugin implements NumenPlugin {
     private static final String RES_DIR = "acx-lib/stable/";
 
     /**
+     * 测试夹具类内置脚本：随 jar 发布（离线测试 {@code AcxTestMain} 直接读
+     * {@code resources/acx-lib}，逐条断言它们在），但<b>不在生产里自动铺盘、自动上线</b>。
+     *
+     * <p>为什么要有这张表（2026-10-08）：这些 demo/自证脚本对游戏内 AI 只是噪音 ——
+     * 它们随 jar 自动进 config、自动 approve，于是 {@code acx_library} 里一堆用不上的样例。
+     * 但直接删文件会红掉离线测试（它们是回归夹具）。所以：<b>文件保留，生产跳过</b>。
+     * 真要跑它们，显式点名执行即可（loader 仍能按名解析 jar 副本）—— 只是不再自动上线。</p>
+     */
+    private static final java.util.Set<String> HIDDEN_BUNDLED = java.util.Set.of(
+            "do_while_scan", "hp_guard_goto", "ignore_failure_demo", "inventory_if",
+            "timeout_demo", "numen_smoke_read_move_read", "subac_nesting",
+            "ore_scan_inspect", "ore_goto_mine", "mine_nearest_ore");
+
+    private static boolean isHiddenBundled(String acName) {
+        return HIDDEN_BUNDLED.contains(acName);
+    }
+
+    /**
      * jar 内置脚本清单，<b>从 jar 现场枚举</b>，不再硬编码。
      *
      * <p>为什么改：硬编码名单在真机踩过——往 jar 里加了
@@ -404,7 +422,7 @@ public final class AcxPlugin implements NumenPlugin {
     private void autoApproveBundled(FileAcxLibrary library, AcxLoader.LoadReport load) {
         List<String> approved = new ArrayList<>();
         for (AcxDefinition def : load.registered().values()) {
-            if (!isBundled(def.name())) {
+            if (!isBundled(def.name()) || isHiddenBundled(def.name())) {
                 continue;
             }
             // 判据是「库里的生效版本是不是还等于 jar 里这份」，不是「库里有这个名字没有」。
@@ -456,6 +474,11 @@ public final class AcxPlugin implements NumenPlugin {
         List<String> bundledNames = bundledScripts();
         LOG.info("[acx] jar 内置脚本 {} 个: {}", bundledNames.size(), bundledNames);
         for (String name : bundledNames) {
+            String bare = name.endsWith(".ac") ? name.substring(0, name.length() - 3) : name;
+            if (isHiddenBundled(bare)) {
+                // 测试夹具：留在 jar（离线测试读 resources），但不进 config → 生产不可见。
+                continue;
+            }
             try (InputStream in = AcxPlugin.class.getResourceAsStream(RES_PREFIX + name)) {
                 if (in == null) {
                     LOG.warn("[acx] jar 内脚本缺失: /acx-lib/stable/{}", name);

@@ -130,6 +130,23 @@ public final class NumenToolCatalog {
                     .output("crops")
                     .build()),
 
+            new ToolSpec("farm_nearby",
+                "一次调用把身边一片田的【成熟】作物全部“收 + 原地留苗”（产物进背包 + age 复位为 0，"
+                + "不拆块、不耗种子，对齐车万女仆 harvest）。只碰成熟作物，输出 {harvested}。",
+                s().param("radius", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).range(1, 32)
+                        .desc("一片田的水平半径（1-32）"))
+                    .output("harvested")
+                    .build()),
+
+            new ToolSpec("farm_cell",
+                "原子收【一格】成熟作物 + 原地留苗（产物进背包 + age 复位为 0，不拆块、不耗种子）；"
+                + "非成熟/太远/未加载一律明确失败、什么都不改。输出 {block, harvested}。",
+                s().param("x", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).desc("作物 X"))
+                    .param("y", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).desc("作物 Y"))
+                    .param("z", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).desc("作物 Z"))
+                    .output("block", "harvested")
+                    .build()),
+
             new ToolSpec("scan_blocks",
                 "球形范围内扫描方块。实测输出是 {matches:[{x,y,z,block,distance}]}，"
                 + "没有 DD 那种 done/count/target_absX 扁平字段；筛选最近目标用 $filter+$pick+$take。",
