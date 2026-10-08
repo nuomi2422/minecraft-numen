@@ -265,6 +265,11 @@ public final class AcxPlugin implements NumenPlugin {
             // 惰性桥接：此刻 NumenCore 全量工具已注册（首次 acx_* 调用必然晚于引擎 init）
             List<AcxToolPort> ports = new ArrayList<>();
             for (NumenTool tool : ToolRegistry.all()) {
+                if (tool == null) {
+                    // 防御：外部 MCP 客户端连接失败等来源可能把 null 塞进注册表，
+                    // 一个 null 会让整块 ACX 初始化 NPE（2026-10-08 实机）。
+                    continue;
+                }
                 String name = tool.name();
                 if (name == null || name.isBlank() || name.startsWith("acx_")) {
                     continue;

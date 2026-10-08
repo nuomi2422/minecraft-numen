@@ -122,6 +122,14 @@ public final class NumenToolCatalog {
 
             // ── 2026-10-02 真机实测补录（形状与 DD 完全不同，按实测写）──
 
+            new ToolSpec("scan_mature_crops",
+                "扫描附近【成熟】作物（age 到顶的小麦/胡萝卜/土豆/甜菜根/下界疣/甜浆果/可可），"
+                + "最近优先、最多 32。输出 {crops:[{x,y,z,block,distance}]}。只读。",
+                s().param("radius", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).range(1, 32)
+                        .desc("球形搜索半径（1-32）"))
+                    .output("crops")
+                    .build()),
+
             new ToolSpec("scan_blocks",
                 "球形范围内扫描方块。实测输出是 {matches:[{x,y,z,block,distance}]}，"
                 + "没有 DD 那种 done/count/target_absX 扁平字段；筛选最近目标用 $filter+$pick+$take。",

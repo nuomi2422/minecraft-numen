@@ -43,7 +43,10 @@ import java.util.function.Supplier;
  */
 public final class NumenToolBridgeX implements AcxToolPort {
 
-    public static final long DEFAULT_TIMEOUT_MS = 30_000;
+    // 同步工具(runSync)的结果经 TaskResultPayload 发给客户端；ACX 直调(服务端)拿不到那条回执，
+    // 会一直等到超时。5s 足够让「点击/破坏/放置」这类当场动作真正发生，又不至于每步白等 30s。
+    // 需要长等的异步工具走 accepted 回执(立即返回)，不受这个值影响。
+    public static final long DEFAULT_TIMEOUT_MS = 5_000;
     public static final String CALL_PREFIX = "mcp-acx-";
 
     private static final Gson GSON = new Gson();

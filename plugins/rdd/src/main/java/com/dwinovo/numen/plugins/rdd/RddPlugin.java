@@ -163,6 +163,12 @@ public final class RddPlugin implements NumenPlugin {
         numen.registerTool(new RddSubmitTool());
         // 2026-10-08 只读世界事实探针：逐组验证世界判定用（不改状态）。
         numen.registerTool(new WorldFactProbeTool());
+        // 2026-10-08 只读“成熟作物”扫描：种田 AC 的“扫成熟作物”这一步。
+        numen.registerTool(new ScanMatureCropsTool());
+        // 2026-10-08 原子“收+种”工具（Path B）：一格一次调用，要么全成要么不改。
+        numen.registerTool(new FarmCellTool());
+        // 2026-10-08 一片田一次收+留苗（避开 ACX for+异步 的续跑限制）。
+        numen.registerTool(new FarmNearbyTool());
         numen.registerTool(new RddSkipTool());
         numen.registerTool(new RddAssetsTool());
         // Supervisor ↔ Numen 双向协商：士兵可对命令结构化回执（ACCEPT/REJECT/COUNTER）。
