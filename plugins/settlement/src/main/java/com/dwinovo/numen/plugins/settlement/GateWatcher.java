@@ -5,8 +5,6 @@ import com.dwinovo.numen.settlement.core.logic.GateKeeper;
 import com.dwinovo.numen.settlement.core.model.BlockBox;
 import com.dwinovo.numen.settlement.core.model.FacilityKind;
 import com.dwinovo.numen.settlement.core.model.FacilityRecord;
-import com.dwinovo.numen.settlement.core.model.ProtectionZone;
-import com.dwinovo.numen.settlement.core.model.ZoneKind;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -83,19 +81,19 @@ public final class GateWatcher {
         return closed;
     }
 
-    /** 扫一座设施的保护区，把敞着的门关回去。 */
+    /** 扫一座设施的占地范围，把敞着的门关回去。 */
     private int sweepFacility(ServerLevel level, FacilityRecord facility, long gameTime) {
+        // ★ 扫<b>整个设施占地</b>，不是只扫 SPACE（通道）区。
+        //   2026-10-09 实机踩到：手工用 settlement_register 登记的设施（如旧 sheep_pen）
+        //   只有一个 STRUCTURE 区、没有 SPACE 区，于是它的栅栏门永远不被扫到、一直敞着——
+        //   而"门是不是敞着"与登记时怎么划区无关，门就是门。
+        //   占地盒有界（设施都是几格到几十格），开销可接受。
+        BlockBox box = facility.bounds();
         int closed = 0;
-        for (ProtectionZone zone : facility.zones()) {
-            if (zone.kind() != ZoneKind.SPACE) {
-                continue;   // 门只登记在 SPACE（通道）区
-            }
-            BlockBox box = zone.box();
-            for (int x = box.minX(); x <= box.maxX(); x++) {
-                for (int y = box.minY(); y <= box.maxY(); y++) {
-                    for (int z = box.minZ(); z <= box.maxZ(); z++) {
-                        closed += maybeClose(level, x, y, z, gameTime);
-                    }
+        for (int x = box.minX(); x <= box.maxX(); x++) {
+            for (int y = box.minY(); y <= box.maxY(); y++) {
+                for (int z = box.minZ(); z <= box.maxZ(); z++) {
+                    closed += maybeClose(level, x, y, z, gameTime);
                 }
             }
         }
