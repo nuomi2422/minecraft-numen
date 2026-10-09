@@ -65,6 +65,9 @@ public final class CarrierAlarms {
     /** 饥饿线：与 {@code NumenPlayer.HUNGRY_LEVEL = 6} 对齐（身体自理同一条线）。 */
     public static final int HUNGRY_LEVEL = 6;
 
+    /** 软饥饿线：饱食度不满（≤ 此值）但未到饥饿线 —— 仅 P2 提示「方便时垫一口」，不唤醒、不命令。 */
+    public static final int FOOD_TOPUP_LEVEL = 17;
+
     /** 低血线：与 {@link CarrierChain.Facts#hpBand()} 的 LOW 上沿对齐（<=10 低血，<=4 危急）。 */
     public static final int LOW_HP = 10;
     public static final int CRITICAL_HP = 4;
@@ -74,7 +77,7 @@ public final class CarrierAlarms {
 
     /** 全部闹钟。顺序仅影响渲染顺序，<b>不影响求值</b>（全部独立算）。 */
     public static final List<Alarm> ALL = List.of(
-            hungry(), lowHp(), night(), creeper());
+            hungry(), hungrySoft(), lowHp(), night(), creeper());
 
     /** 值得主动唤醒执行者的紧急闹钟（E2.2）：会立刻出事的两个。 */
     private static final Set<String> WAKE_RULES = Set.of("creeper", "low_hp");
@@ -128,7 +131,7 @@ public final class CarrierAlarms {
         return hits;
     }
 
-    // ---- 四条闹钟（每条内部可分级；彼此独立） ----
+    // ---- 五条闹钟（每条内部可分级；彼此独立） ----
 
     /** 饥饿：饱食度 <= 6。有食物/无食物/库存未知说三种话（不把 UNKNOWN 当 0）。 */
     private static Alarm hungry() {
@@ -147,7 +150,32 @@ public final class CarrierAlarms {
                         return "饱食度低（" + intOf(f, "food") + "/20），背包还有 " + items
                                 + " 个食物：可以吃点东西。";
                     }
-                    return "饱食度低（" + intOf(f, "food") + "/20）：考虑吃点东西（背包食物数未知，先看一眼背包）。";
+                return "饱食度低（" + intOf(f, "food") + "/20）：考虑吃点东西（背包食物数未知，先看一眼背包）。";
+            });
+    }
+
+    /**
+     * 软饥饿：饱食度不满（{@link #HUNGRY_LEVEL} &lt; food ≤ {@link #FOOD_TOPUP_LEVEL}）。
+     * 仅 P2 提示「方便时垫一口」，把「别等掉到危险线」提前说；到饥饿线后由
+     * {@link #hungry()} 接手（本条让位，不重复报）。P2 不进 {@link #WAKE_RULES}，不唤醒。
+     */
+    private static Alarm hungrySoft() {
+        return new Alarm("hungry_soft", 1, f -> Prio.P2,
+                f -> {
+                    int food = intOf(f, "food");
+                    return food > HUNGRY_LEVEL && food <= FOOD_TOPUP_LEVEL;
+                },
+                f -> "food=" + intOf(f, "food") + " food_items=" + intOf(f, "food_items"),
+                f -> {
+                    int items = intOf(f, "food_items");
+                    if (items > 0) {
+                        return "饱食度不满（" + intOf(f, "food") + "/20），背包还有 " + items
+                                + " 个食物：方便时吃点垫一下，别等掉到危险线。";
+                    }
+                    if (items == 0) {
+                        return "饱食度不满（" + intOf(f, "food") + "/20）且背包没食物：顺手补点吃的。";
+                    }
+                    return "饱食度不满（" + intOf(f, "food") + "/20）：方便时吃点东西垫一下。";
                 });
     }
 

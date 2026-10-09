@@ -204,7 +204,7 @@ public final class SettingsView {
         if (providerEditId != null) {
             lib.update(new com.dwinovo.numen.agent.llm.ProviderLibrary.Entry(
                     providerEditId, d.name.trim(), d.provider, d.model.trim(),
-                    d.apiKey.trim(), d.baseUrl.trim(), d.reasoningEffort, d.proxy.trim(), ctx));
+                    d.apiKey.trim(), d.baseUrl.trim(), d.reasoningEffort, d.proxy.trim(), ctx, 0));
         } else {
             lib.create(d.name.trim(), d.provider, d.model.trim(),
                     d.apiKey.trim(), d.baseUrl.trim(), d.reasoningEffort, d.proxy.trim(), ctx);

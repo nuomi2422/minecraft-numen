@@ -55,6 +55,19 @@ class CarrierAlarmsTest {
     }
 
     @Test
+    void notFullSatietyGivesSoftTopUpHint() {
+        // 不满（>6 且 <=17）→ 软提示 P2；措辞是「垫一下」，不是命令
+        var hits = CarrierAlarms.evaluate(facts("food=17", "food_items=4"));
+        assertNotNull(hit(hits, "hungry_soft"));
+        assertEquals("P2", hit(hits, "hungry_soft").prio());
+        assertTrue(hit(hits, "hungry_soft").advice().contains("不满"));
+        // 到饥饿线后由 hungry(P1) 接手，软提示让位（不重复报）
+        assertNull(hit(CarrierAlarms.evaluate(facts("food=6", "food_items=2")), "hungry_soft"));
+        // 满饱食度不提示
+        assertNull(hit(CarrierAlarms.evaluate(facts("food=20", "food_items=5")), "hungry_soft"));
+    }
+
+    @Test
     void missingFactsAreUnknownNotZero() {
         // 快照缺 food 键 → 不触发（不能拿 0 猜「饿死了」）
         assertNull(hit(CarrierAlarms.evaluate(facts("hp=20/20")), "hungry"));

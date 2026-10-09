@@ -1155,6 +1155,9 @@ final class RddDetector {
      * 去重（首次/更紧/过冷却才发），再走既有的 {@code RddPlugin.nudge} 通道注入提醒。
      */
     private void maybeWarnBackpackFull(NumenPlayer ap) {
+        if (!RddAlarms.enabled("backpack_full")) {
+            return; // 2026-10-08：这条提醒可单独关（config/numen/rdd-alarms.json）
+        }
         try {
             int free = freeMainSlots(ap);
             UUID id = ap.getUUID();

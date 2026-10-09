@@ -187,7 +187,7 @@ final class RddCarryHint {
         // 「已批准但运行时不生效」是最坏的一种状态：审批界面显示成功，游戏里没变化，
         // 没人查得出来。所以生效链必须与审批落点读同一处。
         CarrierChain.Result r = CarrierChain.evaluate(CarrierRuleStore.effective(), facts);
-        List<CarrierAlarms.Hit> alarms = CarrierAlarms.evaluate(facts);
+        List<CarrierAlarms.Hit> alarms = RddAlarms.evaluate(facts);
         if (r.carry().isEmpty() && alarms.isEmpty()) {
             return new Rendered("", alarms);
         }
@@ -319,6 +319,13 @@ final class RddCarryHint {
         try {
             sb.append("hp=").append((int) Math.ceil(body.getHealth()))
               .append('/').append((int) Math.ceil(body.getMaxHealth()));
+            // 2026-10-08 生命不满提醒：hp=cur/max 之外单给一个布尔，供 hp_topup 闹钟读
+            //（Facts 只暴露当前血量、拿不到上限，所以这里显式算）。
+            try {
+                sb.append(", hp_full=").append(body.getHealth() >= body.getMaxHealth() ? "1" : "0");
+            } catch (RuntimeException ignored) {
+                // 读不到就不写：缺失 = 不触发
+            }
             // ★ food = **饱食度**（0-20），不是「背包里有没有吃的」。
             //   两者是两件事：饱食度高也可能一颗食物都没有（刚吃完），
             //   饱食度低也可能背包塞满面包。想让规则按「有没有吃的」判，
@@ -354,6 +361,14 @@ final class RddCarryHint {
                 sb.append(", weapon=none");
             } else {
                 sb.append(", weapon=").append(main);
+            }
+            // ★ 2026-10-08 换装提醒：背包里有比身上更好的护甲/武器没穿。
+            //   值里**不能用逗号/分号/加号/冒号** —— snapshot 按 [,;] 切键值对，且 render 侧
+            //   clean() 只保留 [A-Za-z0-9_./-]。所以槽位之间用 - 连、槽位与物品名之间用 . 连。
+            String[] gap = gearGap(body);
+            if (gap != null) {
+                sb.append(", gear_gap=").append(gap[0]);
+                sb.append(", gear_best=").append(gap[1]);
             }
             // ★ E2：床（睡觉可行性）。按 BedItem 语义判（模组床只要继承 BedItem 就算），
             //   读不到写 -1（未知）**不写 0**。注意：非主世界闹钟不看这个键（见 night 的采样保证）。
@@ -485,6 +500,115 @@ final class RddCarryHint {
         } catch (RuntimeException e) {
             return "";
         }
+    }
+
+    /**
+     * 背包里有没有比身上更好的护甲/武器（换装提醒的数据源）。
+     *
+     * <p><b>判定口径（第一版，进游戏后再核）</b>：
+     * <ul>
+     *   <li><b>槽位/兵种识别按物品名后缀</b>：{@code _helmet/_cap/_hat} → 头、{@code _chestplate/_tunic} → 胸、
+     *       {@code _leggings/_pants} → 腿、{@code _boots} → 脚；武器 {@code _sword/_axe/_trident/_bow}。
+     *       暮色森林等整合包的装备基本都按这套命名，按名判比反射 {@code ArmorItem} 更稳、且不挑模组。</li>
+     *   <li><b>档位用 {@code maxDamage} 代理</b>：同一槽里挑耐久上限最高的背包件与身上件比。这是"档位"的
+     *       粗略代理（木&lt;石&lt;铁&lt;钻…大体单调），<b>不是精确护甲值/攻击力</b> —— 先把"明显有更好的没穿"
+     *       这件事说出来，精确数值后续接属性读取再补。</li>
+     * </ul>
+     *
+     * @return {@code [gapSlots, bestItems]}（用 {@code +} 连接，见 snapshot 的切分规则）；无差距返回 {@code null}
+     */
+    private static String[] gearGap(NumenPlayer body) {
+        try {
+            var inv = body.getInventory();
+            String[] slots = {"head", "chest", "legs", "feet"};
+            EquipmentSlot[] es = {EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
+            List<String> gaps = new ArrayList<>();
+            List<String> best = new ArrayList<>();
+            for (int i = 0; i < slots.length; i++) {
+                int wornTier = tier(body.getItemBySlot(es[i]));
+                int bestTier = wornTier;
+                String bestPath = null;
+                for (int k = 0; k < inv.getContainerSize(); k++) {
+                    ItemStack st = inv.getItem(k);
+                    String p = itemPath(st);
+                    if (p.isEmpty() || !slots[i].equals(armorSlotOf(p))) {
+                        continue;
+                    }
+                    int t = tier(st);
+                    if (t > bestTier) {
+                        bestTier = t;
+                        bestPath = p;
+                    }
+                }
+                if (bestPath != null) {
+                    gaps.add(slots[i]);
+                    best.add(slots[i] + "." + bestPath);
+                }
+            }
+            // 武器：手里不是武器时基准 0（等于"没拿像样的武器"，背包有就提醒）
+            String wornWeapon = itemPath(body.getMainHandItem());
+            int wornWTier = isWeaponPath(wornWeapon) ? tier(body.getMainHandItem()) : 0;
+            int bestWTier = wornWTier;
+            String bestWPath = null;
+            for (int k = 0; k < inv.getContainerSize(); k++) {
+                ItemStack st = inv.getItem(k);
+                String p = itemPath(st);
+                if (p.isEmpty() || !isWeaponPath(p)) {
+                    continue;
+                }
+                int t = tier(st);
+                if (t > bestWTier) {
+                    bestWTier = t;
+                    bestWPath = p;
+                }
+            }
+            if (bestWPath != null) {
+                gaps.add("mainhand");
+                best.add("mainhand." + bestWPath);
+            }
+            if (gaps.isEmpty()) {
+                return null;
+            }
+            return new String[]{String.join("-", gaps), String.join("-", best)};
+        } catch (RuntimeException e) {
+            // 读世界失败：不产 fact（缺失 = 不触发），绝不拿默认值猜
+            return null;
+        }
+    }
+
+    /** 档位代理：物品的耐久上限；空/读不到 = 0。 */
+    private static int tier(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return 0;
+        }
+        try {
+            return stack.getMaxDamage();
+        } catch (RuntimeException e) {
+            return 0;
+        }
+    }
+
+    /** 物品名后缀 → 护甲槽；不是护甲返回 null。 */
+    private static String armorSlotOf(String path) {
+        if (path.endsWith("_helmet") || path.endsWith("_cap") || path.endsWith("_hat") || path.endsWith("_hood")) {
+            return "head";
+        }
+        if (path.endsWith("_chestplate") || path.endsWith("_tunic") || path.endsWith("_chest")) {
+            return "chest";
+        }
+        if (path.endsWith("_leggings") || path.endsWith("_pants") || path.endsWith("_legs")) {
+            return "legs";
+        }
+        if (path.endsWith("_boots")) {
+            return "feet";
+        }
+        return null;
+    }
+
+    /** 物品名后缀 → 是不是武器。 */
+    private static boolean isWeaponPath(String path) {
+        return path.endsWith("_sword") || path.endsWith("_axe") || path.endsWith("_trident")
+                || path.endsWith("_bow") || path.endsWith("_mace");
     }
 
     private static String safeName(Entity e) {

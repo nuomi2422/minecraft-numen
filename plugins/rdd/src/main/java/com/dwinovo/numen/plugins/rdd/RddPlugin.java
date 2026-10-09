@@ -157,6 +157,8 @@ public final class RddPlugin implements NumenPlugin {
             bodyDispatchFlag = numen.configDir().resolve("rdd-bodydispatch.flag");
         // 2026-10-08 正式睡觉支线：通用支线引擎（rdd-core）+ 宿主接线（加载类时注册 tick 监听）。
         SideTaskHost.setup(numen.configDir());
+        // 2026-10-08 携带器提醒的"每条约开关"（含换装提醒 gear_upgrade，默认关）。
+        RddAlarms.install(numen.configDir());
         // E1 shadow：规划角色的预算策略（与客户端同一份文件，幂等）。
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
         numen.registerTool(new RddStatusTool());

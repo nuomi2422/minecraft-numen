@@ -5,6 +5,7 @@ import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.agent.tool.ToolRegistry;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.plugins.settlement.McWorldProbe;
+import com.dwinovo.numen.plugins.settlement.SettlementMonitor;
 import com.dwinovo.numen.plugins.settlement.SettlementService;
 import com.dwinovo.numen.settlement.core.logic.CompletionChecker;
 import com.dwinovo.numen.settlement.core.logic.PlacementLedger;
@@ -332,6 +333,11 @@ public final class SettlementTool implements NumenTool {
         PlacementValidator.Result check = PlacementValidator.validate(plan, cell, template, quarters,
                 service.registry(), plan.dimension(), decision.existing() == null ? null : facilityId);
         if (!check.ok()) {
+            SettlementMonitor.publish("place_rejected", Map.of(
+                    "template", template.id(),
+                    "cell", PlacementValidator.cellName(cell),
+                    "stage", "validate",
+                    "reason", String.join("；", check.rejects())));
             reply.accept(TaskResult.fail("settlement place 被拒绝（未改世界）："
                     + String.join("；", check.rejects())).toJson());
             return;
@@ -512,6 +518,15 @@ public final class SettlementTool implements NumenTool {
         }
         data.put("next", "task_finished 后用 settlement action=inspect id=" + facilityId
                 + " 看施工账；缺料就补料再 settlement action=resume id=" + facilityId);
+        SettlementMonitor.publish("place", Map.of(
+                "facility_id", facilityId,
+                "template", template.id(),
+                "cell", PlacementValidator.cellName(cell),
+                "disposition", decision.disposition().name(),
+                "anchor", anchorText(placement.anchor()),
+                "base", anchorText(basePt),
+                "docks_on_y", basePt.y() - 1,
+                "accepted", accepted));
         reply.accept(TaskResult.ok((accepted ? "已受理施工" : "建造器未受理（已回滚授权）")
                 + "：" + facilityId + " @ " + PlacementValidator.cellName(cell)
                 + "（" + decision.disposition() + "）", data).toJson());
@@ -615,6 +630,12 @@ public final class SettlementTool implements NumenTool {
             data.put("marks_total", completion.total());
             data.put("marks_missing", completion.missing());
         }
+        SettlementMonitor.publish("inspect", Map.of(
+                "id", f.id(),
+                "kind", f.kind().name(),
+                "construction", c.status().name(),
+                "completed", c.completed(),
+                "total", c.total()));
         reply.accept(TaskResult.ok(sb.toString(), data).toJson());
     }
 
@@ -702,6 +723,11 @@ public final class SettlementTool implements NumenTool {
         data.put("accepted", accepted);
         data.put("anchor", anchorText(c.anchor()));
         data.put("outstanding", c.outstanding());
+        SettlementMonitor.publish("resume", Map.of(
+                "id", id,
+                "accepted", accepted,
+                "anchor", anchorText(c.anchor()),
+                "outstanding", c.outstanding()));
         reply.accept(TaskResult.ok((accepted ? "已受理续建" : "续建未被受理") + "：" + id
                 + "（还差 " + c.outstanding() + " 格）", data).toJson());
     }
@@ -983,6 +1009,12 @@ public final class SettlementTool implements NumenTool {
         data.put("unloaded_columns", unloadedColumns);
         data.put("candidates", entries);
         data.put("best", candidates.isEmpty() ? null : PlacementValidator.cellName(candidates.get(0).cell()));
+        SettlementMonitor.publish("survey", Map.of(
+                "template", template.id(),
+                "floor_y", floorY,
+                "candidates", candidates.size(),
+                "best", candidates.isEmpty() ? "(none)" : PlacementValidator.cellName(candidates.get(0).cell()),
+                "unloaded_columns", unloadedColumns));
         reply.accept(TaskResult.ok(sb.toString(), data).toJson());
     }
 

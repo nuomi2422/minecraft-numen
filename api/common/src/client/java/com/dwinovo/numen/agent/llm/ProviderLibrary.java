@@ -28,7 +28,7 @@ public final class ProviderLibrary extends JsonLibrary<ProviderLibrary.Entry> {
      *  fallback of any kind). */
     public record Entry(String id, String name, String provider, String model,
                         String apiKey, String baseUrl, String reasoningEffort,
-                        String proxy, int ctx) {
+                        String proxy, int ctx, int replayWindowTokens) {
 
         /**
          * 这份档案的模型上下文窗口——<b>压缩闸门与水位显示的唯一口径</b>。
@@ -43,6 +43,16 @@ public final class ProviderLibrary extends JsonLibrary<ProviderLibrary.Entry> {
             }
             return com.dwinovo.numen.agent.provider.ProviderRegistry.contextWindow(
                     com.dwinovo.numen.agent.provider.ProviderRegistry.canonicalId(provider), model);
+        }
+
+        /**
+         * 本档案的回放窗口上限。<b>策略值</b>：配置里显式填了就用填的;
+         * 没填则回落 {@link com.dwinovo.numen.agent.provider.ProviderRegistry#replayWindowTokens}。
+         */
+        public int replayWindow() {
+            return replayWindowTokens > 0 ? replayWindowTokens
+                    : com.dwinovo.numen.agent.provider.ProviderRegistry.replayWindowTokens(
+                            com.dwinovo.numen.agent.provider.ProviderRegistry.canonicalId(provider), model);
         }
     }
 
@@ -82,7 +92,7 @@ public final class ProviderLibrary extends JsonLibrary<ProviderLibrary.Entry> {
                         String apiKey, String baseUrl, String reasoningEffort, String proxy,
                         int ctx) {
         Entry e = new Entry(freshId("prov"), name, provider, model, apiKey, baseUrl,
-                reasoningEffort, proxy, ctx);
+                reasoningEffort, proxy, ctx, 0);
         putAndSave(e);
         return e;
     }
@@ -125,7 +135,7 @@ public final class ProviderLibrary extends JsonLibrary<ProviderLibrary.Entry> {
         return new Entry(strOrNull(o, "id"), strOrNull(o, "name"), strOrNull(o, "provider"),
                 strOrNull(o, "model"), strOrNull(o, "api_key"), strOrNull(o, "base_url"),
                 strOrNull(o, "reasoning_effort"), strOrNull(o, "proxy"),
-                o.has("ctx") && o.get("ctx").isJsonPrimitive() ? o.get("ctx").getAsInt() : 0);
+                o.has("ctx") && o.get("ctx").isJsonPrimitive() ? o.get("ctx").getAsInt() : 0, 0);
     }
 
     @Override
