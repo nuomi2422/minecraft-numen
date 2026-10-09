@@ -124,7 +124,7 @@ public final class TemplateCatalog {
         return marks;
     }
 
-    /** 7×7 核心屋：四角墙 + 门 + 屋顶中心 + 地板中心。 */
+    /** 7×7 核心屋：四角墙 + 门 + 屋顶中心 + 地板中心 + <b>四件家具</b>。 */
     private static List<CompletionChecker.Mark> houseMarks() {
         String planks = "minecraft:oak_planks";
         List<CompletionChecker.Mark> marks = new ArrayList<>();
@@ -135,6 +135,13 @@ public final class TemplateCatalog {
         marks.add(new CompletionChecker.Mark(3, 1, 0, "minecraft:oak_door"));   // 南中门
         marks.add(new CompletionChecker.Mark(3, 3, 3, planks));                 // 平顶中心
         marks.add(new CompletionChecker.Mark(3, 0, 3, planks));                 // 地板中心
+        // ★ 家具必须进标记：2026-10-09 实测 D3 核心屋报了「世界核对 11/11 COMPLETE」，
+        //   而箱子其实<b>根本没落地</b>（背包里那件料也消耗了）——因为标记只采了结构，
+        //   家具不在采样里，缺失就判不出来。用户要的是「还差什么」，家具漏了就是谎报完成。
+        marks.add(new CompletionChecker.Mark(1, 1, 1, "minecraft:crafting_table"));
+        marks.add(new CompletionChecker.Mark(5, 1, 1, "minecraft:furnace"));
+        marks.add(new CompletionChecker.Mark(1, 1, 5, "minecraft:chest"));
+        marks.add(new CompletionChecker.Mark(5, 1, 5, "minecraft:white_bed"));
         return marks;
     }
 

@@ -136,4 +136,36 @@ class CompletionCheckerTest {
         assertFalse(r.complete(), "没有标记就不许判完成");
         assertEquals(0, r.total());
     }
+
+    @Test
+    void houseMarksIncludeFurnitureSoAMissingChestIsCaught() {
+        // ★ 2026-10-09 实机抓到的谎报：D3 核心屋报「世界核对 11/11 COMPLETE」，
+        //   而箱子根本没落地——因为标记只采了结构，家具不在采样里。
+        //   用户要的是"还差什么"，家具漏了就是谎报完成。
+        var house = TemplateCatalog.byId("core_house").orElseThrow();
+        long furniture = house.marks().stream()
+                .filter(m -> m.blockId().contains("chest") || m.blockId().contains("furnace")
+                        || m.blockId().contains("bed") || m.blockId().contains("crafting_table"))
+                .count();
+        assertEquals(4, furniture, "四件家具都必须进标记: " + house.marks());
+
+        // 而且缺箱子时必须判"未完成"
+        FakeProbe probe = new FakeProbe();
+        int ax = 100;
+        int ay = 64;
+        int az = 200;
+        for (CompletionChecker.Mark m : house.marks()) {
+            String block = m.blockId();
+            if (block.contains("chest")) {
+                continue;   // 故意不摆箱子
+            }
+            // 按标记的世界坐标摆上（旋转 0 时 = 锚点 + 局部）
+            probe.put(ax + m.localX(), ay + m.localY(), az + m.localZ(), block);
+        }
+        CompletionChecker.Result r = CompletionChecker.check(house.marks(),
+                DimAnchor.of(DIM, ax, ay, az), house.sizeX(), house.sizeZ(), 0, probe);
+        assertFalse(r.complete(), "缺箱子必须判未完成");
+        assertTrue(r.missing().stream().anyMatch(s -> s.contains("chest")),
+                "缺失项要点名箱子: " + r.missing());
+    }
 }
