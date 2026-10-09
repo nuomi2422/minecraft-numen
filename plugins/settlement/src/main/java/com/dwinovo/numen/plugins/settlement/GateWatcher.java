@@ -70,9 +70,12 @@ public final class GateWatcher {
         int closed = 0;
         for (FacilityRecord facility : service.list()) {
             FacilityKind kind = facility.kind();
+            // ★ 牧场/居住的门要关（防动物跑出）；交易所的门【不能自动关】——
+            //   用户 2026-10-09 的玩法是"村民夜里自己找床走进来"，门一关村民就进不来了。
+            //   （关门时机留给后续"交易站收工"类任务显式做，不在这里自动拍板。）
             if (kind != FacilityKind.PASTURE_SHEEP && kind != FacilityKind.PASTURE_COW
-                    && kind != FacilityKind.FARM && kind != FacilityKind.HOUSE) {
-                continue;   // 只有这些设施带门
+                    && kind != FacilityKind.HOUSE) {
+                continue;
             }
             ServerLevel level = levelOf(server, facility.dimension());
             if (level == null) continue;

@@ -65,6 +65,9 @@ public final class SettlementPlatformTool implements NumenTool {
                 .optionalString("floor_block", "顶面方块 id，如 minecraft:dirt；给了才做整平，不给只清空")
                 .optionalInteger("floor_y", "目标水平面 Y，默认你脚下那格", -64, 320)
                 .optionalString("name", "蓝图名（不含扩展名），默认 platform_<size>")
+                // 统一放置入口按格算好坐标后显式传入，不以站位为中心。
+                .optionalInteger("cx", "显式中心 x（不给则用你当前站位）", -30000000, 30000000)
+                .optionalInteger("cz", "显式中心 z", -30000000, 30000000)
                 .build();
     }
 
@@ -81,14 +84,16 @@ public final class SettlementPlatformTool implements NumenTool {
             int maxDepth = clamp(args.has("depth") ? args.get("depth").getAsInt() : 5, 1, MAX_DEPTH);
             String floorBlock = args.has("floor_block") && !args.get("floor_block").isJsonNull()
                     ? args.get("floor_block").getAsString().trim() : null;
-            BlockPos center = self.blockPosition();
-            int floorY = args.has("floor_y") ? args.get("floor_y").getAsInt() : center.getY() - 1;
+            // 显式中心优先（统一放置入口按格算好坐标后传进来），否则退回站位。
+            int centerX = args.has("cx") ? args.get("cx").getAsInt() : self.blockPosition().getX();
+            int centerZ = args.has("cz") ? args.get("cz").getAsInt() : self.blockPosition().getZ();
+            int floorY = args.has("floor_y") ? args.get("floor_y").getAsInt() : self.blockPosition().getY() - 1;
             String bpName = args.has("name") && !args.get("name").getAsString().isBlank()
                     ? sanitize(args.get("name").getAsString()) : ("platform_" + size);
 
             int half = size / 2;
-            int minX = center.getX() - half;
-            int minZ = center.getZ() - half;
+            int minX = centerX - half;
+            int minZ = centerZ - half;
             int anchorY = floorBlock != null ? floorY - maxDepth : floorY;
             int sy = (floorBlock != null ? maxDepth : 0) + clearHeight + 1;
             long cells = (long) size * size * sy;

@@ -39,6 +39,17 @@ public final class SettlementService {
     private final GrantLedger grantLedger = new GrantLedger();
     /** 基地基准网格（一块地皮的网格定义），落盘 base.json。 */
     private volatile BaseGrid base;
+    /**
+     * 自动关门的暂停截止（毫秒）；0=不暂停。<b>不落盘，重启即失效。</b>
+     *
+     * <p>为什么必须有：赶羊进圈时，人穿过门后 {@code GateWatcher} 约 1 秒就把门关了，
+     * 跟在后面的羊会被<b>锁在门外</b>（实测 v6-v8 引羊 n=0 的直接原因之一）。
+     * 引羊 AC 开局把暂停开上（带超时兜底），收尾关掉暂停并自己出门关门。
+     */
+    private volatile long gatesHoldUntilMs = 0L;
+
+    public long gatesHoldUntilMs() { return gatesHoldUntilMs; }
+    public void setGatesHeld(long untilMs) { this.gatesHoldUntilMs = untilMs > 0 ? untilMs : 0L; }
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
     /** 基地基准：一块地皮的固定原点/朝向/每格边长/行列数。 */

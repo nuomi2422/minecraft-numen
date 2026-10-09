@@ -16,6 +16,7 @@ import com.dwinovo.numen.plugins.settlement.tool.SettlementRegisterTool;
 import com.dwinovo.numen.plugins.settlement.tool.SettlementRevokeTool;
 import com.dwinovo.numen.plugins.settlement.tool.SettlementScanContainersTool;
 import com.dwinovo.numen.plugins.settlement.tool.SettlementTool;
+import com.dwinovo.numen.plugins.settlement.tool.SettlementTradeTool;
 import com.dwinovo.numen.plugins.settlement.tool.SettlementUnregisterTool;
 import com.dwinovo.numen.plugins.settlement.tool.SettlementVerifyTool;
 import com.dwinovo.numen.settlement.core.model.BlockBox;
@@ -49,6 +50,8 @@ public final class SettlementPlugin implements NumenPlugin {
         numen.registerTool(new SettlementPenTool());
         // 火柴盒核心屋：基地的第一块（床/箱/工作台/熔炉）。
         numen.registerTool(new SettlementHouseTool());
+        // 交易所：7×7 两格高栅栏围墙 + 门 + 四张床（村民夜投床——用户 2026-10-09 定的做法）。
+        numen.registerTool(new SettlementTradeTool());
         // 农田贴块生成器（中心留水孔）。
         numen.registerTool(new SettlementFarmTool());
         // 区域内实体计数（给 AC 判"圈内≥N 只"用）。

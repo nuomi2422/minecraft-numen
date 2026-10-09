@@ -363,6 +363,8 @@ public final class SettlementTool implements NumenTool {
         int centerZ = placement.anchor().z() + template.sizeZ() / 2;
         switch (genTool) {
             case "settlement_pen" -> {
+                genArgs.addProperty("animal", "pen_cow".equals(template.id()) ? "cow" : "sheep");
+                genArgs.addProperty("size", 7);
                 genArgs.addProperty("cx", centerX);
                 genArgs.addProperty("cy", placement.anchor().y());
                 genArgs.addProperty("cz", centerZ);
@@ -377,17 +379,24 @@ public final class SettlementTool implements NumenTool {
                 // 农田锚点 = floorY-1（y=0 是支撑泥土），所以 floor_y = anchor.y + 1
                 genArgs.addProperty("cx", centerX);
                 genArgs.addProperty("cz", centerZ);
+                genArgs.addProperty("size", 7);
                 genArgs.addProperty("floor_y", placement.anchor().y() + 1);
             }
-            case "settlement_platform" -> {
-                // 平台蓝图是位置相关的（按现场地形填低削高）：给中心 + floor_y + 铺料，
-                // depth=1 时它的锚点 = floor_y - 1 = anchor.y，与模板声明的偏移一致。
+            case "settlement_trade" -> {
                 genArgs.addProperty("cx", centerX);
-                genArgs.addProperty("cy", placement.anchor().y() + 1);
+                genArgs.addProperty("cy", placement.anchor().y());
                 genArgs.addProperty("cz", centerZ);
+            }
+            case "settlement_platform" -> {
+                // 平台蓝图位置相关（按现场地形填低削高）：给中心 + floor_y + 圆石打底。
+                // depth=1 + clear=1 → 蓝图高 3 = sizeY，锚点 = floorY-1（与模板声明一致）。
+                genArgs.addProperty("cx", centerX);
+                genArgs.addProperty("cz", centerZ);
+                genArgs.addProperty("size", 14);
                 genArgs.addProperty("floor_y", placement.anchor().y() + 1);
                 genArgs.addProperty("depth", 1);
-                genArgs.addProperty("floor_block", "minecraft:dirt");
+                genArgs.addProperty("clear_height", 1);
+                genArgs.addProperty("floor_block", "minecraft:cobblestone");
             }
             default -> { }
         }
@@ -666,10 +675,11 @@ public final class SettlementTool implements NumenTool {
     /** 模板 id → 生成器工具名。目录里只有真有生成器的模板才可放置。 */
     private static String generatorToolFor(String templateId) {
         return switch (templateId) {
-            case "pen_basic" -> "settlement_pen";
+            case "pen_sheep", "pen_cow" -> "settlement_pen";
             case "core_house" -> "settlement_house";
             case "farm_basic" -> "settlement_farm";
-            case "platform_basic" -> "settlement_platform";
+            case "trade_post" -> "settlement_trade";
+            case "platform_cobble14" -> "settlement_platform";
             default -> null;
         };
     }

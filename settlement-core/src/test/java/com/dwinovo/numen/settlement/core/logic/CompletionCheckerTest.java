@@ -114,18 +114,30 @@ class CompletionCheckerTest {
 
     @Test
     void penTemplateMarksMatchItsRealGeometry() {
-        // 牧场的标记必须落在它自己的 5×5 外框上（角/边中点/门），不能凭空写
-        FacilityTemplate pen = TemplateCatalog.byId("pen_basic").orElseThrow();
-        assertFalse(pen.marks().isEmpty(), "牧场要有结构标记");
+        // V2：羊圈 7×7，标记必须落在它自己的外框上（角/边中点/门），不能凭空写
+        FacilityTemplate pen = TemplateCatalog.byId("pen_sheep").orElseThrow();
+        assertFalse(pen.marks().isEmpty(), "羊圈要有结构标记");
         for (CompletionChecker.Mark m : pen.marks()) {
-            assertTrue(m.localX() >= 0 && m.localX() <= 4 && m.localZ() >= 0 && m.localZ() <= 4,
-                    "标记必须在 5×5 内: " + m);
+            assertTrue(m.localX() >= 0 && m.localX() <= 6 && m.localZ() >= 0 && m.localZ() <= 6,
+                    "标记必须在 7×7 内: " + m);
             boolean onPerimeter = m.localX() == 0 || m.localZ() == 0
-                    || m.localX() == 4 || m.localZ() == 4;
-            assertTrue(onPerimeter, "牧场标记必须在围栏上: " + m);
+                    || m.localX() == 6 || m.localZ() == 6;
+            assertTrue(onPerimeter, "羊圈标记必须在围栏上: " + m);
         }
         assertEquals(1, pen.marks().stream().filter(m -> m.blockId().contains("gate")).count(),
                 "恰好一处门");
+    }
+
+    @Test
+    void tradeTemplateMarksIncludeBeds() {
+        // 交易所的全部意义是床——床必须进标记（谎报教训：采样漏掉人在乎的东西=假完成）
+        FacilityTemplate trade = TemplateCatalog.byId("trade_post").orElseThrow();
+        long beds = trade.marks().stream().filter(m -> m.blockId().contains("bed")).count();
+        assertEquals(4, beds, "四张床都要进标记");
+        // 两层围墙：四角应有 y=0 与 y=1 两个栅栏标记
+        long corners = trade.marks().stream()
+                .filter(m -> m.blockId().equals("minecraft:oak_fence")).count();
+        assertEquals(8, corners, "四角×两层");
     }
 
     @Test
@@ -167,5 +179,48 @@ class CompletionCheckerTest {
         assertFalse(r.complete(), "缺箱子必须判未完成");
         assertTrue(r.missing().stream().anyMatch(s -> s.contains("chest")),
                 "缺失项要点名箱子: " + r.missing());
+    }
+
+    @Test
+    void platformMarksSampleTopSurfaceAndCatchUnleveledGround() {
+        // ★ 2026-10-09 晚修：平台原来 marks=[] → inspect 跳过世界核对 → 施工账永远停在 BUILDING。
+        //   现在平台必须有一组"顶面采样点是圆石"的标记，才能在场上判出"表面多是泥土"。
+        FacilityTemplate platform = TemplateCatalog.byId("platform_cobble14").orElseThrow();
+        assertFalse(platform.marks().isEmpty(), "平台必须有顶面采样标记");
+        for (CompletionChecker.Mark m : platform.marks()) {
+            assertEquals(1, m.localY(), "圆石顶面在局部 y=1（y=0 是往下填实层）: " + m);
+            assertTrue(m.localX() >= 0 && m.localX() <= 13 && m.localZ() >= 0 && m.localZ() <= 13,
+                    "标记必须在 14×14 内: " + m);
+            assertEquals("minecraft:cobblestone", m.blockId());
+        }
+        // 四角必须采到（"建了一半"最先缺的地方）
+        assertTrue(platform.marks().stream().anyMatch(m -> m.localX() == 0 && m.localZ() == 0));
+        assertTrue(platform.marks().stream().anyMatch(m -> m.localX() == 13 && m.localZ() == 13));
+
+        // 锚点 y = floorY-1（anchorYOffset=-1）→ 顶面世界 y = 锚点 y + 1
+        int ax = 100;
+        int ay = 65;         // = floorY-1，floorY=66
+        int az = 200;
+        DimAnchor anchor = DimAnchor.of(DIM, ax, ay, az);
+
+        FakeProbe good = new FakeProbe();
+        for (CompletionChecker.Mark m : platform.marks()) {
+            good.put(ax + m.localX(), ay + m.localY(), az + m.localZ(), "minecraft:cobblestone");
+        }
+        assertTrue(CompletionChecker.check(platform.marks(), anchor, 14, 14, 0, good).complete(),
+                "顶面全是圆石 → 收口");
+
+        // 真实实况：表面多是泥土、只一角圆石 → 必须判未完成，并点名还差的坐标
+        FakeProbe dirt = new FakeProbe();
+        for (CompletionChecker.Mark m : platform.marks()) {
+            boolean keep = m.localX() == 0 && m.localZ() == 0;   // 只剩一角是圆石
+            dirt.put(ax + m.localX(), ay + m.localY(), az + m.localZ(),
+                    keep ? "minecraft:cobblestone" : "minecraft:dirt");
+        }
+        CompletionChecker.Result r = CompletionChecker.check(platform.marks(), anchor, 14, 14, 0, dirt);
+        assertFalse(r.complete(), "地皮没铺完不能判收口");
+        assertEquals(1, r.matched());
+        assertTrue(r.missing().stream().anyMatch(s -> s.contains("cobblestone")),
+                "缺失项要点名圆石: " + r.missing());
     }
 }
