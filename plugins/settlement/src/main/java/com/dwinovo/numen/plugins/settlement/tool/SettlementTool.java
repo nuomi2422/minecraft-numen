@@ -585,8 +585,37 @@ public final class SettlementTool implements NumenTool {
         FacilityRecord f = found.get();
         ConstructionProgress c = f.construction();
         if (c.status() == ConstructionStatus.COMPLETE) {
-            reply.accept(TaskResult.fail("settlement resume: '" + id + "' 已收口，无需续建").toJson());
-            return;
+            // ★ 账上"收口"不等于世界里建完了：施工账可能停在 COMPLETE 而世界侧还有缺失
+            //   （2026-10-09 实测 D3 核心屋：账=COMPLETE，世界核对=14/15 缺箱子）。
+            //   所以这里必须**先问世界**再决定要不要拒绝续建——否则缺的那件东西
+            //   永远补不上（resume 被自己拦掉）。
+            if (self != null && self.getServer() != null && c.template() != null && c.anchor() != null) {
+                Optional<FacilityTemplate> tpl = TemplateCatalog.byId(c.template());
+                if (tpl.isPresent() && !tpl.get().marks().isEmpty()) {
+                    FacilityTemplate t = tpl.get();
+                    CompletionChecker.Result marks = CompletionChecker.check(t.marks(), c.anchor(),
+                            t.sizeX(), t.sizeZ(), f.rotationQuarters(), new McWorldProbe(self.getServer()));
+                    if (!marks.complete()) {
+                        // 世界说没建完 → 允许续建，并把账重新打开
+                        long at = System.currentTimeMillis();
+                        c = new ConstructionProgress(marks.matched(), c.skipped(), c.droppedAtLoad(),
+                                marks.total(), at, ConstructionStatus.BLOCKED, c.template(),
+                                c.anchor(), c.taskId(), c.missing(),
+                                "世界核对：还差 " + marks.missingCount() + " 处 → 重新开工");
+                        f = f.withConstruction(c);
+                        service.register(f);
+                    } else {
+                        reply.accept(TaskResult.fail("settlement resume: '" + id
+                                + "' 已收口且世界核对通过（" + marks.matched() + "/" + marks.total()
+                                + "），无需续建").toJson());
+                        return;
+                    }
+                }
+            }
+            if (c.status() == ConstructionStatus.COMPLETE) {
+                reply.accept(TaskResult.fail("settlement resume: '" + id + "' 已收口，无需续建").toJson());
+                return;
+            }
         }
         if (c.template() == null || c.anchor() == null) {
             reply.accept(TaskResult.fail("settlement resume: '" + id
