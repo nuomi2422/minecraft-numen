@@ -182,12 +182,15 @@ private static void realAcLib() {
             eq(0, rep.warnings().size(), "warning: " + rep.warnings());
         });
 
-        T.test("11 个 stable 全注册、0 个 beta", () -> {
-            eq(11, rep.registered().size(), "stable 数: " + rep.registered().keySet());
+        T.test("12 个 stable 全注册、0 个 beta", () -> {
+            // 2026-10-09：11 → 12，新增 lure_animals_into_pen（引羊 v6：按 type 筛羊 + 三趟线性）。
+            // 总数是硬断言，涨了必须显式改这里——这正是它存在的意义（覆盖度变化不许静默通过）。
+            eq(12, rep.registered().size(), "stable 数: " + rep.registered().keySet());
             eq(0, rep.betaOnly().size(), "beta 数: " + rep.betaOnly().keySet());
             T.isTrue(rep.registered().containsKey("ore_scan_inspect"), "实测形状脚本在");
             T.isTrue(rep.registered().containsKey("timeout_demo"), "按 AC 限额脚本在");
             T.isTrue(rep.registered().containsKey("subac_nesting"), "子 AC 脚本在");
+            T.isTrue(rep.registered().containsKey("lure_animals_into_pen"), "引羊脚本在");
         });
 
         T.test("★ DD 原件一个都不注册（形状与 Numen 真工具不兼容，已降级到 reference/）", () -> {

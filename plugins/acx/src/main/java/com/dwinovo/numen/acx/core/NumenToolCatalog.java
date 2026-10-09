@@ -178,12 +178,57 @@ public final class NumenToolCatalog {
                     .build()),
 
             new ToolSpec("scan_nearby_entities",
-                "扫描附近实体。参数实测确认；输出字段未实测，故意不声明 outputs（宁缺毋滥）。",
+                "扫描附近实体（按距离排序）。实测输出 {entities:[{id,type,category,position:{x,y,z},distance,hp}]}，"
+                + "最多 20 条，truncated=true 表示还有更多。★ 2026-10-09 按实机回执补齐输出字段："
+                + "此前故意不声明 outputs，导致按 type 筛羊的 .ac 在离线 strict 自检里被判"
+                + "『引用了不存在的字段』（而实机是对的）——宁缺毋滥不该变成看不见真字段。",
                 s().param("radius", AcxPortSchema.Param.req(AcxPortSchema.Type.NUMBER).range(1, 64)
                         .desc("搜索半径（1-64）"))
                     .param("type_filter", AcxPortSchema.Param.req(AcxPortSchema.Type.STRING)
                         .withEnum("hostile", "passive", "player", "all")
                         .desc("实体筛选"))
+                    .output("entities", "total_found", "truncated", "radius_searched", "filter")
+                    .build()),
+
+            new ToolSpec("equip_item",
+                "把背包里的物品拿到手上（或 unequip 放下）。同步工具：AC 直调时回执可能超时，"
+                + "参数加 ignore_failure=true 照常执行。",
+                s().param("action", AcxPortSchema.Param.opt(AcxPortSchema.Type.STRING)
+                        .withEnum("equip", "unequip").desc("equip（默认）/ unequip"))
+                    .param("item_id", AcxPortSchema.Param.opt(AcxPortSchema.Type.STRING)
+                        .desc("要装备的物品 id；unequip 忽略"))
+                    .param("slot", AcxPortSchema.Param.opt(AcxPortSchema.Type.STRING)
+                        .withEnum("mainhand", "offhand", "head", "chest", "legs", "feet", "armor")
+                        .desc("equip 省略则按物品类型自动路由；unequip 必填"))
+                    .build()),
+
+            new ToolSpec("interact_at",
+                "对世界坐标按一次鼠标键（左/右）。同步工具：AC 直调时回执可能超时，"
+                + "参数加 ignore_failure=true 照常执行。必须已站到工作距离内（~4.5 格）。",
+                s().param("button", AcxPortSchema.Param.req(AcxPortSchema.Type.STRING)
+                        .withEnum("left", "right").desc("right=使用/激活，left=攻击/破坏"))
+                    .param("x", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).nullable().desc("瞄准 X"))
+                    .param("y", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).nullable().desc("瞄准 Y"))
+                    .param("z", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).nullable().desc("瞄准 Z"))
+                    .param("hold_ticks", AcxPortSchema.Param.opt(AcxPortSchema.Type.INTEGER)
+                        .desc("0/null=单击；>0=按住刻数；-1=按到完成"))
+                    .param("item_id", AcxPortSchema.Param.opt(AcxPortSchema.Type.STRING)
+                        .desc("可选：先装备再用"))
+                    .build()),
+
+            new ToolSpec("count_entities_in_box",
+                "数一个长方体区域内的实体。用于判『圈内已有几只羊』这类区域条件。",
+                s().param("x1", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).desc("盒角1 x"))
+                    .param("y1", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).desc("盒角1 y"))
+                    .param("z1", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).desc("盒角1 z"))
+                    .param("x2", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).desc("盒角2 x"))
+                    .param("y2", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).desc("盒角2 y"))
+                    .param("z2", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).desc("盒角2 z"))
+                    .param("type_id", AcxPortSchema.Param.opt(AcxPortSchema.Type.STRING)
+                        .desc("只数该实体种，如 minecraft:sheep"))
+                    .param("category", AcxPortSchema.Param.opt(AcxPortSchema.Type.STRING)
+                        .withEnum("passive", "all").desc("passive=动物 / all=全部（默认 all）"))
+                    .output("count", "type_id", "box")
                     .build()),
 
             new ToolSpec("attack",
