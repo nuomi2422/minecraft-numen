@@ -71,6 +71,22 @@ class PlacementTest {
         assertTrue(cells.contains(CellKey.of(2, 3)));
     }
 
+    @Test
+    void footprintBoxYFollowsTheTemplateAnchorOffset() {
+        // ★ 2026-10-09 实机抓到的缺陷：农田/平台的蓝图 y=0 在 floorY-1（支撑泥土层），
+        //   而登记范围原先一律从 floorY 起 → 最底下那层落在保护区与验收之外。
+        //   农田在 floorY=64 上应登记 63..64；牧场（偏移 0）应登记 64..65。
+        PlacementMath.PlacementPlan farm = PlacementMath.resolve(plan(), CellKey.of(0, 0),
+                TemplateCatalog.byId("farm_basic").orElseThrow(), 0);
+        assertEquals(63, farm.footprintBox().minY(), "农田支撑层在 floorY-1");
+        assertEquals(64, farm.footprintBox().maxY());
+        assertEquals(farm.anchor().y(), farm.footprintBox().minY(), "范围底 = 锚点 y");
+
+        PlacementMath.PlacementPlan pen = PlacementMath.resolve(plan(), CellKey.of(0, 0), pen(), 0);
+        assertEquals(64, pen.footprintBox().minY(), "牧场栅栏就在 floorY");
+        assertEquals(65, pen.footprintBox().maxY());
+    }
+
     // ── 旋转 ─────────────────────────────────────────────────────────
 
     @Test

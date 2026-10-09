@@ -43,13 +43,21 @@ public final class PlacementMath {
             /** 占用的网格格。 */
             List<CellKey> cells) { }
 
-    /** 占地格覆盖的世界盒（只算 XZ 与 floor 层）。 */
+    /**
+     * 占地格覆盖的世界盒。
+     *
+     * <p>★ Y 起点必须带上 {@link FacilityTemplate#anchorYOffset()}：各生成器的蓝图 y=0
+     * 落在不同层（牧场/核心屋在 floorY，农田/平台在 floorY-1）。2026-10-09 实机抓到：
+     * 农田登记成 y=68..69，而它真正的支撑泥土层在 <b>y=67</b>——保护区与验收带都漏掉了
+     * 一层，等于把设施最底下那层留在保护之外。
+     */
     public static BlockBox footprintBox(PlatformPlan plan, CellKey cell, FacilityTemplate template) {
         int x0 = plan.originX() + cell.cx() * plan.stride();
         int z0 = plan.originZ() + cell.cz() * plan.stride();
         int x1 = x0 + template.footprintCellsX() * plan.cellSize() - 1;
         int z1 = z0 + template.footprintCellsZ() * plan.cellSize() - 1;
-        return BlockBox.of(x0, plan.floorY(), z0, x1, plan.floorY() + template.sizeY() - 1, z1);
+        int y0 = plan.floorY() + template.anchorYOffset();
+        return BlockBox.of(x0, y0, z0, x1, y0 + template.sizeY() - 1, z1);
     }
 
     /** 占用哪些格（从 cell 起向东南铺 footprintCells）。 */
