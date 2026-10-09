@@ -2307,6 +2307,41 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             eq(1, w.size(), "要有一条提示: " + w);
         });
 
+        T.test("★ $origin 是裸 {x,y,z} 时 nearest 必须真按距离选（2026-10-09 引羊实测缺陷）", () -> {
+            // 元素带嵌套 position（pick_fields 指向它），origin 是 get_self_status 那种裸 {x,y,z}
+            List<Object> items = List.of(
+                    Fake.params("id", "far", "position", Fake.params("x", 100, "y", 64, "z", 100)),
+                    Fake.params("id", "near", "position", Fake.params("x", 3, "y", 64, "z", 3)));
+            List<AcxParamBinder.Warning> w = new ArrayList<>();
+            Map<String, Object> out = AcxParamBinder.bind(
+                    Fake.params("t", Map.of("$from", "$input.items",
+                            "$pick", "nearest",
+                            "$origin", "$input.origin",
+                            "$pick_fields", "position.x,position.y,position.z")),
+                    Map.of(), Map.of("items", items, "origin", Fake.params("x", 0, "y", 64, "z", 0)),
+                    Map.of(), w);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> picked = (Map<String, Object>) out.get("t");
+            eq("near", picked.get("id"),
+                    "★ origin 是裸 {x,y,z} 时必须按距离选最近，不能退回列表第一个（旧缺陷会选 far）");
+            eq(0, w.size(), "正常解析不该产生 REF_UNRESOLVED 提示: " + w);
+        });
+
+        T.test("$pick_fields 描述的 origin（坐标直接就是 x/y/z）也照旧工作", () -> {
+            List<Object> items = List.of(
+                    Fake.params("id", "far", "x", 100, "y", 64, "z", 100),
+                    Fake.params("id", "near", "x", 3, "y", 64, "z", 3));
+            List<AcxParamBinder.Warning> w = new ArrayList<>();
+            Map<String, Object> out = AcxParamBinder.bind(
+                    Fake.params("t", Map.of("$from", "$input.items",
+                            "$pick", "nearest", "$origin", "$input.origin")),
+                    Map.of(), Map.of("items", items, "origin", Fake.params("x", 0, "y", 64, "z", 0)),
+                    Map.of(), w);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> picked = (Map<String, Object>) out.get("t");
+            eq("near", picked.get("id"), "默认字段写法必须仍然有效");
+        });
+
         // ── 指纹 / 落库 ────────────────────────────────────────────────
 
         T.test("precondition 参与指纹：加/改条件都会让指纹变化（resume 契约不被绕过）", () -> {

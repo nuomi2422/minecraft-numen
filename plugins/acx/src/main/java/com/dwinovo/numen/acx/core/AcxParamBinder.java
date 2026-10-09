@@ -306,6 +306,16 @@ public final class AcxParamBinder {
         }
         double[] o = coords(origin, splitFields(m.get(PICK_FIELDS), "x,y,z"));
         if (o == null) {
+            // ★ 回退：`$pick_fields` 描述的是<b>列表元素</b>的坐标字段名（如
+            // `position.x,position.y,position.z`），而 `$origin` 常常是裸 `{x,y,z}`
+            // （例如 `$var.origin` 存的就是 get_self_status 的 position）。
+            // 只按 pick_fields 去读 origin 会取不到 → 永远退回"第一个"，于是
+            // "最近优先"静默退化成"列表第一个"（2026-10-09 引羊 AC 实测就是这个：
+            // 它想选最近的羊，实际选中了扫描列表第一个，而列表按距离排序，
+            // 于是可能选到猪/鸡/掉落物）。这里再用默认 x,y,z 试一次，两种写法都支持。
+            o = coords(origin, splitFields(null, "x,y,z"));
+        }
+        if (o == null) {
             warnings.add(new Warning(path, String.valueOf(originRaw),
                     "$origin 不是 {x,y,z} 或 [x,y,z]，退回第一个", ""));
             return 0;
@@ -341,12 +351,25 @@ public final class AcxParamBinder {
         return parts;
     }
 
-    /** 从 {@code {x,y,z}} 映射或 {@code [x,y,z]} 列表取三坐标；取不到返回 null。 */
+    /**
+     * 从 {@code {x,y,z}} 映射或 {@code [x,y,z]} 列表取三坐标；取不到返回 null。
+     *
+     * <p>★ 字段名支持<b>点路径</b>（{@code position.x}）：Numen 的实体/方块条目是嵌套的
+     * （{@code {"position":{"x":..,"y":..,"z":..}}}），而 {@code $pick_fields} 本来就写成
+     * {@code position.x,position.y,position.z}。此前这里用 {@code m.get(field)} 平铺取，
+     * 点路径必然取不到 → 每个元素都被跳过 → {@code best} 停在 0 → <b>nearest 静默退化成
+     * "列表第一个"</b>（2026-10-09 引羊 AC 实测：想选最近的羊，实际选中扫描列表第一条，
+     * 而那可能是猪/鸡/掉落物）。改用 {@link AcxValueResolver#resolvePath} 同时支持两种写法。
+     */
     private static double[] coords(Object v, String[] fields) {
         if (v instanceof Map<?, ?> m) {
             double[] out = new double[3];
             for (int i = 0; i < 3; i++) {
                 Object c = m.get(fields[i]);
+                if (!(c instanceof Number) && fields[i].indexOf('.') >= 0) {
+                    // 点路径：按 path 下钻（resolvePath 只认 Map/List，正合这里的结构）
+                    c = AcxValueResolver.resolvePath(v, fields[i]);
+                }
                 if (!(c instanceof Number n)) {
                     return null;
                 }
