@@ -28,12 +28,18 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
+
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -88,6 +94,9 @@ public final class SettlementTool implements NumenTool {
                 + "『生成蓝图→算锚点→登记→开施工权限→建造→回收权限→更新地图』整串做完。"
                 + "AI 只需决定建什么、放哪儿。\n"
                 + "action=overview —— 出基地网格地图 + 各设施状态 + 空格提示（先看这个）。\n"
+                + "action=survey template=<id> —— 勘测基地里每块空格的地形（逐列读方块高度），"
+                + "按『已平 / 需削高 / 需洼填 / 上方障碍』排名，帮你挑最平最空的一格"
+                + "（放地皮前先跑它，别把地皮修在树/山坡/建筑上）。\n"
                 + "action=catalog —— 出可选模板：占几格、材料、入口朝向、以及『可用程度』"
                 + "（可完整建造 / 仅结构可建 / 可试建与续建），未自动化的工序会如实列出。\n"
                 + "action=place template=<id> cell=<如 B2> [rotation=0|90|180|270] —— 检查范围/冲突/"
@@ -101,15 +110,16 @@ public final class SettlementTool implements NumenTool {
 
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .enumStr("action", "overview=看地图 / catalog=看模块 / place=放置 / inspect=查设施 / resume=续建",
-                        "overview", "catalog", "place", "inspect", "resume")
-                .optionalString("template", "place 用：模板 id（见 catalog），如 pen_basic")
+                .enumStr("action", "overview=看地图 / catalog=看模块 / survey=勘测地块 / place=放置 / inspect=查设施 / resume=续建",
+                        "overview", "catalog", "survey", "place", "inspect", "resume")
+                .optionalString("template", "place/survey 用：模板 id（见 catalog），如 platform_cobble14")
                 .optionalString("cell", "place 用：目标格，如 B2（列字母+行号，从 A1 起）")
                 .optionalInteger("rotation", "place 用：顺时针旋转角度 0/90/180/270，默认 0", 0, 270)
                 .optionalString("id", "inspect/resume 用：设施 id")
                 .optionalBool("dry_run", "place 用：只做检查不施工，默认 false")
                 .optionalInteger("cols", "overview 用：列数（不给用基地基准）", 1, 26)
                 .optionalInteger("rows", "overview 用：行数（不给用基地基准）", 1, 26)
+                .optionalInteger("limit", "survey 用：返回前几名的空地块，默认 8", 1, 40)
                 .build();
     }
 
@@ -124,11 +134,12 @@ public final class SettlementTool implements NumenTool {
             switch (action) {
                 case "overview" -> overview(args, self, reply);
                 case "catalog" -> catalog(reply);
+                case "survey" -> survey(args, self, reply);
                 case "place" -> place(toolCallId, args, self, reply);
                 case "inspect" -> inspect(args, self, reply);
                 case "resume" -> resume(toolCallId, args, self, reply);
                 default -> reply.accept(TaskResult.fail(
-                        "settlement: action must be overview|catalog|place|inspect|resume").toJson());
+                        "settlement: action must be overview|catalog|survey|place|inspect|resume").toJson());
             }
         } catch (RuntimeException ex) {
             reply.accept(TaskResult.fail("settlement error: " + ex.getMessage()).toJson());
@@ -237,6 +248,9 @@ public final class SettlementTool implements NumenTool {
                     .append("  占地 ").append(t.footprintCellsX()).append('×')
                     .append(t.footprintCellsZ()).append(" 格")
                     .append("  入口朝 ").append(t.entranceFacing()).append('\n')
+                    .append("  底座基准点（局部）=(").append(t.baseLocal().x()).append(',')
+                    .append(t.baseLocal().z()).append(")  最底层相对 floorY 偏移 ")
+                    .append(t.anchorYOffset()).append('\n')
                     .append("  可用程度：").append(t.maturity().label()).append('\n');
             if (!t.materials().isEmpty()) {
                 sb.append("  材料：");
@@ -259,6 +273,8 @@ public final class SettlementTool implements NumenTool {
             e.put("size", t.sizeX() + "x" + t.sizeZ());
             e.put("footprint", t.footprintCellsX() + "x" + t.footprintCellsZ());
             e.put("entrance_facing", t.entranceFacing());
+            e.put("base_local", t.baseLocal().x() + "," + t.baseLocal().z());
+            e.put("base_y_offset", t.anchorYOffset());
             e.put("maturity", t.maturity().name());
             e.put("unfinished", t.unfinishedSteps());
             entries.add(e);
@@ -333,13 +349,25 @@ public final class SettlementTool implements NumenTool {
             }
         }
 
+        // ③b 朴素场地评估（用户 2026-10-09 晚点名）：选点后扫这块地，数一数"上方压了多少、
+        //     下方多深坑"，让 AI 自己决定换不换格，而不是硬修出一个坑。非致命，只入 warnings。
+        List<String> warnings = new ArrayList<>(check.warnings());
+        warnings.addAll(assessSite(self.serverLevel(), placement.footprintBox(), plan.floorY()));
+
+        // 底座基准点（用户 2026-10-10 点名）：每个模块蓝图都带一个"底座坐标标记"，
+        // 说明它站哪、和地基哪一层合并。这里把它算到世界坐标，并标出它坐的地基 Y 层。
+        DimAnchor basePt = PlacementMath.basePoint(placement, template);
+
         if (dryRun) {
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("dry_run", true);
             data.put("facility_id", facilityId);
             data.put("disposition", decision.disposition().name());
             data.put("anchor", anchorText(placement.anchor()));
-            data.put("warnings", check.warnings());
+            data.put("base", anchorText(basePt) + "（底座基准点；坐在地基 y=" + (basePt.y() - 1) + " 上）");
+            data.put("base_local", template.baseLocal().x() + "," + template.baseLocal().z());
+            data.put("docks_on_y", basePt.y() - 1);
+            data.put("warnings", warnings);
             reply.accept(TaskResult.ok("检查通过（dry_run，未动世界）。设施 id=" + facilityId
                     + "，处置=" + decision.disposition(), data).toJson());
             return;
@@ -389,13 +417,20 @@ public final class SettlementTool implements NumenTool {
             }
             case "settlement_platform" -> {
                 // 平台蓝图位置相关（按现场地形填低削高）：给中心 + floor_y + 圆石打底。
-                // depth=1 + clear=1 → 蓝图高 3 = sizeY，锚点 = floorY-1（与模板声明一致）。
+                // ★ 2026-10-09 晚用户点名把整平/清空调大：清够高（树/坡）、填够深（洼地），
+                //   才是"顶面平、上方空、下面实心"的真地皮。旧的 depth=1/clear=1 只削一层、
+                //   只清一层，看着又没平又没清。
+                // ★ floor_y 必须补偿 depth：平台蓝图锚点是"局部 0 = floor_y-depth"，
+                //   而放置锚点 = floorY + anchorYOffset(= -depth)；floor_y 取 anchor.y+depth
+                //   两边才对齐，顶面（局部 y=depth）落回 floorY。
+                final int depth = 6;
+                final int clear = 10;
                 genArgs.addProperty("cx", centerX);
                 genArgs.addProperty("cz", centerZ);
                 genArgs.addProperty("size", 14);
-                genArgs.addProperty("floor_y", placement.anchor().y() + 1);
-                genArgs.addProperty("depth", 1);
-                genArgs.addProperty("clear_height", 1);
+                genArgs.addProperty("floor_y", placement.anchor().y() + depth);
+                genArgs.addProperty("depth", depth);
+                genArgs.addProperty("clear_height", clear);
                 genArgs.addProperty("floor_block", "minecraft:cobblestone");
             }
             default -> { }
@@ -463,11 +498,14 @@ public final class SettlementTool implements NumenTool {
         data.put("cell", PlacementValidator.cellName(cell));
         data.put("disposition", decision.disposition().name());
         data.put("anchor", anchorText(placement.anchor()));
+        data.put("base", anchorText(basePt) + "（底座基准点；坐在地基 y=" + (basePt.y() - 1) + " 上）");
+        data.put("base_local", template.baseLocal().x() + "," + template.baseLocal().z());
+        data.put("docks_on_y", basePt.y() - 1);
         data.put("entrance_inside", anchorText(placement.entranceInside()));
         data.put("entrance_outside", anchorText(placement.entranceOutside()));
         data.put("cells", cells);
         data.put("granted_areas", zones.size());
-        data.put("warnings", check.warnings());
+        data.put("warnings", warnings);
         data.put("build_accepted", accepted);
         if (accepted && buildReply.has("data")) {
             data.put("build", buildReply.get("data").toString());
@@ -758,6 +796,220 @@ public final class SettlementTool implements NumenTool {
             }
         }
         return zones;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // survey —— 勘测地块（逐列读地形，按"已平/削高/洼填/上方障碍"排名）
+    // ══════════════════════════════════════════════════════════════════
+
+    /** 逐列地形统计（probe 范围 {@code [floorY-PROBE_DOWN, floorY+PROBE_UP]}）。 */
+    private record SiteStats(int total, int flat, int cut, int maxCut, int fill, int maxFill,
+                             int tall, int unloaded) {
+
+        /** 越小越好：先看上方障碍，再看最大起伏，再看需动土的列数。 */
+        int penalty() {
+            return tall * 1000 + Math.max(maxCut, maxFill) * 10 + (cut + fill);
+        }
+
+        String describe() {
+            return "已平 " + flat + "  需削高 " + cut + "(最高 +" + maxCut + ")  "
+                    + "需洼填 " + fill + "(最深 -" + maxFill + ")"
+                    + (tall > 0 ? "  ⚠上方障碍 " + tall + " 列" : "");
+        }
+    }
+
+    private static final int PROBE_UP = 16;
+    private static final int PROBE_DOWN = 6;
+
+    /** 单块占地的地形统计（直接扫）。 */
+    private static SiteStats statsFor(ServerLevel level, BlockBox foot, int floorY) {
+        int total = 0, flat = 0, cut = 0, fill = 0, tall = 0, unloaded = 0, maxCut = 0, maxFill = 0;
+        for (int x = foot.minX(); x <= foot.maxX(); x++) {
+            for (int z = foot.minZ(); z <= foot.maxZ(); z++) {
+                total++;
+                if (!level.hasChunkAt(new BlockPos(x, floorY, z))) { unloaded++; continue; }
+                int top = floorY - PROBE_DOWN - 1;   // 哨兵：探针范围内全是空气 → 当深坑
+                for (int y = floorY + PROBE_UP; y >= floorY - PROBE_DOWN; y--) {
+                    if (!level.getBlockState(new BlockPos(x, y, z)).isAir()) { top = y; break; }
+                }
+                if (top > floorY) {
+                    cut++; maxCut = Math.max(maxCut, top - floorY);
+                    if (top - floorY >= 3) tall++;
+                } else if (top < floorY) {
+                    fill++; maxFill = Math.max(maxFill, floorY - top);
+                } else {
+                    flat++;
+                }
+            }
+        }
+        return new SiteStats(total, flat, cut, maxCut, fill, maxFill, tall, unloaded);
+    }
+
+    /**
+     * 朴素场地评估（用户 2026-10-09 晚点名"选点后看看周围东西多不多"）：把这个占地的地形
+     * 统计成"已平 / 需削高 / 需洼填 / 上方障碍"文案。<b>非致命</b>——只报给 AI，
+     * 换不换格由 AI 决定（而不是硬修出一个坑）。
+     */
+    private static List<String> assessSite(ServerLevel level, BlockBox foot, int floorY) {
+        SiteStats s = statsFor(level, foot, floorY);
+        List<String> out = new ArrayList<>();
+        if (s.unloaded() > 0) {
+            out.add("场地评估：有 " + s.unloaded() + " 列区块未加载，评估不全——先走过去再放");
+        }
+        out.add("场地评估(" + foot.sizeX() + "×" + foot.sizeZ() + "，" + s.total() + " 列)："
+                + s.describe());
+        if (s.tall() > 0) {
+            out.add("⚠ 这块地上方有 " + s.tall() + " 列被 ≥3 格高的东西压着（树/建筑/山坡）——"
+                    + "修地皮会削掉它们；建议换更空的格，或确认就是要清这里");
+        }
+        return out;
+    }
+
+    /**
+     * 勘测（用户 2026-10-09 晚点名"AI 自己找平地"）：一次性扫整张基地网格的地形高度，
+     * 对每块能放下 {@code template} 的空格算出「已平/削高/洼填/上方障碍」，按 penalty 排名，
+     * 让 AI 自己挑最平最空的一格——而不是硬修出一个坑。
+     */
+    private void survey(JsonObject args, NumenPlayer self, Consumer<String> reply) {
+        Optional<PlatformPlan> maybePlan = service.platformPlan();
+        if (maybePlan.isEmpty()) {
+            reply.accept(TaskResult.fail("settlement survey: 还没有基地基准网格，先 settlement_base action=set").toJson());
+            return;
+        }
+        PlatformPlan plan = maybePlan.get();
+        String templateId = args.has("template")
+                ? args.get("template").getAsString().toLowerCase(Locale.ROOT).trim() : "platform_cobble14";
+        Optional<FacilityTemplate> maybeTemplate = TemplateCatalog.byId(templateId);
+        if (maybeTemplate.isEmpty()) {
+            reply.accept(TaskResult.fail("settlement survey: 未知模板 '" + templateId + "'").toJson());
+            return;
+        }
+        FacilityTemplate template = maybeTemplate.get();
+        int limit = args.has("limit") ? clamp(args.get("limit").getAsInt(), 1, 40) : 8;
+
+        ServerLevel level = self.serverLevel();
+        int floorY = plan.floorY();
+        int ox = plan.originX(), oz = plan.originZ();
+        int gw = plan.cellsX() * plan.cellSize();
+        int gz = plan.cellsZ() * plan.cellSize();
+        // 一次扫描整张网格的高度图（避免逐格重复读方块）。
+        int[] tops = new int[gw * gz];
+        int unloadedColumns = 0;
+        for (int ix = 0; ix < gw; ix++) {
+            int wx = ox + ix;
+            for (int iz = 0; iz < gz; iz++) {
+                int wz = oz + iz;
+                if (!level.hasChunkAt(new BlockPos(wx, floorY, wz))) {
+                    tops[ix * gz + iz] = Integer.MIN_VALUE;
+                    unloadedColumns++;
+                    continue;
+                }
+                int top = floorY - PROBE_DOWN - 1;
+                for (int y = floorY + PROBE_UP; y >= floorY - PROBE_DOWN; y--) {
+                    if (!level.getBlockState(new BlockPos(wx, y, wz)).isAir()) { top = y; break; }
+                }
+                tops[ix * gz + iz] = top;
+            }
+        }
+
+        // 已占用的格（只按"同类"算：放地皮时地皮/模块都算占；放模块时地皮不算占，与放置校验同口径）。
+        boolean placingPlatform = template.id().startsWith("platform");
+        Set<CellKey> occupied = new LinkedHashSet<>();
+        for (FacilityRecord f : service.registry().inDimension(plan.dimension())) {
+            boolean existingPlatform = f.construction().template() != null
+                    && f.construction().template().startsWith("platform");
+            if (existingPlatform != placingPlatform) continue;
+            occupied.addAll(cellsOf(f, plan));
+        }
+
+        record Candidate(CellKey cell, SiteStats stats) { }
+        List<Candidate> candidates = new ArrayList<>();
+        for (int cx = 0; cx + template.footprintCellsX() <= plan.cellsX(); cx++) {
+            for (int cz = 0; cz + template.footprintCellsZ() <= plan.cellsZ(); cz++) {
+                boolean clash = false;
+                for (int dx = 0; dx < template.footprintCellsX() && !clash; dx++) {
+                    for (int dz = 0; dz < template.footprintCellsZ(); dz++) {
+                        if (occupied.contains(CellKey.of(cx + dx, cz + dz))) { clash = true; break; }
+                    }
+                }
+                if (clash) continue;
+                PlacementMath.PlacementPlan pl = PlacementMath.resolve(plan, CellKey.of(cx, cz), template, 0);
+                candidates.add(new Candidate(CellKey.of(cx, cz),
+                        statsFromMap(tops, ox, oz, gw, gz, pl.footprintBox(), floorY)));
+            }
+        }
+        candidates.sort(Comparator.comparingInt((Candidate c) -> c.stats().penalty())
+                .thenComparingInt(c -> -c.stats().flat()));
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("勘测（模板 ").append(template.id()).append("，占地 ")
+                .append(template.footprintCellsX()).append("×").append(template.footprintCellsZ())
+                .append(" 格；基准平面 y=").append(floorY).append("）：");
+        if (unloadedColumns > 0) {
+            sb.append("\n⚠ 有 ").append(unloadedColumns).append(" 列区块未加载——勘测不全，先走过去再来");
+        }
+        if (candidates.isEmpty()) {
+            sb.append("\n没有能放下它的空格（都被占了或越界）。");
+        } else {
+            sb.append("\n候选空格 ").append(candidates.size()).append(" 个，按『最平最空』排序：");
+            for (int i = 0; i < Math.min(limit, candidates.size()); i++) {
+                Candidate c = candidates.get(i);
+                sb.append("\n  ").append(i + 1).append(". ")
+                        .append(PlacementValidator.cellName(c.cell())).append(" —— ")
+                        .append(c.stats().describe());
+            }
+            Candidate best = candidates.get(0);
+            sb.append("\n建议：").append(PlacementValidator.cellName(best.cell()))
+                    .append("（").append(best.stats().describe()).append("）");
+        }
+
+        List<Map<String, Object>> entries = new ArrayList<>();
+        for (Candidate c : candidates) {
+            SiteStats s = c.stats();
+            Map<String, Object> e = new LinkedHashMap<>();
+            e.put("cell", PlacementValidator.cellName(c.cell()));
+            e.put("flat", s.flat());
+            e.put("cut", s.cut());
+            e.put("max_cut", s.maxCut());
+            e.put("fill", s.fill());
+            e.put("max_fill", s.maxFill());
+            e.put("tall_obstruction", s.tall());
+            e.put("penalty", s.penalty());
+            entries.add(e);
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("template", template.id());
+        data.put("floor_y", floorY);
+        data.put("unloaded_columns", unloadedColumns);
+        data.put("candidates", entries);
+        data.put("best", candidates.isEmpty() ? null : PlacementValidator.cellName(candidates.get(0).cell()));
+        reply.accept(TaskResult.ok(sb.toString(), data).toJson());
+    }
+
+    /** 从预扫的高度图里读一块占地的统计（越出网格的列跳过，未加载单列扣账）。 */
+    private static SiteStats statsFromMap(int[] tops, int ox, int oz, int gw, int gz,
+                                          BlockBox foot, int floorY) {
+        int total = 0, flat = 0, cut = 0, fill = 0, tall = 0, unloaded = 0, maxCut = 0, maxFill = 0;
+        for (int x = foot.minX(); x <= foot.maxX(); x++) {
+            int ix = x - ox;
+            if (ix < 0 || ix >= gw) continue;
+            for (int z = foot.minZ(); z <= foot.maxZ(); z++) {
+                int iz = z - oz;
+                if (iz < 0 || iz >= gz) continue;
+                total++;
+                int top = tops[ix * gz + iz];
+                if (top == Integer.MIN_VALUE) { unloaded++; continue; }
+                if (top > floorY) {
+                    cut++; maxCut = Math.max(maxCut, top - floorY);
+                    if (top - floorY >= 3) tall++;
+                } else if (top < floorY) {
+                    fill++; maxFill = Math.max(maxFill, floorY - top);
+                } else {
+                    flat++;
+                }
+            }
+        }
+        return new SiteStats(total, flat, cut, maxCut, fill, maxFill, tall, unloaded);
     }
 
     private List<FacilityRecord> owned(NumenPlayer self) {

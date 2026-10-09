@@ -38,6 +38,15 @@ public record FacilityTemplate(
          * 靠"猜"就会把房子埋进地里或把农田架到半空。
          */
         int anchorYOffset,
+        /**
+         * 底座基准点（蓝图局部 XZ）：模块的"底座"贴到地基上的参考点。
+         *
+         * <p>用户 2026-10-10 点名：每个蓝图都要有一个底座坐标标记，说明它"站"在哪、怎么和地基合并。
+         * 这是模块最底那一层（局部 {@code y=0}）压在地基顶面上的锚点；{@code place}/{@code catalog}
+         * 会把它算到<b>世界坐标</b>并报出它<b>合并到的地基 Y 层</b>，让"模块 ↔ 地基"的对接
+         * 是显式声明、不是靠猜的。旋转会跟着转（与入口/标记同口径）。
+         */
+        LocalPoint baseLocal,
         LocalPoint entranceLocal,
         String entranceFacing,
         int clearanceOutside,
@@ -101,6 +110,8 @@ public record FacilityTemplate(
         marks = marks == null ? List.of() : List.copyOf(marks);
         maturity = maturity == null ? Maturity.READY : maturity;
         clearanceOutside = Math.max(0, clearanceOutside);
+        // 底座基准点缺省 = 底座正中（用户 2026-10-10 要的"每个蓝图都带底座坐标标记"）。
+        baseLocal = baseLocal == null ? LocalPoint.of(sizeX / 2, sizeZ / 2) : baseLocal;
     }
 
     /** 蓝图外廓盒（局部坐标，min 角在 0,0）。 */

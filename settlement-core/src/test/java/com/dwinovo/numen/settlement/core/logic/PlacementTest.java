@@ -283,4 +283,16 @@ class PlacementTest {
         assertEquals(r90.entranceOutside().x(), c90.minX());
         assertTrue(c90.minX() > r90.entranceInside().x(), "旋转后净空必须在东侧（+X）");
     }
+
+    @Test
+    void basePointLandsAtAnchorPlusBaseLocal() {
+        // ★ 用户 2026-10-10：每个蓝图带一个「底座坐标标记」。底座基准点世界坐标 = 锚点 + 旋转后的 baseLocal，
+        //   Y = 模块最底层（蓝图锚点 Y）。place/catalog 靠它说清"模块站哪、合并到哪层地基"。
+        FacilityTemplate pen = pen();   // baseLocal=(3,3)（底座正中）
+        PlacementMath.PlacementPlan p = PlacementMath.resolve(plan(), CellKey.of(1, 1), pen, 0);
+        DimAnchor b = PlacementMath.basePoint(p, pen);
+        assertEquals(p.anchor().x() + pen.baseLocal().x(), b.x());
+        assertEquals(p.anchor().z() + pen.baseLocal().z(), b.z());
+        assertEquals(p.anchor().y(), b.y(), "底座基准点 Y = 模块最底层");
+    }
 }

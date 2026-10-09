@@ -105,6 +105,22 @@ public final class PlacementMath {
                 entranceInside, entranceOutside, occupiedCells(plan, cell, template));
     }
 
+    /**
+     * 底座基准点的<b>世界坐标</b>：锚点 + 旋转后的 {@link FacilityTemplate#baseLocal()}，
+     * Y 取模块最底层（= 蓝图锚点 Y）。
+     *
+     * <p>用户 2026-10-10 点名「每个蓝图都要有一个底座坐标标记，说明它站哪、怎么和地基合并」——
+     * 这个点就是模块"底座"贴到地基顶面的锚点。它<b>合并到的地基 Y 层</b> = 该点 Y 的下一层
+     * （{@code basePoint.y() - 1}），调用方据此告诉 AI "模块落在这、坐在 y=.. 的地基上"。
+     */
+    public static DimAnchor basePoint(PlacementPlan plan, FacilityTemplate template) {
+        LocalPoint b = template.baseLocal();
+        RotationMath.Point2 r = RotationMath.rotateLocal(b.x(), b.z(),
+                template.sizeX(), template.sizeZ(), plan.rotationQuarters());
+        return DimAnchor.of(plan.anchor().dimension(),
+                plan.anchor().x() + r.x(), plan.anchor().y(), plan.anchor().z() + r.z());
+    }
+
     /** 门外站位 = 入口格沿朝向再走一格（局部坐标；可能越界，这是允许的）。 */
     public static LocalPoint outsidePoint(LocalPoint entrance, String facing) {
         String f = facing == null ? "south" : facing.toLowerCase(java.util.Locale.ROOT);

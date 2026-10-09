@@ -42,6 +42,7 @@ public final class TemplateCatalog {
                 7, 2, 7,
                 1, 1,
                 0,
+                LocalPoint.of(3, 3),
                 LocalPoint.of(3, 0), "north", 1,
                 List.of(MaterialNeed.of("minecraft:oak_fence", 23),
                         MaterialNeed.of("minecraft:oak_fence_gate", 1)),
@@ -56,6 +57,7 @@ public final class TemplateCatalog {
                 7, 2, 7,
                 1, 1,
                 0,
+                LocalPoint.of(3, 3),
                 LocalPoint.of(3, 0), "north", 1,
                 List.of(MaterialNeed.of("minecraft:oak_fence", 23),
                         MaterialNeed.of("minecraft:oak_fence_gate", 1)),
@@ -70,6 +72,7 @@ public final class TemplateCatalog {
                 7, 4, 7,
                 1, 1,
                 0,
+                LocalPoint.of(3, 3),
                 LocalPoint.of(3, 0), "north", 1,
                 List.of(MaterialNeed.of("minecraft:oak_planks", 144),
                         MaterialNeed.of("minecraft:oak_door", 1),
@@ -89,6 +92,7 @@ public final class TemplateCatalog {
                 7, 2, 7,
                 1, 1,
                 -1,
+                LocalPoint.of(3, 3),
                 LocalPoint.of(3, 6), "south", 1,
                 // 7×7 = 49 支撑泥土 + 48 格耕地（耕地按泥土记账，core overrideItem）= 97。
                 List.of(MaterialNeed.of("minecraft:dirt", 97)),
@@ -103,6 +107,7 @@ public final class TemplateCatalog {
                 7, 2, 7,
                 1, 1,
                 0,
+                LocalPoint.of(3, 3),
                 LocalPoint.of(3, 0), "north", 1,
                 List.of(MaterialNeed.of("minecraft:oak_fence", 46),
                         MaterialNeed.of("minecraft:oak_fence_gate", 1),
@@ -116,11 +121,12 @@ public final class TemplateCatalog {
         // ── 一级地皮：14×14 圆石打底（= 2×2 格），一次修好（588 格 << 32768 上限） ──
         put(new FacilityTemplate(
                 "platform_cobble14", "一级地皮（14×14 圆石）", FacilityKind.GENERIC,
-                14, 3, 14,
+                14, 17, 14,
                 2, 2,
-                -1,
+                -6,
+                LocalPoint.of(7, 7),
                 LocalPoint.of(7, 13), "south", 1,
-                // depth=1 打底的上界料单：14×14 = 196 圆石（整平是动态的，实际看现场）。
+                // depth=6 打底的上界料单：14×14 顶面 = 196 圆石（下方填/上方清是地形相关的，实际看现场）。
                 List.of(MaterialNeed.of("minecraft:cobblestone", 196)),
                 Maturity.READY,
                 List.of("四周若落差 >1 格需另修阶梯接地面（放模块前用 build 在四边各垫 1-2 级台阶）"),
@@ -210,9 +216,9 @@ public final class TemplateCatalog {
      * {@code inspect} 的判据写的是"模板没有标记就跳过世界核对"——于是地皮施工账永远停在
      * {@code BUILDING 0/439}，明明表面多是泥土也判不出来。用户点名"给平台加顶面采样点是圆石"。
      *
-     * <p>取四角 + 四边中点 + 中心（这些正是"建了一半"最先缺的地方）。局部 Y=1：
-     * 平台的蓝图锚点 Y = floorY-1（{@code anchorYOffset=-1}），y=0 是往下填实层、
-     * <b>y=1 才是统一铺的圆石顶面</b>，核对时映射回世界 floorY。
+     * <p>取四角 + 四边中点 + 中心（这些正是"建了一半"最先缺的地方）。局部 Y=6：
+     * 平台的蓝图锚点 Y = floorY-6（{@code anchorYOffset=-6}，depth=6），y=0..5 是往下填实层、
+     * <b>y=6 才是统一铺的圆石顶面</b>，核对时映射回世界 floorY。
      *
      * <p>边界：模块压在地皮上时会把落在模块占地里的顶面换成模块方块（栅栏/地板等），
      * 此时该点核对会报"缺"——这是<b>如实</b>的（那格圆石确实被替换了）。地皮的收口核对
@@ -224,7 +230,7 @@ public final class TemplateCatalog {
         // 四角 + 四边中点 + 中心（14×14 → 索引 0..13）
         for (int x : new int[]{0, 7, 13}) {
             for (int z : new int[]{0, 7, 13}) {
-                marks.add(new CompletionChecker.Mark(x, 1, z, cobble));
+                marks.add(new CompletionChecker.Mark(x, 6, z, cobble));
             }
         }
         return marks;

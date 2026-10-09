@@ -80,7 +80,7 @@ class TemplateCatalogAndLedgerTest {
         assertEquals(0, TemplateCatalog.byId("pen_sheep").orElseThrow().anchorYOffset());
         assertEquals(0, TemplateCatalog.byId("core_house").orElseThrow().anchorYOffset());
         assertEquals(-1, TemplateCatalog.byId("farm_basic").orElseThrow().anchorYOffset());
-        assertEquals(-1, TemplateCatalog.byId("platform_cobble14").orElseThrow().anchorYOffset());
+        assertEquals(-6, TemplateCatalog.byId("platform_cobble14").orElseThrow().anchorYOffset());
     }
 
     @Test

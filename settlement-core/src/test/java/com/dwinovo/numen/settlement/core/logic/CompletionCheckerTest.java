@@ -188,7 +188,7 @@ class CompletionCheckerTest {
         FacilityTemplate platform = TemplateCatalog.byId("platform_cobble14").orElseThrow();
         assertFalse(platform.marks().isEmpty(), "平台必须有顶面采样标记");
         for (CompletionChecker.Mark m : platform.marks()) {
-            assertEquals(1, m.localY(), "圆石顶面在局部 y=1（y=0 是往下填实层）: " + m);
+            assertEquals(6, m.localY(), "圆石顶面在局部 y=6（anchorYOffset=-6，y=0..5 是往下填实层）: " + m);
             assertTrue(m.localX() >= 0 && m.localX() <= 13 && m.localZ() >= 0 && m.localZ() <= 13,
                     "标记必须在 14×14 内: " + m);
             assertEquals("minecraft:cobblestone", m.blockId());
@@ -197,9 +197,9 @@ class CompletionCheckerTest {
         assertTrue(platform.marks().stream().anyMatch(m -> m.localX() == 0 && m.localZ() == 0));
         assertTrue(platform.marks().stream().anyMatch(m -> m.localX() == 13 && m.localZ() == 13));
 
-        // 锚点 y = floorY-1（anchorYOffset=-1）→ 顶面世界 y = 锚点 y + 1
+        // 锚点 y = floorY-6（anchorYOffset=-6）→ 顶面世界 y = 锚点 y + 6
         int ax = 100;
-        int ay = 65;         // = floorY-1，floorY=66
+        int ay = 60;         // = floorY-6，floorY=66
         int az = 200;
         DimAnchor anchor = DimAnchor.of(DIM, ax, ay, az);
 
