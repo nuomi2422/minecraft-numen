@@ -38,6 +38,9 @@ public final class SettlementMod {
     /** 服务端插件的 service 引用，供 tick 清扫用（插件 setup 时回填）。 */
     private static volatile SettlementService SERVICE;
 
+    /** 过门自动关门（实测：寻路器开门过路后没人关，敞着的门＝圈没围）。 */
+    private final GateWatcher gateWatcher = new GateWatcher();
+
     public SettlementMod() {
         NumenPlugins.register(new SettlementPlugin());
         NeoForge.EVENT_BUS.addListener(this::onServerTick);
@@ -53,6 +56,16 @@ public final class SettlementMod {
         SettlementService service = SERVICE;
         if (server == null || service == null) return;
 
+        // ① 过门自动关门：只在有已登记设施时扫描（没设施就一步返回）。
+        if (!service.list().isEmpty()) {
+            try {
+                gateWatcher.tick(server, service, server.getTickCount());
+            } catch (Throwable t) {
+                LOG.warn("[settlement] gate watcher failed: {}", t.toString());
+            }
+        }
+
+        // ② 施工授权回收（所有终止路径）。
         GrantLedger ledger = service.grantLedger();
         if (ledger.size() == 0) return;   // 快路径：没开授权就不做任何枚举
 
