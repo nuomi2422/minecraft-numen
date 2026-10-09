@@ -37,6 +37,11 @@ include('ui')
 include('rdd-core')
 // Independent host-agnostic experience memory core (no Minecraft/NUMEN dependency).
 include('experience-core')
+// Independent host-agnostic settlement core (no Minecraft/NUMEN dependency): modular
+// base grid + facility registry + location-based protection rules + three-layer
+// acceptance. Pure JVM so its JUnit suite runs here -- plugin unit tests cannot run
+// (they lack the whole Minecraft test runtime, see AGENTS 第 2 条).
+include('settlement-core')
 
 // 联动模块:一个联动一个,各自独立,内嵌发布不单独发坐标。见 buildSrc 的 numen-plugin.gradle
 include('plugins:ysm')
@@ -56,3 +61,6 @@ include('plugins:camera')
 // 之前这段 include 只存在于悬空 commit 1054f153（不在 redline-1 祖先链），导致 learner 模块
 // 在主干上从未被构建，那 25 项测试一项都不跑 —— 30 号文档记的「752 tests / 新增 25」是失效证据。
 include('plugins:learner')
+// settlement：基地与设施模块（2026-10-08 新增）。登记真源落 config/numen/settlement/，
+// 独立于 128 条世界资产上限；纯逻辑内嵌 settlement-core。
+include('plugins:settlement')

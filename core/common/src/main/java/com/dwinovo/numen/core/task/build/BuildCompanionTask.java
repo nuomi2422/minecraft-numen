@@ -748,6 +748,9 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         // 注意这里不看 progressed:本遍砌了二十格然后断料,和一格没砌就断料,对玩家
         // 是同一件事——她现在动不了了,而且再等下去也不会变。
         if (passStarved) {
+            // 断料也是终点:走之前把已落的连接形状补算——否则未完工的一次会留下
+            // 一圈互不相连的栅栏(用户肉眼可见)。补算幂等,不影响"缺料"的账。
+            fixConnections();
             fail("built " + r.completed() + "/" + r.targets.size()
                     + " and ran out — " + ledger.missingReason(passMissing), FailureType.NO_MATERIAL);
             return TaskState.FAILED;
@@ -764,6 +767,8 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
                 return TaskState.FAILED;
             }
             // 挪了窝也补不上:留案再交代。盖不完就是盖不完,不粉饰成成功。
+            // 交代之前先补算连接形状(见上):未完工也让她已经立起来的栅栏连成圈。
+            fixConnections();
             dumpOutstanding();
             fail(diagnoseOutstanding() + "; built " + r.completed() + "/" + r.targets.size(),
                     FailureType.NO_PATH);

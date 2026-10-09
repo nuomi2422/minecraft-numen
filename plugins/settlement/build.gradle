@@ -1,0 +1,34 @@
+plugins { id 'numen-plugin' }
+
+processResources {
+    def props = [
+            version                       : project.version,
+            license                       : license,
+            neoforge_loader_version_range : neoforge_loader_version_range,
+            neoforge_version              : neoforge_version,
+            minecraft_version_range       : minecraft_version_range
+    ]
+    inputs.properties props
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand props
+    }
+}
+
+dependencies {
+    // 纯逻辑核心内嵌进本插件（与 plugins:rdd 内嵌 rdd-core 同法）。它只被本插件依赖，
+    // 不会与别的模块撞重复包。core / 其它插件都不依赖它，全部经 api jar 那扇门。
+    implementation project(':settlement-core')
+    // 工具读调用参数用的 JsonObject；Gson 在 MC 运行期本就存在，声明只为编译期解析。
+    implementation 'com.google.code.gson:gson:2.10.1'
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test { useJUnitPlatform() }
+
+tasks.named('jar', Jar) {
+    dependsOn(':settlement-core:jar')
+    from({ project(':settlement-core').sourceSets.main.output })
+}
