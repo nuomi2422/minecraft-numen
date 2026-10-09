@@ -220,4 +220,28 @@ class PlacementTest {
         assertEquals(p.entranceOutside().z(), c.minZ());
         assertEquals(1, c.sizeZ(), "clearanceOutside=1 → 一格");
     }
+
+    @Test
+    void clearanceBoxFollowsTheRotatedFacingNotTheDeclaredOne() {
+        // ★ 2026-10-09 发现的缺陷：净空条原先拿模板声明的 entranceFacing（旋转前）去算，
+        //   而 entranceOutside 已经旋转过 → 旋转 90° 后门在东侧、净空条却仍朝北延伸，
+        //   于是"入口被堵"判在错的一侧（漏报真堵 / 误报假堵）。
+        FacilityTemplate pen = pen();   // 声明朝北
+        PlacementMath.PlacementPlan r0 = PlacementMath.resolve(plan(), CellKey.of(0, 0), pen, 0);
+        PlacementMath.PlacementPlan r90 = PlacementMath.resolve(plan(), CellKey.of(0, 0), pen, 1);
+
+        BlockBox c0 = PlacementMath.clearanceBox(r0, pen);
+        assertEquals(1, c0.sizeZ(), "未旋转：净空沿 Z 方向一格");
+        assertEquals(1, c0.sizeX());
+        // 门朝北 → 净空条在北侧（z 更小）
+        assertEquals(r0.entranceOutside().z(), c0.minZ());
+        assertTrue(c0.minZ() < r0.entranceInside().z(), "净空必须在门的朝外一侧");
+
+        BlockBox c90 = PlacementMath.clearanceBox(r90, pen);
+        // 顺时针 90°：北 → 东。净空条必须沿 +X 延伸，而不是继续沿 Z。
+        assertEquals(1, c90.sizeZ(), "旋转后净空不该还在 Z 方向铺开");
+        assertEquals(1, c90.sizeX(), "clearanceOutside=1 仍是单格");
+        assertEquals(r90.entranceOutside().x(), c90.minX());
+        assertTrue(c90.minX() > r90.entranceInside().x(), "旋转后净空必须在东侧（+X）");
+    }
 }

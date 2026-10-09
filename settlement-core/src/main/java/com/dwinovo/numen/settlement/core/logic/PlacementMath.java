@@ -117,23 +117,26 @@ public final class PlacementMath {
         };
     }
 
-    /** 门外净空条（沿朝向从门外站位再往外 clearance 格），用于检查是否被别的设施堵住。 */
+    /**
+     * 门外净空条（沿<b>旋转后</b>的朝向从门外站位再往外 clearance 格），用于检查是否被别的设施堵住。
+     *
+     * <p>★ 方向必须从<b>已旋转的</b>入口内/外站位之差推出来，不能拿模板声明的
+     * {@code entranceFacing} 原文去算：那个朝向是<b>旋转前</b>的。2026-10-09 发现——
+     * 旋转 90° 后门在东侧，而净空条仍朝北延伸，于是"入口被堵"判在错的一侧
+     * （漏报真堵、误报假堵）。
+     */
     public static BlockBox clearanceBox(PlacementMath.PlacementPlan plan, FacilityTemplate template) {
-        DimAnchor o = plan.entranceOutside();
+        DimAnchor in = plan.entranceInside();
+        DimAnchor out = plan.entranceOutside();
         int n = Math.max(1, template.clearanceOutside());
-        int dx = 0;
-        int dz = 0;
-        String f = template.entranceFacing() == null ? "south"
-                : template.entranceFacing().toLowerCase(java.util.Locale.ROOT);
-        switch (f) {
-            case "north" -> dz = -1;
-            case "south" -> dz = 1;
-            case "east" -> dx = 1;
-            case "west" -> dx = -1;
-            default -> dz = 1;
+        // 旋转保长：门外站位与门内站位相差恰好一步，取符号即为旋转后的朝向。
+        int dx = Integer.signum(out.x() - in.x());
+        int dz = Integer.signum(out.z() - in.z());
+        if (dx == 0 && dz == 0) {
+            dz = 1;   // 兜底：朝向信息缺失时按南（与 outsidePoint 的默认一致）
         }
-        int x1 = o.x() + dx * (n - 1);
-        int z1 = o.z() + dz * (n - 1);
-        return BlockBox.of(o.x(), o.y(), o.z(), x1, o.y(), z1);
+        int x1 = out.x() + dx * (n - 1);
+        int z1 = out.z() + dz * (n - 1);
+        return BlockBox.of(out.x(), out.y(), out.z(), x1, out.y(), z1);
     }
 }
