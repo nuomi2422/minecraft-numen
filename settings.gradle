@@ -42,6 +42,10 @@ include('experience-core')
 // acceptance. Pure JVM so its JUnit suite runs here -- plugin unit tests cannot run
 // (they lack the whole Minecraft test runtime, see AGENTS 第 2 条).
 include('settlement-core')
+// Independent host-agnostic world-state core (no Minecraft dependency): unified
+// observation contracts + in-memory store + freshness/coverage rules + read/refresh
+// services. Pure JVM, offline unit-testable (same rationale as settlement-core).
+include('world-state-core')
 
 // 联动模块:一个联动一个,各自独立,内嵌发布不单独发坐标。见 buildSrc 的 numen-plugin.gradle
 include('plugins:ysm')
@@ -64,3 +68,6 @@ include('plugins:learner')
 // settlement：基地与设施模块（2026-10-08 新增）。登记真源落 config/numen/settlement/，
 // 独立于 128 条世界资产上限；纯逻辑内嵌 settlement-core。
 include('plugins:settlement')
+// worldstate：世界观测模块（2026-10-10 新增）。统一采集事实、保存观测、提供查询；
+// 读/取分开、带时间与覆盖信息。纯逻辑内嵌 world-state-core。
+include('plugins:worldstate')
