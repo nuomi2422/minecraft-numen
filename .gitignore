@@ -43,3 +43,8 @@ logs
 
 **/.env
 !**/.env.example
+
+# Root-level scratch/dump (2026-10-18 cleanup: 33 stray debug files removed).
+# 根目录的临时探针输出/源码 dump 不该随改码进库 —— 之前漂进来 33 个。
+/*.txt
+/.batch3-src/
