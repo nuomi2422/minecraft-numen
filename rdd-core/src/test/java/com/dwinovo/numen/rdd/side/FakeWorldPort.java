@@ -13,6 +13,9 @@ final class FakeWorldPort implements SideTaskWorldPort {
     boolean hasDayNightCycle = true;
     String worldId = "minecraft:overworld";
     boolean day;
+    boolean inCombat;
+    boolean bodyBusy;
+    String mainlineObjective;
     private final Map<UUID, Boolean> sleeping = new HashMap<>();
     private final Map<UUID, Wake> wakes = new HashMap<>();
 
@@ -50,6 +53,21 @@ final class FakeWorldPort implements SideTaskWorldPort {
 
     FakeWorldPort wake(UUID companionId, Wake wake) {
         wakes.put(companionId, wake);
+        return this;
+    }
+
+    FakeWorldPort inCombat(boolean value) {
+        this.inCombat = value;
+        return this;
+    }
+
+    FakeWorldPort bodyBusy(boolean value) {
+        this.bodyBusy = value;
+        return this;
+    }
+
+    FakeWorldPort objective(String value) {
+        this.mainlineObjective = value;
         return this;
     }
 
@@ -92,5 +110,20 @@ final class FakeWorldPort implements SideTaskWorldPort {
     public Wake pollWake(UUID companionId) {
         Wake wake = wakes.remove(companionId);
         return wake == null ? Wake.NONE : wake;
+    }
+
+    @Override
+    public boolean inCombat(UUID companionId) {
+        return inCombat;
+    }
+
+    @Override
+    public boolean bodyBusy(UUID companionId) {
+        return bodyBusy;
+    }
+
+    @Override
+    public String mainlineObjective(UUID companionId) {
+        return mainlineObjective;
     }
 }

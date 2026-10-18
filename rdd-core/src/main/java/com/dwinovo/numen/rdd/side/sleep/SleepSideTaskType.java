@@ -1,6 +1,7 @@
 package com.dwinovo.numen.rdd.side.sleep;
 
 import com.dwinovo.numen.rdd.side.SideTask;
+import com.dwinovo.numen.rdd.side.SideTaskDecision;
 import com.dwinovo.numen.rdd.side.SideTaskState;
 import com.dwinovo.numen.rdd.side.SideTaskType;
 import com.dwinovo.numen.rdd.side.SideTaskVerdict;
@@ -8,6 +9,7 @@ import com.dwinovo.numen.rdd.side.SideTaskWorldPort;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * 睡觉支线的硬编码实现（第一条正式支线，也是通用框架的第一个样本）。
@@ -24,6 +26,15 @@ public final class SleepSideTaskType implements SideTaskType {
     public static final String PHASE_SLEEPING = "SLEEPING";
     /** 保护超时：从触发起最多允许的 tick 数（10 分钟）。正常睡/天亮跳过都远小于它。 */
     public static final long DEADLINE_TICKS = 12_000L;
+    /** 战斗中推迟后的重评估间隔（约 10 秒）。 */
+    public static final int COMBAT_RETRY_TICKS = 200;
+    /** 身体被占用（正在引羊/建造等）推迟后的重评估间隔（约 5 秒）。 */
+    public static final int BUSY_RETRY_TICKS = 100;
+    /** 主目标文本命中这些词 → 判定"主线明确要夜间活动"，本次睡觉跳过（下一晚再判断）。 */
+    private static final String[] NIGHT_MARKERS = {
+            "夜晚活动", "夜间活动", "保持夜晚", "保持黑夜", "不能天亮", "别天亮",
+            "整夜", "通宵", "keep night", "stay night"
+    };
 
     @Override
     public String typeId() {
@@ -40,6 +51,29 @@ public final class SleepSideTaskType implements SideTaskType {
         return new SideTask(ctx.companionId(), ctx.instanceId(), TYPE_ID, ctx.generation(),
                 ctx.scheduledGameDay(), ctx.gameTime(), ctx.deadlineGameTime(),
                 SideTaskState.ACTIVE, PHASE_SEEKING, Map.of(), ctx.mainlineToken());
+    }
+
+    /**
+     * 开之前问一句：稳定意图（主线要夜间活动）优先跳过；战斗/身体占用则推迟到安全停顿点；
+     * 否则正常执行。确定规则优先，不做每 tick 的模型取舍。
+     */
+    @Override
+    public SideTaskDecision decide(UUID companionId, SideTaskWorldPort world) {
+        String objective = world.mainlineObjective(companionId);
+        if (objective != null) {
+            for (String marker : NIGHT_MARKERS) {
+                if (objective.contains(marker)) {
+                    return SideTaskDecision.skip("mainline_keeps_night:" + marker);
+                }
+            }
+        }
+        if (world.inCombat(companionId)) {
+            return SideTaskDecision.defer(COMBAT_RETRY_TICKS, "in_combat");
+        }
+        if (world.bodyBusy(companionId)) {
+            return SideTaskDecision.defer(BUSY_RETRY_TICKS, "mid_operation");
+        }
+        return SideTaskDecision.EXECUTE;
     }
 
     @Override

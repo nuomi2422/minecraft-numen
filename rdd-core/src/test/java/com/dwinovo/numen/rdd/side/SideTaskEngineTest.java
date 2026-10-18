@@ -181,4 +181,156 @@ class SideTaskEngineTest {
         assertFalse(engine.isActive(C));
         assertTrue(events.saw("side_task_cancelled"));
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 决策：执行 / 推迟 / 跳过本次（开之前那一问）
+    // ══════════════════════════════════════════════════════════════════
+
+    @Test
+    void skipOccurrenceLocksDayAndEmits() {
+        RecordingEvents events = new RecordingEvents();
+        SideTaskEngine engine = decidingEngine(events, () -> SideTaskDecision.skip("keep_night"));
+        FakeWorldPort port = new FakeWorldPort().at(WINDOW, 0L);
+
+        engine.tick(C, port, null, false);
+        assertFalse(engine.isActive(C));
+        assertEquals(1, events.count("side_task_skipped_occurrence"));
+        assertEquals(0, events.count("side_task_created"));
+
+        engine.tick(C, port, null, false);
+        assertEquals(1, events.count("side_task_skipped_occurrence"), "跳过本次后本晚不再重复");
+    }
+
+    @Test
+    void deferThenExecuteAfterCooldown() {
+        RecordingEvents events = new RecordingEvents();
+        java.util.concurrent.atomic.AtomicReference<SideTaskDecision> decision =
+                new java.util.concurrent.atomic.AtomicReference<>(SideTaskDecision.defer(200, "mid_operation"));
+        SideTaskEngine engine = decidingEngine(events, decision::get);
+
+        engine.tick(C, new FakeWorldPort().at(WINDOW, 0L), null, false);
+        assertFalse(engine.isActive(C));
+        assertEquals(1, events.count("side_task_deferred"));
+
+        // 冷却内：不重新决策、不新增事件
+        engine.tick(C, new FakeWorldPort().at(WINDOW + 10, 0L), null, false);
+        assertEquals(1, events.count("side_task_deferred"));
+        assertFalse(engine.isActive(C));
+
+        // 冷却后 + 条件满足：执行
+        decision.set(SideTaskDecision.EXECUTE);
+        engine.tick(C, new FakeWorldPort().at(WINDOW + 200, 0L), null, false);
+        assertTrue(engine.isActive(C));
+    }
+
+    @Test
+    void deferredStateSurvivesRestart() {
+        RecordingEvents events = new RecordingEvents();
+        SideTaskEngine engine = decidingEngine(events, () -> SideTaskDecision.defer(200, "mid_operation"));
+        engine.tick(C, new FakeWorldPort().at(WINDOW, 0L), null, false);
+        assertEquals(1, events.count("side_task_deferred"));
+
+        RecordingEvents restoredEvents = new RecordingEvents();
+        SideTaskEngine restored = decidingEngine(restoredEvents, () -> SideTaskDecision.EXECUTE);
+        restored.restore(engine.toJson());
+
+        restored.tick(C, new FakeWorldPort().at(WINDOW + 10, 0L), null, false);
+        assertFalse(restored.isActive(C), "重启后仍在冷却内，不决策");
+        assertFalse(restoredEvents.saw("side_task_created"));
+
+        restored.tick(C, new FakeWorldPort().at(WINDOW + 200, 0L), null, false);
+        assertTrue(restored.isActive(C));
+    }
+
+    @Test
+    void deferReevaluatesNextNight() {
+        RecordingEvents events = new RecordingEvents();
+        SideTaskEngine engine = decidingEngine(events, () -> SideTaskDecision.defer(200, "mid_operation"));
+        engine.tick(C, new FakeWorldPort().at(WINDOW, 0L), null, false);
+        assertEquals(1, events.count("side_task_deferred"));
+
+        engine.tick(C, new FakeWorldPort().at(WINDOW + 24_000L, 1L), null, false);
+        assertEquals(2, events.count("side_task_deferred"), "下一夜重新决策，不被上一夜残留挡住");
+    }
+
+    @Test
+    void sleepDefersOnCombat() {
+        RecordingEvents events = new RecordingEvents();
+        SideTaskEngine engine = engine(events);
+        FakeWorldPort port = new FakeWorldPort().at(WINDOW, 0L).inCombat(true);
+
+        engine.tick(C, port, null, false);
+        assertFalse(engine.isActive(C));
+        assertTrue(events.saw("side_task_deferred"));
+
+        port.inCombat(false).at(WINDOW + SleepSideTaskType.COMBAT_RETRY_TICKS, 0L);
+        engine.tick(C, port, null, false);
+        assertTrue(engine.isActive(C), "战斗结束后过冷却就开睡");
+    }
+
+    @Test
+    void sleepDefersWhileBodyBusy() {
+        RecordingEvents events = new RecordingEvents();
+        SideTaskEngine engine = engine(events);
+        FakeWorldPort port = new FakeWorldPort().at(WINDOW, 0L).bodyBusy(true);
+
+        engine.tick(C, port, null, false);
+        assertFalse(engine.isActive(C));
+        assertTrue(events.saw("side_task_deferred"));
+
+        port.bodyBusy(false).at(WINDOW + SleepSideTaskType.BUSY_RETRY_TICKS, 0L);
+        engine.tick(C, port, null, false);
+        assertTrue(engine.isActive(C), "身体空出来后开睡");
+    }
+
+    @Test
+    void sleepSkipsWhenMainlineKeepsNight() {
+        RecordingEvents events = new RecordingEvents();
+        SideTaskEngine engine = engine(events);
+        FakeWorldPort port = new FakeWorldPort().at(WINDOW, 0L).objective("主目标：保持夜晚，引诱僵尸");
+
+        engine.tick(C, port, null, false);
+        assertFalse(engine.isActive(C));
+        assertTrue(events.saw("side_task_skipped_occurrence"));
+        assertEquals(0, events.count("side_task_created"));
+    }
+
+    private SideTaskEngine decidingEngine(RecordingEvents events,
+                                          java.util.function.Supplier<SideTaskDecision> decision) {
+        SideTaskEngine engine = new SideTaskEngine(events, token -> token);
+        engine.registerType(new DecidingType(decision));
+        engine.registerTrigger(new SideTaskTrigger() {
+            @Override public String typeId() { return DecidingType.TYPE_ID; }
+            @Override public boolean fires(Context ctx) { return true; }
+        });
+        return engine;
+    }
+
+    private static final class DecidingType implements SideTaskType {
+        static final String TYPE_ID = "deciding";
+        private final java.util.function.Supplier<SideTaskDecision> decision;
+
+        DecidingType(java.util.function.Supplier<SideTaskDecision> decision) {
+            this.decision = decision;
+        }
+
+        @Override public String typeId() { return TYPE_ID; }
+        @Override public long deadlineTicks() { return 1000L; }
+
+        @Override public SideTask create(CreationContext ctx) {
+            return new SideTask(ctx.companionId(), ctx.instanceId(), TYPE_ID, ctx.generation(),
+                    ctx.scheduledGameDay(), ctx.gameTime(), ctx.deadlineGameTime(),
+                    SideTaskState.ACTIVE, "P", java.util.Map.of(), ctx.mainlineToken());
+        }
+
+        @Override public SideTaskVerdict evaluate(SideTask task, SideTaskWorldPort world) {
+            return SideTaskVerdict.keep("P", java.util.Map.of());
+        }
+
+        @Override public SideTaskDecision decide(UUID companionId, SideTaskWorldPort world) {
+            return decision.get();
+        }
+
+        @Override public String renderContext(SideTask task, SideTaskWorldPort world) { return ""; }
+    }
 }

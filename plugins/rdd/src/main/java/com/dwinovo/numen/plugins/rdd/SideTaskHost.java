@@ -149,6 +149,33 @@ final class SideTaskHost {
         @Override public boolean isSleeping(UUID companionId) { return ap.isSleeping(); }
         @Override public boolean isDay() { return ap.level().isDay(); }
         @Override public Wake pollWake(UUID companionId) { return SleepWakeWatcher.poll(companionId); }
+        @Override public boolean inCombat(UUID companionId) { return ap.hurtTime > 0; }
+        @Override public boolean bodyBusy(UUID companionId) {
+            return com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companionId) != null;
+        }
+        @Override public String mainlineObjective(UUID companionId) { return mainlineObjectiveText(companionId); }
+    }
+
+    /** 主线目标文本（目标 + 当前一级 + 当前二级描述拼接）：仅用于"主线是否明确要求夜间活动"。 */
+    private static String mainlineObjectiveText(UUID companionId) {
+        try {
+            RddRuntime rt = RddPlugin.runtime(companionId);
+            if (rt == null || rt.chain() == null || rt.chain().goal() == null) {
+                return null;
+            }
+            TaskChain chain = rt.chain();
+            StringBuilder sb = new StringBuilder(chain.goal().description());
+            if (chain.currentPrimary() != null) {
+                sb.append(' ').append(chain.currentPrimary().description());
+            }
+            Subtask sub = chain.currentSubtask();
+            if (sub != null) {
+                sb.append(' ').append(sub.description());
+            }
+            return sb.toString();
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 
     // ---- 主线恢复令牌 ----

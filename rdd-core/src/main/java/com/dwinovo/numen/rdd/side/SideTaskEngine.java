@@ -33,6 +33,10 @@ public final class SideTaskEngine {
     private final List<SideTaskTrigger> triggers = new ArrayList<>();
     /** 去重键(companion|world|typeId) → 已处理过的游戏日。 */
     private final Map<String, Long> handledGameDay = new HashMap<>();
+    /** 去重键 → 推迟到该 gameTime 之前不再重新决策（"推迟到安全停顿点"）。用单调 gameTime，不受 /time set 影响。 */
+    private final Map<String, Long> deferredUntil = new HashMap<>();
+    /** 宿主约每 20 tick 调一次 tick；推迟冷却不得小于一拍，否则每拍都会重新决策。 */
+    private static final int MIN_DEFER_TICKS = 20;
     private final SideTaskEvents events;
     private final MainlineValidator mainlineValidator;
 
@@ -90,6 +94,11 @@ public final class SideTaskEngine {
             if (handled != null && handled == day) {
                 continue;
             }
+            // 推迟冷却：未到点不重新决策（避免每拍重复决策）。
+            Long until = deferredUntil.get(key);
+            if (until != null && now < until) {
+                continue;
+            }
             if (!trigger.fires(new SideTaskTrigger.Context(
                     companionId, world.worldId(), day, world.dayTime(), world.hasDayNightCycle()))) {
                 continue;
@@ -98,6 +107,25 @@ public final class SideTaskEngine {
             if (type == null) {
                 continue;
             }
+            SideTaskDecision decision = type.decide(companionId, world);
+            if (decision == null) {
+                decision = SideTaskDecision.EXECUTE;
+            }
+            if (decision.kind() == SideTaskDecision.Kind.DEFER) {
+                deferredUntil.put(key, now + Math.max(decision.deferTicks(), MIN_DEFER_TICKS));
+                publishOccurrence(companionId, "side_task_deferred", trigger.typeId(), day,
+                        decision.reason(), Math.max(decision.deferTicks(), MIN_DEFER_TICKS));
+                continue;
+            }
+            if (decision.kind() == SideTaskDecision.Kind.SKIP) {
+                deferredUntil.remove(key);
+                handledGameDay.put(key, day);
+                publishOccurrence(companionId, "side_task_skipped_occurrence", trigger.typeId(), day,
+                        decision.reason(), 0L);
+                continue;
+            }
+            // EXECUTE：清掉可能残留的推迟，照旧创建。
+            deferredUntil.remove(key);
             MainlineResumeToken token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
             long generation = runtime.nextGeneration();
             String instanceId = trigger.typeId() + "-" + generation + "-" + shortId(companionId);
@@ -111,6 +139,21 @@ public final class SideTaskEngine {
             }
             return;
         }
+    }
+
+    /** 发布"推迟/跳过本次"这类开之前的决策事件（不含实例，因为还没创建实例）。 */
+    private void publishOccurrence(UUID companionId, String event, String typeId, long day,
+                                   String reason, long retryTicks) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("companionId", companionId.toString());
+        data.put("scope", TaskScope.SIDE.name());
+        data.put("typeId", typeId);
+        data.put("gameDay", day);
+        data.put("reason", reason == null ? "" : reason);
+        if (retryTicks > 0) {
+            data.put("retryTicks", retryTicks);
+        }
+        events.publish(event, data);
     }
 
     private void advance(SideTask task, SideTaskWorldPort world) {
@@ -171,6 +214,7 @@ public final class SideTaskEngine {
     public void onServerStopped() {
         runtime.clearAll();
         handledGameDay.clear();
+        deferredUntil.clear();
     }
 
     private static String handledKey(UUID companionId, String worldId, String typeId) {
@@ -203,13 +247,18 @@ public final class SideTaskEngine {
 
     public String toJson() {
         JsonObject root = new JsonObject();
-        root.addProperty("schema", 1);
+        root.addProperty("schema", 2);
         root.add("runtime", runtime.toJsonObject());
         JsonObject handled = new JsonObject();
         for (Map.Entry<String, Long> e : handledGameDay.entrySet()) {
             handled.addProperty(e.getKey(), e.getValue());
         }
         root.add("handledGameDay", handled);
+        JsonObject deferred = new JsonObject();
+        for (Map.Entry<String, Long> e : deferredUntil.entrySet()) {
+            deferred.addProperty(e.getKey(), e.getValue());
+        }
+        root.add("deferredUntil", deferred);
         return GSON.toJson(root);
     }
 
@@ -225,6 +274,12 @@ public final class SideTaskEngine {
         if (root.has("handledGameDay")) {
             for (var entry : root.getAsJsonObject("handledGameDay").entrySet()) {
                 handledGameDay.put(entry.getKey(), entry.getValue().getAsLong());
+            }
+        }
+        deferredUntil.clear();
+        if (root.has("deferredUntil")) {
+            for (var entry : root.getAsJsonObject("deferredUntil").entrySet()) {
+                deferredUntil.put(entry.getKey(), entry.getValue().getAsLong());
             }
         }
     }

@@ -37,4 +37,21 @@ public interface SideTaskWorldPort {
 
     /** 消费一次"睡着→醒"边沿；返回 {@link Wake#NONE} 表示没有。每次调用只返回一次。 */
     Wake pollWake(UUID companionId);
+
+    // ---- 决策用事实（默认无此概念，宿主按需实现） ----
+
+    /** 是否正在战斗/受伤（宿主用 {@code hurtTime} 等）。默认 false。 */
+    default boolean inCombat(UUID companionId) {
+        return false;
+    }
+
+    /** 身体是否被别的任务占着（宿主用当前身体任务是否非空）。默认 false。 */
+    default boolean bodyBusy(UUID companionId) {
+        return false;
+    }
+
+    /** 当前主线目标文本（目标/一级/二级描述拼接）；无主线返回 null。用于"主线是否要求夜间活动"。 */
+    default String mainlineObjective(UUID companionId) {
+        return null;
+    }
 }
