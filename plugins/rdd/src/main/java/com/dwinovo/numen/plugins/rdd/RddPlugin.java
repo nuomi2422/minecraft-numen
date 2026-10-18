@@ -52,6 +52,8 @@ public final class RddPlugin implements NumenPlugin {
     private static final RddCallbackGuard CALLBACKS = new RddCallbackGuard();
     /** 懒边界上报去重：uuid → 最近一次已上报的未展开一级 id（避免每秒刷 expansion_needed）。 */
     private static final Map<UUID, String> LAST_EXPANSION_REPORT = new ConcurrentHashMap<>();
+    /** 开工拍醒去重：uuid → 已经拍过开工的那个二级 id（每个二级都要能开工；换目标时清）。 */
+    private static final Map<UUID, String> KICKOFF_SENT = new ConcurrentHashMap<>();
     static {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
                 (net.neoforged.neoforge.event.server.ServerStoppedEvent event) -> clearWorldState());
@@ -82,8 +84,9 @@ public final class RddPlugin implements NumenPlugin {
      * 取 3 分钟：够 AI 读完上一条并真的动手（判据变了自然会放行），又不会把话重复说 40 遍。
      */
     private static final long MIN_NUDGE_INTERVAL_MS = 3L * 60L * 1000L;
-    /** 最近一次**真的注入出去**的拍醒时刻（uuid→系统毫秒），节流判据。 */
-    private static final Map<UUID, Long> LAST_NUDGE_AT = new ConcurrentHashMap<>();
+    /** 最近一次**真的注入出去**的拍醒时刻，节流判据。键 = 同伴 + 当前二级（见 {@link #nudgeBucket}）：
+     *  状态一变（换二级/换一级）就是新桶 → 天然放行，不再让上一阶段的 3 分钟窗口压住下一阶段。 */
+    private static final Map<String, Long> LAST_NUDGE_AT = new ConcurrentHashMap<>();
     /** 最近一次真实背包快照（Detector 每秒写，uuid→物品ID→数量）。规划注入用；不清除=背包是女仆属性与链无关。 */
     private static final Map<UUID, Map<String, Integer>> LAST_INVENTORY = new ConcurrentHashMap<>();
     /** 最近一次真实背包扫描时刻（系统毫秒），供规划声明的 verified_at 元字段。 */
@@ -336,6 +339,7 @@ public final class RddPlugin implements NumenPlugin {
             LAST_INVENTORY.clear();
             RddCarryHint.invalidateAll();
             LAST_EXPANSION_REPORT.clear();
+            KICKOFF_SENT.clear();
             // 2026-09-30 深审 R05：世界态必须清干净。
             // 计划代次的真源在 TaskChain 里（随链持久化），这里不用管；
             // 但「上一个世界的回执」一个都不能带到新世界。
@@ -460,6 +464,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                 if (runtime != null) {
                     runtime.startCurrent();
                     publishTaskSnapshot(uuid, "goal_decomposed");
+                    kickoffNudge(uuid, runtime.chain());
                 }
                 LOG.info("[rdd] 目标分解完成并启动 {}:{}", uuid, goal.description());
             } catch (RuntimeException ex) {
@@ -498,6 +503,8 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 新 id 前缀含"新链自己的 id"，跨目标天然隔离（不必再加代号次）。
         // 新目标在同一同伴上会复用同样的 primary-<uuid8>-N 命名，必须清掉去重记忆，否则首个懒边界漏报。
         LAST_EXPANSION_REPORT.remove(companionId);
+        KICKOFF_SENT.remove(companionId);   // 一级 id 跨目标重复（primary-<uuid8>-N），不清就永远不再拍
+        clearNudgeThrottle(companionId);    // 新目标 = 新窗口，保证首次开工拍醒一定发得出去
         RddGoalDriver.clear(companionId);
         clearReplanCounts(companionId);   // 新目标 = 新阶段标识，重规划预算清零
         // P0：把该目标血缘下"已可靠完成"的阶段事实注入新链 → 已达成一级直接跳过、不再重复规划
@@ -1353,6 +1360,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
                 BODY.remove(companionId);
                 LAST_CONTEXT.remove(companionId);
                 LAST_EXPANSION_REPORT.remove(companionId);
+                KICKOFF_SENT.remove(companionId);
                 SideTaskHost.cancel(companionId, "task cleared"); // 清目标 = 支线作废
                 clearNudgeThrottle(companionId); // 链都收了，节流记录跟着走（否则新目标开局就被节流）
                 RddGoalDriver.clear(companionId); // 目标清/重绑 → 丢掉该同伴的懒展开状态
@@ -1592,7 +1600,8 @@ private static String safeDeathAttacker(NumenPlayer body) {
      * 拍醒是一次<b>真实 LLM 请求</b>，而催工有六七个互相独立的来源（卡死/重试/暂停复评/
      * 停车/装备/死亡），<b>单来源的去重挡不住它们叠加</b>。实测 10-03 16 点那一小时就拍了
      * 46 次，16:49~17:05 之间同一条话术一字不变地刷了 42 次 —— 全是钱。
-     * 所以这里放一个 per-companion 的<b>最小间隔</b>总闸：无论哪个分支想拍，3 分钟内只放一次。
+     * 所以这里放一个 <b>按状态分桶</b>的最小间隔闸：同一同伴、同一二级内，无论哪个分支想拍，
+     * 3 分钟只放一次；换二级/换一级 = 新桶，立即放行（不再误伤阶段切换）。
      * 间隔到了之后状态真变了（判据变了）自然会再拍，所以这不是"降低监督强度"，
      * 是"不把同一句话说 40 遍"。
      *
@@ -1615,13 +1624,13 @@ private static String safeDeathAttacker(NumenPlayer body) {
                     "sinceLastNudgeMs", since,
                     "minIntervalMs", MIN_NUDGE_INTERVAL_MS,
                     "message", message.length() > 120 ? message.substring(0, 120) : message,
-                    "reason", "global per-companion nudge throttle; no repeat spend without progress"));
+                    "reason", "per-state nudge throttle; no repeat spend within the same subtask"));
             LOG.info("[rdd] nudge 节流({}ms < {}ms) {}: {}", since, MIN_NUDGE_INTERVAL_MS, companionId, message);
             return false;
         }
         try {
             numenApi.enqueue(companionId, message);
-            LAST_NUDGE_AT.put(companionId, now);
+            LAST_NUDGE_AT.put(nudgeBucket(companionId), now);
             Map<String, Object> data = observationData(companionId);
             data.put("outputId", UUID.randomUUID().toString());
             data.put("companionId", companionId.toString());
@@ -1656,21 +1665,87 @@ private static String safeDeathAttacker(NumenPlayer body) {
                 && msSinceLastNudge(companionId) >= MIN_NUDGE_INTERVAL_MS;
     }
 
-    /** 距上次<b>成功</b>拍醒过去了多久；从没拍过 ⇒ {@code Long.MAX_VALUE}。 */
+    /** 距上次<b>成功</b>拍醒过去了多久（同一同伴+同一二级的桶）；从没拍过 ⇒ {@code Long.MAX_VALUE}。 */
     private static long msSinceLastNudge(UUID companionId) {
-        Long last = LAST_NUDGE_AT.get(companionId);
+        Long last = LAST_NUDGE_AT.get(nudgeBucket(companionId));
         return last == null ? Long.MAX_VALUE : System.currentTimeMillis() - last;
     }
 
-    /** 清掉某同伴的节流记录（任务清除时调用）。 */
-    static void clearNudgeThrottle(UUID companionId) {
-        if (companionId != null) {
-            LAST_NUDGE_AT.remove(companionId);
+    /**
+     * 节流桶键：同伴 + 当前二级 id。状态一变就是新桶 → 天然放行。
+     *
+     * <p>为什么不再 per-companion 全局（c6d35893 原设计）：全局桶让**任何一次拍醒**（哪怕是一次
+     * 合理的"新阶段开工"）把下一条堵 3 分钟 —— 阶段/状态明明变了却被上一句的窗口压住，表现就是
+     * "第二个阶段卡住不动"（2026-10-18 实测：kickoff 后下一二级 stall 被 nudge_throttled 挡下）。
+     * 改成按状态分桶后，"同一状态内的跨来源去重"仍然成立，但换阶段不再被误伤。
+     */
+    private static String nudgeBucket(UUID companionId) {
+        String state = "none";
+        RddRuntime rt = companionId == null ? null : RUNTIMES.get(companionId);
+        if (rt != null) {
+            try {
+                Subtask cur = rt.chain().currentSubtask();
+                if (cur != null) state = cur.id();
+            } catch (RuntimeException ignored) {
+                // 读链失败就用 none 桶，退化成原全局节流，不抛。
+            }
         }
+        return companionId + "|" + state;
+    }
+
+    /** 清掉某同伴所有状态的节流记录（任务清除/换目标/换阶段时调用）。 */
+    static void clearNudgeThrottle(UUID companionId) {
+        if (companionId == null) return;
+        String prefix = companionId + "|";
+        LAST_NUDGE_AT.keySet().removeIf(k -> k.startsWith(prefix));
     }
 
     static void clearNudgeThrottleAll() {
         LAST_NUDGE_AT.clear();
+    }
+
+    /**
+     * 开工拍醒：某个一级的第一个可执行二级刚进入 RUNNING → 推一句"现在就动手"。
+     *
+     * <p>为什么必须有：{@code /goal} 被 RDD 接管后，客户端自身 goal 被清空
+     * （{@code CompanionHome.setGoal(null)}），而整条 goal 路径（beginPlanning → Stage-A →
+     * GoalDriver 展开 → Detector startCurrent）**一处都不 nudge** ⇒ 链生成了 AI 却不动手。
+     * 这里是唯一的"开工"拍醒点，每个二级最多一次（阶段一换就再拍，避免被上一阶段的 3 分钟总闸吞掉）。
+     *
+     * <p><b>先发后记账</b>：{@code KICKOFF_SENT.put} 必须在 {@link #nudge} 返回 true 之后，
+     * 否则被总闸挡一次就永久哑火（RddStallWatcher 记过的同类事故）。
+     */
+    static boolean kickoffNudge(UUID companionId, TaskChain chain) {
+        if (companionId == null || chain == null) return false;
+        if (!supervisionEnabled || numenApi == null) return false;   // 监督关着/没接宿主：不吵
+        if (bodySubmissionEnabled) return false;                     // 身体驱动模式 RDD 自己干活，拍醒=双驾驶
+        if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return false;
+        Subtask cur = chain.currentSubtask();
+        if (cur == null || chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) return false;
+        if (cur.id().equals(KICKOFF_SENT.get(companionId))) return false; // 这个二级已拍过
+        if (!nudgeAllowed(companionId)) {
+            // 新阶段的"开工"不能被上一阶段催工的 3 分钟总闸吞掉（每个二级都要能开工）
+            clearNudgeThrottle(companionId);
+        }
+        String msg = "【开工】现在动手做这一步：「" + cur.description() + "」。"
+                + "先调用工具真正执行，不要只回文字；做完把结果报回来，我核对真实资产后再推进下一步。"
+                + "如果这一步现在做不了，用 report_task_concern 上报卡点，不要默默无视。";
+        if (!nudge(companionId, msg)) return false;                  // 发失败不记账 → 下个 tick 重试
+        KICKOFF_SENT.put(companionId, cur.id());
+        Map<String, Object> data = observationData(companionId);
+        data.put("primary", chain.currentPrimary().id());
+        data.put("subtask", cur.id());
+        data.put("reason", "kickoff: a subtask just entered RUNNING");
+        RddMonitor.publish("goal_kickoff", data);
+        LOG.info("[rdd] 开工拍醒 {} 二级 {}", companionId, cur.id());
+        return true;
+    }
+
+    /** rdd_submit 用：AI 自己刚提交并启动的单，不需要再"开工拍醒"一次。 */
+    static void markKickoffHandled(UUID companionId, String subtaskId) {
+        if (companionId != null && subtaskId != null) {
+            KICKOFF_SENT.put(companionId, subtaskId);
+        }
     }
 
     /**

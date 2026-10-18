@@ -493,6 +493,9 @@ final class RddDetector {
             if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) {
                 return;
             }
+            // 开工拍醒：一级的可执行二级已经起来了 → 推一句让内置 AI 动手（每个一级一次，失败下 tick 重试）。
+            // 放在 EarlyAchievement 连跳之后，拍醒的一定是真正在执行的那个二级。
+            RddPlugin.kickoffNudge(ap.getUUID(), chain);
             Subtask current = chain.currentSubtask();
             // AI_ASSISTED 二级交还 AI 驱动，不做卡死监督（保持原语义）。
             if (current.detectionMode() != DetectionMode.HARD_CODED) {

@@ -441,4 +441,39 @@ class RddMainlineWiringPinTest {
         assertTrue(Files.isDirectory(rddCoreSourceDir()) || true,
                 "rdd-core 源目录定位（当前不用于断言，保留以便将来扩展）");
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  M5 · 开工拍醒 —— 每个二级进入 RUNNING 就推 AI 动手，且不能被 3 分钟总闸吞掉
+    // ═══════════════════════════════════════════════════════════════
+
+    @Test
+    void kickoffNudgeFiresPerSubtaskAndCannotBeThrottledAway() {
+        String body = methodBody(plugin(), "kickoffNudge", "KICKOFF_SENT");
+        assertOrder(body,
+                "nudgeAllowed",
+                "clearNudgeThrottle",
+                "nudge(",
+                "KICKOFF_SENT.put");
+        assertContains(body, "cur.id()",
+                "去重必须按【二级 id】：c6d35893 的全局总闸是 per-companion，"
+                        + "若按一级去重，同一一级内的后续二级就再也拿不到开工拍醒 → 阶段卡住");
+        assertContains(body, "report_task_concern",
+                "开工拍醒必须给合规出口，否则她只能瞎动或不动");
+        assertContains(body, "bodySubmissionEnabled",
+                "身体驱动模式下拍醒 = 双驾驶，必须短路");
+        assertContains(methodBody(plugin(), "bindCurrent", "KICKOFF_SENT"), "clearNudgeThrottle",
+                "换目标必须重开节流窗口，否则新目标首次开工拍醒会被 3 分钟总闸吞掉");
+        assertContains(detector(), "RddPlugin.kickoffNudge(",
+                "Detector 的推进段必须接上开工拍醒（链生成后马上推 AI 动手）");
+    }
+
+    @Test
+    void nudgeThrottleIsPerStateNotGlobal() {
+        assertContains(methodBody(plugin(), "nudgeBucket", "currentSubtask"),
+                "currentSubtask()",
+                "节流桶必须按当前二级分桶：per-companion 全局桶会让新阶段的开工被上一阶段的 3 分钟窗口吞掉");
+        assertContains(methodBody(plugin(), "nudge", "LAST_NUDGE_AT.put"),
+                "nudgeBucket(",
+                "nudge 必须写进【状态桶】，不能退回 per-companion 全局");
+    }
 }

@@ -93,6 +93,8 @@ final class RddSubmitTool implements NumenTool {
                 // 拿不到背包不阻断派活：基线记空表，判定会退化成"按持有量算"，不会卡死任务
             }
             runtime.startCurrentWithCounts(baselineCounts);
+            // AI 自己刚提交并启动的单，不需要再"开工拍醒"一次。
+            RddPlugin.markKickoffHandled(companion.getUUID(), subtaskId);
             reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain accepted and started",
                     Map.of("goal", goal.id(), "primary_goal", primaryId, "subtask", subtaskId,
                             "detection_mode", "HARD_CODED",
