@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.camera.command;
 
 import com.dwinovo.numen.plugins.camera.cam.CameraRig;
 import com.dwinovo.numen.plugins.camera.move.FastMove;
+import com.dwinovo.numen.plugins.camera.possess.Possession;
 import com.dwinovo.numen.plugins.camera.rec.VideoRecorder;
 import com.dwinovo.numen.plugins.camera.tether.CompanionTether;
 
@@ -59,6 +60,13 @@ public final class CameraCommands {
                                 .executes(ctx -> bind(ctx, StringArgumentType.getString(ctx, "name")))))
                 .then(Commands.literal("unbind").executes(ctx -> ok(ctx, CameraRig.setTarget(""))))
                 .then(Commands.literal("tp").executes(CameraCommands::tpNow))
+                // ── 附身（观察者模式 + 视角绑定，一条指令搞定）──────────────
+                .then(Commands.literal("possess")
+                        .then(Commands.argument("name", StringArgumentType.word())
+                                .suggests(COMPANIONS)
+                                .executes(ctx -> ok(ctx, Possession.possess(
+                                        StringArgumentType.getString(ctx, "name"))))))
+                .then(Commands.literal("release").executes(ctx -> ok(ctx, Possession.release())))
                 .then(Commands.literal("follow")
                         .executes(ctx -> ok(ctx, CompanionTether.setFollow(true)))
                         .then(Commands.argument("on", BoolArgumentType.bool())
@@ -239,11 +247,12 @@ public final class CameraCommands {
         }
         String msg = String.format(Locale.ROOT,
                 "机位 mode=%s target=%s(%s) dist=%.2f height=%.2f shoulder=%.2f bearing=%.0f° "
-                        + "pitch=%+.0f° hold=%b%n牵引 %s%n移动 疾跑=%b 飞行=%b 速度=%.2fx%n录像 %s%n配置 %s",
+                        + "pitch=%+.0f° hold=%b%n牵引 %s%n附身 %s%n移动 疾跑=%b 飞行=%b 速度=%.2fx%n录像 %s%n配置 %s",
                 CameraRig.mode(), target.isEmpty() ? "(无)" : target, seen,
                 CameraRig.distance(), CameraRig.height(), CameraRig.shoulder(),
                 CameraRig.bearing(), CameraRig.pitchBias(), CameraRig.holdWhenLost(),
                 CompanionTether.status(),
+                Possession.status(),
                 FastMove.sprinting(), FastMove.flying(), FastMove.flyMultiplier(),
                 VideoRecorder.status(),
                 CameraRig.configPath());
@@ -253,10 +262,12 @@ public final class CameraCommands {
     private static int help(CommandContext<CommandSourceStack> ctx) {
         return ok(ctx, """
                 /cam —— Numen 相机模块（纯客户端，不依赖 Numen 引擎）
+                  ★ possess <名字>   附身：切观察者模式 + 把视角绑在它身上（一条指令，之后不再发 /tp）
+                  release            退出附身，视角收回自己，游戏模式复原
                   bind <名字>        绑定跟拍目标（顺手开牵引、切 ORBIT）   别名：/cam follow 同理
                   unbind             解除绑定
                   list               列出客户端能看到的同伴 + 距离
-                  tp                 立刻传到绑定目标身边
+                  tp                 立刻传到绑定目标身边（附身模式下不需要，改用 possess）
                   follow [on|off]    同伴走出加载区/超出阈值就自动传送过来
                   followdist <格>     牵引距离阈值（默认 64）
                   mode <OFF|SHOULDER|ORBIT|LOCK|CINEMATIC>

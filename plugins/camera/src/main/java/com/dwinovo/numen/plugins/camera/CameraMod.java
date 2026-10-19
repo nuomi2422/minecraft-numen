@@ -3,6 +3,7 @@ package com.dwinovo.numen.plugins.camera;
 import com.dwinovo.numen.plugins.camera.cam.CameraRig;
 import com.dwinovo.numen.plugins.camera.command.CameraCommands;
 import com.dwinovo.numen.plugins.camera.move.FastMove;
+import com.dwinovo.numen.plugins.camera.possess.Possession;
 import com.dwinovo.numen.plugins.camera.rec.VideoRecorder;
 import com.dwinovo.numen.plugins.camera.tether.CompanionTether;
 
@@ -28,7 +29,8 @@ import org.slf4j.Logger;
  * <h2>每 tick 做什么</h2>
  * <ol>
  *   <li>{@link CameraRig#tick()} —— 每 20 tick 重读一次 cam.json（外部改文件即可换机位）</li>
- *   <li>{@link CompanionTether#tick()} —— 绑定目标走出加载区就把玩家传送过去</li>
+ *   <li>{@link CompanionTether#tick()} —— 绑定目标走出加载区就把玩家传送过去（附身时自动停用）</li>
+ *   <li>{@link Possession#tick()} —— 冲刷附身回执、开机恢复、看守附身是否被服务端收回</li>
  *   <li>{@link FastMove#tick()} —— 疾跑 / 飞行（飞行必须每 tick 重申，原版落地会自关）</li>
  *   <li>{@link VideoRecorder#tick()} —— 帧序列 + 异步 ffmpeg 封盘</li>
  * </ol>
@@ -64,6 +66,7 @@ public final class CameraMod {
             FastMove.tick();
             CompanionTether.tick();
         }
+        Possession.tick();
         CameraRig.tick();
         VideoRecorder.tick();
     }

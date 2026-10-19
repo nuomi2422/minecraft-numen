@@ -47,6 +47,9 @@ import java.nio.file.Path;
  */
 public final class CameraRig {
 
+    /** 本模块的日志：文件扳机没有「敲指令的人」，出结果只能靠日志和聊天栏两处留痕。 */
+    private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
+
     /** 本模块的 modId。 */
     public static final String MOD_ID = "numencam";
 
@@ -249,6 +252,28 @@ public final class CameraRig {
     }
 
     /**
+     * 配置文件里的「附身请求」。语义是<b>扳机</b>而不是状态：
+     * <b>值一变就执行一次</b>（非空 → 附身，空 → 退出），之后不再重复执行。
+     *
+     * <h2>为什么要有这条路（2026-10-19 实测逼出来的）</h2>
+     * 本来附身只能敲 {@code /cam possess}。但在这台机器上**键盘注入完全进不了游戏**：
+     * {@code SendKeys} / {@code keybd_event} / 扫描码级 {@code SendInput} 三种都试过，
+     * {@code GetForegroundWindow()} 明明返回 MC 窗口，按键就是不生效（推测是远程会话/GLFW 独占输入）。
+     * 于是「让 AI 自己附身」这条路是断的。
+     *
+     * <p>改成文件扳机之后：<b>改 cam.json 就等于下指令</b>，不需要任何键鼠注入 ——
+     * 这也正好符合用户的原话「指令都不用，直接附身」。20 tick 热载，1 秒内生效。
+     */
+    private static volatile String possessRequest = "";
+
+    /** 首次读文件时只记录、不执行 —— 否则每次进世界都会自动附身（很吓人）。 */
+    private static volatile boolean possessArmed;
+
+    public static String possessRequest() {
+        return possessRequest;
+    }
+
+    /**
      * 重读配置文件。
      *
      * <p>解析失败<b>不抛</b> —— 配置文件是外部手写的，一次手滑不该让游戏崩。
@@ -284,6 +309,21 @@ public final class CameraRig {
                 lockY = l.get("y").getAsDouble();
                 lockZ = l.get("z").getAsDouble();
             }
+            if (o.has("possess")) {
+                String want = o.get("possess").getAsString().trim();
+                boolean changed = !want.equals(possessRequest);
+                possessRequest = want;
+                if (possessArmed && changed) {
+                    // 值变了才动手：文件扳机不能变成「每 20 tick 重试一次」的刷屏源。
+                    String msg = want.isEmpty()
+                            ? com.dwinovo.numen.plugins.camera.possess.Possession.release()
+                            : com.dwinovo.numen.plugins.camera.possess.Possession.possess(want);
+                    LOGGER.info("[numencam] cam.json possess={} -> {}", want.isEmpty() ? "(空)" : want, msg);
+                    // 也打到聊天栏：文件扳机是「没人敲指令」的路径，回执必须自己找地方说。
+                    com.dwinovo.numen.plugins.camera.possess.Possession.announce("cam.json possess=" + (want.isEmpty() ? "(空)" : want));
+                }
+            }
+            possessArmed = true;
         } catch (RuntimeException e) {
             // 字段类型不对（比如 distance 写成字符串）——同样保留旧配置，别崩。
         }
@@ -300,6 +340,10 @@ public final class CameraRig {
         o.addProperty("bearing", bearing);
         o.addProperty("pitchBias", pitchBias);
         o.addProperty("holdWhenLost", holdWhenLost);
+        // 把扳机原样写回：否则随便一条 /cam 指令落盘就会把它抹掉，外面就再也「改文件即附身」不了。
+        if (possessRequest != null && !possessRequest.isEmpty()) {
+            o.addProperty("possess", possessRequest);
+        }
         JsonObject l = new JsonObject();
         l.addProperty("x", lockX);
         l.addProperty("y", lockY);

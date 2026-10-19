@@ -105,6 +105,12 @@ public final class CompanionTether {
         if (cooldownTicks > 0) {
             cooldownTicks--;
         }
+        // 附身期间服务端每 tick 都在把我搬到镜头实体身上，这里再发 /tp 就是两条路抢同一个位置
+        // —— 表现是刷屏 + 偶尔被服务端校正拉回。附身优先，牵引让位。
+        if (com.dwinovo.numen.plugins.camera.possess.Possession.isActive()) {
+            lostTicks = 0;
+            return;
+        }
         if (!follow) {
             lostTicks = 0;
             return;

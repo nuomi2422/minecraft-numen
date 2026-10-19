@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.camera.mixin;
 
 import com.dwinovo.numen.plugins.camera.cam.CameraRig;
+import com.dwinovo.numen.plugins.camera.possess.Possession;
 
 import net.minecraft.client.Camera;
 import net.minecraft.util.Mth;
@@ -74,6 +75,9 @@ public abstract class MixinCamera {
             at = @At("HEAD"), cancellable = true)
     private void numencam$rigSetup(BlockGetter level, Entity vanillaEntity, boolean detached,
                                    boolean mirror, float partialTick, CallbackInfo ci) {
+        // 附身优先：这时原版自己就把镜头挂在同伴身上了（cameraEntity = 同伴，服务端每 tick
+        // 跟随）。机位算法再插一手会和它对打 —— 所以这里必须让位，且不取消，交给原版。
+        if (Possession.isActive()) return;
         if (!CameraRig.isActive()) return;
 
         Entity target = CameraRig.resolveTarget();
