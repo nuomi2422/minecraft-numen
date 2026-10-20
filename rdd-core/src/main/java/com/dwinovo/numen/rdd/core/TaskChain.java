@@ -745,6 +745,24 @@ public final class TaskChain {
                 item.put("detectionMode", subtask.detectionMode().name());
                 item.put("condition", subtask.condition());
                 item.put("current", p == primaryIndex && s == subtaskIndex);
+                // ★ D20-C2（75号 15.4 基线可见性）：把 acquire 基线的存在性与取值暴露进快照。
+                //   现在监测台只能看到 condition 里的 mode=acquire，但无法区分
+                //   「基线还没建立(null)」和「基线=空表(当时真空背包)」——两者语义完全不同
+                //   (75号15.4: UNKNOWN ≠ 真空)，从外面一眼看不出来，调试 acquire 永不满足时无从下手。
+                //   判定语义一字不改（HardCodedEvaluator 的 null 守卫照旧），这只是观测面增量。
+                if (acquireBaselines.containsKey(subtask.id())) {
+                    item.put("acquireBaselineCaptured", true);
+                    Map<String, Integer> baseline = acquireBaselines.get(subtask.id());
+                    // 空表是合法值(死亡瞬间真空背包)，但要在观测面区分"捕获过且为空"与"从未捕获"——
+                    // 所以为空表加显式标记，不为空时给 keys 便于核对。
+                    if (baseline != null && !baseline.isEmpty()) {
+                        item.put("acquireBaselineKeys", List.copyOf(baseline.keySet()));
+                    } else {
+                        item.put("acquireBaselineEmpty", true);
+                    }
+                } else {
+                    item.put("acquireBaselineCaptured", false);
+                }
                 subtasks.add(item);
             }
             Map<String, Object> primaryView = new LinkedHashMap<>();

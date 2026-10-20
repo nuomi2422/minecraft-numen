@@ -20,12 +20,28 @@ public final class RequirementManifest {
 
     private RequirementManifest() {}
 
-    /** 单条需求：主资产键 + 最低数量 + 可替代键（任一满足即可）。 */
-    public record Requirement(String key, int minimum, List<String> alternatives) {
+    /**
+     * 单条需求：主资产键 + 最低数量 + 可替代键（任一满足即可）。
+     *
+     * <p>★ D20-C2（75号 15.4 Demand 数据侧先行）：importance / minimumReserve 两字段
+     * 是 75号「重要性是资产对目标的关系」与 D11「关键资源软预留」的最小数据承载。
+     * <b>数据先行，消费者后接</b>——当前判定逻辑（satisfiedBy/gapText）不读这两个字段，
+     * 加它们是为了让后续批次（需求预留/重要度路由）不用再动这个 record 的 shape。
+     * 兼容构造保留（旧调用点不传默认 NORMAL / 0）。
+     */
+    public record Requirement(String key, int minimum, List<String> alternatives,
+                              Importance importance, int minimumReserve) {
         public Requirement {
             if (key == null || key.isBlank()) throw new IllegalArgumentException("requirement key required");
             if (minimum < 0) throw new IllegalArgumentException("minimum must be >= 0");
+            if (minimumReserve < 0) minimumReserve = 0;   // 防呆：负预留归 0（75号 D11 软预留没有负数语义）
             alternatives = alternatives == null ? List.of() : List.copyOf(alternatives);
+            importance = importance == null ? Importance.NORMAL : importance;
+        }
+
+        /** 兼容旧调用：不指定重要度与软预留。 */
+        public Requirement(String key, int minimum, List<String> alternatives) {
+            this(key, minimum, alternatives, Importance.NORMAL, 0);
         }
 
         /** 该需求在给定持有计数下是否满足（主键或任一替代达标）。 */
@@ -46,6 +62,15 @@ public final class RequirementManifest {
                     + (alternatives.isEmpty() ? "" : "（或 " + String.join("/", alternatives) + "）");
         }
     }
+
+    /**
+     * 需求重要度（75号 §3.1 / D01：重要性是「资产对这个目标」的关系，不是物品固有属性）。
+     *
+     * <p>三档起步：<b>CRITICAL</b>（没有它整条链卡死——如进下界的燧石）、
+     * <b>NORMAL</b>（默认）、<b>OPPORTUNISTIC</b>（路过顺手拿，没有也能绕）。
+     * 消费者（预留协商/降级策略）后续批次接；这里只定枚举与持久化形状。
+     */
+    public enum Importance { CRITICAL, NORMAL, OPPORTUNISTIC }
 
     /**
      * 目标需求清单：由一级目标生成时同步产出（首批以资产需求为主；环境条件第二批扩展）。
