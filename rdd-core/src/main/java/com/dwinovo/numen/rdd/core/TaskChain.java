@@ -80,6 +80,25 @@ public final class TaskChain {
      */
     private final Set<String> satisfiedStages = new LinkedHashSet<>();
 
+    /**
+     * G3b：安全相关状态提交版本（IC75-r1 §15.2 的 {@code stateVersion} 最小落地）。
+     *
+     * <p>只在这些「提交点」+1：开跑一次（{@link #beginAttempt}）、节点终态写入
+     * （{@link #applyHardCodedResult} / {@link #applyAiAssistedResult}）、
+     * 失败/重试/暂停/恢复/计划替换。**读操作（snapshot/toJson/状态查询）绝不 +1** ——
+     * 它要能被当成「计划或节点状态变了几次」的判据，不能被遥测刷新稀释
+     * （75号 §15.2：「不按普通遥测刷新递增」）。
+     */
+    private long stateVersion;
+
+    /**
+     * G3b：被忽略的陈旧结果次数（只观测，不参与判定）。
+     *
+     * <p>为什么要有这个计数：陈旧结果静默丢弃会让人以为「判定一直没跑」；
+     * 有了它，监测台能区分「没触发」和「触发了但被 CAS 挡掉」。
+     */
+    private int staleResultsIgnored;
+
     public TaskChain(Goal goal) {
         this(goal, Set.of());
     }
@@ -361,6 +380,7 @@ public final class TaskChain {
         }
         statuses.put(subtaskId, SubtaskStatus.RUNNING);
         attempts.merge(subtaskId, 1, Integer::sum);
+        stateVersion++;            // G3b：开跑一次 = 一次安全提交
         activeExecutionId = null; // 新一轮执行，旧的宿主执行实例身份作废
         lastStartedAtMillis = System.currentTimeMillis();
         if (captureBaseline) {
@@ -447,6 +467,12 @@ public final class TaskChain {
     public synchronized String activeExecutionId() { return activeExecutionId; }
     public synchronized int attempts(String subtaskId) { return attempts.getOrDefault(subtaskId, 0); }
 
+    /** G3b：安全状态版本（只读）。只在这些提交点 +1：开跑/终态/失败/重试/暂停/恢复/展开/替换。 */
+    public synchronized long stateVersion() { return stateVersion; }
+
+    /** G3b：被忽略的陈旧结果次数（只读；区分「判定没跑」与「跑了但被 CAS 挡掉」）。 */
+    public synchronized int staleResultsIgnored() { return staleResultsIgnored; }
+
     /**
      * 懒加载唯一合法的注入点：宿主目标驱动器把已为"当前一级"生成的二级集合注入该一级。
      * 保持一级的 id/description/waitFor 与 {@link #primaryStatus} 不变，仅 unexpanded→false；
@@ -487,14 +513,39 @@ public final class TaskChain {
             statuses.put(s.id(), SubtaskStatus.PENDING);
         }
         subtaskIndex = 0;
+        stateVersion++;   // G3b：展开注入 = 计划结构变化（安全提交）
     }
 
     public synchronized boolean applyHardCodedResult(String subtaskId, boolean satisfied) {
+        return applyHardCodedResult(subtaskId, satisfied, attempts(subtaskId));
+    }
+
+    /**
+     * G3b（IC03 后半句 / IC06 准备）：带<b>尝试号</b>的结果写入。
+     *
+     * <p><b>为什么需要尝试号</b>：`attempts` 记的是「这一步开跑了几次」；如果一次评估
+     * 是在旧尝试里发起的、结果在新尝试开始后才回来，直接套用会把「上一轮的达成」
+     * 记到「这一轮」头上——这正是 IC03「旧结果不推进新 attempt」要堵的洞。
+     *
+     * <p>当前调用链是同一次 tick 内评估并写入，陈旧结果由宿主
+     * {@code RddCallbackGuard} 在回调层拦下；本方法是<b>领域层防御</b>：
+     * 即使将来评估变成异步，TASK 侧也不会被旧结果推进。
+     *
+     * @param attemptNo 发起评估时读到的尝试号（{@link #attempts(String)}）
+     * @return true = 已写入（COMPLETED）；false = 未满足，或尝试号已过期（忽略）
+     */
+    public synchronized boolean applyHardCodedResult(String subtaskId, boolean satisfied, int attemptNo) {
         requireCurrent(subtaskId);
         if (currentSubtask().detectionMode() != DetectionMode.HARD_CODED) throw new IllegalStateException("current subtask is not hard-coded");
         if (statuses.get(subtaskId) != SubtaskStatus.RUNNING) throw new IllegalStateException("current subtask is not running");
+        if (attemptNo != attempts(subtaskId)) {
+            // 旧尝试的迟到结果：只计数、不落状态（历史不会被抹掉，当前节点也不会被推进）
+            staleResultsIgnored++;
+            return false;
+        }
         if (!satisfied) return false;
         statuses.put(subtaskId, SubtaskStatus.COMPLETED);
+        stateVersion++;
         advanceOrAwait();
         return true;
     }
@@ -506,6 +557,7 @@ public final class TaskChain {
         Objects.requireNonNull(result);
         if (!"CONFIRMED".equals(result)) return false;
         statuses.put(subtaskId, SubtaskStatus.COMPLETED);
+        stateVersion++;            // G3b：节点终态提交
         advanceOrAwait();
         return true;
     }
@@ -619,6 +671,7 @@ public final class TaskChain {
      * id/description/waitFor），旧二级状态作废、新二级全置 PENDING，subtask 指针归零回到 PENDING。
      */
     public synchronized void replaceCurrentSubtasks(List<Subtask> generated) {
+        stateVersion++;            // G3b：计划替换 = 安全提交（结构变化）
         if (primaryStatus != PrimaryGoalStatus.REPLANNING) throw new IllegalStateException("only a REPLANNING primary may have its plan replaced: " + primaryStatus);
         if (generated == null || generated.isEmpty()) throw new IllegalArgumentException("replacement requires at least one legal subtask");
         PrimaryGoal cur = currentPrimary();
@@ -655,6 +708,7 @@ public final class TaskChain {
     public synchronized void resumeFromRecovering() {
         if (primaryStatus != PrimaryGoalStatus.RECOVERING) throw new IllegalStateException("not recovering: " + primaryStatus);
         primaryStatus = PrimaryGoalStatus.ACTIVE;
+        stateVersion++;            // G3b：恢复裁决是一次安全提交（改变了在途语义）
         clearExecutionMetadata(); // 恢复续跑不是"同一执行"：旧执行身份/启动时间作废
     }
 
@@ -700,6 +754,7 @@ public final class TaskChain {
         if (st != SubtaskStatus.RUNNING && st != SubtaskStatus.STALLED) throw new IllegalStateException("current subtask is not running/stalled");
         if (reason == null || reason.isBlank()) throw new IllegalArgumentException("failure reason required");
         statuses.put(subtaskId, SubtaskStatus.FAILED);
+        stateVersion++;            // G3b：失败也是安全提交（会触发重试/重规划）
         activeExecutionId = null; // 二级离开 RUNNING：宿主执行身份作废
     }
 
@@ -720,6 +775,7 @@ public final class TaskChain {
 
     /** Level 2 局部恢复：失败的当前二级重置为 PENDING，可重新 startCurrent（AI 换策略再试）。 */
     public synchronized void retrySubtask(String subtaskId) {
+        stateVersion++;            // G3b：重试 = 安全提交（状态从 FAILED 回到可开跑）
         requireCurrent(subtaskId);
         if (statuses.get(subtaskId) != SubtaskStatus.FAILED) throw new IllegalStateException("only a FAILED subtask may retry");
         statuses.put(subtaskId, SubtaskStatus.PENDING);
@@ -765,6 +821,7 @@ public final class TaskChain {
      * 「卡住 + 承认做不到」= 正该被按住，而不是被判失败后继续烧重试预算。
      */
     public synchronized void pauseSubtask(String subtaskId, String reason) {
+        stateVersion++;            // G3b：暂停 = 安全提交
         requireCurrent(subtaskId);
         if (primaryStatus != PrimaryGoalStatus.ACTIVE) throw new IllegalStateException("primary not active");
         SubtaskStatus st = statuses.get(subtaskId);
@@ -779,6 +836,7 @@ public final class TaskChain {
 
     /** 规划器改主意 → 把暂停的当前二级原地开回来（PAUSED → RUNNING，可直接续跑）。 */
     public synchronized void resumeFromPaused(String subtaskId) {
+        stateVersion++;            // G3b：恢复 = 安全提交
         requireCurrent(subtaskId);
         if (statuses.get(subtaskId) != SubtaskStatus.PAUSED) throw new IllegalStateException("current subtask is not paused");
         statuses.put(subtaskId, SubtaskStatus.RUNNING);
@@ -811,6 +869,8 @@ public final class TaskChain {
                 item.put("detectionMode", subtask.detectionMode().name());
                 item.put("condition", subtask.condition());
                 item.put("current", p == primaryIndex && s == subtaskIndex);
+                // G3b：尝试次数进快照（G3a 的债：此前只能读持久化文件核对 IC03）
+                item.put("attempts", attempts.getOrDefault(subtask.id(), 0));
                 // ★ D20-C2（75号 15.4 基线可见性）：把 acquire 基线的存在性与取值暴露进快照。
                 //   现在监测台只能看到 condition 里的 mode=acquire，但无法区分
                 //   「基线还没建立(null)」和「基线=空表(当时真空背包)」——两者语义完全不同
@@ -856,6 +916,10 @@ public final class TaskChain {
         view.put("primaryStatus", primaryStatus.name());
         view.put("primaryIndex", primaryIndex);
         view.put("subtaskIndex", subtaskIndex);
+        // G3b：把「这一步开跑过几次」「安全状态变过几次」「挡掉过几次陈旧结果」带进快照 ——
+        // 监测台据此能核对 IC03/IC06，不用去翻持久化文件（V-20261020-21 的债）。
+        view.put("stateVersion", stateVersion);
+        view.put("staleResultsIgnored", staleResultsIgnored);
         PrimaryGoal current = currentPrimary();
         view.put("currentPrimaryId", current.id());
         // 当前一级未展开时诚实报"无当前二级"，而不是伪造占位节点。
@@ -890,6 +954,9 @@ public final class TaskChain {
         o.addProperty("planRevision", planRevision);
         o.addProperty("primaryStatus", primaryStatus.name());
         o.addProperty("lastStartedAtMillis", lastStartedAtMillis);
+        // G3b：安全状态版本与陈旧结果计数随链持久化（判据要活得过重启）
+        o.addProperty("stateVersion", stateVersion);
+        o.addProperty("staleResultsIgnored", staleResultsIgnored);
         if (activeExecutionId != null) o.addProperty("activeExecutionId", activeExecutionId);
         return GSON.toJson(o);
     }
@@ -971,6 +1038,13 @@ public final class TaskChain {
         }
         if (o.has("lastStartedAtMillis")) {
             chain.lastStartedAtMillis = o.get("lastStartedAtMillis").getAsLong();
+        }
+        // G3b：旧存档无这两个字段 → 0（向后兼容；不因为升级就伪造"提交过"）
+        if (o.has("stateVersion")) {
+            chain.stateVersion = o.get("stateVersion").getAsLong();
+        }
+        if (o.has("staleResultsIgnored")) {
+            chain.staleResultsIgnored = o.get("staleResultsIgnored").getAsInt();
         }
         // 完成事实继承层（P0）：旧链无此字段 → 空集（向后兼容）
         if (o.has("satisfiedStages") && o.get("satisfiedStages").isJsonArray()) {
