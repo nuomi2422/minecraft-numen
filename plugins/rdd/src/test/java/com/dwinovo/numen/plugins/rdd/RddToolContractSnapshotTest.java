@@ -134,6 +134,8 @@ class RddToolContractSnapshotTest {
         PINNED_NAMES.put("RddConcernTool.java", "report_task_concern");
         PINNED_NAMES.put("RddStandbyTool.java", "rdd_standby");
         PINNED_NAMES.put("RddDebugKillTool.java", "debug_kill");
+        // G2b：死亡台账只读查询（V-20261020-17 债②：超时结案在事件里有、可回读的查询面没有）
+        PINNED_NAMES.put("RddDeathLedgerTool.java", "rdd_death_ledger");
     }
 
     @Test
@@ -186,6 +188,8 @@ class RddToolContractSnapshotTest {
         DESCRIPTION_FLOOR.put("RddConcernTool.java", 150);
         DESCRIPTION_FLOOR.put("RddStandbyTool.java", 60);
         DESCRIPTION_FLOOR.put("RddDebugKillTool.java", 40);
+        // G2b 新工具：三档状态的措辞纪律是契约本体，下限按当前长度的 ~75% 取
+        DESCRIPTION_FLOOR.put("RddDeathLedgerTool.java", 300);
     }
 
     @Test
