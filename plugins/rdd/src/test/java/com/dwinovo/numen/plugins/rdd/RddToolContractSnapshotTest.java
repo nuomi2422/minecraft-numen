@@ -136,6 +136,8 @@ class RddToolContractSnapshotTest {
         PINNED_NAMES.put("RddDebugKillTool.java", "debug_kill");
         // G2b：死亡台账只读查询（V-20261020-17 债②：超时结案在事件里有、可回读的查询面没有）
         PINNED_NAMES.put("RddDeathLedgerTool.java", "rdd_death_ledger");
+        // G2c：验证钩子（用户 2026-10-20 批准）——清掉落物以构造超时分支
+        PINNED_NAMES.put("RddDebugClearDropsTool.java", "debug_clear_drops");
     }
 
     @Test
@@ -190,6 +192,8 @@ class RddToolContractSnapshotTest {
         DESCRIPTION_FLOOR.put("RddDebugKillTool.java", 40);
         // G2b 新工具：三档状态的措辞纪律是契约本体，下限按当前长度的 ~75% 取
         DESCRIPTION_FLOOR.put("RddDeathLedgerTool.java", 300);
+        // G2c 验证钩子：必须继续写明「只删 ItemEntity、不碰台账/任务」与 confirm 要求
+        DESCRIPTION_FLOOR.put("RddDebugClearDropsTool.java", 280);
     }
 
     @Test

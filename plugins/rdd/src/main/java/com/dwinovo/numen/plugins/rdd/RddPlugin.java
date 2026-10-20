@@ -185,6 +185,8 @@ public final class RddPlugin implements NumenPlugin {
         numen.registerTool(new RddDebugKillTool());
         // G2b：死亡台账只读查询面（V-20261020-17 债②：事件有、可回读的查询面没有）
         numen.registerTool(new RddDeathLedgerTool());
+        // G2c：验证钩子（用户 2026-10-20 批准）——清掉落物，构造超时分支
+        numen.registerTool(new RddDebugClearDropsTool());
         // 接管 /goal：先同步认领，Stage-A 异步规划；规划期间 NUMEN 原生目标循环让位。
         com.dwinovo.numen.agent.goal.GoalSinks.register((uuid, objective) -> {
             if (uuid == null || objective == null || objective.isBlank()) {

@@ -66,8 +66,11 @@ final class RddDeathLedgerTool implements NumenTool {
             }
             long now = System.currentTimeMillis();
             List<RddDeathLedger.Death> all = snapshot.deaths();
+            // ★ 台账列表是「新 → 旧」（G2c 实测：limit=2 曾取到最旧两条）。
+            //   取最近 N 条 = 从头上取，不是从尾巴切。别按「升序」的直觉写 slice。
+            int take = Math.min(limit, all.size());
             List<Map<String, Object>> rows = new ArrayList<>();
-            for (int i = Math.max(0, all.size() - limit); i < all.size(); i++) {
+            for (int i = 0; i < take; i++) {
                 RddDeathLedger.Death d = all.get(i);
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("seq", d.seq());
