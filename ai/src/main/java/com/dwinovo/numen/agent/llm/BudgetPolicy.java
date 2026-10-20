@@ -396,20 +396,68 @@ public final class BudgetPolicy {
         return checkBlock(phase, estimatedPromptTokens);
     }
 
-    /** 超限判定（两种模式共用的纯求值，不带冷却）。 */    private static Advice evaluate(Policy p, String phase, long estimatedPromptTokens) {
+    /** 超限判定（两种模式共用的纯求值，不带冷却）。 */
+    private static Advice evaluate(Policy p, String phase, long estimatedPromptTokens) {
         String role = roleOf(phase);
         Limit limit = p.roles().get(role);
         if (limit == null || limit.isNone()) return null;
         WindowUsage used = windowUsage(role);
-        long projected = used.tokens() + Math.max(0, estimatedPromptTokens);
+        long estimated = Math.max(0, estimatedPromptTokens);
+        long projected = used.tokens() + estimated;
         List<String> exceeded = new ArrayList<>();
-        if (limit.tokensPerWindow() > 0 && projected > limit.tokensPerWindow()) exceeded.add("tokens");
+        // G4c S108：**退化配置**——窗口里一次调用都没有，单看这一次请求就已经超出整个窗口额度。
+        // 这种额度拦了也解不开：窗口滚过之后用量仍是 0，下一次还是被同一份请求撑爆。
+        // 拦住 = 把她永久关死；放行并大声告警，才是诚实的做法（宁可超预算，也不许卡死）。
+        boolean degenerateTokens = limit.tokensPerWindow() > 0
+                && used.tokens() == 0 && estimated > limit.tokensPerWindow();
+        if (degenerateTokens) {
+            noteDegenerateConfig(role, estimated, limit.tokensPerWindow());
+        } else if (limit.tokensPerWindow() > 0 && projected > limit.tokensPerWindow()) {
+            exceeded.add("tokens");
+        }
         if (limit.callsPerWindow() > 0 && used.calls() + 1 > limit.callsPerWindow()) exceeded.add("calls");
         if (limit.minutesPerWindow() > 0 && used.millis() > limit.minutesPerWindow() * 60_000L) {
             exceeded.add("minutes");
         }
         if (exceeded.isEmpty()) return null;
         return new Advice(role, List.copyOf(exceeded), used.tokens(), projected, used, limit, p.mode());
+    }
+
+    /**
+     * 退化配置的告警（每个「角色 + 额度」组合只喊一次，免得刷屏）。
+     *
+     * <p>为什么必须喊：放行是刻意的取舍，但<b>不能让这件事静默</b>——否则主人只会看到
+     * 「预算配了却不拦」，然后以为预算坏了。
+     */
+    private static void noteDegenerateConfig(String role, long estimated, long limitTokens) {
+        try {
+            String key = role + "|" + limitTokens;
+            if (DEGENERATE_WARNED.add(key)) {
+                DEGENERATE_CONFIGS.incrementAndGet();
+                AiLog.LOG.warn("[numen-econ] 预算配置退化：{} 角色单次请求就要 {} token，已超过整个窗口额度 {} ——"
+                                + "本次放行（拦了也解不开，会把同伴永久关死）。请把 tokensPerWindow 调到大于单次请求。",
+                        role, estimated, limitTokens);
+            }
+        } catch (RuntimeException ignored) {
+            // 观测不许影响求值
+        }
+    }
+
+    /** 已告警的退化组合（去重用；"角色|额度"）。 */
+    private static final java.util.Set<String> DEGENERATE_WARNED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private static final java.util.concurrent.atomic.AtomicInteger DEGENERATE_CONFIGS =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    /**
+     * 识别到「退化额度」的次数（只观测）。
+     *
+     * <p>长期非 0 = 有人配了「永远拦死」的额度（或被放过一次而没改配置）。
+     * 这条数只用来提醒，不参与任何判定。
+     */
+    public static int degenerateConfigs() {
+        return DEGENERATE_CONFIGS.get();
     }
 
     /**
@@ -749,6 +797,8 @@ public final class BudgetPolicy {
         RESERVATIONS.clear();
         RESERVATION_IDS.set(0L);
         POLICY_VERSION_MISMATCHES.set(0);
+        DEGENERATE_CONFIGS.set(0);
+        DEGENERATE_WARNED.clear();
         policy = DEFAULT_POLICY;
         loadedFrom = null;
         loadedMtimeMs = -1L;
