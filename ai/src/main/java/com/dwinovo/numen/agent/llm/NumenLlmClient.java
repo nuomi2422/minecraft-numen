@@ -275,9 +275,37 @@ public final class NumenLlmClient {
             }
         }
 
+        // -- 2c. 经济预算（G4b）：发请求前先「占位」，落地时按**实际**用量扣账。
+        //
+        //   预留不决定「拦不拦」——那是 checkBlock 在调用点的活。它只解决一件事：
+        //   并发的第二路请求也能看见第一路已经占掉的额度（IC09「预算能拦并发超支」）。
+        //   没有给这个角色配限额时 reserve 返回 null，本段**一个事件都不发**，
+        //   默认配置下的行为与接入前逐字节一致。
+        BudgetPolicy.Reservation held = null;
+        long promptEstimate = 0L;
+        if (observation != null) {
+            try {
+                promptEstimate = CompactSplit.estimateTokens(messages)
+                        + estimateTokensOfText(systemPrompt)
+                        + estimateTokensOfText(toolList.toString());
+                held = BudgetPolicy.reserve(observation.phase(), promptEstimate,
+                        BudgetPolicy.DEFAULT_RESERVATION_TTL_MS);
+                if (held != null) {
+                    publishBudgetReserve(observation, model, apiKey, "granted", promptEstimate, held);
+                } else if (BudgetPolicy.roleHasLimit(observation.phase())) {
+                    // 配了额度但这次没占到：照发（既有语义不变），但把「没占到」记下来 ——
+                    // 否则「为什么这轮没有预留」只能靠猜。
+                    publishBudgetReserve(observation, model, apiKey, "rejected", promptEstimate, null);
+                }
+            } catch (RuntimeException ignored) {
+                // 观测/预算层不许影响请求
+            }
+        }
+        final BudgetPolicy.Reservation reservation = held;
+        final long estimatedPromptTokens = promptEstimate;
+
         // -- 3. Stream the response into an accumulator.
-        long t0 = System.nanoTime();
-        StreamAccumulator acc = new StreamAccumulator();
+        long t0 = System.nanoTime();        StreamAccumulator acc = new StreamAccumulator();
         CompletableFuture<Void> pending;
         // 认领身份,让卡死监督看得见"这个同伴的 LLM 正在飞"。
         // token 必须原样带到底下两处 markSettled —— 并发请求时按 token 精确销账(Codex 审稿 P0)。
@@ -409,7 +437,35 @@ public final class NumenLlmClient {
                         cause = cause.getCause();
                     usageEvent.put("errorType", cause.getClass().getSimpleName());
                 }
-                BudgetPolicy.record(observation.phase(), meterTokens, durationMs);
+                // G4b：把预留换成一次真实调用（用实际用量，不是预估）。
+                // 一次都没发出去（attempts==0，例如同步就抛在传输层之前）→ 释放，不记账：
+                // 「没发生的事不许记账」。这是相对旧行为的**刻意修正**（旧行为会记 1 笔 token=0）。
+                if (reservation != null) {
+                    String settleStatus;
+                    if (attempts.get() > 0) {
+                        boolean charged = BudgetPolicy.charge(reservation.id(), meterTokens, durationMs);
+                        if (charged) {
+                            settleStatus = "charged";
+                        } else {
+                            // 预留已过期（TTL 5 分钟）：这笔记账不能丢，退回直接记账。
+                            BudgetPolicy.record(observation.phase(), meterTokens, durationMs);
+                            settleStatus = "charged_after_expiry";
+                        }
+                    } else {
+                        BudgetPolicy.release(reservation.id());
+                        settleStatus = "released";
+                    }
+                    java.util.Map<String, Object> settle = new java.util.LinkedHashMap<>();
+                    settle.put("status", settleStatus);
+                    settle.put("role", reservation.role());
+                    settle.put("reservationId", reservation.id());
+                    settle.put("estimatedTokens", estimatedPromptTokens);
+                    settle.put("actualTokens", meterTokens);
+                    settle.put("durationMs", durationMs);
+                    observation.publish("budget_settle", model, settle, apiKey);
+                } else {
+                    BudgetPolicy.record(observation.phase(), meterTokens, durationMs);
+                }
                 observation.publish("llm_usage", model, usageEvent, apiKey);
             }
             } catch (RuntimeException ignored) {
@@ -418,8 +474,37 @@ public final class NumenLlmClient {
         });
     }
 
-    private void logCallSummary(long t0, StreamAccumulator acc, AssistantTurn turn) {
-        long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+    /**
+     * 一段纯文本的 token 估计。<b>不另造公式</b>：包一个 {@link ConvoState.Msg.Tool} 走
+     * {@link CompactSplit} 的同一条分支——两把尺会漂移，漂移过的限额等于没有限额。
+     */
+    private static int estimateTokensOfText(String text) {
+        return text == null || text.isEmpty()
+                ? 0
+                : CompactSplit.estimateTokens(new ConvoState.Msg.Tool("", text));
+    }
+
+    /**
+     * 发一条 {@code budget_reserve}（granted / rejected）。
+     *
+     * <p>只在「该角色配了限额」时才会走到这里，所以默认配置下的埋点噪音为零。
+     * 事件里不放请求正文也不放 apiKey（{@link LlmObservation#publish} 还会再过滤一次）。
+     */
+    private void publishBudgetReserve(LlmObservation observation, String model, String apiKey,
+                                      String status, long estimatedTokens,
+                                      BudgetPolicy.Reservation reservation) {
+        java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
+        ev.put("status", status);
+        ev.put("role", reservation != null ? reservation.role() : BudgetPolicy.roleOf(observation.phase()));
+        ev.put("estimatedTokens", estimatedTokens);
+        if (reservation != null) {
+            ev.put("reservationId", reservation.id());
+            ev.put("ttlMillis", Math.max(0L, reservation.expiresAtMs() - System.currentTimeMillis()));
+        }
+        observation.publish("budget_reserve", model, ev, apiKey);
+    }
+
+    private void logCallSummary(long t0, StreamAccumulator acc, AssistantTurn turn) {        long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
         String tokens = "?";
         if (acc.usage != null) {
             int in = jsonInt(acc.usage, "prompt_tokens");

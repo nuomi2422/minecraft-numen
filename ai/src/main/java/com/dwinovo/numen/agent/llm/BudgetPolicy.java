@@ -1,5 +1,6 @@
 package com.dwinovo.numen.agent.llm;
 
+import com.dwinovo.numen.agent.context.ContextBudget;
 import com.dwinovo.numen.ai.AiLog;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -72,11 +73,16 @@ public final class BudgetPolicy {
         }
     }
 
-    /** 生效策略快照。{@code mode} = {@code shadow}（只建议）或 {@code enforce}（超限拦截）。 */
+    /**
+     * 生效策略快照。{@code mode} = {@code shadow}（只建议）或 {@code enforce}（超限拦截）。
+     *
+     * @param context G4b：请求侧上下文预算（§15.5）。缺省 = 不限，行为与没有本机制一致
+     */
     public record Policy(int version, String mode, int windowMinutes, int adviceCooldownMinutes,
-                         Map<String, Limit> roles) {}
+                         Map<String, Limit> roles, ContextBudget context) {}
 
-    private static final Policy DEFAULT_POLICY = new Policy(0, "shadow", 60, 5, Map.of());
+    private static final Policy DEFAULT_POLICY =
+            new Policy(0, "shadow", 60, 5, Map.of(), ContextBudget.unlimited());
 
     private static volatile Policy policy = DEFAULT_POLICY;
     private static volatile Path loadedFrom;
@@ -145,6 +151,7 @@ public final class BudgetPolicy {
      * @return 预留；限额不足 / 角色不限 / 异常 → null（调用方按 {@link #checkBlock} 语义处理）
      */
     public static Reservation reserve(String phase, long estimatedTokens, long ttlMillis) {
+        refreshIfChanged();
         try {
             Policy p = policy;
             String role = roleOf(phase);
@@ -179,6 +186,17 @@ public final class BudgetPolicy {
      * @return true = 该预留存在并已扣账；false = 预留不存在/已过期（不补记，避免凭空多一笔）
      */
     public static boolean charge(long reservationId, long actualTokens) {
+        return charge(reservationId, actualTokens, 0L);
+    }
+
+    /**
+     * 扣账（带耗时）。调用点只有 {@link NumenLlmClient}：它同时知道真实用量与本次往返耗时，
+     * 两个数一起记才和 {@link #record} 的口径一致（{@code minutesPerWindow} 限额看的就是耗时）。
+     *
+     * @param millis 本次调用耗时；{@code minutesPerWindow} 按它累计
+     * @return true = 该预留存在并已扣账；false = 预留不存在/已过期（不补记，避免凭空多一笔）
+     */
+    public static boolean charge(long reservationId, long actualTokens, long millis) {
         Reservation r = RESERVATIONS.get(reservationId);
         if (r == null) {
             return false;
@@ -189,7 +207,7 @@ public final class BudgetPolicy {
             return false;
         }
         RESERVATIONS.remove(reservationId);
-        recordRole(r.role(), actualTokens, 0);
+        recordRole(r.role(), actualTokens, millis);
         return true;
     }
 
@@ -266,6 +284,7 @@ public final class BudgetPolicy {
      * 事件），否则 null。同一角色在 {@code adviceCooldownMinutes} 内最多建议一次（平稳心跳限频）。
      */
     public static Advice advice(String phase, long estimatedPromptTokens) {
+        refreshIfChanged();
         try {
             Policy p = policy;
             if (!"shadow".equals(p.mode())) return null;
@@ -290,6 +309,7 @@ public final class BudgetPolicy {
      * 事件/聊天栏通知的限频由 {@link #notifyBlock} 负责，二者分开。
      */
     public static Advice checkBlock(String phase, long estimatedPromptTokens) {
+        refreshIfChanged();
         try {
             Policy p = policy;
             if (!"enforce".equals(p.mode())) return null;
@@ -362,8 +382,9 @@ public final class BudgetPolicy {
             policy = parsed;
             loadedFrom = file;
             loadedMtimeMs = mtime;
-            AiLog.LOG.info("[numen-econ] 预算策略已加载: version={}, mode={}, window={}min, 角色限额={}",
-                    parsed.version(), parsed.mode(), parsed.windowMinutes(), describeLimits(parsed));
+            AiLog.LOG.info("[numen-econ] 预算策略已加载: version={}, mode={}, window={}min, 角色限额={}, 上下文预算={}",
+                    parsed.version(), parsed.mode(), parsed.windowMinutes(), describeLimits(parsed),
+                    parsed.context() == null ? "unlimited" : parsed.context().describe());
         } catch (Exception ex) {
             policy = DEFAULT_POLICY;
             AiLog.LOG.warn("[numen-econ] 预算策略加载失败，退回默认（shadow、全部不限）: {}", ex.toString());
@@ -408,7 +429,99 @@ public final class BudgetPolicy {
                         Math.max(0, longOr(o, "minutesPerWindow", 0))));
             }
         }
-        return new Policy(version, mode, window, cooldown, Map.copyOf(roles));
+        return new Policy(version, mode, window, cooldown, Map.copyOf(roles), parseContext(root));
+    }
+
+    /**
+     * 解析可选的 {@code context} 段（G4b，§15.5）。<b>整段不写 = 全不限</b>——
+     * 老配置文件一个字都不用改，行为与没有本机制时完全一致（判据 S87）。
+     */
+    private static ContextBudget parseContext(JsonObject root) {
+        JsonElement el = root.get("context");
+        if (el == null || el.isJsonNull()) return ContextBudget.unlimited();
+        if (!el.isJsonObject()) {
+            AiLog.LOG.warn("[numen-econ] context 不是对象，按「不限」处理");
+            return ContextBudget.unlimited();
+        }
+        JsonObject o = el.getAsJsonObject();
+        for (String key : o.keySet()) {
+            switch (key) {
+                case "maxCandidates", "maxRows", "maxExpanded", "maxTokens", "maxChars",
+                     "mandatoryReservedTokens" -> { }
+                default -> AiLog.LOG.warn("[numen-econ] context 含未知字段 '{}'（拼错的字段会被当成「不限」！）", key);
+            }
+        }
+        ContextBudget b = new ContextBudget(
+                (int) Math.max(0, longOr(o, "maxCandidates", 0)),
+                (int) Math.max(0, longOr(o, "maxRows", 0)),
+                (int) Math.max(0, longOr(o, "maxExpanded", 0)),
+                Math.max(0, longOr(o, "maxTokens", 0)),
+                Math.max(0, longOr(o, "maxChars", 0)),
+                Math.max(0, longOr(o, "mandatoryReservedTokens", 0)),
+                TOKENIZER_VERSION);
+        if (!b.isUnlimited()) {
+            AiLog.LOG.info("[numen-econ] 上下文预算: {}", b.describe());
+        }
+        return b;
+    }
+
+    /** 记录 token 是哪个尺子算的（只记录，不计量；换尺子要改这里并同步批次卡）。 */
+    public static final String TOKENIZER_VERSION = "compact-split-v1";
+
+    /**
+     * 该相位所属角色<b>是否配了限额</b>。只读、不建策、不记账。
+     *
+     * <p>调用点用它区分两件长得一样的事：「这个角色根本没限额」（什么都不用报）与
+     * 「有额度、但这次没占到」（必须报，否则「为什么这轮没有预留」只能靠猜）。
+     */
+    public static boolean roleHasLimit(String phase) {
+        refreshIfChanged();
+        try {
+            Limit l = policy.roles().get(roleOf(phase));
+            return l != null && !l.isNone();
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    /**
+     * 配置热重载（G4b）：<b>mtime 变了就重装，不必重启游戏。</b>
+     *
+     * <p>为什么非要有它：{@code budget-policy.json} 是给人手调的旋钮。原来只在
+     * {@code EntityAgentLoop} 类加载时装一次 —— 改个数值要重启整个游戏，实际结果就是
+     * 「这个旋钮没人会调」。实机验证时也逼着为每个数值重启一次（一次三分钟，还容易忘）。
+     *
+     * <p>代价：每次读策略多一次 {@code getLastModifiedTime}（每轮一次，微秒级）。
+     * 失败一律吞掉：读不到就保持当前策略，观测/建议层不许影响请求。
+     */
+    public static void refreshIfChanged() {
+        Path file = loadedFrom;
+        if (file == null) return;
+        try {
+            long mtime = Files.getLastModifiedTime(file).toMillis();
+            if (mtime != loadedMtimeMs) {
+                install(file.getParent());
+            }
+        } catch (Exception ignored) {
+            // 文件被删/被占用：退回「缺失 = 默认策略」的语义，而不是抱着旧值不放。
+            try {
+                install(file.getParent());
+            } catch (Exception ignoredToo) {
+                // 目录都没了：保持现状
+            }
+        }
+    }
+
+    /** 生效的上下文预算（调用点每轮取一次；不限额时 {@link ContextBudget#isUnlimited()} 为真）。 */
+    public static ContextBudget contextBudget() {
+        refreshIfChanged();
+        try {
+            Policy p = policy;
+            return p.context() == null ? ContextBudget.unlimited() : p.context();
+        } catch (RuntimeException ex) {
+            AiLog.LOG.warn("[numen-econ] 读上下文预算失败(按不限处理): {}", ex.toString());
+            return ContextBudget.unlimited();
+        }
     }
 
     private static void writeExampleIfMissing(Path configDir) {
@@ -495,6 +608,10 @@ public final class BudgetPolicy {
                 "planning":  { "tokensPerWindow": 0, "callsPerWindow": 0, "minutesPerWindow": 0 },
                 "learning":  { "tokensPerWindow": 0, "callsPerWindow": 0, "minutesPerWindow": 0 }
               },
+              "context": {
+                "maxTokens": 0, "maxChars": 0, "mandatoryReservedTokens": 0,
+                "maxCandidates": 0, "maxRows": 0, "maxExpanded": 0
+              },
               "_readme": [
                 "0 = 不限（缺省即不限，不会给出任何建议、也不会拦截）。",
                 "tokensPerWindow 计 totalTokens（输入+输出+缓存，按模型上报）；callsPerWindow 计调用次数；minutesPerWindow 计调用耗时（分钟）。",
@@ -505,6 +622,8 @@ public final class BudgetPolicy {
                 "计量只在内存、重启清零，跨重启对账请看 monitor 的 llm_usage / budget_block 事件。",
                 "角色按相位归并：execution=execution/execution_retry/goal_judging/compaction；planning=stage_a/stage_b/fallback；learning=review；其余=unknown（只计量不建策）。",
                 "确定性生存反射不在此机制内（不等远程 LLM，属 E2 缺口）。",
+                "context 段是请求侧上下文预算（§15.5）：先预留必知区，再压可选段落；必知区自身装不下就显式拒绝这一轮，绝不裁必知区。",
+                "context 六维全部 0 = 不限（整段不写也一样）；字符上限是独立硬上限，不是 token 的替身。",
                 "此文件是示例；要生效请复制为 budget-policy.json 再改（本示例不会被读取）。"
               ]
             }

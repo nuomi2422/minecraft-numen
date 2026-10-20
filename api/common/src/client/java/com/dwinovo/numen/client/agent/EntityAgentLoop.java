@@ -9,6 +9,7 @@ import com.dwinovo.numen.event.EventQueue;
 import com.dwinovo.numen.event.EventTypes;
 import com.dwinovo.numen.event.JsonlJournal;
 import com.dwinovo.numen.agent.llm.CompactSplit;
+import com.dwinovo.numen.agent.context.ContextBudget;
 import com.dwinovo.numen.agent.llm.BudgetPolicy;
 import com.dwinovo.numen.agent.llm.ConvoState;
 import com.dwinovo.numen.agent.provider.AssistantTurn;
@@ -254,6 +255,15 @@ public final class EntityAgentLoop {
      * 每个唤醒事件都会重查预算（纯求值、零成本），窗口一过自动放行——同端点熔断的教训。
      */
     private volatile String budgetBlockedRole = null;
+
+    /**
+     * 上下文预算拒绝（G4b）：最近一次「必知区自身装不下」的聊天栏提示时刻。
+     *
+     * <p>为什么要限频：这个闸每个唤醒事件都会重查（纯求值），不限频就会把聊天栏刷满，
+     * 而主人真正需要看的是<b>第一次</b>那句（含上限与必知区体量）。60 秒足够看清也不至于刷屏。
+     */
+    private long contextBudgetNoticeAtMs = 0L;
+    private static final long CONTEXT_BUDGET_NOTICE_COOLDOWN_MS = 60_000L;
 
     /**
      * Set while an external driver (an MCP client / Claude) holds this body via
@@ -1813,6 +1823,22 @@ public final class EntityAgentLoop {
         }
         budgetBlockedRole = null;
 
+        // 上下文预算闸（G4b，§15.5）：必知区自身装不下 → 这一轮不发。
+        // 与上面那道财务预算闸的区别：那道管「还要不要再烧一次钱」，这道管「这一轮塞不塞得下现场」。
+        // 两道都是纯求值、不粘：配置一改下一轮就自动放行。
+        String contextProblem = contextBudgetProblem();
+        if (contextProblem != null) {
+            long now = System.currentTimeMillis();
+            if (now - contextBudgetNoticeAtMs >= CONTEXT_BUDGET_NOTICE_COOLDOWN_MS) {
+                contextBudgetNoticeAtMs = now;
+                Constants.LOG.warn("[numen-entity#{}] 上下文预算拦截: {}", entityUuid, contextProblem);
+                // 拒绝必须让主人看见，而且要说清打哪儿调：静默停比超发更糟
+                com.dwinovo.numen.client.chat.ChatLines.notice(presenter.speakerName(), truncate(contextProblem, 160));
+            }
+            com.dwinovo.numen.client.hud.SpeechBubbles.clear(entityUuid);
+            return false;
+        }
+
         // Auto-compaction gate: the last request's true context size (as the
         // API counted it) is within the buffer of the window — summarize FIRST,
         // then this method re-runs and dispatches the turn on the compacted
@@ -2204,12 +2230,37 @@ public final class EntityAgentLoop {
      * 这一轮临时挂载的运行期状态。全部现算,一个字都不入会话历史——包进同一个
      * {@code <runtime_state>} 里,模型只需认一个信封。
      */
+    /**
+     * 这一轮临时挂载的运行期状态。全部现算,一个字都不入会话历史——包进同一个
+     * {@code <runtime_state>} 里,模型只需认一个信封。
+     *
+     * <p><b>G4b（§15.5）：这里是降档点</b>。原来是把五段直接拼成一条 XML，谁也没个数；
+     * 现在先切成段落、过一遍 {@link ContextBudget}：装不下就<b>整段</b>丢可选段落并点名，
+     * 装得下则输出与接入前<b>逐字节相同</b>（没有则不写任何属性）。
+     * 必知区（{@code <current_task>}）永不裁——裁了就是改语义。
+     */
     private String runtimeStateXml() {
-        // 插件的现算片段也挂这一层:它们和背包、状态效果一样是"此刻的她",
-        // 会变,所以不能进字节级稳定的系统提示。
-        String body = currentTaskXml() + inventoryXml() + effectsXml() + ridingXml()
-                + com.dwinovo.numen.api.NumenPlugins.stateFragments(entityUuid);
-        String xml = body.isEmpty() ? "" : "<runtime_state>" + body + "</runtime_state>";
+        ContextBudget budget = BudgetPolicy.contextBudget();
+        List<ContextBudget.Section> sections = runtimeStateSections();
+        ContextBudget.Allocation plan = ContextBudget.allocate(budget, sections);
+        String attributes = "";
+        if (plan.denied()) {
+            // 必知区自身超限：这里**不裁**它（裁了就改语义），只把「这次是超发的」写进信封；
+            // 这一轮由 contextBudgetProblem() 挡在发请求之前。
+            attributes = " budget=\"denied\" needed=\""
+                    + (budget.maxChars() > 0 ? plan.charsUsed() + "chars" : plan.tokensUsed() + "tokens")
+                    + "\" limit=\""
+                    + (budget.maxChars() > 0 ? budget.maxChars() + "chars" : budget.maxTokens() + "tokens") + "\"";
+            publishContextBudget(plan);
+        } else if (plan.truncated()) {
+            attributes = " budget=\"downgraded\" dropped=\"" + String.join(",", plan.droppedNames()) + "\"";
+            publishContextBudget(plan);
+        }
+        StringBuilder body = new StringBuilder();
+        for (ContextBudget.Section kept : plan.kept()) {
+            body.append(kept.text());
+        }
+        String xml = body.isEmpty() ? "" : "<runtime_state" + attributes + ">" + body + "</runtime_state>";
         // 原样打出来。"她看到的世界"平时完全不可见,于是"她怎么会这么说"只能靠猜——
         // 而她说的数跟事件对不上时,分不清是她编的还是我们喂错了。开一次 debug 就有答案。
         //
@@ -2222,6 +2273,110 @@ public final class EntityAgentLoop {
                 "companion_id", entityUuid.toString(), "turn", convo.turnCount(),
                 "source", "request_context", "target", "numen", "context", xml));
         return xml;
+    }
+
+    /** 段落名进丢弃原因与 monitor 事件，必须稳定可 grep。 */
+    private static final String SECTION_CURRENT_TASK = "current_task";
+    private static final String SECTION_INVENTORY = "inventory";
+    private static final String SECTION_EFFECTS = "effects";
+    private static final String SECTION_RIDING = "riding";
+    private static final String SECTION_PLUGINS = "plugin_fragments";
+
+    /**
+     * 运行期状态切段（<b>顺序＝拼进提示词的顺序</b>，与接入前逐字节一致）。
+     *
+     * <p><b>必知区</b>＝{@code <current_task>}（她此刻在干的活）＋插件片段（任务链镜像 / 需求缺口）。
+     * 这两样是「当前目标」与「关键资产缺口」，按 §15.5 不能压缩到改变语义；装不下就整次拒绝。
+     *
+     * <p><b>可选段落</b>按「丢了能不能取回」排优先级：背包 / 效果 / 骑乘 都有工具能重取，
+     * 所以它们是可丢的那部分（优先级只决定先丢谁）。2026-10-20 实机前发现的两件事都写在这里：
+     * ①正文顺序与取舍顺序必须解耦（否则第一个被丢的恰好是排最后的插件片段）；
+     * ②插件片段一度被我当成可选、优先级最高——实测仍会输给「装得下的背包」，故改判必知区。
+     */
+    private List<ContextBudget.Section> runtimeStateSections() {
+        // 一次算出正文再量 token：同一个方法调两次会拿到不同的 elapsed_s，
+        // 「称重的东西」和「放进去的东西」必须是同一份字节。
+        String currentTask = currentTaskXml();
+        String inventory = inventoryXml();
+        String effects = effectsXml();
+        String riding = ridingXml();
+        String plugins = com.dwinovo.numen.api.NumenPlugins.stateFragments(entityUuid);
+        List<ContextBudget.Section> sections = new ArrayList<>(5);
+        sections.add(new ContextBudget.Section(SECTION_CURRENT_TASK, currentTask, true,
+                estimateTokensOfText(currentTask), PRIORITY_CURRENT_TASK));
+        sections.add(runtimeSection(SECTION_INVENTORY, inventory, PRIORITY_INVENTORY));
+        sections.add(runtimeSection(SECTION_EFFECTS, effects, PRIORITY_EFFECTS));
+        sections.add(runtimeSection(SECTION_RIDING, riding, PRIORITY_RIDING));
+        // 插件片段也是必知区（2026-10-20 实机改判）：实测把上限设到 2000 字符时，
+        // 「背包 874 能装下、插件片段 1777 装不下」→ 分配器**丢掉了 RDD 任务链镜像、
+        // 保住了背包**。那正是 §15.5 说不能发生的交换：任务链与需求缺口是当前目标，
+        // 丢了取不回来；背包用工具随时能重取。
+        sections.add(new ContextBudget.Section(SECTION_PLUGINS, plugins, true,
+                estimateTokensOfText(plugins), PRIORITY_PLUGINS));
+        return sections;
+    }
+
+    private static final int PRIORITY_CURRENT_TASK = 100;   // 必知区，优先级只作记录
+    private static final int PRIORITY_PLUGINS = 40;         // 必知区（任务链镜像 / 需求缺口），优先级只作记录
+    private static final int PRIORITY_RIDING = 30;
+    private static final int PRIORITY_EFFECTS = 20;
+    private static final int PRIORITY_INVENTORY = 10;       // 工具可重取，且通常最大 → 第一个丢
+
+    private static ContextBudget.Section runtimeSection(String name, String text, int priority) {
+        return new ContextBudget.Section(name, text, false, estimateTokensOfText(text), priority);
+    }
+
+    /**
+     * 上下文预算闸（G4b，§15.5）：必知区自身装不下 → <b>这一轮不发</b>。
+     *
+     * <p>为什么是「拦下」而不是「发个裁剪版」：必知区里就是当前目标，裁掉之后模型会对着
+     * 不完整的现场下判断，而主人看不出少了什么——那比一个明确的拒绝坏得多。
+     * 拒绝必须说得清「上限多少、必知区要多少、去打哪儿调」，否则等于静默停。
+     *
+     * @return {@code null} = 可以发；否则是一句给主人看的人话原因
+     */
+    private String contextBudgetProblem() {
+        ContextBudget budget = BudgetPolicy.contextBudget();
+        if (budget.isUnlimited()) return null;
+        ContextBudget.Allocation plan = ContextBudget.allocate(budget, runtimeStateSections());
+        if (!plan.denied()) return null;
+        publishContextBudget(plan);
+        return "上下文预算不足：必知区就要 "
+                + (budget.maxChars() > 0 ? plan.charsUsed() + " 字符" : plan.tokensUsed() + " token")
+                + "，上限 "
+                + (budget.maxChars() > 0 ? budget.maxChars() + " 字符" : budget.maxTokens() + " token")
+                + "（调大 budget-policy.json 的 context，或先结束当前任务）";
+    }
+
+    /** 降档/拒绝的埋点。<b>只在真的降档或真的拒绝时发</b>——默认配置下一条都不发（S87）。 */
+    private void publishContextBudget(ContextBudget.Allocation plan) {
+        if (plan.denied()) {
+            Constants.LOG.warn("[numen-ctx#{}] 上下文预算 {}: kept={} dropped={} reasons={} tokens={}/{} chars={}/{} ({})",
+                    entityUuid, plan.status(), String.join(",", plan.keptNames()),
+                    String.join(",", plan.droppedNames()), String.join(",", plan.truncationReasons()),
+                    plan.tokensUsed(), plan.budget().maxTokens(), plan.charsUsed(), plan.budget().maxChars(),
+                    plan.budget().tokenizerVersion());
+        } else {
+            Constants.LOG.info("[numen-ctx#{}] 上下文预算 {}: kept={} dropped={} reasons={} tokens={}/{} chars={}/{} ({})",
+                    entityUuid, plan.status(), String.join(",", plan.keptNames()),
+                    String.join(",", plan.droppedNames()), String.join(",", plan.truncationReasons()),
+                    plan.tokensUsed(), plan.budget().maxTokens(), plan.charsUsed(), plan.budget().maxChars(),
+                    plan.budget().tokenizerVersion());
+        }
+        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "context_budget",
+                java.util.Map.ofEntries(
+                        java.util.Map.entry("companion_id", entityUuid.toString()),
+                        java.util.Map.entry("turn", convo.turnCount()),
+                        java.util.Map.entry("status", plan.status()),
+                        java.util.Map.entry("reasonCode", plan.reasonCode()),
+                        java.util.Map.entry("kept", String.join(",", plan.keptNames())),
+                        java.util.Map.entry("dropped", String.join(",", plan.droppedNames())),
+                        java.util.Map.entry("truncationReasons", String.join(",", plan.truncationReasons())),
+                        java.util.Map.entry("tokensUsed", plan.tokensUsed()),
+                        java.util.Map.entry("charsUsed", plan.charsUsed()),
+                        java.util.Map.entry("limitTokens", plan.budget().maxTokens()),
+                        java.util.Map.entry("limitChars", plan.budget().maxChars()),
+                        java.util.Map.entry("tokenizer", plan.budget().tokenizerVersion())));
     }
 
     /** Live async-task state, recomputed for every worker request and never persisted. */
