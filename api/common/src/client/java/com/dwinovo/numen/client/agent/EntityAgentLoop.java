@@ -266,6 +266,15 @@ public final class EntityAgentLoop {
     private static final long CONTEXT_BUDGET_NOTICE_COOLDOWN_MS = 60_000L;
 
     /**
+     * G4c S102：预算窗口到点的时刻（0 = 没有登记）。
+     *
+     * <p>为什么需要它：被预算拦下只是「这一轮不发」，但触发它的唤醒事件已经被消费了。
+     * 主人挂机 + 身体空闲时不会再有唤醒事件，于是「等窗口重置」这句话永远等不到执行。
+     * 这里记下到点时刻，由 {@link #clientTick()} 到点推一条系统事件，让循环自己重试。
+     */
+    private long budgetRetryAtMs = 0L;
+
+    /**
      * Set while an external driver (an MCP client / Claude) holds this body via
      * {@link com.dwinovo.numen.api.NumenActuator}. The internal brain is paused —
      * no LLM turn starts — until {@link #releaseExternal}. Distinct from
@@ -613,10 +622,40 @@ public final class EntityAgentLoop {
     public void clientTick() {
         dispatcher.tick();
         presenter.tick();
+        // G4c S102：预算窗口到点**自己**再试一次，不等主人来叫。
+        // 为什么必须在这里做：被预算拦下时只是 return false，触发它的那条唤醒事件已经消费掉了；
+        // 如果主人挂机、身体又没在干活，就不会有下一个唤醒事件 —— 那句「等窗口重置」变成等运气。
+        // 做法是「到点推一条系统事件」而不是新起定时器：队列本来就是驱动这个循环的唯一机制，
+        // 推一条 type=budget_retry 的事件（未登记类型 → EventTypes.UNKNOWN：给模型看、不给主人刷屏），
+        // 下一 tick 的 maybeDrain 就会把它排空并开轮。
+        maybeNudgeAfterBudgetWindow();
         // 攒够时长也要开口:光靠"输入到达"触发的话,最后一条之后就再没人问了
         if (!awaitingLlmResponse && !dispatcher.busy()) {
             maybeDrain();
         }
+    }
+
+    /**
+     * 预算窗口到点时推一条系统事件，让循环自己再试一次（G4c S102）。
+     *
+     * <p>为什么是「推事件」而不是「直接调 tryStartTurn」：直接开轮等于给她一个**没有理由**的回合
+     * （没有主人输入、也没有目标跟进），那会绕过「主动性档位」这套设计。推一条事件则是走既有驱动链：
+     * 她收到一条「预算窗口已重置」的事实，然后照常决定要不要动。
+     */
+    private void maybeNudgeAfterBudgetWindow() {
+        long due = budgetRetryAtMs;
+        if (due <= 0) return;
+        long now = System.currentTimeMillis();
+        if (now < due) return;
+        budgetRetryAtMs = 0;
+        long lateMs = now - due;
+        Constants.LOG.info("[numen-entity#{}] 预算窗口到点（晚 {}s），推一条系统事件让循环自己重试",
+                entityUuid, lateMs / 1000L);
+        pushEvent(com.dwinovo.numen.event.EventTypes.EVENT,
+                "预算窗口已重置，之前因预算延后的工作可以继续了。", now, true);
+        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "budget_retry",
+                java.util.Map.of("companion_id", entityUuid.toString(),
+                        "lateMs", lateMs, "source", "clientTick"));
     }
 
     /**
@@ -1796,6 +1835,14 @@ public final class EntityAgentLoop {
         // 被豁免时发一条 budget_owner_override，让「预算被主人刷过头」可被数出来，而不是暗账。
         var budgetOver = BudgetPolicy.checkBlock("execution", contextTokens);
         var budgetBlock = ownerSpokeThisTurn ? null : budgetOver;
+        // G4c S102：被拦下时登记「窗口什么时候让出额度」，到点由 clientTick 推事件自己重试。
+        // 主人回合不受影响（S107 方案 A 已豁免），所以这里只在真的拦下时登记。
+        if (budgetBlock != null) {
+            long waitMs = BudgetPolicy.millisUntilWindowReset(budgetBlock.role());
+            budgetRetryAtMs = waitMs > 0 ? System.currentTimeMillis() + waitMs : 0L;
+        } else {
+            budgetRetryAtMs = 0L;   // 这次没被拦 → 过期的登记作废，避免攒出一条莫名的提醒
+        }
         if (ownerSpokeThisTurn && budgetOver != null) {
             com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "budget_owner_override",
                     java.util.Map.ofEntries(
