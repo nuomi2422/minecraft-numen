@@ -1801,7 +1801,8 @@ public final class EntityAgentLoop {
                         budgetBlock.used().tokens(), budgetBlock.limit().tokensPerWindow());
                 // 预算问题不能静默:聊天栏警示行是快捷键用户的唯一出口
                 com.dwinovo.numen.client.chat.ChatLines.notice(presenter.speakerName(),
-                        "预算用尽（" + budgetBlock.role() + "），等窗口重置或主人唤醒");
+                        "预算用尽（" + budgetBlock.role() + "），"
+                                + describeWindowReset(budgetBlock.role()));
                 com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "budget_block",
                         java.util.Map.ofEntries(
                                 java.util.Map.entry("actor", "numen"),
@@ -1816,6 +1817,10 @@ public final class EntityAgentLoop {
                                 java.util.Map.entry("limitTokens", budgetBlock.limit().tokensPerWindow()),
                                 java.util.Map.entry("limitCalls", budgetBlock.limit().callsPerWindow()),
                                 java.util.Map.entry("limitMinutes", budgetBlock.limit().minutesPerWindow()),
+                                // G4c S102 原语：还有多久窗口才让出额度 —— 这是「自动恢复」要用的数，
+                                // 以前只有「等窗口重置」这句话，没人知道是 3 分钟还是 55 分钟。
+                                java.util.Map.entry("retryInSeconds",
+                                        BudgetPolicy.secondsUntilWindowReset(budgetBlock.role())),
                                 java.util.Map.entry("mode", budgetBlock.mode())));
             }
             com.dwinovo.numen.client.hud.SpeechBubbles.clear(entityUuid);
@@ -1886,6 +1891,21 @@ public final class EntityAgentLoop {
                     bounceBackToMain(gen, res, err);
                 });
         return true;
+    }
+
+    /**
+     * 「预算用尽」那句人话的尾巴：<b>还剩多久</b>，而不是「等窗口重置」。
+     *
+     * <p>为什么值得单独写一个方法（G4c S102）：被拦下的那一刻，主人最想知道的是「多久以后会好」。
+     * 原来只说「等窗口重置或主人唤醒」——等于让他自己猜，也等于把「什么时候恢复」这件事
+     * 变成了运气（没有新唤醒事件就没人重试）。
+     */
+    private static String describeWindowReset(String roleOrPhase) {
+        long seconds = com.dwinovo.numen.agent.llm.BudgetPolicy.secondsUntilWindowReset(roleOrPhase);
+        if (seconds <= 0) return "本窗口应已腾出额度，下一轮会重试";
+        long minutes = seconds / 60;
+        if (minutes >= 1) return "约 " + minutes + " 分钟后本窗口让出额度（会自动重试）";
+        return "约 " + seconds + " 秒后本窗口让出额度（会自动重试）";
     }
 
     // ---- compaction ----

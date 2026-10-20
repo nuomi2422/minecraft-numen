@@ -573,6 +573,41 @@ public final class BudgetPolicy {
     }
 
     /**
+     * 该角色还剩多少毫秒「窗口才会让出额度」——即窗口里最早那笔调用滑出窗口的时刻。
+     *
+     * <p><b>为什么需要它</b>（G4c S102「窗口重置后自动恢复」）：现在被预算拦下后，只会在<b>下一个
+     * 唤醒事件</b>时重查一次。如果那时没有新的唤醒事件（主人在挂机、身体又没在干活），目标就停在
+     * 「等窗口重置」这句话上没人叫醒它 —— 那不是恢复，是等运气。有了这个数，调用点就能安排一次
+     * 「几点几分自己再来」的定时唤醒，而不是靠人催。
+     *
+     * @return 毫秒；{@code 0} = 现在就有额度（窗口里没有调用）或该角色不限
+     */
+    public static long millisUntilWindowReset(String role) {
+        ArrayDeque<Call> q = METER.get(role);
+        if (q == null) return 0L;
+        long now = clock.getAsLong();
+        long windowMillis = policy.windowMinutes() * 60_000L;
+        synchronized (q) {
+            prune(q, now);
+            if (q.isEmpty()) return 0L;
+            long oldest = q.peekFirst().atMs();
+            long resetAt = oldest + windowMillis;
+            return Math.max(0L, resetAt - now);
+        }
+    }
+
+    /**
+     * {@link #millisUntilWindowReset(String)} 的秒数版（给事件/日志用，向上取整：
+     * 报「还剩 0 秒」时其实还要等一下，会让人以为马上就好）。
+     */
+    public static long secondsUntilWindowReset(String phaseOrRole) {
+        String role = phaseOrRole != null && METER.containsKey(phaseOrRole) ? phaseOrRole : roleOf(phaseOrRole);
+        long millis = millisUntilWindowReset(role);
+        if (millis <= 0) return 0L;
+        return (millis + 999L) / 1000L;
+    }
+
+    /**
      * 该相位所属角色<b>是否配了限额</b>。只读、不建策、不记账。
      *
      * <p>调用点用它区分两件长得一样的事：「这个角色根本没限额」（什么都不用报）与

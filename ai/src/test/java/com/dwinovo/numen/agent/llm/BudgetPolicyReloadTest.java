@@ -170,6 +170,37 @@ class BudgetPolicyReloadTest {
     }
 
     @Test
+    void windowResetTimeIsDerivedFromTheOldestCallInTheWindow() {
+        // G4c S102 的原语：被拦下之后「几点自己再来」必须算得出来，否则「窗口重置后自动恢复」
+        // 只能靠人催或靠运气（没有新的唤醒事件时，没人会重查）。
+        BudgetPolicy.resetForTest();
+        try {
+            long t0 = 1_000_000L;
+            BudgetPolicy.setClockForTest(() -> t0);
+            BudgetPolicy.record("execution", 100, 10);
+
+            // 刚记完：窗口 60 分钟，最早那笔在 t0 → 重置在 t0+60min
+            assertEquals(60L * 60_000L, BudgetPolicy.millisUntilWindowReset("execution"));
+            assertEquals(3600L, BudgetPolicy.secondsUntilWindowReset("execution"), "秒数向上取整");
+
+            // 过了 50 分钟：还剩 10 分钟
+            BudgetPolicy.setClockForTest(() -> t0 + 50L * 60_000L);
+            assertEquals(10L * 60_000L, BudgetPolicy.millisUntilWindowReset("execution"));
+            assertEquals(600L, BudgetPolicy.secondsUntilWindowReset("execution"));
+
+            // 过了 61 分钟：窗口已滚过那笔 → 0（现在就有额度）
+            BudgetPolicy.setClockForTest(() -> t0 + 61L * 60_000L);
+            assertEquals(0L, BudgetPolicy.millisUntilWindowReset("execution"));
+            assertEquals(0L, BudgetPolicy.secondsUntilWindowReset("execution"));
+
+            // 没记过账的角色 / 无限额角色 = 0
+            assertEquals(0L, BudgetPolicy.millisUntilWindowReset("planning"));
+        } finally {
+            BudgetPolicy.resetForTest();
+        }
+    }
+
+    @Test
     void deletingTheFileFallsBackToUnlimitedInsteadOfHoldingTheOldPolicy() throws Exception {
         BudgetPolicy.resetForTest();
         try {
