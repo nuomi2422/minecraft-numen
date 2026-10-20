@@ -704,6 +704,154 @@ public final class TaskChain {
         clearExecutionMetadata(); // 换计划 = 旧执行身份/启动时间作废
     }
 
+    // ---- G3c：计划补丁（propose 只校验；commit 在 stateVersion CAS 下原子应用） ----
+
+    /** 已提交补丁的短回执（有界；用于观测「补丁为什么被拒/何时生效」，不存正文）。 */
+    private final java.util.ArrayDeque<Map.Entry<String, Long>> committedPatches = new java.util.ArrayDeque<>();
+
+    /**
+     * 提出补丁：<b>只校验、不改状态</b>（75号 §15.3-5：proposePatch 只存候选，
+     * 不立即进入 REPLANNING、不清在途执行）。
+     *
+     * <p>校验规则（首版刻意窄）：
+     * 目标必须是<b>当前一级</b>；CAS 基线必须是当前 {@code stateVersion}；
+     * ADD 的 id 全链唯一；REPLACE/DROP 只能碰 <b>PENDING</b> 节点（已完成/在跑/暂停一律拒绝）；
+     * 补丁不得让当前一级变空；同一 patchId 已提交过 → {@code ALREADY_COMMITTED}。
+     */
+    public synchronized PlanPatch.Receipt proposePatch(PlanPatch patch) {
+        PatchCheck check = validatePatch(patch, patch == null ? -1L : patch.baseStateVersion());
+        return check.receipt();
+    }
+
+    /**
+     * 提交补丁：CAS（{@code expectedStateVersion} 必须等于当前版本）后原子应用。
+     *
+     * <p>失败不留半更新：所有校验先做完，再一次性重建当前一级的二级列表；
+     * 成功 {@code stateVersion + 1}（后续补丁/判定按新版本判新旧）。
+     */
+    public synchronized PlanPatch.Receipt commitPatch(PlanPatch patch, long expectedStateVersion) {
+        PatchCheck check = validatePatch(patch, expectedStateVersion);
+        if (!check.receipt().ok()) {
+            return check.receipt();
+        }
+        List<Subtask> working = check.working();
+        PrimaryGoal cur = currentPrimary();
+        List<PrimaryGoal> primaries = new ArrayList<>(goal.primaryGoals());
+        primaries.set(primaryIndex,
+                new PrimaryGoal(cur.id(), cur.description(), List.copyOf(working), cur.waitFor(), false));
+        goal = new Goal(goal.id(), goal.description(), primaries);
+        // 新增节点的状态表初始化；被删节点的运行时残留清掉（只可能是 PENDING，无基线/计数）
+        for (Subtask s : working) {
+            statuses.putIfAbsent(s.id(), SubtaskStatus.PENDING);
+        }
+        for (String id : new ArrayList<>(statuses.keySet())) {
+            if (working.stream().noneMatch(s -> s.id().equals(id)) && wasInPrimary(cur.id(), id)) {
+                statuses.remove(id);
+                skipReasons.remove(id);
+                pauseReasons.remove(id);
+                attempts.remove(id);
+                forgetAcquireBaseline(id);
+            }
+        }
+        stateVersion++;            // G3c：补丁提交 = 安全提交
+        committedPatches.addLast(Map.entry(patch.patchId(), stateVersion));
+        while (committedPatches.size() > 16) {
+            committedPatches.removeFirst();
+        }
+        return PlanPatch.Receipt.ok(stateVersion);
+    }
+
+    /** 最近提交过的补丁（patchId → 版本），有界；只读。 */
+    public synchronized Map<String, Long> committedPatchesView() {
+        Map<String, Long> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Long> e : committedPatches) {
+            out.put(e.getKey(), e.getValue());
+        }
+        return Map.copyOf(out);
+    }
+
+    private record PatchCheck(PlanPatch.Receipt receipt, List<Subtask> working) {}
+
+    private PatchCheck validatePatch(PlanPatch patch, long expectedVersion) {
+        if (patch == null || patch.patchId() == null || patch.patchId().isBlank()) {
+            return new PatchCheck(PlanPatch.Receipt.rejected("BAD_INPUT", "patch requires an id"), null);
+        }
+        if (patch.ops().isEmpty()) {
+            return new PatchCheck(PlanPatch.Receipt.rejected("BAD_INPUT", "patch has no operations"), null);
+        }
+        if (!currentPrimary().id().equals(patch.primaryId())) {
+            return new PatchCheck(PlanPatch.Receipt.rejected("NOT_CURRENT_PRIMARY",
+                    "patch targets " + patch.primaryId() + " but current is " + currentPrimary().id()), null);
+        }
+        if (expectedVersion != stateVersion) {
+            return new PatchCheck(PlanPatch.Receipt.rejected("STALE_VERSION",
+                    "expected stateVersion " + expectedVersion + " but chain is at " + stateVersion), null);
+        }
+        for (Map.Entry<String, Long> e : committedPatches) {
+            if (e.getKey().equals(patch.patchId())) {
+                return new PatchCheck(PlanPatch.Receipt.rejected("ALREADY_COMMITTED",
+                        "patch " + patch.patchId() + " was already committed at version " + e.getValue()), null);
+            }
+        }
+        List<Subtask> working = new ArrayList<>(currentPrimary().subtasks());
+        Set<String> allIds = new HashSet<>(statuses.keySet());
+        for (PlanPatch.Op op : patch.ops()) {
+            if (op == null || op.kind() == null || op.nodeId() == null || op.nodeId().isBlank()) {
+                return new PatchCheck(PlanPatch.Receipt.rejected("BAD_INPUT", "operation requires kind and nodeId"), null);
+            }
+            switch (op.kind()) {
+                case ADD_NODE -> {
+                    if (op.condition() == null || op.description() == null || op.description().isBlank()) {
+                        return new PatchCheck(PlanPatch.Receipt.rejected("BAD_INPUT",
+                                "ADD_NODE requires description and condition: " + op.nodeId()), null);
+                    }
+                    if (allIds.contains(op.nodeId()) || working.stream().anyMatch(s -> s.id().equals(op.nodeId()))) {
+                        return new PatchCheck(PlanPatch.Receipt.rejected("DUPLICATE_ID",
+                                "node id already used in chain: " + op.nodeId()), null);
+                    }
+                    working.add(Subtask.hardCoded(op.nodeId(), op.description(), op.condition()));
+                }
+                case REPLACE_PENDING, DROP_PENDING -> {
+                    int idx = -1;
+                    for (int i = 0; i < working.size(); i++) {
+                        if (working.get(i).id().equals(op.nodeId())) {
+                            idx = i;
+                            break;
+                        }
+                    }
+                    if (idx < 0) {
+                        return new PatchCheck(PlanPatch.Receipt.rejected("NODE_MISSING",
+                                "node not found in current primary: " + op.nodeId()), null);
+                    }
+                    if (statuses.get(op.nodeId()) != SubtaskStatus.PENDING) {
+                        return new PatchCheck(PlanPatch.Receipt.rejected("NODE_NOT_PENDING",
+                                "only not-yet-started nodes may be patched: " + op.nodeId()
+                                        + " is " + statuses.get(op.nodeId())), null);
+                    }
+                    if (op.kind() == PlanPatch.OpKind.DROP_PENDING) {
+                        if (working.size() <= 1) {
+                            return new PatchCheck(PlanPatch.Receipt.rejected("WOULD_EMPTY",
+                                    "patch would leave the current primary with no nodes"), null);
+                        }
+                        working.remove(idx);
+                    } else {
+                        if (op.condition() == null || op.description() == null || op.description().isBlank()) {
+                            return new PatchCheck(PlanPatch.Receipt.rejected("BAD_INPUT",
+                                    "REPLACE_PENDING requires description and condition: " + op.nodeId()), null);
+                        }
+                        Subtask old = working.get(idx);
+                        // 保留原 body（身体指令不属于补丁范围）；只换描述与完成条件
+                        working.set(idx, Subtask.hardCoded(op.nodeId(), op.description(), op.condition(), old.body()));
+                    }
+                }
+            }
+        }
+        if (working.isEmpty()) {
+            return new PatchCheck(PlanPatch.Receipt.rejected("WOULD_EMPTY", "patch left no nodes"), null);
+        }
+        return new PatchCheck(PlanPatch.Receipt.ok(stateVersion), List.copyOf(working));
+    }
+
     /** RECOVERING 出口：停机恢复后宿主核实当前二级可继续 → 回到 ACTIVE，照常跑监督/完成判定。 */
     public synchronized void resumeFromRecovering() {
         if (primaryStatus != PrimaryGoalStatus.RECOVERING) throw new IllegalStateException("not recovering: " + primaryStatus);
