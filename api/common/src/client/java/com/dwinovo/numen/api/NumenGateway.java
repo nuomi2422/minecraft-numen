@@ -91,6 +91,40 @@ public final class NumenGateway {
     }
 
     /**
+     * G4c S107b：把一条<b>系统事件</b>交给同伴（「目标还在，接着干」这类），<b>不冒充主人</b>。
+     *
+     * <p>与 {@link #enqueue} 的唯一区别：入口走 {@code submitSystemPrompt}，进的是「世界事件」队列，
+     * 于是「主人回合豁免预算」那条判断不会把它算成人说的话 —— 否则「卡死 → 重推」这个循环
+     * 可以无限绕过预算（2026-10-21 实机暴露）。
+     *
+     * <p>其它语义与 {@code enqueue} 一致：跨线程自动 marshal、斜杠命令照旧本地执行、驾驶期间照旧报
+     * {@link Delivery#TO_EXTERNAL_BRAIN}。
+     */
+    public static Delivery enqueueSystem(UUID companion, String message) {
+        if (companion == null || message == null || message.isBlank()) return Delivery.REJECTED;
+        boolean known = AgentLoopRegistry.get(companion).isPresent()
+                || com.dwinovo.numen.client.agent.NumenRoster.instance().name(companion) != null;
+        if (!known) return Delivery.REJECTED;
+        Minecraft mc = Minecraft.getInstance();
+        if (!mc.isSameThread()) {
+            mc.execute(() -> {
+                EntityAgentLoop l = AgentLoopRegistry.getOrCreate(companion);
+                if (!dispatchIfCommand(l, message)) {
+                    l.submitSystemPrompt(message);
+                }
+            });
+            return Delivery.HANDED_OFF;
+        }
+        EntityAgentLoop loop = AgentLoopRegistry.getOrCreate(companion);
+        if (dispatchIfCommand(loop, message)) {
+            return Delivery.SEEN;
+        }
+        boolean pressed = loop.submitSystemPrompt(message);
+        if (loop.isExternallyDriven()) return Delivery.TO_EXTERNAL_BRAIN;
+        return pressed ? Delivery.QUEUED : Delivery.SEEN;
+    }
+
+    /**
      * 是命令就跑掉并返回 true;不是命令返回 false(调用方照旧当聊天喂)。
      * 命令回话经 {code ChatCommands.dispatch} 走,和 GUI 手打同一条路。
      */

@@ -33,6 +33,13 @@ public final class NumenPlugins {
     /** 客户端接上来的那几样;专用服务器上一直是 null,于是相关调用自然成空操作。 */
     private static volatile Consumer<Path> skills;
     private static volatile BiFunction<UUID, String, Delivery> enqueue;
+
+    /**
+     * G4c S107b：系统事件通道（「目标还在，接着干」这类），与 {@link #enqueue}（主人话语）分开。
+     *
+     * <p>为 {@code null} 时 `enqueueSystem` 退回 `enqueue` —— 老宿主不接也不会坏。
+     */
+    private static volatile BiFunction<UUID, String, Delivery> enqueueSystem;
     /** 客户端接上来了没有。它同时就是"我现在是不是客户端"的答案。 */
     private static volatile boolean clientReady;
 
@@ -55,8 +62,18 @@ public final class NumenPlugins {
      */
     public static void bindClient(Consumer<Path> skillSink,
                                   BiFunction<UUID, String, Delivery> enqueueFn) {
+        bindClient(skillSink, enqueueFn, null);
+    }
+
+    /**
+     * 同上，但额外把<b>系统事件</b>通道接上（G4c S107b）。{@code systemFn} 为 null 时退回主人通道。
+     */
+    public static void bindClient(Consumer<Path> skillSink,
+                                  BiFunction<UUID, String, Delivery> enqueueFn,
+                                  BiFunction<UUID, String, Delivery> enqueueSystemFn) {
         skills = skillSink;
         enqueue = enqueueFn;
+        enqueueSystem = enqueueSystemFn;
         clientReady = true;
         for (Runnable r : PENDING) runClientBlock(r);
         for (Path root : PENDING_SKILLS) skillSink.accept(root);
@@ -234,6 +251,16 @@ public final class NumenPlugins {
         public Delivery enqueue(UUID companion, String message) {
             BiFunction<UUID, String, Delivery> fn = enqueue;
             return fn == null ? Delivery.REJECTED : fn.apply(companion, message);
+        }
+
+        /**
+         * G4c S107b：系统事件（不冒充主人）。**未接系统通道时退回 {@link #enqueue}** ——
+         * 行为与旧版一致，只是「主人回合豁免」那条判断会更宽（= 旧行为）。
+         */
+        @Override
+        public Delivery enqueueSystem(UUID companion, String message) {
+            BiFunction<UUID, String, Delivery> fn = enqueueSystem;
+            return fn != null ? fn.apply(companion, message) : enqueue(companion, message);
         }
     }
 }

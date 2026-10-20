@@ -1635,7 +1635,9 @@ private static String safeDeathAttacker(NumenPlayer body) {
             return false;
         }
         try {
-            numenApi.enqueue(companionId, message);
+            // G4c S107b：拍醒是**系统事件**，不是主人的话 —— 走 enqueueSystem 而不是 enqueue。
+            // 否则「卡死 → 重推」这个循环会被当成主人回合、绕过预算（2026-10-21 实机暴露）。
+            numenApi.enqueueSystem(companionId, message);
             LAST_NUDGE_AT.put(nudgeBucket(companionId), now);
             Map<String, Object> data = observationData(companionId);
             data.put("outputId", UUID.randomUUID().toString());

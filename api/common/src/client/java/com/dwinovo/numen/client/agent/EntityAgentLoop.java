@@ -550,6 +550,30 @@ public final class EntityAgentLoop {
     }
 
     /**
+     * G4c S107b：投一条<b>系统事件</b>（不是主人说的话）。
+     *
+     * <p>与 {@link #submitPrompt} 的差别只有<b>队列类型</b>：这里进 {@code EventTypes.EVENT}
+     * （给模型看、不进主人聊天流、`ownerSpokeThisTurn` 不会为真），所以「主人回合豁免预算」
+     * 不会把系统重推也算成主人 —— 否则卡死重推能无限绕过预算。
+     *
+     * @return 收下了 → true（与 {@code submitPrompt} 同义）
+     */
+    public boolean submitSystemPrompt(String text) {
+        if (text == null || text.isBlank()) return false;
+        return enqueueSystemEvent(text);
+    }
+
+    /** 系统事件的入队实现（与 {@link #enqueueOwnerWords} 同形，只是类型与日志不同）。 */
+    private boolean enqueueSystemEvent(String text) {
+        boolean deferred = awaitingLlmResponse || dispatcher.busy();
+        enqueueBothQueues(com.dwinovo.numen.event.EventTypes.EVENT, text,
+                System.currentTimeMillis(), true);
+        Constants.LOG.info("[numen-entity#{}] system event ({} chars){}: {}",
+                entityUuid, text.length(), deferred ? " — buffered (mid-turn)" : "", text);
+        return true;
+    }
+
+    /**
      * 主人打了一条斜杠命令(见 {@code ChatCommands})。
      *
      * <p>命令是主人对<b>客户端</b>说的话,展开成什么由客户端决定。两半分开放:

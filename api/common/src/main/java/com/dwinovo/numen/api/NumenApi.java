@@ -106,6 +106,24 @@ public interface NumenApi {
     Delivery enqueue(UUID companion, String message);
 
     /**
+     * 把一条<b>系统事件</b>（「目标还在，接着干」「预算窗口已重置」这类）交给同伴的内置大脑。
+     *
+     * <p><b>和 {@link #enqueue} 的区别只有一个，但很要命</b>：{@code enqueue} 的语义是
+     * 「效果和主人亲手打字一样」，所以它进的是**主人话语**队列（{@code <query>}）；
+     * 本方法进的是**世界事件**队列（{@code <events>}）。同伴两边都看得见，但系统知道哪句是人说的。
+     *
+     * <p>为什么要分（2026-10-21 实机暴露，G4c S107b）：预算开闸后，主人回合会被豁免
+     * （{@link #enqueue} 进来的都算主人）。而 RDD 的卡死重推当时走的也是 {@code enqueue}，
+     * 于是**「卡死 → 重推」这个循环可以绕过预算** —— 在最需要它止血的场景里失效。
+     *
+     * <p><b>默认实现 = 退回 {@link #enqueue}</b>：老宿主/老插件不用改一行也不会坏；
+     * 新宿主覆盖它走事件队列。
+     */
+    default Delivery enqueueSystem(UUID companion, String message) {
+        return enqueue(companion, message);
+    }
+
+    /**
      * 每次<b>任务链规划请求</b>现算一段参考资料,拼进真正发给模型的请求正文。
      *
      * <p>与 {@link #contributeState} 同构,只是消费方不同:那份进同伴每轮的
