@@ -1792,7 +1792,22 @@ public final class EntityAgentLoop {
         long contextTokens = lastPromptTokens > 0
                 ? lastPromptTokens
                 : estimateContextTokens(convo.snapshot());
-        var budgetBlock = BudgetPolicy.checkBlock("execution", contextTokens);
+        // G4c S107（方案 A）：主人回合豁免预算闸 —— 预算管的是花多少钱，不是谁说了算。
+        // 被豁免时发一条 budget_owner_override，让「预算被主人刷过头」可被数出来，而不是暗账。
+        var budgetOver = BudgetPolicy.checkBlock("execution", contextTokens);
+        var budgetBlock = ownerSpokeThisTurn ? null : budgetOver;
+        if (ownerSpokeThisTurn && budgetOver != null) {
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "budget_owner_override",
+                    java.util.Map.ofEntries(
+                            java.util.Map.entry("actor", "numen"),
+                            java.util.Map.entry("companionId", entityUuid.toString()),
+                            java.util.Map.entry("role", budgetOver.role()),
+                            java.util.Map.entry("exceeded", String.join("+", budgetOver.exceeded())),
+                            java.util.Map.entry("usedTokens", budgetOver.used().tokens()),
+                            java.util.Map.entry("limitTokens", budgetOver.limit().tokensPerWindow()),
+                            java.util.Map.entry("retryInSeconds", BudgetPolicy.secondsUntilWindowReset(budgetOver.role())),
+                            java.util.Map.entry("mode", budgetOver.mode())));
+        }
         if (budgetBlock != null) {
             budgetBlockedRole = budgetBlock.role();
             if (BudgetPolicy.notifyBlock(budgetBlock)) {

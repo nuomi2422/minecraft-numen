@@ -372,8 +372,31 @@ public final class BudgetPolicy {
         }
     }
 
-    /** 超限判定（两种模式共用的纯求值，不带冷却）。 */
-    private static Advice evaluate(Policy p, String phase, long estimatedPromptTokens) {
+    /**
+     * G4c S107（<b>方案 A：主人回合豁免</b>）：主人的话撞上预算用尽时，<b>不拦</b>。
+     *
+     * <p><b>为什么选 A 而不是 B</b>：预算管的是「花多少钱」，不是「谁说了算」。
+     * 把主人的一句指令压到「等窗口重置」，等于系统推翻主人（RL-10 的精神），
+     * 而代价只是这一轮多花一点额度 —— 主人是老板，这个取舍是划算的。
+     * 同时发一条 {@code budget_owner_override} 事件，让「预算被主人刷过头」这件事可被数出来，
+     * 而不是变成暗账。
+     *
+     * <p><b>方案 B（照拦 + 立刻告知排队）</b>只差一行：把本方法改成直接调 {@link #checkBlock}，
+     * 由调用点负责把「等 N 分钟」说给主人听。**两种都行，唯一不许的是第三种：静默压着。**
+     *
+     * <p>注意：豁免只作用于「这一轮要不要发」，<b>不改变计量</b>——花掉的 token 照样记，
+     * 所以下一轮会不会被拦，取决于真实用量，而不是取决于这次豁免。
+     *
+     * @param ownerSpokeThisTurn 本轮是否由主人的输入触发（{@code false} = 她自发的轮次）
+     * @return {@code null} = 放行（主人回合，或本来就没超限/不是 enforce）；否则同 {@link #checkBlock}
+     */
+    public static Advice checkBlockForTurn(String phase, long estimatedPromptTokens,
+                                           boolean ownerSpokeThisTurn) {
+        if (ownerSpokeThisTurn) return null;   // 方案 A
+        return checkBlock(phase, estimatedPromptTokens);
+    }
+
+    /** 超限判定（两种模式共用的纯求值，不带冷却）。 */    private static Advice evaluate(Policy p, String phase, long estimatedPromptTokens) {
         String role = roleOf(phase);
         Limit limit = p.roles().get(role);
         if (limit == null || limit.isNone()) return null;
