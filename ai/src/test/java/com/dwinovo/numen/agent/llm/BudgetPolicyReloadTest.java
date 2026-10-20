@@ -31,8 +31,7 @@ class BudgetPolicyReloadTest {
         Files.writeString(file(), json, StandardCharsets.UTF_8);
     }
 
-    private static String policy(int version, int callsPerWindow, long maxChars) {
-        return """
+    private static String policy(int version, int callsPerWindow, long maxChars) {        return """
                 {
                   "version": %d,
                   "mode": "shadow",
@@ -75,6 +74,51 @@ class BudgetPolicyReloadTest {
             BudgetPolicy.refreshIfChanged();
             BudgetPolicy.refreshIfChanged();
             assertEquals(3, BudgetPolicy.policyForTest().version(), "mtime 没变就不该重读（每轮读盘是白烧 IO）");
+        } finally {
+            BudgetPolicy.resetForTest();
+        }
+    }
+
+    @Test
+    void reservationIsPinnedToThePolicyVersionItWasMadeUnder() throws Exception {
+        // 2026-10-20 复审要求：热重载让「占额在 v10、落地在 v11」成为真事。
+        // 不钉版本就会出现「按旧限额占的额度、按新限额记账」——开闸后这是对账灾难。
+        BudgetPolicy.resetForTest();
+        try {
+            write(policy(10, 5, 0));
+            BudgetPolicy.install(configDir);
+            BudgetPolicy.Reservation r = BudgetPolicy.reserve("execution", 100, 0);
+            assertNotNull(r);
+            assertEquals(10, r.policyVersion(), "预留必须记住占额时的策略版本");
+
+            Thread.sleep(20);
+            write(policy(11, 5, 0));
+            BudgetPolicy.refreshIfChanged();
+            assertEquals(11, BudgetPolicy.policyForTest().version());
+
+            BudgetPolicy.ChargeOutcome outcome = BudgetPolicy.chargeDetailed(r.id(), 42, 7);
+            assertFalse(outcome.charged(), "跨版本不许按旧预留记账");
+            assertEquals("POLICY_CHANGED", outcome.reason());
+            assertEquals(1, BudgetPolicy.policyVersionMismatches(), "错位要能被数出来");
+            assertEquals(0, BudgetPolicy.windowUsage("execution").calls(),
+                    "被拒的扣账不写计量：账由调用点用 record 补记（不重复记）");
+        } finally {
+            BudgetPolicy.resetForTest();
+        }
+    }
+
+    @Test
+    void samePolicyVersionChargesNormally() throws Exception {
+        BudgetPolicy.resetForTest();
+        try {
+            write(policy(20, 5, 0));
+            BudgetPolicy.install(configDir);
+            BudgetPolicy.Reservation r = BudgetPolicy.reserve("execution", 100, 0);
+            assertNotNull(r);
+            assertTrue(BudgetPolicy.chargeDetailed(r.id(), 42, 7).charged(), "同版本按实际用量扣账");
+            assertEquals(1, BudgetPolicy.windowUsage("execution").calls());
+            assertEquals(42L, BudgetPolicy.windowUsage("execution").tokens());
+            assertEquals(0, BudgetPolicy.policyVersionMismatches());
         } finally {
             BudgetPolicy.resetForTest();
         }

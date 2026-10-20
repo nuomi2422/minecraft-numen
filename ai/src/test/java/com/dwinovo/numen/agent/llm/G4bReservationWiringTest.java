@@ -209,9 +209,10 @@ class G4bReservationWiringTest {
         assertEquals(0, BudgetPolicy.activeReservations("execution"));
         assertEquals(1, BudgetPolicy.windowUsage("execution").calls(), "过期预留不许吃掉这笔真实调用");
         assertEquals(15L, BudgetPolicy.windowUsage("execution").tokens());
-        assertEquals("charged_after_expiry",
-                eventsOfType(events, "budget_settle").get(0).get("status"),
-                "退路要写明白：过期后直接记账，状态可核");
+        assertEquals("reconciled", eventsOfType(events, "budget_settle").get(0).get("status"),
+                "退路要写明白：过期后直接记账");
+        assertEquals("EXPIRED", eventsOfType(events, "budget_settle").get(0).get("reason"),
+                "而且要说清是哪一种没扣成（过期 / 策略变了）");
     }
 
     @Test

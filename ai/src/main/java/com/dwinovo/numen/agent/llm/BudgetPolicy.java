@@ -135,8 +135,12 @@ public final class BudgetPolicy {
      * <p><b>为什么需要它</b>：{@link #record} 是<b>事后</b>记账——两个并发请求都会先看到
      * 同一份窗口用量、都认为还有额度，于是双双发出、事后双双记超。执行角色目前是串行，
      * 问题被掩盖；检索/学习一旦并发出调用，这条缺口就是真超支（IC09）。
+     *
+     * @param policyVersion 占额时生效的策略版本（G4b-fix）。<b>扣账必须校验它</b>：
+     *                      热重载让「占额在 v10、落地在 v11」成为真事，不校验就会出现
+     *                      「按旧限额占的额度、按新限额记账」这种对不上账的账
      */
-    public record Reservation(long id, String role, long tokens, long expiresAtMs) {}
+    public record Reservation(long id, String role, long tokens, long expiresAtMs, int policyVersion) {}
 
     /** 预留默认租约：5 分钟。漏 release 的异常路径不会永久占额。 */
     public static final long DEFAULT_RESERVATION_TTL_MS = 5L * 60_000L;
@@ -171,7 +175,7 @@ public final class BudgetPolicy {
             }
             long ttl = ttlMillis <= 0 ? DEFAULT_RESERVATION_TTL_MS : ttlMillis;
             long id = RESERVATION_IDS.incrementAndGet();
-            Reservation reservation = new Reservation(id, role, want, now + ttl);
+            Reservation reservation = new Reservation(id, role, want, now + ttl, p.version());
             RESERVATIONS.put(id, reservation);
             return reservation;
         } catch (RuntimeException ex) {
@@ -189,26 +193,70 @@ public final class BudgetPolicy {
         return charge(reservationId, actualTokens, 0L);
     }
 
+    /** 扣账结果：为什么没扣成，调用点要能说清楚（而不是只知道「false」）。 */
+    public record ChargeOutcome(boolean charged, String reason) {
+        static final String CHARGED = "CHARGED";
+        static final String NOT_FOUND = "NOT_FOUND";
+        static final String EXPIRED = "EXPIRED";
+        static final String POLICY_CHANGED = "POLICY_CHANGED";
+    }
+
     /**
-     * 扣账（带耗时）。调用点只有 {@link NumenLlmClient}：它同时知道真实用量与本次往返耗时，
-     * 两个数一起记才和 {@link #record} 的口径一致（{@code minutesPerWindow} 限额看的就是耗时）。
+     * 扣账（带耗时，带策略版本校验）。
      *
-     * @param millis 本次调用耗时；{@code minutesPerWindow} 按它累计
-     * @return true = 该预留存在并已扣账；false = 预留不存在/已过期（不补记，避免凭空多一笔）
+     * <p>{@code minutesPerWindow} 限额看的是耗时，所以耗时与用量必须一起记。
+     *
+     * <p><b>策略版本校验（2026-10-20 复审要求）</b>：热重载让「占额在 v10、落地在 v11」成为真事。
+     * 版本不一致时<b>不按预留记账</b>（那张额度是按旧规则占的），把账交还调用点用
+     * {@link #record} 记一笔真实用量——<b>账不能丢</b>，但要能被数出来（{@link #policyVersionMismatches()}）。
+     *
+     * @return {@code charged=true} 只有一种情况：预留存在、未过期、策略版本未变
      */
-    public static boolean charge(long reservationId, long actualTokens, long millis) {
+    public static ChargeOutcome chargeDetailed(long reservationId, long actualTokens, long millis) {
         Reservation r = RESERVATIONS.get(reservationId);
         if (r == null) {
-            return false;
+            return new ChargeOutcome(false, ChargeOutcome.NOT_FOUND);
         }
         // 过期预留不可扣账：它占的额度已按 TTL 释放，再补记就变成凭空多一笔调用。
         if (clock.getAsLong() >= r.expiresAtMs()) {
             RESERVATIONS.remove(reservationId);
-            return false;
+            return new ChargeOutcome(false, ChargeOutcome.EXPIRED);
+        }
+        int nowVersion = policy.version();
+        if (r.policyVersion() != nowVersion) {
+            RESERVATIONS.remove(reservationId);
+            POLICY_VERSION_MISMATCHES.incrementAndGet();
+            AiLog.LOG.info("[numen-econ] 预留跨策略版本落地：占额 v{} → 扣账 v{}，改由调用点直接记账",
+                    r.policyVersion(), nowVersion);
+            return new ChargeOutcome(false, ChargeOutcome.POLICY_CHANGED);
         }
         RESERVATIONS.remove(reservationId);
         recordRole(r.role(), actualTokens, millis);
-        return true;
+        return new ChargeOutcome(true, ChargeOutcome.CHARGED);
+    }
+
+    /**
+     * 扣账（boolean 形式，语义同 {@link #chargeDetailed}）。
+     *
+     * @param millis 本次调用耗时；{@code minutesPerWindow} 按它累计
+     * @return true = 该预留存在、未过期、且策略版本未变，已扣账
+     */
+    public static boolean charge(long reservationId, long actualTokens, long millis) {
+        return chargeDetailed(reservationId, actualTokens, millis).charged();
+    }
+
+    private static final java.util.concurrent.atomic.AtomicInteger POLICY_VERSION_MISMATCHES =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    /**
+     * 「预留跨策略版本落地」的次数（只观测）。
+     *
+     * <p>为什么要能数：热重载是好事，但它让「占额时的规则」与「扣账时的规则」可以不同。
+     * 次数长期为 0 说明没人边跑边改配置；一旦开闸（enforce）后仍频繁非 0，
+     * 就意味着限额口径在漂移——那是要查的，不是要忍的。
+     */
+    public static int policyVersionMismatches() {
+        return POLICY_VERSION_MISMATCHES.get();
     }
 
     /**
@@ -586,6 +634,7 @@ public final class BudgetPolicy {
         LAST_ADVICE_MS.clear();
         RESERVATIONS.clear();
         RESERVATION_IDS.set(0L);
+        POLICY_VERSION_MISMATCHES.set(0);
         policy = DEFAULT_POLICY;
         loadedFrom = null;
         loadedMtimeMs = -1L;

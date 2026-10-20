@@ -442,14 +442,18 @@ public final class NumenLlmClient {
                 // 「没发生的事不许记账」。这是相对旧行为的**刻意修正**（旧行为会记 1 笔 token=0）。
                 if (reservation != null) {
                     String settleStatus;
+                    String settleReason = "";
                     if (attempts.get() > 0) {
-                        boolean charged = BudgetPolicy.charge(reservation.id(), meterTokens, durationMs);
-                        if (charged) {
+                        BudgetPolicy.ChargeOutcome outcome =
+                                BudgetPolicy.chargeDetailed(reservation.id(), meterTokens, durationMs);
+                        if (outcome.charged()) {
                             settleStatus = "charged";
                         } else {
-                            // 预留已过期（TTL 5 分钟）：这笔记账不能丢，退回直接记账。
+                            // 没扣成（过期 / 预览策略版本变了）：这笔记账不能丢，退回直接记账。
+                            // 事件里写明原因——否则「预留没生效」和「预留记错账」看起来一样。
                             BudgetPolicy.record(observation.phase(), meterTokens, durationMs);
-                            settleStatus = "charged_after_expiry";
+                            settleStatus = "reconciled";
+                            settleReason = outcome.reason();
                         }
                     } else {
                         BudgetPolicy.release(reservation.id());
@@ -457,8 +461,10 @@ public final class NumenLlmClient {
                     }
                     java.util.Map<String, Object> settle = new java.util.LinkedHashMap<>();
                     settle.put("status", settleStatus);
+                    if (!settleReason.isEmpty()) settle.put("reason", settleReason);
                     settle.put("role", reservation.role());
                     settle.put("reservationId", reservation.id());
+                    settle.put("policyVersion", reservation.policyVersion());
                     settle.put("estimatedTokens", estimatedPromptTokens);
                     settle.put("actualTokens", meterTokens);
                     settle.put("durationMs", durationMs);
