@@ -2,7 +2,7 @@
 
 > 状态：进行中（2026-09-25 立项）
 > 档位：**模块级(Bounded) + 工具级补充**（人工已批准；不改 TaskChain 核心状态机，不重写 REPLAN）
-> 权威资料根：`E:\新建文件夹\rdd架构\`（README、工程规范）；本文件是 P2 的设计债账本。
+> 权威资料根：`D:\rdd\extras\rdd架构\`（README、工程规范）；本文件是 P2 的设计债账本。
 
 ---
 
@@ -164,7 +164,7 @@ RddDetector.tickRuntime(每20tick)
 ## 9. 交接注意
 - 不改 `TaskChain` 状态转移（satisfiedStages / CONFIRM / RECOVERING 硬约束）。
 - 不重写 REPLAN；`FailureClassifier/RecoveryPolicy/ReplanContextBuilder` 保留并增强。
-- 后续每次改动登记：`E:\新建文件夹\rdd架构\测试日志.md` + `自变异系统v3\08-更新日志.md`。
+- 后续每次改动登记：`D:\rdd\extras\rdd架构\测试日志.md` + `自变异系统v3\08-更新日志.md`。
 
 ---
 

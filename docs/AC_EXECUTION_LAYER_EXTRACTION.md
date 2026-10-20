@@ -55,7 +55,7 @@ AC 步骤工具 `AcTool.execute` 是同步的；Numen 工具是异步 `ToolCall.
 
 - `:ac-core:test`：A~D 全部用例（resume 契约、事件顺序、schema 校验、JSON、authoring、fingerprint、有界历史）全绿。
 - `:plugins:ac:test`：桥的 success / timeout / async受理 / 失败 / 非JSON / 超时 6 例全绿；编译通过（含 NumenTool/ToolCall/ToolAnchor 瘦 api 依赖）。
-- 测试命令使用本地 Gradle（`E:\restart developing doer\gradle-9.2.0`）+ JDK 21，避开 wrapper 下载超时。
+- 测试命令使用本地 Gradle（`D:\rdd\workspace\gradle-9.2.0`）+ JDK 21，避开 wrapper 下载超时。
 
 ## 6. 已知限制与待办
 

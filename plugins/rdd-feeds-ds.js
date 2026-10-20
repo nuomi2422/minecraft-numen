@@ -5,7 +5,7 @@ const path = require('path');
 const WS = process.env.DS_WS || 'ws://127.0.0.1:9222/devtools/browser/a9dc7e6f-b093-4621-bd03-135148deb9ec';
 const QFILE = process.argv[2] || null;
 const OUT = process.argv[3] || null;
-const REPLY_DIR = 'E:\\restart developing doer\\rdd-selfcompile\\brain-replies';
+const REPLY_DIR = 'D:\\rdd\\workspace\\rdd-selfcompile\\brain-replies';
 
 function log(m) { console.log(m); if (OUT) fs.appendFileSync(OUT, m + '\n', 'utf8'); }
 
