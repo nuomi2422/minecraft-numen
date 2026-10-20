@@ -37,6 +37,20 @@ public final class TaskChain {
      * 已完成的二级会在重启后重新变成"没达成"。
      */
     private final Map<String, Map<String, Integer>> acquireBaselines = new LinkedHashMap<>();
+    /**
+     * G1a（IC-75-r1 IC04）：哪些二级的基线是「观测失败（UNKNOWN）」而不是「确认真空」。
+     *
+     * <p>★ 为什么要这个侧表：{@link #captureAcquireBaseline(String, Map)} 的历史契约把
+     * {@code null} 折成空表（{@code TaskChainAcquireBaselineTest:186-201} 钉死），导致
+     * 「读不到背包」与「背包真空」在内部表示上不可区分，{@code acquired = have − 0 = have}
+     * —— 75号 §16.2-2 的静态反例（已有 5 + min 3 → 5≥3 假通过）。
+     *
+     * <p>修复：本侧表记「这条基线是观测失败」。空表条目 + 在本表 = UNKNOWN；
+     * 空表条目 + 不在本表 = 确认真空（合法基线，{@code acquired=have} 就是净增益）。
+     * 非空条目永远不进本表。不改变 {@code acquireBaselines} 的持久化 JSON 形状
+     * （{@code fromJson} 恢复的旧空表条目视作确认真空——历史数据是当时真实观测）。
+     */
+    private final java.util.Set<String> unobservedBaselines = new java.util.LinkedHashSet<>();
     private int primaryIndex;
     private int subtaskIndex;
     /**
@@ -357,16 +371,37 @@ public final class TaskChain {
     public synchronized void captureAcquireBaseline(String subtaskId, Map<String, Integer> counts) {
         if (subtaskId == null || acquireBaselines.containsKey(subtaskId)) return;
         acquireBaselines.put(subtaskId, counts == null ? Map.of() : Map.copyOf(counts));
+        // G1a：null 是「观测失败」，与「确认真空(Map.of())」区分开（见 unobservedBaselines 注释）。
+        if (counts == null) unobservedBaselines.add(subtaskId);
     }
 
-    /** 该二级的基线；没有则 null（宿主据此让 acquire 判未达成，而不是假装达成）。 */
+    /**
+     * 该二级的基线；没有则 null（宿主据此让 acquire 判未达成，而不是假装达成）。
+     *
+     * <p>★ G1a（IC04）：**观测失败（UNKNOWN）时也返回 null** —— 宿主侧
+     * {@code HardCodedEvaluator} 的 null 守卫因此同时挡住「未捕获」和「观测失败」两条路径。
+     * 「确认真空」（捕获时真读到了空背包）仍返回空表 —— 空表是合法基线
+     * （{@code gained = have − 0 = 净增益}），不能错杀。
+     */
     public synchronized Map<String, Integer> acquireBaseline(String subtaskId) {
-        return subtaskId == null ? null : acquireBaselines.get(subtaskId);
+        if (subtaskId == null) return null;
+        Map<String, Integer> baseline = acquireBaselines.get(subtaskId);
+        if (baseline == null) return null;
+        if (baseline.isEmpty() && unobservedBaselines.contains(subtaskId)) {
+            return null;   // UNKNOWN ≠ 确认真空 —— 折回 null 让守卫接住（G1a 核心修复）
+        }
+        return baseline;
+    }
+
+    /** G1a 读数口：该二级的基线是否是「观测失败」。未捕获/确认观测都返回 false。 */
+    public synchronized boolean isBaselineUnobserved(String subtaskId) {
+        return subtaskId != null && unobservedBaselines.contains(subtaskId);
     }
 
     /** 二级离开本轮生命周期（换计划/作废）时连同它的基线一起清掉，避免内存与存档堆积。 */
     private void forgetAcquireBaseline(String subtaskId) {
         acquireBaselines.remove(subtaskId);
+        unobservedBaselines.remove(subtaskId);
     }
 
     /** P0-3 执行身份：宿主开始执行后把真实执行实例 id 绑到当前二级；重复绑定会置换旧 id。 */

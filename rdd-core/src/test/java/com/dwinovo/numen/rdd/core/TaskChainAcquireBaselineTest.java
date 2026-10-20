@@ -187,8 +187,17 @@ class TaskChainAcquireBaselineTest {
     void nullCountsCaptureYieldsEmptyBaselineRatherThanNull() {
         TaskChain chain = activeChain();
         chain.captureAcquireBaseline("p0-r1-0", null);
-        assertEquals(Map.of(), chain.acquireBaseline("p0-r1-0"),
-                "读不到背包 = 基线为全 0（acquire 仍可判），不是 null");
+        // ★ G1a 迁移（2026-10-20，75号 §16.2-2/IC04）：本测试的原断言
+        //   「读不到背包 = 基线为全 0（acquire 仍可判），不是 null」被判定为语义缺陷——
+        //   它让「观测失败」冒充「确认真空」，acquired = have − 0 = have 假通过（静态反例）。
+        //
+        //   原契约的【意图】——「宁不满足不假成功」——保住并加强：观测失败的基线读数回到 null，
+        //   让 HardCodedEvaluator 的 null 守卫接住（更不假成功）。
+        //   原断言的【形状】迁移：assertNull（null 而非空表）+ isBaselineUnobserved 读数口。
+        assertNull(chain.acquireBaseline("p0-r1-0"),
+                "G1a：读不到背包 = UNKNOWN → 读数 null（守卫接住，不假成功），不是空表");
+        assertTrue(chain.isBaselineUnobserved("p0-r1-0"),
+                "读数口确认这是观测失败（UNKNOWN），与「确认真空」区分");
     }
 
     @Test

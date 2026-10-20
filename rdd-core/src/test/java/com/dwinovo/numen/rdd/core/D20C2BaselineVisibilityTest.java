@@ -53,13 +53,16 @@ class D20C2BaselineVisibilityTest {
     @SuppressWarnings("unchecked")
     void capturedEmptyBaselineIsDistinguishable() {
         TaskChain chain = chainWithAcquireSubtask();
-        chain.startCurrentWithCounts(null);   // counts=null → 存成空表（TaskChainAcquireBaselineTest 已钉死的契约）
+        // ★ G1a 之后：counts=null 是观测失败（UNKNOWN），counts=Map.of() 是确认真空。
+        // 本测试改用 Map.of() ——「捕获了且当时背包真空」的合法档位。
+        chain.startCurrentWithCounts(Map.of());
         Map<String, Object> snap = chain.snapshot();
         List<Map<String, Object>> primaries = (List<Map<String, Object>>) snap.get("primaries");
         Map<String, Object> st = (Map<String, Object>) ((List<?>) primaries.get(0).get("subtasks")).get(0);
         assertEquals(Boolean.TRUE, st.get("acquireBaselineCaptured"), "捕获过");
-        assertEquals(Boolean.TRUE, st.get("acquireBaselineEmpty"), "空表要显式标记（区分 null 基线）");
+        assertEquals(Boolean.TRUE, st.get("acquireBaselineEmpty"), "真空背包的空表显式标记");
         assertFalse(st.containsKey("acquireBaselineKeys"), "空表不该有 keys 键");
+        assertFalse(chain.isBaselineUnobserved(chain.currentSubtask().id()), "Map.of() 不是观测失败");
     }
 
     @Test
