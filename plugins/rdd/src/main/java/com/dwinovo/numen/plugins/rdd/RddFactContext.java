@@ -83,7 +83,15 @@ final class RddFactContext {
     private static final int MAX_EVENT_GAPS = 6;
 
     /** 已缓存的需求清单：键 = primaryId，清单的 goalId 必须是 true Goal.id（见 forPrimary 注释）。 */
-    private record Cached(String primaryId, String goalId, RequirementManifest.Manifest manifest) {}
+    /**
+     * 已缓存的需求清单。
+     *
+     * <p>G1b2：{@code expanded}/{@code subtaskCount} 是「展开指纹」——一级懒展开会
+     * 悄悄扩大需求集，而 primaryId/goalId 都不变；不把指纹并入命中条件，缓存就会
+     * 一直用绑定时刻（unexpanded、二级为空）那份清单。
+     */
+    private record Cached(String primaryId, String goalId, boolean expanded, int subtaskCount,
+                          RequirementManifest.Manifest manifest) {}
 
     /** 需求检测状态：按 primaryId 隔离；换 primary 视为新观察（不报跨 primary 的变化）。 */
     private record Watch(String primaryId, Set<String> unmet) {}
@@ -406,7 +414,12 @@ final class RddFactContext {
         }
         try {
             RequirementManifest.Manifest manifest = RddRequirementDetector.forPrimary(primary, goalId);
-            MANIFESTS.put(companionId, new Cached(primary == null ? "" : primary.id(), manifest.goalId(), manifest));
+            // G1b2：绑定时刻的展开指纹必须一起落缓存（unexpanded / 二级数），
+            // 否则 ensureManifest 的命中条件永远对不上，会在下一次 tick 白重建一遍。
+            MANIFESTS.put(companionId, new Cached(primary == null ? "" : primary.id(), manifest.goalId(),
+                    primary != null && !primary.unexpanded(),
+                    primary == null || primary.subtasks() == null ? 0 : primary.subtasks().size(),
+                    manifest));
             WATCH.remove(companionId);   // 换目标 = 检测状态重来（不报跨目标的"变化"）
             publishManifestEvent(companionId, primary, manifest);   // G1b：事件统一出口（带 critical 计数）
         } catch (RuntimeException ex) {
@@ -483,15 +496,30 @@ final class RddFactContext {
         }
     }
 
-    /** 缓存清单；primary/目标变了才重建（并补发一份清单事件——bind 之外的第二个出口）。 */
-    private static RequirementManifest.Manifest ensureManifest(UUID companionId, PrimaryGoal primary, String goalId) {
+    /**
+     * 缓存清单；primary/目标变了 <b>或展开指纹变了</b> 才重建（并补发一份清单事件）。
+     *
+     * <p>★ G1b2（V-20261020-13 债①）：缓存键原本只有 {@code (primaryId, goalId)}，
+     * 而 Stage-A 绑定一级时它还是 unexpanded、二级为空 —— 清单只含 waitFor；
+     * GoalDriver 懒展开注入二级后 primary.id/goalId 都不变 → 旧缓存永不失效，
+     * replan 块与 manifest 事件少报展开后的需求集（执行侧 needs 块走
+     * {@link #needsOf} 现算，不受影响）。
+     * 修法：把「展开指纹」（unexpanded 标志 + 二级数）并入命中条件 —— 展开就是
+     * 「需求集变了」，与「换 primary = 重观察」同一条纪律。
+     */
+    static RequirementManifest.Manifest ensureManifest(UUID companionId, PrimaryGoal primary, String goalId) {
         String gid = goalId == null || goalId.isBlank() ? primary.id() : goalId;
+        boolean expanded = primary != null && !primary.unexpanded();
+        int subtaskCount = primary == null || primary.subtasks() == null ? 0 : primary.subtasks().size();
         Cached cached = MANIFESTS.get(companionId);
-        if (cached != null && primary.id().equals(cached.primaryId()) && gid.equals(cached.goalId())) {
+        if (cached != null && primary != null && primary.id().equals(cached.primaryId())
+                && gid.equals(cached.goalId())
+                && expanded == cached.expanded() && subtaskCount == cached.subtaskCount()) {
             return cached.manifest();
         }
         RequirementManifest.Manifest manifest = RddRequirementDetector.forPrimary(primary, gid);
-        MANIFESTS.put(companionId, new Cached(primary.id(), gid, manifest));
+        MANIFESTS.put(companionId, new Cached(primary == null ? "" : primary.id(), gid,
+                expanded, subtaskCount, manifest));
         publishManifestEvent(companionId, primary, manifest);   // G1b：bind 之外第二个出口同字段
         return manifest;
     }
