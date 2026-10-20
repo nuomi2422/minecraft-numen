@@ -138,6 +138,8 @@ class RddToolContractSnapshotTest {
         PINNED_NAMES.put("RddDeathLedgerTool.java", "rdd_death_ledger");
         // G2c：验证钩子（用户 2026-10-20 批准）——清掉落物以构造超时分支
         PINNED_NAMES.put("RddDebugClearDropsTool.java", "debug_clear_drops");
+        // G3d：计划补丁入口（CAS 提交；只碰当前指针及之后的 PENDING 节点）
+        PINNED_NAMES.put("RddPatchTool.java", "rdd_patch");
     }
 
     @Test
@@ -194,6 +196,7 @@ class RddToolContractSnapshotTest {
         DESCRIPTION_FLOOR.put("RddDeathLedgerTool.java", 300);
         // G2c 验证钩子：必须继续写明「只删 ItemEntity、不碰台账/任务」与 confirm 要求
         DESCRIPTION_FLOOR.put("RddDebugClearDropsTool.java", 280);
+        DESCRIPTION_FLOOR.put("RddPatchTool.java", 400);
     }
 
     @Test

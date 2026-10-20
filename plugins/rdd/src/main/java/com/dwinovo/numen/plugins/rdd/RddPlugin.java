@@ -187,6 +187,8 @@ public final class RddPlugin implements NumenPlugin {
         numen.registerTool(new RddDeathLedgerTool());
         // G2c：验证钩子（用户 2026-10-20 批准）——清掉落物，构造超时分支
         numen.registerTool(new RddDebugClearDropsTool());
+        // G3d：计划补丁（增量改计划；只碰当前指针及之后的 PENDING 节点，CAS 提交）
+        numen.registerTool(new RddPatchTool());
         // 接管 /goal：先同步认领，Stage-A 异步规划；规划期间 NUMEN 原生目标循环让位。
         com.dwinovo.numen.agent.goal.GoalSinks.register((uuid, objective) -> {
             if (uuid == null || objective == null || objective.isBlank()) {

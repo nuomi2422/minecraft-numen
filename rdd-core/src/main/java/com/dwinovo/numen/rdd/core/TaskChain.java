@@ -828,6 +828,13 @@ public final class TaskChain {
                                 "only not-yet-started nodes may be patched: " + op.nodeId()
                                         + " is " + statuses.get(op.nodeId())), null);
                     }
+                    // G3d 安全边界：只能改「当前节点及其之后」的待执行节点。
+                    // 改到当前索引之前的节点会让 subtaskIndex 错位（删一个前面的节点 =
+                    // 当前节点被挪到前一位，指针指向别人），那不是补丁，是重排。
+                    if (idx < subtaskIndex) {
+                        return new PatchCheck(PlanPatch.Receipt.rejected("NODE_BEFORE_CURSOR",
+                                "cannot patch a node before the current pointer: " + op.nodeId()), null);
+                    }
                     if (op.kind() == PlanPatch.OpKind.DROP_PENDING) {
                         if (working.size() <= 1) {
                             return new PatchCheck(PlanPatch.Receipt.rejected("WOULD_EMPTY",
