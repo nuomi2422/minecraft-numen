@@ -285,9 +285,12 @@ public final class NumenLlmClient {
         long promptEstimate = 0L;
         if (observation != null) {
             try {
-                promptEstimate = CompactSplit.estimateTokens(messages)
+                // G4c：占额用「预算校准后」的估算（estimateMultiplier 默认 1.0 = 与今天一致）。
+                // 校准只作用于预算判额，不动 CompactSplit 那把尺（它同时管 replay 窗口与压缩闸）。
+                long rawEstimate = CompactSplit.estimateTokens(messages)
                         + estimateTokensOfText(systemPrompt)
                         + estimateTokensOfText(toolList.toString());
+                promptEstimate = BudgetPolicy.scaleEstimate(rawEstimate);
                 held = BudgetPolicy.reserve(observation.phase(), promptEstimate,
                         BudgetPolicy.DEFAULT_RESERVATION_TTL_MS);
                 if (held != null) {

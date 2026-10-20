@@ -125,6 +125,51 @@ class BudgetPolicyReloadTest {
     }
 
     @Test
+    void estimateMultiplierCalibratesReservationWithoutTouchingTheRuler() throws Exception {
+        // G4c：影子期实测 est/actual 中位 3.16、P90 3.69 → 开闸前要能「用一个系数校准占额」，
+        // 而且校准不能动 CompactSplit（那把尺同时管 replay 窗口与压缩闸）。
+        BudgetPolicy.resetForTest();
+        try {
+            Files.writeString(file(), """
+                    { "version": 30, "mode": "shadow", "estimateMultiplier": 0.35,
+                      "roles": { "execution": { "tokensPerWindow": 1000 } } }
+                    """, StandardCharsets.UTF_8);
+            BudgetPolicy.install(configDir);
+            assertEquals(0.35, BudgetPolicy.policyForTest().estimateMultiplier(), 1e-9);
+            assertEquals(350L, BudgetPolicy.scaleEstimate(1000), "占额按系数缩放");
+            assertEquals(0L, BudgetPolicy.scaleEstimate(0));
+            assertEquals(0L, BudgetPolicy.scaleEstimate(-5), "负数不产生负占额");
+
+            // 不写这个字段 = 1.0 = 行为与今天完全一致
+            Thread.sleep(20);
+            Files.writeString(file(), """
+                    { "version": 31, "mode": "shadow", "roles": { "execution": { "tokensPerWindow": 1000 } } }
+                    """, StandardCharsets.UTF_8);
+            BudgetPolicy.refreshIfChanged();
+            assertEquals(1.0, BudgetPolicy.policyForTest().estimateMultiplier(), 1e-9);
+            assertEquals(1000L, BudgetPolicy.scaleEstimate(1000));
+        } finally {
+            BudgetPolicy.resetForTest();
+        }
+    }
+
+    @Test
+    void illegalEstimateMultiplierFallsBackToNeutral() throws Exception {
+        BudgetPolicy.resetForTest();
+        try {
+            for (String bad : new String[]{"0", "-2", "1e9"}) {
+                Files.writeString(file(),
+                        "{ \"version\": 40, \"estimateMultiplier\": " + bad + " }", StandardCharsets.UTF_8);
+                BudgetPolicy.install(configDir);
+                double m = BudgetPolicy.policyForTest().estimateMultiplier();
+                assertTrue(m > 0 && m <= 10.0, "非法/越界系数必须夹回安全区间，实际=" + m + "（输入 " + bad + "）");
+            }
+        } finally {
+            BudgetPolicy.resetForTest();
+        }
+    }
+
+    @Test
     void deletingTheFileFallsBackToUnlimitedInsteadOfHoldingTheOldPolicy() throws Exception {
         BudgetPolicy.resetForTest();
         try {

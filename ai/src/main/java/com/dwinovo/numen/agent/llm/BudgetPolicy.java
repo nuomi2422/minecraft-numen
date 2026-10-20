@@ -77,12 +77,16 @@ public final class BudgetPolicy {
      * 生效策略快照。{@code mode} = {@code shadow}（只建议）或 {@code enforce}（超限拦截）。
      *
      * @param context G4b：请求侧上下文预算（§15.5）。缺省 = 不限，行为与没有本机制一致
+     * @param estimateMultiplier G4c：<b>预算专用</b>的估算校准系数（默认 1.0 = 不改行为）。
+     *        为什么要有它：影子期实测 `est/actual` 中位 **3.16**、P90 **3.69**（28 对，见 G4c 卡 §6.2），
+     *        开闸后按这个估算判额 → 约 2/3 配额是「假的紧」。有了这个系数，校准是**改配置 + 热重载**，
+     *        不用改代码、不用重启、也不用动 {@code CompactSplit}（那把尺同时管 replay 窗口与压缩闸）。
      */
     public record Policy(int version, String mode, int windowMinutes, int adviceCooldownMinutes,
-                         Map<String, Limit> roles, ContextBudget context) {}
+                         Map<String, Limit> roles, ContextBudget context, double estimateMultiplier) {}
 
     private static final Policy DEFAULT_POLICY =
-            new Policy(0, "shadow", 60, 5, Map.of(), ContextBudget.unlimited());
+            new Policy(0, "shadow", 60, 5, Map.of(), ContextBudget.unlimited(), 1.0);
 
     private static volatile Policy policy = DEFAULT_POLICY;
     private static volatile Path loadedFrom;
@@ -477,7 +481,8 @@ public final class BudgetPolicy {
                         Math.max(0, longOr(o, "minutesPerWindow", 0))));
             }
         }
-        return new Policy(version, mode, window, cooldown, Map.copyOf(roles), parseContext(root));
+        return new Policy(version, mode, window, cooldown, Map.copyOf(roles), parseContext(root),
+                parseEstimateMultiplier(root));
     }
 
     /**
@@ -515,6 +520,57 @@ public final class BudgetPolicy {
 
     /** 记录 token 是哪个尺子算的（只记录，不计量；换尺子要改这里并同步批次卡）。 */
     public static final String TOKENIZER_VERSION = "compact-split-v1";
+
+    // ---- G4c：预算专用估算校准 ----
+
+    /**
+     * 解析可选的 {@code estimateMultiplier}（G4c）。<b>不写 = 1.0 = 行为与今天完全一致。</b>
+     *
+     * <p>取值夹在 0.05~10：0 或负数会把估算压成「不占额」，那等于偷偷关掉限额，比不做校准更危险。
+     */
+    private static double parseEstimateMultiplier(JsonObject root) {
+        JsonElement el = root.get("estimateMultiplier");
+        if (el == null || el.isJsonNull()) return 1.0;
+        double raw;
+        try {
+            raw = el.getAsDouble();
+        } catch (RuntimeException ex) {
+            AiLog.LOG.warn("[numen-econ] estimateMultiplier 不是数字，按 1.0 处理");
+            return 1.0;
+        }
+        if (Double.isNaN(raw) || raw <= 0) {
+            AiLog.LOG.warn("[numen-econ] estimateMultiplier={} 非法（必须 >0），按 1.0 处理", raw);
+            return 1.0;
+        }
+        double clamped = Math.max(0.05, Math.min(10.0, raw));
+        if (clamped != raw) {
+            AiLog.LOG.warn("[numen-econ] estimateMultiplier={} 超出 [0.05,10]，按 {} 处理", raw, clamped);
+        }
+        AiLog.LOG.info("[numen-econ] 预算估算校准系数 = {}（占额 = 原始估算 × 这个数）", clamped);
+        return clamped;
+    }
+
+    /** 预算专用的估算校准系数（默认 1.0）。 */
+    public static double estimateMultiplier() {
+        try {
+            double m = policy.estimateMultiplier();
+            return m > 0 ? m : 1.0;
+        } catch (RuntimeException ex) {
+            return 1.0;
+        }
+    }
+
+    /**
+     * 把「原始估算」换算成「预算占额用的估算」（乘校准系数）。
+     *
+     * <p>只作用于占额/判额，**不动** {@code CompactSplit} 的尺 —— 那把尺同时管 replay 窗口与压缩闸，
+     * 改它等于改上下文策略；预算的偏差来自「系统提示+工具表整体计入」这种结构差异，
+     * 该由预算侧单独校准。
+     */
+    public static long scaleEstimate(long rawTokens) {
+        if (rawTokens <= 0) return 0;
+        return Math.max(0L, Math.round(rawTokens * estimateMultiplier()));
+    }
 
     /**
      * 该相位所属角色<b>是否配了限额</b>。只读、不建策、不记账。
