@@ -248,6 +248,18 @@ final class RddFactContext {
 
     /** 事件里的缺口短文本（有界；只在事件帧用，不用于逐轮上下文）。 */
     static String unmetText(List<Need> needs, Map<String, Integer> held) {
+        return unmetText(needs, held, Map.of());
+    }
+
+    /**
+     * 带转化归因的缺口文本（G1c-3）。
+     *
+     * <p>{@code transformNotes}：资源键 → 「近期被转化成了什么」（如 {@code log→planks×8}）。
+     * 缺口行追加「（近期转化：…）」——把「数量减少」与「东西没了」分开（75号 §3.2）。
+     */
+    static String unmetText(List<Need> needs, Map<String, Integer> held,
+                            Map<String, String> transformNotes) {
+        Map<String, String> notes = transformNotes == null ? Map.of() : transformNotes;
         StringBuilder sb = new StringBuilder();
         int n = 0;
         for (Need need : needs) {
@@ -263,6 +275,10 @@ final class RddFactContext {
                 sb.append("；");
             }
             sb.append(need.display()).append(" 需").append(need.minimum()).append(" 有").append(now);
+            String note = notes.get(need.display());
+            if (note != null && !note.isBlank()) {
+                sb.append("（近期转化 ").append(note).append("）");
+            }
             n++;
         }
         return sb.toString();
@@ -278,11 +294,21 @@ final class RddFactContext {
      * 看见「这批里有多少件已经被许给别的需求」，而不是把全部现有量都当自己可用。
      */
     static String renderNeedsBlock(List<Need> needs, Map<String, Integer> held) {
-        return renderNeedsBlock(needs, held, Map.of());
+        return renderNeedsBlock(needs, held, Map.of(), Map.of());
     }
 
     static String renderNeedsBlock(List<Need> needs, Map<String, Integer> held,
                                    Map<String, Integer> reservedByKey) {
+        return renderNeedsBlock(needs, held, reservedByKey, Map.of());
+    }
+
+    /**
+     * G1c-3：带「近期转化」归因的渲染。{@code transformNotes} = 资源键 → 转化说明
+     * （如 {@code log→planks×8}）；只给命中的未满足行追加，不改变任何数量判定。
+     */
+    static String renderNeedsBlock(List<Need> needs, Map<String, Integer> held,
+                                   Map<String, Integer> reservedByKey,
+                                   Map<String, String> transformNotes) {
         List<Need> unmet = new ArrayList<>();
         for (Need need : needs) {
             if (have(need, held) < need.minimum()) {
@@ -293,6 +319,7 @@ final class RddFactContext {
             return "";
         }
         Map<String, Integer> reserved = reservedByKey == null ? Map.of() : reservedByKey;
+        Map<String, String> notes = transformNotes == null ? Map.of() : transformNotes;
         StringBuilder sb = new StringBuilder("<needs>一级目标需求还差：");
         int n = 0;
         for (Need need : unmet) {
@@ -308,6 +335,10 @@ final class RddFactContext {
             int r = reserved.getOrDefault(need.display(), 0);
             if (r > 0) {
                 sb.append("（已预留 ").append(r).append("）");
+            }
+            String note = notes.get(need.display());
+            if (note != null && !note.isBlank()) {
+                sb.append("（近期转化 ").append(note).append("）");
             }
             n++;
         }
@@ -461,6 +492,7 @@ final class RddFactContext {
         LATEST.remove(companionId);
         LEDGERS.remove(companionId);   // G1c：任务清空 = 承诺作废（账本不跨计划存活）
         LAST_COUNTS.remove(companionId);   // G1c-2：清空的同伴不再拿旧快照当对照面
+        RECENT_TRANSFORMS.remove(companionId);   // G1c-3：旧转化归因不跨任务残留
     }
 
     /** 最近一次快照（观测/测试用；没有就是没采集过，不造空快照）。 */
@@ -510,11 +542,11 @@ final class RddFactContext {
                     case UNMET -> RddMonitor.publish("requirements_unmet", Map.of(
                             "companionId", companionId.toString(),
                             "primary", primary.id(),
-                            "gaps", unmetText(needs, counts)));
+                            "gaps", unmetText(needs, counts, transformNotes(companionId, now))));
                     case GAPS_CHANGED -> RddMonitor.publish("requirement_gaps_changed", Map.of(
                             "companionId", companionId.toString(),
                             "primary", primary.id(),
-                            "gaps", unmetText(needs, counts)));
+                            "gaps", unmetText(needs, counts, transformNotes(companionId, now))));
                     case NONE -> { }
                 }
             }
@@ -646,11 +678,34 @@ final class RddFactContext {
     }
 
     /**
-     * G1c-2：转化证据。拿「这次 vs 上次」两份真实背包计数跑 {@link TransformationDetector}，
+    /** G1c-3：上次 tick 之上的「近期转化」归因（资源键 → 说明 + 时刻），仅内存、10 分钟窗口。 */
+    private record TransformNote(String text, long atMillis) {}
+
+    private static final Map<UUID, Map<String, TransformNote>> RECENT_TRANSFORMS = new ConcurrentHashMap<>();
+    /** 转化归因窗口：10 分钟。过期即不再提「近期转化」（避免拿一小时前的合成解释现在的缺口）。 */
+    private static final long TRANSFORM_NOTE_TTL_MILLIS = 10L * 60_000L;
+
+    /** 某同伴当前有效的「近期转化」说明（资源键 → 如 {@code log→planks×8}）。 */
+    static Map<String, String> transformNotes(UUID companionId, long now) {
+        Map<String, TransformNote> m = RECENT_TRANSFORMS.get(companionId);
+        if (m == null || m.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> out = new LinkedHashMap<>();
+        for (Map.Entry<String, TransformNote> e : m.entrySet()) {
+            if (now - e.getValue().atMillis() <= TRANSFORM_NOTE_TTL_MILLIS) {
+                out.put(e.getKey(), e.getValue().text());
+            }
+        }
+        return out;
+    }
+
+    /**
+     * G1c-2 转化证据：拿「这次 vs 上次」两份真实背包计数跑 {@link TransformationDetector}，
      * 命中就发 {@code asset_transform} 事件（每条只带 kind + 输入/输出短文本，有界）。
      *
-     * <p>★ 刻意<b>不改判定</b>：这一批只是把「东西换了形态」记下来，
-     * 需求检测仍然只看持有量。让判定不再把转化当缺口，是后续批的事。
+     * <p>★ G1c-2 只落证据；★ G1c-3 起把命中记进 {@link #RECENT_TRANSFORMS}，
+     * 供需求块/事件把「数量减少」解释成「换了形态」——<b>数量判定本身仍不变</b>。
      */
     private static void publishTransforms(UUID companionId, Map<String, Integer> counts) {
         try {
@@ -661,6 +716,7 @@ final class RddFactContext {
             if (prev == null || prev.isEmpty()) {
                 return;   // 第一次扫描没有对照面
             }
+            long now = System.currentTimeMillis();
             int n = 0;
             for (TransformationDetector.Transform t : TransformationDetector.detect(prev, counts)) {
                 if (n == MAX_TRANSFORM_EVENTS) {
@@ -671,11 +727,27 @@ final class RddFactContext {
                         "kind", t.kind(),
                         "inputs", joinCounts(t.inputs()),
                         "outputs", joinCounts(t.outputs())));
+                rememberTransform(companionId, t, now);   // G1c-3：给缺口归因留痕
                 n++;
             }
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 转化检测失败 {}: {}", companionId, ex.toString());
         }
+    }
+
+    /**
+     * G1c-3：把「哪个资源被转化成了什么」记进近期归因表（按输入键）。
+     *
+     * <p>只认**输入**侧：缺口说的是「原木少了」，所以归因挂在原木上；
+     * 输出侧（木板变多）不需要解释。顺手清掉过窗条目，避免表无限增长。
+     */
+    private static void rememberTransform(UUID companionId, TransformationDetector.Transform t, long now) {
+        Map<String, TransformNote> notes = RECENT_TRANSFORMS.computeIfAbsent(companionId,
+                k -> new ConcurrentHashMap<>());
+        for (Map.Entry<String, Integer> in : t.inputs().entrySet()) {
+            notes.put(in.getKey(), new TransformNote(t.kind() + "×" + in.getValue(), now));
+        }
+        notes.entrySet().removeIf(e -> now - e.getValue().atMillis() > TRANSFORM_NOTE_TTL_MILLIS);
     }
 
     private static String joinCounts(Map<String, Integer> m) {
@@ -733,7 +805,8 @@ final class RddFactContext {
                 return "";
             }
             return renderNeedsBlock(needsOf(primary), RddPlugin.lastInventory(companionId),
-                    reservedFor(companionId, primary.id()));
+                    reservedFor(companionId, primary.id()),
+                    transformNotes(companionId, System.currentTimeMillis()));
         } catch (RuntimeException ex) {
             return "";   // 增强块，绝不能拖崩上下文构建
         }
