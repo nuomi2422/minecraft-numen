@@ -12,6 +12,7 @@ import com.dwinovo.numen.rdd.fact.FactSnapshot;
 import com.dwinovo.numen.rdd.fact.StageFact;
 import com.dwinovo.numen.rdd.policy.RequirementManifest;
 import com.dwinovo.numen.rdd.policy.RequirementView;
+import com.dwinovo.numen.rdd.policy.ReservationLedger;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -99,6 +100,10 @@ final class RddFactContext {
     private static final Map<UUID, Cached> MANIFESTS = new ConcurrentHashMap<>();
     private static final Map<UUID, Watch> WATCH = new ConcurrentHashMap<>();
     private static final Map<UUID, FactSnapshot> LATEST = new ConcurrentHashMap<>();
+    /** G1c：每同伴一本软预留账本（进程内；换计划即失效，刻意不持久化）。 */
+    private static final Map<UUID, ReservationLedger> LEDGERS = new ConcurrentHashMap<>();
+    /** G1c：预留租约时长——到期只释放承诺（IC05），不写任何「丢失」。 */
+    private static final long RESERVE_LEASE_MILLIS = 5L * 60_000L;
 
     private RddFactContext() {
     }
@@ -260,8 +265,16 @@ final class RddFactContext {
      * <p>★ G1b：CRITICAL 需求带 {@code [关键]} 前缀（到达模型请求正文 = 消费者接通的判据，
      * S44）。<b>排序不变</b>——仍按声明序，不按重要度排：排序归检索层（75号 §4.1），
      * 执行侧上下文块只做可见性，不做调度裁决（D09 执行局部应变自由）。
+     *
+     * <p>★ G1c：{@code reservedByKey} 非空时给对应行追加「（已预留 N）」——让执行 AI
+     * 看见「这批里有多少件已经被许给别的需求」，而不是把全部现有量都当自己可用。
      */
     static String renderNeedsBlock(List<Need> needs, Map<String, Integer> held) {
+        return renderNeedsBlock(needs, held, Map.of());
+    }
+
+    static String renderNeedsBlock(List<Need> needs, Map<String, Integer> held,
+                                   Map<String, Integer> reservedByKey) {
         List<Need> unmet = new ArrayList<>();
         for (Need need : needs) {
             if (have(need, held) < need.minimum()) {
@@ -271,6 +284,7 @@ final class RddFactContext {
         if (unmet.isEmpty()) {
             return "";
         }
+        Map<String, Integer> reserved = reservedByKey == null ? Map.of() : reservedByKey;
         StringBuilder sb = new StringBuilder("<needs>一级目标需求还差：");
         int n = 0;
         for (Need need : unmet) {
@@ -283,6 +297,10 @@ final class RddFactContext {
             }
             sb.append(need.importancePrefix()).append(need.display()).append(" ×").append(need.minimum())
                     .append("（现有 ").append(have(need, held)).append("）");
+            int r = reserved.getOrDefault(need.display(), 0);
+            if (r > 0) {
+                sb.append("（已预留 ").append(r).append("）");
+            }
             n++;
         }
         sb.append("。凑齐即消失；这只有数量，不是指令。</needs>");
@@ -435,6 +453,7 @@ final class RddFactContext {
         MANIFESTS.remove(companionId);
         WATCH.remove(companionId);
         LATEST.remove(companionId);
+        LEDGERS.remove(companionId);   // G1c：任务清空 = 承诺作废（账本不跨计划存活）
     }
 
     /** 最近一次快照（观测/测试用；没有就是没采集过，不造空快照）。 */
@@ -468,6 +487,9 @@ final class RddFactContext {
             Set<String> unmet = Collections.unmodifiableSet(unmetKeys(needs, counts));
             Watch prev = WATCH.get(companionId);
             WATCH.put(companionId, new Watch(primary.id(), unmet));
+            // G1c：关键需求软预留（D11）。只给 CRITICAL 需求申请；申请量取
+            // min(需求, 现有)——软预留只承诺「现有的」，不去许愿天上有多少。
+            int reservedTotal = ensureReservations(companionId, primary, needs, counts, now);
             if (prev != null && prev.primaryId().equals(primary.id()) && !needs.isEmpty()) {
                 switch (transition(prev.unmet(), unmet)) {
                     case MET -> RddMonitor.publish("requirements_met", Map.of(
@@ -490,6 +512,7 @@ final class RddFactContext {
             event.put("primary", primary.id());
             event.put("needs", needs.size());
             event.put("unmet", unmet.size());
+            event.put("reserved", reservedTotal);   // G1c：本 primary 的有效预留总量（有界计数）
             RddMonitor.publish("fact_snapshot", event);
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 共同事实 tick 失败 {}: {}", companionId, ex.toString());
@@ -544,6 +567,72 @@ final class RddFactContext {
     }
 
     /**
+     * G1c：给当前一级的 CRITICAL 需求做软预留（D11：关键资源明确优先用途，可协商不锁死）。
+     *
+     * <p>规则：
+     * <ul>
+     *   <li>只给 {@code CRITICAL} 需求申请；{@code NORMAL/OPPORTUNISTIC} 按需分配（D11）。</li>
+     *   <li>申请量 = `min(需求, 现有)`——软预留只承诺「现有的」，不去许愿天上有多少；
+     *       申请量 0 就不占条目（避免账本里一堆 0）。</li>
+     *   <li>换 primary 时 {@code retainOnly} 释放上一级的承诺（预留是「当前计划的承诺」）。</li>
+     *   <li>到期 {@code releaseExpired} 只释放承诺，不写「丢失」（IC05）。</li>
+     * </ul>
+     *
+     * @return 本 primary 的有效预留总量（事件里报这个数）
+     */
+    private static int ensureReservations(UUID companionId, PrimaryGoal primary, List<Need> needs,
+                                          Map<String, Integer> counts, long now) {
+        try {
+            ReservationLedger ledger = ledger(companionId);
+            ledger.releaseExpired(now);
+            ledger.retainOnly(primary.id());
+            for (Need need : needs) {
+                if (need.importance() != RequirementManifest.Importance.CRITICAL) {
+                    continue;
+                }
+                int want = Math.min(need.minimum(), have(need, counts));
+                if (want <= 0) {
+                    continue;
+                }
+                ledger.reserve(primary.id(), need.display(), want,
+                        need.importance().ordinal(), now + RESERVE_LEASE_MILLIS, counts);
+            }
+            int total = 0;
+            for (ReservationLedger.Reservation r : ledger.reservations()) {
+                total += r.quantity();
+            }
+            return total;
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 预留账本失败 {}: {}", companionId, ex.toString());
+            return 0;
+        }
+    }
+
+    /** 该同伴的预留账本（懒建；进程内生命周期，刻意不持久化——换计划即失效）。 */
+    static ReservationLedger ledger(UUID companionId) {
+        return LEDGERS.computeIfAbsent(companionId, k -> new ReservationLedger());
+    }
+
+    /** 当前 primary 的预留（资源键 → 件数），供执行上下文块渲染「已预留 N」。 */
+    static Map<String, Integer> reservedFor(UUID companionId, String primaryId) {
+        try {
+            ReservationLedger ledger = LEDGERS.get(companionId);
+            if (ledger == null || primaryId == null) {
+                return Map.of();
+            }
+            Map<String, Integer> out = new LinkedHashMap<>();
+            for (ReservationLedger.Reservation r : ledger.reservations()) {
+                if (primaryId.equals(r.demandKey())) {
+                    out.merge(r.resourceKey(), r.quantity(), Integer::sum);
+                }
+            }
+            return out;
+        } catch (RuntimeException ex) {
+            return Map.of();
+        }
+    }
+
+    /**
      * 执行 AI 的 {@code <rdd>} 上下文块（只读缓存，不读世界）。
      *
      * <p>从未扫过背包（{@code lastInventoryAtMillis == null}）时返回空串 ——
@@ -567,7 +656,8 @@ final class RddFactContext {
             if (RddPlugin.lastInventoryAtMillis(companionId) == null) {
                 return "";
             }
-            return renderNeedsBlock(needsOf(primary), RddPlugin.lastInventory(companionId));
+            return renderNeedsBlock(needsOf(primary), RddPlugin.lastInventory(companionId),
+                    reservedFor(companionId, primary.id()));
         } catch (RuntimeException ex) {
             return "";   // 增强块，绝不能拖崩上下文构建
         }
