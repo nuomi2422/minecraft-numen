@@ -268,7 +268,9 @@ public final class TaskChain {
         }
         primaryStatus = PrimaryGoalStatus.ACTIVE;
         if (statuses.get(currentSubtask().id()) == SubtaskStatus.PENDING) {
-            statuses.put(currentSubtask().id(), SubtaskStatus.RUNNING);
+            // G3a：激活也是「开跑一次」——走统一入口计数（IC03）。基线仍按本路径的既有语义：
+            // plain activate 不拍（调用方随后可显式 capture），只有带 registry/snapshot 的两条路拍。
+            beginAttempt(currentSubtask().id(), counts, false);
         }
         return true;
     }
@@ -288,9 +290,9 @@ public final class TaskChain {
         }
         primaryStatus = PrimaryGoalStatus.ACTIVE;
         if (statuses.get(currentSubtask().id()) == SubtaskStatus.PENDING) {
-            statuses.put(currentSubtask().id(), SubtaskStatus.RUNNING);
-            captureAcquireBaseline(currentSubtask().id(),
-                    registry == null ? null : registry.usableCounts());   // F5：激活即锁基线
+            // G3a：统一入口（计数 + 执行身份作废 + 开工时刻），本路径照旧拍基线
+            beginAttempt(currentSubtask().id(),
+                    registry == null ? null : registry.usableCounts(), true);   // F5：激活即锁基线
         }
         return true;
     }
@@ -318,8 +320,8 @@ public final class TaskChain {
         }
         primaryStatus = PrimaryGoalStatus.ACTIVE;
         if (statuses.get(currentSubtask().id()) == SubtaskStatus.PENDING) {
-            statuses.put(currentSubtask().id(), SubtaskStatus.RUNNING);
-            captureAcquireBaseline(currentSubtask().id(), counts);   // F5：激活即锁基线
+            // G3a：统一入口（计数 + 执行身份作废 + 开工时刻），本路径照旧拍基线
+            beginAttempt(currentSubtask().id(), counts, true);   // F5：激活即锁基线
         }
         return true;
     }
@@ -330,11 +332,40 @@ public final class TaskChain {
                     + currentPrimary().id());
         }
         if (primaryStatus == PrimaryGoalStatus.PENDING) primaryStatus = PrimaryGoalStatus.ACTIVE;
-        if (primaryStatus != PrimaryGoalStatus.ACTIVE || statuses.get(currentSubtask().id()) != SubtaskStatus.PENDING) throw new IllegalStateException("current subtask cannot start");
-        statuses.put(currentSubtask().id(), SubtaskStatus.RUNNING);
-        attempts.merge(currentSubtask().id(), 1, Integer::sum);
+        if (primaryStatus != PrimaryGoalStatus.ACTIVE) throw new IllegalStateException("current subtask cannot start");
+        beginAttempt(currentSubtask().id(), null, false);
+    }
+
+    /**
+     * 唯一 PENDING→RUNNING 迁移入口（G3a，IC75-r1 IC03）。
+     *
+     * <p><b>为什么必须收口到一处</b>：此前四条启动路径各写各的 ——
+     * {@link #startCurrent()} 记 attempts，{@link #activateCurrentWithSnapshot} /
+     * {@link #activateCurrentWithRegistry} 不记，{@link #startCurrentWithCounts}
+     * 走 startCurrent 再补基线。结果是「同一次开跑」在不同入口下计数不同，
+     * 而 attempts 是「这一步做过几次」的唯一计数，不一致就没法用它做重试/审计。
+     *
+     * <p><b>本次统一的语义（改的是计数口径，不是启动条件）</b>：
+     * <ul>
+     *   <li>每一次真正的 PENDING→RUNNING 迁移，attempts 恰好 +1；</li>
+     *   <li>非 PENDING（已在跑/已完成）→ 直接抛，不静默 +1；读状态/轮询不经过这里；</li>
+     *   <li>新的执行轮次作废旧宿主执行身份（{@code activeExecutionId=null}），并记开工时刻；</li>
+     *   <li>基线捕获仍按调用方决定（{@code captureBaseline}）——
+     *       这是「这次能不能判 acquire」的语义开关，不与计数混在一起。</li>
+     * </ul>
+     */
+    private void beginAttempt(String subtaskId, Map<String, Integer> counts, boolean captureBaseline) {
+        if (statuses.get(subtaskId) != SubtaskStatus.PENDING) {
+            throw new IllegalStateException("attempt must start from PENDING: " + subtaskId
+                    + " is " + statuses.get(subtaskId));
+        }
+        statuses.put(subtaskId, SubtaskStatus.RUNNING);
+        attempts.merge(subtaskId, 1, Integer::sum);
         activeExecutionId = null; // 新一轮执行，旧的宿主执行实例身份作废
         lastStartedAtMillis = System.currentTimeMillis();
+        if (captureBaseline) {
+            captureAcquireBaseline(subtaskId, counts);
+        }
     }
 
     /**
