@@ -34,6 +34,14 @@ final class RddRequirementDetector {
     /**
      * 从一级目标提取需求清单。
      *
+     * <p>★ G1b（75号 §16.3 / IC-75-r1 §15.4 消费者接线）：{@code waitFor} 前置
+     * 产出 {@code CRITICAL}（它是「进本一级的门」——没有它整条链卡死，正是
+     * {@link RequirementManifest.Importance#CRITICAL} 的定义）；二级 condition 的
+     * asset_key 产出 {@code NORMAL}（普通干活需求）。
+     * 同键两处都出现时取**更高**档（与 minimum 同规则：一个说 CRITICAL 就是 CRITICAL）。
+     * <b>不产 OPPORTUNISTIC</b>——生成侧没有「路过顺手拿」的语义来源，编造它
+     * 恰是 75号 §3.4「禁止编造」要防的；机会获取归 G3c。
+     *
      * @param goalId 真 {@code Goal.id}；null/空串时回落 {@code primary.id}
      *               （回落只为不崩，调用方应总是给真 id —— 否则对账列会静默失配）
      */
@@ -42,7 +50,8 @@ final class RddRequirementDetector {
         if (primary != null) {
             for (AssetRequirement w : primary.waitFor()) {
                 if (w != null && w.assetKey() != null && !w.assetKey().isBlank()) {
-                    merge(byKey, w.assetKey(), w.minimum());
+                    merge(byKey, w.assetKey(), w.minimum(),
+                            RequirementManifest.Importance.CRITICAL);
                 }
             }
             for (Subtask s : primary.subtasks()) {
@@ -52,7 +61,7 @@ final class RddRequirementDetector {
                     int min = 1;
                     Object m = c.get("minimum");
                     if (m instanceof Number n) min = Math.max(0, n.intValue());
-                    merge(byKey, ks, min);
+                    merge(byKey, ks, min, RequirementManifest.Importance.NORMAL);
                 }
             }
         }
@@ -62,11 +71,26 @@ final class RddRequirementDetector {
         return new RequirementManifest.Manifest(gid, new ArrayList<>(byKey.values()));
     }
 
-    /** 同键取更大的 minimum（同一级的两个二级分别要 2 个和 5 个，清单报 5 个才诚实）。 */
-    private static void merge(Map<String, RequirementManifest.Requirement> byKey, String key, int minimum) {
+    /**
+     * 同键取更大的 minimum + 更高的 importance（G1b：waitFor 说 CRITICAL、condition
+     * 说 NORMAL ⇒ 报 CRITICAL 才诚实；同一级的两个二级分别要 2 个和 5 个，报 5 个同理）。
+     */
+    private static void merge(Map<String, RequirementManifest.Requirement> byKey, String key,
+                              int minimum, RequirementManifest.Importance importance) {
         RequirementManifest.Requirement prev = byKey.get(key);
-        if (prev == null || minimum > prev.minimum()) {
-            byKey.put(key, new RequirementManifest.Requirement(key, minimum, List.of()));
+        if (prev == null) {
+            byKey.put(key, new RequirementManifest.Requirement(key, minimum, List.of(), importance, 0));
+        } else if (minimum > prev.minimum()
+                || importance.ordinal() < prev.importance().ordinal()) {   // enum 声明序 = 严重度降序
+            byKey.put(key, new RequirementManifest.Requirement(key,
+                    Math.max(minimum, prev.minimum()), List.of(),
+                    minSeverity(prev.importance(), importance), 0));
         }
+    }
+
+    /** 枚举声明序即严重度序（CRITICAL<NORMAL<OPPORTUNISTIC），取序小者 = 取更关键者。 */
+    private static RequirementManifest.Importance minSeverity(RequirementManifest.Importance a,
+                                                              RequirementManifest.Importance b) {
+        return a.ordinal() <= b.ordinal() ? a : b;
     }
 }

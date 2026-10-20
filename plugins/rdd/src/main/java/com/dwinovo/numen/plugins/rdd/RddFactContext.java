@@ -102,10 +102,24 @@ final class RddFactContext {
      *
      * <p>{@code group} 需求只有三个已知组（food/wood/blocks，见 {@link InventoryGroups}）——
      * 组计数是<b>组内物品件数之和</b>，不是配方等价；未知组名直接不跟踪（不猜）。
+     *
+     * <p>★ G1b：{@code importance} 透传给渲染层（{@code CRITICAL} 渲染 `[关键]` 前缀，
+     * 见 {@link #renderNeedsBlock}）。group 需求一律 NORMAL——组是检测通道的归纳，
+     * 不是目标结构的前置，没有「关键门」语义。
      */
-    record Need(String key, int minimum, boolean group) {
+    record Need(String key, int minimum, boolean group,
+                RequirementManifest.Importance importance) {
+        Need(String key, int minimum, boolean group) {
+            this(key, minimum, group, RequirementManifest.Importance.NORMAL);
+        }
+
         String display() {
             return group ? "group:" + key : key;
+        }
+
+        /** G1b：CRITICAL 需求的人类/AI 可读前缀；NORMAL/OPPORTUNISTIC 无前缀。 */
+        String importancePrefix() {
+            return importance() == RequirementManifest.Importance.CRITICAL ? "[关键] " : "";
         }
     }
 
@@ -115,6 +129,10 @@ final class RddFactContext {
      *
      * <p>同键取<b>更大</b>的 minimum（同一级的两个二级要 2 个和 5 个铁，跟踪 5 个才诚实）；
      * {@code waitFor} 排在前面（它是进入本一级的前置，语义上最先约束）。
+     *
+     * <p>★ G1b：{@code waitFor} 前置标 {@code CRITICAL}（进本一级的门），condition 标
+     * {@code NORMAL}；同键取更高档（与 {@code RddRequirementDetector.merge} 同规则，
+     * 两处口径必须一致否则清单与上下文块互相矛盾）。group 需求恒 NORMAL。
      */
     static List<Need> needsOf(PrimaryGoal primary) {
         Map<String, Need> out = new LinkedHashMap<>();
@@ -123,7 +141,8 @@ final class RddFactContext {
         }
         for (AssetRequirement w : primary.waitFor()) {
             if (w != null && w.assetKey() != null && !w.assetKey().isBlank()) {
-                mergeNeed(out, w.assetKey(), w.minimum(), false);
+                mergeNeed(out, w.assetKey(), w.minimum(), false,
+                        RequirementManifest.Importance.CRITICAL);
             }
         }
         for (Subtask s : primary.subtasks()) {
@@ -136,20 +155,25 @@ final class RddFactContext {
             Object m = c.get("minimum");
             int min = m instanceof Number n ? Math.max(0, n.intValue()) : 1;
             if (key instanceof String ks && !ks.isBlank()) {
-                mergeNeed(out, ks, min, false);
+                mergeNeed(out, ks, min, false, RequirementManifest.Importance.NORMAL);
             } else if (group instanceof String gs && InventoryGroups.known(gs)) {
-                mergeNeed(out, gs, min, true);
+                mergeNeed(out, gs, min, true, RequirementManifest.Importance.NORMAL);
             }
         }
         return List.copyOf(out.values());
     }
 
-    private static void mergeNeed(Map<String, Need> out, String key, int minimum, boolean group) {
+    private static void mergeNeed(Map<String, Need> out, String key, int minimum, boolean group,
+                                  RequirementManifest.Importance importance) {
         int min = Math.max(1, minimum);   // 需求至少 1 件；0 按 1 计（与 AssetRequirement 口径一致）
         String k = group ? "group:" + key : key;
         Need prev = out.get(k);
-        if (prev == null || min > prev.minimum()) {
-            out.put(k, new Need(key, min, group));
+        if (prev == null) {
+            out.put(k, new Need(key, min, group, importance));
+        } else if (min > prev.minimum()
+                || importance.ordinal() < prev.importance().ordinal()) {   // 同键取更高档（G1b）
+            out.put(k, new Need(key, Math.max(min, prev.minimum()), group,
+                    importance.ordinal() <= prev.importance().ordinal() ? importance : prev.importance()));
         }
     }
 
@@ -223,7 +247,12 @@ final class RddFactContext {
         return sb.toString();
     }
 
-    /** 执行 AI 上下文块：只列未凑齐的需求（≤3 条），全凑齐就整块不出现。 */
+    /** 执行 AI 上下文块：只列未凑齐的需求（≤3 条），全凑齐就整块不出现。
+     *
+     * <p>★ G1b：CRITICAL 需求带 {@code [关键]} 前缀（到达模型请求正文 = 消费者接通的判据，
+     * S44）。<b>排序不变</b>——仍按声明序，不按重要度排：排序归检索层（75号 §4.1），
+     * 执行侧上下文块只做可见性，不做调度裁决（D09 执行局部应变自由）。
+     */
     static String renderNeedsBlock(List<Need> needs, Map<String, Integer> held) {
         List<Need> unmet = new ArrayList<>();
         for (Need need : needs) {
@@ -244,7 +273,7 @@ final class RddFactContext {
             if (n > 0) {
                 sb.append("；");
             }
-            sb.append(need.display()).append(" ×").append(need.minimum())
+            sb.append(need.importancePrefix()).append(need.display()).append(" ×").append(need.minimum())
                     .append("（现有 ").append(have(need, held)).append("）");
             n++;
         }
@@ -276,7 +305,11 @@ final class RddFactContext {
                 break;
             }
             n++;
-            sb.append("- ").append(row.requirementKey()).append(" 需要 ").append(row.minimum());
+            // G1b：CRITICAL 需求行带 [关键] 前缀（与 executorBlock 的 needs 块同文案口径）；
+            // 排序仍按 attention（可疑度），不按重要度——本块是只读对账，不是调度裁决。
+            String impPrefix = row.importance() == RequirementManifest.Importance.CRITICAL
+                    ? "[关键] " : "";
+            sb.append("- ").append(impPrefix).append(row.requirementKey()).append(" 需要 ").append(row.minimum());
             if (row.held() == null) {
                 sb.append("，持有未知（登记表没这个键，不等于 0）");
             } else {
@@ -375,10 +408,7 @@ final class RddFactContext {
             RequirementManifest.Manifest manifest = RddRequirementDetector.forPrimary(primary, goalId);
             MANIFESTS.put(companionId, new Cached(primary == null ? "" : primary.id(), manifest.goalId(), manifest));
             WATCH.remove(companionId);   // 换目标 = 检测状态重来（不报跨目标的"变化"）
-            RddMonitor.publish("requirement_manifest", Map.of(
-                    "companionId", companionId.toString(),
-                    "primary", primary == null ? "unknown" : primary.id(),
-                    "requirements", String.valueOf(manifest.requirements().size())));
+            publishManifestEvent(companionId, primary, manifest);   // G1b：事件统一出口（带 critical 计数）
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 需求清单生成失败 {}: {}", companionId, ex.toString());
         }
@@ -462,11 +492,27 @@ final class RddFactContext {
         }
         RequirementManifest.Manifest manifest = RddRequirementDetector.forPrimary(primary, gid);
         MANIFESTS.put(companionId, new Cached(primary.id(), gid, manifest));
+        publishManifestEvent(companionId, primary, manifest);   // G1b：bind 之外第二个出口同字段
+        return manifest;
+    }
+
+    /**
+     * G1b：manifest 事件统一出口——旧三字段（companionId/primary/requirements）逐字保留，
+     * 新增 {@code critical}（CRITICAL 条数）。只发计数不发逐条清单（事件有界纪律）。
+     */
+    private static void publishManifestEvent(UUID companionId, PrimaryGoal primary,
+                                             RequirementManifest.Manifest manifest) {
+        int critical = 0;
+        for (RequirementManifest.Requirement r : manifest.requirements()) {
+            if (r != null && r.importance() == RequirementManifest.Importance.CRITICAL) {
+                critical++;
+            }
+        }
         RddMonitor.publish("requirement_manifest", Map.of(
                 "companionId", companionId.toString(),
                 "primary", primary.id(),
-                "requirements", String.valueOf(manifest.requirements().size())));
-        return manifest;
+                "requirements", String.valueOf(manifest.requirements().size()),
+                "critical", String.valueOf(critical)));
     }
 
     /**

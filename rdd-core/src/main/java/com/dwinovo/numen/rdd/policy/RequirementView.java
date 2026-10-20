@@ -51,19 +51,38 @@ public final class RequirementView {
     public record Row(String requirementKey, int minimum, Integer held, int heldGap,
                       String heldVerdict, int factCount, String factMatchedBy,
                       Attention attention,
+                      RequirementManifest.Importance importance,
                       List<Map<String, Object>> usage) {
+
+        /**
+         * G1b 兼容构造：importance 缺省 NORMAL——老调用方（含既有测试）不传也不变形。
+         * 生产唯一构造点在 {@link #build}，从 manifest 透传。
+         */
+        public Row(String requirementKey, int minimum, Integer held, int heldGap,
+                   String heldVerdict, int factCount, String factMatchedBy,
+                   Attention attention,
+                   List<Map<String, Object>> usage) {
+            this(requirementKey, minimum, held, heldGap, heldVerdict, factCount, factMatchedBy,
+                    attention, RequirementManifest.Importance.NORMAL, usage);
+        }
+
+        /** 防御：importance null → NORMAL（唯一新增守卫；usage 保持原容忍语义，toMap 已处理 null）。 */
+        public Row {
+            if (importance == null) importance = RequirementManifest.Importance.NORMAL;
+        }
 
         public Map<String, Object> toMap() {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("requirement_key", requirementKey);
             m.put("minimum", minimum);
+            m.put("importance", importance.name());
             m.put("held", held);
             m.put("held_gap", heldGap);
             m.put("held_verdict", heldVerdict);
             m.put("fact_count", factCount);
             m.put("fact_matched_by", factMatchedBy);
             m.put("attention", attention.name());
-            m.put("usage", usage == null ? List.of() : usage);
+            m.put("usage", usage);
             return m;
         }
     }
@@ -131,6 +150,14 @@ public final class RequirementView {
         for (var i : fa.items()) {
             byKey.put(i.requirementKey(), i);
         }
+        // G1b：需求键 → importance（manifest 是唯一来源；找不到的键按 NORMAL——
+        // 对账层不猜重要度，缺来源就落默认档，不编造 CRITICAL）
+        Map<String, RequirementManifest.Importance> importanceByKey = new LinkedHashMap<>();
+        for (RequirementManifest.Requirement r : manifest.requirements()) {
+            if (r != null && r.key() != null) {
+                importanceByKey.putIfAbsent(r.key(), r.importance());
+            }
+        }
 
         List<Row> rows = new ArrayList<>();
         for (var a : aa.items()) {
@@ -155,7 +182,10 @@ public final class RequirementView {
                     a.verdict().name(), factCount,
                     // 口径要如实且可读：事实侧只做**阶段键**比对（资产键≠阶段键），
                     // 所以只说「有没有比中」，不说 EXACT/PREFIX —— 那是事实侧内部的口径。
-                    factCount > 0 ? "MATCHED" : "NO_MATCH", at, a.usage()));
+                    factCount > 0 ? "MATCHED" : "NO_MATCH", at,
+                    importanceByKey.getOrDefault(a.requirementKey(),
+                            RequirementManifest.Importance.NORMAL),
+                    a.usage()));
         }
         // 关注项排在前面（枚举声明顺序 = 可疑程度降序，NONE 在最后）
         rows.sort((x, y) -> x.attention().ordinal() - y.attention().ordinal());
