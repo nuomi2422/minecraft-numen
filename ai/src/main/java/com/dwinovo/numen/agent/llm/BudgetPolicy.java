@@ -104,8 +104,12 @@ public final class BudgetPolicy {
 
     /** 记一笔已完成的调用（成功与失败都记；usage 缺失时 tokens 传 0）。 */
     public static void record(String phase, long tokens, long millis) {
+        recordRole(roleOf(phase), tokens, millis);
+    }
+
+    /** 按<b>角色</b>记账（预扣的 charge 走这里：预留里存的已经是角色，不再做相位映射）。 */
+    private static void recordRole(String role, long tokens, long millis) {
         try {
-            String role = roleOf(phase);
             ArrayDeque<Call> q = METER.computeIfAbsent(role, r -> new ArrayDeque<>());
             long now = clock.getAsLong();
             synchronized (q) {
@@ -115,6 +119,123 @@ public final class BudgetPolicy {
         } catch (RuntimeException ex) {
             AiLog.LOG.warn("[numen-econ] 预算计量失败(不影响请求): {}", ex.toString());
         }
+    }
+
+    // ---- G4a：并发预留（reserve / charge / release）----
+
+    /**
+     * 一条预算预留（「这轮调用先占多少额度」）。
+     *
+     * <p><b>为什么需要它</b>：{@link #record} 是<b>事后</b>记账——两个并发请求都会先看到
+     * 同一份窗口用量、都认为还有额度，于是双双发出、事后双双记超。执行角色目前是串行，
+     * 问题被掩盖；检索/学习一旦并发出调用，这条缺口就是真超支（IC09）。
+     */
+    public record Reservation(long id, String role, long tokens, long expiresAtMs) {}
+
+    /** 预留默认租约：5 分钟。漏 release 的异常路径不会永久占额。 */
+    public static final long DEFAULT_RESERVATION_TTL_MS = 5L * 60_000L;
+
+    private static final Map<Long, Reservation> RESERVATIONS = new ConcurrentHashMap<>();
+    private static final java.util.concurrent.atomic.AtomicLong RESERVATION_IDS =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * 申请预留：在「窗口已用 + 其他活跃预留」上判限额。
+     *
+     * @return 预留；限额不足 / 角色不限 / 异常 → null（调用方按 {@link #checkBlock} 语义处理）
+     */
+    public static Reservation reserve(String phase, long estimatedTokens, long ttlMillis) {
+        try {
+            Policy p = policy;
+            String role = roleOf(phase);
+            Limit limit = p.roles().get(role);
+            if (limit == null || limit.isNone()) {
+                return null;   // 不限的角色不占额（占了也拦不住任何东西）
+            }
+            long now = clock.getAsLong();
+            pruneReservations(now);
+            long want = Math.max(0, estimatedTokens);
+            WindowUsage withRes = windowUsageWithReservations(role);
+            if (limit.tokensPerWindow() > 0 && withRes.tokens() + want > limit.tokensPerWindow()) {
+                return null;
+            }
+            if (limit.callsPerWindow() > 0 && withRes.calls() + 1 > limit.callsPerWindow()) {
+                return null;
+            }
+            long ttl = ttlMillis <= 0 ? DEFAULT_RESERVATION_TTL_MS : ttlMillis;
+            long id = RESERVATION_IDS.incrementAndGet();
+            Reservation reservation = new Reservation(id, role, want, now + ttl);
+            RESERVATIONS.put(id, reservation);
+            return reservation;
+        } catch (RuntimeException ex) {
+            AiLog.LOG.warn("[numen-econ] 预算预留失败(按不预留处理): {}", ex.toString());
+            return null;
+        }
+    }
+
+    /**
+     * 扣账：把预留换成一次真实调用（用<b>实际</b>用量，不是预估）。
+     *
+     * @return true = 该预留存在并已扣账；false = 预留不存在/已过期（不补记，避免凭空多一笔）
+     */
+    public static boolean charge(long reservationId, long actualTokens) {
+        Reservation r = RESERVATIONS.get(reservationId);
+        if (r == null) {
+            return false;
+        }
+        // 过期预留不可扣账：它占的额度已按 TTL 释放，再补记就变成凭空多一笔调用。
+        if (clock.getAsLong() >= r.expiresAtMs()) {
+            RESERVATIONS.remove(reservationId);
+            return false;
+        }
+        RESERVATIONS.remove(reservationId);
+        recordRole(r.role(), actualTokens, 0);
+        return true;
+    }
+
+    /**
+     * 失败释放：只移除预留，<b>不记调用</b>——没发生的事不许记账。
+     *
+     * @return true = 确有预留被释放
+     */
+    public static boolean release(long reservationId) {
+        return RESERVATIONS.remove(reservationId) != null;
+    }
+
+    /** 该角色当前活跃预留数（观测/测试用）。 */
+    public static int activeReservations(String role) {
+        pruneReservations(clock.getAsLong());
+        int n = 0;
+        for (Reservation r : RESERVATIONS.values()) {
+            if (r.role().equals(role)) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /**
+     * 「窗口已用 + 活跃预留」的用量视图（求值用）。
+     *
+     * <p>{@link #windowUsage} 保持原义（只算真实调用）；本方法把预留也算进 calls/tokens，
+     * 否则并发两路都会看到「还没用」。
+     */
+    public static WindowUsage windowUsageWithReservations(String role) {
+        WindowUsage used = windowUsage(role);
+        pruneReservations(clock.getAsLong());
+        long tokens = used.tokens();
+        long calls = used.calls();
+        for (Reservation r : RESERVATIONS.values()) {
+            if (r.role().equals(role)) {
+                tokens += r.tokens();
+                calls += 1;
+            }
+        }
+        return new WindowUsage(calls, tokens, used.millis());
+    }
+
+    private static void pruneReservations(long now) {
+        RESERVATIONS.entrySet().removeIf(e -> now >= e.getValue().expiresAtMs());
     }
 
     private static void prune(ArrayDeque<Call> q, long now) {
@@ -346,10 +467,12 @@ public final class BudgetPolicy {
         clock = c;
     }
 
-    /** 测试用：清空计量、建议冷却与已加载策略。 */
+    /** 测试用：清空计量、建议冷却、活跃预留与已加载策略。 */
     static void resetForTest() {
         METER.clear();
         LAST_ADVICE_MS.clear();
+        RESERVATIONS.clear();
+        RESERVATION_IDS.set(0L);
         policy = DEFAULT_POLICY;
         loadedFrom = null;
         loadedMtimeMs = -1L;
