@@ -305,6 +305,11 @@ final class RddDetector {
             PrimaryGoalStatus ps = chain.primaryStatus();
             // 真实背包先扫+缓存（规划注入数据源）；缓存是女仆属性，收尾/监督态也照常更新。
             Map<String, Integer> counts = countInventory(ap);
+            // D20-C1：先跑超时结账 —— 过期支线清掉后，下面的 lastRepair 才不会对死支线空转。
+            // tickTimeout 不落盘（单测环境 RddPlugin 类链炸）；这里在游戏环境补 saveLedger。
+            if (RddRepairDispatch.tickTimeout(ap.getUUID())) {
+                RddPlugin.saveLedger(ap.getUUID());
+            }
             // 死亡支线收尾（深审 R08）：背包里重新出现了死亡时丢的资产 = "捡回来了"的真实证据。
             // 这是 onRepairSuccess 唯一可信的触发点（比"AI 说自己捡了"可靠）——
             // 之前它零生产调用，支线派出去就没人管，连续失败只增不减。

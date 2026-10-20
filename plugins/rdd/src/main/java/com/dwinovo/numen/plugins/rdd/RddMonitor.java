@@ -58,8 +58,13 @@ public final class RddMonitor {
 
             Files.writeString(file, GSON.toJson(envelope) + "\n", StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } catch (Exception ignored) {
-            // 观测失败不影响 RDD 主流程
+        } catch (Throwable ignored) {
+            // 观测失败不影响 RDD 主流程。
+            // ★ D20-C1：从 Exception 升到 Throwable —— FMLPaths 在纯 JVM 单测环境
+            //   抛的是 NoClassDefFoundError（Error 不是 Exception），原 catch 接不住，
+            //   任何碰 RddMonitor.publish 的单测直接炸在类加载上。
+            //   观测是旁路（fail-soft 是本类的设计自述），Error 也必须吞 ——
+            //   让任务链核心逻辑被观测层的类缺失拖垮，正是「fail-soft」的反面。
         }
     }
 

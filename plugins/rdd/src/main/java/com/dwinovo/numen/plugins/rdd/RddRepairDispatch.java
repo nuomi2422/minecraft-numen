@@ -26,6 +26,15 @@ final class RddRepairDispatch {
     private static final Map<UUID, LocalRepairTask.Guard.Tracker> TRACKERS = new ConcurrentHashMap<>();
     private static final AtomicLong ID_SEQ = new AtomicLong();
     private static final LocalRepairTask.Guard GUARD = LocalRepairTask.Guard.defaults();
+    /**
+     * D20-C1：支线创建时的游戏 tick（超时结账用）。
+     *
+     * <p>为什么要记这个：Task 的 timeoutTicks 只是「说明这次支线该多久」，但宿主侧
+     * 没人看它 —— 支线失败/超时后 {@code onRepairFailure} 零调用者、{@code LAST_REPAIR}
+     * 永不清除，台账永远 UNVERIFIED（FV 终验实测）。这条 Map 补上「什么时候创建的」，
+     * {@link #tickTimeout} 到点把没结账的支线结成 CONFIRMED_LOST。
+     */
+    private static final Map<UUID, Long> REPAIR_CREATED_TICK = new ConcurrentHashMap<>();
 
     /** F6：当前支线对应的死亡批次 seq（结账的身份，不是"最近那条"）。 */
     private static final Map<UUID, Integer> OPEN_DEATH_SEQ = new ConcurrentHashMap<>();
@@ -87,6 +96,7 @@ final class RddRepairDispatch {
                 "ESCALATE",
                 repeatDeath ? REPEAT_DEATH_GOAL : DEFAULT_GOAL);
         LAST_REPAIR.put(companionId, task);
+        REPAIR_CREATED_TICK.put(companionId, now);   // D20-C1：超时结账的起点
         // 批次身份跟着支线走：回收判据必须知道"结账的是哪一次死亡"（F6）。
         if (death != null) {
             OPEN_DEATH_SEQ.put(companionId, death.seq());
@@ -115,11 +125,12 @@ final class RddRepairDispatch {
         return true;
     }
 
-    /** \u652f\u7ebf\u6210\u529f\uff1a\u6e05\u8fde\u7eed\u5931\u8d25\u8ba1\u6570\u5e76\u79fb\u9664\u3002 */
+    /** 支线成功：清连续失败计数并移除。 */
     static void onRepairSuccess(UUID companionId) {
         LocalRepairTask.Guard.Tracker tr = TRACKERS.get(companionId);
         if (tr != null) tr.recordSuccess(LocalRepairTask.Trigger.DEATH);
         LocalRepairTask.Task done = LAST_REPAIR.remove(companionId);
+        REPAIR_CREATED_TICK.remove(companionId);   // D20-C1：成功路径也清起点
         if (done != null) {
             RddMonitor.publish("repair_task_succeeded", Map.of(
                     "companionId", companionId.toString(), "repairId", done.id(),
@@ -198,8 +209,62 @@ final class RddRepairDispatch {
 
     static LocalRepairTask.Task lastRepair(UUID companionId) { return LAST_REPAIR.get(companionId); }
 
+    /**
+     * D20-C1：超时结账 —— 宿主每拍调（在 {@code deathDropsBackInInventory} 检查之前）。
+     *
+     * <p><b>修什么</b>：支线失败/超时后 {@code onRepairFailure} 零调用者（生产代码 grep 唯一命中
+     * 是它自己的定义），{@code LAST_REPAIR} 里的任务永不清除。后果两个：
+     * <ol>
+     *   <li>{@code tickRuntime} 每拍空跑 {@code deathDropsBackInInventory}（背包扫描白做）；</li>
+     *   <li>台账停 UNVERIFIED 永不结账 —— FV 终验实测（V-20261020-03 债①）。</li>
+     * </ol>
+     *
+     * <p><b>结账语义</b>：超期 = 「这次支线没有在窗口内把掉落物捡回」→ 台账 {@code confirmLost}。
+     * <b>不是</b>「物理上销毁了」—— 掉落物可能还在地上（区块没加载就不计龄），
+     * 只是<b>本支线放弃追踪</b>。台账的 UNVERIFIED/CONFIRMED_LOST 语义见 RddDeathLedger.State。
+     *
+     * <p><b>75号 §3.3 对齐</b>：「结束恢复尝试不等于确认掉落销毁；不得用墙钟逾时替代实体证据」——
+     * confirmLost 写的 evidence 明确说"支线超时放弃追踪"，不说"物品没了"。
+     *
+     * <p>★ 本方法刻意<b>不</b>调 {@code RddPlugin.saveLedger}：RddPlugin 的类加载链
+     * （实现 NumenPlugin 接口）在纯 JVM 单测环境直接 NoClassDefFoundError。
+     * 落盘由 {@code RddDetector.tickRuntime} 的调用方做（游戏环境必有 RddPlugin）——
+     * {@code lastRepair} 返回 null 时如果台账刚被结过，调一次 saveLedger 即可。
+     *
+     * @return true = 本次调用把支线结掉了（宿主可据此跳过本拍的捡回检查并落盘台账）
+     */
+    static boolean tickTimeout(UUID companionId) {
+        if (companionId == null) return false;
+        LocalRepairTask.Task task = LAST_REPAIR.get(companionId);
+        if (task == null) return false;
+        Long created = REPAIR_CREATED_TICK.get(companionId);
+        if (created == null) return false;
+        long now = RddInstrumentation.currentGameTimeTicks();
+        if (now - created < task.timeoutTicks()) return false;
+        // 到点：结账 + 清支线（与 onRepairSuccess 的清理路径保持一致）
+        LAST_REPAIR.remove(companionId);
+        REPAIR_CREATED_TICK.remove(companionId);
+        LocalRepairTask.Guard.Tracker tr = TRACKERS.get(companionId);
+        if (tr != null) tr.recordFailure(LocalRepairTask.Trigger.DEATH);
+        int seq = OPEN_DEATH_SEQ.getOrDefault(companionId, -1);
+        if (seq >= 0) {
+            OPEN_DEATH_SEQ.remove(companionId);
+            com.dwinovo.numen.rdd.core.RddDeathLedger.confirmLost(companionId, seq,
+                    "repair branch timed out after " + (task.timeoutTicks() / 20) + "s; "
+                            + "drops may still exist on the ground — this closes the branch, not the world");
+        }
+        RddMonitor.publish("repair_task_timed_out", Map.of(
+                "companionId", companionId.toString(),
+                "repairId", task.id(),
+                "deathSeq", seq,
+                "timeoutTicks", task.timeoutTicks(),
+                "note", "branch abandoned; ledger set CONFIRMED_LOST (tracking-level, not physical evidence)"));
+        return true;
+    }
+
     static void remove(UUID companionId) {
         LAST_REPAIR.remove(companionId);
+        REPAIR_CREATED_TICK.remove(companionId);   // D20-C1
         TRACKERS.remove(companionId);
         OPEN_DEATH_SEQ.remove(companionId);
     }
