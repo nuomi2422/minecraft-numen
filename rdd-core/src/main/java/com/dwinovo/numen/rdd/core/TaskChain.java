@@ -99,6 +99,28 @@ public final class TaskChain {
      */
     private int staleResultsIgnored;
 
+    // ---- G3e：安全点凭据（IC75-r1 §15.8）----
+
+    /**
+     * owner 代次：换人设 / 死亡复活重放时 +1，旧凭据一律 {@code STALE_EPOCH}。
+     *
+     * <p>随链持久化（旧存档读作 0）：代次若只活在内存在，重启后归零，
+     * 旧凭据就会「复活」——而凭据代表的是一次尚未完成的结构变更，复活它是危险的。
+     */
+    private long ownerEpoch;
+
+    /**
+     * 当前未消费的凭据；{@code null} = 未冻结。
+     *
+     * <p><b>刻意不持久化</b>：凭据是「此刻身体真的停着」的断言，重启之后那个断言已经无法证明，
+     * 丢弃它才是安全方向（宁可让规划器重新签一张，也不要拿一张来历不明的凭据去改计划）。
+     */
+    private SafePoint outstandingSafePoint;
+
+    /** 凭据流水号（链内单调递增，只用于生成 value；不持久化）。 */
+    private long safePointSeq;
+
+
     public TaskChain(Goal goal) {
         this(goal, Set.of());
     }
@@ -374,6 +396,9 @@ public final class TaskChain {
      * </ul>
      */
     private void beginAttempt(String subtaskId, Map<String, Integer> counts, boolean captureBaseline) {
+        // G3e：凭据未消费期间 = 计划正在被改写 → 冻结「新动作」。
+        // 只冻新动作、不打断在跑的（打断属执行层）：最坏情况是「这件干完等新计划」，不是卡死。
+        requireNoOutstandingSafePoint("start another attempt");
         if (statuses.get(subtaskId) != SubtaskStatus.PENDING) {
             throw new IllegalStateException("attempt must start from PENDING: " + subtaskId
                     + " is " + statuses.get(subtaskId));
@@ -473,12 +498,138 @@ public final class TaskChain {
     /** G3b：被忽略的陈旧结果次数（只读；区分「判定没跑」与「跑了但被 CAS 挡掉」）。 */
     public synchronized int staleResultsIgnored() { return staleResultsIgnored; }
 
+    // ---- G3e：安全点凭据（签发/校验/消费/作废）----
+
+    /** G3e：owner 代次（只读）。 */
+    public synchronized long ownerEpoch() { return ownerEpoch; }
+
+    /**
+     * G3e：owner 换代（换人设 / 死亡复活重放）。代次 +1，且<b>当场作废</b>未消费的凭据。
+     *
+     * @return 新代次
+     */
+    public synchronized long bumpOwnerEpoch() {
+        ownerEpoch++;
+        outstandingSafePoint = null;
+        return ownerEpoch;
+    }
+
+    /**
+     * G3e：签发一张安全点凭据（一张一消费，绑当前 owner 代次）。
+     *
+     * <p><b>签发时机由宿主决定</b>（身体是空的 / 上一动作刚 {@code task_finished}），
+     * 链只负责「同 epoch、同用途、未过期、未消费」的校验与一次性消费。
+     * 把签发条件也写进这里，迟早会出现第二套「身体是否空闲」的判据——那是本项目反复踩的坑。
+     *
+     * @throws IllegalStateException 已经有一张未消费的凭据（一次只允许一个结构变更在途）
+     */
+    public synchronized SafePoint issueSafePoint(SafePoint.Purpose purpose, long ttlMillis) {
+        SafePoint existing = outstandingSafePoint();
+        if (existing != null) {
+            throw new IllegalStateException("safe point already outstanding: " + existing.value());
+        }
+        long now = System.currentTimeMillis();
+        long ttl = ttlMillis <= 0 ? SafePoint.DEFAULT_TTL_MILLIS : ttlMillis;
+        SafePoint token = new SafePoint("sp-" + (++safePointSeq) + "-" + ownerEpoch, ownerEpoch,
+                Objects.requireNonNull(purpose), now, now + ttl);
+        outstandingSafePoint = token;
+        return token;
+    }
+
+    /**
+     * G3e：当前未消费且未过期的凭据；{@code null} = 未冻结。
+     *
+     * <p><b>过期即视为没有</b>（顺手清掉）：规划器崩了/被取消时不能把身体永久冻住。
+     */
+    public synchronized SafePoint outstandingSafePoint() {
+        if (outstandingSafePoint == null) return null;
+        if (outstandingSafePoint.expiredAt(System.currentTimeMillis())) {
+            outstandingSafePoint = null;
+            return null;
+        }
+        return outstandingSafePoint;
+    }
+
+    /** G3e：校验凭据（纯求值，不消费、不改状态）。 */
+    public synchronized SafePoint.Check checkSafePoint(SafePoint token, SafePoint.Purpose purpose) {
+        if (token == null) return SafePoint.Check.reject(SafePoint.NO_TOKEN);
+        if (token.ownerEpoch() != ownerEpoch) return SafePoint.Check.reject(SafePoint.STALE_EPOCH);
+        if (token.purpose() != purpose) return SafePoint.Check.reject(SafePoint.WRONG_PURPOSE);
+        if (token.expiredAt(System.currentTimeMillis())) {
+            if (outstandingSafePoint != null && outstandingSafePoint.value().equals(token.value())) {
+                outstandingSafePoint = null;   // 过期自动解冻
+            }
+            return SafePoint.Check.reject(SafePoint.EXPIRED);
+        }
+        if (outstandingSafePoint == null || !outstandingSafePoint.value().equals(token.value())) {
+            return SafePoint.Check.reject(SafePoint.ALREADY_CONSUMED);
+        }
+        return SafePoint.Check.pass();
+    }
+
+    /**
+     * G3e：消费凭据（一次性）。成功 = 冻结解除。
+     *
+     * @return true = 这张凭据有效且已用掉；false = 无效（种类见 {@link #checkSafePoint}）
+     */
+    public synchronized boolean consumeSafePoint(SafePoint token) {
+        if (token == null) return false;
+        if (!checkSafePoint(token, token.purpose()).ok()) return false;
+        outstandingSafePoint = null;
+        return true;
+    }
+
+    /**
+     * G3e：废弃凭据（计划变更放弃时调用）。
+     *
+     * <p>与消费<b>同一个出口</b>：之后 {@code check} 一律 {@code ALREADY_CONSUMED}——
+     * 不给「作废」另造一种失效态，否则调用方要判两种「不能用」。
+     */
+    public synchronized void revokeSafePoint(SafePoint token) {
+        if (token == null) return;
+        if (outstandingSafePoint != null && outstandingSafePoint.value().equals(token.value())) {
+            outstandingSafePoint = null;
+        }
+    }
+
+    /** 冻结闸：有未消费凭据时，计划正在被改写 → 不许按旧计划启动新结构变更。 */
+    private void requireNoOutstandingSafePoint(String action) {
+        SafePoint out = outstandingSafePoint();
+        if (out != null) {
+            throw new IllegalStateException("SAFE_POINT_PENDING: cannot " + action
+                    + " while a safe point is outstanding (" + out.purpose() + ")");
+        }
+    }
+
+    /** 凭据闸：结构变更必须出示同用途、同 epoch、未过期、未消费的凭据。 */
+    private void requireSafePoint(SafePoint token, SafePoint.Purpose purpose) {
+        SafePoint.Check check = checkSafePoint(token, purpose);
+        if (!check.ok()) {
+            throw new IllegalStateException("SAFE_POINT_REJECTED: " + check.code() + " (" + purpose + ")");
+        }
+    }
+
     /**
      * 懒加载唯一合法的注入点：宿主目标驱动器把已为"当前一级"生成的二级集合注入该一级。
      * 保持一级的 id/description/waitFor 与 {@link #primaryStatus} 不变，仅 unexpanded→false；
      * 注入后照常走依赖门/激活/硬检测。当前一级未展开之外的调用一律拒绝（不重写其他任何状态）。
+     *
+     * <p><b>G3e</b>：有未消费的安全点凭据时拒绝（{@code SAFE_POINT_PENDING}）；
+     * 要注入请走 {@link #expandCurrentPrimary(List, SafePoint)}。
      */
     public synchronized void expandCurrentPrimary(List<Subtask> generated) {
+        requireNoOutstandingSafePoint("expand primary");
+        doExpandCurrentPrimary(generated);
+    }
+
+    /** G3e：带 `EXPAND_PRIMARY` 凭据的展开注入；成功应用后当场消费。 */
+    public synchronized void expandCurrentPrimary(List<Subtask> generated, SafePoint token) {
+        requireSafePoint(token, SafePoint.Purpose.EXPAND_PRIMARY);
+        doExpandCurrentPrimary(generated);
+        consumeSafePoint(token);
+    }
+
+    private void doExpandCurrentPrimary(List<Subtask> generated) {
         PrimaryGoal cur = currentPrimary();
         if (isSatisfied(primaryIndex)) {
             // 防御：被完成事实命中的一级必须跳过，绝不能被展开重跑（正常路径 currentPrimary 已跳过）
@@ -669,8 +820,26 @@ public final class TaskChain {
     /**
      * REPLANNING 出口：宿主为当前一级换了新二级计划 → 原位替换成 generated（保留一级
      * id/description/waitFor），旧二级状态作废、新二级全置 PENDING，subtask 指针归零回到 PENDING。
+     *
+     * <p><b>G3e</b>：存在未消费的安全点凭据时，这条<b>旧签名</b>一律拒绝（{@code SAFE_POINT_PENDING}）——
+     * 否则「换计划」就能绕过冻结。要换请走 {@link #replaceCurrentSubtasks(List, SafePoint)}。
      */
     public synchronized void replaceCurrentSubtasks(List<Subtask> generated) {
+        requireNoOutstandingSafePoint("replace plan");
+        doReplaceCurrentSubtasks(generated);
+    }
+
+    /**
+     * G3e：带安全点凭据的计划替换——凭据必须是 {@code REPLACE_PLAN} 用途、同 epoch、未过期、未消费，
+     * 成功应用后<b>当场消费</b>（一次性）。
+     */
+    public synchronized void replaceCurrentSubtasks(List<Subtask> generated, SafePoint token) {
+        requireSafePoint(token, SafePoint.Purpose.REPLACE_PLAN);
+        doReplaceCurrentSubtasks(generated);
+        consumeSafePoint(token);
+    }
+
+    private void doReplaceCurrentSubtasks(List<Subtask> generated) {
         stateVersion++;            // G3b：计划替换 = 安全提交（结构变化）
         if (primaryStatus != PrimaryGoalStatus.REPLANNING) throw new IllegalStateException("only a REPLANNING primary may have its plan replaced: " + primaryStatus);
         if (generated == null || generated.isEmpty()) throw new IllegalArgumentException("replacement requires at least one legal subtask");
@@ -1075,6 +1244,18 @@ public final class TaskChain {
         // 监测台据此能核对 IC03/IC06，不用去翻持久化文件（V-20261020-21 的债）。
         view.put("stateVersion", stateVersion);
         view.put("staleResultsIgnored", staleResultsIgnored);
+        // G3e：安全点凭据的可见性——「为什么现在不能换计划」必须能一句话说清，
+        // 而不是只能靠「调用抛了 SAFE_POINT_PENDING」去猜。
+        view.put("ownerEpoch", ownerEpoch);
+        SafePoint outstanding = outstandingSafePoint();
+        Map<String, Object> safePoint = new LinkedHashMap<>();
+        safePoint.put("outstanding", outstanding != null);
+        if (outstanding != null) {
+            safePoint.put("purpose", outstanding.purpose().name());
+            safePoint.put("expiresInMs", outstanding.remainingMillis(System.currentTimeMillis()));
+            safePoint.put("epoch", outstanding.ownerEpoch());
+        }
+        view.put("safePoint", safePoint);
         PrimaryGoal current = currentPrimary();
         view.put("currentPrimaryId", current.id());
         // 当前一级未展开时诚实报"无当前二级"，而不是伪造占位节点。
@@ -1112,6 +1293,8 @@ public final class TaskChain {
         // G3b：安全状态版本与陈旧结果计数随链持久化（判据要活得过重启）
         o.addProperty("stateVersion", stateVersion);
         o.addProperty("staleResultsIgnored", staleResultsIgnored);
+        // G3e：owner 代次随链持久化（旧凭据靠它作废；凭据本身不落盘，见字段注释）
+        o.addProperty("ownerEpoch", ownerEpoch);
         if (activeExecutionId != null) o.addProperty("activeExecutionId", activeExecutionId);
         return GSON.toJson(o);
     }
@@ -1200,6 +1383,10 @@ public final class TaskChain {
         }
         if (o.has("staleResultsIgnored")) {
             chain.staleResultsIgnored = o.get("staleResultsIgnored").getAsInt();
+        }
+        // G3e：owner 代次向后兼容读作 0；凭据本身不落盘（重启后必须重签，见字段注释）
+        if (o.has("ownerEpoch")) {
+            chain.ownerEpoch = o.get("ownerEpoch").getAsLong();
         }
         // 完成事实继承层（P0）：旧链无此字段 → 空集（向后兼容）
         if (o.has("satisfiedStages") && o.get("satisfiedStages").isJsonArray()) {
