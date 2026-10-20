@@ -13,6 +13,7 @@ import com.dwinovo.numen.rdd.fact.StageFact;
 import com.dwinovo.numen.rdd.policy.RequirementManifest;
 import com.dwinovo.numen.rdd.policy.RequirementView;
 import com.dwinovo.numen.rdd.policy.ReservationLedger;
+import com.dwinovo.numen.rdd.policy.TransformationDetector;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,11 +88,14 @@ final class RddFactContext {
     /**
      * 已缓存的需求清单。
      *
-     * <p>G1b2：{@code expanded}/{@code subtaskCount} 是「展开指纹」——一级懒展开会
+     * <p>G1b2：{@code expanded}/{@code subtaskFingerprint} 是「展开指纹」——一级懒展开会
      * 悄悄扩大需求集，而 primaryId/goalId 都不变；不把指纹并入命中条件，缓存就会
      * 一直用绑定时刻（unexpanded、二级为空）那份清单。
+     *
+     * <p>G1c-2：指纹从「二级数」升级为「二级 id 连接串」——重规划可能<b>换掉整组二级
+     * 但数量不变</b>（例如把「木棍/火把/圆石」换成「铁锭/面包」），只比数量会漏。
      */
-    private record Cached(String primaryId, String goalId, boolean expanded, int subtaskCount,
+    private record Cached(String primaryId, String goalId, boolean expanded, String subtaskFingerprint,
                           RequirementManifest.Manifest manifest) {}
 
     /** 需求检测状态：按 primaryId 隔离；换 primary 视为新观察（不报跨 primary 的变化）。 */
@@ -104,6 +108,10 @@ final class RddFactContext {
     private static final Map<UUID, ReservationLedger> LEDGERS = new ConcurrentHashMap<>();
     /** G1c：预留租约时长——到期只释放承诺（IC05），不写任何「丢失」。 */
     private static final long RESERVE_LEASE_MILLIS = 5L * 60_000L;
+    /** G1c-2：上一次 tick 的真实背包计数（转化检测的对照面；不参与判定）。 */
+    private static final Map<UUID, Map<String, Integer>> LAST_COUNTS = new ConcurrentHashMap<>();
+    /** G1c-2：一次 tick 最多发几条转化事件（有界纪律）。 */
+    private static final int MAX_TRANSFORM_EVENTS = 3;
 
     private RddFactContext() {
     }
@@ -435,9 +443,7 @@ final class RddFactContext {
             // G1b2：绑定时刻的展开指纹必须一起落缓存（unexpanded / 二级数），
             // 否则 ensureManifest 的命中条件永远对不上，会在下一次 tick 白重建一遍。
             MANIFESTS.put(companionId, new Cached(primary == null ? "" : primary.id(), manifest.goalId(),
-                    primary != null && !primary.unexpanded(),
-                    primary == null || primary.subtasks() == null ? 0 : primary.subtasks().size(),
-                    manifest));
+                    primary != null && !primary.unexpanded(), subtaskFingerprint(primary), manifest));
             WATCH.remove(companionId);   // 换目标 = 检测状态重来（不报跨目标的"变化"）
             publishManifestEvent(companionId, primary, manifest);   // G1b：事件统一出口（带 critical 计数）
         } catch (RuntimeException ex) {
@@ -454,6 +460,7 @@ final class RddFactContext {
         WATCH.remove(companionId);
         LATEST.remove(companionId);
         LEDGERS.remove(companionId);   // G1c：任务清空 = 承诺作废（账本不跨计划存活）
+        LAST_COUNTS.remove(companionId);   // G1c-2：清空的同伴不再拿旧快照当对照面
     }
 
     /** 最近一次快照（观测/测试用；没有就是没采集过，不造空快照）。 */
@@ -490,6 +497,10 @@ final class RddFactContext {
             // G1c：关键需求软预留（D11）。只给 CRITICAL 需求申请；申请量取
             // min(需求, 现有)——软预留只承诺「现有的」，不去许愿天上有多少。
             int reservedTotal = ensureReservations(companionId, primary, needs, counts, now);
+            // G1c-2：转化证据（只落事件，不参与判定）。对照面是「上一次 tick 的真实背包」，
+            // 30 秒窗口内的合成/熔炼能被识别成「原木→木板」这类形态变化，
+            // 从而与「东西丢了」区分开（75号 §3.2）。
+            publishTransforms(companionId, counts);
             if (prev != null && prev.primaryId().equals(primary.id()) && !needs.isEmpty()) {
                 switch (transition(prev.unmet(), unmet)) {
                     case MET -> RddMonitor.publish("requirements_met", Map.of(
@@ -533,18 +544,39 @@ final class RddFactContext {
     static RequirementManifest.Manifest ensureManifest(UUID companionId, PrimaryGoal primary, String goalId) {
         String gid = goalId == null || goalId.isBlank() ? primary.id() : goalId;
         boolean expanded = primary != null && !primary.unexpanded();
-        int subtaskCount = primary == null || primary.subtasks() == null ? 0 : primary.subtasks().size();
+        String fingerprint = subtaskFingerprint(primary);
         Cached cached = MANIFESTS.get(companionId);
         if (cached != null && primary != null && primary.id().equals(cached.primaryId())
                 && gid.equals(cached.goalId())
-                && expanded == cached.expanded() && subtaskCount == cached.subtaskCount()) {
+                && expanded == cached.expanded() && fingerprint.equals(cached.subtaskFingerprint())) {
             return cached.manifest();
         }
         RequirementManifest.Manifest manifest = RddRequirementDetector.forPrimary(primary, gid);
         MANIFESTS.put(companionId, new Cached(primary == null ? "" : primary.id(), gid,
-                expanded, subtaskCount, manifest));
+                expanded, fingerprint, manifest));
         publishManifestEvent(companionId, primary, manifest);   // G1b：bind 之外第二个出口同字段
         return manifest;
+    }
+
+    /**
+     * 展开指纹：二级 id 的连接串。
+     *
+     * <p>G1c-2：只比「二级数」会漏掉「整组换掉但数量不变」的重规划；id 连接串能识别，
+     * 且顺序敏感（重排也算变了——需求集未必变，但按「变了就重算」的保守侧处理）。
+     * 未展开时为空串。
+     */
+    static String subtaskFingerprint(PrimaryGoal primary) {
+        if (primary == null || primary.subtasks() == null || primary.subtasks().isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < primary.subtasks().size(); i++) {
+            if (i > 0) {
+                sb.append('|');
+            }
+            sb.append(primary.subtasks().get(i).id());
+        }
+        return sb.toString();
     }
 
     /**
@@ -611,6 +643,50 @@ final class RddFactContext {
     /** 该同伴的预留账本（懒建；进程内生命周期，刻意不持久化——换计划即失效）。 */
     static ReservationLedger ledger(UUID companionId) {
         return LEDGERS.computeIfAbsent(companionId, k -> new ReservationLedger());
+    }
+
+    /**
+     * G1c-2：转化证据。拿「这次 vs 上次」两份真实背包计数跑 {@link TransformationDetector}，
+     * 命中就发 {@code asset_transform} 事件（每条只带 kind + 输入/输出短文本，有界）。
+     *
+     * <p>★ 刻意<b>不改判定</b>：这一批只是把「东西换了形态」记下来，
+     * 需求检测仍然只看持有量。让判定不再把转化当缺口，是后续批的事。
+     */
+    private static void publishTransforms(UUID companionId, Map<String, Integer> counts) {
+        try {
+            if (counts == null) {
+                return;
+            }
+            Map<String, Integer> prev = LAST_COUNTS.put(companionId, Map.copyOf(counts));
+            if (prev == null || prev.isEmpty()) {
+                return;   // 第一次扫描没有对照面
+            }
+            int n = 0;
+            for (TransformationDetector.Transform t : TransformationDetector.detect(prev, counts)) {
+                if (n == MAX_TRANSFORM_EVENTS) {
+                    break;
+                }
+                RddMonitor.publish("asset_transform", Map.of(
+                        "companionId", companionId.toString(),
+                        "kind", t.kind(),
+                        "inputs", joinCounts(t.inputs()),
+                        "outputs", joinCounts(t.outputs())));
+                n++;
+            }
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 转化检测失败 {}: {}", companionId, ex.toString());
+        }
+    }
+
+    private static String joinCounts(Map<String, Integer> m) {
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Integer> e : m.entrySet()) {
+            if (sb.length() > 0) {
+                sb.append('+');
+            }
+            sb.append(e.getKey()).append('×').append(e.getValue());
+        }
+        return sb.toString();
     }
 
     /** 当前 primary 的预留（资源键 → 件数），供执行上下文块渲染「已预留 N」。 */
