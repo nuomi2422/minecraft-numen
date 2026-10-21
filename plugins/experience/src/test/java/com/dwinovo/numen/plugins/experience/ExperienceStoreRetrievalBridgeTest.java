@@ -257,9 +257,11 @@ class ExperienceStoreRetrievalBridgeTest {
         assertEquals("NOT_FOUND", missing.code(), "找不到必须报错，不许空正文冒充成功");
         assertEquals("", missing.body());
 
+        // G5g：tool: 前缀现在有 owner 了（tool-catalog）。单测类路径下没有真工具表，
+        // 所以这里如实回 NOT_FOUND —— 关键是**不再是 NO_OWNER**，也不是空正文冒充成功。
         ExperienceStoreRetrievalBridge.Expanded tool =
                 ExperienceStoreRetrievalBridge.expand(memory, "tool:goto", 800);
-        assertEquals("NO_OWNER", tool.code(), "tool: 前缀在 G5f 还没有 owner（G5g 才接）");
+        assertEquals("NOT_FOUND", tool.code(), "有 owner 但目录里没有这条 → NOT_FOUND（不是 NO_OWNER）");
         assertEquals("", tool.body());
     }
 }

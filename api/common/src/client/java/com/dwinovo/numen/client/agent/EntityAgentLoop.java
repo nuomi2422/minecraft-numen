@@ -2567,7 +2567,9 @@ public final class EntityAgentLoop {
         String riding = ridingXml();
         String plugins = com.dwinovo.numen.api.NumenPlugins.stateFragments(entityUuid);
         // G5e：执行角色的检索块（统一检索 EXECUTOR 视图）。空 = 不追加（不塞空标题）。
-        String executorKnowledge = com.dwinovo.numen.api.NumenPlugins.executorKnowledge(entityUuid);
+        // G5g：把「她此刻在干什么」一起传下去 —— 工具目录条目要按它做相关性过滤，
+        // 否则要么全塞（挤掉经验）要么全不塞（等于没接）。
+        String executorKnowledge = com.dwinovo.numen.api.NumenPlugins.executorKnowledge(entityUuid, currentTask);
         List<ContextBudget.Section> sections = new ArrayList<>(6);
         sections.add(new ContextBudget.Section(SECTION_CURRENT_TASK, currentTask, true,
                 estimateTokensOfText(currentTask), PRIORITY_CURRENT_TASK));

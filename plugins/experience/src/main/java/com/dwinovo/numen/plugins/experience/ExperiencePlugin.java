@@ -62,7 +62,7 @@ public final class ExperiencePlugin implements NumenPlugin {
         //   只在 unified 下启用；EXECUTOR 视图只收 maturity≥VERIFIED、非撤回、非 WARNING 的条目
         //   （现库 4 条全是 OBSERVED ⇒ 通常为空集，这是**合法**结果：执行角色只信已验证的）。
         //   事件每轮都发：entries=0 也是证据（E3 要能看到 role=EXECUTOR 的快照）。
-        numen.contributeExecutorKnowledge(companion -> {
+        numen.contributeExecutorKnowledge((companion, objective) -> {
             try {
                 if (RetrievalPolicy.experienceRetrievalMode() != RetrievalPolicy.Mode.UNIFIED) {
                     return "";
@@ -71,7 +71,7 @@ public final class ExperiencePlugin implements NumenPlugin {
                 // 若等工具/规划先建库，执行视图会在会话前几分钟静默缺席（2026-10-21 实机踩到）。
                 ExperienceMemory m = memory(companion);
                 ExperienceStoreRetrievalBridge.Rendered rendered =
-                        ExperienceStoreRetrievalBridge.render(m, "", 6, 800,
+                        ExperienceStoreRetrievalBridge.render(m, objective, 6, 800,
                                 com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
                 ExperienceMonitor.publishContext("retrieval_snapshot", rendered.asEvent());
                 return rendered.text();

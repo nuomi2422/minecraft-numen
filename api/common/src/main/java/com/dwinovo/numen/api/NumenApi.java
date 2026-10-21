@@ -5,6 +5,7 @@ import com.dwinovo.numen.agent.tool.NumenTool;
 import java.nio.file.Path;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
@@ -159,6 +160,19 @@ public interface NumenApi {
      */
     default void contributeExecutorKnowledge(Function<UUID, String> fragment) {
         // 默认不接：G5e 之前的行为（执行请求里没有检索块）
+    }
+
+    /**
+     * G5g：带 objective 的注册形态 —— 第二个参数是「她此刻在干什么」。
+     *
+     * <p>为什么需要它：工具目录条目要按相关性过滤（否则 64 个工具会把经验挤掉），
+     * 而旧签名 {@code Function<UUID,String>} 根本拿不到目标文本。
+     * 默认实现退化成旧形态（objective 丢弃），老插件不受影响。
+     */
+    default void contributeExecutorKnowledge(BiFunction<UUID, String, String> fragment) {
+        if (fragment != null) {
+            contributeExecutorKnowledge((Function<UUID, String>) uuid -> fragment.apply(uuid, ""));
+        }
     }
 
 }

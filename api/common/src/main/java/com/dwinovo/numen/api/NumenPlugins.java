@@ -12,6 +12,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.UUID;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
@@ -209,18 +210,32 @@ public final class NumenPlugins {
      * 视角<b>本来就该不同</b>（75 号 §15.5 IC08）——EXECUTOR 只信 VERIFIED、非撤回、非 WARNING；
      * 合成一条缝就等于把两种视图混成一个，判据再也测不出来。
      */
-    private static final List<Function<UUID, String>> EXECUTOR = new CopyOnWriteArrayList<>();
+    private static final List<BiFunction<UUID, String, String>> EXECUTOR = new CopyOnWriteArrayList<>();
 
     /** 执行角色知识的总字符上限（比规划知识小：它每轮都在，且不是任务结构的一部分）。 */
     public static final int MAX_EXECUTOR_KNOWLEDGE_CHARS = 1200;
 
+    /** 老形态：拿不到 objective（G5e 起的插件都这么注册）。等价于「objective 永远为空」。 */
     public static void contributeExecutorKnowledge(Function<UUID, String> fragment) {
+        if (fragment != null) EXECUTOR.add((uuid, objective) -> fragment.apply(uuid));
+    }
+
+    /**
+     * G5g：带 objective 的形态 —— 工具目录类贡献靠它做相关性过滤。
+     * 不传 objective 时，目录 provider 会一条都不放（防止把经验挤掉）。
+     */
+    public static void contributeExecutorKnowledge(BiFunction<UUID, String, String> fragment) {
         if (fragment != null) EXECUTOR.add(fragment);
     }
 
     /** 汇总所有插件为这只同伴的执行请求贡献的知识。<b>引擎内部调用</b>。 */
     public static String executorKnowledge(UUID companion) {
-        return aggregateExecutorKnowledge(EXECUTOR, companion);
+        return executorKnowledge(companion, "");
+    }
+
+    /** G5g：带上「她此刻在干什么」（objective）—— 目录 provider 按它过滤。 */
+    public static String executorKnowledge(UUID companion, String objective) {
+        return aggregateExecutorKnowledge(EXECUTOR, companion, objective == null ? "" : objective);
     }
 
     /**
@@ -229,18 +244,43 @@ public final class NumenPlugins {
      * <p>三重兜底与 {@link #aggregatePlanningKnowledge} 同口径：稳定分隔符、总字符上限、
      * 故障隔离（含 {@code Error}，例如缺类）。没有贡献者/UUID 为空 → 返回空串。
      */
+    /** 兼容旧形态（{@code Function<UUID,String>}）：等价于「objective 永远为空」。 */
     public static String aggregateExecutorKnowledge(List<Function<UUID, String>> contributors, UUID companion) {
+        if (contributors == null) {
+            return "";
+        }
+        List<BiFunction<UUID, String, String>> wrapped = new ArrayList<>();
+        for (Function<UUID, String> f : contributors) {
+            if (f != null) {
+                wrapped.add((uuid, objective) -> f.apply(uuid));
+            }
+        }
+        return aggregateExecutorKnowledge(wrapped, companion, "");
+    }
+
+    /**
+     * 聚合本体（纯函数，注册表由调用方传入，便于单测隔离静态表）。
+     *
+     * <p>三重兜底与 {@link #aggregatePlanningKnowledge} 同口径：稳定分隔符、总字符上限、
+     * 故障隔离（含 {@code Error}，例如缺类）。没有贡献者/UUID 为空 → 返回空串。
+     *
+     * <p><b>G5g</b>：多一个 {@code objective}。工具目录类贡献靠它做相关性过滤 ——
+     * 没有它就只剩「全塞」或「全不塞」，前者会把经验挤掉。
+     */
+    public static String aggregateExecutorKnowledge(List<BiFunction<UUID, String, String>> contributors,
+                                                    UUID companion, String objective) {
         if (contributors == null || contributors.isEmpty() || companion == null) {
             return "";
         }
+        String obj = objective == null ? "" : objective;
         StringBuilder sb = new StringBuilder();
         int accepted = 0;
         int failed = 0;
         int truncated = 0;
-        for (Function<UUID, String> c : contributors) {
+        for (BiFunction<UUID, String, String> c : contributors) {
             String fragment;
             try {
-                fragment = c.apply(companion);
+                fragment = c.apply(companion, obj);
             } catch (Throwable e) {
                 failed++;
                 Constants.LOG.error("[numen] 插件的执行知识算不出来,这一段跳过", e);
@@ -314,6 +354,12 @@ public final class NumenPlugins {
         @Override
         public void contributeExecutorKnowledge(Function<UUID, String> fragment) {
             // G5e：执行角色知识（每轮 runtime_state）——与 STATE 同为读多写少
+            if (fragment != null) EXECUTOR.add((uuid, objective) -> fragment.apply(uuid));
+        }
+
+        @Override
+        public void contributeExecutorKnowledge(BiFunction<UUID, String, String> fragment) {
+            // G5g：带 objective 的形态（工具目录靠它做相关性过滤）
             if (fragment != null) EXECUTOR.add(fragment);
         }
 
