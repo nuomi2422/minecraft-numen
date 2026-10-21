@@ -1855,9 +1855,27 @@ public final class EntityAgentLoop {
         long contextTokens = lastPromptTokens > 0
                 ? lastPromptTokens
                 : estimateContextTokens(convo.snapshot());
+        // G4c S109：**先建这一轮真正要发出去的那份，再拿它去判预算。**
+        // 修之前：判额用的是 `estimateContextTokens(convo.snapshot())`（整段历史，
+        // 实测 106k），而请求随即被 replay 窗口裁到 11.5k —— 按一个根本不会发出去的数拦人，
+        // 误差 9 倍（V-20261021-04 抓到）。现在与请求正文同源。
+        // 注意：快照建在 incrementTurn 之前，所以 runtime_state 事件里的 turn 是「上一轮」的编号；
+        // 那是观测字段的 1 号滞后，不影响请求内容（ai.jsonl 的 turn 事件仍在自增之后发）。
+        var tools = ToolRegistry.resident();
+        var snapshot = modelContextSnapshot();
+        String systemPrompt = composeSystemPrompt();
+        long trimmedEstimate = CompactSplit.estimateTokens(snapshot)
+                + estimateTokensOfText(systemPrompt)
+                + estimateTokensOfText(tools.toString());
+        // 判额口径（S109 修正版）：**有厂商实测就用实测**，只有冷启动（还没收到过 usage 帧）
+        // 才用「裁后估算」。为什么不是一律用估算：本地估算对同一份请求偏高约 2 倍
+        // （实测 37683 vs 厂商 prompt 17k，含 CompactSplit 的 1.5 安全系数），
+        // 拿它判预算会把额度当掉一半。为什么不是一律用实测：冷启动时那个数是 0。
+        long requestTokens = lastPromptTokens > 0 ? lastPromptTokens : trimmedEstimate;
+
         // G4c S107（方案 A）：主人回合豁免预算闸 —— 预算管的是花多少钱，不是谁说了算。
         // 被豁免时发一条 budget_owner_override，让「预算被主人刷过头」可被数出来，而不是暗账。
-        var budgetOver = BudgetPolicy.checkBlock("execution", contextTokens);
+        var budgetOver = BudgetPolicy.checkBlock("execution", requestTokens);
         var budgetBlock = ownerSpokeThisTurn ? null : budgetOver;
         // G4c S102：被拦下时登记「窗口什么时候让出额度」，到点由 clientTick 推事件自己重试。
         // 主人回合不受影响（S107 方案 A 已豁免），所以这里只在真的拦下时登记。
@@ -1950,14 +1968,11 @@ public final class EntityAgentLoop {
         awaitingLlmResponse = true;
         retryingTurn = false;   // 新开的一轮永远不是「重试中」
 
-        // 只发常驻工具:其余的在系统提示的 <deferred_tools> 目录里留一行摘要,
-        // 模型调 find_tools 才取回完整定义(见 ToolDisclosure)。
-        var tools = ToolRegistry.resident();
-        var snapshot = modelContextSnapshot();
-        String systemPrompt = composeSystemPrompt();
+        // （tools / snapshot / systemPrompt 已经在预算闸之前建好了 —— 见上面 S109 的注释。）
 
-        Constants.LOG.info("[numen-entity#{}] turn {}: convo={} msgs, tools={}",
-                entityUuid, convo.turnCount(), snapshot.size(), tools.size());
+        Constants.LOG.info("[numen-entity#{}] turn {}: convo={} msgs, tools={}, requestTokens={} (measured={}, trimmedEstimate={})",
+                entityUuid, convo.turnCount(), snapshot.size(), tools.size(), requestTokens,
+                lastPromptTokens, trimmedEstimate);
         com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "turn", java.util.Map.of(
                 "companion_id", entityUuid.toString(), "turn", convo.turnCount(),
                 "convo_msgs", snapshot.size(), "tools", tools.size()));
