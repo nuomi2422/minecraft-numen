@@ -327,6 +327,9 @@ public final class ExperienceStoreRetrievalBridge {
                     new ExperienceRetrievalProvider(PROVIDER_ID, sourceFor(memory));
             RetrievalRegistry registry = new RetrievalRegistry();
             registry.register(provider);
+            // ★ G5g：展开也要认 `tool:` —— 否则 ownerOf 找不到 tool-catalog，回 NO_OWNER。
+            //   这里用不过滤的构造器：expand 按 ref 精确定位，不存在「塞满预算」的问题。
+            registry.register(new ToolCatalogRetrievalProvider(ToolCatalogBridge.source(), false));
             MinimalRetrievalService service = new MinimalRetrievalService(registry);
             Result<EntryBody> r = service.expand(
                     new EntryRef(ref.trim()),
