@@ -19,7 +19,7 @@ class MinimalRetrievalServiceTest {
                                              String body, List<String> applicable) {
         return new ExperienceEntryRead(ref, kind, title, "摘要 " + title,
                 applicable, List.<String>of(), List.<String>of(), m, 1, false,
-                body, "hash-" + ref, "fake");
+                body, "hash-" + ref, "fake", true);
     }
 
     private static RetrievedEntry e(String ref, String title, EntryKind kind, Maturity m, String body) {
@@ -105,9 +105,14 @@ class MinimalRetrievalServiceTest {
         MinimalRetrievalService svc = service(experienceProvider(), tools);
         Result<EntryBody> toolBody = svc.expand(new EntryRef("tool:mine"), new ExpansionRequest("q", RetrievalRole.PLANNER, 100, ""));
         assertTrue(toolBody instanceof Result.Ok, "tool: 前缀应路由到 tool-catalog");
+        // G5f 起 experience 也实现了 expand：exp: 会被它认领并返回正文
+        //（旧契约是 default UNSUPPORTED；新断言：认领者是 experience，正文来自它）
         Result<EntryBody> expBody = svc.expand(new EntryRef("exp:mining"), new ExpansionRequest("q", RetrievalRole.PLANNER, 100, ""));
-        assertTrue(expBody instanceof Result.Err, "experience 只有 default expand → Err 转发");
-        assertEquals("UNSUPPORTED", ((Result.Err<EntryBody>) expBody).code());
+        assertTrue(expBody instanceof Result.Ok, "experience 应认领 exp: 并返回正文");
+        assertEquals("经验正文", ((Result.Ok<EntryBody>) expBody).value().content());
+        // 不存在的 exp: ref → NOT_FOUND（认领了但找不到，不许伪造）
+        Result<EntryBody> missing = svc.expand(new EntryRef("exp:not-there"), new ExpansionRequest("q", RetrievalRole.PLANNER, 100, ""));
+        assertEquals("NOT_FOUND", ((Result.Err<EntryBody>) missing).code());
         Result<EntryBody> noOwner = svc.expand(new EntryRef("nobody:xyz"), new ExpansionRequest("q", RetrievalRole.PLANNER, 100, ""));
         assertTrue(noOwner instanceof Result.Err && "NO_OWNER".equals(((Result.Err<EntryBody>) noOwner).code()),
                 "无 owner 必须显式 NO_OWNER");
@@ -115,7 +120,12 @@ class MinimalRetrievalServiceTest {
 
     @Test
     void s5_unsupportedIsForwardedNotSwallowed() {
-        MinimalRetrievalService svc = service(experienceProvider());
+        // 用一个**没有实现 expand** 的假 provider（id 仍是 experience，路由才认）来钉「UNSUPPORTED 原样透传」
+        RetrievalProvider plain = new RetrievalProvider() {
+            @Override public String providerId() { return "experience"; }
+            @Override public SearchPage search(RetrievalQuery q) { return SearchPage.empty(providerId(), q.queryId()); }
+        };
+        MinimalRetrievalService svc = service(plain);
         Result<EntryBody> r = svc.expand(new EntryRef("exp:mining"), new ExpansionRequest("q", RetrievalRole.PLANNER, 100, ""));
         assertTrue(r instanceof Result.Err);
         assertEquals("UNSUPPORTED", ((Result.Err<EntryBody>) r).code(), "default 的 UNSUPPORTED 要原样透传，不许吞成别的错");

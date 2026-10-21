@@ -18,7 +18,7 @@ class ExperienceRetrievalProviderTest {
                                              List<String> applicable, List<String> excluded) {
         return new ExperienceEntryRead(ref, EntryKind.EXPERIENCE, title, "summary " + title,
                 applicable, excluded, List.of("ev/" + ref), m, 1, retracted,
-                "body of " + title, "hash-" + ref, "fake-source");
+                "body of " + title, "hash-" + ref, "fake-source", true);
     }
 
     private static ExperienceEntrySource sourceOf(ExperienceEntryRead... entries) {
@@ -111,5 +111,24 @@ class ExperienceRetrievalProviderTest {
         SearchPage page = p.search(query(RetrievalRole.PLANNER, "", 20));
         assertTrue(page.entries().isEmpty());
         assertTrue(page.gaps().stream().anyMatch(g -> "MISSING_REF".equals(g.code())));
+    }
+
+    @Test
+    void 未发布的已验证经验不进执行视图但进规划视图() {
+        ExperienceEntryRead draft = new ExperienceEntryRead("exp:draft", EntryKind.EXPERIENCE, "草稿经验", "s",
+                List.of(), List.of(), List.of(), Maturity.VERIFIED, 3, false,
+                "body", "hash", "fake", false);
+        ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("exp", sourceOf(draft));
+
+        assertTrue(p.search(query(RetrievalRole.EXECUTOR, "", 8)).entries().isEmpty(),
+                "G6a：未发布（published=false）不许进执行视图，哪怕已验证");
+        assertFalse(p.search(query(RetrievalRole.PLANNER, "", 8)).entries().isEmpty(),
+                "规划视图仍应看到它（待核实线索）");
+
+        ExperienceEntryRead published = new ExperienceEntryRead("exp:pub", EntryKind.EXPERIENCE, "已发布", "s",
+                List.of(), List.of(), List.of(), Maturity.VERIFIED, 3, false,
+                "body", "hash", "fake", true);
+        assertEquals(1, new ExperienceRetrievalProvider("exp", sourceOf(published))
+                .search(query(RetrievalRole.EXECUTOR, "", 8)).entries().size(), "已发布的应可见");
     }
 }

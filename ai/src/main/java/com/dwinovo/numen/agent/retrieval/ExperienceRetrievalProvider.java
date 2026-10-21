@@ -94,6 +94,7 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
         if (e == null) return null;
         if (query.role() == RetrievalRole.EXECUTOR
                 && (e.retracted()
+                    || !e.published()        // G6a：未发布（DRAFT/TRIAL/SUSPENDED/REVOKED）不进执行视图
                     || e.maturity() == null
                     || e.maturity().rank < Maturity.VERIFIED.rank)) {
             return null;
@@ -170,9 +171,11 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
 
     private List<RetrievalRole> rolesFor(ExperienceEntryRead e) {
         List<RetrievalRole> roles = new ArrayList<>();
-        // 最小判定：maturity>=VERIFIED 且未撤回才可给 EXECUTOR（即派活时才可自动用）；
-        //      观测 ATTEMPTED 未交付得可给 PLANNER/LEARNER（待核实线索）。
-        if (!e.retracted() && e.maturity() != null && e.maturity().rank >= Maturity.VERIFIED.rank) {
+        // G6a：EXECUTOR 的**两道门**必须同时成立 —— ①maturity>=VERIFIED 且未撤回（可信）
+        //      ②已发布 publication==PUBLISHED（允许）。只可信不允许的条目（DRAFT/TRIAL）
+        //      仍可给 PLANNER/LEARNER 当待核实线索。
+        if (!e.retracted() && e.published() && e.maturity() != null
+                && e.maturity().rank >= Maturity.VERIFIED.rank) {
             roles.add(RetrievalRole.PLANNER);
             roles.add(RetrievalRole.EXECUTOR);
             roles.add(RetrievalRole.LEARNER);

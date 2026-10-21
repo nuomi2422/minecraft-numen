@@ -22,7 +22,10 @@ public record ExperienceEntryRead(
         boolean retracted,
         String bodyContent,
         String contentHash,
-        String source) {
+        String source,
+        // G6a：是否已发布（只有 PUBLISHED 能进 EXECUTOR 视图）。ai 不认识 experience-core 的枚举，
+        // 所以这里用布尔投影；映射由插件侧桥完成。
+        boolean published) {
 
     public ExperienceEntryRead {
         applicableConditions = frozen(applicableConditions);
