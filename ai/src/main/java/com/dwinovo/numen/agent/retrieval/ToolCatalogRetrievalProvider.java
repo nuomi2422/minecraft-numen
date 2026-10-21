@@ -98,9 +98,13 @@ public final class ToolCatalogRetrievalProvider implements RetrievalProvider {
             }
             List<RetrievedEntry> hits = new ArrayList<>();
             for (RetrievedEntry r : all) {
+                // ★ G5g-2：正文也进 haystack —— 中文触发词放在正文里（不占块内显示位）。
+                //   2026-10-22 实机：current_task 是中文、工具描述是英文，只比 title/summary 永远不命中。
                 String hay = (r.descriptor().entryRef() + " "
                         + r.descriptor().title() + " "
-                        + r.descriptor().summary()).toLowerCase(java.util.Locale.ROOT);
+                        + r.descriptor().summary() + " "
+                        + (r.body() == null || r.body().content() == null ? "" : r.body().content()))
+                        .toLowerCase(java.util.Locale.ROOT);
                 if (matchesAnyToken(obj, hay)) {
                     hits.add(r);
                     if (hits.size() >= FILTERED_CAP) break;
@@ -138,12 +142,25 @@ public final class ToolCatalogRetrievalProvider implements RetrievalProvider {
      * 真正的相关性排序归 B6/后续批。宁可漏（少放一条），不可多（挤掉经验）。
      */
     private static boolean matchesAnyToken(String objectiveLower, String hayLower) {
+        // ① 空格/标点分词命中（英文工具名、中文短语都可能走这条）
         for (String tok : objectiveLower.split("[\\s，,。.、；;：:！!？?/|]+")) {
             if (tok.length() >= 2 && hayLower.contains(tok)) {
                 return true;
             }
         }
+        // ② 中文没有空格：整句会被当成一个词，所以用 2 字滑窗。
+        //    2026-10-22 实机就是栽在这里：objective=「走到据点中心并停留」整句比不中「走到」。
+        for (int i = 0; i + 2 <= objectiveLower.length(); i++) {
+            String bi = objectiveLower.substring(i, i + 2);
+            if (isCjk(bi.charAt(0)) && isCjk(bi.charAt(1)) && hayLower.contains(bi)) {
+                return true;
+            }
+        }
         return false;
+    }
+
+    private static boolean isCjk(char c) {
+        return c >= 0x4E00 && c <= 0x9FFF;
     }
 
     private RetrievedEntry toEntry(ExperienceEntryRead e) {        if (e == null) return null;

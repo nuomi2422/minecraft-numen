@@ -35,6 +35,39 @@ public final class ToolCatalogBridge {
     /** 摘要长度上限：它只用来给模型一眼认出「这是干嘛的」。 */
     private static final int MAX_SUMMARY = 80;
 
+    /**
+     * 常用工具的**中文触发词**（2026-10-22 实机教训：执行侧的任务文本是中文，工具描述是英文，
+     * 只比 title/summary 永远不命中）。这些词只进正文、不进块内显示位，由 provider 的 haystack 匹配。
+     *
+     * <p>不做全量：先把「日常主线最常用的那些」补上；没补上的工具仍可按英文名/描述命中。
+     */
+    private static final java.util.Map<String, String> ZH_KEYWORDS = java.util.Map.ofEntries(
+            java.util.Map.entry("goto", "走,过去,前往,去,到,靠近,走到"),
+            java.util.Map.entry("scan_blocks", "扫描,找,附近,周围,搜,查"),
+            java.util.Map.entry("mine", "挖,采,矿,挖掘,开采"),
+            java.util.Map.entry("place_block", "放,放置,摆,铺"),
+            java.util.Map.entry("craft", "合成,做,制作,造"),
+            java.util.Map.entry("collect_items", "捡,收集,拾取,收"),
+            java.util.Map.entry("attack", "打,攻击,杀,战斗"),
+            java.util.Map.entry("eat", "吃,食物,饿,饥饿"),
+            java.util.Map.entry("sleep", "睡,睡觉,床,过夜"),
+            java.util.Map.entry("build", "建,造,搭,盖,建筑"),
+            java.util.Map.entry("get_self_status", "状态,血量,坐标,位置,我在哪"),
+            java.util.Map.entry("task_status", "任务,进度,在干嘛"),
+            java.util.Map.entry("find_tools", "工具,能力,会不会"),
+            java.util.Map.entry("look_around", "看,环视,观察,周围有什么"),
+            java.util.Map.entry("store_item", "存,放箱子,收纳"),
+            java.util.Map.entry("take_item", "取,拿,取出"),
+            java.util.Map.entry("jump", "跳,跳跃"),
+            java.util.Map.entry("follow", "跟,跟随,跟着"),
+            java.util.Map.entry("stop", "停,停止,别动"),
+            java.util.Map.entry("equip", "装备,穿上,换上"),
+            java.util.Map.entry("drop", "扔,丢,放下"),
+            java.util.Map.entry("toss_item", "扔,丢"),
+            java.util.Map.entry("set_timer", "定时,提醒,闹钟"),
+            java.util.Map.entry("experience_recall", "经验,回忆,记得"),
+            java.util.Map.entry("report_task_concern", "上报,有问题,做不到"));
+
     private ToolCatalogBridge() {}
 
     /** 交给 {@code ToolCatalogRetrievalProvider} 的 source（每次检索现读，工具表可热插拔）。 */
@@ -53,7 +86,10 @@ public final class ToolCatalogBridge {
                 String name = tool.name();
                 String desc = tool.description() == null ? "" : tool.description().trim();
                 String params = paramNames(tool);
-                String body = name + "\n" + desc + (params.isBlank() ? "" : "\n参数: " + params);
+                String zh = ZH_KEYWORDS.getOrDefault(name, "");
+                String body = name + "\n" + desc
+                        + (zh.isBlank() ? "" : "\n中文触发词: " + zh)
+                        + (params.isBlank() ? "" : "\n参数: " + params);
                 out.add(new ExperienceEntryRead(
                         "tool:" + name,
                         EntryKind.PROCEDURE,
