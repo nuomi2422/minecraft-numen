@@ -88,7 +88,7 @@ final class RddDecomposer {
         // （调用方据此回落占位链，绝不被吞）。shadow 模式恒为 null。
         BudgetPolicy.Advice block = BudgetPolicy.checkBlock(stage, 0);
         if (block != null) {
-            notifyPlanningBlock(stage, block);
+            notifyPlanningBlock(companionId, stage, block);
             Minecraft.getInstance().execute(onFail);
             return;
         }
@@ -118,7 +118,14 @@ final class RddDecomposer {
      * enforce 预算拦截的通知（限频，同角色冷却内只发一次）：日志 + rdd.jsonl 的
      * {@code budget_block} 事件。拦截本身由调用点执行，这里只负责「不静默」。
      */
-    private static void notifyPlanningBlock(String stage, BudgetPolicy.Advice block) {
+    private static void notifyPlanningBlock(UUID companionId, String stage, BudgetPolicy.Advice block) {
+        // G4c S103：**先记原因，再做限频通知**。占位链要解释「为什么降级」这件事不能依赖
+        // 通知限频（notifyBlock 冷却期内会直接 return，那样原因就丢了）。
+        if (companionId != null) {
+            RECENT_PLANNING_BLOCK.put(companionId, new RecentBlock(
+                    "planning 预算用尽（" + String.join("+", block.exceeded()) + "）",
+                    System.currentTimeMillis()));
+        }
         if (!BudgetPolicy.notifyBlock(block)) return;
         LOG.warn("[rdd] 预算拦截: stage={} role={} exceeded={} usedTokens={} limitTokens={}",
                 stage, block.role(), block.exceeded(), block.used().tokens(), block.limit().tokensPerWindow());
@@ -138,25 +145,45 @@ final class RddDecomposer {
                 Map.entry("mode", block.mode())));
     }
 
+    /** 最近一次「planning 被预算拦下」的原因（G4c S103；15 秒内有效，取一次就清）。 */
+    private record RecentBlock(String reason, long atMs) {}
+
+    private static final java.util.Map<UUID, RecentBlock> RECENT_PLANNING_BLOCK =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 所有「回落占位链」都必须走这里（G4c S103）。
+     *
+     * <p>为什么需要统一入口：`RddDecomposer` 里有 <b>5 处</b>回落（无 key / LLM 失败 / 没调工具 /
+     * 规格不可用 / 预算拦下），只给其中一处加原因等于没加（实测：拦在 `stage_b` 走的是另一个回调）。
+     * 这里按「<b>刚被预算拦过（15 秒内）</b>」决定要不要把原因写进目标正文，然后清掉 ——
+     * 免得一次预算拦截的解释粘到十分钟后一个完全无关的失败上。
+     */
+    private static Goal fallbackGoal(UUID companionId, String objective) {
+        if (companionId != null) {
+            RecentBlock rb = RECENT_PLANNING_BLOCK.remove(companionId);
+            if (rb != null && System.currentTimeMillis() - rb.atMs() <= 15_000L) {
+                return RddChainFactory.fromObjective(companionId, objective, rb.reason());
+            }
+        }
+        return RddChainFactory.fromObjective(companionId, objective);
+    }
+
     /** 主入口：异步分解目标，回调收到一个可用的 Goal（成功=分解链，失败=占位链）。 */
     static void decompose(UUID companionId, String objective, Consumer<Goal> done) {
         INumenConfig cfg = Services.CONFIG;
         if (cfg.getApiKey() == null || cfg.getApiKey().isBlank()) {
             LOG.warn("[rdd] 未配置 LLM key，跳过分解，回落占位链");
-            Minecraft.getInstance().execute(() -> done.accept(RddChainFactory.fromObjective(companionId, objective)));
+            Minecraft.getInstance().execute(() -> done.accept(fallbackGoal(companionId, objective)));
             return;
         }
         // 预算闸（E1 enforce）：planning 限额用尽 → 不发出分解请求，直接回落占位链
         // （目标绝不被吞；明确记事件与日志，不静默）。shadow 模式恒为 null。
         BudgetPolicy.Advice block = BudgetPolicy.checkBlock("fallback", 0);
         if (block != null) {
-            notifyPlanningBlock("fallback", block);
+            notifyPlanningBlock(companionId, "fallback", block);
             LOG.warn("[rdd] planning 预算已用尽，跳过分解，回落占位链");
-            // G4c S103：把「为什么只能占位」写进目标正文 —— 否则事后翻 taskchain_snapshot
-            // 只看到「她围着占位目标转」，不知道是被预算降级了。
-            String why = "planning 预算用尽（" + String.join("+", block.exceeded()) + "）";
-            Minecraft.getInstance().execute(
-                    () -> done.accept(RddChainFactory.fromObjective(companionId, objective, why)));
+            Minecraft.getInstance().execute(() -> done.accept(fallbackGoal(companionId, objective)));
             return;
         }
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
@@ -175,13 +202,13 @@ final class RddDecomposer {
                 .whenComplete((result, error) -> Minecraft.getInstance().execute(() -> {
                     if (error != null) {
                         LOG.warn("[rdd] 分解 LLM 调用失败，回落占位链: {}", error.toString());
-                        done.accept(RddChainFactory.fromObjective(companionId, objective));
+                        done.accept(fallbackGoal(companionId, objective));
                         return;
                     }
                     AssistantTurn turn = result.turn();
                     if (!turn.hasToolCalls()) {
                         LOG.warn("[rdd] LLM 未调用分解工具，回落占位链");
-                        done.accept(RddChainFactory.fromObjective(companionId, objective));
+                        done.accept(fallbackGoal(companionId, objective));
                         return;
                     }
                     LlmToolCall call = turn.toolCalls().get(0);
@@ -194,14 +221,14 @@ final class RddDecomposer {
                     List<SubtaskSpec> specs = guarded.allowed();
                     if (specs.isEmpty()) {
                         LOG.warn("[rdd] 分解结果不可用，回落占位链");
-                        done.accept(RddChainFactory.fromObjective(companionId, objective));
+                        done.accept(fallbackGoal(companionId, objective));
                         return;
                     }
                     try {
                         done.accept(RddChainFactory.fromSpec(companionId, objective, specs));
                     } catch (RuntimeException ex) {
                         LOG.warn("[rdd] 分解规格非法，回落占位链: {}", ex.toString());
-                        done.accept(RddChainFactory.fromObjective(companionId, objective));
+                        done.accept(fallbackGoal(companionId, objective));
                     }
                 }));
     }
