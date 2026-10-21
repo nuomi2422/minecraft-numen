@@ -192,7 +192,7 @@ public final class PortToolAdapter implements AcxTool {
                 }
                 return AcxStepOutcome.paused(
                         name() + " 完成探针暂时无法判定（保留挂账，等待重试）: " + s.message(),
-                        acceptedOutput(acc, false));
+                        unknownPauseOutput(acc));
             }
             default:
                 throw new IllegalStateException("未覆盖的探针状态: " + s.state());
@@ -226,6 +226,13 @@ public final class PortToolAdapter implements AcxTool {
         } else {
             out.put("_pause_reason", "async_accepted");
         }
+        return out;
+    }
+
+    /** UNKNOWN 的暂停输出：让外部能分清「还在跑」（async_accepted）与「探针不知道」（completion_unknown）。 */
+    private Map<String, Object> unknownPauseOutput(Acceptance acc) {
+        Map<String, Object> out = new LinkedHashMap<>(acceptedOutput(acc, false));
+        out.put("_pause_reason", "completion_unknown");
         return out;
     }
 

@@ -30,7 +30,13 @@ final class RecentFinishedTasks {
         }
     };
 
-    /** 记一条终态任务；null / 无 id 的记录直接忽略（不许用空键制造假命中）。 */
+    /**
+     * 记一条终态任务；null / 无 id 的记录直接忽略（不许用空键制造假命中）。
+     *
+     * <p><b>跨线程不变量（B-M4）</b>：进入这张表的记录必须已经写好终态、
+     * 且写完之后**不许再改 state** —— {@code remember} 只在 all/settle/dropNoResult 的
+     * 终态命名之后被调；探针在锁外读 {@code getState()}，靠这条约定保证它看到的是终态。
+     */
     synchronized void remember(TaskRecord record) {
         if (record == null) return;
         String id = record.publicId();
@@ -38,7 +44,7 @@ final class RecentFinishedTasks {
         byId.put(id, record);
     }
 
-    /** 按任务号查最近终态；查不到返回 null（调用方必须按「不知道成败」处理，不许当成功）。 */
+    /** 按任务号查最近终态；查不到返回 null（调用方按「不知道成败」= UNKNOWN 处理，不许当成功）。 */
     synchronized TaskRecord find(String taskId) {
         if (taskId == null || taskId.isBlank()) return null;
         return byId.get(taskId);

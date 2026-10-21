@@ -12,6 +12,7 @@ import java.util.Map;
  * <p><b>为什么放在 acx-core 而不是插件里</b>：这段判断原先埋在 {@code NumenToolBridgeX.probeFor}，
  * 要 Minecraft 服务器 + 同伴实体才跑得到，于是这种错只能靠实机碰运气发现。抽到这里之后，
  * 四条分支都能被离线用例钉住（不依赖 {@code com.dwinovo.numen.task} 包）。
+ * （2026-10-21 acb12b3：现在是**六条分支**——3 个 UNKNOWN 来源分别单独有用例。）
  *
  * <p><b>唯一判据</b>：<b>只有 SUCCESS 才算完成</b>。终态是别的（FAILED / TIMEOUT / CANCELLED）→
  * failed；没有记录、记录属于别的任务、或态名不可判定 → <b>unknown</b>（调用方保留挂账，
@@ -35,8 +36,12 @@ public final class AcxFinishedTask {
             return AcxCompletionProbe.Snapshot.unknown(
                     "槽已空且找不到该任务的终态记录（无法判断成败，保留挂账等待重试）");
         }
-        if (wantedTaskId != null && !wantedTaskId.isBlank()
-                && publicId != null && !wantedTaskId.equals(publicId)) {
+        if (publicId == null) {
+            // 有终态名却对不上任何任务 id —— 无法归属，不许当成功（acb12b3 MINOR-1）。
+            return AcxCompletionProbe.Snapshot.unknown(
+                    "终态记录没有任务 id（无法归属），保留挂账等待重试");
+        }
+        if (!wantedTaskId.equals(publicId)) {
             return AcxCompletionProbe.Snapshot.unknown(
                     "槽已空，且最近一次终态属于别的任务（" + publicId + "），无法判断本任务成败");
         }

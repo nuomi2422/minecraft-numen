@@ -183,11 +183,11 @@ public final class NumenToolBridgeX implements AcxToolPort {
     }
 
     /**
-     * 完成探针（契约 ACX-P1）：按任务号查终态，**槽空不再等于成功**。
+     * 完成探针（契约 ACX-P1）：按任务号查终态，**槽空不再等于成功，槽被占也不删账**。
      *
-     * <p>槽里还有任务 → {@code running}；槽空 → 按 id 查最近终态：只有 {@code SUCCESS} 才
-     * {@code done}，别的终态/查不到 → {@code failed}。没有 {@code task_id} 时退回「最近一次
-     * 终态」，但调用方（{@code PortToolAdapter}）已在空 id 时不问探针，避免把别的任务当成本任务。
+     * <p>三种槽状态：槽里还有**本任务** → {@code running}；槽空 → 按 id 查终态表（有记录按六分支映射，
+     * 查不到 → {@code unknown}）；槽被**别的任务**占用 → 先按 id 查终态表（acb12b3：查到照常映射，
+     * 查不到 → {@code unknown}，**不再直接 failed** —— 那会把真正成功的任务报成失败并删账）。
      */
     public static AcxCompletionProbe probeFor(Supplier<NumenPlayer> companionSupplier) {
         return taskId -> {
@@ -204,9 +204,9 @@ public final class NumenToolBridgeX implements AcxToolPort {
             if (rec == null) {
                 // ═══ AC-B12b（2026-10-21）：槽空**不等于成功** ═══
                 // 修前这里一律 done → 任务 FAILED 时 AC 也会拿到 SUCCESS（假完成）。
-                // 现在去问「最近一次终态」：成功才 done；失败/超时/取消一律 failed；
-                // 查不到（外部调用结束后没有记录）也按 failed 处理 ——
-                // **「不知道成败」不许当成成功**，宁可让 AC 停下来报失败让人看一眼。
+                // 现在去问「最近一次终态」：SUCCESS → done；FAILED/TIMEOUT/CANCELLED → failed；
+                // **查不到（外部调用结束后没有记录）→ unknown** ——
+                // 「不知道成败」不许当成成功，也不许立刻当失败删账（acb12b3）。
                 TaskRecord last = null;
                 try {
                     // 有任务号 → 按 id 精确查（避免被之后结算的别的任务覆盖成「不属于本任务」）；
@@ -222,7 +222,23 @@ public final class NumenToolBridgeX implements AcxToolPort {
                         last == null || last.getState() == null ? null : last.getState().name());
             }
             if (taskId != null && !taskId.isBlank() && !taskId.equals(rec.publicId())) {
-                return AcxCompletionProbe.Snapshot.failed("任务已被替换为 " + rec.publicId());
+                // ═══ acb12b3（B 复审 MAJOR-1）：槽被**别的任务**占着 ≠ 本任务失败 ═══
+                // 修前这里直接 failed → PortToolAdapter 删账 → 重试重发物理动作。
+                // 现在先按 id 查终态表：t1 的 SUCCESS 还在就照常 DONE；
+                // 查不到才 unknown（PortToolAdapter 保留挂账 + 30s 宽限）。
+                TaskRecord last = null;
+                try {
+                    last = CompanionTickDispatcher.finishedTaskFor(p.getUUID(), taskId);
+                } catch (Throwable ignored) {
+                    // 读不到就按「没有终态记录」处理
+                }
+                if (last != null) {
+                    return com.dwinovo.numen.acx.core.AcxFinishedTask.map(taskId,
+                            last.publicId(),
+                            last.getState() == null ? null : last.getState().name());
+                }
+                return AcxCompletionProbe.Snapshot.unknown(
+                        "槽被 " + rec.publicId() + " 占用，本任务终态未知（保留挂账等待重试）");
             }
             return AcxCompletionProbe.Snapshot.running("仍在执行: " + rec.publicId());
         };

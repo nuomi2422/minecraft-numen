@@ -74,7 +74,7 @@ final class CompanionBrain {
         return lastFinished;
     }
 
-    /** 按任务号查最近终态；查不到 = 不知道成败，调用方必须按失败处理。 */
+    /** 按任务号查最近终态；查不到 = 调用方按「不知道成败」（UNKNOWN：保留挂账）处理，不算失败。 */
     TaskRecord finishedTask(String taskId) {
         return recentFinished.find(taskId);
     }
