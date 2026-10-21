@@ -152,7 +152,11 @@ final class RddDecomposer {
         if (block != null) {
             notifyPlanningBlock("fallback", block);
             LOG.warn("[rdd] planning 预算已用尽，跳过分解，回落占位链");
-            Minecraft.getInstance().execute(() -> done.accept(RddChainFactory.fromObjective(companionId, objective)));
+            // G4c S103：把「为什么只能占位」写进目标正文 —— 否则事后翻 taskchain_snapshot
+            // 只看到「她围着占位目标转」，不知道是被预算降级了。
+            String why = "planning 预算用尽（" + String.join("+", block.exceeded()) + "）";
+            Minecraft.getInstance().execute(
+                    () -> done.accept(RddChainFactory.fromObjective(companionId, objective, why)));
             return;
         }
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),

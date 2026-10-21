@@ -74,10 +74,27 @@ public final class RddChainFactory {
      * 只是内部复用 {@link #fromSpec} 的组装/校验。
      */
     public static Goal fromObjective(UUID companionId, String objective) {
+        return fromObjective(companionId, objective, null);
+    }
+
+    /**
+     * 同上，但把「为什么只能占位」写进目标正文（G4c S103）。
+     *
+     * <p><b>为什么需要它</b>：预算用尽时规划不发出，链条回落成一个占位目标。以前只有日志与
+     * {@code budget_block} 事件说了这事，**翻 {@code taskchain_snapshot} 看不出来** ——
+     * 事后复盘只会看到「她围着一个占位目标转」，不知道是被预算降级了。
+     *
+     * <p>标记<b>前置</b>而不是后置：目标正文有长度上限，后置会被截掉，前置一定能看见。
+     * {@code degradedReason} 为空/空白时与两参版本完全一致。
+     */
+    public static Goal fromObjective(UUID companionId, String objective, String degradedReason) {
+        String reason = degradedReason == null ? "" : degradedReason.strip();
+        String obj = objective == null ? "" : objective;
+        if (!reason.isEmpty()) obj = "（预算降级：" + reason + "）" + obj;
         if (companionId == null) {
             throw new IllegalArgumentException("companionId required");
         }
-        String obj = objective == null ? "" : objective.strip();
+        obj = obj.strip();
         if (obj.isEmpty()) {
             throw new IllegalArgumentException("objective required");
         }

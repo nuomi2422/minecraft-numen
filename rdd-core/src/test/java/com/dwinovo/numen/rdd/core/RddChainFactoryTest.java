@@ -63,6 +63,26 @@ class RddChainFactoryTest {
         assertNotEquals(first.id(), subtasks.get(1).id());
     }
 
+    @Test void degradedObjectiveCarriesTheReasonSoSnapshotsExplainThemselves() { // G4c S103
+        Goal goal = RddChainFactory.fromObjective(CID, "找 3 颗钻石", "planning 预算用尽（tokens）");
+        assertTrue(goal.description().contains("预算降级：planning 预算用尽（tokens）"),
+                "降级原因必须进正文：" + goal.description());
+        assertEquals(goal.description(), goal.primaryGoals().get(0).description(),
+                "一级描述与目标描述同源，翻快照就能看见");
+        assertTrue(goal.primaryGoals().get(0).description().startsWith("（预算降级"),
+                "标记必须前置——后置会被长度上限截掉");
+        // 空白原因 = 与两参版本完全一致
+        assertEquals("找 3 颗钻石", RddChainFactory.fromObjective(CID, "找 3 颗钻石", "  ").description());
+        assertEquals("找 3 颗钻石", RddChainFactory.fromObjective(CID, "找 3 颗钻石", null).description());
+    }
+
+    @Test void degradedMarkerSurvivesTheLengthCap() { // G4c S103：前置的理由不许被截掉
+        String huge = "x".repeat(5000);
+        Goal goal = RddChainFactory.fromObjective(CID, huge, "planning 预算用尽");
+        assertEquals(4000, goal.description().length());
+        assertTrue(goal.description().startsWith("（预算降级：planning 预算用尽）"));
+    }
+
     @Test void fromSpecRejectsInvalidInput() {
         assertThrows(IllegalArgumentException.class, () -> RddChainFactory.fromSpec(CID, "g", List.of()));
         assertThrows(IllegalArgumentException.class, () -> RddChainFactory.fromSpec(CID, "g", null));
