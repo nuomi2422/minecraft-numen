@@ -178,4 +178,40 @@ class ExperienceStoreRetrievalBridgeTest {
         assertEquals("", rendered.text());
         assertEquals(0, rendered.entries());
     }
+
+    // ---------- G5e：角色视图（EXECUTOR 只信已验证） ----------
+
+    @Test
+    void 执行视图只留已验证条目_规划视图保留全部() {
+        ExperienceMemory memory = memoryWith(
+                base("g1", "只观察到的做法", ExperienceMaturity.OBSERVED).build(),
+                base("g2", "已验证的做法", ExperienceMaturity.VERIFIED).build());
+
+        ExperienceStoreRetrievalBridge.Rendered planner = ExperienceStoreRetrievalBridge.render(
+                memory, "挖矿", 8, 2400, com.dwinovo.numen.agent.retrieval.RetrievalRole.PLANNER);
+        ExperienceStoreRetrievalBridge.Rendered executor = ExperienceStoreRetrievalBridge.render(
+                memory, "挖矿", 8, 2400, com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
+
+        assertTrue(planner.text().contains("只观察到的做法"), "PLANNER 要看到待核实的线索：" + planner.text());
+        assertFalse(executor.text().contains("只观察到的做法"),
+                "EXECUTOR 只收 maturity≥VERIFIED：" + executor.text());
+        assertTrue(executor.text().contains("已验证的做法"), executor.text());
+        assertTrue(executor.text().contains("role=\"executor\""), "执行块必须带 role 标记：" + executor.text());
+        assertFalse(planner.text().contains("role="), "PLANNER 抬头保持 G5d 形状：" + planner.text());
+        assertEquals("executor", executor.role());
+        assertEquals("planner", planner.role());
+    }
+
+    @Test
+    void 全是观察到时_执行视图为空集但仍报角色() {
+        ExperienceMemory memory = memoryWith(
+                base("h1", "还没验证的做法", ExperienceMaturity.OBSERVED).build());
+
+        ExperienceStoreRetrievalBridge.Rendered executor = ExperienceStoreRetrievalBridge.render(
+                memory, "", 8, 2400, com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
+
+        assertEquals("", executor.text(), "空集不渲染空标题");
+        assertEquals(0, executor.entries());
+        assertEquals("executor", executor.role(), "事件仍要能看出这是 EXECUTOR 视图");
+    }
 }

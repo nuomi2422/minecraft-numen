@@ -144,4 +144,21 @@ public interface NumenApi {
      */
     void contributePlanningKnowledge(PlanningKnowledgeContributor contributor);
 
+    /**
+     * G5e：每次<b>同伴内脑的常规回合请求</b>（执行角色）现算一段参考资料，拼进 {@code <runtime_state>}。
+     *
+     * <p>与 {@link #contributePlanningKnowledge} 同构，区别只在<b>消费方</b>：那一份进任务链规划器
+     * （Stage-A/Stage-B/回退），这一份进同伴每轮的执行请求。之所以要两条缝，是因为 75 号 §15.5
+     * 的 IC08 要求<b>三视图不同</b>——同一份 snapshot 在 EXECUTOR 视角只应看到「当前有效」的经验
+     * （maturity ≥ VERIFIED、非撤回、非 WARNING），而 PLANNER 还应当看到待核实的线索。
+     *
+     * <p><b>默认空实现</b>：老宿主/老插件不实现也不会坏；新宿主覆盖它即可。
+     *
+     * <p>实现方要自己保证：预算受限、只读、不抛异常；算炸了只丢这一段，请求照常发出。
+     * 返回值不改变任务结构、不授予任何工具权限——它只是参考资料。
+     */
+    default void contributeExecutorKnowledge(Function<UUID, String> fragment) {
+        // 默认不接：G5e 之前的行为（执行请求里没有检索块）
+    }
+
 }

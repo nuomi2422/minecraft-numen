@@ -199,6 +199,75 @@ public final class NumenPlugins {
         return sb.toString();
     }
 
+    // ═══ G5e：执行角色的检索/参考知识（进 <runtime_state>，与规划知识分开）═══
+
+    /**
+     * 插件挂在**执行请求**（{@code <runtime_state>}）上的知识片段。见
+     * {@link NumenApi#contributeExecutorKnowledge}。
+     *
+     * <p>为什么与 {@link #PLANNING} 分开而不是共用一条：同一份 snapshot 在 EXECUTOR 与 PLANNER
+     * 视角<b>本来就该不同</b>（75 号 §15.5 IC08）——EXECUTOR 只信 VERIFIED、非撤回、非 WARNING；
+     * 合成一条缝就等于把两种视图混成一个，判据再也测不出来。
+     */
+    private static final List<Function<UUID, String>> EXECUTOR = new CopyOnWriteArrayList<>();
+
+    /** 执行角色知识的总字符上限（比规划知识小：它每轮都在，且不是任务结构的一部分）。 */
+    public static final int MAX_EXECUTOR_KNOWLEDGE_CHARS = 1200;
+
+    public static void contributeExecutorKnowledge(Function<UUID, String> fragment) {
+        if (fragment != null) EXECUTOR.add(fragment);
+    }
+
+    /** 汇总所有插件为这只同伴的执行请求贡献的知识。<b>引擎内部调用</b>。 */
+    public static String executorKnowledge(UUID companion) {
+        return aggregateExecutorKnowledge(EXECUTOR, companion);
+    }
+
+    /**
+     * 聚合本体（纯函数，注册表由调用方传入，便于单测隔离静态表）。
+     *
+     * <p>三重兜底与 {@link #aggregatePlanningKnowledge} 同口径：稳定分隔符、总字符上限、
+     * 故障隔离（含 {@code Error}，例如缺类）。没有贡献者/UUID 为空 → 返回空串。
+     */
+    public static String aggregateExecutorKnowledge(List<Function<UUID, String>> contributors, UUID companion) {
+        if (contributors == null || contributors.isEmpty() || companion == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        int accepted = 0;
+        int failed = 0;
+        int truncated = 0;
+        for (Function<UUID, String> c : contributors) {
+            String fragment;
+            try {
+                fragment = c.apply(companion);
+            } catch (Throwable e) {
+                failed++;
+                Constants.LOG.error("[numen] 插件的执行知识算不出来,这一段跳过", e);
+                continue;
+            }
+            if (fragment == null || fragment.isBlank()) {
+                continue;
+            }
+            String piece = sb.length() == 0 ? fragment : PLANNING_KNOWLEDGE_SEPARATOR + fragment;
+            int room = MAX_EXECUTOR_KNOWLEDGE_CHARS - sb.length();
+            if (piece.length() > room) {
+                if (room > 0) {
+                    sb.append(piece, 0, room);
+                }
+                truncated++;
+                break;
+            }
+            sb.append(piece);
+            accepted++;
+        }
+        if (truncated > 0 || failed > 0) {
+            Constants.LOG.info("[numen] executor knowledge aggregated: contributors={} failed={} truncated={} chars={}/{}",
+                    accepted, failed, truncated, sb.length(), MAX_EXECUTOR_KNOWLEDGE_CHARS);
+        }
+        return sb.toString();
+    }
+
     private static void runClientBlock(Runnable r) {
         try {
             r.run();
@@ -240,6 +309,12 @@ public final class NumenPlugins {
         @Override
         public void contributePlanningKnowledge(PlanningKnowledgeContributor contributor) {
             if (contributor != null) PLANNING.add(contributor);
+        }
+
+        @Override
+        public void contributeExecutorKnowledge(Function<UUID, String> fragment) {
+            // G5e：执行角色知识（每轮 runtime_state）——与 STATE 同为读多写少
+            if (fragment != null) EXECUTOR.add(fragment);
         }
 
         @Override

@@ -2544,6 +2544,8 @@ public final class EntityAgentLoop {
     private static final String SECTION_EFFECTS = "effects";
     private static final String SECTION_RIDING = "riding";
     private static final String SECTION_PLUGINS = "plugin_fragments";
+    /** G5e：执行角色检索块（`<retrieved_knowledge role="executor">`）。 */
+    private static final String SECTION_EXECUTOR_KNOWLEDGE = "executor_knowledge";
 
     /**
      * 运行期状态切段（<b>顺序＝拼进提示词的顺序</b>，与接入前逐字节一致）。
@@ -2564,7 +2566,9 @@ public final class EntityAgentLoop {
         String effects = effectsXml();
         String riding = ridingXml();
         String plugins = com.dwinovo.numen.api.NumenPlugins.stateFragments(entityUuid);
-        List<ContextBudget.Section> sections = new ArrayList<>(5);
+        // G5e：执行角色的检索块（统一检索 EXECUTOR 视图）。空 = 不追加（不塞空标题）。
+        String executorKnowledge = com.dwinovo.numen.api.NumenPlugins.executorKnowledge(entityUuid);
+        List<ContextBudget.Section> sections = new ArrayList<>(6);
         sections.add(new ContextBudget.Section(SECTION_CURRENT_TASK, currentTask, true,
                 estimateTokensOfText(currentTask), PRIORITY_CURRENT_TASK));
         sections.add(runtimeSection(SECTION_INVENTORY, inventory, PRIORITY_INVENTORY));
@@ -2576,11 +2580,19 @@ public final class EntityAgentLoop {
         // 丢了取不回来；背包用工具随时能重取。
         sections.add(new ContextBudget.Section(SECTION_PLUGINS, plugins, true,
                 estimateTokensOfText(plugins), PRIORITY_PLUGINS));
+        // G5e：执行知识放在插件片段之后 —— 现有段顺序逐字不变，新段只在非空时出现。
+        // 它是**可丢**的（priority 35，低于必知区）：参考目录不该挤掉当前目标/任务链；
+        // 丢了只是这一轮少一段参考，工具与经验库都还能按需重取。
+        if (executorKnowledge != null && !executorKnowledge.isBlank()) {
+            sections.add(runtimeSection(SECTION_EXECUTOR_KNOWLEDGE, executorKnowledge,
+                    PRIORITY_EXECUTOR_KNOWLEDGE));
+        }
         return sections;
     }
 
     private static final int PRIORITY_CURRENT_TASK = 100;   // 必知区，优先级只作记录
     private static final int PRIORITY_PLUGINS = 40;         // 必知区（任务链镜像 / 需求缺口），优先级只作记录
+    private static final int PRIORITY_EXECUTOR_KNOWLEDGE = 35;  // G5e：可丢（参考目录），低于是必知区
     private static final int PRIORITY_RIDING = 30;
     private static final int PRIORITY_EFFECTS = 20;
     private static final int PRIORITY_INVENTORY = 10;       // 工具可重取，且通常最大 → 第一个丢
