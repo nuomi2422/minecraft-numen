@@ -38,6 +38,7 @@ public final class ExperiencePlugin implements NumenPlugin {
         numen.registerTool(new ExperienceVerifyTool());
         numen.registerTool(new ExperienceRetractTool());
         numen.registerTool(new ExperienceExpandTool());
+        numen.registerTool(new ExperiencePublishTool());
         // 规划知识：让任务链规划器(Stage-A/Stage-B/回退)真正拿到 guide + builtin + 该同伴经验。
         // 规划器与本插件互不可见，只能通过这扇宿主门通信；知识只是参考资料，不改任务结构。
         //

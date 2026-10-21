@@ -51,6 +51,11 @@ public final class ExperienceMemory {
     }
 
     /** 撤销撤回（误撤回救回来）。id 不存在返回 {@code null}。 */
+    /** G6a：发布资格迁移（委托 store；合法性由状态机判）。 */
+    public ExperienceStore.PublishResult publish(String id, com.dwinovo.numen.experience.api.PublicationState target, String note) {
+        return store.publish(id, target, note);
+    }
+
     public ExperienceEntry reinstate(String id) {
         return store.reinstate(id);
     }

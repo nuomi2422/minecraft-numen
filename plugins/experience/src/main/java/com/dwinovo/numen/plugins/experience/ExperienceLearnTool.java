@@ -106,6 +106,9 @@ final class ExperienceLearnTool implements NumenTool {
                     .toolNames(in.tool_names() == null ? List.of() : in.tool_names())
                     .tags(in.tags() == null ? List.of() : in.tags())
                     .priority(in.priority() <= 0 ? 50 : in.priority())
+                    // ★ G6a：学习侧默认**不发布** —— 新经验先进 DRAFT，只有能进规划/学习视图，
+                    //   要进执行视图必须显式 experience_publish（发布资格 ≠ 可信度）。
+                    .publication(com.dwinovo.numen.experience.api.PublicationState.DRAFT)
                     .build();
 
             ExperienceEntry stored = ExperiencePlugin.memory(companion.getUUID()).learn(entry);
@@ -124,7 +127,8 @@ final class ExperienceLearnTool implements NumenTool {
                     "maturity", stored.maturity().name(),
                     "verified_count", stored.verifiedCount(),
                     "seven_filled", filled,
-                    "seven_complete", filled == 7)).toJson());
+                    "seven_complete", filled == 7,
+                    "publication", stored.publication() == null ? "?" : stored.publication().name())).toJson());
         } catch (RuntimeException ex) {
             reply.accept(TaskResult.fail("experience_learn failed: " + ex.getMessage()).toJson());
         }

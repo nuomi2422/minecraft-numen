@@ -3,6 +3,7 @@ package com.dwinovo.numen.experience.core;
 import com.dwinovo.numen.experience.api.ExperienceEntry;
 import com.dwinovo.numen.experience.api.ExperienceMaturity;
 import com.dwinovo.numen.experience.api.ExperienceType;
+import com.dwinovo.numen.experience.api.PublicationState;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -301,6 +302,41 @@ public final class ExperienceStore {
         return updated;
     }
 
+    /** G6a 发布结果：code ∈ {OK, BAD_ID, BAD_TARGET, NOT_FOUND, ILLEGAL_TRANSITION}。 */
+    public record PublishResult(ExperienceEntry entry, String code, String message) {
+        public boolean ok() { return "OK".equals(code); }
+    }
+
+    /**
+     * G6a：改发布资格（DRAFT/TRIAL/PUBLISHED/SUSPENDED/REVOKED）。
+     *
+     * <p>**迁移表只认 {@link PublicationState#canTransitionTo}** —— 工具层不许各写一份 if。
+     * 非法迁移**不改状态**并如实返回 code；REVOKED 是终态，任何出边都非法。
+     */
+    public synchronized PublishResult publish(String id, PublicationState target, String note) {
+        ensureLoaded();
+        if (id == null || id.isBlank()) {
+            return new PublishResult(null, "BAD_ID", "id 不能为空");
+        }
+        if (target == null) {
+            return new PublishResult(null, "BAD_TARGET", "target 不能为空");
+        }
+        int index = indexOf(id);
+        if (index < 0) {
+            return new PublishResult(null, "NOT_FOUND", "没有这条经验: " + id);
+        }
+        ExperienceEntry old = mirror.get(index);
+        PublicationState cur = old.publication() == null ? PublicationState.PUBLISHED : old.publication();
+        if (!cur.canTransitionTo(target)) {
+            return new PublishResult(old, "ILLEGAL_TRANSITION", cur + " 不能直接迁到 " + target);
+        }
+        ExperienceEntry updated = old.withPublication(target);
+        mirror.set(index, updated);
+        persist();
+        LOG.info("[experience] publication {} -> {} ({})", cur, target,
+                note == null ? "" : note.trim());
+        return new PublishResult(updated, "OK", cur + " -> " + target);
+    }
     /**
      * 撤销撤回（E8）：误撤回要能救回来。
      *

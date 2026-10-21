@@ -277,6 +277,17 @@ public record ExperienceEntry(
                 .build();
     }
 
+    /**
+     * 改发布资格（G6a）。**迁移合法性由调用方校验**（{@link PublicationState#canTransitionTo}），
+     * 这里只做不可变拷贝 —— 与 retracted/unretracted 同一套路。
+     */
+    public ExperienceEntry withPublication(PublicationState state) {
+        return builder().from(this)
+                .publication(state == null ? PublicationState.PUBLISHED : state)
+                .lastAccessedAt(System.currentTimeMillis())
+                .build();
+    }
+
     /** 标注本条目取代了哪一条（E8 修订链）。空 = 不取代任何东西。 */
     public ExperienceEntry supersedes(String olderId) {
         return builder().from(this)
