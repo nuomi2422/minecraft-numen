@@ -65,10 +65,9 @@ public final class ExperiencePlugin implements NumenPlugin {
                 if (RetrievalPolicy.experienceRetrievalMode() != RetrievalPolicy.Mode.UNIFIED) {
                     return "";
                 }
-                ExperienceMemory m = MEMORIES.get(companion);
-                if (m == null) {
-                    return "";
-                }
+                // 用 memory(companion) 而不是 MEMORIES.get：这是**每轮都会走的读路径**，
+                // 若等工具/规划先建库，执行视图会在会话前几分钟静默缺席（2026-10-21 实机踩到）。
+                ExperienceMemory m = memory(companion);
                 ExperienceStoreRetrievalBridge.Rendered rendered =
                         ExperienceStoreRetrievalBridge.render(m, "", 6, 800,
                                 com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
