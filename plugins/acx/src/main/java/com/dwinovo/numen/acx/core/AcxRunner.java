@@ -35,7 +35,7 @@ import com.dwinovo.numen.acx.api.Operator;
  * <p>结构照 DD 版 {@code AcRunner}（{@code brain/ac/AcRunner.java}，654 行），但把五处
  * DD 的坑换掉了。每一处都在 {@code docs/03-与DD的差异和修复清单.md} 里有对照。</p>
  *
- * <h3>与 DD 的五处差异（都记在 03 文档里）</h3>
+ * <h3>与 DD 的五处差异（对照表在 rdd-docs：rdd架构/模块架构/acx-与DD的差异清单.md）</h3>
  * <ol>
  *   <li><b>停滞/超限的 while 立即停帧</b>。DD 是「跳过 markStepCompleted 然后 continue 到下一步」，
  *       于是后面每步都推进断点，最终 {@code completedStepIndex == steps.size()}，
