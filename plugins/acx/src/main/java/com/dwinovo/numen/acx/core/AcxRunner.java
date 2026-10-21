@@ -746,6 +746,22 @@ public final class AcxRunner {
         boolean isFor = step.isFor();
         List<Object> forItems = null;
         String forVar = "item";
+        // ═══ AC-B12（2026-10-21）：控制块参数**快照** + for **游标** ═══
+        // 断点续跑时 `$scan.matches` 这种「前序步骤输出」已不在 allOutputs 里（记录不持久化每步输出），
+        // 解析出来是字面串 → for 直接失败。所以进循环前把解析好的参数快照进 vars（随记录持久化；
+        // list 只留前 MAX_SNAPSHOT_ITEMS 条，免得记录膨胀），resume 时优先用快照。
+        String snapKey = "_params_" + step.id();
+        String cursorKey = "_cursor_" + step.id();
+        Object snapRaw = c.vars.get(snapKey);
+        if (snapRaw instanceof Map<?, ?> snapped) {
+            Map<String, Object> fromSnap = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> en : snapped.entrySet()) {
+                fromSnap.put(String.valueOf(en.getKey()), en.getValue());
+            }
+            resolved = fromSnap;
+        } else {
+            c.vars.put(snapKey, snapshotParams(resolved));
+        }
         if (isFor) {
             Object raw = resolved.get("list");
             if (!(raw instanceof List<?> l)) {
@@ -770,7 +786,12 @@ public final class AcxRunner {
         // ★ do_while：先跑一轮再判条件（默认 false = DD 的轮首求值）
         boolean doWhile = isWhile && boolFlag(resolved.get("do_while"));
 
+        // AC-B12：for 的游标也随 vars 持久化 —— resume 从「下一个未处理元素」接着走，
+        // 不重跑已处理过的元素（否则「逐株收」这类脚本会永远卡在第 0 项）。
         int iters = 0;
+        if (isFor && c.vars.get(cursorKey) instanceof Number nb) {
+            iters = Math.max(0, nb.intValue());
+        }
         int stagnantRounds = 0;
         String ifUnmatched = null;
         boolean stoppedByStagnation = false;
@@ -811,6 +832,9 @@ public final class AcxRunner {
                 // 元素写进变量 → children 里用 $var.<as> 取；$loop.total 给总数
                 c.vars.put(forVar, forItems.get(iters - 1));
                 c.vars.put("loop_total", (long) forItems.size());
+                // AC-B12：这一轮**开始**了就把游标记成「已处理到 iters」，body 中途暂停时
+                // 续跑会重跑当前元素（它本来就没做完，重跑是对的），但不会回到第 0 项。
+                c.vars.put(cursorKey, (long) iters);
             }
 
             boolean roundHasProgress = false;
@@ -972,6 +996,30 @@ public final class AcxRunner {
     private static boolean isPausedControl(Map<String, Object> out) {
         return Boolean.TRUE.equals(out.get("_stagnated"))
                 || Boolean.TRUE.equals(out.get("_reached_max_iters"));
+    }
+
+    /** AC-B12：控制块参数快照最多保留的列表长度（记录不许被大列表撑爆）。 */
+    static final int MAX_SNAPSHOT_ITEMS = 64;
+
+    /**
+     * AC-B12：把解析好的控制块参数做成**可持久化**的快照。
+     *
+     * <p>为什么只截断 List：断点续跑要的是「同一个列表 + 游标」，而列表长度没有上限；
+     * 每条目都是一个小 Map，1000 条就能把记录撑成几十 KB。截到 64 条是个明确的取舍：
+     * 超长列表的续跑只处理前 64 项（剩下的靠重跑），比「记录膨胀到写不进盘」好。
+     */
+    private static Map<String, Object> snapshotParams(Map<String, Object> params) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (params == null) return out;
+        for (Map.Entry<String, Object> e : params.entrySet()) {
+            Object v = e.getValue();
+            if (v instanceof List<?> l && l.size() > MAX_SNAPSHOT_ITEMS) {
+                out.put(e.getKey(), new ArrayList<>(l.subList(0, MAX_SNAPSHOT_ITEMS)));
+            } else {
+                out.put(e.getKey(), v);
+            }
+        }
+        return out;
     }
 
     /** 在飞任务的机器可读字段（适配层 {@code acceptedOutput} 的约定）：原样带进事件 detail。 */

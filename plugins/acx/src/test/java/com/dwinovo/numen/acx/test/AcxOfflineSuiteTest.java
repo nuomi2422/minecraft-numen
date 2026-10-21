@@ -79,9 +79,10 @@ class AcxOfflineSuiteTest {
      * 已知红项数。修好其中任何一个都可以改小，但必须同时改下面的判定片段。
      *
      * <p>2026-10-06 从 7 改为 3（修好 AC-B19/B20/B21/B22，见类注释）。
-     * 剩余两个已知缺陷：for/断点里的变量跨断点看不见（TODO AC-B12 ×2）。
+     * 已知缺陷已清零（2026-10-21：AC-B12 用「控制块参数快照 + for 游标」修掉；AC-B18 用 inFlight 契约修掉）。
+ * 清零之后 KNOWN_RED 必须保持 0：再出现任何红都当新问题查，别把数字调大来盖。
      */
-    private static final int KNOWN_RED = 2;
+    private static final int KNOWN_RED = 0;
 
     /**
      * 已知的 3 项红的判定片段 —— <b>刻意全用 ASCII</b>。
@@ -102,7 +103,7 @@ class AcxOfflineSuiteTest {
      * 将来若出现名字里带「64」的新失败项，它会被误判成已知缺陷。
      * ⇒ 那种情况要<b>显式改这里</b>，别默默放过。
      */
-    private static final String[] KNOWN_RED_MARKERS = {"for", "64"};
+    private static final String[] KNOWN_RED_MARKERS = {};
 
     @Test
     void theOfflineSuiteRunsAndItsKnownRedStaysVisible() throws Exception {

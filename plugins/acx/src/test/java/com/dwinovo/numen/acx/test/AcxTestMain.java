@@ -3854,7 +3854,8 @@ private static void takeDiag() {
                 Fake.params("x", 2, "block", "minecraft:dirt"),
                 Fake.params("x", 3, "block", "minecraft:coal_ore"));
 
-        // TODO(AC-B12 余项)：「for 之前的步骤暂停 → 续跑后 for 拿不到 $scan.matches」尚未定位。
+        // AC-B12 已修（2026-10-21）：控制块参数快照进 vars（`_params_<stepId>`，list 截 64 条）
+        // + for 游标（`_cursor_<stepId>`）→ 续跑能拿回列表、从下一个元素接着走。
         // 现象：首跑在第 0 步 PAUSED（断点=0，续跑会重跑它），续跑仍报
         // 「each (for) 说: list 必须指向一个列表，实际是: $scan.matches」。
         // 已排除：断点位置正确(0)、params 缓存与 _outs 回退都在、for 元素绑定真机可用。
