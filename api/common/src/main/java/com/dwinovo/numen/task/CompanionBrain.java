@@ -6,6 +6,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * 一具身体的调度器——{@code CompanionTickDispatcher} 按 UUID 存的那个值。
@@ -45,11 +46,14 @@ final class CompanionBrain {
     private volatile TaskRecord lastFinished;
 
     /**
-     * 最近若干条终态，按任务号索引。AC-B12b 复审（2026-10-21）：
-     * 单槽 {@link #lastFinished} 会被后来的任务覆盖，探针按旧任务号查会把成功误判成失败；
-     * 有界表让「哪个任务成功了」按 id 可查，不靠「最近一个」猜。
+     * 最近若干条终态，按任务号索引。AC-B12b 复审（2026-10-21）：单槽 {@link #lastFinished}
+     * 会被后来的任务覆盖，探针按旧任务号查会把成功误判成失败。
+     *
+     * <p><b>AC-B12b-3（2026-10-21 长跑）</b>：这张表已经**搬出 brain**，进
+     * {@link TaskTerminalRegistry}（按同伴 UUID 独立，死亡/{@code BRAINS.remove} 不丢）。
+     * brain 只留 {@link #lastFinished} 这个兼容单槽 —— 两套真源会漂移，这是本项目反复踩过的坑。
      */
-    private final RecentFinishedTasks recentFinished = new RecentFinishedTasks();
+    private final UUID companionId;
 
     /** 回合挂着等的同步动作。 */
     final TaskSlot sync = new TaskSlot(outbox::addLast);
@@ -62,11 +66,11 @@ final class CompanionBrain {
         current.onSettled(this::rememberFinished);
     }
 
-    /** 终态落账：单槽保留「最近一次」兼容旧调用方，按 id 表给探针精确查询。 */
+    /** 终态落账：单槽保留「最近一次」兼容旧调用方，按 id 表（UUID 独立）给探针精确查询。 */
     private void rememberFinished(TaskRecord record) {
         if (record == null) return;
         lastFinished = record;
-        recentFinished.remember(record);
+        TaskTerminalRegistry.remember(companionId, record);
     }
 
     /** 最近一次终态任务（可能为 null）。只读快照，调用方不许改它。 */
@@ -76,7 +80,7 @@ final class CompanionBrain {
 
     /** 按任务号查最近终态；查不到 = 调用方按「不知道成败」（UNKNOWN：保留挂账）处理，不算失败。 */
     TaskRecord finishedTask(String taskId) {
-        return recentFinished.find(taskId);
+        return TaskTerminalRegistry.find(companionId, taskId);
     }
 
     private final List<Task> reflexes;
@@ -105,7 +109,8 @@ final class CompanionBrain {
     /** 手部占用的空闲边沿(纯计数器,见 {@link #HAND_PIN_GRACE_TICKS})。 */
     private final HandPinRelease handPinRelease = new HandPinRelease(HAND_PIN_GRACE_TICKS);
 
-    CompanionBrain() {
+    CompanionBrain(UUID companionId) {
+        this.companionId = companionId;
         this.reflexes = List.copyOf(BrainChains.build());
         // 说话时看着主人排在当前任务<b>之下</b>——她挖着矿跟你说话不回头,
         // 这是旧调度里就有的关系(它的出价本来就低于 LLM 基准价),不是新决定。

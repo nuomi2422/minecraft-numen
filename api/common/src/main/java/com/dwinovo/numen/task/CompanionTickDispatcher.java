@@ -59,7 +59,7 @@ public final class CompanionTickDispatcher {
     }
 
     private static CompanionBrain brainFor(UUID companionUuid) {
-        return BRAINS.computeIfAbsent(companionUuid, k -> new CompanionBrain());
+        return BRAINS.computeIfAbsent(companionUuid, CompanionBrain::new);
     }
 
     /** 回合挂着等的同步动作槽(首次使用时建脑)。 */
@@ -179,8 +179,10 @@ public final class CompanionTickDispatcher {
      * 查不到返回 null（调用方按「不知道成败」处理，不许当成功）。
      */
     public static TaskRecord finishedTaskFor(UUID companionUuid, String taskId) {
-        CompanionBrain brain = BRAINS.get(companionUuid);
-        return brain == null ? null : brain.finishedTask(taskId);
+        // AC-B12b-3（2026-10-21 长跑）：终态表按 UUID 独立存（TaskTerminalRegistry），
+        // **不经过 brain** —— 死亡时 BRAINS.remove(id) 之后仍要能按 id 查到，
+        // 否则探针退化成「槽已空且找不到该任务的终态记录」= stale-null。
+        return TaskTerminalRegistry.find(companionUuid, taskId);
     }
 
     /** 她现在在做的那件事,null = 槽空(她站着)。task_status 用。 */
