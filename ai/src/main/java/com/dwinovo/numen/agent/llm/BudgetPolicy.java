@@ -694,6 +694,27 @@ public final class BudgetPolicy {
         }
     }
 
+    /** 只读：该相位的限额；没配返回 {@link Limit#NONE}（G4c-s109c，budget_gate 观测用）。 */
+    public static Limit limitOf(String phase) {
+        refreshIfChanged();
+        try {
+            Limit l = policy.roles().get(roleOf(phase));
+            return l == null ? Limit.NONE : l;
+        } catch (RuntimeException ex) {
+            return Limit.NONE;
+        }
+    }
+
+    /** 只读：当前模式（shadow/enforce）；异常时返回 unknown，不影响请求。 */
+    public static String modeOf() {
+        refreshIfChanged();
+        try {
+            return policy.mode();
+        } catch (RuntimeException ex) {
+            return "unknown";
+        }
+    }
+
     /**
      * 配置热重载（G4b）：<b>mtime 变了就重装，不必重启游戏。</b>
      *
