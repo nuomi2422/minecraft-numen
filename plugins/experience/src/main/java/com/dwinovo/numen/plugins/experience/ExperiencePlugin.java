@@ -2,6 +2,8 @@ package com.dwinovo.numen.plugins.experience;
 
 import com.dwinovo.numen.api.NumenApi;
 import com.dwinovo.numen.api.NumenPlugin;
+import com.dwinovo.numen.api.PlanningQuery;
+import com.dwinovo.numen.api.RetrievalPolicy;
 import com.dwinovo.numen.experience.core.ExperienceDirectory;
 import com.dwinovo.numen.experience.core.ExperienceMemory;
 import com.dwinovo.numen.experience.core.LexicalExperienceRetriever;
@@ -37,11 +39,17 @@ public final class ExperiencePlugin implements NumenPlugin {
         numen.registerTool(new ExperienceRetractTool());
         // 规划知识：让任务链规划器(Stage-A/Stage-B/回退)真正拿到 guide + builtin + 该同伴经验。
         // 规划器与本插件互不可见，只能通过这扇宿主门通信；知识只是参考资料，不改任务结构。
+        //
+        // ★ G5d：mode=unified 时经验这一类改走统一检索（75 号 §15.5「同一请求只用一套新检索视图」），
+        //   旧路经验贡献关掉 → 同一条经验不会被注入两遍。默认 legacy，不配置的人行为零变化。
         numen.contributePlanningKnowledge(query -> {
             try {
-                PlanningKnowledge.Request req = PlanningKnowledge.Request.of(
-                        query.objective(), query.stage(), query.knownFailures());
-                return ExperienceKnowledgeSource.recall(query.companion(), req).text();
+                return knowledgeFor(query.companion(), query.objective(), query.stage(),
+                        query.knownFailures(),
+                        RetrievalPolicy.experienceRetrievalMode() == RetrievalPolicy.Mode.UNIFIED,
+                        ExperiencePlugin::memory,
+                        rendered -> ExperienceMonitor.publishContext("retrieval_snapshot",
+                                rendered.asEvent()));
             } catch (Throwable t) {
                 // 知识是可选增强：坏了就这段留空，规划照常（宿主侧还有一层隔离兜底）
                 LOG.warn("[expmem] planning knowledge unavailable: {}", t.toString());
@@ -77,6 +85,20 @@ public final class ExperiencePlugin implements NumenPlugin {
             }
         });
         LOG.info("[expmem] experience memory plugin ready");
+    }
+
+    /**
+     * 规划知识分流（G5d 判据 S2/S3 的唯一分叉点）。
+     *
+     * <p>规则与可测实现都在 {@link ExperiencePlanningRouter}（它不实现宿主接口，
+     * 离线测试不需要把整条宿主 API 拉进类路径）；这里只把生产依赖接上。
+     */
+    static String knowledgeFor(UUID companion, String objective, String stage,
+                               java.util.List<String> knownFailures, boolean unified,
+                               java.util.function.Function<UUID, ExperienceMemory> memories,
+                               java.util.function.Consumer<ExperienceStoreRetrievalBridge.Rendered> observer) {
+        return ExperiencePlanningRouter.knowledgeFor(companion, objective, stage, knownFailures,
+                unified, memories, observer);
     }
 
     /** 取（或惰性创建）某同伴的经验记忆。 */
