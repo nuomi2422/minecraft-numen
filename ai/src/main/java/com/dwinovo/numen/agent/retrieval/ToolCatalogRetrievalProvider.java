@@ -94,6 +94,7 @@ public final class ToolCatalogRetrievalProvider implements RetrievalProvider {
             if (obj.isBlank()) {
                 // 没有 objective（执行侧当前就是空串）⇒ 一条都不放。
                 // 不是「没实现」，是**故意的**：无相关性时塞目录只会挤掉经验。
+                // objective 为空 ⇒ 一条都不放（无相关性时塞目录只会挤掉经验）。
                 return SearchPage.empty(providerId(), query.queryId());
             }
             List<RetrievedEntry> hits = new ArrayList<>();
