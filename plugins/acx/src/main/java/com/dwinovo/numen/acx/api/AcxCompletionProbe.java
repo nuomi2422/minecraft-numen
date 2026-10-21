@@ -24,7 +24,13 @@ public interface AcxCompletionProbe {
     enum State {
         RUNNING,
         DONE,
-        FAILED
+        FAILED,
+        /**
+         * 探针**无法判断**（没有该任务的终态记录 / 记录被更晚的任务覆盖）。
+         * 调用方必须保留挂账、等待重试或超时，<b>不许</b>把它当 DONE，也不许立刻当 FAILED 删账——
+         * 删账后重试会重发物理动作（G4c-s109b B-M2）。
+         */
+        UNKNOWN
     }
 
     record Snapshot(State state, Map<String, Object> data, String message) {
@@ -49,6 +55,10 @@ public interface AcxCompletionProbe {
 
         public static Snapshot failed(String message) {
             return new Snapshot(State.FAILED, Map.of(), message);
+        }
+
+        public static Snapshot unknown(String message) {
+            return new Snapshot(State.UNKNOWN, Map.of(), message);
         }
     }
 }

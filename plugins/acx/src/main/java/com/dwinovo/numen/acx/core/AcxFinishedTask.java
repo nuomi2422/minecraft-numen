@@ -14,30 +14,39 @@ import java.util.Map;
  * 四条分支都能被离线用例钉住（不依赖 {@code com.dwinovo.numen.task} 包）。
  *
  * <p><b>唯一判据</b>：<b>只有 SUCCESS 才算完成</b>。终态是别的（FAILED / TIMEOUT / CANCELLED）→
- * failed；没有记录、或者记录属于别的任务 → failed。<b>「不知道成败」绝不许当成成功</b>。
+ * failed；没有记录、记录属于别的任务、或态名不可判定 → <b>unknown</b>（调用方保留挂账，
+ * 不许当成功，也不许立刻删账）。<b>「不知道成败」绝不许当成成功</b>。
  */
 public final class AcxFinishedTask {
 
     private AcxFinishedTask() {}
 
     /**
-     * @param wantedTaskId 探针要问的那个任务 id（可为空 = 不校验 id）
+     * @param wantedTaskId 探针要问的那个任务 id（空 = 无法确认归属，返回 UNKNOWN）
      * @param publicId     最近一次终态记录的 id（null = 没有记录）
      * @param stateName    终态名（{@code TaskState.name()}；null = 没有记录）
      */
     public static AcxCompletionProbe.Snapshot map(String wantedTaskId, String publicId, String stateName) {
+        if (wantedTaskId == null || wantedTaskId.isBlank()) {
+            return AcxCompletionProbe.Snapshot.unknown(
+                    "没有 task_id，无法确认该终态属于本任务（不许跳过校验当成功）");
+        }
         if (stateName == null) {
-            return AcxCompletionProbe.Snapshot.failed(
-                    "槽已空且找不到该任务的终态记录（无法判断成败，按失败处理以免假完成）");
+            return AcxCompletionProbe.Snapshot.unknown(
+                    "槽已空且找不到该任务的终态记录（无法判断成败，保留挂账等待重试）");
         }
         if (wantedTaskId != null && !wantedTaskId.isBlank()
                 && publicId != null && !wantedTaskId.equals(publicId)) {
-            return AcxCompletionProbe.Snapshot.failed(
-                    "槽已空，且最近一次终态属于别的任务（" + publicId + "），按失败处理");
+            return AcxCompletionProbe.Snapshot.unknown(
+                    "槽已空，且最近一次终态属于别的任务（" + publicId + "），无法判断本任务成败");
         }
         if ("SUCCESS".equals(stateName)) {
             return AcxCompletionProbe.Snapshot.done(Map.of(), "任务已完成（终态记录）");
         }
-        return AcxCompletionProbe.Snapshot.failed("任务终态是 " + stateName + "（不是成功，按失败处理）");
+        if ("FAILED".equals(stateName) || "TIMEOUT".equals(stateName) || "CANCELLED".equals(stateName)) {
+            return AcxCompletionProbe.Snapshot.failed("任务终态是 " + stateName + "（不是成功，按失败处理）");
+        }
+        // RUNNING/PENDING/未知态名都不是「该任务的终态」——不猜，交给调用方保留挂账。
+        return AcxCompletionProbe.Snapshot.unknown("任务终态不可判定（" + stateName + "），保留挂账等待重试");
     }
 }

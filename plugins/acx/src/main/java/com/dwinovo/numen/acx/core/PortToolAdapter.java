@@ -4,6 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
 
 import com.dwinovo.numen.acx.api.AcxCompletionProbe;
 import com.dwinovo.numen.acx.api.AcxPortSchema;
@@ -31,19 +32,26 @@ public final class PortToolAdapter implements AcxTool {
 
     public static final String CONTROL_IGNORE_FAILURE = "ignore_failure";
 
+    /** G4c-s109b B-M2：探针连续 UNKNOWN 超过这个时长才转 FAILED，避免永久挂起。 */
+    public static final long COMPLETION_UNKNOWN_TIMEOUT_MS = 30_000L;
+
     private final AcxToolPort port;
     private final AcxCompletionProbe probe;
     private final AcxToolSchema toolSchema;
+    private final LongSupplier clock;
     private final Map<String, Acceptance> pendingByStep = new ConcurrentHashMap<>();
     private final Map<String, AcxToolPort.Result> pushedByTask = new ConcurrentHashMap<>();
+    /** 每个挂账键首次 UNKNOWN 的时刻；只用于「不能判断」的宽限计时。 */
+    private final Map<String, Long> unknownSince = new ConcurrentHashMap<>();
 
     private record Acceptance(String taskId, boolean standing, String paramsSignature,
                               Map<String, Object> data) { }
 
-    private PortToolAdapter(AcxToolPort port, AcxCompletionProbe probe) {
+    private PortToolAdapter(AcxToolPort port, AcxCompletionProbe probe, LongSupplier clock) {
         this.port = port;
         this.probe = probe;
         this.toolSchema = toToolSchema(port.schema());
+        this.clock = clock == null ? System::currentTimeMillis : clock;
     }
 
     public static Builder builder(AcxToolPort port) {
@@ -92,6 +100,7 @@ public final class PortToolAdapter implements AcxTool {
             // 同一 AC 同一步骤（同一迭代）换了参数 = 换目标：旧任务的账不能算在新目标头上。
             // resume 例外保留：断点续跑时 $prev 引用解析不出来（保留字面串），这不代表换了目标。
             pendingByStep.remove(key);
+            unknownSince.remove(key);
             acc = null;
         }
         if (acc != null) {
@@ -115,6 +124,7 @@ public final class PortToolAdapter implements AcxTool {
             case ACCEPTED: {
                 Acceptance fresh = new Acceptance(r.taskId(), r.standing(), signature, r.data());
                 pendingByStep.put(key, fresh);
+                unknownSince.remove(key);
                 return AcxStepOutcome.paused(acceptMessage(r), acceptedOutput(fresh, r.standing()));
             }
             default:
@@ -127,6 +137,7 @@ public final class PortToolAdapter implements AcxTool {
             AcxToolPort.Result pushed = pushedByTask.remove(acc.taskId());
             if (pushed != null) {
                 pendingByStep.remove(key);
+                unknownSince.remove(key);
                 return settle(acc, pushed);
             }
         }
@@ -162,10 +173,27 @@ public final class PortToolAdapter implements AcxTool {
                         acceptedOutput(acc, false));
             case DONE:
                 pendingByStep.remove(key);
+                unknownSince.remove(key);
                 return settle(acc, AcxToolPort.Result.completed(s.data(), s.message()));
             case FAILED:
                 pendingByStep.remove(key);
+                unknownSince.remove(key);
                 return AcxStepOutcome.failed(name() + " 异步任务失败: " + s.message());
+            case UNKNOWN: {
+                // B-M2：探针说「不知道」——保留挂账，给 30 秒宽限等宿主补终态；
+                // 超过宽限才按失败删账（避免永久挂起，也避免刚查不到就重发物理动作）。
+                long now = clock.getAsLong();
+                long first = unknownSince.computeIfAbsent(key, k -> now);
+                if (now - first >= COMPLETION_UNKNOWN_TIMEOUT_MS) {
+                    pendingByStep.remove(key);
+                    unknownSince.remove(key);
+                    return AcxStepOutcome.failed(name() + " 完成探针连续 " + (now - first)
+                            + "ms 无法判定（按失败处理，避免永久挂起）");
+                }
+                return AcxStepOutcome.paused(
+                        name() + " 完成探针暂时无法判定（保留挂账，等待重试）: " + s.message(),
+                        acceptedOutput(acc, false));
+            }
             default:
                 throw new IllegalStateException("未覆盖的探针状态: " + s.state());
         }
@@ -271,6 +299,7 @@ public final class PortToolAdapter implements AcxTool {
     public static final class Builder {
         private final AcxToolPort port;
         private AcxCompletionProbe probe;
+        private LongSupplier clock = System::currentTimeMillis;
 
         private Builder(AcxToolPort port) {
             if (port == null) {
@@ -284,8 +313,14 @@ public final class PortToolAdapter implements AcxTool {
             return this;
         }
 
+        /** 测试用：注入可控时钟（UNKNOWN 宽限计时）。 */
+        public Builder clock(LongSupplier v) {
+            this.clock = v == null ? System::currentTimeMillis : v;
+            return this;
+        }
+
         public PortToolAdapter build() {
-            return new PortToolAdapter(port, probe);
+            return new PortToolAdapter(port, probe, clock);
         }
     }
 }

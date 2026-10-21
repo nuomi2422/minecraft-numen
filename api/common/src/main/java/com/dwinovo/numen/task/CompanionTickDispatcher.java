@@ -6,9 +6,9 @@ import com.dwinovo.numen.entity.NumenPlayer;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * numen-core's server-tick driver of companion tasks. The engine ({@code numen-api})
@@ -31,7 +31,11 @@ import java.util.UUID;
 @com.dwinovo.numen.api.Internal
 public final class CompanionTickDispatcher {
 
-    private static final Map<UUID, CompanionBrain> BRAINS = new HashMap<>();
+    /**
+     * B-M4（G4c-s109b）：AC 探针在 {@code numen-acx-runner} 线程读、服务端 tick 线程写，
+     * 原来的 {@code HashMap} 是无锁数据竞争 —— 换并发容器。观察/探针只 get，不迭代业务状态。
+     */
+    private static final Map<UUID, CompanionBrain> BRAINS = new ConcurrentHashMap<>();
 
     /** 已经为"同 UUID 两具身体"警告过的 —— 每具同伴只吵一次。 */
     private static final java.util.Set<UUID> duplicateWarned = new java.util.HashSet<>();

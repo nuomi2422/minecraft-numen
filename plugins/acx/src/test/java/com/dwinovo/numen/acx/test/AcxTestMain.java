@@ -1868,6 +1868,34 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             eq(1, port.invokeCount(), "不重发命令");
         });
 
+        T.test("resume 探针 UNKNOWN → 保留挂账；30s 后转 FAILED 并删账（B-M2）", () -> {
+            FakePorts.Scripted port = FakePorts.Scripted.of("mine")
+                    .thenAccepted("t42", Map.of());
+            FakePorts.Probe probe = new FakePorts.Probe()
+                    .thenUnknown("暂时查不到")
+                    .thenUnknown("还是查不到");
+            long[] now = {0L};
+            PortToolAdapter adapter = PortToolAdapter.builder(port).probe(probe)
+                    .clock(() -> now[0]).build();
+            Fake.Registry reg = new Fake.Registry().add(adapter);
+            AcxRunner r = runner(reg).build();
+            AcxDefinition d = def(step("m", "mine", Map.of()));
+            AcxRunRecord rec = r.run(d, Map.of());
+            eq(AcxStatus.PAUSED, rec.status(), "首跑受理即暂停");
+
+            AcxRunRecord rec2 = r.resume(d, rec);
+            eq(AcxStatus.PAUSED, rec2.status(), "UNKNOWN 不能当完成，也不能立刻当失败");
+            eq(1, probe.asked.size(), "问了一次");
+            eq(1, adapter.pendingCount(), "账必须保留，否则重试会重发物理动作");
+
+            now[0] = PortToolAdapter.COMPLETION_UNKNOWN_TIMEOUT_MS + 1;
+            AcxRunRecord rec3 = r.resume(d, rec2);
+            eq(AcxStatus.FAIL, rec3.status(), "超过宽限才允许按失败收口");
+            eq(2, probe.asked.size(), "宽限期后再问了一次");
+            eq(0, adapter.pendingCount(), "失败后账销掉");
+            eq(1, port.invokeCount(), "全程只发起一次物理动作");
+        });
+
         T.test("resume 探针 DONE → SUCCESS，下游拿到 $move.final_x", () -> {
             Fake.resetCalls();
             FakePorts.Scripted port = FakePorts.Scripted.of("goto")
@@ -2029,16 +2057,22 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             T.isTrue(s.message().contains("FAILED"), "消息里要带终态: " + s.message());
         });
 
-        T.test("mapTerminal：没有终态记录 → failed（不知道成败不许当成功）", () -> {
+        T.test("mapTerminal：没有终态记录 → unknown（不知道成败不许当成功，也不许立刻删账）", () -> {
             var s = com.dwinovo.numen.acx.core.AcxFinishedTask.map("t1", null, null);
-            eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.FAILED, s.state(),
-                    "查不到记录也要 failed: " + s.message());
+            eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.UNKNOWN, s.state(),
+                    "查不到记录要 unknown: " + s.message());
         });
 
-        T.test("mapTerminal：终态属于别的任务 → failed", () -> {
+        T.test("mapTerminal：终态属于别的任务 → unknown", () -> {
             var s = com.dwinovo.numen.acx.core.AcxFinishedTask.map("t1", "t2", "SUCCESS");
-            eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.FAILED, s.state(),
-                    "任务对不上不能算完成: " + s.message());
+            eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.UNKNOWN, s.state(),
+                    "任务对不上不能算完成，也不能当失败删账: " + s.message());
+        });
+
+        T.test("mapTerminal：空白 task_id → unknown（空 id 不许跳过校验当成功）", () -> {
+            var s = com.dwinovo.numen.acx.core.AcxFinishedTask.map("", "t9", "SUCCESS");
+            eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.UNKNOWN, s.state(),
+                    "空 id 不能假成功: " + s.message());
         });
 
         T.test("桥接注册规则：别名挂载 / acx_ 前缀跳过 / 重名与已有跳过", () -> {

@@ -31,7 +31,7 @@ final class TaskSlot {
     private java.util.function.Consumer<TaskRecord> onSettled = r -> { };
 
     private Task task;
-    private TaskRecord record;
+    private volatile TaskRecord record;
     /** 它真正被 tick 过几刻——0 表示"刚受理还没动手"。 */
     private int ticksRun;
 
@@ -168,6 +168,13 @@ final class TaskSlot {
             com.dwinovo.numen.event.NumenEvents.taskFinished(companion, record.publicId(),
                     record.getToolName(), "interrupted", "任务因她死亡而中断");
         }
+        // B-M2：死亡是终态，但它**不走 settle()**（那条路会再发一次工具结果）。
+        // 这里单独把终态记进探针表，避免「上一件活」被误当成本次的结果。
+        TaskRecord dropped = record;
+        if (dropped != null) {
+            if (!dropped.getState().isTerminal()) dropped.setState(TaskState.CANCELLED);
+            notifySettled(dropped);
+        }
         task = null;
         record = null;
         ticksRun = 0;
@@ -177,13 +184,18 @@ final class TaskSlot {
         record.setResult(task.result(record.getState()));
         TaskRecord settled = record;
         outbox.accept(record);
-        try {
-            onSettled.accept(settled);   // AC-B12b：终态记录先留一份，再清槽
-        } catch (RuntimeException ignored) {
-            // 观测不许影响结算
-        }
+        notifySettled(settled);   // AC-B12b：终态记录先留一份，再清槽
         task = null;
         record = null;
         ticksRun = 0;
+    }
+
+    /** 终态通知集中一处：settle 与 dropNoResult（死亡旁路）都走它。 */
+    private void notifySettled(TaskRecord settled) {
+        try {
+            onSettled.accept(settled);
+        } catch (RuntimeException ignored) {
+            // 观测不许影响结算
+        }
     }
 }

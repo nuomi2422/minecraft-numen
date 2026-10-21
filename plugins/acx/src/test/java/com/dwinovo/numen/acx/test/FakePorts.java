@@ -163,6 +163,10 @@ public final class FakePorts {
             return then(AcxCompletionProbe.Snapshot.failed(message));
         }
 
+        public Probe thenUnknown(String message) {
+            return then(AcxCompletionProbe.Snapshot.unknown(message));
+        }
+
         @Override
         public AcxCompletionProbe.Snapshot probe(String taskId) {
             asked.add(taskId);
