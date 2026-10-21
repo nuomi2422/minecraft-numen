@@ -11,12 +11,14 @@ import com.dwinovo.numen.event.JsonlJournal;
 import com.dwinovo.numen.agent.llm.CompactSplit;
 import com.dwinovo.numen.agent.context.ContextBudget;
 import com.dwinovo.numen.agent.llm.BudgetPolicy;
+import com.dwinovo.numen.agent.llm.BudgetGateEstimate;
 import com.dwinovo.numen.agent.llm.ConvoState;
 import com.dwinovo.numen.agent.provider.AssistantTurn;
 import com.dwinovo.numen.agent.provider.LlmToolCall;
 import com.dwinovo.numen.agent.skill.SkillRegistry;
 import com.dwinovo.numen.agent.tool.ToolInvocation;
 import com.dwinovo.numen.agent.tool.ToolRegistry;
+import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.data.ModLanguageData;
 import com.dwinovo.numen.mcp.server.McpMode;
 import com.dwinovo.numen.platform.Services;
@@ -294,6 +296,22 @@ public final class EntityAgentLoop {
     private boolean compacting = false;
     /** Context size of the last request as the API counted it (0 = unknown yet). */
     private long lastPromptTokens = 0;
+    /**
+     * 上一轮成功请求的「本地裁后估算」（含 wire tools）。G4c-s109b A-M1：
+     * 用它把 {@link #lastPromptTokens} 的实测比例套到**本轮**的估算上，
+     * 而不是直接拿上一轮实测判本轮。
+     */
+    private long lastTrimmedEstimate = 0;
+    /** 正在飞的那次请求的本地估算，响应回来时与 {@link #lastPromptTokens} 配对。 */
+    private long inFlightTrimmedEstimate = 0;
+    /** 预构建但还没发出去的 runtime_state XML / plan；真正发请求前由 publishPendingRuntimeState 发布。 */
+    private String pendingRuntimeStateXml;
+    private com.dwinovo.numen.agent.context.ContextBudget.Allocation pendingRuntimeStatePlan;
+    /** 预构建时被 replay 裁过、但还没到发请求时刻的日志；真正发请求时补打一次。 */
+    private String pendingReplayLog;
+    /** provider 的 wire tools 取不到时只警告一次，避免每轮刷屏。 */
+    private boolean toolWireFallbackWarned = false;
+
     /** Consecutive compaction failures — circuit breaker for the auto path. */
     private int compactFailures = 0;
 
@@ -1065,6 +1083,8 @@ public final class EntityAgentLoop {
         convo.replaceAll(List.of());
         display.add(new ConvoState.Msg.User(ConvoLog.CLEAR_DIVIDER));
         lastPromptTokens = 0;
+        lastTrimmedEstimate = 0;
+        inFlightTrimmedEstimate = 0;
         tokens.waste().reset();   // 同压缩:历史剪断之后上一轮不再可比
         compactFailures = 0;
         Constants.LOG.info("[numen-entity#{}] 上下文清空(记录留档)", entityUuid);
@@ -1855,23 +1875,20 @@ public final class EntityAgentLoop {
         long contextTokens = lastPromptTokens > 0
                 ? lastPromptTokens
                 : estimateContextTokens(convo.snapshot());
-        // G4c S109：**先建这一轮真正要发出去的那份，再拿它去判预算。**
-        // 修之前：判额用的是 `estimateContextTokens(convo.snapshot())`（整段历史，
-        // 实测 106k），而请求随即被 replay 窗口裁到 11.5k —— 按一个根本不会发出去的数拦人，
-        // 误差 9 倍（V-20261021-04 抓到）。现在与请求正文同源。
-        // 注意：快照建在 incrementTurn 之前，所以 runtime_state 事件里的 turn 是「上一轮」的编号；
-        // 那是观测字段的 1 号滞后，不影响请求内容（ai.jsonl 的 turn 事件仍在自增之后发）。
+        // G4c S109b A-M2：先建这一轮真正要发出去的那份，但**先不 publish** ——
+        // 预算/上下文/压缩闸都通过、incrementTurn 之后才发 runtime_state。
+        // 这样被拦下的轮次不会留下“她看见了什么”的假记录，turn 也不会滞后一轮。
         var tools = ToolRegistry.resident();
-        var snapshot = modelContextSnapshot();
+        var snapshot = modelContextSnapshot(false);
         String systemPrompt = composeSystemPrompt();
-        long trimmedEstimate = CompactSplit.estimateTokens(snapshot)
-                + estimateTokensOfText(systemPrompt)
-                + estimateTokensOfText(tools.toString());
-        // 判额口径（S109 修正版）：**有厂商实测就用实测**，只有冷启动（还没收到过 usage 帧）
-        // 才用「裁后估算」。为什么不是一律用估算：本地估算对同一份请求偏高约 2 倍
-        // （实测 37683 vs 厂商 prompt 17k，含 CompactSplit 的 1.5 安全系数），
-        // 拿它判预算会把额度当掉一半。为什么不是一律用实测：冷启动时那个数是 0。
-        long requestTokens = lastPromptTokens > 0 ? lastPromptTokens : trimmedEstimate;
+        // A-M3：tools 分量用 provider 真正发出的 wire JSON，不是 List<NumenTool>.toString()。
+        long trimmedEstimate = estimateRequestTokens(snapshot, tools, systemPrompt);
+        // A-M1：用上一对（实测 / 同一口径估算）的比例校准**本轮**的估算，而不是直接拿
+        // 上一轮实测判本轮。没有历史时原样用本轮估算（冷启动）。
+        long requestTokens = BudgetGateEstimate.calibrated(trimmedEstimate, lastPromptTokens, lastTrimmedEstimate);
+        inFlightTrimmedEstimate = trimmedEstimate;
+        String gateSource = BudgetGateEstimate.source(lastPromptTokens, lastTrimmedEstimate);
+        double gateRatio = BudgetGateEstimate.rawRatio(lastPromptTokens, lastTrimmedEstimate);
 
         // G4c S107（方案 A）：主人回合豁免预算闸 —— 预算管的是花多少钱，不是谁说了算。
         // 被豁免时发一条 budget_owner_override，让「预算被主人刷过头」可被数出来，而不是暗账。
@@ -1968,11 +1985,32 @@ public final class EntityAgentLoop {
         awaitingLlmResponse = true;
         retryingTurn = false;   // 新开的一轮永远不是「重试中」
 
-        // （tools / snapshot / systemPrompt 已经在预算闸之前建好了 —— 见上面 S109 的注释。）
+        // A-M2：到这里才发布 runtime_state —— turn 已是本轮，且被拦轮次永远不会走到这里。
+        publishPendingRuntimeState();
 
-        Constants.LOG.info("[numen-entity#{}] turn {}: convo={} msgs, tools={}, requestTokens={} (measured={}, trimmedEstimate={})",
+        // A-M4：每轮（只在 execution 配了限额时）留一条判额对照，供 20 轮自动核。
+        if (BudgetPolicy.roleHasLimit("execution")) {
+            Map<String, Object> gate = new LinkedHashMap<>();
+            gate.put("actor", "numen");
+            gate.put("companionId", entityUuid.toString());
+            gate.put("turn", convo.turnCount());
+            gate.put("role", "execution");
+            gate.put("gateInput", requestTokens);
+            gate.put("source", gateSource);
+            gate.put("trimmed", trimmedEstimate);
+            gate.put("lastMeasured", lastPromptTokens);
+            gate.put("lastTrimmed", lastTrimmedEstimate);
+            gate.put("ratio", Math.round(gateRatio * 1000.0) / 1000.0);
+            gate.put("limitTokens", budgetOver != null ? budgetOver.limit().tokensPerWindow() : 0L);
+            gate.put("mode", budgetOver != null ? budgetOver.mode() : "-");
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "budget_gate", gate);
+        }
+
+        // （tools / snapshot / systemPrompt 已经在预算闸之前建好了 —— 见上面 S109b 的注释。）
+
+        Constants.LOG.info("[numen-entity#{}] turn {}: convo={} msgs, tools={}, requestTokens={} (source={}, measured={}, trimmedEstimate={})",
                 entityUuid, convo.turnCount(), snapshot.size(), tools.size(), requestTokens,
-                lastPromptTokens, trimmedEstimate);
+                gateSource, lastPromptTokens, trimmedEstimate);
         com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "turn", java.util.Map.of(
                 "companion_id", entityUuid.toString(), "turn", convo.turnCount(),
                 "convo_msgs", snapshot.size(), "tools", tools.size()));
@@ -2117,6 +2155,8 @@ public final class EntityAgentLoop {
         convo.replaceAll(next);
         display.add(new ConvoState.Msg.User(ConvoLog.COMPACT_DIVIDER));
         lastPromptTokens = 0;   // unknown until the next request reports usage
+        lastTrimmedEstimate = 0;
+        inFlightTrimmedEstimate = 0;
         tokens.waste().reset();   // 前缀本来就换了,下一轮的未命中不算"白付"
         compactFailures = 0;
         Constants.LOG.info(
@@ -2195,8 +2235,36 @@ public final class EntityAgentLoop {
      * <p>私有:它是<b>现算</b>的,只在发请求那一刻成立。拿去给别人展示,得到的会是
      * "历史上那条消息 + 此刻的状态"——一条从未被发送过的消息。
      */
-    private List<ConvoState.Msg> modelContextSnapshot() {
-        return AgentRequestContext.attach(replayWindow(), runtimeStateXml());
+    /**
+     * @param publish true = 立即 publish runtime_state（供 goal_judging 这类独立请求用）；
+     *                false = 只构建并暂存，等所有闸通过、真正发请求前再 publish（主轮/重试用）。
+     */
+    private List<ConvoState.Msg> modelContextSnapshot(boolean publish) {
+        return AgentRequestContext.attach(replayWindow(publish), runtimeStateXml(publish));
+    }
+
+    /**
+     * 本轮判额用的本地估算：裁后历史 + system + **provider 真正发出的 wire tools**。
+     * A-M3：以前用 {@code List<NumenTool>.toString()}（类名@hash），与请求正文不同源。
+     */
+    private long estimateRequestTokens(List<ConvoState.Msg> snapshot, List<NumenTool> tools, String systemPrompt) {
+        return CompactSplit.estimateTokens(snapshot)
+                + estimateTokensOfText(systemPrompt)
+                + estimateTokensOfText(toolWireJson(tools));
+    }
+
+    /** provider 的 wire tools；取不到时回退 List.toString()，但每会话只警告一次。 */
+    private String toolWireJson(List<NumenTool> tools) {
+        try {
+            return client().provider().buildToolList(tools).toString();
+        } catch (RuntimeException e) {
+            if (!toolWireFallbackWarned) {
+                toolWireFallbackWarned = true;
+                Constants.LOG.warn("[numen-entity#{}] 预算估算取不到 provider 的 wire tools，回退 List.toString(): {}",
+                        entityUuid, e.toString());
+            }
+            return tools.toString();
+        }
     }
 
     /**
@@ -2246,7 +2314,12 @@ public final class EntityAgentLoop {
                 com.dwinovo.numen.platform.Services.CONFIG.getModel());
     }
 
-    private List<ConvoState.Msg> replayWindow() {
+    /**
+     * @param log true = 立即打 INFO；false = 暂存到 {@link #pendingReplayLog}，真正发请求时补打。
+     *            A-M2：被预算/上下文/压缩闸拦下的轮次不该留下「裁过历史」的日志。
+     */
+    private List<ConvoState.Msg> replayWindow(boolean log) {
+        if (!log) pendingReplayLog = null;
         List<ConvoState.Msg> all = convo.snapshot();
         CompactSplit.Split split = CompactSplit.byRecentBudget(all, replayWindowTokens());
         if (split.toSummarize().isEmpty()) {
@@ -2264,25 +2337,32 @@ public final class EntityAgentLoop {
         //   ⇒ 改用 CompactSplit.validTail：带上该工具结果的调用方（Assistant）；
         //     整段历史都是 Tool（坏数据）时宁可不带，也不发必然 400 的请求。
         List<ConvoState.Msg> kept = split.kept();
+        String deferred = null;
         if (kept.isEmpty() && !all.isEmpty()) {
             kept = com.dwinovo.numen.agent.llm.CompactSplit.validTail(all);
             if (kept.isEmpty()) {
                 Constants.LOG.warn("[numen-entity#{}] replay 兜底失败：最近历史全是工具结果（无调用方），"
                         + "本轮不带历史（宁缺勿发非法请求）", entityUuid);
             } else {
-                Constants.LOG.info("[numen-entity#{}] replay 窗口过小（单条消息 {} token 就超了 {}）→ "
-                                + "兜底保留最近合法块 {} 条（含工具结果的调用方）；"
+                deferred = String.format("[numen-entity#%s] replay 窗口过小（单条消息 %d token 就超了 %d）→ "
+                                + "兜底保留最近合法块 %d 条（含工具结果的调用方）；"
                                 + "调大 provider 的 replayWindowTokens 或压缩该条工具结果",
                         entityUuid, CompactSplit.estimateTokens(all.get(all.size() - 1)),
                         replayWindowTokens(), kept.size());
+                if (log) Constants.LOG.info(deferred);
             }
         }
         int dropped = all.size() - kept.size();
         int droppedTokens = CompactSplit.estimateTokens(split.toSummarize());
-        Constants.LOG.info("[numen-entity#{}] replay 窗口限流：{} 条 / {} token 超出 {} → 只发最近 {} 条 / {} token"
+        String clipping = String.format("[numen-entity#%s] replay 窗口限流：%d 条 / %d token 超出 %d → 只发最近 %d 条 / %d token"
                         + "（源历史与 /compact 摘要不受影响；任务链仍在上下文里）",
                 entityUuid, dropped, droppedTokens, replayWindowTokens(),
                 kept.size(), CompactSplit.estimateTokens(kept));
+        if (log) {
+            Constants.LOG.info(clipping);
+        } else {
+            pendingReplayLog = deferred == null ? clipping : deferred + "\n" + clipping;
+        }
         return slimStaleExpansions(kept);
     }
 
@@ -2361,6 +2441,15 @@ public final class EntityAgentLoop {
      * 必知区（{@code <current_task>}）永不裁——裁了就是改语义。
      */
     private String runtimeStateXml() {
+        return runtimeStateXml(true);
+    }
+
+    /**
+     * @param publish true = 立即发布（goal_judging 等独立请求）；
+     *                false = 只构建 + 暂存，主轮等到所有闸通过、incrementTurn 之后由
+     *                {@link #publishPendingRuntimeState()} 发布一次。
+     */
+    private String runtimeStateXml(boolean publish) {
         ContextBudget budget = BudgetPolicy.contextBudget();
         List<ContextBudget.Section> sections = runtimeStateSections();
         ContextBudget.Allocation plan = ContextBudget.allocate(budget, sections);
@@ -2372,16 +2461,41 @@ public final class EntityAgentLoop {
                     + (budget.maxChars() > 0 ? plan.charsUsed() + "chars" : plan.tokensUsed() + "tokens")
                     + "\" limit=\""
                     + (budget.maxChars() > 0 ? budget.maxChars() + "chars" : budget.maxTokens() + "tokens") + "\"";
-            publishContextBudget(plan);
         } else if (plan.truncated()) {
             attributes = " budget=\"downgraded\" dropped=\"" + String.join(",", plan.droppedNames()) + "\"";
-            publishContextBudget(plan);
         }
         StringBuilder body = new StringBuilder();
         for (ContextBudget.Section kept : plan.kept()) {
             body.append(kept.text());
         }
         String xml = body.isEmpty() ? "" : "<runtime_state" + attributes + ">" + body + "</runtime_state>";
+        if (publish) {
+            if (plan.denied() || plan.truncated()) publishContextBudget(plan);
+            publishRuntimeState(xml);
+        } else {
+            // A-M2：先只暂存。被预算/上下文/压缩闸拦下的轮次永远不会走到发布点，
+            // 于是不会留下「她看见了什么」的假记录，turn 也不会滞后一轮。
+            pendingRuntimeStateXml = xml;
+            pendingRuntimeStatePlan = plan;
+        }
+        return xml;
+    }
+
+    /** 所有闸通过、incrementTurn 之后调用：发布预构建的 runtime_state，恰好一次。 */
+    private void publishPendingRuntimeState() {
+        String xml = pendingRuntimeStateXml;
+        if (xml == null) return;
+        pendingRuntimeStateXml = null;
+        ContextBudget.Allocation plan = pendingRuntimeStatePlan;
+        pendingRuntimeStatePlan = null;
+        if (plan != null && (plan.denied() || plan.truncated())) publishContextBudget(plan);
+        String replay = pendingReplayLog;
+        pendingReplayLog = null;
+        if (replay != null) Constants.LOG.info(replay);
+        publishRuntimeState(xml);
+    }
+
+    private void publishRuntimeState(String xml) {
         // 原样打出来。"她看到的世界"平时完全不可见,于是"她怎么会这么说"只能靠猜——
         // 而她说的数跟事件对不上时,分不清是她编的还是我们喂错了。开一次 debug 就有答案。
         //
@@ -2393,7 +2507,6 @@ public final class EntityAgentLoop {
         com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "runtime_state", java.util.Map.of(
                 "companion_id", entityUuid.toString(), "turn", convo.turnCount(),
                 "source", "request_context", "target", "numen", "context", xml));
-        return xml;
     }
 
     /** 段落名进丢弃原因与 monitor 事件，必须稳定可 grep。 */
@@ -2459,7 +2572,12 @@ public final class EntityAgentLoop {
     private String contextBudgetProblem() {
         ContextBudget budget = BudgetPolicy.contextBudget();
         if (budget.isUnlimited()) return null;
-        ContextBudget.Allocation plan = ContextBudget.allocate(budget, runtimeStateSections());
+        // A-M2：复用本轮已经构建并即将发布的 plan —— 判预算的 sections 与发布出去的 XML
+        // 是同一份，不再二次 runtimeStateSections()（那会让 elapsed_s 等字段漂移）。
+        ContextBudget.Allocation plan = pendingRuntimeStatePlan;
+        if (plan == null) {
+            plan = ContextBudget.allocate(budget, runtimeStateSections());
+        }
         if (!plan.denied()) return null;
         publishContextBudget(plan);
         return "上下文预算不足：必知区就要 "
@@ -2832,8 +2950,12 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                 final TurnPresenter.VoiceTurn vt2 = presenter.beginVoiceTurn(ownerSpokeThisTurn);   // 重跑也重新开口(失败那次的半截语音随 beginTurn 作废)
                 presenter.clearPartial();                 // 失败那次的半截文字同理作废
                 NumenLlmClient llm2 = client();
-                llm2.chatStreaming(modelContextSnapshot(), ToolRegistry.resident(),
-                                composeSystemPrompt(),
+                var retrySnapshot = modelContextSnapshot(false);
+                var retryTools = ToolRegistry.resident();
+                String retrySystem = composeSystemPrompt();
+                inFlightTrimmedEstimate = estimateRequestTokens(retrySnapshot, retryTools, retrySystem);
+                publishPendingRuntimeState();
+                llm2.chatStreaming(retrySnapshot, retryTools, retrySystem,
                                 presenter.tapForUi(gen2, vt2.sink(), llm2.provider()::extractReasoningDelta),
                                 observeRequest("execution_retry"))
                         .whenComplete((r2, e2) -> {
@@ -2879,6 +3001,8 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
         // signal. 0 when the backend sent no usage frame (then auto never fires).
         if (res.promptTokens() > 0) {
             lastPromptTokens = res.promptTokens();
+            // A-M1：把实测与「同一份请求的本地估算」配对，下一轮用比例校准本轮估算。
+            if (inFlightTrimmedEstimate > 0) lastTrimmedEstimate = inFlightTrimmedEstimate;
         }
         tokens.add(res.usage());
         // 目标的账单:主人得看得见这个目标到现在烧了多少。
@@ -2951,7 +3075,7 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
     private java.util.Set<String> callableTools() {
         java.util.Set<String> ok = new java.util.LinkedHashSet<>();
         for (com.dwinovo.numen.agent.tool.NumenTool t : ToolRegistry.resident()) ok.add(t.name());
-        ok.addAll(com.dwinovo.numen.agent.tool.ToolDisclosure.expandedIn(modelContextSnapshot()));
+        ok.addAll(com.dwinovo.numen.agent.tool.ToolDisclosure.expandedIn(replayWindow(false)));
         return ok;
     }
 
