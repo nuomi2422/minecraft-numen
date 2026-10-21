@@ -83,5 +83,16 @@ public interface AcxTool {
 
         /** 上报一条与本次调用相关的结构化事件。 */
         void emitDetail(String key, Object value);
+
+        /**
+         * 当前所在的循环迭代号（0 = 不在循环里 / 第一轮）。
+         *
+         * <p><b>为什么要它</b>（AC-B12b）：for 体里的异步步，每一轮**stepId 相同、参数不同**。
+         * 挂账键只按 {@code AC名|stepId} 会把第 2 轮的账算到第 1 轮头上 → 第 2 轮不发任务却拿到
+         * 「已完成」→ AC 报成功而身体没动（V-20261021-09）。迭代号是这类「同一步骤重复执行」的唯一可靠身份。
+         */
+        default int loopIter() {
+            return 0;
+        }
     }
 }

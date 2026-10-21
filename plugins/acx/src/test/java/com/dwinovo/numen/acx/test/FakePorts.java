@@ -21,6 +21,20 @@ public final class FakePorts {
         return AcxPortSchema.builder().build();
     }
 
+    /** 带循环迭代号的上下文（AC-B12b：for 体里同一个 step 每轮迭代号不同）。 */
+    public static AcxTool.AcxCallContext ctxIter(String acName, String stepId, int loopIter) {
+        AcxTool.AcxCallContext base = ctx(acName, stepId);
+        return new AcxTool.AcxCallContext() {
+            @Override public String runId() { return base.runId(); }
+            @Override public String stepId() { return base.stepId(); }
+            @Override public String acName() { return base.acName(); }
+            @Override public boolean isCancelRequested() { return base.isCancelRequested(); }
+            @Override public boolean isResuming() { return base.isResuming(); }
+            @Override public int loopIter() { return loopIter; }
+            @Override public void emitDetail(String key, Object value) { base.emitDetail(key, value); }
+        };
+    }
+
     public static AcxTool.AcxCallContext ctx(String acName, String stepId) {
         return new AcxTool.AcxCallContext() {
             @Override

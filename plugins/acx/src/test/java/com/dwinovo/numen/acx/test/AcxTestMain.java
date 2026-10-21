@@ -1975,6 +1975,28 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             eq(2, port.invokeCount(), "不重发");
         });
 
+        // AC-B12b（2026-10-21 实机抓到「AC 报 SUCCESS 但身体没动」的根因之一）：
+        // for 体里的异步步每轮**同一个 stepId、不同参数**。挂账键只按 AC|stepId 时，
+        // 第 2 轮会命中第 1 轮的账 → 不发任务却 settle 成 SUCCESS。迭代号必须进键。
+        T.test("同名 step 两个迭代 → 必须各发一次（AC-B12b）", () -> {
+            FakePorts.Scripted port = FakePorts.Scripted.of("goto")
+                    .thenAccepted("t1", Map.of())
+                    .thenAccepted("t2", Map.of());
+            PortToolAdapter adapter = PortToolAdapter.builder(port).build();
+            AcxStepOutcome o1 = adapter.execute(Fake.params("x", 1),
+                    FakePorts.ctxIter("t", "s", 1));
+            eq(AcxStatus.PAUSED, o1.status(), "第 1 迭代受理");
+            AcxStepOutcome o2 = adapter.execute(Fake.params("x", 2),
+                    FakePorts.ctxIter("t", "s", 2));
+            eq(AcxStatus.PAUSED, o2.status(), "第 2 迭代也应受理");
+            eq(2, port.invokeCount(), "★ 第 2 迭代必须另发一次（不许吃第 1 迭代的账）");
+            // 同一迭代重入 → 命中挂账，不重发（正常 resume 语义不能被破坏）
+            AcxStepOutcome o3 = adapter.execute(Fake.params("x", 2),
+                    FakePorts.ctxIter("t", "s", 2));
+            eq(AcxStatus.PAUSED, o3.status(), "同迭代命中挂账");
+            eq(2, port.invokeCount(), "同迭代不重发");
+        });
+
         T.test("桥接注册规则：别名挂载 / acx_ 前缀跳过 / 重名与已有跳过", () -> {
             Fake.Registry reg = new Fake.Registry().add(Fake.fixed("mine", Map.of()));
             List<AcxToolPort> ports = new ArrayList<>();

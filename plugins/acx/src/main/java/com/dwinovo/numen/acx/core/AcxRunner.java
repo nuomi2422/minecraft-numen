@@ -1217,6 +1217,12 @@ public final class AcxRunner {
         }
 
         @Override
+        public int loopIter() {
+            Object v = c.vars.get("loop_iter");
+            return v instanceof Number n ? n.intValue() : 0;
+        }
+
+        @Override
         public void emitDetail(String key, Object value) {
             c.detailScratch.put(key, value);
         }

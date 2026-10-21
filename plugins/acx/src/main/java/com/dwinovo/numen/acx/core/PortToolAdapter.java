@@ -78,14 +78,19 @@ public final class PortToolAdapter implements AcxTool {
             return AcxStepOutcome.failed(name() + " 参数校验失败: " + String.join("; ", errors));
         }
 
-        String key = (ctx == null ? "" : ctx.acName()) + "|" + (ctx == null ? "" : ctx.stepId());
+        // ═══ AC-B12b（2026-10-21）：挂账键**必须带迭代号** ═══
+        // 修前键 = `AC名|stepId`。for 体里的异步步每轮都是同一个 stepId、不同参数 → 同键；
+        // 再叠加「resume 时跳过参数签名校验」，第 2 轮就命中了第 1 轮的账 → 不发任务却 settle 成
+        // SUCCESS → AC 报成功而身体没动（V-20261021-09）。迭代号把「同一步骤的第几轮」分开，
+        // 而「同一步骤换参数（不在循环里）」仍交给下面的签名校验处理。
         String signature = String.valueOf(clean);
+        String key = (ctx == null ? "" : ctx.acName()) + "|" + (ctx == null ? "" : ctx.stepId())
+                + "|" + (ctx == null ? 0 : ctx.loopIter());
         Acceptance acc = pendingByStep.get(key);
         boolean resuming = ctx != null && ctx.isResuming();
         if (acc != null && !acc.paramsSignature().equals(signature) && !resuming) {
-            // 同一 AC 同一步骤换了参数 = 换目标：旧任务的账不能算在新目标头上。
-            // 但 resume 例外：前序步骤输出没有持久化，$prev 引用解析不出来（保留字面串），
-            // 这不代表换了目标 —— 定义真变了的话 resume 的指纹校验已经拒绝过了。
+            // 同一 AC 同一步骤（同一迭代）换了参数 = 换目标：旧任务的账不能算在新目标头上。
+            // resume 例外保留：断点续跑时 $prev 引用解析不出来（保留字面串），这不代表换了目标。
             pendingByStep.remove(key);
             acc = null;
         }
