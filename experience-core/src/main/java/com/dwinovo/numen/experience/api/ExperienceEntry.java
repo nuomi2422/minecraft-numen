@@ -83,7 +83,11 @@ public record ExperienceEntry(
         long retractedAt,
         String retractedReason,
         String supersedes,
-        int consecutiveFailures
+        int consecutiveFailures,
+
+        // ---- G6a：发布资格（元数据；不参与 stableKey/fingerprint）----
+        //   缺键 → PUBLISHED（老条目兼容），见 PublicationState.parse
+        PublicationState publication
 ) {
 
     /** 经验条目 JSONL 的文件格式版本；记录模型变了就 +1。 */
@@ -341,6 +345,8 @@ public record ExperienceEntry(
         o.addProperty("retracted_reason", retractedReason == null ? "" : retractedReason);
         o.addProperty("supersedes", supersedes == null ? "" : supersedes);
         o.addProperty("consecutive_failures", Math.max(0, consecutiveFailures));
+        // G6a：一律写出来（与 E8 五个字段同理由：能区分「显式 PUBLISHED」和「老文件没这个键」）
+        o.addProperty("publication", (publication == null ? PublicationState.PUBLISHED : publication).name());
         return o;
     }
 
@@ -378,6 +384,8 @@ public record ExperienceEntry(
                 .retractedReason(str(o, "retracted_reason"))
                 .supersedes(str(o, "supersedes"))
                 .consecutiveFailures(intVal(o, "consecutive_failures"))
+                // G6a：缺键 → PUBLISHED（老条目继续可用），未知值同样落 PUBLISHED
+                .publication(PublicationState.parse(str(o, "publication")))
                 .build();
     }
 
@@ -482,6 +490,7 @@ public record ExperienceEntry(
         private String retractedReason = "";
         private String supersedes = "";
         private int consecutiveFailures;
+        private PublicationState publication = PublicationState.PUBLISHED;
 
         public Builder from(ExperienceEntry e) {
             if (e == null) {
@@ -664,6 +673,11 @@ public record ExperienceEntry(
             return this;
         }
 
+        public Builder publication(PublicationState v) {
+            this.publication = v == null ? PublicationState.PUBLISHED : v;
+            return this;
+        }
+
         public Builder consecutiveFailures(int v) {
             this.consecutiveFailures = v;
             return this;
@@ -707,7 +721,8 @@ public record ExperienceEntry(
                     retractedAt > 0 ? retractedAt : 0L,
                     nz(retractedReason),
                     nz(supersedes),
-                    Math.max(0, consecutiveFailures)
+                    Math.max(0, consecutiveFailures),
+                    publication == null ? PublicationState.PUBLISHED : publication
             );
         }
 
