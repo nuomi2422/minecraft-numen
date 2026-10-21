@@ -18,6 +18,7 @@ import com.dwinovo.numen.agent.retrieval.RetrievalRole;
 import com.dwinovo.numen.agent.retrieval.RetrievedEntry;
 import com.dwinovo.numen.agent.retrieval.Result;
 import com.dwinovo.numen.agent.retrieval.RoleViewSelector;
+import com.dwinovo.numen.agent.retrieval.ToolCatalogRetrievalProvider;
 import com.dwinovo.numen.experience.api.ExperienceEntry;
 import com.dwinovo.numen.experience.api.ExperienceHit;
 import com.dwinovo.numen.experience.api.ExperienceMaturity;
@@ -225,6 +226,11 @@ public final class ExperienceStoreRetrievalBridge {
                     new ExperienceRetrievalProvider(PROVIDER_ID, sourceFor(memory));
             RetrievalRegistry registry = new RetrievalRegistry();
             registry.register(provider);
+            // ★ G5g：工具目录也进同一份 snapshot（`tool:` 条目，只读、可展开、不可执行）。
+            //   objectiveFilter=true：没有 objective（执行侧当前传空串）时一条都不放 ——
+            //   无相关性硬塞 64 个工具会把经验挤掉，那恰好破坏刚验过的 V4。
+            registry.register(new ToolCatalogRetrievalProvider(
+                    ToolCatalogBridge.source(), true));
             MinimalRetrievalService service = new MinimalRetrievalService(registry);
             RetrievalQuery query = new RetrievalQuery(
                     "plan-" + System.nanoTime(), "", "", use, nz(objective),

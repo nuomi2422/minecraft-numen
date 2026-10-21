@@ -26,10 +26,26 @@ public final class ToolCatalogRetrievalProvider implements RetrievalProvider {
 
     private final ExperienceEntrySource source;
 
+    /** G5g：是否按 objective 做相关性过滤（host 接线用 true，离线合成用 false）。 */
+    private final boolean objectiveFilter;
+
+    /** G5g：过滤模式下最多放几条目录条目（防止 64 个工具把经验挤掉）。 */
+    private static final int FILTERED_CAP = 2;
+
     public ToolCatalogRetrievalProvider(ToolCatalogEntrySource source) {
+        this(source, false);
+    }
+
+    /**
+     * @param objectiveFilter true = 只在 objective 命中工具名/描述时才放行，且最多 {@value #FILTERED_CAP} 条。
+     *                        <b>为什么需要它</b>：真工具表有 64 个，执行/规划块只有 800–2400 字预算，
+     *                        无脑全塞会**挤掉经验条目**——那恰好会破坏刚验过的 V4。
+     */
+    public ToolCatalogRetrievalProvider(ToolCatalogEntrySource source, boolean objectiveFilter) {
         // ToolCatalogEntrySource 与 ExperienceEntrySource 同形状；这里直接当 ExperienceEntrySource 用，
         // 避免为同一形状开两条 instanceof 分支。
         this.source = requireSource(source);
+        this.objectiveFilter = objectiveFilter;
     }
 
     private static ExperienceEntrySource requireSource(Object o) {
@@ -72,6 +88,27 @@ public final class ToolCatalogRetrievalProvider implements RetrievalProvider {
                 .thenComparingInt(r -> -r.descriptor().verifiedCount())
                 .thenComparing(r -> r.descriptor().title() == null ? "" : r.descriptor().title()));
 
+        // ★ G5g：过滤模式 —— 只在 objective 命中时放行，且硬上限 FILTERED_CAP。
+        if (objectiveFilter) {
+            String obj = query.objective() == null ? "" : query.objective().toLowerCase(java.util.Locale.ROOT);
+            if (obj.isBlank()) {
+                // 没有 objective（执行侧当前就是空串）⇒ 一条都不放。
+                // 不是「没实现」，是**故意的**：无相关性时塞目录只会挤掉经验。
+                return SearchPage.empty(providerId(), query.queryId());
+            }
+            List<RetrievedEntry> hits = new ArrayList<>();
+            for (RetrievedEntry r : all) {
+                String hay = (r.descriptor().entryRef() + " "
+                        + r.descriptor().title() + " "
+                        + r.descriptor().summary()).toLowerCase(java.util.Locale.ROOT);
+                if (matchesAnyToken(obj, hay)) {
+                    hits.add(r);
+                    if (hits.size() >= FILTERED_CAP) break;
+                }
+            }
+            return new SearchPage(providerId(), query.queryId(), false, List.copyOf(hits), List.of());
+        }
+
         List<RetrievedEntry> kept = new ArrayList<>();
         java.util.Set<String> seen = new java.util.TreeSet<>();
         List<Gap> gaps = new ArrayList<>();
@@ -94,8 +131,22 @@ public final class ToolCatalogRetrievalProvider implements RetrievalProvider {
                 List.copyOf(kept), List.copyOf(gaps));
     }
 
-    private RetrievedEntry toEntry(ExperienceEntryRead e) {
-        if (e == null) return null;
+    /**
+     * objective 里有没有哪个词（≥2 字符）出现在 hay 里。
+     *
+     * <p>刻意做得笨：不做分词、不做同义词 —— 这一步只负责「别把 64 个工具全塞进去」，
+     * 真正的相关性排序归 B6/后续批。宁可漏（少放一条），不可多（挤掉经验）。
+     */
+    private static boolean matchesAnyToken(String objectiveLower, String hayLower) {
+        for (String tok : objectiveLower.split("[\\s，,。.、；;：:！!？?/|]+")) {
+            if (tok.length() >= 2 && hayLower.contains(tok)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private RetrievedEntry toEntry(ExperienceEntryRead e) {        if (e == null) return null;
         if (e.bodyContent() == null && e.title() == null && e.summary() == null) return null;
         EntryKind kind = e.kind() == null ? EntryKind.PROCEDURE : e.kind();
         Maturity m = e.maturity() == null ? Maturity.VERIFIED : e.maturity();
