@@ -40,6 +40,11 @@ public final class RetrievalRegistry {
         return Optional.ofNullable(byId.get(providerId));
     }
 
+    /** 全部已注册 provider（插入序快照）——`MinimalRetrievalService` 合并多路用。 */
+    public synchronized java.util.List<RetrievalProvider> all() {
+        return java.util.List.copyOf(byId.values());
+    }
+
     public synchronized boolean remove(String providerId) {
         return byId.remove(providerId) != null;
     }
