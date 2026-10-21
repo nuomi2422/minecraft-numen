@@ -40,8 +40,12 @@ public final class RoleViewSelector {
         if (role == RetrievalRole.EXECUTOR) {
             // EXECUTOR 只见「当前有效」
             if (d.retracted()) return false;
-            if (d.maturity() == null || d.maturity().rank < Maturity.VERIFIED.rank) return false;
             if (d.kind() == EntryKind.WARNING) return false;   // 警告走必知区，不塞目录
+            // ★ G5g Y2：只读目录条目（`tool:`）没有「成熟度」这个概念 —— 它讲的是「有这个工具、
+            //   参数长这样」，不是「这条经验被验证过」。所以它**不吃** VERIFIED 那道门，
+            //   但仍然只读（viewOnly=true，执行入口会拒）。经验的成熟度门不变。
+            if (d.viewOnly()) return true;
+            if (d.maturity() == null || d.maturity().rank < Maturity.VERIFIED.rank) return false;
         }
         return true;
     }

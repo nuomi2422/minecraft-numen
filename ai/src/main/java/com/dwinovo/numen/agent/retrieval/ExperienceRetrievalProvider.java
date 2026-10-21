@@ -118,7 +118,8 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
                 e.entryRef() == null ? "" : e.entryRef(),
                 e.retracted(),
                 m,
-                e.verifiedCount());
+                e.verifiedCount(),
+                false);   // ★ G5g：经验条目不是「只读目录」，但也不许凭检索结果直接执行（见 ExecutionGate）
         EntryBody body = new EntryBody(
                 e.entryRef() == null ? "" : e.entryRef(),
                 e.contentHash() == null ? "" : e.contentHash(),

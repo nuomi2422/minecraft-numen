@@ -16,7 +16,7 @@ class RoleViewSelectorTest {
                                     List<RetrievalRole> roles) {
         EntryDescriptor d = new EntryDescriptor(ref, kind, "标题 " + ref, "摘要 " + ref,
                 roles, List.<String>of(), List.<String>of(), List.<String>of(),
-                ref, retracted, m, 1);
+                ref, retracted, m, 1, false);
         EntryBody b = new EntryBody(ref, "h-" + ref, "text/plain", "body", false, "fake");
         return new RetrievedEntry(d, b, Applicability.UNKNOWN);
     }

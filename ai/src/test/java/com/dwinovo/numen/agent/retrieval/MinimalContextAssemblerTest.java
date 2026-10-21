@@ -13,7 +13,7 @@ class MinimalContextAssemblerTest {
     private static RetrievedEntry e(String ref, String title, String body) {
         EntryDescriptor d = new EntryDescriptor(ref, EntryKind.EXPERIENCE, title, title + " 摘要",
                 List.of(RetrievalRole.PLANNER), List.<String>of(), List.<String>of(), List.<String>of(),
-                ref, false, Maturity.VERIFIED, 2);
+                ref, false, Maturity.VERIFIED, 2, false);
         EntryBody b = new EntryBody(ref, "h-" + ref, "text/plain", body, false, "fake");
         return new RetrievedEntry(d, b, Applicability.UNKNOWN);
     }

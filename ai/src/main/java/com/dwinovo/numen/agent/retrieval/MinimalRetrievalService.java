@@ -81,9 +81,20 @@ public final class MinimalRetrievalService implements RetrievalService {
         return owner.expand(ref, request);
     }
 
+    /**
+     * G5g Y4：**执行入口的唯一闸门**。
+     *
+     * <p>本批没有任何「从检索结果执行」的通道 —— 这个方法存在的意义是**把门放在那儿**：
+     * 以后谁想从检索结果下发动作，都必须先过这里；今天它对所有条目都返回 allowed=false，
+     * 只是理由不同（只读目录 / 本批无通道）。这样「检索即授权」在结构上就不可能发生，
+     * 而不是靠「provider 里恰好没写 dispatch」。
+     */
+    public ExecutionGate.Verdict authorizeExecution(EntryRef ref, EntryDescriptor descriptor) {
+        return ExecutionGate.check(ref, descriptor);
+    }
+
     /** 前缀路由：`tool:` → tool-catalog；其余 → experience。真实 revision 路由留 host 批。 */
-    private RetrievalProvider ownerOf(String ref) {
-        if (ref.startsWith(ToolCatalogRetrievalProvider.REF_PREFIX)) {
+    private RetrievalProvider ownerOf(String ref) {        if (ref.startsWith(ToolCatalogRetrievalProvider.REF_PREFIX)) {
             return registry.byId("tool-catalog").orElse(null);
         }
         if (ref.startsWith("exp:")) {

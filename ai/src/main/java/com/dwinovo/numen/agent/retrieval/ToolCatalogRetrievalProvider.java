@@ -111,7 +111,8 @@ public final class ToolCatalogRetrievalProvider implements RetrievalProvider {
                 e.entryRef() == null ? "" : e.entryRef(),
                 e.retracted(),
                 m,
-                e.verifiedCount());
+                e.verifiedCount(),
+                true);   // ★ G5g Y1：目录条目恒只读（EntryDescriptor 还会按 tool: 前缀再强制一次）
         EntryBody b = new EntryBody(
                 e.entryRef() == null ? "" : e.entryRef(),
                 e.contentHash() == null ? "" : e.contentHash(),
@@ -121,5 +122,46 @@ public final class ToolCatalogRetrievalProvider implements RetrievalProvider {
                 e.source() == null ? providerId() : e.source());
         // ★ 判据 S6：目录条目 Applicability 恒 UNKNOWN —— 检索层不许擅自升 PASS。
         return new RetrievedEntry(d, b, Applicability.UNKNOWN);
+    }
+
+    // ═══ G5g Y3：`tool:` 条目现在能展开正文（此前是 default 的 UNSUPPORTED）═══
+
+    /**
+     * 展开一条工具目录条目：把「工具名 + 描述 + 参数 schema」当正文返回。
+     *
+     * <p><b>只读</b>：不解析参数、不派任务、不碰工具注册表 —— 这里只从 source 的条目里取
+     * 已经写好的 {@code bodyContent}。要执行请走任务入口，且会被 {@link ExecutionGate} 拦。
+     *
+     * <p>截断是显式的（{@code truncated=true} + 省略号），不把半句话当完整正文。
+     */
+    @Override
+    public Result<EntryBody> expand(EntryRef ref, ExpansionRequest request) {
+        if (ref == null || ref.value() == null || ref.value().isBlank()) {
+            return new Result.Err<>("BAD_REF", "EntryRef 不能为空");
+        }
+        List<ExperienceEntryRead> raw;
+        try {
+            raw = source.allEntries();
+        } catch (RuntimeException t) {
+            return new Result.Err<>("SOURCE_THROW", t.toString());
+        }
+        if (raw == null) {
+            return new Result.Err<>("SOURCE_NULL", "source.allEntries() 返回 null（读失败，不是空结果）");
+        }
+        for (ExperienceEntryRead e : raw) {
+            if (e == null || !ref.value().equals(e.entryRef())) continue;
+            String body = e.bodyContent() == null ? "" : e.bodyContent();
+            int max = request == null ? 0 : request.maxChars();
+            boolean truncated = max > 0 && body.length() > max;
+            if (truncated) body = body.substring(0, max) + "…";
+            return new Result.Ok<>(new EntryBody(
+                    e.entryRef(),
+                    e.contentHash() == null ? "" : e.contentHash(),
+                    "text/plain",
+                    body,
+                    truncated,
+                    providerId()));
+        }
+        return new Result.Err<>("NOT_FOUND", "目录里没有 " + ref.value() + "（不是「没有正文」，是没有这条）");
     }
 }
