@@ -71,7 +71,7 @@ public final class ExperiencePlugin implements NumenPlugin {
                 // 若等工具/规划先建库，执行视图会在会话前几分钟静默缺席（2026-10-21 实机踩到）。
                 ExperienceMemory m = memory(companion);
                 ExperienceStoreRetrievalBridge.Rendered rendered =
-                        ExperienceStoreRetrievalBridge.render(m, objective, 6, 800,
+                        ExperienceStoreRetrievalBridge.render(m, objective, 6, 1100,
                                 com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
                 ExperienceMonitor.publishContext("retrieval_snapshot", rendered.asEvent());
                 return rendered.text();

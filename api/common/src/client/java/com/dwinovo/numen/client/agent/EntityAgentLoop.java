@@ -2567,9 +2567,14 @@ public final class EntityAgentLoop {
         String riding = ridingXml();
         String plugins = com.dwinovo.numen.api.NumenPlugins.stateFragments(entityUuid);
         // G5e：执行角色的检索块（统一检索 EXECUTOR 视图）。空 = 不追加（不塞空标题）。
-        // G5g：把「她此刻在干什么」一起传下去 —— 工具目录条目要按它做相关性过滤，
-        // 否则要么全塞（挤掉经验）要么全不塞（等于没接）。
-        String executorKnowledge = com.dwinovo.numen.api.NumenPlugins.executorKnowledge(entityUuid, currentTask);
+        // G5g：objective 不能只用核心 current_task —— 实机里它是空的，
+        // 而她此刻的活写在**插件片段**里（RDD 任务链镜像的 <current_task>…<subtask_status>）。
+        // 所以两段拼起来再截断，交给工具目录做相关性过滤。
+        String objectiveForRetrieval = currentTask + " " + plugins;
+        if (objectiveForRetrieval.length() > 400) {
+            objectiveForRetrieval = objectiveForRetrieval.substring(0, 400);
+        }
+        String executorKnowledge = com.dwinovo.numen.api.NumenPlugins.executorKnowledge(entityUuid, objectiveForRetrieval);
         List<ContextBudget.Section> sections = new ArrayList<>(6);
         sections.add(new ContextBudget.Section(SECTION_CURRENT_TASK, currentTask, true,
                 estimateTokensOfText(currentTask), PRIORITY_CURRENT_TASK));

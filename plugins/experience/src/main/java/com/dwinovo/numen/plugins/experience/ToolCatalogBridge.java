@@ -33,7 +33,7 @@ public final class ToolCatalogBridge {
     private static final int MAX_PARAMS = 8;
 
     /** 摘要长度上限：它只用来给模型一眼认出「这是干嘛的」。 */
-    private static final int MAX_SUMMARY = 80;
+    private static final int MAX_SUMMARY = 40;
 
     /**
      * 常用工具的**中文触发词**（2026-10-22 实机教训：执行侧的任务文本是中文，工具描述是英文，
