@@ -210,17 +210,9 @@ public final class NumenToolBridgeX implements AcxToolPort {
                 } catch (Throwable ignored) {
                     // 读不到就按「没有终态记录」处理
                 }
-                if (last != null && (taskId == null || taskId.isBlank()
-                        || taskId.equals(last.publicId()))) {
-                    com.dwinovo.numen.task.TaskState st = last.getState();
-                    if (st == com.dwinovo.numen.task.TaskState.SUCCESS) {
-                        return AcxCompletionProbe.Snapshot.done(Map.of(), "任务已完成（终态记录）");
-                    }
-                    return AcxCompletionProbe.Snapshot.failed(
-                            "任务终态是 " + st + "（不是成功，按失败处理）");
-                }
-                return AcxCompletionProbe.Snapshot.failed(
-                        "槽已空且找不到该任务的终态记录（无法判断成败，按失败处理以免假完成）");
+                return com.dwinovo.numen.acx.core.AcxFinishedTask.map(taskId,
+                        last == null ? null : last.publicId(),
+                        last == null || last.getState() == null ? null : last.getState().name());
             }
             if (taskId != null && !taskId.isBlank() && !taskId.equals(rec.publicId())) {
                 return AcxCompletionProbe.Snapshot.failed("任务已被替换为 " + rec.publicId());

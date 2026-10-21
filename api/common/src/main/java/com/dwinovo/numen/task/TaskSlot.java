@@ -20,10 +20,25 @@ final class TaskSlot {
 
     private final Consumer<TaskRecord> outbox;
 
+    /**
+     * 走到终态时（结算的**唯一**出口）额外通知一下。
+     *
+     * <p>为什么挂在这里（AC-B12b 2026-10-21）：原来的捕获写在 {@code CompanionBrain.tick} 的
+     * {@code settleIfTerminal()} 之前，可结算还有几条旁路（取消、掉落、世界卸载的
+     * {@code finalizeInline}）—— 那些路径上的终态记录抓不到，探针就拿不到「最近一次终态」，
+     * 只能退化成「找不到记录按失败处理」。挂到 {@code settle()} 里才覆盖全部出口。
+     */
+    private java.util.function.Consumer<TaskRecord> onSettled = r -> { };
+
     private Task task;
     private TaskRecord record;
     /** 它真正被 tick 过几刻——0 表示"刚受理还没动手"。 */
     private int ticksRun;
+
+    /** 设置终态通知（CompanionBrain 用它维护「最近一次终态」）。 */
+    void onSettled(java.util.function.Consumer<TaskRecord> cb) {
+        this.onSettled = cb == null ? r -> { } : cb;
+    }
 
     TaskSlot(Consumer<TaskRecord> outbox) {
         this.outbox = outbox;
@@ -160,7 +175,13 @@ final class TaskSlot {
 
     private void settle() {
         record.setResult(task.result(record.getState()));
+        TaskRecord settled = record;
         outbox.accept(record);
+        try {
+            onSettled.accept(settled);   // AC-B12b：终态记录先留一份，再清槽
+        } catch (RuntimeException ignored) {
+            // 观测不许影响结算
+        }
         task = null;
         record = null;
         ticksRun = 0;

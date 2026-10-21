@@ -1997,6 +1997,34 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             eq(2, port.invokeCount(), "同迭代不重发");
         });
 
+        // ═══ AC-B12b 收尾：终态 → 探针快照的映射抽成纯函数后钉住三条分支 ═══
+        // 背景（V-20261021-09）：这段判断原先埋在探针里，必须起游戏才跑得到，
+        // 于是「失败被当成功」只能靠实机碰运气发现。现在它可单测。
+        T.test("mapTerminal：SUCCESS → done（同任务）", () -> {
+            var s = com.dwinovo.numen.acx.core.AcxFinishedTask.map("t1", "t1", "SUCCESS");
+            eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.DONE, s.state(),
+                    "成功终态必须 done: " + s.message());
+        });
+
+        T.test("mapTerminal：FAILED → failed（绝不报成功）", () -> {
+            var s = com.dwinovo.numen.acx.core.AcxFinishedTask.map("t1", "t1", "FAILED");
+            eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.FAILED, s.state(),
+                    "失败终态必须 failed: " + s.message());
+            T.isTrue(s.message().contains("FAILED"), "消息里要带终态: " + s.message());
+        });
+
+        T.test("mapTerminal：没有终态记录 → failed（不知道成败不许当成功）", () -> {
+            var s = com.dwinovo.numen.acx.core.AcxFinishedTask.map("t1", null, null);
+            eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.FAILED, s.state(),
+                    "查不到记录也要 failed: " + s.message());
+        });
+
+        T.test("mapTerminal：终态属于别的任务 → failed", () -> {
+            var s = com.dwinovo.numen.acx.core.AcxFinishedTask.map("t1", "t2", "SUCCESS");
+            eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.FAILED, s.state(),
+                    "任务对不上不能算完成: " + s.message());
+        });
+
         T.test("桥接注册规则：别名挂载 / acx_ 前缀跳过 / 重名与已有跳过", () -> {
             Fake.Registry reg = new Fake.Registry().add(Fake.fixed("mine", Map.of()));
             List<AcxToolPort> ports = new ArrayList<>();

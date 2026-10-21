@@ -49,6 +49,12 @@ final class CompanionBrain {
     /** 她现在在做的事:钓鱼、跟随、挖 64 块——常驻还是一次性只看 tick 返不返终态。 */
     final TaskSlot current = new TaskSlot(outbox::addLast);
 
+    {
+        // AC-B12b：两个槽的终态都记进 lastFinished（后者覆盖前者，代表「最近一次」）
+        sync.onSettled(r -> lastFinished = r);
+        current.onSettled(r -> lastFinished = r);
+    }
+
     /** 最近一次终态任务（可能为 null）。只读快照，调用方不许改它。 */
     TaskRecord lastFinished() {
         return lastFinished;
@@ -142,16 +148,10 @@ final class CompanionBrain {
 
         // 每刻结算:主人按停止会在带外把记录标成终态,而客户端串行的派发器会一直
         // 卡到那一个结果送出——不能等这个槽下次赢了才结算。
-        // ═══ AC-B12b（2026-10-21）：结算前把终态记录留一份 ═══
-        // 为什么要留：结算会立刻把 record 置空（TaskSlot.settle），而 acx 的完成探针
-        // 只能看到「槽里有没有任务」→ 任务**失败**时也报「已完成」→ AC 把失败当成功
-        // （V-20261021-09 的第二半）。留一份「最近一次终态」才能分清 done / failed。
-        TaskRecord beforeSync = sync.record();
-        TaskRecord beforeCurrent = current.record();
+        // AC-B12b：终态记录由 TaskSlot.onSettled 回调维护（覆盖 settle 的全部出口，
+        // 不止 tick 里的 settleIfTerminal —— 取消/掉落/卸载那几条旁路以前抓不到）。
         sync.settleIfTerminal();
         current.settleIfTerminal();
-        if (beforeSync != null && beforeSync.getState().isTerminal()) lastFinished = beforeSync;
-        if (beforeCurrent != null && beforeCurrent.getState().isTerminal()) lastFinished = beforeCurrent;
         // 手上的活干完了就把记录抹掉,免得重启后凭空捡回一件早就完成的活。
         if (current.isEmpty() && !wasIdle) {
             TaskPersistence.forget(companion);
