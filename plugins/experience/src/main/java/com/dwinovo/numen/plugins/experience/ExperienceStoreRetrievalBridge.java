@@ -5,6 +5,8 @@ import com.dwinovo.numen.agent.retrieval.ContextSnapshot;
 import com.dwinovo.numen.agent.retrieval.EntryBody;
 import com.dwinovo.numen.agent.retrieval.EntryDescriptor;
 import com.dwinovo.numen.agent.retrieval.EntryKind;
+import com.dwinovo.numen.agent.retrieval.EntryRef;
+import com.dwinovo.numen.agent.retrieval.ExpansionRequest;
 import com.dwinovo.numen.agent.retrieval.ExperienceEntryRead;
 import com.dwinovo.numen.agent.retrieval.ExperienceEntrySource;
 import com.dwinovo.numen.agent.retrieval.ExperienceRetrievalProvider;
@@ -14,6 +16,7 @@ import com.dwinovo.numen.agent.retrieval.RetrievalQuery;
 import com.dwinovo.numen.agent.retrieval.RetrievalRegistry;
 import com.dwinovo.numen.agent.retrieval.RetrievalRole;
 import com.dwinovo.numen.agent.retrieval.RetrievedEntry;
+import com.dwinovo.numen.agent.retrieval.Result;
 import com.dwinovo.numen.agent.retrieval.RoleViewSelector;
 import com.dwinovo.numen.experience.api.ExperienceEntry;
 import com.dwinovo.numen.experience.api.ExperienceHit;
@@ -280,5 +283,57 @@ public final class ExperienceStoreRetrievalBridge {
         if (rendered == 0) return "";   // 全被排除 = 这一段没有可给的知识，不塞空壳
         sb.append("\n</retrieved_knowledge>");
         return sb.toString();
+    }
+
+    // ═══ G5f：展开只读（IC10「展开不等于执行」）═══
+
+    /** 一次展开的结果：成功带正文，失败带错误码（**绝不**用空正文冒充成功）。 */
+    public record Expanded(String code, String message, String ref, String body, int chars, boolean truncated) {
+        public Expanded {
+            code = code == null ? "EXPAND_FAILED" : code;
+            message = message == null ? "" : message;
+            ref = ref == null ? "" : ref;
+            body = body == null ? "" : body;
+        }
+
+        public boolean ok() {
+            return "OK".equals(code);
+        }
+    }
+
+    /**
+     * 按 ref 展开一条经验的正文（只读）。**不派生任何任务、不写库**。
+     *
+     * <p>只组一个 experience provider 的 registry —— `tool:` 前缀在这里必然 `NO_OWNER`，
+     * 这是有意的：工具目录 provider 是 G5g 的事，在此之前不许伪造工具正文。
+     */
+    public static Expanded expand(ExperienceMemory memory, String ref, int maxChars) {
+        if (ref == null || ref.isBlank()) {
+            return new Expanded("BAD_REF", "ref 不能为空", ref, "", 0, false);
+        }
+        if (memory == null) {
+            return new Expanded("MEMORY_MISSING", "该同伴还没有经验库", ref, "", 0, false);
+        }
+        try {
+            ExperienceRetrievalProvider provider =
+                    new ExperienceRetrievalProvider(PROVIDER_ID, sourceFor(memory));
+            RetrievalRegistry registry = new RetrievalRegistry();
+            registry.register(provider);
+            MinimalRetrievalService service = new MinimalRetrievalService(registry);
+            Result<EntryBody> r = service.expand(
+                    new EntryRef(ref.trim()),
+                    new ExpansionRequest("expand-" + System.nanoTime(), RetrievalRole.EXECUTOR,
+                            maxChars <= 0 ? 0 : maxChars, ""));
+            if (r instanceof Result.Ok<EntryBody> ok) {
+                EntryBody b = ok.value();
+                return new Expanded("OK", "", b.entryRef(), b.content(), b.content().length(), b.truncated());
+            }
+            Result.Err<EntryBody> err = (Result.Err<EntryBody>) r;
+            return new Expanded(err.code(), err.message(), ref, "", 0, false);
+        } catch (Throwable t) {
+            // 展开是可选增强：失败要如实报，不许拿空正文当成功
+            return new Expanded("EXPAND_FAILED", t.getClass().getSimpleName() + ": " + t.getMessage(),
+                    ref, "", 0, false);
+        }
     }
 }

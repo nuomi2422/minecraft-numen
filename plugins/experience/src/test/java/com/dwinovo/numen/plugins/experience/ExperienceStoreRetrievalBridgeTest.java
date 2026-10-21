@@ -214,4 +214,52 @@ class ExperienceStoreRetrievalBridgeTest {
         assertEquals(0, executor.entries());
         assertEquals("executor", executor.role(), "事件仍要能看出这是 EXECUTOR 视图");
     }
+
+    // ---------- G5f：展开只读 ----------
+
+    @Test
+    void 展开_命中返回正文且只读() {
+        ExperienceMemory memory = memoryWith(
+                base("i1", "可展开的经验", ExperienceMaturity.VERIFIED)
+                        .mechanism("机制正文").recommendedResponse("按它做").build());
+
+        ExperienceStoreRetrievalBridge.Expanded r =
+                ExperienceStoreRetrievalBridge.expand(memory, "exp:execution|可展开的经验", 800);
+
+        assertTrue(r.ok(), r.code() + " / " + r.message());
+        assertEquals("exp:execution|可展开的经验", r.ref());
+        assertTrue(r.body().contains("机制正文"), r.body());
+        assertTrue(r.body().contains("推荐处理"), r.body());
+        assertFalse(r.truncated());
+    }
+
+    @Test
+    void 展开_超maxChars截断并标记() {
+        ExperienceMemory memory = memoryWith(
+                base("i2", "长经验", ExperienceMaturity.VERIFIED)
+                        .mechanism("很长很长的机制正文很长很长的机制正文").build());
+
+        ExperienceStoreRetrievalBridge.Expanded r =
+                ExperienceStoreRetrievalBridge.expand(memory, "exp:execution|长经验", 5);
+
+        assertTrue(r.ok(), r.code());
+        assertTrue(r.truncated());
+        assertTrue(r.chars() <= 6, "截断后最多 5+1：" + r.chars());
+    }
+
+    @Test
+    void 展开_未知ref与tool前缀都如实失败() {
+        ExperienceMemory memory = memoryWith(
+                base("i3", "随便一条", ExperienceMaturity.VERIFIED).build());
+
+        ExperienceStoreRetrievalBridge.Expanded missing =
+                ExperienceStoreRetrievalBridge.expand(memory, "exp:execution|不存在", 800);
+        assertEquals("NOT_FOUND", missing.code(), "找不到必须报错，不许空正文冒充成功");
+        assertEquals("", missing.body());
+
+        ExperienceStoreRetrievalBridge.Expanded tool =
+                ExperienceStoreRetrievalBridge.expand(memory, "tool:goto", 800);
+        assertEquals("NO_OWNER", tool.code(), "tool: 前缀在 G5f 还没有 owner（G5g 才接）");
+        assertEquals("", tool.body());
+    }
 }

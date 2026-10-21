@@ -127,6 +127,47 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
         return new RetrievedEntry(desc, body, applicability(query, desc));
     }
 
+    /**
+     * G5f：按 ref 展开正文（**只读**，IC10「展开不等于执行」）。
+     *
+     * <p>最小实现就是「在 source 全量里按 entryRef 精确匹配」——不需要重新检索、不排序、不裁剪。
+     * 找不到/读失败/异常都返回 {@code Err}，<b>绝不编一段正文</b>；
+     * `maxChars` 是宿主给的展示预算，截断时 `truncated=true`。
+     */
+    @Override
+    public Result<EntryBody> expand(EntryRef ref, ExpansionRequest request) {
+        if (ref == null || ref.value() == null || ref.value().isBlank()) {
+            return new Result.Err<>("BAD_REF", "EntryRef 不能为空");
+        }
+        List<ExperienceEntryRead> raw;
+        try {
+            raw = source.allEntries();
+        } catch (RuntimeException t) {
+            return new Result.Err<>("EXPAND_FAILED", "读 source 异常: " + t);
+        }
+        if (raw == null) {
+            return new Result.Err<>("SOURCE_NULL", "allEntries() 返回 null（读失败，不是空结果）");
+        }
+        int max = request == null ? 0 : request.maxChars();
+        for (ExperienceEntryRead e : raw) {
+            if (e == null || !ref.value().equals(e.entryRef())) continue;
+            String content = e.bodyContent() == null ? "" : e.bodyContent();
+            boolean truncated = false;
+            if (max > 0 && content.length() > max) {
+                content = content.substring(0, max) + "…";
+                truncated = true;
+            }
+            return new Result.Ok<>(new EntryBody(
+                    e.entryRef() == null ? "" : e.entryRef(),
+                    e.contentHash() == null ? "" : e.contentHash(),
+                    "text/plain",
+                    content,
+                    truncated,
+                    e.source() == null ? id : e.source()));
+        }
+        return new Result.Err<>("NOT_FOUND", "provider " + id + " 里没有 " + ref.value());
+    }
+
     private List<RetrievalRole> rolesFor(ExperienceEntryRead e) {
         List<RetrievalRole> roles = new ArrayList<>();
         // 最小判定：maturity>=VERIFIED 且未撤回才可给 EXECUTOR（即派活时才可自动用）；
