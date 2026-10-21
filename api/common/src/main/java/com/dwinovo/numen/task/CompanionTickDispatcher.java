@@ -156,6 +156,17 @@ public final class CompanionTickDispatcher {
         if (brain != null) brain.dropActiveNoResult(player);   // event must not leak a brain
     }
 
+    /**
+     * 最近一次走到终态的任务（含终态与结果），null = 还没有任务结束过。
+     *
+     * <p>为什么需要（AC-B12b）：acx 的完成探针原本只能看「槽里有没有任务」，于是任务
+     * **失败**时也报「已完成」→ AC 把失败当成功（V-20261021-09）。有了这一份就能分清。
+     */
+    public static TaskRecord lastFinishedTaskFor(UUID companionUuid) {
+        CompanionBrain brain = BRAINS.get(companionUuid);
+        return brain == null ? null : brain.lastFinished();
+    }
+
     /** 她现在在做的那件事,null = 槽空(她站着)。task_status 用。 */
     public static TaskRecord currentTaskFor(UUID companionUuid) {
         CompanionBrain brain = BRAINS.get(companionUuid);

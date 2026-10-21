@@ -199,7 +199,28 @@ public final class NumenToolBridgeX implements AcxToolPort {
                 return AcxCompletionProbe.Snapshot.running("探测异常: " + t.getClass().getSimpleName());
             }
             if (rec == null) {
-                return AcxCompletionProbe.Snapshot.done(Map.of(), "任务已结束（外部调用无终态 data）");
+                // ═══ AC-B12b（2026-10-21）：槽空**不等于成功** ═══
+                // 修前这里一律 done → 任务 FAILED 时 AC 也会拿到 SUCCESS（假完成）。
+                // 现在去问「最近一次终态」：成功才 done；失败/超时/取消一律 failed；
+                // 查不到（外部调用结束后没有记录）也按 failed 处理 ——
+                // **「不知道成败」不许当成成功**，宁可让 AC 停下来报失败让人看一眼。
+                TaskRecord last = null;
+                try {
+                    last = CompanionTickDispatcher.lastFinishedTaskFor(p.getUUID());
+                } catch (Throwable ignored) {
+                    // 读不到就按「没有终态记录」处理
+                }
+                if (last != null && (taskId == null || taskId.isBlank()
+                        || taskId.equals(last.publicId()))) {
+                    com.dwinovo.numen.task.TaskState st = last.getState();
+                    if (st == com.dwinovo.numen.task.TaskState.SUCCESS) {
+                        return AcxCompletionProbe.Snapshot.done(Map.of(), "任务已完成（终态记录）");
+                    }
+                    return AcxCompletionProbe.Snapshot.failed(
+                            "任务终态是 " + st + "（不是成功，按失败处理）");
+                }
+                return AcxCompletionProbe.Snapshot.failed(
+                        "槽已空且找不到该任务的终态记录（无法判断成败，按失败处理以免假完成）");
             }
             if (taskId != null && !taskId.isBlank() && !taskId.equals(rec.publicId())) {
                 return AcxCompletionProbe.Snapshot.failed("任务已被替换为 " + rec.publicId());

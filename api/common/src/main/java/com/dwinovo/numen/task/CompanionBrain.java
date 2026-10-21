@@ -41,10 +41,18 @@ final class CompanionBrain {
     /** 结算完等着送回主人的记录。 */
     private final Deque<TaskRecord> outbox = new ArrayDeque<>();
 
+    /** 最近一次走到终态的任务（含终态与结果）。acx 完成探针用它区分「完成」与「失败」。 */
+    private volatile TaskRecord lastFinished;
+
     /** 回合挂着等的同步动作。 */
     final TaskSlot sync = new TaskSlot(outbox::addLast);
     /** 她现在在做的事:钓鱼、跟随、挖 64 块——常驻还是一次性只看 tick 返不返终态。 */
     final TaskSlot current = new TaskSlot(outbox::addLast);
+
+    /** 最近一次终态任务（可能为 null）。只读快照，调用方不许改它。 */
+    TaskRecord lastFinished() {
+        return lastFinished;
+    }
 
     private final List<Task> reflexes;
     /** 空闲姿态:没别的事做时才轮到,连身体都不算真正占用。 */
@@ -134,8 +142,16 @@ final class CompanionBrain {
 
         // 每刻结算:主人按停止会在带外把记录标成终态,而客户端串行的派发器会一直
         // 卡到那一个结果送出——不能等这个槽下次赢了才结算。
+        // ═══ AC-B12b（2026-10-21）：结算前把终态记录留一份 ═══
+        // 为什么要留：结算会立刻把 record 置空（TaskSlot.settle），而 acx 的完成探针
+        // 只能看到「槽里有没有任务」→ 任务**失败**时也报「已完成」→ AC 把失败当成功
+        // （V-20261021-09 的第二半）。留一份「最近一次终态」才能分清 done / failed。
+        TaskRecord beforeSync = sync.record();
+        TaskRecord beforeCurrent = current.record();
         sync.settleIfTerminal();
         current.settleIfTerminal();
+        if (beforeSync != null && beforeSync.getState().isTerminal()) lastFinished = beforeSync;
+        if (beforeCurrent != null && beforeCurrent.getState().isTerminal()) lastFinished = beforeCurrent;
         // 手上的活干完了就把记录抹掉,免得重启后凭空捡回一件早就完成的活。
         if (current.isEmpty() && !wasIdle) {
             TaskPersistence.forget(companion);
