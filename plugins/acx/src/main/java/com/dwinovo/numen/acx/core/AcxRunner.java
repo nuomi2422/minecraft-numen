@@ -123,6 +123,20 @@ public final class AcxRunner {
     public AcxRunRecord runFrom(AcxDefinition def, Map<String, Object> input,
                                 int startStepIndex, AcxRuntimeLimits lim, String runIdOverride,
                                 Map<String, Object> seedVars) {
+        return runFrom(def, input, startStepIndex, lim, runIdOverride, seedVars,
+                startStepIndex > 0);
+    }
+
+    /**
+     * 同上，但**显式**声明这是不是一次 resume。
+     *
+     * <p>为什么不能靠 {@code startStepIndex} 推断（AC-B18）：从**第 0 步**恢复的运行
+     * {@code startStepIndex} 也是 0，与「全新跑」无法区分，于是「在飞检查」会被跳过 ——
+     * 那正是第一次修失败的原因。
+     */
+    AcxRunRecord runFrom(AcxDefinition def, Map<String, Object> input,
+                                int startStepIndex, AcxRuntimeLimits lim, String runIdOverride,
+                                Map<String, Object> seedVars, boolean resuming) {
         long start = System.currentTimeMillis();
         AcxRuntimeLimits effective = AcxRuntimeLimits.merged(lim == null ? limits : lim, def.limits());
         long deadline = start + effective.maxTimeoutMs();
@@ -131,7 +145,7 @@ public final class AcxRunner {
         AtomicBoolean cancelFlag = new AtomicBoolean(false);
         cancels.put(runId, cancelFlag);
 
-        Ctx c = new Ctx(runId, start, deadline, cancelFlag, effective, events, def.name(), startStepIndex);
+        Ctx c = new Ctx(runId, start, deadline, cancelFlag, effective, events, def.name(), startStepIndex, resuming);
         if (seedVars != null) {
             c.vars.putAll(seedVars);
         }
@@ -216,7 +230,7 @@ public final class AcxRunner {
             emitDetached(AcxEvent.Kind.RESUME_STARTED, def.name(), at);
             // 复用原 runId：会话层的 status/cancel 靠一个稳定 id 串起整条续跑链
             // ★ AC-B9：变量从记录恢复 → 跨断点仍能读 $var.*（真机限制 L-06 就靠这条解掉）
-        return runFrom(def, newInput, at, limits, prior.runId(), prior.vars());
+        return runFrom(def, newInput, at, limits, prior.runId(), prior.vars(), true);
         } catch (RuntimeException e) {
             emitDetached(AcxEvent.Kind.RESUME_REJECTED, def.name(), -1,
                     Map.of("reason", String.valueOf(e.getMessage())));
@@ -564,6 +578,35 @@ public final class AcxRunner {
             emit(c, AcxEvent.Kind.STEP_FAILED, step.id(), AcxStatus.FAIL,
                     Map.of("reason", String.valueOf(r.message())));
             return r;
+        }
+
+        // ═══ AC-B18（2026-10-21，owner 批准动刀）═══
+        // resume 到断点那一步时，先问积木「上次交付的动作还在飞吗」：
+        //   在飞 → **绝不重发**（重复挖/重复走/重复消耗资源就是这么来的）；
+        //   不在飞 → 照常重执行（这是「没开始/主动暂停」的正常恢复路径）。
+        // 只问一次（断点那一步），后面的步不该被残留挂账拦住。
+        if (c.resumeInFlightCheckPending) {
+            c.resumeInFlightCheckPending = false;
+            if (tool.inFlight(new CallCtx(c, step))) {
+                AcxStatus st = tool.inFlightStatus(new CallCtx(c, step));
+                if (st == AcxStatus.SUCCESS) {
+                    emit(c, AcxEvent.Kind.STEP_SUCCEEDED, step.id(), AcxStatus.SUCCESS,
+                            Map.of("delivered", true, "reason", "in-flight already finished; not re-sent"));
+                    return AcxStepOutcome.success(Map.of("_already_delivered", true),
+                            step.id() + " 上次交付的动作已完成（未重发）");
+                }
+                if (st == AcxStatus.FAIL) {
+                    emit(c, AcxEvent.Kind.STEP_FAILED, step.id(), AcxStatus.FAIL,
+                            Map.of("delivered", true, "reason", "in-flight failed; not re-sent"));
+                    return AcxStepOutcome.failed(step.id() + " 上次交付的动作已失败（未重发）");
+                }
+                emit(c, AcxEvent.Kind.STEP_PAUSED, step.id(), AcxStatus.PAUSED,
+                        Map.of("delivered", true, "reason", "still in flight; not re-sent"));
+                return AcxStepOutcome.paused(
+                        step.id() + " 上次交付的动作仍在进行（未重发，等宿主完成通知）",
+                        Map.of("_accepted", true, "_inflight", true,
+                                "_pause_reason", "in_flight_not_resent"));
+            }
         }
 
         long stepStart = System.currentTimeMillis();
@@ -1067,10 +1110,16 @@ public final class AcxRunner {
         Map<String, Object> detailScratch = new LinkedHashMap<>();
         String acNameForEvents;
         final boolean resumeMode;
+        /**
+         * AC-B18：resume 后的**第一个**非控制步要不要先问「上次交付的动作还在飞吗」。
+         * 一次性的 —— 只对断点那一步生效，后面的步不该被残留的挂账拦住。
+         */
+        boolean resumeInFlightCheckPending;
         AcxRunRecord.Builder rec;
 
         Ctx(String runId, long start, long deadline, AtomicBoolean cancelFlag,
-            AcxRuntimeLimits limits, AcxEventSink events, String acName, int startIndex) {
+            AcxRuntimeLimits limits, AcxEventSink events, String acName, int startIndex,
+            boolean resuming) {
             this.runId = runId;
             this.start = start;
             this.deadline = deadline;
@@ -1079,7 +1128,8 @@ public final class AcxRunner {
             this.events = events;
             this.acNameForEvents = acName;
             this.completedStepIndex = startIndex;
-            this.resumeMode = startIndex > 0;
+            this.resumeMode = resuming || startIndex > 0;
+            this.resumeInFlightCheckPending = resuming;
         }
     }
 

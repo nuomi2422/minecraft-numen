@@ -223,8 +223,15 @@ public final class Fake {
     }
 
     /** 「只暂停一次」开关：给 resume 回归用 —— 第一次调用暂停，之后正常成功。 */
+    /**
+     * 「受理一次、之后由外部推进」的开关（AC-B18 的夹具）。
+     *
+     * <p>三个状态要分开，否则「重发」和「正常恢复」不可区分：
+     * <b>未受理</b> → <b>已受理（在飞）</b> → <b>已完成</b>。
+     */
     public static final class PauseOnce {
         private boolean paused;
+        private volatile boolean completed;
 
         public boolean tryPause() {
             if (paused) {
@@ -232,6 +239,26 @@ public final class Fake {
             }
             paused = true;
             return true;
+        }
+
+        /**
+         * 还挂着一次**未被消费**的交付（可能已经完成，但 runner 还没把它消费掉）。
+         *
+         * <p>语义要点：`inFlight` 问的是「这一步的交付账还在吗」，**不是**「还在跑吗」——
+         * 后者由 {@link #isCompleted()} 经 `inFlightStatus` 回答。两者混起来就会出现
+         * 「完成之后再 resume 又把动作重发一遍」（③ 段用例正是抓这个）。
+         */
+        public boolean isInFlight() {
+            return paused;
+        }
+
+        public boolean isCompleted() {
+            return completed;
+        }
+
+        /** 模拟宿主/探针回报「那边做完了」。 */
+        public void complete() {
+            completed = true;
         }
     }
 
@@ -245,6 +272,38 @@ public final class Fake {
                             Map.of("_pause_reason", reason));
                 }
                 return AcxStepOutcome.success(Map.of("resumed", true), name + " resumed");
+            }
+        };
+    }
+
+    /**
+     * AC-B18 专用夹具：**会重复做的工具** —— 第二次执行会真的再发一遍动作。
+     *
+     * <p>与 {@link #pauserOnce} 的区别：它实现 `AcxTool#inFlight`，即「已受理未完成」时
+     * 明确告诉 runner「别再来一遍」。这正是红线要的那条契约。
+     */
+    public static AcxTool pauserInFlight(String name, PauseOnce once, String reason) {
+        return new Base(name, Map.of()) {
+            @Override
+            public AcxStepOutcome execute(Map<String, Object> params, AcxCallContext ctx) {
+                record(name, params);
+                if (once.tryPause()) {
+                    return AcxStepOutcome.paused(name + " accepted once: " + reason,
+                            Map.of("_pause_reason", reason, "_accepted", true));
+                }
+                return AcxStepOutcome.success(Map.of("resumed", true), name + " resumed");
+            }
+
+            @Override
+            public boolean inFlight(AcxCallContext ctx) {
+                return once.isInFlight();
+            }
+
+            @Override
+            public com.dwinovo.numen.acx.api.AcxStatus inFlightStatus(AcxCallContext ctx) {
+                return once.isCompleted()
+                        ? com.dwinovo.numen.acx.api.AcxStatus.SUCCESS
+                        : com.dwinovo.numen.acx.api.AcxStatus.PAUSED;
             }
         };
     }

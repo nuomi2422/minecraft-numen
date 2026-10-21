@@ -19,6 +19,35 @@ public interface AcxTool {
 
     AcxStepOutcome execute(Map<String, Object> params, AcxCallContext ctx);
 
+    /**
+     * ═══ AC-B18 · 在飞查询（2026-10-21 新增，owner 批准的契约扩展）═══
+     *
+     * <p>语义：**这一步还挂着一次「未被消费」的交付吗？** 已交付、runner 还没消费掉 → {@code true}
+     * （**包括已经做完但还没被推进的情况** —— 那种要回 {@code true} + {@code inFlightStatus=SUCCESS}，
+     * 否则 resume 会把做完的动作再做一遍）。
+     *
+     * <p>为什么必须加：修之前 runner 在 resume 时只看到「上一步是 PAUSED」，不知道它是
+     * <b>「已受理、还在跑」</b>还是<b>「没开始/被主动暂停」</b>，于是从同一步重跑 —— 动作被再发一次
+     * （重复挖、重复走、重复消耗资源）。
+     *
+     * <p>为什么不能让 runner 「一律不重跑已 PAUSED 的步」：适配层的恢复路径**正是**靠
+     * 「重跑这一步 → 命中挂账 → 查完成探针」实现的（{@link AcxCompletionProbe}）。
+     * 两条路共用同一个入口，只有积木自己知道该走哪条。
+     *
+     * <p><b>默认 false</b>：不实现本方法的积木行为与以前完全一致（不会突然变成「永不重试」）。
+     */
+    default boolean inFlight(AcxCallContext ctx) {
+        return false;
+    }
+
+    /**
+     * 在飞动作的当前状态：{@code SUCCESS}=已完成（runner 可推进）、{@code FAIL}=已失败、
+     * {@code PAUSED}=仍在进行（runner 保持暂停、**不重发**）。默认 {@code PAUSED}。
+     */
+    default AcxStatus inFlightStatus(AcxCallContext ctx) {
+        return AcxStatus.PAUSED;
+    }
+
     /** 调用上下文：给积木回填取消检查、执行身份、事件上报。 */
     interface AcxCallContext {
 

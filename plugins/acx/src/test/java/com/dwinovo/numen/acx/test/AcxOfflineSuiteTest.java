@@ -79,9 +79,9 @@ class AcxOfflineSuiteTest {
      * 已知红项数。修好其中任何一个都可以改小，但必须同时改下面的判定片段。
      *
      * <p>2026-10-06 从 7 改为 3（修好 AC-B19/B20/B21/B22，见类注释）。
-     * 剩余三个已知缺陷：for/断点的两个（TODO AC-B12）、恢复重发已受理动作（TODO AC-B18）。
+     * 剩余两个已知缺陷：for/断点里的变量跨断点看不见（TODO AC-B12 ×2）。
      */
-    private static final int KNOWN_RED = 3;
+    private static final int KNOWN_RED = 2;
 
     /**
      * 已知的 3 项红的判定片段 —— <b>刻意全用 ASCII</b>。
@@ -90,7 +90,7 @@ class AcxOfflineSuiteTest {
      * <ul>
      *   <li>{@code "for"} → {@code for 循环；断点 pause 后 resume 看不见变量元组}</li>
      *   <li>{@code "64"}  → {@code 应绑定的 64 变量记录表}（同属 for/断点那个缺陷）</li>
-     *   <li>{@code "AC-B18"} → {@code 恢复不能重复发已受理的动作（TODO AC-B18，当前会重发）}</li>
+     *   <li>{@code "for"} / {@code "64"} → 两个 for 变量跨断点的用例（TODO AC-B12）</li>
      * </ul>
      *
      * <p>★ <b>为什么不用中文</b>：本工程在 Windows 上改含中文的文件时，
@@ -102,7 +102,7 @@ class AcxOfflineSuiteTest {
      * 将来若出现名字里带「64」的新失败项，它会被误判成已知缺陷。
      * ⇒ 那种情况要<b>显式改这里</b>，别默默放过。
      */
-    private static final String[] KNOWN_RED_MARKERS = {"for", "64", "AC-B18"};
+    private static final String[] KNOWN_RED_MARKERS = {"for", "64"};
 
     @Test
     void theOfflineSuiteRunsAndItsKnownRedStaysVisible() throws Exception {
@@ -205,7 +205,7 @@ class AcxOfflineSuiteTest {
             assertTrue(isTheKnownOne,
                     "出现了一条不是已知缺陷的失败项：\n  测试名 = " + name + "\n  整条 = " + f
                             + "\n★ 已知的缺陷只剩这些：「for 循环里的变量跨断点看不见」（TODO AC-B12 ×2）"
-                            + "、「恢复会重发已受理的动作」（TODO AC-B18）。"
+                            + "（AC-B18「恢复重发已受理动作」已于 2026-10-21 修复：新增 AcxTool#inFlight 契约。）"
                             + "（AC-B19/B20/B21/B22 已于 2026-10-06 修复并转绿。）"
                             + "新的失败项要先当真问题查，别直接改 KNOWN_RED。");
         }
