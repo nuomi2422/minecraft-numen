@@ -56,6 +56,8 @@ final class RddCarryHint {
     }
 
     private static final Map<UUID, String> CARRY_HINT = new ConcurrentHashMap<>();
+    /** 语义指纹（携带项+闹钟），只用于决定「这次刷新要不要打 INFO」。 */
+    private static final Map<UUID, String> CARRY_FP = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> CARRY_HINT_AT = new ConcurrentHashMap<>();
 
     /** 上次已发布的闹钟状态（rule → prio）。只在边沿（新增/解除/升级）发事件，平稳期不刷。 */
@@ -141,12 +143,26 @@ final class RddCarryHint {
             Rendered rendered = render(body);
             publishAlarmEdges(body, rendered.alarms());
             String hint = rendered.xml();
+            String prev = CARRY_HINT.get(companionId);
+            // ⚠️ 2026-10-21：日志按**语义指纹**打，不按字符串（`<basis>` 里的精确血量每几秒就变）。
+            String fp = rendered.fingerprint();
+            String prevFp = CARRY_FP.get(companionId);
             if (hint.isEmpty()) {
                 CARRY_HINT.remove(companionId);
-                AiLog.LOG.info("[rdd] carry refresh：快照或分级结果为空（无 <carry>/<alarms> 可注入）{}", companionId);
+                CARRY_FP.remove(companionId);
+                if (prev != null) {
+                    AiLog.LOG.info("[rdd] carry refresh：快照或分级结果为空（无 <carry>/<alarms> 可注入）{}", companionId);
+                } else {
+                    AiLog.LOG.debug("[rdd] carry refresh：仍为空 {}", companionId);
+                }
             } else {
                 CARRY_HINT.put(companionId, hint);
-                AiLog.LOG.info("[rdd] carry refresh：已注入提醒 {} 字符 {}", hint.length(), companionId);
+                CARRY_FP.put(companionId, fp);
+                if (!fp.equals(prevFp)) {
+                    AiLog.LOG.info("[rdd] carry refresh：已注入提醒 {} 字符 {}", hint.length(), companionId);
+                } else {
+                    AiLog.LOG.debug("[rdd] carry refresh：携带项未变 {} 字符 {}", hint.length(), companionId);
+                }
             }
         } catch (Throwable t) {
             // 携带器是「锦上添花」，任何问题都不许影响主链路。
@@ -159,6 +175,24 @@ final class RddCarryHint {
 
     /** 一次渲染的产物：注入文本 + 本次命中的独立闹钟（供边沿埋点）。 */
     private record Rendered(String xml, List<CarrierAlarms.Hit> alarms) {
+        /**
+         * 语义指纹：**携带项 + 闹钟规则**，<b>不含</b> {@code <basis>} 里的精确血量。
+         *
+         * <p>为什么需要它（2026-10-21 实机）：`REFRESH_MS=2000`，`<basis>` 里带着 `血量=有(19)`
+         * 这种会随回血变化的数字，于是「内容变了」每 2 秒都成立 → 日志 7 分钟 127 条、约 4 万行/天，
+         * 把当轮真正要看的事件（预算拦截/判定/复盘）全埋了。
+         * 注入内容一字不动，只是**日志按语义变化打**：血量从 19 变 20 不是新闻，携带项/闹钟变了才是。
+         */
+        String fingerprint() {
+            StringBuilder sb = new StringBuilder();
+            int start = xml.indexOf("<item>");
+            int end = xml.indexOf("</carry>");
+            if (start >= 0) sb.append(xml, start, end < 0 ? xml.length() : end);
+            for (CarrierAlarms.Hit h : alarms) {
+                sb.append('|').append(h.rule()).append('@').append(h.version());
+            }
+            return sb.toString();
+        }
     }
 
     /**
