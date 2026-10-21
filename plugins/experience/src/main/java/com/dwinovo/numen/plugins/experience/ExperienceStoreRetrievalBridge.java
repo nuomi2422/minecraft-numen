@@ -146,7 +146,8 @@ public final class ExperienceStoreRetrievalBridge {
                 body,
                 "h" + Integer.toHexString((id + "|" + body).hashCode()),
                 PROVIDER_ID,
-                e.publication() == com.dwinovo.numen.experience.api.PublicationState.PUBLISHED);
+                e.publication() == com.dwinovo.numen.experience.api.PublicationState.PUBLISHED,
+                e.publication() != com.dwinovo.numen.experience.api.PublicationState.REVOKED);
     }
 
     /**

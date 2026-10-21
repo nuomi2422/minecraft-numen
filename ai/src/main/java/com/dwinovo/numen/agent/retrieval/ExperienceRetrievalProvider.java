@@ -92,6 +92,7 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
     /** 把哺乳一条源条目转成 looked-up entry，按 IC08 最小角色/适用性规则；DISQUALIFIED 条目返回 null。 */
     private RetrievedEntry toEntry(RetrievalQuery query, ExperienceEntryRead e) {
         if (e == null) return null;
+        if (!e.retrievable()) return null;   // REVOKED：任何视图都不给
         if (query.role() == RetrievalRole.EXECUTOR
                 && (e.retracted()
                     || !e.published()        // G6a：未发布（DRAFT/TRIAL/SUSPENDED/REVOKED）不进执行视图
@@ -171,6 +172,10 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
 
     private List<RetrievalRole> rolesFor(ExperienceEntryRead e) {
         List<RetrievalRole> roles = new ArrayList<>();
+        // G6a-2：REVOKED 三种角色都不可检索（published=false 不足以表达这件事）
+        if (!e.retrievable()) {
+            return roles;
+        }
         // G6a：EXECUTOR 的**两道门**必须同时成立 —— ①maturity>=VERIFIED 且未撤回（可信）
         //      ②已发布 publication==PUBLISHED（允许）。只可信不允许的条目（DRAFT/TRIAL）
         //      仍可给 PLANNER/LEARNER 当待核实线索。

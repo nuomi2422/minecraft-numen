@@ -25,7 +25,10 @@ public record ExperienceEntryRead(
         String source,
         // G6a：是否已发布（只有 PUBLISHED 能进 EXECUTOR 视图）。ai 不认识 experience-core 的枚举，
         // 所以这里用布尔投影；映射由插件侧桥完成。
-        boolean published) {
+        boolean published,
+        // G6a-2：是否可被任何视图检索（REVOKED=false）。published 分不出 DRAFT 与 REVOKED，
+        // 这是独立的一维 —— 实机就是靠它才发现「撤回的还能被规划看到」。
+        boolean retrievable) {
 
     public ExperienceEntryRead {
         applicableConditions = frozen(applicableConditions);

@@ -19,7 +19,7 @@ class MinimalRetrievalServiceTest {
                                              String body, List<String> applicable) {
         return new ExperienceEntryRead(ref, kind, title, "摘要 " + title,
                 applicable, List.<String>of(), List.<String>of(), m, 1, false,
-                body, "hash-" + ref, "fake", true);
+                body, "hash-" + ref, "fake", true, true);
     }
 
     private static RetrievedEntry e(String ref, String title, EntryKind kind, Maturity m, String body) {

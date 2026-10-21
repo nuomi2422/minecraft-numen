@@ -18,7 +18,7 @@ class ExperienceRetrievalProviderTest {
                                              List<String> applicable, List<String> excluded) {
         return new ExperienceEntryRead(ref, EntryKind.EXPERIENCE, title, "summary " + title,
                 applicable, excluded, List.of("ev/" + ref), m, 1, retracted,
-                "body of " + title, "hash-" + ref, "fake-source", true);
+                "body of " + title, "hash-" + ref, "fake-source", true, true);
     }
 
     private static ExperienceEntrySource sourceOf(ExperienceEntryRead... entries) {
@@ -117,7 +117,7 @@ class ExperienceRetrievalProviderTest {
     void 未发布的已验证经验不进执行视图但进规划视图() {
         ExperienceEntryRead draft = new ExperienceEntryRead("exp:draft", EntryKind.EXPERIENCE, "草稿经验", "s",
                 List.of(), List.of(), List.of(), Maturity.VERIFIED, 3, false,
-                "body", "hash", "fake", false);
+                "body", "hash", "fake", false, true);
         ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("exp", sourceOf(draft));
 
         assertTrue(p.search(query(RetrievalRole.EXECUTOR, "", 8)).entries().isEmpty(),
@@ -127,8 +127,20 @@ class ExperienceRetrievalProviderTest {
 
         ExperienceEntryRead published = new ExperienceEntryRead("exp:pub", EntryKind.EXPERIENCE, "已发布", "s",
                 List.of(), List.of(), List.of(), Maturity.VERIFIED, 3, false,
-                "body", "hash", "fake", true);
+                "body", "hash", "fake", true, true);
         assertEquals(1, new ExperienceRetrievalProvider("exp", sourceOf(published))
                 .search(query(RetrievalRole.EXECUTOR, "", 8)).entries().size(), "已发布的应可见");
+    }
+
+    @Test
+    void 撤回的条目三种视图都看不见() {
+        ExperienceEntryRead revoked = new ExperienceEntryRead("exp:rev", EntryKind.EXPERIENCE, "已撤回", "s",
+                List.of(), List.of(), List.of(), Maturity.VERIFIED, 3, false,
+                "body", "hash", "fake", true, false);
+        ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("exp", sourceOf(revoked));
+        for (RetrievalRole role : new RetrievalRole[]{RetrievalRole.PLANNER, RetrievalRole.EXECUTOR, RetrievalRole.LEARNER}) {
+            assertTrue(p.search(query(role, "", 8)).entries().isEmpty(),
+                    "G6a-2：REVOKED（retrievable=false）不许出现在 " + role + " 视图");
+        }
     }
 }

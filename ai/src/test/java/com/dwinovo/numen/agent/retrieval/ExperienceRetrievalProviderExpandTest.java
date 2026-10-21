@@ -22,7 +22,7 @@ class ExperienceRetrievalProviderExpandTest {
                 ref, EntryKind.EXPERIENCE, "标题-" + ref, "摘要",
                 List.of(), List.of(), List.of(),
                 Maturity.VERIFIED, 2, false,
-                body, hash, "experience", true);
+                body, hash, "experience", true, true);
     }
 
     private static ExpansionRequest req(int maxChars) {
