@@ -54,8 +54,17 @@ public final class SleepOps {
 
         // 这三条的顺序就是判据本身:先看原版拒没拒,再看她是不是真躺下了。
         if (rejection != null) {
-            return TaskResult.fail(explain(rejection) + " (bed at " + pretty(bedHead) + ")",
-                    data(bedHead, false)).toJson();
+            Map<String, Object> d = data(bedHead, false);
+            d.putAll(deferFields(rejection));
+            String msg = explain(rejection) + " (bed at " + pretty(bedHead) + ")";
+            if (d.containsKey("defer")) {
+                // ★ 2026-10-22：白天睡不了时，**明确给一个「推迟」信号**，
+                //   而不是让她自己发明「定个闹钟等 400 秒」。推迟不是等待：
+                //   这件事现在办不了，身体应该交还给主线，到点再回来。
+                msg += " — defer=" + d.get("defer")
+                        + "：这件事现在办不了，把它挂到天黑、把身体交还主线，不要原地等。";
+            }
+            return TaskResult.fail(msg, d).toJson();
         }
         if (!self.isSleeping()) {
             return TaskResult.fail(
@@ -85,8 +94,26 @@ public final class SleepOps {
                 : "the bed refused you (" + problem.name().toLowerCase(java.util.Locale.ROOT) + ")";
     }
 
-    /** 手边够得着的床(原版口径:床的任一半在 ±3/±2/±3 内),归一到床头。 */
-    private static BlockPos nearestBedHeadInReach(NumenPlayer self) {
+    /**
+     * 「现在办不了」时给的结构化推迟信号。
+     *
+     * <p><b>为什么要有它</b>：2026-10-22 实机里，白天被要求睡觉时她自己发明了
+     * 「set_timer 400 秒」——事后来看时间算得没错，但那是**她猜的**。推迟该由工具说清楚：
+     * 现在不行（{@code defer=until_night}），把身体交还主线，到点再来。
+     *
+     * <p>只有「时间不对」才给这个信号：{@code TOO_FAR_AWAY} 该走去床边，
+     * {@code NOT_SAFE} 该清怪 —— 那两种都不是「推迟」。
+     */
+    static Map<String, Object> deferFields(Player.BedSleepingProblem problem) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (problem == Player.BedSleepingProblem.NOT_POSSIBLE_NOW) {
+            out.put("defer", "until_night");
+            out.put("defer_reason", "not_night");
+        }
+        return out;
+    }
+
+    /** 手边够得着的床(原版口径:床的任一半在 ±3/±2/±3 内),归一到床头。 */    private static BlockPos nearestBedHeadInReach(NumenPlayer self) {
         Level level = self.level();
         BlockPos me = self.blockPosition();
         BlockPos best = null;

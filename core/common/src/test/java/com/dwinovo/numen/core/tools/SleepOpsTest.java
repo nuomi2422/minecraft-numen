@@ -76,4 +76,18 @@ class SleepOpsTest {
             assertFalse(SleepOps.explain(problem).isBlank(), problem.name());
         }
     }
+
+    /** 白天被拒 → 必须给结构化推迟信号；别的拒绝不许冒充「推迟」。 */
+    @Test
+    void daytimeRejectionCarriesDeferSignal() {
+        assumeTrue(booted);
+        java.util.Map<String, Object> day =
+                SleepOps.deferFields(Player.BedSleepingProblem.NOT_POSSIBLE_NOW);
+        assertEquals("until_night", day.get("defer"), "白天要给 defer=until_night");
+        assertEquals("not_night", day.get("defer_reason"));
+        assertTrue(SleepOps.deferFields(Player.BedSleepingProblem.TOO_FAR_AWAY).isEmpty(),
+                "离得太远该走过去，不是推迟");
+        assertTrue(SleepOps.deferFields(Player.BedSleepingProblem.NOT_SAFE).isEmpty(),
+                "附近有怪该清怪，不是推迟");
+    }
 }
