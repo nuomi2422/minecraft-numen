@@ -96,4 +96,17 @@ class ExperiencePublicationStoreTest {
         assertTrue(r.ok(), r.code());
         assertEquals(PublicationState.SUSPENDED, r.entry().publication());
     }
+
+    @Test
+    void 验证成功一次后发布状态不许丢() {
+        // G6a-3 实机踩到：from() 不搬 publication ⇒ recordEvidence 把 DRAFT 抹回 PUBLISHED
+        ExperienceStore s = store();
+        ExperienceEntry e = s.learn(draft("发布状态保持测试"));
+        assertEquals(PublicationState.DRAFT, e.publication());
+
+        ExperienceEntry verified = s.recordEvidence(e.id(), true, "一次成功");
+        assertEquals(PublicationState.DRAFT, verified.publication(),
+                "验证只改成熟度，不许顺手把发布状态抹回默认");
+        assertEquals(com.dwinovo.numen.experience.api.ExperienceMaturity.VERIFIED, verified.maturity());
+    }
 }

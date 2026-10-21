@@ -537,7 +537,11 @@ public record ExperienceEntry(
                     .retractedAt(e.retractedAt())
                     .retractedReason(e.retractedReason())
                     .supersedes(e.supersedes())
-                    .consecutiveFailures(e.consecutiveFailures());
+                    .consecutiveFailures(e.consecutiveFailures())
+                // ★ G6a-3 实机踩到：from() 不搬 publication ⇒ verify 一次就把 DRAFT 抹回 PUBLISHED。
+                //   加 record 组件时**每一条拷贝路径都要跟**（from/withXxx/retracted/unretracted…），
+                //   否则「不可变拷贝」会静默丢字段。
+                .publication(e.publication());
         }
 
         public Builder id(String v) {
