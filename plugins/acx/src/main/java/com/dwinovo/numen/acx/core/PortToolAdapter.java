@@ -138,6 +138,13 @@ public final class PortToolAdapter implements AcxTool {
             return AcxStepOutcome.paused(name() + " 异步任务仍在进行（无 completion probe，等待宿主完成通知）",
                     acceptedOutput(acc, false));
         }
+        // AC-B12b 复审（2026-10-21）：没有 task_id 就**不许问探针** —— 探针只能按 id 精确回答，
+        // 空 id 会让它跳过 id 校验，把「别的任务的 SUCCESS」当成本任务完成（假成功）。
+        // 这里保持挂账、等宿主终态推送或 deadline，与 :126/:175 的空 id 守卫保持一致。
+        if (acc.taskId().isEmpty()) {
+            return AcxStepOutcome.paused(name() + " 受理回执没有 task_id，无法确认完成（保留挂账，等宿主终态或 deadline）",
+                    acceptedOutput(acc, false));
+        }
         AcxCompletionProbe.Snapshot s;
         try {
             s = probe.probe(acc.taskId());

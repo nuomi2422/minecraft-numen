@@ -183,8 +183,11 @@ public final class NumenToolBridgeX implements AcxToolPort {
     }
 
     /**
-     * 完成探针（契约 ACX-P1）：只判状态，拿不到终态数据 ——
-     * Numen 外部调用的 {@code task_finished} 不带 data，槽空即 DONE。
+     * 完成探针（契约 ACX-P1）：按任务号查终态，**槽空不再等于成功**。
+     *
+     * <p>槽里还有任务 → {@code running}；槽空 → 按 id 查最近终态：只有 {@code SUCCESS} 才
+     * {@code done}，别的终态/查不到 → {@code failed}。没有 {@code task_id} 时退回「最近一次
+     * 终态」，但调用方（{@code PortToolAdapter}）已在空 id 时不问探针，避免把别的任务当成本任务。
      */
     public static AcxCompletionProbe probeFor(Supplier<NumenPlayer> companionSupplier) {
         return taskId -> {
@@ -206,7 +209,11 @@ public final class NumenToolBridgeX implements AcxToolPort {
                 // **「不知道成败」不许当成成功**，宁可让 AC 停下来报失败让人看一眼。
                 TaskRecord last = null;
                 try {
-                    last = CompanionTickDispatcher.lastFinishedTaskFor(p.getUUID());
+                    // 有任务号 → 按 id 精确查（避免被之后结算的别的任务覆盖成「不属于本任务」）；
+                    // 没有任务号 → 退回「最近一次终态」，但下方 map 仍要求 SUCCESS 且会校验 id。
+                    last = (taskId == null || taskId.isBlank())
+                            ? CompanionTickDispatcher.lastFinishedTaskFor(p.getUUID())
+                            : CompanionTickDispatcher.finishedTaskFor(p.getUUID(), taskId);
                 } catch (Throwable ignored) {
                     // 读不到就按「没有终态记录」处理
                 }

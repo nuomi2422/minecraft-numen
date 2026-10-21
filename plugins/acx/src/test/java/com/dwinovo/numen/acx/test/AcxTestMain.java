@@ -1852,6 +1852,22 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             eq(1, adapter.pendingCount(), "账保留");
         });
 
+        T.test("resume 缺 task_id → 不查探针、保持 PAUSED、账不销（AC-B12b 复审 M3）", () -> {
+            FakePorts.Scripted port = FakePorts.Scripted.of("mine")
+                    .thenAccepted("", Map.of());
+            FakePorts.Probe probe = new FakePorts.Probe().thenDone(Fake.params("never", true));
+            PortToolAdapter adapter = PortToolAdapter.builder(port).probe(probe).build();
+            Fake.Registry reg = new Fake.Registry().add(adapter);
+            AcxRunner r = runner(reg).build();
+            AcxDefinition d = def(step("m", "mine", Map.of()));
+            AcxRunRecord rec = r.run(d, Map.of());
+            AcxRunRecord rec2 = r.resume(d, rec);
+            eq(AcxStatus.PAUSED, rec2.status(), "没有 task_id 不能判完成");
+            eq(0, probe.asked.size(), "★ 空 task_id 不许问探针");
+            eq(1, adapter.pendingCount(), "账保留，等宿主终态或 deadline");
+            eq(1, port.invokeCount(), "不重发命令");
+        });
+
         T.test("resume 探针 DONE → SUCCESS，下游拿到 $move.final_x", () -> {
             Fake.resetCalls();
             FakePorts.Scripted port = FakePorts.Scripted.of("goto")

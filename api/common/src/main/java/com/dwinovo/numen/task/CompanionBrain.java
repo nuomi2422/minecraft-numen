@@ -44,20 +44,39 @@ final class CompanionBrain {
     /** 最近一次走到终态的任务（含终态与结果）。acx 完成探针用它区分「完成」与「失败」。 */
     private volatile TaskRecord lastFinished;
 
+    /**
+     * 最近若干条终态，按任务号索引。AC-B12b 复审（2026-10-21）：
+     * 单槽 {@link #lastFinished} 会被后来的任务覆盖，探针按旧任务号查会把成功误判成失败；
+     * 有界表让「哪个任务成功了」按 id 可查，不靠「最近一个」猜。
+     */
+    private final RecentFinishedTasks recentFinished = new RecentFinishedTasks();
+
     /** 回合挂着等的同步动作。 */
     final TaskSlot sync = new TaskSlot(outbox::addLast);
     /** 她现在在做的事:钓鱼、跟随、挖 64 块——常驻还是一次性只看 tick 返不返终态。 */
     final TaskSlot current = new TaskSlot(outbox::addLast);
 
     {
-        // AC-B12b：两个槽的终态都记进 lastFinished（后者覆盖前者，代表「最近一次」）
-        sync.onSettled(r -> lastFinished = r);
-        current.onSettled(r -> lastFinished = r);
+        // AC-B12b：两个槽的终态都记进「最近一次」+ 有界按 id 表。
+        sync.onSettled(this::rememberFinished);
+        current.onSettled(this::rememberFinished);
+    }
+
+    /** 终态落账：单槽保留「最近一次」兼容旧调用方，按 id 表给探针精确查询。 */
+    private void rememberFinished(TaskRecord record) {
+        if (record == null) return;
+        lastFinished = record;
+        recentFinished.remember(record);
     }
 
     /** 最近一次终态任务（可能为 null）。只读快照，调用方不许改它。 */
     TaskRecord lastFinished() {
         return lastFinished;
+    }
+
+    /** 按任务号查最近终态；查不到 = 不知道成败，调用方必须按失败处理。 */
+    TaskRecord finishedTask(String taskId) {
+        return recentFinished.find(taskId);
     }
 
     private final List<Task> reflexes;

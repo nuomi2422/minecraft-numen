@@ -11,7 +11,7 @@ import java.util.Map;
  *
  * <p><b>为什么放在 acx-core 而不是插件里</b>：这段判断原先埋在 {@code NumenToolBridgeX.probeFor}，
  * 要 Minecraft 服务器 + 同伴实体才跑得到，于是这种错只能靠实机碰运气发现。抽到这里之后，
- * 三条分支都能被离线用例钉住（不依赖 {@code com.dwinovo.numen.task} 包）。
+ * 四条分支都能被离线用例钉住（不依赖 {@code com.dwinovo.numen.task} 包）。
  *
  * <p><b>唯一判据</b>：<b>只有 SUCCESS 才算完成</b>。终态是别的（FAILED / TIMEOUT / CANCELLED）→
  * failed；没有记录、或者记录属于别的任务 → failed。<b>「不知道成败」绝不许当成成功</b>。

@@ -167,6 +167,18 @@ public final class CompanionTickDispatcher {
         return brain == null ? null : brain.lastFinished();
     }
 
+    /**
+     * 按任务号查最近的终态记录（AC-B12b 复审，2026-10-21）。
+     *
+     * <p>为什么不能只用 {@link #lastFinishedTaskFor}：那个只保留「最近一个」终态，后来的任务
+     * 会覆盖它；探针按旧任务号查就会把**真正成功**的任务误判成失败。这个入口按 id 精确查，
+     * 查不到返回 null（调用方按「不知道成败」处理，不许当成功）。
+     */
+    public static TaskRecord finishedTaskFor(UUID companionUuid, String taskId) {
+        CompanionBrain brain = BRAINS.get(companionUuid);
+        return brain == null ? null : brain.finishedTask(taskId);
+    }
+
     /** 她现在在做的那件事,null = 槽空(她站着)。task_status 用。 */
     public static TaskRecord currentTaskFor(UUID companionUuid) {
         CompanionBrain brain = BRAINS.get(companionUuid);
