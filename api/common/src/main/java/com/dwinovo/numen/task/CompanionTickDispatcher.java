@@ -214,6 +214,9 @@ public final class CompanionTickDispatcher {
         TaskRecord target = brain.current.record();
         if (target == null) return null;
         brain.current.cancel();
+        // G6a-ledger-2：取消只是打状态，结算要有人推一把 —— 否则 onSettled 不触发，
+        // TASK_FINISHED 不发，试用归因整类失效（2026-10-22 实机：events.jsonl 0 条）。
+        brain.current.settleIfTerminal();
         TaskSessionHooks.fireSessionEnd(player);
         return target;
     }
@@ -226,6 +229,9 @@ public final class CompanionTickDispatcher {
         if (brain == null) return;                             // packet must not leak a brain
         brain.sync.cancel();
         brain.current.cancel();
+        // 同上：取消边沿要立刻结算，事件才会发
+        brain.sync.settleIfTerminal();
+        brain.current.settleIfTerminal();
         TaskSessionHooks.fireSessionEnd(player);
     }
 
