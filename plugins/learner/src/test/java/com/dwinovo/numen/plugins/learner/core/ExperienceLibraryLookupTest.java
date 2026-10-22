@@ -74,6 +74,27 @@ class ExperienceLibraryLookupTest {
     }
 
     @Test
+    void textLookupFindsByTriggerInsideTheText(@TempDir Path dir) throws Exception {
+        write(dir, "{\"id\":\"f\",\"title\":\"白天别睡\",\"trigger_strings\":[\"睡觉\"],\"tags\":[\"作息\"]}");
+        java.util.List<RetrievalDecision.Hit> hits = ExperienceLibraryLookup.lookupByText(
+                dir, UUID, "今天天亮了，主人让我去睡觉，结果被拒了");
+        assertEquals(1, hits.size(), "文本里出现了触发词「睡觉」就该命中");
+        assertTrue(hits.get(0).highSimilarity());
+    }
+
+    @Test
+    void textLookupFindsByTitleInsideTheText(@TempDir Path dir) throws Exception {
+        write(dir, "{\"id\":\"g\",\"title\":\"白天别睡\"}");
+        assertEquals(1, ExperienceLibraryLookup.lookupByText(dir, UUID, "复盘：白天别睡 这条要改").size());
+    }
+
+    @Test
+    void textLookupReturnsNothingWhenTextIsUnrelated(@TempDir Path dir) throws Exception {
+        write(dir, "{\"id\":\"h\",\"title\":\"白天别睡\",\"trigger_strings\":[\"睡觉\"]}");
+        assertTrue(ExperienceLibraryLookup.lookupByText(dir, UUID, "修好了铁镐").isEmpty());
+    }
+
+    @Test
     void hitsAreCapped(@TempDir Path dir) throws Exception {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < 40; i++) {
