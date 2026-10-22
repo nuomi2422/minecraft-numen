@@ -143,4 +143,16 @@ class ExperienceRetrievalProviderTest {
                     "G6a-2：REVOKED（retrievable=false）不许出现在 " + role + " 视图");
         }
     }
+
+    // G8-K22：TRIAL + OBSERVED 必须能进 EXECUTOR（解环的判据）
+    @Test
+    void trialWithObservedMaturity_isVisibleToExecutor() {
+        ExperienceEntryRead trialObserved = new ExperienceEntryRead(
+                "trial-observed", EntryKind.EXPERIENCE, "minecraft:torch 能用来做什么", "火把照明",
+                List.of(), List.of(), List.of("ev/1"), Maturity.OBSERVED, 0, false,
+                "body", "hash-x", "fake-source", false, true, true);
+        ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("exp", sourceOf(trialObserved));
+        SearchPage page = p.search(query(RetrievalRole.EXECUTOR, "火把 torch", 20));
+        assertEquals(1, page.entries().size(), "TRIAL+OBSERVED 应该被 EXECUTOR 看到，实际 " + page.entries().size());
+    }
 }
