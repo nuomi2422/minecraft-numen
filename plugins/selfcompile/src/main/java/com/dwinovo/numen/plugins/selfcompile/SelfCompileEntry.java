@@ -47,6 +47,7 @@ public final class SelfCompileEntry implements NumenPlugin {
         // Self-Compile 自变异系统生成的工具（每轮变异后更新这里）
         numen.registerTool(new RddWhereamiTool());
         numen.registerTool(new RddGetInventoryTool());
+        numen.registerTool(new com.dwinovo.numen.plugins.selfcompile.generated.RddNearbyEntitiesTool());
 
         Path skills = ModList.get().getModFileById(SelfCompileMod.MOD_ID)
                 .getFile().findResource("skills");
