@@ -95,7 +95,9 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
         if (!e.retrievable()) return null;   // REVOKED：任何视图都不给
         if (query.role() == RetrievalRole.EXECUTOR
                 && (e.retracted()
-                    || !e.published()        // G6a：未发布（DRAFT/TRIAL/SUSPENDED/REVOKED）不进执行视图
+                    // ★ G6c：TRIAL 也要能被用到 —— 否则试用永远没有证据（G6c 之前就是这样）。
+                    //   但「能用」不等于「已发布」：DRAFT/SUSPENDED/REVOKED 仍然不进。
+                    || (!e.published() && !e.trial())
                     || e.maturity() == null
                     || e.maturity().rank < Maturity.VERIFIED.rank)) {
             return null;
@@ -109,7 +111,7 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
         EntryDescriptor desc = new EntryDescriptor(
                 e.entryRef() == null ? "" : e.entryRef(),
                 kind,
-                e.title() == null ? "" : e.title(),
+                (e.trial() ? "（试用中）" : "") + (e.title() == null ? "" : e.title()),
                 e.summary() == null ? "" : e.summary(),
                 rolesFor(e),
                 e.applicableConditions() == null ? List.of() : e.applicableConditions(),

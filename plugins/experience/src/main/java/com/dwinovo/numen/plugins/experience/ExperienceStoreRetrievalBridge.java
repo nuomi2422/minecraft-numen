@@ -148,7 +148,9 @@ public final class ExperienceStoreRetrievalBridge {
                 "h" + Integer.toHexString((id + "|" + body).hashCode()),
                 PROVIDER_ID,
                 e.publication() == com.dwinovo.numen.experience.api.PublicationState.PUBLISHED,
-                e.publication() != com.dwinovo.numen.experience.api.PublicationState.REVOKED);
+                e.publication() != com.dwinovo.numen.experience.api.PublicationState.REVOKED,
+                // G6c：试用态单独一维（可进执行视图，但不等于已发布）
+                e.publication() == com.dwinovo.numen.experience.api.PublicationState.TRIAL);
     }
 
     /**

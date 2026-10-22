@@ -28,7 +28,22 @@ public record ExperienceEntryRead(
         boolean published,
         // G6a-2：是否可被任何视图检索（REVOKED=false）。published 分不出 DRAFT 与 REVOKED，
         // 这是独立的一维 —— 实机就是靠它才发现「撤回的还能被规划看到」。
-        boolean retrievable) {
+        boolean retrievable,
+        // ★ G6c：是否处于「试用」。G6c 之前 TRIAL 被 published=false 挡在执行视图外——
+        //   于是试用条目**永远不会被用到**，也就永远攒不出试用证据（等于死状态）。
+        //   现在 trial 独立成维：TRIAL 可进执行视图（带「试用中」标记），但**不等于已发布**。
+        boolean trial) {
+
+    /** 兼容 15 参构造（G6c 之前的所有调用点）：trial 缺省 false。 */
+    public ExperienceEntryRead(String entryRef, EntryKind kind, String title, String summary,
+                               List<String> applicableConditions, List<String> excludedConditions,
+                               List<String> evidenceRefs, Maturity maturity, int verifiedCount,
+                               boolean retracted, String bodyContent, String contentHash,
+                               String source, boolean published, boolean retrievable) {
+        this(entryRef, kind, title, summary, applicableConditions, excludedConditions, evidenceRefs,
+                maturity, verifiedCount, retracted, bodyContent, contentHash, source,
+                published, retrievable, false);
+    }
 
     public ExperienceEntryRead {
         applicableConditions = frozen(applicableConditions);
