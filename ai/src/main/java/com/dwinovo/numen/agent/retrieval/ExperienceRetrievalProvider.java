@@ -108,7 +108,9 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
                     //   但「能用」不等于「已发布」：DRAFT/SUSPENDED/REVOKED 仍然不进。
                     || (!e.published() && !e.trial())
                     || e.maturity() == null
-                    || e.maturity().rank < Maturity.VERIFIED.rank)) {
+                    // ★ G8：TRIAL 允许 OBSERVED（否则「OBSERVED 进不了执行视图 → 攒不到证据」成环）；
+                    //   PUBLISHED 仍必须 VERIFIED。
+                    || (!e.trial() && e.maturity().rank < Maturity.VERIFIED.rank))) {
             return null;
         }
         if (e.bodyContent() == null && e.title() == null && e.summary() == null) {
@@ -193,8 +195,13 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
         //      仍可给 PLANNER/LEARNER 当待核实线索。
         // ★ G6c：TRIAL 也拿 EXECUTOR 角色 —— 否则它进不了执行视图，
         //   试用条目就永远没有「被用到」的记录（实机 03:28 抓到的：entries 一直是 2）。
-        if (!e.retracted() && (e.published() || e.trial()) && e.maturity() != null
-                && e.maturity().rank >= Maturity.VERIFIED.rank) {
+        // ★ G8（2026-10-22）：TRIAL 解除 maturity>=VERIFIED 限制 —— 否则是个环：
+        //   OBSERVED 进不了执行视图 → 没被用过 → 永远攒不到 verifiedCount → 永远进不了。
+        //   「试用」的本义就是拿未验证的东西去试；DRAFT 仍然进不去。
+        final boolean trialReachable = e.trial();
+        final boolean matureEnough = e.maturity() != null
+                && e.maturity().rank >= Maturity.VERIFIED.rank;
+        if (!e.retracted() && ((e.published() && matureEnough) || (trialReachable && e.maturity() != null))) {
             roles.add(RetrievalRole.PLANNER);
             roles.add(RetrievalRole.EXECUTOR);
             roles.add(RetrievalRole.LEARNER);
