@@ -37,8 +37,17 @@ public enum UsageState {
     /** 容错解析：null/未知 → UNKNOWN（宁可记「不知道」，也不许猜成成功）。 */
     public static UsageState parse(String raw) {
         if (raw == null || raw.isBlank()) return UNKNOWN;
+        String s = raw.trim().toUpperCase(java.util.Locale.ROOT);
+        // 线上真实状态名并不统一（游戏侧有 stopped/done/cancelled 等）：先按别名归一，再走枚举
+        switch (s) {
+            case "DONE", "SUCCESS", "COMPLETED", "OK" -> { return SUCCESS; }
+            case "FAILED", "FAILURE", "ERROR", "TIMEOUT" -> { return FAILURE; }
+            case "CANCELED", "CANCELLED", "STOPPED", "ABORTED" -> { return CANCELED; }
+            case "INTERRUPTED", "KILLED", "CRASHED" -> { return INTERRUPTED; }
+            default -> { }
+        }
         try {
-            return UsageState.valueOf(raw.trim().toUpperCase(java.util.Locale.ROOT));
+            return UsageState.valueOf(s);
         } catch (IllegalArgumentException ignored) {
             return UNKNOWN;
         }

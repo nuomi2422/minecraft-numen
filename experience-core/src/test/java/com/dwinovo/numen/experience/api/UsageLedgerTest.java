@@ -114,4 +114,14 @@ class UsageLedgerTest {
         assertEquals(0, st.unknown());
         assertEquals(0, st.duplicates(), "跨会话同名 t1/t2 不许被当成重复投递吞掉");
     }
+
+    @Test
+    void 状态别名归一_游戏侧stopped算取消() {
+        assertEquals(UsageState.CANCELED, UsageState.parse("stopped"), "task_stop 报的是 stopped，必须算取消而不是未知");
+        assertEquals(UsageState.CANCELED, UsageState.parse("cancelled"));
+        assertEquals(UsageState.SUCCESS, UsageState.parse("done"));
+        assertEquals(UsageState.FAILURE, UsageState.parse("failed"));
+        assertEquals(UsageState.INTERRUPTED, UsageState.parse("killed"));
+        assertEquals(UsageState.UNKNOWN, UsageState.parse("???"));
+    }
 }
