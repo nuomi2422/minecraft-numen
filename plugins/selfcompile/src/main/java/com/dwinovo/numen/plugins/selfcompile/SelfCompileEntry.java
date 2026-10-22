@@ -49,6 +49,7 @@ public final class SelfCompileEntry implements NumenPlugin {
         numen.registerTool(new RddGetInventoryTool());
         numen.registerTool(new com.dwinovo.numen.plugins.selfcompile.generated.RddNearbyEntitiesTool());
         numen.registerTool(new com.dwinovo.numen.plugins.selfcompile.generated.RddVillagerTradesTool());
+        numen.registerTool(new com.dwinovo.numen.plugins.selfcompile.generated.RddTradeExecuteTool());
 
         Path skills = ModList.get().getModFileById(SelfCompileMod.MOD_ID)
                 .getFile().findResource("skills");
