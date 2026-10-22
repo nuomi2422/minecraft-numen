@@ -72,7 +72,13 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
                 .comparingInt((RetrievedEntry r) -> r.descriptor().retracted() ? 1 : 0)
                 // 试用优先（排在成熟度之前）：否则高成熟度的长条目会把试用条目挤出预算
                 .thenComparingInt(r -> trialRefs.contains(r.descriptor().entryRef()) ? 0 : 1)
-                .thenComparingInt(r -> r.descriptor().maturity() == null ? -1 : -r.descriptor().maturity().rank)
+                // ★ G8：试用条目内部「越没证据越先端出来」——归因只认最先呈现的那条，
+                //   OBSERVED 排在 VERIFIED 前面才能攒到自己的证据（否则永远给老条目陪跑）。
+                .thenComparingInt(r -> {
+                    boolean trial = trialRefs.contains(r.descriptor().entryRef());
+                    int rank = r.descriptor().maturity() == null ? -1 : r.descriptor().maturity().rank;
+                    return trial ? rank : -rank;
+                })
                 .thenComparingInt(r -> -r.descriptor().verifiedCount())
                 .thenComparing(r -> r.descriptor().title() == null ? "" : r.descriptor().title(), java.util.Comparator.naturalOrder()));
 
