@@ -64,8 +64,22 @@ public record Verdict(
          * 空列表与「查不到」要分开：查不到时由调用方写 {@code usage_lookup} 说明。
          */
         List<Map<String, Object>> usageOutcome,
-        List<String> rewrittenQuery
+        List<String> rewrittenQuery,
+        /**
+         * G6b：复盘前「先看一眼已经有什么」的结论（hits + 决策 + 理由）。
+         * 老格式没有这一段 → {@code null}；收不收由 Z2 闸门决定，解析层不替它做主。
+         */
+        RetrievalDecision retrieval
 ) {
+
+    /** 兼容 10 参构造（G6b 之前的所有调用点）：retrieval 缺省 null。 */
+    public Verdict(String memoId, List<Action> actions, double confidence, String reasoning,
+                   Experience experience, String acScriptDraft, String carrierDraft,
+                   String selfCompileRequest, List<Map<String, Object>> usageOutcome,
+                   List<String> rewrittenQuery) {
+        this(memoId, actions, confidence, reasoning, experience, acScriptDraft, carrierDraft,
+                selfCompileRequest, usageOutcome, rewrittenQuery, null);
+    }
 
     /** 判定动作。v1 全部是「建议」，由 AI 决定是否执行。 */
     public enum Action {
@@ -182,8 +196,13 @@ public record Verdict(
 
             // usageOutcome **不由 LLM 给**：LLM 手里没有执行事实，
             // 让它填就是让它编。解析时一律空，由 LearnerReviewTool 从账本按 memoId 反查填入。
+            //
+            // G6b：retrieval 段由 LLM 给（它是「这条跟库里什么关系」的判断），
+            // 但**合不合法由 Z2 闸门核**（hits 是否真检索到、NEW 有没有高相似命中）。
+            RetrievalDecision retrieval = RetrievalDecision.parse(obj);
             return new Verdict(memoId, List.copyOf(actions), confidence, reasoning,
-                    exp, acDraft, carrierDraft, selfCompile, List.of(), List.copyOf(queries));
+                    exp, acDraft, carrierDraft, selfCompile, List.of(), List.copyOf(queries),
+                    retrieval);
         } catch (RuntimeException e) {
             // 不是合法 JSON：如实返回 null，让调用方报 UNPARSEABLE
             return null;

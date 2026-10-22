@@ -97,7 +97,11 @@ public record ExperienceDraft(
             "created_at", "verified_at", "last_accessed_at",
             // 和 E8 五个键一样声明，**但刻意不写**：刚产出的经验本来就没被验证过/撤回过，
             // 写出来等于宣称这些事发生过；Builder 的默认值就是「没发生过」。
-            "retracted", "retracted_at", "retracted_reason", "supersedes", "consecutive_failures");
+            "retracted", "retracted_at", "retracted_reason", "supersedes", "consecutive_failures",
+            // G6a（2026-10-22 由 G6b 补）：经验库加了 publication 字段，学习者这边没跟 ——
+            // 契约清单必须同步，否则 ExperienceDraftKeysBindToRealEntryTest 会红（已实测红过）。
+            // 注意：只进「契约清单」，**不进 WRITTEN_KEYS** —— 草稿不该宣称自己的发布状态。
+            "publication");
 
     /** 本映射实际会写的键（其余由记录层落盘时补，或刻意不写）。 */
     public static final List<String> WRITTEN_KEYS = List.of(
