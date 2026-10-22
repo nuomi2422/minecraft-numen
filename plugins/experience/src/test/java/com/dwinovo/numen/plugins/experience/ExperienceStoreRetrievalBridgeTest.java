@@ -264,4 +264,20 @@ class ExperienceStoreRetrievalBridgeTest {
         assertEquals("NOT_FOUND", tool.code(), "有 owner 但目录里没有这条 → NOT_FOUND（不是 NO_OWNER）");
         assertEquals("", tool.body());
     }
+
+    // ---------- G6c/G6a-ledger：TRIAL 进执行视图并带标记 ----------
+
+    @Test
+    void TRIAL条目进执行视图且标题带试用标记() {
+        ExperienceMemory memory = memoryWith(base("t1", "试用条目", ExperienceMaturity.VERIFIED)
+                .publication(com.dwinovo.numen.experience.api.PublicationState.TRIAL)
+                .build());
+
+        ExperienceStoreRetrievalBridge.Rendered r = ExperienceStoreRetrievalBridge.render(
+                memory, "", 8, 1100, com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
+
+        assertEquals(1, r.entries(), "TRIAL 必须进执行视图（否则试用永远攒不出证据）");
+        assertTrue(r.text().contains("（试用中）"), "标题必须带试用标记，实际：" + r.text());
+        assertEquals(1, TrialRuntime.trialRefsIn(r.text()).size(), "trialRefsIn 必须能抓到它");
+    }
 }
