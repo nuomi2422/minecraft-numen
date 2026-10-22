@@ -49,6 +49,21 @@ public final class CompanionEvent<T> {
      */
     public static final CompanionEvent<GoalSet> GOAL_SET = new CompanionEvent<>("goal_set");
 
+    /**
+     * G6c：一个后台任务收尾了（成功或失败）。
+     *
+     * <p><b>为什么需要它</b>：试用期要回答「这条经验是不是真有帮助」，就得知道
+     * 「它被端出来之后那次任务成没成」。此前插件只能轮询 {@code TaskTerminalRegistry}，
+     * 而轮询会漏（任务可能在两次轮询之间收尾）。
+     *
+     * <p><b>只报事实</b>：成功与否是任务自己的终态，不带任何「所以这条经验好不好」的判断。
+     */
+    public static final CompanionEvent<TaskFinished> TASK_FINISHED = new CompanionEvent<>("task_finished");
+
+    /** 任务收尾的事实（不带评价）。 */
+    public record TaskFinished(java.util.UUID companionId, String taskId, String taskName, boolean success) {
+    }
+
     /** {@link #GOAL_SET} 的内容。 */
     public record GoalSet(java.util.UUID companionId, String objective) {
         public GoalSet {

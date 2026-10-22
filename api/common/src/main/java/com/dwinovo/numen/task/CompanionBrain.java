@@ -71,6 +71,17 @@ final class CompanionBrain {
         if (record == null) return;
         lastFinished = record;
         TaskTerminalRegistry.remember(companionId, record);
+        // G6c：把「某任务收尾了」这条事实广播出去（试用归因要用；不订阅就没有任何副作用）。
+        try {
+            boolean ok = record.getState() == com.dwinovo.numen.task.TaskState.SUCCESS;
+            com.dwinovo.numen.entity.CompanionEvents.fire(
+                    com.dwinovo.numen.api.CompanionEvent.TASK_FINISHED,
+                    new com.dwinovo.numen.api.CompanionEvent.TaskFinished(
+                            companionId, record.publicId(), record.getToolName() == null ? "" : record.getToolName(), ok));
+        } catch (Throwable t) {
+            // 广播失败不许影响任务结算本身
+            com.dwinovo.numen.Constants.LOG.warn("[numen] TASK_FINISHED 广播失败: {}", t.toString());
+        }
     }
 
     /** 最近一次终态任务（可能为 null）。只读快照，调用方不许改它。 */
