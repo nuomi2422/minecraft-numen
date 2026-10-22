@@ -256,6 +256,22 @@ public final class PriorRound {
     public static String buildUserPrompt(List<Memo> memos, Summary prior,
                                          com.dwinovo.numen.plugins.learner.core.RejectionFeedback rejections,
                                          String usageText) {
+        return buildUserPrompt(memos, prior, rejections, usageText, java.util.Map.of());
+    }
+
+    /**
+     * G6b：每条备忘录后面挂上「库里可能的同类条目」。
+     *
+     * <p>为什么要摆在<b>该备忘录正下方</b>而不是统一放一段：判断是逐条做的，
+     * 摆远了模型会把 A 的命中套到 B 上——而那正好会把「同主题不许新建」判错。
+     *
+     * @param hitsByMemo memoId → 命中列表（由 {@code ExperienceLibraryLookup} 算好；
+     *                   <b>相似度不能由模型自己填</b>）
+     */
+    public static String buildUserPrompt(List<Memo> memos, Summary prior,
+                                         com.dwinovo.numen.plugins.learner.core.RejectionFeedback rejections,
+                                         String usageText,
+                                         java.util.Map<String, java.util.List<com.dwinovo.numen.plugins.learner.core.RetrievalDecision.Hit>> hitsByMemo) {
         StringBuilder user = new StringBuilder();
         user.append((prior == null ? Summary.none() : prior).promptBlock()).append('\n');
         if (rejections != null) {
@@ -271,8 +287,23 @@ public final class PriorRound {
         user.append("复盘以下 ").append(batch.size()).append(" 条备忘录，逐条输出判定：\n\n");
         for (Memo m : batch) {
             user.append(m.toPromptBlock()).append('\n');
+            user.append(retrievalBlock(hitsByMemo == null ? null : hitsByMemo.get(m.id()))).append('\n');
         }
         return user.toString();
+    }
+
+    /** G6b：一条备忘录的「库里已有」块。没有命中也要明说 —— 「库里没有同类」是一条结论。 */
+    static String retrievalBlock(java.util.List<com.dwinovo.numen.plugins.learner.core.RetrievalDecision.Hit> hits) {
+        if (hits == null || hits.isEmpty()) {
+            return "库里可能的相关条目：**无**（检索过经验库，没有同标题/同触发词/tag 相交的条目）";
+        }
+        StringBuilder sb = new StringBuilder("库里可能的相关条目（**相似度由检索给出，不要自己重判**）：\n");
+        for (com.dwinovo.numen.plugins.learner.core.RetrievalDecision.Hit h : hits) {
+            sb.append("- ").append(h.entryRef()).append("  「").append(h.title()).append("」  ")
+                    .append(h.highSimilarity() ? "[同一件事]" : "[只是相关]")
+                    .append("  ").append(h.why()).append('\n');
+        }
+        return sb.toString();
     }
 
     private static String clip(String s, int max) {

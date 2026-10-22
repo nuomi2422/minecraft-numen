@@ -107,6 +107,67 @@ public final class ExperienceLibraryLookup {
         return out;
     }
 
+    /**
+     * 按**自由文本**找命中（复盘时手上有的是 memo 正文，不是结构化的标题/触发词）。
+     *
+     * <p>口径：库里某条的标题或任一触发词（≥2 字）出现在文本里 → high；
+     * 只有 tag 出现 → low。与 {@link #lookup} 同一套语义，只是匹配方向反过来。
+     */
+    public static List<RetrievalDecision.Hit> lookupByText(Path configDir, String companionId, String text) {
+        if (configDir == null || companionId == null || companionId.isBlank() || text == null || text.isBlank()) {
+            return List.of();
+        }
+        Path file = configDir.resolve("experience-" + companionId + ".jsonl");
+        if (!Files.isRegularFile(file)) {
+            return List.of();
+        }
+        String hay = norm(text);
+        List<Scored> scored = new ArrayList<>();
+        try {
+            for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+                if (line.isBlank()) continue;
+                JsonObject o;
+                try {
+                    JsonElement e = JsonParser.parseString(line);
+                    if (!e.isJsonObject()) continue;
+                    o = e.getAsJsonObject();
+                } catch (RuntimeException bad) {
+                    continue;
+                }
+                String id = str(o, "id");
+                if (id.isBlank()) continue;
+                String entryTitle = str(o, "title");
+                String titleKey = norm(entryTitle);
+                boolean titleHit = titleKey.length() >= 2 && hay.contains(titleKey);
+                int triggerHits = 0;
+                for (String tr : arr(o, "trigger_strings")) {
+                    String k = norm(tr);
+                    if (k.length() >= 2 && hay.contains(k)) triggerHits++;
+                }
+                int tagHits = 0;
+                for (String tg : arr(o, "tags")) {
+                    String k = norm(tg);
+                    if (k.length() >= 2 && hay.contains(k)) tagHits++;
+                }
+                if (!titleHit && triggerHits == 0 && tagHits == 0) continue;
+                boolean high = titleHit || triggerHits > 0;
+                String why = titleHit ? "文本里出现了这条的标题"
+                        : triggerHits > 0 ? "文本里出现了它的触发词" : "只撞了 tag";
+                int score = (titleHit ? 100 : 0) + triggerHits * 10 + tagHits;
+                scored.add(new Scored(score, new RetrievalDecision.Hit("exp:" + id, entryTitle, why, high)));
+            }
+        } catch (IOException io) {
+            return List.of();
+        }
+        scored.sort((x, y) -> Integer.compare(y.score, x.score));
+        List<RetrievalDecision.Hit> out = new ArrayList<>();
+        for (Scored s : scored) {
+            if (out.size() >= MAX_HITS) break;
+            out.add(s.hit);
+        }
+        return out;
+    }
+
     private record Scored(int score, RetrievalDecision.Hit hit) {}
 
     private static String str(JsonObject o, String key) {

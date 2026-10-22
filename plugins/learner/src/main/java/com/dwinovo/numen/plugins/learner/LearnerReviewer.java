@@ -106,6 +106,16 @@ final class LearnerReviewer {
               "failureConditions":"...","observableSignal":"...","derivation":"...",
               "efficiency":"...","evidence":"...","experienceType":"FAILURE"},"ac_script_draft":"",
               "carrier_draft":"","self_compile_request":"","rewritten_query":["..."]}]}
+
+            ★ 先检索再写（G6b，硬要求）：每条备忘录下面会给出「库里可能的相关条目」——
+              那是检索结果，**相似度不要自己重判**（[同一件事] / [只是相关] 由检索给出）。
+              actions 里含 WRITE_EXPERIENCE 时，**必须**同时给出 retrieval 段：
+                "retrieval":{"decision":"REUSE|REVISE|NEW","reason":"为什么这么判",
+                 "hits":[{"entry_ref":"exp:…","title":"…","why":"…","high_similarity":true}]}
+              - 命中里有 [同一件事] 时**不许** NEW：要么 REVISE（改写已有条目），要么 REUSE（直接复用）。
+              - REUSE/REVISE 必须引用上面列出的条目；没有命中就不能 REUSE/REVISE。
+              - 只有没有 [同一件事] 命中时才能 NEW，并在 reason 里写清为什么不是已有条目。
+              缺这一段、或决策与命中矛盾 → 这条判定会被整条退回（不是合并、不是猜）。
             """;
 
     // 2026-10-01：把七字段格式说明（%s）填进 SYSTEM。**格式不要求，模型就不会给** ——
@@ -211,8 +221,20 @@ final class LearnerReviewer {
 
         // ★ 拼装下沉到 core.PriorRound：这条要能用单测钉住（见那边的方法注释）。
         //   本方法只负责拿到配置、发出请求、解析回复。
+        // ★ G6b：先看一眼库里已经有什么 —— 每条 memo 先检索，命中随 prompt 一起给它。
+        //   相似度由检索侧给（同标题/同触发词=同一件事），模型只负责据此给决策。
+        java.util.Map<String, java.util.List<com.dwinovo.numen.plugins.learner.core.RetrievalDecision.Hit>> hitsByMemo =
+                new java.util.LinkedHashMap<>();
+        java.nio.file.Path cfgDir = LearnerPlugin.configDir();
+        String cid = companionId == null ? "" : companionId.toString();
+        if (memos != null) {
+            for (Memo m : memos) {
+                hitsByMemo.put(m.id(), com.dwinovo.numen.plugins.learner.core.ExperienceLibraryLookup
+                        .lookupByText(cfgDir, cid, m.toPromptBlock()));
+            }
+        }
         String user = com.dwinovo.numen.plugins.learner.core.PriorRound.buildUserPrompt(
-                memos, prior, rejections, usageText);
+                memos, prior, rejections, usageText, hitsByMemo);
 
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
