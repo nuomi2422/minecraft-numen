@@ -65,6 +65,7 @@ public final class ExperiencePlugin implements NumenPlugin {
         // G6c：任务收尾 → 试用归因（只报事实，不判好坏）
         numen.on(com.dwinovo.numen.api.CompanionEvent.TASK_FINISHED, f -> {
             try {
+                LOG.info("[expmem] TASK_FINISHED received id={} status={} success={}", f.taskId(), f.status(), f.success());
                 // G6a-ledger：终态字符串 → 五态（取消/中断不再并进失败）；拿不到状态才退回布尔口径
                 com.dwinovo.numen.experience.api.UsageState st =
                         com.dwinovo.numen.experience.api.UsageState.parse(f.status());

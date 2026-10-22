@@ -71,6 +71,9 @@ final class CompanionBrain {
         if (record == null) return;
         lastFinished = record;
         TaskTerminalRegistry.remember(companionId, record);
+        // 诊断（G6a-ledger）：确认取消/正常收尾到底有没有走到这里
+        com.dwinovo.numen.Constants.LOG.info("[numen] TASK_FINISHED fire id={} state={}",
+                record.publicId(), record.getState());
         // G6c：把「某任务收尾了」这条事实广播出去（试用归因要用；不订阅就没有任何副作用）。
         try {
             boolean ok = record.getState() == com.dwinovo.numen.task.TaskState.SUCCESS;
