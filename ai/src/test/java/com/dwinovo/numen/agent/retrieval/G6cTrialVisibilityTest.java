@@ -68,6 +68,21 @@ class G6cTrialVisibilityTest {
     }
 
     @Test
+    void trialSurvivesTheRoleViewSelector() {
+        // 实机 03:28 抓到的坑：provider 放行了，但 rolesFor 没给 EXECUTOR 角色，
+        // RoleViewSelector 又按角色过滤一次 —— 结果执行视图里还是看不到它。
+        // 所以这条必须走完整链路（provider → snapshot → selector），不能只测 provider。
+        java.util.List<RetrievedEntry> hits = provider().search(q(RetrievalRole.EXECUTOR)).entries();
+        ContextSnapshot snapshot = new ContextSnapshot("s-1", "q-1", RetrievalRole.EXECUTOR,
+                List.of(), hits, List.of(), List.of(), ContextSnapshot.Status.OK);
+        ContextSnapshot executor = RoleViewSelector.select(snapshot, RetrievalRole.EXECUTOR);
+        java.util.List<String> refs = executor.directory().stream()
+                .map(h -> h.descriptor().entryRef()).collect(Collectors.toList());
+        assertTrue(refs.contains("exp:trial"),
+                "试用条目必须活着穿到执行视图（rolesFor 也得给 EXECUTOR 角色）：" + refs);
+    }
+
+    @Test
     void plannerStillSeesEverythingButRevoked() {
         List<String> refs = provider().search(q(RetrievalRole.PLANNER)).entries().stream()
                 .map(h -> h.descriptor().entryRef()).collect(Collectors.toList());

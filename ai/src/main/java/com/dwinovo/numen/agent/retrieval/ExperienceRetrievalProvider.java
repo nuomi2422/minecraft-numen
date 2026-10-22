@@ -182,7 +182,9 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
         // G6a：EXECUTOR 的**两道门**必须同时成立 —— ①maturity>=VERIFIED 且未撤回（可信）
         //      ②已发布 publication==PUBLISHED（允许）。只可信不允许的条目（DRAFT/TRIAL）
         //      仍可给 PLANNER/LEARNER 当待核实线索。
-        if (!e.retracted() && e.published() && e.maturity() != null
+        // ★ G6c：TRIAL 也拿 EXECUTOR 角色 —— 否则它进不了执行视图，
+        //   试用条目就永远没有「被用到」的记录（实机 03:28 抓到的：entries 一直是 2）。
+        if (!e.retracted() && (e.published() || e.trial()) && e.maturity() != null
                 && e.maturity().rank >= Maturity.VERIFIED.rank) {
             roles.add(RetrievalRole.PLANNER);
             roles.add(RetrievalRole.EXECUTOR);
