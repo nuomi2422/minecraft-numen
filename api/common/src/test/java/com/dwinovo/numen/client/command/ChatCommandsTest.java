@@ -140,4 +140,41 @@ class ChatCommandsTest {
         ChatCommands.remember("  ");
         assertFalse(ChatCommands.complete(null, "/").isEmpty());
     }
+
+    /**
+     * ★ 回归（2026-10-22 实机抓到的漏）:命令成功时可以一声不吭,但它仍然是命令。
+     *
+     * <p>外部通道（{@code NumenGateway.enqueue}）原先用「回话是不是 {@code null}」判
+     * 「是不是命令」,而 {@code /clear} 成功时不吭声 ⇒ 它一边把清空排进队列、
+     * 一边又被当成主人的话喂给模型（实机:清空日志之后紧跟着一条
+     * {@code <query>/clear</query>} 的请求）。这里用一条不吭声的测试命令钉住
+     * 「跑过了」与「说了话」是两件事。
+     *
+     * <p>{@code loop} 传 {@code null} 只在这条用例里成立:测试命令不碰同伴。
+     */
+    @Test
+    void aSilentCommandStillCountsAsACommand() {
+        ChatCommands.register(new ChatCommand() {
+            @Override
+            public String name() {
+                return "zzsilent";
+            }
+
+            @Override
+            public String description() {
+                return "测试用:跑完不吭声";
+            }
+
+            @Override
+            public String run(com.dwinovo.numen.client.agent.EntityAgentLoop loop, String args) {
+                return null;
+            }
+        });
+        List<String> said = new java.util.ArrayList<>();
+        assertTrue(ChatCommands.runIfCommand(null, "/zzsilent", said::add),
+                "回话是 null 也必须算「命令已执行」——否则外部通道会再把它当聊天发一遍");
+        assertTrue(said.isEmpty(), "不吭声的命令不该调回话回调");
+        assertFalse(ChatCommands.runIfCommand(null, "把田里的麦子收了", said::add),
+                "普通中文仍然不是命令,必须走「主人说话」那条路");
+    }
 }

@@ -255,6 +255,36 @@ public final class ChatCommands {
     }
 
     /**
+     * 外部通道(MCP {@code enqueue}/语音/快捷对话)用:这串输入<b>当命令跑完了没有</b>。
+     *
+     * <p>★ 与 {@link #dispatchIfCommand} 的唯一区别,也是它存在的理由:
+     * <b>"是不是命令"只看 {@link #isCommand},不看回话是不是 {@code null}。</b>
+     * 命令成功时可以一声不吭——{@code /clear} 就是这样(清完分隔线当场出现,再回一行字是重复)。
+     * 而 {@code null} 回话曾被当成"不是命令" ⇒ {@code enqueue("/clear")} 一边把清空排进队列、
+     * 一边又把 {@code /clear} 当成主人的话喂给模型。
+     *
+     * <p><b>实机证据(2026-10-22 04:07:40Z)</b>:{@code latest.log} 12:07:44 有
+     * 「上下文清空(记录留档)」,而紧跟着的下一条请求里带着 {@code <query>/clear</query>}——
+     * 清空生效了,这句话也被端到了模型面前。第二张 existential 卡的"疑点"就是它。
+     *
+     * @param loop  必须有值(网关侧由 {@code AgentLoopRegistry.getOrCreate} 保证);
+     *              单测里只传 {@code null} + 不碰 loop 的测试命令
+     * @param reply 命令的回话;不吭声的命令不会调用它
+     * @return true = 这串是命令(且已在本地跑完);false = 不是命令,调用方走"主人说话"那条路
+     */
+    public static boolean runIfCommand(EntityAgentLoop loop, String text,
+                                       java.util.function.Consumer<String> reply) {
+        if (!isCommand(text)) {
+            return false;
+        }
+        String said = dispatch(loop, text);
+        if (said != null && reply != null) {
+            reply.accept(said);
+        }
+        return true;
+    }
+
+    /**
      * 把不认识的 {@code /}命令转给<b>服务器</b>执行。
      *
      * <p><b>为什么必须回落</b>（2026-10-04 实机证据）：本类在客户端<b>拦下所有 {@code /} 开头的输入</b>，

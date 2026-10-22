@@ -127,15 +127,14 @@ public final class NumenGateway {
     /**
      * 是命令就跑掉并返回 true;不是命令返回 false(调用方照旧当聊天喂)。
      * 命令回话经 {code ChatCommands.dispatch} 走,和 GUI 手打同一条路。
+     *
+     * <p>★ 判据是 {@link ChatCommands#isCommand},<b>不是"回话是不是 null"</b>。命令成功时
+     * 可以不吭声({@code /clear}),拿回话当判据的话它会被当成聊天再发一遍——
+     * 2026-10-22 实机就是这么漏的(清空生效 + 一条 {@code <query>/clear</query>} 请求)。
      */
     private static boolean dispatchIfCommand(EntityAgentLoop loop, String message) {
-        String reply = ChatCommands.dispatchIfCommand(loop, message);
-        if (reply == null) {
-            return false;
-        }
-        // 命令回话打给主人看(外脑/桥接侧看日志确认),行为与 GUI 一致。
-        com.dwinovo.numen.Constants.LOG.info("[numen-gw] 命令执行回话: {}", reply);
-        return true;
+        return ChatCommands.runIfCommand(loop, message, reply ->
+                com.dwinovo.numen.Constants.LOG.info("[numen-gw] 命令执行回话: {}", reply));
     }
 
     /**
