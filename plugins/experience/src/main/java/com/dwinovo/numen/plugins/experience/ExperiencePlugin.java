@@ -98,6 +98,9 @@ public final class ExperiencePlugin implements NumenPlugin {
                 // G6c：这一轮端出来的试用条目，记下来等任务收尾归因
                 String txt0 = rendered.text();
                 LOG.info("[expmem] executor head={}", txt0.substring(0, Math.min(360, txt0.length())));
+                // G8 诊断（2026-10-22）：执行视图按 objective 做词法匹配，不记 objective 就分不清
+                // 「没检索到」还是「检索到但被截断」。只记前 120 字。
+                LOG.info("[expmem] executor objective={}", objective == null ? "" : objective.substring(0, Math.min(120, objective.length())));
                 java.util.List<String> refs0 = TrialRuntime.trialRefsIn(rendered.text());
                 LOG.info("[expmem] trial refs={} len={} hasMarker={}", refs0,
                         rendered.text().length(), rendered.text().contains("（试用中）"));
