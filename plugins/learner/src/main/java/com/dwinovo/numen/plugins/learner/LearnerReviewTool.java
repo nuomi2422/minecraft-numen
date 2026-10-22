@@ -207,10 +207,20 @@ final class LearnerReviewTool implements NumenTool {
         // P1 修复：只 commit「确实拿到判定」的条目，其余 restore 回去。
         // 绝不能因为「至少解析出一条」就删掉整批。
         java.util.Set<String> judged = new java.util.HashSet<>();
+        // ★ G6b Z2/Z3：写经验之前必须先看过库里有什么，且决策要过机核
+        //   （REUSE/REVISE 指向检索到的条目；有高相似命中不许 NEW）。
+        //   不过闸的 memo **不 commit**（下面会 restore 回去），拒因随事件落盘。
+        java.util.List<String> retrievalRejected = new java.util.ArrayList<>();
         for (Verdict v : outcome.verdicts()) {
-            if (v.memoId() != null && !v.memoId().isBlank()) {
-                judged.add(v.memoId());
+            if (v.memoId() == null || v.memoId().isBlank()) {
+                continue;
             }
+            String gate = com.dwinovo.numen.plugins.learner.core.RetrievalGate.problem(v);
+            if (gate != null) {
+                retrievalRejected.add(v.memoId() + ": " + gate);
+                continue;
+            }
+            judged.add(v.memoId());
         }
         List<Memo> toCommit = new ArrayList<>();
         List<Memo> toRestore = new ArrayList<>();
@@ -403,6 +413,8 @@ final class LearnerReviewTool implements NumenTool {
         // ★ 上轮回读的读数也进这条事件：E2 那次「它到底有没有去看」的判断之所以要靠人工翻日志，
         //   就是因为观测侧完全看不到这一步。现在它在 learner.jsonl 里就有。
         reviewedEv.put("prior_round", priorRead.toMap());
+        // G6b：哪些判定因为「先检索」没过闸而被退回（Z2/Z3 的可观察面）
+        reviewedEv.put("retrieval_rejected", retrievalRejected);
         LearnerMonitor.publish("reviewed", reviewedEv);
         LearnerPlugin.setReviewVerdicts(reviewId, rendered);
 
