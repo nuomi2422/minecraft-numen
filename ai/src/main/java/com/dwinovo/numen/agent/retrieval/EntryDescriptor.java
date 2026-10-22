@@ -27,7 +27,20 @@ public record EntryDescriptor(
         Maturity maturity,
         int verifiedCount,
         /* G5g：只读条目（目录/说明书）—— 可以呈现、可以展开，但**不许**作为执行授权。 */
-        boolean viewOnly) {
+        boolean viewOnly,
+        /* G8：试用条目（publication=TRIAL）。它允许 maturity<VERIFIED 进 EXECUTOR 视图，
+         *   否则「进不了视图 → 没证据 → 永远进不了」成环；PUBLISHED 不受影响。 */
+        boolean trial) {
+
+    /** 兼容 13 参构造（G8 之前的所有调用点）：trial 缺省 false。 */
+    public EntryDescriptor(String entryRef, EntryKind kind, String title, String summary,
+                           List<RetrievalRole> roles, List<String> applicableConditions,
+                           List<String> excludedConditions, List<String> evidenceRefs,
+                           String bodyRef, boolean retracted, Maturity maturity,
+                           int verifiedCount, boolean viewOnly) {
+        this(entryRef, kind, title, summary, roles, applicableConditions, excludedConditions,
+                evidenceRefs, bodyRef, retracted, maturity, verifiedCount, viewOnly, false);
+    }
 
     public EntryDescriptor {
         roles = frozenRoles(roles);

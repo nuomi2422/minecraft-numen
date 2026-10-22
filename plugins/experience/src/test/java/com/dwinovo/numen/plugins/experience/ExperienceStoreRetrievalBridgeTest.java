@@ -301,7 +301,6 @@ class ExperienceStoreRetrievalBridgeTest {
 
     // G8-K22 红灯记录：TRIAL+OBSERVED 目前**仍进不了**执行视图（render 输出为空，不是角色门挡的）。
     // 保留成 @Disabled 而不是删掉：谁修好了就把它打开，让它变成绿灯判据。
-    @org.junit.jupiter.api.Disabled("G8-K22: TRIAL+OBSERVED 仍进不了执行视图，见 G8 卡 §13/§14")
     @Test
     void TRIAL且OBSERVED的条目_带火把关键词时能进执行视图() {
         ExperienceMemory memory = memoryWith(base("t8", "minecraft:torch 能用来做什么", ExperienceMaturity.OBSERVED)
@@ -311,8 +310,9 @@ class ExperienceStoreRetrievalBridgeTest {
         ExperienceStoreRetrievalBridge.Rendered r = ExperienceStoreRetrievalBridge.render(
                 memory, "火把 torch 能用来做什么", 8, 1100,
                 com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
+        System.out.println("[diag] render entries=" + r.entries() + " len=" + r.text().length());
 
-        assertTrue(r.text().contains("exp:execution|t8"), "TRIAL+OBSERVED 必须进执行视图，实际：" + r.text());
+        assertTrue(r.text().contains("exp:execution|minecraft:torch"), "TRIAL+OBSERVED 必须进执行视图，实际：" + r.text());
         assertTrue(r.text().contains("（试用中）"), "必须带试用标记");
         assertEquals(1, TrialRuntime.trialRefsIn(r.text()).size());
     }

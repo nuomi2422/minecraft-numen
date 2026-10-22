@@ -45,7 +45,10 @@ public final class RoleViewSelector {
             //   参数长这样」，不是「这条经验被验证过」。所以它**不吃** VERIFIED 那道门，
             //   但仍然只读（viewOnly=true，执行入口会拒）。经验的成熟度门不变。
             if (d.viewOnly()) return true;
-            if (d.maturity() == null || d.maturity().rank < Maturity.VERIFIED.rank) return false;
+            // ★ G8：试用条目（trial=true）允许 maturity<VERIFIED —— 否则「进不了视图→没证据→
+            //   永远进不了」成环。PUBLISHED 经验仍须 >=VERIFIED（G5g 冻结语义不变）。
+            if (d.maturity() == null) return false;
+            if (!d.trial() && d.maturity().rank < Maturity.VERIFIED.rank) return false;
         }
         return true;
     }

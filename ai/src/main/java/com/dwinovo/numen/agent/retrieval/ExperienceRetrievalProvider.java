@@ -132,7 +132,8 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
                 e.retracted(),
                 m,
                 e.verifiedCount(),
-                false);   // ★ G5g：经验条目不是「只读目录」，但也不许凭检索结果直接执行（见 ExecutionGate）
+                false,    // ★ G5g：经验条目不是「只读目录」，但也不许凭检索结果直接执行（见 ExecutionGate）
+                e.trial());   // ★ G8：试用态单独一维，供视图层放行 OBSERVED 的试用条目
         EntryBody body = new EntryBody(
                 e.entryRef() == null ? "" : e.entryRef(),
                 e.contentHash() == null ? "" : e.contentHash(),
