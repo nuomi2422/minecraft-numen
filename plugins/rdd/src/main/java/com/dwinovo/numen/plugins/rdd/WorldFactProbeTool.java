@@ -59,14 +59,28 @@ final class WorldFactProbeTool implements NumenTool {
                 reply.accept(TaskResult.fail("condition must be a JSON object").toJson());
                 return;
             }
-            boolean valid = WorldFactConditions.valid(condition);
+            // ★ 2026-10-22：形状合法 ≠ 判得出来。#tag 在注册表里不存在时判定恒假而
+            // valid 仍为 true —— 模型会把「判不出来」当成「世界没满足」，清怪/巡场/重派
+            // 一百次也没用（RL-18 同族）。这里把两种状态分开报。
+            boolean shape = WorldFactConditions.valid(condition);
+            java.util.List<String> unknownTags = shape
+                    ? RddWorldFacts.unresolvedTags(self, condition) : java.util.List.of();
+            boolean valid = shape && unknownTags.isEmpty();
             boolean matched = valid && RddWorldFacts.matches(self, condition);
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("type", String.valueOf(condition.get("type")));
             out.put("valid", valid);
             out.put("matched", matched);
+            if (!unknownTags.isEmpty()) {
+                out.put("unknown_tags", unknownTags);
+                out.put("reason", "这些 #tag 在本世界注册表里不存在：条件永远判不出来，"
+                        + "这不是世界没满足。改用具体 ID（例如 minecraft:cat / minecraft:villager）重新表达条件。");
+            }
             out.put("condition", condition);
-            reply.accept(TaskResult.ok(matched ? "world fact matches now" : "world fact does not match now", out).toJson());
+            String message = !shape ? "condition is malformed"
+                    : !unknownTags.isEmpty() ? "condition references a tag this world does not have"
+                    : matched ? "world fact matches now" : "world fact does not match now";
+            reply.accept(TaskResult.ok(message, out).toJson());
         } catch (RuntimeException ex) {
             reply.accept(TaskResult.fail("invalid condition: " + ex.getMessage()).toJson());
         }

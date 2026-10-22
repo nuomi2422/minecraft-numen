@@ -42,9 +42,52 @@ import java.util.function.Predicate;
 public final class RddWorldFacts {
     private RddWorldFacts() {}
 
+    /**
+     * 条件里「写了 {@code #tag}、但注册表里没有这个 tag」的字段名。空列表 = 都认得。
+     *
+     * <p>★ 为什么需要它（2026-10-22 实机，RL-18 同族事故）：形状校验
+     * ({@link WorldFactConditions#valid}) 只看 {@code #x:y} 长得像不像，真正查注册表要等到
+     * 判定那一刻；标签不存在 ⇒ 空集 ⇒ 恒假。于是「永远判不出来的条件」长成了
+     * 「世界还没满足」，任务链静默卡死、重派一百次也一样。把这两个状态分开报出去，
+     * 模型才能改条件而不是继续清怪/巡场。
+     */
+    public static List<String> unresolvedTags(NumenPlayer ap, Map<String, Object> condition) {
+        List<String> out = new ArrayList<>();
+        if (ap == null || condition == null) return out;
+        for (String field : new String[]{"entity", "block", "item", "structure", "biome"}) {
+            Object raw = condition.get(field);
+            if (!WorldFactConditions.isTag(raw)) continue;
+            String id = WorldFactConditions.tagId(raw);
+            ResourceLocation key = id == null ? null : ResourceLocation.tryParse(id);
+            if (key == null) {
+                out.add(field + "=" + raw);
+                continue;
+            }
+            boolean present = switch (field) {
+                case "entity" -> BuiltInRegistries.ENTITY_TYPE
+                        .getTag(TagKey.create(Registries.ENTITY_TYPE, key)).isPresent();
+                case "block" -> BuiltInRegistries.BLOCK
+                        .getTag(TagKey.create(Registries.BLOCK, key)).isPresent();
+                case "item" -> BuiltInRegistries.ITEM
+                        .getTag(TagKey.create(Registries.ITEM, key)).isPresent();
+                default -> {
+                    var access = ap.getServer() == null ? null : ap.getServer().registryAccess();
+                    if (access == null) yield false;
+                    // structure / biome 是动态注册表，走 server 的 registryAccess，不能读 BuiltInRegistries。
+                    yield "structure".equals(field)
+                            ? access.lookupOrThrow(Registries.STRUCTURE)
+                            .get(TagKey.create(Registries.STRUCTURE, key)).isPresent()
+                            : access.lookupOrThrow(Registries.BIOME)
+                            .get(TagKey.create(Registries.BIOME, key)).isPresent();
+                }
+            };
+            if (!present) out.add(field + "=" + raw);
+        }
+        return out;
+    }
+
     /** Caller must be on the server thread; this method never schedules work or loads chunks. */
-    public static boolean matches(NumenPlayer ap, Map<String, Object> condition) {
-        if (ap == null || condition == null || ap.getServer() == null
+    public static boolean matches(NumenPlayer ap, Map<String, Object> condition) {        if (ap == null || condition == null || ap.getServer() == null
                 || !ap.getServer().isSameThread()) return false;
         try {
             return switch (String.valueOf(condition.get("type"))) {
