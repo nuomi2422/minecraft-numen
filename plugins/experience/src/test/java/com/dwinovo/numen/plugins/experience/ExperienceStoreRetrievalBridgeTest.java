@@ -316,4 +316,14 @@ class ExperienceStoreRetrievalBridgeTest {
         assertTrue(r.text().contains("（试用中）"), "必须带试用标记");
         assertEquals(1, TrialRuntime.trialRefsIn(r.text()).size());
     }
+
+    @Test
+    void 定位用_recall能否看到TRIAL且OBSERVED的条目() {
+        ExperienceMemory memory = memoryWith(base("t9", "minecraft:torch 能用来做什么", ExperienceMaturity.OBSERVED)
+                .publication(com.dwinovo.numen.experience.api.PublicationState.TRIAL)
+                .build());
+        var snap = ExperienceStoreRetrievalBridge.snapshot(memory);
+        System.out.println("[diag] snapshot size=" + snap.size());
+        assertEquals(1, snap.size(), "桥的 snapshot 应该能看到这条（否则问题在桥之前）");
+    }
 }
