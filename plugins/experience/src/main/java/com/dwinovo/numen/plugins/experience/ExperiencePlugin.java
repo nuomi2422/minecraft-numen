@@ -91,9 +91,9 @@ public final class ExperiencePlugin implements NumenPlugin {
                 // 用 memory(companion) 而不是 MEMORIES.get：这是**每轮都会走的读路径**，
                 // 若等工具/规划先建库，执行视图会在会话前几分钟静默缺席（2026-10-21 实机踩到）。
                 ExperienceMemory m = memory(companion);
-                ExperienceStoreRetrievalBridge.Rendered rendered =
                 // G8 诊断：源快照里有几条（provider 之前的那一层）
                 LOG.info("[expmem] snapshot size={}", ExperienceStoreRetrievalBridge.snapshot(m).size());
+                ExperienceStoreRetrievalBridge.Rendered rendered =
                         ExperienceStoreRetrievalBridge.render(m, objective, 6, 1100,
                                 com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
                 ExperienceMonitor.publishContext("retrieval_snapshot", rendered.asEvent());
