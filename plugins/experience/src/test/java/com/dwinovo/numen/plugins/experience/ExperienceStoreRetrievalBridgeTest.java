@@ -326,4 +326,17 @@ class ExperienceStoreRetrievalBridgeTest {
         System.out.println("[diag] snapshot size=" + snap.size());
         assertEquals(1, snap.size(), "桥的 snapshot 应该能看到这条（否则问题在桥之前）");
     }
+
+    @Test
+    void PUBLISHED且VERIFIED的条目_带torch关键词时能进执行视图() {
+        ExperienceMemory memory = memoryWith(base("pub1", "minecraft:torch 能用来做什么", ExperienceMaturity.VERIFIED)
+                .publication(com.dwinovo.numen.experience.api.PublicationState.PUBLISHED)
+                .verifiedCount(1)
+                .build());
+        ExperienceStoreRetrievalBridge.Rendered r = ExperienceStoreRetrievalBridge.render(
+                memory, "我手上的火把（torch）能用来做什么", 8, 1100,
+                com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
+        System.out.println("[diag-pub] entries=" + r.entries() + " len=" + r.text().length());
+        assertTrue(r.text().contains("torch"), "PUBLISHED+VERIFIED 必须进执行视图，实际：" + r.text());
+    }
 }
