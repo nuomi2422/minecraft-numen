@@ -80,11 +80,26 @@ class TrialRuntimeTest {
 
     @Test
     void 取消终态进五态账_不算失败() {
-        TrialRuntime.notePresented(C, java.util.List.of("exp:cancel"), 1_000L);
-        TrialRuntime.onTaskFinished(C, com.dwinovo.numen.experience.api.UsageState.CANCELED, "t-cancel", 2_000L);
-        com.dwinovo.numen.experience.api.UsageStats st = TrialRuntime.usageStats("exp:cancel");
+        String ref = "exp:cancel-" + java.util.UUID.randomUUID();
+        TrialRuntime.notePresented(C, java.util.List.of(ref), 1_000L);
+        TrialRuntime.onTaskFinished(C, com.dwinovo.numen.experience.api.UsageState.CANCELED, "t-cancel-" + ref, 2_000L);
+        com.dwinovo.numen.experience.api.UsageStats st = TrialRuntime.usageStats(ref);
         assertEquals(1, st.canceled(), "取消必须单独记，不许并进失败");
         assertEquals(0, st.failure());
         assertEquals(com.dwinovo.numen.experience.api.UsageState.CANCELED, st.conclusion());
+    }
+
+    @Test
+    void 取消在试用三态账里算无效_不算失败() {
+        UUID c = java.util.UUID.randomUUID();
+        String ref = "exp:cx-" + java.util.UUID.randomUUID();
+        TrialRuntime.notePresented(c, java.util.List.of(ref), 1_000L);
+        java.util.List<com.dwinovo.numen.experience.api.TrialUse> uses =
+                TrialRuntime.onTaskFinished(c, com.dwinovo.numen.experience.api.UsageState.CANCELED, "t-cx-" + ref, 2_000L);
+        assertEquals(1, uses.size());
+        assertEquals(com.dwinovo.numen.experience.api.TrialUse.Outcome.INCONCLUSIVE, uses.get(0).outcome(),
+                "取消不是失败（TrialUse 口径）");
+        assertEquals(0, TrialRuntime.stats(ref).failures());
+        assertEquals(1, TrialRuntime.usageStats(ref).canceled(), "五态账里取消单独记");
     }
 }

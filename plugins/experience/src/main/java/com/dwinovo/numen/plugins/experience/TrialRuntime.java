@@ -127,11 +127,25 @@ public final class TrialRuntime {
         List<TrialAttribution.TaskOutcome> outcomes =
                 List.of(new TrialAttribution.TaskOutcome(nowMillis, st == UsageState.SUCCESS));
         List<TrialUse> uses = TrialAttribution.attribute(window, outcomes);
+        // ★ 顺序要紧：**先按原始 outcome 记五态账**（被认领的那条用真实终态 st），
+        //   再决定试用三态账要不要把「取消/中断」降成 INCONCLUSIVE。
+        //   反过来的话，取消会被记成 UNKNOWN（2026-10-22 用例抓到）。
+        boolean conclusive = st == UsageState.SUCCESS || st == UsageState.FAILURE;
         for (TrialUse u : uses) {
-            record(u);
-            // 被认领的那条用真实终态；没被认领的（INCONCLUSIVE）记 UNKNOWN —— 两条事实各记各的
             recordUsage(u.entryRef(), artifact,
                     u.outcome() == TrialUse.Outcome.INCONCLUSIVE ? UsageState.UNKNOWN : st, nowMillis);
+        }
+        if (!conclusive) {
+            java.util.List<TrialUse> remapped = new ArrayList<>();
+            for (TrialUse u : uses) {
+                remapped.add(u.outcome() == TrialUse.Outcome.FAILURE
+                        ? new TrialUse(u.entryRef(), u.millis(), TrialUse.Outcome.INCONCLUSIVE)
+                        : u);
+            }
+            uses = remapped;
+        }
+        for (TrialUse u : uses) {
+            record(u);
         }
         return uses;
     }

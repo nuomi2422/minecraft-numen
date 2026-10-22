@@ -45,6 +45,8 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
             return SearchPage.empty(id, "null", new Gap(id, "QUERY_NULL", "query 不能为空"));
         }
         List<RetrievedEntry> all = new ArrayList<>();
+        // G6c/G6a-ledger：试用条目要优先占槽 —— 它存在的意义就是攒证据，端不出来就永远攒不到。
+        java.util.Set<String> trialRefs = new java.util.HashSet<>();
         try {
             List<ExperienceEntryRead> raw = source.allEntries();
             if (raw == null) {
@@ -53,7 +55,12 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
             }
             for (ExperienceEntryRead e : raw) {
                 RetrievedEntry r = toEntry(query, e);
-                if (r != null) all.add(r);
+                if (r != null) {
+                    all.add(r);
+                    if (e.trial()) {
+                        trialRefs.add(r.descriptor().entryRef());
+                    }
+                }
             }
         } catch (RuntimeException t) {
             return SearchPage.empty(id, query.queryId(),
@@ -63,6 +70,8 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
         // 排序（稳定）：非撤回在前 → 成熟度 desc → verifiedCount desc → title 字节序稳定
         all.sort(Comparator
                 .comparingInt((RetrievedEntry r) -> r.descriptor().retracted() ? 1 : 0)
+                // 试用优先（排在成熟度之前）：否则高成熟度的长条目会把试用条目挤出预算
+                .thenComparingInt(r -> trialRefs.contains(r.descriptor().entryRef()) ? 0 : 1)
                 .thenComparingInt(r -> r.descriptor().maturity() == null ? -1 : -r.descriptor().maturity().rank)
                 .thenComparingInt(r -> -r.descriptor().verifiedCount())
                 .thenComparing(r -> r.descriptor().title() == null ? "" : r.descriptor().title(), java.util.Comparator.naturalOrder()));

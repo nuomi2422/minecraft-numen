@@ -280,4 +280,20 @@ class ExperienceStoreRetrievalBridgeTest {
         assertTrue(r.text().contains("（试用中）"), "标题必须带试用标记，实际：" + r.text());
         assertEquals(1, TrialRuntime.trialRefsIn(r.text()).size(), "trialRefsIn 必须能抓到它");
     }
+
+    @Test
+    void 试用条目优先占槽_不被高成熟度长条目挤出预算() {
+        // 三条已发布长条目 + 一条试用；预算只够 1-2 条时，试用必须先出来
+        ExperienceMemory memory = memoryWith(
+                base("p1", "已发布甲", ExperienceMaturity.VERIFIED).publication(com.dwinovo.numen.experience.api.PublicationState.PUBLISHED).build(),
+                base("p2", "已发布乙", ExperienceMaturity.VERIFIED).publication(com.dwinovo.numen.experience.api.PublicationState.PUBLISHED).build(),
+                base("p3", "已发布丙", ExperienceMaturity.GENERALIZED).publication(com.dwinovo.numen.experience.api.PublicationState.PUBLISHED).build(),
+                base("t1", "试用丁", ExperienceMaturity.VERIFIED).publication(com.dwinovo.numen.experience.api.PublicationState.TRIAL).build());
+
+        ExperienceStoreRetrievalBridge.Rendered r = ExperienceStoreRetrievalBridge.render(
+                memory, "", 8, 320, com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
+
+        assertTrue(r.text().contains("（试用中）"), "试用条目必须优先占槽，实际：" + r.text());
+        assertEquals(1, TrialRuntime.trialRefsIn(r.text()).size());
+    }
 }
