@@ -77,7 +77,8 @@ final class CompanionBrain {
             com.dwinovo.numen.entity.CompanionEvents.fire(
                     com.dwinovo.numen.api.CompanionEvent.TASK_FINISHED,
                     new com.dwinovo.numen.api.CompanionEvent.TaskFinished(
-                            companionId, record.publicId(), record.getToolName() == null ? "" : record.getToolName(), ok));
+                            companionId, record.publicId(), record.getToolName() == null ? "" : record.getToolName(), ok,
+                            record.getState() == null ? "UNKNOWN" : record.getState().name()));
         } catch (Throwable t) {
             // 广播失败不许影响任务结算本身
             com.dwinovo.numen.Constants.LOG.warn("[numen] TASK_FINISHED 广播失败: {}", t.toString());

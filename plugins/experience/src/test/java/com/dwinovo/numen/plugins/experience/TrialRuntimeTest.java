@@ -77,4 +77,14 @@ class TrialRuntimeTest {
         assertEquals(3, TrialRuntime.stats(REF).uses());
         assertEquals(TrialVerdict.Decision.SUGGEST_PUBLISH, TrialRuntime.verdict(REF));
     }
+
+    @Test
+    void 取消终态进五态账_不算失败() {
+        TrialRuntime.notePresented(C, java.util.List.of("exp:cancel"), 1_000L);
+        TrialRuntime.onTaskFinished(C, com.dwinovo.numen.experience.api.UsageState.CANCELED, "t-cancel", 2_000L);
+        com.dwinovo.numen.experience.api.UsageStats st = TrialRuntime.usageStats("exp:cancel");
+        assertEquals(1, st.canceled(), "取消必须单独记，不许并进失败");
+        assertEquals(0, st.failure());
+        assertEquals(com.dwinovo.numen.experience.api.UsageState.CANCELED, st.conclusion());
+    }
 }

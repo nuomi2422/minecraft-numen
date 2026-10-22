@@ -61,7 +61,18 @@ public final class CompanionEvent<T> {
     public static final CompanionEvent<TaskFinished> TASK_FINISHED = new CompanionEvent<>("task_finished");
 
     /** 任务收尾的事实（不带评价）。 */
-    public record TaskFinished(java.util.UUID companionId, String taskId, String taskName, boolean success) {
+    public record TaskFinished(
+            java.util.UUID companionId,
+            String taskId,
+            String taskName,
+            boolean success,
+            /**
+             * 终态名（{@code TaskState.name()}：SUCCESS/FAILED/CANCELLED/…）。
+             *
+             * <p>G6a-ledger：消费方据此区分「取消 / 中断 / 失败 / 未知」——
+             * 只看 {@code success} 布尔会把取消也当成失败。
+             */
+            String status) {
     }
 
     /** {@link #GOAL_SET} 的内容。 */

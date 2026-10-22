@@ -2,6 +2,10 @@ package com.dwinovo.numen.plugins.experience;
 
 import com.dwinovo.numen.experience.api.TrialAttribution;
 import com.dwinovo.numen.experience.api.TrialStats;
+import com.dwinovo.numen.experience.api.UsageLedger;
+import com.dwinovo.numen.experience.api.UsageSample;
+import com.dwinovo.numen.experience.api.UsageState;
+import com.dwinovo.numen.experience.api.UsageStats;
 import com.dwinovo.numen.experience.api.TrialUse;
 import com.dwinovo.numen.experience.api.TrialVerdict;
 
@@ -43,6 +47,8 @@ public final class TrialRuntime {
 
     private static final Map<UUID, Deque<TrialAttribution.Presentation>> PENDING = new LinkedHashMap<>();
     private static final Map<String, List<TrialUse>> USES = new LinkedHashMap<>();
+    /** G6a-ledger：同一批收尾事实的**五态**账（TrialUse 三态是给判定用的，这里是给 IC11 用的）。 */
+    private static final Map<String, List<UsageSample>> USAGE = new LinkedHashMap<>();
 
     private TrialRuntime() {}
 
@@ -80,6 +86,20 @@ public final class TrialRuntime {
      * @return 这次收尾归因出来的使用（没人认领就是空列表）
      */
     public static synchronized List<TrialUse> onTaskFinished(UUID companion, boolean success, long nowMillis) {
+        // 兼容旧调用方：只有布尔时，成功=SUCCESS、失败=FAILURE（取消/中断拿不到，见下面的重载）
+        return onTaskFinished(companion, success ? UsageState.SUCCESS : UsageState.FAILURE, "", nowMillis);
+    }
+
+    /**
+     * G6a-ledger：任务收尾（带终态与产物 id）。
+     *
+     * <p>与布尔版相比多两件事：①终态**五态**入账（取消/中断不再并进失败）；②带 artifactId，
+     * 于是「同一产物先取消后成功」在账里是两个 attempt，不会被串成一条结论。
+     */
+    public static synchronized List<TrialUse> onTaskFinished(UUID companion, UsageState state,
+                                                           String artifactId, long nowMillis) {
+        UsageState st = state == null ? UsageState.UNKNOWN : state;
+        String artifact = artifactId == null ? "" : artifactId.trim();
         if (companion == null) {
             return List.of();
         }
@@ -94,6 +114,8 @@ public final class TrialRuntime {
             if (nowMillis - p.millis() > TrialAttribution.WINDOW_MILLIS) {
                 q.removeFirst();
                 record(new TrialUse(p.entryRef(), p.millis(), TrialUse.Outcome.INCONCLUSIVE));
+                // 过期 = 没等到终态 ⇒ UNKNOWN（IC11：宁记「不知道」也不许丢）
+                recordUsage(p.entryRef(), artifact, UsageState.UNKNOWN, p.millis());
                 continue;
             }
             window.add(p);
@@ -103,12 +125,32 @@ public final class TrialRuntime {
             return List.of();
         }
         List<TrialAttribution.TaskOutcome> outcomes =
-                List.of(new TrialAttribution.TaskOutcome(nowMillis, success));
+                List.of(new TrialAttribution.TaskOutcome(nowMillis, st == UsageState.SUCCESS));
         List<TrialUse> uses = TrialAttribution.attribute(window, outcomes);
         for (TrialUse u : uses) {
             record(u);
+            // 被认领的那条用真实终态；没被认领的（INCONCLUSIVE）记 UNKNOWN —— 两条事实各记各的
+            recordUsage(u.entryRef(), artifact,
+                    u.outcome() == TrialUse.Outcome.INCONCLUSIVE ? UsageState.UNKNOWN : st, nowMillis);
         }
         return uses;
+    }
+
+    /** 记一条五态样本：attempt 按「同 ref + 同产物」已有条数 +1（先取消后成功 = 两个 attempt）。 */
+    private static void recordUsage(String entryRef, String artifactId, UsageState state, long atMillis) {
+        List<UsageSample> list = USAGE.computeIfAbsent(entryRef, k -> new ArrayList<>());
+        int attempt = 1;
+        for (UsageSample s : list) {
+            if (s.artifactId().equals(artifactId == null ? "" : artifactId.trim())) {
+                attempt++;
+            }
+        }
+        list.add(new UsageSample(entryRef, attempt, "", artifactId, "", state, atMillis));
+    }
+
+    /** G6a-ledger：某条经验的五态账（IC11 口径）。 */
+    public static synchronized UsageStats usageStats(String entryRef) {
+        return UsageLedger.derive(entryRef, (String) null, USAGE.getOrDefault(entryRef, List.of()));
     }
 
     private static void record(TrialUse use) {

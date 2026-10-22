@@ -65,11 +65,17 @@ public final class ExperiencePlugin implements NumenPlugin {
         // G6c：任务收尾 → 试用归因（只报事实，不判好坏）
         numen.on(com.dwinovo.numen.api.CompanionEvent.TASK_FINISHED, f -> {
             try {
+                // G6a-ledger：终态字符串 → 五态（取消/中断不再并进失败）；拿不到状态才退回布尔口径
+                com.dwinovo.numen.experience.api.UsageState st =
+                        com.dwinovo.numen.experience.api.UsageState.parse(f.status());
+                if (st == com.dwinovo.numen.experience.api.UsageState.UNKNOWN && f.success()) {
+                    st = com.dwinovo.numen.experience.api.UsageState.SUCCESS;
+                }
                 java.util.List<com.dwinovo.numen.experience.api.TrialUse> uses =
-                        TrialRuntime.onTaskFinished(f.companionId(), f.success(), System.currentTimeMillis());
+                        TrialRuntime.onTaskFinished(f.companionId(), st, f.taskId(), System.currentTimeMillis());
                 for (com.dwinovo.numen.experience.api.TrialUse u : uses) {
-                    LOG.info("[expmem] trial use {} -> {} (stats={})", u.entryRef(), u.outcome(),
-                            TrialRuntime.stats(u.entryRef()));
+                    LOG.info("[expmem] trial use {} -> {} (stats={}, usage={})", u.entryRef(), u.outcome(),
+                            TrialRuntime.stats(u.entryRef()), TrialRuntime.usageStats(u.entryRef()));
                 }
             } catch (Throwable t) {
                 LOG.warn("[expmem] trial attribution failed: {}", t.toString());
