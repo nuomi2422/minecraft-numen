@@ -40,8 +40,10 @@ public final class TrialVerdict {
         if (s == null || s.uses() <= 0) {
             return Decision.KEEP_TRIAL;
         }
-        if (s.uses() < MIN_SAMPLES) {
-            return Decision.KEEP_TRIAL;   // 样本不足 → 不猜（C4）
+        // ★ 只看**结论性**样本：取消/中断既不算成功也不算失败，不能拿它凑数。
+        //   （这是 G6c 写测试时抓到的：3 次里 1 成 2 取消，按 uses 算够 3 次，实际只有 1 条证据。）
+        if (s.successes() + s.failures() < MIN_SAMPLES) {
+            return Decision.KEEP_TRIAL;   // 结论性样本不足 → 不猜（C4）
         }
         if (s.successes() == 0) {
             return Decision.SUSPEND;      // 一次没成过 → 停（失败不被平均掩盖）
@@ -56,8 +58,8 @@ public final class TrialVerdict {
     public static String explain(TrialStats s, Decision d) {
         if (s == null) return "没有使用记录 → 继续试用";
         return switch (d) {
-            case KEEP_TRIAL -> s.uses() < MIN_SAMPLES
-                    ? "样本不足（" + s.uses() + "/" + MIN_SAMPLES + "）→ 继续试用，不猜"
+            case KEEP_TRIAL -> s.successes() + s.failures() < MIN_SAMPLES
+                    ? "结论性样本不足（" + (s.successes() + s.failures()) + "/" + MIN_SAMPLES + "）→ 继续试用，不猜"
                     : "成功 " + s.successes() + " / 失败 " + s.failures() + "，看不出优势 → 继续试用";
             case SUSPEND -> "用了 " + s.uses() + " 次一次没成（失败 " + s.failures() + "）→ 建议暂停";
             case SUGGEST_PUBLISH -> "成功 " + s.successes() + " > 失败 " + s.failures()
