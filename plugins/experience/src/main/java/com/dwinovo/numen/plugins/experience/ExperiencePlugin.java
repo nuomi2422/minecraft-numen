@@ -66,6 +66,14 @@ public final class ExperiencePlugin implements NumenPlugin {
         numen.on(com.dwinovo.numen.api.CompanionEvent.TASK_FINISHED, f -> {
             try {
                 LOG.info("[expmem] TASK_FINISHED received id={} status={} success={}", f.taskId(), f.status(), f.success());
+                // 2026-10-23 诊断（#271）：把任务终态写进 monitor 事件，让 MCP 侧也能看到
+                // 「哪个任务、什么终态、成功与否」。只报事实，不做判断。
+                java.util.Map<String, Object> fin = new java.util.LinkedHashMap<>();
+                fin.put("task_id", f.taskId());
+                fin.put("task_name", f.taskName());
+                fin.put("status", f.status());
+                fin.put("success", f.success());
+                ExperienceMonitor.publish("task_finished_detail", fin);
                 // G6a-ledger：终态字符串 → 五态（取消/中断不再并进失败）；拿不到状态才退回布尔口径
                 com.dwinovo.numen.experience.api.UsageState st =
                         com.dwinovo.numen.experience.api.UsageState.parse(f.status());
