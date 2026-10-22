@@ -54,6 +54,7 @@ public final class SelfCompileEntry implements NumenPlugin {
         numen.registerTool(new com.dwinovo.numen.plugins.selfcompile.generated.RddFurnaceTool());
         numen.registerTool(new com.dwinovo.numen.plugins.selfcompile.generated.RddSetDifficultyTool());
         numen.registerTool(new com.dwinovo.numen.plugins.selfcompile.generated.RddTeleportTool());
+        numen.registerTool(new com.dwinovo.numen.plugins.selfcompile.generated.RddEquipTool());
 
         Path skills = ModList.get().getModFileById(SelfCompileMod.MOD_ID)
                 .getFile().findResource("skills");
