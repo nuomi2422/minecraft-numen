@@ -271,6 +271,17 @@ final class LearnerReviewTool implements NumenTool {
                 one.put("usage_outcome_note", "使用账本未初始化，查不到执行结果");
             }
             one.put("actions", v.actions().stream().map(Enum::name).toList());
+            // G6b：把「先检索再写」的决策也放进可观察面（否则 Z4 只能去翻 outbox 文件）
+            com.dwinovo.numen.plugins.learner.core.RetrievalDecision rd = v.retrieval();
+            if (rd != null) {
+                one.put("retrieval_decision", rd.decision() == null ? "" : rd.decision().name());
+                one.put("retrieval_reason", rd.reason());
+                one.put("retrieval_hits", rd.hits().stream().map(h -> Map.of(
+                        "entry_ref", h.entryRef(),
+                        "high_similarity", h.highSimilarity())).toList());
+            } else {
+                one.put("retrieval_decision", "MISSING");
+            }
             one.put("confidence", v.confidence());
             one.put("reasoning", v.reasoning());
             Memo source = batch.stream().filter(m -> v.memoId().equals(m.id())).findFirst().orElse(null);
