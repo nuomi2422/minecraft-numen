@@ -96,8 +96,11 @@ public final class ExperiencePlugin implements NumenPlugin {
                                 com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
                 ExperienceMonitor.publishContext("retrieval_snapshot", rendered.asEvent());
                 // G6c：这一轮端出来的试用条目，记下来等任务收尾归因
+                java.util.List<String> refs0 = TrialRuntime.trialRefsIn(rendered.text());
+                LOG.info("[expmem] trial refs={} len={} hasMarker={}", refs0,
+                        rendered.text().length(), rendered.text().contains("（试用中）"));
                 TrialRuntime.notePresented(companion,
-                        TrialRuntime.trialRefsIn(rendered.text()), System.currentTimeMillis());
+                        refs0, System.currentTimeMillis());
                 return rendered.text();
             } catch (Throwable t) {
                 // 执行知识是可选增强：坏了只丢这一段，本轮请求照常（宿主还有一层隔离兜底）
