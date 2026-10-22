@@ -94,6 +94,12 @@ public final class RddVillagerTradesTool implements NumenTool {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("entity_id", entityId);
         data.put("profession", villager.getVillagerData().getProfession().toString());
+        // 2026-10-23 加：区分「傻子村民」（永远不就职，放工作站也没用）与「普通村民」
+        data.put("type", villager.getVillagerData().getType().toString());
+        boolean nitwit = villager.getVillagerData().getProfession()
+                == net.minecraft.world.entity.npc.VillagerProfession.NITWIT;
+        data.put("nitwit", nitwit);
+        data.put("can_work", !nitwit);
         data.put("level", villager.getVillagerData().getLevel());
         data.put("count", rows.size());
         data.put("offers", rows);
