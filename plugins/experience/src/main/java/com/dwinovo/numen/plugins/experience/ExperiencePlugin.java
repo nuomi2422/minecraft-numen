@@ -62,6 +62,20 @@ public final class ExperiencePlugin implements NumenPlugin {
         //   只在 unified 下启用；EXECUTOR 视图只收 maturity≥VERIFIED、非撤回、非 WARNING 的条目
         //   （现库 4 条全是 OBSERVED ⇒ 通常为空集，这是**合法**结果：执行角色只信已验证的）。
         //   事件每轮都发：entries=0 也是证据（E3 要能看到 role=EXECUTOR 的快照）。
+        // G6c：任务收尾 → 试用归因（只报事实，不判好坏）
+        numen.on(com.dwinovo.numen.api.CompanionEvent.TASK_FINISHED, f -> {
+            try {
+                java.util.List<com.dwinovo.numen.experience.api.TrialUse> uses =
+                        TrialRuntime.onTaskFinished(f.companionId(), f.success(), System.currentTimeMillis());
+                for (com.dwinovo.numen.experience.api.TrialUse u : uses) {
+                    LOG.info("[expmem] trial use {} -> {} (stats={})", u.entryRef(), u.outcome(),
+                            TrialRuntime.stats(u.entryRef()));
+                }
+            } catch (Throwable t) {
+                LOG.warn("[expmem] trial attribution failed: {}", t.toString());
+            }
+        });
+
         numen.contributeExecutorKnowledge((companion, objective) -> {
             try {
                 if (RetrievalPolicy.experienceRetrievalMode() != RetrievalPolicy.Mode.UNIFIED) {
@@ -74,6 +88,9 @@ public final class ExperiencePlugin implements NumenPlugin {
                         ExperienceStoreRetrievalBridge.render(m, objective, 6, 1100,
                                 com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
                 ExperienceMonitor.publishContext("retrieval_snapshot", rendered.asEvent());
+                // G6c：这一轮端出来的试用条目，记下来等任务收尾归因
+                TrialRuntime.notePresented(companion,
+                        TrialRuntime.trialRefsIn(rendered.text()), System.currentTimeMillis());
                 return rendered.text();
             } catch (Throwable t) {
                 // 执行知识是可选增强：坏了只丢这一段，本轮请求照常（宿主还有一层隔离兜底）
