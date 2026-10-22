@@ -167,4 +167,40 @@ class G1bImportanceConsumerTest {
         assertTrue(block.contains("[关键] minecraft:flint 需要 1"), block);
         assertFalse(block.contains("[关键] minecraft:stone"), "NORMAL 行无前缀：" + block);
     }
+
+    // ── S45 · 事件侧（2026-10-22，三项验证卡问题一处置 ②）：
+    //     requirement_manifest 事件带 rows[]（key/importance/minimum），监测台判据 A2'。
+    //     RddMonitor 在纯 JVM 环境会 fail-soft 吞事件，所以把「行构造」抽成
+    //     manifestRows 纯函数单独钉形状；超 MAX_MANIFEST_ROWS(12) 必须 truncated=true。──
+
+    @Test
+    void s45_manifestRowsCarryKeyImportanceMinimum() {
+        RequirementManifest.Manifest manifest = RddRequirementDetector.forPrimary(goal(), "goal-s45");
+        var rowList = RddFactContext.manifestRows(manifest);
+
+        assertFalse(rowList.truncated(), "goal() 只有两个需求，不该截断");
+        assertEquals(manifest.requirements().size(), rowList.rows().size(), "不截断时行数 = 需求数");
+        var oakRow = rowList.rows().stream()
+                .filter(r -> "minecraft:oak_log".equals(r.get("key"))).findFirst().orElseThrow();
+        assertEquals("CRITICAL", oakRow.get("importance"), "waitFor 前置 → 事件行也标 CRITICAL");
+        assertEquals(8, oakRow.get("minimum"), "minimum 透传（对齐 S40 的 detector 口径）");
+        for (Map<String, Object> row : rowList.rows()) {
+            assertTrue(row.containsKey("key") && row.containsKey("importance") && row.containsKey("minimum"),
+                    "每行必须带 key/importance/minimum 三键（监测台判据 A2'）：" + row);
+        }
+    }
+
+    @Test
+    void s45_manifestRowsTruncateAtCapWithFlag() {
+        // 15 条需求 > MAX_MANIFEST_ROWS(12)：rows 只落 12 条且 truncated=true（事件有界纪律）
+        List<RequirementManifest.Requirement> many = new java.util.ArrayList<>();
+        for (int i = 0; i < 15; i++) {
+            many.add(new RequirementManifest.Requirement("minecraft:item_" + i, i + 1, List.of()));
+        }
+        RequirementManifest.Manifest manifest = new RequirementManifest.Manifest("goal-many", many);
+        var rowList = RddFactContext.manifestRows(manifest);
+
+        assertEquals(12, rowList.rows().size(), "行数封顶在 MAX_MANIFEST_ROWS");
+        assertTrue(rowList.truncated(), "超限必须显式 truncated=true，不装作落全了");
+    }
 }

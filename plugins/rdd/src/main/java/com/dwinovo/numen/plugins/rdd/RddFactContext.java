@@ -83,6 +83,11 @@ final class RddFactContext {
     private static final int MAX_EXECUTOR_GAPS = 3;
     /** 监测事件里最多列几条缺口。 */
     private static final int MAX_EVENT_GAPS = 6;
+    /**
+     * 2026-10-22（三项验证卡问题一处置 ②）：manifest 事件里最多落几条需求行。
+     * 事件有界纪律：行数超限时带 {@code rows_truncated=true}，不装作落全了。
+     */
+    private static final int MAX_MANIFEST_ROWS = 12;
 
     /** 已缓存的需求清单：键 = primaryId，清单的 goalId 必须是 true Goal.id（见 forPrimary 注释）。 */
     /**
@@ -614,6 +619,13 @@ final class RddFactContext {
     /**
      * G1b：manifest 事件统一出口——旧三字段（companionId/primary/requirements）逐字保留，
      * 新增 {@code critical}（CRITICAL 条数）。只发计数不发逐条清单（事件有界纪律）。
+     *
+     * <p><b>2026-10-22（三项验证卡问题一处置 ②）</b>：新增 {@code rows[]} ——
+     * 每行 {@code key/importance/minimum} 三键（监测台判据 A2'）。
+     * 此前只落计数 ⇒ 复盘「哪几条是 CRITICAL」无法回答，而重要度<b>已经在影响行为</b>
+     * （RddFactContext 需求块把 CRITICAL 渲染成 {@code [关键] } 前缀，10-21 实测
+     * 61 条上下文里 30 条带前缀）。行数超 {@link #MAX_MANIFEST_ROWS} 时落
+     * {@code rows_truncated=true}，不装作落全了。旧字段逐字不动（消费方兼容）。</p>
      */
     private static void publishManifestEvent(UUID companionId, PrimaryGoal primary,
                                              RequirementManifest.Manifest manifest) {
@@ -623,11 +635,45 @@ final class RddFactContext {
                 critical++;
             }
         }
-        RddMonitor.publish("requirement_manifest", Map.of(
-                "companionId", companionId.toString(),
-                "primary", primary.id(),
-                "requirements", String.valueOf(manifest.requirements().size()),
-                "critical", String.valueOf(critical)));
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("companionId", companionId.toString());
+        data.put("primary", primary.id());
+        data.put("requirements", String.valueOf(manifest.requirements().size()));
+        data.put("critical", String.valueOf(critical));
+        RowList rowList = manifestRows(manifest);
+        data.put("rows", rowList.rows());
+        if (rowList.truncated()) {
+            data.put("rows_truncated", true);
+        }
+        RddMonitor.publish("requirement_manifest", data);
+    }
+
+    /** rows 构造结果：truncated = 需求数超过 {@link #MAX_MANIFEST_ROWS}（事件有界纪律）。 */
+    record RowList(List<Map<String, Object>> rows, boolean truncated) {}
+
+    /**
+     * manifest → 事件行（key/importance/minimum 三键，监测台判据 A2'）。
+     * 包内可见 + 纯函数：单测直接钉形状（RddMonitor 在纯 JVM 环境会 fail-soft 吞事件，
+     * 事件出口本身没法测；把「构造」与「发送」拆开，构造侧可测）。
+     */
+    static RowList manifestRows(RequirementManifest.Manifest manifest) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        boolean truncated = false;
+        for (RequirementManifest.Requirement r : manifest.requirements()) {
+            if (r == null) {
+                continue;
+            }
+            if (rows.size() >= MAX_MANIFEST_ROWS) {
+                truncated = true;
+                break;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("key", r.key());
+            row.put("importance", r.importance().name());
+            row.put("minimum", r.minimum());
+            rows.add(row);
+        }
+        return new RowList(rows, truncated);
     }
 
     /**
