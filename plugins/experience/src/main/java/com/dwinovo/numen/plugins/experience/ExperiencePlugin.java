@@ -92,6 +92,8 @@ public final class ExperiencePlugin implements NumenPlugin {
                 // 若等工具/规划先建库，执行视图会在会话前几分钟静默缺席（2026-10-21 实机踩到）。
                 ExperienceMemory m = memory(companion);
                 ExperienceStoreRetrievalBridge.Rendered rendered =
+                // G8 诊断：源快照里有几条（provider 之前的那一层）
+                LOG.info("[expmem] snapshot size={}", ExperienceStoreRetrievalBridge.snapshot(m).size());
                         ExperienceStoreRetrievalBridge.render(m, objective, 6, 1100,
                                 com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
                 ExperienceMonitor.publishContext("retrieval_snapshot", rendered.asEvent());
@@ -101,6 +103,11 @@ public final class ExperiencePlugin implements NumenPlugin {
                 // G8 诊断（2026-10-22）：执行视图按 objective 做词法匹配，不记 objective 就分不清
                 // 「没检索到」还是「检索到但被截断」。只记前 120 字。
                 LOG.info("[expmem] executor objective={}", objective == null ? "" : objective.substring(0, Math.min(120, objective.length())));
+                // G8 诊断（2026-10-22）：把执行视图里实际出现的 ref 打出来，一次分清是 provider 丢的还是预算挤的。
+                java.util.regex.Matcher mr = java.util.regex.Pattern.compile("ref=\"([^\"]+)\"").matcher(txt0);
+                java.util.List<String> shown = new java.util.ArrayList<>();
+                while (mr.find()) shown.add(mr.group(1));
+                LOG.info("[expmem] executor refs={}", shown);
                 java.util.List<String> refs0 = TrialRuntime.trialRefsIn(rendered.text());
                 LOG.info("[expmem] trial refs={} len={} hasMarker={}", refs0,
                         rendered.text().length(), rendered.text().contains("（试用中）"));
