@@ -238,6 +238,61 @@ final class RddFactContext {
         GAPS_CHANGED
     }
 
+    /** 每个（同伴|一级）只点名一次恢复支线，避免 30 秒一拍地刷。 */
+    private static final Map<String, Long> RECOVERY_NAMED_AT = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * "重要的东西确认没了" → 点名一条恢复支线。
+     *
+     * <p>只处理**能落到具体物品**的需求（{@code key} 能被注册表解析成物品）：
+     * 分组需求（{@code group=true}）不点名 —— 它的完成判据没法用「背包里有 X」表达，
+     * 点了也只会让主线白冻结十分钟。
+     */
+    private static void maybeNameRecovery(UUID companionId, PrimaryGoal primary,
+                                          List<Need> needs, Map<String, Integer> held) {
+        try {
+            if (companionId == null || primary == null || needs == null || needs.isEmpty()) return;
+            if (com.dwinovo.numen.plugins.rdd.SideTaskHost.isActive(companionId)) return;
+            String key = companionId + "|" + primary.id();
+            long nowMs = System.currentTimeMillis();
+            Long last = RECOVERY_NAMED_AT.get(key);
+            if (last != null && nowMs - last < 5 * 60_000L) return;   // 5 分钟冷却
+            for (Need n : needs) {
+                if (n.group()) continue;
+                String itemId = toItemId(n.key());
+                if (itemId == null) continue;
+                int have = have(n, held);
+                if (have >= n.minimum()) continue;
+                com.dwinovo.numen.rdd.side.recovery.RecoverySideTaskTrigger
+                        .expect(companionId, itemId, Math.max(1, n.minimum() - have));
+                RECOVERY_NAMED_AT.put(key, nowMs);
+                RddMonitor.publish("recovery_named_from_needs", Map.of(
+                        "companionId", companionId.toString(),
+                        "primary", primary.id(),
+                        "item", itemId,
+                        "need", n.minimum(),
+                        "have", have));
+                return;
+            }
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 需求→恢复支线点名失败 {}: {}", companionId, ex.toString());
+        }
+    }
+
+    /** 把需求键还原成物品 id；不是可解析的物品就返回 null（宁可不点名，也不要开一条永远完不成的支线）。 */
+    private static String toItemId(String key) {
+        if (key == null || key.isBlank()) return null;
+        String id = key.contains(":") ? key : "minecraft:" + key;
+        try {
+            var rl = net.minecraft.resources.ResourceLocation.tryParse(id);
+            if (rl == null) return null;
+            var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(rl);
+            if (item == null || item == net.minecraft.world.item.Items.AIR) return null;
+            return id;
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
     static Transition transition(Set<String> prev, Set<String> next) {
         if (prev == null || next == null) {
             return Transition.NONE;
@@ -544,10 +599,16 @@ final class RddFactContext {
                             "companionId", companionId.toString(),
                             "primary", primary.id(),
                             "requirements", String.valueOf(needs.size())));
-                    case UNMET -> RddMonitor.publish("requirements_unmet", Map.of(
-                            "companionId", companionId.toString(),
-                            "primary", primary.id(),
-                            "gaps", unmetText(needs, counts, transformNotes(companionId, now))));
+                    case UNMET -> {
+                        RddMonitor.publish("requirements_unmet", Map.of(
+                                "companionId", companionId.toString(),
+                                "primary", primary.id(),
+                                "gaps", unmetText(needs, counts, transformNotes(companionId, now))));
+                        // 2026-10-23（主人要求）：**重要东西从"有"变"没有"**的那一刻，正是该插恢复支线的点。
+                        // 以前这里只发事件；现在顺手点名一条恢复支线（主线冻结、补回来再恢复），
+                        // 而不是等失败重规划去整段重写计划。
+                        maybeNameRecovery(companionId, primary, needs, counts);
+                    }
                     case GAPS_CHANGED -> RddMonitor.publish("requirement_gaps_changed", Map.of(
                             "companionId", companionId.toString(),
                             "primary", primary.id(),
