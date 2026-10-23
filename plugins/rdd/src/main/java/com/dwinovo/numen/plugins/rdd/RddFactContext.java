@@ -104,7 +104,7 @@ final class RddFactContext {
                           RequirementManifest.Manifest manifest) {}
 
     /** 需求检测状态：按 primaryId 隔离；换 primary 视为新观察（不报跨 primary 的变化）。 */
-    private record Watch(String primaryId, Set<String> unmet) {}
+    record Watch(String primaryId, Set<String> unmet, Set<String> needKeys) {}
 
     private static final Map<UUID, Cached> MANIFESTS = new ConcurrentHashMap<>();
     private static final Map<UUID, Watch> WATCH = new ConcurrentHashMap<>();
@@ -239,6 +239,26 @@ final class RddFactContext {
     }
 
     /** 每个（同伴|一级）只点名一次恢复支线，避免 30 秒一拍地刷。 */
+    /**
+     * 「这一拍**刚刚**丢掉的需求键」= 上一拍它还是满足的（在 prev 的需求集里、且不在 prev 未满足集里），
+     * 这一拍变成未满足了。
+     *
+     * <p><b>为什么不能只看整体 UNMET 转移</b>（2026-10-23 实测）：只要链里有一个**永远满足不了**的需求
+     * （当时的 bread 需 1 有 0），未满足集合就永远非空 ⇒ 「空 → 非空」永不发生 ⇒ 触发点哑火。
+     * 按**单个键**算"刚刚丢掉"，才符合"重要度确认那件东西没了"的原意。
+     */
+    static Set<String> newlyLost(Watch prev, List<Need> needs, Set<String> unmet) {
+        if (prev == null || needs == null || unmet == null || unmet.isEmpty()) return Set.of();
+        Set<String> lost = new java.util.LinkedHashSet<>();
+        for (Need n : needs) {
+            String k = n.key();
+            if (!unmet.contains(k)) continue;          // 现在没缺
+            if (!prev.needKeys().contains(k)) continue; // 上一拍还没有这个需求 → 不是"丢"，是"新要"
+            if (prev.unmet().contains(k)) continue;     // 上一拍就已经缺 → 不是"刚刚丢"
+            lost.add(k);
+        }
+        return lost;
+    }
     private static final Map<String, Long> RECOVERY_NAMED_AT = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
@@ -249,7 +269,8 @@ final class RddFactContext {
      * 点了也只会让主线白冻结十分钟。
      */
     private static void maybeNameRecovery(UUID companionId, PrimaryGoal primary,
-                                          List<Need> needs, Map<String, Integer> held) {
+                                          List<Need> needs, Map<String, Integer> held,
+                                          Set<String> preferKeys) {
         try {
             if (companionId == null || primary == null || needs == null || needs.isEmpty()) return;
             // 2026-10-23 实测：睡觉支线常驻时 isActive=true，会把"死了丢东西"这一刻直接吞掉。
@@ -258,7 +279,13 @@ final class RddFactContext {
             long nowMs = System.currentTimeMillis();
             Long last = RECOVERY_NAMED_AT.get(key);
             if (last != null && nowMs - last < 5 * 60_000L) return;   // 5 分钟冷却
-            for (Need n : needs) {
+            // 优先处理"刚刚丢掉"的那些键（见 newlyLost）；没有就退回"第一个真缺的"。
+            java.util.List<Need> ordered = new java.util.ArrayList<>();
+            if (preferKeys != null && !preferKeys.isEmpty()) {
+                for (Need n : needs) if (preferKeys.contains(n.key())) ordered.add(n);
+            }
+            for (Need n : needs) if (!ordered.contains(n)) ordered.add(n);
+            for (Need n : ordered) {
                 if (n.group()) continue;
                 String itemId = toItemId(n.key());
                 if (itemId == null) continue;
@@ -586,7 +613,9 @@ final class RddFactContext {
             List<Need> needs = needsOf(primary);
             Set<String> unmet = Collections.unmodifiableSet(unmetKeys(needs, counts));
             Watch prev = WATCH.get(companionId);
-            WATCH.put(companionId, new Watch(primary.id(), unmet));
+            Set<String> needKeys = new java.util.LinkedHashSet<>();
+            for (Need n : needs) needKeys.add(n.key());
+            WATCH.put(companionId, new Watch(primary.id(), unmet, Set.copyOf(needKeys)));
             // G1c：关键需求软预留（D11）。只给 CRITICAL 需求申请；申请量取
             // min(需求, 现有)——软预留只承诺「现有的」，不去许愿天上有多少。
             int reservedTotal = ensureReservations(companionId, primary, needs, counts, now);
@@ -608,12 +637,17 @@ final class RddFactContext {
                         // 2026-10-23（主人要求）：**重要东西从"有"变"没有"**的那一刻，正是该插恢复支线的点。
                         // 以前这里只发事件；现在顺手点名一条恢复支线（主线冻结、补回来再恢复），
                         // 而不是等失败重规划去整段重写计划。
-                        maybeNameRecovery(companionId, primary, needs, counts);
+                        maybeNameRecovery(companionId, primary, needs, counts, newlyLost(prev, needs, unmet));
                     }
-                    case GAPS_CHANGED -> RddMonitor.publish("requirement_gaps_changed", Map.of(
-                            "companionId", companionId.toString(),
-                            "primary", primary.id(),
-                            "gaps", unmetText(needs, counts, transformNotes(companionId, now))));
+                    case GAPS_CHANGED -> {
+                        RddMonitor.publish("requirement_gaps_changed", Map.of(
+                                "companionId", companionId.toString(),
+                                "primary", primary.id(),
+                                "gaps", unmetText(needs, counts, transformNotes(companionId, now))));
+                        // 2026-10-23：整体转移是 GAPS_CHANGED（还缺别的没补上），但**某件东西刚刚丢了**，
+                        // 也应该点名恢复支线 —— 否则"永远有一个补不上的缺口"会把触发点活活饿死。
+                        maybeNameRecovery(companionId, primary, needs, counts, newlyLost(prev, needs, unmet));
+                    }
                     case NONE -> { }
                 }
             }
