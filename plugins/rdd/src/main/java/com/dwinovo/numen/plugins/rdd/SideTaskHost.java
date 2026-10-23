@@ -51,6 +51,9 @@ final class SideTaskHost {
     static {
         ENGINE.registerType(SLEEP_TYPE);
         ENGINE.registerTrigger(new SleepSideTaskTrigger());
+        // 2026-10-23：恢复支线（主人在意的"丢了东西就插支线，不重写主线"）。
+        ENGINE.registerType(new com.dwinovo.numen.rdd.side.recovery.RecoverySideTaskType());
+        ENGINE.registerTrigger(new com.dwinovo.numen.rdd.side.recovery.RecoverySideTaskTrigger());
         SleepWakeWatcher.install();
         NeoForge.EVENT_BUS.addListener((ServerStoppedEvent event) -> onServerStopped());
     }
@@ -149,6 +152,25 @@ final class SideTaskHost {
         @Override public boolean isSleeping(UUID companionId) { return ap.isSleeping(); }
         @Override public boolean isDay() { return ap.level().isDay(); }
         @Override public Wake pollWake(UUID companionId) { return SleepWakeWatcher.poll(companionId); }
+        @Override public int countItem(UUID companionId, String itemId) {
+            // 2026-10-23 恢复支线：按物品 id 数背包（只读）。解析失败/未知 id → 0。
+            try {
+                if (itemId == null || itemId.isBlank()) return 0;
+                var rl = net.minecraft.resources.ResourceLocation.tryParse(itemId);
+                if (rl == null) return 0;
+                var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(rl);
+                if (item == null || item == net.minecraft.world.item.Items.AIR) return 0;
+                var inv = ap.getInventory();
+                int n = 0;
+                for (int i = 0; i < inv.getContainerSize(); i++) {
+                    var s = inv.getItem(i);
+                    if (!s.isEmpty() && s.getItem() == item) n += s.getCount();
+                }
+                return n;
+            } catch (RuntimeException ex) {
+                return 0;
+            }
+        }
         @Override public boolean inCombat(UUID companionId) { return ap.hurtTime > 0; }
         @Override public boolean bodyBusy(UUID companionId) {
             return com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companionId) != null;

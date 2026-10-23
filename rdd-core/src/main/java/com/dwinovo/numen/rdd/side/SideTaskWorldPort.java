@@ -51,6 +51,14 @@ public interface SideTaskWorldPort {
     }
 
     /** 当前主线目标文本（目标/一级/二级描述拼接）；无主线返回 null。用于"主线是否要求夜间活动"。 */
+    /**
+     * 背包里某物品的数量（2026-10-23 恢复支线用）。
+     *
+     * <p>默认 0 =「没看到」；宿主实现应该返回真实数量。**只读**，不改背包。
+     */
+    default int countItem(UUID companionId, String itemId) {
+        return 0;
+    }
     default String mainlineObjective(UUID companionId) {
         return null;
     }

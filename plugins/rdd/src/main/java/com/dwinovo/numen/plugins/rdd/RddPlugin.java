@@ -638,11 +638,23 @@ private static String withAssets(UUID companionId, String rddContext) {
      */
     static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation, String soldierHint) {
         if (!fromNegotiation && isMissingAssetCause(companionId, reason)) {
-            if (insertRecoveryNode(companionId, describeMissing(companionId), reason)) {
-                LOG.info("[rdd] 缺失型重规划 → 插入恢复支线（不重写当前一级）{}", companionId);
+            // 2026-10-23（主人要求）：首选**派恢复支线**——主线由 SideTaskHost 冻结，支线跑完自动恢复，
+            // 完全不改编主线计划。只有支线通道不可用（例如没有活跃身体）才退回"插节点"。
+            String what = describeMissing(companionId);
+            try {
+                com.dwinovo.numen.rdd.side.recovery.RecoverySideTaskTrigger.expect(companionId, what, 1);
+                LOG.info("[rdd] 缺失型重规划 → 已点名恢复支线（主线冻结，不重写）{}", companionId);
+                RddMonitor.publish("recovery_side_task_expected", Map.of(
+                        "companionId", companionId.toString(), "what", what, "reason", String.valueOf(reason)));
+                return true;
+            } catch (RuntimeException ex) {
+                LOG.warn("[rdd] 点名恢复支线失败，改插入恢复节点 {}: {}", companionId, ex.toString());
+            }
+            if (insertRecoveryNode(companionId, what, reason)) {
+                LOG.info("[rdd] 缺失型重规划 → 插入恢复节点（不重写当前一级）{}", companionId);
                 return true;
             }
-            LOG.warn("[rdd] 插入恢复节点失败，回落整段重规划 {}", companionId);
+            LOG.warn("[rdd] 恢复通道都不可用，回落整段重规划 {}", companionId);
         }
         RddRuntime rt = RUNTIMES.get(companionId);
         if (rt == null) return false;
