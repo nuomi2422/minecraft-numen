@@ -252,7 +252,8 @@ final class RddFactContext {
                                           List<Need> needs, Map<String, Integer> held) {
         try {
             if (companionId == null || primary == null || needs == null || needs.isEmpty()) return;
-            if (com.dwinovo.numen.plugins.rdd.SideTaskHost.isActive(companionId)) return;
+            // 2026-10-23 实测：睡觉支线常驻时 isActive=true，会把"死了丢东西"这一刻直接吞掉。
+            // 改成**照样点名**：引擎在别的支线结束时自然会取走（PENDING 会等），比丢掉这一刻强。
             String key = companionId + "|" + primary.id();
             long nowMs = System.currentTimeMillis();
             Long last = RECOVERY_NAMED_AT.get(key);
