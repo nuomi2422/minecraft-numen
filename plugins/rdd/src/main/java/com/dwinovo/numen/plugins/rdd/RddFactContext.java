@@ -134,9 +134,9 @@ final class RddFactContext {
      * 不是目标结构的前置，没有「关键门」语义。
      */
     record Need(String key, int minimum, boolean group,
-                RequirementManifest.Importance importance) {
+                com.dwinovo.numen.rdd.policy.RequirementManifest.Importance importance) {
         Need(String key, int minimum, boolean group) {
-            this(key, minimum, group, RequirementManifest.Importance.NORMAL);
+            this(key, minimum, group, com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.NORMAL);
         }
 
         String display() {
@@ -145,7 +145,7 @@ final class RddFactContext {
 
         /** G1b：CRITICAL 需求的人类/AI 可读前缀；NORMAL/OPPORTUNISTIC 无前缀。 */
         String importancePrefix() {
-            return importance() == RequirementManifest.Importance.CRITICAL ? "[关键] " : "";
+            return importance() == com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.CRITICAL ? "[关键] " : "";
         }
     }
 
@@ -168,7 +168,7 @@ final class RddFactContext {
         for (AssetRequirement w : primary.waitFor()) {
             if (w != null && w.assetKey() != null && !w.assetKey().isBlank()) {
                 mergeNeed(out, w.assetKey(), w.minimum(), false,
-                        RequirementManifest.Importance.CRITICAL);
+                        com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.CRITICAL);
             }
         }
         for (Subtask s : primary.subtasks()) {
@@ -181,16 +181,16 @@ final class RddFactContext {
             Object m = c.get("minimum");
             int min = m instanceof Number n ? Math.max(0, n.intValue()) : 1;
             if (key instanceof String ks && !ks.isBlank()) {
-                mergeNeed(out, ks, min, false, RequirementManifest.Importance.NORMAL);
+                mergeNeed(out, ks, min, false, com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.NORMAL);
             } else if (group instanceof String gs && InventoryGroups.known(gs)) {
-                mergeNeed(out, gs, min, true, RequirementManifest.Importance.NORMAL);
+                mergeNeed(out, gs, min, true, com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.NORMAL);
             }
         }
         return List.copyOf(out.values());
     }
 
     private static void mergeNeed(Map<String, Need> out, String key, int minimum, boolean group,
-                                  RequirementManifest.Importance importance) {
+                                  com.dwinovo.numen.rdd.policy.RequirementManifest.Importance importance) {
         int min = Math.max(1, minimum);   // 需求至少 1 件；0 按 1 计（与 AssetRequirement 口径一致）
         String k = group ? "group:" + key : key;
         Need prev = out.get(k);
@@ -291,6 +291,21 @@ final class RddFactContext {
                 if (itemId == null) continue;
                 int have = have(n, held);
                 if (have >= n.minimum()) continue;
+                // 2026-10-23（主人底线）：**只有重要度 NORMAL/CRITICAL 的丢失才允许打断主线**。
+                // 这里把 LossImpactAnalyzer / AssetSemantics 这个孤岛接进生产判定：
+                //   1) 声明为 OPPORTUNISTIC 的需求 → 明确判定「放弃回收」，直接继续主线；
+                //   2) 损失分析说"备用已覆盖"或"有替代满足" → 放弃回收（不值当打断）；
+                //   3) 其余才派支线。
+                RecoveryVerdict verdict = judgeRecovery(n, primary, needs, held);
+                if (!verdict.allowed()) {
+                    RddMonitor.publish("recovery_declined", Map.of(
+                            "companionId", companionId.toString(),
+                            "primary", primary.id(),
+                            "item", n.key(),
+                            "importance", String.valueOf(n.importance()),
+                            "reason", verdict.reason()));
+                    continue;
+                }
                 com.dwinovo.numen.rdd.side.recovery.RecoverySideTaskTrigger
                         .expect(companionId, itemId, Math.max(1, n.minimum() - have));
                 RECOVERY_NAMED_AT.put(key, nowMs);
@@ -304,6 +319,64 @@ final class RddFactContext {
             }
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 需求→恢复支线点名失败 {}: {}", companionId, ex.toString());
+        }
+    }
+
+    /** 一次「要不要为这件丢失打断主线」的判定结果（可审计）。 */
+    record RecoveryVerdict(boolean allowed, String reason) {}
+
+    /**
+     * 恢复支线是否值得派：**重要度闸 + 资产语义/损失影响闸**（2026-10-23 主人底线）。
+     *
+     * <p>规则（按顺序）：
+     * <ol>
+     *   <li>需求声明为 {@code OPPORTUNISTIC} → **放弃回收**（不值当；主线继续）；</li>
+     *   <li>损失影响分析（{@link LossImpactAnalyzer} + {@link AssetSemantics}）认为
+     *       <b>备用/替代已经覆盖</b>了这条需求 → 放弃回收；</li>
+     *   <li>其余（NORMAL / CRITICAL 且确实打穿需求）→ 允许派支线。</li>
+     * </ol>
+     *
+     * <p>把这两个类接进来之前，它们在生产里是**孤岛**（只有自己的单测调用）。
+     */
+    private static RecoveryVerdict judgeRecovery(Need lost, PrimaryGoal primary, List<Need> needs,
+                                                 Map<String, Integer> held) {
+        try {
+            com.dwinovo.numen.rdd.policy.RequirementManifest.Importance imp = lost.importance();
+            if (imp == null) imp = com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.NORMAL;
+            if (imp == com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.OPPORTUNISTIC) {
+                return new RecoveryVerdict(false, "opportunistic_importance");
+            }
+            // 需求清单 → 资产语义（CRITICAL=IMPORTANT / NORMAL=SECONDARY / OPPORTUNISTIC=IRRELEVANT）
+            java.util.List<RequirementManifest.Requirement> reqs = new java.util.ArrayList<>();
+            Map<String, com.dwinovo.numen.rdd.policy.AssetSemantics> semantics = new java.util.LinkedHashMap<>();
+            for (Need n : needs) {
+                if (n.group()) continue;
+                com.dwinovo.numen.rdd.policy.RequirementManifest.Importance i = n.importance() == null
+                        ? com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.NORMAL : n.importance();
+                reqs.add(new RequirementManifest.Requirement(
+                        n.key(), Math.max(1, n.minimum()), java.util.List.of(), i, 0));
+                com.dwinovo.numen.rdd.policy.AssetSemantics.Importance sem = switch (i) {
+                    case CRITICAL -> com.dwinovo.numen.rdd.policy.AssetSemantics.Importance.IMPORTANT;
+                    case NORMAL -> com.dwinovo.numen.rdd.policy.AssetSemantics.Importance.SECONDARY;
+                    default -> com.dwinovo.numen.rdd.policy.AssetSemantics.Importance.IRRELEVANT;
+                };
+                semantics.put(n.key(), com.dwinovo.numen.rdd.policy.AssetSemantics.declared(
+                        n.key(), sem, com.dwinovo.numen.rdd.policy.AssetSemantics.guessNature(n.key()), primary.id()));
+            }
+            int have = have(lost, held);
+            Map<String, Integer> lostItems = Map.of(lost.key(), Math.max(1, lost.minimum() - have));
+            RequirementManifest.Manifest manifest =
+                    new RequirementManifest.Manifest(primary.id(), java.util.List.copyOf(reqs));
+            com.dwinovo.numen.rdd.policy.LossImpactAnalyzer.LossImpact impact = com.dwinovo.numen.rdd.policy.LossImpactAnalyzer.analyze(
+                    lostItems, held, java.util.List.of(manifest), semantics, true);
+            if (impact.backupSufficient()) {
+                return new RecoveryVerdict(false, "backup_or_alternative_covers_it");
+            }
+            // NORMAL/CRITICAL 且确实打穿需求 → 值得打断
+            return new RecoveryVerdict(true, "important_loss:" + imp);
+        } catch (RuntimeException ex) {
+            // 判定失败时**保守放行**（宁可多跑一趟，也不要漏掉真正重要的东西）——但记原因
+            return new RecoveryVerdict(true, "judge_failed:" + ex.getClass().getSimpleName());
         }
     }
 
@@ -460,7 +533,7 @@ final class RddFactContext {
             n++;
             // G1b：CRITICAL 需求行带 [关键] 前缀（与 executorBlock 的 needs 块同文案口径）；
             // 排序仍按 attention（可疑度），不按重要度——本块是只读对账，不是调度裁决。
-            String impPrefix = row.importance() == RequirementManifest.Importance.CRITICAL
+            String impPrefix = row.importance() == com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.CRITICAL
                     ? "[关键] " : "";
             sb.append("- ").append(impPrefix).append(row.requirementKey()).append(" 需要 ").append(row.minimum());
             if (row.held() == null) {
@@ -727,7 +800,7 @@ final class RddFactContext {
                                              RequirementManifest.Manifest manifest) {
         int critical = 0;
         for (RequirementManifest.Requirement r : manifest.requirements()) {
-            if (r != null && r.importance() == RequirementManifest.Importance.CRITICAL) {
+            if (r != null && r.importance() == com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.CRITICAL) {
                 critical++;
             }
         }
@@ -793,7 +866,7 @@ final class RddFactContext {
             ledger.releaseExpired(now);
             ledger.retainOnly(primary.id());
             for (Need need : needs) {
-                if (need.importance() != RequirementManifest.Importance.CRITICAL) {
+                if (need.importance() != com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.CRITICAL) {
                     continue;
                 }
                 int want = Math.min(need.minimum(), have(need, counts));
