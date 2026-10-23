@@ -129,6 +129,22 @@ public final class ExperienceStoreRetrievalBridge {
 
     /** 单条转换；null = 跳过（脏数据兜底）。 */
     static ExperienceEntryRead convert(ExperienceEntry e) {
+        // 2026-10-23 诊断（B 组）：TRIAL 条目进不了执行视图，先把三个布尔值摊开。
+        // 只观测，不改行为；行首 EXP-BRIDGE 便于 grep。
+        try {
+            if (e != null && e.id() != null && !e.id().isBlank()) {
+                org.slf4j.LoggerFactory.getLogger("ExpBridge").info(
+                        "[EXP-BRIDGE] id={} pub={} retracted={} published={} retrievable={} trial={}",
+                        e.id(),
+                        e.publication(),
+                        e.retracted(),
+                        e.publication() == com.dwinovo.numen.experience.api.PublicationState.PUBLISHED,
+                        e.publication() != com.dwinovo.numen.experience.api.PublicationState.REVOKED,
+                        e.publication() == com.dwinovo.numen.experience.api.PublicationState.TRIAL);
+            }
+        } catch (Throwable ignored) {
+            // 诊断绝不能影响主流程
+        }
         if (e == null) return null;
         String id = e.id() == null ? "" : e.id();
         if (id.isBlank()) return null;
