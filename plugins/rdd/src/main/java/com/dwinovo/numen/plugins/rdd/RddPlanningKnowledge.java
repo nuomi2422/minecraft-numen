@@ -75,6 +75,12 @@ final class RddPlanningKnowledge {
     static String withKnowledge(Provider provider, UUID companionId, String basePrompt,
                                 String objective, String stage, List<String> knownFailures) {
         Provider p = provider == null ? HOST : provider;
+        // 2026-10-23 主人要求：**每一次规划都直接注入**主人亲授的生存路线（所有同伴通用）。
+        // 放在最前面：它是目标锚点，不该被后面的经验块挤到看不见的位置。
+        String doctrine = RddSurvivalDoctrine.block();
+        if (!doctrine.isEmpty()) {
+            basePrompt = doctrine + "\n\n" + (basePrompt == null ? "" : basePrompt);
+        }
         String knowledge = "";
         try {
             knowledge = p.knowledgeFor(companionId, objective, stage, knownFailures);
