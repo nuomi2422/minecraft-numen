@@ -140,6 +140,9 @@ class RddToolContractSnapshotTest {
         PINNED_NAMES.put("RddDebugClearDropsTool.java", "debug_clear_drops");
         // G3d：计划补丁入口（CAS 提交；只碰当前指针及之后的 PENDING 节点）
         PINNED_NAMES.put("RddPatchTool.java", "rdd_patch");
+        // 2026-10-23：恢复支线调试入口——点名一条 recovery 支线，验证"丢了东西→插支线→回主线"
+        // 这条链在 8776 上看不到（side_task_* 不进程经验链），没有它就只能干等真实场景。
+        PINNED_NAMES.put("RddDebugRecoveryTool.java", "rdd_debug_recovery");
     }
 
     @Test
