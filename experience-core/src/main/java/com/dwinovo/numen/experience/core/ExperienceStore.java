@@ -440,8 +440,18 @@ public final class ExperienceStore {
         java.util.Set<String> dead = supersededIds();
         java.util.List<ExperienceEntry> out = new java.util.ArrayList<>();
         for (ExperienceEntry e : mirror) {
-            if (e.unusableReason(dead.contains(e.id())).isEmpty()) {
+            String why = e.unusableReason(dead.contains(e.id()));
+            if (why.isEmpty()) {
                 out.add(e);
+            } else {
+                // 2026-10-23 诊断：TRIAL/DRAFT 条目为什么进不了检索（usable 是唯一入口）。
+                try {
+                    org.slf4j.LoggerFactory.getLogger("ExpStore").info(
+                            "[STORE-UNUSABLE] id={} pub={} retracted={} reason={}",
+                            e.id(), e.publication(), e.retracted(), why);
+                } catch (Throwable ignored) {
+                    // 诊断不得影响主流程
+                }
             }
         }
         return List.copyOf(out);
