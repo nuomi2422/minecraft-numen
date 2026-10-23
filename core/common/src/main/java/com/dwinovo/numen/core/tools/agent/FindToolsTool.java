@@ -84,7 +84,11 @@ public final class FindToolsTool implements NumenTool {
                         "没有工具匹配 \"" + q + "\"。名字看 <deferred_tools> 目录。").toJson());
                 return;
             }
-            call.complete(ToolDisclosure.render(hits));
+            // 2026-10-24：实机抓到模型把「拿到定义」当「已准备好」，反复 select:mine 十几轮
+            // 一次 mine 都不调（chat.jsonl 实证）。定义只是说明书，不是进度——下一轮必须直接调它。
+            call.complete(ToolDisclosure.render(hits)
+                    + "\n<!-- 上面是工具定义（说明书），不是动作。你的下一步必须直接调用其中一个工具；"
+                    + "再次 find_tools 取同一名单不会带来任何进展。 -->");
         } catch (RuntimeException ex) {
             call.complete(TaskResult.fail(ex.getMessage()).toJson());
         }

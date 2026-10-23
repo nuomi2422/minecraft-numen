@@ -2406,6 +2406,9 @@ public final class EntityAgentLoop {
             }
         }
         if (last < 0) return msgs;
+        // 2026-10-24：展开过=本会话记住（见 callableTools），瘦身不再导致「已展开」丢失。
+        EXPANDED_THIS_SESSION.addAll(
+                com.dwinovo.numen.agent.tool.ToolDisclosure.expandedIn(msgs));
         List<ConvoState.Msg> out = new ArrayList<>(msgs.size());
         int slimmed = 0;
         int saved = 0;
@@ -3118,16 +3121,30 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
     }
 
     /**
-     * 这一刻哪些工具可以调:常驻的永远可以(定义就在请求里),延迟的要看对话里还有没有
-     * 它的展开块。<b>现算,不存</b>——压缩把展开块总结掉之后,模型手里也没有参数定义了,
-     * 这里自然就该重新拦住它。
+     * 这一刻哪些工具可以调:常驻的永远可以(定义就在请求里),延迟的要看<b>本次会话</b>里
+     * 有没有展开过。<b>会话级记忆,不再现算对话文本</b>(2026-10-24):
+     *
+     * <p>旧实现扫 {@code replayWindow(false)} 找 {@code <functions expanded=…>} 标记。
+     * 那在原版 1M 窗口下几乎永不失效(压缩阈值≈987k);但我们的 20k 回放窗口每轮都在裁,
+     * {@code slimExpanded} 又会把标记瘦身——两刀叠加,「已展开」反复丢,模型只好反复
+     * {@code find_tools select:mine},一次 {@code mine} 都不调(实机 chat.jsonl 十几轮实锤)。
+     *
+     * <p>现在:工具一旦展开过,本会话内就一直可调用。模型「看不见定义」时仍会被
+     * 工具层的参数校验拦住并收到 find_tools 的指引,不会盲调;但「已经会用」的
+     * 不会被回放裁剪再夺走。
      */
     private java.util.Set<String> callableTools() {
         java.util.Set<String> ok = new java.util.LinkedHashSet<>();
         for (com.dwinovo.numen.agent.tool.NumenTool t : ToolRegistry.resident()) ok.add(t.name());
+        ok.addAll(EXPANDED_THIS_SESSION);
+        // 会话记忆兜底:老存档热更进来的会话,集合是空的——再扫一次文本,有就补进去。
         ok.addAll(com.dwinovo.numen.agent.tool.ToolDisclosure.expandedIn(replayWindow(false)));
         return ok;
     }
+
+    /** 本会话内展开过的延迟工具(find_tools 一旦取过就一直算「已展开」,直到会话结束)。 */
+    private final java.util.Set<String> EXPANDED_THIS_SESSION =
+            java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
 
     private static String truncate(String s, int max) {
         if (s == null) return "";
