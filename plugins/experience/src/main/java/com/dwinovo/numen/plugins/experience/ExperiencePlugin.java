@@ -85,6 +85,18 @@ public final class ExperiencePlugin implements NumenPlugin {
                 for (com.dwinovo.numen.experience.api.TrialUse u : uses) {
                     LOG.info("[expmem] trial use {} -> {} (stats={}, usage={})", u.entryRef(), u.outcome(),
                             TrialRuntime.stats(u.entryRef()), TrialRuntime.usageStats(u.entryRef()));
+                    // 2026-10-23：归因只进日志、从不进 monitor —— 8776 的「试用归因」因此永远读到 0，
+                    // 被误当成"链路断了"。补一条 trial_used，让那个数字变成真的归因数。
+                    try {
+                        java.util.Map<String, Object> td = new java.util.LinkedHashMap<>();
+                        td.put("ref", u.entryRef());
+                        td.put("outcome", String.valueOf(u.outcome()));
+                        td.put("task_id", f.taskId());
+                        td.put("stats", String.valueOf(TrialRuntime.stats(u.entryRef())));
+                        ExperienceMonitor.publish("trial_used", td);
+                    } catch (Throwable ignore) {
+                        // 观测失败不影响归因与主流程
+                    }
                 }
             } catch (Throwable t) {
                 LOG.warn("[expmem] trial attribution failed: {}", t.toString());
