@@ -1435,25 +1435,45 @@ public final class TaskChain {
                 }
             }
         }
+        // 2026-10-23：坏状态表**不再整份抛异常**——那会让恢复每秒重试一次（实测刷屏到每秒一条）。
+        // 现在按脏数据清理：链上没有的条目丢掉、链上有但没登记的补成 PENDING，并留一条警告。
         if (!statuses.keySet().equals(expected)) {
             Set<String> missing = new LinkedHashSet<>(expected);
             missing.removeAll(statuses.keySet());
             Set<String> unknown = new LinkedHashSet<>(statuses.keySet());
             unknown.removeAll(expected);
-            throw new IllegalArgumentException("restored status table mismatch; missing=" + missing + ", unknown=" + unknown);
+            java.util.List<String> dropped = new java.util.ArrayList<>();
+            for (String id : unknown) {
+                statuses.remove(id);
+                skipReasons.remove(id);
+                pauseReasons.remove(id);
+                attempts.remove(id);
+                forgetAcquireBaseline(id);
+                dropped.add(id);
+            }
+            for (String id : missing) {
+                statuses.put(id, SubtaskStatus.PENDING);
+            }
+            if (!dropped.isEmpty() || !missing.isEmpty()) {
+                System.err.println("[rdd] 恢复时清理了脏状态：丢弃 " + dropped + "，补登记 " + missing);
+            }
         }
+        // 另外两张表只做同样的清理（不再抛）：它们的键必须来自链上节点。
+        java.util.List<String> strayAttempts = new java.util.ArrayList<>();
         for (String id : attempts.keySet()) {
-            if (!expected.contains(id)) {
-                throw new IllegalArgumentException("restored attempts table references unknown subtask: " + id);
-            }
+            if (!expected.contains(id)) strayAttempts.add(id);
         }
+        for (String id : strayAttempts) attempts.remove(id);
+        if (!strayAttempts.isEmpty()) {
+            System.err.println("[rdd] 恢复时丢弃未知节点的 attempts：" + strayAttempts);
+        }
+        java.util.List<String> straySkips = new java.util.ArrayList<>();
         for (String id : skipReasons.keySet()) {
-            if (!expected.contains(id)) {
-                throw new IllegalArgumentException("restored skipReason references unknown subtask: " + id);
-            }
-            if (statuses.get(id) != SubtaskStatus.SKIPPED) {
-                throw new IllegalArgumentException("restored skipReason on non-skipped subtask: " + id);
-            }
+            if (!expected.contains(id) || statuses.get(id) != SubtaskStatus.SKIPPED) straySkips.add(id);
+        }
+        for (String id : straySkips) skipReasons.remove(id);
+        if (!straySkips.isEmpty()) {
+            System.err.println("[rdd] 恢复时丢弃不成立的 skipReasons：" + straySkips);
         }
         for (String id : pauseReasons.keySet()) {
             if (!expected.contains(id)) {
