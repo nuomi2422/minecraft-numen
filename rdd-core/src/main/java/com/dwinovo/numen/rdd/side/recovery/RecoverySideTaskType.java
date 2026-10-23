@@ -51,21 +51,15 @@ public final class RecoverySideTaskType implements SideTaskType {
                 SideTaskState.ACTIVE, PHASE_SEEKING, Map.copyOf(data), ctx.mainlineToken());
     }
 
-    /** 开之前问一句：已经拿回来了就别开；否则正常执行。 */
+    /**
+     * 开之前问一句。
+     *
+     * <p>这里**故意不做「已经拿回来就别开」的判断**：{@code decide} 拿到的只有同伴 id 和世界端口，
+     * 拿不到本条支线的目标物品；想判就得去猜。猜错的代价是"该开的没开"。
+     * 真正的完成判定放在 {@link #evaluate}（那里有 {@code task.data()}），一秒之内就会把它收掉。
+     */
     @Override
     public SideTaskDecision decide(UUID companionId, SideTaskWorldPort world) {
-        String item = null;
-        try {
-            if (world != null) {
-                // decide 拿不到 data，按"未知物品"处理：仍执行，evaluate 会按 data 判定
-                item = null;
-            }
-        } catch (RuntimeException ignore) {
-            // 判定失败就当没拿回来
-        }
-        if (item != null && world != null && world.countItem(companionId, item) > 0) {
-            return SideTaskDecision.skip("已拿回 " + item);
-        }
         return SideTaskDecision.EXECUTE;
     }
 
