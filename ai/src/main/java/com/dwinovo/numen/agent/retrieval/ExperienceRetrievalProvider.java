@@ -25,6 +25,9 @@ import java.util.TreeSet;
  */
 public final class ExperienceRetrievalProvider implements RetrievalProvider {
 
+    /** 诊断用日志（2026-10-23）：System.out 在 NeoForge 客户端不进 latest.log，必须走 logger。 */
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger("ExperienceRetrieval");
+
     private final String id;
     private final ExperienceEntrySource source;
 
@@ -53,6 +56,10 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
                 return SearchPage.empty(id, query.queryId(),
                         new Gap(id, "SOURCE_NULL", "source.allEntries() 返回 null（读失败，不是空结果）"));
             }
+            // 2026-10-23 诊断（B 组为什么进不了请求）：把「看到几条 / 丢了几条 / 为什么丢」摊平输出。
+            // 只观测，不改变行为；行首 tag=RETR-DIAG 便于 grep。
+            java.util.Map<String, Integer> dropReasons = new java.util.LinkedHashMap<>();
+            StringBuilder trialSeen = new StringBuilder();
             for (ExperienceEntryRead e : raw) {
                 RetrievedEntry r = toEntry(query, e);
                 if (r != null) {
@@ -60,8 +67,20 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
                     if (e.trial()) {
                         trialRefs.add(r.descriptor().entryRef());
                     }
+                } else {
+                    String why = judgeReason(query, e);
+                    dropReasons.merge(why, 1, Integer::sum);
+                }
+                if (e.trial()) {
+                    String nm = e.entryRef() == null ? "?" : e.entryRef();
+                    trialSeen.append(nm).append('|');
                 }
             }
+            LOG.info("[RETR-DIAG] role=" + query.role()
+                    + " raw=" + raw.size()
+                    + " kept=" + all.size()
+                    + " trialSeen=[" + trialSeen + "]"
+                    + " drop=" + dropReasons);
         } catch (RuntimeException t) {
             return SearchPage.empty(id, query.queryId(),
                     new Gap(id, "SOURCE_THROW", t.toString()));
@@ -101,9 +120,21 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
         return new SearchPage(id, query.queryId(), partial, List.copyOf(kept), List.copyOf(gaps));
     }
 
+    /** 诊断用：复刻 {@link #toEntry} 的拒收理由，只为了在日志里说清楚「为什么没进去」。 */
+    private static String judgeReason(RetrievalQuery query, ExperienceEntryRead e) {
+        if (e == null) return "null_entry";
+        if (!e.retrievable()) return "not_retrievable";
+        if (query.role() == RetrievalRole.EXECUTOR) {
+            if (e.retracted()) return "retracted";
+            if (!e.published() && !e.trial()) return "draft_or_suspended";
+            if (e.maturity() == null) return "maturity_null";
+            if (!e.trial() && e.maturity().rank < Maturity.VERIFIED.rank) return "not_verified";
+        }
+        if (e.bodyContent() == null && e.title() == null && e.summary() == null) return "empty_content";
+        return "ok";
+    }
     /** 把哺乳一条源条目转成 looked-up entry，按 IC08 最小角色/适用性规则；DISQUALIFIED 条目返回 null。 */
-    private RetrievedEntry toEntry(RetrievalQuery query, ExperienceEntryRead e) {
-        if (e == null) return null;
+    private RetrievedEntry toEntry(RetrievalQuery query, ExperienceEntryRead e) {        if (e == null) return null;
         if (!e.retrievable()) return null;   // REVOKED：任何视图都不给
         if (query.role() == RetrievalRole.EXECUTOR
                 && (e.retracted()
