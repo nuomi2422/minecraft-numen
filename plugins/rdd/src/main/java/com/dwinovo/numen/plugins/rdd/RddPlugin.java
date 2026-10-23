@@ -556,7 +556,94 @@ private static String withAssets(UUID companionId, String rddContext) {
      * 实机表现就是"干活的说了好几次原因，指挥官照原计划执行，像听不到"。
      * 现在建议会原样进入规划器的输入，规划器才可能"听懂并变通"。
      */
+    /** 判断这次重规划是不是"重要东西确认丢了"型（死亡后 / 原因在说缺、丢）。 */
+    private static boolean isMissingAssetCause(UUID companionId, String reason) {
+        try {
+            if (RddInstrumentation.recentDeath(companionId, RddInstrumentation.currentGameTimeTicks())) {
+                return true;
+            }
+        } catch (RuntimeException ignore) {
+            // 判定失败就按"不是"处理，走原来的整段重规划
+        }
+        if (reason == null) return false;
+        String r = reason.toLowerCase(java.util.Locale.ROOT);
+        return r.contains("缺") || r.contains("丢") || r.contains("missing") || r.contains("lost")
+                || r.contains("asset") || r.contains("death");
+    }
+
+    /** 描述"丢了什么"（尽量具体；拿不到就退化成一句人话）。 */
+    private static String describeMissing(UUID companionId) {
+        try {
+            var snap = planningSnapshot(companionId);
+            var missing = ResourceBudget.missingFor(RiskGate.levelForText("recovery"), snap.availableCounts());
+            if (missing != null && !missing.isEmpty()) {
+                return String.join("、", missing);
+            }
+        } catch (RuntimeException ignore) {
+            // 拿不到就退化成默认描述
+        }
+        return "死亡/丢失的装备与材料";
+    }
+
+    /**
+     * 在当前一级**追加**一个恢复节点（不删除、不改写已有节点）。
+     * 用现有的 PlanPatch（ADD_NODE）通道，走 propose → commit 的 CAS，避免绕过冻结/校验。
+     */
+    static boolean insertRecoveryNode(UUID companionId, String what, String reason) {
+        RddRuntime rt = RUNTIMES.get(companionId);
+        if (rt == null) return false;
+        TaskChain chain = rt.chain();
+        String primaryId = chain.currentPrimary().id();
+        String nodeId = primaryId + "-recover-" + System.nanoTime() % 1_000_000L;
+        String desc = "把丢失的「" + what + "」取回来：走到掉落/死亡地点拾取，取回后回到主线继续"
+                + "（支线，不改变主线其它步骤）。";
+        long base = chain.stateVersion();
+        var patch = new com.dwinovo.numen.rdd.core.PlanPatch(
+                "recover-" + nodeId, primaryId, base,
+                java.util.List.of(com.dwinovo.numen.rdd.core.PlanPatch.Op.add(nodeId, desc,
+                        java.util.Map.of())),
+                reason == null ? "missing assets" : reason);
+        var proposed = chain.proposePatch(patch);
+        if (proposed == null || !proposed.ok()) {
+            RddMonitor.publish("recovery_insert_rejected", java.util.Map.of(
+                    "companionId", companionId.toString(),
+                    "code", proposed == null ? "NULL" : proposed.code(),
+                    "why", proposed == null ? "" : proposed.why()));
+            return false;
+        }
+        var committed = chain.commitPatch(patch, base);
+        if (committed == null || !committed.ok()) {
+            RddMonitor.publish("recovery_insert_rejected", java.util.Map.of(
+                    "companionId", companionId.toString(),
+                    "code", committed == null ? "NULL" : committed.code(),
+                    "why", committed == null ? "" : committed.why()));
+            return false;
+        }
+        RddMonitor.publish("recovery_inserted", java.util.Map.of(
+                "companionId", companionId.toString(),
+                "primary", primaryId, "node", nodeId, "what", what));
+        saveRuntimes();
+        publishTaskSnapshot(companionId, "recovery_inserted");
+        return true;
+    }
+    /**
+     * 2026-10-23（主人要求）：**"重要东西确认丢了"这类重规划，要插入支线，不要重写整个当前一级。**
+     *
+     * <p>原行为：重规划 = {@code enterReplanning + replaceCurrentSubtasks}，把当前一级的二级计划整段换掉 ——
+     * 对一个只是"丢了装备/材料"的处境来说，这是破坏性的：原本能走的做法被丢弃。
+     *
+     * <p>新行为：先判断这是不是"缺失型"重规划（最近死过、或原因文本在说缺/丢）；
+     * 是的话走 {@link #insertRecoveryNode}：在当前一级**追加一个恢复节点**（PENDING，末尾），
+     * 其余节点原样保留；取回后再回到主线。只有插入失败才回落到原来的整段重写。
+     */
     static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation, String soldierHint) {
+        if (!fromNegotiation && isMissingAssetCause(companionId, reason)) {
+            if (insertRecoveryNode(companionId, describeMissing(companionId), reason)) {
+                LOG.info("[rdd] 缺失型重规划 → 插入恢复支线（不重写当前一级）{}", companionId);
+                return true;
+            }
+            LOG.warn("[rdd] 插入恢复节点失败，回落整段重规划 {}", companionId);
+        }
         RddRuntime rt = RUNTIMES.get(companionId);
         if (rt == null) return false;
         TaskChain chain = rt.chain();
