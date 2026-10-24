@@ -9,6 +9,7 @@ import com.dwinovo.numen.plugins.learner.core.FeedbackChannel;
 import com.dwinovo.numen.plugins.learner.core.FeedbackEvent;
 import com.dwinovo.numen.plugins.learner.core.Memo;
 import com.dwinovo.numen.plugins.learner.core.MemoQueue;
+import com.dwinovo.numen.plugins.learner.core.StormGuard;
 import com.dwinovo.numen.task.TaskResult;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -62,7 +63,11 @@ final class LearnerIntakeTool implements NumenTool {
     /** 指纹计数表上限：超了就清空（宁可丢计数，也不要长成一坨内存）。 */
     private static final int MAX_SEEN_ENTRIES = 512;
 
-    /** 指纹 → 本次会话内见过的次数。有界；重启即清零（诚实边界，见类注释）。 */
+    /**
+     * (companionId|指纹) → 本次会话内见过的次数。有界；重启即清零（诚实边界，见类注释）。
+     * ★ LC2（78 号 §2.2）：键必须带伙伴身份 —— 全局裸指纹会把 A 同伴的死亡
+     *   计进 B 同伴的 T3 计数，跨伙伴放大模式判定。
+     */
     private static final Map<String, Integer> SEEN = new ConcurrentHashMap<>();
 
     @Override
@@ -137,6 +142,7 @@ final class LearnerIntakeTool implements NumenTool {
             int enqueued = 0;
             int queueFull = 0;
             int triedBlank = 0;
+            int stormSuppressed = 0;
             List<Map<String, Object>> decisions = new ArrayList<>();
             List<CandidateGate.Decision> gateCalls = new ArrayList<>();
             List<Map<String, Object>> queued = new ArrayList<>();
@@ -160,9 +166,12 @@ final class LearnerIntakeTool implements NumenTool {
                 }
 
                 String fp = CandidateGate.fingerprint(ev.sourceType(), ev.observation());
-                int seenBefore = SEEN.getOrDefault(fp, 0);
+                // ★ LC2（78 号 §2.2）：T3 计数按（同伴,指纹）—— 跨伙伴的同类失败
+                //   各自数各自的模式，不许互相放大 seenBefore。
+                String seenKey = me + "|" + fp;
+                int seenBefore = SEEN.getOrDefault(seenKey, 0);
                 CandidateGate.Decision d = CandidateGate.evaluate(ev.sourceType(), ev.observation(), seenBefore);
-                bumpSeen(fp);
+                bumpSeen(seenKey);
                 gateCalls.add(d);
 
                 Map<String, Object> one = new LinkedHashMap<>();
@@ -174,6 +183,16 @@ final class LearnerIntakeTool implements NumenTool {
 
                 if (!d.enqueue()) {
                     rejected++;
+                    decisions.add(one);
+                    continue;
+                }
+                // ★ LC2（78 号 §5/§7）：失败风暴抑制 —— 同（同伴,指纹）冷却窗口内只放行
+                //   第一次入队；T3 计数已经数完了（事实全留），这里只节流「打扰学习者」。
+                //   判定在 max_enqueue 之前：被抑制的不占本次入队名额。
+                StormGuard.Ruling storm = StormGuard.admit(me.toString(), fp, System.currentTimeMillis());
+                if (!storm.allow()) {
+                    stormSuppressed++;
+                    one.put("storm_suppressed", storm.asMap());
                     decisions.add(one);
                     continue;
                 }
@@ -236,6 +255,9 @@ final class LearnerIntakeTool implements NumenTool {
             data.put("rejected_by_gate", rejected);
             data.put("enqueued", enqueued);
             data.put("not_queued_queue_full", queueFull);
+            data.put("storm_suppressed", stormSuppressed);
+            data.put("storm_suppressed_session_total", StormGuard.suppressedGrandTotal());
+            data.put("storm_cooldown_millis", StormGuard.COOLDOWN_MILLIS);
             data.put("queue_depth", depth);
             data.put("t3_state", "session_only");
             // 这条计数是本工具存在的意义：让人看见「这批候选里有多少条注定过不了 Q1」
@@ -257,6 +279,8 @@ final class LearnerIntakeTool implements NumenTool {
             ev2.put("rejected_by_gate", rejected);
             ev2.put("enqueued", enqueued);
             ev2.put("not_queued_queue_full", queueFull);
+            ev2.put("storm_suppressed", stormSuppressed);
+            ev2.put("storm_suppressed_session_total", StormGuard.suppressedGrandTotal());
             ev2.put("queue_depth", depth);
             ev2.put("enqueued_without_tried_evidence", triedBlank);
             ev2.put("other_companion_events", otherCompanion);
