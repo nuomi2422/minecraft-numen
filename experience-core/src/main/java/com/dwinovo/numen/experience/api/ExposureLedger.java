@@ -47,6 +47,12 @@ public final class ExposureLedger {
      * 成为可对账的事实，而不是为了凑计数。
      */
     public static final String KIND_DIRECTORY = "DIRECTORY";
+    /**
+     * LC1（80 号契约 §2）：最终模型请求**保留并发送**的经验正文——执行侧装配点在
+     * 裁剪定案后记（先裁后记；被裁段不记 = 事实即「未送达」）。
+     * <b>算回执</b>：正文确实在发出的请求里到达了模型。见 80 号对接请求文档。
+     */
+    public static final String KIND_REQUEST_DELIVERED = "REQUEST_DELIVERED";
 
     /** 每同伴保留的交付条数上限（超出驱逐最旧）。 */
     static final int MAX_PER_COMPANION = 256;
@@ -69,10 +75,14 @@ public final class ExposureLedger {
             toolCallId = toolCallId == null ? "" : toolCallId.trim();
         }
 
-        /** 这条交付算不算「正文完整到达」：非截断 + 两种正文通道之一（DIRECTORY 不算）。 */
+        /**
+         * 这条交付算不算「正文完整到达」：非截断 + 三种正文通道之一
+         * （DIRECTORY 不算——目录只给标题，正文没交付）。
+         */
         public boolean countsAsReceipt() {
             return !truncated
-                    && (KIND_EXPANDED.equals(kind) || KIND_AUTO_EXPANDED.equals(kind));
+                    && (KIND_EXPANDED.equals(kind) || KIND_AUTO_EXPANDED.equals(kind)
+                        || KIND_REQUEST_DELIVERED.equals(kind));
         }
     }
 

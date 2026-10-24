@@ -108,6 +108,19 @@ class ExposureLedgerTest {
     }
 
     @Test
+    void 请求保留并发送算回执_80号契约钩子() {
+        // LC1（80 号 §2）：执行侧装配点在裁剪定案后记 REQUEST_DELIVERED——算回执。
+        // 语义：正文确实在发出的请求里到达了模型（预算没把它裁掉）。
+        ExposureLedger.record(C, d(REF, "v1", ExposureLedger.KIND_REQUEST_DELIVERED, false, 1000L));
+        assertTrue(ExposureLedger.delivered(C, REF, "v1"),
+                "最终请求保留并发送 = 正文到达，过晋级门");
+        // 截断的请求交付照旧不算完整回执
+        ExposureLedger.record(C, d(REF + "x", "v1", ExposureLedger.KIND_REQUEST_DELIVERED, true, 1000L));
+        assertFalse(ExposureLedger.delivered(C, REF + "x", "v1"),
+                "请求里被截断的段可能缺关键步骤，不算完整到达");
+    }
+
+    @Test
     void 空ref不记() {
         ExposureLedger.record(C, d("", "v1", ExposureLedger.KIND_EXPANDED, false, 1000L));
         ExposureLedger.record(C, d(null, "v1", ExposureLedger.KIND_EXPANDED, false, 1000L));
