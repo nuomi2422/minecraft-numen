@@ -35,7 +35,12 @@ public final class InteractAtTool implements NumenTool {
                 + "changed (hands, aimed block, new entities); no change listed = the click did nothing. "
                 + "It does NOT travel: you must ALREADY be within working reach (~4.5 blocks) of the aim "
                 + "point — goto stops you right beside a block, which is in reach. Farther away it fails "
-                + "and tells you to goto first.";
+                + "and tells you to goto first. "
+                // 2026-10-25 实机：AI 反复用 interact_at 瞄地面放床/熔炉，连续两次"right-clicked 但什么都没变"。
+                // 放方块这件事它不该靠瞄准：build 能直接指定坐标，一次到位。
+                + "PLACING BLOCKS: to put a bed/furnace/chest/table at a Spot, do NOT aim at the floor with this tool " 
+                + "and hope — use build with the exact coordinates (it places deterministically). " 
+                + "interact_at is for activating an existing block (door/button/lever/chest) or using an item on one.";
     }
 
     @Override
