@@ -123,20 +123,26 @@ public final class FindToolsTool implements NumenTool {
             // ⇒ 加**带逃生口的硬互锁**：占位 3 次只回一行提示（不再返回整份 schema），
             //   第 4 次立刻恢复完整定义。这样既不给循环续命，也绝不让她永久失明。
             int seen = REPEAT.merge(repeatKey(q), 1, Integer::sum);
-            if (seen == LOCK_AT) {
-                // ★ 2026-10-24 现场事故：这一支原来只回一段注释、**不带 <functions expanded=…> 标记**，
-                // 而 EntityAgentLoop.callableTools() 正是靠这个标记判断"这个延迟工具已展开"。
-                // 标记一没了 ⇒ locate_biome 从可调用集合里消失 ⇒ 模型想调它却调不到，
-                // 只能再 find_tools —— 于是"第 3 次回短消息"反而制造了死锁（实机复现：locate_biome 循环）。
-                // 现在**保留空的展开块头**：名字仍然可调用，只是不再重复整份 schema。
+            if (seen >= LOCK_AT) {
+                // ★ 2026-10-24 三轮实机教训：
+                //   ① 只回注释不带头 → 工具从可调用集合消失 → 死锁（locate_biome）；
+                //   ② 带头但"第 4 次恢复完整定义" → 模型就在 2/4 之间循环，永不收敛（rdd_death_ledger）；
+                //   ③ 光有告警 → 模型无视（33/8 连击）。
+                // ⇒ 现在**第 3 次起一律失败**（失败也是模型能看见的信号），
+                //   但把 `<functions expanded=…>` 头留在失败文本里，保证工具**仍然可调用**。
+                call.complete(TaskResult.fail(
+                        "<functions expanded=\"" + names(hits) + "\"></functions>"
+                        + "已拒绝第 " + seen + " 次取同一份定义：" + names(hits) + " 的参数你早就拿到了。"
+                        + "不要再来这里 —— 直接调用它；如果你已经调过但没成功，换一个办法（换工具/换坐标/换策略），"
+                        + "或者把当前困难用 report_task_concern 报上去。").toJson());
+                return;
+            }
+            if (seen == LOCK_AT - 1) {
                 call.complete("<functions expanded=\"" + names(hits) + "\"></functions>\n"
                         + "<!-- " + names(hits) + " 的定义**已经在你的上下文里**（这是第 " + seen
                         + " 次取同一份）。本次没有重复返回 schema：它的参数你已经有了，直接调用它即可。"
-                        + "若你确实看不到定义（上下文被压缩过），再取一次会立刻恢复完整定义。 -->");
+                        + "**下一次重复取用会被直接拒绝。** -->");
                 return;
-            }
-            if (seen > LOCK_AT) {
-                REPEAT.put(repeatKey(q), 0);   // 逃生口复位：重新从"完整定义"开始
             }
             String warn = seen <= 1 ? ""
                     : "<!-- 同一份定义你已经取过 " + seen + " 次。它没变。"
