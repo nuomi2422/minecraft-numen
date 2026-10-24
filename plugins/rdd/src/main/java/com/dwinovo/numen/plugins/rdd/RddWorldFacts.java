@@ -212,27 +212,44 @@ public final class RddWorldFacts {
     private static boolean blockNearby(NumenPlayer ap, Map<String, Object> condition) {
         ServerLevel level = ap.serverLevel();
         if (!dimension(level, condition)) return false;
-        Object raw = condition.get("block");
-        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
-        if (key == null || !dimension(level, condition)) return false;
-        int radius = WorldFactConditions.radiusOf(condition, WorldFactConditions.DEFAULT_BLOCK_RADIUS);
-        Predicate<BlockState> hit;
-        if (WorldFactConditions.isTag(raw)) {
-            // 直接问状态本身「你在不在这个 tag 里」，不自己遍历注册表成员 ——
-            // BlockState#is(TagKey) 是原版原生判定，#minecraft:ores / #minecraft:logs 都能用。
-            TagKey<Block> tag = TagKey.create(Registries.BLOCK, key);
-            hit = state -> state.is(tag);
+        java.util.List<Predicate<BlockState>> hits = new java.util.ArrayList<>();
+        Object list = condition.get("blocks");
+        if (list instanceof java.util.List<?> many) {
+            for (Object one : many) {
+                Predicate<BlockState> single = blockPredicate(one);
+                if (single == null) return false;
+                hits.add(single);
+            }
         } else {
-            var wanted = BuiltInRegistries.BLOCK.get(key);
-            if (wanted == null || !BuiltInRegistries.BLOCK.containsKey(key)) return false;
-            hit = state -> state.is(wanted);
+            Predicate<BlockState> single = blockPredicate(condition.get("block"));
+            if (single == null) return false;
+            hits.add(single);
         }
+        Predicate<BlockState> hit = state -> {
+            for (Predicate<BlockState> one : hits) {
+                if (one.test(state)) return true;
+            }
+            return false;
+        };
+        int radius = WorldFactConditions.radiusOf(condition, WorldFactConditions.DEFAULT_BLOCK_RADIUS);
         int need = WorldFactConditions.minimumOf(condition, 1);
         if (need > 1) {
-            // 数量型：半径内至少 need 个（本身是"停在够用就收"，不扫全量）
             return countNeighbourhood(level, ap.blockPosition(), radius, hit, need) >= need;
         }
         return scanNeighbourhood(level, ap.blockPosition(), radius, hit);
+    }
+
+    /** 单个方块 id / tag → 判定谓词；非法返回 null。 */
+    private static Predicate<BlockState> blockPredicate(Object raw) {
+        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+        if (key == null) return null;
+        if (WorldFactConditions.isTag(raw)) {
+            TagKey<Block> tag = TagKey.create(Registries.BLOCK, key);
+            return state -> state.is(tag);
+        }
+        if (!BuiltInRegistries.BLOCK.containsKey(key)) return null;
+        var wanted = BuiltInRegistries.BLOCK.get(key);
+        return state -> state.is(wanted);
     }
 
     /**

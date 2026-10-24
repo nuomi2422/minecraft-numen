@@ -52,7 +52,9 @@ public final class WorldFactConditions {
             case "entity_killed" -> id(condition.get("entity")) && positive(condition.getOrDefault("minimum", 1));
             case "base" -> true;
             case "biome" -> tag(condition.get("biome"));
-            case "block_nearby" -> tag(condition.get("block")) && radius(condition.get("radius"), MAX_NEARBY_RADIUS);
+            case "block_nearby" -> (tag(condition.get("block")) || blockList(condition.get("blocks")))
+                    && radius(condition.get("radius"), MAX_NEARBY_RADIUS)
+                    && optionalPositive(condition.get("minimum"));
             case "container_nearby" -> tag(condition.get("item"))
                     && radius(condition.get("radius"), MAX_NEARBY_RADIUS)
                     && positive(condition.getOrDefault("minimum", 1));
@@ -79,6 +81,16 @@ public final class WorldFactConditions {
     // ── 宿主侧读取用的解析器（形状已由 valid 把关，这里不再失败，只给默认值）──────
 
     /** 邻域判定半径；未给或非法时回落到缺省值（合法路径上 {@link #valid} 已经挡过非法值）。 */
+    /** 多个方块 id（2026-10-25）：{@code blocks} 允许"torch 或 wall_torch"一起算，
+     *  因为 AI 会按最省事的方式贴墙插，而只认一种 id 会把合理做法判成没做。 */
+    public static boolean blockList(Object value) {
+        if (!(value instanceof java.util.List<?> list) || list.isEmpty()) return false;
+        for (Object one : list) {
+            if (!tag(one)) return false;
+        }
+        return true;
+    }
+
     public static int radiusOf(Map<String, Object> condition, int fallback) {
         Object raw = condition == null ? null : condition.get("radius");
         return raw instanceof Number n && n.intValue() >= 1 && n.intValue() <= MAX_NEARBY_RADIUS
