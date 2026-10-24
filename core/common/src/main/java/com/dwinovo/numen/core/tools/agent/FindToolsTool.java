@@ -33,31 +33,6 @@ public final class FindToolsTool implements NumenTool {
     static final int MAX_RESULTS = 8;
 
     private static final String SELECT = "select:";
-    /** 同一 query 第几次开始只回一行提示（第 LOCK_AT+1 次恢复完整定义，避免永久失明）。 */
-    private static final int LOCK_AT = 3;
-
-    /**
-     * 「同一份定义被反复取」的计数（2026-10-24 实测：一分钟内 6 次 select:sleep，
-     * 人就在床边 1 格外却一次都没调 sleep）。
-     *
-     * <p><b>只计数、不拦截</b>：定义照常返回。原作者语义是「用到再取」，
-     * 压掉定义会让压缩之后的上下文彻底失明；这里只加一行告警把"够了就动手"讲明白。
-     */
-    private static final java.util.concurrent.ConcurrentHashMap<String, Integer> REPEAT =
-            new java.util.concurrent.ConcurrentHashMap<>();
-
-    private static String repeatKey(String query) {
-        return query.toLowerCase(Locale.ROOT);
-    }
-
-    private static String names(List<NumenTool> hits) {
-        StringBuilder sb = new StringBuilder();
-        for (NumenTool t : hits) {
-            if (sb.length() > 0) sb.append(',');
-            sb.append(t.name());
-        }
-        return sb.toString();
-    }
     private static final Gson GSON = new Gson();
 
     private record Args(String query) {}
@@ -109,48 +84,9 @@ public final class FindToolsTool implements NumenTool {
                         "没有工具匹配 \"" + q + "\"。名字看 <deferred_tools> 目录。").toJson());
                 return;
             }
-            // 2026-10-24：实机抓到两种退化——
-            //   ① 把「拿到定义」当「已准备好」，同一名单反复取（chat.jsonl 实证 33 次 select:mine）；
-            //   ② 一次只取一个工具，来回七八轮（实测一轮里 equip_item/look_around/get_self_status/interact_at 各取一次）。
-            // 两种都靠一句提示治：定义不是动作；要用的工具**一次取全**。
-            //
-            // 2026-10-24 晚（第二轮实测）：同一个名字**一分钟内取了 6 次**，人就在床边 1 格外，
-            // 一次 sleep 都没调。据此加"重复计数"提示——注意：**仍然照常返回完整定义**
-            // （原作者语义是"用到再取"，压掉定义会让压缩后的上下文彻底失明），只在前面加一行告警。
-            //
-            // 2026-10-24 夜（第三轮实测）：告警**挡不住**——同一形态原样复发，
-            // select:collect_items 连取 8 次、模型明说"Now let me actually act: collect_items"却仍在取定义。
-            // ⇒ 加**带逃生口的硬互锁**：占位 3 次只回一行提示（不再返回整份 schema），
-            //   第 4 次立刻恢复完整定义。这样既不给循环续命，也绝不让她永久失明。
-            int seen = REPEAT.merge(repeatKey(q), 1, Integer::sum);
-            if (seen >= LOCK_AT) {
-                // ★ 2026-10-24 三轮实机教训：
-                //   ① 只回注释不带头 → 工具从可调用集合消失 → 死锁（locate_biome）；
-                //   ② 带头但"第 4 次恢复完整定义" → 模型就在 2/4 之间循环，永不收敛（rdd_death_ledger）；
-                //   ③ 光有告警 → 模型无视（33/8 连击）。
-                // ⇒ 现在**第 3 次起一律失败**（失败也是模型能看见的信号），
-                //   但把 `<functions expanded=…>` 头留在失败文本里，保证工具**仍然可调用**。
-                call.complete(TaskResult.fail(
-                        "<functions expanded=\"" + names(hits) + "\"></functions>"
-                        + "已拒绝第 " + seen + " 次取同一份定义：" + names(hits) + " 的参数你早就拿到了。"
-                        + "不要再来这里 —— 直接调用它；如果你已经调过但没成功，换一个办法（换工具/换坐标/换策略），"
-                        + "或者把当前困难用 report_task_concern 报上去。").toJson());
-                return;
-            }
-            if (seen == LOCK_AT - 1) {
-                call.complete("<functions expanded=\"" + names(hits) + "\"></functions>\n"
-                        + "<!-- " + names(hits) + " 的定义**已经在你的上下文里**（这是第 " + seen
-                        + " 次取同一份）。本次没有重复返回 schema：它的参数你已经有了，直接调用它即可。"
-                        + "**下一次重复取用会被直接拒绝。** -->");
-                return;
-            }
-            String warn = seen <= 1 ? ""
-                    : "<!-- 同一份定义你已经取过 " + seen + " 次。它没变。"
-                    + "现在缺的不是说明书，是动手：下一步请直接调用 " + names(hits) + "。 -->\n";
-            call.complete(warn + ToolDisclosure.render(hits)
-                    + "\n<!-- 上面是工具定义（说明书），不是动作。"
-                    + "① 你的下一步必须直接调用其中一个工具；再次 find_tools 取同一名单不会带来任何进展。"
-                    + "② 如果你预计还要用到别的工具，请用 select:a,b,c 一次性取全，不要一个工具一轮。 -->");
+            // 2026-10-24 夜（主人裁决）：提示/互锁/硬拒绝三轮补丁全部删除。
+            // 根因是渐进披露机制本身（上游 471d3861d 已删）；工具表已全量发送，这里只给定义、不拦截。
+            call.complete(ToolDisclosure.render(hits));
         } catch (RuntimeException ex) {
             call.complete(TaskResult.fail(ex.getMessage()).toJson());
         }
