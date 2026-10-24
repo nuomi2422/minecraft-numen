@@ -112,8 +112,10 @@ public final class EntityAgentLoop {
 
     /** 会话分段（2026-10-25）：每 N 轮把历史切成一段，只留最近 K 条原文。 */
     private static final boolean SEGMENT_ENABLED = true;
-    private static final int SEGMENT_TURNS = 120;
+    private static final int SEGMENT_TURNS = 60;
     private static final int SEGMENT_KEEP_MSGS = 24;
+    /** 历史估算超过这么多 token 也分段（不必等满 60 轮）。 */
+    private static final int SEGMENT_TOKENS = 20_000;
 
     /**
      * <b>发给模型的会话窗口上限</b>（2026-10-01 新增）。
@@ -2284,8 +2286,10 @@ public final class EntityAgentLoop {
      */
     private void maybeSegmentSession() {
         if (!SEGMENT_ENABLED) return;
-        if (convo.turnCount() < SEGMENT_TURNS) return;
         List<ConvoState.Msg> all = convo.snapshot();
+        boolean turnFull = convo.turnCount() >= SEGMENT_TURNS;
+        boolean tokenFull = com.dwinovo.numen.agent.llm.CompactSplit.estimateTokens(all) >= SEGMENT_TOKENS;
+        if (!turnFull && !tokenFull) return;
         if (all.size() <= SEGMENT_KEEP_MSGS) { convo.resetTurnCount(); return; }
         List<ConvoState.Msg> tail = com.dwinovo.numen.agent.llm.CompactSplit.validTail(all);
         if (tail.size() > SEGMENT_KEEP_MSGS) tail = tail.subList(tail.size() - SEGMENT_KEEP_MSGS, tail.size());
