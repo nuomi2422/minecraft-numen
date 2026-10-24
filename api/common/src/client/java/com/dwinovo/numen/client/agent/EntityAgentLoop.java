@@ -1890,7 +1890,7 @@ public final class EntityAgentLoop {
         // G4c S109b A-M2：先建这一轮真正要发出去的那份，但**先不 publish** ——
         // 预算/上下文/压缩闸都通过、incrementTurn 之后才发 runtime_state。
         // 这样被拦下的轮次不会留下“她看见了什么”的假记录，turn 也不会滞后一轮。
-        var tools = ToolRegistry.resident();
+        var tools = ToolRegistry.all();   // 2026-10-24 跟上游 471d3861d：渐进披露已删，工具表发全份
         var snapshot = modelContextSnapshot(false, "execution", 1);
         String systemPrompt = composeSystemPrompt();
         // A-M3：tools 分量用 provider 真正发出的 wire JSON，不是 List<NumenTool>.toString()。
@@ -2398,6 +2398,17 @@ public final class EntityAgentLoop {
      */
     private List<ConvoState.Msg> slimStaleExpansions(List<ConvoState.Msg> msgs, boolean log) {
         if (msgs.isEmpty()) return msgs;
+        // 2026-10-24 诊断：先数清楚"到底有没有展开块、是不是 Msg.Tool"。
+        // 之前 dedupe 日志一直是 0，无法区分"没重复"和"根本没走到"。
+        int toolMsgs = 0;
+        int expandedMsgs = 0;
+        for (ConvoState.Msg m : msgs) {
+            if (!(m instanceof ConvoState.Msg.Tool t)) continue;
+            toolMsgs++;
+            if (com.dwinovo.numen.agent.tool.ToolDisclosure.hasExpandedBlock(t.content())) expandedMsgs++;
+        }
+        Constants.LOG.info("[numen-entity#{}] 去重诊断：窗口 {} 条 / 工具消息 {} 条 / 含展开块 {} 条",
+                entityUuid, msgs.size(), toolMsgs, expandedMsgs);
         // 2026-10-24（主人裁决②）：**同名去重走正常路径**——以前只在窗口超预算后才动，
         // 实测 33 次 find_tools 就把展开块堆到 28.2k/40k（70% 窗口）。
         // 规则落在纯函数 ToolDisclosure.dedupeSameName 上（可钉测），这里只做消息层映射。
@@ -3025,7 +3036,7 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                 presenter.clearPartial();                 // 失败那次的半截文字同理作废
                 NumenLlmClient llm2 = client();
                 var retrySnapshot = modelContextSnapshot(false, "execution", 2);
-                var retryTools = ToolRegistry.resident();
+                var retryTools = ToolRegistry.all();   // 同上：重跑也发全份
                 String retrySystem = composeSystemPrompt();
                 inFlightTrimmedEstimate = estimateRequestTokens(retrySnapshot, retryTools, retrySystem);
                 publishPendingRuntimeState();
@@ -3144,14 +3155,19 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
     }
 
     /**
-     * 这一刻哪些工具可以调:常驻的永远可以(定义就在请求里),延迟的要看对话里还有没有
-     * 它的展开块。<b>现算,不存</b>——压缩把展开块总结掉之后,模型手里也没有参数定义了,
-     * 这里自然就该重新拦住它。
+     * 这一刻哪些工具可以调。
+     *
+     * <p><b>2026-10-24 跟上游 471d3861d 改回"全部可调"</b>：上游 09-20 就把渐进披露整个删了
+     * （ADR 0003「状态：被取代」：玩家反馈效果明显变差 #109，工具表一律发全份）。
+     * 我们这条分支还留着旧机制，于是模型手里只有常驻 11 个工具的完整定义，
+     * 每用一个别的工具都要先 {@code find_tools} 取定义 —— 实机表现为
+     * 「33 连击 / 8 连击 / 2-4 循环」空转，任务推进极慢。
+     *
+     * <p>现在工具表整份发出去，这里自然不再需要按对话内容现算可调用集合。
      */
     private java.util.Set<String> callableTools() {
         java.util.Set<String> ok = new java.util.LinkedHashSet<>();
-        for (com.dwinovo.numen.agent.tool.NumenTool t : ToolRegistry.resident()) ok.add(t.name());
-        ok.addAll(com.dwinovo.numen.agent.tool.ToolDisclosure.expandedIn(replayWindow(false)));
+        for (com.dwinovo.numen.agent.tool.NumenTool t : ToolRegistry.all()) ok.add(t.name());
         return ok;
     }
 
