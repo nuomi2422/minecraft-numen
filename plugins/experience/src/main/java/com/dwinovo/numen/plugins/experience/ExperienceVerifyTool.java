@@ -136,6 +136,41 @@ final class ExperienceVerifyTool implements NumenTool {
             }
 
             // 第二段：给了 id 才落数据。
+            //
+            // ★★ LC1（78 号 §7 判据）：晋级/归因门 —— 回报前必须证明「被回报的那版正文
+            //   真的到过模型手里」。呈现可能被预算裁掉、目录只给标题、旧凭证对应旧正文，
+            //   三条路都拦：没有完整交付 → 拒绝归因并给补证指引，但**不倒写游戏事实**
+            //   （任务成败在任务链/五态账里如实保留，这里只拒「归到这条经验头上」）。
+            ExperienceEntry target = memory.findById(id);
+            if (target == null) {
+                // findById 与 recordEvidence 同一套 id 解析：这里查不到，recordEvidence 也查不到
+                reply.accept(TaskResult.fail("no experience with id: " + id).toJson());
+                return;
+            }
+            String ref = id.startsWith("exp:") ? id : "exp:" + id;
+            String curVersion = target.contentFingerprint();
+            boolean retracted = target.retracted();
+            String lastDelivered = com.dwinovo.numen.experience.api.ExposureLedger
+                    .latestDeliveredVersion(companion.getUUID(), ref, System.currentTimeMillis());
+            java.util.List<String> everDelivered = com.dwinovo.numen.experience.api.ExposureLedger
+                    .deliveredVersions(companion.getUUID(), ref);
+            com.dwinovo.numen.experience.api.PromotionGate.Decision gate =
+                    com.dwinovo.numen.experience.api.PromotionGate.check(
+                            ref, curVersion, retracted, lastDelivered, everDelivered);
+            if (!gate.allowed()) {
+                ExperienceMonitor.publish("verify_rejected", java.util.Map.of(
+                        "companion", companion.getUUID().toString(),
+                        "id", id,
+                        "code", gate.code(),
+                        "delivered_versions", String.valueOf(everDelivered.size()),
+                        "current_version", curVersion));
+                // ★ 拒绝也清待回报：不加这道门时 AI 会反复来报同一条 —— 与 recordEvidence
+                //   的 receipts.report(id) 同一口径，拒绝路径同样要清。
+                memory.receipts().report(id);
+                reply.accept(TaskResult.fail("verification rejected (" + gate.code() + "): "
+                        + gate.message()).toJson());
+                return;
+            }
             ExperienceEntry updated = memory.recordEvidence(id, in.success(), in.note());
             if (updated == null) {
                 // ★ 如实说「没找到」，而不是假装成功、也不是偷偷留一条假记录。

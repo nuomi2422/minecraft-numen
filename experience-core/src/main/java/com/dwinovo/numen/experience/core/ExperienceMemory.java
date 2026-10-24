@@ -43,6 +43,14 @@ public final class ExperienceMemory {
         return store.recordEvidence(id, success, note);
     }
 
+    /**
+     * LC1：按 id 只读取条目（工具层晋级门用它算「当前版本指纹」，不改库）。
+     * 与 {@link #recordEvidence} 同一套 id 解析（含旧拼写兜底）。
+     */
+    public ExperienceEntry findById(String id) {
+        return store.findById(id);
+    }
+
     // ---- E8：撤回 / 修订链（薄转发，真逻辑在 ExperienceStore）----
 
     /** 撤回一条经验（标记不删）。reason 必填且不许空。id 不存在返回 {@code null}。 */

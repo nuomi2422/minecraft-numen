@@ -131,8 +131,23 @@ public final class ExperiencePlugin implements NumenPlugin {
                 java.util.List<String> refs0 = TrialRuntime.trialRefsIn(rendered.text());
                 LOG.info("[expmem] trial refs={} len={} hasMarker={}", refs0,
                         rendered.text().length(), rendered.text().contains("（试用中）"));
-                TrialRuntime.notePresented(companion,
-                        refs0, System.currentTimeMillis());
+                // ★ LC1（78 号 §2.1）：渲染不等于送达 —— 本呈现仍按原窗口归因记账（弱证据），
+                //   但版本指纹如实带上；真正的「收到」回执在 ExposureLedger（工具回复通道）。
+                java.util.List<TrialRuntime.VersionedPresentation> vps = new java.util.ArrayList<>();
+                for (String ref : refs0) {
+                    String version = "";
+                    try {
+                        String id = ref.startsWith("exp:") ? ref.substring(4) : ref;
+                        var entry = ExperiencePlugin.memory(companion).findById(id);
+                        if (entry != null) {
+                            version = entry.contentFingerprint();
+                        }
+                    } catch (RuntimeException ignore) {
+                        // 解析不到条目：版本留空串 = LEGACY，归因照旧，不猜
+                    }
+                    vps.add(new TrialRuntime.VersionedPresentation(ref, version, System.currentTimeMillis()));
+                }
+                TrialRuntime.noteVersionedPresented(companion, vps, System.currentTimeMillis());
                 return rendered.text();
             } catch (Throwable t) {
                 // 执行知识是可选增强：坏了只丢这一段，本轮请求照常（宿主还有一层隔离兜底）

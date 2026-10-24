@@ -4,6 +4,7 @@ import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.experience.api.ExperienceHit;
+import com.dwinovo.numen.experience.api.ExposureLedger;
 import com.dwinovo.numen.experience.api.ExperienceMaturity;
 import com.dwinovo.numen.experience.core.ExperienceMemory;
 import com.dwinovo.numen.experience.core.PresentationReceipt;
@@ -118,6 +119,29 @@ final class ExperienceRecallTool implements NumenTool {
             int before = receipts.pendingCount();
             List<ExperienceHit> hits = memory.recall(
                     query, limit, min, tags, PresentationReceipt.SURFACE_RECALL_TOOL, true);
+            // ★ LC1（78 号 §3.1）：召回回复自带正文（description/root_cause/recommended_response），
+            //   正文确实到了 = AUTO_EXPANDED（系统随召回交付，不伪装为模型逐条主动展开）。
+            //   版本 = 每条命中当下的正文指纹；截断=否（工具层不裁剪这些字段）。
+            for (ExperienceHit hit : hits) {
+                if (hit == null || hit.entry() == null || hit.entry().id() == null) continue;
+                try {
+                    ExposureLedger.record(companion.getUUID(), new ExposureLedger.Delivery(
+                            "exp:" + hit.entry().id(),
+                            hit.entry().contentFingerprint(),
+                            ExposureLedger.KIND_AUTO_EXPANDED,
+                            toolCallId, false, System.currentTimeMillis()));
+                } catch (RuntimeException ignore) {
+                    // 记账失败不影响召回本身
+                }
+            }
+            try {
+                ExperienceMonitor.publish("auto_expanded", java.util.Map.of(
+                        "companion", companion.getUUID().toString(),
+                        "hits", hits.size(),
+                        "tool_call_id", String.valueOf(toolCallId)));
+            } catch (Throwable ignore) {
+                // 观测失败不影响召回
+            }
             List<Map<String, Object>> results = new ArrayList<>();
             for (ExperienceHit hit : hits) {
                 Map<String, Object> item = new LinkedHashMap<>();

@@ -153,14 +153,48 @@ public final class ExperienceStore {
         if (index < 0) {
             stored = normalized;
             mirror.add(stored);
+            // ★ LC1（78 号 §2.2）：新条目（首次入库）没有旧证据可隔离，正文本就是这一版。
             LOG.info("[experience] learned '{}' ({})", stored.title(), stored.type());
         } else {
-            stored = merge(mirror.get(index), normalized);
-            mirror.set(index, stored);
-            LOG.info("[experience] merged '{}' (now {})", stored.title(), stored.maturity());
+            ExperienceEntry old = mirror.get(index);
+            // ★★ LC1（78 号 §2.2）：同身份更新正文时，旧成熟度/验证次数不许跟着新内容走。
+            //   正文指纹（ContentIdentity，只吃命题字段）变了 = 验证过的命题不复存在：
+            //   旧正文验证十次、learn 一版新正文进来仍然显示可信 —— 学习线就越攒越不可靠。
+            //   处理：verifiedCount/verifiedAt/consecutiveFailures 按内容漂移重置；
+            //   反例（counterexamples）保留 —— 那是对旧命题的记录，丢了才是丢证据；
+            //   maturity 不动（成熟度是身份级信任的读数，正文修订不自动推翻它，
+            //   但 verifiedCount 归零意味着 GENERALIZED 阈值要重新数起）。
+            if (!com.dwinovo.numen.experience.api.ContentIdentity.fingerprint(old)
+                    .equals(com.dwinovo.numen.experience.api.ContentIdentity.fingerprint(normalized))) {
+                stored = merge(old, normalized).withEvidenceResetForContentDrift();
+                mirror.set(index, stored);
+                LOG.info("[experience] content drifted on '{}': evidence counters reset "
+                                + "(maturity {} kept, {} counterexamples kept)",
+                        stored.title(), stored.maturity(), stored.counterexamples().size());
+            } else {
+                stored = merge(old, normalized);
+                mirror.set(index, stored);
+                LOG.info("[experience] merged '{}' (now {})", stored.title(), stored.maturity());
+            }
         }
         persist();
         return stored;
+    }
+
+    /**
+     * LC1：按 id 找条目（只读）。与 {@link #recordEvidence} 用<b>同一套</b> id 解析
+     * （canonical id 优先，旧拼写兜底）—— 否则旧 id 在验证门这一步就查不到，
+     * 而 recordEvidence 却认它，两个入口对同一 id 答案不一致。
+     *
+     * @return 条目；解析不出返回 {@code null}
+     */
+    public synchronized ExperienceEntry findById(String id) {
+        ensureLoaded();
+        int index = indexOf(id);
+        if (index < 0) {
+            index = indexByLegacyId(id);
+        }
+        return index < 0 ? null : mirror.get(index);
     }
 
     /**

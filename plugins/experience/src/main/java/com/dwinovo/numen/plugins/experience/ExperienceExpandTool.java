@@ -3,6 +3,7 @@ package com.dwinovo.numen.plugins.experience;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.entity.NumenPlayer;
+import com.dwinovo.numen.experience.api.ExposureLedger;
 import com.dwinovo.numen.experience.core.ExperienceMemory;
 import com.dwinovo.numen.task.TaskResult;
 import com.google.gson.Gson;
@@ -66,10 +67,37 @@ final class ExperienceExpandTool implements NumenTool {
                 reply.accept(TaskResult.fail(r.code() + ": " + r.message()).toJson());
                 return;
             }
+            // ★ LC1（78 号 §3.1）：成功交付正文才记 EXPANDED —— 工具回复不走预算裁剪，
+            //   回了就是到了。截断照记（可审计）但不算完整交付（可能缺关键步骤）。
+            //   版本 = 条目当前正文指纹（ContentIdentity）；拿不到条目如实记空串（LEGACY）。
+            String version = "";
+            try {
+                String id = r.ref().startsWith("exp:") ? r.ref().substring(4) : r.ref();
+                var entry = ExperiencePlugin.memory(companion.getUUID()).findById(id);
+                if (entry != null) {
+                    version = entry.contentFingerprint();
+                }
+            } catch (RuntimeException lookupFailed) {
+                // 版本解析失败不阻塞交付；空串版本在账本里就是 LEGACY 口径
+            }
+            ExposureLedger.record(companion.getUUID(), new ExposureLedger.Delivery(
+                    r.ref(), version, ExposureLedger.KIND_EXPANDED,
+                    toolCallId, r.truncated(), System.currentTimeMillis()));
+            try {
+                ExperienceMonitor.publish("expanded", java.util.Map.of(
+                        "ref", r.ref(),
+                        "version", version,
+                        "chars", r.chars(),
+                        "truncated", r.truncated(),
+                        "tool_call_id", String.valueOf(toolCallId)));
+            } catch (Throwable ignore) {
+                // 观测失败不影响交付
+            }
             reply.accept(TaskResult.ok(r.body(), java.util.Map.of(
                     "ref", r.ref(),
                     "chars", r.chars(),
                     "truncated", r.truncated(),
+                    "content_version", version,
                     "read_only", true)).toJson());
         } catch (RuntimeException ex) {
             reply.accept(TaskResult.fail("experience_expand failed: " + ex.getMessage()).toJson());

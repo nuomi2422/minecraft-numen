@@ -214,6 +214,51 @@ public record ExperienceEntry(
     }
 
     // ============================================================
+    // LC1（78 号工作单 §3）：内容版本 —— 「验证过的是哪一版正文」
+    // ============================================================
+
+    /**
+     * 正文命题指纹（{@link ContentIdentity}）：description / rationale / rootCause /
+     * recommendedResponse / 七字段槽位 / triggerStrings / toolNames。
+     * title / tags / priority / 各计数与时间戳 / 撤回与发布状态<b>不参与</b> ——
+     * 身份归 stableKey 管，评价变化不该换版本。
+     */
+    public String contentFingerprint() {
+        return ContentIdentity.fingerprint(this);
+    }
+
+    /**
+     * 是否同版正文命题（learn 合并前的漂移判定）。
+     *
+     * <p>用指纹比较而不是逐字段 equals：指纹对 null/空串同形、trim 容错，
+     * 与落盘/重载后的字段形状一致（重载不会把没填的槽位变成 "null" 字符串）。</p>
+     */
+    public boolean sameContent(ExperienceEntry other) {
+        return other != null && contentFingerprint().equals(other.contentFingerprint());
+    }
+
+    /**
+     * LC1：内容漂移后的证据隔离 —— 正文变了，旧证据<b>不跟着新内容走</b>。
+     *
+     * <p>重置：verifiedCount→0 / verifiedAt→0 / consecutiveFailures→0。
+     * 保留：counterexamples（对旧命题的反例记录是证据）、maturity（身份级信任读数，
+     * 正文修订不自动推翻它 —— 推翻走反例连续失败那一条既有路径）、
+     * retracted / supersedes / publication（状态机的领域，本方法不碰）。</p>
+     *
+     * <p>⚠️ 与 {@link #withEvidence} 的分工：那个是「记录一次验证结果」，
+     * 这个是「正文变了，验证计数重新数起」。两个都在 Store 的 synchronized 下调用，
+     * 不可变拷贝、无副作用。</p>
+     */
+    public ExperienceEntry withEvidenceResetForContentDrift() {
+        return builder().from(this)
+                .verifiedCount(0)
+                .verifiedAt(0L)
+                .consecutiveFailures(0)
+                .lastAccessedAt(System.currentTimeMillis())
+                .build();
+    }
+
+    // ============================================================
     // E8：验证状态变化 —— 撤回 / 修订 / 降级
     // ============================================================
 
