@@ -124,8 +124,14 @@ public final class FindToolsTool implements NumenTool {
             //   第 4 次立刻恢复完整定义。这样既不给循环续命，也绝不让她永久失明。
             int seen = REPEAT.merge(repeatKey(q), 1, Integer::sum);
             if (seen == LOCK_AT) {
-                call.complete("<!-- " + names(hits) + " 的定义**已经在你的上下文里**（这是第 " + seen
-                        + " 次取同一份）。本次不再重复返回 schema：直接调用它。"
+                // ★ 2026-10-24 现场事故：这一支原来只回一段注释、**不带 <functions expanded=…> 标记**，
+                // 而 EntityAgentLoop.callableTools() 正是靠这个标记判断"这个延迟工具已展开"。
+                // 标记一没了 ⇒ locate_biome 从可调用集合里消失 ⇒ 模型想调它却调不到，
+                // 只能再 find_tools —— 于是"第 3 次回短消息"反而制造了死锁（实机复现：locate_biome 循环）。
+                // 现在**保留空的展开块头**：名字仍然可调用，只是不再重复整份 schema。
+                call.complete("<functions expanded=\"" + names(hits) + "\"></functions>\n"
+                        + "<!-- " + names(hits) + " 的定义**已经在你的上下文里**（这是第 " + seen
+                        + " 次取同一份）。本次没有重复返回 schema：它的参数你已经有了，直接调用它即可。"
                         + "若你确实看不到定义（上下文被压缩过），再取一次会立刻恢复完整定义。 -->");
                 return;
             }
