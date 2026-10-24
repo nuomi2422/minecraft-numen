@@ -52,7 +52,18 @@ public final class ToolDispatcher {
      * Only rescues a dead-server / never-replying tool — deliberately generous, so a
      * core tool (always answered by the server) never trips it.
      */
-    private static final long TOOL_BACKSTOP_MILLIS = 15 * 60 * 1000L;
+    /**
+     * 单个工具调用的兜底超时：到点就合成一条失败回执，免得整个 agent loop 被一个哑掉的调用拖死。
+     *
+     * <p><b>2026-10-25 实机</b>：原来 15 分钟。夜里一次工具调用不返回，
+     * brain gate 卡在 {@code tool_calls_outstanding} **11 分钟**，期间一句话都不说，
+     * 外部只能重启游戏（重启后任务其实是好的，纯属被拖死）。
+     *
+     * <p><b>为什么不能设很短</b>：合法长任务本身就要好几分钟 ——
+     * {@code goto} 的时间预算实测 296s、{@code mine} 240s。
+     * 6 分钟刚好比最长合法预算(5 分钟)留出余量，又把"干等"从 15 分钟压到 6 分钟。
+     */
+    private static final long TOOL_BACKSTOP_MILLIS = 6 * 60 * 1000L;
 
     private final UUID entityUuid;
     private final Sink sink;
