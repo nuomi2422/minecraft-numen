@@ -122,6 +122,10 @@ class AcxExecutionReflectorTest {
         assertEquals(UsageLedger.Outcome.CANCELED, e.outcome(),
                 "熔断=被外力中止，归 CANCELED：与 FAIL 分开（不评价脚本质量），与 UNKNOWN 分开（终态明确）");
         assertTrue(e.source().startsWith(AcxExecutionReflector.SOURCE_PREFIX), "幂等键照带: " + e.source());
+        // ★ 自审钉子：TIMEOUT 是终态 ⇒ 不许进 notFinal（那个数属于「只记 EXECUTED 没结果」的
+        //   PAUSED/RUNNING 组）。首版把 notFinal++ 写进了 TIMEOUT 分支——终态混进「非终态」读数。
+        assertEquals(0, rep.skippedNotFinal(),
+                "TIMEOUT 已入 RESULT（终态），notFinal 必须为 0——它只数 PAUSED/RUNNING 那组: " + rep.toMap());
     }
 
     /**

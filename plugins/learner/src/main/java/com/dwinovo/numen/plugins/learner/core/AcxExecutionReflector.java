@@ -175,7 +175,9 @@ public final class AcxExecutionReflector {
                 case "TIMEOUT", "TIMED_OUT" -> {
                     phase = UsageLedger.Phase.RESULT;
                     outcome = UsageLedger.Outcome.CANCELED;
-                    notFinal++;   // 计数上仍归「非终态质量信号」：熔断不评价脚本好坏
+                    // ★ 自审修正：notFinal 不 +1 —— 它的语义是「只记 EXECUTED、没有结果」
+                    //   （PAUSED/RUNNING 那一组）。TIMEOUT 已入 RESULT（终态明确），
+                    //   计进 notFinal 会让「非终态」读数混入终态，与它自己的名字矛盾。
                     terminal = true;
                 }
                 case "PAUSED", "RUNNING", "PENDING", "STEP_FAILED", "STEP_OK" -> {

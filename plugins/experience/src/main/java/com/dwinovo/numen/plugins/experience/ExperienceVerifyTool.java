@@ -164,9 +164,11 @@ final class ExperienceVerifyTool implements NumenTool {
                         "code", gate.code(),
                         "delivered_versions", String.valueOf(everDelivered.size()),
                         "current_version", curVersion));
-                // ★ 拒绝也清待回报：不加这道门时 AI 会反复来报同一条 —— 与 recordEvidence
-                //   的 receipts.report(id) 同一口径，拒绝路径同样要清。
-                memory.receipts().report(id);
+                // ★ 自审修正（LC1 首版错把这里写成「拒绝也清待回报」）：**不清**。
+                //   拒绝不等于「这条经验不欠结论了」——它仍然欠（只是要先补展开/重新召回
+                //   拿到当前版本正文）。清掉 pending 会把这个连接键断掉：AI 下次列清单
+                //   再也看不到它，这笔欠账永远挂不上。recordEvidence 里那一次 report(id)
+                //   只在**真的记上证据**时发生，语义不变。
                 reply.accept(TaskResult.fail("verification rejected (" + gate.code() + "): "
                         + gate.message()).toJson());
                 return;
