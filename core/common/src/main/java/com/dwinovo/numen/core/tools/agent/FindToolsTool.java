@@ -33,6 +33,29 @@ public final class FindToolsTool implements NumenTool {
     static final int MAX_RESULTS = 8;
 
     private static final String SELECT = "select:";
+
+    /**
+     * 「同一份定义被反复取」的计数（2026-10-24 实测：一分钟内 6 次 select:sleep，
+     * 人就在床边 1 格外却一次都没调 sleep）。
+     *
+     * <p><b>只计数、不拦截</b>：定义照常返回。原作者语义是「用到再取」，
+     * 压掉定义会让压缩之后的上下文彻底失明；这里只加一行告警把"够了就动手"讲明白。
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Integer> REPEAT =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static String repeatKey(String query) {
+        return query.toLowerCase(Locale.ROOT);
+    }
+
+    private static String names(List<NumenTool> hits) {
+        StringBuilder sb = new StringBuilder();
+        for (NumenTool t : hits) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(t.name());
+        }
+        return sb.toString();
+    }
     private static final Gson GSON = new Gson();
 
     private record Args(String query) {}
@@ -88,7 +111,15 @@ public final class FindToolsTool implements NumenTool {
             //   ① 把「拿到定义」当「已准备好」，同一名单反复取（chat.jsonl 实证 33 次 select:mine）；
             //   ② 一次只取一个工具，来回七八轮（实测一轮里 equip_item/look_around/get_self_status/interact_at 各取一次）。
             // 两种都靠一句提示治：定义不是动作；要用的工具**一次取全**。
-            call.complete(ToolDisclosure.render(hits)
+            //
+            // 2026-10-24 晚（第二轮实测）：同一个名字**一分钟内取了 6 次**，人就在床边 1 格外，
+            // 一次 sleep 都没调。据此加"重复计数"提示——注意：**仍然照常返回完整定义**
+            // （原作者语义是"用到再取"，压掉定义会让压缩后的上下文彻底失明），只在前面加一行告警。
+            int seen = REPEAT.merge(repeatKey(q), 1, Integer::sum);
+            String warn = seen <= 1 ? ""
+                    : "<!-- 同一份定义你已经取过 " + seen + " 次。它没变。"
+                    + "现在缺的不是说明书，是动手：下一步请直接调用 " + names(hits) + "。 -->\n";
+            call.complete(warn + ToolDisclosure.render(hits)
                     + "\n<!-- 上面是工具定义（说明书），不是动作。"
                     + "① 你的下一步必须直接调用其中一个工具；再次 find_tools 取同一名单不会带来任何进展。"
                     + "② 如果你预计还要用到别的工具，请用 select:a,b,c 一次性取全，不要一个工具一轮。 -->");
