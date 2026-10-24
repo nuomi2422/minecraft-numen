@@ -261,6 +261,42 @@ class ExperienceFingerprintTest {
                 ExperienceEntry.fingerprint(ExperienceType.POLICY, "同名"));
     }
 
+    /**
+     * LC6（78 号 §7 判据）：两条 OBSERVED 合并仍是候选 —— <b>不许合成 VERIFIED</b>。
+     *
+     * <p>merge 取 max 是隐式保证；这条按工作单判据原文显式钉死，防止将来有人把
+     * 「合并 = 证据翻倍 ⇒ 应该升级」的想法写进去（两条各验一次 ≠ 合起来验了两次：
+     * 78 号 §1「合并是新版本/新命题，不能相加次数冒充可靠」）。
+     * 顺带钉对称面：两条各验一次的 VERIFIED 合并<b>不升</b> GENERALIZED（次数取 max 不相加）。
+     */
+    @Test
+    void twoObservedMergeStaysObserved_twoVerifiedMergeStaysVerified() throws Exception {
+        // 两条 OBSERVED（各无验证）在磁盘上撞 id → 读时合并
+        write(
+                lineWithCounterexamples("failure|两条观察", "FAILURE", "两条观察", "OBSERVED", 0, "甲场景反例"),
+                lineWithCounterexamples("failure|两条观察", "FAILURE", "两条观察", "OBSERVED", 0, "乙场景反例"));
+
+        ExperienceStore s = store();
+        assertEquals(1, s.size());
+        ExperienceEntry merged = s.all().get(0);
+        assertEquals(ExperienceMaturity.OBSERVED, merged.maturity(),
+                "OBSERVED + OBSERVED = OBSERVED，合并不产生验证");
+        assertEquals(0, merged.verifiedCount());
+        assertEquals(2, merged.counterexamples().size(), "反例照旧并集保留");
+
+        // 对称面：两条各验一次的 VERIFIED 合并 → 仍是 VERIFIED（count 取 max=1，不是相加=2，
+        // 更不因此触发 GENERALIZED_THRESHOLD=3）
+        write(
+                lineWithCounterexamples("failure|两条已验", "FAILURE", "两条已验", "VERIFIED", 1, "a"),
+                lineWithCounterexamples("failure|两条已验", "FAILURE", "两条已验", "VERIFIED", 1, "b"));
+        ExperienceStore s2 = store();
+        assertEquals(1, s2.size());
+        ExperienceEntry m2 = s2.all().get(0);
+        assertEquals(ExperienceMaturity.VERIFIED, m2.maturity(),
+                "VERIFIED + VERIFIED = VERIFIED，不是 GENERALIZED");
+        assertEquals(1, m2.verifiedCount(), "次数取 max 不相加——两条各验一次合起来也不是验了两次");
+    }
+
     /** 语义符号写在标题两端时<b>不能</b>剥掉。 */
     @Test
     void fingerprintMustNotStripEdgePunctuation() {
