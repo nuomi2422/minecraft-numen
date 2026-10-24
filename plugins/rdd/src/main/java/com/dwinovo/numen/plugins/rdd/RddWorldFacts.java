@@ -40,6 +40,9 @@ import java.util.function.Predicate;
 
 /** Read-only, server-thread world evidence. Unknown/unloaded facts never pass. */
 public final class RddWorldFacts {
+
+    /** 锚点判定的垂直容差：建造类目标只在"这一层附近"，不要球半径那么苛刻。 */
+    private static final int ANCHOR_DY = 16;
     private RddWorldFacts() {}
 
     /**
@@ -233,11 +236,16 @@ public final class RddWorldFacts {
         };
         int radius = WorldFactConditions.radiusOf(condition, WorldFactConditions.DEFAULT_BLOCK_RADIUS);
         int need = WorldFactConditions.minimumOf(condition, 1);
+        // 2026-10-25 实机：锚点用**球**半径时，同伴在 y 上差 40 格就永远够不到（goto 只在水平面走）。
+        // 建造类目标应当是"这块地的这一层附近"——锚点存在时改成**圆柱**：水平用 radius，垂直给 ±ANCHOR_DY。
+
         // 2026-10-25：锚点可选。建造类目标（插火把/围栏/盖房）必须锚在**那块地**上，
         // 不能锚在会走动的同伴身上 —— 否则人一走，早先插的火把滑出半径，已满足的条件又变假。
         net.minecraft.core.BlockPos origin = ap.blockPosition();
         Object anchor = condition.get("anchor");
+        boolean anchored = false;
         if (anchor instanceof java.util.List<?> xyz && xyz.size() == 3) {
+            anchored = true;
             try {
                 origin = new net.minecraft.core.BlockPos(
                         ((Number) xyz.get(0)).intValue(),
@@ -248,9 +256,37 @@ public final class RddWorldFacts {
             }
         }
         if (need > 1) {
+            if (anchored) {
+                return countCylinder(level, origin, radius, ANCHOR_DY, hit, need) >= need;
+            }
             return countNeighbourhood(level, origin, radius, hit, need) >= need;
         }
+        if (anchored) {
+            return countCylinder(level, origin, radius, ANCHOR_DY, hit, 1) >= 1;
+        }
         return scanNeighbourhood(level, origin, radius, hit);
+    }
+
+    /** 圆柱扫描：水平半径 radius + 垂直 ±dy（锚点建造判定用）。 */
+    private static int countCylinder(ServerLevel level, BlockPos origin, int radius, int dy,
+                                     Predicate<BlockState> hit, int stopAt) {
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        int squared = radius * radius;
+        int found = 0;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                if (dx * dx + dz * dz > squared) continue;
+                for (int ddy = -dy; ddy <= dy; ddy++) {
+                    cursor.set(origin.getX() + dx, origin.getY() + ddy, origin.getZ() + dz);
+                    if (!level.hasChunkAt(cursor)) continue;
+                    if (hit.test(level.getBlockState(cursor))) {
+                        found++;
+                        if (stopAt > 0 && found >= stopAt) return found;
+                    }
+                }
+            }
+        }
+        return found;
     }
 
     /** 单个方块 id / tag → 判定谓词；非法返回 null。 */
