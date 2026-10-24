@@ -107,7 +107,12 @@ public final class RddFurnaceTool implements NumenTool {
             data.put("fuel_added", putFuel);
             data.put("furnace_input", furnace.getItem(SLOT_INPUT).getCount());
             data.put("furnace_fuel", furnace.getItem(SLOT_FUEL).getCount());
-            reply.accept(TaskResult.ok("放料：输入 +" + putInput + "，燃料 +" + putFuel, data).toJson());
+            reply.accept(TaskResult.ok("放料：输入 +" + putInput + "，燃料 +" + putFuel
+                    // 2026-10-25 实机：AI 放料、等烧完，然后**走开了**——
+                    // 炉子里躺着 8 个铁锭，背包里一个没有，任务链还判"没拿到铁锭"。
+                    // 它不知道"烧完还要收"，所以放料回执里把下一步写明。
+                    + "。烧完后**必须回来收**：用 action=take 把产物收进背包，"
+                    + "不收的话炉子里会一直堆着，背包里不会增加。", data).toJson());
             return;
         }
         if ("take".equals(action)) {
