@@ -255,11 +255,15 @@ class TaskChainTest {
         assertThrows(IllegalArgumentException.class, () -> TaskChain.fromJson(corrupt));
     }
 
-    @Test void restoreRejectsMissingStatusEntry() {
+    @Test void restoreRegistersMissingStatusEntryWithAccounting() {
         var primary = new PrimaryGoal("p1", "mine", java.util.List.of(
                 Subtask.hardCoded("s1", "get stone", Map.of("item", "stone"))));
         var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(primary)));
         String corrupt = chain.toJson().replace("\"s1\":\"PENDING\"", "");
-        assertThrows(IllegalArgumentException.class, () -> TaskChain.fromJson(corrupt));
+        var c = TaskChain.fromJson(corrupt);
+        assertEquals(com.dwinovo.numen.rdd.api.SubtaskStatus.PENDING, c.subtaskStatuses().get("s1"),
+                "缺登记的二级补成 PENDING（拍板 1）");
+        assertNotNull(c.lastSanitization(), "补登记必须留账");
+        assertTrue(c.lastSanitization().registeredAsPending().contains("s1"));
     }
 }

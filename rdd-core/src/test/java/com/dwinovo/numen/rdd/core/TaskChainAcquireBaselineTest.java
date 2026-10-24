@@ -171,16 +171,21 @@ class TaskChainAcquireBaselineTest {
     }
 
     @Test
-    void restoredBaselinePointingAtUnknownSubtaskIsRejectedLoudly() {
+    void restoredBaselinePointingAtUnknownSubtaskIsCleanedAndAccounted() {
+        // 2026-10-24 拍板 1：恢复语义从「拒绝」改为「清理 + 结构化账」。
+        // acquire 判据静默卡死的风险由「清理时挂账」兜住：账上点名 ghost-99，
+        // 宿主（无人值守场景）能从 lastSanitization() 看到基线被清的事实。
         TaskChain chain = activeChain();
         chain.captureAcquireBaseline("p0-r1-0", Map.of("minecraft:wheat_seeds", 33));
         String tampered = chain.toJson().replace("\"acquireBaselines\":{\"p0-r1-0\"",
                 "\"acquireBaselines\":{\"ghost-99\"");
         assertNotNull(tampered);
-        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                () -> TaskChain.fromJson(tampered));
-        assertTrue(ex.getMessage().contains("acquireBaseline"),
-                "指向不存在二级的基线必须大声拒绝（查不到基线会让 acquire 静默卡死）：" + ex.getMessage());
+        var restored = TaskChain.fromJson(tampered);
+        assertNull(restored.acquireBaseline("ghost-99"), "幽灵基线必须被清掉（不再拒绝）");
+        var report = restored.lastSanitization();
+        assertNotNull(report, "清理必须留账（拍板 1：删了什么、为什么，要能对账）");
+        assertTrue(report.droppedAcquireBaselines().contains("ghost-99"),
+                "账必须点名被清的基线 id");
     }
 
     @Test

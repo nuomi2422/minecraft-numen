@@ -287,15 +287,21 @@ class TaskChainStateMachineExitTest {
         assertThrows(IllegalArgumentException.class, () -> TaskChain.fromJson(corrupt));
     }
 
-    @Test void restoreRejectsUnknownAttemptSubtask() {
+    @Test void restoreCleansUnknownAttemptSubtaskWithAccounting() {
         var chain = chain(new PrimaryGoal("p", "a", List.of(hc("s1"))));
         String corrupt = chain.toJson().replace("\"attempts\":{}", "\"attempts\":{\"ghost\":5}");
-        assertThrows(IllegalArgumentException.class, () -> TaskChain.fromJson(corrupt));
+        var c = TaskChain.fromJson(corrupt);
+        assertEquals(0, c.attempts("ghost"), "幽灵 attempts 清零（拍板 1：清理为规范）");
+        assertNotNull(c.lastSanitization(), "清理必须留账");
+        assertTrue(c.lastSanitization().droppedAttempts().contains("ghost"));
     }
 
-    @Test void restoreRejectsSkipReasonOnNonSkipped() {
+    @Test void restoreCleansSkipReasonOnNonSkippedWithAccounting() {
         var chain = chain(new PrimaryGoal("p", "a", List.of(hc("s1"))));
         String corrupt = chain.toJson().replace("\"skipReasons\":{}", "\"skipReasons\":{\"s1\":\"nope\"}");
-        assertThrows(IllegalArgumentException.class, () -> TaskChain.fromJson(corrupt));
+        var c = TaskChain.fromJson(corrupt);
+        assertNull(c.skipReason("s1"), "不成立的 skipReason 清掉");
+        assertNotNull(c.lastSanitization(), "清理必须留账");
+        assertTrue(c.lastSanitization().droppedSkipReasons().contains("s1"));
     }
 }

@@ -18,10 +18,12 @@ import static org.junit.jupiter.api.Assertions.*;
  * 两者的失败后果完全不同：T1 挂 = 丢状态、AI 重做；本类挂 = 带着非法状态进执行器，
  * 变成<b>静默卡死</b>或<b>假完成</b>——那是最难查的一类事故。
  *
- * <h2>一条铁律</h2>
- * <p>{@code TaskChain.validateRestoredState()} 必须在链交给执行器或监测台之前大声拒绝损坏数据。
- * 「悄悄丢进 /dev/null」是本仓反复出现过的错误形态（见 {@code fromJson} 里 skipReasons
- * 那段注释：加载期过滤会让非法引用静默消失，而不是大声报错）。
+ * <h2>立场更新（2026-10-24 主人拍板 1，rdd.audit-sweep→repair-sweep）</h2>
+ * <p>恢复语义已定为「<b>清理脏状态为规范，但清理必须留结构化账</b>」（拒绝语义每次逼人手动清场，
+ * 违背无人值守目标；f24b7c752 起生效）。本类随之改判：损坏数据不再期待抛异常，
+ * 而是期待「被清掉 + {@code lastSanitization()} 账上点名」。<b>「清理了但账是 null」= 本类要抓的红</b>——
+ * 那才是「悄悄丢进 /dev/null」在新时代的形态。仍保留抛异常的是结构性损坏
+ * （重复 id / 指针越界 / 整表缺失）：那些不是「脏数据」是「坏结构」，清理救不了。
  *
  * <p>本类零生产改动、零构建改动、零 Minecraft。
  */
@@ -54,21 +56,26 @@ class TaskChainInvariantsTest {
     }
 
     @Test
-    void statusTableWithExtraKeyIsRejected() {
+    void statusTableWithExtraKeyIsCleanedAndAccounted() {
         String json = jsonOf(new PrimaryGoal("p", "阶段一", List.of(hc("s1"))))
                 .replace("\"statuses\":{\"s1\":\"PENDING\"}", "\"statuses\":{\"s1\":\"PENDING\",\"ghost\":\"PENDING\"}");
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> restore(json),
-                "★ 状态表里多出一个不存在的二级 = 损坏。必须拒绝，而不是让它进执行器。");
-        assertTrue(e.getMessage().contains("ghost"), "报错信息必须点名那个幽灵 id，便于定位");
+        var c = restore(json);
+        assertNull(c.subtaskStatuses().get("ghost"), "幽灵条目必须被清掉（拍板 1：清理为规范）");
+        var report = c.lastSanitization();
+        assertNotNull(report, "★ 清理必须留账（拍板 1）——账是 null 就是悄悄丢进 /dev/null");
+        assertTrue(report.droppedStatuses().contains("ghost"), "账必须点名被丢弃的幽灵 id");
     }
 
     @Test
-    void statusTableWithMissingKeyIsRejected() {
+    void statusTableWithMissingKeyIsRegisteredAndAccounted() {
         String json = jsonOf(new PrimaryGoal("p", "阶段一", List.of(hc("s1"), hc("s2"))))
                 .replaceAll("\"statuses\":\\{[^}]*\\}", "\"statuses\":{\"s1\":\"PENDING\"}");
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> restore(json),
-                "★ 状态表少一条 = 那个二级的状态丢了。必须拒绝（否则它会被当成 PENDING 静默重跑）。");
-        assertTrue(e.getMessage().contains("missing"), "报错必须说明是缺条目");
+        var c = restore(json);
+        assertEquals(SubtaskStatus.PENDING, c.subtaskStatuses().get("s2"),
+                "缺登记的二级补成 PENDING（不再拒绝——拒绝语义逼人手动清场）");
+        var report = c.lastSanitization();
+        assertNotNull(report, "★ 补登记也必须留账（拍板 1）");
+        assertTrue(report.registeredAsPending().contains("s2"), "账必须点名补登记的 id");
     }
 
     @Test
@@ -91,47 +98,64 @@ class TaskChainInvariantsTest {
     // ── ② reason 表只允许挂在对应的状态上 ──────────────────────────
 
     @Test
-    void skipReasonMustSitOnSkippedSubtask() {
+    void skipReasonOnNonSkippedIsCleanedAndAccounted() {
         String json = jsonOf(new PrimaryGoal("p", "阶段一", List.of(hc("s1"))))
                 .replace("\"skipReasons\":{}", "\"skipReasons\":{\"s1\":\"nope\"}");
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> restore(json),
-                "★ 跳过理由挂在非 SKIPPED 的二级上 = 账实不符。必须拒绝。");
-        assertTrue(e.getMessage().contains("non-skipped"), "报错要说清是状态不匹配");
+        var c = restore(json);
+        assertNull(c.skipReason("s1"), "不成立的 skipReason 清掉（挂在非 SKIPPED 上）");
+        var report = c.lastSanitization();
+        assertNotNull(report, "★ 清理必须留账");
+        assertTrue(report.droppedSkipReasons().contains("s1"));
     }
 
     @Test
-    void pauseReasonMustSitOnPausedSubtask() {
+    void pauseReasonOnNonPausedIsCleanedAndAccounted() {
         String json = jsonOf(new PrimaryGoal("p", "阶段一", List.of(hc("s1"))))
                 .replace("\"pauseReasons\":{}", "\"pauseReasons\":{\"s1\":\"nope\"}");
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> restore(json),
-                "★ 暂停理由挂在非 PAUSED 的二级上 = 账实不符。必须拒绝。");
-        assertTrue(e.getMessage().contains("non-paused"), "报错要说清是状态不匹配");
+        var c = restore(json);
+        assertNull(c.pauseReason("s1"), "不成立的 pauseReason 清掉");
+        var report = c.lastSanitization();
+        assertNotNull(report, "★ 清理必须留账");
+        assertTrue(report.droppedPauseReasons().contains("s1"));
     }
 
     @Test
-    void reasonReferencingUnknownSubtaskIsRejected() {
+    void reasonReferencingUnknownSubtaskIsCleanedAndAccounted() {
         String skip = jsonOf(new PrimaryGoal("p", "阶段一", List.of(hc("s1"))))
                 .replace("\"skipReasons\":{}", "\"skipReasons\":{\"ghost\":\"nope\"}");
-        assertThrows(IllegalArgumentException.class, () -> restore(skip), "skipReason 指向幽灵二级必须拒绝");
+        var c1 = restore(skip);
+        assertNull(c1.skipReason("ghost"), "幽灵 skipReason 清掉");
+        assertNotNull(c1.lastSanitization(), "skipReason 清理必须留账");
+        assertTrue(c1.lastSanitization().droppedSkipReasons().contains("ghost"));
+
         String pause = jsonOf(new PrimaryGoal("p", "阶段一", List.of(hc("s1"))))
                 .replace("\"pauseReasons\":{}", "\"pauseReasons\":{\"ghost\":\"nope\"}");
-        assertThrows(IllegalArgumentException.class, () -> restore(pause), "pauseReason 指向幽灵二级必须拒绝");
+        var c2 = restore(pause);
+        assertNull(c2.pauseReason("ghost"), "幽灵 pauseReason 清掉");
+        assertNotNull(c2.lastSanitization(), "pauseReason 清理必须留账");
+        assertTrue(c2.lastSanitization().droppedPauseReasons().contains("ghost"));
     }
 
     @Test
-    void attemptsReferencingUnknownSubtaskIsRejected() {
+    void attemptsReferencingUnknownSubtaskIsCleanedAndAccounted() {
         String json = jsonOf(new PrimaryGoal("p", "阶段一", List.of(hc("s1"))))
                 .replace("\"attempts\":{}", "\"attempts\":{\"ghost\":3}");
-        assertThrows(IllegalArgumentException.class, () -> restore(json),
-                "重试次数指向幽灵二级必须拒绝（预算账本不许有孤儿条目）");
+        var c = restore(json);
+        assertEquals(0, c.attempts("ghost"), "孤儿 attempts 清零");
+        var report = c.lastSanitization();
+        assertNotNull(report, "★ attempts 清理必须留账（预算账本不许有静默孤儿）");
+        assertTrue(report.droppedAttempts().contains("ghost"));
     }
 
     @Test
-    void acquireBaselineReferencingUnknownSubtaskIsRejected() {
+    void acquireBaselineReferencingUnknownSubtaskIsCleanedAndAccounted() {
         String json = jsonOf(new PrimaryGoal("p", "阶段一", List.of(hc("s1"))))
                 .replace("\"acquireBaselines\":{}", "\"acquireBaselines\":{\"ghost\":{\"minecraft:stone\":1}}");
-        assertThrows(IllegalArgumentException.class, () -> restore(json),
-                "★ acquire 基线指向幽灵二级必须拒绝：查不到基线的 acquire 判据会永久为假 = 静默卡死");
+        var c = restore(json);
+        assertNull(c.acquireBaseline("ghost"), "幽灵基线清掉");
+        var report = c.lastSanitization();
+        assertNotNull(report, "★ 基线清理必须留账（拍板 1）");
+        assertTrue(report.droppedAcquireBaselines().contains("ghost"));
     }
 
     @Test
@@ -291,5 +315,32 @@ class TaskChainInvariantsTest {
                 "★ 最后一个二级完成必须停在 AWAITING_SUPERVISOR 等监督拍板，"
                         + "而不是自作主张跳到 COMPLETED（那是 M4/M5 的接线点）");
         assertNull(c.currentSubtaskStatus() == SubtaskStatus.RUNNING ? "still running" : null);
+    }
+
+    // ── ④ 拍板 1 护栏：清理必须留账（2026-10-24 修复轮新增）─────────
+
+    @Test
+    void 干净恢复时账为null而不是空对象() {
+        var c = restore(jsonOf(new PrimaryGoal("p", "阶段一", List.of(hc("s1")))));
+        assertNull(c.lastSanitization(),
+                "干净恢复 = null（「没清理」和「清理了没事」语义不同，不许用空对象冒充）");
+    }
+
+    @Test
+    void 混合脏数据的账必须逐项点名() {
+        // 一次恢复同时有：幽灵 status、缺登记、幽灵 attempts、不成立 skipReason——账要全记
+        String json = jsonOf(new PrimaryGoal("p", "阶段一", List.of(hc("s1"), hc("s2"))))
+                .replace("\"statuses\":{\"s1\":\"PENDING\",\"s2\":\"PENDING\"}",
+                         "\"statuses\":{\"s1\":\"PENDING\",\"ghost\":\"PENDING\"}")
+                .replace("\"attempts\":{}", "\"attempts\":{\"ghost2\":2}")
+                .replace("\"skipReasons\":{}", "\"skipReasons\":{\"s2\":\"nope\"}");
+        var c = restore(json);
+        var r = c.lastSanitization();
+        assertNotNull(r, "有清理就必须有账");
+        assertTrue(r.droppedStatuses().contains("ghost"), "幽灵 status 点名");
+        assertTrue(r.registeredAsPending().contains("s2"), "补登记点名");
+        assertTrue(r.droppedAttempts().contains("ghost2"), "幽灵 attempts 点名");
+        assertTrue(r.droppedSkipReasons().contains("s2"), "不成立 skipReason 点名");
+        assertEquals(SubtaskStatus.PENDING, c.subtaskStatuses().get("s2"), "s2 补成 PENDING");
     }
 }

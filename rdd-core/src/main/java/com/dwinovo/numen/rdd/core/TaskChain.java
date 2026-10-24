@@ -1412,6 +1412,7 @@ public final class TaskChain {
             chain.activeExecutionId = null;
         }
         chain.validateRestoredState();
+        // 拍板 1：清理留账——validateRestoredState 内部把账写到 chain.lastSanitization。
         return chain;
     }
 
@@ -1421,6 +1422,54 @@ public final class TaskChain {
         primaryStatus = PrimaryGoalStatus.AWAITING_SUPERVISOR;
     }
     private void requireCurrent(String id) { if (id == null || currentSubtask() == null || !currentSubtask().id().equals(id)) throw new IllegalArgumentException("stale subtask: " + id); }
+
+    /**
+     * 恢复清理的结构化账（2026-10-24 修复轮，主人拍板 1：「清理脏状态为规范，但清理必须留账」）。
+     *
+     * <p><b>为什么必须留账而不是只打 stderr</b>：清理 = 有意丢弃别人写下的状态。
+     * 「删了什么、为什么删」如果只存在于滚动日志里，无人值守场景下等于没记——
+     * 下一次会话考古时既对不了账，也分不清「丢数据」和「清理」。
+     * 宿主可经 {@link #lastSanitization()} 观察（与 RddRuntime 同款 facade 哲学：core 零 monitor 依赖）。
+     *
+     * <p>只有实际发生了清理才非 null；干净恢复 = null（不是空对象——空对象会掩盖「没查」和「查了没事」的区别）。
+     */
+    public record SanitizationReport(
+            java.util.List<String> droppedStatuses,
+            java.util.List<String> registeredAsPending,
+            java.util.List<String> droppedAttempts,
+            java.util.List<String> droppedSkipReasons,
+            java.util.List<String> droppedPauseReasons,
+            java.util.List<String> droppedAcquireBaselines) {
+
+        static SanitizationReport empty() {
+            return new SanitizationReport(java.util.List.of(), java.util.List.of(), java.util.List.of(),
+                    java.util.List.of(), java.util.List.of(), java.util.List.of());
+        }
+
+        public boolean cleaned() {
+            return droppedStatuses.size() + registeredAsPending.size() + droppedAttempts.size()
+                    + droppedSkipReasons.size() + droppedPauseReasons.size() + droppedAcquireBaselines.size() > 0;
+        }
+    }
+
+    /** 最近一次恢复清理的账；从未清理过或干净恢复 = null。宿主在 fromJson 后读取。 */
+    private SanitizationReport lastSanitization;
+
+    /** 最近一次恢复清理的结构化账；干净恢复返回 null（区别于「没查」）。 */
+    public SanitizationReport lastSanitization() {
+        return lastSanitization;
+    }
+
+    /** 只读访问器：某二级的跳过理由（无则 null）。测试与宿主对账用。 */
+    public String skipReason(String id) {
+        return skipReasons.get(id);
+    }
+
+    /** 只读访问器：某二级的暂停理由（无则 null）。 */
+    public String pauseReason(String id) {
+        return pauseReasons.get(id);
+    }
+
 
     /** Reject corrupt handoff state before it can reach a live executor or monitor. */
     private void validateRestoredState() {
@@ -1437,6 +1486,7 @@ public final class TaskChain {
         }
         // 2026-10-23：坏状态表**不再整份抛异常**——那会让恢复每秒重试一次（实测刷屏到每秒一条）。
         // 现在按脏数据清理：链上没有的条目丢掉、链上有但没登记的补成 PENDING，并留一条警告。
+        SanitizationReport report = SanitizationReport.empty();
         if (!statuses.keySet().equals(expected)) {
             Set<String> missing = new LinkedHashSet<>(expected);
             missing.removeAll(statuses.keySet());
@@ -1451,11 +1501,16 @@ public final class TaskChain {
                 forgetAcquireBaseline(id);
                 dropped.add(id);
             }
+            java.util.List<String> registered = new java.util.ArrayList<>();
             for (String id : missing) {
                 statuses.put(id, SubtaskStatus.PENDING);
+                registered.add(id);
             }
-            if (!dropped.isEmpty() || !missing.isEmpty()) {
-                System.err.println("[rdd] 恢复时清理了脏状态：丢弃 " + dropped + "，补登记 " + missing);
+            if (!dropped.isEmpty() || !registered.isEmpty()) {
+                System.err.println("[rdd] 恢复时清理了脏状态：丢弃 " + dropped + "，补登记 " + registered);
+                report = new SanitizationReport(java.util.List.copyOf(dropped), java.util.List.copyOf(registered),
+                        report.droppedAttempts(), report.droppedSkipReasons(),
+                        report.droppedPauseReasons(), report.droppedAcquireBaselines());
             }
         }
         // 另外两张表只做同样的清理（不再抛）：它们的键必须来自链上节点。
@@ -1466,6 +1521,9 @@ public final class TaskChain {
         for (String id : strayAttempts) attempts.remove(id);
         if (!strayAttempts.isEmpty()) {
             System.err.println("[rdd] 恢复时丢弃未知节点的 attempts：" + strayAttempts);
+            report = new SanitizationReport(report.droppedStatuses(), report.registeredAsPending(),
+                    java.util.List.copyOf(strayAttempts), report.droppedSkipReasons(),
+                    report.droppedPauseReasons(), report.droppedAcquireBaselines());
         }
         java.util.List<String> straySkips = new java.util.ArrayList<>();
         for (String id : skipReasons.keySet()) {
@@ -1474,27 +1532,43 @@ public final class TaskChain {
         for (String id : straySkips) skipReasons.remove(id);
         if (!straySkips.isEmpty()) {
             System.err.println("[rdd] 恢复时丢弃不成立的 skipReasons：" + straySkips);
+            report = new SanitizationReport(report.droppedStatuses(), report.registeredAsPending(),
+                    report.droppedAttempts(), java.util.List.copyOf(straySkips),
+                    report.droppedPauseReasons(), report.droppedAcquireBaselines());
         }
+        java.util.List<String> strayPauses = new java.util.ArrayList<>();
         for (String id : pauseReasons.keySet()) {
-            if (!expected.contains(id)) {
-                throw new IllegalArgumentException("restored pauseReason references unknown subtask: " + id);
-            }
-            if (statuses.get(id) != SubtaskStatus.PAUSED) {
-                throw new IllegalArgumentException("restored pauseReason on non-paused subtask: " + id);
-            }
+            if (!expected.contains(id) || statuses.get(id) != SubtaskStatus.PAUSED) strayPauses.add(id);
         }
-        // 基线表只做"引用完整性"校验：不许指向不存在的二级（那会让基线永远查不到、acquire 卡死）。
+        for (String id : strayPauses) pauseReasons.remove(id);
+        if (!strayPauses.isEmpty()) {
+            System.err.println("[rdd] 恢复时丢弃不成立的 pauseReasons：" + strayPauses);
+            report = new SanitizationReport(report.droppedStatuses(), report.registeredAsPending(),
+                    report.droppedAttempts(), report.droppedSkipReasons(),
+                    java.util.List.copyOf(strayPauses), report.droppedAcquireBaselines());
+        }
+        // 基线表引用完整性：指向不存在二级的基线清掉+挂账（拍板 1：清理必须留账）。
         // 注意**不**校验"该二级必须正在跑"——重试/暂停期间基线继续存在是合法的。
+        java.util.List<String> strayBaselines = new java.util.ArrayList<>();
         for (String id : acquireBaselines.keySet()) {
-            if (!expected.contains(id)) {
-                throw new IllegalArgumentException("restored acquireBaseline references unknown subtask: " + id);
-            }
+            if (!expected.contains(id)) strayBaselines.add(id);
+        }
+        for (String id : strayBaselines) {
+            acquireBaselines.remove(id);
+        }
+        if (!strayBaselines.isEmpty()) {
+            System.err.println("[rdd] 恢复时丢弃未知节点的 acquireBaselines：" + strayBaselines);
+            report = new SanitizationReport(report.droppedStatuses(), report.registeredAsPending(),
+                    report.droppedAttempts(), report.droppedSkipReasons(),
+                    report.droppedPauseReasons(), java.util.List.copyOf(strayBaselines));
         }
         PrimaryGoal current = goal.primaryGoals().get(primaryIndex);
         // 完成事实层自洽：非终态的当前一级不得是被事实命中的阶段（否则永远停在已达成阶段）
         if (primaryStatus != PrimaryGoalStatus.COMPLETED && isSatisfied(primaryIndex)) {
             throw new IllegalArgumentException("current primary is fact-satisfied but chain is not COMPLETED: " + current.id());
         }
+        // 拍板 1 收口：清理账只在真的清理过时留存（干净恢复 = null，区别于「没查」）。
+        this.lastSanitization = report.cleaned() ? report : null;
         if (current.unexpanded()) {
             if (subtaskIndex != 0) {
                 throw new IllegalArgumentException("unexpanded primary must have subtask index 0: " + subtaskIndex);
