@@ -147,7 +147,12 @@ final class ExperienceVerifyTool implements NumenTool {
                 reply.accept(TaskResult.fail("no experience with id: " + id).toJson());
                 return;
             }
-            String ref = id.startsWith("exp:") ? id : "exp:" + id;
+            // ★ 实机修正（V-20261025-01 判据⑤首跑抓到）：ref 必须用**条目归一化后的真 id**
+            //   （target.id()，stableKey 小写形态）——调用方手里的 id 可能是原始大小写
+            //   （learn 归一化前写的标题）。用原文拼 ref 会与 ExposureLedger 的记账键
+            //   （recall/expand 都按 entry.id() 记）对不上 ⇒ 正文真交付过也过不了门。
+            //   三处必须同键：账本记 entry.id()、门禁查 target.id()、回执报原文（人读）。
+            String ref = "exp:" + target.id();
             String curVersion = target.contentFingerprint();
             boolean retracted = target.retracted();
             String lastDelivered = com.dwinovo.numen.experience.api.ExposureLedger
