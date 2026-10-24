@@ -54,7 +54,8 @@ public final class WorldFactConditions {
             case "biome" -> tag(condition.get("biome"));
             case "block_nearby" -> (tag(condition.get("block")) || blockList(condition.get("blocks")))
                     && radius(condition.get("radius"), MAX_NEARBY_RADIUS)
-                    && optionalPositive(condition.get("minimum"));
+                    && optionalPositive(condition.get("minimum"))
+                    && optionalAnchor(condition.get("anchor"));
             case "container_nearby" -> tag(condition.get("item"))
                     && radius(condition.get("radius"), MAX_NEARBY_RADIUS)
                     && positive(condition.getOrDefault("minimum", 1));
@@ -83,6 +84,16 @@ public final class WorldFactConditions {
     /** 邻域判定半径；未给或非法时回落到缺省值（合法路径上 {@link #valid} 已经挡过非法值）。 */
     /** 多个方块 id（2026-10-25）：{@code blocks} 允许"torch 或 wall_torch"一起算，
      *  因为 AI 会按最省事的方式贴墙插，而只认一种 id 会把合理做法判成没做。 */
+    /** 可选固定锚点：三个整数坐标（建造类目标用，避免"人一走条件就变假"）。 */
+    public static boolean optionalAnchor(Object value) {
+        if (value == null) return true;
+        if (!(value instanceof java.util.List<?> xyz) || xyz.size() != 3) return false;
+        for (Object one : xyz) {
+            if (!(one instanceof Number n) || !Double.isFinite(n.doubleValue())) return false;
+        }
+        return true;
+    }
+
     public static boolean blockList(Object value) {
         if (!(value instanceof java.util.List<?> list) || list.isEmpty()) return false;
         for (Object one : list) {

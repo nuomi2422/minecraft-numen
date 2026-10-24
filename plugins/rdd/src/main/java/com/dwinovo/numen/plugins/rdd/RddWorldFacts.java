@@ -233,10 +233,24 @@ public final class RddWorldFacts {
         };
         int radius = WorldFactConditions.radiusOf(condition, WorldFactConditions.DEFAULT_BLOCK_RADIUS);
         int need = WorldFactConditions.minimumOf(condition, 1);
-        if (need > 1) {
-            return countNeighbourhood(level, ap.blockPosition(), radius, hit, need) >= need;
+        // 2026-10-25：锚点可选。建造类目标（插火把/围栏/盖房）必须锚在**那块地**上，
+        // 不能锚在会走动的同伴身上 —— 否则人一走，早先插的火把滑出半径，已满足的条件又变假。
+        net.minecraft.core.BlockPos origin = ap.blockPosition();
+        Object anchor = condition.get("anchor");
+        if (anchor instanceof java.util.List<?> xyz && xyz.size() == 3) {
+            try {
+                origin = new net.minecraft.core.BlockPos(
+                        ((Number) xyz.get(0)).intValue(),
+                        ((Number) xyz.get(1)).intValue(),
+                        ((Number) xyz.get(2)).intValue());
+            } catch (RuntimeException ignored) {
+                origin = ap.blockPosition();
+            }
         }
-        return scanNeighbourhood(level, ap.blockPosition(), radius, hit);
+        if (need > 1) {
+            return countNeighbourhood(level, origin, radius, hit, need) >= need;
+        }
+        return scanNeighbourhood(level, origin, radius, hit);
     }
 
     /** 单个方块 id / tag → 判定谓词；非法返回 null。 */

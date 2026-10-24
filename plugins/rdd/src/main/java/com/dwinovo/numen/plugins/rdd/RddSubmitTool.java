@@ -51,6 +51,8 @@ final class RddSubmitTool implements NumenTool {
                 // 2026-10-25：AI 会贴墙插火把（wall_torch），只认一种 id 会把合理做法判成没做。
                 // blocks 用逗号分隔多个 id，合计计数。
                 .optionalString("blocks", "Comma separated block ids for block_nearby; counted together with block.")
+                // 2026-10-25：建造类目标必须锚在"那块地"上（可选），否则人一走条件就变假。
+                .optionalString("anchor", "Optional fixed anchor \"x,y,z\" for block_nearby (build goals: judge around that spot, not around the moving companion).")
                 .optionalInteger("radius", "Radius for block_nearby (1..16, default 8).", 1, 16)
                 .optionalString("task_type", "Optional body tool to drive. RDD 词表内(mine/craft/equip_item/collect_items)会被自动翻译参数; 也可指名任意真实注册 NUMEN 工具原样驱动.")
                 .optionalString("args", "Optional JSON object string of body-tool arguments, e.g. {\"item\":\"minecraft:oak_log\",\"count\":5}.")
@@ -89,6 +91,23 @@ final class RddSubmitTool implements NumenTool {
                     condition.put("block", many.isEmpty() ? "" : many.get(0));
                 }
                 condition.put("radius", r);
+                if (!blank(input.anchor())) {
+                    String[] xyz = input.anchor().split(",");
+                    if (xyz.length != 3) {
+                        reply.accept(com.dwinovo.numen.task.TaskResult.fail(
+                                "rdd_submit anchor must be \"x,y,z\"").toJson());
+                        return;
+                    }
+                    java.util.List<Integer> anchor = new java.util.ArrayList<>();
+                    try {
+                        for (String one : xyz) anchor.add((int) Math.round(Double.parseDouble(one.trim())));
+                    } catch (NumberFormatException bad) {
+                        reply.accept(com.dwinovo.numen.task.TaskResult.fail(
+                                "rdd_submit anchor must be numeric \"x,y,z\"").toJson());
+                        return;
+                    }
+                    condition.put("anchor", anchor);
+                }
                 condition.put("minimum", Math.max(1, input.minimum()));
                 if (!com.dwinovo.numen.rdd.core.WorldFactConditions.valid(condition)) {
                     reply.accept(com.dwinovo.numen.task.TaskResult.fail(
@@ -172,6 +191,6 @@ final class RddSubmitTool implements NumenTool {
     private static boolean blank(String value) { return value == null || value.isBlank(); }
     private record Input(String goal, String primary_goal, String subtask, String asset_key, int minimum,
                          String mode,
-                         String condition_type, String block, String blocks, Integer radius,
+                         String condition_type, String block, String blocks, Integer radius, String anchor,
                          String task_type, String args) {}
 }
