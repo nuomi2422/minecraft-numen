@@ -2035,7 +2035,15 @@ public final class EntityAgentLoop {
         }
 
         // （tools / snapshot / systemPrompt 已经在预算闸之前建好了 —— 见上面 S109b 的注释。）
-
+        int toolsChars = 0;
+        try {
+            for (com.dwinovo.numen.agent.tool.NumenTool t : tools) {
+                toolsChars += com.dwinovo.numen.agent.tool.ToolDisclosure.render(java.util.List.of(t)).length();
+            }
+        } catch (RuntimeException ignored) {
+            toolsChars = -1;
+        }
+        Constants.LOG.info("[numen-entity#{}] toolsWireChars={}", entityUuid, toolsChars);
         Constants.LOG.info("[numen-entity#{}] turn {}: convo={} msgs, tools={}, requestTokens={} (source={}, measured={}, trimmedEstimate={})",
                 entityUuid, convo.turnCount(), snapshot.size(), tools.size(), requestTokens,
                 gateSource, lastPromptTokens, trimmedEstimate);
