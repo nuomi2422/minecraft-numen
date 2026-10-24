@@ -2421,14 +2421,16 @@ public final class EntityAgentLoop {
             }
             out.add(m);
         }
-        if (slimmed > 0 && log) {
+        // 2026-10-24：去重**必须留痕**（主人要求可审计）。原来 log 由调用方给（常为 false），
+        // 导致"改了但看不到"——这类节俭正是上次误判的根源。
+        if (slimmed > 0) {
             Constants.LOG.info("[numen-entity#{}] 同名展开去重：压掉 {} 条旧版说明书，省约 {} token/请求"
                             + "（每工具只留最新一次展开；原件在 monitor/tools.jsonl）",
                     entityUuid, slimmed, saved);
         }
         // 2026-10-24 主人要求的**防复发监控**：去重之后仍不健康就 WARN。
         // 治了不防等于没治完——数据证明这个病复发很快（33 次 find_tools 就堆到 70%）。
-        if (log) {
+        {
             int totalChars = 0;
             int expandedChars = 0;
             java.util.Map<String, Integer> sameName = new java.util.HashMap<>();

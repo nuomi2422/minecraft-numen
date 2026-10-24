@@ -84,11 +84,14 @@ public final class FindToolsTool implements NumenTool {
                         "没有工具匹配 \"" + q + "\"。名字看 <deferred_tools> 目录。").toJson());
                 return;
             }
-            // 2026-10-24：实机抓到模型把「拿到定义」当「已准备好」，反复 select:mine 十几轮
-            // 一次 mine 都不调（chat.jsonl 实证）。定义只是说明书，不是进度——下一轮必须直接调它。
+            // 2026-10-24：实机抓到两种退化——
+            //   ① 把「拿到定义」当「已准备好」，同一名单反复取（chat.jsonl 实证 33 次 select:mine）；
+            //   ② 一次只取一个工具，来回七八轮（实测一轮里 equip_item/look_around/get_self_status/interact_at 各取一次）。
+            // 两种都靠一句提示治：定义不是动作；要用的工具**一次取全**。
             call.complete(ToolDisclosure.render(hits)
-                    + "\n<!-- 上面是工具定义（说明书），不是动作。你的下一步必须直接调用其中一个工具；"
-                    + "再次 find_tools 取同一名单不会带来任何进展。 -->");
+                    + "\n<!-- 上面是工具定义（说明书），不是动作。"
+                    + "① 你的下一步必须直接调用其中一个工具；再次 find_tools 取同一名单不会带来任何进展。"
+                    + "② 如果你预计还要用到别的工具，请用 select:a,b,c 一次性取全，不要一个工具一轮。 -->");
         } catch (RuntimeException ex) {
             call.complete(TaskResult.fail(ex.getMessage()).toJson());
         }
