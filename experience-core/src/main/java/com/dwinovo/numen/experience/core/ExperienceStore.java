@@ -337,7 +337,11 @@ public final class ExperienceStore {
             throw new IllegalArgumentException("retract requires a reason: id=" + id);
         }
         ensureLoaded();
+        // ★ 同 publish 的实机修正：retract 也走同一套 id 解析（归一前原文必须也能撤回）。
         int index = indexOf(id);
+        if (index < 0) {
+            index = indexByLegacyId(id);
+        }
         if (index < 0) {
             return null;
         }
@@ -372,7 +376,14 @@ public final class ExperienceStore {
         if (target == null) {
             return new PublishResult(null, "BAD_TARGET", "target 不能为空");
         }
+        // ★ 实机修正（V-20261025-01 #300 首跑抓到）：publish 的 id 解析与 recordEvidence
+        //   同套——canonical id 精确匹配 + 旧拼写/大小写兜底。调用方手里的 id 可能是
+        //   learn 归一化前的原文（含大写标题），只 indexOf 会 NOT_FOUND，
+        //   而 verify/recordEvidence 却认它 ⇒ 同一个 id 两个入口答案不一致。
         int index = indexOf(id);
+        if (index < 0) {
+            index = indexByLegacyId(id);
+        }
         if (index < 0) {
             return new PublishResult(null, "NOT_FOUND", "没有这条经验: " + id);
         }
