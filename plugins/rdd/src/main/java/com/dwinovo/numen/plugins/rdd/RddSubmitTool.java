@@ -126,7 +126,17 @@ final class RddSubmitTool implements NumenTool {
             } catch (RuntimeException ignored) {
                 // 拿不到背包不阻断派活：基线记空表，判定会退化成"按持有量算"，不会卡死任务
             }
-            runtime.startCurrentWithCounts(baselineCounts);
+            try {
+                runtime.startCurrentWithCounts(baselineCounts);
+            } catch (IllegalStateException startEx) {
+                // 2026-10-25：这条错误夜里撞了三次。真相是 TaskChain 构造时按
+                // "已达成阶段"把 primary 直接标成 COMPLETED（P0 的跳过已达成特性），
+                // 于是 startCurrent 拒绝启动 —— 不是链坏了，是**这个目标本来就已经满足**。
+                reply.accept(com.dwinovo.numen.task.TaskResult.ok(
+                        "RDD goal already satisfied — nothing to start: " + startEx.getMessage(),
+                        Map.of("goal", goal.id(), "already_satisfied", true)).toJson());
+                return;
+            }
             // AI 自己刚提交并启动的单，不需要再"开工拍醒"一次。
             RddPlugin.markKickoffHandled(companion.getUUID(), subtaskId);
             reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain accepted and started",
