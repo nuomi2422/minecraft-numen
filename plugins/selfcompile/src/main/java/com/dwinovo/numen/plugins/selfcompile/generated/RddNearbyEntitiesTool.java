@@ -37,7 +37,8 @@ public final class RddNearbyEntitiesTool implements NumenTool {
     @Override
     public String description() {
         return "列出同伴附近半径内的实体（类型、实体 id、坐标、距离）。找村民/铁傀儡/动物时用。"
-                + "可选参数 radius（默认 32，上限 64）与 limit（默认 40，上限 60）。只读。";
+                + "可选参数 radius（默认 32，上限 64）与 limit（默认 40，上限 60）。只读。"
+                + "需要「数量」而不是清单时传 count_only=true：按类型计数、不受 limit 截断（2026-10-24 加）。";
     }
 
     @Override
@@ -47,6 +48,10 @@ public final class RddNearbyEntitiesTool implements NumenTool {
                 "description", "搜索半径（方块），默认 32"));
         props.put("limit", Map.of("type", "integer", "minimum", 1, "maximum", MAX_LIMIT,
                 "description", "最多返回多少条，默认 40"));
+        // 2026-10-24 实测：验证卡需要「栏内还有几只村民」，但列表会被 limit 截断，
+        // 于是"村民数 8→9"这种假读数反复骗人。计数模式只回聚合结果，不占上下文也不截断。
+        props.put("count_only", Map.of("type", "boolean",
+                "description", "true = 只按类型返回数量（不返回实体清单，不受 limit 限制）"));
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
         schema.put("properties", props);
@@ -59,12 +64,16 @@ public final class RddNearbyEntitiesTool implements NumenTool {
                              Consumer<String> reply) {
         int radius = 32;
         int limit = 40;
+        boolean countOnly = false;
         if (args != null) {
             if (args.has("radius") && args.get("radius").isJsonPrimitive()) {
                 radius = Math.max(1, Math.min(MAX_RADIUS, args.get("radius").getAsInt()));
             }
             if (args.has("limit") && args.get("limit").isJsonPrimitive()) {
                 limit = Math.max(1, Math.min(MAX_LIMIT, args.get("limit").getAsInt()));
+            }
+            if (args.has("count_only") && args.get("count_only").isJsonPrimitive()) {
+                countOnly = args.get("count_only").getAsBoolean();
             }
         }
         if (!(companion.level() instanceof ServerLevel level)) {
@@ -73,6 +82,20 @@ public final class RddNearbyEntitiesTool implements NumenTool {
         }
         AABB box = companion.getBoundingBox().inflate(radius);
         List<Entity> found = level.getEntities(companion, box, e -> e != companion && e.isAlive());
+        if (countOnly) {
+            // 计数模式：按类型聚合，**不截断**。验证卡靠这个数"栏内还有几只村民/动物"。
+            Map<String, Integer> byType = new LinkedHashMap<>();
+            for (Entity e : found) {
+                String type = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
+                byType.merge(type, 1, Integer::sum);
+            }
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("radius", radius);
+            data.put("total", found.size());
+            data.put("by_type", byType);
+            reply.accept(TaskResult.ok("附近实体 " + found.size() + " 个（按类型）", data).toJson());
+            return;
+        }
         List<Map<String, Object>> rows = new ArrayList<>();
         for (Entity e : found) {
             if (rows.size() >= limit) break;
