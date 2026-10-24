@@ -110,6 +110,11 @@ public final class EntityAgentLoop {
      */
     private static final int KEEP_RECENT_TOKENS = 20_000;
 
+    /** 会话分段（2026-10-25）：每 N 轮把历史切成一段，只留最近 K 条原文。 */
+    private static final boolean SEGMENT_ENABLED = true;
+    private static final int SEGMENT_TURNS = 120;
+    private static final int SEGMENT_KEEP_MSGS = 24;
+
     /**
      * <b>发给模型的会话窗口上限</b>（2026-10-01 新增）。
      *
@@ -2260,7 +2265,41 @@ public final class EntityAgentLoop {
      *                false = 只构建并暂存，等所有闸通过、真正发请求前再 publish（主轮/重试用）。
      */
     private List<ConvoState.Msg> modelContextSnapshot(boolean publish, String origin, int attempt) {
+        maybeSegmentSession();
         return AgentRequestContext.attach(replayWindow(publish), runtimeStateXml(publish, origin, attempt));
+    }
+
+    /**
+     * <b>会话分段</b>（2026-10-25，主人裁决的"止血带"）。
+     *
+     * <p><b>为什么</b>：无触发的压缩 + 每轮全量重发 ⇒ 会话总输入 O(轮数²)。
+     * 原作者画像里会话一两小时自然死亡，n≈50 不疼；我们跑 10+ 小时自主任务，n 到几百就炸。
+     *
+     * <p><b>为什么这样安全</b>：任务卡、资产、判据、世界状态都由 RDD 侧
+     * **每轮重新注入**（{@code numen_context}），不依赖对话历史；
+     * 对话只是"执行现场"，而现场可以重建。
+     *
+     * <p><b>保留尾部</b>用 {@link CompactSplit#validTail} 对齐，避免出现"孤儿工具结果"
+     * （只有 Tool 消息、没有发起它的 Assistant，会让端点直接 400 —— 2026-10-06 踩过）。
+     */
+    private void maybeSegmentSession() {
+        if (!SEGMENT_ENABLED) return;
+        if (convo.turnCount() < SEGMENT_TURNS) return;
+        List<ConvoState.Msg> all = convo.snapshot();
+        if (all.size() <= SEGMENT_KEEP_MSGS) { convo.resetTurnCount(); return; }
+        List<ConvoState.Msg> tail = com.dwinovo.numen.agent.llm.CompactSplit.validTail(all);
+        if (tail.size() > SEGMENT_KEEP_MSGS) tail = tail.subList(tail.size() - SEGMENT_KEEP_MSGS, tail.size());
+        if (tail.isEmpty()) return;
+        List<ConvoState.Msg> next = new ArrayList<>();
+        next.add(new ConvoState.Msg.User("（会话已分段：更早的对话为节省成本已归档。"
+                + "你的任务卡、判据、背包与世界状态每轮都由系统重新注入，不受影响；"
+                + "直接继续当前目标即可，不要凭记忆推断已归档的细节。）"));
+        next.addAll(tail);
+        int before = all.size();
+        convo.replaceAll(next);
+        convo.resetTurnCount();
+        Constants.LOG.info("[numen-entity#{}] 会话分段：{} 条 → {} 条（保留最近 {} 条原文，其余归档）",
+                entityUuid, before, next.size(), tail.size());
     }
 
     /**
