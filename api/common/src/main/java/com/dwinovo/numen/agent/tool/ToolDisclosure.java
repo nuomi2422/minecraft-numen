@@ -150,19 +150,24 @@ public final class ToolDisclosure {
      * 同名块从新往旧扫，只有第一次遇到的那份保留原文。
      */
     public static java.util.List<String> dedupeSameName(java.util.List<String> contents) {
-        if (contents == null || contents.isEmpty()) return contents == null ? java.util.List.of() : contents;
+        if (contents == null || contents.isEmpty()) {
+            return contents == null ? java.util.List.of() : contents;
+        }
+        // ★ 入参可能含 null（调用方对「非工具消息」传 null 做占位），
+        //   所以用 Arrays.asList 而不是 List.of —— List.of 遇到 null 直接 NPE，
+        //   2026-10-24 实机就因此崩在客户端 tick 里（ToolDisclosure.java:165）。
         String[] result = contents.toArray(new String[0]);
         java.util.Set<String> claimed = new java.util.LinkedHashSet<>();
         for (int i = contents.size() - 1; i >= 0; i--) {
             String text = contents.get(i);
-            if (!hasExpandedBlock(text)) continue;
+            if (text == null || !hasExpandedBlock(text)) continue;
             java.util.Set<String> names = firstNamesOf(text);
             boolean anyFresh = names.stream().anyMatch(claimed::add);
             if (!anyFresh) {
                 result[i] = slimExpanded(text);   // 旧版同名说明书 → 压成索引行
             }
         }
-        return java.util.List.of(result);
+        return java.util.Arrays.asList(result);
     }
 
     /**

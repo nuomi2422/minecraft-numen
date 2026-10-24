@@ -108,4 +108,21 @@ class ToolDisclosureDedupeTest {
         Set<String> names = ToolDisclosure.firstNamesOf(two);
         assertEquals(Set.of("mine", "craft"), names);
     }
+
+    @Test
+    void 含null占位不崩_非工具消息原样保留() {
+        // 2026-10-24 实机崩点：调用方用 null 代表「这条不是工具消息」，
+        // List.of(null) 直接 NPE，崩在客户端 tick 里。这条钉子钉住它。
+        List<String> mixed = new java.util.ArrayList<>();
+        mixed.add(block("mine", body("mine", 100)));
+        mixed.add(null);
+        mixed.add(block("mine", body("mine", 100)));
+
+        List<String> out = ToolDisclosure.dedupeSameName(mixed);
+
+        assertEquals(3, out.size());
+        assertEquals(null, out.get(1), "null 占位必须原样返回");
+        assertFalse(ToolDisclosure.hasExpandedBlock(out.get(0)), "旧块被压");
+        assertTrue(ToolDisclosure.hasExpandedBlock(out.get(2)), "新块保留");
+    }
 }
