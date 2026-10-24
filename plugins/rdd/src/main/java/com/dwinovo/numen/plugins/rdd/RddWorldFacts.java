@@ -227,6 +227,11 @@ public final class RddWorldFacts {
             if (wanted == null || !BuiltInRegistries.BLOCK.containsKey(key)) return false;
             hit = state -> state.is(wanted);
         }
+        int need = WorldFactConditions.minimumOf(condition, 1);
+        if (need > 1) {
+            // 数量型：半径内至少 need 个（本身是"停在够用就收"，不扫全量）
+            return countNeighbourhood(level, ap.blockPosition(), radius, hit, need) >= need;
+        }
         return scanNeighbourhood(level, ap.blockPosition(), radius, hit);
     }
 
@@ -258,6 +263,33 @@ public final class RddWorldFacts {
      * 有界邻域扫描：只读已加载 chunk，绝不触发生成。判定每秒跑一次，所以半径被
      * {@link WorldFactConditions#MAX_NEARBY_RADIUS} 硬顶住。
      */
+    /**
+     * 数一数邻域里有几个匹配方块（2026-10-25）。
+     * <p>为什么要有：{@code block_nearby} 原来只判"有没有"，于是"插满 8 支火把"这种
+     * 目标写不成判据——插一支就算过。加上计数后，{@code minimum} 才真正有意义。
+     */
+    private static int countNeighbourhood(ServerLevel level, BlockPos origin, int radius,
+                                          Predicate<BlockState> hit, int stopAt) {
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        int squared = radius * radius;
+        int found = 0;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    int planar = dx * dx + dz * dz;
+                    if (planar > squared || planar + dy * dy > squared) continue;
+                    cursor.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
+                    if (!level.hasChunkAt(cursor)) continue;
+                    if (hit.test(level.getBlockState(cursor))) {
+                        found++;
+                        if (stopAt > 0 && found >= stopAt) return found;
+                    }
+                }
+            }
+        }
+        return found;
+    }
+
     private static boolean scanNeighbourhood(ServerLevel level, BlockPos origin, int radius,
                                              Predicate<BlockState> hit) {
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
