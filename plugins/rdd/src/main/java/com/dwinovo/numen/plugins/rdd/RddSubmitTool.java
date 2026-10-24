@@ -44,6 +44,11 @@ final class RddSubmitTool implements NumenTool {
                                 + "tasks where she may already hold a pile. Never use acquire for craft/produce.",
                         com.dwinovo.numen.rdd.core.HardCodedEvaluator.MODE_HOLD,
                         com.dwinovo.numen.rdd.core.HardCodedEvaluator.MODE_ACQUIRE)
+                // 2026-10-25：补「方块条件」写侧。读侧（WorldFactConditions/RddDecomposer）早就支持 block_nearby，
+                // 但 rdd_submit 只会写 asset_key，于是「盖房/插火把/放床」这类以世界状态为成果的目标无法进任务链。
+                .optionalEnum("condition_type", "item (default) keeps the inventory reading; block_nearby judges by a block existing near the companion.", "item", "block_nearby")
+                .optionalString("block", "Block id for condition_type=block_nearby (e.g. minecraft:torch).")
+                .optionalInteger("radius", "Radius for block_nearby (1..16, default 8).", 1, 16)
                 .optionalString("task_type", "Optional body tool to drive. RDD 词表内(mine/craft/equip_item/collect_items)会被自动翻译参数; 也可指名任意真实注册 NUMEN 工具原样驱动.")
                 .optionalString("args", "Optional JSON object string of body-tool arguments, e.g. {\"item\":\"minecraft:oak_log\",\"count\":5}.")
                 .build();
@@ -53,8 +58,9 @@ final class RddSubmitTool implements NumenTool {
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
         try {
             Input input = GSON.fromJson(args, Input.class);
+            boolean blockMode = input != null && "block_nearby".equalsIgnoreCase(input.condition_type());
             if (input == null || blank(input.goal()) || blank(input.primary_goal()) || blank(input.subtask())
-                    || blank(input.asset_key()) || input.minimum() < 0) {
+                    || (!blockMode && blank(input.asset_key())) || (blockMode && blank(input.block())) || input.minimum() < 0) {
                 reply.accept(com.dwinovo.numen.task.TaskResult.fail(
                         "rdd_submit requires goal, primary_goal, subtask, asset_key and non-negative minimum").toJson());
                 return;
@@ -63,8 +69,21 @@ final class RddSubmitTool implements NumenTool {
             // 拼进 condition 前先过一遍 modeOf：非法值显式拒绝，不静默降级成 hold
             // （那正是 7.4#2 假完成那一族 —— 拼错的键悄悄变成另一种语义）。
             var condition = new java.util.LinkedHashMap<String, Object>();
-            condition.put("asset_key", input.asset_key());
-            condition.put("minimum", input.minimum());
+            if (blockMode) {
+                int r = input.radius() == null ? 8 : Math.max(1, Math.min(16, input.radius()));
+                condition.put("type", "block_nearby");
+                condition.put("block", input.block().trim());
+                condition.put("radius", r);
+                condition.put("minimum", Math.max(1, input.minimum()));
+                if (!com.dwinovo.numen.rdd.core.WorldFactConditions.valid(condition)) {
+                    reply.accept(com.dwinovo.numen.task.TaskResult.fail(
+                            "rdd_submit block_nearby needs a valid block id and radius 1..16").toJson());
+                    return;
+                }
+            } else {
+                condition.put("asset_key", input.asset_key());
+                condition.put("minimum", input.minimum());
+            }
             if (!blank(input.mode())) {
                 if (com.dwinovo.numen.rdd.core.HardCodedEvaluator.modeOf(
                         java.util.Map.of("asset_key", input.asset_key(), "mode", input.mode())) == null) {
@@ -128,5 +147,6 @@ final class RddSubmitTool implements NumenTool {
     private static boolean blank(String value) { return value == null || value.isBlank(); }
     private record Input(String goal, String primary_goal, String subtask, String asset_key, int minimum,
                          String mode,
+                         String condition_type, String block, Integer radius,
                          String task_type, String args) {}
 }
