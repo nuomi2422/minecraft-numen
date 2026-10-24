@@ -147,6 +147,18 @@ final class RddStallWatcher {
         if (!RddPlugin.supervisionEnabled()) {
             return false; // 空转止血：暂停监督不做卡死检测/拍醒/能力升级，资产推进照常
         }
+        // 2026-10-25（夜里实测）：AI 用 set_timer 定了"100 秒后回来收熔炉"，这段时间
+        // 它**故意不动**（等烧完），但指纹 15 秒不变就被判 STALLED，还累计"能力缺口"信号。
+        // 等待是正确行为，不是卡死 —— 有未到点的定时器就跳过这一轮判定。
+        try {
+            var timers = com.dwinovo.numen.task.TimerRegistry.get(ap.getServer()).list(ap.getUUID());
+            if (timers != null && !timers.isEmpty()) {
+                stalls.remove(ap.getUUID());
+                return false;
+            }
+        } catch (RuntimeException ignored) {
+            // 定时器表读不到就按原逻辑走，不影响判定
+        }
         RddStallPolicy.Observation observation = observe(ap, rt, current);
         String fp = observation.fingerprint();
         String stateKey = stateKey(ap, observation);
