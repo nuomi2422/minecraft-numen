@@ -2397,34 +2397,33 @@ public final class EntityAgentLoop {
      * 展开块原文也一直在 {@code monitor/tools.jsonl} 里。
      */
     private List<ConvoState.Msg> slimStaleExpansions(List<ConvoState.Msg> msgs, boolean log) {
-        int last = -1;
-        for (int i = msgs.size() - 1; i >= 0; i--) {
-            if (msgs.get(i) instanceof ConvoState.Msg.Tool t
-                    && com.dwinovo.numen.agent.tool.ToolDisclosure.hasExpandedBlock(t.content())) {
-                last = i;
-                break;
-            }
+        if (msgs.isEmpty()) return msgs;
+        // 2026-10-24（主人裁决②）：**同名去重走正常路径**——以前只在窗口超预算后才动，
+        // 实测 33 次 find_tools 就把展开块堆到 28.2k/40k（70% 窗口）。
+        // 规则落在纯函数 ToolDisclosure.dedupeSameName 上（可钉测），这里只做消息层映射。
+        List<String> contents = new ArrayList<>(msgs.size());
+        for (ConvoState.Msg m : msgs) {
+            contents.add(m instanceof ConvoState.Msg.Tool t ? t.content() : null);
         }
-        if (last < 0) return msgs;
+        List<String> deduped = com.dwinovo.numen.agent.tool.ToolDisclosure.dedupeSameName(contents);
         List<ConvoState.Msg> out = new ArrayList<>(msgs.size());
         int slimmed = 0;
         int saved = 0;
         for (int i = 0; i < msgs.size(); i++) {
             ConvoState.Msg m = msgs.get(i);
-            if (i != last && m instanceof ConvoState.Msg.Tool t) {
-                String slim = com.dwinovo.numen.agent.tool.ToolDisclosure.slimExpanded(t.content());
-                if (!slim.equals(t.content())) {
-                    saved += estimateTokensOfText(t.content()) - estimateTokensOfText(slim);
-                    slimmed++;
-                    out.add(new ConvoState.Msg.Tool(t.toolCallId(), slim));
-                    continue;
-                }
+            String after = deduped.get(i);
+            String before = contents.get(i);
+            if (before != null && after != null && !after.equals(before)) {
+                saved += estimateTokensOfText(before) - estimateTokensOfText(after);
+                slimmed++;
+                out.add(new ConvoState.Msg.Tool(((ConvoState.Msg.Tool) m).toolCallId(), after));
+                continue;
             }
             out.add(m);
         }
         if (slimmed > 0 && log) {
-            Constants.LOG.info("[numen-entity#{}] 压掉 {} 条陈旧 find_tools 展开块，省约 {} token/请求"
-                            + "（最后一次展开保留；原件仍在 monitor/tools.jsonl；需要时 find_tools 可再取回）",
+            Constants.LOG.info("[numen-entity#{}] 同名展开去重：压掉 {} 条旧版说明书，省约 {} token/请求"
+                            + "（每工具只留最新一次展开；原件在 monitor/tools.jsonl）",
                     entityUuid, slimmed, saved);
         }
         return out;

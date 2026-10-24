@@ -110,9 +110,59 @@ public final class ToolDisclosure {
         }
     }
 
+    /**
+     * 一条消息里「首次出现」的每个工具名的展开块标记（2026-10-24）。
+     * 用于同名去重：同一个工具的<b>第二次</b>展开出现后，第一次的定义边际价值≈0。
+     */
+    public static java.util.Set<String> firstNamesOf(String text) {
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        int from = 0;
+        while (true) {
+            int open = text.indexOf(OPEN_PREFIX, from);
+            if (open < 0) return out;
+            int start = open + OPEN_PREFIX.length();
+            int end = text.indexOf(OPEN_SUFFIX, start);
+            if (end < 0) return out;
+            for (String raw : text.substring(start, end).split(",")) {
+                String name = raw.strip();
+                if (!name.isEmpty() && seen.add(name)) out.add(name);
+            }
+            from = end + OPEN_SUFFIX.length();
+        }
+    }
+
     /** 文中是否含展开块首行标记。压不压之前先问这个,不扫正文。 */
     public static boolean hasExpandedBlock(String text) {
         return text != null && text.contains(OPEN_PREFIX);
+    }
+
+    /**
+     * <b>同名展开去重</b>（2026-10-24，主人裁决②）：一个工具只保留它<b>最新</b>那份展开块，
+     * 更早的同名块压成索引行。
+     *
+     * <p><b>为什么放到正常路径</b>：{@code slimStaleExpansions} 原来只在窗口超预算后才动，
+     * 而实测 33 次 {@code find_tools select:mine} 就把展开块堆到 <b>28,206 / 40,000 token（70%）</b>，
+     * 205 万 token 的会话史里 823 个展开块占 124 万。模型此刻手里已有最新版，
+     * 旧版对它的边际价值≈0，却仍占着窗口核心位置。
+     *
+     * <p>纯函数，便于钉测：输入按时间顺序（旧→新），返回同长度列表。
+     * 同名块从新往旧扫，只有第一次遇到的那份保留原文。
+     */
+    public static java.util.List<String> dedupeSameName(java.util.List<String> contents) {
+        if (contents == null || contents.isEmpty()) return contents == null ? java.util.List.of() : contents;
+        String[] result = contents.toArray(new String[0]);
+        java.util.Set<String> claimed = new java.util.LinkedHashSet<>();
+        for (int i = contents.size() - 1; i >= 0; i--) {
+            String text = contents.get(i);
+            if (!hasExpandedBlock(text)) continue;
+            java.util.Set<String> names = firstNamesOf(text);
+            boolean anyFresh = names.stream().anyMatch(claimed::add);
+            if (!anyFresh) {
+                result[i] = slimExpanded(text);   // 旧版同名说明书 → 压成索引行
+            }
+        }
+        return java.util.List.of(result);
     }
 
     /**
