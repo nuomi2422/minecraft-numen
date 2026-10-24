@@ -59,6 +59,11 @@ public final class SleepSideTaskType implements SideTaskType {
      */
     @Override
     public SideTaskDecision decide(UUID companionId, SideTaskWorldPort world) {
+        // 2026-10-24（主人指出）：睡眠只在夜里成立 —— 白天根本睡不着（原版直接拒绝），
+        // 开一条白天执行的睡觉支线＝白占主线 10 分钟。**按时间窗判定，而不是只靠 deadline**。
+        if (world.hasDayNightCycle() && world.isDay() && !world.isSleeping(companionId)) {
+            return SideTaskDecision.skip("daytime_no_sleep_needed");
+        }
         String objective = world.mainlineObjective(companionId);
         if (objective != null) {
             for (String marker : NIGHT_MARKERS) {
@@ -87,6 +92,12 @@ public final class SleepSideTaskType implements SideTaskType {
         }
         if (world.isSleeping(task.companionId())) {
             return SideTaskVerdict.keep(PHASE_SLEEPING, Map.of("sleeping", "true"));
+        }
+        // 2026-10-24（主人指出）：**白天到了就该收**，不必等到 12,000 tick 的 deadline。
+        // 之前只有 deadline 一条出口，于是白天开出来的睡眠支线会白占主线十分钟
+        // （实机还留下过两条早已失效同伴的 ACTIVE sleep 支线）。
+        if (world.hasDayNightCycle() && world.isDay()) {
+            return SideTaskVerdict.skip("daytime: sleep is impossible until night falls");
         }
         Map<String, String> data = PHASE_SLEEPING.equals(task.phase())
                 ? Map.of("last", wake == SideTaskWorldPort.Wake.INTERRUPTED ? "interrupted_wake" : "left_bed")
@@ -119,6 +130,12 @@ public final class SleepSideTaskType implements SideTaskType {
                 + "★ 若附近根本没有床（也来不及杀羊做床），就【挖三填一】保命："
                 + "原地向下挖 3 格成一个 1×1 竖井，自己站进去，再用方块把头顶那格封住（三面墙一面顶），"
                 + "躲在里面熬到天亮——没有床也能活下来，别在夜里硬顶怪物。"
+                // 2026-10-24 实机：模型把"挖三填一"反复在心里演练，每轮都先 get_self_status 再重新规划，
+                // 十几轮没有一个动作落地（P0 卡死）。把"读状态不算进展"直接写进它的上下文。
+                + "★★ 读一次 get_self_status 就够：**重复读状态不算进展**。"
+                + "看完状态后的下一步必须是真动作（build/mine/goto/interact_at 之一），"
+                + "挖三填一用 build 的 ops 一次给出全部格子，不要一格格试。"
+                + "若附近有怪、太远，按原版返回的原因处理，别硬顶。"
                 + "若附近有怪、太远，按原版返回的原因处理，别硬顶。"
                 + "</side_task>";
     }
