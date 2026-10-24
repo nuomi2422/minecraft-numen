@@ -40,6 +40,13 @@ public final class ExposureLedger {
     public static final String KIND_EXPANDED = "EXPANDED";
     /** 系统随召回主动交付的正文（{@code experience_recall} 成功回复）。 */
     public static final String KIND_AUTO_EXPANDED = "AUTO_EXPANDED";
+    /**
+     * LC1（78 号 §3 exposureKind 三分类补全）：目录/渲染层曝光——只给标题与适用线索，
+     * 正文没交付。**审计用，不算回执**（78 号 §2.1：渲染段可能被预算裁掉，
+     * 「呈现过」推不出「收到过」）。把它记进来是为了让「这条经验在目录里出现过」
+     * 成为可对账的事实，而不是为了凑计数。
+     */
+    public static final String KIND_DIRECTORY = "DIRECTORY";
 
     /** 每同伴保留的交付条数上限（超出驱逐最旧）。 */
     static final int MAX_PER_COMPANION = 256;
@@ -62,7 +69,7 @@ public final class ExposureLedger {
             toolCallId = toolCallId == null ? "" : toolCallId.trim();
         }
 
-        /** 这条交付算不算「正文完整到达」：非截断 + 两种正文通道之一。 */
+        /** 这条交付算不算「正文完整到达」：非截断 + 两种正文通道之一（DIRECTORY 不算）。 */
         public boolean countsAsReceipt() {
             return !truncated
                     && (KIND_EXPANDED.equals(kind) || KIND_AUTO_EXPANDED.equals(kind));
@@ -137,10 +144,13 @@ public final class ExposureLedger {
         Deque<Delivery> q = LEDGERS.get(companion);
         int receipts = 0;
         int truncated = 0;
+        int directory = 0;
         if (q != null) {
             for (Delivery d : q) {
                 if (d.countsAsReceipt()) {
                     receipts++;
+                } else if (KIND_DIRECTORY.equals(d.kind())) {
+                    directory++;
                 } else if (d.truncated()) {
                     truncated++;
                 }
@@ -149,6 +159,7 @@ public final class ExposureLedger {
         out.put("session_only", true);
         out.put("deliveries", q == null ? 0 : q.size());
         out.put("full_receipts", receipts);
+        out.put("directory_exposures", directory);
         out.put("truncated_deliveries", truncated);
         out.put("max_per_companion", MAX_PER_COMPANION);
         return out;

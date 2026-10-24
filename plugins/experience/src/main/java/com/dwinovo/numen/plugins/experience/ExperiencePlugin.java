@@ -150,6 +150,15 @@ public final class ExperiencePlugin implements NumenPlugin {
                         var entry = ExperiencePlugin.memory(companion).findById(id);
                         if (entry != null) {
                             version = entry.contentFingerprint();
+                            // ★ LC1（78 号 §3 exposureKind 三分类）：目录/渲染层曝光同帧记
+                            //   ExposureLedger——只审计（「在目录里出现过」是可对账事实），
+                            //   不过晋级门（countsAsReceipt 不认 DIRECTORY：渲染段可能被
+                            //   预算裁掉，「呈现过」推不出「收到过」）。
+                            com.dwinovo.numen.experience.api.ExposureLedger.record(companion,
+                                    new com.dwinovo.numen.experience.api.ExposureLedger.Delivery(
+                                            ref, version,
+                                            com.dwinovo.numen.experience.api.ExposureLedger.KIND_DIRECTORY,
+                                            "", false, System.currentTimeMillis()));
                         }
                     } catch (RuntimeException ignore) {
                         // 解析不到条目：版本留空串 = LEGACY，归因照旧，不猜

@@ -93,6 +93,21 @@ class ExposureLedgerTest {
     }
 
     @Test
+    void DIRECTORY曝光只审计_不算回执() {
+        // LC1（78 号 §3 exposureKind 三分类）：目录层曝光——记下来可对账，但不许过晋级门
+        ExposureLedger.record(C, d(REF, "v1", ExposureLedger.KIND_DIRECTORY, false, 1000L));
+        assertFalse(ExposureLedger.delivered(C, REF, "v1"),
+                "目录只给标题与线索，正文没交付——渲染段可能被预算裁掉，不算「收到」");
+        assertEquals(1, ExposureLedger.deliveries(C, REF).size(), "但曝光事实要留（可审计）");
+        assertEquals(1, ExposureLedger.readout(C).get("directory_exposures"),
+                "readout 单列目录曝光数");
+        // 目录曝光后再真展开：回执通道不受影响
+        ExposureLedger.record(C, d(REF, "v1", ExposureLedger.KIND_EXPANDED, false, 2000L));
+        assertTrue(ExposureLedger.delivered(C, REF, "v1"), "真展开照常算回执");
+        assertEquals(1, ExposureLedger.readout(C).get("full_receipts"));
+    }
+
+    @Test
     void 空ref不记() {
         ExposureLedger.record(C, d("", "v1", ExposureLedger.KIND_EXPANDED, false, 1000L));
         ExposureLedger.record(C, d(null, "v1", ExposureLedger.KIND_EXPANDED, false, 1000L));
