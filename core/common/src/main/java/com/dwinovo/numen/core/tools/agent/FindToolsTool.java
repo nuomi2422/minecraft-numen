@@ -33,6 +33,8 @@ public final class FindToolsTool implements NumenTool {
     static final int MAX_RESULTS = 8;
 
     private static final String SELECT = "select:";
+    /** 同一 query 第几次开始只回一行提示（第 LOCK_AT+1 次恢复完整定义，避免永久失明）。 */
+    private static final int LOCK_AT = 3;
 
     /**
      * 「同一份定义被反复取」的计数（2026-10-24 实测：一分钟内 6 次 select:sleep，
@@ -115,7 +117,21 @@ public final class FindToolsTool implements NumenTool {
             // 2026-10-24 晚（第二轮实测）：同一个名字**一分钟内取了 6 次**，人就在床边 1 格外，
             // 一次 sleep 都没调。据此加"重复计数"提示——注意：**仍然照常返回完整定义**
             // （原作者语义是"用到再取"，压掉定义会让压缩后的上下文彻底失明），只在前面加一行告警。
+            //
+            // 2026-10-24 夜（第三轮实测）：告警**挡不住**——同一形态原样复发，
+            // select:collect_items 连取 8 次、模型明说"Now let me actually act: collect_items"却仍在取定义。
+            // ⇒ 加**带逃生口的硬互锁**：占位 3 次只回一行提示（不再返回整份 schema），
+            //   第 4 次立刻恢复完整定义。这样既不给循环续命，也绝不让她永久失明。
             int seen = REPEAT.merge(repeatKey(q), 1, Integer::sum);
+            if (seen == LOCK_AT) {
+                call.complete("<!-- " + names(hits) + " 的定义**已经在你的上下文里**（这是第 " + seen
+                        + " 次取同一份）。本次不再重复返回 schema：直接调用它。"
+                        + "若你确实看不到定义（上下文被压缩过），再取一次会立刻恢复完整定义。 -->");
+                return;
+            }
+            if (seen > LOCK_AT) {
+                REPEAT.put(repeatKey(q), 0);   // 逃生口复位：重新从"完整定义"开始
+            }
             String warn = seen <= 1 ? ""
                     : "<!-- 同一份定义你已经取过 " + seen + " 次。它没变。"
                     + "现在缺的不是说明书，是动手：下一步请直接调用 " + names(hits) + "。 -->\n";
