@@ -2291,8 +2291,11 @@ public final class EntityAgentLoop {
         boolean tokenFull = com.dwinovo.numen.agent.llm.CompactSplit.estimateTokens(all) >= SEGMENT_TOKENS;
         if (!turnFull && !tokenFull) return;
         if (all.size() <= SEGMENT_KEEP_MSGS) { convo.resetTurnCount(); return; }
-        List<ConvoState.Msg> tail = com.dwinovo.numen.agent.llm.CompactSplit.validTail(all);
-        if (tail.size() > SEGMENT_KEEP_MSGS) tail = tail.subList(tail.size() - SEGMENT_KEEP_MSGS, tail.size());
+        // ★ 2026-10-25 实机：原来用 validTail，结果只留了 1 条（209 -> 2），把"刚才在干什么"全丢了。
+        // 它要的是"最后一段合法块"，不是"最近 N 条"。改成按条数取尾部，再跳过开头的 Tool（避免孤儿工具结果）。
+        int from = Math.max(0, all.size() - SEGMENT_KEEP_MSGS);
+        while (from < all.size() && all.get(from) instanceof ConvoState.Msg.Tool) from++;
+        List<ConvoState.Msg> tail = new ArrayList<>(all.subList(from, all.size()));
         if (tail.isEmpty()) return;
         List<ConvoState.Msg> next = new ArrayList<>();
         next.add(new ConvoState.Msg.User("（会话已分段：更早的对话为节省成本已归档。"
