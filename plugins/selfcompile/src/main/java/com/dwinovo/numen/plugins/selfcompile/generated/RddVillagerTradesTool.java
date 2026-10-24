@@ -99,7 +99,12 @@ public final class RddVillagerTradesTool implements NumenTool {
         boolean nitwit = villager.getVillagerData().getProfession()
                 == net.minecraft.world.entity.npc.VillagerProfession.NITWIT;
         data.put("nitwit", nitwit);
-        data.put("can_work", !nitwit);
+        // 2026-10-25 实机：AI 给一个村民放了堆肥桶、等了一分多钟没认领，
+        // 反复怀疑"位置不对/路径被挡"，其实最常见的原因是**那是幼年村民（不能就职）**。
+        // 这个字段以前没暴露，等于让它对着一张错误的假设排查。
+        boolean baby = villager.isBaby();
+        data.put("baby", baby);
+        data.put("can_work", !nitwit && !baby);
         data.put("level", villager.getVillagerData().getLevel());
         data.put("count", rows.size());
         data.put("offers", rows);
