@@ -169,7 +169,8 @@ public final class TrialRuntime {
                 q.removeFirst();
                 record(new TrialUse(p.entryRef(), p.millis(), TrialUse.Outcome.INCONCLUSIVE));
                 // 过期 = 没等到终态 ⇒ UNKNOWN（IC11：宁记「不知道」也不许丢）
-                recordUsage(p.entryRef(), p.version(), artifact, UsageState.UNKNOWN, p.millis());
+                recordUsage(p.entryRef(), p.version(), artifact, nextAttemptOf(p.entryRef(), artifact),
+                        UsageState.UNKNOWN, p.millis());
                 continue;
             }
             window.add(new TrialAttribution.Presentation(p.entryRef(), p.millis()));
@@ -189,10 +190,17 @@ public final class TrialRuntime {
         // ★ LC1：TrialAttribution.attribute 返回的 uses 与 window 参数顺序一致；
         //   inWindow 与 window 同步入队，逐条对位取版本指纹，五态样本带真实 contentVersion。
         List<VersionedPresentation> windowList = new ArrayList<>(inWindow);
+        // ★ 实机修正（V-20261025-01 #296 复算首跑抓到）：同一次收尾的多条呈现共享同一
+        //   attempt 基数。首版把「每条呈现」都当独立 attempt 递增（1/2/3）——把「同收尾
+        //   的多次曝光」误当「同产物的多次尝试」，UsageLedger 的 conclusion 取最大
+        //   attempt ⇒ 后录的 UNKNOWN（attempt 更大）反压过先录的 SUCCESS，结论翻转。
+        //   正确语义：attempt 归「收尾」不归「呈现」——本批全部用同一 attempt，
+        //   「先取消后成功」的 attempt 递增只在【下一次收尾】发生。
+        int attemptBase = nextAttemptOf(windowList.isEmpty() ? "" : windowList.get(0).entryRef(), artifact);
         for (int i = 0; i < uses.size(); i++) {
             TrialUse u = uses.get(i);
             String version = i < windowList.size() ? windowList.get(i).version() : "";
-            recordUsage(u.entryRef(), version, artifact,
+            recordUsage(u.entryRef(), version, artifact, attemptBase,
                     u.outcome() == TrialUse.Outcome.INCONCLUSIVE ? UsageState.UNKNOWN : st, nowMillis);
         }
         if (!conclusive) {
@@ -211,19 +219,31 @@ public final class TrialRuntime {
     }
 
     /**
-     * 记一条五态样本（LC1：带正文版本指纹）。attempt 按「同 ref + 同产物」已有条数 +1
-     * （先取消后成功 = 两个 attempt）。version 空串 = LEGACY（呈现路径解析不到条目），
-     * UsageLedger.derive 按 version 过滤时空串与真实指纹分开统计 —— 不再混算。
+     * 「同 ref + 同产物」下一个 attempt 是几。★ attempt 归「收尾」不归「呈现」（实机修正，
+     * V-20261025-01 #296 复算首跑抓到）：首版把同收尾的多条呈现各记 attempt 1/2/3，
+     * 把「多次曝光」误当「多次尝试」，conclusion 取最大 attempt ⇒ 后录的 UNKNOWN
+     * 反压先录的 SUCCESS，结论翻转。正确语义：一次收尾一个 attempt；
+     * 「先取消后成功」= 两次收尾 = attempt 递增。
      */
-    private static void recordUsage(String entryRef, String version, String artifactId,
-                                     UsageState state, long atMillis) {
-        List<UsageSample> list = USAGE.computeIfAbsent(entryRef, k -> new ArrayList<>());
+    private static int nextAttemptOf(String entryRef, String artifactId) {
+        List<UsageSample> list = USAGE.getOrDefault(entryRef, List.of());
         int attempt = 1;
         for (UsageSample s : list) {
             if (s.artifactId().equals(artifactId == null ? "" : artifactId.trim())) {
-                attempt++;
+                attempt = Math.max(attempt, s.attempt() + 1);
             }
         }
+        return attempt;
+    }
+
+    /**
+     * 记一条五态样本（LC1：带正文版本指纹；attempt 由收尾批次统一分配——同批共享，
+     * 见 nextAttemptOf）。version 空串 = LEGACY（呈现路径解析不到条目），
+     * UsageLedger.derive 按 version 过滤时空串与真实指纹分开统计 —— 不再混算。
+     */
+    private static void recordUsage(String entryRef, String version, String artifactId, int attempt,
+                                     UsageState state, long atMillis) {
+        List<UsageSample> list = USAGE.computeIfAbsent(entryRef, k -> new ArrayList<>());
         UsageSample s = new UsageSample(entryRef, attempt, "", artifactId, version, state, atMillis);
         list.add(s);
         // LC3：每条五态样本镜像成 usage_recorded 事件 —— 重算的原料（78 号「日常样本能复算」）
