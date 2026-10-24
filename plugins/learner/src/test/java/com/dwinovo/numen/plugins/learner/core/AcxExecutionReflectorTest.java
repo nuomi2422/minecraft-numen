@@ -100,6 +100,56 @@ class AcxExecutionReflectorTest {
         assertTrue(e.detail().contains("boom"), "错误信息也要带: " + e.detail());
     }
 
+    /**
+     * LC4（78 号 §7「正常、缺料、中断三种结局」）：TIMEOUT（被熔断杀掉的中断结局）
+     * 必须作为 CANCELED 入 RESULT 账，不许落到「跑过但无结论」。
+     * 之前没有 TIMEOUT 分支，中断结局从账本里消失——78 号判据直接抓到。
+     */
+    @Test
+    void timeoutRun_isReflectedAsCanceledNotUnknown() throws Exception {
+        Path d = tmp("timeout");
+        ArtifactOutbox ob = outboxWith(d);
+        UsageLedger ul = new UsageLedger(d);
+        Path rec = records(d, run("r-tmo", "low_hp_flee", "1", "TIMEOUT", "\"step_retreat\""));
+
+        var rep = new AcxExecutionReflector(ob, ul).reflect(rec, true);
+        assertEquals(1, rep.reflected(), "TIMEOUT 必须被反射: " + rep.toMap());
+
+        String artifactId = ob.list(ArtifactOutbox.Kind.AC_SCRIPT).get(0).get("artifact_id").getAsString();
+        UsageLedger.Entry e = ul.latestOf(artifactId);
+        assertEquals(UsageLedger.Phase.RESULT, e.phase(),
+                "TIMEOUT 是终态——「中断」是三种必须正确记录的结局之一，不许降成「跑过」");
+        assertEquals(UsageLedger.Outcome.CANCELED, e.outcome(),
+                "熔断=被外力中止，归 CANCELED：与 FAIL 分开（不评价脚本质量），与 UNKNOWN 分开（终态明确）");
+        assertTrue(e.source().startsWith(AcxExecutionReflector.SOURCE_PREFIX), "幂等键照带: " + e.source());
+    }
+
+    /**
+     * LC4 缺料语义：PAUSED 是「等材料/等环境」的预期停止（AcxStatus 注释原文），
+     * 半截结论不许进 RESULT 账；缺料后 resume 续跑成功才有终态。
+     * 同一 run_id 两条事件：PAUSED 只记 EXECUTED，SUCCESS 才入 RESULT。
+     */
+    @Test
+    void pausedRun_staysExecutedUntilResumeCompletes() throws Exception {
+        Path d = tmp("paused");
+        ArtifactOutbox ob = outboxWith(d);
+        UsageLedger ul = new UsageLedger(d);
+        Path rec = records(d,
+                run("r-p1", "low_hp_flee", "1", "PAUSED", "null"),
+                run("r-p1", "low_hp_flee", "1", "SUCCESS", "null"));   // resume 后成功
+
+        var rep = new AcxExecutionReflector(ob, ul).reflect(rec, true);
+        assertEquals(2, rep.reflected(),
+                "两条都该入账（PAUSED=EXECUTED 半截 + SUCCESS=RESULT 终态）: " + rep.toMap());
+        assertEquals(1, rep.skippedNotFinal(), "PAUSED 那条计入 notFinal（半截不是质量信号）");
+
+        String artifactId = ob.list(ArtifactOutbox.Kind.AC_SCRIPT).get(0).get("artifact_id").getAsString();
+        // latest 是 SUCCESS（终态入账）
+        UsageLedger.Entry latest = ul.latestOf(artifactId);
+        assertEquals(UsageLedger.Phase.RESULT, latest.phase(), "resume 成功后终态入账");
+        assertEquals(UsageLedger.Outcome.SUCCESS, latest.outcome());
+    }
+
     @Test
     void otherPeoplesRuns_areNotReflected() throws Exception {
         Path d = tmp("other");

@@ -144,24 +144,39 @@ public final class AcxExecutionReflector {
             String artifactId = candidates.get(0);
             matched++;
             String source = SOURCE_PREFIX + r.runId();
-            if (knownSources.contains(source)) {
-                already++;
-                continue;
-            }
+            // ★ LC4（78 号 §7「正常、缺料、中断三种结局」）：先解析 status 再查幂等 ——
+            //   幂等只对**终态**生效；半截状态（PAUSED/RUNNING…）记 EXECUTED 不占坑，
+            //   这样「缺料 PAUSED → 恢复 SUCCESS」的终态能补进账（此前 PAUSED 先入账、
+            //   source 已存在，resume 的成功被当 already-known 跳过 —— 缺料恢复链路断了）。
             UsageLedger.Phase phase;
             UsageLedger.Outcome outcome;
+            boolean terminal;
             switch (r.status() == null ? "" : r.status().toUpperCase(java.util.Locale.ROOT)) {
                 case "SUCCESS", "COMPLETED" -> {
                     phase = UsageLedger.Phase.RESULT;
                     outcome = UsageLedger.Outcome.SUCCESS;
+                    terminal = true;
                 }
                 case "FAIL", "FAILED" -> {
                     phase = UsageLedger.Phase.RESULT;
                     outcome = UsageLedger.Outcome.FAIL;
+                    terminal = true;
                 }
                 case "CANCELED", "CANCELLED", "ABORTED" -> {
                     phase = UsageLedger.Phase.RESULT;
                     outcome = UsageLedger.Outcome.CANCELED;
+                    terminal = true;
+                }
+                // ★ LC4：TIMEOUT 是 ACX 的独立终态（AcxStatus：「被 wall-clock 熔断杀掉，
+                //   不反映脚本质量」）—— 之前没有这个分支，落到 default 会被记成
+                //   「跑过但无结论」，中断结局从账本里消失。
+                //   归 CANCELED（被外力中止，不是脚本做砸）：与 FAIL 分开，学习判定不会
+                //   把熔断当质量信号；与 UNKNOWN 分开，终态是明确的「被中止」。
+                case "TIMEOUT", "TIMED_OUT" -> {
+                    phase = UsageLedger.Phase.RESULT;
+                    outcome = UsageLedger.Outcome.CANCELED;
+                    notFinal++;   // 计数上仍归「非终态质量信号」：熔断不评价脚本好坏
+                    terminal = true;
                 }
                 case "PAUSED", "RUNNING", "PENDING", "STEP_FAILED", "STEP_OK" -> {
                     // ★ 进行中/暂停**不记 RESULT**：半截结论会被当成最终结果，
@@ -169,6 +184,7 @@ public final class AcxExecutionReflector {
                     phase = UsageLedger.Phase.EXECUTED;
                     outcome = UsageLedger.Outcome.UNKNOWN;
                     notFinal++;
+                    terminal = false;
                 }
                 default -> {
                     phase = UsageLedger.Phase.EXECUTED;
@@ -176,12 +192,19 @@ public final class AcxExecutionReflector {
                     notFinal++;
                     notes.add("run " + r.runId() + " 的状态看不懂(" + r.status()
                             + ")，只记「跑过」不记结果");
+                    terminal = false;
                 }
+            }
+            if (terminal && knownSources.contains(source)) {
+                already++;
+                continue;
             }
             String detail = buildDetail(r);
             ledger.append(artifactId, "AC_SCRIPT", r.acName(), phase, outcome, detail, source,
                     companionById.getOrDefault(artifactId, ""));
-            knownSources.add(source);
+            if (terminal) {
+                knownSources.add(source);
+            }
             reflected++;
         }
         return new Report(runs.size(), matched, reflected, already, unmatched, notFinal, ambiguous,
