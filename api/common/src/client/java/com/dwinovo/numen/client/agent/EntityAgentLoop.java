@@ -2426,6 +2426,31 @@ public final class EntityAgentLoop {
                             + "（每工具只留最新一次展开；原件在 monitor/tools.jsonl）",
                     entityUuid, slimmed, saved);
         }
+        // 2026-10-24 主人要求的**防复发监控**：去重之后仍不健康就 WARN。
+        // 治了不防等于没治完——数据证明这个病复发很快（33 次 find_tools 就堆到 70%）。
+        if (log) {
+            int totalChars = 0;
+            int expandedChars = 0;
+            java.util.Map<String, Integer> sameName = new java.util.HashMap<>();
+            for (ConvoState.Msg m : out) {
+                if (!(m instanceof ConvoState.Msg.Tool t)) continue;
+                totalChars += t.content().length();
+                if (!com.dwinovo.numen.agent.tool.ToolDisclosure.hasExpandedBlock(t.content())) continue;
+                expandedChars += t.content().length();
+                for (String n : com.dwinovo.numen.agent.tool.ToolDisclosure.firstNamesOf(t.content())) {
+                    sameName.merge(n, 1, Integer::sum);
+                }
+            }
+            if (totalChars > 0) {
+                double ratio = expandedChars * 1.0 / totalChars;
+                int worst = sameName.values().stream().mapToInt(Integer::intValue).max().orElse(0);
+                if (ratio > 0.40 || worst >= 3) {
+                    Constants.LOG.warn("[numen-entity#{}] 说明书占比异常：展开块 {}% / 同名最多 {} 份"
+                                    + "（阈值 40% / 3 份）——自增殖可能在复发",
+                            entityUuid, Math.round(ratio * 100), worst);
+                }
+            }
+        }
         return out;
     }
 
