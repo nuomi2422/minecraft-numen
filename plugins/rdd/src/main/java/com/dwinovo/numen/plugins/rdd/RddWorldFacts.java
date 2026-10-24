@@ -512,10 +512,27 @@ public final class RddWorldFacts {
         }
         final Set<EntityType<?>> members = tagMembers;
         final EntityType<?> exactType = exact;
-        var box = ap.getBoundingBox().inflate(radius);
+        // 2026-10-25：和 block_nearby 对齐 —— 支持固定锚点 + 数量（交易站要判"这块地附近有村民"）。
+        net.minecraft.world.phys.Vec3 center = ap.position();
+        Object anchor = condition.get("anchor");
+        if (anchor instanceof java.util.List<?> xyz && xyz.size() == 3) {
+            try {
+                center = new net.minecraft.world.phys.Vec3(
+                        ((Number) xyz.get(0)).doubleValue(),
+                        ((Number) xyz.get(1)).doubleValue(),
+                        ((Number) xyz.get(2)).doubleValue());
+            } catch (RuntimeException ignored) {
+                center = ap.position();
+            }
+        }
+        int need = WorldFactConditions.minimumOf(condition, 1);
+        var box = new net.minecraft.world.phys.AABB(center.x - radius, center.y - radius, center.z - radius,
+                center.x + radius, center.y + radius, center.z + radius);
+        int found = 0;
         for (Entity entity : level.getEntities(ap, box, e -> e != ap && e.isAlive())) {
             if (isTag ? members.contains(entity.getType()) : entity.getType() == exactType) {
-                return true;
+                found++;
+                if (found >= need) return true;
             }
         }
         return false;

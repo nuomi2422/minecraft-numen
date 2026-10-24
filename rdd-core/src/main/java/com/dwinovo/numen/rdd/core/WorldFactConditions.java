@@ -67,7 +67,8 @@ public final class WorldFactConditions {
             case "position_at" -> coord(condition) && radius(condition.get("radius"), MAX_NEARBY_RADIUS);
             case "entity_nearby" -> tag(condition.get("entity"))
                     && radius(condition.get("radius"), MAX_NEARBY_RADIUS)
-                    && optionalPositive(condition.get("minimum"));
+                    && optionalPositive(condition.get("minimum"))
+                    && optionalAnchor(condition.get("anchor"));
             case "block_at" -> coord(condition) && tag(condition.get("block"));
             case "container_at" -> coord(condition) && tag(condition.get("item"))
                     && optionalPositive(condition.get("minimum"));

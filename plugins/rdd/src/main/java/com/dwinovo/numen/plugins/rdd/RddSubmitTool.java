@@ -46,8 +46,9 @@ final class RddSubmitTool implements NumenTool {
                         com.dwinovo.numen.rdd.core.HardCodedEvaluator.MODE_ACQUIRE)
                 // 2026-10-25：补「方块条件」写侧。读侧（WorldFactConditions/RddDecomposer）早就支持 block_nearby，
                 // 但 rdd_submit 只会写 asset_key，于是「盖房/插火把/放床」这类以世界状态为成果的目标无法进任务链。
-                .optionalEnum("condition_type", "item (default) keeps the inventory reading; block_nearby judges by a block existing near the companion.", "item", "block_nearby")
+                .optionalEnum("condition_type", "item (default) = inventory reading; block_nearby = a block near the companion/anchor; entity_nearby = an entity near the companion/anchor (e.g. minecraft:villager).", "item", "block_nearby", "entity_nearby")
                 .optionalString("block", "Block id for condition_type=block_nearby (e.g. minecraft:torch).")
+                .optionalString("entity", "Entity type id or #tag for condition_type=entity_nearby (e.g. minecraft:villager).")
                 // 2026-10-25：AI 会贴墙插火把（wall_torch），只认一种 id 会把合理做法判成没做。
                 // blocks 用逗号分隔多个 id，合计计数。
                 .optionalString("blocks", "Comma separated block ids for block_nearby; counted together with block.")
@@ -64,8 +65,11 @@ final class RddSubmitTool implements NumenTool {
         try {
             Input input = GSON.fromJson(args, Input.class);
             boolean blockMode = input != null && "block_nearby".equalsIgnoreCase(input.condition_type());
+            boolean entityMode = input != null && "entity_nearby".equalsIgnoreCase(input.condition_type());
             if (input == null || blank(input.goal()) || blank(input.primary_goal()) || blank(input.subtask())
-                    || (!blockMode && blank(input.asset_key())) || (blockMode && blank(input.block()) && blank(input.blocks())) || input.minimum() < 0) {
+                    || (!blockMode && !entityMode && blank(input.asset_key()))
+                    || (blockMode && blank(input.block()) && blank(input.blocks()))
+                    || (entityMode && blank(input.entity())) || input.minimum() < 0) {
                 reply.accept(com.dwinovo.numen.task.TaskResult.fail(
                         "rdd_submit requires goal, primary_goal, subtask, asset_key and non-negative minimum").toJson());
                 return;
@@ -74,7 +78,21 @@ final class RddSubmitTool implements NumenTool {
             // 拼进 condition 前先过一遍 modeOf：非法值显式拒绝，不静默降级成 hold
             // （那正是 7.4#2 假完成那一族 —— 拼错的键悄悄变成另一种语义）。
             var condition = new java.util.LinkedHashMap<String, Object>();
-            if (blockMode) {
+            if (entityMode) {
+                int r = input.radius() == null ? 8 : Math.max(1, Math.min(16, input.radius()));
+                condition.put("type", "entity_nearby");
+                condition.put("entity", input.entity().trim());
+                condition.put("radius", r);
+                condition.put("minimum", Math.max(1, input.minimum()));
+                java.util.List<Integer> anchorPos = parseAnchor(input.anchor(), reply);
+                if (anchorPos == null && !blank(input.anchor())) return;
+                if (anchorPos != null) condition.put("anchor", anchorPos);
+                if (!com.dwinovo.numen.rdd.core.WorldFactConditions.valid(condition)) {
+                    reply.accept(com.dwinovo.numen.task.TaskResult.fail(
+                            "rdd_submit entity_nearby needs a valid entity id and radius 1..16").toJson());
+                    return;
+                }
+            } else if (blockMode) {
                 int r = input.radius() == null ? 8 : Math.max(1, Math.min(16, input.radius()));
                 condition.put("type", "block_nearby");
                 java.util.List<String> many = new java.util.ArrayList<>();
@@ -188,9 +206,29 @@ final class RddSubmitTool implements NumenTool {
         return new BodyInstruction(input.task_type(), argsMap);
     }
 
+    /** "x,y,z" → List<Integer>；空串返回 null；格式错则已经回复失败并返回 null。 */
+    private static java.util.List<Integer> parseAnchor(String raw, java.util.function.Consumer<String> reply) {
+        if (blank(raw)) return null;
+        String[] xyz = raw.split(",");
+        if (xyz.length != 3) {
+            reply.accept(com.dwinovo.numen.task.TaskResult.fail(
+                    "rdd_submit anchor must be \"x,y,z\"").toJson());
+            return null;
+        }
+        java.util.List<Integer> out = new java.util.ArrayList<>();
+        try {
+            for (String one : xyz) out.add((int) Math.round(Double.parseDouble(one.trim())));
+        } catch (NumberFormatException bad) {
+            reply.accept(com.dwinovo.numen.task.TaskResult.fail(
+                    "rdd_submit anchor must be numeric \"x,y,z\"").toJson());
+            return null;
+        }
+        return out;
+    }
+
     private static boolean blank(String value) { return value == null || value.isBlank(); }
     private record Input(String goal, String primary_goal, String subtask, String asset_key, int minimum,
                          String mode,
-                         String condition_type, String block, String blocks, Integer radius, String anchor,
+                         String condition_type, String block, String blocks, String entity, Integer radius, String anchor,
                          String task_type, String args) {}
 }
