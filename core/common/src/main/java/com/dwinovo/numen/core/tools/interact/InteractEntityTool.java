@@ -31,7 +31,13 @@ public final class InteractEntityTool implements NumenTool {
                 + "and FOLLOWS the entity (id from scan_nearby_entities), then acts once the crosshair "
                 + "reaches it (a wall in the way makes it re-position, not hit through). right on a "
                 + "boat/rideable = board it (runtime_state then shows <riding>; goto pilots or steps "
-                + "off — never click your own vehicle again).";
+                + "off — never click your own vehicle again). "
+                // 2026-10-24：实机抓到 AI 手里拿着小麦、羊在 20 格内，却把小麦当成"换绿宝石的商品"，
+                // 一次都没想过用它引羊。缺的不是工具，是"这个动作能干什么"的说明。
+                + "LURING: right-click an animal while holding its food and it FOLLOWS you — "
+                + "wheat for sheep/cows, carrot or potato for pigs, seeds for chickens. "
+                + "So \"把动物引进围栏\" = hold the food, interact_entity(right) once to start it following, "
+                + "then goto/walk to the pen and it trails behind; feed twice to breed instead.";
     }
 
     @Override
