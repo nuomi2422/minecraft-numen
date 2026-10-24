@@ -65,6 +65,23 @@ public final class ExperienceStore {
      */
     public static final int DEMOTE_AFTER_CONSECUTIVE_FAILURES = 3;
 
+    /**
+     * ★ LC3（78 号 §7「反例阻止错误晋级」）：近期连续失败达到这个数，发布资格就<b>不许</b>迁到
+     * PUBLISHED（进执行视图）。
+     *
+     * <p><b>为什么是 2 不是 3</b>：与 {@link #DEMOTE_AFTER_CONSECUTIVE_FAILURES} 解耦 ——
+     * 降级问「该不该降」，发布门问「敢不敢让它指导行动」；后者必须更严：连续失败两次的
+     * 经验还能进执行视图，就是 78 号 §1 说的「自我印证的垃圾证据开始指导行动」。
+     * ⚠️ 与 {@code DEMOTE_AFTER_CONSECUTIVE_FAILURES} 同款说明：未经实测校准，
+     * 真实拦截数落在 verify/publish 回执里，攒够样本回来校准。</p>
+     *
+     * <p><b>负向门的边界（刻意）</b>：只拦「向 PUBLISHED 迁移」—— SUSPENDED/REVOKED
+     * 是停用方向，紧急停永远不该被反例卡住（主人的刹车权高于一切学习判定）。
+     * 也不要求 N 次成功（78 号 §2.2：TrialRuntime verdict 是建议不是自动门）——
+     * 这里只做「有近期反例 ⇒ 不许放行」的否决，不做「攒够成功 ⇒ 自动放行」。</p>
+     */
+    public static final int PUBLISH_BLOCK_AFTER_CONSECUTIVE_FAILURES = 2;
+
     private final Path file;
     private final List<ExperienceEntry> mirror = new ArrayList<>();
     private boolean loaded;
@@ -363,6 +380,17 @@ public final class ExperienceStore {
         PublicationState cur = old.publication() == null ? PublicationState.PUBLISHED : old.publication();
         if (!cur.canTransitionTo(target)) {
             return new PublishResult(old, "ILLEGAL_TRANSITION", cur + " 不能直接迁到 " + target);
+        }
+        // ★ LC3（78 号 §7「反例阻止错误晋级」）负向门：近期连续失败的经验不许进执行视图。
+        //   只拦向 PUBLISHED 的迁移；SUSPENDED/REVOKED 是停用方向，永远放行（刹车权优先）。
+        if (target == PublicationState.PUBLISHED
+                && old.consecutiveFailures() >= PUBLISH_BLOCK_AFTER_CONSECUTIVE_FAILURES) {
+            return new PublishResult(old, "COUNTER_EXAMPLES_BLOCK",
+                    "近期连续失败 " + old.consecutiveFailures() + " 次（阈值 "
+                            + PUBLISH_BLOCK_AFTER_CONSECUTIVE_FAILURES + "），不许发布到执行视图。"
+                            + "近期反例如下：" + old.counterexamples()
+                            + " —— 先用 experience_verify 记成功/反例让连续计数归零或降级，"
+                            + "或修订正文后重新走 TRIAL。");
         }
         ExperienceEntry updated = old.withPublication(target);
         mirror.set(index, updated);
