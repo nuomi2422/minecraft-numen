@@ -33,6 +33,15 @@ public final class ExperiencePlugin implements NumenPlugin {
     @Override
     public void setup(NumenApi numen) {
         configDir = numen.configDir();
+        // LC3（78 号 §7「日常样本能复算」）：五态样本全字段镜像进 expmem.jsonl。
+        // 事件是重算的唯一原料；出口失败不影响记账（TrialRuntime 内部已吞）。
+        TrialRuntime.eventSink((type, data) -> {
+            try {
+                ExperienceMonitor.publish(type, data);
+            } catch (Throwable ignored) {
+                // 观测失败不拖垮主流程（ExperienceMonitor 同款纪律）
+            }
+        });
         numen.registerTool(new ExperienceLearnTool());
         numen.registerTool(new ExperienceRecallTool());
         numen.registerTool(new ExperienceVerifyTool());

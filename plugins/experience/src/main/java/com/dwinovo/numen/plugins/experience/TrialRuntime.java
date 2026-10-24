@@ -42,6 +42,14 @@ public final class TrialRuntime {
     /** 每个同伴最多记这么多条呈现（够覆盖 120 秒窗口就行；再多只会浪费）。 */
     static final int MAX_PENDING = 64;
 
+    /**
+     * LC3：五态样本的事件出口（注入式 —— 本类保持纯 JVM 可测，不 import NeoForge）。
+     * 宿主在 setup 时注入 {@code ExperienceMonitor::publish}；测试注入收集器或 null。
+     * 出口失败绝不影响记账（事件是<b>镜像</b>，内存才是运行时读数 —— 与 ExperienceMonitor
+     * 「观测失败不影响主流程」同款纪律）。
+     */
+    private static volatile java.util.function.BiConsumer<String, java.util.Map<String, Object>> eventSink;
+
     /** 渲染块里「试用中」条目的 ref：`ref="exp:…" ...>（试用中）标题`。 */
     private static final Pattern TRIAL_REF = Pattern.compile("ref=\"(exp:[^\"]+)\"[^>]*>\\s*（试用中）");
 
@@ -52,6 +60,23 @@ public final class TrialRuntime {
     private static final Map<String, List<UsageSample>> USAGE = new LinkedHashMap<>();
 
     private TrialRuntime() {}
+
+    /** 宿主接线用：注入事件出口。传 null = 关闭事件镜像（测试/无宿主环境）。 */
+    public static void eventSink(java.util.function.BiConsumer<String, java.util.Map<String, Object>> sink) {
+        eventSink = sink;
+    }
+
+    private static void publishUsage(UsageSample s) {
+        java.util.function.BiConsumer<String, java.util.Map<String, Object>> sink = eventSink;
+        if (sink == null || s == null) {
+            return;
+        }
+        try {
+            sink.accept("usage_recorded", com.dwinovo.numen.experience.api.UsageEventCodec.toEvent(s));
+        } catch (RuntimeException ignored) {
+            // 镜像失败不影响记账 —— 事件是审计面，内存才是运行时读数
+        }
+    }
 
     /** 从渲染好的执行知识里挑出「试用中」的条目 ref（顺序即出现顺序）。 */
     public static List<String> trialRefsIn(String renderedText) {
@@ -199,7 +224,10 @@ public final class TrialRuntime {
                 attempt++;
             }
         }
-        list.add(new UsageSample(entryRef, attempt, "", artifactId, version, state, atMillis));
+        UsageSample s = new UsageSample(entryRef, attempt, "", artifactId, version, state, atMillis);
+        list.add(s);
+        // LC3：每条五态样本镜像成 usage_recorded 事件 —— 重算的原料（78 号「日常样本能复算」）
+        publishUsage(s);
     }
 
     /** G6a-ledger：某条经验的五态账（IC11 口径）。 */
