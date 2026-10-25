@@ -135,6 +135,9 @@ public final class RddWorldFacts {
                 case "entity_nearby" -> entityNearby(ap, condition);
                 case "block_at" -> blockAt(ap, condition);
                 case "container_at" -> containerAt(ap, condition);
+                case "shelter" -> shelterAround(ap, condition);
+                case "stocked" -> stockedAround(ap, condition);
+                case "lit" -> litAround(ap, condition);
                 default -> false;
             };
         } catch (IllegalArgumentException exception) {
@@ -755,4 +758,126 @@ public final class RddWorldFacts {
 
     record BaseSnapshot(String dimension, BlockPos spawn, boolean complete,
                         List<String> facilities, Map<String, Integer> storedItems) {}
+
+    // ──────────────────────────────────────────────────────────────────────
+    // D 组：基地分级（2026-10-25 主人预设）。全部以**重生床**为锚点，与 base 同源：
+    // 没绑床（或床被拆了）⇒ 三个全判 false——"家在哪"永远只有床这一个真相。
+    // ──────────────────────────────────────────────────────────────────────
+
+    /** 床坐标；未绑床/床被拆返回 null（三个分级的公共入口）。 */
+    private static BlockPos bedAnchor(NumenPlayer ap) {
+        BlockPos spawn = ap.getRespawnPosition();
+        if (spawn == null || spawn.equals(BlockPos.ZERO)) return null;
+        if (!(ap.level() instanceof ServerLevel level)) return null;
+        return level.getBlockState(spawn).getBlock() instanceof BedBlock ? spawn.immutable() : null;
+    }
+
+    /** D 组半径：床周围水平多少格（默认 8，与 base 的扫描口径一致）。 */
+    private static int baseRadius(Map<String, Object> condition) {
+        return WorldFactConditions.radiusOf(condition, WorldFactConditions.DEFAULT_BLOCK_RADIUS);
+    }
+
+    /**
+     * shelter：床周围半径 R 内"围合"达标。
+     * 判据（刻意可解释、可懒造）：墙块（solid 且不是床/门/火把这类功能性方块）≥ minimum（默认 20），
+     * 且床头顶 ≤2 格内有顶盖（solid 方块）——"有个能挡雨睡觉的角落"，不要求像人盖的房子。
+     */
+    private static boolean shelterAround(NumenPlayer ap, Map<String, Object> condition) {
+        BlockPos bed = bedAnchor(ap);
+        if (bed == null) return false;
+        ServerLevel level = ap.serverLevel();
+        int radius = baseRadius(condition);
+        int minimum = WorldFactConditions.minimumOf(condition, 20);
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        int walls = 0;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                if (dx * dx + dz * dz > radius * radius) continue;
+                for (int dy = 0; dy <= 4; dy++) {
+                    cursor.set(bed.getX() + dx, bed.getY() + dy, bed.getZ() + dz);
+                    if (!level.hasChunkAt(cursor)) continue;
+                    var state = level.getBlockState(cursor);
+                    if (isWallLike(state)) walls++;
+                }
+            }
+        }
+        if (walls < minimum) return false;
+        // 顶盖：床正上方 1~2 格内有 solid
+        for (int dy = 1; dy <= 2; dy++) {
+            var above = level.getBlockState(bed.above(dy));
+            if (above.isSolid()) return true;
+        }
+        return false;
+    }
+
+    /** 墙块：solid 且不是床/门/容器/光源（那些是"设施"，不算墙）。 */
+    private static boolean isWallLike(BlockState state) {
+        return state.isSolid()
+                && !(state.getBlock() instanceof BedBlock)
+                && !state.is(Blocks.CHEST) && !state.is(Blocks.TRAPPED_CHEST)
+                && !state.is(Blocks.FURNACE) && !state.is(Blocks.CRAFTING_TABLE)
+                && !state.is(Blocks.TORCH) && !state.is(Blocks.WALL_TORCH)
+                && !state.is(Blocks.LANTERN) && !state.is(Blocks.SOUL_LANTERN)
+                && !(state.getBlock() instanceof net.minecraft.world.level.block.DoorBlock);
+    }
+
+    /**
+     * stocked：床半径 R 内所有容器里的物品**总件数** ≥ minimum（默认 10）。
+     * 判"真的放了东西"，不是"附近有个空箱子"——AI 把装备存进去才算数。
+     */
+    private static boolean stockedAround(NumenPlayer ap, Map<String, Object> condition) {
+        BlockPos bed = bedAnchor(ap);
+        if (bed == null) return false;
+        ServerLevel level = ap.serverLevel();
+        int radius = baseRadius(condition);
+        int minimum = WorldFactConditions.minimumOf(condition, 10);
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        int total = 0;
+        for (int dx = -radius; dx <= radius && total < minimum; dx++) {
+            for (int dz = -radius; dz <= radius && total < minimum; dz++) {
+                if (dx * dx + dz * dz > radius * radius) continue;
+                for (int dy = -2; dy <= 3 && total < minimum; dy++) {
+                    cursor.set(bed.getX() + dx, bed.getY() + dy, bed.getZ() + dz);
+                    if (!level.hasChunkAt(cursor)) continue;
+                    if (!(level.getBlockEntity(cursor) instanceof Container container)) continue;
+                    for (int slot = 0; slot < container.getContainerSize(); slot++) {
+                        ItemStack stack = container.getItem(slot);
+                        if (!stack.isEmpty()) total += stack.getCount();
+                    }
+                }
+            }
+        }
+        return total >= minimum;
+    }
+
+    /** lit：床半径 R 内光源（火把/灯笼/萤石/海晶灯等，走 tag）≥ minimum（默认 4）。 */
+    private static boolean litAround(NumenPlayer ap, Map<String, Object> condition) {
+        BlockPos bed = bedAnchor(ap);
+        if (bed == null) return false;
+        ServerLevel level = ap.serverLevel();
+        int radius = baseRadius(condition);
+        int minimum = WorldFactConditions.minimumOf(condition, 4);
+        // 光源用明枚举而不是 tag：原版没有现成的"光源" tag，编一个 tag 反而会让规划器
+        // 生成永远解析不了的东西（RL-18 同族）。这八个是原版可放置光源的全集。
+        Predicate<BlockState> isLight = state -> state.is(Blocks.TORCH) || state.is(Blocks.WALL_TORCH)
+                || state.is(Blocks.LANTERN) || state.is(Blocks.SOUL_LANTERN)
+                || state.is(Blocks.GLOWSTONE) || state.is(Blocks.SEA_LANTERN)
+                || state.is(Blocks.JACK_O_LANTERN) || state.is(Blocks.SHROOMLIGHT);
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        int found = 0;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                if (dx * dx + dz * dz > radius * radius) continue;
+                for (int dy = -2; dy <= 3; dy++) {
+                    cursor.set(bed.getX() + dx, bed.getY() + dy, bed.getZ() + dz);
+                    if (!level.hasChunkAt(cursor)) continue;
+                    if (isLight.test(level.getBlockState(cursor))) {
+                        found++;
+                        if (found >= minimum) return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
 }

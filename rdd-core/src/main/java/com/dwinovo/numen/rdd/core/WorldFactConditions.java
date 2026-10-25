@@ -32,7 +32,9 @@ public final class WorldFactConditions {
             // B 组：位置 / 维度
             "dimension", "position_at", "y_below",
             // C 组：实体 / 精确坐标
-            "entity_nearby", "block_at", "container_at");
+            "entity_nearby", "block_at", "container_at",
+            // D 组：基地分级（2026-10-25 主人预设：绑床只是第一级，有屋/有存货/有灯才算后续）
+            "shelter", "stocked", "lit");
 
     /** 判定半径上限。判定只读一个邻域，永不遍历世界 —— 这是它能每秒跑一次的前提。 */
     public static final int MAX_NEARBY_RADIUS = 16;
@@ -72,6 +74,13 @@ public final class WorldFactConditions {
             case "block_at" -> coord(condition) && tag(condition.get("block"));
             case "container_at" -> coord(condition) && tag(condition.get("item"))
                     && optionalPositive(condition.get("minimum"));
+            // D 组：基地分级。全部以重生床为锚点（与 base 同源），没有床时一律判 false。
+            //   shelter：床周围 RADIUS 格内"围合"程度达标——四面墙块数 ≥ minimum（默认 20）且头顶 ≤2 格内有顶盖。
+            //   stocked：床 RADIUS 格内所有容器里的物品**总数** ≥ minimum（默认 10）——判"真放了东西"，不只是"有个空箱"。
+            //   lit：床 RADIUS 格内光源（火把/灯笼/萤石等 tag）≥ minimum（默认 4）——夜里不刷怪。
+            case "shelter" -> optionalRadius(condition.get("radius")) && optionalPositive(condition.get("minimum"));
+            case "stocked" -> optionalRadius(condition.get("radius")) && optionalPositive(condition.get("minimum"));
+            case "lit" -> optionalRadius(condition.get("radius")) && optionalPositive(condition.get("minimum"));
             default -> false;
         };
     }
@@ -159,5 +168,10 @@ public final class WorldFactConditions {
         return value instanceof Number n
                 && n.intValue() >= 1 && n.intValue() <= cap
                 && n.doubleValue() == n.intValue();
+    }
+
+    /** D 组（shelter/stocked/lit）的 radius 是可选的；给了必须合法。 */
+    private static boolean optionalRadius(Object value) {
+        return radius(value, MAX_NEARBY_RADIUS);
     }
 }

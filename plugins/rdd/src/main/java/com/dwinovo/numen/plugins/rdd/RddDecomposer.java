@@ -481,9 +481,14 @@ final class RddDecomposer {
                     + "{type:position_at,x:100,y:64,z:200,radius:4}；"
                     + "{type:entity_nearby,entity:minecraft:cow,radius:8}；"
                     + "{type:block_at,x:100,y:64,z:200,block:minecraft:crafting_table}；"
-                    + "{type:container_at,x:100,y:64,z:200,item:minecraft:diamond,minimum:1}。\n"
-                    + "  只用下面这十七种类型：advancement/structure/entity_killed/base/biome/block_nearby/container_nearby/"
-                    + "block_mined/item_crafted/item_used/item_picked_up/dimension/position_at/y_below/entity_nearby/block_at/container_at，"
+                    + "{type:container_at,x:100,y:64,z:200,item:minecraft:diamond,minimum:1}；"
+                    + "{type:shelter,minimum:20,radius:8}（床周围墙块≥minimum 且头顶≤2格有顶盖——「有个能挡雨的角落」，不要求像人盖的房）；"
+                    + "{type:stocked,minimum:10,radius:8}（床周围容器里物品总件数≥minimum——「真把东西存进去了」，空箱子不算）；"
+                    + "{type:lit,minimum:4,radius:8}（床周围光源≥minimum——夜里不刷怪）。\n"
+                    + "  shelter/stocked/lit 都以重生床为圆心：没绑床=全判 false。安家链必须先放床并 sleep 绑点（{type:base}），"
+                    + "再逐步 shelter→stocked→lit；把 shelter 排在床前面=永远判假=链死锁。\n"
+                    + "  只用下面这二十种类型：advancement/structure/entity_killed/base/biome/block_nearby/container_nearby/"
+                    + "block_mined/item_crafted/item_used/item_picked_up/dimension/position_at/y_below/entity_nearby/block_at/container_at/shelter/stocked/lit，"
                     + "写别的一律会被丢掉（整条步骤消失且不报错）。ID 不确定就用 #tag。\n"
                 + "  你只负责给「完成条件」，不要给身体动作指令 —— 身体只有一个驾驶员（执行 AI），"
                 + "派活是它的事，不是规划器的事。\n";
@@ -552,7 +557,8 @@ final class RddDecomposer {
                                     "biome", "block_nearby", "container_nearby",
                                     "block_mined", "item_crafted", "item_used", "item_picked_up",
                                     "dimension", "position_at", "y_below",
-                                    "entity_nearby", "block_at", "container_at"))),
+                                    "entity_nearby", "block_at", "container_at",
+                                    "shelter", "stocked", "lit"))),
                     Map.entry("advancement", Map.of("type", "string")),
                     Map.entry("structure", Map.of("type", "string")),
                     Map.entry("entity", Map.of("type", "string")),

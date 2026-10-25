@@ -52,7 +52,9 @@ class WorldFactConditionsPinTest {
             "biome", "block_nearby", "container_nearby",
             "block_mined", "item_crafted", "item_used", "item_picked_up",
             "dimension", "position_at", "y_below",
-            "entity_nearby", "block_at", "container_at");
+            "entity_nearby", "block_at", "container_at",
+            // 2026-10-25 D 组：基地分级（shelter/stocked/lit，全部以重生床为锚点）
+            "shelter", "stocked", "lit");
 
     @Test
     void knownTypesArePinnedToTheFullSet() {
@@ -323,12 +325,18 @@ class WorldFactConditionsPinTest {
             boolean valid = WorldFactConditions.valid(c("type", type));
             if (type.equals("base")) {
                 assertTrue(known && valid, "base 既要 known 也要 valid");
+            } else if (GROUP_D.contains(type)) {
+                // D 组（shelter/stocked/lit）全参数可选：裸条件合法是**设计**
+                assertTrue(known && valid, type + " 属于 D 组（全参数可选），裸条件必须合法");
             } else {
                 assertTrue(known, type + " 必须 knownType");
                 assertFalse(valid, type + " 缺必填 id 时 valid 必须为 false（两处对 type 本身看法必须一致）");
             }
         }
     }
+
+    /** D 组 = 基地分级（全参数可选，裸条件即合法）。 */
+    private static final java.util.Set<String> GROUP_D = java.util.Set.of("shelter", "stocked", "lit");
 
     @Test
     void pinnedTypeListMatchesWhatKnownTypeAccepts() {
@@ -340,6 +348,7 @@ class WorldFactConditionsPinTest {
                 "block_mined", "item_crafted", "item_used", "item_picked_up",
                 "dimension", "position_at", "y_below",
                 "entity_nearby", "block_at", "container_at",
+                "shelter", "stocked", "lit",
                 "inventory", "asset", "item", "block", "entity", "recipe",
                 "effect", "stat", "weather", "time", "damage", "xp", "level", "mob_nearby")) {
             if (WorldFactConditions.knownType(candidate)) accepted.add(candidate);
@@ -347,5 +356,31 @@ class WorldFactConditionsPinTest {
         assertEquals(Set.copyOf(PINNED_TYPES), accepted,
                 "★ 实现接受的 type 集合与本类钉住的清单不一致。要么有人加了新 type（请同步本类"
                         + "并同时检查 RddWorldFacts.matches 与 RddDecomposer 提示词），要么有人删了旧的。");
+    }
+
+    // ── D 组形状：shelter / stocked / lit（2026-10-25 基地分级）──────────────
+
+    @Test
+    void 组D_shelter默认形状合法() {
+        assertTrue(WorldFactConditions.valid(c("type", "shelter")),
+                "裸 shelter 必须合法（全部参数可选：minimum 默认 20，radius 默认 8）");
+        assertTrue(WorldFactConditions.valid(c("type", "shelter", "minimum", 24, "radius", 6)),
+                "显式 minimum/radius 必须合法");
+    }
+
+    @Test
+    void 组D_shelter拒绝非法参数() {
+        assertFalse(WorldFactConditions.valid(c("type", "shelter", "minimum", 0)), "minimum 必须 >0");
+        assertFalse(WorldFactConditions.valid(c("type", "shelter", "radius", 0)), "radius 必须 ≥1");
+        assertFalse(WorldFactConditions.valid(c("type", "shelter", "radius", 99)), "radius 上限 16");
+        assertFalse(WorldFactConditions.valid(c("type", "shelter", "minimum", 2.5)), "minimum 必须整数");
+    }
+
+    @Test
+    void 组D_stocked和lit同形() {
+        assertTrue(WorldFactConditions.valid(c("type", "stocked")));
+        assertTrue(WorldFactConditions.valid(c("type", "lit", "minimum", 6, "radius", 10)));
+        assertFalse(WorldFactConditions.valid(c("type", "stocked", "minimum", -1)), "stocked minimum 拒负数");
+        assertFalse(WorldFactConditions.valid(c("type", "lit", "radius", 1.5)), "lit radius 拒小数");
     }
 }
