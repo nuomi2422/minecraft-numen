@@ -482,6 +482,22 @@ private static String withAssets(UUID companionId, String rddContext) {
         } catch (RuntimeException ignored) {
             playbook = "";
         }
+        // 2026-10-25（主人）：**点一下床就绑好了**——但 AI 不一定会想到去点。
+        // 谈基地/床时如果还没绑（spawn 为空或 0,0,0），直接把"去点一下"这句话放到它眼前。
+        String bedHint = "";
+        try {
+            if (!playbook.isEmpty()) {
+                net.minecraft.server.level.ServerPlayer body = RddCompanionBody.get(companionId);
+                net.minecraft.core.BlockPos spawn = body == null ? null : body.getRespawnPosition();
+                boolean unbound = spawn == null || spawn.equals(net.minecraft.core.BlockPos.ZERO);
+                if (unbound) {
+                    bedHint = "<base_hint>你还没有绑重生点。走到床边用 sleep 点一下就好 —— "
+                            + "白天点也生效（只是不跳过时间），不用等天黑、也不用真的睡着。</base_hint>";
+                }
+            }
+        } catch (RuntimeException ignored) {
+            bedHint = "";
+        }
         // 容器存货：**只读 tick 缓存**（上下文构建不保证在主线程，不能读世界）。
         String storageBlock = RddContainerMemory.cached(companionId);
         String worldAssets = RddAssetContext.render(assets(companionId), 1200);
@@ -494,6 +510,10 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!playbook.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(playbook);
+        }
+        if (!bedHint.isEmpty()) {
+            if (merged.length() > 0) merged.append("\n");
+            merged.append(bedHint);
         }
         if (!worldAssets.isBlank()) {
             if (merged.length() > 0) merged.append("\n");
