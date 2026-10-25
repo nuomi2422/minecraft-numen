@@ -238,6 +238,11 @@ public final class ExperienceStore {
             if (index >= 0) {
                 LOG.info("[experience] legacy id '{}' resolved to '{}' by title",
                         id, mirror.get(index).id());
+                // ★ 实机修正（V-20261025-01 遗留债）：调用方手里的 id 可能是归一化前的
+                //   原文（含大写标题），而 pending 表的键是 recall 时存的 entry.id()
+                //   （归一化小写形态）——只清原文键等于没清，欠的结论永远挂在清单里。
+                //   resolve 出真 id 后把归一化键也清一遍（两个键都试，幂等）。
+                receipts.report(mirror.get(index).id());
             }
         }
         if (index < 0) {
