@@ -90,7 +90,26 @@ public final class RddWorldFacts {
     }
 
     /** Caller must be on the server thread; this method never schedules work or loads chunks. */
-    public static boolean matches(NumenPlayer ap, Map<String, Object> condition) {        if (ap == null || condition == null || ap.getServer() == null
+    /**
+     * 建造类条件（block_nearby / container_nearby）若没有显式 anchor，就套上基地锚点。
+     * 没有基地坐标时原样返回（探索/采集类不该被基地绑住）。
+     */
+    private static Map<String, Object> withBaseAnchor(NumenPlayer ap, Map<String, Object> condition) {
+        if (ap == null || condition == null) return condition;
+        if (!RddBaseAnchor.needsAnchor(condition)) return condition;
+        net.minecraft.core.BlockPos base = RddBaseAnchor.get(ap.getUUID());
+        if (base == null) return condition;
+        Map<String, Object> copy = new java.util.LinkedHashMap<>(condition);
+        copy.put("anchor", java.util.List.of(base.getX(), base.getY(), base.getZ()));
+        return copy;
+    }
+
+    public static boolean matches(NumenPlayer ap, Map<String, Object> condition) {
+        // 2026-10-25（主人在实机上指出）：规划器把"回到基地再办"写在**文字**里，
+        // 而条件里没有 anchor ⇒ 判定圆心是"同伴现在站的地方" ⇒ 它就近放下也算完成。
+        // 这里给建造类条件补上基地锚点：第一次放下床的位置 = 基地。
+        condition = withBaseAnchor(ap, condition);
+        if (ap == null || condition == null || ap.getServer() == null
                 || !ap.getServer().isSameThread()) return false;
         try {
             return switch (String.valueOf(condition.get("type"))) {
@@ -255,6 +274,11 @@ public final class RddWorldFacts {
                 origin = ap.blockPosition();
             }
         }
+        // 2026-10-25：床判定成功 ⇒ 把这张床的位置记成基地（之后所有建造类条件以它为圆心）。
+        if (isBedCondition(condition)) {
+            net.minecraft.core.BlockPos bed = findNearest(level, origin, radius, hit);
+            if (bed != null) RddBaseAnchor.remember(ap.getUUID(), bed);
+        }
         if (need > 1) {
             if (anchored) {
                 return countCylinder(level, origin, radius, ANCHOR_DY, hit, need) >= need;
@@ -265,6 +289,40 @@ public final class RddWorldFacts {
             return countCylinder(level, origin, radius, ANCHOR_DY, hit, 1) >= 1;
         }
         return scanNeighbourhood(level, origin, radius, hit);
+    }
+
+    /** 这条条件是不是"找床"（床 = 安家标志，第一次放下就是基地坐标）。 */
+    private static boolean isBedCondition(Map<String, Object> condition) {
+        Object one = condition.get("block");
+        if (one instanceof String id && id.contains("_bed")) return true;
+        Object many = condition.get("blocks");
+        if (many instanceof java.util.List<?> list) {
+            for (Object o : list) if (o instanceof String id && id.contains("_bed")) return true;
+        }
+        return false;
+    }
+
+    /** 半径内最近的一个命中方块（用来把"床"变成坐标）。 */
+    private static net.minecraft.core.BlockPos findNearest(ServerLevel level, net.minecraft.core.BlockPos origin,
+                                                          int radius, Predicate<BlockState> hit) {
+        net.minecraft.core.BlockPos.MutableBlockPos cursor = new net.minecraft.core.BlockPos.MutableBlockPos();
+        int squared = radius * radius;
+        net.minecraft.core.BlockPos best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    int planar = dx * dx + dz * dz;
+                    if (planar > squared || planar + dy * dy > squared) continue;
+                    cursor.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
+                    if (!level.hasChunkAt(cursor)) continue;
+                    if (!hit.test(level.getBlockState(cursor))) continue;
+                    double dist = planar + dy * dy;
+                    if (dist < bestDist) { bestDist = dist; best = cursor.immutable(); }
+                }
+            }
+        }
+        return best;
     }
 
     /** 圆柱扫描：水平半径 radius + 垂直 ±dy（锚点建造判定用）。 */
