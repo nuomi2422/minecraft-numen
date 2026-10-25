@@ -465,6 +465,19 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!needs.isEmpty()) {
             rddContext = rddContext.replace("</rdd>", needs + "</rdd>");
         }
+        // 2026-10-25（主人指出）：放进箱子的东西 AI 与规划器都"忘了"——
+        // 背包口径只认手持，世界资产不记箱内容。这里把**身边容器里的存货**带回上下文：
+        // 只读、只在 8 格内、只在非空时出现（不改任何判定）。
+        try {
+            net.minecraft.server.MinecraftServer srv = ServerLifecycleHooks.getCurrentServer();
+            net.minecraft.server.level.ServerPlayer self = srv == null ? null : srv.getPlayerList().getPlayer(companionId);
+            String storage = RddContainerMemory.render(self);
+            if (!storage.isEmpty()) {
+                rddContext = rddContext.replace("</rdd>", storage + "</rdd>");
+            }
+        } catch (RuntimeException ignored) {
+            // 容器记忆是增强项：读不到就不出现，绝不影响主链路
+        }
         String worldAssets = RddAssetContext.render(assets(companionId), 1200);
         return worldAssets.isBlank() ? rddContext : rddContext + "\n" + worldAssets;
     }

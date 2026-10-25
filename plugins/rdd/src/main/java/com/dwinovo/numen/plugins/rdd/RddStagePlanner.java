@@ -35,9 +35,20 @@ final class RddStagePlanner {
         // 注入"当前真实背包"：规划师要站在已有资产上推进，不倒退重规划已持有的装备/设施。
         // 再贴上经验知识（无知识时与原来逐字相同）。
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
+        // 2026-10-25（主人指出）：规划师缺"我有啥/我在哪/世界里有啥"。补一块紧凑事实包，
+        // 只给事实不给策略；整块 ≤420 字符，读不到写"未观测"。
+        String facts = "";
+        try {
+            var srv = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
+            var self = srv == null ? null : srv.getPlayerList().getPlayer(companionId);
+            facts = self == null ? RddPlannerFacts.block(snapshot.availableCounts())
+                    : RddPlannerFacts.block(self, companionId);
+        } catch (RuntimeException ignored) {
+            facts = "";
+        }
         String base = RddPlanningKnowledge.attach(
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
-                        + planningPrompt(objective, snapshot),
+                        + facts + "\n" + planningPrompt(objective, snapshot),
                 RddPlanningPolicy.block(objective, "stage_a"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 base, objective, "stage_a", List.of());
