@@ -49,10 +49,31 @@ public final class SleepOps {
             return noBed(self, x != null && y != null && z != null);
         }
 
+        // ★ 2026-10-25（主人）：绑重生点就是**点一下床**这件事，不用等到晚上，也不是"随随便便弄不到的东西"。
+        //   原版 startSleepInBed 白天会拒（NOT_POSSIBLE_NOW），但重生点该绑的还是要绑 —— 所以这里显式绑一次，
+        //   然后白天照样回「已绑定」而不是「现在办不了，等天黑」。等天黑只影响"是否过夜"，不影响"家在哪"。
+        boolean bound = false;
+        try {
+            self.setRespawnPosition(self.level().dimension(), bedHead, self.getYRot(), false, true);
+            bound = true;
+        } catch (RuntimeException ignored) {
+            bound = false;
+        }
         Either<Player.BedSleepingProblem, Unit> result = self.startSleepInBed(bedHead);
         Player.BedSleepingProblem rejection = result.left().orElse(null);
 
         // 这三条的顺序就是判据本身:先看原版拒没拒,再看她是不是真躺下了。
+        if (rejection != null && bound) {
+            // 点一下就算绑好了：白天/有怪/床被占都只影响"能不能睡"，不影响"家在哪"。
+            Map<String, Object> d = data(bedHead, false);
+            d.put("bound", true);
+            d.put("vanilla_rejection", rejection.name());
+            return TaskResult.ok(
+                    "respawn point is now bound to the bed at " + pretty(bedHead) + " — 点一下就够了。\n"
+                            + "这次没能真的睡着（" + explain(rejection) + "），但那不影响绑定；"
+                            + "晚上再睡一次才会过夜。现在可以继续干别的，不用等天黑。",
+                    d).toJson();
+        }
         if (rejection != null) {
             Map<String, Object> d = data(bedHead, false);
             d.putAll(deferFields(rejection));
@@ -73,7 +94,7 @@ public final class SleepOps {
                     data(bedHead, false)).toJson();
         }
         return TaskResult.ok(
-                "you are in the bed at " + pretty(bedHead) + " and the server confirms you are sleeping. "
+                "you are in the bed at " + pretty(bedHead) + " and the server confirms you are sleeping (respawn point bound). "
                         + "Night passes on its own; you do not need to wait on a tool for that.",
                 data(bedHead, true)).toJson();
     }
