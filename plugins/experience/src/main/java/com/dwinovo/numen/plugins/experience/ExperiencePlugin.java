@@ -125,7 +125,17 @@ public final class ExperiencePlugin implements NumenPlugin {
                 ExperienceStoreRetrievalBridge.Rendered rendered =
                         ExperienceStoreRetrievalBridge.render(m, objective, 6, 1100,
                                 com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
-                ExperienceMonitor.publishContext("retrieval_snapshot", rendered.asEvent());
+                // ★ 2026-10-25（我实测发现）：上面这条是**执行视图**（role=EXECUTOR，每轮都发），
+                //   它用的是裸 rendered —— 指纹只在规划路径（ExperiencePlanningRouter）补过，
+                //   于是 context.jsonl 里role=executor 的 retrieval_snapshot **一条指纹都没有**
+                //   （实测：重启后 6 条新事件 task_fingerprint 全缺）。A6 判据在 EXECUTOR 视图上仍然断着。
+                //   这里补同一套算法：objective 为主，没有 stage/knownFailures 就不塞（不编造）。
+                java.util.List<String> fpParts = new java.util.ArrayList<>();
+                if (objective != null && !objective.isBlank()) fpParts.add(objective);
+                ExperienceMonitor.publishContext("retrieval_snapshot",
+                        rendered.withFingerprints(
+                                com.dwinovo.numen.experience.core.TaskFingerprint.of(fpParts),
+                                com.dwinovo.numen.experience.core.TaskFingerprint.sceneFingerprints(fpParts)).asEvent());
                 // G6c：这一轮端出来的试用条目，记下来等任务收尾归因
                 String txt0 = rendered.text();
                 LOG.info("[expmem] executor head={}", txt0.substring(0, Math.min(360, txt0.length())));
