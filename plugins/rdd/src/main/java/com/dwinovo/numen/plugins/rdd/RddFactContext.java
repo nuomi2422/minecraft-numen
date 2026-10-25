@@ -654,11 +654,21 @@ final class RddFactContext {
         LEDGERS.remove(companionId);   // G1c：任务清空 = 承诺作废（账本不跨计划存活）
         LAST_COUNTS.remove(companionId);   // G1c-2：清空的同伴不再拿旧快照当对照面
         RECENT_TRANSFORMS.remove(companionId);   // G1c-3：旧转化归因不跨任务残留
+        RddSemanticsStore.forget(companionId);   // S1：语义表随任务清空（落盘文件保留供审计）
     }
 
     /** 最近一次快照（观测/测试用；没有就是没采集过，不造空快照）。 */
     static FactSnapshot latest(UUID companionId) {
         return companionId == null ? null : LATEST.get(companionId);
+    }
+
+    /**
+     * S1 只读口：当前缓存的需求清单（死亡损失分析、外部只读消费者用）。
+     * 没有缓存 = 没绑定过目标 = 返回 null（消费者自己判空，不在这里造空清单）。
+     */
+    static RequirementManifest.Manifest currentManifest(UUID companionId) {
+        Cached c = companionId == null ? null : MANIFESTS.get(companionId);
+        return c == null ? null : c.manifest();
     }
 
     /**
@@ -761,6 +771,9 @@ final class RddFactContext {
         MANIFESTS.put(companionId, new Cached(primary == null ? "" : primary.id(), gid,
                 expanded, fingerprint, manifest));
         publishManifestEvent(companionId, primary, manifest);   // G1b：bind 之外第二个出口同字段
+        // ★ S1 写路径（2026-10-24）：清单重建 = 语义集变了——派生 AssetSemantics 并落盘。
+        //   fail-soft 在 store 内部；派生失败不碰清单本身（语义是派生缓存，源头一直都在）。
+        RddSemanticsStore.deriveAndSave(RddPlugin.semanticsDir(), companionId, manifest, gid);
         return manifest;
     }
 

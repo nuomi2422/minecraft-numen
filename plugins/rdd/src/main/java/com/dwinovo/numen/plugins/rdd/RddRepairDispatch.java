@@ -1,7 +1,13 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import com.dwinovo.numen.rdd.policy.AssetSemantics;
+import com.dwinovo.numen.rdd.policy.LossImpactAnalyzer;
 import com.dwinovo.numen.rdd.policy.LocalRepairTask;
+import com.dwinovo.numen.rdd.policy.RequirementManifest;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -85,8 +91,17 @@ final class RddRepairDispatch {
             return false;
         }
         String at = (deathAt == null || deathAt.isBlank()) ? "死亡点" : deathAt;
+        // ★ S1 读路径（2026-10-24）：派支线**之前**先做损失影响分析。
+        //   lostItems = 台账里本次死亡记录的掉落（净损失口径由回收核对）；
+        //   heldAfterLoss = 空表（死亡瞬间背包必然清空——这正是最保守的输入，
+        //   分析器类的边界 1：传净损失快照而非"死亡瞬间持有"）；
+        //   manifests = 当前清单（RddFactContext 缓存，可能 null）；
+        //   lossConfirmed = false（掉落还在地上，回收未结束——分析器类注释红线：
+        //   未确认不下"永久丢失"结论，只建议先确认）。
+        LossImpactAnalyzer.LossImpact impact = analyzeDeathLoss(companionId, death);
         // 台账原样拼进 nudge：倒计时必须在**她眼前**，规划器看不到就等于没有。
         String timeline = (dropTimeline == null || dropTimeline.isBlank()) ? "" : ("\n" + dropTimeline);
+        String semanticNote = impact == null ? "" : renderSemanticNote(impact);
         String id = "repair-" + companionId + "-" + ID_SEQ.incrementAndGet();
         String parent = (goalId == null || goalId.isBlank()) ? ("goal-" + companionId) : goalId;
         LocalRepairTask.Task task = LocalRepairTask.Task.of(id, parent, "death-event",
@@ -102,12 +117,38 @@ final class RddRepairDispatch {
             OPEN_DEATH_SEQ.put(companionId, death.seq());
         }
         tr.recordFire(LocalRepairTask.Trigger.DEATH, now);
-        RddMonitor.publish("repair_task_dispatched", Map.of(
-                "companionId", companionId.toString(), "repairId", id, "priority", pri.name(),
-                "deathAt", at, "dropTimeline", dropTimeline == null ? "" : dropTimeline,
-                "deathSeq", death == null ? -1 : death.seq(),
-                "trackedItemKinds", death == null ? 0 : death.lostItems().size(),
-                "repeatDeath", repeatDeath));
+        Map<String, Object> dispatched = new LinkedHashMap<>();
+        dispatched.put("companionId", companionId.toString());
+        dispatched.put("repairId", id);
+        dispatched.put("priority", pri.name());
+        dispatched.put("deathAt", at);
+        dispatched.put("dropTimeline", dropTimeline == null ? "" : dropTimeline);
+        dispatched.put("deathSeq", death == null ? -1 : death.seq());
+        dispatched.put("trackedItemKinds", death == null ? 0 : death.lostItems().size());
+        dispatched.put("repeatDeath", repeatDeath);
+        // ★ S1：损失影响分析结果落事件（判据 S1——监测台从这一个键看到
+        //   「丢了什么重要的、影响了哪个目标、建议补充还是先确认」）。
+        if (impact != null) {
+            Map<String, Object> li = new LinkedHashMap<>();
+            li.put("importantLoss", impact.importantLoss());
+            li.put("backupSufficient", impact.backupSufficient());
+            li.put("lossConfirmed", impact.lossConfirmed());
+            li.put("recommendation", impact.recommendation().name());
+            List<Map<String, Object>> goals = new ArrayList<>();
+            for (LossImpactAnalyzer.GoalImpact g : impact.affectedGoals()) {
+                Map<String, Object> gm = new LinkedHashMap<>();
+                gm.put("goalId", g.goalId());
+                gm.put("requirementKey", g.requirementKey());
+                gm.put("minimum", g.minimum());
+                gm.put("available", g.available());
+                gm.put("coveredBy", g.coveredBy());
+                goals.add(gm);
+            }
+            li.put("affectedGoals", goals);
+            li.put("summary", impact.summary());
+            dispatched.put("lossImpact", li);
+        }
+        RddMonitor.publish("repair_task_dispatched", dispatched);
         if (repeatDeath) {
             RddPlugin.nudge(companionId, "[支线任务/死亡] 你**刚在同一个地方又死了一次**。"
                     + "回去拿掉落物不是现在该做的事：你现在身上什么都没有，回去只会被再杀一次。"
@@ -115,14 +156,70 @@ final class RddRepairDispatch {
                     + " ② 回基地/安全处补血、吃饱、换掉破损装备 "
                     + " ③ 再回来捡掉落物（下面有时间表）" + timeline
                     + "\n如果装备掉得太惨、这一趟不值得冒险，就**明确说出来**：宁可少捡，也不要再死一次。"
+                    + semanticNote
                     + "\n不要为这件事重规划整条主链。");
             return true;
         }
         RddPlugin.nudge(companionId, "[支线任务/死亡] 你刚死一次。掉落物在 "
                 + at + " 附近——**注意：掉落物约 5 分钟就会消失**。"
                 + "所以顺序是：先立刻回 " + at + " 把掉落物捡回来（限时优先），"
-                + "再去取备用装备，最后回主链继续。不要为这件事重规划整条主链。" + timeline);
+                + "再去取备用装备，最后回主链继续。" + semanticNote
+                + "\n不要为这件事重规划整条主链。" + timeline);
         return true;
+    }
+
+    /**
+     * S1 读路径：死亡时收集输入并调 {@link LossImpactAnalyzer}。
+     *
+     * <p>fail-soft：任何一步炸了返回 null（事件不带 lossImpact 键、文案不带语义段），
+     * 死亡支线本身照旧 —— 语义分析是增强，不是依赖（分析器「只产事实与建议」的红线）。
+     *
+     * <p>heldAfterLoss 传**空表**：死亡瞬间背包必然清空，这是最保守的输入；
+     * 「掉落可能还在地上、会被捡回」由 lossConfirmed=false 表达（分析器边界 2）。
+     */
+    private static LossImpactAnalyzer.LossImpact analyzeDeathLoss(UUID companionId,
+            com.dwinovo.numen.rdd.core.RddDeathLedger.Death death) {
+        try {
+            if (death == null || death.lostItems().isEmpty()) {
+                return null;   // 没记录掉落清单（旧台账/无背包数据）→ 不硬凑分析
+            }
+            RequirementManifest.Manifest manifest = RddFactContext.currentManifest(companionId);
+            List<RequirementManifest.Manifest> manifests =
+                    manifest == null ? List.of() : List.of(manifest);
+            Map<String, AssetSemantics> semantics =
+                    RddSemanticsStore.forAnalyzer(RddSemanticsStore.semantics(companionId));
+            return LossImpactAnalyzer.analyze(
+                    new LinkedHashMap<>(death.lostItems()),
+                    Map.of(),
+                    manifests,
+                    semantics,
+                    false);   // 掉落还在地上：未确认丢失
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    /**
+     * S1 文案渲染：把分析结论翻译给执行 AI（判据 S2/S4）。
+     *
+     * <p>只有**有话说**时才渲染——importantLoss=false 且无受影响目标 = 没丢重要的，
+     * 硬加一段只会教她「什么损失都值得大惊小怪」。SUPPLEMENT 时点明
+     * 「目标 X 需要补 xxx ×N」（判据 S4 的行为通道：她下一步该去补）。
+     */
+    static String renderSemanticNote(LossImpactAnalyzer.LossImpact impact) {
+        if (impact == null) return "";
+        if (!impact.importantLoss() && impact.affectedGoals().isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("\n[损失影响] ");
+        sb.append(impact.summary());
+        switch (impact.recommendation()) {
+            case SUPPLEMENT -> sb.append("。先按上面的顺序把能捡的捡回；捡不回的缺口（尤其受影响目标里的物品）需要重新补充，别装作没看见。");
+            case CONFIRM_STOCK -> sb.append("。捡回后核对背包：只确认丢失的部分才需要补，不确定就先数一数再决定。");
+            case SWAP_BACKUP -> sb.append("。备用/替代仍能满足需求：换装继续即可，不必专门补货。");
+            default -> { return sb.toString(); }
+        }
+        return sb.toString();
     }
 
     /** 支线成功：清连续失败计数并移除。 */

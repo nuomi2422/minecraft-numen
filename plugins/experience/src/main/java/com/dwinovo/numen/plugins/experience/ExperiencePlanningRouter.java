@@ -1,9 +1,11 @@
 package com.dwinovo.numen.plugins.experience;
 
 import com.dwinovo.numen.experience.core.ExperienceMemory;
+import com.dwinovo.numen.experience.core.TaskFingerprint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -54,7 +56,18 @@ final class ExperiencePlanningRouter {
                     memory, objective,
                     PlanningKnowledge.DEFAULT_MAX_ITEMS, PlanningKnowledge.DEFAULT_MAX_CHARS);
             if (observer != null) {
-                observer.accept(rendered);
+                // ★ 2026-10-25（#167 债①，用户点名「目标指纹没接上」）：unified 路径的观测
+                //   补回任务指纹与场景指纹——与旧路 ExperienceKnowledgeSource.publish:263 同源
+                //   （TaskFingerprint.of，语序无关分词 + SHA）。没有它，A6 判据「同类任务再发生
+                //   → 同一条经验被再次命中」在 unified 下没有可比对标识。
+                //   纯观测补齐：不改检索行为、不参与命中判定（指纹只回答「是不是同一类场景」）。
+                List<String> parts = new ArrayList<>();
+                if (objective != null && !objective.isBlank()) parts.add(objective);
+                if (stage != null && !stage.isBlank()) parts.add(stage);
+                if (knownFailures != null) parts.addAll(knownFailures);
+                observer.accept(rendered.withFingerprints(
+                        TaskFingerprint.of(parts),
+                        TaskFingerprint.sceneFingerprints(parts)));
             }
             return rendered.text();
         }

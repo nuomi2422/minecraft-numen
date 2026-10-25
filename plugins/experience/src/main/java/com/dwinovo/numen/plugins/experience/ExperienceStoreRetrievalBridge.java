@@ -67,11 +67,18 @@ public final class ExperienceStoreRetrievalBridge {
             int gaps,
             String status,
             List<String> truncationReasons,
-            String role) {
+            String role,
+            String taskFingerprint,
+            List<String> sceneFingerprints) {
 
-        /** 兼容旧调用方：不写 role = PLANNER（G5d 的几何形状逐字不变）。 */
+        /** 兼容旧调用方：不写 role = PLANNER、不带指纹（G5d 的几何形状逐字不变）。 */
         public Rendered(String text, int entries, int gaps, String status, List<String> truncationReasons) {
-            this(text, entries, gaps, status, truncationReasons, "planner");
+            this(text, entries, gaps, status, truncationReasons, "planner", null, null);
+        }
+
+        /** 兼容五参形态（role 省略）。 */
+        public Rendered(String text, int entries, int gaps, String status, List<String> truncationReasons, String role) {
+            this(text, entries, gaps, status, truncationReasons, role, null, null);
         }
 
         public Rendered {
@@ -79,6 +86,15 @@ public final class ExperienceStoreRetrievalBridge {
             status = status == null ? "OK" : status;
             truncationReasons = truncationReasons == null ? List.of() : List.copyOf(truncationReasons);
             role = role == null || role.isBlank() ? "planner" : role;
+            // ★ 2026-10-25（#167 债①）：unified 补任务/场景指纹（观测层，不参与命中判定）。
+            sceneFingerprints = sceneFingerprints == null ? List.of() : List.copyOf(sceneFingerprints);
+        }
+
+        /** 带指纹副本（旧实例不可变；null 指纹 → UNKNOWN）。 */
+        public Rendered withFingerprints(String fp, List<String> scenes) {
+            return new Rendered(text, entries, gaps, status, truncationReasons, role,
+                    fp == null || fp.isBlank() ? com.dwinovo.numen.experience.core.TaskFingerprint.UNKNOWN : fp,
+                    scenes);
         }
 
         /** 监测台事件的 data 段（不含正文——正文在 llm_request 里）。 */
@@ -91,6 +107,12 @@ public final class ExperienceStoreRetrievalBridge {
             data.put("status", status);
             data.put("truncationReasons", truncationReasons);
             data.put("chars", text.length());
+            // ★ 指纹只有真算过才出现（旧调用方 withFingerprints 没调 ⇒ 键不出现，
+            //   监测台按「有键/无键」区分新旧形状，不猜）。
+            if (taskFingerprint != null) {
+                data.put("task_fingerprint", taskFingerprint);
+                data.put("scene_fingerprints", sceneFingerprints);
+            }
             return data;
         }
     }

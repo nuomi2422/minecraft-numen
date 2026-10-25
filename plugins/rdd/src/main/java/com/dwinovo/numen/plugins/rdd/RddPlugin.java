@@ -97,6 +97,13 @@ public final class RddPlugin implements NumenPlugin {
     private static volatile Path tasksDir;
     /** Independent world-asset store; clearing a task must not erase a base or known structure. */
     private static volatile Path assetsDir;
+    /** S1 语义资产目录 config/numen/rdd-semantics（每同伴一个 <uuid>.json；派生自需求清单）。 */
+    private static volatile Path semanticsDir;
+
+    static Path semanticsDir() {
+        Path p = semanticsDir;
+        return p == null ? null : p;
+    }
     /** P0 完成事实目录 config/numen/rdd-facts（每个同伴一个 <uuid>.json）；跨重绑/跨重启保留。 */
     private static volatile Path factsDir;
     /** 内存完成事实仓库（uuid→store）；磁盘为真身，清世界状态只清内存。 */
@@ -154,6 +161,7 @@ public final class RddPlugin implements NumenPlugin {
         factsDir = numen.configDir().resolve("rdd-facts");
         historyDir = numen.configDir().resolve("rdd-history");
         ledgerDir = numen.configDir().resolve("rdd-ledger");
+        semanticsDir = numen.configDir().resolve("rdd-semantics");
             supervisionFlag = numen.configDir().resolve("rdd-supervision.flag");
         // 暂停开关：文件存在 = 禁用 PAUSE（2026-09-30 用户要求可随时关，防误伤实验）
         setPauseDisabledFlagPath(numen.configDir().resolve("rdd-pause-disabled.flag"));
