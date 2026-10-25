@@ -64,12 +64,8 @@ final class RddPlannerFacts {
                     .append("\n");
 
             // ② 我拥有什么（手上 + 身边容器）
-            String storage = "";
-            try {
-                storage = RddContainerMemory.render(player);
-            } catch (RuntimeException ignored) {
-                storage = "";
-            }
+            // 只读 tick 缓存（与执行侧同一份口径；上下文构建不读世界）
+            String storage = RddContainerMemory.cached(companionId);
             if (!storage.isEmpty()) {
                 String plain = storage.replaceAll("<[^>]+>", "").trim();
                 sb.append("箱子里：").append(plain).append('\n');

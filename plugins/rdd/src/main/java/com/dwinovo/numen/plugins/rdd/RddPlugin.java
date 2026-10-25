@@ -468,18 +468,8 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 2026-10-25（主人指出）：放进箱子的东西 AI 与规划器都"忘了"——
         // 背包口径只认手持，世界资产不记箱内容。这里把**身边容器里的存货**带回上下文：
         // 只读、只在 8 格内、只在非空时出现（不改任何判定）。
-        String storageBlock = "";
-        try {
-            // 用检测器记下的**真身体**（玩家列表取到的实例扫不到方块实体，实机踩过）
-            net.minecraft.server.level.ServerPlayer self = RddCompanionBody.get(companionId) instanceof net.minecraft.server.level.ServerPlayer sp ? sp : null;
-            if (self == null) {
-                net.minecraft.server.MinecraftServer srv = ServerLifecycleHooks.getCurrentServer();
-                self = srv == null ? null : srv.getPlayerList().getPlayer(companionId);
-            }
-            storageBlock = RddContainerMemory.render(self);
-        } catch (RuntimeException ignored) {
-            // 容器记忆是增强项：读不到就不出现，绝不影响主链路
-        }
+        // 容器存货：**只读 tick 缓存**（上下文构建不保证在主线程，不能读世界）。
+        String storageBlock = RddContainerMemory.cached(companionId);
         String worldAssets = RddAssetContext.render(assets(companionId), 1200);
         // 容器记忆**独立成块**追加：它不依赖 <rdd> 包装是否存在（无链时也要看得见"箱子里有什么"）。
         StringBuilder merged = new StringBuilder(rddContext == null ? "" : rddContext);

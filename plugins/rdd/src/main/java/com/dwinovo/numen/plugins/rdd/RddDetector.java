@@ -164,6 +164,9 @@ final class RddDetector {
             if (!(p instanceof NumenPlayer ap)) {
                 continue;
             }
+            // 2026-10-25：每 tick 记账「这只同伴的真身体」——读世界（箱子存货）只认这个实例。
+            RddCompanionBody.remember(ap);
+            RddContainerMemory.refresh(ap, server.getTickCount());
             // P2-A【B】背包感知不依赖任务链：先无条件缓存实时背包，再判是否有 Runtime。
             // （感知世界 与 任务运行 不是一个生命周期；/goal 首次规划早于链建立，旧代码要求 rt!=null
             //  才扫背包 → 首次规划/判定读到空背包。）
