@@ -468,6 +468,20 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 2026-10-25（主人指出）：放进箱子的东西 AI 与规划器都"忘了"——
         // 背包口径只认手持，世界资产不记箱内容。这里把**身边容器里的存货**带回上下文：
         // 只读、只在 8 格内、只在非空时出现（不改任何判定）。
+        // 2026-10-25（主人）：安家要"自己选地+自己整平+自己点灯"，这些工具早就有，
+        // 缺的是把顺序讲清楚。只在当前目标/阶段谈基地时注入，避免每轮占 token。
+        String playbook = "";
+        try {
+            RddRuntime rt0 = RUNTIMES.get(companionId);
+            if (rt0 != null && rt0.chain() != null) {
+                com.dwinovo.numen.rdd.api.Subtask cur0 = rt0.chain().currentSubtask();
+                String stageDesc = rt0.chain().goal() == null ? "" : String.valueOf(rt0.chain().goal().description());
+                String curDesc = cur0 == null ? "" : String.valueOf(cur0.description());
+                playbook = RddBasePlaybook.block(stageDesc + " " + curDesc);
+            }
+        } catch (RuntimeException ignored) {
+            playbook = "";
+        }
         // 容器存货：**只读 tick 缓存**（上下文构建不保证在主线程，不能读世界）。
         String storageBlock = RddContainerMemory.cached(companionId);
         String worldAssets = RddAssetContext.render(assets(companionId), 1200);
@@ -476,6 +490,10 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!storageBlock.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(storageBlock);
+        }
+        if (!playbook.isEmpty()) {
+            if (merged.length() > 0) merged.append("\n");
+            merged.append(playbook);
         }
         if (!worldAssets.isBlank()) {
             if (merged.length() > 0) merged.append("\n");
