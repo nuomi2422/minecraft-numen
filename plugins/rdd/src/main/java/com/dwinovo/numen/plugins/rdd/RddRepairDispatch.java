@@ -228,12 +228,25 @@ final class RddRepairDispatch {
                                                              Map<String, Integer> counts,
                                                              boolean lossConfirmed,
                                                              String phase) {
+        return recomputeAfterDeath(companionId, counts, lossConfirmed, phase, -1);
+    }
+
+    /**
+     * @param seqHint 调用方手上的死亡批次号（超时结账会先清 OPEN_DEATH_SEQ，必须由调用方留底）。
+     *                -1 = 让它自己找（当前支线批次，找不到退最近一条）。
+     */
+    static LossImpactAnalyzer.LossImpact recomputeAfterDeath(UUID companionId,
+                                                             Map<String, Integer> counts,
+                                                             boolean lossConfirmed,
+                                                             String phase,
+                                                             int seqHint) {
         try {
             if (companionId == null) return null;
-            com.dwinovo.numen.rdd.core.RddDeathLedger.Death death = deathForRecompute(companionId);
+            com.dwinovo.numen.rdd.core.RddDeathLedger.Death death = deathForRecompute(companionId, seqHint);
             if (death == null || death.lostItems().isEmpty()) return null;
             String dedupeKey = companionId + "|" + death.seq() + "|" + phase;
             if (!RECOMPUTED.add(dedupeKey)) return null;   // 同一批次同一阶段只报一次
+            if (RECOMPUTED.size() > 256) RECOMPUTED.clear();   // 有界：死亡很多次也不让集合长成漏勺
 
             RequirementManifest.Manifest manifest = RddFactContext.currentManifest(companionId);
             List<RequirementManifest.Manifest> manifests =
@@ -293,8 +306,9 @@ final class RddRepairDispatch {
     }
 
     /** 重算要盯的那次死亡：优先当前支线批次，批次已结账则用最近一条。 */
-    private static com.dwinovo.numen.rdd.core.RddDeathLedger.Death deathForRecompute(UUID companionId) {
-        int seq = openDeathSeq(companionId);
+    private static com.dwinovo.numen.rdd.core.RddDeathLedger.Death deathForRecompute(UUID companionId,
+                                                                                int seqHint) {
+        int seq = seqHint >= 0 ? seqHint : openDeathSeq(companionId);
         if (seq >= 0) {
             var open = com.dwinovo.numen.rdd.core.RddDeathLedger.openDeath(companionId, seq);
             if (open != null) return open;

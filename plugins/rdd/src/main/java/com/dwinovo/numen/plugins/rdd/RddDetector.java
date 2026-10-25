@@ -307,10 +307,11 @@ final class RddDetector {
             Map<String, Integer> counts = countInventory(ap);
             // D20-C1：先跑超时结账 —— 过期支线清掉后，下面的 lastRepair 才不会对死支线空转。
             // tickTimeout 不落盘（单测环境 RddPlugin 类链炸）；这里在游戏环境补 saveLedger。
+            int deathSeqAtTick = RddRepairDispatch.openDeathSeq(ap.getUUID());
             if (RddRepairDispatch.tickTimeout(ap.getUUID())) {
                 // 81 号 P0-A：超时结账这一拍手里有真实背包 → 用**净损失**重算一次影响，
                 // 给"确认缺口"或"备用其实够"一个可执行结论（死亡那一拍只能报"库存未知"）。
-                RddRepairDispatch.recomputeAfterDeath(ap.getUUID(), counts, true, "timeout");
+                RddRepairDispatch.recomputeAfterDeath(ap.getUUID(), counts, true, "timeout", deathSeqAtTick);
                 RddPlugin.saveLedger(ap.getUUID());
             }
             // 死亡支线收尾（深审 R08）：背包里重新出现了死亡时丢的资产 = "捡回来了"的真实证据。
@@ -320,7 +321,7 @@ final class RddDetector {
                     && deathDropsBackInInventory(ap, counts)) {
                 // 81 号 P0-A：回收成功 = 净损失此刻可算（counts 是真的）→ 重算影响，
                 // 再结账。顺序不能反：onRepairSuccess 会清 OPEN_DEATH_SEQ，重算就找不到批次。
-                RddRepairDispatch.recomputeAfterDeath(ap.getUUID(), counts, false, "recovered");
+                RddRepairDispatch.recomputeAfterDeath(ap.getUUID(), counts, false, "recovered", deathSeqAtTick);
                 RddRepairDispatch.onRepairSuccess(ap.getUUID());
             }
             // 背包快满主动提醒（用户点名）：放在这里是因为它在**任何链状态**（停车/失败/未展开）
