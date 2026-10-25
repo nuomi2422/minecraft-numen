@@ -45,6 +45,15 @@ final class RddRepairDispatch {
     /** F6：当前支线对应的死亡批次 seq（结账的身份，不是"最近那条"）。 */
     private static final Map<UUID, Integer> OPEN_DEATH_SEQ = new ConcurrentHashMap<>();
 
+    /**
+     * 重算幂等键：{@code companion|deathSeq|phase}。
+     *
+     * <p>回收判据每拍都会问一次，"回收完成"与"超时结账"在边界上可能同拍/相邻拍都成立；
+     * 没有这个集合，同一批损失会重复发事件、重复补一句 nudge（长会话里就是噪音洪水）。
+     */
+    private static final java.util.Set<String> RECOMPUTED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     /** 非重复死亡的支线步骤（RL-7：先捡包后取备用，掉落物限时）。 */
     private static final String DEFAULT_STEPS =
             "先去世亡点 {at} 捡回掉落物（限时！约 5 分钟消失）；再取备用装备；然后回主链";
@@ -91,13 +100,10 @@ final class RddRepairDispatch {
             return false;
         }
         String at = (deathAt == null || deathAt.isBlank()) ? "死亡点" : deathAt;
-        // ★ S1 读路径（2026-10-24）：派支线**之前**先做损失影响分析。
-        //   lostItems = 台账里本次死亡记录的掉落（净损失口径由回收核对）；
-        //   heldAfterLoss = 空表（死亡瞬间背包必然清空——这正是最保守的输入，
-        //   分析器类的边界 1：传净损失快照而非"死亡瞬间持有"）；
-        //   manifests = 当前清单（RddFactContext 缓存，可能 null）；
-        //   lossConfirmed = false（掉落还在地上，回收未结束——分析器类注释红线：
-        //   未确认不下"永久丢失"结论，只建议先确认）。
+        // ★ S1 读路径（2026-10-24）；2026-10-25 按 81 号 §4.1 改口径：
+        //   死亡**这一瞬间**背包还没被重新读到，所以此刻只能报 inventoryKnown=false，
+        //   不能拿空表冒充"背包是空的"。真正的净损失/备用判断推迟到
+        //   {@link #recomputeAfterDeath}（回收完成或超时结账那一拍，手里有真实 counts）。
         LossImpactAnalyzer.LossImpact impact = analyzeDeathLoss(companionId, death);
         // 台账原样拼进 nudge：倒计时必须在**她眼前**，规划器看不到就等于没有。
         String timeline = (dropTimeline == null || dropTimeline.isBlank()) ? "" : ("\n" + dropTimeline);
@@ -169,13 +175,19 @@ final class RddRepairDispatch {
     }
 
     /**
-     * S1 读路径：死亡时收集输入并调 {@link LossImpactAnalyzer}。
+     * S1 读路径（死亡瞬间）：只报"库存未知"，不下够/不够结论。
+     *
+     * <p><b>为什么不在这一拍读背包</b>：死亡与复活之间有一个窗口（原版掉落还在尸体上、
+     * 同伴实体已 0 血），此时读到的"空"既可能是"全掉了"，也可能是"还没准备好"。
+     * 把两者混成一个空表，就会在下一步推出"备用足够"——那是本批要修的核心假象
+     * （81 号 §4.1：读取失败与真实空库存必须分开）。
+     *
+     * <p>所以这里固定传 {@code inventoryKnown=false}、{@code backup={}}：
+     * 结论必然是 {@code CONFIRM_STOCK}，文案说"先确认库存"，绝不说"0 件"。
+     * 真正的判定在 {@link #recomputeAfterDeath}。
      *
      * <p>fail-soft：任何一步炸了返回 null（事件不带 lossImpact 键、文案不带语义段），
      * 死亡支线本身照旧 —— 语义分析是增强，不是依赖（分析器「只产事实与建议」的红线）。
-     *
-     * <p>heldAfterLoss 传**空表**：死亡瞬间背包必然清空，这是最保守的输入；
-     * 「掉落可能还在地上、会被捡回」由 lossConfirmed=false 表达（分析器边界 2）。
      */
     private static LossImpactAnalyzer.LossImpact analyzeDeathLoss(UUID companionId,
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death death) {
@@ -190,13 +202,148 @@ final class RddRepairDispatch {
                     RddSemanticsStore.forAnalyzer(RddSemanticsStore.semantics(companionId));
             return LossImpactAnalyzer.analyze(
                     new LinkedHashMap<>(death.lostItems()),
-                    Map.of(),
+                    Map.of(),                       // 随身：未知，不是空
+                    Map.of(),                       // 备用：P0 只认"真观测到"的基地容器
                     manifests,
                     semantics,
-                    false);   // 掉落还在地上：未确认丢失
+                    false,                          // 掉落还在地上：未确认丢失
+                    false);                         // ★ 库存未确认（81 号 §4.1）
         } catch (RuntimeException ex) {
             return null;
         }
+    }
+
+    /**
+     * 死亡后重算：回收完成 / 超时结账那一拍，手里有**真实背包**才算得准。
+     *
+     * <p>三条输入都有出处：{@code counts} 是本拍真实扫描；{@code backup} 来自基地容器观测
+     * （{@link #backupFromBase}，带新鲜度门槛）；{@code lossConfirmed} 由调用方按台账状态给
+     * （回收成功 = false，超时结账 = true，语义是"本支线放弃追踪"而不是"物理销毁"）。
+     *
+     * <p>幂等：同一 {@code deathSeq + phase} 只发一次事件。重复调用只返回结论，不重复打扰。
+     *
+     * @return 分析结论；没有死亡记录/清单为空/异常时 null
+     */
+    static LossImpactAnalyzer.LossImpact recomputeAfterDeath(UUID companionId,
+                                                             Map<String, Integer> counts,
+                                                             boolean lossConfirmed,
+                                                             String phase) {
+        try {
+            if (companionId == null) return null;
+            com.dwinovo.numen.rdd.core.RddDeathLedger.Death death = deathForRecompute(companionId);
+            if (death == null || death.lostItems().isEmpty()) return null;
+            String dedupeKey = companionId + "|" + death.seq() + "|" + phase;
+            if (!RECOMPUTED.add(dedupeKey)) return null;   // 同一批次同一阶段只报一次
+
+            RequirementManifest.Manifest manifest = RddFactContext.currentManifest(companionId);
+            List<RequirementManifest.Manifest> manifests =
+                    manifest == null ? List.of() : List.of(manifest);
+            Map<String, AssetSemantics> semantics =
+                    RddSemanticsStore.forAnalyzer(RddSemanticsStore.semantics(companionId));
+            Map<String, Integer> backup = backupFromBase(companionId);
+            LossImpactAnalyzer.LossImpact impact = LossImpactAnalyzer.analyze(
+                    new LinkedHashMap<>(death.lostItems()),
+                    counts == null ? Map.of() : counts,
+                    backup,
+                    manifests,
+                    semantics,
+                    lossConfirmed,
+                    counts != null);                 // 只有真扫过才算"库存未知解除"
+
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("companionId", companionId.toString());
+            ev.put("deathSeq", death.seq());
+            ev.put("phase", phase);
+            ev.put("recommendation", impact.recommendation().name());
+            ev.put("reason", impact.reason());
+            ev.put("importantLoss", impact.importantLoss());
+            ev.put("backupSufficient", impact.backupSufficient());
+            ev.put("lossConfirmed", impact.lossConfirmed());
+            ev.put("inventoryKnown", impact.inventoryKnown());
+            ev.put("backupKeyCount", backup.size());
+            ev.put("summary", impact.summary());
+            List<Map<String, Object>> goals = new ArrayList<>();
+            for (LossImpactAnalyzer.GoalImpact g : impact.affectedGoals()) {
+                Map<String, Object> gm = new LinkedHashMap<>();
+                gm.put("goalId", g.goalId());
+                gm.put("requirementKey", g.requirementKey());
+                gm.put("minimum", g.minimum());
+                gm.put("available", g.available());
+                gm.put("backup", g.backup());
+                gm.put("coveredBy", g.coveredBy());
+                goals.add(gm);
+            }
+            ev.put("affectedGoals", goals);
+            RddMonitor.publish("loss_impact_recomputed", ev);
+
+            // 只在她"该改主意"的时候补一句：有备用 → 别去补货；确认缺口 → 去补。
+            // CONFIRM_STOCK / NONE 不打扰（死亡那条 nudge 已经说过"先捡、先确认"）。
+            if (impact.recommendation() == LossImpactAnalyzer.Recommendation.SWAP_BACKUP) {
+                RddPlugin.nudge(companionId, "[损失影响] 回收这一趟结束：" + impact.summary()
+                        + "\n→ **基地备用/替代已经够用**：换装继续原目标即可，不必为了这几件回炉重做。"
+                        + "如果备用也已经被用掉，就说一声，再去补。");
+            } else if (impact.recommendation() == LossImpactAnalyzer.Recommendation.SUPPLEMENT) {
+                RddPlugin.nudge(companionId, "[损失影响] 回收结束，缺口确认：" + impact.summary()
+                        + "\n这几件是真缺（不是没找到），接下来按目标需要补上；别把'没捡到'当成'已经够了'。");
+            }
+            return impact;
+        } catch (RuntimeException ex) {
+            return null;   // 增强旁路：分析炸了不影响支线结账
+        }
+    }
+
+    /** 重算要盯的那次死亡：优先当前支线批次，批次已结账则用最近一条。 */
+    private static com.dwinovo.numen.rdd.core.RddDeathLedger.Death deathForRecompute(UUID companionId) {
+        int seq = openDeathSeq(companionId);
+        if (seq >= 0) {
+            var open = com.dwinovo.numen.rdd.core.RddDeathLedger.openDeath(companionId, seq);
+            if (open != null) return open;
+        }
+        return com.dwinovo.numen.rdd.core.RddDeathLedger.latest(companionId);
+    }
+
+    /**
+     * 已知备用：只读**缓存里的基地容器观测**（{@code world_base.important_items}，最多 24 种）。
+     *
+     * <p>三条诚实边界：
+     * <ol>
+     *   <li>只认"看到过的"：没进前 24 种类的物品视为<b>未观测</b>，不能据此判"没有"；</li>
+     *   <li>有新鲜度门槛（10 分钟墙钟）：过期观测只能当线索，不能当"家里有"；</li>
+     *   <li>不读世界、不扫容器：这一层在 tick 里被调用，绝不允许为了分析去翻区块。</li>
+     * </ol>
+     */
+    static Map<String, Integer> backupFromBase(UUID companionId) {
+        try {
+            if (companionId == null) return Map.of();
+            var rt = RddPlugin.runtime(companionId);
+            if (rt == null || rt.assets() == null) return Map.of();
+            long now = System.currentTimeMillis();
+            for (var entry : RddAssetContext.worldAssets(rt.assets())) {
+                if (!"world_base".equals(entry.observation().type())) continue;
+                long age = now - entry.observation().observedAt();
+                if (age < 0 || age > 10L * 60L * 1000L) return Map.of();   // 过期 = 未知，不装新鲜
+                Object items = entry.observation().value().get("important_items");
+                if (!(items instanceof Map<?, ?> map)) return Map.of();
+                Map<String, Integer> out = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> e : map.entrySet()) {
+                    if (!(e.getKey() instanceof String key) || key.isBlank()) continue;
+                    Integer n = asInt(e.getValue());
+                    if (n != null && n > 0) out.put(key, n);
+                }
+                return out;
+            }
+        } catch (RuntimeException ignored) {
+            // 备用读不到 = 未知；调用方会走 CONFIRM_STOCK，不会拿"空"当"没有"
+        }
+        return Map.of();
+    }
+
+    private static Integer asInt(Object v) {
+        if (v instanceof Number n) return n.intValue();
+        if (v instanceof String str) {
+            try { return Integer.parseInt(str.trim()); } catch (NumberFormatException ignored) { return null; }
+        }
+        return null;
     }
 
     /**
@@ -213,6 +360,11 @@ final class RddRepairDispatch {
         }
         StringBuilder sb = new StringBuilder("\n[损失影响] ");
         sb.append(impact.summary());
+        if (!impact.inventoryKnown()) {
+            // 死亡瞬间的口径：读不到 ≠ 0。这句话必须出现，否则执行体容易把"还没数"当"已经没了"。
+            sb.append("。此刻还没有重新读到背包（不是\"0 件\"）——先按上面的顺序捡包，捡完再核对。");
+            return sb.toString();
+        }
         switch (impact.recommendation()) {
             case SUPPLEMENT -> sb.append("。先按上面的顺序把能捡的捡回；捡不回的缺口（尤其受影响目标里的物品）需要重新补充，别装作没看见。");
             case CONFIRM_STOCK -> sb.append("。捡回后核对背包：只确认丢失的部分才需要补，不确定就先数一数再决定。");
@@ -364,5 +516,6 @@ final class RddRepairDispatch {
         REPAIR_CREATED_TICK.remove(companionId);   // D20-C1
         TRACKERS.remove(companionId);
         OPEN_DEATH_SEQ.remove(companionId);
+        RECOMPUTED.removeIf(k -> companionId != null && k.startsWith(companionId.toString()));
     }
 }

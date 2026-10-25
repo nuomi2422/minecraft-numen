@@ -130,4 +130,90 @@ class LossImpactAnalyzerTest {
         assertEquals(Nature.CONSUMABLE, AssetSemantics.guessNature("minecraft:cooked_beef"));
         assertEquals(Nature.MATERIAL, AssetSemantics.guessNature("minecraft:stone"));
     }
+
+    // ── 81 号 P0-A（2026-10-25）：死亡后"随身 / 备用 / 库存可读"三分 ──────────────
+    //
+    // 这六条钉的是「不许把观测失败当结论」：
+    // A1 基地有备用 → 换装继续（用户要的"有备用就不用再做一遍"）
+    // A2 真·空库存 + 未确认 → 只敢说"先确认"
+    // A3 确认净损失 + 缺口 → 补
+    // A4 库存读不到 → 先确认，且不许算"被打穿"（空表≠零）
+    // A5 清单对不上这次损失 → 不许说"备用足够"
+    // A6 备用只有 1 件、需求 2 件 → 仍然缺（不被"有一点备用"掩盖）
+
+    private static final String CHEST = "minecraft:iron_chestplate";
+
+    @Test
+    void a1_backupInBaseLetsHerKeepGoing() {
+        LossImpact impact = LossImpactAnalyzer.analyze(
+                Map.of(CHEST, 1),
+                Map.of(),                                  // 死亡后随身：真空
+                Map.of(CHEST, 1),                          // 基地容器观测到 1 件备用
+                List.of(manifest(new Requirement(CHEST, 1, List.of()))),
+                importantEquipment(CHEST, GOAL),
+                false,                                     // 掉落/回收还没确认
+                true);                                     // 背包读得到（真空也是已知）
+        assertEquals(Recommendation.SWAP_BACKUP, impact.recommendation());
+        assertTrue(impact.backupSufficient(), "基地备用覆盖需求 → 不必回炉重做");
+        assertEquals(1, impact.affectedGoals().size());
+        assertEquals(0, impact.affectedGoals().get(0).available(), "随身确实没有");
+        assertEquals(1, impact.affectedGoals().get(0).backup(), "备用 1 件是证据，不是猜测");
+    }
+
+    @Test
+    void a2_realEmptyInventoryStillAsksToConfirm() {
+        LossImpact impact = LossImpactAnalyzer.analyze(
+                Map.of(CHEST, 1), Map.of(), Map.of(),
+                List.of(manifest(new Requirement(CHEST, 1, List.of()))),
+                importantEquipment(CHEST, GOAL), false, true);
+        assertEquals(Recommendation.CONFIRM_STOCK, impact.recommendation());
+        assertFalse(impact.backupSufficient());
+        assertEquals(0, impact.affectedGoals().get(0).available());
+    }
+
+    @Test
+    void a3_confirmedNetLossWithGapNeedsSupplement() {
+        LossImpact impact = LossImpactAnalyzer.analyze(
+                Map.of(CHEST, 1), Map.of(), Map.of(),
+                List.of(manifest(new Requirement(CHEST, 1, List.of()))),
+                importantEquipment(CHEST, GOAL), true, true);
+        assertEquals(Recommendation.SUPPLEMENT, impact.recommendation());
+        assertTrue(impact.needsAction());
+        assertEquals("important_requirement_unsatisfied_after_confirmed_loss", impact.reason());
+    }
+
+    @Test
+    void a4_unreadableInventoryNeverClaimsEnough() {
+        LossImpact impact = LossImpactAnalyzer.analyze(
+                Map.of(CHEST, 1), Map.of(), Map.of(),
+                List.of(manifest(new Requirement(CHEST, 1, List.of()))),
+                importantEquipment(CHEST, GOAL), false, false);
+        assertEquals(Recommendation.CONFIRM_STOCK, impact.recommendation());
+        assertEquals("inventory_unreadable", impact.reason());
+        assertFalse(impact.inventoryKnown());
+        assertTrue(impact.affectedGoals().isEmpty(), "读不到时不算'被打穿'——空表不是零");
+        assertFalse(impact.backupSufficient());
+    }
+
+    @Test
+    void a5_lossWithoutRequirementEvidenceCannotClaimBackup() {
+        LossImpact impact = LossImpactAnalyzer.analyze(
+                Map.of("minecraft:diamond_sword", 1), Map.of(), Map.of(),
+                List.of(),                                 // 切过目标：当前没有清单
+                importantEquipment("minecraft:diamond_sword", GOAL), true, true);
+        assertEquals(Recommendation.CONFIRM_STOCK, impact.recommendation());
+        assertEquals("no_requirement_evidence_for_this_loss", impact.reason());
+        assertFalse(impact.backupSufficient(), "没证据时不许说'备用足够'");
+    }
+
+    @Test
+    void a6_partialBackupDoesNotHideTheGap() {
+        LossImpact impact = LossImpactAnalyzer.analyze(
+                Map.of("minecraft:torch", 2), Map.of(), Map.of("minecraft:torch", 1),
+                List.of(manifest(new Requirement("minecraft:torch", 2, List.of()))),
+                importantEquipment("minecraft:torch", GOAL), true, true);
+        assertEquals(Recommendation.SUPPLEMENT, impact.recommendation(), "备用 1 < 需求 2 → 仍然缺");
+        assertEquals(1, impact.affectedGoals().get(0).backup());
+        assertFalse(impact.backupSufficient());
+    }
 }
