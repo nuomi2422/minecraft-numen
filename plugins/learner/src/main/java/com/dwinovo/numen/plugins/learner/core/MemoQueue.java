@@ -72,6 +72,18 @@ public final class MemoQueue {
             if (all.size() >= MAX_QUEUE) {
                 return false;
             }
+            // 幂等键（2026-10-25 换代重扫事故）：同一 memo id 在队列里只允许存在一份。
+            // 事故形态：自动入队的幂等集只在内存，世界重载=新代=游标归零=全量重扫，
+            // 新 JVM 空集 → 同 8 条事件入队 4 次（e44 队列 27 条、去重后只剩 9）。
+            // 这道闸放在**队列本身**而不是调用方：任何入口（手动/自动/未来新增）
+            // 都不可能再把同一 id 塞两遍——队列是唯一真源，幂等是它的不变量。
+            // 返回 true（假装成功）：对调用方而言"这条已在队列里"与"刚放进去"
+            // 语义等价，都不需要再放；返回 false 会让自动口误报 queue_full。
+            for (Memo existing : all) {
+                if (existing.id() != null && existing.id().equals(memo.id())) {
+                    return true;
+                }
+            }
             all.add(memo);
             writeAll(all);
             return true;

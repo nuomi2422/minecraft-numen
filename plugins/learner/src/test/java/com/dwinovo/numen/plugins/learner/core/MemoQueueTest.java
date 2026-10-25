@@ -40,6 +40,22 @@ class MemoQueueTest {
     }
 
     @Test
+    void appendIsIdempotentById() throws Exception {
+        // 2026-10-25 换代重扫事故：同一 memo id 入队 4 次，队列里出现 4 份
+        // （e44 队列 27 条、去重后 9）。幂等必须是不变量：队列里一个 id 一份。
+        Path dir = java.nio.file.Files.createTempDirectory("memo-idem");
+        MemoQueue q = new MemoQueue(dir.resolve("m.json"));
+        Memo m = new Memo("same-id", "problem", "stage", "tried", "snap", 1L);
+        assertTrue(q.append(m), "第一次入队成功");
+        assertTrue(q.append(m), "同 id 第二次：返回 true（语义=已在队列）但不重复存");
+        assertTrue(q.append(m), "同 id 第三次：同上");
+        assertEquals(1, q.size(), "队列里只能有一份——幂等是队列的不变量，不是调用方的自觉");
+        // 不同 id 照常入队
+        assertTrue(q.append(new Memo("other-id", "p", "s", "t", "x", 2L)));
+        assertEquals(2, q.size());
+    }
+
+    @Test
     void appendAndDrainRoundTrip(@TempDir Path dir) {
         MemoQueue q = new MemoQueue(dir.resolve("m.json"));
         assertTrue(q.append(memo("m-1", "could not mine iron")));
