@@ -122,4 +122,30 @@ public final class CandidateMemo {
         }
         sb.append(label).append('=').append(v);
     }
+
+    /**
+     * 事件归属哪个同伴（companionId → companion → subjectRef.companion 三层兜底）。
+     *
+     * <p>2026-10-25 从 LearnerIntakeTool 下沉到 core：自动口（LearnerAutoIntake）也要用，
+     * 而工具类 implements NumenTool，类加载拖 NeoForge 链，纯 JVM 单测一碰就炸。
+     * 纯逻辑下沉后，两个入口共用同一实现，归属口径永不漂移。
+     */
+    public static String companionOf(FeedbackEvent ev) {
+        Object v = firstPresent(ev.observation(), "companionId");
+        if (v == null) {
+            v = firstPresent(ev.observation(), "companion");
+        }
+        if (v == null) {
+            v = str(ev.subjectRef().get("companion"));
+        }
+        return str(v);
+    }
+
+    private static String str(Object v) {
+        if (v == null) {
+            return null;
+        }
+        String s = String.valueOf(v).trim();
+        return s.isEmpty() ? null : s;
+    }
 }

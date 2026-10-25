@@ -47,7 +47,7 @@ import java.util.function.Consumer;
  * 这是成本控制的主要来源」。<b>入队仍然要 AI 点一次</b>。
  *
  * <p><b>⚠️ T3（同一问题重复出现）的去重计数只活在本次 JVM 会话里</b>：
- * 重启游戏后从头数（{@link #SEEN} 是静态 map）。跨重启的重复不会被算成 T3 ——
+ * 重启游戏后从头数（计数表在 core.T3Seen，进程内静态 map）。跨重启的重复不会被算成 T3 ——
  * 如实标注为 {@code t3_state=session_only}，不假装它是真代际计数。
  */
 final class LearnerIntakeTool implements NumenTool {
@@ -61,14 +61,7 @@ final class LearnerIntakeTool implements NumenTool {
     private static final int MAX_ENQUEUE_PER_CALL = 16;
 
     /** 指纹计数表上限：超了就清空（宁可丢计数，也不要长成一坨内存）。 */
-    private static final int MAX_SEEN_ENTRIES = 512;
-
-    /**
-     * (companionId|指纹) → 本次会话内见过的次数。有界；重启即清零（诚实边界，见类注释）。
-     * ★ LC2（78 号 §2.2）：键必须带伙伴身份 —— 全局裸指纹会把 A 同伴的死亡
-     *   计进 B 同伴的 T3 计数，跨伙伴放大模式判定。
-     */
-    private static final Map<String, Integer> SEEN = new ConcurrentHashMap<>();
+    /** T3 计数已下沉到 core（自动口与手动口共用同一张表；见 T3Seen 的类注释）。 */
 
     @Override
     public String name() {
@@ -169,9 +162,9 @@ final class LearnerIntakeTool implements NumenTool {
                 // ★ LC2（78 号 §2.2）：T3 计数按（同伴,指纹）—— 跨伙伴的同类失败
                 //   各自数各自的模式，不许互相放大 seenBefore。
                 String seenKey = me + "|" + fp;
-                int seenBefore = SEEN.getOrDefault(seenKey, 0);
+                int seenBefore = com.dwinovo.numen.plugins.learner.core.T3Seen.seenBefore(me.toString(), fp);
                 CandidateGate.Decision d = CandidateGate.evaluate(ev.sourceType(), ev.observation(), seenBefore);
-                bumpSeen(seenKey);
+                com.dwinovo.numen.plugins.learner.core.T3Seen.bump(me.toString(), fp);
                 gateCalls.add(d);
 
                 Map<String, Object> one = new LinkedHashMap<>();
@@ -298,15 +291,10 @@ final class LearnerIntakeTool implements NumenTool {
     }
 
     /** 这条事件属于哪个同伴；<b>两个键都认</b>（instrumentation 用 companionId，rdd 侧用 companion）。 */
-    private static String companionOf(FeedbackEvent ev) {
-        Object v = CandidateMemo.firstPresent(ev.observation(), "companionId");
-        if (v == null) {
-            v = CandidateMemo.firstPresent(ev.observation(), "companion");
-        }
-        if (v == null) {
-            v = str(ev.subjectRef().get("companion"));
-        }
-        return str(v);
+    /** 自动口（LearnerAutoIntake）共用：事件归属哪个同伴。与手动口同一实现。 */
+    static String companionOf(FeedbackEvent ev) {
+        // 2026-10-25 下沉到 core（自动口共用；工具类加载拖 NeoForge 链）
+        return CandidateMemo.companionOf(ev);
     }
 
     private static String str(Object v) {
@@ -315,13 +303,6 @@ final class LearnerIntakeTool implements NumenTool {
         }
         String s = String.valueOf(v).trim();
         return s.isEmpty() ? null : s;
-    }
-
-    private static void bumpSeen(String fp) {
-        if (SEEN.size() >= MAX_SEEN_ENTRIES) {
-            SEEN.clear();
-        }
-        SEEN.merge(fp, 1, Integer::sum);
     }
 
     private static String nz(String s) {

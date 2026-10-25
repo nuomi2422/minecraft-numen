@@ -1,0 +1,287 @@
+package com.dwinovo.numen.plugins.learner;
+
+import com.dwinovo.numen.plugins.learner.core.CandidateGate;
+import com.dwinovo.numen.plugins.learner.core.CandidateMemo;
+import com.dwinovo.numen.plugins.learner.core.FeedbackChannel;
+import com.dwinovo.numen.plugins.learner.core.FeedbackEvent;
+import com.dwinovo.numen.plugins.learner.core.Memo;
+import com.dwinovo.numen.plugins.learner.core.MemoQueue;
+import com.dwinovo.numen.plugins.learner.core.StormGuard;
+import com.dwinovo.numen.plugins.learner.core.T3Seen;
+import net.neoforged.fml.loading.FMLPaths;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * E1 自动入队（81 号 §14.4 第一轮）：真实失败事件 → 候选，**不依赖 AI 记得调 learner_intake**。
+ *
+ * <h2>为什么要有它（2026-10-25 实测）</h2>
+ * 当天 instrumentation 有 6 条 T2 命中（5 空转 + 1 死亡），`learner_*` 工具全窗口 0 次调用 ——
+ * 「该不该学」的判定与队列都建好了，但唯一的入口是 AI 自觉调用，而它**从不调用**。
+ * 这正是核准回执点出的第四瓶颈：发现问题→定谁处理→执行→确认，四步之间没有稳定交接。
+ * 本类补的是第一跳：**事件自己流进队列**。
+ *
+ * <h2>与 LearnerIntakeTool（手动口）的关系 —— 共用一切，不另造入口</h2>
+ * <ul>
+ *   <li>同一个事件源（`FeedbackChannel.pull`，只读）；</li>
+ *   <li>同一个判定（`CandidateGate.evaluate`）；</li>
+ *   <li>同一个风暴抑制（`StormGuard.admit`，按（类型,指纹）分桶）；</li>
+ *   <li>同一个队列（`MemoQueue`）与同一套质量门 —— 自动口**没有任何放宽**。</li>
+ * </ul>
+ * 所以它不是「绕过」，是把手动口那套逐字复用成「没人按也会跑」的形式。
+ *
+ * <h2>边界（与手动口完全一致，一处不加）</h2>
+ * <ol>
+ *   <li>只读事件源 + 只写学习者自己的 memo 队列；不碰世界、不派身体（RL-9 不变）；</li>
+ *   <li>不写经验库 —— 入队的是<b>待审候选</b>，不是经验；提炼仍归 learner_review；</li>
+ *   <li>每条入队都落 learner.jsonl 事件（`auto_intake`），决策可逐条对账；</li>
+ *   <li>读失败/队列写失败 = 记一次失败并停这一轮，绝不让它拖垮 tick（观测旁路纪律）。</li>
+ * </ol>
+ *
+ * <h2>为什么按「事件身份」去重而不是靠 StormGuard</h2>
+ * 手动口靠调用方传 cursor；自动口没有调用方，所以自己记每类事件源的游标。
+ * 游标按（存档代际 + 事件源文件）存，换存档即重算 —— 与 FeedbackChannel 的 generation
+ * 同一口径，避免把上一世的字节偏移量用在这一世。
+ */
+final class LearnerAutoIntake {
+
+    private LearnerAutoIntake() {}
+
+    /** 扫描间隔：每 30 秒（600 tick）看一次事件流。学习不需要亚秒级响应。 */
+    static final long SCAN_INTERVAL_TICKS = 600L;
+
+    /** 单轮入队上限：与手动口同值（16）。风暴抑制之后仍要防一次灌满队列。 */
+    private static final int MAX_ENQUEUE_PER_SCAN = 16;
+
+    /** 游标文件：<configDir>/learner-auto-cursor.json。进程外可读可删（删了=从头扫，靠幂等键防重）。 */
+    private static final String CURSOR_FILE = "learner-auto-cursor.json";
+
+    /** 开关文件：<configDir>/learner-auto-intake.json，形如 {"enabled":true}。默认<b>开</b>。 */
+    private static final String TOGGLE_FILE = "learner-auto-intake.json";
+
+    private static final com.google.gson.Gson GSON = new com.google.gson.Gson();
+
+    /** （存档代际 → 游标字节）。只进内存，落盘见 {@link #loadCursor}/{@link #saveCursor}。 */
+    private static final Map<String, Long> CURSORS = new ConcurrentHashMap<>();
+
+    /** 幂等键：入队成功的 memo_id 一律见过就跳（重放/重启都不重复入队）。 */
+    private static final java.util.Set<String> ENQUEUED = ConcurrentHashMap.newKeySet();
+    private static final int MAX_ENQUEUED_KEYS = 4096;
+
+    private static volatile boolean enabled = true;
+    private static volatile long lastToggleCheck = -1L;
+    private static volatile Path configDirCache;
+
+    /**
+     * 队列解析器：生产用 LearnerPlugin::queue；测试注入直建 MemoQueue。
+     * 这层接缝存在的唯一理由：LearnerPlugin 的类加载链要 NeoForge（纯 JVM 单测会
+     * NoClassDefFoundError），而自动入队本身是纯逻辑 —— 不把队列来源做成注入，
+     * 这段逻辑一行都测不到。
+     */
+    // 默认 null：生产 setup() 里装（见 install）——写在这里的初始化器会在类加载时就
+    // 触碰 LearnerPlugin，而它的类链要 NeoForge（纯 JVM 单测 NoClassDefFoundError）。
+    private static volatile java.util.function.Function<UUID, MemoQueue> queueResolver;
+
+    /** setup 时调一次：记下 configDir、读一次开关。 */
+    static void install(Path configDir) {
+        configDirCache = configDir;
+        reloadToggle();
+    }
+
+    static boolean enabled() {
+        return enabled;
+    }
+
+    /** 生产入口：LearnerPlugin.setup 时调（默认队列解析器在这里装）。 */
+    static void installDefaultQueueResolver() {
+        if (queueResolver == null) {
+            queueResolver = LearnerPlugin::queue;
+        }
+    }
+
+    /** 测试接缝：换队列解析器。生产代码不许调。 */
+    static void installQueueResolverForTest(java.util.function.Function<UUID, MemoQueue> r) {
+        queueResolver = r;
+    }
+
+    /** 每 tick 由 LearnerMod 调；内部自己节流。观测/入队任何异常都不外抛。 */
+    static void onServerTick(long gameTimeTicks) {
+        try {
+            if (configDirCache == null || !maybeReloadToggle()) return;
+            if (!enabled) return;
+            if (gameTimeTicks <= 0 || gameTimeTicks % SCAN_INTERVAL_TICKS != 0) return;
+            scanOnce();
+        } catch (RuntimeException | java.io.IOError ignored) {
+            // 自动入队是增强旁路：它坏了不许影响游戏主循环
+        }
+    }
+
+    private static boolean maybeReloadToggle() {
+        long now = System.currentTimeMillis();
+        if (lastToggleCheck > 0 && now - lastToggleCheck < 10_000L) return true;
+        lastToggleCheck = now;
+        reloadToggle();
+        return true;
+    }
+
+    private static void reloadToggle() {
+        Path dir = configDirCache;
+        if (dir == null) return;
+        try {
+            Path f = dir.resolve(TOGGLE_FILE);
+            if (!Files.isRegularFile(f)) {
+                Files.createDirectories(dir);
+                Map<String, Object> def = new LinkedHashMap<>();
+                def.put("_note", "自动入队开关：true=自动把 T2/T3 命中的失败事件转成学习者候选；false=回到纯手动（learner_intake）。删文件=恢复默认开。");
+                def.put("enabled", true);
+                Files.writeString(f, GSON.toJson(def) + "\n", StandardCharsets.UTF_8);
+                enabled = true;
+                return;
+            }
+            String raw = Files.readString(f, StandardCharsets.UTF_8);
+            enabled = !String.valueOf(com.google.gson.JsonParser.parseString(raw)
+                    .getAsJsonObject().get("enabled")).equalsIgnoreCase("false");
+        } catch (RuntimeException | java.io.IOException ignored) {
+            enabled = true;   // 读失败=保持开（诚实方向：宁可多扫，不静默失明）
+        }
+    }
+
+    /** 一次扫描：拉增量 → 逐条判定 → 入队 → 落事件。返回本轮入队数（测试用）。 */
+    static int scanOnce() {
+        // 开关也挡直调（测试/未来别的调用方）：关了就是关了，不许绕过。
+        if (!enabled) return 0;
+        Path dir = configDirCache;
+        if (dir == null) return 0;
+        String generation = FeedbackChannel.generationForConfigDir(dir);
+        long cursor = loadCursor(generation);
+        Path jsonl = dir.resolve("monitor/instrumentation.jsonl");
+        FeedbackChannel.Pull pull = new FeedbackChannel.Pull();
+        List<FeedbackEvent> events;
+        try {
+            events = FeedbackChannel.pull(jsonl, generation, cursor, null, pull).events;
+        } catch (RuntimeException e) {
+            LearnerMonitor.publish("auto_intake_failed", Map.of(
+                    "reason", "read_failed: " + safe(e), "cursor", cursor));
+            return 0;
+        }
+        if (events == null || events.isEmpty()) {
+            saveCursor(generation, pull.nextCursor);   // 没有新事件也推进游标（文件被截短时防卡死）
+            return 0;
+        }
+
+        // 事件归属的同伴各建一条队列；无主事件如实跳过（手动口同款三态）
+        Map<UUID, Integer> enqueuedBy = new LinkedHashMap<>();
+        int rejected = 0, unattributed = 0, stormSuppressed = 0, dupSkipped = 0, queueFull = 0;
+
+        for (FeedbackEvent ev : events) {
+            String owner = CandidateMemo.companionOf(ev);
+            if (owner == null) { unattributed++; continue; }
+            UUID companionId;
+            try {
+                companionId = UUID.fromString(owner);
+            } catch (IllegalArgumentException e) { unattributed++; continue; }
+
+            String fp = CandidateGate.fingerprint(ev.sourceType(), ev.observation());
+            int seenBefore = T3Seen.seenBefore(companionId.toString(), fp);
+            T3Seen.bump(companionId.toString(), fp);
+            CandidateGate.Decision d = CandidateGate.evaluate(ev.sourceType(), ev.observation(), seenBefore);
+            if (!d.enqueue()) { rejected++; continue; }
+
+            String memoId = "ai-" + ev.eventId();
+            if (!ENQUEUED.add(memoId)) { dupSkipped++; continue; }
+            if (ENQUEUED.size() > MAX_ENQUEUED_KEYS) ENQUEUED.clear();
+
+            StormGuard.Ruling storm = StormGuard.admit(companionId.toString(), fp, System.currentTimeMillis());
+            if (!storm.allow()) { stormSuppressed++; continue; }
+
+            int soFar = enqueuedBy.getOrDefault(companionId, 0);
+            if (soFar >= MAX_ENQUEUE_PER_SCAN) { continue; }
+
+            Memo memo = CandidateMemo.from(ev, d);
+            MemoQueue queue = queueResolver.apply(companionId);
+            boolean ok;
+            try {
+                ok = queue.append(new Memo(memoId, memo.problem(), memo.stage(), memo.tried(),
+                        memo.snapshot(), System.currentTimeMillis()));
+            } catch (RuntimeException e) {
+                LearnerMonitor.publish("auto_intake_failed", Map.of(
+                        "reason", "queue_write_failed: " + safe(e), "memo_id", memoId));
+                break;
+            }
+            if (ok) {
+                enqueuedBy.merge(companionId, 1, Integer::sum);
+            } else {
+                queueFull++;
+            }
+        }
+
+        long next = pull.nextCursor;
+        saveCursor(generation, next);
+
+        if (!enqueuedBy.isEmpty() || rejected > 0 || stormSuppressed > 0 || unattributed > 0 || dupSkipped > 0 || queueFull > 0) {
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("generation", generation);
+            data.put("events_scanned", events.size());
+            data.put("enqueued_by_companion", enqueuedBy);
+            data.put("rejected_by_gate", rejected);
+            data.put("storm_suppressed", stormSuppressed);
+            data.put("unattributed", unattributed);
+            data.put("duplicate_skipped", dupSkipped);
+            data.put("queue_full", queueFull);
+            LearnerMonitor.publish("auto_intake", data);
+        }
+        return enqueuedBy.values().stream().mapToInt(Integer::intValue).sum();
+    }
+
+    // ── 游标持久化（tmp + 原子替换，抄 MemoQueue 的做法） ──────────────────
+
+    private static long loadCursor(String generation) {
+        Long cached = CURSORS.get(generation);
+        if (cached != null) return cached;
+        try {
+            Path f = cursorFile();
+            if (Files.isRegularFile(f)) {
+                var o = com.google.gson.JsonParser.parseString(Files.readString(f, StandardCharsets.UTF_8))
+                        .getAsJsonObject();
+                Long v = o.has(generation) && o.get(generation).isJsonPrimitive()
+                        ? o.get(generation).getAsLong() : null;
+                if (v != null) { CURSORS.put(generation, v); return v; }
+            }
+        } catch (RuntimeException | java.io.IOException ignored) {
+            // 读不到=从 0 开始扫，幂等键会挡住重复入队
+        }
+        return 0L;
+    }
+
+    private static void saveCursor(String generation, long cursor) {
+        CURSORS.put(generation, cursor);
+        try {
+            Path f = cursorFile();
+            Files.createDirectories(f.getParent());
+            var o = new com.google.gson.JsonObject();
+            o.addProperty(generation, cursor);
+            Path tmp = f.resolveSibling(f.getFileName() + ".tmp");
+            Files.writeString(tmp, o.toString(), StandardCharsets.UTF_8);
+            Files.move(tmp, f, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (RuntimeException | java.io.IOException ignored) {
+            // 游标存不下=下次多扫一遍（幂等键挡住重复），不致命
+        }
+    }
+
+    private static Path cursorFile() {
+        return configDirCache.resolve(CURSOR_FILE);
+    }
+
+    private static String safe(Exception e) {
+        String s = String.valueOf(e.getMessage());
+        return s.length() > 200 ? s.substring(0, 200) : s;
+    }
+}

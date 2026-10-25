@@ -148,6 +148,9 @@ public final class LearnerPlugin implements NumenPlugin {
     @Override
     public void setup(NumenApi numen) {
         configDir = numen.configDir();
+        // E1 自动入队（81 号 §14.4）：记下 configDir 并读开关；tick 由 LearnerMod 挂。
+        LearnerAutoIntake.install(configDir);
+        LearnerAutoIntake.installDefaultQueueResolver();
         // E1 shadow：学习角色的预算策略（与客户端同一份文件，幂等）。
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
         numen.registerTool(new LearnerNoteTool());

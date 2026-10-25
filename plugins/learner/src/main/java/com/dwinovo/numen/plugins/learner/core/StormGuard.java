@@ -114,7 +114,7 @@ public final class StormGuard {
     }
 
     /** 清空（只给测试用；运行时没有「清空节流账」这回事）。 */
-    static synchronized void resetForTest() {
+    public static void resetForTest() {
         STATES.clear();
     }
 

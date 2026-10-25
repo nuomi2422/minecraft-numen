@@ -40,8 +40,9 @@ final class LearnerMonitor {
 
             Files.writeString(file, GSON.toJson(envelope) + "\n", StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } catch (Exception ignored) {
-            // 观测失败不影响 learner 主流程
+        } catch (Exception | NoClassDefFoundError ignored) {
+            // 观测失败不影响 learner 主流程。NoClassDefFoundError：纯 JVM 单测没有
+            // FMLPaths（NeoForge 类链）—— 观测面缺席时静默，不拖垮入队本身。
         }
     }
 }
