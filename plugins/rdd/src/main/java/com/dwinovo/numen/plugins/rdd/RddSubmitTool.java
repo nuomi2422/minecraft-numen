@@ -53,6 +53,10 @@ final class RddSubmitTool implements NumenTool {
                 // blocks 用逗号分隔多个 id，合计计数。
                 .optionalString("blocks", "Comma separated block ids for block_nearby; counted together with block.")
                 // 2026-10-25：建造类目标必须锚在"那块地"上（可选），否则人一走条件就变假。
+                // 2026-10-25：页面上「重要度」只有 NORMAL（实测 critical=0）——因为 rdd_submit 从不说前置。
+                // wait_asset_key/wait_minimum 表达"进本一级的门"：RequirementDetector 会把它判成 CRITICAL。
+                .optionalString("wait_asset_key", "Optional gating asset: the primary cannot start until the companion holds this (becomes a CRITICAL requirement).")
+                .optionalInteger("wait_minimum", "Minimum count for wait_asset_key (default 1).", 1, 9999)
                 .optionalString("anchor", "Optional fixed anchor \"x,y,z\" for block_nearby (build goals: judge around that spot, not around the moving companion).")
                 .optionalInteger("radius", "Radius for block_nearby (1..16, default 8).", 1, 16)
                 .optionalString("task_type", "Optional body tool to drive. RDD 词表内(mine/craft/equip_item/collect_items)会被自动翻译参数; 也可指名任意真实注册 NUMEN 工具原样驱动.")
@@ -148,8 +152,13 @@ final class RddSubmitTool implements NumenTool {
             String primaryId = "primary-" + companion.getUUID();
             String subtaskId = "subtask-" + companion.getUUID();
             var subtask = Subtask.hardCoded(subtaskId, input.subtask(), condition, parseBody(input));
+            java.util.List<com.dwinovo.numen.rdd.api.AssetRequirement> waitFor = new java.util.ArrayList<>();
+            if (!blank(input.wait_asset_key())) {
+                waitFor.add(new com.dwinovo.numen.rdd.api.AssetRequirement(
+                        input.wait_asset_key().trim(), input.wait_minimum() == null ? 1 : input.wait_minimum()));
+            }
             var primary = new com.dwinovo.numen.rdd.api.PrimaryGoal(primaryId, input.primary_goal(),
-                    java.util.List.of(subtask));
+                    java.util.List.of(subtask), waitFor);
             var goal = new com.dwinovo.numen.rdd.api.Goal("goal-" + companion.getUUID(), input.goal(),
                     java.util.List.of(primary));
             RddPlugin.bind(companion.getUUID(), goal);
@@ -230,5 +239,6 @@ final class RddSubmitTool implements NumenTool {
     private record Input(String goal, String primary_goal, String subtask, String asset_key, int minimum,
                          String mode,
                          String condition_type, String block, String blocks, String entity, Integer radius, String anchor,
+                         String wait_asset_key, Integer wait_minimum,
                          String task_type, String args) {}
 }
