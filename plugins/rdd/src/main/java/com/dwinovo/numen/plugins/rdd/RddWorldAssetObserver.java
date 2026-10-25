@@ -6,6 +6,7 @@ import com.dwinovo.numen.platform.Services;
 import com.dwinovo.numen.rdd.api.AssetScope;
 import com.dwinovo.numen.rdd.api.Observation;
 import com.dwinovo.numen.rdd.core.AssetRegistry;
+import com.dwinovo.numen.rdd.policy.WorldAssetRetention;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
@@ -17,6 +18,9 @@ import net.minecraft.world.phys.AABB;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,7 +52,7 @@ final class RddWorldAssetObserver {
         observeVillages(companion, registry);   // P2.3：村庄资源节点（供规划查“这村庄有啥”）
         int machines = observeMachines(companion, registry);
         int entities = observeEntities(companion, registry);
-        trim(registry);
+        trim(companion, registry);
         return new Result(bases, structures, machines, entities);
     }
 
@@ -63,7 +67,7 @@ final class RddWorldAssetObserver {
         value.put("summary", "respawn bed; facilities=" + base.facilities().size()
                 + "; stored item types=" + base.storedItems().size()
                 + "; completion=" + base.complete());
-        apply(registry, "base|" + base.dimension() + "|" + pos.asLong(), "world_base", base.dimension(), value);
+        apply(companion.getUUID(), registry, "base|" + base.dimension() + "|" + pos.asLong(), "world_base", base.dimension(), value);
         return 1;
     }
 
@@ -80,7 +84,7 @@ final class RddWorldAssetObserver {
             value.put("structure", id.toString());
             value.put("summary", "companion was physically inside this structure");
             String key = "structure|" + value.get("dimension") + "|" + id + "|" + (pos.getX() >> 4) + "," + (pos.getZ() >> 4);
-            apply(registry, key, "world_structure", String.valueOf(value.get("dimension")), value);
+            apply(companion.getUUID(), registry, key, "world_structure", String.valueOf(value.get("dimension")), value);
             count++;
         }
         return count;
@@ -119,7 +123,7 @@ final class RddWorldAssetObserver {
             }
             String key = portal ? "machine|" + dimension + "|" + cluster
                     : "machine|" + dimension + "|" + blockId + "|" + pos.asLong();
-            apply(registry, key, "world_machine", dimension, value);
+            apply(companion.getUUID(), registry, key, "world_machine", dimension, value);
             if (++count >= MAX_MACHINES_PER_SCAN) break outer;
         }
         return count;
@@ -147,7 +151,7 @@ final class RddWorldAssetObserver {
             value.put("summary", "last seen nearby; entities may move or die");
             String key = "entity|" + dimension + "|" + group.getKey() + "|"
                     + (companion.blockPosition().getX() >> 4) + "," + (companion.blockPosition().getZ() >> 4);
-            apply(registry, key, "world_entity", dimension, value);
+            apply(companion.getUUID(), registry, key, "world_entity", dimension, value);
             count++;
         }
         return count;
@@ -191,7 +195,7 @@ final class RddWorldAssetObserver {
         value.put("summary", "village scanned: villagers=" + villagers + " golems=" + golems
                 + " chests=" + chests + " crops=" + crops + " bookshelves=" + bookshelves);
         String key = "village|" + value.get("dimension") + "|" + (pos.getX() >> 4) + "," + (pos.getZ() >> 4);
-        apply(registry, key, "world_village", String.valueOf(value.get("dimension")), value);
+        apply(companion.getUUID(), registry, key, "world_village", String.valueOf(value.get("dimension")), value);
         return 1;
     }
 
@@ -208,11 +212,22 @@ final class RddWorldAssetObserver {
         return value;
     }
 
-    private static void apply(AssetRegistry registry, String assetId, String type,
+    /**
+     * 记一条世界观测，**同时**记下"这一拍看见它了"的游戏 tick。
+     *
+     * <p>为什么 tick 不进 {@link Observation}：那会改落盘形状与所有消费者；
+     * 而 TTL 只需要"多久没被重新看见"，侧表就够。重启后侧表为空 → 该资产
+     * {@code observed=false} → 本拍不接受淘汰（宽限一整天，见 RetentionPolicy）。
+     */
+    private static void apply(UUID companionId, AssetRegistry registry, String assetId, String type,
                               String environmentId, Map<String, Object> value) {
         registry.apply(new Observation("obs-world-" + System.nanoTime(), type,
                         "rdd_world_observer", environmentId, System.currentTimeMillis(), value),
                 assetId, AssetScope.GLOBAL, null);
+        if (companionId != null) {
+            SEEN_TICK.computeIfAbsent(companionId, k -> new ConcurrentHashMap<>())
+                    .put(assetId, RddInstrumentation.currentGameTimeTicks());
+        }
     }
 
     private static Map<String, Integer> topCounts(Map<String, Integer> counts, int limit) {
@@ -223,10 +238,68 @@ final class RddWorldAssetObserver {
         return Map.copyOf(out);
     }
 
-    private static void trim(AssetRegistry registry) {
-        List<AssetRegistry.AssetEntry> world = new ArrayList<>(RddAssetContext.worldAssets(registry));
-        world.sort(Comparator.comparingLong(e -> e.observation().observedAt()));
-        for (int i = 0; i < world.size() - MAX_WORLD_ASSETS; i++) registry.forget(world.get(i).assetId());
+    /** 每个同伴的"资产 → 上次看见的 tick"。进程内、有界（资产上限 128），重启即空（设计如此）。 */
+    private static final Map<UUID, Map<String, Long>> SEEN_TICK = new ConcurrentHashMap<>();
+
+    /**
+     * 裁剪：不再"按时间丢最旧"，而是走 {@link WorldAssetRetention} 的受害者顺序 + 实体 TTL。
+     *
+     * <p>本方法只在服务端线程被 {@link #observe} 调；读的是一份快照，不改世界、不扫区块。
+     * 只在真的有动作时发事件（平稳期零噪音）。
+     */
+    private static void trim(NumenPlayer companion, AssetRegistry registry) {
+        UUID companionId = companion.getUUID();
+        long now = RddInstrumentation.currentGameTimeTicks();
+        Map<String, Long> seen = SEEN_TICK.computeIfAbsent(companionId, k -> new ConcurrentHashMap<>());
+
+        List<WorldAssetRetention.Item> items = new ArrayList<>();
+        for (var entry : RddAssetContext.worldAssets(registry)) {
+            Long tick = seen.get(entry.assetId());
+            items.add(new WorldAssetRetention.Item(entry.assetId(),
+                    WorldAssetRetention.kindOf(entry.observation().type()),
+                    tick == null ? 0L : tick, tick != null));
+        }
+
+        List<WorldAssetRetention.Decision> decisions = WorldAssetRetention.decide(
+                items, RddWorldAssetObserver.MAX_WORLD_ASSETS, now,
+                WorldAssetRetention.DEFAULT_ENTITY_TTL_TICKS);
+
+        int expired = 0;
+        int evicted = 0;
+        List<Map<String, Object>> sample = new ArrayList<>();
+        for (var d : decisions) {
+            if (d.action() == WorldAssetRetention.Action.KEEP) {
+                if (!d.reason().equals("within_capacity")) {
+                    // 宽限条目：第一次看到时补上 tick，从此开始计龄（不一口气全删）。
+                    if (d.reason().equals("age_unknown_grace")) seen.put(d.assetId(), now);
+                }
+                continue;
+            }
+            registry.forget(d.assetId());
+            seen.remove(d.assetId());
+            if (d.action() == WorldAssetRetention.Action.EXPIRE_TTL) expired++;
+            else evicted++;
+            if (sample.size() < 8) {
+                Map<String, Object> one = new LinkedHashMap<>();
+                one.put("assetId", d.assetId());
+                one.put("kind", d.kind().name());
+                one.put("action", d.action().name());
+                one.put("ageTicks", d.ageTicks());
+                one.put("reason", d.reason());
+                sample.add(one);
+            }
+        }
+        if (expired + evicted == 0) return;
+        Map<String, Object> ev = new LinkedHashMap<>();
+        ev.put("companionId", companionId.toString());
+        ev.put("expired", expired);
+        ev.put("evicted", evicted);
+        ev.put("activeAfter", items.size() - expired - evicted);
+        ev.put("cap", RddWorldAssetObserver.MAX_WORLD_ASSETS);
+        ev.put("entityTtlTicks", WorldAssetRetention.DEFAULT_ENTITY_TTL_TICKS);
+        ev.put("policy", "victim_order=entity>machine>village>structure>other; base pinned");
+        ev.put("sample", sample);
+        RddMonitor.publish("asset_retention", ev);
     }
 
     record Result(int bases, int structures, int machines, int entityGroups) {
