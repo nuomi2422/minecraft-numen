@@ -661,15 +661,23 @@ public final class RddWorldFacts {
     }
 
     /** A valid personal respawn bed is a reusable base asset even before every facility is complete. */
+    private static final org.slf4j.Logger BASELOG =
+            org.slf4j.LoggerFactory.getLogger("rdd-base");
+
     static BaseSnapshot inspectBase(NumenPlayer ap, Map<String, Object> condition) {
         BlockPos spawn = ap.getRespawnPosition();
+        BASELOG.info("[rdd-base] 检查：spawn={} dim={} 当前维度={}", spawn,
+                ap.getRespawnDimension(), ap.level().dimension().location());
         // 未绑床时 getRespawnPosition() 可能返回 BlockPos.ZERO（哨兵）而非 null——
         // 必须显式挡掉，否则会拿 (0,0,0) 当"重生床"去查（语义错，且恰好在原点有床时会误判成功）。
         if (spawn == null || spawn.equals(BlockPos.ZERO)) {
+            BASELOG.info("[rdd-base] 失败：未绑床（spawn=null/ZERO）");
             return null;
         }
         ServerLevel level = ap.getServer().getLevel(ap.getRespawnDimension());
         if (level == null || !dimension(level, condition) || !BedBlock.canSetSpawn(level)) {
+            BASELOG.info("[rdd-base] 失败：level={} dimensionOk={} canSetSpawn={}", level,
+                    level != null && dimension(level, condition), level != null && BedBlock.canSetSpawn(level));
             return null;
         }
         // A tiny bounded area, preflighted before any block/collision query. No chunk generation.
@@ -679,7 +687,10 @@ public final class RddWorldFacts {
             }
         }
         var bed = level.getBlockState(spawn);
-        if (!(bed.getBlock() instanceof BedBlock)) return null;
+        if (!(bed.getBlock() instanceof BedBlock)) {
+            BASELOG.info("[rdd-base] 失败：spawn 处不是床，实际={}", bed.getBlock());
+            return null;
+        }
         var facing = bed.getValue(BedBlock.FACING);
         BlockPos otherPos = spawn.relative(bed.getValue(BedBlock.PART) == BedPart.HEAD
                 ? facing.getOpposite() : facing);

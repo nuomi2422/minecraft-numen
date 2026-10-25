@@ -43,9 +43,14 @@ final class RddStagePlanner {
             var self = srv == null ? null : srv.getPlayerList().getPlayer(companionId);
             facts = self == null ? RddPlannerFacts.block(snapshot.availableCounts())
                     : RddPlannerFacts.block(self, companionId);
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException ex) {
+            org.slf4j.LoggerFactory.getLogger(RddStagePlanner.class)
+                    .warn("[rdd-facts] 事实包生成失败：{}", ex.toString());
             facts = "";
         }
+        org.slf4j.LoggerFactory.getLogger(RddStagePlanner.class)
+                .info("[rdd-facts] 事实包长度={} 片段={}", facts.length(),
+                        facts.length() > 120 ? facts.substring(0, 120).replace("\n", " ") : facts.replace("\n", " "));
         String base = RddPlanningKnowledge.attach(
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
                         + facts + "\n" + planningPrompt(objective, snapshot),
