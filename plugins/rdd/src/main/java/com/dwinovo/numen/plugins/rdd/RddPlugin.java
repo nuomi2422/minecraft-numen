@@ -470,8 +470,12 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 只读、只在 8 格内、只在非空时出现（不改任何判定）。
         String storageBlock = "";
         try {
-            net.minecraft.server.MinecraftServer srv = ServerLifecycleHooks.getCurrentServer();
-            net.minecraft.server.level.ServerPlayer self = srv == null ? null : srv.getPlayerList().getPlayer(companionId);
+            // 用检测器记下的**真身体**（玩家列表取到的实例扫不到方块实体，实机踩过）
+            net.minecraft.server.level.ServerPlayer self = RddCompanionBody.get(companionId) instanceof net.minecraft.server.level.ServerPlayer sp ? sp : null;
+            if (self == null) {
+                net.minecraft.server.MinecraftServer srv = ServerLifecycleHooks.getCurrentServer();
+                self = srv == null ? null : srv.getPlayerList().getPlayer(companionId);
+            }
             storageBlock = RddContainerMemory.render(self);
         } catch (RuntimeException ignored) {
             // 容器记忆是增强项：读不到就不出现，绝不影响主链路

@@ -112,6 +112,7 @@ public final class RddWorldFacts {
         // 2026-10-25（主人在实机上指出）：规划器把"回到基地再办"写在**文字**里，
         // 而条件里没有 anchor ⇒ 判定圆心是"同伴现在站的地方" ⇒ 它就近放下也算完成。
         // 这里给建造类条件补上基地锚点：第一次放下床的位置 = 基地。
+        RddCompanionBody.remember(ap);
         condition = withBaseAnchor(ap, condition);
         if (ap == null || condition == null || ap.getServer() == null
                 || !ap.getServer().isSameThread()) return false;
