@@ -39,6 +39,9 @@ import java.util.Map;
  */
 final class RddContainerMemory {
 
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(RddContainerMemory.class);
+
     /** 扫描半径（格）。 */
     private static final int RADIUS = 8;
     /** 一次最多看几处容器。 */
@@ -56,10 +59,24 @@ final class RddContainerMemory {
 
     /** 渲染成一段 &lt;storage&gt; 上下文；没东西可报时返回空串。 */
     static String render(ServerPlayer player) {
-        if (player == null) return "";
-        if (!(player.level() instanceof ServerLevel level)) return "";
+        if (player == null) {
+            LOG.info("[rdd-storage] 无玩家对象，跳过");
+            return "";
+        }
+        // 2026-10-25：用 ServerPlayer.serverLevel() 而不是 player.level()。
+        // 实测拿 player.level() 扫时 getBlockEntity 恒 null（同坐标同帧 CAPS 却能读到），
+        // 差别只在"哪个 Level 实例"；serverLevel() 是服务端权威实例。
+        ServerLevel level;
+        try {
+            level = player.serverLevel();
+        } catch (RuntimeException ex) {
+            LOG.info("[rdd-storage] serverLevel() 失败：{}", ex.toString());
+            return "";
+        }
         List<String> lines = new ArrayList<>();
         BlockPos origin = player.blockPosition();
+        LOG.info("[rdd-storage] origin={},{},{} 维度={} 附近状态={}", origin.getX(), origin.getY(), origin.getZ(),
+                level.dimension().location(), level.getBlockState(origin));
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
         int seen = 0;
         for (int dx = -RADIUS; dx <= RADIUS && seen < MAX_CONTAINERS; dx++) {
@@ -69,9 +86,16 @@ final class RddContainerMemory {
                     cursor.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
                     if (!level.hasChunkAt(cursor)) continue;
                     BlockState state = level.getBlockState(cursor);
-                    if (!isContainer(state)) continue;
-                    BlockEntity be = level.getBlockEntity(cursor);
+                    if (state.isAir()) continue;
+                    // 2026-10-25：用**不可变**坐标取方块实体（MutableBlockPos 在这里取不到，实测 mutable=null）。
+                    BlockEntity be = level.getBlockEntity(new BlockPos(cursor));
                     if (!(be instanceof Container container)) continue;
+                    if (!(state.getBlock() instanceof ChestBlock
+                            || state.getBlock() instanceof BarrelBlock
+                            || state.getBlock() instanceof ShulkerBoxBlock)) {
+                        // 熔炉/漏斗这类也带 Container，但它们的"存货"是燃料与半成品，别当仓库报给 AI
+                        if (!state.getBlock().getDescriptionId().contains("chest")) continue;
+                    }
                     Map<String, Integer> counts = new LinkedHashMap<>();
                     int total = 0;
                     for (int i = 0; i < container.getContainerSize(); i++) {
@@ -95,6 +119,7 @@ final class RddContainerMemory {
                 }
             }
         }
+        LOG.info("[rdd-storage] 扫描完成：容器 {} 处，物品行 {} 条", seen, lines.size());
         if (lines.isEmpty()) return "";
         StringBuilder out = new StringBuilder();
         out.append("<storage nearby=\"").append(lines.size()).append("\">")
