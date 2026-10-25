@@ -41,6 +41,9 @@ import java.util.function.Predicate;
 /** Read-only, server-thread world evidence. Unknown/unloaded facts never pass. */
 public final class RddWorldFacts {
 
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(RddWorldFacts.class);
+
     /** 锚点判定的垂直容差：建造类目标只在"这一层附近"，不要球半径那么苛刻。 */
     private static final int ANCHOR_DY = 16;
     private RddWorldFacts() {}
@@ -101,6 +104,7 @@ public final class RddWorldFacts {
         if (base == null) return condition;
         Map<String, Object> copy = new java.util.LinkedHashMap<>(condition);
         copy.put("anchor", java.util.List.of(base.getX(), base.getY(), base.getZ()));
+        LOG.info("[rdd] 基地锚点注入 {} -> ({},{},{}) 条件 type={}", ap.getUUID(), base.getX(), base.getY(), base.getZ(), condition.get("type"));
         return copy;
     }
 
@@ -277,7 +281,10 @@ public final class RddWorldFacts {
         // 2026-10-25：床判定成功 ⇒ 把这张床的位置记成基地（之后所有建造类条件以它为圆心）。
         if (isBedCondition(condition)) {
             net.minecraft.core.BlockPos bed = findNearest(level, origin, radius, hit);
-            if (bed != null) RddBaseAnchor.remember(ap.getUUID(), bed);
+            if (bed != null) {
+                RddBaseAnchor.remember(ap.getUUID(), bed);
+                LOG.info("[rdd] 基地锚点已记录 {} -> ({},{},{})", ap.getUUID(), bed.getX(), bed.getY(), bed.getZ());
+            }
         }
         if (need > 1) {
             if (anchored) {
