@@ -685,10 +685,13 @@ public final class RddWorldFacts {
                 ? facing.getOpposite() : facing);
         var other = level.getBlockState(otherPos);
         if (!other.is(bed.getBlock()) || other.getValue(BedBlock.PART) == bed.getValue(BedBlock.PART)
-                || other.getValue(BedBlock.FACING) != facing
-                || BedBlock.findStandUpPosition(ap.getType(), level, spawn, facing, ap.getRespawnAngle()).isEmpty()) {
+                || other.getValue(BedBlock.FACING) != facing) {
             return null;
         }
+        // 2026-10-25（主人）：**点一下床就算安家**。这里原来还要求
+        //   BedBlock.findStandUpPosition(...).isEmpty() == false（床旁边得有地方站起来），
+        //   斜坡/草丛边上经常判空 ⇒ 重生点明明绑好了，`base` 事实却是 false，
+        //   于是 AI 以为自己没有基地、反复找地方重绑。站不站得起来只影响"这一觉"，不影响"家在哪"。
         boolean chest = false;
         boolean furnace = false;
         List<String> facilities = new ArrayList<>();
