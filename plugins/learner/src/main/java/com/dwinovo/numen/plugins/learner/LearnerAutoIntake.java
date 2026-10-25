@@ -20,6 +20,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+// E2 消费提醒：队列非空时催一次复盘（复用既有 learner_review 管线，不另造执行器）
+
 /**
  * E1 自动入队（81 号 §14.4 第一轮）：真实失败事件 → 候选，**不依赖 AI 记得调 learner_intake**。
  *
@@ -80,6 +82,17 @@ final class LearnerAutoIntake {
     private static volatile long lastToggleCheck = -1L;
     private static volatile Path configDirCache;
 
+    // ── E2：消费提醒（81 号 §14.4：队列只进不出=新瓶颈） ─────────────────────
+    // 入队解决「没人发现」，这一段解决「发现了没人处理」。做法不是再造一个
+    // headless 复盘器（那会复制一套质量门与落盘语义），而是把「该复盘了」
+    // 作为**系统事件**推给执行 AI，让它调既有 learner_review —— 走的还是
+    // 同一条 LLM→质量门→草稿→投递箱 管线，闸门一个不少。
+    /** 复盘提醒冷却（毫秒）：同一同伴 10 分钟内只催一次。 */
+    static final long REVIEW_NUDGE_COOLDOWN_MS = 10L * 60L * 1000L;
+    /** 深度达到该值才催（太少不值得打断执行）。 */
+    static final int REVIEW_NUDGE_MIN_DEPTH = 3;
+    private static final Map<UUID, Long> LAST_REVIEW_NUDGE = new ConcurrentHashMap<>();
+
     /**
      * 队列解析器：生产用 LearnerPlugin::queue；测试注入直建 MemoQueue。
      * 这层接缝存在的唯一理由：LearnerPlugin 的类加载链要 NeoForge（纯 JVM 单测会
@@ -119,6 +132,7 @@ final class LearnerAutoIntake {
             if (!enabled) return;
             if (gameTimeTicks <= 0 || gameTimeTicks % SCAN_INTERVAL_TICKS != 0) return;
             scanOnce();
+            maybeNudgeReview();
         } catch (RuntimeException | java.io.IOError ignored) {
             // 自动入队是增强旁路：它坏了不许影响游戏主循环
         }
@@ -239,6 +253,69 @@ final class LearnerAutoIntake {
             LearnerMonitor.publish("auto_intake", data);
         }
         return enqueuedBy.values().stream().mapToInt(Integer::intValue).sum();
+    }
+
+    /**
+     * E2 消费提醒：谁的队列积了 ¦REVIEW_NUDGE_MIN_DEPTH¦ 条以上，且冷却期已过，
+     * 就给它推一条系统消息「learner_review 有 N 条待复盘」。真正的复盘仍由
+     * 执行 AI 调工具完成 —— 质量门、上轮回顾、拒收回喂、投递箱全部走原管线。
+     *
+     * <p>预算边界：这里只发一条文本（不触发 LLM），LLM 成本由 learner_review
+     * 自身的 review 角色 + BudgetPolicy 控制（E1 shadow 已接）；冷却防重复打扰。
+     */
+    static void maybeNudgeReview() {
+        try {
+            if (configDirCache == null || queueResolver == null) return;
+            long now = System.currentTimeMillis();
+            // 队列按同伴隔离；用游标事件里见过的同伴集合不可靠，改扫 memo 文件名
+            java.util.List<UUID> companions = companionsWithMemos();
+            for (UUID id : companions) {
+                MemoQueue q = queueResolver.apply(id);
+                int depth;
+                try {
+                    depth = q.size();
+                } catch (RuntimeException e) {
+                    continue;
+                }
+                if (depth < REVIEW_NUDGE_MIN_DEPTH) continue;
+                Long last = LAST_REVIEW_NUDGE.get(id);
+                if (last != null && now - last < REVIEW_NUDGE_COOLDOWN_MS) continue;
+                if (LAST_REVIEW_NUDGE.putIfAbsent(id, now) != null) continue;
+                boolean sent = LearnerPlugin.nudgeSystem(id,
+                        "[学习者] 队列里有 " + depth + " 条待复盘的备忘录（都是真实失败事件，不是测试）。"
+                        + "现在没有正在跑的复盘；下一轮请调用 learner_review 处理它们——"
+                        + "该成经验的经验、该拒绝的拒绝（拒绝也要给理由），别让队列一直积着。");
+                if (sent) {
+                    LearnerMonitor.publish("review_nudge_sent", Map.of(
+                            "companionId", id.toString(), "queue_depth", depth));
+                } else {
+                    LAST_REVIEW_NUDGE.remove(id);   // 没送出去就不占冷却
+                }
+            }
+        } catch (RuntimeException | NoClassDefFoundError ignored) {
+            // 提醒是增强旁路：坏了不许影响 tick
+        }
+    }
+
+    /** 从 memo 文件名反推哪些同伴有待复盘队列（文件名即契约：learner-memos-<uuid>.json）。 */
+    private static java.util.List<UUID> companionsWithMemos() {
+        java.util.List<UUID> out = new java.util.ArrayList<>();
+        try (var stream = Files.list(configDirCache)) {
+            stream.filter(p -> {
+                        String n = p.getFileName().toString();
+                        return n.startsWith("learner-memos-") && n.endsWith(".json");
+                    })
+                    .forEach(p -> {
+                        String n = p.getFileName().toString();
+                        try {
+                            out.add(UUID.fromString(n.substring("learner-memos-".length(), n.length() - ".json".length())));
+                        } catch (IllegalArgumentException ignored) {
+                        }
+                    });
+        } catch (java.io.IOException ignored) {
+            // 目录读不到=没有队列可催
+        }
+        return out;
     }
 
     // ── 游标持久化（tmp + 原子替换，抄 MemoQueue 的做法） ──────────────────

@@ -43,6 +43,9 @@ public final class LearnerPlugin implements NumenPlugin {
 
     private static volatile Path configDir;
 
+    /** E2：复盘提醒用（enqueueSystem）。setup 时记下，与 configDir 同生命周期。 */
+    private static volatile NumenApi numenApi;
+
     /**
      * B16：产物投放口。第 1 批是 {@code UnsupportedArtifactSink}（三个方法都显式抛错）；
      * <b>B6/S2 起换成 {@link com.dwinovo.numen.plugins.learner.core.OutboxArtifactSink}</b> ——
@@ -148,6 +151,7 @@ public final class LearnerPlugin implements NumenPlugin {
     @Override
     public void setup(NumenApi numen) {
         configDir = numen.configDir();
+        numenApi = numen;   // E2：复盘提醒的系统通道
         // E1 自动入队（81 号 §14.4）：记下 configDir 并读开关；tick 由 LearnerMod 挂。
         LearnerAutoIntake.install(configDir);
         LearnerAutoIntake.installDefaultQueueResolver();
@@ -226,6 +230,24 @@ public final class LearnerPlugin implements NumenPlugin {
         //   日志撒谎比注释撒谎更坏：出事时第一个被查的就是它。
         LOG.info("[learner] plugin ready; 不执行身体动作（RL-9 单驾驶员），"
                 + "但三类草稿真落 config/numen/artifact-outbox，携带器走显式审批（learner_carrier approve）");
+    }
+
+    /**
+     * E2：把一条**系统事件**推给执行 AI（与 RDD nudge 同性质：提醒不是指令）。
+     * 复盘本身仍由 AI 调 learner_review 完成 —— 单驾驶员与质量门都不绕。
+     *
+     * @return 真送出去 true；api 缺失/同伴不存在/文本为空 false
+     */
+    static boolean nudgeSystem(UUID companionId, String message) {
+        NumenApi api = numenApi;
+        if (api == null || companionId == null || message == null || message.isBlank()) return false;
+        try {
+            api.enqueueSystem(companionId, message);
+            return true;
+        } catch (RuntimeException e) {
+            LOG.warn("[learner] 复盘提醒发送失败（不影响主流程）: {}", e.toString());
+            return false;
+        }
     }
 
     /** 取（或惰性创建）某同伴的备忘录队列。 */
