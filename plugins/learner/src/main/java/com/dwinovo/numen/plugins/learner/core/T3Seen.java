@@ -42,6 +42,61 @@ public final class T3Seen {
         SEEN.merge(key(companionId, fingerprint), 1, Integer::sum);
     }
 
+    /**
+     * 跨会话重建（81 号 §14.1 Q4：两个身份分开）：
+     *
+     * <ul>
+     *   <li><b>事件身份</b>（同一事件重放只算一次）—— 由 LearnerAutoIntake 的
+     *       幂等键（memo id = ai-<eventId>）与盘上**游标**负责；游标按存档代际落盘，
+     *       重放的事件根本不会再被读到。</li>
+     *   <li><b>问题指纹</b>（三次独立死亡属于同类问题，应累计三次）—— 由本方法负责：
+     *       启动时把 {@code instrumentation.jsonl} **从头重放一遍**，把每个同伴的
+     *       T2 类事件按指纹计数灌回本表。真源就是那份 append-only 的事件文件本身，
+     *       <b>不另建计数账本</b>（核准回执：优先从既有持久记录恢复）。</li>
+     * </ul>
+     *
+     * <p>为什么重放而不是存计数文件：计数文件是第二真源，和事件流必然漂移
+     * （事件被轮转、计数没跟上）；重放的代价是一次线性扫描（当前文件 ~百行级），
+     * 换来的是「计数永远可以从真源重新推导」——这与 LC3 的「日常样本可复算」同一条纪律。
+     *
+     * <p>时间范围：从**本存档代际**的第一条事件起算（FeedbackChannel.pull 按
+     * generation 过滤），旧存档的旧问题不永久累加（核准回执：保留时间范围，
+     * 避免旧版本问题永久计入）。
+     *
+     * @param events 本存代的全部历史事件（调用方用 FeedbackChannel 从头拉）
+     * @param gate  判定器（只把 T2 能认的事件计进去；用 CandidateGate.fingerprint 同一算法）
+     */
+    public static int rebuildFrom(Iterable<FeedbackEvent> events) {
+        resetForTest();
+        java.util.Set<String> seenEventIds = new java.util.HashSet<>();
+        int counted = 0;
+        for (FeedbackEvent ev : events) {
+            // 事件身份：同一 eventId（重放/轮转副本）只算一次。
+            if (ev.eventId() == null || !seenEventIds.add(ev.eventId())) continue;
+            String companion = companionKey(ev);
+            if (companion == null) continue;
+            String fingerprint = CandidateGate.fingerprint(ev.sourceType(), ev.observation());
+            // 只数 T2 类（失败族）事件：成功/中性事件数进指纹表只会稀释"重复失败"信号。
+            if (!isFailureFamily(ev.sourceType())) continue;
+            bump(companion, fingerprint);
+            counted++;
+        }
+        return counted;
+    }
+
+    private static String companionKey(FeedbackEvent ev) {
+        return CandidateMemo.companionOf(ev);
+    }
+
+    private static boolean isFailureFamily(String sourceType) {
+        if (sourceType == null) return false;
+        return switch (sourceType) {
+            case "death", "starvation_death", "loop_detected", "repeat_gather",
+                 "recovery_failed", "asset_mismatch", "resource_waste" -> true;
+            default -> false;
+        };
+    }
+
     /** 测试用：清表。 */
     public static void resetForTest() {
         SEEN.clear();

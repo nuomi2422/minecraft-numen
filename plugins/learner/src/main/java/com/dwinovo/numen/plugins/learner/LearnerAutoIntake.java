@@ -103,10 +103,45 @@ final class LearnerAutoIntake {
     // 触碰 LearnerPlugin，而它的类链要 NeoForge（纯 JVM 单测 NoClassDefFoundError）。
     private static volatile java.util.function.Function<UUID, MemoQueue> queueResolver;
 
-    /** setup 时调一次：记下 configDir、读一次开关。 */
+    /** setup 时调一次：记下 configDir、读开关、重建跨会话 T3 计数。 */
     static void install(Path configDir) {
         configDirCache = configDir;
         reloadToggle();
+        rebuildT3FromHistory();
+    }
+
+    /**
+     * 跨会话 T3 重建（81 号 §14.1 Q4）：把本存代的 instrumentation.jsonl 从头重放，
+     * 失败族事件按（同伴,指纹）计数灌回 T3Seen。真源是事件文件本身，不另建账本。
+     * 失败=计数表为空（会话内新事件照常 bump），不拖垮启动。
+     */
+    private static void rebuildT3FromHistory() {
+        try {
+            Path dir = configDirCache;
+            if (dir == null) return;
+            String generation = FeedbackChannel.generationForConfigDir(dir);
+            List<FeedbackEvent> all = new ArrayList<>();
+            long cursor = 0L;
+            while (true) {
+                FeedbackChannel.Pull pull = new FeedbackChannel.Pull();
+                var page = FeedbackChannel.pull(dir.resolve("monitor/instrumentation.jsonl"),
+                        generation, cursor, null, pull).events;
+                if (page == null || page.isEmpty()) break;
+                all.addAll(page);
+                long next = pull.nextCursor;
+                if (next <= cursor) break;
+                cursor = next;
+                if (all.size() > 100_000) break;   // 防御：事件文件异常膨胀时不无限扫
+            }
+            int counted = T3Seen.rebuildFrom(all);
+            if (counted > 0) {
+                LearnerMonitor.publish("t3_rebuilt", Map.of(
+                        "generation", generation, "events_replayed", all.size(), "t2_counted", counted));
+            }
+        } catch (RuntimeException | NoClassDefFoundError e) {
+            // 重建失败 = 计数退化为会话内（诚实边界不变），不影响入队主流程
+            LearnerMonitor.publish("t3_rebuild_failed", Map.of("reason", safe(e)));
+        }
     }
 
     static boolean enabled() {
@@ -357,7 +392,7 @@ final class LearnerAutoIntake {
         return configDirCache.resolve(CURSOR_FILE);
     }
 
-    private static String safe(Exception e) {
+    private static String safe(Throwable e) {
         String s = String.valueOf(e.getMessage());
         return s.length() > 200 ? s.substring(0, 200) : s;
     }
