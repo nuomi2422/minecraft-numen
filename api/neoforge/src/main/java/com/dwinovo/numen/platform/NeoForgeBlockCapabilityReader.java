@@ -50,6 +50,10 @@ public final class NeoForgeBlockCapabilityReader implements IBlockCapabilityRead
         for (Direction d : Direction.values()) {
             collect(byHandler, level.getCapability(Capabilities.ItemHandler.BLOCK, pos, d), d.getName());
         }
+        // 2026-10-25 实机：同一个箱子按 7 个面各返回一个**新的** handler 包装对象，
+        // IdentityHashMap 去重失效 → 同一份格子在 dump 里出现 7 次（1 把锄头被读成 ×7，
+        // 9 个铁锭被读成 ×63），规划据此排链就全错了。所以按**内容相同**再合一次。
+        byHandler = dedupeByContents(byHandler);
         if (byHandler.isEmpty()) return;
         int idx = 0;
         for (Map.Entry<IItemHandler, List<String>> e : byHandler.entrySet()) {
@@ -121,6 +125,37 @@ public final class NeoForgeBlockCapabilityReader implements IBlockCapabilityRead
     }
 
     /** Record a non-null handler under the side that exposed it, de-duplicating by identity. */
+    /** 把"内容一模一样"的 handler 合成一个（sides 合并），用于 Face 各自 new 包装的加载器。 */
+    private static Map<IItemHandler, List<String>> dedupeByContents(Map<IItemHandler, List<String>> byHandler) {
+        Map<IItemHandler, List<String>> kept = new java.util.LinkedHashMap<>();
+        for (Map.Entry<IItemHandler, List<String>> e : byHandler.entrySet()) {
+            IItemHandler h = e.getKey();
+            IItemHandler same = null;
+            for (IItemHandler k : kept.keySet()) {
+                if (sameContents(h, k)) { same = k; break; }
+            }
+            if (same != null) {
+                kept.get(same).addAll(e.getValue());
+            } else {
+                kept.put(h, new ArrayList<>(e.getValue()));
+            }
+        }
+        return kept;
+    }
+
+    private static boolean sameContents(IItemHandler a, IItemHandler b) {
+        if (a.getSlots() != b.getSlots()) return false;
+        for (int i = 0; i < a.getSlots(); i++) {
+            ItemStack x = a.getStackInSlot(i);
+            ItemStack y = b.getStackInSlot(i);
+            if (x.isEmpty() != y.isEmpty()) return false;
+            if (x.isEmpty()) continue;
+            if (x.getCount() != y.getCount()) return false;
+            if (!itemId(x).equals(itemId(y))) return false;
+        }
+        return true;
+    }
+
     private static <T> void collect(Map<T, List<String>> byHandler, T handler, String side) {
         if (handler == null) return;
         byHandler.computeIfAbsent(handler, h -> new ArrayList<>()).add(side);

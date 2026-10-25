@@ -134,11 +134,28 @@ final class RddContainerMemory {
         return out.toString();
     }
 
+    /** 按 "items #N" 分段；内容签名相同的段只保留一份。 */
+    static String dedupeSections(String dump) {
+        String[] raw = dump.split("(?m)^items");
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < raw.length; i++) {
+            String section = i == 0 ? "" : raw[i];
+            String sig = section.replaceAll("\\(sides:[^)]*\\)", "").trim();
+            if (!seen.add(sig)) continue;
+            out.append(section);
+        }
+        return out.length() == 0 ? dump : out.toString();
+    }
+
     /** 从工具文本里抽出「物品 id × 数量」，按 id 汇总（同一物品可能占多个 slot）。 */
     static Map<String, Integer> parseSlotLines(String dump) {
         Map<String, Integer> counts = new LinkedHashMap<>();
         if (dump == null || dump.isBlank()) return counts;
-        Matcher m = SLOT_LINE.matcher(dump);
+        // 2026-10-25：加载器会按**每个面**各返回一个 handler 包装，同一个箱子因此在 dump 里
+        // 重复出现（1 把锄头读成 ×7、9 个铁锭读成 ×63）。读取侧已按内容去重，这里再兜一层：
+        // 把 "items #N …" 分段，**内容完全相同的段只算一次**（真正的双箱两半内容不同，不会误合）。
+        Matcher m = SLOT_LINE.matcher(dedupeSections(dump));
         while (m.find()) {
             int n;
             try {
