@@ -181,6 +181,27 @@ class LearnerAutoIntakeTest {
     }
 
     @Test
+    void generationChangeDoesNotDuplicateEnqueue() throws Exception {
+        // 2026-10-25 实机抓的：世界重载 → 新 generation → 游标归零 → 81 条历史重扫，
+        // 新 JVM 的内存幂等集是空的 → 同 8 条事件再次入队（e44 队列 15→21）。
+        // 修复=幂等集落盘（learner-enqueued.jsonl）。本用例模拟两次独立 JVM。
+        writeInstrumentation(tmp.resolve("monitor"), deathLine("ev-1", COMPANION));
+        assertEquals(1, LearnerAutoIntake.scanOnce());
+        assertEquals(1, queueForTest(COMPANION).size());
+
+        // —— 模拟重启 + 换存档代：内存全清，游标清零（新 generation 从 0 扫）——
+        setStatic("configDirCache", tmp.toAbsolutePath());
+        enqueuedKeys().clear();
+        cursors().clear();
+        // 注意：configDirCache 指向同一个 tmp，盘上的 journal 与游标文件都还在
+        assertEquals(0, LearnerAutoIntake.scanOnce(),
+                "盘上幂等日志挡住换代重扫——同一事件不得二次入队");
+        assertEquals(1, queueForTest(COMPANION).size());
+        assertTrue(java.nio.file.Files.isRegularFile(tmp.resolve("learner-enqueued.jsonl")),
+                "幂等日志必须落盘（否则下次重启又是空的）");
+    }
+
+    @Test
     void unreadableSourceReportsFailureAndDoesNotThrow() throws IOException {
         // instrumentation.jsonl 不存在：读失败 → 0 入队 + 不抛（增强旁路不许拖垮调用方）
         assertEquals(0, LearnerAutoIntake.scanOnce());

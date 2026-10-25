@@ -74,9 +74,20 @@ final class LearnerAutoIntake {
     /** （存档代际 → 游标字节）。只进内存，落盘见 {@link #loadCursor}/{@link #saveCursor}。 */
     private static final Map<String, Long> CURSORS = new ConcurrentHashMap<>();
 
-    /** 幂等键：入队成功的 memo_id 一律见过就跳（重放/重启都不重复入队）。 */
+    /**
+     * 幂等键：入队成功的 memo_id 一律见过就跳（重放/重启/**换存档代**都不重复入队）。
+     *
+     * <p>2026-10-25 实机抓到：只在内存里放这个集合挡不住「换代重扫」——每次世界重载
+     * 生成新 generation，游标按代归零，81 条历史全部重扫；新 JVM 的内存集合是空的，
+     * 于是同 8 条事件再次入队（e44 队列 15→21）。核准回执 Q4 说的「事件身份」
+     * 必须落盘才成立。存成 append-only 的 id 行文件（¦learner-enqueued.jsonl¦），
+     * 与游标同一目录、同一原子纪律；读取失败=按空集处理（宁可重复入队，
+     * 也不让观测面的损坏阻塞学习主流程——重复会被复盘的质量门看见并拒绝）。
+     */
     private static final java.util.Set<String> ENQUEUED = ConcurrentHashMap.newKeySet();
     private static final int MAX_ENQUEUED_KEYS = 4096;
+    /** 已入队 id 的持久日志（一行一个 JSON 对象 {"id":...}）。 */
+    private static final String ENQUEUED_JOURNAL = "learner-enqueued.jsonl";
 
     private static volatile boolean enabled = true;
     private static volatile long lastToggleCheck = -1L;
@@ -107,7 +118,50 @@ final class LearnerAutoIntake {
     static void install(Path configDir) {
         configDirCache = configDir;
         reloadToggle();
+        loadEnqueuedJournal();
         rebuildT3FromHistory();
+    }
+
+    /** 把盘上的入队 id 日志读回内存（一行一个 {"id":...}；坏行跳过不致命）。 */
+    private static void loadEnqueuedJournal() {
+        Path f = configDirCache == null ? null : configDirCache.resolve(ENQUEUED_JOURNAL);
+        if (f == null || !Files.isRegularFile(f)) return;
+        try (var reader = Files.newBufferedReader(f, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) continue;
+                try {
+                    String id = com.google.gson.JsonParser.parseString(line)
+                            .getAsJsonObject().get("id").getAsString();
+                    if (id != null && !id.isBlank()) ENQUEUED.add(id);
+                } catch (RuntimeException ignored) {
+                    // 坏行=跳过；这条事件最坏被重复入队，复盘质量门会看见
+                }
+            }
+        } catch (java.io.IOException ignored) {
+            // 读不到=空集（诚实方向：宁可重复，不阻塞）
+        }
+        if (ENQUEUED.size() > MAX_ENQUEUED_KEYS) trimEnqueuedKeys();
+    }
+
+    /** 入队成功后把 id 追加进盘上日志（失败只丢防重，不丢队列条目本身）。 */
+    private static void appendEnqueuedJournal(String memoId) {
+        Path f = configDirCache == null ? null : configDirCache.resolve(ENQUEUED_JOURNAL);
+        if (f == null) return;
+        try {
+            Files.createDirectories(f.getParent());
+            String nl = System.lineSeparator();
+            Files.writeString(f, "{\"id\":\"" + memoId + "\"}" + nl, StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        } catch (java.io.IOException ignored) {
+            // 日志写失败不回滚队列（队列条目本身还在，最坏是下次重扫重复）
+        }
+    }
+
+    private static void trimEnqueuedKeys() {
+        // 上限防膨胀：清空内存集（盘上日志仍在，但旧 id 不再防重——最坏重复入队，
+        // 质量门会看见；比让集合无限长更可接受）
+        ENQUEUED.clear();
     }
 
     /**
@@ -246,7 +300,7 @@ final class LearnerAutoIntake {
 
             String memoId = "ai-" + ev.eventId();
             if (!ENQUEUED.add(memoId)) { dupSkipped++; continue; }
-            if (ENQUEUED.size() > MAX_ENQUEUED_KEYS) ENQUEUED.clear();
+            if (ENQUEUED.size() > MAX_ENQUEUED_KEYS) trimEnqueuedKeys();
 
             StormGuard.Ruling storm = StormGuard.admit(companionId.toString(), fp, System.currentTimeMillis());
             if (!storm.allow()) { stormSuppressed++; continue; }
@@ -267,6 +321,7 @@ final class LearnerAutoIntake {
             }
             if (ok) {
                 enqueuedBy.merge(companionId, 1, Integer::sum);
+                appendEnqueuedJournal(memoId);   // 落盘防「换代重扫」重复入队
             } else {
                 queueFull++;
             }
