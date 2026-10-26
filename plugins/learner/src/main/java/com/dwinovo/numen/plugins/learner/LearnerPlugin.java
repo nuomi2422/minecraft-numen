@@ -242,7 +242,14 @@ public final class LearnerPlugin implements NumenPlugin {
         NumenApi api = numenApi;
         if (api == null || companionId == null || message == null || message.isBlank()) return false;
         try {
-            api.enqueueSystem(companionId, message);
+            com.dwinovo.numen.api.Delivery delivery = api.enqueueSystem(companionId, message);
+            // ★ A2（契约 §2/§3，2026-10-26 实测）：REJECTED = 不认识这个 UUID（不在本世界/已删）。
+            //   以前无条件 return true ⇒ 给上一世的同伴排队也算「已提醒」，e44 的 9 条僵尸 memo
+            //   因此霸占 nudge（review_nudge_sent 恒发 e44）。这里把「调用过」和「送出去了」分开。
+            if (delivery == com.dwinovo.numen.api.Delivery.REJECTED) {
+                LOG.info("[learner] 复盘提醒未送达（同伴不在本世界或不存在）: {}", companionId);
+                return false;
+            }
             return true;
         } catch (RuntimeException e) {
             LOG.warn("[learner] 复盘提醒发送失败（不影响主流程）: {}", e.toString());

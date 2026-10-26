@@ -184,6 +184,13 @@ public final class ExperiencePlugin implements NumenPlugin {
             }
         });
         numen.contributeState(companion -> {
+            // ★ A1（契约 §2/§4①，2026-10-26 实测）：unified 下经验已由
+            //   contributeExecutorKnowledge 的 <retrieved_knowledge role="executor"> 承担；
+            //   这里再印一遍旧 <experience> 目录 = 双通道（实测 82/83 条请求同一 ref 两处并存，
+            //   「同一条经验不会被注入两遍」的承诺没兑现）。legacy 行为逐字不变。
+            if (RetrievalPolicy.experienceRetrievalMode() == RetrievalPolicy.Mode.UNIFIED) {
+                return "";
+            }
             ExperienceMemory m = MEMORIES.get(companion);
             if (m == null) {
                 return "";
