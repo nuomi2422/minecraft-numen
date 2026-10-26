@@ -32,8 +32,10 @@ public final class TrajectorySlices {
 
     private static final long BEFORE_MS = 60_000L;
     private static final long AFTER_MS = 30_000L;
-    private static final int MAX_TOOL_ROWS = 6;
-    private static final int MAX_CHARS = 900;
+    // 2026-10-26：6 行/900 字只够看一个片段，自然任务常在死亡前有十几到二十几次调用；
+    // 提到 24 行/2400 字，仍小于复盘 prompt 的输入预算，但能覆盖"前置状态→动作→后置"整段。
+    private static final int MAX_TOOL_ROWS = 24;
+    private static final int MAX_CHARS = 2400;
 
     private TrajectorySlices() {}
 
@@ -69,10 +71,22 @@ public final class TrajectorySlices {
         if (id.startsWith("ai-")) return id.substring(3);
         if (id.startsWith("tf-")) {
             String snap = memo.snapshot() == null ? "" : memo.snapshot();
+            // 旧格式（中文键）：窗口=<first>..<last>
             int i = snap.indexOf("窗口=");
             if (i >= 0) {
                 int j = snap.indexOf("..", i);
                 if (j > i) return snap.substring(i + 3, j).trim();
+            }
+            // 现行格式（ToolFailureIntake.snapshotOf）：window_first=<first>, window_last=<last>
+            // ★ 2026-10-26 测试抓到：只认旧中文键时，所有 tf- memo 的 anchor 都为空，
+            //   轨迹切片整段缺席——B1 的自然工具失败永远没有轨迹。两种键都认。
+            i = snap.indexOf("window_first=");
+            if (i >= 0) {
+                int j = snap.indexOf(',', i);
+                String first = j > i ? snap.substring(i + "window_first=".length(), j)
+                        : snap.substring(i + "window_first=".length());
+                first = first.trim();
+                if (!first.isEmpty()) return first;
             }
         }
         return "";

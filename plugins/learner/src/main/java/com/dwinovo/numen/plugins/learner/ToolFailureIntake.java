@@ -66,6 +66,12 @@ final class ToolFailureIntake {
 
     private ToolFailureIntake() {}
 
+    /** 仅供离线单测：清掉静态窗口/游标，避免用例顺序互相污染。 */
+    static void resetForTest() {
+        WINDOWS.clear();
+        CURSORS.clear();
+    }
+
     /** 扫一遍 tools.jsonl 增量。返回本轮入队条数。 */
     static int scanOnce(Path configDir, Function<UUID, MemoQueue> queueOf) {
         if (configDir == null || queueOf == null) return 0;
