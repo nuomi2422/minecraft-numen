@@ -272,6 +272,21 @@ public final class PriorRound {
                                          com.dwinovo.numen.plugins.learner.core.RejectionFeedback rejections,
                                          String usageText,
                                          java.util.Map<String, java.util.List<com.dwinovo.numen.plugins.learner.core.RetrievalDecision.Hit>> hitsByMemo) {
+        return buildUserPrompt(memos, prior, rejections, usageText, hitsByMemo, java.util.Map.of());
+    }
+
+    /**
+     * 轨迹切片版（契约 §2）：每条 memo 下方附「前置状态 → 动作/工具结果 → 后置状态」。
+     *
+     * <p>切片由 {@link TrajectorySlices} 从现有 monitor 文件拼出（只读，不另造账本）；
+     * 锚点找不到时它返回“未找到（不编造）”，这里原样带进 prompt ——
+     * 让模型知道“证据缺”而不是“没发生”。
+     */
+    public static String buildUserPrompt(List<Memo> memos, Summary prior,
+                                         com.dwinovo.numen.plugins.learner.core.RejectionFeedback rejections,
+                                         String usageText,
+                                         java.util.Map<String, java.util.List<com.dwinovo.numen.plugins.learner.core.RetrievalDecision.Hit>> hitsByMemo,
+                                         java.util.Map<String, String> slicesByMemo) {
         StringBuilder user = new StringBuilder();
         user.append((prior == null ? Summary.none() : prior).promptBlock()).append('\n');
         if (rejections != null) {
@@ -288,6 +303,8 @@ public final class PriorRound {
         for (Memo m : batch) {
             user.append(m.toPromptBlock()).append('\n');
             user.append(retrievalBlock(hitsByMemo == null ? null : hitsByMemo.get(m.id()))).append('\n');
+            String slice = slicesByMemo == null ? "" : slicesByMemo.getOrDefault(m.id(), "");
+            if (!slice.isBlank()) user.append(slice).append('\n');
         }
         return user.toString();
     }

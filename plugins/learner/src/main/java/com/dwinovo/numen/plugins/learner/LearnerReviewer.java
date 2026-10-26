@@ -233,8 +233,17 @@ final class LearnerReviewer {
                         .lookupByText(cfgDir, cid, m.toPromptBlock()));
             }
         }
+        // 契约 §2：复盘吃轨迹切片。锚点从 memo id 解析（ai-<eventId> / tf-… 的窗口首事件）；
+        // 拼不出来就带「未找到（不编造）」，不让模型把缺失当成没发生。
+        java.util.Map<String, String> slicesByMemo = new java.util.LinkedHashMap<>();
+        if (memos != null) {
+            for (Memo m : memos) {
+                slicesByMemo.put(m.id(), com.dwinovo.numen.plugins.learner.core.TrajectorySlices
+                        .forMemo(cfgDir, companionId, m));
+            }
+        }
         String user = com.dwinovo.numen.plugins.learner.core.PriorRound.buildUserPrompt(
-                memos, prior, rejections, usageText, hitsByMemo);
+                memos, prior, rejections, usageText, hitsByMemo, slicesByMemo);
 
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");

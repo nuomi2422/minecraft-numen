@@ -221,6 +221,12 @@ final class LearnerAutoIntake {
             if (!enabled) return;
             if (gameTimeTicks <= 0 || gameTimeTicks % SCAN_INTERVAL_TICKS != 0) return;
             scanOnce();
+            // B1（契约 §4③）：普通工具失败的确定性采集（聚合后入同一个队列，不另造通道）
+            try {
+                ToolFailureIntake.scanOnce(configDirCache, queueResolver);
+            } catch (RuntimeException | LinkageError ignored) {
+                // 采集是增强旁路：它坏了不许影响 tick
+            }
             maybeNudgeReview();
         } catch (RuntimeException | java.io.IOError ignored) {
             // 自动入队是增强旁路：它坏了不许影响游戏主循环

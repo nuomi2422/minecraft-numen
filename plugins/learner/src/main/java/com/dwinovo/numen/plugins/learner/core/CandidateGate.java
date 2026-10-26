@@ -171,6 +171,9 @@ public final class CandidateGate {
             case "repeat_gather":
             case "recovery_failed":
             case "asset_mismatch":
+            // B1（契约 §4③）：普通工具失败经 ToolFailureIntake 聚合后的复盘单元。
+            // 聚合器已应用“同形态连败 3 次 + 成功即关窗”，这里只是让判定门认识这个类型。
+            case "tool_loop":
                 return Status.MATCH;
             case "resource_waste":
                 // 59 §4.2：不为琐碎单步入队。「 surplus gather stopped because minimum already met」
@@ -192,6 +195,7 @@ public final class CandidateGate {
             "repeat_gather", "采集步骤到达重试上限 = 这次没成",
             "recovery_failed", "死亡后恢复动作卡住 = 这次没成",
             "asset_mismatch", "声明的资产与背包实际不符 = 这次没成",
+            "tool_loop", "普通工具同一错误形态连续失败（B1 聚合后的复盘单元）",
             "resource_waste", "确实有超出最低需求的采集被丢弃（资源损失）");
 
     private static Trigger undecidable(String id, String name, String why) {

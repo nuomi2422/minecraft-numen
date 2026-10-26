@@ -122,8 +122,12 @@ public final class ExperiencePlugin implements NumenPlugin {
                 ExperienceMemory m = memory(companion);
                 // G8 诊断：源快照里有几条（provider 之前的那一层）
                 LOG.info("[expmem] snapshot size={}", ExperienceStoreRetrievalBridge.snapshot(m).size());
+                // ★ 2026-10-26（V-20261026-04 实测）：原来 1100 字符的硬上限只够装 1 条
+                //   （objective 先进必知区占预算，一条正文 ~500 就顶满）——新条目即使 TRIAL
+                //   也永远被 max_chars 截掉，等于「学了一条，永远轮不到它上场」。
+                //   提到 2200：objective(~300) + 2 条正文(~500×2) 可同时在场，仍是有界预算。
                 ExperienceStoreRetrievalBridge.Rendered rendered =
-                        ExperienceStoreRetrievalBridge.render(m, objective, 6, 1100,
+                        ExperienceStoreRetrievalBridge.render(m, objective, 6, 2200,
                                 com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
                 // ★ 2026-10-25（我实测发现）：上面这条是**执行视图**（role=EXECUTOR，每轮都发），
                 //   它用的是裸 rendered —— 指纹只在规划路径（ExperiencePlanningRouter）补过，
