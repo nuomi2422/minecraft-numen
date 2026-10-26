@@ -4,6 +4,7 @@ import com.dwinovo.numen.plugins.worldstate.provider.EntityCountWorldProvider;
 import com.dwinovo.numen.plugins.worldstate.provider.EnvironmentWorldProvider;
 import com.dwinovo.numen.worldstate.core.freshness.TopicFreshnessPolicy;
 import com.dwinovo.numen.worldstate.core.json.ObservationJson;
+import com.dwinovo.numen.worldstate.core.model.WorldIdentity;
 import com.dwinovo.numen.worldstate.core.observation.Observation;
 import com.dwinovo.numen.worldstate.core.provider.ProviderRegistry;
 import com.dwinovo.numen.worldstate.core.query.QueryService;
@@ -13,6 +14,7 @@ import com.dwinovo.numen.worldstate.core.refresh.RefreshService;
 import com.dwinovo.numen.worldstate.core.request.ObservationRequest;
 import com.dwinovo.numen.worldstate.core.store.InMemoryObservationStore;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.world.level.storage.LevelResource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -90,16 +92,30 @@ public final class WorldStateService {
                 server == null ? 0L : server.getTickCount(), System.currentTimeMillis());
     }
 
-    /** 世界存档标识——观测命名空间的一部分，两个存档不能互相串数据。 */
+    /**
+     * 世界存档标识——观测命名空间的一部分，两个存档不能互相串数据。
+     *
+     * <p>优先存档目录名：exp 副本目录是 `exp-xxx`，但 level.dat 的 LevelName 常仍是
+     * `live`；只按显示名分会把副本混进同一命名空间。目录名取不到才回退显示名。
+     */
     public static String worldId(MinecraftServer server) {
         if (server == null) return "unknown";
+        String saveDir = null;
         try {
-            String name = server.getWorldData().getLevelName();
-            if (name != null && !name.isBlank()) return name;
+            Path root = server.getWorldPath(LevelResource.ROOT);
+            if (root != null && root.getFileName() != null) {
+                saveDir = root.getFileName().toString();
+            }
         } catch (RuntimeException ignored) {
-            // 拿不到名字也要有一个稳定命名空间，回退到 unknown，而不是崩。
+            // 目录名取不到就回退显示名，不崩。
         }
-        return "unknown";
+        String levelName = null;
+        try {
+            levelName = server.getWorldData().getLevelName();
+        } catch (RuntimeException ignored) {
+            // 显示名也取不到时由 WorldIdentity 回退 unknown。
+        }
+        return WorldIdentity.of(saveDir, levelName);
     }
 
     private void load() {
