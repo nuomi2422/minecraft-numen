@@ -19,6 +19,11 @@ public record McCollectionContext(MinecraftServer server, String worldId, long g
         implements CollectionContext {
 
     public ServerLevel levelOf(String dimension) {
+        return levelOf(server, dimension);
+    }
+
+    /** 按维度 id 取已加载的 {@link ServerLevel}；未知/非法/未加载一律 null，不强制加载。 */
+    public static ServerLevel levelOf(MinecraftServer server, String dimension) {
         if (server == null || dimension == null || dimension.isBlank()) return null;
         try {
             ResourceLocation id = ResourceLocation.parse(dimension);

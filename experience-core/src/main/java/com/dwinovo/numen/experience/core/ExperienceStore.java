@@ -627,6 +627,7 @@ public final class ExperienceStore {
         return switch (p) {
             case "tooldefect" -> ExperienceType.TOOL_DEFECT;
             case "worldrelation" -> ExperienceType.WORLD_RELATION;
+            case "worldmechanic" -> ExperienceType.WORLD_MECHANIC;
             default -> null;
         };
     }

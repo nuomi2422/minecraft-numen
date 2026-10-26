@@ -44,7 +44,7 @@ final class ExperienceLearnTool implements NumenTool {
     @Override
     public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .enumStr("type", "Experience kind", "EXECUTION", "FAILURE", "TOOL_DEFECT", "WORLD_RELATION", "POLICY")
+                .enumStr("type", "Experience kind", "EXECUTION", "FAILURE", "TOOL_DEFECT", "WORLD_RELATION", "WORLD_MECHANIC", "POLICY")
                 .string("title", "Short experience title.")
                 .string("description", "What happened / the phenomenon.")
                 .optionalString("rationale", "Why this is worth keeping.")
@@ -82,7 +82,7 @@ final class ExperienceLearnTool implements NumenTool {
                 type = ExperienceType.valueOf(in.type().toUpperCase());
             } catch (IllegalArgumentException ex) {
                 reply.accept(TaskResult.fail("unknown type: " + in.type()
-                        + " (EXECUTION|FAILURE|TOOL_DEFECT|WORLD_RELATION|POLICY)").toJson());
+                        + " (EXECUTION|FAILURE|TOOL_DEFECT|WORLD_RELATION|WORLD_MECHANIC|POLICY)").toJson());
                 return;
             }
 

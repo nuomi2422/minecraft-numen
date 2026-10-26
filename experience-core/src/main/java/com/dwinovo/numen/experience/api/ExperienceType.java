@@ -13,6 +13,8 @@ public enum ExperienceType {
     TOOL_DEFECT,
     /** 物品、地点、前置条件之间的世界关系。 */
     WORLD_RELATION,
+    /** 世界机制：难度/规则/时间/玩家等世界侧的因果，不是一次失败，也不是一条行动策略。 */
+    WORLD_MECHANIC,
     /** 遇到某类情况时应采用的判断规则（“铁律”式经验）。 */
     POLICY
 }

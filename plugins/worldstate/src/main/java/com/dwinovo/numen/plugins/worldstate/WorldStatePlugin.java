@@ -2,6 +2,8 @@ package com.dwinovo.numen.plugins.worldstate;
 
 import com.dwinovo.numen.api.NumenApi;
 import com.dwinovo.numen.api.NumenPlugin;
+import com.dwinovo.numen.plugins.worldstate.probe.ProbeService;
+import com.dwinovo.numen.plugins.worldstate.tool.WorldProbeTool;
 import com.dwinovo.numen.plugins.worldstate.tool.WorldStateTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +23,7 @@ public final class WorldStatePlugin implements NumenPlugin {
         WorldStateService service = new WorldStateService(numen.configDir());
         WorldStateMod.bindService(service);
         numen.registerTool(new WorldStateTool(service));
-        LOG.info("[worldstate] registered; store={} topics={}", service.file(), service.topics());
+        numen.registerTool(new WorldProbeTool(new ProbeService()));
+        LOG.info("[worldstate] registered; store={} topics={} + world_probe catalog", service.file(), service.topics());
     }
 }

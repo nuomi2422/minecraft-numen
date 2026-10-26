@@ -61,6 +61,7 @@ public final class WorldStateTool implements NumenTool {
                 + "topic=entities —— 范围内的动物/实体计数，需要 x1/y1/z1/x2/y2/z2；可选 entity_type"
                 + "（如 minecraft:sheep）或 category=passive/all。区块未加载不强制加载，也不误报 0。\n"
                 + "topic=blocks —— 预留（尚无采集器，refresh 会明确返回 NO_PROVIDER）。\n"
+                + "需要难度/游戏模式/玩家列表/光照/自身状态等诊断事实时，用 world_probe action=list。\n"
                 + "典型用法：先 refresh 采集，再 read 读取；要求交易/取物/完工前再 refresh 一次。";
     }
 

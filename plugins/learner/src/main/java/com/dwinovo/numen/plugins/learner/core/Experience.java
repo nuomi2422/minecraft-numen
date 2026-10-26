@@ -81,7 +81,7 @@ public record Experience(
      * <b>直接读 experience-core 源文件</b>做集合相等断言 —— 那边改枚举值，这边会红。</p>
      */
     public static final List<String> EXPERIENCE_TYPES = List.of(
-            "EXECUTION", "FAILURE", "TOOL_DEFECT", "WORLD_RELATION", "POLICY");
+            "EXECUTION", "FAILURE", "TOOL_DEFECT", "WORLD_RELATION", "WORLD_MECHANIC", "POLICY");
 
     /** 每个分类的判据（给 prompt 用，也是给「它到底分没分对」的人工核对用）。 */
     private static final Map<String, String> TYPE_RULES = Map.of(
@@ -89,6 +89,7 @@ public record Experience(
             "FAILURE", "讲「为什么这次没成」：失败的原因与对策",
             "TOOL_DEFECT", "讲「工具/字段本身有问题」：前提写错、字段失效、能力缺失",
             "WORLD_RELATION", "讲「世界里的关系」：物品、生物、地形彼此怎么互相影响",
+            "WORLD_MECHANIC", "讲「世界规则本身」：难度/游戏规则/时间/玩家状态如何改变结果",
             "POLICY", "讲「以后必须怎么做」：给同伴的硬约束、铁律、必须先问主人");
 
     public Experience {

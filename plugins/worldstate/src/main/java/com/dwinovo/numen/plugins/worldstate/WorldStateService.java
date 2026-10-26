@@ -91,7 +91,7 @@ public final class WorldStateService {
     }
 
     /** 世界存档标识——观测命名空间的一部分，两个存档不能互相串数据。 */
-    static String worldId(MinecraftServer server) {
+    public static String worldId(MinecraftServer server) {
         if (server == null) return "unknown";
         try {
             String name = server.getWorldData().getLevelName();
