@@ -22,6 +22,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
@@ -938,9 +939,56 @@ Map<String, Object> deathData = new LinkedHashMap<>();
             // reason 保持老语义（starvation 优先，事件选择逻辑 publishAt 依赖它），
             // 其余情况改用归类结果 —— 这样 reason 自己也变得可聚合了。
             deathData.put("reason", starving ? "starvation" : deathKind);
-            deathData.put("context", Map.of(
-                    "lastObservedInventory", lastInventory(companionId),
-                    "invalidatedEntries", lost));
+            // ★ 2026-10-26（V-20261026-07 缺口）：死亡上下文原来只有背包/失效条目，
+            //   复盘根本看不到“这是夜里”——于是经验只能写“低血/无甲”，写不出“夜间/没睡”。
+            //   这里补时间与环境事实（只读、从死亡瞬间的实体取，不推断）。
+            long dayTime = Math.floorMod(body.level().getDayTime(), 24_000L);
+            boolean isNight = dayTime >= 13_000L && dayTime < 23_000L;
+            var deathPos = body.blockPosition();
+            // 床锚点：未绑床时原版可能返回 BlockPos.ZERO 哨兵，必须显式挡掉。
+            BlockPos respawnBed = body.getRespawnPosition();
+            boolean hasBed = respawnBed != null && !respawnBed.equals(BlockPos.ZERO);
+            String bedDimension = "none";
+            double bedDistance = -1.0;
+            int bedX = -1, bedY = -1, bedZ = -1;
+            if (hasBed) {
+                var bedDimKey = body.getRespawnDimension();
+                bedDimension = bedDimKey == null ? "unknown" : bedDimKey.location().toString();
+                bedX = respawnBed.getX();
+                bedY = respawnBed.getY();
+                bedZ = respawnBed.getZ();
+                if (bedDimension.equals(body.level().dimension().location().toString())) {
+                    bedDistance = Math.sqrt(deathPos.distSqr(respawnBed));
+                }
+            }
+            ServerLevel deathLevel = body.serverLevel();
+            int blockLight = -1;
+            int skyLight = -1;
+            boolean canSeeSky = false;
+            if (deathLevel != null) {
+                blockLight = deathLevel.getBrightness(LightLayer.BLOCK, deathPos);
+                skyLight = deathLevel.getBrightness(LightLayer.SKY, deathPos);
+                canSeeSky = deathLevel.canSeeSky(deathPos);
+            }
+            deathData.put("context", Map.ofEntries(
+                    Map.entry("lastObservedInventory", lastInventory(companionId)),
+                    Map.entry("invalidatedEntries", lost),
+                    Map.entry("dayTime", dayTime),
+                    Map.entry("isNight", isNight),
+                    Map.entry("dimension", body.level().dimension().location().toString()),
+                    Map.entry("posX", deathPos.getX()),
+                    Map.entry("posY", deathPos.getY()),
+                    Map.entry("posZ", deathPos.getZ()),
+                    Map.entry("hasBed", hasBed),
+                    Map.entry("bedDimension", bedDimension),
+                    Map.entry("bedX", bedX),
+                    Map.entry("bedY", bedY),
+                    Map.entry("bedZ", bedZ),
+                    Map.entry("bedDistance", bedDistance),
+                    Map.entry("blockLight", blockLight),
+                    Map.entry("skyLight", skyLight),
+                    Map.entry("canSeeSky", canSeeSky),
+                    Map.entry("sleeping", body.isSleeping())));
             RddInstrumentation.publishAt(starving ? RddInstrumentation.STARVATION_DEATH : RddInstrumentation.DEATH,
                     deathData, deathTick);
             // P2.1：把死亡瞬间身上"值得记住"的资产记为 LOST（保留最后位置），供重规划判断"能否回去取"。
