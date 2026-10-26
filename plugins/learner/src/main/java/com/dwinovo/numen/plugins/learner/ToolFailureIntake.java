@@ -98,6 +98,11 @@ final class ToolFailureIntake {
             String tool = str(d, "tool");
             String cid = str(d, "companion_id");
             String result = str(d, "result");
+            // ★★ 2026-10-26 实机抓到污染：exp-runner / 外部 MCP 的停机调用也会落 tool_result
+            //   （call_id=mcp-…，例如每轮结束的 task_stop / rdd_standby），它们不是同伴的决策。
+            //   之前 B1 的唯一一条 memo 就是由三轮停机调用“三连败”拼出来的假事件。
+            //   只采同伴自己的调用（call_…）；外部控制面一律不进学习。
+            if (str(d, "tool_call_id").startsWith("mcp-")) continue;
             // result 为空不算“没数据”：本地工具的成败在 data.success 上（见下）。
             if (tool.isBlank() || cid.isBlank() || (result.isBlank() && !d.has("success"))) continue;
             // 两种落点都要认：身体工具把结果写在 result（二次编码 JSON）；
