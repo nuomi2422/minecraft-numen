@@ -93,7 +93,14 @@ public final class TrajectorySlices {
     }
 
     private static long anchorTime(Path configDir, String eventId) {
-        Path f = configDir.resolve("monitor/instrumentation.jsonl");
+        long t = timeFrom(configDir.resolve("monitor/instrumentation.jsonl"), eventId);
+        if (t >= 0) return t;
+        // B1 的 tf- memo 的 window_first 是 **tools.jsonl** 的 event_id（tools-...），
+        // 不是 instrumentation 事件。只查 instrumentation 会把整段轨迹判成“未找到”。
+        return timeFrom(configDir.resolve("monitor/tools.jsonl"), eventId);
+    }
+
+    private static long timeFrom(Path f, String eventId) {
         if (!Files.isRegularFile(f)) return -1;
         try {
             for (String line : Files.readAllLines(f, StandardCharsets.UTF_8)) {

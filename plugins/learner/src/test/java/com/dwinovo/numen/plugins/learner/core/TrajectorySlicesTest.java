@@ -42,15 +42,15 @@ class TrajectorySlicesTest {
     @Test
     void tfAnchorUsesWindowFirstEvent() throws Exception {
         Instant t = Instant.parse("2026-10-26T10:00:00Z");
-        writeInstrumentation("instr-2", t);
+        Files.createDirectories(dir.resolve("monitor"));
         Files.writeString(dir.resolve("monitor/tools.jsonl"),
-                tool(t, "craft", false, "3x3 recipe") + "\n", StandardCharsets.UTF_8);
+                tool(t, "tools-2", "craft", false, "3x3 recipe") + "\n", StandardCharsets.UTF_8);
 
         String text = TrajectorySlices.forMemo(dir, null,
-                new Memo("tf-craft-abc-instr-2", "p", "tool_failure", "t",
-                        "items=1, effects=0, tool=craft, class=craft_needs_table, window_first=instr-2, window_last=instr-2", 0L));
+                new Memo("tf-craft-abc-tools-2", "p", "tool_failure", "t",
+                        "items=1, effects=0, tool=craft, class=craft_needs_table, window_first=tools-2, window_last=tools-2", 0L));
 
-        assertTrue(text.contains("锚点 instr-2"), text);
+        assertTrue(text.contains("锚点 tools-2"), text);
         assertTrue(text.contains("craft"), text);
     }
 
@@ -81,8 +81,12 @@ class TrajectorySlicesTest {
     }
 
     private static String tool(Instant t, String tool, boolean ok, String msg) {
+        return tool(t, "tools-" + tool, tool, ok, msg);
+    }
+
+    private static String tool(Instant t, String eventId, String tool, boolean ok, String msg) {
         String result = "{\"success\":" + ok + ",\"message\":\"" + msg + "\"}";
-        return "{\"type\":\"tool_result\",\"timestamp\":\"" + t
+        return "{\"event_id\":\"" + eventId + "\",\"type\":\"tool_result\",\"timestamp\":\"" + t
                 + "\",\"data\":{\"companion_id\":\"c1\",\"tool\":\"" + tool
                 + "\",\"tool_call_id\":\"call_1\",\"result\":\"" + result.replace("\"", "\\\"") + "\"}}";
     }
