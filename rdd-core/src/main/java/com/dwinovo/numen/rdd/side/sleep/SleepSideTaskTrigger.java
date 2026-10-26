@@ -14,6 +14,17 @@ public final class SleepSideTaskTrigger implements SideTaskTrigger {
     public static final long TRIGGER_DAY_TIME = 11_800L;
     public static final long WINDOW_END_DAY_TIME = 23_000L;
 
+    /** 可逆开关（2026-10-26）：学习实验需要“夜里不睡、被怪打死”的自然事件。 */
+    private static volatile boolean enabled = true;
+
+    public static void setEnabled(boolean v) {
+        enabled = v;
+    }
+
+    public static boolean enabled() {
+        return enabled;
+    }
+
     @Override
     public String typeId() {
         return SleepSideTaskType.TYPE_ID;
@@ -21,6 +32,9 @@ public final class SleepSideTaskTrigger implements SideTaskTrigger {
 
     @Override
     public boolean fires(Context ctx) {
+        if (!enabled) {
+            return false;
+        }
         if (!ctx.hasDayNightCycle()) {
             return false;
         }

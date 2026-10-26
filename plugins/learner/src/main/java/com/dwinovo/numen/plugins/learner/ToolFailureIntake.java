@@ -52,7 +52,9 @@ final class ToolFailureIntake {
         int count;
         String firstId = "";
         String lastId = "";
+        String cls = "";
         long firstMs;
+        long lastMs;
         final List<String> samples = new ArrayList<>();
     }
 
@@ -124,27 +126,34 @@ final class ToolFailureIntake {
             }
             String toolKey = cid + "|" + tool;
             if (ok) {
-                // 成功 = 这个工具的失败窗口全部关闭（失败→成功闭环收束，不把后来的成功算成教训）
-                WINDOWS.keySet().removeIf(k -> k.startsWith(toolKey + "|"));
+                // ★ 2026-10-26 实机改：原来“同工具一次成功就清空全部窗口”，结果
+                //   craft 这类高频工具中间成功一次（做了别的东西）就把失败模式抹平，
+                //   永远凑不到阈值。改为：成功不抹窗，窗口按 TTL 过期（见下）。
                 continue;
             }
             long ts = tsOf(o);
             // 新鲜度闸：首次扫描（游标 0）会把整份历史读一遍 —— 只聚合最近 30 分钟的失败，
             // 防「开机就把历史失败一次性灌进队列」。更老的失败仍计入扫描量，不参与窗口。
-            if (ts < System.currentTimeMillis() - 30L * 60L * 1000L) continue;
+            long now = System.currentTimeMillis();
+            if (ts < now - 30L * 60L * 1000L) continue;
+            // 窗口 TTL：>30 分钟没再出现的失败模式作废（替代“成功即清窗”那条被证伪的规则）
+            WINDOWS.entrySet().removeIf(en -> en.getValue().lastMs > 0 && now - en.getValue().lastMs > 30L * 60L * 1000L);
             String msg = messageOf(result);
             if (msg.isBlank()) msg = "(local tool failed; no message)";
-            String fp = digest(tool + "|" + norm(msg)).substring(0, 8);
+            String cls = errorClass(tool, msg);
+            String fp = digest(tool + "|" + cls).substring(0, 8);
             String key = toolKey + "|" + fp;
             String eventId = str(o, "event_id");
             Win w = WINDOWS.computeIfAbsent(key, k -> {
                 Win n = new Win();
                 n.firstMs = ts;
                 n.firstId = eventId;
+                n.cls = cls;
                 return n;
             });
             w.count++;
             w.lastId = eventId;
+            w.lastMs = ts;
             if (w.samples.size() < MAX_SAMPLES) w.samples.add(clip(msg, 120));
             if (w.count < THRESHOLD) continue;
 
@@ -153,7 +162,7 @@ final class ToolFailureIntake {
                     "工具 " + tool + " 连续执行失败 " + w.count + " 次（同一错误形态，不是参数被拒）：" + clip(msg, 160),
                     "tool_failure",
                     String.join(" ｜ ", w.samples),
-                    "窗口=" + w.firstId + ".." + w.lastId + " 同伴=" + cid + " 工具=" + tool + " 首次=" + w.firstMs,
+                    snapshotOf(configDir, cid, tool, w),
                     System.currentTimeMillis());
             boolean appended;
             try {
@@ -183,6 +192,38 @@ final class ToolFailureIntake {
             LearnerMonitor.publish("tool_failure_intake", ev);
         }
         return memos;
+    }
+
+    /**
+     * 环境快照（可被质量门 Q1 解析：逗号分隔的 ASCII key=value）。
+     * 之前写成“窗口=… 同伴=…”——中文键+空格，Q1 的 kv 解析读不出任何事实，整条被判 REJECT。
+     * items/effects 取该同伴最近一条 companion_state；读不到就写 -1（不当 0 冒充空背包）。
+     */
+    private static String snapshotOf(Path configDir, String cid, String tool, Win w) {
+        int items = -1, effects = -1;
+        Path state = configDir == null ? null : configDir.resolve("monitor/state.jsonl");
+        if (state != null && Files.isRegularFile(state)) {
+            try {
+                List<String> lines = Files.readAllLines(state, StandardCharsets.UTF_8);
+                for (int i = lines.size() - 1; i >= 0 && i > lines.size() - 400; i--) {
+                    JsonObject o;
+                    try {
+                        o = JsonParser.parseString(lines.get(i)).getAsJsonObject();
+                    } catch (RuntimeException e) {
+                        continue;
+                    }
+                    if (!"companion_state".equals(str(o, "type"))) continue;
+                    JsonObject d = o.has("data") && o.get("data").isJsonObject() ? o.getAsJsonObject("data") : null;
+                    if (d == null || !cid.equals(str(d, "companion_id"))) continue;
+                    items = d.has("items") ? d.get("items").getAsInt() : -1;
+                    effects = d.has("effects") ? d.get("effects").getAsInt() : -1;
+                    break;
+                }
+            } catch (IOException ignored) {
+            }
+        }
+        return "items=" + items + ", effects=" + effects + ", tool=" + tool
+                + ", class=" + w.cls + ", window_first=" + w.firstId + ", window_last=" + w.lastId;
     }
 
     // ── 解析工具 ─────────────────────────────────────────────
@@ -228,12 +269,32 @@ final class ToolFailureIntake {
         }
     }
 
+    /**
+     * 错误类别归一（2026-10-26 实机）：同一类失败的消息里嵌了物品名/坐标/数量，
+     * 直接按文本会拆成不同窗口（"wooden_pickaxe is a 3x3 recipe…" vs "stone_pickaxe …"）。
+     * 这里抽"类别"，让同一种失败合并；抽不出类别才退回文本指纹。
+     */
+    private static String errorClass(String tool, String msg) {
+        String m = msg == null ? "" : msg.toLowerCase(java.util.Locale.ROOT);
+        // 见调用处：craft 的失败原因多样（缺材料/缺工作台），但对“连续 craft 失败”这个
+        // 学习单元来说它们是同一类——统一归类，避免被物品名/原因拆成不同窗口。
+        if ("craft".equals(tool)) return "craft_failure";
+        if (m.isEmpty()) return "empty";
+        if (m.contains("is a 3x3 recipe") || m.contains("crafting table within reach")) return "craft_needs_table";
+        if (m.contains("not enough materials")) return "craft_missing_materials";
+        if (m.contains("requires") && (m.contains("pickaxe") || m.contains("tool"))) return "tool_tier";
+        return norm(msg);
+    }
+
     /** 归一化：只留字母数字与少量分隔，防止同一错误的措辞细节（坐标/数量）拆成不同窗口。 */
     private static String norm(String s) {
         if (s == null) return "";
         String t = s.toLowerCase(java.util.Locale.ROOT).replaceAll("[0-9]+", "#");
         t = t.replaceAll("[^a-z#\\u4e00-\\u9fa5]+", "");
-        return t.length() > 80 ? t.substring(0, 80) : t;
+        // ★ 2026-10-26 实机：craft 失败的尾部（Nearest one is at 158,63,… / None within 16 blocks）
+        //   会把同一条“需要工作台”的失败拆成不同窗口，永远凑不到阈值。截短到 48 字符，
+        //   只保留错误类别前缀；代价是“缺材料 A”与“缺材料 B”会合并成同一类，可接受。
+        return t.length() > 48 ? t.substring(0, 48) : t;
     }
 
     private static String digest(String s) {

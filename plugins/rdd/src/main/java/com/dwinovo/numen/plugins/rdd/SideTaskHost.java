@@ -63,6 +63,24 @@ final class SideTaskHost {
 
     static void setup(Path configDir) {
         sideDir = configDir == null ? null : configDir.resolve("rdd-side");
+        // ★ 可逆开关（2026-10-26）：config/numen/side-tasks.json 的 "sleep": false 可暂停睡觉支线。
+        //   缺文件/坏文件 = 保持默认开（不因读不到就悄悄改行为）。
+        try {
+            if (configDir != null) {
+                Path f = configDir.resolve("side-tasks.json");
+                if (java.nio.file.Files.isRegularFile(f)) {
+                    String raw = java.nio.file.Files.readString(f, java.nio.charset.StandardCharsets.UTF_8);
+                    var o = com.google.gson.JsonParser.parseString(raw).getAsJsonObject();
+                    if (o.has("sleep") && o.get("sleep").isJsonPrimitive()) {
+                        boolean on = o.get("sleep").getAsBoolean();
+                        SleepSideTaskTrigger.setEnabled(on);
+                        LOG.info("[rdd-side] sleep side task enabled={} (from side-tasks.json)", on);
+                    }
+                }
+            }
+        } catch (RuntimeException | java.io.IOException ex) {
+            LOG.warn("[rdd-side] side-tasks.json 读取失败，保持默认（sleep=on）: {}", ex.toString());
+        }
         restore();
     }
 
