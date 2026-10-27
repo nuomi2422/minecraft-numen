@@ -583,6 +583,9 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 2 次死时正在吃东西 —— 上下文里此前没有"你现在有危险"这条事实，于是轮询比活命优先。
         // 只读、只陈述、有危险才出现；不改任何判定（动作归执行 AI）。
         String dangerBlock = RddDangerFacts.blockFor(RddCompanionBody.get(companionId));
+        // 2026-10-28（主人点名的两条支线提醒）：装备没穿完 / 该吃东西了。
+        // 与 danger 同口径：只读世界、只陈述事实与现成动作（equip_item / eat），不硬派活。
+        String needsBlock = RddNeedsFacts.blockFor(RddCompanionBody.get(companionId));
         String worldAssets = RddAssetContext.render(assets(companionId), 1200);
         // 容器记忆**独立成块**追加：它不依赖 <rdd> 包装是否存在（无链时也要看得见"箱子里有什么"）。
         StringBuilder merged = new StringBuilder(rddContext == null ? "" : rddContext);
@@ -614,6 +617,12 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!dangerBlock.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(dangerBlock);
+        }
+        // 装备/吃饭提示放在 danger 之后、最后一块：它们都是"现在就能做的一件小事"，
+        // 挨着模型说话的位置放，才更容易被立刻执行。
+        if (!needsBlock.isEmpty()) {
+            if (merged.length() > 0) merged.append("\n");
+            merged.append(needsBlock);
         }
         return merged.toString();
     }
