@@ -120,6 +120,19 @@ public final class TaskChain {
     /** 凭据流水号（链内单调递增，只用于生成 value；不持久化）。 */
     private long safePointSeq;
 
+    /**
+     * 链实例身份（75 号 §15.2 chainInstanceId 的最小落地，2026-10-27）。
+     *
+     * <p><b>为什么 goalId 不够</b>：goalId 是**内容**身份（同一段目标文本 → 同一个 id），
+     * 同伴重提同一目标会得到两个 goalId 相同的链 —— 恢复支线的恢复令牌、协商回执的
+     * 消费者校验、跨轮对账都分不清「这是第几次提交」。
+     *
+     * <p><b>生命周期</b>：构造时分配一次，随 {@link #toJson}/{@link #fromJson} 活过重启；
+     * 旧存档（无此字段）读盘当场分配（75 号 §15.8 的迁移规则：不伪造历史，但往后稳定）。
+     * <b>本批只加读口与快照可见性，不改任何既有调用点</b>——消费侧（协商/恢复/对账）后续批接。
+     */
+    private String chainInstanceId;
+
 
     public TaskChain(Goal goal) {
         this(goal, Set.of());
@@ -128,6 +141,7 @@ public final class TaskChain {
     /** @param satisfiedStageKeys 历史已完成的阶段键集合（归一键）；命中一级跳过。空集等价旧构造。 */
     public TaskChain(Goal goal, Set<String> satisfiedStageKeys) {
         this.goal = Objects.requireNonNull(goal);
+        this.chainInstanceId = UUID.randomUUID().toString();   // §15.2：每次真正建链分配一次
         for (PrimaryGoal primary : goal.primaryGoals()) for (Subtask subtask : primary.subtasks()) statuses.put(subtask.id(), SubtaskStatus.PENDING);
         if (satisfiedStageKeys != null) {
             for (PrimaryGoal primary : goal.primaryGoals()) {
@@ -149,6 +163,9 @@ public final class TaskChain {
     }
     public Goal goal() { return goal; }
     public synchronized PrimaryGoalStatus primaryStatus() { return primaryStatus; }
+
+    /** 链实例身份（见字段注释；只读口，本批无消费者，监测台从 snapshot 读）。 */
+    public synchronized String chainInstanceId() { return chainInstanceId; }
 
     /** 当前计划代次（只增）。生成二级 id 时拼上它即可保证跨轮次唯一。 */
     public synchronized int planRevision() { return planRevision; }
@@ -1235,6 +1252,7 @@ public final class TaskChain {
         }
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("goalId", goal.id());
+        view.put("chainInstanceId", chainInstanceId);   // §15.2：链实例身份进快照（监测台对账读数口）
         view.put("description", goal.description());
         view.put("satisfiedStages", List.copyOf(satisfiedStages));
         view.put("primaryStatus", primaryStatus.name());
@@ -1288,6 +1306,8 @@ public final class TaskChain {
         o.addProperty("primaryIndex", primaryIndex);
         o.addProperty("subtaskIndex", subtaskIndex);
         o.addProperty("planRevision", planRevision);
+        // §15.2 链实例身份随链持久化（重启后还是同一条链；读盘缺失即当场分配，见字段注释）
+        o.addProperty("chainInstanceId", chainInstanceId);
         o.addProperty("primaryStatus", primaryStatus.name());
         o.addProperty("lastStartedAtMillis", lastStartedAtMillis);
         // G3b：安全状态版本与陈旧结果计数随链持久化（判据要活得过重启）
@@ -1337,6 +1357,11 @@ public final class TaskChain {
         // 所以从磁盘上**实际存在的二级 id 反推一个下限**（见 adoptRevisionFromIds）。
         chain.planRevision = o.has("planRevision") ? o.get("planRevision").getAsInt() : 0;
         chain.adoptRevisionFromIds();
+        // §15.2 旧存档首次补链实例身份：读到就用（同一条链跨重启稳定）；
+        // 没有（老链）当场分配 —— 不伪造历史（老链本来就没这个概念），但往后稳定。
+        chain.chainInstanceId = o.has("chainInstanceId") && !o.get("chainInstanceId").isJsonNull()
+                ? o.get("chainInstanceId").getAsString()
+                : UUID.randomUUID().toString();
         chain.primaryStatus = PrimaryGoalStatus.valueOf(o.get("primaryStatus").getAsString());
         if (o.has("skipReasons") && o.get("skipReasons").isJsonObject()) {
             // 全量载入（不做加载期过滤）：skipReason 指向非 SKIPPED/未知二级属于损坏数据，
