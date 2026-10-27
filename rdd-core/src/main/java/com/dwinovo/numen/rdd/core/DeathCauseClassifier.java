@@ -169,6 +169,38 @@ public final class DeathCauseClassifier {
     private static final java.util.regex.Pattern KILLED_BY =
             java.util.regex.Pattern.compile("被(.+?)(?:杀死|打死|射杀|炸死|烧死|淹死|摔死)");
 
+    // ── 2026-10-27（D-04）：最后伤害来源兜底 ────────────────────────────────
+    //
+    // 实测缺口：最近 3 天 52 次死亡里 8 次归因 unknown，原始数据是
+    //   deathCauseId="genericKill" / deathCauseMsg="RDD was killed"
+    // —— 原版在拿不到凶手时给的就是这条泛化文案，句子里没有线索、id 也只说「被杀」。
+    // 但**死亡那一刻实体身上还留着最后一次伤害来源**（LivingEntity#getLastDamageSource），
+    // 它带 msgId 与直接来源实体名（比如 skeleton / creeper / arrow）。
+    // 这一段就是拿它做**只降级不编造**的兜底：只有原分类落在 UNKNOWN 才启用；
+    // 仍判不出来就仍返回 UNKNOWN（不猜成 mob，那是把"不知道"冒充成已知）。
+
+    /**
+     * 带最后伤害来源的兜底分类。
+     *
+     * @param lastDamageId    最后伤害的 msgId（如 {@code mob_attack}、{@code arrow}）；可空
+     * @param lastDamageName  最后伤害的直接来源实体显示名（如 {@code Skeleton}）；可空
+     */
+    public static String classifyWithFallback(String causeId, String deathMessage,
+                                              String lastDamageId, String lastDamageName) {
+        String base = classify(causeId, deathMessage);
+        if (!UNKNOWN.equals(base)) {
+            return base;
+        }
+        String cascaded = classify(lastDamageId, null);
+        if (!UNKNOWN.equals(cascaded) && !OTHER.equals(cascaded)) {
+            return cascaded;
+        }
+        // id 仍不认得时，看来源实体名是否落在怪物/玩家词表里（与句子分类同一套词）。
+        String byName = classifyMessage(lastDamageName);
+        return UNKNOWN.equals(byName) ? base : byName;
+    }
+
+
     private static boolean containsAny(String haystack, String... needles) {
         for (String n : needles) {
             if (n != null && !n.isEmpty() && haystack.contains(n.toLowerCase(java.util.Locale.ROOT))) {

@@ -990,11 +990,34 @@ Map<String, Object> deathData = new LinkedHashMap<>();
             // NumenPlayer.die() 里现成的 cause.getMsgId() 不受那个清空影响。
             String deathCauseId = safeDeathCauseId(body);
             String deathCauseMsg = safeDeathMessage(body);
+            // 2026-10-27（D-04 兜底）：原版拿不到凶手时给的是 genericKill / "RDD was killed"，
+            // 8/52 次死亡因此归因 unknown。死亡那一刻实体身上还有**最后一次伤害来源**
+            // （msgId + 直接来源实体名），拿它做只降级不编造的兜底；仍判不出就仍是 unknown。
+            String lastDamageId = "";
+            String lastDamageName = "";
+            try {
+                var lastDamage = body.getLastDamageSource();
+                if (lastDamage != null) {
+                    lastDamageId = String.valueOf(lastDamage.getMsgId());
+                    var direct = lastDamage.getDirectEntity();
+                    var causing = lastDamage.getEntity();
+                    var named = direct != null ? direct : causing;
+                    lastDamageName = named == null ? "" : named.getName().getString();
+                }
+            } catch (RuntimeException ignored) {
+                // 读不到就是读不到：留空，绝不编一个凶手出来
+            }
             String deathKind = com.dwinovo.numen.rdd.core.DeathCauseClassifier
-                    .classify(deathCauseId, deathCauseMsg);
+                    .classifyWithFallback(deathCauseId, deathCauseMsg, lastDamageId, lastDamageName);
             deathData.put("deathCauseId", deathCauseId);
             deathData.put("deathCauseMsg", deathCauseMsg);
             deathData.put("deathKind", deathKind);
+            if (!lastDamageId.isBlank()) {
+                deathData.put("lastDamageId", lastDamageId);
+            }
+            if (!lastDamageName.isBlank()) {
+                deathData.put("lastDamageName", lastDamageName);
+            }
             String deathAttacker = safeDeathAttacker(body);
             deathData.put("deathAttacker", deathAttacker);
             // reason 保持老语义（starvation 优先，事件选择逻辑 publishAt 依赖它），
