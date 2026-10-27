@@ -114,6 +114,10 @@ public final class NumenCore {
         ToolRegistry.register(new com.dwinovo.numen.core.tools.inventory.EquipItemTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.work.BuildTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.work.BlueprintTool());
+        // 2026-10-27（D-12）：引动物——全仓此前没有任何 lead/lure/breed/tame 工具，
+        // 引羊/繁殖这一步从来没被真正做过（基地食物链到"种地"就断）。
+        // 只做准备动作（选诱饵 + 切手持 + 报附近数量），走路仍归执行 AI。
+        ToolRegistry.register(new com.dwinovo.numen.core.tools.work.AnimalLureTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.perception.BlueprintReadTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.interact.InteractAtTool());
         // 跨维度专用：goto 只负责"走到旁边"，传送门必须 USE 才生效（2026-09-29 实机死循环修复）
