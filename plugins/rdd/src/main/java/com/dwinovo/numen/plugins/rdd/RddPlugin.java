@@ -199,6 +199,9 @@ public final class RddPlugin implements NumenPlugin {
         numen.registerTool(new RddDebugRecoveryTool());
         // G3d：计划补丁（增量改计划；只碰当前指针及之后的 PENDING 节点，CAS 提交）
         numen.registerTool(new RddPatchTool());
+        // 2026-10-27（主人）：代码层直发 Supervisor（Stage-A）的注册口——实验台跑超长线任务用，
+        // 与 /goal 同一条规划真路；source 标 rdd_supervisor_submit，监测台能分清发起方。
+        numen.registerTool(new RddSupervisorSubmitTool());
         // 接管 /goal：先同步认领，Stage-A 异步规划；规划期间 NUMEN 原生目标循环让位。
         com.dwinovo.numen.agent.goal.GoalSinks.register((uuid, objective) -> {
             if (uuid == null || objective == null || objective.isBlank()) {
@@ -366,13 +369,23 @@ public final class RddPlugin implements NumenPlugin {
     }
 
     private static void beginPlanning(MinecraftServer server, RddCallbackGuard.Ticket ticket, String objective) {
+        beginPlanning(server, ticket, objective, "goal_sink");
+    }
+
+    /**
+     * 2026-10-27（主人）：代码层直发 Supervisor 的同一入口 —— {@code rdd_supervisor_submit} 走这里。
+     * 与 {@code /goal} 的唯一区别是 {@code source} 标签（监测台区分发起方）与可选的引擎目标登记。
+     * <b>不旁路任何规划语义</b>：Stage-A、绑定、失败回落全部同一段代码。
+     */
+    static void beginPlanning(MinecraftServer server, RddCallbackGuard.Ticket ticket,
+                              String objective, String source) {
         UUID uuid = ticket.companionId();
         DECOMPOSING.add(uuid);
         BODY.remove(uuid);
         RddGoalDriver.clear(uuid);
         RddMonitor.publish("supervisor_input", Map.of(
                 "companionId", uuid.toString(), "objective", objective,
-                "source", "goal_sink", "target", "rdd"));
+                "source", source, "target", "rdd"));
         RddStagePlanner.planStages(uuid, objective, stages -> onServer(server, ticket, () -> {
             if (!stages.isEmpty()) {
                 try {
@@ -394,7 +407,46 @@ public final class RddPlugin implements NumenPlugin {
             // Fallback belongs to this submission too; a later /goal invalidates both callbacks.
             decomposeSinglePass(server, ticket, objective);
         }));
-        LOG.info("[rdd] 接管目标，Stage-A 规划中 {}:{}", uuid, objective);
+        LOG.info("[rdd] 接管目标，Stage-A 规划中 {}:{} (source={})", uuid, objective, source);
+    }
+
+    /**
+     * 2026-10-27：代码层直发 Supervisor 的入口（{@code rdd_supervisor_submit} 工具调它）。
+     *
+     * <p>与 {@code /goal} 同一条规划真路（{@link #beginPlanning}），只多两件事：
+     * <ul>
+     *   <li>{@code register=true}（缺省）时把目标写进引擎 {@code GoalState}——
+     *       面板与轮末简报要能看到"她在追什么"，否则实验里目标只活在链里，人看不出来；</li>
+     *   <li>同伴不在线 / 无服务器 → 显式拒绝（回执给外部脚本，不静默丢）。</li>
+     * </ul>
+     */
+    static String submitSupervisorGoal(UUID companionId, String objective, boolean register, String source) {
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server == null) {
+            return "no server: cannot plan while the game is offline";
+        }
+        if (NumenPlayer.findByUuid(server, companionId) == null) {
+            return "companion not online: rdd_supervisor_submit needs an active body "
+                    + "(planning and binding both require it)";
+        }
+        if (register) {
+            // 2026-10-27：客户端 EntityAgentLoop 不在本插件的可视范围（rdd 是服务端插件）。
+            // 引擎目标登记改走 GoalSinks 的既有注册面——它本来就是「谁来都行」的目标入口，
+            // 而且与 /goal 完全同一条路（连带把引擎侧 goal 面板一起写好）。
+            // 拿不到（无头/未注册）不拦：链照样建，只是引擎目标面板看不到——如实记事件。
+            boolean sinkOk = false;
+            try {
+                sinkOk = com.dwinovo.numen.agent.goal.GoalSinks.submit(companionId, objective);
+            } catch (RuntimeException ex) {
+                LOG.warn("[rdd] 引擎目标登记失败（链不受影响） {}: {}", companionId, ex.toString());
+            }
+            RddMonitor.publish("supervisor_goal_register", Map.of(
+                    "companionId", companionId.toString(),
+                    "registered", sinkOk, "source", source));
+        }
+        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+        onServer(server, ticket, () -> beginPlanning(server, ticket, objective, source));
+        return "objective accepted by the supervisor (Stage-A planning started)";
     }
 
     /** Exact RDD state block returned to Numen; observation does not own task progress. */

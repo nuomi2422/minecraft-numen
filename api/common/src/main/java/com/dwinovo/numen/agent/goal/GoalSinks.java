@@ -99,6 +99,17 @@ public final class GoalSinks {
     }
 
     /**
+     * 2026-10-27：代码层直发目标（{@code rdd_supervisor_submit} 用）。
+     *
+     * <p>与 {@code /goal} 的引擎侧唯一差异是**不要求客户端在座**：外部脚本（实验台/harness）
+     * 没有聊天框，但目标该进 sink 就进 sink——sink 不在场返回 {@code false}（调用方自行决定
+     * 是否回退引擎默认目标循环，本方法不代办）。
+     */
+    public static boolean submit(UUID companionId, String objective) {
+        return dispatch(companionId, objective);
+    }
+
+    /**
      * 获取指定目标的描述文本。
      * 用于引擎在设定目标时，向同伴同步目标的语义化描述。
      */

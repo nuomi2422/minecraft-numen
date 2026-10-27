@@ -143,6 +143,9 @@ class RddToolContractSnapshotTest {
         // 2026-10-23：恢复支线调试入口——点名一条 recovery 支线，验证"丢了东西→插支线→回主线"
         // 这条链在 8776 上看不到（side_task_* 不进程经验链），没有它就只能干等真实场景。
         PINNED_NAMES.put("RddDebugRecoveryTool.java", "rdd_debug_recovery");
+        // 2026-10-27（主人指示）：代码层直发 Supervisor——实验台跑超长线任务的注册口，
+        // 与 /goal 同一条规划真路（Stage-A），source 标 rdd_supervisor_submit 供监测台区分。
+        PINNED_NAMES.put("RddSupervisorSubmitTool.java", "rdd_supervisor_submit");
     }
 
     @Test
