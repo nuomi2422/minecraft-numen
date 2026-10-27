@@ -524,16 +524,22 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 2026-10-25（主人）：安家要"自己选地+自己整平+自己点灯"，这些工具早就有，
         // 缺的是把顺序讲清楚。只在当前目标/阶段谈基地时注入，避免每轮占 token。
         String playbook = "";
+        // 2026-10-27：下矿姿势（死亡数据：52 次死亡 mob 41 / fall 1 / suffocate 1 / drown 1，
+        // 死前一刻多在 eat / 查背包 / 查状态）。与安家提示同一注入点、同一纪律：只讲顺序。
+        String minePlaybook = "";
         try {
             RddRuntime rt0 = RUNTIMES.get(companionId);
             if (rt0 != null && rt0.chain() != null) {
                 com.dwinovo.numen.rdd.api.Subtask cur0 = rt0.chain().currentSubtask();
                 String stageDesc = rt0.chain().goal() == null ? "" : String.valueOf(rt0.chain().goal().description());
                 String curDesc = cur0 == null ? "" : String.valueOf(cur0.description());
-                playbook = RddBasePlaybook.block(stageDesc + " " + curDesc);
+                String both = stageDesc + " " + curDesc;
+                playbook = RddBasePlaybook.block(both);
+                minePlaybook = RddMinePlaybook.block(both);
             }
         } catch (RuntimeException ignored) {
             playbook = "";
+            minePlaybook = "";
         }
         // 2026-10-25（主人）：**点一下床就绑好了**——但 AI 不一定会想到去点。
         // 谈基地/床时如果还没绑（spawn 为空或 0,0,0），直接把"去点一下"这句话放到它眼前。
@@ -567,6 +573,10 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!playbook.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(playbook);
+        }
+        if (!minePlaybook.isEmpty()) {
+            if (merged.length() > 0) merged.append("\n");
+            merged.append(minePlaybook);
         }
         if (!bedHint.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");
