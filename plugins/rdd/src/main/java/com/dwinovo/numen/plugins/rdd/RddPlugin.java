@@ -197,6 +197,8 @@ public final class RddPlugin implements NumenPlugin {
         // G2c：验证钩子（用户 2026-10-20 批准）——清掉落物，构造超时分支
         numen.registerTool(new RddDebugClearDropsTool());
         numen.registerTool(new RddDebugRecoveryTool());
+        // 2026-10-27（主人报告「换维度后似乎无敌」）：只读诊断——模式/abilities/invulnerable/免疫矩阵。
+        numen.registerTool(new RddDebugVulnerabilityTool());
         // G3d：计划补丁（增量改计划；只碰当前指针及之后的 PENDING 节点，CAS 提交）
         numen.registerTool(new RddPatchTool());
         // 2026-10-27（主人）：代码层直发 Supervisor（Stage-A）的注册口——实验台跑超长线任务用，

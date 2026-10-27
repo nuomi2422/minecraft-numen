@@ -146,6 +146,8 @@ class RddToolContractSnapshotTest {
         // 2026-10-27（主人指示）：代码层直发 Supervisor——实验台跑超长线任务的注册口，
         // 与 /goal 同一条规划真路（Stage-A），source 标 rdd_supervisor_submit 供监测台区分。
         PINNED_NAMES.put("RddSupervisorSubmitTool.java", "rdd_supervisor_submit");
+        // 2026-10-27: read-only diagnosis for the reported dimension-change invulnerability.
+        PINNED_NAMES.put("RddDebugVulnerabilityTool.java", "debug_vulnerability");
     }
 
     @Test

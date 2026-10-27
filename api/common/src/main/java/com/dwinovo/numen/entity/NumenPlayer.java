@@ -347,8 +347,37 @@ public final class NumenPlayer extends ServerPlayer {
         if (took) {
             CompanionEvents.fire(CompanionEvent.HURT,
                     new CompanionEvent.Hurt(this, source, amount));
+        } else {
+            // 2026-10-27（主人报告）：**换维度之后她似乎无敌、打不掉血**。
+            // 这里不改任何判定（先取证再动刀），只在"伤害被挡下"时留一条可对账的诊断行：
+            // 到底是 abilities.invulnerable（创造/旁观或某个保护 mod 给的）、
+            // 出生无敌刻数、还是 isInvulnerableTo 的其它分支。
+            // 关键实体事实全部来自实体自身，不猜：模式/能力/无敌计时/维度/伤害来源 id。
+            try {
+                var abilities = this.getAbilities();
+                lastBlockedDamage = "src=" + source.getMsgId()
+                        + " amount=" + amount
+                        + " dim=" + this.level().dimension().location()
+                        + " mode=" + (this.isCreative() ? "creative" : this.isSpectator() ? "spectator"
+                                : this.isSpectator() ? "?" : "survival")
+                        + " abilities.invulnerable=" + (abilities != null && abilities.invulnerable)
+                        + " isInvulnerable=" + this.isInvulnerable()
+                        + " isInvulnerableTo=" + this.isInvulnerableTo(source)
+                        + " invulnerableTime=" + this.invulnerableTime
+                        + " hp=" + this.getHealth() + "/" + this.getMaxHealth();
+                com.dwinovo.numen.Constants.LOG.warn("[numen][hurt-blocked] {}", lastBlockedDamage);
+            } catch (RuntimeException ignored) {
+                // 诊断本身绝不能影响受伤结算
+            }
         }
         return took;
+    }
+
+    /** 最近一次「伤害被挡下」的诊断串（只读，供 debug 工具/排查读取；从未发生过为 null）。 */
+    private static volatile String lastBlockedDamage;
+
+    public static String lastBlockedDamageReport() {
+        return lastBlockedDamage;
     }
 
     /**
