@@ -525,6 +525,24 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 只读、只在 8 格内、只在非空时出现（不改任何判定）。
         // 2026-10-25（主人）：安家要"自己选地+自己整平+自己点灯"，这些工具早就有，
         // 缺的是把顺序讲清楚。只在当前目标/阶段谈基地时注入，避免每轮占 token。
+        // 2026-10-28（主人口径）：目标/阶段/步骤用「软注入」——只告诉她现在在哪、要往哪去，
+        // 数量到现场再定。链条不再替她把"要多少个"钉死（那是她停在原地的根因之一）。
+        String goalHint = "";
+        try {
+            RddRuntime rtG = RUNTIMES.get(companionId);
+            if (rtG != null && rtG.chain() != null) {
+                var chainG = rtG.chain();
+                String totalGoal = chainG.goal() == null ? "" : String.valueOf(chainG.goal().description());
+                String stageDescG = "";
+                var pg = chainG.currentPrimary();
+                if (pg != null) stageDescG = String.valueOf(pg.description());
+                var csub = chainG.currentSubtask();
+                String stepDesc = csub == null ? "" : String.valueOf(csub.description());
+                goalHint = RddGoalHint.block(totalGoal, stageDescG, stepDesc);
+            }
+        } catch (RuntimeException ignored) {
+            goalHint = "";
+        }
         String playbook = "";
         // 2026-10-27：下矿姿势（死亡数据：52 次死亡 mob 41 / fall 1 / suffocate 1 / drown 1，
         // 死前一刻多在 eat / 查背包 / 查状态）。与安家提示同一注入点、同一纪律：只讲顺序。
@@ -571,6 +589,10 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!storageBlock.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(storageBlock);
+        }
+        if (!goalHint.isEmpty()) {
+            if (merged.length() > 0) merged.append("\n");
+            merged.append(goalHint);
         }
         if (!playbook.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");

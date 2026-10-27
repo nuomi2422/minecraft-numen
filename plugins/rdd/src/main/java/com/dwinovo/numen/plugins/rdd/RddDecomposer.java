@@ -254,7 +254,8 @@ final class RddDecomposer {
         // §9：重试带上下文修正——再次尝试时把"为何上次不可执行"喂回去，逼 LLM 给可检测的真实物品键。
         String hint = attempt >= 1
                 ? "\n注意：上一次生成的子步骤被判定不可执行——每个 asset_key 必须是完整的小写命名空间 ID"
-                + "（如 minecraft:oak_log），condition 必须有真实可检测物品，minimum 给具体数字。"
+                + "（如 minecraft:oak_log），condition 必须有真实可检测物品，minimum 取「拿到即算」的小值"
+                + "（采集类不要写「必须凑够 N 个」）。"
                 + "不要裸键/占位符/大写，不要用 \"goal\" 冒充物品。宁可少拆，不可拆出跑不动的步骤。"
                 : "";
         // 上一次被判定不可执行 → 把该失败事实一并交给知识侧，召回「这类失败该怎么办」的经验
@@ -403,7 +404,13 @@ final class RddDecomposer {
     private static final String SYSTEM_PROMPT =
             "你是 MC 女仆的目标分解器。把主人的目标拆成 1~8 个具体、按依赖顺序排列、可逐步检测的子步骤。"
                     + "每个子步骤的 condition 必须用真实的 minecraft 物品命名空间 ID（如 minecraft:oak_log、"
-                    + "minecraft:iron_ingot），数量 minimum 给具体数字。只给完成条件，不要派身体动作。"
+                    + "minecraft:iron_ingot）。**数量分两类，别搞混**："
+                    + "① 配方/规则能算死的，照样写准数（如钻石镐要 3 个钻石、下界传送门要 10 个黑曜石、"
+                    + "末影之眼要 12 个末影珍珠）——这些不用到现场猜；"
+                    + "② 只有到了现场才知道有多少的（这条矿脉有几块矿、这片林子有多少木头、附近有几只动物），"
+                    + "**不要把大目标写死**：minimum 先给一个小值（1~3）当「起步就算推进」，"
+                    + "到地方看清了再决定要不要继续挖/采。"
+                    + "只给完成条件，不要派身体动作。"
                     + "通用食物/木头/垫脚方块需求优先用 condition:{group:food|wood|blocks,minimum:数量}，组内按物品总数相加，禁止同时给asset_key。"
                     + "food只计直接可食用的东西，生肉/腐肉也计（捡回来就算推进），不计小麦/干草/生土豆/种子；wood原木和木板按件计，不换算配方。指定合成原料仍用asset_key。"
                     + "世界条件可用type=advancement(advancement ID)、entity_killed(entity ID,minimum)、structure(structure ID 或 #tag，可选dimension)、base(可选dimension)。"
