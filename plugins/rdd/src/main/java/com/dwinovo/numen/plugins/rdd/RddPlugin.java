@@ -44,6 +44,8 @@ import java.util.concurrent.atomic.AtomicLong;
 /** NUMEN host adapter for the host-independent RDD task-chain core. */
 public final class RddPlugin implements NumenPlugin {
     private static final Logger LOG = LoggerFactory.getLogger(RddPlugin.class);
+    /** 空转检测状态（2026-10-28）：同一二级久跑且资产不变就提醒她动手。 */
+    private static final RddStuckWatch STUCK_WATCH = new RddStuckWatch();
     private static final Map<UUID, RddRuntime> RUNTIMES = new ConcurrentHashMap<>();
     /** Reusable world assets survive task replacement and are attached to the next task runtime. */
     private static final Map<UUID, AssetRegistry> ASSETS = new ConcurrentHashMap<>();
@@ -587,6 +589,26 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 与 danger 同口径：只读世界、只陈述事实与现成动作（equip_item / eat），不硬派活。
         String needsBlock = RddNeedsFacts.blockFor(RddCompanionBody.get(companionId));
         String worldAssets = RddAssetContext.render(assets(companionId), 1200);
+        // 2026-10-28（实机观察到的盲点）：**空转**——链说要往地下走，她连续几分钟
+        // 只在 rdd_status / scan_blocks / look_around / get_self_status 之间打转，
+        // 一次都没有改变世界。上下文里必须有"你在原地打转"这条事实。
+        String stuckBlock = "";
+        try {
+            RddRuntime rtS = RUNTIMES.get(companionId);
+            if (rtS != null && rtS.chain() != null) {
+                var chainS = rtS.chain();
+                var curS = chainS.currentSubtask();
+                String subId = curS == null ? "" : String.valueOf(curS.id());
+                String subDesc = curS == null ? "" : String.valueOf(curS.description());
+                // AssetRegistry 没有 size()：用可用资产条数当"背包有没有变化"的度量
+                var reg = assets(companionId);
+                int assetCount = reg == null ? 0 : reg.snapshot().size();
+                stuckBlock = STUCK_WATCH.tick(companionId, subId, assetCount,
+                        System.currentTimeMillis(), subDesc);
+            }
+        } catch (RuntimeException ignored) {
+            stuckBlock = "";
+        }
         // 容器记忆**独立成块**追加：它不依赖 <rdd> 包装是否存在（无链时也要看得见"箱子里有什么"）。
         StringBuilder merged = new StringBuilder(rddContext == null ? "" : rddContext);
         if (!storageBlock.isEmpty()) {
@@ -623,6 +645,11 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!needsBlock.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(needsBlock);
+        }
+        // 空转提醒放最末尾：只在"久跑无进展"时出现，出现就说明该动手了。
+        if (!stuckBlock.isEmpty()) {
+            if (merged.length() > 0) merged.append("\n");
+            merged.append(stuckBlock);
         }
         return merged.toString();
     }
