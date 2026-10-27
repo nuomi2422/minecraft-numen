@@ -158,9 +158,31 @@ public final class WorldFactConditions {
         return value instanceof Number n && n.doubleValue() == n.intValue();
     }
 
-    /** 必须有整数 x/y/z 三元。 */
+    /** 水平坐标上限（世界边界 3000 万格；目标点写到百万格外基本就是写错了）。 */
+    private static final int MAX_HORIZONTAL = 30_000_000;
+    /** 世界最低可放置高度（主世界 -64）。 */
+    private static final int MIN_Y = -64;
+    /** 世界最高可放置高度（主世界 320）。 */
+    private static final int MAX_Y = 320;
+
+    /**
+     * 必须有整数 x/y/z 三元，**且在可玩世界范围内**。
+     *
+     * <p>2026-10-28 实机抓到：模型把结构坐标 "(320,848)"（其实只有 x/z 两维）填成了
+     * {@code position_at{x:320,y:848,z:848}} —— y=848 超出世界高度上限，这个条件
+     * **永远不可能成立**，那一步就一直 STALLED、整条链停住。
+     *
+     * <p>判无效会走既有的「不可执行 → 重新拆步」路径，比让它悄悄永远为假好得多。
+     */
     private static boolean coord(Map<String, Object> condition) {
-        return integer(condition.get("x")) && integer(condition.get("y")) && integer(condition.get("z"));
+        if (!(integer(condition.get("x")) && integer(condition.get("y")) && integer(condition.get("z")))) {
+            return false;
+        }
+        int x = ((Number) condition.get("x")).intValue();
+        int y = ((Number) condition.get("y")).intValue();
+        int z = ((Number) condition.get("z")).intValue();
+        if (Math.abs(x) > MAX_HORIZONTAL || Math.abs(z) > MAX_HORIZONTAL) return false;
+        return y >= MIN_Y && y <= MAX_Y;
     }
 
     private static boolean radius(Object value, int cap) {
