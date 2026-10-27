@@ -66,16 +66,54 @@ public final class RddTeleportTool implements NumenTool {
             return;
         }
         var before = companion.position();
-        boolean loaded = level.isLoaded(net.minecraft.core.BlockPos.containing(x, y, z));
+        var target = net.minecraft.core.BlockPos.containing(x, y, z);
+        boolean loaded = level.isLoaded(target);
         if (!loaded) {
             reply.accept(TaskResult.fail("目标区块未加载：" + (int) x + "," + (int) y + "," + (int) z
                     + "（先在附近用 goto 或换一个坐标）").toJson());
             return;
         }
+        // ── 2026-10-27：落点安全检查（主人「死亡记录」核查的直接产物）──────────────
+        // 实测证据：最近 3 天 52 次死亡里有 2 次死在 rdd_teleport 之后——一次溺水、一次被蜘蛛咬。
+        // 传送是「脱困」工具，但它此前**不看落点**：水里、岩浆里、实心方块里、怪堆中间都照传。
+        // 这里补三件（拒绝 + 如实说明，不静默改写坐标）：
+        //   ① 落点或头顶是液体 → 拒绝（溺水/岩浆是立即伤害，不是"稍后处理"）
+        //   ② 落点与头顶都是实心 → 拒绝（卡在方块里会窒息）
+        //   ③ 落点 8 格内有敌怪 → 允许但回执里点名（它得知道"到那儿就要打"）
+        var feet = level.getBlockState(target);
+        var head = level.getBlockState(target.above());
+        boolean feetLiquid = !feet.getFluidState().isEmpty();
+        boolean headLiquid = !head.getFluidState().isEmpty();
+        if (feetLiquid || headLiquid) {
+            reply.accept(TaskResult.fail("落点是液体（" + (feetLiquid ? "脚下" : "头部")
+                    + "）：溺水/岩浆是立即伤害，不是脱困。换一个坐标（建议先 y=60~80 传到自己区块地表）。")
+                    .toJson());
+            return;
+        }
+        if (feet.isSolidRender(level, target) && head.isSolidRender(level, target.above())) {
+            reply.accept(TaskResult.fail("落点被方块占住（脚与头都在实心方块里，会窒息）。"
+                    + "换一个坐标或先往上抬 2 格。").toJson());
+            return;
+        }
+        int hostiles = 0;
+        try {
+            var box = new net.minecraft.world.phys.AABB(target).inflate(8);
+            for (var e : level.getEntities((net.minecraft.world.entity.Entity) null, box)) {
+                if (e instanceof net.minecraft.world.entity.monster.Monster && e.isAlive()) hostiles++;
+            }
+        } catch (RuntimeException ignored) {
+            hostiles = -1;   // 数不出来时如实标 -1，不假装 0
+        }
         companion.teleportTo(level, x, y, z, companion.getYRot(), companion.getXRot());
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("from", Map.of("x", before.x, "y", before.y, "z", before.z));
         data.put("to", Map.of("x", companion.getX(), "y", companion.getY(), "z", companion.getZ()));
-        reply.accept(TaskResult.ok("已传送", data).toJson());
+        if (hostiles > 0) {
+            data.put("hostiles_near", hostiles);
+        }
+        String msg = hostiles > 0
+                ? "已传送；⚠ 落点 8 格内有 " + hostiles + " 只敌怪 —— 先处理或立刻离开，别站着查看背包。"
+                : "已传送";
+        reply.accept(TaskResult.ok(msg, data).toJson());
     }
 }
