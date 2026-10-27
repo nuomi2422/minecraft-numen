@@ -553,6 +553,10 @@ private static String withAssets(UUID companionId, String rddContext) {
         }
         // 容器存货：**只读 tick 缓存**（上下文构建不保证在主线程，不能读世界）。
         String storageBlock = RddContainerMemory.cached(companionId);
+        // 2026-10-27（D-01/D-02）：**敌怪与血量事实**。52 次死亡里 4 次死时正在查背包/查任务状态、
+        // 2 次死时正在吃东西 —— 上下文里此前没有"你现在有危险"这条事实，于是轮询比活命优先。
+        // 只读、只陈述、有危险才出现；不改任何判定（动作归执行 AI）。
+        String dangerBlock = RddDangerFacts.blockFor(RddCompanionBody.get(companionId));
         String worldAssets = RddAssetContext.render(assets(companionId), 1200);
         // 容器记忆**独立成块**追加：它不依赖 <rdd> 包装是否存在（无链时也要看得见"箱子里有什么"）。
         StringBuilder merged = new StringBuilder(rddContext == null ? "" : rddContext);
@@ -571,6 +575,11 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!worldAssets.isBlank()) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(worldAssets);
+        }
+        // 危险事实放**最后**：离模型说话的位置最近（尾部注意力最强），且它是最有时效的一条。
+        if (!dangerBlock.isEmpty()) {
+            if (merged.length() > 0) merged.append("\n");
+            merged.append(dangerBlock);
         }
         return merged.toString();
     }
