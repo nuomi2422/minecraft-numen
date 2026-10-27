@@ -27,6 +27,9 @@ public final class BlueprintTool implements NumenTool {
     private static final Gson GSON = new Gson();
     private static final long MIN_TIMEOUT_TICKS = 2 * 60 * 20;
 
+    /** verify 回执里最多列几格差异（有界：不把整张图的差异灌进上下文）。 */
+    private static final int MAX_VERIFY_SAMPLES = 6;
+
     private record Args(String action, String file, Integer x, Integer y, Integer z, Integer rotation) {}
 
     @Override
@@ -54,23 +57,27 @@ public final class BlueprintTool implements NumenTool {
                 + "instead of promising one trip. "
                 + "Pick a flat, clear area big enough for the size from list. "
                 + "For freeform construction use the build tool instead. BACKGROUND (build action): wait for "
-                + "task_finished; never resend while running.";
+                + "task_finished; never resend while running. "
+                + "action=verify is READ-ONLY: same file/anchor/rotation, reports how many cells actually match "
+                + "the blueprint right now (matched/total + up to 6 mismatches). Use it after task_finished to "
+                + "confirm the build really landed instead of trusting the accept receipt.";
     }
 
     @Override
     public Map<String, Object> parameterSchema() {
         Map<String, Object> props = new LinkedHashMap<>();
-        props.put("action", Map.of("type", "string", "enum", List.of("list", "build"),
-                "description", "list = show blueprints; build = construct one."));
+        props.put("action", Map.of("type", "string", "enum", List.of("list", "build", "verify"),
+                "description", "list = show blueprints; build = construct one; "
+                        + "verify = read-only check of how many cells are actually in place."));
         props.put("file", Map.of("type", "string",
-                "description", "build only: blueprint name from list, no extension."));
-        props.put("x", Map.of("type", "integer", "description", "build only: anchor minimum X."));
-        props.put("y", Map.of("type", "integer", "description", "build only: anchor bottom Y (floor level)."));
-        props.put("z", Map.of("type", "integer", "description", "build only: anchor minimum Z."));
+                "description", "build/verify: blueprint name from list, no extension."));
+        props.put("x", Map.of("type", "integer", "description", "build/verify: anchor minimum X."));
+        props.put("y", Map.of("type", "integer", "description", "build/verify: anchor bottom Y (floor level)."));
+        props.put("z", Map.of("type", "integer", "description", "build/verify: anchor minimum Z."));
         // 值域写描述不写 enum:代码对任意整数取模,enum 在这儿不添约束,
         // 而整数 enum 会被一部分只认字符串 enum 的上游拒收。
         props.put("rotation", Map.of("type", "integer",
-                "description", "build only: optional clockwise rotation (0/90/180/270), default 0."));
+                "description", "build/verify: optional clockwise rotation (0/90/180/270), default 0."));
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("type", "object");
         root.put("properties", props);
@@ -101,20 +108,62 @@ public final class BlueprintTool implements NumenTool {
             reply.accept(TaskResult.ok(message, Map.of("blueprints", out)).toJson());
             return;
         }
-        if (!"build".equals(a.action())) {
-            throw new IllegalArgumentException("action must be list or build");
+        if (!"build".equals(a.action()) && !"verify".equals(a.action())) {
+            throw new IllegalArgumentException("action must be list, build or verify");
         }
         if (a.file() == null || a.file().isBlank()) {
             throw new IllegalArgumentException("file is required; use action=list first");
         }
         if (a.x() == null || a.y() == null || a.z() == null) {
-            throw new IllegalArgumentException("build needs anchor x, y, z (minimum corner)");
+            throw new IllegalArgumentException(a.action() + " needs anchor x, y, z (minimum corner)");
         }
         int quarters = a.rotation() == null ? 0 : Math.floorMod(a.rotation(), 360) / 90;
         BlueprintStore.Loaded loaded = BlueprintStore.load((ServerLevel) companion.level(), a.file(),
                 new BlockPos(a.x(), a.y(), a.z()), quarters);
         if (loaded.targets().isEmpty()) {
             throw new IllegalArgumentException("blueprint " + a.file() + " contains no buildable cells");
+        }
+        // ── 2026-10-27（D-11）：**建完必须能回读** ────────────────────────────────
+        // 实机缺口：`action=build` 是异步受理（setTask 之后回执只说"已提交"），
+        // 于是「建没建出来」从来没被核过——监测台只看得到受理，看不到产物。
+        // verify 是**只读**动作：按同一份图纸、同一个锚点重扫，逐格比对期望方块，
+        // 回答「N/M 格已就位、缺哪几格」。它不改世界、不派工，谁都能调（包括外部脚本）。
+        if ("verify".equals(a.action())) {
+            int matched = 0;
+            List<Map<String, Object>> missing = new ArrayList<>();
+            for (BuildTaskRecord.Target t : loaded.targets()) {
+                net.minecraft.world.level.block.state.BlockState actual =
+                        companion.level().getBlockState(t.pos());
+                if (actual.equals(t.desiredState())) {
+                    matched++;
+                    continue;
+                }
+                if (missing.size() < MAX_VERIFY_SAMPLES) {
+                    Map<String, Object> one = new LinkedHashMap<>();
+                    one.put("pos", t.pos().getX() + "," + t.pos().getY() + "," + t.pos().getZ());
+                    one.put("expected", t.desiredState().toString());
+                    one.put("actual", actual.toString());
+                    missing.add(one);
+                }
+            }
+            int total = loaded.targets().size();
+            int absent = total - matched;
+            String message = matched == total
+                    ? "verified: all " + total + " cells match the blueprint at this anchor"
+                    : "verified: " + matched + "/" + total + " cells in place, " + absent
+                            + " still missing or different"
+                            + (loaded.dropped() > 0 ? " (plus " + loaded.dropped() + " cells dropped at load)" : "");
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("file", a.file());
+            data.put("anchor", a.x() + "," + a.y() + "," + a.z());
+            data.put("rotation", quarters * 90);
+            data.put("total", total);
+            data.put("matched", matched);
+            data.put("missing", absent);
+            data.put("dropped_at_load", loaded.dropped());
+            if (!missing.isEmpty()) data.put("samples", missing);
+            reply.accept(TaskResult.ok(message, data).toJson());
+            return;
         }
         // 材料记账随能力画像(同 build 工具):免耗材想建就建,否则消耗并预检报缺。
         boolean consume = !com.dwinovo.numen.core.WorkProfile.of(companion).freeMaterials();
