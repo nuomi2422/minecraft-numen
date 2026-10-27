@@ -183,8 +183,12 @@ final class RddStagePlanner {
         // 2026-10-07 用户裁决：世界资产块 / 村庄事实列表 / 可恢复线索 / P2-E 时间成本刻度 不再注入
         // 规划 prompt —— 固定旧债，白烧 token（烧钱），还会盖过主人写进经验库的路线。
         // 参数保留只为不动一串签名（调用点已不再传真值）。
+        // 2026-10-27（主人要的「写题型注入规划 AI」）：长线终局目标补一段**阶段骨架**
+        // ——它填的是"这类目标长什么样"的先验，不是具体步数；普通目标不注入（空串）。
+        String patterns = RddStagePatterns.block(objective);
         return "主人的目标：" + objective + "\n\n"
                 + heldBlock
+                + (patterns.isEmpty() ? "" : patterns + "\n\n")
                 + PLAN_BODY_TAIL;
     }
 
