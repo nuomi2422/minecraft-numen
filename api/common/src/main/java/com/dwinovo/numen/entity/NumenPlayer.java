@@ -335,6 +335,35 @@ public final class NumenPlayer extends ServerPlayer {
      * walks out of its loaded area.
      */
     /**
+     * ★ 2026-10-28（D-16 根因，字节码实证）：**假玩家跨维度之后会永久免伤**。
+     *
+     * <p>反编译 {@code net/minecraft/server/level/ServerPlayer.class} 得到：
+     * <pre>
+     *   public boolean isInvulnerableTo(DamageSource source) {
+     *       return super.isInvulnerableTo(source) || this.isChangingDimension();
+     *   }
+     * </pre>
+     * 而 {@code isChangingDimension} 这个标志由「开始转移」置位、由**客户端侧完成转移的握手**清掉。
+     * 同伴是 {@link ServerPlayer} 但不是真客户端（它是假连接建出来的），那一拍永远不会来 →
+     * 标志永远为 true → <b>所有伤害都被 isInvulnerableTo 挡掉</b>，HP 不掉、也不报错。
+     *
+     * <p>实机证据（2026-10-27/28，一次性同伴 PROBE）：
+     * 下界生成时六类伤害源全 false；从下界 tp 到主世界后**全 true**，
+     * 且 {@code isRemoved()=false}、{@code isInvulnerable()=false}、{@code abilities.invulnerable=false}、
+     * {@code spawnInvulnerableTime=-2982}、{@code invulnerableTime=0} —— 原版其余分支全被排除，
+     * 只剩这一条。熔岩里被烧仍 20/20 HP，日志里的 {@code [numen][hurt-blocked]} 就是这个出口。
+     *
+     * <p><b>为什么直接在子类里返回 false</b>：同伴的维度转移在同一 tick 内完成（我们有
+     * {@code teleportTo(level,…)} 与传送门两条路，都没有跨 tick 的"等待客户端确认"阶段），
+     * 所以这个标志对它没有"保护意义"，只有"永久免伤"这一个副作用。
+     * 这比加 mixin/反射清字段更稳：只影响 NumenPlayer，不碰别的实体。
+     */
+    @Override
+    public boolean isChangingDimension() {
+        return false;
+    }
+
+    /**
      * 挨打。原样交给父类结算,只在真的掉了血之后广播一条 {@code HURT}。
      *
      * <p>发在这里而不是 tick 里扫 {@code hurtTime}:扫的话拿不到来源和伤害量
