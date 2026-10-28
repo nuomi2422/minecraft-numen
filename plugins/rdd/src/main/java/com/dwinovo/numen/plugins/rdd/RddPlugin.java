@@ -514,15 +514,28 @@ public final class RddPlugin implements NumenPlugin {
     private static String wayHomeHint(UUID companionId) {
         try {
             RddRuntime rt = runtime(companionId);
-            if (rt == null || rt.chain().currentSubtask() == null) return "";
+            if (rt == null || rt.chain().currentSubtask() == null) {
+                org.slf4j.LoggerFactory.getLogger(RddPlugin.class)
+                        .info("[rdd-way] wayHomeHint skip reason=no-runtime-or-subtask companion={}", companionId);
+                return "";
+            }
             Map<String, Object> cond = rt.chain().currentSubtask().condition();
-            if (cond == null) return "";
+            if (cond == null) {
+                org.slf4j.LoggerFactory.getLogger(RddPlugin.class)
+                        .info("[rdd-way] wayHomeHint skip reason=no-condition subtask={}", rt.chain().currentSubtask().id());
+                return "";
+            }
             Object want = cond.get("dimension");
             String dim = (want instanceof String s && !s.isBlank()) ? s : "minecraft:overworld";
             // 2026-10-28：没有 dimension 判据时也默认问"回主世界"——她在下界、身边没门、
             // 计划又不可能在下界凑出黑曜石的时候，"门在哪"这条事实**任何时候都值得给**。
             // returnHint 内部会判"她已经在目标维度就不说话"，所以不会多嘴。
-            return RddWaypoints.returnHint(companionId, dim);
+                        {
+                String h = RddWaypoints.returnHint(companionId, dim);
+                org.slf4j.LoggerFactory.getLogger(RddPlugin.class)
+                        .info("[rdd-way] wayHomeHint want={} len={}", dim, h.length());
+                return h;
+            }
         } catch (RuntimeException ignored) {
             return "";
         }
