@@ -161,6 +161,9 @@ final class RddStallWatcher {
         }
         RddStallPolicy.Observation observation = observe(ap, rt, current);
         String fp = observation.fingerprint();
+        // 2026-10-29（#196）：库存类目标只认"东西变多"，走路不算进展。
+        //   原指纹含位置 ⇒ 她在地表绕圈就永远判不出卡住（实测该级 20 分钟无进展、规划者 76 分钟没被叫过）。
+        if (isInventoryTarget(current.condition())) fp = inventoryKey(ap);
         String stateKey = stateKey(ap, observation);
         StallState st = stalls.get(ap.getUUID());
         if (st == null || !st.subtaskId().equals(current.id())) {
@@ -462,4 +465,24 @@ final class RddStallWatcher {
         stallCounts.clear();
         nudgedStates.clear();
     }
-}
+
+    /** 库存类判据：只靠"东西变多"推进的目标。 */
+    private static boolean isInventoryTarget(java.util.Map<String, Object> cond) {
+        if (cond == null) return false;
+        Object t = cond.get("type");
+        boolean inventoryType = t == null
+                || "inventory".equals(String.valueOf(t))
+                || "item".equals(String.valueOf(t));
+        if (!inventoryType) return false;
+        return cond.containsKey("asset_key") || cond.containsKey("group") || "item".equals(String.valueOf(t));
+    }
+
+    /** 只含背包内容的指纹（不含位置）：同一堆东西 = 没有进展。 */
+    private static String inventoryKey(net.minecraft.world.entity.player.Player ap) {
+        StringBuilder sb = new StringBuilder();
+        for (net.minecraft.world.item.ItemStack s : ap.getInventory().items) {
+            if (s == null || s.isEmpty()) continue;
+            sb.append(s.getItem().builtInRegistryHolder().key().location()).append('x').append(s.getCount()).append(';');
+        }
+        return sb.toString();
+    }}
