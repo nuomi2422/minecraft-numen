@@ -61,19 +61,35 @@ final class RddParkedWatcher {
         }
         int unchanged = w.unchanged() + 1;
         if (w.nudges() >= MAX_PARKED_NUDGES) {
-            // 预算耗尽：只报一次"需要外部介入"，之后不再拍醒、不再烧模型调用。
-            // 2026-09-28 修刷屏：原来靠 `w.nudges() == MAX_PARKED_NUDGES` 判"首次"，
-            // 但 nudges 到顶后不再变化 → 这个条件**每 tick 都成立** → 一次卡死刷出 90+ 条。
-            // 现在用 silentAt 记录上次发布时间：首次立刻发，之后每 5 分钟兜底重播一次。
+            // 2026-10-28（D-19，主人："任务链怎么可能卡死？"）：
+            // 原来拍满 3 次就**彻底静默**，只报一句 "needs external intervention"。
+            // 实机代价：r18-1 在 00:54 停车后，身体还在动、背包 162→164，链却一步没走
+            // —— 等于"判定它是确定性失败，然后干等人类"。
+            // 现在改成：停车且长时间零变化 → **主动重规划一次**（换方案）；
+            // 只有重规划预算也拒绝时，才退回"需要外部介入"那条静默路径。
+            // 2026-09-28 的防刷屏仍然有效：靠 silentAt 控制节奏（首次立刻，之后每 5 分钟）。
             long now = System.currentTimeMillis();
             boolean due = w.silentAt() == 0L || now - w.silentAt() >= SILENT_REPEAT_MS;
             parkedWatches.put(uuid, new ParkedWatch(current.id(), fp, unchanged, w.nudges(),
                     due ? now : w.silentAt()));
             if (due) {
-                RddMonitor.publish("subtask_parked_silent", Map.of(
+                boolean replanned;
+                try {
+                    replanned = RddPlugin.requestReplan(uuid,
+                            "parked subtask " + current.id() + " unchanged after " + MAX_PARKED_NUDGES
+                                    + " nudges; ask for a different approach");
+                } catch (RuntimeException ex) {
+                    replanned = false;
+                }
+                RddMonitor.publish("subtask_parked_replan", Map.of(
                         "companionId", uuid.toString(), "subtask", current.id(),
-                        "reason", "parked and unchanged after " + MAX_PARKED_NUDGES
-                                + " nudges; needs external intervention"));
+                        "replanned", replanned,
+                        "reason", "parked with zero world change; asking planner for a different route"));
+                if (!replanned) {
+                    RddMonitor.publish("subtask_parked_silent", Map.of(
+                            "companionId", uuid.toString(), "subtask", current.id(),
+                            "reason", "parked, unchanged, and replan refused; needs external intervention"));
+                }
             }
             return;
         }
