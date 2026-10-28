@@ -160,6 +160,12 @@ class RddToolContractSnapshotTest {
         // 2026-10-28（主人：「提前收口这种东西是规划者决定的」）：一级被"事实达成/不再需要"时，
         // 规划者用它收口（记阶段事实、当前级立即推进）。代码不给物品表 —— 判断权在人。
         PINNED_NAMES.put("RddSettleStageTool.java", "rdd_settle_stage");
+
+        // 2026-10-29（主人 goal 第 8 条「允许作弊跳过、不因单个能力问题阻断主线」）：白名单服务器
+        // 指令通道。它解决的问题是：门熄着 + 下界做不出打火石 → 整条主线停住，而工具集里没有任何
+        // 下达指令/给物品的入口（find_tools 实测无 give / 无 command）。
+        // 安全边界写在该类注释里：白名单动词 + 拒选择器(@a/@e/@r) + 拒 op/ban/stop/kill + confirm。
+        PINNED_NAMES.put("RddAdminCommandTool.java", "rdd_admin_command");
     }
 
     @Test

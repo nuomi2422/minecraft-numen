@@ -189,6 +189,8 @@ public final class RddPlugin implements NumenPlugin {
         numen.registerTool(new RddAssetsTool());
         // Supervisor ↔ Numen 双向协商：士兵可对命令结构化回执（ACCEPT/REJECT/COUNTER）。
         numen.registerTool(new RddConcernTool());
+        // 2026-10-29（goal 第 8 条：允许作弊跳过）：白名单服务器指令通道，用于不阻断主线；每次调用都记审计事件。
+        numen.registerTool(new RddAdminCommandTool());
         // 主人待命控制面：owner 暂停与士兵 PAUSE 治理不同（主人待命永不过期/不被自动恢复），
         // 必须有独立入口 —— 否则"主人暂停"的保护逻辑是死代码（深审 R04/codex P1-2）。
         numen.registerTool(new RddStandbyTool());
