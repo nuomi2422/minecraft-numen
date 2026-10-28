@@ -86,6 +86,18 @@ final class RddWaypoints {
         String[] xyz = at.split(",");
         if (xyz.length != 3) return "";
         String dist = distanceRough(id, cur, xyz);
+        // ★ 2026-10-28 实机（#265）：她反复"走到门口→改去搭东西→又走开"，从未调用 use_portal。
+        //   已经站在门口时，"怎么走"的说明反而分散注意力——这时只该说一件事：过门。
+        try {
+            double d = Double.parseDouble(dist);
+            if (d <= 12) {
+                return "<way_home>你已经到门口了。**这一步只做一件事**："
+                        + "站进门框里那一格（门方块那一层），然后 use_portal {kind:\"nether\"}。"
+                        + "不要在门口搭东西、不要开挖、不要去别处——过门只需要这一下。</way_home>";
+            }
+        } catch (RuntimeException ignored) {
+            // 距离解析不出来就退回普通文案
+        }
         return "<way_home>【下一步动作】先把身体派到门口：goto " + xyz[0] + " " + xyz[1] + " " + xyz[2]
                 + "（从你当前位置约 " + dist + " 格，一次派到底，中途不用反复查状态；" + "**要站进门框里那一格**，不是站在门框底下）。"
                 + "站进去之后**立刻 use_portal {kind:\"nether\"}** —— 那一步才是真正过门。"
