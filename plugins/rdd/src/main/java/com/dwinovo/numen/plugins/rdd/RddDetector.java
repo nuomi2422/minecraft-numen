@@ -330,6 +330,11 @@ final class RddDetector {
             // 背包快满主动提醒（用户点名）：放在这里是因为它在**任何链状态**（停车/失败/未展开）
             // 都该生效——满了就是满了，跟目标推到第几级无关。see BackpackSpace。
             maybeWarnBackpackFull(ap);
+            // ★ 2026-10-28（#238）：修理工单的计时表是静态内存，重启即清空 →
+            //   "5 分钟超时重算"再也不会触发（实测 loss_impact_recomputed 恒为 0，
+            //   而 11:18 那次死亡确实派过工单）。这里补一条与内存无关的兜底：
+            //   每个会话对台账里最近一次死亡重算一次（内部按 companion|seq|phase 去重）。
+            RddRepairDispatch.recomputeLatestFromLedger(ap.getUUID(), counts);
             surplus.inspect(ap, chain, counts);
             RddPlugin.cacheInventory(ap.getUUID(), counts);
             // P2.1：观测到即记资产历史 CURRENT（只记装备/工具/食物等有恢复价值者），供 Lost≠Gone 线索。

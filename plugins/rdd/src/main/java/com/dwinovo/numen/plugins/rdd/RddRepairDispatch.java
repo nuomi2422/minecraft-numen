@@ -224,6 +224,24 @@ final class RddRepairDispatch {
      *
      * @return 分析结论；没有死亡记录/清单为空/异常时 null
      */
+    /**
+     * 与内存无关的兜底（2026-10-28 实机教训）：死亡后派的"修理工单"靠静态内存表计时
+     * （REPAIR_CREATED_TICK / LAST_REPAIR），**实例一重启就清空**，于是"5 分钟超时重算"
+     * 再也不会触发。实测 11:18 那次死亡工单事件在案，但 loss_impact_recomputed 恒为 0，
+     * 而那段时间重启过两次。这里给一条不依赖内存的入口：对台账里最近一次死亡重算一次
+     * （内部按 companion|seq|phase 去重，同一会话只算一次）。
+     */
+    static void recomputeLatestFromLedger(UUID companionId, java.util.Map<String, Integer> counts) {
+        try {
+            if (companionId == null) return;
+            com.dwinovo.numen.rdd.core.RddDeathLedger.Death latest =
+                    com.dwinovo.numen.rdd.core.RddDeathLedger.latest(companionId);
+            if (latest == null || latest.lostItems().isEmpty()) return;
+            recomputeAfterDeath(companionId, counts, false, "restart", latest.seq());
+        } catch (RuntimeException ignored) {
+            // fail-soft：兜底不能拖垮 tick
+        }
+    }
     static LossImpactAnalyzer.LossImpact recomputeAfterDeath(UUID companionId,
                                                              Map<String, Integer> counts,
                                                              boolean lossConfirmed,
