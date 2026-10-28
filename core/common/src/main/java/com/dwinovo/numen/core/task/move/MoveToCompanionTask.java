@@ -490,12 +490,20 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
      *  Requires solid footing (or water — the settle path): as a live arrival
      *  predicate on the near-retry nav this must not fire during a mid-air jump
      *  or a sneak-hover over the edge, for the same reason as {@link #reached}. */
+    /** BLOCK 类目标允许的垂直误差（格）：超过就算"没到"，不再判成功。 */
+    private static final int VERTICAL_SUCCESS_SLACK = 2;
+
     private boolean closeEnoughToSucceed() {
         if (!player.onGround() && !player.isInWater()) {
             return false;
         }
         return switch (r.kind) {
-            case BLOCK, COLUMN -> horizontalDistSqr(bx, bz) <= NEAR_SUCCESS_RADIUS * NEAR_SUCCESS_RADIUS;
+            // ★ 2026-10-28 实机（#269）：BLOCK 原来**只看水平**——她站在目标正下方 48 格也被判 SUCCESS，
+            //   而事件正文写着 "I did NOT reach it."（自相矛盾）。模型读到 status=done 就以为到了，
+            //   不再想办法上去。BLOCK 的语义是"到达那一格"，垂直必须一起算；COLUMN 本来就是"任意 y"。
+            case BLOCK -> horizontalDistSqr(bx, bz) <= NEAR_SUCCESS_RADIUS * NEAR_SUCCESS_RADIUS
+                    && Math.abs(feet().getY() - by) <= VERTICAL_SUCCESS_SLACK;
+            case COLUMN -> horizontalDistSqr(bx, bz) <= NEAR_SUCCESS_RADIUS * NEAR_SUCCESS_RADIUS;
             case YLEVEL -> Math.abs(feet().getY() - by) <= 1;
             // FIND 候选众多,失败梯已在候选间轮换过,不设贴近成功档
             case FIND -> false;
