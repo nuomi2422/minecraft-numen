@@ -46,6 +46,13 @@ public record Verdict(
         String carrierDraft,
         String selfCompileRequest,
         /**
+         * ★ 2026-10-27（权利缺口②）：SIDE_TASK 的草稿 —— JSON：
+         * {@code {"type_id":"learner_<name>","when":{"is_dark":true,"has_bed":true},
+         * "nudge":"触发时要对同伴说的话"}}。conditions 只支持引擎能判的最小集
+         * （is_dark/has_bed/hostile_nearby），不支持的字段由消费端拒绝并说明。
+         */
+        String sideTaskDraft,
+        /**
          * ★ B1（2026-10-05）：这条判定里各产物的<b>使用结果</b>。
          *
          * <p><b>为什么加这个字段</b>：使用账本按 {@code artifact_id} 记事实，
@@ -72,13 +79,13 @@ public record Verdict(
         RetrievalDecision retrieval
 ) {
 
-    /** 兼容 10 参构造（G6b 之前的所有调用点）：retrieval 缺省 null。 */
+    /** 兼容 10 参构造（G6b 之前的所有调用点）：retrieval/sideTaskDraft 缺省。 */
     public Verdict(String memoId, List<Action> actions, double confidence, String reasoning,
                    Experience experience, String acScriptDraft, String carrierDraft,
                    String selfCompileRequest, List<Map<String, Object>> usageOutcome,
                    List<String> rewrittenQuery) {
         this(memoId, actions, confidence, reasoning, experience, acScriptDraft, carrierDraft,
-                selfCompileRequest, usageOutcome, rewrittenQuery, null);
+                selfCompileRequest, "", usageOutcome, rewrittenQuery, null);
     }
 
     /** 判定动作。v1 全部是「建议」，由 AI 决定是否执行。 */
@@ -87,6 +94,10 @@ public record Verdict(
         USE_AC,
         USE_CARRIER,
         SELF_COMPILE,
+        // ★ 2026-10-27（权利缺口②）：让学习者能派支线活。
+        //   之前的权利表里它只能「写」，不能「派」——而支线引擎（SideTaskEngine）
+        //   是可注册触发器的通用机制。这一位 + side_task_draft 就是「learner 出产物 → rdd 消费」。
+        SIDE_TASK,
         NO_ACTION,
         NEEDS_HUMAN;
 
@@ -172,6 +183,8 @@ public record Verdict(
             // 2026-10-03：携带器实现与自编译请求的草稿位（声明了 actions 却没有载荷位 = 僵尸声明）
             String carrierDraft = optString(obj, "carrier_draft");
             String selfCompile = optString(obj, "self_compile_request");
+            // ★ 2026-10-27（权利缺口②）：SIDE_TASK 草稿位（声明了 actions 却没载荷 = 僵尸声明）
+            String sideTask = optString(obj, "side_task_draft");
 
             List<String> queries = new ArrayList<>();
             if (obj.has("rewritten_query")) {
@@ -201,7 +214,7 @@ public record Verdict(
             // 但**合不合法由 Z2 闸门核**（hits 是否真检索到、NEW 有没有高相似命中）。
             RetrievalDecision retrieval = RetrievalDecision.parse(obj);
             return new Verdict(memoId, List.copyOf(actions), confidence, reasoning,
-                    exp, acDraft, carrierDraft, selfCompile, List.of(), List.copyOf(queries),
+                    exp, acDraft, carrierDraft, selfCompile, sideTask, List.of(), List.copyOf(queries),
                     retrieval);
         } catch (RuntimeException e) {
             // 不是合法 JSON：如实返回 null，让调用方报 UNPARSEABLE

@@ -53,7 +53,7 @@ final class LearnerReviewer {
             1. 只输出 JSON，不要任何解释性文字、不要 markdown 代码块之外的内容。
             2. 每条备忘录单独输出一个对象。
             3. actions 是数组，可多选，取值只能是：
-               WRITE_EXPERIENCE / USE_AC / USE_CARRIER / SELF_COMPILE / NO_ACTION / NEEDS_HUMAN
+               WRITE_EXPERIENCE / USE_AC / USE_CARRIER / SELF_COMPILE / SIDE_TASK / NO_ACTION / NEEDS_HUMAN
             4. 只有真正可复用的教训才给 WRITE_EXPERIENCE；一次性意外给 NO_ACTION。
             5. SELF_COMPILE 只在「明确缺少工具能力」时给；能靠现有工具解决就不要给。
             6. confidence 取 0 到 1。
@@ -99,6 +99,42 @@ final class LearnerReviewer {
                    `block:"move"`，AI 照抄 ⇒ 必然被拒 ⇒ 连拒之后学会只交空壳）。
                    凑不出可执行的动作序列时，**不要**声明 USE_AC ——
                    改给 NO_ACTION / NEEDS_HUMAN 并写清缺哪一项能力，那比交空壳诚实得多。
+
+            15. ★★ 归因必须走「多假设 + 缺席行动」两道工序（2026-10-26 定，不许跳）：
+                (a) 先列 **≥3 个候选原因**（可来自：时间/光照/暴露、装备与血量、地形与掩体、
+                    未使用的逃生手段、任务选择）。逐个对着证据评估：它能解释哪几条 memo、
+                    解释不了哪条（尤其是「床边没睡」「白天死」「洞穴死」这类表面相反的样本）。
+                (b) 只把**能解释最多样本、且能解释反例**的那条写进 root_cause；被排除的候选
+                    连同「为什么排除」写进 rationale —— 这一步不许省，它是审计材料。
+                (c) ★**缺席行动显式化**：除了切片里「发生过」的事，必须对照快照字段，把
+                    「当时可用但没做的动作」逐条写成证据行，例如：
+                    `isNight=true, bedDistance<=8, sleeping=false → 有床、天黑了、没睡`、
+                    `hp<=6, food>=15 → 有食物没吃`、`canSeeSky=true, blockLight<=4, 火把=0 → 能插火把没插`、
+                    `装备栏空但背包有甲 → 有甲没穿`。
+                    轨迹只记事实、不记反事实，**缺席的动作不显式列出来就永远看不见** ——
+                    这是本系统已知的结构性盲区，必须由这里补。
+                判断顺序固定：**先问「当时有什么没做」，再问「做了什么」**。
+
+            16. ★★ 顺序类根因要**自己认出来**并给可执行产物（2026-10-27 定）：
+                备忘上的类别是**投料方写的**（多数是 learning），不是判决。若你判定根因是
+                「**两步的先后**」（先做了 A，导致 B 做不成/B 发生时已经晚了），那就属于顺序类：
+                  (a) 在 reasoning 里写清「哪一步该在哪一步之前」，并指出证据里的先后事实；
+                  (b) **必须**同时声明 USE_AC 并给 ac_script_draft（形状照上面 14b），
+                      脚本只需覆盖那两步的顺序，不要贪多；
+                  (c) 若证据里根本没有两步先后（例如纯粹站错位置、纯装备不足），
+                      **不要**硬造顺序 —— 那就只给 WRITE_EXPERIENCE。
+                反例（真踩过）：夜间「建了掩体又出去、在水边被溺尸打死」是顺序问题（建完该留在里面）；
+                「床边有怪睡不了」不是顺序问题（是环境），别硬套。
+
+            17. ★★ SIDE_TASK（2026-10-27，权利缺口②）：判定为「该在某个世界条件下提醒自己/派生活」时给。
+                声明就必须给 side_task_draft，形状：
+                {"type_id":"learner_小写下划线名","when":{"is_dark":true,"has_bed":true,"hostile_nearby":false},
+                 "nudge":"触发时对同伴说的一句话（可执行：指名工具与步骤）"}
+                - when 只支持引擎能判的字段：is_dark / has_bed / hostile_nearby（布尔，缺省 false）；
+                  写别的字段会被消费端拒绝并说明原因。
+                - nudge 必须是**可执行指令**（像「用 scan_blocks 找床(tag #minecraft:beds)→goto→sleep」），
+                  不许写「要注意安全」这类空话。
+                - 一次性/无触发条件的别给 SIDE_TASK——那用 WRITE_EXPERIENCE。
 
             输出格式：
             {"verdicts":[{"memo_id":"...","actions":["WRITE_EXPERIENCE"],"confidence":0.7,

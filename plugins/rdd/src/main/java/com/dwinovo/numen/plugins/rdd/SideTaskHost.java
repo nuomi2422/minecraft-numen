@@ -81,6 +81,17 @@ final class SideTaskHost {
         } catch (RuntimeException | java.io.IOException ex) {
             LOG.warn("[rdd-side] side-tasks.json 读取失败，保持默认（sleep=on）: {}", ex.toString());
         }
+        // ★ 2026-10-27（权利缺口②）：学习者派的支线——扫 artifact-outbox/SIDE_TASK
+        //   为每条 PENDING 草稿注册触发器+类型。只支持 is_dark 条件；不支持的字段
+        //   被拒收并写进日志（不静默丢弃）。重复调用幂等（registerType 同名覆盖、
+        //   registerTrigger 追加——引擎每游戏日只开一次同型支线，天然防重）。
+        if (sideDir != null) {
+            try {
+                LearnerSideTaskLoader.loadAll(sideDir.getParent().resolve("artifact-outbox"), ENGINE);
+            } catch (Throwable t) {
+                LOG.warn("[rdd-side] learner SIDE_TASK 导入失败（不阻塞支线宿主）: {}", t.toString());
+            }
+        }
         restore();
     }
 
@@ -91,6 +102,42 @@ final class SideTaskHost {
     /** 执行 AI 上下文：支线 active 时返回完整 {@code <rdd>…</rdd>}，否则 null。只读缓存。 */
     static String contextFor(UUID companionId) {
         return companionId == null ? null : SIDE_CONTEXT.get(companionId);
+    }
+
+    /** 当前支线类型 id（无支线 → null）：给"拒绝"工具做旧回执校验（防拒错一条）。 */
+    static String currentTypeId(UUID companionId) {
+        if (companionId == null) {
+            return null;
+        }
+        return ENGINE.current(companionId).map(SideTask::typeId).orElse(null);
+    }
+
+    /**
+     * 执行 AI 自己放弃当前支线（2026-10-28，主人第三点：「要不要去捡是你决定的」）。
+     *
+     * <p>宿主这一层只做三件收尾：把世界信息（维度 + 游戏日）递进去（拒绝之后当天别再问同一件事）、
+     * 清掉上下文缓存、落盘。判定与事件全在 {@code SideTaskEngine.decline} —— 纯 JVM 那边可单测。
+     */
+    static boolean decline(UUID companionId, String reason) {
+        if (companionId == null) {
+            return false;
+        }
+        String worldId = null;
+        long gameDay = -1L;
+        try {
+            NumenPlayer body = RddCompanionBody.get(companionId);
+            if (body != null && body.level() != null) {
+                worldId = body.level().dimension().location().toString();
+                gameDay = Math.floorDiv(body.level().getDayTime(), 24_000L);
+            }
+        } catch (RuntimeException ignored) {
+            // 拿不到世界信息 → 引擎按"只拒这一次"降级（不猜日子、不锁整晚）
+        }
+        boolean declined = ENGINE.decline(companionId, reason, worldId, gameDay);
+        SIDE_CONTEXT.remove(companionId);
+        LAST_NUDGE_GAME_TIME.remove(companionId);
+        persist();
+        return declined;
     }
 
     /** 宿主每拍（约 20 tick）调用。 */
@@ -131,9 +178,10 @@ final class SideTaskHost {
         if (wasActive && last != null && now - last < NUDGE_REPEAT_TICKS) {
             return;
         }
-        RddPlugin.nudge(companionId, "[睡觉支线] 天黑了，去睡觉——这是你当前最高优先的目标。"
-                + "用 scan_blocks 找床（tag #minecraft:beds）→ goto 走到床边 → 调用 sleep。"
-                + "白天被原版拒绝不是工具坏了。主线已临时冻结；睡到天亮自然醒、或超时后系统会自动恢复主线。");
+        RddPlugin.nudge(companionId, "[睡觉支线·建议] 天黑了，去睡觉——这趟值得去，但你可以判断："
+                + "如果床边有怪、附近根本没床、或身上没武器一去就送命，用 rdd_decline_side 写清理由拒绝（主线立刻恢复，今天不再问你）。"
+                + "要去就：scan_blocks 找床（tag #minecraft:beds）→ goto 走到床边 → 调用 sleep。"
+                + "白天被原版拒绝不是工具坏了。主线已临时冻结；睡到天亮自然醒、超时或你拒绝后系统都会恢复主线。");
         LAST_NUDGE_GAME_TIME.put(companionId, now);
     }
 
@@ -282,7 +330,10 @@ final class SideTaskHost {
         String block = "<rdd><enabled>true</enabled><active>true</active>"
                 + "<primary_status>SIDE_TASK</primary_status>"
                 + "<scope>SIDE</scope>"
-                + "<instruction>当前最高优先目标是你下面的支线任务；主线已临时冻结，完成或超时后系统自动恢复主线。</instruction>"
+                + "<instruction>下面是一条**建议性**支线（不是命令）：主线已临时冻结，"
+                + "完成、超时、或你拒绝后都会自动恢复主线。"
+                + "若现场判断这趟不值得/做不到（太危险、没工具、目标已不可能），"
+                + "用 rdd_decline_side 说明理由即可放弃 —— 拒绝会记成 DECLINED（不是失败）。</instruction>"
                 + type.renderContext(task, port)
                 + "</rdd>";
         SIDE_CONTEXT.put(companionId, block);

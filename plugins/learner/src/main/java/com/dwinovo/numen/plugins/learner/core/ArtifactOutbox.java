@@ -55,7 +55,10 @@ public final class ArtifactOutbox {
     public enum Kind {
         AC_SCRIPT("AC_SCRIPT"),
         CARRIER("CARRIER"),
-        SELF_COMPILE_REQUEST("SELF_COMPILE_REQUEST");
+        SELF_COMPILE_REQUEST("SELF_COMPILE_REQUEST"),
+        // ★ 2026-10-27（权利缺口②）：学习者派支线活的产物位。
+        //   消费端：rdd 插件的 LearnerSideTaskTrigger（按文件形状读，不跨插件 import）。
+        SIDE_TASK("SIDE_TASK");
 
         private final String wire;
 

@@ -7,6 +7,7 @@ import com.dwinovo.numen.plugins.learner.core.FeedbackEvent;
 import com.dwinovo.numen.plugins.learner.core.Memo;
 import com.dwinovo.numen.plugins.learner.core.MemoQueue;
 import com.dwinovo.numen.plugins.learner.core.StormGuard;
+import com.dwinovo.numen.plugins.learner.core.SuppressedStore;
 import com.dwinovo.numen.plugins.learner.core.T3Seen;
 import net.neoforged.fml.loading.FMLPaths;
 
@@ -62,6 +63,9 @@ final class LearnerAutoIntake {
 
     /** 单轮入队上限：与手动口同值（16）。风暴抑制之后仍要防一次灌满队列。 */
     private static final int MAX_ENQUEUE_PER_SCAN = 16;
+
+    /** 单轮从「被抑制暂存区」放回的上限（2026-10-26）：小步回流，别一次灌满。 */
+    private static final int MAX_DEFERRED_PER_SCAN = 4;
 
     /** 游标文件：<configDir>/learner-auto-cursor.json。进程外可读可删（删了=从头扫，靠幂等键防重）。 */
     private static final String CURSOR_FILE = "learner-auto-cursor.json";
@@ -309,7 +313,20 @@ final class LearnerAutoIntake {
             if (ENQUEUED.size() > MAX_ENQUEUED_KEYS) trimEnqueuedKeys();
 
             StormGuard.Ruling storm = StormGuard.admit(companionId.toString(), fp, System.currentTimeMillis());
-            if (!storm.allow()) { stormSuppressed++; continue; }
+            if (!storm.allow()) {
+                stormSuppressed++;
+                // 2026-10-26：抑制**不再丢弃**。实机代价是床边没睡那条最干净的样本被挡掉后
+                // 永久消失（auto_intake storm_suppressed=1，手动 intake 再撞 10 分钟冷却）。
+                // 改成降级暂存：冷却窗口过去后由 admitDeferred() 放回队列。
+                if (configDirCache != null) {
+                    Memo raw = CandidateMemo.from(ev, d);
+                    long nowMillis = System.currentTimeMillis();
+                    SuppressedStore.append(configDirCache, companionId,
+                            new Memo(memoId, raw.problem(), raw.stage(), raw.tried(), raw.snapshot(), nowMillis),
+                            fp, storm.code(), nowMillis);
+                }
+                continue;
+            }
 
             int soFar = enqueuedBy.getOrDefault(companionId, 0);
             if (soFar >= MAX_ENQUEUE_PER_SCAN) { continue; }
@@ -336,7 +353,11 @@ final class LearnerAutoIntake {
         long next = pull.nextCursor;
         saveCursor(generation, next);
 
-        if (!enqueuedBy.isEmpty() || rejected > 0 || stormSuppressed > 0 || unattributed > 0 || dupSkipped > 0 || queueFull > 0) {
+        // 冷却已过的「被抑制候选」放回队列（与入队同一条 append 路径；写不进就放回暂存区）
+        int deferredAdmitted = admitDeferred(enqueuedBy);
+
+        if (!enqueuedBy.isEmpty() || rejected > 0 || stormSuppressed > 0 || unattributed > 0 || dupSkipped > 0 || queueFull > 0
+                || deferredAdmitted > 0) {
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("generation", generation);
             data.put("events_scanned", events.size());
@@ -346,9 +367,64 @@ final class LearnerAutoIntake {
             data.put("unattributed", unattributed);
             data.put("duplicate_skipped", dupSkipped);
             data.put("queue_full", queueFull);
+            data.put("deferred_admitted", deferredAdmitted);
             LearnerMonitor.publish("auto_intake", data);
         }
         return enqueuedBy.values().stream().mapToInt(Integer::intValue).sum();
+    }
+
+
+    /**
+     * 把冷却已过的「被抑制候选」放回队列（2026-10-26）。
+     *
+     * <p>背景：StormGuard 原来把冷却窗口内的候选直接丢掉，实机上代价是
+     * {@code bedDistance=2.83, isNight=true, sleeping=false} 这条最干净的样本被
+     * {@code storm_suppressed=1} 挡掉后永久消失。现在抑制 = 暂存 + 冷却后放回。
+     *
+     * <p>写不回队列（满）就 {@link SuppressedStore#append} 放回暂存区，样本不丢。
+     *
+     * @param enqueuedBy 本轮已入队计数（放回也算占用同一轮上限）
+     * @return 本轮放回几条
+     */
+    private static int admitDeferred(Map<UUID, Integer> enqueuedBy) {
+        if (configDirCache == null || queueResolver == null) {
+            return 0;
+        }
+        long now = System.currentTimeMillis();
+        int admitted = 0;
+        for (UUID id : SuppressedStore.companionsWithSuppressed(configDirCache)) {
+            if (admitted >= MAX_DEFERRED_PER_SCAN) {
+                break;
+            }
+            int room = MAX_ENQUEUE_PER_SCAN - enqueuedBy.getOrDefault(id, 0);
+            if (room <= 0) {
+                continue;
+            }
+            int cap = Math.min(room, MAX_DEFERRED_PER_SCAN - admitted);
+            List<SuppressedStore.Entry> due =
+                    SuppressedStore.drainDue(configDirCache, id, now, StormGuard.COOLDOWN_MILLIS, cap);
+            for (SuppressedStore.Entry e : due) {
+                boolean ok;
+                try {
+                    ok = queueResolver.apply(id).append(e.memo());
+                } catch (RuntimeException ex) {
+                    ok = false;
+                }
+                if (ok) {
+                    admitted++;
+                    enqueuedBy.merge(id, 1, Integer::sum);
+                    appendEnqueuedJournal(e.memo().id());
+                    LearnerMonitor.publish("suppressed_admitted", Map.of(
+                            "memo_id", e.memo().id(),
+                            "fingerprint", e.fingerprint(),
+                            "reason", e.reason()));
+                } else {
+                    // 队列满：放回暂存区再等一轮（at 拨到当前，不重算冷却）
+                    SuppressedStore.append(configDirCache, id, e.memo(), e.fingerprint(), e.reason(), now);
+                }
+            }
+        }
+        return admitted;
     }
 
     /**

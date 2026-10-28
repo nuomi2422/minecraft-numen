@@ -76,7 +76,30 @@ final class LearnerStatusTool implements NumenTool {
                 //   状态项撒谎比注释撒谎更坏（出事时第一个查的就是它），所以必须跟着实现一起改。
                 box.put("CARRIER_consumer",
                         "learner.CarrierArtifactAdopter → 登记为候选；**要 learner_carrier approve 才进生效链**");
-                box.put("SELF_COMPILE_REQUEST_consumer", "NONE_YET（只有落点，无消费者）");
+                // ★ 2026-10-27（权利缺口①）：SELF_COMPILE 有消费者了 ——
+                //   SelfCompileRequests（取件契约：list/ack，回执落 ack 目录）+
+                //   harness 的 selfcompile-drain.js（人/工程流用）。以前写 NONE_YET
+                //   是撒谎的状态：请求其实一直躺在那没人看得见。
+                box.put("SELF_COMPILE_REQUEST_consumer",
+                        "SelfCompileRequests 取件契约（ack 目录）+ harness/bin/selfcompile-drain.js；"
+                                + "取件状态见 selfcompile_requests 列");
+                try {
+                    var scr = new com.dwinovo.numen.plugins.learner.core.SelfCompileRequests(
+                            ob, com.dwinovo.numen.plugins.learner.LearnerPlugin.configDir());
+                    java.util.List<java.util.Map<String, Object>> reqs = new java.util.ArrayList<>();
+                    for (var rq : scr.list()) {
+                        java.util.Map<String, Object> one = new java.util.LinkedHashMap<>();
+                        one.put("artifact_id", rq.artifactId());
+                        one.put("state", rq.state().name());
+                        one.put("taken_by", rq.takenBy());
+                        one.put("note", rq.note());
+                        one.put("memo_id", rq.memoId());
+                        reqs.add(one);
+                    }
+                    box.put("selfcompile_requests", reqs);
+                } catch (Throwable t) {
+                    box.put("selfcompile_requests", "UNREADABLE: " + t);
+                }
                 box.put("note", "落地 ≠ 生效：以 *_consumer 为准，别把 LANDED 当成已被采纳");
                 data.put("artifact_outbox", box);
             } else {

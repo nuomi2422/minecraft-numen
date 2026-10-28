@@ -278,6 +278,10 @@ final class LearnerReviewTool implements NumenTool {
                 one.put("retrieval_reason", rd.reason());
                 one.put("retrieval_hits", rd.hits().stream().map(h -> Map.of(
                         "entry_ref", h.entryRef(),
+                        // ★ 2026-10-27：title 进 rendered —— autoStoreExperience 的 REVISE
+                        //   覆写要用它撞回既有条目（id 由 type+规范化 title 派生），
+                        //   不带它就只能在 learner 里再开一条跨插件读通道（被封死）。
+                        "title", h.title(),
                         "high_similarity", h.highSimilarity())).toList());
             } else {
                 one.put("retrieval_decision", "MISSING");
@@ -356,6 +360,10 @@ final class LearnerReviewTool implements NumenTool {
             if (!v.selfCompileRequest().isBlank()) {
                 one.put("self_compile_request", v.selfCompileRequest());
             }
+            // ★ 2026-10-27（权利缺口②）：SIDE_TASK 草稿位（非空才写，同上口径）
+            if (!v.sideTaskDraft().isBlank()) {
+                one.put("side_task_draft", v.sideTaskDraft());
+            }
             // 声明了某个产物却没给载荷位 —— 显式报出来，不让调用方以为「它写了」
             List<String> declaredButEmpty = new ArrayList<>();
             if (v.actions() != null) {
@@ -367,6 +375,9 @@ final class LearnerReviewTool implements NumenTool {
                 }
                 if (v.actions().contains(Verdict.Action.SELF_COMPILE) && v.selfCompileRequest().isBlank()) {
                     declaredButEmpty.add("SELF_COMPILE/self_compile_request");
+                }
+                if (v.actions().contains(Verdict.Action.SIDE_TASK) && v.sideTaskDraft().isBlank()) {
+                    declaredButEmpty.add("SIDE_TASK/side_task_draft");
                 }
             }
             if (!declaredButEmpty.isEmpty()) {
@@ -429,6 +440,13 @@ final class LearnerReviewTool implements NumenTool {
         LearnerMonitor.publish("reviewed", reviewedEv);
         LearnerPlugin.setReviewVerdicts(reviewId, rendered);
 
+        // ★ 2026-10-27（19 轮学习曲线暴露的结构问题①）：
+        //   verdict 的 experience_draft 原本「委托给执行侧 AI 调 experience_learn」，
+        //   实测 19 轮里执行侧从不调 —— 学到的经验永远进不了库（前 10 轮零入库）。
+        //   补法不破 RL-20 红线：落库仍走**唯一工具 experience_learn**，只是调用方
+        //   从 AI 变成复盘收尾（程序化 onServerCall）。门禁失败的/没草稿的不落。
+        //   失败只发事件，绝不把一次成功复盘点成失败（同 announce 的纪律）。
+        autoStoreExperience(id, rendered);
         // ★ 2026-10-05：把上面这些数字**说给主人听**。
         //   此前学习者一直在写、从不说话（用户原话「不是一直裸着写」）。
         //   措辞与限频都在 Announce/AnnounceText 里，那两个类是纯 Java、可离线测；
@@ -436,6 +454,143 @@ final class LearnerReviewTool implements NumenTool {
         //   ★ 只说事实（学了几条/落了什么/拒了什么），不写「我学会了」这类自评 ——
         //     学习者自己打分会立刻变成自我印证。
         announceToOwner(id, rendered.size(), removed, restored);
+    }
+
+    /**
+     * ★ 2026-10-27：把通过门禁的 experience_draft **自动落库**（经唯一工具 experience_learn）。
+     *
+     * <p>为什么从「委托 AI」改成「程序化落库」：19 轮学习曲线（V-20261027-04/05）实测
+     * 执行侧从不调 experience_learn —— 委托链断了 10 轮才发现。RL-20 的本意是
+     * 「学习者不自己写库、不另开第二写库通道」，这里仍走既有唯一出口，只是调用方
+     * 从 AI 变成复盘收尾 —— 红线语义（单通道）不变，断链补上。</p>
+     *
+     * <p>只落「publishable 且门禁没硬失败且带 type」的条目；每条成败都发
+     * auto_learn 事件（成功带 entry_id，失败带 reason），观测侧可对账。
+     * 落库失败**绝不**影响复盘已成功的结论（同 announce 的纪律）。</p>
+     */
+    private static void autoStoreExperience(java.util.UUID companionId, List<Map<String, Object>> rendered) {
+        int stored = 0;
+        List<Map<String, Object>> outcomes = new ArrayList<>();
+        for (Map<String, Object> one : rendered) {
+            Object gateObj = one.get("quality_gate");
+            boolean gateHardFail = gateObj instanceof Map<?, ?> gm
+                    && Boolean.TRUE.equals(gm.get("hard_fail"));
+            Object draftObj = one.get("experience_draft");
+            boolean publishable = Boolean.TRUE.equals(one.get("publishable"));
+            if (gateHardFail || !publishable || !(draftObj instanceof Map<?, ?> dm)) {
+                continue;
+            }
+            Object entryObj = dm.get("entry");
+            if (!(entryObj instanceof Map<?, ?> entry)) {
+                continue;
+            }
+            String memoId = String.valueOf(one.get("memo_id"));
+            try {
+                JsonObject args = new JsonObject();
+                for (Map.Entry<?, ?> e : entry.entrySet()) {
+                    String k = String.valueOf(e.getKey());
+                    Object v = e.getValue();
+                    if (v == null) continue;
+                    if (v instanceof Number num) args.addProperty(k, num);
+                    else if (v instanceof Boolean b) args.addProperty(k, b);
+                    else if (v instanceof java.util.List<?> li) {
+                        com.google.gson.JsonArray arr = new com.google.gson.JsonArray();
+                        for (Object x : li) arr.add(String.valueOf(x));
+                        args.add(k, arr);
+                    } else args.addProperty(k, String.valueOf(v));
+                }
+                // ★ 2026-10-27（19 轮曲线结构问题②）：REVISE 必须落在它引用的那条上。
+                //   背景：ExperienceStore.learn 已有「同身份更新正文」语义（id/指纹撞上 →
+                //   merge + 内容漂移重置证据计数），但复盘每次归纳出的 title 措辞不同 →
+                //   id 不同 → 全部当新条目（实测 3 个主题堆成 24 条）。
+                //   补法：decision=REVISE 且 hits 非空时，把草稿 title 覆写为
+                //   目标条目的现 title（id 派生自 type+规范化 title → 撞上 → 走更新分支）。
+                //   不新增 API、不动 store；REUSE/NEW 不动。
+                // ★ 2026-10-27（19 轮曲线结构问题②）：REVISE 落在它引用的那条上。
+                //   ExperienceStore.learn 已有「同身份更新正文」语义（id 撞上 → merge +
+                //   漂移重置），但复盘每次归纳的 title 措辞不同 → id 不同 → 全当新条目
+                //   （实测 3 主题堆成 24 条）。覆写 title=检索命中的原条目 title，
+                //   id 即撞上 → 走更新分支。title 取自 retrieval_hits（渲染处已带），
+                //   不开任何跨插件读通道。
+                String reviseNote = "";
+                Object decObj = one.get("retrieval_decision");
+                if ("REVISE".equals(decObj)) {
+                    Object hitsObj = one.get("retrieval_hits");
+                    if (hitsObj instanceof java.util.List<?> hits && !hits.isEmpty()
+                            && hits.get(0) instanceof Map<?, ?> h0) {
+                        String targetTitle = String.valueOf(h0.get("title"));
+                        String ref = String.valueOf(h0.get("entry_ref"));
+                        String targetId = ref.startsWith("exp:") ? ref.substring(4) : ref;
+                        if (!targetTitle.isBlank() && !"null".equals(targetTitle)) {
+                            args.addProperty("title", targetTitle);
+                            reviseNote = "REVISE->" + targetId;
+                        } else {
+                            // 命中没带 title（旧渲染或坏数据）：按 NEW 落并如实记
+                            reviseNote = "REVISE_NO_TITLE:" + targetId;
+                        }
+                    }
+                }
+                if (args.has("type") && args.has("title") && args.has("description")) {
+                    var tool = com.dwinovo.numen.agent.tool.ToolRegistry.get("experience_learn");
+                    if (tool == null) {
+                        outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "SKIPPED",
+                                "reason", "experience_learn not registered"));
+                        continue;
+                    }
+                    final java.util.List<Map<String, Object>> sink = outcomes;
+                    var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
+                    if (server == null) {
+                        outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "SKIPPED",
+                                "reason", "no server context"));
+                        continue;
+                    }
+                    NumenPlayer companion = NumenPlayer.findByUuid(server, companionId);
+                    if (companion == null) {
+                        outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "SKIPPED",
+                                "reason", "companion not found"));
+                        continue;
+                    }
+                    // 落库走服务器主线程（onServerCall 契约），同步取回执
+                    final java.util.concurrent.atomic.AtomicReference<String> replyRef =
+                            new java.util.concurrent.atomic.AtomicReference<>();
+                    final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+                    server.execute(() -> {
+                        try {
+                            tool.onServerCall("auto-learn-" + System.currentTimeMillis(), args, companion,
+                                    r2 -> { replyRef.set(r2); latch.countDown(); });
+                        } catch (Throwable t) {
+                            replyRef.set("{\"success\":false,\"message\":\"" + t + "\"}");
+                            latch.countDown();
+                        }
+                    });
+                    boolean done = latch.await(30, java.util.concurrent.TimeUnit.SECONDS);
+                    String reply = done ? String.valueOf(replyRef.get()) : "TIMEOUT";
+                    boolean ok = reply != null && reply.contains("\"success\":true");
+                    if (ok) stored++;
+                    Map<String, Object> ev = new java.util.LinkedHashMap<>();
+                    ev.put("memo_id", memoId);
+                    if (!reviseNote.isEmpty()) {
+                        ev.put("revise", reviseNote);
+                    }
+                    ev.put("outcome", ok ? "STORED" : "FAILED");
+                    ev.put("reply", reply == null ? "" : reply.substring(0, Math.min(300, reply.length())));
+                    outcomes.add(ev);
+                } else {
+                    outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "SKIPPED",
+                            "reason", "draft missing type/title/description (type 是学习者显式交的，没交不落)"));
+                }
+            } catch (Throwable t) {
+                outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "FAILED",
+                        "reason", String.valueOf(t)));
+            }
+        }
+        if (!outcomes.isEmpty()) {
+            Map<String, Object> ev = new java.util.LinkedHashMap<>();
+            ev.put("companion", companionId.toString());
+            ev.put("stored", stored);
+            ev.put("results", outcomes);
+            LearnerMonitor.publish("auto_learn", ev);
+        }
     }
 
     /**
@@ -542,6 +697,9 @@ final class LearnerReviewTool implements NumenTool {
                     v.carrierDraft(), Verdict.Action.USE_CARRIER);
             submit(ob, out, ArtifactOutbox.Kind.SELF_COMPILE_REQUEST, companionId, reviewId, v,
                     v.selfCompileRequest(), Verdict.Action.SELF_COMPILE);
+            // ★ 2026-10-27（权利缺口②）：SIDE_TASK 也走同一投递口（rdd 侧按文件形状消费）
+            submit(ob, out, ArtifactOutbox.Kind.SIDE_TASK, companionId, reviewId, v,
+                    v.sideTaskDraft(), Verdict.Action.SIDE_TASK);
         }
         if (v.experience() != null || v.actions().contains(Verdict.Action.WRITE_EXPERIENCE)) {
             out.add(deliveryRow("EXPERIENCE", "DELEGATED",
