@@ -80,6 +80,27 @@ public final class SideTaskEngine {
 
         Optional<SideTask> active = runtime.current(companionId);
         if (active.isPresent()) {
+            // 2026-10-28 实机死锁（本会话抓到的）：
+            // 她在主世界天黑时激活了「睡觉支线」，随后自己走进**下界**；
+            // 下界没有昼夜循环、也睡不成，而这里原来**只看 active 就 advance、从不重判触发条件**
+            // → 支线永远 active → 主线被冻结 → 判据明明成立（condition_matches=true）也永远判不过
+            // （实测卡了 14 分钟，一步没走）。
+            // 所以：active 期间也要复查「当初让它来的条件还在不在」，不在了就取消，把主线放出来。
+            SideTask running = active.get();
+            SideTaskTrigger source = null;
+            for (SideTaskTrigger t : triggers) {
+                if (t.typeId().equals(running.typeId())) {
+                    source = t;
+                    break;
+                }
+            }
+            // 只针对**世界能力变了**这一种（换到没有昼夜循环的维度：下界/末地）。
+            // 注意不能因为"时间走出窗口"就取消 —— 那是 deadline 的职责（要 SKIP 而不是 CANCELLED），
+            // 我第一版写宽了，直接把 deadlineSkipsInsteadOfFailing 这条测试打红。
+            if (!world.hasDayNightCycle()) {
+                cancel(companionId, "world has no day-night cycle (" + world.worldId() + "); side task can never finish");
+                return;
+            }
             advance(active.get(), world);
             return;
         }
