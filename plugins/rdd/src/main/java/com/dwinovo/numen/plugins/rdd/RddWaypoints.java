@@ -86,11 +86,12 @@ final class RddWaypoints {
         String[] xyz = at.split(",");
         if (xyz.length != 3) return "";
         String dist = distanceRough(id, cur, xyz);
-        return "<way_home>要回 " + wantedDimension + " 的话，门就在你这个维度的 " + at
-                + " 附近（离你约 " + dist + " 格）。先把身体挪过去（goto "
-                + xyz[0] + " " + xyz[1] + " " + xyz[2] + "），再 use_portal {kind:\"nether\"}——"
-                + "use_portal 只在约 96 格内找门，隔着几百格它会直接报找不到。"
-                + "别在这个维度现造一座门：那要 10 个黑曜石，而下界没有水。</way_home>";
+        return "<way_home>【下一步动作】先把身体派到门口：goto " + xyz[0] + " " + xyz[1] + " " + xyz[2]
+                + "（从你当前位置约 " + dist + " 格，一次派到底，中途不用反复查状态）。"
+                + "到了门边再 use_portal {kind:\"nether\"}。"
+                + "use_portal 只在约 96 格内找门，隔着几百格它会直接报找不到；"
+                + "别在这个维度现造一座门——那要 10 个黑曜石，而下界没有水。"
+                + "（这一侧的门在 " + at + "，属于 " + wantedDimension + " 的出入口）</way_home>";
     }
     private static String distanceRough(UUID id, String curDim, String[] target) {
         try {
