@@ -286,11 +286,27 @@ final class RddRepairDispatch {
             if (!RECOMPUTED.add(dedupeKey)) return null;   // 同一批次同一阶段只报一次
             if (RECOMPUTED.size() > 256) RECOMPUTED.clear();   // 有界：死亡很多次也不让集合长成漏勺
 
-            // ★ 2026-10-28 实机（#239）：`LossImpactAnalyzer.analyze` 在没有"当前目标清单"时返回 null，
-            //   于是整条重算在**没有 manifest 的那一拍**直接消失（实测：她全丢、台账 seq=15 有 25 件，
-            //   但 loss_impact_recomputed 恒 0）。这里补一支"无清单也要留证"的兜底：
-            //   至少把"丢了什么、多少件、这次是哪一批死亡"落成事件，别让事实消失。
+            // ★ 2026-10-28 实机（#245）：清单缓存**重启即空**（只在"绑一级目标那一刻"写），
+            //   于是重算拿不到需求清单 → 只能走下面"无清单也要留证"的兜底（noManifest=true），
+            //   "打穿了哪条需求、要不要降档"永远算不出来。
+            //   先尝试**按当前一级重建清单**（ensureManifest 现成、按展开指纹幂等）；
+            //   重建成功就走完整分析，只有链本身没有一级目标时才退回兜底。
             RequirementManifest.Manifest manifest0 = RddFactContext.currentManifest(companionId);
+            if (manifest0 == null) {
+                try {
+                    var rt0 = RddPlugin.runtime(companionId);
+                    var primary0 = rt0 == null ? null : rt0.chain().currentPrimary();
+                    if (primary0 != null) {
+                        manifest0 = RddFactContext.ensureManifest(companionId, primary0, null);
+                        RddMonitor.publish("manifest_rebuilt_for_recompute", Map.of(
+                                "companionId", companionId.toString(),
+                                "primary", primary0.id(),
+                                "reason", "清单缓存重启即空，按当前一级重建后再算损失影响"));
+                    }
+                } catch (RuntimeException ignored) {
+                    // fail-soft：重建失败就退回下面的兜底（至少保住"丢了什么"这条事实）
+                }
+            }
             if (manifest0 == null) {
                 Map<String, Object> ev0 = new LinkedHashMap<>();
                 ev0.put("companionId", companionId.toString());
