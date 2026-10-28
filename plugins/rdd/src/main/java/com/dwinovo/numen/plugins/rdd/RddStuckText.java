@@ -41,9 +41,12 @@ final class RddStuckText {
         // 2026-10-28 实机：这一步的判据是「**附近**有黑曜石(半径16)」，而她人在 200 格外的村庄，
         // 于是连续 failed/stalled —— 这类条件失败不是"没干活"，是"站错地方"，建议必须是"走过去"。
         if (ct.endsWith("_nearby") || "position_at".equals(ct)) {
+            // 2026-10-28 实机再进一步：判据 radius=4 而砖在 14 格外，她**没走那 10 步**。
+            // 光说"先 locate 再 goto"太抽象；`goto` 本身就支持按方块名走，所以直接给一条能照抄的调用。
             advice.append("这一条的判据是「**你在目标附近**」（").append(ct)
-                  .append("），所以光在原地挖/查没用：先用 locate_block / locate_structure 查最近的")
-                  .append("目标在哪，再 goto 过去，到了再判定。前面如果已经找到过位置，就直接回去。");
+                  .append("），所以光在原地挖/查没用：用 goto {x:null,y:null,z:null,")
+                  .append("block:\"<判据里那个方块 id>\"} 直接走到它旁边（goto 支持按方块名走、不用坐标），")
+                  .append("到了再判定；不知道它在哪就先 locate_block / locate_structure 查一下。");
         } else if (s.contains("地下") || s.contains("Y≤") || s.contains("y≤") || s.contains("矿洞") || s.contains("岩浆")) {
             advice.append("往下走/往下挖：goto 到附近的洞口，或在脚下安全开挖（先挖两格看脚下，别垂直挖穿）");
         } else if (s.contains("找") || s.contains("前往") || s.contains("到达")) {
