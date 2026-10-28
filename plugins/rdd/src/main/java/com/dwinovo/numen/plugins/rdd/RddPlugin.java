@@ -540,6 +540,29 @@ public final class RddPlugin implements NumenPlugin {
                         .info("[rdd-way] wayHomeHint skip reason=no-condition subtask={}", rt.chain().currentSubtask().id());
                 return "";
             }
+            // 2026-10-29（去重）：`<env>` 的"回家"行已经每回合给「门在哪/多远/亮熄」这条事实，
+            //   `<way_home>` 只该在"真要动身"时出现（约 140 字/回合，不能次次都塞）：
+            //   条件 = ① 当前二级的判据就是 dimension（明确要换维度），或 ② 她已经走到门口附近（≤16 格）。
+            boolean wantsDimension = cond.get("dimension") instanceof String dw && !dw.isBlank();
+            if (!wantsDimension) {
+                double dist = 9999;
+                try {
+                    net.minecraft.server.level.ServerPlayer body = RddCompanionBody.get(companionId);
+                    if (body instanceof NumenPlayer np) {
+                        int[] anchor = RddWaypoints.anchorPos(companionId, "minecraft:the_nether");
+                        if (anchor == null) anchor = RddWaypoints.anchorPos(companionId, "minecraft:overworld");
+                        if (anchor != null) {
+                            double dx = anchor[0] - np.getX(), dy = anchor[1] - np.getY(), dz = anchor[2] - np.getZ();
+                            dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                        }
+                    }
+                } catch (RuntimeException ignored) {
+                    // 算不出距离就当作"不近"，交给 <env> 的回家行
+                }
+                if (dist > 16) {
+                    return "";
+                }
+            }
             Object want = cond.get("dimension");
             String dim = (want instanceof String s && !s.isBlank()) ? s : "minecraft:overworld";
             // 2026-10-28：没有 dimension 判据时也默认问"回主世界"——她在下界、身边没门、
