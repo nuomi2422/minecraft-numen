@@ -48,7 +48,15 @@ public final class AcxFinishedTask {
         if ("SUCCESS".equals(stateName)) {
             return AcxCompletionProbe.Snapshot.done(Map.of(), "任务已完成（终态记录）");
         }
-        if ("FAILED".equals(stateName) || "TIMEOUT".equals(stateName) || "CANCELLED".equals(stateName)) {
+        // 2026-10-28（实机）：**CANCELLED ≠ 这一步做不到**。
+        // 一只同伴只有一个异步槽，主线（RDD 链）下一次派活会 brain.current.cancel() 顶掉脚本的 goto，
+        // 脚本就被判成 FAIL —— 但事实是"身体被抢走"，不是"目标不可达"。
+        // 这里改判为「保留挂账等待重试」（unknown），把可恢复的冲突和真正的失败分开。
+        if ("CANCELLED".equals(stateName)) {
+            return AcxCompletionProbe.Snapshot.unknown(
+                    "任务被取消（身体被别的派活顶掉，不是做不到）；保留挂账等待重试");
+        }
+        if ("FAILED".equals(stateName) || "TIMEOUT".equals(stateName)) {
             return AcxCompletionProbe.Snapshot.failed("任务终态是 " + stateName + "（不是成功，按失败处理）");
         }
         // RUNNING/PENDING/未知态名都不是「该任务的终态」——不猜，交给调用方保留挂账。
