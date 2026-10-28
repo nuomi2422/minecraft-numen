@@ -497,6 +497,65 @@ public final class NumenPlayer extends ServerPlayer {
         // 已经是新位置,位移天然为零 —— 不需要另写传送豁免。
         net.minecraft.world.phys.Vec3 moved = position().subtract(before);
         doCheckFallDamage(moved.x, moved.y, moved.z, onGround());
+        // D-20（2026-10-28 主人指出，旧债）：**假玩家站进传送门不会被原版传送**。
+        //   原版那条路（baseTick → handlePortal → changeDimension）里含"给客户端的 respawn 握手"，
+        //   而假玩家的连接是空壳 —— 握手永远不回来，于是站 100+ tick 维度都不变
+        //   （UsePortalCompanionTask 的注释"剩下的交给原版"就是这么失效的）。
+        //   这里补一支**假玩家专用**的兜底：站进门框超过阈值就自己按 1:8 配对坐标传过去。
+        if (level() instanceof ServerLevel serverLevel) {
+            tickPortalFallback(serverLevel);
+        }
+    }
+
+    /** 站进门框的累计 tick（D-20 兜底用）。 */
+    private int portalStuckTicks = 0;
+    /** 门兜底的阈值：原版换维度约 80 tick，给到 100 还没走就自己动手。 */
+    private static final int PORTAL_FALLBACK_TICKS = 100;
+
+    /**
+     * D-20 兜底：站在下界传送门方块里、且原版迟迟没把维度换掉时，自己完成传送。
+     *
+     * <p>只在"确实站在 {@code minecraft:nether_portal} 方块里"时累计；
+     * 离开门框立刻清零，避免误传。传送走 {@link #teleportTo(ServerLevel, double, double, double, float, float)}
+     * —— 与 {@code rdd_teleport} 同一入口（那条路实测可用）。
+     */
+    private void tickPortalFallback(ServerLevel serverLevel) {
+        if (!serverLevel.getBlockState(blockPosition()).is(net.minecraft.world.level.block.Blocks.NETHER_PORTAL)) {
+            portalStuckTicks = 0;
+            return;
+        }
+        if (++portalStuckTicks < PORTAL_FALLBACK_TICKS) {
+            return;
+        }
+        portalStuckTicks = 0;
+        try {
+            boolean inNether = serverLevel.dimension() == net.minecraft.world.level.Level.NETHER;
+            net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> target =
+                    inNether ? net.minecraft.world.level.Level.OVERWORLD : net.minecraft.world.level.Level.NETHER;
+            ServerLevel dest = serverLevel.getServer().getLevel(target);
+            if (dest == null) {
+                return;
+            }
+            double scale = inNether ? 8.0 : 0.125;      // 下界→主世界 ×8；主世界→下界 ÷8
+            double x = position().x * scale;
+            double z = position().z * scale;
+            double y = position().y;
+            // 目标点如果不在已加载区块里，先让它生成（否则会落到虚空/墙里）
+            dest.getChunk((int) Math.floor(x) >> 4, (int) Math.floor(z) >> 4);
+            if (inNether) {
+                // 回主世界：用地表高度，避免落进地下
+                y = Math.max(y, dest.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING,
+                        (int) Math.floor(x), (int) Math.floor(z)) + 1);
+            } else {
+                y = Math.min(Math.max(y, 32), 120);     // 下界：夹在可站立高度
+            }
+            org.slf4j.LoggerFactory.getLogger(NumenPlayer.class).info(
+                    "[numen][portal-fallback] {} standing in portal {} tick(>= {}) without vanilla transfer → teleport {} -> {}",
+                    getUUID(), PORTAL_FALLBACK_TICKS, PORTAL_FALLBACK_TICKS, serverLevel.dimension().location(), target.location());
+            teleportTo(dest, x + 0.5, y, z + 0.5, getYRot(), getXRot());
+        } catch (RuntimeException ex) {
+            reportTickFailure(ex);
+        }
     }
 
     /** 同一具身体只吵一次:tick 每秒二十下,真炸起来就是每秒二十条,日志立刻没法看。 */
