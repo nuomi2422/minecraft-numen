@@ -36,6 +36,9 @@ final class RddWaypoints {
      * 每 tick 调用：记录当前维度里的坐标；一旦发现维度变了，
      * 就把**上一个维度**里最后记下的坐标固化为"门的位置"。
      */
+    /** 每个维度里"门在这一侧"的坐标（= 从别处跳进来时的落点）。回家要走向**当前维度这一侧**的门。 */
+    private static final Map<UUID, Map<String, String>> PORTAL_IN_DIM = new ConcurrentHashMap<>();
+
     static void observe(NumenPlayer ap) {
         if (ap == null || ap.level() == null) return;
         UUID id = ap.getUUID();
@@ -45,6 +48,9 @@ final class RddWaypoints {
         LAST_SEEN.computeIfAbsent(id, k -> new ConcurrentHashMap<>()).put(dim, here);
         String prev = CURRENT_DIM.put(id, dim);
         if (prev != null && !prev.equals(dim)) {
+            // 落点 = 这一侧的门（人是从门里出来的）——回家时走向它，而不是目标维度那侧的坐标
+            PORTAL_IN_DIM.computeIfAbsent(id, k -> new ConcurrentHashMap<>()).put(dim, here);
+            PORTAL_IN_DIM.computeIfAbsent(id, k -> new ConcurrentHashMap<>()).put(prev, LAST_SEEN.getOrDefault(id, Map.of()).getOrDefault(prev, ""));
             // 刚跳完维度：上一个维度里最后那格 = 那扇门的门口
             RddMonitor.publish("dimension_anchor", Map.of(
                     "companionId", id.toString(),
@@ -71,17 +77,19 @@ final class RddWaypoints {
         if (id == null || wantedDimension == null || wantedDimension.isBlank()) return "";
         String cur = CURRENT_DIM.get(id);
         if (cur == null || cur.equals(wantedDimension)) return "";
-        String at = lastPosIn(id, wantedDimension);
+        // ★ 要走向**当前维度这一侧**的门（她进来的那个落点），不是目标维度那侧的坐标。
+        Map<String, String> m = PORTAL_IN_DIM.get(id);
+        String at = m == null ? "" : m.getOrDefault(cur, "");
         if (at.isEmpty()) return "";
         String[] xyz = at.split(",");
         if (xyz.length != 3) return "";
-        return "<way_home>你从 " + wantedDimension + " 进来时，那扇门在 " + at
-                + "（约 " + distanceRough(id, cur, xyz) + " 格）。要回去就先把身体挪到那附近"
-                + "（goto " + xyz[0] + " " + xyz[1] + " " + xyz[2] + "），再 use_portal {kind:\"nether\"}——"
+        String dist = distanceRough(id, cur, xyz);
+        return "<way_home>要回 " + wantedDimension + " 的话，门就在你这个维度的 " + at
+                + " 附近（离你约 " + dist + " 格）。先把身体挪过去（goto "
+                + xyz[0] + " " + xyz[1] + " " + xyz[2] + "），再 use_portal {kind:\"nether\"}——"
                 + "use_portal 只在约 96 格内找门，隔着几百格它会直接报找不到。"
-                + "别在下界现造一座门：那要 10 个黑曜石，而下界没有水。</way_home>";
+                + "别在这个维度现造一座门：那要 10 个黑曜石，而下界没有水。</way_home>";
     }
-
     private static String distanceRough(UUID id, String curDim, String[] target) {
         try {
             Map<String, String> m = LAST_SEEN.get(id);
