@@ -245,10 +245,20 @@ public final class LossImpactAnalyzer {
     }
 
     private static AssetSemantics.Importance importanceOf(String assetKey, Map<String, AssetSemantics> semantics) {
-        if (assetKey == null || semantics == null) return AssetSemantics.Importance.SECONDARY;
-        AssetSemantics s = semantics.get(assetKey);
-        if (s == null) s = semantics.get(assetKey.toLowerCase(Locale.ROOT));
-        return s == null ? AssetSemantics.Importance.SECONDARY : s.importance();
+        if (assetKey == null) return AssetSemantics.Importance.SECONDARY;
+        AssetSemantics s = semantics == null ? null : semantics.get(assetKey);
+        if (s == null && semantics != null) s = semantics.get(assetKey.toLowerCase(Locale.ROOT));
+        if (s != null) return s.importance();
+        // ★ 2026-10-28 实机（#245）：语义表里**没有条目**就一律 SECONDARY —— 结果她丢了整套钻石甲，
+        //   分析器报 importantLoss=false / recommendation=NONE / affectedGoals=0，看起来"没什么大事"。
+        //   语义表本来只覆盖"规划时提到过的那几件"（当时只有 obsidian/diamond_pickaxe/bucket 三条），
+        //   所以**没有条目 ≠ 不重要**。这里补按品级的兜底（只用于"没有语义"的资产）：
+        //   diamond_/netherite_ → IMPORTANT；iron_/chainmail_ → SECONDARY；其余 SECONDARY。
+        String k = assetKey.toLowerCase(Locale.ROOT);
+        if (k.startsWith("netherite_") || k.startsWith("diamond_")) {
+            return AssetSemantics.Importance.IMPORTANT;
+        }
+        return AssetSemantics.Importance.SECONDARY;
     }
 
     private static Map<String, Integer> clean(Map<String, Integer> counts) {
