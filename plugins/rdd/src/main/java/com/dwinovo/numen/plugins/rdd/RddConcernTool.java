@@ -65,8 +65,31 @@ final class RddConcernTool implements NumenTool {
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("kind", n.kind().name());
             data.put("needsSupervisorAction", n.needsSupervisorAction());
+            // ★ 2026-10-28 实机（本会话最贵的一课）：
+            //   她 03:14 交了高质量 COUNTER（地形/边界/替代位置/代价都写了），
+            //   系统只回 "concern recorded"，而 `replanned` 停在 03:05 ——
+            //   **报告被记下、没人接单，链继续让她在岩浆脊上挖 48 块**。
+            //   所以：需要上层动作的回执（COUNTER/REJECT/PAUSE）**当场触发一次重规划**，
+            //   并把她的 suggestion 当 soldierHint 传进去（上层能看到她建议改去哪）。
+            boolean escalated = false;
+            if (n.needsSupervisorAction()) {
+                String hint = n.suggestion() == null ? "" : n.suggestion();
+                try {
+                    escalated = RddPlugin.requestReplan(companion.getUUID(),
+                            "soldier " + n.kind().name() + ": " + n.reason(), true, hint);
+                } catch (RuntimeException ignored) {
+                    escalated = false;
+                }
+                data.put("replanRequested", escalated);
+            }
+            RddMonitor.publish("concern_handled", Map.of(
+                    "companionId", companion.getUUID().toString(),
+                    "kind", n.kind().name(),
+                    "replanRequested", escalated,
+                    "subtask", taskId == null ? "" : taskId));
             reply.accept(com.dwinovo.numen.task.TaskResult.ok(
-                    "concern recorded: " + n.render(), data).toJson());
+                    (escalated ? "concern recorded + replan requested: " : "concern recorded: ")
+                            + n.render(), data).toJson());
         } catch (RuntimeException ex) {
             reply.accept(com.dwinovo.numen.task.TaskResult.fail("concern failed: " + ex.getMessage()).toJson());
         }
