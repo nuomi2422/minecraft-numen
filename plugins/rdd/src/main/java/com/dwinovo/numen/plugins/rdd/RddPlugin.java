@@ -570,7 +570,13 @@ private static String withAssets(UUID companionId, String rddContext) {
                 org.slf4j.LoggerFactory.getLogger(RddPlugin.class).info(
                         "[rdd-env] built len={} body={}", env.length(), body.getUUID());
                 if (!env.isEmpty()) {
-                    rddContext = rddContext.replace("</rdd>", env + "</rdd>");
+                    // 2026-10-28：`</rdd>` 这个锚点在某些组装路径上并不存在（实机 len=259 却始终没进上下文）。
+                    //   改成：有锚点就插在末尾之前，没有就直接接在后面——**不许静默丢弃**。
+                    if (rddContext.contains("</rdd>")) {
+                        rddContext = rddContext.replace("</rdd>", env + "</rdd>");
+                    } else {
+                        rddContext = rddContext + env;
+                    }
                 }
             } else {
                 org.slf4j.LoggerFactory.getLogger(RddPlugin.class).info(
