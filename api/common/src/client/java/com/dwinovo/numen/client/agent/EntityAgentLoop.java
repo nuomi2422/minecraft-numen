@@ -310,6 +310,13 @@ public final class EntityAgentLoop {
             new com.dwinovo.numen.agent.llm.BudgetGateCalibration();
     /** 正在飞的那次请求的本地估算，响应回来时与实测配对。 */
     private long inFlightTrimmedEstimate = 0;
+    /**
+     * G5g+（80 号 §2 REQUEST_DELIVERED）：本轮执行知识片段里「真保留在最终正文」的条目引用。
+     * 在 runtimeStateSections() 聚合时暂存，到发布点（plan 定案、keptNames 含 executor_knowledge）
+     * 才交给 NumenPlugins.requestDelivered —— 先裁后记，被丢的段一条不记。
+     */
+    private List<com.dwinovo.numen.api.NumenPlugins.DeliveredRef> pendingDeliveredRefs = new ArrayList<>();
+
     /** 预构建但还没发出去的 runtime_state XML / plan；真正发请求前由 publishPendingRuntimeState 发布。 */
     private String pendingRuntimeStateXml;
     private com.dwinovo.numen.agent.context.ContextBudget.Allocation pendingRuntimeStatePlan;
@@ -2584,6 +2591,7 @@ public final class EntityAgentLoop {
         String xml = body.isEmpty() ? "" : "<runtime_state" + attributes + ">" + body + "</runtime_state>";
         if (publish) {
             if (plan.denied() || plan.truncated()) publishContextBudget(plan);
+            deliverKnowledgeRefs(plan);
             publishRuntimeState(xml, origin, attempt);
         } else {
             // A-M2：先只暂存。被预算/上下文/压缩闸拦下的轮次永远不会走到发布点，
@@ -2608,10 +2616,33 @@ public final class EntityAgentLoop {
         pendingRuntimeOrigin = "execution";
         pendingRuntimeAttempt = 1;
         if (plan != null && (plan.denied() || plan.truncated())) publishContextBudget(plan);
+        deliverKnowledgeRefs(plan);
         String replay = pendingReplayLog;
         pendingReplayLog = null;
         if (replay != null) Constants.LOG.info(replay);
         publishRuntimeState(xml, origin, attempt);
+    }
+
+    /**
+     * G5g+（80 号契约 §2 REQUEST_DELIVERED，2026-10-27 补写）：
+     * 在 runtime_state **定案之后**把「真保留在正文里的条目」交给落账终点。
+     *
+     * <p>先裁后记（83 号 §9 验收②）：只有 plan.keptNames() 含 executor_knowledge 才记；
+     * 被预算丢掉的段一条不记 —— 否则账本会说「送到了」而请求里根本没有。
+     *
+     * <p>观测旁路：requestDelivered 内部逐 sink try/catch，账本挂了不挡请求。
+     * 账本本身是会话内的（ExposureLedger），经验插件侧还会发 monitor 事件留审计。
+     */
+    private void deliverKnowledgeRefs(ContextBudget.Allocation plan) {
+        List<com.dwinovo.numen.api.NumenPlugins.DeliveredRef> refs = pendingDeliveredRefs;
+        pendingDeliveredRefs = new ArrayList<>();
+        if (refs == null || refs.isEmpty()) {
+            return;
+        }
+        if (plan == null || !plan.keptNames().contains(SECTION_EXECUTOR_KNOWLEDGE)) {
+            return; // 段被裁：不记（先裁后记）
+        }
+        com.dwinovo.numen.api.NumenPlugins.requestDelivered(entityUuid, refs);
     }
 
     private void publishRuntimeState(String xml, String origin, int attempt) {
@@ -2665,7 +2696,13 @@ public final class EntityAgentLoop {
         if (objectiveForRetrieval.length() > 400) {
             objectiveForRetrieval = objectiveForRetrieval.substring(0, 400);
         }
-        String executorKnowledge = com.dwinovo.numen.api.NumenPlugins.executorKnowledge(entityUuid, objectiveForRetrieval);
+        // G5g+（80 号 §2）：改用片段版聚合 —— 正文与「哪些条目被装进来了」是同一次计算的产物，
+        // 「称重的东西」和「放进去的东西」必须同源（同一段上面那段注释的纪律）。
+        com.dwinovo.numen.api.NumenPlugins.KnowledgeFragment executorFragment =
+                com.dwinovo.numen.api.NumenPlugins.aggregateExecutorKnowledgeFragment(
+                        com.dwinovo.numen.api.NumenPlugins.executorContributors(), entityUuid, objectiveForRetrieval);
+        pendingDeliveredRefs = new ArrayList<>(executorFragment.refs());
+        String executorKnowledge = executorFragment.text();
         List<ContextBudget.Section> sections = new ArrayList<>(6);
         sections.add(new ContextBudget.Section(SECTION_CURRENT_TASK, currentTask, true,
                 estimateTokensOfText(currentTask), PRIORITY_CURRENT_TASK));

@@ -175,4 +175,25 @@ public interface NumenApi {
         }
     }
 
+    /**
+     * G5g+（80 号契约 §2，2026-10-27 补写）：片段形态 —— 贡献者交回
+     * {@link NumenPlugins.KnowledgeFragment}（正文 + 引用清单），聚合层据此记账。
+     * 默认实现退化成 BiFunction 形态（refs 丢弃 = 不记账），老插件不受影响。
+     */
+    default void contributeExecutorKnowledge(com.dwinovo.numen.api.NumenPlugins.KnowledgeContributor contributor) {
+        if (contributor != null) {
+            contributeExecutorKnowledge((BiFunction<UUID, String, String>) (uuid, objective)
+                    -> contributor.contribute(uuid, objective).text());
+        }
+    }
+
+    /**
+     * G5g+（80 号契约 §2）：注册「交付账本」终点。引擎在 runtime_state 定案后调用
+     * {@link NumenPlugins#requestDelivered}，把真保留的条目交给终点落
+     * ExposureLedger（api 不依赖 experience-core，这一跳由插件自己做）。
+     */
+    default void sinkRequestDelivered(java.util.function.BiConsumer<UUID, java.util.List<NumenPlugins.DeliveredRef>> sink) {
+        // 默认不接：老宿主没有账本
+    }
+
 }
