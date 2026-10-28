@@ -58,7 +58,17 @@ final class RddNeedsText {
      * @param foodCount 背包里可直接吃的件数
      */
     static String food(int hunger, int foodCount) {
-        if (hunger >= HUNGRY_AT) return "";
+        // ★ 2026-10-28 实机（主人点名要的"食物不足的补充"）：**不饿但没有库存**同样是问题。
+        //   场景：她刚进下界、hunger 还是 20/20，但背包**一份吃的都没有**，
+        //   而下界没有农田/树木，走远一点就只能干挨饿（饱食度掉到 0 会持续掉血）。
+        //   原来只在 hunger < HUNGRY_AT 时才提示 —— 那时已经晚了：她可能已经在无食物的地方了。
+        //   所以补一支：**饱食度还行但背包零食物 → 趁现在补**。
+        if (hunger >= HUNGRY_AT) {
+            if (foodCount > 0) return "";
+            return "<food_hint>你现在还不饿（" + hunger + "/20），但背包里**一份能吃的都没有**——"
+                    + "趁现在补上：打猎、摘果子、收作物，或者回仓库取存粮。"
+                    + "等你饿了才发现没吃的，往往已经在回不去的地方（下界没有农田和树）。</food_hint>";
+        }
         String level = hunger <= STARVING_AT ? "很饿（" : "有点饿（";
         if (foodCount > 0) {
             return "<food_hint>你现在" + level + hunger + "/20），背包里有 " + foodCount

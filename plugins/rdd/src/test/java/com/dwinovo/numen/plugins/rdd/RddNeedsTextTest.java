@@ -53,8 +53,11 @@ class RddNeedsTextTest {
 
     @Test
     void 不饿就不说话() {
-        assertEquals("", RddNeedsText.food(20, 0));
-        assertEquals("", RddNeedsText.food(RddNeedsText.HUNGRY_AT, 0), "阈值上边界不提示");
+        // 2026-10-28 改口径：**不饿但背包零食物**要提示（"趁现在补"），
+        // 因为实机她在下界 hunger=20 却一份吃的都没有，而下界没有农田和树。
+        assertNotEquals("", RddNeedsText.food(20, 0), "不饿但零食物也要提示：趁现在补");
+        assertNotEquals("", RddNeedsText.food(RddNeedsText.HUNGRY_AT, 0), "阈值上边界、零食物 → 提示补货");
+        assertEquals("", RddNeedsText.food(20, 3), "不饿且身上有吃的 → 安静");
         assertNotEquals("", RddNeedsText.food(RddNeedsText.HUNGRY_AT - 1, 1), "阈值下一格要提示");
     }
 }
