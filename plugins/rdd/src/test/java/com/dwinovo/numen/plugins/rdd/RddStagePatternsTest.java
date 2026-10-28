@@ -41,6 +41,9 @@ class RddStagePatternsTest {
         assertTrue(b.contains("烈焰"), "下界取烈焰棒是必经环节");
         assertTrue(b.contains("末影之眼"), "定位要塞靠眼睛");
         assertTrue(b.contains("出口："), "每个阶段都要有出口判据（否则阶段互相吞）");
+        // 2026-10-28 实机：她攒够黑曜石却**没有打火石**（燧石4、铁锭0），门造好也点不着。
+        assertTrue(b.contains("打火石"), "下界阶段必须点名点火物，否则会在门口干瞪眼：" + b);
+        assertTrue(b.contains("燧石") && b.contains("铁锭"), "要写出打火石的配方，不然她不知道缺什么");
     }
 
     @Test
