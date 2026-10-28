@@ -784,7 +784,13 @@ public final class RddWorldFacts {
      */
     private static boolean shelterAround(NumenPlayer ap, Map<String, Object> condition) {
         BlockPos bed = bedAnchor(ap);
-        if (bed == null) return false;
+        // ★ 2026-10-28 实机：**下界/末地放不了床** → bedAnchor 恒为 null → shelter 永远 false。
+        //   而链在下界给她派了「建个庇护所（shelter ≥20）」，于是失败→卡死。
+        //   判据本意是"你身边有没有挡得住风雨的角落"；床只是**有床时更准的锚点**，
+        //   没床时就锚在**她自己脚下** —— 语义不变，但可达成了。
+        if (bed == null) {
+            bed = ap.blockPosition().immutable();
+        }
         ServerLevel level = ap.serverLevel();
         int radius = baseRadius(condition);
         int minimum = WorldFactConditions.minimumOf(condition, 20);
