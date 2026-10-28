@@ -51,6 +51,7 @@ final class RddWaypoints {
             // 落点 = 这一侧的门（人是从门里出来的）——回家时走向它，而不是目标维度那侧的坐标
             PORTAL_IN_DIM.computeIfAbsent(id, k -> new ConcurrentHashMap<>()).put(dim, here);
             PORTAL_IN_DIM.computeIfAbsent(id, k -> new ConcurrentHashMap<>()).put(prev, LAST_SEEN.getOrDefault(id, Map.of()).getOrDefault(prev, ""));
+            save();   // 落盘：重启后"回家"仍然有效
             // 刚跳完维度：上一个维度里最后那格 = 那扇门的门口
             RddMonitor.publish("dimension_anchor", Map.of(
                     "companionId", id.toString(),
@@ -74,6 +75,7 @@ final class RddWaypoints {
      * @return 空串表示没有可用锚点（不硬编一句废话）
      */
     static String returnHint(UUID id, String wantedDimension) {
+        loadIfNeeded();   // 重启后锚点在磁盘上，不加载等于没有
         if (id == null || wantedDimension == null || wantedDimension.isBlank()) return "";
         String cur = CURRENT_DIM.get(id);
         if (cur == null || cur.equals(wantedDimension)) return "";
@@ -108,6 +110,63 @@ final class RddWaypoints {
         }
     }
 
+    // ── 落盘（2026-10-28，#252 的下一步）：锚点原来只在内存，重启即空 ——
+    //    而"先走远、再重启、再想回家"恰恰是最常见的处境。这里把它存成一个小 JSON：
+    //    { "<uuid>": { "<dim>": "x,y,z", ... }, ... }（只记"门在这一侧"的坐标）
+    private static java.nio.file.Path storeFile() {
+        // 放在 config\numen 下（语义目录的兄弟），跟其它 RDD 状态同一处
+        return RddPlugin.semanticsDir().resolveSibling("rdd-waypoints.json");
+    }
+
+    /** 启动/首次使用时读一次（失败就按空处理，不炸）。 */
+    static void loadIfNeeded() {
+        if (LOADED) return;
+        LOADED = true;
+        try {
+            java.nio.file.Path p = storeFile();
+            if (p == null || !java.nio.file.Files.isRegularFile(p)) return;
+            String raw = java.nio.file.Files.readString(p, java.nio.charset.StandardCharsets.UTF_8);
+            var root = com.google.gson.JsonParser.parseString(raw);
+            if (!root.isJsonObject()) return;
+            for (var e : root.getAsJsonObject().entrySet()) {
+                try {
+                    UUID id = UUID.fromString(e.getKey());
+                    if (!e.getValue().isJsonObject()) continue;
+                    Map<String, String> m = PORTAL_IN_DIM.computeIfAbsent(id, k -> new ConcurrentHashMap<>());
+                    for (var d : e.getValue().getAsJsonObject().entrySet()) {
+                        m.put(d.getKey(), d.getValue().getAsString());
+                    }
+                } catch (RuntimeException ignored) {
+                    // 单条坏数据不影响其它同伴
+                }
+            }
+        } catch (RuntimeException | java.io.IOException ignored) {
+            // fail-soft：读不到就当没有锚点
+        }
+    }
+
+    private static volatile boolean LOADED = false;
+
+    /** 落盘（每次维度切换后调一次，量很小）。 */
+    private static void save() {
+        try {
+            java.nio.file.Path p = storeFile();
+            if (p == null) return;
+            var root = new com.google.gson.JsonObject();
+            for (var e : PORTAL_IN_DIM.entrySet()) {
+                var dims = new com.google.gson.JsonObject();
+                for (var d : e.getValue().entrySet()) {
+                    dims.addProperty(d.getKey(), d.getValue());
+                }
+                root.add(e.getKey().toString(), dims);
+            }
+            java.nio.file.Files.createDirectories(p.getParent());
+            java.nio.file.Files.writeString(p, root.toString(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+        } catch (RuntimeException | java.io.IOException ignored) {
+            // fail-soft：存不下不影响本次提示
+        }
+    }
     static void clear(UUID id) {
         LAST_SEEN.remove(id);
         CURRENT_DIM.remove(id);
