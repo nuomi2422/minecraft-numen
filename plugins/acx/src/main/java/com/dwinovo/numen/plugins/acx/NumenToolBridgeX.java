@@ -46,7 +46,12 @@ public final class NumenToolBridgeX implements AcxToolPort {
     // 同步工具(runSync)的结果经 TaskResultPayload 发给客户端；ACX 直调(服务端)拿不到那条回执，
     // 会一直等到超时。5s 足够让「点击/破坏/放置」这类当场动作真正发生，又不至于每步白等 30s。
     // 需要长等的异步工具走 accepted 回执(立即返回)，不受这个值影响。
-    public static final long DEFAULT_TIMEOUT_MS = 5_000;
+    //
+    // 2026-10-28 实机（nether_retreat 第一次真机跑）：`use_portal` 是「走到传送门再进去」的长动作，
+    // 它同步等终态、5 秒回不来 → 脚本判 FAIL，而身体其实已经在走了（坐标 166,45,717 → 87,33,630 确实在变）。
+    // 所以 5s 对走路类积木明显不够：短动作（查状态/扫描）毫秒级返回不受影响，
+    // 长动作多等几秒，比"误判失败、整段脚本作废"划算得多。改 30s。
+    public static final long DEFAULT_TIMEOUT_MS = 30_000;
     public static final String CALL_PREFIX = "mcp-acx-";
 
     private static final Gson GSON = new Gson();
