@@ -567,12 +567,18 @@ private static String withAssets(UUID companionId, String rddContext) {
             net.minecraft.server.level.ServerPlayer body = RddCompanionBody.get(companionId);
             if (body instanceof NumenPlayer envAp) {
                 String env = RddEnvBlock.build(envAp, null);
+                org.slf4j.LoggerFactory.getLogger(RddPlugin.class).info(
+                        "[rdd-env] built len={} body={}", env.length(), body.getUUID());
                 if (!env.isEmpty()) {
                     rddContext = rddContext.replace("</rdd>", env + "</rdd>");
                 }
+            } else {
+                org.slf4j.LoggerFactory.getLogger(RddPlugin.class).info(
+                        "[rdd-env] skip reason=no-body bodyType={}",
+                        body == null ? "null" : body.getClass().getSimpleName());
             }
-        } catch (RuntimeException ignored) {
-            // 环境块失败不影响上下文组装
+        } catch (RuntimeException ex) {
+            org.slf4j.LoggerFactory.getLogger(RddPlugin.class).warn("[rdd-env] failed {}", ex.toString());
         }
         // 第三批 N1 消费：当前一级还没凑齐的需求（只读缓存；从未扫过背包时整块不出现）。
         // 放在这里的原因与 carry 相同：withAssets 是**全部分支的共同出口**。
