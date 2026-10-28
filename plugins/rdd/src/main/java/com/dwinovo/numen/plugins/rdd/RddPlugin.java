@@ -203,6 +203,14 @@ public final class RddPlugin implements NumenPlugin {
         numen.registerTool(new RddDebugVulnerabilityTool());
         // G3d：计划补丁（增量改计划；只碰当前指针及之后的 PENDING 节点，CAS 提交）
         numen.registerTool(new RddPatchTool());
+        // 2026-10-28（主人第一/三/四/六点）：现场数量回报、支线可拒绝、后面几级整段重写。
+        // 三个工具对应三段"执行侧本该有、但此前没有"的话语权：
+        //   ① rdd_report_yield —— 到了现场数清了，把目标数改成实际值（只许往上抬）；
+        //   ② rdd_decline_side —— 支线是建议不是命令，太危险/做不到可以拒绝；
+        //   ③ rdd_replan_chain —— 后面的路整体不成立时，整段重写（当前阶段及已完成的一字不动）。
+        numen.registerTool(new RddReportYieldTool());
+        numen.registerTool(new RddDeclineSideTool());
+        numen.registerTool(new RddReplanChainTool());
         // 2026-10-27（主人）：代码层直发 Supervisor（Stage-A）的注册口——实验台跑超长线任务用，
         // 与 /goal 同一条规划真路；source 标 rdd_supervisor_submit，监测台能分清发起方。
         numen.registerTool(new RddSupervisorSubmitTool());
@@ -248,6 +256,7 @@ public final class RddPlugin implements NumenPlugin {
             LAST_INVENTORY_AT.remove(body.getUUID());
             // 38号v3.6 B24：携带器缓存与 LAST_INVENTORY 同生命周期，不清就是泄漏
             RddCarryHint.invalidate(body.getUUID());
+            RddFutureNeeds.clear(body.getUUID());
         });
         // 床边复活：死亡时记下同伴"自己绑的"床位（见 onCompanionDeath），SPAWN 时 TP 到床旁安全落点。
         // 只消费一次（take-and-clear）；首建/休眠恢复没有锚点，不会触发。
@@ -363,6 +372,7 @@ public final class RddPlugin implements NumenPlugin {
             RddCarryHint.invalidateAll();
             LAST_EXPANSION_REPORT.clear();
             KICKOFF_SENT.clear();
+            RddFutureNeeds.clearAll();   // "后面几级要用的东西"是世界观测，换世界必须清
             // 2026-09-30 深审 R05：世界态必须清干净。
             // 计划代次的真源在 TaskChain 里（随链持久化），这里不用管；
             // 但「上一个世界的回执」一个都不能带到新世界。
@@ -550,6 +560,20 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!carry.isEmpty()) {
             rddContext = rddContext.replace("</rdd>", carry + "</rdd>");
         }
+        // 2026-10-28（#297）：常驻环境块——每回合自动在场的一小块事实（位置/身边/手上/背包/危险/回家）。
+        //   她以前只能靠工具主动探环境，而一回合往往只调一两个工具 ⇒ 多数决定是在"不知道周围有什么"时做的。
+        //   只写事实、不写建议；≤12 行 / ≤400 字符，超了截断。见 rdd架构\常驻环境块-轻量方案-20261028.md
+        try {
+            net.minecraft.server.level.ServerPlayer body = RddCompanionBody.get(companionId);
+            if (body instanceof NumenPlayer envAp) {
+                String env = RddEnvBlock.build(envAp, null);
+                if (!env.isEmpty()) {
+                    rddContext = rddContext.replace("</rdd>", env + "</rdd>");
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // 环境块失败不影响上下文组装
+        }
         // 第三批 N1 消费：当前一级还没凑齐的需求（只读缓存；从未扫过背包时整块不出现）。
         // 放在这里的原因与 carry 相同：withAssets 是**全部分支的共同出口**。
         // #252：回家锚点——她需要回另一个维度时，把"门在哪"当**事实**递过去（不是指令）。
@@ -581,7 +605,13 @@ private static String withAssets(UUID companionId, String rddContext) {
                 if (pg != null) stageDescG = String.valueOf(pg.description());
                 var csub = chainG.currentSubtask();
                 String stepDesc = csub == null ? "" : String.valueOf(csub.description());
-                goalHint = RddGoalHint.block(totalGoal, stageDescG, stepDesc);
+                // 2026-10-28（主人第六点）：一级清单是一次生成的，那就把"后面还有哪几级"也给她，
+                // 否则她只看得到当前这一级，"要不要顺手把后面要用的东西拿了"根本无从判断。
+                java.util.List<String> remaining = new java.util.ArrayList<>();
+                for (var later : RddFutureNeeds.futurePrimaries(chainG)) {
+                    remaining.add(later.description());
+                }
+                goalHint = RddGoalHint.block(totalGoal, stageDescG, stepDesc, remaining);
             }
         } catch (RuntimeException ignored) {
             goalHint = "";
@@ -670,6 +700,13 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!goalHint.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(goalHint);
+        }
+        // 2026-10-28（主人第六点）："后面几级要用的东西，现在手上/身边有没有"。
+        // 由 30 秒一拍的 RddFutureNeeds 算好缓存，这里只读（上下文构建可能在非主线程）。
+        String futureNeeds = RddFutureNeeds.block(companionId);
+        if (!futureNeeds.isEmpty()) {
+            if (merged.length() > 0) merged.append("\n");
+            merged.append(futureNeeds);
         }
         if (!playbook.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");
@@ -979,6 +1016,21 @@ private static String withAssets(UUID companionId, String rddContext) {
         String previous = renderPreviousPlanForReplan(chain);
         if (!previous.isBlank()) {
             hint = hint + "\n\n## 上一版的二级计划（**不要原样重复**，指出它的错处并给出不同做法）\n" + previous;
+        }
+        // 2026-10-28（主人第二点）：重规划此前只有"当前一级 + 上一版二级"——它在猜三件事：
+        // 后面还要走什么、已经做过什么、此刻站在哪/手上有什么。三样都补上，才谈得上"全局"。
+        String remainingPlan = renderRemainingPlanForReplan(chain);
+        if (!remainingPlan.isBlank()) {
+            hint = hint + "\n\n## 后面还要走的阶段（可以保留、调整，或整段重写；别把已完成的又排一遍）\n"
+                    + remainingPlan;
+        }
+        String doneWork = renderDoneForReplan(chain);
+        if (!doneWork.isBlank()) {
+            hint = hint + "\n\n## 这条链已经做过的事（已成事实，不要重复规划）\n" + doneWork;
+        }
+        String situation = replanSituation(companionId);
+        if (!situation.isBlank()) {
+            hint = hint + "\n\n" + situation;
         }
         // 第三批 N1 消费：把「需求 × 持有对账 + 近期阶段事实」作为只读事实块送进规划器输入。
         // 只陈述事实（缺口数字 ≠「没做」），生成失败绝不影响重规划本身。
@@ -1849,6 +1901,113 @@ private static String safeDeathAttacker(NumenPlayer body) {
         } catch (RuntimeException e) {
             // 渲染旧计划失败不该阻断重规划：没有对照物只是质量下降，不是功能中断
             LOG.warn("[rdd] 渲染上一版计划失败: {}", e.toString());
+            return "";
+        }
+    }
+
+    /**
+     * 重规划输入②：当前一级<b>之后</b>的一级（主题 + 前置门）。
+     *
+     * <p>2026-10-28（主人第二点）：「我知道我还有备用装备……他知道这个是什么东西、拿来做什么的，
+     * 所以他才好重新规划整条任务。当然还要把那个他之前做过的任务和后面还要做的任务全都发给他」。
+     * 此前后面几级从来没进过重规划 prompt —— 规划器只能看见眼前这一级，自然写不出
+     * "别去下界了，先回主世界补装备"这种跨阶段的判断。
+     */
+    private static String renderRemainingPlanForReplan(TaskChain chain) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            java.util.List<PrimaryGoal> all = chain.goal().primaryGoals();
+            PrimaryGoal cur = chain.currentPrimary();
+            int idx = all.indexOf(cur);
+            for (int i = idx + 1; i >= 0 && i < all.size(); i++) {
+                PrimaryGoal p = all.get(i);
+                sb.append("  ").append(i - idx).append(". ").append(p.description());
+                if (!p.waitFor().isEmpty()) {
+                    sb.append("（进入前需持有：");
+                    java.util.List<String> needs = new java.util.ArrayList<>();
+                    for (var r : p.waitFor()) {
+                        needs.add(r.assetKey() + "×" + r.minimum());
+                    }
+                    sb.append(String.join("、", needs)).append("）");
+                }
+                sb.append('\n');
+            }
+            return sb.toString().strip();
+        } catch (RuntimeException e) {
+            return "";
+        }
+    }
+
+    /**
+     * 重规划输入③：这条链<b>已经做过的事</b>（终态 + 尝试次数）。
+     *
+     * <p>此前只给"已完成阶段键"（一句话），重规划无从知道"她上一次已经试了两次、都是怎么败的"。
+     * 有界（最多 {@value #REPLAN_DONE_MAX} 条），只列有终态的节点。
+     */
+    private static final int REPLAN_DONE_MAX = 20;
+
+    private static String renderDoneForReplan(TaskChain chain) {
+        try {
+            java.util.Map<String, com.dwinovo.numen.rdd.api.SubtaskStatus> statuses = chain.subtaskStatuses();
+            StringBuilder sb = new StringBuilder();
+            int shown = 0;
+            for (PrimaryGoal p : chain.goal().primaryGoals()) {
+                if (shown >= REPLAN_DONE_MAX) {
+                    break;
+                }
+                for (Subtask s : p.subtasks()) {
+                    if (shown >= REPLAN_DONE_MAX) {
+                        break;
+                    }
+                    var st = statuses.get(s.id());
+                    if (st == null) {
+                        continue;
+                    }
+                    String name = st.name();
+                    if (!("COMPLETED".equals(name) || "SKIPPED".equals(name)
+                            || "PAUSED".equals(name) || "FAILED".equals(name))) {
+                        continue;
+                    }
+                    String desc = s.description() == null ? "" : s.description().trim();
+                    if (desc.length() > REPLAN_PLAN_DESC_MAX) {
+                        desc = desc.substring(0, REPLAN_PLAN_DESC_MAX) + "…";
+                    }
+                    sb.append("  - [").append(name).append("] ").append(desc);
+                    int attempts = chain.attempts(s.id());
+                    if (attempts > 0) {
+                        sb.append("（试了 ").append(attempts).append(" 次）");
+                    }
+                    sb.append('\n');
+                    shown++;
+                }
+            }
+            if (shown == 0) {
+                return "";
+            }
+            if (sb.length() == 0) {
+                return "";
+            }
+            return sb.toString().strip();
+        } catch (RuntimeException e) {
+            return "";
+        }
+    }
+
+    /**
+     * 重规划输入④：现状事实包（我在哪 / 群系 / 背包 / 身边容器）。
+     *
+     * <p>与 Stage-A 规划用的是同一个 {@link RddPlannerFacts}（≤420 字符、只陈述事实）。
+     * 同伴不在线 → 空串（不猜）。这补的是"跟规划任务那个时候一个样子"里的"环境"那一半。
+     */
+    private static String replanSituation(UUID companionId) {
+        try {
+            MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+            var self = server == null ? null : server.getPlayerList().getPlayer(companionId);
+            if (self == null) {
+                return "";
+            }
+            return RddPlannerFacts.block(self, companionId);
+        } catch (RuntimeException e) {
             return "";
         }
     }
