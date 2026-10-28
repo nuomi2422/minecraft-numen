@@ -603,8 +603,19 @@ private static String withAssets(UUID companionId, String rddContext) {
                 // AssetRegistry 没有 size()：用可用资产条数当"背包有没有变化"的度量
                 var reg = assets(companionId);
                 int assetCount = reg == null ? 0 : reg.snapshot().size();
+                // 条件类型要传进去：空间型判据（*_nearby / position_at）失败多半是"人不在那儿"，
+                // 该建议"走过去"，不是"动手挖"。
+                String condType = "";
+                try {
+                    var cond = curS == null ? null : curS.condition();
+                    if (cond != null && cond.get("type") != null) {
+                        condType = String.valueOf(cond.get("type"));
+                    }
+                } catch (RuntimeException ignored) {
+                    condType = "";
+                }
                 stuckBlock = STUCK_WATCH.tick(companionId, subId, assetCount,
-                        System.currentTimeMillis(), subDesc);
+                        System.currentTimeMillis(), subDesc, condType);
             }
         } catch (RuntimeException ignored) {
             stuckBlock = "";

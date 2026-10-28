@@ -9,6 +9,10 @@ import java.util.UUID;
  *
  * <p>跟踪「当前二级 + 起始时刻 + 起始资产数」；同一个二级持续超过 {@link RddStuckText#STUCK_SECONDS}
  * 且资产数没变，就返回提示块。二级一变就重置 —— 换了步骤不算空转。
+ *
+ * <p>2026-10-28 追加：把**条件类型**也传进来 —— 因为空间型判据（`block_nearby` / `position_at`）
+ * 失败的最常见原因不是"没干活"，而是"**人不在判据要求的位置**"（实机：判据要"附近有黑曜石半径16"，
+ * 她人在 200 格外的村庄）。这种情况下给的必须是"走过去"，不是"动手挖"。
  */
 final class RddStuckWatch {
 
@@ -26,15 +30,22 @@ final class RddStuckWatch {
 
     private final Map<UUID, Mark> marks = new HashMap<>();
 
+    /** @deprecated 用带 condType 的重载；保留是为了不破坏旧调用点。 */
+    @Deprecated
+    String tick(UUID companion, String subtaskId, int assets, long nowMs, String stepDesc) {
+        return tick(companion, subtaskId, assets, nowMs, stepDesc, "");
+    }
+
     /**
      * @param companion 同伴
      * @param subtaskId 当前二级 id（为空则清掉状态）
      * @param assets    当前资产数
      * @param nowMs     当前时刻
      * @param stepDesc  二级描述（生成对症动作）
+     * @param condType  条件类型（空/未知则按步骤文字给建议）
      * @return 提示块；不该提示时返回空串
      */
-    String tick(UUID companion, String subtaskId, int assets, long nowMs, String stepDesc) {
+    String tick(UUID companion, String subtaskId, int assets, long nowMs, String stepDesc, String condType) {
         if (companion == null) return "";
         if (subtaskId == null || subtaskId.isBlank()) {
             marks.remove(companion);
@@ -49,7 +60,7 @@ final class RddStuckWatch {
         if (elapsedSec < RddStuckText.STUCK_SECONDS) return "";
         boolean sameAssets = assets <= m.assetsAtStart;
         int minutes = (int) (elapsedSec / 60L);
-        return RddStuckText.block(minutes, assets, sameAssets, stepDesc);
+        return RddStuckText.block(minutes, assets, sameAssets, stepDesc, condType);
     }
 
     /** 二级完成/切换时清状态（由调用方在检测到 id 变化时自然重置，这里只提供显式清理）。 */

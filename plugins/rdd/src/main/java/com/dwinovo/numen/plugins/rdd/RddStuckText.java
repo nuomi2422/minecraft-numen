@@ -31,13 +31,20 @@ final class RddStuckText {
      * @param assets    当前资产数
      * @param sameAssets 这段时间资产数有没有变化
      * @param step      当前二级描述（用来给出对症的动作）
+     * @param condType  当前二级的条件类型（block_nearby / container_nearby / position_at …）
      */
-    static String block(int minutes, int assets, boolean sameAssets, String step) {
+    static String block(int minutes, int assets, boolean sameAssets, String step, String condType) {
         if (minutes < STUCK_SECONDS / 60 || !sameAssets) return "";
         String s = step == null ? "" : step;
+        String ct = condType == null ? "" : condType;
         StringBuilder advice = new StringBuilder();
-        // 按这一步在干什么给动作，不给空话
-        if (s.contains("地下") || s.contains("Y≤") || s.contains("y≤") || s.contains("矿洞") || s.contains("岩浆")) {
+        // 2026-10-28 实机：这一步的判据是「**附近**有黑曜石(半径16)」，而她人在 200 格外的村庄，
+        // 于是连续 failed/stalled —— 这类条件失败不是"没干活"，是"站错地方"，建议必须是"走过去"。
+        if (ct.endsWith("_nearby") || "position_at".equals(ct)) {
+            advice.append("这一条的判据是「**你在目标附近**」（").append(ct)
+                  .append("），所以光在原地挖/查没用：先用 locate_block / locate_structure 查最近的")
+                  .append("目标在哪，再 goto 过去，到了再判定。前面如果已经找到过位置，就直接回去。");
+        } else if (s.contains("地下") || s.contains("Y≤") || s.contains("y≤") || s.contains("矿洞") || s.contains("岩浆")) {
             advice.append("往下走/往下挖：goto 到附近的洞口，或在脚下安全开挖（先挖两格看脚下，别垂直挖穿）");
         } else if (s.contains("找") || s.contains("前往") || s.contains("到达")) {
             advice.append("直接 goto 过去，到了再用 scan 看；不要站在原地点名");
@@ -50,5 +57,10 @@ final class RddStuckText {
                 + " 件没有变化 —— 你大概率在**空转**（反复查状态/扫描但没动手）。"
                 + "下一条不要再查了，直接做：" + advice + "。"
                 + "查状态不会让进度前进，只有挖/走/放/打会。</stuck_hint>";
+    }
+
+    /** 兼容旧调用：不知道条件类型时按步骤文字给建议。 */
+    static String block(int minutes, int assets, boolean sameAssets, String step) {
+        return block(minutes, assets, sameAssets, step, "");
     }
 }
