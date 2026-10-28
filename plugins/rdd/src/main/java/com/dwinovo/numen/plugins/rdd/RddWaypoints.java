@@ -219,6 +219,26 @@ final class RddWaypoints {
             // fail-soft：存不下不影响本次提示
         }
     }
+    /** 该维度里记着的门坐标 x,y,z；没有则 null。 */
+    static int[] anchorPos(UUID id, String dimension) {
+        Map<String, String> m = PORTAL_IN_DIM.get(id);
+        String at = m == null ? "" : m.getOrDefault(dimension, "");
+        if (at.isEmpty()) return null;
+        String[] p = at.split(",");
+        if (p.length != 3) return null;
+        try {
+            return new int[]{Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2])};
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    /** 该维度的门亮没亮："亮" / "熄" / ""（没记录）。 */
+    static String litState(UUID id, String dimension) {
+        Map<String, String> m = PORTAL_LIT.get(id);
+        String v = m == null ? "" : m.getOrDefault(dimension, "");
+        return "1".equals(v) ? "亮" : ("0".equals(v) ? "熄" : "");
+    }
     static void clear(UUID id) {
         LAST_SEEN.remove(id);
         CURRENT_DIM.remove(id);
