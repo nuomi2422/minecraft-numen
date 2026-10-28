@@ -46,6 +46,30 @@ final class RddWaypoints {
         var pos = ap.blockPosition();
         String here = pos.getX() + "," + pos.getY() + "," + pos.getZ();
         LAST_SEEN.computeIfAbsent(id, k -> new ConcurrentHashMap<>()).put(dim, here);
+        // 2026-10-28 实机（#271）：**门可能只是熄的**——她站在门框里却不传送，
+        //   因为框是黑曜石、portal 方块一个都没有（未点亮）。这里顺便记"这一侧的门亮没亮"，
+        //   供 returnHint 说对的话（"框在，但门没点亮"），而不是让她在门口干等。
+        try {
+            String anchorPos = PORTAL_IN_DIM.getOrDefault(id, Map.of()).get(dim);
+            if (anchorPos != null && !anchorPos.isEmpty()) {
+                String[] p = anchorPos.split(",");
+                if (p.length == 3) {
+                    var ap3 = new net.minecraft.core.BlockPos(
+                            Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2]));
+                    boolean lit = false;
+                    for (net.minecraft.core.BlockPos q : net.minecraft.core.BlockPos.betweenClosed(
+                            ap3.offset(-4, -2, -4), ap3.offset(4, 3, 4))) {
+                        if (ap.level().getBlockState(q).is(net.minecraft.world.level.block.Blocks.NETHER_PORTAL)) {
+                            lit = true;
+                            break;
+                        }
+                    }
+                    PORTAL_LIT.computeIfAbsent(id, k -> new ConcurrentHashMap<>()).put(dim, lit ? "1" : "0");
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // 记不下就按"不知道"处理，不影响回家提示
+        }
         String prev = CURRENT_DIM.put(id, dim);
         if (prev != null && !prev.equals(dim)) {
             // 落点 = 这一侧的门（人是从门里出来的）——回家时走向它，而不是目标维度那侧的坐标
@@ -91,6 +115,17 @@ final class RddWaypoints {
         try {
             double d = Double.parseDouble(dist);
             if (d <= 12) {
+                // 2026-10-28 #271：**门可能只是熄的**。她站在框里却不传送，因为 portal 方块一个都没有。
+                // 这时候让她"站进去再 use_portal"是废话——必须告诉她真正缺的东西（点火物）和可行路线。
+                Map<String, String> litMap = PORTAL_LIT.get(id);
+                boolean unlit = litMap != null && "0".equals(litMap.get(cur));
+                if (unlit) {
+                    return "<way_home>门框还在，但**这扇门没有点亮**——站进去不会有任何反应，use_portal 也会报找不到门。"
+                            + "要过去得先有火。你在下界，**打火石做不出来**（燧石好找，但铁锭要熔炉炼铁矿石，下界没有铁矿石）；"
+                            + "可行的两条：①**火焰弹**＝烈焰粉（打烈焰人）＋火药（恶魂/爬行者掉的）＋煤；"
+                            + "②用 locate_structure 找另一座**已点亮的**废墟传送门（ruined_portal），走到它里面去。"
+                            + "先选一条：要打烈焰人就往堡垒走，要碰运气就找废墟门。</way_home>";
+                }
                 return "<way_home>你已经到门口了。**这一步只做一件事**："
                         + "站进门框里那一格（门方块那一层），然后 use_portal {kind:\"nether\"}。"
                         + "不要在门口搭东西、不要开挖、不要去别处——过门只需要这一下。</way_home>";
@@ -157,6 +192,9 @@ final class RddWaypoints {
             // fail-soft：读不到就当没有锚点
         }
     }
+
+    /** 每个维度里"这门亮没亮"（"1"=亮 / "0"=熄）。 */
+    private static final Map<UUID, Map<String, String>> PORTAL_LIT = new ConcurrentHashMap<>();
 
     private static volatile boolean LOADED = false;
 
