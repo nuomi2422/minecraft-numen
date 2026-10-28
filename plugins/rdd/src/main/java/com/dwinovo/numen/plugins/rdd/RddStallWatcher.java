@@ -420,9 +420,12 @@ final class RddStallWatcher {
      * <p>不影响卡死检测：{@link RddStallPolicy} 那条路径继续用精确坐标（走路本身算进展）。
      */
     String parkedFingerprint(NumenPlayer ap) {
-        String inv = RddDetector.countInventory(ap).toString();
-        var pos = ap.blockPosition();
-        return inv + "|" + RddStallPolicy.parkedBucket(pos.getX(), pos.getY(), pos.getZ());
+        // ★ 2026-10-28 实机（D-19 修法的漏洞）：停车守望原来把**位置**也算进指纹。
+        //   可她停车后一直在传送门附近来回走（位置一直在变）→ 指纹每拍都不同 →
+        //   "无变化"永远攒不满 → 我写的"停车零变化就重规划"一次都没触发（实测停车 30 分钟无 replan）。
+        //   停车后的判据应该是**有没有产出**（背包），不是"人有没有动"——来回走不算进展。
+        //   位置仍在卡死判定（observe）里使用，只是不进停车指纹。
+        return RddDetector.countInventory(ap).toString();
     }
 
     /** Server-thread observation only. Fuel/elapsed/deadline/task-id changes are not work progress. */
