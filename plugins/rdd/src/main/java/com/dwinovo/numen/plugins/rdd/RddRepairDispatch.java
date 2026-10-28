@@ -233,15 +233,19 @@ final class RddRepairDispatch {
      */
     static void recomputeLatestFromLedger(UUID companionId, java.util.Map<String, Integer> counts) {
         try {
+            // 2026-10-28：日志必须在**所有早退之前**。
+            // 上一版把 start 日志放在 `latest == null || lostItems().isEmpty()` 之后，
+            // 结果"一次都没打印"——我差点又把它读成"没被调用"，其实是被这道早退挡在了前面。
+            com.dwinovo.numen.core.Constants.LOG.info(
+                    "[rdd-repair] recompute-from-ledger enter companion={}", companionId);
             if (companionId == null) return;
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death latest =
                     com.dwinovo.numen.rdd.core.RddDeathLedger.latest(companionId);
-            if (latest == null || latest.lostItems().isEmpty()) return;
-            // 2026-10-28：这里原本 catch 后静默吞掉 —— 而"重算一次都没发生"最可能就是被吞掉的异常。
-            // 兜底仍然 fail-soft，但**必须留下证据**（一行日志胜过再猜三轮）。
             com.dwinovo.numen.core.Constants.LOG.info(
-                    "[rdd-repair] recompute-from-ledger start companion={} latestSeq={} lostKinds={}",
-                    companionId, latest.seq(), latest.lostItems().size());
+                    "[rdd-repair] latest={} lostKinds={}",
+                    latest == null ? "null" : latest.seq(),
+                    latest == null ? -1 : latest.lostItems().size());
+            if (latest == null || latest.lostItems().isEmpty()) return;
             var impact = recomputeAfterDeath(companionId, counts, false, "restart", latest.seq());
             com.dwinovo.numen.core.Constants.LOG.info(
                     "[rdd-repair] recompute-from-ledger done companion={} seq={} impact={}",
