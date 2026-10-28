@@ -63,6 +63,12 @@ public final class CompanionFactory {
         // to its owner. Same-level setPos via moveTo — NOT the teleportTo(ServerLevel,…) dimension-travel
         // overload, which fires EntityTravelToDimensionEvent (tripping some world-protection mods) even for a
         // same-level move. A respawn from dormancy passes null and keeps exactly what the .dat restored.
+        // 2026-10-28（#285）：两条 spawn 路径在日志上长得一样，导致"重启后她为什么在这个坐标"无法定案。
+        //   各打一行：explicit = 新召唤/在主人身边重生；restore = 沿用 .dat 里保存的位置。
+        org.slf4j.LoggerFactory.getLogger(CompanionFactory.class).info(
+                "[numen][spawn] companion={} path={} pos={}", player.getUUID(),
+                pos == null ? "restore-from-dat" : "explicit",
+                pos == null ? player.blockPosition().toShortString() : (pos.x + "," + pos.y + "," + pos.z));
         if (pos != null) {
             player.moveTo(pos.x, pos.y, pos.z, player.getYRot(), player.getXRot());
         }
