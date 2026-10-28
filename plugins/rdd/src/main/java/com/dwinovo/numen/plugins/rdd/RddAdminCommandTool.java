@@ -82,7 +82,8 @@ final class RddAdminCommandTool implements NumenTool {
             var server = companion.getServer();
             if (server == null) throw new IllegalStateException("no server");
             // 以命令方块同等权限执行；源头记成同伴，便于事后从日志回溯是谁触发的
-            var source = server.createCommandSourceStack().withSuppressedOutput();
+            // 2026-10-29：命令源必须是**她本人**，否则 `@s` / `give @s` / `tp @s` 全部无效（她不是源）。
+            var source = companion.createCommandSourceStack().withSuppressedOutput();
             // 这一版 MC 的 performPrefixedCommand 返回 void，拿不到 syncResultCode —— 记 0 表示"已执行未取返回码"
             server.getCommands().performPrefixedCommand(source, command);
             int ok = 0;
