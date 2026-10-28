@@ -112,10 +112,10 @@ public final class ExperiencePlugin implements NumenPlugin {
             }
         });
 
-        numen.contributeExecutorKnowledge((companion, objective) -> {
+        numen.contributeExecutorKnowledge((com.dwinovo.numen.api.NumenPlugins.KnowledgeContributor) (companion, objective) -> {
             try {
                 if (RetrievalPolicy.experienceRetrievalMode() != RetrievalPolicy.Mode.UNIFIED) {
-                    return "";
+                    return com.dwinovo.numen.api.NumenPlugins.KnowledgeFragment.ofText("");
                 }
                 // 用 memory(companion) 而不是 MEMORIES.get：这是**每轮都会走的读路径**，
                 // 若等工具/规划先建库，执行视图会在会话前几分钟静默缺席（2026-10-21 实机踩到）。
@@ -126,8 +126,13 @@ public final class ExperiencePlugin implements NumenPlugin {
                 //   （objective 先进必知区占预算，一条正文 ~500 就顶满）——新条目即使 TRIAL
                 //   也永远被 max_chars 截掉，等于「学了一条，永远轮不到它上场」。
                 //   提到 2200：objective(~300) + 2 条正文(~500×2) 可同时在场，仍是有界预算。
+                // ★ 2026-10-27：2200 → 6000。实测：1200→2400 只改了「聚合上限」，请求里仍只有 3 条——
+                //   真正的截断在 MinimalContextAssembler：它的 bodyCost = title+summary+正文，
+                //   一条夜间经验光标题就 157 字、描述 491 字，单条成本 ~1000；
+                //   2200 减去 objective(~300) 只够 2 条，第 4 条起必然被 MAX_CHARS 挡掉。
+                //   6000 能让「objective + 5 条」同时在场（渲染正文约 2000 字，仍在聚合上限 2400 内）。
                 ExperienceStoreRetrievalBridge.Rendered rendered =
-                        ExperienceStoreRetrievalBridge.render(m, objective, 6, 2200,
+                        ExperienceStoreRetrievalBridge.render(m, objective, 8, 6000,
                                 com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
                 // ★ 2026-10-25（我实测发现）：上面这条是**执行视图**（role=EXECUTOR，每轮都发），
                 //   它用的是裸 rendered —— 指纹只在规划路径（ExperiencePlanningRouter）补过，
@@ -180,11 +185,54 @@ public final class ExperiencePlugin implements NumenPlugin {
                     vps.add(new TrialRuntime.VersionedPresentation(ref, version, System.currentTimeMillis()));
                 }
                 TrialRuntime.noteVersionedPresented(companion, vps, System.currentTimeMillis());
-                return rendered.text();
+                // G5g+（80 号契约 §2，2026-10-27 补写）：把「本片段引用了哪些条目」随正文一起交回
+                // 聚合器 —— 聚合层按「片段是否完整装入」决定 delivered/truncated（83 号 §9）。
+                // 每个条目都带上 contentFingerprint 作版本（找不到条目时留空 = LEGACY，不猜）。
+                java.util.List<com.dwinovo.numen.api.NumenPlugins.DeliveredRef> refs = new java.util.ArrayList<>();
+                for (String ref : shown) {
+                    String version = "";
+                    try {
+                        String id = ref.startsWith("exp:") ? ref.substring(4) : ref;
+                        var ve = ExperiencePlugin.memory(companion).findById(id);
+                        if (ve != null) {
+                            version = ve.contentFingerprint();
+                        }
+                    } catch (RuntimeException ignore) {
+                        // 与上面同一纪律：解析不到就空版本，不编造
+                    }
+                    refs.add(new com.dwinovo.numen.api.NumenPlugins.DeliveredRef(ref, version, false));
+                }
+                return new com.dwinovo.numen.api.NumenPlugins.KnowledgeFragment(rendered.text(), refs);
             } catch (Throwable t) {
                 // 执行知识是可选增强：坏了只丢这一段，本轮请求照常（宿主还有一层隔离兜底）
                 LOG.warn("[expmem] executor knowledge unavailable: {}", t.toString());
-                return "";
+                return com.dwinovo.numen.api.NumenPlugins.KnowledgeFragment.ofText("");
+            }
+        });
+        // G5g+（80 号契约 §2）：注册「交付账本」终点 —— 引擎在 runtime_state 定案后，
+        // 把真保留在正文里的条目交回来；这里落 ExposureLedger（KIND_REQUEST_DELIVERED，
+        // countsAsReceipt 认它）并发 monitor 事件留审计（会话内账本掉电即忘，事件才可对账）。
+        // api 不依赖 experience-core，所以这一跳必须由经验插件自己做（83 号 §9 阻塞点）。
+        com.dwinovo.numen.api.NumenPlugins.sinkRequestDelivered((companion, refs) -> {
+            try {
+                long now = System.currentTimeMillis();
+                int n = 0;
+                for (com.dwinovo.numen.api.NumenPlugins.DeliveredRef r : refs) {
+                    com.dwinovo.numen.experience.api.ExposureLedger.record(companion,
+                            new com.dwinovo.numen.experience.api.ExposureLedger.Delivery(
+                                    r.entryRef(), r.version(),
+                                    com.dwinovo.numen.experience.api.ExposureLedger.KIND_REQUEST_DELIVERED,
+                                    "", false, now));
+                    n++;
+                }
+                java.util.Map<String, Object> td = new java.util.LinkedHashMap<>();
+                td.put("companion", String.valueOf(companion));
+                td.put("count", n);
+                td.put("refs", refs.stream().map(x -> x.entryRef()).toList());
+                ExperienceMonitor.publish("request_delivered", td);
+            } catch (Throwable t) {
+                // 落账失败只发观测，不影响主流程（api 侧还有一层 try/catch）
+                LOG.warn("[expmem] request_delivered ledger failed: {}", t.toString());
             }
         });
         numen.contributeState(companion -> {
