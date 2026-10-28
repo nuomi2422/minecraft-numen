@@ -506,6 +506,24 @@ public final class RddPlugin implements NumenPlugin {
             return "";
         }
     }
+    /**
+     * 回家锚点提示（#252）：当前不在"目标维度"、而那个维度里记着"从哪离开的"，
+     * 就给一句"门在 (x,y,z)，先 goto 再 use_portal"。只读缓存、只给事实；
+     * 没有锚点（例如重启后还没跨过维度）就整块不出现。
+     */
+    private static String wayHomeHint(UUID companionId) {
+        try {
+            RddRuntime rt = runtime(companionId);
+            if (rt == null || rt.chain().currentSubtask() == null) return "";
+            Map<String, Object> cond = rt.chain().currentSubtask().condition();
+            if (cond == null) return "";
+            Object want = cond.get("dimension");
+            if (!(want instanceof String dim) || dim.isBlank()) return "";
+            return RddWaypoints.returnHint(companionId, dim);
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
 private static String withAssets(UUID companionId, String rddContext) {
         // 38号v3.6 B24：携带器提醒放在**这里**，而不是 renderStateContext 的主分支。
         // ⚠️ 2026-10-01 实机抓到：renderStateContext 有**三个提前返回分支**
@@ -518,6 +536,13 @@ private static String withAssets(UUID companionId, String rddContext) {
         }
         // 第三批 N1 消费：当前一级还没凑齐的需求（只读缓存；从未扫过背包时整块不出现）。
         // 放在这里的原因与 carry 相同：withAssets 是**全部分支的共同出口**。
+        // #252：回家锚点——她需要回另一个维度时，把"门在哪"当**事实**递过去（不是指令）。
+        // 背景：她自己搭门进下界、走远 500 格后计划要她回主世界，而她身边没有门，
+        // 只能想到"再造一座"（要 10 黑曜石 + 水，两样都没了），整条链就在下界空转。
+        String wayHome = wayHomeHint(companionId);
+        if (!wayHome.isEmpty()) {
+            rddContext = rddContext.replace("</rdd>", wayHome + "</rdd>");
+        }
         String needs = RddFactContext.executorBlock(companionId);
         if (!needs.isEmpty()) {
             rddContext = rddContext.replace("</rdd>", needs + "</rdd>");
