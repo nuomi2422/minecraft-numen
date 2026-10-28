@@ -518,7 +518,10 @@ public final class RddPlugin implements NumenPlugin {
             Map<String, Object> cond = rt.chain().currentSubtask().condition();
             if (cond == null) return "";
             Object want = cond.get("dimension");
-            if (!(want instanceof String dim) || dim.isBlank()) return "";
+            String dim = (want instanceof String s && !s.isBlank()) ? s : "minecraft:overworld";
+            // 2026-10-28：没有 dimension 判据时也默认问"回主世界"——她在下界、身边没门、
+            // 计划又不可能在下界凑出黑曜石的时候，"门在哪"这条事实**任何时候都值得给**。
+            // returnHint 内部会判"她已经在目标维度就不说话"，所以不会多嘴。
             return RddWaypoints.returnHint(companionId, dim);
         } catch (RuntimeException ignored) {
             return "";
