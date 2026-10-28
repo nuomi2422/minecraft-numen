@@ -30,6 +30,22 @@ final class RddStuckWatch {
 
     private final Map<UUID, Mark> marks = new HashMap<>();
 
+    /** 2026-10-28：跨步骤的"毫无产出"看门狗（步骤级计时会被频繁重规划重置，见下方注释）。 */
+    private static final class Progress {
+        int lastAssets;
+        long lastChangeMs;
+
+        Progress(int lastAssets, long lastChangeMs) {
+            this.lastAssets = lastAssets;
+            this.lastChangeMs = lastChangeMs;
+        }
+    }
+
+    private final Map<UUID, Progress> progress = new HashMap<>();
+
+    /** 背包连续这么多秒没有任何变化 → 认定"整条链在原地"（不是单个步骤的空转）。 */
+    static final int NO_PROGRESS_SECONDS = 600;
+
     /** @deprecated 用带 condType 的重载；保留是为了不破坏旧调用点。 */
     @Deprecated
     String tick(UUID companion, String subtaskId, int assets, long nowMs, String stepDesc) {
@@ -47,6 +63,22 @@ final class RddStuckWatch {
      */
     String tick(UUID companion, String subtaskId, int assets, long nowMs, String stepDesc, String condType) {
         if (companion == null) return "";
+        // ── 跨步骤看门狗 ────────────────────────────────────────────────
+        // 实机教训（2026-10-28）：链每 2~4 分钟就重规划一次（r5→r11 一路换步），
+        // 于是**步骤级的计时永远攒不满 5 分钟**，stuck_hint 一次都没触发 ——
+        // 而她这半小时背包始终 157~159 件，等于"整条链在原地"。
+        // 所以判定必须挂在**背包有没有变化**上，而不是挂在某一步上。
+        Progress pg = progress.get(companion);
+        if (pg == null) {
+            progress.put(companion, new Progress(assets, nowMs));
+        } else if (assets != pg.lastAssets) {
+            pg.lastAssets = assets;
+            pg.lastChangeMs = nowMs;
+        } else if ((nowMs - pg.lastChangeMs) / 1000L >= NO_PROGRESS_SECONDS) {
+            long mins = (nowMs - pg.lastChangeMs) / 60000L;
+            pg.lastChangeMs = nowMs;   // 报一次就重置，别每轮刷屏
+            return RddStuckText.noProgress((int) mins, assets, stepDesc);
+        }
         if (subtaskId == null || subtaskId.isBlank()) {
             marks.remove(companion);
             return "";

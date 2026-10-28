@@ -59,4 +59,30 @@ class RddStuckWatchTest {
         String s = RddStuckText.block(20, 999, true, "深入地下 Y≤30 找岩浆区域");
         assertTrue(s.length() < 700, "上下文块必须有界，实际 " + s.length());
     }
+
+    @Test
+    void 跨步骤毫无产出时提醒整条链在原地() {
+        RddStuckWatch w = new RddStuckWatch();
+        long t0 = 2_000_000L;
+        // 每 3 分钟换一个步骤（真实实况：r5→r11 一路重规划），资产始终 159
+        w.tick(id, "sub-1", 159, t0, "凑黑曜石", "block_nearby");
+        long t = t0;
+        String hit = "";
+        for (int i = 0; i < 6 && hit.isEmpty(); i++) {
+            t += 3 * 60_000L;
+            hit = w.tick(id, "sub-" + (i + 2), 159, t, "凑黑曜石", "block_nearby");
+        }
+        assertTrue(hit.contains("<progress_hint>"), "十几分钟零产出必须提醒，实际：" + hit);
+        assertTrue(hit.contains("黑曜石框"), "该给「挖废墟框」这条更省事的路");
+    }
+
+    @Test
+    void 有产出就不提醒进度() {
+        RddStuckWatch w = new RddStuckWatch();
+        long t0 = 3_000_000L;
+        w.tick(id, "sub-1", 159, t0, "凑黑曜石", "");
+        w.tick(id, "sub-2", 160, t0 + 5 * 60_000L, "凑黑曜石", "");
+        String s = w.tick(id, "sub-3", 161, t0 + 11 * 60_000L, "凑黑曜石", "");
+        assertEquals("", s, "背包在变多说明在推进，不要打扰");
+    }
 }

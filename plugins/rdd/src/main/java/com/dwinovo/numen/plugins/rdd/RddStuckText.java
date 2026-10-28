@@ -63,4 +63,27 @@ final class RddStuckText {
     static String block(int minutes, int assets, boolean sameAssets, String step) {
         return block(minutes, assets, sameAssets, step, "");
     }
+
+    /**
+     * 「整条链在原地」——跨步骤看门狗。
+     *
+     * <p>实机（2026-10-28）：链在 30 分钟里从 r5 重规划到 r11，**每一步都换了**，
+     * 于是步骤级计时永远攒不满；而她的背包从头到尾 157~159 件，一次都没有真正推进。
+     * 这种情况要说的是"你换了很多步但产出为零"，而不是"这一步做久了"。
+     */
+    static String noProgress(int minutes, int assets, String step) {
+        String s = step == null ? "" : step;
+        StringBuilder sb = new StringBuilder("<progress_hint>");
+        sb.append("过去 ").append(minutes).append(" 分钟，你的背包一直是 ").append(assets)
+          .append(" 件，**一件新东西都没有** —— 不管计划换了几步，你其实没有推进。");
+        sb.append("现在的卡点是什么？说清楚再动：缺什么（工具/材料/食物）、")
+          .append("还是到不了（路被挡/太远/找不到）。");
+        if (s.contains("黑曜石") || s.contains("岩浆")) {
+            sb.append("眼前这类目标还有个更省事的路子：**废墟传送门的黑曜石框可以直接挖走**，")
+              .append("比自己浇岩浆再挖省事得多。");
+        }
+        sb.append("如果反复走同一条路都失败，换一条完全不同的路（换来源/换维度/先去补装备），")
+          .append("不要在同一个地方加码。</progress_hint>");
+        return sb.toString();
+    }
 }
