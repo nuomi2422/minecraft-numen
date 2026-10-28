@@ -239,6 +239,12 @@ final class RddRepairDispatch {
             com.dwinovo.numen.core.Constants.LOG.info(
                     "[rdd-repair] recompute-from-ledger enter companion={}", companionId);
             if (companionId == null) return;
+            // ★ 2026-10-28（静态定案）：死亡台账是**懒加载**的，加载点只有两处 ——
+            //   ① onDeath（死亡那一刻；重启后这条路不会再走）；
+            //   ② deathDropsBackInInventory（要求 lastRepair != null，而 lastRepair 也是内存表，重启即空）。
+            //   所以**重启之后**跑这段兜底时，内存台账是空的：latest() 为 null、静默返回
+            //   （上一版日志放在这之后，于是看起来"从没被调用"）。ensureLedgerLoaded 按 UUID 幂等，补一次即可。
+            RddPlugin.ensureLedgerLoaded(companionId);
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death latest =
                     com.dwinovo.numen.rdd.core.RddDeathLedger.latest(companionId);
             com.dwinovo.numen.core.Constants.LOG.info(
