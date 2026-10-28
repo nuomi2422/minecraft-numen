@@ -96,6 +96,13 @@ sourceSets {
 
 test {
     useJUnitPlatform()
+    // 2026-10-29：`@Tag("mc")` 的测试需要真实 Minecraft 注册表（SharedConstants.tryDetectVersion +
+    //   MobEffects 等），而 api:common 的 test 运行期没有 MC 类 → 16 条 InventoryBlockTest 全是
+    //   NoClassDefFoundError。它们在"干净树上同样失败"（#386），属于长期的假红，会把真红淹没。
+    //   这里显式排除；要跑它们用专门的带 MC 运行期的任务，不要混在默认 test 里。
+    useJUnitPlatform {
+        excludeTags 'mc'
+    }
 }
 
 // 服务端安全门:主源码集不得引用 Minecraft 客户端类。源码集隔离挡得住
