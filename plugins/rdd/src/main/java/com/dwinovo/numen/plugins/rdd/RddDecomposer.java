@@ -77,8 +77,37 @@ final class RddDecomposer {
      * 交回调；任何失败（无 key/LLM 错/未调工具）交 onFail。两段都在 {@code Minecraft.getInstance().execute}
      * 弹回主线程——调用方据此决定回落或走 §9 失败恢复，绝不在传输层伪造结果。
      */
+    /**
+     * 「现场事实」前缀（2026-10-28 实机教训）：
+     * 重规划之后给出的仍是同一个步骤（obsidian≥10），因为规划器不知道她**人在下界**——
+     * 黑曜石在下界几乎拿不到（要水桶浇岩浆），在主世界才有现成的废墟传送门框。
+     * 所以每次规划都先用一句话把"现在在哪个维度、那个维度的硬约束"递到它眼前。
+     * 纯文本、极短，不占多少 token。
+     */
+    static String situationBlock(UUID companionId) {
+        try {
+            var body = com.dwinovo.numen.plugins.rdd.RddCompanionBody.get(companionId);
+            if (body == null) return "";
+            String dim = body.level().dimension().location().toString();
+            String hint;
+            if (dim.contains("the_nether")) {
+                hint = "下界：不能放床（放了会炸）、没有水和树、熔岩遍地、出行靠自己建的传送门；"
+                        + "黑曜石/木头这类东西在下界很难拿到，需要的话回主世界取。";
+            } else if (dim.contains("the_end")) {
+                hint = "末地：没有水、不能睡、掉下去就回不来；补给必须事先带够。";
+            } else {
+                hint = "主世界：水和树都有，怪物夜间出没。";
+            }
+            return "【现场事实】当前所在维度：" + dim + "（" + hint + "）\n\n";
+        } catch (RuntimeException | LinkageError ignored) {
+            return "";
+        }
+    }
+
     static void llmAsk(UUID companionId, String stage, String userContent, String system, IToolSpec tool,
                        Consumer<String> onArguments, Runnable onFail) {
+        // 现场事实进 prompt：让"重规划"能真正换方向，而不是拿同样的输入再写一遍。
+        userContent = situationBlock(companionId) + userContent;
         INumenConfig cfg = Services.CONFIG;
         if (cfg.getApiKey() == null || cfg.getApiKey().isBlank()) {
             Minecraft.getInstance().execute(onFail);
