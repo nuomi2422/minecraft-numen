@@ -165,6 +165,9 @@ final class RddStallWatcher {
         //   原指纹含位置 ⇒ 她在地表绕圈就永远判不出卡住（实测该级 20 分钟无进展、规划者 76 分钟没被叫过）。
         if (isInventoryTarget(current.condition())) fp = inventoryKey(ap);
         String stateKey = stateKey(ap, observation);
+        // 2026-10-29（#210 补刀）：库存类判据下 stateKey 也必须只用背包 —— 它是真进展的判据，
+        //   位置一变就 resumeFromStalled 把计数清零（我上一轮只改了 windowFp，漏了这条路径）。
+        if (isInventoryTarget(current.condition())) stateKey = inventoryKey(ap);
         StallState st = stalls.get(ap.getUUID());
         if (st == null || !st.subtaskId().equals(current.id())) {
             stalls.put(ap.getUUID(), new StallState(current.id(), fp, stateKey, 0, 0));
@@ -328,6 +331,9 @@ final class RddStallWatcher {
         // observe() 只调一次：它有副作用（furnaceWatch.track 在记账），调两次等于记两次。
         RddStallPolicy.Observation observation = observe(ap, rt, current);
         String stateKey = stateKey(ap, observation);
+        // 2026-10-29（#210 补刀）：库存类判据下 stateKey 也必须只用背包 —— 它是真进展的判据，
+        //   位置一变就 resumeFromStalled 把计数清零（我上一轮只改了 windowFp，漏了这条路径）。
+        if (isInventoryTarget(current.condition())) stateKey = inventoryKey(ap);
         String windowFp = observation.fingerprint();
         StallState st = stalls.get(ap.getUUID());
         if (!RddPlugin.supervisionEnabled()) {
