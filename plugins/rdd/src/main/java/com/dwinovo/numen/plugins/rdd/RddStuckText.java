@@ -47,6 +47,14 @@ final class RddStuckText {
                   .append("），所以光在原地挖/查没用：用 goto {x:null,y:null,z:null,")
                   .append("block:\"<判据里那个方块 id>\"} 直接走到它旁边（goto 支持按方块名走、不用坐标），")
                   .append("到了再判定；不知道它在哪就先 locate_block / locate_structure 查一下。");
+        } else if ("dimension".equals(ct)) {
+            // 2026-10-28 实机（#248）：她被要求"回主世界"，人却停在离自己那座门 520 格的地方，
+            // 因为 use_portal 只在 96 格内找门，而没人告诉她这条规则、也没告诉她门在哪。
+            advice.append("这一条是「**换个维度**」（dimension）：回家不是调一下工具就行——")
+                  .append("use_portal **只在约 96 格内找传送门**，超出就报 no nether_portal within 96 blocks。")
+                  .append("所以先走回去：门就在**你当初进来时的那个坐标附近**，")
+                  .append("用 goto 贴近它，再 use_portal {kind:\"nether\"}；")
+                  .append("如果记不清位置，就沿原路往回挪一段、再试一次 use_portal，别在原地反复调用。");
         } else if (s.contains("地下") || s.contains("Y≤") || s.contains("y≤") || s.contains("矿洞") || s.contains("岩浆")) {
             advice.append("往下走/往下挖：goto 到附近的洞口，或在脚下安全开挖（先挖两格看脚下，别垂直挖穿）");
         } else if (s.contains("找") || s.contains("前往") || s.contains("到达")) {
