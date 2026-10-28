@@ -61,7 +61,9 @@ final class RddEnvBlock {
 
             // ② 身边 8 格：门(亮/熄) · 箱子 · 岩浆 · 悬崖
             int portals = 0, litPortals = 0, chests = 0, lava = 0;
-            for (BlockPos q : BlockPos.betweenClosed(p.offset(-8, -4, -8), p.offset(8, 4, 8))) {
+            // 2026-10-28 修：原来垂直只扫 ±4，而她在 y=39、门框在 y=58（差 19）⇒ 永远报"门无"。
+            //   水平 ±8、垂直 ±12，够看见"上方那扇门"。
+            for (BlockPos q : BlockPos.betweenClosed(p.offset(-8, -12, -8), p.offset(8, 12, 8))) {
                 BlockState st = ap.level().getBlockState(q);
                 if (st.is(Blocks.NETHER_PORTAL)) { portals++; litPortals++; }
                 else if (st.is(Blocks.OBSIDIAN) || st.is(Blocks.CRYING_OBSIDIAN)) { portals++; }
@@ -82,7 +84,7 @@ final class RddEnvBlock {
               .append(toolOk ? " · 可挖" : " · 不是工具").append('\n');
 
             // ④ 背包（用本拍真实统计）
-            int kinds = 0, total = 0, food = 0;
+            int kinds = 0, total = 0;
             if (counts == null) {
                 // 调用方没给统计就从背包现数（同口径：非空槽位）
                 counts = new java.util.LinkedHashMap<>();
@@ -96,11 +98,11 @@ final class RddEnvBlock {
                 for (Map.Entry<String, Integer> e : counts.entrySet()) {
                     kinds++;
                     total += e.getValue() == null ? 0 : e.getValue();
-                    if (e.getKey() != null && e.getKey().contains("food")) food += e.getValue();
+
                 }
             }
             sb.append("背包 ").append(kinds).append("种 ").append(total).append("件")
-              .append(food == 0 ? " · 无食物" : "").append('\n');
+              .append("").append('\n');
 
             // ⑤ 危险：最近受伤多久前
             Long hurt = LAST_HURT_TICK.get(ap.getUUID());
@@ -110,11 +112,19 @@ final class RddEnvBlock {
               .append(" · 血量").append(Math.round(ap.getHealth())).append('\n');
 
             // ⑥ 回家：门在哪、亮不亮（来自锚点记忆）
-            String home = RddWaypoints.returnHint(ap.getUUID(), "minecraft:overworld");
-            if (!home.isEmpty()) {
-                sb.append("回家 ").append(oneLine(home)).append('\n');
+            // 2026-10-28 修：原来把整段"动作指引"塞进来（120 字），占了块体积的一半。
+            //   这里只留**事实**：门在哪、多远、亮不亮；动作指引仍然只留在 <way_home>。
+            String homeDim = "minecraft:overworld";
+            int[] anchor = RddWaypoints.anchorPos(ap.getUUID(), "minecraft:the_nether");
+            if (anchor == null) anchor = RddWaypoints.anchorPos(ap.getUUID(), "minecraft:overworld");
+            if (anchor != null) {
+                double dx = anchor[0] - p.getX(), dy = anchor[1] - p.getY(), dz = anchor[2] - p.getZ();
+                long dist = Math.round(Math.sqrt(dx * dx + dy * dy + dz * dz));
+                String lit = RddWaypoints.litState(ap.getUUID(), "minecraft:the_nether");
+                sb.append("回家 门在 (").append(anchor[0]).append(',').append(anchor[1]).append(',')
+                  .append(anchor[2]).append(") 约 ").append(dist).append("格")
+                  .append(lit.isEmpty() ? "" : (" · " + lit)).append('\n');
             }
-
             sb.append("</env>");
             String out = sb.toString();
             // 硬上限：超了就把中间几行截掉（保头保尾，宁可少也不刷屏）
