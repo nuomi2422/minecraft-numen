@@ -363,6 +363,15 @@ final class RddDetector {
                 // 监督扩面（2026-09-27）：REPLANNING/FAILED 原先直接 return，卡住时无人拍醒 → 静默停。
                 // 复用 RddParkedWatcher：长期无进展就催 AI（不动状态机，只补"催工"）。
                 if (ps == PrimaryGoalStatus.REPLANNING || ps == PrimaryGoalStatus.FAILED) {
+                    // ★ 2026-10-28 实机（本会话链卡死的直接原因）：
+                    //   重规划请求发出后，LLM 调用失败/预算被拒 → 状态机**留在 REPLANNING 出不来**，
+                    //   而 REPLANNING 冻结主线（实测 primary_status=REPLANNING 卡了 20+ 分钟，
+                    //   `replanned` 停在 02:27，之后既没成功也没回落）。
+                    //   → 超时回落：REPLANNING 超过 REPLAN_TIMEOUT_MS 仍未回 ACTIVE，就 resumeFromReplanning()
+                    //     回退重跑旧计划并发显式事件。宁可回退干活，也不要整条链静默停摆。
+                    if (ps == PrimaryGoalStatus.REPLANNING && replanTimedOut(ap, rt, chain)) {
+                        return;
+                    }
                     // 停车态「已达成」先裁决：条件早就满足却停在 REPLANNING 时（实测 cond=true
                     // 仍原地不动、AI 白干），退回正常流程让既有 EarlyAchievement 接管。
                     tryAcceptSatisfiedWhileParked(ap, rt, chain, ps);
@@ -795,6 +804,47 @@ final class RddDetector {
      * 监督扩面（2026-09-27）：非 ACTIVE 的停滞态（WAITING 待料 / REPLANNING / FAILED）也走停泊守望，
      * 长时间无进展就催 AI（复用 RddParkedWatcher），不再静默停。fail-soft，不改变状态机。
      */
+    /** REPLANNING 超时阈值：进去多久还没回来就回落重跑旧计划（宁可回退，不要静默停摆）。 */
+    private static final long REPLAN_TIMEOUT_MS = 5 * 60 * 1000L;
+
+    /** 每次进入 REPLANNING 的时刻（uuid → ms）；回到 ACTIVE 后清掉。 */
+    private final java.util.Map<UUID, Long> replanEnteredAt = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * REPLANNING 卡死兜底（2026-10-28 实机）：重规划发出去后若既没成功也没回落，
+     * 状态机就会永远留在 REPLANNING（冻结主线、外部看着像静默死亡）。
+     * 超过阈值 → 直接 {@code resumeFromReplanning()} 回落重跑现有计划，并显式发事件。
+     *
+     * @return true 表示本 tick 已处理（调用方直接 return）
+     */
+    private boolean replanTimedOut(NumenPlayer ap, RddRuntime rt, TaskChain chain) {
+        UUID uuid = ap.getUUID();
+        long now = System.currentTimeMillis();
+        Long since = replanEnteredAt.get(uuid);
+        if (since == null) {
+            replanEnteredAt.put(uuid, now);
+            return false;
+        }
+        if (now - since < REPLAN_TIMEOUT_MS) {
+            return false;
+        }
+        replanEnteredAt.remove(uuid);
+        try {
+            chain.resumeFromReplanning();
+            RddPlugin.clearBody(uuid);
+            RddMonitor.publish("replanning_timed_out", Map.of(
+                    "companionId", uuid.toString(),
+                    "waited_ms", now - since,
+                    "action", "resumeFromReplanning (回退重跑旧计划)"));
+            RddPlugin.publishTaskSnapshot(uuid, "replanning_timeout_resumed");
+        } catch (RuntimeException ex) {
+            RddMonitor.publish("replanning_timed_out", Map.of(
+                    "companionId", uuid.toString(),
+                    "waited_ms", now - since,
+                    "action", "resume failed: " + ex));
+        }
+        return true;
+    }
     private void watchParkedIfStuck(NumenPlayer ap, RddRuntime rt, TaskChain chain) {
         try {
             Subtask cur = chain.currentSubtask();
