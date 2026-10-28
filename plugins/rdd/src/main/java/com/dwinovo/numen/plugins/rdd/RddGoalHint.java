@@ -1,5 +1,7 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import java.util.List;
+
 /**
  * 「目标与阶段」软注入（2026-10-28，主人定的口径）。
  *
@@ -34,6 +36,13 @@ final class RddGoalHint {
      * @return 注入块；三者全空时返回空串（零注入）
      */
     static String block(String totalGoal, String stage, String step) {
+        return block(totalGoal, stage, step, List.of());
+    }
+
+    /**
+     * @param remainingStages 当前阶段<b>之后</b>还要走的一级主题（顺序即先后；空 = 已经是最后一阶段）
+     */
+    static String block(String totalGoal, String stage, String step, List<String> remainingStages) {
         String g = clip(totalGoal);
         String s = clip(stage);
         String t = clip(step);
@@ -43,15 +52,50 @@ final class RddGoalHint {
         if (!g.isEmpty()) sb.append("总目标：").append(g).append('；');
         if (!s.isEmpty()) sb.append("当前阶段：").append(s).append('；');
         if (!t.isEmpty()) sb.append("当前步骤：").append(t).append('；');
+        String rest = renderRemaining(remainingStages);
+        if (!rest.isEmpty()) {
+            sb.append("后面还有 ").append(remainingStages.size()).append(" 个阶段：").append(rest).append('；');
+        }
         sb.append("判据口径：数量分两类 —— **配方/规则能算死的按实数办**（钻石镐 3 钻、下界门 10 黑曜石、"
           + "末影之眼 12）；**只有到现场才知道多少的**（这条矿脉几块矿、这片林子多少木头、附近几只动物）"
           + "先走过去看清，再决定挖/采到什么程度，够用就走，不必为凑一个预先写死的大数字反复折返。")
+          // 2026-10-28（主人第一点）：光说"到现场再决定"不够 —— 她决定完了，链并不知道。
+          // 给一个回报口，目标数才能跟着现场走（只许往上抬，见 rdd_report_yield）。
+          .append("★ 到了现场数清之后，用 rdd_report_yield 把实际数量报上来（只许往上抬："
+          + "链会按你报的数判，够了就走，别为了凑计划里的旧数字来回跑）。")
           .append("阶段与步骤是路线图，不是硬指标：现场条件变了（怪物、岩浆、缺工具）就按实际调整顺序或换来源。")
           // 2026-10-28 实机（#256）：她返程 450 格，却每回合只走十几格、中间被"查状态"占满，
           // 9 分钟位移 12 格。长距离移动应当一次派到底，中途不必反复确认。
           .append("长距离移动要一次派到底：goto 到目标坐标后等它跑完（异步受理只代表开始），")
           .append("中途不需要反复查状态/背包——走一段看一眼就够，别把一次长途拆成十几小段。")
           .append("</goals>");
+        return sb.toString();
+    }
+
+    /** 后面几级的短清单：最多列 3 条（多了是噪音，完整清单在链里）。 */
+    private static String renderRemaining(List<String> remainingStages) {
+        if (remainingStages == null || remainingStages.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        int shown = 0;
+        for (String stage : remainingStages) {
+            String v = clip(stage);
+            if (v.isEmpty()) {
+                continue;
+            }
+            if (shown >= 3) {
+                break;
+            }
+            if (shown > 0) {
+                sb.append(" → ");
+            }
+            sb.append(v);
+            shown++;
+        }
+        if (remainingStages.size() > shown) {
+            sb.append(" 等");
+        }
         return sb.toString();
     }
 

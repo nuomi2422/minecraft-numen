@@ -122,7 +122,13 @@ public final class SleepSideTaskType implements SideTaskType {
             attrXml.append(' ').append(e.getKey()).append("=\"").append(esc(e.getValue())).append('"');
         }
         return "<side_task" + attrXml + ">"
-                + "你现在最高优先的目标是【去睡觉】（睡觉支线；主线已临时冻结，做完或超时后系统会恢复主线）。"
+                + "系统建议你现在【去睡觉】（睡觉支线：**建议，不是命令**；主线已临时冻结，"
+                + "做完、超时、或你拒绝后都会恢复主线）。"
+                // 2026-10-28（主人第三点）：「要不要去是你决定的……万一那里很危险，我回去了也没有用」。
+                // 支线文案必须给出拒绝的出口，否则执行侧只能照着办。
+                + "★ 若这趟本身会送命或根本做不到（床边有怪、附近没床也来不及挖三填一、身上没武器、"
+                + "天马上就亮），**你可以拒绝**：调用 rdd_decline_side 写清你看到的理由，"
+                + "支线立刻结束（记 DECLINED，不是失败）、主线马上恢复，今天不会再问你同一件事。"
                 + "做法：用 scan_blocks 找床（tag 用 #minecraft:beds），用 goto 走到床边，站定后调用 sleep。"
                 + "只在床边、且是夜里才调用 sleep；白天被原版拒绝不是工具坏了，按返回的原因处理。"
                 + "sleep 返回成功只代表你躺下了，不等于整条支线完成——真正睡着由系统硬判定；"
@@ -135,7 +141,6 @@ public final class SleepSideTaskType implements SideTaskType {
                 + "★★ 读一次 get_self_status 就够：**重复读状态不算进展**。"
                 + "看完状态后的下一步必须是真动作（build/mine/goto/interact_at 之一），"
                 + "挖三填一用 build 的 ops 一次给出全部格子，不要一格格试。"
-                + "若附近有怪、太远，按原版返回的原因处理，别硬顶。"
                 + "若附近有怪、太远，按原版返回的原因处理，别硬顶。"
                 + "</side_task>";
     }

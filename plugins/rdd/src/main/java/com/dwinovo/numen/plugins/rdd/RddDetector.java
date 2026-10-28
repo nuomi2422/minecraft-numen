@@ -342,6 +342,12 @@ final class RddDetector {
             // Observe even parked/failed/unexpanded chains. A control-state early
             // return must not make the monitoring station appear frozen.
             if (assetTick == 0) populateAssets(ap, rt, chain.currentSubtask(), counts);
+            // 2026-10-28（主人第六点）：30 秒一拍扫"后面几级要用的东西现在手上/身边有没有"。
+            // 只读、只发事件与上下文块，不改链、不判提前完成（那需要主人定的口径）。
+            if (assetTick == 0) RddFutureNeeds.tick(ap.getUUID(), chain, counts);
+            // 2026-10-28（主人第六点后半）：30 秒一拍盯"从无到有的装备/重要物" —— 只发事实 + 拍醒，
+            // 收不收口由规划者决定（rdd_settle_stage / rdd_replan_chain）。
+            if (assetTick == 0) RddCapabilityWatch.tick(ap.getUUID(), counts);
             if (worldAssetTick == 0) {
                 RddWorldAssetObserver.Result observed = RddWorldAssetObserver.observe(ap, rt.assets());
                 RddPlugin.saveAssets(ap.getUUID());

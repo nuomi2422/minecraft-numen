@@ -222,6 +222,41 @@ public final class SideTaskEngine {
         events.publish("side_task_resumed_mainline", data);
     }
 
+    /**
+     * 执行 AI 自己放弃当前支线（2026-10-28，主人要的「支线可跳过」）。
+     *
+     * <p><b>为什么必须有这个出口</b>：支线文案一直是「你现在最高优先的目标」，
+     * 执行侧没有任何拒绝的通道 —— 于是「那里太危险 / 我连工具都没有 / 我过去了也捡不回来」
+     * 这类只有到现场才知道的判断，只能被无视。主人原话：
+     * 「这个支线任务是发给你了，但是你要不要去捡是你决定的……万一那里很危险，我回去了也没有用」。
+     *
+     * <p><b>为什么带 worldId / gameDay</b>：拒绝之后<b>本游戏日不再重开同型支线</b> ——
+     * 否则引擎下一拍照旧触发，「拒绝」等于没拒绝。去重键与 {@link #handledGameDay} 完全一致。
+     * 传 {@code worldId=null} / {@code gameDay<0}（拿不到世界信息）时只拒绝这一次、不锁当天，
+     * 这是刻意的降级：宁可它下一拍再来问，也不要凭一个猜的日子把整晚的支线全锁死。
+     *
+     * @return 是否真的拒绝了一条活跃支线（没有活跃支线 → false，调用方据此回执，不静默成功）
+     */
+    public boolean decline(UUID companionId, String reason, String worldId, long gameDay) {
+        Objects.requireNonNull(companionId, "companionId");
+        Optional<SideTask> active = runtime.current(companionId);
+        if (active.isEmpty()) {
+            return false;
+        }
+        SideTask task = active.get();
+        runtime.remove(companionId);
+        if (worldId != null && gameDay >= 0) {
+            handledGameDay.put(handledKey(companionId, worldId, task.typeId()), gameDay);
+        }
+        Map<String, Object> data = base(task);
+        data.put("state", SideTaskState.DECLINED.name());
+        data.put("reason", reason == null ? "" : reason);
+        data.put("decidedBy", "executor");
+        events.publish("side_task_declined", data);
+        resumeMainline(task);
+        return true;
+    }
+
     /** 外部取消（主人暂停/换目标/清目标/世界切换）。 */
     public void cancel(UUID companionId, String reason) {
         runtime.current(companionId).ifPresent(task -> {

@@ -45,4 +45,19 @@ public record Subtask(
         return new Subtask(id, description, DetectionMode.AI_ASSISTED, Map.of(), intervalSeconds, maxChecks,
                 recheckOnUnchanged, null);
     }
+
+    /**
+     * 只换判据、其余字段原样（2026-10-28，现场上调用）。
+     *
+     * <p><b>为什么要这个口</b>：{@code TaskChain.raiseCurrentMinimum} 需要重建一条 Subtask 来改
+     * {@code condition.minimum}。若调用方自己逐个字段读出来再拼，就会在**主链路**里出现
+     * {@code .detectionIntervalSeconds()} 之类的读取点 —— 而
+     * {@code SubtaskModeContractTest.aiOnlyFieldsHaveNoProductionReaderYet} 的契约是
+     * 「这些 AI-only 字段在被真正接线前，主链路不许读」。放进 record 自己内部，
+     * 读的是本记录的字段、不是新接线，契约与实现都不破。
+     */
+    public Subtask withCondition(Map<String, Object> nextCondition) {
+        return new Subtask(id, description, detectionMode, nextCondition,
+                detectionIntervalSeconds, maxAiChecks, recheckOnUnchanged, body);
+    }
 }

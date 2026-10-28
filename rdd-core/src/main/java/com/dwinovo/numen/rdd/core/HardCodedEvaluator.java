@@ -59,10 +59,7 @@ public final class HardCodedEvaluator {
             return false;
         }
         if (condition.containsKey("type") && !"inventory".equals(condition.get("type"))) return false;
-        Object minimumObj = condition.get("minimum");
-        if (minimumObj != null && (!(minimumObj instanceof Number n) || !Double.isFinite(n.doubleValue())
-                || n.doubleValue() != n.intValue())) return false;
-        int minimum = minimumObj instanceof Number n ? n.intValue() : DEFAULT_MINIMUM;
+        int minimum = minimumOf(condition);
         if (minimum < 0) return false;
         if (condition.containsKey("group")) {
             Object group = condition.get("group");
@@ -90,6 +87,32 @@ public final class HardCodedEvaluator {
         }
         if (!MODE_HOLD.equals(modeOf(condition))) return false; // 未知/畸形 mode：显式不满足
         return holdSatisfied(key, minimum, counts);
+    }
+
+    /**
+     * 条件里的目标数量（缺省 {@value #DEFAULT_MINIMUM}）。
+     *
+     * <p>抽成公开纯函数是给「现场上调」（{@link TaskChain#raiseCurrentMinimum}）用的：
+     * 判定与改判据必须读同一套规则，否则会出现「判定按 1 算、上调按 3 算」这种两边都自洽、
+     * 合起来错位的情况。
+     *
+     * @return 合法整数 ≥ 0；缺 {@code minimum} 键 → {@link #DEFAULT_MINIMUM}；
+     *         畸形（非数字 / 非有限 / 带小数 / 负数）→ {@code -1}（调用方一律当"不满足/不可改"）
+     */
+    public static int minimumOf(Map<String, Object> condition) {
+        if (condition == null) {
+            return -1;
+        }
+        Object minimumObj = condition.get("minimum");
+        if (minimumObj == null) {
+            return DEFAULT_MINIMUM;
+        }
+        if (!(minimumObj instanceof Number n) || !Double.isFinite(n.doubleValue())
+                || n.doubleValue() != n.intValue()) {
+            return -1;
+        }
+        int minimum = n.intValue();
+        return minimum < 0 ? -1 : minimum;
     }
 
     /**

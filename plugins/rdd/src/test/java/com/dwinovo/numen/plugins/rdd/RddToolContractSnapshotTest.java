@@ -148,6 +148,18 @@ class RddToolContractSnapshotTest {
         PINNED_NAMES.put("RddSupervisorSubmitTool.java", "rdd_supervisor_submit");
         // 2026-10-27: read-only diagnosis for the reported dimension-change invulnerability.
         PINNED_NAMES.put("RddDebugVulnerabilityTool.java", "debug_vulnerability");
+        // 2026-10-28（主人第一点）：现场数量回报入口 —— 不知道村庄有多少干草块时，
+        // 规划只能给最低数；到了现场数清后由她把这步的目标抬到实际值（只许上调）。
+        PINNED_NAMES.put("RddReportYieldTool.java", "rdd_report_yield");
+        // 2026-10-28（主人第三点）：支线可以拒绝 —— 支线文案此前写着"最高优先"且没有出口，
+        // 有了它，"太危险/没工具/不可能"才是一个她真能做的决定，而不是只能照着办。
+        PINNED_NAMES.put("RddDeclineSideTool.java", "rdd_decline_side");
+        // 2026-10-28（主人第二/四点）：后面几级整段重写 —— 丢了核心装备、后面整条路不成立时，
+        // 规划器终于有地方落笔（当前一级及已完成的一字不动）。
+        PINNED_NAMES.put("RddReplanChainTool.java", "rdd_replan_chain");
+        // 2026-10-28（主人：「提前收口这种东西是规划者决定的」）：一级被"事实达成/不再需要"时，
+        // 规划者用它收口（记阶段事实、当前级立即推进）。代码不给物品表 —— 判断权在人。
+        PINNED_NAMES.put("RddSettleStageTool.java", "rdd_settle_stage");
     }
 
     @Test
@@ -205,6 +217,12 @@ class RddToolContractSnapshotTest {
         // G2c 验证钩子：必须继续写明「只删 ItemEntity、不碰台账/任务」与 confirm 要求
         DESCRIPTION_FLOOR.put("RddDebugClearDropsTool.java", 280);
         DESCRIPTION_FLOOR.put("RddPatchTool.java", 400);
+        // 2026-10-28：三条新工具的下限按当前长度的 ~75% 取。它们的 description 就是"什么时候用"
+        // 的全部依据（尤其 rdd_decline_side：写不清"可以拒绝"就退化成没有这个工具）。
+        DESCRIPTION_FLOOR.put("RddReportYieldTool.java", 380);
+        DESCRIPTION_FLOOR.put("RddDeclineSideTool.java", 380);
+        DESCRIPTION_FLOOR.put("RddReplanChainTool.java", 275);
+        DESCRIPTION_FLOOR.put("RddSettleStageTool.java", 550);
     }
 
     @Test

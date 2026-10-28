@@ -956,6 +956,215 @@ public final class TaskChain {
         return Map.copyOf(out);
     }
 
+    // ---- 2026-10-28：执行侧的「现场修正」两条口 ----
+    //
+    // 主人这轮的要求可以压成一句：链条不该替她把「要多少个」提前钉死，也不该只能
+    // 「重写当前一级」。于是加两个方向相反的入口：
+    //   ① raiseCurrentMinimum —— 往回收紧（只许上调，永远不会造出假完成）；
+    //   ② replaceFuturePrimaries —— 往后重写（只动当前一级之后，永远不碰已完成的事实）。
+
+    /**
+     * 现场上调：执行 AI 到了地方、看清实际有多少之后，把<b>当前正在跑的那一步</b>的目标数量往上抬。
+     *
+     * <p><b>为什么"只许上调"</b>：下调会立刻让硬判据变真 —— 那正是历史上最贵的一类事故
+     * （{@code acquire} 假完成 / UNKNOWN 当空表，见模块文档 §4.1/§4.2）。上调只会让判定更难，
+     * 最坏结果是"这一步没判过、继续干"，<b>不可能凭空造出"已完成"</b>。
+     * 这条不对称是整个方法的全部安全性所在，不要为了"灵活"开口子。
+     *
+     * <p><b>为什么只对 RUNNING 开放</b>：PENDING 还没开工，"现场"无从谈起（改它属于规划，走
+     * {@link #commitPatch}）；已完成/暂停的节点改判据 = 改历史。
+     *
+     * <p><b>基线不动</b>：{@code acquire} 的基线是"接活那一刻的量"，抬 minimum 只改目标；
+     * 若连基线一起重拍，抬一次就等于重开一次 attempt（尝试计数也会骗人）。
+     *
+     * @param subtaskId  当前二级 id（调用方从 rdd_status 读，防张冠李戴）
+     * @param newMinimum 新目标数量，必须<b>严格大于</b>当前值
+     * @return 被替换掉的旧目标数量（调用方拿来回执"3 → 12"）
+     */
+    public synchronized int raiseCurrentMinimum(String subtaskId, int newMinimum) {
+        requireNoOutstandingSafePoint("raise target");
+        requireCurrent(subtaskId);
+        if (currentSubtaskStatus() != SubtaskStatus.RUNNING) {
+            throw new IllegalStateException(
+                    "only a RUNNING subtask can have its target raised: " + currentSubtaskStatus());
+        }
+        Subtask cur = currentSubtask();
+        int old = HardCodedEvaluator.minimumOf(cur.condition());
+        if (old < 0) {
+            throw new IllegalStateException("current subtask has a malformed minimum: " + cur.condition());
+        }
+        if (cur.condition().get("asset_key") == null && cur.condition().get("group") == null) {
+            throw new IllegalStateException("only an inventory target can be raised: " + cur.condition());
+        }
+        if (newMinimum <= old) {
+            // 刻意抛而不是返回 false：下调是**危险方向**，必须让调用方看到失败原因，
+            // 不能让它以为"报了就更严了"。
+            throw new IllegalArgumentException(
+                    "target can only be raised on site (old=" + old + ", new=" + newMinimum + ")");
+        }
+        Map<String, Object> condition = new LinkedHashMap<>(cur.condition());
+        condition.put("minimum", newMinimum);
+        PrimaryGoal primary = currentPrimary();
+        List<Subtask> working = new ArrayList<>(primary.subtasks());
+        working.set(subtaskIndex, cur.withCondition(condition));
+        List<PrimaryGoal> primaries = new ArrayList<>(goal.primaryGoals());
+        primaries.set(primaryIndex, new PrimaryGoal(primary.id(), primary.description(),
+                List.copyOf(working), primary.waitFor(), false));
+        goal = new Goal(goal.id(), goal.description(), primaries);
+        stateVersion++;            // 判据变了 = 安全提交（补丁/回执的 CAS 基准跟着走）
+        return old;
+    }
+
+    /** 当前二级的目标数量（缺省 1；条件畸形 → -1）。只读，不 +stateVersion。 */
+    public synchronized int currentMinimum(String subtaskId) {
+        requireCurrent(subtaskId);
+        return HardCodedEvaluator.minimumOf(currentSubtask().condition());
+    }
+
+    /**
+     * 重写<b>当前一级之后</b>的一级清单（2026-10-28，主人要的「整条链重新写一遍」）。
+     *
+     * <p><b>边界（为什么只动"之后"）</b>：当前一级及其之前<b>一字不动</b> —— 已完成的节点是事实，
+     * 不能被一次重规划抹掉（75号 §15.3-4：改验收语义要新建后继节点，不许改历史）。
+     * 所以这个入口只回答一个问题：「接下来要走的路，还要不要这么走」。
+     * 前面丢了东西、需要回头补，那是恢复支线 / 计划补丁的活，不是这里。
+     *
+     * <p><b>为什么要开这个口</b>：此前重规划只能重写"当前一级的二级清单"
+     * （{@link #replaceCurrentSubtasks}），于是"我丢了整套钻石甲、后面的下界/末地阶段都不成立了"
+     * 这种处境，规划器看懂了也没有地方落笔 —— 只能把当前一级重写一遍，后面几级原样往前推。
+     *
+     * <p><b>契约</b>：新清单里的一级必须<b>未展开</b>（二级仍由懒展开生成，保持 §9 的懒加载纪律）；
+     * id 全链唯一（不许复用任何已有一级/二级的 id）；传空表 = 明确砍掉后面所有阶段
+     * （例如"只差最后一件东西、后面都不必走了"）。
+     *
+     * <p><b>不动 {@code satisfiedStages}</b>：完成事实按"阶段键"记，与一级 id 无关。
+     * 若新清单里出现了已完成的同一主题，它会被跳过 —— 这是既有的完成事实继承语义，
+     * 不是这次新加的（见 {@link #satisfiedStages()}）。
+     *
+     * @return 重写后的一级条数（0 = 后面被砍空）
+     */
+    public synchronized int replaceFuturePrimaries(List<PrimaryGoal> replacement) {
+        requireNoOutstandingSafePoint("rewrite future stages");
+        List<PrimaryGoal> all = new ArrayList<>(goal.primaryGoals());
+        Set<String> used = new HashSet<>();
+        for (PrimaryGoal p : all) {
+            used.add(p.id());
+            for (Subtask s : p.subtasks()) {
+                used.add(s.id());
+            }
+        }
+        List<PrimaryGoal> next = replacement == null ? List.of() : List.copyOf(replacement);
+        Set<String> incoming = new HashSet<>();
+        for (PrimaryGoal p : next) {
+            if (p == null) {
+                throw new IllegalArgumentException("null primary in replacement");
+            }
+            if (!p.unexpanded()) {
+                throw new IllegalArgumentException("replacement primaries must be unexpanded: " + p.id());
+            }
+            if (!incoming.add(p.id())) {
+                throw new IllegalArgumentException("duplicate primary id in replacement: " + p.id());
+            }
+            if (used.contains(p.id())) {
+                throw new IllegalArgumentException("primary id already used in chain: " + p.id());
+            }
+        }
+        List<PrimaryGoal> rebuilt = new ArrayList<>(all.subList(0, primaryIndex + 1));
+        rebuilt.addAll(next);
+        goal = new Goal(goal.id(), goal.description(), rebuilt);
+        stateVersion++;            // 换后面的路 = 安全提交
+        return next.size();
+    }
+
+    /** 被"事实达成"的一级 → 理由（只观测，重启后不保留；完成事实本身落在 {@link #satisfiedStages}）。 */
+    private final Map<String, String> settleReasons = new LinkedHashMap<>();
+
+    /**
+     * 事实达成 / 提前收口（2026-10-28，主人的口径：**由规划者决定，代码不猜**）。
+     *
+     * <h2>它解决什么</h2>
+     * 主人原话：「提前收口是规划者决定的……如果说我最终的目标就是拿到钻石镐，那我已经拿到钻石镐了，
+     * 前面的东西就没有意义了……因为有些东西比较核心，比如我拿到了钻石镐，我直接可以去挖黑曜石了，
+     * 那我挖铁镐就没有意义了。当然也有……我有钻石镐了，但是我没有铁装备，那么我可以规划一下，
+     * 用钻石镐来挖铁，而不是继续去挖到石镐之后再来挖铁」。
+     *
+     * <p>这正是"简易的、依据实际状态而变化的规划"：代码只提供两个原语 ——
+     * <b>把某一级记成"事实上已经达成/不再需要"</b>（本方法）与<b>重写后面的路</b>
+     * （{@link #replaceFuturePrimaries}）—— 判断权完全在规划者。所以这里**没有任何等级/物品表**：
+     * 钻石镐能不能替代铁镐，不是一个 switch 能回答的问题。
+     *
+     * <h2>语义</h2>
+     * <ul>
+     *   <li>记的是<b>阶段键</b>（{@link StageKeyNormalizer}），不是"跳过节点"：它会随
+     *       {@code satisfiedStages} 被继承，重提同一目标时同样跳过；</li>
+     *   <li>落在<b>当前级</b>：把该级所有未完成二级收成 {@code SKIPPED}（留理由），指针立刻推进
+     *       —— 不走 {@code AWAITING_SUPERVISOR}，因为这不是"跑完了"，是"不用跑了"；</li>
+     *   <li>落在<b>后面的级</b>：只加事实键，指针不动；走到那一级时由
+     *       {@code firstUnsatisfiedFrom} 自动跳过；</li>
+     *   <li>落在<b>指针之前</b>：拒绝（那是改历史）。</li>
+     * </ul>
+     *
+     * @param primaryId 要收口的一级 id
+     * @param reason    为什么它已经不需要 —— <b>必填</b>，这是唯一能事后复核的东西
+     *                  （"我有钻石镐，能直接挖黑曜石，铁镐这一步没有意义"）
+     * @return 被收口的那一级的主题（回执用）
+     */
+    public synchronized String settlePrimaryByFact(String primaryId, String reason) {
+        requireNoOutstandingSafePoint("settle a stage by fact");
+        if (primaryId == null || primaryId.isBlank()) {
+            throw new IllegalArgumentException("primary id required");
+        }
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("reason required: say what makes this stage unnecessary");
+        }
+        if (primaryStatus == PrimaryGoalStatus.COMPLETED) {
+            throw new IllegalStateException("chain already completed; nothing to settle");
+        }
+        List<PrimaryGoal> all = goal.primaryGoals();
+        int idx = -1;
+        for (int i = 0; i < all.size(); i++) {
+            if (all.get(i).id().equals(primaryId)) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0) {
+            throw new IllegalArgumentException("unknown primary: " + primaryId);
+        }
+        if (idx < primaryIndex) {
+            throw new IllegalStateException("cannot settle a stage behind the cursor: " + primaryId);
+        }
+        PrimaryGoal target = all.get(idx);
+        satisfiedStages.add(StageKeyNormalizer.normalize(target.description()));
+        settleReasons.put(primaryId, reason);
+        stateVersion++;            // 计划事实变化 = 安全提交
+        if (idx == primaryIndex) {
+            for (Subtask s : target.subtasks()) {
+                if (statuses.get(s.id()) == SubtaskStatus.COMPLETED) {
+                    continue;   // 真做完的保持 COMPLETED（事实不降级）
+                }
+                statuses.put(s.id(), SubtaskStatus.SKIPPED);
+                skipReasons.put(s.id(), "stage settled by fact: " + reason);
+                pauseReasons.remove(s.id());
+            }
+            int next = firstUnsatisfiedFrom(primaryIndex + 1);
+            subtaskIndex = 0;
+            if (next < 0) {
+                primaryStatus = PrimaryGoalStatus.COMPLETED;
+            } else {
+                primaryIndex = next;
+                primaryStatus = PrimaryGoalStatus.PENDING;
+            }
+            clearExecutionMetadata();   // 收口 = 旧的执行身份/启动时刻作废
+        }
+        return target.description();
+    }
+
+    /** 只读：被"事实达成"的一级 → 理由（本进程内；完成事实本身看 {@link #satisfiedStages()}）。 */
+    public synchronized Map<String, String> settledStages() {
+        return Map.copyOf(settleReasons);
+    }
+
     private record PatchCheck(PlanPatch.Receipt receipt, List<Subtask> working) {}
 
     private PatchCheck validatePatch(PlanPatch patch, long expectedVersion) {
@@ -1255,6 +1464,8 @@ public final class TaskChain {
         view.put("chainInstanceId", chainInstanceId);   // §15.2：链实例身份进快照（监测台对账读数口）
         view.put("description", goal.description());
         view.put("satisfiedStages", List.copyOf(satisfiedStages));
+        // 2026-10-28：哪些一级是"被事实达成/提前收口"的（键 → 理由）。只观测，不参与判定。
+        view.put("settledStages", Map.copyOf(settleReasons));
         view.put("primaryStatus", primaryStatus.name());
         view.put("primaryIndex", primaryIndex);
         view.put("subtaskIndex", subtaskIndex);
