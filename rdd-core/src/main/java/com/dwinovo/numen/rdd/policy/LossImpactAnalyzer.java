@@ -255,7 +255,11 @@ public final class LossImpactAnalyzer {
         //   所以**没有条目 ≠ 不重要**。这里补按品级的兜底（只用于"没有语义"的资产）：
         //   diamond_/netherite_ → IMPORTANT；iron_/chainmail_ → SECONDARY；其余 SECONDARY。
         String k = assetKey.toLowerCase(Locale.ROOT);
-        if (k.startsWith("netherite_") || k.startsWith("diamond_")) {
+        // 注意：assetKey 是带命名空间的（minecraft:diamond_chestplate），
+        // 上一版直接 startsWith("diamond_") 永远为假 —— 判据全落空，兜底等于没写。
+        int colon = k.indexOf(':');
+        String path = colon >= 0 ? k.substring(colon + 1) : k;
+        if (path.startsWith("netherite_") || path.startsWith("diamond_")) {
             return AssetSemantics.Importance.IMPORTANT;
         }
         return AssetSemantics.Importance.SECONDARY;
