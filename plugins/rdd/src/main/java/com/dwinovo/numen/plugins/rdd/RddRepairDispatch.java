@@ -237,9 +237,19 @@ final class RddRepairDispatch {
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death latest =
                     com.dwinovo.numen.rdd.core.RddDeathLedger.latest(companionId);
             if (latest == null || latest.lostItems().isEmpty()) return;
-            recomputeAfterDeath(companionId, counts, false, "restart", latest.seq());
-        } catch (RuntimeException ignored) {
-            // fail-soft：兜底不能拖垮 tick
+            // 2026-10-28：这里原本 catch 后静默吞掉 —— 而"重算一次都没发生"最可能就是被吞掉的异常。
+            // 兜底仍然 fail-soft，但**必须留下证据**（一行日志胜过再猜三轮）。
+            com.dwinovo.numen.core.Constants.LOG.info(
+                    "[rdd-repair] recompute-from-ledger start companion={} latestSeq={} lostKinds={}",
+                    companionId, latest.seq(), latest.lostItems().size());
+            var impact = recomputeAfterDeath(companionId, counts, false, "restart", latest.seq());
+            com.dwinovo.numen.core.Constants.LOG.info(
+                    "[rdd-repair] recompute-from-ledger done companion={} seq={} impact={}",
+                    companionId, latest.seq(), impact == null ? "null" : impact.recommendation());
+        } catch (RuntimeException e) {
+            // fail-soft：兜底不能拖垮 tick；但把异常打出来（原来这里是静默的，导致整条链无迹可查）
+            com.dwinovo.numen.core.Constants.LOG.info(
+                    "[rdd-repair] recompute-from-ledger FAILED companion={} : {}", companionId, e.toString());
         }
     }
     static LossImpactAnalyzer.LossImpact recomputeAfterDeath(UUID companionId,
@@ -266,7 +276,27 @@ final class RddRepairDispatch {
             if (!RECOMPUTED.add(dedupeKey)) return null;   // 同一批次同一阶段只报一次
             if (RECOMPUTED.size() > 256) RECOMPUTED.clear();   // 有界：死亡很多次也不让集合长成漏勺
 
-            RequirementManifest.Manifest manifest = RddFactContext.currentManifest(companionId);
+            // ★ 2026-10-28 实机（#239）：`LossImpactAnalyzer.analyze` 在没有"当前目标清单"时返回 null，
+            //   于是整条重算在**没有 manifest 的那一拍**直接消失（实测：她全丢、台账 seq=15 有 25 件，
+            //   但 loss_impact_recomputed 恒 0）。这里补一支"无清单也要留证"的兜底：
+            //   至少把"丢了什么、多少件、这次是哪一批死亡"落成事件，别让事实消失。
+            RequirementManifest.Manifest manifest0 = RddFactContext.currentManifest(companionId);
+            if (manifest0 == null) {
+                Map<String, Object> ev0 = new LinkedHashMap<>();
+                ev0.put("companionId", companionId.toString());
+                ev0.put("deathSeq", death.seq());
+                ev0.put("phase", phase);
+                ev0.put("noManifest", true);
+                ev0.put("lostKinds", death.lostItems().size());
+                ev0.put("lostTotal", death.lostItems().values().stream().mapToInt(Integer::intValue).sum());
+                ev0.put("lostItems", new LinkedHashMap<>(death.lostItems()));
+                ev0.put("inventoryKnown", counts != null);
+                ev0.put("recommendation", "CONFIRM_STOCK");
+                ev0.put("summary", "没有当前目标清单，无法按目标算影响；但这次确实丢了 "
+                        + death.lostItems().size() + " 种物品，先确认背包再决定补不补");
+                RddMonitor.publish("loss_impact_recomputed", ev0);
+                return null;
+            }            RequirementManifest.Manifest manifest = RddFactContext.currentManifest(companionId);
             List<RequirementManifest.Manifest> manifests =
                     manifest == null ? List.of() : List.of(manifest);
             Map<String, AssetSemantics> semantics =
