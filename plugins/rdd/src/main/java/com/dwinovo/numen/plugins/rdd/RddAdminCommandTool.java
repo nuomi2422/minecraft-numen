@@ -81,6 +81,29 @@ final class RddAdminCommandTool implements NumenTool {
 
             // 2026-10-29：`tp @s x y z [dim]` 特判 —— 假玩家走原版 tp 不生效（与 D-20 同源：
             //   维度/位置切换要"给客户端"的握手，空壳连接等不到）。这里直接调 teleportTo。
+            // 2026-10-29（give-special）：`give @s <item> <n>` 也走原版命令不生效（假玩家收不到），
+            //   这里直接把 ItemStack 塞进她背包。只支持 @s 与物品 id + 数量。
+            if ("give".equals(verb)) {
+                String[] g = command.trim().split("\\s+");
+                if (g.length >= 4 && "@s".equals(g[1])) {
+                    String itemId = g[2].contains(":") ? g[2] : "minecraft:" + g[2];
+                    int n = (int) Math.max(1, Math.min(64, Double.parseDouble(g[3])));
+                    var rl = net.minecraft.resources.ResourceLocation.parse(itemId);
+                    var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(rl);
+                    if (item == null) throw new IllegalArgumentException("unknown item " + itemId);
+                    var stack = new net.minecraft.world.item.ItemStack(item, n);
+                    boolean ok = companion.getInventory().add(stack);
+                    if (!ok) companion.drop(stack, false);
+                    RddMonitor.publish("admin_command_used", Map.of(
+                            "companionId", companion.getUUID().toString(),
+                            "command", command, "stuck", stuck, "result", ok ? 1 : 0, "mode", "direct-give"));
+                    reply.accept(com.dwinovo.numen.task.TaskResult.ok(
+                            "gave " + n + " " + itemId + (ok ? " (into inventory)" : " (dropped at feet)")
+                                    + " —— 这次进展算 CHEATED，不算 AI 学会；事后必须补测。",
+                            Map.of("cheated", true)).toJson());
+                    return;
+                }
+            }
             if ("tp".equals(verb)) {
                 String[] t = command.trim().split("\\s+");
                 if (t.length >= 5 && "@s".equals(t[1])) {
