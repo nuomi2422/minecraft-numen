@@ -109,7 +109,13 @@ final class RddEnvBlock {
             long now = ap.level().getGameTime();
             String hurtText = hurt == null ? "无记录" : (Math.max(0, (now - hurt) / 20L) + "秒前");
             sb.append("危险 最近受伤").append(hurtText)
-              .append(" · 血量").append(Math.round(ap.getHealth())).append('\n');
+              .append(" · 血量").append(Math.round(ap.getHealth()))
+              // 2026-10-29（经验库 #37 的配套）：低血只报数字没用，要直接说该干什么。
+              //   实机：下界 hp 18.95→2.5 只用一分钟、hunger 满，她既没撤也没吃。
+              .append(ap.getHealth() <= 12.0f
+                      ? " · **正在持续掉血：先撤到安全处（退回门/回主世界），别继续打**"
+                      : "")
+              .append('\n');
 
             // ⑥ 回家：门在哪、亮不亮（来自锚点记忆）
             // 2026-10-28 修：原来把整段"动作指引"塞进来（120 字），占了块体积的一半。
