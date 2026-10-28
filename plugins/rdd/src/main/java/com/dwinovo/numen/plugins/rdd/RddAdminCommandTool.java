@@ -79,6 +79,34 @@ final class RddAdminCommandTool implements NumenTool {
                         + String.join("/", ALLOWED) + ")");
             }
 
+            // 2026-10-29：`tp @s x y z [dim]` 特判 —— 假玩家走原版 tp 不生效（与 D-20 同源：
+            //   维度/位置切换要"给客户端"的握手，空壳连接等不到）。这里直接调 teleportTo。
+            if ("tp".equals(verb)) {
+                String[] t = command.trim().split("\\s+");
+                if (t.length >= 5 && "@s".equals(t[1])) {
+                    double x = Double.parseDouble(t[2]), y = Double.parseDouble(t[3]), z = Double.parseDouble(t[4]);
+                    var server0 = companion.getServer();
+                    net.minecraft.server.level.ServerLevel dest = companion.serverLevel();
+                    if (t.length >= 6) {
+                        String dimId = t[5].contains(":") ? t[5] : "minecraft:" + t[5];
+                        var key = net.minecraft.resources.ResourceKey.create(
+                                net.minecraft.core.registries.Registries.DIMENSION,
+                                net.minecraft.resources.ResourceLocation.parse(dimId));
+                        var lv = server0.getLevel(key);
+                        if (lv != null) dest = lv;
+                    }
+                    companion.teleportTo(dest, x, y, z, companion.getYRot(), companion.getXRot());
+                    RddMonitor.publish("admin_command_used", Map.of(
+                            "companionId", companion.getUUID().toString(),
+                            "command", command, "stuck", stuck, "result", 1,
+                            "mode", "direct-teleport"));
+                    reply.accept(com.dwinovo.numen.task.TaskResult.ok(
+                            "teleported (direct) to " + x + "," + y + "," + z + " in " + dest.dimension().location()
+                                    + " —— 这次进展算 CHEATED，不算 AI 学会；事后必须补测。",
+                            Map.of("cheated", true)).toJson());
+                    return;
+                }
+            }
             var server = companion.getServer();
             if (server == null) throw new IllegalStateException("no server");
             // 以命令方块同等权限执行；源头记成同伴，便于事后从日志回溯是谁触发的
