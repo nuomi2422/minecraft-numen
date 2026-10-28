@@ -211,6 +211,9 @@ public final class RddPlugin implements NumenPlugin {
         numen.registerTool(new RddReportYieldTool());
         numen.registerTool(new RddDeclineSideTool());
         numen.registerTool(new RddReplanChainTool());
+        // 2026-10-28（主人：「提前收口这种东西是规划者决定的」）：把"某一级已达成/不必走"
+        // 做成一个规划者按钮。代码不给物品表、不做等级判断 —— 那是规划者看语义后的决定。
+        numen.registerTool(new RddSettleStageTool());
         // 2026-10-27（主人）：代码层直发 Supervisor（Stage-A）的注册口——实验台跑超长线任务用，
         // 与 /goal 同一条规划真路；source 标 rdd_supervisor_submit，监测台能分清发起方。
         numen.registerTool(new RddSupervisorSubmitTool());
@@ -257,6 +260,7 @@ public final class RddPlugin implements NumenPlugin {
             // 38号v3.6 B24：携带器缓存与 LAST_INVENTORY 同生命周期，不清就是泄漏
             RddCarryHint.invalidate(body.getUUID());
             RddFutureNeeds.clear(body.getUUID());
+            RddCapabilityWatch.clear(body.getUUID());
         });
         // 床边复活：死亡时记下同伴"自己绑的"床位（见 onCompanionDeath），SPAWN 时 TP 到床旁安全落点。
         // 只消费一次（take-and-clear）；首建/休眠恢复没有锚点，不会触发。
@@ -373,6 +377,7 @@ public final class RddPlugin implements NumenPlugin {
             LAST_EXPANSION_REPORT.clear();
             KICKOFF_SENT.clear();
             RddFutureNeeds.clearAll();   // "后面几级要用的东西"是世界观测，换世界必须清
+            RddCapabilityWatch.clearAll();   // "刚到手的能力"同理：换世界后整包都是"新到手"
             // 2026-09-30 深审 R05：世界态必须清干净。
             // 计划代次的真源在 TaskChain 里（随链持久化），这里不用管；
             // 但「上一个世界的回执」一个都不能带到新世界。
@@ -720,6 +725,13 @@ private static String withAssets(UUID companionId, String rddContext) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(futureNeeds);
         }
+        // 2026-10-28（主人：「不是这些重要的东西都有语义吗」）：把语义层里已声明的能力/用途/可替代
+        // 连数量摆出来 —— 否则"我有钻石镐，为什么还要做铁镐"只能靠她从背包列表里猜。
+        String capabilities = RddCapabilityBrief.block(companionId);
+        if (!capabilities.isEmpty()) {
+            if (merged.length() > 0) merged.append("\n");
+            merged.append(capabilities);
+        }
         if (!playbook.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(playbook);
@@ -1043,6 +1055,12 @@ private static String withAssets(UUID companionId, String rddContext) {
         String situation = replanSituation(companionId);
         if (!situation.isBlank()) {
             hint = hint + "\n\n" + situation;
+        }
+        // 2026-10-28（主人）：规划者要看得见"手上这些东西能干什么、能替代什么"，
+        // 否则"用钻石镐直接挖铁、不走石镐→铁镐"这种判断没有依据。
+        String capabilities = RddCapabilityBrief.block(companionId);
+        if (!capabilities.isBlank()) {
+            hint = hint + "\n\n## 现有能力与可替代（判断'哪一级已经没必要走'的依据）\n" + capabilities;
         }
         // 第三批 N1 消费：把「需求 × 持有对账 + 近期阶段事实」作为只读事实块送进规划器输入。
         // 只陈述事实（缺口数字 ≠「没做」），生成失败绝不影响重规划本身。
