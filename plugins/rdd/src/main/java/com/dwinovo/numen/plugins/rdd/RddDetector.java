@@ -520,6 +520,15 @@ final class RddDetector {
                 return;
             }
             // 资产 populate：把背包物品写进 AssetRegistry（节流），rdd_status 据此报真实资产。
+            // ★ 2026-10-28 实机 bug（本会话抓到）：**验收必须排在卡死监督之前**。
+            //   她进了下界、站在传送门边不动 → 位置/背包指纹不变 → stallWatcher.track 返回 true
+            //   → 这里提前 return，下面那句 conditionMatches **永远轮不到**；
+            //   实测 `block_nearby(nether_portal)` 明明成立（rdd_status 也报 condition_matches=true），
+            //   二级却一直是 RUNNING 卡了 14 分钟。顺序改成：先判"做到了没"，再判"是不是卡住了"。
+            if (conditionMatches(ap, current, counts)) {
+                completeSubtask(ap, rt, current);
+                return;
+            }
             // 卡死监督：资产指纹（背包+位置）连续未变化 → 判 STALLED 并拍醒将军。
             // 空转止血：暂停监督 → 跳过卡死检测与身体驱动(不 nudge / 不自动重派)，只留资产检测推进。
             if (RddPlugin.supervisionEnabled() && stallWatcher.track(ap, rt, current)) {
