@@ -306,7 +306,8 @@ final class RddRepairDispatch {
                         + death.lostItems().size() + " 种物品，先确认背包再决定补不补");
                 RddMonitor.publish("loss_impact_recomputed", ev0);
                 return null;
-            }            RequirementManifest.Manifest manifest = RddFactContext.currentManifest(companionId);
+            }
+            RequirementManifest.Manifest manifest = RddFactContext.currentManifest(companionId);
             List<RequirementManifest.Manifest> manifests =
                     manifest == null ? List.of() : List.of(manifest);
             Map<String, AssetSemantics> semantics =
