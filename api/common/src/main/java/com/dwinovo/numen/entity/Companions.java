@@ -303,11 +303,28 @@ public final class Companions {
         if (pos == null && owner.onGround() && SafeSpawn.hasStandingRoom(level, owner.position())) {
             pos = owner.position();   // non-full-block floor (slab/carpet): the owner's own spot fits
         }
+        // H2（106 号）判据①②：落点选定后再终检一次「站得住」。
+        // 2026-10-30 实测出现过重生落到 the_end (166,-269,681)、脚下 void_air、hp=0 的情形——
+        // 与其猜 findNear 为什么没命中，不如在落点确定后按结果判：站不住就不许重生，
+        // 保持死亡状态让 ticker 下一拍重试（判据④「兜底不硬塞」）。
+        if (pos != null && !SafeSpawn.isStanding(level, pos)) {
+            com.dwinovo.numen.Constants.LOG.warn("[numen][respawn] 落点站不住 {} {}，本轮不重生，下一拍重试",
+                    level.dimension().location(), pos);
+            pos = null;
+        }
         if (pos == null) return false;
         NumenPlayer body = CompanionFactory.spawn(server, uuid, entry.name(), entry.owner(), level, pos);
         body.setHealth(body.getMaxHealth());
         body.clearFire();
         CompanionRegistry.get(server).markAlive(uuid);
+        // H2（106 号）判据⑤：每次重生都留一条可观测记录（维度/坐标/来源）。
+        com.dwinovo.numen.event.NumenEvents.emit(body,
+                com.dwinovo.numen.event.NumenEvents.Kind.RESPAWN,
+                java.util.Map.of(
+                        "dimension", level.dimension().location().toString(),
+                        "pos", pos.x + "," + pos.y + "," + pos.z,
+                        "reason", "owner_nearby"),
+                "你在 " + level.dimension().location() + " 重生了。", false);
         syncRosterToOwner(server, owner);
         Services.NETWORK.sendToPlayer(owner, new NumenRespawnPayload(uuid, entry.deathCause()));
         return true;

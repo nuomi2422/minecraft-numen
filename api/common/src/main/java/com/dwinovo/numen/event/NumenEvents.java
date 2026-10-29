@@ -67,6 +67,8 @@ public final class NumenEvents {
         DIMENSION_CHANGE("dimension_change"),
         /** 她死了又复活了(在客户端合成——身体那会儿已经不在了)。 */
         DEATH("death"),
+        /** H2（106 号）：死亡窗口结束后真的重生了。带维度与坐标，供实验台判「落点站不站得住」。 */
+        RESPAWN("respawn"),
         /** 她自己定的表到点了(见 {@code TimerRegistry})。提醒而已,不代表那件事完成了。 */
         TIMER("timer"),
         /** 她从床上醒了。{@code sleep} 到躺下就返回,醒来这一刻只有这条事件说得出。 */

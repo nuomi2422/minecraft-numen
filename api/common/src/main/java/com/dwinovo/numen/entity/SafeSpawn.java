@@ -78,6 +78,26 @@ final class SafeSpawn {
         return level.noCollision(standingBox(pos.x, pos.y, pos.z));
     }
 
+    /**
+     * H2（106 号）判据①②：对**已选定的落点**做一次终检。
+     *
+     * <p>为什么还要一次终检：{@link #findNear} 是「在主人附近找一个格子」，
+     * 但 2026-10-30 实测出现过重生落到 {@code the_end (166,-269,681)}、脚下 void_air、hp=0 的情形。
+     * 与其去猜当时为什么没命中，不如在落点确定后**再判一次它站不站得住**——判据只看结果。
+     *
+     * @return 站得住（脚下实心、脚下不是空气、站得下）才 true
+     */
+    static boolean isStanding(ServerLevel level, Vec3 pos) {
+        if (level == null || pos == null) return false;
+        BlockPos feet = BlockPos.containing(pos.x, pos.y + 0.01, pos.z);
+        BlockPos below = feet.below();
+        BlockState footing = level.getBlockState(below);
+        if (footing.isAir()) return false;
+        if (!footing.isFaceSturdy(level, below, Direction.UP)) return false;
+        if (level.getBlockState(feet).getFluidState().is(FluidTags.LAVA)) return false;
+        return level.noCollision(standingBox(pos.x, pos.y, pos.z));
+    }
+
     private static boolean isSafe(ServerLevel level, BlockPos pos) {
         if (!level.getWorldBorder().isWithinBounds(pos)) return false;
         BlockPos belowPos = pos.below();
