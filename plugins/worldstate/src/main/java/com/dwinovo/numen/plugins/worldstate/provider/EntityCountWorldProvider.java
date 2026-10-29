@@ -79,7 +79,13 @@ public final class EntityCountWorldProvider implements WorldProvider {
         AABB area = new AABB(box.minX(), box.minY(), box.minZ(),
                 box.maxX() + 1.0, box.maxY() + 1.0, box.maxZ() + 1.0);
         int count = 0;
-        for (Entity entity : level.getEntities((Entity) null, area, ignored -> true)) {
+        // 123 号：统一口径，排除多部位实体的部位。
+        for (Entity entity : level.getEntities((Entity) null, area,
+            // 123 号（2026-10-30）：排除多部位实体的部位（否则 1 条末影龙被数成 9 条）。
+            //   ⚠ 这个判断在 4 处同形出现（rdd_nearby_entities / count_entities_in_box /
+            //   world_probe entities / EntityCountWorldProvider）——因为 settlement、worldstate
+            //   的编译单元看不到 api:common 新增的公共类。将来若多出第三种部位类型，四处必须同改。
+                e -> !(e instanceof net.minecraft.world.entity.boss.EnderDragonPart))) {
             String id = BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString();
             if (entityType != null) {
                 if (!entityType.equals(id)) continue;

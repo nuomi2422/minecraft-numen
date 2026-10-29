@@ -86,8 +86,13 @@ public final class RddNearbyEntitiesTool implements NumenTool {
         // id 恰好是 496..503 连续 8 个，正是「1 个根 + 7 个 EnderDragonPart」。
         // EnderDragonPart 也是 Entity，getType() 同样报 minecraft:ender_dragon，
         // 于是同一条龙被数了 8 次，AI 据此误判「8 只龙堆在原点」。
+        // 123 号：改用公共口径（原来这里内联判断，现在与另外三条路径共用一处）。
         List<Entity> found = level.getEntities(companion, box,
                 e -> e != companion && e.isAlive()
+            // 123 号（2026-10-30）：排除多部位实体的部位（否则 1 条末影龙被数成 9 条）。
+            //   ⚠ 这个判断在 4 处同形出现（rdd_nearby_entities / count_entities_in_box /
+            //   world_probe entities / EntityCountWorldProvider）——因为 settlement、worldstate
+            //   的编译单元看不到 api:common 新增的公共类。将来若多出第三种部位类型，四处必须同改。
                         && !(e instanceof net.minecraft.world.entity.boss.EnderDragonPart));
         if (countOnly) {
             // 计数模式：按类型聚合，**不截断**。验证卡靠这个数"栏内还有几只村民/动物"。
