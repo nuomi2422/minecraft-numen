@@ -129,6 +129,7 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
             if (!e.published() && !e.trial()) return "draft_or_suspended";
             if (e.maturity() == null) return "maturity_null";
             if (!e.trial() && e.maturity().rank < Maturity.VERIFIED.rank) return "not_verified";
+            if (e.audienceExcludesExecutor()) return "audience_not_executor";
         }
         if (e.bodyContent() == null && e.title() == null && e.summary() == null) return "empty_content";
         return "ok";
@@ -144,7 +145,10 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
                     || e.maturity() == null
                     // ★ G8：TRIAL 允许 OBSERVED（否则「OBSERVED 进不了执行视图 → 攒不到证据」成环）；
                     //   PUBLISHED 仍必须 VERIFIED。
-                    || (!e.trial() && e.maturity().rank < Maturity.VERIFIED.rank))) {
+                    || (!e.trial() && e.maturity().rank < Maturity.VERIFIED.rank)
+                    // A6（98 号）：显式标注了 audience 且不含 EXECUTOR → 不进执行正文。
+                    // 空 audience = 旧条目（legacy），不受这条影响。
+                    || e.audienceExcludesExecutor())) {
             return null;
         }
         if (e.bodyContent() == null && e.title() == null && e.summary() == null) {
@@ -238,7 +242,12 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
                 && e.maturity().rank >= Maturity.VERIFIED.rank;
         if (!e.retracted() && ((e.published() && matureEnough) || (trialReachable && e.maturity() != null))) {
             roles.add(RetrievalRole.PLANNER);
-            roles.add(RetrievalRole.EXECUTOR);
+            // A6（98 号）：成熟度门之后再按「这条经验给谁用」收窄执行视图。
+            // 空 audience = 旧条目/未标注 → legacy，行为不变（否则历史经验会被一夜清空）。
+            // 显式标注且不含 EXECUTOR → 只给规划/复盘，不进行执行正文。
+            if (!e.audienceExcludesExecutor()) {
+                roles.add(RetrievalRole.EXECUTOR);
+            }
             roles.add(RetrievalRole.LEARNER);
         } else {
             roles.add(RetrievalRole.PLANNER);

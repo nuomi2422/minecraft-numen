@@ -155,4 +155,27 @@ class ExperienceRetrievalProviderTest {
         SearchPage page = p.search(query(RetrievalRole.EXECUTOR, "火把 torch", 20));
         assertEquals(1, page.entries().size(), "TRIAL+OBSERVED 应该被 EXECUTOR 看到，实际 " + page.entries().size());
     }
+
+    // ---- A6（98 号）：audience 收窄 EXECUTOR ----
+
+    @Test
+    void audiencePlannerOnly_hiddenFromExecutor_visibleToPlanner() {
+        ExperienceEntryRead plannerOnly = new ExperienceEntryRead(
+                "planner-only", EntryKind.EXPERIENCE, "规划经验", "summary",
+                List.of(), List.of(), List.of("ev/1"), Maturity.VERIFIED, 1, false,
+                "body", "hash-1", "fake-source", true, true, false, List.of("PLANNER"));
+        ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("exp", sourceOf(plannerOnly));
+        assertEquals(0, p.search(query(RetrievalRole.EXECUTOR, "", 20)).entries().size(),
+                "audience 不含 EXECUTOR：执行视图不可见");
+        assertEquals(1, p.search(query(RetrievalRole.PLANNER, "", 20)).entries().size(),
+                "规划视图仍可见");
+    }
+
+    @Test
+    void legacyEntryWithoutAudience_keepsExecutorVisibility() {
+        ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("exp", sourceOf(
+                entry("legacy", "旧经验", Maturity.VERIFIED, false, List.of(), List.of())));
+        assertEquals(1, p.search(query(RetrievalRole.EXECUTOR, "", 20)).entries().size(),
+                "旧条目（无 audience）不得因 A6 被收窄");
+    }
 }

@@ -32,7 +32,22 @@ public record ExperienceEntryRead(
         // ★ G6c：是否处于「试用」。G6c 之前 TRIAL 被 published=false 挡在执行视图外——
         //   于是试用条目**永远不会被用到**，也就永远攒不出试用证据（等于死状态）。
         //   现在 trial 独立成维：TRIAL 可进执行视图（带「试用中」标记），但**不等于已发布**。
-        boolean trial) {
+        boolean trial,
+        // A6（98 号）：这条经验「本来是给谁用的」（PLANNER/EXECUTOR/LEARNER）。
+        // 空 = 旧条目/未标注（legacy：保持原有角色，不因 A6 被收窄）。
+        // 非空 = 显式标注：EXECUTOR 视图只认含 EXECUTOR 的条目。
+        List<String> audience) {
+
+    /** 兼容 16 参构造（A6 之前的所有调用点）：audience 缺省空 = legacy。 */
+    public ExperienceEntryRead(String entryRef, EntryKind kind, String title, String summary,
+                               List<String> applicableConditions, List<String> excludedConditions,
+                               List<String> evidenceRefs, Maturity maturity, int verifiedCount,
+                               boolean retracted, String bodyContent, String contentHash,
+                               String source, boolean published, boolean retrievable, boolean trial) {
+        this(entryRef, kind, title, summary, applicableConditions, excludedConditions, evidenceRefs,
+                maturity, verifiedCount, retracted, bodyContent, contentHash, source,
+                published, retrievable, trial, List.of());
+    }
 
     /** 兼容 15 参构造（G6c 之前的所有调用点）：trial 缺省 false。 */
     public ExperienceEntryRead(String entryRef, EntryKind kind, String title, String summary,
@@ -42,13 +57,19 @@ public record ExperienceEntryRead(
                                String source, boolean published, boolean retrievable) {
         this(entryRef, kind, title, summary, applicableConditions, excludedConditions, evidenceRefs,
                 maturity, verifiedCount, retracted, bodyContent, contentHash, source,
-                published, retrievable, false);
+                published, retrievable, false, List.of());
     }
 
     public ExperienceEntryRead {
         applicableConditions = frozen(applicableConditions);
         excludedConditions = frozen(excludedConditions);
         evidenceRefs = frozen(evidenceRefs);
+        audience = frozen(audience);
+    }
+
+    /** A6：显式标注了 audience 且不含 EXECUTOR（空 = legacy，不算收窄）。 */
+    public boolean audienceExcludesExecutor() {
+        return !audience.isEmpty() && audience.stream().noneMatch(a -> "EXECUTOR".equalsIgnoreCase(a));
     }
 
     private static List<String> frozen(List<String> v) {
