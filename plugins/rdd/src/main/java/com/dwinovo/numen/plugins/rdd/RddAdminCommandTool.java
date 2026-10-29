@@ -104,6 +104,17 @@ final class RddAdminCommandTool implements NumenTool {
             //   这里给一个"原地向上垫方块"的通道：每次在脚下放一块圆石并上移 1 格。
             // 2026-10-29（crystal）：attack 对末影水晶完全无效（450 秒预算 0/6，因为水晶不是 LivingEntity）。
             //   这里直接把它们从世界里移除（discard 不会像被打碎那样爆炸，避免再把她炸进虚空）。
+            // 2026-10-29（heal）：她 hp 11、背包 5 个金苹果却不吃（低血回血不稳定）。
+            //   末地死亡 = 丢全身装备，所以给一条兜底回血通道。
+            if ("heal".equals(verb)) {
+                companion.setHealth(companion.getMaxHealth());
+                RddMonitor.publish("admin_command_used", Map.of("companionId", companion.getUUID().toString(),
+                        "command", command, "stuck", stuck, "mode", "heal"));
+                reply.accept(com.dwinovo.numen.task.TaskResult.ok(
+                        "healed to " + Math.round(companion.getHealth()) + " —— 算 CHEATED，事后必须补测。",
+                        Map.of("cheated", true)).toJson());
+                return;
+            }
             if ("crystal".equals(verb)) {
                 var lvl2 = (net.minecraft.server.level.ServerLevel) companion.level();
                 var box = companion.getBoundingBox().inflate(96.0);
