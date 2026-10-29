@@ -312,6 +312,9 @@ final class RddDetector {
             //   而"卡住"恰恰是死亡后最可能的状态 —— 放后面等于永不执行（第一版就犯了这个错）。
             RddRepairDispatch.recomputeLatestFromLedger(ap.getUUID(), counts);
             RddWaypoints.observe(ap);   // #252：记维度锚点（"门在哪"），供回家提示用
+            // A3（95 号）：四层事实第一版（fact/progress，只读，不改规划）。放在所有早退之前，
+            // 否则"卡住"这种最该被看到的状态会被早退挡掉（#238 的同一教训）。
+            RddSituationFacts.tick(ap);
             // D20-C1：先跑超时结账 —— 过期支线清掉后，下面的 lastRepair 才不会对死支线空转。
             // tickTimeout 不落盘（单测环境 RddPlugin 类链炸）；这里在游戏环境补 saveLedger。
             int deathSeqAtTick = RddRepairDispatch.openDeathSeq(ap.getUUID());
