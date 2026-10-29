@@ -95,6 +95,30 @@ public final class RddTeleportTool implements NumenTool {
                     + "换一个坐标或先往上抬 2 格。").toJson());
             return;
         }
+        // ── H4-110（2026-10-30）：落点必须**脚下有地面** ──────────────────────────
+        // 实测：exp-loop-r4b 里 2 次「已传送」到 y=-235 / y=-249 的末地虚空，
+        // 随后反复 low_hp、整轮未达成目标。原检查只看了落点本身与头顶，
+        // 液体/实心/敌怪都过了，唯独没人问「下面有没有地」。
+        // 边界：拒绝就拒绝，**不许偷偷把 y 改成正数再传**（那是替它做决定）。
+        var below = target.below();
+        var footing = level.getBlockState(below);
+        boolean hasFooting = footing.isFaceSturdy(level, below, net.minecraft.core.Direction.UP);
+        boolean endVoid = level.dimension() == net.minecraft.world.level.Level.END && y < 0;
+        if (endVoid || !hasFooting) {
+            String why = endVoid
+                    ? "末地虚空（y=" + (int) y + " < 0）"
+                    : "落点悬空（" + (int) x + "," + (int) y + "," + (int) z + " 脚下是空气）";
+            // selfcompile 模块不依赖 api 的 monitor 包，也不依赖 plugins:rdd —— 所以这里只打日志，
+            // 事件留给 harness 从 chat/tools 日志侧去认（判据⑤在本单里降级为「日志可查」）。
+            org.slf4j.LoggerFactory.getLogger(RddTeleportTool.class).info(
+                    "[rdd-teleport] rejected {} at {},{},{} dim={}",
+                    why, (int) x, (int) y, (int) z, level.dimension().location());
+            reply.accept(TaskResult.fail("拒绝传送：" + why
+                    + "。传过去会一路坠落。先找有地面的坐标（y 保持在你现在的高度附近），"
+                    + "或者用 goto 走过去。").toJson());
+            return;
+        }
+
         int hostiles = 0;
         try {
             var box = new net.minecraft.world.phys.AABB(target).inflate(8);
