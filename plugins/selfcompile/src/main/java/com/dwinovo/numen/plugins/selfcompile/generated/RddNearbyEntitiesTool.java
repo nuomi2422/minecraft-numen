@@ -81,7 +81,14 @@ public final class RddNearbyEntitiesTool implements NumenTool {
             return;
         }
         AABB box = companion.getBoundingBox().inflate(radius);
-        List<Entity> found = level.getEntities(companion, box, e -> e != companion && e.isAlive());
+        // H9（121 号）：**必须排除多部位实体的部位**。
+        // 实测（exp-loop-r10）：末地只有 1 条末影龙，本工具却报 8 个 ender_dragon——
+        // id 恰好是 496..503 连续 8 个，正是「1 个根 + 7 个 EnderDragonPart」。
+        // EnderDragonPart 也是 Entity，getType() 同样报 minecraft:ender_dragon，
+        // 于是同一条龙被数了 8 次，AI 据此误判「8 只龙堆在原点」。
+        List<Entity> found = level.getEntities(companion, box,
+                e -> e != companion && e.isAlive()
+                        && !(e instanceof net.minecraft.world.entity.boss.EnderDragonPart));
         if (countOnly) {
             // 计数模式：按类型聚合，**不截断**。验证卡靠这个数"栏内还有几只村民/动物"。
             Map<String, Integer> byType = new LinkedHashMap<>();
