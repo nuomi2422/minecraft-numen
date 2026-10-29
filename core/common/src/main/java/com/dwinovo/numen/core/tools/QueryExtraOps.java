@@ -93,6 +93,14 @@ String type_filter,
         root.addProperty("truncated", matched.size() > MAX_RESULTS);
         root.addProperty("radius_searched", radius);
         root.addProperty("filter", filter);
+        // 2026-10-29 实机（末地）：她扫出了 end_crystal（id=112，12.9 格），然后就停住了 ——
+        //   数据齐全、字段名也对，缺的是"扫完了下一步该干什么"。经验库里的三步她没检索到，
+        //   所以在**需要的那一刻**把下一步塞进回执里（tool_result 是即时通道，不依赖检索）。
+        if (!matched.isEmpty()) {
+            root.addProperty("hint",
+                    "要打其中某个：attack(entity_ids=[它的 id])（attack 会自己决定靠近砍还是拉弓射）；"
+                            + "id 每帧可能变，扫完就立刻打，不要隔回合再用旧 id。");
+        }
         return root.toString();
     }
 
