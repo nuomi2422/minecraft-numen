@@ -1203,6 +1203,10 @@ private static String withAssets(UUID companionId, String rddContext) {
 Map<String, Object> deathData = new LinkedHashMap<>();
             deathData.put("companionId", companionId.toString());
             deathData.put("task", currentTaskId(companionId));
+            // A1（93 号 §2）：死亡事件必须自带台账批次号，否则「这是哪一次死亡」只能靠人记
+            // （88 §7.5 的坑：8 次死亡机读对不上）。与 companion_assets_invalidated 里的
+            // deathSeq 同源（同一次 record() 的返回），不重复记账；记录失败时 -1 = UNKNOWN。
+            deathData.put("deathSeq", death == null ? -1 : death.seq());
             // ── 死因结构化（2026-10-01 本轮新增）────────────────────────────
             // 老字段 reason 只有 starvation/other 二值，把「掉岩浆里/淹死/摔死/被怪打死/
             // 被玩家打死」全塌缩成 other —— 而"被玩家打死"和"被怪打死"归因方向相反
