@@ -97,6 +97,23 @@ final class RddAdminCommandTool implements NumenTool {
             String verb = lower.split("\\s+", 2)[0];
             // 2026-10-29（revive）：假玩家死了**不会自己复活** —— Companions.respawnDead 只在主人登录时触发，
             //   而外置学习者全程走 MCP、没有主人登录 ⇒ 她死了主线就永久停住（实机：末地虚空坠落 3 次后 hp 一直 0）。
+            // 2026-10-29（dragon）：这个存档的末地从来就没有龙 —— DIM1/data 里没有 ender_dragon_fight.dat，
+            //   因为她进末地走的是 D-20 兜底（假玩家传送），绕过了原版"首次进入维度"的龙战初始化。
+            //   这里给一个显式入口，把末地龙战初始化/复活跑一遍。
+            if ("dragon".equals(verb)) {
+                var endLevel = companion.getServer().getLevel(net.minecraft.world.level.Level.END);
+                if (endLevel == null) throw new IllegalArgumentException("dragon: end level missing");
+                var fight = endLevel.getDragonFight();
+                if (fight == null) throw new IllegalArgumentException("dragon: no dragon fight in this level");
+                fight.tryRespawn();
+                RddMonitor.publish("admin_command_used", Map.of("companionId", companion.getUUID().toString(),
+                        "command", command, "stuck", stuck, "mode", "dragon-fight"));
+                reply.accept(com.dwinovo.numen.task.TaskResult.ok(
+                        "dragon fight: tryRespawn done, previouslyKilled=" + fight.hasPreviouslyKilledDragon()
+                                + " —— 算 CHEATED，事后必须补测。",
+                        Map.of("cheated", true)).toJson());
+                return;
+            }
             if ("revive".equals(verb)) {
                 var server = companion.getServer();
                 UUID cid = companion.getUUID();
