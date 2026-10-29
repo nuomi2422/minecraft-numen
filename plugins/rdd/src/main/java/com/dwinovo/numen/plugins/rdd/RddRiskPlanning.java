@@ -116,4 +116,58 @@ final class RddRiskPlanning {
             case END -> "末地";
         };
     }
+
+    // ------------------------------------------------------------ A2（94 号）：准备节点 ----
+
+    /** 规划师已经写出这类阶段时，不再重复注入。 */
+    private static final List<String> PREP_WORDS =
+            List.of("准备", "补给", "前哨", "备用", "备齐", "营地", "仓库");
+
+    static final String PREP_STAGE_DESC =
+            "准备与补给：建前哨/补齐食物与工具/备一套备用/定回撤路线（进入高风险区域前完成）";
+
+    /**
+     * A2：高风险目标必须有一个「准备与补给」阶段，排在**第一个高风险阶段之前**。
+     *
+     * <p>为什么不能只靠提示词：88 §7.2 的实据是「末地链直线、没有前哨/备用/补给」，
+     * 而规划师是 LLM，提示词可能被忽略。这里做**解析后的注入**，保证任务图里真有这个节点，
+     * 且 `goal_staged` 事件能机读出来（不是文档里的一句口号）。
+     *
+     * <p>保守边界：
+     * <ul>
+     *   <li>没有高风险阶段 → 不插（低风险目标不该被加一步准备）；</li>
+     *   <li>第一个阶段就是高风险（index 0）→ 不插：插进去会把原第一阶段顶到 index 1，
+     *       让「就地采石」这类产出型阶段拿到 torch/bread 硬门而自锁（P2.2 真机回归）；</li>
+     *   <li>已达阶段上限 → 不插（不硬塞）。</li>
+     * </ul>
+     */
+    static List<PrimarySpec> ensurePrepStage(List<PrimarySpec> stages, int maxStages) {
+        if (stages == null || stages.isEmpty()) {
+            return stages == null ? List.of() : stages;
+        }
+        int firstRisky = -1;
+        for (int i = 0; i < stages.size(); i++) {
+            PrimarySpec s = stages.get(i);
+            if (s == null) continue;
+            if (RiskGate.levelForText(s.description()) != RiskLevel.NORMAL) {
+                firstRisky = i;
+                break;
+            }
+        }
+        if (firstRisky <= 0) {
+            return stages;
+        }
+        for (int i = 0; i < firstRisky; i++) {
+            String d = stages.get(i).description();
+            for (String w : PREP_WORDS) {
+                if (d.contains(w)) return stages;
+            }
+        }
+        if (stages.size() >= maxStages) {
+            return stages;
+        }
+        List<PrimarySpec> out = new ArrayList<>(stages);
+        out.add(firstRisky, new PrimarySpec(PREP_STAGE_DESC, List.of()));
+        return List.copyOf(out);
+    }
 }

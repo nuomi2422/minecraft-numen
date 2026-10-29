@@ -99,4 +99,34 @@ class RddRiskPlanningTest {
         String hint = RddRiskPlanning.prepHint("击杀末影龙", Map.of());
         assertTrue(hint.contains("备用套"), "风险前置文案要说明含备用套");
     }
+
+    // ---- A2（94 号）：准备节点注入 ----
+
+    @Test void ensurePrepStageInjectedBeforeFirstRiskyStage() {
+        List<PrimarySpec> stages = List.of(
+                new PrimarySpec("石器起步", List.of()),
+                new PrimarySpec("进入下界", List.of()));
+        List<PrimarySpec> out = RddRiskPlanning.ensurePrepStage(stages, 12);
+        assertEquals(3, out.size(), "高风险前应插入准备节点");
+        assertTrue(out.get(1).description().contains("准备与补给"));
+        assertEquals("进入下界", out.get(2).description(), "原高风险阶段顺延但内容不变");
+    }
+
+    @Test void ensurePrepStageSkipsLowRiskAndExistingPrep() {
+        List<PrimarySpec> low = List.of(
+                new PrimarySpec("采石头", List.of()), new PrimarySpec("采木头", List.of()));
+        assertEquals(2, RddRiskPlanning.ensurePrepStage(low, 12).size(), "低风险目标不插");
+
+        List<PrimarySpec> hasPrep = List.of(
+                new PrimarySpec("准备与补给：备食物", List.of()),
+                new PrimarySpec("进入下界", List.of()));
+        assertEquals(2, RddRiskPlanning.ensurePrepStage(hasPrep, 12).size(), "已有准备阶段不重复插");
+    }
+
+    @Test void ensurePrepStageRespectsMaxStages() {
+        List<PrimarySpec> stages = List.of(
+                new PrimarySpec("石器起步", List.of()),
+                new PrimarySpec("进入下界", List.of()));
+        assertEquals(2, RddRiskPlanning.ensurePrepStage(stages, 2).size(), "到上限不硬塞");
+    }
 }

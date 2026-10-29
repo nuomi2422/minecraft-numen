@@ -61,7 +61,9 @@ final class RddStagePlanner {
                 args -> {
                     RddPlanGuard.Stages guarded = RddPlanGuard.filterStages(parse(args), objective);
                     // P2.2：高风险阶段自动补 wait_for 硬门（提前备装，由依赖门强制）
-                    List<PrimarySpec> planned = RddRiskPlanning.injectWaitFor(guarded.allowed(), snapshot.availableCounts());
+                    // A2（94 号）：先保证任务图里有「准备与补给」节点（规划师可能不写），再挂硬门。
+                    List<PrimarySpec> prepared = RddRiskPlanning.ensurePrepStage(guarded.allowed(), RddChainFactory.MAX_STAGES);
+                    List<PrimarySpec> planned = RddRiskPlanning.injectWaitFor(prepared, snapshot.availableCounts());
                     RddPlanningKnowledge.publishPolicy(companionId, "stage_a",
                             RddPlanningPolicy.appliedRules(objective, "stage_a"),
                             guarded.dropped(), List.of());

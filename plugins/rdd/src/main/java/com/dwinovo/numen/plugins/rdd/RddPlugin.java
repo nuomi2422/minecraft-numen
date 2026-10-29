@@ -412,7 +412,9 @@ public final class RddPlugin implements NumenPlugin {
                 try {
                     bindCurrent(uuid, RddChainFactory.fromStages(uuid, objective, stages));
                     RddMonitor.publish("goal_staged", Map.of(
-                            "companionId", uuid.toString(), "objective", objective, "stages", stages.size()));
+                            "companionId", uuid.toString(), "objective", objective, "stages", stages.size(),
+                            // A2（94 号）：阶段名必须机读——否则「任务图里有没有准备节点」只能靠文档口号。
+                            "stageNames", stages.stream().map(com.dwinovo.numen.rdd.api.PrimarySpec::description).toList()));
                     publishTaskSnapshot(uuid, "goal_staged");
                     // First primary stays unexpanded; Detector reports the boundary to GoalDriver.
                     LOG.info("[rdd] Stage-A 规划 {} 级已绑定 {}:{}", stages.size(), uuid, objective);
