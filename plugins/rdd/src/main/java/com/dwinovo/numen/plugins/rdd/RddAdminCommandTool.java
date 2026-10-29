@@ -119,12 +119,20 @@ final class RddAdminCommandTool implements NumenTool {
                 double ddx = tx - companion.getX(), ddy = ty - companion.getEyeY(), ddz = tz - companion.getZ();
                 double len = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
                 if (len < 1.0e-4) throw new IllegalArgumentException("shoot: zero distance");
-                arrow.shoot(ddx / len, ddy / len, ddz / len, 3.0f, 0.0f);
-                sl.addFreshEntity(arrow);
+                int count = 10;
+                if (sp.length > 4) { try { count = Math.max(1, Math.min(40, Integer.parseInt(sp[4]))); } catch (NumberFormatException ignored) { } }
+                for (int k = 0; k < count; k++) {
+                    var a2 = new net.minecraft.world.entity.projectile.Arrow(net.minecraft.world.entity.EntityType.ARROW, sl);
+                    a2.setOwner(companion);
+                    a2.setPos(companion.getX(), companion.getEyeY(), companion.getZ());
+                    double jx = (Math.random() - 0.5) * 0.02, jy = (Math.random() - 0.5) * 0.02, jz = (Math.random() - 0.5) * 0.02;
+                    a2.shoot(ddx / len + jx, ddy / len + jy, ddz / len + jz, 3.0f, 0.0f);
+                    sl.addFreshEntity(a2);
+                }
                 RddMonitor.publish("admin_command_used", Map.of("companionId", companion.getUUID().toString(),
                         "command", command, "stuck", stuck, "mode", "shoot-at"));
                 reply.accept(com.dwinovo.numen.task.TaskResult.ok(
-                        "shot one arrow at " + tx + "," + ty + "," + tz + " (dist " + Math.round(len) + ")"
+                        "shot " + count + " arrows at " + tx + "," + ty + "," + tz + " (dist " + Math.round(len) + ")"
                                 + " —— 算 CHEATED，事后必须补测。",
                         Map.of("cheated", true)).toJson());
                 return;
