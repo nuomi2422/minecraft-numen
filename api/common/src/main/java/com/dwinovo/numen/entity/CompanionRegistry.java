@@ -209,7 +209,17 @@ public final class CompanionRegistry extends SavedData {
     /** Mark a companion dead (records the cause + game-time, persisted for the respawn timer). */
     public void markDead(UUID uuid, String cause, long diedAt) {
         Entry e = entries.get(uuid);
-        if (e == null) return;
+        // H5-113（2026-10-30）：原来这里 `if (e == null) return;` —— **静默**。
+        // 条目不存在时 diedAt 永远写不进去 ⇒ pendingDead() 空 ⇒ tickRespawns 什么都不做
+        // ⇒ 「死得了、重生不了」，而且日志里一条错都没有。
+        // 实测（exp-loop-r4b / r5）：dead=true、hp=0、停在末地 10 分钟，[numen][respawn] 零日志。
+        // 现在改成：没有条目也**记下这次死亡**（用一个最小条目），宁可多一条记录，不要静默丢死亡。
+        if (e == null) {
+            org.slf4j.LoggerFactory.getLogger(CompanionRegistry.class).warn(
+                    "[numen][respawn] markDead 找不到条目 {}，补建最小条目后继续（H5-113）", uuid);
+            e = new Entry("?", uuid, net.minecraft.world.level.Level.OVERWORLD,
+                    net.minecraft.core.BlockPos.ZERO);
+        }
         entries.put(uuid, e.dead(cause, diedAt));
         setDirty();
     }

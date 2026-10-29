@@ -279,7 +279,16 @@ public final class Companions {
      */
     public static void tickRespawns(MinecraftServer server) {
         long now = server.overworld().getGameTime();
-        for (Map.Entry<UUID, CompanionRegistry.Entry> e : CompanionRegistry.get(server).pendingDead()) {
+        // H5-113（2026-10-30）：可观测。实测两轮「死得了、重生不了」时，这里一条日志都没有，
+        // 外部完全看不出是 pendingDead 空、还是 respawnDead 一直返回 false。
+        // 每 200 tick（10 秒）报一次，且只在真有死者时才报，避免刷屏。
+        var pending = CompanionRegistry.get(server).pendingDead();
+        if (!pending.isEmpty() && now % 200L == 0L) {
+            com.dwinovo.numen.Constants.LOG.info("[numen][respawn] pendingDead={} 最近 diedAt 距今 {}s",
+                    pending.size(),
+                    (now - pending.get(0).getValue().diedAt()) / 20L);
+        }
+        for (Map.Entry<UUID, CompanionRegistry.Entry> e : pending) {
             CompanionRegistry.Entry entry = e.getValue();
             if (now - entry.diedAt() < RESPAWN_DELAY_TICKS) continue;
             ServerPlayer owner = server.getPlayerList().getPlayer(entry.owner());
