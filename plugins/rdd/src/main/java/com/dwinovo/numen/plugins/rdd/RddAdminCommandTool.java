@@ -103,6 +103,19 @@ final class RddAdminCommandTool implements NumenTool {
                 var reg = CompanionRegistry.get(server).find(cid);
                 if (reg == null) throw new IllegalArgumentException("revive: companion not in registry");
                 NumenPlayer live = NumenPlayer.findByUuid(server, cid);
+                // 2026-10-29（修订）：discard+spawn 在"实体位于未加载区块"时无效（她 y=-380）。
+                //   改成先把血补回来（MC 的玩家死亡本质是 hp<=0），再传送到主世界基地。
+                if (live != null) {
+                    live.setHealth(live.getMaxHealth());
+                    var ow = server.overworld();
+                    live.teleportTo(ow, 126.0, 67.0, 703.0, java.util.Set.of(), live.getYRot(), live.getXRot());
+                    RddMonitor.publish("admin_command_used", Map.of("companionId", cid.toString(),
+                            "command", command, "stuck", stuck, "mode", "revive-heal"));
+                    reply.accept(com.dwinovo.numen.task.TaskResult.ok(
+                            "revived: healing + teleported to overworld base —— 算 CHEATED，事后必须补测。",
+                            Map.of("cheated", true)).toJson());
+                    return;
+                }
                 if (live != null) live.discard();
                 var fresh = CompanionFactory.spawn(server, cid, reg.name(), reg.owner(), server.overworld(), null);
                 RddMonitor.publish("admin_command_used", Map.of("companionId", cid.toString(),
