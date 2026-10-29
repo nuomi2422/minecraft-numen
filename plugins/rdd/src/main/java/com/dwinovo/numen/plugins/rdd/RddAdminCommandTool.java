@@ -30,6 +30,10 @@ import java.util.function.Consumer;
  */
 final class RddAdminCommandTool implements NumenTool {
 
+    /** 每个同伴上一次调用本工具的时间（毫秒）：60 秒闸，防她自己用作弊通道绕过能力验证。 */
+    private static final java.util.concurrent.ConcurrentHashMap<java.util.UUID, Long> LAST_CALL =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     /** 允许的指令前缀（第一条空格前的词）。 */
     private static final List<String> ALLOWED = List.of(
             "give", "setblock", "fill", "summon", "gamemode", "time", "weather", "tp");
@@ -66,6 +70,19 @@ final class RddAdminCommandTool implements NumenTool {
             if (command.isEmpty()) throw new IllegalArgumentException("command required");
             if (!confirm) throw new IllegalArgumentException("confirm=true required");
             if (stuck.isEmpty()) throw new IllegalArgumentException("'stuck' reason required (audit trail)");
+            // 2026-10-29（§37 权限边界）：本工具注册在**同伴工具集**里，她理论上能自己调。
+            //   实测她还没用过（三次调用全是我发的，stuck 字段可证），但必须设闸：
+            //   同一个同伴 60 秒内只允许一次，被挡时记 admin_command_refused。
+            Long lastAt = LAST_CALL.get(companion.getUUID());
+            long nowMs = System.currentTimeMillis();
+            if (lastAt != null && nowMs - lastAt < 60_000L) {
+                RddMonitor.publish("admin_command_refused", Map.of(
+                        "companionId", companion.getUUID().toString(),
+                        "reason", "cooldown-60s"));
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail("admin command refused: cooldown-60s").toJson());
+                return;
+            }
+            LAST_CALL.put(companion.getUUID(), nowMs);
 
             String lower = command.toLowerCase(java.util.Locale.ROOT) + " ";
             for (String bad : FORBIDDEN) {
