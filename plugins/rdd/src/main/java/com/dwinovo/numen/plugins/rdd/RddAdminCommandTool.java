@@ -106,6 +106,29 @@ final class RddAdminCommandTool implements NumenTool {
             //   这里直接把它们从世界里移除（discard 不会像被打碎那样爆炸，避免再把她炸进虚空）。
             // 2026-10-29（heal）：她 hp 11、背包 5 个金苹果却不吃（低血回血不稳定）。
             //   末地死亡 = 丢全身装备，所以给一条兜底回血通道。
+            // 2026-10-29（shoot）：attack 只会"地面追击+近距射",对 77 格外的飞行末影龙无效（三次实测）。
+            //   这里直接朝坐标发一支箭（以她为射手），补上"朝天上射"这个动作。
+            if ("shoot".equals(verb)) {
+                String[] sp = command.trim().split("\s+");
+                if (sp.length < 4) throw new IllegalArgumentException("shoot needs x y z");
+                double tx = Double.parseDouble(sp[1]), ty = Double.parseDouble(sp[2]), tz = Double.parseDouble(sp[3]);
+                var sl = (net.minecraft.server.level.ServerLevel) companion.level();
+                var arrow = new net.minecraft.world.entity.projectile.Arrow(net.minecraft.world.entity.EntityType.ARROW, sl);
+                arrow.setOwner(companion);
+                arrow.setPos(companion.getX(), companion.getEyeY(), companion.getZ());
+                double ddx = tx - companion.getX(), ddy = ty - companion.getEyeY(), ddz = tz - companion.getZ();
+                double len = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+                if (len < 1.0e-4) throw new IllegalArgumentException("shoot: zero distance");
+                arrow.shoot(ddx / len, ddy / len, ddz / len, 3.0f, 0.0f);
+                sl.addFreshEntity(arrow);
+                RddMonitor.publish("admin_command_used", Map.of("companionId", companion.getUUID().toString(),
+                        "command", command, "stuck", stuck, "mode", "shoot-at"));
+                reply.accept(com.dwinovo.numen.task.TaskResult.ok(
+                        "shot one arrow at " + tx + "," + ty + "," + tz + " (dist " + Math.round(len) + ")"
+                                + " —— 算 CHEATED，事后必须补测。",
+                        Map.of("cheated", true)).toJson());
+                return;
+            }
             if ("heal".equals(verb)) {
                 companion.setHealth(companion.getMaxHealth());
                 RddMonitor.publish("admin_command_used", Map.of("companionId", companion.getUUID().toString(),
