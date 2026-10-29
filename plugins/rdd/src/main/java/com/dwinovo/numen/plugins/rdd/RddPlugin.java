@@ -173,6 +173,16 @@ public final class RddPlugin implements NumenPlugin {
         SideTaskHost.setup(numen.configDir());
         // 2026-10-08 携带器提醒的"每条约开关"（含换装提醒 gear_upgrade，默认关）。
         RddAlarms.install(numen.configDir());
+        // H3（108 号）：重复查询的**运行时**感知（A3 的 redundant_query 是归档后处理，跑的时候不告警）。
+        RddRepeatQueryWatcher.install(numen.configDir());
+        com.dwinovo.numen.agent.tool.ToolCallObserver.install((companionId, toolName, argsChars) ->
+                RddRepeatQueryWatcher.observe(companionId, toolName, argsChars,
+                        com.dwinovo.numen.entity.NumenPlayer.findByUuid(
+                                net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer(), companionId) == null
+                                ? System.currentTimeMillis() / 50
+                                : com.dwinovo.numen.entity.NumenPlayer.findByUuid(
+                                        net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer(), companionId)
+                                        .level().getGameTime()));
         // E1 shadow：规划角色的预算策略（与客户端同一份文件，幂等）。
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
         numen.registerTool(new RddStatusTool());
