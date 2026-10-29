@@ -67,6 +67,18 @@ final class RddRepairDispatch {
             "重复死亡支线：先撤离并补给，再限时回收掉落物；宁可不捡也不要再死一次";
 
     /**
+     * A2（94 号）判据③：恢复分支的**机读步骤序列**（与上面的散文步骤一一对应）。
+     *
+     * <p>以前只有 nudge 里的一段话与 LocalRepairTask 的 stepsText，监测台/判据只能读自然语言；
+     * 这两个常量让「先保命/先捡包 → 再补装 → 再回主链」变成事件里的有序枚举，可断言顺序。
+     * 只加事件字段，不改任何执行逻辑。
+     */
+    private static final java.util.List<String> STEPS_NORMAL = java.util.List.of(
+            "recover_drops", "fetch_backup_gear", "resume_main_chain");
+    private static final java.util.List<String> STEPS_REPEAT_DEATH = java.util.List.of(
+            "leave_death_zone", "heal_and_resupply", "recover_drops");
+
+    /**
      * 生成并（经护栏）投放一条死亡支线任务。 返回 true = 已投放（nudge 注入）。
      * 死亡触发优先级 CRITICAL（护栏放行）。
      *
@@ -132,6 +144,11 @@ final class RddRepairDispatch {
         dispatched.put("deathSeq", death == null ? -1 : death.seq());
         dispatched.put("trackedItemKinds", death == null ? 0 : death.lostItems().size());
         dispatched.put("repeatDeath", repeatDeath);
+        // A2 判据③：恢复分支步骤机读（顺序即执行顺序）；散文 stepsText 保留供人读。
+        dispatched.put("steps", repeatDeath ? STEPS_REPEAT_DEATH : STEPS_NORMAL);
+        dispatched.put("stepsText", repeatDeath
+                ? REPEAT_DEATH_STEPS.replace("{at}", at)
+                : DEFAULT_STEPS.replace("{at}", at));
         // ★ S1：损失影响分析结果落事件（判据 S1——监测台从这一个键看到
         //   「丢了什么重要的、影响了哪个目标、建议补充还是先确认」）。
         if (impact != null) {
