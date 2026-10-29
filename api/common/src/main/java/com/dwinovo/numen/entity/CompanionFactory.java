@@ -70,7 +70,22 @@ public final class CompanionFactory {
                 pos == null ? "restore-from-dat" : "explicit",
                 pos == null ? player.blockPosition().toShortString() : (pos.x + "," + pos.y + "," + pos.z));
         if (pos != null) {
-            player.moveTo(pos.x, pos.y, pos.z, player.getYRot(), player.getXRot());
+            // H2-106（2026-10-30 实测定位）：`.dat` 里存的是**死亡时所在维度**，而 `moveTo` 只在
+            // 同一维度内挪坐标。上一版重生目标写对了（日志 `path=explicit pos=166.5,63.0,685.5`），
+            // 但身体仍在 the_end → 在 the_end 的同一 X/Z 处从 y=63 一路坠到 y=-269。
+            // 证据：上下文 `位置 the_end (166,-269,685)` 与目标 X/Z 完全相同、只差 Y=332 格。
+            // 所以跨维度重生必须走 teleportTo(ServerLevel,…)；同维度仍用 moveTo（避免多余的事件）。
+            boolean crossDimension = player.level() == null
+                    || !player.level().dimension().equals(level.dimension());
+            if (crossDimension) {
+                org.slf4j.LoggerFactory.getLogger(CompanionFactory.class).info(
+                        "[numen][spawn] H2-106 cross-dimension respawn {} -> {} pos={}",
+                        player.level() == null ? "?" : player.level().dimension().location(),
+                        level.dimension().location(), pos);
+                player.teleportTo(level, pos.x, pos.y, pos.z, player.getYRot(), player.getXRot());
+            } else {
+                player.moveTo(pos.x, pos.y, pos.z, player.getYRot(), player.getXRot());
+            }
         }
         // ★ 补上注册表写入（2026-09-30 修"同伴死而不复生"）
         //
