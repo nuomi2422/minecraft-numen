@@ -58,7 +58,20 @@ public final class HardCodedEvaluator {
         if (condition == null || counts == null) {
             return false;
         }
-        if (condition.containsKey("type") && !"inventory".equals(condition.get("type"))) return false;
+        // 2026-10-29（#22 链被判自满的根）：规划器写的是 `{item: minecraft:crafting_table, type: item}`，
+        //   而这里原来只要 type 不是 inventory 就 false ⇒ 工作台/木镐那几级**从来没被真正判定过**，
+        //   却被链路当成"已满足/无需判定"推了过去（实机：她只有 3 个原木，r1-2~r1-5 全 COMPLETED）。
+        //   现在把 `type:item` 收进来，语义 = 背包里该物品 ≥ minimum（与 asset_key 同口径）。
+        String rawType = condition.containsKey("type") ? String.valueOf(condition.get("type")) : null;
+        if ("item".equals(rawType)) {
+            Object it = condition.get("item");
+            if (!(it instanceof String itemId) || itemId.isBlank()) return false;
+            int need = minimumOf(condition);
+            if (need <= 0) need = DEFAULT_MINIMUM;
+            Integer have = counts.get(itemId);
+            return have != null && have >= need;
+        }
+        if (rawType != null && !"inventory".equals(rawType)) return false;
         int minimum = minimumOf(condition);
         if (minimum < 0) return false;
         if (condition.containsKey("group")) {
