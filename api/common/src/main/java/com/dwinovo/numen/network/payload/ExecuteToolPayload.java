@@ -185,8 +185,20 @@ public record ExecuteToolPayload(UUID entityUuid,
                 new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
     }
 
+    /**
+     * H8-120（2026-10-30）：观测日志里单条工具回执的保留上限。
+     *
+     * <p>原来写死 300 字符，实际把我们自己害了：`exp-loop-r9` 里 {@code rdd_nearby_entities}
+     * 返回 8 条末影龙，日志只留得下前 3 条的 id，于是「8 条到底是 8 只龙、还是 1 只龙 + 7 个部位」
+     * 从归档里**根本无法判定**——归因只能靠猜。
+     *
+     * <p>边界：发给 AI 的 {@code TaskResultPayload} 一直是全文，这里只影响观测日志；
+     * 超过上限仍截断，避免单条日志无界膨胀。
+     */
+    private static final int RESULT_LOG_LIMIT = 2000;
+
     private static String truncate(String s) {
         if (s == null) return "";
-        return s.length() <= 300 ? s : s.substring(0, 300) + "...";
+        return s.length() <= RESULT_LOG_LIMIT ? s : s.substring(0, RESULT_LOG_LIMIT) + "...";
     }
 }
