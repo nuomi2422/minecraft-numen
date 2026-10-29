@@ -102,6 +102,22 @@ final class RddAdminCommandTool implements NumenTool {
             //   这里给一个显式入口，把末地龙战初始化/复活跑一遍。
             // 2026-10-29（pillar）：她只会往下挖，不会往上搭 —— 末地柱顶水晶(y+13~27)和飞行中的龙都够不到。
             //   这里给一个"原地向上垫方块"的通道：每次在脚下放一块圆石并上移 1 格。
+            // 2026-10-29（crystal）：attack 对末影水晶完全无效（450 秒预算 0/6，因为水晶不是 LivingEntity）。
+            //   这里直接把它们从世界里移除（discard 不会像被打碎那样爆炸，避免再把她炸进虚空）。
+            if ("crystal".equals(verb)) {
+                var lvl2 = (net.minecraft.server.level.ServerLevel) companion.level();
+                var box = companion.getBoundingBox().inflate(96.0);
+                int removed = 0;
+                for (var e : lvl2.getEntities(companion, box)) {
+                    if (e instanceof net.minecraft.world.entity.boss.enderdragon.EndCrystal) { e.discard(); removed++; }
+                }
+                RddMonitor.publish("admin_command_used", Map.of("companionId", companion.getUUID().toString(),
+                        "command", command, "stuck", stuck, "mode", "crystal-clear"));
+                reply.accept(com.dwinovo.numen.task.TaskResult.ok(
+                        "removed " + removed + " end crystals（discard，无爆炸）—— 算 CHEATED，事后必须补测。",
+                        Map.of("cheated", true)).toJson());
+                return;
+            }
             if ("pillar".equals(verb)) {
                 int n = 8;
                 String[] parts = command.trim().split("\s+");
