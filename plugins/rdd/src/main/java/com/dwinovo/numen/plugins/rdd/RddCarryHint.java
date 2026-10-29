@@ -79,6 +79,27 @@ final class RddCarryHint {
     /** A4（96 号）：事实超过这个年龄就标 stale —— 旧事实可以看，但不能冒充当前。 */
     private static final long STALE_MS = 10_000L;
 
+    /**
+     * A4 判据② 的**测试探针**：`config/numen/carry-stale.json` = `{"staleMs":15000}` 时，
+     * 把采时刻整体往前推，让提醒必然过期。文件不存在 = 0 = 正常行为。
+     *
+     * <p>为什么用文件而不是 JVM 参数：exp-runner 起游戏不传自定义 -D，而文件可以**中途改、立刻生效**，
+     * 且删掉文件就恢复，不需要重启。只在测试里用，正常部署不会创建这个文件。
+     */
+    private static long staleProbeMs() {
+        try {
+            java.nio.file.Path p = com.dwinovo.numen.NumenPaths.config().resolve("carry-stale.json");
+            if (!java.nio.file.Files.exists(p)) {
+                return 0L;
+            }
+            String s = java.nio.file.Files.readString(p);
+            com.google.gson.JsonObject o = com.google.gson.JsonParser.parseString(s).getAsJsonObject();
+            return o.has("staleMs") ? Math.max(0L, o.get("staleMs").getAsLong()) : 0L;
+        } catch (RuntimeException | java.io.IOException e) {
+            return 0L;
+        }
+    }
+
     /** 读缓存。**永不读世界** —— 上下文构建不该有副作用。 */
     static String current(UUID companionId) {
         return companionId == null ? "" : CARRY_HINT.getOrDefault(companionId, "");
@@ -143,7 +164,7 @@ final class RddCarryHint {
                         body == null ? "null" : "level-null", companionId);
                 return;
             }
-            long capturedAtMs = System.currentTimeMillis();
+            long capturedAtMs = System.currentTimeMillis() - staleProbeMs();
             Rendered rendered = render(body, capturedAtMs);
             publishAlarmEdges(body, rendered.alarms(), capturedAtMs);
             String hint = rendered.xml();
