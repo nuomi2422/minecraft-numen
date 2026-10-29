@@ -1104,6 +1104,12 @@ final class RddDetector {
         // F5：mode=acquire 的二级按"进入时的基线 + 当前增量"判（hold 走两参重载，行为逐字不变）。
         // 基线缺失 → evaluator 判 false → 不算达成（宁可漏判，不许假完成）。
         Map<String, Integer> baseline = acquireBaselineFor(ap, task);
+        // 2026-10-29（#288 实机）：acquire 的"基线 + 增量"口径在**目标本来就已经满足**时会加倍要求 ——
+        //   r14-0 要 iron_pickaxe>=1，她进这一级时背包里就有 1 把 ⇒ baseline=1，判定要求 1+1=2 把，
+        //   于是 matches 永远是 false，链卡死。目标语义是"拥有"，不是"再赚"。先判"已有即达成"。
+        if (HardCodedEvaluator.matches(task.condition(), counts, null)) {
+            return true;
+        }
         if (HardCodedEvaluator.matches(task.condition(), counts, baseline)) {
             return true;
         }
