@@ -60,6 +60,10 @@ String type_filter,
 
         List<ScoredEntity> matched = new ArrayList<>(raw.size());
         for (Entity e : raw) {
+            // 2026-10-29（末影龙坐标全 0）：末影龙是多部件实体，
+            //   getEntities 会把每个 EnderDragonPart 也当成独立实体返回（同一条龙出现 3~4 次，
+            //   而且部件的 getX/getY/getZ 全是 0）⇒ shoot 没有瞄准点。这里跳过所有部件，只保留主实体。
+            if (e instanceof net.minecraft.world.entity.boss.EnderDragonPart) continue;
             String cat = categorise(e);
             if (!matches(filter, cat)) continue;
             matched.add(new ScoredEntity(e, cat, self.distanceTo(e)));
