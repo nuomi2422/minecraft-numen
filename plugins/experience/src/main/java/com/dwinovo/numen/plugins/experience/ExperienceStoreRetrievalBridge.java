@@ -190,7 +190,32 @@ public final class ExperienceStoreRetrievalBridge {
                 e.publication() == com.dwinovo.numen.experience.api.PublicationState.PUBLISHED,
                 e.publication() != com.dwinovo.numen.experience.api.PublicationState.REVOKED,
                 // G6c：试用态单独一维（可进执行视图，但不等于已发布）
-                e.publication() == com.dwinovo.numen.experience.api.PublicationState.TRIAL);
+                e.publication() == com.dwinovo.numen.experience.api.PublicationState.TRIAL,
+                // A6（98 号）：tags 里的 audience:* 提升成显式角色标注；没有就留空 = legacy。
+                audienceFrom(e.tags()));
+    }
+
+    /**
+     * A6（98 号）：从 tags 读 `audience:planner|executor|learner`（可多个）。
+     *
+     * <p>为什么不加新字段：`ExperienceEntry` 的 JSONL 是冻结 schema（加字段要动 build()/存储/反序列化一大串），
+     * 而 tags 本来就是自由元数据；空 = 旧条目 legacy，行为不变。显式标注才收窄。
+     */
+    private static List<String> audienceFrom(List<String> tags) {
+        if (tags == null || tags.isEmpty()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (String t : tags) {
+            if (t == null) continue;
+            String s = t.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!s.startsWith("audience:")) continue;
+            String v = s.substring("audience:".length()).trim().toUpperCase(java.util.Locale.ROOT);
+            if (v.isEmpty()) continue;
+            if (!v.equals("PLANNER") && !v.equals("EXECUTOR") && !v.equals("LEARNER")) continue;
+            if (!out.contains(v)) out.add(v);
+        }
+        return List.copyOf(out);
     }
 
     /**
