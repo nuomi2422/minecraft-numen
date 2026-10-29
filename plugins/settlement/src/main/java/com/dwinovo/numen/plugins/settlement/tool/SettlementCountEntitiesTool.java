@@ -77,7 +77,11 @@ public final class SettlementCountEntitiesTool implements NumenTool {
             AABB box = new AABB(Math.min(ax, bx), Math.min(ay, by), Math.min(az, bz),
                     Math.max(ax, bx) + 1.0, Math.max(ay, by) + 1.0, Math.max(az, bz) + 1.0);
             int count = 0;
-            for (Entity e : level.getEntities((Entity) null, box, ignored -> true)) {
+            // 123 号（2026-10-30）：排除多部位实体的部位，否则 1 条末影龙被数成 9 条。
+            //   ⚠ 同形判断出现在 4 处（rdd_nearby_entities / count_entities_in_box /
+            //   world_probe entities / EntityCountWorldProvider），因为各插件编译单元看不到
+            //   公共类。将来多出第三种部位类型时必须四处同改。
+            for (Entity e : level.getEntities((Entity) null, box, e -> !(e instanceof net.minecraft.world.entity.boss.EnderDragonPart))) {
                 String id = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
                 if (typeId != null && !typeId.equals(id)) continue;
                 if (typeId == null && "passive".equals(category) && !(e instanceof Animal)) continue;

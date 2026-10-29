@@ -87,7 +87,8 @@ public final class EntityCensusProbe implements WorldProbe {
         int total = 0, hostile = 0, passive = 0, other = 0, matching = 0;
         String typeFilter = ctx.type() == null || ctx.type().isBlank() ? null
                 : ctx.type().trim().toLowerCase(Locale.ROOT);
-        for (Entity e : level.getEntities((Entity) null, area, ignored -> true)) {
+        // 123 号：排除多部位实体的部位（同形判断共 4 处，见 count_entities_in_box 注释）。
+        for (Entity e : level.getEntities((Entity) null, area, e -> !(e instanceof net.minecraft.world.entity.boss.EnderDragonPart))) {
             total++;
             if (e instanceof Enemy) hostile++;
             else if (e instanceof Animal) passive++;
