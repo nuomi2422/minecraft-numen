@@ -231,6 +231,20 @@ final class RddRepairDispatch {
      * 而那段时间重启过两次。这里给一条不依赖内存的入口：对台账里最近一次死亡重算一次
      * （内部按 companion|seq|phase 去重，同一会话只算一次）。
      */
+    /**
+     * 已按哪一笔死亡做过"重启后重算"（companion → seq）。
+     *
+     * <p>2026-10-29 实机事故：{@code tickRuntime} **每 tick** 都调 {@link #recomputeLatestFromLedger}，
+     * 而死亡台账里的 latest 不会自己消失 ⇒ 它每 tick 都重算一遍、并且每次先扫一遍已知容器。
+     * 实机表现是**每秒 4 次 {@code [rdd-storage] 扫描}** + {@code [rdd-repair] latest=27 lostKinds=31}
+     * 三行日志无限重复，把 Server thread 占满，AI **完全停摆 1 小时 40 分钟**
+     * （06:21 之后没有任何新回合/工具调用）。
+     *
+     * <p>修法：按 (companion, seq) **幂等** —— 同一笔死亡只重算一次；新死亡（seq 变）才会再跑。
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<UUID, Long> LAST_RECOMPUTED =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     static void recomputeLatestFromLedger(UUID companionId, java.util.Map<String, Integer> counts) {
         try {
             // 2026-10-28：日志必须在**所有早退之前**。
@@ -252,6 +266,11 @@ final class RddRepairDispatch {
                     latest == null ? "null" : latest.seq(),
                     latest == null ? -1 : latest.lostItems().size());
             if (latest == null || latest.lostItems().isEmpty()) return;
+            // 2026-10-29（本方法每 tick 都被调用）：同一笔死亡只重算一次，否则就是死循环。
+            if (LAST_RECOMPUTED.getOrDefault(companionId, (long) Integer.MIN_VALUE) == (long) latest.seq()) {
+                return;
+            }
+            LAST_RECOMPUTED.put(companionId, (long) latest.seq());
             var impact = recomputeAfterDeath(companionId, counts, false, "restart", latest.seq());
             com.dwinovo.numen.core.Constants.LOG.info(
                     "[rdd-repair] recompute-from-ledger done companion={} seq={} impact={}",
