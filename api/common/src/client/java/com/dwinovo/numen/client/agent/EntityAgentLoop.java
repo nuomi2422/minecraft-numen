@@ -2639,10 +2639,55 @@ public final class EntityAgentLoop {
         if (refs == null || refs.isEmpty()) {
             return;
         }
-        if (plan == null || !plan.keptNames().contains(SECTION_EXECUTOR_KNOWLEDGE)) {
+        boolean kept = plan != null && plan.keptNames().contains(SECTION_EXECUTOR_KNOWLEDGE);
+        // A5（97 号）：最终裁剪账本——per-ref kept/dropped + 原因。只观测，不改裁剪与预算数字。
+        publishBudgetDecision(refs, kept, plan);
+        if (!kept) {
             return; // 段被裁：不记（先裁后记）
         }
         com.dwinovo.numen.api.NumenPlugins.requestDelivered(entityUuid, refs);
+    }
+
+    /**
+     * A5（97 号）：把「这一轮最终请求里哪些知识被保留/被裁、为什么」落一条 `budget_decision`。
+     *
+     * <p>以前只有 expanded（渲染过）与 request_delivered（保留的），中间的「渲染了但被预算裁掉」
+     * 是黑箱；A0 的 dropped 只能靠 rendered - delivered 猜，且没有原因。这里只补账本，不改裁剪。
+     *
+     * <p>异常一律吞掉：观测旁路不许拖垮请求（与 requestDelivered 同一约定）。
+     */
+    private void publishBudgetDecision(List<com.dwinovo.numen.api.NumenPlugins.DeliveredRef> refs,
+                                       boolean kept, ContextBudget.Allocation plan) {
+        try {
+            List<Map<String, Object>> keptList = new ArrayList<>();
+            List<Map<String, Object>> droppedList = new ArrayList<>();
+            for (com.dwinovo.numen.api.NumenPlugins.DeliveredRef r : refs) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("ref", r.entryRef());
+                m.put("version", r.version());
+                m.put("truncated", r.truncated());
+                if (kept) {
+                    keptList.add(m);
+                } else {
+                    m.put("reason", "budget");
+                    droppedList.add(m);
+                }
+            }
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("companion_id", entityUuid.toString());
+            data.put("role", "executor");
+            data.put("mode", com.dwinovo.numen.api.RetrievalPolicy.experienceRetrievalMode()
+                    .name().toLowerCase(java.util.Locale.ROOT));
+            data.put("kept", keptList);
+            data.put("dropped", droppedList);
+            data.put("coverage", "COMPLETE");
+            if (plan != null) {
+                data.put("droppedSections", plan.droppedNames());
+            }
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("expmem", "budget_decision", data);
+        } catch (RuntimeException ignored) {
+            // 观测旁路：账本挂了不挡请求
+        }
     }
 
     private void publishRuntimeState(String xml, String origin, int attempt) {
