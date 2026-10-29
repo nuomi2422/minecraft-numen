@@ -32,13 +32,13 @@ final class RddRiskPlanning {
         if (level == RiskLevel.NORMAL) {
             return "";
         }
-        Map<String, Integer> required = ResourceBudget.requiredFor(level);
+        Map<String, Integer> required = ResourceBudget.requiredWithBackup(level);
         if (required.isEmpty()) {
             return "";
         }
-        List<String> missing = ResourceBudget.missingFor(level, available);
+        List<String> missing = ResourceBudget.missingWithBackup(level, available);
         StringBuilder sb = new StringBuilder();
-        sb.append("【风险前置｜").append(levelLabel(level)).append("】本目标/阶段属高风险。进入前必须备齐（真实资产）：\n");
+        sb.append("【风险前置｜").append(levelLabel(level)).append("】本目标/阶段属高风险。进入前必须备齐（真实资产，含备用套）：\n");
         for (Map.Entry<String, Integer> e : required.entrySet()) {
             sb.append("- ").append(e.getKey()).append(" ×").append(e.getValue()).append("\n");
         }
@@ -81,7 +81,9 @@ final class RddRiskPlanning {
                 continue;
             }
             RiskLevel level = RiskGate.levelForText(stage.description());
-            Map<String, Integer> required = ResourceBudget.requiredFor(level);
+            // A2（94 号）：高风险阶段的门里带上「备用套」（ResourceBudget.backupFor），
+            // 不是只够打一次就进门。NORMAL/MINING 与旧行为完全一致（backup 为空）。
+            Map<String, Integer> required = ResourceBudget.requiredWithBackup(level);
             if (level == RiskLevel.NORMAL || required.isEmpty()) {
                 out.add(stage);
                 continue;

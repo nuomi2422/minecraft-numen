@@ -70,4 +70,33 @@ class RddRiskPlanningTest {
         List<PrimarySpec> out = RddRiskPlanning.injectWaitFor(stages, Map.of());
         assertTrue(out.get(0).waitFor().isEmpty(), "first stage must not get injected wait_for");
     }
+
+    // ---- A2（94 号）：备用套进硬门 ----
+
+    @Test void highRiskStageCarriesBackupSet() {
+        List<PrimarySpec> stages = List.of(
+                new PrimarySpec("石器起步", List.of()),
+                new PrimarySpec("击杀末影龙", List.of()));
+        List<PrimarySpec> out = RddRiskPlanning.injectWaitFor(stages, Map.of());
+        var wf = out.get(1).waitFor();
+        int beef = wf.stream().filter(r -> r.assetKey().equals("minecraft:cooked_beef"))
+                .findFirst().orElseThrow().minimum();
+        assertEquals(32, beef, "末地阶段应带备用食物 32（基线 16）");
+        int arrows = wf.stream().filter(r -> r.assetKey().equals("minecraft:arrow"))
+                .findFirst().orElseThrow().minimum();
+        assertEquals(64, arrows, "末地阶段应带备用箭 64（基线 32）");
+    }
+
+    @Test void lowRiskStageHasNoBackupRequirement() {
+        List<PrimarySpec> stages = List.of(
+                new PrimarySpec("石器起步", List.of()),
+                new PrimarySpec("采集4个橡木原木", List.of()));
+        List<PrimarySpec> out = RddRiskPlanning.injectWaitFor(stages, Map.of());
+        assertTrue(out.get(1).waitFor().isEmpty(), "低风险阶段不因 A2 被加门");
+    }
+
+    @Test void prepHintMentionsBackupForEnd() {
+        String hint = RddRiskPlanning.prepHint("击杀末影龙", Map.of());
+        assertTrue(hint.contains("备用套"), "风险前置文案要说明含备用套");
+    }
 }
