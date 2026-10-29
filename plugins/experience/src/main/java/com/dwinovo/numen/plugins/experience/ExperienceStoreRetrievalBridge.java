@@ -201,7 +201,7 @@ public final class ExperienceStoreRetrievalBridge {
      * <p>为什么不加新字段：`ExperienceEntry` 的 JSONL 是冻结 schema（加字段要动 build()/存储/反序列化一大串），
      * 而 tags 本来就是自由元数据；空 = 旧条目 legacy，行为不变。显式标注才收窄。
      */
-    private static List<String> audienceFrom(List<String> tags) {
+    static List<String> audienceFrom(List<String> tags) {
         if (tags == null || tags.isEmpty()) {
             return List.of();
         }
