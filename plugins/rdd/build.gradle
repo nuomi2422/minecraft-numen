@@ -24,6 +24,9 @@ dependencies {
     // 2026-10-25：只**编译期**引用共享 core（不内嵌，避免重复包）。
     // 用途：容器存货要走 QueryExtraOps.inspectBlockStorage 这条**已被证明能读箱子**的路。
     compileOnly project(':core:common')
+    // 2026-10-29（revive）：复活通道要用 entity 包（CompanionFactory/CompanionRegistry），
+    //   它们只在 api:common 里；本插件原本只看到 core:common，所以显式补一条 compileOnly（不内嵌）。
+    compileOnly project(':api:common')
     // RddDecomposer / RddSubmitTool / RddDetector 用 Gson。
     implementation 'com.google.code.gson:gson:2.10.1'
     // 纯 JVM 容错解析(RddDecomposer.parse)需要 ai 模块的 IToolSpec 参与类加载。

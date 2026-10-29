@@ -7,6 +7,10 @@ import com.google.gson.JsonObject;
 
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import com.dwinovo.numen.entity.CompanionRegistry;
+import com.dwinovo.numen.entity.CompanionFactory;
+import com.dwinovo.numen.entity.NumenPlayer;
 import java.util.function.Consumer;
 
 /**
@@ -91,6 +95,23 @@ final class RddAdminCommandTool implements NumenTool {
                 }
             }
             String verb = lower.split("\\s+", 2)[0];
+            // 2026-10-29（revive）：假玩家死了**不会自己复活** —— Companions.respawnDead 只在主人登录时触发，
+            //   而外置学习者全程走 MCP、没有主人登录 ⇒ 她死了主线就永久停住（实机：末地虚空坠落 3 次后 hp 一直 0）。
+            if ("revive".equals(verb)) {
+                var server = companion.getServer();
+                UUID cid = companion.getUUID();
+                var reg = CompanionRegistry.get(server).find(cid);
+                if (reg == null) throw new IllegalArgumentException("revive: companion not in registry");
+                NumenPlayer live = NumenPlayer.findByUuid(server, cid);
+                if (live != null) live.discard();
+                var fresh = CompanionFactory.spawn(server, cid, reg.name(), reg.owner(), server.overworld(), null);
+                RddMonitor.publish("admin_command_used", Map.of("companionId", cid.toString(),
+                        "command", command, "stuck", stuck, "mode", "revive"));
+                reply.accept(com.dwinovo.numen.task.TaskResult.ok(
+                        "revived " + (fresh == null ? "FAILED" : "ok") + " —— 算 CHEATED，事后必须补测。",
+                        Map.of("cheated", true)).toJson());
+                return;
+            }
             if (!ALLOWED.contains(verb)) {
                 throw new IllegalArgumentException("refused: '" + verb + "' is not whitelisted ("
                         + String.join("/", ALLOWED) + ")");
