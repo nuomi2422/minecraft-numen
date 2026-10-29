@@ -100,6 +100,26 @@ final class RddAdminCommandTool implements NumenTool {
             // 2026-10-29（dragon）：这个存档的末地从来就没有龙 —— DIM1/data 里没有 ender_dragon_fight.dat，
             //   因为她进末地走的是 D-20 兜底（假玩家传送），绕过了原版"首次进入维度"的龙战初始化。
             //   这里给一个显式入口，把末地龙战初始化/复活跑一遍。
+            // 2026-10-29（pillar）：她只会往下挖，不会往上搭 —— 末地柱顶水晶(y+13~27)和飞行中的龙都够不到。
+            //   这里给一个"原地向上垫方块"的通道：每次在脚下放一块圆石并上移 1 格。
+            if ("pillar".equals(verb)) {
+                int n = 8;
+                String[] parts = command.trim().split("\s+");
+                if (parts.length > 1) { try { n = Math.max(1, Math.min(64, Integer.parseInt(parts[1]))); } catch (NumberFormatException ignored) { } }
+                var lvl = (net.minecraft.server.level.ServerLevel) companion.level();
+                for (int i = 0; i < n; i++) {
+                    net.minecraft.core.BlockPos below = companion.blockPosition().below();
+                    lvl.setBlock(below, net.minecraft.world.level.block.Blocks.COBBLESTONE.defaultBlockState(), 3);
+                    companion.teleportTo(companion.getX(), companion.getY() + 1.0, companion.getZ());
+                }
+                RddMonitor.publish("admin_command_used", Map.of("companionId", companion.getUUID().toString(),
+                        "command", command, "stuck", stuck, "mode", "pillar-up"));
+                reply.accept(com.dwinovo.numen.task.TaskResult.ok(
+                        "pillar up " + n + " blocks, y now " + Math.round(companion.getY())
+                                + " —— 算 CHEATED，事后必须补测。",
+                        Map.of("cheated", true)).toJson());
+                return;
+            }
             if ("dragon".equals(verb)) {
                 var endLevel = companion.getServer().getLevel(net.minecraft.world.level.Level.END);
                 if (endLevel == null) throw new IllegalArgumentException("dragon: end level missing");
