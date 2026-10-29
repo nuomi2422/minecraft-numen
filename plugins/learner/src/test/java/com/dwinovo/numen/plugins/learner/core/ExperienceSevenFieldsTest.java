@@ -199,7 +199,10 @@ class ExperienceSevenFieldsTest {
         for (String t : Experience.EXPERIENCE_TYPES) {
             assertTrue(spec.contains(t), "prompt 里少了可选值 " + t + "，它只能靠猜");
         }
-        assertTrue(spec.contains("正好这 8 个键"), "键数说 7 就会让人交 7 个键的旧格式");
+        assertTrue(spec.contains("8 个必填键"), "键数说 7 就会让人交 7 个键的旧格式");
+        // A6（98 号）：audience 是可选键，prompt 必须说明它可选、说不清就不写
+        assertTrue(spec.contains("audience"), "prompt 必须提到 audience 键");
+        assertTrue(spec.contains("可选"), "audience 必须写成可选，否则会挤掉必填键的注意力");
     }
 
     @Test

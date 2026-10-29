@@ -52,8 +52,24 @@ public record Experience(
         String derivation,
         String efficiency,
         String evidence,
-        String experienceType
+        String experienceType,
+        /**
+         * A6（98 号）：这条经验是给谁用的（PLANNER/EXECUTOR/LEARNER）。
+         *
+         * <p>可选键，**不参与七字段门禁**（{@link #acceptable()} 只数 {@code FIELDS}）；
+         * 空 = 没说清 = 不标注（legacy，不收窄任何视图）。
+         * 写侧落成 {@code tags: ["audience:executor", ...]}，读侧由桥接解析。
+         */
+        java.util.List<String> audience
 ) {
+
+    /** 兼容 8 参构造（A6 之前的全部调用点）：audience 缺省空。 */
+    public Experience(String mechanism, String preconditions, String failureConditions,
+                      String observableSignal, String derivation, String efficiency,
+                      String evidence, String experienceType) {
+        this(mechanism, preconditions, failureConditions, observableSignal, derivation,
+                efficiency, evidence, experienceType, java.util.List.of());
+    }
 
     private static final Gson GSON = new Gson();
 
@@ -101,6 +117,18 @@ public record Experience(
         efficiency = nz(efficiency);
         evidence = nz(evidence);
         experienceType = nz(experienceType);
+        // A6（98 号）：只收三种合法角色，去重并大写；其它值丢弃（不猜）。
+        java.util.List<String> a = new java.util.ArrayList<>();
+        if (audience != null) {
+            for (String v : audience) {
+                if (v == null) continue;
+                String u = v.trim().toUpperCase(java.util.Locale.ROOT);
+                if ((u.equals("PLANNER") || u.equals("EXECUTOR") || u.equals("LEARNER")) && !a.contains(u)) {
+                    a.add(u);
+                }
+            }
+        }
+        audience = java.util.List.copyOf(a);
     }
 
     private static String nz(String s) {
@@ -276,12 +304,32 @@ public record Experience(
                 optString(o, "derivation"),
                 optString(o, "efficiency"),
                 optString(o, "evidence"),
-                optString(o, "experienceType"));
+                optString(o, "experienceType"),
+                // A6（98 号）：可选 audience（数组或单字符串）；缺省 = 空 = 不标注
+                optStringList(o, "audience"));
         return x.filledCount() == 0 ? null : x;
     }
 
-    private static String optString(JsonObject o, String k) {
+    /** A6（98 号）：读可选字符串数组（也容忍单字符串）；缺失 = 空列表。 */
+    private static java.util.List<String> optStringList(JsonObject o, String k) {
         if (o == null || !o.has(k) || o.get(k).isJsonNull()) {
+            return java.util.List.of();
+        }
+        JsonElement e = o.get(k);
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (e.isJsonArray()) {
+            for (JsonElement it : e.getAsJsonArray()) {
+                if (it != null && it.isJsonPrimitive()) {
+                    out.add(it.getAsString());
+                }
+            }
+        } else if (e.isJsonPrimitive()) {
+            out.add(e.getAsString());
+        }
+        return out;
+    }
+
+    private static String optString(JsonObject o, String k) {        if (o == null || !o.has(k) || o.get(k).isJsonNull()) {
             return "";
         }
         JsonElement e = o.get(k);
@@ -293,7 +341,7 @@ public record Experience(
 
     /** 给 prompt 用的格式说明（中文，直接可读）。 */
     public static String promptSpec() {
-        return "experience 必须是**对象**，且正好这 8 个键：\n"
+        return "experience 必须是**对象**，8 个必填键（另可加可选的 audience）：\n"
                 + "  {\"mechanism\":\"世界规律是什么\","
                 + "\"preconditions\":\"满足哪些条件才能用\","
                 + "\"failureConditions\":\"什么情况下这条会害你\","
@@ -301,7 +349,11 @@ public record Experience(
                 + "\"derivation\":\"从信号到动作的因果链\","
                 + "\"efficiency\":\"相比朴素做法省多少\","
                 + "\"evidence\":\"从哪来的\","
-                + "\"experienceType\":\"五选一\"}\n"
+                + "\"experienceType\":\"五选一\","
+                + "\"audience\":[\"planner\",\"executor\",\"learner\"]}\n"
+                + "audience 是**可选**的「这条给谁用」：怎么规划/先做什么给 planner；"
+                + "这一步具体怎么操作/工具怎么用给 executor；复盘方法本身给 learner。"
+                + "可多选；**说不清就不写**（不写 = 不标注，不会因此不合格）。\n"
                 + "硬要求一：failureConditions 与 observableSignal **不许留空**。"
                 + "填不出这两项，说明你还没真的理解这件事 → 这种情况应该给 NO_ACTION，"
                 + "而不是硬凑一段话。\n"

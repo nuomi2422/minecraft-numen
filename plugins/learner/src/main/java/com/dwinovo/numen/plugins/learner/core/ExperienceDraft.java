@@ -255,6 +255,14 @@ public record ExperienceDraft(
         if (m != null && m.id() != null && !m.id().isBlank()) {
             tags.add("memo:" + m.id());   // 出处可回溯到具体那条备忘录
         }
+        // A6（98 号）：「这条给谁用」落成 tags，桥接侧解析成 ExperienceEntryRead.audience。
+        // 没标注 = 不加标签 = legacy（不收窄任何视图）。
+        Experience exp = v.experience();
+        if (exp != null && exp.audience() != null) {
+            for (String a : exp.audience()) {
+                tags.add("audience:" + a.toLowerCase(java.util.Locale.ROOT));
+            }
+        }
         o.add("tags", tags);
 
         // maturity：一次成功未验证 —— doc 59 D5「允许进目录但必须标待验证」。

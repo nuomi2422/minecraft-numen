@@ -58,6 +58,9 @@ final class LearnerReviewer {
             5. SELF_COMPILE 只在「明确缺少工具能力」时给；能靠现有工具解决就不要给。
             6. confidence 取 0 到 1。
             7. rewritten_query 给出 1 到 3 个用于检索经验库的改写检索词（这是替代向量检索的检索键）。
+            7b. ★ 每条 experience 要给可选的 audience（这条经验给谁用）：planner（怎么规划/先做什么）、
+                executor（这一步具体怎么操作/工具怎么用）、learner（复盘方法本身）；可多选。
+                **说不清就不写**（不写 = 不标注，不影响合格）；不许三个都写充数。
             8. ★ 经验必须是**结构化对象**，不是一段话。%s
             9. 给 WRITE_EXPERIENCE 就**必须**同时给出 experience 对象；给 NO_ACTION 时不要给。
             10. 不要输出 experience_draft 这个键（旧格式，已废弃；一段散文不算经验）。
