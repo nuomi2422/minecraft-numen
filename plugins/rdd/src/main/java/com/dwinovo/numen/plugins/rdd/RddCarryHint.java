@@ -76,6 +76,9 @@ final class RddCarryHint {
     /** 避让半径：只关心「身边有没有威胁」，不做全图扫描。 */
     private static final double NEARBY_RADIUS = 16.0D;
 
+    /** A4（96 号）：事实超过这个年龄就标 stale —— 旧事实可以看，但不能冒充当前。 */
+    private static final long STALE_MS = 10_000L;
+
     /** 读缓存。**永不读世界** —— 上下文构建不该有副作用。 */
     static String current(UUID companionId) {
         return companionId == null ? "" : CARRY_HINT.getOrDefault(companionId, "");
@@ -140,8 +143,9 @@ final class RddCarryHint {
                         body == null ? "null" : "level-null", companionId);
                 return;
             }
-            Rendered rendered = render(body);
-            publishAlarmEdges(body, rendered.alarms());
+            long capturedAtMs = System.currentTimeMillis();
+            Rendered rendered = render(body, capturedAtMs);
+            publishAlarmEdges(body, rendered.alarms(), capturedAtMs);
             String hint = rendered.xml();
             String prev = CARRY_HINT.get(companionId);
             // ⚠️ 2026-10-21：日志按**语义指纹**打，不按字符串（`<basis>` 里的精确血量每几秒就变）。
@@ -204,6 +208,13 @@ final class RddCarryHint {
      * 旧链短路不再压掉闹钟，闹钟也不改写旧链的 basis。
      */
     private static Rendered render(NumenPlayer body) {
+        return render(body, System.currentTimeMillis());
+    }
+
+    /**
+     * @param capturedAtMs 本拍采样时刻（A4：提醒要带 asOf/age，过期不能冒充当前）
+     */
+    private static Rendered render(NumenPlayer body, long capturedAtMs) {
         String snapshot = snapshot(body);
         if (snapshot.isEmpty()) {
             return new Rendered("", List.of());
@@ -216,7 +227,12 @@ final class RddCarryHint {
                 kv.putIfAbsent(clean(p.substring(0, sep)), clean(p.substring(sep + 1)));
             }
         }
-        CarrierChain.Facts facts = CarrierChain.factsOf(kv, snapshot.toLowerCase(Locale.ROOT));
+        // A4（96 号）：来源=本拍实体快照；覆盖只有血量可解析时才敢说 COMPLETE，否则 UNKNOWN。
+        CarrierChain.Facts facts = CarrierChain.factsOf(kv, snapshot.toLowerCase(Locale.ROOT),
+                capturedAtMs, "body", "COMPLETE");
+        CarrierChain.Facts probe = facts;
+        String coverage = probe.hasHp() ? "COMPLETE" : "UNKNOWN";
+        facts = CarrierChain.factsOf(kv, snapshot.toLowerCase(Locale.ROOT), capturedAtMs, "body", coverage);
         // B6/S2：走 effective()（DEFAULT + 已批准的携带器规则），不再写死 DEFAULT。
         // 「已批准但运行时不生效」是最坏的一种状态：审批界面显示成功，游戏里没变化，
         // 没人查得出来。所以生效链必须与审批落点读同一处。
@@ -246,12 +262,22 @@ final class RddCarryHint {
         if (!alarms.isEmpty()) {
             sb.append("<alarms scope=\"nearby16\">");
             for (CarrierAlarms.Hit h : alarms) {
+                // A4（96 号）：每条提醒带采样时刻/年龄/来源/覆盖；过期显式标 stale，不冒充当前。
+                long ageMs = facts.capturedAtMs() > 0 ? Math.max(0, System.currentTimeMillis() - facts.capturedAtMs()) : -1;
+                boolean stale = ageMs > STALE_MS;
                 sb.append("<alarm rule=\"").append(esc(h.rule())).append("\" v=\"").append(h.version())
-                        .append("\" pri=\"").append(esc(h.prio())).append("\" facts=\"")
+                        .append("\" pri=\"").append(esc(h.prio()))
+                        .append("\" asOf=\"").append(esc(facts.capturedAtMs() > 0
+                                ? java.time.Instant.ofEpochMilli(facts.capturedAtMs()).toString() : "unknown"))
+                        .append("\" age=\"").append(ageMs < 0 ? "unknown" : (ageMs / 1000) + "s")
+                        .append("\" source=\"").append(esc(facts.source()))
+                        .append("\" coverage=\"").append(esc(facts.coverage())).append("\"")
+                        .append(stale ? " stale=\"true\"" : "")
+                        .append(" facts=\"")
                         .append(esc(shorten(h.facts(), 120))).append("\">")
                         .append(esc(shorten(h.advice(), 200))).append("</alarm>");
             }
-            sb.append("<note>这些是提醒，不是指令；是否处理由你按当前任务判断，**不要为了提醒中断当前目标**。</note>");
+            sb.append("<note>这些是提醒，不是指令；是否处理由你按当前任务判断，**不要为了提醒中断当前目标**。过期（stale）的提醒只作历史参考。</note>");
             sb.append("</alarms>");
         }
         return new Rendered(sb.toString(), alarms);
@@ -266,7 +292,7 @@ final class RddCarryHint {
      * 等下一个可插入时机随攒下的一切一起走）。同一规则 {@code WAKE_COOLDOWN_MS} 内不重复叫；
      * 同伴已死（isAlive=false）不叫 —— 事件照旧进队列，但死了不该再被险情吵。
      */
-    private static void publishAlarmEdges(NumenPlayer body, List<CarrierAlarms.Hit> alarms) {
+    private static void publishAlarmEdges(NumenPlayer body, List<CarrierAlarms.Hit> alarms, long capturedAtMs) {
         try {
             UUID companionId = body.getUUID();
             Map<String, String> nowState = new LinkedHashMap<>();
@@ -294,9 +320,12 @@ final class RddCarryHint {
                 }
             }
             ALARM_STATE.put(companionId, nowState);
+            // A4（96 号）：边沿事件带采样时刻/年龄；过期事实只记录、不唤醒。
+            long ageMs = capturedAtMs > 0 ? Math.max(0, System.currentTimeMillis() - capturedAtMs) : -1;
+            boolean stale = ageMs > STALE_MS;
             // E2.2：危险边沿 → 主动唤醒（urgent 事件）。冷却防震荡，死亡不叫。
             int woke = 0;
-            if (body.isAlive()) {
+            if (body.isAlive() && !stale) {
                 long nowMs = System.currentTimeMillis();
                 Map<String, Long> wakeAt = WAKE_AT.computeIfAbsent(companionId, k -> new LinkedHashMap<>());
                 for (CarrierAlarms.Hit h : alarms) {
@@ -320,6 +349,14 @@ final class RddCarryHint {
             data.put("escalated", String.join(",", escalated));
             data.put("removed", String.join(",", removed));
             data.put("active", String.join(",", nowState.keySet()));
+            // A4（96 号）：事实的来源与时效（缺就写 unknown/UNKNOWN，不补 0）
+            data.put("asOf", capturedAtMs > 0 ? java.time.Instant.ofEpochMilli(capturedAtMs).toString() : "unknown");
+            data.put("ageSeconds", ageMs < 0 ? null : Math.round(ageMs / 100.0) / 10.0);
+            data.put("source", "body");
+            data.put("coverage", "COMPLETE");
+            if (stale) {
+                data.put("stale", true);
+            }
             if (woke > 0) {
                 data.put("woke", woke);
             }

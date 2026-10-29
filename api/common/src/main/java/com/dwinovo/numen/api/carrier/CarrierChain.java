@@ -66,12 +66,40 @@ public final class CarrierChain {
     public static final class Facts {
         private final Map<String, String> kv;
         private final String rawLower;
+        private final long capturedAtMs;
+        private final String source;
+        private final String coverage;
         private final List<String> evaluated = new ArrayList<>();
         private final List<String> skipped = new ArrayList<>();
 
         Facts(Map<String, String> kv, String rawLower) {
+            this(kv, rawLower, 0L, "unknown", "UNKNOWN");
+        }
+
+        /**
+         * A4（96 号）：事实自带来源与时效。{@code capturedAtMs<=0} = 未知（老调用点），
+         * {@code coverage} 只有明确完整时才写 COMPLETE，缺字段一律 UNKNOWN（不补默认值）。
+         */
+        Facts(Map<String, String> kv, String rawLower, long capturedAtMs, String source, String coverage) {
             this.kv = kv;
             this.rawLower = rawLower;
+            this.capturedAtMs = capturedAtMs;
+            this.source = source == null || source.isBlank() ? "unknown" : source;
+            this.coverage = coverage == null || coverage.isBlank() ? "UNKNOWN" : coverage;
+        }
+
+        /** 采样时刻（毫秒）；&lt;=0 表示未知（老路径/测试构造）。 */
+        public long capturedAtMs() {
+            return capturedAtMs;
+        }
+
+        public String source() {
+            return source;
+        }
+
+        /** COMPLETE / PARTIAL / UNKNOWN —— 缺失不写 COMPLETE。 */
+        public String coverage() {
+            return coverage;
         }
 
         /** 快照里的键值（小写、已清洗）。取值不到就是空串，<b>不是默认值</b>。 */
@@ -268,5 +296,12 @@ public final class CarrierChain {
      */
     public static Facts factsOf(Map<String, String> kv, String rawLower) {
         return new Facts(kv, rawLower == null ? "" : rawLower.toLowerCase(Locale.ROOT));
+    }
+
+    /** A4（96 号）：带采样时刻/来源/覆盖的事实（E2 提醒要能说清"什么时候、从哪、全不全"）。 */
+    public static Facts factsOf(Map<String, String> kv, String rawLower, long capturedAtMs,
+                                String source, String coverage) {
+        return new Facts(kv, rawLower == null ? "" : rawLower.toLowerCase(Locale.ROOT),
+                capturedAtMs, source, coverage);
     }
 }
