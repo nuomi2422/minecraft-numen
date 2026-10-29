@@ -187,6 +187,8 @@ public final class RddPlugin implements NumenPlugin {
         numen.registerTool(new FarmNearbyTool());
         numen.registerTool(new RddSkipTool());
         numen.registerTool(new RddAssetsTool());
+        // H1.1（104 号）：只读重生点（床锚）坐标+维度，供实验台起跑前判「一死会不会掉进虚空」。
+        numen.registerTool(new RddRespawnInfoTool());
         // Supervisor ↔ Numen 双向协商：士兵可对命令结构化回执（ACCEPT/REJECT/COUNTER）。
         numen.registerTool(new RddConcernTool());
         // 2026-10-29（goal 第 8 条：允许作弊跳过）：白名单服务器指令通道，用于不阻断主线；每次调用都记审计事件。
