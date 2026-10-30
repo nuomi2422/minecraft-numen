@@ -343,6 +343,17 @@ final class CompanionBrain {
                 // 外部(MCP)派的异步任务不投 task_finished:那条事件会唤醒并没有派它的
                 // 内置大脑。外部驱动靠 task_status 轮询 + 感知确认闭环。
                 if (rec.isExternalCall()) {
+                    // H20b-152：外部（MCP）派的异步任务原来在这里直接 continue，
+                    // 所以它们的终态从来没进过 tools.jsonl —— 我上一版只补了"内置大脑派的"。
+                    // status/msg 在原代码里声明在 external 判断**之后**，这里不能引用，自己算。
+                    String extStatus = switch (rec.getState()) {
+                        case SUCCESS -> "done";
+                        case TIMEOUT -> "timeout";
+                        case CANCELLED -> "stopped";
+                        default -> "failed";
+                    };
+                    String extMsg = result == null ? "no result produced" : result.message();
+                    journalTaskOutcome(companion, rec, "external-" + extStatus, extMsg);
                     continue;
                 }
                 String status = switch (rec.getState()) {
@@ -352,22 +363,7 @@ final class CompanionBrain {
                     default -> "failed";
                 };
                 String msg = result == null ? "no result produced" : result.message();
-                // H20-147 (2026-10-30): async task outcomes only went out as a NumenEvent and
-                // never landed in tools.jsonl, so attack/goto/mine results were invisible --
-                // "did it work, time out, or give up?" could not be answered. Journal it like
-                // the sync path does (H18), same category/type so existing readers see it.
-                try {
-                    java.util.Map<String, Object> jd = new java.util.LinkedHashMap<>();
-                    jd.put("companion_id", String.valueOf(companion.getUUID()));
-                    jd.put("tool_call_id", rec.getToolCallId() == null ? "" : rec.getToolCallId());
-                    jd.put("tool", rec.getToolName() == null ? "" : rec.getToolName());
-                    jd.put("journaled_by", "server-async");
-                    jd.put("async_status", status);
-                    jd.put("success", "done".equals(status));
-                    jd.put("result", msg == null ? "" : (msg.length() <= 2000 ? msg : msg.substring(0, 2000) + "..."));
-                    com.dwinovo.numen.monitor.MonitoringJournal.get()
-                            .publish("tools", "tool_result", jd);
-                } catch (RuntimeException ignored) { /* journaling must never break the task path */ }
+                journalTaskOutcome(companion, rec, status, msg);
                 com.dwinovo.numen.event.NumenEvents.taskFinished(
                         companion, rec.publicId(), rec.getToolName(), status, msg);
                 continue;
@@ -389,5 +385,25 @@ final class CompanionBrain {
                     new com.dwinovo.numen.network.payload.TaskResultPayload(
                             companion.getUUID(), rec.getToolCallId(), json));
         }
+    }
+
+    /**
+     * 把任务终态写进 tools.jsonl（category=tools / type=tool_result）。
+     *
+     * <p>H20-147 起：异步任务原本只发 NumenEvent，终态不可见；H20b-152 起抽成方法，
+     * 让"内置大脑派"和"外部 MCP 派"两条分支走同一段写入，避免再出现只补一半的情况。
+     */
+    private void journalTaskOutcome(NumenPlayer companion, TaskRecord rec, String status, String msg) {
+        try {
+            java.util.Map<String, Object> jd = new java.util.LinkedHashMap<>();
+            jd.put("companion_id", String.valueOf(companion.getUUID()));
+            jd.put("tool_call_id", rec.getToolCallId() == null ? "" : rec.getToolCallId());
+            jd.put("tool", rec.getToolName() == null ? "" : rec.getToolName());
+            jd.put("journaled_by", "server-async");
+            jd.put("async_status", status);
+            jd.put("success", "done".equals(status));
+            jd.put("result", msg == null ? "" : (msg.length() <= 2000 ? msg : msg.substring(0, 2000) + "..."));
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("tools", "tool_result", jd);
+        } catch (RuntimeException ignored) { /* journaling must never break the task path */ }
     }
 }
