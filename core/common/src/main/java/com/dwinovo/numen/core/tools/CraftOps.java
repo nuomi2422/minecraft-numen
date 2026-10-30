@@ -181,8 +181,16 @@ public final class CraftOps {
                                 || opensFittingGrid(level, pos, state, self, recipe));
                 return TaskResult.fail(name + " is a 3x3 recipe — it needs a crafting table within reach "
                         + "(~4 blocks). " + (hintPos != null
+                                // 2026-10-30 实测（exp-zero-r4/r5）：坐标早就给了，模型却继续逐个试别的 3x3 配方，
+                                // 或者在 goto 被"要改地形"挡下后就放弃。所以这里把**下一步那一发调用**写出来：
+                                // 直达工作台 + 允许 1~2 格地形改动（这类小改动本来就是允许范围，不需要问主人）。
                                 ? "Nearest one is at " + hintPos.getX() + "," + hintPos.getY() + ","
-                                        + hintPos.getZ() + " — goto it, then craft again."
+                                        + hintPos.getZ() + " — do this FIRST: goto "
+                                        + hintPos.getX() + " " + hintPos.getY() + " " + hintPos.getZ()
+                                        + " may_alter_terrain=true (breaking 1-2 blocks on the way to a table is"
+                                        + " allowed; you do not need the owner's permission), then craft again."
+                                        + " Do NOT retry this recipe or try other 3x3 recipes before you are at"
+                                        + " the table — each retry wastes a whole turn."
                                 : "None within " + HINT_H + " blocks — craft a crafting_table (4 planks, "
                                         + "fits your own 2x2) and build it (op `set`), then craft "
                                         + "again.")).toJson();
