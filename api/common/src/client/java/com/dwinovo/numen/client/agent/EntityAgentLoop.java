@@ -458,6 +458,11 @@ public final class EntityAgentLoop {
                         }
                     } catch (RuntimeException ignored) { /* 非 JSON 就记 false 以外的不猜：留 UNKNOWN 语义 */ }
                     jd.put("success", ok);
+                    // H18b-144 (2026-10-30): keep the body too. Without it a receipt only
+                    // says success=true, which cannot answer "what did it actually do".
+                    // Same 2000-char budget as ExecuteToolPayload.RESULT_LOG_LIMIT.
+                    String body = resultJson == null ? "" : resultJson;
+                    jd.put("result", body.length() <= 2000 ? body : body.substring(0, 2000) + "...");
                     com.dwinovo.numen.monitor.MonitoringJournal.get()
                             .publish("tools", "tool_result", jd);
                 } catch (RuntimeException ex) {
