@@ -1013,6 +1013,9 @@ private static String withAssets(UUID companionId, String rddContext) {
         RddRuntime rt = RUNTIMES.get(companionId);
         if (rt == null) return false;
         TaskChain chain = rt.chain();
+        // 死亡恢复结算可能落在"链已走完/没有当前一级"的时刻：currentPrimary() 为空时
+        // 下一行会 NPE，被外层 catch 吞成一句 warn，看起来像"重规划没发生"。
+        if (chain.currentPrimary() == null) return false;
         // 预算：失败驱动按 (同伴|一级) 最多 MAX_REPLAN_PER_PRIMARY 次；协商驱动用独立 key+上限。
         String primaryId = chain.currentPrimary().id();
         String key = fromNegotiation
@@ -1190,8 +1193,12 @@ private static String withAssets(UUID companionId, String rddContext) {
             settlement.put("inventoryKnown", !counts.isEmpty());
             RddMonitor.publish("death_recovery_settled", settlement);
             if (shouldReplan) {
+                // 结算时当前二级通常还是 RUNNING（人不是"卡住"，是计划所依据的事实变了）。
+                // 走 enterReplanningFromStuck 会抛 "current subtask is not stuck: RUNNING"，
+                // 被 requestReplan 的 catch 吞掉 ⇒ replanRequested=true 却没有任何 replanned
+                // 事件（V-20261030-13 实测）。协商入口允许 RUNNING 进入 REPLANNING，语义正确。
                 requestReplan(companionId,
-                        "death recovery settled seq=" + seq + " terminal=" + terminal, false, null, true);
+                        "death recovery settled seq=" + seq + " terminal=" + terminal, true, null, true);
             }
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] death recovery settlement failed {}: {}", companionId, ex.toString());
@@ -1394,10 +1401,22 @@ Map<String, Object> deathData = new LinkedHashMap<>();
                 boolean repeat = publishRepeatDeathHint(body, companionId, death == null ? -1 : death.seq());
                 RddRepairDispatch.onDeath(companionId, goalId, deathAt, dropTimeline, repeat, death);
                 // 真正的内部恢复任务：旧 repair 事件保留作兼容观测，驾驶权交给统一 SideTask。
-                if (death != null) {
+                if (death != null && !death.lostItems().isEmpty()) {
                     RddRepairDispatch.markDeathRecoveryHandoff(companionId, death.seq());
                     SideTaskHost.expectDeathRecovery(companionId, death.seq(),
                             body.level().dimension().location().toString(), deathAt, death.lostItems());
+                    // V-20261030-13 债①：支线原本只在 `RddDetector` 的**活体** tick 里推进，
+                    // 尸体期间引擎零拍 —— 实测死亡到支线创建空窗 5 分 22 秒，300 秒掉落窗口
+                    // 直接错过。死亡这一拍就把支线开出来（主线立刻冻结）；掉落事实等复活后
+                    // 由真实身体再算，不在尸体上假装"已确认丢失"。
+                    MinecraftServer deathServer = body.serverLevel().getServer();
+                    if (deathServer != null) {
+                        SideTaskHost.tick(deathServer, body);
+                        LOG.info("[rdd] 死亡当拍已开死亡恢复支线 seq={} {}", death.seq(), companionId);
+                    }
+                } else if (death != null) {
+                    // 空背包死亡 = 没有可回收的东西：不开恢复支线，也不该写成 CONFIRMED_LOST。
+                    LOG.info("[rdd] 死亡 seq={} 没有记录到掉落，不开恢复支线 {}", death.seq(), companionId);
                 }
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 支线任务生成失败 {}: {}", companionId, ex.toString());

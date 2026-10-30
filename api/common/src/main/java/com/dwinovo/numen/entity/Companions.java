@@ -310,11 +310,21 @@ public final class Companions {
         ServerLevel level = (ServerLevel) owner.level();
         // H2 诊断（106 号 §2 未确定项）：先把「主人当时在哪、候选落点是什么」打出来，
         // 否则只看到结果（掉虚空）无法判断是 findNear 选错、还是落点被别处改掉。
-        com.dwinovo.numen.Constants.LOG.info("[numen][respawn] 决策 ownerDim={} ownerPos={}",
-                level.dimension().location(), owner.position());
+        //
+        // 2026-10-30（V-20261030-13）：这两行原来**每 tick** 都打，主人站在没有安全落点的
+        // 位置时 5 分钟刷了 12715 行，且与下面"quietly retry"的注释自相矛盾。
+        // 改成每 200 tick（10 秒）一条；一旦真的选到落点，无条件补一条（那是结果，值得留）。
+        long respawnTick = server.overworld().getGameTime();
+        boolean trace = respawnTick % 200L == 0L;
+        if (trace) {
+            com.dwinovo.numen.Constants.LOG.info("[numen][respawn] 决策 ownerDim={} ownerPos={}",
+                    level.dimension().location(), owner.position());
+        }
         Vec3 pos = SafeSpawn.findNear(level, owner.position());
-        com.dwinovo.numen.Constants.LOG.info("[numen][respawn] 决策 findNear={} standing={}",
-                pos, pos != null && SafeSpawn.isStanding(level, pos));
+        if (trace || pos != null) {
+            com.dwinovo.numen.Constants.LOG.info("[numen][respawn] 决策 findNear={} standing={}",
+                    pos, pos != null && SafeSpawn.isStanding(level, pos));
+        }
         if (pos == null && owner.onGround() && SafeSpawn.hasStandingRoom(level, owner.position())) {
             pos = owner.position();   // non-full-block floor (slab/carpet): the owner's own spot fits
         }
@@ -323,8 +333,10 @@ public final class Companions {
         // 与其猜 findNear 为什么没命中，不如在落点确定后按结果判：站不住就不许重生，
         // 保持死亡状态让 ticker 下一拍重试（判据④「兜底不硬塞」）。
         if (pos != null && !SafeSpawn.isStanding(level, pos)) {
-            com.dwinovo.numen.Constants.LOG.warn("[numen][respawn] 落点站不住 {} {}，本轮不重生，下一拍重试",
-                    level.dimension().location(), pos);
+            if (trace) {
+                com.dwinovo.numen.Constants.LOG.warn("[numen][respawn] 落点站不住 {} {}，本轮不重生，下一拍重试",
+                        level.dimension().location(), pos);
+            }
             pos = null;
         }
         if (pos == null) return false;

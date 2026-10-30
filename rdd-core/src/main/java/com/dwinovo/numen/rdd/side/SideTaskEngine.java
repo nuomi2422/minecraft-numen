@@ -65,6 +65,16 @@ public final class SideTaskEngine {
         return types.get(typeId);
     }
 
+    /** 找到某类支线的触发器（没有 → null）。 */
+    private SideTaskTrigger triggerOf(String typeId) {
+        for (SideTaskTrigger t : triggers) {
+            if (t.typeId().equals(typeId)) {
+                return t;
+            }
+        }
+        return null;
+    }
+
     public Optional<SideTask> current(UUID companionId) {
         return runtime.current(companionId);
     }
@@ -97,13 +107,7 @@ public final class SideTaskEngine {
             // （实测卡了 14 分钟，一步没走）。
             // 所以：active 期间也要复查「当初让它来的条件还在不在」，不在了就取消，把主线放出来。
             SideTask running = active.get();
-            SideTaskTrigger source = null;
-            for (SideTaskTrigger t : triggers) {
-                if (t.typeId().equals(running.typeId())) {
-                    source = t;
-                    break;
-                }
-            }
+            SideTaskTrigger source = triggerOf(running.typeId());
             // 只有依赖昼夜能力的周期支线才在固定时间维度取消。
             // 死亡恢复必须能在下界/末地运行；它的时钟是掉落/业务事实，不是昼夜时钟。
             if (!world.hasDayNightCycle() && (source == null || !source.allowedWhileDeathOccupying())) {
@@ -123,14 +127,19 @@ public final class SideTaskEngine {
                 continue;
             }
             String key = handledKey(companionId, world.worldId(), trigger.typeId());
-            Long handled = handledGameDay.get(key);
-            if (handled != null && handled == day) {
-                continue;
-            }
-            // 推迟冷却：未到点不重新决策（避免每拍重复决策）。
-            Long until = deferredUntil.get(key);
-            if (until != null && now < until) {
-                continue;
+            // 按日去重只适用于周期支线。死亡恢复按 deathSeq 去重（触发器 take() 消费一批），
+            // 否则同一天的第二、三次死亡会被"今天已经问过"静默吞掉（V-20261030-13）。
+            boolean oncePerDay = trigger.oncePerGameDay();
+            if (oncePerDay) {
+                Long handled = handledGameDay.get(key);
+                if (handled != null && handled == day) {
+                    continue;
+                }
+                // 推迟冷却：未到点不重新决策（避免每拍重复决策）。
+                Long until = deferredUntil.get(key);
+                if (until != null && now < until) {
+                    continue;
+                }
             }
             if (!trigger.fires(new SideTaskTrigger.Context(
                     companionId, world.worldId(), day, world.dayTime(), world.hasDayNightCycle()))) {
@@ -145,20 +154,26 @@ public final class SideTaskEngine {
                 decision = SideTaskDecision.EXECUTE;
             }
             if (decision.kind() == SideTaskDecision.Kind.DEFER) {
-                deferredUntil.put(key, now + Math.max(decision.deferTicks(), MIN_DEFER_TICKS));
+                if (oncePerDay) {
+                    deferredUntil.put(key, now + Math.max(decision.deferTicks(), MIN_DEFER_TICKS));
+                }
                 publishOccurrence(companionId, "side_task_deferred", trigger.typeId(), day,
                         decision.reason(), Math.max(decision.deferTicks(), MIN_DEFER_TICKS));
                 continue;
             }
             if (decision.kind() == SideTaskDecision.Kind.SKIP) {
-                deferredUntil.remove(key);
-                handledGameDay.put(key, day);
+                if (oncePerDay) {
+                    deferredUntil.remove(key);
+                    handledGameDay.put(key, day);
+                }
                 publishOccurrence(companionId, "side_task_skipped_occurrence", trigger.typeId(), day,
                         decision.reason(), 0L);
                 continue;
             }
             // EXECUTE：清掉可能残留的推迟，照旧创建。
-            deferredUntil.remove(key);
+            if (oncePerDay) {
+                deferredUntil.remove(key);
+            }
             MainlineResumeToken token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
             long generation = runtime.nextGeneration();
             String instanceId = trigger.typeId() + "-" + generation + "-" + shortId(companionId);
@@ -166,7 +181,9 @@ public final class SideTaskEngine {
                     companionId, instanceId, generation, day, now,
                     now + type.deadlineTicks(), token, Map.of()));
             if (runtime.activate(task)) {
-                handledGameDay.put(key, day);
+                if (oncePerDay) {
+                    handledGameDay.put(key, day);
+                }
                 events.publish("side_task_created", base(task));
                 events.publish("side_task_activated", base(task));
             }
@@ -257,7 +274,9 @@ public final class SideTaskEngine {
         }
         SideTask task = active.get();
         runtime.remove(companionId);
-        if (worldId != null && gameDay >= 0) {
+        // 只有按日去重的支线才把"拒绝"记成当天不再问；死亡恢复按 deathSeq 走，不锁当天。
+        SideTaskTrigger trigger = triggerOf(task.typeId());
+        if (worldId != null && gameDay >= 0 && (trigger == null || trigger.oncePerGameDay())) {
             handledGameDay.put(handledKey(companionId, worldId, task.typeId()), gameDay);
         }
         Map<String, Object> data = base(task);

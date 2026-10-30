@@ -22,6 +22,18 @@ public interface SideTaskTrigger {
         return false;
     }
 
+    /**
+     * 是否按「同一游戏日只开一次」去重。
+     *
+     * <p>周期支线（睡觉）必须是 —— 一晚只该问一次。**死亡恢复不是**：
+     * 一天死两次就是两批不同的掉落，按日去重会把第二次静默吞掉
+     * （V-20261030-13 实测 seq3/seq5 只有旧 repair 事件、没有 side_task_created）。
+     * 死亡恢复自己的去重单位是 {@code deathSeq}（触发器 {@code take()} 一次消费一批）。
+     */
+    default boolean oncePerGameDay() {
+        return true;
+    }
+
     record Context(UUID companionId, String worldId, long gameDay, long dayTime, boolean hasDayNightCycle) {
     }
 }
