@@ -180,8 +180,10 @@ final class SideTaskHost {
         }
         RddPlugin.nudge(companionId, "[睡觉支线·建议] 天黑了，去睡觉——这趟值得去，但你可以判断："
                 + "如果床边有怪、附近根本没床、或身上没武器一去就送命，用 rdd_decline_side 写清理由拒绝（主线立刻恢复，今天不再问你）。"
-                + "要去就：scan_blocks 找床（tag #minecraft:beds）→ goto 走到床边 → 调用 sleep。"
-                + "白天被原版拒绝不是工具坏了。主线已临时冻结；睡到天亮自然醒、超时或你拒绝后系统都会恢复主线。");
+                + "要去就：scan_blocks 找床（tag #minecraft:beds）→ goto 走到床边 → 对床右键/调用 sleep。"
+                // 2026-10-30（主人裁定）：判据从"睡满一夜"改成"绑出生点"。
+                + "★ 把出生点绑上就算完成（不用睡满一夜），主线马上恢复；2 分钟内没绑上系统会自己撤回主线。"
+                + "白天被原版拒绝不是工具坏了。");
         LAST_NUDGE_GAME_TIME.put(companionId, now);
     }
 
@@ -238,6 +240,11 @@ final class SideTaskHost {
             }
         }
         @Override public boolean inCombat(UUID companionId) { return ap.hurtTime > 0; }
+        /**
+         * 2026-10-30：出生点绑没绑 —— 睡觉支线的新完成判据就靠它
+         * （原版：对床右键成功 → ServerPlayer 的 respawnPosition 非空）。
+         */
+        @Override public boolean isSpawnBound(UUID companionId) { return ap.getRespawnPosition() != null; }
         @Override public boolean bodyBusy(UUID companionId) {
             return com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companionId) != null;
         }

@@ -15,6 +15,7 @@ final class FakeWorldPort implements SideTaskWorldPort {
     boolean day;
     boolean inCombat;
     boolean bodyBusy;
+    boolean spawnBound;
     String mainlineObjective;
     private final Map<UUID, Boolean> sleeping = new HashMap<>();
     private final Map<UUID, Wake> wakes = new HashMap<>();
@@ -71,6 +72,11 @@ final class FakeWorldPort implements SideTaskWorldPort {
         return this;
     }
 
+    FakeWorldPort spawnBound(boolean value) {
+        this.spawnBound = value;
+        return this;
+    }
+
     @Override
     public long gameTime() {
         return gameTime;
@@ -120,6 +126,11 @@ final class FakeWorldPort implements SideTaskWorldPort {
     @Override
     public boolean bodyBusy(UUID companionId) {
         return bodyBusy;
+    }
+
+    @Override
+    public boolean isSpawnBound(UUID companionId) {
+        return spawnBound;
     }
 
     @Override
