@@ -1165,12 +1165,30 @@ private static String withAssets(UUID companionId, String rddContext) {
             String key = companionId + "|" + seq;
             if (!DEATH_SETTLEMENTS.add(key)) return;
             String terminal = String.valueOf(data.getOrDefault("deathRecoveryTerminalReason", ""));
-            boolean shouldReplan = "drops_absent_with_world_evidence".equals(terminal)
-                    || "executor_declined_recovery".equals(terminal)
-                    || "recovery_decision_window_ended".equals(terminal);
-            RddMonitor.publish("death_recovery_settled", Map.of(
-                    "companionId", companionId.toString(), "deathSeq", seq,
-                    "terminalReason", terminal, "replanRequested", shouldReplan));
+            boolean confirmedLost = "drops_absent_with_world_evidence".equals(terminal);
+            boolean recovered = "drops_recovered".equals(terminal);
+            if (confirmedLost) {
+                RddDeathLedger.confirmLost(companionId, seq,
+                        "loaded death chunk scan found no tracked drop entity");
+                saveLedger(companionId);
+            } else if (recovered) {
+                RddDeathLedger.confirmRecovered(companionId, seq,
+                        "all tracked drops observed back in inventory");
+                saveLedger(companionId);
+            }
+            // UNKNOWN（执行者放弃/保护线结束）仍然要进入规划上下文，但不伪造 CONFIRMED_LOST。
+            Map<String, Integer> counts = lastInventory(companionId);
+            RddRepairDispatch.recomputeAfterDeath(companionId, counts, confirmedLost,
+                    recovered ? "recovered" : (confirmedLost ? "confirmed_lost" : "unverified_settlement"), seq);
+            boolean shouldReplan = !recovered;
+            Map<String, Object> settlement = new LinkedHashMap<>();
+            settlement.put("companionId", companionId.toString());
+            settlement.put("deathSeq", seq);
+            settlement.put("terminalReason", terminal);
+            settlement.put("ledgerState", recovered ? "RECOVERED" : (confirmedLost ? "CONFIRMED_LOST" : "UNVERIFIED"));
+            settlement.put("replanRequested", shouldReplan);
+            settlement.put("inventoryKnown", !counts.isEmpty());
+            RddMonitor.publish("death_recovery_settled", settlement);
             if (shouldReplan) {
                 requestReplan(companionId,
                         "death recovery settled seq=" + seq + " terminal=" + terminal, false, null, true);
