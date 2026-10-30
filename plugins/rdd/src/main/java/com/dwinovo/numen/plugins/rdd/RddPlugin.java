@@ -505,6 +505,16 @@ public final class RddPlugin implements NumenPlugin {
                 return withAssets(uuid, "<rdd><enabled>true</enabled><active>false</active></rdd>");
             }
             TaskChain chain = runtime.chain();
+            // 2026-10-31（V-20261031-10 旁记）：链已完成时不能再把最后一个子任务当「当前目标」注入。
+            // B5 实测：primary/subtask 都是 COMPLETED，但 runtime_state 仍 active=true + current_task
+            // 「清点圆石堆」，AI 在「只放工作台」目标下照样去做了支线（目标漂移）。
+            if (chain.primaryStatus() == PrimaryGoalStatus.COMPLETED
+                    && chain.currentSubtaskStatus() == SubtaskStatus.COMPLETED) {
+                return withAssets(uuid, "<rdd><enabled>true</enabled><active>false</active>"
+                        + "<primary_status>COMPLETED</primary_status>"
+                        + "<state>chain_completed</state>"
+                        + "<note>上一条 RDD 链已完成，不要再执行它的最后一个子任务；按主人当前目标行动。</note></rdd>");
+            }
             Subtask current = chain.currentSubtask();
             if (current == null) {
                 // 当前一级已到达但未展开(懒加载)：诚实报阶段主题，不伪造可执行节点
