@@ -303,6 +303,11 @@ public final class NumenPlugins {
      * G5g+（80 号契约 §2）：片段版聚合 —— 正文 + 被装进/被裁明细。
      * 记账规则（83 号 §9 冻结）：整体接受→refs 全记 delivered；被切断→记 truncated=true；
      * 预算满后不再处理→一条不记（先裁后记）。
+     *
+     * <p>★ 2026-10-31（V-20261031-03 实测）：切断时**不能把整片段所有 refs 都标 truncated** ——
+     * 4353 字的片段在 4000 切断，前 4000 字里的条目其实完整进了正文，却因整片段标记而让
+     * {@code request_delivered} 归零。现在按条目边界判定：能找到 {@code ref="<ref>" ... </entry>}
+     * 且闭合标签在保留前缀内的记 false，跨切点/找不到边界的才记 true（保守）。
      */
     public static KnowledgeFragment aggregateExecutorKnowledgeFragment(
             List<KnowledgeContributor> contributors, UUID companion, String objective) {
@@ -332,10 +337,12 @@ public final class NumenPlugins {
             if (piece.length() > room) {
                 if (room > 0) {
                     sb.append(piece, 0, room);
-                    // 装了一部分：算「截断交付」——refs 记 truncated=true（审计可见，不算回执）
+                    // 装了一部分：片段算「截断交付」，但 refs 要按条目边界分开记账：
+                    // 完整落在保留前缀内的条目仍是完整交付（2026-10-31 修正）。
                     truncated++;
                     for (DeliveredRef r : f.refs()) {
-                        delivered.add(new DeliveredRef(r.entryRef(), r.version(), true));
+                        boolean cut = !refFullyIncluded(piece, room, r.entryRef());
+                        delivered.add(new DeliveredRef(r.entryRef(), r.version(), cut));
                     }
                 }
                 // room<=0：预算已满、这个片段一个字节都没装进去 ——
@@ -353,6 +360,29 @@ public final class NumenPlugins {
                     accepted, failed, truncated, sb.length(), MAX_EXECUTOR_KNOWLEDGE_CHARS);
         }
         return new KnowledgeFragment(sb.toString(), delivered);
+    }
+
+    /**
+     * 2026-10-31：片段被 room 切断时，判断某个 ref 是否**完整**落在保留前缀内。
+     *
+     * <p>条目格式由经验桥/工具目录统一渲染成 {@code <entry ref="..." ...> ... </entry>}；
+     * 找到该 ref 的起始标记与闭合标签，闭合在 room 之内 = 完整交付。
+     * 找不到边界（格式变了/正文里没有）→ 返回 false，沿用「截断」的保守口径，不冒充完整。
+     */
+    private static boolean refFullyIncluded(String piece, int room, String entryRef) {
+        if (piece == null || entryRef == null || entryRef.isBlank() || room <= 0) {
+            return false;
+        }
+        String marker = "ref=\"" + entryRef + "\"";
+        int start = piece.indexOf(marker);
+        if (start < 0) {
+            return false;
+        }
+        int close = piece.indexOf("</entry>", start);
+        if (close < 0) {
+            return false;
+        }
+        return close + "</entry>".length() <= room;
     }
 
     /** 落账终点：经验插件注册后，每轮把「真保留的 refs」交给它记 ExposureLedger。 */

@@ -15,7 +15,8 @@ import static org.junit.jupiter.api.Assertions.*;
  *
  * <ol>
  *   <li>片段整体接受 → 它的 refs 全部 delivered=false；</li>
- *   <li>片段被切断 → 该片段 refs 全部 truncated=true（审计可见，不算回执）；</li>
+ *   <li>片段被切断 → 跨切点/找不到边界的 refs 记 truncated=true（审计可见，不算回执）；
+ *       闭合标签完整落在保留前缀内的条目仍记 false（2026-10-31 V-20261031-03 修正）；</li>
  *   <li>预算满后不再处理的片段 → 一条不记（先裁后记）；</li>
  *   <li>落账终点只收非 truncated 的 refs；终点抛异常不许冒泡。</li>
  * </ol>
@@ -56,6 +57,22 @@ class RequestDeliveredAggregationTest {
         assertEquals(NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS, out.text().length());
         assertEquals(1, out.refs().size());
         assertTrue(out.refs().get(0).truncated(), "被切断的片段：refs 记 truncated=true（审计可见，不算回执）");
+    }
+
+    @Test
+    void truncatedFragmentKeepsFullyIncludedEntryAsDelivered() {
+        // 2026-10-31 V-20261031-03：片段超 4000 被切断，但 exp:a 的 </entry> 在切点之前 ——
+        // 它其实完整进了正文，不能因为「片段被切」就把它记成 truncated（否则 request_delivered 归零）。
+        String a = "<entry ref=\"exp:a\">" + "A".repeat(3000) + "</entry>";
+        String b = "<entry ref=\"exp:b\">" + "B".repeat(2000) + "</entry>";
+        NumenPlugins.KnowledgeFragment out = NumenPlugins.aggregateExecutorKnowledgeFragment(
+                List.of(frag(a + b, "exp:a", "exp:b")), C, "");
+        assertEquals(NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS, out.text().length());
+        assertEquals(2, out.refs().size());
+        java.util.Map<String, Boolean> cut = new java.util.HashMap<>();
+        for (NumenPlugins.DeliveredRef r : out.refs()) cut.put(r.entryRef(), r.truncated());
+        assertFalse(cut.get("exp:a"), "exp:a 完整落在保留前缀内，应记 false");
+        assertTrue(cut.get("exp:b"), "exp:b 跨切点，应记 truncated=true");
     }
 
     @Test
