@@ -352,6 +352,22 @@ final class CompanionBrain {
                     default -> "failed";
                 };
                 String msg = result == null ? "no result produced" : result.message();
+                // H20-147 (2026-10-30): async task outcomes only went out as a NumenEvent and
+                // never landed in tools.jsonl, so attack/goto/mine results were invisible --
+                // "did it work, time out, or give up?" could not be answered. Journal it like
+                // the sync path does (H18), same category/type so existing readers see it.
+                try {
+                    java.util.Map<String, Object> jd = new java.util.LinkedHashMap<>();
+                    jd.put("companion_id", String.valueOf(companion.getUUID()));
+                    jd.put("tool_call_id", rec.getToolCallId() == null ? "" : rec.getToolCallId());
+                    jd.put("tool", rec.getToolName() == null ? "" : rec.getToolName());
+                    jd.put("journaled_by", "server-async");
+                    jd.put("async_status", status);
+                    jd.put("success", "done".equals(status));
+                    jd.put("result", msg == null ? "" : (msg.length() <= 2000 ? msg : msg.substring(0, 2000) + "..."));
+                    com.dwinovo.numen.monitor.MonitoringJournal.get()
+                            .publish("tools", "tool_result", jd);
+                } catch (RuntimeException ignored) { /* journaling must never break the task path */ }
                 com.dwinovo.numen.event.NumenEvents.taskFinished(
                         companion, rec.publicId(), rec.getToolName(), status, msg);
                 continue;
