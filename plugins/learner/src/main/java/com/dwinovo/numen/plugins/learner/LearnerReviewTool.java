@@ -46,7 +46,11 @@ import java.util.function.Consumer;
  * {@code quality_gate}（硬质量门结论）。此前只给七字段原文，
  * 下游得自己猜怎么变成 {@code experience_learn} 的参数，
  * 而<b>那段映射代码从来没写过</b>（这就是 {@code 60} 号 B2）。
- * 映射做了 ≠ 有权发布：<b>落盘仍由 AI 调 experience_learn 决定</b>（doc 59 D3）。
+ * 映射做了 ≠ 有权发布。
+ * <b>2026-10-31 修正</b>：落盘（写 DRAFT）由复盘收尾程序按 {@code ExperiencePersistencePolicy}
+ * 自动调用唯一出口 {@code experience_learn} 完成；
+ * <b>发布（DRAFT→TRIAL/PUBLISHED）仍由发布门按证据决定</b>（doc 59 D3 / 86 号契约 §3）。
+ * 旧实现把「落盘」也委托给执行侧 AI，实测它从不调用 —— 经验永远进不了库。
  *
  * <p><b>必须异步</b>（2026-09-29 P0 修复）：本工具在 body tool 的
  * {@code onServerCall} 里跑，而那是 <b>服务器主线程入口</b>
@@ -340,10 +344,15 @@ final class LearnerReviewTool implements NumenTool {
             ExperienceQualityGate.Result gate =
                     ExperienceQualityGate.evaluate(v.experience(), source, body);
             one.put("quality_gate", GSON.fromJson(gate.toMap(), Map.class));
-            // 映射失败/无草稿 ⇒ 即使门禁没硬失败，也不给「可直接发布」的入口形态
-            if (draft == null) {
-                one.put("publishable", false);
-            }
+            // ★ 2026-10-31：把「可发布」与「可落库」分开，两个键都显式给。
+            //   publishable = 质量门 PASS（Q2/Q4 当前恒 UNDECIDABLE ⇒ 实际恒 false，这是事实不是 bug）；
+            //   storable    = 可写进经验库（DRAFT），见 ExperiencePersistencePolicy。
+            //   旧写法只在 draft==null 时写 publishable=false，其余情况键缺失；
+            //   autoStoreExperience 用 Boolean.TRUE.equals(...) 读它 ⇒ 所有草稿都被跳过（死代码）。
+            one.put("publishable", draft != null
+                    && gate.verdict() == ExperienceQualityGate.Verdict.PASS);
+            one.put("storable", com.dwinovo.numen.plugins.learner.core.ExperiencePersistencePolicy
+                    .storable(one.get("experience_draft"), gate.hasHardFailure()));
             if (!v.acScriptDraft().isBlank()) {
                 one.put("ac_script_draft", v.acScriptDraft());
             }
@@ -464,8 +473,10 @@ final class LearnerReviewTool implements NumenTool {
      * 「学习者不自己写库、不另开第二写库通道」，这里仍走既有唯一出口，只是调用方
      * 从 AI 变成复盘收尾 —— 红线语义（单通道）不变，断链补上。</p>
      *
-     * <p>只落「publishable 且门禁没硬失败且带 type」的条目；每条成败都发
-     * auto_learn 事件（成功带 entry_id，失败带 reason），观测侧可对账。
+     * <p>只落「有草稿、草稿带 type、门禁没硬失败」的条目（REVIEW_REQUIRED 可落 DRAFT，
+     * REJECT 不可）；发布资格另由发布门判。每条成败都发 auto_learn 事件，观测侧可对账。
+     * <p>★ 2026-10-31：旧门槛读 {@code publishable}，但渲染处从不会置 true ⇒ 本方法一直是死代码；
+     * 改由 {@link com.dwinovo.numen.plugins.learner.core.ExperiencePersistencePolicy} 统一判定。
      * 落库失败**绝不**影响复盘已成功的结论（同 announce 的纪律）。</p>
      */
     private static void autoStoreExperience(java.util.UUID companionId, List<Map<String, Object>> rendered) {
@@ -476,10 +487,14 @@ final class LearnerReviewTool implements NumenTool {
             boolean gateHardFail = gateObj instanceof Map<?, ?> gm
                     && Boolean.TRUE.equals(gm.get("hard_fail"));
             Object draftObj = one.get("experience_draft");
-            boolean publishable = Boolean.TRUE.equals(one.get("publishable"));
-            if (gateHardFail || !publishable || !(draftObj instanceof Map<?, ?> dm)) {
+            // ★ 2026-10-31：旧条件读 publishable —— 那个键从来不会被置 true（见渲染处注释），
+            //   所以自动落库从 2026-10-27 上线起一条都没落。落库资格改由唯一策略判定：
+            //   有草稿 + 带 type + 门禁无硬失败（REVIEW_REQUIRED 允许，REJECT 不允许）。
+            if (!com.dwinovo.numen.plugins.learner.core.ExperiencePersistencePolicy
+                    .storable(draftObj, gateHardFail)) {
                 continue;
             }
+            Map<?, ?> dm = (Map<?, ?>) draftObj;
             Object entryObj = dm.get("entry");
             if (!(entryObj instanceof Map<?, ?> entry)) {
                 continue;
@@ -550,22 +565,19 @@ final class LearnerReviewTool implements NumenTool {
                                 "reason", "companion not found"));
                         continue;
                     }
-                    // 落库走服务器主线程（onServerCall 契约），同步取回执
+                    // ★ 2026-10-31：本方法只在 completeOnServer 主线程里调用（见 :190 capturedServer.execute），
+                    //   而 experience_learn 是同步回执。旧的 server.execute + latch.await(30s) 多一次线程切换，
+                    //   且若 execute 走队列就会在服务器线程上自等 30 秒。这里直接调用并同步取回执。
                     final java.util.concurrent.atomic.AtomicReference<String> replyRef =
                             new java.util.concurrent.atomic.AtomicReference<>();
-                    final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-                    server.execute(() -> {
-                        try {
-                            tool.onServerCall("auto-learn-" + System.currentTimeMillis(), args, companion,
-                                    r2 -> { replyRef.set(r2); latch.countDown(); });
-                        } catch (Throwable t) {
-                            replyRef.set("{\"success\":false,\"message\":\"" + t + "\"}");
-                            latch.countDown();
-                        }
-                    });
-                    boolean done = latch.await(30, java.util.concurrent.TimeUnit.SECONDS);
-                    String reply = done ? String.valueOf(replyRef.get()) : "TIMEOUT";
-                    boolean ok = reply != null && reply.contains("\"success\":true");
+                    try {
+                        tool.onServerCall("auto-learn-" + System.currentTimeMillis(), args, companion,
+                                replyRef::set);
+                    } catch (Throwable t) {
+                        replyRef.set("{\"success\":false,\"message\":\"" + t + "\"}");
+                    }
+                    String reply = replyRef.get() == null ? "NO_REPLY" : String.valueOf(replyRef.get());
+                    boolean ok = reply.contains("\"success\":true");
                     if (ok) stored++;
                     Map<String, Object> ev = new java.util.LinkedHashMap<>();
                     ev.put("memo_id", memoId);
