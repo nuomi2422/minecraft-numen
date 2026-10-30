@@ -48,25 +48,7 @@ public final class TaskDispatch {
      * 而队首的长活可能几分钟——让它排在后面等于把对话卡到 deadline。
      * 反过来它有界短,插队也饿不死别人。
      */
-    /**
-     * 同步槽任务的期限上界：**400 tick = 20 秒**。
-     *
-     * <p>为什么必须有：同步槽是「回合挂着等结果」的路，任务不收尾就永远没有 tool_result。
-     * 实测 `exp-loop-r23`：`interact_at` **20 次调用、0 条回执**（参数完全相同），
-     * 而同轮 `rdd_get_inventory` 30 次全有回执、`attack` 4 次都有受理回执 ⇒ 不是日志问题。
-     * `UsePortalTool:88` 的注释早就写着这个坑：「任务既不会超时、也不会让出身体，能把同伴卡住整局」。
-     *
-     * <p>为什么是 20 秒：`equip / drop / locate` 都是秒级；超了就该回话说「没完成」，
-     * 而不是让整轮静默卡死。`TaskSlot.tick` 到期会置 TIMEOUT 并走既有的 settle() 回执。
-     */
-    private static final long SYNC_DEADLINE_TICKS = 400L;
-
     public static void runSync(NumenPlayer companion, TaskRecord record, Consumer<String> reply) {
-        // H14（134 号）：只给「本来就没有期限」的任务补上界——
-        // 已经有真实期限的（自己算过预算的）保持原样，避免把长任务误杀。
-        if (record.getDeadlineGameTime() >= TaskRecord.NO_DEADLINE) {
-            record.capDeadlineTo(companion.level().getGameTime() + SYNC_DEADLINE_TICKS);
-        }
         CompanionTickDispatcher.syncSlotFor(companion.getUUID()).put(companion, record);
     }
 

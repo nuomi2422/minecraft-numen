@@ -82,17 +82,6 @@ public abstract class TaskRecord {
     public final TaskResult getResult() { return result; }
 
     /** Push the deadline later (never earlier). Tick-thread only, like all reads. */
-    /**
-     * 把期限**提前**到一个有界值（只会提前，不会推后）。
-     *
-     * <p>H14（134 号，2026-10-30）：同步槽里的任务原本可以用 {@link #NO_DEADLINE} 一直挂着——
-     * 任务不收尾就永远没有 tool_result。实测 `exp-loop-r23`：`interact_at` 20 次调用 0 条回执。
-     * `TaskSlot.tick` 本来就会在超期时置 TIMEOUT 并结算，所以只要给它一个有限期限就够了。
-     */
-    public final void capDeadlineTo(long gameTime) {
-        if (gameTime < deadlineGameTime) deadlineGameTime = gameTime;
-    }
-
     public final void extendDeadlineTo(long gameTime) {
         if (gameTime > deadlineGameTime) deadlineGameTime = gameTime;
     }
