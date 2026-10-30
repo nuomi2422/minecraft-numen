@@ -281,6 +281,49 @@ class ExperienceStoreRetrievalBridgeTest {
         assertEquals(1, TrialRuntime.trialRefsIn(r.text()).size(), "trialRefsIn 必须能抓到它");
     }
 
+    // ---------- 2026-10-31：retrieval_snapshot 不再只给 count，refs 带可见性事实 ----------
+
+    @Test
+    void asEvent_refs记录TRIAL条目且trial为true() {
+        ExperienceMemory memory = memoryWith(base("t9", "试用条目", ExperienceMaturity.OBSERVED)
+                .publication(com.dwinovo.numen.experience.api.PublicationState.TRIAL).build());
+
+        ExperienceStoreRetrievalBridge.Rendered r = ExperienceStoreRetrievalBridge.render(
+                memory, "挖矿", 8, 2400, com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
+
+        assertEquals(1, r.entries(), r.text());
+        assertEquals(1, r.rawEntries(), "raw_entries 记录 view 过滤前的候选数");
+        List<?> refs = (List<?>) r.asEvent().get("refs");
+        assertNotNull(refs, "asEvent 必须带 refs");
+        boolean hit = refs.stream().anyMatch(x -> {
+            java.util.Map<?, ?> m = (java.util.Map<?, ?>) x;
+            String ref = String.valueOf(m.get("ref"));
+            return ref.endsWith("|试用条目")
+                    && Boolean.TRUE.equals(m.get("rendered"))
+                    && Boolean.TRUE.equals(m.get("trial"));
+        });
+        assertTrue(hit, "refs 必须含试用条目且 rendered/trial=true：" + refs);
+    }
+
+    @Test
+    void asEvent_refs记录被EXECUTOR过滤的OBSERVED条目及原因() {
+        ExperienceMemory memory = memoryWith(base("t10", "只观察到的做法", ExperienceMaturity.OBSERVED).build());
+
+        ExperienceStoreRetrievalBridge.Rendered r = ExperienceStoreRetrievalBridge.render(
+                memory, "挖矿", 8, 2400, com.dwinovo.numen.agent.retrieval.RetrievalRole.EXECUTOR);
+
+        assertEquals(0, r.entries(), "OBSERVED 且非 TRIAL 不进 EXECUTOR 视图");
+        List<?> refs = (List<?>) r.asEvent().get("refs");
+        boolean hit = refs.stream().anyMatch(x -> {
+            java.util.Map<?, ?> m = (java.util.Map<?, ?>) x;
+            String ref = String.valueOf(m.get("ref"));
+            return ref.endsWith("|只观察到的做法")
+                    && Boolean.FALSE.equals(m.get("rendered"))
+                    && "not_verified".equals(m.get("reason"));
+        });
+        assertTrue(hit, "refs 必须记录被 provider 过滤的条目与原因 not_verified：" + refs);
+    }
+
     @Test
     void 试用条目优先占槽_不被高成熟度长条目挤出预算() {
         // 三条已发布长条目 + 一条试用；预算只够 1-2 条时，试用必须先出来

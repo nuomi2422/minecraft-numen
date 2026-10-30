@@ -63,6 +63,24 @@ public final class ExperienceStoreRetrievalBridge {
      * <p>刻意不把 {@code ContextSnapshot} 整个带出去——调用方只需要这几个数，
      * 带全量会让插件侧能碰到检索内部结构，边界就没了。
      */
+    /**
+     * 一个条目在这次渲染里的可见性事实（2026-10-31）。
+     *
+     * <p><b>为什么加</b>：V-20261031-02 发现 {@code retrieval_snapshot.entries} 只是**计数**，
+     * 投送是否命中只能靠 GBK 的 {@code latest.log} 行反推。本记录把「哪条进了、为什么没进」
+     * 变成事件里的第一等字段，下一轮判据不用再依赖日志编码。
+     *
+     * @param reason 渲染时为空串；未渲染时给过滤原因（maturity_below_verified / retracted /
+     *               warning_kind / role_not_granted / applicability_fail / pinned_duplicate）
+     */
+    public record RefView(String ref, String maturity, boolean trial, boolean rendered, String reason) {
+        public RefView {
+            ref = ref == null ? "" : ref;
+            maturity = maturity == null ? "" : maturity;
+            reason = reason == null ? "" : reason;
+        }
+    }
+
     public record Rendered(
             String text,
             int entries,
@@ -71,16 +89,21 @@ public final class ExperienceStoreRetrievalBridge {
             List<String> truncationReasons,
             String role,
             String taskFingerprint,
-            List<String> sceneFingerprints) {
+            List<String> sceneFingerprints,
+            /* 2026-10-31：本次渲染里每个条目的可见性事实（含被过滤掉的与原因）。 */
+            List<RefView> refs,
+            /* source 层的条数（provider 过滤前，含 DRAFT/SUSPENDED/REVOKED），
+             * 用于区分「库是空的」与「库里有但被 provider/view 过滤」。 */
+            int rawEntries) {
 
         /** 兼容旧调用方：不写 role = PLANNER、不带指纹（G5d 的几何形状逐字不变）。 */
         public Rendered(String text, int entries, int gaps, String status, List<String> truncationReasons) {
-            this(text, entries, gaps, status, truncationReasons, "planner", null, null);
+            this(text, entries, gaps, status, truncationReasons, "planner", null, null, List.of(), entries);
         }
 
         /** 兼容五参形态（role 省略）。 */
         public Rendered(String text, int entries, int gaps, String status, List<String> truncationReasons, String role) {
-            this(text, entries, gaps, status, truncationReasons, role, null, null);
+            this(text, entries, gaps, status, truncationReasons, role, null, null, List.of(), entries);
         }
 
         public Rendered {
@@ -90,13 +113,14 @@ public final class ExperienceStoreRetrievalBridge {
             role = role == null || role.isBlank() ? "planner" : role;
             // ★ 2026-10-25（#167 债①）：unified 补任务/场景指纹（观测层，不参与命中判定）。
             sceneFingerprints = sceneFingerprints == null ? List.of() : List.copyOf(sceneFingerprints);
+            refs = refs == null ? List.of() : List.copyOf(refs);
         }
 
         /** 带指纹副本（旧实例不可变；null 指纹 → UNKNOWN）。 */
         public Rendered withFingerprints(String fp, List<String> scenes) {
             return new Rendered(text, entries, gaps, status, truncationReasons, role,
                     fp == null || fp.isBlank() ? com.dwinovo.numen.experience.core.TaskFingerprint.UNKNOWN : fp,
-                    scenes);
+                    scenes, refs, rawEntries);
         }
 
         /** 监测台事件的 data 段（不含正文——正文在 llm_request 里）。 */
@@ -109,6 +133,20 @@ public final class ExperienceStoreRetrievalBridge {
             data.put("status", status);
             data.put("truncationReasons", truncationReasons);
             data.put("chars", text.length());
+            // ★ 2026-10-31：不再只给 count。refs 让「投送是否命中」可直接从 JSONL 判，
+            //   不再依赖 GBK 的 latest.log 行（V-20261031-02 的观测缺口）。
+            data.put("raw_entries", rawEntries);
+            List<Map<String, Object>> refRows = new ArrayList<>();
+            for (RefView r : refs) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("ref", r.ref());
+                row.put("maturity", r.maturity());
+                row.put("trial", r.trial());
+                row.put("rendered", r.rendered());
+                if (!r.reason().isBlank()) row.put("reason", r.reason());
+                refRows.add(row);
+            }
+            data.put("refs", refRows);
             // ★ 指纹只有真算过才出现（旧调用方 withFingerprints 没调 ⇒ 键不出现，
             //   监测台按「有键/无键」区分新旧形状，不猜）。
             if (taskFingerprint != null) {
@@ -314,12 +352,40 @@ public final class ExperienceStoreRetrievalBridge {
             ContextSnapshot raw = service.buildContext(query);
             ContextSnapshot snapshot = RoleViewSelector.select(raw, use);
             Body body = renderText(snapshot, pinned);
+            // ★ 2026-10-31：把「候选里有、但被 view 过滤掉」的条目也记进 refs（带原因）。
+            //   只给 count 时，观测面分不清「没检索到」与「检索到但被 view 拒绝」。
+            List<RefView> allRefs = new ArrayList<>();
+            // ① provider 级丢弃：源里有、但没进候选（DRAFT/SUSPENDED/not_verified/audience…）。
+            //    原因复用 provider 的公开纯函数，避免与 toEntry 的判据漂移。
+            Set<String> rawRefs = new HashSet<>();
+            for (RetrievedEntry e : raw.directory()) rawRefs.add(e.descriptor().entryRef());
+            List<ExperienceEntryRead> sourceAll = ExperienceStoreRetrievalBridge.snapshot(memory);
+            for (ExperienceEntryRead e : sourceAll) {
+                String ref = e.entryRef();
+                if (ref == null || rawRefs.contains(ref)) continue;
+                allRefs.add(new RefView(ref, maturityName(e.maturity()), e.trial(), false,
+                        ExperienceRetrievalProvider.filterReason(use, e)));
+            }
+            // ② view 级丢弃：候选里有、但被 RoleViewSelector 筛掉（retracted/WARNING/maturity）。
+            Set<String> selectedRefs = new HashSet<>();
+            for (RetrievedEntry e : snapshot.directory()) {
+                selectedRefs.add(e.descriptor().entryRef());
+            }
+            for (RetrievedEntry e : raw.directory()) {
+                EntryDescriptor d = e.descriptor();
+                if (selectedRefs.contains(d.entryRef())) {
+                    continue;
+                }
+                allRefs.add(new RefView(d.entryRef(), maturityName(d.maturity()),
+                        d.trial(), false, exclusionReason(d, use)));
+            }
+            allRefs.addAll(body.refs());
             return new Rendered(body.text(),
                     body.entries(),
                     snapshot.gaps().size(),
                     snapshot.status().name(),
                     snapshot.truncationReasons(),
-                    roleName);
+                    roleName, null, null, allRefs, sourceAll.size());
         } catch (Throwable t) {
             // 知识是可选增强：坏了留空，规划照常（与旧路同纪律），但把缺口报出来
             return new Rendered("", 0, 1, "PARTIAL", List.of("render_failed:" + t.getClass().getSimpleName()), roleName);
@@ -355,11 +421,15 @@ public final class ExperienceStoreRetrievalBridge {
         StringBuilder sb = new StringBuilder();
         int rendered = 0;
         Set<String> pinnedRefs = new HashSet<>();
+        List<RefView> refs = new ArrayList<>();
         for (ExperienceHit hit : pinned) {
             ExperienceEntry e = hit == null ? null : hit.entry();
             if (e == null || e.id() == null || e.id().isBlank()) continue;
             String ref = REF_PREFIX + e.id();
             String body = body(e);
+            refs.add(new RefView(ref, maturityName(maturity(e.maturity())),
+                    e.publication() == com.dwinovo.numen.experience.api.PublicationState.TRIAL,
+                    true, "pinned"));
             if (rendered == 0) appendHeader(sb, snapshot.role());
             sb.append("\n<entry ref=\"").append(ref)
                     .append("\" maturity=\"").append(maturity(e.maturity()).name())
@@ -372,9 +442,16 @@ public final class ExperienceStoreRetrievalBridge {
             rendered++;
         }
         for (RetrievedEntry e : snapshot.directory()) {
-            if (e.applicability() == Applicability.FAIL) continue;
             EntryDescriptor d = e.descriptor();
-            if (pinnedRefs.contains(d.entryRef())) continue;
+            if (e.applicability() == Applicability.FAIL) {
+                refs.add(new RefView(d.entryRef(), maturityName(d.maturity()), d.trial(), false, "applicability_fail"));
+                continue;
+            }
+            if (pinnedRefs.contains(d.entryRef())) {
+                refs.add(new RefView(d.entryRef(), maturityName(d.maturity()), d.trial(), false, "pinned_duplicate"));
+                continue;
+            }
+            refs.add(new RefView(d.entryRef(), maturityName(d.maturity()), d.trial(), true, ""));
             if (rendered == 0) appendHeader(sb, snapshot.role());
             rendered++;
             sb.append("\n<entry ref=\"").append(d.entryRef())
@@ -389,9 +466,31 @@ public final class ExperienceStoreRetrievalBridge {
             }
             sb.append("</entry>");
         }
-        if (rendered == 0) return new Body("", 0);   // 全被排除 = 这一段没有可给的知识，不塞空壳
+        // 全被排除 = 这一段没有可给的知识，不塞空壳；但 refs 仍要带出去（被过滤也是事实）。
+        if (rendered == 0) return new Body("", 0, refs);
         sb.append("\n</retrieved_knowledge>");
-        return new Body(sb.toString(), rendered);
+        return new Body(sb.toString(), rendered, refs);
+    }
+
+    /** 被 view 过滤的原因（与 {@link RoleViewSelector} 的判据一一对应；未知原因不编）。 */
+    private static String exclusionReason(EntryDescriptor d, RetrievalRole role) {
+        if (d == null) return "descriptor_missing";
+        if (!d.roles().contains(role)) return "role_not_granted";
+        if (role == RetrievalRole.EXECUTOR) {
+            if (d.retracted()) return "retracted";
+            if (d.kind() == EntryKind.WARNING) return "warning_kind";
+            if (d.viewOnly()) return "role_filtered";
+            if (d.maturity() == null) return "maturity_unknown";
+            if (!d.trial()
+                    && d.maturity().rank < com.dwinovo.numen.agent.retrieval.Maturity.VERIFIED.rank) {
+                return "maturity_below_verified";
+            }
+        }
+        return "role_filtered";
+    }
+
+    private static String maturityName(com.dwinovo.numen.agent.retrieval.Maturity m) {
+        return m == null ? "" : m.name();
     }
 
     private static void appendHeader(StringBuilder sb, RetrievalRole role) {
@@ -405,8 +504,12 @@ public final class ExperienceStoreRetrievalBridge {
         }
     }
 
-    /** 渲染结果：正文 + 实际渲染条数（pinned + snapshot，已去重）。 */
-    private record Body(String text, int entries) {}
+    /** 渲染结果：正文 + 实际渲染条数（pinned + snapshot，已去重）+ 每条可见性事实。 */
+    private record Body(String text, int entries, List<RefView> refs) {
+        Body(String text, int entries) {
+            this(text, entries, List.of());
+        }
+    }
 
     // ═══ G5f：展开只读（IC10「展开不等于执行」）═══
 

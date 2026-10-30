@@ -122,9 +122,21 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
 
     /** 诊断用：复刻 {@link #toEntry} 的拒收理由，只为了在日志里说清楚「为什么没进去」。 */
     private static String judgeReason(RetrievalQuery query, ExperienceEntryRead e) {
+        return filterReason(query == null ? RetrievalRole.PLANNER : query.role(), e);
+    }
+
+    /**
+     * 2026-10-31：把「为什么这条源条目没进 provider 候选」变成可复用的公开纯函数。
+     *
+     * <p>桥侧要在 {@code retrieval_snapshot.refs} 里记下 provider 级丢弃原因（DRAFT/SUSPENDED/
+     * not_verified/audience 等），不能各写一份判断 —— 那会和 {@link #toEntry} 漂移。
+     * 本函数与 {@code toEntry} 的 EXECUTOR 分支逐条对应；返回 {@code "ok"} 表示本来可以进。
+     */
+    public static String filterReason(RetrievalRole role, ExperienceEntryRead e) {
+        RetrievalRole use = role == null ? RetrievalRole.PLANNER : role;
         if (e == null) return "null_entry";
         if (!e.retrievable()) return "not_retrievable";
-        if (query.role() == RetrievalRole.EXECUTOR) {
+        if (use == RetrievalRole.EXECUTOR) {
             if (e.retracted()) return "retracted";
             if (!e.published() && !e.trial()) return "draft_or_suspended";
             if (e.maturity() == null) return "maturity_null";
