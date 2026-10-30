@@ -126,6 +126,20 @@ final class LearnerReviewTool implements NumenTool {
 
         // 必须在主线程上读队列；此刻我们确实在主线程
         MemoQueue queue = LearnerPlugin.queue(id);
+        // 2026-10-31（V-20261031-17）：同同伴已有 RUNNING 复盘时不再 drain 第二批 ——
+        // B8 一局 3 次 learner_review 造成重叠复盘/重复落库。复用现有 review_id，不启动新的。
+        LearnerPlugin.ReviewRecord running = LearnerPlugin.runningReview(id);
+        if (running != null) {
+            java.util.Map<String, Object> ack = new java.util.LinkedHashMap<>();
+            ack.put("review_id", running.reviewId());
+            ack.put("status", running.state());
+            ack.put("reviewing", running.reviewing());
+            ack.put("queue_depth", queue.size());
+            ack.put("dedup", true);
+            ack.put("next", "poll learner_status with review_id=" + running.reviewId());
+            reply.accept(TaskResult.ok("learner review already running; not starting another", ack).toJson());
+            return;
+        }
         List<Memo> taken = queue.drain(max);
         if (taken.isEmpty()) {
             reply.accept(TaskResult.ok("no pending memos to review", Map.of(

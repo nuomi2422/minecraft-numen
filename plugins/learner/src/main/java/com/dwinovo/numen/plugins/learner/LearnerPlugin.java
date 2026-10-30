@@ -267,6 +267,23 @@ public final class LearnerPlugin implements NumenPlugin {
                 uuid -> new MemoQueue(dir.resolve("learner-memos-" + uuid + ".json")));
     }
 
+    /**
+     * 2026-10-31（V-20261031-17）：同一同伴当前是否有 RUNNING 的复盘。
+     *
+     * <p>B8 实测：一局内 AI 调了 3 次 learner_review（10/20/20 条），复盘重叠、同一 memo
+     * 被多次判定/落库。复盘是全局资源（LLM），同同伴只应有一个在跑；第二个调用应复用/拒绝，
+     * 而不是再 drain 一批。
+     */
+    static ReviewRecord runningReview(UUID companionId) {
+        if (companionId == null) return null;
+        for (ReviewRecord r : REVIEWS.values()) {
+            if ("RUNNING".equals(r.state()) && companionId.equals(r.companionId())) {
+                return r;
+            }
+        }
+        return null;
+    }
+
     static void beginReview(String reviewId, UUID companionId, String state, int reviewing) {
         REVIEWS.put(reviewId, new ReviewRecord(reviewId, companionId, state, reviewing, 0, "", List.of()));
         evictOld();
