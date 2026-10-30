@@ -44,6 +44,13 @@ final class RddDebugKillTool implements NumenTool {
             // 不经过 invulnerable / hurtTime 判定，是让"调试死亡"确定生效的那条路。
             companion.kill();
             boolean died = !companion.isAlive() || companion.getHealth() <= 0f;
+            // 2026-10-30：**先**把死亡瞬间的真实状态抄下来。
+            //   Companions.onDeath 会把血量回满（给重生用的健康身体），如果回执在它之后才读，
+            //   就会出现"debug_kill executed 但 alive:true / hp:20"这种自相矛盾的读数
+            //   （exp-loop-r20 实测已出现）。回执必须反映死亡那一刻，不是之后的状态。
+            float hpAtDeath = companion.getHealth();
+            boolean aliveAtDeath = companion.isAlive();
+            String posAtDeath = companion.blockPosition().toShortString();
         // H12-131（2026-10-30）：kill() 会**立刻移除实体**，NumenPlayer.tick() 不再运行，
         // 于是 Companions.onDeath（死亡事件的唯一发出口）永远不被调用 ⇒ 自杀不产生 death 事件，
         // 采集端读到 deaths=NONE，每轮死亡数被低估。
@@ -63,8 +70,8 @@ final class RddDebugKillTool implements NumenTool {
             reply.accept(com.dwinovo.numen.task.TaskResult.ok(
                     died ? "debug_kill executed (entity.kill(); death resolves this tick)"
                          : "debug_kill FAILED: entity.kill() ran but the companion is still alive",
-                    Map.of("hp", companion.getHealth(),
-                            "alive", companion.isAlive(),
+                    Map.of("hp", hpAtDeath,
+                            "alive", aliveAtDeath,
                             "dimension", companion.level().dimension().location().toString(),
                             "position", companion.blockPosition().toShortString())).toJson());
         } catch (RuntimeException ex) {
