@@ -1956,7 +1956,7 @@ public final class EntityAgentLoop {
         // G4c S109b A-M2：先建这一轮真正要发出去的那份，但**先不 publish** ——
         // 预算/上下文/压缩闸都通过、incrementTurn 之后才发 runtime_state。
         // 这样被拦下的轮次不会留下“她看见了什么”的假记录，turn 也不会滞后一轮。
-        var tools = ToolRegistry.all();   // 2026-10-24 跟上游 471d3861d：渐进披露已删，工具表发全份
+        var tools = com.dwinovo.numen.agent.tool.ToolVisibility.forExecutor(ToolRegistry.all());   // 2026-10-30：内脑只发白名单（config/numen/tool-visibility.json），MCP 仍全量
         var snapshot = modelContextSnapshot(false, "execution", 1);
         String systemPrompt = composeSystemPrompt();
         // A-M3：tools 分量用 provider 真正发出的 wire JSON，不是 List<NumenTool>.toString()。
@@ -3224,7 +3224,7 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                 presenter.clearPartial();                 // 失败那次的半截文字同理作废
                 NumenLlmClient llm2 = client();
                 var retrySnapshot = modelContextSnapshot(false, "execution", 2);
-                var retryTools = ToolRegistry.all();   // 同上：重跑也发全份
+                var retryTools = com.dwinovo.numen.agent.tool.ToolVisibility.forExecutor(ToolRegistry.all());   // 同上：重跑同样走白名单
                 String retrySystem = composeSystemPrompt();
                 inFlightTrimmedEstimate = estimateRequestTokens(retrySnapshot, retryTools, retrySystem);
                 publishPendingRuntimeState();
