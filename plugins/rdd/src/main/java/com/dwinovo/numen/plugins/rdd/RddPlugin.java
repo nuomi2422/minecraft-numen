@@ -208,6 +208,9 @@ public final class RddPlugin implements NumenPlugin {
         // 主人待命控制面：owner 暂停与士兵 PAUSE 治理不同（主人待命永不过期/不被自动恢复），
         // 必须有独立入口 —— 否则"主人暂停"的保护逻辑是死代码（深审 R04/codex P1-2）。
         numen.registerTool(new RddStandbyTool());
+        // 2026-10-31（V-20261031-08）：停机前落盘钩子。harness 在 task_stop 后、强制杀进程前调用，
+        // 把最后几分钟的背包/位置刷到 playerdata；不改世界、不产生 admin_command_used。
+        numen.registerTool(new RddSaveTool());
         // 验证专用：debug_kill（需 confirm=true）——验证死亡回收闭环（V3）。
         numen.registerTool(new RddDebugKillTool());
         // G2b：死亡台账只读查询面（V-20261020-17 债②：事件有、可回读的查询面没有）
