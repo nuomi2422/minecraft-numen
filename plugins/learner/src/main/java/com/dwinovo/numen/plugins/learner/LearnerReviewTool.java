@@ -540,17 +540,21 @@ final class LearnerReviewTool implements NumenTool {
                     Object hitsObj = one.get("retrieval_hits");
                     if (hitsObj instanceof java.util.List<?> hits && !hits.isEmpty()
                             && hits.get(0) instanceof Map<?, ?> h0) {
-                        String targetTitle = String.valueOf(h0.get("title"));
+                        String hitTitle = String.valueOf(h0.get("title"));
                         String ref = String.valueOf(h0.get("entry_ref"));
                         String targetId = ref.startsWith("exp:") ? ref.substring(4) : ref;
-                        // 2026-10-31（V-20261031-14 旁记）：REVISE 只覆写 title 不够 ——
-                        // 草稿的 type 可能不同（如 tool_defect vs execution），id = type|title
-                        // 仍然撞不上目标，于是「同一件事」被存成另一个 type 的副本（B9 实测）。
-                        // 目标 id 的前缀就是它的 type；REVISE 时一并覆写。
+                        // 2026-10-31（V-20261031-15 实测）：REVISE 只覆写 title 不够 ——
+                        // ① 草稿 type 可能不同（tool_defect vs execution）⇒ id 撞不上；
+                        // ② hits[0].title 可能是**显示截断**后的短 title ⇒ id 仍然撞不上（B10 实测：
+                        //    目标 155 字，落库成 20 字新条目）。
+                        // 目标 id 的前缀/后缀就是 type 与 canonical title，REVISE 时两者都从 targetId 取。
                         String targetType = targetTypeOf(targetId);
                         if (!targetType.isBlank()) {
                             args.addProperty("type", targetType);
                         }
+                        int bar = targetId.indexOf('|');
+                        String idTitle = bar >= 0 ? targetId.substring(bar + 1) : "";
+                        String targetTitle = !idTitle.isBlank() ? idTitle : hitTitle;
                         if (!targetTitle.isBlank() && !"null".equals(targetTitle)) {
                             args.addProperty("title", targetTitle);
                             reviseNote = "REVISE->" + targetId;
