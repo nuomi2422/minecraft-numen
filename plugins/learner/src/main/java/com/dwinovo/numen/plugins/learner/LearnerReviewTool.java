@@ -479,6 +479,13 @@ final class LearnerReviewTool implements NumenTool {
      * 改由 {@link com.dwinovo.numen.plugins.learner.core.ExperiencePersistencePolicy} 统一判定。
      * 落库失败**绝不**影响复盘已成功的结论（同 announce 的纪律）。</p>
      */
+    /** 2026-10-31：从目标 entry id（{@code type|title}）取 type；取不到返回空串（不猜）。 */
+    static String targetTypeOf(String targetId) {
+        if (targetId == null) return "";
+        int bar = targetId.indexOf('|');
+        return bar > 0 ? targetId.substring(0, bar).trim() : "";
+    }
+
     private static void autoStoreExperience(java.util.UUID companionId, List<Map<String, Object>> rendered) {
         int stored = 0;
         List<Map<String, Object>> outcomes = new ArrayList<>();
@@ -536,6 +543,14 @@ final class LearnerReviewTool implements NumenTool {
                         String targetTitle = String.valueOf(h0.get("title"));
                         String ref = String.valueOf(h0.get("entry_ref"));
                         String targetId = ref.startsWith("exp:") ? ref.substring(4) : ref;
+                        // 2026-10-31（V-20261031-14 旁记）：REVISE 只覆写 title 不够 ——
+                        // 草稿的 type 可能不同（如 tool_defect vs execution），id = type|title
+                        // 仍然撞不上目标，于是「同一件事」被存成另一个 type 的副本（B9 实测）。
+                        // 目标 id 的前缀就是它的 type；REVISE 时一并覆写。
+                        String targetType = targetTypeOf(targetId);
+                        if (!targetType.isBlank()) {
+                            args.addProperty("type", targetType);
+                        }
                         if (!targetTitle.isBlank() && !"null".equals(targetTitle)) {
                             args.addProperty("title", targetTitle);
                             reviseNote = "REVISE->" + targetId;
