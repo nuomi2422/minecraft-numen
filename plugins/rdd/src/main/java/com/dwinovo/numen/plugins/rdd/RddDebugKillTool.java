@@ -44,6 +44,20 @@ final class RddDebugKillTool implements NumenTool {
             // 不经过 invulnerable / hurtTime 判定，是让"调试死亡"确定生效的那条路。
             companion.kill();
             boolean died = !companion.isAlive() || companion.getHealth() <= 0f;
+        // H12-131（2026-10-30）：kill() 会**立刻移除实体**，NumenPlayer.tick() 不再运行，
+        // 于是 Companions.onDeath（死亡事件的唯一发出口）永远不被调用 ⇒ 自杀不产生 death 事件，
+        // 采集端读到 deaths=NONE，每轮死亡数被低估。
+        // 实测（exp-loop-r19）：debug_kill 回执 alive:false / hp:0.0 / pos 124,-229,6，
+        // 而 envelope.deaths = {"status":"NONE","count":0}。
+        // 这里显式补走同一条既有链路（markDead + CompanionEvent.DEATH + 重生调度）。
+        if (died) {
+            try {
+                com.dwinovo.numen.entity.Companions.onDeath(companion);
+            } catch (RuntimeException ex) {
+                org.slf4j.LoggerFactory.getLogger(RddDebugKillTool.class).warn(
+                        "[rdd] debug_kill 补发死亡事件失败: {}", ex.toString());
+            }
+        }
             // 如实回报：死没死、当前维度与坐标。静默"成功"比失败更糟 ——
             // 它会让人以为死亡链路验过了，其实一次都没触发。
             reply.accept(com.dwinovo.numen.task.TaskResult.ok(
