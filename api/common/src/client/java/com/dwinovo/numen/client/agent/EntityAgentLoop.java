@@ -1867,6 +1867,20 @@ public final class EntityAgentLoop {
      * @return 真的把这一轮开出去了（含 drainInbox 接管、自动整理记忆这两种自己也算开出去）
      */
     private boolean tryStartTurn() {
+        // 2026-10-30：binding.json 是绑定的真源，但 providerEntryId 只在**构造时**读一次。
+        // MCP `create_companion` 现召的同伴在我们补写 binding 之前就已经构造好 loop ⇒ 永远没有
+        // provider ⇒ 一次请求都不发（exp-zero-r1/r2 实测 llmRequests=0；把 binding 提前放好、
+        // 重进世界让 loop 重新构造后立刻恢复正常，exp-zero-r3 实测 50 次请求）。
+        // 每次开轮前重读一次：既救新召的同伴，也让 UI 改绑定立即生效。
+        try {
+            String bound = CompanionHome.binding(entityUuid).providerId();
+            boolean changed = bound == null ? providerEntryId != null : !bound.equals(providerEntryId);
+            if (changed) {
+                Constants.LOG.info("[numen-entity#{}] 模型绑定已更新: {} -> {}", entityUuid,
+                        String.valueOf(providerEntryId), String.valueOf(bound));
+                this.providerEntryId = bound;
+            }
+        } catch (RuntimeException ignored) { /* 读绑定不许挡住开轮 */ }
         publishBrainGate();
         if (paused()) {
             Constants.LOG.debug("[numen-entity#{}] tryStartTurn skipped: 停牌 (dead={}, external={})",
