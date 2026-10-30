@@ -27,10 +27,10 @@ import java.util.function.Consumer;
 public final class RddNearbyEntitiesTool implements NumenTool {
 
     // H11（127 号，2026-10-30）：64 → 256。
-    // 实测代价（exp-loop-r16）：末影龙在 90 格外，半径上限 64 够不着；
+    // 实测代价（exp-loop-r16）：末影龙在 90 格外，半径上限 256 够不着；
     // world_state 那条路 3 次全 BUDGET_EXCEEDED，count_entities_in_box 只给数量 ⇒
     // 77 次工具调用里 0 次攻击——它一直在夹逼，永远拿不到一个点。
-    private static final int MAX_RADIUS = 256;
+    private static final int MAX_RADIUS = 256;   // H11b-151：描述里第二处"上限 64"已补成 256
     private static final int MAX_LIMIT = 60;
 
     @Override
@@ -41,7 +41,7 @@ public final class RddNearbyEntitiesTool implements NumenTool {
     @Override
     public String description() {
         return "列出同伴附近半径内的实体（类型、实体 id、坐标、距离）。找村民/铁傀儡/动物时用。"
-                + "可选参数 radius（默认 32，上限 64）与 limit（默认 40，上限 60）。只读。"
+                + "可选参数 radius（默认 32，上限 256）与 limit（默认 40，上限 60）。只读。"
                 + "需要「数量」而不是清单时传 count_only=true：按类型计数、不受 limit 截断（2026-10-24 加）。";
     }
 
