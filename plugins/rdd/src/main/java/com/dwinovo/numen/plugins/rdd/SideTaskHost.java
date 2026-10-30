@@ -140,6 +140,24 @@ final class SideTaskHost {
      * <p>宿主这一层只做三件收尾：把世界信息（维度 + 游戏日）递进去（拒绝之后当天别再问同一件事）、
      * 清掉上下文缓存、落盘。判定与事件全在 {@code SideTaskEngine.decline} —— 纯 JVM 那边可单测。
      */
+    static boolean chooseDeathRecovery(UUID companionId, String decision, String reason) {
+        if (companionId == null || !isDeathRecoveryActive(companionId)) return false;
+        com.dwinovo.numen.rdd.side.death.DeathRecoveryDecision parsed =
+                com.dwinovo.numen.rdd.side.death.DeathRecoveryDecision.parse(decision);
+        if (parsed == null) return false;
+        boolean set = ENGINE.setData(companionId,
+                com.dwinovo.numen.rdd.side.death.DeathRecoverySideTaskType.KEY_DECISION,
+                parsed.name());
+        if (set) {
+            RddMonitor.publish("death_recovery_decision", Map.of(
+                    "companionId", companionId.toString(),
+                    "decision", parsed.name(),
+                    "reason", reason == null ? "" : reason));
+            persist();
+        }
+        return set;
+    }
+
     static boolean decline(UUID companionId, String reason) {
         if (companionId == null) {
             return false;

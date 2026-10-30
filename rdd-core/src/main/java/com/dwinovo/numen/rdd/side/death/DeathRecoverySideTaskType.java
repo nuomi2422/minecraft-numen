@@ -24,6 +24,7 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
     public static final String PHASE_DECIDE = "DECIDE_RECOVERY";
     public static final String PHASE_RECOVER = "RECOVER_DROPS";
     public static final String PHASE_REEQUIP = "REEQUIP_AND_RESUME";
+    public static final String KEY_DECISION = "decision";
 
     /** 业务保护线；不代表掉落实体已经消失。 */
     public static final long DEADLINE_TICKS = 24_000L;
@@ -60,6 +61,17 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
                 world.deathRecoveryFacts(task.companionId(), task);
         Map<String, String> data = new LinkedHashMap<>(task.data());
         data.put("drop_state", facts.dropState().name());
+        String rawDecision = data.getOrDefault(KEY_DECISION, "PENDING");
+        DeathRecoveryDecision decision = "PENDING".equals(rawDecision)
+                ? null : DeathRecoveryDecision.parse(rawDecision);
+        if (!"PENDING".equals(rawDecision) && decision == null) {
+            data.put("decision_rejected", "unknown_strategy");
+            data.put(KEY_DECISION, "PENDING");
+        }
+        if (decision == DeathRecoveryDecision.ABANDON_RECOVERY) {
+            data.put("terminal_reason", "executor_declined_recovery");
+            return SideTaskVerdict.skip("执行 AI 在有限策略中选择放弃回收；交给损失影响分析", data);
+        }
         data.put("dangerous", Boolean.toString(facts.dangerous()));
         data.put("backup_available", Boolean.toString(facts.backupAvailable()));
         data.put("inventory_known", Boolean.toString(facts.inventoryKnown()));
@@ -99,7 +111,9 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
                 + "危险、距离、维度、区块加载状态、备用装备和原目标都要一起看。"
                 + "若有备用装备且回死亡点会再次送命，先取备用/重新装战，再决定是否回收；"
                 + "若就在附近且安全，可以直接回死亡点捡。"
-                + "你可以调用 rdd_decline_side 明确放弃本次回收，写清危险或收益不足；"
+                + "只能从固定策略中选择：RECOVER_DROPS_FIRST、FETCH_BACKUP_THEN_CONTINUE、"
+                + "ABANDON_RECOVERY、PREPARE_AND_REPLAN；未知策略会被拒绝。"
+                + "也可以调用 rdd_decline_side 明确放弃本次回收，写清危险或收益不足；"
                 + "放弃后才进入重要性损失分析和规划，不会因为五分钟业务保护线自动宣称物品消失。"
                 + "区块未加载、掉落状态未知都不能当成没有。"
                 + "</death_recovery>";

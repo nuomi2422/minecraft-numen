@@ -73,6 +73,16 @@ public final class SideTaskEngine {
         return runtime.isActive(companionId);
     }
 
+    /** Set a validated strategy field on an active task; unknown fields are rejected by the caller. */
+    public boolean setData(UUID companionId, String key, String value) {
+        Optional<SideTask> active = runtime.current(companionId);
+        if (active.isEmpty() || key == null || key.isBlank()) return false;
+        Map<String, String> data = new LinkedHashMap<>(active.get().data());
+        data.put(key, value == null ? "" : value);
+        runtime.replace(active.get().withData(data));
+        return true;
+    }
+
     public void tick(UUID companionId, SideTaskWorldPort world,
                      MainlineResumeToken mainlineToken, boolean deathSideTaskOccupying) {
         Objects.requireNonNull(companionId, "companionId");

@@ -224,6 +224,7 @@ public final class RddPlugin implements NumenPlugin {
         //   ③ rdd_replan_chain —— 后面的路整体不成立时，整段重写（当前阶段及已完成的一字不动）。
         numen.registerTool(new RddReportYieldTool());
         numen.registerTool(new RddDeclineSideTool());
+        numen.registerTool(new RddChooseDeathRecoveryTool());
         numen.registerTool(new RddReplanChainTool());
         // 2026-10-28（主人：「提前收口这种东西是规划者决定的」）：把"某一级已达成/不必走"
         // 做成一个规划者按钮。代码不给物品表、不做等级判断 —— 那是规划者看语义后的决定。
