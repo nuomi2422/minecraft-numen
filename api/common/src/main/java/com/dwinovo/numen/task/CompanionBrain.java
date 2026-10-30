@@ -357,6 +357,13 @@ final class CompanionBrain {
                 continue;
             }
             if (owner == null) {
+                // H16-140（2026-10-30）：原来这里静默 continue，同步工具的回执直接消失。
+                // 实测：exp-runner 用 MCP 驱动、没有真人玩家在线 ⇒ resolveOwnerPlayer()==null
+                // ⇒ interact_at / equip_item / drop_items / locate_* 全部零回执（连查五轮才发现）。
+                // 至少不许静默：记一条 warn，把 tool 与 call_id 摆出来。
+                org.slf4j.LoggerFactory.getLogger(CompanionBrain.class).warn(
+                        "[numen-task] sync result dropped (owner offline) tool={} callId={} state={}",
+                        rec.getToolName(), rec.getToolCallId(), rec.getState());
                 continue;
             }
             String json = result == null
