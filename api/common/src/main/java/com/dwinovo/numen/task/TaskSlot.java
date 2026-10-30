@@ -81,6 +81,11 @@ final class TaskSlot {
      * 消失:模型手上握着它的 tool_call,那条调用要么有结果要么永远悬着。
      */
     void put(NumenPlayer companion, TaskRecord rec) {
+        // SLOTDIAG（137 号）：interact_at 4 次调用 0 回执，外部已排除「日志丢失/身体被占/期限没设/put 丢记录」。
+        // 只在三处打日志、不改任何行为，用来定位断点。
+        org.slf4j.LoggerFactory.getLogger(TaskSlot.class).info(
+                "[numen-slot] put tool={} rec={} deadlineIn={} replaced={}",
+                rec.getToolName(), rec.publicId(), rec.getDeadlineGameTime(), record != null);
         if (record != null) {
             task.stop(companion, Task.StopReason.REPLACED);
             if (!record.getState().isTerminal()) {
@@ -105,6 +110,12 @@ final class TaskSlot {
             return;
         }
         ticksRun++;
+        if (ticksRun % 20 == 0) {
+            org.slf4j.LoggerFactory.getLogger(TaskSlot.class).info(
+                    "[numen-slot] tick rec={} tool={} ticks={} state={} leftTicks={}",
+                    record.publicId(), record.getToolName(), ticksRun, record.getState(),
+                    record.getDeadlineGameTime() - companion.level().getGameTime());
+        }
         if (record.getState() == TaskState.RUNNING) {
             if (companion.level().getGameTime() >= record.getDeadlineGameTime()) {
                 record.setState(TaskState.TIMEOUT);
@@ -183,6 +194,9 @@ final class TaskSlot {
     private void settle() {
         record.setResult(task.result(record.getState()));
         TaskRecord settled = record;
+        org.slf4j.LoggerFactory.getLogger(TaskSlot.class).info(
+                "[numen-slot] settle rec={} tool={} state={}",
+                record.publicId(), record.getToolName(), record.getState());   // SLOTDIAG
         outbox.accept(record);
         notifySettled(settled);   // AC-B12b：终态记录先留一份，再清槽
         task = null;
