@@ -33,6 +33,9 @@ dependencies {
     // ⚠️ 主编译靠 compileOnly 就够，但 **compileOnly 不会被 testCompileClasspath 继承**，
     //    所以测试要显式加 api jar，否则 CarrierChainTest 报「找不到 com.dwinovo.numen.api.carrier」。
     testImplementation files(project(':api:neoforge').tasks.named('apiJar'))
+    // 2026-10-31（V-20261031-16 旁记）：testCompileJava 缺 com.dwinovo.numen.agent.provider.IToolSpec
+    // （ai 的类被 api:neoforge 的**发布 jar** 平铺，apiJar 任务不含 ai）；测试显式加 ai project。
+    testImplementation project(':ai')
     // 2026-10-05：共同事实的 shadow 对账器在 rdd-core（事实归 rdd，账本归 learner）。
     // 为什么是 compileOnly 而不是 implementation：
     //   implementation 会把 rdd-core 的类**内嵌进 learner jar**，而 plugins/rdd 已经

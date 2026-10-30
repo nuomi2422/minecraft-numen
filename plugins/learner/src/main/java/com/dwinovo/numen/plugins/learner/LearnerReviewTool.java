@@ -479,6 +479,23 @@ final class LearnerReviewTool implements NumenTool {
      * 改由 {@link com.dwinovo.numen.plugins.learner.core.ExperiencePersistencePolicy} 统一判定。
      * 落库失败**绝不**影响复盘已成功的结论（同 announce 的纪律）。</p>
      */
+    /**
+     * 2026-10-31：从目标 entry id（{@code type|title}）取 title；取不到才回退（不猜）。
+     *
+     * <p>为什么不用 {@code hits[0].title}：它是检索渲染的显示截断（B10 实测 155 字→20 字），
+     * 拿它当 title 会让 id 撞不上目标、REVISE 变成新建副本。
+     */
+    static String targetTitleOf(String targetId, String fallback) {
+        if (targetId != null) {
+            int bar = targetId.indexOf('|');
+            if (bar >= 0) {
+                String t = targetId.substring(bar + 1).trim();
+                if (!t.isBlank()) return t;
+            }
+        }
+        return fallback == null ? "" : fallback;
+    }
+
     /** 2026-10-31：从目标 entry id（{@code type|title}）取 type；取不到返回空串（不猜）。 */
     static String targetTypeOf(String targetId) {
         if (targetId == null) return "";
@@ -552,9 +569,7 @@ final class LearnerReviewTool implements NumenTool {
                         if (!targetType.isBlank()) {
                             args.addProperty("type", targetType);
                         }
-                        int bar = targetId.indexOf('|');
-                        String idTitle = bar >= 0 ? targetId.substring(bar + 1) : "";
-                        String targetTitle = !idTitle.isBlank() ? idTitle : hitTitle;
+                        String targetTitle = targetTitleOf(targetId, hitTitle);
                         if (!targetTitle.isBlank() && !"null".equals(targetTitle)) {
                             args.addProperty("title", targetTitle);
                             reviseNote = "REVISE->" + targetId;
