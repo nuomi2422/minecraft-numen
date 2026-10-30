@@ -22,11 +22,15 @@ import java.util.function.Consumer;
  * 现有能力里没有实体读取（`look_around` 只有地形符号，`entities` 是内部 worldstate provider，
  * 不在 MCP 工具面），所以补这个最小的只读工具。
  *
- * <p>边界：只返回**已加载**实体；范围上限 64，条数上限 60，避免一次拉爆上下文。
+ * <p>边界：只返回**已加载**实体；范围上限 256，条数上限 60，避免一次拉爆上下文。
  */
 public final class RddNearbyEntitiesTool implements NumenTool {
 
-    private static final int MAX_RADIUS = 64;
+    // H11（127 号，2026-10-30）：64 → 256。
+    // 实测代价（exp-loop-r16）：末影龙在 90 格外，半径上限 64 够不着；
+    // world_state 那条路 3 次全 BUDGET_EXCEEDED，count_entities_in_box 只给数量 ⇒
+    // 77 次工具调用里 0 次攻击——它一直在夹逼，永远拿不到一个点。
+    private static final int MAX_RADIUS = 256;
     private static final int MAX_LIMIT = 60;
 
     @Override
