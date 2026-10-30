@@ -282,6 +282,9 @@ public final class McpServer {
         // 而且 MCP 客户端(Claude Code 之类)本来就会把借来的工具再延迟一次。
         for (NumenTool tool : ToolRegistry.all()) {
             if (config.isHidden(tool.name())) continue;
+            // 2026-10-30 主人定：外部 AI 只该看见"最核心的几件"——建链、对话、下指令、看状态；
+            // 其余一律不进 MCP 清单（内脑那份由 ToolVisibility.forExecutor 管，两边互不影响）。
+            if (!com.dwinovo.numen.agent.tool.ToolVisibility.externalVisible(tool.name())) continue;
             tools.add(toolDef(tool.name(), tool.description(), withCompanion(tool.parameterSchema())));
         }
 

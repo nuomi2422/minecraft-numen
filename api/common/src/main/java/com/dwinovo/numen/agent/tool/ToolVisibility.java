@@ -10,70 +10,82 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 执行者（同伴内脑）侧的工具可见性。
+ * 工具可见性分层（2026-10-30 主人定）。
  *
- * <p>2026-10-30 主人定：「我们添加的工具太冗杂，只保留基建 + 建链，其余隐藏（不是删）」。
- * 实测依据：`turn 2: convo=5 msgs, tools=123, tokens=41090` —— 5 条消息撑不起 41k，
- * 说明 123 条工具定义是**整包**发出去的（`ToolRegistry.all()`，2026-10-24 渐进披露被删后就这样）。
- *
- * <p>过滤器只作用于**装配给内脑的那份清单**；MCP/外部视图仍是全量（监督要看得到全部），
- * 分层语义与 152 号的 L0/L1/L2 一致。
+ * <p>两侧各管一份，互不影响：
+ * <ul>
+ *   <li><b>执行者（内脑）</b>{@link #forExecutor}：只发"基建 + 建链"，其余隐藏但保留；
+ *       依据是实测 `turn: convo=5, tools=123, tokens=41090` —— 123 条定义整包发。</li>
+ *   <li><b>外部 AI（MCP）</b>{@link #externalVisible}：只给"最核心的几件"——
+ *       设任务链、对话、下指令、看状态；外部写代码的人不需要从 133 个工具里猜。</li>
+ * </ul>
  *
  * <p>配置：`config/numen/tool-visibility.json`
- * <pre>{"executor":{"mode":"whitelist","tools":["mine","craft",…]}}</pre>
- * 文件缺失、读不了、解析失败、mode 不是 whitelist ⇒ **一律返回全量**（宁可见得多，不可把人锁死）。
+ * <pre>
+ * {"executor":{"mode":"whitelist","tools":["mine",…]},
+ *  "external":{"mode":"whitelist","tools":["rdd_supervisor_submit",…]}}
+ * </pre>
+ * 任一侧缺失 / 解析失败 / 名单为空 ⇒ 该侧**回退全量**（宁可见得多，不能把同伴削成哑巴）。
  */
 public final class ToolVisibility {
 
     private static final String FILE = "tool-visibility.json";
 
+    private static volatile String cachedText = null;
     private static volatile long cachedStamp = Long.MIN_VALUE;
-    private static volatile Set<String> cachedWhitelist = null;
 
     private ToolVisibility() {}
 
-    /** 按配置裁剪给内脑的工具清单；任何异常都退回全量。 */
+    /** 执行者侧：按白名单裁剪给内脑的工具清单。 */
     public static List<NumenTool> forExecutor(List<NumenTool> all) {
-        Set<String> keep = whitelist();
+        Set<String> keep = whitelist("executor");
         if (keep == null || keep.isEmpty()) return all;
         List<NumenTool> out = new ArrayList<>(keep.size());
         for (NumenTool t : all) {
             if (t != null && keep.contains(t.name())) out.add(t);
         }
-        // 兜底：配置写坏了（比如全是拼错的工具名）不许把同伴削成哑巴
-        return out.isEmpty() ? all : out;
+        return out.isEmpty() ? all : out;   // 名单全写错也不许把同伴削哑
     }
 
-    private static Set<String> whitelist() {
+    /** 外部侧：这个工具要不要出现在 MCP 清单里。 */
+    public static boolean externalVisible(String toolName) {
+        Set<String> keep = whitelist("external");
+        if (keep == null || keep.isEmpty()) return true;
+        return keep.contains(toolName);
+    }
+
+    private static Set<String> whitelist(String section) {
+        String json = read();
+        if (json == null) return null;
+        return parse(json, section);
+    }
+
+    private static String read() {
         try {
             Path p = NumenPaths.config().resolve(FILE);
-            if (!Files.isRegularFile(p)) { cachedWhitelist = null; return null; }
+            if (!Files.isRegularFile(p)) { cachedText = null; return null; }
             long stamp = Files.getLastModifiedTime(p).toMillis();
-            Set<String> cached = cachedWhitelist;
-            if (cached != null && stamp == cachedStamp) return cached;
-            Set<String> parsed = parse(new String(Files.readAllBytes(p), java.nio.charset.StandardCharsets.UTF_8));
-            cachedWhitelist = parsed;
+            if (cachedText != null && stamp == cachedStamp) return cachedText;
+            String text = new String(Files.readAllBytes(p), java.nio.charset.StandardCharsets.UTF_8);
+            cachedText = text;
             cachedStamp = stamp;
-            return parsed;
+            return text;
         } catch (RuntimeException | java.io.IOException e) {
             return null;
         }
     }
 
-    /** 极简解析：只认 executor.mode=whitelist 与 executor.tools 数组，不引入 JSON 依赖。 */
-    static Set<String> parse(String json) {
-        if (json == null || json.isBlank()) return null;
-        int i = json.indexOf("\"executor\"");
+    /** 极简解析：只认 `"<section>" … "whitelist" … [ "a","b" ]`，不引入 JSON 依赖。 */
+    static Set<String> parse(String json, String section) {
+        if (json == null || json.isBlank() || section == null) return null;
+        int i = json.indexOf("\"" + section + "\"");
         if (i < 0) return null;
-        String tail = json.substring(i);
-        if (!tail.contains("\"whitelist\"")) return null;
-        int arr = tail.indexOf("[");
-        if (arr < 0) return null;
-        int end = tail.indexOf("]", arr);
-        if (end < 0) return null;
-        String body = tail.substring(arr + 1, end);
+        int arr = json.indexOf('[', i);
+        int end = arr < 0 ? -1 : json.indexOf(']', arr);
+        if (arr < 0 || end < 0) return null;
+        if (!json.substring(i, arr).contains("whitelist")) return null;
         Set<String> out = new LinkedHashSet<>();
-        for (String raw : body.split(",")) {
+        for (String raw : json.substring(arr + 1, end).split(",")) {
             String s = raw.trim();
             if (s.length() > 1 && s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"') {
                 out.add(s.substring(1, s.length() - 1));
