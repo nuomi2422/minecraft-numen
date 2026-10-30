@@ -671,6 +671,14 @@ private static String withAssets(UUID companionId, String rddContext) {
             RddRuntime rtG = RUNTIMES.get(companionId);
             if (rtG != null && rtG.chain() != null) {
                 var chainG = rtG.chain();
+                // 2026-10-31（V-20261031-21 实测）：链完成后 <goals> 仍把旧总目标/阶段/步骤注入，
+                // 新 query 被旧目标劫持（B16 只查背包、不开箱）。已完成链不再注入目标提示；
+                // <rdd> 块已输出 active=false/chain_completed，这里保持零注入。
+                boolean chainDone = chainG.primaryStatus() == PrimaryGoalStatus.COMPLETED
+                        && chainG.currentSubtaskStatus() == SubtaskStatus.COMPLETED;
+                if (chainDone) {
+                    goalHint = "";
+                } else {
                 String totalGoal = chainG.goal() == null ? "" : String.valueOf(chainG.goal().description());
                 String stageDescG = "";
                 var pg = chainG.currentPrimary();
@@ -684,6 +692,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                     remaining.add(later.description());
                 }
                 goalHint = RddGoalHint.block(totalGoal, stageDescG, stepDesc, remaining);
+                }
             }
         } catch (RuntimeException ignored) {
             goalHint = "";
