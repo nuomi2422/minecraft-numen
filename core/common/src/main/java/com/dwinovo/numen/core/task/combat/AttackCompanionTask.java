@@ -589,6 +589,11 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
     private static final double NO_SHOT_MOVE_SQR = 1.0;
     private int noShotTicks;
     private net.minecraft.world.phys.Vec3 noShotLastPos;
+    // H21b-147（审计指出：H21 只跟踪目标位移，漏了射手自己也在动）：
+    //   目标静止、射手绕位到能射的角度，需要几十 tick 是常态；
+    //   只按目标静止就判无解，会在射手到达窗口之前误杀这次攻击。
+    //   所以射手位移也必须重置计数。
+    private net.minecraft.world.phys.Vec3 noShotLastShooterPos;
 
     /** 走位环的外沿:剑是够到距离,弓是 {@link #BOW_MAX_DISTANCE}。 */
     private double skirmishOuter() {
@@ -711,10 +716,15 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
             // 那时候继续拉弓只会把失败拖成静默超时(r34 实测:跑满预算,0 击杀,一箭未放)。
             // 所以这里给它一个有理由的放弃,并把原因说清楚。
             net.minecraft.world.phys.Vec3 now = target.position();
-            boolean moved = noShotLastPos == null || noShotLastPos.distanceToSqr(now) > NO_SHOT_MOVE_SQR;
-            if (moved) {
+            net.minecraft.world.phys.Vec3 here = player.position();
+            boolean targetMoved = noShotLastPos == null
+                    || noShotLastPos.distanceToSqr(now) > NO_SHOT_MOVE_SQR;
+            boolean shooterMoved = noShotLastShooterPos == null
+                    || noShotLastShooterPos.distanceToSqr(here) > NO_SHOT_MOVE_SQR;
+            if (targetMoved || shooterMoved) {
                 noShotTicks = 0;
                 noShotLastPos = now;
+                noShotLastShooterPos = here;
             } else if (++noShotTicks >= NO_SHOT_TICKS) {
                 r.unreachable(target.getId());
                 fail("no feasible arrow shot at distance "
@@ -727,6 +737,7 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
         }
         noShotTicks = 0;
         noShotLastPos = null;
+        noShotLastShooterPos = null;
 
         // <b>不停脚。</b>攻击层与寻路层正交:挥刀不停脚,拉弓也不该停 —— 原版拉弓时本来
         // 就能走。这里曾经 stopNav() + halt(),而 bowFight 上一行刚 driveApproach() 建好
