@@ -300,7 +300,14 @@ public final class Ballistics {
         AABB sweep = hitbox.expandTowards(to.subtract(from)).inflate(1.0);
         EntityHitResult hit = ProjectileUtil.getEntityHitResult(
                 shooter, from, to, sweep,
-                e -> e != shooter && e != target && !e.isSpectator() && e.isPickable() && e.isAlive(),
+                // H19-146 (2026-10-30): EnderDragonPart are separate pickable+alive entities that sit
+// right on the dragon body, so they always intersect an arrow path aimed at the dragon.
+// Without excluding them entityDistance is always < MAX -> simulate() returns null ->
+// shotExistsTo() null -> AttackCompanionTask.judgeNoPath() gives up the target.
+// Measured: dragon 7 blocks away reported "no path ... not even by digging or bridging"
+// and 16 arrows were fired at the ground instead. Same bug shape as H9/H10.
+e -> e != shooter && e != target && !(e instanceof net.minecraft.world.entity.boss.EnderDragonPart)
+        && !e.isSpectator() && e.isPickable() && e.isAlive(),
                 Double.MAX_VALUE);
         return hit == null ? Double.MAX_VALUE : hit.getLocation().distanceToSqr(from);
     }
