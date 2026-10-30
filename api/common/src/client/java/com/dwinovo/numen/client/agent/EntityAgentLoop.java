@@ -431,6 +431,14 @@ public final class EntityAgentLoop {
         this.providerEntryId = CompanionHome.binding(entityUuid).providerId();
         this.dispatcher = new ToolDispatcher(entityUuid, new ToolDispatcher.Sink() {
             @Override public void onResult(ToolInvocation inv, String resultJson) {
+                // H17-142 (2026-10-30): journal the result. Sync tools (runSync) deliver their
+                // result through TaskResultPayload -> Sink.onResult, which used to ONLY add it to
+                // the conversation and never write tools.jsonl. Consequence: every sync tool
+                // (interact_at / equip_item / drop_items / locate_*) looked like "no receipt",
+                // and 8 rounds of diagnosis blamed the tool instead of the journal.
+                org.slf4j.LoggerFactory.getLogger(EntityAgentLoop.class).info(
+                        "[numen-tool] result client-side tool={} callId={} chars={}",
+                        inv.name(), inv.id(), resultJson == null ? 0 : resultJson.length());
                 harvestWorkBlocks(inv.name(), resultJson);
                 convo.addToolResult(inv.id(), resultJson);
             }
