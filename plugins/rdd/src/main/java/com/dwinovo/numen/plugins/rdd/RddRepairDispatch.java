@@ -44,6 +44,17 @@ final class RddRepairDispatch {
 
     /** F6：当前支线对应的死亡批次 seq（结账的身份，不是"最近那条"）。 */
     private static final Map<UUID, Integer> OPEN_DEATH_SEQ = new ConcurrentHashMap<>();
+    /** 纯 JVM 可见的统一 death_recovery 接管标记；不能从这里反向加载 NeoForge SideTaskHost。 */
+    private static final Map<UUID, Integer> DEATH_RECOVERY_HANDOFF = new ConcurrentHashMap<>();
+
+    static void markDeathRecoveryHandoff(UUID companionId, int deathSeq) {
+        if (companionId != null && deathSeq >= 0) DEATH_RECOVERY_HANDOFF.put(companionId, deathSeq);
+    }
+
+    static void clearDeathRecoveryHandoff(UUID companionId, int deathSeq) {
+        if (companionId == null) return;
+        DEATH_RECOVERY_HANDOFF.remove(companionId, deathSeq);
+    }
 
     /**
      * 重算幂等键：{@code companion|deathSeq|phase}。
@@ -609,13 +620,16 @@ final class RddRepairDispatch {
      */
     static boolean tickTimeout(UUID companionId) {
         if (companionId == null) return false;
+        // 统一 death_recovery 已接管驾驶与 deathSeq；旧兼容窗口不得清掉它的批次身份。
+        if (DEATH_RECOVERY_HANDOFF.containsKey(companionId)) return false;
         LocalRepairTask.Task task = LAST_REPAIR.get(companionId);
         if (task == null) return false;
         Long created = REPAIR_CREATED_TICK.get(companionId);
         if (created == null) return false;
         long now = RddInstrumentation.currentGameTimeTicks();
         if (now - created < task.timeoutTicks()) return false;
-        // 到点：结账 + 清支线（与 onRepairSuccess 的清理路径保持一致）
+        // 兼容旧 repair 的保护线到点只清掉旧内存工单；不能据此结算物理损失。
+        // 真正的死亡恢复现在由 death_recovery SideTask 驱动，掉落状态由世界事实决定。
         LAST_REPAIR.remove(companionId);
         REPAIR_CREATED_TICK.remove(companionId);
         LocalRepairTask.Guard.Tracker tr = TRACKERS.get(companionId);
@@ -623,17 +637,14 @@ final class RddRepairDispatch {
         int seq = OPEN_DEATH_SEQ.getOrDefault(companionId, -1);
         if (seq >= 0) {
             OPEN_DEATH_SEQ.remove(companionId);
-            com.dwinovo.numen.rdd.core.RddDeathLedger.confirmLost(companionId, seq,
-                    "repair branch timed out after " + (task.timeoutTicks() / 20) + "s; "
-                            + "drops may still exist on the ground — this closes the branch, not the world");
         }
-        RddMonitor.publish("repair_task_timed_out", Map.of(
+        RddMonitor.publish("repair_task_window_ended", Map.of(
                 "companionId", companionId.toString(),
                 "repairId", task.id(),
                 "deathSeq", seq,
                 "timeoutTicks", task.timeoutTicks(),
-                "note", "branch abandoned; ledger set CONFIRMED_LOST (tracking-level, not physical evidence)"));
-        return true;
+                "note", "legacy repair window ended; ledger remains UNKNOWN until world evidence settles it"));
+        return false;
     }
 
     static void remove(UUID companionId) {
@@ -641,6 +652,7 @@ final class RddRepairDispatch {
         REPAIR_CREATED_TICK.remove(companionId);   // D20-C1
         TRACKERS.remove(companionId);
         OPEN_DEATH_SEQ.remove(companionId);
+        DEATH_RECOVERY_HANDOFF.remove(companionId);
         RECOMPUTED.removeIf(k -> companionId != null && k.startsWith(companionId.toString()));
     }
 }

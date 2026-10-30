@@ -1344,6 +1344,12 @@ Map<String, Object> deathData = new LinkedHashMap<>();
                 // currentSeq 必须传进去排除本次死亡自己（否则刚记的那条与自己距离 0 = 自我匹配）。
                 boolean repeat = publishRepeatDeathHint(body, companionId, death == null ? -1 : death.seq());
                 RddRepairDispatch.onDeath(companionId, goalId, deathAt, dropTimeline, repeat, death);
+                // 真正的内部恢复任务：旧 repair 事件保留作兼容观测，驾驶权交给统一 SideTask。
+                if (death != null) {
+                    RddRepairDispatch.markDeathRecoveryHandoff(companionId, death.seq());
+                    SideTaskHost.expectDeathRecovery(companionId, death.seq(),
+                            body.level().dimension().location().toString(), deathAt, death.lostItems());
+                }
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 支线任务生成失败 {}: {}", companionId, ex.toString());
             }

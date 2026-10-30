@@ -94,22 +94,24 @@ public final class SideTaskEngine {
                     break;
                 }
             }
-            // 只针对**世界能力变了**这一种（换到没有昼夜循环的维度：下界/末地）。
-            // 注意不能因为"时间走出窗口"就取消 —— 那是 deadline 的职责（要 SKIP 而不是 CANCELLED），
-            // 我第一版写宽了，直接把 deadlineSkipsInsteadOfFailing 这条测试打红。
-            if (!world.hasDayNightCycle()) {
+            // 只有依赖昼夜能力的周期支线才在固定时间维度取消。
+            // 死亡恢复必须能在下界/末地运行；它的时钟是掉落/业务事实，不是昼夜时钟。
+            if (!world.hasDayNightCycle() && (source == null || !source.allowedWhileDeathOccupying())) {
                 cancel(companionId, "world has no day-night cycle (" + world.worldId() + "); side task can never finish");
                 return;
             }
             advance(active.get(), world);
             return;
         }
-        if (!world.hasDayNightCycle() || deathSideTaskOccupying) {
+        if (!world.hasDayNightCycle() && !deathSideTaskOccupying) {
             return;
         }
         long now = world.gameTime();
         long day = world.gameDay();
         for (SideTaskTrigger trigger : triggers) {
+            if (deathSideTaskOccupying && !trigger.allowedWhileDeathOccupying()) {
+                continue;
+            }
             String key = handledKey(companionId, world.worldId(), trigger.typeId());
             Long handled = handledGameDay.get(key);
             if (handled != null && handled == day) {
@@ -194,9 +196,9 @@ public final class SideTaskEngine {
                     events.publish("side_task_progress", data);
                 }
             }
-            case COMPLETE -> finish(task, SideTaskState.COMPLETED, verdict.evidence());
-            case SKIP -> finish(task, SideTaskState.SKIPPED_TIMEOUT, verdict.evidence());
-            case CANCEL -> finish(task, SideTaskState.CANCELLED, verdict.evidence());
+            case COMPLETE -> finish(task.withData(verdict.data()), SideTaskState.COMPLETED, verdict.evidence());
+            case SKIP -> finish(task.withData(verdict.data()), SideTaskState.SKIPPED_TIMEOUT, verdict.evidence());
+            case CANCEL -> finish(task.withData(verdict.data()), SideTaskState.CANCELLED, verdict.evidence());
         }
     }
 
@@ -291,6 +293,10 @@ public final class SideTaskEngine {
         data.put("gameDay", task.scheduledGameDay());
         data.put("state", task.state().name());
         data.put("phase", task.phase());
+        if (task.data().containsKey("death_seq")) {
+            data.put("deathSeq", task.data().get("death_seq"));
+            data.put("deathRecoveryTerminalReason", task.data().getOrDefault("terminal_reason", ""));
+        }
         if (task.mainlineToken() != null) {
             data.put("mainlineGoalId", task.mainlineToken().goalId());
             data.put("mainlinePrimaryId", task.mainlineToken().primaryId());

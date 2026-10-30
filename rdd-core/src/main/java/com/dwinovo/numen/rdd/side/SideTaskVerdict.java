@@ -27,11 +27,19 @@ public record SideTaskVerdict(Kind kind, String evidence, String nextPhase, Map<
     }
 
     public static SideTaskVerdict complete(String evidence) {
-        return new SideTaskVerdict(Kind.COMPLETE, evidence, "", Map.of());
+        return complete(evidence, Map.of());
+    }
+
+    public static SideTaskVerdict complete(String evidence, Map<String, String> data) {
+        return new SideTaskVerdict(Kind.COMPLETE, evidence, "", data);
     }
 
     public static SideTaskVerdict skip(String reason) {
-        return new SideTaskVerdict(Kind.SKIP, reason, "", Map.of());
+        return skip(reason, Map.of());
+    }
+
+    public static SideTaskVerdict skip(String reason, Map<String, String> data) {
+        return new SideTaskVerdict(Kind.SKIP, reason, "", data);
     }
 
     public static SideTaskVerdict cancel(String reason) {

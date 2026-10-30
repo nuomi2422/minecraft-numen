@@ -75,4 +75,36 @@ public interface SideTaskWorldPort {
     default String mainlineObjective(UUID companionId) {
         return null;
     }
+
+    /**
+     * Death recovery facts. UNKNOWN is deliberate: an unloaded chunk or a failed scan is not absence.
+     */
+    enum DeathDropState {
+        UNKNOWN,
+        CHUNK_UNLOADED,
+        DROPS_PRESENT,
+        DROPS_ABSENT,
+        RECOVERED
+    }
+
+    record DeathRecoveryFacts(
+            DeathDropState dropState,
+            boolean dangerous,
+            boolean backupAvailable,
+            boolean inventoryKnown,
+            String note) {
+        public DeathRecoveryFacts {
+            dropState = dropState == null ? DeathDropState.UNKNOWN : dropState;
+            note = note == null ? "" : note;
+        }
+
+        public static DeathRecoveryFacts unknown(String note) {
+            return new DeathRecoveryFacts(DeathDropState.UNKNOWN, false, false, false, note);
+        }
+    }
+
+    /** Host must report loaded/observed facts; the core never turns UNKNOWN into absence. */
+    default DeathRecoveryFacts deathRecoveryFacts(UUID companionId, SideTask task) {
+        return DeathRecoveryFacts.unknown("death-drop facts not observed yet");
+    }
 }

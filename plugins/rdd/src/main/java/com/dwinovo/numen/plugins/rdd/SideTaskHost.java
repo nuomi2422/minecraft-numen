@@ -11,6 +11,14 @@ import com.dwinovo.numen.rdd.side.SideTaskType;
 import com.dwinovo.numen.rdd.side.SideTaskWorldPort;
 import com.dwinovo.numen.rdd.side.sleep.SleepSideTaskTrigger;
 import com.dwinovo.numen.rdd.side.sleep.SleepSideTaskType;
+import com.dwinovo.numen.rdd.side.death.DeathRecoverySideTaskTrigger;
+import com.dwinovo.numen.rdd.side.death.DeathRecoverySideTaskType;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.server.MinecraftServer;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
@@ -39,6 +47,7 @@ final class SideTaskHost {
 
     private static final Logger LOG = LoggerFactory.getLogger(SideTaskHost.class);
     private static final SleepSideTaskType SLEEP_TYPE = new SleepSideTaskType();
+    private static final DeathRecoverySideTaskType DEATH_RECOVERY_TYPE = new DeathRecoverySideTaskType();
     private static final SideTaskEngine ENGINE =
             new SideTaskEngine(SideTaskHost::publish, SideTaskHost::validateMainline);
     /** 支线上下文缓存：主线程 tick 写入，上下文构建只读（可能在非主线程被调）。 */
@@ -54,6 +63,8 @@ final class SideTaskHost {
         // 2026-10-23：恢复支线（主人在意的"丢了东西就插支线，不重写主线"）。
         ENGINE.registerType(new com.dwinovo.numen.rdd.side.recovery.RecoverySideTaskType());
         ENGINE.registerTrigger(new com.dwinovo.numen.rdd.side.recovery.RecoverySideTaskTrigger());
+        ENGINE.registerType(DEATH_RECOVERY_TYPE);
+        ENGINE.registerTrigger(new DeathRecoverySideTaskTrigger());
         SleepWakeWatcher.install();
         NeoForge.EVENT_BUS.addListener((ServerStoppedEvent event) -> onServerStopped());
     }
@@ -97,6 +108,17 @@ final class SideTaskHost {
 
     static boolean isActive(UUID companionId) {
         return companionId != null && ENGINE.isActive(companionId);
+    }
+
+    static boolean isDeathRecoveryActive(UUID companionId) {
+        return companionId != null
+                && DeathRecoverySideTaskTrigger.TYPE_ID.equals(currentTypeId(companionId));
+    }
+
+    /** Point a death ledger batch at the protected internal recovery task. */
+    static void expectDeathRecovery(UUID companionId, int deathSeq, String dimension,
+                                    String deathAt, Map<String, Integer> lostItems) {
+        DeathRecoverySideTaskTrigger.expect(companionId, deathSeq, dimension, deathAt, lostItems);
     }
 
     /** 执行 AI 上下文：支线 active 时返回完整 {@code <rdd>…</rdd>}，否则 null。只读缓存。 */
@@ -178,12 +200,11 @@ final class SideTaskHost {
         if (wasActive && last != null && now - last < NUDGE_REPEAT_TICKS) {
             return;
         }
-        RddPlugin.nudge(companionId, "[睡觉支线·建议] 天黑了，去睡觉——这趟值得去，但你可以判断："
-                + "如果床边有怪、附近根本没床、或身上没武器一去就送命，用 rdd_decline_side 写清理由拒绝（主线立刻恢复，今天不再问你）。"
-                + "要去就：scan_blocks 找床（tag #minecraft:beds）→ goto 走到床边 → 对床右键/调用 sleep。"
-                // 2026-10-30（主人裁定）：判据从"睡满一夜"改成"绑出生点"。
-                + "★ 把出生点绑上就算完成（不用睡满一夜），主线马上恢复；2 分钟内没绑上系统会自己撤回主线。"
-                + "白天被原版拒绝不是工具坏了。");
+        String type = currentTypeId(companionId);
+        RddPlugin.nudge(companionId, "[支线·" + (type == null ? "unknown" : type) + "·建议] "
+                + "当前支线仍在执行，主线暂时冻结。请按 <side_task> 中的事实和有限决策处理；"
+                + "若现场判断不值得或无法完成，用 rdd_decline_side 写明观察到的原因，"
+                + "不要把未知事实当成已完成或永久丢失。");
         LAST_NUDGE_GAME_TIME.put(companionId, now);
     }
 
@@ -249,6 +270,62 @@ final class SideTaskHost {
             return com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companionId) != null;
         }
         @Override public String mainlineObjective(UUID companionId) { return mainlineObjectiveText(companionId); }
+
+        @Override public DeathRecoveryFacts deathRecoveryFacts(UUID companionId, SideTask task) {
+            try {
+                int seq = Integer.parseInt(task.data().getOrDefault("death_seq", "-1"));
+                var death = com.dwinovo.numen.rdd.core.RddDeathLedger.openDeath(companionId, seq);
+                if (death == null) {
+                    return new DeathRecoveryFacts(DeathDropState.UNKNOWN, false, false, true,
+                            "death batch is already closed or unavailable");
+                }
+                Map<String, Integer> inventory = RddDetector.countInventory(ap);
+                if (com.dwinovo.numen.rdd.core.RddDeathLedger.checkBatchRecovery(companionId, seq, inventory).satisfied()) {
+                    return new DeathRecoveryFacts(DeathDropState.RECOVERED, false,
+                            !RddRepairDispatch.backupFromBase(companionId).isEmpty(), true,
+                            "all tracked items are back in the current inventory");
+                }
+                BlockPos deathPos = parseDeathAt(task.data().get("death_at"));
+                if (deathPos == null || !worldId().equals(task.data().get("dimension"))) {
+                    return new DeathRecoveryFacts(DeathDropState.UNKNOWN, false,
+                            !RddRepairDispatch.backupFromBase(companionId).isEmpty(), true,
+                            "death position or dimension is unknown");
+                }
+                if (!ap.serverLevel().hasChunkAt(deathPos)) {
+                    return new DeathRecoveryFacts(DeathDropState.CHUNK_UNLOADED, false,
+                            !RddRepairDispatch.backupFromBase(companionId).isEmpty(), true,
+                            "death-drop chunk is not loaded; no despawn conclusion");
+                }
+                AABB area = new AABB(deathPos).inflate(12.0D);
+                boolean trackedDrop = false;
+                for (ItemEntity entity : ap.serverLevel().getEntitiesOfClass(ItemEntity.class, area)) {
+                    ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(entity.getItem().getItem());
+                    if (id != null && death.lostItems().containsKey(id.toString())) {
+                        trackedDrop = true;
+                        break;
+                    }
+                }
+                boolean danger = !ap.serverLevel().getEntitiesOfClass(
+                        Monster.class, area.inflate(4.0D), Mob::isAlive).isEmpty();
+                return new DeathRecoveryFacts(trackedDrop ? DeathDropState.DROPS_PRESENT : DeathDropState.DROPS_ABSENT,
+                        danger, !RddRepairDispatch.backupFromBase(companionId).isEmpty(), true,
+                        trackedDrop ? "tracked drop entities are present in the loaded death area"
+                                : "loaded death area contains no tracked drop entity");
+            } catch (RuntimeException ex) {
+                return DeathRecoveryFacts.unknown("death recovery observation failed: " + ex.getClass().getSimpleName());
+            }
+        }
+
+        private static BlockPos parseDeathAt(String raw) {
+            if (raw == null || raw.isBlank()) return null;
+            String[] parts = raw.replace(" ", "").split(",");
+            if (parts.length != 3) return null;
+            try {
+                return new BlockPos(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2]));
+            } catch (NumberFormatException ex) {
+                return null;
+            }
+        }
     }
 
     /** 主线目标文本（目标 + 当前一级 + 当前二级描述拼接）：仅用于"主线是否明确要求夜间活动"。 */
@@ -350,6 +427,13 @@ final class SideTaskHost {
 
     private static void publish(String event, Map<String, Object> data) {
         try {
+            if (("side_task_completed".equals(event) || "side_task_skipped".equals(event)
+                    || "side_task_cancelled".equals(event) || "side_task_declined".equals(event))
+                    && DeathRecoverySideTaskTrigger.TYPE_ID.equals(String.valueOf(data.get("typeId")))) {
+                UUID companionId = UUID.fromString(String.valueOf(data.get("companionId")));
+                int seq = Integer.parseInt(String.valueOf(data.getOrDefault("deathSeq", "-1")));
+                RddRepairDispatch.clearDeathRecoveryHandoff(companionId, seq);
+            }
             RddMonitor.publish(event, data);
         } catch (Throwable ignored) {
             // 观测失败不影响支线主流程

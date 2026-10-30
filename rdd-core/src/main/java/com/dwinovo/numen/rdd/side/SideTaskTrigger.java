@@ -14,6 +14,14 @@ public interface SideTaskTrigger {
 
     boolean fires(Context ctx);
 
+    /**
+     * 是否允许在旧死亡占用标志存在时启动。
+     * 普通支线默认不抢；死亡恢复支线自身必须能在这个窗口里成为真正的驾驶任务。
+     */
+    default boolean allowedWhileDeathOccupying() {
+        return false;
+    }
+
     record Context(UUID companionId, String worldId, long gameDay, long dayTime, boolean hasDayNightCycle) {
     }
 }

@@ -64,18 +64,18 @@ class RddRepairDispatchTimeoutTest {
     }
 
     @Test
-    void expiredBranchIsClosedAndLedgerConfirmedLost(@TempDir Path dir) throws Exception {
+    void expiredLegacyWindowClosesWithoutConfirmingPhysicalLoss(@TempDir Path dir) throws Exception {
         // currentGameTimeTicks() 无 MC 环境返回 -1（RddInstrumentation 明确 fallback）。
         // created = Long.MIN_VALUE/2 → now(-1) - created = 巨大正数 → 必然过阈。
+        // 旧 repair 保护线只能清兼容内存工单；真正掉落状态由 death_recovery SideTask 的世界事实结算。
         seed(Long.MIN_VALUE / 2);
         boolean closed = RddRepairDispatch.tickTimeout(COMPANION);
-        assertTrue(closed, "过期支线应被结掉");
+        assertFalse(closed, "兼容窗口结束不应冒充恢复任务已完成");
         assertNull(RddRepairDispatch.lastRepair(COMPANION), "lastRepair 应被清");
         var death = RddDeathLedger.all(COMPANION).stream()
                 .filter(d -> d.seq() == 1).findFirst().orElseThrow();
-        assertEquals(RddDeathLedger.State.CONFIRMED_LOST, death.state(),
-                "台账应结成 CONFIRMED_LOST（追踪级，非物理证据）");
-        assertTrue(death.evidence().contains("timed out"), "evidence 说明是超时放弃，不是物理销毁");
+        assertEquals(RddDeathLedger.State.UNVERIFIED, death.state(),
+                "仅经过业务保护线不能确认物理掉落丢失");
     }
 
     @Test
