@@ -580,6 +580,16 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
     /** 这一刻走的是弓那一套吗。环的内外沿、以及攻击层用什么,都看它。 */
     private boolean bowFighting;
 
+    // H21-147 (2026-10-30): how long we have been unable to compute an arrow shot at a
+    // target that is NOT moving. shootAt() used to return RUNNING forever on aim==null,
+    // which is right for a ground mob (it will step into a window) but for an airborne,
+    // geometrically-stuck target it means "draw the bow for the whole budget, never fire".
+    // Measured r34: "attack timed out after defeating 0/1" with zero arrows released.
+    private static final int NO_SHOT_TICKS = 40;
+    private static final double NO_SHOT_MOVE_SQR = 1.0;
+    private int noShotTicks;
+    private net.minecraft.world.phys.Vec3 noShotLastPos;
+
     /** 走位环的外沿:剑是够到距离,弓是 {@link #BOW_MAX_DISTANCE}。 */
     private double skirmishOuter() {
         return bowFighting ? BOW_MAX_DISTANCE : reachToTarget();
@@ -696,8 +706,27 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
         if (aim == null) {
             // 这一刻算不出弹道。<b>弓接着拉</b> —— 脚一直在走位,下一刻位置变了自会有窗口,
             // 取消了就白等一次拉满的时间。
+            //
+            // H21-147：但目标**自己不动**时,"下一刻"和"这一刻"是同一个几何,永远算不出来。
+            // 那时候继续拉弓只会把失败拖成静默超时(r34 实测:跑满预算,0 击杀,一箭未放)。
+            // 所以这里给它一个有理由的放弃,并把原因说清楚。
+            net.minecraft.world.phys.Vec3 now = target.position();
+            boolean moved = noShotLastPos == null || noShotLastPos.distanceToSqr(now) > NO_SHOT_MOVE_SQR;
+            if (moved) {
+                noShotTicks = 0;
+                noShotLastPos = now;
+            } else if (++noShotTicks >= NO_SHOT_TICKS) {
+                r.unreachable(target.getId());
+                fail("no feasible arrow shot at distance "
+                        + String.format("%.1f", player.distanceTo(target))
+                        + " after " + noShotTicks + " ticks with the target standing still",
+                        FailureType.UNKNOWN);
+                return TaskState.FAILED;
+            }
             return TaskState.RUNNING;
         }
+        noShotTicks = 0;
+        noShotLastPos = null;
 
         // <b>不停脚。</b>攻击层与寻路层正交:挥刀不停脚,拉弓也不该停 —— 原版拉弓时本来
         // 就能走。这里曾经 stopNav() + halt(),而 bowFight 上一行刚 driveApproach() 建好
