@@ -353,7 +353,7 @@ final class CompanionBrain {
                         default -> "failed";
                     };
                     String extMsg = result == null ? "no result produced" : result.message();
-                    journalTaskOutcome(companion, rec, "external-" + extStatus, extMsg);
+                    journalTaskOutcome(companion, rec, "external-" + extStatus, extMsg, result);
                     continue;
                 }
                 String status = switch (rec.getState()) {
@@ -363,7 +363,7 @@ final class CompanionBrain {
                     default -> "failed";
                 };
                 String msg = result == null ? "no result produced" : result.message();
-                journalTaskOutcome(companion, rec, status, msg);
+                journalTaskOutcome(companion, rec, status, msg, result);
                 com.dwinovo.numen.event.NumenEvents.taskFinished(
                         companion, rec.publicId(), rec.getToolName(), status, msg);
                 continue;
@@ -393,7 +393,7 @@ final class CompanionBrain {
      * <p>H20-147 起：异步任务原本只发 NumenEvent，终态不可见；H20b-152 起抽成方法，
      * 让"内置大脑派"和"外部 MCP 派"两条分支走同一段写入，避免再出现只补一半的情况。
      */
-    private void journalTaskOutcome(NumenPlayer companion, TaskRecord rec, String status, String msg) {
+    private void journalTaskOutcome(NumenPlayer companion, TaskRecord rec, String status, String msg, TaskResult result) {
         try {
             java.util.Map<String, Object> jd = new java.util.LinkedHashMap<>();
             jd.put("companion_id", String.valueOf(companion.getUUID()));
@@ -403,6 +403,15 @@ final class CompanionBrain {
             jd.put("async_status", status);
             jd.put("success", "done".equals(status));
             jd.put("result", msg == null ? "" : (msg.length() <= 2000 ? msg : msg.substring(0, 2000) + "..."));
+            // H21-obs（150 号 §6）：把任务自己带出来的只读观测摘要原样落账，
+            // 让 tools.jsonl 也能回答「进没进过分支」——不必去翻 GBK 的 latest.log。
+            // 只透传 noshot 这一个键：不做通用的 result_data 透传，避免日志膨胀。
+            if (result != null && result.data() != null) {
+                Object noshot = result.data().get("noshot");
+                if (noshot != null) {
+                    jd.put("noshot", noshot);
+                }
+            }
             com.dwinovo.numen.monitor.MonitoringJournal.get().publish("tools", "tool_result", jd);
         } catch (RuntimeException ignored) { /* journaling must never break the task path */ }
     }

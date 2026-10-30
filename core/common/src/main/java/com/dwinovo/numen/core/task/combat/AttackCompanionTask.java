@@ -595,6 +595,21 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
     //   所以射手位移也必须重置计数。
     private net.minecraft.world.phys.Vec3 noShotLastShooterPos;
 
+    // ==================== H21 判别性观测（150 号 §6）====================
+    // 纯计数：只回答「进没进过 aim==null、为什么复位、最长连续多少」，不参与任何判定。
+    // 严格口径（150 §6.4）：只有 observerVersion 匹配且 coverage=FULL 时，entered==0 才支持
+    // 「未进入」；缺摘要 => UNKNOWN，既不当 0，也不当"未进入"。
+    static final String NOSHOT_OBSERVER_VERSION = "h21-obs-2";
+    private int noShotEntered;         // 进入 aim==null 分支的 tick 数
+    private int noShotResetByTarget;   // 因目标位移复位（与下一条可同 tick 同时发生，分别计数）
+    private int noShotResetByShooter;  // 因射手自己走位复位
+    private int noShotResetByInit;     // 首次初始化复位（不是"真的动了"，单独记）
+    private int noShotMaxStreak;       // max(noShotTicks)
+    private int noShotStreakAtExit;    // 离开该分支那一刻的连续数
+    private boolean noShotSummaryEmitted;
+    private String noShotTerminal = "UNKNOWN";
+    private String noShotCoverage = "FULL";   // 本任务实例从拿到身体到收场全程在观测
+
     /** 走位环的外沿:剑是够到距离,弓是 {@link #BOW_MAX_DISTANCE}。 */
     private double skirmishOuter() {
         return bowFighting ? BOW_MAX_DISTANCE : reachToTarget();
@@ -721,7 +736,20 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                     || noShotLastPos.distanceToSqr(now) > NO_SHOT_MOVE_SQR;
             boolean shooterMoved = noShotLastShooterPos == null
                     || noShotLastShooterPos.distanceToSqr(here) > NO_SHOT_MOVE_SQR;
+            // H21 观测：只计数。resetByInit 与"真的动了"分开记，否则首次进出会被算成一次移动。
+            noShotEntered++;
             if (targetMoved || shooterMoved) {
+                if (noShotLastPos == null && noShotLastShooterPos == null) {
+                    noShotResetByInit++;
+                } else {
+                    if (targetMoved) {
+                        noShotResetByTarget++;
+                    }
+                    if (shooterMoved) {
+                        noShotResetByShooter++;
+                    }
+                }
+                noShotStreakAtExit = noShotTicks;
                 noShotTicks = 0;
                 noShotLastPos = now;
                 noShotLastShooterPos = here;
@@ -733,8 +761,10 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                         FailureType.UNKNOWN);
                 return TaskState.FAILED;
             }
+            noShotMaxStreak = Math.max(noShotMaxStreak, noShotTicks);
             return TaskState.RUNNING;
         }
+        noShotStreakAtExit = noShotTicks;
         noShotTicks = 0;
         noShotLastPos = null;
         noShotLastShooterPos = null;
@@ -952,6 +982,13 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
     }
 
     @Override
+    protected void fail(String why, FailureType t) {
+        // 只为观测标注终态类型，不改变失败语义
+        noShotTerminal = "FAILED";
+        super.fail(why, t);
+    }
+
+    @Override
     protected Map<String, Object> resultData() {
         // 逐个报账要覆盖<b>所有经手过的 id</b>,不能只遍历请求清单 —— 无差别模式那份是空的,
         // 照旧遍历会把整场战果吞掉。
@@ -976,6 +1013,27 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
         data.put("combat_by_entity", byEntity);
         data.put("loot_gained", lootGained());
         data.put("unreachable_drop_count", loot.unreachableCount());
+        // H21 观测摘要（150 号 §6.3）：四类终态都经过 result()，所以摘要只在这里出一次；
+        // 每 tick 不写日志（主线程开销），局部计数 + 终态摘要即可。
+        Map<String, Object> noshot = new LinkedHashMap<>();
+        noshot.put("observerVersion", NOSHOT_OBSERVER_VERSION);
+        noshot.put("coverage", noShotCoverage);
+        noshot.put("entered", noShotEntered);
+        noshot.put("resetByTarget", noShotResetByTarget);
+        noshot.put("resetByShooter", noShotResetByShooter);
+        noshot.put("resetByInit", noShotResetByInit);
+        noshot.put("maxStreak", noShotMaxStreak);
+        noshot.put("streakAtExit", noShotStreakAtExit);
+        noshot.put("liveStreak", noShotTicks);
+        noshot.put("giveUpTicks", NO_SHOT_TICKS);
+        noshot.put("terminalReason", noShotTerminal);
+        noshot.put("targetId", target == null ? null : target.getId());
+        noshot.put("scope", r.indiscriminate ? "nearby_hostiles" : "named_ids:" + r.entityIds.size());
+        data.put("noshot", noshot);
+        if (!noShotSummaryEmitted) {
+            noShotSummaryEmitted = true;
+            Constants.LOG.info("[numen-attack] noshot {}", noshot);
+        }
         return data;
     }
 
@@ -988,6 +1046,7 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
 
     @Override
     protected String successMessage() {
+        noShotTerminal = "SUCCESS";
         if (r.indiscriminate) {
             return "fought off " + tally() + "; nothing is coming after you any more";
         }
@@ -998,11 +1057,13 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
 
     @Override
     protected String timeoutMessage() {
+        noShotTerminal = "TIMEOUT";
         return "attack timed out after defeating " + tally();
     }
 
     @Override
     protected String cancelledMessage() {
+        noShotTerminal = "CANCELLED";
         return "attack interrupted after defeating " + tally();
     }
 }
