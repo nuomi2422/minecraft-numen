@@ -451,6 +451,7 @@ final class SideTaskHost {
                 UUID companionId = UUID.fromString(String.valueOf(data.get("companionId")));
                 int seq = Integer.parseInt(String.valueOf(data.getOrDefault("deathSeq", "-1")));
                 RddRepairDispatch.clearDeathRecoveryHandoff(companionId, seq);
+                RddPlugin.onDeathRecoverySettled(companionId, data);
             }
             RddMonitor.publish(event, data);
         } catch (Throwable ignored) {

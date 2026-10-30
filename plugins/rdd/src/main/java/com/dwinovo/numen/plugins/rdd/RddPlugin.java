@@ -116,6 +116,8 @@ public final class RddPlugin implements NumenPlugin {
     /** 协商驱动改单的独立预算（与失败驱动分开；士兵的反馈不该被 REPLAN 预算回绝）。 */
     private static final int MAX_NEGOTIATION_REPLANS_PER_PRIMARY = 3;
     private static final Map<String, Integer> REPLAN_COUNTS = new ConcurrentHashMap<>();
+    /** deathSeq settlement idempotency: one death episode may produce at most one planner handoff. */
+    private static final Set<String> DEATH_SETTLEMENTS = ConcurrentHashMap.newKeySet();
     /** 同伴自绑床位复活锚点：companionId → 同伴自己的 respawn 床位（成功 sleep 时由原版写入）。复活(SPAWN)时 TP 到床旁。 */
     private static final Map<UUID, BedAnchor> BED_RESPAWN_PREFERENCE = new ConcurrentHashMap<>();
     /**
@@ -984,7 +986,12 @@ private static String withAssets(UUID companionId, String rddContext) {
      * 其余节点原样保留；取回后再回到主线。只有插入失败才回落到原来的整段重写。
      */
     static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation, String soldierHint) {
-        if (!fromNegotiation && isMissingAssetCause(companionId, reason)) {
+        return requestReplan(companionId, reason, fromNegotiation, soldierHint, false);
+    }
+
+    private static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation,
+                                         String soldierHint, boolean skipRecoverySideTask) {
+        if (!skipRecoverySideTask && !fromNegotiation && isMissingAssetCause(companionId, reason)) {
             // 2026-10-23（主人要求）：首选**派恢复支线**——主线由 SideTaskHost 冻结，支线跑完自动恢复，
             // 完全不改编主线计划。只有支线通道不可用（例如没有活跃身体）才退回"插节点"。
             String what = describeMissing(companionId);
@@ -1148,6 +1155,29 @@ private static String withAssets(UUID companionId, String rddContext) {
                     }
                 }));
         return true;
+    }
+
+    static void onDeathRecoverySettled(UUID companionId, Map<String, Object> data) {
+        if (companionId == null || data == null) return;
+        try {
+            int seq = Integer.parseInt(String.valueOf(data.getOrDefault("deathSeq", "-1")));
+            if (seq < 0) return;
+            String key = companionId + "|" + seq;
+            if (!DEATH_SETTLEMENTS.add(key)) return;
+            String terminal = String.valueOf(data.getOrDefault("deathRecoveryTerminalReason", ""));
+            boolean shouldReplan = "drops_absent_with_world_evidence".equals(terminal)
+                    || "executor_declined_recovery".equals(terminal)
+                    || "recovery_decision_window_ended".equals(terminal);
+            RddMonitor.publish("death_recovery_settled", Map.of(
+                    "companionId", companionId.toString(), "deathSeq", seq,
+                    "terminalReason", terminal, "replanRequested", shouldReplan));
+            if (shouldReplan) {
+                requestReplan(companionId,
+                        "death recovery settled seq=" + seq + " terminal=" + terminal, false, null, true);
+            }
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] death recovery settlement failed {}: {}", companionId, ex.toString());
+        }
     }
 
     public static RddRuntime runtime(UUID companionId) {
