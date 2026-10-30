@@ -142,15 +142,37 @@ final class RddEnvBlock {
                   .append(lit.isEmpty() ? "" : (" · " + lit)).append('\n');
             }
             sb.append("</env>");
-            String out = sb.toString();
-            // 硬上限：超了就把中间几行截掉（保头保尾，宁可少也不刷屏）
-            if (out.length() > 400) {
-                out = out.substring(0, 200) + "…(略)…\n</env>";
-            }
-            return out;
+            return compact(sb.toString());
         } catch (RuntimeException ignored) {
             return "";   // 环境块不许拖垮上下文组装
         }
+    }
+
+    /**
+     * Keep the environment block well-formed while preserving safety facts.
+     * The old substring(0, 200) could cut inside a line/tag and discard the
+     * danger and home lines, exactly the facts that justify conservative action.
+     */
+    private static String compact(String raw) {
+        if (raw.length() <= 400) return raw;
+        String[] lines = raw.split("\\n");
+        StringBuilder out = new StringBuilder(400);
+        out.append(lines[0]).append('\n');
+        for (int i = 1; i < lines.length - 1; i++) {
+            String line = lines[i];
+            // Never silently drop these semantic lines; trim only at a line boundary.
+            boolean critical = line.startsWith("位置 ") || line.startsWith("身边 ")
+                    || line.startsWith("手上 ") || line.startsWith("背包 ")
+                    || line.startsWith("危险 ") || line.startsWith("末地 ")
+                    || line.startsWith("回家 ");
+            if (!critical) continue;
+            int room = 400 - out.length() - 16; // marker + closing tag
+            if (room <= 4) break;
+            String safe = line.length() <= room ? line : line.substring(0, Math.max(1, room - 1)) + "…";
+            out.append(safe).append('\n');
+        }
+        out.append("…(略)…\n</env>");
+        return out.length() <= 400 ? out.toString() : out.substring(0, 400 - "</env>".length()) + "</env>";
     }
 
     private static String shortDim(String id) {

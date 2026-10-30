@@ -308,6 +308,9 @@ final class RddDetector {
             PrimaryGoalStatus ps = chain.primaryStatus();
             // 真实背包先扫+缓存（规划注入数据源）；缓存是女仆属性，收尾/监督态也照常更新。
             Map<String, Integer> counts = countInventory(ap);
+            // 环境块的“最近受伤”事实必须在每拍先观察；只定义 observeHealth 而不调用
+            // 会让它永久显示“无记录”，从而把生存提示变成静态假象。
+            RddEnvBlock.observeHealth(ap);
             // ★ 2026-10-28（#238）兜底必须放在**所有早退之前**：stallWatcher 命中会 return，
             //   而"卡住"恰恰是死亡后最可能的状态 —— 放后面等于永不执行（第一版就犯了这个错）。
             RddRepairDispatch.recomputeLatestFromLedger(ap.getUUID(), counts);
