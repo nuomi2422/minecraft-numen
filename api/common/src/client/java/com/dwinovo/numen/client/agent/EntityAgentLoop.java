@@ -439,6 +439,31 @@ public final class EntityAgentLoop {
                 org.slf4j.LoggerFactory.getLogger(EntityAgentLoop.class).info(
                         "[numen-tool] result client-side tool={} callId={} chars={}",
                         inv.name(), inv.id(), resultJson == null ? 0 : resultJson.length());
+                // H18-143 (2026-10-30): also journal it into tools.jsonl. Sync tools (runSync)
+                // deliver their result through this Sink and never pass ExecuteToolPayload.reply,
+                // so before this line they had NO tool_result row at all -- which read as
+                // "the tool never answers". Same category/type as the existing writer.
+                try {
+                    java.util.Map<String, Object> jd = new java.util.LinkedHashMap<>();
+                    jd.put("companion_id", String.valueOf(entityUuid));
+                    jd.put("tool_call_id", inv.id() == null ? "" : inv.id());
+                    jd.put("tool", inv.name() == null ? "" : inv.name());
+                    jd.put("journaled_by", "client");
+                    boolean ok = false;
+                    try {
+                        com.google.gson.JsonObject root =
+                                com.google.gson.JsonParser.parseString(resultJson).getAsJsonObject();
+                        if (root.has("success") && root.get("success").isJsonPrimitive()) {
+                            ok = root.get("success").getAsBoolean();
+                        }
+                    } catch (RuntimeException ignored) { /* 非 JSON 就记 false 以外的不猜：留 UNKNOWN 语义 */ }
+                    jd.put("success", ok);
+                    com.dwinovo.numen.monitor.MonitoringJournal.get()
+                            .publish("tools", "tool_result", jd);
+                } catch (RuntimeException ex) {
+                    org.slf4j.LoggerFactory.getLogger(EntityAgentLoop.class)
+                            .warn("[numen-tool] journal failed tool={}: {}", inv.name(), ex.toString());
+                }
                 harvestWorkBlocks(inv.name(), resultJson);
                 convo.addToolResult(inv.id(), resultJson);
             }
