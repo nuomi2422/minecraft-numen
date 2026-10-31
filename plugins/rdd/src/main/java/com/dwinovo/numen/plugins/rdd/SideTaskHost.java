@@ -451,7 +451,18 @@ final class SideTaskHost {
                 UUID companionId = UUID.fromString(String.valueOf(data.get("companionId")));
                 int seq = Integer.parseInt(String.valueOf(data.getOrDefault("deathSeq", "-1")));
                 RddRepairDispatch.clearDeathRecoveryHandoff(companionId, seq);
-                RddPlugin.onDeathRecoverySettled(companionId, data);
+                // 2026-10-31 实机（166 §55）：rdd_decline_side 关闭死亡恢复支线时，
+                // data 里没有 terminal_reason（四个 evaluate 分支都会写，但拒绝这条路绕过了 evaluate）。
+                // 于是结算带空串落地 → 台账停在 UNVERIFIED，且事后无法区分『放弃回收』与『没说原因』。
+                // 这里补上语义等同的既有值，不改任何判定。
+                if ("side_task_declined".equals(event)
+                        && String.valueOf(data.getOrDefault("terminal_reason", "")).isBlank()) {
+                    Map<String, Object> patched = new java.util.LinkedHashMap<>(data);
+                    patched.put("terminal_reason", "executor_declined_recovery");
+                    RddPlugin.onDeathRecoverySettled(companionId, patched);
+                } else {
+                    RddPlugin.onDeathRecoverySettled(companionId, data);
+                }
             }
             RddMonitor.publish(event, data);
         } catch (Throwable ignored) {
