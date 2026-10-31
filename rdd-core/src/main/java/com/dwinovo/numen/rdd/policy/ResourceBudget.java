@@ -21,11 +21,17 @@ public final class ResourceBudget {
             RiskLevel.MINING, Map.of(
                     "minecraft:torch", 16,
                     "minecraft:bread", 4),
+            // 2026-10-31（166 §72）：护甲 2 → 1。
+            // 原值来自 523ba5796（2026-09-25）就写的 2，四件各 2 = 两整套 = **48 颗钻石**。
+            // 今天两次门放行（19:36、20:22）账面确实是 2/2/2/2 —— 但那批甲是主人 admin give 的
+            // （B3 已标注 cheated=true），不是自然产出。自然路线要凑 48 钻等于把终局装备当前置。
+            // 降到 1 套（24 钻）后：护甲仍在要求里、仍在被检查，只是不再要求两套；
+            // 「丢一套还能再开」的备用诉求交给 BACKUP + B6 的保护级别去表达，不再压在第一套门槛上。
             RiskLevel.NETHER, Map.of(
-                    "minecraft:diamond_helmet", 2,
-                    "minecraft:diamond_chestplate", 2,
-                    "minecraft:diamond_leggings", 2,
-                    "minecraft:diamond_boots", 2,
+                    "minecraft:diamond_helmet", 1,
+                    "minecraft:diamond_chestplate", 1,
+                    "minecraft:diamond_leggings", 1,
+                    "minecraft:diamond_boots", 1,
                     "minecraft:fire_resistance_potion", 3,
                     "minecraft:torch", 16,
                     "minecraft:cooked_beef", 16),
