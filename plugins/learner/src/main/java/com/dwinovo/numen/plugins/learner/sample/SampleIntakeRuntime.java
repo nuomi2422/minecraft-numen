@@ -169,17 +169,22 @@ public final class SampleIntakeRuntime {
     /**
      * TTL 归档扫描（158 §8：只归档不删证据）。
      *
-     * <p>只在<b>启用</b>且主实例已就绪时执行 —— 否则会新建第二个 `SampleStore` 去改文件，
-     * 而主实例内存里还是旧样子，下一次写入就会把归档结果覆盖掉（双实例互相踩）。
+     * <p>只在<b>启用</b>时执行。这里<b>会惰性建主实例</b>（`service()`）——
+     * 2026-10-31 实机发现的问题：旧写法要求 `service != null`，而 `service` 只在"入过一条样本"后才建，
+     * 于是<b>重启后已有样本永远等不到归档</b>，TTL 形同虚设。
+     *
+     * <p>惰性建在这里是安全的：同一进程里同一个 configDir 只有这一个 runtime 实例，
+     * `service()` 也是它自己缓存的那份 store —— 不存在"第二个写者覆盖第一个"。
+     * （`storeReadOnly()` 才是可能重复开文件的那个，见其注释。）
      *
      * @return 归档条数；未启用或失败时为 0（失败计数进 {@link #errors()}）
      */
     public synchronized int sweepExpired(long nowMillis, long ttlMillis) {
-        if (!enabled() || service == null) {
+        if (!enabled()) {
             return 0;
         }
         try {
-            return service.store().archiveExpired(nowMillis, ttlMillis);
+            return service().store().archiveExpired(nowMillis, ttlMillis);
         } catch (RuntimeException | java.io.IOException e) {
             noteError(e);
             return 0;

@@ -360,11 +360,17 @@ final class LearnerAutoIntake {
         int deferredAdmitted = admitDeferred(enqueuedBy);
 
         // TTL 归档（低频旁路，158 §8）：只归档不删证据；样本层没启用时是 no-op。
-        // ⚠ 7 天是**未校准**的初值（与 StormGuard.COOLDOWN 同款说明）：先跑出真实分布再调。
+        // 时长可配（learner-sample-ttl.json）；7 天是**未校准**初值，写死等于在队列长期满的情况下永不归档。
         try {
-            com.dwinovo.numen.plugins.learner.sample.SampleIntakeRuntime
+            long ttl = com.dwinovo.numen.plugins.learner.sample.SampleTtlConfig.ttlMillis(configDirCache);
+            int archived = com.dwinovo.numen.plugins.learner.sample.SampleIntakeRuntime
                     .shared(configDirCache)
-                    .sweepExpired(System.currentTimeMillis(), 7L * 24 * 60 * 60 * 1000);
+                    .sweepExpired(System.currentTimeMillis(), ttl);
+            if (archived > 0) {
+                // 归档必须留痕：否则"样本怎么不见了"会变成一次考古。
+                LearnerMonitor.publish("sample_ttl_archived", Map.of(
+                        "archived", archived, "ttl_millis", ttl));
+            }
         } catch (RuntimeException ignore) {
             // 归档失败不改扫描结果：它只是旁路。
         }

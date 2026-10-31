@@ -69,6 +69,20 @@ public final class SampleBlockAssembler {
         String note = "window=" + from + ".." + to
                 + " companion=" + (sample.companionId().isBlank() ? "UNKNOWN" : sample.companionId())
                 + " context_blocks=" + ctx.blocks().size();
+        if (ctx.blocks().isEmpty()) {
+            // ★ 2026-10-31 实机：重启后再读老样本，context_blocks 从 2 变成 0，
+            //   工具仍然成功 —— 读的人会以为"当时只有 1 个块"。所以必须说清是"没有"还是"读不到"。
+            //   判据：样本窗口是否落在 context.jsonl 尾部覆盖范围之外。
+            long earliestCovered = earliestTimestampOf(lines);
+            if (earliestCovered > 0 && to < earliestCovered) {
+                note += " | context_missing=outside_tail_window（样本时间早于 context.jsonl 尾部覆盖范围，"
+                        + "不是当时没有上下文）";
+            } else if (earliestCovered <= 0) {
+                note += " | context_missing=no_context_log（读不到 context.jsonl 或为空）";
+            } else {
+                note += " | context_missing=not_matched（窗口内有日志但没匹配到该同伴的记录）";
+            }
+        }
         return new Assembled(blocks, ctx.skipped(), ctx.problems(), note);
     }
 
@@ -82,6 +96,33 @@ public final class SampleBlockAssembler {
                                           ReadLedger ledger, long nowMillis) {
         Assembled a = assemble(sample, lines, nowMillis);
         return BlockReader.open(sample.sampleId(), a.blocks(), ledger, nowMillis);
+    }
+
+    /**
+     * 这行日志里最早的时间戳（毫秒）；解析不出来返回 {@code -1}。
+     *
+     * <p>用来回答「窗口外没有块，是因为当时没有，还是因为日志尾部已经翻过去了」。
+     * 只扫到能解析的第一行即可 —— 尾部读本来就是按时间递增写的。
+     */
+    static long earliestTimestampOf(List<String> lines) {
+        if (lines == null) {
+            return -1L;
+        }
+        for (String line : lines) {
+            if (line == null || line.isBlank()) {
+                continue;
+            }
+            try {
+                var o = com.google.gson.JsonParser.parseString(line).getAsJsonObject();
+                var ts = o.get("timestamp");
+                if (ts != null && !ts.isJsonNull()) {
+                    return java.time.Instant.parse(ts.getAsString()).toEpochMilli();
+                }
+            } catch (RuntimeException ignore) {
+                // 坏行/无时间戳：继续找下一行。
+            }
+        }
+        return -1L;
     }
 
     /** 引擎新鲜度阈值（与 {@link ContextBlockSource#DEFAULT_STALE_AFTER_MILLIS} 保持一致）。 */
