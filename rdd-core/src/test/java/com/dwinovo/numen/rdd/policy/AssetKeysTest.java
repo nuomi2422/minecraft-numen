@@ -20,6 +20,14 @@ class AssetKeysTest {
     }
 
     @Test
+    void 普通水药水也能映射_说明映射是通例而非验收特例() {
+        // 166 B3 的对照：如果只有抗火被特判，那这条会失败。
+        // 普通药水（water）能映射，说明映射是通例而不是为验收开的特例。
+        assertEquals("minecraft:water_potion", AssetKeys.potionKey("water"));
+        assertEquals("minecraft:healing_potion", AssetKeys.potionKey("healing"));
+    }
+
+    @Test
     void 空效果不生成假键() {
         assertEquals("", AssetKeys.potionKey(null));
         assertEquals("", AssetKeys.potionKey(""));
