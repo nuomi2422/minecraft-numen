@@ -423,7 +423,12 @@ final class RddDetector {
                     publishWaitingOnce(ap, "riskgate|" + chain.currentPrimary().id(), "primary_waiting", Map.of(
                             "primary", chain.currentPrimary().id(),
                             "reason", "risk gate: high-risk stage not prepared (equipment/potion/recovery point)"));
-                    RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_risk_gated");
+                    // 2026-10-31：这里原先每 tick 都发一次快照（实机 rdd.jsonl 962 行里
+                    // taskchain_snapshot 占 704 行），把真正有用的证据淹掉了。
+                    // 同一 primary 的结果按 10 秒去重；换阶段立刻发一次。
+                    if (shouldPublishGatedSnapshot(ap.getUUID(), chain.currentPrimary().id())) {
+                        RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_risk_gated");
+                    }
                     watchParkedIfStuck(ap, rt, chain); // 监督扩面：缺料/风险门长时间没过也催工
                     return;
                 }
@@ -584,12 +589,18 @@ final class RddDetector {
      * 不达标 → 不激活、不派工（保持 WAITING）。NORMAL/MINING 直接放行。
      */
     /**
-     * 风险门开关（2026-09-28 用户指示：关）。
+     * 风险门开关（B3/166 起默认开）。
      *
-     * <p>默认关＝行为上等同"删掉"，但实现与契约测试仍���树内：{@code -Drdd.riskGate=true}
-     * 或 {@code RddDetector.setRiskGateEnabled(true)} 即可恢复，避免红线能力被顺手删没。
+     * <p>历史：2026-09-28 曾按当时指示默认关闭，理由是 {@code levelForText} 把「也绝不进入下界」
+     * 这类禁止项误判成要去下界，给原地待命阶段挂了下界硬门，任务永远派不下去。
+     * 该误判已在 {@code RiskGate.actionFor} 用否定句守卫修掉（B3），所以门重新默认生效：
+     * 缺恢复点/备用/食物/武器时不再放行高风险阶段。
+     *
+     * <p>仍保留 {@code -Drdd.riskGate=false} 与 {@link #setRiskGateEnabled(boolean)} 作为显式关闭口，
+     * 关闭时必须在 run envelope / taskchain_snapshot 里可见（事件 {@code risk_gate_state}）。
      */
-    private static volatile boolean riskGateEnabled = Boolean.getBoolean("rdd.riskGate");
+    private static volatile boolean riskGateEnabled = !"false".equalsIgnoreCase(
+            System.getProperty("rdd.riskGate", "true"));
 
     /** 运行时开关风险门（默认关）。 */
     public static void setRiskGateEnabled(boolean enabled) {
@@ -601,11 +612,29 @@ final class RddDetector {
         return riskGateEnabled;
     }
 
+    /** 2026-10-31：primary_risk_gated 快照的节流状态（uuid|primaryId → 上次发送毫秒）。 */
+    private static final Map<String, Long> LAST_GATED_SNAPSHOT_AT =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long GATED_SNAPSHOT_MIN_INTERVAL_MS = 10_000L;
+
+    /** 同一 primary 的"被门拦住"快照按 10 秒节流；换阶段立即放行一次。 */
+    static boolean shouldPublishGatedSnapshot(java.util.UUID uuid, String primaryId) {
+        String key = String.valueOf(uuid) + "|" + String.valueOf(primaryId);
+        long now = System.currentTimeMillis();
+        Long last = LAST_GATED_SNAPSHOT_AT.get(key);
+        if (last != null && now - last < GATED_SNAPSHOT_MIN_INTERVAL_MS) {
+            return false;
+        }
+        LAST_GATED_SNAPSHOT_AT.put(key, now);
+        return true;
+    }
+
+    /** B3/166：风险门去重键 → 上次判定（只在状态变化时发事件，避免每秒刷屏）。 */
+    private static final Map<String, String> LAST_RISK_VERDICT = new java.util.concurrent.ConcurrentHashMap<>();
+
     static boolean riskGateAllows(NumenPlayer ap, String primaryDescription) {
-        // 2026-09-28 用户指示：风险门先关掉。它在真实任务里净添乱——把「也绝不进入下界」
-        // 这种**禁止项**当成要去下界，给"原地待命"阶段挂下界准备硬门，任务永远派不下去。
-        // 做法与依赖门一致：**从运行路径关掉，不删能力**（RiskGate 类与其契约测试全部保留，
-        // 打开开关立刻恢复），并保留诊断读数，避免"为什么没拦"变成灵异事件。
+        // B3/166：门默认开。2026-09-28 关它的根因（禁止项被判成行动）已在 RiskGate 用否定句守卫修掉；
+        // 显式关闭仍可用 -Drdd.riskGate=false 或 setRiskGateEnabled(false)，关闭事实会落 risk_gate_state。
         if (!riskGateEnabled) {
             return true;
         }
@@ -619,10 +648,48 @@ final class RddDetector {
             Map<String, Integer> inv = countInventory(ap);
             boolean hasRecovery = hasBoundRespawn(ap);
             var verdict = com.dwinovo.numen.rdd.policy.RiskGate.checkWithRecovery(level, inv, hasRecovery);
+            publishRiskVerdict(ap, primaryDescription, level, verdict, inv);
             return verdict.allowed();
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 风险门判定异常（保守放行）: {}", ex.toString());
             return true;   // 判定异常不误拦（避免因 bug 卡死主线）
+        }
+    }
+
+    /**
+     * B3/166：风险门裁决只在「同一阶段结论变化」时发一次事件。
+     * 允许 → {@code risk_gate_opened}；阻止 → {@code risk_gate_blocked}（带 missing 缺口）。
+     */
+    private static void publishRiskVerdict(NumenPlayer ap, String primaryDescription,
+                                           com.dwinovo.numen.rdd.policy.RiskLevel level,
+                                           com.dwinovo.numen.rdd.policy.RiskGate.Verdict verdict,
+                                           Map<String, Integer> inventory) {
+        try {
+            UUID uuid = ap.getUUID();
+            String key = uuid + "|" + String.valueOf(primaryDescription).hashCode();
+            String state = verdict.allowed() ? "ALLOWED" : "BLOCKED";
+            if (state.equals(LAST_RISK_VERDICT.put(key, state))) {
+                return;   // 结论没变，不重复发
+            }
+            Map<String, Object> data = new java.util.LinkedHashMap<>();
+            data.put("companionId", uuid.toString());
+            data.put("riskLevel", level.name());
+            data.put("allowed", verdict.allowed());
+            data.put("missing", verdict.missing());
+            // 2026-10-31（166 B3）：只报 missing 时，无法分辨"配额太高"还是"键不可满足"。
+            // 把要求键与实有数量一起带出（有界），下次拦停即可自证。
+            try {
+                data.put("observed", com.dwinovo.numen.rdd.policy.GateObservation.observe(
+                        com.dwinovo.numen.rdd.policy.ResourceBudget.requiredFor(level), inventory, 16));
+            } catch (RuntimeException ignore) {
+                // 观测失败不影响裁决
+            }
+            data.put("prepTasks", verdict.prepTasks());
+            data.put("primaryHint", String.valueOf(primaryDescription).length() > 120
+                    ? String.valueOf(primaryDescription).substring(0, 120) : String.valueOf(primaryDescription));
+            RddMonitor.publish(verdict.allowed() ? "risk_gate_opened" : "risk_gate_blocked", data);
+        } catch (RuntimeException ignored) {
+            // 观测失败不影响门本身的判定
         }
     }
 
@@ -1209,6 +1276,37 @@ final class RddDetector {
     }
 
     /** 统计背包里每种物品的数量，用命名空间 ID（minecraft:oak_log）作 key。 */
+    /**
+     * 药水栈的预算键（非药水返回空串）。
+     *
+     * <p>映射规则收在纯函数 {@link com.dwinovo.numen.rdd.policy.AssetKeys#potionKey(String)} 里，
+     * 便于离线单测；这里只负责从 ItemStack 取出效果 id。
+     */
+    private static String potionAssetKeyOf(net.minecraft.world.item.ItemStack stack) {
+        try {
+            if (!(stack.is(net.minecraft.world.item.Items.POTION)
+                    || stack.is(net.minecraft.world.item.Items.SPLASH_POTION)
+                    || stack.is(net.minecraft.world.item.Items.LINGERING_POTION))) {
+                return "";
+            }
+            var contents = stack.get(net.minecraft.core.component.DataComponents.POTION_CONTENTS);
+            if (contents == null) {
+                return "";
+            }
+            var potion = contents.potion();
+            if (potion == null || potion.isEmpty()) {
+                return "";
+            }
+            String path = potion.get().unwrapKey()
+                    .map(k -> k.location().getPath())
+                    .orElse("");
+            return com.dwinovo.numen.rdd.policy.AssetKeys.potionKey(path);
+        } catch (RuntimeException ex) {
+            // 取值失败不许影响整次盘点（少算一瓶药比让门崩掉好）
+            return "";
+        }
+    }
+
     static Map<String, Integer> countInventory(NumenPlayer ap) {
         Map<String, Integer> counts = new HashMap<>();
         var inv = ap.getInventory();
@@ -1219,6 +1317,13 @@ final class RddDetector {
             }
             String key = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
             counts.merge(key, stack.getCount(), Integer::sum);
+            // ★ 2026-10-31（166 B3）：药水的真实 id 是 minecraft:potion，
+            //   而 ResourceBudget 要求的键是 minecraft:<effect>_potion。
+            //   不补这一行，下界门要求的 fire_resistance_potion 永远计不到 → 高风险阶段永久拦停。
+            String potionKey = potionAssetKeyOf(stack);
+            if (!potionKey.isEmpty()) {
+                counts.merge(potionKey, stack.getCount(), Integer::sum);
+            }
         }
         return counts;
     }
