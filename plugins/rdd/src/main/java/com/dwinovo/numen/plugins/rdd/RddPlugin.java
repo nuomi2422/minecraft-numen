@@ -55,6 +55,12 @@ public final class RddPlugin implements NumenPlugin {
     private static final RddCallbackGuard CALLBACKS = new RddCallbackGuard();
     /** 懒边界上报去重：uuid → 最近一次已上报的未展开一级 id（避免每秒刷 expansion_needed）。 */
     private static final Map<UUID, String> LAST_EXPANSION_REPORT = new ConcurrentHashMap<>();
+
+    /** B6：连续死亡的保护级别窗口（30 分钟 = 36_000 刻）。 */
+    private static final long PROTECTION_WINDOW_TICKS = 36_000L;
+    /** B6：上一次算出的保护级别（只在上升时发 protection_escalated）。 */
+    private static final Map<UUID, com.dwinovo.numen.rdd.policy.RddProtectionLevel> LAST_PROTECTION_LEVEL
+            = new ConcurrentHashMap<>();
     /** 开工拍醒去重：uuid → 已经拍过开工的那个二级 id（每个二级都要能开工；换目标时清）。 */
     private static final Map<UUID, String> KICKOFF_SENT = new ConcurrentHashMap<>();
     static {
@@ -1304,6 +1310,35 @@ private static String withAssets(UUID companionId, String rddContext) {
                 invalidatedData.put("trackedItemKinds", death.lostItems().size());
             }
             RddMonitor.publish("companion_assets_invalidated", invalidatedData);
+            // 2026-10-31（166 §48 / B6）：连续死亡就该提高保护级别，但此前**没有这条链路**
+            // （全仓 0 处 protection/guard 级别）。这里只做「把事实变成可观测事件」，
+            // **不改任何判定**：真正收紧留给 RiskGate 接 requiredWithBackup(level, protection)。
+            // 口径：窗口 30 分钟内的**未回收**死亡（回收成功的死亡不算保护不足）。
+            try {
+                long nowTick = RddInstrumentation.currentGameTimeTicks();
+                int recent = com.dwinovo.numen.rdd.core.RddDeathLedger
+                        .recentUnrecoveredDeaths(companionId, nowTick, PROTECTION_WINDOW_TICKS);
+                com.dwinovo.numen.rdd.policy.RddProtectionLevel level =
+                        com.dwinovo.numen.rdd.policy.RddProtectionLevel.of(recent);
+                com.dwinovo.numen.rdd.policy.RddProtectionLevel prev =
+                        LAST_PROTECTION_LEVEL.put(companionId, level);
+                // 只在**上升**时发一次：下降发事件只会变成噪音，且会让人以为"保护被撤销了"。
+                if (prev != null && level.ordinal() > prev.ordinal()) {
+                    Map<String, Object> esc = new LinkedHashMap<>();
+                    esc.put("companionId", companionId.toString());
+                    esc.put("from", prev.name());
+                    esc.put("to", level.name());
+                    esc.put("recentUnrecoveredDeaths", recent);
+                    esc.put("windowTicks", PROTECTION_WINDOW_TICKS);
+                    esc.put("deathSeq", death == null ? -1 : death.seq());
+                    esc.put("reason", "consecutive_deaths_without_recovery");
+                    RddMonitor.publish("protection_escalated", esc);
+                    LOG.info("[rdd] 保护级别上升 {} -> {}（窗口内未回收死亡 {} 次）",
+                            prev, level, recent);
+                }
+            } catch (RuntimeException ignore) {
+                // 观测增强：任何异常都不许拖垮死亡处理
+            }
             LOG.info("[rdd] 同伴死亡：背包资产失效 {} 项", companionId, lost);
             // 埋点：死亡事件（starvation 判据=死亡瞬间食物条为 0，连带 recovery 追踪时间窗）
             long deathTick = RddInstrumentation.currentGameTimeTicks();
