@@ -368,6 +368,13 @@ final class RddDetector {
             if (SideTaskHost.isActive(ap.getUUID())) {
                 return;
             }
+            // ★ 2026-10-31（本会话实测）：REPLANNING 的兜底计时表只在"超时"分支里清，
+            //   链正常回到 ACTIVE 时没人清 —— 下一次 REPLANNING 会从**上一次进入的时刻**起算，
+            //   把 5 分钟的兜底算成 17~33 分钟（waited_ms = 1975744 / 1831659 / 1045416）。
+            //   做法：只要当前不是 REPLANNING，就把计时表清空；进入时自然从 null 重新记。
+            if (ps != PrimaryGoalStatus.REPLANNING) {
+                replanEnteredAt.remove(ap.getUUID());
+            }
             // Supervisor ↔ Numen 双向协商：士兵对命令回了 REJECT/COUNTER → 指挥官改单/重规划。
             if (tickNegotiation(ap, rt, chain)) {
                 return;   // 已按士兵反馈处理（改单/重规划/停车），本 tick 不再照旧推进
@@ -380,6 +387,7 @@ final class RddDetector {
                 // 监督扩面（2026-09-27）：REPLANNING/FAILED 原先直接 return，卡住时无人拍醒 → 静默停。
                 // 复用 RddParkedWatcher：长期无进展就催 AI（不动状态机，只补"催工"）。
                 if (ps == PrimaryGoalStatus.REPLANNING || ps == PrimaryGoalStatus.FAILED) {
+                    // 计时起点由上面的"非 REPLANNING 即清账"保证；这里不再重复判断。
                     // ★ 2026-10-28 实机（本会话链卡死的直接原因）：
                     //   重规划请求发出后，LLM 调用失败/预算被拒 → 状态机**留在 REPLANNING 出不来**，
                     //   而 REPLANNING 冻结主线（实测 primary_status=REPLANNING 卡了 20+ 分钟，
@@ -906,6 +914,7 @@ final class RddDetector {
 
     /** 每次进入 REPLANNING 的时刻（uuid → ms）；回到 ACTIVE 后清掉。 */
     private final java.util.Map<UUID, Long> replanEnteredAt = new java.util.concurrent.ConcurrentHashMap<>();
+
 
     /**
      * REPLANNING 卡死兜底（2026-10-28 实机）：重规划发出去后若既没成功也没回落，
