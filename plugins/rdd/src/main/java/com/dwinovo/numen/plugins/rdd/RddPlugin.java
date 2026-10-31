@@ -1233,6 +1233,15 @@ private static String withAssets(UUID companionId, String rddContext) {
             settlement.put("companionId", companionId.toString());
             settlement.put("deathSeq", seq);
             settlement.put("terminalReason", terminal);
+            // 2026-10-31 实机（166 §55）：death #34 的结算 terminalReason 是**空串**，
+            // 于是 ledgerState 永远停在 UNVERIFIED、replanRequested 恒 true。
+            // 产出侧四个分支都会写 terminal_reason，所以空串说明结算走的是**第五条路**
+            // （支线被外部关闭：decline/engine 跳过/myline 恢复等），那条路不带理由。
+            // 这里不编造理由（空就是空），只把它标出来并告警，让"缺理由"变成可统计的事实。
+            if (terminal == null || terminal.isBlank()) {
+                settlement.put("terminalReasonMissing", true);
+                LOG.warn("[rdd] 死亡结算缺少 terminalReason（deathSeq={}）—— 台账将停在 UNVERIFIED", seq);
+            }
             settlement.put("ledgerState", recovered ? "RECOVERED" : (confirmedLost ? "CONFIRMED_LOST" : "UNVERIFIED"));
             settlement.put("replanRequested", shouldReplan);
             settlement.put("inventoryKnown", !counts.isEmpty());
