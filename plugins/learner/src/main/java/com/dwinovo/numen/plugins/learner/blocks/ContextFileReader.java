@@ -58,13 +58,26 @@ public final class ContextFileReader {
     }
 
     public static Read read(Path configDir, int tailBytes, int maxLines) {
+        return readAt(configDir, RELATIVE_PATH, tailBytes, maxLines);
+    }
+
+    /**
+     * 读<b>任意</b> JSONL 的尾部（`monitor/expmem.jsonl` 等处复用同一套逻辑）。
+     *
+     * <p>为什么不复制一份：跳转没生效是静默故障（从文件头读到的也是合法 JSON），
+     * 复制一份等于把同一颗雷埋两遍。
+     */
+    public static Read readAt(Path configDir, String relativePath, int tailBytes, int maxLines) {
         if (configDir == null) {
             return new Read(List.of(), false, "configDir 为空");
         }
-        Path file = configDir.resolve(RELATIVE_PATH);
+        if (relativePath == null || relativePath.isBlank()) {
+            return new Read(List.of(), false, "relativePath 为空");
+        }
+        Path file = configDir.resolve(relativePath);
         if (!Files.isRegularFile(file)) {
             // 第一次跑就是这样：如实说"还没有这份日志"，不当故障也不当空数据。
-            return new Read(List.of(), false, "no context.jsonl yet (" + file + ")");
+            return new Read(List.of(), false, "no " + relativePath + " yet (" + file + ")");
         }
         try {
             long size = Files.size(file);

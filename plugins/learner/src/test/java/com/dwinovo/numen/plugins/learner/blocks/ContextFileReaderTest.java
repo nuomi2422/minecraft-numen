@@ -30,7 +30,8 @@ class ContextFileReaderTest {
     void 缺文件是没读到不是没内容(@TempDir Path dir) {
         ContextFileReader.Read r = ContextFileReader.read(dir);
         assertFalse(r.ok(), "第一次跑就是没有这份日志，但必须与读失败区分");
-        assertTrue(r.error().contains("no context.jsonl"));
+        assertTrue(r.error().startsWith("no "), "缺文件要如实说「还没有」");
+        assertTrue(r.error().contains("context.jsonl"), "错误里要点名是哪份日志");
         assertTrue(r.lines().isEmpty());
     }
 

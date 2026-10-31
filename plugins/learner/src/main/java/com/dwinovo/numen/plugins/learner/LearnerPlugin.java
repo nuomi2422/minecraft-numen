@@ -171,6 +171,8 @@ public final class LearnerPlugin implements NumenPlugin {
         numen.registerTool(new LearnerIntakeTool());
         // 样本环境块读取（159 D）：只读、按同伴隔离、先 open 再多次调用。
         numen.registerTool(new LearnerBlocksTool());
+        // 检索漏斗只读视图（159 H）：从现有日志回放七阶，不改世界。
+        numen.registerTool(new LearnerFunnelTool());
         // B6/S2：投递箱放在共享 configDir 下 —— 跨插件不能 import（见 NumenApi 的 javadoc），
         // 文件是这三条既有通道里唯一「不依赖谁记得调用」的一条。
         outbox = new com.dwinovo.numen.plugins.learner.core.ArtifactOutbox(

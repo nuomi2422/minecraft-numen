@@ -167,6 +167,26 @@ public final class SampleIntakeRuntime {
     }
 
     /**
+     * TTL 归档扫描（158 §8：只归档不删证据）。
+     *
+     * <p>只在<b>启用</b>且主实例已就绪时执行 —— 否则会新建第二个 `SampleStore` 去改文件，
+     * 而主实例内存里还是旧样子，下一次写入就会把归档结果覆盖掉（双实例互相踩）。
+     *
+     * @return 归档条数；未启用或失败时为 0（失败计数进 {@link #errors()}）
+     */
+    public synchronized int sweepExpired(long nowMillis, long ttlMillis) {
+        if (!enabled() || service == null) {
+            return 0;
+        }
+        try {
+            return service.store().archiveExpired(nowMillis, ttlMillis);
+        } catch (RuntimeException | java.io.IOException e) {
+            noteError(e);
+            return 0;
+        }
+    }
+
+    /**
      * 只读取样本存储（给 `learner_blocks` 这类只读工具用）。
      *
      * <p>它<b>不</b>受开关影响：开关关的是「要不要往样本层写」，不是「能不能读已有的样本」。

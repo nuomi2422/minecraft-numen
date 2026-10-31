@@ -359,6 +359,16 @@ final class LearnerAutoIntake {
         // 冷却已过的「被抑制候选」放回队列（与入队同一条 append 路径；写不进就放回暂存区）
         int deferredAdmitted = admitDeferred(enqueuedBy);
 
+        // TTL 归档（低频旁路，158 §8）：只归档不删证据；样本层没启用时是 no-op。
+        // ⚠ 7 天是**未校准**的初值（与 StormGuard.COOLDOWN 同款说明）：先跑出真实分布再调。
+        try {
+            com.dwinovo.numen.plugins.learner.sample.SampleIntakeRuntime
+                    .shared(configDirCache)
+                    .sweepExpired(System.currentTimeMillis(), 7L * 24 * 60 * 60 * 1000);
+        } catch (RuntimeException ignore) {
+            // 归档失败不改扫描结果：它只是旁路。
+        }
+
         if (!enqueuedBy.isEmpty() || rejected > 0 || stormSuppressed > 0 || unattributed > 0 || dupSkipped > 0 || queueFull > 0
                 || deferredAdmitted > 0) {
             Map<String, Object> data = new LinkedHashMap<>();

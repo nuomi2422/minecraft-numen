@@ -31,10 +31,25 @@ import java.util.Set;
  */
 public final class FunnelReplay {
 
-    /** 已知的过滤原因码（来自 `ExperienceStoreRetrievalBridge.RefView` 的注释）。 */
+    /**
+     * 已知的过滤原因码。
+     *
+     * <p>⚠ 这两个文件<b>各自</b>产出 reason，所以词表必须两处都收：
+     * <ul>
+     *   <li>`plugins/experience/.../ExperienceStoreRetrievalBridge`：`maturity_below_verified` /
+     *       `retracted` / `warning_kind` / `role_not_granted` / `applicability_fail` / `pinned_duplicate`；</li>
+     *   <li>`ai/.../ExperienceRetrievalProvider`：`not_retrievable` / `draft_or_suspended`。</li>
+     * </ul>
+     * 后两个是 2026-10-31 用真实日志回放时由 `unknownReasons` 报出来的（164 §8），
+     * 不是想起来的 —— 这就是"未知码不许静默当适用"的价值。
+     */
     public static final Set<String> KNOWN_REASONS = Set.of(
             "maturity_below_verified", "retracted", "warning_kind",
-            "role_not_granted", "applicability_fail", "pinned_duplicate");
+            "role_not_granted", "applicability_fail", "pinned_duplicate",
+            "not_retrievable", "draft_or_suspended",
+            // `ok` 是"没被过滤"的显式标记（不是失败码）。真实日志里 rendered=false 的候选也带它，
+            // 所以必须认识，否则每次回放都会把它当成"未知码漂移"报警。
+            "ok");
 
     /** 终止态（有这些状态说明这一轮已经有结果了）。 */
     public static final Set<String> TERMINAL_STATES = Set.of(
@@ -46,15 +61,23 @@ public final class FunnelReplay {
     /**
      * 回放结果。
      *
-     * @param skipped        跳过的行数（坏 JSON / 没有 ref / 不认识的 type）
+     * @param skipped        真正的"读不进来"（坏 JSON / 没有 ref）
+     * @param outOfWindow    时间窗外的行数 —— <b>不能</b>和 skipped 混在一起：
+     *                       一个是"日志坏了"，一个是"这不是我要的那段时间"，处理方式完全不同
      * @param unknownReasons 遇到过的不认识的原因码（去重）
      */
-    public record Result(List<FunnelLedger.Entry> entries, int skipped,
+    public record Result(List<FunnelLedger.Entry> entries, int skipped, int outOfWindow,
                          List<String> unknownReasons, List<String> problems) {
         public Result {
             entries = entries == null ? List.of() : List.copyOf(entries);
             unknownReasons = unknownReasons == null ? List.of() : List.copyOf(unknownReasons);
             problems = problems == null ? List.of() : List.copyOf(problems);
+        }
+
+        /** 不分窗口的旧视图（老调用点/老用例用）。 */
+        public Result(List<FunnelLedger.Entry> entries, int skipped,
+                      List<String> unknownReasons, List<String> problems) {
+            this(entries, skipped, 0, unknownReasons, problems);
         }
     }
 
@@ -64,10 +87,26 @@ public final class FunnelReplay {
      * @param nowMillis 用于给记录打时间（原始事件若带 timestamp 会用原始值）
      */
     public static Result replay(List<String> contextLines, List<String> expmemLines, long nowMillis) {
+        return replay(contextLines, expmemLines, 0L, 0L, nowMillis);
+    }
+
+    /**
+     * 按<strong>时间窗</strong>回放（164 §8 的结论：按字节取尾会让两本日志落在不同时段）。
+     *
+     * <p>为什么必须按时间对齐：两本日志每行大小差两个数量级（context 每行含整段 XML），
+     * 用"同样字节数取尾"取到的是两段完全不同的时间，于是会出现
+     * `ADOPTED > RECALLED` 这种荒谬计数。
+     *
+     * @param fromMillis 起始（含）；{@code <= 0} 不限
+     * @param toMillis   结束（含）；{@code <= 0} 不限
+     */
+    public static Result replay(List<String> contextLines, List<String> expmemLines,
+                                long fromMillis, long toMillis, long nowMillis) {
         List<FunnelLedger.Entry> out = new ArrayList<>();
         Set<String> unknownReasons = new LinkedHashSet<>();
         List<String> problems = new ArrayList<>();
-        int[] skipped = {0};
+        // [0]=读不进来  [1]=时间窗外（两者必须分开：一个是日志坏了，一个是不在这段时间）
+        int[] skipped = {0, 0};
 
         for (String line : safe(contextLines)) {
             JsonObject env = parse(line, skipped);
@@ -83,7 +122,16 @@ public final class FunnelReplay {
                 continue;
             }
             String occurrence = firstNonBlank(str(env, "event_id"), str(data, "task_fingerprint"));
-            long at = at(env, nowMillis);
+            long stamp = stampOf(env);
+            long at = stamp > 0 ? stamp : nowMillis;
+            if (stamp > 0 && !inWindow(stamp, fromMillis, toMillis)) {
+                // 时间窗外的行单独计数：它既不是"日志坏了"，也不是"没有发生"。
+                skipped[1]++;
+                continue;
+            }
+            if (stamp <= 0) {
+                addProblem(problems, "no_timestamp");
+            }
             FunnelLedger.Caller caller = "LEARNER".equalsIgnoreCase(str(data, "role"))
                     ? FunnelLedger.Caller.LEARNER : FunnelLedger.Caller.EXECUTOR;
 
@@ -137,7 +185,16 @@ public final class FunnelReplay {
             if (ref.isBlank()) {
                 continue;
             }
-            long at = at(env, nowMillis);
+            long stamp = stampOf(env);
+            long at = stamp > 0 ? stamp : nowMillis;
+            if (stamp > 0 && !inWindow(stamp, fromMillis, toMillis)) {
+                // 时间窗外的行单独计数：它既不是"日志坏了"，也不是"没有发生"。
+                skipped[1]++;
+                continue;
+            }
+            if (stamp <= 0) {
+                addProblem(problems, "no_timestamp");
+            }
             String occurrence = firstNonBlank(str(env, "event_id"), ref);
             switch (type) {
                 case "expanded" -> out.add(new FunnelLedger.Entry(ref, FunnelStage.EXPANDED,
@@ -161,7 +218,7 @@ public final class FunnelReplay {
                 }
             }
         }
-        return new Result(out, skipped[0], List.copyOf(unknownReasons), problems);
+        return new Result(out, skipped[0], skipped[1], List.copyOf(unknownReasons), problems);
     }
 
     private static List<String> safe(List<String> lines) {
@@ -199,16 +256,30 @@ public final class FunnelReplay {
         return e == null || e.isJsonNull() ? "" : e.getAsString();
     }
 
-    private static long at(JsonObject env, long fallback) {
+    /**
+     * 原始时间戳；缺失或解析不了返回 {@code -1}。
+     *
+     * <p>为什么不直接回退到 nowMillis：回退会让一条没有时间戳的记录<b>看起来是刚发生的</b>，
+     * 于是它永远落在时间窗内 —— 而它可能是一周前的。窗口判定必须能看见"没有时间"这件事。
+     */
+    private static long stampOf(JsonObject env) {
         String ts = str(env, "timestamp");
         if (ts.isBlank()) {
-            return fallback;
+            return -1L;
         }
         try {
             return java.time.Instant.parse(ts).toEpochMilli();
         } catch (RuntimeException e) {
-            return fallback;
+            return -1L;
         }
+    }
+
+    /** 时间窗判定：{@code <=0} 视为该端不限。 */
+    private static boolean inWindow(long stamp, long fromMillis, long toMillis) {
+        if (fromMillis > 0 && stamp < fromMillis) {
+            return false;
+        }
+        return toMillis <= 0 || stamp <= toMillis;
     }
 
     private static String firstNonBlank(String... xs) {

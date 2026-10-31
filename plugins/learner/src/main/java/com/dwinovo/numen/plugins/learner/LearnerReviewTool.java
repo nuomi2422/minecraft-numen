@@ -265,6 +265,18 @@ final class LearnerReviewTool implements NumenTool {
                 row.put("accepted", dec.result().accepted());
                 row.put("codes", dec.codes());
                 row.put("blocked", dec.blocked());
+                // 只有**通过契约校验**的产物才进 Skill 目录（158 §7：质量门之后才登记）。
+                // 没过门也登记，目录就成了草稿堆，而检索看到的是目录。
+                var regReport = com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.register(
+                        LearnerPlugin.configDir(), draft, dec.result().accepted());
+                if (regReport.total() > 0 || !regReport.ok()) {
+                    row.put("skills", java.util.Map.of(
+                            "registered", regReport.registered(),
+                            "reused", regReport.reused(),
+                            "revised", regReport.revised(),
+                            "conflicted", regReport.conflicted(),
+                            "error", regReport.error()));
+                }
                 contractRows.add(row);
                 if (dec.blocked()) {
                     // enforce：与检索闸门同样处理 —— 不 commit，memo 退回队列。
