@@ -267,8 +267,22 @@ final class LearnerReviewTool implements NumenTool {
                 row.put("blocked", dec.blocked());
                 // 只有**通过契约校验**的产物才进 Skill 目录（158 §7：质量门之后才登记）。
                 // 没过门也登记，目录就成了草稿堆，而检索看到的是目录。
+                // 权限矩阵判成 trial_only 的产物，登记时状态记 TRIAL（不是 DRAFT）——
+                // 否则"矩阵判了、下游不知道"，可见范围照样一样。
+                java.util.Set<Integer> trialIndexes = new java.util.LinkedHashSet<>();
+                for (String code : dec.result().trialOnly()) {
+                    int hash = code.indexOf('#');
+                    int colon = code.indexOf(':', hash + 1);
+                    if (hash > 0 && colon > hash) {
+                        try {
+                            trialIndexes.add(Integer.parseInt(code.substring(hash + 1, colon)));
+                        } catch (NumberFormatException ignore) {
+                            // 码形不对就不猜：宁可不标试用，也不乱标。
+                        }
+                    }
+                }
                 var regReport = com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.register(
-                        LearnerPlugin.configDir(), draft, dec.result().accepted());
+                        LearnerPlugin.configDir(), draft, dec.result().accepted(), trialIndexes);
                 if (regReport.total() > 0 || !regReport.ok()) {
                     row.put("skills", java.util.Map.of(
                             "registered", regReport.registered(),

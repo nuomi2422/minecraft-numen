@@ -136,13 +136,24 @@ public final class SkillRegistry {
      * @param bodyRef 正文引用（正文不入目录，目录只给标题层）
      */
     public Decision register(ArtifactDraft artifact, String skillId, String bodyRef) {
+        return register(artifact, skillId, bodyRef, false);
+    }
+
+    /**
+     * 登记一条产物为 Skill 条目，并指定它是否只准进试用态。
+     *
+     * @param trial 权限矩阵判成 `TRIAL_ONLY` 时传 true —— 状态记 {@link SkillStatus#TRIAL}，
+     *              这样 `retrievable()` 与检索侧才可能真的区别对待（而不是日志里多一行）
+     */
+    public Decision register(ArtifactDraft artifact, String skillId, String bodyRef, boolean trial) {
         if (artifact == null) {
             return new Decision(Outcome.CONFLICT, null, "no_artifact");
         }
         SkillEntry candidate = new SkillEntry(
                 skillId, 1, artifact.kind(), artifact.name(), artifact.purpose(),
                 artifact.audience(), artifact.triggerConditions(), artifact.excludeConditions(),
-                artifact.preconditions(), artifact.risk(), "", SkillStatus.DRAFT, bodyRef,
+                artifact.preconditions(), artifact.risk(), "",
+                trial ? SkillStatus.TRIAL : SkillStatus.DRAFT, bodyRef,
                 List.of(), artifact.sampleRefs(), List.of(), List.of());
 
         String fp = candidate.fingerprint();

@@ -61,6 +61,21 @@ public final class SkillRegistrar {
      * @param accepted 这次提交是否已通过契约校验；<b>false 时直接不登记</b>
      */
     public static Report register(Path configDir, Submission.Draft draft, boolean accepted) {
+        return register(configDir, draft, accepted, java.util.Set.of());
+    }
+
+    /**
+     * 带权限裁决的登记：被 `PermissionMatrix` 判成 `TRIAL_ONLY` 的产物，进目录时状态是
+     * {@link SkillStatus#TRIAL} 而不是 `DRAFT`。
+     *
+     * <p>为什么必须区分：`trialOnly` 如果只算不落，等于"矩阵判了但下游不知道"——
+     * 158 §7 要的是<b>可见范围不同</b>，而不是日志里多一行。落到目录状态上，
+     * 检索侧（`retrievable()`）才有可能真的区别对待。
+     *
+     * @param trialIndexes 第几个产物只准进试用态（对应 `artifact#i:trial_only:…` 里的 i）
+     */
+    public static Report register(Path configDir, Submission.Draft draft, boolean accepted,
+                                  java.util.Set<Integer> trialIndexes) {
         if (configDir == null) {
             return new Report(0, 0, 0, 0, "configDir 为空");
         }
@@ -75,12 +90,14 @@ public final class SkillRegistrar {
             SkillRegistry registry = REGISTRIES.computeIfAbsent(configDir,
                     d -> openQuietly(d.resolve("skills.jsonl")));
             int reg = 0, reuse = 0, revise = 0, conflict = 0;
-            for (ArtifactDraft a : draft.artifacts()) {
+            for (int i = 0; i < draft.artifacts().size(); i++) {
+                ArtifactDraft a = draft.artifacts().get(i);
                 String skillId = skillIdOf(a);
                 // bodyRef 必须包含**内容**指纹：否则正文改了 bodyRef 不变，
                 // SkillRegistry 会判成 REUSE（同一份内容），修订永远发生不了。
                 String bodyRef = "draft:" + skillId + ":" + a.contentHash();
-                SkillRegistry.Decision d = registry.register(a, skillId, bodyRef);
+                boolean trial = trialIndexes != null && trialIndexes.contains(i);
+                SkillRegistry.Decision d = registry.register(a, skillId, bodyRef, trial);
                 switch (d.outcome()) {
                     case REGISTERED -> reg++;
                     case REUSE -> reuse++;

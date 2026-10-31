@@ -88,6 +88,32 @@ class SkillRegistrarTest {
     }
 
     @Test
+    void 被判试用态的产物进目录后状态是TRIAL(@TempDir Path dir) throws IOException {
+        // 内部学习者的 AUTO_ACTION 会被 PermissionMatrix 判成 TRIAL_ONLY；
+        // 若这里仍写 DRAFT，"只准试用"就只活在日志里，检索侧照样一视同仁。
+        ArtifactDraft trialArt = new ArtifactDraft(ArtifactKind.AUTO_ACTION, "撤退", "血量低于 6 就撤",
+                "body", List.of("hp<6"), List.of("安全"), List.of("有退路"), "LOW",
+                List.of(EvidenceRef.parse("block:dc-1")), List.of("s-1"), "EXECUTOR");
+        var r = SkillRegistrar.register(dir, draft(trialArt), true, java.util.Set.of(0));
+        assertEquals(1, r.registered());
+
+        var reg = SkillRegistry.open(dir.resolve("skills.jsonl"));
+        var entry = reg.get(SkillRegistrar.skillIdOf(trialArt)).orElseThrow();
+        assertEquals(SkillStatus.TRIAL, entry.status());
+        assertTrue(entry.status().retrievable(), "TRIAL 是可见的，只是范围受限——不能因此藏起来");
+    }
+
+    @Test
+    void 没被判试用态的仍是草稿(@TempDir Path dir) throws IOException {
+        var r = SkillRegistrar.register(dir, draft(artifact("p", "b1", "s-1")), true);
+        assertEquals(1, r.registered());
+        var reg = SkillRegistry.open(dir.resolve("skills.jsonl"));
+        var e = reg.get(SkillRegistrar.skillIdOf(artifact("p", "b1", "s-1"))).orElseThrow();
+        assertEquals(SkillStatus.DRAFT, e.status());
+        assertFalse(e.status().retrievable(), "草稿不进检索：登记不等于验证完成");
+    }
+
+    @Test
     void 空提交安全(@TempDir Path dir) {
         assertEquals(0, SkillRegistrar.register(dir, null, true).total());
         assertEquals(0, SkillRegistrar.register(dir, draft(), true).total());
