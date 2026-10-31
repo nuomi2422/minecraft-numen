@@ -679,9 +679,21 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         // 其实不是。
         String advice = "";
         if (nav.failType() != FailureType.TERRAIN_BLOCKED) {
-            advice = ScaffoldMaterials.shortageAdvice(player);
-            if (advice == null) {
-                advice = " Try a nearer waypoint or scan_blocks for a way through.";
+            // 2026-10-31（B46 实测）：目标 344 格外时 goto 直接 "no path to target"，AI 重复同一目标 5 次；
+            // 泛泛的 "try a nearer waypoint" 没被采纳。超过 128 格时给出**具体分段路点**。
+            double h = Math.sqrt(horizontalDistSqr(bx, bz));
+            if (h > 128) {
+                double step = Math.min(96, h);
+                double wx = player.getX() + (bx - player.getX()) * (step / h);
+                double wz = player.getZ() + (bz - player.getZ()) * (step / h);
+                advice = String.format(" This target is %.0f blocks away — too far for one path."
+                        + " First goto x=%d z=%d (about %.0f blocks toward it), then call goto again for the final target.",
+                        h, (int) Math.round(wx), (int) Math.round(wz), step);
+            } else {
+                advice = ScaffoldMaterials.shortageAdvice(player);
+                if (advice == null) {
+                    advice = " Try a nearer waypoint or scan_blocks for a way through.";
+                }
             }
         }
         return "blocked: " + geometry + " — target is " + where
