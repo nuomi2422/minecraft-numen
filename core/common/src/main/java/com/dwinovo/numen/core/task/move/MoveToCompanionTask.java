@@ -683,11 +683,12 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
             // 泛泛的 "try a nearer waypoint" 没被采纳。超过 128 格时给出**具体分段路点**。
             double h = Math.sqrt(horizontalDistSqr(bx, bz));
             if (h > 128) {
-                double step = Math.min(96, h);
+                double step = Math.min(64, h);
                 double wx = player.getX() + (bx - player.getX()) * (step / h);
                 double wz = player.getZ() + (bz - player.getZ()) * (step / h);
                 advice = String.format(" This target is %.0f blocks away — too far for one path."
-                        + " First goto x=%d z=%d (about %.0f blocks toward it), then call goto again for the final target.",
+                        + " First goto x=%d z=%d (about %.0f blocks toward it; omit y, it resolves to the surface),"
+                        + " then call goto again for the final target.",
                         h, (int) Math.round(wx), (int) Math.round(wz), step);
             } else {
                 advice = ScaffoldMaterials.shortageAdvice(player);
