@@ -1329,10 +1329,18 @@ private static String withAssets(UUID companionId, String rddContext) {
                         .recentUnrecoveredDeaths(companionId, nowTick, PROTECTION_WINDOW_TICKS);
                 com.dwinovo.numen.rdd.policy.RddProtectionLevel level =
                         com.dwinovo.numen.rdd.policy.RddProtectionLevel.of(recent);
+                // 2026-10-31（166 §57）：原来用内存里的 LAST_PROTECTION_LEVEL 当基线，
+                // 但它是 static Map —— 每次重启就从零开始，于是「重启后第一次死亡只建基线」，
+                // 而今天重启了十几次，B6 的升级几乎不可能被观测到。
+                // 改为**无状态推导**：这次死亡之前窗口里是 recent-1 次，取它的级别当 prev。
+                // 台账本身是落盘的，所以重启不影响这条推导。
                 com.dwinovo.numen.rdd.policy.RddProtectionLevel prev =
-                        LAST_PROTECTION_LEVEL.put(companionId, level);
+                        com.dwinovo.numen.rdd.policy.RddProtectionLevel.of(Math.max(0, recent - 1));
                 // 只在**上升**时发一次：下降发事件只会变成噪音，且会让人以为"保护被撤销了"。
-                if (com.dwinovo.numen.rdd.policy.RddProtectionLevel.isEscalationFrom(prev, level)) {
+                if (com.dwinovo.numen.rdd.policy.RddProtectionLevel.isEscalationFrom(prev, level)
+                        && level == com.dwinovo.numen.rdd.policy.RddProtectionLevel.HIGH
+                        && LAST_PROTECTION_LEVEL.get(companionId) != level) {
+                    LAST_PROTECTION_LEVEL.put(companionId, level);
                     Map<String, Object> esc = new LinkedHashMap<>();
                     esc.put("companionId", companionId.toString());
                     esc.put("from", prev.name());
