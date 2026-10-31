@@ -166,12 +166,21 @@ final class ExperienceRecallTool implements NumenTool {
                 item.put("presented_before", receipts.presentedCount(hit.entry().id()));
                 results.add(item);
             }
-            ExperienceMonitor.publish("recalled", Map.of(
-                    "companion", companion.getUUID().toString(),
-                    "query_chars", query.length(),
-                    "hits", hits.size(),
-                    "pending_before", before,
-                    "pending_after", receipts.pendingCount()));
+            // 2026-10-31（166 B7）：原来只发 hits 计数，**没有任何 id** —— 于是"召回→被采用"
+            // 这条因果无法从日志串联（见 166 §34.3）。这里补 experience_ids（命中条目 id 列表），
+            // 只加字段不改旧键，已有解析不受影响。
+            List<String> hitIds = new ArrayList<>();
+            for (ExperienceHit hit : hits) {
+                hitIds.add(hit.entry().id());
+            }
+            Map<String, Object> recallEvent = new LinkedHashMap<>();
+            recallEvent.put("companion", companion.getUUID().toString());
+            recallEvent.put("query_chars", query.length());
+            recallEvent.put("hits", hits.size());
+            recallEvent.put("pending_before", before);
+            recallEvent.put("pending_after", receipts.pendingCount());
+            recallEvent.put("experience_ids", hitIds);
+            ExperienceMonitor.publish("recalled", recallEvent);
             reply.accept(TaskResult.ok("经验召回返回 " + results.size() + " 条。",
                     Map.of("hits", results,
                             "maturity_guide", maturityGuide(),
