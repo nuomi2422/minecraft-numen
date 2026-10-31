@@ -881,9 +881,14 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
                     + r.label;
             return TaskState.SUCCESS;
         }
+        // 2026-10-31 实机（166）：同一句提示在 16:40 与 16:38 各命中一次，位置不同（371,68,715 / 377,66,704），
+        // 模型两次都原样重试 mine。原话只说「Move me somewhere else, or clear a way first」，
+        // 没告诉它**用什么参数**清路。这里补两种可执行的下一步，并点明参数名。
         fail("found " + knownOres.size() + " " + r.label + " but could not reach any of them from "
                 + where + " — no path out, and nothing minable in place; gathered 0."
-                + " Move me somewhere else, or clear a way first.", FailureType.NO_PATH);
+                + " Two concrete next moves: (a) goto a surface opening first (x+z, omit y) and mine again from there;"
+                + " (b) if the only way out needs breaking a block, re-issue mine with may_alter_terrain=true"
+                + " — without it the walk never breaks or places anything.", FailureType.NO_PATH);
         return TaskState.FAILED;
     }
 
