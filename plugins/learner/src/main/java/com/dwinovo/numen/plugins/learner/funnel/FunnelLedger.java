@@ -126,6 +126,22 @@ public final class FunnelLedger {
                 highest = s;
             }
         }
+        // 第 0 阶可能是**否定结论**（排除条件命中 = 这条这次不适用）。
+        // 那种情况下"停在哪一阶"的正确回答是"不适用"，而不是"适用未召回"——
+        // 后者会让人去查检索，而真正该改的是这条的触发/排除条件。
+        String denyReason = "";
+        for (Entry e : byKey.values()) {
+            if (e.entryRef().equals(entryRef) && e.caller() == caller
+                    && e.stage() == FunnelStage.APPLICABLE
+                    && !e.reason().isBlank() && !"applicable".equals(e.reason())) {
+                denyReason = e.reason();
+            }
+        }
+        if (!denyReason.isBlank()) {
+            return new Stop(FunnelStage.APPLICABLE, FunnelStage.RECALLED,
+                    "不适用（" + denyReason + "）：检索不会再看到它，该改的是触发/排除条件");
+        }
+
         FunnelStage missing = highest.next();
         // 措辞按"缺失的那一阶"命名，不按"已到达的那一阶"——
         // 「召回未展开」既可能指停在 RECALLED 也可能指停在 PRESENTED，含糊的措辞在复盘时会被读错。
