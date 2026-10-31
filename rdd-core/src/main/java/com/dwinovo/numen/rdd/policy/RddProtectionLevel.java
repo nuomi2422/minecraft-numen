@@ -30,4 +30,18 @@ public enum RddProtectionLevel {
     public boolean escalates() {
         return this == HIGH;
     }
+
+    /**
+     * 这次观测到的级别是否构成「上升」——只有上升才该发 {@code protection_escalated}。
+     *
+     * <p>为什么单独抽出来：这段判断原本内联在 {@code RddPlugin} 的死亡处理里，
+     * 也就是**只能靠实机连续死两次才能验**。抽成纯函数之后，边界（首次基线、
+     * 持平、下降、连跳两级）都能单测钉死，实机只需验"事件真的发出来了"。
+     *
+     * @param previous 上一次观测到的级别；null = 还没建立基线（首次不发）
+     */
+    public static boolean isEscalationFrom(RddProtectionLevel previous, RddProtectionLevel current) {
+        if (previous == null || current == null) return false;
+        return current.ordinal() > previous.ordinal();
+    }
 }

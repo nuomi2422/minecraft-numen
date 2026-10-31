@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -45,6 +46,21 @@ class RddProtectionLevelTest {
                     "连死两次后，" + e.getKey() + " 应取末地备用标准");
         }
         assertTrue(escalated.size() >= netherBase.size());
+    }
+
+    @Test
+    void escalationIsOnlyWhenLevelActuallyRises() {
+        // 首次（基线未建立）不发：否则每一次"第一条死亡"都会误报升级。
+        assertFalse(RddProtectionLevel.isEscalationFrom(null, RddProtectionLevel.NORMAL));
+        assertFalse(RddProtectionLevel.isEscalationFrom(null, RddProtectionLevel.HIGH));
+        // 持平不发。
+        assertFalse(RddProtectionLevel.isEscalationFrom(RddProtectionLevel.NORMAL, RddProtectionLevel.NORMAL));
+        // 下降不发（下面那句警告是"保护被撤销"的错觉来源）。
+        assertFalse(RddProtectionLevel.isEscalationFrom(RddProtectionLevel.HIGH, RddProtectionLevel.NORMAL));
+        // 上升才发，且允许连跳两级。
+        assertTrue(RddProtectionLevel.isEscalationFrom(RddProtectionLevel.LOW, RddProtectionLevel.NORMAL));
+        assertTrue(RddProtectionLevel.isEscalationFrom(RddProtectionLevel.NORMAL, RddProtectionLevel.HIGH));
+        assertTrue(RddProtectionLevel.isEscalationFrom(RddProtectionLevel.LOW, RddProtectionLevel.HIGH));
     }
 
     @Test

@@ -1323,7 +1323,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                 com.dwinovo.numen.rdd.policy.RddProtectionLevel prev =
                         LAST_PROTECTION_LEVEL.put(companionId, level);
                 // 只在**上升**时发一次：下降发事件只会变成噪音，且会让人以为"保护被撤销了"。
-                if (prev != null && level.ordinal() > prev.ordinal()) {
+                if (com.dwinovo.numen.rdd.policy.RddProtectionLevel.isEscalationFrom(prev, level)) {
                     Map<String, Object> esc = new LinkedHashMap<>();
                     esc.put("companionId", companionId.toString());
                     esc.put("from", prev.name());
