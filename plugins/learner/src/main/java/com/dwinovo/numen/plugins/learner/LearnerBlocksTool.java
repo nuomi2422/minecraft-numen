@@ -88,6 +88,12 @@ final class LearnerBlocksTool implements NumenTool {
                 default -> com.dwinovo.numen.plugins.learner.blocks.BlockSessionRegistry.Outcome.fail(
                         "unknown action: '" + action + "'（可用 open/list/expand/next/previous/close）");
             };
+            // ★ 账本必须落盘（2026-10-31 实机发现）：原来"没展开=没读"只存在于工具回执里，
+            //   learner.jsonl 一条事件都没有 —— 那么"可机械审计"就只是句口号：
+            //   重启后查不到谁读过什么，外部复盘也无从核对。
+            //   这里按动作各记一条，expand/close 额外带块数与跳过数。
+            publishLedger(action, companionId, args, outcome, now);
+
             if (outcome.ok()) {
                 reply.accept(TaskResult.ok("learner blocks", outcome.data()).toJson());
             } else {
@@ -97,6 +103,45 @@ final class LearnerBlocksTool implements NumenTool {
             // 学习层读不出来不许炸工具：显式失败，让调用方知道"没读到"而不是"没有"。
             reply.accept(TaskResult.fail("learner_blocks failed: " + e.getClass().getSimpleName()
                     + ": " + e.getMessage()).toJson());
+        }
+    }
+
+    /**
+     * 把一次块访问写进 monitor（也是唯一能被外部审计的证据）。
+     *
+     * <p>只记事实，不记正文：块正文可能很长，而且记进来就等于把上下文复制一份到日志里。
+     */
+    private static void publishLedger(String action, String companionId, JsonObject args,
+                                      com.dwinovo.numen.plugins.learner.blocks.BlockSessionRegistry.Outcome outcome,
+                                      long now) {
+        try {
+            java.util.Map<String, Object> data = new java.util.LinkedHashMap<>();
+            data.put("action", action);
+            data.put("companion", companionId);
+            data.put("ok", outcome.ok());
+            data.put("at", now);
+            String sampleId = str(args, "sample_id");
+            if (!sampleId.isBlank()) {
+                data.put("sample_id", sampleId);
+            }
+            String blockId = str(args, "block_id");
+            if (!blockId.isBlank()) {
+                data.put("block_id", blockId);
+            }
+            if (!outcome.ok()) {
+                data.put("error", outcome.error());
+            } else if (outcome.data() != null) {
+                // 只挑计数类字段，不把正文带进日志。
+                for (String k : new String[]{"expanded", "skipped", "count", "blocks", "occurrences"}) {
+                    Object v = outcome.data().get(k);
+                    if (v != null) {
+                        data.put(k, v);
+                    }
+                }
+            }
+            LearnerMonitor.publish("block_read", data);
+        } catch (Throwable ignore) {
+            // 观测失败不影响读取本身。
         }
     }
 
