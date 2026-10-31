@@ -100,6 +100,22 @@ final class LearnerFunnelTool implements NumenTool {
             win.put("window_minutes", windowMinutes);
             win.put("from", from);
             win.put("to", now);
+
+            // ★ 2026-10-31 实机：请求 180 分钟窗，但日志只按**尾部字节**读，
+            //   于是"窗口内"的数据其实只有更短的一段 —— 计数会静默偏小。
+            //   这里把日志真正覆盖到的起点也报出来，并在覆盖不足时显式警告。
+            long ctxStart = com.dwinovo.numen.plugins.learner.blocks.SampleBlockAssembler
+                    .earliestTimestampOf(ctx.lines());
+            long expStart = com.dwinovo.numen.plugins.learner.blocks.SampleBlockAssembler
+                    .earliestTimestampOf(exp.lines());
+            long covered = Math.max(ctxStart, expStart);
+            if (covered > 0) {
+                win.put("logs_covered_from", covered);
+                if (from < covered) {
+                    win.put("coverage_warning", "请求窗口比日志尾部覆盖范围更早（从 "
+                            + covered + " 起才有数据）：计数只反映覆盖到的那一段，不是整窗");
+                }
+            }
             data.put("window", win);
 
             // 两本日志本体的可读性也透出：读不到与没有内容必须分开。

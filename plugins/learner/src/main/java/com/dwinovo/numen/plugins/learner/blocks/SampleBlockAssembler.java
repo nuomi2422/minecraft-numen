@@ -104,7 +104,7 @@ public final class SampleBlockAssembler {
      * <p>用来回答「窗口外没有块，是因为当时没有，还是因为日志尾部已经翻过去了」。
      * 只扫到能解析的第一行即可 —— 尾部读本来就是按时间递增写的。
      */
-    static long earliestTimestampOf(List<String> lines) {
+    public static long earliestTimestampOf(List<String> lines) {
         if (lines == null) {
             return -1L;
         }
