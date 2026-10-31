@@ -33,8 +33,34 @@ public final class RiskGate {
         if (missing.isEmpty()) {
             return new Verdict(true, lv, List.of(), List.of());
         }
+        // A/166 §69：首次下界放行 —— 只放过抗火药这一项，其余一项都不放松。
+        if (lv == RiskLevel.NETHER && onlyPotionMissing(missing)) {
+            return new Verdict(true, lv, missing, FIRST_ENTRY_ADVICE);
+        }
         return new Verdict(false, lv, missing, prepare(lv, missing));
     }
+
+    /** 缺的项里只有抗火药（其余全齐）。缺任何别的都不算。 */
+    static boolean onlyPotionMissing(List<String> missing) {
+        if (missing == null || missing.isEmpty()) {
+            return false;
+        }
+        for (String m : missing) {
+            if (m == null || !m.startsWith("minecraft:fire_resistance_potion")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 首次下界（无抗火药）时必须照做的一句话。
+     *
+     * <p>放行是为了破环（抗火药=下界材料，见 §69），不是为了让她在下界长待；
+     * 没有这句话，放行就变成随便进。
+     */
+    private static final List<String> FIRST_ENTRY_ADVICE = List.of(
+            "首次下界（背包没有抗火药）：进门后立刻返回主世界，不要在下界久留、不要主动打烈焰人；本次只确认传送门可通行并记住出口坐标。");
 
     /** 由维度 ID 判定风险级别（如 minecraft:the_nether → NETHER）。 */
     public static RiskLevel levelForDimension(String dimensionId) {
@@ -89,17 +115,38 @@ public final class RiskGate {
         for (String target : targets) {
             int idx = text.indexOf(target);
             while (idx >= 0) {
-                int from = Math.max(0, idx - 4);
-                int to = Math.min(text.length(), idx + target.length() + 4);
-                String window = text.substring(from, to);
-                for (String v : verbs) {
-                    if (window.contains(v)) return true;
+                // 否定句守卫（B3/166）：目标词前一小段出现否定词时，这一处不算「要去」。
+                // 依据 2026-09-28 实机回归：「也绝不进入下界」这类**禁止项**曾被判成 NETHER，
+                // 于是给"原地待命"挂上下界硬门，任务永远派不下去 —— 风险门当时因此被整个关掉。
+                // 现在只跳过被否定的那一处命中，同一文本里其它真正的行动短语仍然照常判定。
+                if (!negatedBefore(text, idx)) {
+                    int from = Math.max(0, idx - 4);
+                    int to = Math.min(text.length(), idx + target.length() + 4);
+                    String window = text.substring(from, to);
+                    for (String v : verbs) {
+                        if (window.contains(v)) return true;
+                    }
                 }
                 idx = text.indexOf(target, idx + 1);
             }
         }
         return false;
     }
+
+    /** 目标词前 8 个字符内是否出现否定词（不做句式理解，只防最明确的禁止项误判）。 */
+    private static boolean negatedBefore(String text, int targetStart) {
+        int from = Math.max(0, targetStart - 8);
+        String before = text.substring(from, targetStart);
+        for (String neg : NEGATIONS) {
+            if (before.contains(neg)) return true;
+        }
+        return false;
+    }
+
+    /** 明确的否定/禁止措辞。刻意只收多字或语义无歧义的单字，避免把「不错」「差不多」当成否定。 */
+    private static final String[] NEGATIONS = {
+            "不要", "不用", "不必", "无需", "禁止", "绝不", "不得", "不能", "不可",
+            "别", "勿", "莫", "严禁", "避免", "暂不", "先不"};
 
     /**
      * 把缺口转成准备任务描述。核心策略：缺 N 件 → “获取/制作至 N”；抗火/治疗归“酿造”；
