@@ -157,24 +157,29 @@ public final class ScaffoldMaterials {
      */
     public static String shortageAdvice(ServerPlayer player) {
         List<Item> accepted = of(player);
-        if (accepted.isEmpty()) {
-            return " Your scaffolding list is EMPTY, so pathfinding may not place a single block —"
-                    + " no pillaring, bridging or stepping up. That was your own call; put blocks"
-                    + " back with scaffold_materials if this route needs them.";
-        }
         var inv = player.getInventory();
+        // 2026-10-31 实机（166 §42）：清单为空时必须**同时报出她背着的方块**。
+        // 旧实现对"清单空"只说 "put blocks back with scaffold_materials"，连她自己带了什么
+        // 都不提 —— 模型于是完全不知道该填哪个 id（实测 scaffold_materials 全天 0 次调用，
+        // 而 goto 因 "scaffolding list is EMPTY" 反复失败）。
+        // 这里把 spare 统计提到分支之前，两条分支共用。
         Map<String, Integer> spare = new LinkedHashMap<>();
+        boolean carriesAccepted = false;
         for (int i = 0; i < inv.getContainerSize(); i++) {
             ItemStack stack = inv.getItem(i);
             if (stack.isEmpty()) {
                 continue;
             }
             if (accepted.contains(stack.getItem())) {
-                return null;   // 有料,走不通是别的原因
+                carriesAccepted = true;
+                continue;
             }
             if (stack.getItem() instanceof BlockItem) {
                 spare.merge(idOf(stack.getItem()), stack.getCount(), Integer::sum);
             }
+        }
+        if (carriesAccepted) {
+            return null;   // 有料,走不通是别的原因
         }
         String carrying = spare.entrySet().stream()
                 .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue()))
@@ -182,6 +187,17 @@ public final class ScaffoldMaterials {
                 .map(e -> e.getKey() + "×" + e.getValue())
                 .reduce((a, b) -> a + ", " + b)
                 .orElse("");
+        if (accepted.isEmpty()) {
+            String head = " Your scaffolding list is EMPTY, so pathfinding may not place a single block —"
+                    + " no pillaring, bridging or stepping up. That was your own call; put blocks"
+                    + " back with scaffold_materials if this route needs them.";
+            if (carrying.isEmpty()) {
+                return head;
+            }
+            return head + " You ARE carrying blocks you could spend, e.g. " + carrying
+                    + " — call scaffold_materials with one of those ids (that single call unblocks"
+                    + " pillaring, bridging and stepping up for every later goto).";
+        }
         StringBuilder out = new StringBuilder(" You are carrying NONE of your scaffolding materials (")
                 .append(String.join(", ", effectiveIds(player)))
                 .append("), so pathfinding could not pillar, bridge or step anywhere.");
