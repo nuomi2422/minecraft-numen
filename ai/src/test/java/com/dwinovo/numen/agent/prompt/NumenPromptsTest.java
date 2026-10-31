@@ -24,6 +24,13 @@ class NumenPromptsTest {
     }
 
     @Test
+    void backgroundJobsEndTheTurnInsteadOfPolling() {
+        String prompt = NumenPrompts.ENTITY_PROMPT;
+        assertTrue(prompt.contains("END YOUR TURN with one"));
+        assertTrue(prompt.contains("NEVER poll with task_status"));
+    }
+
+    @Test
     void bodyStatusPromptMatchesLiveInventoryContract() {
         String prompt = NumenPrompts.ENTITY_PROMPT;
         assertTrue(prompt.contains("live backpack is in the request's <inventory> state block"));
