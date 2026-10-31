@@ -470,6 +470,11 @@ public final class RddPlugin implements NumenPlugin {
             return "companion not online: rdd_supervisor_submit needs an active body "
                     + "(planning and binding both require it)";
         }
+        // 2026-10-31（V-20261031-41 实测）：register=true 时 GoalSinks.submit 会触发 sink 自己的
+        // beginPlanning（source=goal_sink），而这里又 beginPlanning 一次（source=rdd_supervisor_submit）
+        // ⇒ 同一次 submit 出现**两条** supervisor_input（B37：02:49:37.009 与 .073）。
+        // 修法：sink 接管了就不再重复规划；sink 不在/拒绝才走本工具的显式规划。
+        boolean plannedBySink = false;
         if (register) {
             // 2026-10-27：客户端 EntityAgentLoop 不在本插件的可视范围（rdd 是服务端插件）。
             // 引擎目标登记改走 GoalSinks 的既有注册面——它本来就是「谁来都行」的目标入口，
@@ -481,12 +486,15 @@ public final class RddPlugin implements NumenPlugin {
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 引擎目标登记失败（链不受影响） {}: {}", companionId, ex.toString());
             }
+            plannedBySink = sinkOk;
             RddMonitor.publish("supervisor_goal_register", Map.of(
                     "companionId", companionId.toString(),
                     "registered", sinkOk, "source", source));
         }
-        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
-        onServer(server, ticket, () -> beginPlanning(server, ticket, objective, source));
+        if (!plannedBySink) {
+            RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+            onServer(server, ticket, () -> beginPlanning(server, ticket, objective, source));
+        }
         return "objective accepted by the supervisor (Stage-A planning started)";
     }
 
