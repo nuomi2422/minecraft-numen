@@ -111,6 +111,26 @@ final class ExperienceLearnTool implements NumenTool {
                     .publication(com.dwinovo.numen.experience.api.PublicationState.DRAFT)
                     .build();
 
+            // 2026-10-31（166 §39）：学到之后再报一次"同题已有多少条"。
+            // 实测 8 条里 5 条是同题（goto 净位移），其中 4 条已是终态 REVOKED ——
+            // 原因是 supersede 是纯手动通道、从没被用过（retracted/supersedes 全为 0）。
+            // 这里只**提示**，不自动合并、不改任何数据：让"这条已经有 5 个副本了"从不可见变成可见。
+            List<ExperienceEntry> before = ExperiencePlugin.memory(companion.getUUID()).all();
+            String newTitle = nz(in.title()).trim();
+            int sameTopic = 0;
+            int sameTopicRevoked = 0;
+            for (ExperienceEntry old : before) {
+                if (old == null || old.title() == null) {
+                    continue;
+                }
+                if (!old.title().trim().equals(newTitle)) {
+                    continue;
+                }
+                sameTopic++;
+                if (old.publication() == com.dwinovo.numen.experience.api.PublicationState.REVOKED) {
+                    sameTopicRevoked++;
+                }
+            }
             ExperienceEntry stored = ExperiencePlugin.memory(companion.getUUID()).learn(entry);
             // ★ 回执与埋点都报 seven_filled：「七个槽位进没进来」必须从外部看得见，
             //   否则「我传了七项」与「我一个都没传」在观测面完全同形 —— 那正是本条缺陷藏了这么久的原因。
@@ -121,14 +141,25 @@ final class ExperienceLearnTool implements NumenTool {
                     "id", stored.id(), "type", stored.type().name(),
                     "title", stored.title(), "maturity", stored.maturity().name(),
                     "seven_filled", filled));
-            reply.accept(TaskResult.ok("experience recorded", Map.of(
-                    "id", stored.id(),
-                    "type", stored.type().name(),
-                    "maturity", stored.maturity().name(),
-                    "verified_count", stored.verifiedCount(),
-                    "seven_filled", filled,
-                    "seven_complete", filled == 7,
-                    "publication", stored.publication() == null ? "?" : stored.publication().name())).toJson());
+            Map<String, Object> receipt = new java.util.LinkedHashMap<>();
+            if (sameTopic > 0) {
+                receipt.put("same_title_existing", sameTopic);
+                receipt.put("same_title_revoked", sameTopicRevoked);
+                receipt.put("duplicate_hint", "已存在 " + sameTopic + " 条同名经验"
+                        + (sameTopicRevoked > 0 ? "（其中 " + sameTopicRevoked + " 条已是终态 REVOKED，无法再发布）" : "")
+                        + "。若这条只是更新版，请用 experience_retract action=supersede 合并，"
+                        + "不要继续堆副本 —— 副本会一条条被 REVOKED 掉，且终态不可逆。");
+            }
+            Map<String, Object> out = new java.util.LinkedHashMap<>();
+            out.put("id", stored.id());
+            out.put("type", stored.type().name());
+            out.put("maturity", stored.maturity().name());
+            out.put("verified_count", stored.verifiedCount());
+            out.put("seven_filled", filled);
+            out.put("seven_complete", filled == 7);
+            out.put("publication", stored.publication() == null ? "?" : stored.publication().name());
+            out.putAll(receipt);   // same_title_existing / same_title_revoked / duplicate_hint（有同题时才出现）
+            reply.accept(TaskResult.ok("experience recorded", out).toJson());
         } catch (RuntimeException ex) {
             reply.accept(TaskResult.fail("experience_learn failed: " + ex.getMessage()).toJson());
         }
