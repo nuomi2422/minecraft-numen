@@ -125,6 +125,21 @@ public abstract class TaskRecord {
         return startedGameTime >= 0 && gameTime <= startedGameTime;
     }
 
+    /**
+     * 受理后 {@code graceTicks} 刻之内（含当刻）。
+     *
+     * <p>2026-10-31 实机（166 长线跑）：同一秒内连派两件活，第二件把第一件顶掉 ——
+     * 40 分钟里 105 次 cancel/interrupt（goto 56、mine 21、attack 14）；
+     * 而旧的"同一刻"判据拦不住它，因为两次派发落在**相邻两刻**。
+     * 于是把"刚受理"放宽到"刚受理的一小段窗口"，拦住同一次动作规划里的连发。
+     *
+     * <p>为什么不用更长的窗口：主人（或模型）真的改主意时，下一回合必须能直接替换；
+     * 20 刻（1 秒）足够覆盖连发，又不会把"确实变卦"挡在外面。
+     */
+    public final boolean acceptedWithin(long gameTime, long graceTicks) {
+        return startedGameTime >= 0 && gameTime <= startedGameTime + Math.max(0, graceTicks);
+    }
+
     /** Called by {@code CompanionTickDispatcher} as the record transitions through lifecycle. */
     public final void setState(TaskState state) { this.state = state; }
     public final void setResult(TaskResult result) { this.result = result; }

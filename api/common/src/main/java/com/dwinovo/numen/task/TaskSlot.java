@@ -63,8 +63,18 @@ final class TaskSlot {
      *
      * <p>记录自己知道是哪一刻受理的,判据也住在那儿({@link TaskRecord#acceptedThisTick})。
      */
+    /**
+     * 「刚受理」的窗口：默认 20 刻（1 秒）。
+     *
+     * <p>2026-10-31 实机（166）：同一秒内连派两件活（如 17:08:04/17:08:05 两次 goto）
+     * 会让后件把前件顶掉，40 分钟内 105 次 cancel/interrupt。旧判据只看"同一刻"，
+     * 拦不住落在相邻两刻的连发，于是放宽到 1 秒。
+     */
+    static final long FRESH_ACCEPT_GRACE_TICKS = 20L;
+
     boolean freshlyAccepted(NumenPlayer companion) {
-        return record != null && record.acceptedThisTick(companion.level().getGameTime());
+        return record != null
+                && record.acceptedWithin(companion.level().getGameTime(), FRESH_ACCEPT_GRACE_TICKS);
     }
 
     TaskRecord record() {
