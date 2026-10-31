@@ -39,6 +39,12 @@ public final class ToolRegistry {
      * 时就会撞上;借来的工具由调用方接住并跳过(见 {@code McpClientManager})。
      */
     public static void register(NumenTool tool) {
+        synchronized (TOOLS) {
+            registerLocked(tool);
+        }
+    }
+
+    private static void registerLocked(NumenTool tool) {
         String name = tool.name();
         if (name == null || !LEGAL_NAME.matcher(name).matches()) {
             throw new IllegalArgumentException(
@@ -65,7 +71,9 @@ public final class ToolRegistry {
      * since the backing map is not synchronized.
      */
     public static NumenTool remove(String name) {
-        return TOOLS.remove(name);
+        synchronized (TOOLS) {
+            return TOOLS.remove(name);
+        }
     }
 
     public static NumenTool get(String name) {
@@ -97,9 +105,29 @@ public final class ToolRegistry {
     /**
      * All registered tools, in registration order. Fed to each LLM call.
      * A copy, so callers can pass it to APIs expecting a mutable {@link List}.
+     *
+     * <h2>为什么这里要加锁并跳过 null（2026-10-31 实机事故）</h2>
+     * 旧实现是 {@code new ArrayList<>(TOOLS.values())}：它走
+     * {@code AbstractCollection.toArray()}，先按 {@code size()} 开数组再迭代填充。
+     * 若迭代期间有别的线程 {@code register}/{@code remove}（MCP 客户端装载/卸载借来的工具
+     * 就会），数组尾部会留下 <b>null</b> —— 不抛异常，静默破坏。
+     *
+     * <p>实机表现：{@code tools/list} 与内脑每轮 {@code callableTools()} 都在
+     * {@code t.name()} 上 NPE（{@code Cannot invoke NumenTool.name() because "t" is null}），
+     * 整条 AI 链路停摆，而日志里看不出是谁塞进去的。
+     *
+     * <p>所以：读写同一把锁，且拷贝时显式过滤 null。宁可少一个工具，也不能让整轮请求炸掉。
      */
     public static List<NumenTool> all() {
-        return new ArrayList<>(TOOLS.values());
+        synchronized (TOOLS) {
+            List<NumenTool> out = new ArrayList<>(TOOLS.size());
+            for (NumenTool t : TOOLS.values()) {
+                if (t != null) {
+                    out.add(t);
+                }
+            }
+            return out;
+        }
     }
 
     /**
@@ -118,14 +146,21 @@ public final class ToolRegistry {
     }
 
     private static List<NumenTool> byResidency(NumenTool.Residency want) {
-        List<NumenTool> out = new ArrayList<>();
-        for (NumenTool t : TOOLS.values()) {
-            if (t.residency() == want) out.add(t);
+        synchronized (TOOLS) {
+            List<NumenTool> out = new ArrayList<>();
+            for (NumenTool t : TOOLS.values()) {
+                // 同 all()：并发拷出可能带 null，挑档位时直接跳过。
+                if (t != null && t.residency() == want) {
+                    out.add(t);
+                }
+            }
+            return out;
         }
-        return out;
     }
 
     public static int size() {
-        return TOOLS.size();
+        synchronized (TOOLS) {
+            return TOOLS.size();
+        }
     }
 }
