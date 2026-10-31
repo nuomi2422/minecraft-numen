@@ -3,6 +3,16 @@ package com.dwinovo.numen.plugins.learner.skills;
 import com.dwinovo.numen.plugins.learner.contract.ArtifactDraft;
 import com.dwinovo.numen.plugins.learner.contract.ArtifactKind;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -69,6 +79,49 @@ public final class SkillRegistry {
     private final Map<String, String> byName = new LinkedHashMap<>();
     private final Map<String, Set<String>> bySample = new LinkedHashMap<>();
 
+    /** 落盘文件；{@code null} 表示纯内存（单测/预览用）。 */
+    private final Path file;
+    private int skippedLines;
+
+    /** 纯内存目录。 */
+    public SkillRegistry() {
+        this(null);
+    }
+
+    private SkillRegistry(Path file) {
+        this.file = file;
+    }
+
+    /**
+     * 打开（或新建）目录。
+     *
+     * <p>重建索引靠条目自己的 `fingerprint()` 与 `foundingSamples` ——
+     * 不靠"记一张索引表"，否则索引与条目一旦分叉就再也没法重建。
+     *
+     * <p>坏行跳过并计数（不炸整份目录）：一条坏记录不该让整份历史读不出来。
+     */
+    public static SkillRegistry open(Path file) throws IOException {
+        SkillRegistry reg = new SkillRegistry(file);
+        if (file != null && Files.exists(file)) {
+            for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+                if (line == null || line.isBlank()) {
+                    continue;
+                }
+                try {
+                    reg.index(fromJson(JsonParser.parseString(line).getAsJsonObject()));
+                } catch (RuntimeException e) {
+                    reg.skippedLines++;
+                }
+            }
+        }
+        return reg;
+    }
+
+    /** 加载时跳过的坏行数（诚实计数）。 */
+    public int skippedLines() {
+        return skippedLines;
+    }
+
     /** 测试隔离 / 空库。 */
     public void clear() {
         byId.clear();
@@ -121,6 +174,35 @@ public final class SkillRegistry {
     }
 
     private void store(SkillEntry e) {
+        index(e);
+        if (file != null) {
+            try {
+                persist();
+            } catch (IOException ignored) {
+                // 落盘失败不许炸复盘：目录在内存里仍然可用，下次写入会再试。
+            }
+        }
+    }
+
+    private void persist() throws IOException {
+        Path parent = file.toAbsolutePath().getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        StringBuilder sb = new StringBuilder();
+        for (SkillEntry e : byId.values()) {
+            sb.append(toJson(e).toString()).append('\n');
+        }
+        Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+        Files.writeString(tmp, sb.toString(), StandardCharsets.UTF_8);
+        try {
+            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private void index(SkillEntry e) {
         byId.put(e.skillId(), e);
         byFingerprint.put(e.fingerprint(), e.skillId());
         byName.put(norm(e.name()), e.skillId());
@@ -149,6 +231,81 @@ public final class SkillRegistry {
         for (SkillEntry e : byId.values()) {
             if (e.status().retrievable()) {
                 out.add(e);
+            }
+        }
+        return out;
+    }
+
+    static JsonObject toJson(SkillEntry e) {
+        JsonObject o = new JsonObject();
+        o.addProperty("v", 1);
+        o.addProperty("skillId", e.skillId());
+        o.addProperty("version", e.version());
+        o.addProperty("kind", e.kind().name());
+        o.addProperty("name", e.name());
+        o.addProperty("purpose", e.purpose());
+        o.addProperty("audience", e.audience());
+        o.add("triggerConditions", arr(e.triggerConditions()));
+        o.add("excludeConditions", arr(e.excludeConditions()));
+        o.add("preconditions", arr(e.preconditions()));
+        o.addProperty("risk", e.risk());
+        o.addProperty("evidenceLevel", e.evidenceLevel());
+        o.addProperty("status", e.status().name());
+        o.addProperty("bodyRef", e.bodyRef());
+        o.add("validationSignals", arr(e.validationSignals()));
+        o.add("foundingSamples", arr(e.foundingSamples()));
+        o.add("supersedes", arr(e.supersedes()));
+        o.add("conflicts", arr(e.conflicts()));
+        return o;
+    }
+
+    static SkillEntry fromJson(JsonObject o) {
+        return new SkillEntry(
+                str(o, "skillId"),
+                (int) num(o, "version", 1),
+                ArtifactKind.valueOf(str(o, "kind")),
+                str(o, "name"),
+                str(o, "purpose"),
+                str(o, "audience"),
+                list(o, "triggerConditions"),
+                list(o, "excludeConditions"),
+                list(o, "preconditions"),
+                str(o, "risk"),
+                str(o, "evidenceLevel"),
+                SkillStatus.valueOf(str(o, "status")),
+                str(o, "bodyRef"),
+                list(o, "validationSignals"),
+                list(o, "foundingSamples"),
+                list(o, "supersedes"),
+                list(o, "conflicts"));
+    }
+
+    private static JsonArray arr(List<String> xs) {
+        JsonArray a = new JsonArray();
+        for (String x : xs) {
+            a.add(x);
+        }
+        return a;
+    }
+
+    private static String str(JsonObject o, String k) {
+        var e = o.get(k);
+        return e == null || e.isJsonNull() ? "" : e.getAsString();
+    }
+
+    private static long num(JsonObject o, String k, long def) {
+        var e = o.get(k);
+        return e == null || e.isJsonNull() ? def : e.getAsLong();
+    }
+
+    private static List<String> list(JsonObject o, String k) {
+        var e = o.get(k);
+        List<String> out = new ArrayList<>();
+        if (e != null && e.isJsonArray()) {
+            for (var x : e.getAsJsonArray()) {
+                if (!x.isJsonNull()) {
+                    out.add(x.getAsString());
+                }
             }
         }
         return out;

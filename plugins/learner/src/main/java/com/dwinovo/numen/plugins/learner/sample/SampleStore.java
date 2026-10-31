@@ -154,6 +154,41 @@ public final class SampleStore {
         return d;
     }
 
+    /**
+     * TTL 归档（158 §8：<b>只归档，不删除证据</b>）。
+     *
+     * <p>只动「还能被复盘」的样本（OPEN / READY_FOR_REVIEW / DEFERRED）；
+     * 已 RESOLVED / INVALID / DUPLICATE 的不碰 —— 那些已经有结论，不该因为超期被改写。
+     *
+     * <p>停手条件写死在这里：<b>occurrence 一条都不删</b>。归档的是"待办"，不是"事实"。
+     * 真删了，之后任何"这条死亡到底发生过几次"都回答不了。
+     *
+     * @param ttlMillis 超过多久算过期；{@code <= 0} 抛错（静默不归档会让待办无限堆积）
+     * @return 本次归档的条数
+     */
+    public synchronized int archiveExpired(long nowMillis, long ttlMillis) throws IOException {
+        if (ttlMillis <= 0) {
+            throw new IllegalArgumentException("ttlMillis 必须为正数，收到 " + ttlMillis);
+        }
+        int archived = 0;
+        for (Map.Entry<String, LearningSample> e : byId.entrySet()) {
+            LearningSample s = e.getValue();
+            if (!s.state().reviewable()) {
+                continue;
+            }
+            long at = s.latestEvidenceAt() > 0 ? s.latestEvidenceAt() : s.createdAt();
+            if (at <= 0 || nowMillis - at < ttlMillis) {
+                continue;
+            }
+            e.setValue(s.withState(SampleState.ARCHIVED));
+            archived++;
+        }
+        if (archived > 0) {
+            persist();
+        }
+        return archived;
+    }
+
     /** 强指纹 → 稳定 id；撞了就加序号（保持可复算：同一个指纹永远得到同一个 id）。 */
     private String allocateId(String fingerprint) {
         String baseId = "s-" + SampleFingerprint.shortHash(fingerprint);

@@ -60,10 +60,13 @@ public enum SampleState {
     private static final Map<SampleState, Set<SampleState>> NEXT = new EnumMap<>(SampleState.class);
 
     static {
-        NEXT.put(OPEN, EnumSet.of(READY_FOR_REVIEW, DEFERRED, INVALID, DUPLICATE));
-        NEXT.put(READY_FOR_REVIEW, EnumSet.of(IN_REVIEW, DEFERRED, INVALID, DUPLICATE));
+        // ARCHIVED 允许从待办态直接进入：TTL 到期时，一条从没被复盘的样本必须能归档。
+        // 否则它要么永远占着待办、要么只能被误标成 INVALID —— 那等于说"这条样本不成立"，是撒谎。
+        // 158 §8 的语义是「只归档不删证据」，不是「必须复盘过才能归档」。
+        NEXT.put(OPEN, EnumSet.of(READY_FOR_REVIEW, DEFERRED, INVALID, DUPLICATE, ARCHIVED));
+        NEXT.put(READY_FOR_REVIEW, EnumSet.of(IN_REVIEW, DEFERRED, INVALID, DUPLICATE, ARCHIVED));
         // 延迟的样本必须能回来，否则一次预算不足就永久埋掉一个真实失败。
-        NEXT.put(DEFERRED, EnumSet.of(READY_FOR_REVIEW, INVALID, DUPLICATE));
+        NEXT.put(DEFERRED, EnumSet.of(READY_FOR_REVIEW, INVALID, DUPLICATE, ARCHIVED));
         NEXT.put(IN_REVIEW, EnumSet.of(RESOLVED, DEFERRED, INVALID));
         NEXT.put(RESOLVED, EnumSet.of(ARCHIVED));
         NEXT.put(ARCHIVED, EnumSet.noneOf(SampleState.class));
