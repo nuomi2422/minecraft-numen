@@ -95,7 +95,9 @@ public final class TaskDispatch {
         } else if (record.isExternalCall()) {
             note = "已受理,后台执行中。用 task_status 轮询,身体转空闲即为完成,再用感知工具确认结果;task_stop 叫停。";
         } else {
-            note = "已受理,后台执行中。完成会自动收到 task_finished 事件,不要轮询;task_status 查进度,task_stop 叫停。";
+            // 2026-10-31（V-20261031-37 实测）：旧文案「不要轮询;task_status 查进度」自相矛盾，
+            // AI 照后半句每 2 秒查一次（B33 9 次）。内置大脑只该等 task_finished。
+            note = "已受理,后台执行中。完成会自动收到 task_finished 事件;不要调用 task_status 轮询。需要中止时用 task_stop。";
         }
         reply.accept(TaskResult.ok(
                 note,
