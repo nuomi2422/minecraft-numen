@@ -121,6 +121,14 @@ final class LearnerStatusTool implements NumenTool {
                 data.put("samples", java.util.Map.of("unreadable", true, "error", String.valueOf(t)));
             }
 
+            // Skill 目录（159 G）：空目录也要能一眼看见，而不是去文件系统里考古。
+            try {
+                java.nio.file.Path cfg = LearnerPlugin.configDir();
+                data.put("skills", com.dwinovo.numen.plugins.learner.skills.SkillCatalogView.stats(cfg));
+            } catch (Throwable t) {
+                data.put("skills", java.util.Map.of("readable", false, "error", String.valueOf(t)));
+            }
+
             String reviewId = null;
             try {
                 if (args != null && args.has("review_id") && args.get("review_id").isJsonPrimitive()) {

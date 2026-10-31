@@ -230,6 +230,11 @@ public final class SkillRegistry {
         return byId.size();
     }
 
+    /** 全部条目（只读视图，给面板统计用；不暴露内部 map）。 */
+    public List<SkillEntry> all() {
+        return List.copyOf(byId.values());
+    }
+
     /** 样本 → 它派生出的 Skill（双向回链的另一半）。 */
     public List<String> skillsOfSample(String sampleId) {
         Set<String> ids = bySample.get(sampleId);
