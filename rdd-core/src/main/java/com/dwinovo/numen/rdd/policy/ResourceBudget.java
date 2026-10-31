@@ -121,4 +121,54 @@ public final class ResourceBudget {
     public static boolean satisfied(RiskLevel level, Map<String, Integer> available) {
         return missingFor(level, available).isEmpty();
     }
+
+    // ---- B6 / S6：连续死亡后把备用要求升一档 --------------------------------------
+
+    /**
+     * 保护级别下的「一档更严」应取哪个级别的备用套。
+     *
+     * <p>只用于 {@link #requiredWithBackup(RiskLevel, RddProtectionLevel)}：
+     * 低风险不加码（MINING 以下没有备用套，硬升只会凭空造要求）。
+     */
+    public static RiskLevel escalatedLevel(RiskLevel level) {
+        if (level == null) return RiskLevel.NORMAL;
+        return switch (level) {
+            case NETHER -> RiskLevel.END;
+            case MINING -> RiskLevel.NETHER;
+            case NORMAL -> RiskLevel.MINING;
+            default -> level;   // END 已是最严，不再往上
+        };
+    }
+
+    /**
+     * 含备用套的要求，并按保护级别加码。
+     *
+     * <p>非 {@link RddProtectionLevel#HIGH} 时与 {@link #requiredWithBackup(RiskLevel)} **逐项相等**
+     * —— 这是 B6 的关键约束：没有连续死亡就绝不能改变现有行为，
+     * 否则 B3/B5 已经验过的门行为会被悄悄改掉。
+     *
+     * <p>HIGH 时取「升一档」的备用套（NETHER→END 等），
+     * 语义是：已经连死两次，进下界就该按末地的备用标准准备。
+     */
+    public static Map<String, Integer> requiredWithBackup(RiskLevel level, RddProtectionLevel protection) {
+        if (protection == null || !protection.escalates()) {
+            return requiredWithBackup(level);
+        }
+        Map<String, Integer> base = requiredFor(level);
+        Map<String, Integer> backup = backupFor(escalatedLevel(level));
+        if (backup.isEmpty()) {
+            return base;
+        }
+        Map<String, Integer> out = new LinkedHashMap<>(base);
+        for (Map.Entry<String, Integer> e : backup.entrySet()) {
+            out.merge(e.getKey(), e.getValue(), Math::max);
+        }
+        return Map.copyOf(out);
+    }
+
+    /** 按保护级别算缺口（契约与 {@link #requiredWithBackup(RiskLevel, RddProtectionLevel)} 一致）。 */
+    public static List<String> missingWithBackup(RiskLevel level, Map<String, Integer> available,
+                                                 RddProtectionLevel protection) {
+        return missingFrom(requiredWithBackup(level, protection), available);
+    }
 }

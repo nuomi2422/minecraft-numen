@@ -281,6 +281,30 @@ public final class RddDeathLedger {
     }
 
     /** 全部记录，最新在前。 */
+    /**
+     * 窗口内**未回收**的死亡次数（B6 / S6「连续死亡」的唯一计数口径）。
+     *
+     * <p>为什么排除 {@link State#RECOVERED}：回收成功说明保护是够的，
+     * 把它算进「保护不足」会让保护级别只因小事升级，反而更容易拦死主线。
+     *
+     * @param nowGameTime 当前游戏刻；{@code age = now - gameTime}，只有 0..windowTicks 才计入
+     * @param windowTicks 窗口长度（刻）。<=0 直接返回 0，不做"全时段"的意外行为
+     */
+    public static int recentUnrecoveredDeaths(UUID companionId, long nowGameTime, long windowTicks) {
+        if (windowTicks <= 0) return 0;
+        List<Death> list = LEDGER.get(companionId == null ? new UUID(0, 0) : companionId);
+        if (list == null || list.isEmpty()) return 0;
+        int n = 0;
+        synchronized (list) {
+            for (Death d : list) {
+                if (d.state() == State.RECOVERED) continue;
+                long age = nowGameTime - d.gameTime();
+                if (age >= 0 && age <= windowTicks) n++;
+            }
+        }
+        return n;
+    }
+
     public static List<Death> all(UUID companionId) {
         List<Death> list = LEDGER.get(companionId);
         if (list == null) return List.of();
