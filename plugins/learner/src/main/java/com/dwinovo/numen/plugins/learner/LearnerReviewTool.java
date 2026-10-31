@@ -494,6 +494,31 @@ final class LearnerReviewTool implements NumenTool {
      * 落库失败**绝不**影响复盘已成功的结论（同 announce 的纪律）。</p>
      */
     /**
+     * 2026-10-31（V-20261031-25）：两条 title 的字符 bigram Jaccard，用于 REVISE 主题一致性。
+     *
+     * <p>为什么需要：REVISE 只覆写 type/title，正文仍取草稿；当草稿讲的是另一件事时，
+     * 会把不相干正文合并进目标条目（实测：goto 标题 + craft 正文）。主题不一致就不落库。
+     */
+    static double titleOverlap(String a, String b) {
+        java.util.Set<String> ga = bigrams(a);
+        java.util.Set<String> gb = bigrams(b);
+        if (ga.isEmpty() || gb.isEmpty()) return 0.0;
+        java.util.Set<String> inter = new java.util.HashSet<>(ga);
+        inter.retainAll(gb);
+        java.util.Set<String> union = new java.util.HashSet<>(ga);
+        union.addAll(gb);
+        return union.isEmpty() ? 0.0 : (double) inter.size() / union.size();
+    }
+
+    private static java.util.Set<String> bigrams(String s) {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        if (s == null) return out;
+        String t = s.replaceAll("\\s+", "").toLowerCase(java.util.Locale.ROOT);
+        for (int i = 0; i + 1 < t.length(); i++) out.add(t.substring(i, i + 2));
+        return out;
+    }
+
+    /**
      * 2026-10-31：从目标 entry id（{@code type|title}）取 title；取不到才回退（不猜）。
      *
      * <p>为什么不用 {@code hits[0].title}：它是检索渲染的显示截断（B10 实测 155 字→20 字），
@@ -566,6 +591,9 @@ final class LearnerReviewTool implements NumenTool {
                 //   id 即撞上 → 走更新分支。title 取自 retrieval_hits（渲染处已带），
                 //   不开任何跨插件读通道。
                 String reviseNote = "";
+                boolean topicMismatch = false;
+                String draftTitle = args.has("title") && args.get("title").isJsonPrimitive()
+                        ? args.get("title").getAsString() : "";
                 Object decObj = one.get("retrieval_decision");
                 if ("REVISE".equals(decObj)) {
                     Object hitsObj = one.get("retrieval_hits");
@@ -584,7 +612,13 @@ final class LearnerReviewTool implements NumenTool {
                             args.addProperty("type", targetType);
                         }
                         String targetTitle = targetTitleOf(targetId, hitTitle);
-                        if (!targetTitle.isBlank() && !"null".equals(targetTitle)) {
+                        // 2026-10-31（V-20261031-25 实测）：REVISE 只改身份、正文仍取草稿，
+                        // 会把不相干 memo 的正文合并进目标条目（goto 标题 + craft 正文）。
+                        // 主题不一致就**不落库**，只记录（宁可少学一条，不污染已有经验）。
+                        if (titleOverlap(draftTitle, targetTitle) < 0.10) {
+                            reviseNote = "REVISE_TOPIC_MISMATCH:" + targetId;
+                            topicMismatch = true;
+                        } else if (!targetTitle.isBlank() && !"null".equals(targetTitle)) {
                             args.addProperty("title", targetTitle);
                             reviseNote = "REVISE->" + targetId;
                         } else {
@@ -593,7 +627,7 @@ final class LearnerReviewTool implements NumenTool {
                         }
                     }
                 }
-                if (args.has("type") && args.has("title") && args.has("description")) {
+                if (!topicMismatch && args.has("type") && args.has("title") && args.has("description")) {
                     var tool = com.dwinovo.numen.agent.tool.ToolRegistry.get("experience_learn");
                     if (tool == null) {
                         outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "SKIPPED",
