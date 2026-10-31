@@ -106,6 +106,21 @@ final class LearnerStatusTool implements NumenTool {
                 data.put("artifact_outbox", "UNSET（插件 setup 没跑完？）");
             }
 
+            // 样本层（158/159 C）：这段只说"现在是什么状态"，不说"学到了什么"。
+            // note 会明确写「关闭/开启」，防止把接线读成已生效。
+            try {
+                java.nio.file.Path cfg = LearnerPlugin.configDir();
+                if (cfg == null) {
+                    data.put("samples", java.util.Map.of("unreadable", true, "note", "UNSET（插件 setup 没跑完？）"));
+                } else {
+                    data.put("samples", com.dwinovo.numen.plugins.learner.sample.SampleStatusView.render(
+                            com.dwinovo.numen.plugins.learner.sample.SampleIntakeRuntime.shared(cfg).stats()));
+                }
+            } catch (Throwable t) {
+                // 面板读不出来不许影响状态查询本身：其余字段照常返回。
+                data.put("samples", java.util.Map.of("unreadable", true, "error", String.valueOf(t)));
+            }
+
             String reviewId = null;
             try {
                 if (args != null && args.has("review_id") && args.get("review_id").isJsonPrimitive()) {

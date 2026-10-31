@@ -178,6 +178,10 @@ final class ToolFailureIntake {
             }
             WINDOWS.remove(key);
             if (appended) {
+                // 样本层（旁路）：工具失败口也走同一个入库入口 —— 161 §6.5 的三口收敛点。
+                com.dwinovo.numen.plugins.learner.sample.SampleIntakeRuntime.shared(configDir).recordToolFailure(
+                        String.valueOf(uuid), tool, cls, w.count, w.lastMs, w.firstId,
+                        System.currentTimeMillis());
                 memos++;
                 byCompanion.merge(uuid, 1, Integer::sum);
                 if (memos >= MAX_MEMOS_PER_SCAN) break;

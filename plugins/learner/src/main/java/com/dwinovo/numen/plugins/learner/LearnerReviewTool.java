@@ -240,6 +240,40 @@ final class LearnerReviewTool implements NumenTool {
             }
             judged.add(v.memoId());
         }
+        // ── E 段：复盘契约闸门（默认 shadow）──────────────────────────────────
+        // 它不改旧判定语义，只把「按新契约会不会被拒」量出来；配置成 enforce 才真的拦。
+        // 默认 shadow 的理由写在 ReviewContractGate 类注释里：旧格式没有结构化证据，
+        // 直接 ENFORCE 会让学习线当场停摆，而且没人知道为什么。
+        java.util.List<Map<String, Object>> contractRows = new java.util.ArrayList<>();
+        com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.Mode contractMode =
+                com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.mode(LearnerPlugin.configDir());
+        if (contractMode != com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.Mode.OFF) {
+            for (Verdict v : outcome.verdicts()) {
+                if (v.memoId() == null || v.memoId().isBlank()) {
+                    continue;
+                }
+                var draft = com.dwinovo.numen.plugins.learner.contract.ReviewContractAdapter.toSubmission(
+                        v, v.memoId(), com.dwinovo.numen.plugins.learner.contract.Submission.Mode.INTERNAL);
+                var dec = com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.evaluate(
+                        contractMode, draft, null);
+                if (dec == null) {
+                    continue;
+                }
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("memo_id", v.memoId());
+                row.put("status", dec.status().name());
+                row.put("accepted", dec.result().accepted());
+                row.put("codes", dec.codes());
+                row.put("blocked", dec.blocked());
+                contractRows.add(row);
+                if (dec.blocked()) {
+                    // enforce：与检索闸门同样处理 —— 不 commit，memo 退回队列。
+                    retrievalRejected.add(v.memoId() + ": contract:" + String.join(";", dec.codes()));
+                    judged.remove(v.memoId());
+                }
+            }
+        }
+
         List<Memo> toCommit = new ArrayList<>();
         List<Memo> toRestore = new ArrayList<>();
         for (Memo m : batch) {
@@ -460,6 +494,15 @@ final class LearnerReviewTool implements NumenTool {
         reviewedEv.put("prior_round", priorRead.toMap());
         // G6b：哪些判定因为「先检索」没过闸而被退回（Z2/Z3 的可观察面）
         reviewedEv.put("retrieval_rejected", retrievalRejected);
+        if (!contractRows.isEmpty()) {
+            java.util.Map<String, Object> cg = new java.util.LinkedHashMap<>();
+            cg.put("mode", contractMode.name());
+            cg.put("checked", contractRows.size());
+            cg.put("would_reject", contractRows.stream()
+                    .filter(r -> Boolean.FALSE.equals(r.get("accepted"))).count());
+            cg.put("rows", contractRows);
+            reviewedEv.put("contract_gate", cg);
+        }
         LearnerMonitor.publish("reviewed", reviewedEv);
         LearnerPlugin.setReviewVerdicts(reviewId, rendered);
 

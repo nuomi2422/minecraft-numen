@@ -218,6 +218,11 @@ final class LearnerIntakeTool implements NumenTool {
                     continue;
                 }
                 enqueued++;
+                // ── 样本层（旁路，160 §7）──────────────────────────────────────────
+                // 旧链路已经写完 memo，这里只是把同一事实登记成学习样本。
+                // 永不抛、默认关；开关 = <configDir>/learner-sample-intake.json。
+                com.dwinovo.numen.plugins.learner.sample.SampleIntakeRuntime.shared(dir).recordEvent(
+                        ev, com.dwinovo.numen.plugins.learner.sample.SampleIntakeAdapter.SRC_MANUAL, System.currentTimeMillis());
                 one.put("memo_id", memoId);
                 one.put("tried_source", memo.tried().isBlank() ? "absent" : "derived_from_event");
                 decisions.add(one);

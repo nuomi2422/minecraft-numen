@@ -345,6 +345,9 @@ final class LearnerAutoIntake {
             if (ok) {
                 enqueuedBy.merge(companionId, 1, Integer::sum);
                 appendEnqueuedJournal(memoId);   // 落盘防「换代重扫」重复入队
+                // 样本层（旁路）：与手动口同一个入库入口，只换 source。
+                com.dwinovo.numen.plugins.learner.sample.SampleIntakeRuntime.shared(configDirCache).recordEvent(
+                        ev, com.dwinovo.numen.plugins.learner.sample.SampleIntakeAdapter.SRC_AUTO, System.currentTimeMillis());
             } else {
                 queueFull++;
             }
