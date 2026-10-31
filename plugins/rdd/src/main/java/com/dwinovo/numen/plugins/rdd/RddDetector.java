@@ -436,7 +436,10 @@ final class RddDetector {
                     publishWaitingOnce(ap, "dependency|" + chain.currentPrimary().id(), "primary_waiting", Map.of(
                             "primary", chain.currentPrimary().id(),
                             "reason", "dependency assets not present"));
-                    RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_dependency_waiting");
+                    // 与风险门同样的理由：快照每 tick 发会把证据淹掉；按 10 秒节流，换阶段立刻发。
+                    if (shouldPublishGatedSnapshot(ap.getUUID(), chain.currentPrimary().id(), "dependency")) {
+                        RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_dependency_waiting");
+                    }
                     watchParkedIfStuck(ap, rt, chain); // 监督扩面：依赖门长时间没过也催工
                     return;
                 }
@@ -530,7 +533,9 @@ final class RddDetector {
                         RddMonitor.publish("primary_waiting", Map.of(
                                 "primary", chain.currentPrimary().id(),
                                 "reason", "dependency assets not present"));
-                        RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_dependency_waiting");
+                        if (shouldPublishGatedSnapshot(ap.getUUID(), chain.currentPrimary().id(), "dependency")) {
+                            RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_dependency_waiting");
+                        }
                         break;
                     }
                 }
@@ -619,7 +624,15 @@ final class RddDetector {
 
     /** 同一 primary 的"被门拦住"快照按 10 秒节流；换阶段立即放行一次。 */
     static boolean shouldPublishGatedSnapshot(java.util.UUID uuid, String primaryId) {
-        String key = String.valueOf(uuid) + "|" + String.valueOf(primaryId);
+        return shouldPublishGatedSnapshot(uuid, primaryId, "riskgate");
+    }
+
+    /**
+     * 同上，但可按"哪一层门"分开去重 —— 风险门与依赖门是两条不同的原因，
+     * 共用一把键会把其中一个的首次记录吞掉。
+     */
+    static boolean shouldPublishGatedSnapshot(java.util.UUID uuid, String primaryId, String layer) {
+        String key = String.valueOf(uuid) + "|" + String.valueOf(layer) + "|" + String.valueOf(primaryId);
         long now = System.currentTimeMillis();
         Long last = LAST_GATED_SNAPSHOT_AT.get(key);
         if (last != null && now - last < GATED_SNAPSHOT_MIN_INTERVAL_MS) {
