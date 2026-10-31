@@ -215,8 +215,14 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
             if (!anyHarvestable) {
                 return new Precondition.Failure(
                         "can't harvest " + r.label + " with the current tools — mining it would"
-                        + " destroy it without any drop. Equip a suitable tool (e.g. a pickaxe)"
-                        + " first; to just destroy a block regardless of drops, use break_block.",
+                        + " destroy it without any drop."
+                        // 2026-10-31 实机（166）：这条只说「Equip a suitable tool (e.g. a pickaxe)」，
+                        // 模型 7 分钟后装的是 iron_sword（不是镐），然后又来挖黑曜石 —— 空转 7 分钟。
+                        // 改为把「必须先用 equip_item 装备镐类工具」写成具体动作，并点名要用哪一类。
+                        + " First call equip_item with a pickaxe-class tool (diamond_pickaxe / iron_pickaxe /"
+                        + " stone_pickaxe) so it is in your main hand, THEN call mine again."
+                        + " Holding one in the backpack is not enough — mining uses the tool in hand."
+                        + " (To destroy a block regardless of drops, use break_block instead.)",
                         FailureType.WRONG_TOOL);
             }
             return null;
@@ -886,9 +892,13 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         // 没告诉它**用什么参数**清路。这里补两种可执行的下一步，并点明参数名。
         fail("found " + knownOres.size() + " " + r.label + " but could not reach any of them from "
                 + where + " — no path out, and nothing minable in place; gathered 0."
+                // ★ 2026-10-31 更正：上一版这里写「re-issue mine with may_alter_terrain=true」是**错的** ——
+                //   mine 的参数只有 block_ids/count，没有 may_alter_terrain，那条建议模型根本无法执行。
+                //   能清路的真实工具是 break_block；也可以先 goto 到地表开口再挖。
                 + " Two concrete next moves: (a) goto a surface opening first (x+z, omit y) and mine again from there;"
-                + " (b) if the only way out needs breaking a block, re-issue mine with may_alter_terrain=true"
-                + " — without it the walk never breaks or places anything.", FailureType.NO_PATH);
+                + " (b) if a block is walling you in, use break_block on that specific block, then mine again."
+                + " (mine already digs through natural terrain; this failure means no route exists at all.)",
+                FailureType.NO_PATH);
         return TaskState.FAILED;
     }
 
