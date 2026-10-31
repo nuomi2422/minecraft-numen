@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -140,5 +141,11 @@ class FunnelLadderTest {
         assertEquals("已展开未采用", stop.verdict());
         assertEquals(0, l.countAt(FunnelStage.RECALLED, FunnelLedger.Caller.EXECUTOR),
                 "账本如实记着没有召回 —— 局限只在 whereStopped 的措辞，不在数据");
+        // 2026-10-31 补：断点单列成 gaps，措辞保持稳定（避免面板抖动）。
+        assertTrue(stop.hasGaps(), "跳过更早的阶必须被标出来，否则「已展开未采用」读不出前面断了");
+        assertTrue(stop.gaps().contains(FunnelStage.RECALLED), "缺的就是召回这一阶");
+        assertTrue(stop.gaps().contains(FunnelStage.PRESENTED), "呈现也没记录，同样算断点");
+        assertFalse(stop.gaps().contains(FunnelStage.EXPANDED),
+                "到达的那一阶不是断点：把最高阶也算进 gaps 会让面板永远报断");
     }
 }

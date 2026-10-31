@@ -69,8 +69,21 @@ public final class FunnelLedger {
      * @param reached 已经到达的最高阶（没有任何记录时为 {@code null}）
      * @param missing 下一阶（即"停在哪"）；已走完 7 阶时为 {@code null}
      * @param verdict 一句话结论（给面板/回执）
+     * @param gaps    比 {$reached} 更早、却没有任何记录的阶（阶梯断点）
      */
-    public record Stop(FunnelStage reached, FunnelStage missing, String verdict) {
+    public record Stop(FunnelStage reached, FunnelStage missing, String verdict, List<FunnelStage> gaps) {
+        public Stop {
+            gaps = gaps == null ? List.of() : List.copyOf(gaps);
+        }
+
+        /** 无断点视图（老调用点用）。 */
+        public Stop(FunnelStage reached, FunnelStage missing, String verdict) {
+            this(reached, missing, verdict, List.of());
+        }
+
+        public boolean hasGaps() {
+            return !gaps.isEmpty();
+        }
     }
 
     private final Map<String, Entry> byKey = new LinkedHashMap<>();
@@ -155,7 +168,18 @@ public final class FunnelLedger {
             case EXECUTED -> "已采用未执行";
             case EFFECT -> "已执行未见效果";
         };
-        return new Stop(highest, missing, verdict);
+        // 阶梯断点：比最高阶更早、却没有任何记录的阶。
+        // 为什么不改 verdict：措辞会随"缺不缺阶"抖动，读的人分不清是出问题还是本来如此；
+        // 把断点单列成字段，面板可以只在需要时突出它。
+        List<FunnelStage> gaps = new ArrayList<>();
+        if (highest != null) {
+            for (FunnelStage s : FunnelStage.values()) {
+                if (s.rank() < highest.rank() && !stages.contains(s)) {
+                    gaps.add(s);
+                }
+            }
+        }
+        return new Stop(highest, missing, verdict, gaps);
     }
 
     /** 某阶段某调用方的计数（面板读数）。 */

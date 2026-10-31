@@ -67,6 +67,11 @@ public final class FunnelReport {
         out.put("reached", stop.reached() == null ? "" : stop.reached().name());
         out.put("missing", stop.missing() == null ? "" : stop.missing().name());
         out.put("verdict", stop.verdict());
+        // 阶梯断点单独列出：空列表 = 连续。措辞（verdict）刻意不随缺阶抖动。
+        out.put("gaps", stop.gaps().stream().map(Enum::name).toList());
+        if (stop.hasGaps()) {
+            out.put("gap_note", "阶梯不连续：这些更早的阶没有任何记录（数据没错，是这一段的动作没发生）");
+        }
         return out;
     }
 
