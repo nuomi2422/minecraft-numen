@@ -419,6 +419,12 @@ public final class RddPlugin implements NumenPlugin {
     static void beginPlanning(MinecraftServer server, RddCallbackGuard.Ticket ticket,
                               String objective, String source) {
         UUID uuid = ticket.companionId();
+        // B1/166：切断旧目标必须发生在异步 Stage-A 规划之前。
+        // 否则规划窗口内仍会把旧链投给执行 AI，重启时还会从 rdd-tasks/<uuid>.json 复活。
+        discardPreviousGoalState(uuid, objective);
+        RddMonitor.publish("goal_generation_bound", Map.of(
+                "companionId", uuid.toString(), "objective", objective,
+                "source", source, "oldStateDiscarded", true));
         DECOMPOSING.add(uuid);
         BODY.remove(uuid);
         RddGoalDriver.clear(uuid);
@@ -1197,9 +1203,12 @@ private static String withAssets(UUID companionId, String rddContext) {
             if (seq < 0) return;
             String key = companionId + "|" + seq;
             if (!DEATH_SETTLEMENTS.add(key)) return;
-            String terminal = String.valueOf(data.getOrDefault("deathRecoveryTerminalReason", ""));
-            boolean confirmedLost = "drops_absent_with_world_evidence".equals(terminal);
-            boolean recovered = "drops_recovered".equals(terminal);
+            // 2026-10-31：产出侧写的是 terminal_reason（下划线），这里原先只读驼峰键
+            // deathRecoveryTerminalReason —— 两者对不上，terminal 永远为空，
+            // 于是 ledgerState 恒 UNVERIFIED、replanRequested 恒 true（实测 죽30/31 两次都是空）。
+            String terminal = com.dwinovo.numen.rdd.side.death.RecoveryTerminal.parse(data);
+            boolean confirmedLost = com.dwinovo.numen.rdd.side.death.RecoveryTerminal.isConfirmedAbsent(terminal);
+            boolean recovered = com.dwinovo.numen.rdd.side.death.RecoveryTerminal.isRecovered(terminal);
             if (confirmedLost) {
                 RddDeathLedger.confirmLost(companionId, seq,
                         "loaded death chunk scan found no tracked drop entity");
@@ -1981,6 +1990,42 @@ private static String safeDeathAttacker(NumenPlayer body) {
 
     public static String nextBodyCallId() {
         return "rdd-" + BODY_CALLS.incrementAndGet();
+    }
+
+    /**
+     * B1/166：在新目标进入异步规划前，同步切断旧 RDD 运行时和磁盘 handoff。
+     * 这是目标代次边界，不调用 remove()，因为 remove() 会异步排队而留下一个可见窗口。
+     */
+    private static void discardPreviousGoalState(UUID companionId, String newObjective) {
+        if (companionId == null) return;
+        RddRuntime previous = RUNTIMES.remove(companionId);
+        BODY.remove(companionId);
+        RddGoalDriver.clear(companionId);
+        RddNegotiationInbox.clear(companionId);
+        LAST_CONTEXT.remove(companionId);
+        LAST_EXPANSION_REPORT.remove(companionId);
+        KICKOFF_SENT.remove(companionId);
+        clearNudgeThrottle(companionId);
+        SideTaskHost.cancel(companionId, "goal replaced before planning");
+        try {
+            if (tasksDir != null) {
+                Files.deleteIfExists(tasksDir.resolve(companionId + ".json.tmp"));
+                Files.deleteIfExists(tasksDir.resolve(companionId + ".json"));
+            }
+            if (previous != null) {
+                RddMonitor.publish("task_removed", Map.of(
+                        "companionId", companionId.toString(),
+                        "reason", "goal_replaced_before_planning",
+                        "newObjective", newObjective == null ? "" : newObjective));
+            }
+        } catch (IOException ex) {
+            RddMonitor.publish("goal_generation_mismatch", Map.of(
+                    "companionId", companionId.toString(),
+                    "reason", "old_task_handoff_delete_failed",
+                    "newObjective", newObjective == null ? "" : newObjective,
+                    "error", ex.toString()));
+            throw new IllegalStateException("cannot discard previous RDD goal state", ex);
+        }
     }
 
     /** 这个同伴身上还有没有 RDD 的任务状态（内存里的任何一样）。/goal clear 据它如实回报。 */
