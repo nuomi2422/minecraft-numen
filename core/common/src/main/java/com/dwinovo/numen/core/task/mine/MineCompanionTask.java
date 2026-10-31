@@ -229,11 +229,54 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         });
     }
 
+    /**
+     * 挖矿前确保垫路料清单不是空的（2026-10-31 实机，166 §66）。
+     *
+     * <p>实机证据：scaffold_materials 全天 0 次调用，而 mine 反复因
+     * scaffolding list is EMPTY / no path out 失败 —— 清单为空时寻路一格都不能放，
+     * 于是挖竖井下去能挖、爬回来或搭桥不能搭，深部矿脉基本无解。
+     *
+     * <p>为什么由挖矿任务自己补：挖矿本来就要求破坏地形，垫路料是这项任务的执行前提，
+     * 不该再指望模型先想起来去设一遍清单（它已经 0 次了）。
+     * 只在清单为空时挑背包里最富余的一种方块补进去，不覆盖模型自己设过的清单。
+     */
+    private void ensureScaffoldMaterials() {
+        try {
+            if (!com.dwinovo.numen.core.pathing.settings.ScaffoldMaterials.effectiveIds(player).isEmpty()) {
+                return;   // 已经设过，尊重它
+            }
+            Map<String, Integer> byId = new java.util.LinkedHashMap<>();
+            var inv = player.getInventory();
+            for (int i = 0; i < inv.getContainerSize(); i++) {
+                ItemStack st = inv.getItem(i);
+                if (st.isEmpty() || !(st.getItem() instanceof net.minecraft.world.item.BlockItem)) {
+                    continue;
+                }
+                byId.merge(com.dwinovo.numen.core.pathing.settings.ScaffoldMaterials.idOf(st.getItem()),
+                        st.getCount(), Integer::sum);
+            }
+            String best = byId.entrySet().stream()
+                    .filter(e -> e.getValue() >= 8)
+                    .max(Map.Entry.comparingByValue())
+                    .map(Map.Entry::getKey)
+                    .orElse(null);
+            if (best == null) {
+                return;   // 背包里确实没有可用方块，交给上层按走不到失败
+            }
+            new com.dwinovo.numen.core.tools.ScaffoldOps().apply("add", List.of(best), player);
+            com.dwinovo.numen.core.Constants.LOG.info(
+                    "[numen-task] mine 自动补垫路料 {}（清单原为空，共 {}）", best, byId.get(best));
+        } catch (RuntimeException ignored) {
+            // 补料失败不该拖垮挖矿
+        }
+    }
+
     @Override
     protected void onStart() {
         // Count toward `count` by ITEMS gathered, not blocks broken: resolve what these
         // blocks drop, and snapshot how many we already hold so the tally is the delta above it.
         dropItems = computeDropItems();
+        ensureScaffoldMaterials();
         baseline = inventoryMatch();
         // 登记目标进共享索引并立即首查;冷区域的索引构建由每次查询的预算分摊,
         // 覆盖完整前 onTick 的终局判定会等着(lastQueryComplete)。
