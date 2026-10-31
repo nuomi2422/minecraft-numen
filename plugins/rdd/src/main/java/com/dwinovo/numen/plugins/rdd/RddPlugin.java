@@ -1334,16 +1334,14 @@ private static String withAssets(UUID companionId, String rddContext) {
                 // 而今天重启了十几次，B6 的升级几乎不可能被观测到。
                 // 改为**无状态推导**：这次死亡之前窗口里是 recent-1 次，取它的级别当 prev。
                 // 台账本身是落盘的，所以重启不影响这条推导。
-                com.dwinovo.numen.rdd.policy.RddProtectionLevel prev =
-                        com.dwinovo.numen.rdd.policy.RddProtectionLevel.of(Math.max(0, recent - 1));
+                // prev 不再需要：跨阈值判断已收进 RddProtectionLevel.shouldAnnounceEscalation(recent)
                 // 只在**上升**时发一次：下降发事件只会变成噪音，且会让人以为"保护被撤销了"。
-                if (com.dwinovo.numen.rdd.policy.RddProtectionLevel.isEscalationFrom(prev, level)
-                        && level == com.dwinovo.numen.rdd.policy.RddProtectionLevel.HIGH
+                if (com.dwinovo.numen.rdd.policy.RddProtectionLevel.shouldAnnounceEscalation(recent)
                         && LAST_PROTECTION_LEVEL.get(companionId) != level) {
                     LAST_PROTECTION_LEVEL.put(companionId, level);
                     Map<String, Object> esc = new LinkedHashMap<>();
                     esc.put("companionId", companionId.toString());
-                    esc.put("from", prev.name());
+                    esc.put("from", com.dwinovo.numen.rdd.policy.RddProtectionLevel.of(recent - 1).name());
                     esc.put("to", level.name());
                     esc.put("recentUnrecoveredDeaths", recent);
                     esc.put("windowTicks", PROTECTION_WINDOW_TICKS);
@@ -1351,7 +1349,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                     esc.put("reason", "consecutive_deaths_without_recovery");
                     RddMonitor.publish("protection_escalated", esc);
                     LOG.info("[rdd] 保护级别上升 {} -> {}（窗口内未回收死亡 {} 次）",
-                            prev, level, recent);
+                            com.dwinovo.numen.rdd.policy.RddProtectionLevel.of(recent - 1), level, recent);
                 }
             } catch (RuntimeException ignore) {
                 // 观测增强：任何异常都不许拖垮死亡处理

@@ -64,6 +64,18 @@ class RddProtectionLevelTest {
     }
 
     @Test
+    void announceOnlyWhenCrossingTheThreshold() {
+        // 0/1 次：还没到"连续"，不发。
+        assertFalse(RddProtectionLevel.shouldAnnounceEscalation(0));
+        assertFalse(RddProtectionLevel.shouldAnnounceEscalation(1));
+        // 2 次：正好跨过 1 -> 2，发一次。
+        assertTrue(RddProtectionLevel.shouldAnnounceEscalation(2));
+        // 3 次以上：早就跨过了，不重复发（避免每死一次都喊一遍）。
+        assertFalse(RddProtectionLevel.shouldAnnounceEscalation(3));
+        assertFalse(RddProtectionLevel.shouldAnnounceEscalation(9));
+    }
+
+    @Test
     void highOnEndStaysEnd() {
         assertEquals(RiskLevel.END, ResourceBudget.escalatedLevel(RiskLevel.END));
         assertEquals(ResourceBudget.requiredWithBackup(RiskLevel.END),

@@ -32,6 +32,20 @@ public enum RddProtectionLevel {
     }
 
     /**
+     * 这次死亡是否**正好跨过**「连续死亡」阈值（1 → 2 次），应当发一次 {@code protection_escalated}。
+     *
+     * <p>为什么不用 {@code previous/current} 比大小：那需要一个「上一次的级别」，
+     * 而它只能存在内存里 —— 重启就丢，于是重启后第一次死亡永远只建基线（§57 的坑）。
+     * 这里改成**只看当前窗口计数**：既然我们只知道"现在窗口里有几次未回收死亡"，
+     * 那就只在 recent==2 时断言「刚刚跨过」。recent>=3 时说明早就跨过了，不重复发。
+     *
+     * @param recentUnrecoveredDeaths 记录本次死亡**之后**窗口内的未回收死亡次数
+     */
+    public static boolean shouldAnnounceEscalation(int recentUnrecoveredDeaths) {
+        return of(recentUnrecoveredDeaths) == HIGH && of(recentUnrecoveredDeaths - 1) != HIGH;
+    }
+
+    /**
      * 这次观测到的级别是否构成「上升」——只有上升才该发 {@code protection_escalated}。
      *
      * <p>为什么单独抽出来：这段判断原本内联在 {@code RddPlugin} 的死亡处理里，
