@@ -52,7 +52,7 @@ public enum PublicationState {
      * DRAFT      → TRIAL, PUBLISHED, REVOKED
      * TRIAL      → PUBLISHED, SUSPENDED, REVOKED
      * PUBLISHED  → SUSPENDED, REVOKED
-     * SUSPENDED  → PUBLISHED, REVOKED
+     * SUSPENDED  → PUBLISHED, TRIAL, REVOKED
      * REVOKED    → （无）
      * </pre>
      */
@@ -63,7 +63,10 @@ public enum PublicationState {
             case DRAFT -> next == TRIAL || next == PUBLISHED || next == REVOKED;
             case TRIAL -> next == PUBLISHED || next == SUSPENDED || next == REVOKED;
             case PUBLISHED -> next == SUSPENDED || next == REVOKED;
-            case SUSPENDED -> next == PUBLISHED || next == REVOKED;
+            // 2026-10-31（V-20261031-32 实测）：试用是一次性的——SUSPENDED 后无法再 TRIAL，
+            // 导致「停用→再试」不可行、trial 测试只能用新条目。加 SUSPENDED→TRIAL（re-trial），
+            // 不恢复 DRAFT（正文/证据仍不退回草稿）。
+            case SUSPENDED -> next == PUBLISHED || next == TRIAL || next == REVOKED;
             case REVOKED -> false;
         };
     }

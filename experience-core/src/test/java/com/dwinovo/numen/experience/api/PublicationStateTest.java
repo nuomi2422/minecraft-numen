@@ -44,6 +44,9 @@ class PublicationStateTest {
         assertTrue(PublicationState.TRIAL.canTransitionTo(PublicationState.PUBLISHED));
         assertTrue(PublicationState.PUBLISHED.canTransitionTo(PublicationState.SUSPENDED));
         assertTrue(PublicationState.SUSPENDED.canTransitionTo(PublicationState.PUBLISHED));
+        // 2026-10-31（V-20261031-32）：停用后可再进 TRIAL（re-trial），但不回 DRAFT。
+        assertTrue(PublicationState.SUSPENDED.canTransitionTo(PublicationState.TRIAL));
+        assertFalse(PublicationState.SUSPENDED.canTransitionTo(PublicationState.DRAFT), "停用不回草稿");
 
         assertFalse(PublicationState.DRAFT.canTransitionTo(PublicationState.DRAFT), "同状态不算迁移");
         assertFalse(PublicationState.PUBLISHED.canTransitionTo(PublicationState.DRAFT), "发布后不许退回草稿");
