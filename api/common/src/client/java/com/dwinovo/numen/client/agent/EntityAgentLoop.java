@@ -1956,7 +1956,12 @@ public final class EntityAgentLoop {
         // G4c S109b A-M2：先建这一轮真正要发出去的那份，但**先不 publish** ——
         // 预算/上下文/压缩闸都通过、incrementTurn 之后才发 runtime_state。
         // 这样被拦下的轮次不会留下“她看见了什么”的假记录，turn 也不会滞后一轮。
-        var tools = com.dwinovo.numen.agent.tool.ToolVisibility.forExecutor(ToolRegistry.all());   // 2026-10-30：内脑只发白名单（config/numen/tool-visibility.json），MCP 仍全量
+        var tools = new java.util.ArrayList<>(com.dwinovo.numen.agent.tool.ToolVisibility.forExecutor(ToolRegistry.all()));   // 2026-10-30：内脑只发白名单（config/numen/tool-visibility.json），MCP 仍全量
+        // 2026-10-31（V-20261031-38）：任务运行中**不发** task_status —— prompt/回执文案都压不住轮询
+        // （B33 9 次、B34 13 次）；task_finished 事件自己会到，<current_task> 已显示进度，要中止用 task_stop。
+        if (com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(entityUuid) != null) {
+            tools.removeIf(t -> "task_status".equals(t.name()));
+        }
         var snapshot = modelContextSnapshot(false, "execution", 1);
         String systemPrompt = composeSystemPrompt();
         // A-M3：tools 分量用 provider 真正发出的 wire JSON，不是 List<NumenTool>.toString()。
@@ -3224,7 +3229,10 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                 presenter.clearPartial();                 // 失败那次的半截文字同理作废
                 NumenLlmClient llm2 = client();
                 var retrySnapshot = modelContextSnapshot(false, "execution", 2);
-                var retryTools = com.dwinovo.numen.agent.tool.ToolVisibility.forExecutor(ToolRegistry.all());   // 同上：重跑同样走白名单
+                var retryTools = new java.util.ArrayList<>(com.dwinovo.numen.agent.tool.ToolVisibility.forExecutor(ToolRegistry.all()));   // 同上：重跑同样走白名单
+                if (com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(entityUuid) != null) {
+                    retryTools.removeIf(t -> "task_status".equals(t.name()));   // 任务运行中同样不发（见 V-20261031-38）
+                }
                 String retrySystem = composeSystemPrompt();
                 inFlightTrimmedEstimate = estimateRequestTokens(retrySnapshot, retryTools, retrySystem);
                 publishPendingRuntimeState();
