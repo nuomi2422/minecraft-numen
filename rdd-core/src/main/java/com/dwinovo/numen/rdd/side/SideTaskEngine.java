@@ -108,6 +108,19 @@ public final class SideTaskEngine {
             // 所以：active 期间也要复查「当初让它来的条件还在不在」，不在了就取消，把主线放出来。
             SideTask running = active.get();
             SideTaskTrigger source = triggerOf(running.typeId());
+            // 167 §B4-6（2026-11-01）：**死亡恢复点名事件不许被常驻支线吞掉**。
+            // 原来 active 存在时这里直接 advance 并 return，于是"睡觉支线正在跑"期间发生死亡，
+            // death_recovery 根本不会在本轮被创建 —— 要等睡觉结束。而掉落物 5 分钟就消失。
+            // 现在：死亡占用时，任何不允许在死亡期运行的支线先取消，再让本轮去创建死亡恢复。
+            if (deathSideTaskOccupying && (source == null || !source.allowedWhileDeathOccupying())) {
+                cancel(companionId, "death recovery takes precedence over " + running.typeId());
+                // **本拍到此为止**：不能接着跑触发循环，否则同一条常驻支线会被立刻重新创建
+                // （实测：取消后 sleep 触发器仍然 fires，于是 cancel→create 循环）。
+                // 下一拍 active 为空，deathSideTaskOccupying 会把非死亡触发器全部跳过，
+                // 死亡恢复点名就能在下一拍被创建——掉落窗口是 5 分钟，等一拍没有代价。
+                return;
+            }
+            {
             // 只有依赖昼夜能力的周期支线才在固定时间维度取消。
             // 死亡恢复必须能在下界/末地运行；它的时钟是掉落/业务事实，不是昼夜时钟。
             if (!world.hasDayNightCycle() && (source == null || !source.allowedWhileDeathOccupying())) {
@@ -116,6 +129,7 @@ public final class SideTaskEngine {
             }
             advance(active.get(), world);
             return;
+            }
         }
         if (!world.hasDayNightCycle() && !deathSideTaskOccupying) {
             return;

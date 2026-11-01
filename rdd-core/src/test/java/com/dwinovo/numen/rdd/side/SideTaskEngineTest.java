@@ -50,6 +50,35 @@ class SideTaskEngineTest {
         assertEquals(1, events.count("side_task_created"), "同一游戏日只触发一次");
     }
 
+    /**
+     * 167 §B4-6（2026-11-01）：睡觉支线正在跑时发生死亡，**不许把死亡恢复点名吞掉**。
+     *
+     * <p>原来的行为：active 存在 → advance 并 return，于是本轮不会创建 death_recovery，
+     * 要等睡觉结束；而掉落物 5 分钟就没了。现在死亡占用会先取消不允许在死亡期运行的支线。
+     */
+    @Test
+    void deathRecoveryPreemptsSleepingSideTask() {
+        RecordingEvents events = new RecordingEvents();
+        SideTaskEngine engine = engine(events);
+        FakeWorldPort port = new FakeWorldPort().at(WINDOW, 0L);
+
+        engine.tick(C, port, null, false);
+        assertTrue(engine.isActive(C), "先在窗口内开出一条睡觉支线");
+        assertEquals("sleep", engine.current(C).orElseThrow().typeId());
+
+        int createdBefore = events.count("side_task_created");
+        // 死亡占用：这一拍必须把睡觉支线取消（否则死亡恢复点名会被拖到天亮）
+        engine.tick(C, port, null, true);
+        assertEquals(createdBefore, events.count("side_task_created"), "本测试没有注册死亡触发器，不应凭空创建");
+        assertFalse(engine.isActive(C), "睡觉支线应已被取消，把位置让给死亡恢复");
+        assertTrue(events.saw("side_task_cancelled"), "取消要有事件，便于事后归因");
+
+        // 再一拍：仍处死亡占用，且没有死亡触发器 → 不许把 sleep 重新创建回来（否则 cancel→create 循环）
+        engine.tick(C, port, null, true);
+        assertFalse(engine.isActive(C), "死亡占用期间常驻支线不得被重新创建");
+        assertEquals(createdBefore, events.count("side_task_created"));
+    }
+
     @Test
     void triggersDuringNightToo() {
         RecordingEvents events = new RecordingEvents();
