@@ -90,6 +90,16 @@ final class LearnerAutoIntake {
      */
     private static final java.util.Set<String> ENQUEUED = ConcurrentHashMap.newKeySet();
     private static final int MAX_ENQUEUED_KEYS = 4096;
+
+    /**
+     * 事件新鲜度上限（2026-11-02）：超过这个年龄的 instrumentation 事件只计 stale、不入队。
+     *
+     * <p>为什么要有：重启→代际变→游标归零→重扫历史，会把 10-31 从未入过队的老事件
+     * 按「新事件」放进来（实测 01:25 队列 56→64，seen 只能挡「曾入队过」的 id）。
+     * 学习线要学的是刚刚发生的事；两天前的死亡不该在今天才变成经验。
+     * 没时间戳/解析失败的事件不猜，照旧处理。
+     */
+    static final long MAX_EVENT_AGE_MS = 2L * 60L * 60L * 1000L;
     /** 已入队 id 的持久日志（一行一个 JSON 对象 {"id":...}）。 */
     private static final String ENQUEUED_JOURNAL = "learner-enqueued.jsonl";
 
@@ -168,6 +178,22 @@ final class LearnerAutoIntake {
                     java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
         } catch (java.io.IOException ignored) {
             // 日志写失败不回滚队列（队列条目本身还在，最坏是下次重扫重复）
+        }
+    }
+
+    /**
+     * 时间戳可解析且早于上限 → stale。
+     *
+     * <p>没有时间戳 / 解析失败 → **走新鲜路径**（返回 false，照旧处理）：
+     * 宁可保留一条时间未知的事件，也不静默丢；这是刻意语义，有测试钉住。
+     */
+    static boolean isStale(FeedbackEvent ev, long nowMs) {
+        if (ev == null || ev.ts() == null || ev.ts().isBlank()) return false;
+        try {
+            long t = java.time.Instant.parse(ev.ts()).toEpochMilli();
+            return nowMs - t > MAX_EVENT_AGE_MS;
+        } catch (RuntimeException parseFailed) {
+            return false;
         }
     }
 
@@ -301,9 +327,11 @@ final class LearnerAutoIntake {
 
         // 事件归属的同伴各建一条队列；无主事件如实跳过（手动口同款三态）
         Map<UUID, Integer> enqueuedBy = new LinkedHashMap<>();
-        int rejected = 0, unattributed = 0, stormSuppressed = 0, dupSkipped = 0, queueFull = 0;
+        int rejected = 0, unattributed = 0, stormSuppressed = 0, dupSkipped = 0, queueFull = 0, stale = 0;
+        long nowMs = System.currentTimeMillis();
 
         for (FeedbackEvent ev : events) {
+            if (isStale(ev, nowMs)) { stale++; continue; }
             String owner = CandidateMemo.companionOf(ev);
             if (owner == null) { unattributed++; continue; }
             UUID companionId;
@@ -352,11 +380,22 @@ final class LearnerAutoIntake {
                 break;
             }
             if (ok) {
-                enqueuedBy.merge(companionId, 1, Integer::sum);
-                appendEnqueuedJournal(memoId);   // 落盘防「换代重扫」重复入队
-                // 样本层（旁路）：与手动口同一个入库入口，只换 source。
-                com.dwinovo.numen.plugins.learner.sample.SampleIntakeRuntime.shared(configDirCache).recordEvent(
-                        ev, com.dwinovo.numen.plugins.learner.sample.SampleIntakeAdapter.SRC_AUTO, System.currentTimeMillis());
+                boolean inQueue;
+                try {
+                    inQueue = queue.contains(memoId);
+                } catch (RuntimeException e) {
+                    inQueue = true;   // 查不了就按「已入队」处理，不制造第二条样本
+                }
+                if (inQueue) {
+                    enqueuedBy.merge(companionId, 1, Integer::sum);
+                    appendEnqueuedJournal(memoId);   // 落盘防「换代重扫」重复入队
+                    // 样本层（旁路）：与手动口同一个入库入口，只换 source。
+                    com.dwinovo.numen.plugins.learner.sample.SampleIntakeRuntime.shared(configDirCache).recordEvent(
+                            ev, com.dwinovo.numen.plugins.learner.sample.SampleIntakeAdapter.SRC_AUTO, System.currentTimeMillis());
+                } else {
+                    // append=true 但队列里没有：seen 命中的重复事件，不得计新入队/写样本。
+                    dupSkipped++;
+                }
             } else {
                 queueFull++;
             }
@@ -385,7 +424,7 @@ final class LearnerAutoIntake {
         }
 
         if (!enqueuedBy.isEmpty() || rejected > 0 || stormSuppressed > 0 || unattributed > 0 || dupSkipped > 0 || queueFull > 0
-                || deferredAdmitted > 0) {
+                || deferredAdmitted > 0 || stale > 0) {
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("generation", generation);
             data.put("events_scanned", events.size());
@@ -396,6 +435,7 @@ final class LearnerAutoIntake {
             data.put("duplicate_skipped", dupSkipped);
             data.put("queue_full", queueFull);
             data.put("deferred_admitted", deferredAdmitted);
+            data.put("stale_skipped", stale);
             LearnerMonitor.publish("auto_intake", data);
         }
         return enqueuedBy.values().stream().mapToInt(Integer::intValue).sum();

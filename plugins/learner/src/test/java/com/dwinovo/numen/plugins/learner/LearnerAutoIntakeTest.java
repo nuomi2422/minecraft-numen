@@ -155,14 +155,18 @@ class LearnerAutoIntakeTest {
     }
 
     private static String deathLine(String eventId, String companion) {
-        return "{\"schema_version\":1,\"event_id\":\"" + eventId + "\",\"timestamp\":\"2026-10-25T09:00:00Z\","
+        return deathLineAt(eventId, companion, java.time.Instant.now().toString());
+    }
+
+    private static String deathLineAt(String eventId, String companion, String ts) {
+        return "{\"schema_version\":1,\"event_id\":\"" + eventId + "\",\"timestamp\":\"" + ts + "\","
                 + "\"source\":\"numen\",\"category\":\"rdd_instrumentation\",\"type\":\"death\","
                 + "\"data\":{\"companionId\":\"" + companion + "\",\"deathKind\":\"mob\",\"deathAttacker\":\"Zombie\","
                 + "\"reason\":\"mob\",\"task\":\"subtask-x\"}}";
     }
 
     private static String loopLine(String eventId, String companion) {
-        return "{\"schema_version\":1,\"event_id\":\"" + eventId + "\",\"timestamp\":\"2026-10-25T09:00:01Z\","
+        return "{\"schema_version\":1,\"event_id\":\"" + eventId + "\",\"timestamp\":\"" + java.time.Instant.now().toString() + "\","
                 + "\"source\":\"numen\",\"category\":\"rdd_instrumentation\",\"type\":\"loop_detected\","
                 + "\"data\":{\"companionId\":\"" + companion + "\",\"reason\":\"loop\"}}";
     }
@@ -200,6 +204,27 @@ class LearnerAutoIntakeTest {
         var queue = queueForTest(COMPANION);
         // 游标文件跨重启存着字节偏移 → 第二次从偏移起读 → 0 新事件 → 不会重复入队
         assertEquals(1, queue.size(), "重启后游标从盘上恢复，同一事件不得二次入队");
+    }
+
+    @Test
+    void staleEventsAreCountedButNotEnqueued() throws IOException {
+        // 2026-11-02：换代重扫会把 10-31 从未入过队的老事件当新事件（队列 56→64）。
+        // 新鲜度闸：超过 2h 的事件只计 stale，不入队。
+        String oldTs = java.time.Instant.now().minus(java.time.Duration.ofDays(2)).toString();
+        writeInstrumentation(tmp.resolve("monitor"),
+                deathLineAt("ev-old", COMPANION, oldTs),
+                deathLine("ev-new", COMPANION));
+        int n = LearnerAutoIntake.scanOnce();
+        assertEquals(1, n, "只有新鲜事件入队");
+        assertEquals(1, queueForTest(COMPANION).size(), "两天前的死亡不得在今天才变成新 memo");
+    }
+
+    @Test
+    void eventWithoutTimestampTakesFreshPath() throws IOException {
+        // 刻意的语义：没有时间戳 = 无法证明它老，走新鲜路径（宁可保留，不静默丢）。
+        writeInstrumentation(tmp.resolve("monitor"), deathLineAt("ev-no-ts", COMPANION, ""));
+        assertEquals(1, LearnerAutoIntake.scanOnce());
+        assertEquals(1, queueForTest(COMPANION).size());
     }
 
     @Test
