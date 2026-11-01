@@ -203,6 +203,34 @@ public final class RiskGate {
         return new Verdict(false, lv, List.copyOf(missing), List.copyOf(prep));
     }
 
+    /**
+     * 167 §B6：在「物资 + 恢复点」之上，再要求**基地备用**达标。
+     *
+     * <p>只收紧、不放松：{@code baseShortfall} 非空时往 missing 里追加条目并返回 allowed=false；
+     * 达标时**完全等于** {@link #checkWithRecovery} 的结果——所以 {@code ESTABLISHED} 永远不会变成放行理由。
+     *
+     * @param baseShortfall 备用缺口（形如 {@code cooked_beef 0/8}）；null/空 表示已达标或未知
+     * @param baseKnown     是否真的观测过基地备用箱；false 时不追加（未知不等于没有）
+     */
+    public static Verdict checkWithBase(RiskLevel level, Map<String, Integer> available,
+                                        boolean hasRecoveryPoint,
+                                        boolean baseKnown, List<String> baseShortfall) {
+        Verdict base = checkWithRecovery(level, available, hasRecoveryPoint);
+        RiskLevel lv = base.level();
+        boolean risky = lv == RiskLevel.NETHER || lv == RiskLevel.END;
+        if (!risky || !baseKnown || baseShortfall == null || baseShortfall.isEmpty()) {
+            return base;   // 不额外收紧；也不因为不知道就放宽
+        }
+        List<String> missing = new ArrayList<>(base.missing());
+        for (String s : baseShortfall) {
+            missing.add("base_reserve need " + s);
+        }
+        List<String> prep = new ArrayList<>(base.prepTasks());
+        prep.add("先把基地备用箱补到最低清单（" + String.join(", ", baseShortfall)
+                + "），再进" + lv.name().toLowerCase() + "；否则死一次就没有第二套");
+        return new Verdict(false, lv, List.copyOf(missing), List.copyOf(prep));
+    }
+
     /** 供测试/宿主使用的已知风险关键词集合（保持与 {@link #levelForText} 一致）。 */
     public static Set<String> knownRiskKeywords() {
         return Set.of("下界", "地狱", "nether", "末地", "末影龙", "the_end", "下矿", "挖矿", "洞穴", "废弃矿井");

@@ -113,6 +113,22 @@ class HomeStageTest {
     }
 
     @Test
+    void baseReserveTightensTheGateButNeverLoosensIt() {
+        // 167 §B6：ESTABLISHED 不是放行理由；这里钉住"只收紧不放松"。
+        Map<String, Integer> empty = java.util.Map.of();
+        var withoutBase = RiskGate.checkWithBase(RiskLevel.NETHER, empty, true, false, java.util.List.of());
+        var withBaseGap = RiskGate.checkWithBase(RiskLevel.NETHER, empty, true, true,
+                java.util.List.of("cooked_beef 0/8", "torch 0/8"));
+        assertFalse(withBaseGap.allowed());
+        assertTrue(withBaseGap.missing().stream().anyMatch(m -> m.startsWith("base_reserve need cooked_beef")),
+                withBaseGap.missing().toString());
+        // 基地达标时，结果必须与"不传基地"完全一致 —— 不许悄悄放宽
+        var baseOk = RiskGate.checkWithBase(RiskLevel.NETHER, empty, true, true, java.util.List.of());
+        assertEquals(withoutBase.allowed(), baseOk.allowed());
+        assertEquals(withoutBase.missing(), baseOk.missing());
+    }
+
+    @Test
     void blockingAndNextOnlyAppearWhenKnown() {
         List<String> bare = HomeSummary.lines(HomeStage.STOCKED, "h", "minecraft:overworld", "1 2 3", NOW,
                 null, null, null, null, NOW);

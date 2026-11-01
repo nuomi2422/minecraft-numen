@@ -668,7 +668,10 @@ final class RddDetector {
             }
             Map<String, Integer> inv = countInventory(ap);
             boolean hasRecovery = hasBoundRespawn(ap);
-            var verdict = com.dwinovo.numen.rdd.policy.RiskGate.checkWithRecovery(level, inv, hasRecovery);
+            // 167 §B6：把基地备用接进门。只收紧不放松——基地达标时与 checkWithRecovery 完全一致。
+            var baseRegistry = RddPlugin.assets(ap.getUUID());
+            var verdict = com.dwinovo.numen.rdd.policy.RiskGate.checkWithBase(level, inv, hasRecovery,
+                    RddHomeFacts.reserveKnown(baseRegistry), RddHomeFacts.reserveShortfall(baseRegistry));
             publishRiskVerdict(ap, primaryDescription, level, verdict, inv);
             return verdict.allowed();
         } catch (RuntimeException ex) {

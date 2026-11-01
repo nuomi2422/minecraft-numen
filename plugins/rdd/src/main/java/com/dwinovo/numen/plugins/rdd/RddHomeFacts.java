@@ -99,6 +99,26 @@ final class RddHomeFacts {
                 blocking, next, nowMillis));
     }
 
+    /** 基地备用箱是否**真的观测过**（有 world_base 且带 important_items）。 */
+    static boolean reserveKnown(AssetRegistry registry) {
+        AssetRegistry.AssetEntry base = freshestBase(registry);
+        return base != null && base.observation().value().get("important_items") instanceof Map<?, ?>;
+    }
+
+    /** 基地备用相对 ReserveKit 的缺口；未知时返回空表（未知不等于缺失）。 */
+    static java.util.List<String> reserveShortfall(AssetRegistry registry) {
+        AssetRegistry.AssetEntry base = freshestBase(registry);
+        if (base == null) return java.util.List.of();
+        if (!(base.observation().value().get("important_items") instanceof Map<?, ?> m)) {
+            return java.util.List.of();
+        }
+        Map<String, Integer> reserve = new LinkedHashMap<>();
+        for (var e : m.entrySet()) {
+            if (e.getValue() instanceof Number n) reserve.put(String.valueOf(e.getKey()), n.intValue());
+        }
+        return com.dwinovo.numen.rdd.policy.ReserveKit.shortfall(reserve);
+    }
+
     private static AssetRegistry.AssetEntry freshestBase(AssetRegistry registry) {
         if (registry == null) return null;
         AssetRegistry.AssetEntry best = null;
