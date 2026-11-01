@@ -82,18 +82,22 @@ public final class ReviewContractAdapter {
                         ? null
                         : new ArtifactDraft(ArtifactKind.AUTO_ACTION,
                         "carrier from " + nz(v.memoId()), clip(v.carrierDraft(), 80), v.carrierDraft(),
-                        List.of(), List.of(), List.of(), "", List.of(), List.of(nz(v.memoId())), "EXECUTOR");
+                        // 2026-11-02：三类产物同样从各自 draft JSON 抬 triggerConditions/evidence（只搬不造）。
+                        listField(v.carrierDraft(), "triggerConditions"), List.of(), List.of(), "",
+                        evidenceField(v.carrierDraft()), List.of(nz(v.memoId())), "EXECUTOR");
                 case SELF_COMPILE -> v.selfCompileRequest() == null || v.selfCompileRequest().isBlank()
                         ? null
                         : new ArtifactDraft(ArtifactKind.CAPABILITY_REQUEST,
                         "capability from " + nz(v.memoId()), clip(v.selfCompileRequest(), 80),
-                        v.selfCompileRequest(), List.of(), List.of(), List.of(), "",
-                        List.of(), List.of(nz(v.memoId())), "EXECUTOR");
+                        v.selfCompileRequest(),
+                        listField(v.selfCompileRequest(), "triggerConditions"), List.of(), List.of(), "",
+                        evidenceField(v.selfCompileRequest()), List.of(nz(v.memoId())), "EXECUTOR");
                 case SIDE_TASK -> v.sideTaskDraft() == null || v.sideTaskDraft().isBlank()
                         ? null
                         : new ArtifactDraft(ArtifactKind.SIDE_TASK,
                         "side task from " + nz(v.memoId()), clip(v.sideTaskDraft(), 80), v.sideTaskDraft(),
-                        List.of(), List.of(), List.of(), "", List.of(), List.of(nz(v.memoId())), "EXECUTOR");
+                        listField(v.sideTaskDraft(), "triggerConditions"), List.of(), List.of(), "",
+                        evidenceField(v.sideTaskDraft()), List.of(nz(v.memoId())), "EXECUTOR");
                 case NO_ACTION, NEEDS_HUMAN -> null;
             };
             if (d != null) {

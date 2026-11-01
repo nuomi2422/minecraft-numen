@@ -29,6 +29,46 @@ class ReviewContractAdapterTest {
     }
 
     @Test
+    void experienceArtifactCarriesPreconditionsAndWindowFirst() {
+        var sub = ReviewContractAdapter.toSubmission(verdict(), "m-1", Submission.Mode.INTERNAL, "tools-123-0");
+        var a = sub.artifacts().get(0);
+        assertEquals("p", a.triggerConditions().get(0), "preconditions 抬成 triggerConditions");
+        assertEquals(1, a.evidence().size(), "源 memo 的 window_first 作为证据");
+        assertEquals("tools-123-0", a.evidence().get(0).id());
+    }
+
+    @Test
+    void carrierArtifactCarriesItsOwnTriggerAndEvidence() {
+        String carrier = "{\"name\":\"c\",\"triggerConditions\":[\"night\"],"
+                + "\"evidence\":[\"event:e-1\"]}";
+        String json = "{\"memo_id\":\"m-2\",\"actions\":[\"USE_CARRIER\"],\"confidence\":0.6,"
+                + "\"reasoning\":\"r\",\"carrier_draft\":" + javaEscaped(carrier) + "}";
+        var v = Verdict.parse("m-2", json);
+        var sub = ReviewContractAdapter.toSubmission(v, "m-2", Submission.Mode.INTERNAL, "e-1");
+        var a = sub.artifacts().get(0);
+        assertEquals(1, a.triggerConditions().size());
+        assertEquals(1, a.evidence().size());
+    }
+
+    @Test
+    void sideTaskArtifactCarriesItsOwnTriggerAndEvidence() {
+        String side = "{\"type_id\":\"learner_x\",\"when\":{},\"nudge\":\"d\","
+                + "\"triggerConditions\":[\"is_dark\"],\"evidence\":[\"event:e-2\"]}";
+        String json = "{\"memo_id\":\"m-3\",\"actions\":[\"SIDE_TASK\"],\"confidence\":0.6,"
+                + "\"reasoning\":\"r\",\"side_task_draft\":" + javaEscaped(side) + "}";
+        var v = Verdict.parse("m-3", json);
+        var sub = ReviewContractAdapter.toSubmission(v, "m-3", Submission.Mode.INTERNAL, "e-2");
+        var a = sub.artifacts().get(0);
+        assertEquals(1, a.triggerConditions().size());
+        assertEquals(1, a.evidence().size());
+    }
+
+    /** 把一段 JSON 变成可嵌入另一个 JSON 字符串字面量的形式（只处理引号/反斜杠就够）。 */
+    private static String javaEscaped(String inner) {
+        return "\"" + inner.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    @Test
     void windowFirstBecomesEventEvidenceRef() {
         var sub = ReviewContractAdapter.toSubmission(verdict(), "m-1", Submission.Mode.INTERNAL, "tools-123-0");
         var ev = sub.review().claims().get(0).evidence();
