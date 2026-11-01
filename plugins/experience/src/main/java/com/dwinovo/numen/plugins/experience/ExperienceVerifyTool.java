@@ -209,6 +209,14 @@ final class ExperienceVerifyTool implements NumenTool {
             out.put("was_presented", shown != null);
             out.put("presented_surface", shown == null ? "" : shown.surface());
             out.put("receipt", receipts.readout());
+            // 2026-10-31（166 §76）：实机里模型反复把 TRIAL 的经验 verify 成功后又 publish 成
+            // SUSPENDED，整天没有一条新经验进 PUBLISHED —— 而执行视图只认 PUBLISHED。
+            // 这里只在**验证成功且当前还是 TRIAL** 时补一句可执行的下一步（不改状态机、不自动发布：
+            // 「验证=放行」的暗通道是设计上明确禁止的）。
+            if (in.success() && updated.publication() == com.dwinovo.numen.experience.api.PublicationState.TRIAL) {
+                out.put("next_step", "这条仍是 TRIAL，TRIAL 不会出现在执行视图里。"
+                        + "若已无未处理反例，用 experience_publish 把它迁到 PUBLISHED，下次执行才会被检索到。");
+            }
             reply.accept(TaskResult.ok("experience verified", out).toJson());
         } catch (RuntimeException ex) {
             reply.accept(TaskResult.fail("experience_verify failed: " + ex.getMessage()).toJson());
