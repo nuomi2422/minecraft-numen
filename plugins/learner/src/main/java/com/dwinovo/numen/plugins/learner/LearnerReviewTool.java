@@ -683,12 +683,9 @@ final class LearnerReviewTool implements NumenTool {
                         String targetTitle = targetTitleOf(targetId, hitTitle);
                         // 2026-10-31（V-20261031-25 实测）：REVISE 只改身份、正文仍取草稿，
                         // 会把不相干 memo 的正文合并进目标条目（goto 标题 + craft 正文）。
-                        // 主题不一致时**不得并入目标条目**；但也不该丢 —— 2026-11-01 实机：
-                        // 检索把单触发词（"tool_failure"）判成 [同一件事] → 模型只能 REVISE →
-                        // 主题不一致 → 两条七字段经验全部被丢（stored=0）。改为按草稿自己的
-                        // type/title/description 落 NEW，并在 revise 里留痕（不污染已有条目）。
+                        // 主题不一致就**不落库**，只记录（宁可少学一条，不污染已有经验）。
                         if (titleOverlap(draftTitle, targetTitle) < 0.10) {
-                            reviseNote = "REVISE_TOPIC_MISMATCH->NEW:" + targetId;
+                            reviseNote = "REVISE_TOPIC_MISMATCH:" + targetId;
                             topicMismatch = true;
                         } else if (!targetTitle.isBlank() && !"null".equals(targetTitle)) {
                             args.addProperty("title", targetTitle);
@@ -699,9 +696,7 @@ final class LearnerReviewTool implements NumenTool {
                         }
                     }
                 }
-                // topicMismatch 只表示「不能并入命中条目」，不再表示「不落库」：
-                // 草稿身份（type/title/description）本来就在 args 里，走 NEW 落库。
-                if (args.has("type") && args.has("title") && args.has("description")) {
+                if (!topicMismatch && args.has("type") && args.has("title") && args.has("description")) {
                     var tool = com.dwinovo.numen.agent.tool.ToolRegistry.get("experience_learn");
                     if (tool == null) {
                         outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "SKIPPED",
@@ -744,9 +739,8 @@ final class LearnerReviewTool implements NumenTool {
                     ev.put("reply", reply == null ? "" : reply.substring(0, Math.min(300, reply.length())));
                     outcomes.add(ev);
                 } else {
-                    String missing = "draft missing type/title/description (type 是学习者显式交的，没交不落)";
                     outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "SKIPPED",
-                            "reason", reviseNote.isEmpty() ? missing : missing + " | " + reviseNote));
+                            "reason", "draft missing type/title/description (type 是学习者显式交的，没交不落)"));
                 }
             } catch (Throwable t) {
                 outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "FAILED",
