@@ -48,6 +48,19 @@ class LearnerAutoIntakeTest {
     }
 
     @Test
+    void undeliverableNudgeBacksOffInsteadOfRetryingEveryTick() {
+        // 2026-11-02 00:29–00:32 实测：4 个不在本世界的旧同伴每 30 秒被重试（remove 冷却位当重试策略）。
+        java.util.Map<java.util.UUID, Long> m = new java.util.HashMap<>();
+        java.util.UUID id = java.util.UUID.randomUUID();
+        long t0 = 9_000_000L;
+        assertFalse(LearnerAutoIntake.nudgeBlocked(m, id, t0), "没有退避位就不拦");
+        m.put(id, t0 + 30 * 60_000L);
+        assertTrue(LearnerAutoIntake.nudgeBlocked(m, id, t0 + 60_000L), "退避期内不重试");
+        assertFalse(LearnerAutoIntake.nudgeBlocked(m, id, t0 + 31 * 60_000L), "到期后允许再试");
+        assertFalse(m.containsKey(id), "到期清位");
+    }
+
+    @Test
     void nudgeBacksOffAfterReviewFailures() {
         // L2：失败后不能按 10 分钟原速重催（一次 review 实测 35k tokens）。
         java.util.Map<java.util.UUID, Long> state = new java.util.HashMap<>();

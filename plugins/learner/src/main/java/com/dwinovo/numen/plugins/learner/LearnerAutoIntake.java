@@ -110,6 +110,9 @@ final class LearnerAutoIntake {
     /** 同伴 → 连续复盘失败次数（0/缺省 = 正常）。 */
     private static final java.util.Map<java.util.UUID, Integer> REVIEW_FAIL_STREAK =
             new java.util.concurrent.ConcurrentHashMap<>();
+    /** 同伴 → 「提醒送不到」的退避截止时刻（防每 30 秒重试）。 */
+    private static final java.util.Map<java.util.UUID, Long> NUDGE_UNDELIVERABLE_UNTIL =
+            new java.util.concurrent.ConcurrentHashMap<>();
     /** 深度达到该值才催（太少不值得打断执行）。 */
     static final int REVIEW_NUDGE_MIN_DEPTH = 3;
     private static final Map<UUID, Long> LAST_REVIEW_NUDGE = new ConcurrentHashMap<>();
@@ -474,6 +477,7 @@ final class LearnerAutoIntake {
                 } catch (RuntimeException e) {
                     continue;
                 }
+                if (nudgeBlocked(NUDGE_UNDELIVERABLE_UNTIL, id, now)) continue;
                 if (!claimNudge(LAST_REVIEW_NUDGE, id, depth, now)) continue;
                 boolean sent = LearnerPlugin.nudgeSystem(id,
                         "[学习者] 队列里有 " + depth + " 条待复盘的备忘录（都是真实失败事件，不是测试）。"
@@ -483,7 +487,10 @@ final class LearnerAutoIntake {
                     LearnerMonitor.publish("review_nudge_sent", Map.of(
                             "companionId", id.toString(), "queue_depth", depth));
                 } else {
-                    LAST_REVIEW_NUDGE.remove(id);   // 没送出去就不占冷却
+                    // 送不到（同伴不在本世界 / 已归档）：不再用「remove 冷却位」当重试策略，
+                    // 那样会每 30 秒重试一次（2026-11-02 00:29–00:32 实测 4 个旧同伴 × 每 30s 刷屏）。
+                    LAST_REVIEW_NUDGE.remove(id);
+                    NUDGE_UNDELIVERABLE_UNTIL.put(id, now + REVIEW_NUDGE_FAIL_MIN_MS);
                 }
             }
         } catch (RuntimeException | NoClassDefFoundError ignored) {
@@ -521,6 +528,19 @@ final class LearnerAutoIntake {
         if (last != null && now - last < cooldown) return false;
         state.put(id, now);
         return true;
+    }
+
+    /**
+     * 送不到的同伴（不在本世界/已归档）的退避判定：返回 true 表示本轮跳过。
+     * 到期后自动清位，允许再试一次。
+     */
+    static boolean nudgeBlocked(java.util.Map<java.util.UUID, Long> undeliverable,
+                                java.util.UUID id, long now) {
+        Long until = undeliverable.get(id);
+        if (until == null) return false;
+        if (now < until) return true;
+        undeliverable.remove(id);
+        return false;
     }
 
     /** 复盘失败：记连续失败次数（供 nudge 退避）。 */
