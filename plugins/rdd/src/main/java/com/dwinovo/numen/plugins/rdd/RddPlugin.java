@@ -864,6 +864,16 @@ private static String withAssets(UUID companionId, String rddContext) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(homeBlock);
         }
+        // 2026-11-01：同一坐标反复死（3 分钟窗口抓不到的那种）——把历史危险点摆到眼前。
+        try {
+            String deathSpots = RddDeathSpotFacts.blockFor(companionId);
+            if (!deathSpots.isBlank()) {
+                if (merged.length() > 0) merged.append("\n");
+                merged.append(deathSpots);
+            }
+        } catch (RuntimeException ignored) {
+            // 事实块失败不影响其它上下文
+        }
         // 167 §B7：农田"有没有在产粮"——只用背包可食作物净增判断（不确定就写 UNKNOWN）。
         try {
             String farmLine = RddFarmFacts.lineFor(companionId, lastInventory(companionId),
