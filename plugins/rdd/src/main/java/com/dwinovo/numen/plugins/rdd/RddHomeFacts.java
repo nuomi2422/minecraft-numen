@@ -107,6 +107,9 @@ final class RddHomeFacts {
             String action = com.dwinovo.numen.rdd.policy.ReserveAction.describe(
                     com.dwinovo.numen.rdd.policy.ReserveAction.plan(shortfall, inventory));
             if (!action.isBlank()) lines.add("reserve_next=" + action);
+            // 2026-11-01（167 §9.15）：家里缺的东西，可能还留在旧据点里。只报线索，标 LAZY。
+            String stale = staleBaseLine(registry, v, asOf, nowMillis);
+            if (!stale.isBlank()) lines.add(stale);
         }
         return HomeSummary.block(lines);
     }
@@ -171,6 +174,38 @@ final class RddHomeFacts {
         }
         int idx = com.dwinovo.numen.rdd.core.BaseSelector.pick(cands, RESPX.get(), RESPY.get(), RESPZ.get());
         return idx < 0 ? null : bases.get(idx);
+    }
+
+    /**
+     * 「旧据点里还有你要的东西」——只看 base 观测里含 RESERVE_KEYS 的那些，排除当前家。
+     * 全部标 LAZY：区块可能没加载、箱子可能早被搬空，模型必须重新确认。
+     */
+    private static String staleBaseLine(AssetRegistry registry, Map<String, Object> homeValue,
+                                        long homeAsOf, long nowMillis) {
+        try {
+            int hx = num(homeValue.get("x"));
+            int hy = num(homeValue.get("y"));
+            int hz = num(homeValue.get("z"));
+            java.util.List<com.dwinovo.numen.rdd.core.StaleBases.Candidate> all = new java.util.ArrayList<>();
+            for (var e : RddAssetContext.worldAssets(registry)) {
+                var v = e.observation().value();
+                if (!"base".equals(String.valueOf(v.get("kind")))) continue;
+                Map<String, Integer> items = new LinkedHashMap<>();
+                if (v.get("important_items") instanceof Map<?, ?> m) {
+                    for (var kv : m.entrySet()) {
+                        if (kv.getValue() instanceof Number n) items.put(String.valueOf(kv.getKey()), n.intValue());
+                    }
+                }
+                all.add(new com.dwinovo.numen.rdd.core.StaleBases.Candidate(
+                        num(v.get("x")), num(v.get("y")), num(v.get("z")),
+                        e.observation().observedAt(), items));
+            }
+            var hits = com.dwinovo.numen.rdd.core.StaleBases.find(all, hx, hy, hz, 8.0, RESERVE_KEYS, 1);
+            if (hits.isEmpty()) return "";
+            return com.dwinovo.numen.rdd.core.StaleBases.describe(hits.get(0), nowMillis, RESERVE_KEYS);
+        } catch (RuntimeException ex) {
+            return "";
+        }
     }
 
     /** 当前重生点（由插件在上下文构建时写入；未绑定为 null）。 */
