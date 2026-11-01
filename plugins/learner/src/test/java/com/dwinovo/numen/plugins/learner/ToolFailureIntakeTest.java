@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -188,6 +189,31 @@ class ToolFailureIntakeTest {
 
         assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue),
                 "本地工具显式 false（无 result 正文）必须仍算失败");
+    }
+
+    @Test
+    void replayedFailureAfterReviewIsNotCountedAgain() throws Exception {
+        // 2026-11-02 回归：换代重扫会把「已复核移除」的同一事件重新入队。
+        // seen 命中时 append 返回 true，但 contains=false —— 不得计 memos、不得写 sample。
+        StringBuilder tools = new StringBuilder();
+        for (int i = 0; i < 3; i++) {
+            tools.append(toolResult("tf-replay-" + i, "call_replay_" + i, "goto",
+                    "{\"success\":false,\"message\":\"blocked: stopped 2 blocks short\"}")).append('\n');
+        }
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue), "首扫：3 连败成 1 条");
+        List<Memo> taken = queue.drain(10);
+        assertEquals(1, queue.commitDrain(taken), "模拟复核消费掉这条");
+        assertEquals(0, queue.size());
+
+        Files.deleteIfExists(tmp.resolve("tool-failure-cursor.json"));
+        ToolFailureIntake.resetForTest();
+        assertEquals(0, ToolFailureIntake.scanOnce(tmp, id -> queue),
+                "同一事件重放：已入过队的不再计入（memos 不能 +1）");
+        assertEquals(0, queue.size(), "也不得回灌");
     }
 
     @Test

@@ -188,13 +188,18 @@ final class ToolFailureIntake {
                     snapshotOf(configDir, cid, tool, w),
                     System.currentTimeMillis());
             boolean appended;
+            boolean reallyInQueue = false;
             try {
-                appended = queueOf.apply(uuid).append(memo);
+                MemoQueue q = queueOf.apply(uuid);
+                appended = q.append(memo);
+                // append=true 有两种含义：刚放进去 / 曾经入过队被去重。
+                // 只有真在队列里才算「新入队」，否则重复事件会被记成新 memo 并写重复 sample。
+                if (appended) reallyInQueue = q.contains(memo.id());
             } catch (RuntimeException e) {
                 appended = false;
             }
             WINDOWS.remove(key);
-            if (appended) {
+            if (appended && reallyInQueue) {
                 // 样本层（旁路）：工具失败口也走同一个入库入口 —— 161 §6.5 的三口收敛点。
                 com.dwinovo.numen.plugins.learner.sample.SampleIntakeRuntime.shared(configDir).recordToolFailure(
                         String.valueOf(uuid), tool, cls, w.count, w.lastMs, w.firstId,

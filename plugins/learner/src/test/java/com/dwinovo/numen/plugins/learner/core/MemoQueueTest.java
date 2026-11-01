@@ -56,6 +56,45 @@ class MemoQueueTest {
     }
 
     @Test
+    void processedIdCannotComeBackAfterCommitDrain(@TempDir Path dir) {
+        // 2026-11-02 现场：换代重扫把「已复核移除」的旧 memo 以同一 id 重新入队（队列 33→48）。
+        MemoQueue q = new MemoQueue(dir.resolve("m.json"));
+        Memo m = memo("once-processed", "problem");
+        assertTrue(q.append(m));
+        assertEquals(1, q.commitDrain(q.drain(1)));
+        assertEquals(0, q.size());
+
+        assertTrue(q.append(m), "已入过队的 id：返回 true（语义=不必再放）");
+        assertEquals(0, q.size(), "但不得重新入队 —— 已处理过的事件不能回灌");
+    }
+
+    @Test
+    void seenHitIsNotActuallyInQueue(@TempDir Path dir) {
+        // append 对「曾经入队过」返回 true，但队列里并没有它 —— 调用方必须用 contains 二次确认，
+        // 否则会把换代重扫的重复事件记成新 memo / 新样本。
+        MemoQueue q = new MemoQueue(dir.resolve("m.json"));
+        Memo m = memo("seen-only", "problem");
+        assertTrue(q.append(m));
+        q.commitDrain(q.drain(1));
+        assertTrue(q.contains("nope") == false);
+        assertTrue(q.append(m), "重复 append 返回 true");
+        assertFalse(q.contains(m.id()), "但它并不在队列里");
+    }
+
+    @Test
+    void seenSetSurvivesReopen(@TempDir Path dir) {
+        Path file = dir.resolve("m.json");
+        MemoQueue first = new MemoQueue(file);
+        Memo m = memo("survives-restart", "problem");
+        first.append(m);
+        first.commitDrain(first.drain(1));
+
+        MemoQueue reopened = new MemoQueue(file);
+        assertTrue(reopened.append(m));
+        assertEquals(0, reopened.size(), "新实例（模拟重启）仍记得该 id 已入过队");
+    }
+
+    @Test
     void appendAndDrainRoundTrip(@TempDir Path dir) {
         MemoQueue q = new MemoQueue(dir.resolve("m.json"));
         assertTrue(q.append(memo("m-1", "could not mine iron")));

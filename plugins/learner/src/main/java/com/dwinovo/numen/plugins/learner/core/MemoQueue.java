@@ -40,11 +40,121 @@ public final class MemoQueue {
     private static final Gson GSON = new Gson();
     private static final Type LIST_TYPE = new TypeToken<List<Memo>>() {}.getType();
 
+    /**
+     * 已入队过的 memo id 上限（持久化，防换代重扫重复入队）。
+     *
+     * <p>2026-11-02 现场：重启→存档代际变→自动入队游标归零→重扫旧 instrumentation，
+     * 内存幂等集已丢，队列又只按「当前在队列里」去重 ⇒ 16:52:09 一次回灌 +11 death、
+     * +5 loop；手动隔离不持久。
+     *
+     * <p><b>保证范围</b>：seen 文件建立**之后**入过队的 id 不会再来（含复核移除、手动隔离）。
+     * 建立之前的历史（隔离清单、更早的 reviewed id）由一次性迁移脚本
+     * {@code evidence/seed-seen.cjs} 并进 seen 文件；不迁移就只能覆盖新数据。
+     * 上限 {@link #SEEN_CAP}：被淘汰的最旧 id 理论上可再回来，这是有界内存的已知代价。
+     */
+    private static final int SEEN_CAP = 4096;
+
     private final Path file;
     private final ReentrantLock lock = new ReentrantLock();
+    /** 懒加载的「曾经入队过」集合；null = 还没读。 */
+    private java.util.LinkedHashSet<String> seen;
 
     public MemoQueue(Path file) {
         this.file = file;
+    }
+
+    private Path seenFile() {
+        return file.resolveSibling(file.getFileName() + ".seen.json");
+    }
+
+    private java.util.LinkedHashSet<String> seen() {
+        if (seen == null) {
+            java.util.LinkedHashSet<String> s = new java.util.LinkedHashSet<>();
+            boolean loaded = false;
+            try {
+                Path sf = seenFile();
+                if (Files.isRegularFile(sf)) {
+                    String raw = Files.readString(sf, StandardCharsets.UTF_8);
+                    if (raw.isBlank()) {
+                        loaded = true;   // 空文件是合法状态（从没入队过）
+                    } else {
+                        java.util.List<String> ids = GSON.fromJson(raw,
+                                new TypeToken<java.util.List<String>>() {}.getType());
+                        if (ids != null) {
+                            for (String id : ids) {
+                                if (id != null && !id.isBlank()) s.add(id);
+                            }
+                        }
+                        loaded = ids != null;
+                    }
+                }
+            } catch (IOException | RuntimeException ignored) {
+                // 读不到/解析坏：下面按「未加载」走播种，幂等退化为旧行为，绝不拒绝入队。
+            }
+            if (!loaded) {
+                // 首次上线：把当前队列里的 id 播进 seen，避免「升级前就在队列里的条目」
+                // 被复核移除后又以同一 id 回灌。坏队列不阻断入队（沿用 readAll 的失败语义）。
+                try {
+                    for (Memo m : readAll()) {
+                        if (m != null && m.id() != null && !m.id().isBlank()) s.add(m.id());
+                    }
+                } catch (RuntimeException ignored) {
+                    // 队列坏了：留给 append/commit 的既有失败路径处理，这里不猜。
+                }
+                if (!s.isEmpty()) {
+                    try { Files.writeString(seenFile(), GSON.toJson(java.util.List.copyOf(s), java.util.List.class), StandardCharsets.UTF_8); } catch (IOException ignored) { }
+                }
+            }
+            seen = s;
+        }
+        return seen;
+    }
+
+    /**
+     * 这个 id 现在是否真的在队列里。
+     *
+     * <p>为什么需要：{@link #append} 对「曾经入队过」也返回 true（语义=不必再放），
+     * 调用方若把 true 当「新增了一条」会把重复事件记成新样本/新 memo。用这个做二次确认。
+     */
+    public boolean contains(String id) {
+        if (id == null || id.isBlank()) return false;
+        lock.lock();
+        try {
+            for (Memo m : readAll()) {
+                if (m != null && id.equals(m.id())) return true;
+            }
+            return false;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void remember(String id) {
+        if (id == null || id.isBlank()) return;
+        java.util.LinkedHashSet<String> s = seen();
+        s.remove(id);
+        s.add(id);
+        while (s.size() > SEEN_CAP) {
+            java.util.Iterator<String> it = s.iterator();
+            it.next();
+            it.remove();
+        }
+        Path sf = seenFile();
+        Path tmp = sf.resolveSibling(sf.getFileName() + "." + ProcessHandle.current().pid()
+                + "-" + System.nanoTime() + ".tmp");
+        try {
+            Files.createDirectories(sf.getParent() == null ? Path.of(".") : sf.getParent());
+            Files.writeString(tmp, GSON.toJson(java.util.List.copyOf(s), java.util.List.class),
+                    StandardCharsets.UTF_8);
+            try {
+                Files.move(tmp, sf, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException atomicUnsupported) {
+                Files.move(tmp, sf, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException ignored) {
+            try { Files.deleteIfExists(tmp); } catch (IOException ignored2) { }
+        }
     }
 
     public Path file() {
@@ -72,6 +182,11 @@ public final class MemoQueue {
             if (all.size() >= MAX_QUEUE) {
                 return false;
             }
+            // 2026-11-02：曾经入队过的 id 不再回来（含复核后已移除的、手动隔离的）。
+            // 只查「当前队列」挡不住换代重扫：被复核移除的旧 memo 会以同一 id 重新入队。
+            if (memo.id() != null && seen().contains(memo.id())) {
+                return true;
+            }
             // 幂等键（2026-10-25 换代重扫事故）：同一 memo id 在队列里只允许存在一份。
             // 事故形态：自动入队的幂等集只在内存，世界重载=新代=游标归零=全量重扫，
             // 新 JVM 空集 → 同 8 条事件入队 4 次（e44 队列 27 条、去重后只剩 9）。
@@ -86,6 +201,7 @@ public final class MemoQueue {
             }
             all.add(memo);
             writeAll(all);
+            remember(memo.id());
             return true;
         } finally {
             lock.unlock();
