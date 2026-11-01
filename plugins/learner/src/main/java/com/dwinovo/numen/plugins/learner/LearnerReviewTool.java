@@ -71,7 +71,13 @@ final class LearnerReviewTool implements NumenTool {
     private static final Gson GSON = new Gson();
     private static final int DEFAULT_MAX = 5;
     private static final int HARD_MAX = 20;
-    private static final int LLM_TIMEOUT_SEC = 120;
+    /**
+     * 复盘 LLM 等待上限（秒）。2026-11-02 实测：18:25:08 llm_request dispatched，
+     * 18:27:08 恰好 120s TimeoutException、无 llm_response —— 32k prompt tokens 的复盘
+     * 在 120s 内没回来。复盘跑在虚拟线程、不占服务器主线程，放宽到 240s 只是给它时间；
+     * 是否够用由下一次复盘验证（若仍超时，问题在 provider，不是这个常量）。
+     */
+    private static final int LLM_TIMEOUT_SEC = 240;
 
     @Override
     public String name() {

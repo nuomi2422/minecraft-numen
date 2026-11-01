@@ -291,6 +291,13 @@ public final class LearnerPlugin implements NumenPlugin {
     static void beginReview(String reviewId, UUID companionId, String state, int reviewing) {
         REVIEWS.put(reviewId, new ReviewRecord(reviewId, companionId, state, reviewing, 0, "", List.of()));
         evictOld();
+        // 2026-11-02：观测缺口 —— 之前只有 nudge_sent/finished，没有「复盘真的开始了」。
+        // 18:37 的 nudge 后没有 review、也没有任何事件，只能靠事后推断。
+        // 加了这行，「nudge 发了但 review 未启动」就变成可计算的事实（缺 review_started）。
+        com.dwinovo.numen.plugins.learner.LearnerMonitor.publish("review_started", java.util.Map.of(
+                "review_id", reviewId,
+                "companion", companionId == null ? "" : companionId.toString(),
+                "reviewing", reviewing));
     }
 
     static void finishReview(String reviewId, String state, int verdictCount) {
