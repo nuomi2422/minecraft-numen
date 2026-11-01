@@ -468,10 +468,7 @@ final class LearnerAutoIntake {
                 } catch (RuntimeException e) {
                     continue;
                 }
-                if (depth < REVIEW_NUDGE_MIN_DEPTH) continue;
-                Long last = LAST_REVIEW_NUDGE.get(id);
-                if (last != null && now - last < REVIEW_NUDGE_COOLDOWN_MS) continue;
-                if (LAST_REVIEW_NUDGE.putIfAbsent(id, now) != null) continue;
+                if (!claimNudge(LAST_REVIEW_NUDGE, id, depth, now)) continue;
                 boolean sent = LearnerPlugin.nudgeSystem(id,
                         "[学习者] 队列里有 " + depth + " 条待复盘的备忘录（都是真实失败事件，不是测试）。"
                         + "现在没有正在跑的复盘；下一轮请调用 learner_review 处理它们——"
@@ -486,6 +483,23 @@ final class LearnerAutoIntake {
         } catch (RuntimeException | NoClassDefFoundError ignored) {
             // 提醒是增强旁路：坏了不许影响 tick
         }
+    }
+
+    /**
+     * 冷却 + 门槛的纯判定：返回 true 才允许发，并在同一时刻占用冷却位。
+     *
+     * <p>★ 2026-11-02 修：旧写法先用 get 判冷却、再用 putIfAbsent 占位 ——
+     * 第一次提醒之后 key 永远在，冷却到期也会被 putIfAbsent 挡掉 ⇒
+     * **一次 JVM 生命周期只会提醒一次**（实测 23:28 起只发过 15:30:08 一条，
+     * 队列 56 条、30 分钟不再触发）。这里改成标准的「读旧值 → 过期则覆盖」。
+     */
+    static boolean claimNudge(java.util.Map<java.util.UUID, Long> state,
+                              java.util.UUID id, int depth, long now) {
+        if (depth < REVIEW_NUDGE_MIN_DEPTH) return false;
+        Long last = state.get(id);
+        if (last != null && now - last < REVIEW_NUDGE_COOLDOWN_MS) return false;
+        state.put(id, now);
+        return true;
     }
 
     /** 从 memo 文件名反推哪些同伴有待复盘队列（文件名即契约：learner-memos-<uuid>.json）。 */

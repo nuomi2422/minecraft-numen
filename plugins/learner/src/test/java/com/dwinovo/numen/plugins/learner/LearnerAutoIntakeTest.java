@@ -33,6 +33,20 @@ class LearnerAutoIntakeTest {
 
     private static final String COMPANION = "e502d17b-0000-0000-0000-000000000001";
 
+    @Test
+    void nudgeCooldownAllowsASecondNudgeAfterWindow() {
+        // 2026-11-02 实测：旧实现先 get 判冷却、再 putIfAbsent 占位；第一次提醒后 key 永在，
+        // 冷却到期也不会再提醒（23:28 起只发过 15:30:08 一条，队列 56 条、30 分钟静默）。
+        java.util.Map<java.util.UUID, Long> state = new java.util.HashMap<>();
+        java.util.UUID id = java.util.UUID.randomUUID();
+        long t0 = 1_000_000L;
+        assertFalse(LearnerAutoIntake.claimNudge(state, id, 2, t0), "低于门槛不发");
+        assertTrue(LearnerAutoIntake.claimNudge(state, id, 3, t0), "首次发");
+        assertFalse(LearnerAutoIntake.claimNudge(state, id, 3, t0 + 60_000L), "冷却内不发");
+        assertTrue(LearnerAutoIntake.claimNudge(state, id, 3, t0 + 11 * 60_000L),
+                "冷却到期必须能再发（旧实现在这里恒 false）");
+    }
+
     @TempDir
     Path tmp;
 

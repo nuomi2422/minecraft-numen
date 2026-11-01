@@ -208,6 +208,24 @@ class ToolFailureIntakeTest {
     }
 
     @Test
+    void stoppedWithBlockedTextIsSkippedKnownLoss() throws Exception {
+        // 已知漏判（L2）：blocked-stopped（被挡在 38 格之外）其实是真失败，但当前按
+        // async_status=stopped 整类跳过。本用例钉住现状 + 标记损失，不许当成「stopped 都安全」。
+        StringBuilder tools = new StringBuilder();
+        for (int i = 0; i < 3; i++) {
+            tools.append(toolResult("tf-blocked-" + i, "call_blocked_" + i, "goto",
+                    "blocked: stopped 38.2 blocks short horizontally and 17 blocks above you",
+                    Boolean.FALSE, "server-async", "stopped")).append('\n');
+        }
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(0, ToolFailureIntake.scanOnce(tmp, id -> queue),
+                "当前实现会跳过 stopped；这是已知损失，修法见 L2 reason-code（不得用文本正则兜底）");
+    }
+
+    @Test
     void duplicateWritersCountOneCallAndRealFailuresStillCount() throws Exception {
         // 同一次真实失败被 server + client 各记一行；阈值按「调用次数」算，不按「日志行数」算。
         StringBuilder tools = new StringBuilder();
