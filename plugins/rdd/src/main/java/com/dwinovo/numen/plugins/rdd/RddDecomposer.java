@@ -266,6 +266,25 @@ final class RddDecomposer {
                         done.accept(fallbackGoal(companionId, objective));
                         return;
                     }
+                    // 167 §19 第 4 条：输入里已经写明的「实测做不到」，不许再被排进计划。
+                    try {
+                        var facts = com.dwinovo.numen.rdd.policy.MeasuredFacts.extract(userContent);
+                        java.util.List<com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask> view2 =
+                                new java.util.ArrayList<>();
+                        for (SubtaskSpec spec : specs) {
+                            view2.add(new com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask(
+                                    spec.description(), spec.condition()));
+                        }
+                        var violations = com.dwinovo.numen.rdd.policy.MeasuredFacts.violations(facts, view2);
+                        if (!violations.isEmpty()) {
+                            RddMonitor.publish("plan_violates_measured_fact", java.util.Map.of(
+                                    "companionId", companionId.toString(),
+                                    "violations", String.join(" | ", violations),
+                                    "note", "输入里已写明做不到，计划却又排了同样的步骤（167 §19）"));
+                        }
+                    } catch (RuntimeException ignored) {
+                        // 检查失败不影响分解
+                    }
                     // 167 §17：计划自洽检查——只发事件、不拦、不改判据。
                     try {
                         java.util.List<com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask> view = new java.util.ArrayList<>();
