@@ -129,6 +129,15 @@ class HomeStageTest {
     }
 
     @Test
+    void freshnessRuleIsTheSameOneUsedForRendering() {
+        long now = 1_700_000_000_000L;
+        assertTrue(HomeSummary.fresh(now - 5_000, now));
+        assertFalse(HomeSummary.fresh(now - HomeSummary.DEFAULT_STALE_AFTER_MS - 1_000, now));
+        assertFalse(HomeSummary.fresh(null, now));
+        assertFalse(HomeSummary.fresh(now - 40 * 60_000L, now));
+    }
+
+    @Test
     void blockingAndNextOnlyAppearWhenKnown() {
         List<String> bare = HomeSummary.lines(HomeStage.STOCKED, "h", "minecraft:overworld", "1 2 3", NOW,
                 null, null, null, null, NOW);

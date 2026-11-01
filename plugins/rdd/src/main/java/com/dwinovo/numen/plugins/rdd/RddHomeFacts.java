@@ -62,18 +62,23 @@ final class RddHomeFacts {
         // 167 B5：把「观测到但没备货」与「根本没观测到」分开。
         // 读数是否新鲜由 HomeSummary 统一判（超过 stale 就降级 UNKNOWN），这里只决定传不传。
         boolean observedItems = v.get("important_items") instanceof Map<?, ?>;
+        // 2026-11-01 实机抓到的不一致：reserve=UNKNOWN 却报 reserve_short:…。
+        // 原因是渲染层按新鲜度降级，而 blocking 仍按「曾经观测过」算缺口。
+        // 现在两处用同一把尺子：过期就等于没观测。
+        boolean reserveUsable = observedItems
+                && com.dwinovo.numen.rdd.policy.HomeSummary.fresh(asOf, nowMillis);
         // 167 B5：够不够不再由"有没有东西"决定，统一按 ReserveKit.MINIMUM 判。
         boolean reserveSufficient = com.dwinovo.numen.rdd.policy.HomeStage.reserveSufficient(
-                observedItems ? reserve : null);
+                reserveUsable ? reserve : null);
         java.util.List<String> shortfall = com.dwinovo.numen.rdd.policy.ReserveKit.shortfall(
-                observedItems ? reserve : null);
+                reserveUsable ? reserve : null);
         boolean litProtected = false;   // 保护/光照判据尚未产生事实，明确保持 false 而不是假装通过
 
-        HomeStage stage = HomeStage.of(true, houseUsable, true, observedItems, reserveSufficient, litProtected);
+        HomeStage stage = HomeStage.of(true, houseUsable, true, reserveUsable, reserveSufficient, litProtected);
         String blocking;
         if (stage == HomeStage.ESTABLISHED) {
             blocking = null;
-        } else if (!observedItems) {
+        } else if (!reserveUsable) {
             blocking = "reserve_unobserved";
         } else if (!reserveSufficient) {
             // 读到但不够：把缺口写进 blocking，模型才知道"补什么"，而不是只知道"缺"。
@@ -99,11 +104,11 @@ final class RddHomeFacts {
         List<String> lines = new java.util.ArrayList<>(HomeSummary.lines(stage,
                 String.valueOf(v.getOrDefault("label", base.assetId())),
                 dimension, pos, asOf,
-                observedItems ? reserve : null, asOf,
+                reserveUsable ? reserve : null, asOf,
                 blocking, next, nowMillis));
         // 2026-11-01：把「箱子里缺什么」和「背包里有什么」合起来给一句可执行建议——
         // 背包里已经有的，下一步是放进箱子，而不是再去做一遍（实机：它背着一包东西，基地箱是空的）。
-        if (observedItems && !reserveSufficient) {
+        if (reserveUsable && !reserveSufficient) {
             String action = com.dwinovo.numen.rdd.policy.ReserveAction.describe(
                     com.dwinovo.numen.rdd.policy.ReserveAction.plan(shortfall, inventory));
             if (!action.isBlank()) lines.add("reserve_next=" + action);

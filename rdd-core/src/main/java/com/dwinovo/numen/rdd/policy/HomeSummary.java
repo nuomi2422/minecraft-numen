@@ -63,6 +63,18 @@ public final class HomeSummary {
         return List.copyOf(out);
     }
 
+    /**
+     * 一条观测是否还新鲜（供调用方与这里的渲染用**同一个**判据）。
+     *
+     * <p>2026-11-01 实机抓到的不一致：blocking=reserve_short:cooked_beef 0/8 与 reserve=UNKNOWN 同时出现——
+     * 因为渲染层按新鲜度降级成 UNKNOWN，而 blocking 仍按「观测过」算缺口。两处必须同一把尺子。
+     */
+    public static boolean fresh(Long observedAtMillis, long nowMillis) {
+        if (observedAtMillis == null) return false;
+        long age = nowMillis - observedAtMillis;
+        return age >= 0 && age <= staleAfter();
+    }
+
     private static long staleAfter() {
         return Long.getLong("numen.home.reserve.staleMs", DEFAULT_STALE_AFTER_MS);
     }
