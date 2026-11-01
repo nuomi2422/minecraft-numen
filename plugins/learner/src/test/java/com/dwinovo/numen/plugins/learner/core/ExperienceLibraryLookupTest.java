@@ -124,6 +124,17 @@ class ExperienceLibraryLookupTest {
     }
 
     @Test
+    void genericEnglishTokensAreNeverIdentityEvidence(@TempDir Path dir) throws Exception {
+        // 审核窗口 05:16：nopath 正好 6 字符，长度阈值漏了；通用词黑名单拦它。
+        write(dir, "{\"id\":\"m\",\"title\":\"无关标题\",\"trigger_strings\":[\"nopath\"]}");
+        assertTrue(ExperienceLibraryLookup.lookupByText(dir, UUID, "mine failed: no path out").isEmpty(),
+                "nopath 不构成身份证据");
+        write(dir, "{\"id\":\"n\",\"title\":\"无关标题2\",\"trigger_strings\":[\"blocked: stopped 22.3 blocks short\"]}");
+        assertTrue(ExperienceLibraryLookup.lookupByText(dir, UUID, "blocked: stopped 22.3 blocks short horizontally")
+                .stream().anyMatch(h -> h.highSimilarity()), "长短语不受黑名单影响");
+    }
+
+    @Test
     void longTriggerStillCountsAsIdentity(@TempDir Path dir) throws Exception {
         write(dir, "{\"id\":\"i\",\"title\":\"下界岩浆伤害\",\"trigger_strings\":[\"岩浆接触伤害是持续结算\"]}");
         var hits = ExperienceLibraryLookup.lookupByText(dir, UUID, "死亡原因：岩浆接触伤害是持续结算，没有兜底");

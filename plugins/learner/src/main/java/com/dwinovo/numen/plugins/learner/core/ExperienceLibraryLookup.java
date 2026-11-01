@@ -51,6 +51,16 @@ public final class ExperienceLibraryLookup {
      */
     public static final int MIN_TRIGGER_CHARS = 6;
 
+    /**
+     * 通用英文 token 黑名单（2026-11-02，审核窗口 05:16）：长度阈值不是正确抽象 ——
+     * `nopath` 正好 6 字符混了过去，把 mine 失败判成 goto 净位移同族。
+     * 这些词单独出现时只是「出现了一个概念」，不构成「同一件事」的证据；
+     * 含它们的**长短语**（如 "blocked: stopped 22.3 blocks short"）不受影响。
+     */
+    private static final java.util.Set<String> GENERIC_TRIGGERS = java.util.Set.of(
+            "death", "die", "dead", "kill", "killed", "nopath", "path",
+            "fail", "failed", "error", "blocked", "timeout", "retry", "stuck");
+
     private ExperienceLibraryLookup() {}
 
     /**
@@ -222,6 +232,7 @@ public final class ExperienceLibraryLookup {
      */
     private static boolean identityWorthy(String k) {
         if (k == null || k.isBlank()) return false;
+        if (GENERIC_TRIGGERS.contains(k)) return false;   // 通用词单独出现不算身份证据
         if (k.length() >= MIN_TRIGGER_CHARS) return true;
         for (int i = 0; i < k.length(); i++) {
             if (k.charAt(i) > 127) return true;   // 中文等非 ASCII 短词是领域词，保留
