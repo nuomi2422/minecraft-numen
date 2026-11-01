@@ -52,10 +52,15 @@ public enum HomeStage {
         return this == STOCKED || this == LIT_PROTECTED || this == ESTABLISHED;
     }
 
-    /** 供上下文渲染的一行摘要；{@code null} 事实一律写 UNKNOWN，不写 0。 */
+    /**
+     * 供上下文渲染的一行摘要；{@code null} 事实一律写 UNKNOWN，不写 0。
+     *
+     * <p>「观测到了但里面没有关键物品」和「根本没观测到」必须是两句话：
+     * 前者说明箱子在、能读、但没备货（该去补）；后者说明读数不可信（该去扫）。
+     */
     public static String describe(Map<String, Integer> reserve, boolean reserveKnown) {
         if (!reserveKnown) return "reserve=UNKNOWN";
-        if (reserve == null || reserve.isEmpty()) return "reserve=KNOWN (empty)";
+        if (reserve == null || reserve.isEmpty()) return "reserve=KNOWN but no critical items";
         StringBuilder sb = new StringBuilder("reserve=KNOWN");
         reserve.entrySet().stream()
                 .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()

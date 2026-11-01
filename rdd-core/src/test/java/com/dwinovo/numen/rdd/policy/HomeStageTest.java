@@ -40,6 +40,15 @@ class HomeStageTest {
     }
 
     @Test
+    void knownButEmptyReserveSaysSoInsteadOfUnknown() {
+        // 167 B5 首跑暴露的混淆：箱子读到了但没备货，原来也渲染成 UNKNOWN，和"根本没扫到"一样。
+        assertEquals("reserve=KNOWN but no critical items", HomeStage.describe(java.util.Map.of(), true));
+        assertEquals("reserve=UNKNOWN", HomeStage.describe(java.util.Map.of(), false));
+        assertFalse(HomeStage.of(true, true, true, true, false, false) == HomeStage.STOCKED,
+                "已知但没备货不算 STOCKED");
+    }
+
+    @Test
     void unknownReserveNeverRendersAsZero() {
         String s = HomeStage.describe(null, false);
         assertEquals("reserve=UNKNOWN", s);

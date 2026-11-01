@@ -55,12 +55,23 @@ final class RddHomeFacts {
                 if (RESERVE_KEYS.contains(k)) reserve.put(k, n.intValue());
             }
         }
+        // 167 B5：把「观测到但没备货」与「根本没观测到」分开。
+        // 读数是否新鲜由 HomeSummary 统一判（超过 stale 就降级 UNKNOWN），这里只决定传不传。
+        boolean observedItems = v.get("important_items") instanceof Map<?, ?>;
         boolean reserveSufficient = !reserve.isEmpty();
         boolean litProtected = false;   // 保护/光照判据尚未产生事实，明确保持 false 而不是假装通过
 
-        HomeStage stage = HomeStage.of(true, houseUsable, true, reserveSufficient, reserveSufficient, litProtected);
-        String blocking = stage == HomeStage.ESTABLISHED ? null
-                : (litProtected ? null : "lit_protection_unverified");
+        HomeStage stage = HomeStage.of(true, houseUsable, true, observedItems, reserveSufficient, litProtected);
+        String blocking;
+        if (stage == HomeStage.ESTABLISHED) {
+            blocking = null;
+        } else if (!observedItems) {
+            blocking = "reserve_unobserved";
+        } else if (!reserveSufficient) {
+            blocking = "reserve_missing";   // 箱子读到了，但里面没有能救命的几类
+        } else {
+            blocking = "lit_protection_unverified";
+        }
         String next = switch (stage) {
             case NO_HOME, CANDIDATE -> "settlement_register(core_house)";
             case SHELTERED -> "bind_respawn_at_bed";
@@ -71,7 +82,7 @@ final class RddHomeFacts {
         return HomeSummary.block(HomeSummary.lines(stage,
                 String.valueOf(v.getOrDefault("label", base.assetId())),
                 dimension, pos, asOf,
-                reserve.isEmpty() ? null : reserve, asOf,
+                observedItems ? reserve : null, asOf,
                 blocking, next, nowMillis));
     }
 
