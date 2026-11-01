@@ -572,7 +572,19 @@ final class LearnerReviewTool implements NumenTool {
         //   补法不破 RL-20 红线：落库仍走**唯一工具 experience_learn**，只是调用方
         //   从 AI 变成复盘收尾（程序化 onServerCall）。门禁失败的/没草稿的不落。
         //   失败只发事件，绝不把一次成功复盘点成失败（同 announce 的纪律）。
-        autoStoreExperience(id, rendered);
+        // 2026-11-02（试用常态化）：把契约判定与源可信度带进落库收尾，
+        // 只有「契约 accepted + 源可信 + maturity≥OBSERVED」的新条目才自动进 TRIAL，
+        // 否则保持 DRAFT（发布仍是显式决策，TRIAL 是设计里的试用态）。
+        java.util.Map<String, Boolean> acceptedByMemo = new java.util.LinkedHashMap<>();
+        for (Map<String, Object> row : contractRows) {
+            acceptedByMemo.put(String.valueOf(row.get("memo_id")), Boolean.TRUE.equals(row.get("accepted")));
+        }
+        java.util.Map<String, Boolean> trustedByMemo = new java.util.LinkedHashMap<>();
+        for (com.dwinovo.numen.plugins.learner.core.Memo m : batch) {
+            trustedByMemo.put(m.id(), com.dwinovo.numen.plugins.learner.contract.ReviewContractAdapter
+                    .evidenceAllowed(m.snapshot(), m.stage()));
+        }
+        autoStoreExperience(id, rendered, acceptedByMemo, trustedByMemo);
         // ★ 2026-10-05：把上面这些数字**说给主人听**。
         //   此前学习者一直在写、从不说话（用户原话「不是一直裸着写」）。
         //   措辞与限频都在 Announce/AnnounceText 里，那两个类是纯 Java、可离线测；
@@ -645,7 +657,66 @@ final class LearnerReviewTool implements NumenTool {
         return bar > 0 ? targetId.substring(0, bar).trim() : "";
     }
 
-    private static void autoStoreExperience(java.util.UUID companionId, List<Map<String, Object>> rendered) {
+    /**
+     * 试用常态化的纯判定（2026-11-02）：契约 accepted + 源可信 + maturity≥OBSERVED。
+     *
+     * <p>为什么只到 TRIAL 不自动 PUBLISHED：TRIAL 是设计里的「试用态」（只进试用视图），
+     * 发布仍需显式决策；ExperienceVerifyTool 的注释也明确「不自动发布」。
+     * 这样经验能进 executor 正文被观察，又不会把刚学到的条目当成已定论。
+     */
+    static boolean shouldAutoTrial(boolean contractAccepted, boolean trustedSource, String maturity) {
+        if (!contractAccepted || !trustedSource) return false;
+        if (maturity == null || maturity.isBlank()) return false;
+        String m = maturity.trim().toUpperCase(java.util.Locale.ROOT);
+        return "OBSERVED".equals(m) || "VERIFIED".equals(m);
+    }
+
+    /** 从工具回执 JSON 里取字段（顶层的，或 data 下的）；解析失败返回空串，不猜。 */
+    static String jsonField(String reply, String field) {
+        if (reply == null || reply.isBlank()) return "";
+        try {
+            com.google.gson.JsonObject o = com.google.gson.JsonParser.parseString(reply).getAsJsonObject();
+            com.google.gson.JsonObject d = o.has("data") && o.get("data").isJsonObject()
+                    ? o.getAsJsonObject("data") : o;
+            if (!d.has(field) || d.get(field).isJsonNull()) return "";
+            return d.get(field).getAsString();
+        } catch (RuntimeException e) {
+            return "";
+        }
+    }
+
+    /** 调 experience_publish 把刚存的新条目推到 TRIAL（走插件唯一发布工具，不直接改文件）。 */
+    private static void tryAutoTrial(java.util.UUID companionId, String entryId,
+                                     List<Map<String, Object>> outcomes) {
+        try {
+            var tool = com.dwinovo.numen.agent.tool.ToolRegistry.get("experience_publish");
+            var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
+            if (tool == null || server == null) return;
+            var companion = com.dwinovo.numen.entity.NumenPlayer.findByUuid(server, companionId);
+            if (companion == null) return;
+            com.google.gson.JsonObject args = new com.google.gson.JsonObject();
+            args.addProperty("id", entryId);
+            args.addProperty("target", "TRIAL");
+            args.addProperty("note", "auto_trial: contract accepted + trusted source + maturity>=OBSERVED");
+            java.util.concurrent.atomic.AtomicReference<String> ref =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            tool.onServerCall("auto-trial-" + System.currentTimeMillis(), args, companion, ref::set);
+            String pubReply = ref.get() == null ? "NO_REPLY" : String.valueOf(ref.get());
+            boolean ok = pubReply.contains("\"success\":true");
+            var ev = new java.util.LinkedHashMap<String, Object>();
+            ev.put("entry_id", entryId);
+            ev.put("outcome", ok ? "PROMOTED" : "FAILED");
+            ev.put("reply", pubReply.substring(0, Math.min(240, pubReply.length())));
+            LearnerMonitor.publish("experience_promoted", ev);
+        } catch (RuntimeException | NoClassDefFoundError e) {
+            LearnerMonitor.publish("experience_promoted", java.util.Map.of(
+                    "entry_id", entryId, "outcome", "FAILED", "error", String.valueOf(e)));
+        }
+    }
+
+    private static void autoStoreExperience(java.util.UUID companionId, List<Map<String, Object>> rendered,
+                                             java.util.Map<String, Boolean> acceptedByMemo,
+                                             java.util.Map<String, Boolean> trustedByMemo) {
         int stored = 0;
         List<Map<String, Object>> outcomes = new ArrayList<>();
         for (Map<String, Object> one : rendered) {
@@ -776,7 +847,18 @@ final class LearnerReviewTool implements NumenTool {
                     }
                     String reply = replyRef.get() == null ? "NO_REPLY" : String.valueOf(replyRef.get());
                     boolean ok = reply.contains("\"success\":true");
-                    if (ok) stored++;
+                    if (ok) {
+                        stored++;
+                        // 2026-11-02：落库成功后按「契约 accepted + 源可信 + maturity≥OBSERVED」
+                        // 自动进 TRIAL（设计里的试用态），并留 experience_promoted 事件。
+                        boolean accepted = Boolean.TRUE.equals(acceptedByMemo.get(memoId));
+                        boolean trusted = Boolean.TRUE.equals(trustedByMemo.get(memoId));
+                        String entryId = jsonField(reply, "id");
+                        String maturity = jsonField(reply, "maturity");
+                        if (shouldAutoTrial(accepted, trusted, maturity) && !entryId.isBlank()) {
+                            tryAutoTrial(companionId, entryId, outcomes);
+                        }
+                    }
                     Map<String, Object> ev = new java.util.LinkedHashMap<>();
                     ev.put("memo_id", memoId);
                     if (!reviseNote.isEmpty()) {
