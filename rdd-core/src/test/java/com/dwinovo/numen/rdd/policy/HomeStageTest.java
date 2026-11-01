@@ -49,6 +49,32 @@ class HomeStageTest {
     }
 
     @Test
+    void reserveKitDecidesSufficiencyByItself() {
+        // 167 B5：达标与否不再由调用方拍，统一按 ReserveKit.MINIMUM（铁镐1/熟牛肉8/火把8）。
+        assertFalse(HomeStage.reserveSufficient(null), "未知不算够");
+        assertFalse(HomeStage.reserveSufficient(java.util.Map.of("minecraft:torch", 64)),
+                "只有火把不算够（缺镐和食物）");
+        Map<String, Integer> full = new LinkedHashMap<>();
+        full.put("minecraft:iron_pickaxe", 1);
+        full.put("minecraft:cooked_beef", 8);
+        full.put("minecraft:torch", 8);
+        assertTrue(HomeStage.reserveSufficient(full), "刚好齐就该算够");
+        assertTrue(HomeStage.of(true, true, true, true, HomeStage.reserveSufficient(full), true)
+                == HomeStage.ESTABLISHED);
+    }
+
+    @Test
+    void shortfallIsRenderedWithHaveOverNeed() {
+        Map<String, Integer> partial = new LinkedHashMap<>();
+        partial.put("minecraft:iron_pickaxe", 1);
+        partial.put("minecraft:cooked_beef", 3);
+        String s = HomeStage.describe(partial, true);
+        assertTrue(s.startsWith("reserve=SHORT"), s);
+        assertTrue(s.contains("cooked_beef 3/8"), "缺多少要写在行里: " + s);
+        assertTrue(s.contains("torch 0/8"), s);
+    }
+
+    @Test
     void unknownReserveNeverRendersAsZero() {
         String s = HomeStage.describe(null, false);
         assertEquals("reserve=UNKNOWN", s);
@@ -69,9 +95,10 @@ class HomeStageTest {
 
         List<String> fresh = HomeSummary.lines(HomeStage.STOCKED, "home_house_01", "minecraft:overworld",
                 "372 68 715", NOW - 30_000, reserve, NOW - 60_000, null, null, NOW);
-        assertTrue(fresh.stream().anyMatch(l -> l.startsWith("reserve=KNOWN")
-                        && l.contains("minecraft:iron_pickaxe:1")),
-                "新鲜观测要如实列出备用: " + fresh);
+        // §B5 之后渲染格式变成 SHORT/OK + missing= + have:（ReserveKit 统一判定够不够）
+        assertTrue(fresh.stream().anyMatch(l -> l.startsWith("reserve=SHORT")
+                        && l.contains("have:") && l.contains("minecraft:iron_pickaxe:1")),
+                "新鲜观测要如实列出备用与缺口: " + fresh);
     }
 
     @Test

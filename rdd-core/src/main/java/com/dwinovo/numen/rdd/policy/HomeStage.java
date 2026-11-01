@@ -1,5 +1,6 @@
 package com.dwinovo.numen.rdd.policy;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -34,6 +35,14 @@ public enum HomeStage {
      * @param reserveSufficient 备用是否达到最低清单
      * @param litProtected   光照/保护是否通过
      */
+    /**
+     * 备用是否达标 —— 直接按 {@link ReserveKit#MINIMUM} 判，不再由调用方自己拍"够不够"。
+     * {@code null}（未知）不算达标。
+     */
+    public static boolean reserveSufficient(Map<String, Integer> reserve) {
+        return ReserveKit.sufficient(reserve);
+    }
+
     public static HomeStage of(boolean baseKnown, boolean houseUsable, boolean respawnBound,
                                boolean reserveKnown, boolean reserveSufficient, boolean litProtected) {
         if (!baseKnown) return NO_HOME;
@@ -61,7 +70,10 @@ public enum HomeStage {
     public static String describe(Map<String, Integer> reserve, boolean reserveKnown) {
         if (!reserveKnown) return "reserve=UNKNOWN";
         if (reserve == null || reserve.isEmpty()) return "reserve=KNOWN but no critical items";
-        StringBuilder sb = new StringBuilder("reserve=KNOWN");
+        List<String> shortfall = ReserveKit.shortfall(reserve);
+        String head = shortfall.isEmpty() ? "reserve=OK" : "reserve=SHORT";
+        String tail = shortfall.isEmpty() ? "" : " missing=" + String.join(",", shortfall);
+        StringBuilder sb = new StringBuilder(head).append(tail).append(" have:");
         reserve.entrySet().stream()
                 .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
                         .thenComparing(Map.Entry.comparingByKey()))
