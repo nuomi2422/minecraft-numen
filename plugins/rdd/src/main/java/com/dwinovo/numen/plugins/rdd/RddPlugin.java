@@ -864,6 +864,17 @@ private static String withAssets(UUID companionId, String rddContext) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(homeBlock);
         }
+        // 167 §B7：农田"有没有在产粮"——只用背包可食作物净增判断（不确定就写 UNKNOWN）。
+        try {
+            String farmLine = RddFarmFacts.lineFor(companionId, lastInventory(companionId),
+                    System.currentTimeMillis());
+            if (!farmLine.isBlank()) {
+                if (merged.length() > 0) merged.append("\n");
+                merged.append("<farm>\n").append(farmLine).append("\n</farm>");
+            }
+        } catch (RuntimeException ignored) {
+            // 产出证据失败不影响其它上下文
+        }
         // 167 §B2：村庄候选顺序（只排序，不作准入）。
         try {
             String villages = RddVillageFacts.blockFor(assets(companionId));
