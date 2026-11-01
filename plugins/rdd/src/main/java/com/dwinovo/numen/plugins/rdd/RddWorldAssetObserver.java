@@ -166,7 +166,14 @@ final class RddWorldAssetObserver {
             var id = structureRegistry.getKey(structure);
             if (id != null && id.toString().startsWith("minecraft:village")) { villageId = id.toString(); break; }
         }
-        if (villageId == null) return 0;
+        // 2026-11-01（167 §B2 实测）：这套世界的"村庄基地"**不是原版 village 结构**，
+        // 于是 getStructuresAt 永远拿不到 villageId，world_village 一天 0 条，
+        // 167 §B2 的"多村候选排序"直接空跑。
+        // 这里加一条**加成式**回退：结构判定不到时，若附近有村民，也记一条候选村庄
+        // （structure 写成 nearby_villagers，并保留原始计数）。
+        // 注意：原有"结构命中"路径一字未改，只是多了一条不再干等的分支。
+        boolean viaStructure = villageId != null;
+        if (!viaStructure) villageId = "nearby_villagers";
         // 有界资源扫描（半径内，不强制加载远处区块）：村民/铁傀儡（实体）+ 箱子/作物/书架（方块）。
         int villagers = 0, golems = 0;
         AABB area = companion.getBoundingBox().inflate(24, 12, 24);
@@ -186,10 +193,11 @@ final class RddWorldAssetObserver {
             else if (b == Blocks.BOOKSHELF) bookshelves++;
             else if (b == Blocks.WHEAT || b == Blocks.CARROTS || b == Blocks.POTATOES || b == Blocks.BEETROOTS) crops++;
         }
+        if (!viaStructure && villagers <= 0) return 0;   // 既不在村庄结构里、附近也没村民 → 不记
         Map<String, Object> value = common("village", villageId,
                 level.dimension().location().toString(), pos, "LAZY");
         value.put("structure", villageId);
-        value.put("state", "SCANNED");
+        value.put("state", viaStructure ? "SCANNED" : "NEARBY_VILLAGERS");
         value.put("resources", Map.of("villagers", villagers, "iron_golem", golems,
                 "chests", chests, "crops", crops, "bookshelves", bookshelves));
         value.put("summary", "village scanned: villagers=" + villagers + " golems=" + golems
