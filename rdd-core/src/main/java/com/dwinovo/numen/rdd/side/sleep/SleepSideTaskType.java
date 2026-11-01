@@ -77,7 +77,14 @@ public final class SleepSideTaskType implements SideTaskType {
     public SideTaskDecision decide(UUID companionId, SideTaskWorldPort world) {
         // 2026-10-24（主人指出）：睡眠只在夜里成立 —— 白天根本睡不着（原版直接拒绝），
         // 开一条白天执行的睡觉支线＝白占主线 10 分钟。**按时间窗判定，而不是只靠 deadline**。
-        if (world.hasDayNightCycle() && world.isDay() && !world.isSleeping(companionId)) {
+        //
+        // 2026-11-01 实机回归（杂项记录 #423）：这里原来用 world.isDay() 判白天，而触发器
+        // 11_800 就 fires —— 那一刻 MC 仍算白天（夕阳 12_000 才开始）。于是每天第一拍就
+        // SKIP，引擎又把 SKIP 记成「今天问过了」（handledGameDay），13_000-23_000 整个夜晚
+        // 再也不会问；实测连续两晚没有睡眠支线，同伴通宵赶路、夜间连死两次。
+        // 现在按 dayTime 判「真白天」，与触发器同一个时间口径，窗口内一律放行；
+        // isDay() 的边界（11_800 仍是 day）不再参与决策。
+        if (moreThanOneMinuteBeforeNight(world) && !world.isSleeping(companionId)) {
             return SideTaskDecision.skip("daytime_no_sleep_needed");
         }
         String objective = world.mainlineObjective(companionId);
@@ -132,7 +139,9 @@ public final class SleepSideTaskType implements SideTaskType {
         // 2026-10-24（主人指出）：**白天到了就该收**，不必等到 12,000 tick 的 deadline。
         // 之前只有 deadline 一条出口，于是白天开出来的睡眠支线会白占主线十分钟
         // （实机还留下过两条早已失效同伴的 ACTIVE sleep 支线）。
-        if (world.hasDayNightCycle() && world.isDay()) {
+        // 2026-11-01（#423）：改为按 dayTime 判 —— 否则 11_800 建好的支线会在同一天白天的
+        // 窗口里被 isDay() 立刻收掉，又回到「夜里没有睡眠支线」。
+        if (moreThanOneMinuteBeforeNight(world)) {
             return SideTaskVerdict.skip("daytime: sleep is impossible until night falls");
         }
         // ★ 找床窗口：2 分钟没绑上就撤回主线。实测代价：05:44Z 那条支线冻结主线 8 分钟才等到天亮。
@@ -190,6 +199,21 @@ public final class SleepSideTaskType implements SideTaskType {
                 + "挖三填一用 build 的 ops 一次给出全部格子，不要一格格试。"
                 + "若附近有怪、太远，按原版返回的原因处理，别硬顶。"
                 + "</side_task>";
+    }
+
+    /**
+     * 距离入夜是否**超过一分钟**（白名单之外）——这才是「真跳过」的判据。
+     *
+     * <p>主人 2026-11-01 的口径：夜前最后一分钟（11_800 起）是白名单，允许它去床边等/绑出生点；
+     * 只有「还要等一分钟以上」（dayTime &lt; 11_800，真正的白天）才花不着，直接跳过。
+     *
+     * <p>为什么不用 {@code isDay()}：11_800 时 MC 的 isDay() 仍为真（夕阳 12_000 才开始），
+     * 用它判白天会把白名单那一分钟也判成白天——决定阶段 SKIP 会锁住整日（引擎把 SKIP 记进
+     * handledGameDay），评估阶段 SKIP 会把刚建好的支线一拍收掉。两边统一用触发器的 dayTime 口径。
+     */
+    private static boolean moreThanOneMinuteBeforeNight(SideTaskWorldPort world) {
+        return world.hasDayNightCycle()
+                && Math.floorMod(world.dayTime(), 24_000L) < SleepSideTaskTrigger.TRIGGER_DAY_TIME;
     }
 
     private static String esc(String s) {

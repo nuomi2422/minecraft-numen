@@ -87,6 +87,50 @@ class SideTaskEngineTest {
         assertTrue(engine.isActive(C), "夜里（18000）也应触发，不能只认夜前那 60 秒");
     }
 
+    /**
+     * 2026-11-01 实机回归（杂项记录 #423）：{@code 11_800} 那一刻 MC 的 {@code isDay()} 仍为真
+     * （夕阳 {@code 12_000} 才开始）。旧实现用 isDay() 判白天 → 每天第一拍就 SKIP；引擎又把
+     * SKIP 记进 handledGameDay，13_000–23_000 整个夜晚不再触发（实测连续两晚没有睡眠支线）。
+     */
+    @Test
+    void sleepStartsAtPreDuskEvenWhileIsDayStillTrue() {
+        RecordingEvents events = new RecordingEvents();
+        SideTaskEngine engine = engine(events);
+        FakeWorldPort port = new FakeWorldPort().at(WINDOW, 0L).day(true);
+
+        engine.tick(C, port, null, false);
+        assertTrue(engine.isActive(C), "夜前一分钟（isDay 仍真）也必须开睡觉支线");
+        assertEquals(1, events.count("side_task_created"));
+        assertFalse(events.saw("side_task_skipped_occurrence"), "不得把这次当成白天跳过并锁当日");
+
+        // 创建后的下一拍仍在白天窗口内：不能被 evaluate 的白天判定立刻收掉
+        port.at(WINDOW + 100L, 0L).day(true);
+        engine.tick(C, port, null, false);
+        assertTrue(engine.isActive(C), "窗口内保持 active，等它走到床边绑出生点");
+        assertFalse(events.saw("side_task_skipped"));
+
+        // 入夜（13_000，仍在一个 2 分钟找床窗口内）：继续跑
+        port.at(13_000L, 0L).day(false);
+        engine.tick(C, port, null, false);
+        assertTrue(engine.isActive(C), "入夜后支线应继续（窗口没到就还在找床）");
+    }
+
+    /** 反向保护：真正把时间跳到正午时，睡眠支线仍然要收，别白占主线。 */
+    @Test
+    void sleepSideTaskStillSkipsWhenTimeJumpsToRealDay() {
+        RecordingEvents events = new RecordingEvents();
+        SideTaskEngine engine = engine(events);
+        FakeWorldPort port = new FakeWorldPort().at(18_000L, 0L).day(false);
+
+        engine.tick(C, port, null, false);
+        assertTrue(engine.isActive(C));
+
+        port.at(6_000L, 0L).day(true);
+        engine.tick(C, port, null, false);
+        assertFalse(engine.isActive(C), "正午是真实白天，睡觉支线必须收");
+        assertTrue(events.saw("side_task_skipped"));
+    }
+
     @Test
     void noTriggerWithoutDayNightCycle() {
         RecordingEvents events = new RecordingEvents();
