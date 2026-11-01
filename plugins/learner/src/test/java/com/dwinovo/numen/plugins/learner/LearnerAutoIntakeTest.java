@@ -292,6 +292,26 @@ class LearnerAutoIntakeTest {
     }
 
     @Test
+    void autoReviewOnlyWhenPreviousNudgeWentUnanswered() {
+        long cooldown = 30L * 60L * 1000L;
+        long now = 100_000_000L;
+        // 队列太浅
+        assertFalse(LearnerAutoIntake.autoReviewDue(now - 700_000L, now - 900_000L, null, now, 2, false));
+        // 没有上一条提醒
+        assertFalse(LearnerAutoIntake.autoReviewDue(null, 0L, null, now, 5, false));
+        // 上一条提醒距现在不到 10 分钟 → 不抢跑（与 nudge 冷却联动，显式钉住）
+        assertFalse(LearnerAutoIntake.autoReviewDue(now - 5L * 60_000L, now - 900_000L, null, now, 5, false));
+        // 上次提醒之后有 review 启动 → 有人响应，不兜底
+        assertFalse(LearnerAutoIntake.autoReviewDue(now - 700_000L, now - 100_000L, null, now, 5, false));
+        // 已在跑
+        assertFalse(LearnerAutoIntake.autoReviewDue(now - 700_000L, now - 900_000L, null, now, 5, true));
+        // 30 分钟冷却内不再兜底
+        assertFalse(LearnerAutoIntake.autoReviewDue(now - 700_000L, now - 900_000L, now - 10_000L, now, 5, false));
+        // 上次提醒无人响应 + 冷却已过 → 兜底
+        assertTrue(LearnerAutoIntake.autoReviewDue(now - 700_000L, now - 900_000L, now - cooldown, now, 5, false));
+    }
+
+    @Test
     void eventsForOtherCompanionsAreNotAttributedToMine() throws IOException {
         String other = "e44fe5f8-0000-0000-0000-000000000002";
         writeInstrumentation(tmp.resolve("monitor"),

@@ -123,6 +123,21 @@ final class LearnerAutoIntake {
     /** 同伴 → 「提醒送不到」的退避截止时刻（防每 30 秒重试）。 */
     private static final java.util.Map<java.util.UUID, Long> NUDGE_UNDELIVERABLE_UNTIL =
             new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 自动复盘（2026-11-02）：提醒发了没人响应时的兜底。
+     *
+     * <p>实测 18:13–19:23 七次 nudge 只有三次真的启动了 review —— 触发链最后一跳
+     * 完全押在「执行 AI 自觉」上，队列不会自己降。这里在「上一次提醒之后没有任何
+     * 复盘开始」时，直接按执行 AI 的同一条接口调用 learner_review（不是旁路、
+     * 不复制管线：质量门/上轮回顾/commit/announce 全走原工具）。
+     *
+     * <p>真实代价：一次复盘实测 ~28–45k tokens，所以加 30 分钟冷却，且只在
+     * 「上一次提醒未被响应」时触发一次；事件留痕 auto_review_started。
+     */
+    private static final long AUTO_REVIEW_COOLDOWN_MS = 30L * 60L * 1000L;
+    private static final java.util.Map<java.util.UUID, Long> LAST_AUTO_REVIEW_AT =
+            new java.util.concurrent.ConcurrentHashMap<>();
     /** 深度达到该值才催（太少不值得打断执行）。 */
     static final int REVIEW_NUDGE_MIN_DEPTH = 3;
     private static final Map<UUID, Long> LAST_REVIEW_NUDGE = new ConcurrentHashMap<>();
@@ -537,6 +552,7 @@ final class LearnerAutoIntake {
                     continue;
                 }
                 if (nudgeBlocked(NUDGE_UNDELIVERABLE_UNTIL, id, now)) continue;
+                Long prevNudge = LAST_REVIEW_NUDGE.get(id);
                 if (!claimNudge(LAST_REVIEW_NUDGE, id, depth, now)) continue;
                 boolean sent = LearnerPlugin.nudgeSystem(id,
                         "[学习者] 队列里有 " + depth + " 条待复盘的备忘录（都是真实失败事件，不是测试）。"
@@ -545,6 +561,12 @@ final class LearnerAutoIntake {
                 if (sent) {
                     LearnerMonitor.publish("review_nudge_sent", Map.of(
                             "companionId", id.toString(), "queue_depth", depth));
+                    // 上一次提醒之后一条 review 都没启动 → 这一跳不能继续押在执行 AI 自觉上。
+                    long startedAt = LearnerPlugin.lastReviewStartedMs(id);
+                    boolean running = LearnerPlugin.runningReview(id) != null;
+                    if (autoReviewDue(prevNudge, startedAt, LAST_AUTO_REVIEW_AT.get(id), now, depth, running)) {
+                        maybeAutoReview(id, depth, now);
+                    }
                 } else {
                     // 送不到（同伴不在本世界 / 已归档）：不再用「remove 冷却位」当重试策略，
                     // 那样会每 30 秒重试一次（2026-11-02 00:29–00:32 实测 4 个旧同伴 × 每 30s 刷屏）。
@@ -554,6 +576,55 @@ final class LearnerAutoIntake {
             }
         } catch (RuntimeException | NoClassDefFoundError ignored) {
             // 提醒是增强旁路：坏了不许影响 tick
+        }
+    }
+
+    /**
+     * 提醒无人响应时的兜底：走执行 AI 的同一条工具接口（不另写管线）。
+     *
+     * <p>边界：队列 < 3 不跑；30 分钟内最多一次；已有 review 在跑不跑；
+     * 找不到服务器/同伴/工具都如实放弃并留事件，不假装跑过。
+     */
+    /**
+     * 纯判定：这次提醒之后该不该走自动复盘。抽出来是为了能在纯 JVM 单测里钉住策略，
+     * 而不是靠实机撞。
+     */
+    static boolean autoReviewDue(Long prevNudge, long lastReviewStartedAt, Long lastAutoReviewAt,
+                                 long now, int depth, boolean reviewRunning) {
+        if (depth < REVIEW_NUDGE_MIN_DEPTH) return false;          // 队列太浅不值得花一次 LLM
+        if (prevNudge == null) return false;                        // 还没有「上一次提醒」可比
+        // 上一条提醒本身必须已经过了 nudge 冷却（≥10 分钟）。当前 nudge 触发时 prevNudge
+        // 天然满足；这条显式写死，防以后有人调 nudge 冷却而忘了这里（审核窗口 03:50 要求）。
+        if (now - prevNudge < REVIEW_NUDGE_COOLDOWN_MS) return false;
+        if (lastReviewStartedAt > prevNudge) return false;          // 上次提醒有人响应了
+        if (reviewRunning) return false;                            // 已经在跑
+        return lastAutoReviewAt == null || now - lastAutoReviewAt >= AUTO_REVIEW_COOLDOWN_MS;
+    }
+
+    private static void maybeAutoReview(UUID id, int depth, long now) {
+        try {
+            if (depth < REVIEW_NUDGE_MIN_DEPTH) return;
+            Long last = LAST_AUTO_REVIEW_AT.get(id);
+            if (last != null && now - last < AUTO_REVIEW_COOLDOWN_MS) return;
+            if (LearnerPlugin.runningReview(id) != null) return;
+            var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
+            if (server == null) return;
+            var companion = com.dwinovo.numen.entity.NumenPlayer.findByUuid(server, id);
+            if (companion == null) return;
+            var tool = com.dwinovo.numen.agent.tool.ToolRegistry.get("learner_review");
+            if (tool == null) return;
+            LAST_AUTO_REVIEW_AT.put(id, now);
+            java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
+            ev.put("companion", id.toString());
+            ev.put("queue_depth", depth);
+            ev.put("reason", "nudge_unanswered");
+            LearnerMonitor.publish("auto_review_started", ev);
+            tool.onServerCall("auto-review-" + now, new com.google.gson.JsonObject(), companion, reply -> { });
+        } catch (RuntimeException | NoClassDefFoundError e) {
+            String msg = String.valueOf(e);
+            LearnerMonitor.publish("auto_review_failed", java.util.Map.of(
+                    "companion", id.toString(),
+                    "error", msg.substring(0, Math.min(200, msg.length()))));
         }
     }
 

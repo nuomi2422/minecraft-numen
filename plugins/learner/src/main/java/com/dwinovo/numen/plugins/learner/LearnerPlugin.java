@@ -288,8 +288,23 @@ public final class LearnerPlugin implements NumenPlugin {
         return null;
     }
 
+    /**
+     * 每个同伴最近一次复盘真正开始的时刻（2026-11-02：自动复盘用它判断「上次提醒有没有人响应」）。
+     * 按同伴存，不是全局 —— 多同伴时全局值会被别的同伴压掉，自动复盘就会误判。
+     */
+    private static final java.util.Map<UUID, Long> LAST_REVIEW_STARTED =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    static long lastReviewStartedMs(UUID companionId) {
+        Long v = companionId == null ? null : LAST_REVIEW_STARTED.get(companionId);
+        return v == null ? 0L : v;
+    }
+
     static void beginReview(String reviewId, UUID companionId, String state, int reviewing) {
         REVIEWS.put(reviewId, new ReviewRecord(reviewId, companionId, state, reviewing, 0, "", List.of()));
+        if (companionId != null) {
+            LAST_REVIEW_STARTED.put(companionId, System.currentTimeMillis());
+        }
         evictOld();
         // 2026-11-02：观测缺口 —— 之前只有 nudge_sent/finished，没有「复盘真的开始了」。
         // 18:37 的 nudge 后没有 review、也没有任何事件，只能靠事后推断。
