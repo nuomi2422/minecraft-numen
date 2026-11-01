@@ -146,9 +146,12 @@ public record ExecuteToolPayload(UUID entityUuid,
         // onServerCall 是 NumenTool 的接口默认方法——非身体工具的默认实现
         // 兜底出一条清晰失败,这里无需再分岔。
         java.util.function.Consumer<String> reply = json -> {
+            // 2026-11-02（F9）：这是服务端 onServerCall 的成功回执，必须自报写者。
+            // 原来没写 journaled_by，学习线只能记成 unknown、证据引用不放行；
+            // 补成 server（事实，不是猜），让写入者标签从源头成立。
             MonitoringJournal.get().publish("tools", "tool_result", Map.of(
                     "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
-                    "tool", p.toolName(), "result", truncate(json)));
+                    "tool", p.toolName(), "journaled_by", "server", "result", truncate(json)));
             com.dwinovo.numen.agent.tool.ToolCallLoopWatch.onSucceeded(p.entityUuid(), p.toolName());
             com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
                     new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
