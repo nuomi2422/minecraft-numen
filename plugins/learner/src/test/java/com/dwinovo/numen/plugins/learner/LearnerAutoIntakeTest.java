@@ -228,6 +228,70 @@ class LearnerAutoIntakeTest {
     }
 
     @Test
+    void staleDeferredEntryIsDroppedInsteadOfRequeued() throws IOException {
+        // 2026-11-02：admitDeferred 原来绕过 2h 闸 —— 10-31 被 StormGuard 抑制的老条目
+        // 冷却到期后从后门放回（17:39 deferred_admitted=4 全是老的）。
+        java.util.UUID id = java.util.UUID.fromString(COMPANION);
+        long threeDaysAgo = System.currentTimeMillis() - 3L * 24 * 3600 * 1000;
+        var old = new com.dwinovo.numen.plugins.learner.core.Memo(
+                "ai-instr-old-suppressed", "death old", "death", "tried", "snap", threeDaysAgo);
+        com.dwinovo.numen.plugins.learner.core.SuppressedStore.append(
+                tmp, id, old, "fp-old", "SUPPRESSED_COOLDOWN", threeDaysAgo);
+
+        writeInstrumentation(tmp.resolve("monitor"));
+        assertEquals(0, LearnerAutoIntake.scanOnce());
+        assertEquals(0, queueForTest(COMPANION).size(), "3 天前的暂存条目不得从后门放回");
+    }
+
+    @Test
+    void seenHitDeferredEntryIsNotAdmittedAgain() throws IOException {
+        // append=true 但 seen 命中：不得计 admitted、不得再写 journal。
+        java.util.UUID id = java.util.UUID.fromString(COMPANION);
+        long recent = System.currentTimeMillis() - 11 * 60 * 1000;   // 已过 10min 冷却、且未过 2h
+        var m = new com.dwinovo.numen.plugins.learner.core.Memo(
+                "ai-instr-seen-deferred", "p", "death", "tried", "snap", recent);
+        var queue = queueForTest(COMPANION);
+        assertTrue(queue.append(m));
+        assertTrue(queue.commitDrain(queue.drain(1)) > 0, "先入队再复核移除 → id 进 seen");
+
+        com.dwinovo.numen.plugins.learner.core.SuppressedStore.append(
+                tmp, id, m, "fp", "SUPPRESSED_COOLDOWN", recent);
+        Path journal = tmp.resolve("learner-enqueued.jsonl");
+        long before = Files.exists(journal) ? Files.readAllLines(journal).size() : 0;
+
+        writeInstrumentation(tmp.resolve("monitor"));
+        assertEquals(0, LearnerAutoIntake.scanOnce());
+        assertEquals(0, queue.size(), "seen 命中的暂存条目不得重新入队");
+        long after = Files.exists(journal) ? Files.readAllLines(journal).size() : 0;
+        assertEquals(before, after, "不得再写重复 journal 行");
+    }
+
+    @Test
+    void dueDeferredEntryGoesBackToStoreWhenQueueIsFull() throws IOException {
+        // 队列满时：不放回、也不丢 —— 回暂存区等下一轮。
+        var queue = queueForTest(COMPANION);
+        java.util.UUID id = java.util.UUID.fromString(COMPANION);
+        for (int i = 0; i < 64; i++) {
+            queue.append(new com.dwinovo.numen.plugins.learner.core.Memo(
+                    "fill-" + i, "p", "death", "t", "s", System.currentTimeMillis()));
+        }
+        assertEquals(64, queue.size(), "先把队列塞满");
+        long recent = System.currentTimeMillis() - 11 * 60 * 1000;
+        var m = new com.dwinovo.numen.plugins.learner.core.Memo(
+                "ai-instr-due-full", "p", "death", "tried", "snap", recent);
+        com.dwinovo.numen.plugins.learner.core.SuppressedStore.append(
+                tmp, id, m, "fp", "SUPPRESSED_COOLDOWN", recent);
+
+        writeInstrumentation(tmp.resolve("monitor"));
+        int n = LearnerAutoIntake.scanOnce();
+        assertEquals(0, n);
+        assertEquals(64, queue.size(), "满队列不能再进");
+        assertTrue(Files.readString(
+                        com.dwinovo.numen.plugins.learner.core.SuppressedStore.fileFor(tmp, id))
+                .contains("ai-instr-due-full"), "写不进队列的条目必须回暂存区，不能丢");
+    }
+
+    @Test
     void eventsForOtherCompanionsAreNotAttributedToMine() throws IOException {
         String other = "e44fe5f8-0000-0000-0000-000000000002";
         writeInstrumentation(tmp.resolve("monitor"),

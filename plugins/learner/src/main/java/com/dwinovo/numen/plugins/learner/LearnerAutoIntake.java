@@ -472,13 +472,30 @@ final class LearnerAutoIntake {
             List<SuppressedStore.Entry> due =
                     SuppressedStore.drainDue(configDirCache, id, now, StormGuard.COOLDOWN_MILLIS, cap);
             for (SuppressedStore.Entry e : due) {
+                // ★ 2026-11-02：暂存区放回也必须过同一道新鲜度闸 —— 否则 10-31 被风暴抑制的
+                //   老条目冷却到期后又从后门进来（实测 17:39 deferred_admitted=4，全是老条目）。
+                //   Entry 只带 memo.createdAt（抑制时刻），作为年龄代理：抑制超过 2h 的视为陈旧。
+                //   边缘：无时间戳的老事件若“今天才被抑制”，会以 now 身份在 10 分钟后放回 ——
+                //   这是已知限制（源事件缺 ts 时无法证明它老，与 scan 层「无 ts 走新鲜路径」同口径）。
+                long bornAt = e.memo().createdAt();
+                if (bornAt > 0 && now - bornAt > MAX_EVENT_AGE_MS) {
+                    Map<String, Object> staleEv = new LinkedHashMap<>();
+                    staleEv.put("memo_id", e.memo().id());
+                    staleEv.put("age_ms", now - bornAt);
+                    staleEv.put("reason", e.reason() == null ? "" : e.reason());
+                    LearnerMonitor.publish("suppressed_stale_dropped", staleEv);
+                    continue;
+                }
                 boolean ok;
+                boolean inQueue = false;
                 try {
-                    ok = queueResolver.apply(id).append(e.memo());
+                    MemoQueue q = queueResolver.apply(id);
+                    ok = q.append(e.memo());
+                    if (ok) inQueue = q.contains(e.memo().id());
                 } catch (RuntimeException ex) {
                     ok = false;
                 }
-                if (ok) {
+                if (ok && inQueue) {
                     admitted++;
                     enqueuedBy.merge(id, 1, Integer::sum);
                     appendEnqueuedJournal(e.memo().id());
@@ -486,6 +503,8 @@ final class LearnerAutoIntake {
                             "memo_id", e.memo().id(),
                             "fingerprint", e.fingerprint(),
                             "reason", e.reason()));
+                } else if (ok) {
+                    // seen 命中：这条以前处理过，不再放回、也不计 admitted。
                 } else {
                     // 队列满：放回暂存区再等一轮（at 拨到当前，不重算冷却）
                     SuppressedStore.append(configDirCache, id, e.memo(), e.fingerprint(), e.reason(), now);
