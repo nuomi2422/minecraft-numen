@@ -77,7 +77,10 @@ public final class SleepOps {
         if (rejection != null) {
             Map<String, Object> d = data(bedHead, false);
             d.putAll(deferFields(rejection));
-            String msg = explain(rejection) + " (bed at " + pretty(bedHead) + ")";
+            // 167 §B4-5：原因之外必须给动作词，否则模型只会原地重试 sleep。
+            d.put("next_action", nextAction(rejection));
+            String msg = explain(rejection) + " (bed at " + pretty(bedHead) + ")"
+                    + " — next=" + nextAction(rejection) + "：" + nextActionHint(rejection);
             if (d.containsKey("defer")) {
                 // ★ 2026-10-22：白天睡不了时，**明确给一个「推迟」信号**，
                 //   而不是让她自己发明「定个闹钟等 400 秒」。推迟不是等待：
@@ -125,6 +128,38 @@ public final class SleepOps {
      * <p>只有「时间不对」才给这个信号：{@code TOO_FAR_AWAY} 该走去床边，
      * {@code NOT_SAFE} 该清怪 —— 那两种都不是「推迟」。
      */
+    /**
+     * 167 §B4-5：拒绝理由要给**可执行动作**，不能只报"睡不着"。
+     *
+     * <p>原版文案是原因（"the bed is too far away"），不是下一步；
+     * 模型拿到原因仍会原地重试 sleep。这里把原因映射成动作词，
+     * 但**不改原版文案**（那仍是主人看得懂的真话）。
+     */
+    public static String nextAction(Player.BedSleepingProblem problem) {
+        if (problem == null) return "";
+        return switch (problem) {
+            case TOO_FAR_AWAY -> "walk_to_bed";
+            case NOT_SAFE -> "clear_monsters";
+            case NOT_POSSIBLE_NOW -> "defer_until_night";
+            case OBSTRUCTED -> "clear_blocks_above_bed";
+            case NOT_POSSIBLE_HERE -> "move_bed_or_use_another";
+            case OTHER_PROBLEM -> "report_unclear_refusal";
+        };
+    }
+
+    /** 供消息尾部的短提示（与 {@link #nextAction} 同源，避免两处漂移）。 */
+    static String nextActionHint(Player.BedSleepingProblem problem) {
+        if (problem == null) return "";
+        return switch (problem) {
+            case TOO_FAR_AWAY -> "走到床边（3 格内）再 sleep，别原地重试";
+            case NOT_SAFE -> "先把附近怪清掉或插火把，再 sleep";
+            case NOT_POSSIBLE_NOW -> "不是晚上的事，挂到天黑再来";
+            case OBSTRUCTED -> "床上方被挡住了，先清掉上面的方块";
+            case NOT_POSSIBLE_HERE -> "这个位置不能睡，换一张床或换个地方";
+            case OTHER_PROBLEM -> "原版没给具体原因，记录现象后换一种办法";
+        };
+    }
+
     static Map<String, Object> deferFields(Player.BedSleepingProblem problem) {
         Map<String, Object> out = new LinkedHashMap<>();
         if (problem == Player.BedSleepingProblem.NOT_POSSIBLE_NOW) {
