@@ -29,10 +29,14 @@ final class RddHomeFacts {
             "minecraft:white_bed", "minecraft:water_bucket");
 
     static String blockFor(AssetRegistry registry) {
-        return blockFor(registry, System.currentTimeMillis());
+        return blockFor(registry, null, System.currentTimeMillis());
     }
 
-    static String blockFor(AssetRegistry registry, long nowMillis) {
+    static String blockFor(AssetRegistry registry, Map<String, Integer> inventory) {
+        return blockFor(registry, inventory, System.currentTimeMillis());
+    }
+
+    static String blockFor(AssetRegistry registry, Map<String, Integer> inventory, long nowMillis) {
         AssetRegistry.AssetEntry base = freshestBase(registry);
         if (base == null) {
             // 没观测到基地不等于没有基地：只报 NO_HOME，并明确 reserve 未知（不写 0）。
@@ -92,11 +96,19 @@ final class RddHomeFacts {
         } else if ("reserve_unobserved".equals(blocking)) {
             next = "scan_reserve_containers";    // 真没读到 → 去扫
         }
-        return HomeSummary.block(HomeSummary.lines(stage,
+        List<String> lines = new java.util.ArrayList<>(HomeSummary.lines(stage,
                 String.valueOf(v.getOrDefault("label", base.assetId())),
                 dimension, pos, asOf,
                 observedItems ? reserve : null, asOf,
                 blocking, next, nowMillis));
+        // 2026-11-01：把「箱子里缺什么」和「背包里有什么」合起来给一句可执行建议——
+        // 背包里已经有的，下一步是放进箱子，而不是再去做一遍（实机：它背着一包东西，基地箱是空的）。
+        if (observedItems && !reserveSufficient) {
+            String action = com.dwinovo.numen.rdd.policy.ReserveAction.describe(
+                    com.dwinovo.numen.rdd.policy.ReserveAction.plan(shortfall, inventory));
+            if (!action.isBlank()) lines.add("reserve_next=" + action);
+        }
+        return HomeSummary.block(lines);
     }
 
     /** 当前基地阶段（167 B3 的派生口径；没有基地观测就是 NO_HOME）。 */

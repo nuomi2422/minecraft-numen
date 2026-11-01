@@ -769,7 +769,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 真正进请求的只有一句 summary —— 基地事实等于看不见。
         String homeBlock = "";
         try {
-            homeBlock = RddHomeFacts.blockFor(assets(companionId));
+            homeBlock = RddHomeFacts.blockFor(assets(companionId), lastInventory(companionId));
             // 167 §B1：把建家路线作为**一条带依赖的路线**发布一次，便于运行期核对它确实存在
             // （本轮还不塞进常驻提示词：先让它可观测，再谈怎么消费）。
             try {
