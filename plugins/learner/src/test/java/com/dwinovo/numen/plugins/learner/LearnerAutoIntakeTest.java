@@ -292,6 +292,22 @@ class LearnerAutoIntakeTest {
     }
 
     @Test
+    void deathInQueueReachesNudgeThresholdEvenWhenAlone() {
+        // 目标要求：每一次死亡都要变成经验，不能等后面两次失败才触发复盘。
+        assertEquals(1, LearnerAutoIntake.effectiveDepth(1, false));
+        assertEquals(3, LearnerAutoIntake.effectiveDepth(1, true));
+        assertEquals(5, LearnerAutoIntake.effectiveDepth(5, true));
+    }
+
+    @Test
+    void nudgeTextReportsTheRealCountEvenWhenDeathLowersTheGate() {
+        // 审核窗口 06:08：death 只降门槛，不许把「1 条」说成「3 条」。
+        String text = LearnerAutoIntake.nudgeText(1);
+        assertTrue(text.contains("队列里有 1 条"), text);
+        assertFalse(text.contains("队列里有 3 条"), text);
+    }
+
+    @Test
     void autoReviewOnlyWhenPreviousNudgeWentUnanswered() {
         long cooldown = 30L * 60L * 1000L;
         long now = 100_000_000L;

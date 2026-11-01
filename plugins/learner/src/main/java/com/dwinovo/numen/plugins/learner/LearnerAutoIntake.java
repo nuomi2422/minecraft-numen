@@ -551,20 +551,32 @@ final class LearnerAutoIntake {
                 } catch (RuntimeException e) {
                     continue;
                 }
+                // 2026-11-02（目标要求：每一次死亡都要变成经验）：队列里有 death 时不等攒到 3 条，
+                // 立刻允许提醒/兜底复盘 —— 否则一次死亡要等后面两次失败才可能被看到。
+                boolean hasDeath = false;
+                try {
+                    for (Memo m : q.all()) {
+                        if ("death".equals(m.stage())) {
+                            hasDeath = true;
+                            break;
+                        }
+                    }
+                } catch (RuntimeException ignored) {
+                    // 读不到就按原规则走，不假装有 death
+                }
+                // 真实深度用于报告/事件（不许造假数）；gateDepth 只用于门槛判断。
+                int gateDepth = effectiveDepth(depth, hasDeath);
                 if (nudgeBlocked(NUDGE_UNDELIVERABLE_UNTIL, id, now)) continue;
                 Long prevNudge = LAST_REVIEW_NUDGE.get(id);
-                if (!claimNudge(LAST_REVIEW_NUDGE, id, depth, now)) continue;
-                boolean sent = LearnerPlugin.nudgeSystem(id,
-                        "[学习者] 队列里有 " + depth + " 条待复盘的备忘录（都是真实失败事件，不是测试）。"
-                        + "现在没有正在跑的复盘；下一轮请调用 learner_review 处理它们——"
-                        + "该成经验的经验、该拒绝的拒绝（拒绝也要给理由），别让队列一直积着。");
+                if (!claimNudge(LAST_REVIEW_NUDGE, id, gateDepth, now)) continue;
+                boolean sent = LearnerPlugin.nudgeSystem(id, nudgeText(depth));
                 if (sent) {
                     LearnerMonitor.publish("review_nudge_sent", Map.of(
                             "companionId", id.toString(), "queue_depth", depth));
                     // 上一次提醒之后一条 review 都没启动 → 这一跳不能继续押在执行 AI 自觉上。
                     long startedAt = LearnerPlugin.lastReviewStartedMs(id);
                     boolean running = LearnerPlugin.runningReview(id) != null;
-                    if (autoReviewDue(prevNudge, startedAt, LAST_AUTO_REVIEW_AT.get(id), now, depth, running)) {
+                    if (autoReviewDue(prevNudge, startedAt, LAST_AUTO_REVIEW_AT.get(id), now, gateDepth, running)) {
                         maybeAutoReview(id, depth, now);
                     }
                 } else {
@@ -577,6 +589,21 @@ final class LearnerAutoIntake {
         } catch (RuntimeException | NoClassDefFoundError ignored) {
             // 提醒是增强旁路：坏了不许影响 tick
         }
+    }
+
+    /** nudge 的正文（纯函数，便于钉住「说几条就是几条」）。 */
+    static String nudgeText(int depth) {
+        return "[学习者] 队列里有 " + depth + " 条待复盘的备忘录（都是真实失败事件，不是测试）。"
+                + "现在没有正在跑的复盘；下一轮请调用 learner_review 处理它们——"
+                + "该成经验的经验、该拒绝的拒绝（拒绝也要给理由），别让队列一直积着。";
+    }
+
+    /**
+     * death 在队列里时按「已到门槛」处理（2026-11-02）。纯函数，供 nudge/自动复盘共用。
+     * 理由：目标要求每一次死亡都要变成经验；按 3 条门槛，单次死亡会被无限期压后。
+     */
+    static int effectiveDepth(int depth, boolean hasDeath) {
+        return hasDeath ? Math.max(depth, REVIEW_NUDGE_MIN_DEPTH) : depth;
     }
 
     /**
