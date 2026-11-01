@@ -99,6 +99,23 @@ final class RddHomeFacts {
                 blocking, next, nowMillis));
     }
 
+    /** 当前基地阶段（167 B3 的派生口径；没有基地观测就是 NO_HOME）。 */
+    static HomeStage stageOf(AssetRegistry registry) {
+        AssetRegistry.AssetEntry base = freshestBase(registry);
+        if (base == null) return HomeStage.NO_HOME;
+        Map<String, Object> v = base.observation().value();
+        boolean houseUsable = v.get("facilities") instanceof List<?> l && !l.isEmpty();
+        Map<String, Integer> reserve = new LinkedHashMap<>();
+        if (v.get("important_items") instanceof Map<?, ?> m) {
+            for (var e : m.entrySet()) {
+                if (e.getValue() instanceof Number n) reserve.put(String.valueOf(e.getKey()), n.intValue());
+            }
+        }
+        boolean reserveKnown = v.get("important_items") instanceof Map<?, ?>;
+        return HomeStage.of(true, houseUsable, true, reserveKnown,
+                HomeStage.reserveSufficient(reserveKnown ? reserve : null), false);
+    }
+
     /** 基地备用箱是否**真的观测过**（有 world_base 且带 important_items）。 */
     static boolean reserveKnown(AssetRegistry registry) {
         AssetRegistry.AssetEntry base = freshestBase(registry);

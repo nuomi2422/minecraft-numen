@@ -672,6 +672,8 @@ final class RddDetector {
             var baseRegistry = RddPlugin.assets(ap.getUUID());
             var verdict = com.dwinovo.numen.rdd.policy.RiskGate.checkWithBase(level, inv, hasRecovery,
                     RddHomeFacts.reserveKnown(baseRegistry), RddHomeFacts.reserveShortfall(baseRegistry));
+            // 167 §B3：基地阶段是高风险动作的硬依赖（只收紧）。物资齐了但家里没底，同样不许进。
+            verdict = com.dwinovo.numen.rdd.policy.HomeGate.enforce(verdict, RddHomeFacts.stageOf(baseRegistry));
             publishRiskVerdict(ap, primaryDescription, level, verdict, inv);
             return verdict.allowed();
         } catch (RuntimeException ex) {
