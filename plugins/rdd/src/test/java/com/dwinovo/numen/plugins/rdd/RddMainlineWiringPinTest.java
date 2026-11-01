@@ -236,6 +236,28 @@ class RddMainlineWiringPinTest {
     }
 
     @Test
+    void b1_newPlanningDiscardsPreviousGoalBeforeStageA() {
+        String source = plugin();
+        int discard = source.indexOf("discardPreviousGoalState(uuid, objective)");
+        int bound = source.indexOf("RddMonitor.publish(\"goal_generation_bound\"");
+        int input = source.indexOf("RddMonitor.publish(\"supervisor_input\"");
+        assertTrue(discard >= 0, "B1：新目标规划前必须切断旧 RDD runtime/handoff");
+        assertTrue(bound > discard, "B1：目标代次绑定必须在旧状态清理之后");
+        assertTrue(input > bound, "B1：supervisor_input 必须在目标代次绑定之后");
+    }
+
+    @Test
+    void b1_oldTaskDeletionFailureBlocksPlanning() {
+        String body = methodBody(plugin(), "discardPreviousGoalState", "goal_generation_mismatch");
+        assertContains(body, "Files.deleteIfExists(tasksDir.resolve(companionId + \".json\"))",
+                "B1：必须删除真正的 rdd-tasks handoff，不是只删 goal.json");
+        assertContains(body, "throw new IllegalStateException",
+                "B1：旧 handoff 删除失败必须阻止继续规划，不能静默沿用旧目标");
+        assertContains(body, "goal_generation_mismatch",
+                "B1：删除失败要留下可审计 mismatch 事件");
+    }
+
+    @Test
     void m3_rddRuntimeIsRefreshedBeforeTheNullCheck() {
         String onTick = methodBody(detector(), "onServerTick", "RddCarryHint.refresh");
         assertOrder(onTick,

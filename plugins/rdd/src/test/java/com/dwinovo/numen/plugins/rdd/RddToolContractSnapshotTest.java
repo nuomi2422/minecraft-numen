@@ -127,6 +127,9 @@ class RddToolContractSnapshotTest {
     private static final Map<String, String> PINNED_NAMES = new LinkedHashMap<>();
 
     static {
+        PINNED_NAMES.put("RddRespawnInfoTool.java", "rdd_respawn_info");
+        PINNED_NAMES.put("RddSaveTool.java", "rdd_save");
+        PINNED_NAMES.put("RddChooseDeathRecoveryTool.java", "rdd_choose_death_recovery");
         PINNED_NAMES.put("RddStatusTool.java", "rdd_status");
         PINNED_NAMES.put("RddSubmitTool.java", "rdd_submit");
         PINNED_NAMES.put("RddSkipTool.java", "rdd_skip_optional");
