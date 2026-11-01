@@ -128,21 +128,44 @@ public abstract class MixinCamera {
     private void numencam$orbit(Entity target, float pt) {
         Vec3 base = numencam$interpolatedFeet(target, pt);
         double rad = Math.toRadians(CameraRig.bearing());
+        Vec3 eye = new Vec3(target.getX(), target.getY() + 1.5, target.getZ());
         Vec3 cam = new Vec3(
                 base.x + Math.cos(rad) * CameraRig.distance(),
                 base.y + CameraRig.height(),
                 base.z + Math.sin(rad) * CameraRig.distance());
+        // ★ 2026-11-02：ORBIT 原本不躲方块，树林里必然拍到树叶墙。
+        //   这里从目标眼睛往镜头打一条线，被挡就把镜头收到障碍物前面。
+        cam = numencam$keepLineOfSight(cam, eye);
         this.setPosition(cam);
-        numencam$aimAt(cam, new Vec3(target.getX(), target.getY() + 1.5, target.getZ()));
+        numencam$aimAt(cam, eye);
         CameraRig.damp(this.position, this.yRot, this.xRot, 1.0f);
+    }
+
+    // ── 视线保护：目标↔镜头之间不能有方块 ──────────────────────────────────
+    @Unique
+    private Vec3 numencam$keepLineOfSight(Vec3 cam, Vec3 eye) {
+        if (this.level == null) return cam;
+        BlockHitResult hit = this.level.clip(new ClipContext(
+                eye, cam, ClipContext.Block.VISUAL, ClipContext.Fluid.NONE, this.entity));
+        if (hit.getType() == HitResult.Type.MISS) return cam;
+        Vec3 dir = cam.subtract(eye);
+        double len = dir.length();
+        if (len < 1.0e-4) return cam;
+        double d = hit.getLocation().distanceTo(eye);
+        // 眼睛自己就埋在方块里（贴墙/贴天花板）时不要收镜头，否则会变成第一人称
+        if (d < 0.9) return cam;
+        Vec3 safe = eye.add(dir.normalize().scale(Math.max(0.8, d - 0.35)));
+        return safe;
     }
 
     // ── 模式：固定机位（只转头）────────────────────────────────────────────
     @Unique
     private void numencam$lock(Entity target) {
-        Vec3 cam = new Vec3(CameraRig.lockX(), CameraRig.lockY(), CameraRig.lockZ());
+        Vec3 eye = new Vec3(target.getX(), target.getY() + 1.5, target.getZ());
+        Vec3 cam = numencam$keepLineOfSight(
+                new Vec3(CameraRig.lockX(), CameraRig.lockY(), CameraRig.lockZ()), eye);
         this.setPosition(cam);
-        numencam$aimAt(cam, new Vec3(target.getX(), target.getY() + 1.5, target.getZ()));
+        numencam$aimAt(cam, eye);
         CameraRig.damp(this.position, this.yRot, this.xRot, 1.0f);
     }
 
