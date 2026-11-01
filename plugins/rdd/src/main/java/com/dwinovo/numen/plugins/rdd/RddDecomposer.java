@@ -198,6 +198,14 @@ final class RddDecomposer {
         return RddChainFactory.fromObjective(companionId, objective);
     }
 
+    /** 目标里是否在建家/安家（决定要不要贴建家顺序参考）。 */
+    private static boolean mentionsHome(String objective) {
+        if (objective == null) return false;
+        String s = objective.toLowerCase(java.util.Locale.ROOT);
+        return s.contains("家") || s.contains("基地") || s.contains("村")
+                || s.contains("home") || s.contains("base");
+    }
+
     /** 主入口：异步分解目标，回调收到一个可用的 Goal（成功=分解链，失败=占位链）。 */
     static void decompose(UUID companionId, String objective, Consumer<Goal> done) {
         INumenConfig cfg = Services.CONFIG;
@@ -219,9 +227,14 @@ final class RddDecomposer {
                 cfg.getBaseUrl(), cfg.getProxy(), plannerReasoningEffort());
         // 经验知识贴进最终请求正文（无知识时与原来逐字相同）
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
+        // 167 §B1 接线：建家顺序只给分解器一次（不是常驻上下文），且只在目标提到建家/安家时贴。
+        String homeHint = mentionsHome(objective)
+                ? System.lineSeparator() + System.lineSeparator()
+                  + com.dwinovo.numen.rdd.policy.HomeBuildPlan.hint() + System.lineSeparator()
+                : "";
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
-                        + decompositionPrompt(objective, snapshot, List.of()),
+                        + homeHint + decompositionPrompt(objective, snapshot, List.of()),
                 objective, "fallback", List.of());
         RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
         NumenLlmClient.forEndpoint(ep)

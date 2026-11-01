@@ -63,6 +63,16 @@ class HomeBuildPlanTest {
     }
 
     @Test
+    void hintMentionsEveryNodeAndTheTwoHardRules() {
+        String h = HomeBuildPlan.hint();
+        for (HomeBuildPlan.Node n : HomeBuildPlan.standard()) {
+            assertTrue(h.contains(n.id()), "提示里应包含节点 " + n.id());
+        }
+        assertTrue(h.contains("登记与验收必须拆成两步"), "167 的硬规则必须在提示里");
+        assertTrue(h.contains("农田要灌水"), "农田的硬规则必须在提示里");
+    }
+
+    @Test
     void violationIsDetectedWhenOrderIsBroken() {
         List<HomeBuildPlan.Node> bad = List.of(
                 new HomeBuildPlan.Node("b", "", List.of("a"), Map.of(), "x", "y"),

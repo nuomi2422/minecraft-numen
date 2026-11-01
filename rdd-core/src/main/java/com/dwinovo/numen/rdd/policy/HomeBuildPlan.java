@@ -100,6 +100,24 @@ public final class HomeBuildPlan {
         return sb.toString();
     }
 
+    /**
+     * 给**分解器**的一句话参考（167 §B1 的接线，2026-11-01）。
+     *
+     * <p>为什么放在分解提示里而不是常驻上下文：167 §2.2 禁止把攻略塞进每次请求；
+     * 但分解是**一次性**的，把「建家该按什么顺序」放在这里，只影响「计划长什么样」，
+     * 不影响「每次执行看什么」。计划一旦生成，执行侧看到的仍然是链条本身。
+     */
+    public static String hint() {
+        StringBuilder sb = new StringBuilder("基地建设顺序参考（仅在需要建家时采用）：");
+        List<Node> nodes = standard();
+        for (int i = 0; i < nodes.size(); i++) {
+            if (i > 0) sb.append(" > ");
+            sb.append(nodes.get(i).id());
+        }
+        sb.append("。登记与验收必须拆成两步；农田要灌水并观察到真实产出才算可用。");
+        return sb.toString();
+    }
+
     /** 按 id 索引（幂等执行时用）。 */
     public static Map<String, Node> byId(List<Node> nodes) {
         Map<String, Node> m = new LinkedHashMap<>();
