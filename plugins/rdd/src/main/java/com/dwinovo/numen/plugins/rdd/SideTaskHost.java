@@ -455,10 +455,17 @@ final class SideTaskHost {
                 // data 里没有 terminal_reason（四个 evaluate 分支都会写，但拒绝这条路绕过了 evaluate）。
                 // 于是结算带空串落地 → 台账停在 UNVERIFIED，且事后无法区分『放弃回收』与『没说原因』。
                 // 这里补上语义等同的既有值，不改任何判定。
-                if ("side_task_declined".equals(event)
-                        && String.valueOf(data.getOrDefault("terminal_reason", "")).isBlank()) {
+                boolean blankReason = String.valueOf(data.getOrDefault("terminal_reason", "")).isBlank();
+                if ("side_task_declined".equals(event) && blankReason) {
                     Map<String, Object> patched = new java.util.LinkedHashMap<>(data);
                     patched.put("terminal_reason", "executor_declined_recovery");
+                    RddPlugin.onDeathRecoverySettled(companionId, patched);
+                } else if ("side_task_cancelled".equals(event) && blankReason) {
+                    // 2026-11-01（166 §80.4）：seq36 走的是**第三条路**——引擎 cancel 掉支线，
+                    // 结算仍带空理由（terminalReasonMissing=true 已证明这一点，8dd3fd05a 生效）。
+                    // 与 decline 同因不同路：这里补一个语义相当的既有值，让"被引擎取消"与"没说原因"可区分。
+                    Map<String, Object> patched = new java.util.LinkedHashMap<>(data);
+                    patched.put("terminal_reason", "recovery_cancelled");
                     RddPlugin.onDeathRecoverySettled(companionId, patched);
                 } else {
                     RddPlugin.onDeathRecoverySettled(companionId, data);
