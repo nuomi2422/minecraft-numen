@@ -651,6 +651,10 @@ final class LearnerReviewTool implements NumenTool {
             //   有草稿 + 带 type + 门禁无硬失败（REVIEW_REQUIRED 允许，REJECT 不允许）。
             if (!com.dwinovo.numen.plugins.learner.core.ExperiencePersistencePolicy
                     .storable(draftObj, gateHardFail)) {
+                // 2026-11-02：原来这里静默 continue —— 判定了 WRITE_EXPERIENCE 却连一条
+                // outcome 都没有，事后无法区分「没交草稿」和「草稿不合格」。如实记下。
+                outcomes.add(java.util.Map.of("memo_id", String.valueOf(one.get("memo_id")),
+                        "outcome", "SKIPPED", "reason", "not storable (no draft shell / no type / gate hard-fail)"));
                 continue;
             }
             Map<?, ?> dm = (Map<?, ?>) draftObj;
@@ -723,7 +727,14 @@ final class LearnerReviewTool implements NumenTool {
                         }
                     }
                 }
-                if (!topicMismatch && args.has("type") && args.has("title") && args.has("description")) {
+                // 2026-11-02：这句原来把「REVISE 主题不一致」和「真缺字段」都说成
+                // 「draft missing type/title/description」——18:53 那批 6 条全被这句误导，
+                // 实际 verdict.entry 里字段齐全。现在分开说，并列出真正缺的键。
+                java.util.List<String> missingKeys = new java.util.ArrayList<>();
+                if (!args.has("type")) missingKeys.add("type");
+                if (!args.has("title")) missingKeys.add("title");
+                if (!args.has("description")) missingKeys.add("description");
+                if (!topicMismatch && missingKeys.isEmpty()) {
                     var tool = com.dwinovo.numen.agent.tool.ToolRegistry.get("experience_learn");
                     if (tool == null) {
                         outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "SKIPPED",
@@ -766,8 +777,20 @@ final class LearnerReviewTool implements NumenTool {
                     ev.put("reply", reply == null ? "" : reply.substring(0, Math.min(300, reply.length())));
                     outcomes.add(ev);
                 } else {
+                    // 2026-11-02：把「auto_learn 实际看到什么」写进回执 —— 18:53 那批
+                    // 日志说缺 type/title/description，但 verdict.experience_draft.entry 明明是齐的；
+                    // 不把 entry 的键列出来，只能在两条互相矛盾的观测里猜。
+                    String entryKeys = "";
+                    if (draftObj instanceof java.util.Map<?, ?> shell
+                            && shell.get("entry") instanceof java.util.Map<?, ?> em) {
+                        entryKeys = String.join(",", em.keySet().stream().map(String::valueOf).toList());
+                    }
+                    String why = topicMismatch
+                            ? "revise_topic_mismatch: " + reviseNote
+                            : "draft missing keys: " + String.join(",", missingKeys)
+                                    + " | entry keys: " + (entryKeys.isBlank() ? "(none)" : entryKeys);
                     outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "SKIPPED",
-                            "reason", "draft missing type/title/description (type 是学习者显式交的，没交不落)"));
+                            "reason", why));
                 }
             } catch (Throwable t) {
                 outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "FAILED",
