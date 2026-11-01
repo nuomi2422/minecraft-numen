@@ -123,6 +123,20 @@ final class ToolFailureIntake {
             //   绝不 getAsBoolean() 隐式转 false —— 那会把「不知道」写成失败事实
             //   （当天 939 行 client 默认 false + 81 行 UNKNOWN 就是这么进来的）。
             Boolean ok = successOf(result);
+            // 2026-11-02（审核窗口 07:42）：身体工具（goto/scan/eat/fish…）把结果写成**纯文本**，
+            // 没有 success 信封 —— 之前整行跳过，真实失败（invalid arguments / blocked /
+            // didn't eat … / no safe dry stance）一个都进不来。这里只按**明确前缀**判失败，
+            // 命中即 1x 入队（用户要求：每次失败都要被看到）；模糊/成功回执仍 unknown，不猜。
+            boolean clearTextFailure = false;
+            if (ok == null && !result.isBlank()) {
+                TextVerdict tv = classifyText(result);
+                if (tv == TextVerdict.FAILURE) {
+                    ok = Boolean.FALSE;
+                    clearTextFailure = true;
+                } else if (tv == TextVerdict.SUCCESS) {
+                    ok = Boolean.TRUE;
+                }
+            }
             // data.success 的可信度按写者分：除了已删除的 client 写者（EntityAgentLoop 的历史行，
             // 缺字段默认 false，2026-11-01 当天 939 行），其余写者都是显式判定：
             // server-async/server-sync 按任务终态，client-local/client-synthetic 由 successOf 三态给出，
@@ -159,7 +173,7 @@ final class ToolFailureIntake {
             // 窗口 TTL：>30 分钟没再出现的失败模式作废（替代“成功即清窗”那条被证伪的规则）
             WINDOWS.entrySet().removeIf(en -> en.getValue().lastMs > 0 && now - en.getValue().lastMs > 30L * 60L * 1000L);
             String msg = messageOf(result);
-            if (msg.isBlank()) msg = "(local tool failed; no message)";
+            if (msg.isBlank()) msg = result.isBlank() ? "(local tool failed; no message)" : clip(result.trim(), 160);
             String cls = errorClass(tool, msg);
             String fp = digest(tool + "|" + cls).substring(0, 8);
             String key = toolKey + "|" + fp;
@@ -181,7 +195,12 @@ final class ToolFailureIntake {
             w.lastId = eventId;
             w.lastMs = ts;
             if (w.samples.size() < MAX_SAMPLES) w.samples.add(clip(msg, 120));
-            if (w.count < THRESHOLD) continue;
+            // 明确文本失败 1x 就入队；模糊形态仍要 3x（防单条误判造 memo）。
+            // 但 async 任务行（server-async/sync、带 async_status）保持原 3x 语义：
+            // 它们的终态失败本来就是显式判定，已有单测钉住「3 连败 → 1 条 memo」。
+            boolean asyncRow = !str(d, "async_status").isBlank()
+                    || "server-async".equals(writer) || "server-sync".equals(writer);
+            if (w.count < THRESHOLD && !(clearTextFailure && !asyncRow)) continue;
 
             String memoId = "tf-" + safe(tool) + "-" + fp + "-" + safeSuffix(w.firstId);
             Memo memo = new Memo(memoId,
@@ -271,6 +290,37 @@ final class ToolFailureIntake {
         } catch (RuntimeException e) {
             return "";
         }
+    }
+
+    /** 纯文本工具回执的三态（2026-11-02）：只按明确前缀判，模糊一律 UNKNOWN。 */
+    enum TextVerdict { FAILURE, SUCCESS, UNKNOWN }
+
+    private static final String[] TEXT_FAILURE_PREFIXES = {
+            "didn't ", "did not ", "can't ", "cannot ", "couldn't ", "could not ",
+            "failed", "no path", "nothing ", "not enough", "missing:",
+            "invalid arguments", "blocked:", "no safe dry", "broke off"
+    };
+
+    private static final String[] TEXT_SUCCESS_PREFIXES = {
+            "reached ", "arrived ", "ate ", "sleeping", "built ", "crafted ",
+            "routed ", "look_around", "moved ", "placed "
+    };
+
+    /**
+     * 判纯文本回执：只有**明确前缀**才算失败/成功；`interrupted after X/Y`（部分成功）
+     * 与其余文本一律 UNKNOWN，不猜。前缀表覆盖 21:49–21:53 实测到的真实失败文案。
+     */
+    static TextVerdict classifyText(String result) {
+        if (result == null || result.isBlank()) return TextVerdict.UNKNOWN;
+        String t = result.trim().toLowerCase(java.util.Locale.ROOT);
+        for (String p : TEXT_FAILURE_PREFIXES) {
+            if (t.startsWith(p)) return TextVerdict.FAILURE;
+        }
+        if (t.startsWith("aim ") && t.contains("is blocked")) return TextVerdict.FAILURE;
+        for (String p : TEXT_SUCCESS_PREFIXES) {
+            if (t.startsWith(p)) return TextVerdict.SUCCESS;
+        }
+        return TextVerdict.UNKNOWN;
     }
 
     /** result 是**二次编码的 JSON 字符串**（{"success":false,"message":…}）。解析不出返回 null。 */

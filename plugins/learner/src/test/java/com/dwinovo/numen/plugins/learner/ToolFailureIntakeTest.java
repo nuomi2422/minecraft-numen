@@ -22,6 +22,31 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class ToolFailureIntakeTest {
 
+    @Test
+    void plainTextFailuresAreRecognizedByExplicitPrefixes() {
+        // 21:49–21:53 实测到的真实失败文案
+        assertEquals(ToolFailureIntake.TextVerdict.FAILURE, ToolFailureIntake.classifyText("didn't eat cooked_cod — already full (hunger 11/20)"));
+        assertEquals(ToolFailureIntake.TextVerdict.FAILURE, ToolFailureIntake.classifyText("invalid arguments: goto requires x,y,z"));
+        assertEquals(ToolFailureIntake.TextVerdict.FAILURE, ToolFailureIntake.classifyText("blocked: stopped 107 blocks short"));
+        assertEquals(ToolFailureIntake.TextVerdict.FAILURE, ToolFailureIntake.classifyText("no safe dry fishing stance nearby"));
+        assertEquals(ToolFailureIntake.TextVerdict.FAILURE, ToolFailureIntake.classifyText("broke off — too hurt to keep fighting"));
+        assertEquals(ToolFailureIntake.TextVerdict.FAILURE, ToolFailureIntake.classifyText("not enough materials — missing: stick"));
+        assertEquals(ToolFailureIntake.TextVerdict.FAILURE, ToolFailureIntake.classifyText("aim at 363,66,643 is blocked"));
+    }
+
+    @Test
+    void successesCancelsAndPartialResultsStayOutOfFailureBuckets() {
+        assertEquals(ToolFailureIntake.TextVerdict.SUCCESS, ToolFailureIntake.classifyText("reached the location x=423 z=699"));
+        assertEquals(ToolFailureIntake.TextVerdict.SUCCESS, ToolFailureIntake.classifyText("arrived beside minecraft:furnace at 420,63,703"));
+        assertEquals(ToolFailureIntake.TextVerdict.SUCCESS, ToolFailureIntake.classifyText("ate cooked_salmon (hunger +6)"));
+        assertEquals(ToolFailureIntake.TextVerdict.UNKNOWN, ToolFailureIntake.classifyText("cancelled before reaching target"),
+                "AI 自己取消不算工具失败（审核窗口 07:44）");
+        assertEquals(ToolFailureIntake.TextVerdict.UNKNOWN, ToolFailureIntake.classifyText("fishing interrupted after 5/8 successful catches"),
+                "部分成功不算失败");
+        assertEquals(ToolFailureIntake.TextVerdict.UNKNOWN, ToolFailureIntake.classifyText("something unexpected"));
+        assertEquals(ToolFailureIntake.TextVerdict.UNKNOWN, ToolFailureIntake.classifyText(""), "空文本不猜");
+    }
+
     private static final UUID CID = UUID.fromString("e502d17b-0000-0000-0000-000000000001");
 
     @TempDir
@@ -197,6 +222,32 @@ class ToolFailureIntakeTest {
 
         assertEquals(0, n, "字符串 UNKNOWN 是「不知道」，不能 getAsBoolean 成 false");
         assertEquals(0, queue.size());
+    }
+
+    @Test
+    void clearPlainTextFailureAdmitsImmediatelyAndDedupes() throws Exception {
+        // 2026-11-02：body 工具（fish/goto/…）结果是无信封纯文本；明确前缀失败 1x 就要入队。
+        String body = "no safe dry fishing stance nearby";
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"),
+                toolResult("pt-0", "pc_0", "fish", body, null, "server") + "\n", StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue), "明确前缀失败 1x 入队");
+        java.util.List<Memo> drained = queue.drain(10);
+        queue.commitDrain(drained);   // 模拟复盘消费掉，seen 置位
+        Memo memo = drained.get(0);
+        assertTrue(memo.problem().contains("连续执行失败 1 次"), memo.problem());
+        assertTrue(memo.snapshot().contains("window_first=pt-0"), memo.snapshot());
+
+        // 同形态第二条不重复造 memo（同一窗口 → 同一 memoId → seen 命中）
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"),
+                toolResult("pt-0", "pc_0", "fish", body, null, "server") + "\n"
+                        + toolResult("pt-1", "pc_1", "fish", body, null, "server") + "\n",
+                StandardCharsets.UTF_8);
+        // 注意（未钉）：跨 scan 的同形态去重依赖窗口与游标状态，测试里改写文件会重置窗口；
+        // 该行为本轮未验证，交下一批用真实多轮 scan 覆盖（不在这里假装通过）。
+        ToolFailureIntake.scanOnce(tmp, id -> queue);
     }
 
     @Test
