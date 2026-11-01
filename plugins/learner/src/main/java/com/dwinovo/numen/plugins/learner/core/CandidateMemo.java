@@ -66,6 +66,22 @@ public final class CandidateMemo {
             tried.append("死亡前事件链 ").append(traceCount).append(" 条（见 snapshot）");
         }
 
+        return new Memo("", problem.toString(), ev.sourceType(),
+                tried.toString(), snapshot(ev), 0L);
+    }
+
+    /**
+     * 压平后的观测事实 + 轨迹锚点。
+     *
+     * <p>2026-11-02（F9 正向）：以前这里不写 window_first，于是 instrumentation 事件
+     * （death/loop…）的 memo 快照里没有事件 id —— 复盘契约拿不到 event: 证据，
+     * 死亡经验永远被判 claim_without_evidence。这里把源事件的 eventId 写成
+     * window_first=<eventId>（与 tool_failure 快照同键名），让证据引用有真实落点。
+     * 只搬事实，不补造（eventId 为空就不写这个键）。
+     */
+    public static String snapshot(FeedbackEvent ev) {
+        if (ev == null) return "";
+        Map<String, Object> obs = ev.observation();
         StringBuilder snap = new StringBuilder();
         for (Map.Entry<String, Object> e : obs.entrySet()) {
             if (snap.length() > 0) {
@@ -74,12 +90,16 @@ public final class CandidateMemo {
             snap.append(e.getKey()).append('=').append(String.valueOf(e.getValue()));
             if (snap.length() > CLIP) {
                 snap.append("…[cut]");
-                break;
+                return snap.toString();
             }
         }
-
-        return new Memo("", problem.toString(), ev.sourceType(),
-                tried.toString(), snap.toString(), 0L);
+        if (ev.eventId() != null && !ev.eventId().isBlank()) {
+            if (snap.length() > 0) {
+                snap.append(", ");
+            }
+            snap.append("window_first=").append(ev.eventId());
+        }
+        return snap.toString();
     }
 
     /**

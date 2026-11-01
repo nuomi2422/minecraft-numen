@@ -141,6 +141,23 @@ public final class ReviewContractAdapter {
      * 写者取 memo 窗口的第一条计数行；跨写者窗口只代表那一条。
      */
     public static boolean evidenceAllowed(String snapshot) {
+        return evidenceAllowed(snapshot, null);
+    }
+
+    /**
+     * 带 stage 的版本（2026-11-02，F9 正向路径）：instrumentation 事件（death/loop_detected/
+     * asset_mismatch…）由服务端 instrumentation 日志产生，不经过 client 写者那条会缺标签的
+     * tool_result 路径 —— 它们的 stage 不是 tool_failure，可以带 event 证据。
+     * tool_failure 仍按写者标记判定（缺标签=不可信）。
+     */
+    public static boolean evidenceAllowed(String snapshot, String stage) {
+        if (stage != null && !stage.isBlank() && !"tool_failure".equals(stage)) {
+            return true;
+        }
+        return evidenceAllowedByWriter(snapshot);
+    }
+
+    private static boolean evidenceAllowedByWriter(String snapshot) {
         if (snapshot == null || snapshot.isBlank()) return false;
         java.util.regex.Matcher m = java.util.regex.Pattern
                 .compile("journaled_by=([^,\\s]+)").matcher(snapshot);

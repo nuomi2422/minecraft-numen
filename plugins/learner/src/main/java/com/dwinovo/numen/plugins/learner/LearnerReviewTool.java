@@ -263,13 +263,14 @@ final class LearnerReviewTool implements NumenTool {
                 }
                 // F9：只有写明来路、且不是 client 注入的 memo，才把 window_first 作为证据；
                 // 其余留空（质量门继续判 claim_without_evidence）。
-                String memoSnapshot = batch.stream()
+                com.dwinovo.numen.plugins.learner.core.Memo srcMemo = batch.stream()
                         .filter(m -> v.memoId().equals(m.id()))
                         .findFirst()
-                        .map(m -> m.snapshot())
-                        .orElse("");
+                        .orElse(null);
+                String memoSnapshot = srcMemo == null ? "" : srcMemo.snapshot();
+                String memoStage = srcMemo == null ? "" : srcMemo.stage();
                 String windowFirst = com.dwinovo.numen.plugins.learner.contract.ReviewContractAdapter
-                        .evidenceAllowed(memoSnapshot)
+                        .evidenceAllowed(memoSnapshot, memoStage)
                         ? com.dwinovo.numen.plugins.learner.contract.ReviewContractAdapter
                                 .windowFirstOf(memoSnapshot)
                         : "";

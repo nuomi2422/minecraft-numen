@@ -67,6 +67,17 @@ class ReviewContractAdapterTest {
     }
 
     @Test
+    void instrumentationStagesAreTrustedWithoutWriterLabel() {
+        // death/loop 等 instrumentation 事件由服务端日志产生，不走 client 写者的 tool_result 路径。
+        assertTrue(ReviewContractAdapter.evidenceAllowed("items=3, window_first=instr-1-0", "death"));
+        assertTrue(ReviewContractAdapter.evidenceAllowed("window_first=instr-2-0", "loop_detected"));
+        assertFalse(ReviewContractAdapter.evidenceAllowed("window_first=instr-3-0", "tool_failure"),
+                "tool_failure 仍按写者标记判定，缺标签不可信");
+        assertTrue(ReviewContractAdapter.evidenceAllowed(
+                "journaled_by=server-async, window_first=tools-4-0", "tool_failure"));
+    }
+
+    @Test
     void windowFirstOfParsesSnapshot() {
         assertEquals("tools-9-1", ReviewContractAdapter.windowFirstOf("items=3, window_first=tools-9-1, window_last=tools-10-0"));
         assertEquals("", ReviewContractAdapter.windowFirstOf("no pointer"));
