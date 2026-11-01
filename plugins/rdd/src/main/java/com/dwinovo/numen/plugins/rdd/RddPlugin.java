@@ -864,6 +864,16 @@ private static String withAssets(UUID companionId, String rddContext) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(homeBlock);
         }
+        // 167 §B2：村庄候选顺序（只排序，不作准入）。
+        try {
+            String villages = RddVillageFacts.blockFor(assets(companionId));
+            if (!villages.isBlank()) {
+                if (merged.length() > 0) merged.append("\n");
+                merged.append(villages);
+            }
+        } catch (RuntimeException ignored) {
+            // 候选块失败不影响其它上下文
+        }
         // 危险事实放**最后**：离模型说话的位置最近（尾部注意力最强），且它是最有时效的一条。
         if (!dangerBlock.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");
