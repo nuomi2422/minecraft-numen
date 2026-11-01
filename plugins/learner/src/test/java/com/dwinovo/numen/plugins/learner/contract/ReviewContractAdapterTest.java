@@ -78,6 +78,23 @@ class ReviewContractAdapterTest {
     }
 
     @Test
+    void acDraftTriggerAndEvidenceAreLiftedNotInvented() {
+        String draft = "{\"name\":\"low_hp_disengage\",\"version\":\"1\","
+                + "\"triggerConditions\":[\"hp<6 且有敌意实体 nearby\"],"
+                + "\"evidence\":[\"event:tools-1793562339505-1\",\"not-a-ref\"]}";
+        var trig = ReviewContractAdapter.listField(draft, "triggerConditions");
+        assertEquals(1, trig.size());
+        assertEquals("hp<6 且有敌意实体 nearby", trig.get(0));
+        var ev = ReviewContractAdapter.evidenceField(draft);
+        assertEquals(1, ev.size(), "非法引用被丢弃，不伪造");
+        assertEquals("tools-1793562339505-1", ev.get(0).id());
+        assertEquals("EVENT", ev.get(0).kind().name());
+        // 草稿没写这两个键 → 空表（契约会如实判 missing_field，而不是被补造）
+        assertTrue(ReviewContractAdapter.listField("{\"name\":\"x\"}", "triggerConditions").isEmpty());
+        assertTrue(ReviewContractAdapter.evidenceField("not json").isEmpty());
+    }
+
+    @Test
     void windowFirstOfParsesSnapshot() {
         assertEquals("tools-9-1", ReviewContractAdapter.windowFirstOf("items=3, window_first=tools-9-1, window_last=tools-10-0"));
         assertEquals("", ReviewContractAdapter.windowFirstOf("no pointer"));

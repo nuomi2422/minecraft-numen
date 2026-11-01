@@ -91,6 +91,12 @@ final class LearnerReviewer {
                    - **没有 trigger 字段**：条件写成 `block:"guard"` 的 step，
                      conditions 里用 `$<上一步 id>.<字段>` 引用上一步的输出
                    - version 固定 "1"；name 用小写下划线
+                   - ★ 2026-11-02 起**额外必需**两个顶层键（复盘契约按它们判 artifact 完整性；
+                     缺了就 REJECT，经验只能停在 DRAFT、不可注入）：
+                     "triggerConditions":["这条脚本在什么世界条件下适用（可判定的事实，不是口号）"],
+                     "evidence":["event:<memo 快照里的 window_first>"]
+                     （快照里没有 window_first 时，用事件 id 的 event 形式；实在没有证据就留空数组
+                     并在 reasoning 里写明缺证据，不要编。）
                  ★★ **不许交「看起来能过、其实什么都不做」的空壳**：
                    若这条脚本的意图是移动 / 采集 / 战斗 / 合成这类**动作**，
                    它的 steps 里就必须有对应的**动作积木**；只放一个 get_self_status 的动作脚本

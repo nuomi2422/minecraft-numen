@@ -69,12 +69,15 @@ public final class ReviewContractAdapter {
         List<ArtifactDraft> artifacts = new ArrayList<>();
         for (Verdict.Action a : v.actions()) {
             ArtifactDraft d = switch (a) {
-                case WRITE_EXPERIENCE -> fromExperience(v.experience(), v.memoId());
+                case WRITE_EXPERIENCE -> fromExperience(v.experience(), v.memoId(), evidence);
                 case USE_AC -> v.acScriptDraft() == null || v.acScriptDraft().isBlank()
                         ? null
                         : new ArtifactDraft(ArtifactKind.ACX_REQUEST,
                         "AC from " + nz(v.memoId()), clip(v.acScriptDraft(), 80), v.acScriptDraft(),
-                        List.of(), List.of(), List.of(), "", List.of(), List.of(nz(v.memoId())), "EXECUTOR");
+                        // 2026-11-02：AC 草稿里的 triggerConditions / evidence 直接抬进产物声明。
+                        // 只搬草稿自己写了的（不补造），缺失仍会被契约如实判 missing_field。
+                        listField(v.acScriptDraft(), "triggerConditions"), List.of(), List.of(), "",
+                        evidenceField(v.acScriptDraft()), List.of(nz(v.memoId())), "EXECUTOR");
                 case USE_CARRIER -> v.carrierDraft() == null || v.carrierDraft().isBlank()
                         ? null
                         : new ArtifactDraft(ArtifactKind.AUTO_ACTION,
@@ -100,23 +103,58 @@ public final class ReviewContractAdapter {
         return new Submission.Draft(mode, sampleId, new ReviewDraft.Draft(sampleId, claims), artifacts);
     }
 
-    private static ArtifactDraft fromExperience(Experience e, String memoId) {
+    /** 从草稿 JSON 里读字符串数组字段；缺键/坏 JSON 返回空表（不猜）。 */
+    static List<String> listField(String json, String key) {
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            com.google.gson.JsonObject o = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+            if (!o.has(key) || !o.get(key).isJsonArray()) return List.of();
+            List<String> out = new java.util.ArrayList<>();
+            for (com.google.gson.JsonElement e : o.getAsJsonArray(key)) {
+                if (e.isJsonPrimitive() && !e.getAsString().isBlank()) out.add(e.getAsString().trim());
+            }
+            return out;
+        } catch (RuntimeException ex) {
+            return List.of();
+        }
+    }
+
+    /** 从草稿 JSON 的 evidence 数组里读合法引用（event:… / block:…）；非法项丢弃，不伪造。 */
+    static List<EvidenceRef> evidenceField(String json) {
+        List<EvidenceRef> out = new java.util.ArrayList<>();
+        for (String raw : listField(json, "evidence")) {
+            try {
+                EvidenceRef r = EvidenceRef.parse(raw);
+                // OTHER = 解析得出但不可核验（没有合法前缀）；不进证据，避免「看起来有证据」。
+                if (r.kind() != EvidenceRef.Kind.OTHER) out.add(r);
+            } catch (RuntimeException ignored) {
+                // 空/坏引用丢弃，不伪造
+            }
+        }
+        return out;
+    }
+
+    private static ArtifactDraft fromExperience(Experience e, String memoId, List<EvidenceRef> sourceEvidence) {
         if (e == null) {
             return null;
         }
         String purpose = firstNonBlank(e.mechanism(), e.observableSignal(), "未命名经验");
-        // triggerConditions 旧格式没有对应字段：observableSignal 语义接近但不是触发条件，
-        // 硬塞会让影子统计失真，所以这里留空（缺字段会被闸门如实判出来）。
+        // 2026-11-02（审核窗口 07:06）：EXPERIENCE 产物也必须带 triggerConditions/evidence，
+        // 否则 WRITE_EXPERIENCE 这条 artifact 永远 missing_field → 契约 REJECT → 不可注入。
+        // triggerConditions 用 experience.preconditions（同义：这条机制在什么条件下成立），
+        // evidence 用源 memo 的 window_first（经验正是从那个事件得出的），都不补造。
+        List<String> trig = e.preconditions() == null || e.preconditions().isBlank()
+                ? List.of() : List.of(e.preconditions().trim());
         return new ArtifactDraft(
                 ArtifactKind.EXPERIENCE,
                 clip(purpose, 40),
                 purpose,
                 join(e.derivation(), e.efficiency()),
-                List.of(),
+                trig,
                 splitOne(e.failureConditions()),
                 splitOne(e.preconditions()),
                 "",
-                List.of(),
+                sourceEvidence,
                 List.of(nz(memoId)),
                 String.join(",", e.audience() == null ? List.of() : e.audience()));
     }
