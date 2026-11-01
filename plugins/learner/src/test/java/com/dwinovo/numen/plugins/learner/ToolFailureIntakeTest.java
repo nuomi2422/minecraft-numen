@@ -55,6 +55,64 @@ class ToolFailureIntakeTest {
                 "快照必须带轨迹锚点（window_first），否则 TrajectorySlices 找不到切片：" + memo.snapshot());
     }
 
+
+    @Test
+    void memoSnapshotRecordsServerWriter() throws Exception {
+        StringBuilder tools = new StringBuilder();
+        for (int i = 0; i < 3; i++) {
+            tools.append(toolResult("w-" + i, "wc_" + i, "mine",
+                    "{\"success\":false,\"message\":\"no path out\"}", false, "server-async", "failed"))
+                    .append('\n');
+        }
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue));
+        Memo memo = queue.drain(10).get(0);
+        assertTrue(memo.snapshot().contains("journaled_by=server-async"),
+                "F9：快照必须带源写者，证据引用才能过闸：" + memo.snapshot());
+    }
+
+    @Test
+    void memoSnapshotRecordsClientWriter() throws Exception {
+        // client 行只有显式布尔才算数；F9 要能识别它的来路（证据不放行）。
+        StringBuilder tools = new StringBuilder();
+        for (int i = 0; i < 3; i++) {
+            tools.append(toolResult("c-" + i, "cc_" + i, "look_around",
+                    "{\"success\":false,\"message\":\"bad args\"}", null, "client"))
+                    .append('\n');
+        }
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue));
+        Memo memo = queue.drain(10).get(0);
+        assertTrue(memo.snapshot().contains("journaled_by=client"), memo.snapshot());
+    }
+
+
+    @Test
+    void windowWriterIsTheFirstCountedRow() throws Exception {
+        // 口径：writer 取窗口第一条计数行；跨写者窗口只代表那条（F9 判 client 注入够用）。
+        StringBuilder tools = new StringBuilder();
+        tools.append(toolResult("mx-0", "mx0", "goto",
+                "{\"success\":false,\"message\":\"blocked\"}", null, "client")).append('\n');
+        tools.append(toolResult("mx-1", "mx1", "goto",
+                "{\"success\":false,\"message\":\"blocked\"}", false, "server-async", "failed")).append('\n');
+        tools.append(toolResult("mx-2", "mx2", "goto",
+                "{\"success\":false,\"message\":\"blocked\"}", false, "server-async", "failed")).append('\n');
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue));
+        Memo memo = queue.drain(10).get(0);
+        assertTrue(memo.snapshot().contains("journaled_by=client"),
+                "第一条计数行是 client → 快照记 client（保守，证据不放行）：" + memo.snapshot());
+    }
+
     @Test
     void mcpControlPlaneFailuresAreNotLearned() throws Exception {
         StringBuilder tools = new StringBuilder();

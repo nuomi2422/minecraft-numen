@@ -255,8 +255,21 @@ final class LearnerReviewTool implements NumenTool {
                 if (v.memoId() == null || v.memoId().isBlank()) {
                     continue;
                 }
+                // F9：只有写明来路、且不是 client 注入的 memo，才把 window_first 作为证据；
+                // 其余留空（质量门继续判 claim_without_evidence）。
+                String memoSnapshot = batch.stream()
+                        .filter(m -> v.memoId().equals(m.id()))
+                        .findFirst()
+                        .map(m -> m.snapshot())
+                        .orElse("");
+                String windowFirst = com.dwinovo.numen.plugins.learner.contract.ReviewContractAdapter
+                        .evidenceAllowed(memoSnapshot)
+                        ? com.dwinovo.numen.plugins.learner.contract.ReviewContractAdapter
+                                .windowFirstOf(memoSnapshot)
+                        : "";
                 var draft = com.dwinovo.numen.plugins.learner.contract.ReviewContractAdapter.toSubmission(
-                        v, v.memoId(), com.dwinovo.numen.plugins.learner.contract.Submission.Mode.INTERNAL);
+                        v, v.memoId(), com.dwinovo.numen.plugins.learner.contract.Submission.Mode.INTERNAL,
+                        windowFirst);
                 var dec = com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.evaluate(
                         contractMode, draft, null);
                 if (dec == null) {

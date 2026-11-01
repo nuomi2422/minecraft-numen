@@ -38,14 +38,33 @@ public final class ReviewContractAdapter {
      * @param sampleId 这条判定对应的样本 id；旧流程没有，传 memoId 或空
      */
     public static Submission.Draft toSubmission(Verdict v, String sampleId, Submission.Mode mode) {
+        return toSubmission(v, sampleId, mode, null);
+    }
+
+    /**
+     * 带证据引用的版本（2026-11-02，F9 之后）：{@code windowFirst} 是 memo 快照里的原始事件 id，
+     * 映射成 {@code event:<id>}（{@link EvidenceRef} 既有能力）。
+     *
+     * <p>前提：调用方必须先用 {@link #evidenceAllowed(String)} 判断源写者 —— 只有
+     * {@code journaled_by} 明确且不是 client 注入的 memo 才允许带证据；否则留空，
+     * 让质量门继续判 {@code claim_without_evidence}（宁可不放行，也不给假失败开门）。
+     */
+    public static Submission.Draft toSubmission(Verdict v, String sampleId, Submission.Mode mode,
+                                                String windowFirst) {
         if (v == null) {
             return new Submission.Draft(mode, sampleId, new ReviewDraft.Draft(sampleId, List.of()), List.of());
         }
         List<ReviewDraft.Claim> claims = new ArrayList<>();
-        // 旧判定只有一段自由推理：如实搬成一条「事件事实」，证据留空。
-        // 留空不是偷懒 —— 旧载荷里真的没有可核验的引用。
+        List<EvidenceRef> evidence = List.of();
+        if (windowFirst != null && !windowFirst.isBlank()) {
+            try {
+                evidence = List.of(EvidenceRef.parse("event:" + windowFirst.trim()));
+            } catch (RuntimeException ignored) {
+                evidence = List.of();   // 形不成合法引用就不放，不伪造
+            }
+        }
         claims.add(new ReviewDraft.Claim(ReviewDraft.Section.FACT,
-                clip(v.reasoning(), 400), List.of()));
+                clip(v.reasoning(), 400), evidence));
 
         List<ArtifactDraft> artifacts = new ArrayList<>();
         for (Verdict.Action a : v.actions()) {
@@ -100,6 +119,34 @@ public final class ReviewContractAdapter {
                 List.of(),
                 List.of(nz(memoId)),
                 String.join(",", e.audience() == null ? List.of() : e.audience()));
+    }
+
+    /** 从 memo 快照里取 {@code window_first=<event-id>}；没有/格式不对返回空串（不猜）。 */
+    public static String windowFirstOf(String snapshot) {
+        if (snapshot == null || snapshot.isBlank()) return "";
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("window_first=([^,\\s]+)").matcher(snapshot);
+        return m.find() ? m.group(1).trim() : "";
+    }
+
+    /**
+     * F9 源写者闸（2026-11-02）：只有写明 {@code journaled_by} 且不是 client 注入的 memo
+     * 才允许带 {@code event:} 证据。
+     *
+     * <p>没有写者标记的老 memo 一律不放行 —— 「不知道来源」不等于「来源可信」。
+     * client 注入行（缺显式布尔、由客户端默认 false 凑出来的）是本次要挡的对象。
+     *
+     * <p><b>边界（如实写）</b>：event:&lt;id&gt; 只保证 id 形态与来源写者，ReviewDraft 不校验该事件
+     * 在 tools.jsonl 里是否存在 —— 真正的 resolver 还没接（跨模块索引，见 168 §7.12）。
+     * 写者取 memo 窗口的第一条计数行；跨写者窗口只代表那一条。
+     */
+    public static boolean evidenceAllowed(String snapshot) {
+        if (snapshot == null || snapshot.isBlank()) return false;
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("journaled_by=([^,\\s]+)").matcher(snapshot);
+        if (!m.find()) return false;
+        String w = m.group(1).trim();
+        return !w.isBlank() && !"client".equals(w) && !"unknown".equals(w);
     }
 
     private static List<String> splitOne(String s) {

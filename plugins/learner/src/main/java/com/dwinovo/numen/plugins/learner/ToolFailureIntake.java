@@ -53,6 +53,8 @@ final class ToolFailureIntake {
         String firstId = "";
         String lastId = "";
         String cls = "";
+        /** 这条失败第一个计数行的写者（journaled_by）——F9：证据引用只认非 client 注入的源。 */
+        String writer = "";
         long firstMs;
         long lastMs;
         final List<String> samples = new ArrayList<>();
@@ -167,6 +169,7 @@ final class ToolFailureIntake {
                 n.firstMs = ts;
                 n.firstId = eventId;
                 n.cls = cls;
+                n.writer = writer == null ? "" : writer;
                 return n;
             });
             // 同一次调用会被 server / client / server-async 记 2~3 行（2026-11-01 实测 2365/2734）。
@@ -255,7 +258,8 @@ final class ToolFailureIntake {
             }
         }
         return "items=" + items + ", effects=" + effects + ", tool=" + tool
-                + ", class=" + w.cls + ", window_first=" + w.firstId + ", window_last=" + w.lastId;
+                + ", class=" + w.cls + ", journaled_by=" + (w.writer == null || w.writer.isBlank() ? "unknown" : w.writer)
+                + ", window_first=" + w.firstId + ", window_last=" + w.lastId;
     }
 
     // ── 解析工具 ─────────────────────────────────────────────
