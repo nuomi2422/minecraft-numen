@@ -58,7 +58,11 @@ final class RddHomeFacts {
         // 167 B5：把「观测到但没备货」与「根本没观测到」分开。
         // 读数是否新鲜由 HomeSummary 统一判（超过 stale 就降级 UNKNOWN），这里只决定传不传。
         boolean observedItems = v.get("important_items") instanceof Map<?, ?>;
-        boolean reserveSufficient = !reserve.isEmpty();
+        // 167 B5：够不够不再由"有没有东西"决定，统一按 ReserveKit.MINIMUM 判。
+        boolean reserveSufficient = com.dwinovo.numen.rdd.policy.HomeStage.reserveSufficient(
+                observedItems ? reserve : null);
+        java.util.List<String> shortfall = com.dwinovo.numen.rdd.policy.ReserveKit.shortfall(
+                observedItems ? reserve : null);
         boolean litProtected = false;   // 保护/光照判据尚未产生事实，明确保持 false 而不是假装通过
 
         HomeStage stage = HomeStage.of(true, houseUsable, true, observedItems, reserveSufficient, litProtected);
@@ -68,7 +72,8 @@ final class RddHomeFacts {
         } else if (!observedItems) {
             blocking = "reserve_unobserved";
         } else if (!reserveSufficient) {
-            blocking = "reserve_missing";   // 箱子读到了，但里面没有能救命的几类
+            // 读到但不够：把缺口写进 blocking，模型才知道"补什么"，而不是只知道"缺"。
+            blocking = shortfall.isEmpty() ? "reserve_missing" : "reserve_short:" + String.join(",", shortfall);
         } else {
             blocking = "lit_protection_unverified";
         }
@@ -80,8 +85,10 @@ final class RddHomeFacts {
             case STOCKED -> "verify_lighting_and_protection";
             default -> null;
         };
-        if ("reserve_missing".equals(blocking)) {
-            next = "stock_reserve_box";          // 已读到、但没备货 → 去补
+        if (blocking != null && blocking.startsWith("reserve_short")) {
+            next = "stock_reserve_box";          // 已读到但不够 → 去补
+        } else if ("reserve_missing".equals(blocking)) {
+            next = "stock_reserve_box";
         } else if ("reserve_unobserved".equals(blocking)) {
             next = "scan_reserve_containers";    // 真没读到 → 去扫
         }
