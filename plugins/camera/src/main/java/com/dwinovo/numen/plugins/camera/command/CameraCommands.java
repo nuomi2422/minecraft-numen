@@ -1,6 +1,9 @@
 package com.dwinovo.numen.plugins.camera.command;
 
+import com.dwinovo.numen.plugins.camera.api.AllOff;
+import com.dwinovo.numen.plugins.camera.api.DirectorServer;
 import com.dwinovo.numen.plugins.camera.cam.CameraRig;
+import com.dwinovo.numen.plugins.camera.lens.Lens;
 import com.dwinovo.numen.plugins.camera.move.FastMove;
 import com.dwinovo.numen.plugins.camera.possess.Possession;
 import com.dwinovo.numen.plugins.camera.rec.VideoRecorder;
@@ -152,6 +155,29 @@ public final class CameraCommands {
                 .then(Commands.literal("status").executes(CameraCommands::status))
                 .then(Commands.literal("save").executes(ctx -> ok(ctx, CameraRig.forceReload())))
                 .then(Commands.literal("reload").executes(ctx -> ok(ctx, CameraRig.forceReload())))
+                // ── 一键全关 / 亮度夜视 / 控制口 ──────────────────────────
+                .then(Commands.literal("off").executes(ctx -> ok(ctx, AllOff.run())))
+                .then(Commands.literal("api")
+                        .executes(ctx -> ok(ctx, DirectorServer.status()))
+                        .then(Commands.literal("off").executes(ctx -> {
+                            DirectorServer.stopIfRunning();
+                            return ok(ctx, "控制口已关（/cam 指令不受影响）");
+                        })))
+                .then(Commands.literal("lens")
+                        .executes(ctx -> ok(ctx, Lens.status()))
+                        .then(Commands.literal("off").executes(ctx -> {
+                            Lens.restore();
+                            return ok(ctx, "亮度已还原、夜视已收");
+                        }))
+                        .then(Commands.literal("gamma")
+                                .then(Commands.argument("v", DoubleArgumentType.doubleArg(0.0, 1.0))
+                                        .executes(ctx -> ok(ctx, Lens.setGamma(
+                                                DoubleArgumentType.getDouble(ctx, "v"))))))
+                        .then(Commands.literal("nv")
+                                .executes(ctx -> ok(ctx, Lens.setNightVision(true)))
+                                .then(Commands.argument("on", BoolArgumentType.bool())
+                                        .executes(ctx -> ok(ctx, Lens.setNightVision(
+                                                BoolArgumentType.getBool(ctx, "on")))))))
                 .then(Commands.literal("help").executes(CameraCommands::help)));
     }
 
@@ -270,7 +296,7 @@ public final class CameraCommands {
                   tp                 立刻传到绑定目标身边（附身模式下不需要，改用 possess）
                   follow [on|off]    同伴走出加载区/超出阈值就自动传送过来
                   followdist <格>     牵引距离阈值（默认 64）
-                  mode <OFF|SHOULDER|ORBIT|LOCK|CINEMATIC>
+                  mode <OFF|SHOULDER|ORBIT|LOCK|CINEMATIC|BODY>
                   dist/height/shoulder/bearing/pitch <数值>   机位参数
                   hold [on|off]      目标走丢时是否保持最后机位
                   lock [x y z]       钉死机位（不给坐标就钉在玩家头顶上方 2 格）

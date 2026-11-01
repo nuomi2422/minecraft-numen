@@ -6,6 +6,7 @@ import com.dwinovo.numen.plugins.camera.tether.CompanionTether;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import net.minecraft.client.CameraType;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.server.IntegratedServer;
@@ -80,6 +81,15 @@ public final class Possession {
     /** 请求发出后的宽限 tick：这段时间内不判「镜头被收回」，否则刚发完就被自己取消。 */
     private static volatile int graceTicks;
 
+    /** 目标连续"不在"多少 tick 才放弃附身。400 tick = 20 秒，够一次死亡重生。 */
+    private static final int GIVE_UP_TICKS = 400;
+
+    /** 目标暂时不在的累计 tick（死亡 / 卸载 / 重生窗口）。 */
+    private static int missingTicks;
+
+    /** 重绑 + 补传的节流，10 tick 一次。 */
+    private static int rebindCooldown;
+
     /** 本进程只做一次「上次是否停在观察者」的恢复。 */
     private static volatile boolean recovered;
 
@@ -88,6 +98,9 @@ public final class Possession {
 
     /** 记录文件里的「附身前是什么档」。 */
     private static volatile GameType previousMode;
+
+    /** 附身前玩家的第三人称设置。附身会强制切到背后第三人称，退出时还原。 */
+    private static volatile CameraType previousCameraType;
 
     private Possession() {
     }
@@ -142,6 +155,12 @@ public final class Possession {
 
         UUID targetUuid = clientSideUuid(n, mc);
         previousMode = mc.gameMode.getPlayerMode();
+        // 附身 = 「镜头分出去 + 挂到目标身上」，但只有第三人称才看得见目标自己。
+        // 第一人称会变成「从它眼睛里往外看」，那就不是拍它了 —— 用户要的是它的第三人称。
+        previousCameraType = mc.options.getCameraType();
+        if (previousCameraType != CameraType.THIRD_PERSON_BACK) {
+            mc.options.setCameraType(CameraType.THIRD_PERSON_BACK);
+        }
         active = true;
         targetName = n;
         graceTicks = 40;
@@ -178,12 +197,22 @@ public final class Possession {
         return "正在附身 " + n + " …（结果打在聊天栏）";
     }
 
+    /** 把玩家自己的第三人称设置还原回去（附身时被强制改过）。 */
+    private static void restoreCameraType(Minecraft mc) {
+        CameraType prev = previousCameraType;
+        previousCameraType = null;
+        if (prev != null && mc.options.getCameraType() != prev) {
+            mc.options.setCameraType(prev);
+        }
+    }
+
     /** 退出附身：镜头收回自己身上，并恢复附身前的游戏模式。 */
     public static String release() {
         Minecraft mc = Minecraft.getInstance();
         if (!active) {
             return "现在没附身。";
         }
+        restoreCameraType(mc);
         IntegratedServer server = mc.getSingleplayerServer();
         if (server == null) {
             return releaseRemote(mc);
@@ -228,23 +257,82 @@ public final class Possession {
             graceTicks--;
             return;
         }
+        if (rebindCooldown > 0) {
+            rebindCooldown--;
+        }
+
         Entity cam = mc.getCameraEntity();
         if (cam == mc.player) {
-            // 服务端把镜头收回去了：目标死亡/卸载，或者别的插件接管。观察者档不能就这么留着。
-            deactivate();
-            IntegratedServer server = mc.getSingleplayerServer();
-            if (server != null) {
-                server.execute(() -> {
-                    ServerPlayer self = server.getPlayerList().getPlayer(mc.player.getUUID());
-                    GameType prev = readRecordMode();
-                    if (self != null && prev != null && prev != GameType.SPECTATOR) {
-                        self.setGameMode(prev);
-                    }
-                    clearRecord();
-                });
+            // 镜头被收回 = 目标死了 / 被卸载了。
+            //
+            // ⚠ 2026-10-31 用户实测反馈的 bug 就在这一行：以前这里**立刻退出附身**，
+            // 于是「同伴被僵尸打死 → 镜头瞬间弹回几百格外的旁观者身体 → 拍不了了」。
+            // 同伴一夜死十几次，等于全程都在弹。现在改成：先给它一段时间重生，
+            // 期间不停重绑；连续 20 秒都找不回来才真正退出。
+            missingTicks++;
+            if (missingTicks > GIVE_UP_TICKS) {
+                restoreCameraType(mc);
+                deactivate();
+                IntegratedServer server = mc.getSingleplayerServer();
+                if (server != null) {
+                    server.execute(() -> {
+                        ServerPlayer self = server.getPlayerList().getPlayer(mc.player.getUUID());
+                        GameType prev = readRecordMode();
+                        if (self != null && prev != null && prev != GameType.SPECTATOR) {
+                            self.setGameMode(prev);
+                        }
+                        clearRecord();
+                    });
+                }
+                push("附身结束：目标连续 " + (GIVE_UP_TICKS / 20) + " 秒找不回来，游戏模式已恢复。");
+                return;
             }
-            push("附身已结束（目标死亡/卸载，或服务端收回镜头），游戏模式已恢复。");
+            rebindAndFollow();
+            return;
         }
+
+        missingTicks = 0;
+        rebindAndFollow();
+    }
+
+    /**
+     * 每 10 tick 校正一次：镜头必须真的绑在目标身上，身体必须真的在目标附近。
+     *
+     * <h2>为什么要「重绑」</h2>
+     * 目标死亡后重生是一个**新实体**，服务端的 {@code camera} 字段仍然指着那个已经
+     * 被移除的旧实体 —— 不重绑就永远拍不到新的那个。判定用 {@code getCamera() != target}
+     * 而不是名字，因为名字一样但实体 id 变了。
+     *
+     * <h2>为什么要「补传身体」</h2>
+     * 服务端 {@code absMoveTo} 确实每 tick 跟着镜头走，但**它在区块加载之前就开始跟了**：
+     * 目标跨区 / 被传送 / 重生到几百格外时，身体位置是对的、客户端却没收到周围的区块，
+     * 表现就是「人在那儿但镜头是空的」。显式传一次能把区块请求提前打出去。
+     */
+    private static void rebindAndFollow() {
+        if (rebindCooldown > 0 || targetName == null || targetName.isEmpty()) {
+            return;
+        }
+        Minecraft mc = Minecraft.getInstance();
+        IntegratedServer server = mc.getSingleplayerServer();
+        if (server == null || mc.player == null) {
+            return;
+        }
+        rebindCooldown = 10;
+        UUID selfId = mc.player.getUUID();
+        String name = targetName;
+        server.execute(() -> {
+            ServerPlayer self = server.getPlayerList().getPlayer(selfId);
+            ServerPlayer target = server.getPlayerList().getPlayerByName(name);
+            if (self == null || target == null) {
+                return;
+            }
+            if (self.getCamera() != target) {
+                self.setCamera(target);
+            }
+            if (self.distanceTo(target) > 48.0) {
+                self.connection.teleport(target.getX(), target.getY(), target.getZ(), self.getYRot(), self.getXRot());
+            }
+        });
     }
 
     // ── 联机服（无集成服务端）────────────────────────────────────────────────
@@ -311,6 +399,8 @@ public final class Possession {
     // ── 状态与回执 ───────────────────────────────────────────────────────────
 
     private static void deactivate() {
+        missingTicks = 0;
+        rebindCooldown = 0;
         active = false;
         targetName = "";
         graceTicks = 0;

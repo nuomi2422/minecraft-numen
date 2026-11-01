@@ -1,7 +1,10 @@
 package com.dwinovo.numen.plugins.camera;
 
+import com.dwinovo.numen.plugins.camera.api.DirectorServer;
 import com.dwinovo.numen.plugins.camera.cam.CameraRig;
 import com.dwinovo.numen.plugins.camera.command.CameraCommands;
+import com.dwinovo.numen.plugins.camera.director.BodyCam;
+import com.dwinovo.numen.plugins.camera.lens.Lens;
 import com.dwinovo.numen.plugins.camera.move.FastMove;
 import com.dwinovo.numen.plugins.camera.possess.Possession;
 import com.dwinovo.numen.plugins.camera.rec.VideoRecorder;
@@ -33,6 +36,8 @@ import org.slf4j.Logger;
  *   <li>{@link Possession#tick()} —— 冲刷附身回执、开机恢复、看守附身是否被服务端收回</li>
  *   <li>{@link FastMove#tick()} —— 疾跑 / 飞行（飞行必须每 tick 重申，原版落地会自关）</li>
  *   <li>{@link VideoRecorder#tick()} —— 帧序列 + 异步 ffmpeg 封盘</li>
+ *   <li>{@link DirectorServer#tick()} —— 消费 127.0.0.1:8767 上外部 AI 投进来的指令</li>
+ *   <li>{@link Lens#tick()} —— 退出世界时把亮度和夜视还原（别把亮度留在存档里）</li>
  * </ol>
  *
  * <p><b>为什么用 {@code ClientTickEvent.Post} 而不是 EndClientTick</b>：Post 在渲染之后，
@@ -50,6 +55,8 @@ public final class CameraMod {
         // 把 IModBusEvent 类的事件（注册表、生命周期那些）挂到游戏总线上会直接炸。
         NeoForge.EVENT_BUS.addListener(this::onRegisterCommands);
         NeoForge.EVENT_BUS.addListener(this::onClientTickPost);
+        // 外部 AI 的控制口。起不来（端口被占）只记日志，不影响 /cam 的任何功能。
+        DirectorServer.start();
         LOGGER.info("[numencam] 已装载。/cam help 看用法，cam.json 在 {}",
                 CameraRig.configPath());
     }
@@ -65,9 +72,12 @@ public final class CameraMod {
         if (mc.screen == null) {
             FastMove.tick();
             CompanionTether.tick();
+            BodyCam.tick();
         }
         Possession.tick();
         CameraRig.tick();
         VideoRecorder.tick();
+        DirectorServer.tick();   // 先把 HTTP 投进来的活干完，再让 Lens 判退世界
+        Lens.tick();
     }
 }

@@ -61,7 +61,15 @@ public final class CameraRig {
 
     /** 追踪模式。{@link #OFF} 表示完全交还原版。 */
     public enum Mode {
-        OFF, SHOULDER, ORBIT, LOCK, CINEMATIC
+        OFF, SHOULDER, ORBIT, LOCK, CINEMATIC,
+        /**
+         * 身体机位：<b>相机就是玩家自己</b>（原版第一人称），AI 去搬玩家这个身体。
+         *
+         * <p>和上面四种的本质区别：那些是「相机离开身体、单独算一个机位」，
+         * 画面不是玩家眼睛看到的；BODY 不动相机，只动身体 —— 拍出来的和用户自己
+         * 站在那里看到的一模一样，所以要「用我的身体直接拍」就用它。
+         */
+        BODY
     }
 
     private static final Gson GSON = new Gson();

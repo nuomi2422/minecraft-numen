@@ -78,6 +78,8 @@ public abstract class MixinCamera {
         // 附身优先：这时原版自己就把镜头挂在同伴身上了（cameraEntity = 同伴，服务端每 tick
         // 跟随）。机位算法再插一手会和它对打 —— 所以这里必须让位，且不取消，交给原版。
         if (Possession.isActive()) return;
+        // 身体机位：相机本来就该挂在玩家身上，这里必须让原版接管，不能自己算。
+        if (CameraRig.mode() == CameraRig.Mode.BODY) return;
         if (!CameraRig.isActive()) return;
 
         Entity target = CameraRig.resolveTarget();
