@@ -50,11 +50,23 @@ public record RetrievalDecision(List<Hit> hits, Kind decision, String reason) {
      * @param highSimilarity 是否「同一件事」级别 —— 由检索侧判（同标题或同触发词）。
      *                       它是 Z2 里「不许 NEW」的唯一依据，**不能由 LLM 自己填**。
      */
-    public record Hit(String entryRef, String title, String why, boolean highSimilarity) {
+    public record Hit(String entryRef, String title, String why, boolean highSimilarity,
+                      String publication) {
+        /** 兼容旧构造：不知道发布状态时是空串（不是 DRAFT，也不假装可注入）。 */
+        public Hit(String entryRef, String title, String why, boolean highSimilarity) {
+            this(entryRef, title, why, highSimilarity, "");
+        }
+
         public Hit {
             entryRef = entryRef == null ? "" : entryRef.trim();
             title = title == null ? "" : title.trim();
             why = why == null ? "" : why.trim();
+            publication = publication == null ? "" : publication.trim();
+        }
+
+        /** 目标条目是否已停用/撤销（F11 I1：REVISE 不许落到这两种状态上）。 */
+        public boolean inactive() {
+            return "SUSPENDED".equalsIgnoreCase(publication) || "REVOKED".equalsIgnoreCase(publication);
         }
     }
 

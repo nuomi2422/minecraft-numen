@@ -389,7 +389,9 @@ final class LearnerReviewTool implements NumenTool {
                         //   覆写要用它撞回既有条目（id 由 type+规范化 title 派生），
                         //   不带它就只能在 learner 里再开一条跨插件读通道（被封死）。
                         "title", h.title(),
-                        "high_similarity", h.highSimilarity())).toList());
+                        "high_similarity", h.highSimilarity(),
+                        // F11 I1：REVISE 需要知道目标是否已停用/撤销（SUSPENDED/REVOKED 不许落）。
+                        "publication", h.publication())).toList());
             } else {
                 one.put("retrieval_decision", "MISSING");
             }
@@ -658,6 +660,43 @@ final class LearnerReviewTool implements NumenTool {
     }
 
     /**
+     * 近重复的「同一件事」阈值（2026-11-02，审核窗口 05:32）：0.10 太松，
+     * 12% 重叠会把草稿 REVISE 到只是略微相关的条目；50% 才算近重复。
+     * 低于这个值的命中既不改写目标、也不阻止 NEW（可信来源时会落 NEW）。
+     */
+    static final double NEAR_DUP_TITLE_OVERLAP = 0.5;
+
+    /** 目标条目是否已停用/撤销（F11 I1：不许 REVISE 到这两种状态）。 */
+    static boolean inactivePublication(String pub) {
+        return "SUSPENDED".equalsIgnoreCase(pub) || "REVOKED".equalsIgnoreCase(pub);
+    }
+
+    /**
+     * 从命中里挑 REVISE 目标：跳过 inactive，取标题重叠最高且 ≥ 阈值的那条；
+     * 没有够近的返回 -1（调用方据 trusted 决定 NEW 或 SKIP）。纯函数，可单测。
+     */
+    static int bestReviseIndex(java.util.List<String> titles, java.util.List<String> pubs, String draftTitle) {
+        int best = -1;
+        double bestOv = -1.0;
+        for (int i = 0; i < titles.size(); i++) {
+            String pub = pubs != null && i < pubs.size() ? pubs.get(i) : "";
+            if (inactivePublication(pub)) continue;
+            double ov = titleOverlap(draftTitle, titles.get(i));
+            if (ov > bestOv) {
+                bestOv = ov;
+                best = i;
+            }
+        }
+        return bestOv >= NEAR_DUP_TITLE_OVERLAP ? best : -1;
+    }
+
+    /** REVISE 的三种结局：REVISE（有近重复目标）/ NEW_TRUSTED（可信且无近重复）/ SKIP。 */
+    static String reviseOutcome(int bestIndex, boolean trustedSource) {
+        if (bestIndex >= 0) return "REVISE";
+        return trustedSource ? "NEW_TRUSTED" : "SKIP";
+    }
+
+    /**
      * 试用常态化的纯判定（2026-11-02）：契约 accepted + 源可信 + maturity≥OBSERVED。
      *
      * <p>为什么只到 TRIAL 不自动 PUBLISHED：TRIAL 是设计里的「试用态」（只进试用视图），
@@ -686,14 +725,13 @@ final class LearnerReviewTool implements NumenTool {
     }
 
     /** 调 experience_publish 把刚存的新条目推到 TRIAL（走插件唯一发布工具，不直接改文件）。 */
-    private static void tryAutoTrial(java.util.UUID companionId, String entryId,
-                                     List<Map<String, Object>> outcomes) {
+    private static boolean tryAutoTrial(java.util.UUID companionId, String entryId) {
         try {
             var tool = com.dwinovo.numen.agent.tool.ToolRegistry.get("experience_publish");
             var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
-            if (tool == null || server == null) return;
+            if (tool == null || server == null) return false;
             var companion = com.dwinovo.numen.entity.NumenPlayer.findByUuid(server, companionId);
-            if (companion == null) return;
+            if (companion == null) return false;
             com.google.gson.JsonObject args = new com.google.gson.JsonObject();
             args.addProperty("id", entryId);
             args.addProperty("target", "TRIAL");
@@ -708,9 +746,11 @@ final class LearnerReviewTool implements NumenTool {
             ev.put("outcome", ok ? "PROMOTED" : "FAILED");
             ev.put("reply", pubReply.substring(0, Math.min(240, pubReply.length())));
             LearnerMonitor.publish("experience_promoted", ev);
+            return ok;
         } catch (RuntimeException | NoClassDefFoundError e) {
             LearnerMonitor.publish("experience_promoted", java.util.Map.of(
                     "entry_id", entryId, "outcome", "FAILED", "error", String.valueOf(e)));
+            return false;
         }
     }
 
@@ -774,11 +814,32 @@ final class LearnerReviewTool implements NumenTool {
                         ? args.get("title").getAsString() : "";
                 Object decObj = one.get("retrieval_decision");
                 if ("REVISE".equals(decObj)) {
+                    // 2026-11-02（B+F11）：不再只看 hits[0] —— 扫描全部命中，跳过已停用/撤销的目标
+                    // （I1），挑与草稿标题最接近的那条（近重复判据）；一条都不够近时，可信来源
+                    // 按草稿自身身份落 NEW，不可信来源仍跳过。
                     Object hitsObj = one.get("retrieval_hits");
-                    if (hitsObj instanceof java.util.List<?> hits && !hits.isEmpty()
-                            && hits.get(0) instanceof Map<?, ?> h0) {
-                        String hitTitle = String.valueOf(h0.get("title"));
-                        String ref = String.valueOf(h0.get("entry_ref"));
+                    java.util.List<String> hitTitles = new java.util.ArrayList<>();
+                    java.util.List<String> hitPubs = new java.util.ArrayList<>();
+                    java.util.List<String> hitRefs = new java.util.ArrayList<>();
+                    java.util.List<String> inactiveRefs = new java.util.ArrayList<>();
+                    if (hitsObj instanceof java.util.List<?> hits) {
+                        for (Object ho : hits) {
+                            if (!(ho instanceof Map<?, ?> h)) continue;
+                            String ref0 = String.valueOf(h.get("entry_ref") == null ? "" : h.get("entry_ref"));
+                            String ht = String.valueOf(h.get("title") == null ? "" : h.get("title"));
+                            String pub = String.valueOf(h.get("publication") == null ? "" : h.get("publication"));
+                            hitRefs.add(ref0);
+                            hitTitles.add(ht);
+                            hitPubs.add(pub);
+                            if (inactivePublication(pub)) inactiveRefs.add(ref0);
+                        }
+                    }
+                    int bestIdx = bestReviseIndex(hitTitles, hitPubs, draftTitle);
+                    boolean trustedSource = Boolean.TRUE.equals(trustedByMemo.get(memoId));
+                    String outcomeKind = reviseOutcome(bestIdx, trustedSource);
+                    if ("REVISE".equals(outcomeKind)) {
+                        String hitTitle = hitTitles.get(bestIdx);
+                        String ref = hitRefs.get(bestIdx);
                         String targetId = ref.startsWith("exp:") ? ref.substring(4) : ref;
                         // 2026-10-31（V-20261031-15 实测）：REVISE 只覆写 title 不够 ——
                         // ① 草稿 type 可能不同（tool_defect vs execution）⇒ id 撞不上；
@@ -792,19 +853,31 @@ final class LearnerReviewTool implements NumenTool {
                         String targetTitle = targetTitleOf(targetId, hitTitle);
                         // 2026-10-31（V-20261031-25 实测）：REVISE 只改身份、正文仍取草稿，
                         // 会把不相干 memo 的正文合并进目标条目（goto 标题 + craft 正文）。
-                        // 主题不一致就**不落库**，只记录（宁可少学一条，不污染已有经验）。
-                        // 2026-11-02（审核窗口 03:19）：把它改成「可信来源落 NEW」是 B 方案反转
-                        // （bc69ed973 撤回过），必须单独批次 + F11 一起审，不许夹带。
-                        if (titleOverlap(draftTitle, targetTitle) < 0.10) {
-                            reviseNote = "REVISE_TOPIC_MISMATCH:" + targetId;
-                            topicMismatch = true;
-                        } else if (!targetTitle.isBlank() && !"null".equals(targetTitle)) {
+                        // 近重复（≥ NEAR_DUP_TITLE_OVERLAP）已由 bestReviseIndex 保证。
+                        if (!targetTitle.isBlank() && !"null".equals(targetTitle)) {
                             args.addProperty("title", targetTitle);
                             reviseNote = "REVISE->" + targetId;
                         } else {
                             // 命中没带 title（旧渲染或坏数据）：按 NEW 落并如实记
                             reviseNote = "REVISE_NO_TITLE:" + targetId;
                         }
+                    } else if ("NEW_TRUSTED".equals(outcomeKind)) {
+                        // B（2026-11-02，审核窗口附条件通过）：可信来源 + 无近重复目标
+                        // → 按草稿自己的身份落 NEW（不覆写 type/title）。
+                        reviseNote = "NEW_ON_MISMATCH_TRUSTED:no_near_dup";
+                    } else {
+                        // 不可信来源：继续跳过，不回开假失败的门。
+                        reviseNote = "REVISE_TOPIC_MISMATCH:no_near_dup";
+                        topicMismatch = true;
+                    }
+                    // F11 I1：命中了停用/撤销目标也要留痕，不能静默跳过。
+                    if (!inactiveRefs.isEmpty()) {
+                        reviseNote = reviseNote + "; INACTIVE_TARGET_SKIPPED:"
+                                + String.join(",", inactiveRefs);
+                        var ie = new java.util.LinkedHashMap<String, Object>();
+                        ie.put("memo_id", memoId);
+                        ie.put("inactive_targets", inactiveRefs);
+                        LearnerMonitor.publish("revise_target_inactive", ie);
                     }
                 }
                 // 2026-11-02：这句原来把「REVISE 主题不一致」和「真缺字段」都说成
@@ -847,6 +920,7 @@ final class LearnerReviewTool implements NumenTool {
                     }
                     String reply = replyRef.get() == null ? "NO_REPLY" : String.valueOf(replyRef.get());
                     boolean ok = reply.contains("\"success\":true");
+                    boolean promoted = false;
                     if (ok) {
                         stored++;
                         // 2026-11-02：落库成功后按「契约 accepted + 源可信 + maturity≥OBSERVED」
@@ -856,7 +930,7 @@ final class LearnerReviewTool implements NumenTool {
                         String entryId = jsonField(reply, "id");
                         String maturity = jsonField(reply, "maturity");
                         if (shouldAutoTrial(accepted, trusted, maturity) && !entryId.isBlank()) {
-                            tryAutoTrial(companionId, entryId, outcomes);
+                            promoted = tryAutoTrial(companionId, entryId);
                         }
                     }
                     Map<String, Object> ev = new java.util.LinkedHashMap<>();
@@ -865,6 +939,14 @@ final class LearnerReviewTool implements NumenTool {
                         ev.put("revise", reviseNote);
                     }
                     ev.put("outcome", ok ? "STORED" : "FAILED");
+                    if (ok) {
+                        // F11 I2：落库成功但不满足 auto_trial 条件时，必须显式说明「不可注入」。
+                        ev.put("promotion", promoted ? "TRIAL" : "none");
+                        if (!promoted) {
+                            ev.put("injectable", false);
+                            ev.put("injectable_note", "publication stays DRAFT: auto_trial conditions not met");
+                        }
+                    }
                     ev.put("reply", reply == null ? "" : reply.substring(0, Math.min(300, reply.length())));
                     outcomes.add(ev);
                 } else {

@@ -118,7 +118,8 @@ public final class ExperienceLibraryLookup {
                         : "同 tag: " + String.join("/", sharedTags);
                 boolean high = sameTitle || !sharedTriggers.isEmpty();
                 int score = (sameTitle ? 100 : 0) + sharedTriggers.size() * 10 + sharedTags.size();
-                scored.add(new Scored(score, new RetrievalDecision.Hit("exp:" + id, entryTitle, why, high)));
+                scored.add(new Scored(score, new RetrievalDecision.Hit("exp:" + id, entryTitle, why, high,
+                        str(o, "publication"))));
             }
         } catch (IOException io) {
             return List.of();   // 读失败 = 没有命中，但调用方会看到空而不是假数据
@@ -181,7 +182,8 @@ public final class ExperienceLibraryLookup {
                 String why = titleHit ? "文本里出现了这条的标题"
                         : triggerHits > 0 ? "文本里出现了它的触发词" : "只撞了 tag";
                 int score = (titleHit ? 100 : 0) + triggerHits * 10 + tagHits;
-                scored.add(new Scored(score, new RetrievalDecision.Hit("exp:" + id, entryTitle, why, high)));
+                scored.add(new Scored(score, new RetrievalDecision.Hit("exp:" + id, entryTitle, why, high,
+                        str(o, "publication"))));
             }
         } catch (IOException io) {
             return List.of();
