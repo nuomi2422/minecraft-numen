@@ -53,8 +53,10 @@ public final class HomeSummary {
 
         boolean reserveKnown = reserve != null && reserveAsOf != null
                 && nowMillis - reserveAsOf <= staleAfter();
+        // asOf 只在「这条观测真的可用」时才有意义：UNKNOWN 时后面跟个 asOf 会让人以为
+        // "这是 32 分钟前的可靠读数"，而实际含义是"没有可用读数"。实机 167 B3 首跑就出现了这种歧义。
         out.add(HomeStage.describe(reserve, reserveKnown)
-                + (reserveAsOf == null ? "" : " asOf=" + ago(reserveAsOf, nowMillis)));
+                + (reserveKnown && reserveAsOf != null ? " asOf=" + ago(reserveAsOf, nowMillis) : ""));
 
         if (blocking != null && !blocking.isBlank()) out.add("blocking=" + blocking);
         if (next != null && !next.isBlank()) out.add("next=" + next);
