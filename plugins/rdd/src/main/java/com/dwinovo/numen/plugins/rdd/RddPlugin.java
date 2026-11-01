@@ -761,6 +761,15 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 与 danger 同口径：只读世界、只陈述事实与现成动作（equip_item / eat），不硬派活。
         String needsBlock = RddNeedsFacts.blockFor(RddCompanionBody.get(companionId));
         String worldAssets = RddAssetContext.render(assets(companionId), 1200);
+        // 167 §B3：把「基地阶段 + 床 + 备用 + 硬缺口」压成四行进上下文。
+        // 之前 world_base 的 complete/facilities/important_items 只被用来排序或兜底，
+        // 真正进请求的只有一句 summary —— 基地事实等于看不见。
+        String homeBlock = "";
+        try {
+            homeBlock = RddHomeFacts.blockFor(assets(companionId));
+        } catch (RuntimeException ignored) {
+            // 事实块失败不影响其它上下文
+        }
         // 2026-10-28（实机观察到的盲点）：**空转**——链说要往地下走，她连续几分钟
         // 只在 rdd_status / scan_blocks / look_around / get_self_status 之间打转，
         // 一次都没有改变世界。上下文里必须有"你在原地打转"这条事实。
@@ -831,6 +840,10 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!worldAssets.isBlank()) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(worldAssets);
+        }
+        if (!homeBlock.isBlank()) {
+            if (merged.length() > 0) merged.append("\n");
+            merged.append(homeBlock);
         }
         // 危险事实放**最后**：离模型说话的位置最近（尾部注意力最强），且它是最有时效的一条。
         if (!dangerBlock.isEmpty()) {

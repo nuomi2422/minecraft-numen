@@ -1,0 +1,81 @@
+package com.dwinovo.numen.rdd.policy;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 执行请求里的「基地摘要」四行（167 §B3）。
+ *
+ * <p>为什么要单独成类：原来的基地事实（{@code world_base}）**写得很厚、消费得很薄**——
+ * {@code complete/facilities/important_items} 只被用来排序或兜底，真正进上下文的只有一句 summary。
+ * 这里把「阶段 + 硬缺口 + 下一步」压成固定几行，让执行 AI 每次请求都能看到。
+ *
+ * <p>三条硬规则（167 §B3）：
+ * <ul><li>UNKNOWN 不写成 0；</li>
+ * <li>过期观测不算满足备用门（{@code staleAfterMillis}）；</li>
+ * <li>只陈述事实与下一步，不把 settlement 工具正文塞进来。</li></ul>
+ */
+public final class HomeSummary {
+
+    private HomeSummary() {}
+
+    /** 备用观测超过这个时间就当成不新鲜（默认 10 分钟，与容器缓存的刷新节奏同量级）。 */
+    public static final long DEFAULT_STALE_AFTER_MS = 10 * 60 * 1000L;
+
+    /**
+     * @param stage        由事实算出的阶段
+     * @param facilityId   基地设施 id（可为 null）
+     * @param respawnDim   重生维度（未绑定为 null）
+     * @param respawnPos   重生坐标（未绑定为 null）
+     * @param respawnAsOf  绑定点观测时刻（毫秒，未知为 null）
+     * @param reserve      基站备用清单（未知为 null / 空 map 表示"已知但空"）
+     * @param reserveAsOf  备用扫描时刻（毫秒，未知为 null）
+     * @param blocking     当前硬缺口（可为 null）
+     * @param next         下一步（可为 null）
+     * @param nowMillis    当前时刻，用于判断过期
+     */
+    public static List<String> lines(HomeStage stage, String facilityId,
+                                     String respawnDim, String respawnPos, Long respawnAsOf,
+                                     Map<String, Integer> reserve, Long reserveAsOf,
+                                     String blocking, String next, long nowMillis) {
+        List<String> out = new ArrayList<>(6);
+        HomeStage st = stage == null ? HomeStage.NO_HOME : stage;
+        out.add("home_stage=" + st.name());
+        out.add("home_facility=" + (facilityId == null || facilityId.isBlank() ? "UNKNOWN" : facilityId));
+
+        if (respawnDim == null || respawnPos == null) {
+            out.add("respawn=UNBOUND");
+        } else {
+            out.add("respawn=BOUND " + respawnDim + " " + respawnPos
+                    + (respawnAsOf == null ? " asOf=UNKNOWN" : " asOf=" + ago(respawnAsOf, nowMillis)));
+        }
+
+        boolean reserveKnown = reserve != null && reserveAsOf != null
+                && nowMillis - reserveAsOf <= staleAfter();
+        out.add(HomeStage.describe(reserve, reserveKnown)
+                + (reserveAsOf == null ? "" : " asOf=" + ago(reserveAsOf, nowMillis)));
+
+        if (blocking != null && !blocking.isBlank()) out.add("blocking=" + blocking);
+        if (next != null && !next.isBlank()) out.add("next=" + next);
+        return List.copyOf(out);
+    }
+
+    private static long staleAfter() {
+        return Long.getLong("numen.home.reserve.staleMs", DEFAULT_STALE_AFTER_MS);
+    }
+
+    /** {@code 12s} / {@code 3m} / {@code 2h}：只给量级，不给绝对时间戳（省 token 且够用）。 */
+    static String ago(long atMillis, long nowMillis) {
+        long d = Math.max(0, nowMillis - atMillis) / 1000;
+        if (d < 60) return d + "s";
+        if (d < 3600) return (d / 60) + "m";
+        return (d / 3600) + "h";
+    }
+
+    /** 以 XML 风格包一段，便于和其它事实块共存。 */
+    public static String block(List<String> lines) {
+        if (lines == null || lines.isEmpty()) return "";
+        return "<home>\n" + String.join("\n", lines) + "\n</home>";
+    }
+}
