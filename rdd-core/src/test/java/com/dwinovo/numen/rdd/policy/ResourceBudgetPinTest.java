@@ -35,14 +35,30 @@ class ResourceBudgetPinTest {
             "minecraft:torch", 16,
             "minecraft:bread", 4);
 
-    private static final Map<String, Integer> NETHER = Map.of(
-            "minecraft:diamond_helmet", 2,
-            "minecraft:diamond_chestplate", 2,
-            "minecraft:diamond_leggings", 2,
-            "minecraft:diamond_boots", 2,
-            "minecraft:fire_resistance_potion", 3,
-            "minecraft:torch", 16,
-            "minecraft:cooked_beef", 16);
+    /**
+     * 2026-10-31（166 §73，**主人口径**）：由「四件钻石甲各 2」改为
+     * 「四件钻石甲各 1 + 四件铁甲各 2」。
+     *
+     * <p>原值（各 2）的理由是「一套穿、一套备用，掉进岩浆时那一整套能救命」，本类此前正是钉住它。
+     * 主人改口径的理由：它现在**没有「基地=仓库」的意识**，装备全在身上，
+     * 钻石门槛抬到 48 颗等于把终局装备当前置、根本下不去；
+     * 而「死一次还能再开」用**便宜的铁甲两套**更现实。
+     *
+     * <p>所以这条钉子的**意图没变**（仍要求一套主甲 + 备用），只把备用的材质从钻石换成铁。
+     * 抗火药仍在表内（3 瓶），但在门判定里按 §69 允许首次缺失。
+     */
+    private static final Map<String, Integer> NETHER = Map.ofEntries(
+            Map.entry("minecraft:diamond_helmet", 1),
+            Map.entry("minecraft:diamond_chestplate", 1),
+            Map.entry("minecraft:diamond_leggings", 1),
+            Map.entry("minecraft:diamond_boots", 1),
+            Map.entry("minecraft:iron_helmet", 2),
+            Map.entry("minecraft:iron_chestplate", 2),
+            Map.entry("minecraft:iron_leggings", 2),
+            Map.entry("minecraft:iron_boots", 2),
+            Map.entry("minecraft:fire_resistance_potion", 3),
+            Map.entry("minecraft:torch", 16),
+            Map.entry("minecraft:cooked_beef", 16));
 
     private static final Map<String, Integer> END = Map.of(
             "minecraft:diamond_chestplate", 1,
@@ -148,9 +164,10 @@ class ResourceBudgetPinTest {
     @Test
     void thresholdIsStrictlyLessThanSoExactlyEnoughPasses() {
         // 差一个也该拦（严格小于），刚好够就该放行 —— 少算一格会让「刚好备齐」的正常计划被永久拦死。
+        // §73 后钻石甲只要 1 件，所以「差一件」改用仍然要 2 件的**铁甲**来验同一个性质。
         assertTrue(ResourceBudget.missingFor(RiskLevel.NETHER,
-                        Map.of("minecraft:diamond_helmet", 1)).stream()
-                        .anyMatch(s -> s.contains("diamond_helmet") && s.contains("need 2")),
+                        Map.of("minecraft:iron_helmet", 1)).stream()
+                        .anyMatch(s -> s.contains("iron_helmet") && s.contains("need 2")),
                 "差 1 件就必须报缺口");
         Map<String, Integer> exact = ResourceBudget.requiredFor(RiskLevel.NETHER);
         assertTrue(ResourceBudget.satisfied(RiskLevel.NETHER, exact),

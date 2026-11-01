@@ -27,14 +27,22 @@ public final class ResourceBudget {
             // （B3 已标注 cheated=true），不是自然产出。自然路线要凑 48 钻等于把终局装备当前置。
             // 降到 1 套（24 钻）后：护甲仍在要求里、仍在被检查，只是不再要求两套；
             // 「丢一套还能再开」的备用诉求交给 BACKUP + B6 的保护级别去表达，不再压在第一套门槛上。
-            RiskLevel.NETHER, Map.of(
-                    "minecraft:diamond_helmet", 1,
-                    "minecraft:diamond_chestplate", 1,
-                    "minecraft:diamond_leggings", 1,
-                    "minecraft:diamond_boots", 1,
-                    "minecraft:fire_resistance_potion", 3,
-                    "minecraft:torch", 16,
-                    "minecraft:cooked_beef", 16),
+            RiskLevel.NETHER, Map.ofEntries(
+                    Map.entry("minecraft:diamond_helmet", 1),
+                    Map.entry("minecraft:diamond_chestplate", 1),
+                    Map.entry("minecraft:diamond_leggings", 1),
+                    Map.entry("minecraft:diamond_boots", 1),
+                    // 2026-10-31（166 §73，主人口径）：再加**两套铁甲**当备用。
+                    // 理由：它现在还没有"基地 = 仓库"的意识，装备全靠身上带；
+                    // 钻石甲只有一套，死了就裸奔（seq34 一次丢 32 类，正是这个下场）。
+                    // 铁甲便宜、能成建制地补，用来保证"死一次还能再开"，而不是把第一套抬到 48 钻。
+                    Map.entry("minecraft:iron_helmet", 2),
+                    Map.entry("minecraft:iron_chestplate", 2),
+                    Map.entry("minecraft:iron_leggings", 2),
+                    Map.entry("minecraft:iron_boots", 2),
+                    Map.entry("minecraft:fire_resistance_potion", 3),
+                    Map.entry("minecraft:torch", 16),
+                    Map.entry("minecraft:cooked_beef", 16)),
             RiskLevel.END, Map.of(
                     "minecraft:diamond_chestplate", 1,
                     "minecraft:bow", 1,

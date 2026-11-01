@@ -17,13 +17,17 @@ class FirstEntryNoPotionTest {
 
     /** 下界要求的其余六项齐全，唯独没有抗火药。 */
     private static Map<String, Integer> everythingButPotion() {
-        return Map.of(
-                "minecraft:diamond_helmet", 2,
-                "minecraft:diamond_chestplate", 2,
-                "minecraft:diamond_leggings", 2,
-                "minecraft:diamond_boots", 2,
-                "minecraft:torch", 16,
-                "minecraft:cooked_beef", 16);
+        return Map.ofEntries(
+                Map.entry("minecraft:diamond_helmet", 1),
+                Map.entry("minecraft:diamond_chestplate", 1),
+                Map.entry("minecraft:diamond_leggings", 1),
+                Map.entry("minecraft:diamond_boots", 1),
+                Map.entry("minecraft:iron_helmet", 2),
+                Map.entry("minecraft:iron_chestplate", 2),
+                Map.entry("minecraft:iron_leggings", 2),
+                Map.entry("minecraft:iron_boots", 2),
+                Map.entry("minecraft:torch", 16),
+                Map.entry("minecraft:cooked_beef", 16));
     }
 
     @Test

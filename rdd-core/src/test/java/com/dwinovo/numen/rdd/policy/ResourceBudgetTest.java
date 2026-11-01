@@ -12,24 +12,31 @@ class ResourceBudgetTest {
         assertTrue(ResourceBudget.requiredFor(RiskLevel.NORMAL).isEmpty());
     }
 
-    @Test void netherRequiresTwoSetsDiamondArmorAndPotions() {
+    /**
+     * 2026-10-31（166 §73）：门槛从「两套钻石」改为「一套钻石 + 两套铁」。
+     * 这条用例的意图（甲要成套、药水要在表里）不变，只更新数量口径。
+     */
+    @Test void netherRequiresOneDiamondSetPlusTwoIronSetsAndPotions() {
         var need = ResourceBudget.requiredFor(RiskLevel.NETHER);
-        assertEquals(2, need.get("minecraft:diamond_chestplate"));
+        assertEquals(1, need.get("minecraft:diamond_chestplate"));
+        assertEquals(2, need.get("minecraft:iron_chestplate"), "铁甲备用是两套");
         assertEquals(3, need.get("minecraft:fire_resistance_potion"));
-        // 只有一套甲 + 没药水 → 报缺口
+        // 只有一件钻甲 + 没铁甲 + 没药水 → 报缺口
         var missing = ResourceBudget.missingFor(RiskLevel.NETHER,
                 Map.of("minecraft:diamond_chestplate", 1, "minecraft:torch", 16));
-        assertTrue(missing.stream().anyMatch(s -> s.contains("diamond_chestplate") && s.contains("need 2")));
+        assertTrue(missing.stream().anyMatch(s -> s.contains("iron_chestplate") && s.contains("need 2")));
         assertTrue(missing.stream().anyMatch(s -> s.contains("fire_resistance_potion")));
         assertFalse(ResourceBudget.satisfied(RiskLevel.NETHER, Map.of("minecraft:diamond_chestplate", 1)));
     }
 
     @Test void satisfiedWhenAllPresent() {
-        var available = Map.of(
-                "minecraft:diamond_helmet", 2, "minecraft:diamond_chestplate", 2,
-                "minecraft:diamond_leggings", 2, "minecraft:diamond_boots", 2,
-                "minecraft:fire_resistance_potion", 3, "minecraft:torch", 16,
-                "minecraft:cooked_beef", 16);
+        var available = Map.ofEntries(
+                Map.entry("minecraft:diamond_helmet", 1), Map.entry("minecraft:diamond_chestplate", 1),
+                Map.entry("minecraft:diamond_leggings", 1), Map.entry("minecraft:diamond_boots", 1),
+                Map.entry("minecraft:iron_helmet", 2), Map.entry("minecraft:iron_chestplate", 2),
+                Map.entry("minecraft:iron_leggings", 2), Map.entry("minecraft:iron_boots", 2),
+                Map.entry("minecraft:fire_resistance_potion", 3), Map.entry("minecraft:torch", 16),
+                Map.entry("minecraft:cooked_beef", 16));
         assertTrue(ResourceBudget.satisfied(RiskLevel.NETHER, available));
     }
 
