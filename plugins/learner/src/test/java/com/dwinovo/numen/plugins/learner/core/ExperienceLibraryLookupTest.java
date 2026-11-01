@@ -117,6 +117,13 @@ class ExperienceLibraryLookupTest {
     }
 
     @Test
+    void bareDeathTagIsNotEvenAWeakHit(@TempDir Path dir) throws Exception {
+        // tag 只产生 low，但裸 death 作为 tag 同样不该制造「相关」假象（审核窗口 04:28）。
+        write(dir, "{\"id\":\"l\",\"title\":\"无关标题\",\"tags\":[\"death\"]}");
+        assertTrue(ExperienceLibraryLookup.lookupByText(dir, UUID, "deathCauseId=fall").isEmpty());
+    }
+
+    @Test
     void longTriggerStillCountsAsIdentity(@TempDir Path dir) throws Exception {
         write(dir, "{\"id\":\"i\",\"title\":\"下界岩浆伤害\",\"trigger_strings\":[\"岩浆接触伤害是持续结算\"]}");
         var hits = ExperienceLibraryLookup.lookupByText(dir, UUID, "死亡原因：岩浆接触伤害是持续结算，没有兜底");
