@@ -314,6 +314,12 @@ final class LearnerReviewTool implements NumenTool {
                             "error", regReport.error()));
                 }
                 contractRows.add(row);
+                // 2026-11-02：契约判定落成事件。reviewed 的 verdict 里没有 dec，
+                // F9 的「post-F9 memo 带 event: 证据 + PASS_WITH_UNRESOLVED」以前只能靠推断；
+                // 这里把 status/codes/accepted/window_first 一起落盘，活链可查。
+                Map<String, Object> contractEv = new LinkedHashMap<>(row);
+                contractEv.put("window_first", windowFirst);
+                LearnerMonitor.publish("contract_checked", contractEv);
                 if (dec.blocked()) {
                     // enforce：与检索闸门同样处理 —— 不 commit，memo 退回队列。
                     retrievalRejected.add(v.memoId() + ": contract:" + String.join(";", dec.codes()));
@@ -715,6 +721,8 @@ final class LearnerReviewTool implements NumenTool {
                         // 2026-10-31（V-20261031-25 实测）：REVISE 只改身份、正文仍取草稿，
                         // 会把不相干 memo 的正文合并进目标条目（goto 标题 + craft 正文）。
                         // 主题不一致就**不落库**，只记录（宁可少学一条，不污染已有经验）。
+                        // 2026-11-02（审核窗口 03:19）：把它改成「可信来源落 NEW」是 B 方案反转
+                        // （bc69ed973 撤回过），必须单独批次 + F11 一起审，不许夹带。
                         if (titleOverlap(draftTitle, targetTitle) < 0.10) {
                             reviseNote = "REVISE_TOPIC_MISMATCH:" + targetId;
                             topicMismatch = true;
