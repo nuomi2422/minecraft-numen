@@ -145,6 +145,23 @@ static boolean isDeadTask(int unchanged, String source) {
 }
 
 /**
+ * 「忙但没产出」的升级阈值（2026-11-01，167 §10.26）。
+ *
+ * <p>实机：10 分钟内 60+ 次调用（goto/scan/inspect/status），身体一直在动，
+ * 而 obsidian 从 7 一个没变、mine 一次没发。三条既有检测都不覆盖这类：
+ * stall 要求 waiting()；isDeadTask 要求身体进度没前进；idle 要求没有工具调用。
+ *
+ * <p>所以这条只看一件事：身体在动、也有工具调用，但资产指纹连续不变。
+ * 取 180 秒（比死任务 45 秒宽得多），因为搜索资源本身可以合法地花几分钟。
+ */
+static final int BUSY_NO_PROGRESS_CHECKS = 180;
+
+/** 是否为「忙但没产出」：不是在等、也不是死任务，但资产已经很久没变。 */
+static boolean isBusyNoProgress(boolean waiting, boolean deadTask, int unchanged) {
+    return !waiting && !deadTask && unchanged >= BUSY_NO_PROGRESS_CHECKS;
+}
+
+/**
  * 坐标量化成 8 格粗桶（纯函数，无 MC 依赖，便于单测锁住"区域内抖动同桶、跨区域换桶"）。
  *
  * <p>2026-09-27 实机教训：停车守望原用**精确坐标**判进展，AI 在两点之间横跳（寻路打转、
