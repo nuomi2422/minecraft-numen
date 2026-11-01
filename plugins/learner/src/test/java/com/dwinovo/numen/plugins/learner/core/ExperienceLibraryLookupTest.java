@@ -104,4 +104,36 @@ class ExperienceLibraryLookupTest {
         assertEquals(ExperienceLibraryLookup.MAX_HITS,
                 ExperienceLibraryLookup.lookup(dir, UUID, "同题", List.of("t"), List.of()).size());
     }
+    @Test
+    void bareEnglishDeathTriggerIsNotIdentityEvidence(@TempDir Path dir) throws Exception {
+        // 2026-11-02 实测事故：debug_kill 条目的 trigger_strings 里有裸 "death"，
+        // 任何死亡 memo 正文都含 deathCauseId → 被判「同一件事」→ 真实死亡教训被 REVISE 丢弃。
+        write(dir, "{\"id\":\"policy|debug_kill 走原版死亡流程\",\"title\":\"debug_kill 走原版死亡流程\","
+                + "\"trigger_strings\":[\"death\",\"debug_kill 死亡资产失效\"]}");
+        var hits = ExperienceLibraryLookup.lookupByText(dir, UUID,
+                "deathCauseId=fall deathKind=fall deathAttacker=" );
+        assertTrue(hits.stream().noneMatch(h -> h.entryRef().contains("debug_kill")),
+                "裸 death 不得把死亡文本判成 debug_kill 同类：" + hits);
+    }
+
+    @Test
+    void longTriggerStillCountsAsIdentity(@TempDir Path dir) throws Exception {
+        write(dir, "{\"id\":\"i\",\"title\":\"下界岩浆伤害\",\"trigger_strings\":[\"岩浆接触伤害是持续结算\"]}");
+        var hits = ExperienceLibraryLookup.lookupByText(dir, UUID, "死亡原因：岩浆接触伤害是持续结算，没有兜底");
+        assertTrue(hits.stream().anyMatch(h -> h.highSimilarity()), hits.toString());
+    }
+
+    @Test
+    void shortChineseTriggerStillCounts(@TempDir Path dir) throws Exception {
+        write(dir, "{\"id\":\"j\",\"title\":\"摔落教训\",\"trigger_strings\":[\"摔落\"]}");
+        var hits = ExperienceLibraryLookup.lookupByText(dir, UUID, "从高处摔落导致死亡");
+        assertTrue(hits.stream().anyMatch(h -> h.highSimilarity()), "短中文领域词保留：" + hits);
+    }
+
+    @Test
+    void shortEnglishTriggerIsDroppedEvenIfPresent(@TempDir Path dir) throws Exception {
+        // 已知代价：纯英文短触发词不再参与召回（精确性换召回，见 §7）。
+        write(dir, "{\"id\":\"k\",\"title\":\"无关标题\",\"trigger_strings\":[\"lava\"]}");
+        assertTrue(ExperienceLibraryLookup.lookupByText(dir, UUID, "lava 伤害").isEmpty());
+    }
 }

@@ -38,6 +38,19 @@ public final class ExperienceLibraryLookup {
     /** 最多回头几条 —— 太多了会把 prompt 撑爆，而且「同主题」本来就该是少数。 */
     public static final int MAX_HITS = 5;
 
+    /**
+     * 触发词作为「同一件事」证据的最小长度（2026-11-02）。
+     *
+     * <p>实测事故：库里有 3 条 debug_kill 策略把裸词 {@code death} 写进了 trigger_strings，
+     * 而 {@code lookupByText} 只要求触发词是文本子串 —— 任何死亡 memo 的正文都含
+     * "deathCauseId"，于是三条真实死亡教训（lava/fall/zombie）全被判「同一件事」，
+     * 被迫 REVISE 到 debug_kill 条目上、topicMismatch 后丢弃。
+     *
+     * <p>口径：短于 6 字符的单 token 不构成身份证据（只会降召回，不会造假命中）。
+     * 中文短语触发词通常远超这个长度；英文单词触发词会少数命中，这是已知代价。
+     */
+    public static final int MIN_TRIGGER_CHARS = 6;
+
     private ExperienceLibraryLookup() {}
 
     /**
@@ -57,7 +70,7 @@ public final class ExperienceLibraryLookup {
         if (!Files.isRegularFile(file)) {
             return List.of();   // 还没有库 = 没有命中（不是错）
         }
-        Set<String> wantTriggers = normSet(triggers);
+        Set<String> wantTriggers = specific(normSet(triggers));
         Set<String> wantTags = normSet(tags);
         String wantTitle = norm(title);
 
@@ -76,7 +89,7 @@ public final class ExperienceLibraryLookup {
                 String id = str(o, "id");
                 if (id.isBlank()) continue;
                 String entryTitle = str(o, "title");
-                Set<String> entryTriggers = normSet(arr(o, "trigger_strings"));
+                Set<String> entryTriggers = specific(normSet(arr(o, "trigger_strings")));
                 Set<String> entryTags = normSet(arr(o, "tags"));
 
                 boolean sameTitle = !wantTitle.isBlank() && wantTitle.equals(norm(entryTitle));
@@ -142,7 +155,9 @@ public final class ExperienceLibraryLookup {
                 int triggerHits = 0;
                 for (String tr : arr(o, "trigger_strings")) {
                     String k = norm(tr);
-                    if (k.length() >= 2 && hay.contains(k)) triggerHits++;
+                    // 见 identityWorthy：裸 "death" 这类纯英文短 token 不算身份证据
+                    // （任何死亡 memo 正文都含 deathCauseId，会误判「同一件事」）。
+                    if (identityWorthy(k) && hay.contains(k)) triggerHits++;
                 }
                 int tagHits = 0;
                 for (String tg : arr(o, "tags")) {
@@ -183,6 +198,33 @@ public final class ExperienceLibraryLookup {
             if (e.isJsonPrimitive()) out.add(e.getAsString());
         }
         return out;
+    }
+
+    /** 去掉不构成身份证据的触发词（见 {@link #identityWorthy}）。 */
+    private static Set<String> specific(Set<String> s) {
+        Set<String> out = new LinkedHashSet<>();
+        for (String k : s) {
+            if (identityWorthy(k)) out.add(k);
+        }
+        return out;
+    }
+
+    /**
+     * 一个触发词能不能当作「同一件事」的证据。
+     *
+     * <p>规则：长度 ≥ {@link #MIN_TRIGGER_CHARS} → 可以；短词只看**是否含非 ASCII**
+     * （中文短词 岩浆/摔落/僵尸 保留，它们是领域词）；**纯英文短 token**（death/kill/lava）
+     * 一律不算 —— 实测事故就是裸 "death" 命中了任何死亡 memo 的 deathCauseId。
+     *
+     * <p>已知代价：纯英文短触发词（如 lava）不再参与召回；这是精确性换召回的取舍，写在 §7。
+     */
+    private static boolean identityWorthy(String k) {
+        if (k == null || k.isBlank()) return false;
+        if (k.length() >= MIN_TRIGGER_CHARS) return true;
+        for (int i = 0; i < k.length(); i++) {
+            if (k.charAt(i) > 127) return true;   // 中文等非 ASCII 短词是领域词，保留
+        }
+        return false;
     }
 
     private static Set<String> normSet(List<String> v) {
