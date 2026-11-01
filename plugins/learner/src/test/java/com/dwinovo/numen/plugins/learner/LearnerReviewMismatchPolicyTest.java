@@ -92,6 +92,32 @@ class LearnerReviewMismatchPolicyTest {
     }
 
 
+
+    @Test
+    void replay1939DeathLessonsWouldBeNewTrustedAfterTheFix() {
+        // 19:39:59 三条真实死亡草稿：旧逻辑被 debug_kill 判同族 → topicMismatch 丢弃。
+        // 新逻辑：标题重叠<0.5 → 无近重复；stage=death 属可信来源 → NEW_TRUSTED。
+        assertDeathBecomesNewTrusted(
+                "death44Lava",
+                "下界岩浆的伤害是持续 onFire 结算：身体一接触岩浆就开始每半秒连续掉血，直到离开岩浆为止；而这个维度没有兜底——床会爆炸且不设重生点（bedDimension=overworld、bedDistance=-1），水桶放不出水，唯一的保险是抗火药或事先挖出的隔离走道。",
+                "debug_kill 走原版死亡流程，代价是真丢东西");
+        assertDeathBecomesNewTrusted(
+                "death45Fall",
+                "goto 在『可开路』模式下遇到大幅垂直差（本例 y 48→63）会把抬升拆成挖台阶/堆柱子，最后一步是从柱顶或台阶边缘落下；回执只报 'reached the HORIZONTAL position … but the target cell is y=63 — N block(s) …'——它承认没到目标层，却已经把人放在半空的落脚点上，之后任何一次移动都可能是自由落体。",
+                "debug_kill 走原版死亡流程（entity.kill()，当刻结算），因此背包全部物品会立刻进入死亡资产记账并可能被判 confirmed_lost");
+        assertDeathBecomesNewTrusted(
+                "death46Zombie",
+                "夜间野外是刷怪场：isNight=true 且所在格 blockLight=0 时僵尸会就地刷新并主动近身，而无武器无护甲的身体在硬直交换里必输；睡眠侧线不是可选项——它是把身体从『可被杀』切回『安全』的唯一低成本手段，且床就在 18 格内。",
+                "debug_kill 走原版死亡流程（entity.kill()，当刻结算），因此背包全部物品会立刻进入死亡资产记账并可能被判 confirmed_lost");
+    }
+
+    private static void assertDeathBecomesNewTrusted(String label, String draft, String hitTitle) {
+        int idx = LearnerReviewTool.bestReviseIndex(List.of(hitTitle), List.of("DRAFT"), draft);
+        assertEquals(-1, idx, label + "：不应把死亡教训判成 debug_kill 的近重复");
+        assertEquals("NEW_TRUSTED", LearnerReviewTool.reviseOutcome(idx, true),
+                label + "：death 是可信来源 → 按草稿身份落 NEW");
+    }
+
     @Test
     void outcomeDependsOnTrustWhenNoNearDuplicate() {
         assertEquals("REVISE", LearnerReviewTool.reviseOutcome(0, false));
