@@ -71,7 +71,9 @@ public final class ExperienceLibraryLookup {
             return List.of();   // 还没有库 = 没有命中（不是错）
         }
         Set<String> wantTriggers = specific(normSet(triggers));
-        Set<String> wantTags = normSet(tags);
+        // tag 只产生 low（相关≠同一件事），但仍过 identityWorthy：
+        // 以后谁把裸 "death" 写进 tags，也不会再制造假命中（审核窗口 04:22）。
+        Set<String> wantTags = specific(normSet(tags));
         String wantTitle = norm(title);
 
         List<Scored> scored = new ArrayList<>();
@@ -90,7 +92,7 @@ public final class ExperienceLibraryLookup {
                 if (id.isBlank()) continue;
                 String entryTitle = str(o, "title");
                 Set<String> entryTriggers = specific(normSet(arr(o, "trigger_strings")));
-                Set<String> entryTags = normSet(arr(o, "tags"));
+                Set<String> entryTags = specific(normSet(arr(o, "tags")));
 
                 boolean sameTitle = !wantTitle.isBlank() && wantTitle.equals(norm(entryTitle));
                 Set<String> sharedTriggers = new LinkedHashSet<>(wantTriggers);
@@ -162,7 +164,7 @@ public final class ExperienceLibraryLookup {
                 int tagHits = 0;
                 for (String tg : arr(o, "tags")) {
                     String k = norm(tg);
-                    if (k.length() >= 2 && hay.contains(k)) tagHits++;
+                    if (identityWorthy(k) && hay.contains(k)) tagHits++;
                 }
                 if (!titleHit && triggerHits == 0 && tagHits == 0) continue;
                 boolean high = titleHit || triggerHits > 0;
