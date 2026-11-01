@@ -56,6 +56,9 @@ public final class RddPlugin implements NumenPlugin {
     /** 懒边界上报去重：uuid → 最近一次已上报的未展开一级 id（避免每秒刷 expansion_needed）。 */
     private static final Map<UUID, String> LAST_EXPANSION_REPORT = new ConcurrentHashMap<>();
 
+    /** 167 B1：建家路线每个同伴只发布一次（观测用，不重复刷事件）。 */
+    private static final Set<UUID> HOME_PLAN_PUBLISHED = ConcurrentHashMap.newKeySet();
+
     /** B6：连续死亡的保护级别窗口（30 分钟 = 36_000 刻）。 */
     private static final long PROTECTION_WINDOW_TICKS = 36_000L;
     /** B6：上一次算出的保护级别（只在上升时发 protection_escalated）。 */
@@ -767,6 +770,22 @@ private static String withAssets(UUID companionId, String rddContext) {
         String homeBlock = "";
         try {
             homeBlock = RddHomeFacts.blockFor(assets(companionId));
+            // 167 §B1：把建家路线作为**一条带依赖的路线**发布一次，便于运行期核对它确实存在
+            // （本轮还不塞进常驻提示词：先让它可观测，再谈怎么消费）。
+            try {
+                if (!HOME_PLAN_PUBLISHED.contains(companionId)) {
+                    var nodes = com.dwinovo.numen.rdd.policy.HomeBuildPlan.standard();
+                    HOME_PLAN_PUBLISHED.add(companionId);
+                    RddMonitor.publish("home_plan_ready", java.util.Map.of(
+                            "companionId", companionId.toString(),
+                            "nodes", nodes.size(),
+                            "order", com.dwinovo.numen.rdd.policy.HomeBuildPlan.summary(nodes),
+                            "dependencyOk", com.dwinovo.numen.rdd.policy.HomeBuildPlan
+                                    .firstDependencyViolation(nodes) == null));
+                }
+            } catch (RuntimeException ignored) {
+                // 观测失败不影响上下文
+            }
         } catch (RuntimeException ignored) {
             // 事实块失败不影响其它上下文
         }
