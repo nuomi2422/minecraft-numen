@@ -200,6 +200,7 @@ final class LearnerReviewTool implements NumenTool {
             MinecraftServer current = ServerLifecycleHooks.getCurrentServer();
             if (current != capturedServer) {
                 queue.restore(batch);
+                // 注：STALE_WORLD 是换档丢弃，不是 provider 失败，刻意不记 noteReviewFailed。
                 LearnerPlugin.finishReview(reviewId, "STALE_WORLD", 0);
                 LearnerMonitor.publish("review_stale", Map.of(
                         "review_id", reviewId, "companion", id.toString(), "restored", batch.size()));
@@ -507,7 +508,10 @@ final class LearnerReviewTool implements NumenTool {
         String at = Instant.now().toString();
         String state = rendered.isEmpty() ? "NO_VERDICT" : "DONE";
         // 复盘成功：清零失败退避，回到 10 分钟节奏。
-        LearnerAutoIntake.noteReviewOk(id);
+        // 只有拿到判定才清零 —— NO_VERDICT（解析为空）不该被当成成功复位退避。
+        if (!rendered.isEmpty()) {
+            LearnerAutoIntake.noteReviewOk(id);
+        }
         LearnerPlugin.finishReview(reviewId, state, rendered.size());
         LearnerPlugin.recordReview(at, rendered.size());
 
