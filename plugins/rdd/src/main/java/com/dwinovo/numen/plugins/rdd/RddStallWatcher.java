@@ -386,8 +386,10 @@ final class RddStallWatcher {
         //   原来先 mark 再发（还被外层 alreadyNudgedFor 提前 return），被总闸挡下时
         //   这一次机会**白花掉**：计数照样推进到判失败，提醒却一次没送到。
         //   两条分支的 `stalls.put(...)` 本来就完全一样，所以合并成一条。
-        if (nudgeOnce(ap.getUUID(), "renudge", stateKey, "你还没动。告诉我你卡在哪一步？"
-                + "如果缺工具或能力，把「缺什么 + 你试过什么 + 你所处环境的快照」"
+        if (nudgeOnce(ap.getUUID(), "renudge", stateKey, "你还没动。"
+                + stallHint(ap, current)
+                + "换个获取途径再试：能就近拿就拿、能合成就先合成，别把同一步原样重做。"
+                + "如果确实缺工具或能力，把「缺什么 + 你试过什么 + 你所处环境的快照」"
                 + "用 learner_note 写一条待办，学习者会看到；**不要自己请求代码变更**。")) {
             RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(), "reason", "still stalled, re-nudge"));
         }
@@ -472,6 +474,34 @@ final class RddStallWatcher {
         nudgedStates.clear();
     }
 
+    /**
+     * 卡死拍醒时补一句**具体缺什么**（2026-10-31，166 §77）。
+     *
+     * <p>实机证据：00:29~00:48 同一阶段连续 5 次 `subtask_failed: stalled after nudges`，
+     * 而拍醒话术只有「你卡住了吗？缺什么工具或材料？」——它已经把答案写在条件里，
+     * 却要模型自己再猜一遍。这里把条件里的 `asset_key` 与当前持有量直接报出来。
+     */
+    private static String stallHint(NumenPlayer ap, com.dwinovo.numen.rdd.api.Subtask current) {
+        try {
+            java.util.Map<String, Object> cond = current.condition();
+            if (cond == null) return "";
+            Object key = cond.get("asset_key");
+            if (key == null) {
+                Object grp = cond.get("group");
+                if (grp != null) return "这一步要的是「" + grp + "」这一组东西，先把组里任意一种凑够。";
+                return "";
+            }
+            String k = String.valueOf(key);
+            int held = 0;
+            java.util.Map<String, Integer> inv = RddDetector.countInventory(ap);
+            held = inv.getOrDefault(k, 0);
+            Object min = cond.get("minimum");
+            String need = min == null ? "至少 1" : ("至少 " + min);
+            return "这一步的判据是「" + k + "」，你现在有 " + held + " 个（要 " + need + "）。";
+        } catch (RuntimeException ignore) {
+            return "";
+        }
+    }
     /** 库存类判据：只靠"东西变多"推进的目标。 */
     private static boolean isInventoryTarget(java.util.Map<String, Object> cond) {
         if (cond == null) return false;
