@@ -266,6 +266,24 @@ final class RddDecomposer {
                         done.accept(fallbackGoal(companionId, objective));
                         return;
                     }
+                    // 167 §17：计划自洽检查——只发事件、不拦、不改判据。
+                    try {
+                        java.util.List<com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask> view = new java.util.ArrayList<>();
+                        for (SubtaskSpec spec : specs) {
+                            view.add(new com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask(
+                                    spec.description(), spec.condition()));
+                        }
+                        var warnings = com.dwinovo.numen.rdd.policy.PlanConsistency.check(objective, view);
+                        if (!warnings.isEmpty()) {
+                            RddMonitor.publish("plan_inconsistent", java.util.Map.of(
+                                    "companionId", companionId.toString(),
+                                    "objective", objective.length() > 120 ? objective.substring(0, 120) : objective,
+                                    "warnings", String.join(" | ", warnings),
+                                    "note", "正文写的数量大于子任务要求：照它执行会「造一半就算完成」（167 §17）"));
+                        }
+                    } catch (RuntimeException ignored) {
+                        // 检查失败不影响分解
+                    }
                     try {
                         done.accept(RddChainFactory.fromSpec(companionId, objective, specs));
                     } catch (RuntimeException ex) {
