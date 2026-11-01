@@ -29,6 +29,17 @@ class ReviewContractAdapterTest {
     }
 
     @Test
+    void experiencePlusAcPassesContractAfterFieldFix() {
+        // 离线复现 21:25:28 的 REJECT 形状（WRITE_EXPERIENCE + USE_AC），验证修复后契约接受。
+        String raw = "{\"memo_id\":\"m-9\",\"actions\":[\"WRITE_EXPERIENCE\",\"USE_AC\"],\"confidence\":0.6,\"reasoning\":\"r\",\"experience\":{\"mechanism\":\"m\",\"preconditions\":\"p\",\"failureConditions\":\"f\",\"observableSignal\":\"o\",\"derivation\":\"d\",\"efficiency\":\"e\",\"evidence\":\"ev\",\"experienceType\":\"FAILURE\"},\"ac_script_draft\":\"{\\\"name\\\":\\\"low_hp_disengage\\\",\\\"version\\\":\\\"1\\\",\\\"description\\\":\\\"d\\\",\\\"triggerConditions\\\":[\\\"hp<6\\\"],\\\"evidence\\\":[\\\"event:tools-123-0\\\"],\\\"steps\\\":[{\\\"id\\\":\\\"read\\\",\\\"block\\\":\\\"get_self_status\\\",\\\"params\\\":{}}]}\"}";
+        var v = Verdict.parse("m-9", raw);
+        var sub = ReviewContractAdapter.toSubmission(v, "m-9", Submission.Mode.INTERNAL, "tools-123-0");
+        var dec = ReviewContractGate.evaluate(ReviewContractGate.Mode.SHADOW, sub,
+                ref -> java.util.Optional.empty());
+        assertTrue(dec.result().accepted(), "修复后应 accepted，实际 codes=" + dec.codes());
+    }
+
+    @Test
     void experienceArtifactCarriesPreconditionsAndWindowFirst() {
         var sub = ReviewContractAdapter.toSubmission(verdict(), "m-1", Submission.Mode.INTERNAL, "tools-123-0");
         var a = sub.artifacts().get(0);
