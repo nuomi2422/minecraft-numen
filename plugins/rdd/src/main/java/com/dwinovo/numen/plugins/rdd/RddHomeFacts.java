@@ -148,14 +148,37 @@ final class RddHomeFacts {
         return com.dwinovo.numen.rdd.policy.ReserveKit.shortfall(reserve);
     }
 
+    /**
+     * 取「当前这个家」的基地观测。
+     *
+     * <p>2026-11-01 实机查明：base 观测分布在 6 个坐标上（它每换一次床就多一个「基地」），
+     * 原来按「最新一条」取，经常拿到别的床旁边那个空箱子 → 上下文一直显示没有备用，
+     * 而 1554 条观测里其实有铁镐。改成优先按**当前重生点**挑（{@link BaseSelector}）。
+     */
     private static AssetRegistry.AssetEntry freshestBase(AssetRegistry registry) {
         if (registry == null) return null;
-        AssetRegistry.AssetEntry best = null;
+        java.util.List<AssetRegistry.AssetEntry> bases = new java.util.ArrayList<>();
         for (var e : RddAssetContext.worldAssets(registry)) {
-            Object kind = e.observation().value().get("kind");
-            if (!"base".equals(String.valueOf(kind))) continue;
-            if (best == null || e.observation().observedAt() > best.observation().observedAt()) best = e;
+            if (!"base".equals(String.valueOf(e.observation().value().get("kind")))) continue;
+            bases.add(e);
         }
-        return best;
+        if (bases.isEmpty()) return null;
+        java.util.List<com.dwinovo.numen.rdd.core.BaseSelector.Candidate> cands = new java.util.ArrayList<>();
+        for (var e : bases) {
+            var v = e.observation().value();
+            cands.add(new com.dwinovo.numen.rdd.core.BaseSelector.Candidate(
+                    num(v.get("x")), num(v.get("y")), num(v.get("z")), e.observation().observedAt()));
+        }
+        int idx = com.dwinovo.numen.rdd.core.BaseSelector.pick(cands, RESPX.get(), RESPY.get(), RESPZ.get());
+        return idx < 0 ? null : bases.get(idx);
+    }
+
+    /** 当前重生点（由插件在上下文构建时写入；未绑定为 null）。 */
+    static final ThreadLocal<Integer> RESPX = new ThreadLocal<>();
+    static final ThreadLocal<Integer> RESPY = new ThreadLocal<>();
+    static final ThreadLocal<Integer> RESPZ = new ThreadLocal<>();
+
+    private static int num(Object o) {
+        return o instanceof Number n ? n.intValue() : 0;
     }
 }

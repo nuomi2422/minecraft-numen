@@ -769,6 +769,19 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 真正进请求的只有一句 summary —— 基地事实等于看不见。
         String homeBlock = "";
         try {
+            // 2026-11-01：把当前重生点告诉基地事实，让它挑「这个家」而不是「最新那条 base」。
+            try {
+                net.minecraft.server.level.ServerPlayer bodyH = RddCompanionBody.get(companionId);
+                var spawnH = bodyH == null ? null : bodyH.getRespawnPosition();
+                boolean bound = spawnH != null && !spawnH.equals(net.minecraft.core.BlockPos.ZERO);
+                RddHomeFacts.RESPX.set(bound ? spawnH.getX() : null);
+                RddHomeFacts.RESPY.set(bound ? spawnH.getY() : null);
+                RddHomeFacts.RESPZ.set(bound ? spawnH.getZ() : null);
+            } catch (RuntimeException ignored) {
+                RddHomeFacts.RESPX.remove();
+                RddHomeFacts.RESPY.remove();
+                RddHomeFacts.RESPZ.remove();
+            }
             homeBlock = RddHomeFacts.blockFor(assets(companionId), lastInventory(companionId));
             // 167 §B1：把建家路线作为**一条带依赖的路线**发布一次，便于运行期核对它确实存在
             // （本轮还不塞进常驻提示词：先让它可观测，再谈怎么消费）。
