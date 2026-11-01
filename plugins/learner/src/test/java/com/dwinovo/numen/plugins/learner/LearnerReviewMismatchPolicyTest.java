@@ -71,6 +71,27 @@ class LearnerReviewMismatchPolicyTest {
                 "来源不可信时跳过（不回开假失败的门）");
     }
 
+
+    @Test
+    void replay2032MineMismatchBecomesNewTrusted() {
+        // 20:32:38 的真实案例：mine memo（journaled_by=server-async，可信）被检索判成
+        // 与三条 goto 条目同族 → 旧逻辑 REVISE → 10% 阈值 → topicMismatch 丢弃。
+        // 新逻辑：近重复阈值 0.5 → 无近重复 → 可信来源 → NEW_TRUSTED。
+        String draft = "mine 的可达性前提是『从当前站立点出发有现成的可行走路径』：它把世界里存在多少块（found 64 iron_ore+1）和我实际能走到几块分开算，走不到就整条任务失败并返回 'could not reach any of them from x,y,z — no path out, and nothing minable in place'。当目标在身体所在的另一层（本例身体 y=63~70、矿 y=51）时，地表没有任何向下通道 ⇒ 永远不可达；而 goto 只对齐水平 x/z 并落到地面（y=70），不改变层高，所以原地重试 N 次结果逐字相同。";
+        List<String> titles = List.of(
+                "goto 的寻路以『净位移』判定进度",
+                "goto 以净位移判定进度，绕行地形中会因方向反转中止",
+                "goto 的寻路以『净位移』判定进度");
+        List<String> pubs = List.of("DRAFT", "DRAFT", "DRAFT");
+        assertEquals(-1, LearnerReviewTool.bestReviseIndex(titles, pubs, draft),
+                "mine 与 goto 条目不是近重复（标题重叠 < 0.5）");
+        assertEquals("NEW_TRUSTED", LearnerReviewTool.reviseOutcome(-1, true),
+                "可信来源 + 无近重复 → 按草稿身份落 NEW");
+        assertEquals("SKIP", LearnerReviewTool.reviseOutcome(-1, false),
+                "同案若来源不可信仍跳过");
+    }
+
+
     @Test
     void outcomeDependsOnTrustWhenNoNearDuplicate() {
         assertEquals("REVISE", LearnerReviewTool.reviseOutcome(0, false));
