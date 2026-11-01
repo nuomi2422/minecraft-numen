@@ -768,15 +768,27 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 之前 world_base 的 complete/facilities/important_items 只被用来排序或兜底，
         // 真正进请求的只有一句 summary —— 基地事实等于看不见。
         String homeBlock = "";
+        String homeAnchorNote = "";
         try {
-            // 2026-11-01：把当前重生点告诉基地事实，让它挑「这个家」而不是「最新那条 base」。
+            // 2026-11-01：把「家」告诉基地事实，让它挑这个家而不是「最新那条 base」。
+            // 家的语义见 HomeAnchorPolicy（第一次绑定即为家；换床只更新复活点）。
             try {
+                RddHomeAnchor.DIR = factsDir;
                 net.minecraft.server.level.ServerPlayer bodyH = RddCompanionBody.get(companionId);
                 var spawnH = bodyH == null ? null : bodyH.getRespawnPosition();
                 boolean bound = spawnH != null && !spawnH.equals(net.minecraft.core.BlockPos.ZERO);
-                RddHomeFacts.RESPX.set(bound ? spawnH.getX() : null);
-                RddHomeFacts.RESPY.set(bound ? spawnH.getY() : null);
-                RddHomeFacts.RESPZ.set(bound ? spawnH.getZ() : null);
+                Integer rx = bound ? spawnH.getX() : null;
+                Integer ry = bound ? spawnH.getY() : null;
+                Integer rz = bound ? spawnH.getZ() : null;
+                String dim = bound ? bodyH.getRespawnDimension().location().toString() : null;
+                var anchor = RddHomeAnchor.current(companionId, dim, rx, ry, rz);
+                RddHomeFacts.RESPX.set(anchor == null ? null : anchor.x());
+                RddHomeFacts.RESPY.set(anchor == null ? null : anchor.y());
+                RddHomeFacts.RESPZ.set(anchor == null ? null : anchor.z());
+                String anchorNote = RddHomeAnchor.note(companionId, anchor, rx, ry, rz);
+                if (!anchorNote.isBlank()) {
+                    homeAnchorNote = anchorNote;
+                }
             } catch (RuntimeException ignored) {
                 RddHomeFacts.RESPX.remove();
                 RddHomeFacts.RESPY.remove();
@@ -876,6 +888,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!homeBlock.isBlank()) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(homeBlock);
+            if (!homeAnchorNote.isBlank()) merged.append("\n").append(homeAnchorNote);
         }
         // 2026-11-01：同一坐标反复死（3 分钟窗口抓不到的那种）——把历史危险点摆到眼前。
         try {
