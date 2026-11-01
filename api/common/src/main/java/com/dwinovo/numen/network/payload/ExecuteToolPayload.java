@@ -185,7 +185,7 @@ public record ExecuteToolPayload(UUID entityUuid,
         // 这里不会再有 tool_result —— 学习线只读 tool_result，会漏掉这类真失败。
         MonitoringJournal.get().publish("tools", "tool_result", Map.of(
                 "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
-                "tool", p.toolName(), "result", truncate(json)));
+                "tool", p.toolName(), "success", false, "result", truncate(json)));
         com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
                 new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
     }

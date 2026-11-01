@@ -120,8 +120,12 @@ public final class ToolDispatcher {
         Constants.LOG.warn("[numen-dispatch#{}] tool {} id={} hit backstop timeout — failing it",
                 entityUuid, inv.name(), inv.id());
         String json = TaskResult.fail("tool timed out (no result returned)").toJson();
-        // 客户端不再给每条结果补写 tool_result（2026-11-01 L1），这条合成失败必须自己留痕。
-        LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), json);
+        // 客户端不再给每条结果补写 tool_result（2026-11-01 L1）。本地工具由 complete()
+        // 里的 publishResult 记（带 duration），这里只为没有本地写者的调用补一行。
+        NumenTool timedOut = ToolRegistry.resolve(inv.name());
+        if (timedOut == null || !LocalToolCallLog.runsLocally(timedOut)) {
+            LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), json);
+        }
         complete(inv, json);
     }
 
@@ -219,8 +223,11 @@ public final class ToolDispatcher {
                     Constants.LOG.warn("[numen-dispatch#{}] tool {} threw (id={}): {}",
                             entityUuid, inv.name(), inv.id(), ex.getMessage());
                     String thrownJson = TaskResult.fail(ex.getMessage()).toJson();
-                    // 服务端工具抛异常时 complete()->publishResult 对非本地直接 return，没有写者。
-                    LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), thrownJson);
+                    // 服务端工具抛异常时 complete()->publishResult 对非本地直接 return，没有写者；
+                    // 本地工具会由 publishResult 记，别在这里写第二行。
+                    if (!LocalToolCallLog.runsLocally(tool)) {
+                        LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), thrownJson);
+                    }
                     complete(inv, thrownJson);
                 }
                 // Client tool: complete() cleared the slot → loop drains the next.

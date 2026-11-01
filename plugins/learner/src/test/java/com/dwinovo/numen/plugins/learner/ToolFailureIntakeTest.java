@@ -78,6 +78,12 @@ class ToolFailureIntakeTest {
     /** 可带 data.success（Boolean 或字符串）与 journaled_by，用于复现历史污染形态。 */
     private static String toolResult(String eventId, String callId, String tool, String resultJson,
                                      Object dataSuccess, String journaledBy) {
+        return toolResult(eventId, callId, tool, resultJson, dataSuccess, journaledBy, null);
+    }
+
+    /** 同上，额外带 async_status（server-async 终态行）。 */
+    private static String toolResult(String eventId, String callId, String tool, String resultJson,
+                                     Object dataSuccess, String journaledBy, String asyncStatus) {
         JsonObject o = new JsonObject();
         o.addProperty("event_id", eventId);
         o.addProperty("timestamp", Instant.now().toString());
@@ -93,6 +99,7 @@ class ToolFailureIntakeTest {
             d.addProperty("success", s);
         }
         if (journaledBy != null) d.addProperty("journaled_by", journaledBy);
+        if (asyncStatus != null) d.addProperty("async_status", asyncStatus);
         o.add("data", d);
         return o.toString();
     }
@@ -139,7 +146,7 @@ class ToolFailureIntakeTest {
         StringBuilder tools = new StringBuilder();
         for (int i = 0; i < 3; i++) {
             tools.append(toolResult("tf-async-" + i, "call_async_" + i, "goto",
-                    "blocked: stopped 38 blocks short", Boolean.FALSE, "server-async")).append('\n');
+                    "blocked: stopped 38 blocks short", Boolean.FALSE, "server-async", "failed")).append('\n');
         }
         Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
         Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
@@ -181,6 +188,23 @@ class ToolFailureIntakeTest {
 
         assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue),
                 "本地工具显式 false（无 result 正文）必须仍算失败");
+    }
+
+    @Test
+    void stoppedAsyncTaskIsNotAFailure() throws Exception {
+        // 2026-11-01 实机复核 P1：stopped = 主动取消/被顶替，不是工具失败（与 harness action-ledger 同口径）。
+        StringBuilder tools = new StringBuilder();
+        for (int i = 0; i < 3; i++) {
+            tools.append(toolResult("tf-stop-" + i, "call_stop_" + i, "goto",
+                    "cancelled before reaching target", Boolean.FALSE, "server-async", "stopped")).append('\n');
+        }
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(0, ToolFailureIntake.scanOnce(tmp, id -> queue),
+                "主动取消的任务不是失败，不得生成复盘单元");
+        assertEquals(0, queue.size());
     }
 
     @Test

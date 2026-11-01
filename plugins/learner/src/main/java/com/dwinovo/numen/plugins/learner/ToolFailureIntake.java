@@ -144,6 +144,11 @@ final class ToolFailureIntake {
                 //   永远凑不到阈值。改为：成功不抹窗，窗口按 TTL 过期（见下）。
                 continue;
             }
+            // ★ 2026-11-01（实机复核 P1）：async_status=stopped 是**主动取消/被顶替**，
+            //   不是工具失败 —— harness 的 action-ledger 同一口径（cancelled 不计失败）。
+            //   failed/timeout 仍算失败。这里按状态分型，不回改历史行。
+            String asyncStatus = str(d, "async_status");
+            if (asyncStatus.endsWith("stopped")) continue;
             long ts = tsOf(o);
             // 新鲜度闸：首次扫描（游标 0）会把整份历史读一遍 —— 只聚合最近 30 分钟的失败，
             // 防「开机就把历史失败一次性灌进队列」。更老的失败仍计入扫描量，不参与窗口。
