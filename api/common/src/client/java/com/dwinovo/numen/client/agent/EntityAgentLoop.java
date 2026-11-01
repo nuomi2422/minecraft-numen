@@ -431,44 +431,13 @@ public final class EntityAgentLoop {
         this.providerEntryId = CompanionHome.binding(entityUuid).providerId();
         this.dispatcher = new ToolDispatcher(entityUuid, new ToolDispatcher.Sink() {
             @Override public void onResult(ToolInvocation inv, String resultJson) {
-                // H17-142 (2026-10-30): journal the result. Sync tools (runSync) deliver their
-                // result through TaskResultPayload -> Sink.onResult, which used to ONLY add it to
-                // the conversation and never write tools.jsonl. Consequence: every sync tool
-                // (interact_at / equip_item / drop_items / locate_*) looked like "no receipt",
-                // and 8 rounds of diagnosis blamed the tool instead of the journal.
-                org.slf4j.LoggerFactory.getLogger(EntityAgentLoop.class).info(
-                        "[numen-tool] result client-side tool={} callId={} chars={}",
-                        inv.name(), inv.id(), resultJson == null ? 0 : resultJson.length());
-                // H18-143 (2026-10-30): also journal it into tools.jsonl. Sync tools (runSync)
-                // deliver their result through this Sink and never pass ExecuteToolPayload.reply,
-                // so before this line they had NO tool_result row at all -- which read as
-                // "the tool never answers". Same category/type as the existing writer.
-                try {
-                    java.util.Map<String, Object> jd = new java.util.LinkedHashMap<>();
-                    jd.put("companion_id", String.valueOf(entityUuid));
-                    jd.put("tool_call_id", inv.id() == null ? "" : inv.id());
-                    jd.put("tool", inv.name() == null ? "" : inv.name());
-                    jd.put("journaled_by", "client");
-                    boolean ok = false;
-                    try {
-                        com.google.gson.JsonObject root =
-                                com.google.gson.JsonParser.parseString(resultJson).getAsJsonObject();
-                        if (root.has("success") && root.get("success").isJsonPrimitive()) {
-                            ok = root.get("success").getAsBoolean();
-                        }
-                    } catch (RuntimeException ignored) { /* 非 JSON 就记 false 以外的不猜：留 UNKNOWN 语义 */ }
-                    jd.put("success", ok);
-                    // H18b-144 (2026-10-30): keep the body too. Without it a receipt only
-                    // says success=true, which cannot answer "what did it actually do".
-                    // Same 2000-char budget as ExecuteToolPayload.RESULT_LOG_LIMIT.
-                    String body = resultJson == null ? "" : resultJson;
-                    jd.put("result", body.length() <= 2000 ? body : body.substring(0, 2000) + "...");
-                    com.dwinovo.numen.monitor.MonitoringJournal.get()
-                            .publish("tools", "tool_result", jd);
-                } catch (RuntimeException ex) {
-                    org.slf4j.LoggerFactory.getLogger(EntityAgentLoop.class)
-                            .warn("[numen-tool] journal failed tool={}: {}", inv.name(), ex.toString());
-                }
+                // 2026-11-01（L1 收拢）：这里原来把每条结果再写一遍 tools.jsonl（H17/H18 补的）。
+                // 实测当天 5778 行 tool_result 里 2365 次调用被记 2~3 行；缺 success 时又默认写
+                // false —— 学习线把纯数据结果（inspect_block / look_around / find_tools …）当成
+                // 工具失败，48 条 tool_failure memo 里 34 条源自这一行（证据见 168 §7 L1）。
+                // 现在每种结果只有一个写者：身体工具=ExecuteToolPayload，本地工具=LocalToolCallLog，
+                // 同步工具=CompanionBrain.shipResults，派发层合成失败=LocalToolCallLog.publishSynthetic。
+                // 这里只保留会话与世界记忆两件事。
                 harvestWorkBlocks(inv.name(), resultJson);
                 convo.addToolResult(inv.id(), resultJson);
             }

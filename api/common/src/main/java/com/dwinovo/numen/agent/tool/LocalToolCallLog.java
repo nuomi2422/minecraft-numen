@@ -151,13 +151,32 @@ public final class LocalToolCallLog {
         publish("tool_result", data);
     }
 
+    /**
+     * 派发层自己合成的失败结果（未知工具 / 6 分钟兜底超时）。
+     *
+     * <p>2026-11-01：客户端不再对每条结果补写 tool_result（那是与这里/服务端重复的写者，
+     * 且缺 success 默认 false）。这两条没有别的写者的路径必须自己留痕，否则真失败会消失。
+     */
+    public static void publishSynthetic(UUID companionId, String toolCallId, String tool, String resultJson) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("companion_id", companionId == null ? "" : companionId.toString());
+        data.put("tool_call_id", toolCallId == null ? "" : toolCallId);
+        data.put("tool", tool == null ? "" : tool);
+        data.put("success", successOf(resultJson));
+        data.put("journaled_by", "client-synthetic");
+        String body = resultJson == null ? "" : resultJson;
+        data.put("result", body.length() <= 2000 ? body : body.substring(0, 2000) + "...");
+        publish("tool_result", data);
+    }
+
     /** 从结果 JSON 读 {@code success}；读不到返回 "UNKNOWN"（不把「不知道」写成 false）。 */
     private static Object successOf(String resultJson) {
         try {
             com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(resultJson);
             if (root.isJsonObject()
                     && root.getAsJsonObject().has("success")
-                    && root.getAsJsonObject().get("success").isJsonPrimitive()) {
+                    && root.getAsJsonObject().get("success").isJsonPrimitive()
+                    && root.getAsJsonObject().get("success").getAsJsonPrimitive().isBoolean()) {
                 return root.getAsJsonObject().get("success").getAsBoolean();
             }
         } catch (RuntimeException ignored) {

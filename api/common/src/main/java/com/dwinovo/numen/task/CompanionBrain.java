@@ -378,6 +378,9 @@ final class CompanionBrain {
                         rec.getToolName(), rec.getToolCallId(), rec.getState());
                 continue;
             }
+            // 2026-11-01（L1）：同步工具回执原来只有客户端那条重复写者记过；客户端写者删掉后，
+            // 这里成为同步结果唯一的写者（成功/失败取任务终态，result 存完整 JSON）。
+            journalSyncOutcome(companion, rec, result);
             String json = result == null
                     ? "{\"success\":false,\"message\":\"no result produced\"}"
                     : result.toJson();
@@ -393,6 +396,32 @@ final class CompanionBrain {
      * <p>H20-147 起：异步任务原本只发 NumenEvent，终态不可见；H20b-152 起抽成方法，
      * 让"内置大脑派"和"外部 MCP 派"两条分支走同一段写入，避免再出现只补一半的情况。
      */
+    /**
+     * 同步工具回执（2026-11-01）：同步结果在 server 侧的唯一写者。
+     *
+     * <p>边界：只在结果真正要送给主人时记；主人离线时同步回执本来就被丢弃
+     * （客户端也会兜底超时），这里不补记一条对方永远收不到的结果。
+     *
+     * <p>为什么在这里：客户端原来对每条结果再写一遍（H18-143 补的），与
+     * ExecuteToolPayload / LocalToolCallLog 重复；缺 success 时默认 false，把纯数据
+     * 结果写成失败事实。同步工具（interact_at / equip_item / locate_* …）不经过
+     * ExecuteToolPayload.reply，结果真正的产生点就是这里 —— 送给主人之前记一行，
+     * 成功与否取任务终态，不做任何猜测。
+     */
+    private void journalSyncOutcome(NumenPlayer companion, TaskRecord rec, TaskResult result) {
+        try {
+            java.util.Map<String, Object> jd = new java.util.LinkedHashMap<>();
+            jd.put("companion_id", String.valueOf(companion.getUUID()));
+            jd.put("tool_call_id", rec.getToolCallId() == null ? "" : rec.getToolCallId());
+            jd.put("tool", rec.getToolName() == null ? "" : rec.getToolName());
+            jd.put("journaled_by", "server-sync");
+            jd.put("success", rec.getState() == TaskState.SUCCESS);
+            String json = result == null ? "" : result.toJson();
+            jd.put("result", json.length() <= 2000 ? json : json.substring(0, 2000) + "...");
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("tools", "tool_result", jd);
+        } catch (RuntimeException ignored) { /* 观测层不许影响派发 */ }
+    }
+
     private void journalTaskOutcome(NumenPlayer companion, TaskRecord rec, String status, String msg, TaskResult result) {
         try {
             java.util.Map<String, Object> jd = new java.util.LinkedHashMap<>();
@@ -401,7 +430,8 @@ final class CompanionBrain {
             jd.put("tool", rec.getToolName() == null ? "" : rec.getToolName());
             jd.put("journaled_by", "server-async");
             jd.put("async_status", status);
-            jd.put("success", "done".equals(status));
+            // external-* 前缀（MCP 派的异步任务）也要按同一条判据：external-done 是成功。
+            jd.put("success", status != null && status.endsWith("done"));
             jd.put("result", msg == null ? "" : (msg.length() <= 2000 ? msg : msg.substring(0, 2000) + "..."));
             // H21-obs（150 号 §6）：把任务自己带出来的只读观测摘要原样落账，
             // 让 tools.jsonl 也能回答「进没进过分支」——不必去翻 GBK 的 latest.log。

@@ -119,7 +119,10 @@ public final class ToolDispatcher {
         ToolInvocation inv = inFlight.values().iterator().next();
         Constants.LOG.warn("[numen-dispatch#{}] tool {} id={} hit backstop timeout — failing it",
                 entityUuid, inv.name(), inv.id());
-        complete(inv, TaskResult.fail("tool timed out (no result returned)").toJson());
+        String json = TaskResult.fail("tool timed out (no result returned)").toJson();
+        // 客户端不再给每条结果补写 tool_result（2026-11-01 L1），这条合成失败必须自己留痕。
+        LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), json);
+        complete(inv, json);
     }
 
     /**
@@ -179,8 +182,10 @@ public final class ToolDispatcher {
                     // 比让一次瞎填的调用真的动身体便宜。
                     Constants.LOG.info("[numen-dispatch#{}] tool '{}' not expanded yet (id={})",
                             entityUuid, inv.name(), inv.id());
-                    sink.onResult(inv, TaskResult.fail(
-                            com.dwinovo.numen.agent.tool.ToolDisclosure.notExpanded(tool.name())).toJson());
+                    String notExpandedJson = TaskResult.fail(
+                            com.dwinovo.numen.agent.tool.ToolDisclosure.notExpanded(tool.name())).toJson();
+                    LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), notExpandedJson);
+                    sink.onResult(inv, notExpandedJson);
                     // ★ 「她试过但用不了」是唯一能证明「去取过定义」的痕迹，
                     //   而监测台此前连这个都看不见（这一段在服务端那条路之前就返回了）。
                     LocalToolCallLog.publishRejected(tool, entityUuid, inv.id(),
@@ -190,7 +195,9 @@ public final class ToolDispatcher {
                 if (tool == null) {
                     Constants.LOG.warn("[numen-dispatch#{}] LLM called unknown tool '{}' (id={})",
                             entityUuid, inv.name(), inv.id());
-                    sink.onResult(inv, TaskResult.fail("unknown tool: " + inv.name()).toJson());
+                    String json = TaskResult.fail("unknown tool: " + inv.name()).toJson();
+                    LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), json);
+                    sink.onResult(inv, json);
                     continue;   // nothing in flight — drain the next queued call
                 }
                 inFlight.put(inv.id(), inv);
@@ -211,7 +218,10 @@ public final class ToolDispatcher {
                 } catch (RuntimeException ex) {
                     Constants.LOG.warn("[numen-dispatch#{}] tool {} threw (id={}): {}",
                             entityUuid, inv.name(), inv.id(), ex.getMessage());
-                    complete(inv, TaskResult.fail(ex.getMessage()).toJson());
+                    String thrownJson = TaskResult.fail(ex.getMessage()).toJson();
+                    // 服务端工具抛异常时 complete()->publishResult 对非本地直接 return，没有写者。
+                    LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), thrownJson);
+                    complete(inv, thrownJson);
                 }
                 // Client tool: complete() cleared the slot → loop drains the next.
                 // Server tool: slot occupied → exit and wait for deliver().

@@ -56,6 +56,8 @@ final class ToolFailureIntake {
         long firstMs;
         long lastMs;
         final List<String> samples = new ArrayList<>();
+        /** 已经算过的 tool_call_id —— 同一调用被多个 writer 记 2~3 行时只算一次。 */
+        final java.util.Set<String> calls = new java.util.HashSet<>();
     }
 
     /** (同伴|工具|错误指纹) → 当前窗口。 */
@@ -115,13 +117,18 @@ final class ToolFailureIntake {
             if (tool.isBlank() || cid.isBlank() || (result.isBlank() && !d.has("success"))) continue;
             // 两种落点都要认：身体工具把结果写在 result（二次编码 JSON）；
             // 客户端本地工具（load_skill/find_tools/todowrite…）把 success 直接写在 data。
+            // ★ 2026-11-01：只认 JSON boolean。缺字段 / 字符串 "UNKNOWN" / null 一律 continue，
+            //   绝不 getAsBoolean() 隐式转 false —— 那会把「不知道」写成失败事实
+            //   （当天 939 行 client 默认 false + 81 行 UNKNOWN 就是这么进来的）。
             Boolean ok = successOf(result);
-            if (ok == null && d.has("success") && d.get("success").isJsonPrimitive()) {
-                try {
-                    ok = d.get("success").getAsBoolean();
-                } catch (RuntimeException ignored) {
-                    ok = null;
-                }
+            // data.success 的可信度按写者分：除了已删除的 client 写者（EntityAgentLoop 的历史行，
+            // 缺字段默认 false，2026-11-01 当天 939 行），其余写者都是显式判定：
+            // server-async/server-sync 按任务终态，client-local/client-synthetic 由 successOf 三态给出，
+            // server 行根本不写 success（走 result 解析）。client-local 的真实失败没有 result 正文
+            // （LocalToolCallLog.publishResult 只写布尔），所以不能只认 server-*。
+            String writer = str(d, "journaled_by");
+            if (ok == null && !"client".equals(writer)) {
+                ok = boolOf(d.get("success"));
             }
             if (ok == null) continue;
             UUID uuid;
@@ -157,6 +164,11 @@ final class ToolFailureIntake {
                 n.cls = cls;
                 return n;
             });
+            // 同一次调用会被 server / client / server-async 记 2~3 行（2026-11-01 实测 2365/2734）。
+            // 学习单元是「失败了几次调用」，不是「落了几行日志」：同一 call 只算一次。
+            String dedupeKey = str(d, "tool_call_id");
+            if (dedupeKey.isBlank()) dedupeKey = eventId;
+            if (!w.calls.add(dedupeKey)) continue;
             w.count++;
             w.lastId = eventId;
             w.lastMs = ts;
@@ -251,12 +263,16 @@ final class ToolFailureIntake {
     private static Boolean successOf(String result) {
         try {
             JsonObject r = JsonParser.parseString(result).getAsJsonObject();
-            if (r.has("success") && r.get("success").isJsonPrimitive()) {
-                return r.get("success").getAsBoolean();
-            }
+            return boolOf(r.get("success"));
         } catch (RuntimeException ignored) {
+            return null;
         }
-        return null;
+    }
+
+    /** 只认 JSON boolean：字符串 "UNKNOWN"/"false"、数字、null 都是「不知道」，不猜。 */
+    private static Boolean boolOf(com.google.gson.JsonElement e) {
+        if (e == null || !e.isJsonPrimitive() || !e.getAsJsonPrimitive().isBoolean()) return null;
+        return e.getAsBoolean();
     }
 
     private static String messageOf(String result) {

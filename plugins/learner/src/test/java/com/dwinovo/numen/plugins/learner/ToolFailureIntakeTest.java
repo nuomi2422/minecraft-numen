@@ -72,6 +72,12 @@ class ToolFailureIntakeTest {
     }
 
     private static String toolResult(String eventId, String callId, String tool, String resultJson) {
+        return toolResult(eventId, callId, tool, resultJson, null, null);
+    }
+
+    /** 可带 data.success（Boolean 或字符串）与 journaled_by，用于复现历史污染形态。 */
+    private static String toolResult(String eventId, String callId, String tool, String resultJson,
+                                     Object dataSuccess, String journaledBy) {
         JsonObject o = new JsonObject();
         o.addProperty("event_id", eventId);
         o.addProperty("timestamp", Instant.now().toString());
@@ -81,8 +87,128 @@ class ToolFailureIntakeTest {
         d.addProperty("tool", tool);
         d.addProperty("tool_call_id", callId);
         d.addProperty("result", resultJson);
+        if (dataSuccess instanceof Boolean b) {
+            d.addProperty("success", b);
+        } else if (dataSuccess instanceof String s) {
+            d.addProperty("success", s);
+        }
+        if (journaledBy != null) d.addProperty("journaled_by", journaledBy);
         o.add("data", d);
         return o.toString();
+    }
+
+    // ── 2026-11-01 L1：UNKNOWN 不得被记成失败；同一调用多 writer 只算一次 ─────────
+
+    @Test
+    void clientFalseWithoutExplicitSuccessIsNotAFailure() throws Exception {
+        // 实测形态：EntityAgentLoop 对无 success 字段的数据结果默认写 success=false。
+        StringBuilder tools = new StringBuilder();
+        for (int i = 0; i < 3; i++) {
+            tools.append(toolResult("tf-inj-" + i, "call_inj_" + i, "inspect_block",
+                    "{\"x\":368,\"y\":67,\"z\":711,\"block\":\"minecraft:air\"}",
+                    Boolean.FALSE, "client")).append('\n');
+        }
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        int n = ToolFailureIntake.scanOnce(tmp, id -> queue);
+
+        assertEquals(0, n, "缺少显式 success 的数据结果不是失败；默认 false 不得变成失败事实");
+        assertEquals(0, queue.size());
+    }
+
+    @Test
+    void unknownStringSuccessIsNotAFailure() throws Exception {
+        StringBuilder tools = new StringBuilder();
+        for (int i = 0; i < 3; i++) {
+            tools.append(toolResult("tf-unk-" + i, "call_unk_" + i, "find_tools",
+                    "<functions expanded=\"x\" />", "UNKNOWN", "client-local")).append('\n');
+        }
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        int n = ToolFailureIntake.scanOnce(tmp, id -> queue);
+
+        assertEquals(0, n, "字符串 UNKNOWN 是「不知道」，不能 getAsBoolean 成 false");
+        assertEquals(0, queue.size());
+    }
+
+    @Test
+    void serverAsyncTerminalFailureStillCounts() throws Exception {
+        // server-async 的 result 是人话 message（非 JSON），success 由任务终态显式给出 —— 仍必须算失败。
+        StringBuilder tools = new StringBuilder();
+        for (int i = 0; i < 3; i++) {
+            tools.append(toolResult("tf-async-" + i, "call_async_" + i, "goto",
+                    "blocked: stopped 38 blocks short", Boolean.FALSE, "server-async")).append('\n');
+        }
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue),
+                "异步任务终态失败是显式判定，不能被三态收紧误杀");
+    }
+
+    @Test
+    void serverSyncTerminalFailureCountsOnceEvenWithLongResult() throws Exception {
+        // server-sync 的 result 可能被 2000 字截断；success 由写者按任务终态显式给出，仍要算失败。
+        StringBuilder tools = new StringBuilder();
+        for (int i = 0; i < 3; i++) {
+            tools.append(toolResult("tf-sync-" + i, "call_sync_" + i, "locate_structure",
+                    "{\"success\":false,\"message\":\"not found\",\"data\":\"\"",
+                    Boolean.FALSE, "server-sync")).append('\n');
+        }
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue),
+                "写者显式给出的终态失败不能被截断的 JSON 掩掉");
+    }
+
+    @Test
+    void clientLocalExplicitFalseWithoutResultBodyStillCounts() throws Exception {
+        // LocalToolCallLog.publishResult 只写 success 布尔、不写 result 正文；
+        // 真实失败不能因为「读不到正文」被丢掉（2026-11-01 复核 D2）。
+        StringBuilder tools = new StringBuilder();
+        for (int i = 0; i < 3; i++) {
+            tools.append(toolResult("tf-local-" + i, "call_local_" + i, "load_skill",
+                    "", Boolean.FALSE, "client-local")).append('\n');
+        }
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue),
+                "本地工具显式 false（无 result 正文）必须仍算失败");
+    }
+
+    @Test
+    void duplicateWritersCountOneCallAndRealFailuresStillCount() throws Exception {
+        // 同一次真实失败被 server + client 各记一行；阈值按「调用次数」算，不按「日志行数」算。
+        StringBuilder tools = new StringBuilder();
+        for (int i = 0; i < 2; i++) {
+            String res = "{\"success\":false,\"message\":\"blocked: stopped 38 blocks short\"}";
+            tools.append(toolResult("tf-dup-a" + i, "call_dup_" + i, "goto", res, null, null)).append('\n');
+            tools.append(toolResult("tf-dup-b" + i, "call_dup_" + i, "goto", res, Boolean.FALSE, "client")).append('\n');
+        }
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools.toString(), StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(0, ToolFailureIntake.scanOnce(tmp, id -> queue),
+                "2 次真实失败 × 2 个 writer = 4 行，仍不足以凑成 3 连败");
+        assertEquals(0, queue.size());
+
+        // 第 3 次真实失败（仍带重复写者）才形成复盘单元，且只有一条。
+        StringBuilder more = new StringBuilder(tools.toString());
+        String res = "{\"success\":false,\"message\":\"blocked: stopped 38 blocks short\"}";
+        more.append(toolResult("tf-dup-a3", "call_dup_3", "goto", res, null, null)).append('\n');
+        more.append(toolResult("tf-dup-b3", "call_dup_3", "goto", res, Boolean.FALSE, "client")).append('\n');
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), more.toString(), StandardCharsets.UTF_8);
+
+        assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue), "第 3 次真实失败必须形成一条复盘单元");
+        assertEquals(1, queue.size());
     }
 
     private static String state() {

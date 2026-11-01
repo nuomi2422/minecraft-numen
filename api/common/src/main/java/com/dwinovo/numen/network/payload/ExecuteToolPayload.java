@@ -181,6 +181,11 @@ public record ExecuteToolPayload(UUID entityUuid,
                 "tool", p.toolName(), "reason", message));
         String shown = loopAdvice == null ? message : message + "\n" + loopAdvice;
         String json = TaskResult.fail(shown).toJson();
+        // 2026-11-01（L1）：被拒也是一条真实结果。原来只有 tool_rejected，客户端写者删掉后
+        // 这里不会再有 tool_result —— 学习线只读 tool_result，会漏掉这类真失败。
+        MonitoringJournal.get().publish("tools", "tool_result", Map.of(
+                "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
+                "tool", p.toolName(), "result", truncate(json)));
         com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
                 new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
     }
