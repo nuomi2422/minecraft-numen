@@ -72,6 +72,7 @@ final class RddHomeFacts {
         } else {
             blocking = "lit_protection_unverified";
         }
+        // next 必须与 blocking 自洽：blocking 说"箱子里没备货"，next 就不该再叫人去扫同一个箱子。
         String next = switch (stage) {
             case NO_HOME, CANDIDATE -> "settlement_register(core_house)";
             case SHELTERED -> "bind_respawn_at_bed";
@@ -79,6 +80,11 @@ final class RddHomeFacts {
             case STOCKED -> "verify_lighting_and_protection";
             default -> null;
         };
+        if ("reserve_missing".equals(blocking)) {
+            next = "stock_reserve_box";          // 已读到、但没备货 → 去补
+        } else if ("reserve_unobserved".equals(blocking)) {
+            next = "scan_reserve_containers";    // 真没读到 → 去扫
+        }
         return HomeSummary.block(HomeSummary.lines(stage,
                 String.valueOf(v.getOrDefault("label", base.assetId())),
                 dimension, pos, asOf,
