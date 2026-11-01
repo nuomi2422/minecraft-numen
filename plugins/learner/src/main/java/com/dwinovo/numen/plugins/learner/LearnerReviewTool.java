@@ -214,6 +214,8 @@ final class LearnerReviewTool implements NumenTool {
             List<Memo> batch, LearnerReviewer.ReviewOutcome outcome, PriorRoundReader.Read priorRead) {
         if (!outcome.ok()) {
             int restored = queue.restore(batch);
+            // 2026-11-02：失败退避 —— 下次 nudge 冷却改成 30/60 分钟（L2 禁止失败驱动的高频重试）。
+            LearnerAutoIntake.noteReviewFailed(id);
             LearnerPlugin.finishReview(reviewId, outcome.reason(), 0);
             LearnerMonitor.publish("review_failed", Map.of(
                     "review_id", reviewId, "companion", id.toString(),
@@ -504,6 +506,8 @@ final class LearnerReviewTool implements NumenTool {
 
         String at = Instant.now().toString();
         String state = rendered.isEmpty() ? "NO_VERDICT" : "DONE";
+        // 复盘成功：清零失败退避，回到 10 分钟节奏。
+        LearnerAutoIntake.noteReviewOk(id);
         LearnerPlugin.finishReview(reviewId, state, rendered.size());
         LearnerPlugin.recordReview(at, rendered.size());
 

@@ -104,6 +104,12 @@ final class LearnerAutoIntake {
     // 同一条 LLM→质量门→草稿→投递箱 管线，闸门一个不少。
     /** 复盘提醒冷却（毫秒）：同一同伴 10 分钟内只催一次。 */
     static final long REVIEW_NUDGE_COOLDOWN_MS = 10L * 60L * 1000L;
+    /** 复盘失败后的退避：30 分钟起，按连续失败次数翻倍，封顶 60 分钟。 */
+    static final long REVIEW_NUDGE_FAIL_MIN_MS = 30L * 60L * 1000L;
+    static final long REVIEW_NUDGE_FAIL_MAX_MS = 60L * 60L * 1000L;
+    /** 同伴 → 连续复盘失败次数（0/缺省 = 正常）。 */
+    private static final java.util.Map<java.util.UUID, Integer> REVIEW_FAIL_STREAK =
+            new java.util.concurrent.ConcurrentHashMap<>();
     /** 深度达到该值才催（太少不值得打断执行）。 */
     static final int REVIEW_NUDGE_MIN_DEPTH = 3;
     private static final Map<UUID, Long> LAST_REVIEW_NUDGE = new ConcurrentHashMap<>();
@@ -495,11 +501,38 @@ final class LearnerAutoIntake {
      */
     static boolean claimNudge(java.util.Map<java.util.UUID, Long> state,
                               java.util.UUID id, int depth, long now) {
+        Integer streak = REVIEW_FAIL_STREAK.get(id);
+        return claimNudge(state, id, depth, now, streak == null ? 0 : streak);
+    }
+
+    /**
+     * 失败退避（2026-11-02 审核窗口）：复盘失败后不能按 10 分钟原速再催 ——
+     * 一次 review 实测 35,429 tokens（15:31:59），失败驱动的高频重试正是 L2 禁止的。
+     * 规则：连续失败 1 次 → 30 分钟，2 次 → 60 分钟（封顶）；一次成功复盘清零。
+     */
+    static boolean claimNudge(java.util.Map<java.util.UUID, Long> state,
+                              java.util.UUID id, int depth, long now, int failStreak) {
         if (depth < REVIEW_NUDGE_MIN_DEPTH) return false;
+        long cooldown = REVIEW_NUDGE_COOLDOWN_MS;
+        if (failStreak > 0) {
+            cooldown = Math.min(REVIEW_NUDGE_FAIL_MAX_MS, REVIEW_NUDGE_FAIL_MIN_MS * failStreak);
+        }
         Long last = state.get(id);
-        if (last != null && now - last < REVIEW_NUDGE_COOLDOWN_MS) return false;
+        if (last != null && now - last < cooldown) return false;
         state.put(id, now);
         return true;
+    }
+
+    /** 复盘失败：记连续失败次数（供 nudge 退避）。 */
+    static void noteReviewFailed(java.util.UUID id) {
+        if (id == null) return;
+        REVIEW_FAIL_STREAK.merge(id, 1, Integer::sum);
+    }
+
+    /** 复盘成功：清零失败计数，回到正常提醒节奏。 */
+    static void noteReviewOk(java.util.UUID id) {
+        if (id == null) return;
+        REVIEW_FAIL_STREAK.remove(id);
     }
 
     /** 从 memo 文件名反推哪些同伴有待复盘队列（文件名即契约：learner-memos-<uuid>.json）。 */

@@ -47,6 +47,26 @@ class LearnerAutoIntakeTest {
                 "冷却到期必须能再发（旧实现在这里恒 false）");
     }
 
+    @Test
+    void nudgeBacksOffAfterReviewFailures() {
+        // L2：失败后不能按 10 分钟原速重催（一次 review 实测 35k tokens）。
+        java.util.Map<java.util.UUID, Long> state = new java.util.HashMap<>();
+        java.util.UUID id = java.util.UUID.randomUUID();
+        long t0 = 5_000_000L;
+        assertTrue(LearnerAutoIntake.claimNudge(state, id, 3, t0, 0), "首次发");
+        assertFalse(LearnerAutoIntake.claimNudge(state, id, 3, t0 + 11 * 60_000L, 1),
+                "失败 1 次后 11 分钟不够（退避 30 分钟）");
+        assertTrue(LearnerAutoIntake.claimNudge(state, id, 3, t0 + 31 * 60_000L, 1),
+                "失败 1 次满 30 分钟可再发");
+        assertFalse(LearnerAutoIntake.claimNudge(state, id, 3, t0 + 61 * 60_000L, 2),
+                "连续失败 2 次退避 60 分钟");
+        assertTrue(LearnerAutoIntake.claimNudge(state, id, 3, t0 + 92 * 60_000L, 2),
+                "满 60 分钟可再发");
+        LearnerAutoIntake.noteReviewOk(id);
+        assertTrue(LearnerAutoIntake.claimNudge(state, id, 3, t0 + 104 * 60_000L),
+                "一次成功复盘后回到 10 分钟节奏");
+    }
+
     @TempDir
     Path tmp;
 
