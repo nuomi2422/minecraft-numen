@@ -37,4 +37,14 @@ class StateFactsTest {
         assertTrue(!facts.contains("dmg="), "没有持续掉血就不许写 dmg：" + facts);
         assertTrue(!facts.contains("night="), "没有夜间告警就不许写 night：" + facts);
     }
+
+    /** 白天也要能表达：只有 night=1 时，"白天适用"的条目永远匹配不上。 */
+    @Test
+    void daytimeIsExpressedAsNightEqualsZero() {
+        String facts = NumenPlugins.stateFactsOf("<carry> … night=0 hostile=false …</carry>");
+        assertTrue(facts.contains("night=0"), facts);
+        assertTrue(facts.contains("hostile=0"), facts);
+        String night = NumenPlugins.stateFactsOf("<carry> … night=1 …</carry>");
+        assertTrue(night.contains("night=1"), night);
+    }
 }

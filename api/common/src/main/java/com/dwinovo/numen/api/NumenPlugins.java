@@ -135,7 +135,13 @@ public final class NumenPlugins {
         java.util.regex.Matcher hp = HP.matcher(state);
         if (hp.find()) f.put("hp", hp.group(1));
         if (state.contains("正在持续掉血")) f.put("dmg", "1");
-        if (state.contains("night=1") || state.matches("(?s).*<alarm[^>]*rule=\"night\".*")) f.put("night", "1");
+        if (state.contains("night=1") || state.matches("(?s).*<alarm[^>]*rule=\"night\".*")) {
+            f.put("night", "1");
+        } else if (state.contains("night=0")) {
+            // 白天也要能表达：某些条目只在白天适用（例如"白天补火把/晒太阳"），
+            // 只写 night=1 会让它们永远匹配不上。
+            f.put("night", "0");
+        }
         if (state.contains("hostile=true")) f.put("hostile", "1");
         else if (state.contains("hostile=false")) f.put("hostile", "0");
         java.util.regex.Matcher bed = BED.matcher(state);
