@@ -86,11 +86,16 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
                     new Gap(id, "SOURCE_THROW", t.toString()));
         }
 
-        // 排序（稳定）：非撤回在前 → 成熟度 desc → verifiedCount desc → title 字节序稳定
+        // 排序（稳定）：非撤回在前 → 试用优先 → **与当前目标的相关度 desc** → 成熟度 desc
+        // → verifiedCount desc → title 字节序稳定。
+        // 2026-11-02（实测）：原来没有「相关度」，TRIAL 条目并列时按 title 字典序截断，
+        // mine 教训（title=failure|mine …）排到第 6 位被预算切掉 —— 正在挖矿的请求里
+        // 反而看不到 mine 的教训。相关度用 objective 与 title/summary/applicable 的词重合算。
         all.sort(Comparator
                 .comparingInt((RetrievedEntry r) -> r.descriptor().retracted() ? 1 : 0)
                 // 试用优先（排在成熟度之前）：否则高成熟度的长条目会把试用条目挤出预算
                 .thenComparingInt(r -> trialRefs.contains(r.descriptor().entryRef()) ? 0 : 1)
+                .thenComparingInt(r -> -relevanceScore(query.objective(), r.descriptor()))
                 // ★ G8（2026-10-22 23:2x 更正）：归因把结局记给**最后一个呈现**，
                 //   所以「证据弱的」要排在**最后**才有机会被认领 —— 恢复成熟度降序即可：
                 //   VERIFIED 在前、OBSERVED 在后。上一版弄反了（弱在前），结果弱条目永远吃不到结局。
@@ -118,6 +123,23 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
         }
         boolean partial = !gaps.isEmpty();
         return new SearchPage(id, query.queryId(), partial, List.copyOf(kept), List.copyOf(gaps));
+    }
+
+    /**
+     * 条目与当前目标的相关度（2026-11-02）：objective 里长度 ≥2 的词命中
+     * title/summary/applicableConditions 的个数。纯函数、可单测；不改变过滤，只影响排序。
+     */
+    public static int relevanceScore(String objective, EntryDescriptor d) {
+        if (objective == null || objective.isBlank() || d == null) return 0;
+        String hay = ((d.title() == null ? "" : d.title()) + " "
+                + (d.summary() == null ? "" : d.summary()) + " "
+                + (d.applicableConditions() == null ? "" : String.join(" ", d.applicableConditions())))
+                .toLowerCase(java.util.Locale.ROOT);
+        int score = 0;
+        for (String tok : objective.toLowerCase(java.util.Locale.ROOT).split("[^\\p{L}\\p{N}]+")) {
+            if (tok.length() >= 2 && hay.contains(tok)) score++;
+        }
+        return score;
     }
 
     /** 诊断用：复刻 {@link #toEntry} 的拒收理由，只为了在日志里说清楚「为什么没进去」。 */

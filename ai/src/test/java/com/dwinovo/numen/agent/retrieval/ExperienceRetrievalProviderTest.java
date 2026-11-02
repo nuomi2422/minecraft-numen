@@ -32,6 +32,24 @@ class ExperienceRetrievalProviderTest {
     }
 
     @Test
+    void objectiveRelevanceCountsMatchingTerms() {
+        // 2026-11-02：TRIAL 并列时按 title 字典序截断，mine 教训被切掉 —— 相关度进排序。
+        EntryDescriptor mine = new EntryDescriptor("exp:mine", EntryKind.EXPERIENCE,
+                "failure|mine 的 found 64 diamond_ore but could not reach — no path out",
+                "found 是世界里存在的数量，gathered 才是能采到的",
+                List.of(), List.of("mine 目标不可达"), List.of(), List.of(), "b", false,
+                Maturity.OBSERVED, 0, false, true);
+        EntryDescriptor craft = new EntryDescriptor("exp:craft", EntryKind.EXPERIENCE,
+                "execution|craft 的工作台判定", "半径 4 格内有 crafting_table",
+                List.of(), List.of(), List.of(), List.of(), "b", false,
+                Maturity.OBSERVED, 0, false, true);
+        int mineScore = ExperienceRetrievalProvider.relevanceScore("mine diamond_ore 挖矿 no path out", mine);
+        int craftScore = ExperienceRetrievalProvider.relevanceScore("mine diamond_ore 挖矿 no path out", craft);
+        assertTrue(mineScore > craftScore, "mine 目标下 mine 条目相关度应更高：" + mineScore + " vs " + craftScore);
+        assertEquals(0, ExperienceRetrievalProvider.relevanceScore("", mine));
+    }
+
+    @Test
     void executorSeesOnlyVerifiedNonRetracted() {
         ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("exp",
                 sourceOf(
