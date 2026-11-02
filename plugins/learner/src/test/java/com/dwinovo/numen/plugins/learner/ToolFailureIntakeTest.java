@@ -436,4 +436,27 @@ class ToolFailureIntakeTest {
                 "single", ToolFailureIntake.joinSamples(java.util.List.of("single")));
         org.junit.jupiter.api.Assertions.assertEquals("", ToolFailureIntake.joinSamples(java.util.List.of()));
     }
+
+    /**
+     * 2026-11-03（外部学习者 #505/#509）：同一工具+错误形态在 30 分钟内复发，不该再生成第二条 memo。
+     * 实测 tf-mine-664867ab 在 20:34:28 与 20:39:21 各入一条（同指纹、同错误，只是坐标差 4 格）。
+     */
+    @org.junit.jupiter.api.Test
+    void sameShapeWithinWindowIsNotQueuedTwice() {
+        long now = 1_000_000_000_000L;
+        String prefix = "tf-mine-664867ab";
+        com.dwinovo.numen.plugins.learner.core.Memo old = new com.dwinovo.numen.plugins.learner.core.Memo(
+                prefix + "-tools-1", "p", "tool_failure", "t", "s", now - 5 * 60_000L);
+        com.dwinovo.numen.plugins.learner.core.Memo stale = new com.dwinovo.numen.plugins.learner.core.Memo(
+                prefix + "-tools-2", "p", "tool_failure", "t", "s", now - 45 * 60_000L);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                ToolFailureIntake.sameShapeRecentlyQueued(java.util.List.of(old), prefix, now),
+                "5 分钟前的同形态 memo 应挡住新的一条");
+        org.junit.jupiter.api.Assertions.assertFalse(
+                ToolFailureIntake.sameShapeRecentlyQueued(java.util.List.of(stale), prefix, now),
+                "45 分钟前的允许再来一条（不永久吞掉复发）");
+        org.junit.jupiter.api.Assertions.assertFalse(
+                ToolFailureIntake.sameShapeRecentlyQueued(java.util.List.of(old), "tf-other-xyz", now),
+                "不同指纹互不影响");
+    }
 }

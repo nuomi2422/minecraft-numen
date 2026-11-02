@@ -205,8 +205,8 @@ final class ToolFailureIntake {
             // 2026-11-02（A4）：1x 纯文本失败用**不含 firstId** 的稳定 id —— 否则窗口重建时
             // 同一形态会生成第二个 memoId（实测 tf-fish-…-pt-1），seen 挡不住，队列里出现重复。
             // 3x 窗口仍带 firstId（一个窗口 = 一次学习单元，需要可区分）。
-            String memoId = "tf-" + safe(tool) + "-" + fp
-                    + (clearTextFailure ? "" : "-" + safeSuffix(w.firstId));
+            String shapePrefix = "tf-" + safe(tool) + "-" + fp;
+            String memoId = shapePrefix + (clearTextFailure ? "" : "-" + safeSuffix(w.firstId));
             Memo memo = new Memo(memoId,
                     "工具 " + tool + " 连续执行失败 " + w.count + " 次（同一错误形态，不是参数被拒）：" + clip(msg, 160),
                     "tool_failure",
@@ -217,7 +217,21 @@ final class ToolFailureIntake {
             boolean reallyInQueue = false;
             try {
                 MemoQueue q = queueOf.apply(uuid);
-                appended = q.append(memo);
+                // 2026-11-03（外部学习者 #505/#509）：同一工具+错误形态在窗口内复发时，3x 窗口 id 带 firstId
+                //   会生成**第二条 memo**（实测 tf-mine-664867ab：20:34:28 与 20:39:21 各一条，同指纹同错误、
+                //   只是坐标差 4 格）。窗口内已有同前缀 memo 就不再入队，如实记一条 suppressed。
+                if (sameShapeRecentlyQueued(q.all(), shapePrefix, memo.createdAt())) {
+                    appended = false;
+                    try {
+                        LearnerMonitor.publish("tool_failure_same_shape_suppressed", Map.of(
+                                "companion", String.valueOf(uuid), "tool", tool, "memo_id", memoId,
+                                "reason", "same tool+error shape already queued within window"));
+                    } catch (RuntimeException ignored) {
+                        // 观测失败不影响主流程
+                    }
+                } else {
+                    appended = q.append(memo);
+                }
                 // append=true 有两种含义：刚放进去 / 曾经入过队被去重。
                 // 只有真在队列里才算「新入队」，否则重复事件会被记成新 memo 并写重复 sample。
                 if (appended) reallyInQueue = q.contains(memo.id());
@@ -461,5 +475,21 @@ final class ToolFailureIntake {
             parts.add(e.getValue() > 1 ? e.getKey() + " ×" + e.getValue() : e.getKey());
         }
         return String.join(" ｜ ", parts);
+    }
+
+    /** 同一工具+错误形态的去重窗口：30 分钟内不重复入队。 */
+    static final long SAME_SHAPE_DEDUPE_MS = 30L * 60_000L;
+
+    /** 队列里是否已有同前缀、且在窗口内创建的 memo（纯函数，便于单测）。 */
+    static boolean sameShapeRecentlyQueued(java.util.List<Memo> queued, String shapePrefix, long nowMs) {
+        if (queued == null || shapePrefix == null || shapePrefix.isBlank()) return false;
+        for (Memo m : queued) {
+            if (m == null) continue;
+            String id = m.id() == null ? "" : m.id();
+            if (!id.startsWith(shapePrefix)) continue;
+            long age = nowMs - m.createdAt();
+            if (age >= 0 && age < SAME_SHAPE_DEDUPE_MS) return true;
+        }
+        return false;
     }
 }
