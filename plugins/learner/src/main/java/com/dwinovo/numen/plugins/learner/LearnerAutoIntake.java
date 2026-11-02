@@ -605,7 +605,11 @@ final class LearnerAutoIntake {
     /** nudge 的正文（纯函数，便于钉住「说几条就是几条」）。 */
     static String nudgeText(int depth) {
         return "[学习者] 队列里有 " + depth + " 条待复盘的备忘录（都是真实失败事件，不是测试）。"
-                + "现在没有正在跑的复盘；下一轮请调用 learner_review 处理它们——"
+                + "现在没有正在跑的复盘；下一轮请调用 learner_review 处理它们"
+                // ★ 2026-11-03（外部学习者、实机）：learner_review 是 DEFERRED 工具，不在常驻工具表里，
+                //   要先 find_tools 拉到定义才能调。18:22:41 那次提醒被 AI 读到也口头接受了，但它
+                //   没去 find_tools，5 分钟内一次 learner_review 都没调（#456）。提醒文案直接把这一步写出来。
+                + "（learner_review 是延迟工具：先 find_tools 搜 learner_review 拉定义，再调用）——"
                 + "该成经验的经验、该拒绝的拒绝（拒绝也要给理由），别让队列一直积着。";
     }
 
