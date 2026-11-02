@@ -54,6 +54,23 @@ class ExperienceRetrievalProviderTest {
      * 实机背景：夜间死亡场景下，库里"夜间露天站桩"的条目排不进 5 个槽位，因为
      * 旧口径把中文整句当一个 token（goal 169 字 → 22 token，仅 1 个命中任意条目）。
      */
+    /**
+     * 2026-11-03（外部学习者 #475/#481）：条件写紧凑事实表达式时，按 objective 里的
+     * <state_facts/> 比较；缺键不许猜成满足。
+     */
+    @Test
+    void compactFactConditionsAreComparedAgainstStateFacts() {
+        java.util.Map<String, String> facts = ExperienceRetrievalProvider.stateFacts(
+                "<state_facts hp=5 dmg=1 night=0 hostile=1/>");
+        assertEquals("5", facts.get("hp"), facts.toString());
+        assertTrue(ExperienceRetrievalProvider.factHolds("hp<=6", facts), "hp=5 应满足 hp<=6");
+        assertTrue(!ExperienceRetrievalProvider.factHolds("hp>=15", facts), "hp=5 不满足 hp>=15");
+        assertTrue(ExperienceRetrievalProvider.factHolds("hostile=1", facts), "hostile=1 应等值命中");
+        assertTrue(ExperienceRetrievalProvider.factHolds("dmg=1", facts), "dmg=1 应等值命中");
+        assertTrue(!ExperienceRetrievalProvider.factHolds("armor=0", facts), "缺 armor 键 = 不知道 = 不满足");
+        assertTrue(!ExperienceRetrievalProvider.factHolds("这是散文条件", facts), "散文条件交回逐字匹配");
+    }
+
     @Test
     void chineseObjectiveRanksTheRelevantEntryHigher() {
         EntryDescriptor night = new EntryDescriptor("exp:night", EntryKind.EXPERIENCE,

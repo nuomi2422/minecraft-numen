@@ -328,13 +328,69 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
      */
     private Applicability applicability(RetrievalQuery query, EntryDescriptor desc) {
         String objective = query.objective() == null ? "" : query.objective();
+        java.util.Map<String, String> facts = stateFacts(objective);
         for (String c : desc.excludedConditions()) {
-            if (c != null && !c.isBlank() && objective.contains(c)) return Applicability.FAIL;
+            if (c != null && !c.isBlank() && (objective.contains(c) || factHolds(c, facts))) return Applicability.FAIL;
         }
         for (String c : desc.applicableConditions()) {
-            if (c != null && !c.isBlank() && objective.contains(c)) return Applicability.PASS;
+            if (c != null && !c.isBlank() && (objective.contains(c) || factHolds(c, facts))) return Applicability.PASS;
         }
         return Applicability.UNKNOWN;
+    }
+
+    private static final java.util.regex.Pattern STATE_FACTS =
+            java.util.regex.Pattern.compile("<state_facts([^/>]*)/>");
+    private static final java.util.regex.Pattern FACT_EXPR =
+            java.util.regex.Pattern.compile("^\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*(<=|>=|<|>|=)\\s*([A-Za-z0-9_.-]+)\\s*$");
+
+    /** 从 objective 里的 {@code <state_facts .../>} 读键值（没有就空表）。纯函数，便于单测。 */
+    static java.util.Map<String, String> stateFacts(String objective) {
+        java.util.Map<String, String> out = new java.util.LinkedHashMap<>();
+        if (objective == null || objective.isBlank()) return out;
+        java.util.regex.Matcher m = STATE_FACTS.matcher(objective);
+        if (!m.find()) return out;
+        for (String tok : m.group(1).trim().split("\\s+")) {
+            int eq = tok.indexOf('=');
+            if (eq <= 0) continue;
+            out.put(tok.substring(0, eq), tok.substring(eq + 1));
+        }
+        return out;
+    }
+
+    /**
+     * 2026-11-03（外部学习者 #475/#481）：条件若是紧凑事实表达式（{@code hp<=6}、{@code night=1}、
+     * {@code hostile=1}），就拿 objective 里的 state_facts 做比较；否则返回 false 交回逐字匹配。
+     * 只支持数值比较与等值；缺该键 = 不知道 = false（不许猜成满足）。
+     */
+    static boolean factHolds(String condition, java.util.Map<String, String> facts) {
+        if (condition == null || facts == null || facts.isEmpty()) return false;
+        java.util.regex.Matcher m = FACT_EXPR.matcher(condition);
+        if (!m.matches()) return false;
+        String key = m.group(1);
+        String op = m.group(2);
+        String want = m.group(3);
+        String have = facts.get(key);
+        if (have == null) return false;
+        Double h = parseNum(have);
+        Double w = parseNum(want);
+        if (h != null && w != null) {
+            return switch (op) {
+                case "<" -> h < w;
+                case "<=" -> h <= w;
+                case ">" -> h > w;
+                case ">=" -> h >= w;
+                default -> h.doubleValue() == w.doubleValue();
+            };
+        }
+        return "=".equals(op) && have.trim().equalsIgnoreCase(want.trim());
+    }
+
+    private static Double parseNum(String s) {
+        try {
+            return Double.valueOf(s.trim());
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private static String safeTitle(RetrievedEntry r) {
