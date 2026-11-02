@@ -71,6 +71,8 @@ final class LearnerReviewTool implements NumenTool {
     private static final Gson GSON = new Gson();
     private static final int DEFAULT_MAX = 5;
     private static final int HARD_MAX = 20;
+    /** 2026-11-03（外部学习者）：一次复盘最多 3 条——5 条那次输出被截断（UNPARSEABLE），3 条那次成功。 */
+    private static final int MAX_REVIEW_BATCH = 3;
     /**
      * 复盘 LLM 等待上限（秒）。2026-11-02 实测：18:25:08 llm_request dispatched，
      * 18:27:08 恰好 120s TimeoutException、无 llm_response —— 32k prompt tokens 的复盘
@@ -146,7 +148,10 @@ final class LearnerReviewTool implements NumenTool {
             reply.accept(TaskResult.ok("learner review already running; not starting another", ack).toJson());
             return;
         }
-        List<Memo> taken = queue.drain(max);
+        // 2026-11-03（外部学习者）：实机 5 条 memo 的复盘输出在 JSON 中途被截断（UNPARSEABLE，整批 restored），
+        //   而 3 条那次成功。批越大 → 输出越长 → 截断概率越高。给批大小设上限，剩下的留在队列下次复盘；
+        //   与 LearnerReviewer 的"截断重试"互补（那条治单次输出，这条治输入批太胖）。
+        List<Memo> taken = queue.drain(Math.min(max, MAX_REVIEW_BATCH));
         if (taken.isEmpty()) {
             reply.accept(TaskResult.ok("no pending memos to review", Map.of(
                     "reviewed", 0, "queue_depth", queue.size())).toJson());
