@@ -130,15 +130,26 @@ final class RddEnvBlock {
             // ⑥ 回家：门在哪、亮不亮（来自锚点记忆）
             // 2026-10-28 修：原来把整段"动作指引"塞进来（120 字），占了块体积的一半。
             //   这里只留**事实**：门在哪、多远、亮不亮；动作指引仍然只留在 <way_home>。
-            String homeDim = "minecraft:overworld";
-            int[] anchor = RddWaypoints.anchorPos(ap.getUUID(), "minecraft:the_nether");
-            if (anchor == null) anchor = RddWaypoints.anchorPos(ap.getUUID(), "minecraft:overworld");
+            // 2026-11-03（外部学习者）：原来**优先取"下界"那一侧的锚点**，且行里不写维度 ——
+            //   实测（20:25 请求）：人站在主世界基地旁 (399,60,643)，env 却写「回家 门在 (38,38,32) 约 710格」，
+            //   那是**下界侧**的门。照字面走就是往主世界 710 格外走。
+            //   RddWaypoints 的注释也写着"回家要走向当前维度这一侧的门"，所以改成：优先当前维度，
+            //   取不到再退回另一侧，并且**永远标出维度**（坐标脱离维度就是误导）。
+            String hereDim = ap.level().dimension().location().toString();
+            String otherDim = "minecraft:the_nether".equals(hereDim) ? "minecraft:overworld" : "minecraft:the_nether";
+            int[] anchor = RddWaypoints.anchorPos(ap.getUUID(), hereDim);
+            String anchorDim = hereDim;
+            if (anchor == null) {
+                anchor = RddWaypoints.anchorPos(ap.getUUID(), otherDim);
+                anchorDim = otherDim;
+            }
             if (anchor != null) {
                 double dx = anchor[0] - p.getX(), dy = anchor[1] - p.getY(), dz = anchor[2] - p.getZ();
                 long dist = Math.round(Math.sqrt(dx * dx + dy * dy + dz * dz));
-                String lit = RddWaypoints.litState(ap.getUUID(), "minecraft:the_nether");
+                String lit = RddWaypoints.litState(ap.getUUID(), anchorDim);
                 sb.append("回家 门在 (").append(anchor[0]).append(',').append(anchor[1]).append(',')
-                  .append(anchor[2]).append(") 约 ").append(dist).append("格")
+                  .append(anchor[2]).append(")（").append(dimLabel(anchorDim)).append("）约 ")
+                  .append(dist).append("格")
                   .append(lit.isEmpty() ? "" : (" · " + lit)).append('\n');
             }
             sb.append("</env>");
@@ -203,5 +214,16 @@ final class RddEnvBlock {
         String t = s.replace("<way_home>", "").replace("</way_home>", "")
                     .replace("\n", " ").trim();
         return t.length() > 120 ? t.substring(0, 120) + "…" : t;
+    }
+
+    /** 维度 id → 人话（只用于 env 的可读标注，不改任何判定）。 */
+    private static String dimLabel(String dim) {
+        if (dim == null) return "?维度";
+        return switch (dim) {
+            case "minecraft:overworld" -> "主世界";
+            case "minecraft:the_nether" -> "下界";
+            case "minecraft:the_end" -> "末地";
+            default -> dim;
+        };
     }
 }
