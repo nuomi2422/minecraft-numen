@@ -107,13 +107,29 @@ public final class FindToolsTool implements NumenTool {
 
     /**
      * 关键词搜。名字命中排在摘要命中前面——她打进来的词更可能是名字的一部分。
-     * 只搜延迟工具:常驻的定义本来就在请求里,再"取"一遍纯属浪费一轮。
+     *
+     * <p><b>2026-11-02 修（主人点名「找都找不到」）</b>：原来只搜
+     * {@link ToolRegistry#deferred()}。当时的前提是「常驻的定义本来就在请求里」，
+     * 但白名单（{@code ToolVisibility.forExecutor}）在<b>发请求之前</b>就把一部分工具滤掉了：
+     * 一个<b>常驻</b>工具一旦被白名单挡掉，它既不在 wire tools、也不进
+     * {@code <deferred_tools>} 目录、关键词又搜不到——三头都看不见，只能靠
+     * {@code select:准确名字} 硬猜。现在先搜延迟工具（目录里列着的那些，结果排前面），
+     * 再补搜全表；命中常驻工具只是让她「知道有这个名字」，它的定义本来就在请求里，
+     * 不会多花一轮。
      */
     private static List<NumenTool> search(String query) {
         String[] terms = query.toLowerCase(Locale.ROOT).split("\\s+");
         List<NumenTool> byName = new ArrayList<>();
         List<NumenTool> bySummary = new ArrayList<>();
-        for (NumenTool t : ToolRegistry.deferred()) {
+        List<NumenTool> candidates = new ArrayList<>(ToolRegistry.deferred());
+        Set<String> listed = new LinkedHashSet<>();
+        for (NumenTool t : candidates) {
+            if (t != null) listed.add(t.name());
+        }
+        for (NumenTool t : ToolRegistry.all()) {
+            if (t != null && listed.add(t.name())) candidates.add(t);
+        }
+        for (NumenTool t : candidates) {
             String name = t.name().toLowerCase(Locale.ROOT);
             String summary = ToolDisclosure.summaryOf(t).toLowerCase(Locale.ROOT);
             boolean nameHit = false;

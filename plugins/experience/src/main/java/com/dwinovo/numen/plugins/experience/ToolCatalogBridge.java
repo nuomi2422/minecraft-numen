@@ -56,14 +56,15 @@ public final class ToolCatalogBridge {
             java.util.Map.entry("task_status", "任务,进度,在干嘛"),
             java.util.Map.entry("find_tools", "工具,能力,会不会"),
             java.util.Map.entry("look_around", "看,环视,观察,周围有什么"),
-            java.util.Map.entry("store_item", "存,放箱子,收纳"),
-            java.util.Map.entry("take_item", "取,拿,取出"),
-            java.util.Map.entry("jump", "跳,跳跃"),
-            java.util.Map.entry("follow", "跟,跟随,跟着"),
-            java.util.Map.entry("stop", "停,停止,别动"),
-            java.util.Map.entry("equip", "装备,穿上,换上"),
-            java.util.Map.entry("drop", "扔,丢,放下"),
-            java.util.Map.entry("toss_item", "扔,丢"),
+            // 2026-11-02 修：这 8 个名字在注册表里根本不存在（store_item/take_item/jump/follow/
+            // stop/equip/drop/toss_item），写了永远匹配不到，等于「存/取/跟/停/装备/扔」这些中文
+            // 触发词一直是死的——find_tools 用中文问「存箱子」返回空就是这么来的。改成真名：
+            java.util.Map.entry("interact_at", "放,放置,摆,铺,放方块,交互,右键"),
+            java.util.Map.entry("take_items", "取,拿,取出,拿走"),
+            java.util.Map.entry("transfer", "存,放箱子,收纳,转移"),
+            java.util.Map.entry("equip_item", "装备,穿上,换上"),
+            java.util.Map.entry("drop_items", "扔,丢,放下"),
+            java.util.Map.entry("task_stop", "停,停止,别动"),
             java.util.Map.entry("set_timer", "定时,提醒,闹钟"),
             java.util.Map.entry("experience_recall", "经验,回忆,记得"),
             java.util.Map.entry("report_task_concern", "上报,有问题,做不到"));

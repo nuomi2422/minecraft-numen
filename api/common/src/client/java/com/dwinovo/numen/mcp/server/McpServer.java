@@ -278,6 +278,16 @@ public final class McpServer {
                         + "驾驶模式(非 assist)下内置 AI 停轮,注入会被拒。",
                 enqueueSchema()));
 
+        // 2026-11-02 主人定：「看不见 ≠ 不存在」。白名单把 100+ 个工具挡在 MCP 清单外之后，
+        // 外部 AI 只知道剩下 7 个，连被挡掉的名字都拿不到，只能说"没有这个能力"。
+        // 补一个只读目录：名字 + 一句摘要 + 现在能不能调。要真调仍须主人放开 external 白名单，
+        // 这个工具不放大任何执行面（它只读注册表，不 invoke 任何工具）。
+        tools.add(toolDef("list_tools",
+                "List every tool this companion has, including tools hidden from this MCP list by the "
+                        + "owner's external whitelist. Read-only: name, one-line summary, and whether it is "
+                        + "callable right now. Call this before telling the owner a capability is missing.",
+                objectSchema("companion", false)));
+
         // 全量给外脑,不做渐进披露:那是我们自己请求里的省法,外脑的上下文预算归它自己管,
         // 而且 MCP 客户端(Claude Code 之类)本来就会把借来的工具再延迟一次。
         for (NumenTool tool : ToolRegistry.all()) {
@@ -291,6 +301,27 @@ public final class McpServer {
         JsonObject result = new JsonObject();
         result.add("tools", tools);
         return result;
+    }
+
+    /**
+     * 只读目录：注册表里的每个工具 —— 名字、一句摘要、现在能不能从这里调。
+     *
+     * <p>2026-11-02：白名单（{@code ToolVisibility.externalVisible}）把外部可见面收到 7 个之后，
+     * 被挡掉的那批连名字都不在 {@code tools/list} 里，外脑只能说"没有这个能力"。这里只读注册表，
+     * 不 invoke、不改可见性，恢复的是"知道有什么"，不是"随便能用"。
+     */
+    private String listToolCatalogue() {
+        StringBuilder sb = new StringBuilder();
+        for (NumenTool tool : ToolRegistry.all()) {
+            if (tool == null || tool.name() == null || tool.name().isBlank()) continue;
+            boolean callable = !config.isHidden(tool.name())
+                    && com.dwinovo.numen.agent.tool.ToolVisibility.externalVisible(tool.name());
+            sb.append(callable ? "[callable] " : "[hidden]   ")
+              .append(tool.name()).append(" — ")
+              .append(com.dwinovo.numen.agent.tool.ToolDisclosure.summaryOf(tool))
+              .append('\n');
+        }
+        return sb.toString();
     }
 
     private JsonObject toolDef(String name, String description, JsonObject inputSchema) {
@@ -434,6 +465,7 @@ public final class McpServer {
                 case "get_events" -> handleGetEvents(args);
                 case "say" -> handleSay(args);
                 case "enqueue" -> handleEnqueue(args);
+                case "list_tools" -> content(listToolCatalogue(), false);
                 default -> handleToolInvoke(name, args);
             };
         } catch (TimeoutException te) {
