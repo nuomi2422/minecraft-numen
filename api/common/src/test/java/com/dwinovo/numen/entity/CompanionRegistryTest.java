@@ -139,11 +139,18 @@ class CompanionRegistryTest {
     }
 
     @Test
-    void deathStateOfAnUnknownCompanionIsANoOp() {
+    void deathStateOfAnUnknownCompanionIsRecordedNotDropped() {
         CompanionRegistry reg = new CompanionRegistry();
-        reg.markDead(UUID.randomUUID(), "x", 1L);
+        UUID ghost = UUID.randomUUID();
+        // 2026-11-03（外部学习者）：旧断言「未知同伴 markDead 是 no-op」与实现相反——
+        //   实现按 H5-113（2026-10-30 实机）故意补建最小条目：没有条目时 diedAt 永远写不进去，
+        //   pendingDead() 就空，tickRespawns 什么都不做，于是「死得了、重生不了」且无日志。
+        //   「宁可多一条记录，不要静默丢死亡」是现在的契约，测试跟着实现走，别把旧行为钉回去。
+        reg.markDead(ghost, "x", 1L);
+        assertEquals(1, reg.pendingDead().size(), "未知同伴的死亡也必须被记下（H5-113）");
+        assertEquals(ghost, reg.pendingDead().get(0).getKey());
         reg.markAlive(UUID.randomUUID());
-        assertTrue(reg.pendingDead().isEmpty());
+        assertEquals(1, reg.pendingDead().size(), "未知同伴 markAlive 仍是 no-op");
     }
 
     @Test
