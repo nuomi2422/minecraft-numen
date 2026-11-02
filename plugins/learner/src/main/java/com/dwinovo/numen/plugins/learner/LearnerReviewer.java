@@ -149,6 +149,13 @@ final class LearnerReviewer {
                   不许写「要注意安全」这类空话。
                 - 一次性/无触发条件的别给 SIDE_TASK——那用 WRITE_EXPERIENCE。
 
+            17b. ★ 缺席行动 vs 已有条目（2026-11-03，外部学习者 #462）：
+                若「缺席行动」本身就是一个**新的机制维度**（材料与配方齐备却一次 craft 都没调 /
+                背包有甲没穿 / 有床、天黑了、没睡），而命中的 [同一件事] 条目讲的是**别的机制**
+                （只读轮询空转、预算记账、工具语义），那不算同一条经验：用 REVISE 把这个新机制
+                维度写进 mechanism（或 NEW 并在 reason 里写清「为何是新维度」），
+                **不要**用「没有新增机制」一句话 REUSE 掉 —— 那会把真正该学的一条丢掉。
+
             输出格式：
             {"verdicts":[{"memo_id":"...","actions":["WRITE_EXPERIENCE"],"confidence":0.7,
               "reasoning":"...","experience":{"mechanism":"...","preconditions":"...",
