@@ -112,7 +112,41 @@ public final class NumenPlugins {
                 Constants.LOG.error("[numen] 插件的运行期状态算不出来,这一段跳过", e);
             }
         }
-        return sb.toString();
+        String all = sb.toString();
+        // 2026-11-03（外部学习者 #475/#481）：检索的 objective 取 currentTask + 这段片段再截 400 字，
+        //   而 hp/持续掉血/夜间/敌对这些**硬安全事实**都在 env/alarms 尾部，通常被截掉——
+        //   于是「血 5、正在掉血」的那一轮，5 个经验槽位里一条健康类条目都没有。
+        //   这里把可机读事实**前置**一行：objective 与请求体都以它开头，判据才有东西可逐字匹配。
+        //   只从已算好的片段里读，不新读世界；一个事实都没读到就不写（B21：缺失就缺失，不造假）。
+        String facts = stateFactsOf(all);
+        return facts.isEmpty() ? all : facts + all;
+    }
+
+    private static final java.util.regex.Pattern HP = java.util.regex.Pattern.compile("血量\\s*(\\d+(?:\\.\\d+)?)");
+    private static final java.util.regex.Pattern BED = java.util.regex.Pattern.compile("bed=(\\d+)");
+
+    /**
+     * 从已渲染的状态片段里提取一行紧凑事实（纯函数，便于单测）。读不到就不写那一项。
+     * 判据用的字面量来自 rdd 的 env/alarms 渲染，改那边措辞时这里要跟着改（测试会钉住）。
+     */
+    static String stateFactsOf(String state) {
+        if (state == null || state.isBlank()) return "";
+        java.util.Map<String, String> f = new java.util.LinkedHashMap<>();
+        java.util.regex.Matcher hp = HP.matcher(state);
+        if (hp.find()) f.put("hp", hp.group(1));
+        if (state.contains("正在持续掉血")) f.put("dmg", "1");
+        if (state.contains("night=1") || state.matches("(?s).*<alarm[^>]*rule=\"night\".*")) f.put("night", "1");
+        if (state.contains("hostile=true")) f.put("hostile", "1");
+        else if (state.contains("hostile=false")) f.put("hostile", "0");
+        java.util.regex.Matcher bed = BED.matcher(state);
+        if (bed.find()) f.put("bed", bed.group(1));
+        if (state.contains("护甲=无")) f.put("armor", "0");
+        if (f.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder("<state_facts");
+        for (java.util.Map.Entry<String, String> e : f.entrySet()) {
+            sb.append(' ').append(e.getKey()).append('=').append(e.getValue());
+        }
+        return sb.append("/>\n").toString();
     }
 
     private static final List<Runnable> PENDING = new ArrayList<>();
