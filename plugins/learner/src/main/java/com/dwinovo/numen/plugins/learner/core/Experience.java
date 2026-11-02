@@ -363,6 +363,12 @@ public record Experience(
                 + "填错等于把这条经验劈成两条、或把两条并成一条，所以"
                 + "**不能拿近义词顶**（「失败经验」不算 FAILURE，「事故」更不算）。"
                 + "挑不出来就说明你还没想清楚这是哪一类 → 给 NO_ACTION。\n"
+                // 2026-11-03（外部学习者 #475）：检索的适用性只做**逐字子串**匹配（不中 → UNKNOWN 不拦），
+                //   只写散文的条件永远匹配不上。要求两种都写：散文给人看，token 给检索用。
+                + "★ 可机读 token（2026-11-03）：preconditions 与 observableSignal 里除了散文，"
+                + "请保留引擎能逐字匹配的事实 token，例如 isNight=true、blockLight<=4、hp<=6、dmg=1、"
+                + "hostile=1、armor=0、bed=0、food>=15。检索的适用性只做逐字子串匹配，"
+                + "没有 token 的条件永远不会命中——散文与 token 并存，不要只写一种。\n"
                 + "反例（不合格）：\"experience_draft\":\"hp=0 不能当缺失\" 这种一段散文 —— "
                 + "它没有结构，不接受。";
     }
