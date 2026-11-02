@@ -486,7 +486,9 @@ final class ToolFailureIntake {
         for (Memo m : queued) {
             if (m == null) continue;
             String id = m.id() == null ? "" : m.id();
-            if (!id.startsWith(shapePrefix)) continue;
+            // 前缀必须按「整段」比：fp 是 8 位十六进制，万一某个 fp 恰好是另一个的前缀，
+            // 裸 startsWith 会把两条不同的形态当成同一件（实测 id 形如 tf-mine-664867ab-tools-…）。
+            if (!id.equals(shapePrefix) && !id.startsWith(shapePrefix + "-")) continue;
             long age = nowMs - m.createdAt();
             if (age >= 0 && age < SAME_SHAPE_DEDUPE_MS) return true;
         }
