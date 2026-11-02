@@ -49,6 +49,32 @@ class ExperienceRetrievalProviderTest {
         assertEquals(0, ExperienceRetrievalProvider.relevanceScore("", mine));
     }
 
+    /**
+     * 2026-11-03（外部学习者）：中文目标的相关度不能恒 0。
+     * 实机背景：夜间死亡场景下，库里"夜间露天站桩"的条目排不进 5 个槽位，因为
+     * 旧口径把中文整句当一个 token（goal 169 字 → 22 token，仅 1 个命中任意条目）。
+     */
+    @Test
+    void chineseObjectiveRanksTheRelevantEntryHigher() {
+        EntryDescriptor night = new EntryDescriptor("exp:night", EntryKind.EXPERIENCE,
+                "failure|夜间在露天且方块光很低时停留，僵尸会贴身",
+                "身上没有武器也没有护甲，伤害按 tick 结算",
+                List.of(), List.of(), List.of(), List.of(), "b", false,
+                Maturity.OBSERVED, 0, false, true);
+        EntryDescriptor craft = new EntryDescriptor("exp:craft", EntryKind.EXPERIENCE,
+                "execution|craft 的工作台判定", "半径 4 格内有 crafting_table",
+                List.of(), List.of(), List.of(), List.of(), "b", false,
+                Maturity.OBSERVED, 0, false, true);
+
+        String objective = "夜间无甲站在露天，附近有敌对生物";
+        int nightScore = ExperienceRetrievalProvider.relevanceScore(objective, night);
+        int craftScore = ExperienceRetrievalProvider.relevanceScore(objective, craft);
+        assertTrue(nightScore > 0, "中文目标必须能产出非零相关度：" + nightScore);
+        assertTrue(nightScore > craftScore, "夜间场景应把夜间条目排在无关条目之前：" + nightScore + " vs " + craftScore);
+        assertFalse(ExperienceRetrievalProvider.cjkBigrams(objective).isEmpty(), "中文二元组不应为空");
+        assertTrue(ExperienceRetrievalProvider.cjkBigrams("abc 123").isEmpty(), "英文/数字不切二元组");
+    }
+
     @Test
     void executorSeesOnlyVerifiedNonRetracted() {
         ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("exp",

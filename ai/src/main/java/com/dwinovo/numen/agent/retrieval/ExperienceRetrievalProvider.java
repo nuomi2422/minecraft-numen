@@ -135,11 +135,43 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
                 + (d.summary() == null ? "" : d.summary()) + " "
                 + (d.applicableConditions() == null ? "" : String.join(" ", d.applicableConditions())))
                 .toLowerCase(java.util.Locale.ROOT);
+        String obj = objective.toLowerCase(java.util.Locale.ROOT);
+        // ① 词级命中：英文/数字仍按非字母数字切词，每个命中 ×10（保持 11-02 那版的量级与主导地位）。
         int score = 0;
-        for (String tok : objective.toLowerCase(java.util.Locale.ROOT).split("[^\\p{L}\\p{N}]+")) {
-            if (tok.length() >= 2 && hay.contains(tok)) score++;
+        for (String tok : obj.split("[^\\p{L}\\p{N}]+")) {
+            if (tok.length() >= 2 && hay.contains(tok)) score += 10;
+        }
+        // ② 中文没有空格：按「二元组覆盖率」加分（0..100）。纯函数、只影响排序，不改过滤。
+        //    ★ 2026-11-03 实机（外部学习者）：旧口径把中文整句当一个 token，实测 goal 169 字 →
+        //    22 个 token 只有 1 个能命中任意条目，相关度对中文几乎恒 0，5 个槽位实际由
+        //    trial/maturity/verifiedCount/title 字节序决定（#433/#436）。
+        java.util.Set<String> grams = cjkBigrams(obj);
+        if (!grams.isEmpty()) {
+            int hit = 0;
+            for (String g : grams) {
+                if (hay.contains(g)) hit++;
+            }
+            score += Math.round(100f * hit / grams.size());
         }
         return score;
+    }
+
+    /** 中文二元组：只切连续 CJK 片段（不跨标点/英文）。纯函数，便于单测。 */
+    static java.util.Set<String> cjkBigrams(String s) {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        if (s == null) return out;
+        for (int i = 0; i + 1 < s.length(); i++) {
+            char a = s.charAt(i);
+            char b = s.charAt(i + 1);
+            if (isCjk(a) && isCjk(b)) {
+                out.add(new String(new char[] { a, b }));
+            }
+        }
+        return out;
+    }
+
+    private static boolean isCjk(char c) {
+        return (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3400 && c <= 0x4DBF);
     }
 
     /** 诊断用：复刻 {@link #toEntry} 的拒收理由，只为了在日志里说清楚「为什么没进去」。 */
