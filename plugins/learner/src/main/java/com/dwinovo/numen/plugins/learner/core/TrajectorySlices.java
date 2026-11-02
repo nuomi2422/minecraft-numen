@@ -149,17 +149,32 @@ public final class TrajectorySlices {
                 String tool = str(d, "tool");
                 if (tool.isBlank()) continue;
                 String result = str(d, "result");
-                boolean ok = true;
+                // ★ 2026-11-03：成败三态，缺字段不再默认 "ok"。
+                //   实机反例：find_tools 的 client-local 行 `success:"UNKNOWN", result:""`，
+                //   旧代码把它渲染成 "find_tools ok" —— 和 F1/F2 同一类「UNKNOWN 被写成成功」。
+                //   client writer 缺字段默认 false 的历史坑也不吃（判据同 ToolFailureIntake）。
+                Boolean ok = null;
                 String msg = "";
                 try {
                     JsonObject r = JsonParser.parseString(result).getAsJsonObject();
-                    if (r.has("success") && r.get("success").isJsonPrimitive()) ok = r.get("success").getAsBoolean();
+                    if (r.has("success") && r.get("success").isJsonPrimitive()
+                            && r.getAsJsonPrimitive("success").isBoolean()) {
+                        ok = r.get("success").getAsBoolean();
+                    }
                     msg = str(r, "message");
                 } catch (RuntimeException ignored) {
-                    msg = clip(result, 80);
+                    if (!result.isBlank()) msg = clip(result, 80);
                 }
+                if (ok == null) {
+                    String writer = str(d, "journaled_by");
+                    if (!"client".equals(writer) && d.has("success") && d.get("success").isJsonPrimitive()
+                            && d.getAsJsonPrimitive("success").isBoolean()) {
+                        ok = d.get("success").getAsBoolean();
+                    }
+                }
+                String verdict = ok == null ? "?" : (ok ? "ok" : "FAILED");
                 out.add("[" + hhmmss(ts) + "] " + (externalCall ? "[外部控制台] " : "") + tool
-                        + (ok ? " ok" : " FAILED") + (msg.isBlank() ? "" : " · " + clip(msg, 80)));
+                        + " " + verdict + (msg.isBlank() ? "" : " · " + clip(msg, 80)));
             }
         } catch (IOException ignored) {
         }

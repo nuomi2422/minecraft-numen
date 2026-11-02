@@ -78,6 +78,28 @@ class TrajectorySlicesTest {
         assertTrue(!text.contains("读不到 ≠ 没发生"), "还有调用时不能报'没有工具调用'：" + text);
     }
 
+    /**
+     * 2026-11-03：find_tools 的 client-local 行是 `success:"UNKNOWN", result:""`。
+     * 旧代码默认 ok=true，把它渲染成 "find_tools ok" —— UNKNOWN 被写成成功（F1/F2 同族）。
+     * 现在缺成败证据必须显示 "?"，不许猜。
+     */
+    @Test
+    void unknownOutcomeIsNotRenderedAsOk() throws Exception {
+        Instant t = Instant.parse("2026-11-02T17:19:00Z");
+        writeInstrumentation("instr-u", t);
+        String row = "{\"event_id\":\"tools-u\",\"type\":\"tool_result\",\"timestamp\":\"" + t
+                + "\",\"data\":{\"companion_id\":\"c1\",\"tool\":\"find_tools\","
+                + "\"tool_call_id\":\"call_u\",\"journaled_by\":\"client-local\","
+                + "\"success\":\"UNKNOWN\",\"result\":\"\"}}";
+        Files.writeString(dir.resolve("monitor/tools.jsonl"), row + "\n", StandardCharsets.UTF_8);
+
+        String text = TrajectorySlices.forMemo(dir, null,
+                new Memo("ai-instr-u", "p", "tool_failure", "t", "", 0L));
+
+        assertTrue(text.contains("find_tools ?"), "UNKNOWN 必须显示 ?，不能写成 ok：" + text);
+        assertTrue(!text.contains("find_tools ok"), "不许把 UNKNOWN 说成成功：" + text);
+    }
+
     @Test
     void missingAnchorIsExplicitlyNotFabricated() throws Exception {
         Files.createDirectories(dir.resolve("monitor"));
