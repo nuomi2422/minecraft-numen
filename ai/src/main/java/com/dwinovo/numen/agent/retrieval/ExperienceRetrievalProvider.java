@@ -129,6 +129,10 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
      * 条目与当前目标的相关度（2026-11-02）：objective 里长度 ≥2 的词命中
      * title/summary/applicableConditions 的个数。纯函数、可单测；不改变过滤，只影响排序。
      */
+    /** 与主题无关的通用词（命名空间 / 布尔字面量 / 英文虚词）：命中不加分。中文虚词暂不列——中文靠二元组。 */
+    private static final java.util.Set<String> STOP_TOKENS = java.util.Set.of(
+            "minecraft", "true", "false", "the", "and", "for", "with", "you", "your", "not", "this", "that");
+
     public static int relevanceScore(String objective, EntryDescriptor d) {
         if (objective == null || objective.isBlank() || d == null) return 0;
         String hay = ((d.title() == null ? "" : d.title()) + " "
@@ -139,7 +143,11 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
         // ① 词级命中：英文/数字仍按非字母数字切词，每个命中 ×10（保持 11-02 那版的量级与主导地位）。
         int score = 0;
         for (String tok : obj.split("[^\\p{L}\\p{N}]+")) {
-            if (tok.length() >= 2 && hay.contains(tok)) score += 10;
+            // 2026-11-03（外部学习者）：命名空间/布尔字面量/英文虚词**与主题无关**，命中也不加分。
+            //   实机（挖矿任务 + 65 条库）：`minecraft`、`true` 这类 token 把「下界猪灵」条目顶到 100 分，
+            //   而真正相关的 mine/goto 条目只有 30–80 —— 槽位被通用词决定，不是被任务决定（#494）。
+            if (tok.length() < 2 || STOP_TOKENS.contains(tok)) continue;
+            if (hay.contains(tok)) score += 10;
         }
         // ② 中文没有空格：按「二元组覆盖率」加分（0..100）。纯函数、只影响排序，不改过滤。
         //    ★ 2026-11-03 实机（外部学习者）：旧口径把中文整句当一个 token，实测 goal 169 字 →

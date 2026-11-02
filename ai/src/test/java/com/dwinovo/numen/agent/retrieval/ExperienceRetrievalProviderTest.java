@@ -239,4 +239,24 @@ class ExperienceRetrievalProviderTest {
         assertEquals(1, p.search(query(RetrievalRole.EXECUTOR, "", 20)).entries().size(),
                 "旧条目（无 audience）不得因 A6 被收窄");
     }
+
+    /**
+     * 2026-11-03（外部学习者 #494）：命名空间/布尔字面量不该给相关度加分。
+     * 实机：挖矿任务下，「下界猪灵」条目因命中 minecraft/true 被顶到 100 分，把 mine/goto 条目挤出槽位。
+     */
+    @Test
+    void namespaceAndBooleanTokensDoNotInflateRelevance() {
+        EntryDescriptor noise = new EntryDescriptor("exp:noise", EntryKind.EXPERIENCE,
+                "minecraft true false", "minecraft true false",
+                List.of(), List.of(), List.of(), List.of(), "b", false,
+                Maturity.OBSERVED, 0, false, true);
+        assertEquals(0, ExperienceRetrievalProvider.relevanceScore("minecraft:raw_iron true", noise),
+                "只有命名空间/布尔字面量的条目不该得分");
+        EntryDescriptor topical = new EntryDescriptor("exp:ore", EntryKind.EXPERIENCE,
+                "mine raw_iron 挖矿", "raw_iron 才是进背包的数量",
+                List.of(), List.of(), List.of(), List.of(), "b", false,
+                Maturity.OBSERVED, 0, false, true);
+        assertTrue(ExperienceRetrievalProvider.relevanceScore("minecraft:raw_iron true", topical) > 0,
+                "主题词仍应得分");
+    }
 }
