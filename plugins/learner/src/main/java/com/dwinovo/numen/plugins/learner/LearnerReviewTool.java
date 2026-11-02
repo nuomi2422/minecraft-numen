@@ -106,7 +106,7 @@ final class LearnerReviewTool implements NumenTool {
     @Override
     public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .optionalInteger("max_memos", "How many memos to review now (1-20).", 1, HARD_MAX)
+                .optionalInteger("max_memos", "How many memos to review now (1-3; capped to keep the reply parseable).", 1, MAX_REVIEW_BATCH)
                 .build();
     }
 
