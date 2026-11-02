@@ -317,24 +317,41 @@ final class LearnerReviewer {
                 companionId == null ? "" : companionId.toString(), "review",
                 LearnerMonitor::publish);
         try {
-            return NumenLlmClient.forEndpoint(ep)
-                    .chatStreaming(List.of(new ConvoState.Msg.User(user)),
-                            List.of(), system, null, observation)
-                    .orTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
-                    .handle((res, err) -> {
-                        if (err != null) {
-                            LOG.warn("[learner] LLM 复盘失败: {}", err.toString());
-                            return ReviewOutcome.fail("LLM_FAILED: " + err);
-                        }
-                        String text = res.turn() == null ? null : res.turn().content();
-                        if (text == null || text.isBlank()) {
-                            return ReviewOutcome.fail("LLM_EMPTY: empty turn content");
-                        }
-                        return parseAll(memos, text);
-                    });
+            // 2026-11-03（外部学习者）：实机 22:27 那次 5 条 memo 的复盘**输出在 JSON 中途被截断**
+            //   （MalformedJsonException: Unterminated object ... $.verdicts[0].reasoning），整批 restored。
+            //   截断不是"模型不会写"，是**写太长**；所以不可解析时带"精简"要求重试一次，代价是一次 LLM。
+            return callOnce(ep, user, system, observation, timeoutSeconds, memos).thenCompose(out -> {
+                if (out.ok() || out.reason() == null || !out.reason().startsWith("UNPARSEABLE")) {
+                    return CompletableFuture.completedFuture(out);
+                }
+                LOG.warn("[learner] 复盘输出不可解析，带精简要求重试一次: {}", out.reason());
+                String retrySystem = system + "\n\n[重试] 上一次输出在 JSON 中途被截断。请输出**完整合法的 JSON**："
+                        + "每个 verdict 的 reasoning ≤ 300 字、mechanism ≤ 200 字，不要任何多余文本。";
+                return callOnce(ep, user, retrySystem, observation, timeoutSeconds, memos);
+            });
         } catch (Throwable t) {
             return CompletableFuture.completedFuture(ReviewOutcome.fail("LLM_DISPATCH_FAILED: " + t));
         }
+    }
+
+    /** 一次 LLM 调用 + 解析；失败不抛，只回带原因的 fail。 */
+    private static CompletableFuture<ReviewOutcome> callOnce(LlmEndpoint ep, String user, String system,
+            LlmObservation observation, int timeoutSeconds, List<Memo> memos) {
+        return NumenLlmClient.forEndpoint(ep)
+                .chatStreaming(List.of(new ConvoState.Msg.User(user)),
+                        List.of(), system, null, observation)
+                .orTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+                .handle((res, err) -> {
+                    if (err != null) {
+                        LOG.warn("[learner] LLM 复盘失败: {}", err.toString());
+                        return ReviewOutcome.fail("LLM_FAILED: " + err);
+                    }
+                    String text = res.turn() == null ? null : res.turn().content();
+                    if (text == null || text.isBlank()) {
+                        return ReviewOutcome.fail("LLM_EMPTY: empty turn content");
+                    }
+                    return parseAll(memos, text);
+                });
     }
 
     /** 把 LLM 的单个 JSON 回复拆成每条 memo 的判定。 */
