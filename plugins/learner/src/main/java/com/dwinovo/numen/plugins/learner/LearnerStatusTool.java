@@ -129,6 +129,14 @@ final class LearnerStatusTool implements NumenTool {
                 data.put("skills", java.util.Map.of("readable", false, "error", String.valueOf(t)));
             }
 
+            // 2026-11-03（外部学习者，#464/#465）：needs_review 一直「有写没读者」——
+            //   至少把「最近 24 小时里带未复核项的判定」摆出来，让积压可见。
+            try {
+                data.put("review_backlog", reviewBacklog(LearnerPlugin.configDir(), System.currentTimeMillis()));
+            } catch (Throwable t) {
+                data.put("review_backlog", java.util.Map.of("unreadable", true, "error", String.valueOf(t)));
+            }
+
             String reviewId = null;
             try {
                 if (args != null && args.has("review_id") && args.get("review_id").isJsonPrimitive()) {
@@ -152,6 +160,88 @@ final class LearnerStatusTool implements NumenTool {
             reply.accept(TaskResult.ok("learner status", data).toJson());
         } catch (RuntimeException ex) {
             reply.accept(TaskResult.fail("learner_status failed: " + ex.getMessage()).toJson());
+        }
+    }
+
+    /**
+     * 最近 24 小时的未复核积压（纯读文件，不猜）。
+     * 判据：reviewed 事件的 verdicts[].quality_gate.needs_review 非空即计入，按检查项 id 汇总。
+     * 读不到就报 UNREADABLE —— 与队列深度同一条纪律（不假装 0）。
+     */
+    static java.util.Map<String, Object> reviewBacklog(java.nio.file.Path cfg, long nowMillis) {
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+        if (cfg == null) {
+            out.put("status", "UNKNOWN");
+            out.put("why", "configDir 未就绪");
+            return out;
+        }
+        java.nio.file.Path f = cfg.resolve("monitor/learner.jsonl");
+        if (!java.nio.file.Files.isRegularFile(f)) {
+            out.put("status", "MISSING");
+            out.put("path", f.toString());
+            return out;
+        }
+        long since = nowMillis - 24L * 3600_000L;
+        int verdicts = 0;
+        int withUnreviewed = 0;
+        java.util.Map<String, Integer> byCheck = new java.util.LinkedHashMap<>();
+        try {
+            for (String line : java.nio.file.Files.readAllLines(f, java.nio.charset.StandardCharsets.UTF_8)) {
+                if (!line.contains("\"reviewed\"")) continue;
+                com.google.gson.JsonObject o;
+                try {
+                    o = com.google.gson.JsonParser.parseString(line).getAsJsonObject();
+                } catch (RuntimeException e) {
+                    continue;
+                }
+                if (!"reviewed".equals(str(o, "type"))) continue;
+                long ts;
+                try {
+                    ts = java.time.Instant.parse(str(o, "timestamp")).toEpochMilli();
+                } catch (RuntimeException e) {
+                    continue;
+                }
+                if (ts < since) continue;
+                com.google.gson.JsonObject d = o.has("data") && o.get("data").isJsonObject()
+                        ? o.getAsJsonObject("data") : null;
+                if (d == null || !d.has("verdicts") || !d.get("verdicts").isJsonArray()) continue;
+                for (com.google.gson.JsonElement el : d.getAsJsonArray("verdicts")) {
+                    if (!el.isJsonObject()) continue;
+                    verdicts++;
+                    com.google.gson.JsonObject v = el.getAsJsonObject();
+                    com.google.gson.JsonObject g = v.has("quality_gate") && v.get("quality_gate").isJsonObject()
+                            ? v.getAsJsonObject("quality_gate") : null;
+                    if (g == null || !g.has("needs_review") || !g.get("needs_review").isJsonArray()) continue;
+                    boolean any = false;
+                    for (com.google.gson.JsonElement idEl : g.getAsJsonArray("needs_review")) {
+                        String id = idEl.isJsonPrimitive() ? idEl.getAsString() : "";
+                        if (id.isBlank()) continue;
+                        any = true;
+                        byCheck.merge(id, 1, Integer::sum);
+                    }
+                    if (any) withUnreviewed++;
+                }
+            }
+        } catch (java.io.IOException | RuntimeException e) {
+            out.put("status", "UNREADABLE");
+            out.put("error", String.valueOf(e));
+            return out;
+        }
+        out.put("status", "OK");
+        out.put("window", "last 24h");
+        out.put("verdicts", verdicts);
+        out.put("with_unreviewed", withUnreviewed);
+        out.put("by_check", byCheck);
+        out.put("note", "needs_review 目前没有消费者（#464）：这些判定停在 REVIEW_REQUIRED，没人复核");
+        return out;
+    }
+
+    private static String str(com.google.gson.JsonObject o, String k) {
+        if (o == null || !o.has(k) || !o.get(k).isJsonPrimitive()) return "";
+        try {
+            return o.get(k).getAsString();
+        } catch (RuntimeException e) {
+            return "";
         }
     }
 }
