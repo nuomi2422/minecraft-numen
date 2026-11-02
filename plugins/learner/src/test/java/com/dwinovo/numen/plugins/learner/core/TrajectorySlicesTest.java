@@ -123,6 +123,29 @@ class TrajectorySlicesTest {
         assertTrue(text.contains("-600s"), "窗口必须如实写出来：" + text);
     }
 
+    /**
+     * 2026-11-03（实机 r3-5：39 条动作）：窗口放宽到 10 分钟后，旧代码"凑满 24 条就 break"
+     * 留下的是**最早**的 24 条，最后那条决定性失败反而被切掉。必须保留最近 24 条。
+     */
+    @Test
+    void keepsTheMostRecentRowsWhenWindowIsFull() throws Exception {
+        Instant t = Instant.parse("2026-11-02T18:11:59Z");
+        writeInstrumentation("instr-full", t);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 40; i++) {
+            sb.append(tool(t.minusSeconds(600 - i * 10), "tools-" + i, "call_" + i, "tool_" + i, i != 39, "m" + i)).append('\n');
+        }
+        Files.writeString(dir.resolve("monitor/tools.jsonl"), sb.toString(), StandardCharsets.UTF_8);
+
+        String text = TrajectorySlices.forMemo(dir, null,
+                new Memo("ai-instr-full", "p", "loop_detected", "t", "", 0L));
+
+        assertTrue(text.contains("tool_39"), "最近一条必须在（旧实现会被切掉）：" + text);
+        assertTrue(!text.contains("tool_0]"), "最早的应被丢掉，避免把窗口开头当结局：" + text);
+        long rows = text.lines().filter(l -> l.startsWith("  · ")).count();
+        assertTrue(rows <= 24, "最多 24 行，实得 " + rows);
+    }
+
     @Test
     void missingAnchorIsExplicitlyNotFabricated() throws Exception {
         Files.createDirectories(dir.resolve("monitor"));

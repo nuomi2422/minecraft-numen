@@ -133,7 +133,9 @@ public final class TrajectorySlices {
         if (!Files.isRegularFile(f)) return out;
         try {
             for (String line : Files.readAllLines(f, StandardCharsets.UTF_8)) {
-                if (out.size() >= MAX_TOOL_ROWS) break;
+                // ★ 2026-11-03（外部学习者）：这里原来一凑满 24 行就 break，保留的是**窗口里最早的**
+                //   24 条。60s 窗口时无所谓；loop 窗口放宽到 10 分钟后（实机一次 39 条），
+                //   决定性的**最后几条**反而被切掉。改成收完再取最近 24 条。
                 if (line.isBlank()) continue;
                 JsonObject o;
                 try {
@@ -189,6 +191,10 @@ public final class TrajectorySlices {
                         + " " + verdict + (msg.isBlank() ? "" : " · " + clip(msg, 80)));
             }
         } catch (IOException ignored) {
+        }
+        // 只留最近 MAX_TOOL_ROWS 条：最近的动作才是「她最后怎么失败的」。
+        if (out.size() > MAX_TOOL_ROWS) {
+            out = new ArrayList<>(out.subList(out.size() - MAX_TOOL_ROWS, out.size()));
         }
         return out;
     }
