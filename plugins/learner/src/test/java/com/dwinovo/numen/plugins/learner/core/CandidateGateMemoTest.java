@@ -108,4 +108,21 @@ class CandidateGateMemoTest {
         org.junit.jupiter.api.Assertions.assertTrue(tried.contains("事件环为空"), tried);
         org.junit.jupiter.api.Assertions.assertTrue(tried.contains("轨迹切片"), tried);
     }
+
+    /** 截断可以砍背包细节，但不能把『有没有武器/护甲』砍掉——否则会误用「空手夜间」那类条目。 */
+    @Test
+    void gearSurvivesSnapshotTruncation() {
+        Map<String, Object> obs = new LinkedHashMap<>();
+        obs.put("task", "back home at night");
+        for (int i = 0; i < 40; i++) {
+            obs.put("context.lastObservedInventory.minecraft:filler_" + i, "1");
+        }
+        obs.put("context.lastObservedInventory.minecraft:iron_sword", "1");
+        obs.put("context.lastObservedInventory.minecraft:iron_helmet", "1");
+        FeedbackEvent ev = event("death", obs);
+        String snap = CandidateMemo.snapshot(ev);
+        assertTrue(snap.contains("gear="), snap);
+        assertTrue(snap.contains("iron_sword"), "被截断也要留装备摘要：" + snap);
+        assertTrue(snap.contains("iron_helmet"), snap);
+    }
 }

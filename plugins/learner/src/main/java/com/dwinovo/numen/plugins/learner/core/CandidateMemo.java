@@ -96,6 +96,10 @@ public final class CandidateMemo {
             snap.append(e.getKey()).append('=').append(String.valueOf(e.getValue()));
             if (snap.length() > CLIP) {
                 snap.append("…[cut]");
+                // 2026-11-03（外部学习者）：截断会按 map 顺序砍尾巴，装备/武器可能正好被砍掉——
+                //   实机（骷髅射杀）：快照 18 个背包键里有 iron_helmet/chestplate，**没有 iron_sword**。
+                //   reviewer 看到「无武器」就会误用「空手夜间」条目（#548）。这里在截断之后再补一行 gear=…
+                appendGear(snap, obs);
                 // 2026-11-02（death47 复盘暴露）：先 return 会把 window_first 一起截掉 ——
                 // death memo 的快照必然超长（背包/上下文），于是死亡经验永远缺证据、契约 REJECT。
                 // 锚点必须**在截断之后也写**。
@@ -105,6 +109,23 @@ public final class CandidateMemo {
         }
         appendWindowFirst(snap, ev);
         return snap.toString();
+    }
+
+    /** 截断之后仍保留装备摘要：只列背包里出现的武器/护甲，不猜。 */
+    private static void appendGear(StringBuilder snap, Map<String, Object> obs) {
+        if (obs == null || obs.isEmpty()) return;
+        java.util.LinkedHashSet<String> gear = new java.util.LinkedHashSet<>();
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+                "lastObservedInventory\\.minecraft:(iron|golden|diamond|netherite|stone|wooden|leather)_"
+                        + "(sword|axe|pickaxe|helmet|chestplate|leggings|boots)");
+        for (String k : obs.keySet()) {
+            if (k == null) continue;
+            java.util.regex.Matcher m = p.matcher(k);
+            if (m.find()) gear.add(m.group(1) + "_" + m.group(2));
+        }
+        if (gear.isEmpty()) return;
+        if (snap.length() > 0) snap.append(", ");
+        snap.append("gear=").append(String.join("+", gear));
     }
 
     private static void appendWindowFirst(StringBuilder snap, FeedbackEvent ev) {
