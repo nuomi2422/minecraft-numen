@@ -97,4 +97,21 @@ class LocalToolCallLogTest {
         LocalToolCallLog.publishRejected(null, null, null, null);
         // 能走到这里就是通过：上面任何一步抛异常都会让测试红。
     }
+
+    /**
+     * 2026-11-03（外部学习者）：本地工具的参数要记前 80 字 —— 否则 load_skill 只留 args_chars，
+     * 看不出展开的是哪个 Skill（技能展开无法归因）。
+     */
+    @org.junit.jupiter.api.Test
+    void argsPreviewKeepsTheSkillNameVisible() {
+        org.junit.jupiter.api.Assertions.assertEquals(
+                "{\"name\":\"bedrock-mining\"}",
+                LocalToolCallLog.argsPreview("{\"name\":\"bedrock-mining\"}"));
+        String longArgs = "{\"name\":\"" + "x".repeat(120) + "\"}";
+        String pv = LocalToolCallLog.argsPreview(longArgs);
+        org.junit.jupiter.api.Assertions.assertEquals(81, pv.length());
+        org.junit.jupiter.api.Assertions.assertTrue(pv.endsWith("…"));
+        org.junit.jupiter.api.Assertions.assertEquals("", LocalToolCallLog.argsPreview(null));
+        org.junit.jupiter.api.Assertions.assertEquals("a b", LocalToolCallLog.argsPreview("a\n  b"));
+    }
 }

@@ -216,7 +216,7 @@ public final class ToolDispatcher {
                 //   所以 ExecuteToolPayload 那一跳压根不发生 ⇒ tools.jsonl 里没有它们。
                 //   实测漏掉 12 个（find_tools 内脑真调 118 次 / todowrite 33 次 / load_skill …）。
                 //   判据（反射 invoke 的声明类）与「为什么不用接口标记方法」见 LocalToolCallLog。
-                LocalToolCallLog.publishCall(tool, entityUuid, inv.id(), inv.argsJson().length());
+                LocalToolCallLog.publishCall(tool, entityUuid, inv.id(), inv.argsJson());   // 2026-11-03：带 args_preview，load_skill 才能归因
                 try {
                     tool.invoke(call);
                 } catch (RuntimeException ex) {

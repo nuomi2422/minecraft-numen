@@ -92,6 +92,28 @@ public final class LocalToolCallLog {
      */
     public static void publishCall(NumenTool tool, UUID companionId,
                                    String toolCallId, int argsChars) {
+        publishCall(tool, companionId, toolCallId, argsChars, null);
+    }
+
+    /**
+     * 2026-11-03（外部学习者）：加一个可选 args_preview（首 80 字、压成一行）。
+     * 动因：`load_skill` 这类本地工具原来只记 args_chars=34，**看不出展开的是哪个 Skill** ——
+     * 技能展开因此无法归因（L6 缺口）。args 是模型生成的工具参数，不是密钥，记前 80 字足够分辨。
+     */
+    public static void publishCall(NumenTool tool, UUID companionId,
+                                   String toolCallId, String argsJson) {
+        int len = argsJson == null ? 0 : argsJson.length();
+        publishCall(tool, companionId, toolCallId, len, argsPreview(argsJson));
+    }
+
+    static String argsPreview(String argsJson) {
+        if (argsJson == null) return "";
+        String one = argsJson.replaceAll("\\s+", " ").trim();
+        return one.length() <= 80 ? one : one.substring(0, 80) + "…";
+    }
+
+    private static void publishCall(NumenTool tool, UUID companionId,
+                                    String toolCallId, int argsChars, String argsPreview) {
         if (!runsLocally(tool)) {
             return;
         }
@@ -100,6 +122,9 @@ public final class LocalToolCallLog {
         data.put("tool_call_id", toolCallId == null ? "" : toolCallId);
         data.put("tool", tool.name());
         data.put("args_chars", argsChars);
+        if (argsPreview != null && !argsPreview.isBlank()) {
+            data.put("args_preview", argsPreview);
+        }
         // ★ 显式标出这一行的来源：读的人要能分清「客户端本地记的」与「服务端记的」，
         //   否则将来出现重复行时无法判断是重复还是两个不同的调用。
         data.put("journaled_by", "client-local");
