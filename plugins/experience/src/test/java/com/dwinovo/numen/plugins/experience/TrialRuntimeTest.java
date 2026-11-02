@@ -46,6 +46,33 @@ class TrialRuntimeTest {
         assertEquals(1, TrialRuntime.stats(REF).successes());
     }
 
+    /**
+     * 2026-11-03（外部学习者）：试用判定必须真的被算出来并可见 ——
+     * 实机里库 0 条 PUBLISHED、experience_publish 0 次、trial_verdict 事件 0 条。
+     * 判据：3 次成功收尾 → 发出一条 SUGGEST_PUBLISH；同结论重复不收（去重）。
+     */
+    @Test
+    void trialVerdictSuggestionIsSurfaced() {
+        java.util.List<java.util.Map<String, Object>> events = new java.util.ArrayList<>();
+        TrialRuntime.eventSink((type, map) -> {
+            if ("trial_verdict".equals(type)) {
+                events.add(map);
+            }
+        });
+        try {
+            for (int i = 0; i < 3; i++) {
+                TrialRuntime.notePresented(C, List.of(REF), 1000L + i);
+                TrialRuntime.onTaskFinished(C, true, 2000L + i);
+            }
+            assertTrue(events.stream().anyMatch(e -> "SUGGEST_PUBLISH".equals(String.valueOf(e.get("decision")))),
+                    "3 次成功应收尾出一条 SUGGEST_PUBLISH 建议：" + events);
+            long count = events.stream().filter(e -> "SUGGEST_PUBLISH".equals(String.valueOf(e.get("decision")))).count();
+            assertEquals(1, count, "同一结论只发一次：" + events);
+        } finally {
+            TrialRuntime.eventSink(null);
+        }
+    }
+
     @Test
     void failureIsRecordedNotSwallowed() {
         TrialRuntime.notePresented(C, List.of(REF), 1000L);

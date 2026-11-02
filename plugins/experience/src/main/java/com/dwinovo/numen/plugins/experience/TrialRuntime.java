@@ -212,10 +212,52 @@ public final class TrialRuntime {
             }
             uses = remapped;
         }
+        java.util.Set<String> touched = new java.util.LinkedHashSet<>();
         for (TrialUse u : uses) {
             record(u);
+            touched.add(u.entryRef());
+        }
+        for (String ref : touched) {
+            publishTrialVerdict(ref);
         }
         return uses;
+    }
+
+    /**
+     * 2026-11-03（外部学习者）：试用判定此前只有定义、生产里没人调——实机证据：
+     * 库 65 条里 PUBLISHED 0 条、experience_publish 调用 0 次、trial_verdict 事件 0 条。
+     * 于是 SUGGEST_PUBLISH / SUSPEND 永远不出现，条目永远停在试用中。
+     * 这里在每次试用收尾后算一次判定，只在「有结论且与上次不同」时发一条 trial_verdict 事件。
+     * 仍只是建议：改 publication 要人/AI 显式调 experience_publish，本类不动状态。
+     */
+    private static final Map<String, TrialVerdict.Decision> LAST_VERDICT = new LinkedHashMap<>();
+
+    private static void publishTrialVerdict(String entryRef) {
+        java.util.function.BiConsumer<String, java.util.Map<String, Object>> sink = eventSink;
+        if (sink == null || entryRef == null || entryRef.isBlank()) {
+            return;
+        }
+        try {
+            TrialVerdict.Decision d = verdict(entryRef);
+            if (d == TrialVerdict.Decision.KEEP_TRIAL) {
+                return;   // 没结论不发（噪声）
+            }
+            if (d == LAST_VERDICT.get(entryRef)) {
+                return;   // 与上次相同不重复发
+            }
+            LAST_VERDICT.put(entryRef, d);
+            TrialStats st = stats(entryRef);
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("entry_ref", entryRef);
+            ev.put("decision", d.name());
+            ev.put("uses", st.uses());
+            ev.put("successes", st.successes());
+            ev.put("failures", st.failures());
+            ev.put("explain", TrialVerdict.explain(st, d));
+            sink.accept("trial_verdict", ev);
+        } catch (RuntimeException ignored) {
+            // 事件是镜像：坏掉不影响记账（与 UsageSample 同纪律）
+        }
     }
 
     /**
@@ -279,5 +321,6 @@ public final class TrialRuntime {
         PENDING.clear();
         USES.clear();
         USAGE.clear();
+        LAST_VERDICT.clear();
     }
 }
