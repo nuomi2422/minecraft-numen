@@ -39,6 +39,53 @@ final class RddDeathSpotFacts {
         }
     }
 
+    /**
+     * 2026-11-02：把最近死亡写成规划侧的 knownFailures（纯函数、可单测）。
+     *
+     * <p>为什么需要：`RddDecomposer` 的 knownFailures 原先只在 attempt≥1 时塞
+     * 「上一次子步骤不可执行」，死亡原因从不进入 ⇒ 规划侧的 experience 检索召不回
+     * 死亡教训（只能靠上下文里的 <death_spots> 被动看到）。这里把「最近死亡原因+坐标」
+     * 和「同点复死」变成检索依据，最多 {@link #MAX_FAILURES} 条，避免刷爆 prompt。
+     */
+    static List<String> knownFailures(List<RddDeathLedger.Death> deaths) {
+        if (deaths == null || deaths.isEmpty()) return List.of();
+        List<String> out = new ArrayList<>();
+        int from = Math.max(0, deaths.size() - 3);
+        for (int i = deaths.size() - 1; i >= from && out.size() < MAX_FAILURES; i--) {
+            RddDeathLedger.Death d = deaths.get(i);
+            String cause = d.cause() == null || d.cause().isBlank() ? "unknown" : d.cause();
+            String at = d.deathAt() == null || d.deathAt().isBlank() ? "?" : d.deathAt();
+            out.add("在此前死亡：" + cause + " @ " + at
+                    + (d.lostEntries() > 0 ? "（丢 " + d.lostEntries() + " 类）" : ""));
+        }
+        try {
+            List<DangerSpots.DeathAt> spots = new ArrayList<>();
+            for (RddDeathLedger.Death d : deaths) {
+                int[] xyz = parse(d.deathAt());
+                if (xyz != null) spots.add(new DangerSpots.DeathAt(d.seq(), xyz[0], xyz[1], xyz[2], d.gameTime()));
+            }
+            for (var spot : DangerSpots.find(spots, DangerSpots.DEFAULT_RADIUS, 2)) {
+                if (out.size() >= MAX_FAILURES) break;
+                out.add("同一地点已死 " + spot.deaths() + " 次：" + spot.x() + ", " + spot.y() + ", " + spot.z());
+            }
+        } catch (RuntimeException ignored) {
+            // 聚类失败不影响前几条；事实块失败不许拖垮规划
+        }
+        return List.copyOf(out);
+    }
+
+    /** 从台账取（宿主侧便捷入口；读不到返回空）。 */
+    static List<String> knownFailuresFor(UUID companionId) {
+        if (companionId == null) return List.of();
+        try {
+            return knownFailures(RddDeathLedger.all(companionId));
+        } catch (RuntimeException ignored) {
+            return List.of();
+        }
+    }
+
+    static final int MAX_FAILURES = 4;
+
     /** deathAt 是 "x, y, z" 短文本；解析不了返回 null（不猜）。 */
     private static int[] parse(String deathAt) {
         if (deathAt == null) return null;

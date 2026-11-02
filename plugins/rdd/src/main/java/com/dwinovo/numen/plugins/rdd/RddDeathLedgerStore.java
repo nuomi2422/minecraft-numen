@@ -103,8 +103,10 @@ final class RddDeathLedgerStore {
                     }
                 }
             }
+            String cause = o.has("cause") && o.get("cause").isJsonPrimitive()
+                    ? o.get("cause").getAsString() : "";
             return new RddDeathLedger.Death(seq, gameTime, wallClock, deathAt, Math.max(0, lost),
-                    state, evidence, lostItems.isEmpty() ? null : Map.copyOf(lostItems));
+                    state, evidence, lostItems.isEmpty() ? null : Map.copyOf(lostItems), cause);
         } catch (RuntimeException bad) {
             return null;   // 这条读不出来就当没有；调用方会看到记录数变少
         }
@@ -133,6 +135,9 @@ final class RddDeathLedgerStore {
             o.addProperty("lostEntries", d.lostEntries());
             o.addProperty("state", d.state().name());
             o.addProperty("evidence", d.evidence());
+            if (d.cause() != null && !d.cause().isBlank()) {
+                o.addProperty("cause", d.cause());
+            }
             if (!d.lostItems().isEmpty()) {
                 JsonObject items = new JsonObject();
                 for (Map.Entry<String, Integer> e : d.lostItems().entrySet()) {

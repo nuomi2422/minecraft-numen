@@ -65,11 +65,21 @@ public final class RddDeathLedger {
     public record Death(int seq, long gameTime, long wallClockMillis,
                         String deathAt, int lostEntries,
                         State state, String evidence,
-                        Map<String, Integer> lostItems) {
+                        Map<String, Integer> lostItems,
+                        /* 2026-11-02：死因（deathKind/msgId 短标签），供规划侧召回死亡经验；旧文件缺省 "" */
+                        String cause) {
 
         public Death(int seq, long gameTime, long wallClockMillis,
                      String deathAt, int lostEntries) {
-            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, State.UNVERIFIED, "", null);
+            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, State.UNVERIFIED, "", null, "");
+        }
+
+        /** G7 之前写出的调用点形状（8 参，无 cause）。 */
+        public Death(int seq, long gameTime, long wallClockMillis,
+                     String deathAt, int lostEntries,
+                     State state, String evidence,
+                     Map<String, Integer> lostItems) {
+            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, state, evidence, lostItems, "");
         }
 
         /** 旧构造器 + 证据状态（2026-09-30 深审 R07 之前写出的调用点形状，保持可用）。 */
@@ -100,12 +110,12 @@ public final class RddDeathLedger {
 
         public Death confirmedLost(String reason) {
             return new Death(seq, gameTime, wallClockMillis, deathAt, lostEntries,
-                    State.CONFIRMED_LOST, reason, lostItems);
+                    State.CONFIRMED_LOST, reason, lostItems, cause);
         }
 
         public Death recovered(String reason) {
             return new Death(seq, gameTime, wallClockMillis, deathAt, lostEntries,
-                    State.RECOVERED, reason, lostItems);
+                    State.RECOVERED, reason, lostItems, cause);
         }
     }
 
@@ -185,7 +195,7 @@ public final class RddDeathLedger {
      */
     public static Death record(UUID companionId, long gameTime, long wallClockMillis,
                                String deathAt, int lostEntries) {
-        return record(companionId, gameTime, wallClockMillis, deathAt, lostEntries, null);
+        return record(companionId, gameTime, wallClockMillis, deathAt, lostEntries, null, "");
     }
 
     /**
@@ -197,6 +207,13 @@ public final class RddDeathLedger {
      */
     public static Death record(UUID companionId, long gameTime, long wallClockMillis,
                                String deathAt, int lostEntries, Map<String, Integer> lostItems) {
+        return record(companionId, gameTime, wallClockMillis, deathAt, lostEntries, lostItems, "");
+    }
+
+    /** 2026-11-02：同 {@link #record(UUID, long, long, String, int, Map)}，额外记死因短标签（供规划侧召回）。 */
+    public static Death record(UUID companionId, long gameTime, long wallClockMillis,
+                               String deathAt, int lostEntries, Map<String, Integer> lostItems,
+                               String cause) {
         UUID id = companionId == null ? new UUID(0, 0) : companionId;
         int seq = SEQ.merge(id, 1, Integer::sum);
         Map<String, Integer> items = null;
@@ -205,7 +222,7 @@ public final class RddDeathLedger {
         }
         Death d = new Death(seq, gameTime, wallClockMillis,
                 deathAt == null ? "?" : deathAt, Math.max(0, lostEntries),
-                State.UNVERIFIED, "", items);
+                State.UNVERIFIED, "", items, cause == null ? "" : cause);
         List<Death> list = LEDGER.computeIfAbsent(id, k -> new ArrayList<>());
         synchronized (list) {
             list.add(d);

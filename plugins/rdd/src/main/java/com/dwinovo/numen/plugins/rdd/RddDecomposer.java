@@ -337,10 +337,12 @@ final class RddDecomposer {
                 + "（采集类不要写「必须凑够 N 个」）。"
                 + "不要裸键/占位符/大写，不要用 \"goal\" 冒充物品。宁可少拆，不可拆出跑不动的步骤。"
                 : "";
+        // 2026-11-02：死亡原因/坐标也进 knownFailures（否则规划侧永远召不回死亡教训）。
         // 上一次被判定不可执行 → 把该失败事实一并交给知识侧，召回「这类失败该怎么办」的经验
-        List<String> knownFailures = attempt >= 1
-                ? List.of("上一次生成的子步骤被判定不可执行")
-                : List.of();
+        List<String> knownFailures = new java.util.ArrayList<>(RddDeathSpotFacts.knownFailuresFor(companionId));
+        if (attempt >= 1) {
+            knownFailures.add("上一次生成的子步骤被判定不可执行");
+        }
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         String base = RddPlanningKnowledge.attach(
                 RddRiskPlanning.prepHint(themeObjective, snapshot.availableCounts())

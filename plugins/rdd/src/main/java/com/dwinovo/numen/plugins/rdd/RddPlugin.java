@@ -1385,11 +1385,15 @@ private static String withAssets(UUID companionId, String rddContext) {
             // 不能读 LAST_INVENTORY —— 上一轮实机"LOST 没新增"就是读了缓存的锅。
             // 这份 lostItems 是回收判据的批次身份：没有它就只能"任意一件回来即算成功"（假完成）。
             Map<String, Integer> lostItems = deathInstantCounts(body);
+            // 2026-11-02：死因要随台账落盘，才能在**规划侧**作为 knownFailures 召回死亡经验
+            // （此前只写进死亡事件，台账与规划都拿不到）。读不到就空串，不编。
+            String deathCauseForLedger = safeDeathCauseId(body);
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death death = null;
             try {
                 death = com.dwinovo.numen.rdd.core.RddDeathLedger.record(
                         companionId, RddInstrumentation.currentGameTimeTicks(),
-                        System.currentTimeMillis(), body.blockPosition().toShortString(), lost, lostItems);
+                        System.currentTimeMillis(), body.blockPosition().toShortString(), lost, lostItems,
+                        deathCauseForLedger);
             } catch (RuntimeException ledgerFail) {
                 LOG.warn("[rdd] 死亡台账写入失败 {}: {}", companionId, ledgerFail.toString());
             }
