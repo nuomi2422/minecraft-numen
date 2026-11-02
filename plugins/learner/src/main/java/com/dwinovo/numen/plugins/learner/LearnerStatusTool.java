@@ -185,8 +185,9 @@ final class LearnerStatusTool implements NumenTool {
         int verdicts = 0;
         int withUnreviewed = 0;
         java.util.Map<String, Integer> byCheck = new java.util.LinkedHashMap<>();
-        try {
-            for (String line : java.nio.file.Files.readAllLines(f, java.nio.charset.StandardCharsets.UTF_8)) {
+        try (java.util.stream.Stream<String> lines = java.nio.file.Files.lines(f, java.nio.charset.StandardCharsets.UTF_8)) {
+            // 流式读：learner.jsonl 会到几十 MB（实测 32.8MB），readAllLines 会把它整块装进内存。
+            for (String line : (Iterable<String>) lines::iterator) {
                 if (!line.contains("\"reviewed\"")) continue;
                 com.google.gson.JsonObject o;
                 try {
