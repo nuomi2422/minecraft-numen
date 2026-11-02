@@ -45,7 +45,15 @@ class ReviewContractGateTest {
         assertEquals(ArtifactKind.EXPERIENCE, a.kind());
         assertEquals("夜里在洞口停留会被围住", a.purpose());
         assertTrue(a.evidence().isEmpty(), "旧载荷没有结构化证据，一个字都不许补");
-        assertTrue(a.triggerConditions().isEmpty(), "observableSignal 不是触发条件，硬塞会让影子统计失真");
+        // 2026-11-03（外部学习者）：旧断言「triggerConditions 必须为空」与 2026-11-02 的适配器
+        // 变更是冲突的——ReviewContractAdapter.fromExperience 注释写明：EXPERIENCE 产物若不带
+        // triggerConditions/evidence，WRITE_EXPERIENCE 这条 artifact 永远 missing_field → 契约
+        // REJECT → 不可注入。所以它用 experience.preconditions 充当 triggerConditions（同义：机制
+        // 在什么条件下成立）。这里守住原意（**observableSignal 不许被当成触发条件**），
+        // 而不是守住"必须为空"这个已被有意改掉的形状。
+        assertEquals(List.of("带火把"), a.triggerConditions(), "触发条件取自 preconditions");
+        assertFalse(a.triggerConditions().contains("敌对实体数突然上升"),
+                "observableSignal 不是触发条件，硬塞会让影子统计失真");
         assertEquals(List.of("带火把"), a.preconditions());
         assertEquals(List.of("白天"), a.excludeConditions());
         assertEquals(List.of("m-1"), a.sampleRefs());
