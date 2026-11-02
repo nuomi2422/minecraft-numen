@@ -33,6 +33,24 @@ class LearnerAutoIntakeTest {
 
     private static final String COMPANION = "e502d17b-0000-0000-0000-000000000001";
 
+    /**
+     * 2026-11-03（外部学习者）：单条非死亡 memo 的"等待超时"通道。
+     * 实机背景：17:22:30 一条 loop_detected memo 入队，30 分钟无 nudge / 无复盘
+     * ——原门槛只认 depth>=3，death 才有 effectiveDepth 例外（158 §8 的"等待超时"没实现）。
+     */
+    @Test
+    void staleMemoCountsAsDueForReview() {
+        long m = LearnerAutoIntake.REVIEW_STALE_MS;
+        assertFalse(LearnerAutoIntake.staleEnough(m - 1), "差 1ms 不到超时");
+        assertTrue(LearnerAutoIntake.staleEnough(m), "到点即超时");
+        assertTrue(LearnerAutoIntake.effectiveDepth(1, LearnerAutoIntake.staleEnough(m))
+                        >= LearnerAutoIntake.REVIEW_NUDGE_MIN_DEPTH,
+                "超时的单条 memo 应被视作到门槛（允许提醒/兜底复盘）");
+        assertFalse(LearnerAutoIntake.effectiveDepth(1, LearnerAutoIntake.staleEnough(m / 2))
+                        >= LearnerAutoIntake.REVIEW_NUDGE_MIN_DEPTH,
+                "未超时的单条 memo 仍按原规则等攒够");
+    }
+
     @Test
     void nudgeCooldownAllowsASecondNudgeAfterWindow() {
         // 2026-11-02 实测：旧实现先 get 判冷却、再 putIfAbsent 占位；第一次提醒后 key 永在，

@@ -564,8 +564,19 @@ final class LearnerAutoIntake {
                 } catch (RuntimeException ignored) {
                     // 读不到就按原规则走，不假装有 death
                 }
+                // 2026-11-03：再加一条「等待超时」——最老待复盘 memo ≥30 分钟也算到门槛，
+                // 否则单条非死亡事件（如 loop_detected）会无限期压着（158 §8 触发清单含"等待超时"）。
+                long oldestAgeMs = 0;
+                try {
+                    for (Memo m : q.all()) {
+                        long c = m.createdAt();
+                        if (c > 0) oldestAgeMs = Math.max(oldestAgeMs, now - c);
+                    }
+                } catch (RuntimeException ignored) {
+                    // 读不到按原规则走，不假装超时
+                }
                 // 真实深度用于报告/事件（不许造假数）；gateDepth 只用于门槛判断。
-                int gateDepth = effectiveDepth(depth, hasDeath);
+                int gateDepth = effectiveDepth(depth, hasDeath || staleEnough(oldestAgeMs));
                 if (nudgeBlocked(NUDGE_UNDELIVERABLE_UNTIL, id, now)) continue;
                 Long prevNudge = LAST_REVIEW_NUDGE.get(id);
                 if (!claimNudge(LAST_REVIEW_NUDGE, id, gateDepth, now)) continue;
@@ -604,6 +615,23 @@ final class LearnerAutoIntake {
      */
     static int effectiveDepth(int depth, boolean hasDeath) {
         return hasDeath ? Math.max(depth, REVIEW_NUDGE_MIN_DEPTH) : depth;
+    }
+
+    /**
+     * 单条非死亡 memo 的「等待超时」通道（2026-11-03，外部学习者）。
+     *
+     * <p>为什么要有它：158 §8 的调度触发里有一条「普通样本等待超时」，但原实现对 memo 只认
+     * `depth >= 3`（death 另有 `effectiveDepth` 绕过）。实机 2026-11-03 17:22:30 一条
+     * loop_detected memo 入队后 30 分钟既无 nudge 也无复盘——只要不攒到 3 条就无限期压着。
+     *
+     * <p>这里只放宽**门槛**（是否允许提醒/兜底复盘），不伪造 depth；真正的 LLM 调用仍受
+     * `AUTO_REVIEW_COOLDOWN_MS`（30 分钟）与"已有 review 在跑"两道限制。阈值可调。
+     */
+    static final long REVIEW_STALE_MS = 30L * 60L * 1000L;
+
+    /** 最老待复盘 memo 是否已超时。纯函数，便于钉住边界。 */
+    static boolean staleEnough(long oldestAgeMs) {
+        return oldestAgeMs >= REVIEW_STALE_MS;
     }
 
     /**
