@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -45,6 +46,34 @@ class ToolFailureIntakeTest {
                 "部分成功不算失败");
         assertEquals(ToolFailureIntake.TextVerdict.UNKNOWN, ToolFailureIntake.classifyText("something unexpected"));
         assertEquals(ToolFailureIntake.TextVerdict.UNKNOWN, ToolFailureIntake.classifyText(""), "空文本不猜");
+    }
+
+    @Test
+    void syncMissingTargetFailureIsCollectedOnce() throws Exception {
+        // 2026-11-02T11:01:45Z 实测：use_portal 返回 success:false + "no minecraft:nether_portal within 96 blocks"，
+        // server-sync 单次、learner 0 条 memo。目标缺失是确定性失败，必须 1x 入队。
+        String tools = toolResult("p-0", "pc_0", "use_portal",
+                "{\"success\":false,\"message\":\"no minecraft:nether_portal within 96 blocks in minecraft:overworld. A portal only exists where someone built it.\"}",
+                false, "server-sync", null) + "\n";
+        Files.writeString(tmp.resolve("monitor/tools.jsonl"), tools, StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue),
+                "单次目标缺失失败必须 1x 入队（旧逻辑按 server-sync 3x，静默漏采）");
+        Memo memo = queue.drain(10).get(0);
+        assertTrue(memo.id().startsWith("tf-use_portal-"), memo.id());
+    }
+
+    @Test
+    void missingTargetSemanticOnlyMatchesNarrowForms() {
+        assertTrue(ToolFailureIntake.isMissingTargetSemantic(
+                "no minecraft:nether_portal within 96 blocks in minecraft:overworld."));
+        assertTrue(ToolFailureIntake.isMissingTargetSemantic(
+                "could not walk into the portal at 305, 38, 275 — still out of reach after 10s."));
+        assertFalse(ToolFailureIntake.isMissingTargetSemantic("blocked: stopped 107 blocks short"),
+                "blocked/short 需要重试，不能当目标缺失放成 1x");
+        assertFalse(ToolFailureIntake.isMissingTargetSemantic("no path out"));
     }
 
     private static final UUID CID = UUID.fromString("e502d17b-0000-0000-0000-000000000001");

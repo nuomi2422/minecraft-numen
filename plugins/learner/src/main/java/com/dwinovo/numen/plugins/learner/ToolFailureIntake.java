@@ -174,6 +174,10 @@ final class ToolFailureIntake {
             WINDOWS.entrySet().removeIf(en -> en.getValue().lastMs > 0 && now - en.getValue().lastMs > 30L * 60L * 1000L);
             String msg = messageOf(result);
             if (msg.isBlank()) msg = result.isBlank() ? "(local tool failed; no message)" : clip(result.trim(), 160);
+            // 2026-11-02（学习线 AI）：显式 success:false 但走 server-sync 的「目标不存在」失败
+            //   （use_portal: no minecraft:nether_portal within 96 blocks）原本按 async 3x 阈值，
+            //   单次必漏采。目标缺失是确定性语义失败，按 1x 采集，且不受 async 3x 约束。
+            boolean missingTarget = !ok && isMissingTargetSemantic(msg);
             String cls = errorClass(tool, msg);
             String fp = digest(tool + "|" + cls).substring(0, 8);
             String key = toolKey + "|" + fp;
@@ -198,15 +202,15 @@ final class ToolFailureIntake {
             // 明确文本失败 1x 就入队；模糊形态仍要 3x（防单条误判造 memo）。
             // 但 async 任务行（server-async/sync、带 async_status）保持原 3x 语义：
             // 它们的终态失败本来就是显式判定，已有单测钉住「3 连败 → 1 条 memo」。
-            boolean asyncRow = !str(d, "async_status").isBlank()
-                    || "server-async".equals(writer) || "server-sync".equals(writer);
-            if (w.count < THRESHOLD && !(clearTextFailure && !asyncRow)) continue;
+            boolean asyncRow = (!str(d, "async_status").isBlank()
+                    || "server-async".equals(writer) || "server-sync".equals(writer)) && !missingTarget;
+            if (w.count < THRESHOLD && !((clearTextFailure || missingTarget) && !asyncRow)) continue;
 
             // 2026-11-02（A4）：1x 纯文本失败用**不含 firstId** 的稳定 id —— 否则窗口重建时
             // 同一形态会生成第二个 memoId（实测 tf-fish-…-pt-1），seen 挡不住，队列里出现重复。
             // 3x 窗口仍带 firstId（一个窗口 = 一次学习单元，需要可区分）。
             String memoId = "tf-" + safe(tool) + "-" + fp
-                    + (clearTextFailure ? "" : "-" + safeSuffix(w.firstId));
+                    + (clearTextFailure || missingTarget ? "" : "-" + safeSuffix(w.firstId));
             Memo memo = new Memo(memoId,
                     "工具 " + tool + " 连续执行失败 " + w.count + " 次（同一错误形态，不是参数被拒）：" + clip(msg, 160),
                     "tool_failure",
@@ -294,6 +298,19 @@ final class ToolFailureIntake {
         } catch (RuntimeException e) {
             return "";
         }
+    }
+
+    /**
+     * 同步工具的「目标不存在」语义失败：带显式 success:false，但走 server-sync 的 3x 阈值会漏采。
+     * 只认窄形态（no minecraft:<id> within N blocks / no … within N blocks / could not walk into the portal），
+     * 不把 blocked/short/timeout 这些需要重试的形态一起放成 1x。
+     */
+    static boolean isMissingTargetSemantic(String msg) {
+        if (msg == null) return false;
+        String t = msg.trim().toLowerCase(java.util.Locale.ROOT);
+        if (t.startsWith("no minecraft:") && t.contains(" within ")) return true;
+        if (t.startsWith("no ") && t.contains(" within ") && t.contains(" blocks")) return true;
+        return t.startsWith("could not walk into the portal");
     }
 
     /** 纯文本工具回执的三态（2026-11-02）：只按明确前缀判，模糊一律 UNKNOWN。 */
