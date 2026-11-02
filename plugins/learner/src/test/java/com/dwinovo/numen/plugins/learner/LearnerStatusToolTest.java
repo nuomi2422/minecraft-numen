@@ -52,4 +52,26 @@ class LearnerStatusToolTest {
                 + "{\"memo_id\":\"m-1\",\"actions\":[\"WRITE_EXPERIENCE\"],"
                 + "\"quality_gate\":{\"verdict\":\"REVIEW_REQUIRED\",\"needs_review\":" + needsReview + "}}]}}";
     }
+
+    /**
+     * 2026-11-03：复盘期间 learner_status 会被轮询；learner.jsonl 33MB，不能每次都全扫。
+     * 判据：文件没变 → 复用缓存；文件变了 → 必须重算。
+     */
+    @Test
+    void backlogIsCachedUntilTheFileChanges() throws Exception {
+        Files.createDirectories(dir.resolve("monitor"));
+        java.nio.file.Path log = dir.resolve("monitor/learner.jsonl");
+        Files.writeString(log, reviewed(Instant.now().toString(), "[\"Q2\"]") + "\n", StandardCharsets.UTF_8);
+
+        java.util.Map<String, Object> first = LearnerStatusTool.reviewBacklog(dir, System.currentTimeMillis());
+        java.util.Map<String, Object> second = LearnerStatusTool.reviewBacklog(dir, System.currentTimeMillis());
+        org.junit.jupiter.api.Assertions.assertSame(first, second);
+
+        Files.writeString(log, reviewed(Instant.now().toString(), "[\"Q3\"]") + "\n",
+                StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
+        Files.setLastModifiedTime(log,
+                java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 5000L));
+        java.util.Map<String, Object> third = LearnerStatusTool.reviewBacklog(dir, System.currentTimeMillis());
+        assertEquals(2, third.get("verdicts"), "文件变了必须重算：" + third);
+    }
 }

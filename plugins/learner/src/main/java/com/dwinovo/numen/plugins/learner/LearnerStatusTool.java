@@ -181,12 +181,48 @@ final class LearnerStatusTool implements NumenTool {
             out.put("path", f.toString());
             return out;
         }
+        // 2026-11-03（外部学习者）：learner_status 在复盘期间会被轮询；learner.jsonl 已 33MB，
+        //   每次调用都全量扫一遍太浪费。按「文件 mtime+size」缓存：文件没变就直接复用上次结果。
+        try {
+            // 缓存键必须带路径：不同测试/不同同伴目录可能有同样的 mtime+size，
+            // 只按 mtime+size 会把 A 目录的结果当成 B 目录的（错得还很安静）。
+            long stamp = (long) f.toAbsolutePath().hashCode() * 1_000_003L
+                    ^ (java.nio.file.Files.getLastModifiedTime(f).toMillis() * 31L
+                    + java.nio.file.Files.size(f));
+            if (stamp == BACKLOG_STAMP && BACKLOG_CACHE != null) {
+                return BACKLOG_CACHE;
+            }
+            out = computeReviewBacklog(f, nowMillis, out);
+            BACKLOG_STAMP = stamp;
+            BACKLOG_CACHE = out;
+            return out;
+        } catch (java.io.IOException ignored) {
+            // 拿不到 mtime 就按无缓存走
+        }
+        // 拿不到 mtime/size：直接算一次，不缓存（宁可慢，不许静默返回假数）。
+        return computeReviewBacklog(f, nowMillis, out);
+    }
+
+    private static String str(com.google.gson.JsonObject o, String k) {
+        if (o == null || !o.has(k) || !o.get(k).isJsonPrimitive()) return "";
+        try {
+            return o.get(k).getAsString();
+        } catch (RuntimeException e) {
+            return "";
+        }
+    }
+
+    /** 缓存：learner.jsonl 的 mtime+size 没变就不重复扫 33MB。 */
+    private static volatile long BACKLOG_STAMP = -1L;
+    private static volatile java.util.Map<String, Object> BACKLOG_CACHE = null;
+
+    private static java.util.Map<String, Object> computeReviewBacklog(java.nio.file.Path f, long nowMillis,
+            java.util.Map<String, Object> out) {
         long since = nowMillis - 24L * 3600_000L;
         int verdicts = 0;
         int withUnreviewed = 0;
         java.util.Map<String, Integer> byCheck = new java.util.LinkedHashMap<>();
         try (java.util.stream.Stream<String> lines = java.nio.file.Files.lines(f, java.nio.charset.StandardCharsets.UTF_8)) {
-            // 流式读：learner.jsonl 会到几十 MB（实测 32.8MB），readAllLines 会把它整块装进内存。
             for (String line : (Iterable<String>) lines::iterator) {
                 if (!line.contains("\"reviewed\"")) continue;
                 com.google.gson.JsonObject o;
@@ -235,14 +271,5 @@ final class LearnerStatusTool implements NumenTool {
         out.put("by_check", byCheck);
         out.put("note", "needs_review 目前没有消费者（#464）：这些判定停在 REVIEW_REQUIRED，没人复核");
         return out;
-    }
-
-    private static String str(com.google.gson.JsonObject o, String k) {
-        if (o == null || !o.has(k) || !o.get(k).isJsonPrimitive()) return "";
-        try {
-            return o.get(k).getAsString();
-        } catch (RuntimeException e) {
-            return "";
-        }
     }
 }
