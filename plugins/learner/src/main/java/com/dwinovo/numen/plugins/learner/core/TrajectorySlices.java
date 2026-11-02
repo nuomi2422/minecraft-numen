@@ -134,10 +134,11 @@ public final class TrajectorySlices {
                 if (d == null) continue;
                 if (!cid.isBlank() && !cid.equals(str(d, "companion_id"))) continue;
                 // ★ 2026-11-03（外部学习者，实机 death61）：mcp-* 是外部 MCP/控制面调用，不是同伴决策。
-                //   不过滤就把「外部每 30s 轮询 get_self_status」写进"动作"切片，复盘据此得出
-                //   「死前只做过轮询、身体空闲」这种假事实（已污染一条 TRIAL 经验，53/55 次呈现）。
-                //   与 ToolFailureIntake（2026-10-26 起跳过 mcp-*）同一条规则。
-                if (str(d, "tool_call_id").startsWith("mcp-")) continue;
+                //   **不能直接丢**——外部 task_stop / 复活 / 停机本身会改变结局，是归因材料；
+                //   也不能当同伴动作写——那会让复盘得出「死前只做过轮询、身体空闲」这种假事实
+                //   （已污染一条 TRIAL 经验，53/55 次呈现进执行视图）。
+                //   做法：保留并标 [外部控制台]；同伴自己的调用不加前缀。
+                final boolean externalCall = str(d, "tool_call_id").startsWith("mcp-");
                 long ts;
                 try {
                     ts = Instant.parse(str(o, "timestamp")).toEpochMilli();
@@ -157,7 +158,8 @@ public final class TrajectorySlices {
                 } catch (RuntimeException ignored) {
                     msg = clip(result, 80);
                 }
-                out.add("[" + hhmmss(ts) + "] " + tool + (ok ? " ok" : " FAILED") + (msg.isBlank() ? "" : " · " + clip(msg, 80)));
+                out.add("[" + hhmmss(ts) + "] " + (externalCall ? "[外部控制台] " : "") + tool
+                        + (ok ? " ok" : " FAILED") + (msg.isBlank() ? "" : " · " + clip(msg, 80)));
             }
         } catch (IOException ignored) {
         }

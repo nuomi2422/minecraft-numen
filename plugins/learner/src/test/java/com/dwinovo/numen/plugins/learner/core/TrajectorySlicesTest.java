@@ -72,8 +72,10 @@ class TrajectorySlicesTest {
                 new Memo("ai-instr-9", "p", "death", "t", "", 0L));
 
         assertTrue(text.contains("get_self_status"), "同伴自己的调用必须保留：" + text);
-        assertTrue(!text.contains("task_status"), "mcp-* 外部调用不许出现在动作切片里：" + text);
-        assertTrue(!text.contains("读不到 ≠ 没发生"), "还有一条真实调用时不能报'没有工具调用'：" + text);
+        assertTrue(!text.contains("[外部控制台] get_self_status"), "同伴调用不许被标成外部：" + text);
+        assertTrue(text.contains("[外部控制台] task_status"),
+                "mcp-* 要保留但必须标明是外部控制台（它会影响结局，是归因材料）：" + text);
+        assertTrue(!text.contains("读不到 ≠ 没发生"), "还有调用时不能报'没有工具调用'：" + text);
     }
 
     @Test
