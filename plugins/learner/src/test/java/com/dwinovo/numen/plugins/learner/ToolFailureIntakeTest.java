@@ -421,4 +421,19 @@ class ToolFailureIntakeTest {
         o.add("data", d);
         return o.toString();
     }
+
+    /**
+     * 2026-11-03（外部学习者）：同一句错误重复 N 次只写一行，不同错误仍逐条保留。
+     * 实测 tf-task_stop 那条 memo 的 tried 是同一句话三遍，对复盘没有新信息。
+     */
+    @org.junit.jupiter.api.Test
+    void repeatedIdenticalFailuresAreCollapsedWithACount() {
+        org.junit.jupiter.api.Assertions.assertEquals(
+                "没有进行中的后台任务 ×3 ｜ 别的错误",
+                ToolFailureIntake.joinSamples(java.util.List.of(
+                        "没有进行中的后台任务", "没有进行中的后台任务", "没有进行中的后台任务", "别的错误")));
+        org.junit.jupiter.api.Assertions.assertEquals(
+                "single", ToolFailureIntake.joinSamples(java.util.List.of("single")));
+        org.junit.jupiter.api.Assertions.assertEquals("", ToolFailureIntake.joinSamples(java.util.List.of()));
+    }
 }

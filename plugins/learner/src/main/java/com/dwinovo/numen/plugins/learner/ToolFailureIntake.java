@@ -210,7 +210,7 @@ final class ToolFailureIntake {
             Memo memo = new Memo(memoId,
                     "工具 " + tool + " 连续执行失败 " + w.count + " 次（同一错误形态，不是参数被拒）：" + clip(msg, 160),
                     "tool_failure",
-                    String.join(" ｜ ", w.samples),
+                    joinSamples(w.samples),
                     snapshotOf(configDir, cid, tool, w),
                     System.currentTimeMillis());
             boolean appended;
@@ -442,5 +442,24 @@ final class ToolFailureIntake {
             Files.writeString(f, GSON.toJson(o) + "\n", StandardCharsets.UTF_8);
         } catch (IOException ignored) {
         }
+    }
+
+    /**
+     * 2026-11-03（外部学习者）：同一条错误重复 N 次只写一行（"msg ×N"）。
+     * 实测 tf-task_stop 那条 memo 的 tried 是同一句话三遍——重复串对复盘没有新信息，次数已写在 problem 里。
+     * 不同错误仍逐条保留（顺序即出现顺序）。
+     */
+    static String joinSamples(java.util.List<String> samples) {
+        if (samples == null || samples.isEmpty()) return "";
+        java.util.LinkedHashMap<String, Integer> counts = new java.util.LinkedHashMap<>();
+        for (String s : samples) {
+            if (s == null) continue;
+            counts.merge(s.trim(), 1, Integer::sum);
+        }
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, Integer> e : counts.entrySet()) {
+            parts.add(e.getValue() > 1 ? e.getKey() + " ×" + e.getValue() : e.getKey());
+        }
+        return String.join(" ｜ ", parts);
     }
 }
