@@ -54,6 +54,28 @@ class TrajectorySlicesTest {
         assertTrue(text.contains("craft"), text);
     }
 
+    /**
+     * 2026-11-03（实机 death61）：mcp-* 是外部 MCP/控制面轮询，不是同伴的动作。
+     * 不过滤会让复盘写出「死前只做过 task_status/get_self_status 轮询」这种假证据，
+     * 并跟着经验进执行视图（已发生：一条 TRIAL 条目被 53/55 次呈现）。
+     */
+    @Test
+    void mcpControlPlaneCallsAreNotCompanionActions() throws Exception {
+        Instant t = Instant.parse("2026-11-02T16:06:30Z");
+        writeInstrumentation("instr-9", t);
+        Files.writeString(dir.resolve("monitor/tools.jsonl"),
+                tool(t, "tools-a", "call_00_real", "get_self_status", true, "hp=20") + "\n"
+                        + tool(t, "tools-b", "mcp-31", "task_status", true, "身体空闲") + "\n",
+                StandardCharsets.UTF_8);
+
+        String text = TrajectorySlices.forMemo(dir, null,
+                new Memo("ai-instr-9", "p", "death", "t", "", 0L));
+
+        assertTrue(text.contains("get_self_status"), "同伴自己的调用必须保留：" + text);
+        assertTrue(!text.contains("task_status"), "mcp-* 外部调用不许出现在动作切片里：" + text);
+        assertTrue(!text.contains("读不到 ≠ 没发生"), "还有一条真实调用时不能报'没有工具调用'：" + text);
+    }
+
     @Test
     void missingAnchorIsExplicitlyNotFabricated() throws Exception {
         Files.createDirectories(dir.resolve("monitor"));
@@ -85,10 +107,14 @@ class TrajectorySlicesTest {
     }
 
     private static String tool(Instant t, String eventId, String tool, boolean ok, String msg) {
+        return tool(t, eventId, "call_1", tool, ok, msg);
+    }
+
+    private static String tool(Instant t, String eventId, String callId, String tool, boolean ok, String msg) {
         String result = "{\"success\":" + ok + ",\"message\":\"" + msg + "\"}";
         return "{\"event_id\":\"" + eventId + "\",\"type\":\"tool_result\",\"timestamp\":\"" + t
                 + "\",\"data\":{\"companion_id\":\"c1\",\"tool\":\"" + tool
-                + "\",\"tool_call_id\":\"call_1\",\"result\":\"" + result.replace("\"", "\\\"") + "\"}}";
+                + "\",\"tool_call_id\":\"" + callId + "\",\"result\":\"" + result.replace("\"", "\\\"") + "\"}}";
     }
 
     private static String state(Instant t, int items, int effects) {
