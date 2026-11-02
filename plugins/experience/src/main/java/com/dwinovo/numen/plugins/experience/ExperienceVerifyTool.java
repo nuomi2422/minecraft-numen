@@ -214,8 +214,13 @@ final class ExperienceVerifyTool implements NumenTool {
             // 这里只在**验证成功且当前还是 TRIAL** 时补一句可执行的下一步（不改状态机、不自动发布：
             // 「验证=放行」的暗通道是设计上明确禁止的）。
             if (in.success() && updated.publication() == com.dwinovo.numen.experience.api.PublicationState.TRIAL) {
-                out.put("next_step", "这条仍是 TRIAL，TRIAL 不会出现在执行视图里。"
-                        + "若已无未处理反例，用 experience_publish 把它迁到 PUBLISHED，下次执行才会被检索到。");
+                // 2026-11-03（外部学习者，审核冲突）：旧文案「TRIAL 不会出现在执行视图里」与实现相反。
+                //   ExperienceRetrievalProvider.rolesFor（G6c/G8，2026-10-22）对 TRIAL+OBSERVED 明确发放
+                //   EXECUTOR 角色（仅 audience 显式排除时不给），实机也看到 TRIAL 条目带「试用中」进请求。
+                //   留着这句会让模型以为试用条目不可见，去乱 publish / 甚至发成 SUSPENDED（10-31 已踩过）。
+                out.put("next_step", "这条仍是 TRIAL：TRIAL+OBSERVED 会以「试用中」出现在执行视图（G6c/G8），不是不可见；"
+                        + "audience 显式排除 EXECUTOR 的条目例外。若已无未处理反例，用 experience_publish 迁到 PUBLISHED，"
+                        + "才会长期生效、不再占用试用槽。");
             }
             reply.accept(TaskResult.ok("experience verified", out).toJson());
         } catch (RuntimeException ex) {
