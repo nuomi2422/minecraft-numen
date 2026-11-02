@@ -32,6 +32,12 @@ public final class TrajectorySlices {
 
     private static final long BEFORE_MS = 60_000L;
     private static final long AFTER_MS = 30_000L;
+    /**
+     * 2026-11-03（外部学习者）：loop_detected 的前置窗口必须长于 60s —— 重试预算是分钟级的，
+     * ±60s 抓不到实际尝试（实机 r5-3：窗口只差 11 秒就漏掉 chest 巡查）。10 分钟覆盖两次重试。
+     */
+    private static final long LOOP_BEFORE_MS = 10L * 60_000L;
+    private static final java.util.Set<String> LOOP_STAGES = java.util.Set.of("loop_detected");
     // 2026-10-26：6 行/900 字只够看一个片段，自然任务常在死亡前有十几到二十几次调用；
     // 提到 24 行/2400 字，仍小于复盘 prompt 的输入预算，但能覆盖"前置状态→动作→后置"整段。
     private static final int MAX_TOOL_ROWS = 24;
@@ -48,13 +54,19 @@ public final class TrajectorySlices {
         if (t < 0) {
             return "轨迹切片: 锚点事件 " + anchor + " 在 instrumentation.jsonl 未找到（不编造）";
         }
-        long from = t - BEFORE_MS;
+        // ★ 2026-11-03（外部学习者，实机 r5-3）：重试预算是**分钟级**的。18:11:59 的 loop 事件，
+        //   -60s 窗口从 18:10:59 起，而决定性的 chest 巡查在 18:10:48（差 11 秒被排除）、
+        //   scan_blocks 在 18:09:44（差 2 分钟）。切片里只剩最后一条 report_task_concern，复盘看不出
+        //   「这 10 分钟到底试了什么」。loop 这类 memo 放宽前置窗口。
+        long before = LOOP_STAGES.contains(memo.stage()) ? LOOP_BEFORE_MS : BEFORE_MS;
+        long from = t - before;
         long to = t + AFTER_MS;
         String cid = companionId == null ? "" : companionId.toString();
         List<String> tools = toolRows(configDir, cid, from, to);
         String state = stateRow(configDir, cid, from, to);
         StringBuilder sb = new StringBuilder();
-        sb.append("轨迹切片（锚点 ").append(anchor).append("，窗口 -60s/+30s）：");
+        sb.append("轨迹切片（锚点 ").append(anchor).append("，窗口 -").append(before / 1000).append("s/+")
+                .append(AFTER_MS / 1000).append("s）：");
         if (!state.isBlank()) sb.append("\n- 状态: ").append(state);
         if (tools.isEmpty()) {
             sb.append("\n- 动作: 窗口内没有工具调用记录（读不到 ≠ 没发生）");

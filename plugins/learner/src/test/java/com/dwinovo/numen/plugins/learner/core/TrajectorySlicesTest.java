@@ -100,6 +100,29 @@ class TrajectorySlicesTest {
         assertTrue(!text.contains("find_tools ok"), "不许把 UNKNOWN 说成成功：" + text);
     }
 
+    /**
+     * 2026-11-03（实机 r5-3）：重试预算是分钟级的，±60s 会把决定性动作切在窗外
+     * （18:11:59 的 loop 事件，chest 巡查在 18:10:48 —— 差 11 秒被漏）。
+     * loop_detected 的前置窗口放宽到 10 分钟。
+     */
+    @Test
+    void loopMemosSeeTheWholeRetryWindow() throws Exception {
+        Instant t = Instant.parse("2026-11-02T18:11:59Z");
+        writeInstrumentation("instr-loop", t);
+        Files.writeString(dir.resolve("monitor/tools.jsonl"),
+                tool(t.minusSeconds(300), "tools-early", "call_00_e", "inspect_block", true, "chest found") + "\n"
+                        + tool(t.minusSeconds(5), "tools-late", "call_00_l", "report_task_concern", false,
+                                "concern rejected: expected_subtask_mismatch") + "\n",
+                StandardCharsets.UTF_8);
+
+        String text = TrajectorySlices.forMemo(dir, null,
+                new Memo("ai-instr-loop", "p", "loop_detected", "t", "", 0L));
+
+        assertTrue(text.contains("inspect_block"), "5 分钟前的尝试必须进切片（旧 ±60s 会漏）：" + text);
+        assertTrue(text.contains("rejected"), "最后那条失败也要在：" + text);
+        assertTrue(text.contains("-600s"), "窗口必须如实写出来：" + text);
+    }
+
     @Test
     void missingAnchorIsExplicitlyNotFabricated() throws Exception {
         Files.createDirectories(dir.resolve("monitor"));
