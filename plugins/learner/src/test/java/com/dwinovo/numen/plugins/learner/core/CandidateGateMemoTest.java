@@ -97,4 +97,15 @@ class CandidateGateMemoTest {
         Memo m = CandidateMemo.from(ev, CandidateGate.evaluate(ev.sourceType(), ev.observation(), 0));
         assertTrue(m.problem().contains("player"), m.problem());
     }
+
+    /** 0 条时不能读成「死前什么都没发生」：要指向轨迹切片。 */
+    @Test
+    void emptyTraceRingDoesNotClaimNothingHappened() {
+        FeedbackEvent ev = event("death", Map.of("recent_trace.count", "0"));
+        CandidateGate.Decision d = CandidateGate.evaluate(ev.sourceType(), ev.observation(), 0);
+        Memo memo = CandidateMemo.from(ev, d);
+        String tried = memo.tried();
+        org.junit.jupiter.api.Assertions.assertTrue(tried.contains("事件环为空"), tried);
+        org.junit.jupiter.api.Assertions.assertTrue(tried.contains("轨迹切片"), tried);
+    }
 }

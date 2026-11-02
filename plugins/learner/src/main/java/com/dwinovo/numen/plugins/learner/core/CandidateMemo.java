@@ -63,7 +63,13 @@ public final class CandidateMemo {
             if (tried.length() > 0) {
                 tried.append("；");
             }
-            tried.append("死亡前事件链 ").append(traceCount).append(" 条（见 snapshot）");
+            // 2026-11-03（外部学习者）：0 条时会写成「死亡前事件链 0 条」，读起来像"死前什么都没发生"。
+            //   实机（21:44:40 骷髅射杀）：死前 46 秒刚发过 goto，动作在轨迹切片里，不在事件环里。
+            if ("0".equals(String.valueOf(traceCount))) {
+                tried.append("死亡前事件环为空（动作见轨迹切片，不在此处）");
+            } else {
+                tried.append("死亡前事件链 ").append(traceCount).append(" 条（见 snapshot）");
+            }
         }
 
         return new Memo("", problem.toString(), ev.sourceType(),
