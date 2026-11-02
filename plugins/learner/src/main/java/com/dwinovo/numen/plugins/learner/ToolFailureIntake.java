@@ -202,7 +202,11 @@ final class ToolFailureIntake {
                     || "server-async".equals(writer) || "server-sync".equals(writer);
             if (w.count < THRESHOLD && !(clearTextFailure && !asyncRow)) continue;
 
-            String memoId = "tf-" + safe(tool) + "-" + fp + "-" + safeSuffix(w.firstId);
+            // 2026-11-02（A4）：1x 纯文本失败用**不含 firstId** 的稳定 id —— 否则窗口重建时
+            // 同一形态会生成第二个 memoId（实测 tf-fish-…-pt-1），seen 挡不住，队列里出现重复。
+            // 3x 窗口仍带 firstId（一个窗口 = 一次学习单元，需要可区分）。
+            String memoId = "tf-" + safe(tool) + "-" + fp
+                    + (clearTextFailure ? "" : "-" + safeSuffix(w.firstId));
             Memo memo = new Memo(memoId,
                     "工具 " + tool + " 连续执行失败 " + w.count + " 次（同一错误形态，不是参数被拒）：" + clip(msg, 160),
                     "tool_failure",

@@ -251,6 +251,28 @@ class ToolFailureIntakeTest {
     }
 
     @Test
+    void repeatedPlainTextFailureAcrossScansDoesNotDuplicateMemos() throws Exception {
+        // A4（2026-11-02）：真实的多轮 scan（文件只追加、不重写）下，同形态第二次失败不得再造一条。
+        String body = "no safe dry fishing stance nearby";
+        java.nio.file.Path tools = tmp.resolve("monitor/tools.jsonl");
+        Files.writeString(tools, toolResult("pt-0", "pc_0", "fish", body, null, "server") + "\n",
+                StandardCharsets.UTF_8);
+        Files.writeString(tmp.resolve("monitor/state.jsonl"), state(), StandardCharsets.UTF_8);
+        MemoQueue queue = new MemoQueue(tmp.resolve("queue.json"));
+
+        assertEquals(1, ToolFailureIntake.scanOnce(tmp, id -> queue));
+        java.util.List<Memo> first = queue.drain(10);
+        queue.commitDrain(first);
+
+        Files.writeString(tools, toolResult("pt-1", "pc_1", "fish", body, null, "server") + "\n",
+                StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
+        ToolFailureIntake.scanOnce(tmp, id -> queue);
+        java.util.List<Memo> again = queue.drain(10);
+        assertTrue(again.isEmpty() || again.get(0).id().equals(first.get(0).id()),
+                "同形态不得产生新的 memoId：" + (again.isEmpty() ? "empty" : again.get(0).id()));
+    }
+
+    @Test
     void serverAsyncTerminalFailureStillCounts() throws Exception {
         // server-async 的 result 是人话 message（非 JSON），success 由任务终态显式给出 —— 仍必须算失败。
         StringBuilder tools = new StringBuilder();
