@@ -321,7 +321,12 @@ final class LearnerReviewer {
             //   （MalformedJsonException: Unterminated object ... $.verdicts[0].reasoning），整批 restored。
             //   截断不是"模型不会写"，是**写太长**；所以不可解析时带"精简"要求重试一次，代价是一次 LLM。
             return callOnce(ep, user, system, observation, timeoutSeconds, memos).thenCompose(out -> {
-                if (out.ok() || out.reason() == null || !out.reason().startsWith("UNPARSEABLE")) {
+                String reason = out.reason() == null ? "" : out.reason();
+                // 只重试**语法截断**这一类；"no valid verdict"/"single verdict for a batch" 这类是语义问题，
+                // 精简重试治不了它们，白花一次 LLM。
+                boolean syntaxTruncation = out.ok() || reason.isEmpty()
+                        || (!reason.contains("MalformedJsonException") && !reason.contains("JsonSyntaxException"));
+                if (syntaxTruncation) {
                     return CompletableFuture.completedFuture(out);
                 }
                 LOG.warn("[learner] 复盘输出不可解析，带精简要求重试一次: {}", out.reason());
