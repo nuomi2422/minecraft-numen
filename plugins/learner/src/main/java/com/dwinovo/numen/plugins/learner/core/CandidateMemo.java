@@ -90,16 +90,24 @@ public final class CandidateMemo {
             snap.append(e.getKey()).append('=').append(String.valueOf(e.getValue()));
             if (snap.length() > CLIP) {
                 snap.append("…[cut]");
+                // 2026-11-02（death47 复盘暴露）：先 return 会把 window_first 一起截掉 ——
+                // death memo 的快照必然超长（背包/上下文），于是死亡经验永远缺证据、契约 REJECT。
+                // 锚点必须**在截断之后也写**。
+                appendWindowFirst(snap, ev);
                 return snap.toString();
             }
         }
+        appendWindowFirst(snap, ev);
+        return snap.toString();
+    }
+
+    private static void appendWindowFirst(StringBuilder snap, FeedbackEvent ev) {
         if (ev.eventId() != null && !ev.eventId().isBlank()) {
             if (snap.length() > 0) {
                 snap.append(", ");
             }
             snap.append("window_first=").append(ev.eventId());
         }
-        return snap.toString();
     }
 
     /**

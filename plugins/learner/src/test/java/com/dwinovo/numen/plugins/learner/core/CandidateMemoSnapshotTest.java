@@ -24,6 +24,22 @@ class CandidateMemoSnapshotTest {
     }
 
     @Test
+    void hugeSnapshotStillCarriesWindowFirst() {
+        // death47 复盘暴露：快照超长时早期 return 把 window_first 截掉，死亡经验永远缺证据。
+        java.util.Map<String, Object> big = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < 120; i++) {
+            big.put("context.inventorySlot" + i, "minecraft:item" + i);
+        }
+        big.put("deathCauseId", "onFire");
+        FeedbackEvent ev = new FeedbackEvent("instr-1793613312224-9", "live@1",
+                "2026-11-02T09:55:00Z", "death", "death", java.util.Map.of("task", "primary"), big, null);
+        String snap = CandidateMemo.snapshot(ev);
+        assertTrue(snap.contains("…[cut]"), "确实被截断");
+        assertTrue(snap.contains("window_first=instr-1793613312224-9"),
+                "截断后仍必须带轨迹锚点：" + snap.substring(Math.max(0, snap.length() - 120)));
+    }
+
+    @Test
     void instrumentationSnapshotCarriesWindowFirst() {
         String snap = CandidateMemo.snapshot(deathEvent());
         assertTrue(snap.contains("window_first=instr-1793560000000-1"), snap);
