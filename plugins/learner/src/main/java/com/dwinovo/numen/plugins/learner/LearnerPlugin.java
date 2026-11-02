@@ -151,6 +151,26 @@ public final class LearnerPlugin implements NumenPlugin {
     @Override
     public void setup(NumenApi numen) {
         configDir = numen.configDir();
+        // 2026-11-03（外部学习者 #508/#516）：上一进程若死在复盘飞行中，哨兵还在 —— 如实记一条再清。
+        //   已经两次实机（20:37、20:49）出现「复盘在飞 + 世界重启」：那次复盘在任何账本里都没有痕迹。
+        try {
+            String[] sentinel = readReviewSentinel(configDir);
+            if (sentinel != null) {
+                long age = -1L;
+                try {
+                    age = Long.parseLong(sentinel[1]);
+                } catch (RuntimeException ignored) {
+                    // 解析不了就按 -1 记，别编数字
+                }
+                com.dwinovo.numen.plugins.learner.LearnerMonitor.publish("review_interrupted", Map.of(
+                        "review_id", sentinel[0] == null ? "" : sentinel[0],
+                        "age_ms", age,
+                        "reason", "world/process restarted while review was in flight"));
+                clearReviewSentinel(configDir, sentinel[0]);
+            }
+        } catch (RuntimeException ignored) {
+            // 哨兵读取失败不影响启动
+        }
         numenApi = numen;   // E2：复盘提醒的系统通道
         // E1 自动入队（81 号 §14.4）：记下 configDir 并读开关；tick 由 LearnerMod 挂。
         LearnerAutoIntake.install(configDir);
@@ -306,6 +326,7 @@ public final class LearnerPlugin implements NumenPlugin {
             LAST_REVIEW_STARTED.put(companionId, System.currentTimeMillis());
         }
         evictOld();
+        writeReviewSentinel(configDir, reviewId, companionId);
         // 2026-11-02：观测缺口 —— 之前只有 nudge_sent/finished，没有「复盘真的开始了」。
         // 18:37 的 nudge 后没有 review、也没有任何事件，只能靠事后推断。
         // 加了这行，「nudge 发了但 review 未启动」就变成可计算的事实（缺 review_started）。
@@ -316,6 +337,7 @@ public final class LearnerPlugin implements NumenPlugin {
     }
 
     static void finishReview(String reviewId, String state, int verdictCount) {
+        clearReviewSentinel(configDir, reviewId);
         REVIEWS.computeIfPresent(reviewId, (id, rec) ->
                 new ReviewRecord(rec.reviewId(), rec.companionId(), state, rec.reviewing(),
                         verdictCount, state.startsWith("NO_") || state.startsWith("FAILED") ? state : rec.reason(),
@@ -373,5 +395,61 @@ public final class LearnerPlugin implements NumenPlugin {
             m.put("verdicts", r.verdicts());
         }
         return m;
+    }
+
+    // ── 2026-11-03（外部学习者 #508/#516）：复盘哨兵 ───────────────────────────────
+    //   两次实机（20:37、20:49）：复盘在飞时世界重启/停机，虚拟线程与回调随类加载器一起没了，
+    //   `reviewed` / `review_failed` / `review_stale` 一个都不发——**这场复盘在任何账本里都不存在**。
+    //   做法：开始时落一个小哨兵文件、终态时删掉；启动时若哨兵还在，就如实记一条 `review_interrupted`。
+    static final String REVIEW_SENTINEL = "learner-review-active.json";
+
+    static void writeReviewSentinel(java.nio.file.Path dir, String reviewId, UUID companionId) {
+        if (dir == null || reviewId == null || reviewId.isBlank()) return;
+        try {
+            java.nio.file.Files.createDirectories(dir);
+            java.nio.file.Files.writeString(dir.resolve(REVIEW_SENTINEL),
+                    "{\"review_id\":\"" + reviewId + "\",\"companion\":\""
+                            + (companionId == null ? "" : companionId) + "\",\"started_at\":"
+                            + System.currentTimeMillis() + "}",
+                    java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception ignored) {
+            // 哨兵是观测旁路，写不出来不影响复盘
+        }
+    }
+
+    static void clearReviewSentinel(java.nio.file.Path dir, String reviewId) {
+        if (dir == null) return;
+        java.nio.file.Path f = dir.resolve(REVIEW_SENTINEL);
+        try {
+            if (!java.nio.file.Files.isRegularFile(f)) return;
+            String text = java.nio.file.Files.readString(f, java.nio.charset.StandardCharsets.UTF_8);
+            // 只删自己的哨兵：并发/后启动的复盘不能被前一场误清
+            if (reviewId != null && !reviewId.isBlank() && !text.contains(reviewId)) return;
+            java.nio.file.Files.deleteIfExists(f);
+        } catch (Exception ignored) {
+            // 清不掉就留给下次启动报 interrupted，不假装干净
+        }
+    }
+
+    /** 读哨兵（不删）：返回 null 表示没有；否则给出 review_id 与已过去多久。调用方负责记账与删除。 */
+    static String[] readReviewSentinel(java.nio.file.Path dir) {
+        if (dir == null) return null;
+        java.nio.file.Path f = dir.resolve(REVIEW_SENTINEL);
+        try {
+            if (!java.nio.file.Files.isRegularFile(f)) return null;
+            String text = java.nio.file.Files.readString(f, java.nio.charset.StandardCharsets.UTF_8);
+            String id = "";
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("\"review_id\"\\s*:\\s*\"([^\"]*)\"").matcher(text);
+            if (m.find()) id = m.group(1);
+            long startedAt = 0L;
+            java.util.regex.Matcher t = java.util.regex.Pattern
+                    .compile("\"started_at\"\\s*:\\s*(\\d+)").matcher(text);
+            if (t.find()) startedAt = Long.parseLong(t.group(1));
+            long age = startedAt > 0 ? System.currentTimeMillis() - startedAt : -1L;
+            return new String[] { id, String.valueOf(age) };
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 }
