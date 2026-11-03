@@ -217,6 +217,32 @@ final class RddRepairDispatch {
      * <p>fail-soft：任何一步炸了返回 null（事件不带 lossImpact 键、文案不带语义段），
      * 死亡支线本身照旧 —— 语义分析是增强，不是依赖（分析器「只产事实与建议」的红线）。
      */
+    /** 食物损失在“人正饿/没食物”时不能被 NONE 放行；至少先确认库存。 */
+    private static LossImpactAnalyzer.LossImpact escalateFoodLossIfHungry(
+            UUID companionId, Map<String, Integer> lost, LossImpactAnalyzer.LossImpact impact) {
+        if (impact == null || impact.importantLoss()
+                || impact.recommendation() != LossImpactAnalyzer.Recommendation.NONE) {
+            return impact;
+        }
+        boolean food = lost != null && lost.keySet().stream().anyMatch(k -> {
+            String s = k == null ? "" : k.toLowerCase(java.util.Locale.ROOT);
+            return s.contains("cooked_") || s.contains("bread") || s.contains("beef")
+                    || s.contains("porkchop") || s.contains("mutton") || s.contains("chicken")
+                    || s.contains("cod") || s.contains("salmon") || s.contains("stew")
+                    || s.contains("_apple");
+        });
+        if (!food) return impact;
+        var body = RddCompanionBody.get(companionId);
+        if (body == null) return impact;
+        int foodLevel = body.getFoodData().getFoodLevel();
+        if (foodLevel > 6) return impact;
+        return new LossImpactAnalyzer.LossImpact(true, impact.backupSufficient(),
+                impact.lossConfirmed(), impact.inventoryKnown(), impact.affectedGoals(),
+                LossImpactAnalyzer.Recommendation.CONFIRM_STOCK,
+                impact.summary() + "；食物损失且当前饥饿(" + foodLevel + ")/无食物，不能判无需动作",
+                "food_loss_while_hungry");
+    }
+
     private static LossImpactAnalyzer.LossImpact analyzeDeathLoss(UUID companionId,
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death death) {
         try {
@@ -384,6 +410,9 @@ final class RddRepairDispatch {
                     semantics,
                     lossConfirmed,
                     counts != null);                 // 只有真扫过才算"库存未知解除"
+            // T4 实证（2026-11-03）：丢 8 cooked_beef、同分钟 hungry:P1/no_food，分析器仍给 NONE。
+            // 食物损失 + 身体饥饿/无食物时，至少要 CONFIRM_STOCK，不能宣称“无重要影响”。
+            impact = escalateFoodLossIfHungry(companionId, death.lostItems(), impact);
 
             Map<String, Object> ev = new LinkedHashMap<>();
             ev.put("companionId", companionId.toString());
