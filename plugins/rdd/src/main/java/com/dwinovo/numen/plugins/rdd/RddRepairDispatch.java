@@ -220,10 +220,7 @@ final class RddRepairDispatch {
     /** 食物损失在“人正饿/没食物”时不能被 NONE 放行；至少先确认库存。 */
     private static LossImpactAnalyzer.LossImpact escalateFoodLossIfHungry(
             UUID companionId, Map<String, Integer> lost, LossImpactAnalyzer.LossImpact impact) {
-        if (impact == null || impact.importantLoss()
-                || impact.recommendation() != LossImpactAnalyzer.Recommendation.NONE) {
-            return impact;
-        }
+        if (impact == null) return null;
         boolean food = lost != null && lost.keySet().stream().anyMatch(k -> {
             String s = k == null ? "" : k.toLowerCase(java.util.Locale.ROOT);
             return s.contains("cooked_") || s.contains("bread") || s.contains("beef")
@@ -233,14 +230,8 @@ final class RddRepairDispatch {
         });
         if (!food) return impact;
         var body = RddCompanionBody.get(companionId);
-        if (body == null) return impact;
-        int foodLevel = body.getFoodData().getFoodLevel();
-        if (foodLevel > 6) return impact;
-        return new LossImpactAnalyzer.LossImpact(true, impact.backupSufficient(),
-                impact.lossConfirmed(), impact.inventoryKnown(), impact.affectedGoals(),
-                LossImpactAnalyzer.Recommendation.CONFIRM_STOCK,
-                impact.summary() + "；食物损失且当前饥饿(" + foodLevel + ")/无食物，不能判无需动作",
-                "food_loss_while_hungry");
+        int foodLevel = body == null ? 20 : body.getFoodData().getFoodLevel();
+        return LossImpactAnalyzer.escalateFoodLossWhileHungry(impact, true, foodLevel);
     }
 
     private static LossImpactAnalyzer.LossImpact analyzeDeathLoss(UUID companionId,

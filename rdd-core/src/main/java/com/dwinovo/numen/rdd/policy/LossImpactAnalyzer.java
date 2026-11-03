@@ -87,6 +87,22 @@ public final class LossImpactAnalyzer {
         }
     }
 
+    /**
+     * 食物损失 + 身体正在挨饿/没食物时，分析器仍可能给 NONE（食物语义只是 SECONDARY）。
+     * 这种组合不能宣称“无重要影响”：至少先确认库存。纯函数，便于单测。
+     *
+     * @param foodLost  本次净损失里是否有食物类物品
+     * @param foodLevel 当前饥饿值（0..20）；&lt;=6 视为需要处理
+     */
+    public static LossImpact escalateFoodLossWhileHungry(LossImpact impact, boolean foodLost, int foodLevel) {
+        if (impact == null || !foodLost || foodLevel > 6) return impact;
+        if (impact.importantLoss() || impact.recommendation() != Recommendation.NONE) return impact;
+        return new LossImpact(true, impact.backupSufficient(), impact.lossConfirmed(),
+                impact.inventoryKnown(), impact.affectedGoals(), Recommendation.CONFIRM_STOCK,
+                impact.summary() + "；食物损失且当前饥饿(" + foodLevel + ")/无食物，不能判无需动作",
+                "food_loss_while_hungry");
+    }
+
     private LossImpactAnalyzer() {
     }
 

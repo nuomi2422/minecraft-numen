@@ -216,4 +216,20 @@ class LossImpactAnalyzerTest {
         assertEquals(1, impact.affectedGoals().get(0).backup());
         assertFalse(impact.backupSufficient());
     }
+
+    @Test
+    void foodLossWhileHungryCannotBeNone() {
+        LossImpact base = LossImpactAnalyzer.analyze(
+                Map.of("minecraft:cooked_beef", 8), Map.of(), List.of(), Map.of(), true);
+        assertEquals(Recommendation.NONE, base.recommendation());
+
+        LossImpact hungry = LossImpactAnalyzer.escalateFoodLossWhileHungry(base, true, 4);
+        assertTrue(hungry.importantLoss());
+        assertEquals(Recommendation.CONFIRM_STOCK, hungry.recommendation());
+        assertEquals("food_loss_while_hungry", hungry.reason());
+
+        // 不饿 / 非食物：保持原判定，避免把正常损失升级
+        assertFalse(LossImpactAnalyzer.escalateFoodLossWhileHungry(base, true, 20).importantLoss());
+        assertFalse(LossImpactAnalyzer.escalateFoodLossWhileHungry(base, false, 4).importantLoss());
+    }
 }
