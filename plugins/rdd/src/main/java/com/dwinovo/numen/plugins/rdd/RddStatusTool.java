@@ -30,6 +30,19 @@ final class RddStatusTool implements NumenTool {
             reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD has no active task chain", Map.of("active", false)).toJson());
             return;
         }
+        var chain0 = runtime.chain();
+        // 2026-11-03：末级完成后链仍报 active=true，面板/AI 会以为还有活；这里明确终态。
+        if (chain0.primaryStatus() == PrimaryGoalStatus.COMPLETED
+                && chain0.currentSubtaskStatus() == SubtaskStatus.COMPLETED) {
+            reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain is complete", Map.of(
+                    "active", false, "completed", true,
+                    "goal", chain0.goal().id(),
+                    "primary_goal", chain0.currentPrimary().id(),
+                    "primary_status", "COMPLETED",
+                    "subtask", chain0.currentSubtask().id(),
+                    "subtask_status", "COMPLETED")).toJson());
+            return;
+        }
         var current = runtime.chain().currentSubtask();
         var inventory = RddDetector.countInventory(companion);
         var groups = Map.of("food", com.dwinovo.numen.rdd.core.InventoryGroups.count("food", inventory),
