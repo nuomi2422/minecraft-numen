@@ -228,8 +228,11 @@ class LossImpactAnalyzerTest {
         assertEquals(Recommendation.CONFIRM_STOCK, hungry.recommendation());
         assertEquals("food_loss_while_hungry", hungry.reason());
 
-        // 不饿 / 非食物：保持原判定，避免把正常损失升级
-        assertFalse(LossImpactAnalyzer.escalateFoodLossWhileHungry(base, true, 20).importantLoss());
+        // 7~17 也可能饿死，同样升级；读不到(-1)按危险处理
+        assertTrue(LossImpactAnalyzer.escalateFoodLossWhileHungry(base, true, 12).importantLoss());
+        assertTrue(LossImpactAnalyzer.escalateFoodLossWhileHungry(base, true, -1).importantLoss());
+        // 18+ / 非食物：保持原判定，避免把正常损失升级
+        assertFalse(LossImpactAnalyzer.escalateFoodLossWhileHungry(base, true, 18).importantLoss());
         assertFalse(LossImpactAnalyzer.escalateFoodLossWhileHungry(base, false, 4).importantLoss());
     }
 }

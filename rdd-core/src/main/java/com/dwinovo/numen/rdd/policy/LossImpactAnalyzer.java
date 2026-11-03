@@ -92,10 +92,11 @@ public final class LossImpactAnalyzer {
      * 这种组合不能宣称“无重要影响”：至少先确认库存。纯函数，便于单测。
      *
      * @param foodLost  本次净损失里是否有食物类物品
-     * @param foodLevel 当前饥饿值（0..20）；&lt;=6 视为需要处理
+     * @param foodLevel 当前饥饿值（0..20）；负数=读不到（按危险处理），&lt;=17 视为需要处理
      */
     public static LossImpact escalateFoodLossWhileHungry(LossImpact impact, boolean foodLost, int foodLevel) {
-        if (impact == null || !foodLost || foodLevel > 6) return impact;
+        // 读不到不能当“吃饱了”：负数走保守升级；7~17 也可能饿死，不放行。
+        if (impact == null || !foodLost || foodLevel > 17) return impact;
         if (impact.importantLoss() || impact.recommendation() != Recommendation.NONE) return impact;
         return new LossImpact(true, impact.backupSufficient(), impact.lossConfirmed(),
                 impact.inventoryKnown(), impact.affectedGoals(), Recommendation.CONFIRM_STOCK,

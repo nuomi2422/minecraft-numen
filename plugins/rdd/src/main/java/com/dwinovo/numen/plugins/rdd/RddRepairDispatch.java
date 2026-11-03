@@ -221,16 +221,11 @@ final class RddRepairDispatch {
     private static LossImpactAnalyzer.LossImpact escalateFoodLossIfHungry(
             UUID companionId, Map<String, Integer> lost, LossImpactAnalyzer.LossImpact impact) {
         if (impact == null) return null;
-        boolean food = lost != null && lost.keySet().stream().anyMatch(k -> {
-            String s = k == null ? "" : k.toLowerCase(java.util.Locale.ROOT);
-            return s.contains("cooked_") || s.contains("bread") || s.contains("beef")
-                    || s.contains("porkchop") || s.contains("mutton") || s.contains("chicken")
-                    || s.contains("cod") || s.contains("salmon") || s.contains("stew")
-                    || s.contains("_apple");
-        });
+        boolean food = lost != null && lost.keySet().stream()
+                .anyMatch(k -> com.dwinovo.numen.rdd.core.InventoryGroups.contains("food", k));
         if (!food) return impact;
         var body = RddCompanionBody.get(companionId);
-        int foodLevel = body == null ? 20 : body.getFoodData().getFoodLevel();
+        int foodLevel = body == null ? -1 : body.getFoodData().getFoodLevel();
         return LossImpactAnalyzer.escalateFoodLossWhileHungry(impact, true, foodLevel);
     }
 
