@@ -1256,18 +1256,7 @@ final class RddDetector {
         if (HardCodedEvaluator.matches(task.condition(), counts, baseline)) {
             return true;
         }
-        // P2-C：食物类条件允许"资产派生等价"兜底——目标面包不够时，若背包里的小麦（等价表
-        // wheat→bread）折算后够，则视为已满足，避免合成后又被要求重复耕作。只对"食物"放宽，
-        // 不触碰装备/工具/进度类硬门。
-        // P2-C 等价兜底只服务 hold（“现在手里够不够”）；acquire 必须看真实净增量，
-        // 不能被“小麦可折面包”绕过（2026-11-03 审计）。
-        // 只承认“缺省 mode”或显式 hold；未知/畸形 mode（acquireX 等）一律不走等价兜底。
-        Object mode = task.condition().get("mode");
-        boolean explicitHold = mode == null
-                || com.dwinovo.numen.rdd.core.HardCodedEvaluator.MODE_HOLD.equals(String.valueOf(mode));
-        if (explicitHold && foodEquivalentSatisfied(task, counts)) {
-            return true;
-        }
+        // 战略派生等价不是真实背包持有：例如小麦尚未变成面包，不能用于完成判定。
         // 埋点：此声明（condition）与真实背包不符（系统以为有、真身没有）→ asset_mismatch（限流）
         detectAssetMismatch(ap, task, counts);
         return false;
@@ -1369,25 +1358,6 @@ final class RddDetector {
             // 资产表不可读 → 无声明，不误报
         }
         return 0;
-    }
-
-    /** P2-C：仅对食物子步做派生等价兜底（安全放宽，只增不减）。 */
-    private static boolean foodEquivalentSatisfied(Subtask task, Map<String, Integer> counts) {
-        if (task == null || task.condition() == null || counts == null) return false;
-        // 混合形状 {group, asset_key} 不是合法背包条件；旧链/直接构造不得借等价兜底通过。
-        if (task.condition().containsKey("group") && task.condition().containsKey("asset_key")) return false;
-        Object group = task.condition().get("group");
-        Object key = task.condition().get("asset_key");
-        String target = null;
-        if (group instanceof String g && "food".equals(g)) {
-            return false;   // group=food 已由组计数覆盖，无需等价兜底
-        } else if (key instanceof String k && com.dwinovo.numen.rdd.core.InventoryGroups.contains("food", k)) {
-            target = k;
-        }
-        if (target == null) return false;
-        int minimum = com.dwinovo.numen.rdd.core.HardCodedEvaluator.minimumOf(task.condition());
-        if (minimum <= 0) return false;   // 畸形/零/负门槛一律不构成“已有食物”的证据
-        return com.dwinovo.numen.rdd.policy.AssetDerivation.equivalentCount(target, counts) >= minimum;
     }
 
     /** 统计背包里每种物品的数量，用命名空间 ID（minecraft:oak_log）作 key。 */

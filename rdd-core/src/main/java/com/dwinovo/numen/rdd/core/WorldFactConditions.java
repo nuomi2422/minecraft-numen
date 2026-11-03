@@ -34,7 +34,9 @@ public final class WorldFactConditions {
             // C 组：实体 / 精确坐标
             "entity_nearby", "block_at", "container_at",
             // D 组：基地分级（2026-10-25 主人预设：绑床只是第一级，有屋/有存货/有灯才算后续）
-            "shelter", "stocked", "lit");
+            "shelter", "stocked", "lit",
+            // E 组：装备槽实穿（2026-11-03：obtain_armor 成就只证明“拿到过”，不证明四槽穿上）
+            "equipment");
 
     /** 判定半径上限。判定只读一个邻域，永不遍历世界 —— 这是它能每秒跑一次的前提。 */
     public static final int MAX_NEARBY_RADIUS = 16;
@@ -83,8 +85,49 @@ public final class WorldFactConditions {
             case "shelter" -> optionalRadius(condition.get("radius")) && optionalPositive(condition.get("minimum"));
             case "stocked" -> optionalRadius(condition.get("radius")) && optionalPositive(condition.get("minimum"));
             case "lit" -> optionalRadius(condition.get("radius")) && optionalPositive(condition.get("minimum"));
+            case "equipment" -> equipmentValid(condition);
             default -> false;
         };
+    }
+
+    /**
+     * 装备事实只表示当前槽位内容，不证明本步穿戴动作或完整套装。
+     * 未实现的字段（例如 mode=acquire）不能悄悄退化成当前持有。
+     */
+    private static boolean equipmentValid(Map<String, Object> condition) {
+        if (!Set.of("type", "item", "slot", "minimum", "dimension", "optional")
+                .containsAll(condition.keySet())) return false;
+        if (!tag(condition.get("item"))) return false;
+        if (condition.containsKey("slot") && equipmentSlotIndex(condition.get("slot")) == -2) return false;
+        if (condition.containsKey("minimum") && !positive(condition.get("minimum"))) return false;
+        return !condition.containsKey("optional") || condition.get("optional") instanceof Boolean;
+    }
+
+    /** 0=feet, 1=legs, 2=chest, 3=head；-1=any，-2=非法。 */
+    private static int equipmentSlotIndex(Object raw) {
+        if (raw == null) return -2;
+        if (!(raw instanceof String s)) return -2;
+        return switch (s.toLowerCase(java.util.Locale.ROOT)) {
+            case "feet", "boots" -> 0;
+            case "legs", "leggings" -> 1;
+            case "chest", "chestplate" -> 2;
+            case "head", "helmet" -> 3;
+            case "any" -> -1;
+            default -> -2;
+        };
+    }
+
+    /** 四个布尔量须来自同一次服务端采样；指定槽也必须满足 minimum。 */
+    public static boolean equipmentSlotsSatisfied(Map<String, Object> condition,
+                                                   boolean feet, boolean legs, boolean chest, boolean head) {
+        if (!valid(condition) || !"equipment".equals(condition.get("type"))) return false;
+        int slot = condition.containsKey("slot") ? equipmentSlotIndex(condition.get("slot")) : -1;
+        boolean[] matched = {feet, legs, chest, head};
+        int count = 0;
+        for (int i = 0; i < matched.length; i++) {
+            if ((slot == -1 || slot == i) && matched[i]) count++;
+        }
+        return count >= minimumOf(condition, 1);
     }
 
     /**

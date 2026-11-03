@@ -183,12 +183,33 @@ public final class RddWorldFacts {
                 case "shelter" -> shelterAround(ap, condition);
                 case "stocked" -> stockedAround(ap, condition);
                 case "lit" -> litAround(ap, condition);
+                case "equipment" -> equipped(ap, condition);
                 default -> false;
             };
         } catch (IllegalArgumentException exception) {
             // Malformed IDs/conditions are unproven, never inventory fallbacks.
             return false;
         }
+    }
+
+    /** 当前槽位事实，不证明本步是否执行过穿戴或四件是否同时齐全。 */
+    private static boolean equipped(NumenPlayer ap, Map<String, Object> condition) {
+        if (!WorldFactConditions.valid(condition) || !dimension(ap.serverLevel(), condition)) return false;
+        Object raw = condition.get("item");
+        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+        if (key == null) return false;
+        // itemHit 的 food 兜底只用于容器；装备条件按注册表中的真实 tag，不猜。
+        if (WorldFactConditions.isTag(raw)
+                && BuiltInRegistries.ITEM.getTag(TagKey.create(Registries.ITEM, key)).isEmpty()) return false;
+        Predicate<ItemStack> hit = itemHit(raw, key);
+        if (hit == null) return false;
+        boolean[] matched = new boolean[4];
+        for (int i = 0; i < matched.length; i++) {
+            ItemStack stack = ap.getInventory().getArmor(i);
+            matched[i] = !stack.isEmpty() && hit.test(stack);
+        }
+        return WorldFactConditions.equipmentSlotsSatisfied(condition,
+                matched[0], matched[1], matched[2], matched[3]);
     }
 
     private static ResourceLocation id(Map<String, Object> condition, String key) {

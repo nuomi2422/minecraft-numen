@@ -54,7 +54,8 @@ class WorldFactConditionsPinTest {
             "dimension", "position_at", "y_below",
             "entity_nearby", "block_at", "container_at",
             // 2026-10-25 D 组：基地分级（shelter/stocked/lit，全部以重生床为锚点）
-            "shelter", "stocked", "lit");
+            "shelter", "stocked", "lit",
+            "equipment");
 
     @Test
     void knownTypesArePinnedToTheFullSet() {
@@ -348,7 +349,7 @@ class WorldFactConditionsPinTest {
                 "block_mined", "item_crafted", "item_used", "item_picked_up",
                 "dimension", "position_at", "y_below",
                 "entity_nearby", "block_at", "container_at",
-                "shelter", "stocked", "lit",
+                "shelter", "stocked", "lit", "equipment",
                 "inventory", "asset", "item", "block", "entity", "recipe",
                 "effect", "stat", "weather", "time", "damage", "xp", "level", "mob_nearby")) {
             if (WorldFactConditions.knownType(candidate)) accepted.add(candidate);

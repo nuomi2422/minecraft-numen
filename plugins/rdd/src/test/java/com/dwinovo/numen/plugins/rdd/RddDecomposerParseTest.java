@@ -17,6 +17,26 @@ class RddDecomposerParseTest {
         assertFalse(specs.getFirst().condition().containsKey("asset_key"));
         assertDoesNotThrow(() -> com.dwinovo.numen.rdd.core.RddChainFactory.fromSpec(java.util.UUID.randomUUID(), "food", specs));
     }
+    @Test void equipmentConditionsKeepTheirFieldsThroughParsingAndChainFactory() {
+        String json = """
+                {"subtasks":[{"description":"equip chestplate","condition":{"type":"equipment",
+                 "item":"minecraft:iron_chestplate","slot":"chest","minimum":1,"dimension":"minecraft:overworld"}}]}
+                """;
+        var specs = RddDecomposer.parse(json);
+        assertEquals(1, specs.size());
+        assertEquals("minecraft:iron_chestplate", specs.getFirst().condition().get("item"));
+        assertEquals("chest", specs.getFirst().condition().get("slot"));
+        assertEquals(1, specs.getFirst().condition().get("minimum"));
+        assertEquals("minecraft:overworld", specs.getFirst().condition().get("dimension"));
+        var goal = RddChainFactory.fromSpec(java.util.UUID.randomUUID(), "equip", specs);
+        assertEquals(specs.getFirst().condition(), goal.primaryGoals().getFirst().subtasks().getFirst().condition());
+    }
+
+    @Test void equipmentNullAndUnsupportedModeAreNotSilentlyConverted() {
+        assertTrue(RddDecomposer.parse("{\"subtasks\":[{\"description\":\"equip\",\"condition\":{\"type\":\"equipment\",\"item\":\"minecraft:iron_boots\",\"slot\":null}}]}").isEmpty());
+        assertTrue(RddDecomposer.parse("{\"subtasks\":[{\"description\":\"equip\",\"condition\":{\"type\":\"equipment\",\"item\":\"minecraft:iron_boots\",\"mode\":\"acquire\"}}]}").isEmpty());
+    }
+
     @Test void parsesWorldEvidenceAndRejectsFractionalKillThreshold() {
         assertEquals(1, RddDecomposer.parse("{\"subtasks\":[{\"description\":\"base\",\"condition\":{\"type\":\"base\"}}]}").size());
         assertTrue(RddDecomposer.parse("{\"subtasks\":[{\"description\":\"dragon\",\"condition\":{\"type\":\"entity_killed\",\"entity\":\"minecraft:ender_dragon\",\"minimum\":1.5}}]}").isEmpty());
