@@ -120,6 +120,22 @@ class RddDeathLedgerStoreTest {
         assertEquals(2, RddDeathLedger.all(ID).size(), "按 seq 去重，不能变成 4 条");
     }
 
+    /** 长期日志只读访问器（#662 的 a 项）：能按 seq 升序取回、limit 取最新 N 条。 */
+    @Test
+    void journalReaderReturnsNewestFirstBySeq(@TempDir Path dir) throws Exception {
+        RddDeathLedger.clearAll();
+        for (int i = 1; i <= 3; i++) {
+            var d = RddDeathLedger.record(ID, 1000L * i, 5000L * i, i + ", 2, 3", 1);
+            RddDeathLedgerStore.appendJournal(dir, ID, d);
+        }
+        var all = RddDeathLedgerStore.readJournal(dir, ID, 0);
+        assertEquals(3, all.size());
+        assertEquals(1, all.get(0).seq());
+        var newest2 = RddDeathLedgerStore.readJournal(dir, ID, 2);
+        assertEquals(2, newest2.size());
+        assertEquals(3, newest2.get(1).seq(), "limit 取最新 N 条");
+    }
+
     @Test
     void writtenJsonIsUtf8AndSelfDescribing(@TempDir Path dir) throws Exception {
         RddDeathLedger.clearAll();

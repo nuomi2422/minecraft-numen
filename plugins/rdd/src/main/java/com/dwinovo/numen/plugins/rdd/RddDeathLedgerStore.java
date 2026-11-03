@@ -210,6 +210,38 @@ final class RddDeathLedgerStore {
                 + System.lineSeparator(), StandardCharsets.UTF_8);
     }
 
+    /**
+     * 只读长期日志（#662 设计里的“危险统计读日志”那一半）——**当前未接线**。
+     *
+     * <p>为什么先只给访问器：把危险点/knownFailures 从内存环形改成读日志，会改变规划上下文
+     * 的体积与内容，属于行为变更，需要主会话定口径。这里先把能力备好并测通，
+     * 接线时只改调用方。
+     *
+     * @param limit 最多返回多少条（按 seq 倒序取最新）；≤0 表示不限制
+     * @return 日志里能解析出来的死亡（seq 升序）；文件不存在/损坏返回空表
+     */
+    static java.util.List<RddDeathLedger.Death> readJournal(Path directory, UUID companionId, int limit) {
+        if (directory == null || companionId == null) return java.util.List.of();
+        Path log = directory.resolve(companionId + JOURNAL_SUFFIX);
+        if (!Files.isRegularFile(log)) return java.util.List.of();
+        Map<Integer, RddDeathLedger.Death> bySeq = new LinkedHashMap<>();
+        try {
+            for (String line : Files.readAllLines(log, StandardCharsets.UTF_8)) {
+                if (line.isBlank()) continue;
+                RddDeathLedger.Death d = parseDeath(JsonParser.parseString(line));
+                if (d != null) bySeq.put(d.seq(), d);
+            }
+        } catch (IOException | RuntimeException bad) {
+            return java.util.List.of();
+        }
+        java.util.List<RddDeathLedger.Death> all = new java.util.ArrayList<>(bySeq.values());
+        all.sort(java.util.Comparator.comparingInt(RddDeathLedger.Death::seq));
+        if (limit > 0 && all.size() > limit) {
+            return java.util.List.copyOf(all.subList(all.size() - limit, all.size()));
+        }
+        return java.util.List.copyOf(all);
+    }
+
     /** 快照 + 追加日志重放：seq 大于快照最大值的行补进来（按 seq 去重）。 */
     private static RddDeathLedger.LedgerSnapshot replay(Path directory, UUID companionId,
                                                          RddDeathLedger.LedgerSnapshot base) {
