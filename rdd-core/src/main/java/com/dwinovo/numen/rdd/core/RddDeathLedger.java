@@ -92,6 +92,20 @@ public final class RddDeathLedger {
             this(seq, gameTime, wallClockMillis, deathAt, lostEntries, state, evidence, null, "", false);
         }
 
+        /**
+         * G7 形状（9 参：lostItems + cause，无 testKill）。
+         *
+         * <p>2026-11-03（外部学习者 P0-1）：加了 {@code testKill} 之后，原来由 record 规范构造器
+         * 隐式提供的这个 9 参形状消失，{@code RddDeathSpotFactsTest} 等既有调用点会直接编译不过。
+         * 这里显式补回，缺省 false —— 旧调用点行为不变。
+         */
+        public Death(int seq, long gameTime, long wallClockMillis,
+                     String deathAt, int lostEntries,
+                     State state, String evidence,
+                     Map<String, Integer> lostItems, String cause) {
+            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, state, evidence, lostItems, cause, false);
+        }
+
         /** 本次死亡丢了哪些、各多少（可能为 null = 本次改动前的旧批次，无法逐项核对）。 */
         public Map<String, Integer> lostItems() {
             return lostItems == null ? Map.of() : lostItems;
@@ -127,31 +141,56 @@ public final class RddDeathLedger {
     private static final Map<UUID, Integer> SEQ = new ConcurrentHashMap<>();
 
     /**
-     * 测试致死标记的有效窗口（毫秒）。
+     * 测试致死标记（2026-11-03，外部学习者 P0-1；窗口/判据按主会话复审修正）。
      *
-     * <p>2026-11-03（外部学习者 P0-1）：{@code debug_kill} 与管理员传送会走原版死亡流程，
-     * 产生的死亡与自然死亡在台账里完全同形。实测 12:04/12:06 两次 {@code debug_kill}
-     * 让 {@code rdd_choose_death_recovery} 判出 {@code REFUSED_REPEATED_DEATH_AREA}
-     * —— 人工验证被当成真实危险信号累计，属于「测量污染被测对象」。
+     * <p>背景：{@code debug_kill} 与管理员传送会走原版死亡流程，产生的死亡与自然死亡在台账里
+     * 完全同形。实测 12:04/12:06 两次 {@code debug_kill} 让 {@code rdd_choose_death_recovery}
+     * 判出 {@code REFUSED_REPEATED_DEATH_AREA} —— 人工验证被当成真实危险信号累计。
      *
-     * <p>做法：测试路径在真正致死前 {@link #markTestKill(UUID)}，5 秒内到达的那次死亡
-     * 打 {@code testKill=true}；聚类只看非测试死亡，台账仍保留全部记录（可审计）。
+     * <p><b>两种来源分开处理</b>（复审意见：5 秒一刀切会既误标又漏标）：
+     * <ul>
+     *   <li>{@link Source#DEBUG_KILL}：{@code entity.kill()} 在同一 tick 就死，5 秒窗口足够；任何死因都算；</li>
+     *   <li>{@link Source#ADMIN_MOVE}：管理员 {@code tp} 抬高后要**坠落几秒**，窗口放宽到 20 秒，
+     *       但**只认 {@code fall} 死因**——同一窗口内被怪打死不会被误标成测试（这条正是把
+     *       08:34 那次自然 mob 死亡排除掉的原因）。</li>
+     * </ul>
+     *
+     * <p>标记一次性：消费即清除，避免后续自然死亡被连带污染。
      */
-    public static final long TEST_KILL_WINDOW_MS = 5_000L;
+    public enum Source { DEBUG_KILL, ADMIN_MOVE }
 
-    private static final Map<UUID, Long> TEST_KILL_AT = new ConcurrentHashMap<>();
+    public static final long DEBUG_KILL_WINDOW_MS = 5_000L;
+    public static final long ADMIN_MOVE_WINDOW_MS = 20_000L;
 
-    /** 调试/测试路径在真正致死前调用：下一次死亡（{@link #TEST_KILL_WINDOW_MS} 内）标记为测试致死。 */
+    private record Pending(long at, Source source, long windowMs) {}
+
+    private static final Map<UUID, Pending> TEST_KILL = new ConcurrentHashMap<>();
+
+    /** 调试致死前调用（{@code entity.kill()} 前）：下一次死亡标记为测试致死。 */
     public static void markTestKill(UUID companionId) {
+        mark(companionId, Source.DEBUG_KILL, DEBUG_KILL_WINDOW_MS);
+    }
+
+    /** 管理员移动身体前调用（{@code tp}/{@code summon}/{@code fill}）：只有随后的 {@code fall} 才标记。 */
+    public static void markAdminMove(UUID companionId) {
+        mark(companionId, Source.ADMIN_MOVE, ADMIN_MOVE_WINDOW_MS);
+    }
+
+    private static void mark(UUID companionId, Source source, long windowMs) {
         if (companionId != null) {
-            TEST_KILL_AT.put(companionId, System.currentTimeMillis());
+            TEST_KILL.put(companionId, new Pending(System.currentTimeMillis(), source, windowMs));
         }
     }
 
-    /** 取走并判断标记（一次性）：只有真正紧邻标记的死亡才算测试致死。 */
-    private static boolean consumeTestKillMarker(UUID id) {
-        Long at = TEST_KILL_AT.remove(id);
-        return at != null && System.currentTimeMillis() - at <= TEST_KILL_WINDOW_MS;
+    /** 取走并判断标记（一次性）。{@code cause} 用于 ADMIN_MOVE 的“只认 fall”判据。 */
+    private static boolean consumeTestKillMarker(UUID id, String cause) {
+        Pending p = TEST_KILL.remove(id);
+        if (p == null) return false;
+        if (System.currentTimeMillis() - p.at() > p.windowMs()) return false;
+        if (p.source() == Source.ADMIN_MOVE) {
+            return "fall".equalsIgnoreCase(cause == null ? "" : cause.trim());
+        }
+        return true;
     }
 
     private RddDeathLedger() {}
@@ -252,10 +291,11 @@ public final class RddDeathLedger {
         if (lostItems != null && !lostItems.isEmpty()) {
             items = java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(lostItems));
         }
+        String normalizedCause = cause == null ? "" : cause;
         Death d = new Death(seq, gameTime, wallClockMillis,
                 deathAt == null ? "?" : deathAt, Math.max(0, lostEntries),
-                State.UNVERIFIED, "", items, cause == null ? "" : cause,
-                consumeTestKillMarker(id));
+                State.UNVERIFIED, "", items, normalizedCause,
+                consumeTestKillMarker(id, normalizedCause));
         List<Death> list = LEDGER.computeIfAbsent(id, k -> new ArrayList<>());
         synchronized (list) {
             list.add(d);

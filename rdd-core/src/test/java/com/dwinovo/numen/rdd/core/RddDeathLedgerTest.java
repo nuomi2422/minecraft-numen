@@ -153,6 +153,22 @@ class RddDeathLedgerTest {
         assertFalse(natural.testKill(), "标记是一次性的：紧接着的下一次死亡应回到自然死亡");
     }
 
+    /**
+     * 2026-11-03（主会话复审意见）：管理员移动身体的标记**只认 fall**。
+     *
+     * <p>实测 12:09:07 tp 到 y=180、12:09:10 摔死（fall）；但 08:34:08 那次是自然 mob 死亡，
+     * 与一条 08:34:15 的管理员指令只差 7 秒 —— 一刀切窗口会把它误标成测试致死。
+     */
+    @Test void adminMoveMarkerMarksFallButNotMobDeaths() {
+        RddDeathLedger.markAdminMove(id);
+        var fall = RddDeathLedger.record(id, 1000L, System.currentTimeMillis(), "10, 64, 10", 1, null, "fall");
+        assertTrue(fall.testKill(), "tp 抬高后坠落属于测试致死");
+
+        RddDeathLedger.markAdminMove(id);
+        var mob = RddDeathLedger.record(id, 2000L, System.currentTimeMillis(), "10, 64, 10", 1, null, "mob");
+        assertFalse(mob.testKill(), "同一窗口里被怪打死是自然死亡，不能误标");
+    }
+
     @Test void deathWithoutMarkerIsNatural() {
         var d = RddDeathLedger.record(id, 1000L, 0L, "20, 64, 20", 2);
         assertFalse(d.testKill());

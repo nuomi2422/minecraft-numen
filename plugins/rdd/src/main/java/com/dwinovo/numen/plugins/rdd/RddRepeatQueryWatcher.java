@@ -86,6 +86,15 @@ final class RddRepeatQueryWatcher {
         SEEN.clear();
     }
 
+    /**
+     * 2026-11-03（外部学习者）：HEAD 的 {@code RddPlugin} 已经在调这个方法，但提交里没有它
+     * （工作区里是未提交改动）⇒ 干净树必然编译失败。语义与调用点注释一致：
+     * MCP 监控面（{@code toolCallId} 以 {@code mcp-} 开头）不是同伴行为，不计入重复查询。
+     */
+    static boolean isExternalCall(String toolCallId) {
+        return toolCallId != null && toolCallId.startsWith("mcp-");
+    }
+
     /** 测试用：替换副作用出口。 */
     static void installNotifier(Notifier n) {
         notifier = n;
