@@ -30,8 +30,9 @@ final class RddDeathRecoveryGuard {
         for (int i = deathAt.size() - 2; i >= from; i--) {
             double[] p = parse(deathAt.get(i));
             if (p == null) continue;
-            double dx = p[0] - latest[0], dy = p[1] - latest[1], dz = p[2] - latest[2];
-            if (dx * dx + dy * dy + dz * dz <= (double) radius * radius) return true;
+            // 水平距离：同一 x/z、地表 vs 深洞也算“同点”；垂直差单独看会漏掉坠落/矿洞回冲。
+            double dx = p[0] - latest[0], dz = p[2] - latest[2];
+            if (dx * dx + dz * dz <= (double) radius * radius) return true;
         }
         return false;
     }
@@ -46,6 +47,16 @@ final class RddDeathRecoveryGuard {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    /** 供台账留痕：为什么放行/拒绝（尤其 unknown_cause 不能静默放行）。 */
+    static String recoverGuardReason(boolean noCombatGear, String lastCause) {
+        if (!noCombatGear) return "geared";
+        if (lastCause == null || lastCause.isBlank()) return "unknown_cause_allow";
+        String c = lastCause.toLowerCase(Locale.ROOT);
+        boolean hazard = c.contains("lava") || c.contains("onfire") || c.contains("fire")
+                || c.contains("fall") || c.contains("mob");
+        return hazard ? "hazard_cause_refused" : "non_hazard_cause_allow";
     }
 
     /** 台账里 seq 最大的那条的死因（读不到返回空串，不猜）。 */

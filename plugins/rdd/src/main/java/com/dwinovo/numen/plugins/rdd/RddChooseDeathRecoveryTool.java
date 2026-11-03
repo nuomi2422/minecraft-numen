@@ -82,6 +82,11 @@ final class RddChooseDeathRecoveryTool implements NumenTool {
             // 背包空 或 胸甲槽空 都算没有保命装备。
             boolean noCombatGear = companion.getInventory().isEmpty()
                     || companion.getInventory().getArmor(2).isEmpty();
+            String guardReason = RddDeathRecoveryGuard.recoverGuardReason(noCombatGear, lastCause);
+            RddMonitor.publish("t6_recover_guard", Map.of(
+                    "companionId", companion.getUUID().toString(),
+                    "decision", parsed.name(), "reason", guardReason,
+                    "lastCause", lastCause == null ? "" : lastCause));
             if (!RddDeathRecoveryGuard.allowRecoverFirst(noCombatGear, lastCause)) {
                 reply.accept(TaskResult.fail("REFUSED_EMPTY_HANDS: 背包空手且上次死因是 " + lastCause
                         + "，回死亡点捡装备等于再死一次；先 FETCH_BACKUP_THEN_CONTINUE（拿备用）"

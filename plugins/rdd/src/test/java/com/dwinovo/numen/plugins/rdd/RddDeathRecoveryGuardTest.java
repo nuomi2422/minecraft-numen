@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.rdd;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -38,5 +39,22 @@ class RddDeathRecoveryGuardTest {
                 java.util.List.of("10, 64, 10", "100, 64, 100"), 24));
         assertFalse(RddDeathRecoveryGuard.repeatedNearby(
                 java.util.List.of("?", "70, 63, 51"), 24));
+    }
+
+    @Test
+    void sameXzButDeeperStillCountsAsSameSpot() {
+        // 垂直差 >24 但 x/z 相同：坠落/矿洞回冲必须命中
+        assertTrue(RddDeathRecoveryGuard.repeatedNearby(
+                java.util.List.of("72, 63, 51", "72, -9, 51"), 24));
+        assertFalse(RddDeathRecoveryGuard.repeatedNearby(
+                java.util.List.of("72, 63, 51", "110, 63, 51"), 24));
+    }
+
+    @Test
+    void guardReasonDistinguishesUnknownFromSafe() {
+        assertEquals("unknown_cause_allow", RddDeathRecoveryGuard.recoverGuardReason(true, ""));
+        assertEquals("hazard_cause_refused", RddDeathRecoveryGuard.recoverGuardReason(true, "mob"));
+        assertEquals("non_hazard_cause_allow", RddDeathRecoveryGuard.recoverGuardReason(true, "starved"));
+        assertEquals("geared", RddDeathRecoveryGuard.recoverGuardReason(false, "lava"));
     }
 }
