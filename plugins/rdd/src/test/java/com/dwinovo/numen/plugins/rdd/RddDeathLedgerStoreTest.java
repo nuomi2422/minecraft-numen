@@ -14,6 +14,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -70,8 +71,20 @@ class RddDeathLedgerStoreTest {
 
         var seq1 = RddDeathLedger.all(ID).stream().filter(d -> d.seq() == 1).findFirst().orElseThrow();
         var seq2 = RddDeathLedger.all(ID).stream().filter(d -> d.seq() == 2).findFirst().orElseThrow();
-        assertTrue(seq1.testKill(), "测试致死标记必须落盘");
-        assertFalse(seq2.testKill(), "自然死亡不能被标记污染");
+        assertEquals(Boolean.TRUE, seq1.testKill(), "测试致死标记必须落盘");
+        assertEquals(Boolean.FALSE, seq2.testKill(), "自然死亡不能被标记污染");
+    }
+
+    /** 旧文件没有 testKill 键：必须解析成 null（未知），不能冒充 false（自然）。 */
+    @Test
+    void legacyLedgerWithoutTestKillParsesAsUnknown(@TempDir Path dir) throws Exception {
+        String legacy = "{\"version\":1,\"nextSeq\":2,\"deaths\":[{\"seq\":1,\"gameTime\":1000,\"wallClockMillis\":0,"
+                + "\"deathAt\":\"1, 2, 3\",\"lostEntries\":1,\"state\":\"UNVERIFIED\",\"evidence\":\"\",\"cause\":\"mob\"}]}";
+        RddDeathLedger.clearAll();
+        RddDeathLedger.restore(ID, RddDeathLedgerStore.parse(legacy));
+        var d = RddDeathLedger.latest(ID);
+        assertNotNull(d);
+        assertNull(d.testKill(), "缺键 = 未知，不能当自然死亡");
     }
 
     @Test

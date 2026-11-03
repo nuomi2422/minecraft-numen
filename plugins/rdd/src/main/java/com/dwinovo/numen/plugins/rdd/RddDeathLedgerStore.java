@@ -105,9 +105,11 @@ final class RddDeathLedgerStore {
             }
             String cause = o.has("cause") && o.get("cause").isJsonPrimitive()
                     ? o.get("cause").getAsString() : "";
-            // 2026-11-03（外部学习者 P0-1）：旧文件没有 testKill 键 ⇒ 缺省 false（历史条目靠一次性清洗补标）。
-            boolean testKill = o.has("testKill") && o.get("testKill").isJsonPrimitive()
-                    && o.get("testKill").getAsBoolean();
+            // 2026-11-03（外部学习者 P0-1，按主会话复审修正）：旧文件没有 testKill 键 ⇒ **null（未知）**，
+            // 不能当成 false（自然）——未知历史可能是测试致死，宁可标未知也不冒充自然。
+            Boolean testKill = o.has("testKill") && o.get("testKill").isJsonPrimitive()
+                    ? Boolean.valueOf(o.get("testKill").getAsBoolean())
+                    : null;
             return new RddDeathLedger.Death(seq, gameTime, wallClock, deathAt, Math.max(0, lost),
                     state, evidence, lostItems.isEmpty() ? null : Map.copyOf(lostItems), cause, testKill);
         } catch (RuntimeException bad) {
@@ -141,8 +143,8 @@ final class RddDeathLedgerStore {
             if (d.cause() != null && !d.cause().isBlank()) {
                 o.addProperty("cause", d.cause());
             }
-            if (d.testKill()) {
-                o.addProperty("testKill", true);
+            if (d.testKill() != null) {
+                o.addProperty("testKill", d.testKill());
             }
             if (!d.lostItems().isEmpty()) {
                 JsonObject items = new JsonObject();

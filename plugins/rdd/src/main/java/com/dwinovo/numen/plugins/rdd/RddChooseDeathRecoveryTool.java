@@ -71,7 +71,7 @@ final class RddChooseDeathRecoveryTool implements NumenTool {
             // 2026-11-03（外部学习者 P0-1）：测试致死不参与「重复死亡区」聚类。
             // 12:04/12:06 两次 debug_kill 让这条硬闸误判，把人工验证当成真实危险累计。
             // 台账仍保留全部记录（可审计），只在聚类输入处过滤 testKill。
-            var deaths = com.dwinovo.numen.rdd.core.RddDeathLedger.natural(companion.getUUID());
+            var deaths = com.dwinovo.numen.rdd.core.RddDeathLedger.notProvenTest(companion.getUUID());
             var deathAt = deaths == null ? java.util.List.<String>of()
                     : deaths.stream()
                             .map(com.dwinovo.numen.rdd.core.RddDeathLedger.Death::deathAt)

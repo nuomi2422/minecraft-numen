@@ -228,10 +228,9 @@ final class RddAdminCommandTool implements NumenTool {
             // tp 有 direct-teleport 快路径（下方 teleportTo 后直接 return），把标记塞在
             // performPrefixedCommand 前会漏掉那条路径 —— 正是 12:09:07 那次 tp 到 y=180 的形状。
             // 只有会移动身体/改世界的动词才可能导致非自然死亡，give/gamemode/time/weather 不标。
-            boolean bodyMovingAdmin = "tp".equals(verb) || "summon".equals(verb) || "fill".equals(verb);
-            if (bodyMovingAdmin) {
-                com.dwinovo.numen.rdd.core.RddDeathLedger.markAdminMove(companion.getUUID());
-            }
+            // 2026-11-03（主会话复审）：管理员 tp 与随后坠落只是**时间相关**，不是"确定测试致死"，
+            // 不能再拿相关性去标 testKill（12:09 那次也一样）。外部干预由事实层/人工审计处理，
+            // 这里只留一行日志备注，不改死亡分类。
 
             // 2026-10-29：`tp @s x y z [dim]` 特判 —— 假玩家走原版 tp 不生效（与 D-20 同源：
             //   维度/位置切换要"给客户端"的握手，空壳连接等不到）。这里直接调 teleportTo。
