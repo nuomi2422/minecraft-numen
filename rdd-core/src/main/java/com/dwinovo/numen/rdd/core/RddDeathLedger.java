@@ -543,6 +543,7 @@ public final class RddDeathLedger {
                                           long windowTicks, double radiusBlocks,
                                           int excludeSeq) {
         for (Death d : all(companionId)) {
+            if (d.testKill()) continue;   // 2026-11-03（P0-1）：测试致死不构成“重复死亡”
             if (excludeSeq >= 0 && d.seq() == excludeSeq) continue;   // 不跟自己比
             if (nowGameTime - d.gameTime() > windowTicks) continue;
             if (isNear(d.deathAt(), atX, atY, atZ, radiusBlocks)) return d;
@@ -572,9 +573,24 @@ public final class RddDeathLedger {
         }
     }
 
-    /** 死亡次数（台账内计数）。 */
+    /** 死亡次数（台账内计数，含测试致死）。 */
     public static int deathsRecorded(UUID companionId) {
         return all(companionId).size();
+    }
+
+    /**
+     * 只留**非测试**致死（2026-11-03 P0-1）。
+     *
+     * <p>危险点、knownFailures、恢复守卫这类“上次怎么死的”判据都该看自然死亡：
+     * 测试击杀（debug_kill / 管理员传送）不是她踩到的危险。台账本身仍保留全部记录，
+     * 掉落回收那一侧继续用 {@link #all(UUID)}，避免丢恢复线索。
+     */
+    public static List<Death> natural(UUID companionId) {
+        List<Death> out = new ArrayList<>();
+        for (Death d : all(companionId)) {
+            if (!d.testKill()) out.add(d);
+        }
+        return out;
     }
 
     /**

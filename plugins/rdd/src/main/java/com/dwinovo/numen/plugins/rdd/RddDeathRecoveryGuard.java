@@ -66,7 +66,7 @@ final class RddDeathRecoveryGuard {
         try {
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death last = null;
             for (com.dwinovo.numen.rdd.core.RddDeathLedger.Death d
-                    : com.dwinovo.numen.rdd.core.RddDeathLedger.all(companionId)) {
+                    : com.dwinovo.numen.rdd.core.RddDeathLedger.natural(companionId)) {
                 if (last == null || d.seq() > last.seq()) last = d;
             }
             return last == null || last.cause() == null ? "" : last.cause();

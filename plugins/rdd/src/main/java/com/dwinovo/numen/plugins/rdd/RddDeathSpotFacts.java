@@ -24,7 +24,8 @@ final class RddDeathSpotFacts {
         if (companionId == null) return "";
         try {
             List<DangerSpots.DeathAt> deaths = new ArrayList<>();
-            for (RddDeathLedger.Death d : RddDeathLedger.all(companionId)) {
+            // 2026-11-03（P0-1）：危险点/knownFailures 只看自然死亡，测试击杀不是她踩到的危险。
+            for (RddDeathLedger.Death d : RddDeathLedger.natural(companionId)) {
                 int[] xyz = parse(d.deathAt());
                 if (xyz == null) continue;
                 deaths.add(new DangerSpots.DeathAt(d.seq(), xyz[0], xyz[1], xyz[2], d.gameTime()));
@@ -78,7 +79,7 @@ final class RddDeathSpotFacts {
     static List<String> knownFailuresFor(UUID companionId) {
         if (companionId == null) return List.of();
         try {
-            return knownFailures(RddDeathLedger.all(companionId));
+            return knownFailures(RddDeathLedger.natural(companionId));
         } catch (RuntimeException ignored) {
             return List.of();
         }
