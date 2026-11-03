@@ -29,25 +29,37 @@ class RddDeathRecoveryGuardTest {
         assertTrue(RddDeathRecoveryGuard.allowRecoverFirst(true, null));
     }
 
+    private static java.util.UUID seedDeath(java.util.UUID id, long gameTime, String deathAt) {
+        com.dwinovo.numen.rdd.core.RddDeathLedger.record(
+                id, gameTime, gameTime, deathAt, 1, java.util.Map.of("minecraft:stone", 1));
+        return id;
+    }
+
     @Test
     void repeatedDeathsNearbyBlockRecoverFirst() {
-        assertTrue(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("72, 63, 51", "70, 63, 51"), 24));
-        assertTrue(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("10, 64, 10", "100, 64, 100", "12, 64, 11"), 24));
-        assertFalse(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("10, 64, 10", "100, 64, 100"), 24));
-        assertFalse(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("?", "70, 63, 51"), 24));
+        java.util.UUID id = seedDeath(java.util.UUID.randomUUID(), 1_000L, "72, 63, 51");
+        seedDeath(id, 1_020L, "70, 63, 51");
+        assertTrue(com.dwinovo.numen.rdd.core.RddDeathLedger.latestDeathRepeatNearby(id, 3_600L, 8.0));
+
+        java.util.UUID far = seedDeath(java.util.UUID.randomUUID(), 1_000L, "10, 64, 10");
+        seedDeath(far, 1_020L, "300, 64, 300");
+        assertFalse(com.dwinovo.numen.rdd.core.RddDeathLedger.latestDeathRepeatNearby(far, 3_600L, 8.0));
+    }
+
+    @Test
+    void oldDeathOutsideWindowDoesNotCount() {
+        // 同点但相隔 10 小时（720000 ticks > 3600 窗口）：不算「同点连死」
+        java.util.UUID id = seedDeath(java.util.UUID.randomUUID(), 1_000L, "72, 63, 51");
+        seedDeath(id, 721_000L, "72, 63, 51");
+        assertFalse(com.dwinovo.numen.rdd.core.RddDeathLedger.latestDeathRepeatNearby(id, 3_600L, 8.0));
     }
 
     @Test
     void sameXzButDeeperStillCountsAsSameSpot() {
-        // 垂直差 >24 但 x/z 相同：坠落/矿洞回冲必须命中
-        assertTrue(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("72, 63, 51", "72, -9, 51"), 24));
-        assertFalse(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("72, 63, 51", "110, 63, 51"), 24));
+        // 垂直差很大但 x/z 相同：坠落/矿洞回冲必须命中（水平距离语义）
+        java.util.UUID id = seedDeath(java.util.UUID.randomUUID(), 1_000L, "72, 63, 51");
+        seedDeath(id, 1_020L, "72, -9, 51");
+        assertTrue(com.dwinovo.numen.rdd.core.RddDeathLedger.latestDeathRepeatNearby(id, 3_600L, 8.0));
     }
 
     @Test

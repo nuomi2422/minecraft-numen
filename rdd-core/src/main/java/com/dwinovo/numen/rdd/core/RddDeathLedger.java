@@ -234,6 +234,50 @@ public final class RddDeathLedger {
     }
 
     /**
+     * 最新一次死亡，是否与窗口内的上一次死亡挤在同一片（「同点连死」）。
+     *
+     * <p>2026-11-03 审核（REINVENT/CONFLICT）：原先调用方 RddDeathRecoveryGuard 自己扫 deathAt 列表、
+     * radius 硬编 24、且没有时间窗（十小时前的老死亡也算「最近三次」）。这里把窗口与半径收敛到台账一处，
+     * 调用方只传 RL-16 的常量（REPEAT_DEATH_WINDOW_TICKS / REPEAT_DEATH_RADIUS_BLOCKS）。
+     *
+     * <p>用<b>水平距离</b>（只看 x/z）：地表坠落、矿洞回冲这类「同一 x/z、垂直差几十格」的死亡必须命中；
+     * 既有 repeatDeathWithin 是三维距离会漏掉这一类，两者语义待统一（169 T4）；统一前本方法只服务
+     * 「回不回死亡点」这一决策，不改 RL-16 既有判据。
+     */
+    public static boolean latestDeathRepeatNearby(UUID companionId, long windowTicks, double radiusBlocks) {
+        List<Death> sorted = all(companionId);
+        if (sorted.size() < 2 || radiusBlocks <= 0) return false;
+        Death latest = sorted.get(0);
+        int[] latestPos = parseDeathAt(latest.deathAt());
+        if (latestPos == null) return false;
+        long now = latest.gameTime();
+        for (int i = 1; i < sorted.size(); i++) {
+            Death other = sorted.get(i);
+            if (now - other.gameTime() > windowTicks) break; // 台账按 gameTime 倒序，越往后越旧
+            int[] p = parseDeathAt(other.deathAt());
+            if (p == null) continue;
+            double dx = p[0] - latestPos[0];
+            double dz = p[2] - latestPos[2];
+            if (dx * dx + dz * dz <= radiusBlocks * radiusBlocks) return true;
+        }
+        return false;
+    }
+
+    /** {@link Death#deathAt()} 是 x, y, z 短文本；解析不了返回 null（不猜）。 */
+    private static int[] parseDeathAt(String deathAt) {
+        if (deathAt == null) return null;
+        String[] parts = deathAt.split(",");
+        if (parts.length != 3) return null;
+        try {
+            return new int[]{(int) Math.round(Double.parseDouble(parts[0].trim())),
+                    (int) Math.round(Double.parseDouble(parts[1].trim())),
+                    (int) Math.round(Double.parseDouble(parts[2].trim()))};
+        } catch (NumberFormatException notCoordinates) {
+            return null;
+        }
+    }
+
+    /**
      * 记下「这一次死亡的东西**确实**没了」的证据（2026-09-30 深审 R07）。
      *
      * <p>没有这个方法，系统只能靠时钟猜——而时钟猜不出来（原版只在区块被 tick 时给掉落物计龄）。

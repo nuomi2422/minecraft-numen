@@ -60,6 +60,20 @@ public final class RddWorldFacts {
     public static List<String> unresolvedTags(NumenPlayer ap, Map<String, Object> condition) {
         List<String> out = new ArrayList<>();
         if (ap == null || condition == null) return out;
+        // 2026-11-03 审核：advancement id 写错时条件永远判不出来，但此前 probe 只报
+        // valid=true/matched=false —— 读起来像“还没达成”，实际是“根本没有这个 id”。
+        // 今天两次卡死（stage3 r6-4 10 分钟、stage7 r11-3 16 分钟）都是这个误读。
+        // 与 #tag 同口径：注册表里没有 → 列入 unresolved，probe 直接报 valid=false。
+        if ("advancement".equals(String.valueOf(condition.get("type")))) {
+            Object advRaw = condition.get("advancement");
+            String advId = advRaw instanceof String s ? s.trim() : null;
+            ResourceLocation advKey = advId == null ? null : ResourceLocation.tryParse(advId);
+            if (advKey == null) {
+                out.add("advancement=" + advRaw);
+            } else if (ap.getServer().getAdvancements().get(advKey) == null) {
+                out.add("advancement=" + advKey);
+            }
+        }
         for (String field : new String[]{"entity", "block", "item", "structure", "biome"}) {
             Object raw = condition.get(field);
             if (!WorldFactConditions.isTag(raw)) continue;
@@ -183,12 +197,33 @@ public final class RddWorldFacts {
                 case "shelter" -> shelterAround(ap, condition);
                 case "stocked" -> stockedAround(ap, condition);
                 case "lit" -> litAround(ap, condition);
+                case "equipment" -> equipped(ap, condition);
                 default -> false;
             };
         } catch (IllegalArgumentException exception) {
             // Malformed IDs/conditions are unproven, never inventory fallbacks.
             return false;
         }
+    }
+
+    /** 当前槽位事实，不证明本步是否执行过穿戴或四件是否同时齐全。 */
+    private static boolean equipped(NumenPlayer ap, Map<String, Object> condition) {
+        if (!WorldFactConditions.valid(condition) || !dimension(ap.serverLevel(), condition)) return false;
+        Object raw = condition.get("item");
+        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+        if (key == null) return false;
+        // itemHit 的 food 兜底只用于容器；装备条件按注册表中的真实 tag，不猜。
+        if (WorldFactConditions.isTag(raw)
+                && BuiltInRegistries.ITEM.getTag(TagKey.create(Registries.ITEM, key)).isEmpty()) return false;
+        Predicate<ItemStack> hit = itemHit(raw, key);
+        if (hit == null) return false;
+        boolean[] matched = new boolean[4];
+        for (int i = 0; i < matched.length; i++) {
+            ItemStack stack = ap.getInventory().getArmor(i);
+            matched[i] = !stack.isEmpty() && hit.test(stack);
+        }
+        return WorldFactConditions.equipmentSlotsSatisfied(condition,
+                matched[0], matched[1], matched[2], matched[3]);
     }
 
     private static ResourceLocation id(Map<String, Object> condition, String key) {
@@ -203,11 +238,38 @@ public final class RddWorldFacts {
         return wanted != null && level.dimension().location().equals(wanted);
     }
 
+    /**
+     * Only advancement conditions: a successful registry miss is INVALID; unavailable
+     * server/registry/progress is NOT_VERIFIABLE. No failure is a completed world fact.
+     */
+    static com.dwinovo.numen.rdd.core.AdvancementVerification.Result advancementResult(
+            NumenPlayer ap, Map<String, Object> condition) {
+        var unknown = com.dwinovo.numen.rdd.core.AdvancementVerification.Result.NOT_VERIFIABLE;
+        if (ap == null || condition == null) return unknown;
+        try {
+            var server = ap.getServer();
+            if (server == null || !server.isSameThread() || server.getAdvancements() == null) return unknown;
+            if (!WorldFactConditions.valid(condition))
+                return com.dwinovo.numen.rdd.core.AdvancementVerification.Result.INVALID;
+            ResourceLocation key = id(condition, "advancement");
+            if (key == null) return com.dwinovo.numen.rdd.core.AdvancementVerification.Result.INVALID;
+            // A dimension restriction is a real guard, not an ignored condition field.
+            if (condition.containsKey("dimension")) {
+                if (ap.serverLevel() == null) return unknown;
+                if (!dimension(ap.serverLevel(), condition))
+                    return com.dwinovo.numen.rdd.core.AdvancementVerification.Result.NOT_MATCHED;
+            }
+            return com.dwinovo.numen.rdd.core.AdvancementVerification.evaluate(key.toString(),
+                    id -> java.util.Optional.ofNullable(server.getAdvancements().get(key)),
+                    holder -> ap.getAdvancements().getOrStartProgress(holder).isDone());
+        } catch (RuntimeException ex) {
+            return unknown;
+        }
+    }
+
     private static boolean advancement(NumenPlayer ap, Map<String, Object> condition) {
-        ResourceLocation key = id(condition, "advancement");
-        if (key == null) return false;
-        var advancement = ap.getServer().getAdvancements().get(key);
-        return advancement != null && ap.getAdvancements().getOrStartProgress(advancement).isDone();
+        return advancementResult(ap, condition)
+                == com.dwinovo.numen.rdd.core.AdvancementVerification.Result.MATCHED;
     }
 
     private static boolean killed(NumenPlayer ap, Map<String, Object> condition) {

@@ -34,7 +34,9 @@ public final class WorldFactConditions {
             // C 组：实体 / 精确坐标
             "entity_nearby", "block_at", "container_at",
             // D 组：基地分级（2026-10-25 主人预设：绑床只是第一级，有屋/有存货/有灯才算后续）
-            "shelter", "stocked", "lit");
+            "shelter", "stocked", "lit",
+            // E 组：装备槽实穿（2026-11-03：obtain_armor 成就只证明“拿到过”，不证明四槽穿上）
+            "equipment");
 
     /** 判定半径上限。判定只读一个邻域，永不遍历世界 —— 这是它能每秒跑一次的前提。 */
     public static final int MAX_NEARBY_RADIUS = 16;
@@ -83,6 +85,9 @@ public final class WorldFactConditions {
             case "shelter" -> optionalRadius(condition.get("radius")) && optionalPositive(condition.get("minimum"));
             case "stocked" -> optionalRadius(condition.get("radius")) && optionalPositive(condition.get("minimum"));
             case "lit" -> optionalRadius(condition.get("radius")) && optionalPositive(condition.get("minimum"));
+            case "equipment" -> tag(condition.get("item"))
+                    && (condition.get("slot") == null || slotName(condition.get("slot")))
+                    && optionalPositive(condition.get("minimum"));
             default -> false;
         };
     }
@@ -91,6 +96,15 @@ public final class WorldFactConditions {
      * 2026-11-03 实机：判据写 `white_bed`，现场是 `purple_bed` → 永远判假。
      * 床的颜色只是外观变体，任何 `*_bed`（含历史泛化 id `minecraft:bed`）都视为同一类方块。
      */
+    /** equipment 的槽位名：head/chest/legs/feet（也接受 helmet/chestplate/leggings/boots）。 */
+    public static boolean slotName(Object raw) {
+        if (!(raw instanceof String s)) return false;
+        return switch (s.toLowerCase(java.util.Locale.ROOT)) {
+            case "head", "helmet", "chest", "chestplate", "legs", "leggings", "feet", "boots" -> true;
+            default -> false;
+        };
+    }
+
     public static boolean isBedBlockId(String id) {
         if (id == null) return false;
         return id.equals("minecraft:bed") || id.endsWith("_bed");

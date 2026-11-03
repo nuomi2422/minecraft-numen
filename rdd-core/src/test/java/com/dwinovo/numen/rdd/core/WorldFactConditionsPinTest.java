@@ -54,7 +54,9 @@ class WorldFactConditionsPinTest {
             "dimension", "position_at", "y_below",
             "entity_nearby", "block_at", "container_at",
             // 2026-10-25 D 组：基地分级（shelter/stocked/lit，全部以重生床为锚点）
-            "shelter", "stocked", "lit");
+            "shelter", "stocked", "lit",
+            // 2026-11-03 E 组：装备槽（advancement 只能证明"拿到过"，S5 要"槽位实穿"）
+            "equipment");
 
     @Test
     void knownTypesArePinnedToTheFullSet() {

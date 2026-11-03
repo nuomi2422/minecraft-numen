@@ -67,13 +67,15 @@ final class RddChooseDeathRecoveryTool implements NumenTool {
         // 上次死因是 lava/onFire/fall 且背包一件不剩时，RECOVER_DROPS_FIRST 直接拒绝，
         // 逼它先 FETCH_BACKUP_THEN_CONTINUE / PREPARE_AND_REPLAN（拿备用或先补装）。
         if (parsed == com.dwinovo.numen.rdd.side.death.DeathRecoveryDecision.RECOVER_DROPS_FIRST) {
-            // T6：同点连死（最近 3 次里已有一次在 24 格内）不再允许回死亡点，先撤离/换路线。
-            var deaths = com.dwinovo.numen.rdd.core.RddDeathLedger.all(companion.getUUID());
-            var deathAt = deaths == null ? java.util.List.<String>of()
-                    : deaths.stream().map(com.dwinovo.numen.rdd.core.RddDeathLedger.Death::deathAt).toList();
-            if (RddDeathRecoveryGuard.repeatedNearby(deathAt, 24)) {
-                reply.accept(TaskResult.fail("REFUSED_REPEATED_DEATH_AREA: 最近死亡集中在同一片 24 格内，"
-                        + "回死亡点会继续送死；先撤离/换路线，或 FETCH_BACKUP_THEN_CONTINUE / PREPARE_AND_REPLAN。").toJson());
+            // T6：同点连死不再允许回死亡点，先撤离/换路线。
+            // 2026-11-03 审核：判断收敛到 RddDeathLedger（RL-16 的 180s 窗口 + 8 格半径常量），
+            // 不再本地扫 list、也不再用硬编的 24 与无窗口口径。
+            if (RddDeathRecoveryGuard.repeatedNearby(companion.getUUID(),
+                    RddPlugin.REPEAT_DEATH_WINDOW_TICKS, RddPlugin.REPEAT_DEATH_RADIUS_BLOCKS)) {
+                reply.accept(TaskResult.fail("REFUSED_REPEATED_DEATH_AREA: 最近死亡集中在同一片 "
+                        + (int) RddPlugin.REPEAT_DEATH_RADIUS_BLOCKS + " 格内（"
+                        + (RddPlugin.REPEAT_DEATH_WINDOW_TICKS / 20) + " 秒窗口），回死亡点会继续送死；"
+                        + "先撤离/换路线，或 FETCH_BACKUP_THEN_CONTINUE / PREPARE_AND_REPLAN。").toJson());
                 return;
             }
             String lastCause = RddDeathRecoveryGuard.lastDeathCause(companion.getUUID());

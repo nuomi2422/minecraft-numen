@@ -21,33 +21,16 @@ final class RddDeathRecoveryGuard {
                 || c.contains("fall") || c.contains("mob"));
     }
 
-    /** 最近几次死亡是否集中在同一小片区域（同点连死）；解析不了的位置跳过，不猜。 */
-    static boolean repeatedNearby(java.util.List<String> deathAt, int radius) {
-        if (deathAt == null || deathAt.size() < 2) return false;
-        // RddDeathLedger.all() 是 gameTime 倒序：下标 0 最新，不能拿 size-1 当最新。
-        double[] latest = parse(deathAt.get(0));
-        if (latest == null) return false;
-        int to = Math.min(2, deathAt.size() - 1);
-        for (int i = 1; i <= to; i++) {
-            double[] p = parse(deathAt.get(i));
-            if (p == null) continue;
-            // 水平距离：同一 x/z、地表 vs 深洞也算“同点”；垂直差单独看会漏掉坠落/矿洞回冲。
-            double dx = p[0] - latest[0], dz = p[2] - latest[2];
-            if (dx * dx + dz * dz <= (double) radius * radius) return true;
-        }
-        return false;
-    }
-
-    private static double[] parse(String s) {
-        if (s == null) return null;
-        String[] parts = s.split(",");
-        if (parts.length < 3) return null;
-        try {
-            return new double[]{Double.parseDouble(parts[0].trim()),
-                    Double.parseDouble(parts[1].trim()), Double.parseDouble(parts[2].trim())};
-        } catch (NumberFormatException e) {
-            return null;
-        }
+    /**
+     * 最新一次死亡是否与窗口内的上一次死亡挤在同一片（同点连死）。
+     *
+     * <p>2026-11-03 审核：原来这里自己扫 deathAt 列表、radius 硬编 24、无时间窗，
+     * 与 RddDeathLedger 里 RL-16 的 repeatDeathWithin(180s, 8.0) 是两份口径
+     * （20 格/10 秒前会一边判重复、一边判不重复）。现在统一委托给台账，只留一套判断与一组常量。
+     */
+    static boolean repeatedNearby(java.util.UUID companionId, long windowTicks, double radiusBlocks) {
+        return com.dwinovo.numen.rdd.core.RddDeathLedger.latestDeathRepeatNearby(
+                companionId, windowTicks, radiusBlocks);
     }
 
     /** 供台账留痕：为什么放行/拒绝（尤其 unknown_cause 不能静默放行）。 */

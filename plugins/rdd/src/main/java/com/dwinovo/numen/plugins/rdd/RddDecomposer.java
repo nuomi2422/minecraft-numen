@@ -727,7 +727,7 @@ final class RddDecomposer {
                                     "block_mined", "item_crafted", "item_used", "item_picked_up",
                                     "dimension", "position_at", "y_below",
                                     "entity_nearby", "block_at", "container_at",
-                                    "shelter", "stocked", "lit"))),
+                                    "shelter", "stocked", "lit", "equipment"))),
                     Map.entry("advancement", Map.of("type", "string")),
                     Map.entry("structure", Map.of("type", "string")),
                     Map.entry("entity", Map.of("type", "string")),

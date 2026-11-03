@@ -59,4 +59,73 @@ class PlanConsistencyTest {
         assertEquals(List.of(), PlanConsistency.check(null, List.of()));
         assertEquals(List.of(), PlanConsistency.check("", null));
     }
+    // ── 2026-11-03：语义 vs 条件类型的最小一致性 ──────────────────
+
+    private static PlanConsistency.Subtask typed(String type, Map<String, Object> extra) {
+        var m = new java.util.LinkedHashMap<String, Object>();
+        m.put("type", type);
+        if (extra != null) m.putAll(extra);
+        return new PlanConsistency.Subtask("", m);
+    }
+
+    @Test
+    void wearStatementNeedsEquipmentCondition() {
+        // 实机阶段 1 原文：只给了 container_at + position_at，穿戴从未被证明
+        var bad = PlanConsistency.checkSemantics(
+                "主用穿戴成型：把已持有的铁头盔/铁胸甲/铁护腿/铁靴子四件按装备槽真实穿上",
+                List.of(typed("container_at", Map.of("item", "minecraft:iron_ingot", "minimum", 1)),
+                        typed("position_at", Map.of("radius", 8))));
+        assertEquals(1, bad.size());
+        assertTrue(bad.get(0).startsWith("wear_without_equipment"));
+
+        var good = PlanConsistency.checkSemantics(
+                "主用穿戴成型：把四件铁甲按装备槽真实穿上",
+                List.of(typed("equipment", Map.of("item", "minecraft:iron_chestplate", "slot", "chest"))));
+        assertEquals(List.of(), good);
+    }
+
+    @Test
+    void storeStatementNeedsContainerCondition() {
+        var bad = PlanConsistency.checkSemantics(
+                "备用套入库对账：把第二套四部位铁甲搬进指定箱子",
+                List.of(typed("equipment", Map.of("item", "minecraft:iron_helmet", "slot", "head"))));
+        assertEquals(1, bad.size());
+        assertTrue(bad.get(0).startsWith("store_without_container"));
+
+        // 实机阶段 4 的写法：只有 stocked≥40，没有 container_at → 必须报 container_at 缺失
+        var stockedOnly = PlanConsistency.checkSemantics(
+                "备用套入库对账：把第二套四部位铁甲搬进指定箱子",
+                List.of(typed("stocked", Map.of("radius", 8, "minimum", 40))));
+        assertEquals(1, stockedOnly.size());
+        assertTrue(stockedOnly.get(0).startsWith("store_without_container_at"));
+
+        var good = PlanConsistency.checkSemantics(
+                "备用套入库对账：把第二套四部位搬进指定箱子",
+                List.of(typed("container_at", Map.of("item", "minecraft:iron_helmet", "minimum", 1))));
+        assertEquals(List.of(), good);
+    }
+
+    @Test
+    void sleepStatementNeedsSleepCondition() {
+        // 实机重写后：阶段 3 正文「连续两夜睡床」，条件只有 position_at/base/lit/stocked
+        var bad = PlanConsistency.checkSemantics("夜间自保：连续两夜在基地睡床或安全掩蔽",
+                List.of(typed("position_at", Map.of("radius", 8)), typed("lit", Map.of("minimum", 4))));
+        assertEquals(1, bad.size());
+        assertTrue(bad.get(0).startsWith("sleep_not_expressible"));
+    }
+
+    @Test
+    void singleSleepAdvancementCannotProveTwoNights() {
+        var once = PlanConsistency.checkSemantics("夜间自保：连续两夜睡床",
+                List.of(new PlanConsistency.Subtask("",
+                        Map.of("type", "advancement", "advancement", "minecraft:adventure/sleep_in_bed"))));
+        assertEquals(1, once.size());
+        assertTrue(once.get(0).startsWith("sleep_once_cannot_prove_two_nights"));
+    }
+
+    @Test
+    void unrelatedProseProducesNoSemanticWarning() {
+        assertEquals(List.of(), PlanConsistency.checkSemantics("去村庄拿干草块并做成面包",
+                List.of(cond("wheat", 8))));
+    }
 }
