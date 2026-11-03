@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** 2026-11-02（B7）：进下界后 100 tick 内，D-20 传送兜底不累计/不传送。 */
+/** 2026-11-02（B7）：进下界后 40 tick（2 秒）内，D-20 传送兜底不累计/不传送。 */
 class DimensionGraceTest {
 
     @Test
