@@ -57,4 +57,11 @@ class RddDeathRecoveryGuardTest {
         assertEquals("non_hazard_cause_allow", RddDeathRecoveryGuard.recoverGuardReason(true, "starved"));
         assertEquals("geared", RddDeathRecoveryGuard.recoverGuardReason(false, "lava"));
     }
+
+    @Test
+    void ledgerOrderIsNewestFirst() {
+        // all() 倒序：下标 0 最新；旧实现拿 size-1 会错过这条
+        assertTrue(RddDeathRecoveryGuard.repeatedNearby(
+                java.util.List.of("70, 63, 51", "72, 63, 51", "100, 100, 100"), 24));
+    }
 }

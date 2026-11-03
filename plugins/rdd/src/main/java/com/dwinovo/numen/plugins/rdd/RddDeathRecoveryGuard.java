@@ -24,10 +24,11 @@ final class RddDeathRecoveryGuard {
     /** 最近几次死亡是否集中在同一小片区域（同点连死）；解析不了的位置跳过，不猜。 */
     static boolean repeatedNearby(java.util.List<String> deathAt, int radius) {
         if (deathAt == null || deathAt.size() < 2) return false;
-        double[] latest = parse(deathAt.get(deathAt.size() - 1));
+        // RddDeathLedger.all() 是 gameTime 倒序：下标 0 最新，不能拿 size-1 当最新。
+        double[] latest = parse(deathAt.get(0));
         if (latest == null) return false;
-        int from = Math.max(0, deathAt.size() - 3);
-        for (int i = deathAt.size() - 2; i >= from; i--) {
+        int to = Math.min(2, deathAt.size() - 1);
+        for (int i = 1; i <= to; i++) {
             double[] p = parse(deathAt.get(i));
             if (p == null) continue;
             // 水平距离：同一 x/z、地表 vs 深洞也算“同点”；垂直差单独看会漏掉坠落/矿洞回冲。
