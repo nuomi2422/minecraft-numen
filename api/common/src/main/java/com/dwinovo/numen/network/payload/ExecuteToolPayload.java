@@ -90,7 +90,7 @@ public record ExecuteToolPayload(UUID entityUuid,
                 "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
                 "tool", p.toolName(), "args_chars", p.argumentsJson().length()));
         // H3（108 号）：旁路观察者（重复查询运行时感知）。只读，不改回执；没人注册时零开销。
-        com.dwinovo.numen.agent.tool.ToolCallObserver.fire(p.entityUuid(), p.toolName(), p.argumentsJson().length());
+        com.dwinovo.numen.agent.tool.ToolCallObserver.fire(p.entityUuid(), p.toolCallId(), p.toolName(), p.argumentsJson().length());
 
         // -- 0. companion player body (the new architecture). Resolve it (or
         //       respawn it from the registry on a cold start) and run the tool

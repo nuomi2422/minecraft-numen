@@ -321,12 +321,64 @@ public final class Companions {
                     level.dimension().location(), owner.position());
         }
         Vec3 pos = SafeSpawn.findNear(level, owner.position());
+        // 2026-11-02（学习线 death59）：owner 在 the_nether/the_end 时，findNear 会把同伴又拉回危险维度。
+        // 这种维度下无条件退主世界，不管 findNear 是否命中（death59 复活在下界复现过）。
+        boolean ownerInDangerDimension = level.dimension().equals(net.minecraft.world.level.Level.NETHER)
+                || level.dimension().equals(net.minecraft.world.level.Level.END);
         if (trace || pos != null) {
             com.dwinovo.numen.Constants.LOG.info("[numen][respawn] 决策 findNear={} standing={}",
                     pos, pos != null && SafeSpawn.isStanding(level, pos));
         }
         if (pos == null && owner.onGround() && SafeSpawn.hasStandingRoom(level, owner.position())) {
             pos = owner.position();   // non-full-block floor (slab/carpet): the owner's own spot fits
+        }
+        // 2026-11-02（实机 death49–56）：主人在下界岩浆台/洞穴里时 findNear 恒 null，
+        // 同伴就一直 pendingDead（实测 5 分钟不复活），救援命令也打不进去。
+        // 主人身边找不到落脚点 ≠ 不许复活：等够 10 秒就退到主世界出生点附近，
+        // 让它先活过来（宁可远离主人，也不要无限卡在死亡状态）。
+        if ((pos == null || ownerInDangerDimension) && entry.diedAt() > 0) {
+            long waited = respawnTick - entry.diedAt();
+            if (waited > 200L || ownerInDangerDimension) {
+                ServerLevel overworld = server.overworld();
+                net.minecraft.core.BlockPos spawn = overworld.getSharedSpawnPos();
+                // 先试出生点附近的安全格；再按高度图做一圈更宽的搜索；都不行就站地表/水面上，
+                // 宁可落点不完美，也不要永远停在 pendingDead（2026-11-02 实测卡死 12 分钟）。
+                Vec3 fallback = SafeSpawn.findNear(overworld, Vec3.atCenterOf(spawn));
+                if (fallback == null) {
+                    outer:
+                    for (int r = 4; r <= 24; r += 4) {
+                        for (int dx = -r; dx <= r; dx += 4) {
+                            for (int dz = -r; dz <= r; dz += 4) {
+                                int x = spawn.getX() + dx;
+                                int z = spawn.getZ() + dz;
+                                int y = overworld.getHeight(
+                                        net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                                        x, z);
+                                Vec3 cand = new Vec3(x + 0.5, y, z + 0.5);
+                                if (SafeSpawn.isStanding(overworld, cand)) {
+                                    fallback = cand;
+                                    break outer;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (fallback == null) {
+                    int surface = overworld.getHeight(
+                            net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                            spawn.getX(), spawn.getZ());
+                    fallback = new Vec3(spawn.getX() + 0.5, surface, spawn.getZ() + 0.5);
+                }
+                if (trace) {
+                    com.dwinovo.numen.Constants.LOG.warn(
+                            "[numen][respawn] fallback 触发 waited={}s spawn={} cand={} standing={}",
+                            waited / 20L, spawn, fallback, SafeSpawn.isStanding(overworld, fallback));
+                }
+                if (fallback != null) {
+                    level = overworld;
+                    pos = fallback;
+                }
+            }
         }
         // H2（106 号）判据①②：落点选定后再终检一次「站得住」。
         // 2026-10-30 实测出现过重生落到 the_end (166,-269,681)、脚下 void_air、hp=0 的情形——

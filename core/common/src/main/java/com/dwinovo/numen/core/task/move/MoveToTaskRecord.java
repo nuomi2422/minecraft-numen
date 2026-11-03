@@ -60,6 +60,15 @@ public final class MoveToTaskRecord extends TaskRecord {
      */
     private static Kind resolveKind(Double x, Double y, Double z, String block) {
         boolean hasX = x != null, hasY = y != null, hasZ = z != null;
+        // 2026-11-03 实机：模型想只给 y=65，却把 x/z 填成 0，工具把 0,65,0 当真实目标，
+        // 诊断回“距离 805 格、远处 waypoint”。0,0 在正常远行里几乎必是占位；y-only 要留空 x/z。
+        if (hasX && hasY && hasZ && x == 0d && z == 0d) {
+            throw new IllegalArgumentException(
+                    "x=0,z=0 with y looks like a placeholder, not a destination. For an elevation-only"
+                            + " move send y alone and leave x/z null; for a real location send its x+z"
+                            + " (omit y) or its exact x+y+z. If you truly meant world-origin (0,y,0),"
+                            + " send x+z without y and then walk the last block.");
+        }
         if (block != null) {
             if (hasX || hasY || hasZ) {
                 // 2026-10-02（stage 20261002-104007 候选1）：旧文案只说 "goto its location (x+z)"，

@@ -79,6 +79,18 @@ public final class EntityAgentLoop {
     private static final String ENTITY_PROMPT = com.dwinovo.numen.agent.prompt.NumenPrompts.ENTITY_PROMPT;
 
     /**
+     * [CLEANUP-2026-11-02] 延迟工具目录去重开关。
+     *
+     * <p>审计背景（2026-11-02，live 请求体实测）：{@code <deferred_tools>} 目录列了 112 条，
+     * 其中 <b>44 条的工具定义本来就以完整 schema 发在同一次请求的 wire tools 里</b>
+     * （白名单放行的工具，{@code ToolVisibility.forExecutor} 不看 residency）——
+     * 一条说了参数、另一条又只列名字，多花 <b>4,259 字符/轮</b>。
+     *
+     * <p>置 false = 回到旧行为（目录列全部延迟工具），一行即可回滚。
+     */
+    private static final boolean CATALOGUE_SKIP_ALREADY_SENT = true;
+
+    /**
      * 经济预算策略（E1 shadow）：客户端类加载时装一次 {@code config/numen/budget-policy.json}。
      * 只读一次、失败退回默认；策略与计量见 {@link com.dwinovo.numen.agent.llm.BudgetPolicy}。
      */
@@ -3089,8 +3101,20 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
         }
         // 延迟工具目录。它随注册表变(接了 MCP server 会多出几行),但不随回合变,
         // 所以仍然待得住这个稳定层——与技能表、本能名册同一档。
-        String catalogue = com.dwinovo.numen.agent.tool.ToolDisclosure
-                .catalog(ToolRegistry.deferred());
+        // [CLEANUP-2026-11-02] 只列「这次不会发定义」的延迟工具（见 CATALOGUE_SKIP_ALREADY_SENT）。
+        // 白名单关掉的工具仍然会出现在目录里 —— 那是"名字可见、要用先 find_tools"的入口，
+        // 不在此处删；被白名单放行、定义已随请求发出的那些才是纯重复。
+        java.util.List<com.dwinovo.numen.agent.tool.NumenTool> catalogued =
+                new java.util.ArrayList<>(ToolRegistry.deferred());
+        if (CATALOGUE_SKIP_ALREADY_SENT) {
+            java.util.Set<String> alreadySent = new java.util.HashSet<>();
+            for (com.dwinovo.numen.agent.tool.NumenTool sentTool
+                    : com.dwinovo.numen.agent.tool.ToolVisibility.forExecutor(ToolRegistry.all())) {
+                if (sentTool != null) alreadySent.add(sentTool.name());
+            }
+            catalogued.removeIf(t -> t == null || alreadySent.contains(t.name()));
+        }
+        String catalogue = com.dwinovo.numen.agent.tool.ToolDisclosure.catalog(catalogued);
         if (!catalogue.isEmpty()) {
             sb.append("\n\n").append(catalogue);
         }

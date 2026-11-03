@@ -481,6 +481,14 @@ public final class NumenPlayer extends ServerPlayer {
         } catch (RuntimeException ex) {
             reportTickFailure(ex);
         }
+        // 2026-11-02（B7 实机）：进下界 1 分钟内立刻站回门 → D-20 兜底 100 tick 后把人送回主世界。
+        // 记下「刚换维度」的时刻，给兜底一个保护期，让「进界先站定/铺台」有窗口。
+        if (level() instanceof ServerLevel levelNow) {
+            if (lastDimension != levelNow.dimension()) {
+                lastDimension = levelNow.dimension();
+                lastDimensionChangeTick = levelNow.getGameTime();
+            }
+        }
         // 摔落结算是玩家<b>唯一</b>由客户端权威的物理:{@code Entity.move} 里那一处被
         // {@code isLocalInstanceAuthoritative()} 挡着(Player.isClientAuthoritative()
         // 恒为 true,服务端算出来就是 false),真正结算的是收到移动包时的
@@ -509,6 +517,10 @@ public final class NumenPlayer extends ServerPlayer {
 
     /** 站进门框的累计 tick（D-20 兜底用）。 */
     private int portalStuckTicks = 0;
+    /** 上一次看到的维度与换维度时刻（B7 保护期用）。 */
+    private net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> lastDimension = null;
+    private long lastDimensionChangeTick = Long.MIN_VALUE;
+    /** 换维度后的保护期：兜底不累计、不传送（见 {@link DimensionGrace}）。 */
     /** 门兜底的阈值：原版换维度约 80 tick，给到 100 还没走就自己动手。 */
     private static final int PORTAL_FALLBACK_TICKS = 100;
 
@@ -520,6 +532,10 @@ public final class NumenPlayer extends ServerPlayer {
      * —— 与 {@code rdd_teleport} 同一入口（那条路实测可用）。
      */
     private void tickPortalFallback(ServerLevel serverLevel) {
+        if (DimensionGrace.inGrace(serverLevel.getGameTime(), lastDimensionChangeTick)) {
+            portalStuckTicks = 0;   // 刚换维度：先别让兜底把人弹回去
+            return;
+        }
         if (!serverLevel.getBlockState(blockPosition()).is(net.minecraft.world.level.block.Blocks.NETHER_PORTAL)) {
             portalStuckTicks = 0;
             return;

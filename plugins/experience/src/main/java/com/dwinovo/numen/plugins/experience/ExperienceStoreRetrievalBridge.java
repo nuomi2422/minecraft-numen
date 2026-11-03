@@ -276,6 +276,32 @@ public final class ExperienceStoreRetrievalBridge {
         return body.substring(0, MAX_BODY_CHARS) + "…";
     }
 
+    /**
+     * [CLEANUP-2026-11-02] 标题与正文首行重复时，去掉正文那一行。
+     *
+     * <p>审计背景（2026-11-02，live 请求体实测）：{@code <entry>} 先印 title，再印 body；
+     * 而 body = 机制 + 推荐处理，**机制这一行与 title 是同一句话**（种子条目就是这么写的），
+     * 于是每条经验都把同一句话打两遍 —— 实测 5 条里 4 条命中，共 <b>611 字符/轮</b> 的纯重复。
+     *
+     * <p>只删"逐字相同的第一行"：标题不同、或正文首行是别的内容时，一个字都不动。
+     * 回滚：把 {@link #DROP_TITLE_DUP_IN_BODY} 置 false。
+     */
+    private static final boolean DROP_TITLE_DUP_IN_BODY = true;
+
+    private static String withoutTitleDup(String title, String body) {
+        if (!DROP_TITLE_DUP_IN_BODY) return body;
+        if (body == null || body.isBlank()) return body == null ? "" : body;
+        // 标题可能带「（试用中）」前缀（ExperienceRetrievalProvider 加的），比较前先摘掉，
+        // 否则试用条目永远比不上、去重永远不生效。
+        String t = nz(title).trim();
+        if (t.startsWith("（试用中）")) t = t.substring("（试用中）".length()).trim();
+        if (t.isEmpty()) return body;
+        int nl = body.indexOf('\n');
+        String firstLine = (nl < 0 ? body : body.substring(0, nl)).trim();
+        if (!firstLine.equals(t)) return body;
+        return nl < 0 ? "" : body.substring(nl + 1).stripLeading();
+    }
+
     private static com.dwinovo.numen.agent.retrieval.Maturity maturity(ExperienceMaturity m) {
         if (m == null) return com.dwinovo.numen.agent.retrieval.Maturity.OBSERVED;
         return switch (m) {
@@ -436,7 +462,7 @@ public final class ExperienceStoreRetrievalBridge {
                     .append("\" verified=\"").append(e.verifiedCount())
                     .append("\" pinned=\"true\">")
                     .append(nz(e.title()));
-            if (!body.isBlank()) sb.append("\n").append(body);
+            if (!body.isBlank()) sb.append("\n").append(withoutTitleDup(nz(e.title()), body));
             sb.append("</entry>");
             pinnedRefs.add(ref);
             rendered++;
@@ -462,7 +488,8 @@ public final class ExperienceStoreRetrievalBridge {
                     .append(d.title());
             EntryBody body = e.body();
             if (body != null && !body.content().isBlank()) {
-                sb.append("\n").append(body.content());
+                // [CLEANUP-2026-11-02] 标题与正文首行逐字相同 → 正文那行不再重打（见 withoutTitleDup）。
+                sb.append("\n").append(withoutTitleDup(d.title(), body.content()));
             }
             sb.append("</entry>");
         }
