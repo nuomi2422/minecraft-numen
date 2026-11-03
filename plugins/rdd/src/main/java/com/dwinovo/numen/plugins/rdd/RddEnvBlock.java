@@ -143,6 +143,15 @@ final class RddEnvBlock {
                 anchor = RddWaypoints.anchorPos(ap.getUUID(), otherDim);
                 anchorDim = otherDim;
             }
+            // 2026-11-03 实机：waypoint 锚点在重启/新链后可能为空，env 连“回家”都没有。
+            // 基地床坐标是链内已确认事实，作为最后兜底；不跨维度推断，基地默认主世界。
+            if (anchor == null) {
+                net.minecraft.core.BlockPos base = RddBaseAnchor.get(ap.getUUID());
+                if (base != null) {
+                    anchor = new int[]{base.getX(), base.getY(), base.getZ()};
+                    anchorDim = "minecraft:overworld";
+                }
+            }
             if (anchor != null) {
                 double dx = anchor[0] - p.getX(), dy = anchor[1] - p.getY(), dz = anchor[2] - p.getZ();
                 long dist = Math.round(Math.sqrt(dx * dx + dy * dy + dz * dz));

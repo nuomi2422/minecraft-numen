@@ -61,9 +61,11 @@ public final class WorldFactConditions {
             case "container_nearby" -> tag(condition.get("item"))
                     && radius(condition.get("radius"), MAX_NEARBY_RADIUS)
                     && positive(condition.getOrDefault("minimum", 1));
-            case "block_mined" -> tag(condition.get("block")) && optionalPositive(condition.get("minimum"));
+            case "block_mined" -> tag(condition.get("block")) && optionalPositive(condition.get("minimum"))
+                    && scopeOk(condition);
             case "item_crafted", "item_used", "item_picked_up" ->
-                    tag(condition.get("item")) && optionalPositive(condition.get("minimum"));
+                    tag(condition.get("item")) && optionalPositive(condition.get("minimum"))
+                    && scopeOk(condition);
             case "dimension" -> id(condition.get("dimension"));
             case "y_below" -> integer(condition.get("y"));
             case "position_at" -> coord(condition) && radius(condition.get("radius"), MAX_NEARBY_RADIUS);
@@ -83,6 +85,39 @@ public final class WorldFactConditions {
             case "lit" -> optionalRadius(condition.get("radius")) && optionalPositive(condition.get("minimum"));
             default -> false;
         };
+    }
+
+    /**
+     * 2026-11-03 实机：判据写 `white_bed`，现场是 `purple_bed` → 永远判假。
+     * 床的颜色只是外观变体，任何 `*_bed`（含历史泛化 id `minecraft:bed`）都视为同一类方块。
+     */
+    public static boolean isBedBlockId(String id) {
+        if (id == null) return false;
+        return id.equals("minecraft:bed") || id.endsWith("_bed");
+    }
+
+    /** 统计类条件的口径：delta（默认，本步增量）/ lifetime（终身累计）；其它值拒绝。 */
+    private static boolean scopeOk(Map<String, Object> condition) {
+        Object raw = condition.get("scope");
+        return raw == null || "delta".equals(raw) || "lifetime".equals(raw);
+    }
+
+    /**
+     * 只有容器类条件支持 `#minecraft:food` 的 FOOD 组件回退；统计类仍按 tag 是否存在判 UNKNOWN，
+     * 不能因为同名字段就假装可解析（2026-11-03 审计：P8l 最初无 type 过滤，stat 类被误标可解析）。
+     */
+    /** 原版没有 food 物品 tag；`minecraft:food` 与 `minecraft:is_food` 都按"可直接吃"语义回退。 */
+    public static boolean isFoodTag(String id) {
+        return "minecraft:food".equals(id) || "minecraft:is_food".equals(id);
+    }
+
+    public static boolean supportsFoodTagFallback(Object conditionType) {
+        return "container_at".equals(conditionType) || "container_nearby".equals(conditionType);
+    }
+
+    /** 该统计条件是否显式要求终身口径（检测器据此跳过增量基线）。 */
+    public static boolean lifetimeScope(Object condition) {
+        return condition instanceof Map<?, ?> m && "lifetime".equals(m.get("scope"));
     }
 
     public static boolean knownType(Object type) {

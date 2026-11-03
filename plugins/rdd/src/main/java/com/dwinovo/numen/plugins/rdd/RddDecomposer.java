@@ -352,10 +352,19 @@ final class RddDecomposer {
                 RddPlanningPolicy.block(themeObjective, "stage_b"));
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 base, themeObjective, "stage_b", knownFailures);
+        // 2026-11-02（r25-2→r26-0 实机：counter 说「门没有路」，新计划仍写「借同一扇门」）：
+        // 先证明失败原因到底有没有进 prompt——只记长度与关键词，不存正文。
+        LOG.info("[rdd] stage_b 请求 {} 字 | 失败上下文={} | 含不可达关键词={} | 含 3x3={}",
+                userContent.length(),
+                extraHint != null && !extraHint.isBlank(),
+                userContent.contains("no path") || userContent.contains("不可达")
+                        || userContent.contains("没有路"),
+                userContent.contains("3×3") || userContent.contains("3x3"));
         RddDecomposer.llmAsk(companionId, "stage_b", userContent,
                 SYSTEM_PROMPT, DECOMPOSE_TOOL,
                 args -> {
-                    RddPlanGuard.Filtered guarded = RddPlanGuard.filterSubtasks(parse(args), themeObjective,
+                    RddPlanGuard.Filtered guarded = RddPlanGuard.filterSubtasks(
+                            RddPlanGuard.normalizeConditions(parse(args)), themeObjective,
                             snapshot.availableCounts());
                     RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
                             RddPlanningPolicy.appliedRules(themeObjective, "stage_b"),
@@ -440,6 +449,15 @@ final class RddDecomposer {
             condition.put("minimum", minimum);
         }
         if (group != null && !condition.containsKey("minimum")) condition.put("minimum", 1);
+        // 2026-11-03 审计：旧 parseOne 只保留 asset_key/group/minimum/optional，
+        // 把显式 mode=acquire 静默降成 hold → “已有就不算新增”语义丢失。未知 mode 直接丢弃该步。
+        if (cond.has("mode")) {
+            if (!cond.get("mode").isJsonPrimitive()) return null;
+            String mode = cond.get("mode").getAsString();
+            if (!"hold".equals(mode) && !"acquire".equals(mode)) return null;
+            if (group != null && "acquire".equals(mode)) return null;   // group 无增量实现
+            condition.put("mode", mode);
+        }
         if (cond.has("optional") && cond.get("optional").isJsonPrimitive()
                 && cond.getAsJsonPrimitive("optional").isBoolean())
             condition.put("optional", cond.get("optional").getAsBoolean());
@@ -554,12 +572,15 @@ final class RddDecomposer {
                     + "只给完成条件，不要派身体动作。"
                     + "通用食物/木头/垫脚方块需求优先用 condition:{group:food|wood|blocks,minimum:数量}，组内按物品总数相加，禁止同时给asset_key。"
                     + "food只计直接可食用的东西，生肉/腐肉也计（捡回来就算推进），不计小麦/干草/生土豆/种子；wood原木和木板按件计，不换算配方。指定合成原料仍用asset_key。"
+                    + "种子种植不要用 item_used 验收（右键点击会把失败点击也算进去，实测种子没少仍判完成）；"
+                    + "用 type=block_nearby 验收作物方块（wheat/beetroots/carrots/potatoes 等）或 container_at 验收收获物。"
                     + "世界条件可用type=advancement(advancement ID)、entity_killed(entity ID,minimum)、structure(structure ID 或 #tag，可选dimension)、base(可选dimension)。"
                     + "另外三种读周围环境：type=biome(biome ID 或 #tag) 判「站在什么群系」；"
                     + "type=block_nearby(block ID 或 #tag, radius) 判「附近有没有这类方块」（矿石/刷怪笼/草捆这类没方块实体的也能查到，默认半径8，上限16）；"
                     + "type=container_nearby(item ID 或 #tag, minimum, radius) 判「附近箱子里有没有这种东西」（默认半径8，上限16）；"
-                    + "type=block_mined(block ID 或 #tag, minimum) 与 item_crafted/item_used/item_picked_up(item ID 或 #tag, minimum) 判「本人终身统计真的做了 N 次」"
-                    + "（服务器权威、跨重启；挖矿/合成/使用/拾取各对应一个）；"
+                    + "type=block_mined(block ID 或 #tag, minimum) 与 item_crafted/item_used/item_picked_up(item ID 或 #tag, minimum) "
+                    + "默认判「从本步开始到现在真的做了 N 次」（delta，防历史统计冒充本次）；"
+                    + "只有确实要终身累计时才加 scope=lifetime（服务器权威、跨重启）。"
                     + "type=dimension(dimension ID) 判「本人在某维度」；type=y_below(y, 可选dimension) 判「本人 Y≤y」；"
                     + "type=position_at(x,y,z, 可选radius) 判「本人在该点附近」（默认半径4，上限16）；"
                     + "type=entity_nearby(entity ID 或 #tag, radius) 判「附近有这种实体」；"

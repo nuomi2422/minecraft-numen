@@ -477,7 +477,31 @@ final class RddDetector {
             }
             // STALLED → 监督恢复分支：行为恢复则回到 RUNNING，多次拍醒无效则升级失败。
             if (status == SubtaskStatus.STALLED) {
-                stallWatcher.handleStalled(ap, rt, chain.currentSubtask());
+                // #468（2026-11-03）：卡死判失败前先求一次真实条件；人已经站到基地/东西已够时，
+                // stalled 状态不能把完成品判死。先 STALLED→RUNNING 再走正常完成路径。
+                Subtask stalled = chain.currentSubtask();
+                if (stalled != null && stalled.detectionMode() == DetectionMode.HARD_CODED
+                        && conditionMatches(ap, stalled, counts)) {
+                    try {
+                        chain.resumeFromStalled(stalled.id());
+                        boolean done = completeSubtask(ap, rt, stalled);
+                        if (done) {
+                            RddMonitor.publish("subtask_completed_after_stall", Map.of(
+                                    "subtask", stalled.id(), "condition", stalled.condition(),
+                                    "reason", "condition matched while STALLED; completed instead of failed"));
+                            return;
+                        }
+                    } catch (RuntimeException ex) {
+                        RddMonitor.publish("stalled_condition_complete_failed", Map.of(
+                                "subtask", stalled.id(), "error", String.valueOf(ex)));
+                    }
+                }
+                // catch/未完成：必须确认“还是原来那个 STALLED 任务”再交给 watcher，避免把已推进的链再判失败。
+                Subtask still = chain.currentSubtask();
+                if (still != null && still.id().equals(stalled == null ? null : stalled.id())
+                        && chain.currentSubtaskStatus() == SubtaskStatus.STALLED) {
+                    stallWatcher.handleStalled(ap, rt, still);
+                }
                 return;
             }
             // FAILED → 先重跑真实资产检测：条件此刻已满足(如 AI 失败后自己攒够) → 直接验收推进
@@ -1101,8 +1125,8 @@ final class RddDetector {
         }
     }
     /** 世界真身满足条件 → 推进；二级全完成 → 简化 Supervisor CONFIRM。 */
-    private void completeSubtask(NumenPlayer ap, RddRuntime rt, Subtask current) {
-        if (surplus.hold(ap, rt.chain(), current, countInventory(ap))) return;
+    private boolean completeSubtask(NumenPlayer ap, RddRuntime rt, Subtask current) {
+        if (surplus.hold(ap, rt.chain(), current, countInventory(ap))) return false;
         boolean completed = rt.applyHardCoded(current.id(), true);
         RddPlugin.clearBody(ap.getUUID());
         retries.remove(ap.getUUID());
@@ -1111,7 +1135,7 @@ final class RddDetector {
         parkedWatcher.clear(ap.getUUID());
         furnaceWatch.remove(ap.getUUID());
         if (!completed) {
-            return;
+            return false;
         }
         LOG.info("[rdd] 二级目标完成: {} ({})", current.id(), current.description());
         RddMonitor.publish("subtask_completed", Map.of(
@@ -1138,6 +1162,7 @@ final class RddDetector {
             RddPlugin.publishTaskSnapshot(ap.getUUID(), "primary_completed");
             RddPlugin.clearBody(ap.getUUID());
         }
+        return true;
     }
 
     /** 给当前二级派过身体、身体任务已不在位、条件仍未满足 → 重试或判失败。 */
@@ -1198,9 +1223,27 @@ final class RddDetector {
     }
 
     static boolean conditionMatches(NumenPlayer ap, Subtask task, Map<String, Integer> counts) {
-        if (task.condition().containsKey("type") && !"inventory".equals(task.condition().get("type")))
+        if (task.condition().containsKey("type") && !"inventory".equals(task.condition().get("type"))) {
+            // 2026-11-03 实机：item_crafted bread>=1 用终身统计，历史面包把 r3-3 假完成。
+            // 统计类条件必须按「进入本步后的增量」判，而不是终身累计。
+            if (isStatCondition(task.condition())) {
+                return statDeltaSatisfied(ap, task, counts);
+            }
+            // 2026-11-03 审计：type=item 是背包形状，WorldFactConditions.valid 不认它，
+            // 原路径会让 HardCodedEvaluator 的 type:item 分支永远到不了 → 生产链假卡死。
+            if ("item".equals(task.condition().get("type"))) {
+                // fail-closed：type:item 只接受缺省/hold + 合法正门槛；acquire/畸形/≤0 一律不判，
+                // 不把旧链/外部入口的未知语义当成“持有即完成”（2026-11-03 审计）。
+                Object itemMode = task.condition().get("mode");
+                boolean itemHold = itemMode == null
+                        || com.dwinovo.numen.rdd.core.HardCodedEvaluator.MODE_HOLD.equals(String.valueOf(itemMode));
+                int itemMin = com.dwinovo.numen.rdd.core.HardCodedEvaluator.minimumOf(task.condition());
+                if (!itemHold || itemMin <= 0) return false;
+                return com.dwinovo.numen.rdd.core.HardCodedEvaluator.matches(task.condition(), counts, null);
+            }
             return com.dwinovo.numen.rdd.core.WorldFactConditions.valid(task.condition())
                     && RddWorldFacts.matches(ap, task.condition());
+        }
         // F5：mode=acquire 的二级按"进入时的基线 + 当前增量"判（hold 走两参重载，行为逐字不变）。
         // 基线缺失 → evaluator 判 false → 不算达成（宁可漏判，不许假完成）。
         Map<String, Integer> baseline = acquireBaselineFor(ap, task);
@@ -1216,12 +1259,56 @@ final class RddDetector {
         // P2-C：食物类条件允许"资产派生等价"兜底——目标面包不够时，若背包里的小麦（等价表
         // wheat→bread）折算后够，则视为已满足，避免合成后又被要求重复耕作。只对"食物"放宽，
         // 不触碰装备/工具/进度类硬门。
-        if (foodEquivalentSatisfied(task, counts)) {
+        // P2-C 等价兜底只服务 hold（“现在手里够不够”）；acquire 必须看真实净增量，
+        // 不能被“小麦可折面包”绕过（2026-11-03 审计）。
+        // 只承认“缺省 mode”或显式 hold；未知/畸形 mode（acquireX 等）一律不走等价兜底。
+        Object mode = task.condition().get("mode");
+        boolean explicitHold = mode == null
+                || com.dwinovo.numen.rdd.core.HardCodedEvaluator.MODE_HOLD.equals(String.valueOf(mode));
+        if (explicitHold && foodEquivalentSatisfied(task, counts)) {
             return true;
         }
         // 埋点：此声明（condition）与真实背包不符（系统以为有、真身没有）→ asset_mismatch（限流）
         detectAssetMismatch(ap, task, counts);
         return false;
+    }
+
+    private static boolean isStatCondition(Map<String, Object> condition) {
+        Object type = condition == null ? null : condition.get("type");
+        return "item_crafted".equals(type) || "item_used".equals(type)
+                || "item_picked_up".equals(type) || "block_mined".equals(type);
+    }
+
+    /**
+     * 统计类条件的增量判定：首次看到该二级时拍当前累计值为基线并返回 false（宁可晚一拍，不许假完成）；
+     * 之后只要 (current - baseline) >= minimum 才算达成。基线随链持久化（TaskChain.acquireBaselines 同表）。
+     */
+    private static boolean statDeltaSatisfied(NumenPlayer ap, Subtask task, Map<String, Integer> counts) {
+        RddRuntime rt = RddPlugin.runtime(ap.getUUID());
+        if (rt == null) return false;
+        // 旧链（无 statDeltaEnabled 字段）默认 lifetime；但**显式 scope=lifetime/delta 优先**：
+        // 旧链里显式写 delta 的条件不能被链开关覆盖成 lifetime（2026-11-03 审计指出）。
+        boolean explicitLifetime = com.dwinovo.numen.rdd.core.WorldFactConditions.lifetimeScope(task.condition());
+        boolean explicitDelta = "delta".equals(task.condition().get("scope"));
+        if (explicitLifetime || (!explicitDelta && !rt.chain().statDeltaEnabled())) {
+            return com.dwinovo.numen.rdd.core.WorldFactConditions.valid(task.condition())
+                    && RddWorldFacts.matches(ap, task.condition());
+        }
+        // 只对真正在跑的子步拍基线：rdd_status 等纯查询也会调用 conditionMatches，
+        // 若在那里拍，会在动作开始前把基线提前固定，污染增量。PENDING/WAITING 一律只读不拍。
+        boolean running = rt.chain().subtaskStatuses().get(task.id()) == SubtaskStatus.RUNNING;
+        int current = RddWorldFacts.statCount(ap, task.condition());
+        if (current < 0) return false;
+        Map<String, Integer> baseline = rt.chain().statBaseline(task.id());
+        if (baseline == null) {
+            if (!running) return false;
+            rt.chain().captureStatBaseline(task.id(), current);
+            return false;
+        }
+        int base = baseline.getOrDefault("value", current);
+        Object rawMin = task.condition().get("minimum");
+        int minimum = rawMin instanceof Number n && n.intValue() > 0 ? n.intValue() : 1;
+        return current - base >= minimum;
     }
 
     /**
@@ -1287,6 +1374,8 @@ final class RddDetector {
     /** P2-C：仅对食物子步做派生等价兜底（安全放宽，只增不减）。 */
     private static boolean foodEquivalentSatisfied(Subtask task, Map<String, Integer> counts) {
         if (task == null || task.condition() == null || counts == null) return false;
+        // 混合形状 {group, asset_key} 不是合法背包条件；旧链/直接构造不得借等价兜底通过。
+        if (task.condition().containsKey("group") && task.condition().containsKey("asset_key")) return false;
         Object group = task.condition().get("group");
         Object key = task.condition().get("asset_key");
         String target = null;
@@ -1296,9 +1385,8 @@ final class RddDetector {
             target = k;
         }
         if (target == null) return false;
-        Object min = task.condition().get("minimum");
-        int minimum = min instanceof Number n ? n.intValue() : 1;
-        if (minimum <= 0) return true;
+        int minimum = com.dwinovo.numen.rdd.core.HardCodedEvaluator.minimumOf(task.condition());
+        if (minimum <= 0) return false;   // 畸形/零/负门槛一律不构成“已有食物”的证据
         return com.dwinovo.numen.rdd.policy.AssetDerivation.equivalentCount(target, counts) >= minimum;
     }
 

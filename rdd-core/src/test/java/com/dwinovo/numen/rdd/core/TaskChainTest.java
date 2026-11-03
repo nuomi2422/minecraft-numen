@@ -71,6 +71,28 @@ class TaskChainTest {
         assertEquals(SubtaskStatus.RUNNING, restored.currentSubtaskStatus());
     }
 
+    @Test void stalledResumeDoesNotCompleteWithoutResult() {
+        var primary = new PrimaryGoal("p", "mine", java.util.List.of(
+                Subtask.hardCoded("s1", "mine diamond", Map.of("item", "diamond"))));
+        var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(primary)));
+        chain.startCurrent();
+        chain.markStalled("s1", "stalled");
+        chain.resumeFromStalled("s1");
+        assertEquals(SubtaskStatus.RUNNING, chain.currentSubtaskStatus(),
+                "resume 只回到 RUNNING，不能凭 resume 算完成");
+    }
+
+    @Test void stalledResumeThenRealResultCompletes() {
+        var primary = new PrimaryGoal("p", "mine", java.util.List.of(
+                Subtask.hardCoded("s1", "mine diamond", Map.of("item", "diamond"))));
+        var chain = new TaskChain(new Goal("g", "goal", java.util.List.of(primary)));
+        chain.startCurrent();
+        chain.markStalled("s1", "stalled");
+        chain.resumeFromStalled("s1");
+        assertTrue(chain.applyHardCodedResult("s1", true), "真实结果应写入 COMPLETED");
+        assertEquals(SubtaskStatus.COMPLETED, chain.currentSubtaskStatus());
+    }
+
     @Test void failedSubtaskCanRetry() {
         var primary = new PrimaryGoal("p", "mine", java.util.List.of(
                 Subtask.hardCoded("s1", "mine diamond", Map.of("item", "diamond"))));

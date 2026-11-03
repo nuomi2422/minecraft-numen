@@ -70,4 +70,17 @@ class HardCodedEvaluatorTest {
                 Map.of("minecraft:birch_log", 1)));
         assertFalse(HardCodedEvaluator.matches(Map.of("asset_key", "goal", "minimum", 1), Map.of("x", 1)));
     }
+
+
+    @Test void groupAcquireIsFailClosed() {
+        assertFalse(HardCodedEvaluator.matches(
+                Map.of("group", "food", "minimum", 1, "mode", "acquire"),
+                Map.of("minecraft:bread", 9)));
+        assertTrue(HardCodedEvaluator.matches(
+                Map.of("group", "food", "minimum", 1),
+                Map.of("minecraft:bread", 9)));
+        assertFalse(HardCodedEvaluator.matches(
+                Map.of("group", "food", "minimum", 1, "mode", "acquireX"),
+                Map.of("minecraft:bread", 9)));
+    }
 }

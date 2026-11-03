@@ -55,6 +55,11 @@ public final class RddPlugin implements NumenPlugin {
     private static final RddCallbackGuard CALLBACKS = new RddCallbackGuard();
     /** 懒边界上报去重：uuid → 最近一次已上报的未展开一级 id（避免每秒刷 expansion_needed）。 */
     private static final Map<UUID, String> LAST_EXPANSION_REPORT = new ConcurrentHashMap<>();
+    /** 169 T6：rdd_restart_mainline 已请求但尚未完成绑定（uuid → 新 objective 归一指纹）。
+     *  只对同一个 goal 正文生效：若规划窗口内又来了新目标，旧请求不得把新链误清。 */
+    private static final Map<UUID, Long> RESTART_PENDING = new ConcurrentHashMap<>();
+    /** 重启请求序号：把 pending 绑定到具体一次 beginPlanning，避免被并发 /goal 认领。 */
+    private static final AtomicLong RESTART_REQUEST_SEQ = new AtomicLong();
 
     /** 167 B1：建家路线每个同伴只发布一次（观测用，不重复刷事件）。 */
     private static final Set<UUID> HOME_PLAN_PUBLISHED = ConcurrentHashMap.newKeySet();
@@ -66,6 +71,8 @@ public final class RddPlugin implements NumenPlugin {
             = new ConcurrentHashMap<>();
     /** 开工拍醒去重：uuid → 已经拍过开工的那个二级 id（每个二级都要能开工；换目标时清）。 */
     private static final Map<UUID, String> KICKOFF_SENT = new ConcurrentHashMap<>();
+    /** 诊断：同二级只记一次"为什么没开工拍醒"，避免每 tick 刷事件。 */
+    private static final Map<UUID, String> KICKOFF_SKIP_LOGGED = new ConcurrentHashMap<>();
     static {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
                 (net.neoforged.neoforge.event.server.ServerStoppedEvent event) -> clearWorldState());
@@ -186,18 +193,23 @@ public final class RddPlugin implements NumenPlugin {
         RddAlarms.install(numen.configDir());
         // H3（108 号）：重复查询的**运行时**感知（A3 的 redundant_query 是归档后处理，跑的时候不告警）。
         RddRepeatQueryWatcher.install(numen.configDir());
-        com.dwinovo.numen.agent.tool.ToolCallObserver.install((companionId, toolName, argsChars) ->
-                RddRepeatQueryWatcher.observe(companionId, toolName, argsChars,
-                        com.dwinovo.numen.entity.NumenPlayer.findByUuid(
-                                net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer(), companionId) == null
-                                ? System.currentTimeMillis() / 50
-                                : com.dwinovo.numen.entity.NumenPlayer.findByUuid(
-                                        net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer(), companionId)
-                                        .level().getGameTime()));
+        com.dwinovo.numen.agent.tool.ToolCallObserver.install((companionId, toolCallId, toolName, argsChars) -> {
+            // 2026-11-02：MCP 监控面（toolCallId=mcp-*）的轮询不是同伴行为。
+            // 之前把它算进「重复查询」，会因外部采集给 AI 发假的「你刚问过」提醒。
+            if (RddRepeatQueryWatcher.isExternalCall(toolCallId)) {
+                return;
+            }
+            var body = com.dwinovo.numen.entity.NumenPlayer.findByUuid(
+                    net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer(), companionId);
+            long tick = body == null ? System.currentTimeMillis() / 50 : body.level().getGameTime();
+            RddRepeatQueryWatcher.observe(companionId, toolName, argsChars, tick);
+        });
         // E1 shadow：规划角色的预算策略（与客户端同一份文件，幂等）。
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
+        // 169 T6 / 170 §5.1：主线可重启（死亡后旧链不安全时的唯一改单入口）。
+        numen.registerTool(new RddRestartMainlineTool());
         // 2026-10-08 只读世界事实探针：逐组验证世界判定用（不改状态）。
         numen.registerTool(new WorldFactProbeTool());
         // 2026-10-08 只读“成熟作物”扫描：种田 AC 的“扫成熟作物”这一步。
@@ -427,7 +439,23 @@ public final class RddPlugin implements NumenPlugin {
      */
     static void beginPlanning(MinecraftServer server, RddCallbackGuard.Ticket ticket,
                               String objective, String source) {
+        beginPlanning(server, ticket, objective, source, 0L);
+    }
+
+    /**
+     * @param restartRequestId 非 0 时只认领**这一个**待处理重启请求（原子 remove(key,value)）；
+     *                         普通目标用 0，会清掉任何遗留请求，避免下一次规划误吃重启语义。
+     */
+    static void beginPlanning(MinecraftServer server, RddCallbackGuard.Ticket ticket,
+                              String objective, String source, long restartRequestId) {
         UUID uuid = ticket.companionId();
+        boolean restartRequested;
+        if (restartRequestId != 0L) {
+            restartRequested = RESTART_PENDING.remove(uuid, restartRequestId);
+        } else {
+            RESTART_PENDING.remove(uuid);
+            restartRequested = false;
+        }
         // B1/166：切断旧目标必须发生在异步 Stage-A 规划之前。
         // 否则规划窗口内仍会把旧链投给执行 AI，重启时还会从 rdd-tasks/<uuid>.json 复活。
         discardPreviousGoalState(uuid, objective);
@@ -443,7 +471,7 @@ public final class RddPlugin implements NumenPlugin {
         RddStagePlanner.planStages(uuid, objective, stages -> onServer(server, ticket, () -> {
             if (!stages.isEmpty()) {
                 try {
-                    bindCurrent(uuid, RddChainFactory.fromStages(uuid, objective, stages));
+                    bindCurrent(uuid, RddChainFactory.fromStages(uuid, objective, stages), restartRequested);
                     RddMonitor.publish("goal_staged", Map.of(
                             "companionId", uuid.toString(), "objective", objective, "stages", stages.size(),
                             // A2（94 号）：阶段名必须机读——否则「任务图里有没有准备节点」只能靠文档口号。
@@ -454,14 +482,14 @@ public final class RddPlugin implements NumenPlugin {
                 } catch (RuntimeException ex) {
                     LOG.warn("[rdd] Stage-A 装配失败，回落单遍分解: {}", ex.toString());
                     DECOMPOSING.add(uuid);
-                    decomposeSinglePass(server, ticket, objective);
+                    decomposeSinglePass(server, ticket, objective, restartRequested);
                     return;
                 }
                 DECOMPOSING.remove(uuid);
                 return;
             }
             // Fallback belongs to this submission too; a later /goal invalidates both callbacks.
-            decomposeSinglePass(server, ticket, objective);
+            decomposeSinglePass(server, ticket, objective, restartRequested);
         }));
         LOG.info("[rdd] 接管目标，Stage-A 规划中 {}:{} (source={})", uuid, objective, source);
     }
@@ -511,6 +539,56 @@ public final class RddPlugin implements NumenPlugin {
             onServer(server, ticket, () -> beginPlanning(server, ticket, objective, source));
         }
         return "objective accepted by the supervisor (Stage-A planning started)";
+    }
+
+    /**
+     * 169 T6 / 170 §5.1：**主线可重启**。死亡/装备全丢后，旧目标（如「再进下界取烈焰棒」）
+     * 已经不安全，但恢复支线只能改策略、不能改主线。本入口是唯一的改单通道：
+     * 丢弃旧链 → 用新 objective 走同一段 Stage-A 规划 → 绑定后清掉历史完成继承。
+     *
+     * <p>与 {@code rdd_supervisor_submit} 的差别只有语义标记与「清继承」：
+     * 规划路径、失败回落、引擎 GoalState 登记完全复用，不另造规划器。
+     *
+     * @param reason 执行 AI 写下的重置理由（必须非空，进事件账）
+     */
+    static String restartMainline(UUID companionId, String objective, String reason) {
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server == null) {
+            return "no server: cannot restart the mainline while the game is offline";
+        }
+        if (NumenPlayer.findByUuid(server, companionId) == null) {
+            return "companion not online: rdd_restart_mainline needs an active body";
+        }
+        String obj = objective == null ? "" : objective.strip();
+        if (obj.isBlank()) {
+            return "objective must not be blank";
+        }
+        if (obj.length() > com.dwinovo.numen.rdd.core.RddChainFactory.MAX_OBJECTIVE_CHARS) {
+            return "objective too long (max " + com.dwinovo.numen.rdd.core.RddChainFactory.MAX_OBJECTIVE_CHARS + " chars)";
+        }
+        RddRuntime before = RUNTIMES.get(companionId);
+        long beforeState = before == null ? -1L : before.chain().stateVersion();
+        int beforePlan = before == null ? -1 : before.chain().planRevision();
+        String beforeChain = before == null ? "" : before.chain().chainInstanceId();
+        String beforeGoal = before == null ? "" : before.chain().goal().description();
+        long requestId = RESTART_REQUEST_SEQ.incrementAndGet();
+        RESTART_PENDING.put(companionId, requestId);
+        RddMonitor.publish("mainline_restart_requested", Map.of(
+                "companionId", companionId.toString(),
+                "objective", obj,
+                "reason", reason == null ? "" : reason,
+                "oldGoal", beforeGoal,
+                "oldChainInstanceId", beforeChain,
+                "oldStateVersion", beforeState,
+                "oldPlanRevision", beforePlan,
+                "restartRequestId", requestId));
+        // 2026-11-02 审计：不再走 GoalSinks.submit —— 它会再触发一条 beginPlanning，
+        // 与并发 /goal 抢同一个 UUID pending，且只能靠目标文本判断"这条规划是不是重启"。
+        // 现在直接把 requestId 带进本次 beginPlanning 的闭包，pending 用 remove(key,value) 原子认领；
+        // 普通目标（requestId=0）会清掉遗留请求。代价：不写引擎 GoalState，面板以 rdd_status 为准。
+        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+        onServer(server, ticket, () -> beginPlanning(server, ticket, obj, "rdd_restart_mainline", requestId));
+        return "mainline restart accepted: old chain discarded, new objective is being planned from scratch";
     }
 
     /** Exact RDD state block returned to Numen; observation does not own task progress. */
@@ -941,11 +1019,12 @@ private static String withAssets(UUID companionId, String rddContext) {
     }
 
     /** Stage-A 退化回落：今天的单遍 decompose -> bind + startCurrent（目标不被吞，行为不劣化）。 */
-    private static void decomposeSinglePass(MinecraftServer server, RddCallbackGuard.Ticket ticket, String objective) {
+    private static void decomposeSinglePass(MinecraftServer server, RddCallbackGuard.Ticket ticket,
+                                            String objective, boolean restartRequested) {
         UUID uuid = ticket.companionId();
         RddDecomposer.decompose(uuid, objective, goal -> onServer(server, ticket, () -> {
             try {
-                bindCurrent(uuid, goal);
+                bindCurrent(uuid, goal, restartRequested);
                 RddRuntime runtime = runtime(uuid);
                 if (runtime != null) {
                     runtime.startCurrent();
@@ -972,6 +1051,14 @@ private static String withAssets(UUID companionId, String rddContext) {
 
     /** Apply a planning result without invalidating that result's own goal generation. */
     private static void bindCurrent(UUID companionId, Goal goal) {
+        bindCurrent(companionId, goal, false);
+    }
+
+    /**
+     * @param restarted true = 这条链来自 rdd_restart_mainline：不继承历史完成阶段，
+     *                  绑好后立即清一次并 bump planRevision/stateVersion（169 T6 / 170 §5.1）。
+     */
+    private static void bindCurrent(UUID companionId, Goal goal, boolean restarted) {
         BODY.remove(companionId);
         DECOMPOSING.remove(companionId);
         // 换目标 = 旧支线作废：立即取消，且不恢复旧主线（新链自己重新选择）。
@@ -993,9 +1080,22 @@ private static String withAssets(UUID companionId, String rddContext) {
         clearNudgeThrottle(companionId);    // 新目标 = 新窗口，保证首次开工拍醒一定发得出去
         RddGoalDriver.clear(companionId);
         clearReplanCounts(companionId);   // 新目标 = 新阶段标识，重规划预算清零
-        // P0：把该目标血缘下"已可靠完成"的阶段事实注入新链 → 已达成一级直接跳过、不再重复规划
-        RUNTIMES.put(companionId, new RddRuntime(
-                new TaskChain(goal, facts(companionId).satisfiedStageKeys(goal)), assets(companionId)));
+        // P0：把该目标血缘下"已可靠完成"的阶段事实注入新链 → 已达成一级直接跳过、不再重复规划。
+        // 169 T6：重启主线的链**不注入**继承事实，并在绑定后统一清一次（防相似目标按指纹再次继承）。
+        TaskChain fresh = new TaskChain(goal,
+                restarted ? Set.of() : facts(companionId).satisfiedStageKeys(goal));
+        if (restarted) {
+            fresh.resetForRestart(goal.description());
+            RddMonitor.publish("mainline_restarted", Map.of(
+                    "companionId", companionId.toString(),
+                    "objective", goal.description(),
+                    "chainInstanceId", fresh.chainInstanceId(),
+                    "satisfiedStages", fresh.satisfiedStages().size(),
+                    "planRevision", fresh.planRevision(),
+                    "stateVersion", fresh.stateVersion(),
+                    "note", "inherited stage facts cleared; first primary must be re-earned"));
+        }
+        RUNTIMES.put(companionId, new RddRuntime(fresh, assets(companionId)));
         // 【架构概念 2/4 接线】一级目标生成时同步产出"需求清单"（元件检测的需求侧）。
         // 只产"事实"，不在这里做裁决（裁决归 DetectionArbitration），更不在这里改规划。
         // 2026-10-06：清单不再"算完即丢"——RddFactContext 缓存它，并在检测 tick 里持续对账；
@@ -2667,12 +2767,27 @@ private static String safeDeathAttacker(NumenPlayer body) {
      */
     static boolean kickoffNudge(UUID companionId, TaskChain chain) {
         if (companionId == null || chain == null) return false;
-        if (!supervisionEnabled || numenApi == null) return false;   // 监督关着/没接宿主：不吵
-        if (bodySubmissionEnabled) return false;                     // 身体驱动模式 RDD 自己干活，拍醒=双驾驶
-        if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return false;
+        if (!supervisionEnabled || numenApi == null) {
+            kickoffSkip(companionId, chain, "supervision_off_or_no_api");
+            return false;
+        }
+        if (bodySubmissionEnabled) {
+            kickoffSkip(companionId, chain, "body_dispatch_enabled");
+            return false;
+        }
+        if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) {
+            kickoffSkip(companionId, chain, "primary_not_active");
+            return false;
+        }
         Subtask cur = chain.currentSubtask();
-        if (cur == null || chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) return false;
-        if (cur.id().equals(KICKOFF_SENT.get(companionId))) return false; // 这个二级已拍过
+        if (cur == null || chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) {
+            kickoffSkip(companionId, chain, cur == null ? "no_current_subtask" : "subtask_not_running");
+            return false;
+        }
+        if (cur.id().equals(KICKOFF_SENT.get(companionId))) {
+            kickoffSkip(companionId, chain, "already_kicked_off");
+            return false;
+        }
         if (!nudgeAllowed(companionId)) {
             // 新阶段的"开工"不能被上一阶段催工的 3 分钟总闸吞掉（每个二级都要能开工）
             clearNudgeThrottle(companionId);
@@ -2680,7 +2795,10 @@ private static String safeDeathAttacker(NumenPlayer body) {
         String msg = "【开工】现在动手做这一步：「" + cur.description() + "」。"
                 + "先调用工具真正执行，不要只回文字；做完把结果报回来，我核对真实资产后再推进下一步。"
                 + "如果这一步现在做不了，用 report_task_concern 上报卡点，不要默默无视。";
-        if (!nudge(companionId, msg)) return false;                  // 发失败不记账 → 下个 tick 重试
+        if (!nudge(companionId, msg)) {                                // 发失败不记账 → 下个 tick 重试
+            kickoffSkip(companionId, chain, "nudge_failed");
+            return false;
+        }
         KICKOFF_SENT.put(companionId, cur.id());
         Map<String, Object> data = observationData(companionId);
         data.put("primary", chain.currentPrimary().id());
@@ -2689,6 +2807,21 @@ private static String safeDeathAttacker(NumenPlayer body) {
         RddMonitor.publish("goal_kickoff", data);
         LOG.info("[rdd] 开工拍醒 {} 二级 {}", companionId, cur.id());
         return true;
+    }
+
+    private static void kickoffSkip(UUID companionId, TaskChain chain, String reason) {
+        String key = chain != null && chain.currentSubtask() != null
+                ? chain.currentSubtask().id() : "none";
+        if (key.equals(KICKOFF_SKIP_LOGGED.get(companionId))) return;   // 同二级只记一次
+        KICKOFF_SKIP_LOGGED.put(companionId, key);
+        RddMonitor.publish("goal_kickoff_skipped", Map.of(
+                "companionId", companionId.toString(),
+                "subtask", key,
+                "primaryStatus", chain == null ? "null" : chain.primaryStatus().name(),
+                "reason", reason,
+                "bodyDispatch", bodySubmissionEnabled,
+                "supervision", supervisionEnabled,
+                "apiBound", numenApi != null));
     }
 
     /** rdd_submit 用：AI 自己刚提交并启动的单，不需要再"开工拍醒"一次。 */

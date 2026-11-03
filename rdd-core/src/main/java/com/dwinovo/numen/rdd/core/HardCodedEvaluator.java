@@ -75,6 +75,8 @@ public final class HardCodedEvaluator {
         int minimum = minimumOf(condition);
         if (minimum < 0) return false;
         if (condition.containsKey("group")) {
+            // group 条件没有“基线增量”实现：只支持 hold；acquire/未知 mode 一律 fail-close。
+            if (!MODE_HOLD.equals(modeOf(condition))) return false;
             Object group = condition.get("group");
             return !condition.containsKey("asset_key") && InventoryGroups.known(group) && minimum > 0
                     && InventoryGroups.count((String) group, counts) >= minimum;

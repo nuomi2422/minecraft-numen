@@ -20,6 +20,171 @@ class RddPlanGuardTest {
         return new SubtaskSpec(description, Map.of("asset_key", assetKey, "minimum", minimum), null);
     }
 
+    // ---------- 2026-11-02（r25-2 实机）：工具前提不成立 ----------
+
+    @Test
+    void 描述要用钻石镐但背包只有石镐_isToolGap() {
+        SubtaskSpec s = new SubtaskSpec(
+                "用钻石镐去 Y<16 或找熔岩湖与水交界处取 10 块黑曜石",
+                Map.of("asset_key", "minecraft:obsidian", "minimum", 10), null);
+        assertEquals(List.of("钻石镐"),
+                RddPlanGuard.toolGaps(s, Map.of("minecraft:stone_pickaxe", 1)));
+    }
+
+    @Test
+    void 去下界而背包无甲_isArmorGap() {
+        SubtaskSpec s = new SubtaskSpec(
+                "借废墟传送门进下界要塞打烈焰人，拿 1 根烈焰棒",
+                Map.of("asset_key", "minecraft:blaze_rod", "minimum", 1), null);
+        assertTrue(RddPlanGuard.toolGaps(s, Map.of("minecraft:stone_sword", 1))
+                .stream().anyMatch(g -> g.contains("护甲")), RddPlanGuard.toolGaps(s, Map.of()).toString());
+    }
+
+    @Test
+    void 途中不下界的走路步骤不报护甲缺() {
+        SubtaskSpec s = new SubtaskSpec("从农田步行前往已知首目标村庄 village_home，途中不下界、不额外囤资源",
+                Map.of("asset_key", "minecraft:stone_pickaxe", "minimum", 1), null);
+        assertTrue(RddPlanGuard.toolGaps(s, Map.of("minecraft:stone_pickaxe", 1)).isEmpty(),
+                RddPlanGuard.toolGaps(s, Map.of()).toString());
+    }
+
+    @Test
+    void acquire垫脚不归一成不可完成的group条件() {
+        SubtaskSpec s = new SubtaskSpec("垫脚：圆石/深板岩都行 8 块",
+                Map.of("asset_key", "minecraft:cobblestone", "minimum", 8, "mode", "acquire"), null);
+        SubtaskSpec n = RddPlanGuard.normalizeCondition(s);
+        assertEquals("minecraft:cobblestone", n.condition().get("asset_key"), n.toString());
+        assertEquals("acquire", n.condition().get("mode"));
+        assertFalse(n.condition().containsKey("group"));
+    }
+
+    @Test
+    void 种植步骤用item_used_isGap() {
+        SubtaskSpec s = new SubtaskSpec("种植 6 个小麦种子到农田",
+                Map.of("type", "item_used", "item", "minecraft:wheat_seeds", "minimum", 6), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("不证种子实际种下")),
+                RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void 骨粉使用仍允许item_used() {
+        SubtaskSpec s = new SubtaskSpec("使用 6 次骨粉催熟作物",
+                Map.of("type", "item_used", "item", "minecraft:bone_meal", "minimum", 6), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).isEmpty(), RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void 不要进入下界的准备步骤不报护甲缺() {
+        SubtaskSpec s = new SubtaskSpec("不要进入下界，先在主世界准备火把与食物",
+                Map.of("asset_key", "minecraft:torch", "minimum", 8), null);
+        assertTrue(RddPlanGuard.toolGaps(s, Map.of()).isEmpty(), RddPlanGuard.toolGaps(s, Map.of()).toString());
+    }
+
+    @Test
+    void 同句混合_不下界但打烈焰人_仍报护甲缺() {
+        SubtaskSpec s = new SubtaskSpec("途中不下界，打烈焰人取烈焰棒",
+                Map.of("asset_key", "minecraft:blaze_rod", "minimum", 1), null);
+        assertTrue(RddPlanGuard.toolGaps(s, Map.of()).stream().anyMatch(g -> g.contains("护甲")),
+                RddPlanGuard.toolGaps(s, Map.of()).toString());
+    }
+
+    @Test
+    void 有胸甲时不报护甲缺() {
+        SubtaskSpec s = new SubtaskSpec("进下界要塞打烈焰人",
+                Map.of("asset_key", "minecraft:blaze_rod", "minimum", 1), null);
+        assertTrue(RddPlanGuard.toolGaps(s, Map.of("minecraft:iron_chestplate", 1)).isEmpty());
+    }
+
+    @Test
+    void 描述是制作工具时不算缺() {
+        SubtaskSpec s = new SubtaskSpec("合成一把铁镐",
+                Map.of("asset_key", "minecraft:iron_pickaxe", "minimum", 1), null);
+        assertTrue(RddPlanGuard.toolGaps(s, Map.of()).isEmpty());
+    }
+
+    @Test
+    void 过滤时把工具前提不成立的步骤丢弃() {
+        SubtaskSpec bad = new SubtaskSpec("用钻石镐取 10 块黑曜石",
+                Map.of("asset_key", "minecraft:obsidian", "minimum", 10), null);
+        RddPlanGuard.Filtered out = RddPlanGuard.filterSubtasks(List.of(bad), "酿抗火药",
+                Map.of("minecraft:stone_pickaxe", 1));
+        assertTrue(out.allowed().isEmpty());
+        assertTrue(out.dropped().get(0).contains("工具前提不成立"), out.dropped().toString());
+    }
+
+    @Test
+    void 顺序产出工具时后续步骤不误丢() {
+        // 2026-11-02 实机：Stage-B 首两步行文「搓木棍做木镐」→「用木镐挖石头做石镐」，
+        // 旧实现按当前空背包逐条判，两条全丢，第一步就没人干活。
+        SubtaskSpec make = new SubtaskSpec("用 2 块木板竖放搓 4 根木棍做木镐",
+                Map.of("asset_key", "minecraft:wooden_pickaxe", "minimum", 1), null);
+        SubtaskSpec use = new SubtaskSpec("用木镐挖约 6 个石头做石镐与石斧",
+                Map.of("asset_key", "minecraft:stone_pickaxe", "minimum", 1), null);
+        RddPlanGuard.Filtered out = RddPlanGuard.filterSubtasks(List.of(make, use), "石器开局", Map.of());
+        assertEquals(2, out.allowed().size(), "前一步产出的工具应视为后续可用：" + out.dropped());
+    }
+
+    // ---------- 2026-11-02（169 T2 最小版）：判据不覆盖描述 ----------
+
+    @Test
+    void 描述要三十二块方块而判据只认铁剑_isGap() {
+        SubtaskSpec r25 = new SubtaskSpec(
+                "备齐武器与垫脚方块：一把铁剑加至少 32 块圆石/石质方块用于垫桥",
+                Map.of("asset_key", "minecraft:iron_sword", "minimum", 1), null);
+        assertEquals(List.of("至少 32 块方块"), RddPlanGuard.predicateGaps(r25));
+    }
+
+    @Test
+    void 背包意图配世界方块判据_isGap() {
+        SubtaskSpec r27 = new SubtaskSpec("清点背包：blaze_rod/nether_wart/玻璃瓶/圆石",
+                Map.of("type", "block_nearby", "block", "minecraft:nether_wart", "radius", 1), null);
+        assertTrue(RddPlanGuard.predicateGaps(r27).stream().anyMatch(g -> g.contains("背包物品")),
+                RddPlanGuard.predicateGaps(r27).toString());
+    }
+
+    @Test
+    void 判据是方块组时不算Gap() {
+        SubtaskSpec ok = new SubtaskSpec("在脚下铺 3x3 落脚台，先备 8 块方块",
+                Map.of("group", "blocks", "minimum", 8), null);
+        assertTrue(RddPlanGuard.predicateGaps(ok).isEmpty());
+    }
+
+    @Test
+    void 过滤时把判据不覆盖的步骤丢弃并给出理由() {
+        SubtaskSpec bad = new SubtaskSpec(
+                "备齐武器与垫脚：一把铁剑加至少 32 块圆石/石质方块",
+                Map.of("asset_key", "minecraft:iron_sword", "minimum", 1), null);
+        RddPlanGuard.Filtered out = RddPlanGuard.filterSubtasks(List.of(bad), "酿抗火药", Map.of());
+        assertTrue(out.allowed().isEmpty());
+        assertEquals(1, out.dropped().size());
+        assertTrue(out.dropped().get(0).contains("判据不覆盖描述"), out.dropped().toString());
+    }
+
+    @Test
+    void 没有方块数量要求时不报Gap() {
+        SubtaskSpec s = spec("取 4 块黑曜石", "minecraft:obsidian", 4);
+        assertTrue(RddPlanGuard.predicateGaps(s).isEmpty());
+    }
+
+    // ---------- 2026-11-02：垫脚类「都行」条件归一成 group:blocks（r22-0 实机形状） ----------
+
+    @Test
+    void 垫脚多选材料条件归一为方块组() {
+        SubtaskSpec r22 = spec("用已有的方块（圆石/深板岩/下界岩都行）在脚下铺 3x3 落脚台",
+                "minecraft:cobblestone", 8);
+        SubtaskSpec normalized = RddPlanGuard.normalizeCondition(r22);
+        assertEquals("blocks", normalized.condition().get("group"), normalized.condition().toString());
+        assertEquals(8, normalized.condition().get("minimum"));
+        assertFalse(normalized.condition().containsKey("asset_key"));
+    }
+
+    @Test
+    void 单一材料步骤不被改写() {
+        SubtaskSpec single = spec("取 4 块黑曜石", "minecraft:obsidian", 4);
+        assertEquals("minecraft:obsidian",
+                RddPlanGuard.normalizeCondition(single).condition().get("asset_key"));
+    }
+
     // ---------- 1 & 3：未要求的可选升级被丢弃，明确要求时放行 ----------
 
     @Test

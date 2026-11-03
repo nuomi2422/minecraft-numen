@@ -74,8 +74,18 @@ public final class RddWorldFacts {
                         .getTag(TagKey.create(Registries.ENTITY_TYPE, key)).isPresent();
                 case "block" -> BuiltInRegistries.BLOCK
                         .getTag(TagKey.create(Registries.BLOCK, key)).isPresent();
-                case "item" -> BuiltInRegistries.ITEM
-                        .getTag(TagKey.create(Registries.ITEM, key)).isPresent();
+                case "item" -> {
+                    boolean itemTagPresent = BuiltInRegistries.ITEM
+                            .getTag(TagKey.create(Registries.ITEM, key)).isPresent();
+                    // 2026-11-03：`#minecraft:food` 原版没有这个 item tag，但 itemHit 已按
+                    // FOOD 组件做了等价回退；探针必须用同一口径，否则检测器能判、探针却报
+                    // "永远不可判"。只放行这一个语义 tag，其它缺失 tag 仍报 UNKNOWN。
+                    if (!itemTagPresent) {
+                        itemTagPresent = WorldFactConditions.isFoodTag(key.toString())
+                                && WorldFactConditions.supportsFoodTagFallback(condition.get("type"));
+                    }
+                    yield itemTagPresent;
+                }
                 default -> {
                     var access = ap.getServer() == null ? null : ap.getServer().registryAccess();
                     if (access == null) yield false;
@@ -106,6 +116,41 @@ public final class RddWorldFacts {
         copy.put("anchor", java.util.List.of(base.getX(), base.getY(), base.getZ()));
         LOG.info("[rdd] 基地锚点注入 {} -> ({},{},{}) 条件 type={}", ap.getUUID(), base.getX(), base.getY(), base.getZ(), condition.get("type"));
         return copy;
+    }
+
+    /**
+     * 2026-11-03：统计类条件的**当前累计值**（不是布尔）。供检测器拍基线/算增量；
+     * 不支持的 type 返回 -1（调用方判未达成，不猜）。
+     */
+    public static int statCount(NumenPlayer ap, Map<String, Object> condition) {
+        if (ap == null || condition == null) return -1;
+        if (!WorldFactConditions.valid(condition)) return -1;
+        if (condition.containsKey("dimension")) {
+            ResourceLocation wanted = id(condition, "dimension");
+            if (wanted == null || ap.serverLevel() == null
+                    || !ap.serverLevel().dimension().location().equals(wanted)) return -1;
+        }
+        if (ap.getServer() == null || !ap.getServer().isSameThread()) return -1;
+        try {
+            String type = String.valueOf(condition.get("type"));
+            // block_mined 用 block 键；item_* 用 item 键。不能"item 优先"（两字段都在时会错 key）。
+            Object raw = "block_mined".equals(type) ? condition.get("block") : condition.get("item");
+            ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+            if (key == null) return -1;
+            return switch (type) {
+                case "item_crafted" -> sumStat(ap, Stats.ITEM_CRAFTED, BuiltInRegistries.ITEM, key,
+                        WorldFactConditions.isTag(condition.get("item")));
+                case "item_used" -> sumStat(ap, Stats.ITEM_USED, BuiltInRegistries.ITEM, key,
+                        WorldFactConditions.isTag(condition.get("item")));
+                case "item_picked_up" -> sumStat(ap, Stats.ITEM_PICKED_UP, BuiltInRegistries.ITEM, key,
+                        WorldFactConditions.isTag(condition.get("item")));
+                case "block_mined" -> sumStat(ap, Stats.BLOCK_MINED, BuiltInRegistries.BLOCK, key,
+                        WorldFactConditions.isTag(condition.get("block")));
+                default -> -1;
+            };
+        } catch (RuntimeException ex) {
+            return -1;
+        }
     }
 
     public static boolean matches(NumenPlayer ap, Map<String, Object> condition) {
@@ -362,6 +407,11 @@ public final class RddWorldFacts {
     private static Predicate<BlockState> blockPredicate(Object raw) {
         ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
         if (key == null) return null;
+        // 2026-11-03 实机：判据 white_bed、现场 purple_bed（AI 用紫床）→ 颜色不该让判据永远假。
+        // 只对床做同类归一，其它方块仍走精确 id / tag。
+        if (WorldFactConditions.isBedBlockId(key.toString())) {
+            return state -> state.getBlock() instanceof net.minecraft.world.level.block.BedBlock;
+        }
         if (WorldFactConditions.isTag(raw)) {
             TagKey<Block> tag = TagKey.create(Registries.BLOCK, key);
             return state -> state.is(tag);
@@ -383,15 +433,8 @@ public final class RddWorldFacts {
         if (key == null || !dimension(level, condition)) return false;
         int minimum = WorldFactConditions.minimumOf(condition, 1);
         int radius = WorldFactConditions.radiusOf(condition, WorldFactConditions.DEFAULT_CONTAINER_RADIUS);
-        Predicate<ItemStack> hit;
-        if (WorldFactConditions.isTag(raw)) {
-            TagKey<Item> tag = TagKey.create(Registries.ITEM, key);
-            hit = stack -> stack.is(tag);
-        } else {
-            var wanted = BuiltInRegistries.ITEM.get(key);
-            if (wanted == null || !BuiltInRegistries.ITEM.containsKey(key)) return false;
-            hit = stack -> stack.is(wanted);
-        }
+        Predicate<ItemStack> hit = itemHit(raw, key);
+        if (hit == null) return false;
         return countInNeighbourhood(level, ap.blockPosition(), radius, hit, minimum) >= minimum;
     }
 
@@ -498,14 +541,18 @@ public final class RddWorldFacts {
         int total = 0;
         if (isTag) {
             var members = registry.getTag(TagKey.create(registry.key(), key));
-            if (members.isEmpty()) return 0;
+            if (members.isEmpty()) return -1;   // UNKNOWN tag ≠ 0：不能固化成一个合法基线
             for (Holder<T> holder : members.get()) {
-                total += statValue(ap, stat, holder.value());
+                int one = statValue(ap, stat, holder.value());
+                if (one < 0) return -1;
+                total += one;
             }
         } else {
             T value = registry.get(key);
-            if (value == null || !registry.containsKey(key)) return 0;
-            total += statValue(ap, stat, value);
+            if (value == null || !registry.containsKey(key)) return -1;   // UNKNOWN id ≠ 0
+            int one = statValue(ap, stat, value);
+            if (one < 0) return -1;
+            total += one;
         }
         return total;
     }
@@ -514,7 +561,7 @@ public final class RddWorldFacts {
         try {
             return ap.getStats().getValue(stat, key);
         } catch (RuntimeException ignored) {
-            return 0;
+            return -1;   // 读统计失败 = UNKNOWN，调用方不得拍成 0 基线
         }
     }
 
@@ -647,6 +694,15 @@ public final class RddWorldFacts {
     private static Predicate<ItemStack> itemHit(Object raw, ResourceLocation key) {
         if (WorldFactConditions.isTag(raw)) {
             TagKey<Item> tag = TagKey.create(Registries.ITEM, key);
+            // 2026-11-03 实机：world_fact_probe 报 #minecraft:food 在本世界不存在，
+            // planner 却把它当硬门 → 永远 WAITING。原版没有 minecraft:food 物品 tag，
+            // 这是"可直接吃"的语义，缺失时按 FOOD 组件判定；其它缺失 tag 仍返回 null（不猜）。
+            if (BuiltInRegistries.ITEM.getTag(tag).isEmpty()) {
+                if (WorldFactConditions.isFoodTag(key.toString())) {
+                    return stack -> stack.has(net.minecraft.core.component.DataComponents.FOOD);
+                }
+                return null;
+            }
             return stack -> stack.is(tag);
         }
         Item wanted = BuiltInRegistries.ITEM.get(key);

@@ -38,6 +38,11 @@ public final class TaskChain {
      */
     private final Map<String, Map<String, Integer>> acquireBaselines = new LinkedHashMap<>();
     /**
+     * 统计条件口径（2026-11-03）：true=delta（本步增量，新建链默认）；false=lifetime（旧链兼容）。
+     * 旧存档没有这个字段 → 恢复为 false，避免把历史累计语义的旧链突然改判成 delta。
+     */
+    private boolean statDeltaEnabled = true;
+    /**
      * G1a（IC-75-r1 IC04）：哪些二级的基线是「观测失败（UNKNOWN）」而不是「确认真空」。
      *
      * <p>★ 为什么要这个侧表：{@link #captureAcquireBaseline(String, Map)} 的历史契约把
@@ -162,6 +167,38 @@ public final class TaskChain {
         }
     }
     public Goal goal() { return goal; }
+
+    /**
+     * 2026-11-02（169 T6 / 170 §5.1）：在同一份新规划上清掉「历史完成继承」，让任务链真的从头跑。
+     *
+     * <p>为什么需要它：死亡只走「恢复支线」，主线一级与 {@link #satisfiedStages} 都是粘性的；
+     * 新目标正文若与旧目标相似，CompletedFactStore 会按指纹把旧阶段再注进来 →
+     * 「甲/镐/食物全丢」之后链仍把旧阶段当已完成，继续指向下界/烈焰棒，一路送死。
+     *
+     * <p>语义：保留刚绑定的新 goal/primary，只清继承的完成阶段、所有二级状态、跳过/暂停原因、
+     * acquire 基线与当前执行绑定；planRevision++（旧 id 全部作废）、stateVersion++（安全提交）。
+     * 调用方必须先构造好新 goal（Stage-A 结果），再调本方法，然后正常 beginAttempt。
+     */
+    public synchronized void resetForRestart(String objective) {
+        if (objective == null || objective.isBlank()) {
+            throw new IllegalArgumentException("objective required for restart");
+        }
+        this.goal = new Goal(goal.id(), objective, goal.primaryGoals());
+        this.satisfiedStages.clear();
+        this.statuses.replaceAll((id, ignored) -> SubtaskStatus.PENDING);
+        this.skipReasons.clear();
+        this.pauseReasons.clear();
+        this.attempts.clear();
+        this.acquireBaselines.clear();
+        this.unobservedBaselines.clear();
+        this.primaryIndex = 0;
+        this.subtaskIndex = 0;
+        this.primaryStatus = PrimaryGoalStatus.PENDING;
+        this.activeExecutionId = null;
+        this.lastStartedAtMillis = 0L;
+        this.planRevision++;
+        this.stateVersion++;
+    }
     public synchronized PrimaryGoalStatus primaryStatus() { return primaryStatus; }
 
     /** 链实例身份（见字段注释；只读口，本批无消费者，监测台从 snapshot 读）。 */
@@ -492,9 +529,35 @@ public final class TaskChain {
     }
 
     /** 二级离开本轮生命周期（换计划/作废）时连同它的基线一起清掉，避免内存与存档堆积。 */
-    private void forgetAcquireBaseline(String subtaskId) {
+    void forgetAcquireBaseline(String subtaskId) {
         acquireBaselines.remove(subtaskId);
+        // 2026-11-03：统计基线用 <id>#stat 独立 key；同 ID 重跑时必须一起清，否则上一轮增量残留会假通过。
+        acquireBaselines.remove(subtaskId + "#stat");
         unobservedBaselines.remove(subtaskId);
+    }
+
+    /**
+     * 2026-11-03 实机：`item_crafted bread>=1` 用**终身统计**判当前步骤 → 历史面包把 r3-3 假完成。
+     * 这里给统计类条件拍「进入本步时的计数」基线，判定只看增量（与 acquire 同思路，独立 key）。
+     */
+    public synchronized void captureStatBaseline(String subtaskId, int value) {
+        if (subtaskId == null) return;
+        acquireBaselines.putIfAbsent(subtaskId + "#stat", Map.of("value", value));
+    }
+
+    /** 该二级的统计基线；未拍过返回 null（调用方必须判未达成，不猜）。 */
+    public synchronized Map<String, Integer> statBaseline(String subtaskId) {
+        return subtaskId == null ? null : acquireBaselines.get(subtaskId + "#stat");
+    }
+
+    /** 本链统计条件是否走 delta；旧链（无此字段恢复）为 false，继续 lifetime。 */
+    public synchronized boolean statDeltaEnabled() {
+        return statDeltaEnabled;
+    }
+
+    /** 新建/重绑链时显式开启 delta（修复旧链时用）。 */
+    public synchronized void enableStatDelta() {
+        statDeltaEnabled = true;
     }
 
     /** P0-3 执行身份：宿主开始执行后把真实执行实例 id 绑到当前二级；重复绑定会置换旧 id。 */
@@ -1509,6 +1572,7 @@ public final class TaskChain {
         o.add("pauseReasons", GSON.toJsonTree(pauseReasons));
         o.add("attempts", GSON.toJsonTree(attempts));
         o.add("acquireBaselines", GSON.toJsonTree(acquireBaselines));
+        o.addProperty("statDeltaEnabled", statDeltaEnabled);
         JsonArray sat = new JsonArray();
         for (String k : satisfiedStages) {
             sat.add(k);
@@ -1574,6 +1638,8 @@ public final class TaskChain {
                 ? o.get("chainInstanceId").getAsString()
                 : UUID.randomUUID().toString();
         chain.primaryStatus = PrimaryGoalStatus.valueOf(o.get("primaryStatus").getAsString());
+        // 2026-11-03：旧存档没有 statDeltaEnabled → 保持 lifetime，不把历史语义突然改判。
+        chain.statDeltaEnabled = o.has("statDeltaEnabled") && o.get("statDeltaEnabled").getAsBoolean();
         if (o.has("skipReasons") && o.get("skipReasons").isJsonObject()) {
             // 全量载入（不做加载期过滤）：skipReason 指向非 SKIPPED/未知二级属于损坏数据，
             // 交由 validateRestoredState 大声拒绝，而不是悄悄丢进 /dev/null。
@@ -1787,7 +1853,15 @@ public final class TaskChain {
         // 注意**不**校验"该二级必须正在跑"——重试/暂停期间基线继续存在是合法的。
         java.util.List<String> strayBaselines = new java.util.ArrayList<>();
         for (String id : acquireBaselines.keySet()) {
-            if (!expected.contains(id)) strayBaselines.add(id);
+            // 2026-11-03：统计基线用 <subtaskId>#stat 作为独立 key，引用校验要剥后缀再比。
+            String owner = id;
+            for (String suffix : new String[]{"#stat"}) {
+                if (owner.endsWith(suffix)) {
+                    owner = owner.substring(0, owner.length() - suffix.length());
+                    break;
+                }
+            }
+            if (!expected.contains(owner)) strayBaselines.add(id);
         }
         for (String id : strayBaselines) {
             acquireBaselines.remove(id);
