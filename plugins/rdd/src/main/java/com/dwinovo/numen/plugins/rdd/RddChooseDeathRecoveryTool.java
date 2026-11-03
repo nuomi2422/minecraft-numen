@@ -67,6 +67,15 @@ final class RddChooseDeathRecoveryTool implements NumenTool {
         // 上次死因是 lava/onFire/fall 且背包一件不剩时，RECOVER_DROPS_FIRST 直接拒绝，
         // 逼它先 FETCH_BACKUP_THEN_CONTINUE / PREPARE_AND_REPLAN（拿备用或先补装）。
         if (parsed == com.dwinovo.numen.rdd.side.death.DeathRecoveryDecision.RECOVER_DROPS_FIRST) {
+            // T6：同点连死（最近 3 次里已有一次在 24 格内）不再允许回死亡点，先撤离/换路线。
+            var deaths = com.dwinovo.numen.rdd.core.RddDeathLedger.all(companion.getUUID());
+            var deathAt = deaths == null ? java.util.List.<String>of()
+                    : deaths.stream().map(com.dwinovo.numen.rdd.core.RddDeathLedger.Death::deathAt).toList();
+            if (RddDeathRecoveryGuard.repeatedNearby(deathAt, 24)) {
+                reply.accept(TaskResult.fail("REFUSED_REPEATED_DEATH_AREA: 最近死亡集中在同一片 24 格内，"
+                        + "回死亡点会继续送死；先撤离/换路线，或 FETCH_BACKUP_THEN_CONTINUE / PREPARE_AND_REPLAN。").toJson());
+                return;
+            }
             String lastCause = RddDeathRecoveryGuard.lastDeathCause(companion.getUUID());
             // 2026-11-02（death59 实机）：它捡回 7 件掉落（不算「空手」）但依然无甲，
             // 于是「空手守卫」放行、它又把自己送回下界死亡点。判据改成「无战斗装备」：
