@@ -44,6 +44,33 @@ final class RddRepeatQueryWatcher {
 
     private RddRepeatQueryWatcher() {}
 
+    /**
+     * 2026-11-03（外部学习者 P0）：逐点扫描型工具不能用「答案没变」去劝。
+     *
+     * <p>实机（13:00–13:28）：{@code inspect_block} 被调 56 次 / 46 个不同坐标、单轮最多
+     * 10 个并行 —— 它是在给「放床」找位置，**每次查的是不同方块，答案当然不同**。
+     * 而本 watcher 按 {@code tool + args_chars} 计数，不同坐标只要参数长度一样就被算成
+     * 「同一个查询」，于是发出「你在 30 秒内第 N 次查同一个东西，答案没变」——
+     * 这句是**错的**，模型不会理，调用继续。最近三个 rdd 归档里各 6 条 redundant 事件即此。
+     *
+     * <p>改成对逐点工具说清「逐格枚举贵、改用面扫描」，才是模型能照做的指令。
+     */
+    static final java.util.Set<String> POINT_SCAN_TOOLS = java.util.Set.of("inspect_block");
+
+    /** 提醒正文（纯函数，便于单测钉住文案指向的工具）。 */
+    static String nudgeText(String tool, int count) {
+        int windowSeconds = WINDOW_TICKS / 20;
+        if (tool != null && POINT_SCAN_TOOLS.contains(tool)) {
+            return "[重复查询] 你在 " + windowSeconds + " 秒内第 " + count + " 次逐点查方块（" + tool + "）。"
+                    + "\n逐格枚举很贵：要确认一片区域时改用 scan_blocks（一次扫半径内的方块，block_ids 里带上你关心的种类），"
+                    + "或先把范围缩到真正要确认的那一两格。"
+                    + "\n每次 inspect_block 都是一次完整往返，10 次逐点查等于 10 次预算。";
+        }
+        return "[重复查询] 你在 " + windowSeconds + " 秒内第 " + count + " 次查同一个东西（" + tool + "），**答案没变**。"
+                + "\n刚查到的结果就在你上一条回执里，直接用；要换就换个参数或换个工具。"
+                + "\n不要为了确认而重复查——那会吃掉你的时间预算。";
+    }
+
     static void install(Path configDir) {
         offFlag = configDir == null ? null : configDir.resolve("redundant-query-off.flag");
         notifier = (companionId, tool, argsChars, count) -> {
@@ -54,10 +81,7 @@ final class RddRepeatQueryWatcher {
             data.put("count", count);
             data.put("windowTicks", WINDOW_TICKS);
             RddMonitor.publish("redundant_query_runtime", data);
-            RddPlugin.nudge(companionId, "[重复查询] 你在 " + (WINDOW_TICKS / 20)
-                    + " 秒内第 " + count + " 次查同一个东西（" + tool + "），**答案没变**。"
-                    + "\n刚查到的结果就在你上一条回执里，直接用；要换就换个参数或换个工具。"
-                    + "\n不要为了确认而重复查——那会吃掉你的时间预算。");
+            RddPlugin.nudge(companionId, nudgeText(tool, count));
         };
         SEEN.clear();
     }

@@ -136,6 +136,28 @@ class RddDeathLedgerTest {
         assertEquals("P23", RddDeathLedger.latest(id).deathAt());
     }
 
+    /**
+     * 2026-11-03（外部学习者 P0-1）：测试致死必须打标，且只对**紧邻标记**的那一次生效。
+     *
+     * <p>实机背景：12:04/12:06 两次 {@code debug_kill} 与 12:09 一次管理员传送造成的死亡，
+     * 在台账里与自然死亡同形，于是 {@code REFUSED_REPEATED_DEATH_AREA} 把人工验证当成
+     * 真实危险信号累计（测量污染被测对象）。这里钉住三件事：
+     * ①标记后紧邻死亡 = testKill；②没标记 = false；③标记是一次性的。
+     */
+    @Test void testKillMarkerMarksExactlyTheNextDeath() {
+        RddDeathLedger.markTestKill(id);
+        var debugKilled = RddDeathLedger.record(id, 1000L, System.currentTimeMillis(), "10, 64, 10", 3);
+        assertTrue(debugKilled.testKill(), "紧跟标记的那次死亡必须标成测试致死");
+
+        var natural = RddDeathLedger.record(id, 1020L, System.currentTimeMillis(), "10, 64, 10", 1);
+        assertFalse(natural.testKill(), "标记是一次性的：紧接着的下一次死亡应回到自然死亡");
+    }
+
+    @Test void deathWithoutMarkerIsNatural() {
+        var d = RddDeathLedger.record(id, 1000L, 0L, "20, 64, 20", 2);
+        assertFalse(d.testKill());
+    }
+
     @Test void ledgersArePerCompanionAndClearable() {
         UUID a = UUID.randomUUID(), b = UUID.randomUUID();
         RddDeathLedger.record(a, 1L, 0L, "A1", 1);

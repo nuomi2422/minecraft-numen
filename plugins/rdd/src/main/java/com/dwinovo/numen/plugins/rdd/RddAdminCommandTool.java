@@ -281,6 +281,13 @@ final class RddAdminCommandTool implements NumenTool {
             // 以命令方块同等权限执行；源头记成同伴，便于事后从日志回溯是谁触发的
             // 2026-10-29：命令源必须是**她本人**，否则 `@s` / `give @s` / `tp @s` 全部无效（她不是源）。
             var source = companion.createCommandSourceStack().withSuppressedOutput();
+            // 2026-11-03（外部学习者 P0-1）：外部指令造成的死亡也是测试致死。
+            // 实测 12:09:07 用本工具 tp 到 y=180，4 秒后自由落体摔死 —— 这次死亡进了
+            // 「重复死亡区」聚类，让 rdd_choose_death_recovery 误拒。tp/summon/fill 这类
+            // 主动改变身体或世界的指令都按测试处理（打 testKill，聚类不采信）。
+            if ("tp".equals(verb) || "summon".equals(verb) || "fill".equals(verb)) {
+                com.dwinovo.numen.rdd.core.RddDeathLedger.markTestKill(companion.getUUID());
+            }
             // 这一版 MC 的 performPrefixedCommand 返回 void，拿不到 syncResultCode —— 记 0 表示"已执行未取返回码"
             server.getCommands().performPrefixedCommand(source, command);
             int ok = 0;

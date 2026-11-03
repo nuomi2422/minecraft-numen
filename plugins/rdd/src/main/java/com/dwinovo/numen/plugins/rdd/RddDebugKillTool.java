@@ -42,6 +42,9 @@ final class RddDebugKillTool implements NumenTool {
             // 主人看着像调试器成功、实际人还活着（= 静默说谎的调试工具）。
             // entity.kill() 是 LivingEntity 的终局入口（内部 hurt(die, MAX_VALUE)），
             // 不经过 invulnerable / hurtTime 判定，是让"调试死亡"确定生效的那条路。
+            // 2026-11-03（外部学习者 P0-1）：先把这次致死标成测试致死 —— 否则它会进
+            // 「重复死亡区」聚类，让 rdd_choose_death_recovery 把人工验证当真实危险累计。
+            com.dwinovo.numen.rdd.core.RddDeathLedger.markTestKill(companion.getUUID());
             companion.kill();
             boolean died = !companion.isAlive() || companion.getHealth() <= 0f;
             // 2026-10-30：**先**把死亡瞬间的真实状态抄下来。

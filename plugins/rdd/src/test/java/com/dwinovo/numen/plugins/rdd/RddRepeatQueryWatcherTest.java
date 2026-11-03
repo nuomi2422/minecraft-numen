@@ -17,6 +17,27 @@ class RddRepeatQueryWatcherTest {
 
     private static final UUID ID = UUID.fromString("e502d17b-de15-4e5e-9864-9e97b0702546");
 
+    /**
+     * 2026-11-03（外部学习者 P0）：逐点扫描工具的提醒不能再说「答案没变」。
+     *
+     * <p>实机 13:00–13:28：{@code inspect_block} 56 次、46 个不同坐标。watcher 按
+     * {@code tool + args_chars} 计数把它们当成同一次查询，发出的「答案没变」是错的，
+     * 模型当然不理。逐点工具的提醒必须指向能一次扫一片的 {@code scan_blocks}。
+     */
+    @Test
+    void pointScanToolIsToldToUseAreaScanInsteadOfRepeatWarning() {
+        String text = RddRepeatQueryWatcher.nudgeText("inspect_block", 3);
+        assertTrue(text.contains("scan_blocks"), "必须指向面扫描工具，否则模型没有替代动作：" + text);
+        assertTrue(text.contains("逐点"), "必须点明这是逐点枚举：" + text);
+        assertFalse(text.contains("答案没变"), "逐点查的是不同方块，答案本来就不同，不能这么说：" + text);
+    }
+
+    @Test
+    void ordinaryToolKeepsTheOriginalRepeatWarning() {
+        String text = RddRepeatQueryWatcher.nudgeText("rdd_get_inventory", 3);
+        assertTrue(text.contains("答案没变"), "非逐点工具沿用原文案：" + text);
+    }
+
     @Test
     void firstTwoCallsDoNotNotify() {
         RddRepeatQueryWatcher.clear(ID);

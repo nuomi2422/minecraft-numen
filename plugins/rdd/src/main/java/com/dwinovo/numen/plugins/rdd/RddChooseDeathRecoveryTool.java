@@ -68,9 +68,15 @@ final class RddChooseDeathRecoveryTool implements NumenTool {
         // 逼它先 FETCH_BACKUP_THEN_CONTINUE / PREPARE_AND_REPLAN（拿备用或先补装）。
         if (parsed == com.dwinovo.numen.rdd.side.death.DeathRecoveryDecision.RECOVER_DROPS_FIRST) {
             // T6：同点连死（最近 3 次里已有一次在 24 格内）不再允许回死亡点，先撤离/换路线。
+            // 2026-11-03（外部学习者 P0-1）：测试致死不参与「重复死亡区」聚类。
+            // 12:04/12:06 两次 debug_kill 让这条硬闸误判，把人工验证当成真实危险累计。
+            // 台账仍保留全部记录（可审计），只在聚类输入处过滤 testKill。
             var deaths = com.dwinovo.numen.rdd.core.RddDeathLedger.all(companion.getUUID());
             var deathAt = deaths == null ? java.util.List.<String>of()
-                    : deaths.stream().map(com.dwinovo.numen.rdd.core.RddDeathLedger.Death::deathAt).toList();
+                    : deaths.stream()
+                            .filter(d -> !d.testKill())
+                            .map(com.dwinovo.numen.rdd.core.RddDeathLedger.Death::deathAt)
+                            .toList();
             if (RddDeathRecoveryGuard.repeatedNearby(deathAt, 24)) {
                 reply.accept(TaskResult.fail("REFUSED_REPEATED_DEATH_AREA: 最近死亡集中在同一片 24 格内，"
                         + "回死亡点会继续送死；先撤离/换路线，或 FETCH_BACKUP_THEN_CONTINUE / PREPARE_AND_REPLAN。").toJson());

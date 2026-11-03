@@ -51,6 +51,29 @@ class RddDeathLedgerStoreTest {
         assertEquals(2, RddDeathLedger.snapshot(ID).nextSeq(), "nextSeq 必须落盘");
     }
 
+    /**
+     * 2026-11-03（外部学习者 P0-1）：{@code testKill} 必须活过重启。
+     *
+     * <p>否则「重复死亡区」聚类在重启后又会把测试致死算进去 —— 那正是 12:22 那次
+     * {@code REFUSED_REPEATED_DEATH_AREA} 误判的形态。
+     */
+    @Test
+    void testKillSurvivesRoundTrip(@TempDir Path dir) throws Exception {
+        RddDeathLedger.clearAll();
+        RddDeathLedger.markTestKill(ID);
+        RddDeathLedger.record(ID, 1000L, 5_000L, "10, 64, 10", 3);
+        RddDeathLedger.record(ID, 2000L, 6_000L, "20, 64, 20", 1);
+
+        RddDeathLedgerStore.save(dir, ID, RddDeathLedger.snapshot(ID));
+        RddDeathLedger.clearAll();
+        RddDeathLedger.restore(ID, RddDeathLedgerStore.load(dir, ID));
+
+        var seq1 = RddDeathLedger.all(ID).stream().filter(d -> d.seq() == 1).findFirst().orElseThrow();
+        var seq2 = RddDeathLedger.all(ID).stream().filter(d -> d.seq() == 2).findFirst().orElseThrow();
+        assertTrue(seq1.testKill(), "测试致死标记必须落盘");
+        assertFalse(seq2.testKill(), "自然死亡不能被标记污染");
+    }
+
     @Test
     void writtenJsonIsUtf8AndSelfDescribing(@TempDir Path dir) throws Exception {
         RddDeathLedger.clearAll();

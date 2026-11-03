@@ -67,11 +67,15 @@ public final class RddDeathLedger {
                         State state, String evidence,
                         Map<String, Integer> lostItems,
                         /* 2026-11-02：死因（deathKind/msgId 短标签），供规划侧召回死亡经验；旧文件缺省 "" */
-                        String cause) {
+                        String cause,
+                        /* 2026-11-03（外部学习者 P0-1）：测试致死标记（debug_kill / 管理员传送致死）。
+                           测试致死不进「重复死亡区」聚类 —— 否则人工验证死亡会污染真实危险判据。
+                           旧文件缺省 false。 */
+                        boolean testKill) {
 
         public Death(int seq, long gameTime, long wallClockMillis,
                      String deathAt, int lostEntries) {
-            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, State.UNVERIFIED, "", null, "");
+            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, State.UNVERIFIED, "", null, "", false);
         }
 
         /** G7 之前写出的调用点形状（8 参，无 cause）。 */
@@ -79,13 +83,13 @@ public final class RddDeathLedger {
                      String deathAt, int lostEntries,
                      State state, String evidence,
                      Map<String, Integer> lostItems) {
-            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, state, evidence, lostItems, "");
+            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, state, evidence, lostItems, "", false);
         }
 
         /** 旧构造器 + 证据状态（2026-09-30 深审 R07 之前写出的调用点形状，保持可用）。 */
         public Death(int seq, long gameTime, long wallClockMillis,
                      String deathAt, int lostEntries, State state, String evidence) {
-            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, state, evidence, null);
+            this(seq, gameTime, wallClockMillis, deathAt, lostEntries, state, evidence, null, "", false);
         }
 
         /** 本次死亡丢了哪些、各多少（可能为 null = 本次改动前的旧批次，无法逐项核对）。 */
@@ -110,17 +114,45 @@ public final class RddDeathLedger {
 
         public Death confirmedLost(String reason) {
             return new Death(seq, gameTime, wallClockMillis, deathAt, lostEntries,
-                    State.CONFIRMED_LOST, reason, lostItems, cause);
+                    State.CONFIRMED_LOST, reason, lostItems, cause, testKill);
         }
 
         public Death recovered(String reason) {
             return new Death(seq, gameTime, wallClockMillis, deathAt, lostEntries,
-                    State.RECOVERED, reason, lostItems, cause);
+                    State.RECOVERED, reason, lostItems, cause, testKill);
         }
     }
 
     private static final Map<UUID, List<Death>> LEDGER = new ConcurrentHashMap<>();
     private static final Map<UUID, Integer> SEQ = new ConcurrentHashMap<>();
+
+    /**
+     * 测试致死标记的有效窗口（毫秒）。
+     *
+     * <p>2026-11-03（外部学习者 P0-1）：{@code debug_kill} 与管理员传送会走原版死亡流程，
+     * 产生的死亡与自然死亡在台账里完全同形。实测 12:04/12:06 两次 {@code debug_kill}
+     * 让 {@code rdd_choose_death_recovery} 判出 {@code REFUSED_REPEATED_DEATH_AREA}
+     * —— 人工验证被当成真实危险信号累计，属于「测量污染被测对象」。
+     *
+     * <p>做法：测试路径在真正致死前 {@link #markTestKill(UUID)}，5 秒内到达的那次死亡
+     * 打 {@code testKill=true}；聚类只看非测试死亡，台账仍保留全部记录（可审计）。
+     */
+    public static final long TEST_KILL_WINDOW_MS = 5_000L;
+
+    private static final Map<UUID, Long> TEST_KILL_AT = new ConcurrentHashMap<>();
+
+    /** 调试/测试路径在真正致死前调用：下一次死亡（{@link #TEST_KILL_WINDOW_MS} 内）标记为测试致死。 */
+    public static void markTestKill(UUID companionId) {
+        if (companionId != null) {
+            TEST_KILL_AT.put(companionId, System.currentTimeMillis());
+        }
+    }
+
+    /** 取走并判断标记（一次性）：只有真正紧邻标记的死亡才算测试致死。 */
+    private static boolean consumeTestKillMarker(UUID id) {
+        Long at = TEST_KILL_AT.remove(id);
+        return at != null && System.currentTimeMillis() - at <= TEST_KILL_WINDOW_MS;
+    }
 
     private RddDeathLedger() {}
 
@@ -222,7 +254,8 @@ public final class RddDeathLedger {
         }
         Death d = new Death(seq, gameTime, wallClockMillis,
                 deathAt == null ? "?" : deathAt, Math.max(0, lostEntries),
-                State.UNVERIFIED, "", items, cause == null ? "" : cause);
+                State.UNVERIFIED, "", items, cause == null ? "" : cause,
+                consumeTestKillMarker(id));
         List<Death> list = LEDGER.computeIfAbsent(id, k -> new ArrayList<>());
         synchronized (list) {
             list.add(d);
