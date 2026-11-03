@@ -33,9 +33,12 @@ final class RddDeathLedgerStore {
     static RddDeathLedger.LedgerSnapshot load(Path directory, UUID companionId) {
         if (directory == null || companionId == null) return new RddDeathLedger.LedgerSnapshot(1, java.util.List.of());
         Path file = directory.resolve(companionId + ".json");
-        if (!Files.isRegularFile(file)) return new RddDeathLedger.LedgerSnapshot(1, java.util.List.of());
+        if (!Files.isRegularFile(file)) {
+            // 没有快照也可能是"只有日志"（第一次落盘前崩溃）——照样重放
+            return replay(directory, companionId, new RddDeathLedger.LedgerSnapshot(1, java.util.List.of()));
+        }
         try {
-            return parse(Files.readString(file, StandardCharsets.UTF_8));
+            return replay(directory, companionId, parse(Files.readString(file, StandardCharsets.UTF_8)));
         } catch (IOException | RuntimeException bad) {
             // 坏文件不阻断：明确记一次，之后按"没死过"处理。
             // 这里必须兜 Throwable —— 埋点链在裁剪 classpath 下会抛 NoClassDefFoundError，
@@ -132,30 +135,104 @@ final class RddDeathLedgerStore {
         root.addProperty("nextSeq", snapshot.nextSeq());
         JsonArray deaths = new JsonArray();
         for (RddDeathLedger.Death d : snapshot.deaths()) {
-            JsonObject o = new JsonObject();
-            o.addProperty("seq", d.seq());
-            o.addProperty("gameTime", d.gameTime());
-            o.addProperty("wallClockMillis", d.wallClockMillis());
-            o.addProperty("deathAt", d.deathAt());
-            o.addProperty("lostEntries", d.lostEntries());
-            o.addProperty("state", d.state().name());
-            o.addProperty("evidence", d.evidence());
-            if (d.cause() != null && !d.cause().isBlank()) {
-                o.addProperty("cause", d.cause());
-            }
-            if (d.testKill() != null) {
-                o.addProperty("testKill", d.testKill());
-            }
-            if (!d.lostItems().isEmpty()) {
-                JsonObject items = new JsonObject();
-                for (Map.Entry<String, Integer> e : d.lostItems().entrySet()) {
-                    items.addProperty(e.getKey(), e.getValue());
-                }
-                o.add("lostItems", items);
-            }
-            deaths.add(o);
+            deaths.add(deathToJson(d));
         }
         root.add("deaths", deaths);
         return root.toString();
+    }
+
+    /** 单条死亡的 JSON（快照与追加日志共用同一份渲染，保证两种投影字段一致）。 */
+    static JsonObject deathToJson(RddDeathLedger.Death d) {
+        JsonObject o = new JsonObject();
+        o.addProperty("seq", d.seq());
+        o.addProperty("gameTime", d.gameTime());
+        o.addProperty("wallClockMillis", d.wallClockMillis());
+        o.addProperty("deathAt", d.deathAt());
+        o.addProperty("lostEntries", d.lostEntries());
+        o.addProperty("state", d.state().name());
+        o.addProperty("evidence", d.evidence());
+        if (d.cause() != null && !d.cause().isBlank()) {
+            o.addProperty("cause", d.cause());
+        }
+        if (d.testKill() != null) {
+            o.addProperty("testKill", d.testKill());
+        }
+        if (!d.lostItems().isEmpty()) {
+            JsonObject items = new JsonObject();
+            for (Map.Entry<String, Integer> e : d.lostItems().entrySet()) {
+                items.addProperty(e.getKey(), e.getValue());
+            }
+            o.add("lostItems", items);
+        }
+        return o;
+    }
+
+    // ---- 追加日志（2026-11-03，P0-1 存储最小设计 #662 的第一步） ----
+
+    /** 追加日志后缀：每次死亡立刻写一行，崩溃后靠它重放。 */
+    static final String JOURNAL_SUFFIX = ".log.jsonl";
+
+    /** 日志体积上限；超过就裁掉最老的行（未结案批次同时也在快照里，不会因裁剪丢恢复）。 */
+    static final long MAX_JOURNAL_BYTES = 2L * 1024 * 1024;
+
+    /**
+     * 记一次死亡到追加日志。
+     *
+     * <p>为什么要有：快照 {@code <uuid>.json} 是整体重写的，record() 改内存到 save() 落盘之间
+     * 崩溃，这条死亡就没了。追加日志在死亡当场写一行，{@link #load} 时按 seq 重放补齐。
+     */
+    static void appendJournal(Path directory, UUID companionId, RddDeathLedger.Death death) {
+        if (directory == null || companionId == null || death == null) return;
+        try {
+            Files.createDirectories(directory);
+            Path log = directory.resolve(companionId + JOURNAL_SUFFIX);
+            Files.writeString(log, deathToJson(death).toString() + System.lineSeparator(),
+                    StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND);
+            trimJournal(log);
+        } catch (IOException | RuntimeException bad) {
+            try {
+                RddPlugin.warnLedgerStore("ledger_journal_failed", Map.of(
+                        "companionId", companionId.toString(), "error", String.valueOf(bad)));
+            } catch (Throwable ignored) {
+                // 日志写不进去不能阻断死亡路径
+            }
+        }
+    }
+
+    /** 超过上限时保留最新的一半行（简单、无状态，重启后不会反复裁剪同一段）。 */
+    private static void trimJournal(Path log) throws IOException {
+        if (Files.size(log) <= MAX_JOURNAL_BYTES) return;
+        java.util.List<String> lines = Files.readAllLines(log, StandardCharsets.UTF_8);
+        int keep = Math.max(1, lines.size() / 2);
+        Files.writeString(log, String.join(System.lineSeparator(), lines.subList(lines.size() - keep, lines.size()))
+                + System.lineSeparator(), StandardCharsets.UTF_8);
+    }
+
+    /** 快照 + 追加日志重放：seq 大于快照最大值的行补进来（按 seq 去重）。 */
+    private static RddDeathLedger.LedgerSnapshot replay(Path directory, UUID companionId,
+                                                         RddDeathLedger.LedgerSnapshot base) {
+        Path log = directory.resolve(companionId + JOURNAL_SUFFIX);
+        if (!Files.isRegularFile(log)) return base;
+        int maxSeq = base.deaths().stream().mapToInt(RddDeathLedger.Death::seq).max().orElse(0);
+        Map<Integer, RddDeathLedger.Death> merged = new LinkedHashMap<>();
+        for (RddDeathLedger.Death d : base.deaths()) merged.put(d.seq(), d);
+        try {
+            for (String line : Files.readAllLines(log, StandardCharsets.UTF_8)) {
+                if (line.isBlank()) continue;
+                RddDeathLedger.Death d = parseDeath(JsonParser.parseString(line));
+                if (d != null && d.seq() > maxSeq) merged.put(d.seq(), d);
+            }
+        } catch (IOException | RuntimeException bad) {
+            return base;   // 日志坏了就只用快照，不阻断
+        }
+        if (merged.size() == base.deaths().size()) return base;
+        java.util.List<RddDeathLedger.Death> all = new java.util.ArrayList<>(merged.values());
+        all.sort(java.util.Comparator.comparingInt(RddDeathLedger.Death::seq));
+        while (all.size() > RddDeathLedger.MAX_ENTRIES) all.remove(0);
+        int nextSeq = Math.max(base.nextSeq(),
+                all.stream().mapToInt(RddDeathLedger.Death::seq).max().orElse(0) + 1);
+        return new RddDeathLedger.LedgerSnapshot(nextSeq, all);
     }
 }

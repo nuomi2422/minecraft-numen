@@ -87,6 +87,39 @@ class RddDeathLedgerStoreTest {
         assertNull(d.testKill(), "缺键 = 未知，不能当自然死亡");
     }
 
+    /** 追加日志：快照没来得及写时，load 必须靠日志把死亡补回来（崩溃丢窗口）。 */
+    @Test
+    void journalReplaysDeathsMissingFromSnapshot(@TempDir Path dir) throws Exception {
+        RddDeathLedger.clearAll();
+        RddDeathLedger.record(ID, 1000L, 5_000L, "1, 2, 3", 1);
+        RddDeathLedgerStore.save(dir, ID, RddDeathLedger.snapshot(ID));   // 快照只有 seq=1
+        RddDeathLedger.record(ID, 2000L, 6_000L, "4, 5, 6", 2);
+        RddDeathLedger.record(ID, 3000L, 7_000L, "7, 8, 9", 3);
+        // 模拟崩溃：只把 seq=2/3 写进日志，不写快照
+        var deaths = RddDeathLedger.all(ID);
+        RddDeathLedgerStore.appendJournal(dir, ID, deaths.stream().filter(d -> d.seq() == 2).findFirst().orElseThrow());
+        RddDeathLedgerStore.appendJournal(dir, ID, deaths.stream().filter(d -> d.seq() == 3).findFirst().orElseThrow());
+
+        RddDeathLedger.clearAll();
+        RddDeathLedger.restore(ID, RddDeathLedgerStore.load(dir, ID));
+        assertEquals(3, RddDeathLedger.all(ID).size(), "日志里的 seq=2/3 必须被重放出来");
+        assertEquals("7, 8, 9", RddDeathLedger.latest(ID).deathAt());
+    }
+
+    /** 日志里重复出现快照已有的 seq 时不能重复计数（重放按 seq 去重）。 */
+    @Test
+    void journalReplayDeduplicatesBySeq(@TempDir Path dir) throws Exception {
+        RddDeathLedger.clearAll();
+        RddDeathLedger.record(ID, 1000L, 5_000L, "1, 2, 3", 1);
+        RddDeathLedger.record(ID, 2000L, 6_000L, "4, 5, 6", 2);
+        RddDeathLedgerStore.save(dir, ID, RddDeathLedger.snapshot(ID));
+        // 把 seq=1/2 都补进日志（模拟日志先写、快照后写）
+        for (var d : RddDeathLedger.all(ID)) RddDeathLedgerStore.appendJournal(dir, ID, d);
+        RddDeathLedger.clearAll();
+        RddDeathLedger.restore(ID, RddDeathLedgerStore.load(dir, ID));
+        assertEquals(2, RddDeathLedger.all(ID).size(), "按 seq 去重，不能变成 4 条");
+    }
+
     @Test
     void writtenJsonIsUtf8AndSelfDescribing(@TempDir Path dir) throws Exception {
         RddDeathLedger.clearAll();

@@ -1504,6 +1504,9 @@ private static String withAssets(UUID companionId, String rddContext) {
                 LOG.warn("[rdd] 死亡台账写入失败 {}: {}", companionId, ledgerFail.toString());
             }
             if (death != null) {
+                // 2026-11-03（外部学习者 P0-1 / #662）：先写追加日志，再整体落快照。
+                // 快照是整体重写，两者之间崩溃会丢这条；日志一行一写，重启时按 seq 重放补齐。
+                RddDeathLedgerStore.appendJournal(ledgerDir, companionId, death);
                 saveLedger(companionId);          // F2：写完立刻落盘，死亡记录不留在纯内存里
             }
             Map<String, Object> invalidatedData = new LinkedHashMap<>();
