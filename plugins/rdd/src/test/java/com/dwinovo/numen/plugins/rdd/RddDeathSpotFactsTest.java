@@ -4,6 +4,7 @@ import com.dwinovo.numen.rdd.core.RddDeathLedger;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -45,6 +46,23 @@ class RddDeathSpotFactsTest {
     void unknownCauseStaysUnknown() {
         var out = RddDeathSpotFacts.knownFailures(List.of(death(1, "1, 2, 3", "")));
         assertTrue(out.get(0).contains("unknown"), out.get(0));
+    }
+
+    /**
+     * 2026-11-03（P0-1）：确证测试致死不能进 knownFailures，否则规划侧会把人工验证当成真实失败依据。
+     */
+    @Test
+    void testKillsDoNotBecomeKnownFailures() {
+        RddDeathLedger.clearAll();
+        UUID id = UUID.randomUUID();
+        RddDeathLedger.record(id, 1000L, 5_000L, "15, 61, 106", 3, null, "fall");
+        RddDeathLedger.markTestKill(id);
+        RddDeathLedger.record(id, 1100L, 5_100L, "15, 62, 107", 3, null, "genericKill");
+
+        var out = RddDeathSpotFacts.knownFailuresFor(id);
+        assertTrue(out.stream().anyMatch(s -> s.contains("fall")), "自然死亡要保留：" + out);
+        assertTrue(out.stream().noneMatch(s -> s.contains("同一地点已死 2 次")),
+                "测试致死不能和自然死亡凑成“同点重复”：" + out);
     }
 
     @Test
