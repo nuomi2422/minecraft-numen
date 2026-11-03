@@ -199,6 +199,38 @@ public final class ExperienceLibraryLookup {
 
     private record Scored(int score, RetrievalDecision.Hit hit) {}
 
+    /**
+     * 读**整库**的 title+mechanism 文本（只读，供近重复门使用；2026-11-03）。
+     *
+     * <p>与 {@link #lookup} 的区别：那个按同标题/触发词判“同一件事”，只能抓“字面相同”；
+     * 实测库涨到 24 条时 {@code mine} 与 {@code interact_at} 各有 4 条同机制不同措辞的条目，
+     * 字面检索抓不到。近重复门用字符二元组 Jaccard 兜这一层。
+     *
+     * @return 每条库记录一段 "title + ' ' + mechanism"（坏行跳过，不中断）
+     */
+    public static List<String> readAllText(Path configDir, String companionId) {
+        List<String> out = new ArrayList<>();
+        if (configDir == null || companionId == null || companionId.isBlank()) return out;
+        Path file = configDir.resolve("experience-" + companionId + ".jsonl");
+        if (!Files.isRegularFile(file)) return out;
+        try {
+            for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+                if (line.isBlank()) continue;
+                try {
+                    JsonObject o = JsonParser.parseString(line).getAsJsonObject();
+                    String title = str(o, "title");
+                    String mechanism = str(o, "mechanism");
+                    if (!title.isBlank() || !mechanism.isBlank()) out.add(title + " " + mechanism);
+                } catch (RuntimeException badLine) {
+                    // 单行坏就跳过：近重复门是增强，不是硬依赖
+                }
+            }
+        } catch (IOException bad) {
+            return List.of();
+        }
+        return out;
+    }
+
     private static String str(JsonObject o, String key) {
         if (!o.has(key) || !o.get(key).isJsonPrimitive()) return "";
         return o.get(key).getAsString();
