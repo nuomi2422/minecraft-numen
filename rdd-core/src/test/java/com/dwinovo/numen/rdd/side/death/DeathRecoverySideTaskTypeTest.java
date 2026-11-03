@@ -97,6 +97,55 @@ class DeathRecoverySideTaskTypeTest {
     }
 
     @Test
+    void resetDecisionKeepsBranchFrozenUntilExplicitRestart() {
+        SideTask frozen = new SideTask(C, "death_recovery-2", DeathRecoverySideTaskType.TYPE_ID,
+                1L, 0L, 1000L, 1000L + DeathRecoverySideTaskType.DEADLINE_TICKS,
+                SideTaskState.ACTIVE, DeathRecoverySideTaskType.PHASE_DECIDE,
+                Map.of("death_seq", "7", "dimension", "minecraft:the_nether",
+                        "death_at", "10,64,20",
+                        DeathRecoverySideTaskType.KEY_DECISION, "RESET_AND_RESTART"), null);
+        SideTaskVerdict verdict = new DeathRecoverySideTaskType().evaluate(frozen, new Port());
+        assertEquals(SideTaskVerdict.Kind.CONTINUE, verdict.kind(),
+                "选 RESET_AND_RESTART 后支线必须保持冻结，不能先恢复旧主线");
+        assertEquals(DeathRecoverySideTaskType.PHASE_RESET_MAINLINE, verdict.nextPhase());
+        assertEquals("rdd_restart_mainline", verdict.data().get("next_action"),
+                "必须把真正的改单入口写进上下文，策略工具本身不越权改链");
+    }
+
+    @Test
+    void resetDecisionSkipsAfterDeadlineInsteadOfFreezingForever() {
+        SideTask frozen = new SideTask(C, "death_recovery-3", DeathRecoverySideTaskType.TYPE_ID,
+                1L, 0L, 1000L, 1000L + DeathRecoverySideTaskType.DEADLINE_TICKS,
+                SideTaskState.ACTIVE, DeathRecoverySideTaskType.PHASE_RESET_MAINLINE,
+                Map.of("death_seq", "7", "dimension", "minecraft:the_nether",
+                        "death_at", "10,64,20",
+                        DeathRecoverySideTaskType.KEY_DECISION, "RESET_AND_RESTART"), null);
+        Port port = new Port();
+        port.time = 1000L + DeathRecoverySideTaskType.DEADLINE_TICKS + 1L;
+        SideTaskVerdict verdict = new DeathRecoverySideTaskType().evaluate(frozen, port);
+        assertEquals(SideTaskVerdict.Kind.SKIP, verdict.kind(),
+                "选了重置但保护线到期仍未调用工具时，必须解冻主线，不能永久 keep");
+        assertTrue(verdict.evidence().contains("UNKNOWN") || verdict.evidence().contains("不能记 PASS"));
+    }
+
+    @Test
+    void resetDecisionStillWaitsWhenDropsAreRecovered() {
+        SideTask frozen = new SideTask(C, "death_recovery-4", DeathRecoverySideTaskType.TYPE_ID,
+                1L, 0L, 1000L, 1000L + DeathRecoverySideTaskType.DEADLINE_TICKS,
+                SideTaskState.ACTIVE, DeathRecoverySideTaskType.PHASE_DECIDE,
+                Map.of("death_seq", "7", "dimension", "minecraft:the_nether",
+                        "death_at", "10,64,20",
+                        DeathRecoverySideTaskType.KEY_DECISION, "RESET_AND_RESTART"), null);
+        Port port = new Port();
+        port.facts = new SideTaskWorldPort.DeathRecoveryFacts(
+                SideTaskWorldPort.DeathDropState.RECOVERED, false, false, true, "all tracked items observed");
+        SideTaskVerdict verdict = new DeathRecoverySideTaskType().evaluate(frozen, port);
+        assertEquals(SideTaskVerdict.Kind.CONTINUE, verdict.kind(),
+                "掉落找回不等于旧主线安全；重置未应用前仍保持冻结");
+        assertEquals(DeathRecoverySideTaskType.PHASE_RESET_MAINLINE, verdict.nextPhase());
+    }
+
+    @Test
     void triggerAllowedDuringDeathOccupancy() {
         assertTrue(new DeathRecoverySideTaskTrigger().allowedWhileDeathOccupying());
     }

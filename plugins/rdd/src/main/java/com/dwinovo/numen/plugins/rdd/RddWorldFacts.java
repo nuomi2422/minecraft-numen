@@ -224,6 +224,45 @@ public final class RddWorldFacts {
         return wanted != null && level.dimension().location().equals(wanted);
     }
 
+    /**
+     * Advancement diagnostics: a malformed condition is INVALID. Until this host
+     * has an explicit registry-readiness proof, a registry miss is NOT_VERIFIABLE,
+     * not proof of an invalid ID. Neither outcome judges the subject's actions.
+     */
+    static com.dwinovo.numen.rdd.core.AdvancementVerification.Result advancementResult(
+            NumenPlayer ap, Map<String, Object> condition) {
+        var unknown = com.dwinovo.numen.rdd.core.AdvancementVerification.Result.NOT_VERIFIABLE;
+        // Syntax is checked without touching a live world. Keep this ordering the
+        // same for rdd_status and world_fact_probe, even when the server is offline.
+        if (condition == null || !"advancement".equals(condition.get("type"))
+                || !WorldFactConditions.valid(condition))
+            return com.dwinovo.numen.rdd.core.AdvancementVerification.Result.INVALID;
+        ResourceLocation key = id(condition, "advancement");
+        if (key == null) return com.dwinovo.numen.rdd.core.AdvancementVerification.Result.INVALID;
+        if (ap == null) return unknown;
+        try {
+            var server = ap.getServer();
+            if (server == null || !server.isSameThread() || server.getAdvancements() == null) return unknown;
+            var result = com.dwinovo.numen.rdd.core.AdvancementVerification.evaluate(key.toString(),
+                    id -> java.util.Optional.ofNullable(server.getAdvancements().get(key)),
+                    holder -> ap.getAdvancements().getOrStartProgress(holder).isDone());
+            // A manager may exist before datapack apply, or be reloading. No readiness
+            // token is available here; don't turn a miss into an authoritative absence.
+            if (result == com.dwinovo.numen.rdd.core.AdvancementVerification.Result.INVALID) return unknown;
+            if (result == unknown) return result;
+            if (condition.containsKey("dimension")) {
+                if (ap.serverLevel() == null) return unknown;
+                if (!dimension(ap.serverLevel(), condition))
+                    return com.dwinovo.numen.rdd.core.AdvancementVerification.Result.NOT_MATCHED;
+            }
+            return result;
+        } catch (RuntimeException ex) {
+            return unknown;
+        }
+    }
+
+    // Legacy execution path retained verbatim until the detector can branch on all
+    // four results atomically. Diagnostic callers use advancementResult separately.
     private static boolean advancement(NumenPlayer ap, Map<String, Object> condition) {
         ResourceLocation key = id(condition, "advancement");
         if (key == null) return false;

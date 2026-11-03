@@ -10,14 +10,21 @@ import java.util.UUID;
  */
 public record MainlineResumeToken(
         UUID companionId,
+        String chainInstanceId,
         String goalId,
         String primaryId,
         String subtaskId,
         int planRevision,
         long generation) {
 
-    public boolean matches(String goalId, String primaryId, String subtaskId, int planRevision) {
-        return eq(this.goalId, goalId)
+    /**
+     * 2026-11-02（169 审阅）：同 goalId/同 primaryId/同 planRevision 的两条链可以重名（新链从 0 起），
+     * 只比代次存在 ABA：旧令牌可能在新链同号同版本时误命中。加 chainInstanceId 后跨链必然不等。
+     */
+    public boolean matches(String chainInstanceId, String goalId, String primaryId, String subtaskId,
+                           int planRevision) {
+        return eq(this.chainInstanceId, chainInstanceId)
+                && eq(this.goalId, goalId)
                 && eq(this.primaryId, primaryId)
                 && eq(this.subtaskId, subtaskId)
                 && this.planRevision == planRevision;

@@ -14,9 +14,9 @@ import java.util.UUID;
 /**
  * 睡觉支线的硬编码实现（第一条正式支线，也是通用框架的第一个样本）。
  *
- * <p>完成口径（2026-10-30 主人裁定起）= <b>把出生点绑到床上</b>（对床右键）
- * 或 <b>真睡到天亮自然醒</b>（{@link SideTaskWorldPort.Wake#DAYBREAK}）。
- * 天没亮就醒（被打醒/被传送）算中断，退回找床重试；
+ * <p>完成口径：本次活动支线期间观察到正在睡觉，或出生点从未绑定变为已绑定，
+ * 即一次性 COMPLETE，不等天亮；保留 {@link SideTaskWorldPort.Wake#DAYBREAK} 快跳兜底。
+ * 已有绑床状态不能冒充本次完成；恢复的旧 SLEEPING 支线若被观察到仍睡着，也立即完成。
  * 找床窗口内没绑上 → SKIPPED（不是失败），主线立即恢复。
  *
  * <p>为什么改：原判据只有 DAYBREAK，而"睡满一夜"要跨 10000+ tick；实测（2026-10-30
@@ -29,13 +29,14 @@ public final class SleepSideTaskType implements SideTaskType {
 
     public static final String TYPE_ID = "sleep";
     public static final String PHASE_SEEKING = "SEEKING_BED";
+    /** 兼容持久化的旧支线；新支线观察到睡眠时直接完成。 */
     public static final String PHASE_SLEEPING = "SLEEPING";
     /** 保护超时：从触发起最多允许的 tick 数（10 分钟）。正常睡/天亮跳过都远小于它。 */
     public static final long DEADLINE_TICKS = 12_000L;
     /**
      * 找床窗口：从触发起这么多 tick（2 分钟）内没绑上出生点 → 放弃，把主线还回去。
      *
-     * <p>只约束"找床"阶段（还没睡过）；已经睡着的不受它限制（天亮自然收）。
+     * <p>只约束"找床"阶段；观察到正在睡觉立即完成，旧版恢复的已睡状态保留原有超时规则。
      */
     public static final long SEEK_WINDOW_TICKS = 2_400L;
     /** 数据键：支线刚创建时出生点是否已绑（用来防"昨晚绑过"冒充"今晚绑了"）。 */
@@ -128,9 +129,7 @@ public final class SleepSideTaskType implements SideTaskType {
         boolean boundAtStartFlag = firstSeen ? boundNow : Boolean.parseBoolean(boundAtStart);
 
         if (world.isSleeping(companionId)) {
-            data.put("sleeping", "true");
-            data.put(KEY_EVER_SLEPT, "true");
-            return SideTaskVerdict.keep(PHASE_SLEEPING, data);
+            return SideTaskVerdict.complete("observed companion sleeping during this side task");
         }
         if (boundNow && !boundAtStartFlag) {
             return SideTaskVerdict.complete(
@@ -184,9 +183,9 @@ public final class SleepSideTaskType implements SideTaskType {
                 + "支线立刻结束（记 DECLINED，不是失败）、主线马上恢复，今天不会再问你同一件事。"
                 + "做法：用 scan_blocks 找床（tag 用 #minecraft:beds），用 goto 走到床边，站定后调用 sleep。"
                 + "只在床边、且是夜里才调用 sleep；白天被原版拒绝不是工具坏了，按返回的原因处理。"
-                // 2026-10-30（主人裁定）：完成判据 = 绑出生点，不是睡满一夜。
-                + "★★ 完成判据 =【把出生点绑到这张床】（走到床边对床右键/调用 sleep 就会绑上）。"
-                + "**不需要睡满一夜**：绑上出生点这条支线就完成、主线立刻恢复；能顺便睡到天亮当然更好。"
+                // 本次真实上床或出生点从未绑定变为已绑定，都不用等一整夜。
+                + "★★ 完成判据 =【本次观察到睡觉】或【出生点由未绑定变为已绑定】。"
+                + "**不需要睡满一夜**：系统观察到你睡着，或检测到出生点新绑上后，这条支线就完成、主线恢复。"
                 + "★ 时限：从触发算起约 2 分钟内没绑上出生点，系统会自动撤回主线（记 SKIPPED，不算失败）——"
                 + "所以附近没床时**别硬找、别干等**，直接 rdd_decline_side 写清理由。"
                 + "★ 若附近根本没有床（也来不及杀羊做床），就【挖三填一】保命："

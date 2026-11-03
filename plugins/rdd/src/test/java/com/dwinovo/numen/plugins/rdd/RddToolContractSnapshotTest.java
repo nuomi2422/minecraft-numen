@@ -169,6 +169,9 @@ class RddToolContractSnapshotTest {
         // 下达指令/给物品的入口（find_tools 实测无 give / 无 command）。
         // 安全边界写在该类注释里：白名单动词 + 拒选择器(@a/@e/@r) + 拒 op/ban/stop/kill + confirm。
         PINNED_NAMES.put("RddAdminCommandTool.java", "rdd_admin_command");
+        // 2026-11-02（169 T6 / 170 §5.1）：死亡后旧主线已不安全时，唯一的主线改单入口。
+        // 它解决：恢复支线按契约只能改策略、不能改主线 → 旧链永远指向已死的计划（death59 又回下界）。
+        PINNED_NAMES.put("RddRestartMainlineTool.java", "rdd_restart_mainline");
     }
 
     @Test
@@ -232,6 +235,8 @@ class RddToolContractSnapshotTest {
         DESCRIPTION_FLOOR.put("RddDeclineSideTool.java", 380);
         DESCRIPTION_FLOOR.put("RddReplanChainTool.java", 275);
         DESCRIPTION_FLOOR.put("RddSettleStageTool.java", 550);
+        // 169 T6 主线重启：description 本体是"何时用/不许怎么用"的契约（不能用来跳步、不能重述旧目标）。
+        DESCRIPTION_FLOOR.put("RddRestartMainlineTool.java", 400);
     }
 
     @Test

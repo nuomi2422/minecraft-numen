@@ -18,6 +18,14 @@ class RddRepeatQueryWatcherTest {
     private static final UUID ID = UUID.fromString("e502d17b-de15-4e5e-9864-9e97b0702546");
 
     @Test
+    void mcpMonitorCallsAreNotCompanionRepeats() {
+        assertTrue(RddRepeatQueryWatcher.isExternalCall("mcp-122"), "MCP 采集面应被识别为外部");
+        assertTrue(RddRepeatQueryWatcher.isExternalCall("mcp-1"), "任何 mcp- 前缀都算");
+        assertFalse(RddRepeatQueryWatcher.isExternalCall("call_00_abc"), "AI 自己的调用不是外部");
+        assertFalse(RddRepeatQueryWatcher.isExternalCall(null), "没有 call id 也不判外部");
+    }
+
+    @Test
     void firstTwoCallsDoNotNotify() {
         RddRepeatQueryWatcher.clear(ID);
         assertFalse(RddRepeatQueryWatcher.observe(ID, "rdd_get_inventory", 2, 1000L), "① 第 1 次不提醒");

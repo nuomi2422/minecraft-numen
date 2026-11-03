@@ -166,26 +166,24 @@ class SideTaskEngineTest {
     }
 
     @Test
-    void interruptedWakeReturnsToSeeking() {
+    void interruptedWakeBeforeObservedSleepKeepsSeeking() {
         RecordingEvents events = new RecordingEvents();
         SideTaskEngine engine = engine(events);
         FakeWorldPort port = new FakeWorldPort().at(WINDOW, 0L);
         engine.tick(C, port, null, false);
 
-        port.asleep(C, true);
-        engine.tick(C, port, null, false);
-        assertEquals(SleepSideTaskType.PHASE_SLEEPING, engine.current(C).orElseThrow().phase());
-
+        // A sleep interrupted before the one-second side-task sample provides no
+        // current sleeping evidence and must not masquerade as a successful click.
         port.asleep(C, false).wake(C, SideTaskWorldPort.Wake.INTERRUPTED);
         engine.tick(C, port, null, false);
-        assertTrue(engine.isActive(C), "中断不应结束支线");
+        assertTrue(engine.isActive(C), "未观测到入睡时，中断不应结束支线");
         assertEquals(SleepSideTaskType.PHASE_SEEKING, engine.current(C).orElseThrow().phase());
         assertFalse(events.saw("side_task_completed"));
     }
 
     @Test
     void capturesMainlineToken() {
-        MainlineResumeToken token = new MainlineResumeToken(C, "goal-1", "primary-1", "sub-1", 3, 3);
+        MainlineResumeToken token = new MainlineResumeToken(C, "chain-1", "goal-1", "primary-1", "sub-1", 3, 3);
         SideTaskEngine engine = new SideTaskEngine(new RecordingEvents(), t -> t);
         engine.registerType(new SleepSideTaskType());
         engine.registerTrigger(new SleepSideTaskTrigger());
@@ -202,9 +200,17 @@ class SideTaskEngineTest {
         engine.registerType(new SleepSideTaskType());
         engine.registerTrigger(new SleepSideTaskTrigger());
         engine.tick(C, new FakeWorldPort().at(WINDOW, 0L),
-                new MainlineResumeToken(C, "g", "p", "s", 1, 1), false);
+                new MainlineResumeToken(C, "chain-g", "g", "p", "s", 1, 1), false);
         assertTrue(engine.current(C).isPresent());
         assertNull(engine.current(C).orElseThrow().mainlineToken(), "主线已失效 → 不保存令牌");
+    }
+
+    @Test
+    void tokenRequiresSameChainInstance() {
+        MainlineResumeToken token = new MainlineResumeToken(C, "chain-a", "g", "p", "s", 1, 1);
+        assertTrue(token.matches("chain-a", "g", "p", "s", 1));
+        assertFalse(token.matches("chain-b", "g", "p", "s", 1),
+                "同 goalId/primaryId/planRevision 的新链不能复用旧恢复令牌（ABA）");
     }
 
     @Test

@@ -381,7 +381,7 @@ final class SideTaskHost {
                 return null;
             }
             Subtask current = chain.currentSubtask();
-            return new MainlineResumeToken(companionId, chain.goal().id(),
+            return new MainlineResumeToken(companionId, chain.chainInstanceId(), chain.goal().id(),
                     chain.currentPrimary() == null ? null : chain.currentPrimary().id(),
                     current == null ? null : current.id(),
                     chain.planRevision(), chain.planRevision());
@@ -406,7 +406,8 @@ final class SideTaskHost {
             Subtask current = chain.currentSubtask();
             String primaryId = chain.currentPrimary() == null ? null : chain.currentPrimary().id();
             String subtaskId = current == null ? null : current.id();
-            if (!token.matches(chain.goal().id(), primaryId, subtaskId, chain.planRevision())) {
+            if (!token.matches(chain.chainInstanceId(), chain.goal().id(), primaryId, subtaskId,
+                    chain.planRevision())) {
                 return null;
             }
             return token;

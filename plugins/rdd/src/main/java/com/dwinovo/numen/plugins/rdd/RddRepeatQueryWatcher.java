@@ -62,6 +62,14 @@ final class RddRepeatQueryWatcher {
         SEEN.clear();
     }
 
+    /**
+     * 2026-11-02：MCP 监控面（外部采集，tool_call_id=mcp-*）不是同伴行为。
+     * 之前它被算进「重复查询」，会因外部轮询给 AI 发假的「你刚问过」提醒。
+     */
+    static boolean isExternalCall(String toolCallId) {
+        return toolCallId != null && toolCallId.startsWith("mcp-");
+    }
+
     /** 测试用：替换副作用出口。 */
     static void installNotifier(Notifier n) {
         notifier = n;

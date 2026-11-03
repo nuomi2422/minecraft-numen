@@ -77,7 +77,16 @@ final class RddRiskPlanning {
                 continue;
             }
             if (isFirstStage) {
-                out.add(stage);
+                out.add(pruneSelfLocked(stage));
+                continue;
+            }
+            // 2026-11-02 实机：验收/收口阶段只是核对已有成果，不是新的高风险行动；
+            // 给它注入下界/末地硬门会把「最终验收」变成永远等两套钻石甲的硬锁。
+            String d = stage.description() == null ? "" : stage.description();
+            boolean acceptance = d.contains("验收") || d.contains("最终确认") || d.contains("最终")
+                    || d.contains("收口") || d.contains("确认");
+            if (acceptance) {
+                out.add(pruneSelfLocked(stage));
                 continue;
             }
             RiskLevel level = RiskGate.levelForText(stage.description());
@@ -85,7 +94,7 @@ final class RddRiskPlanning {
             // 不是只够打一次就进门。NORMAL/MINING 与旧行为完全一致（backup 为空）。
             Map<String, Integer> required = ResourceBudget.requiredWithBackup(level);
             if (level == RiskLevel.NORMAL || required.isEmpty()) {
-                out.add(stage);
+                out.add(pruneSelfLocked(stage));
                 continue;
             }
             Map<String, Integer> merged = new LinkedHashMap<>();
@@ -101,11 +110,63 @@ final class RddRiskPlanning {
             }
             List<AssetRequirement> wf = new ArrayList<>();
             for (Map.Entry<String, Integer> e : merged.entrySet()) {
+                // 2026-11-03 实机：`minecraft:bed` 不是真实物品 ID（床是 *_bed），
+                // 且床通常已放在基地、不在背包；当硬门会永久 WAITING。规划期直接剥掉。
+                if ("minecraft:bed".equals(e.getKey())) continue;
+                // 2026-11-02 实机：阶段自己就会产出 bread/emerald/bed，却把它们写成进入本阶段的
+                // wait_for → 永远等不到（自我依赖死锁）。只剥掉「本阶段明确会产出」的同类项。
+                if (producesInStage(stage.description(), e.getKey())) continue;
                 wf.add(new AssetRequirement(e.getKey(), e.getValue()));
             }
             out.add(new PrimarySpec(stage.description(), wf));
         }
         return List.copyOf(out);
+    }
+
+    /** 去掉「本阶段自己会产出、却被写成进入本阶段前置」的 wait_for（不改其它要求）。 */
+    private static PrimarySpec pruneSelfLocked(PrimarySpec stage) {
+        if (stage == null || stage.waitFor() == null || stage.waitFor().isEmpty()) return stage;
+        List<AssetRequirement> kept = new ArrayList<>();
+        for (AssetRequirement r : stage.waitFor()) {
+            if (!producesInStage(stage.description(), r.assetKey())) kept.add(r);
+        }
+        if (kept.size() == stage.waitFor().size()) return stage;
+        return new PrimarySpec(stage.description(), kept);
+    }
+
+    /** 本阶段描述是否明确会产出该资产（只覆盖最容易自锁的几类）。 */
+    private static boolean producesInStage(String description, String assetKey) {
+        if (description == null || assetKey == null) return false;
+        // 泛化床 ID 不是真实物品，任何阶段都不该当 wait_for 硬门（床可能已放置）。
+        if ("minecraft:bed".equals(assetKey)) return true;
+        String d = description;
+        if (assetKey.endsWith(":bread")) return d.contains("面包");
+        if (assetKey.endsWith(":emerald")) return d.contains("绿宝石") && d.contains("交易");
+        if (assetKey.endsWith("_bed")) return d.contains("床");
+        if (assetKey.endsWith(":wheat")) return d.contains("小麦") && (d.contains("拆") || d.contains("收") || d.contains("合成"));
+        // 2026-11-03 实机：`wait_for cooked_beef×4` 落在「在村庄安家：拆干草块做面包」阶段上；
+        // 该阶段本来就是产食物，靠作弊给了 16 牛肉才通过。食物类前置只在明确产食物的阶段剥离。
+        if (isFoodAsset(assetKey) && isFoodProducingStage(d)) return true;
+        return false;
+    }
+
+    private static boolean isFoodAsset(String assetKey) {
+        return assetKey.endsWith(":bread") || assetKey.endsWith(":cooked_beef")
+                || assetKey.endsWith(":beef") || assetKey.endsWith(":cooked_porkchop")
+                || assetKey.endsWith(":porkchop") || assetKey.endsWith(":cooked_chicken")
+                || assetKey.endsWith(":chicken") || assetKey.endsWith(":cooked_mutton")
+                || assetKey.endsWith(":mutton") || assetKey.endsWith(":baked_potato")
+                || assetKey.endsWith(":potato") || assetKey.endsWith(":carrot")
+                || assetKey.endsWith(":apple") || assetKey.endsWith(":melon_slice")
+                || assetKey.endsWith(":sweet_berries");
+    }
+
+    private static boolean isFoodProducingStage(String d) {
+        // 只认"生产/处理食物"的上下文；`杀`/`猎` 会让「击杀末影龙」被误判成食物阶段，
+        // 从而剥掉它应有的熟牛肉备用门（RddRiskPlanningTest.highRiskStageCarriesBackupSet 回归）。
+        return d.contains("干草") || d.contains("面包") || d.contains("小麦")
+                || d.contains("农田") || d.contains("收") || d.contains("种")
+                || d.contains("烤") || d.contains("食物") || d.contains("吃");
     }
 
     private static String levelLabel(RiskLevel level) {
@@ -141,6 +202,43 @@ final class RddRiskPlanning {
      *   <li>已达阶段上限 → 不插（不硬塞）。</li>
      * </ul>
      */
+    /**
+     * 2026-11-03 实机 r10-2：Stage-A 直接给「把铁矿石全部烧成铁锭」并要 iron_ingot≥11，
+     * 但背包/箱子没有铁矿石，描述把"有矿"当既成事实 → 空转 20 分钟。
+     * 这里只做最小前置：烧/熔炼铁且前面没有挖铁步、当前也没有铁源时，插一个"先挖铁"准备级。
+     * 纯函数、可单测；不碰已绑定链。
+     */
+    static List<PrimarySpec> ensureSmeltPrepStage(List<PrimarySpec> stages, Map<String, Integer> available) {
+        if (stages == null || stages.isEmpty()) return stages;
+        java.util.Map<String, Integer> held = available == null ? java.util.Map.of() : available;
+        List<PrimarySpec> out = new ArrayList<>();
+        boolean minedIron = false;
+        for (int i = 0; i < stages.size(); i++) {
+            PrimarySpec stage = stages.get(i);
+            String d = stage.description() == null ? "" : stage.description();
+            boolean smeltIron = (d.contains("烧") || d.contains("熔炼") || d.contains("冶炼"))
+                    && d.contains("铁");
+            boolean ironSource = held.getOrDefault("minecraft:iron_ore", 0) > 0
+                    || held.getOrDefault("minecraft:deepslate_iron_ore", 0) > 0
+                    || held.getOrDefault("minecraft:raw_iron", 0) > 0
+                    || held.getOrDefault("minecraft:iron_ingot", 0) > 0;
+            int remainingIncludingCurrent = stages.size() - i;
+            if (smeltIron && !minedIron && !ironSource
+                    && out.size() + 1 + remainingIncludingCurrent
+                    <= com.dwinovo.numen.rdd.core.RddChainFactory.MAX_STAGES) {
+                out.add(new PrimarySpec(
+                        "先下矿挖铁矿石：在已知矿区/浅层找到铁矿石并采够本轮烧炼所需（先取原料，再烧锭）",
+                        List.of()));
+            }
+            out.add(stage);
+            if (d.contains("挖铁") || d.contains("铁矿石") || d.contains("采铁")
+                    || d.contains("挖矿") || d.contains("采矿")) {
+                minedIron = true;
+            }
+        }
+        return out;
+    }
+
     static List<PrimarySpec> ensurePrepStage(List<PrimarySpec> stages, int maxStages) {
         if (stages == null || stages.isEmpty()) {
             return stages == null ? List.of() : stages;

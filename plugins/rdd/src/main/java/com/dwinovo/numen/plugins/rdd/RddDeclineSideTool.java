@@ -51,6 +51,7 @@ final class RddDeclineSideTool implements NumenTool {
                 .build();
     }
 
+
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
         try {
@@ -65,7 +66,7 @@ final class RddDeclineSideTool implements NumenTool {
                         "no active side task; nothing to decline").toJson());
                 return;
             }
-            if (!expectedType.isBlank() && !expectedType.equals(currentType)) {
+            if (!expectedType.isBlank() && !RddSideType.matches(expectedType, currentType)) {
                 reply.accept(com.dwinovo.numen.task.TaskResult.fail(
                         "decline refused: side task type changed (current=" + currentType + ")").toJson());
                 return;

@@ -249,6 +249,7 @@ final class RddWorldAssetObserver {
     /** 每个同伴的"资产 → 上次看见的 tick"。进程内、有界（资产上限 128），重启即空（设计如此）。 */
     private static final Map<UUID, Map<String, Long>> SEEN_TICK = new ConcurrentHashMap<>();
 
+
     /**
      * 裁剪：不再"按时间丢最旧"，而是走 {@link WorldAssetRetention} 的受害者顺序 + 实体 TTL。
      *
@@ -285,6 +286,7 @@ final class RddWorldAssetObserver {
             }
             registry.forget(d.assetId());
             seen.remove(d.assetId());
+
             if (d.action() == WorldAssetRetention.Action.EXPIRE_TTL) expired++;
             else evicted++;
             if (sample.size() < 8) {

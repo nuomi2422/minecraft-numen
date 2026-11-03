@@ -24,6 +24,8 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
     public static final String PHASE_DECIDE = "DECIDE_RECOVERY";
     public static final String PHASE_RECOVER = "RECOVER_DROPS";
     public static final String PHASE_REEQUIP = "REEQUIP_AND_RESUME";
+    /** 已选择重置主线：等执行 AI 调 rdd_restart_mainline；不在这里越权改链。 */
+    public static final String PHASE_RESET_MAINLINE = "RESET_MAINLINE";
     public static final String KEY_DECISION = "decision";
 
     /** 业务保护线；不代表掉落实体已经消失。 */
@@ -72,6 +74,22 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
             data.put("terminal_reason", "executor_declined_recovery");
             return SideTaskVerdict.skip("执行 AI 在有限策略中选择放弃回收；交给损失影响分析", data);
         }
+        if (decision == DeathRecoveryDecision.RESET_AND_RESTART) {
+            // 169 T6 / 170 §5.1：旧主线（例如「再进下界取烈焰棒」）在装备全丢后已不安全。
+            // 这里只冻结支线并等待执行 AI 显式调用 rdd_restart_mainline；
+            // 不直接改链——策略工具没有、也不该有重写主线的权限。
+            data.put("next_action", "rdd_restart_mainline");
+            if (task.pastDeadline(world.gameTime())) {
+                // 安全兜底：选了重置却一直没调用工具，不能把主线永久冻结。
+                // 保护线到期后解冻，交给恢复规划按 UNKNOWN/未完成处理；不冒充已重置。
+                data.put("terminal_reason", "reset_not_applied_before_deadline");
+                return SideTaskVerdict.skip(
+                        "已选择重置主线，但保护线到期仍未调用 rdd_restart_mainline；解冻主线交回恢复规划"
+                                + "（旧链未被 reset，不能记 PASS）", data);
+            }
+            data.put("terminal_reason", "");
+            return SideTaskVerdict.keep(PHASE_RESET_MAINLINE, data);
+        }
         data.put("dangerous", Boolean.toString(facts.dangerous()));
         data.put("backup_available", Boolean.toString(facts.backupAvailable()));
         data.put("inventory_known", Boolean.toString(facts.inventoryKnown()));
@@ -112,7 +130,10 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
                 + "若有备用装备且回死亡点会再次送命，先取备用/重新装战，再决定是否回收；"
                 + "若就在附近且安全，可以直接回死亡点捡。"
                 + "只能从固定策略中选择：RECOVER_DROPS_FIRST、FETCH_BACKUP_THEN_CONTINUE、"
-                + "ABANDON_RECOVERY、PREPARE_AND_REPLAN；未知策略会被拒绝。"
+                + "ABANDON_RECOVERY、PREPARE_AND_REPLAN、RESET_AND_RESTART；未知策略会被拒绝。"
+                + "若旧主线（例如再进下界）在装备全丢后已不安全，选 RESET_AND_RESTART，"
+                + "然后调用 rdd_restart_mainline 提交新目标（带 objective 与 reason）；"
+                + "在重置生效前主线保持冻结。"
                 + "也可以调用 rdd_decline_side 明确放弃本次回收，写清危险或收益不足；"
                 + "放弃后才进入重要性损失分析和规划，不会因为五分钟业务保护线自动宣称物品消失。"
                 + "区块未加载、掉落状态未知都不能当成没有。"

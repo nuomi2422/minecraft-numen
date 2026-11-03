@@ -140,8 +140,17 @@ public final class RiskGate {
         for (String neg : NEGATIONS) {
             if (before.contains(neg)) return true;
         }
+        // 2026-11-02 实机：验收阶段写「以上完成前不下界」——目标词前是「不」，但单字「不」不能进
+        // NEGATIONS（会把「不错/差不多」误伤）。这里只认「不 + 明确位移动词」的紧邻组合。
+        for (String neg : NEGATION_PHRASES) {
+            if (before.contains(neg)) return true;
+        }
         return false;
     }
+
+    /** 由「不 + 位移/进入动词」组成的明确否定短语（只做紧邻匹配，不做句式理解）。 */
+    private static final String[] NEGATION_PHRASES = {
+            "不进入", "不前往", "不下界", "不去", "不打算", "完成前不", "之前不"};
 
     /** 明确的否定/禁止措辞。刻意只收多字或语义无歧义的单字，避免把「不错」「差不多」当成否定。 */
     private static final String[] NEGATIONS = {

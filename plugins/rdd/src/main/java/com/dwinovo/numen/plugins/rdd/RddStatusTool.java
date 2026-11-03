@@ -14,7 +14,7 @@ import java.util.function.Consumer;
 /** Small diagnostic/status tool for the RDD host adapter. */
 final class RddStatusTool implements NumenTool {
     @Override public String name() { return "rdd_status"; }
-    @Override public String description() { return "Read the RDD asset task-chain status. Use rdd_assets for reusable bases, locations, machines and entity sightings. If the current optional food step is unavailable, use rdd_skip_optional to preserve progress and continue; do not replace the whole chain."; }
+    @Override public String description() { return "Read the RDD asset task-chain status. Use rdd_assets for reusable bases, locations, machines and entity sightings. If the current optional food step is unavailable, use rdd_skip_optional to preserve progress and continue; do not replace the whole chain. For an advancement condition, verification_status distinguishes MATCHED, NOT_MATCHED, INVALID, and NOT_VERIFIABLE. condition_matches is absent if invalid or unavailable, not false; it is also absent for advancement+dimension because the legacy detector ignores that dimension. Verification is diagnostic only and does not block execution or failure handling. Reading advancement progress may initialize a missing player progress entry in memory, but does not award progress or rewards."; }
     @Override public Map<String, Object> parameterSchema() { return Schema.none(); }
 
     @Override
@@ -55,16 +55,37 @@ final class RddStatusTool implements NumenTool {
                     "primary_status", runtime.chain().primaryStatus().name(), "condition_groups", groups)).toJson());
             return;
         }
-        reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain is active", Map.of(
-                "active", true,
-                "goal", runtime.chain().goal().id(),
-                "primary_goal", runtime.chain().currentPrimary().id(),
-                "primary_status", runtime.chain().primaryStatus().name(),
-                "subtask", current.id(),
-                "subtask_status", runtime.chain().currentSubtaskStatus().name(),
-                "condition_groups", groups,
-                "condition", current.condition(),
-                "condition_matches", RddDetector.conditionMatches(companion, current, inventory),
-                "assets", runtime.assets().snapshot().size())).toJson());
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("active", true);
+        out.put("goal", runtime.chain().goal().id());
+        out.put("primary_goal", runtime.chain().currentPrimary().id());
+        out.put("primary_status", runtime.chain().primaryStatus().name());
+        out.put("subtask", current.id());
+        out.put("subtask_status", runtime.chain().currentSubtaskStatus().name());
+        out.put("condition_groups", groups);
+        out.put("condition", current.condition());
+        if ("advancement".equals(current.condition().get("type"))) {
+            var state = RddWorldFacts.advancementResult(companion, current.condition());
+            out.put("verification_status", state.name());
+            // Diagnostic honors dimension; the legacy detector does not. Never
+            // present the stronger result as if it were the detector's decision.
+            if (current.condition().containsKey("dimension")) {
+                out.put("verification_scope", "advancement_and_dimension");
+                out.put("execution_note", "legacy detector ignores the dimension field for advancement; "
+                        + "verification_status is diagnostic, not its execution verdict");
+            } else {
+                out.put("verification_scope", "advancement");
+                // Unknown / invalid must not be serialized as a factual false.
+                switch (state) {
+                    case MATCHED -> out.put("condition_matches", true);
+                    case NOT_MATCHED -> out.put("condition_matches", false);
+                    default -> { }
+                }
+            }
+        } else {
+            out.put("condition_matches", RddDetector.conditionMatches(companion, current, inventory));
+        }
+        out.put("assets", runtime.assets().snapshot().size());
+        reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain is active", out).toJson());
     }
 }
