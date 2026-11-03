@@ -348,6 +348,12 @@ final class LearnerReviewTool implements NumenTool {
         int restored = toRestore.isEmpty() ? 0 : queue.restore(toRestore);
         int depth = queue.size();
 
+        // P2-1（2026-11-03）：整库文本读一次，供每条草稿做近重复比对。
+        //   只读、失败即空表（readAllText 自带容错），不影响复盘主流程。
+        java.util.List<String> duplicateLibrary =
+                com.dwinovo.numen.plugins.learner.core.ExperienceLibraryLookup
+                        .readAllText(LearnerPlugin.configDir(), id == null ? "" : id.toString());
+
         List<Map<String, Object>> rendered = new ArrayList<>();
         // ★★ 实机抓到的 bug（2026-10-05）：这里原来写的是
         //    `if (v.memoId() == null || !v.memoId().startsWith("m-")) continue;`
@@ -463,6 +469,28 @@ final class LearnerReviewTool implements NumenTool {
                     && gate.verdict() == ExperienceQualityGate.Verdict.PASS);
             one.put("storable", com.dwinovo.numen.plugins.learner.core.ExperiencePersistencePolicy
                     .storable(one.get("experience_draft"), gate.hasHardFailure()));
+            // P2-1 近重复门（2026-11-03，**只标不改判定**）：命中时给回执加 possible_duplicate_of，
+            // 让人/下一轮知道“这条跟库里某条像”，先观察误杀率，再决定是否自动降级为 REVISE。
+            // 阈值见 NearDuplicateGate：>=0.30 判重复、0.24~0.30 仅提示。
+            if (draft != null && !duplicateLibrary.isEmpty()) {
+                try {
+                    var dj = draft.toJson();
+                    String dTitle = dj.has("title") ? dj.get("title").getAsString() : "";
+                    String dMech = dj.has("mechanism") ? dj.get("mechanism").getAsString() : "";
+                    var dec = com.dwinovo.numen.plugins.learner.core.NearDuplicateGate
+                            .check(dTitle, dMech, duplicateLibrary, java.util.List.of());
+                    if (dec.duplicate()) {
+                        one.put("possible_duplicate_of", String.format(java.util.Locale.ROOT,
+                                "duplicate(sim=%.2f, matches entry #%d)", dec.similarity(), dec.matchedIndex() + 1));
+                    } else if (dec.suspicious()) {
+                        one.put("possible_duplicate_of", String.format(java.util.Locale.ROOT,
+                                "suspicious(sim=%.2f, matches entry #%d) —— 仅提示，未改判定",
+                                dec.similarity(), dec.matchedIndex() + 1));
+                    }
+                } catch (RuntimeException ignore) {
+                    // 近重复标记是增强，任何异常都不能影响复盘收尾
+                }
+            }
             if (!v.acScriptDraft().isBlank()) {
                 one.put("ac_script_draft", v.acScriptDraft());
             }
