@@ -1487,7 +1487,13 @@ private static String withAssets(UUID companionId, String rddContext) {
             Map<String, Integer> lostItems = deathInstantCounts(body);
             // 2026-11-02：死因要随台账落盘，才能在**规划侧**作为 knownFailures 召回死亡经验
             // （此前只写进死亡事件，台账与规划都拿不到）。读不到就空串，不编。
+            // P0-2：ledger 只存短标签时，复盘拿不到 damageType/attacker；把 attacker 一并编进
+            // cause（旧消费者只做 contains，不会破坏），复盘至少能区分 “genericKill/attacker=zombie”。
             String deathCauseForLedger = safeDeathCauseId(body);
+            String deathAttackerForLedger = safeDeathAttacker(body);
+            if (deathAttackerForLedger != null && !deathAttackerForLedger.isBlank()) {
+                deathCauseForLedger = deathCauseForLedger + "|attacker=" + deathAttackerForLedger;
+            }
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death death = null;
             try {
                 death = com.dwinovo.numen.rdd.core.RddDeathLedger.record(
