@@ -24,6 +24,12 @@ import java.util.Map;
 public interface ContainerReader {
 
     /**
+     * 平台没实现时的兜底：永远 unknown，原因写明"这个平台没有容器读实现"。
+     * 用它而不是抛异常，是因为调用方（扫描/规划）本来就要处理"读不到"。
+     */
+    ContainerReader UNAVAILABLE = (level, pos) -> Result.unknown("no container reader on this platform");
+
+    /**
      * 读一个容器。
      *
      * <p>为什么参数是 {@code Level + BlockPos} 而不是 “玩家 + 维度字串 + xyz”：读容器本来就不需要身份/权限，

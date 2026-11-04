@@ -99,16 +99,23 @@ final class RddContainerMemory {
                     if (state.isAir()) continue;
                     if (!state.getBlock().getDescriptionId().contains("chest")) continue;
                     hits++;
-                    String dump;
+                    // 2026-11-04（037/T8b）：改走公开的 ContainerReader（结构化数量），
+                    // 不再 new core 内部工具再解析它返回的人读文本。
+                    com.dwinovo.numen.api.storage.ContainerReader.Result read;
                     try {
-                        dump = new com.dwinovo.numen.core.tools.QueryExtraOps()
-                                .inspectBlockStorage(cursor.getX(), cursor.getY(), cursor.getZ(), body);
+                        read = com.dwinovo.numen.platform.Services.CONTAINERS
+                                .read(level, cursor.immutable());
                     } catch (RuntimeException | LinkageError ex) {
                         LOG.warn("[rdd-storage] 读容器失败 ({},{},{})：{}",
                                 cursor.getX(), cursor.getY(), cursor.getZ(), ex.toString());
                         continue;
                     }
-                    Map<String, Integer> counts = parseSlotLines(dump);
+                    if (!read.known()) {
+                        LOG.debug("[rdd-storage] 容器读不到 ({},{},{})：{}",
+                                cursor.getX(), cursor.getY(), cursor.getZ(), read.reason());
+                        continue;
+                    }
+                    Map<String, Integer> counts = read.items();
                     if (counts.isEmpty()) continue;
                     StringBuilder sb = new StringBuilder();
                     int listed = 0;
