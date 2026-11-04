@@ -32,8 +32,14 @@ import net.minecraft.world.phys.AABB;
  */
 public final class EntityCountWorldProvider implements WorldProvider {
 
-    /** 单次请求的最大体积（方块数）；超了让调用方缩小范围，不在这里硬扫。 */
-    private static final long MAX_VOLUME = 32768L;
+    /**
+     * 单次请求的最大体积（方块数）。
+     *
+     * <p>2026-11-05 调高到 65536：实体采集不逐格扫，只做一次 AABB 查询 + 逐列判区块加载，
+     * 16 格半径（33³ = 35937）这种"危险扫描"盒子是常用值；原来的 32768 会把 16 格盒直接拒掉
+     * （实机表现为 `entities FAILED`，危险块从此再也亮不起来）。
+     */
+    private static final long MAX_VOLUME = 65536L;
 
     @Override public Topic topic() { return Topic.ENTITIES; }
 
