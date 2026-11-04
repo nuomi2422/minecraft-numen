@@ -87,8 +87,12 @@ final class RddContainerMemory {
             var resp = svc.changes(cursor, java.util.List.of("containers"), 64);
             if (resp == null
                     || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR) {
+                LOG_CHANGE.maybe(id, "增量不可用 status=" + (resp == null ? "null" : resp.status() + " reason=" + resp.reason()));
                 return false;   // 拿不到增量就退回节奏扫描，不当作"没变化"的证据
             }
+            LOG_CHANGE.maybe(id, "增量 status=" + resp.status() + " cursor=" + cursor
+                    + " next=" + resp.nextCursor() + " gap=" + resp.gap()
+                    + " n=" + resp.changes().size() + " oldest=" + resp.oldestRetainedRevision());
             CHANGE_CURSOR.put(id, resp.nextCursor());
             if (resp.gap()) {
                 LOG.info("[rdd-storage] containers 增量断档，全量重扫一次");
@@ -99,6 +103,20 @@ final class RddContainerMemory {
             return false;
         }
     }
+
+    /** 增量轮询的诊断（每 30 秒最多一条，避免刷屏）。 */
+    private static final class ChangeDiag {
+        private final Map<UUID, Long> last = new ConcurrentHashMap<>();
+
+        void maybe(UUID id, String msg) {
+            long now = System.currentTimeMillis();
+            Long prev = last.put(id, now);
+            if (prev != null && now - prev < 30_000L) return;
+            LOG.info("[rdd-storage] {}", msg);
+        }
+    }
+
+    private static final ChangeDiag LOG_CHANGE = new ChangeDiag();
 
     /** 上下文构建（可能在非主线程）调用：只读缓存。 */
     static String cached(UUID companionId) {
