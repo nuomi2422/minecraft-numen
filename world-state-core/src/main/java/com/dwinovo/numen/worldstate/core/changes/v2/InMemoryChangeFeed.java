@@ -42,21 +42,22 @@ public final class InMemoryChangeFeed implements ChangeFeed {
     }
 
     @Override
-    public synchronized void append(ChangeEvent event) {
-        if (event == null) return;
+    public synchronized long append(String topic, String key, ChangeEvent.Kind kind,
+                                    long observationRevision, long epochMs) {
         evictExpired();
-        // 序号由日志自己发：调用方给的 streamSeq 只作为"期望值"参考，不一致就重编号，
-        // 保证唯一且单调（v1 里 goneSeq 与 revision 抢游标的问题在这里不存在）。
         long seq = nextSeq++;
-        entries.addLast(new ChangeEvent(seq, event.topic(), event.key(), event.kind(),
-                event.observationRevision(), event.epochMs() == 0 ? nowMs.getAsLong() : event.epochMs()));
+        entries.addLast(new ChangeEvent(seq, topic, key, kind, observationRevision,
+                epochMs == 0 ? nowMs.getAsLong() : epochMs));
         while (entries.size() > capacity) entries.removeFirst();
+        return seq;
     }
 
     @Override
     public synchronized ChangesPage query(long cursor, String epochHint, Set<String> topics, int limit) {
         evictExpired();
-        boolean epochMismatch = epochHint != null && !epochHint.isBlank() && !epochHint.equals(epoch);
+        // 不知道 epoch 就不能信游标：null/空一律按 reset（审计实测过：放行 null 会让
+        // 重启后的消费者把新序号当成旧流的延续，静默错答比 reset 糟得多）。
+        boolean epochMismatch = epochHint == null || epochHint.isBlank() || !epochHint.equals(epoch);
         if (cursor < 0) cursor = 0;
         long watermark = watermark();
         if (epochMismatch) {

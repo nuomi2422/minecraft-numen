@@ -65,6 +65,8 @@ class BlockCountPayloadJsonTest {
                 "{\"version\":1,\"observations\":[{\"worldId\":\"w\",\"dimension\":\"d\",\"topic\":\"blocks\","
                         + "\"payload\":\"not-an-object\",\"coverage\":\"COMPLETE\",\"revision\":1,\"dataVersion\":1}]}");
         assertTrue(back.isEmpty(), "坏载荷整条丢弃，不抛");
-        assertFalse(ObservationJson.canDecode(Topic.CONTAINERS));
+        // 2026-11-05：containers 已经实现，这条断言原来是"未实现主题不可解码"的意思，
+        // 换成确实不存在的主题，保持原意。
+        assertFalse(ObservationJson.canDecode(Topic.byId("minecraft:moonphase")));
     }
 }

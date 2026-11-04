@@ -53,8 +53,10 @@ class ObservationJsonTest {
 
     @Test
     void unknownTopicIsDroppedForwardCompatible() {
+        // 2026-11-05：原文用 containers 当"未知主题"，但 containers 已经实现了。
+        // 这条测的是"未来版本的新主题要被安全丢弃"，所以换一个确实不存在的主题。
         String json = "{\"version\":1,\"observations\":[{\"worldId\":\"live\","
-                + "\"dimension\":\"minecraft:overworld\",\"topic\":\"containers\",\"target\":\"\","
+                + "\"dimension\":\"minecraft:overworld\",\"topic\":\"minecraft:moonphase\",\"target\":\"\","
                 + "\"filter\":\"\",\"payload\":{},\"source\":\"x\",\"origin\":\"DIRECT\","
                 + "\"gameTick\":0,\"epochMs\":0,\"coverage\":\"COMPLETE\",\"revision\":1,"
                 + "\"dataVersion\":1}]}";
