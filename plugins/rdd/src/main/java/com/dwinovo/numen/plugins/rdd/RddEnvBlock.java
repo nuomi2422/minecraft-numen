@@ -2,7 +2,6 @@ package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.entity.NumenPlayer;
 import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.Map;
@@ -65,31 +64,22 @@ final class RddEnvBlock {
             if (!observed.isEmpty()) sb.append(observed).append('\n');
 
             // ② 身边 8 格：门(亮/熄) · 箱子 · 岩浆 · 悬崖
-            int portals = 0, litPortals = 0, chests = 0, lava = 0;
-            // 2026-10-28 修：原来垂直只扫 ±4，而她在 y=39、门框在 y=58（差 19）⇒ 永远报"门无"。
-            //   水平 ±8、垂直 ±12，够看见"上方那扇门"。
-            for (BlockPos q : BlockPos.betweenClosed(p.offset(-8, -12, -8), p.offset(8, 12, 8))) {
-                BlockState st = ap.level().getBlockState(q);
-                if (st.is(Blocks.NETHER_PORTAL)) { portals++; litPortals++; }
-                else if (st.is(Blocks.OBSIDIAN) || st.is(Blocks.CRYING_OBSIDIAN)) { portals++; }
-                else if (st.is(Blocks.CHEST) || st.is(Blocks.BARREL) || st.is(Blocks.TRAPPED_CHEST)) chests++;
-                else if (st.is(Blocks.LAVA)) lava++;
-            }
+            //
+            // 039 U2b → 2026-11-05 收口：**本地立方扫描已删**，"身边有什么"只认统一观测。
+            // 为什么敢删：连续多轮实机 shadow 0 差异（观测与本地扫描同值）。
+            // 为什么不能"读不到就写 0"：那等于把"没看见"说成"没有"——宁可写"观测不可用"。
             boolean cliff = !ap.onGround() && ap.fallDistance > 2.0f;
-            // 039 U2b：先看统一观测能不能回答"身边有什么"；能就用观测值，同时与本拍本地扫描
-            // 做 shadow 比对（不一致只记日志、不改行），跑稳了再删旧扫描。
+            String cliffText = " · 悬崖" + (cliff ? "脚下悬空" : (ap.onGround() ? "无" : "高处"));
             int[] nearbyObs = observedNearby(ap);
             if (nearbyObs != null) {
-                shadowCompare(ap, portals, litPortals, chests, lava, nearbyObs);
-                portals = nearbyObs[0];
-                litPortals = nearbyObs[1];
-                chests = nearbyObs[2];
-                lava = nearbyObs[3];
+                sb.append("身边 门").append(nearbyObs[0] == 0 ? "无" : (nearbyObs[1] > 0 ? "亮" : "(熄)"))
+                  .append(" · 箱子").append(nearbyObs[2])
+                  .append(" · 岩浆").append(nearbyObs[3]).append("格")
+                  .append(cliffText).append('\n');
+            } else {
+                // 观测缺席/过期：只报身体状态，不编方块计数
+                sb.append("身边（观测不可用，未统计门/箱子/岩浆）").append(cliffText).append('\n');
             }
-            sb.append("身边 门").append(portals == 0 ? "无" : (litPortals > 0 ? "亮" : "(熄)"))
-              .append(" · 箱子").append(chests)
-              .append(" · 岩浆").append(lava).append("格")
-              .append(" · 悬崖").append(cliff ? "脚下悬空" : (ap.onGround() ? "无" : "高处")).append('\n');
 
             // ③ 手上
             String main = shortItem(ap.getMainHandItem());
@@ -223,18 +213,6 @@ final class RddEnvBlock {
         }
     }
 
-    /** 观测值与本地扫描不一致时记一行（限频 30 秒），只诊断不改变行为。 */
-    private static void shadowCompare(NumenPlayer ap, int p, int lp, int c, int l, int[] o) {
-        if (p == o[0] && c == o[2] && l == o[3]) return;
-        long now = System.currentTimeMillis();
-        Long last = SHADOW_AT.get(ap.getUUID());
-        if (last != null && now - last < 30_000L) return;
-        SHADOW_AT.put(ap.getUUID(), now);
-        LOG.warn("[rdd-env] shadow mismatch nearby: local(门{},亮{},箱{},岩浆{}) vs observed(门{},亮{},箱{},岩浆{})",
-                p, lp, c, l, o[0], o[1], o[2], o[3]);
-    }
-
-    private static final java.util.Map<java.util.UUID, Long> SHADOW_AT = new java.util.concurrent.ConcurrentHashMap<>();
     private static final org.slf4j.Logger LOG =
             org.slf4j.LoggerFactory.getLogger(RddEnvBlock.class);
 
