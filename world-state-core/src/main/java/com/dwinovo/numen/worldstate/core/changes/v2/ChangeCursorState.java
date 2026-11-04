@@ -53,11 +53,13 @@ public final class ChangeCursorState {
             epoch = page.streamEpoch();
         }
         if (epochChanged) {
+            // 换流 = 游戏重启，是**正常事件**，不是失败：立刻重同步、退避清零、不计入熔断计数。
+            // （审计实测：之前每重启一次 +1，三次正常重启就误判活锁；一天重启十几次是常态。）
             epoch = page.streamEpoch();
             cursor = page.watermark();
-            consecutiveResets++;
-            backoffMs = nextBackoff();
-            livelocked = consecutiveResets >= maxResets;
+            consecutiveResets = 0;
+            backoffMs = 0L;
+            livelocked = false;
             return true;
         }
         if (page.resetRequired()) {

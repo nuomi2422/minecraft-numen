@@ -47,8 +47,8 @@ final class RddContainerMemory {
     /** 同一份扫描的结构化计数（037/T14）：上下文要文字，规划要数字，两边不许走不同的解析路。 */
     private static final Map<UUID, Map<String, Integer>> COUNTS = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> LAST_REFRESH = new ConcurrentHashMap<>();
-    /** 041 U4c：containers 主题的增量游标（每个同伴一个）。 */
-    private static final Map<UUID, Long> CHANGE_CURSOR = new ConcurrentHashMap<>();
+    /** 041 U4c：每只同伴一个增量轮询器（内含游标）。 */
+    private static final Map<UUID, ContainerChangePoller> POLLERS = new ConcurrentHashMap<>();
 
     private RddContainerMemory() {}
 
@@ -86,22 +86,27 @@ final class RddContainerMemory {
                 LOG_CHANGE.maybe(id, "capability = null（观测能力没拿到）");
                 return false;
             }
-            long cursor = CHANGE_CURSOR.getOrDefault(id, 0L);
-            var resp = svc.changes(cursor, java.util.List.of("containers"), 64);
-            if (resp == null
-                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR) {
-                LOG_CHANGE.maybe(id, "增量不可用 status=" + (resp == null ? "null" : resp.status() + " reason=" + resp.reason()));
-                return false;   // 拿不到增量就退回节奏扫描，不当作"没变化"的证据
-            }
-            LOG_CHANGE.maybe(id, "增量 status=" + resp.status() + " cursor=" + cursor
-                    + " next=" + resp.nextCursor() + " gap=" + resp.gap()
-                    + " n=" + resp.changes().size() + " oldest=" + resp.oldestRetainedRevision());
-            CHANGE_CURSOR.put(id, resp.nextCursor());
-            if (resp.gap()) {
-                LOG.info("[rdd-storage] containers 增量断档，全量重扫一次");
-                return true;
-            }
-            return !resp.changes().isEmpty();
+            ContainerChangePoller poller = POLLERS.computeIfAbsent(id, k -> new ContainerChangePoller());
+            // 决策交给 ContainerChangePoller（同口径、离线可测）；这里只负责"怎么问能力面"
+            return poller.poll(cursor -> {
+                var resp = svc.changes(cursor, java.util.List.of("containers"), 64);
+                if (resp == null
+                        || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR) {
+                    LOG_CHANGE.maybe(id, "增量不可用 status="
+                            + (resp == null ? "null" : resp.status() + " reason=" + resp.reason()));
+                    return null;      // 拿不到增量 → 调用方退回节奏扫描
+                }
+                LOG_CHANGE.maybe(id, "增量 status=" + resp.status() + " cursor=" + cursor
+                        + " next=" + resp.nextCursor() + " gap=" + resp.gap()
+                        + " n=" + resp.changes().size() + " oldest=" + resp.oldestRetainedRevision());
+                if (resp.gap()) {
+                    LOG.info("[rdd-storage] containers 增量断档，全量重扫一次");
+                } else if (!resp.changes().isEmpty()) {
+                    LOG.info("[rdd-storage] change-signal n={} cursor={} next={}",
+                            resp.changes().size(), cursor, resp.nextCursor());
+                }
+                return new ContainerChangePoller.Page(resp.gap(), resp.nextCursor(), resp.changes().size());
+            });
         } catch (RuntimeException | LinkageError e) {
             LOG_CHANGE.maybe(id, "poll 失败: " + e);
             return false;
@@ -144,7 +149,7 @@ final class RddContainerMemory {
         CACHE.remove(companionId);
         COUNTS.remove(companionId);
         LAST_REFRESH.remove(companionId);
-        CHANGE_CURSOR.remove(companionId);
+        POLLERS.remove(companionId);
     }
 
     /** 一次扫描的双产物：给人看的文字 + 给规划用的计数。 */

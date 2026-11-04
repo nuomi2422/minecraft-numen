@@ -74,13 +74,28 @@ class ChangeCursorStateTest {
     }
 
     @Test
-    void epochChangeCountsAsReset() {
-        ChangeCursorState s = new ChangeCursorState();
+    void epochChangeTriggersResyncButIsNotAFailure() {
+        ChangeCursorState s = new ChangeCursorState(2);
         s.onPage(page(List.of(ev(1)), 1, false, 1, "e1"));
         boolean reset = s.onPage(page(List.of(ev(9)), 9, false, 9, "e2"));
         assertTrue(reset, "epoch 变化必须重同步");
         assertEquals(9L, s.cursor());
         assertEquals("e2", s.epoch());
+        assertEquals(0, s.consecutiveResets(), "换流是正常事件，不该计入失败");
+        assertEquals(0L, s.backoffMs(), "换流应该立刻重同步，不该退避");
+        assertFalse(s.livelocked());
+    }
+
+    @Test
+    void repeatedNormalRestartsNeverTripLivelock() {
+        // 审计实测：一天重启十几次是常态，旧实现三次就误判活锁
+        ChangeCursorState s = new ChangeCursorState(3);
+        for (int i = 1; i <= 8; i++) {
+            s.onPage(page(List.of(ev(i)), i, false, i, "epoch-" + i));
+        }
+        assertFalse(s.livelocked(), "正常重启不能触发熔断");
+        assertEquals(0, s.consecutiveResets());
+        assertEquals(0L, s.backoffMs());
     }
 
     @Test
