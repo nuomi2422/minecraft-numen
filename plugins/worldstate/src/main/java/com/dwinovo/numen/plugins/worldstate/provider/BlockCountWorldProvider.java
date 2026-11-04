@@ -31,8 +31,14 @@ import java.util.Map;
  */
 public final class BlockCountWorldProvider implements WorldProvider {
 
-    /** 单次请求的最大体积（方块数）。 */
-    private static final long MAX_VOLUME = 32768L;
+    /**
+     * 单次请求的最大体积（方块数）。
+     *
+     * <p>2026-11-05 调高到 262144（64³）：作物扫描这类"球形半径 24"的盒子明明是空心多、
+     * 体积却 49³=117649，原来的 32768 会直接拒掉 → 消费者只能回退本地扫描（实机 `sampled=false`）。
+     * 读方块状态很便宜（无区块加载），一次几毫秒级，按需调用可以承受。
+     */
+    private static final long MAX_VOLUME = 262144L;
 
     @Override public Topic topic() { return Topic.BLOCKS; }
 
