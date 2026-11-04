@@ -71,6 +71,7 @@ public final class WorldStateTool implements NumenTool {
                 .enumStr("action", "read=只读已有观测 / refresh=主动采集", "read", "refresh")
                 .enumStr("topic", "观测主题", "environment", "entities", "blocks", "containers")
                 .optionalString("dimension", "维度 id，默认同伴当前维度，如 minecraft:overworld")
+                .optionalInteger("samples", "blocks 用：每个规格带回几个位置样本（0~32，默认 0）", 0, 32)
                 .optionalInteger("x1", "范围角1 x（entities/blocks 用）", -30000000, 30000000)
                 .optionalInteger("y1", "范围角1 y", -64, 320)
                 .optionalInteger("z1", "范围角1 z", -30000000, 30000000)
@@ -134,7 +135,15 @@ public final class WorldStateTool implements NumenTool {
             case BLOCKS -> {
                 Bounds box = boundsFrom(args);
                 if (box == null) yield null;
-                yield ObservationRequest.blocks(dimension, box, optionalString(args, "block"));
+                int samples = 0;
+                if (args.has("samples") && !args.get("samples").isJsonNull()) {
+                    try {
+                        samples = Math.max(0, Math.min(32, args.get("samples").getAsInt()));
+                    } catch (RuntimeException ignored) {
+                        samples = 0;
+                    }
+                }
+                yield ObservationRequest.blocks(dimension, box, optionalString(args, "block"), samples);
             }
             case CONTAINERS -> {
                 String target = optionalString(args, "container");
@@ -215,6 +224,7 @@ public final class WorldStateTool implements NumenTool {
             data.put("counts", blocks.counts());
             data.put("scanned_columns", blocks.scannedColumns());
             data.put("skipped_columns", blocks.skippedColumns());
+            if (!blocks.samplePositions().isEmpty()) data.put("samples", blocks.samplePositions());
         } else if (payload instanceof com.dwinovo.numen.worldstate.core.observation.payload.ContainerPayload container) {
             data.put("container", container.target());
             data.put("items", container.items());
