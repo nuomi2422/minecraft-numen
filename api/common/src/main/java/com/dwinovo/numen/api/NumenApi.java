@@ -33,6 +33,21 @@ import java.util.function.Function;
 public interface NumenApi {
 
     /**
+     * 按接口登记一份能力实现（宿主侧调用），以及按接口查找（消费者侧调用）。
+     *
+     * <p>用途：跨插件只读能力（如统一世界观测 {@code WorldObservationService}）需要一个
+     * 公开的取用口——既不能让插件 import 另一个插件的实现，也不能复制核心类进多个 jar。
+     * 语义刻意收得很小：**按接口登记、按接口取、找不到就 null**，不是通用服务定位器，
+     * 也不做生命周期管理（谁登记谁自己负责注销/幂等）。
+     *
+     * @return 旧实现（若有），没有则 null——方便登记方判断是不是覆盖了别人
+     */
+    <T> T capability(Class<T> type, T impl);
+
+    /** 按接口取实现；没有登记时返回 {@code null}（调用方自行降级，不许扫世界兜底）。 */
+    <T> T capability(Class<T> type);
+
+    /**
      * 订阅同伴身上的事。同一个事件可以订阅多次,按注册顺序调用。
      *
      * @param event   见 {@link CompanionEvent} 的常量

@@ -46,6 +46,17 @@ public final class NumenPlugins {
 
     private static final NumenApi API = new Impl();
 
+    /** 按接口登记的能力（039 U1：跨插件只读能力的公开取用口）。 */
+    private static final java.util.concurrent.ConcurrentHashMap<Class<?>, Object> CAPABILITIES =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 取一份已登记的能力；没有返回 null。 */
+    public static <T> T capability(Class<T> type) {
+        if (type == null) return null;
+        Object impl = CAPABILITIES.get(type);
+        return impl == null ? null : type.cast(impl);
+    }
+
     private NumenPlugins() {}
 
     /** 登记一个插件。可在任何时候调用,通常在你模组的构造期。 */
@@ -554,6 +565,22 @@ public final class NumenPlugins {
     }
 
     private static final class Impl implements NumenApi {
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T> T capability(Class<T> type, T impl) {
+            if (type == null || impl == null) return null;
+            if (!type.isInstance(impl)) {
+                throw new IllegalArgumentException("impl is not a " + type.getName() + ": " + impl.getClass().getName());
+            }
+            Object previous = CAPABILITIES.put(type, impl);
+            return previous == null ? null : (T) previous;
+        }
+
+        @Override
+        public <T> T capability(Class<T> type) {
+            return NumenPlugins.capability(type);
+        }
 
         @Override
         public <T> void on(CompanionEvent<T> event, Consumer<T> handler) {
