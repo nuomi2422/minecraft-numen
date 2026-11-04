@@ -694,10 +694,13 @@ final class RddDetector {
             boolean hasRecovery = hasBoundRespawn(ap);
             // 167 §B6：把基地备用接进门。只收紧不放松——基地达标时与 checkWithRecovery 完全一致。
             var baseRegistry = RddPlugin.assets(ap.getUUID());
+            // 2026-11-04（TC-RESERVE-01）：known / 缺口 / 阶段从**同一份**基地视图派生，共用一个 now。
+            // 原来三个入口各选一次家、各取一次时间，TTL 边界上会出现"这次新鲜、那次过期"的自相矛盾。
+            var home = RddHomeFacts.HomeView.of(baseRegistry, System.currentTimeMillis());
             var verdict = com.dwinovo.numen.rdd.policy.RiskGate.checkWithBase(level, inv, hasRecovery,
-                    RddHomeFacts.reserveKnown(baseRegistry), RddHomeFacts.reserveShortfall(baseRegistry));
+                    home.reserve().known(), home.reserve().shortfall());
             // 167 §B3：基地阶段是高风险动作的硬依赖（只收紧）。物资齐了但家里没底，同样不许进。
-            verdict = com.dwinovo.numen.rdd.policy.HomeGate.enforce(verdict, RddHomeFacts.stageOf(baseRegistry));
+            verdict = com.dwinovo.numen.rdd.policy.HomeGate.enforce(verdict, home.stage());
             publishRiskVerdict(ap, primaryDescription, level, verdict, inv);
             return verdict.allowed();
         } catch (RuntimeException ex) {

@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.rdd.core.AssetRegistry;
+import com.dwinovo.numen.rdd.policy.HomeReserve;
 import com.dwinovo.numen.rdd.policy.HomeStage;
 import com.dwinovo.numen.rdd.policy.HomeSummary;
 
@@ -17,6 +18,10 @@ import java.util.Map;
  *
  * <p>刻意保持"只读、只陈述"：这里不判断该不该放行高风险（那是 RiskGate 的事，167 §B6），
  * 也不替模型挑下一步的工具。
+ *
+ * <p>2026-11-04（TC-RESERVE-01）：展示与准入改为共用同一份 {@link HomeView}。
+ * 原来 {@code blockFor} 按新鲜度降级、{@code stageOf/reserveKnown/reserveShortfall} 却只看
+ * {@code important_items} 是否存在，于是"摘要说读数过期"与"风险门按旧库存放行"能同时成立。
  */
 final class RddHomeFacts {
 
@@ -37,44 +42,28 @@ final class RddHomeFacts {
     }
 
     static String blockFor(AssetRegistry registry, Map<String, Integer> inventory, long nowMillis) {
-        AssetRegistry.AssetEntry base = freshestBase(registry);
-        if (base == null) {
+        // TC-RESERVE-01：选家与新鲜度只做一次，下面每一行都从这一份视图派生。
+        HomeView view = HomeView.of(registry, nowMillis);
+        if (view.base() == null) {
             // 没观测到基地不等于没有基地：只报 NO_HOME，并明确 reserve 未知（不写 0）。
             return HomeSummary.block(HomeSummary.lines(HomeStage.NO_HOME, null, null, null, null,
-                    null, null, null, null, nowMillis));
+                    HomeReserve.unobserved(), null, null, nowMillis));
         }
-        Map<String, Object> v = base.observation().value();
-        long asOf = base.observation().observedAt();
+        Map<String, Object> v = view.value();
+        long asOf = view.asOf();
         String dimension = String.valueOf(v.getOrDefault("dimension", "unknown"));
         String pos = v.get("x") + " " + v.get("y") + " " + v.get("z");
 
-        int facilityCount = v.get("facilities") instanceof List<?> l ? l.size() : 0;
-        boolean houseUsable = facilityCount > 0;
-
-        Map<String, Integer> reserve = new LinkedHashMap<>();
-        if (v.get("important_items") instanceof Map<?, ?> m) {
-            for (var e : m.entrySet()) {
-                if (!(e.getValue() instanceof Number n)) continue;
-                String k = String.valueOf(e.getKey());
-                if (RESERVE_KEYS.contains(k)) reserve.put(k, n.intValue());
-            }
-        }
-        // 167 B5：把「观测到但没备货」与「根本没观测到」分开。
-        // 读数是否新鲜由 HomeSummary 统一判（超过 stale 就降级 UNKNOWN），这里只决定传不传。
-        boolean observedItems = v.get("important_items") instanceof Map<?, ?>;
-        // 2026-11-01 实机抓到的不一致：reserve=UNKNOWN 却报 reserve_short:…。
-        // 原因是渲染层按新鲜度降级，而 blocking 仍按「曾经观测过」算缺口。
-        // 现在两处用同一把尺子：过期就等于没观测。
-        boolean reserveUsable = observedItems
-                && com.dwinovo.numen.rdd.policy.HomeSummary.fresh(asOf, nowMillis);
-        // 167 B5：够不够不再由"有没有东西"决定，统一按 ReserveKit.MINIMUM 判。
-        boolean reserveSufficient = com.dwinovo.numen.rdd.policy.HomeStage.reserveSufficient(
-                reserveUsable ? reserve : null);
-        java.util.List<String> shortfall = com.dwinovo.numen.rdd.policy.ReserveKit.shortfall(
-                reserveUsable ? reserve : null);
+        HomeReserve reserve = view.reserve();
+        // 展示裁剪：只列 RESERVE_KEYS（167 B5 的省 token 口径）；缺口仍按完整读数算。
+        Map<String, Integer> shownItems = reserve.rawItems() == null ? null : reserveKeysOf(reserve.rawItems());
+        HomeReserve shown = reserve.withItems(shownItems);
+        boolean reserveUsable = reserve.known();
+        boolean reserveSufficient = reserve.sufficient();
+        List<String> shortfall = reserve.shortfall();
         boolean litProtected = false;   // 保护/光照判据尚未产生事实，明确保持 false 而不是假装通过
 
-        HomeStage stage = HomeStage.of(true, houseUsable, true, reserveUsable, reserveSufficient, litProtected);
+        HomeStage stage = view.stage();
         String blocking;
         if (stage == HomeStage.ESTABLISHED) {
             blocking = null;
@@ -102,9 +91,9 @@ final class RddHomeFacts {
             next = "scan_reserve_containers";    // 真没读到 → 去扫
         }
         List<String> lines = new java.util.ArrayList<>(HomeSummary.lines(stage,
-                String.valueOf(v.getOrDefault("label", base.assetId())),
+                String.valueOf(v.getOrDefault("label", view.base().assetId())),
                 dimension, pos, asOf,
-                reserveUsable ? reserve : null, asOf,
+                shown,
                 blocking, next, nowMillis));
         // 2026-11-01：把「箱子里缺什么」和「背包里有什么」合起来给一句可执行建议——
         // 背包里已经有的，下一步是放进箱子，而不是再去做一遍（实机：它背着一包东西，基地箱是空的）。
@@ -121,39 +110,74 @@ final class RddHomeFacts {
 
     /** 当前基地阶段（167 B3 的派生口径；没有基地观测就是 NO_HOME）。 */
     static HomeStage stageOf(AssetRegistry registry) {
-        AssetRegistry.AssetEntry base = freshestBase(registry);
-        if (base == null) return HomeStage.NO_HOME;
-        Map<String, Object> v = base.observation().value();
-        boolean houseUsable = v.get("facilities") instanceof List<?> l && !l.isEmpty();
-        Map<String, Integer> reserve = new LinkedHashMap<>();
-        if (v.get("important_items") instanceof Map<?, ?> m) {
-            for (var e : m.entrySet()) {
-                if (e.getValue() instanceof Number n) reserve.put(String.valueOf(e.getKey()), n.intValue());
-            }
-        }
-        boolean reserveKnown = v.get("important_items") instanceof Map<?, ?>;
-        return HomeStage.of(true, houseUsable, true, reserveKnown,
-                HomeStage.reserveSufficient(reserveKnown ? reserve : null), false);
+        return stageOf(registry, System.currentTimeMillis());
     }
 
-    /** 基地备用箱是否**真的观测过**（有 world_base 且带 important_items）。 */
+    /** 显式 now 的版本：同一次判定只取一个 now，展示与准入必须传同一个值。 */
+    static HomeStage stageOf(AssetRegistry registry, long nowMillis) {
+        return HomeView.of(registry, nowMillis).stage();
+    }
+
+    /** 基地备用箱现在是否**可信可用**（有 world_base、带 important_items、且读数未过期）。 */
     static boolean reserveKnown(AssetRegistry registry) {
-        AssetRegistry.AssetEntry base = freshestBase(registry);
-        return base != null && base.observation().value().get("important_items") instanceof Map<?, ?>;
+        return reserveKnown(registry, System.currentTimeMillis());
     }
 
-    /** 基地备用相对 ReserveKit 的缺口；未知时返回空表（未知不等于缺失）。 */
-    static java.util.List<String> reserveShortfall(AssetRegistry registry) {
-        AssetRegistry.AssetEntry base = freshestBase(registry);
-        if (base == null) return java.util.List.of();
-        if (!(base.observation().value().get("important_items") instanceof Map<?, ?> m)) {
-            return java.util.List.of();
+    static boolean reserveKnown(AssetRegistry registry, long nowMillis) {
+        return HomeView.of(registry, nowMillis).reserve().known();
+    }
+
+    /** 基地备用相对 ReserveKit 的缺口；未知时返回空表（未知不等于缺失，判定必须同时看 reserveKnown）。 */
+    static List<String> reserveShortfall(AssetRegistry registry) {
+        return reserveShortfall(registry, System.currentTimeMillis());
+    }
+
+    static List<String> reserveShortfall(AssetRegistry registry, long nowMillis) {
+        return HomeView.of(registry, nowMillis).reserve().shortfall();
+    }
+
+    /**
+     * 选中基地的一次性视图（TC-RESERVE-01）。
+     *
+     * <p>同一 now、同一次选家：摘要（{@link #blockFor}）、阶段、known、缺口全部从这里派生。
+     * 原因是 TTL 边界上三个入口各自调用 {@code System.currentTimeMillis()} + 各自选一次家，
+     * 能出现"这次读是新鲜的、那次读已经过期"的裂缝；现在裂缝只剩一处，而且不存在。
+     */
+    record HomeView(AssetRegistry.AssetEntry base, Map<String, Object> value, long asOf,
+                    boolean houseUsable, HomeReserve reserve, HomeStage stage) {
+
+        static HomeView of(AssetRegistry registry, long nowMillis) {
+            AssetRegistry.AssetEntry base = freshestBase(registry);
+            if (base == null) {
+                return new HomeView(null, Map.of(), 0L, false, HomeReserve.unobserved(), HomeStage.NO_HOME);
+            }
+            Map<String, Object> value = base.observation().value();
+            boolean houseUsable = value.get("facilities") instanceof List<?> l && !l.isEmpty();
+            long asOf = base.observation().observedAt();
+            HomeReserve reserve = HomeReserve.of(itemsOf(value.get("important_items")), asOf, nowMillis);
+            return new HomeView(base, value, asOf, houseUsable, reserve,
+                    HomeStage.of(true, houseUsable, true, reserve, false));
         }
-        Map<String, Integer> reserve = new LinkedHashMap<>();
+    }
+
+    /** {@code important_items} → 备用条目；字段不是 Map 就是"没观测到"（null），不能当成空 Map。 */
+    private static Map<String, Integer> itemsOf(Object rawItems) {
+        if (!(rawItems instanceof Map<?, ?> m)) return null;
+        Map<String, Integer> out = new LinkedHashMap<>();
         for (var e : m.entrySet()) {
-            if (e.getValue() instanceof Number n) reserve.put(String.valueOf(e.getKey()), n.intValue());
+            if (!(e.getValue() instanceof Number n)) continue;
+            out.put(String.valueOf(e.getKey()), n.intValue());
         }
-        return com.dwinovo.numen.rdd.policy.ReserveKit.shortfall(reserve);
+        return out;
+    }
+
+    /** 展示裁剪：只留 RESERVE_KEYS 里那几类。 */
+    private static Map<String, Integer> reserveKeysOf(Map<String, Integer> items) {
+        Map<String, Integer> out = new LinkedHashMap<>();
+        for (var e : items.entrySet()) {
+            if (RESERVE_KEYS.contains(e.getKey())) out.put(e.getKey(), e.getValue());
+        }
+        return out;
     }
 
     /**

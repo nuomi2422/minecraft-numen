@@ -39,6 +39,17 @@ public final class HomeSummary {
                                      String respawnDim, String respawnPos, Long respawnAsOf,
                                      Map<String, Integer> reserve, Long reserveAsOf,
                                      String blocking, String next, long nowMillis) {
+        // TC-RESERVE-01（2026-11-04）：Map + asOf 这种"散装"入参一律先折成 {@link HomeReserve}，
+        // 新鲜度只在它里面算一次；这里不再自己写 age 公式，免得未来时间戳出现"渲染新鲜、判定过期"。
+        return lines(stage, facilityId, respawnDim, respawnPos, respawnAsOf,
+                HomeReserve.of(reserve, reserveAsOf, nowMillis), blocking, next, nowMillis);
+    }
+
+    /** 同一份摘要，改用已经算好新鲜度的备用投影（展示与准入共用一把尺子）。 */
+    public static List<String> lines(HomeStage stage, String facilityId,
+                                     String respawnDim, String respawnPos, Long respawnAsOf,
+                                     HomeReserve reserve, String blocking, String next, long nowMillis) {
+        HomeReserve r = reserve == null ? HomeReserve.unobserved() : reserve;
         List<String> out = new ArrayList<>(6);
         HomeStage st = stage == null ? HomeStage.NO_HOME : stage;
         out.add("home_stage=" + st.name());
@@ -51,12 +62,10 @@ public final class HomeSummary {
                     + (respawnAsOf == null ? " asOf=UNKNOWN" : " asOf=" + ago(respawnAsOf, nowMillis)));
         }
 
-        boolean reserveKnown = reserve != null && reserveAsOf != null
-                && nowMillis - reserveAsOf <= staleAfter();
         // asOf 只在「这条观测真的可用」时才有意义：UNKNOWN 时后面跟个 asOf 会让人以为
         // "这是 32 分钟前的可靠读数"，而实际含义是"没有可用读数"。实机 167 B3 首跑就出现了这种歧义。
-        out.add(HomeStage.describe(reserve, reserveKnown)
-                + (reserveKnown && reserveAsOf != null ? " asOf=" + ago(reserveAsOf, nowMillis) : ""));
+        out.add(HomeStage.describe(r.items(), r.known())
+                + (r.known() && r.asOf() != null ? " asOf=" + ago(r.asOf(), nowMillis) : ""));
 
         if (blocking != null && !blocking.isBlank()) out.add("blocking=" + blocking);
         if (next != null && !next.isBlank()) out.add("next=" + next);

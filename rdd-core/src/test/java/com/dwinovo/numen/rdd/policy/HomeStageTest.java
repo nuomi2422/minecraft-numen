@@ -147,4 +147,17 @@ class HomeStageTest {
         assertTrue(withNext.contains("blocking=food_production"));
         assertTrue(withNext.contains("next=verify_farm_water_then_observe_output"));
     }
+
+    @Test
+    void futureReserveTimestampIsUnknownEverywhere() {
+        // TC-RESERVE-01：时间戳在未来的观测不可信。渲染与判定必须同时降到 UNKNOWN。
+        Map<String, Integer> reserve = new LinkedHashMap<>();
+        reserve.put("minecraft:iron_pickaxe", 1);
+        reserve.put("minecraft:cooked_beef", 8);
+        reserve.put("minecraft:torch", 8);
+        List<String> lines = HomeSummary.lines(HomeStage.STOCKED, "home_house_01", "minecraft:overworld",
+                "372 68 715", NOW - 30_000, reserve, NOW + 1, null, null, NOW);
+        assertTrue(lines.stream().anyMatch(l -> l.startsWith("reserve=UNKNOWN")),
+                "未来时间戳必须渲染成 UNKNOWN: " + lines);
+    }
 }

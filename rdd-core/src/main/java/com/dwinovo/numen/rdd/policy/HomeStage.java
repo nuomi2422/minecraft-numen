@@ -43,6 +43,18 @@ public enum HomeStage {
         return ReserveKit.sufficient(reserve);
     }
 
+    /**
+     * TC-RESERVE-01（2026-11-04）：直接吃备用投影，known 与 sufficient 由它自己给。
+     *
+     * <p>为什么不保留"调方自己拼那两个 boolean"的写法：拼的时候最容易漏掉新鲜度——
+     * 过期但足量的库存就是从这里滑进 {@code STOCKED} 的。
+     */
+    public static HomeStage of(boolean baseKnown, boolean houseUsable, boolean respawnBound,
+                               HomeReserve reserve, boolean litProtected) {
+        HomeReserve r = reserve == null ? HomeReserve.unobserved() : reserve;
+        return of(baseKnown, houseUsable, respawnBound, r.known(), r.sufficient(), litProtected);
+    }
+
     public static HomeStage of(boolean baseKnown, boolean houseUsable, boolean respawnBound,
                                boolean reserveKnown, boolean reserveSufficient, boolean litProtected) {
         if (!baseKnown) return NO_HOME;
