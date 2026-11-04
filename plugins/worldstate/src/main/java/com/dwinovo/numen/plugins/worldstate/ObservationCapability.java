@@ -75,20 +75,11 @@ public final class ObservationCapability implements WorldObservationService {
                     ? new Item(values, Set.of(), values.keySet())   // 有值但过期：全部标 stale，不许当当前事实
                     : Item.of(values);
 
-            // 注意：world-state-core 的 Coverage 与本接口的 Coverage 是两个枚举（接口成员名会被继承，
-            // 所以这里的 core 枚举必须写全限定名，否则编译期会解析到接口那一套）。
-            com.dwinovo.numen.worldstate.core.model.Coverage cov = rr.coverage() == null
-                    ? com.dwinovo.numen.worldstate.core.model.Coverage.UNLOADED : rr.coverage();
-            // 注意：core 的 Coverage 与 API 的 Coverage 是两套枚举，这里做显式映射（不猜、不合并）。
-            Coverage out = switch (cov) {
-                case COMPLETE -> Coverage.FULL;
-                case PARTIAL -> Coverage.PARTIAL;
-                case UNLOADED -> Coverage.UNKNOWN;
-            };
-            Status status = out == Coverage.FULL && !stale ? Status.OK : Status.PARTIAL;
-            String reason = status == Status.PARTIAL
-                    ? (stale ? "observation is " + rr.freshness() : "coverage is " + cov)
-                    : null;
+            // 状态判定统一走 ObservationMap（纯函数、可离线测）：覆盖不全或过期都不许 OK。
+            var mapped = ObservationMap.map(rr.coverage(), rr.freshness(), true);
+            Coverage out = mapped.coverage();
+            Status status = mapped.status();
+            String reason = mapped.reason();
             long observedTick = rr.observation().gameTick();
             return new Response(status, request.topic(), snapshotId(rr), observedTick, out, reason, List.of(item));
         } catch (RuntimeException ex) {
@@ -125,16 +116,9 @@ public final class ObservationCapability implements WorldObservationService {
             values.put("count", e.getValue());
             items.add(stale ? new Item(values, Set.of(), values.keySet()) : Item.of(values));
         }
-        Coverage cov = switch (rr.coverage() == null
-                ? com.dwinovo.numen.worldstate.core.model.Coverage.UNLOADED : rr.coverage()) {
-            case COMPLETE -> Coverage.FULL;
-            case PARTIAL -> Coverage.PARTIAL;
-            case UNLOADED -> Coverage.UNKNOWN;
-        };
-        Status st = cov == Coverage.FULL && !stale ? Status.OK : Status.PARTIAL;
-        return new Response(st, request.topic(), snapshotId(rr), rr.observation().gameTick(), cov,
-                st == Status.PARTIAL ? (stale ? "observation is " + rr.freshness() : "coverage is " + rr.coverage()) : null,
-                items);
+        var mapped = ObservationMap.map(rr.coverage(), rr.freshness(), true);
+        return new Response(mapped.status(), request.topic(), snapshotId(rr),
+                rr.observation().gameTick(), mapped.coverage(), mapped.reason(), items);
     }
 
     @Override

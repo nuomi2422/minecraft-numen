@@ -23,6 +23,8 @@ dependencies {
     implementation project(':world-state-core')
     implementation 'com.google.code.gson:gson:2.10.1'
 
+    // 纯函数测试要用公开读口的枚举；主源集经 numen-plugin 约定拿到 api，测试源集要显式声明。
+    testImplementation project(':api:common')
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
