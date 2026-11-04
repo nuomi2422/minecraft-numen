@@ -683,29 +683,84 @@ final class RddDetector {
         if (!riskGateEnabled) {
             return true;
         }
+        // 2026-11-04（037/T7 · SAFE-01）：分类失败不再当成"不危险"。
+        com.dwinovo.numen.rdd.policy.RiskLevel level;
         try {
-            com.dwinovo.numen.rdd.policy.RiskLevel level =
-                    com.dwinovo.numen.rdd.policy.RiskGate.levelForText(primaryDescription);
-            if (level != com.dwinovo.numen.rdd.policy.RiskLevel.NETHER
-                    && level != com.dwinovo.numen.rdd.policy.RiskLevel.END) {
-                return true;   // 非高风险级不拦
-            }
-            Map<String, Integer> inv = countInventory(ap);
+            level = com.dwinovo.numen.rdd.policy.RiskGate.levelForText(primaryDescription);
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 风险分类异常，按高风险处理: {}", ex.toString());
+            return applyGateDecision(ap, primaryDescription, null,
+                    com.dwinovo.numen.rdd.policy.RiskGateGuard.classifyFailed(ex), Map.of());
+        }
+        // 事实采集整体交给 RiskGateGuard：非高风险级它根本不采（NORMAL/MINING 行为不变），
+        // 高风险级观测失败则拒绝——「观测越糟越容易放行」的旧语义到此为止。
+        Map<String, Integer> inv = new java.util.LinkedHashMap<>();
+        var decision = com.dwinovo.numen.rdd.policy.RiskGateGuard.decide(level, lv -> {
+            inv.putAll(countInventory(ap));
             boolean hasRecovery = hasBoundRespawn(ap);
             // 167 §B6：把基地备用接进门。只收紧不放松——基地达标时与 checkWithRecovery 完全一致。
             var baseRegistry = RddPlugin.assets(ap.getUUID());
             // 2026-11-04（TC-RESERVE-01）：known / 缺口 / 阶段从**同一份**基地视图派生，共用一个 now。
-            // 原来三个入口各选一次家、各取一次时间，TTL 边界上会出现"这次新鲜、那次过期"的自相矛盾。
             var home = RddHomeFacts.HomeView.of(baseRegistry, System.currentTimeMillis());
-            var verdict = com.dwinovo.numen.rdd.policy.RiskGate.checkWithBase(level, inv, hasRecovery,
+            var verdict = com.dwinovo.numen.rdd.policy.RiskGate.checkWithBase(lv, inv, hasRecovery,
                     home.reserve().known(), home.reserve().shortfall());
             // 167 §B3：基地阶段是高风险动作的硬依赖（只收紧）。物资齐了但家里没底，同样不许进。
-            verdict = com.dwinovo.numen.rdd.policy.HomeGate.enforce(verdict, home.stage());
-            publishRiskVerdict(ap, primaryDescription, level, verdict, inv);
-            return verdict.allowed();
-        } catch (RuntimeException ex) {
-            LOG.warn("[rdd] 风险门判定异常（保守放行）: {}", ex.toString());
-            return true;   // 判定异常不误拦（避免因 bug 卡死主线）
+            return com.dwinovo.numen.rdd.policy.HomeGate.enforce(verdict, home.stage());
+        });
+        return applyGateDecision(ap, primaryDescription, level, decision, inv);
+    }
+
+    /**
+     * 裁决收口：先定裁决，再发遥测——**遥测失败不许改变裁决**（037/T7 的"隔离日志失败"要求）。
+     */
+    private static boolean applyGateDecision(NumenPlayer ap, String primaryDescription,
+                                             com.dwinovo.numen.rdd.policy.RiskLevel level,
+                                             com.dwinovo.numen.rdd.policy.RiskGateGuard.Decision decision,
+                                             Map<String, Integer> inventory) {
+        try {
+            if (decision.error() != null) {
+                publishGateException(ap, primaryDescription, decision, inventory);
+            } else if (decision.verdict() != null) {
+                publishRiskVerdict(ap, primaryDescription, decision.level() == null ? level : decision.level(),
+                        decision.verdict(), inventory == null ? Map.of() : inventory);
+            }
+        } catch (RuntimeException ignored) {
+            // 遥测是旁路：发不出去也不能反过来改变"放不放行"。
+        }
+        return decision.allowed();
+    }
+
+    /**
+     * 风险门观测/分类异常的拦截事件（037/T7）。
+     *
+     * <p>为什么必须发事件而不只写日志：日志没人看，模型和面板只能看到"没派工"。
+     * 事件里带 reason 与 error，恢复后下一次正常裁决会照常发 {@code risk_gate_opened/blocked}，
+     * 所以不需要清除什么状态，也就不会留下永久锁。
+     */
+    private static void publishGateException(NumenPlayer ap, String primaryDescription,
+                                             com.dwinovo.numen.rdd.policy.RiskGateGuard.Decision decision,
+                                             Map<String, Integer> inventory) {
+        try {
+            UUID uuid = ap.getUUID();
+            if (!shouldPublishGatedSnapshot(uuid, String.valueOf(primaryDescription).hashCode() + "|" + decision.reason(), "riskgate_error")) {
+                return;   // 同一目标同一原因 10 秒内只报一次
+            }
+            Map<String, Object> data = new java.util.LinkedHashMap<>();
+            data.put("companionId", uuid.toString());
+            data.put("riskLevel", decision.level() == null ? "UNKNOWN" : decision.level().name());
+            data.put("allowed", false);
+            data.put("reason", decision.reason());
+            data.put("error", decision.error());
+            data.put("missing", java.util.List.of("risk_gate=error need fresh observation"));
+            data.put("prepTasks", java.util.List.of("先让观测恢复正常（背包/恢复点/基地读数），再重试高风险动作"));
+            data.put("primaryHint", String.valueOf(primaryDescription).length() > 120
+                    ? String.valueOf(primaryDescription).substring(0, 120) : String.valueOf(primaryDescription));
+            if (inventory != null && !inventory.isEmpty()) {
+                data.put("inventoryKeys", Math.min(inventory.size(), 8));
+            }
+            RddMonitor.publish("risk_gate_blocked", data);
+        } catch (RuntimeException ignored) {
+            // 事件发不出去不影响已经定下的裁决
         }
     }
 
