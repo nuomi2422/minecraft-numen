@@ -1,7 +1,9 @@
 package com.dwinovo.numen.api.storage;
 
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.Level;
+
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * 窄能力：读一个方块容器的内容（037/T8b，2026-11-04）。
@@ -24,11 +26,11 @@ public interface ContainerReader {
     /**
      * 读一个容器。
      *
-     * @param companionId 谁的视角（权限/背包上下文；不可为 null）
-     * @param dimension   维度 id，例如 {@code minecraft:overworld}
-     * @param x,y,z       方块坐标
+     * <p>为什么参数是 {@code Level + BlockPos} 而不是 “玩家 + 维度字串 + xyz”：读容器本来就不需要身份/权限，
+     * 而“从维度字串反查 Level”会把实现逼去拿全局服务器引用（两个 loader 不同叫法）。
+     * 这与现有 {@code IBlockCapabilityReader.describe(Level, BlockPos)} 同一个口径。
      */
-    Result read(UUID companionId, String dimension, int x, int y, int z);
+    Result read(Level level, BlockPos pos);
 
     /**
      * 读到的东西。

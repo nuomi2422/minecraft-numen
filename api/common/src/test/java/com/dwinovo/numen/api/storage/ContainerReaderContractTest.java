@@ -2,9 +2,11 @@ package com.dwinovo.numen.api.storage;
 
 import org.junit.jupiter.api.Test;
 
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.Level;
+
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -20,15 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class ContainerReaderContractTest {
 
-    private static final UUID ID = UUID.fromString("00000000-0000-0000-0000-0000000000aa");
-
     /** 只为证明接口可用；真实实现由宿主提供。 */
     private static final class Fake implements ContainerReader {
         @Override
-        public Result read(UUID companionId, String dimension, int x, int y, int z) {
-            if (x < 0) return Result.unknown("chunk not loaded");
+        public Result read(Level level, BlockPos pos) {
+            if (pos.getX() < 0) return Result.unknown("chunk not loaded");
             Map<String, Integer> items = new LinkedHashMap<>();
-            if (x == 0 && y == 0 && z == 0) return Result.known(items);   // 已知为空
+            if (pos.getX() == 0 && pos.getY() == 0 && pos.getZ() == 0) return Result.known(items);   // 已知为空
             items.put("minecraft:torch", 8);
             items.put("minecraft:cooked_beef", 3);
             return Result.known(items);
@@ -37,7 +37,7 @@ class ContainerReaderContractTest {
 
     @Test
     void knownItemsAreCopyOnWrite() {
-        ContainerReader.Result r = new Fake().read(ID, "minecraft:overworld", 1, 64, 1);
+        ContainerReader.Result r = new Fake().read(null, new BlockPos(1, 64, 1));
         assertTrue(r.known());
         assertEquals(8, r.items().get("minecraft:torch"));
         assertThrows(UnsupportedOperationException.class, () -> r.items().put("minecraft:dirt", 1),
@@ -46,7 +46,7 @@ class ContainerReaderContractTest {
 
     @Test
     void emptyContainerIsKnownNotEmptyUnknown() {
-        ContainerReader.Result empty = new Fake().read(ID, "minecraft:overworld", 0, 0, 0);
+        ContainerReader.Result empty = new Fake().read(null, new BlockPos(0, 0, 0));
         assertTrue(empty.known(), "已知为空是 known，不是 unknown");
         assertTrue(empty.items().isEmpty());
         assertEquals(null, empty.reason());
@@ -54,7 +54,7 @@ class ContainerReaderContractTest {
 
     @Test
     void unreadableContainerCarriesAReasonAndNoItems() {
-        ContainerReader.Result unknown = new Fake().read(ID, "minecraft:overworld", -1, 64, 0);
+        ContainerReader.Result unknown = new Fake().read(null, new BlockPos(-1, 64, 0));
         assertFalse(unknown.known());
         assertTrue(unknown.items().isEmpty(), "不知道的时候不许编出数量");
         assertNotNull(unknown.reason());
