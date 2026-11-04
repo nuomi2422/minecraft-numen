@@ -38,6 +38,8 @@ class WorldStateSchemaTest {
     void requiredIsExactlyActionAndTopic() {
         assertEquals(Set.of("action", "topic"), Set.copyOf(required()),
                 "当前契约：action 与 topic 必填；R3 把 topic 改 optional 时这条应红");
+        // 审计 nit：Set 比较会吞掉重复项，加一条长度断言兜住
+        assertEquals(required().size(), Set.copyOf(required()).size(), "required 里不该有重复项");
     }
 
     @Test
