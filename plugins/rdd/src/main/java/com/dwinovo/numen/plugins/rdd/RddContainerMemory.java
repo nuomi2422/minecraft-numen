@@ -156,7 +156,8 @@ final class RddContainerMemory {
                                                       BlockPos pos, long gameTime) {
         Map<String, Integer> observed = readViaObservation(body, pos, gameTime);
         Map<String, Integer> direct = readDirect(level, pos);
-        if (observed != null && direct != null && !observed.equals(direct)) {
+        boolean mismatch = observed != null && direct != null && !observed.equals(direct);
+        if (mismatch) {
             String key = pos.getX() + "," + pos.getY() + "," + pos.getZ();
             long now = System.currentTimeMillis();
             Long last = SHADOW_AT.get(key);
@@ -165,6 +166,8 @@ final class RddContainerMemory {
                 LOG.warn("[rdd-storage] shadow mismatch at {}: direct={} observed={}", key, direct, observed);
             }
         }
+        // 不一致时**以直读为准**：观测还没被证明可靠前，不让旧快照盖住眼前的真东西。
+        if (mismatch) return direct != null ? direct : observed;
         return observed != null ? observed : direct;
     }
 
@@ -180,14 +183,13 @@ final class RddContainerMemory {
                     "rdd-storage", dim, "containers", Map.of("container", target), 0L, 64, 0L);
             var resp = svc.read(req);
             if (resp == null) return null;
-            boolean needsRefresh = resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING
-                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PARTIAL;
-            if (needsRefresh) {
-                Long last = OBS_AT.get(target);
-                if (last == null || gameTime - last >= OBS_REFRESH_TICKS) {
-                    OBS_AT.put(target, gameTime);
-                    resp = svc.refresh(req);
-                }
+            // 容器内容**随时会变**（放进去/拿出来），所以不能只靠 TTL：按本地节奏定期 refresh，
+            // 否则会拿旧快照当真（2026-11-05 02:41 实机：箱里已有 5 铁锭，观测里还是空）。
+            Long last = OBS_AT.get(target);
+            if (last == null || gameTime - last >= OBS_REFRESH_TICKS) {
+                OBS_AT.put(target, gameTime);
+                var refreshed = svc.refresh(req);
+                if (refreshed != null) resp = refreshed;
             }
             if (resp == null
                     || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR
