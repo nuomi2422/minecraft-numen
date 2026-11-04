@@ -69,7 +69,7 @@ public final class WorldStateTool implements NumenTool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .enumStr("action", "read=只读已有观测 / refresh=主动采集", "read", "refresh")
-                .enumStr("topic", "观测主题", "environment", "entities", "blocks")
+                .enumStr("topic", "观测主题", "environment", "entities", "blocks", "containers")
                 .optionalString("dimension", "维度 id，默认同伴当前维度，如 minecraft:overworld")
                 .optionalInteger("x1", "范围角1 x（entities/blocks 用）", -30000000, 30000000)
                 .optionalInteger("y1", "范围角1 y", -64, 320)
@@ -135,7 +135,16 @@ public final class WorldStateTool implements NumenTool {
                 if (box == null) yield null;
                 yield ObservationRequest.blocks(dimension, box, optionalString(args, "block"));
             }
-            // containers / facilities 尚未接入采集器：V1 明确不支持，别假装成功。
+            case CONTAINERS -> {
+                String target = optionalString(args, "container");
+                if (target == null || target.isBlank()) yield null;
+                try {
+                    yield ObservationRequest.containers(dimension, target);
+                } catch (IllegalArgumentException e) {
+                    yield null;
+                }
+            }
+            // facilities 尚未接入采集器：明确不支持，别假装成功。
             default -> null;
         };
     }
@@ -201,6 +210,15 @@ public final class WorldStateTool implements NumenTool {
             data.put("weather", env.weather());
             data.put("raining", env.raining());
             data.put("thundering", env.thundering());
+        } else if (payload instanceof com.dwinovo.numen.worldstate.core.observation.payload.BlockCountPayload blocks) {
+            data.put("counts", blocks.counts());
+            data.put("scanned_columns", blocks.scannedColumns());
+            data.put("skipped_columns", blocks.skippedColumns());
+        } else if (payload instanceof com.dwinovo.numen.worldstate.core.observation.payload.ContainerPayload container) {
+            data.put("container", container.target());
+            data.put("items", container.items());
+            data.put("slots", container.slots());
+            data.put("total_items", container.totalItems());
         } else if (payload instanceof EntityCountPayload counts) {
             data.put("count", counts.count());
             if (counts.entityType() != null) {
