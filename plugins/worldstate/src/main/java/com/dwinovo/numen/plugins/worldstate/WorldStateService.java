@@ -55,9 +55,12 @@ public final class WorldStateService {
         this.providers.register(new EntityCountWorldProvider());
         this.providers.register(new BlockCountWorldProvider());
         this.providers.register(new ContainerWorldProvider());
+        // 先载入磁盘观测**再**建 RefreshService：后者要按存储里的最大修订号续号，
+        // 否则重启后新进程序列从 0 起，所有刷新都会被 put() 判成"更旧"而静默丢弃
+        //（2026-11-05 实机事故，见 RefreshRevisionContinuityTest）。
+        load();
         this.refreshService = new RefreshService(providers, store, Runnable::run);
         this.queryService = new QueryService(store, freshness, refreshService, System::currentTimeMillis);
-        load();
     }
 
     public Path file() {
