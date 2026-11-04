@@ -104,23 +104,10 @@ public final class ObservationCapability implements WorldObservationService {
     private Response readBlocks(Request request) {
         MinecraftServer mc = server.get();
         if (mc == null) return Response.error(request.topic(), "no server");
-        String boxRaw = request.selector().get("box");
-        String idsRaw = request.selector().get("blocks");
-        if (boxRaw == null || idsRaw == null) {
+        ObservationRequest req = blocksRequest(request);
+        if (req == null) {
             return Response.error(request.topic(), "blocks needs selector box=… and blocks=…");
         }
-        String[] parts = boxRaw.split(",");
-        if (parts.length != 6) {
-            return Response.error(request.topic(), "box must be x1,y1,z1,x2,y2,z2");
-        }
-        int[] c = new int[6];
-        try {
-            for (int i = 0; i < 6; i++) c[i] = Integer.parseInt(parts[i].trim());
-        } catch (NumberFormatException e) {
-            return Response.error(request.topic(), "box must be integers");
-        }
-        var bounds = new com.dwinovo.numen.worldstate.core.model.Bounds(c[0], c[1], c[2], c[3], c[4], c[5]);
-        var req = ObservationRequest.blocks(request.dimension(), bounds, idsRaw);
         ReadResult rr = host.read(mc, req);
         if (!rr.present()) {
             return new Response(Status.PENDING, request.topic(), "", 0L, Coverage.UNKNOWN,
@@ -156,15 +143,28 @@ public final class ObservationCapability implements WorldObservationService {
             return Response.error("", "missing request");
         }
         Topic topic = Topic.byId(request.topic());
-        if (topic != null && topic != Topic.ENVIRONMENT) {
+        if (topic == null) {
+            return Response.error(request.topic(), "unknown topic: " + request.topic());
+        }
+        if (topic != Topic.ENVIRONMENT && topic != Topic.BLOCKS) {
             return Response.error(request.topic(), "topic not wired yet: " + topic.id());
         }
         MinecraftServer mc = server.get();
         if (mc == null) {
             return Response.error(request.topic(), "no server");
         }
+        ObservationRequest req;
+        if (topic == Topic.BLOCKS) {
+            ObservationRequest built = blocksRequest(request);
+            if (built == null) {
+                return Response.error(request.topic(), "blocks needs selector box=… and blocks=…");
+            }
+            req = built;
+        } else {
+            req = ObservationRequest.environment(request.dimension());
+        }
         try {
-            var result = host.refresh(mc, ObservationRequest.environment(request.dimension()));
+            var result = host.refresh(mc, req);
             if (result != null && !result.success()) {
                 return Response.error(request.topic(), "refresh failed: " + result.message()
                         + " (" + result.reason() + ")");
@@ -173,6 +173,23 @@ public final class ObservationCapability implements WorldObservationService {
         } catch (RuntimeException ex) {
             return Response.error(request.topic(), "refresh failed: " + ex);
         }
+    }
+
+    /** 把 selector 的 box/blocks 组成 core 的方块请求；缺字段返回 null（不猜默认范围）。 */
+    private static ObservationRequest blocksRequest(Request request) {
+        String boxRaw = request.selector().get("box");
+        String idsRaw = request.selector().get("blocks");
+        if (boxRaw == null || idsRaw == null) return null;
+        String[] parts = boxRaw.split(",");
+        if (parts.length != 6) return null;
+        int[] c = new int[6];
+        try {
+            for (int i = 0; i < 6; i++) c[i] = Integer.parseInt(parts[i].trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        var bounds = new com.dwinovo.numen.worldstate.core.model.Bounds(c[0], c[1], c[2], c[3], c[4], c[5]);
+        return ObservationRequest.blocks(request.dimension(), bounds, idsRaw);
     }
 
     private static String snapshotId(ReadResult rr) {
