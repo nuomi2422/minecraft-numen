@@ -11,6 +11,7 @@ import com.dwinovo.numen.settlement.core.model.FacilityKind;
 import com.dwinovo.numen.settlement.core.model.FacilityRecord;
 import com.dwinovo.numen.settlement.core.model.ProductionState;
 import com.dwinovo.numen.settlement.core.model.ProtectionZone;
+import com.dwinovo.numen.settlement.core.protect.ProtectionRing;
 import com.dwinovo.numen.settlement.core.model.Verdict;
 import com.dwinovo.numen.task.TaskResult;
 import com.google.gson.JsonObject;
@@ -125,23 +126,22 @@ public final class SettlementRegisterTool implements NumenTool {
         }
     }
 
-    /** 四壁 STRUCTURE（南墙在入口列留缺口）+ 南侧入口 SPACE。墙高 2，footprint 为 1 格。 */
+    /**
+     * 四壁 STRUCTURE（南墙在入口列留缺口）+ 南侧入口 SPACE。墙高 2，footprint 为 1 格。
+     *
+     * <p>2026-11-04（037/T4 · ZONE-01）：改为调用 settlement-core 的唯一生成器，与蓝图落地那条
+     * 走同一份几何；墙高仍由这里显式传入（登记口径是墙高 2，蓝图口径是建筑全高，本批不合并）。
+     */
     private static List<ProtectionZone> ringZones(BlockBox b, String dimension, BlockPos entrance) {
         int y0 = b.minY() + 1;
         int y1 = b.minY() + 2;
-        List<ProtectionZone> zones = new ArrayList<>();
-        zones.add(ProtectionZone.structure(BlockBox.of(b.minX(), y0, b.minZ(), b.maxX(), y1, b.minZ())));
-        zones.add(ProtectionZone.structure(BlockBox.of(b.minX(), y0, b.minZ(), b.minX(), y1, b.maxZ())));
-        zones.add(ProtectionZone.structure(BlockBox.of(b.maxX(), y0, b.minZ(), b.maxX(), y1, b.maxZ())));
-        // 南墙在入口列挖口：通道不能既算结构（禁拆）又算通道（禁堵），否则入口永远打不开。
         int gateX = entrance.getX();
-        if (gateX - 1 >= b.minX()) {
-            zones.add(ProtectionZone.structure(BlockBox.of(b.minX(), y0, b.maxZ(), gateX - 1, y1, b.maxZ())));
+        Integer gap = (gateX >= b.minX() && gateX <= b.maxX()) ? gateX : null;
+        ProtectionRing.Result ring = ProtectionRing.ring(b, y0, y1, ProtectionRing.Side.SOUTH, gap);
+        if (ring.ok()) {
+            return ring.zones();
         }
-        if (gateX + 1 <= b.maxX()) {
-            zones.add(ProtectionZone.structure(BlockBox.of(gateX + 1, y0, b.maxZ(), b.maxX(), y1, b.maxZ())));
-        }
-        zones.add(ProtectionZone.space(BlockBox.of(gateX, y0, b.maxZ(), gateX, y1, b.maxZ())));
-        return zones;
+        ProtectionRing.Result wallsOnly = ProtectionRing.ring(b, y0, y1, ProtectionRing.Side.SOUTH, null);
+        return wallsOnly.ok() ? wallsOnly.zones() : List.of(ProtectionZone.structure(b));
     }
 }

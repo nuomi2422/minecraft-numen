@@ -22,6 +22,7 @@ import com.dwinovo.numen.settlement.core.model.FacilityTemplate;
 import com.dwinovo.numen.settlement.core.model.PlatformPlan;
 import com.dwinovo.numen.settlement.core.model.ProductionState;
 import com.dwinovo.numen.settlement.core.model.ProtectionZone;
+import com.dwinovo.numen.settlement.core.protect.ProtectionRing;
 import com.dwinovo.numen.settlement.core.model.Verdict;
 import com.dwinovo.numen.settlement.core.protect.Grant;
 import com.dwinovo.numen.task.TaskResult;
@@ -795,33 +796,28 @@ public final class SettlementTool implements NumenTool {
      * 就退回"南墙中点留口"的旧口径。
      */
     private static List<ProtectionZone> ringZones(BlockBox b, DimAnchor entrance, String facing) {
-        int y0 = b.minY();
-        int y1 = b.maxY();
-        List<ProtectionZone> zones = new ArrayList<>();
+        // 2026-11-04（037/T4 · ZONE-01）：不再自己铺墙 + 叠 SPACE —— 那样门列同时落在墙体 STRUCTURE 里，
+        // "通道能拆"永远不生效。改由 settlement-core 的唯一生成器算，墙按门列切开。
         String f = facing == null ? "south" : facing.toLowerCase(Locale.ROOT);
-
-        // 四条边各记 STRUCTURE，门所在的边按门的位置挖口
-        int gateX = entrance.x();
-        int gateZ = entrance.z();
-        // 北/南墙（沿 X）
-        zones.add(ProtectionZone.structure(BlockBox.of(b.minX(), y0, b.minZ(), b.maxX(), y1, b.minZ())));
-        zones.add(ProtectionZone.structure(BlockBox.of(b.minX(), y0, b.maxZ(), b.maxX(), y1, b.maxZ())));
-        // 东/西墙（沿 Z）
-        zones.add(ProtectionZone.structure(BlockBox.of(b.minX(), y0, b.minZ(), b.minX(), y1, b.maxZ())));
-        zones.add(ProtectionZone.structure(BlockBox.of(b.maxX(), y0, b.minZ(), b.maxX(), y1, b.maxZ())));
-        // 门所在的格改成 SPACE（通道不能既算结构禁拆、又算通道禁堵）
-        if ("north".equals(f) || "south".equals(f)) {
-            int z = "north".equals(f) ? b.minZ() : b.maxZ();
-            if (gateX >= b.minX() && gateX <= b.maxX()) {
-                zones.add(ProtectionZone.space(BlockBox.of(gateX, y0, z, gateX, y1, z)));
-            }
-        } else {
-            int x = "west".equals(f) ? b.minX() : b.maxX();
-            if (gateZ >= b.minZ() && gateZ <= b.maxZ()) {
-                zones.add(ProtectionZone.space(BlockBox.of(x, y0, gateZ, x, y1, gateZ)));
-            }
+        ProtectionRing.Side side = switch (f) {
+            case "north" -> ProtectionRing.Side.NORTH;
+            case "east" -> ProtectionRing.Side.EAST;
+            case "west" -> ProtectionRing.Side.WEST;
+            default -> ProtectionRing.Side.SOUTH;
+        };
+        boolean alongX = side == ProtectionRing.Side.NORTH || side == ProtectionRing.Side.SOUTH;
+        int coord = alongX ? entrance.x() : entrance.z();
+        int lo = alongX ? b.minX() : b.minZ();
+        int hi = alongX ? b.maxX() : b.maxZ();
+        // 入口不在占地环上（模板入口在内部）→ 保持"没有开口"的旧口径，不硬挪门位置。
+        Integer gap = (coord >= lo && coord <= hi) ? coord : null;
+        ProtectionRing.Result ring = ProtectionRing.ring(b, b.minY(), b.maxY(), side, gap);
+        if (ring.ok()) {
+            return ring.zones();
         }
-        return zones;
+        // 几何太小（1 格宽）生成不出环时**不能**返回空表——那等于这栋楼没有保护。退成整块结构保护。
+        ProtectionRing.Result wallsOnly = ProtectionRing.ring(b, b.minY(), b.maxY(), side, null);
+        return wallsOnly.ok() ? wallsOnly.zones() : List.of(ProtectionZone.structure(b));
     }
 
     // ══════════════════════════════════════════════════════════════════
