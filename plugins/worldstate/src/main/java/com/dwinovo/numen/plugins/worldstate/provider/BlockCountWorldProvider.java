@@ -38,7 +38,7 @@ public final class BlockCountWorldProvider implements WorldProvider {
      * 体积却 49³=117649，原来的 32768 会直接拒掉 → 消费者只能回退本地扫描（实机 `sampled=false`）。
      * 读方块状态很便宜（无区块加载），一次几毫秒级，按需调用可以承受。
      */
-    private static final long MAX_VOLUME = 262144L;
+    static final long MAX_VOLUME = 274625L;   // 65³：与实体采集同一口径
 
     @Override public Topic topic() { return Topic.BLOCKS; }
 
