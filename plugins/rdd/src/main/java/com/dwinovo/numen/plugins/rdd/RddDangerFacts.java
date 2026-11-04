@@ -37,6 +37,48 @@ final class RddDangerFacts {
 
     private RddDangerFacts() {}
 
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(RddDangerFacts.class);
+    /** 观测不可用而走本地兜底的次数（按同伴），只用于诊断。 */
+    private static final Map<java.util.UUID, Integer> LOG_LOCAL_AT = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 本地兜底：返回 {@code [hostiles, close]}；读不到返回 null。 */
+    private static int[] localHostiles(NumenPlayer body, net.minecraft.server.level.ServerLevel level) {
+        try {
+            net.minecraft.world.phys.AABB box =
+                    body.getBoundingBox().inflate(RddDangerText.SCAN_RADIUS);
+            int hostiles = 0, close = 0;
+            for (net.minecraft.world.entity.Mob mob
+                    : level.getEntitiesOfClass(net.minecraft.world.entity.Mob.class, box)) {
+                if (!(mob instanceof net.minecraft.world.entity.monster.Monster) || !mob.isAlive()) continue;
+                hostiles++;
+                if (mob.distanceTo(body) <= RddDangerText.CLOSE_RADIUS) close++;
+            }
+            return new int[]{hostiles, close};
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** 本地兜底的按类型明细。 */
+    private static Map<String, Integer> localKinds(NumenPlayer body, net.minecraft.server.level.ServerLevel level) {
+        Map<String, Integer> kinds = new LinkedHashMap<>();
+        try {
+            net.minecraft.world.phys.AABB box =
+                    body.getBoundingBox().inflate(RddDangerText.SCAN_RADIUS);
+            for (net.minecraft.world.entity.Mob mob
+                    : level.getEntitiesOfClass(net.minecraft.world.entity.Mob.class, box)) {
+                if (!(mob instanceof net.minecraft.world.entity.monster.Monster) || !mob.isAlive()) continue;
+                String id = net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE
+                        .getKey(mob.getType()).getPath();
+                kinds.merge(id, 1, Integer::sum);
+            }
+        } catch (RuntimeException ignored) {
+            // 明细拿不到不影响主判据
+        }
+        return kinds;
+    }
+
     /** 最近一次从观测读到的按类型明细（只在读取线程内使用，键=同伴）。 */
     private static final Map<java.util.UUID, Map<String, Integer>> observedKinds =
             new java.util.concurrent.ConcurrentHashMap<>();
@@ -106,8 +148,14 @@ final class RddDangerFacts {
                 close = observed[1];
                 kinds.putAll(observedKinds.getOrDefault(body.getUUID(), Map.of()));
             } else {
-                // 观测不可用：**不做假警报**，直接返回空串（不自己扫世界，避免两套口径）
-                return "";
+                // 观测不可用时**安全反射仍走本地**：039 §6 明确"安全反射保持本地执行，
+                // 不等待统一服务返回才救命"。危险块是保命用的，宁可多扫一次也不能变空。
+                var local = localHostiles(body, level);
+                if (local == null) return "";
+                hostiles = local[0];
+                close = local[1];
+                kinds = localKinds(body, level);
+                LOG_LOCAL_AT.merge(body.getUUID(), 1, Integer::sum);
             }
             if (hostiles == 0) {
                 return "";
