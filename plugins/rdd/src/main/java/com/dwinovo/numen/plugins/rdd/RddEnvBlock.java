@@ -75,6 +75,7 @@ final class RddEnvBlock {
                 sb.append("身边 门").append(nearbyObs[0] == 0 ? "无" : (nearbyObs[1] > 0 ? "亮" : "(熄)"))
                   .append(" · 箱子").append(nearbyObs[2])
                   .append(" · 岩浆").append(nearbyObs[3]).append("格")
+                  .append(nearbyObs.length > 4 && nearbyObs[4] == 1 ? " · 观测不完整/已过期" : "")
                   .append(cliffText).append('\n');
             } else {
                 // 观测缺席/过期：只报身体状态，不编方块计数
@@ -207,7 +208,10 @@ final class RddEnvBlock {
                 }
             }
             // 门 = 门框（黑曜石）+ 门方块；"亮"看有没有 nether_portal（暗门只剩黑曜石框）。
-            return new int[]{portalBlocks + obsidian, portalBlocks, chests, lava};
+            // 第 5 位 = 是否"不完整/已过期"：过期值必须自己带标记，不能看着像当前事实。
+            boolean stale = resp.status()
+                    == com.dwinovo.numen.api.observation.WorldObservationService.Status.PARTIAL;
+            return new int[]{portalBlocks + obsidian, portalBlocks, chests, lava, stale ? 1 : 0};
         } catch (RuntimeException | LinkageError ignored) {
             return null;
         }
