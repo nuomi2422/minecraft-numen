@@ -130,4 +130,52 @@ public interface WorldObservationService {
         return Response.error(request == null ? "" : request.topic(),
                 "refresh not supported by this provider");
     }
+
+    /**
+     * 一条变化记录（041 U4）：**只有被存储接受的写入**才会产生。
+     *
+     * @param revision 与观测同一修订号（GONE 用独立序号，保证不被游标过滤）
+     * @param kind     CREATED / UPDATED / GONE
+     */
+    record Change(long revision, String topic, String key, String kind, long epochMs) {
+        public Change {
+            topic = topic == null ? "" : topic;
+            key = key == null ? "" : key;
+            kind = kind == null ? "UPDATED" : kind;
+        }
+    }
+
+    /**
+     * 增量读的结果。
+     *
+     * <p><b>{@code gap=true} 表示"历史断档，你得重新同步"</b>——不是"没有变化"。
+     * 消费方在 gap 时必须做一次全量 {@link #read}，不能把空列表当"没变"。
+     *
+     * @param nextCursor             下次请求用的游标（不小于请求里的 after）
+     * @param oldestRetainedRevision 当前还保留着的最小 revision（0=无记录）
+     */
+    record ChangesResponse(Status status, List<Change> changes, long nextCursor, boolean gap,
+                           long oldestRetainedRevision, String reason) {
+        public ChangesResponse {
+            status = status == null ? Status.ERROR : status;
+            changes = changes == null ? List.of() : List.copyOf(changes);
+        }
+
+        public static ChangesResponse error(String reason) {
+            return new ChangesResponse(Status.ERROR, List.of(), 0L, false, 0L, reason);
+        }
+    }
+
+    /**
+     * 读 {@code afterRevision} 之后的变化（只读内存，不扫世界）。
+     *
+     * <p>默认实现明确"不支持"，避免老实现被迫实现；调用方应把 ERROR 当作"拿不到增量"，
+     * 回退成按需 read，而不是当成"没有变化"。
+     *
+     * @param topics 主题过滤（null/空=不过滤）
+     * @param limit  最多返回条数
+     */
+    default ChangesResponse changes(long afterRevision, List<String> topics, int limit) {
+        return ChangesResponse.error("changes not supported by this provider");
+    }
 }

@@ -42,6 +42,8 @@ public final class WorldStateService {
     private static final Logger LOG = LoggerFactory.getLogger("worldstate");
 
     private final Path file;
+    private final com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog changeLog =
+            new com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog();
     private final InMemoryObservationStore store;
     private final ProviderRegistry providers = new ProviderRegistry();
     private final TopicFreshnessPolicy freshness = TopicFreshnessPolicy.defaults();
@@ -50,7 +52,8 @@ public final class WorldStateService {
 
     public WorldStateService(Path configDir) {
         this.file = configDir.resolve("worldstate").resolve("observations.json");
-        this.store = new InMemoryObservationStore(512);
+        // 041 U4b：给存储挂上变化日志——被接受的写入才产生变化
+        this.store = new InMemoryObservationStore(512, changeLog);
         this.providers.register(new EnvironmentWorldProvider());
         this.providers.register(new EntityCountWorldProvider());
         this.providers.register(new BlockCountWorldProvider());
@@ -65,6 +68,11 @@ public final class WorldStateService {
 
     public Path file() {
         return file;
+    }
+
+    /** 变化日志（041）：能力面与工具面都从这里读增量。 */
+    public com.dwinovo.numen.worldstate.core.changes.ChangeLog changeLog() {
+        return changeLog;
     }
 
     public ProviderRegistry providers() {

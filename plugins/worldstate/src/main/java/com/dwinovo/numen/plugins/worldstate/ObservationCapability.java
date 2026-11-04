@@ -35,6 +35,24 @@ public final class ObservationCapability implements WorldObservationService {
     }
 
     @Override
+    public ChangesResponse changes(long afterRevision, java.util.List<String> topics, int limit) {
+        try {
+            var log = host.changeLog();
+            if (log == null) return ChangesResponse.error("change log not configured");
+            var r = log.after(afterRevision,
+                    topics == null || topics.isEmpty() ? null : new java.util.HashSet<>(topics), limit);
+            java.util.List<Change> out = new java.util.ArrayList<>();
+            for (var c : r.changes()) {
+                out.add(new Change(c.revision(), c.topic(), c.key(), c.kind().name(), c.epochMs()));
+            }
+            return new ChangesResponse(Status.OK, out, r.nextCursor(), r.gap(),
+                    r.oldestRetainedRevision(), null);
+        } catch (RuntimeException e) {
+            return ChangesResponse.error("changes failed: " + e);
+        }
+    }
+
+    @Override
     public Response read(Request request) {
         if (request == null) {
             return Response.error("", "missing request");

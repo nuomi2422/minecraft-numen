@@ -12,6 +12,7 @@ import com.dwinovo.numen.worldstate.core.observation.ObservationPayload;
 import com.dwinovo.numen.worldstate.core.observation.payload.EntityCountPayload;
 import com.dwinovo.numen.worldstate.core.observation.payload.EnvironmentPayload;
 import com.dwinovo.numen.worldstate.core.query.ReadResult;
+import com.google.gson.JsonArray;
 import com.dwinovo.numen.worldstate.core.refresh.RefreshResult;
 import com.dwinovo.numen.worldstate.core.request.ObservationRequest;
 import com.google.gson.JsonObject;
@@ -68,7 +69,11 @@ public final class WorldStateTool implements NumenTool {
     @Override
     public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .enumStr("action", "read=只读已有观测 / refresh=主动采集", "read", "refresh")
+                .enumStr("action", "read=只读已有观测 / refresh=主动采集 / changes=增量读（041）",
+                        "read", "refresh", "changes")
+                .optionalInteger("after", "changes 用：上次读到的游标（revision），0=从头", 0, Integer.MAX_VALUE)
+                .optionalInteger("limit", "changes 用：最多返回几条（默认 64，上限 256）", 1, 256)
+                .optionalString("topics", "changes 用：主题过滤，逗号分隔，如 blocks,containers")
                 .enumStr("topic", "观测主题", "environment", "entities", "blocks", "containers")
                 .optionalString("dimension", "维度 id，默认同伴当前维度，如 minecraft:overworld")
                 .optionalInteger("samples", "blocks 用：每个规格带回几个位置样本（0~32，默认 0）", 0, 32)
@@ -98,6 +103,10 @@ public final class WorldStateTool implements NumenTool {
             if (topic == null) {
                 reply.accept(TaskResult.fail(
                         "world_state: topic must be environment|entities|blocks").toJson());
+                return;
+            }
+            if ("changes".equals(action)) {
+                handleChanges(args, reply);      // 增量读：不需要 topic/范围
                 return;
             }
             String dimension = args.has("dimension") && !args.get("dimension").isJsonNull()
@@ -157,6 +166,58 @@ public final class WorldStateTool implements NumenTool {
             // facilities 尚未接入采集器：明确不支持，别假装成功。
             default -> null;
         };
+    }
+
+    /**
+     * 增量读（041 U4c）：`action=changes after=<游标> [topics=a,b] [limit=N]`。
+     *
+     * <p><b>gap=true 必须让调用方看得见</b>：据此做一次全量 read，而不是把空列表当"没变"。
+     */
+    private void handleChanges(JsonObject args, Consumer<String> reply) {
+        long after = 0L;
+        int limit = 64;
+        try {
+            if (args.has("after") && !args.get("after").isJsonNull()) {
+                after = Math.max(0L, args.get("after").getAsLong());
+            }
+            if (args.has("limit") && !args.get("limit").isJsonNull()) {
+                limit = Math.max(1, Math.min(256, args.get("limit").getAsInt()));
+            }
+        } catch (RuntimeException ignored) {
+            // 用默认值
+        }
+        java.util.Set<String> topics = null;
+        if (args.has("topics") && !args.get("topics").isJsonNull()) {
+            String raw = args.get("topics").getAsString();
+            if (raw != null && !raw.isBlank()) {
+                topics = new java.util.HashSet<>();
+                for (String t : raw.split(",")) {
+                    if (!t.isBlank()) topics.add(t.trim());
+                }
+            }
+        }
+        var result = service.changeLog().after(after, topics, limit);
+        JsonObject data = new JsonObject();
+        data.addProperty("after", after);
+        data.addProperty("next_cursor", result.nextCursor());
+        data.addProperty("gap", result.gap());
+        data.addProperty("oldest_retained_revision", result.oldestRetainedRevision());
+        data.addProperty("count", result.changes().size());
+        JsonArray arr = new JsonArray();
+        for (var c : result.changes()) {
+            JsonObject o = new JsonObject();
+            o.addProperty("revision", c.revision());
+            o.addProperty("topic", c.topic());
+            o.addProperty("key", c.key());
+            o.addProperty("kind", c.kind().name());
+            o.addProperty("epoch_ms", c.epochMs());
+            arr.add(o);
+        }
+        data.add("changes", arr);
+        if (result.gap()) {
+            data.addProperty("note", "历史断档：请做一次全量 read 重新同步，不要把空列表当成'没变化'");
+        }
+        reply.accept(TaskResult.ok(data.toString()).toJson());
     }
 
     private void handleRead(NumenPlayer self, ObservationRequest request, Consumer<String> reply) {
