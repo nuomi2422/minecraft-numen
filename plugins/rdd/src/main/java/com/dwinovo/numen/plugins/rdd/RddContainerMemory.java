@@ -58,7 +58,7 @@ final class RddContainerMemory {
         if (last != null && gameTime - last < REFRESH_TICKS) return;
         LAST_REFRESH.put(id, gameTime);
         try {
-            Scan scan = scan(body);
+            Scan scan = scan(body, gameTime);
             CACHE.put(id, scan.text());
             COUNTS.put(id, scan.counts());
         } catch (RuntimeException | LinkageError ex) {
@@ -96,7 +96,7 @@ final class RddContainerMemory {
     }
 
     /** 真正扫世界（**只在主线程调**）。 */
-    private static Scan scan(NumenPlayer body) {
+    private static Scan scan(NumenPlayer body, long gameTime) {
         ServerLevel level = body.serverLevel();
         List<String> lines = new ArrayList<>();
         Map<String, Integer> totals = new LinkedHashMap<>();
@@ -113,24 +113,10 @@ final class RddContainerMemory {
                     if (state.isAir()) continue;
                     if (!state.getBlock().getDescriptionId().contains("chest")) continue;
                     hits++;
-                    // 2026-11-04（037/T8b）：改走公开的 ContainerReader（结构化数量），
-                    // 不再 new core 内部工具再解析它返回的人读文本。
-                    com.dwinovo.numen.api.storage.ContainerReader.Result read;
-                    try {
-                        read = com.dwinovo.numen.platform.Services.CONTAINERS
-                                .read(level, cursor.immutable());
-                    } catch (RuntimeException | LinkageError ex) {
-                        LOG.warn("[rdd-storage] 读容器失败 ({},{},{})：{}",
-                                cursor.getX(), cursor.getY(), cursor.getZ(), ex.toString());
-                        continue;
-                    }
-                    if (!read.known()) {
-                        LOG.debug("[rdd-storage] 容器读不到 ({},{},{})：{}",
-                                cursor.getX(), cursor.getY(), cursor.getZ(), read.reason());
-                        continue;
-                    }
-                    Map<String, Integer> counts = read.items();
-                    if (counts.isEmpty()) continue;
+                    // 039 U3：内容优先走统一观测的 containers 主题；观测缺席/过期就显式 refresh，
+                    // 两条路都不通才回退直读。发现（往哪看）仍然靠这里的本地扫描——观测不负责"找"。
+                    Map<String, Integer> counts = readContainer(body, level, cursor.immutable(), gameTime);
+                    if (counts == null || counts.isEmpty()) continue;
                     counts.forEach((item, n) -> totals.merge(item, n, Integer::sum));
                     StringBuilder sb = new StringBuilder();
                     int listed = 0;
@@ -154,6 +140,85 @@ final class RddContainerMemory {
         }
         out.append("。这些**不在背包里**，要用得先走过去取；别重复去造/挖已有的存货。</storage>");
         return new Scan(out.toString(), Map.copyOf(totals));
+    }
+
+    /** 同一容器两次 refresh 的最小间隔（tick）：观测写入会落盘，别每 2 秒刷一次盘。 */
+    private static final long OBS_REFRESH_TICKS = 200L;
+    private static final Map<String, Long> OBS_AT = new ConcurrentHashMap<>();
+    private static final Map<String, Long> SHADOW_AT = new ConcurrentHashMap<>();
+
+    /**
+     * 读一个容器的内容：观测优先，直读兜底，两边都有时做 shadow 比对（只记日志）。
+     *
+     * @return 物品→数量（空表 = 已知为空）；两条路都读不到返回 null（**不是**空表）
+     */
+    private static Map<String, Integer> readContainer(NumenPlayer body, ServerLevel level,
+                                                      BlockPos pos, long gameTime) {
+        Map<String, Integer> observed = readViaObservation(body, pos, gameTime);
+        Map<String, Integer> direct = readDirect(level, pos);
+        if (observed != null && direct != null && !observed.equals(direct)) {
+            String key = pos.getX() + "," + pos.getY() + "," + pos.getZ();
+            long now = System.currentTimeMillis();
+            Long last = SHADOW_AT.get(key);
+            if (last == null || now - last > 30_000L) {
+                SHADOW_AT.put(key, now);
+                LOG.warn("[rdd-storage] shadow mismatch at {}: direct={} observed={}", key, direct, observed);
+            }
+        }
+        return observed != null ? observed : direct;
+    }
+
+    private static Map<String, Integer> readViaObservation(NumenPlayer body, BlockPos pos, long gameTime) {
+        try {
+            com.dwinovo.numen.api.observation.WorldObservationService svc =
+                    com.dwinovo.numen.api.NumenPlugins.capability(
+                            com.dwinovo.numen.api.observation.WorldObservationService.class);
+            if (svc == null) return null;
+            String target = "block:" + pos.getX() + "," + pos.getY() + "," + pos.getZ();
+            String dim = body.level().dimension().location().toString();
+            var req = new com.dwinovo.numen.api.observation.WorldObservationService.Request(
+                    "rdd-storage", dim, "containers", Map.of("container", target), 0L, 64, 0L);
+            var resp = svc.read(req);
+            if (resp == null) return null;
+            boolean needsRefresh = resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING
+                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PARTIAL;
+            if (needsRefresh) {
+                Long last = OBS_AT.get(target);
+                if (last == null || gameTime - last >= OBS_REFRESH_TICKS) {
+                    OBS_AT.put(target, gameTime);
+                    resp = svc.refresh(req);
+                }
+            }
+            if (resp == null
+                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR
+                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING) {
+                return null;
+            }
+            Map<String, Integer> out = new LinkedHashMap<>();
+            for (var item : resp.items()) {
+                Object idObj = item.values().get("item");
+                Object countObj = item.values().get("count");
+                if (idObj instanceof String id && countObj instanceof Number n && n.intValue() > 0) {
+                    out.merge(id, n.intValue(), Integer::sum);
+                }
+            }
+            return out;
+        } catch (RuntimeException | LinkageError ignored) {
+            return null;
+        }
+    }
+
+    private static Map<String, Integer> readDirect(ServerLevel level, BlockPos pos) {
+        try {
+            com.dwinovo.numen.api.storage.ContainerReader.Result read =
+                    com.dwinovo.numen.platform.Services.CONTAINERS.read(level, pos);
+            if (read == null || !read.known()) return null;
+            return read.items();
+        } catch (RuntimeException | LinkageError ex) {
+            LOG.debug("[rdd-storage] 直读容器失败 ({},{},{})：{}",
+                    pos.getX(), pos.getY(), pos.getZ(), ex.toString());
+            return null;
+        }
     }
 
     // 2026-11-04（037/T14）：删掉 dedupeSections / parseSlotLines。
