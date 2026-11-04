@@ -345,6 +345,7 @@ final class RddDetector {
             maybeWarnBackpackFull(ap);
 
             surplus.inspect(ap, chain, counts);
+            // (039 U3 hook 见下)
             RddPlugin.cacheInventory(ap.getUUID(), counts);
             // P2.1：观测到即记资产历史 CURRENT（只记装备/工具/食物等有恢复价值者），供 Lost≠Gone 线索。
             RddPlugin.recordHistoryCurrent(ap.getUUID(), counts);
@@ -357,6 +358,9 @@ final class RddDetector {
             // 2026-10-28（主人第六点后半）：30 秒一拍盯"从无到有的装备/重要物" —— 只发事实 + 拍醒，
             // 收不收口由规划者决定（rdd_settle_stage / rdd_replan_chain）。
             if (assetTick == 0) RddCapabilityWatch.tick(ap.getUUID(), counts);
+            // 039 U3：用统一观测做一次"装备要件齐没齐"的三态判定，只发事实事件，不改链、不判提前完成。
+            // 关键：NOT_VERIFIABLE **不算满足**——读不到/过期不许被当成"有了"。
+            if (assetTick == 0) evaluateGearCondition(ap, ap.level().getGameTime());
             if (worldAssetTick == 0) {
                 RddWorldAssetObserver.Result observed = RddWorldAssetObserver.observe(ap, rt.assets());
                 RddPlugin.saveAssets(ap.getUUID());
@@ -1575,6 +1579,38 @@ final class RddDetector {
      * 这里在每 tick 监督入口做一次判断，靠 {@link com.dwinovo.numen.rdd.policy.BackpackSpace}
      * 去重（首次/更紧/过冷却才发），再走既有的 {@code RddPlugin.nudge} 通道注入提醒。
      */
+    /**
+     * 039 U3：装备要件的三态判定（只发事实事件）。
+     *
+     * <p>口径写死：**NOT_VERIFIABLE 绝不能被当成满足**。观测读不到就明说"不可核验"，
+     * 而不是悄悄回退成本地扫描（那样又会分出第二套真相）。
+     */
+    private void evaluateGearCondition(NumenPlayer ap, long gameTime) {
+        try {
+            final List<String> required = List.of(
+                    "minecraft:iron_helmet", "minecraft:iron_chestplate",
+                    "minecraft:iron_leggings", "minecraft:iron_boots");
+            var result = RddCondition.evaluate(ap.getUUID(),
+                    ap.level().dimension().location().toString(), gameTime, required);
+            String signature = result.verdict().name();
+            String prev = GEAR_VERDICT.put(ap.getUUID(), signature);
+            if (signature.equals(prev)) {
+                return;   // 只在状态变化时发事件，避免每 30 秒刷屏
+            }
+            Map<String, Object> data = new java.util.LinkedHashMap<>();
+            data.put("companionId", ap.getUUID().toString());
+            data.put("verdict", result.verdict().name());
+            data.put("reason", result.reason());
+            data.put("required", required);
+            data.put("have", result.have());
+            RddMonitor.publish("condition_evaluated", data);
+        } catch (RuntimeException ignored) {
+            // 判定是增强，不许拖垮 tick
+        }
+    }
+
+    private static final Map<UUID, String> GEAR_VERDICT = new java.util.concurrent.ConcurrentHashMap<>();
+
     private void maybeWarnBackpackFull(NumenPlayer ap) {
         if (!RddAlarms.enabled("backpack_full")) {
             return; // 2026-10-08：这条提醒可单独关（config/numen/rdd-alarms.json）
