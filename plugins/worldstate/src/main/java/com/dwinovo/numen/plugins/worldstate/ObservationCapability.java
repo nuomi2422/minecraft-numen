@@ -9,6 +9,7 @@ import com.dwinovo.numen.worldstate.core.request.ObservationRequest;
 
 import net.minecraft.server.MinecraftServer;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +42,9 @@ public final class ObservationCapability implements WorldObservationService {
         Topic topic = Topic.byId(request.topic());
         if (topic == null) {
             return Response.error(request.topic(), "unknown topic: " + request.topic());
+        }
+        if (topic == Topic.BLOCKS) {
+            return readBlocks(request);
         }
         if (topic != Topic.ENVIRONMENT) {
             return Response.error(request.topic(), "topic not wired yet: " + topic.id());
@@ -91,6 +95,59 @@ public final class ObservationCapability implements WorldObservationService {
             // 契约：实现不得抛异常
             return Response.error(request.topic(), "read failed: " + ex);
         }
+    }
+
+    /**
+     * blocks 主题：selector 里必须有 {@code box=x1,y1,z1,x2,y2,z2} 与 {@code blocks=a,b}。
+     * 只读缓存，不刷新。
+     */
+    private Response readBlocks(Request request) {
+        MinecraftServer mc = server.get();
+        if (mc == null) return Response.error(request.topic(), "no server");
+        String boxRaw = request.selector().get("box");
+        String idsRaw = request.selector().get("blocks");
+        if (boxRaw == null || idsRaw == null) {
+            return Response.error(request.topic(), "blocks needs selector box=… and blocks=…");
+        }
+        String[] parts = boxRaw.split(",");
+        if (parts.length != 6) {
+            return Response.error(request.topic(), "box must be x1,y1,z1,x2,y2,z2");
+        }
+        int[] c = new int[6];
+        try {
+            for (int i = 0; i < 6; i++) c[i] = Integer.parseInt(parts[i].trim());
+        } catch (NumberFormatException e) {
+            return Response.error(request.topic(), "box must be integers");
+        }
+        var bounds = new com.dwinovo.numen.worldstate.core.model.Bounds(c[0], c[1], c[2], c[3], c[4], c[5]);
+        var req = ObservationRequest.blocks(request.dimension(), bounds, idsRaw);
+        ReadResult rr = host.read(mc, req);
+        if (!rr.present()) {
+            return new Response(Status.PENDING, request.topic(), "", 0L, Coverage.UNKNOWN,
+                    rr.note() == null ? "no observation yet; refresh first" : rr.note(), List.of());
+        }
+        if (!(rr.observation().payload() instanceof
+                com.dwinovo.numen.worldstate.core.observation.payload.BlockCountPayload payload)) {
+            return Response.error(request.topic(), "unexpected payload type");
+        }
+        boolean stale = rr.freshness() == Freshness.STALE || rr.freshness() == Freshness.HISTORICAL;
+        List<Item> items = new ArrayList<>();
+        for (var e : payload.counts().entrySet()) {
+            Map<String, Object> values = new LinkedHashMap<>();
+            values.put("block", e.getKey());
+            values.put("count", e.getValue());
+            items.add(stale ? new Item(values, Set.of(), values.keySet()) : Item.of(values));
+        }
+        Coverage cov = switch (rr.coverage() == null
+                ? com.dwinovo.numen.worldstate.core.model.Coverage.UNLOADED : rr.coverage()) {
+            case COMPLETE -> Coverage.FULL;
+            case PARTIAL -> Coverage.PARTIAL;
+            case UNLOADED -> Coverage.UNKNOWN;
+        };
+        Status st = cov == Coverage.FULL && !stale ? Status.OK : Status.PARTIAL;
+        return new Response(st, request.topic(), snapshotId(rr), rr.observation().gameTick(), cov,
+                st == Status.PARTIAL ? (stale ? "observation is " + rr.freshness() : "coverage is " + rr.coverage()) : null,
+                items);
     }
 
     @Override

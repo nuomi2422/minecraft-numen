@@ -104,6 +104,8 @@ public final class ObservationJson {
             return switch (topic) {
                 case ENVIRONMENT -> GSON.fromJson(payload, EnvironmentPayload.class);
                 case ENTITIES -> GSON.fromJson(payload, EntityCountPayload.class);
+                case BLOCKS -> GSON.fromJson(payload,
+                        com.dwinovo.numen.worldstate.core.observation.payload.BlockCountPayload.class);
                 // 其余主题尚未接入采集器，载荷形状未定；遇到就丢弃，向前兼容。
                 default -> null;
             };
@@ -132,6 +134,6 @@ public final class ObservationJson {
 
     /** 供测试与诊断：确认某主题的载荷能被本编解码器处理。 */
     public static boolean canDecode(Topic topic) {
-        return topic == Topic.ENVIRONMENT || topic == Topic.ENTITIES;
+        return topic == Topic.ENVIRONMENT || topic == Topic.ENTITIES || topic == Topic.BLOCKS;
     }
 }
