@@ -66,6 +66,24 @@ public final class TaskDispatch {
     public static void setTask(NumenPlayer companion, TaskRecord record, JsonObject args,
                                Consumer<String> reply) {
         java.util.UUID id = companion.getUUID();
+        // 2026-11-04（037/T5 第二轮 · OWN-01）：跨 owner 不再静默顶替。
+        // 这里只用能从既有字段推出来的身份（工具调用 id 的 mcp- 前缀），不动存档；
+        // generation 还没上（需要新的槽状态），所以本批只挡"不同执行方"，不挡迟到回调。
+        TaskRecord current = CompanionTickDispatcher.currentTaskFor(id);
+        if (current != null && !CompanionTickDispatcher.currentFreshlyAccepted(companion)) {
+            TaskOwnership.Outcome outcome = TaskOwnership.decide(
+                    new TaskOwnership.Current(current.publicId(),
+                            TaskOwnership.ownerOf(current.isExternalCall()), 0L),
+                    new TaskOwnership.Request(id.toString(), record.publicId(),
+                            TaskOwnership.ownerOf(record.isExternalCall()), 0L,
+                            record.getToolName(), false));
+            if (outcome.decision() != TaskOwnership.Decision.REPLACE) {
+                reply.accept(TaskResult.fail("身体一次只做一件事。" + current.publicId()
+                        + "(" + current.describe() + ")正被另一个执行方占着：" + outcome.reason()
+                        + "。要换成你的，先用 task_stop 叫停它，再派新的。").toJson());
+                return;
+            }
+        }
         if (CompanionTickDispatcher.currentFreshlyAccepted(companion)) {
             TaskRecord busy = CompanionTickDispatcher.currentTaskFor(id);
             // 常驻的活永远不会发 task_finished，让模型去等它就是指一个不存在的事件。

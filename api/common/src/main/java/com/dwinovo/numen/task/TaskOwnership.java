@@ -56,6 +56,17 @@ public final class TaskOwnership {
 
     private TaskOwnership() {}
 
+    /**
+     * 现有代码里唯一能推出来的身份：外接大脑的调用 id 带 {@code mcp-} 前缀
+     * （见 {@code TaskRecord#isExternalCall}）。其余一律算内置大脑。
+     *
+     * <p>这是第二轮"先上 owner、暂不上 generation"的依据：owner 能从既有字段推出来，
+     * 不需要动存档；generation 需要新的槽状态，留到有了再加。
+     */
+    public static Owner ownerOf(boolean externalCall) {
+        return externalCall ? Owner.EXTERNAL_BRAIN : Owner.BUILTIN_BRAIN;
+    }
+
     /** 判定一次受理（OWN-01 冻结版）。 */
     public static Outcome decide(Current current, Request incoming) {
         if (incoming == null) {

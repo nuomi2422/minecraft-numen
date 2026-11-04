@@ -107,6 +107,41 @@ class TaskOwnershipTest {
     }
 
     @Test
+    void ownerIsDerivedFromTheCallPrefixNotFromANewField() {
+        assertEquals(Owner.EXTERNAL_BRAIN, TaskOwnership.ownerOf(true));
+        assertEquals(Owner.BUILTIN_BRAIN, TaskOwnership.ownerOf(false));
+    }
+
+    @Test
+    void mcpCannotSilentlyStompTheBuiltInBrain() {
+        // 第二轮真实场景：外接大脑在身体上有内置大脑的任务时派活
+        var out = TaskOwnership.decide(
+                new Current("t42", TaskOwnership.ownerOf(false), 0L),
+                new Request("c-1", "t43", TaskOwnership.ownerOf(true), 0L, "mcp_goto", false));
+        assertTrue(out.decision() == Decision.BUSY || out.decision() == Decision.CONFLICT,
+                "外接大脑不许静默顶替内置大脑，实际=" + out.decision());
+        assertFalse(out.reason().isBlank());
+    }
+
+    @Test
+    void mcpCanReplaceItsOwnTask() {
+        var out = TaskOwnership.decide(
+                new Current("t42", TaskOwnership.ownerOf(true), 0L),
+                new Request("c-1", "t43", TaskOwnership.ownerOf(true), 0L, "mcp_goto", false));
+        assertEquals(Decision.REPLACE, out.decision(), "同一个外接大脑换活是常态");
+        assertTrue(out.reason().contains("t42"), out.reason());
+    }
+
+    @Test
+    void brainCannotStompAnMcpTaskEither() {
+        var out = TaskOwnership.decide(
+                new Current("t42", TaskOwnership.ownerOf(true), 0L),
+                new Request("c-1", "t43", TaskOwnership.ownerOf(false), 0L, "walk_to", false));
+        assertTrue(out.decision() == Decision.BUSY || out.decision() == Decision.CONFLICT,
+                "内置大脑也不许顶掉外接大脑的任务，实际=" + out.decision());
+    }
+
+    @Test
     void nullRequestConflictsInsteadOfGuessing() {
         assertEquals(Decision.CONFLICT, TaskOwnership.decide(null, null).decision());
     }
