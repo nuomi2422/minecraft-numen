@@ -99,14 +99,15 @@ public final class WorldStateTool implements NumenTool {
             }
             String action = args.has("action")
                     ? args.get("action").getAsString().toLowerCase(Locale.ROOT) : "";
+            // 增量读不需要 topic/范围，必须先于主题校验
+            if ("changes".equals(action)) {
+                handleChanges(args, reply);
+                return;
+            }
             Topic topic = Topic.byId(args.has("topic") ? args.get("topic").getAsString() : null);
             if (topic == null) {
                 reply.accept(TaskResult.fail(
                         "world_state: topic must be environment|entities|blocks").toJson());
-                return;
-            }
-            if ("changes".equals(action)) {
-                handleChanges(args, reply);      // 增量读：不需要 topic/范围
                 return;
             }
             String dimension = args.has("dimension") && !args.get("dimension").isJsonNull()
