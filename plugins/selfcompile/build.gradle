@@ -16,9 +16,10 @@ processResources {
 
 dependencies {
     // Self-Compile 只依赖公开 API 和 LLM 接口，不碰 core 内部实现。
-    compileOnly files(project(':api:neoforge').tasks.named('apiJar'))
-    compileOnly project(':ai')
-    compileOnly project(':ui')
+    // 这三条 compileOnly（瘦 api jar / ai / ui）已由 numen-plugin 约定统一提供
+    // （buildSrc/src/main/groovy/numen-plugin.gradle 的 dependencies 块），本文件不再重复声明
+    // —— 重复声明一旦与约定分叉，就会出现「约定说 compileOnly、模块说 implementation」的静默偏差
+    //（037/T8a，2026-11-04）。
 
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'

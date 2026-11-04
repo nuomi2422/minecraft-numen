@@ -1,7 +1,8 @@
 plugins { id 'numen-plugin' }
 
-// 中文注释必须有：PS 5.1 / javac 默认按平台编码读源码，少这行会乱码甚至编译失败
-tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+// 中文注释必须有：PS 5.1 / javac 默认按平台编码读源码，乱码会直接编译失败。
+// 该设置在 numen-plugin 约定里已统一配置（buildSrc/src/main/groovy/numen-plugin.gradle 的
+// tasks.withType(JavaCompile)），本文件不再重复（037/T8a，2026-11-04）。
 
 processResources {
     def props = [

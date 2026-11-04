@@ -1,6 +1,7 @@
 plugins { id 'numen-plugin' }
 
-tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+// UTF-8 源码编码由 numen-plugin 约定统一设置（buildSrc/src/main/groovy/numen-plugin.gradle），
+// 这里不再重复声明 —— 两处各写一遍时，改约定会漏改一处（037/T8a，2026-11-04）。
 
 processResources {
     def props = [
