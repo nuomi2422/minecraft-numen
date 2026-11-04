@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.worldstate;
 
 import com.dwinovo.numen.plugins.worldstate.provider.BlockCountWorldProvider;
+import com.dwinovo.numen.plugins.worldstate.provider.ContainerWorldProvider;
 import com.dwinovo.numen.plugins.worldstate.provider.EntityCountWorldProvider;
 import com.dwinovo.numen.plugins.worldstate.provider.EnvironmentWorldProvider;
 import com.dwinovo.numen.worldstate.core.freshness.TopicFreshnessPolicy;
@@ -53,6 +54,7 @@ public final class WorldStateService {
         this.providers.register(new EnvironmentWorldProvider());
         this.providers.register(new EntityCountWorldProvider());
         this.providers.register(new BlockCountWorldProvider());
+        this.providers.register(new ContainerWorldProvider());
         this.refreshService = new RefreshService(providers, store, Runnable::run);
         this.queryService = new QueryService(store, freshness, refreshService, System::currentTimeMillis);
         load();

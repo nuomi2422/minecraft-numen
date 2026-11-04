@@ -46,6 +46,9 @@ public final class ObservationCapability implements WorldObservationService {
         if (topic == Topic.BLOCKS) {
             return readBlocks(request);
         }
+        if (topic == Topic.CONTAINERS) {
+            return readContainer(request);
+        }
         if (topic != Topic.ENVIRONMENT) {
             return Response.error(request.topic(), "topic not wired yet: " + topic.id());
         }
@@ -130,7 +133,7 @@ public final class ObservationCapability implements WorldObservationService {
         if (topic == null) {
             return Response.error(request.topic(), "unknown topic: " + request.topic());
         }
-        if (topic != Topic.ENVIRONMENT && topic != Topic.BLOCKS) {
+        if (topic != Topic.ENVIRONMENT && topic != Topic.BLOCKS && topic != Topic.CONTAINERS) {
             return Response.error(request.topic(), "topic not wired yet: " + topic.id());
         }
         MinecraftServer mc = server.get();
@@ -144,6 +147,16 @@ public final class ObservationCapability implements WorldObservationService {
                 return Response.error(request.topic(), "blocks needs selector box=… and blocks=…");
             }
             req = built;
+        } else if (topic == Topic.CONTAINERS) {
+            String target = request.selector().get("container");
+            if (target == null || target.isBlank()) {
+                return Response.error(request.topic(), "containers needs selector container=block:x,y,z");
+            }
+            try {
+                req = ObservationRequest.containers(request.dimension(), target);
+            } catch (IllegalArgumentException e) {
+                return Response.error(request.topic(), e.getMessage());
+            }
         } else {
             req = ObservationRequest.environment(request.dimension());
         }
@@ -157,6 +170,40 @@ public final class ObservationCapability implements WorldObservationService {
         } catch (RuntimeException ex) {
             return Response.error(request.topic(), "refresh failed: " + ex);
         }
+    }
+
+    /**
+     * containers 主题：selector 要 {@code container=block:x,y,z}。
+     * 每个物品一条 {@code items[{item,count}]}；空容器 = 空表 + COMPLETE（"已知为空"），
+     * 读不到 = ERROR/PENDING（"不知道"），两者不混。
+     */
+    private Response readContainer(Request request) {
+        MinecraftServer mc = server.get();
+        if (mc == null) return Response.error(request.topic(), "no server");
+        String target = request.selector().get("container");
+        if (target == null || target.isBlank()) {
+            return Response.error(request.topic(), "containers needs selector container=block:x,y,z");
+        }
+        var req = ObservationRequest.containers(request.dimension(), target);
+        ReadResult rr = host.read(mc, req);
+        if (!rr.present()) {
+            return new Response(Status.PENDING, request.topic(), "", 0L, Coverage.UNKNOWN,
+                    rr.note() == null ? "no observation yet; refresh first" : rr.note(), List.of());
+        }
+        if (!(rr.observation().payload() instanceof
+                com.dwinovo.numen.worldstate.core.observation.payload.ContainerPayload payload)) {
+            return Response.error(request.topic(), "unexpected payload type");
+        }
+        var mapped = ObservationMap.map(rr.coverage(), rr.freshness(), true);
+        List<Item> items = new ArrayList<>();
+        for (var e : payload.items().entrySet()) {
+            Map<String, Object> values = new LinkedHashMap<>();
+            values.put("item", e.getKey());
+            values.put("count", e.getValue());
+            items.add(mapped.stale() ? new Item(values, Set.of(), values.keySet()) : Item.of(values));
+        }
+        return new Response(mapped.status(), request.topic(), snapshotId(rr),
+                rr.observation().gameTick(), mapped.coverage(), mapped.reason(), items);
     }
 
     /** 把 selector 的 box/blocks 组成 core 的方块请求；缺字段返回 null（不猜默认范围）。 */

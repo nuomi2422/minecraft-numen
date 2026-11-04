@@ -42,6 +42,19 @@ public record ObservationRequest(Topic topic, String dimension, String target, S
         return new ObservationRequest(Topic.BLOCKS, dimension, "box=" + box.canonical(), f, box);
     }
 
+    /**
+     * 单个容器的请求（039 U3）：目标形如 {@code block:1,2,3} 或 {@code player:<uuid>}。
+     *
+     * <p>只认一个容器——"把附近所有箱子合成一条"是消费者的事，不是观测的事。
+     */
+    public static ObservationRequest containers(String dimension, String containerTarget) {
+        String t = containerTarget == null ? "" : containerTarget.trim();
+        if (t.isEmpty() || (!t.startsWith("block:") && !t.startsWith("player:"))) {
+            throw new IllegalArgumentException("container target must be block:x,y,z or player:<uuid>");
+        }
+        return new ObservationRequest(Topic.CONTAINERS, dimension, t, "", null);
+    }
+
     /** 该请求在世界存档 {@code worldId} 下的观测键。 */
     public ObservationKey keyFor(String worldId) {
         return new ObservationKey(worldId, dimension, topic, target, filter);
