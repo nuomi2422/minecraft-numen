@@ -72,6 +72,46 @@ public enum Readiness {
         }
     }
 
+    /**
+     * 多条 item 的合并规则（**worst-of**，不是多数票）。
+     *
+     * <p>为什么是 worst-of：一条链路上任何一条 item 不可核验，"整批"就不可核验——
+     * 少数服从多数会把"有 2 条好的"当成"整体没问题"，正好是假完成的入口。
+     *
+     * <p>优先级（从坏到好）：`NOT_READY_UNKNOWN > NOT_READY_STALE > NOT_READY_PENDING > READY_PARTIAL > READY`。
+     * 空列表 → `READY`（"没有 item 要看"不等于"不可核验"；证否走 {@link #canProveAbsence} 的 response 级判定）。
+     */
+    public static Readiness worstOf(java.util.List<Readiness> items) {
+        if (items == null || items.isEmpty()) return READY;
+        Readiness worst = READY;
+        for (Readiness r : items) {
+            if (r == null) return NOT_READY_UNKNOWN;
+            if (severity(r) > severity(worst)) worst = r;
+        }
+        return worst;
+    }
+
+    private static int severity(Readiness r) {
+        switch (r) {
+            case NOT_READY_UNKNOWN: return 4;
+            case NOT_READY_STALE: return 3;
+            case NOT_READY_PENDING: return 2;
+            case READY_PARTIAL: return 1;
+            default: return 0;
+        }
+    }
+
+    /**
+     * **证否**是 response 级结论，不是 item 级。
+     *
+     * <p>"这箱子是空的"在 items 为空时根本没有 item 可评估——所以证否必须单独问一次：
+     * 传空所需字段，只认 {@link #canProveAbsence()}（即 OK + COMPLETE）。
+     */
+    public static boolean canProveAbsence(Transport transport, Coverage coverage) {
+        return assess(transport, coverage, java.util.Set.of(), java.util.Set.of(), java.util.Set.of(),
+                java.util.Set.of()).canProveAbsence();
+    }
+
     /** 能否据此下"不存在/为空"的结论。只有完整覆盖才配。 */
     public boolean canProveAbsence() {
         return this == READY;
