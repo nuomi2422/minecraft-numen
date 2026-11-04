@@ -78,7 +78,8 @@ public final class WorldStateTool implements NumenTool {
                 .optionalInteger("y2", "范围角2 y", -64, 320)
                 .optionalInteger("z2", "范围角2 z", -30000000, 30000000)
                 .optionalString("entity_type", "entities 用：只数该实体种，如 minecraft:sheep")
-                .optionalEnum("category", "entities 用：passive=动物 / all=全部（默认 all）", "passive", "all")
+                .optionalEnum("category", "entities 用：passive=动物 / hostile=怪物 / all=全部（默认 all）",
+                        "passive", "hostile", "all")
                 .optionalString("block", "blocks 用：目标方块 id / #tag（预留）")
                 .build();
     }
@@ -225,6 +226,7 @@ public final class WorldStateTool implements NumenTool {
                 data.put("entity_type", counts.entityType());
             } else {
                 data.put("category", counts.category());
+                if (!counts.typeCounts().isEmpty()) data.put("type_counts", counts.typeCounts());
             }
             data.put("scanned_columns", counts.scannedColumns());
             data.put("skipped_columns", counts.skippedColumns());

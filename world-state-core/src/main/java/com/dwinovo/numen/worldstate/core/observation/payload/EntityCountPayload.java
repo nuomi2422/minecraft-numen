@@ -19,8 +19,20 @@ import com.dwinovo.numen.worldstate.core.observation.ObservationPayload;
  * @param skippedColumns 因区块未加载而跳过的列数
  */
 public record EntityCountPayload(String dimension, Bounds box, String entityType, String category,
-                                 int count, int scannedColumns, int skippedColumns)
+                                 int count, int scannedColumns, int skippedColumns,
+                                 java.util.Map<String, Integer> typeCounts)
         implements ObservationPayload {
+
+    /** 兼容旧调用：不带分类计数。 */
+    public EntityCountPayload(String dimension, Bounds box, String entityType, String category,
+                              int count, int scannedColumns, int skippedColumns) {
+        this(dimension, box, entityType, category, count, scannedColumns, skippedColumns, java.util.Map.of());
+    }
+
+    public EntityCountPayload {
+        // 按类型的明细（039 U5#7）：只有"按类别查询"时才有意义；单类型查询留空表。
+        typeCounts = typeCounts == null ? java.util.Map.of() : java.util.Map.copyOf(typeCounts);
+    }
 
     @Override
     public Topic topic() {

@@ -37,23 +37,77 @@ final class RddDangerFacts {
 
     private RddDangerFacts() {}
 
+    /** 最近一次从观测读到的按类型明细（只在读取线程内使用，键=同伴）。 */
+    private static final Map<java.util.UUID, Map<String, Integer>> observedKinds =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 读统一观测回答"附近有几只敌怪、贴身几只、都是什么"。
+     *
+     * <p>两个盒子各读一次（扫描半径 / 贴身半径）——只读缓存，不扫世界；由
+     * {@code RddObservation} 在服务端 tick 里按 5 秒节奏刷新。
+     *
+     * @return {@code [hostiles, close]}；任一观测不可用返回 {@code null}（调用方据此**不报警**）
+     */
+    private static int[] observedHostiles(NumenPlayer body) {
+        try {
+            var svc = com.dwinovo.numen.api.NumenPlugins.capability(
+                    com.dwinovo.numen.api.observation.WorldObservationService.class);
+            if (svc == null) return null;
+            String dim = body.level().dimension().location().toString();
+            var pos = body.blockPosition();
+            int[] out = new int[2];
+            Map<String, Integer> kinds = new LinkedHashMap<>();
+            for (int i = 0; i < 2; i++) {
+                int r = i == 0 ? RddDangerText.SCAN_RADIUS : RddDangerText.CLOSE_RADIUS;
+                var resp = svc.read(new com.dwinovo.numen.api.observation.WorldObservationService.Request(
+                        "rdd-danger", dim, "entities",
+                        Map.of("box", RddObservation.dangerBox(pos, r), "category", "hostile"), 0L, 64, 0L));
+                if (resp == null
+                        || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR
+                        || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING
+                        || resp.items().isEmpty()) {
+                    return null;
+                }
+                Object c = resp.items().get(0).values().get("count");
+                if (!(c instanceof Number n)) return null;
+                out[i] = n.intValue();
+                if (i == 0) {
+                    Object tc = resp.items().get(0).values().get("type_counts");
+                    if (tc instanceof Map<?, ?> m) {
+                        for (var e : m.entrySet()) {
+                            if (e.getKey() instanceof String k && e.getValue() instanceof Number v) {
+                                kinds.merge(k.replace("minecraft:", ""), v.intValue(), Integer::sum);
+                            }
+                        }
+                    }
+                }
+            }
+            observedKinds.put(body.getUUID(), kinds);
+            return out;
+        } catch (RuntimeException | LinkageError e) {
+            return null;
+        }
+    }
+
     /** 从真实世界取事实；读不到就返回空串（不做假警报，也不编数）。 */
     static String blockFor(NumenPlayer body) {
         try {
             if (body == null || !(body.level() instanceof ServerLevel level)) {
                 return "";
             }
-            AABB box = body.getBoundingBox().inflate(RddDangerText.SCAN_RADIUS);
+            // 039 U5#7：先读统一观测（entities/hostile，两个盒子：扫描半径 / 贴身半径）。
+            int[] observed = observedHostiles(body);
+            int hostiles;
+            int close;
             Map<String, Integer> kinds = new LinkedHashMap<>();
-            int hostiles = 0;
-            int close = 0;
-            for (Mob mob : level.getEntitiesOfClass(Mob.class, box)) {
-                if (!(mob instanceof Monster) || !mob.isAlive()) continue;
-                hostiles++;
-                if (mob.distanceTo(body) <= RddDangerText.CLOSE_RADIUS) close++;
-                String id = net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE
-                        .getKey(mob.getType()).getPath();
-                kinds.merge(id, 1, Integer::sum);
+            if (observed != null) {
+                hostiles = observed[0];
+                close = observed[1];
+                kinds.putAll(observedKinds.getOrDefault(body.getUUID(), Map.of()));
+            } else {
+                // 观测不可用：**不做假警报**，直接返回空串（不自己扫世界，避免两套口径）
+                return "";
             }
             if (hostiles == 0) {
                 return "";

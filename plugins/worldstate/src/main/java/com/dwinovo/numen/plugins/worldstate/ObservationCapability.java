@@ -49,6 +49,9 @@ public final class ObservationCapability implements WorldObservationService {
         if (topic == Topic.CONTAINERS) {
             return readContainer(request);
         }
+        if (topic == Topic.ENTITIES) {
+            return readEntities(request);
+        }
         if (topic != Topic.ENVIRONMENT) {
             return Response.error(request.topic(), "topic not wired yet: " + topic.id());
         }
@@ -133,7 +136,8 @@ public final class ObservationCapability implements WorldObservationService {
         if (topic == null) {
             return Response.error(request.topic(), "unknown topic: " + request.topic());
         }
-        if (topic != Topic.ENVIRONMENT && topic != Topic.BLOCKS && topic != Topic.CONTAINERS) {
+        if (topic != Topic.ENVIRONMENT && topic != Topic.BLOCKS
+                && topic != Topic.CONTAINERS && topic != Topic.ENTITIES) {
             return Response.error(request.topic(), "topic not wired yet: " + topic.id());
         }
         MinecraftServer mc = server.get();
@@ -145,6 +149,12 @@ public final class ObservationCapability implements WorldObservationService {
             ObservationRequest built = blocksRequest(request);
             if (built == null) {
                 return Response.error(request.topic(), "blocks needs selector box=… and blocks=…");
+            }
+            req = built;
+        } else if (topic == Topic.ENTITIES) {
+            ObservationRequest built = entitiesRequest(request);
+            if (built == null) {
+                return Response.error(request.topic(), "entities needs selector box=x1,y1,z1,x2,y2,z2");
             }
             req = built;
         } else if (topic == Topic.CONTAINERS) {
@@ -175,6 +185,56 @@ public final class ObservationCapability implements WorldObservationService {
         } catch (RuntimeException ex) {
             return Response.error(request.topic(), "refresh failed: " + ex);
         }
+    }
+
+    /**
+     * entities 主题：selector 要 {@code box=x1,y1,z1,x2,y2,z2}，可选 {@code category}/{@code type}。
+     * 返回一条 item：`{count, category, type_counts}`（按类型明细可能为空表）。
+     */
+    private Response readEntities(Request request) {
+        MinecraftServer mc = server.get();
+        if (mc == null) return Response.error(request.topic(), "no server");
+        var req = entitiesRequest(request);
+        if (req == null) {
+            return Response.error(request.topic(), "entities needs selector box=x1,y1,z1,x2,y2,z2");
+        }
+        ReadResult rr = host.read(mc, req);
+        if (!rr.present()) {
+            return new Response(Status.PENDING, request.topic(), "", 0L, Coverage.UNKNOWN,
+                    rr.note() == null ? "no observation yet; refresh first" : rr.note(), List.of());
+        }
+        if (!(rr.observation().payload() instanceof
+                com.dwinovo.numen.worldstate.core.observation.payload.EntityCountPayload payload)) {
+            return Response.error(request.topic(), "unexpected payload type");
+        }
+        var mapped = ObservationMap.map(rr.coverage(), rr.freshness(), true);
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("count", payload.count());
+        if (payload.entityType() != null) {
+            values.put("entity_type", payload.entityType());
+        } else {
+            values.put("category", payload.category());
+            if (!payload.typeCounts().isEmpty()) values.put("type_counts", payload.typeCounts());
+        }
+        Item item = mapped.stale() ? new Item(values, Set.of(), values.keySet()) : Item.of(values);
+        return new Response(mapped.status(), request.topic(), snapshotId(rr),
+                rr.observation().gameTick(), mapped.coverage(), mapped.reason(), List.of(item));
+    }
+
+    private static ObservationRequest entitiesRequest(Request request) {
+        String boxRaw = request.selector().get("box");
+        if (boxRaw == null) return null;
+        String[] parts = boxRaw.split(",");
+        if (parts.length != 6) return null;
+        int[] c = new int[6];
+        try {
+            for (int i = 0; i < 6; i++) c[i] = Integer.parseInt(parts[i].trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        var bounds = new com.dwinovo.numen.worldstate.core.model.Bounds(c[0], c[1], c[2], c[3], c[4], c[5]);
+        return ObservationRequest.entities(request.dimension(), bounds,
+                request.selector().get("type"), request.selector().getOrDefault("category", "all"));
     }
 
     /**

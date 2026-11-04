@@ -52,6 +52,11 @@ final class RddObservation {
                     + (pos.getX() + 8) + "," + (pos.getY() + 12) + "," + (pos.getZ() + 8);
             svc.refresh(new WorldObservationService.Request("rdd-env", dim, "blocks",
                     Map.of("box", box, "blocks", NEARBY_IDS), 0L, 32, 0L));
+            // entities 主题（039 U5#7）：危险实体 —— 两个盒子：扫描半径 / 贴身半径。
+            svc.refresh(new WorldObservationService.Request("rdd-env", dim, "entities",
+                    Map.of("box", dangerBox(pos, RddDangerText.SCAN_RADIUS), "category", "hostile"), 0L, 64, 0L));
+            svc.refresh(new WorldObservationService.Request("rdd-env", dim, "entities",
+                    Map.of("box", dangerBox(pos, RddDangerText.CLOSE_RADIUS), "category", "hostile"), 0L, 64, 0L));
             if (resp != null && resp.status() == WorldObservationService.Status.ERROR) {
                 // 限频：只在状态变化时打一条，避免每 5 秒刷屏
                 Long prevErr = ERR_AT.get(ap.getUUID());
@@ -63,6 +68,12 @@ final class RddObservation {
         } catch (RuntimeException | LinkageError ignored) {
             // 观测不该影响判定；能力缺席是正常情况
         }
+    }
+
+    /** 以方块位置为中心、半径 r 的整数盒（与实体扫描同口径）。 */
+    static String dangerBox(net.minecraft.core.BlockPos pos, int r) {
+        return (pos.getX() - r) + "," + (pos.getY() - r) + "," + (pos.getZ() - r) + ","
+                + (pos.getX() + r) + "," + (pos.getY() + r) + "," + (pos.getZ() + r);
     }
 
     private static final Map<UUID, Long> ERR_AT = new ConcurrentHashMap<>();

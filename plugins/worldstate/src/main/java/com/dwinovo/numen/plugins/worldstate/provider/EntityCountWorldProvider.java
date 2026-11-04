@@ -79,6 +79,7 @@ public final class EntityCountWorldProvider implements WorldProvider {
         AABB area = new AABB(box.minX(), box.minY(), box.minZ(),
                 box.maxX() + 1.0, box.maxY() + 1.0, box.maxZ() + 1.0);
         int count = 0;
+        java.util.Map<String, Integer> typeCounts = new java.util.LinkedHashMap<>();
         // 123 号：排除多部位实体的部位（同形判断共 4 处，见 count_entities_in_box 注释）。
         for (Entity entity : level.getEntities((Entity) null, area, e -> !(e instanceof net.minecraft.world.entity.boss.EnderDragonPart))) {
             String id = BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString();
@@ -86,13 +87,17 @@ public final class EntityCountWorldProvider implements WorldProvider {
                 if (!entityType.equals(id)) continue;
             } else if ("passive".equals(category) && !(entity instanceof Animal)) {
                 continue;
+            } else if ("hostile".equals(category)
+                    && !(entity instanceof net.minecraft.world.entity.monster.Monster)) {
+                continue;   // 039 U5#7：怪物类，给"危险实体"用
             }
             count++;
+            if (entityType == null) typeCounts.merge(id, 1, Integer::sum);
         }
 
         Coverage coverage = skipped == 0 ? Coverage.COMPLETE : Coverage.PARTIAL;
         EntityCountPayload payload = new EntityCountPayload(request.dimension(), box, entityType,
-                entityType == null ? category : null, count, scanned, skipped);
+                entityType == null ? category : null, count, scanned, skipped, typeCounts);
         return ProviderResult.of(payload, coverage);
     }
 
