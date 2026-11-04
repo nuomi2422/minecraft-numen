@@ -91,6 +91,35 @@ class ObservableStoreV2Test {
     }
 
     @Test
+    void sameRevisionIsRejectedAndEmitsNothing() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        InMemoryChangeFeed feed = new InMemoryChangeFeed("e1", 16, 60_000L, clock::get);
+        ObservableStoreV2 store = new ObservableStoreV2(16, feed);
+
+        assertTrue(store.put(obs("box=1", 5)));
+        assertFalse(store.put(obs("box=1", 5)), "同 revision 重复写入必须拒收");
+        assertEquals(1, feed.query(0, "e1", null, 10).events().size(),
+                "同 revision 不能产生第二个事件");
+    }
+
+    @Test
+    void evictionEmitsInvalidate() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        InMemoryChangeFeed feed = new InMemoryChangeFeed("e1", 16, 60_000L, clock::get);
+        ObservableStoreV2 store = new ObservableStoreV2(2, feed);
+
+        store.put(obs("box=1", 1));
+        store.put(obs("box=2", 2));
+        store.put(obs("box=3", 3));      // 容量 2 → box=1 被挤掉
+
+        ChangesPage page = feed.query(0, "e1", null, 10);
+        long invalidates = page.events().stream()
+                .filter(e -> e.kind() == ChangeEvent.Kind.INVALIDATE).count();
+        assertEquals(1, invalidates, "被淘汰的观测必须发 INVALIDATE");
+        assertEquals(2, store.size());
+    }
+
+    @Test
     void clearEmitsInvalidateNotGone() {
         AtomicLong clock = new AtomicLong(1_000L);
         InMemoryChangeFeed feed = new InMemoryChangeFeed("e1", 16, 60_000L, clock::get);

@@ -55,8 +55,10 @@ public final class ObservableStoreV2 implements ObservationStore {
         if (observation == null || observation.key() == null) return false;
         String k = observation.key().canonical();
         Observation current = map.get(k);
-        if (current != null && current.revision() > observation.revision()) {
-            return false;                    // 迟到的旧刷新：拒收，且不产生变化
+        if (current != null && current.revision() >= observation.revision()) {
+            // 迟到的旧刷新**或同 revision 重复写入**：拒收，且不产生变化。
+            // 同 revision 放行会造出重复事件（042 R3 反例清单第 7 条），这里用 >= 而不是 >。
+            return false;
         }
         map.put(k, observation);
         if (feed != null) {
@@ -121,10 +123,27 @@ public final class ObservableStoreV2 implements ObservationStore {
         map.clear();
     }
 
+    /**
+     * 容量淘汰。
+     *
+     * <p><b>淘汰必须发 {@link ChangeEvent.Kind#INVALIDATE}</b>（042 R3-6）：被挤掉的观测从存储里
+     * 没了，但消费者手里可能还握着它、游标还在往前走——不告诉它们"这条不可信了"，
+     * 现场表现就是"拿着一份已经不存在的旧数据当真"。
+     *
+     * <p>淘汰不产生 {@code GONE}：那表示世界里真的没了，缓存淘汰不是世界事件。
+     */
     private void evictIfNeeded() {
         while (map.size() > capacity) {
             String eldest = map.keySet().iterator().next();
-            map.remove(eldest);
+            Observation removed = map.remove(eldest);
+            if (feed != null && removed != null) {
+                feed.append(
+                        removed.key().topic() == null ? "" : removed.key().topic().id(),
+                        eldest,
+                        ChangeEvent.Kind.INVALIDATE,
+                        removed.revision(),
+                        System.currentTimeMillis());
+            }
         }
     }
 }
