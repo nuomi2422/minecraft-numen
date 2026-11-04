@@ -27,6 +27,10 @@ final class RddObservation {
 
     private static final Map<UUID, Long> LAST = new ConcurrentHashMap<>();
 
+    /** 身边关心的方块：与 RddEnvBlock 的"身边"行同一份清单。 */
+    static final String NEARBY_IDS = "minecraft:chest,minecraft:barrel,minecraft:trapped_chest,"
+            + "minecraft:lava,minecraft:nether_portal,minecraft:obsidian,minecraft:crying_obsidian";
+
     private RddObservation() {}
 
     /** 服务端 tick 调用；能力缺席或宿主出错都不影响主链路。 */
@@ -41,6 +45,13 @@ final class RddObservation {
             String dim = ap.level().dimension().location().toString();
             WorldObservationService.Response resp = svc.refresh(
                     new WorldObservationService.Request("rdd-env", dim, "environment", Map.of(), 0L, 1, 0L));
+            // blocks 主题：身边有没有箱子/岩浆/门（039 U2b 的消费者）。
+            // 盒子与 RddEnvBlock 旧扫描同口径（±8 水平、±12 垂直）。
+            var pos = ap.blockPosition();
+            String box = (pos.getX() - 8) + "," + (pos.getY() - 12) + "," + (pos.getZ() - 8) + ","
+                    + (pos.getX() + 8) + "," + (pos.getY() + 12) + "," + (pos.getZ() + 8);
+            svc.refresh(new WorldObservationService.Request("rdd-env", dim, "blocks",
+                    Map.of("box", box, "blocks", NEARBY_IDS), 0L, 32, 0L));
             if (resp != null && resp.status() == WorldObservationService.Status.ERROR) {
                 // 限频：只在状态变化时打一条，避免每 5 秒刷屏
                 Long prevErr = ERR_AT.get(ap.getUUID());

@@ -76,6 +76,16 @@ final class RddEnvBlock {
                 else if (st.is(Blocks.LAVA)) lava++;
             }
             boolean cliff = !ap.onGround() && ap.fallDistance > 2.0f;
+            // 039 U2b：先看统一观测能不能回答"身边有什么"；能就用观测值，同时与本拍本地扫描
+            // 做 shadow 比对（不一致只记日志、不改行），跑稳了再删旧扫描。
+            int[] nearbyObs = observedNearby(ap);
+            if (nearbyObs != null) {
+                shadowCompare(ap, portals, litPortals, chests, lava, nearbyObs);
+                portals = nearbyObs[0];
+                litPortals = nearbyObs[1];
+                chests = nearbyObs[2];
+                lava = nearbyObs[3];
+            }
             sb.append("身边 门").append(portals == 0 ? "无" : (litPortals > 0 ? "亮" : "(熄)"))
               .append(" · 箱子").append(chests)
               .append(" · 岩浆").append(lava).append("格")
@@ -167,6 +177,66 @@ final class RddEnvBlock {
             return "";   // 环境块不许拖垮上下文组装
         }
     }
+
+    /**
+     * 从统一观测读"身边有什么"。返回 {@code [门总数, 亮的门数, 箱子, 岩浆]}；读不到返回 null。
+     *
+     * <p>只读缓存（由 {@link RddObservation} 在服务端 tick 里刷新），这里**不扫世界**。
+     * 局部覆盖（PARTIAL）也算数——它给的是下限，比"没有"强；但绝不把空列表当成"确认没有"。
+     */
+    private static int[] observedNearby(NumenPlayer ap) {
+        try {
+            com.dwinovo.numen.api.observation.WorldObservationService svc =
+                    com.dwinovo.numen.api.NumenPlugins.capability(
+                            com.dwinovo.numen.api.observation.WorldObservationService.class);
+            if (svc == null) return null;
+            var pos = ap.blockPosition();
+            String box = (pos.getX() - 8) + "," + (pos.getY() - 12) + "," + (pos.getZ() - 8) + ","
+                    + (pos.getX() + 8) + "," + (pos.getY() + 12) + "," + (pos.getZ() + 8);
+            var resp = svc.read(new com.dwinovo.numen.api.observation.WorldObservationService.Request(
+                    "rdd-env", ap.level().dimension().location().toString(), "blocks",
+                    java.util.Map.of("box", box, "blocks", RddObservation.NEARBY_IDS), 0L, 32, 0L));
+            if (resp == null
+                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR
+                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING
+                    || resp.items().isEmpty()) {
+                return null;
+            }
+            int portalBlocks = 0, obsidian = 0, chests = 0, lava = 0;
+            for (var item : resp.items()) {
+                Object idObj = item.values().get("block");
+                Object countObj = item.values().get("count");
+                if (!(idObj instanceof String id) || !(countObj instanceof Number n)) continue;
+                int c = n.intValue();
+                switch (id) {
+                    case "minecraft:nether_portal" -> portalBlocks += c;
+                    case "minecraft:obsidian", "minecraft:crying_obsidian" -> obsidian += c;
+                    case "minecraft:chest", "minecraft:barrel", "minecraft:trapped_chest" -> chests += c;
+                    case "minecraft:lava" -> lava += c;
+                    default -> { }
+                }
+            }
+            // 门 = 门框（黑曜石）+ 门方块；"亮"看有没有 nether_portal（暗门只剩黑曜石框）。
+            return new int[]{portalBlocks + obsidian, portalBlocks, chests, lava};
+        } catch (RuntimeException | LinkageError ignored) {
+            return null;
+        }
+    }
+
+    /** 观测值与本地扫描不一致时记一行（限频 30 秒），只诊断不改变行为。 */
+    private static void shadowCompare(NumenPlayer ap, int p, int lp, int c, int l, int[] o) {
+        if (p == o[0] && c == o[2] && l == o[3]) return;
+        long now = System.currentTimeMillis();
+        Long last = SHADOW_AT.get(ap.getUUID());
+        if (last != null && now - last < 30_000L) return;
+        SHADOW_AT.put(ap.getUUID(), now);
+        LOG.warn("[rdd-env] shadow mismatch nearby: local(门{},亮{},箱{},岩浆{}) vs observed(门{},亮{},箱{},岩浆{})",
+                p, lp, c, l, o[0], o[1], o[2], o[3]);
+    }
+
+    private static final java.util.Map<java.util.UUID, Long> SHADOW_AT = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(RddEnvBlock.class);
 
     /**
      * 时间/天气行（039 U1：第一个走统一观测的消费者）。
