@@ -8,6 +8,10 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.io.IOException;
@@ -468,5 +472,73 @@ public final class CameraRig {
 
     private static float clamp(float v, float lo, float hi) {
         return v < lo ? lo : (v > hi ? hi : v);
+    }
+
+    // ── 遮挡 → 第一人称（2026-11-05）────────────────────────────────────────
+    //
+    // 用户反馈：被墙挡住时镜头只能「收近」，墙一让开又「弹回去」，看着像抖动。
+    // 现在改成有滞回的状态机：被挡就压到眼睛（第一人称），至少停 10 秒；
+    // 视线恢复后 2 秒内缓缓拉回第三人称。
+    //
+    // 为什么需要 10 秒滞留：树丛/墙角里射线会一两帧就 MISS，没有滞留就会来回闪。
+
+    /** 0 = 第三人称，1 = 完全第一人称。 */
+    private static volatile float occBlend;
+    /** 还要保持第一人称多少 tick（用户要求至少 10 秒 = 200 tick）。 */
+    private static int occHoldTicks;
+
+    private static final int OCC_HOLD_TICKS = 200;
+    /** 切进去用 5 tick（0.25s）——要快，否则「被挡住」的那一刻画面还是糊的。 */
+    private static final int OCC_IN_TICKS = 5;
+    /** 缓出来用 40 tick（2s）——要慢，这是用户要的「缓慢变回第三人称」。 */
+    private static final int OCC_OUT_TICKS = 40;
+
+    public static float occBlend() {
+        return occBlend;
+    }
+
+    /** 关掉遮挡切换时把状态归零，别把上一次的混合系数留在下一次机位里。 */
+    public static void resetOcclusion() {
+        occBlend = 0f;
+        occHoldTicks = 0;
+    }
+
+    /**
+     * 把「第三人称机位」按遮挡情况压向眼睛。
+     *
+     * @param level  当前世界（mixin 里 shadow 的 BlockGetter）
+     * @param target 被拍的目标
+     * @param third  本该站的位置（模式算完的结果）
+     * @param eye    目标眼睛位置
+     * @return 这一帧实际该站的位置
+     */
+    public static Vec3 applyOcclusion(BlockGetter level, Entity target, Vec3 third, Vec3 eye) {
+        if (level == null || target == null || third == null || eye == null || !isActive()) {
+            resetOcclusion();
+            return third;
+        }
+        Vec3 dir = third.subtract(eye);
+        double len = dir.length();
+        boolean blocked = false;
+        if (len > 0.6) {
+            BlockHitResult hit = level.clip(new ClipContext(
+                    eye, third, ClipContext.Block.VISUAL, ClipContext.Fluid.NONE, target));
+            // 命中点比目标位置近 0.6 格以上才算「真被挡」——贴墙时的擦边命中不算，
+            // 否则站在墙边会一直切第一人称。
+            blocked = hit.getType() != HitResult.Type.MISS
+                    && hit.getLocation().distanceTo(eye) < len - 0.6;
+        }
+        if (blocked) {
+            occHoldTicks = OCC_HOLD_TICKS;
+            occBlend = Math.min(1f, occBlend + 1f / OCC_IN_TICKS);
+        } else if (occHoldTicks > 0) {
+            occHoldTicks--;
+        } else if (occBlend > 0f) {
+            occBlend = Math.max(0f, occBlend - 1f / OCC_OUT_TICKS);
+        }
+        if (occBlend <= 0f) {
+            return third;
+        }
+        return third.lerp(eye, occBlend);
     }
 }

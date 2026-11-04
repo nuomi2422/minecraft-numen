@@ -109,6 +109,16 @@ public abstract class MixinCamera {
             case CINEMATIC -> numencam$cinematic(target, partialTick);
             case SHOULDER, OFF -> numencam$shoulder(target, partialTick);
         }
+
+        // ── 遮挡 → 第一人称（2026-11-05）──────────────────────────────────
+        // 各模式先把「第三人称该站哪」算出来，这里再按遮挡情况压向眼睛。
+        // 状态机在 CameraRig：被挡 0.25s 内切进去、至少停 10 秒、之后 2 秒缓出来。
+        Vec3 eyeNow = target.getEyePosition(partialTick);
+        this.setPosition(CameraRig.applyOcclusion(this.level, target, this.position, eyeNow));
+        if (CameraRig.occBlend() > 0.5f) {
+            // 第一人称要跟目标的视线；否则 ORBIT/LOCK 会出现「镜头瞄自己」的退化朝向。
+            this.setRotation(target.getViewYRot(partialTick), target.getViewXRot(partialTick));
+        }
         ci.cancel();
     }
 

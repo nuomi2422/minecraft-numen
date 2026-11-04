@@ -73,8 +73,13 @@ public final class CompanionTether {
      */
     private static final int TP_MIN_GAP_TICKS = 40;
 
-    /** 超过这个距离就主动传过去（只在目标可见时判）。默认 64 格 ≈ 一个区块多一点。 */
-    private static volatile double maxDist = 64.0;
+    /**
+     * 超过这个距离就主动传过去（只在目标可见时判）。
+     *
+     * <p>2026-11-05 由 64 改 32：64 格时目标在画面里只剩几个像素，跟拍没意义；
+     * 32 格还能看清动作。要更近用 {@code /cam follow dist <n>}。
+     */
+    private static volatile double maxDist = 32.0;
 
     /** 牵引总开关。 */
     private static volatile boolean follow;

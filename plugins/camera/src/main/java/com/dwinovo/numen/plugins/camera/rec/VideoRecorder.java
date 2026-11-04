@@ -51,8 +51,14 @@ import java.util.Locale;
  */
 public final class VideoRecorder {
 
-    /** 默认帧率。 */
-    private static final int DEFAULT_FPS = 10;
+    /**
+     * 默认帧率。
+     *
+     * <p>2026-11-05 用户反馈「视频不连贯、帧率很低」：原值 10fps 只有 tick 的一半，
+     * 连续运动看起来一格一格。本实现每 tick 最多抓一帧，20 是自然上限；
+     * 要 30/60 必须改渲染线程逐帧抓（GL 读回翻倍），默认不做。
+     */
+    private static final int DEFAULT_FPS = 20;
 
     /** 默认最长帧数（10fps → 90 秒）。防「忘了停」把磁盘写满。 */
     private static final int DEFAULT_MAX_FRAMES = 900;
