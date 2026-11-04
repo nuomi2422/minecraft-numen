@@ -206,6 +206,13 @@ public final class RddPlugin implements NumenPlugin {
         });
         // E1 shadow：规划角色的预算策略（与客户端同一份文件，幂等）。
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
+        // 039：末地打法从 env 挪出来（它是知识，不是环境事实），改为随插件下发的技能。
+        try {
+            var skills = net.neoforged.fml.ModList.get().getModFileById("rdd").getFile().findResource("skills");
+            if (skills != null) numen.bundleSkills(skills);
+        } catch (RuntimeException | LinkageError ignored) {
+            // 技能下发失败不影响主流程；env 里已经不再硬编码攻略，缺技能只是少了提示
+        }
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
         // 169 T6 / 170 §5.1：主线可重启（死亡后旧链不安全时的唯一改单入口）。
