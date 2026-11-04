@@ -61,7 +61,9 @@ public final class WorldStateTool implements NumenTool {
                 + "topic=environment —— 维度/游戏时间/天气。\n"
                 + "topic=entities —— 范围内的动物/实体计数，需要 x1/y1/z1/x2/y2/z2；可选 entity_type"
                 + "（如 minecraft:sheep）或 category=passive/all。区块未加载不强制加载，也不误报 0。\n"
-                + "topic=blocks —— 预留（尚无采集器，refresh 会明确返回 NO_PROVIDER）。\n"
+                + "topic=blocks —— 范围内方块计数，需要 x1..z2；可选 block=id 或 id[属性=值]（逗号分隔多个），"
+                + "samples=N 可带回最多 N 个命中坐标。\n"
+                + "topic=containers —— 容器内容，需要 container=block:x,y,z 或 player:<uuid>。\n"
                 + "需要难度/游戏模式/玩家列表/光照/自身状态等诊断事实时，用 world_probe action=list。\n"
                 + "典型用法：先 refresh 采集，再 read 读取；要求交易/取物/完工前再 refresh 一次。";
     }
@@ -71,7 +73,9 @@ public final class WorldStateTool implements NumenTool {
         return Schema.object()
                 .enumStr("action", "read=只读已有观测 / refresh=主动采集 / changes=增量读（041）",
                         "read", "refresh", "changes")
-                .optionalInteger("after", "changes 用：上次读到的游标（revision），0=从头", 0, Integer.MAX_VALUE)
+                // 中性措辞：具体是"观测 revision"还是"日志 streamSeq"，等 042 R3 定（R3-2 要求拆开）。
+                // 这里不写 revision，免得说明先骗人。
+                .optionalInteger("after", "changes 用：增量游标（上次读到的位置），0=从头", 0, Integer.MAX_VALUE)
                 .optionalInteger("limit", "changes 用：最多返回几条（默认 64，上限 256）", 1, 256)
                 .optionalString("topics", "changes 用：主题过滤，逗号分隔，如 blocks,containers")
                 .enumStr("topic", "观测主题", "environment", "entities", "blocks", "containers")
@@ -86,7 +90,8 @@ public final class WorldStateTool implements NumenTool {
                 .optionalString("entity_type", "entities 用：只数该实体种，如 minecraft:sheep")
                 .optionalEnum("category", "entities 用：passive=动物 / hostile=怪物 / all=全部（默认 all）",
                         "passive", "hostile", "all")
-                .optionalString("block", "blocks 用：目标方块 id / #tag（预留）")
+                .optionalString("block", "blocks 用：目标方块 id 或 id[属性=值]，逗号分隔多个")
+                .optionalString("container", "containers 用：block:x,y,z 或 player:<uuid>")
                 .build();
     }
 
@@ -107,7 +112,8 @@ public final class WorldStateTool implements NumenTool {
             Topic topic = Topic.byId(args.has("topic") ? args.get("topic").getAsString() : null);
             if (topic == null) {
                 reply.accept(TaskResult.fail(
-                        "world_state: topic must be environment|entities|blocks").toJson());
+                        "world_state: topic is required for action=read|refresh"
+                                + " (environment|entities|blocks|containers)").toJson());
                 return;
             }
             String dimension = args.has("dimension") && !args.get("dimension").isJsonNull()
@@ -116,8 +122,8 @@ public final class WorldStateTool implements NumenTool {
 
             ObservationRequest request = buildRequest(args, topic, dimension);
             if (request == null) {
-                // buildRequest 已在非法参数时回执；这里直接结束。
-                reply.accept(TaskResult.fail("world_state: invalid parameters for topic " + topic.id()).toJson());
+                // 042 R1：缺字段必须说清是哪个字段，别只回"参数非法"
+                reply.accept(TaskResult.fail(missingFieldMessage(topic)).toJson());
                 return;
             }
 
@@ -125,11 +131,20 @@ public final class WorldStateTool implements NumenTool {
                 case "read" -> handleRead(self, request, reply);
                 case "refresh" -> handleRefresh(self, request, reply);
                 default -> reply.accept(TaskResult.fail(
-                        "world_state: action must be read|refresh").toJson());
+                        "world_state: action must be read|refresh|changes").toJson());
             }
         } catch (RuntimeException ex) {
             reply.accept(TaskResult.fail("world_state error: " + ex.getMessage()).toJson());
         }
+    }
+
+    /** 缺字段的明确报错（042 R1：非法 selector / 缺字段要能一眼看出来）。 */
+    private String missingFieldMessage(Topic topic) {
+        return switch (topic) {
+            case CONTAINERS -> "world_state: containers needs container=block:x,y,z or player:<uuid> (got empty)";
+            case ENTITIES, BLOCKS -> "world_state: " + topic.id() + " needs a box: x1,y1,z1,x2,y2,z2 (got empty or invalid)";
+            default -> "world_state: invalid parameters for topic " + topic.id();
+        };
     }
 
     private ObservationRequest buildRequest(JsonObject args, Topic topic, String dimension) {
