@@ -47,6 +47,8 @@ final class RddContainerMemory {
     /** 同一份扫描的结构化计数（037/T14）：上下文要文字，规划要数字，两边不许走不同的解析路。 */
     private static final Map<UUID, Map<String, Integer>> COUNTS = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> LAST_REFRESH = new ConcurrentHashMap<>();
+    /** 041 U4c：containers 主题的增量游标（每个同伴一个）。 */
+    private static final Map<UUID, Long> CHANGE_CURSOR = new ConcurrentHashMap<>();
 
     private RddContainerMemory() {}
 
@@ -55,7 +57,11 @@ final class RddContainerMemory {
         if (body == null) return;
         UUID id = body.getUUID();
         Long last = LAST_REFRESH.get(id);
-        if (last != null && gameTime - last < REFRESH_TICKS) return;
+        boolean due = last == null || gameTime - last >= REFRESH_TICKS;
+        // 041 U4c：只要容器观测**有过变化**就立刻重扫，等于把"别人刷新过"这件事当成信号；
+        // 没有变化时仍按 2 秒节奏扫（世界变化只能靠扫发现，变化日志只知道"观测被写过"）。
+        boolean changed = pollContainerChanges(id);
+        if (!due && !changed) return;
         LAST_REFRESH.put(id, gameTime);
         try {
             Scan scan = scan(body, gameTime);
@@ -64,6 +70,33 @@ final class RddContainerMemory {
         } catch (RuntimeException | LinkageError ex) {
             // 读世界失败不影响主链路；保留上一次缓存（宁可旧一点，也不要突然说"没有"）
             LOG.warn("[rdd-storage] 扫描失败 {}: {}", id, ex.toString());
+        }
+    }
+
+    /**
+     * 读一次 containers 主题的增量（041 U4c）。
+     *
+     * @return true=有新变化（含历史断档，断档时更要重扫）；false=没变化或增量不可用
+     */
+    private static boolean pollContainerChanges(UUID id) {
+        try {
+            var svc = com.dwinovo.numen.api.NumenPlugins.capability(
+                    com.dwinovo.numen.api.observation.WorldObservationService.class);
+            if (svc == null) return false;
+            long cursor = CHANGE_CURSOR.getOrDefault(id, 0L);
+            var resp = svc.changes(cursor, java.util.List.of("containers"), 64);
+            if (resp == null
+                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR) {
+                return false;   // 拿不到增量就退回节奏扫描，不当作"没变化"的证据
+            }
+            CHANGE_CURSOR.put(id, resp.nextCursor());
+            if (resp.gap()) {
+                LOG.info("[rdd-storage] containers 增量断档，全量重扫一次");
+                return true;
+            }
+            return !resp.changes().isEmpty();
+        } catch (RuntimeException | LinkageError e) {
+            return false;
         }
     }
 
@@ -89,6 +122,7 @@ final class RddContainerMemory {
         CACHE.remove(companionId);
         COUNTS.remove(companionId);
         LAST_REFRESH.remove(companionId);
+        CHANGE_CURSOR.remove(companionId);
     }
 
     /** 一次扫描的双产物：给人看的文字 + 给规划用的计数。 */
