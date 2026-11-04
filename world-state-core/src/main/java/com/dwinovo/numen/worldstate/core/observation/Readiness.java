@@ -32,8 +32,45 @@ public enum Readiness {
     NOT_READY_PENDING,
     NOT_READY_UNKNOWN;
 
-    /** 传输层结果（core 层不依赖 API 枚举，这里只保留三者）。 */
-    public enum Transport { OK, PENDING, ERROR }
+    /**
+     * 传输层结果（core 层不依赖 API 枚举，值与 API 的 `Status` **一一对应**）。
+     *
+     * <p>四值 `{OK, PARTIAL, PENDING, ERROR}` 必须与 `WorldObservationService.Status` 完全同构——
+     * 少一个（比如漏 PARTIAL）就会逼消费者自己决定"它算 OK 还是 ERROR"，于是又变成各写一套
+     * （审计 C 的原话：洞只是从"可读判断"挪到了"枚举转换"）。
+     */
+    public enum Transport {
+        OK,
+        PARTIAL,
+        PENDING,
+        ERROR;
+
+        /** 按 API 枚举名映射；不认识的名字一律按 ERROR（fail-closed，绝不默认 OK）。 */
+        public static Transport fromApiName(String name) {
+            if (name == null) return ERROR;
+            switch (name.trim().toUpperCase(java.util.Locale.ROOT)) {
+                case "OK": return OK;
+                case "PARTIAL": return PARTIAL;
+                case "PENDING": return PENDING;
+                default: return ERROR;
+            }
+        }
+    }
+
+    /**
+     * 按 API 的 `Coverage` 名映射到 core 的 {@link Coverage}。
+     *
+     * <p>`FULL→COMPLETE`、`PARTIAL→PARTIAL`、`UNKNOWN→UNLOADED`；
+     * 不认识的名字按 UNLOADED（最保守：什么都不能证明）。
+     */
+    public static Coverage coverageFromApiName(String name) {
+        if (name == null) return Coverage.UNLOADED;
+        switch (name.trim().toUpperCase(java.util.Locale.ROOT)) {
+            case "FULL": return Coverage.COMPLETE;
+            case "PARTIAL": return Coverage.PARTIAL;
+            default: return Coverage.UNLOADED;
+        }
+    }
 
     /** 能否据此下"不存在/为空"的结论。只有完整覆盖才配。 */
     public boolean canProveAbsence() {
@@ -67,7 +104,9 @@ public enum Readiness {
                                    Set<String> unknownFields,
                                    Set<String> staleFields) {
         if (transport == Transport.PENDING) return NOT_READY_PENDING;
-        if (transport != Transport.OK) return NOT_READY_UNKNOWN;
+        // PARTIAL 传输 = 只拿到一部分：绝不能据此断言"没有"，最多算 READY_PARTIAL
+        boolean transportPartial = transport == Transport.PARTIAL;
+        if (transport != Transport.OK && !transportPartial) return NOT_READY_UNKNOWN;
         if (requiredFields == null) return NOT_READY_UNKNOWN;   // fail-closed：忘了传不等于不需要
         if (coverage == null || coverage == Coverage.UNLOADED) return NOT_READY_UNKNOWN;
 
@@ -81,6 +120,7 @@ public enum Readiness {
         for (String f : requiredFields) {
             if (stale.contains(f)) return NOT_READY_STALE;
         }
+        if (transportPartial) return READY_PARTIAL;
         return coverage == Coverage.PARTIAL ? READY_PARTIAL : READY;
     }
 }

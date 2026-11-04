@@ -76,6 +76,23 @@ class ObservableStoreV2Test {
     }
 
     @Test
+    void watermarkEvictedRequiresReset() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        InMemoryChangeFeed feed = new InMemoryChangeFeed("e1", 2, 60_000L, clock::get);
+        ObservableStoreV2 store = new ObservableStoreV2(16, feed);
+
+        store.put(obs("box=1", 1));
+        long watermark = feed.watermark();       // 消费者此刻拿到的水位
+        store.put(obs("box=2", 2));
+        store.put(obs("box=3", 3));
+        store.put(obs("box=4", 4));              // 容量 2 → 水位那条已被淘汰
+
+        ChangesPage page = feed.query(watermark, "e1", null, 10);
+        assertTrue(page.resetRequired(),
+                "水位都被淘汰了，必须 RESET 而不是返回空（041 §18.4 第 11 条）");
+    }
+
+    @Test
     void loadAllEvictionIsSilent() {
         AtomicLong clock = new AtomicLong(1_000L);
         InMemoryChangeFeed feed = new InMemoryChangeFeed("e1", 16, 60_000L, clock::get);
