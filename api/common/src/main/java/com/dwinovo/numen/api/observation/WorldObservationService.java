@@ -117,6 +117,17 @@ public interface WorldObservationService {
         }
     }
 
-    /** 读一次。实现不得抛异常。 */
+    /** 读一次（只读缓存）。实现不得抛异常。 */
     Response read(Request request);
+
+    /**
+     * 显式刷新：让宿主按自己的预算重新采集一次，再返回可读结果（039 §3）。
+     *
+     * <p>默认实现明确"不支持"，而不是假装成功——这样旧实现/测试替身不用被迫实现它。
+     * 调用方只能在**自己的 tick** 里调，绝不能在上下文组装线程里调（会同步扫世界）。
+     */
+    default Response refresh(Request request) {
+        return Response.error(request == null ? "" : request.topic(),
+                "refresh not supported by this provider");
+    }
 }

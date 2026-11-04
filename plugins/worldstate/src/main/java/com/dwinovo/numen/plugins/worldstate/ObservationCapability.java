@@ -93,6 +93,31 @@ public final class ObservationCapability implements WorldObservationService {
         }
     }
 
+    @Override
+    public Response refresh(Request request) {
+        if (request == null) {
+            return Response.error("", "missing request");
+        }
+        Topic topic = Topic.byId(request.topic());
+        if (topic != null && topic != Topic.ENVIRONMENT) {
+            return Response.error(request.topic(), "topic not wired yet: " + topic.id());
+        }
+        MinecraftServer mc = server.get();
+        if (mc == null) {
+            return Response.error(request.topic(), "no server");
+        }
+        try {
+            var result = host.refresh(mc, ObservationRequest.environment(request.dimension()));
+            if (result != null && !result.success()) {
+                return Response.error(request.topic(), "refresh failed: " + result.message()
+                        + " (" + result.reason() + ")");
+            }
+            return read(request);
+        } catch (RuntimeException ex) {
+            return Response.error(request.topic(), "refresh failed: " + ex);
+        }
+    }
+
     private static String snapshotId(ReadResult rr) {
         try {
             return rr.observation().epochMs() + "/" + rr.observation().gameTick();
