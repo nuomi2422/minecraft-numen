@@ -59,6 +59,11 @@ final class RddEnvBlock {
               .append(p.getY()).append(',').append(p.getZ()).append(") 脚下")
               .append(shortBlock(feet)).append(" 眼高").append(shortBlock(eye)).append('\n');
 
+            // ①b 时间/天气：039 U1 的第一个真实消费者——读统一观测，不再自己从 level 里摸。
+            //   读不到就**不写这一行**（宁可少一行，也不编一个"看起来像环境事实"的假数据）。
+            String observed = observationLine(ap);
+            if (!observed.isEmpty()) sb.append(observed).append('\n');
+
             // ② 身边 8 格：门(亮/熄) · 箱子 · 岩浆 · 悬崖
             int portals = 0, litPortals = 0, chests = 0, lava = 0;
             // 2026-10-28 修：原来垂直只扫 ±4，而她在 y=39、门框在 y=58（差 19）⇒ 永远报"门无"。
@@ -165,6 +170,40 @@ final class RddEnvBlock {
             return compact(sb.toString());
         } catch (RuntimeException ignored) {
             return "";   // 环境块不许拖垮上下文组装
+        }
+    }
+
+    /**
+     * 时间/天气行（039 U1：第一个走统一观测的消费者）。
+     *
+     * <p>只认 {@code environment} 主题；拿不到实现、主题未接、观测过期都不编——
+     * 过期时明确标"观测过期"，不把旧值当当前事实（039 §4 字段状态口径）。
+     */
+    private static String observationLine(NumenPlayer ap) {
+        try {
+            com.dwinovo.numen.api.observation.WorldObservationService svc =
+                    com.dwinovo.numen.api.NumenPlugins.capability(
+                            com.dwinovo.numen.api.observation.WorldObservationService.class);
+            if (svc == null) return "";
+            String dim = ap.level().dimension().location().toString();
+            var resp = svc.read(new com.dwinovo.numen.api.observation.WorldObservationService.Request(
+                    "rdd-env", dim, "environment", java.util.Map.of(), 0L, 1, 0L));
+            if (resp == null
+                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR
+                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING) {
+                return "";
+            }
+            var item = resp.items().isEmpty() ? null : resp.items().get(0);
+            if (item == null || item.values().get("day_time") == null) return "";
+            long dayTime = ((Number) item.values().get("day_time")).longValue();
+            long dayPart = Math.floorMod(dayTime, 24000L);
+            String phase = dayPart < 12000L ? "白天" : (dayPart < 13000L ? "傍晚" : (dayPart < 23000L ? "夜晚" : "黎明"));
+            String weather = String.valueOf(item.values().getOrDefault("weather", "unknown"));
+            boolean stale = !item.staleFields().isEmpty()
+                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PARTIAL;
+            return "时间 " + phase + " · 天气 " + weather + (stale ? " · 观测不完整/已过期" : "");
+        } catch (RuntimeException | LinkageError ignored) {
+            return "";   // 观测能力缺席或宿主出错，都不许拖垮上下文组装
         }
     }
 
