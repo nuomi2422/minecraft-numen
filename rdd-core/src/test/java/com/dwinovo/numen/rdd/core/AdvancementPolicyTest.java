@@ -86,4 +86,35 @@ class AdvancementPolicyTest {
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
                 () -> AdvancementPolicy.of(null));
     }
+
+    @Test
+    void predicatesMatchTheFrozenTable() {
+        // 执行侧只用这三个谓词，避免各处自己 switch 四态又长出第二套规则。
+        assertTrue(AdvancementPolicy.completesStep(Result.MATCHED));
+        assertFalse(AdvancementPolicy.completesStep(Result.NOT_MATCHED));
+        assertFalse(AdvancementPolicy.completesStep(Result.INVALID));
+        assertFalse(AdvancementPolicy.completesStep(Result.NOT_VERIFIABLE));
+
+        assertTrue(AdvancementPolicy.shouldRequestRepair(Result.INVALID));
+        assertFalse(AdvancementPolicy.shouldRequestRepair(Result.NOT_VERIFIABLE));
+        assertFalse(AdvancementPolicy.shouldRequestRepair(Result.NOT_MATCHED));
+        assertFalse(AdvancementPolicy.shouldRequestRepair(Result.MATCHED));
+
+        assertTrue(AdvancementPolicy.shouldDiagnoseOnly(Result.NOT_VERIFIABLE));
+        assertFalse(AdvancementPolicy.shouldDiagnoseOnly(Result.INVALID));
+        assertFalse(AdvancementPolicy.shouldDiagnoseOnly(Result.MATCHED));
+    }
+
+    @Test
+    void onlyOneStateCanEverCompleteOrRepairOrDiagnose() {
+        long completes = java.util.Arrays.stream(Result.values())
+                .filter(AdvancementPolicy::completesStep).count();
+        long repairs = java.util.Arrays.stream(Result.values())
+                .filter(AdvancementPolicy::shouldRequestRepair).count();
+        long diagnoses = java.util.Arrays.stream(Result.values())
+                .filter(AdvancementPolicy::shouldDiagnoseOnly).count();
+        assertEquals(1L, completes);
+        assertEquals(1L, repairs);
+        assertEquals(1L, diagnoses);
+    }
 }

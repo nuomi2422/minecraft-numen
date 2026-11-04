@@ -65,4 +65,19 @@ public final class AdvancementPolicy {
     public static boolean legacyBoolean(AdvancementVerification.Result result) {
         return result == AdvancementVerification.Result.MATCHED;
     }
+
+    /** 能不能当"本步完成"（与 {@link #of} 的 completionEvidence 同源，给执行侧直接用）。 */
+    public static boolean completesStep(AdvancementVerification.Result result) {
+        return of(result).completionEvidence();
+    }
+
+    /** 条件本身错了 → 该去修条件/重规划（本步不算执行失败）。 */
+    public static boolean shouldRequestRepair(AdvancementVerification.Result result) {
+        return of(result).next() == Next.REPAIR_CONDITION;
+    }
+
+    /** 观测不可用 → 只诊断、等刷新（既不算失败，也不许永久沉默）。 */
+    public static boolean shouldDiagnoseOnly(AdvancementVerification.Result result) {
+        return of(result).next() == Next.DIAGNOSE_WAIT;
+    }
 }

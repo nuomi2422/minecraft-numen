@@ -163,7 +163,11 @@ public final class RddWorldFacts {
                 || !ap.getServer().isSameThread()) return false;
         try {
             return switch (String.valueOf(condition.get("type"))) {
-                case "advancement" -> advancement(ap, condition);
+                // 2026-11-04（037/T3 第二轮）：成就条件走四态分类，只有 MATCHED 才是完成证据。
+                // 与旧 advancement() 的布尔结果一致（INVALID/NOT_VERIFIABLE/NOT_MATCHED 都是 false），
+                // 但路径统一到 advancementResult，执行侧另有四态分支（见 RddDetector.applyAdvancementPolicy）。
+                case "advancement" -> com.dwinovo.numen.rdd.core.AdvancementPolicy
+                        .completesStep(advancementResult(ap, condition));
                 case "entity_killed" -> killed(ap, condition);
                 case "structure" -> structure(ap, condition);
                 case "base" -> base(ap, condition);
@@ -261,8 +265,8 @@ public final class RddWorldFacts {
         }
     }
 
-    // Legacy execution path retained verbatim until the detector can branch on all
-    // four results atomically. Diagnostic callers use advancementResult separately.
+    // 2026-11-04（037/T3 第二轮）：matches() 已改走 advancementResult + AdvancementPolicy，
+    // 这里只留给历史对照；执行侧不再经过它（保留方法是为了不再改动存量调用点）。
     private static boolean advancement(NumenPlayer ap, Map<String, Object> condition) {
         ResourceLocation key = id(condition, "advancement");
         if (key == null) return false;

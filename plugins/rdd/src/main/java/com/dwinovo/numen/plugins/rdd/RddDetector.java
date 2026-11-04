@@ -526,6 +526,10 @@ final class RddDetector {
             if (status != SubtaskStatus.RUNNING) {
                 return;
             }
+            // 2026-11-04（037/T3 第二轮）：成就条件先按四态分诊——INVALID 去修条件、NOT_VERIFIABLE 只诊断，
+            // 两者都**不是**"动作失败"。刻意只做旁路（发事件/请求重规划），不改变本 tick 的控制流；
+            // 完成判定仍由下面的 conditionMatches（只有 MATCHED 为真）决定。
+            applyAdvancementPolicy(ap, rt, chain.currentSubtask());
             // ==== 资产提前触发(EarlyAchievement)：资产已满足的硬编码二级不拍醒/不派身体，直接过，
             // 同 tick 连跳一串已满足的二级；到一级边界自动过依赖门进入下一级。 ====
             int guard = 0;
@@ -1272,6 +1276,72 @@ final class RddDetector {
             case SOFTWARE_DEFECT -> com.dwinovo.numen.rdd.fail.TaskQualityReport.Reason.SUSPECTED_PLAN_DEFECT;
             default -> com.dwinovo.numen.rdd.fail.TaskQualityReport.Reason.OTHER;
         };
+    }
+
+    /** 成就条件修复预算：每个二级一次（见 {@link com.dwinovo.numen.rdd.core.AdvancementRepairBudget}）。 */
+    private static final com.dwinovo.numen.rdd.core.AdvancementRepairBudget ADVANCEMENT_REPAIR_BUDGET =
+            new com.dwinovo.numen.rdd.core.AdvancementRepairBudget();
+
+    /**
+     * 成就条件的四态分诊（037/T3 第二轮 · EV-01）。
+     *
+     * <p>只做三件事，都**不改变本 tick 的控制流**：
+     * <ul>
+     *   <li>MATCHED / NOT_MATCHED：不插话，交给正常完成/等待路径；</li>
+     *   <li>INVALID（条件可证明是错的）：预算内请求一次重规划（{@code RddPlugin.requestReplan}），
+     *       预算用尽后只报一次 {@code advancement_repair_exhausted}，不无限悄悄重试，也不记动作失败；</li>
+     *   <li>NOT_VERIFIABLE（观测不可用）：只发限频 {@code advancement_unverifiable} 诊断事件，
+     *       不增加尝试次数、不卡死（下一次判定自然重试）。</li>
+     * </ul>
+     */
+    private static void applyAdvancementPolicy(NumenPlayer ap, RddRuntime rt, Subtask cur) {
+        if (ap == null || cur == null || cur.detectionMode() != DetectionMode.HARD_CODED) {
+            return;
+        }
+        Map<String, Object> condition = cur.condition();
+        if (condition == null || !"advancement".equals(condition.get("type"))) {
+            return;
+        }
+        com.dwinovo.numen.rdd.core.AdvancementVerification.Result state;
+        try {
+            state = RddWorldFacts.advancementResult(ap, condition);
+        } catch (RuntimeException ex) {
+            state = com.dwinovo.numen.rdd.core.AdvancementVerification.Result.NOT_VERIFIABLE;
+        }
+        if (com.dwinovo.numen.rdd.core.AdvancementPolicy.shouldRequestRepair(state)) {
+            var decision = ADVANCEMENT_REPAIR_BUDGET.take(cur.id());
+            if (decision == com.dwinovo.numen.rdd.core.AdvancementRepairBudget.Decision.REQUEST) {
+                try {
+                    RddMonitor.publish("advancement_condition_invalid", Map.of(
+                            "subtask", cur.id(),
+                            "advancement", String.valueOf(condition.get("advancement")),
+                            "reason", "advancement condition is provably invalid; requesting replan instead of retrying the action"));
+                    RddPlugin.requestReplan(ap.getUUID(),
+                            "advancement condition invalid: " + condition.get("advancement"));
+                } catch (RuntimeException ignored) {
+                    // 请求修复失败只影响能不能立刻改单，不改变完成判定
+                }
+            } else if (shouldPublishGatedSnapshot(ap.getUUID(), cur.id() + "|exhausted", "advancement_repair")) {
+                try {
+                    RddMonitor.publish("advancement_repair_exhausted", Map.of(
+                            "subtask", cur.id(), "budget", ADVANCEMENT_REPAIR_BUDGET.maxAttempts(),
+                            "reason", "repair budget used; reporting instead of silently retrying"));
+                } catch (RuntimeException ignored) {
+                    // 事件失败不影响判定
+                }
+            }
+        } else if (com.dwinovo.numen.rdd.core.AdvancementPolicy.shouldDiagnoseOnly(state)) {
+            if (shouldPublishGatedSnapshot(ap.getUUID(), cur.id() + "|unverifiable", "advancement_repair")) {
+                try {
+                    RddMonitor.publish("advancement_unverifiable", Map.of(
+                            "subtask", cur.id(),
+                            "advancement", String.valueOf(condition.get("advancement")),
+                            "reason", "registry/progress unavailable; waiting for a fresh observation, not counted as a failed action"));
+                } catch (RuntimeException ignored) {
+                    // 事件失败不影响判定
+                }
+            }
+        }
     }
 
     /** 已发生的失败重试次数（安全读，供上报）。 */
