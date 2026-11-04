@@ -54,8 +54,8 @@ public final class BlockCountWorldProvider implements WorldProvider {
             throw new ProviderException(FailReason.DIMENSION_MISSING,
                     "dimension not loaded: " + request.dimension());
         }
-        List<String> ids = parseIds(request.filter());
-        if (ids.isEmpty()) {
+        List<String> specs = parseIds(request.filter());
+        if (specs.isEmpty()) {
             throw new ProviderException(FailReason.INVALID_REQUEST, "blocks request needs id=… filter");
         }
 
@@ -75,7 +75,7 @@ public final class BlockCountWorldProvider implements WorldProvider {
         }
 
         Map<String, Integer> counts = new LinkedHashMap<>();
-        for (String id : ids) counts.put(id, 0);
+        for (String spec : specs) counts.put(spec, 0);
         for (int x = box.minX(); x <= box.maxX(); x++) {
             for (int y = box.minY(); y <= box.maxY(); y++) {
                 for (int z = box.minZ(); z <= box.maxZ(); z++) {
@@ -84,30 +84,52 @@ public final class BlockCountWorldProvider implements WorldProvider {
                     BlockState state = level.getBlockState(cursor);
                     if (state == null || state.isAir()) continue;
                     String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-                    Integer prev = counts.get(id);
-                    if (prev != null) counts.put(id, prev + 1);
+                    for (String spec : specs) {
+                        // 同一个方块可能同时命中多条规格（无状态 spec 与前缀），都记上
+                        if (matches(state, id, spec)) {
+                            counts.merge(spec, 1, Integer::sum);
+                        }
+                    }
                 }
             }
         }
         Coverage coverage = skipped == 0 ? Coverage.COMPLETE : Coverage.PARTIAL;
-        BlockCountPayload payload = new BlockCountPayload(request.dimension(), box, ids, counts, scanned, skipped);
+        BlockCountPayload payload = new BlockCountPayload(request.dimension(), box, specs, counts, scanned, skipped);
         return ProviderResult.of(payload, coverage);
     }
 
-    static List<String> parseIds(String filter) {
-        List<String> out = new ArrayList<>();
-        if (filter == null || filter.isBlank()) return out;
-        String body = filter.trim();
-        int eq = body.indexOf('=');
-        if (eq < 0) return out;
-        // 与 ObservationRequest.blocks 的规范串保持一致（它发 block=），同时容忍 id= 的写法。
-        String key = body.substring(0, eq).trim();
-        if (!"id".equals(key) && !"block".equals(key)) return out;
-        for (String raw : body.substring(eq + 1).split(",")) {
-            String id = raw.trim();
-            if (id.isEmpty() || out.contains(id)) continue;
-            out.add(id);
+    /**
+     * 一条规格是否命中这个方块状态。
+     *
+     * <p>规格形如 `minecraft:wheat` 或 `minecraft:wheat[age=7]`（可带多个属性，逗号分隔）。
+     * 属性名/值不认就**不命中**——不猜、不忽略未知属性（否则"按状态过滤"会静默退化成按 id 过滤）。
+     */
+    static boolean matches(BlockState state, String blockId, String spec) {
+        if (state == null || spec == null) return false;
+        String[] parts = BlockSpec.split(spec);
+        if (parts == null) return false;
+        String id = parts[0];
+        Map<String, String> props = BlockSpec.parseProps(parts[1]);
+        if (props == null) return false;
+        if (!id.equals(blockId)) return false;
+        if (props.isEmpty()) return true;
+        var def = state.getBlock().getStateDefinition();
+        for (Map.Entry<String, String> e : props.entrySet()) {
+            var prop = def.getProperty(e.getKey());
+            if (prop == null) return false;                 // 方块没有这个属性 → 不命中（不忽略）
+            String actual = String.valueOf(state.getValue(prop));
+            if (!actual.equalsIgnoreCase(e.getValue())) return false;
         }
-        return out;
+        return true;
+    }
+
+    private static void addSpec(List<String> out, String raw) {
+        String spec = raw == null ? "" : raw.trim();
+        if (spec.isEmpty() || out.contains(spec)) return;
+        out.add(spec);
+    }
+
+    static List<String> parseIds(String filter) {
+        return BlockSpec.parseIds(filter);
     }
 }
