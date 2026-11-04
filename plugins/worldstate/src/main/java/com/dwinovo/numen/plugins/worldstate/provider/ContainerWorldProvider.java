@@ -17,6 +17,9 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.Container;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * 读一个方块容器的内容（039 U3，第一个 {@code containers} 采集器）。
  *
@@ -37,9 +40,12 @@ public final class ContainerWorldProvider implements WorldProvider {
     public ProviderResult collect(CollectionContext ctx, ObservationRequest request) {
         McCollectionContext mc = McCollectionContexts.require(ctx);
         String target = request.target();
+        if (target != null && target.startsWith("player:")) {
+            return collectPlayerInventory(mc, request, target);
+        }
         if (target == null || !target.startsWith("block:")) {
             throw new ProviderException(FailReason.INVALID_REQUEST,
-                    "containers currently supports block:x,y,z only, got: " + target);
+                    "containers supports block:x,y,z or player:<uuid>, got: " + target);
         }
         BlockPos pos = parsePos(target.substring("block:".length()));
         if (pos == null) {
@@ -71,6 +77,43 @@ public final class ContainerWorldProvider implements WorldProvider {
             // 槽位只是附加信息，取不到就记 0，不影响"里面有什么"
         }
         ContainerPayload payload = new ContainerPayload(request.dimension(), target, slots, read.items());
+        return ProviderResult.of(payload, Coverage.COMPLETE);
+    }
+
+    /**
+     * 玩家背包当成一个容器来读（039 U3 的前置）：36 格主背包 + 4 格护甲 + 1 格副手。
+     *
+     * <p>读的是**服务端线程上的真实背包**，不是缓存计数；空背包返回空表 + COMPLETE
+     * （"已知为空"），玩家不存在则是 CHUNK/DIMENSION 之外的明确失败。
+     */
+    private ProviderResult collectPlayerInventory(McCollectionContext mc, ObservationRequest request,
+                                                  String target) {
+        String raw = target.substring("player:".length()).trim();
+        java.util.UUID id;
+        try {
+            id = java.util.UUID.fromString(raw);
+        } catch (IllegalArgumentException e) {
+            throw new ProviderException(FailReason.INVALID_REQUEST, "bad player uuid: " + raw);
+        }
+        net.minecraft.server.MinecraftServer server = mc.server();
+        if (server == null) {
+            throw new ProviderException(FailReason.PROVIDER_ERROR, "no server");
+        }
+        net.minecraft.server.level.ServerPlayer player = server.getPlayerList().getPlayer(id);
+        if (player == null) {
+            throw new ProviderException(FailReason.PROVIDER_ERROR, "player not online: " + id);
+        }
+        Map<String, Integer> items = new java.util.LinkedHashMap<>();
+        net.minecraft.world.entity.player.Inventory inv = player.getInventory();
+        int slots = inv.getContainerSize();
+        for (int i = 0; i < slots; i++) {
+            net.minecraft.world.item.ItemStack stack = inv.getItem(i);
+            if (stack == null || stack.isEmpty()) continue;
+            String itemId = net.minecraft.core.registries.BuiltInRegistries.ITEM
+                    .getKey(stack.getItem()).toString();
+            items.merge(itemId, stack.getCount(), Integer::sum);
+        }
+        ContainerPayload payload = new ContainerPayload(request.dimension(), target, slots, items);
         return ProviderResult.of(payload, Coverage.COMPLETE);
     }
 
