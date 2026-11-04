@@ -243,4 +243,114 @@ class CompletedFactStoreTest {
         assertDoesNotThrow(chain::snapshot);
         assertDoesNotThrow(chain::toJson);
     }
+
+    // =====================================================================
+    // T2 / CF-01：辅助完成留档（CompletedFactStore.subtasks）稳定性
+    // 2026-11-04 追加。根因：键里用 subtasks.size() 当唯一序号，
+    // 到了 256 上限后 size 被淘汰回 256，新记录反复覆盖同一个槽。
+    // =====================================================================
+
+    @Test
+    void subtaskArchiveKeepsExactlyTheNewest256() {
+        Goal goal = stagedGoal("goal-abc12345", "击败末影龙", "阶段A");
+        CompletedFactStore store = new CompletedFactStore();
+        for (int i = 1; i <= 300; i++) {
+            store.recordSubtask(goal, "阶段A", "subtask-" + i, 1000L + i);
+        }
+        List<String> kept = subtaskRaws(store.toJson());
+        assertEquals(256, kept.size(), "只留 256 条");
+        assertEquals("subtask-45", kept.get(0), "最旧的 44 条应被淘汰");
+        assertEquals("subtask-300", kept.get(kept.size() - 1), "最新一条必须在");
+        for (int i = 45; i <= 300; i++) {
+            assertTrue(kept.contains("subtask-" + i), "上限后仍在丢记录: subtask-" + i + " 不在了");
+        }
+    }
+
+    @Test
+    void importedSubtaskArchiveDoesNotCollideWithNewRecords() {
+        Goal goal = stagedGoal("goal-abc12345", "击败末影龙", "阶段A");
+        CompletedFactStore seed = new CompletedFactStore();
+        for (int i = 1; i <= 100; i++) {
+            seed.recordSubtask(goal, "阶段A", "old-" + i, i);
+        }
+        CompletedFactStore store = CompletedFactStore.fromJson(seed.toJson());
+        for (int i = 1; i <= 3; i++) {
+            store.recordSubtask(goal, "阶段A", "new-" + i, 2000L + i);
+        }
+        List<String> kept = subtaskRaws(store.toJson());
+        assertEquals(103, kept.size(), "导入 100 + 新 3 条都应留住（不得撞键覆盖）");
+        assertTrue(kept.containsAll(List.of("new-1", "new-2", "new-3")), kept.toString());
+        assertTrue(kept.contains("old-1") && kept.contains("old-100"), kept.toString());
+    }
+
+    @Test
+    void importedSubtaskArrayIsTrimmedToNewest256() {
+        CompletedFactStore store = CompletedFactStore.fromJson(subtaskJson(300));
+        List<String> kept = subtaskRaws(store.toJson());
+        assertEquals(256, kept.size(), "读入超限数组也要裁到最近 256");
+        assertFalse(kept.contains("subtask-1"), "裁掉的是最旧那批");
+        assertEquals("subtask-300", kept.get(kept.size() - 1));
+    }
+
+    @Test
+    void importedStageWithoutGoalIdIsNotInheritableAndNeverThrows() {
+        Goal goal = stagedGoal("goal-abc12345", "击败末影龙", "阶段A");
+        CompletedFactStore seed = new CompletedFactStore();
+        seed.recordStage(goal, "阶段A", 1L, "c");
+        String broken = seed.toJson().replace(",\"goalId\":\"goal-abc12345\"", "");
+        CompletedFactStore store = CompletedFactStore.fromJson(broken);
+
+        Goal sameLineage = stagedGoal("goal-abc12345", "击败末影龙", "阶段A");
+        assertDoesNotThrow(() -> store.satisfiedStageKeys(sameLineage), "缺 goalId 的记录不得把查询打成 NPE");
+        assertFalse(store.satisfiedStageKeys(sameLineage).contains(StageKeyNormalizer.normalize("阶段A")),
+                "缺 goalId 的记录不纳入可继承阶段");
+
+        Goal similarObjective = stagedGoal("goal-abc12345", "击败末影龙任务", "阶段A");
+        assertDoesNotThrow(() -> store.satisfiedStageKeys(similarObjective), "Level-2 近似路径同样不得 NPE");
+    }
+
+    @Test
+    void badStageRecordDoesNotWipeHealthyRecords() {
+        Goal goal = stagedGoal("goal-abc12345", "击败末影龙", "阶段A");
+        CompletedFactStore seed = new CompletedFactStore();
+        seed.recordStage(goal, "阶段A", 1L, "c");
+        String broken = seed.toJson().replace("\"stages\":[", "\"stages\":[123,");
+        CompletedFactStore store = CompletedFactStore.fromJson(broken);
+        assertEquals(1, store.stageCount(), "一条坏记录不得把整仓清空");
+        assertTrue(store.satisfiedStageKeys(goal).contains(StageKeyNormalizer.normalize("阶段A")),
+                "正常记录必须还能被查到");
+    }
+
+    @Test
+    void mixedLineageAndDuplicateTimestampsKeepEveryEvent() {
+        Goal a = stagedGoal("goal-abc12345", "击败末影龙", "阶段A");
+        Goal b = stagedGoal("goal-abc12345", "建造基地", "阶段A");
+        CompletedFactStore store = new CompletedFactStore();
+        for (int i = 1; i <= 3; i++) {
+            store.recordSubtask(a, "阶段A", "a-" + i, 500L);   // 同一个时间戳
+            store.recordSubtask(b, "阶段A", "b-" + i, 500L);
+        }
+        List<String> kept = subtaskRaws(store.toJson());
+        assertEquals(6, kept.size(), "重复时间戳不是同一个事件，不能合并: " + kept);
+    }
+
+    private static List<String> subtaskRaws(String json) {
+        List<String> out = new java.util.ArrayList<>();
+        com.google.gson.JsonArray arr = com.google.gson.JsonParser.parseString(json)
+                .getAsJsonObject().getAsJsonArray("subtasks");
+        for (com.google.gson.JsonElement el : arr) {
+            out.add(el.getAsJsonObject().get("rawSubtask").getAsString());
+        }
+        return out;
+    }
+
+    private static String subtaskJson(int count) {
+        StringBuilder sb = new StringBuilder("{\"version\":1,\"stages\":[],\"subtasks\":[");
+        for (int i = 1; i <= count; i++) {
+            if (i > 1) sb.append(',');
+            sb.append("{\"lineageId\":\"goal-abc12345#x\",\"stageKey\":\"stageA\",\"rawSubtask\":\"subtask-")
+              .append(i).append("\",\"at\":").append(i).append('}');
+        }
+        return sb.append("]}").toString();
+    }
 }

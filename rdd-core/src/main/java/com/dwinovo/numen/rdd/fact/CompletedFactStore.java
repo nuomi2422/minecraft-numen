@@ -37,6 +37,14 @@ public final class CompletedFactStore {
 
     private final Map<String, StageFact> stages = new LinkedHashMap<>();
     private final Map<String, SubtaskFact> subtasks = new LinkedHashMap<>();
+    /**
+     * 辅助留档的**私有单调序号**（2026-11-04，CF-01）。
+     *
+     * <p>为什么不能用 {@code subtasks.size()} 当键：到 256 上限后淘汰会把 size 拉回 256，
+     * 于是下一条又用同一个键，把 256 条里的某一条覆盖掉——300 条不同二级最后只剩 255 条老的 + 1 条新的。
+     * 序号只活在内存里，不写进存档字段，读入时按数组顺序重新分配。
+     */
+    private int nextSubtaskSeq = 0;
 
     public CompletedFactStore() {}
 
@@ -59,9 +67,13 @@ public final class CompletedFactStore {
             return;
         }
         String lineage = GoalLineage.of(goal);
-        String key = StageKeyNormalizer.normalize(primaryDescription) + COMPOSITE_SEP + subtasks.size();
-        subtasks.put(lineage + COMPOSITE_SEP + key, new SubtaskFact(
+        putSubtask(new SubtaskFact(
                 lineage, StageKeyNormalizer.normalize(primaryDescription), subtaskDescription, atMillis));
+    }
+
+    /** 统一入口：私有序号分配内部键 + 有界淘汰（记录与导入共用同一规则，才会互不撞键）。 */
+    private void putSubtask(SubtaskFact fact) {
+        subtasks.put(fact.lineageId() + COMPOSITE_SEP + "u" + (nextSubtaskSeq++), fact);
         while (subtasks.size() > MAX_SUBTASK_FACTS) {
             String oldest = subtasks.keySet().iterator().next();
             subtasks.remove(oldest);
@@ -86,7 +98,9 @@ public final class CompletedFactStore {
         String fp = GoalLineage.fingerprint(goal.description());
         Set<String> similar = new LinkedHashSet<>();
         for (StageFact f : stages.values()) {
-            if (!f.goalId().equals(goal.id())) {
+            // 2026-11-04（CF-01）：导入的历史记录可能缺 goalId —— 只留档、不参与继承，
+            // 并且绝不能把整次查询打成 NPE（缺字段的旧数据不许连坐正常记录）。
+            if (f.goalId() == null || !f.goalId().equals(goal.id())) {
                 continue;
             }
             if (GoalLineage.similar(fp, f.objective())) {
@@ -99,7 +113,10 @@ public final class CompletedFactStore {
     private Set<String> keysOfLineage(String lineage) {
         Set<String> out = new LinkedHashSet<>();
         for (StageFact f : stages.values()) {
-            if (f.lineageId().equals(lineage)) {
+            if (f.goalId() == null) {
+                continue;   // 缺 goalId 的导入记录不纳入可继承阶段（CF-01）
+            }
+            if (f.lineageId() != null && f.lineageId().equals(lineage)) {
                 out.add(f.stageKey());
             }
         }
@@ -151,27 +168,44 @@ public final class CompletedFactStore {
             JsonArray sa = o.getAsJsonArray("stages");
             if (sa != null) {
                 for (JsonElement el : sa) {
-                    JsonObject j = el.getAsJsonObject();
-                    String lineage = str(j, "lineageId");
-                    String stageKey = str(j, "stageKey");
-                    if (lineage == null || stageKey == null) {
-                        continue;
+                    try {
+                        if (el == null || !el.isJsonObject()) {
+                            continue;
+                        }
+                        JsonObject j = el.getAsJsonObject();
+                        String lineage = str(j, "lineageId");
+                        String stageKey = str(j, "stageKey");
+                        if (lineage == null || stageKey == null) {
+                            continue;
+                        }
+                        store.stages.put(lineage + COMPOSITE_SEP + stageKey, new StageFact(
+                                lineage, str(j, "goalId"), str(j, "objective"), stageKey,
+                                str(j, "rawStage"), num(j, "at"), str(j, "evidence")));
+                    } catch (RuntimeException ignore) {
+                        // CF-01：单条坏阶段记录跳过即可，不许把整仓当空（那等于把历史完成事实全抹了）。
                     }
-                    store.stages.put(lineage + COMPOSITE_SEP + stageKey, new StageFact(
-                            lineage, str(j, "goalId"), str(j, "objective"), stageKey,
-                            str(j, "rawStage"), num(j, "at"), str(j, "evidence")));
                 }
             }
             JsonArray ua = o.getAsJsonArray("subtasks");
             if (ua != null) {
-                for (int i = 0; i < ua.size(); i++) {
-                    JsonObject j = ua.get(i).getAsJsonObject();
-                    String lineage = str(j, "lineageId");
-                    if (lineage == null) {
-                        continue;
+                // CF-01：超限数组只保留最近的 256 条；键由同一条私有序号规则分配，导入后继续记录不撞键。
+                int start = Math.max(0, ua.size() - MAX_SUBTASK_FACTS);
+                for (int i = start; i < ua.size(); i++) {
+                    try {
+                        JsonElement el = ua.get(i);
+                        if (el == null || !el.isJsonObject()) {
+                            continue;
+                        }
+                        JsonObject j = el.getAsJsonObject();
+                        String lineage = str(j, "lineageId");
+                        if (lineage == null) {
+                            continue;
+                        }
+                        store.putSubtask(new SubtaskFact(
+                                lineage, str(j, "stageKey"), str(j, "rawSubtask"), num(j, "at")));
+                    } catch (RuntimeException ignore) {
+                        // 同上：坏记录不连坐。
                     }
-                    store.subtasks.put(lineage + COMPOSITE_SEP + i, new SubtaskFact(
-                            lineage, str(j, "stageKey"), str(j, "rawSubtask"), num(j, "at")));
                 }
             }
         } catch (RuntimeException ex) {
