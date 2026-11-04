@@ -23,14 +23,29 @@ public final class InMemoryObservationStore implements ObservationStore {
 
     private final int capacity;
     private final Map<String, Observation> map;
+    /** 变化日志（041）：可选；为 null 时只记内存、不发变化。 */
+    private final com.dwinovo.numen.worldstate.core.changes.ChangeLog changeLog;
+    /**
+     * GONE 用的独立序号。
+     *
+     * <p>为什么不能复用观测修订号：GONE 说的是"这个键没了"，而消费者可能已经看到过
+     * 那个键的最后一个 revision——若沿用同一个数，会被 `revision <= after` 直接过滤掉，
+     * 消费者永远收不到"没了"。这里用一个只增不减的计数器保证 GONE 一定排在后面。
+     */
+    private long goneSeq = 0L;
 
     public InMemoryObservationStore() {
-        this(DEFAULT_CAPACITY);
+        this(DEFAULT_CAPACITY, null);
     }
 
     public InMemoryObservationStore(int capacity) {
+        this(capacity, null);
+    }
+
+    public InMemoryObservationStore(int capacity, com.dwinovo.numen.worldstate.core.changes.ChangeLog changeLog) {
         this.capacity = Math.max(1, capacity);
         this.map = new LinkedHashMap<>(16, 0.75f, true); // accessOrder = true → LRU
+        this.changeLog = changeLog;
     }
 
     @Override
@@ -50,6 +65,18 @@ public final class InMemoryObservationStore implements ObservationStore {
         }
         map.put(k, observation);
         evictIfNeeded();
+        if (changeLog != null) {
+            // 只有"被接受"的写入才产生变化（041 §3）；上面拒收的分支已经 return false
+            changeLog.append(new com.dwinovo.numen.worldstate.core.changes.Change(
+                    observation.revision(),
+                    observation.key().topic() == null ? "" : observation.key().topic().id(),
+                    k,
+                    current == null
+                            ? com.dwinovo.numen.worldstate.core.changes.Change.Kind.CREATED
+                            : com.dwinovo.numen.worldstate.core.changes.Change.Kind.UPDATED,
+                    observation.epochMs()));
+            if (observation.revision() > goneSeq) goneSeq = observation.revision();
+        }
         return true;
     }
 
@@ -74,6 +101,14 @@ public final class InMemoryObservationStore implements ObservationStore {
 
     @Override
     public synchronized void clear() {
+        if (changeLog != null) {
+            long now = System.currentTimeMillis();
+            for (Map.Entry<String, Observation> e : map.entrySet()) {
+                changeLog.append(new com.dwinovo.numen.worldstate.core.changes.Change(
+                        ++goneSeq, e.getValue().key().topic() == null ? "" : e.getValue().key().topic().id(),
+                        e.getKey(), com.dwinovo.numen.worldstate.core.changes.Change.Kind.GONE, now));
+            }
+        }
         map.clear();
     }
 
