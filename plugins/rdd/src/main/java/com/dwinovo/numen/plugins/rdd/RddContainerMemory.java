@@ -145,30 +145,20 @@ final class RddContainerMemory {
     /** 同一容器两次 refresh 的最小间隔（tick）：观测写入会落盘，别每 2 秒刷一次盘。 */
     private static final long OBS_REFRESH_TICKS = 200L;
     private static final Map<String, Long> OBS_AT = new ConcurrentHashMap<>();
-    private static final Map<String, Long> SHADOW_AT = new ConcurrentHashMap<>();
 
     /**
-     * 读一个容器的内容：观测优先，直读兜底，两边都有时做 shadow 比对（只记日志）。
+     * 读一个容器的内容：**观测是唯一真源**，直读只在观测不可用（能力缺席/ERROR/PENDING）时兜底。
+     *
+     * <p>2026-11-05 收口：shadow 阶段结束（实机多轮 0 差异 + D-017 修复后刷新已可靠），
+     * 不再每次都做两份读取——两份都读就永远有两个可能不一致的答案。
      *
      * @return 物品→数量（空表 = 已知为空）；两条路都读不到返回 null（**不是**空表）
      */
     private static Map<String, Integer> readContainer(NumenPlayer body, ServerLevel level,
                                                       BlockPos pos, long gameTime) {
         Map<String, Integer> observed = readViaObservation(body, pos, gameTime);
-        Map<String, Integer> direct = readDirect(level, pos);
-        boolean mismatch = observed != null && direct != null && !observed.equals(direct);
-        if (mismatch) {
-            String key = pos.getX() + "," + pos.getY() + "," + pos.getZ();
-            long now = System.currentTimeMillis();
-            Long last = SHADOW_AT.get(key);
-            if (last == null || now - last > 30_000L) {
-                SHADOW_AT.put(key, now);
-                LOG.warn("[rdd-storage] shadow mismatch at {}: direct={} observed={}", key, direct, observed);
-            }
-        }
-        // 不一致时**以直读为准**：观测还没被证明可靠前，不让旧快照盖住眼前的真东西。
-        if (mismatch) return direct != null ? direct : observed;
-        return observed != null ? observed : direct;
+        if (observed != null) return observed;
+        return readDirect(level, pos);
     }
 
     private static Map<String, Integer> readViaObservation(NumenPlayer body, BlockPos pos, long gameTime) {
