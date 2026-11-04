@@ -27,6 +27,11 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 final class RddSituationFacts {
 
+    // 2026-11-04（037/T8b 收尾）：原来借 core:common 的 Constants.LOG，等于为了打日志
+    // 也要依赖别人的内部类；插件用自己的 logger，依赖面才能真的收掉。
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(RddSituationFacts.class);
+
     static final long DEBOUNCE_MS = 60_000L;
     static final int LOW_HP = 6;
     /** 饥饿值 <= 6 视为「没食物」（原版 20 满，6 以下不能疾跑）。 */
@@ -77,7 +82,7 @@ final class RddSituationFacts {
             }
         } catch (RuntimeException ex) {
             // 观测失败不能拖垮 tick；但也别静默到查无此人
-            com.dwinovo.numen.core.Constants.LOG.info("[rdd-situation] tick FAILED: {}", ex.toString());
+            LOG.info("[rdd-situation] tick FAILED: {}", ex.toString());
         }
     }
 

@@ -22,9 +22,11 @@ dependencies {
     // （第一代 plugins/ac + ac-api + ac-core 已于 2026-10-08 删除，AC 执行层现为 plugins:acx）。
     // 不内嵌共享 core 是为了避免同装时出现重复包（历史 JPMS ResolutionException）。
     implementation project(':rdd-core')
-    // 2026-10-25：只**编译期**引用共享 core（不内嵌，避免重复包）。
-    // 用途：容器存货要走 QueryExtraOps.inspectBlockStorage 这条**已被证明能读箱子**的路。
-    compileOnly project(':core:common')
+    // 2026-11-04（037/T8b 收尾）：**不再依赖 core:common**。
+    //   原用途两条都已换成公开面：
+    //   ①容器存货原来 new core 内部工具 QueryExtraOps → 现走 api 的 ContainerReader；
+    //   ②日志原来借 core Constants.LOG → 现用插件自己的 slf4j logger。
+    //   删掉这条依赖意味着"RDD 插件不再看 core 的内部类型"，将来谁想加回来，编译期就会挡住他。
     // 2026-10-29（revive）：复活通道要用 entity 包（CompanionFactory/CompanionRegistry），
     //   它们只在 api:common 里；本插件原本只看到 core:common，所以显式补一条 compileOnly（不内嵌）。
     compileOnly project(':api:common')

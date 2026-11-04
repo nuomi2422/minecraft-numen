@@ -24,6 +24,10 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 final class RddRepairDispatch {
 
+    // 2026-11-04（037/T8b 收尾）：不再借 core:common 的 Constants.LOG。
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(RddRepairDispatch.class);
+
     private RddRepairDispatch() {}
 
     /** \u6bcf\u540c\u4f34\u7684\u6700\u8fd1\u652f\u7ebf\u4efb\u52a1\uff08\u89c2\u6d4b/\u751f\u6210\u53bb\u91cd\u7528\uff09\u3002 */
@@ -290,8 +294,7 @@ final class RddRepairDispatch {
             // 2026-10-28：日志必须在**所有早退之前**。
             // 上一版把 start 日志放在 `latest == null || lostItems().isEmpty()` 之后，
             // 结果"一次都没打印"——我差点又把它读成"没被调用"，其实是被这道早退挡在了前面。
-            com.dwinovo.numen.core.Constants.LOG.info(
-                    "[rdd-repair] recompute-from-ledger enter companion={}", companionId);
+            LOG.info("[rdd-repair] recompute-from-ledger enter companion={}", companionId);
             if (companionId == null) return;
             // ★ 2026-10-28（静态定案）：死亡台账是**懒加载**的，加载点只有两处 ——
             //   ① onDeath（死亡那一刻；重启后这条路不会再走）；
@@ -301,8 +304,7 @@ final class RddRepairDispatch {
             RddPlugin.ensureLedgerLoaded(companionId);
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death latest =
                     com.dwinovo.numen.rdd.core.RddDeathLedger.latest(companionId);
-            com.dwinovo.numen.core.Constants.LOG.info(
-                    "[rdd-repair] latest={} lostKinds={}",
+            LOG.info("[rdd-repair] latest={} lostKinds={}",
                     latest == null ? "null" : latest.seq(),
                     latest == null ? -1 : latest.lostItems().size());
             if (latest == null || latest.lostItems().isEmpty()) return;
@@ -312,13 +314,11 @@ final class RddRepairDispatch {
             }
             LAST_RECOMPUTED.put(companionId, (long) latest.seq());
             var impact = recomputeAfterDeath(companionId, counts, false, "restart", latest.seq());
-            com.dwinovo.numen.core.Constants.LOG.info(
-                    "[rdd-repair] recompute-from-ledger done companion={} seq={} impact={}",
+            LOG.info("[rdd-repair] recompute-from-ledger done companion={} seq={} impact={}",
                     companionId, latest.seq(), impact == null ? "null" : impact.recommendation());
         } catch (RuntimeException e) {
             // fail-soft：兜底不能拖垮 tick；但把异常打出来（原来这里是静默的，导致整条链无迹可查）
-            com.dwinovo.numen.core.Constants.LOG.info(
-                    "[rdd-repair] recompute-from-ledger FAILED companion={} : {}", companionId, e.toString());
+            LOG.info("[rdd-repair] recompute-from-ledger FAILED companion={} : {}", companionId, e.toString());
         }
     }
     static LossImpactAnalyzer.LossImpact recomputeAfterDeath(UUID companionId,
