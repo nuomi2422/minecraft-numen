@@ -61,6 +61,7 @@ public final class ObservableStoreV2 implements ObservationStore {
             return false;
         }
         map.put(k, observation);
+        evictIfNeeded(true);   // 实时写入路径：淘汰要发 INVALIDATE
         if (feed != null) {
             feed.append(
                     observation.key().topic() == null ? "" : observation.key().topic().id(),
@@ -69,7 +70,6 @@ public final class ObservableStoreV2 implements ObservationStore {
                     observation.revision(),
                     observation.epochMs());
         }
-        evictIfNeeded();
         return true;
     }
 
@@ -84,7 +84,9 @@ public final class ObservableStoreV2 implements ObservationStore {
             if (o == null || o.key() == null) continue;
             map.put(o.key().canonical(), o);
         }
-        evictIfNeeded();
+        // 静默淘汰：载入是历史快照，不是世界变化；这里淘汰也不能发事件，
+        // 否则启动载入上千条会在消费者还不存在时灌进一堆 INVALIDATE，还白占 streamSeq（042 R3-1）。
+        evictIfNeeded(false);
     }
 
     @Override
@@ -132,11 +134,11 @@ public final class ObservableStoreV2 implements ObservationStore {
      *
      * <p>淘汰不产生 {@code GONE}：那表示世界里真的没了，缓存淘汰不是世界事件。
      */
-    private void evictIfNeeded() {
+    private void evictIfNeeded(boolean emit) {
         while (map.size() > capacity) {
             String eldest = map.keySet().iterator().next();
             Observation removed = map.remove(eldest);
-            if (feed != null && removed != null) {
+            if (emit && feed != null && removed != null) {
                 feed.append(
                         removed.key().topic() == null ? "" : removed.key().topic().id(),
                         eldest,

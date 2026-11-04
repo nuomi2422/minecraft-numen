@@ -76,6 +76,19 @@ class ObservableStoreV2Test {
     }
 
     @Test
+    void loadAllEvictionIsSilent() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        InMemoryChangeFeed feed = new InMemoryChangeFeed("e1", 16, 60_000L, clock::get);
+        ObservableStoreV2 store = new ObservableStoreV2(2, feed);
+
+        store.loadAll(List.of(obs("box=1", 1), obs("box=2", 2), obs("box=3", 3)));
+
+        assertEquals(2, store.size());
+        assertEquals(0, feed.query(0, "e1", null, 10).events().size(),
+                "载入时的淘汰必须静默：它是历史快照，不是世界变化（042 R3-1）");
+    }
+
+    @Test
     void watermarkThenAppendIsVisibleToNextQuery() {
         AtomicLong clock = new AtomicLong(1_000L);
         InMemoryChangeFeed feed = new InMemoryChangeFeed("e1", 16, 60_000L, clock::get);
