@@ -94,9 +94,12 @@ public final class BlockCountWorldProvider implements WorldProvider {
                             counts.merge(spec, 1, Integer::sum);
                             if (samplesPerSpec > 0) {
                                 var list = samples.computeIfAbsent(spec, k -> new java.util.ArrayList<>());
-                                if (list.size() < samplesPerSpec) {
-                                    list.add(spec + "@" + cursor.getX() + "," + cursor.getY() + "," + cursor.getZ());
-                                }
+                                BlockSpec.insertNearest(list,
+                                        spec + "@" + cursor.getX() + "," + cursor.getY() + "," + cursor.getZ(),
+                                        samplesPerSpec,
+                                        (box.minX() + box.maxX()) / 2,
+                                        (box.minY() + box.maxY()) / 2,
+                                        (box.minZ() + box.maxZ()) / 2);
                             }
                         }
                     }
@@ -105,6 +108,9 @@ public final class BlockCountWorldProvider implements WorldProvider {
         }
         java.util.List<String> flatSamples = new java.util.ArrayList<>();
         for (var e : samples.entrySet()) flatSamples.addAll(e.getValue());
+        // 按到盒子中心的距离排序（中心≈请求者位置），让"最近几格"可用；上限仍然是每规格 N 个。
+        flatSamples = new java.util.ArrayList<>(BlockSpec.sortByDistance(flatSamples,
+                (box.minX() + box.maxX()) / 2, (box.minY() + box.maxY()) / 2, (box.minZ() + box.maxZ()) / 2));
         Coverage coverage = skipped == 0 ? Coverage.COMPLETE : Coverage.PARTIAL;
         BlockCountPayload payload = new BlockCountPayload(request.dimension(), box, specs, counts, scanned, skipped,
                 flatSamples);
