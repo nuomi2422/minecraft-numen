@@ -82,7 +82,10 @@ final class RddContainerMemory {
         try {
             var svc = com.dwinovo.numen.api.NumenPlugins.capability(
                     com.dwinovo.numen.api.observation.WorldObservationService.class);
-            if (svc == null) return false;
+            if (svc == null) {
+                LOG_CHANGE.maybe(id, "capability = null（观测能力没拿到）");
+                return false;
+            }
             long cursor = CHANGE_CURSOR.getOrDefault(id, 0L);
             var resp = svc.changes(cursor, java.util.List.of("containers"), 64);
             if (resp == null
@@ -100,6 +103,7 @@ final class RddContainerMemory {
             }
             return !resp.changes().isEmpty();
         } catch (RuntimeException | LinkageError e) {
+            LOG_CHANGE.maybe(id, "poll 失败: " + e);
             return false;
         }
     }
