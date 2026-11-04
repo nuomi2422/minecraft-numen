@@ -42,6 +42,33 @@ final class RddDangerFacts {
     /** 观测不可用而走本地兜底的次数（按同伴），只用于诊断。 */
     private static final Map<java.util.UUID, Integer> LOG_LOCAL_AT = new java.util.concurrent.ConcurrentHashMap<>();
 
+    /**
+     * 危险块**只在真的弹出来时**发一条事件（内容变化才发）。
+     *
+     * <p>为什么要有：这是保命块，但"它到底有没有弹"以前只能靠上下文日志里翻。
+     * 有了事件，验 D-018 这种"游戏里到底会不会报警"的问题不用再猜。
+     */
+    private static void publishIfChanged(NumenPlayer body, String text, int hostiles, int close, int pct) {
+        if (text == null || text.isEmpty()) return;
+        String signature = hostiles + "/" + close + "/" + pct + "/" + text.length();
+        String prev = LAST_PUBLISHED.put(body.getUUID(), signature);
+        if (signature.equals(prev)) return;
+        java.util.Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("companionId", body.getUUID().toString());
+        data.put("hostiles", hostiles);
+        data.put("close", close);
+        data.put("healthPercent", pct);
+        data.put("text", text);
+        try {
+            RddMonitor.publish("danger_rendered", data);
+        } catch (RuntimeException ignored) {
+            // 事件发不出去不影响上下文
+        }
+    }
+
+    private static final Map<java.util.UUID, String> LAST_PUBLISHED =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     /** 本地兜底：返回 {@code [hostiles, close]}；读不到返回 null。 */
     private static int[] localHostiles(NumenPlayer body, net.minecraft.server.level.ServerLevel level) {
         try {
@@ -170,7 +197,9 @@ final class RddDangerFacts {
                 shown++;
             }
             int pct = Math.round(body.getHealth() / Math.max(1f, body.getMaxHealth()) * 100f);
-            return RddDangerText.block(hostiles, close, pct, kindText.toString());
+            String text = RddDangerText.block(hostiles, close, pct, kindText.toString());
+            publishIfChanged(body, text, hostiles, close, pct);
+            return text;
         } catch (RuntimeException ex) {
             return "";   // 增强块，绝不能拖崩上下文构建
         }
