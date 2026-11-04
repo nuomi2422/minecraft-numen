@@ -37,9 +37,20 @@ public record ObservationRequest(Topic topic, String dimension, String target, S
 
     /** 方块状态请求：范围内的方块（可选只匹配某方块 id / tag）。 */
     public static ObservationRequest blocks(String dimension, Bounds box, String blockFilter) {
+        return blocks(dimension, box, blockFilter, 0);
+    }
+
+    /**
+     * 同上，并要求采集器带回**位置样本**（每个规格最多 {@code samples} 个）。
+     *
+     * <p>为什么要位置：农田/采矿这类消费者不只是问"有多少"，还要问"要去哪一格"。
+     * 计数与位置分开放（计数全量、样本有上限），不把整个范围搬进观测。
+     */
+    public static ObservationRequest blocks(String dimension, Bounds box, String blockFilter, int samples) {
         if (box == null) throw new IllegalArgumentException("bounds required for blocks");
         String f = blockFilter == null || blockFilter.isBlank() ? "" : "block=" + blockFilter.trim();
-        return new ObservationRequest(Topic.BLOCKS, dimension, "box=" + box.canonical(), f, box);
+        String target = "box=" + box.canonical() + (samples > 0 ? " samples=" + samples : "");
+        return new ObservationRequest(Topic.BLOCKS, dimension, target, f, box);
     }
 
     /**

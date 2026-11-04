@@ -120,6 +120,13 @@ public final class ObservationCapability implements WorldObservationService {
             Map<String, Object> values = new LinkedHashMap<>();
             values.put("block", e.getKey());
             values.put("count", e.getValue());
+            if (!payload.samplePositions().isEmpty()) {
+                List<String> mine = new ArrayList<>();
+                for (String s : payload.samplePositions()) {
+                    if (s.startsWith(e.getKey() + "@")) mine.add(s.substring(e.getKey().length() + 1));
+                }
+                values.put("samples", mine);
+            }
             items.add(stale ? new Item(values, Set.of(), values.keySet()) : Item.of(values));
         }
         var mapped = ObservationMap.map(rr.coverage(), rr.freshness(), true);
@@ -285,7 +292,13 @@ public final class ObservationCapability implements WorldObservationService {
             return null;
         }
         var bounds = new com.dwinovo.numen.worldstate.core.model.Bounds(c[0], c[1], c[2], c[3], c[4], c[5]);
-        return ObservationRequest.blocks(request.dimension(), bounds, idsRaw);
+        int samples = 0;
+        try {
+            samples = Integer.parseInt(request.selector().getOrDefault("samples", "0").trim());
+        } catch (NumberFormatException ignored) {
+            samples = 0;
+        }
+        return ObservationRequest.blocks(request.dimension(), bounds, idsRaw, Math.max(0, Math.min(32, samples)));
     }
 
     private static String snapshotId(ReadResult rr) {

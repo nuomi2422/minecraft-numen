@@ -22,11 +22,23 @@ import java.util.Map;
  * @param skippedColumns 因区块未加载而跳过的列数
  */
 public record BlockCountPayload(String dimension, Bounds box, java.util.List<String> blockIds,
-                                Map<String, Integer> counts, int scannedColumns, int skippedColumns)
+                                Map<String, Integer> counts, int scannedColumns, int skippedColumns,
+                                java.util.List<String> samplePositions)
         implements ObservationPayload {
 
+    /** 兼容旧调用：不带位置样本。 */
+    public BlockCountPayload(String dimension, Bounds box, java.util.List<String> blockIds,
+                             Map<String, Integer> counts, int scannedColumns, int skippedColumns) {
+        this(dimension, box, blockIds, counts, scannedColumns, skippedColumns, java.util.List.of());
+    }
+
+    /**
+     * @param samplePositions 命中的**少量位置样本**（形如 {@code <spec>@x,y,z}），给"要去哪一格"用；
+     *                        计数仍是全量，但样本有上限——不把整个范围搬进观测
+     */
     public BlockCountPayload {
         blockIds = blockIds == null ? java.util.List.of() : java.util.List.copyOf(blockIds);
+        samplePositions = samplePositions == null ? java.util.List.of() : java.util.List.copyOf(samplePositions);
         Map<String, Integer> copy = new LinkedHashMap<>();
         if (counts != null) {
             copy.putAll(counts);

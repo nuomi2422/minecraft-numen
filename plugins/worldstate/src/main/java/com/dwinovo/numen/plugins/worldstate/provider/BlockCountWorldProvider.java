@@ -76,6 +76,10 @@ public final class BlockCountWorldProvider implements WorldProvider {
 
         Map<String, Integer> counts = new LinkedHashMap<>();
         for (String spec : specs) counts.put(spec, 0);
+        // 位置样本（039 U5#8 收尾）：每规格最多 SAMPLE_LIMIT 个，供"要去哪一格"用。
+        // 只有请求里带了 samples=N 才收集，默认不收集——不把位置当默认输出。
+        int samplesPerSpec = Math.max(0, Math.min(32, selectorSamples(request)));
+        java.util.Map<String, java.util.List<String>> samples = new LinkedHashMap<>();
         for (int x = box.minX(); x <= box.maxX(); x++) {
             for (int y = box.minY(); y <= box.maxY(); y++) {
                 for (int z = box.minZ(); z <= box.maxZ(); z++) {
@@ -88,13 +92,22 @@ public final class BlockCountWorldProvider implements WorldProvider {
                         // 同一个方块可能同时命中多条规格（无状态 spec 与前缀），都记上
                         if (matches(state, id, spec)) {
                             counts.merge(spec, 1, Integer::sum);
+                            if (samplesPerSpec > 0) {
+                                var list = samples.computeIfAbsent(spec, k -> new java.util.ArrayList<>());
+                                if (list.size() < samplesPerSpec) {
+                                    list.add(spec + "@" + cursor.getX() + "," + cursor.getY() + "," + cursor.getZ());
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+        java.util.List<String> flatSamples = new java.util.ArrayList<>();
+        for (var e : samples.entrySet()) flatSamples.addAll(e.getValue());
         Coverage coverage = skipped == 0 ? Coverage.COMPLETE : Coverage.PARTIAL;
-        BlockCountPayload payload = new BlockCountPayload(request.dimension(), box, specs, counts, scanned, skipped);
+        BlockCountPayload payload = new BlockCountPayload(request.dimension(), box, specs, counts, scanned, skipped,
+                flatSamples);
         return ProviderResult.of(payload, coverage);
     }
 
@@ -121,6 +134,24 @@ public final class BlockCountWorldProvider implements WorldProvider {
             if (!actual.equalsIgnoreCase(e.getValue())) return false;
         }
         return true;
+    }
+
+    /**
+     * 位置样本上限从哪来：采集器只认 {@link ObservationRequest#target()} 里的
+     * `samples=N` 记号（blocks 的 target 目前是 `box=…`）。
+     *
+     * <p>为什么不用 selector：`ObservationRequest` 没有 selector，只有 target/filter 两个串；
+     * 把采样上限拼进 target 是这里能拿到的最少改动。
+     */
+    private static int selectorSamples(ObservationRequest request) {
+        String t = request == null ? "" : request.target();
+        if (t == null) return 0;
+        int i = t.indexOf("samples=");
+        if (i < 0) return 0;
+        int end = i + "samples=".length();
+        int j = end;
+        while (j < t.length() && Character.isDigit(t.charAt(j))) j++;
+        return j == end ? 0 : Integer.parseInt(t.substring(end, j));
     }
 
     private static void addSpec(List<String> out, String raw) {
