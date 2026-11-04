@@ -28,6 +28,40 @@ import java.util.function.Consumer;
  */
 final class LearnerFactShadowTool implements NumenTool {
 
+    /** 对账器类名（rdd-core 提供）。抽成常量是为了让"缺席降级"能被单测直接构造。 */
+    static final String RECONCILER_CLASS = "com.dwinovo.numen.rdd.fact.FactShadowReconciler";
+
+    /** rdd 插件没加载：**不是** "没有差异"，是 "没法对账"。 */
+    static final class MissingReconciler extends Exception {
+        MissingReconciler(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    /**
+     * 反射调用对账器（037/T16 抽出的接缝：让"rdd 缺席"这条降级路径可测）。
+     *
+     * @throws MissingReconciler 类不在（rdd 插件未加载）
+     * @throws ReflectiveOperationException 类在但签名不对/调用失败
+     */
+    static Object reconcile(Path facts, Path ledger, String className)
+            throws MissingReconciler, ReflectiveOperationException {
+        Class<?> c;
+        try {
+            c = Class.forName(className);
+        } catch (ClassNotFoundException | NoClassDefFoundError e) {
+            throw new MissingReconciler("reconciler absent: " + className, e);
+        }
+        java.lang.reflect.Method m = c.getMethod("reconcile", Path.class, Path.class);
+        try {
+            return m.invoke(null, facts, ledger);
+        } catch (LinkageError e) {
+            // 版本不兼容：类在、方法签名却对不上（NoSuchMethodError/IncompatibleClassChangeError）。
+            // 这同样是"没法对账"，不能让它冒出去把工具调用打成崩。
+            throw new MissingReconciler("reconciler incompatible: " + className + " (" + e + ")", e);
+        }
+    }
+
     @Override
     public String name() {
         return "learner_fact_shadow";
@@ -66,10 +100,8 @@ final class LearnerFactShadowTool implements NumenTool {
             //   直接 import 的话 rdd 插件缺席就是 NoClassDefFoundError（今天刚踩过这个坑）。
             Object report;
             try {
-                Class<?> c = Class.forName("com.dwinovo.numen.rdd.fact.FactShadowReconciler");
-                java.lang.reflect.Method m = c.getMethod("reconcile", Path.class, Path.class);
-                report = m.invoke(null, facts, ledger);
-            } catch (ClassNotFoundException | NoClassDefFoundError e) {
+                report = reconcile(facts, ledger, RECONCILER_CLASS);
+            } catch (MissingReconciler e) {
                 // 显式降级：说清缺什么、为什么不能对账，不崩也不假装
                 reply.accept(TaskResult.fail("对账器不可用：rdd 插件未加载（共同事实对账依赖 rdd-core）。"
                         + "这不是「没有差异」，而是「没法对账」。").toJson());
