@@ -24,6 +24,15 @@ public interface ObservationStore {
 
     List<Observation> all();
 
+    /**
+     * 当前存储里的最大修订号（没有观测时返回 0）。
+     *
+     * <p>用途：进程重启后，{@code RefreshService} 的序列号要从这里**接着数**——
+     * 否则新进程从 1 开始，而磁盘里载入的观测修订号早已是几十上百，{@code put} 会判定
+     * "新观测更旧"而**静默丢弃一切刷新**（2026-11-05 实机事故：重启后观测永远刷不动）。
+     */
+    long maxRevision();
+
     int size();
 
     void clear();

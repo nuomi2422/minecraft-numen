@@ -162,6 +162,11 @@ public final class ObservationCapability implements WorldObservationService {
         }
         try {
             var result = host.refresh(mc, req);
+            // 039 诊断（限频在调用方）：只报结果，不刷屏
+            com.dwinovo.numen.plugins.worldstate.WorldStateMonitor.publish("cap_refresh", Map.of(
+                    "topic", request.topic(),
+                    "ok", result != null && result.success(),
+                    "status", result == null ? "null" : result.status().name()));
             if (result != null && !result.success()) {
                 return Response.error(request.topic(), "refresh failed: " + result.message()
                         + " (" + result.reason() + ")");

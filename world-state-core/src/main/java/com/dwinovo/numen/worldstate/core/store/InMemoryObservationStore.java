@@ -59,6 +59,15 @@ public final class InMemoryObservationStore implements ObservationStore {
     }
 
     @Override
+    public synchronized long maxRevision() {
+        long max = 0L;
+        for (Observation o : map.values()) {
+            if (o != null && o.revision() > max) max = o.revision();
+        }
+        return max;
+    }
+
+    @Override
     public synchronized int size() {
         return map.size();
     }

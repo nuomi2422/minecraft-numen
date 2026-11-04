@@ -46,13 +46,16 @@ public final class RefreshService {
     private final ObservationStore store;
     private final Executor executor;
     /** 修订号：按请求被采纳的先后单调递增，让迟到的旧刷新无法覆盖新观测。 */
-    private final AtomicLong sequence = new AtomicLong();
+    private final AtomicLong sequence = new AtomicLong();   // 构造时按存储最大修订号续号
     private final ConcurrentHashMap<String, CompletableFuture<RefreshResult>> inFlight = new ConcurrentHashMap<>();
 
     public RefreshService(ProviderRegistry providers, ObservationStore store, Executor executor) {
         this.providers = providers;
         this.store = store;
         this.executor = executor;
+        // 重启后从存储里的最大修订号接着数：否则新进程从 1 开始，而磁盘里的观测早已是几十上百，
+        // put() 会按"新观测更旧"拒收，表现为**刷新全都无声失败**（2026-11-05 实机事故）。
+        this.sequence.set(store == null ? 0L : store.maxRevision());
     }
 
     /** 同步采集（宿主工具用；必须在服务端线程调用，采集器要读真实世界）。 */
