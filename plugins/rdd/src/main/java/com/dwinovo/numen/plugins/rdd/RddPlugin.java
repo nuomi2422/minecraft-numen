@@ -208,10 +208,20 @@ public final class RddPlugin implements NumenPlugin {
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
         // 039：末地打法从 env 挪出来（它是知识，不是环境事实），改为随插件下发的技能。
         try {
-            var skills = net.neoforged.fml.ModList.get().getModFileById("rdd").getFile().findResource("skills");
-            if (skills != null) numen.bundleSkills(skills);
-        } catch (RuntimeException | LinkageError ignored) {
-            // 技能下发失败不影响主流程；env 里已经不再硬编码攻略，缺技能只是少了提示
+            var mod = net.neoforged.fml.ModList.get().getModFileById("rdd");
+            if (mod == null) {
+                LOG.warn("[rdd] skill bundle skipped: mod file 'rdd' not found");
+            } else {
+                var skills = mod.getFile().findResource("skills");
+                if (skills == null) {
+                    LOG.warn("[rdd] skill bundle skipped: resource 'skills' not found in jar");
+                } else {
+                    numen.bundleSkills(skills);
+                    LOG.info("[rdd] bundled skills root declared: {}", skills);
+                }
+            }
+        } catch (RuntimeException | LinkageError e) {
+            LOG.warn("[rdd] skill bundle failed: {}", e.toString());
         }
         numen.registerTool(new RddStatusTool());
         numen.registerTool(new RddSubmitTool());
