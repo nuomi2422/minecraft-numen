@@ -12,8 +12,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * 「附近容器里有什么」——把**放进箱子里的东西**重新带回 AI 的上下文。
@@ -45,11 +43,9 @@ final class RddContainerMemory {
     private static final int MAX_TYPES = 10;
     /** 两次扫描的最小间隔（tick）——约 2 秒。 */
     private static final long REFRESH_TICKS = 40L;
-    /** 工具返回行形如 "  slot 0: minecraft:iron_ingot x9"。 */
-    private static final Pattern SLOT_LINE =
-            Pattern.compile("([a-z0-9_.-]+:[a-z0-9_./-]+)\\s*x\\s*(\\d+)");
-
     private static final Map<UUID, String> CACHE = new ConcurrentHashMap<>();
+    /** 同一份扫描的结构化计数（037/T14）：上下文要文字，规划要数字，两边不许走不同的解析路。 */
+    private static final Map<UUID, Map<String, Integer>> COUNTS = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> LAST_REFRESH = new ConcurrentHashMap<>();
 
     private RddContainerMemory() {}
@@ -62,7 +58,9 @@ final class RddContainerMemory {
         if (last != null && gameTime - last < REFRESH_TICKS) return;
         LAST_REFRESH.put(id, gameTime);
         try {
-            CACHE.put(id, scan(body));
+            Scan scan = scan(body);
+            CACHE.put(id, scan.text());
+            COUNTS.put(id, scan.counts());
         } catch (RuntimeException | LinkageError ex) {
             // 读世界失败不影响主链路；保留上一次缓存（宁可旧一点，也不要突然说"没有"）
             LOG.warn("[rdd-storage] 扫描失败 {}: {}", id, ex.toString());
@@ -76,16 +74,32 @@ final class RddContainerMemory {
         return s == null ? "" : s;
     }
 
+    /**
+     * 上下文/规划共用的结构化计数：物品 id（带 {@code minecraft:} 前缀）→ 数量。
+     * 没有缓存时返回空表（调用方按"没看见"处理，不要当"确认没有"）。
+     */
+    static Map<String, Integer> cachedCounts(UUID companionId) {
+        if (companionId == null) return Map.of();
+        Map<String, Integer> counts = COUNTS.get(companionId);
+        return counts == null ? Map.of() : counts;
+    }
+
     static void clear(UUID companionId) {
         if (companionId == null) return;
         CACHE.remove(companionId);
+        COUNTS.remove(companionId);
         LAST_REFRESH.remove(companionId);
     }
 
+    /** 一次扫描的双产物：给人看的文字 + 给规划用的计数。 */
+    private record Scan(String text, Map<String, Integer> counts) {
+    }
+
     /** 真正扫世界（**只在主线程调**）。 */
-    private static String scan(NumenPlayer body) {
+    private static Scan scan(NumenPlayer body) {
         ServerLevel level = body.serverLevel();
         List<String> lines = new ArrayList<>();
+        Map<String, Integer> totals = new LinkedHashMap<>();
         BlockPos origin = body.blockPosition();
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
         int hits = 0;
@@ -117,6 +131,7 @@ final class RddContainerMemory {
                     }
                     Map<String, Integer> counts = read.items();
                     if (counts.isEmpty()) continue;
+                    counts.forEach((item, n) -> totals.merge(item, n, Integer::sum));
                     StringBuilder sb = new StringBuilder();
                     int listed = 0;
                     for (Map.Entry<String, Integer> e : counts.entrySet()) {
@@ -130,7 +145,7 @@ final class RddContainerMemory {
             }
         }
         LOG.info("[rdd-storage] 扫描 原点={} 箱子命中={} 成行={}", origin, hits, lines.size());
-        if (lines.isEmpty()) return "";
+        if (lines.isEmpty()) return new Scan("", Map.of());
         StringBuilder out = new StringBuilder("<storage nearby=\"").append(lines.size()).append("\">")
                 .append("你身边的容器里放着：");
         for (int i = 0; i < lines.size(); i++) {
@@ -138,41 +153,11 @@ final class RddContainerMemory {
             out.append(lines.get(i));
         }
         out.append("。这些**不在背包里**，要用得先走过去取；别重复去造/挖已有的存货。</storage>");
-        return out.toString();
+        return new Scan(out.toString(), Map.copyOf(totals));
     }
 
-    /** 按 "items #N" 分段；内容签名相同的段只保留一份。 */
-    static String dedupeSections(String dump) {
-        String[] raw = dump.split("(?m)^items");
-        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < raw.length; i++) {
-            String section = i == 0 ? "" : raw[i];
-            String sig = section.replaceAll("\\(sides:[^)]*\\)", "").trim();
-            if (!seen.add(sig)) continue;
-            out.append(section);
-        }
-        return out.length() == 0 ? dump : out.toString();
-    }
-
-    /** 从工具文本里抽出「物品 id × 数量」，按 id 汇总（同一物品可能占多个 slot）。 */
-    static Map<String, Integer> parseSlotLines(String dump) {
-        Map<String, Integer> counts = new LinkedHashMap<>();
-        if (dump == null || dump.isBlank()) return counts;
-        // 2026-10-25：加载器会按**每个面**各返回一个 handler 包装，同一个箱子因此在 dump 里
-        // 重复出现（1 把锄头读成 ×7、9 个铁锭读成 ×63）。读取侧已按内容去重，这里再兜一层：
-        // 把 "items #N …" 分段，**内容完全相同的段只算一次**（真正的双箱两半内容不同，不会误合）。
-        Matcher m = SLOT_LINE.matcher(dedupeSections(dump));
-        while (m.find()) {
-            int n;
-            try {
-                n = Integer.parseInt(m.group(2));
-            } catch (NumberFormatException ex) {
-                continue;
-            }
-            if (n <= 0) continue;
-            counts.merge(m.group(1), n, Integer::sum);
-        }
-        return counts;
-    }
+    // 2026-11-04（037/T14）：删掉 dedupeSections / parseSlotLines。
+    // 它们是"从人读文本里抠数字"的产物，而渲染用的是 '×'（U+00D7），正则要的却是 ASCII 'x'
+    // —— 所以 RddFutureNeeds 这条消费链一直解析出空表，"存起来的东西对规划不可见"。
+    // 现在扫描同时产出结构化计数（Scan.counts），消费者直接读数字，不再有文本可解析错。
 }

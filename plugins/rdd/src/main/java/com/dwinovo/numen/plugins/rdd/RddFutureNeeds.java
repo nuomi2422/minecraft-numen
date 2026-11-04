@@ -56,8 +56,10 @@ final class RddFutureNeeds {
                 SIGNATURE.remove(companionId);
                 return;
             }
-            Map<String, Integer> nearby = RddContainerMemory.parseSlotLines(
-                    RddContainerMemory.cached(companionId));
+            // 2026-11-04（037/T14）：直接读扫描产出的结构化计数。
+            // 老做法是从缓存的人读文本里用正则抠数字，而文本用的是 '×'、正则要 ASCII 'x' ——
+            // 那条链一直得到空表，等于"箱子里的存货对未来规划不可见"。
+            Map<String, Integer> nearby = RddContainerMemory.cachedCounts(companionId);
             List<FutureNeedScanner.Sighting> hits = FutureNeedScanner.scan(future, inventory, nearby);
             if (hits.isEmpty()) {
                 BLOCK.remove(companionId);
