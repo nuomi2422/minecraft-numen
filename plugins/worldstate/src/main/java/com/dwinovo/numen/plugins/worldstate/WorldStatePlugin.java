@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.worldstate;
 
 import com.dwinovo.numen.api.NumenApi;
 import com.dwinovo.numen.api.NumenPlugin;
+import com.dwinovo.numen.api.observation.WorldObservationService;
 import com.dwinovo.numen.plugins.worldstate.probe.ProbeService;
 import com.dwinovo.numen.plugins.worldstate.tool.WorldProbeTool;
 import com.dwinovo.numen.plugins.worldstate.tool.WorldStateTool;
@@ -24,6 +25,19 @@ public final class WorldStatePlugin implements NumenPlugin {
         WorldStateMod.bindService(service);
         numen.registerTool(new WorldStateTool(service));
         numen.registerTool(new WorldProbeTool(new ProbeService()));
-        LOG.info("[worldstate] registered; store={} topics={} + world_probe catalog", service.file(), service.topics());
+        // 039 U1：把只读观测能力登记到公开取用口（当前只接 environment，其它主题明确 ERROR）。
+        WorldObservationService previous = numen.capability(WorldObservationService.class,
+                new ObservationCapability(service, () -> {
+                    try {
+                        return net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
+                    } catch (RuntimeException | LinkageError e) {
+                        return null;
+                    }
+                }));
+        if (previous != null) {
+            LOG.warn("[worldstate] replaced an existing WorldObservationService: {}", previous.getClass().getName());
+        }
+        LOG.info("[worldstate] registered; store={} topics={} + world_probe catalog + observation capability",
+                service.file(), service.topics());
     }
 }
