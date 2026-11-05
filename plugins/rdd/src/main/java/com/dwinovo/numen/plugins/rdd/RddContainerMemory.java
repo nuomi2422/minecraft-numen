@@ -152,8 +152,12 @@ final class RddContainerMemory {
         POLLERS.remove(companionId);
     }
 
-    /** 一次扫描的双产物：给人看的文字 + 给规划用的计数。 */
-    private record Scan(String text, Map<String, Integer> counts) {
+    /** 一次扫描的产物：给人看的文字 + 给规划用的计数 + **这批数字有没有来自直读兜底**。 */
+    private record Scan(String text, Map<String, Integer> counts, boolean anyDirect) {
+    }
+
+    /** 一个容器的读结果：计数 + 出处（观测 / 直读兜底）。 */
+    private record ContainerRead(Map<String, Integer> counts, boolean direct) {
     }
 
     /** 真正扫世界（**只在主线程调**）。 */
@@ -161,6 +165,7 @@ final class RddContainerMemory {
         ServerLevel level = body.serverLevel();
         List<String> lines = new ArrayList<>();
         Map<String, Integer> totals = new LinkedHashMap<>();
+        boolean anyDirect = false;
         BlockPos origin = body.blockPosition();
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
         int hits = 0;
@@ -176,8 +181,10 @@ final class RddContainerMemory {
                     hits++;
                     // 039 U3：内容优先走统一观测的 containers 主题；观测缺席/过期就显式 refresh，
                     // 两条路都不通才回退直读。发现（往哪看）仍然靠这里的本地扫描——观测不负责"找"。
-                    Map<String, Integer> counts = readContainer(body, level, cursor.immutable(), gameTime);
-                    if (counts == null || counts.isEmpty()) continue;
+                    ContainerRead read = readContainer(body, level, cursor.immutable(), gameTime);
+                    if (read == null || read.counts().isEmpty()) continue;
+                    if (read.direct()) anyDirect = true;      // 042 R2：直读兜底要留出处
+                    Map<String, Integer> counts = read.counts();
                     counts.forEach((item, n) -> totals.merge(item, n, Integer::sum));
                     StringBuilder sb = new StringBuilder();
                     int listed = 0;
@@ -192,15 +199,21 @@ final class RddContainerMemory {
             }
         }
         LOG.info("[rdd-storage] 扫描 原点={} 箱子命中={} 成行={}", origin, hits, lines.size());
-        if (lines.isEmpty()) return new Scan("", Map.of());
-        StringBuilder out = new StringBuilder("<storage nearby=\"").append(lines.size()).append("\">")
+        if (lines.isEmpty()) return new Scan("", Map.of(), anyDirect);
+        StringBuilder out = new StringBuilder("<storage nearby=\"").append(lines.size()).append('"')
+                .append(scanDirectAttr(anyDirect)).append('>')
                 .append("你身边的容器里放着：");
         for (int i = 0; i < lines.size(); i++) {
             if (i > 0) out.append("；");
             out.append(lines.get(i));
         }
         out.append("。这些**不在背包里**，要用得先走过去取；别重复去造/挖已有的存货。</storage>");
-        return new Scan(out.toString(), Map.copyOf(totals));
+        return new Scan(out.toString(), Map.copyOf(totals), anyDirect);
+    }
+
+    /** 出处属性：直读兜底时在 <storage> 上标出来源，让上下文知道"这不是观测数据"。 */
+    private static String scanDirectAttr(boolean anyDirect) {
+        return anyDirect ? " source=\"direct\"" : "";
     }
 
     /** 同一容器两次 refresh 的最小间隔（tick）：观测写入会落盘，别每 2 秒刷一次盘。 */
@@ -215,11 +228,29 @@ final class RddContainerMemory {
      *
      * @return 物品→数量（空表 = 已知为空）；两条路都读不到返回 null（**不是**空表）
      */
-    private static Map<String, Integer> readContainer(NumenPlayer body, ServerLevel level,
-                                                      BlockPos pos, long gameTime) {
+    private static ContainerRead readContainer(NumenPlayer body, ServerLevel level,
+                                               BlockPos pos, long gameTime) {
         Map<String, Integer> observed = readViaObservation(body, pos, gameTime);
-        if (observed != null) return observed;
-        return readDirect(level, pos);
+        if (observed != null) return new ContainerRead(observed, false);
+        Map<String, Integer> direct = readDirect(level, pos);
+        // 直读是**当前值**（比旧观测新），不能降级成"历史"；但必须留出处，让调用方知道它不是观测来的。
+        return direct == null ? null : new ContainerRead(direct, true);
+    }
+
+    /**
+     * 节流键：世界 + 维度 + 目标（042 R2 第 5 条）。
+     *
+     * <p>只按坐标做键时，换世界/换维度会命中别的维度同坐标容器的节流记录——
+     * 轻则漏刷新，重则把 A 世界的刷新时间当成 B 世界的。
+     */
+    private static String containerKey(ServerLevel level, String target) {
+        String world = "?";
+        try {
+            world = level.getServer().getWorldData().getLevelName();
+        } catch (RuntimeException ignored) {
+            // 名字拿不到就退化成"?"，仍然比只按坐标好
+        }
+        return world + "|" + level.dimension().location() + "|" + target;
     }
 
     private static Map<String, Integer> readViaObservation(NumenPlayer body, BlockPos pos, long gameTime) {
@@ -236,9 +267,10 @@ final class RddContainerMemory {
             if (resp == null) return null;
             // 容器内容**随时会变**（放进去/拿出来），所以不能只靠 TTL：按本地节奏定期 refresh，
             // 否则会拿旧快照当真（2026-11-05 02:41 实机：箱里已有 5 铁锭，观测里还是空）。
-            Long last = OBS_AT.get(target);
+            String key = containerKey(body.serverLevel(), target);
+            Long last = OBS_AT.get(key);
             if (last == null || gameTime - last >= OBS_REFRESH_TICKS) {
-                OBS_AT.put(target, gameTime);
+                OBS_AT.put(key, gameTime);
                 var refreshed = svc.refresh(req);
                 if (refreshed != null) resp = refreshed;
             }

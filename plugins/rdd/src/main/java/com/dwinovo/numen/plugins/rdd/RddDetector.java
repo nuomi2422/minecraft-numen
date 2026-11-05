@@ -171,7 +171,7 @@ final class RddDetector {
             // 只放在服务端 tick，绝不在上下文组装线程里做。
             RddObservation.refreshIfDue(ap, server.getTickCount());
             // 042 R2：危险事实的本地采样只能在服务端 tick（上下文组装线程不许读世界）。
-            RddDangerFacts.sampleOnTick(ap, server.getTickCount());
+            RddDangerFacts.sampleOnTick(ap);
             // P2-A【B】背包感知不依赖任务链：先无条件缓存实时背包，再判是否有 Runtime。
             // （感知世界 与 任务运行 不是一个生命周期；/goal 首次规划早于链建立，旧代码要求 rt!=null
             //  才扫背包 → 首次规划/判定读到空背包。）

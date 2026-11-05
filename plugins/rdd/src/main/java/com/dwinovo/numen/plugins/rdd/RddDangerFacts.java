@@ -192,17 +192,29 @@ final class RddDangerFacts {
     private static final Map<java.util.UUID, Long> LAST_SAMPLE_TICK =
             new java.util.concurrent.ConcurrentHashMap<>();
 
-    static void sampleOnTick(NumenPlayer body, long serverTick) {
+    /**
+     * **读写的唯一时钟源**。
+     *
+     * <p>审计实测过：写入用 `server.getTickCount()`、读取用 `level.getGameTime` 是两个计数器
+     * （前者每次开服从 0 起，后者跟着存档走）→ 重启后 age 变成巨大值 → 快照永远不新鲜 →
+     * 观测一不可用就永久"未知"。两次都调这里，才谈得上"同源"。
+     */
+    static long currentTick(ServerLevel level) {
+        return level.getServer().getTickCount();
+    }
+
+    static void sampleOnTick(NumenPlayer body) {
         try {
             if (body == null || !(body.level() instanceof ServerLevel level)) return;
+            long tick = currentTick(level);
             Long last = LAST_SAMPLE_TICK.get(body.getUUID());
-            if (last != null && serverTick - last < SAMPLE_INTERVAL_TICKS) return;   // 有界采样，不是每 tick 扫
-            LAST_SAMPLE_TICK.put(body.getUUID(), serverTick);
+            if (last != null && tick - last < SAMPLE_INTERVAL_TICKS) return;   // 有界采样，不是每 tick 扫
+            LAST_SAMPLE_TICK.put(body.getUUID(), tick);
             var local = localHostiles(body, level);
             if (local == null) return;
             Map<String, Integer> kinds = localKinds(body, level);
             DANGER_SNAPSHOT.put(body.getUUID(),
-                    new DangerSnapshot(local[0], local[1], Map.copyOf(kinds), serverTick));
+                    new DangerSnapshot(local[0], local[1], Map.copyOf(kinds), tick));
         } catch (RuntimeException | LinkageError ignored) {
             // 采样失败不影响 tick
         }
@@ -239,7 +251,7 @@ final class RddDangerFacts {
             } else {
                 // 观测不可用 → 用 tick 采样写下的快照（**不读世界**）。
                 DangerSnapshot snap = DANGER_SNAPSHOT.get(body.getUUID());
-                long nowTick = level.getGameTime();
+                long nowTick = currentTick(level);   // 与写入侧同源（见 currentTick 注释）
                 if (snap == null
                         || !RddDangerText.isFresh(nowTick, snap.tick(), RddDangerText.SNAPSHOT_TTL_TICKS)) {
                     // 既没观测、也没新鲜快照 → 明确说"未知"，不许用空串冒充"安全"
