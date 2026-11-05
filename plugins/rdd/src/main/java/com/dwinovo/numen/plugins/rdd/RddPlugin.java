@@ -199,9 +199,17 @@ public final class RddPlugin implements NumenPlugin {
             if (RddRepeatQueryWatcher.isExternalCall(toolCallId)) {
                 return;
             }
+            // 注意：这里用 gameTime（跨重启连续），与 RddRepeatQueryWatcher 的 600 tick 窗口同源。
+            // 全插件 tick 入口见 RddClock（只用于"开服至今"的间隔/新鲜度，两者用途不同）。
             var body = com.dwinovo.numen.entity.NumenPlayer.findByUuid(
                     net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer(), companionId);
-            long tick = body == null ? System.currentTimeMillis() / 50 : body.level().getGameTime();
+            if (body == null) {
+                // 观测不到身体时**不猜 tick**：以前这里用 System.currentTimeMillis()/50（3.4e10 量级）
+                // 与 gameTime（几百万）混用，喂给"600 tick 窗口"的判定会错乱。
+                // 没身体 = 没有同伴行为，"重复查询"本来也没有意义。
+                return;
+            }
+            long tick = body.level().getGameTime();
             RddRepeatQueryWatcher.observe(companionId, toolName, argsChars, tick);
         });
         // E1 shadow：规划角色的预算策略（与客户端同一份文件，幂等）。

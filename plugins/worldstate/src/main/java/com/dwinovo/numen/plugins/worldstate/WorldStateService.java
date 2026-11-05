@@ -45,6 +45,14 @@ public final class WorldStateService {
     private final com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog changeLog =
             new com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog();
     private final InMemoryObservationStore store;
+    /**
+     * v2 变化流（041 §19 / R3 接线第 1 步）：**本版只构造、不接任何调用点**。
+     *
+     * <p>为什么先放着：v2 的语义（streamSeq/epoch/RESET）要等能力面版本化才敢切；
+     * 先把组件就位，接线时只改调用点，不改构造。
+     */
+    private final com.dwinovo.numen.worldstate.core.changes.v2.InMemoryChangeFeed changeFeedV2 =
+            new com.dwinovo.numen.worldstate.core.changes.v2.InMemoryChangeFeed("worldstate-v2");
     private final ProviderRegistry providers = new ProviderRegistry();
     private final TopicFreshnessPolicy freshness = TopicFreshnessPolicy.defaults();
     private final RefreshService refreshService;
@@ -68,6 +76,11 @@ public final class WorldStateService {
 
     public Path file() {
         return file;
+    }
+
+    /** v2 变化流（本版未接线，只供后续 R3 接线使用）。 */
+    public com.dwinovo.numen.worldstate.core.changes.v2.InMemoryChangeFeed changeFeedV2() {
+        return changeFeedV2;
     }
 
     /** 变化日志（041）：能力面与工具面都从这里读增量。 */
