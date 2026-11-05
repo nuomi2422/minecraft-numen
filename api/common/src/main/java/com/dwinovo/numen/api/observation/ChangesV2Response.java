@@ -13,6 +13,9 @@ import java.util.List;
  *   <li>{@code watermark} 是当前日志尾部序号，用于"快照 + 增量"接缝；</li>
  *   <li>{@code hasMore} 表示还有未读事件。</li>
  * </ul>
+ *
+ * <p><b>陷阱</b>：`status=OK` **不代表可以当"没变化"用**——`resetRequired=true` 时游标不可信，
+ * 必须做一次有界重同步。只看 status 的消费者会把重置当成"一切正常"，这是最安静的错。
  */
 public record ChangesV2Response(WorldObservationService.Status status,
                                 List<Event> events,
