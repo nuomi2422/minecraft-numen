@@ -216,7 +216,8 @@ public final class SleepOps {
                 : " there is no bed within reach (you must be standing next to one)";
         // 2026-11-05：实测「no bed at those coordinates」在请求历史里出现 60 次——给了错坐标就一直重试。
         // 与交互被挡同一处理：把「去 scan」换成「最近的床在 x,y,z」，把指引变成坐标。
-        BlockPos near = nearestBedHeadWithin(self, 24, 8);
+        // 半径 16/6：约 1.4 万个方块读取，失败路径可接受；24/8 是 4 万个，没必要。
+        BlockPos near = nearestBedHeadWithin(self, 16, 6);
         String next = carried != null
                 ? " You are carrying " + carried + " — place it on flat ground and try again."
                 : (near != null
