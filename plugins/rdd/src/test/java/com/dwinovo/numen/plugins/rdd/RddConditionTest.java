@@ -68,7 +68,7 @@ class RddConditionTest {
     // ---- 042 R2：Readiness 驱动的判定（decide） ----
 
     private static final RddCondition.Observability READY =
-            new RddCondition.Observability(true, false, false, false);
+            new RddCondition.Observability(true, false, false);
 
     @Test
     void decideMatchedNeedsOnlyPresence() {
@@ -91,7 +91,7 @@ class RddConditionTest {
 
     @Test
     void decidePartialCoverageMissingItemIsUnverifiable() {
-        var partial = new RddCondition.Observability(true, false, false, false);
+        var partial = new RddCondition.Observability(true, false, false);
         Map<String, Integer> have = Map.of("minecraft:iron_helmet", 1);
         var r = RddCondition.decide(partial, have, GEAR, false);
         assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict(),
@@ -100,7 +100,7 @@ class RddConditionTest {
 
     @Test
     void decideStaleIsUnverifiable() {
-        var stale = new RddCondition.Observability(false, true, false, false);
+        var stale = new RddCondition.Observability(false, true, false);
         var r = RddCondition.decide(stale, Map.of(), GEAR, false);
         assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict());
         assertTrue(r.reason().contains("过期"), r.reason());
@@ -108,7 +108,7 @@ class RddConditionTest {
 
     @Test
     void decidePendingIsUnverifiable() {
-        var pending = new RddCondition.Observability(false, false, true, false);
+        var pending = new RddCondition.Observability(false, false, true);
         var r = RddCondition.decide(pending, Map.of(), GEAR, false);
         assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict());
     }
@@ -116,7 +116,7 @@ class RddConditionTest {
     @Test
     void decideEmptyInventoryWithPartialCoverageIsNotAnAbsence() {
         // 实机反例 C：空背包 + 部分覆盖 → 不许说"空"
-        var partial = new RddCondition.Observability(true, false, false, false);
+        var partial = new RddCondition.Observability(true, false, false);
         var r = RddCondition.decide(partial, Map.of(), GEAR, false);
         assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict());
     }
@@ -135,7 +135,7 @@ class RddConditionTest {
 
     @Test
     void decideUnknownAggIsUnverifiable() {
-        var unknown = new RddCondition.Observability(false, false, false, true);
+        var unknown = new RddCondition.Observability(false, false, false);
         var r = RddCondition.decide(unknown, Map.of(), GEAR, true);
         assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict());
     }

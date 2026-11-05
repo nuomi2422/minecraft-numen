@@ -62,16 +62,33 @@ final class RddCondition {
      * 把 api:common 加进本插件的测试运行时会让 AdvancementTickWiringRegressionTest 的
      * "TaskResult 必须来自本次编译产物"断言失效（父加载器先命中了 api 里的同名类）。
      */
-    record Observability(boolean canReportPresence, boolean stale, boolean pending, boolean unknown) {
+    record Observability(boolean canReportPresence, boolean stale, boolean pending) {
+        /**
+         * 显式穷举 + 兜底抛错。
+         *
+         * <p>用 `!` 推导"其余都是 UNKNOWN"会让 Readiness 将来加第六态时静默归到 unknown——
+         * 那和"按名字映射漂移"是同一类错误，只是范围缩到一处。跨模块编译器管不了穷尽性，
+         * 所以这里让它在运行期炸，而不是悄悄判错。
+         */
         static Observability from(com.dwinovo.numen.api.observation.Readiness r) {
-            return new Observability(r.canReportPresence(),
-                    r == com.dwinovo.numen.api.observation.Readiness.NOT_READY_STALE,
-                    r == com.dwinovo.numen.api.observation.Readiness.NOT_READY_PENDING,
-                    !r.canReportPresence()
-                            && r != com.dwinovo.numen.api.observation.Readiness.NOT_READY_STALE
-                            && r != com.dwinovo.numen.api.observation.Readiness.NOT_READY_PENDING);
+            switch (r) {
+                case READY:
+                case READY_PARTIAL:
+                    return new Observability(true, false, false);
+                case NOT_READY_STALE:
+                    return new Observability(false, true, false);
+                case NOT_READY_PENDING:
+                    return new Observability(false, false, true);
+                case NOT_READY_UNKNOWN:
+                    return new Observability(false, false, false);
+                default:
+                    throw new IllegalStateException("unhandled Readiness: " + r);
+            }
         }
     }
+
+    /** 一次评估的完整产物：最坏状态 + "有没有任何一条想刷新"。 */
+    record Assessment(com.dwinovo.numen.api.observation.Readiness worst, boolean anyWantsRefresh) {}
 
     static Result decide(Observability obs,
                          Map<String, Integer> have, List<String> required, boolean canProveAbsence) {
@@ -143,7 +160,9 @@ final class RddCondition {
             }
             // 042 R2：先按 Readiness 判"能不能下结论"，再决定要不要刷新
             var agg = assess(resp);
-            if (agg.wantsRefresh()) {
+            // 042 R2/E2：刷新信号要看 anyWantsRefresh，不能只看最坏状态——
+            // [PENDING, UNKNOWN, READY] 的最坏是 UNKNOWN（不想刷），但那条 PENDING 只能靠刷新救回来。
+            if (agg.anyWantsRefresh()) {
                 Long last = REFRESH_AT.get(companionId);
                 if (last == null || gameTime - last >= 200L) {
                     REFRESH_AT.put(companionId, gameTime);
@@ -165,7 +184,7 @@ final class RddCondition {
             }
             boolean canProveAbsence = com.dwinovo.numen.api.observation.Readiness
                     .canProveAbsence(resp.status(), resp.coverage());
-            return decide(Observability.from(agg), have, required, canProveAbsence);
+            return decide(Observability.from(agg.worst()), have, required, canProveAbsence);
         } catch (RuntimeException | LinkageError e) {
             return new Result(Verdict.NOT_VERIFIABLE, "判定异常：" + e, Map.of());
         }
@@ -177,7 +196,7 @@ final class RddCondition {
      * <p>注意：`Status.PARTIAL` 在 API 里**同时**代表"覆盖不全"和"数据过期"（ObservationMap），
      * 所以不能只看 status——过期信息在 item 的 staleFields 里。
      */
-    private static com.dwinovo.numen.api.observation.Readiness assess(
+    private static Assessment assess(
             WorldObservationService.Response resp) {
         var required = java.util.Set.of("item", "count");   // slots 不是 item 字段（012 附录 G.1）
         java.util.List<com.dwinovo.numen.api.observation.Readiness> per = new java.util.ArrayList<>();
@@ -186,8 +205,9 @@ final class RddCondition {
                     resp.status(), resp.coverage(), required,
                     item.values().keySet(), item.unknownFields(), item.staleFields()));
         }
-        return com.dwinovo.numen.api.observation.Readiness
-                .worstOf(per, resp.status(), resp.coverage());
+        return new Assessment(
+                com.dwinovo.numen.api.observation.Readiness.worstOf(per, resp.status(), resp.coverage()),
+                com.dwinovo.numen.api.observation.Readiness.anyWantsRefresh(per));
     }
 
     private static final Map<UUID, Long> REFRESH_AT = new java.util.concurrent.ConcurrentHashMap<>();
