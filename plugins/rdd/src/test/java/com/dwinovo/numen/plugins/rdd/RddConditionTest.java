@@ -139,4 +139,77 @@ class RddConditionTest {
         var r = RddCondition.decide(unknown, Map.of(), GEAR, true);
         assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict());
     }
+    // ---- 042 R2：接线级用例（assess(status, coverage, items) → decide，不构造 Response） ----
+
+    private static final java.util.Set<String> GEAR_SET = java.util.Set.copyOf(GEAR);
+
+    private static com.dwinovo.numen.api.observation.WorldObservationService.Item item(
+            java.util.Map<String, Object> values, java.util.Set<String> stale) {
+        return new com.dwinovo.numen.api.observation.WorldObservationService.Item(
+                values, java.util.Set.of(), stale);
+    }
+
+    private static RddCondition.Result viaAssess(
+            com.dwinovo.numen.api.observation.WorldObservationService.Status status,
+            com.dwinovo.numen.api.observation.WorldObservationService.Coverage coverage,
+            java.util.List<com.dwinovo.numen.api.observation.WorldObservationService.Item> items) {
+        var assessment = RddCondition.assess(status, coverage, items);
+        java.util.Map<String, Integer> have = new java.util.LinkedHashMap<>();
+        for (var it : items) {
+            Object id = it.values().get("item");
+            Object n = it.values().get("count");
+            if (id instanceof String s && n instanceof Number num) have.merge(s, num.intValue(), Integer::sum);
+        }
+        boolean canProveAbsence = com.dwinovo.numen.api.observation.Readiness.canProveAbsence(status, coverage);
+        return RddCondition.decide(RddCondition.Observability.from(assessment.worst()), have, GEAR, canProveAbsence);
+    }
+
+    @Test
+    void wiringFullCoverageMissingGearIsNotMatched() {
+        var r = viaAssess(com.dwinovo.numen.api.observation.WorldObservationService.Status.OK,
+                com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL,
+                java.util.List.of(item(java.util.Map.of("item", "minecraft:iron_helmet", "count", 1),
+                        java.util.Set.of())));
+        assertEquals(RddCondition.Verdict.NOT_MATCHED, r.verdict(), "完整覆盖 + 缺件 → 说缺");
+    }
+
+    @Test
+    void wiringPartialCoverageMissingGearIsUnverifiable() {
+        // 这条就是判别新旧的关键：旧代码 readable=true → NOT_MATCHED；新代码必须 NOT_VERIFIABLE
+        var r = viaAssess(com.dwinovo.numen.api.observation.WorldObservationService.Status.OK,
+                com.dwinovo.numen.api.observation.WorldObservationService.Coverage.PARTIAL,
+                java.util.List.of(item(java.util.Map.of("item", "minecraft:iron_helmet", "count", 1),
+                        java.util.Set.of())));
+        assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict(),
+                "部分覆盖 + 缺件 → 不许断言缺（旧代码这里是 NOT_MATCHED）");
+    }
+
+    @Test
+    void wiringStaleFieldIsUnverifiable() {
+        var r = viaAssess(com.dwinovo.numen.api.observation.WorldObservationService.Status.OK,
+                com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL,
+                java.util.List.of(item(java.util.Map.of("item", "minecraft:iron_helmet", "count", 1),
+                        java.util.Set.of("item", "count"))));
+        assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict(), "字段过期 → 不可核验");
+    }
+
+    @Test
+    void wiringPendingIsUnverifiable() {
+        var r = viaAssess(com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING,
+                com.dwinovo.numen.api.observation.WorldObservationService.Coverage.UNKNOWN,
+                java.util.List.of());
+        assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict());
+    }
+
+    @Test
+    void wiringFullSetIsMatched() {
+        var items = java.util.List.of(
+                item(java.util.Map.of("item", "minecraft:iron_helmet", "count", 1), java.util.Set.of()),
+                item(java.util.Map.of("item", "minecraft:iron_chestplate", "count", 1), java.util.Set.of()),
+                item(java.util.Map.of("item", "minecraft:iron_leggings", "count", 1), java.util.Set.of()),
+                item(java.util.Map.of("item", "minecraft:iron_boots", "count", 2), java.util.Set.of()));
+        var r = viaAssess(com.dwinovo.numen.api.observation.WorldObservationService.Status.OK,
+                com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL, items);
+        assertEquals(RddCondition.Verdict.MATCHED, r.verdict());
+    }
 }

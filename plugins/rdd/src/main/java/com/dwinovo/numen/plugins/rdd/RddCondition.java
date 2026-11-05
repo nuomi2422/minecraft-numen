@@ -198,15 +198,27 @@ final class RddCondition {
      */
     private static Assessment assess(
             WorldObservationService.Response resp) {
+        return assess(resp.status(), resp.coverage(), resp.items());
+    }
+
+    /**
+     * 接线版的评估：只吃三样输入（status / coverage / items），不依赖 Response 整体。
+     *
+     * <p>为什么抽成这个签名：审计指出"只测 decide() 等于又回到纯函数绿、接线错"。
+     * 这里把 per-item 判 → worstOf → Assessment 这条真实接线暴露出来，测试可用合成输入直接跑。
+     */
+    static Assessment assess(WorldObservationService.Status status,
+                             WorldObservationService.Coverage coverage,
+                             java.util.List<WorldObservationService.Item> items) {
         var required = java.util.Set.of("item", "count");   // slots 不是 item 字段（012 附录 G.1）
         java.util.List<com.dwinovo.numen.api.observation.Readiness> per = new java.util.ArrayList<>();
-        for (var item : resp.items()) {
+        for (var item : items) {
             per.add(com.dwinovo.numen.api.observation.Readiness.assess(
-                    resp.status(), resp.coverage(), required,
+                    status, coverage, required,
                     item.values().keySet(), item.unknownFields(), item.staleFields()));
         }
         return new Assessment(
-                com.dwinovo.numen.api.observation.Readiness.worstOf(per, resp.status(), resp.coverage()),
+                com.dwinovo.numen.api.observation.Readiness.worstOf(per, status, coverage),
                 com.dwinovo.numen.api.observation.Readiness.anyWantsRefresh(per));
     }
 

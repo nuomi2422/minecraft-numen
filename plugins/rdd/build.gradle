@@ -34,6 +34,9 @@ dependencies {
     implementation 'com.google.code.gson:gson:2.10.1'
     // 纯 JVM 容错解析(RddDecomposer.parse)需要 ai 模块的 IToolSpec 参与类加载。
     testImplementation project(':ai')
+    // 2026-11-05（042 R2）：接线测试要构造 api 的 Status/Coverage/Item 跑 assess(status, coverage, items)。
+    // 主源集经 numen-plugin 约定拿到 api（compileOnly）；测试源集不吃那套约定，必须显式声明。
+    testImplementation project(':api:common')
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

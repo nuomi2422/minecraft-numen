@@ -74,7 +74,20 @@ class AdvancementTickWiringRegressionTest {
         int result = compiler.run(null, null, null, "-encoding", "UTF-8", "-proc:none", "-classpath", classpath,
                 "-d", output.toString(), java.toString(), taskResult.toString());
         assertEquals(0, result, "isolated host could not compile extracted production methods");
-        loader = new URLClassLoader(new URL[]{output.toUri().toURL()}, AdvancementTickWiringRegressionTest.class.getClassLoader());
+        // 2026-11-05（042 R2）：测试运行时也带了 api:common，父加载器里可能有同名的 TaskResult，
+        // 会盖掉"本次编译出来的那份"。这里对 TaskResult 用 child-first，保证断言测的是编译产物。
+        loader = new URLClassLoader(new URL[]{output.toUri().toURL()},
+                AdvancementTickWiringRegressionTest.class.getClassLoader()) {
+            @Override
+            protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+                if ("com.dwinovo.numen.task.TaskResult".equals(name)) {
+                    Class<?> c = findClass(name);
+                    if (resolve) resolveClass(c);
+                    return c;
+                }
+                return super.loadClass(name, resolve);
+            }
+        };
         host = loader.loadClass("AdvancementDiagnosticHost");
         assertEquals(output.toUri().toURL(), loader.loadClass("com.dwinovo.numen.task.TaskResult")
                 .getProtectionDomain().getCodeSource().getLocation(), "must use compiled production TaskResult source");
