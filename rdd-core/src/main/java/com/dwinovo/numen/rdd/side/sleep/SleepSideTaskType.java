@@ -46,7 +46,14 @@ public final class SleepSideTaskType implements SideTaskType {
     /** 战斗中推迟后的重评估间隔（约 10 秒）。 */
     public static final int COMBAT_RETRY_TICKS = 200;
     /** 身体被占用（正在引羊/建造等）推迟后的重评估间隔（约 5 秒）。 */
-    public static final int BUSY_RETRY_TICKS = 100;
+    /**
+     * 身体忙时多久再问一次。
+     *
+     * <p>2026-11-05 实测：原来 100 tick（5 秒），主线下连续操作时 `side_task_deferred` 每 5 秒写一条，
+     * 50 秒里写了 11 条同样的 `mid_operation`——纯噪声。放慢到 400 tick（20 秒），
+     * 一只需要睡觉的同伴不会因为多等 15 秒而错过夜晚。
+     */
+    public static final int BUSY_RETRY_TICKS = 400;
     /** 主目标文本命中这些词 → 判定"主线明确要夜间活动"，本次睡觉跳过（下一晚再判断）。 */
     private static final String[] NIGHT_MARKERS = {
             "夜晚活动", "夜间活动", "保持夜晚", "保持黑夜", "不能天亮", "别天亮",
