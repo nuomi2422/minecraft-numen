@@ -47,6 +47,9 @@ final class RddContainerMemory {
     /** 同一份扫描的结构化计数（037/T14）：上下文要文字，规划要数字，两边不许走不同的解析路。 */
     private static final Map<UUID, Map<String, Integer>> COUNTS = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> LAST_REFRESH = new ConcurrentHashMap<>();
+    /** 每只同伴上次看到的 streamEpoch（v2 游标必须与 epoch 成对，缺了服务端会判 reset）。 */
+    private static final Map<UUID, String> CHANGE_EPOCH = new ConcurrentHashMap<>();
+
     /** 041 U4c：每只同伴一个增量轮询器（内含游标）。 */
     private static final Map<UUID, ContainerChangePoller> POLLERS = new ConcurrentHashMap<>();
 
@@ -89,23 +92,41 @@ final class RddContainerMemory {
             ContainerChangePoller poller = POLLERS.computeIfAbsent(id, k -> new ContainerChangePoller());
             // 决策交给 ContainerChangePoller（同口径、离线可测）；这里只负责"怎么问能力面"
             return poller.poll(cursor -> {
-                var resp = svc.changes(cursor, java.util.List.of("containers"), 64);
-                if (resp == null
-                        || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR) {
-                    LOG_CHANGE.maybe(id, "增量不可用 status="
-                            + (resp == null ? "null" : resp.status() + " reason=" + resp.reason()));
+                // R3 第 4 步：**显式声明 v2**。v1 的老入口仍保留给老消费者，但本消费者不再二分猜测。
+                var q = com.dwinovo.numen.api.observation.ChangesQuery.v2(
+                        cursor, CHANGE_EPOCH.getOrDefault(id, ""), java.util.List.of("containers"), 64);
+                var v2 = svc.changes(q);
+                if (v2 == null || v2.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR) {
+                    String why = v2 == null ? "null" : v2.status() + " reason=" + v2.reason();
+                    // 老宿主不认 v2（过渡期）→ 明确回退一次老入口，并记一条，不静默
+                    if (v2 != null && v2.reason() != null && v2.reason().contains("not supported")) {
+                        LOG_CHANGE.maybe(id, "v2 增量不受支持，回退 v1（" + why + "）");
+                        var legacy = svc.changes(cursor, java.util.List.of("containers"), 64);
+                        if (legacy == null
+                                || legacy.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR) {
+                            LOG_CHANGE.maybe(id, "v1 增量也不可用");
+                            return null;
+                        }
+                        return new ContainerChangePoller.Page(legacy.gap(), legacy.nextCursor(),
+                                legacy.changes().size());
+                    }
+                    LOG_CHANGE.maybe(id, "增量不可用 " + why);
                     return null;      // 拿不到增量 → 调用方退回节奏扫描
                 }
-                LOG_CHANGE.maybe(id, "增量 status=" + resp.status() + " cursor=" + cursor
-                        + " next=" + resp.nextCursor() + " gap=" + resp.gap()
-                        + " n=" + resp.changes().size() + " oldest=" + resp.oldestRetainedRevision());
-                if (resp.gap()) {
-                    LOG.info("[rdd-storage] containers 增量断档，全量重扫一次");
-                } else if (!resp.changes().isEmpty()) {
-                    LOG.info("[rdd-storage] change-signal n={} cursor={} next={}",
-                            resp.changes().size(), cursor, resp.nextCursor());
+                CHANGE_EPOCH.put(id, v2.streamEpoch());
+                LOG_CHANGE.maybe(id, "增量(v2) cursor=" + cursor + " next=" + v2.nextCursor()
+                        + " reset=" + v2.resetRequired() + " n=" + v2.events().size()
+                        + " epoch=" + v2.streamEpoch());
+                if (v2.resetRequired()) {
+                    // 区分"切换/换流导致的重置"与"真断档"：两者都 reset，日志必须能分开
+                    LOG.info("[rdd-storage] containers 游标重置（epoch 变更或首次切 v2）→ 立刻重扫并强制刷新");
+                    OBS_AT.clear();   // 让下一次读容器走显式 refresh，而不是拿旧缓存凑合
+                } else if (!v2.events().isEmpty()) {
+                    LOG.info("[rdd-storage] change-signal(v2) n={} cursor={} next={}",
+                            v2.events().size(), cursor, v2.nextCursor());
                 }
-                return new ContainerChangePoller.Page(resp.gap(), resp.nextCursor(), resp.changes().size());
+                return new ContainerChangePoller.Page(v2.resetRequired(), v2.nextCursor(),
+                        v2.events().size());
             });
         } catch (RuntimeException | LinkageError e) {
             LOG_CHANGE.maybe(id, "poll 失败: " + e);

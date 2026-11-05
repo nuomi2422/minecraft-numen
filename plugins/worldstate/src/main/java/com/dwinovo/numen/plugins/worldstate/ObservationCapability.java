@@ -26,6 +26,9 @@ import java.util.function.Supplier;
  */
 public final class ObservationCapability implements WorldObservationService {
 
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(ObservationCapability.class);
+
     private final WorldStateService host;
     private final Supplier<MinecraftServer> server;
 
@@ -72,8 +75,14 @@ public final class ObservationCapability implements WorldObservationService {
     private long watermark() {
         try {
             var feed = host.changeFeedV2();
-            return feed == null ? 0L : feed.watermark();
+            if (feed == null) {
+                LOG.warn("[worldstate] change feed 缺席，watermark 记 0（消费者会做一次全量增量读）");
+                return 0L;
+            }
+            return feed.watermark();
         } catch (RuntimeException e) {
+            // 0 会让 changes(after=0) 全量扫：安全但重，而且静默——打一条，别让"取水位失败"和"水位真是 0"长得一样
+            LOG.warn("[worldstate] 取 watermark 失败，回退 0：{}", e.toString());
             return 0L;
         }
     }

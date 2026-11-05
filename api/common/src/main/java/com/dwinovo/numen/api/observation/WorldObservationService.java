@@ -85,9 +85,15 @@ public interface WorldObservationService {
      * @param observedTick 观测时刻（游戏刻/毫秒，由宿主声明）
      * @param coverage     覆盖程度
      * @param reason       ERROR/PENDING/PARTIAL 的人话原因
-     * @param watermark    取快照时变化日志的尾部序号（041 §18.1 / R3-3 接缝）。
-     *                     **必须在快照完成后、同一锁内取**；分两次取就会出现"快照与水位不匹配"的夹缝。
-     *                     v1 消费者可以忽略它（恒 0）。
+     * @param watermark    取快照时变化日志的尾部序号（041 §18.1 / R3-3 接缝）。v1 消费者可忽略（恒 0）。
+     *                     <b>两种取法，各看前提</b>：
+     *                     <ul>
+     *                       <li><b>有共享锁</b>（存储与日志同一临界区）：锁内"先快照、后取水位"——无重复、无遗漏；</li>
+     *                       <li><b>没有共享锁</b>（本仓现状）：必须"<b>先取水位</b>、再读快照"——
+     *                           中间写入的 streamSeq &gt; 水位，必进 changes（可重复、不可遗漏）；
+     *                           反过来先快照后取水位，中间写入的 streamSeq ≤ 水位，会被过滤掉（漏）。</li>
+     *                     </ul>
+     *                     不写前提直接说"快照后取"，下一个没有共享锁的实现照做就会造出夹缝。
      */
     record Response(Status status, String topic, String snapshotId, long observedTick,
                     Coverage coverage, String reason, List<Item> items, long watermark) {
