@@ -53,7 +53,11 @@ public final class RddMonitor {
     public static synchronized boolean publishIfChanged(String type, Map<String, ?> data) {
         String sig = signature(data);
         long now = System.currentTimeMillis();
-        if (!GATE.shouldEmit(type, sig, now)) {
+        boolean emit = GATE.shouldEmit(type, sig, now);
+        if (DEBUG_GATE && DEBUG_COUNT.getAndIncrement() < 40) {
+            LOG.info("[rdd-monitor] gate type={} sig={} emit={} len={}", type, sig.hashCode(), emit, sig.length());
+        }
+        if (!emit) {
             return false;
         }
         // 2026-11-05（审计）：**先发成功再记账**。反过来的话，写盘失败也会留下指纹，
@@ -64,6 +68,12 @@ public final class RddMonitor {
         GATE.commit(type, sig, now);
         return true;
     }
+
+    /** 临时诊断（2026-11-05）：现场去重未生效时用来对比签名。确认后可删。 */
+    private static final boolean DEBUG_GATE = Boolean.getBoolean("rdd.monitor.debug");
+    private static final java.util.concurrent.atomic.AtomicInteger DEBUG_COUNT =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger("rdd-monitor");
 
     /** 内容长时间不变时，每 10 分钟强制发一条全量心跳——否则日志里没有该同伴的痕迹，会被误判成卡死。 */
     static final long HEARTBEAT_MS = 10L * 60 * 1000;
@@ -92,9 +102,15 @@ public final class RddMonitor {
             }
             return out;
         }
-        if (value instanceof List<?> list) {
-            List<Object> out = new java.util.ArrayList<>(list.size());
-            for (Object o : list) out.add(stripVolatile(o));
+        if (value instanceof java.util.Collection<?> collection) {
+            // 2026-11-05 现场：签名长度不变但 hash 每拍都变 → 内容相同、**集合顺序**不同
+            //（HashSet/多来源拼装）。签名只用来判"内容是否变化"，排序不影响这个判断，
+            // 所以统一按规范化后的字符串排序，彻底消除顺序影响。
+            List<String> parts = new java.util.ArrayList<>(collection.size());
+            for (Object o : collection) parts.add(GSON.toJson(stripVolatile(o)));
+            parts.sort(java.util.Comparator.naturalOrder());
+            List<Object> out = new java.util.ArrayList<>(parts.size());
+            for (String part : parts) out.add(part);
             return out;
         }
         return value;
