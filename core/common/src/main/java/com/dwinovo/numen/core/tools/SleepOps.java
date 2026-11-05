@@ -213,11 +213,34 @@ public final class SleepOps {
         String carried = carriedBed(self);
         String base = coordsGiven
                 ? "there is no bed at those coordinates"
-                : "there is no bed within reach (you must be standing next to one)";
+                : " there is no bed within reach (you must be standing next to one)";
+        // 2026-11-05：实测「no bed at those coordinates」在请求历史里出现 60 次——给了错坐标就一直重试。
+        // 与交互被挡同一处理：把「去 scan」换成「最近的床在 x,y,z」，把指引变成坐标。
+        BlockPos near = nearestBedHeadWithin(self, 24, 8);
         String next = carried != null
                 ? " You are carrying " + carried + " — place it on flat ground and try again."
-                : " Use scan_blocks with #minecraft:beds to find one, goto it, then call sleep again.";
+                : (near != null
+                        ? " The nearest bed is at " + near.getX() + "," + near.getY() + "," + near.getZ()
+                                + " — goto it, then call sleep again."
+                        : " Use scan_blocks with #minecraft:beds to find one, goto it, then call sleep again.");
         return TaskResult.fail(base + "." + next).toJson();
+    }
+
+    /** 更大范围找一张床的床头（只在失败回执里用；半径有界，避免满世界扫）。 */
+    private static BlockPos nearestBedHeadWithin(NumenPlayer self, int radiusH, int radiusV) {
+        Level level = self.level();
+        BlockPos me = self.blockPosition();
+        BlockPos best = null;
+        double bestDistSq = Double.MAX_VALUE;
+        for (BlockPos p : BlockPos.betweenClosed(
+                me.offset(-radiusH, -radiusV, -radiusH),
+                me.offset(radiusH, radiusV, radiusH))) {
+            BlockPos head = headOf(level, p);
+            if (head == null) continue;
+            double d = head.distSqr(me);
+            if (d < bestDistSq) { bestDistSq = d; best = head.immutable(); }
+        }
+        return best;
     }
 
     /** 背包里的第一张床;没有则 null。 */
