@@ -211,20 +211,32 @@ public final class SleepOps {
     /** 没床时把下一步递到她面前——包括"你自己身上就带着一张"。 */
     private String noBed(NumenPlayer self, boolean coordsGiven) {
         String carried = carriedBed(self);
+        // 先扫 8 格；没有再扩到 16。半径 16/6 本身约 1.4 万格，仍然只在失败路径跑。
+        BlockPos near = nearestBedHeadWithin(self, 8, 4);
+        if (near == null) near = nearestBedHeadWithin(self, 16, 6);
+        String nearLabel = near == null ? null
+                : near.getX() + "," + near.getY() + "," + near.getZ();
+        return TaskResult.fail(noBedMessage(coordsGiven, carried, nearLabel)).toJson();
+    }
+
+    /**
+     * 没床时的回执正文（纯字符串，可离线测）。
+     *
+     * @param nearLabel 最近床头坐标；null 表示范围内也没有
+     */
+    static String noBedMessage(boolean coordsGiven, String carried, String nearLabel) {
         String base = coordsGiven
                 ? "there is no bed at those coordinates"
-                : " there is no bed within reach (you must be standing next to one)";
-        // 2026-11-05：实测「no bed at those coordinates」在请求历史里出现 60 次——给了错坐标就一直重试。
-        // 与交互被挡同一处理：把「去 scan」换成「最近的床在 x,y,z」，把指引变成坐标。
-        // 半径 16/6：约 1.4 万个方块读取，失败路径可接受；24/8 是 4 万个，没必要。
-        BlockPos near = nearestBedHeadWithin(self, 16, 6);
-        String next = carried != null
-                ? " You are carrying " + carried + " — place it on flat ground and try again."
-                : (near != null
-                        ? " The nearest bed is at " + near.getX() + "," + near.getY() + "," + near.getZ()
-                                + " — goto it, then call sleep again."
-                        : " Use scan_blocks with #minecraft:beds to find one, goto it, then call sleep again.");
-        return TaskResult.fail(base + "." + next).toJson();
+                : "there is no bed within reach (you must be standing next to one)";
+        String next;
+        if (carried != null) {
+            next = " You are carrying " + carried + " — place it on flat ground and try again.";
+        } else if (nearLabel != null) {
+            next = " The nearest bed is at " + nearLabel + " — goto it, then call sleep again.";
+        } else {
+            next = " Use scan_blocks with #minecraft:beds to find one, goto it, then call sleep again.";
+        }
+        return base + "." + next;
     }
 
     /** 更大范围找一张床的床头（只在失败回执里用；半径有界，避免满世界扫）。 */
