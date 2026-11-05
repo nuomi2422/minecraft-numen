@@ -26,10 +26,16 @@ final class RddRepeatQueryWatcher {
 
     /** 同一 key 至少出现这么多次才算「重复查询」。 */
     static final int MIN_COUNT = 3;
-    /** 窗口：600 tick = 30 秒（工具调用串行，30 秒足够覆盖「连着查同一件事」）。 */
-    static final int WINDOW_TICKS = 600;
+    /**
+     * 窗口：**2400 tick = 120 秒**（2026-11-05 由 600 上调；两轮试算：600 抓不到 34 秒节奏，1200 也抓不到 40 秒×3）。
+     *
+     * <p>现场证据：同伴在状态轮询循环里，`rdd_status/get_self_status/task_status` 平均间隔约 34 秒
+     * （8 分钟 14 次）。原窗口 30 秒 → 每次都在"上一个窗口过期"之后才来 → 计数永远从 1 开始 →
+     * `redundant_query_runtime` 事件 0 条。**窗口比调用间隔短，这个感知就永远不触发。**
+     */
+    static final int WINDOW_TICKS = 2400;
     /** 提醒节流：同一 key 至少隔这么久才再提醒一次（避免刷屏）。 */
-    static final int RENOTIFY_TICKS = 1200;
+    static final int RENOTIFY_TICKS = 4800;
 
     private static final Map<String, State> SEEN = new ConcurrentHashMap<>();
     private static volatile Path offFlag;

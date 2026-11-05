@@ -65,4 +65,14 @@ class RddRepeatQueryWatcherTest {
         assertTrue(RddRepeatQueryWatcher.observe(ID, "rdd_get_inventory", 2, 5020L), "② 首次提醒");
         assertFalse(RddRepeatQueryWatcher.observe(ID, "rdd_get_inventory", 2, 5030L), "② 节流内不再提醒");
     }
+    /** 2026-11-05 现场：状态轮询平均间隔 ≈34 秒；40 秒 ×3 = 1600 tick，需要窗口 ≥1600 才抓得到。 */
+    @Test
+    void pollingAtFortySecondCadenceStillCountsAsRepeat() {
+        RddRepeatQueryWatcher.clear(ID);
+        long step = 40 * 20L;   // 40 秒 = 800 tick，比旧窗口(600)大、比新窗口(1200)小
+        assertFalse(RddRepeatQueryWatcher.observe(ID, "rdd_status", 2, 10_000L));
+        assertFalse(RddRepeatQueryWatcher.observe(ID, "rdd_status", 2, 10_000L + step));
+        assertTrue(RddRepeatQueryWatcher.observe(ID, "rdd_status", 2, 10_000L + step * 2),
+                "34–40 秒一次的轮询也必须被判为重复（这正是现场没触发的原因）");
+    }
 }
