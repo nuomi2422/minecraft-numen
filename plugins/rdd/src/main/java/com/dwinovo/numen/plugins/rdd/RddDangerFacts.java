@@ -203,6 +203,12 @@ final class RddDangerFacts {
         return RddClock.current(level);
     }
 
+    /** tick 耗时的滚动统计（每 {@link #PERF_LOG_EVERY} 次采样打一行）。 */
+    private static final int PERF_LOG_EVERY = 200;
+    private static long perfSamples = 0L;
+    private static long perfTotalNanos = 0L;
+    private static long perfMaxNanos = 0L;
+
     static void sampleOnTick(NumenPlayer body) {
         try {
             if (body == null || !(body.level() instanceof ServerLevel level)) return;
@@ -210,13 +216,38 @@ final class RddDangerFacts {
             Long last = LAST_SAMPLE_TICK.get(body.getUUID());
             if (last != null && tick - last < SAMPLE_INTERVAL_TICKS) return;   // 有界采样，不是每 tick 扫
             LAST_SAMPLE_TICK.put(body.getUUID(), tick);
+            long t0 = System.nanoTime();
             var local = localHostiles(body, level);
             if (local == null) return;
             Map<String, Integer> kinds = localKinds(body, level);
+            long cost = System.nanoTime() - t0;
+            recordPerf(cost);
             DANGER_SNAPSHOT.put(body.getUUID(),
                     new DangerSnapshot(local[0], local[1], Map.copyOf(kinds), tick));
         } catch (RuntimeException | LinkageError ignored) {
             // 采样失败不影响 tick
+        }
+    }
+
+    /**
+     * 记录一次采样耗时；每 200 次输出"平均/最大"。
+     *
+     * <p>042 R2 条件 4 要求现场量 tick 耗时与采样频率——没有这行就只能靠"感觉不卡"。
+     */
+    private static void recordPerf(long costNanos) {
+        synchronized (RddDangerFacts.class) {
+            perfSamples++;
+            perfTotalNanos += costNanos;
+            if (costNanos > perfMaxNanos) perfMaxNanos = costNanos;
+            if (perfSamples % PERF_LOG_EVERY == 0) {
+                long avgUs = perfTotalNanos / perfSamples / 1000L;
+                long maxUs = perfMaxNanos / 1000L;
+                LOG.info("[rdd-danger] tick采样 n={} 平均={}us 最大={}us 间隔={}tick",
+                        perfSamples, avgUs, maxUs, SAMPLE_INTERVAL_TICKS);
+                perfTotalNanos = 0L;
+                perfMaxNanos = 0L;
+                perfSamples = 0L;
+            }
         }
     }
 
