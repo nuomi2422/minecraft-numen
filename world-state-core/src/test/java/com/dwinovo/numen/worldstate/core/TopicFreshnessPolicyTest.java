@@ -42,6 +42,37 @@ class TopicFreshnessPolicyTest {
         assertEquals(Freshness.STALE, policy.classify(obs(1_000L, Freshness.CURRENT), 1_000L + ttl + 1));
     }
 
+    // 2026-11-05：时钟回拨时年龄会截成 0，不能让未来观测因这个简化算法变为 CURRENT。
+    @Test
+    void futureTimestampIsUnknownEvenInsideTtl() {
+        TopicFreshnessPolicy policy = TopicFreshnessPolicy.defaults();
+        assertEquals(Freshness.UNKNOWN, policy.classify(obs(1_001L, Freshness.CURRENT), 1_000L));
+        assertEquals(Freshness.UNKNOWN, policy.classify(obs(Long.MAX_VALUE, Freshness.CURRENT), 1_000L));
+    }
+
+    @Test
+    void nonPositiveObservationTimesAreUnknown() {
+        TopicFreshnessPolicy policy = TopicFreshnessPolicy.defaults();
+        for (long timestamp : new long[]{0L, -1L, Long.MIN_VALUE}) {
+            assertEquals(Freshness.UNKNOWN, policy.classify(obs(timestamp, Freshness.CURRENT), 1_000L));
+        }
+    }
+
+    @Test
+    void nonPositiveReadTimesAreUnknown() {
+        TopicFreshnessPolicy policy = TopicFreshnessPolicy.defaults();
+        for (long now : new long[]{0L, -1L, Long.MIN_VALUE}) {
+            assertEquals(Freshness.UNKNOWN, policy.classify(obs(1_000L, Freshness.CURRENT), now));
+        }
+    }
+
+    @Test
+    void historicalStaysHistoricalWhenClockIsInvalid() {
+        TopicFreshnessPolicy policy = TopicFreshnessPolicy.defaults();
+        assertEquals(Freshness.HISTORICAL, policy.classify(obs(2_000L, Freshness.HISTORICAL), 1_000L));
+        assertEquals(Freshness.HISTORICAL, policy.classify(obs(0L, Freshness.HISTORICAL), 0L));
+    }
+
     @Test
     void historicalStaysHistoricalEvenWhenFresh() {
         TopicFreshnessPolicy policy = TopicFreshnessPolicy.defaults();

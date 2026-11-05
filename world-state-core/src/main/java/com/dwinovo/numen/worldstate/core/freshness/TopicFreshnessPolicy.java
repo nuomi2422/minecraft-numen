@@ -44,6 +44,10 @@ public final class TopicFreshnessPolicy implements FreshnessPolicy {
     public Freshness classify(Observation observation, long nowMs) {
         if (observation == null) return Freshness.UNKNOWN;
         if (observation.freshness() == Freshness.HISTORICAL) return Freshness.HISTORICAL;
+        // 2026-11-05：时钟回拨/缺时间时 ageMillis 会截成 0；不能把未来或无效时间当刚采集。
+        if (nowMs <= 0L || observation.epochMs() <= 0L || observation.epochMs() > nowMs) {
+            return Freshness.UNKNOWN;
+        }
         long age = observation.ageMillis(nowMs);
         return age <= ttlOf(observation.key().topic()) ? Freshness.CURRENT : Freshness.STALE;
     }

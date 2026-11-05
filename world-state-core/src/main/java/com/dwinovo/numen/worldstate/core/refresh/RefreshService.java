@@ -121,7 +121,7 @@ public final class RefreshService {
             ObservationKey key = request.keyFor(ctx.worldId());
             Observation observation = new Observation(key, result.payload(), provider.id(), Origin.DIRECT,
                     ctx.gameTick(), ctx.nowMs(), result.coverage(), Freshness.CURRENT, revision,
-                    provider.dataVersion());
+                    provider.dataVersion(), ctx.serverSession());
             store.put(observation);
             return RefreshResult.ok(observation, elapsed(start));
         } catch (ProviderException e) {

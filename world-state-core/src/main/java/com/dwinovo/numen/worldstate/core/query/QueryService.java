@@ -39,18 +39,36 @@ public final class QueryService {
         this.nowMs = nowMs == null ? System::currentTimeMillis : nowMs;
     }
 
-    /** 只读已有观测；不触发任何采集。 */
+    /** 兼容旧读口：仅按原有新鲜度策略判断；真实宿主应使用带会话的严格重载。 */
     public ReadResult read(String worldId, ObservationRequest request) {
+        return read(worldId, null, request, false);
+    }
+
+    /**
+     * 2026-11-05：只读已有观测，且只有已知的同一服务器会话才可能 CURRENT。
+     * 案例：同一 JVM 重开同一存档时 TTL 仍未过；只比较 worldId 或两个空串都会误认当前。
+     */
+    public ReadResult read(String worldId, String serverSession, ObservationRequest request) {
+        return read(worldId, serverSession, request, true);
+    }
+
+    private ReadResult read(String worldId, String serverSession, ObservationRequest request, boolean strictSession) {
         ObservationKey key = request.keyFor(worldId);
         Optional<Observation> found = store.get(key);
         if (found.isEmpty()) return ReadResult.missing(key);
 
         Observation observation = found.get();
         long now = nowMs.getAsLong();
-        Freshness freshness = freshnessPolicy.classify(observation, now);
+        Freshness freshness = strictSession && !sameKnownSession(serverSession, observation.serverSession())
+                ? Freshness.HISTORICAL : freshnessPolicy.classify(observation, now);
         long age = observation.ageMillis(now);
         return ReadResult.present(observation, freshness, age, observation.coverage(),
                 describe(observation, freshness, age));
+    }
+
+    private static boolean sameKnownSession(String expected, String observed) {
+        return expected != null && !expected.isBlank() && !"unknown".equalsIgnoreCase(expected)
+                && expected.equals(observed);
     }
 
     /** 同步刷新（宿主工具用）。 */
@@ -70,7 +88,7 @@ public final class QueryService {
         switch (freshness) {
             case CURRENT -> sb.append("（当前）");
             case STALE -> sb.append("（已过期，建议刷新）");
-            case HISTORICAL -> sb.append("（重启前载入的历史观测，内容无法确认，请刷新）");
+            case HISTORICAL -> sb.append("（历史观测：从磁盘载入、会话不匹配或未知，内容无法确认，请刷新）");
             default -> sb.append("（未知）");
         }
         if (observation.coverage() != null && !observation.coverage().canProveAbsence()) {

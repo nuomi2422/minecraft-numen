@@ -15,8 +15,18 @@ import net.minecraft.world.level.Level;
  * {@link ServerLevel} 去只读世界。采集器用 {@link #levelOf} 按维度取已加载的 {@link ServerLevel}，
  * <b>不强制加载任何区块</b>。
  */
-public record McCollectionContext(MinecraftServer server, String worldId, long gameTick, long nowMs)
+public record McCollectionContext(MinecraftServer server, String worldId, long gameTick, long nowMs,
+                                  String serverSession)
         implements CollectionContext {
+
+    public McCollectionContext {
+        if (serverSession == null || serverSession.isBlank()) serverSession = "";
+    }
+
+    /** 2026-11-05：保留旧构造；没有显式会话就是 unknown，不能从世界名猜测本轮身份。 */
+    public McCollectionContext(MinecraftServer server, String worldId, long gameTick, long nowMs) {
+        this(server, worldId, gameTick, nowMs, "");
+    }
 
     public ServerLevel levelOf(String dimension) {
         return levelOf(server, dimension);

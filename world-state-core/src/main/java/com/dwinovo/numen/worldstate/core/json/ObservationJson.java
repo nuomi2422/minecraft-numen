@@ -26,8 +26,10 @@ import java.util.List;
  *
  * <p>重启后载入的观测一律标 {@link Freshness#HISTORICAL}：它们是上个进程看到的，
  * 不能冒充本轮实时结果，要读当前内容必须刷新。
+ * 2026-11-05：追加可选 serverSession 字段，旧 schema 1 文件缺字段仍可读（空串 = unknown）；
+ * 即使落盘会话碰巧与读侧相同，也不拿会话相等替代载入后的历史标记。
  *
- * <p>这里只管"字节 ↔ 对象"，落盘目录与原子替换由宿主侧（{@code plugins/worldstate}）负责。
+ * <p>这里只管"字节 ↔ 对象"，落盘目录与文件替换由宿主侧（{@code plugins/worldstate}）负责。
  */
 public final class ObservationJson {
 
@@ -44,7 +46,7 @@ public final class ObservationJson {
     private record StoredObservation(String worldId, String dimension, String topic, String target,
                                      String filter, JsonElement payload, String source, String origin,
                                      long gameTick, long epochMs, String coverage, long revision,
-                                     int dataVersion) {
+                                     int dataVersion, String serverSession) {
     }
 
     public static String toJson(List<Observation> observations) {
@@ -82,7 +84,7 @@ public final class ObservationJson {
         return new StoredObservation(k.worldId(), k.dimension(), k.topic().id(), k.target(), k.filter(),
                 GSON.toJsonTree(o.payload()), o.source(), o.origin() == null ? null : o.origin().name(),
                 o.gameTick(), o.epochMs(), o.coverage() == null ? null : o.coverage().name(),
-                o.revision(), o.dataVersion());
+                o.revision(), o.dataVersion(), o.serverSession());
     }
 
     private static Observation fromStored(StoredObservation s) {
@@ -94,7 +96,7 @@ public final class ObservationJson {
         ObservationKey key = ObservationKey.of(s.worldId(), s.dimension(), topic, s.target(), s.filter());
         return new Observation(key, payload, s.source(), parseOrigin(s.origin()),
                 s.gameTick(), s.epochMs(), parseCoverage(s.coverage()),
-                Freshness.HISTORICAL, s.revision(), s.dataVersion());
+                Freshness.HISTORICAL, s.revision(), s.dataVersion(), s.serverSession());
     }
 
     /** 按主题解码载荷；未知主题或解码失败返回 null（整条丢弃）。 */

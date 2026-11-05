@@ -6,6 +6,7 @@ import com.dwinovo.numen.plugins.worldstate.provider.EntityCountWorldProvider;
 import com.dwinovo.numen.plugins.worldstate.provider.EnvironmentWorldProvider;
 import com.dwinovo.numen.worldstate.core.freshness.TopicFreshnessPolicy;
 import com.dwinovo.numen.worldstate.core.json.ObservationJson;
+import com.dwinovo.numen.worldstate.core.model.FailReason;
 import com.dwinovo.numen.worldstate.core.model.WorldIdentity;
 import com.dwinovo.numen.worldstate.core.observation.Observation;
 import com.dwinovo.numen.worldstate.core.provider.ProviderRegistry;
@@ -21,18 +22,24 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * 世界观测的宿主侧真源：装配存储、采集器、查询服务，并把观测持久化到
  * {@code config/numen/worldstate/observations.json}（按世界存档命名空间隔离）。
  *
- * <p><b>同步采集</b>：{@code read}/{@code refresh} 由工具在服务端线程调用，采集器直接读真实世界，
- * 线程安全。写盘用 tmp + 原子替换；重启后载入的观测一律标历史（见 {@link ObservationJson}）。
+ * <p><b>同步采集</b>：{@code refresh} 必须在服务端线程调用，入口先检查再读真实世界；
+ * {@code read} 只读缓存。写盘先写临时文件再替换（不承诺断电原子性）；载入的观测一律标历史。
+ * 2026-11-05：同一 JVM 重开存档会换 MinecraftServer 对象，故按对象绑定 UUID 会话；
+ * 不能仅用进程启动时间或存档名，否则上一轮缓存仍会在有效期内冒充当前。
  *
  * <p>共享方式沿用 settlement 的先例：{@link WorldStateMod#service()} 给别的模块一个只读入口，
  * 不必 import 整份实现。
@@ -40,6 +47,10 @@ import java.util.Set;
 public final class WorldStateService {
 
     private static final Logger LOG = LoggerFactory.getLogger("worldstate");
+
+    // 2026-11-05：弱引用不留住已关闭的服务器；显式用 ==，不用按 equals 合并对象的 WeakHashMap。
+    // 案例：同名存档的新服务器实例必须换会话；静态表也让同一服务器的多个服务实例身份一致。
+    private static final Map<WeakReference<MinecraftServer>, String> SERVER_SESSIONS = new HashMap<>();
 
     private final Path file;
     private final com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog changeLog =
@@ -83,7 +94,7 @@ public final class WorldStateService {
         return file;
     }
 
-    /** v2 变化流（本版未接线，只供后续 R3 接线使用）。 */
+    /** v2 变化流：已由双写存储接入，能力面读取增量和快照水位。 */
     public com.dwinovo.numen.worldstate.core.changes.v2.InMemoryChangeFeed changeFeedV2() {
         return changeFeedV2;
     }
@@ -102,17 +113,30 @@ public final class WorldStateService {
         return providers.topics();
     }
 
+    /** The actual host policy used by QueryService, not a second set of default TTLs. */
+    public long topicTtlMs(com.dwinovo.numen.worldstate.core.model.Topic topic) {
+        return freshness.ttlOf(topic);
+    }
+
     public int size() {
         return store.size();
     }
 
     /** 只读已有观测（不扫描世界）。 */
     public ReadResult read(MinecraftServer server, ObservationRequest request) {
-        return queryService.read(worldId(server), request);
+        return queryService.read(worldId(server), sessionId(server), request);
     }
 
     /** 主动采集并写入观测；成功才落盘。 */
     public RefreshResult refresh(MinecraftServer server, ObservationRequest request) {
+        if (server == null) {
+            return RefreshResult.failed(FailReason.INVALID_REQUEST, "no server; refresh requires a server thread", 0L);
+        }
+        // 2026-11-05：核过 MinecraftServer 继承的 BlockableEventLoop.isSameThread()；
+        // 不能仅靠调用方承诺，否则异步能力调用会直接扫描真实世界。拒绝，不偷偷调度或刷新。
+        if (!server.isSameThread()) {
+            return RefreshResult.failed(FailReason.INVALID_REQUEST, "refresh requires the Minecraft server thread", 0L);
+        }
         RefreshResult result = queryService.refresh(context(server), request);
         if (result.success()) {
             persist();
@@ -122,33 +146,39 @@ public final class WorldStateService {
 
     private McCollectionContext context(MinecraftServer server) {
         return new McCollectionContext(server, worldId(server),
-                server == null ? 0L : server.getTickCount(), System.currentTimeMillis());
+                server == null ? 0L : server.getTickCount(), System.currentTimeMillis(), sessionId(server));
+    }
+
+    /** 当前服务器实例的会话；无服务器为空串（unknown），不制造可匹配的虚假会话。 */
+    public String sessionId(MinecraftServer server) {
+        return sessionFor(server);
+    }
+
+    private static synchronized String sessionFor(MinecraftServer server) {
+        if (server == null) return "";
+        var entries = SERVER_SESSIONS.entrySet().iterator();
+        while (entries.hasNext()) {
+            var entry = entries.next();
+            MinecraftServer bound = entry.getKey().get();
+            if (bound == null) entries.remove();
+            else if (bound == server) return entry.getValue();
+        }
+        String session = UUID.randomUUID().toString();
+        SERVER_SESSIONS.put(new WeakReference<>(server), session);
+        return session;
     }
 
     /**
-     * 世界存档标识——观测命名空间的一部分，两个存档不能互相串数据。
-     *
-     * <p>优先存档目录名：exp 副本目录是 `exp-xxx`，但 level.dat 的 LevelName 常仍是
-     * `live`；只按显示名分会把副本混进同一命名空间。目录名取不到才回退显示名。
+     * 2026-11-05：真实 save root 的规范化绝对路径区分同名存档，如 a/live 与 b/live。
+     * 取路径失败时以 unknown + 服务器会话隔离，不能退回共享的 LevelName 或裸 unknown。
      */
     public static String worldId(MinecraftServer server) {
         if (server == null) return "unknown";
-        String saveDir = null;
         try {
-            Path root = server.getWorldPath(LevelResource.ROOT);
-            if (root != null && root.getFileName() != null) {
-                saveDir = root.getFileName().toString();
-            }
-        } catch (RuntimeException ignored) {
-            // 目录名取不到就回退显示名，不崩。
+            return WorldIdentity.forPath(server.getWorldPath(LevelResource.ROOT));
+        } catch (RuntimeException unavailable) {
+            return "unknown-" + sessionFor(server);
         }
-        String levelName = null;
-        try {
-            levelName = server.getWorldData().getLevelName();
-        } catch (RuntimeException ignored) {
-            // 显示名也取不到时由 WorldIdentity 回退 unknown。
-        }
-        return WorldIdentity.of(saveDir, levelName);
     }
 
     private void load() {
