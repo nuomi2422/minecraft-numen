@@ -151,6 +151,7 @@ public final class LearnerPlugin implements NumenPlugin {
     @Override
     public void setup(NumenApi numen) {
         configDir = numen.configDir();
+        loadReviewState(configDir);   // 2026-11-05：last_review_at 以前只在内存里，重启即空，容易误判「复盘没跑」
         // 2026-11-03（外部学习者 #508/#516）：上一进程若死在复盘飞行中，哨兵还在 —— 如实记一条再清。
         //   已经两次实机（20:37、20:49）出现「复盘在飞 + 世界重启」：那次复盘在任何账本里都没有痕迹。
         try {
@@ -372,6 +373,36 @@ public final class LearnerPlugin implements NumenPlugin {
     static void recordReview(String at, int verdictCount) {
         lastReviewAt = at;
         lastVerdictCount = verdictCount;
+        saveReviewState(configDir, at, verdictCount);
+    }
+
+    /** 状态落盘：只写 last_review_at / last_verdict_count，读失败就当没读过（不编历史）。 */
+    private static void saveReviewState(Path dir, String at, int verdictCount) {
+        if (dir == null) return;
+        try {
+            java.nio.file.Files.createDirectories(dir);
+            String json = "{\"last_review_at\":\"" + (at == null ? "" : at) + "\",\"last_verdict_count\":" + verdictCount + "}";
+            java.nio.file.Files.writeString(dir.resolve("learner-review-state.json"), json,
+                    java.nio.charset.StandardCharsets.UTF_8);
+        } catch (RuntimeException | java.io.IOException ignored) {
+            // 只是状态展示，写不进去不能影响复盘主流程
+        }
+    }
+
+    private static void loadReviewState(Path dir) {
+        if (dir == null) return;
+        try {
+            Path f = dir.resolve("learner-review-state.json");
+            if (!java.nio.file.Files.exists(f)) return;
+            String raw = java.nio.file.Files.readString(f, java.nio.charset.StandardCharsets.UTF_8);
+            var o = com.google.gson.JsonParser.parseString(raw).getAsJsonObject();
+            if (o.has("last_review_at") && !o.get("last_review_at").isJsonNull()) {
+                lastReviewAt = o.get("last_review_at").getAsString();
+            }
+            if (o.has("last_verdict_count")) lastVerdictCount = o.get("last_verdict_count").getAsInt();
+        } catch (RuntimeException | java.io.IOException ignored) {
+            // 文件坏了就保持空——宁可不显示，也不显示错的
+        }
     }
 
     static String lastReviewAt() {
