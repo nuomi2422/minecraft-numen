@@ -61,7 +61,8 @@ public final class WorldStateService {
     public WorldStateService(Path configDir) {
         this.file = configDir.resolve("worldstate").resolve("observations.json");
         // 041 U4b：给存储挂上变化日志——被接受的写入才产生变化
-        this.store = new InMemoryObservationStore(512, changeLog);
+        // R3 过渡期双写：v1 日志 + v2 流（041 §24.4）；两边的键/主题/修订号/类型必须逐条一致
+        this.store = new InMemoryObservationStore(512, changeLog, changeFeedV2);
         this.providers.register(new EnvironmentWorldProvider());
         this.providers.register(new EntityCountWorldProvider());
         this.providers.register(new BlockCountWorldProvider());

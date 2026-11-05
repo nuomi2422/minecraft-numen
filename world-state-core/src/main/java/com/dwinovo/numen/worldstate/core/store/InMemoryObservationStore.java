@@ -25,6 +25,8 @@ public final class InMemoryObservationStore implements ObservationStore {
     private final Map<String, Observation> map;
     /** 变化日志（041）：可选；为 null 时只记内存、不发变化。 */
     private final com.dwinovo.numen.worldstate.core.changes.ChangeLog changeLog;
+    /** v2 流（R3 过渡期双写；null = 只写 v1）。 */
+    private final com.dwinovo.numen.worldstate.core.changes.v2.ChangeFeed changeFeed;
     /**
      * GONE 用的独立序号。
      *
@@ -43,9 +45,24 @@ public final class InMemoryObservationStore implements ObservationStore {
     }
 
     public InMemoryObservationStore(int capacity, com.dwinovo.numen.worldstate.core.changes.ChangeLog changeLog) {
+        this(capacity, changeLog, null);
+    }
+
+    /**
+     * R3 过渡期**双写**（041 §24.4）：同一次被接受的写入，同时进 v1 日志与 v2 流。
+     *
+     * <p>为什么双写：老消费者仍读 v1，新消费者按版本切 v2；两边都必须看到"被接受的写入"。
+     * <b>两份序号不保证对应</b>——这是刻意的，跨版本迁移走 RESET，不试图对齐两份序号。
+     *
+     * @param changeFeed v2 流（可为 null = 只写 v1）
+     */
+    public InMemoryObservationStore(int capacity,
+                                    com.dwinovo.numen.worldstate.core.changes.ChangeLog changeLog,
+                                    com.dwinovo.numen.worldstate.core.changes.v2.ChangeFeed changeFeed) {
         this.capacity = Math.max(1, capacity);
         this.map = new LinkedHashMap<>(16, 0.75f, true); // accessOrder = true → LRU
         this.changeLog = changeLog;
+        this.changeFeed = changeFeed;
     }
 
     @Override
@@ -76,6 +93,17 @@ public final class InMemoryObservationStore implements ObservationStore {
                             : com.dwinovo.numen.worldstate.core.changes.Change.Kind.UPDATED,
                     observation.epochMs()));
             if (observation.revision() > goneSeq) goneSeq = observation.revision();
+            if (changeFeed != null) {
+                // v2 用自己的 streamSeq；两边的"键/主题/修订号/类型"必须逐条一致（一致性测试盯着这条）
+                changeFeed.append(
+                        observation.key().topic() == null ? "" : observation.key().topic().id(),
+                        k,
+                        current == null
+                                ? com.dwinovo.numen.worldstate.core.changes.v2.ChangeEvent.Kind.CREATED
+                                : com.dwinovo.numen.worldstate.core.changes.v2.ChangeEvent.Kind.UPDATED,
+                        observation.revision(),
+                        observation.epochMs());
+            }
         }
         return true;
     }
@@ -107,6 +135,18 @@ public final class InMemoryObservationStore implements ObservationStore {
                 changeLog.append(new com.dwinovo.numen.worldstate.core.changes.Change(
                         ++goneSeq, e.getValue().key().topic() == null ? "" : e.getValue().key().topic().id(),
                         e.getKey(), com.dwinovo.numen.worldstate.core.changes.Change.Kind.GONE, now));
+            }
+        }
+        if (changeFeed != null) {
+            long now = System.currentTimeMillis();
+            for (Map.Entry<String, Observation> e : map.entrySet()) {
+                // v1 用 GONE（"这个键没了"）；v2 用 INVALIDATE（"这份缓存不可信"）——
+                // 语义不同，一致性测试按"同一批键"对比，不按字面 kind 对比。
+                changeFeed.append(
+                        e.getValue().key().topic() == null ? "" : e.getValue().key().topic().id(),
+                        e.getKey(),
+                        com.dwinovo.numen.worldstate.core.changes.v2.ChangeEvent.Kind.INVALIDATE,
+                        e.getValue().revision(), now);
             }
         }
         map.clear();
