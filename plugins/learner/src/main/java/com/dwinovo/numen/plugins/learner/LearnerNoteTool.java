@@ -131,6 +131,16 @@ final class LearnerNoteTool implements NumenTool {
         EnvSnapshot.onServerThread(companion, () -> {
             try {
                 UUID id = companion.getUUID();
+                // 2026-11-05：文字自律失效（一轮 68 次调用里 36 次是写待办），加进程内硬闸。
+                long day = companion.level().getDayTime() / 24000L;
+                if (!com.dwinovo.numen.plugins.learner.core.MemoThrottle.allow(id, day)) {
+                    reply.accept(TaskResult.fail("memo not queued: already wrote "
+                            + com.dwinovo.numen.plugins.learner.core.MemoThrottle.MAX_PER_DAY
+                            + " memos today. Only write when you are actually STUCK — routine steps,"
+                            + " things that worked, and same-turn fixes are not memos. Next game day"
+                            + " resets the counter.").toJson());
+                    return;
+                }
                 MemoQueue q = LearnerPlugin.queue(id);
                 String memoId = "m-" + System.currentTimeMillis() + "-" + Math.abs(in.problem().hashCode() % 1000);
 
