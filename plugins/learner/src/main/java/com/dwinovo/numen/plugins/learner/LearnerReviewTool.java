@@ -120,6 +120,14 @@ final class LearnerReviewTool implements NumenTool {
             return;
         }
 
+        // 2026-11-05：额度窗口内不要再去调 LLM —— 每次都是 429，白等 4 秒还占一条回执。
+        if (com.dwinovo.numen.plugins.learner.core.ReviewQuotaGate.isBlocked(System.currentTimeMillis())) {
+            reply.accept(TaskResult.fail("review skipped: learner model is out of quota (HTTP 429)."
+                    + " Do not retry now — tell the owner to switch the account; memos stay queued.")
+                    .toJson());
+            return;
+        }
+
         int max = DEFAULT_MAX;
         try {
             if (args != null && args.has("max_memos") && args.get("max_memos").isJsonPrimitive()) {
