@@ -62,23 +62,40 @@ public final class ObservationCapability implements WorldObservationService {
         }
     }
 
+    /**
+     * 取水位：**必须在快照读取之前**取。
+     *
+     * <p>先读快照再取水位的话，两次之间写入的事件 streamSeq ≤ 水位，会被 changes(after=水位) 过滤掉——
+     * 正是 R3-3 要防的夹缝。先取水位最多导致"同一个变化既在快照里又在增量里"（重复，消费者按游标去重），
+     * 不会漏。代价是重复，收益是不丢。
+     */
+    private long watermark() {
+        try {
+            var feed = host.changeFeedV2();
+            return feed == null ? 0L : feed.watermark();
+        } catch (RuntimeException e) {
+            return 0L;
+        }
+    }
+
     @Override
     public Response read(Request request) {
         if (request == null) {
             return Response.error("", "missing request");
         }
+        long wm = watermark();   // 先取水位，再读快照（见 watermark() 注释）
         Topic topic = Topic.byId(request.topic());
         if (topic == null) {
             return Response.error(request.topic(), "unknown topic: " + request.topic());
         }
         if (topic == Topic.BLOCKS) {
-            return readBlocks(request);
+            return readBlocks(request, wm);
         }
         if (topic == Topic.CONTAINERS) {
-            return readContainer(request);
+            return readContainer(request, wm);
         }
         if (topic == Topic.ENTITIES) {
-            return readEntities(request);
+            return readEntities(request, wm);
         }
         if (topic != Topic.ENVIRONMENT) {
             return Response.error(request.topic(), "topic not wired yet: " + topic.id());
@@ -92,7 +109,7 @@ public final class ObservationCapability implements WorldObservationService {
             if (!rr.present()) {
                 // 没有观测 ≠ 世界是空的：明确 PENDING，让调用方决定要不要刷新
                 return new Response(Status.PENDING, request.topic(), "", 0L, Coverage.UNKNOWN,
-                        rr.note() == null ? "no observation yet; refresh first" : rr.note(), List.of());
+                        rr.note() == null ? "no observation yet; refresh first" : rr.note(), List.of(), wm);
             }
             if (!(rr.observation().payload() instanceof EnvironmentPayload env)) {
                 return Response.error(request.topic(), "unexpected payload type");
@@ -115,7 +132,7 @@ public final class ObservationCapability implements WorldObservationService {
             Status status = mapped.status();
             String reason = mapped.reason();
             long observedTick = rr.observation().gameTick();
-            return new Response(status, request.topic(), snapshotId(rr), observedTick, out, reason, List.of(item));
+            return new Response(status, request.topic(), snapshotId(rr), observedTick, out, reason, List.of(item), wm);
         } catch (RuntimeException ex) {
             // 契约：实现不得抛异常
             return Response.error(request.topic(), "read failed: " + ex);
@@ -126,7 +143,7 @@ public final class ObservationCapability implements WorldObservationService {
      * blocks 主题：selector 里必须有 {@code box=x1,y1,z1,x2,y2,z2} 与 {@code blocks=a,b}。
      * 只读缓存，不刷新。
      */
-    private Response readBlocks(Request request) {
+    private Response readBlocks(Request request, long wm) {
         MinecraftServer mc = server.get();
         if (mc == null) return Response.error(request.topic(), "no server");
         ObservationRequest req = blocksRequest(request);
@@ -136,7 +153,7 @@ public final class ObservationCapability implements WorldObservationService {
         ReadResult rr = host.read(mc, req);
         if (!rr.present()) {
             return new Response(Status.PENDING, request.topic(), "", 0L, Coverage.UNKNOWN,
-                    rr.note() == null ? "no observation yet; refresh first" : rr.note(), List.of());
+                    rr.note() == null ? "no observation yet; refresh first" : rr.note(), List.of(), wm);
         }
         if (!(rr.observation().payload() instanceof
                 com.dwinovo.numen.worldstate.core.observation.payload.BlockCountPayload payload)) {
@@ -159,7 +176,7 @@ public final class ObservationCapability implements WorldObservationService {
         }
         var mapped = ObservationMap.map(rr.coverage(), rr.freshness(), true);
         return new Response(mapped.status(), request.topic(), snapshotId(rr),
-                rr.observation().gameTick(), mapped.coverage(), mapped.reason(), items);
+                rr.observation().gameTick(), mapped.coverage(), mapped.reason(), items, wm);
     }
 
     @Override
@@ -226,7 +243,7 @@ public final class ObservationCapability implements WorldObservationService {
      * entities 主题：selector 要 {@code box=x1,y1,z1,x2,y2,z2}，可选 {@code category}/{@code type}。
      * 返回一条 item：`{count, category, type_counts}`（按类型明细可能为空表）。
      */
-    private Response readEntities(Request request) {
+    private Response readEntities(Request request, long wm) {
         MinecraftServer mc = server.get();
         if (mc == null) return Response.error(request.topic(), "no server");
         var req = entitiesRequest(request);
@@ -236,7 +253,7 @@ public final class ObservationCapability implements WorldObservationService {
         ReadResult rr = host.read(mc, req);
         if (!rr.present()) {
             return new Response(Status.PENDING, request.topic(), "", 0L, Coverage.UNKNOWN,
-                    rr.note() == null ? "no observation yet; refresh first" : rr.note(), List.of());
+                    rr.note() == null ? "no observation yet; refresh first" : rr.note(), List.of(), wm);
         }
         if (!(rr.observation().payload() instanceof
                 com.dwinovo.numen.worldstate.core.observation.payload.EntityCountPayload payload)) {
@@ -253,7 +270,7 @@ public final class ObservationCapability implements WorldObservationService {
         }
         Item item = mapped.stale() ? new Item(values, Set.of(), values.keySet()) : Item.of(values);
         return new Response(mapped.status(), request.topic(), snapshotId(rr),
-                rr.observation().gameTick(), mapped.coverage(), mapped.reason(), List.of(item));
+                rr.observation().gameTick(), mapped.coverage(), mapped.reason(), List.of(item), wm);
     }
 
     private static ObservationRequest entitiesRequest(Request request) {
@@ -277,7 +294,7 @@ public final class ObservationCapability implements WorldObservationService {
      * 每个物品一条 {@code items[{item,count}]}；空容器 = 空表 + COMPLETE（"已知为空"），
      * 读不到 = ERROR/PENDING（"不知道"），两者不混。
      */
-    private Response readContainer(Request request) {
+    private Response readContainer(Request request, long wm) {
         MinecraftServer mc = server.get();
         if (mc == null) return Response.error(request.topic(), "no server");
         String target = request.selector().get("container");
@@ -288,7 +305,7 @@ public final class ObservationCapability implements WorldObservationService {
         ReadResult rr = host.read(mc, req);
         if (!rr.present()) {
             return new Response(Status.PENDING, request.topic(), "", 0L, Coverage.UNKNOWN,
-                    rr.note() == null ? "no observation yet; refresh first" : rr.note(), List.of());
+                    rr.note() == null ? "no observation yet; refresh first" : rr.note(), List.of(), wm);
         }
         if (!(rr.observation().payload() instanceof
                 com.dwinovo.numen.worldstate.core.observation.payload.ContainerPayload payload)) {
@@ -303,7 +320,7 @@ public final class ObservationCapability implements WorldObservationService {
             items.add(mapped.stale() ? new Item(values, Set.of(), values.keySet()) : Item.of(values));
         }
         return new Response(mapped.status(), request.topic(), snapshotId(rr),
-                rr.observation().gameTick(), mapped.coverage(), mapped.reason(), items);
+                rr.observation().gameTick(), mapped.coverage(), mapped.reason(), items, wm);
     }
 
     /** 把 selector 的 box/blocks 组成 core 的方块请求；缺字段返回 null（不猜默认范围）。 */

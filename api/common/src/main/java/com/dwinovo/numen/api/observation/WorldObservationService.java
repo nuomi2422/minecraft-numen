@@ -85,9 +85,12 @@ public interface WorldObservationService {
      * @param observedTick 观测时刻（游戏刻/毫秒，由宿主声明）
      * @param coverage     覆盖程度
      * @param reason       ERROR/PENDING/PARTIAL 的人话原因
+     * @param watermark    取快照时变化日志的尾部序号（041 §18.1 / R3-3 接缝）。
+     *                     **必须在快照完成后、同一锁内取**；分两次取就会出现"快照与水位不匹配"的夹缝。
+     *                     v1 消费者可以忽略它（恒 0）。
      */
     record Response(Status status, String topic, String snapshotId, long observedTick,
-                    Coverage coverage, String reason, List<Item> items) {
+                    Coverage coverage, String reason, List<Item> items, long watermark) {
 
         public Response {
             if (status == null) {
@@ -103,12 +106,12 @@ public interface WorldObservationService {
         }
 
         public static Response error(String topic, String reason) {
-            return new Response(Status.ERROR, topic, "", 0L, Coverage.UNKNOWN, reason, List.of());
+            return new Response(Status.ERROR, topic, "", 0L, Coverage.UNKNOWN, reason, List.of(), 0L);
         }
 
         public static Response ok(String topic, String snapshotId, long observedTick,
                                   Coverage coverage, List<Item> items) {
-            return new Response(Status.OK, topic, snapshotId, observedTick, coverage, null, items);
+            return new Response(Status.OK, topic, snapshotId, observedTick, coverage, null, items, 0L);
         }
 
         /** OK 且读到了内容才算"有东西"；空列表不等于"没有"，要看 coverage。 */

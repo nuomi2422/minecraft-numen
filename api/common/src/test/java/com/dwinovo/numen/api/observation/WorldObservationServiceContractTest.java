@@ -35,7 +35,7 @@ class WorldObservationServiceContractTest {
 
     @Test
     void errorResponseMustCarryAReason() {
-        assertThrows(IllegalArgumentException.class, () -> new Response(Status.ERROR, "env", "", 0, Coverage.UNKNOWN, null, List.of()));
+        assertThrows(IllegalArgumentException.class, () -> new Response(Status.ERROR, "env", "", 0, Coverage.UNKNOWN, null, List.of(), 0L));
         Response e = Response.error("env", "provider missing");
         assertEquals(Status.ERROR, e.status());
         assertFalse(e.hasItems());
@@ -43,7 +43,7 @@ class WorldObservationServiceContractTest {
 
     @Test
     void okIsNotACompletedConditionAndEmptyIsNotAbsence() {
-        Response emptyPartial = new Response(Status.OK, "combat.crystals", "snap-1", 100, Coverage.PARTIAL, null, List.of());
+        Response emptyPartial = new Response(Status.OK, "combat.crystals", "snap-1", 100, Coverage.PARTIAL, null, List.of(), 0L);
         assertFalse(emptyPartial.hasItems(), "没有条目");
         assertEquals(Coverage.PARTIAL, emptyPartial.coverage(),
                 "局部覆盖不能据此证明不存在（调用方要自己判 canProveAbsence）");
@@ -68,8 +68,16 @@ class WorldObservationServiceContractTest {
 
     @Test
     void pendingIsNeitherOkNorError() {
-        Response p = new Response(Status.PENDING, "entities", "", 0, Coverage.UNKNOWN, "refresh started", List.of());
+        Response p = new Response(Status.PENDING, "entities", "", 0, Coverage.UNKNOWN, "refresh started", List.of(), 0L);
         assertEquals(Status.PENDING, p.status());
         assertFalse(p.hasItems());
+    }
+    @Test
+    void snapshotCarriesWatermarkForTheSeam() {
+        // R3-3：响应必须带水位，否则"先 read 拿水位 → 再 changes"走不通
+        Response r = new Response(Status.OK, "containers", "snap-2", 100, Coverage.FULL,
+                null, List.of(), 4321L);
+        assertEquals(4321L, r.watermark());
+        assertEquals(0L, Response.error("x", "y").watermark(), "错误响应没有水位");
     }
 }
