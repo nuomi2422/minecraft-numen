@@ -36,7 +36,6 @@ public record ChangesQuery(int schemaVersion, long after, String epoch,
         return new ChangesQuery(SCHEMA_V2, after, epoch, topics, limit);
     }
 
-    public boolean isV2() {
-        return schemaVersion == SCHEMA_V2;
-    }
+    // 刻意**不提供 isV2()**：二分开关会把 schemaVersion=99 推进 else 分支 → 静默降级成 v1。
+    // 分流必须显式三分：==SCHEMA_V1 / ==SCHEMA_V2 / 其余 ERROR（见 VersionedChangesMapper）。
 }

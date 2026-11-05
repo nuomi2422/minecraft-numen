@@ -168,7 +168,7 @@ public final class InMemoryObservationStore implements ObservationStore {
                         eldest,
                         com.dwinovo.numen.worldstate.core.changes.v2.ChangeEvent.Kind.INVALIDATE,
                         removed.revision(),
-                        System.currentTimeMillis());
+                        removed.epochMs());   // 与 put() 同一时间来源（别再引入第二个时钟）
             }
         }
     }

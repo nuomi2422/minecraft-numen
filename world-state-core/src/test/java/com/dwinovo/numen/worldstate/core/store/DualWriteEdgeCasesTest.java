@@ -61,4 +61,17 @@ class DualWriteEdgeCasesTest {
         assertEquals(1, v2Invalidate, "被淘汰的那条必须发 INVALIDATE");
         assertTrue(v1Events < p2.events().size(), "不对称是刻意的：v1 少一条、v2 多一条");
     }
+    @Test
+    void evictionInvalidateUsesTheRemovedObservationTime() {
+        InMemoryChangeFeed v2 = new InMemoryChangeFeed("e1");
+        InMemoryObservationStore store = new InMemoryObservationStore(1, null, v2);
+        Observation first = obs("box=1", 1);
+        store.put(first);
+        store.put(obs("box=2", 2));      // box=1 被淘汰
+
+        var inval = v2.query(0, "e1", null, 10).events().stream()
+                .filter(e -> e.kind() == ChangeEvent.Kind.INVALIDATE).findFirst().orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals(first.epochMs(), inval.epochMs(),
+                "淘汰事件的 epochMs 必须沿用被淘汰那条，不能另取 System.currentTimeMillis()");
+    }
 }

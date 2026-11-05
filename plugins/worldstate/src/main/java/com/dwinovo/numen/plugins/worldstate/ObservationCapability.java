@@ -35,6 +35,16 @@ public final class ObservationCapability implements WorldObservationService {
     }
 
     @Override
+    public com.dwinovo.numen.api.observation.ChangesV2Response changes(
+            com.dwinovo.numen.api.observation.ChangesQuery query) {
+        try {
+            return VersionedChangesMapper.map(query, host.changeFeedV2());
+        } catch (RuntimeException e) {
+            return com.dwinovo.numen.api.observation.ChangesV2Response.error("versioned changes failed: " + e);
+        }
+    }
+
+    @Override
     public ChangesResponse changes(long afterRevision, java.util.List<String> topics, int limit) {
         try {
             var log = host.changeLog();
