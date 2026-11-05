@@ -100,27 +100,43 @@ final class RddContainerMemory {
                     String why = v2 == null ? "null" : v2.status() + " reason=" + v2.reason();
                     // 老宿主不认 v2（过渡期）→ 明确回退一次老入口，并记一条，不静默
                     if (v2 != null && v2.reason() != null && v2.reason().contains("not supported")) {
-                        LOG_CHANGE.maybe(id, "v2 增量不受支持，回退 v1（" + why + "）");
-                        var legacy = svc.changes(cursor, java.util.List.of("containers"), 64);
+                        // 回退必须**把游标归零**：此刻 poller 里的 cursor 可能已经是 v2 的 streamSeq，
+                        // 而 v1 的 after 是 observation revision——两个命名空间，混用会静默返回错误切片。
+                        LOG_CHANGE.maybe(id, "v2 增量不受支持，回退 v1 且游标重置（" + why + "）");
+                        LOG.info("[rdd-storage] containers 回退 v1 导致游标重置 → 全量重扫一次 companion={}", id);
+                        var legacy = svc.changes(0L, java.util.List.of("containers"), 64);
                         if (legacy == null
                                 || legacy.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR) {
                             LOG_CHANGE.maybe(id, "v1 增量也不可用");
                             return null;
                         }
-                        return new ContainerChangePoller.Page(legacy.gap(), legacy.nextCursor(),
-                                legacy.changes().size());
+                        return new ContainerChangePoller.Page(true, 0L, legacy.changes().size());
                     }
                     LOG_CHANGE.maybe(id, "增量不可用 " + why);
                     return null;      // 拿不到增量 → 调用方退回节奏扫描
                 }
+                String prevEpoch = CHANGE_EPOCH.get(id);
                 CHANGE_EPOCH.put(id, v2.streamEpoch());
                 LOG_CHANGE.maybe(id, "增量(v2) cursor=" + cursor + " next=" + v2.nextCursor()
                         + " reset=" + v2.resetRequired() + " n=" + v2.events().size()
                         + " epoch=" + v2.streamEpoch());
                 if (v2.resetRequired()) {
-                    // 区分"切换/换流导致的重置"与"真断档"：两者都 reset，日志必须能分开
-                    LOG.info("[rdd-storage] containers 游标重置（epoch 变更或首次切 v2）→ 立刻重扫并强制刷新");
-                    OBS_AT.clear();   // 让下一次读容器走显式 refresh，而不是拿旧缓存凑合
+                    // 三种 reset 是三种处置，必须分开记（审计上轮的死要求）
+                    String whyReset;
+                    if (prevEpoch == null || prevEpoch.isBlank()) {
+                        whyReset = "首次切 v2";
+                    } else if (!prevEpoch.equals(v2.streamEpoch())) {
+                        whyReset = "换流/重启（epoch " + prevEpoch + " → " + v2.streamEpoch() + "）";
+                    } else {
+                        whyReset = "真断档（保留期淘汰）";
+                    }
+                    LOG.info("[rdd-storage] containers 游标重置[{}] companion={} → 重扫并强制刷新", whyReset, id);
+                    // 只清本同伴当前维度的节流键，别让一只同伴换流触发全场刷新风暴
+                    int cleared = clearThrottleFor(id);
+                    LOG_CHANGE.maybe(id, "节流清理 cleared=" + cleared + "（仅本同伴维度）");
+                    if (cleared == 0) {
+                        LOG_CHANGE.maybe(id, "未匹配到本同伴节流键：节流表无维度前缀，请检查 containerKey");
+                    }
                 } else if (!v2.events().isEmpty()) {
                     LOG.info("[rdd-storage] change-signal(v2) n={} cursor={} next={}",
                             v2.events().size(), cursor, v2.nextCursor());
@@ -265,13 +281,44 @@ final class RddContainerMemory {
      * 轻则漏刷新，重则把 A 世界的刷新时间当成 B 世界的。
      */
     private static String containerKey(ServerLevel level, String target) {
+        return worldPrefix(level) + target;
+    }
+
+    /** 世界 + 维度前缀：节流键与"按同伴清理"共用同一套口径。 */
+    private static String worldPrefix(ServerLevel level) {
         String world = "?";
         try {
             world = level.getServer().getWorldData().getLevelName();
         } catch (RuntimeException ignored) {
             // 名字拿不到就退化成"?"，仍然比只按坐标好
         }
-        return world + "|" + level.dimension().location() + "|" + target;
+        return world + "|" + level.dimension().location() + "|";
+    }
+
+    /**
+     * 只清**该同伴当前世界/维度**的节流键。
+     *
+     * <p>为什么不能 OBS_AT.clear()：键是跨同伴的，一只同伴换流会把所有同伴、所有容器的节流清零 →
+     * 全场强制 refresh、每个容器一次落盘。一只同伴换流触发全场风暴，这在现场会表现成"莫名其妙卡一下"。
+     */
+    private static int clearThrottleFor(java.util.UUID id) {
+        try {
+            var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
+            if (server == null) return 0;
+            var body = com.dwinovo.numen.entity.NumenPlayer.findByUuid(server, id);
+            if (body == null || body.level() == null) return 0;
+            String prefix = worldPrefix((ServerLevel) body.level());
+            int n = 0;
+            for (var it = OBS_AT.keySet().iterator(); it.hasNext(); ) {
+                if (it.next().startsWith(prefix)) {
+                    it.remove();
+                    n++;
+                }
+            }
+            return n;
+        } catch (RuntimeException | LinkageError e) {
+            return 0;
+        }
     }
 
     private static Map<String, Integer> readViaObservation(NumenPlayer body, BlockPos pos, long tick) {
