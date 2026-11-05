@@ -1938,17 +1938,7 @@ public final class EntityAgentLoop {
         // 预算/上下文/压缩闸都通过、incrementTurn 之后才发 runtime_state。
         // 这样被拦下的轮次不会留下“她看见了什么”的假记录，turn 也不会滞后一轮。
         var tools = new java.util.ArrayList<>(com.dwinovo.numen.agent.tool.ToolVisibility.forExecutor(ToolRegistry.all()));
-        // 2026-11-05（实测）：find_tools 把定义渲染进消息，却没有把工具放进 tools 数组——
-        // 模型看得见参数却看不到可调用的函数，于是 20 分钟里 223/274 次调用都是 find_tools（最长 58 连）。
-        // 修法：对话里已展开的工具补回 tools。压缩后展开记录消失（expandedIn 从对话推导），
-        // 自然退回“取一次”的原语义，不会出现“记着展开过、手里却没参数”的假象。
-        for (String expandedName : com.dwinovo.numen.agent.tool.ToolDisclosure.expandedIn(convo.snapshot())) {
-            var extra = ToolRegistry.resolve(expandedName);
-            if (extra == null) continue;
-            boolean already = false;
-            for (var t : tools) { if (t.name().equals(expandedName)) { already = true; break; } }
-            if (!already) tools.add(extra);
-        }   // 2026-10-30：内脑只发白名单（config/numen/tool-visibility.json），MCP 仍全量
+        addExpandedTools(tools);   // 2026-10-30：内脑只发白名单（config/numen/tool-visibility.json），MCP 仍全量
         // 2026-10-31（V-20261031-38）：任务运行中**不发** task_status —— prompt/回执文案都压不住轮询
         // （B33 9 次、B34 13 次）；task_finished 事件自己会到，<current_task> 已显示进度，要中止用 task_stop。
         if (com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(entityUuid) != null) {
@@ -3083,6 +3073,25 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
         return label.toString();
     }
 
+    /**
+     * 2026-11-05（实测）：find_tools 把定义渲染进消息，却没有把工具放进 tools 数组——
+     * 模型看得见参数却看不到可调用的函数，20 分钟里 223/274 次调用都是 find_tools（最长 58 连）。
+     * 这里把对话里已展开的工具补回本轮 tools；压缩后展开记录消失（expandedIn 从对话推导），
+     * 自然退回“取一次”的原语义，不会出现「记着展开过、手里却没参数」的假象。
+     */
+    private void addExpandedTools(java.util.List<com.dwinovo.numen.agent.tool.NumenTool> tools) {
+        if (tools == null) return;
+        for (String expandedName : com.dwinovo.numen.agent.tool.ToolDisclosure.expandedIn(convo.snapshot())) {
+            var extra = ToolRegistry.resolve(expandedName);
+            if (extra == null) continue;
+            boolean already = false;
+            for (var t : tools) {
+                if (t.name().equals(expandedName)) { already = true; break; }
+            }
+            if (!already) tools.add(extra);
+        }
+    }
+
     private String composeSystemPrompt() {
         // Per-companion persona wins; fall back to the global default; with neither,
         // the persona slot says so EXPLICITLY — an unconfigured persona is a valid
@@ -3236,6 +3245,7 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                 var retryTools = new java.util.ArrayList<>(com.dwinovo.numen.agent.tool.ToolVisibility.forExecutor(ToolRegistry.all()));   // 同上：重跑同样走白名单
                 if (com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(entityUuid) != null) {
                     retryTools.removeIf(t -> "task_status".equals(t.name()));   // 任务运行中同样不发（见 V-20261031-38）
+                    addExpandedTools(retryTools);   // 重跑这一发也要带上已展开的工具，否则又是 58 连
                 }
                 String retrySystem = composeSystemPrompt();
                 inFlightTrimmedEstimate = estimateRequestTokens(retrySnapshot, retryTools, retrySystem);
