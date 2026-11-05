@@ -14,8 +14,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 042 R1：把 `world_state` **公布出去的 schema 形状**钉住。
  *
  * <p>为什么断言"形状"而不是"字段存在"：字段存在只证明我写了这行，形状才决定模型看到什么。
- * 尤其 `required`——它现在是 `[action, topic]`，等 R3 把 topic 改成 optional 时这条会红，
- * **那是故意的**：强制一次有意识的修改，而不是让它悄悄漂。
+ *
+ * <p>2026-11-05（R1-2 / R3 完成后）：`topic` 已从 required 改为**操作条件必需**——
+ * `changes` 不需要主题，`read|refresh` 需要。schema 层不再强制（否则 changes 永远过不了校验），
+ * 缺 topic 时由 onServerCall 明确报错。这条改动是 R3 收口的一部分，测试随之更新。
  */
 class WorldStateSchemaTest {
 
@@ -35,11 +37,21 @@ class WorldStateSchemaTest {
     }
 
     @Test
-    void requiredIsExactlyActionAndTopic() {
-        assertEquals(Set.of("action", "topic"), Set.copyOf(required()),
-                "当前契约：action 与 topic 必填；R3 把 topic 改 optional 时这条应红");
-        // 审计 nit：Set 比较会吞掉重复项，加一条长度断言兜住
+    void requiredIsExactlyAction() {
+        // R1-2：topic 改为操作条件必需（changes 不需要），所以 schema 只剩 action 必填
+        assertEquals(Set.of("action"), Set.copyOf(required()),
+                "schema 必填只剩 action；topic 的必需性由 onServerCall 按 action 判定");
         assertEquals(required().size(), Set.copyOf(required()).size(), "required 里不该有重复项");
+    }
+
+    @Test
+    void topicIsPublishedButOptional() {
+        Map<String, Object> topic = (Map<String, Object>) props().get("topic");
+        assertTrue(topic != null, "topic 必须仍在 properties 里——模型要能表达它");
+        assertFalse(required().contains("topic"), "topic 不该是 schema 必填：changes 不带主题也要能过校验");
+        String desc = String.valueOf(topic.get("description"));
+        assertTrue(desc.contains("read") && desc.contains("refresh"),
+                "说明要写清它只在 read|refresh 必需，实际：" + desc);
     }
 
     @Test

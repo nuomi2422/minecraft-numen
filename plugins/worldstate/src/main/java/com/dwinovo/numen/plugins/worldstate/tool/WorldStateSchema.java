@@ -31,7 +31,11 @@ public final class WorldStateSchema {
                 .optionalInteger("after", "changes 用：增量游标（上次读到的位置），0=从头", 0, Integer.MAX_VALUE)
                 .optionalInteger("limit", "changes 用：最多返回几条（默认 64，上限 256）", 1, 256)
                 .optionalString("topics", "changes 用：主题过滤，逗号分隔，如 blocks,containers")
-                .enumStr("topic", "观测主题", "environment", "entities", "blocks", "containers")
+                // 042 R1-2：topic 改为**操作条件必需**——changes 不需要主题，read/refresh 需要。
+                // schema 层不强制 required（否则 changes 永远过不了校验）；缺 topic 时由 onServerCall
+                // 明确报 "topic is required for action=read|refresh"（R1-3 的可诊断失败）。
+                .optionalEnum("topic", "观测主题（action=read|refresh 必需）：environment / entities / blocks / containers",
+                        "environment", "entities", "blocks", "containers")
                 .optionalString("dimension", "维度 id，默认同伴当前维度，如 minecraft:overworld")
                 .optionalInteger("samples", "blocks 用：每个规格带回几个位置样本（0~32，默认 0）", 0, 32)
                 .optionalInteger("x1", "范围角1 x（entities/blocks 用）", -30000000, 30000000)
