@@ -46,17 +46,13 @@ public final class WorldStateService {
             new com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog();
     private final InMemoryObservationStore store;
     /**
-     * v2 变化流（041 §19 / R3 接线第 1 步）：**本版只构造、不接任何调用点**。
+     * v2 变化流（041 §19 / §24）：**已接调用点**——写入走双写（见构造里的 store），
+     * 读取走能力面 `changes(ChangesQuery)`。
      *
-     * <p>为什么先放着：v2 的语义（streamSeq/epoch/RESET）要等能力面版本化才敢切；
-     * 先把组件就位，接线时只改调用点，不改构造。
-     */
-    /**
-     * v2 变化流的 epoch：**每个进程必须不同**。
-     *
-     * <p>之前写死成 `"worldstate-v2"`，后果是：进程重启后 epoch 不变，任何"持久化游标"都会被当成
-     * 仍然有效——而新进程的 streamSeq 是从 1 重新发的，等于把新流接到旧游标上。
-     * 现在带上进程启动毫秒，重启即换流，旧游标一律 RESET。
+     * <p><b>epoch 每个进程必须不同</b>：写死常量时，进程重启后 epoch 不变，
+     * 一旦游标持久化，旧游标就会被当成仍有效，接上新进程从 1 重发的 streamSeq（规格违背；
+     * 当前游标在内存，所以今天没有实际故障，但持久化后必炸）。
+     * 现在带进程启动毫秒，重启即换流，旧游标一律 RESET。
      */
     private final com.dwinovo.numen.worldstate.core.changes.v2.InMemoryChangeFeed changeFeedV2 =
             new com.dwinovo.numen.worldstate.core.changes.v2.InMemoryChangeFeed(
