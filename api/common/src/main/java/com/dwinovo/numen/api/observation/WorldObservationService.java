@@ -96,9 +96,16 @@ public interface WorldObservationService {
      *                     不写前提直接说"快照后取"，下一个没有共享锁的实现照做就会造出夹缝。
      */
     record Response(Status status, String topic, String snapshotId, long observedTick,
-                    Coverage coverage, String reason, List<Item> items, long watermark) {
+                    Coverage coverage, String reason, List<Item> items, long watermark, ObservationMetadata metadata) {
+
+        /** Compatibility for existing plugins; absent provenance stays explicitly UNKNOWN. */
+        public Response(Status status, String topic, String snapshotId, long observedTick,
+                        Coverage coverage, String reason, List<Item> items, long watermark) {
+            this(status, topic, snapshotId, observedTick, coverage, reason, items, watermark, ObservationMetadata.unknown());
+        }
 
         public Response {
+            metadata = metadata == null ? ObservationMetadata.unknown() : metadata;
             if (status == null) {
                 throw new IllegalArgumentException("status required");
             }
@@ -128,6 +135,14 @@ public interface WorldObservationService {
 
     /** 读一次（只读缓存）。实现不得抛异常。 */
     Response read(Request request);
+
+    /** Bounded cached reads; never calls refresh (039/B1, 2026-11-05). */
+    default ObservationBatch.Result batchRead(ObservationBatch.Query query) {
+        return ObservationBatchReader.read(this, query);
+    }
+
+    /** Advertise only wired topics. Empty means a legacy provider has no catalog. */
+    default List<String> catalog() { return List.of(); }
 
     /**
      * 显式刷新：让宿主按自己的预算重新采集一次，再返回可读结果（039 §3）。

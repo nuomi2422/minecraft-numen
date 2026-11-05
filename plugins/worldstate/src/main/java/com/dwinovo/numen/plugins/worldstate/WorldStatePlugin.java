@@ -23,17 +23,17 @@ public final class WorldStatePlugin implements NumenPlugin {
     public void setup(NumenApi numen) {
         WorldStateService service = new WorldStateService(numen.configDir());
         WorldStateMod.bindService(service);
-        numen.registerTool(new WorldStateTool(service));
-        numen.registerTool(new WorldProbeTool(new ProbeService()));
-        // 039 U1：把只读观测能力登记到公开取用口（当前只接 environment，其它主题明确 ERROR）。
-        WorldObservationService previous = numen.capability(WorldObservationService.class,
-                new ObservationCapability(service, () -> {
+        // 039/B1: tool and plugins share this one adapter, not parallel policy instances.
+        ObservationCapability observations = new ObservationCapability(service, () -> {
                     try {
                         return net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
                     } catch (RuntimeException | LinkageError e) {
                         return null;
                     }
-                }));
+                });
+        numen.registerTool(new WorldStateTool(service, observations));
+        numen.registerTool(new WorldProbeTool(new ProbeService()));
+        WorldObservationService previous = numen.capability(WorldObservationService.class, observations);
         if (previous != null) {
             LOG.warn("[worldstate] replaced an existing WorldObservationService: {}", previous.getClass().getName());
         }

@@ -24,9 +24,9 @@ public final class WorldStateSchema {
     private WorldStateSchema() {}
 
     public static Map<String, Object> build() {
-        return Schema.object()
+        Map<String, Object> schema = Schema.object()
                 .enumStr("action", "read=只读已有观测 / refresh=主动采集 / changes=增量读（041）",
-                        "read", "refresh", "changes")
+                        "read", "refresh", "changes", "catalog", "batch_read")
                 // 中性措辞：具体是"观测 revision"还是"日志 streamSeq"，等 042 R3 定（R3-2 要求拆开）。
                 .optionalInteger("after", "changes 用：增量游标（上次读到的位置），0=从头", 0, Integer.MAX_VALUE)
                 .optionalInteger("limit", "changes 用：最多返回几条（默认 64，上限 256）", 1, 256)
@@ -49,6 +49,21 @@ public final class WorldStateSchema {
                         "passive", "hostile", "all")
                 .optionalString("block", "blocks 用：目标方块 id 或 id[属性=值]，逗号分隔多个")
                 .optionalString("container", "containers 用：block:x,y,z 或 player:<uuid>")
+                .optionalInteger("max_age_ms", "batch_read：允许年龄，默认2000毫秒", 1, 60000)
+                .optionalInteger("max_skew_ms", "batch_read：各观测采样偏差上限，默认100毫秒", 0, 60000)
+                .optionalInteger("max_items", "batch_read：每个查询条目上限，默认64", 1, 256)
+                .optionalInteger("deadline_ms", "batch_read：合作式读取预算，默认50毫秒，不强行中断采集", 1, 1000)
                 .build();
+        // 2026-11-05: reuse the published query fields, without recursively building another tool schema.
+        @SuppressWarnings("unchecked")
+        Map<String, Object> properties = (Map<String, Object>) schema.get("properties");
+        Map<String, Object> queryProperties = new java.util.LinkedHashMap<>(properties);
+        for (String key : java.util.List.of("action", "after", "limit", "topics", "max_age_ms", "max_skew_ms", "max_items", "deadline_ms"))
+            queryProperties.remove(key);
+        properties.put("queries", Map.of("type", "array", "minItems", 1, "maxItems", 16,
+                "description", "batch_read必需；只读当前同伴各轴±32格立方近场缓存/自身背包，不扫描，不修改世界",
+                "items", Map.of("type", "object", "properties", queryProperties,
+                        "required", java.util.List.of("topic"), "additionalProperties", false)));
+        return schema;
     }
 }

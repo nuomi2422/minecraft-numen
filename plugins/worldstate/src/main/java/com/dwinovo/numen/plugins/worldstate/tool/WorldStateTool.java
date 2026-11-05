@@ -43,9 +43,11 @@ import java.util.function.Consumer;
 public final class WorldStateTool implements NumenTool {
 
     private final WorldStateService service;
+    private final com.dwinovo.numen.api.observation.WorldObservationService observations;
 
-    public WorldStateTool(WorldStateService service) {
+    public WorldStateTool(WorldStateService service, com.dwinovo.numen.api.observation.WorldObservationService observations) {
         this.service = service;
+        this.observations = observations;
     }
 
     @Override
@@ -56,6 +58,7 @@ public final class WorldStateTool implements NumenTool {
     @Override
     public String description() {
         return "★ 世界观测统一入口：读事实 / 取事实（都不改世界）。\n"
+                + "action=catalog —— 列出已接主题；action=batch_read + queries —— 有限组合缓存读取，返回世界/会话/时效/采样偏差；不自动刷新。\n"
                 + "action=read —— 只读已有观测，不扫描世界；没有就明确返回没有。返回带时间、覆盖、新鲜度。\n"
                 + "action=refresh —— 主动到世界采集最新信息并更新观测；失败时明确报原因，且不清空旧观测。\n"
                 + "topic=environment —— 维度/游戏时间/天气。\n"
@@ -83,6 +86,30 @@ public final class WorldStateTool implements NumenTool {
             }
             String action = args.has("action")
                     ? args.get("action").getAsString().toLowerCase(Locale.ROOT) : "";
+            // 039/B1: the existing tool exposes the exact same capability used by plugin consumers.
+            if ("catalog".equals(action)) {
+                reply.accept(TaskResult.ok("wired observation topics", Map.of("topics", observations.catalog(),
+                        "batch_max_queries", 16, "batch_scope", "SERVER_LOADED near-field, not line-of-sight",
+                        "legacy_scope", "read/refresh/changes unchanged; not caller-bound by this batch adapter",
+                        "read_does_not_refresh", true)).toJson());
+                return;
+            }
+            if ("batch_read".equals(action)) {
+                var p = self.blockPosition();
+                var caller = new WorldStateBatch.Caller(self.getUUID().toString(),
+                        WorldStateService.worldId(self.getServer()), service.sessionId(self.getServer()),
+                        self.serverLevel().dimension().location().toString(), p.getX(), p.getY(), p.getZ());
+                String queryId = "obs-" + java.util.UUID.randomUUID();
+                var query = WorldStateBatch.parse(args, caller, queryId);
+                var result = observations.batchRead(query);
+                Map<String, Object> data = Map.of("query_id", queryId,
+                        "companion_id", self.getUUID().toString(), "result", WorldStateBatch.resultData(result));
+                WorldStateMonitor.publish("batch_read", Map.of("query_id", queryId,
+                        "companion_id", self.getUUID().toString(), "status", result.status().name(),
+                        "consistency", result.consistency().name(), "responses", result.responses().size()));
+                reply.accept(TaskResult.ok("read result; inspect status/consistency, not a task completion", data).toJson());
+                return;
+            }
             // 2026-11-05（042 R1-5）：参数解析抽到 WorldStateArgs（纯函数、可离线测），
             // 这里只负责"有身体才能读世界"与分发。
             // 增量读不需要 topic/范围，必须先于主题校验
@@ -107,7 +134,7 @@ public final class WorldStateTool implements NumenTool {
                 case "read" -> handleRead(self, request, reply);
                 case "refresh" -> handleRefresh(self, request, reply);
                 default -> reply.accept(TaskResult.fail(
-                        "world_state: action must be read|refresh|changes").toJson());
+                        "world_state: action must be read|refresh|changes|catalog|batch_read").toJson());
             }
         } catch (RuntimeException ex) {
             reply.accept(TaskResult.fail("world_state error: " + ex.getMessage()).toJson());
