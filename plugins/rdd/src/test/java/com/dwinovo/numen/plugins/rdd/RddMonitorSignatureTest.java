@@ -51,4 +51,32 @@ class RddMonitorSignatureTest {
         Map<String, Object> b = Map.of("assets", List.of(Map.of("assetId", "a1", "status", "gone")));
         assertNotEquals(RddMonitor.signature(a), RddMonitor.signature(b), "内容真变了必须不同");
     }
+    /** 现场回归：RddAssetContext 返回的是 POJO，不是 Map——旧实现只剥 Map key，POJO 字段漏了。 */
+    static final class AssetPojo {
+        String assetId = "a1";
+        String observationId;
+        long observedAt;
+
+        AssetPojo(String observationId, long observedAt) {
+            this.observationId = observationId;
+            this.observedAt = observedAt;
+        }
+    }
+
+    @Test
+    void pojoFieldsAreStrippedToo() {
+        Map<String, Object> a = Map.of("assets", List.of(new AssetPojo("obs-1", 100L)));
+        Map<String, Object> b = Map.of("assets", List.of(new AssetPojo("obs-2", 200L)));
+        assertEquals(RddMonitor.signature(a), RddMonitor.signature(b),
+                "POJO 里的 observationId/observedAt 也必须剥——这正是去重三次没生效的根因");
+    }
+
+    @Test
+    void pojoRealDifferenceIsKept() {
+        Map<String, Object> a = Map.of("assets", List.of(new AssetPojo("obs-1", 100L)));
+        Map<String, Object> b = Map.of("assets", List.of(new AssetPojo("obs-1", 200L)));
+        assertEquals(RddMonitor.signature(a), RddMonitor.signature(b));
+        Map<String, Object> c = Map.of("assets", List.of(Map.of("assetId", "a2")));
+        assertNotEquals(RddMonitor.signature(a), RddMonitor.signature(c), "真不同必须不同");
+    }
 }

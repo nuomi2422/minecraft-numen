@@ -36,6 +36,14 @@ public final class RddMonitor {
     private static final String FILE_NAME = "rdd.jsonl";
     private static final String ROTATED_PREFIX = "rdd-";
 
+    /** 构建标记：现场核对"跑的到底是不是新 jar"用（今天栽过一次"以为部署了"）。 */
+    static final String BUILD_STAMP = "2026-11-05Tjson-tree-signature";
+
+    static {
+        org.slf4j.LoggerFactory.getLogger("rdd-monitor")
+                .info("[rdd-monitor] build={}（签名在 JSON 树上规范化，POJO 字段也会被剥）", BUILD_STAMP);
+    }
+
     private RddMonitor() {}
 
     /**
@@ -54,7 +62,16 @@ public final class RddMonitor {
         String sig = signature(data);
         long now = System.currentTimeMillis();
         boolean emit = GATE.shouldEmit(type, sig, now);
-        if (DEBUG_GATE && DEBUG_COUNT.getAndIncrement() < 40) {
+        if (DEBUG_GATE && "asset_snapshot".equals(type) && DEBUG_COUNT.getAndIncrement() < 3) {
+            // 2026-11-05：把完整签名落盘，离线逐字符 diff——hash 只能告诉你"不同"，不能告诉你"哪不同"。
+            try {
+                Path dbg = FMLPaths.GAMEDIR.get().resolve("config").resolve("numen")
+                        .resolve("monitor").resolve("gate-debug.txt");
+                Files.createDirectories(dbg.getParent());
+                Files.writeString(dbg, "=== " + now + " len=" + sig.length() + "\n" + sig + "\n",
+                        StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            } catch (Throwable ignored) {
+            }
             LOG.info("[rdd-monitor] gate type={} sig={} emit={} len={}", type, sig.hashCode(), emit, sig.length());
         }
         if (!emit) {
@@ -80,42 +97,59 @@ public final class RddMonitor {
 
     /** 判定逻辑抽在 RddMonitorGate（纯类），这里只保留实例。 */
     private static final RddMonitorGate GATE = new RddMonitorGate(HEARTBEAT_MS);
-    /** 内容指纹：递归剥掉 observationId / observedAt（它们每拍都在变，不代表内容变化）。 */
+    /**
+     * 内容指纹：先把**对象图**转成 JSON 树，再在树上剥掉易变字段并规范化。
+     *
+     * <p>为什么不在对象图上剥（2026-11-05 实机教训）：旧实现只检查 Map 的 key，
+     * 而 RddAssetContext.worldAssets 返回的是 **POJO（AssetEntry）**，字段名不在 Map key 里，
+     * 于是 observationId/observedAt 一路进了签名 → 每拍都变 → 去重永不命中。
+     * 落盘 JSON 看起来「内容一样」，是因为对比方在 JSON 层剥了；两边不在同一层剥，结论就不一样。
+     *
+     * <p>在 JSON 树上做还有一个好处：Map / POJO / record / 数组一律类型无关，剥的就是要写出去的那份内容。
+     */
     static String signature(Object value) {
-        return GSON.toJson(stripVolatile(value));
+        return canonical(toJsonTree(value)).toString();
     }
 
-    /**
-     * 递归剥掉易变字段，并**按 key 排序**。
-     *
-     * <p>为什么排序：签名靠 GSON 序列化字符串比较，而 Map 的迭代顺序受实现/插入顺序影响
-     * （HashMap vs LinkedHashMap、Map.of 的随机 salt）。内容一样但 key 顺序不同 → 签名不同 →
-     * 去重永不命中。实机第一次部署就是这么翻车的：asset_snapshot 仍然每 30 秒一条。
-     */
-    private static Object stripVolatile(Object value) {
-        if (value instanceof Map<?, ?> map) {
-            Map<String, Object> out = new java.util.TreeMap<>();
-            for (Map.Entry<?, ?> e : map.entrySet()) {
-                String k = String.valueOf(e.getKey());
-                if ("observationId".equals(k) || "observedAt".equals(k)) continue;
-                out.put(k, stripVolatile(e.getValue()));
+    private static com.google.gson.JsonElement toJsonTree(Object value) {
+        try {
+            return GSON.toJsonTree(value);
+        } catch (RuntimeException e) {
+            return new com.google.gson.JsonPrimitive(String.valueOf(value));
+        }
+    }
+
+    /** 规范化：对象按 key 排序并跳过易变字段；数组元素递归后按字符串排序（顺序无关）。 */
+    private static com.google.gson.JsonElement canonical(com.google.gson.JsonElement el) {
+        if (el == null || el.isJsonNull() || el.isJsonPrimitive()) return el;
+        if (el.isJsonObject()) {
+            java.util.TreeMap<String, com.google.gson.JsonElement> sorted = new java.util.TreeMap<>();
+            for (Map.Entry<String, com.google.gson.JsonElement> e : el.getAsJsonObject().entrySet()) {
+                String k = e.getKey();
+                if (VOLATILE_FIELDS.contains(k)) continue;
+                sorted.put(k, canonical(e.getValue()));
+            }
+            com.google.gson.JsonObject out = new com.google.gson.JsonObject();
+            for (Map.Entry<String, com.google.gson.JsonElement> e : sorted.entrySet()) {
+                out.add(e.getKey(), e.getValue());
             }
             return out;
         }
-        if (value instanceof java.util.Collection<?> collection) {
-            // 2026-11-05 现场：签名长度不变但 hash 每拍都变 → 内容相同、**集合顺序**不同
-            //（HashSet/多来源拼装）。签名只用来判"内容是否变化"，排序不影响这个判断，
-            // 所以统一按规范化后的字符串排序，彻底消除顺序影响。
-            List<String> parts = new java.util.ArrayList<>(collection.size());
-            for (Object o : collection) parts.add(GSON.toJson(stripVolatile(o)));
-            parts.sort(java.util.Comparator.naturalOrder());
-            List<Object> out = new java.util.ArrayList<>(parts.size());
-            for (String part : parts) out.add(part);
-            return out;
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        for (com.google.gson.JsonElement child : el.getAsJsonArray()) {
+            parts.add(canonical(child).toString());
         }
-        return value;
+        parts.sort(java.util.Comparator.naturalOrder());
+        com.google.gson.JsonArray out = new com.google.gson.JsonArray();
+        for (String part : parts) {
+            out.add(com.google.gson.JsonParser.parseString(part));
+        }
+        return out;
     }
 
+    /** 每拍都会变、但不代表内容变化的字段。 */
+    private static final java.util.Set<String> VOLATILE_FIELDS =
+            java.util.Set.of("observationId", "observedAt");
     /** @return true=确实写盘成功（调用方据此决定要不要记账） */
     public static synchronized boolean publish(String type, Map<String, ?> data) {
         try {
