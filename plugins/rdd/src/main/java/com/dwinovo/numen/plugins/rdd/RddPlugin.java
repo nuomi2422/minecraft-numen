@@ -2881,7 +2881,8 @@ private static String safeDeathAttacker(NumenPlayer body) {
         data.put("assetCount", runtime.assets().snapshot().size());
         data.put("taskId", runtime.chain().goal().id());
         data.put("subtaskId", runtime.snapshot().get("currentSubtaskId"));
-        RddMonitor.publish("taskchain_snapshot", data);
+        // 2026-11-05：内容没变就不发（审计实测 348 条里只有 8 种内容，重复率 98%）
+        RddMonitor.publishIfChanged("taskchain_snapshot", data);
     }
 
     /**
@@ -2915,7 +2916,8 @@ private static String safeDeathAttacker(NumenPlayer body) {
                 "registry", "rdd-assets/<companion>.json",
                 "consumers", java.util.List.of("numen_context", "supervisor_context", "monitoring_station"),
                 "refresh", "lazy_30s_no_chunk_force_load"));
-        RddMonitor.publish("asset_snapshot", data);
+        // 同上：assets 的 value 每拍都一样，只有 observationId/observedAt 在跳（签名会剥掉）
+        RddMonitor.publishIfChanged("asset_snapshot", data);
     }
 
     /** Correlation only; no secondary task state and no reconstructed prompt. */

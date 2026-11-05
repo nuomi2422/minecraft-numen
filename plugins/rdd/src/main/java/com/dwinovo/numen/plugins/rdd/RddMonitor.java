@@ -14,6 +14,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * RDD 任务链的观测出口：往 {@code config/numen/monitor/rdd.jsonl} 追加 JSON 行。
@@ -36,6 +37,54 @@ public final class RddMonitor {
     private static final String ROTATED_PREFIX = "rdd-";
 
     private RddMonitor() {}
+
+    /** 每个 type 上一次发出的内容指纹（2026-11-05：内容没变就不发）。 */
+    private static final Map<String, String> LAST_SIGNATURE = new LinkedHashMap<>();
+
+    /**
+     * 按内容去重发布：**内容没变就不写**。
+     *
+     * <p>为什么（审计实测）：taskchain_snapshot 348 条里只有 8 种不同的 data（340 条逐字节重复，≈7.6 MB 纯冗余）；
+     * asset_snapshot 每条的 value 完全相同，只有 observationId/observedAt 在跳。一轮 12 分钟测试就占了
+     * 16 MB 轮转额度的 76% —— 证据还没被读就被轮转走了。
+     *
+     * <p>语义：**没有新事件 = 内容没变**。这本来就和 condition_evaluated 的纪律一致（状态没变只发一条），
+     * 不加字段、不改 schema、消费方不用动。
+     *
+     * <p>签名会**剥掉易变字段**（observationId / observedAt），否则每次都不同，去重永远不命中。
+     */
+    public static synchronized boolean publishIfChanged(String type, Map<String, ?> data) {
+        String sig = signature(data);
+        String prev = LAST_SIGNATURE.put(type, sig);
+        if (sig.equals(prev)) {
+            return false;
+        }
+        publish(type, data);
+        return true;
+    }
+
+    /** 内容指纹：递归剥掉 observationId / observedAt（它们每拍都在变，不代表内容变化）。 */
+    static String signature(Object value) {
+        return GSON.toJson(stripVolatile(value));
+    }
+
+    private static Object stripVolatile(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<Object, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> e : map.entrySet()) {
+                String k = String.valueOf(e.getKey());
+                if ("observationId".equals(k) || "observedAt".equals(k)) continue;
+                out.put(e.getKey(), stripVolatile(e.getValue()));
+            }
+            return out;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> out = new java.util.ArrayList<>(list.size());
+            for (Object o : list) out.add(stripVolatile(o));
+            return out;
+        }
+        return value;
+    }
 
     public static synchronized void publish(String type, Map<String, ?> data) {
         try {

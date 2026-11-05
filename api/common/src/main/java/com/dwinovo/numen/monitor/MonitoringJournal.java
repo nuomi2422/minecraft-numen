@@ -127,12 +127,54 @@ public final class MonitoringJournal implements AutoCloseable {
         }
     }
 
+    /**
+     * 每个类别保留的轮转归档上限（2026-11-05）。
+     *
+     * <p>为什么必须加：rotate 原来只负责「改名归档」，**从不清理**。实机目录里 context-* 已经
+     * 362 份 × 16 MB ≈ **5.8 GB**，占整个 monitor 目录的 94%，而 rdd.jsonl 只占 0.2%。
+     * 这不是「证据保留」，是无上限增长。
+     */
+    static final int MAX_ROTATED_FILES = 20;
+
     private void rotate(BufferedWriter writer, Path file, String category) throws IOException {
         writer.flush();
         writer.close();
         Path rotated = file.resolveSibling(category + "-" + System.currentTimeMillis() + ".jsonl");
         Files.move(file, rotated, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         writers.remove(category);
+        pruneRotated(file.getParent(), category, MAX_ROTATED_FILES);
+    }
+
+    /**
+     * 删掉某类别超出保留数的旧归档；**只认 category-数字.jsonl**，绝不碰正在写的
+     * category.jsonl，也不碰别的类别。
+     *
+     * @return 删除的文件数
+     */
+    static int pruneRotated(Path dir, String category, int keep) throws IOException {
+        if (dir == null || category == null || keep <= 0) return 0;
+        java.util.List<Path> rotated = new java.util.ArrayList<>();
+        try (var stream = Files.list(dir)) {
+            stream.filter(Files::isRegularFile).forEach(path -> {
+                String name = path.getFileName().toString();
+                if (name.startsWith(category + "-") && name.endsWith(".jsonl")) {
+                    String mid = name.substring(category.length() + 1, name.length() - ".jsonl".length());
+                    if (!mid.isEmpty() && mid.chars().allMatch(Character::isDigit)) rotated.add(path);
+                }
+            });
+        }
+        if (rotated.size() <= keep) return 0;
+        rotated.sort(java.util.Comparator.comparingLong(path -> path.toFile().lastModified()));
+        int removed = 0;
+        for (int i = 0; i < rotated.size() - keep; i++) {
+            try {
+                Files.deleteIfExists(rotated.get(i));
+                removed++;
+            } catch (IOException ignored) {
+                // 删不掉就算了，别让观测层影响主流程
+            }
+        }
+        return removed;
     }
 
     private synchronized void closeWriter(String category) {
