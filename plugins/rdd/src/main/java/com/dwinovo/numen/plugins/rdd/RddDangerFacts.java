@@ -206,8 +206,11 @@ final class RddDangerFacts {
     /** tick 耗时的滚动统计（每 {@link #PERF_LOG_EVERY} 次采样打一行）。 */
     private static final int PERF_LOG_EVERY = 200;
     private static long perfSamples = 0L;
+    private static long perfSkipped = 0L;
     private static long perfTotalNanos = 0L;
     private static long perfMaxNanos = 0L;
+    /** 统计窗口内第一次采样的 tick：真实间隔只能由它算，不能拿常量当实测。 */
+    private static long perfFirstTick = -1L;
 
     static void sampleOnTick(NumenPlayer body) {
         try {
@@ -216,12 +219,16 @@ final class RddDangerFacts {
             Long last = LAST_SAMPLE_TICK.get(body.getUUID());
             if (last != null && tick - last < SAMPLE_INTERVAL_TICKS) return;   // 有界采样，不是每 tick 扫
             LAST_SAMPLE_TICK.put(body.getUUID(), tick);
+            if (perfFirstTick < 0) perfFirstTick = tick;
             long t0 = System.nanoTime();
             var local = localHostiles(body, level);
-            if (local == null) return;
+            if (local == null) {
+                recordSkipped();     // 失败的采样也要计数，否则平均值是"幸存者平均"
+                return;
+            }
             Map<String, Integer> kinds = localKinds(body, level);
             long cost = System.nanoTime() - t0;
-            recordPerf(cost);
+            recordPerf(cost, tick);
             DANGER_SNAPSHOT.put(body.getUUID(),
                     new DangerSnapshot(local[0], local[1], Map.copyOf(kinds), tick));
         } catch (RuntimeException | LinkageError ignored) {
@@ -234,7 +241,20 @@ final class RddDangerFacts {
      *
      * <p>042 R2 条件 4 要求现场量 tick 耗时与采样频率——没有这行就只能靠"感觉不卡"。
      */
-    private static void recordPerf(long costNanos) {
+    private static void recordSkipped() {
+        synchronized (RddDangerFacts.class) {
+            perfSkipped++;
+        }
+    }
+
+    /**
+     * 记录一次**成功**采样的耗时；每 200 次输出平均值、最大值、**真实平均间隔**与跳过次数。
+     *
+     * <p>间隔必须由 tick 算：`(tick - perfFirstTick) / n`。
+     * 之前打的是 `SAMPLE_INTERVAL_TICKS` 常量——那不是测量，是自我复述；
+     * 而墙钟也推不出 tick 间隔（窗口失焦时集成服务器会暂停，游戏时间停、墙钟走）。
+     */
+    private static void recordPerf(long costNanos, long tick) {
         synchronized (RddDangerFacts.class) {
             perfSamples++;
             perfTotalNanos += costNanos;
@@ -242,11 +262,15 @@ final class RddDangerFacts {
             if (perfSamples % PERF_LOG_EVERY == 0) {
                 long avgUs = perfTotalNanos / perfSamples / 1000L;
                 long maxUs = perfMaxNanos / 1000L;
-                LOG.info("[rdd-danger] tick采样 n={} 平均={}us 最大={}us 间隔={}tick",
-                        perfSamples, avgUs, maxUs, SAMPLE_INTERVAL_TICKS);
+                long spanTicks = perfFirstTick < 0 ? 0 : (tick - perfFirstTick);
+                long avgInterval = perfSamples > 0 ? Math.max(1, spanTicks / perfSamples) : 0;
+                LOG.info("[rdd-danger] tick采样 n={} skipped={} 平均={}us 最大={}us 真实间隔≈{}tick 窗口={}tick",
+                        perfSamples, perfSkipped, avgUs, maxUs, avgInterval, spanTicks);
                 perfTotalNanos = 0L;
                 perfMaxNanos = 0L;
                 perfSamples = 0L;
+                perfSkipped = 0L;
+                perfFirstTick = -1L;
             }
         }
     }
