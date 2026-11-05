@@ -53,18 +53,18 @@ final class RddContainerMemory {
     private RddContainerMemory() {}
 
     /** 服务端 tick（主线程）调用：扫描并写缓存。 */
-    static void refresh(NumenPlayer body, long gameTime) {
+    static void refresh(NumenPlayer body, long tick) {
         if (body == null) return;
         UUID id = body.getUUID();
         Long last = LAST_REFRESH.get(id);
-        boolean due = last == null || gameTime - last >= REFRESH_TICKS;
+        boolean due = last == null || tick - last >= REFRESH_TICKS;
         // 041 U4c：只要容器观测**有过变化**就立刻重扫，等于把"别人刷新过"这件事当成信号；
         // 没有变化时仍按 2 秒节奏扫（世界变化只能靠扫发现，变化日志只知道"观测被写过"）。
         boolean changed = pollContainerChanges(id);
         if (!due && !changed) return;
-        LAST_REFRESH.put(id, gameTime);
+        LAST_REFRESH.put(id, tick);
         try {
-            Scan scan = scan(body, gameTime);
+            Scan scan = scan(body, tick);
             CACHE.put(id, scan.text());
             COUNTS.put(id, scan.counts());
         } catch (RuntimeException | LinkageError ex) {
@@ -161,7 +161,7 @@ final class RddContainerMemory {
     }
 
     /** 真正扫世界（**只在主线程调**）。 */
-    private static Scan scan(NumenPlayer body, long gameTime) {
+    private static Scan scan(NumenPlayer body, long tick) {
         ServerLevel level = body.serverLevel();
         List<String> lines = new ArrayList<>();
         Map<String, Integer> totals = new LinkedHashMap<>();
@@ -181,7 +181,7 @@ final class RddContainerMemory {
                     hits++;
                     // 039 U3：内容优先走统一观测的 containers 主题；观测缺席/过期就显式 refresh，
                     // 两条路都不通才回退直读。发现（往哪看）仍然靠这里的本地扫描——观测不负责"找"。
-                    ContainerRead read = readContainer(body, level, cursor.immutable(), gameTime);
+                    ContainerRead read = readContainer(body, level, cursor.immutable(), tick);
                     if (read == null || read.counts().isEmpty()) continue;
                     if (read.direct()) anyDirect = true;      // 042 R2：直读兜底要留出处
                     Map<String, Integer> counts = read.counts();
@@ -229,8 +229,8 @@ final class RddContainerMemory {
      * @return 物品→数量（空表 = 已知为空）；两条路都读不到返回 null（**不是**空表）
      */
     private static ContainerRead readContainer(NumenPlayer body, ServerLevel level,
-                                               BlockPos pos, long gameTime) {
-        Map<String, Integer> observed = readViaObservation(body, pos, gameTime);
+                                               BlockPos pos, long tick) {
+        Map<String, Integer> observed = readViaObservation(body, pos, tick);
         if (observed != null) return new ContainerRead(observed, false);
         Map<String, Integer> direct = readDirect(level, pos);
         // 直读是**当前值**（比旧观测新），不能降级成"历史"；但必须留出处，让调用方知道它不是观测来的。
@@ -253,7 +253,7 @@ final class RddContainerMemory {
         return world + "|" + level.dimension().location() + "|" + target;
     }
 
-    private static Map<String, Integer> readViaObservation(NumenPlayer body, BlockPos pos, long gameTime) {
+    private static Map<String, Integer> readViaObservation(NumenPlayer body, BlockPos pos, long tick) {
         try {
             com.dwinovo.numen.api.observation.WorldObservationService svc =
                     com.dwinovo.numen.api.NumenPlugins.capability(
@@ -267,10 +267,12 @@ final class RddContainerMemory {
             if (resp == null) return null;
             // 容器内容**随时会变**（放进去/拿出来），所以不能只靠 TTL：按本地节奏定期 refresh，
             // 否则会拿旧快照当真（2026-11-05 02:41 实机：箱里已有 5 铁锭，观测里还是空）。
+            // 节流表要防长跑膨胀：换世界/走远都会留下旧键，超上限就整体清一次（简单但不会泄漏）
+            if (OBS_AT.size() > 1024) OBS_AT.clear();
             String key = containerKey(body.serverLevel(), target);
             Long last = OBS_AT.get(key);
-            if (last == null || gameTime - last >= OBS_REFRESH_TICKS) {
-                OBS_AT.put(key, gameTime);
+            if (last == null || tick - last >= OBS_REFRESH_TICKS) {
+                OBS_AT.put(key, tick);
                 var refreshed = svc.refresh(req);
                 if (refreshed != null) resp = refreshed;
             }

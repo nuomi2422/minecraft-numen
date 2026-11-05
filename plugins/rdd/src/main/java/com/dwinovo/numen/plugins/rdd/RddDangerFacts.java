@@ -200,7 +200,7 @@ final class RddDangerFacts {
      * 观测一不可用就永久"未知"。两次都调这里，才谈得上"同源"。
      */
     static long currentTick(ServerLevel level) {
-        return level.getServer().getTickCount();
+        return RddClock.current(level);
     }
 
     static void sampleOnTick(NumenPlayer body) {

@@ -166,10 +166,11 @@ final class RddDetector {
             }
             // 2026-10-25：每 tick 记账「这只同伴的真身体」——读世界（箱子存货）只认这个实例。
             RddCompanionBody.remember(ap);
-            RddContainerMemory.refresh(ap, server.getTickCount());
+            long tick = RddClock.current(ap.serverLevel());   // 唯一 tick 来源（见 RddClock）
             // 039 U1：environment 主题由这里按 5 秒节奏显式刷新——读口只读缓存，没人刷就永远 PENDING。
             // 只放在服务端 tick，绝不在上下文组装线程里做。
-            RddObservation.refreshIfDue(ap, server.getTickCount());
+            RddContainerMemory.refresh(ap, tick);
+            RddObservation.refreshIfDue(ap, tick);
             // 042 R2：危险事实的本地采样只能在服务端 tick（上下文组装线程不许读世界）。
             RddDangerFacts.sampleOnTick(ap);
             // P2-A【B】背包感知不依赖任务链：先无条件缓存实时背包，再判是否有 Runtime。
