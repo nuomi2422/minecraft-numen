@@ -178,4 +178,14 @@ public interface WorldObservationService {
     default ChangesResponse changes(long afterRevision, List<String> topics, int limit) {
         return ChangesResponse.error("changes not supported by this provider");
     }
+
+    /**
+     * **版本化**增量入口（041 §24.3）：v1 走上面那个方法，v2 走这里。
+     *
+     * <p>版本由调用方声明，服务端按版本分流；不认识的值明确 ERROR，**不静默降级**。
+     * 默认实现同样明确"不支持"，避免老实现被迫实现。
+     */
+    default ChangesV2Response changes(ChangesQuery query) {
+        return ChangesV2Response.error("versioned changes not supported by this provider");
+    }
 }
