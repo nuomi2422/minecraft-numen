@@ -124,9 +124,11 @@ final class RddContainerMemory {
                     // 三种 reset 是三种处置，必须分开记（审计上轮的死要求）
                     String whyReset;
                     if (prevEpoch == null || prevEpoch.isBlank()) {
-                        whyReset = "首次切 v2";
+                        // 本进程第一次问增量：没有游标可言。注意这**不是**"换流"——
+                        // 换流要求先有旧 epoch 再变；新进程的旧 epoch 只存在于持久化里（尚未实现）。
+                        whyReset = "新进程（无游标）";
                     } else if (!prevEpoch.equals(v2.streamEpoch())) {
-                        whyReset = "换流/重启（epoch " + prevEpoch + " → " + v2.streamEpoch() + "）";
+                        whyReset = "换流（epoch " + prevEpoch + " → " + v2.streamEpoch() + "）";
                     } else {
                         whyReset = "真断档（保留期淘汰）";
                     }

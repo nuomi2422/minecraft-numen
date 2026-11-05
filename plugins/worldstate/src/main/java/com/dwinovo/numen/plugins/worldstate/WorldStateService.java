@@ -51,8 +51,16 @@ public final class WorldStateService {
      * <p>为什么先放着：v2 的语义（streamSeq/epoch/RESET）要等能力面版本化才敢切；
      * 先把组件就位，接线时只改调用点，不改构造。
      */
+    /**
+     * v2 变化流的 epoch：**每个进程必须不同**。
+     *
+     * <p>之前写死成 `"worldstate-v2"`，后果是：进程重启后 epoch 不变，任何"持久化游标"都会被当成
+     * 仍然有效——而新进程的 streamSeq 是从 1 重新发的，等于把新流接到旧游标上。
+     * 现在带上进程启动毫秒，重启即换流，旧游标一律 RESET。
+     */
     private final com.dwinovo.numen.worldstate.core.changes.v2.InMemoryChangeFeed changeFeedV2 =
-            new com.dwinovo.numen.worldstate.core.changes.v2.InMemoryChangeFeed("worldstate-v2");
+            new com.dwinovo.numen.worldstate.core.changes.v2.InMemoryChangeFeed(
+                    "ws-" + System.currentTimeMillis());
     private final ProviderRegistry providers = new ProviderRegistry();
     private final TopicFreshnessPolicy freshness = TopicFreshnessPolicy.defaults();
     private final RefreshService refreshService;
