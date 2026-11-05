@@ -36,15 +36,36 @@ public final class ToolVisibility {
 
     private ToolVisibility() {}
 
-    /** 执行者侧：按白名单裁剪给内脑的工具清单。 */
+    /**
+     * 执行者侧：按白名单裁剪给内脑的工具清单。
+     *
+     * <p><b>RESIDENT 工具不参与裁剪</b>（2026-11-05 修）：白名单只管「哪些工具看起来可省」，
+     * 但声明了 {@link NumenTool.Residency#RESIDENT} 的工具，源码里本来就写着「执行 AI 要一直知道」——
+     * 2026-10-30 的白名单把它们一起滤掉了：learner_note 从 54 次/10 天掉到 6 天 0 次，
+     * learner_announce / learner_carrier / learner_usage 同样消失。
+     * 让白名单能清掉常驻工具，等于允许配置静默推翻代码里的决定——这类事故不该靠人一条条去发现。
+     */
     public static List<NumenTool> forExecutor(List<NumenTool> all) {
-        Set<String> keep = whitelist("executor");
-        if (keep == null || keep.isEmpty()) return all;
+        return applyWhitelist(all, whitelist("executor"));
+    }
+
+    /** 纯函数版（可测）：keep 为 null/空表示不裁剪。 */
+    static List<NumenTool> applyWhitelist(List<NumenTool> all, Set<String> keep) {
+        if (keep == null || keep.isEmpty() || all == null) return all;
         List<NumenTool> out = new ArrayList<>(keep.size());
         for (NumenTool t : all) {
-            if (t != null && keep.contains(t.name())) out.add(t);
+            if (t == null) continue;
+            if (keep.contains(t.name()) || isResident(t)) out.add(t);
         }
         return out.isEmpty() ? all : out;   // 名单全写错也不许把同伴削哑
+    }
+
+    private static boolean isResident(NumenTool tool) {
+        try {
+            return tool.residency() == NumenTool.Residency.RESIDENT;
+        } catch (RuntimeException e) {
+            return false;
+        }
     }
 
     /** 外部侧：这个工具要不要出现在 MCP 清单里。 */
