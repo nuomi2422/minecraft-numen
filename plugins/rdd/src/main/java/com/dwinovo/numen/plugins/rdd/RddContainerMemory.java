@@ -47,6 +47,10 @@ final class RddContainerMemory {
     /** 同一份扫描的结构化计数（037/T14）：上下文要文字，规划要数字，两边不许走不同的解析路。 */
     private static final Map<UUID, Map<String, Integer>> COUNTS = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> LAST_REFRESH = new ConcurrentHashMap<>();
+    /** 上次**扫描成功**的墙钟毫秒：缓存可能是旧的，旧到什么程度要说得出来（R2：旧数据只能标历史）。 */
+    private static final Map<UUID, Long> LAST_OK = new ConcurrentHashMap<>();
+    /** 标记规则在纯类里（R2）：本类一加载就碰 Minecraft 类型，纯 JVM 单测测不了。 */
+    static final long STALE_AFTER_MS = RddStorageStaleness.STALE_AFTER_MS;
     /** 每只同伴上次看到的 streamEpoch（v2 游标必须与 epoch 成对，缺了服务端会判 reset）。 */
     private static final Map<UUID, String> CHANGE_EPOCH = new ConcurrentHashMap<>();
 
@@ -70,6 +74,7 @@ final class RddContainerMemory {
             Scan scan = scan(body, tick);
             CACHE.put(id, scan.text());
             COUNTS.put(id, scan.counts());
+            LAST_OK.put(id, System.currentTimeMillis());
         } catch (RuntimeException | LinkageError ex) {
             // 读世界失败不影响主链路；保留上一次缓存（宁可旧一点，也不要突然说"没有"）
             LOG.warn("[rdd-storage] 扫描失败 {}: {}", id, ex.toString());
@@ -170,8 +175,12 @@ final class RddContainerMemory {
     static String cached(UUID companionId) {
         if (companionId == null) return "";
         String s = CACHE.get(companionId);
-        return s == null ? "" : s;
+        if (s == null || s.isEmpty()) return "";
+        Long ok = LAST_OK.get(companionId);
+        if (ok == null) return s;
+        return RddStorageStaleness.markStale(s, System.currentTimeMillis() - ok, STALE_AFTER_MS);
     }
+
 
     /**
      * 上下文/规划共用的结构化计数：物品 id（带 {@code minecraft:} 前缀）→ 数量。
@@ -188,6 +197,7 @@ final class RddContainerMemory {
         CACHE.remove(companionId);
         COUNTS.remove(companionId);
         LAST_REFRESH.remove(companionId);
+        LAST_OK.remove(companionId);
         POLLERS.remove(companionId);
     }
 
