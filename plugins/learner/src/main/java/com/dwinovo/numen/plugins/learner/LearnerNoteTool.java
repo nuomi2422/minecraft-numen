@@ -131,6 +131,13 @@ final class LearnerNoteTool implements NumenTool {
         EnvSnapshot.onServerThread(companion, () -> {
             try {
                 UUID id = companion.getUUID();
+                // 2026-11-05：复盘额度用尽（HTTP 429）时不要再往队列里塞——先看这条，再看每日上限。
+                if (com.dwinovo.numen.plugins.learner.core.ReviewQuotaGate.isBlocked(System.currentTimeMillis())) {
+                    reply.accept(TaskResult.fail("memo not queued: learner review is out of quota right now"
+                            + " (HTTP 429 from the review model). Memos would only pile up; wait for the"
+                            + " owner to switch the account, then write it again.").toJson());
+                    return;
+                }
                 // 2026-11-05：文字自律失效（一轮 68 次调用里 36 次是写待办），加进程内硬闸。
                 long day = companion.level().getDayTime() / 24000L;
                 if (!com.dwinovo.numen.plugins.learner.core.MemoThrottle.allow(id, day)) {

@@ -226,6 +226,13 @@ final class LearnerReviewTool implements NumenTool {
             List<Memo> batch, LearnerReviewer.ReviewOutcome outcome, PriorRoundReader.Read priorRead) {
         if (!outcome.ok()) {
             int restored = queue.restore(batch);
+            // 2026-11-05：额度类失败（HTTP 429 / GoUsageLimit）不是"这次运气不好"，而是这个号没额度了。
+            // 记一个 30 分钟窗口，期间 learner_note 直接拒收——否则队列被塞满、复盘又 restore，白转。
+            String why = outcome.reason() == null ? "" : outcome.reason();
+            if (why.contains("429") || why.contains("UsageLimit") || why.contains("usage limit")) {
+                com.dwinovo.numen.plugins.learner.core.ReviewQuotaGate.blockQuota(System.currentTimeMillis());
+                LearnerMonitor.publish("review_quota_blocked", Map.of("reason", why));
+            }
             // 2026-11-02：失败退避 —— 下次 nudge 冷却改成 30/60 分钟（L2 禁止失败驱动的高频重试）。
             LearnerAutoIntake.noteReviewFailed(id);
             LearnerPlugin.finishReview(reviewId, outcome.reason(), 0);
