@@ -83,28 +83,25 @@ public final class WorldStateTool implements NumenTool {
             }
             String action = args.has("action")
                     ? args.get("action").getAsString().toLowerCase(Locale.ROOT) : "";
+            // 2026-11-05（042 R1-5）：参数解析抽到 WorldStateArgs（纯函数、可离线测），
+            // 这里只负责"有身体才能读世界"与分发。
             // 增量读不需要 topic/范围，必须先于主题校验
             if ("changes".equals(action)) {
                 handleChanges(args, reply);
                 return;
             }
             Topic topic = Topic.byId(args.has("topic") ? args.get("topic").getAsString() : null);
-            if (topic == null) {
-                reply.accept(TaskResult.fail(
-                        "world_state: topic is required for action=read|refresh"
-                                + " (environment|entities|blocks|containers)").toJson());
-                return;
-            }
             String dimension = args.has("dimension") && !args.get("dimension").isJsonNull()
                     ? args.get("dimension").getAsString()
                     : self.serverLevel().dimension().location().toString();
 
-            ObservationRequest request = buildRequest(args, topic, dimension);
-            if (request == null) {
+            var outcome = WorldStateArgs.forReadRefresh(topic, args, dimension);
+            if (!outcome.ok()) {
                 // 042 R1：缺字段必须说清是哪个字段，别只回"参数非法"
-                reply.accept(TaskResult.fail(missingFieldMessage(topic)).toJson());
+                reply.accept(TaskResult.fail(outcome.error()).toJson());
                 return;
             }
+            ObservationRequest request = outcome.request();
 
             switch (action) {
                 case "read" -> handleRead(self, request, reply);
@@ -115,52 +112,6 @@ public final class WorldStateTool implements NumenTool {
         } catch (RuntimeException ex) {
             reply.accept(TaskResult.fail("world_state error: " + ex.getMessage()).toJson());
         }
-    }
-
-    /** 缺字段的明确报错（042 R1：非法 selector / 缺字段要能一眼看出来）。 */
-    private String missingFieldMessage(Topic topic) {
-        return switch (topic) {
-            case CONTAINERS -> "world_state: containers needs container=block:x,y,z or player:<uuid> (got empty)";
-            case ENTITIES, BLOCKS -> "world_state: " + topic.id() + " needs a box: x1,y1,z1,x2,y2,z2 (got empty or invalid)";
-            default -> "world_state: invalid parameters for topic " + topic.id();
-        };
-    }
-
-    private ObservationRequest buildRequest(JsonObject args, Topic topic, String dimension) {
-        return switch (topic) {
-            case ENVIRONMENT -> ObservationRequest.environment(dimension);
-            case ENTITIES -> {
-                Bounds box = boundsFrom(args);
-                if (box == null) yield null;
-                String type = optionalString(args, "entity_type");
-                String category = optionalString(args, "category");
-                yield ObservationRequest.entities(dimension, box, type, category);
-            }
-            case BLOCKS -> {
-                Bounds box = boundsFrom(args);
-                if (box == null) yield null;
-                int samples = 0;
-                if (args.has("samples") && !args.get("samples").isJsonNull()) {
-                    try {
-                        samples = Math.max(0, Math.min(32, args.get("samples").getAsInt()));
-                    } catch (RuntimeException ignored) {
-                        samples = 0;
-                    }
-                }
-                yield ObservationRequest.blocks(dimension, box, optionalString(args, "block"), samples);
-            }
-            case CONTAINERS -> {
-                String target = optionalString(args, "container");
-                if (target == null || target.isBlank()) yield null;
-                try {
-                    yield ObservationRequest.containers(dimension, target);
-                } catch (IllegalArgumentException e) {
-                    yield null;
-                }
-            }
-            // facilities 尚未接入采集器：明确不支持，别假装成功。
-            default -> null;
-        };
     }
 
     /**
