@@ -81,30 +81,28 @@ public final class InMemoryObservationStore implements ObservationStore {
             return false;
         }
         map.put(k, observation);
-        evictIfNeeded();
+        boolean created = current == null;
+        String topic = observation.key().topic() == null ? "" : observation.key().topic().id();
         if (changeLog != null) {
             // 只有"被接受"的写入才产生变化（041 §3）；上面拒收的分支已经 return false
             changeLog.append(new com.dwinovo.numen.worldstate.core.changes.Change(
-                    observation.revision(),
-                    observation.key().topic() == null ? "" : observation.key().topic().id(),
-                    k,
-                    current == null
+                    observation.revision(), topic, k,
+                    created
                             ? com.dwinovo.numen.worldstate.core.changes.Change.Kind.CREATED
                             : com.dwinovo.numen.worldstate.core.changes.Change.Kind.UPDATED,
                     observation.epochMs()));
             if (observation.revision() > goneSeq) goneSeq = observation.revision();
-            if (changeFeed != null) {
-                // v2 用自己的 streamSeq；两边的"键/主题/修订号/类型"必须逐条一致（一致性测试盯着这条）
-                changeFeed.append(
-                        observation.key().topic() == null ? "" : observation.key().topic().id(),
-                        k,
-                        current == null
-                                ? com.dwinovo.numen.worldstate.core.changes.v2.ChangeEvent.Kind.CREATED
-                                : com.dwinovo.numen.worldstate.core.changes.v2.ChangeEvent.Kind.UPDATED,
-                        observation.revision(),
-                        observation.epochMs());
-            }
         }
+        // v1 与 v2 **各自独立**写：只给 v2 不给 v1 的构造也必须能收到事件（审计实测过这个洞）
+        if (changeFeed != null) {
+            // 两边"键/主题/修订号/类型"必须逐条一致（一致性测试盯着这条），只有序号不同
+            changeFeed.append(topic, k,
+                    created
+                            ? com.dwinovo.numen.worldstate.core.changes.v2.ChangeEvent.Kind.CREATED
+                            : com.dwinovo.numen.worldstate.core.changes.v2.ChangeEvent.Kind.UPDATED,
+                    observation.revision(), observation.epochMs());
+        }
+        evictIfNeeded();
         return true;
     }
 
@@ -152,10 +150,26 @@ public final class InMemoryObservationStore implements ObservationStore {
         map.clear();
     }
 
+    /**
+     * 容量淘汰。
+     *
+     * <p><b>不对称是刻意的</b>：v2 发 {@code INVALIDATE}（"这份缓存不可信"），
+     * v1 的 Change 协议只有 CREATED/UPDATED/GONE，**表达不了"失效"**，所以 v1 不发。
+     * 一致性测试里显式断言这种"淘汰时 v1 少一条、v2 多一条 INVALIDATE"，
+     * 免得哪天测试红了被人把断言改松（那种松是静默的，比 bug 更难查）。
+     */
     private void evictIfNeeded() {
         while (map.size() > capacity) {
             String eldest = map.keySet().iterator().next();
-            map.remove(eldest);
+            Observation removed = map.remove(eldest);
+            if (removed != null && changeFeed != null) {
+                changeFeed.append(
+                        removed.key().topic() == null ? "" : removed.key().topic().id(),
+                        eldest,
+                        com.dwinovo.numen.worldstate.core.changes.v2.ChangeEvent.Kind.INVALIDATE,
+                        removed.revision(),
+                        System.currentTimeMillis());
+            }
         }
     }
 }
