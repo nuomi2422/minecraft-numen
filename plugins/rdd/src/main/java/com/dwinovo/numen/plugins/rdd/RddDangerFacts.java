@@ -203,74 +203,81 @@ final class RddDangerFacts {
         return RddClock.current(level);
     }
 
-    /** tick 耗时的滚动统计（每 {@link #PERF_LOG_EVERY} 次采样打一行）。 */
+    /** 每只同伴各自的耗时统计（混在一起会失真：两只时 n 是两只之和，间隔算出半速）。 */
+    private static final class Perf {
+        long samples;
+        long skipped;
+        long totalNanos;
+        long maxNanos;
+        long firstTick = -1L;
+    }
+
     private static final int PERF_LOG_EVERY = 200;
-    private static long perfSamples = 0L;
-    private static long perfSkipped = 0L;
-    private static long perfTotalNanos = 0L;
-    private static long perfMaxNanos = 0L;
-    /** 统计窗口内第一次采样的 tick：真实间隔只能由它算，不能拿常量当实测。 */
-    private static long perfFirstTick = -1L;
+    private static final Map<java.util.UUID, Perf> PERF =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     static void sampleOnTick(NumenPlayer body) {
         try {
             if (body == null || !(body.level() instanceof ServerLevel level)) return;
+            java.util.UUID id = body.getUUID();
             long tick = currentTick(level);
-            Long last = LAST_SAMPLE_TICK.get(body.getUUID());
+            Long last = LAST_SAMPLE_TICK.get(id);
             if (last != null && tick - last < SAMPLE_INTERVAL_TICKS) return;   // 有界采样，不是每 tick 扫
-            LAST_SAMPLE_TICK.put(body.getUUID(), tick);
-            if (perfFirstTick < 0) perfFirstTick = tick;
+            LAST_SAMPLE_TICK.put(id, tick);
+            Perf perf = PERF.computeIfAbsent(id, k -> new Perf());
+            if (perf.firstTick < 0) perf.firstTick = tick;
             long t0 = System.nanoTime();
             var local = localHostiles(body, level);
             if (local == null) {
-                recordSkipped();     // 失败的采样也要计数，否则平均值是"幸存者平均"
+                recordSkipped(perf);     // 失败的采样也要计数，否则平均值是"幸存者平均"
                 return;
             }
             Map<String, Integer> kinds = localKinds(body, level);
             long cost = System.nanoTime() - t0;
-            recordPerf(cost, tick);
-            DANGER_SNAPSHOT.put(body.getUUID(),
-                    new DangerSnapshot(local[0], local[1], Map.copyOf(kinds), tick));
+            recordPerf(perf, cost, tick);
+            DANGER_SNAPSHOT.put(id, new DangerSnapshot(local[0], local[1], Map.copyOf(kinds), tick));
         } catch (RuntimeException | LinkageError ignored) {
             // 采样失败不影响 tick
         }
     }
 
-    /**
-     * 记录一次采样耗时；每 200 次输出"平均/最大"。
-     *
-     * <p>042 R2 条件 4 要求现场量 tick 耗时与采样频率——没有这行就只能靠"感觉不卡"。
-     */
-    private static void recordSkipped() {
-        synchronized (RddDangerFacts.class) {
-            perfSkipped++;
+    private static void recordSkipped(Perf perf) {
+        synchronized (perf) {
+            perf.skipped++;
         }
     }
 
     /**
-     * 记录一次**成功**采样的耗时；每 200 次输出平均值、最大值、**真实平均间隔**与跳过次数。
+     * 记录一次**成功**采样的耗时；每 200 次输出平均值、最大值、两种间隔与跳过次数。
      *
-     * <p>间隔必须由 tick 算：`(tick - perfFirstTick) / n`。
-     * 之前打的是 `SAMPLE_INTERVAL_TICKS` 常量——那不是测量，是自我复述；
-     * 而墙钟也推不出 tick 间隔（窗口失焦时集成服务器会暂停，游戏时间停、墙钟走）。
+     * <p>间隔必须由 tick 算，且**按同伴分别统计**：
+     * <ul>
+     *   <li>混在一起时，两只同伴的 n 是两只之和、spanTicks 却是同一个轴 →
+     *       算出的"间隔"会是单只的一半，看起来像采样频率翻倍；</li>
+     *   <li>间隔除的是成功次数，而窗口覆盖的是全部尝试（含 skipped）→ 所以要分开报
+     *       "成功间隔"和"尝试间隔"，否则一个名字两种含义。</li>
+     * </ul>
+     * 墙钟也推不出 tick 间隔（窗口失焦时集成服务器暂停：游戏时间停、墙钟走）。
      */
-    private static void recordPerf(long costNanos, long tick) {
-        synchronized (RddDangerFacts.class) {
-            perfSamples++;
-            perfTotalNanos += costNanos;
-            if (costNanos > perfMaxNanos) perfMaxNanos = costNanos;
-            if (perfSamples % PERF_LOG_EVERY == 0) {
-                long avgUs = perfTotalNanos / perfSamples / 1000L;
-                long maxUs = perfMaxNanos / 1000L;
-                long spanTicks = perfFirstTick < 0 ? 0 : (tick - perfFirstTick);
-                long avgInterval = perfSamples > 0 ? Math.max(1, spanTicks / perfSamples) : 0;
-                LOG.info("[rdd-danger] tick采样 n={} skipped={} 平均={}us 最大={}us 真实间隔≈{}tick 窗口={}tick",
-                        perfSamples, perfSkipped, avgUs, maxUs, avgInterval, spanTicks);
-                perfTotalNanos = 0L;
-                perfMaxNanos = 0L;
-                perfSamples = 0L;
-                perfSkipped = 0L;
-                perfFirstTick = -1L;
+    private static void recordPerf(Perf perf, long costNanos, long tick) {
+        synchronized (perf) {
+            perf.samples++;
+            perf.totalNanos += costNanos;
+            if (costNanos > perf.maxNanos) perf.maxNanos = costNanos;
+            if (perf.samples % PERF_LOG_EVERY == 0) {
+                long avgUs = perf.totalNanos / perf.samples / 1000L;
+                long maxUs = perf.maxNanos / 1000L;
+                long spanTicks = perf.firstTick < 0 ? 0 : (tick - perf.firstTick);
+                long attempts = perf.samples + perf.skipped;
+                long okInterval = perf.samples > 0 ? Math.max(1, spanTicks / perf.samples) : 0;
+                long tryInterval = attempts > 0 ? Math.max(1, spanTicks / attempts) : 0;
+                LOG.info("[rdd-danger] tick采样 n={} skipped={} 平均={}us 最大={}us 成功间隔≈{}tick 尝试间隔≈{}tick 窗口={}tick",
+                        perf.samples, perf.skipped, avgUs, maxUs, okInterval, tryInterval, spanTicks);
+                perf.totalNanos = 0L;
+                perf.maxNanos = 0L;
+                perf.samples = 0L;
+                perf.skipped = 0L;
+                perf.firstTick = -1L;
             }
         }
     }
