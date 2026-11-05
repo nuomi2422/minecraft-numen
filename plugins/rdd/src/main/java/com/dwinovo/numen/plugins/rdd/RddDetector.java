@@ -331,7 +331,10 @@ final class RddDetector {
             RddWaypoints.observe(ap);   // #252：记维度锚点（"门在哪"），供回家提示用
             // A3（95 号）：四层事实第一版（fact/progress，只读，不改规划）。放在所有早退之前，
             // 否则"卡住"这种最该被看到的状态会被早退挡掉（#238 的同一教训）。
-            RddSituationFacts.tick(ap);
+            // 2026-11-05：只把「有活在推进」算作可能停滞；链已完成时站着不动不是停滞。
+            boolean busyNow = ps == PrimaryGoalStatus.ACTIVE
+                    || SideTaskHost.isActive(ap.getUUID());
+            RddSituationFacts.tick(ap, busyNow);
             // D20-C1：先跑超时结账 —— 过期支线清掉后，下面的 lastRepair 才不会对死支线空转。
             // tickTimeout 不落盘（单测环境 RddPlugin 类链炸）；这里在游戏环境补 saveLedger。
             int deathSeqAtTick = RddRepairDispatch.openDeathSeq(ap.getUUID());

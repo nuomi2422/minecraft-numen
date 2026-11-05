@@ -49,4 +49,13 @@ class RddSituationFactsTest {
     @Test void nullSnapshotIsEmpty() {
         assertTrue(RddSituationFacts.classify(null).isEmpty());
     }
+    /**
+     * 2026-11-05：链已 COMPLETED、同伴在等主人时，站着不动不是停滞。
+     * 实测 96 条 progress:stalled 里 88 条发生在同一坐标、同一停车状态。
+     */
+    @Test void idleIsNotStall() {
+        RddSituationFacts.Snapshot still = new RddSituationFacts.Snapshot(false, false, 20f, 20, 600 * 20L);
+        assertTrue(RddSituationFacts.classify(still, false).isEmpty(), "没活可干时不该报停滞：" + RddSituationFacts.classify(still, false));
+        assertTrue(RddSituationFacts.classify(still, true).contains("progress:stalled"), "有活在推进、又不动，才算停滞");
+    }
 }

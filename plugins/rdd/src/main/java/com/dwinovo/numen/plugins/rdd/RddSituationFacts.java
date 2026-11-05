@@ -44,14 +44,17 @@ final class RddSituationFacts {
     record Snapshot(boolean inWater, boolean inLava, float hp, int food, long posUnchangedTicks) {}
 
     /** 一次采样应报的层:类型（有序，同一拍可能多条）。 */
-    static List<String> classify(Snapshot s) {
+    static List<String> classify(Snapshot s) { return classify(s, true); }
+
+    /** 分类：{@code busy=false} 时不再发 progress:stalled（没活可干不算停滞）。 */
+    static List<String> classify(Snapshot s, boolean busy) {
         List<String> out = new ArrayList<>();
         if (s == null) return out;
         if (s.inLava()) out.add("fact:in_lava");
         else if (s.inWater()) out.add("fact:in_water");
         if (s.hp() <= LOW_HP) out.add("fact:low_hp");
         if (s.food() <= NO_FOOD) out.add("fact:no_food");
-        if (s.posUnchangedTicks() >= STALL_TICKS) out.add("progress:stalled");
+        if (busy && s.posUnchangedTicks() >= STALL_TICKS) out.add("progress:stalled");
         return out;
     }
 
@@ -59,7 +62,15 @@ final class RddSituationFacts {
     private static final Map<UUID, long[]> POS = new ConcurrentHashMap<>();    // uuid -> {x,y,z,lastMoveTick}
 
     /** 每 tick 调一次（放在 tickRuntime 的早退之前）。 */
-    static void tick(NumenPlayer ap) {
+    static void tick(NumenPlayer ap) { tick(ap, true); }
+
+    /**
+     * @param busy 是否有正在推进的活（任务链 ACTIVE 或支线在跑）。
+     *             <p>2026-11-05 实测：链已 COMPLETED、同伴在等主人时，这里仍每 60 秒报一次
+     *             {@code progress:stalled}（96 条里 88 条在同一坐标）。「没活可干」不是停滞，
+     *             不该发 progress 层事件。
+     */
+    static void tick(NumenPlayer ap, boolean busy) {
         if (ap == null || ap.level() == null) return;
         try {
             UUID id = ap.getUUID();
@@ -76,7 +87,7 @@ final class RddSituationFacts {
             Snapshot s = new Snapshot(ap.isInWater(), ap.isInLava(),
                     ap.getHealth(), ap.getFoodData().getFoodLevel(), unchanged);
             long wall = System.currentTimeMillis();
-            for (String kind : classify(s)) {
+            for (String kind : classify(s, busy)) {
                 String[] parts = kind.split(":", 2);
                 emit(parts[0], parts[1], id, now, wall, ap);
             }
