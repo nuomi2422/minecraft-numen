@@ -81,7 +81,8 @@ public final class FindToolsTool implements NumenTool {
                     : search(q);
             if (hits.isEmpty()) {
                 call.complete(TaskResult.fail(
-                        "没有工具匹配 \"" + q + "\"。名字看 <deferred_tools> 目录。").toJson());
+                        "没有工具匹配 \"" + q + "\"。名字看 <deferred_tools> 目录。"
+                                + familiesHint()).toJson());
                 return;
             }
             // 2026-10-24 夜（主人裁决）：提示/互锁/硬拒绝三轮补丁全部删除。
@@ -144,5 +145,31 @@ public final class FindToolsTool implements NumenTool {
         }
         byName.addAll(bySummary);
         return byName.size() > MAX_RESULTS ? byName.subList(0, MAX_RESULTS) : byName;
+    }
+
+    /** 工具族清单（按前缀分组计数）：空结果时告诉她「有哪些类别」，比只说「看目录」有用。 */
+    static String familiesHint() { return familiesHint(ToolRegistry.all()); }
+
+    /** 纯函数版（可测）：按工具名前缀分组计数。 */
+    static String familiesHint(java.util.List<NumenTool> tools) {
+        java.util.TreeMap<String, Integer> groups = new java.util.TreeMap<>();
+        if (tools == null) return "";
+        for (NumenTool t : tools) {
+            if (t == null || t.name() == null) continue;
+            String n = t.name();
+            int u = n.indexOf('_');
+            String family = u > 0 ? n.substring(0, u + 1) : n;
+            groups.merge(family, 1, Integer::sum);
+        }
+        if (groups.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder(" 现有工具族：");
+        boolean first = true;
+        for (var e : groups.entrySet()) {
+            if (!first) sb.append("、");
+            sb.append(e.getKey()).append('(').append(e.getValue()).append(')');
+            first = false;
+        }
+        sb.append("。要按族找，用族前缀当关键词（例如 rdd_、settlement_）。");
+        return sb.toString();
     }
 }
