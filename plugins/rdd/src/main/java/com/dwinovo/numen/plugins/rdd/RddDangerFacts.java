@@ -66,6 +66,25 @@ final class RddDangerFacts {
         }
     }
 
+    /**
+     * 这次 entities 响应能不能当当前事实用（042 R2 条件 2）。
+     *
+     * <p>只有 READY / READY_PARTIAL 算可用；STALE / PENDING / UNKNOWN 一律不可用——
+     * 不能因为 `status != ERROR` 就把过期数据当成"当前有几只敌怪"。
+     */
+    private static com.dwinovo.numen.api.observation.Readiness usability(
+            com.dwinovo.numen.api.observation.WorldObservationService.Response resp) {
+        var required = java.util.Set.of("count");
+        java.util.List<com.dwinovo.numen.api.observation.Readiness> per = new java.util.ArrayList<>();
+        for (var item : resp.items()) {
+            per.add(com.dwinovo.numen.api.observation.Readiness.assess(
+                    resp.status(), resp.coverage(), required,
+                    item.values().keySet(), item.unknownFields(), item.staleFields()));
+        }
+        return com.dwinovo.numen.api.observation.Readiness
+                .worstOf(per, resp.status(), resp.coverage());
+    }
+
     private static final Map<java.util.UUID, String> LAST_PUBLISHED =
             new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -75,8 +94,10 @@ final class RddDangerFacts {
             net.minecraft.world.phys.AABB box =
                     body.getBoundingBox().inflate(RddDangerText.SCAN_RADIUS);
             int hostiles = 0, close = 0;
+            int seen = 0;
             for (net.minecraft.world.entity.Mob mob
                     : level.getEntitiesOfClass(net.minecraft.world.entity.Mob.class, box)) {
+                if (seen++ >= MAX_SAMPLED_ENTITIES) break;      // 单次实体数上限（042 R2 条件 1）
                 if (!(mob instanceof net.minecraft.world.entity.monster.Monster) || !mob.isAlive()) continue;
                 hostiles++;
                 if (mob.distanceTo(body) <= RddDangerText.CLOSE_RADIUS) close++;
@@ -132,12 +153,12 @@ final class RddDangerFacts {
                 var resp = svc.read(new com.dwinovo.numen.api.observation.WorldObservationService.Request(
                         "rdd-danger", dim, "entities",
                         Map.of("box", RddObservation.dangerBox(pos, r), "category", "hostile"), 0L, 64, 0L));
-                if (resp == null
-                        || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR
-                        || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING
-                        || resp.items().isEmpty()) {
-                    return null;
-                }
+                if (resp == null) return null;
+                // 042 R2 条件 2：**过期观测不能用**。status 不是 ERROR/PENDING 也不代表新鲜——
+                // ObservationMap 把 FULL&&!stale 之外的一律标 Status.PARTIAL，所以必须看 Readiness。
+                var readable = usability(resp);
+                if (!readable.canReportPresence()) return null;
+                if (resp.items().isEmpty()) return null;
                 Object c = resp.items().get(0).values().get("count");
                 if (!(c instanceof Number n)) return null;
                 out[i] = n.intValue();
@@ -159,7 +180,48 @@ final class RddDangerFacts {
         }
     }
 
-    /** 从真实世界取事实；读不到就返回空串（不做假警报，也不编数）。 */
+    /**
+     * tick 采样（**只在服务端线程**）：读世界 → 写不可变快照。
+     *
+     * <p>为什么必须在这里读：上下文组装不保证在主线程，`blockFor` 里读世界就是 042 R2 说的线程违规。
+     * 但"挪到 tick" ≠ "改成等观测服务"——039 §6 要求保命反射保持本地，本地方案就是本方法。
+     */
+    /** 采样间隔与实体数上限：可调，不写死（042 R2 条件 1）。 */
+    static int SAMPLE_INTERVAL_TICKS = 5;
+    static int MAX_SAMPLED_ENTITIES = 128;
+    private static final Map<java.util.UUID, Long> LAST_SAMPLE_TICK =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    static void sampleOnTick(NumenPlayer body, long serverTick) {
+        try {
+            if (body == null || !(body.level() instanceof ServerLevel level)) return;
+            Long last = LAST_SAMPLE_TICK.get(body.getUUID());
+            if (last != null && serverTick - last < SAMPLE_INTERVAL_TICKS) return;   // 有界采样，不是每 tick 扫
+            LAST_SAMPLE_TICK.put(body.getUUID(), serverTick);
+            var local = localHostiles(body, level);
+            if (local == null) return;
+            Map<String, Integer> kinds = localKinds(body, level);
+            DANGER_SNAPSHOT.put(body.getUUID(),
+                    new DangerSnapshot(local[0], local[1], Map.copyOf(kinds), serverTick));
+        } catch (RuntimeException | LinkageError ignored) {
+            // 采样失败不影响 tick
+        }
+    }
+
+    /** 一只同伴的危险快照（不可变）。 */
+    record DangerSnapshot(int hostiles, int close, Map<String, Integer> kinds, long tick) {}
+
+    private static final Map<java.util.UUID, DangerSnapshot> DANGER_SNAPSHOT =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 清掉某只同伴的快照（换身体/退场时用）。 */
+    static void forget(java.util.UUID companionId) {
+        if (companionId != null) DANGER_SNAPSHOT.remove(companionId);
+    }
+
+    /**
+     * 从缓存/观测取事实；**绝不在这里读世界**，读不到就给明确的"未知"。
+     */
     static String blockFor(NumenPlayer body) {
         try {
             if (body == null || !(body.level() instanceof ServerLevel level)) {
@@ -175,13 +237,17 @@ final class RddDangerFacts {
                 close = observed[1];
                 kinds.putAll(observedKinds.getOrDefault(body.getUUID(), Map.of()));
             } else {
-                // 观测不可用时**安全反射仍走本地**：039 §6 明确"安全反射保持本地执行，
-                // 不等待统一服务返回才救命"。危险块是保命用的，宁可多扫一次也不能变空。
-                var local = localHostiles(body, level);
-                if (local == null) return "";
-                hostiles = local[0];
-                close = local[1];
-                kinds = localKinds(body, level);
+                // 观测不可用 → 用 tick 采样写下的快照（**不读世界**）。
+                DangerSnapshot snap = DANGER_SNAPSHOT.get(body.getUUID());
+                long nowTick = level.getGameTime();
+                if (snap == null
+                        || !RddDangerText.isFresh(nowTick, snap.tick(), RddDangerText.SNAPSHOT_TTL_TICKS)) {
+                    // 既没观测、也没新鲜快照 → 明确说"未知"，不许用空串冒充"安全"
+                    return RddDangerText.unknownMarker();
+                }
+                hostiles = snap.hostiles();
+                close = snap.close();
+                kinds = new LinkedHashMap<>(snap.kinds());
                 LOG_LOCAL_AT.merge(body.getUUID(), 1, Integer::sum);
             }
             if (hostiles == 0) {

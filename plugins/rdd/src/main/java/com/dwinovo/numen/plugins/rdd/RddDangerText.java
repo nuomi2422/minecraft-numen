@@ -14,6 +14,26 @@ final class RddDangerText {
 
     private RddDangerText() {}
 
+    /** 快照新鲜度上限（tick）。tick 每轮采样，1 秒足够；超过就说明采样停了。 */
+    static final int SNAPSHOT_TTL_TICKS = 20;
+
+    /**
+     * 读不到敌怪事实时的**显式未知**标记。
+     *
+     * <p>为什么要它：以前 `return ""` 同时表示"没有危险"和"读不到"，两者在上下文里长得一样。
+     * 空串会让执行 AI 以为"安全"，而真相是"根本没看见"。宁可占几个 token，也不给假的安全感。
+     */
+    static String unknownMarker() {
+        return "<danger>敌怪状态未知（没读到观测，tick 采样也没有数据）——这不等于安全</danger>";
+    }
+
+    /** 快照是否还新鲜（纯函数，便于单测）。 */
+    static boolean isFresh(long nowTick, long snapshotTick, int ttlTicks) {
+        if (snapshotTick < 0) return false;
+        long age = nowTick - snapshotTick;
+        return age >= 0 && age <= ttlTicks;
+    }
+
     /** 8 格内算「贴身」，无论血量都会提示。 */
     static final int CLOSE_RADIUS = 8;
     /** 扫描半径（再远的怪与"我现在要不要紧"无关）。 */
