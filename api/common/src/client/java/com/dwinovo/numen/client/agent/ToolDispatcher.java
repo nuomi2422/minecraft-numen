@@ -180,7 +180,9 @@ public final class ToolDispatcher {
                     sink.onAllSettled();
                     return;
                 }
-                NumenTool tool = ToolRegistry.resolve(inv.name());
+                // 2026-11-05：9 次 `unknown tool: todo`（真名 todowrite）。只映射实测出现过的短名，不做模糊匹配。
+                NumenTool tool = ToolRegistry.resolve(
+                        com.dwinovo.numen.agent.tool.ToolAliases.resolve(inv.name()));
                 if (tool != null && !callable.contains(tool.name())) {
                     // 定义没在她眼前,参数只能是猜的——挡下来并告诉她怎么补,
                     // 比让一次瞎填的调用真的动身体便宜。
