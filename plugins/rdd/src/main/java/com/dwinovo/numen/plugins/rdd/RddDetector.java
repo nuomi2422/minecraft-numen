@@ -147,6 +147,15 @@ final class RddDetector {
         if (server == null) {
             return;
         }
+        // 042 R2 条件 4（2026-11-05 审计）：危险采样**必须在心跳闸之外**。
+        // 放在里面时，sampleOnTick 每秒才被调一次，它自己的 5 tick 闸永远满足 → 实际 1 Hz，
+        // 而代码看起来是 4 Hz（"空转常量"是代码说一套、运行做一套的最小形态）。
+        // 代价：29us × 4/s ≈ 0.12ms/s，可忽略；收益：保命信号延迟从 1 秒回到 0.25 秒。
+        for (ServerPlayer p : server.getPlayerList().getPlayers()) {
+            if (p instanceof NumenPlayer ap) {
+                RddDangerFacts.sampleOnTick(ap);
+            }
+        }
         if (++tickCounter < TICKS_PER_CHECK) {
             return;
         }
@@ -171,8 +180,7 @@ final class RddDetector {
             // 只放在服务端 tick，绝不在上下文组装线程里做。
             RddContainerMemory.refresh(ap, tick);
             RddObservation.refreshIfDue(ap, tick);
-            // 042 R2：危险事实的本地采样只能在服务端 tick（上下文组装线程不许读世界）。
-            RddDangerFacts.sampleOnTick(ap);
+            // 042 R2：危险采样已移到心跳闸之外（见方法开头），这里不再重复调用。
             // P2-A【B】背包感知不依赖任务链：先无条件缓存实时背包，再判是否有 Runtime。
             // （感知世界 与 任务运行 不是一个生命周期；/goal 首次规划早于链建立，旧代码要求 rt!=null
             //  才扫背包 → 首次规划/判定读到空背包。）
