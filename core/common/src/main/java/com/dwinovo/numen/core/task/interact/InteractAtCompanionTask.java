@@ -109,10 +109,16 @@ public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTask
                 var blocker = blockedHit.getBlockPos();
                 String blockerId = BuiltInRegistries.BLOCK
                         .getKey(player.level().getBlockState(blocker).getBlock()).getPath();
+                // 2026-11-05：只说「换个开放侧」不够——实测该失败在请求历史里上千次、34 个卡点，
+                // 模型没有自己找位置的能力。这里直接把一个「站得下 + 看得见」的坐标写进回执。
+                int[] openSpot = suggestOpenSpot(r.aim);
+                String spotHint = openSpot == null ? ""
+                        : " Nearest spot that can see it: stand at "
+                        + openSpot[0] + "," + openSpot[1] + "," + openSpot[2] + " and retry.";
                 fail("aim " + aimLabel() + " is blocked from here — the crosshair lands on "
                         + blockerId + " at " + blocker.getX() + "," + blocker.getY() + ","
                         + blocker.getZ() + " instead. break_block that blocker, or goto the"
-                        + " target's open side, then retry.", FailureType.OCCLUDED);
+                        + " target's open side, then retry." + spotHint, FailureType.OCCLUDED);
                 return TaskState.FAILED;
             }
             // A consumable / ender pearl used in the AIR is body-bound (would feed or teleport the
@@ -289,5 +295,34 @@ public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTask
     @Override
     protected String cancelledMessage() {
         return "interact_at interrupted";
+    }
+
+    /**
+     * 找一个能站、能看见目标的落脚点（只用于回执提示，不会自己走过去）。
+     *
+     * <p>可见性用原版 raytrace 判：从候选点的眼睛高度射向目标格中心，命中的方块就是目标。
+     */
+    private int[] suggestOpenSpot(BlockPos target) {
+        if (target == null || player == null || player.level() == null) return null;
+        var level = player.level();
+        return InteractSightHint.pick(target.getX(), target.getY(), target.getZ(),
+                pos -> standable(level, pos),
+                pos -> sees(level, pos, target));
+    }
+
+    private static boolean standable(net.minecraft.world.level.Level level, int[] pos) {
+        BlockPos feet = new BlockPos(pos[0], pos[1], pos[2]);
+        BlockPos below = feet.below();
+        return level.getBlockState(feet).getCollisionShape(level, feet).isEmpty()
+                && !level.getBlockState(below).getCollisionShape(level, below).isEmpty();
+    }
+
+    private boolean sees(net.minecraft.world.level.Level level, int[] pos, BlockPos target) {
+        Vec3 eye = new Vec3(pos[0] + 0.5d, pos[1] + 1.62d, pos[2] + 0.5d);
+        Vec3 aim = Vec3.atCenterOf(target);
+        var hit = level.clip(new net.minecraft.world.level.ClipContext(eye, aim,
+                net.minecraft.world.level.ClipContext.Block.COLLIDER,
+                net.minecraft.world.level.ClipContext.Fluid.NONE, player));
+        return hit.getType() == HitResult.Type.BLOCK && target.equals(hit.getBlockPos());
     }
 }
