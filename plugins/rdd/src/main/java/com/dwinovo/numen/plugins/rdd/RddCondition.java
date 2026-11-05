@@ -45,6 +45,64 @@ final class RddCondition {
      *   <li>可读但有缺口 → NOT_MATCHED。</li>
      * </ul>
      */
+    /**
+     * 用 {@link com.dwinovo.numen.api.observation.Readiness} 下结论（042 R2）。
+     *
+     * <h2>两条路不许混</h2>
+     * <ul>
+     *   <li><b>MATCHED（说"有"）</b>：逐条 item 判 canReportPresence 即可；</li>
+     *   <li><b>NOT_MATCHED（说"缺"）</b>：缺的物品**根本不在 items 里**，没有 item 可评，
+     *       所以只能走 **response 级** {@code canProveAbsence}（OK+FULL）。</li>
+     * </ul>
+     * 反过来实现（用"所有存在的 item 都 READY"推 NOT_MATCHED）会把最常见的一种情况判错：
+     * 背包缺铁锭 + 覆盖完整 → 会被判成 NOT_VERIFIABLE，而不是"缺"。
+     */
+    /**
+     * 判定只需要 Readiness 的三个事实。单独抽成 record，是为了让**测试不依赖 api 模块**——
+     * 把 api:common 加进本插件的测试运行时会让 AdvancementTickWiringRegressionTest 的
+     * "TaskResult 必须来自本次编译产物"断言失效（父加载器先命中了 api 里的同名类）。
+     */
+    record Observability(boolean canReportPresence, boolean stale, boolean pending, boolean unknown) {
+        static Observability from(com.dwinovo.numen.api.observation.Readiness r) {
+            return new Observability(r.canReportPresence(),
+                    r == com.dwinovo.numen.api.observation.Readiness.NOT_READY_STALE,
+                    r == com.dwinovo.numen.api.observation.Readiness.NOT_READY_PENDING,
+                    !r.canReportPresence()
+                            && r != com.dwinovo.numen.api.observation.Readiness.NOT_READY_STALE
+                            && r != com.dwinovo.numen.api.observation.Readiness.NOT_READY_PENDING);
+        }
+    }
+
+    static Result decide(Observability obs,
+                         Map<String, Integer> have, List<String> required, boolean canProveAbsence) {
+        Map<String, Integer> snapshot = have == null ? Map.of() : new LinkedHashMap<>(have);
+        if (required == null || required.isEmpty()) {
+            return new Result(Verdict.NOT_VERIFIABLE, "没有声明要件", snapshot);
+        }
+        if (obs.pending()) {
+            return new Result(Verdict.NOT_VERIFIABLE, "还没有观测（PENDING）", snapshot);
+        }
+        if (obs.stale()) {
+            return new Result(Verdict.NOT_VERIFIABLE, "所需字段已过期（STALE），需刷新", snapshot);
+        }
+        if (!obs.canReportPresence()) {
+            return new Result(Verdict.NOT_VERIFIABLE, "观测不可用或覆盖不足", snapshot);
+        }
+        java.util.List<String> missing = new java.util.ArrayList<>();
+        for (String item : required) {
+            if (snapshot.getOrDefault(item, 0) <= 0) missing.add(item);
+        }
+        if (missing.isEmpty()) {
+            return new Result(Verdict.MATCHED, "全部齐了：" + required.size() + " 项", snapshot);
+        }
+        // 说"缺"必须走 response 级证否——缺失物没有 item 可评
+        if (!canProveAbsence) {
+            return new Result(Verdict.NOT_VERIFIABLE,
+                    "没看到 " + missing + "，但覆盖不足以断言'缺'", snapshot);
+        }
+        return new Result(Verdict.NOT_MATCHED, "缺 " + missing, snapshot);
+    }
+
     static Result requireAll(Map<String, Integer> have, List<String> required, boolean readable) {
         Map<String, Integer> snapshot = have == null ? Map.of() : new LinkedHashMap<>(have);
         if (!readable) {
@@ -83,29 +141,53 @@ final class RddCondition {
             if (resp == null) {
                 return new Result(Verdict.NOT_VERIFIABLE, "观测返回空", Map.of());
             }
-            if (resp.status() == WorldObservationService.Status.PENDING) {
+            // 042 R2：先按 Readiness 判"能不能下结论"，再决定要不要刷新
+            var agg = assess(resp);
+            if (agg.wantsRefresh()) {
                 Long last = REFRESH_AT.get(companionId);
                 if (last == null || gameTime - last >= 200L) {
                     REFRESH_AT.put(companionId, gameTime);
                     var refreshed = svc.refresh(req);
-                    if (refreshed != null) resp = refreshed;
+                    if (refreshed != null) {
+                        resp = refreshed;
+                        agg = assess(resp);      // 刷完重判一次
+                    }
                 }
             }
             if (resp.status() == WorldObservationService.Status.ERROR) {
                 return new Result(Verdict.NOT_VERIFIABLE, "观测失败：" + resp.reason(), Map.of());
             }
-            boolean readable = resp.status() != WorldObservationService.Status.PENDING
-                    && resp.coverage() != WorldObservationService.Coverage.UNKNOWN;
             Map<String, Integer> have = new LinkedHashMap<>();
             for (var item : resp.items()) {
                 Object id = item.values().get("item");
                 Object n = item.values().get("count");
                 if (id instanceof String s && n instanceof Number num) have.merge(s, num.intValue(), Integer::sum);
             }
-            return requireAll(have, required, readable);
+            boolean canProveAbsence = com.dwinovo.numen.api.observation.Readiness
+                    .canProveAbsence(resp.status(), resp.coverage());
+            return decide(Observability.from(agg), have, required, canProveAbsence);
         } catch (RuntimeException | LinkageError e) {
             return new Result(Verdict.NOT_VERIFIABLE, "判定异常：" + e, Map.of());
         }
+    }
+
+    /**
+     * 逐条 item 判可读性，再按 worst-of 合并（042 R2 契约 1/2）。
+     *
+     * <p>注意：`Status.PARTIAL` 在 API 里**同时**代表"覆盖不全"和"数据过期"（ObservationMap），
+     * 所以不能只看 status——过期信息在 item 的 staleFields 里。
+     */
+    private static com.dwinovo.numen.api.observation.Readiness assess(
+            WorldObservationService.Response resp) {
+        var required = java.util.Set.of("item", "count");   // slots 不是 item 字段（012 附录 G.1）
+        java.util.List<com.dwinovo.numen.api.observation.Readiness> per = new java.util.ArrayList<>();
+        for (var item : resp.items()) {
+            per.add(com.dwinovo.numen.api.observation.Readiness.assess(
+                    resp.status(), resp.coverage(), required,
+                    item.values().keySet(), item.unknownFields(), item.staleFields()));
+        }
+        return com.dwinovo.numen.api.observation.Readiness
+                .worstOf(per, resp.status(), resp.coverage());
     }
 
     private static final Map<UUID, Long> REFRESH_AT = new java.util.concurrent.ConcurrentHashMap<>();

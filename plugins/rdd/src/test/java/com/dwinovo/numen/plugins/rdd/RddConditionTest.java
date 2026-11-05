@@ -65,4 +65,78 @@ class RddConditionTest {
         var r = RddCondition.requireAll(null, GEAR, true);
         assertEquals(RddCondition.Verdict.NOT_MATCHED, r.verdict());
     }
+    // ---- 042 R2：Readiness 驱动的判定（decide） ----
+
+    private static final RddCondition.Observability READY =
+            new RddCondition.Observability(true, false, false, false);
+
+    @Test
+    void decideMatchedNeedsOnlyPresence() {
+        Map<String, Integer> have = Map.of(
+                "minecraft:iron_helmet", 1, "minecraft:iron_chestplate", 1,
+                "minecraft:iron_leggings", 1, "minecraft:iron_boots", 1);
+        var r = RddCondition.decide(READY, have, GEAR, true);
+        assertEquals(RddCondition.Verdict.MATCHED, r.verdict());
+    }
+
+    @Test
+    void decideFullCoverageMissingItemIsNotMatched() {
+        // 审计强调的那条：缺的物品根本不在 items 里，只能靠 response 级证否
+        Map<String, Integer> have = Map.of("minecraft:iron_helmet", 1);
+        var r = RddCondition.decide(READY, have, GEAR, true);
+        assertEquals(RddCondition.Verdict.NOT_MATCHED, r.verdict(),
+                "完整覆盖 + 缺件 → 必须说'缺'，不是'判不了'");
+        assertTrue(r.reason().contains("iron_chestplate"), r.reason());
+    }
+
+    @Test
+    void decidePartialCoverageMissingItemIsUnverifiable() {
+        var partial = new RddCondition.Observability(true, false, false, false);
+        Map<String, Integer> have = Map.of("minecraft:iron_helmet", 1);
+        var r = RddCondition.decide(partial, have, GEAR, false);
+        assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict(),
+                "部分覆盖 + 缺件 → 不许断言'缺'");
+    }
+
+    @Test
+    void decideStaleIsUnverifiable() {
+        var stale = new RddCondition.Observability(false, true, false, false);
+        var r = RddCondition.decide(stale, Map.of(), GEAR, false);
+        assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict());
+        assertTrue(r.reason().contains("过期"), r.reason());
+    }
+
+    @Test
+    void decidePendingIsUnverifiable() {
+        var pending = new RddCondition.Observability(false, false, true, false);
+        var r = RddCondition.decide(pending, Map.of(), GEAR, false);
+        assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict());
+    }
+
+    @Test
+    void decideEmptyInventoryWithPartialCoverageIsNotAnAbsence() {
+        // 实机反例 C：空背包 + 部分覆盖 → 不许说"空"
+        var partial = new RddCondition.Observability(true, false, false, false);
+        var r = RddCondition.decide(partial, Map.of(), GEAR, false);
+        assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict());
+    }
+
+    @Test
+    void decideEmptyInventoryWithFullCoverageIsAbsence() {
+        var r = RddCondition.decide(READY, Map.of(), GEAR, true);
+        assertEquals(RddCondition.Verdict.NOT_MATCHED, r.verdict());
+    }
+
+    @Test
+    void decideWithoutRequiredIsUnverifiable() {
+        var r = RddCondition.decide(READY, Map.of(), List.of(), true);
+        assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict());
+    }
+
+    @Test
+    void decideUnknownAggIsUnverifiable() {
+        var unknown = new RddCondition.Observability(false, false, false, true);
+        var r = RddCondition.decide(unknown, Map.of(), GEAR, true);
+        assertEquals(RddCondition.Verdict.NOT_VERIFIABLE, r.verdict());
+    }
 }
