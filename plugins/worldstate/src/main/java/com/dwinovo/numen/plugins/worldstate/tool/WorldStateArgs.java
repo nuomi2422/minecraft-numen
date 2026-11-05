@@ -38,7 +38,7 @@ public final class WorldStateArgs {
     public static Outcome forReadRefresh(Topic topic, JsonObject args, String dimension) {
         if (topic == null) {
             return Outcome.fail("world_state: topic is required for action=read|refresh"
-                    + " (environment|entities|blocks|containers)");
+                    + " (environment|entities|blocks|containers; facilities is defined but not wired yet)");
         }
         ObservationRequest request = buildRequest(args, topic, dimension);
         if (request == null) {
