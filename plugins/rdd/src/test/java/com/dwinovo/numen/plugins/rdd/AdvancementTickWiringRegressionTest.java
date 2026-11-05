@@ -89,8 +89,19 @@ class AdvancementTickWiringRegressionTest {
             }
         };
         host = loader.loadClass("AdvancementDiagnosticHost");
+        // 正向：child-first 的 loader 必须拿到编译产物。
         assertEquals(output.toUri().toURL(), loader.loadClass("com.dwinovo.numen.task.TaskResult")
-                .getProtectionDomain().getCodeSource().getLocation(), "must use compiled production TaskResult source");
+                .getProtectionDomain().getCodeSource().getLocation(),
+                "child-first loader must use the compiled production TaskResult");
+        // 反向（2026-11-05 审计要求）：普通 URLClassLoader（父优先）必须拿到别处的同名类。
+        // 这条不恒真——哪天父加载器里没有影子了，它会红，提醒我们 override 可以删掉。
+        try (URLClassLoader plain = new URLClassLoader(new URL[]{output.toUri().toURL()},
+                AdvancementTickWiringRegressionTest.class.getClassLoader())) {
+            assertNotEquals(output.toUri().toURL(), plain.loadClass("com.dwinovo.numen.task.TaskResult")
+                            .getProtectionDomain().getCodeSource().getLocation(),
+                    "parent-first loader should resolve the shadowed TaskResult elsewhere; "
+                            + "if this fails the child-first override is no longer needed");
+        }
     }
 
     @AfterAll
