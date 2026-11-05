@@ -55,13 +55,28 @@ public final class RddMonitor {
      */
     public static synchronized boolean publishIfChanged(String type, Map<String, ?> data) {
         String sig = signature(data);
-        String prev = LAST_SIGNATURE.put(type, sig);
-        if (sig.equals(prev)) {
+        String prev = LAST_SIGNATURE.get(type);
+        long now = System.currentTimeMillis();
+        Long lastAt = LAST_PUBLISHED_AT.get(type);
+        boolean unchanged = sig.equals(prev);
+        boolean heartbeatDue = lastAt != null && now - lastAt >= HEARTBEAT_MS;
+        if (unchanged && !heartbeatDue) {
             return false;
         }
-        publish(type, data);
+        // 2026-11-05（审计）：**先发成功再记签名**。反过来的话，写盘失败也会留下签名，
+        // 下次相同内容被判「没变」→ 事件永久丢失且无痕（publish 内部是 catch Throwable ignored）。
+        if (!publish(type, data)) {
+            return false;
+        }
+        LAST_SIGNATURE.put(type, sig);
+        LAST_PUBLISHED_AT.put(type, now);
         return true;
     }
+
+    /** 内容长时间不变时，每 10 分钟强制发一条全量心跳——否则日志里没有该同伴的痕迹，会被误判成卡死。 */
+    static final long HEARTBEAT_MS = 10L * 60 * 1000;
+
+    private static final Map<String, Long> LAST_PUBLISHED_AT = new LinkedHashMap<>();
 
     /** 内容指纹：递归剥掉 observationId / observedAt（它们每拍都在变，不代表内容变化）。 */
     static String signature(Object value) {
@@ -86,7 +101,8 @@ public final class RddMonitor {
         return value;
     }
 
-    public static synchronized void publish(String type, Map<String, ?> data) {
+    /** @return true=确实写盘成功（调用方据此决定要不要记账） */
+    public static synchronized boolean publish(String type, Map<String, ?> data) {
         try {
             Path dir = FMLPaths.GAMEDIR.get().resolve("config").resolve("numen").resolve("monitor");
             Files.createDirectories(dir);
@@ -107,6 +123,7 @@ public final class RddMonitor {
 
             Files.writeString(file, GSON.toJson(envelope) + "\n", StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            return true;
         } catch (Throwable ignored) {
             // 观测失败不影响 RDD 主流程。
             // ★ D20-C1：从 Exception 升到 Throwable —— FMLPaths 在纯 JVM 单测环境
@@ -115,6 +132,7 @@ public final class RddMonitor {
             //   观测是旁路（fail-soft 是本类的设计自述），Error 也必须吞 ——
             //   让任务链核心逻辑被观测层的类缺失拖垮，正是「fail-soft」的反面。
         }
+        return false;
     }
 
     /** 把写满的 rdd.jsonl 挪成带时间戳的归档，再清出目录里的超量归档。 */
