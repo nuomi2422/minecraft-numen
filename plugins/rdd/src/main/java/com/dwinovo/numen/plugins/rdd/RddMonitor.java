@@ -38,9 +38,6 @@ public final class RddMonitor {
 
     private RddMonitor() {}
 
-    /** 每个 type 上一次发出的内容指纹（2026-11-05：内容没变就不发）。 */
-    private static final Map<String, String> LAST_SIGNATURE = new LinkedHashMap<>();
-
     /**
      * 按内容去重发布：**内容没变就不写**。
      *
@@ -55,29 +52,24 @@ public final class RddMonitor {
      */
     public static synchronized boolean publishIfChanged(String type, Map<String, ?> data) {
         String sig = signature(data);
-        String prev = LAST_SIGNATURE.get(type);
         long now = System.currentTimeMillis();
-        Long lastAt = LAST_PUBLISHED_AT.get(type);
-        boolean unchanged = sig.equals(prev);
-        boolean heartbeatDue = lastAt != null && now - lastAt >= HEARTBEAT_MS;
-        if (unchanged && !heartbeatDue) {
+        if (!GATE.shouldEmit(type, sig, now)) {
             return false;
         }
-        // 2026-11-05（审计）：**先发成功再记签名**。反过来的话，写盘失败也会留下签名，
+        // 2026-11-05（审计）：**先发成功再记账**。反过来的话，写盘失败也会留下指纹，
         // 下次相同内容被判「没变」→ 事件永久丢失且无痕（publish 内部是 catch Throwable ignored）。
         if (!publish(type, data)) {
             return false;
         }
-        LAST_SIGNATURE.put(type, sig);
-        LAST_PUBLISHED_AT.put(type, now);
+        GATE.commit(type, sig, now);
         return true;
     }
 
     /** 内容长时间不变时，每 10 分钟强制发一条全量心跳——否则日志里没有该同伴的痕迹，会被误判成卡死。 */
     static final long HEARTBEAT_MS = 10L * 60 * 1000;
 
-    private static final Map<String, Long> LAST_PUBLISHED_AT = new LinkedHashMap<>();
-
+    /** 判定逻辑抽在 RddMonitorGate（纯类），这里只保留实例。 */
+    private static final RddMonitorGate GATE = new RddMonitorGate(HEARTBEAT_MS);
     /** 内容指纹：递归剥掉 observationId / observedAt（它们每拍都在变，不代表内容变化）。 */
     static String signature(Object value) {
         return GSON.toJson(stripVolatile(value));
