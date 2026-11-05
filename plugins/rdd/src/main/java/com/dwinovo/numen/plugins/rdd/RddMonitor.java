@@ -83,13 +83,20 @@ public final class RddMonitor {
         return GSON.toJson(stripVolatile(value));
     }
 
+    /**
+     * 递归剥掉易变字段，并**按 key 排序**。
+     *
+     * <p>为什么排序：签名靠 GSON 序列化字符串比较，而 Map 的迭代顺序受实现/插入顺序影响
+     * （HashMap vs LinkedHashMap、Map.of 的随机 salt）。内容一样但 key 顺序不同 → 签名不同 →
+     * 去重永不命中。实机第一次部署就是这么翻车的：asset_snapshot 仍然每 30 秒一条。
+     */
     private static Object stripVolatile(Object value) {
         if (value instanceof Map<?, ?> map) {
-            Map<Object, Object> out = new LinkedHashMap<>();
+            Map<String, Object> out = new java.util.TreeMap<>();
             for (Map.Entry<?, ?> e : map.entrySet()) {
                 String k = String.valueOf(e.getKey());
                 if ("observationId".equals(k) || "observedAt".equals(k)) continue;
-                out.put(e.getKey(), stripVolatile(e.getValue()));
+                out.put(k, stripVolatile(e.getValue()));
             }
             return out;
         }
