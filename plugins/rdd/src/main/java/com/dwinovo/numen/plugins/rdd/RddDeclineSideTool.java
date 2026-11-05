@@ -68,7 +68,11 @@ final class RddDeclineSideTool implements NumenTool {
             }
             if (!expectedType.isBlank() && !RddSideType.matches(expectedType, currentType)) {
                 reply.accept(com.dwinovo.numen.task.TaskResult.fail(
-                        "decline refused: side task type changed (current=" + currentType + ")").toJson());
+                        // 2026-11-05：实测这条失败 48 次——她拿着旧 expected_type 反复重试。
+                        // 拒绝是对的（防止把新支线误拒），但要把「那就再调一次、这次别带类型」写出来。
+                        "decline refused: side task type changed (current=" + currentType
+                                + "). If you still mean THIS side task, call decline_side again without"
+                                + " expected_type; if you meant the old one, it is already gone.").toJson());
                 return;
             }
             boolean declined = SideTaskHost.decline(companion.getUUID(), reason);
