@@ -300,4 +300,25 @@ class ExperienceRetrievalProviderTest {
         assertEquals(plain, ExperienceRetrievalProvider.relevanceScore(ExperienceRetrievalProvider.queryText(unrelated), e));
     }
 
+    @Test
+    void knownFailuresDoNotChangeApplicabilityFiltering() {
+        // excluded 命中 objective（不是命中 knownFailures 文本）时仍必须被过滤 —— 失败文本不参与 applicability。
+        ExperienceEntryRead blocked = entry("exp:b", "no path out 教训", Maturity.OBSERVED, false,
+                List.of(), List.of("no path out"));
+        ExperienceEntryRead kept = entry("exp:k", "craft 工作台", Maturity.OBSERVED, false,
+                List.of(), List.of());
+        ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("experience", sourceOf(blocked, kept));
+        RetrievalQuery q = new RetrievalQuery("q-6", "c-1", "w-1", RetrievalRole.PLANNER, "mine ore no path out",
+                List.of("no path out"), List.of(), List.of(), 1, "",
+                new RetrievalBudget(8, 0, 0, 0, 2000, 0, "none"), "ACTIVE");
+        SearchPage page = p.search(q);
+        assertTrue(page.entries().stream().anyMatch(e -> "exp:k".equals(e.descriptor().entryRef())));
+        // search 不按 applicability 丢弃条目；但被排除条目必须仍标 FAIL，不能因 knownFailures 变 PASS。
+        var blockedEntry = page.entries().stream()
+                .filter(e -> "exp:b".equals(e.descriptor().entryRef())).findFirst();
+        assertTrue(blockedEntry.isPresent(), "条目应仍在候选里（过滤发生在下游视图）");
+        assertEquals(Applicability.FAIL, blockedEntry.get().applicability(),
+                "excluded 命中时必须仍为 FAIL，不能因 knownFailures 放行");
+    }
+
 }
