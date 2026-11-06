@@ -70,7 +70,7 @@ class WorldStateSessionWiringTest {
         // 2026-11-05：父加载器可能有插件/MC 类；用本次完整源码编译物，不能误测父类路径旧产物。
         loader = new URLClassLoader(new URL[]{compiled.toUri().toURL()}, WorldStateSessionWiringTest.class.getClassLoader()) {
             @Override protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-                if (name.startsWith(PKG) || name.startsWith("net.minecraft.") || name.startsWith("org.slf4j.")) {
+                if (name.startsWith(PKG) || name.startsWith("net.minecraft.") || name.startsWith("com.dwinovo.numen.entity.") || name.startsWith("org.slf4j.")) {
                     synchronized (getClassLoadingLock(name)) {
                         Class<?> found = findLoadedClass(name);
                         if (found == null) found = findClass(name);
@@ -291,6 +291,24 @@ class WorldStateSessionWiringTest {
         assertEquals(Freshness.HISTORICAL, read(reloaded, server).freshness());
     }
 
+    @Test void selfRefreshPreservesPreviouslyCapturedEpochAndTick() throws Exception {
+        Object host=host(config), server=server(config.resolve("live"),true,false);
+        Class<?> body=loader.loadClass("com.dwinovo.numen.entity.NumenPlayer");
+        Object player=body.getConstructor().newInstance();
+        Object list=serverType.getMethod("getPlayerList").invoke(server);
+        list.getClass().getField("player").set(list,player);
+        Class<?> sampler=loader.loadClass("com.dwinovo.numen.entity.CompanionBodySample");
+        var request=ObservationRequest.self("minecraft:overworld",UUID.randomUUID());
+        for(long tick:new long[]{42,43}) {
+            sampler.getField("tick").setLong(null,tick);
+            sampler.getField("epoch").setLong(null,1000+tick);
+            RefreshResult result=(RefreshResult)invoke(host,"refresh",new Class<?>[]{serverType,ObservationRequest.class},server,request);
+            assertEquals(tick,result.observation().gameTick());
+            assertEquals(1000+tick,result.observation().epochMs());
+        }
+        assertFalse(Files.exists(config.resolve("worldstate/observations.json")));
+    }
+
     private static String location(Class<?> type) throws Exception {
         return Path.of(type.getProtectionDomain().getCodeSource().getLocation().toURI()).toString();
     }
@@ -320,6 +338,8 @@ class WorldStateSessionWiringTest {
                     public MinecraftServer(Path root, boolean sameThread, boolean failPath) {
                         this.root = root; this.sameThread = sameThread; this.failPath = failPath;
                     }
+                    public final net.minecraft.server.players.PlayerList players=new net.minecraft.server.players.PlayerList();
+                    public net.minecraft.server.players.PlayerList getPlayerList(){return players;}
                     public boolean isSameThread() { return sameThread; }
                     public Path getWorldPath(LevelResource ignored) {
                         pathReads++;
@@ -331,6 +351,27 @@ class WorldStateSessionWiringTest {
                     @Override public boolean equals(Object other) { return other instanceof MinecraftServer; }
                     @Override public int hashCode() { return 1; }
                 }
+                """);
+        sources.put("com.dwinovo.numen.entity.NumenPlayer", """
+                package com.dwinovo.numen.entity;
+                public class NumenPlayer {
+                    public String dimensionId="minecraft:overworld";
+                    public NumenPlayer serverLevel(){return this;} public NumenPlayer dimension(){return this;}
+                    public String location(){return dimensionId;}
+                }
+                """);
+        sources.put("com.dwinovo.numen.entity.CompanionBodySample", """
+                package com.dwinovo.numen.entity;
+                public class CompanionBodySample {
+                    public static long epoch=1000,tick=42; public static int calls;
+                    public record Frame(long tick,long epochMs){}
+                    public static Frame capture(NumenPlayer body){calls++; return new Frame(tick,epoch);}
+                }
+                """);
+        sources.put("net.minecraft.server.players.PlayerList", """
+                package net.minecraft.server.players;
+                public class PlayerList { public com.dwinovo.numen.entity.NumenPlayer player;
+                    public com.dwinovo.numen.entity.NumenPlayer getPlayer(java.util.UUID id){return player;} }
                 """);
         sources.put("net.minecraft.world.level.storage.LevelResource",
                 "package net.minecraft.world.level.storage; public class LevelResource { public static final LevelResource ROOT = new LevelResource(); }");

@@ -5,7 +5,6 @@ import com.dwinovo.numen.network.payload.RequestStatePayload;
 import com.dwinovo.numen.platform.Services;
 
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import com.dwinovo.numen.monitor.MonitoringJournal;
@@ -100,9 +99,10 @@ public final class CompanionStateWatch {
             return;
         }
         // 各趟都要走:短路的话背包变了就不再看别的,镜像会漏掉同一波里的其余变化。
-        boolean invChanged = changedSince(companion.getInventory());
-        boolean effectsChanged = effectsChangedSince(companion);
-        boolean vehicleChanged = vehicleChangedSince(companion);
+        CompanionBodySample.Frame sample = CompanionBodySample.capture(companion);
+        boolean invChanged = changedSince(sample);
+        boolean effectsChanged = effectsChangedSince(sample);
+        boolean vehicleChanged = vehicleChangedSince(sample);
         if (!invChanged && !effectsChanged && !vehicleChanged) {
             return;
         }
@@ -126,15 +126,15 @@ public final class CompanionStateWatch {
     }
 
     /** 一趟遍历:顺便把镜像更新到最新。返回"有没有模型在乎的变化"。 */
-    private boolean changedSince(Inventory inv) {
-        int size = inv.getContainerSize();
+    private boolean changedSince(CompanionBodySample.Frame sample) {
+        int size = 41;
         if (lastItem.length != size) {
             lastItem = new Item[size];   // 全 null,首格全部算变化
             lastCount = new int[size];
         }
         boolean changed = false;
         for (int i = 0; i < size; i++) {
-            ItemStack stack = inv.getItem(i);
+            ItemStack stack = sample.slot(i);
             // 空栈的 getItem() 是 AIR、getCount() 是 0,和"这一格没东西"天然一致。
             if (lastItem[i] != stack.getItem() || lastCount[i] != stack.getCount()) {
                 lastItem[i] = stack.getItem();
@@ -143,8 +143,8 @@ public final class CompanionStateWatch {
             }
         }
         // 换手不动任何格子的内容,但块里的 holding 会变——所以选中槽自成一处状态。
-        if (inv.selected != lastSelected) {
-            lastSelected = inv.selected;
+        if (sample.selected() != lastSelected) {
+            lastSelected = sample.selected();
             changed = true;
         }
         return changed;
@@ -152,9 +152,9 @@ public final class CompanionStateWatch {
 
 
     /** 一趟遍历:更新效果镜像,返回"有没有多一种、少一种、或者升了级"。 */
-    private boolean effectsChangedSince(NumenPlayer companion) {
+    private boolean effectsChangedSince(CompanionBodySample.Frame sample) {
         java.util.Set<String> now = new java.util.HashSet<>();
-        for (var effect : companion.getActiveEffects()) {
+        for (var effect : sample.effects()) {
             now.add(effect.getEffect().unwrapKey()
                     .map(key -> key.location().toString()).orElse("unknown")
                     + '@' + effect.getAmplifier());
@@ -167,9 +167,8 @@ public final class CompanionStateWatch {
     }
 
     /** 上没上/下没下载具。比实体 id 就够:换了一条船也是一次上下船。 */
-    private boolean vehicleChangedSince(NumenPlayer companion) {
-        var vehicle = companion.getVehicle();
-        int nowId = vehicle == null ? -1 : vehicle.getId();
+    private boolean vehicleChangedSince(CompanionBodySample.Frame sample) {
+        int nowId = sample.vehicleId();
         if (nowId == lastVehicleId) {
             return false;
         }

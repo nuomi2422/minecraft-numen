@@ -140,7 +140,16 @@ public final class WorldStateService {
         if (!server.isSameThread()) {
             return RefreshResult.failed(FailReason.INVALID_REQUEST, "refresh requires the Minecraft server thread", 0L);
         }
-        RefreshResult result = queryService.refresh(context(server), request);
+        McCollectionContext context = context(server);
+        if (request.topic() == Topic.SELF) {
+            var player = server.getPlayerList().getPlayer(UUID.fromString(request.target().substring(7)));
+            if (player instanceof com.dwinovo.numen.entity.NumenPlayer body
+                    && body.serverLevel().dimension().location().toString().equals(request.dimension())) {
+                var sample = com.dwinovo.numen.entity.CompanionBodySample.capture(body);
+                context = new McCollectionContext(server, context.worldId(), sample.tick(), sample.epochMs(), context.serverSession());
+            }
+        }
+        RefreshResult result = queryService.refresh(context, request);
         if (result.success() && request.topic() != Topic.SELF) {
             persist();
         }

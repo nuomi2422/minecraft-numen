@@ -138,6 +138,8 @@ tasks.register('apiJar', Jar) {
     include 'com/dwinovo/numen/agent/FunctionalBlockTypes*.class' // shared durable workstation classification
     include 'com/dwinovo/numen/task/**'            // task contract + the registration points a pack drives
     include 'com/dwinovo/numen/entity/NumenPlayer*.class'   // the body a tool acts on
+    // 2026-11-06: shared same-tick SELF frame is read by plugins; keep its nested Frame/Task/Entry, not all entity internals.
+    include 'com/dwinovo/numen/entity/CompanionBodySample*.class'
     include 'com/dwinovo/numen/entity/InputDriver*.class'   // ...and its input surface (look/press keys)
     include 'com/dwinovo/numen/entity/package-info.class'
     include 'com/dwinovo/numen/agent/skill/SkillRegistry*.class' // ship-skills-with-your-jar entry
