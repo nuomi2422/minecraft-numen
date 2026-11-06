@@ -38,13 +38,28 @@ public final class MonitoringJournal implements AutoCloseable {
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final Map<String, BufferedWriter> writers = new LinkedHashMap<>();
     private final Thread writerThread;
+    private final java.util.function.Supplier<Path> configResolver;
     private volatile Path root;
     private volatile long dropped;
 
     private MonitoringJournal() {
+        this(com.dwinovo.numen.NumenPaths::config, null);
+    }
+
+    /** Package-local async fixture seam: only platform path resolution is replaceable. */
+    MonitoringJournal(java.util.function.Supplier<Path> configResolver,
+                      Thread.UncaughtExceptionHandler uncaughtHandler) {
+        this.configResolver = Objects.requireNonNull(configResolver, "configResolver");
         writerThread = new Thread(this::drain, "numen-monitor-writer");
         writerThread.setDaemon(true);
+        if (uncaughtHandler != null) writerThread.setUncaughtExceptionHandler(uncaughtHandler);
         writerThread.start();
+    }
+
+    /** Bounded fixture cleanup; does not alter production close/drain semantics. */
+    boolean awaitStopped(long timeoutMillis) throws InterruptedException {
+        writerThread.join(timeoutMillis);
+        return !writerThread.isAlive();
     }
 
     public static MonitoringJournal get() {
@@ -96,9 +111,13 @@ public final class MonitoringJournal implements AutoCloseable {
         Path base = root;
         if (base == null) {
             try {
-                base = com.dwinovo.numen.NumenPaths.config().resolve("monitor");
+                base = configResolver.get().resolve("monitor");
                 root = base;
-            } catch (RuntimeException ex) {
+            } catch (RuntimeException | LinkageError ex) {
+                // 2026-11-07: unavailable platform initialization can raise a linkage
+                // error before configure(). Drop this observation, not the worker;
+                // later explicit configuration must still recover. Fatal VM errors
+                // are deliberately not caught. Evidence: full API test XML worker death.
                 return;
             }
         }
