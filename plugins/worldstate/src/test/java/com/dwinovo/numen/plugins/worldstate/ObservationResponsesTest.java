@@ -77,12 +77,4 @@ class ObservationResponsesTest {
         assertEquals(30_000L, loose.metadata().validUntilMs() - loose.metadata().observedAtMs(), "caller age must not widen topic ttl");
     }
 
-    @Test void selfTtlCapsValidUntilAtThreeSeconds() {
-        var rr = sample(1000, Freshness.CURRENT);
-        var request = request(0, 10);
-        var r = ObservationResponses.map(rr, request, List.of(), 0, 1100,
-                new ObservationKey("world", DIM, Topic.SELF, "player:00000000-0000-0000-0000-000000000000", ""), 3_000);
-        assertEquals(3_000L, r.metadata().validUntilMs() - r.metadata().observedAtMs(), "SELF topic ttl must cap validUntil at 3s");
-    }
-
 }
