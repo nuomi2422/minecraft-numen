@@ -111,6 +111,7 @@ public final class NumenCore {
         ToolRegistry.register(new com.dwinovo.numen.core.tools.locate.LocateBiomeTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.work.CollectItemsTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.work.FishTool());
+        ToolRegistry.register(new com.dwinovo.numen.core.tools.work.SugarCaneHarvestTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.work.FollowTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.work.AutoMineTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.inventory.EquipItemTool());
