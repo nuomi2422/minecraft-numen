@@ -107,6 +107,7 @@ final class LearnerReviewTool implements NumenTool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .optionalInteger("max_memos", "How many memos to review now (1-3; capped to keep the reply parseable).", 1, MAX_REVIEW_BATCH)
+                .optionalStringArray("memo_ids", "Optional: review only these memo ids (up to 10). Unknown ids are ignored; if none are pending the call is rejected.", 1, 10)
                 .build();
     }
 
@@ -125,6 +126,26 @@ final class LearnerReviewTool implements NumenTool {
             reply.accept(TaskResult.fail("review skipped: learner model is out of quota (HTTP 429)."
                     + " Do not retry now — tell the owner to switch the account; memos stay queued.")
                     .toJson());
+            return;
+        }
+
+        // 2026-11-06：可选 memo_ids（数组或逗号串）——只复盘指定的 memo，≤10 条。
+        java.util.List<String> requestedIds = new ArrayList<>();
+        try {
+            if (args != null && args.has("memo_ids") && args.get("memo_ids").isJsonArray()) {
+                for (var el : args.getAsJsonArray("memo_ids")) {
+                    if (el != null && el.isJsonPrimitive()) requestedIds.add(el.getAsString());
+                }
+            } else if (args != null && args.has("memo_ids") && args.get("memo_ids").isJsonPrimitive()) {
+                for (String s : args.get("memo_ids").getAsString().split(",")) requestedIds.add(s);
+            }
+        } catch (RuntimeException ex) {
+            reply.accept(TaskResult.fail("learner_review: memo_ids must be an array or comma-separated string").toJson());
+            return;
+        }
+        requestedIds.removeIf(s -> s == null || s.isBlank());
+        if (requestedIds.size() > 10) {
+            reply.accept(TaskResult.fail("learner_review: memo_ids accepts at most 10 ids").toJson());
             return;
         }
 
@@ -159,7 +180,13 @@ final class LearnerReviewTool implements NumenTool {
         // 2026-11-03（外部学习者）：实机 5 条 memo 的复盘输出在 JSON 中途被截断（UNPARSEABLE，整批 restored），
         //   而 3 条那次成功。批越大 → 输出越长 → 截断概率越高。给批大小设上限，剩下的留在队列下次复盘；
         //   与 LearnerReviewer 的"截断重试"互补（那条治单次输出，这条治输入批太胖）。
-        List<Memo> taken = queue.drain(Math.min(max, MAX_REVIEW_BATCH));
+        List<Memo> taken = requestedIds.isEmpty()
+                ? queue.drain(Math.min(max, MAX_REVIEW_BATCH))
+                : queue.drainByIds(requestedIds);
+        if (!requestedIds.isEmpty() && taken.isEmpty()) {
+            reply.accept(TaskResult.fail("learner_review: none of the requested memo_ids are pending").toJson());
+            return;
+        }
         if (taken.isEmpty()) {
             reply.accept(TaskResult.ok("no pending memos to review", Map.of(
                     "reviewed", 0, "queue_depth", queue.size())).toJson());

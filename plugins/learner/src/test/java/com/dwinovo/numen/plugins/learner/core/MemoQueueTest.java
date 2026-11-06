@@ -400,4 +400,17 @@ class MemoQueueTest {
         assertEquals(Memo.CATEGORY_TIMING, back.category(),
                 "★ 类别只活在内存里的话，重启后它就没了 —— 而队列本来就要落盘");
     }
+    @Test
+    void drainByIdsReturnsOnlyRequestedInQueueOrder() throws Exception {
+        Path dir = Files.createTempDirectory("memo-by-id");
+        MemoQueue q = new MemoQueue(dir.resolve("m.json"));
+        q.append(memo("m-a", "first"));
+        q.append(memo("m-b", "second"));
+        q.append(memo("m-c", "third"));
+
+        List<Memo> picked = q.drainByIds(List.of("m-c", "m-a", "m-missing"));
+        assertEquals(List.of("m-a", "m-c"), idsOf(picked), "only requested ids, kept in queue order");
+        assertEquals(3, q.size(), "drain does not remove anything");
+    }
+
 }

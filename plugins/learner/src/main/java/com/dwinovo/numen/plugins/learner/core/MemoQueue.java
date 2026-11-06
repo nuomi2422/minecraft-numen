@@ -237,6 +237,22 @@ public final class MemoQueue {
         }
     }
 
+    /** 按 id 指定取批（2026-11-06）：只取请求的 memo，未找到的忽略；顺序保持队列原序。 */
+    public List<Memo> drainByIds(java.util.List<String> ids) {
+        lock.lock();
+        try {
+            java.util.Set<String> want = new java.util.LinkedHashSet<>();
+            if (ids != null) for (String id : ids) if (id != null && !id.isBlank()) want.add(id.trim());
+            java.util.List<Memo> out = new ArrayList<>();
+            for (Memo m : readAll()) {
+                if (m.id() != null && want.contains(m.id())) out.add(m);
+            }
+            return out;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     /** 复盘成功：把这批 memoId 真正从队列移除。 */
     public int commitDrain(List<Memo> taken) {
         lock.lock();
