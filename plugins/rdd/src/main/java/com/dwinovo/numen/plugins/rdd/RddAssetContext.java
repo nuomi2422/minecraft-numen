@@ -19,6 +19,47 @@ import java.util.Map;
 final class RddAssetContext {
     private RddAssetContext() {}
 
+    /**
+     * 2026-11-07（038 地点投影最小版）：从既有 AssetRegistry 的 world_base/world_* 观测里，
+     * 只列**同维度且新鲜**的真实地点；不排序/不算距离/不猜当前位置；旧记忆不标 CURRENT。
+     * 上限：条目数与总字符双界，超限显式省略。
+     */
+    static String locationCatalog(AssetRegistry registry, String dimension, long nowMs, long maxAgeMs,
+                                  int maxItems, int maxChars) {
+        if (registry == null || dimension == null || dimension.isBlank()) return "";
+        java.util.List<AssetRegistry.AssetEntry> places = new java.util.ArrayList<>();
+        for (AssetRegistry.AssetEntry e : registry.snapshot()) {
+            if (e == null || e.observation() == null) continue;
+            var v = e.observation().value();
+            if (v == null) continue;
+            Object kind = v.get("kind");
+            if (kind == null) continue;
+            Object dim = v.get("dimension");
+            if (!dimension.equals(String.valueOf(dim))) continue;
+            if (!"OBSERVED".equals(String.valueOf(e.status()))) continue;
+            long at = e.observation().observedAt();
+            if (at <= 0 || nowMs - at > maxAgeMs || at > nowMs) continue;
+            places.add(e);
+        }
+        if (places.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        int shown = 0;
+        for (var e : places) {
+            if (shown >= maxItems) break;
+            var v = e.observation().value();
+            String label = String.valueOf(v.getOrDefault("label", v.get("kind")));
+            String line = label + " (" + v.get("x") + "," + v.get("y") + "," + v.get("z") + ") 观测于 "
+                    + e.observation().observedAt();
+            if (sb.length() + line.length() + 1 > maxChars) break;
+            if (sb.length() > 0) sb.append('；');
+            sb.append(line);
+            shown++;
+        }
+        int omitted = places.size() - shown;
+        if (omitted > 0) sb.append("（省略 ").append(omitted).append(" 项）");
+        return sb.toString();
+    }
+
     static List<AssetRegistry.AssetEntry> worldAssets(AssetRegistry registry) {
         if (registry == null) return List.of();
         List<AssetRegistry.AssetEntry> out = new ArrayList<>();
