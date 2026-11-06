@@ -120,6 +120,10 @@ class CompanionBodySampleTest {
     /** Watch 的镜像表是世界作用域的；每个用例从零开始，免得上一个用例的身份残留。 */
     @BeforeEach void resetWatchTables() throws Exception {
         watchType.getMethod("dropAll").invoke(null);
+        // READY 计数与发包计数在替身里都是静态的：不清零会让后一个用例读到前一个用例的次数。
+        eventsType.getField("ready").setInt(null, 0);
+        Object network = servicesType.getField("NETWORK").get(null);
+        network.getClass().getField("sends").setInt(network, 0);
         var latest = sampleType.getDeclaredField("LATEST");
         latest.setAccessible(true);
         ((Map<?,?>) latest.get(null)).clear();

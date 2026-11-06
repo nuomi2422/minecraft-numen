@@ -328,9 +328,12 @@ class WorldStateSessionWiringTest {
     /** 直接调生产映射层（WorldStatePlugin 的订阅只是把它接到事件总线上）。 */
     private static void bridge(String method, Object host, Object player) throws Exception {
         Class<?> body = loader.loadClass("com.dwinovo.numen.entity.NumenPlayer");
-        loader.loadClass(PKG + "SelfSampleBridge")
-                .getDeclaredMethod(method, serviceType, body)
-                .invoke(null, host, player);
+        // 被测的是隔离加载器里按桩编译出来的那份生产代码。它与测试类同名包、但类加载器不同，
+        // 属于不同的运行时包，所以包级方法必须 setAccessible 才能反射调用（不改产品可见性）。
+        var mapper = loader.loadClass(PKG + "SelfSampleBridge")
+                .getDeclaredMethod(method, serviceType, body);
+        mapper.setAccessible(true);
+        mapper.invoke(null, host, player);
     }
 
     private static ReadResult selfRead(Object host, Object server, ObservationRequest request) throws Exception {
