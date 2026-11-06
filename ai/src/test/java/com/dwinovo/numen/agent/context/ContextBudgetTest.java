@@ -34,6 +34,31 @@ class ContextBudgetTest {
     }
 
     @Test
+    void namedPlaybookCanFoldWithoutLosingRequiredRuntimeAndFacts() {
+        var sections = List.of(
+                mandatory("plugin:rdd:runtime", 20, "<rdd>task and safety</rdd>"),
+                mandatory("plugin_fragments", 5, "<state_facts hp=20/>"),
+                optional("plugin:rdd:base_playbook", 100, "<guide>" + "x".repeat(200) + "</guide>"));
+        var plan = ContextBudget.allocate(chars(80), sections);
+        assertFalse(plan.denied());
+        assertEquals(List.of("plugin:rdd:runtime", "plugin_fragments"), plan.keptNames());
+        assertEquals(List.of("plugin:rdd:base_playbook"), plan.droppedNames());
+        assertFalse(plan.truncationReasons().isEmpty());
+        assertEquals(sections.get(0).text(), plan.kept().get(0).text());
+        assertEquals(ContextBudget.allocate(chars(80), sections), plan);
+    }
+
+    @Test
+    void namedRuntimeOverflowStillDeniesRatherThanDroppingSafety() {
+        var plan = ContextBudget.allocate(chars(5), List.of(
+                mandatory("plugin:rdd:runtime", 20, "<env>known safety</env>"),
+                optional("plugin:rdd:base_playbook", 1, "guide")));
+        assertTrue(plan.denied());
+        assertEquals(List.of("plugin:rdd:runtime"), plan.keptNames());
+        assertEquals(List.of("plugin:rdd:base_playbook"), plan.droppedNames());
+    }
+
+    @Test
     void unlimitedKeepsEverythingAndNeverReportsTruncation() {
         List<Section> sections = List.of(
                 mandatory("current_task", 300, "<t/>"),

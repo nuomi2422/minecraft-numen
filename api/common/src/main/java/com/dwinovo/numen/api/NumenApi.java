@@ -114,6 +114,25 @@ public interface NumenApi {
     void contributeState(Function<UUID, String> fragment);
 
     /**
+     * Register one named state producer. Identity is the explicit (owner, id) pair;
+     * both names must match {@code [A-Za-z0-9_.-]+} (safe budget/markup identity).
+     * larger priority means more important to a budgeting consumer. Required safety
+     * and task state must remain mandatory; only clearly optional playbooks opt out.
+     * Duplicate pairs are rejected before mutation: the first producer remains intact.
+     * Callers must handle the explicit error; rejected callbacks are never registered.
+     *
+     * <p>2026-11-06: old implementors remain compatible: the default delegates to
+     * the legacy method without discarding even optional text. No caching or reads
+     * of the world are added. Callback threading is unchanged from the legacy API.
+     */
+    default void contributeState(String owner, String id, boolean mandatory, int priority,
+                                 Function<UUID, String> fragment) {
+        StateFragment.requireName(owner, "owner");
+        StateFragment.requireName(id, "id");
+        contributeState(java.util.Objects.requireNonNull(fragment, "fragment"));
+    }
+
+    /**
      * 把一句话交给同伴的内置大脑,效果和主人亲手打字一样。
      *
      * <p>这是<b>进</b>的方向。出的方向不在这里:同伴要说什么、要做什么,是它自己

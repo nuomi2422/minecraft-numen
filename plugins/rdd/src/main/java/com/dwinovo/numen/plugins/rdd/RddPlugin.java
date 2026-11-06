@@ -373,8 +373,13 @@ public final class RddPlugin implements NumenPlugin {
                 LOG.warn("[rdd] 床边复活 TP 失败 {}: {}", uuid, e.toString());
             }
         });
-        numen.contributeState(uuid -> {
-            String context = renderStateContext(uuid);
+        numen.contributeState("rdd", "runtime", true, 100, uuid -> {
+            String requiredContext = renderStateContext(uuid);
+            // 2026-11-06: monitor is the pre-budget String, not final-request delivery evidence.
+            // Include optional text once without rerunning the stateful renderer.
+            String basePlaybook = renderBasePlaybook(uuid);
+            String context = basePlaybook.isEmpty() ? requiredContext
+                    : requiredContext + "\n" + basePlaybook;
             if (!context.equals(LAST_CONTEXT.put(uuid, context))) {
                 Map<String, Object> data = observationData(uuid);
                 data.put("source", "rdd_state_contributor");
@@ -382,8 +387,9 @@ public final class RddPlugin implements NumenPlugin {
                 data.put("context", context);
                 RddMonitor.publish("numen_context", data);
             }
-            return context;
+            return requiredContext;
         });
+        numen.contributeState("rdd", "base_playbook", false, 5, RddPlugin::renderBasePlaybook);
     }
 
     /** Model-requested task correction: only explicitly optional food may be skipped. */
@@ -618,7 +624,21 @@ public final class RddPlugin implements NumenPlugin {
         return "mainline restart accepted: old chain discarded, new objective is being planned from scratch";
     }
 
-    /** Exact RDD state block returned to Numen; observation does not own task progress. */
+    /** Optional construction workflow only; reads the same task strings as the former inline block. */
+    private static String renderBasePlaybook(UUID companionId) {
+        try {
+            RddRuntime rt = RUNTIMES.get(companionId);
+            if (rt == null || rt.chain() == null) return "";
+            Subtask current = rt.chain().currentSubtask();
+            String goal = rt.chain().goal() == null ? "" : String.valueOf(rt.chain().goal().description());
+            String step = current == null ? "" : String.valueOf(current.description());
+            return RddBasePlaybook.block(goal + " " + step);
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
+
+    /** Mandatory RDD state; observation does not own task progress. */
     private static String renderStateContext(UUID uuid) {
             // 2026-10-08 支线接管：支线 active 时当前目标投影为睡觉支线，主线上下文让位。
             String sideContext = SideTaskHost.contextFor(uuid);
@@ -820,7 +840,6 @@ private static String withAssets(UUID companionId, String rddContext) {
         } catch (RuntimeException ignored) {
             goalHint = "";
         }
-        String playbook = "";
         // 2026-10-27：下矿姿势（死亡数据：52 次死亡 mob 41 / fall 1 / suffocate 1 / drown 1，
         // 死前一刻多在 eat / 查背包 / 查状态）。与安家提示同一注入点、同一纪律：只讲顺序。
         String minePlaybook = "";
@@ -831,18 +850,18 @@ private static String withAssets(UUID companionId, String rddContext) {
                 String stageDesc = rt0.chain().goal() == null ? "" : String.valueOf(rt0.chain().goal().description());
                 String curDesc = cur0 == null ? "" : String.valueOf(cur0.description());
                 String both = stageDesc + " " + curDesc;
-                playbook = RddBasePlaybook.block(both);
+                // 2026-11-06: keep imminent lava/fall/mob survival constraints mandatory.
                 minePlaybook = RddMinePlaybook.block(both);
             }
         } catch (RuntimeException ignored) {
-            playbook = "";
             minePlaybook = "";
         }
         // 2026-10-25（主人）：**点一下床就绑好了**——但 AI 不一定会想到去点。
         // 谈基地/床时如果还没绑（spawn 为空或 0,0,0），直接把"去点一下"这句话放到它眼前。
         String bedHint = "";
         try {
-            if (!playbook.isEmpty()) {
+            // Bed binding remains required even when the optional construction guide is folded.
+            if (!renderBasePlaybook(companionId).isEmpty()) {
                 net.minecraft.server.level.ServerPlayer body = RddCompanionBody.get(companionId);
                 net.minecraft.core.BlockPos spawn = body == null ? null : body.getRespawnPosition();
                 boolean unbound = spawn == null || spawn.equals(net.minecraft.core.BlockPos.ZERO);
@@ -968,10 +987,6 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (!capabilities.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");
             merged.append(capabilities);
-        }
-        if (!playbook.isEmpty()) {
-            if (merged.length() > 0) merged.append("\n");
-            merged.append(playbook);
         }
         if (!minePlaybook.isEmpty()) {
             if (merged.length() > 0) merged.append("\n");

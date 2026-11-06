@@ -2771,7 +2771,11 @@ public final class EntityAgentLoop {
         String inventory = inventoryXml();
         String effects = effectsXml();
         String riding = ridingXml();
-        String plugins = com.dwinovo.numen.api.NumenPlugins.stateFragments(entityUuid);
+        // 2026-11-06: enumerate once; required task/safety facts stay mandatory, explicitly optional text can fold.
+        var pluginEntries = com.dwinovo.numen.api.NumenPlugins.stateFragmentEntries(entityUuid);
+        String pluginFacts = com.dwinovo.numen.api.NumenPlugins.stateFactsOf(pluginEntries);
+        String plugins = pluginFacts + pluginEntries.stream().filter(com.dwinovo.numen.api.StateFragment::mandatory)
+                .map(com.dwinovo.numen.api.StateFragment::text).collect(java.util.stream.Collectors.joining());
         // G5e：执行角色的检索块（统一检索 EXECUTOR 视图）。空 = 不追加（不塞空标题）。
         // G5g：objective 不能只用核心 current_task —— 实机里它是空的，
         // 而她此刻的活写在**插件片段**里（RDD 任务链镜像的 <current_task>…<subtask_status>）。
@@ -2797,8 +2801,12 @@ public final class EntityAgentLoop {
         // 「背包 874 能装下、插件片段 1777 装不下」→ 分配器**丢掉了 RDD 任务链镜像、
         // 保住了背包**。那正是 §15.5 说不能发生的交换：任务链与需求缺口是当前目标，
         // 丢了取不回来；背包用工具随时能重取。
-        sections.add(new ContextBudget.Section(SECTION_PLUGINS, plugins, true,
-                estimateTokensOfText(plugins), PRIORITY_PLUGINS));
+        sections.add(new ContextBudget.Section(SECTION_PLUGINS, pluginFacts, true,
+                estimateTokensOfText(pluginFacts), PRIORITY_PLUGINS));
+        for (var fragment : pluginEntries) {
+            sections.add(new ContextBudget.Section("plugin:" + fragment.owner() + ":" + fragment.id(),
+                    fragment.text(), fragment.mandatory(), estimateTokensOfText(fragment.text()), fragment.priority()));
+        }
         // G5e：执行知识放在插件片段之后 —— 现有段顺序逐字不变，新段只在非空时出现。
         // 它是**可丢**的（priority 35，低于必知区）：参考目录不该挤掉当前目标/任务链；
         // 丢了只是这一轮少一段参考，工具与经验库都还能按需重取。

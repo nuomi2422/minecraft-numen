@@ -103,34 +103,43 @@ public final class NumenPlugins {
      */
     /**
      * 插件挂在 {@code <runtime_state>} 上的现算片段。见 {@link NumenApi#contributeState}。
-     * 用 CopyOnWriteArrayList:登记发生在加载期,读发生在每次请求,读远多于写。
+     * 登记发生在加载期；每次请求复制生产者快照，回调在锁外执行。
      */
-    private static final List<Function<UUID, String>> STATE = new CopyOnWriteArrayList<>();
+    private static final StateFragmentRegistry STATE = new StateFragmentRegistry();
 
     /**
-     * 汇总所有插件对这只同伴的现算片段。<b>引擎内部调用</b>。
-     *
-     * <p>某个插件算炸了不能连累整条请求——它自己那段丢掉,别人的照常挂上。
+     * Enumerate one immutable request snapshot in registration order, invoking each
+     * producer once. Legacy producers are mandatory. No sorting or truncation here.
+     * Runtime exceptions and linkage failures are isolated; fatal VM errors propagate.
+     * Consumers must reuse this snapshot rather than invoke stateFragments as well.
      */
+    public static List<StateFragment> stateFragmentEntries(UUID companion) {
+        return STATE.entries(companion, failure ->
+                Constants.LOG.error("[numen] 插件的运行期状态算不出来,这一段跳过", failure));
+    }
+
+    /** Legacy string view: exact concatenation, with required-only facts prepended. */
     public static String stateFragments(UUID companion) {
-        if (STATE.isEmpty()) return "";
-        StringBuilder sb = new StringBuilder();
-        for (Function<UUID, String> f : STATE) {
-            try {
-                String x = f.apply(companion);
-                if (x != null && !x.isBlank()) sb.append(x);
-            } catch (RuntimeException e) {
-                Constants.LOG.error("[numen] 插件的运行期状态算不出来,这一段跳过", e);
-            }
+        return renderStateFragments(stateFragmentEntries(companion));
+    }
+
+    static String renderStateFragments(List<StateFragment> fragments) {
+        StringBuilder all = new StringBuilder(stateFactsOf(fragments));
+        for (StateFragment fragment : fragments) all.append(fragment.text());
+        return all.toString();
+    }
+
+    /**
+     * Derive known facts only from required entries in an already evaluated snapshot.
+     * Optional playbooks are not evidence, even when their text mentions safety facts.
+     * 2026-11-06: avoids publishing facts from optional content omitted by a budget.
+     */
+    public static String stateFactsOf(List<StateFragment> fragments) {
+        StringBuilder required = new StringBuilder();
+        for (StateFragment fragment : fragments) {
+            if (fragment.mandatory()) required.append(fragment.text());
         }
-        String all = sb.toString();
-        // 2026-11-03（外部学习者 #475/#481）：检索的 objective 取 currentTask + 这段片段再截 400 字，
-        //   而 hp/持续掉血/夜间/敌对这些**硬安全事实**都在 env/alarms 尾部，通常被截掉——
-        //   于是「血 5、正在掉血」的那一轮，5 个经验槽位里一条健康类条目都没有。
-        //   这里把可机读事实**前置**一行：objective 与请求体都以它开头，判据才有东西可逐字匹配。
-        //   只从已算好的片段里读，不新读世界；一个事实都没读到就不写（B21：缺失就缺失，不造假）。
-        String facts = stateFactsOf(all);
-        return facts.isEmpty() ? all : facts + all;
+        return stateFactsOf(required.toString());
     }
 
     private static final java.util.regex.Pattern HP = java.util.regex.Pattern.compile("血量\\s*(\\d+(?:\\.\\d+)?)");
@@ -607,7 +616,13 @@ public final class NumenPlugins {
 
         @Override
         public void contributeState(Function<UUID, String> fragment) {
-            if (fragment != null) STATE.add(fragment);
+            STATE.addLegacy(fragment);
+        }
+
+        @Override
+        public void contributeState(String owner, String id, boolean mandatory, int priority,
+                                    Function<UUID, String> fragment) {
+            STATE.add(owner, id, mandatory, priority, fragment);
         }
 
         @Override
