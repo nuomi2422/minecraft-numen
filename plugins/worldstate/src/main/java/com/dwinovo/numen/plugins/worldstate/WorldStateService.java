@@ -55,6 +55,11 @@ public final class WorldStateService {
     private static final Map<WeakReference<MinecraftServer>, String> SERVER_SESSIONS = new HashMap<>();
 
     private final Path file;
+    /** 显式短期焦点（038）：与观测服务同生命周期；进程内、不落盘。 */
+    private final com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore focusPins =
+            new com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore();
+
+    public com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore focusPins() { return focusPins; }
     private final com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog changeLog =
             new com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog();
     private final InMemoryObservationStore store;
