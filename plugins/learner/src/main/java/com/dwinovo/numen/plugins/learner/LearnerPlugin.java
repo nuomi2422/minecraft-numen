@@ -92,6 +92,28 @@ public final class LearnerPlugin implements NumenPlugin {
         return configDir;
     }
 
+    /**
+     * 外部/主人侧撤回技能（2026-11-06）。**不进执行者工具表**，由外部 MCP/管理员通道调用；
+     * 语义=追加同 id 新版本 status=REVOKED、supersedes 指旧版；事件 learner_retired 可追溯。
+     */
+    public static String retireSkill(String skillId, String reason, String by) {
+        try {
+            var file = configDir.resolve("skills.jsonl");
+            var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(file);
+            var before = registry.get(skillId).orElse(null);
+            var decision = registry.retire(skillId, reason);
+            java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
+            ev.put("skillId", skillId);
+            ev.put("reason", reason == null ? "" : reason);
+            ev.put("by", by == null ? "external" : by);
+            ev.put("prevVersion", before == null ? 0 : before.version());
+            LearnerMonitor.publish("learner_retired", ev);
+            return decision.outcome() + " v" + (decision.entry() == null ? 0 : decision.entry().version());
+        } catch (Exception e) {
+            return "error: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+        }
+    }
+
     static com.dwinovo.numen.plugins.learner.core.ArtifactSink artifactSink() {
         return artifactSink;
     }

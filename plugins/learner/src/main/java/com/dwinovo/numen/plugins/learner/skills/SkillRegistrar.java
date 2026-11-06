@@ -113,7 +113,7 @@ public final class SkillRegistrar {
     }
 
     /** 稳定 id：同 kind 同指纹 → 同一条 Skill。 */
-    static String skillIdOf(ArtifactDraft a) {
+    public static String skillIdOf(ArtifactDraft a) {
         return "sk-" + SampleFingerprint.shortHash(a.kind().name() + "|" + a.fingerprint());
     }
 

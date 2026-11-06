@@ -133,4 +133,43 @@ class SkillRegistryTest {
         r.register(a, "sk-1", "body:1");
         assertEquals(SkillRegistry.Outcome.REUSE, r.register(b, "sk-2", "body:1").outcome());
     }
+    @Test
+    void 撤回追加版本并不可检索() {
+        SkillRegistry r = new SkillRegistry();
+        r.register(artifact("夜间别出门", "夜里在洞口停留会被围", "v1", "s-1"), "sk-1", "body:1");
+        var d = r.retire("sk-1", "与产品现状冲突");
+        assertEquals(SkillRegistry.Outcome.REVISE, d.outcome());
+        assertEquals(2, d.entry().version());
+        assertEquals(SkillStatus.REVOKED, d.entry().status());
+        assertTrue(d.entry().supersedes().contains("sk-1@v1"));
+        assertTrue(r.retrievable().isEmpty(), "REVOKED 不得再被检索");
+    }
+
+    @Test
+    void 撤回不存在的id报错() {
+        SkillRegistry r = new SkillRegistry();
+        assertEquals(SkillRegistry.Outcome.CONFLICT, r.retire("sk-missing", "x").outcome());
+    }
+
+    @Test
+    void 重复撤回不产生重复版本() {
+        SkillRegistry r = new SkillRegistry();
+        r.register(artifact("夜间别出门", "夜里在洞口停留会被围", "v1", "s-1"), "sk-1", "body:1");
+        r.retire("sk-1", "first");
+        var second = r.retire("sk-1", "again");
+        assertEquals(SkillRegistry.Outcome.REUSE, second.outcome());
+        assertEquals(2, second.entry().version());
+    }
+
+    @Test
+    void 近重复先共享触发词再算trigram() {
+        SkillRegistry r = new SkillRegistry();
+        r.register(artifact("夜间别出门", "夜里在洞口停留会被围", "v1", "s-1"), "sk-1", "body:1");
+        var same = r.nearDuplicates(artifact("夜间别出门", "夜里在洞口停留会被围", "v2", "s-2"), 0.2);
+        assertEquals(1, same.size());
+        assertTrue(same.get(0).score() >= 0.2);
+        var other = r.nearDuplicates(artifact("砍树", "去森林砍原木", "v1", "s-3"), 0.2);
+        assertTrue(other.isEmpty(), "不同触发词不应报近重复");
+    }
+
 }

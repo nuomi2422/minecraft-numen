@@ -184,6 +184,76 @@ public final class SkillRegistry {
         return new Decision(Outcome.REGISTERED, candidate, "新条目 " + candidate.skillId() + "@v1");
     }
 
+    /**
+     * 外部/主人侧撤回（2026-11-06）：**不改检索实现**，只把状态写成 REVOKED 并追加版本；
+     * retrievable() 已过滤 REVOKED。历史靠 supersedes 串起来，不删行。
+     *
+     * <p>为什么不给同伴工具：技能一撤就少一条经验，必须由外部/主人侧发起，避免 AI 自撤。
+     */
+    public Decision retire(String skillId, String reason) {
+        SkillEntry current = skillId == null ? null : byId.get(skillId);
+        if (current == null) {
+            return new Decision(Outcome.CONFLICT, null, "unknown skillId: " + skillId);
+        }
+        if (current.status() == SkillStatus.REVOKED) {
+            return new Decision(Outcome.REUSE, current, "already revoked: " + skillId);
+        }
+        java.util.List<String> nextSupersedes = new java.util.ArrayList<>(current.supersedes());
+        nextSupersedes.add(current.skillId() + "@v" + current.version());
+        SkillEntry revoked = new SkillEntry(current.skillId(), current.version() + 1, current.kind(),
+                current.name(), current.purpose(), current.audience(), current.triggerConditions(),
+                current.excludeConditions(), current.preconditions(), current.risk(),
+                current.evidenceLevel(), SkillStatus.REVOKED, current.bodyRef(),
+                current.validationSignals(), current.foundingSamples(), nextSupersedes, current.conflicts());
+        store(revoked);
+        return new Decision(Outcome.REVISE, revoked, "retired: " + (reason == null ? "" : reason));
+    }
+
+    /** 近重复提示（不拦截）：先按共享触发词收敛，再算 trigram Jaccard。 */
+    public java.util.List<NearDuplicate> nearDuplicates(ArtifactDraft candidate, double threshold) {
+        java.util.List<NearDuplicate> out = new java.util.ArrayList<>();
+        if (candidate == null) return out;
+        java.util.Set<String> candTrigrams = trigrams(candidate.name() + " " + candidate.purpose() + " " + candidate.triggerConditions());
+        java.util.Set<String> candTokens = tokens(candidate.triggerConditions());
+        for (SkillEntry e : byId.values()) {
+            java.util.Set<String> tokens = tokens(e.triggerConditions());
+            boolean shared = false;
+            for (String t : candTokens) if (tokens.contains(t)) { shared = true; break; }
+            if (!shared) continue;
+            double score = jaccard(candTrigrams, trigrams(e.name() + " " + e.purpose() + " " + e.triggerConditions()));
+            if (score >= threshold) out.add(new NearDuplicate(e.skillId(), score));
+        }
+        out.sort((a, b) -> Double.compare(b.score(), a.score()));
+        return out;
+    }
+
+    public record NearDuplicate(String existingId, double score) {}
+
+    static java.util.Set<String> tokens(java.util.List<String> conditions) {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        if (conditions == null) return out;
+        for (String c : conditions) {
+            if (c == null) continue;
+            for (String t : c.toLowerCase(java.util.Locale.ROOT).split("[^a-z0-9_]+")) if (!t.isBlank()) out.add(t);
+        }
+        return out;
+    }
+
+    static java.util.Set<String> trigrams(String text) {
+        String norm = text == null ? "" : text.toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", " ");
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        for (int i = 0; i + 3 <= norm.length(); i++) out.add(norm.substring(i, i + 3));
+        return out;
+    }
+
+    static double jaccard(java.util.Set<String> a, java.util.Set<String> b) {
+        if (a.isEmpty() && b.isEmpty()) return 0.0;
+        int inter = 0;
+        for (String s : a) if (b.contains(s)) inter++;
+        int union = a.size() + b.size() - inter;
+        return union == 0 ? 0.0 : (double) inter / union;
+    }
+
     private void store(SkillEntry e) {
         index(e);
         if (file != null) {

@@ -347,6 +347,25 @@ final class LearnerReviewTool implements NumenTool {
                         }
                     }
                 }
+                // 2026-11-06：近重复只提示、不拦截（正文相似度不足以自动合并）。
+                // 先读一次目录算候选，再把事件落到 learner.jsonl；失败不影响注册。
+                try {
+                    var snapshot = com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(
+                            LearnerPlugin.configDir().resolve("skills.jsonl"));
+                    for (var a : draft.artifacts()) {
+                        var near = snapshot.nearDuplicates(a, 0.25);
+                        if (near.isEmpty()) continue;
+                        var best = near.getFirst();
+                        java.util.Map<String, Object> ev = new LinkedHashMap<>();
+                        ev.put("new_id", com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.skillIdOf(a));
+                        ev.put("existing_id", best.existingId());
+                        ev.put("score", best.score());
+                        ev.put("tool", String.join(",", com.dwinovo.numen.plugins.learner.skills.SkillRegistry.tokens(a.triggerConditions())));
+                        LearnerMonitor.publish("near_duplicate_candidate", ev);
+                    }
+                } catch (RuntimeException | java.io.IOException ignored) {
+                    // 观测失败不许影响注册
+                }
                 var regReport = com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.register(
                         LearnerPlugin.configDir(), draft, dec.result().accepted(), trialIndexes);
                 if (regReport.total() > 0 || !regReport.ok()) {
