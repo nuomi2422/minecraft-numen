@@ -1,6 +1,6 @@
 {
   "name": "farm_maintain_loop",
-  "version": "1",
+  "version": "2",
   "description": "种田维护：先 farm_nearby 把成熟作物收割并原地留苗，再 sow_nearby 把空地耕地补种（消耗背包种子），最后 collect_items 捡起零星掉落；一次调用走完全链，不需要逐株寻路。",
   "tags": [
     "farming",
@@ -8,7 +8,7 @@
     "sow",
     "maintain"
   ],
-  "planner_notes": "为什么要有这条：2026-11-06 实测基地 18 块耕地只长 2 株、背包 20 颗种子却种不下去——farm_nearby/farm_cell 只碰成熟作物（收产物+age 复位，不耗种子），全仓没有播种动作，模型只能用 interact_at 硬点，回执全是 aim is blocked from here。收割与补种必须是两个原子工具，再由一条 AC 串起来，才不需要每一步都花一次 LLM。用法：站到田边（离耕地 4 格内不必逐株走），直接跑本脚本；半径默认 24 覆盖整片田。",
+  "planner_notes": "为什么要有这条：2026-11-06 实测基地 18 块耕地只长 2 株、背包 20 颗种子却种不下去——farm_nearby/farm_cell 只碰成熟作物（收产物+age 复位，不耗种子），全仓没有播种动作，模型只能用 interact_at 硬点，回执全是 aim is blocked from here。收割与补种必须是两个原子工具，再由一条 AC 串起来，才不需要每一步都花一次 LLM。用法：站到田边（离耕地 4 格内不必逐株走），直接跑本脚本；半径默认 24 覆盖整片田。 半径口径（2026-11-06 实机）：整片田一律 radius=24 一次覆盖；她上轮手调 radius=8 只种了一小片，全田还剩 11 格空。不要用 3/6/8 小半径一片片试，也不要在扫空后换更小半径重试——只会多花调用。优先跑这条 AC，而不是逐步调 farm_nearby/sow_nearby。",
   "safety_notes": "只碰成熟作物与空耕地；不拆块、不改地形；没有种子时 sow_nearby 如实报 0，不会凭空造作物。",
   "limits": {
     "max_steps": 60,
