@@ -68,4 +68,13 @@ class ObservationResponsesTest {
         var r = mapped(null, request(0, 1), List.of(), 0, 1100);
         assertEquals(Status.PENDING, r.status()); assertFalse(r.metadata().identified());
     }
+    @Test void validUntilUsesTopicTtlUnlessCallerAgeIsStricter() {
+        var zero = mapped(sample(1000, Freshness.CURRENT), request(0, 10), List.of(), 0, 1100);
+        assertEquals(30_000L, zero.metadata().validUntilMs() - zero.metadata().observedAtMs());
+        var tight = mapped(sample(1000, Freshness.CURRENT), request(1000, 10), List.of(), 0, 1100);
+        assertEquals(1_000L, tight.metadata().validUntilMs() - tight.metadata().observedAtMs());
+        var loose = mapped(sample(1000, Freshness.CURRENT), request(60_000, 10), List.of(), 0, 1100);
+        assertEquals(30_000L, loose.metadata().validUntilMs() - loose.metadata().observedAtMs(), "caller age must not widen topic ttl");
+    }
+
 }

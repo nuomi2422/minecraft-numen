@@ -133,9 +133,14 @@ public final class WorldStateTool implements NumenTool {
             WorldStateArgs.requireOwnSelf(request, self.getUUID().toString(),
                     self.serverLevel().dimension().location().toString());
             if (topic == Topic.SELF && ("read".equals(action) || "refresh".equals(action))) {
+                // 2026-11-06：原来这里把 maxAge 写死 1000，而 validUntil=min(topicTtl, maxAge)
+                // ⇒ SELF 的 3s TTL 被压成 1s（实测 validUntil-observedAt=1000）。
+                // 默认 0 = 不额外收紧、按主题 TTL；显式 max_age_ms 才收紧，且不得放宽过 TTL。
+                long maxAge = args.has("max_age_ms") && !args.get("max_age_ms").isJsonNull()
+                        ? Math.max(0L, args.get("max_age_ms").getAsLong()) : 0L;
                 var apiRequest = new com.dwinovo.numen.api.observation.WorldObservationService.Request(
                         "world-state-tool", request.dimension(), "self", Map.of("target", request.target()),
-                        1000, 1, 1000);
+                        maxAge, 1, 1000);
                 reply.accept(com.dwinovo.numen.plugins.worldstate.SelfObservationProjection.toolReply(action, apiRequest, observations));
                 return;
             }
