@@ -28,7 +28,11 @@ public final class SugarCaneCompanionTask extends AbstractCompanionTask<SugarCan
     private static final int MAX_COLUMN = 4;
 
     private final SugarCaneTaskRecord cfg;
-    private final BlockDigger digger;
+    private final com.dwinovo.numen.entity.NumenPlayer owner;
+    /** 最小测试接缝：生产默认仍是 BlockDigger.digTargetStep（无清障）。 */
+    interface Digger { BlockDigger.DigResult dig(BlockPos target); }
+    private final Digger digger;
+    private final java.util.Map<BlockPos, BlockPos> baseOf = new java.util.HashMap<>();
     private final Deque<BlockPos> queue = new ArrayDeque<>();
     private final int requested;
     private int destroyed;
@@ -39,7 +43,9 @@ public final class SugarCaneCompanionTask extends AbstractCompanionTask<SugarCan
                                   SugarCaneTaskRecord record, List<BlockPos> candidateBases) {
         super(player, record);
         this.cfg = record;
-        this.digger = new BlockDigger(player);
+        this.owner = player;
+        BlockDigger real = new BlockDigger(player);
+        this.digger = real::digTargetStep;
         this.requested = record.count;
         int budgets = record.count;
         int tried = 0;
@@ -55,10 +61,11 @@ public final class SugarCaneCompanionTask extends AbstractCompanionTask<SugarCan
                 if (!player.serverLevel().getBlockState(p).is(Blocks.SUGAR_CANE)) break;
                 upper.add(p);
             }
-            // top count cells, top-down (highest first)
+            // top count cells, top-down (highest first); remember base for pre-dig root check
             int take = Math.min(budgets, upper.size());
             for (int i = upper.size() - 1; i >= 0 && take > 0; i--, take--) {
                 queue.addLast(upper.get(i));
+                baseOf.put(upper.get(i), base);
             }
             budgets -= Math.min(budgets, upper.size());
         }
@@ -84,7 +91,16 @@ public final class SugarCaneCompanionTask extends AbstractCompanionTask<SugarCan
             return TaskState.SUCCESS;
         }
         BlockPos target = queue.peekFirst();
-        BlockDigger.DigResult res = digger.digTargetStep(target);
+        BlockPos base = baseOf.get(target);
+        var level = owner.serverLevel();
+        // 执行前复核：仍加载、仍是甘蔗、底根仍在（外界变更不误挖别块）
+        if (base == null || !level.hasChunkAt(target) || !level.getBlockState(target).is(Blocks.SUGAR_CANE)
+                || !level.getBlockState(base).is(Blocks.SUGAR_CANE)) {
+            stopReason = "target_changed_before_dig";
+            fail("sugar cane target changed/unloaded before dig", FailureType.TARGET_LOST);
+            return TaskState.FAILED;
+        }
+        BlockDigger.DigResult res = digger.dig(target);
         switch (res) {
             case BROKE_TARGET -> {
                 destroyed++;
