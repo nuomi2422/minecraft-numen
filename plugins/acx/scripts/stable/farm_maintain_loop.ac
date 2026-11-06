@@ -1,0 +1,102 @@
+{
+  "name": "farm_maintain_loop",
+  "version": "3",
+  "description": "种田维护（按已验证离线形状收敛）：初始化 continue=1 → while($var.continue>0, max_iters=8) { farm_nearby r12 → set continue=$calc($prev.harvested) → guard continue>=0 } → guard continue==0 → sow r12 → done。一次调用串完整往复；不调用异步 collect。",
+  "tags": [
+    "farming",
+    "harvest",
+    "sow",
+    "maintain",
+    "bounded_loop",
+    "offline_draft"
+  ],
+  "planner_notes": "离线 dдraft2（活库未改）：①半径12技术起点（25×25×9≈5625格/次，总farm≤8⇒扫描上界≈4.5万格），性能未实机。②循环体只放同步 farm_nearby；set 用严格 $calc 绑定 $prev.harvested（桥已解包 TaskResult.data），缺字段抛错→FAIL，不会比较成0误SUCCESS。③实测形状（9场景，exit0）：3→1→0 成功 farm3；首0成功 farm1；8正值 PAUSED farm8；第8轮零成功 farm8；缺字段/工具失败/错误data路径/负数 FAIL。④停止原因：harvest=0→条件停=局部无成熟（非世界无资源）；连续正值到上限→PAUSED（非农事SUCCESS）；失败/缺字段→FAIL。⑤sow=0 仅报零，原因待真实回执细分（无种子/无空地不自动推断）；满包原地掉落不自动拾取，汇总不得称全部入库。⑥取消只承诺步边界；同步 farm/sow 调用中不可取消。",
+  "safety_notes": "只碰成熟作物与空耕地；不拆块、不改地形；无种子时 sow 报0；不把受理/PAUSED 当 SUCCESS。",
+  "limits": {
+    "max_steps": 64,
+    "max_timeout_ms": 300000
+  },
+  "steps": [
+    {
+      "id": "read",
+      "block": "get_self_status",
+      "params": {}
+    },
+    {
+      "id": "init",
+      "block": "set",
+      "params": {
+        "continue": 1
+      }
+    },
+    {
+      "id": "cycle",
+      "block": "while",
+      "params": {
+        "condition": {
+          "field": "$var.continue",
+          "op": ">",
+          "value": 0
+        },
+        "max_iters": 8,
+        "stagnant_limit": 9
+      },
+      "children": [
+        {
+          "id": "harvest",
+          "block": "farm_nearby",
+          "params": {
+            "radius": 12
+          }
+        },
+        {
+          "id": "update",
+          "block": "set",
+          "params": {
+            "continue": {
+              "$calc": "$prev.harvested"
+            }
+          }
+        },
+        {
+          "id": "nonneg",
+          "block": "guard",
+          "params": {
+            "condition": {
+              "field": "$var.continue",
+              "op": ">=",
+              "value": 0
+            },
+            "message": "harvested 出现负数/异常，停止（不把异常当0）",
+            "on_fail": "fail"
+          }
+        }
+      ]
+    },
+    {
+      "id": "stopok",
+      "block": "guard",
+      "params": {
+        "condition": {
+          "field": "$var.continue",
+          "op": "==",
+          "value": 0
+        },
+        "message": "循环非正常退出（continue!=0），不报农事完成",
+        "on_fail": "fail"
+      }
+    },
+    {
+      "id": "sow",
+      "block": "sow_nearby",
+      "params": {
+        "radius": 12
+      }
+    },
+    {
+      "id": "done",
+      "block": "get_self_status",
+      "params": {}
+    }
+  ]
+}

@@ -47,7 +47,7 @@ public class AcxFarmContinueOfflineTest {
     @Test
     void candidateFileRunsWithVerifiedShape() throws Exception {
         Path file = Path.of(System.getProperty("acx.candidate",
-                "D:/rdd/tmp/acx-drafts/farm_maintain_loop.v3.ac"));
+                "scripts/stable/farm_maintain_loop.ac"));
         check(Files.isRegularFile(file), "candidate missing: " + file);
         Fake.resetCalls();
         FakePorts.Scripted farmPort = port(3, 1, 0);
