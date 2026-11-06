@@ -229,7 +229,27 @@ final class LearnerReviewTool implements NumenTool {
     });
 }
 
-/** 在主线程收尾：commit 或 restore，然后把可查状态交给 learner_status。 */
+/**
+     * 只有**明确额度耗尽**才该锁 30 分钟闸门（2026-11-06，外部学习者）。
+     *
+     * <p>反例：容量类 429（prefill_cap_refused / cell is at capacity）是瞬时服务端容量，
+     * 服务端自己说 retry shortly（after 5 s）；把它当额度耗尽会让工具提示换账号、且短退避内不再重发。
+     * 未知 429 也不冒认额度（宁可走普通失败退避 + nudge 退避）。
+     *
+     * <p>包级可见：单测直接钉正反例，不需要起游戏。
+     */
+    static boolean isQuotaExhausted(String why) {
+        if (why == null) return false;
+        String s = why.toLowerCase(java.util.Locale.ROOT);
+        if (s.contains("prefill_cap_refused") || s.contains("cell is at capacity")) return false;
+        return s.contains("gousagelimiterror")
+                || s.contains("usage limit")
+                || s.contains("usagelimit")
+                || s.contains("quota exhausted")
+                || s.contains("out of quota");
+    }
+
+    /** 在主线程收尾：commit 或 restore，然后把可查状态交给 learner_status。 */
     private void completeOnServer(MemoQueue queue, UUID id, String reviewId,
             List<Memo> batch, LearnerReviewer.ReviewOutcome outcome, PriorRoundReader.Read priorRead) {
         if (!outcome.ok()) {
@@ -237,7 +257,10 @@ final class LearnerReviewTool implements NumenTool {
             // 2026-11-05：额度类失败（HTTP 429 / GoUsageLimit）不是"这次运气不好"，而是这个号没额度了。
             // 记一个 30 分钟窗口，期间 learner_note 直接拒收——否则队列被塞满、复盘又 restore，白转。
             String why = outcome.reason() == null ? "" : outcome.reason();
-            if (why.contains("429") || why.contains("UsageLimit") || why.contains("usage limit")) {
+            // 2026-11-06（外部学习者，实机 02:31:58）：闸门原来对任何含 "429" 的失败都锁 30 分钟，
+            // 把容量类 429（prefill_cap_refused / cell is at capacity）误判成额度用尽，导致
+            // learner_review 提示“换账号”，短退避内也不会真正重发。只有**明确额度类**才锁闸。
+            if (isQuotaExhausted(why)) {
                 com.dwinovo.numen.plugins.learner.core.ReviewQuotaGate.blockQuota(System.currentTimeMillis());
                 LearnerMonitor.publish("review_quota_blocked", Map.of("reason", why));
             }
