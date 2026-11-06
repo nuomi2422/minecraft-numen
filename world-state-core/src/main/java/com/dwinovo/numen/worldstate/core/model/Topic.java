@@ -17,7 +17,9 @@ public enum Topic {
     /** 指定容器及物品快照。 */
     CONTAINERS("containers"),
     /** 从基建模块读取的设施摘要适配器（后续接入）。 */
-    FACILITIES("facilities");
+    FACILITIES("facilities"),
+    /** B2a data-contract candidate only; no production provider/catalog wiring (2026-11-06). */
+    SELF("self");
 
     private final String id;
 

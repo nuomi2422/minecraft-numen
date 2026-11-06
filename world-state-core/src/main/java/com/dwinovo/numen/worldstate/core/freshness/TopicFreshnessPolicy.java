@@ -28,6 +28,8 @@ public final class TopicFreshnessPolicy implements FreshnessPolicy {
         p.withTtl(Topic.BLOCKS, 60_000L);
         p.withTtl(Topic.CONTAINERS, 120_000L);
         p.withTtl(Topic.FACILITIES, 120_000L);
+        // 2026-11-06 candidate only, pending sampling/performance validation; not an action-safety check.
+        p.withTtl(Topic.SELF, 1_000L);
         return p;
     }
 

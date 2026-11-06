@@ -9,6 +9,8 @@ import com.dwinovo.numen.worldstate.core.observation.ObservationKey;
 import com.dwinovo.numen.worldstate.core.observation.ObservationPayload;
 import com.dwinovo.numen.worldstate.core.observation.payload.EntityCountPayload;
 import com.dwinovo.numen.worldstate.core.observation.payload.EnvironmentPayload;
+import com.dwinovo.numen.worldstate.core.observation.payload.SelfPayload;
+import com.dwinovo.numen.worldstate.core.request.ObservationRequest;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
@@ -93,6 +95,7 @@ public final class ObservationJson {
         if (topic == null) return null;
         ObservationPayload payload = decodePayload(topic, s.payload());
         if (payload == null) return null;
+        if (payload instanceof SelfPayload self && !matchesSelf(s, self)) return null;
         ObservationKey key = ObservationKey.of(s.worldId(), s.dimension(), topic, s.target(), s.filter());
         return new Observation(key, payload, s.source(), parseOrigin(s.origin()),
                 s.gameTick(), s.epochMs(), parseCoverage(s.coverage()),
@@ -104,6 +107,7 @@ public final class ObservationJson {
         if (payload == null || payload.isJsonNull()) return null;
         try {
             return switch (topic) {
+                case SELF -> GSON.fromJson(payload, SelfPayload.class);
                 case ENVIRONMENT -> GSON.fromJson(payload, EnvironmentPayload.class);
                 case ENTITIES -> GSON.fromJson(payload, EntityCountPayload.class);
                 case BLOCKS -> GSON.fromJson(payload,
@@ -115,6 +119,18 @@ public final class ObservationJson {
             };
         } catch (RuntimeException e) {
             return null;
+        }
+    }
+
+    /** Candidate identity must survive persistence without relabeling another companion/dimension. */
+    private static boolean matchesSelf(StoredObservation stored, SelfPayload self) {
+        try {
+            ObservationRequest request = new ObservationRequest(Topic.SELF, stored.dimension(),
+                    stored.target(), stored.filter(), null);
+            return request.dimension().equals(self.dimension())
+                    && request.target().equals("player:" + self.companionUUID());
+        } catch (RuntimeException e) {
+            return false;
         }
     }
 
@@ -139,6 +155,6 @@ public final class ObservationJson {
     /** 供测试与诊断：确认某主题的载荷能被本编解码器处理。 */
     public static boolean canDecode(Topic topic) {
         return topic == Topic.ENVIRONMENT || topic == Topic.ENTITIES || topic == Topic.BLOCKS
-                || topic == Topic.CONTAINERS;
+                || topic == Topic.CONTAINERS || topic == Topic.SELF;
     }
 }

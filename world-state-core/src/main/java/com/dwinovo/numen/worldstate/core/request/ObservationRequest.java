@@ -5,6 +5,7 @@ import com.dwinovo.numen.worldstate.core.model.Topic;
 import com.dwinovo.numen.worldstate.core.observation.ObservationKey;
 
 import java.util.Locale;
+import java.util.UUID;
 
 /**
  * 一次「去取」的请求：主题 + 维度 + 目标/范围 + 过滤条件。
@@ -19,6 +20,15 @@ public record ObservationRequest(Topic topic, String dimension, String target, S
         dimension = dimension == null ? "" : dimension.toLowerCase(Locale.ROOT).trim();
         target = target == null ? "" : target.trim();
         filter = filter == null ? "" : filter.trim();
+        // 2026-11-06: one canonical companion key, not a box/filter alias or implicit current player.
+        if (topic == Topic.SELF) {
+            if (dimension.isEmpty() || !target.startsWith("player:") || target.length() != 43
+                    || !filter.isEmpty() || bounds != null) {
+                throw new IllegalArgumentException("self requires dimension and player:<uuid>, no filter/bounds");
+            }
+            UUID uuid = UUID.fromString(target.substring(7));
+            target = "player:" + uuid;
+        }
     }
 
     /** 环境快照请求：一个维度一份。 */
@@ -64,6 +74,12 @@ public record ObservationRequest(Topic topic, String dimension, String target, S
             throw new IllegalArgumentException("container target must be block:x,y,z or player:<uuid>");
         }
         return new ObservationRequest(Topic.CONTAINERS, dimension, t, "", null);
+    }
+
+    /** B2a data-only candidate: UUID names the companion, not an authorization grant. */
+    public static ObservationRequest self(String dimension, UUID companionUUID) {
+        if (companionUUID == null) throw new IllegalArgumentException("companion UUID required");
+        return new ObservationRequest(Topic.SELF, dimension, "player:" + companionUUID, "", null);
     }
 
     /** 该请求在世界存档 {@code worldId} 下的观测键。 */
