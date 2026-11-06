@@ -2,19 +2,25 @@ package com.dwinovo.numen.plugins.rdd;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class RddSurvivalGateTest {
 
-    @Test void hungryOrHurtOrFullBackpackRequiresEatingFirst() {
-        assertTrue(RddSurvivalGate.mustEatFirst(6, 20, 3), "hunger 6 must plan eating first");
-        assertTrue(RddSurvivalGate.mustEatFirst(19, 7.5, 3), "hp 7.5 must plan healing/eating first");
-        assertTrue(RddSurvivalGate.mustEatFirst(19, 20, 0), "no free slot must free a slot before eating");
+    @Test void hungryOrHurtRequiresEatingFirst() {
+        assertEquals(RddSurvivalGate.Decision.EAT_FIRST, RddSurvivalGate.decide(6, 20, 3, false));
+        assertEquals(RddSurvivalGate.Decision.EAT_FIRST, RddSurvivalGate.decide(19, 7.5, 3, false));
+    }
+
+    @Test void hungryWithFullBackpackStillEatsFirstThenFreesSlot() {
+        assertEquals(RddSurvivalGate.Decision.EAT_FIRST, RddSurvivalGate.decide(6, 20, 0, true));
+    }
+
+    @Test void fullBackpackAloneIsNotHunger() {
+        assertEquals(RddSurvivalGate.Decision.NONE, RddSurvivalGate.decide(19, 20, 0, false));
+        assertEquals(RddSurvivalGate.Decision.MAKE_ROOM_FIRST, RddSurvivalGate.decide(19, 20, 0, true));
     }
 
     @Test void healthyCompanionDoesNotGetFoodSteps() {
-        assertFalse(RddSurvivalGate.mustEatFirst(19, 20, 3));
-        assertFalse(RddSurvivalGate.mustEatFirst(18, 8, 1));
+        assertEquals(RddSurvivalGate.Decision.NONE, RddSurvivalGate.decide(19, 20, 3, false));
     }
 }
