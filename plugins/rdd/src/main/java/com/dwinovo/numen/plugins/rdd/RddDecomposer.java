@@ -740,6 +740,33 @@ final class RddDecomposer {
     }
 
     /** P1.5：来自统一快照的背包块——可持有 + 显式告知"已失去/不确定"。 */
+    /** 展示上限：条数与总字符双界，超出给“其余 N 条略”；不截半个 id（2026-11-06）。 */
+    static final int ID_LIST_MAX_IDS = 12;
+    static final int ID_LIST_MAX_CHARS = 240;
+
+    static String boundedIdList(java.util.List<String> ids) {
+        return boundedIdList(ids, ID_LIST_MAX_CHARS);
+    }
+
+    /** 两个列表共用 {@link #ID_LIST_MAX_CHARS} 总预算（调用方按剩余额度传参）。 */
+    static String boundedIdList(java.util.List<String> ids, int maxChars) {
+        if (ids == null || ids.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        int shown = 0;
+        int total = 0;
+        for (String id : ids) {
+            if (id == null || id.isBlank()) continue;
+            total++;
+            if (shown >= ID_LIST_MAX_IDS) continue;
+            String candidate = (sb.length() == 0 ? "" : "、") + id;
+            if (sb.length() + candidate.length() > maxChars) continue;
+            sb.append(candidate);
+            shown++;
+        }
+        int omitted = total - shown;
+        return omitted > 0 ? sb + "（其余 " + omitted + " 条略）" : sb.toString();
+    }
+
     private static String renderHeldAssets(PlanningAssetSnapshot snap) {
         StringBuilder sb = new StringBuilder();
         if (snap != null && !snap.availableCounts().isEmpty()) {
@@ -752,13 +779,17 @@ final class RddDecomposer {
                     .append("除非后面马上要消耗它。只规划把当前资产推进到本阶段目标还缺的部分；")
                     .append("会消耗掉的（食物、合成/烧炼原料如 plank/stick/木炭）才按本阶段真实消耗补量。\n\n");
         }
+        int lostChars = 0;
         if (snap != null && !snap.lostIds().isEmpty()) {
+            String lostText = boundedIdList(snap.lostIds());
+            lostChars = lostText.length();
             sb.append("【已失去（死亡/掉落判定失效，绝不要假设还持有，需要就重新获取）：】")
-                    .append(String.join("、", snap.lostIds())).append("\n\n");
+                    .append(lostText).append("\n\n");
         }
         if (snap != null && !snap.unknownIds().isEmpty()) {
+            int remaining = Math.max(0, ID_LIST_MAX_CHARS - lostChars);
             sb.append("【状态不确定（先核实再依赖）：】")
-                    .append(String.join("、", snap.unknownIds())).append("\n\n");
+                    .append(boundedIdList(snap.unknownIds(), remaining)).append("\n\n");
         }
         return sb.toString();
     }
