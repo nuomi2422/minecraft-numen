@@ -74,6 +74,17 @@ public final class ObservationCapability implements WorldObservationService {
         } catch (RuntimeException e) { return Response.error(request.topic(), "read failed: " + e.getMessage()); }
     }
 
+    @Override public Response readSelf(String consumer, UUID subject, long maxAgeMs) {
+        try {
+            long wm = watermark(); // watermark before snapshot: replay may repeat, never omit
+            MinecraftServer mc = server.get();
+            if (mc == null) return Response.error("self", "no server");
+            return host.readSelf(mc, consumer, subject, maxAgeMs, wm);
+        } catch (RuntimeException e) {
+            return Response.error("self", "self read failed: " + e.getMessage());
+        }
+    }
+
     @Override public Response refresh(Request request) {
         if (request == null) return Response.error("", "missing request");
         long start = System.nanoTime();

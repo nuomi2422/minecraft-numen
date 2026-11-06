@@ -136,6 +136,16 @@ public interface WorldObservationService {
     /** 读一次（只读缓存）。实现不得抛异常。 */
     Response read(Request request);
 
+    /**
+     * UUID-targeted cached SELF sample (2026-11-06, B2b). The host binds world/session;
+     * the returned dimension is sampled, not an instantaneous live-position guarantee.
+     * Missing, ambiguous or non-current samples must not expose current-state values.
+     * Never scans, refreshes, or resolves a live companion on the calling thread.
+     */
+    default Response readSelf(String consumer, java.util.UUID subject, long maxAgeMs) {
+        return Response.error("self", "UUID-targeted self read not supported by this provider");
+    }
+
     /** Bounded cached reads; never calls refresh (039/B1, 2026-11-05). */
     default ObservationBatch.Result batchRead(ObservationBatch.Query query) {
         return ObservationBatchReader.read(this, query);

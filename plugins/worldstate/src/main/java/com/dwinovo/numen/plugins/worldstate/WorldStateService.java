@@ -130,6 +130,16 @@ public final class WorldStateService {
         return queryService.read(worldId(server), sessionId(server), request);
     }
 
+    /** Cache-only UUID resolution; store lock excludes concurrent invalidation during selection. */
+    public com.dwinovo.numen.api.observation.WorldObservationService.Response readSelf(
+            MinecraftServer server, String consumer, UUID subject, long maxAgeMs, long watermark) {
+        String world = worldId(server), session = sessionId(server);
+        synchronized (store) {
+            return SelfSampleReader.read(store.all(), freshness, world, session, consumer, subject,
+                    maxAgeMs, watermark, System.currentTimeMillis());
+        }
+    }
+
     /** 主动采集并写入观测；成功才落盘。 */
     public RefreshResult refresh(MinecraftServer server, ObservationRequest request) {
         if (server == null) {

@@ -752,11 +752,10 @@ private static String withAssets(UUID companionId, String rddContext) {
         //   她以前只能靠工具主动探环境，而一回合往往只调一两个工具 ⇒ 多数决定是在"不知道周围有什么"时做的。
         //   只写事实、不写建议；≤12 行 / ≤400 字符，超了截断。见 rdd架构\常驻环境块-轻量方案-20261028.md
         try {
-            net.minecraft.server.level.ServerPlayer body = RddCompanionBody.get(companionId);
-            if (body instanceof NumenPlayer envAp) {
-                String env = RddEnvBlock.build(envAp, null);
+            {
+                String env = RddEnvBlock.build(companionId);
                 org.slf4j.LoggerFactory.getLogger(RddPlugin.class).info(
-                        "[rdd-env] built len={} body={}", env.length(), body.getUUID());
+                        "[rdd-env] built len={} subject={}", env.length(), companionId);
                 if (!env.isEmpty()) {
                     // 2026-10-28：`</rdd>` 这个锚点在某些组装路径上并不存在（实机 len=259 却始终没进上下文）。
                     //   改成：有锚点就插在末尾之前，没有就直接接在后面——**不许静默丢弃**。
@@ -766,10 +765,6 @@ private static String withAssets(UUID companionId, String rddContext) {
                         rddContext = rddContext + env;
                     }
                 }
-            } else {
-                org.slf4j.LoggerFactory.getLogger(RddPlugin.class).info(
-                        "[rdd-env] skip reason=no-body bodyType={}",
-                        body == null ? "null" : body.getClass().getSimpleName());
             }
         } catch (RuntimeException ex) {
             org.slf4j.LoggerFactory.getLogger(RddPlugin.class).warn("[rdd-env] failed {}", ex.toString());

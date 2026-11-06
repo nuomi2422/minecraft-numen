@@ -195,9 +195,7 @@ final class RddDetector {
             //    原来放在后面，于是「同伴没有活动任务链」时直接 continue → 永远不刷新，
             //    而那恰恰是最需要携带提醒的时刻（无任务 = 更该自己决定要不要先准备）。
             RddCarryHint.refresh(ap.serverLevel().getServer(), ap.getUUID());
-            // 环境块的“最近受伤”事实同样**不依赖任务链**：新身体/刚复活/没建链时最需要它，
-            // 而 tickRuntime 在 rt == null 时不会执行。放在 rt 判空之前（与上面 carry 同一个陷阱）。
-            RddEnvBlock.observeHealth(ap);
+            // B2b: environment uses detached SELF; no second recent-hurt fact cache.
             // 2026-10-08 正式睡觉支线：不要求必须有主线链——睡觉是基本的夜间行为，
             // 无链时也能触发（主线恢复令牌为空即可）。先驱动支线，再走主线检测（支线 active 时主线冻结）。
             SideTaskHost.tick(server, ap);

@@ -53,7 +53,8 @@ class WorldStateSessionWiringTest {
     static void compileProductionSourcesAgainstBoundaryStubs() throws Exception {
         Path plugin = root().resolve("plugins/worldstate/src/main/java/com/dwinovo/numen/plugins/worldstate");
         List<String> arguments = new ArrayList<>(List.of("-encoding", "UTF-8", "-proc:none",
-                "-classpath", location(Observation.class) + File.pathSeparator + location(Gson.class),
+                "-classpath", location(Observation.class) + File.pathSeparator + location(Gson.class)
+                        + File.pathSeparator + location(com.dwinovo.numen.api.observation.WorldObservationService.class),
                 "-d", compiled.toString()));
         for (var source : stubs().entrySet()) {
             Path target = compiled.resolve(source.getKey().replace('.', '/') + ".java");
@@ -62,7 +63,8 @@ class WorldStateSessionWiringTest {
             arguments.add(target.toString());
         }
         for (String name : List.of("WorldStateService", "McCollectionContext", "SelfSampleBridge",
-                "EnvironmentRefresher")) {
+                "EnvironmentRefresher", "SelfSampleReader", "SelfObservationProjection",
+                "ObservationResponses", "ObservationMap")) {
             arguments.add(plugin.resolve(name + ".java").toString());
         }
         var compiler = ToolProvider.getSystemJavaCompiler();
