@@ -62,4 +62,21 @@ class KnownFailuresWiringTest {
         assertTrue(t2.contains("C2-ONLY"));
         assertFalse(t2.contains("C1-ONLY"));
     }
+    @Test
+    void retrievalObjectiveCanChangeApplicabilityWhileObjectiveStays() {
+        var m = ExperienceMemory.at(dir.resolve("hp.jsonl"), new LexicalExperienceRetriever());
+        m.learn(ExperienceEntry.builder()
+                .id("e-hp").type(ExperienceType.EXECUTION).title("低血教训")
+                .description("hp<=6 时别硬打").maturity(ExperienceMaturity.VERIFIED).verifiedCount(3)
+                .triggerStrings(List.of("fight")).failureConditions("hp<=6")
+                .mechanism("m").recommendedResponse("r").build());
+        var memories = (java.util.function.Function<UUID, ExperienceMemory>) id -> m;
+        String low = ExperiencePlanningRouter.knowledgeFor(UUID.randomUUID(), "fight", "fight <state_facts hp=5.9/>",
+                "", List.of(), true, memories, null);
+        String high = ExperiencePlanningRouter.knowledgeFor(UUID.randomUUID(), "fight", "fight <state_facts hp=6.4/>",
+                "", List.of(), true, memories, null);
+        assertFalse(low.contains("低血教训"), "hp=5.9 应判 FAIL 被剔除: " + low);
+        assertTrue(high.contains("低血教训"), "hp=6.4 只是 UNKNOWN，应保留: " + high);
+    }
+
 }
