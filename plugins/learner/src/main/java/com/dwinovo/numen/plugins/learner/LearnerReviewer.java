@@ -163,6 +163,9 @@ final class LearnerReviewer {
               "efficiency":"...","evidence":"...","experienceType":"FAILURE"},"ac_script_draft":"",
               "carrier_draft":"","self_compile_request":"","rewritten_query":["..."]}]}
 
+            ★★ evidence 必填（2026-11-06）：actions 含 WRITE_EXPERIENCE 时，experience.evidence
+               **必须是非空数组**，引用 event:<window_first> 或真实事件 id；空数组/空串会被判
+               claim_without_evidence，并触发一次补证据重试。不许编造 id。
             ★ 先检索再写（G6b，硬要求）：每条备忘录下面会给出「库里可能的相关条目」——
               那是检索结果，**相似度不要自己重判**（[同一件事] / [只是相关] 由检索给出）。
               actions 里含 WRITE_EXPERIENCE 时，**必须**同时给出 retrieval 段：
@@ -327,6 +330,14 @@ final class LearnerReviewer {
                 boolean syntaxTruncation = out.ok() || reason.isEmpty()
                         || (!reason.contains("MalformedJsonException") && !reason.contains("JsonSyntaxException"));
                 if (syntaxTruncation) {
+                    if (hasBlankEvidence(out)) {
+                        LOG.warn("[learner] 复盘产物缺 evidence，带补证据要求重试一次");
+                        String evSystem = system + "\n\n[必须补证据] 上一批 verdict 里有 WRITE_EXPERIENCE 但 "
+                                + "experience.evidence 为空。每条 WRITE_EXPERIENCE 必须给**非空** evidence 数组"
+                                + "（event:<window_first> 或真实事件 id）；仍为空就会被判 claim_without_evidence。不许编造 id。";
+                        return callOnce(ep, user, evSystem, observation, timeoutSeconds, memos)
+                                .thenApply(next -> next.ok() ? next : out);
+                    }
                     return CompletableFuture.completedFuture(out);
                 }
                 LOG.warn("[learner] 复盘输出不可解析，带精简要求重试一次: {}", out.reason());
@@ -340,6 +351,18 @@ final class LearnerReviewer {
     }
 
     /** 一次 LLM 调用 + 解析；失败不抛，只回带原因的 fail。 */
+    /** actions 里有 WRITE_EXPERIENCE 但 experience.evidence 为空 → true（触发补证据重试）。 */
+    static boolean hasBlankEvidence(ReviewOutcome out) {
+        if (out == null || !out.ok() || out.verdicts() == null) return false;
+        for (Verdict v : out.verdicts()) {
+            if (v == null || v.actions() == null || !v.actions().contains("WRITE_EXPERIENCE")) continue;
+            if (v.experience() == null) return true;
+            String evidence = v.experience().field("evidence");
+            if (evidence == null || evidence.isBlank()) return true;
+        }
+        return false;
+    }
+
     private static CompletableFuture<ReviewOutcome> callOnce(LlmEndpoint ep, String user, String system,
             LlmObservation observation, int timeoutSeconds, List<Memo> memos) {
         return NumenLlmClient.forEndpoint(ep)
