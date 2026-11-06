@@ -28,7 +28,7 @@ public final class SetTimerTool implements NumenTool {
     private static final Gson GSON = new Gson();
     private static final int MAX_REASON_LENGTH = 200;
 
-    private record Args(int after_s, String reason) {}
+    private record Args(int after_s, String reason, Boolean urgent) {}
 
     @Override
     public String name() {
@@ -57,6 +57,9 @@ public final class SetTimerTool implements NumenTool {
                         TimerRegistry.MIN_SECONDS, TimerRegistry.MAX_SECONDS)
                 .string("reason", "What to look at or decide when it fires. The owner sees this too, "
                         + "so name the thing: \"collect the iron from the furnace\" beats \"check back\".")
+                .optionalBoolean("urgent", "true only if you must be woken exactly when it fires "
+                        + "(furnace done, potion ready). Default false: the reminder rides along with your "
+                        + "next turn within ~3 minutes, which is enough for crops/daybreak.")
                 .build();
     }
 
@@ -83,7 +86,8 @@ public final class SetTimerTool implements NumenTool {
         TimerRegistry registry = TimerRegistry.get(server);
         long now = server.overworld().getGameTime();
 
-        TimerRegistry.Timer timer = registry.set(companion.getUUID(), now, seconds, reason);
+        boolean urgent = Boolean.TRUE.equals(parsed.urgent());
+        TimerRegistry.Timer timer = registry.set(companion.getUUID(), now, seconds, reason, urgent);
         if (timer == null) {
             reply.accept(TaskResult.fail(
                     "已经挂了 " + TimerRegistry.MAX_PER_COMPANION + " 个表,先撤一个再定。当前挂着:"
@@ -102,7 +106,8 @@ public final class SetTimerTool implements NumenTool {
                         + "身体没被占用,接着干别的就行;到点会自动收到 timer 事件,不要轮询。",
                 Map.of("timer_id", timer.id(),
                         "after_s", seconds,
-                        "reason", reason)).toJson());
+                        "reason", reason,
+                        "urgent", urgent)).toJson());
     }
 
     /** 她的日程也是主人的信息:表定在什么时候、为什么定,当场说一句。 */

@@ -65,6 +65,12 @@ public final class Schema {
             return this;
         }
 
+        /** Optional boolean — dropped from {@code required}; missing binds as null/false in callers. */
+        public Builder optionalBoolean(String name, String desc) {
+            props.put(name, base("boolean", desc));
+            return this;
+        }
+
         /** Optional bounded integer — dropped from {@code required}. */
         public Builder optionalInteger(String name, String desc, int min, int max) {
             Map<String, Object> p = base("integer", desc);

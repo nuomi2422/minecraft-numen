@@ -62,13 +62,14 @@ public final class TimerRegistry extends SavedData {
     private static final long SWEEP_INTERVAL_TICKS = 20L;
 
     /** 一个表。{@code id} 跟着存档走,重启后模型手上那个 id 还认得。 */
-    public record Timer(String id, UUID companion, long dueGameTime, String reason) {}
+    public record Timer(String id, UUID companion, long dueGameTime, String reason, boolean urgent) {}
 
     private static final Codec<Timer> TIMER_CODEC = RecordCodecBuilder.create(i -> i.group(
             Codec.STRING.fieldOf("id").forGetter(Timer::id),
             UUIDUtil.STRING_CODEC.fieldOf("companion").forGetter(Timer::companion),
             Codec.LONG.fieldOf("due").forGetter(Timer::dueGameTime),
-            Codec.STRING.fieldOf("reason").forGetter(Timer::reason)
+            Codec.STRING.fieldOf("reason").forGetter(Timer::reason),
+            Codec.BOOL.optionalFieldOf("urgent", false).forGetter(Timer::urgent)
     ).apply(i, Timer::new));
 
     private static final Codec<TimerRegistry> CODEC = RecordCodecBuilder.create(i -> i.group(
@@ -111,10 +112,15 @@ public final class TimerRegistry extends SavedData {
      * @return 定好的表;已经挂满 {@value #MAX_PER_COMPANION} 个则返回 null
      */
     public Timer set(UUID companion, long nowGameTime, int seconds, String reason) {
+        return set(companion, nowGameTime, seconds, reason, false);
+    }
+
+    /** 定一个表；{@code urgent=true} 只在必须按那一刻叫醒时用（默认 false，随下一回合捎带）。 */
+    public Timer set(UUID companion, long nowGameTime, int seconds, String reason, boolean urgent) {
         if (list(companion).size() >= MAX_PER_COMPANION) {
             return null;
         }
-        Timer t = new Timer("tm" + nextId++, companion, nowGameTime + seconds * 20L, reason);
+        Timer t = new Timer("tm" + nextId++, companion, nowGameTime + seconds * 20L, reason, urgent);
         timers.put(t.id(), t);
         setDirty();
         return t;
@@ -183,7 +189,7 @@ public final class TimerRegistry extends SavedData {
             NumenEvents.emit(body, NumenEvents.Kind.TIMER, Map.of("id", t.id()),
                     "你定的表到点了:" + t.reason()
                             + "。表只负责提醒,不代表那件事已经完成——先看清现在的状况再决定下一步。",
-                    true);
+                    t.urgent());
             spent.add(t.id());
         }
         if (!spent.isEmpty()) {
