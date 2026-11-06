@@ -334,7 +334,10 @@ final class RddDetector {
             for (int i = 0; i < size; i++) {
                 if (ap.getInventory().getItem(i).isEmpty()) free++;
             }
-            var decision = RddSurvivalGate.evaluate(hunger, hp, free, false);
+            // 2026-11-06 21:44 实机：hunger 6、包里只有小麦和种子（没有能吃的）时，闸每分钟插一次“去吃”，
+            // 却永远吃不上 ⇒ 必须区分“去吃”和“先弄到吃的”。
+            boolean hasFood = RddSurvivalGate.hasEdibleFood(countInventory(ap));
+            var decision = RddSurvivalGate.evaluate(hunger, hp, free, false, hasFood);
             if (decision == RddSurvivalGate.Decision.NONE) return;
             SURVIVAL_PREEMPT_AT.put(ap.getUUID(), now);
             try {

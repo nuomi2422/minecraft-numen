@@ -211,11 +211,18 @@ final class RddDecomposer {
         for (int i = 0; i < size; i++) {
             if (body.getInventory().getItem(i).isEmpty()) free++;
         }
-        var decision = RddSurvivalGate.evaluate(hunger, hp, free, false);
+        // 2026-11-06 21:44：包里没有能吃的东西时，“去吃”永远做不完（实测 hunger 6 连刷 4 次），
+        // 必须改成“先弄到吃的”。
+        boolean hasFood = RddSurvivalGate.hasEdibleFood(RddDetector.countInventory(body));
+        var decision = RddSurvivalGate.evaluate(hunger, hp, free, false, hasFood);
         if (decision == RddSurvivalGate.Decision.NONE) return null;
-        String head = decision == RddSurvivalGate.Decision.EAT_FIRST
-                ? "先活下来：背包满就先丢掉/存好一组大宗材料腾出格子，再取或合成食物并吃掉，hunger 回到 15 以上。"
-                : "背包满且有东西要捡/要合成：先丢掉或存好一组大宗材料腾出一格。";
+        String head = switch (decision) {
+            case EAT_FIRST -> "先活下来：背包满就先丢掉/存好一组大宗材料腾出格子，再取或合成食物并吃掉，hunger 回到 15 以上。";
+            case SEEK_FOOD_FIRST -> "先活下来：背包里没有能直接吃的东西——先去弄吃的（收割成熟作物；有 3 个小麦就找台子合成面包；"+
+                    "都没有就就近打猎/钓鱼并烤熟），吃到 hunger 15 以上再干别的。";
+            case MAKE_ROOM_FIRST -> "背包满且有东西要捡/要合成：先丢掉或存好一组大宗材料腾出一格。";
+            case NONE -> "";   // 上面已提前 return，这里只为编译完备
+        };
         LOG.info("[rdd] 生存闸命中 {} hunger={} hp={} free={}", decision, hunger, hp, free);
         return RddChainFactory.fromObjective(companionId, head + "完成后再继续原目标：" + objective);
     }
