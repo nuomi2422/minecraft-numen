@@ -22,7 +22,7 @@ class FocusToolWiringTest {
             @Override public Response read(Request request) {
                 reads.incrementAndGet();
                 long now = 1_000L;
-                var meta = new ObservationMetadata("w", "s", "minecraft:overworld", "c", "test", "self",
+                var meta = new ObservationMetadata("world", "session", "minecraft:overworld", "c", "test", request.topic(),
                         1L, now, ObservationMetadata.Freshness.CURRENT, "INTERNAL", now + 60_000L);
                 return new Response(Status.OK, request.topic(), "snap", 1L, Coverage.FULL, "",
                         List.of(WorldObservationService.Item.of(Map.of("k", "v"))), 0L, meta);

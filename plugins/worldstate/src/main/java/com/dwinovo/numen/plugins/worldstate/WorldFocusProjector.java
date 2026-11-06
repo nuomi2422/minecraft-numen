@@ -51,8 +51,13 @@ final class WorldFocusProjector {
                         line = "UNKNOWN";
                     } else {
                         var m = resp.metadata();
-                        boolean current = m != null && m.freshness() == com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT
-                                && (m.validUntilMs() <= 0 || m.validUntilMs() > nowMs);
+                        boolean current = m != null
+                                && m.freshness() == com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT
+                                && m.observedAtMs() > 0 && m.observedAtMs() <= nowMs + 5_000L
+                                && m.validUntilMs() > nowMs
+                                && same(m.worldId(), world) && same(m.serverSession(), session)
+                                && same(m.dimension(), pin.dimension())
+                                && same(pin.topic(), resp.topic());
                         line = current ? summarize(resp.items().get(0).values()) : "UNKNOWN";
                     }
                 } catch (RuntimeException | LinkageError noProvider) {
@@ -71,6 +76,10 @@ final class WorldFocusProjector {
         } catch (RuntimeException | LinkageError unavailable) {
             return "";
         }
+    }
+
+    private static boolean same(String a, String b) {
+        return a != null && !a.isBlank() && b != null && a.equals(b);
     }
 
     private static String summarize(Map<String, Object> v) {
