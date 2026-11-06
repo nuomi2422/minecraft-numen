@@ -662,16 +662,16 @@ final class LearnerAutoIntake {
 
     private static void maybeAutoReview(UUID id, int depth, long now) {
         try {
-            if (depth < REVIEW_NUDGE_MIN_DEPTH) return;
+            if (depth < REVIEW_NUDGE_MIN_DEPTH) { skipped(id, depth, "queue_too_shallow"); return; }
             Long last = LAST_AUTO_REVIEW_AT.get(id);
-            if (last != null && now - last < AUTO_REVIEW_COOLDOWN_MS) return;
-            if (LearnerPlugin.runningReview(id) != null) return;
+            if (last != null && now - last < AUTO_REVIEW_COOLDOWN_MS) { skipped(id, depth, "cooldown"); return; }
+            if (LearnerPlugin.runningReview(id) != null) { skipped(id, depth, "review_running"); return; }
             var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
-            if (server == null) return;
+            if (server == null) { skipped(id, depth, "no_server"); return; }
             var companion = com.dwinovo.numen.entity.NumenPlayer.findByUuid(server, id);
-            if (companion == null) return;
+            if (companion == null) { skipped(id, depth, "no_companion"); return; }
             var tool = com.dwinovo.numen.agent.tool.ToolRegistry.get("learner_review");
-            if (tool == null) return;
+            if (tool == null) { skipped(id, depth, "no_tool"); return; }
             LAST_AUTO_REVIEW_AT.put(id, now);
             java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
             ev.put("companion", id.toString());
@@ -685,6 +685,17 @@ final class LearnerAutoIntake {
                     "companion", id.toString(),
                     "error", msg.substring(0, Math.min(200, msg.length()))));
         }
+    }
+
+    /** 自动复盘静默早退的可观测记录（2026-11-06）：下次一眼看出卡在哪。 */
+    private static void skipped(UUID id, int depth, String reason) {
+        try {
+            java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
+            ev.put("companion", id == null ? "" : id.toString());
+            ev.put("queue_depth", depth);
+            ev.put("reason", reason);
+            LearnerMonitor.publish("auto_review_skipped", ev);
+        } catch (RuntimeException ignored) { /* 观测失败不许影响主流程 */ }
     }
 
     /**
