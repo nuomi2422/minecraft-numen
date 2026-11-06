@@ -29,6 +29,8 @@ public final class MonitoringJournal implements AutoCloseable {
     private static final long MAX_FILE_BYTES = 16L * 1024 * 1024;
     private static final Gson GSON = new Gson();
     private static final MonitoringJournal INSTANCE = new MonitoringJournal();
+    /** 进程级运行标识：tools/events 同由本 writer 落盘，消费者可据此跨文件关联（旧行缺字段=unknown）。 */
+    private static final String SESSION_ID = java.util.UUID.randomUUID().toString();
 
     private record Entry(String category, String type, Map<String, Object> data, long time) {}
 
@@ -112,6 +114,7 @@ public final class MonitoringJournal implements AutoCloseable {
             Map<String, Object> envelope = new LinkedHashMap<>();
             envelope.put("schema_version", 1);
             envelope.put("event_id", entry.category() + "-" + entry.time() + "-" + queue.size());
+            envelope.put("session", SESSION_ID);
             envelope.put("timestamp", Instant.ofEpochMilli(entry.time()).toString());
             envelope.put("source", "numen");
             envelope.put("category", entry.category());
