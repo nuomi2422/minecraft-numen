@@ -112,9 +112,18 @@ public final class ReviewContractAdapter {
         if (json == null || json.isBlank()) return List.of();
         try {
             com.google.gson.JsonObject o = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
-            if (!o.has(key) || !o.get(key).isJsonArray()) return List.of();
+            if (!o.has(key)) return List.of();
+            com.google.gson.JsonElement el = o.get(key);
             List<String> out = new java.util.ArrayList<>();
-            for (com.google.gson.JsonElement e : o.getAsJsonArray(key)) {
+            // 2026-11-06：模型常把 evidence 写成逗号字符串；字符串按单段列表容忍，不整条丢弃。
+            if (el.isJsonPrimitive() && el.getAsJsonPrimitive().isString()) {
+                for (String part : el.getAsString().split(",")) {
+                    if (!part.isBlank()) out.add(part.trim());
+                }
+                return out;
+            }
+            if (!el.isJsonArray()) return List.of();
+            for (com.google.gson.JsonElement e : el.getAsJsonArray()) {
                 if (e.isJsonPrimitive() && !e.getAsString().isBlank()) out.add(e.getAsString().trim());
             }
             return out;
