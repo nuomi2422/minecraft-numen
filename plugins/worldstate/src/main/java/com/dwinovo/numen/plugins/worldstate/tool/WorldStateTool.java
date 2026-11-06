@@ -8,6 +8,8 @@ import com.dwinovo.numen.plugins.worldstate.WorldStateService;
 import com.dwinovo.numen.task.TaskResult;
 import com.dwinovo.numen.worldstate.core.model.Bounds;
 import com.dwinovo.numen.worldstate.core.model.Topic;
+import com.dwinovo.numen.plugins.worldstate.focus.FocusPin;
+import com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore;
 import com.dwinovo.numen.worldstate.core.observation.ObservationPayload;
 import com.dwinovo.numen.worldstate.core.observation.payload.EntityCountPayload;
 import com.dwinovo.numen.worldstate.core.observation.payload.EnvironmentPayload;
@@ -44,6 +46,8 @@ public final class WorldStateTool implements NumenTool {
 
     private final WorldStateService service;
     private final com.dwinovo.numen.api.observation.WorldObservationService observations;
+    /** 显式短期焦点（038）：进程内、按世界/会话归属；不落盘、不存观测值。 */
+    private final FocusPinStore PINS = new FocusPinStore();
 
     public WorldStateTool(WorldStateService service, com.dwinovo.numen.api.observation.WorldObservationService observations) {
         this.service = service;
@@ -87,6 +91,38 @@ public final class WorldStateTool implements NumenTool {
             }
             String action = args.has("action")
                     ? args.get("action").getAsString().toLowerCase(Locale.ROOT) : "";
+            // 2026-11-06 显式短期焦点（038）：只记录选择与生命周期，不新增观测缓存、不改采集频率。
+            if ("pin".equals(action) || "unpin".equals(action)) {
+                var server = self.getServer();
+                String world = WorldStateService.worldId(server);
+                String sess = service.sessionId(server);
+                String dim = self.serverLevel().dimension().location().toString();
+                if ("unpin".equals(action)) {
+                    String pinId = args.has("pin_id") ? args.get("pin_id").getAsString() : "";
+                    boolean removed = PINS.unpin(self.getUUID(), pinId);
+                    reply.accept(TaskResult.ok(removed ? "focus unpinned" : "no such pin for this companion",
+                            Map.of("pin_id", pinId, "removed", removed)).toJson());
+                    return;
+                }
+                String topic = args.has("topic") ? args.get("topic").getAsString() : "";
+                if (!"environment".equals(topic) && !"entities".equals(topic)) {
+                    reply.accept(TaskResult.fail("focus pin supports topic=environment|entities only (got '" + topic + "')").toJson());
+                    return;
+                }
+                long ttlMs = args.has("ttl_seconds") ? (long) (args.get("ttl_seconds").getAsDouble() * 1000) : 0L;
+                int limit = args.has("limit") ? args.get("limit").getAsInt() : 0;
+                FocusPin pin = PINS.pin(self.getUUID(), world, sess, dim, topic, System.currentTimeMillis(),
+                        ttlMs, 0L, limit, 0);
+                if (pin == null) {
+                    reply.accept(TaskResult.fail("focus pin rejected: max " + FocusPinStore.MAX_PINS_PER_COMPANION
+                            + " pins per companion (expired/world-switch pins are pruned first)").toJson());
+                    return;
+                }
+                reply.accept(TaskResult.ok("focus pinned until " + pin.expiresAtMs(),
+                        Map.of("pin_id", pin.id(), "topic", pin.topic(), "dimension", pin.dimension(),
+                                "expires_at_ms", pin.expiresAtMs())).toJson());
+                return;
+            }
             // 039/B1: the existing tool exposes the exact same capability used by plugin consumers.
             if ("catalog".equals(action)) {
                 reply.accept(TaskResult.ok("wired observation topics", Map.of("topics", observations.catalog(),
