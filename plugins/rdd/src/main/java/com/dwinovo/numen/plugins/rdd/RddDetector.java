@@ -205,6 +205,8 @@ final class RddDetector {
             if (rt == null) {
                 continue;
             }
+            // 2026-11-06 生存抢占：hunger<10/hp<8 时停当前身体任务并重规划（重规划会命中计划前闸直出进食链）。
+            survivalPreempt(ap, tick);
             tickRuntime(ap, rt);
         }
         // 持久化：保存活跃任务链（1 秒一次，文件小，原子写）
@@ -318,6 +320,39 @@ final class RddDetector {
             return false;
         }
     }
+
+    /** 生存抢占（2026-11-06）：与计划前闸同一判据；先 task_stop 当前身体任务，再重规划，60s 冷却防刷屏。 */
+    private static void survivalPreempt(com.dwinovo.numen.entity.NumenPlayer ap, long tick) {
+        try {
+            long now = System.currentTimeMillis();
+            Long last = SURVIVAL_PREEMPT_AT.get(ap.getUUID());
+            if (last != null && now - last < 60_000L) return;
+            int hunger = ap.getFoodData().getFoodLevel();
+            double hp = ap.getHealth();
+            int free = 0;
+            int size = Math.min(36, ap.getInventory().getContainerSize());
+            for (int i = 0; i < size; i++) {
+                if (ap.getInventory().getItem(i).isEmpty()) free++;
+            }
+            var decision = RddSurvivalGate.evaluate(hunger, hp, free, false);
+            if (decision == RddSurvivalGate.Decision.NONE) return;
+            SURVIVAL_PREEMPT_AT.put(ap.getUUID(), now);
+            try {
+                var stop = com.dwinovo.numen.agent.tool.ToolRegistry.get("task_stop");
+                if (stop != null) stop.onServerCall("survival-" + now, new com.google.gson.JsonObject(), ap, r -> { });
+            } catch (RuntimeException ignored) {
+                // task_stop 不可用不阻断重规划
+            }
+            RddPlugin.requestReplan(ap.getUUID(), "survival " + decision + " hunger=" + hunger + " hp=" + hp + " free=" + free);
+            RddMonitor.publish("survival_preempt", java.util.Map.of(
+                    "decision", decision.name(), "hunger", hunger, "hp", hp, "free_slots", free));
+            LOG.info("[rdd] 生存抢占 {} hunger={} hp={} free={}", decision, hunger, hp, free);
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 生存抢占失败: {}", ex.toString());
+        }
+    }
+
+    private static final java.util.Map<java.util.UUID, Long> SURVIVAL_PREEMPT_AT = new java.util.concurrent.ConcurrentHashMap<>();
 
     private void tickRuntime(NumenPlayer ap, RddRuntime rt) {
         try {
