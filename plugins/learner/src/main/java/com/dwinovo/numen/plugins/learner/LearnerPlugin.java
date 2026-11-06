@@ -104,8 +104,8 @@ public final class LearnerPlugin implements NumenPlugin {
     public static java.util.Map<String, Object> promoteSkill(String skillId, String reason, String by) {
         java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
         try {
-            var file = configDir.resolve("skills.jsonl");
-            var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(file);
+            // 2026-11-06：必须与复盘共用同一个目录实例，否则复盘下一次登记会把这里改的整份覆盖掉。
+            var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.registryFor(configDir);
             var before = registry.get(skillId).orElse(null);
             if (before == null) {
                 out.put("error", "unknown skillId: " + skillId);
@@ -137,8 +137,8 @@ public final class LearnerPlugin implements NumenPlugin {
     public static java.util.Map<String, Object> retireSkill(String skillId, String reason, String by) {
         java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
         try {
-            var file = configDir.resolve("skills.jsonl");
-            var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(file);
+            // 2026-11-06：同 promoteSkill —— 复盘与该入口必须共用一个实例，防“丢失更新”。
+            var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.registryFor(configDir);
             var before = registry.get(skillId).orElse(null);
             if (before == null) {
                 out.put("error", "unknown skillId: " + skillId);

@@ -40,6 +40,19 @@ public final class SkillRegistrar {
         REGISTRIES.clear();
     }
 
+    /**
+     * 取该 configDir 的**唯一目录实例**（2026-11-06 修“丢失更新”）。
+     *
+     * <p>事故：管理侧 retire/promote 各自 open 一份新目录改完写盘，而复盘侧用的是本缓存的
+     * 旧实例；复盘一登记就把整份内存图写回，管理侧的撤回/升格被**静默覆盖**。实测 10:32
+     * 的 6 条 retire + 3 条 promote 全部没有落盘，事件却都发了。
+     *
+     * <p>修法：所有写入口共用同一个实例，一个体内只有一个写者，不再互踩。
+     */
+    public static SkillRegistry registryFor(Path configDir) {
+        return REGISTRIES.computeIfAbsent(configDir, d -> openQuietly(d.resolve("skills.jsonl")));
+    }
+
     /** 登记结果。 */
     public record Report(int registered, int reused, int revised, int conflicted, String error) {
         public Report {
@@ -87,8 +100,7 @@ public final class SkillRegistrar {
             return new Report(0, 0, 0, 0, "");
         }
         try {
-            SkillRegistry registry = REGISTRIES.computeIfAbsent(configDir,
-                    d -> openQuietly(d.resolve("skills.jsonl")));
+            SkillRegistry registry = registryFor(configDir);
             int reg = 0, reuse = 0, revise = 0, conflict = 0;
             for (int i = 0; i < draft.artifacts().size(); i++) {
                 ArtifactDraft a = draft.artifacts().get(i);
