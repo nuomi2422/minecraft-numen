@@ -83,9 +83,7 @@ final class FarmNearbyTool implements NumenTool {
                         BlockEntity be = st.hasBlockEntity() ? level.getBlockEntity(pos) : null;
                         List<ItemStack> drops = Block.getDrops(st, level, pos, be, self, self.getMainHandItem());
                         for (ItemStack drop : drops) {
-                            if (!drop.isEmpty() && !self.getInventory().add(drop)) {
-                                self.drop(drop, false);
-                            }
+                            FarmHarvestSupport.give(self, drop);
                         }
                         level.setBlock(pos, st.setValue(age, age.getPossibleValues().iterator().next()),
                                 Block.UPDATE_ALL);
