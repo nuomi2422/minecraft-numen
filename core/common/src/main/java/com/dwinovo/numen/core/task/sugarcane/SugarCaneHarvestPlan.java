@@ -4,25 +4,25 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 有界甘蔗目标规划（2026-11-07，记录 008 §9.1/§9.2）。纯逻辑，不碰世界：
- * 每株保留最底根（y=base），只取上段；数量与期限由调用方预算；不预测入包件数。
- *
- * <p>未加载/只有底根由调用方跳过并计入 tried；本类只回答“这一株要破坏哪些格”。</p>
+ * 有界甘蔗目标规划（2026-11-07，记录 008 §9.1/§9.2；修订：从上往下）。
+ * 每株保留最底根；若 count 小于上段长度，**只取最高的 count 格**，并返回**自上而下**的执行顺序——
+ * 与真实破坏顺序一致，避免从靠近根部下手导致上方连锁掉落绕过 count/统计。
  */
 public final class SugarCaneHarvestPlan {
     private SugarCaneHarvestPlan() {}
 
-    /** 一株的格 y 列表（从下到上、同一水平位置），返回要破坏的上段 y（保留下标 0）。 */
+    /** columnYs 从下到上；返回要破坏的上段 y（**自上而下**），底根永远保留。 */
     public static List<Integer> segmentsToBreak(List<Integer> columnYs, int remainingBudget) {
         if (columnYs == null || columnYs.size() < 2 || remainingBudget <= 0) return List.of();
-        List<Integer> out = new ArrayList<>();
-        for (int i = 1; i < columnYs.size() && out.size() < remainingBudget; i++) {
-            out.add(columnYs.get(i));
+        int upper = columnYs.size() - 1;                 // 上段格数，不含根
+        int take = Math.min(upper, remainingBudget);
+        List<Integer> out = new ArrayList<>(take);
+        for (int i = columnYs.size() - 1; i >= 1 && out.size() < take; i--) {
+            out.add(columnYs.get(i));                    // 先最高格
         }
         return List.copyOf(out);
     }
 
-    /** 只用于判定：该株是否“只有底根”（无可收上段）。 */
     public static boolean hasHarvestableSegment(List<Integer> columnYs) {
         return columnYs != null && columnYs.size() >= 2;
     }
