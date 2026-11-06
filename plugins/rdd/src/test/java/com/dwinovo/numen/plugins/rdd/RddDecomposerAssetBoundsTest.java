@@ -72,4 +72,34 @@ class RddDecomposerAssetBoundsTest {
         assertTrue(prompt.contains("条略）"), prompt.contains("条略）") ? "" : prompt);
         assertTrue(prompt.length() < 6000, "提示词不应被长列表拉爆");
     }
+    @Test void bothListsShareStrictBudgetIncludingMarkers() {
+        List<String> lost = ids("minecraft:gem", 30);
+        List<String> unknown = ids("minecraft:ore", 30);
+        AssetRegistry r = reg(lost);
+        AssetRegistry r2 = reg(unknown);
+        r2.markUnknown("minecraft:ore-0");
+        for (int i = 0; i < 30; i++) r2.markUnknown("minecraft:ore-" + i);
+        PlanningAssetSnapshot snap = PlanningAssetSnapshot.from(Map.of(), r);
+        int reserve = RddDecomposer.marker(30).length();
+        String lostText = RddDecomposer.boundedIdList(lost, RddDecomposer.ID_LIST_MAX_CHARS, reserve);
+        String unknownText = RddDecomposer.boundedIdList(unknown, RddDecomposer.ID_LIST_MAX_CHARS - lostText.length(), 0);
+        assertTrue(lostText.length() + unknownText.length() <= RddDecomposer.ID_LIST_MAX_CHARS,
+                "两列表+标记必须 ≤240：" + lostText.length() + "+" + unknownText.length());
+    }
+
+    @Test void exactlyAtBudgetAndZeroRemainingAreStrict() {
+        String id = "a".repeat(200);
+        String t1 = RddDecomposer.boundedIdList(List.of(id, id + "b"), RddDecomposer.ID_LIST_MAX_CHARS, RddDecomposer.marker(1).length());
+        assertTrue(t1.length() <= RddDecomposer.ID_LIST_MAX_CHARS);
+        assertEquals("", RddDecomposer.boundedIdList(List.of(id), 5, 0), "连省略标记都放不下时返回空，不越界");
+        assertEquals(RddDecomposer.marker(1), RddDecomposer.boundedIdList(List.of(id), 10, 0), "只有标记放得下时只留标记");
+    }
+
+    @Test void perListIdCapIsTwelve() {
+        List<String> many = ids("x", 30);
+        String t = RddDecomposer.boundedIdList(many, 10_000, 0);
+        long commas = t.chars().filter(c -> c == '、').count();
+        assertTrue(commas + 1 <= RddDecomposer.ID_LIST_MAX_IDS, "每列表最多 12 条: " + t);
+    }
+
 }

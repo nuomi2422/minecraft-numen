@@ -740,31 +740,49 @@ final class RddDecomposer {
     }
 
     /** P1.5：来自统一快照的背包块——可持有 + 显式告知"已失去/不确定"。 */
-    /** 展示上限：条数与总字符双界，超出给“其余 N 条略”；不截半个 id（2026-11-06）。 */
+    /**
+     * 展示上限（2026-11-06 收紧）：**每列表最多 12 条**，两列表 + 两段省略标记**共享 240 字符总预算**；
+     * 语义标题不计入预算（标题是固定说明，不是内容）。只放整条 id，放不下就整条略过并给显式省略数。
+     */
     static final int ID_LIST_MAX_IDS = 12;
     static final int ID_LIST_MAX_CHARS = 240;
 
     static String boundedIdList(java.util.List<String> ids) {
-        return boundedIdList(ids, ID_LIST_MAX_CHARS);
+        return boundedIdList(ids, ID_LIST_MAX_CHARS, 0);
     }
 
-    /** 两个列表共用 {@link #ID_LIST_MAX_CHARS} 总预算（调用方按剩余额度传参）。 */
-    static String boundedIdList(java.util.List<String> ids, int maxChars) {
+    /** 单列表入口：{@code reservedAfter} 是留给后续列表的最低省略标记额度。 */
+    static String boundedIdList(java.util.List<String> ids, int maxChars, int reservedAfter) {
         if (ids == null || ids.isEmpty()) return "";
+        int total = 0;
+        for (String id : ids) if (id != null && !id.isBlank()) total++;
+        if (total == 0) return "";
+        int allow = Math.max(0, maxChars - reservedAfter);
+        int markerFloor = marker(total).length();
+        for (int keep = Math.min(ID_LIST_MAX_IDS, total); keep >= 0; keep--) {
+            int omitted = total - keep;
+            String marker = omitted > 0 ? marker(omitted) : "";
+            String body = joinFirst(ids, keep);
+            if (body.length() + marker.length() <= allow) return body + marker;
+        }
+        return "";
+    }
+
+    static String marker(int n) {
+        return "（其余 " + n + " 条略）";
+    }
+
+    private static String joinFirst(java.util.List<String> ids, int keep) {
         StringBuilder sb = new StringBuilder();
         int shown = 0;
-        int total = 0;
         for (String id : ids) {
             if (id == null || id.isBlank()) continue;
-            total++;
-            if (shown >= ID_LIST_MAX_IDS) continue;
-            String candidate = (sb.length() == 0 ? "" : "、") + id;
-            if (sb.length() + candidate.length() > maxChars) continue;
-            sb.append(candidate);
+            if (shown >= keep) break;
+            if (sb.length() > 0) sb.append("、");
+            sb.append(id);
             shown++;
         }
-        int omitted = total - shown;
-        return omitted > 0 ? sb + "（其余 " + omitted + " 条略）" : sb.toString();
+        return sb.toString();
     }
 
     private static String renderHeldAssets(PlanningAssetSnapshot snap) {
@@ -779,17 +797,18 @@ final class RddDecomposer {
                     .append("除非后面马上要消耗它。只规划把当前资产推进到本阶段目标还缺的部分；")
                     .append("会消耗掉的（食物、合成/烧炼原料如 plank/stick/木炭）才按本阶段真实消耗补量。\n\n");
         }
-        int lostChars = 0;
+        int used = 0;
         if (snap != null && !snap.lostIds().isEmpty()) {
-            String lostText = boundedIdList(snap.lostIds());
-            lostChars = lostText.length();
+            int reserve = snap.unknownIds().isEmpty() ? 0 : marker(snap.unknownIds().size()).length();
+            String lostText = boundedIdList(snap.lostIds(), ID_LIST_MAX_CHARS, reserve);
+            used += lostText.length();
             sb.append("【已失去（死亡/掉落判定失效，绝不要假设还持有，需要就重新获取）：】")
                     .append(lostText).append("\n\n");
         }
         if (snap != null && !snap.unknownIds().isEmpty()) {
-            int remaining = Math.max(0, ID_LIST_MAX_CHARS - lostChars);
+            int remaining = Math.max(0, ID_LIST_MAX_CHARS - used);
             sb.append("【状态不确定（先核实再依赖）：】")
-                    .append(boundedIdList(snap.unknownIds(), remaining)).append("\n\n");
+                    .append(boundedIdList(snap.unknownIds(), remaining, 0)).append("\n\n");
         }
         return sb.toString();
     }
