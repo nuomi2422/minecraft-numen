@@ -107,7 +107,7 @@ final class LearnerReviewTool implements NumenTool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .optionalInteger("max_memos", "How many memos to review now (1-3; capped to keep the reply parseable).", 1, MAX_REVIEW_BATCH)
-                .optionalStringArray("memo_ids", "Optional: review only these memo ids (up to 10). Unknown ids are ignored; if none are pending the call is rejected.", 1, 10)
+                .optionalStringArray("memo_ids", "Optional: review only these memo ids (up to 10). Unknown ids are ignored; if none are pending the call is rejected.")
                 .build();
     }
 
