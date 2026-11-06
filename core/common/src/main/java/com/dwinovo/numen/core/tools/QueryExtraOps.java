@@ -308,7 +308,7 @@ int z,
         BlockState state = self.level().getBlockState(pos);
         String coord = x + "," + y + "," + z;
         if (state.isAir()) {
-            return TaskResult.fail("block at " + coord + " is air — nothing to read.").toJson();
+            return TaskResult.fail(InspectStorageText.airAt(coord)).toJson();
         }
         String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
         String caps = Services.CAPS.describe(self.level(), pos);
