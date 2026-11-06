@@ -61,7 +61,8 @@ class WorldStateSessionWiringTest {
             Files.writeString(target, source.getValue(), StandardCharsets.UTF_8);
             arguments.add(target.toString());
         }
-        for (String name : List.of("WorldStateService", "McCollectionContext")) {
+        for (String name : List.of("WorldStateService", "McCollectionContext", "SelfSampleBridge",
+                "EnvironmentRefresher")) {
             arguments.add(plugin.resolve(name + ".java").toString());
         }
         var compiler = ToolProvider.getSystemJavaCompiler();
@@ -309,6 +310,146 @@ class WorldStateSessionWiringTest {
         assertFalse(Files.exists(config.resolve("worldstate/observations.json")));
     }
 
+    // ==== 2026-11-06 自动 SELF 采样 + 周期环境刷新 ====
+    // 这一组盯的是"READY → refresh / DEATH·REMOVE → invalidateSelf / 到点才刷 environment"
+    // 这三条真实接线；采样节拍本身在 api 的 CompanionBodySampleTest 里测。
+
+    /** 造一具带服务端句柄与身份的身体，并挂进 player list（SELF refresh 会按 UUID 取它）。 */
+    private static Object companion(Object server, UUID id) throws Exception {
+        Class<?> body = loader.loadClass("com.dwinovo.numen.entity.NumenPlayer");
+        Object player = body.getConstructor().newInstance();
+        body.getField("server").set(player, server);
+        body.getField("uuid").set(player, id);
+        Object list = serverType.getMethod("getPlayerList").invoke(server);
+        list.getClass().getField("player").set(list, player);
+        return player;
+    }
+
+    /** 直接调生产映射层（WorldStatePlugin 的订阅只是把它接到事件总线上）。 */
+    private static void bridge(String method, Object host, Object player) throws Exception {
+        Class<?> body = loader.loadClass("com.dwinovo.numen.entity.NumenPlayer");
+        loader.loadClass(PKG + "SelfSampleBridge")
+                .getDeclaredMethod(method, serviceType, body)
+                .invoke(null, host, player);
+    }
+
+    private static ReadResult selfRead(Object host, Object server, ObservationRequest request) throws Exception {
+        return (ReadResult) invoke(host, "read", new Class<?>[]{serverType, ObservationRequest.class}, server, request);
+    }
+
+    private static int size(Object host) throws Exception {
+        return (Integer) invoke(host, "size", new Class<?>[]{});
+    }
+
+    @Test void selfSampleReadyRefreshesAtTheSampledTickAndNeverTouchesDisk() throws Exception {
+        Object host = host(config);
+        Object server = server(config.resolve("live"), true, false);
+        UUID id = UUID.randomUUID();
+        Object player = companion(server, id);
+        // Watch 已经采好这一帧；refresh 必须原样沿用它的 tick/epoch，不能自己再取一次。
+        Class<?> sampler = loader.loadClass("com.dwinovo.numen.entity.CompanionBodySample");
+        sampler.getField("tick").setLong(null, 42L);
+        sampler.getField("epoch").setLong(null, 1_042L);
+
+        bridge("ready", host, player);
+
+        ObservationRequest request = ObservationRequest.self("minecraft:overworld", id);
+        ReadResult read = selfRead(host, server, request);
+        assertTrue(read.present());
+        assertEquals(42L, read.observation().gameTick(), "沿用采样帧的 tick");
+        assertEquals(1_042L, read.observation().epochMs(), "沿用采样帧的 epoch");
+        assertEquals(id, read.observation().payload().getClass()
+                .getMethod("companionUUID").invoke(read.observation().payload()), "主体就是发事件的那具身体");
+        assertFalse(Files.exists(config.resolve("worldstate/observations.json")), "SELF 刷新不落盘");
+    }
+
+    @Test void readyIntoNewDimensionInvalidatesTheOldDimensionKeyWithoutGrowingTheStore() throws Exception {
+        Object host = host(config);
+        Object server = server(config.resolve("live"), true, false);
+        UUID id = UUID.randomUUID();
+        Object player = companion(server, id);
+        ObservationRequest overworld = ObservationRequest.self("minecraft:overworld", id);
+
+        bridge("ready", host, player);
+        assertTrue(selfRead(host, server, overworld).present());
+        int before = size(host);
+
+        loader.loadClass("com.dwinovo.numen.entity.NumenPlayer").getField("dimensionId")
+                .set(player, "minecraft:the_end");
+        bridge("ready", host, player);
+
+        assertFalse(selfRead(host, server, overworld).present(), "换维度后旧维度的键必须失效");
+        assertTrue(selfRead(host, server, ObservationRequest.self("minecraft:the_end", id)).present());
+        assertEquals(before, size(host), "旧键删、新键写：不许留下两代同主体");
+    }
+
+    @Test void deathAndServerStopInvalidateOnlySelfWhileOtherTopicsSurvive() throws Exception {
+        Object host = host(config);
+        Object server = server(config.resolve("live"), true, false);
+        UUID id = UUID.randomUUID();
+        Object player = companion(server, id);
+        ObservationRequest self = ObservationRequest.self("minecraft:overworld", id);
+
+        assertTrue(refresh(host, server).success());
+        bridge("ready", host, player);
+        assertTrue(selfRead(host, server, self).present());
+        assertEquals(2, size(host));
+
+        bridge("gone", host, player);
+        assertFalse(selfRead(host, server, self).present(), "死亡/移除后回到 PENDING（存储层等价事实：没有观测）");
+        assertEquals(1, size(host), "不许为了 PENDING 造一条空观测");
+        assertEquals(Freshness.CURRENT, read(host, server).freshness(), "其它主题不丢");
+
+        bridge("ready", host, player);
+        assertTrue(selfRead(host, server, self).present());
+        assertEquals(2, size(host));
+
+        int removed = (Integer) invoke(host, "invalidateAllSelf", new Class<?>[]{});
+        assertEquals(1, removed, "停服只清 SELF");
+        assertFalse(selfRead(host, server, self).present());
+        assertEquals(1, size(host));
+        assertEquals(Freshness.CURRENT, read(host, server).freshness(), "停服清 SELF 不许动其它主题");
+
+        assertTrue(refresh(host, server).success());
+        List<Observation> persisted = ObservationJson.fromJson(
+                Files.readString(config.resolve("worldstate/observations.json")));
+        assertEquals(1, persisted.size());
+        assertEquals(com.dwinovo.numen.worldstate.core.model.Topic.ENVIRONMENT,
+                persisted.getFirst().key().topic(), "落盘的只有非 SELF 主题");
+    }
+
+    @Test void environmentRefreshesOnIntervalOnlyAndFailureKeepsTheOldObservation() throws Exception {
+        Object host = host(config);
+        Object server = server(config.resolve("live"), true, false);
+        Class<?> refresherType = loader.loadClass(PKG + "EnvironmentRefresher");
+        var constructor = refresherType.getDeclaredConstructor(serviceType);
+        constructor.setAccessible(true);
+        Object refresher = constructor.newInstance(host);
+        var tick = refresherType.getDeclaredMethod("tick", serverType, long.class);
+        tick.setAccessible(true);
+
+        assertEquals(1, (int) (Integer) tick.invoke(refresher, server, 0L), "首次到点：刷一次");
+        assertEquals(1, calls());
+        assertEquals(0, (int) (Integer) tick.invoke(refresher, server, 19_999L), "没到间隔：不许刷");
+        assertEquals(1, calls(), "未到点连采集器都不许进");
+        assertEquals(1, (int) (Integer) tick.invoke(refresher, server, 20_000L), "到点：再刷一次");
+        assertEquals(2, calls());
+
+        // 失败：采集器抛错 → 旧观测原样留着（修订号/时间戳不变），年龄继续走，自然过期。
+        ReadResult before = read(host, server);
+        assertTrue(before.present());
+        providerType.getField("failNext").setBoolean(null, true);
+        assertEquals(0, (int) (Integer) tick.invoke(refresher, server, 40_000L));
+        assertEquals(3, calls(), "失败也要确实尝试过");
+        ReadResult after = read(host, server);
+        assertTrue(after.present(), "失败不许把旧值删掉，也不许补一条假事实");
+        assertEquals(before.observation().revision(), after.observation().revision());
+        assertEquals(before.observation().epochMs(), after.observation().epochMs());
+        providerType.getField("failNext").setBoolean(null, false);
+        assertEquals(0, (int) (Integer) tick.invoke(refresher, server, 40_001L), "失败后按节拍等下一轮，不每 tick 重试");
+        assertEquals(3, calls());
+    }
+
     private static String location(Class<?> type) throws Exception {
         return Path.of(type.getProtectionDomain().getCodeSource().getLocation().toURI()).toString();
     }
@@ -340,6 +481,9 @@ class WorldStateSessionWiringTest {
                     }
                     public final net.minecraft.server.players.PlayerList players=new net.minecraft.server.players.PlayerList();
                     public net.minecraft.server.players.PlayerList getPlayerList(){return players;}
+                    /** 2026-11-06：只给 EnvironmentRefresher 的维度枚举用；一个维度够验"到点才刷"。 */
+                    public java.util.Collection<ServerLevel> levels=java.util.List.of(new ServerLevel());
+                    public java.util.Collection<ServerLevel> getAllLevels(){return levels;}
                     public boolean isSameThread() { return sameThread; }
                     public Path getWorldPath(LevelResource ignored) {
                         pathReads++;
@@ -354,10 +498,15 @@ class WorldStateSessionWiringTest {
                 """);
         sources.put("com.dwinovo.numen.entity.NumenPlayer", """
                 package com.dwinovo.numen.entity;
+                /** 2026-11-06：SELF 采样接线用的身体边界；只给"服务端句柄 + 身份 + 维度"，不含任何背包。 */
                 public class NumenPlayer {
                     public String dimensionId="minecraft:overworld";
+                    public java.util.UUID uuid=java.util.UUID.randomUUID();
+                    public net.minecraft.server.MinecraftServer server;
                     public NumenPlayer serverLevel(){return this;} public NumenPlayer dimension(){return this;}
                     public String location(){return dimensionId;}
+                    public java.util.UUID getUUID(){return uuid;}
+                    public net.minecraft.server.MinecraftServer getServer(){return server;}
                 }
                 """);
         sources.put("com.dwinovo.numen.entity.CompanionBodySample", """
@@ -376,22 +525,37 @@ class WorldStateSessionWiringTest {
         sources.put("net.minecraft.world.level.storage.LevelResource",
                 "package net.minecraft.world.level.storage; public class LevelResource { public static final LevelResource ROOT = new LevelResource(); }");
         sources.put("net.minecraft.world.level.Level", "package net.minecraft.world.level; public class Level {}");
-        sources.put("net.minecraft.server.level.ServerLevel", "package net.minecraft.server.level; public class ServerLevel {}");
+        sources.put("net.minecraft.server.level.ServerLevel", """
+                package net.minecraft.server.level;
+                public class ServerLevel {
+                    public net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension(){
+                        return net.minecraft.resources.ResourceKey.of("minecraft:overworld");
+                    }
+                }
+                """);
         sources.put("net.minecraft.resources.ResourceLocation", """
                 package net.minecraft.resources;
                 public record ResourceLocation(String id) {
                     public static ResourceLocation parse(String id) { return new ResourceLocation(id); }
+                    @Override public String toString() { return id; }   // 生产里 dimension().location().toString() 就是维度 id
                 }
                 """);
         sources.put("net.minecraft.resources.ResourceKey", """
                 package net.minecraft.resources;
                 public class ResourceKey<T> {
-                    public static <T> ResourceKey<T> create(Object registry, ResourceLocation location) { return new ResourceKey<>(); }
+                    private String id = "minecraft:overworld";
+                    public static <T> ResourceKey<T> create(Object registry, ResourceLocation location) {
+                        ResourceKey<T> key = new ResourceKey<>(); key.id = location.id(); return key;
+                    }
+                    public static <T> ResourceKey<T> of(String id) {
+                        ResourceKey<T> key = new ResourceKey<>(); key.id = id; return key;
+                    }
+                    public ResourceLocation location() { return new ResourceLocation(id); }
                 }
                 """);
         sources.put("net.minecraft.core.registries.Registries",
                 "package net.minecraft.core.registries; public class Registries { public static final Object DIMENSION = new Object(); }");
-        sources.put("org.slf4j.Logger", "package org.slf4j; public interface Logger { default void warn(String text, Object value) {} }");
+        sources.put("org.slf4j.Logger", "package org.slf4j; public interface Logger { default void warn(String text, Object value) {} default void info(String text, Object... values) {} default void debug(String text, Object... values) {} }");
         sources.put("org.slf4j.LoggerFactory", """
                 package org.slf4j;
                 public class LoggerFactory { public static Logger getLogger(String name) { return new Logger() {}; } }
@@ -413,8 +577,13 @@ class WorldStateSessionWiringTest {
                         public Topic topic() { return Topic.%s; }
                         public String id() { return "fixture-%s"; }
                         public int dataVersion() { return 1; }
+                        /** 2026-11-06：周期环境刷新的失败分支用；false 时行为不变。 */
+                        public static boolean failNext;
                         public ProviderResult collect(CollectionContext context, ObservationRequest request) {
                             calls++;
+                            if (failNext && topic() == Topic.ENVIRONMENT) {
+                                throw new ProviderException(FailReason.PROVIDER_ERROR, "fixture failure");
+                            }
                             if (topic() == Topic.SELF) return ProviderResult.of(
                                 new com.dwinovo.numen.worldstate.core.observation.payload.SelfPayload(request.dimension(),
                                     java.util.UUID.fromString(request.target().substring(7)), null, null, null, null,

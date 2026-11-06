@@ -221,9 +221,15 @@ class SelfContractTest {
     @Test void candidateTtlAndStrictSessionNeverMakeHistoryCurrent() {
         TopicFreshnessPolicy policy = TopicFreshnessPolicy.defaults();
         Observation o = observation(full());
-        assertEquals(1_000, policy.ttlOf(Topic.SELF));
-        assertEquals(Freshness.CURRENT, policy.classify(o, 2_000));
-        assertEquals(Freshness.STALE, policy.classify(o, 2_001));
+        // 2026-11-06：TTL 1s → 3s。实测锚点（同日 12:45 外部 MCP 消费者，同伴 overworld）：
+        // read self 未刷新 → PENDING；refresh → 成功且 CURRENT；约 1 秒后再 read 已判 STALE；
+        // 跨主题 batch_read(environment+self) 报 "sample expired before batch delivery"，
+        // 而同一次 environment 的 validUntil 是 +30000。1s 短于消费者的一次往返，等于"刚采就过期"。
+        assertEquals(3_000, policy.ttlOf(Topic.SELF));
+        // 边界例：观测于 1000ms。
+        assertEquals(Freshness.CURRENT, policy.classify(o, 3_000), "2s 内必须 CURRENT");
+        assertEquals(Freshness.CURRENT, policy.classify(o, 4_000), "恰好 3s 仍 CURRENT");
+        assertEquals(Freshness.STALE, policy.classify(o, 4_001), ">3s 必须 STALE");
         assertEquals(Freshness.UNKNOWN, policy.classify(o, 999));
         assertEquals(Freshness.HISTORICAL, policy.classify(o.withFreshness(Freshness.HISTORICAL), 1_000));
         InMemoryObservationStore store = new InMemoryObservationStore(); store.put(o);

@@ -1,5 +1,7 @@
 package com.dwinovo.numen.entity;
 
+import com.dwinovo.numen.Constants;
+import com.dwinovo.numen.api.CompanionEvent;
 import com.dwinovo.numen.network.payload.NumenStatePayload;
 import com.dwinovo.numen.network.payload.RequestStatePayload;
 import com.dwinovo.numen.platform.Services;
@@ -9,6 +11,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import com.dwinovo.numen.monitor.MonitoringJournal;
 
+import java.lang.ref.WeakReference;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -37,6 +40,20 @@ import java.util.UUID;
  * 耐久、附魔、其它组件一概不进比较。否则她每挥一镐都算变了。模型读的是"我有什么、几个",
  * 要精确到槽位和附魔时才调 {@code inspect_gui}。
  *
+ * <h2>采样段与发包段是两件事(2026-11-06)</h2>
+ * 同一个类里现在有两段,顺序固定、状态互不相干:先按 10 tick 节拍做一次 <b>SELF 采样</b>
+ * (读身体 + fire {@link CompanionEvent#SELF_SAMPLE_READY}),再走原来的发包段。
+ * <ul>
+ *   <li><b>为什么采样不看主人在不在</b>:世界观测描述的是身体在世界里的样子,主人下线了
+ *       身体还在(钓鱼、走路、被打),这段时间的事实不能空着;而发给主人的包一旦没人收白费。
+ *       把两段拆开,离线时只省包、不省事实。</li>
+ *   <li><b>为什么先采样再判断 owner</b>:原来 owner 为 null 就在遍历之前 return,
+ *       镜像和发包都不推进——这条保持不变(离线期间攒下的变化,主人回来时一次补发)。
+ *       采样段放在这个 return <b>之前</b>,所以离线也照采。</li>
+ *   <li><b>为什么不自动落盘</b>:SELF 只在内存里(见 WorldStateService),采样只负责把帧交出去。</li>
+ * </ul>
+ * 采样失败/死亡/换维度/换身体/换服务器一律<b>重置节拍</b>:宁可早采一拍,也不拿旧身份接着数。
+ *
  * <h2>效果同理:只认"有哪些、几级"</h2>
  * <b>剩余时间不进比较</b> —— 它每 tick 都在减,拿它当变化判据就是每 tick 推一个包。
  * 时长照发,由客户端按收到的时刻自己往下扣:效果是确定性的倒计时,推算出来的秒数和真值
@@ -46,6 +63,13 @@ public final class CompanionStateWatch {
 
     /** 最小推送间隔(tick)。她连续捡东西时压成一波,模型下一轮才读,晚半秒无感。 */
     private static final int MIN_INTERVAL_TICKS = 10;
+    /**
+     * SELF 采样间隔(tick)。与 {@link #MIN_INTERVAL_TICKS} 数值相同但是<b>两条独立的节拍</b>:
+     * 推送压的是包,采样压的是读身体的次数;主人离线时前者停、后者照走,共用一个字段就会互相拖。
+     *
+     * <p>10 tick(约 0.5 秒)仍是候选值,未经实机测性能,不声称"够用"。
+     */
+    private static final int SAMPLE_INTERVAL_TICKS = 10;
     private static final Item[] EMPTY_ITEMS = new Item[0];
     private static final int[] EMPTY_COUNTS = new int[0];
 
@@ -67,6 +91,17 @@ public final class CompanionStateWatch {
     private int lastVehicleId = -1;
     private long lastSentTick;
     private boolean everSent;
+    /** 上次 SELF 采样的服务端 tick;只在采样成功时推进。 */
+    private long lastSampleTick;
+    /** 有没有成功采过。第一次必须放行,否则"上次 tick 是 0"会跟真实第 0 tick 撞。 */
+    private boolean everSampled;
+    /**
+     * 上次采样时的身体/服务器/维度。弱引用是为了不留住一具已经离开世界的身体
+     * (这张表活到关服);维度用串,弱引用对字符串没有意义。
+     */
+    private WeakReference<NumenPlayer> sampledBody;
+    private WeakReference<Object> sampledServer;
+    private String sampledDimension = "";
 
     private CompanionStateWatch() {}
 
@@ -87,6 +122,8 @@ public final class CompanionStateWatch {
     }
 
     private void tickOne(NumenPlayer companion, long serverTick) {
+        // 采样先行:主人离线也照采(世界观测不属于某个客户端)。这一段不推进任何发包状态。
+        sampleSelf(companion, serverTick);
         // 主人不在线就直接走,而且<b>不碰镜像</b>:走一趟把变化吃掉的话,他回来时镜像已经
         // 是最新的,再也检测不出那段时间发生过什么,她的背包就一直是他离线前那份。
         ServerPlayer owner = companion.resolveOwnerPlayer();
@@ -123,6 +160,69 @@ public final class CompanionStateWatch {
                 payload.effects().size(),
                 payload.vehicleId() >= 0 ? ", 骑 " + payload.vehicleType() : "",
                 first ? " (首次)" : "");
+    }
+
+    /**
+     * 自动 SELF 采样段:每 {@link #SAMPLE_INTERVAL_TICKS} tick 读一次身体,并告诉订阅者
+     * "这一拍有了一帧新事实"。
+     *
+     * <p>失败/死亡/换维度/换身体/换服务器一律<b>重置节拍</b>:这几件事会让上一帧不再代表
+     * 当前身份,接着按旧节拍数等于继续引用一份过期事实。重置的代价只是早采一拍。
+     */
+    private void sampleSelf(NumenPlayer companion, long serverTick) {
+        if (companion.isRemoved() || companion.isDeadOrDying()) {
+            // 尸体不是"这一拍没轮到":身份已经作废,活过来的第一 tick 就要重采。
+            resetSampleCadence();
+            return;
+        }
+        Object server = companion.getServer();
+        if (server == null) {
+            // 不在世界里就没有服务端可读;不是失败,也不能把节拍留给下一具身体接着数。
+            resetSampleCadence();
+            return;
+        }
+        String dimension = companion.serverLevel().dimension().location().toString();
+        boolean identityChanged = !sameSampleIdentity(companion, server, dimension);
+        if (!identityChanged && everSampled && serverTick - lastSampleTick < SAMPLE_INTERVAL_TICKS) {
+            return;
+        }
+        try {
+            // 同一 tick 的第二次调用(发包段 / 插件 refresh)会命中 CompanionBodySample 的帧复用,
+            // 不会再多读 41 格——这是"采样与消费者共享一帧"的落点。
+            CompanionBodySample.capture(companion);
+        } catch (RuntimeException failed) {
+            // 失败不能记成"这拍采过了":否则要白等 10 tick 才重试。
+            resetSampleCadence();
+            return;
+        }
+        lastSampleTick = serverTick;
+        everSampled = true;
+        sampledBody = new WeakReference<>(companion);
+        sampledServer = new WeakReference<>(server);
+        sampledDimension = dimension;
+        try {
+            CompanionEvents.fire(CompanionEvent.SELF_SAMPLE_READY, companion);
+        } catch (RuntimeException listenerFailed) {
+            // 总线自己已逐个监听者兜底(CompanionEvents.fire);这里再兜一层,
+            // 保证"某个监听者写坏"绝不会带走身体这一 tick 的其余工作。
+            Constants.LOG.warn("[numen-state] SELF 采样事件派发失败: {}", listenerFailed.toString());
+        }
+    }
+
+    /** 身体、服务器、维度三者都没换,才算"同一个身份"——任何一项变了都要立刻重采。 */
+    private boolean sameSampleIdentity(NumenPlayer companion, Object server, String dimension) {
+        return sampledBody != null && sampledBody.get() == companion
+                && sampledServer != null && sampledServer.get() == server
+                && sampledDimension.equals(dimension);
+    }
+
+    /** 节拍与身份一起作废:下一次 tick 必须重采。 */
+    private void resetSampleCadence() {
+        everSampled = false;
+        lastSampleTick = 0L;
+        sampledBody = null;
+        sampledServer = null;
+        sampledDimension = "";
     }
 
     /** 一趟遍历:顺便把镜像更新到最新。返回"有没有模型在乎的变化"。 */

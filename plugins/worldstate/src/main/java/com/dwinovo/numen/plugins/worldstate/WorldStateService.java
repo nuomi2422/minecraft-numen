@@ -142,9 +142,13 @@ public final class WorldStateService {
         }
         McCollectionContext context = context(server);
         if (request.topic() == Topic.SELF) {
-            var player = server.getPlayerList().getPlayer(UUID.fromString(request.target().substring(7)));
+            UUID subject = UUID.fromString(request.target().substring(7));
+            var player = server.getPlayerList().getPlayer(subject);
             if (player instanceof com.dwinovo.numen.entity.NumenPlayer body
                     && body.serverLevel().dimension().location().toString().equals(request.dimension())) {
+                // 2026-11-06：新样本落进新维度之前，先让同主体留在**其它**维度上的旧键失效。
+                // 同维度旧键不删：本次刷新会用新修订号直接覆盖，少一次 INVALIDATE/CREATED 抖动。
+                invalidateSelfKeys(context.worldId(), context.serverSession(), subject, request.dimension());
                 var sample = com.dwinovo.numen.entity.CompanionBodySample.capture(body);
                 context = new McCollectionContext(server, context.worldId(), sample.tick(), sample.epochMs(), context.serverSession());
             }
@@ -154,6 +158,57 @@ public final class WorldStateService {
             persist();
         }
         return result;
+    }
+
+    /**
+     * 同主体的 SELF 缓存全部失效（<b>含旧维度</b>）。死亡/移除走这条路：身体没了，
+     * 它在任何维度上的旧帧都不再代表当前。
+     *
+     * @return 实际失效的键数（0 = 本来就没有）
+     */
+    public int invalidateSelf(MinecraftServer server, UUID companionUUID) {
+        if (server == null || companionUUID == null) return 0;
+        return invalidateSelfKeys(worldId(server), sessionId(server), companionUUID, null);
+    }
+
+    /**
+     * 停服/换存档：只清本进程里的 SELF，其它主题一条不动。
+     *
+     * <p>为什么不按世界/会话过滤：停服时存档路径可能已读不到（{@link #worldId} 会退化成
+     * {@code unknown-会话}），而 SELF 本来就不落盘、只属于本进程，留给下一个服务端进程没有
+     * 任何意义。其它主题要留着跟磁盘历史对账，所以不碰。
+     *
+     * <p>不用 {@code store.clear()}：那会把别的主题一起带走，并在 v1 日志里发 GONE。
+     */
+    public int invalidateAllSelf() {
+        int removed = 0;
+        for (Observation observation : store.all()) {
+            if (observation.key().topic() == Topic.SELF && store.invalidate(observation.key())) removed++;
+        }
+        if (removed > 0) {
+            LOG.info("[worldstate] invalidated {} SELF observation(s) on server stop", removed);
+        }
+        return removed;
+    }
+
+    /**
+     * 失效的匹配规则只有一条：<b>同世界 + 同会话 + topic=SELF + target=player:&lt;uuid&gt;</b>，
+     * 维度<b>不</b>参与匹配（旧维度的帧同样要清）。
+     *
+     * @param keepDimension 非空时跳过该维度：刷新自己那一格时用，覆盖比"先删再建"少一次事件抖动
+     */
+    private int invalidateSelfKeys(String worldId, String sessionId, UUID companionUUID, String keepDimension) {
+        String target = "player:" + companionUUID;
+        int removed = 0;
+        for (Observation observation : store.all()) {
+            var key = observation.key();
+            if (key.topic() != Topic.SELF) continue;
+            if (!key.worldId().equals(worldId) || !sessionId.equals(observation.serverSession())) continue;
+            if (!key.target().equals(target)) continue;
+            if (keepDimension != null && keepDimension.equals(key.dimension())) continue;
+            if (store.invalidate(key)) removed++;
+        }
+        return removed;
     }
 
     private McCollectionContext context(MinecraftServer server) {

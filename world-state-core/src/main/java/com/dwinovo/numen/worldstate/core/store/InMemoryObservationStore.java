@@ -106,6 +106,36 @@ public final class InMemoryObservationStore implements ObservationStore {
         return true;
     }
 
+    /**
+     * 定向失效:删掉<b>一个具体键</b>,并只在 v2 流里记 {@code INVALIDATE}
+     * (2026-11-06,SELF 自动采样的失效入口)。
+     *
+     * <p><b>为什么不用 {@link #clear()}</b>:clear 是整表清空,会把别的主题一起带走;
+     * 而且它会为每个键在 v1 日志里发 {@code GONE}——那是"世界里的东西没了"的语义,
+     * 而这里只是"这份缓存不可信,别再拿来当当前值"。所以 v1 一条都不发。
+     *
+     * <p>键不存在时返回 false 且不发任何事件:没删掉东西就不该让消费者以为有变化。
+     *
+     * <p>修订号/时间戳取自被删的那条观测,与 {@link #evictIfNeeded()} 同一口径——
+     * 不在这里引入第二个时钟。
+     *
+     * @return 真的删掉了才 true
+     */
+    public synchronized boolean invalidate(ObservationKey key) {
+        if (key == null) return false;
+        Observation removed = map.remove(key.canonical());
+        if (removed == null) return false;
+        if (changeFeed != null) {
+            changeFeed.append(
+                    removed.key().topic() == null ? "" : removed.key().topic().id(),
+                    key.canonical(),
+                    com.dwinovo.numen.worldstate.core.changes.v2.ChangeEvent.Kind.INVALIDATE,
+                    removed.revision(),
+                    removed.epochMs());
+        }
+        return true;
+    }
+
     @Override
     public synchronized List<Observation> all() {
         return new ArrayList<>(map.values());

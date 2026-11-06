@@ -28,8 +28,15 @@ public final class TopicFreshnessPolicy implements FreshnessPolicy {
         p.withTtl(Topic.BLOCKS, 60_000L);
         p.withTtl(Topic.CONTAINERS, 120_000L);
         p.withTtl(Topic.FACILITIES, 120_000L);
-        // 2026-11-06 candidate only, pending sampling/performance validation; not an action-safety check.
-        p.withTtl(Topic.SELF, 1_000L);
+        // 2026-11-06：SELF 的 TTL 从 1000ms 提到 3000ms（与既有主题同一量级）。
+        // 原因：1000ms 短于真实 MCP 消费者的一次往返，出现"刚采就过期"——
+        // 案例：外部消费者对同伴 a43d753e-…（overworld）refresh self 成功后约 1 秒再 read 已判 STALE；
+        // 同一次 environment 的 validUntil 是 +30000；跨主题 batch_read(environment+self,
+        // max_age_ms=30000, max_skew_ms=5000) 直接报 "sample expired before batch delivery"。
+        // 放宽到 3000ms 不等于"允许旧数据"：10 tick 自动采样约 500ms 就会覆盖一次，
+        // 并且不为了过 batch 去放宽 max_skew 或改一致性判据。
+        // 仍是候选值：未经实机性能验证，不声称"够用"。
+        p.withTtl(Topic.SELF, 3_000L);
         return p;
     }
 

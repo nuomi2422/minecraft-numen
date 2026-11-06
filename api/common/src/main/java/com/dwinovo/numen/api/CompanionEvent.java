@@ -29,6 +29,18 @@ public final class CompanionEvent<T> {
     /** 主人打断了这个同伴的思考——手上没做完的活该放弃了。给的是 UUID,因为身体未必还在。 */
     public static final CompanionEvent<UUID> ABORT = new CompanionEvent<>("companion_abort");
 
+    /**
+     * 身体的一次 SELF 采样已经完成(2026-11-06,自动 SELF 采样切片)。
+     *
+     * <p><b>为什么带身体而不是 UUID</b>:监听者要拿当前维度建自己的键,
+     * 还要在服务端线程上直接复用同一 tick 的帧;只给 UUID 的话每个消费者都得再解析一次身体,
+     * 而那时维度可能已经变了。
+     *
+     * <p><b>不代表已经发包</b>:主人离线时照样采——观测属于世界,不属于某个客户端——
+     * 但不会给他推任何包。两件事分开之后,采样节拍不必跟着在线状态抖。
+     */
+    public static final CompanionEvent<NumenPlayer> SELF_SAMPLE_READY = new CompanionEvent<>("companion_self_sample_ready");
+
     /** 她挨了一下。伤害已经结算,{@code amount} 是<b>结算前</b>报上来的量。 */
     public static final CompanionEvent<Hurt> HURT = new CompanionEvent<>("companion_hurt");
 
