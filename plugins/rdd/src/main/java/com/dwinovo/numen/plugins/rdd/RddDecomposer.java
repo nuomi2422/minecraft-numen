@@ -652,6 +652,7 @@ final class RddDecomposer {
                     + "{type:block_at,x:100,y:64,z:200,block:minecraft:crafting_table}；"
                     + "{type:container_at,x:100,y:64,z:200,item:minecraft:diamond,minimum:1}；"
                     + "{type:equipment,item:minecraft:iron_chestplate,slot:chest} 只判此刻该装备槽，不证明穿戴动作或四槽同时齐全；"
+                    + "slot 可取 head/chest/legs/feet/mainhand/offhand/any；any=任一装备槽（含主副手）；"
                     + "{type:shelter,minimum:20,radius:8}（床周围墙块≥minimum 且头顶≤2格有顶盖——「有个能挡雨的角落」，不要求像人盖的房）；"
                     + "{type:stocked,minimum:10,radius:8}（床周围容器里物品总件数≥minimum——「真把东西存进去了」，空箱子不算）；"
                     + "{type:lit,minimum:4,radius:8}（床周围光源≥minimum——夜里不刷怪）。\n"
@@ -733,7 +734,7 @@ final class RddDecomposer {
                     Map.entry("structure", Map.of("type", "string")),
                     Map.entry("entity", Map.of("type", "string")),
                     Map.entry("item", Map.of("type", "string", "description", "Exact item ID or #item tag for world facts.")),
-                    Map.entry("slot", Map.of("type", "string", "enum", List.of("head", "chest", "legs", "feet", "any"))),
+                    Map.entry("slot", Map.of("type", "string", "enum", List.of("head", "chest", "legs", "feet", "mainhand", "offhand", "any"))),
                     Map.entry("dimension", Map.of("type", "string")),
                     Map.entry("asset_key", Map.of("type", "string",
                             "description", "minecraft 物品命名空间ID，如 minecraft:oak_log")),

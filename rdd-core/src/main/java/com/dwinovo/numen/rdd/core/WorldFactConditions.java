@@ -103,7 +103,7 @@ public final class WorldFactConditions {
         return !condition.containsKey("optional") || condition.get("optional") instanceof Boolean;
     }
 
-    /** 0=feet, 1=legs, 2=chest, 3=head；-1=any，-2=非法。 */
+    /** 0=feet, 1=legs, 2=chest, 3=head, 4=mainhand, 5=offhand；-1=any（含主副手），-2=非法。 */
     private static int equipmentSlotIndex(Object raw) {
         if (raw == null) return -2;
         if (!(raw instanceof String s)) return -2;
@@ -112,17 +112,28 @@ public final class WorldFactConditions {
             case "legs", "leggings" -> 1;
             case "chest", "chestplate" -> 2;
             case "head", "helmet" -> 3;
+            case "mainhand" -> 4;
+            case "offhand" -> 5;
             case "any" -> -1;
             default -> -2;
         };
     }
 
-    /** 四个布尔量须来自同一次服务端采样；指定槽也必须满足 minimum。 */
+    /** 四个护甲布尔量的旧入口（兼容既有调用/测试）；主副手按未命中处理。
+     *  2026-11-06：`slot:any` 原先只统计四护甲槽，主手钻石镐/钻石剑实测 2/2 判 false
+     *  （见记录 006）；`any` 的契约是“任一装备槽”，故补 6 槽入口。 */
     public static boolean equipmentSlotsSatisfied(Map<String, Object> condition,
                                                    boolean feet, boolean legs, boolean chest, boolean head) {
+        return equipmentSlotsSatisfied(condition, feet, legs, chest, head, false, false);
+    }
+
+    /** 六个布尔量须来自同一次服务端采样；`any` 覆盖主手、副手与四护甲槽。 */
+    public static boolean equipmentSlotsSatisfied(Map<String, Object> condition,
+                                                   boolean feet, boolean legs, boolean chest, boolean head,
+                                                   boolean mainhand, boolean offhand) {
         if (!valid(condition) || !"equipment".equals(condition.get("type"))) return false;
         int slot = condition.containsKey("slot") ? equipmentSlotIndex(condition.get("slot")) : -1;
-        boolean[] matched = {feet, legs, chest, head};
+        boolean[] matched = {feet, legs, chest, head, mainhand, offhand};
         int count = 0;
         for (int i = 0; i < matched.length; i++) {
             if ((slot == -1 || slot == i) && matched[i]) count++;

@@ -29,6 +29,18 @@ class WorldFactConditionsTest {
         assertTrue(WorldFactConditions.equipmentSlotsSatisfied(Map.of("type", "equipment", "item", "minecraft:iron_boots", "slot", "boots"), true, false, false, false));
         assertTrue(WorldFactConditions.equipmentSlotsSatisfied(Map.of("type", "equipment", "item", "minecraft:iron_helmet", "slot", "helmet"), false, false, false, true));
         assertTrue(WorldFactConditions.equipmentSlotsSatisfied(Map.of("type", "equipment", "item", "minecraft:iron_boots", "slot", "any"), true, false, false, false));
+        // 2026-11-06：any 覆盖主副手（记录 006 的 2/2 实测）；mainhand/offhand 为新增精确槽位。
+        var held = Map.<String, Object>of("type", "equipment", "item", "minecraft:diamond_sword", "slot", "any");
+        assertTrue(WorldFactConditions.valid(held));
+        assertTrue(WorldFactConditions.equipmentSlotsSatisfied(held, false, false, false, false, true, false));
+        assertFalse(WorldFactConditions.equipmentSlotsSatisfied(held, false, false, false, false, false, false));
+        var mainOnly = Map.<String, Object>of("type", "equipment", "item", "minecraft:diamond_pickaxe", "slot", "mainhand");
+        assertTrue(WorldFactConditions.valid(mainOnly));
+        assertTrue(WorldFactConditions.equipmentSlotsSatisfied(mainOnly, false, false, false, false, true, false));
+        assertFalse(WorldFactConditions.equipmentSlotsSatisfied(mainOnly, false, false, false, false, false, true));
+        var offOnly = Map.<String, Object>of("type", "equipment", "item", "minecraft:shield", "slot", "offhand");
+        assertTrue(WorldFactConditions.valid(offOnly));
+        assertTrue(WorldFactConditions.equipmentSlotsSatisfied(offOnly, false, false, false, false, false, true));
         assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "item", "minecraft:iron_chestplate", "slot", "hand")));
         assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "slot", "chest")));
         assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "item", "minecraft:iron_chestplate", "minimum", 0)));

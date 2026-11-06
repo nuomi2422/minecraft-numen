@@ -207,13 +207,20 @@ public final class RddWorldFacts {
                 && BuiltInRegistries.ITEM.getTag(TagKey.create(Registries.ITEM, key)).isEmpty()) return false;
         Predicate<ItemStack> hit = itemHit(raw, key);
         if (hit == null) return false;
+        // 2026-11-06：装备条件原先只看四护甲槽，`slot:any` 对主手钻石镐/钻石剑 2/2 判 false
+        //（记录 006）。这里把主手/副手一并采样，与 WorldFactConditions 的 any=任一装备槽 对齐；
+        // 铁胸甲/护腿/靴等具体槽位行为不变。
         boolean[] matched = new boolean[4];
         for (int i = 0; i < matched.length; i++) {
             ItemStack stack = ap.getInventory().getArmor(i);
             matched[i] = !stack.isEmpty() && hit.test(stack);
         }
+        ItemStack main = ap.getMainHandItem();
+        ItemStack off = ap.getOffhandItem();
         return WorldFactConditions.equipmentSlotsSatisfied(condition,
-                matched[0], matched[1], matched[2], matched[3]);
+                matched[0], matched[1], matched[2], matched[3],
+                !main.isEmpty() && hit.test(main),
+                !off.isEmpty() && hit.test(off));
     }
 
     private static ResourceLocation id(Map<String, Object> condition, String key) {
