@@ -52,6 +52,7 @@ class SelfToolEntryTest {
             public class WorldStateService {
               public static String worldId(Object server){return "world";}
               public String sessionId(Object server){return "session";}
+              public com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore focusPins(){return new com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore();}
               public com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog changeLog(){return new com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog();}
               public com.dwinovo.numen.worldstate.core.query.ReadResult read(Object s,com.dwinovo.numen.worldstate.core.request.ObservationRequest r){throw new AssertionError("legacy read for SELF");}
               public com.dwinovo.numen.worldstate.core.refresh.RefreshResult refresh(Object s,com.dwinovo.numen.worldstate.core.request.ObservationRequest r){throw new AssertionError("legacy refresh for SELF");}

@@ -64,7 +64,7 @@ class WorldStateSessionWiringTest {
         }
         for (String name : List.of("WorldStateService", "McCollectionContext", "SelfSampleBridge",
                 "EnvironmentRefresher", "SelfSampleReader", "SelfObservationProjection",
-                "ObservationResponses", "ObservationMap")) {
+                "ObservationResponses", "ObservationMap", "focus/FocusPin", "focus/FocusPinStore")) {
             arguments.add(plugin.resolve(name + ".java").toString());
         }
         var compiler = ToolProvider.getSystemJavaCompiler();
