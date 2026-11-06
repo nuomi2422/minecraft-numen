@@ -16,16 +16,11 @@ import java.util.function.Consumer;
 public final class SugarCaneHarvestTool implements NumenTool {
 
     private static final Gson GSON = new Gson();
-    private static final long WALL_MS_PER_BLOCK = 2_000L;
-    private static final long MAX_DEADLINE_MS = 120_000L;
-
-    private record Args(Integer count, Integer max_targets, Integer radius) {}
-
     @Override public String name() { return SugarCaneTaskRecord.TOOL_NAME; }
 
     @Override public String description() {
-        return "Harvest sugar cane nearby with a bounded background task. Breaks only the TOP count upper blocks "
-                + "of each column (bottom root is kept); no manual drops - vanilla pickup/stat handles items. "
+        return "Harvest sugar cane nearby with a bounded background task. Breaks at most count upper blocks TOTAL "
+                + "(not per column; highest cells first), keeps the bottom root of each column; no manual drops. "
                 + "Bounded: count 1..64, max_targets 1..16, radius 1..16, hard deadline <=120s. "
                 + "NO_SHOT / occluder returns failure (target-only, no clearing); PROGRESSING is normal. "
                 + "BACKGROUND task: returns task_id immediately; result arrives in task_finished.";
@@ -41,18 +36,12 @@ public final class SugarCaneHarvestTool implements NumenTool {
 
     @Override public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion,
                                        Consumer<String> reply) {
-        Args a = GSON.fromJson(args, Args.class);
-        if (a == null || a.count() == null) {
-            reply.accept(com.dwinovo.numen.task.TaskResult.fail(
-                    "sugar_cane_harvest requires count (upper blocks, 1..64); bounded tasks only").toJson());
+        var parsed = com.dwinovo.numen.core.tools.work.SugarCaneHarvestArgs.parse(args, System.currentTimeMillis());
+        if (parsed.record() == null) {
+            reply.accept(com.dwinovo.numen.task.TaskResult.fail(parsed.error()).toJson());
             return;
         }
-        int count = Math.clamp(a.count(), 1, 64);
-        int maxTargets = a.max_targets() == null ? 8 : Math.clamp(a.max_targets(), 1, 16);
-        int radius = a.radius() == null ? 12 : Math.clamp(a.radius(), 1, 16);
-        long now = System.currentTimeMillis();
-        long deadline = now + Math.min(MAX_DEADLINE_MS, count * WALL_MS_PER_BLOCK);
-        var record = new SugarCaneTaskRecord(count, maxTargets, radius, deadline, now);
+        var record = parsed.record();
         setTask(companion, record, args, reply);
     }
 }
