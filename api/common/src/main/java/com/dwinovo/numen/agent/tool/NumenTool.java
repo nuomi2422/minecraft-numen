@@ -28,6 +28,14 @@ public interface NumenTool extends IToolSpec {
      * <p>缺省 {@link Residency#DEFERRED} —— 新工具默认不占每轮的位置,要常驻得自己
      * 表态。反过来(默认常驻)的话,忘了表态的工具会悄悄挤进每一轮请求。
      */
+    /**
+     * 外部专用（2026-11-06）：不进执行者（内脑）清单，只能从外部/MCP 或主人侧调用。
+     * 用于“撤回技能”这类只有主人该有的权限，防止同伴自撤经验。
+     */
+    default boolean externalOnly() {
+        return false;
+    }
+
     default Residency residency() {
         return Residency.DEFERRED;
     }

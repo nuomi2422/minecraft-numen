@@ -55,6 +55,7 @@ public final class ToolVisibility {
         List<NumenTool> out = new ArrayList<>(keep.size());
         for (NumenTool t : all) {
             if (t == null) continue;
+            if (t.externalOnly()) continue; // 外部专用：执行者侧永不可见（即使名单写了名字）
             if (keep.contains(t.name()) || isResident(t)) out.add(t);
         }
         return out.isEmpty() ? all : out;   // 名单全写错也不许把同伴削哑

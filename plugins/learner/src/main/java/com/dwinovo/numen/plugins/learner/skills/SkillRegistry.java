@@ -229,12 +229,12 @@ public final class SkillRegistry {
 
     public record NearDuplicate(String existingId, double score) {}
 
-    static java.util.Set<String> tokens(java.util.List<String> conditions) {
+    public static java.util.Set<String> tokens(java.util.List<String> conditions) {
         java.util.Set<String> out = new java.util.LinkedHashSet<>();
         if (conditions == null) return out;
         for (String c : conditions) {
             if (c == null) continue;
-            for (String t : c.toLowerCase(java.util.Locale.ROOT).split("[^a-z0-9_]+")) if (!t.isBlank()) out.add(t);
+            for (String t : c.toLowerCase(java.util.Locale.ROOT).split("[^\\p{L}\\p{N}_]+")) if (!t.isBlank()) out.add(t);
         }
         return out;
     }

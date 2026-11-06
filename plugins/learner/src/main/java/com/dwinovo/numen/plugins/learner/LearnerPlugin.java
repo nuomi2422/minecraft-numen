@@ -96,7 +96,8 @@ public final class LearnerPlugin implements NumenPlugin {
      * 外部/主人侧撤回技能（2026-11-06）。**不进执行者工具表**，由外部 MCP/管理员通道调用；
      * 语义=追加同 id 新版本 status=REVOKED、supersedes 指旧版；事件 learner_retired 可追溯。
      */
-    public static String retireSkill(String skillId, String reason, String by) {
+    public static java.util.Map<String, Object> retireSkill(String skillId, String reason, String by) {
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
         try {
             var file = configDir.resolve("skills.jsonl");
             var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(file);
@@ -108,10 +109,15 @@ public final class LearnerPlugin implements NumenPlugin {
             ev.put("by", by == null ? "external" : by);
             ev.put("prevVersion", before == null ? 0 : before.version());
             LearnerMonitor.publish("learner_retired", ev);
-            return decision.outcome() + " v" + (decision.entry() == null ? 0 : decision.entry().version());
+            out.put("skillId", skillId);
+            out.put("outcome", decision.outcome().name());
+            out.put("prevVersion", before == null ? 0 : before.version());
+            out.put("newVersion", decision.entry() == null ? 0 : decision.entry().version());
+            out.put("supersedes", decision.entry() == null ? java.util.List.of() : decision.entry().supersedes());
         } catch (Exception e) {
-            return "error: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+            out.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
         }
+        return out;
     }
 
     static com.dwinovo.numen.plugins.learner.core.ArtifactSink artifactSink() {
@@ -203,6 +209,7 @@ public final class LearnerPlugin implements NumenPlugin {
         numen.registerTool(new LearnerNoteTool());
         numen.registerTool(new LearnerReviewTool());
         numen.registerTool(new LearnerStatusTool());
+        numen.registerTool(new LearnerAdminTool()); // 外部专用（externalOnly），不进执行者清单
         // 第 4 个工具：只读反馈通道（38号v3 B14 / v3.2 B22）。**纯只读**——
         // B2 约束的是「不得发身体指令」不是工具总数；tools/list 里仍无 mine/goto/attack/build。
         // 结果**不进 contributeState**（那是主 AI 的上下文，注进去就变成「叙述变授权」）。
