@@ -95,7 +95,7 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
                 .comparingInt((RetrievedEntry r) -> r.descriptor().retracted() ? 1 : 0)
                 // 试用优先（排在成熟度之前）：否则高成熟度的长条目会把试用条目挤出预算
                 .thenComparingInt(r -> trialRefs.contains(r.descriptor().entryRef()) ? 0 : 1)
-                .thenComparingInt(r -> -relevanceScore(query.objective(), r.descriptor()))
+                .thenComparingInt(r -> -relevanceScore(queryText(query), r.descriptor()))
                 // ★ G8（2026-10-22 23:2x 更正）：归因把结局记给**最后一个呈现**，
                 //   所以「证据弱的」要排在**最后**才有机会被认领 —— 恢复成熟度降序即可：
                 //   VERIFIED 在前、OBSERVED 在后。上一版弄反了（弱在前），结果弱条目永远吃不到结局。
@@ -132,6 +132,19 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
     /** 与主题无关的通用词（命名空间 / 布尔字面量 / 英文虚词）：命中不加分。中文虚词暂不列——中文靠二元组。 */
     private static final java.util.Set<String> STOP_TOKENS = java.util.Set.of(
             "minecraft", "true", "false", "the", "and", "for", "with", "you", "your", "not", "this", "that");
+
+    /** 与旧路 ExperienceKnowledgeSource.buildQuery 对齐：目标 + 去重后的已知失败文本，不新增计分框架。 */
+    static String queryText(RetrievalQuery q) {
+        if (q == null) return "";
+        String base = q.objective() == null ? "" : q.objective();
+        if (q.knownFailures() == null || q.knownFailures().isEmpty()) return base;
+        java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        for (String f : q.knownFailures()) {
+            if (f != null && !f.isBlank()) seen.add(f.trim());
+        }
+        if (seen.isEmpty()) return base;
+        return (base + " " + String.join(" ", seen)).trim();
+    }
 
     public static int relevanceScore(String objective, EntryDescriptor d) {
         if (objective == null || objective.isBlank() || d == null) return 0;

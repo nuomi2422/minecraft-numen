@@ -259,4 +259,45 @@ class ExperienceRetrievalProviderTest {
         assertTrue(ExperienceRetrievalProvider.relevanceScore("minecraft:raw_iron true", topical) > 0,
                 "主题词仍应得分");
     }
+    @Test
+    void knownFailuresJoinRelevanceTextAndDedupe() {
+        RetrievalQuery q = new RetrievalQuery("q-2", "c-1", "w-1", RetrievalRole.PLANNER, "mine ore",
+                java.util.List.of("no path out", " no path out ", ""), java.util.List.of(), java.util.List.of(),
+                1, "", new RetrievalBudget(8, 0, 0, 0, 2000, 0, "none"), "ACTIVE");
+        String t = ExperienceRetrievalProvider.queryText(q);
+        assertTrue(t.contains("no path out"));
+        assertEquals(t.indexOf("no path out"), t.lastIndexOf("no path out"), "重复失败应去重: " + t);
+    }
+
+    @Test
+    void knownFailureMatchingEntryRaisesRelevance() {
+        EntryDescriptor e = new EntryDescriptor("exp:fail", EntryKind.EXPERIENCE,
+                "failure|mine no path out", "可达性失败",
+                java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of(), "b", false,
+                Maturity.OBSERVED, 0, false, true);
+        int plain = ExperienceRetrievalProvider.relevanceScore("mine ore", e);
+        RetrievalQuery q = new RetrievalQuery("q-3", "c-1", "w-1", RetrievalRole.PLANNER, "mine ore",
+                java.util.List.of("no path out"), java.util.List.of(), java.util.List.of(),
+                1, "", new RetrievalBudget(8, 0, 0, 0, 2000, 0, "none"), "ACTIVE");
+        int withFailure = ExperienceRetrievalProvider.relevanceScore(
+                ExperienceRetrievalProvider.queryText(q), e);
+        assertTrue(withFailure > plain, "已知失败命中应提高相关度: " + withFailure + " vs " + plain);
+    }
+
+    @Test
+    void emptyOrUnrelatedKnownFailuresKeepScore() {
+        EntryDescriptor e = new EntryDescriptor("exp:x", EntryKind.EXPERIENCE,
+                "failure|mine no path out", "s", java.util.List.of(), java.util.List.of(), java.util.List.of(),
+                java.util.List.of(), "b", false, Maturity.OBSERVED, 0, false, true);
+        int plain = ExperienceRetrievalProvider.relevanceScore("mine ore", e);
+        RetrievalQuery empty = new RetrievalQuery("q-4", "c-1", "w-1", RetrievalRole.PLANNER, "mine ore",
+                java.util.List.of(), java.util.List.of(), java.util.List.of(), 1, "",
+                new RetrievalBudget(8, 0, 0, 0, 2000, 0, "none"), "ACTIVE");
+        assertEquals(plain, ExperienceRetrievalProvider.relevanceScore(ExperienceRetrievalProvider.queryText(empty), e));
+        RetrievalQuery unrelated = new RetrievalQuery("q-5", "c-1", "w-1", RetrievalRole.PLANNER, "mine ore",
+                java.util.List.of("zzz unrelated"), java.util.List.of(), java.util.List.of(), 1, "",
+                new RetrievalBudget(8, 0, 0, 0, 2000, 0, "none"), "ACTIVE");
+        assertEquals(plain, ExperienceRetrievalProvider.relevanceScore(ExperienceRetrievalProvider.queryText(unrelated), e));
+    }
+
 }

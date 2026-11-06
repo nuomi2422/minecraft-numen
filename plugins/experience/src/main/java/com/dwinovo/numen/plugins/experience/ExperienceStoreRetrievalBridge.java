@@ -347,6 +347,19 @@ public final class ExperienceStoreRetrievalBridge {
      */
     public static Rendered render(ExperienceMemory memory, String objective,
                                   int maxItems, int maxChars, RetrievalRole role) {
+        return render(memory, objective, java.util.List.of(), maxItems, maxChars, role);
+    }
+
+    /** 2026-11-06：规划侧 4 参入口的 knownFailures 版本（默认 PLANNER 角色）。 */
+    public static Rendered render(ExperienceMemory memory, String objective, java.util.List<String> knownFailures,
+                                  int maxItems, int maxChars) {
+        return render(memory, objective, knownFailures, maxItems, maxChars, RetrievalRole.PLANNER);
+    }
+
+    /** 2026-11-06：规划侧把 knownFailures 传进统一检索（只进相关性文本，不改 applicability）。 */
+    public static Rendered render(ExperienceMemory memory, String objective, java.util.List<String> knownFailures,
+                                  int maxItems, int maxChars, RetrievalRole role) {
+        java.util.List<String> failures = knownFailures == null ? java.util.List.of() : java.util.List.copyOf(knownFailures);
         RetrievalRole use = role == null ? RetrievalRole.PLANNER : role;
         String roleName = use.name().toLowerCase(java.util.Locale.ROOT);
         if (memory == null) {
@@ -371,7 +384,7 @@ public final class ExperienceStoreRetrievalBridge {
             MinimalRetrievalService service = new MinimalRetrievalService(registry);
             RetrievalQuery query = new RetrievalQuery(
                     "plan-" + System.nanoTime(), "", "", use, nz(objective),
-                    List.of(), List.of(), List.of(), 1, "",
+                    failures, List.of(), List.of(), 1, "",
                     new RetrievalBudget(Math.max(1, (maxItems <= 0 ? 8 : maxItems) - pinned.size()), 0, 0, 0,
                             maxChars <= 0 ? 2400 : maxChars, 0, "none"),
                     "ACTIVE");

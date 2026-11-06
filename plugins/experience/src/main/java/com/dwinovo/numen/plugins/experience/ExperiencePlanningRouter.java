@@ -53,7 +53,7 @@ final class ExperiencePlanningRouter {
                 LOG.warn("[expmem] unified retrieval memory unavailable: {}", t.toString());
             }
             ExperienceStoreRetrievalBridge.Rendered rendered = ExperienceStoreRetrievalBridge.render(
-                    memory, objective,
+                    memory, objective, knownFailures,
                     PlanningKnowledge.DEFAULT_MAX_ITEMS, PlanningKnowledge.DEFAULT_MAX_CHARS);
             if (observer != null) {
                 // ★ 2026-10-25（#167 债①，用户点名「目标指纹没接上」）：unified 路径的观测
