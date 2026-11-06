@@ -142,7 +142,7 @@ public final class NumenPlugins {
         return stateFactsOf(required.toString());
     }
 
-    private static final java.util.regex.Pattern HP = java.util.regex.Pattern.compile("血量\\s*(\\d+(?:\\.\\d+)?)");
+    private static final java.util.regex.Pattern HP = java.util.regex.Pattern.compile("血量\\s*(\\d+(?:\\.\\d+)?)(?!\\s*[%％])(?![\\d.])");
     private static final java.util.regex.Pattern BED = java.util.regex.Pattern.compile("bed=(\\d+)");
 
     /**
