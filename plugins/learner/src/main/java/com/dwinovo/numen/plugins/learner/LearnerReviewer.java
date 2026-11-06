@@ -355,7 +355,7 @@ final class LearnerReviewer {
     static boolean hasBlankEvidence(ReviewOutcome out) {
         if (out == null || !out.ok() || out.verdicts() == null) return false;
         for (Verdict v : out.verdicts()) {
-            if (v == null || v.actions() == null || !v.actions().contains("WRITE_EXPERIENCE")) continue;
+            if (v == null || v.actions() == null || !v.actions().contains(Verdict.Action.WRITE_EXPERIENCE)) continue;
             if (v.experience() == null) return true;
             String evidence = v.experience().field("evidence");
             if (evidence == null || evidence.isBlank()) return true;
