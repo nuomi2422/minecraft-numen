@@ -122,13 +122,15 @@ public final class FindToolsTool implements NumenTool {
         String[] terms = query.toLowerCase(Locale.ROOT).split("\\s+");
         List<NumenTool> byName = new ArrayList<>();
         List<NumenTool> bySummary = new ArrayList<>();
-        List<NumenTool> candidates = new ArrayList<>(ToolRegistry.deferred());
+        List<NumenTool> candidates = new ArrayList<>();
         Set<String> listed = new LinkedHashSet<>();
-        for (NumenTool t : candidates) {
-            if (t != null) listed.add(t.name());
+        for (NumenTool t : ToolRegistry.deferred()) {
+            if (t == null || t.externalOnly()) continue; // 外部专用：同伴侧永不可见
+            if (listed.add(t.name())) candidates.add(t);
         }
         for (NumenTool t : ToolRegistry.all()) {
-            if (t != null && listed.add(t.name())) candidates.add(t);
+            if (t == null || t.externalOnly()) continue;
+            if (listed.add(t.name())) candidates.add(t);
         }
         for (NumenTool t : candidates) {
             String name = t.name().toLowerCase(Locale.ROOT);
