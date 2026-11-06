@@ -3,6 +3,7 @@ package com.dwinovo.numen.api;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -47,4 +48,13 @@ class StateFactsTest {
         String night = NumenPlugins.stateFactsOf("<carry> … night=1 …</carry>");
         assertTrue(night.contains("night=1"), night);
     }
+    @Test void percentDangerTextIsNotAbsoluteHp() {
+        // 2026-11-06: RddDangerText 的“血量87%”是比例，不得提取为 hp=87（也不得回溯成 8）。
+        assertFalse(NumenPlugins.stateFactsOf("<env> 血量87% </env>").contains("hp="));
+        assertFalse(NumenPlugins.stateFactsOf("<env> 血量87％ </env>").contains("hp="));
+        assertFalse(NumenPlugins.stateFactsOf("<env> 血量87 % </env>").contains("hp="));
+        assertTrue(NumenPlugins.stateFactsOf("<env> 血量7.5/20 </env>").contains("hp=7.5"));
+        assertTrue(NumenPlugins.stateFactsOf("<env> 血量 12 </env>").contains("hp=12"));
+    }
+
 }
