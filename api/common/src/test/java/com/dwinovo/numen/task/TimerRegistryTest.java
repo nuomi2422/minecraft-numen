@@ -99,7 +99,6 @@ class TimerRegistryTest {
 
         assertEquals("早的", registry.list(SHE).getFirst().reason());
     }
-}
 
     @Test void urgentFlagDefaultsFalseAndCanBeSet() {
         TimerRegistry registry = new TimerRegistry();
@@ -107,3 +106,4 @@ class TimerRegistryTest {
         TimerRegistry.Timer urgent = registry.set(OTHER, 0L, 10, "出炉", true);
         assertTrue(urgent.urgent());
     }
+}
