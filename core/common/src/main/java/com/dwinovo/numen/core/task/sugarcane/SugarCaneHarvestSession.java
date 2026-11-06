@@ -22,6 +22,9 @@ public final class SugarCaneHarvestSession {
         boolean isCane(BlockPos p);
     }
 
+    /** 高度探测上限：到上限仍见甘蔗=顶端未确认，整株跳过（不把第4/8格当顶端）。 */
+    public static final int MAX_PROBE_HEIGHT = 8;
+
     private final int requested;
     private final long deadlineMs;
     private final Deque<BlockPos> queue = new ArrayDeque<>();
@@ -41,11 +44,15 @@ public final class SugarCaneHarvestSession {
             if (base == null || !world.loaded(base)) continue;
             tried++;
             List<BlockPos> upper = new ArrayList<>();
-            for (int i = 1; i <= 4; i++) {
+            boolean topUnknown = false;
+            for (int i = 1; i <= MAX_PROBE_HEIGHT; i++) {
                 BlockPos p = base.above(i);
-                if (!world.loaded(p) || !world.isCane(p)) break;
+                if (!world.loaded(p)) break;                 // 边界/未加载视为结束，但下方已知上段仍可用
+                if (!world.isCane(p)) break;                 // 顶端已确认
                 upper.add(p);
+                if (i == MAX_PROBE_HEIGHT) topUnknown = true; // 到上限仍有甘蔗
             }
+            if (topUnknown) { continue; }                    // 整株跳过，不破坏伪顶端
             int take = Math.min(budget, upper.size());
             for (int i = upper.size() - 1; i >= 0 && take > 0; i--, take--) {
                 queue.addLast(upper.get(i));
@@ -70,6 +77,19 @@ public final class SugarCaneHarvestSession {
     }
 
     public BlockPos baseOf(BlockPos target) { return baseOf.get(target); }
+
+    /** 执行前校验：加载、仍甘蔗、上方无新增、根到目标连通；返回 null=可破坏，否则原因。 */
+    public String precheck(BlockPos target, World world) {
+        BlockPos base = baseOf.get(target);
+        if (base == null) return "target_not_in_plan";
+        if (!world.loaded(target) || !world.loaded(base)) return "target_unloaded";
+        if (!world.isCane(target) || !world.isCane(base)) return "target_changed";
+        if (world.isCane(target.above())) return "grew_above_since_plan";
+        for (BlockPos p = base.above(); p.getY() <= target.getY(); p = p.above()) {
+            if (!world.isCane(p)) return "root_to_target_disconnected";
+        }
+        return null;
+    }
 
     /** 按端口回执推进；未知/拒绝不清障。 */
     public void accept(Outcome o, long nowMs) {

@@ -11,7 +11,7 @@ class SugarCaneHarvestSessionTest {
     private static SugarCaneHarvestSession.World world(int height, boolean loaded) {
         return new SugarCaneHarvestSession.World() {
             public boolean loaded(BlockPos p) { return loaded; }
-            public boolean isCane(BlockPos p) { return p.getY() > BASE.getY() && p.getY() <= BASE.getY() + height; }
+            public boolean isCane(BlockPos p) { return p.getY() >= BASE.getY() && p.getY() <= BASE.getY() + height; }
         };
     }
     private static SugarCaneHarvestSession session(int height, int count, int maxTargets, long deadline) {
@@ -41,6 +41,26 @@ class SugarCaneHarvestSessionTest {
         b.accept(SugarCaneHarvestSession.Outcome.CANCELLED, 1);
         assertEquals(SugarCaneHarvestSession.State.FAILED, b.state());
         assertNull(b.next(2));
+    }
+    @Test void tooTallTopUnknownSkipped() {
+        var s = session(9, 2, 1, 1000);
+        assertEquals(SugarCaneHarvestSession.State.SUCCESS, s.state());
+        assertEquals("no_harvestable_sugar_cane", s.stopReason());
+    }
+    @Test void precheckRejectsGrowthAboveAndDisconnect() {
+        var s = session(3, 2, 1, 1000);
+        var target = s.next(0);
+        assertNotNull(target);
+        var grown = new SugarCaneHarvestSession.World() {
+            public boolean loaded(BlockPos p) { return true; }
+            public boolean isCane(BlockPos p) { return p.getY() >= BASE.getY() && p.getY() <= target.getY() + 1; }
+        };
+        assertEquals("grew_above_since_plan", s.precheck(target, grown));
+        var hole = new SugarCaneHarvestSession.World() {
+            public boolean loaded(BlockPos p) { return true; }
+            public boolean isCane(BlockPos p) { return p.getY() != BASE.getY() + 2 && p.getY() >= BASE.getY() && p.getY() <= BASE.getY() + 3; }
+        };
+        assertEquals("root_to_target_disconnected", s.precheck(target, hole));
     }
     @Test void unloadedSkippedAndDeadlinePartial() {
         var none = new SugarCaneHarvestSession(List.of(BASE), 2, 1, world(3, false), 1000);

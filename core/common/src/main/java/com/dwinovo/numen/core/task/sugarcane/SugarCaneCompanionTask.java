@@ -26,6 +26,8 @@ public final class SugarCaneCompanionTask extends AbstractCompanionTask<SugarCan
     private final NumenPlayer owner;
     private final SugarCaneHarvestSession session;
     private final BlockDigger digger;
+    private final SugarCaneHarvestSession.World worldProbe;
+    private final net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> startDimension;
 
     public SugarCaneCompanionTask(NumenPlayer player, SugarCaneTaskRecord record) {
         this(player, record, scanBases(player, record.radius));
@@ -60,6 +62,8 @@ public final class SugarCaneCompanionTask extends AbstractCompanionTask<SugarCan
             @Override public boolean loaded(BlockPos p) { return level.hasChunkAt(p); }
             @Override public boolean isCane(BlockPos p) { return level.getBlockState(p).is(Blocks.SUGAR_CANE); }
         };
+        this.worldProbe = world;
+        this.startDimension = player.serverLevel().dimension();
         this.session = new SugarCaneHarvestSession(candidateBases, record.count, record.maxTargets,
                 world, record.deadlineMs);
     }
@@ -67,13 +71,15 @@ public final class SugarCaneCompanionTask extends AbstractCompanionTask<SugarCan
     @Override
     protected TaskState onTick() {
         long now = System.currentTimeMillis();
+        if (!owner.serverLevel().dimension().equals(startDimension)) {
+            fail("dimension changed since task start", FailureType.TARGET_LOST);
+            return TaskState.FAILED;
+        }
         BlockPos target = session.next(now);
         if (target == null) return terminal();
-        BlockPos base = session.baseOf(target);
-        var level = owner.serverLevel();
-        if (base == null || !level.hasChunkAt(target) || !level.getBlockState(target).is(Blocks.SUGAR_CANE)
-                || !level.getBlockState(base).is(Blocks.SUGAR_CANE)) {
-            fail("sugar cane target changed/unloaded before dig", FailureType.TARGET_LOST);
+        String why = session.precheck(target, worldProbe);
+        if (why != null) {
+            fail("sugar cane precheck failed: " + why, FailureType.TARGET_LOST);
             return TaskState.FAILED;
         }
         BlockDigger.DigResult r = digger.digTargetStep(target);
