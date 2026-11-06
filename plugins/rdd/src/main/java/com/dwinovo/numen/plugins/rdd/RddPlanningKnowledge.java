@@ -81,14 +81,16 @@ final class RddPlanningKnowledge {
                     com.dwinovo.numen.api.observation.WorldObservationService.class);
             if (service == null) return objective;
             var self = service.readSelf("rdd-plan", companionId, 3_000L);
-            Long hp = validHp(companionId, self, System.currentTimeMillis());
-            return hp == null ? objective : objective + " <state_facts hp=" + hp + "/>";
+            Double hp = validHp(companionId, self, System.currentTimeMillis());
+            if (hp == null) return objective;
+            String num = hp == Math.rint(hp) ? String.valueOf(hp.longValue()) : String.valueOf(hp);
+            return objective + " <state_facts hp=" + num + "/>";
         } catch (RuntimeException | LinkageError unavailable) {
             return objective;
         }
     }
 
-    static Long validHp(UUID companionId, com.dwinovo.numen.api.observation.WorldObservationService.Response self, long nowMs) {
+    static Double validHp(UUID companionId, com.dwinovo.numen.api.observation.WorldObservationService.Response self, long nowMs) {
         if (self == null || self.status() != com.dwinovo.numen.api.observation.WorldObservationService.Status.OK) return null;
         var m = self.metadata();
         if (m == null) return null;
@@ -96,14 +98,14 @@ final class RddPlanningKnowledge {
         if (m.subjectId() == null || !m.subjectId().equalsIgnoreCase(companionId.toString())) return null;
         if (m.worldId() == null || m.worldId().isBlank() || m.serverSession() == null || m.serverSession().isBlank()) return null;
         if (m.observedAtMs() <= 0 || m.observedAtMs() > nowMs) return null;
-        if (m.validUntilMs() > 0 && m.validUntilMs() <= nowMs) return null;
+        if (m.validUntilMs() <= 0 || m.validUntilMs() <= nowMs) return null;  // 0/缺省 = 未声明有效期，不当永久有效
         for (var item : self.items()) {
             if (item == null) continue;
             if (item.staleFields().contains("hp") || item.unknownFields().contains("hp")) continue;
             Object v = item.values().get("hp");
             if (v instanceof Number n) {
                 double d = n.doubleValue();
-                if (Double.isFinite(d) && d >= 0) return Math.round(d);
+                if (Double.isFinite(d) && d >= 0) return d;
             }
         }
         return null;

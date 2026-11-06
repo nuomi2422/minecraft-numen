@@ -321,4 +321,12 @@ class ExperienceRetrievalProviderTest {
                 "excluded 命中时必须仍为 FAIL，不能因 knownFailures 放行");
     }
 
+    @Test
+    void fractionalHpDoesNotMatchIntegerCeiling() {
+        var facts64 = ExperienceRetrievalProvider.stateFacts("mine <state_facts hp=6.4/>");
+        assertFalse(ExperienceRetrievalProvider.factHolds("hp<=6", facts64), "6.4 不得命中 <=6");
+        var facts59 = ExperienceRetrievalProvider.stateFacts("mine <state_facts hp=5.9/>");
+        assertTrue(ExperienceRetrievalProvider.factHolds("hp<=6", facts59), "5.9 应命中 <=6");
+    }
+
 }

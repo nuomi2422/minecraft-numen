@@ -32,7 +32,19 @@ class RddPlanningHpFactTest {
     @Test void freshCurrentHpIsAccepted() {
         UUID c = UUID.randomUUID();
         var r = ok(c, meta(c.toString(), ObservationMetadata.Freshness.CURRENT, NOW - 1000, NOW + 60_000), 4);
-        assertEquals(4L, RddPlanningKnowledge.validHp(c, r, NOW));
+        assertEquals(4.0, RddPlanningKnowledge.validHp(c, r, NOW));
+    }
+
+    @Test void keepsFractionalHpPrecision() {
+        UUID c = UUID.randomUUID();
+        var r = ok(c, meta(c.toString(), ObservationMetadata.Freshness.CURRENT, NOW - 1000, NOW + 60_000), 6.4);
+        assertEquals(6.4, RddPlanningKnowledge.validHp(c, r, NOW), 0.0001);
+    }
+
+    @Test void rejectsZeroValidUntil() {
+        UUID c = UUID.randomUUID();
+        var r = ok(c, meta(c.toString(), ObservationMetadata.Freshness.CURRENT, NOW - 1000, 0L), 4);
+        assertNull(RddPlanningKnowledge.validHp(c, r, NOW));
     }
 
     @Test void rejectsWrongSubjectStaleExpiredAndFuture() {
