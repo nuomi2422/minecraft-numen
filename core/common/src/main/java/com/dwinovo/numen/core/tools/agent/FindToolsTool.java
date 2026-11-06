@@ -101,7 +101,7 @@ public final class FindToolsTool implements NumenTool {
             String n = raw.strip();
             if (n.isEmpty() || !seen.add(n)) continue;
             NumenTool t = ToolRegistry.resolve(n);
-            if (t != null && out.size() < MAX_RESULTS) out.add(t);
+            if (t != null && !t.externalOnly() && out.size() < MAX_RESULTS) out.add(t);
         }
         return out;
     }
