@@ -18,7 +18,7 @@ final class RddSurvivalGate {
      * @param freeSlots      背包空槽数
      * @param needsSlotAction 当前是否有待捡/待合成/待给食物的动作（决定满包是否要腾格）
      */
-    static Decision decide(int hunger, double hp, int freeSlots, boolean needsSlotAction) {
+    static Decision evaluate(int hunger, double hp, int freeSlots, boolean needsSlotAction) {
         if (hunger < 10 || hp < 8.0) return Decision.EAT_FIRST;
         if (freeSlots <= 0 && needsSlotAction) return Decision.MAKE_ROOM_FIRST;
         return Decision.NONE;

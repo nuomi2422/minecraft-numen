@@ -198,6 +198,28 @@ final class RddDecomposer {
         return RddChainFactory.fromObjective(companionId, objective);
     }
 
+    /** 生存闸：需要先吃时产出首任务链（只做进食，其余目标等它完成后再规划）。 */
+    private static Goal survivalFirst(UUID companionId, String objective) {
+        var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
+        if (server == null) return null;
+        var body = com.dwinovo.numen.entity.NumenPlayer.findByUuid(server, companionId);
+        if (body == null) return null;
+        int hunger = body.getFoodData().getFoodLevel();
+        double hp = body.getHealth();
+        int free = 0;
+        int size = Math.min(36, body.getInventory().getContainerSize());
+        for (int i = 0; i < size; i++) {
+            if (body.getInventory().getItem(i).isEmpty()) free++;
+        }
+        var decision = RddSurvivalGate.evaluate(hunger, hp, free, false);
+        if (decision == RddSurvivalGate.Decision.NONE) return null;
+        String head = decision == RddSurvivalGate.Decision.EAT_FIRST
+                ? "先活下来：背包满就先丢掉/存好一组大宗材料腾出格子，再取或合成食物并吃掉，hunger 回到 15 以上。"
+                : "背包满且有东西要捡/要合成：先丢掉或存好一组大宗材料腾出一格。";
+        LOG.info("[rdd] 生存闸命中 {} hunger={} hp={} free={}", decision, hunger, hp, free);
+        return RddChainFactory.fromObjective(companionId, head + "完成后再继续原目标：" + objective);
+    }
+
     /** 目标里是否在建家/安家（决定要不要贴建家顺序参考）。 */
     private static boolean mentionsHome(String objective) {
         if (objective == null) return false;
@@ -208,6 +230,16 @@ final class RddDecomposer {
 
     /** 主入口：异步分解目标，回调收到一个可用的 Goal（成功=分解链，失败=占位链）。 */
     static void decompose(UUID companionId, String objective, Consumer<Goal> done) {
+        // 2026-11-06 生存闸（内容层唯一判据）：hunger<10 / hp<8 时跳过常规分解，直出进食首任务。
+        try {
+            Goal survival = survivalFirst(companionId, objective);
+            if (survival != null) {
+                Minecraft.getInstance().execute(() -> done.accept(survival));
+                return;
+            }
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 生存闸判定失败，按原流程分解: {}", ex.toString());
+        }
         INumenConfig cfg = Services.CONFIG;
         if (cfg.getApiKey() == null || cfg.getApiKey().isBlank()) {
             LOG.warn("[rdd] 未配置 LLM key，跳过分解，回落占位链");
