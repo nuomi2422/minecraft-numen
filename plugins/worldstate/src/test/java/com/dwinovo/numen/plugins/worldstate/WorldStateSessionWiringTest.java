@@ -259,6 +259,38 @@ class WorldStateSessionWiringTest {
         assertEquals(Freshness.CURRENT, read(reloadedHost, server).freshness());
     }
 
+    @Test void selfRefreshStaysInSameMemoryStoreAndNeverCreatesDiskFile() throws Exception {
+        Object host = host(config);
+        Object server = server(config.resolve("live"), true, false);
+        ObservationRequest self = ObservationRequest.self("minecraft:overworld", UUID.randomUUID());
+        RefreshResult result = (RefreshResult) invoke(host, "refresh", new Class<?>[]{serverType, ObservationRequest.class}, server, self);
+        assertTrue(result.success());
+        assertTrue(((ReadResult) invoke(host, "read", new Class<?>[]{serverType, ObservationRequest.class}, server, self)).present());
+        assertFalse(Files.exists(config.resolve("worldstate/observations.json")));
+        assertTrue(refresh(host, server).success());
+        List<Observation> persisted = ObservationJson.fromJson(Files.readString(config.resolve("worldstate/observations.json")));
+        assertEquals(1, persisted.size());
+        assertEquals(com.dwinovo.numen.worldstate.core.model.Topic.ENVIRONMENT, persisted.getFirst().key().topic());
+    }
+
+    @Test void loadIgnoresLegacySelfWhileKeepingOtherHistoricalTopics() throws Exception {
+        Object host = host(config);
+        Object server = server(config.resolve("live"), true, false);
+        assertTrue(refresh(host, server).success());
+        Path file = config.resolve("worldstate/observations.json");
+        List<Observation> rows = new ArrayList<>(ObservationJson.fromJson(Files.readString(file)));
+        UUID uuid = UUID.randomUUID();
+        var request = ObservationRequest.self("minecraft:overworld", uuid);
+        var payload = new com.dwinovo.numen.worldstate.core.observation.payload.SelfPayload(
+                "minecraft:overworld", uuid, null, null, null, null, null, null, null, null, null, null, null);
+        rows.add(new Observation(request.keyFor(world(server)), payload, "old", com.dwinovo.numen.worldstate.core.model.Origin.DIRECT,
+                42, System.currentTimeMillis(), com.dwinovo.numen.worldstate.core.model.Coverage.COMPLETE, Freshness.CURRENT, 2, 1, session(host, server)));
+        Files.writeString(file, ObservationJson.toJson(rows));
+        Object reloaded = host(config);
+        assertFalse(((ReadResult) invoke(reloaded, "read", new Class<?>[]{serverType, ObservationRequest.class}, server, request)).present());
+        assertEquals(Freshness.HISTORICAL, read(reloaded, server).freshness());
+    }
+
     private static String location(Class<?> type) throws Exception {
         return Path.of(type.getProtectionDomain().getCodeSource().getLocation().toURI()).toString();
     }
@@ -326,7 +358,7 @@ class WorldStateSessionWiringTest {
         sources.put(PKG + "WorldStateMonitor", "package " + PKG.substring(0, PKG.length() - 1)
                 + "; public class WorldStateMonitor { public static void publish(String event, java.util.Map<String, Object> values) {} }");
         for (var entry : Map.of("Environment", "ENVIRONMENT", "EntityCount", "ENTITIES",
-                "BlockCount", "BLOCKS", "Container", "CONTAINERS").entrySet()) {
+                "BlockCount", "BLOCKS", "Container", "CONTAINERS", "Self", "SELF").entrySet()) {
             String name = entry.getKey() + "WorldProvider";
             sources.put(PKG + "provider." + name, """
                     package com.dwinovo.numen.plugins.worldstate.provider;
@@ -342,6 +374,10 @@ class WorldStateSessionWiringTest {
                         public int dataVersion() { return 1; }
                         public ProviderResult collect(CollectionContext context, ObservationRequest request) {
                             calls++;
+                            if (topic() == Topic.SELF) return ProviderResult.of(
+                                new com.dwinovo.numen.worldstate.core.observation.payload.SelfPayload(request.dimension(),
+                                    java.util.UUID.fromString(request.target().substring(7)), null, null, null, null,
+                                    null, null, null, null, null, null, null), Coverage.COMPLETE);
                             return ProviderResult.of(new EnvironmentPayload(request.dimension(), 6000L, true, false), Coverage.COMPLETE);
                         }
                     }

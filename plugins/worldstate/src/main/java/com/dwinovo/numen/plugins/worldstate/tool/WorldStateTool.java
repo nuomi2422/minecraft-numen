@@ -66,6 +66,7 @@ public final class WorldStateTool implements NumenTool {
                 + "（如 minecraft:sheep）或 category=passive/all。区块未加载不强制加载，也不误报 0。\n"
                 + "topic=blocks —— 范围内方块计数，需要 x1..z2；可选 block=id 或 id[属性=值]（逗号分隔多个），"
                 + "samples=N 可带回最多 N 个命中坐标。\n"
+                + "topic=self —— 显式采集/读取当前同伴身体快照，target=player:<当前同伴UUID>，仅当前维度；无自动采样。\n"
                 + "topic=containers —— 容器内容，需要 container=block:x,y,z 或 player:<uuid>。\n"
                 + "需要难度/游戏模式/玩家列表/光照/自身状态等诊断事实时，用 world_probe action=list。\n"
                 + "典型用法：先 refresh 采集，再 read 读取；要求交易/取物/完工前再 refresh 一次。";
@@ -129,6 +130,15 @@ public final class WorldStateTool implements NumenTool {
                 return;
             }
             ObservationRequest request = outcome.request();
+            WorldStateArgs.requireOwnSelf(request, self.getUUID().toString(),
+                    self.serverLevel().dimension().location().toString());
+            if (topic == Topic.SELF && ("read".equals(action) || "refresh".equals(action))) {
+                var apiRequest = new com.dwinovo.numen.api.observation.WorldObservationService.Request(
+                        "world-state-tool", request.dimension(), "self", Map.of("target", request.target()),
+                        1000, 1, 1000);
+                reply.accept(com.dwinovo.numen.plugins.worldstate.SelfObservationProjection.toolReply(action, apiRequest, observations));
+                return;
+            }
 
             switch (action) {
                 case "read" -> handleRead(self, request, reply);

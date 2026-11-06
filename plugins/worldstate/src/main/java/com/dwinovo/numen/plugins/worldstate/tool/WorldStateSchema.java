@@ -34,8 +34,8 @@ public final class WorldStateSchema {
                 // 042 R1-2：topic 改为**操作条件必需**——changes 不需要主题，read/refresh 需要。
                 // schema 层不强制 required（否则 changes 永远过不了校验）；缺 topic 时由 onServerCall
                 // 明确报 "topic is required for action=read|refresh"（R1-3 的可诊断失败）。
-                .optionalEnum("topic", "观测主题（action=read|refresh 必需）：environment / entities / blocks / containers",
-                        "environment", "entities", "blocks", "containers")
+                .optionalEnum("topic", "观测主题（action=read|refresh 必需）：environment / entities / blocks / containers / self",
+                        "environment", "entities", "blocks", "containers", "self")
                 .optionalString("dimension", "维度 id，默认同伴当前维度，如 minecraft:overworld")
                 .optionalInteger("samples", "blocks 用：每个规格带回几个位置样本（0~32，默认 0）", 0, 32)
                 .optionalInteger("x1", "范围角1 x（entities/blocks 用）", -30000000, 30000000)
@@ -48,6 +48,7 @@ public final class WorldStateSchema {
                 .optionalEnum("category", "entities 用：passive=动物 / hostile=怪物 / all=全部（默认 all）",
                         "passive", "hostile", "all")
                 .optionalString("block", "blocks 用：目标方块 id 或 id[属性=值]，逗号分隔多个")
+                .optionalString("target", "self 必需：player:<当前同伴UUID>；只读当前同伴当前维度")
                 .optionalString("container", "containers 用：block:x,y,z 或 player:<uuid>")
                 .optionalInteger("max_age_ms", "batch_read：允许年龄，默认2000毫秒", 1, 60000)
                 .optionalInteger("max_skew_ms", "batch_read：各观测采样偏差上限，默认100毫秒", 0, 60000)

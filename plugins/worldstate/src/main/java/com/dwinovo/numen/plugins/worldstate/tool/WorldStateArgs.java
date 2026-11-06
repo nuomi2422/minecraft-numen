@@ -38,7 +38,7 @@ public final class WorldStateArgs {
     public static Outcome forReadRefresh(Topic topic, JsonObject args, String dimension) {
         if (topic == null) {
             return Outcome.fail("world_state: topic is required for action=read|refresh"
-                    + " (environment|entities|blocks|containers; facilities is defined but not wired yet)");
+                    + " (environment|entities|blocks|containers|self; facilities is defined but not wired yet)");
         }
         ObservationRequest request = buildRequest(args, topic, dimension);
         if (request == null) {
@@ -50,6 +50,7 @@ public final class WorldStateArgs {
     /** 缺字段的明确报错（042 R1-3：非法 selector / 缺字段要能一眼看出来）。 */
     public static String missingFieldMessage(Topic topic) {
         return switch (topic) {
+            case SELF -> "world_state: self needs target=player:<uuid> (got empty or invalid)";
             case CONTAINERS -> "world_state: containers needs container=block:x,y,z or player:<uuid> (got empty)";
             case ENTITIES, BLOCKS -> "world_state: " + topic.id()
                     + " needs a box: x1,y1,z1,x2,y2,z2 (got empty or invalid)";
@@ -60,6 +61,10 @@ public final class WorldStateArgs {
     /** 与工具处理器同口径的请求构造；返回 null 表示这个主题的参数不完整。 */
     public static ObservationRequest buildRequest(JsonObject args, Topic topic, String dimension) {
         return switch (topic) {
+            case SELF -> {
+                try { yield new ObservationRequest(Topic.SELF, dimension, optionalString(args, "target"), "", null); }
+                catch (RuntimeException e) { yield null; }
+            }
             case ENVIRONMENT -> ObservationRequest.environment(dimension);
             case ENTITIES -> {
                 Bounds box = boundsFrom(args);
@@ -91,6 +96,14 @@ public final class WorldStateArgs {
             }
             default -> null;
         };
+    }
+
+    /** 2026-11-06: SELF alone is caller-bound; do not silently change legacy four-topic permissions. */
+    public static void requireOwnSelf(ObservationRequest request, String companionId, String dimension) {
+        if (request.topic() != Topic.SELF) return;
+        if (companionId == null || !request.target().equals("player:" + companionId)
+                || !request.dimension().equals(dimension))
+            throw new IllegalArgumentException("DENIED: self requires current companion and dimension");
     }
 
     /** x1..z2 六个数都在就构成范围；缺一个就 null（不猜默认值）。 */

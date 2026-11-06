@@ -31,7 +31,7 @@ public final class WorldStateBatch {
         for (var entry : input) {
             if (!entry.isJsonObject()) throw new IllegalArgumentException("each query must be an object");
             JsonObject q = entry.getAsJsonObject();
-            Set<String> allowed = Set.of("topic", "dimension", "container", "block", "samples", "entity_type", "category", "x1", "y1", "z1", "x2", "y2", "z2");
+            Set<String> allowed = Set.of("topic", "dimension", "target", "container", "block", "samples", "entity_type", "category", "x1", "y1", "z1", "x2", "y2", "z2");
             for (String key : q.keySet()) if (!allowed.contains(key))
                 throw new IllegalArgumentException("unknown query field: " + key);
             String dim = text(q, "dimension", caller.dimension());
@@ -40,6 +40,7 @@ public final class WorldStateBatch {
             var parsed = WorldStateArgs.forReadRefresh(topic, q, dim);
             if (!parsed.ok()) throw new IllegalArgumentException(parsed.error());
             var core = parsed.request();
+            WorldStateArgs.requireOwnSelf(core, caller.companionId(), caller.dimension());
             Map<String, String> selector = new LinkedHashMap<>();
             if (core.bounds() != null) {
                 // Parse the same six coordinates; check BEFORE passing to the trusted plugin API.
@@ -53,6 +54,7 @@ public final class WorldStateBatch {
                 selector.put("box", core.bounds().canonical().replace("..", ","));
             }
             switch (topic) {
+                case SELF -> selector.put("target", core.target());
                 case CONTAINERS -> {
                     String target = core.target();
                     if (target.startsWith("player:")) {

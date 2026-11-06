@@ -20,6 +20,7 @@ public final class ObservationBatchReader {
         return response.items().stream().allMatch(item -> {
             var v = item.values();
             return switch (request.topic()) {
+                case "self" -> selfShape(request, response, v);
                 case "environment" -> v.get("day_time") instanceof Number && v.get("weather") instanceof String
                         && request.dimension().equals(v.get("dimension"));
                 case "entities" -> v.get("count") instanceof Number;
@@ -28,6 +29,45 @@ public final class ObservationBatchReader {
                 default -> false;
             };
         });
+    }
+
+    /** SELF is one complete detached subject, not an empty inventory or a partial summary. */
+    private static boolean selfShape(Request request, Response response, java.util.Map<String, Object> v) {
+        String target = request.selector().getOrDefault("target", "");
+        if (response.items().size() != 1 || !target.startsWith("player:")
+                || !target.substring(7).equals(v.get("companionUUID")) || !request.dimension().equals(v.get("dimension"))) return false;
+        for (String key : List.of("hp", "maxHp", "food", "saturation", "selected"))
+            if (!(v.get(key) instanceof Number)) return false;
+        int selected = ((Number) v.get("selected")).intValue();
+        if (selected < 0 || selected > 8 || !selfSlots(v.get("main"), 0, 36)
+                || !selfSlots(v.get("armor"), 36, 4) || !selfSlot(v.get("offhand"), 40)) return false;
+        if (!(v.get("mainHand") instanceof java.util.Map<?, ?> hand)
+                || !selfSlot(hand, selected) || !hand.equals(((List<?>) v.get("main")).get(selected))) return false;
+        if (!(v.get("effects") instanceof List<?> effects)) return false;
+        for (Object effect : effects) {
+            if (!(effect instanceof java.util.Map<?, ?> e) || !(e.get("id") instanceof String)
+                    || !(e.get("amplifier") instanceof Number) || !(e.get("infinite") instanceof Boolean)) return false;
+            if (!Boolean.TRUE.equals(e.get("infinite"))
+                    && (!(e.get("observedDuration") instanceof Number) || !(e.get("expiryTick") instanceof Number))) return false;
+        }
+        if (!(v.get("vehicle") instanceof java.util.Map<?, ?> vehicle) || !(vehicle.get("type") instanceof String type)
+                || (!type.isEmpty() && !(vehicle.get("uuid") instanceof String))) return false;
+        return v.get("bodyTask") instanceof java.util.Map<?, ?> task && task.get("taskId") instanceof String
+                && task.get("tool") instanceof String && task.get("describe") instanceof String
+                && task.get("standing") instanceof Boolean && task.get("elapsedMs") instanceof Number;
+    }
+
+    private static boolean selfSlots(Object value, int start, int count) {
+        if (!(value instanceof List<?> slots) || slots.size() != count) return false;
+        for (int i = 0; i < count; i++) if (!selfSlot(slots.get(i), start + i)) return false;
+        return true;
+    }
+
+    private static boolean selfSlot(Object value, int index) {
+        return value instanceof java.util.Map<?, ?> slot && slot.get("slot") instanceof Number n
+                && n.doubleValue() == index && slot.get("id") instanceof String && slot.get("count") instanceof Number
+                && slot.get("damage") instanceof Number && slot.get("maxDamage") instanceof Number
+                && slot.get("isDamageable") instanceof Boolean;
     }
 
     public static Result read(WorldObservationService service, Query query) {
@@ -56,7 +96,7 @@ public final class ObservationBatchReader {
             if (r == null) r = Response.error(original.topic(), "provider returned null");
             out.add(r);
             var m = r.metadata();
-            String container = original.selector().getOrDefault("container", "");
+            String container = original.selector().getOrDefault("self".equals(original.topic()) ? "target" : "container", "");
             String expectedSubject = container.startsWith("player:") ? container.substring(7) : "";
             if (!m.identified() || r.observedTick() < 0 || !expectedSubject.equals(m.subjectId())
                     || !r.topic().equals(original.topic()) || !m.dimension().equals(original.dimension())) {

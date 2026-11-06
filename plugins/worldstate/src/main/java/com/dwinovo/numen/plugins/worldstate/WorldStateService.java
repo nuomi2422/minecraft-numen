@@ -2,6 +2,8 @@ package com.dwinovo.numen.plugins.worldstate;
 
 import com.dwinovo.numen.plugins.worldstate.provider.BlockCountWorldProvider;
 import com.dwinovo.numen.plugins.worldstate.provider.ContainerWorldProvider;
+import com.dwinovo.numen.plugins.worldstate.provider.SelfWorldProvider;
+import com.dwinovo.numen.worldstate.core.model.Topic;
 import com.dwinovo.numen.plugins.worldstate.provider.EntityCountWorldProvider;
 import com.dwinovo.numen.plugins.worldstate.provider.EnvironmentWorldProvider;
 import com.dwinovo.numen.worldstate.core.freshness.TopicFreshnessPolicy;
@@ -82,6 +84,7 @@ public final class WorldStateService {
         this.providers.register(new EntityCountWorldProvider());
         this.providers.register(new BlockCountWorldProvider());
         this.providers.register(new ContainerWorldProvider());
+        this.providers.register(new SelfWorldProvider());
         // 先载入磁盘观测**再**建 RefreshService：后者要按存储里的最大修订号续号，
         // 否则重启后新进程序列从 0 起，所有刷新都会被 put() 判成"更旧"而静默丢弃
         //（2026-11-05 实机事故，见 RefreshRevisionContinuityTest）。
@@ -138,7 +141,7 @@ public final class WorldStateService {
             return RefreshResult.failed(FailReason.INVALID_REQUEST, "refresh requires the Minecraft server thread", 0L);
         }
         RefreshResult result = queryService.refresh(context(server), request);
-        if (result.success()) {
+        if (result.success() && request.topic() != Topic.SELF) {
             persist();
         }
         return result;
@@ -186,7 +189,8 @@ public final class WorldStateService {
             if (Files.isRegularFile(file)) {
                 for (Observation o : ObservationJson.fromJson(
                         Files.readString(file, StandardCharsets.UTF_8))) {
-                    store.put(o);
+                    // 2026-11-06: private full inventory is session-only, including old cache files.
+                    if (o.key().topic() != Topic.SELF) store.put(o);
                 }
             }
         } catch (IOException | RuntimeException ignored) {
@@ -198,7 +202,7 @@ public final class WorldStateService {
         try {
             Files.createDirectories(file.getParent());
             Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
-            Files.writeString(tmp, ObservationJson.toJson(store.all()), StandardCharsets.UTF_8);
+            Files.writeString(tmp, ObservationJson.toJson(store.all().stream().filter(o -> o.key().topic() != Topic.SELF).toList()), StandardCharsets.UTF_8);
             Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             // 落盘失败只记事件与日志——本次内存观测仍有效，不把成功的刷新变成崩溃。

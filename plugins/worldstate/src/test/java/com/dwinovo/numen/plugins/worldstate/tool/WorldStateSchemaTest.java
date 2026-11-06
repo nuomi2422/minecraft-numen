@@ -94,7 +94,7 @@ class WorldStateSchemaTest {
     void topicEnumContainsContainers() {
         Map<String, Object> topic = (Map<String, Object>) props().get("topic");
         List<String> values = (List<String>) topic.get("enum");
-        assertEquals(Set.of("environment", "entities", "blocks", "containers"), Set.copyOf(values));
+        assertEquals(Set.of("environment", "entities", "blocks", "containers", "self"), Set.copyOf(values));
     }
 
     @Test

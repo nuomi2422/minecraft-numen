@@ -104,6 +104,10 @@ public final class ObservationCapability implements WorldObservationService {
         if (topic == null) throw new IllegalArgumentException("unknown topic: " + request.topic());
         var s = request.selector();
         return switch (topic) {
+            case SELF -> {
+                if (!s.keySet().equals(Set.of("target"))) throw new IllegalArgumentException("self requires only target=player:<uuid>");
+                yield new ObservationRequest(Topic.SELF, request.dimension(), s.get("target"), "", null);
+            }
             case ENVIRONMENT -> ObservationRequest.environment(request.dimension());
             case CONTAINERS -> ObservationRequest.containers(request.dimension(), s.get("container"));
             case ENTITIES -> ObservationRequest.entities(request.dimension(), box(s.get("box")),
@@ -129,7 +133,9 @@ public final class ObservationCapability implements WorldObservationService {
 
     private static List<Item> items(ObservationPayload payload) {
         List<Item> out = new ArrayList<>();
-        if (payload instanceof EnvironmentPayload e) {
+        if (payload instanceof SelfPayload self) {
+            out.add(SelfObservationProjection.item(self));
+        } else if (payload instanceof EnvironmentPayload e) {
             out.add(Item.of(Map.of("dimension", e.dimension(), "day_time", e.dayTime(),
                     "weather", e.weather(), "raining", e.raining(), "thundering", e.thundering())));
         } else if (payload instanceof ContainerPayload c) {
