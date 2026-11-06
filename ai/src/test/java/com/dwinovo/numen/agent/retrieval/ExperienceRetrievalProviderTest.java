@@ -302,7 +302,7 @@ class ExperienceRetrievalProviderTest {
 
     @Test
     void knownFailuresDoNotChangeApplicabilityFiltering() {
-        // excluded 命中 objective（不是命中 knownFailures 文本）时仍必须被过滤 —— 失败文本不参与 applicability。
+        // excluded 命中 objective 时应标 FAIL；search 当前不按 applicability 丢弃条目（过滤在下游视图），此测试锁 FAIL 标签不被 knownFailures 改写。
         ExperienceEntryRead blocked = entry("exp:b", "no path out 教训", Maturity.OBSERVED, false,
                 List.of(), List.of("no path out"));
         ExperienceEntryRead kept = entry("exp:k", "craft 工作台", Maturity.OBSERVED, false,
