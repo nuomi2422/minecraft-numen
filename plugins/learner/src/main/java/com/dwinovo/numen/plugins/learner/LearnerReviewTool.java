@@ -344,9 +344,32 @@ final class LearnerReviewTool implements NumenTool {
                         ? com.dwinovo.numen.plugins.learner.contract.ReviewContractAdapter
                                 .windowFirstOf(memoSnapshot)
                         : "";
+                // 2026-11-06（监督者实测）：提交侧带来的结构化证据优先，且**必须能在日志里查到**。
+                // 形状合法但不存在的事件 id 一样能过契约校验 ⇒ 那会把"有证据"变成假象。
+                java.util.List<String> memoEvidence = srcMemo == null ? java.util.List.of() : srcMemo.evidence();
+                java.util.List<String> unresolved = com.dwinovo.numen.plugins.learner.core.EvidenceJournal
+                        .unresolved(LearnerPlugin.configDir().resolve("monitor"), memoEvidence);
+                java.util.List<String> verifiedEvidence = new java.util.ArrayList<>(memoEvidence);
+                verifiedEvidence.removeAll(unresolved);
+                if (!unresolved.isEmpty()) {
+                    try {
+                        LearnerMonitor.publish("evidence_unresolved", Map.of(
+                                "memo_id", v.memoId(), "provided", memoEvidence, "unresolved", unresolved));
+                    } catch (RuntimeException ignored) {
+                        // 观测失败不影响复盘
+                    }
+                }
+                if (verifiedEvidence.isEmpty() && (windowFirst == null || windowFirst.isBlank())) {
+                    try {
+                        LearnerMonitor.publish("evidence_missing", Map.of(
+                                "memo_id", v.memoId(), "reason", "missing_window_first"));
+                    } catch (RuntimeException ignored) {
+                        // 同上
+                    }
+                }
                 var draft = com.dwinovo.numen.plugins.learner.contract.ReviewContractAdapter.toSubmission(
                         v, v.memoId(), com.dwinovo.numen.plugins.learner.contract.Submission.Mode.INTERNAL,
-                        windowFirst);
+                        windowFirst, verifiedEvidence);
                 var dec = com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.evaluate(
                         contractMode, draft, null);
                 if (dec == null) {

@@ -104,6 +104,13 @@ final class LearnerNoteTool implements NumenTool {
                 .optionalString("category", "learning (default) or timing. "
                         + "Use \"timing\" for ordering/sequencing problems (needs X first, wait for Y "
                         + "before Z) - those usually become an AC script. Use \"learning\" for anything else.")
+                // ★ 2026-11-06（监督者实测）：契约取证的首选来源。人工提交没有 snapshot.window_first
+                //   时，证据恒空 ⇒ 真实教训连续被判 claim_without_evidence。给一个结构化入口，
+                //   并明确“必须是真的、日志里查得到的事件 id”，否则会被丢弃并记账。
+                .optionalString("evidence", "Event ids that prove this memo, comma-separated, e.g. "
+                        + "tools-1793933887212-0, learner-430909465154500 (the event_id field in "
+                        + "config/numen/monitor/*.jsonl). Use the ids you actually saw in this turn; "
+                        + "an id that cannot be found in the journal is dropped and reported, never accepted.")
                 .optionalString("snapshot", "REQUIRED WHEN STUCK. Environment as key=value pairs separated by commas, "
                         + "e.g. hp=6/20, armor=none, weapon=none, nearby=zombie, dim=overworld. "
                         + "Keys: hp|health, armor|chestplate|helmet|leggings|boots, weapon|sword|axe|bow, "
@@ -160,8 +167,9 @@ final class LearnerNoteTool implements NumenTool {
                     autoCollected = !snapshot.isEmpty();
                 }
 
+                java.util.List<String> evidence = Memo.normalizeEvidence(splitEvidence(in.evidence()));
                 Memo memo = new Memo(memoId, in.problem().trim(), nz(in.stage()), in.tried().trim(),
-                        snapshot, System.currentTimeMillis(), nz(in.category()));
+                        snapshot, System.currentTimeMillis(), nz(in.category()), evidence);
 
                 if (!q.append(memo)) {
                     // 分不清是「满了」还是「字段太长」时不猜：两种都如实报，并给出当前深度
@@ -228,6 +236,27 @@ final class LearnerNoteTool implements NumenTool {
     }
 
     /**
+     * 把 {@code evidence} 入参拆成 id 列表：逗号/空白分隔，也接受 JSON 数组字面量的样子
+     * （模型偶尔会直接塞 {"a","b"}）。具体归一（去 event: 前缀、去重、限条数）交给
+     * {@link Memo#normalizeEvidence}，这里只管切分。
+     */
+    static java.util.List<String> splitEvidence(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return java.util.List.of();
+        }
+        String s = raw.trim();
+        if (s.startsWith("[") && s.endsWith("]")) {
+            s = s.substring(1, s.length() - 1);
+        }
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (String part : s.split("[,;\\s]+")) {
+            String t = part.trim().replace("\"", "");
+            if (!t.isEmpty()) out.add(t);
+        }
+        return out;
+    }
+
+    /**
      * ★ {@code category} 刻意做成<b>可选</b>（缺省 {@code learning}），不做成必填：
      * 这个工具刚变成常驻（每轮都进 prompt），必填参数会诱使它每轮都填一次 ——
      * 而「分类」这件事只在真的要写待办时才需要想。
@@ -235,5 +264,6 @@ final class LearnerNoteTool implements NumenTool {
      * <p>而且 {@link Memo} 的规范构造器会把 null/空白也归成 {@code learning}，
      * 所以「没传」与「传了 learning」不需要在下游分两种情形处理。</p>
      */
-    private record Input(String problem, String tried, String stage, String snapshot, String category) {}
+    private record Input(String problem, String tried, String stage, String snapshot, String category,
+                         String evidence) {}
 }

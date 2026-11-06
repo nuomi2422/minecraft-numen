@@ -37,7 +37,18 @@ public record Memo(
          * 「调用方没传类别」与「调用方显式传了 learning」落在同一个值上，
          * 下游按 {@code learning} 判就够，不必先判空再判值（两段判断必有一段漏）。</p>
          */
-        String category
+        String category,
+        /**
+         * ★ 2026-11-06（监督者实测）：提交侧带来的**事件证据 id**（裸 id 或已带 event: 前缀）。
+         *
+         * <p>为什么要它：复盘契约给 claim/artifact 挂证据的唯一来源原先只有 snapshot 里的
+         * {@code window_first}；人工用 {@code learner_note} 提交的 memo 没有那个字段 ⇒ 证据恒空 ⇒
+         * 四条真实教训连续被判 {@code claim_without_evidence}（2026-11-06 实测）。证据不能靠
+         * 散文约定，必须有结构化入口。
+         *
+         * <p>缺省空表：老队列文件没有该键时 Gson 给 null，构造器归一成空表，向后兼容。
+         */
+        List<String> evidence
 ) {
     /** 未声明类别时的缺省值；也是 {@code LearnerNoteTool} 的缺省。 */
     public static final String CATEGORY_LEARNING = "learning";
@@ -53,11 +64,39 @@ public record Memo(
         // ⚠️ 不认识的值原样留着，不静默改成 learning ——
         //   「它说了个我没听过的类别」是一条要让人看见的事实，悄悄改掉就查不到了。
         category = category == null || category.isBlank() ? CATEGORY_LEARNING : category.trim();
+        evidence = normalizeEvidence(evidence);
     }
 
-    /** 老条目 / 程序化构造（投料侧）用：类别缺省 learning。 */
+    /**
+     * 证据 id 归一：去空白、去 event: 前缀、去重、限 8 条、单条限 80 字。
+     *
+     * <p>只做形状归一，**不做真伪判断**（真伪要靠调用方到日志里查，纯 JVM 这里读不到日志）。
+     */
+    public static List<String> normalizeEvidence(List<String> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return List.of();
+        }
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+        for (String s : raw) {
+            if (s == null) continue;
+            String t = s.trim();
+            if (t.startsWith("event:")) t = t.substring(6).trim();
+            if (t.isEmpty() || t.length() > 80) continue;
+            out.add(t);
+            if (out.size() >= 8) break;
+        }
+        return List.copyOf(out);
+    }
+
+    /** 老条目 / 程序化构造（投料侧）用：类别缺省 learning、无证据。 */
     public Memo(String id, String problem, String stage, String tried, String snapshot, long createdAt) {
         this(id, problem, stage, tried, snapshot, createdAt, CATEGORY_LEARNING);
+    }
+
+    /** 带类别、无证据的老构造（保持调用点不变）。 */
+    public Memo(String id, String problem, String stage, String tried, String snapshot,
+                long createdAt, String category) {
+        this(id, problem, stage, tried, snapshot, createdAt, category, List.of());
     }
 
     /** 供 LLM 复盘用的紧凑文本：只给判断所需，不给无关字段。 */
@@ -78,6 +117,10 @@ public record Memo(
         }
         sb.append("问题: ").append(problem).append('\n');
         sb.append("已尝试: ").append(tried.isBlank() ? "(未记录)" : tried).append('\n');
+        // 把提交侧带来的事件 id 给复盘看：它是契约取证的**首选来源**，不印出来等于让它猜。
+        if (evidence != null && !evidence.isEmpty()) {
+            sb.append("证据: ").append(String.join(", ", evidence)).append('\n');
+        }
         if (!snapshot.isBlank()) {
             sb.append("环境快照: ").append(snapshot).append('\n');
         }

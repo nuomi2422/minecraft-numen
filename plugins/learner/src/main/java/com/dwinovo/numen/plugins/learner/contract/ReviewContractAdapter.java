@@ -51,18 +51,27 @@ public final class ReviewContractAdapter {
      */
     public static Submission.Draft toSubmission(Verdict v, String sampleId, Submission.Mode mode,
                                                 String windowFirst) {
+        return toSubmission(v, sampleId, mode, windowFirst, List.of());
+    }
+
+    /**
+     * 带**结构化证据**的版本（2026-11-06，监督者实测后补）。
+     *
+     * <p>为什么需要它：契约给 claim/artifact 挂证据的唯一来源原先只有 snapshot 里的
+     * {@code window_first}。人工用 {@code learner_note} 提交的 memo 没有那个字段，于是证据恒空，
+     * 四条真实教训连续被判 {@code claim_without_evidence}（2026-11-06 现场）。所以：
+     *
+     * <p>取证优先级 = **memo 自带证据 → snapshot window_first**。两条都不合法就留空，
+     * 让质量门如实拒绝，**不补造**。调用方须先用 {@link #evidenceAllowed} 判断源写者，
+     * 并自行到日志里核 id 是否存在（本类纯函数，读不到日志）。
+     */
+    public static Submission.Draft toSubmission(Verdict v, String sampleId, Submission.Mode mode,
+                                                String windowFirst, List<String> memoEvidence) {
         if (v == null) {
             return new Submission.Draft(mode, sampleId, new ReviewDraft.Draft(sampleId, List.of()), List.of());
         }
         List<ReviewDraft.Claim> claims = new ArrayList<>();
-        List<EvidenceRef> evidence = List.of();
-        if (windowFirst != null && !windowFirst.isBlank()) {
-            try {
-                evidence = List.of(EvidenceRef.parse("event:" + windowFirst.trim()));
-            } catch (RuntimeException ignored) {
-                evidence = List.of();   // 形不成合法引用就不放，不伪造
-            }
-        }
+        List<EvidenceRef> evidence = evidenceOf(memoEvidence, windowFirst);
         claims.add(new ReviewDraft.Claim(ReviewDraft.Section.FACT,
                 clip(v.reasoning(), 400), evidence));
 
@@ -133,6 +142,36 @@ public final class ReviewContractAdapter {
     }
 
     /** 从草稿 JSON 的 evidence 数组里读合法引用（event:… / block:…）；非法项丢弃，不伪造。 */
+    /**
+     * 取证优先级：memo 自带证据 → snapshot 的 window_first。
+     *
+     * <p>逐条走 {@link EvidenceRef#parse} 校验；任何一条形不成合法引用就丢掉那一条，
+     * 不因为一条坏就全丢（真实场景常有一条能查到、一条写错）。去重后最多 8 条。
+     */
+    static List<EvidenceRef> evidenceOf(List<String> memoEvidence, String windowFirst) {
+        List<EvidenceRef> out = new ArrayList<>();
+        java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        java.util.List<String> candidates = new ArrayList<>();
+        if (memoEvidence != null) candidates.addAll(memoEvidence);
+        if (windowFirst != null && !windowFirst.isBlank()) candidates.add(windowFirst.trim());
+        for (String raw : candidates) {
+            if (raw == null || raw.isBlank()) continue;
+            String t = raw.trim();
+            String ref = t.startsWith("event:") ? t : "event:" + t;
+            try {
+                EvidenceRef r = EvidenceRef.parse(ref);
+                if (r.kind() == EvidenceRef.Kind.OTHER) continue;
+                if (seen.add(r.kind().name() + ":" + r.id())) {
+                    out.add(r);
+                    if (out.size() >= 8) break;
+                }
+            } catch (RuntimeException ignored) {
+                // 形不成合法引用就丢掉这一条，不伪造
+            }
+        }
+        return List.copyOf(out);
+    }
+
     static List<EvidenceRef> evidenceField(String json) {
         List<EvidenceRef> out = new java.util.ArrayList<>();
         for (String raw : listField(json, "evidence")) {
