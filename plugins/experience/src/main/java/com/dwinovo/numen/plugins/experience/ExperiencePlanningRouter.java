@@ -43,6 +43,14 @@ final class ExperiencePlanningRouter {
                                List<String> knownFailures, boolean unified,
                                Function<UUID, ExperienceMemory> memories,
                                Consumer<ExperienceStoreRetrievalBridge.Rendered> observer) {
+        return knowledgeFor(companion, objective, objective, stage, knownFailures, unified, memories, observer);
+    }
+
+    /** 2026-11-06：检索串与目标文本分离——指纹/观测仍用 objective，召回用 retrievalObjective。 */
+    static String knowledgeFor(UUID companion, String objective, String retrievalObjective, String stage,
+                               List<String> knownFailures, boolean unified,
+                               Function<UUID, ExperienceMemory> memories,
+                               Consumer<ExperienceStoreRetrievalBridge.Rendered> observer) {
         if (unified) {
             ExperienceMemory memory = null;
             try {
@@ -53,7 +61,7 @@ final class ExperiencePlanningRouter {
                 LOG.warn("[expmem] unified retrieval memory unavailable: {}", t.toString());
             }
             ExperienceStoreRetrievalBridge.Rendered rendered = ExperienceStoreRetrievalBridge.render(
-                    memory, objective, knownFailures,
+                    memory, retrievalObjective, knownFailures,
                     PlanningKnowledge.DEFAULT_MAX_ITEMS, PlanningKnowledge.DEFAULT_MAX_CHARS);
             if (observer != null) {
                 // ★ 2026-10-25（#167 债①，用户点名「目标指纹没接上」）：unified 路径的观测

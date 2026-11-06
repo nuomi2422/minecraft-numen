@@ -42,7 +42,8 @@ final class RddPlanningKnowledge {
     static final Provider HOST = (companionId, objective, stage, knownFailures) -> {
         try {
             return NumenPlugins.planningKnowledge(
-                    PlanningQuery.of(companionId, objective, stage, knownFailures));
+                    PlanningQuery.of(companionId, objective, stage, knownFailures,
+                withHpFact(companionId, objective)));
         } catch (Throwable t) {
             return "";
         }
@@ -72,6 +73,42 @@ final class RddPlanningKnowledge {
      * @param basePrompt 规划器原本要发出去的正文（背包/已完成阶段/重试提示都已渲染好）
      * @return 最终请求正文；知识不可用时与 {@code basePrompt} 逐字相同
      */
+    /** 2026-11-06：只接 hp 一项；readSelf 缓存读，任何校验失败都回退原 objective（UNKNOWN）。 */
+    static String withHpFact(UUID companionId, String objective) {
+        if (companionId == null || objective == null) return objective;
+        try {
+            var service = com.dwinovo.numen.api.NumenPlugins.capability(
+                    com.dwinovo.numen.api.observation.WorldObservationService.class);
+            if (service == null) return objective;
+            var self = service.readSelf("rdd-plan", companionId, 3_000L);
+            Long hp = validHp(companionId, self, System.currentTimeMillis());
+            return hp == null ? objective : objective + " <state_facts hp=" + hp + "/>";
+        } catch (RuntimeException | LinkageError unavailable) {
+            return objective;
+        }
+    }
+
+    static Long validHp(UUID companionId, com.dwinovo.numen.api.observation.WorldObservationService.Response self, long nowMs) {
+        if (self == null || self.status() != com.dwinovo.numen.api.observation.WorldObservationService.Status.OK) return null;
+        var m = self.metadata();
+        if (m == null) return null;
+        if (m.freshness() != com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT) return null;
+        if (m.subjectId() == null || !m.subjectId().equalsIgnoreCase(companionId.toString())) return null;
+        if (m.worldId() == null || m.worldId().isBlank() || m.serverSession() == null || m.serverSession().isBlank()) return null;
+        if (m.observedAtMs() <= 0 || m.observedAtMs() > nowMs) return null;
+        if (m.validUntilMs() > 0 && m.validUntilMs() <= nowMs) return null;
+        for (var item : self.items()) {
+            if (item == null) continue;
+            if (item.staleFields().contains("hp") || item.unknownFields().contains("hp")) continue;
+            Object v = item.values().get("hp");
+            if (v instanceof Number n) {
+                double d = n.doubleValue();
+                if (Double.isFinite(d) && d >= 0) return Math.round(d);
+            }
+        }
+        return null;
+    }
+
     static String withKnowledge(Provider provider, UUID companionId, String basePrompt,
                                 String objective, String stage, List<String> knownFailures) {
         Provider p = provider == null ? HOST : provider;

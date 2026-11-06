@@ -55,7 +55,7 @@ public final class ExperiencePlugin implements NumenPlugin {
         //   旧路经验贡献关掉 → 同一条经验不会被注入两遍。默认 legacy，不配置的人行为零变化。
         numen.contributePlanningKnowledge(query -> {
             try {
-                return knowledgeFor(query.companion(), query.objective(), query.stage(),
+                return knowledgeFor(query.companion(), query.objective(), query.retrievalObjective(), query.stage(),
                         query.knownFailures(),
                         RetrievalPolicy.experienceRetrievalMode() == RetrievalPolicy.Mode.UNIFIED,
                         ExperiencePlugin::memory,
@@ -279,11 +279,11 @@ public final class ExperiencePlugin implements NumenPlugin {
      * <p>规则与可测实现都在 {@link ExperiencePlanningRouter}（它不实现宿主接口，
      * 离线测试不需要把整条宿主 API 拉进类路径）；这里只把生产依赖接上。
      */
-    static String knowledgeFor(UUID companion, String objective, String stage,
+    static String knowledgeFor(UUID companion, String objective, String retrievalObjective, String stage,
                                java.util.List<String> knownFailures, boolean unified,
                                java.util.function.Function<UUID, ExperienceMemory> memories,
                                java.util.function.Consumer<ExperienceStoreRetrievalBridge.Rendered> observer) {
-        return ExperiencePlanningRouter.knowledgeFor(companion, objective, stage, knownFailures,
+        return ExperiencePlanningRouter.knowledgeFor(companion, objective, retrievalObjective, stage, knownFailures,
                 unified, memories, observer);
     }
 
