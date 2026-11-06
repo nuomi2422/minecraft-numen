@@ -124,4 +124,19 @@ class WorldFocusProjectorTest {
         }
     }
 
+    @Test void executorSideUsesSameStoreAndReadsOnly() {
+        var store = new com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore();
+        UUID c = UUID.randomUUID();
+        long now = 4_000_000L;
+        store.pin(c, "world", "session", "minecraft:overworld", "environment", now, 60_000L, 0, 0, 0);
+        AtomicInteger reads = new AtomicInteger(), refreshes = new AtomicInteger();
+        var obs = stub(Map.of("environment", ok("environment", now, "time", "day")), reads, refreshes);
+        String text = WorldFocusProjector.render(store, obs, c, "world", "session", now + 100);
+        assertTrue(text.contains("environment="), text);
+        assertEquals(1, reads.get());
+        assertEquals(0, refreshes.get(), "执行侧同样不得 refresh");
+        String none = WorldFocusProjector.render(store, obs, UUID.randomUUID(), "world", "session", now + 100);
+        assertEquals("", none, "无 pin 或错主体时为空串（正文不变）");
+    }
+
 }

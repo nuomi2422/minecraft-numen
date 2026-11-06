@@ -34,10 +34,29 @@ final class WorldFocusProjector {
     static String render(com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore pins,
                          WorldObservationService observations, PlanningQuery query,
                          String world, String session, long nowMs) {
-        if (pins == null || observations == null || query == null || query.companion() == null) return "";
+        return query == null ? "" : render(pins, observations, query.companion(), world, session, nowMs);
+    }
+
+    /** 执行侧同源入口：同一 store/同一 projector，返回 UUID 适配器的片段。 */
+    static String renderFor(WorldStateService service, WorldObservationService observations, java.util.UUID companion) {
+        if (service == null || companion == null) return "";
+        try {
+            var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
+            if (server == null) return "";
+            return render(service.focusPins(), observations, companion, WorldStateService.worldId(server),
+                    service.sessionId(server), System.currentTimeMillis());
+        } catch (RuntimeException | LinkageError unavailable) {
+            return "";
+        }
+    }
+
+    static String render(com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore pins,
+                         WorldObservationService observations, java.util.UUID companion,
+                         String world, String session, long nowMs) {
+        if (pins == null || observations == null || companion == null) return "";
         try {
             List<com.dwinovo.numen.plugins.worldstate.focus.FocusPin> active =
-                    pins.active(query.companion(), world, session, nowMs);
+                    pins.active(companion, world, session, nowMs);
             if (active.isEmpty()) return "";
             StringBuilder sb = new StringBuilder("<focus>");
             int shown = 0;

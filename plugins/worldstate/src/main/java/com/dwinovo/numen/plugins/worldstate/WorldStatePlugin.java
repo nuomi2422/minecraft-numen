@@ -37,6 +37,9 @@ public final class WorldStatePlugin implements NumenPlugin {
         numen.registerTool(new WorldStateTool(service, observations));
         // 2026-11-06（038 显式短期焦点）：只投影已有缓存里的 pin，不刷新、不重复 danger/weather 正文。
         numen.contributePlanningKnowledge(query -> WorldFocusProjector.render(service, observations, query));
+        // 2026-11-07：执行侧同源片段（低优先级、可裁；无 pin 时为空串，正文不变）。
+        numen.contributeExecutorKnowledge((java.util.function.BiFunction<java.util.UUID, String, String>)
+                (uuid, objective) -> WorldFocusProjector.renderFor(service, observations, uuid));
         numen.registerTool(new WorldProbeTool(new ProbeService()));
         // 2026-11-06：身体每 10 tick 采好一帧就映射进原 store（只映射，不扫库存——帧已由
         // CompanionBodySample 在同一个 tick 备好）。这条链由 CompanionTickDispatcher 直接驱动，
