@@ -243,6 +243,8 @@ public final class RddPlugin implements NumenPlugin {
         numen.registerTool(new FarmCellTool());
         // 2026-10-08 一片田一次收+留苗（避开 ACX for+异步 的续跑限制）。
         numen.registerTool(new FarmNearbyTool());
+        // 2026-11-06 播种：18 块耕地只长 2 株的根因是「全仓没有播种动作」，farm_nearby 只管收割。
+        numen.registerTool(new SowNearbyTool());
         numen.registerTool(new RddSkipTool());
         numen.registerTool(new RddAssetsTool());
         // H1.1（104 号）：只读重生点（床锚）坐标+维度，供实验台起跑前判「一死会不会掉进虚空」。

@@ -1,0 +1,50 @@
+{
+  "name": "farm_maintain_loop",
+  "version": "1",
+  "description": "种田维护：先 farm_nearby 把成熟作物收割并原地留苗，再 sow_nearby 把空地耕地补种（消耗背包种子），最后 collect_items 捡起零星掉落；一次调用走完全链，不需要逐株寻路。",
+  "tags": [
+    "farming",
+    "harvest",
+    "sow",
+    "maintain"
+  ],
+  "planner_notes": "为什么要有这条：2026-11-06 实测基地 18 块耕地只长 2 株、背包 20 颗种子却种不下去——farm_nearby/farm_cell 只碰成熟作物（收产物+age 复位，不耗种子），全仓没有播种动作，模型只能用 interact_at 硬点，回执全是 aim is blocked from here。收割与补种必须是两个原子工具，再由一条 AC 串起来，才不需要每一步都花一次 LLM。用法：站到田边（离耕地 4 格内不必逐株走），直接跑本脚本；半径默认 24 覆盖整片田。",
+  "safety_notes": "只碰成熟作物与空耕地；不拆块、不改地形；没有种子时 sow_nearby 如实报 0，不会凭空造作物。",
+  "limits": {
+    "max_steps": 60,
+    "max_timeout_ms": 600000
+  },
+  "steps": [
+    {
+      "id": "read",
+      "block": "get_self_status",
+      "params": {}
+    },
+    {
+      "id": "harvest",
+      "block": "farm_nearby",
+      "params": {
+        "radius": 24
+      }
+    },
+    {
+      "id": "sow",
+      "block": "sow_nearby",
+      "params": {
+        "radius": 24
+      }
+    },
+    {
+      "id": "pickup",
+      "block": "collect_items",
+      "params": {
+        "radius": 16
+      }
+    },
+    {
+      "id": "done",
+      "block": "get_self_status",
+      "params": {}
+    }
+  ]
+}
