@@ -289,12 +289,12 @@ final class RddRepairDispatch {
     private static final java.util.concurrent.ConcurrentHashMap<UUID, Long> LAST_RECOMPUTED =
             new java.util.concurrent.ConcurrentHashMap<>();
 
+    /** 每同伴每进程只打一次 "armed"，证明兜底真的被调用过，又不逐 tick 刷屏。 */
+    private static final java.util.Set<UUID> ARMED_LOGGED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     static void recomputeLatestFromLedger(UUID companionId, java.util.Map<String, Integer> counts) {
         try {
-            // 2026-10-28：日志必须在**所有早退之前**。
-            // 上一版把 start 日志放在 `latest == null || lostItems().isEmpty()` 之后，
-            // 结果"一次都没打印"——我差点又把它读成"没被调用"，其实是被这道早退挡在了前面。
-            LOG.info("[rdd-repair] recompute-from-ledger enter companion={}", companionId);
             if (companionId == null) return;
             // ★ 2026-10-28（静态定案）：死亡台账是**懒加载**的，加载点只有两处 ——
             //   ① onDeath（死亡那一刻；重启后这条路不会再走）；
@@ -304,13 +304,17 @@ final class RddRepairDispatch {
             RddPlugin.ensureLedgerLoaded(companionId);
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death latest =
                     com.dwinovo.numen.rdd.core.RddDeathLedger.latest(companionId);
-            LOG.info("[rdd-repair] latest={} lostKinds={}",
-                    latest == null ? "null" : latest.seq(),
-                    latest == null ? -1 : latest.lostItems().size());
             if (latest == null || latest.lostItems().isEmpty()) return;
             // 2026-10-29（本方法每 tick 都被调用）：同一笔死亡只重算一次，否则就是死循环。
-            if (LAST_RECOMPUTED.getOrDefault(companionId, (long) Integer.MIN_VALUE) == (long) latest.seq()) {
+            // 2026-11-06（热点）：日志必须放在幂等 guard **之后**，否则每 tick 两条 INFO 把
+            // latest.log 撑到 4.6MB/6 分钟（12:40–12:41 实测）；"是否被调用"用每同伴一次 armed 保留。
+            long lastRecomputedSeq = LAST_RECOMPUTED.getOrDefault(companionId, (long) Integer.MIN_VALUE);
+            if (RddRepairLogPolicy.skipSameBatch(lastRecomputedSeq, latest.seq())) {
                 return;
+            }
+            if (RddRepairLogPolicy.shouldLogArmed(ARMED_LOGGED, companionId)) {
+                LOG.info("[rdd-repair] recompute-from-ledger armed companion={} seq={} lostKinds={}",
+                        companionId, latest.seq(), latest.lostItems().size());
             }
             LAST_RECOMPUTED.put(companionId, (long) latest.seq());
             var impact = recomputeAfterDeath(companionId, counts, false, "restart", latest.seq());
