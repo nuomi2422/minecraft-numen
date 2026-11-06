@@ -26,7 +26,7 @@ public final class WorldStateSchema {
     public static Map<String, Object> build() {
         Map<String, Object> schema = Schema.object()
                 .enumStr("action", "read=只读已有观测 / refresh=主动采集 / changes=增量读（041）",
-                        "read", "refresh", "changes", "catalog", "batch_read")
+                        "read", "refresh", "changes", "catalog", "batch_read", "pin", "unpin")
                 // 中性措辞：具体是"观测 revision"还是"日志 streamSeq"，等 042 R3 定（R3-2 要求拆开）。
                 .optionalInteger("after", "changes 用：增量游标（上次读到的位置），0=从头", 0, Integer.MAX_VALUE)
                 .optionalInteger("limit", "changes 用：最多返回几条（默认 64，上限 256）", 1, 256)
@@ -36,6 +36,8 @@ public final class WorldStateSchema {
                 // 明确报 "topic is required for action=read|refresh"（R1-3 的可诊断失败）。
                 .optionalEnum("topic", "观测主题（action=read|refresh 必需）：environment / entities / blocks / containers / self",
                         "environment", "entities", "blocks", "containers", "self")
+                .optionalInteger("ttl_seconds", "pin 用：焦点存活秒数（默认 120，范围 1~600）", 1, 600)
+                .optionalString("pin_id", "unpin 用：要取消的焦点 id")
                 .optionalString("dimension", "维度 id，默认同伴当前维度，如 minecraft:overworld")
                 .optionalInteger("samples", "blocks 用：每个规格带回几个位置样本（0~32，默认 0）", 0, 32)
                 .optionalInteger("x1", "范围角1 x（entities/blocks 用）", -30000000, 30000000)

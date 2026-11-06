@@ -10,6 +10,7 @@ import com.dwinovo.numen.worldstate.core.model.Bounds;
 import com.dwinovo.numen.worldstate.core.model.Topic;
 import com.dwinovo.numen.plugins.worldstate.focus.FocusPin;
 import com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore;
+import com.dwinovo.numen.plugins.worldstate.focus.FocusTools;
 import com.dwinovo.numen.worldstate.core.observation.ObservationPayload;
 import com.dwinovo.numen.worldstate.core.observation.payload.EntityCountPayload;
 import com.dwinovo.numen.worldstate.core.observation.payload.EnvironmentPayload;
@@ -97,7 +98,7 @@ public final class WorldStateTool implements NumenTool {
                 String dim = self.serverLevel().dimension().location().toString();
                 if ("unpin".equals(action)) {
                     String pinId = args.has("pin_id") ? args.get("pin_id").getAsString() : "";
-                    boolean removed = service.focusPins().unpin(self.getUUID(), pinId);
+                    boolean removed = FocusTools.unpin(service.focusPins(), self.getUUID(), pinId);
                     reply.accept(TaskResult.ok(removed ? "focus unpinned" : "no such pin for this companion",
                             Map.of("pin_id", pinId, "removed", removed)).toJson());
                     return;
