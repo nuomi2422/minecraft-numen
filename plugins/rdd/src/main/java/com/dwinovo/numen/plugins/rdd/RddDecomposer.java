@@ -758,7 +758,6 @@ final class RddDecomposer {
         for (String id : ids) if (id != null && !id.isBlank()) total++;
         if (total == 0) return "";
         int allow = Math.max(0, maxChars - reservedAfter);
-        int markerFloor = marker(total).length();
         for (int keep = Math.min(ID_LIST_MAX_IDS, total); keep >= 0; keep--) {
             int omitted = total - keep;
             String marker = omitted > 0 ? marker(omitted) : "";
