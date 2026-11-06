@@ -45,6 +45,18 @@ class SelfWiringContractTest {
         return WorldStateBatch.parse(root,CALLER,"q");
     }
 
+    @Test void effectExpiryRemainsInObservedTickDomainNotBodyElapsedGameTime() {
+        var item=SelfObservationProjection.item(sample());
+        var response=response(item);
+        @SuppressWarnings("unchecked") var effects=(List<Map<String,Object>>)item.values().get("effects");
+        var effect=effects.getFirst();
+        assertEquals(response.observedTick()+((Number)effect.get("observedDuration")).longValue(),
+                ((Number)effect.get("expiryTick")).longValue());
+        // This sample's observedTick=100, duration=100, expiry=200; body elapsed=0 is unrelated.
+        @SuppressWarnings("unchecked") var body=(Map<String,Object>)item.values().get("bodyTask");
+        assertEquals(0,((Number)body.get("elapsedMs")).longValue());
+    }
+
     @Test void schemaAndParserUseOneCanonicalTarget() {
         var request = WorldStateArgs.forReadRefresh(Topic.SELF,args(TARGET),DIM).request();
         assertEquals(TARGET,request.target());

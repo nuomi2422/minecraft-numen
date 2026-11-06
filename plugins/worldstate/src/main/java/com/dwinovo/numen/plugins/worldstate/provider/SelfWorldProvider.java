@@ -17,7 +17,9 @@ import java.util.*;
  * WHY: immutable equipment wear/effect expiry must come from one server observation.
  * USAGE: registered with the existing WorldStateService refresh path; reads remain cache-only.
  * Not Watch/client caches: those omit wear/renewal and cannot establish current server identity.
- * Task elapsedMs is game-time ticks * 50, an estimate, NOT elapsed wall-clock milliseconds.
+ * Effect expiryTick uses context.gameTick / Observation.gameTick (server.getTickCount, session-local),
+ * NOT level.getGameTime. Compare expiry only with observedTick-domain ticks from this same session.
+ * Task elapsedMs instead uses level game-time ticks * 50, an estimate, NOT wall-clock milliseconds.
  */
 public final class SelfWorldProvider implements WorldProvider {
     @Override public Topic topic() { return Topic.SELF; }
@@ -43,6 +45,7 @@ public final class SelfWorldProvider implements WorldProvider {
         for (var effect : player.getActiveEffects()) {
             boolean infinite = effect.isInfiniteDuration();
             Integer duration = infinite ? null : effect.getDuration();
+            // Context tick is exactly the Observation observedTick domain; world gameTime is a different clock.
             Long expiry = duration == null ? null : Math.addExact(mc.gameTick(), duration.longValue());
             effects.add(new Effect(BuiltInRegistries.MOB_EFFECT.getKey(effect.getEffect().value()).toString(),
                     effect.getAmplifier(), duration, infinite, expiry));
