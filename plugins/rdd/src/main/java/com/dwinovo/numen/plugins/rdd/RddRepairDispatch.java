@@ -296,6 +296,10 @@ final class RddRepairDispatch {
     static void recomputeLatestFromLedger(UUID companionId, java.util.Map<String, Integer> counts) {
         try {
             if (companionId == null) return;
+            // "到底有没有被调到"必须与台账是否有货无关：armed 放在台账判断之前，每同伴一次。
+            if (RddRepairLogPolicy.shouldLogArmed(ARMED_LOGGED, companionId)) {
+                LOG.info("[rdd-repair] recompute-from-ledger armed companion={}", companionId);
+            }
             // ★ 2026-10-28（静态定案）：死亡台账是**懒加载**的，加载点只有两处 ——
             //   ① onDeath（死亡那一刻；重启后这条路不会再走）；
             //   ② deathDropsBackInInventory（要求 lastRepair != null，而 lastRepair 也是内存表，重启即空）。
@@ -311,10 +315,6 @@ final class RddRepairDispatch {
             long lastRecomputedSeq = LAST_RECOMPUTED.getOrDefault(companionId, (long) Integer.MIN_VALUE);
             if (RddRepairLogPolicy.skipSameBatch(lastRecomputedSeq, latest.seq())) {
                 return;
-            }
-            if (RddRepairLogPolicy.shouldLogArmed(ARMED_LOGGED, companionId)) {
-                LOG.info("[rdd-repair] recompute-from-ledger armed companion={} seq={} lostKinds={}",
-                        companionId, latest.seq(), latest.lostItems().size());
             }
             LAST_RECOMPUTED.put(companionId, (long) latest.seq());
             var impact = recomputeAfterDeath(companionId, counts, false, "restart", latest.seq());
