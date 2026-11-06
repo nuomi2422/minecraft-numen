@@ -24,6 +24,23 @@ class ObservationBatchTest {
         AtomicInteger index = new AtomicInteger();
         return ObservationBatchReader.read(r -> responses[index.getAndIncrement()], q, () -> 2000, () -> 0);
     }
+    @Test void pendingSampleDoesNotMasqueradeAsExpired() {
+        var pending = new Response(Status.PENDING, "environment", "", 0, Coverage.UNKNOWN,
+                "no observation yet; refresh explicitly", List.of(), 0);
+        var result = read(query(100, 2), response("world", "session", 1500, 10), pending);
+        assertEquals(Status.PARTIAL, result.status());
+        assertEquals(Consistency.UNKNOWN, result.consistency());
+        assertEquals("missing or mismatched sample identity", result.reason());
+    }
+
+    @Test void pendingSampleDoesNotHideAnActuallyExpiredSample() {
+        var pending = new Response(Status.PENDING, "environment", "", 0, Coverage.UNKNOWN,
+                "no observation yet; refresh explicitly", List.of(), 0);
+        var result = read(query(100, 2), response("world", "session", 999, 10), pending);
+        assertFalse(result.coherent());
+        assertEquals("sample expired before batch delivery", result.reason());
+    }
+
     @Test void batchReadsOnlyAndKeepsKnownSamples() {
         AtomicInteger calls = new AtomicInteger();
         WorldObservationService svc = new WorldObservationService() {

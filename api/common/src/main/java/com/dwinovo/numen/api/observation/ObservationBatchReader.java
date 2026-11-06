@@ -83,8 +83,11 @@ public final class ObservationBatchReader {
         long deliveredAt = nowMs.getAsLong();
         for (int i = 0; i < out.size(); i++) {
             var m = out.get(i).metadata();
+            // 2026-11-06 B-249: a missing sample is not an expired observation.
+            // Keep its identity diagnostic, while still checking every dated sample below.
+            if (m.observedAtMs() <= 0) continue;
             long ageLimit = query.requests().get(i).maxAgeMs();
-            if (m.observedAtMs() <= 0 || m.observedAtMs() > deliveredAt
+            if (m.observedAtMs() > deliveredAt
                     || m.validUntilMs() < m.observedAtMs() || deliveredAt > m.validUntilMs()
                     || (ageLimit > 0 && deliveredAt - m.observedAtMs() > ageLimit)) {
                 usable = false; problem = "sample expired before batch delivery";
