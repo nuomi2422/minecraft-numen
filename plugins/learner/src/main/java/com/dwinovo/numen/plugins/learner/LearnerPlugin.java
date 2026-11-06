@@ -102,6 +102,10 @@ public final class LearnerPlugin implements NumenPlugin {
             var file = configDir.resolve("skills.jsonl");
             var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(file);
             var before = registry.get(skillId).orElse(null);
+            if (before == null) {
+                out.put("error", "unknown skillId: " + skillId);
+                return out;
+            }
             var decision = registry.retire(skillId, reason);
             java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
             ev.put("skillId", skillId);
