@@ -10,6 +10,8 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * 单进程焦点表：挂在现有观测服务生命周期里，按 (companion, world, session) 归属；
  * 不落盘、不新观测缓存；到期/换世界/换会话自动失效。上限 4（038 建议 2+4，这里取显式焦点 4）。
+ * <p><b>复用语义（2026-11-06 实机确认）</b>：同 companion+dimension+topic 再 pin 返回**原条目**且
+ * **不续期**（expiresAt 不变）；需要延长请在到期后重新 pin（本批不实现自动续期）。
  */
 public final class FocusPinStore {
 

@@ -39,6 +39,7 @@ class FocusPinStoreTest {
         FocusPin a = st.pin(c, W, S, D, "entities", 1000L, 60_000L, 0, 0, 0);
         FocusPin again = st.pin(c, W, S, D, "entities", 1500L, 60_000L, 0, 0, 0);
         assertEquals(a.id(), again.id(), "同 topic+dimension 复用现有 pin");
+        assertEquals(a.expiresAtMs(), again.expiresAtMs(), "复用不续期：expiresAt 不变");
         assertTrue(st.unpin(c, a.id()));
         assertFalse(st.unpin(c, a.id()));
         for (int i = 0; i < FocusPinStore.MAX_PINS_PER_COMPANION; i++) {
