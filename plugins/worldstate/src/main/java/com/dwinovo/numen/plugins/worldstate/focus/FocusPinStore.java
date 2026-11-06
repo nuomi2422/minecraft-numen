@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class FocusPinStore {
 
     public static final int MAX_PINS_PER_COMPANION = 4;
+    /** 技术默认（非主人决定）：120s 见 038 §3.1 的短期焦点，上限 4 取自其“2 自动+4 显式”建议；2026-11-06。 */
     public static final long DEFAULT_TTL_MS = 120_000L;
     public static final long MIN_TTL_MS = 1_000L;
     public static final long MAX_TTL_MS = 600_000L;
@@ -25,6 +26,11 @@ public final class FocusPinStore {
                                      String topic, long nowMs, long ttlMs, long maxAgeMs, int limit, int maxItems) {
         if (companion == null) return null;
         pruneExpired(companion, nowMs);
+        // 2026-11-06（038）：换世界/换会话/换主体维度时真清理旧焦点，而不是只在查询时过滤。
+        List<FocusPin> existing = pins.get(companion);
+        if (existing != null) {
+            existing.removeIf(p -> !p.worldId().equals(worldId) || !p.sessionId().equals(sessionId));
+        }
         List<FocusPin> list = pins.computeIfAbsent(companion, k -> new ArrayList<>());
         if (list.stream().anyMatch(p -> p.topic().equals(topic) && p.dimension().equals(dimension))) {
             return list.stream().filter(p -> p.topic().equals(topic) && p.dimension().equals(dimension)).findFirst().orElse(null);

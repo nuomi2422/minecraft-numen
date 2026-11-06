@@ -13,19 +13,35 @@ final class WorldFocusProjector {
     static final int MAX_CHARS = 400;
 
     static String render(WorldStateService service, WorldObservationService observations, PlanningQuery query) {
-        if (service == null || observations == null || query == null || query.companion() == null) return "";
+        if (service == null || query == null) return "";
         try {
             var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
             if (server == null) return "";
-            String world = WorldStateService.worldId(server);
-            String session = service.sessionId(server);
-            long now = System.currentTimeMillis();
-            List<com.dwinovo.numen.plugins.worldstate.focus.FocusPin> pins =
-                    service.focusPins().active(query.companion(), world, session, now);
-            if (pins.isEmpty()) return "";
+            return render(service, observations, query, WorldStateService.worldId(server),
+                    service.sessionId(server), System.currentTimeMillis());
+        } catch (RuntimeException | LinkageError unavailable) {
+            return "";
+        }
+    }
+
+    /** 纯入口（可单测）：世界/会话/时间由调用方给，内部只读缓存。 */
+    static String render(WorldStateService service, WorldObservationService observations, PlanningQuery query,
+                         String world, String session, long nowMs) {
+        return service == null ? "" : render(service.focusPins(), observations, query, world, session, nowMs);
+    }
+
+    /** 纯入口（可单测，不依赖 MC 服务类）。 */
+    static String render(com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore pins,
+                         WorldObservationService observations, PlanningQuery query,
+                         String world, String session, long nowMs) {
+        if (pins == null || observations == null || query == null || query.companion() == null) return "";
+        try {
+            List<com.dwinovo.numen.plugins.worldstate.focus.FocusPin> active =
+                    pins.active(query.companion(), world, session, nowMs);
+            if (active.isEmpty()) return "";
             StringBuilder sb = new StringBuilder("<focus>");
             int shown = 0;
-            for (var pin : pins) {
+            for (var pin : active) {
                 if (sb.length() >= MAX_CHARS) break;
                 String line;
                 try {
@@ -36,7 +52,7 @@ final class WorldFocusProjector {
                     } else {
                         var m = resp.metadata();
                         boolean current = m != null && m.freshness() == com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT
-                                && (m.validUntilMs() <= 0 || m.validUntilMs() > now);
+                                && (m.validUntilMs() <= 0 || m.validUntilMs() > nowMs);
                         line = current ? summarize(resp.items().get(0).values()) : "UNKNOWN";
                     }
                 } catch (RuntimeException | LinkageError noProvider) {
@@ -45,11 +61,13 @@ final class WorldFocusProjector {
                 sb.append(shown == 0 ? "" : "；").append(pin.topic()).append("=").append(line);
                 shown++;
             }
-            int omitted = pins.size() - shown;
+            int omitted = active.size() - shown;
             sb.append("</focus>");
             String out = sb.toString();
             if (omitted > 0) out = out.replace("</focus>", "（省略 " + omitted + " 项）</focus>");
-            return out.length() <= MAX_CHARS + 40 ? out : out.substring(0, MAX_CHARS) + "…</focus>";
+            if (out.length() <= MAX_CHARS) return out;
+            String suffix = "…</focus>";
+            return out.substring(0, Math.max(0, MAX_CHARS - suffix.length())) + suffix;
         } catch (RuntimeException | LinkageError unavailable) {
             return "";
         }

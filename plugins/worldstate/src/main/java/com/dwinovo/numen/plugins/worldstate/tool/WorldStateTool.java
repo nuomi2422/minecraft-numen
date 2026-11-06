@@ -46,8 +46,6 @@ public final class WorldStateTool implements NumenTool {
 
     private final WorldStateService service;
     private final com.dwinovo.numen.api.observation.WorldObservationService observations;
-    /** 显式短期焦点（038）：进程内、按世界/会话归属；不落盘、不存观测值。 */
-    private final FocusPinStore PINS = new FocusPinStore();
 
     public WorldStateTool(WorldStateService service, com.dwinovo.numen.api.observation.WorldObservationService observations) {
         this.service = service;
@@ -99,7 +97,7 @@ public final class WorldStateTool implements NumenTool {
                 String dim = self.serverLevel().dimension().location().toString();
                 if ("unpin".equals(action)) {
                     String pinId = args.has("pin_id") ? args.get("pin_id").getAsString() : "";
-                    boolean removed = PINS.unpin(self.getUUID(), pinId);
+                    boolean removed = service.focusPins().unpin(self.getUUID(), pinId);
                     reply.accept(TaskResult.ok(removed ? "focus unpinned" : "no such pin for this companion",
                             Map.of("pin_id", pinId, "removed", removed)).toJson());
                     return;
@@ -111,7 +109,7 @@ public final class WorldStateTool implements NumenTool {
                 }
                 long ttlMs = args.has("ttl_seconds") ? (long) (args.get("ttl_seconds").getAsDouble() * 1000) : 0L;
                 int limit = args.has("limit") ? args.get("limit").getAsInt() : 0;
-                FocusPin pin = PINS.pin(self.getUUID(), world, sess, dim, topic, System.currentTimeMillis(),
+                FocusPin pin = service.focusPins().pin(self.getUUID(), world, sess, dim, topic, System.currentTimeMillis(),
                         ttlMs, 0L, limit, 0);
                 if (pin == null) {
                     reply.accept(TaskResult.fail("focus pin rejected: max " + FocusPinStore.MAX_PINS_PER_COMPANION
@@ -128,7 +126,11 @@ public final class WorldStateTool implements NumenTool {
                 reply.accept(TaskResult.ok("wired observation topics", Map.of("topics", observations.catalog(),
                         "batch_max_queries", 16, "batch_scope", "SERVER_LOADED near-field, not line-of-sight",
                         "legacy_scope", "read/refresh/changes unchanged; not caller-bound by this batch adapter",
-                        "read_does_not_refresh", true)).toJson());
+                        "read_does_not_refresh", true,
+                        "focus_actions", java.util.List.of("pin", "unpin"),
+                        "focus_topics", java.util.List.of("environment", "entities"),
+                        "focus_default_ttl_seconds", 120,
+                        "focus_max_per_companion", FocusPinStore.MAX_PINS_PER_COMPANION)).toJson());
                 return;
             }
             if ("batch_read".equals(action)) {
