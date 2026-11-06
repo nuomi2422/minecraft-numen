@@ -1,146 +1,115 @@
 package com.dwinovo.numen.core.task.sugarcane;
 
 // Source of the "keep bottom root, harvest upper segments" idea: TartaricAcid/TouhouLittleMaid
-// TaskSugarCane.java (MIT, commit 207647c85740b1d0971de6040d6dd57cea62528c). Implementation here is
-// original (BlockDigger target-only), no upstream code/assets copied; see THIRD_PARTY_NOTICES.
+// TaskSugarCane.java (MIT, commit 207647c85740b1d0971de6040d6dd57cea62528c). Implementation is
+// original (BlockDigger target-only); see THIRD_PARTY_NOTICES.
 
 import com.dwinovo.numen.core.FailureType;
 import com.dwinovo.numen.core.act.BlockDigger;
 import com.dwinovo.numen.core.task.base.AbstractCompanionTask;
+import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.task.TaskState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Blocks;
 
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * 有界甘蔗收割（2026-11-07，记录 008 §9.1–§9.3）。
- * 只破坏**最高的 count 格**（自上而下），保留底根；拒绝/遮挡/未加载按明确终态处理；
- * PROGRESSING 视为正常挖掘进度；不手工发掉落，拾取交原版 ITEM_PICKED_UP。
+ * 有界甘蔗收割（2026-11-07，记录 008 §9.1–§9.3）。选择/复核/计数/终态全部委托
+ * {@link SugarCaneHarvestSession}；本类只做 MC 采样与 BlockDigger 调用。
  */
 public final class SugarCaneCompanionTask extends AbstractCompanionTask<SugarCaneTaskRecord> {
 
-    private static final int MAX_COLUMN = 4;
-
     private final SugarCaneTaskRecord cfg;
-    private final com.dwinovo.numen.entity.NumenPlayer owner;
-    /** 最小测试接缝：生产默认仍是 BlockDigger.digTargetStep（无清障）。 */
-    interface Digger { BlockDigger.DigResult dig(BlockPos target); }
-    private final Digger digger;
-    private final java.util.Map<BlockPos, BlockPos> baseOf = new java.util.HashMap<>();
-    private final Deque<BlockPos> queue = new ArrayDeque<>();
-    private final int requested;
-    private int destroyed;
-    private int targetsTried;
-    private String stopReason = "";
+    private final NumenPlayer owner;
+    private final SugarCaneHarvestSession session;
+    private final BlockDigger digger;
 
-    public SugarCaneCompanionTask(com.dwinovo.numen.entity.NumenPlayer player,
-                                  SugarCaneTaskRecord record, List<BlockPos> candidateBases) {
+    public SugarCaneCompanionTask(NumenPlayer player, SugarCaneTaskRecord record) {
+        this(player, record, scanBases(player, record.radius));
+    }
+
+    /** 有界局部扫描：只找“底根”（下方不是甘蔗）的甘蔗列；不加载未知区块。 */
+    private static List<BlockPos> scanBases(NumenPlayer player, int radius) {
+        var level = player.serverLevel();
+        BlockPos center = player.blockPosition();
+        java.util.ArrayList<BlockPos> out = new java.util.ArrayList<>();
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                for (int dy = -2; dy <= 4; dy++) {
+                    BlockPos pos = center.offset(dx, dy, dz);
+                    if (!level.hasChunkAt(pos)) continue;
+                    if (!level.getBlockState(pos).is(Blocks.SUGAR_CANE)) continue;
+                    if (level.getBlockState(pos.below()).is(Blocks.SUGAR_CANE)) continue; // 只要底根
+                    out.add(pos);
+                }
+            }
+        }
+        return out;
+    }
+
+    public SugarCaneCompanionTask(NumenPlayer player, SugarCaneTaskRecord record, List<BlockPos> candidateBases) {
         super(player, record);
         this.cfg = record;
         this.owner = player;
-        BlockDigger real = new BlockDigger(player);
-        this.digger = real::digTargetStep;
-        this.requested = record.count;
-        int budgets = record.count;
-        int tried = 0;
-        for (BlockPos base : candidateBases == null ? List.<BlockPos>of() : candidateBases) {
-            if (budgets <= 0 || tried >= record.maxTargets) break;
-            if (base == null || !player.serverLevel().hasChunkAt(base)) continue;
-            tried++;
-            // 从下到上收集该株的上段，再从顶往下进队列（只取最高 budgets 格）
-            List<BlockPos> upper = new ArrayList<>();
-            for (int i = 1; i <= MAX_COLUMN && upper.size() <= budgets + 1; i++) {
-                BlockPos p = base.above(i);
-                if (!player.serverLevel().hasChunkAt(p)) break;
-                if (!player.serverLevel().getBlockState(p).is(Blocks.SUGAR_CANE)) break;
-                upper.add(p);
-            }
-            // top count cells, top-down (highest first); remember base for pre-dig root check
-            int take = Math.min(budgets, upper.size());
-            for (int i = upper.size() - 1; i >= 0 && take > 0; i--, take--) {
-                queue.addLast(upper.get(i));
-                baseOf.put(upper.get(i), base);
-            }
-            budgets -= Math.min(budgets, upper.size());
-        }
-        this.targetsTried = tried;
-        if (queue.isEmpty()) stopReason = "no_harvestable_sugar_cane";
-    }
-
-    private static List<Integer> ys(List<BlockPos> ps) {
-        List<Integer> out = new ArrayList<>(ps.size());
-        for (BlockPos p : ps) out.add(p.getY());
-        return out;
+        this.digger = new BlockDigger(player);
+        var level = player.serverLevel();
+        SugarCaneHarvestSession.World world = new SugarCaneHarvestSession.World() {
+            @Override public boolean loaded(BlockPos p) { return level.hasChunkAt(p); }
+            @Override public boolean isCane(BlockPos p) { return level.getBlockState(p).is(Blocks.SUGAR_CANE); }
+        };
+        this.session = new SugarCaneHarvestSession(candidateBases, record.count, record.maxTargets,
+                world, record.deadlineMs);
     }
 
     @Override
     protected TaskState onTick() {
-        SugarCaneTaskRecord r = cfg;
-        if (System.currentTimeMillis() > r.deadlineMs) {
-            stopReason = "deadline_reached";
-            return TaskState.TIMEOUT;
-        }
-        if (queue.isEmpty()) {
-            if (stopReason.isBlank()) stopReason = destroyed >= requested ? "reached_count" : "scan_exhausted";
-            return TaskState.SUCCESS;
-        }
-        BlockPos target = queue.peekFirst();
-        BlockPos base = baseOf.get(target);
+        long now = System.currentTimeMillis();
+        BlockPos target = session.next(now);
+        if (target == null) return terminal();
+        BlockPos base = session.baseOf(target);
         var level = owner.serverLevel();
-        // 执行前复核：仍加载、仍是甘蔗、底根仍在（外界变更不误挖别块）
         if (base == null || !level.hasChunkAt(target) || !level.getBlockState(target).is(Blocks.SUGAR_CANE)
                 || !level.getBlockState(base).is(Blocks.SUGAR_CANE)) {
-            stopReason = "target_changed_before_dig";
             fail("sugar cane target changed/unloaded before dig", FailureType.TARGET_LOST);
             return TaskState.FAILED;
         }
-        BlockDigger.DigResult res = digger.dig(target);
-        switch (res) {
-            case BROKE_TARGET -> {
-                destroyed++;
-                queue.pollFirst();
-                return destroyed >= requested ? finish("reached_count") : TaskState.RUNNING;
-            }
-            case PROGRESSING -> {
-                return TaskState.RUNNING;               // 正常挖掘进度，不是权限失败
-            }
-            case NO_SHOT, BROKE_OCCLUDER -> {
-                stopReason = res == BlockDigger.DigResult.NO_SHOT ? "no_shot" : "occluder_broken";
-                fail("sugar cane target unavailable (" + res + ")", FailureType.TARGET_LOST);
-                return TaskState.FAILED;
-            }
-            default -> {
-                stopReason = "unknown_dig_result";
-                fail("unexpected dig result " + res, FailureType.INTERNAL);
-                return TaskState.FAILED;
-            }
+        BlockDigger.DigResult r = digger.digTargetStep(target);
+        switch (r) {
+            case BROKE_TARGET -> session.accept(SugarCaneHarvestSession.Outcome.BROKE, System.currentTimeMillis());
+            case PROGRESSING -> session.accept(SugarCaneHarvestSession.Outcome.PROGRESSING, now);
+            case NO_SHOT -> session.accept(SugarCaneHarvestSession.Outcome.NO_SHOT, now);
+            case BROKE_OCCLUDER -> session.accept(SugarCaneHarvestSession.Outcome.OCCLUDER, now);
+            default -> { fail("unexpected dig result " + r, FailureType.INTERNAL); return TaskState.FAILED; }
         }
+        return terminal();
     }
 
-    private TaskState finish(String why) {
-        stopReason = why;
-        return TaskState.SUCCESS;
+    private TaskState terminal() {
+        return switch (session.state()) {
+            case RUNNING -> TaskState.RUNNING;
+            case SUCCESS -> TaskState.SUCCESS;
+            case TIMEOUT -> { fail("sugar cane deadline reached", FailureType.TIMED_OUT); yield TaskState.FAILED; }
+            case FAILED -> { fail("sugar cane stopped: " + session.stopReason(), FailureType.TARGET_LOST);
+                yield TaskState.FAILED; }
+        };
     }
 
     @Override
     protected Map<String, Object> resultData() {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("requested", requested);
-        m.put("destroyedBlocks", destroyed);
-        m.put("targetsTried", targetsTried);
-        m.put("stopReason", stopReason);
+        m.put("requested", cfg.count);
+        m.put("destroyedBlocks", session.destroyed());
+        m.put("targetsTried", session.targetsTried());
+        m.put("stopReason", session.stopReason());
         return m;
     }
 
     @Override
     protected String successMessage() {
-        return "sugar cane: destroyed " + destroyed + "/" + requested + " upper blocks ("
-                + (stopReason.isBlank() ? "done" : stopReason) + ")";
+        return "sugar cane: destroyed " + session.destroyed() + "/" + cfg.count + " upper blocks ("
+                + (session.stopReason().isBlank() ? "done" : session.stopReason()) + ")";
     }
 }

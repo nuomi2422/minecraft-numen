@@ -28,6 +28,8 @@ import com.dwinovo.numen.core.task.mine.MineBlockTaskRecord;
 import com.dwinovo.numen.core.task.mine.MineCompanionTask;
 import com.dwinovo.numen.core.task.move.MoveToCompanionTask;
 import com.dwinovo.numen.core.task.move.MoveToTaskRecord;
+import com.dwinovo.numen.core.task.sugarcane.SugarCaneCompanionTask;
+import com.dwinovo.numen.core.task.sugarcane.SugarCaneTaskRecord;
 
 /**
  * Loader-agnostic init for the {@code numen-core} tool pack — the worked example
@@ -155,6 +157,7 @@ public final class NumenCore {
 
     private static void registerTaskRunners() {
         TaskFactory.register(MoveToTaskRecord.class, (p, r) -> new MoveToCompanionTask(p, r));
+        TaskFactory.register(SugarCaneTaskRecord.class, (p, r) -> new SugarCaneCompanionTask(p, r));
         TaskFactory.register(com.dwinovo.numen.core.task.move.FollowTaskRecord.class,
                 (p, r) -> new com.dwinovo.numen.core.task.move.FollowCompanionTask(p, r));
         TaskFactory.register(MineBlockTaskRecord.class, (p, r) -> new MineCompanionTask(p, r));
