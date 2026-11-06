@@ -28,6 +28,7 @@ public final class SugarCaneCompanionTask extends AbstractCompanionTask<SugarCan
     private final BlockDigger digger;
     private final SugarCaneHarvestSession.World worldProbe;
     private final net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> startDimension;
+    private final net.minecraft.server.level.ServerLevel startLevel;
 
     public SugarCaneCompanionTask(NumenPlayer player, SugarCaneTaskRecord record) {
         this(player, record, scanBases(player, record.radius));
@@ -64,6 +65,7 @@ public final class SugarCaneCompanionTask extends AbstractCompanionTask<SugarCan
         };
         this.worldProbe = world;
         this.startDimension = player.serverLevel().dimension();
+        this.startLevel = player.serverLevel();
         this.session = new SugarCaneHarvestSession(candidateBases, record.count, record.maxTargets,
                 world, record.deadlineMs);
     }
@@ -71,7 +73,7 @@ public final class SugarCaneCompanionTask extends AbstractCompanionTask<SugarCan
     @Override
     protected TaskState onTick() {
         long now = System.currentTimeMillis();
-        if (!owner.serverLevel().dimension().equals(startDimension)) {
+        if (owner.serverLevel() != startLevel || !owner.serverLevel().dimension().equals(startDimension)) {
             fail("dimension changed since task start", FailureType.TARGET_LOST);
             return TaskState.FAILED;
         }
@@ -101,6 +103,12 @@ public final class SugarCaneCompanionTask extends AbstractCompanionTask<SugarCan
             case FAILED -> { fail("sugar cane stopped: " + session.stopReason(), FailureType.TARGET_LOST);
                 yield TaskState.FAILED; }
         };
+    }
+
+    @Override
+    protected void cleanup() {
+        digger.cancel();   // 复用 BlockDigger 既有 ABORT_DESTROY_BLOCK + 清裂纹入口
+        super.cleanup();
     }
 
     @Override

@@ -47,6 +47,15 @@ class SugarCaneHarvestSessionTest {
         assertEquals(SugarCaneHarvestSession.State.SUCCESS, s.state());
         assertEquals("no_harvestable_sugar_cane", s.stopReason());
     }
+    @Test void unloadedAboveIsTopUnknownSkipped() {
+        var w = new SugarCaneHarvestSession.World() {
+            public boolean loaded(BlockPos p) { return p.getY() <= BASE.getY() + 1; }
+            public boolean isCane(BlockPos p) { return p.getY() >= BASE.getY() && p.getY() <= BASE.getY() + 3; }
+        };
+        var s = new SugarCaneHarvestSession(List.of(BASE), 2, 1, w, 1000);
+        assertEquals(SugarCaneHarvestSession.State.SUCCESS, s.state());
+        assertEquals("no_harvestable_sugar_cane", s.stopReason());
+    }
     @Test void precheckRejectsGrowthAboveAndDisconnect() {
         var s = session(3, 2, 1, 1000);
         var target = s.next(0);

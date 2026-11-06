@@ -47,7 +47,7 @@ public final class SugarCaneHarvestSession {
             boolean topUnknown = false;
             for (int i = 1; i <= MAX_PROBE_HEIGHT; i++) {
                 BlockPos p = base.above(i);
-                if (!world.loaded(p)) break;                 // 边界/未加载视为结束，但下方已知上段仍可用
+                if (!world.loaded(p)) { topUnknown = true; break; } // 上方未加载=顶端未知，整株跳过
                 if (!world.isCane(p)) break;                 // 顶端已确认
                 upper.add(p);
                 if (i == MAX_PROBE_HEIGHT) topUnknown = true; // 到上限仍有甘蔗
