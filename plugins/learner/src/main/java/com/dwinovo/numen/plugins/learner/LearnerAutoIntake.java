@@ -588,7 +588,7 @@ final class LearnerAutoIntake {
                     long startedAt = LearnerPlugin.lastReviewStartedMs(id);
                     boolean running = LearnerPlugin.runningReview(id) != null;
                     if (autoReviewDue(prevNudge, startedAt, LAST_AUTO_REVIEW_AT.get(id), now, gateDepth, running)) {
-                        maybeAutoReview(id, depth, now);
+                        maybeAutoReview(id, depth, gateDepth, now);
                     }
                 } else {
                     // 送不到（同伴不在本世界 / 已归档）：不再用「remove 冷却位」当重试策略，
@@ -660,22 +660,30 @@ final class LearnerAutoIntake {
         return lastAutoReviewAt == null || now - lastAutoReviewAt >= AUTO_REVIEW_COOLDOWN_MS;
     }
 
-    private static void maybeAutoReview(UUID id, int depth, long now) {
+    /** 第二跳准入（2026-11-06）：门槛只看 gateDepth（可因 death/stale 抬高），真实队列必须 >0 才放行。 */
+    static boolean secondHopAdmits(int realDepth, int gateDepth) {
+        return gateDepth >= REVIEW_NUDGE_MIN_DEPTH && realDepth > 0;
+    }
+
+    private static void maybeAutoReview(UUID id, int realDepth, int gateDepth, long now) {
         try {
-            if (depth < REVIEW_NUDGE_MIN_DEPTH) { skipped(id, depth, "queue_too_shallow"); return; }
+            if (!secondHopAdmits(realDepth, gateDepth)) {
+                skipped(id, realDepth, realDepth <= 0 ? "real_depth_zero" : "gate_too_shallow");
+                return;
+            }
             Long last = LAST_AUTO_REVIEW_AT.get(id);
-            if (last != null && now - last < AUTO_REVIEW_COOLDOWN_MS) { skipped(id, depth, "cooldown"); return; }
-            if (LearnerPlugin.runningReview(id) != null) { skipped(id, depth, "review_running"); return; }
+            if (last != null && now - last < AUTO_REVIEW_COOLDOWN_MS) { skipped(id, realDepth, "cooldown"); return; }
+            if (LearnerPlugin.runningReview(id) != null) { skipped(id, realDepth, "review_running"); return; }
             var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
-            if (server == null) { skipped(id, depth, "no_server"); return; }
+            if (server == null) { skipped(id, realDepth, "no_server"); return; }
             var companion = com.dwinovo.numen.entity.NumenPlayer.findByUuid(server, id);
-            if (companion == null) { skipped(id, depth, "no_companion"); return; }
+            if (companion == null) { skipped(id, realDepth, "no_companion"); return; }
             var tool = com.dwinovo.numen.agent.tool.ToolRegistry.get("learner_review");
-            if (tool == null) { skipped(id, depth, "no_tool"); return; }
+            if (tool == null) { skipped(id, realDepth, "no_tool"); return; }
             LAST_AUTO_REVIEW_AT.put(id, now);
             java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
             ev.put("companion", id.toString());
-            ev.put("queue_depth", depth);
+            ev.put("queue_depth", realDepth);
             ev.put("reason", "nudge_unanswered");
             LearnerMonitor.publish("auto_review_started", ev);
             tool.onServerCall("auto-review-" + now, new com.google.gson.JsonObject(), companion, reply -> { });
