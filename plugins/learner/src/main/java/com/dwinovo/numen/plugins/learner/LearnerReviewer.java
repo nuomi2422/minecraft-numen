@@ -164,8 +164,8 @@ final class LearnerReviewer {
               "carrier_draft":"","self_compile_request":"","rewritten_query":["..."]}]}
 
             ★★ evidence 必填（2026-11-06）：actions 含 WRITE_EXPERIENCE 时，experience.evidence
-               **必须是非空数组**，引用 event:<window_first> 或真实事件 id；空数组/空串会被判
-               claim_without_evidence，并触发一次补证据重试。不许编造 id。
+               **必须是非空字符串**（不是数组！），例如 "event:<window_first>, tools.jsonl L18533"；
+               空串会被判 claim_without_evidence 并触发一次补证据重试。不许编造 id。
             ★ 先检索再写（G6b，硬要求）：每条备忘录下面会给出「库里可能的相关条目」——
               那是检索结果，**相似度不要自己重判**（[同一件事] / [只是相关] 由检索给出）。
               actions 里含 WRITE_EXPERIENCE 时，**必须**同时给出 retrieval 段：
@@ -333,8 +333,8 @@ final class LearnerReviewer {
                     if (hasBlankEvidence(out)) {
                         LOG.warn("[learner] 复盘产物缺 evidence，带补证据要求重试一次");
                         String evSystem = system + "\n\n[必须补证据] 上一批 verdict 里有 WRITE_EXPERIENCE 但 "
-                                + "experience.evidence 为空。每条 WRITE_EXPERIENCE 必须给**非空** evidence 数组"
-                                + "（event:<window_first> 或真实事件 id）；仍为空就会被判 claim_without_evidence。不许编造 id。";
+                                + "experience.evidence 为空。每条 WRITE_EXPERIENCE 必须给**非空字符串** experience.evidence"
+                                + "（如 \"event:<window_first>, tools.jsonl L18533\"；不是数组）；仍为空就会被判 claim_without_evidence。不许编造 id。";
                         return callOnce(ep, user, evSystem, observation, timeoutSeconds, memos)
                                 .thenApply(next -> next.ok() ? next : out);
                     }
