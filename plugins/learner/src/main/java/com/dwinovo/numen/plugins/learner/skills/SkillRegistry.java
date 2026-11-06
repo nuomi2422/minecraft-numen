@@ -209,6 +209,38 @@ public final class SkillRegistry {
         return new Decision(Outcome.REVISE, revoked, "retired: " + (reason == null ? "" : reason));
     }
 
+    /**
+     * 外部/主人侧升格（2026-11-06）：把一条 DRAFT/PUBLISHED 状态的条目写成 TRIAL，让它真的可被检索。
+     *
+     * <p>为什么必须有这条路：`retrievable()` 只放 TRIAL/PUBLISHED，而全仓**没有任何写入者**能把
+     * DRAFT 改成 TRIAL（只有注册时权限矩阵判 trialOnly 才直接写 TRIAL）。结果 2026-11-06 实测：
+     * 库内 DRAFT=119、TRIAL=14，新学到的内容全部检索不到——"注册成功"等于没有任何行为效果。
+     *
+     * <p>语义与 retire 对称：追加同 id 新版本、版本+1、旧版进 supersedes，**不删历史**；
+     * 已经是 TRIAL/PUBLISHED 的不重复升格（幂等）。
+     */
+    public Decision promote(String skillId, String reason) {
+        SkillEntry current = skillId == null ? null : byId.get(skillId);
+        if (current == null) {
+            return new Decision(Outcome.CONFLICT, null, "unknown skillId: " + skillId);
+        }
+        if (current.status() == SkillStatus.TRIAL || current.status() == SkillStatus.PUBLISHED) {
+            return new Decision(Outcome.REUSE, current, "already promoted: " + skillId);
+        }
+        if (current.status() == SkillStatus.REVOKED) {
+            return new Decision(Outcome.CONFLICT, current, "revoked skill cannot be promoted: " + skillId);
+        }
+        java.util.List<String> nextSupersedes = new java.util.ArrayList<>(current.supersedes());
+        nextSupersedes.add(current.skillId() + "@v" + current.version());
+        SkillEntry promoted = new SkillEntry(current.skillId(), current.version() + 1, current.kind(),
+                current.name(), current.purpose(), current.audience(), current.triggerConditions(),
+                current.excludeConditions(), current.preconditions(), current.risk(),
+                current.evidenceLevel(), SkillStatus.TRIAL, current.bodyRef(),
+                current.validationSignals(), current.foundingSamples(), nextSupersedes, current.conflicts());
+        store(promoted);
+        return new Decision(Outcome.REVISE, promoted, "promoted: " + (reason == null ? "" : reason));
+    }
+
     /** 近重复提示（不拦截）：先按共享触发词收敛，再算 trigram Jaccard。 */
     public java.util.List<NearDuplicate> nearDuplicates(ArtifactDraft candidate, double threshold) {
         java.util.List<NearDuplicate> out = new java.util.ArrayList<>();

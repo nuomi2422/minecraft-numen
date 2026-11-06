@@ -28,13 +28,14 @@ final class LearnerAdminTool implements NumenTool {
     @Override public boolean externalOnly() { return true; }
 
     @Override public String description() {
-        return "External-only admin: retire a skill (owner side). action=retire, skillId, reason, confirm=true. "
-                + "Writes a new version with status=REVOKED and supersedes the old one; history is kept.";
+        return "External-only admin for the skill library (owner side). action=retire|promote, skillId, reason, "
+                + "confirm=true. retire writes status=REVOKED, promote writes status=TRIAL (only TRIAL/PUBLISHED "
+                + "are retrievable). Both append a new version with supersedes and keep history.";
     }
 
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .string("action", "Only 'retire' is supported.")
+                .string("action", "'retire' (hide it) or 'promote' (make it retrievable: DRAFT/PUBLISHED -> TRIAL).")
                 .string("skillId", "Skill id to retire, e.g. sk-xxxx.")
                 .string("reason", "Why it is retired (kept in learner_retired event).")
                 .optionalBoolean("confirm", "Must be true; without it the call is rejected.")
@@ -42,7 +43,9 @@ final class LearnerAdminTool implements NumenTool {
     }
 
     static String validate(String action, String skillId, String reason, Boolean confirm) {
-        if (!"retire".equals(action)) return "learner_admin: action must be 'retire'";
+        if (!"retire".equals(action) && !"promote".equals(action)) {
+            return "learner_admin: action must be 'retire' or 'promote'";
+        }
         if (skillId == null || skillId.isBlank()) return "learner_admin: skillId is required";
         if (reason == null || reason.isBlank()) return "learner_admin: reason is required";
         if (!Boolean.TRUE.equals(confirm)) return "learner_admin: confirm=true is required";
@@ -57,12 +60,15 @@ final class LearnerAdminTool implements NumenTool {
             reply.accept(TaskResult.fail(error).toJson());
             return;
         }
-        Map<String, Object> result = LearnerPlugin.retireSkill(parsed.skillId(), parsed.reason(), "external");
+        Map<String, Object> result = "promote".equals(parsed.action())
+                ? LearnerPlugin.promoteSkill(parsed.skillId(), parsed.reason(), "external")
+                : LearnerPlugin.retireSkill(parsed.skillId(), parsed.reason(), "external");
         if (result.containsKey("error")) {
             reply.accept(TaskResult.fail("learner_admin: " + result.get("error")).toJson());
             return;
         }
-        reply.accept(TaskResult.ok("retired " + parsed.skillId() + " -> " + result.get("outcome")
+        String verb = "promote".equals(parsed.action()) ? "promoted" : "retired";
+        reply.accept(TaskResult.ok(verb + " " + parsed.skillId() + " -> " + result.get("outcome")
                 + " v" + result.get("newVersion"), result).toJson());
     }
 }

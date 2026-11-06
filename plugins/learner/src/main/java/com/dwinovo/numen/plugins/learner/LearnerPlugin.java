@@ -96,6 +96,44 @@ public final class LearnerPlugin implements NumenPlugin {
      * 外部/主人侧撤回技能（2026-11-06）。**不进执行者工具表**，由外部 MCP/管理员通道调用；
      * 语义=追加同 id 新版本 status=REVOKED、supersedes 指旧版；事件 learner_retired 可追溯。
      */
+    /**
+     * 外部/主人侧升格技能（2026-11-06）：DRAFT/PUBLISHED → TRIAL，让它真正可被检索。
+     *
+     * <p>事件 learner_promoted 可追溯；不改检索实现（retrievable() 已放行 TRIAL）。
+     */
+    public static java.util.Map<String, Object> promoteSkill(String skillId, String reason, String by) {
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+        try {
+            var file = configDir.resolve("skills.jsonl");
+            var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(file);
+            var before = registry.get(skillId).orElse(null);
+            if (before == null) {
+                out.put("error", "unknown skillId: " + skillId);
+                return out;
+            }
+            if (before.status() == com.dwinovo.numen.plugins.learner.skills.SkillStatus.REVOKED) {
+                out.put("error", "revoked skill cannot be promoted: " + skillId);
+                return out;
+            }
+            var decision = registry.promote(skillId, reason);
+            java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
+            ev.put("skillId", skillId);
+            ev.put("reason", reason == null ? "" : reason);
+            ev.put("by", by == null ? "external" : by);
+            ev.put("prevVersion", before.version());
+            ev.put("prevStatus", before.status().name());
+            LearnerMonitor.publish("learner_promoted", ev);
+            out.put("skillId", skillId);
+            out.put("outcome", decision.outcome().name());
+            out.put("prevVersion", before.version());
+            out.put("newVersion", decision.entry() == null ? 0 : decision.entry().version());
+            out.put("status", decision.entry() == null ? "" : decision.entry().status().name());
+        } catch (Exception e) {
+            out.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+        return out;
+    }
+
     public static java.util.Map<String, Object> retireSkill(String skillId, String reason, String by) {
         java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
         try {
