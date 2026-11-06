@@ -362,7 +362,7 @@ final class CompanionBrain {
                     case CANCELLED -> "stopped";
                     default -> "failed";
                 };
-                String msg = result == null ? "no result produced" : result.message();
+                String msg = TaskCompletionText.withStopHint(result == null ? "no result produced" : result.message());
                 journalTaskOutcome(companion, rec, status, msg, result);
                 com.dwinovo.numen.event.NumenEvents.taskFinished(
                         companion, rec.publicId(), rec.getToolName(), status, msg);
