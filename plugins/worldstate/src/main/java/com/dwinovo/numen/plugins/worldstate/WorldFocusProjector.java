@@ -53,7 +53,7 @@ final class WorldFocusProjector {
                         var m = resp.metadata();
                         boolean current = m != null
                                 && m.freshness() == com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT
-                                && m.observedAtMs() > 0 && m.observedAtMs() <= nowMs + 5_000L
+                                && m.observedAtMs() > 0 && m.observedAtMs() <= nowMs
                                 && m.validUntilMs() > nowMs
                                 && same(m.worldId(), world) && same(m.serverSession(), session)
                                 && same(m.dimension(), pin.dimension())

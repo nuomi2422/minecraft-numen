@@ -82,33 +82,46 @@ class WorldFocusProjectorTest {
         svc.pin(c, "world-b", "s2", "minecraft:overworld", "entities", 1_000L, 60_000L, 0, 0, 0);
         assertEquals(1, svc.active(c, "world-b", "s2", 2_000L).size(), "切换世界时旧焦点被清理");
     }
-    @Test void identityMismatchIsUnknown() {
-        var store = new com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore();
-        UUID c = UUID.randomUUID();
-        long now = 3_000_000L;
-        store.pin(c, "world", "session", "minecraft:overworld", "environment", now, 60_000L, 0, 0, 0);
-        AtomicInteger reads = new AtomicInteger(), refreshes = new AtomicInteger();
-        // 响应写成别的世界/会话/维度/主题、未来时间、缺有效期，都必须 UNKNOWN。
-        var bad = new WorldObservationService() {
-            @Override public Response read(Request request) {
-                reads.incrementAndGet();
-                var wrongWorld = new ObservationMetadata("other-world", "session", "minecraft:overworld", "c",
-                        "test", request.topic(), 1L, now, ObservationMetadata.Freshness.CURRENT, "INTERNAL", now + 60_000L);
-                var future = new ObservationMetadata("world", "session", "minecraft:overworld", "c",
-                        "test", request.topic(), 1L, now + 60_000L, ObservationMetadata.Freshness.CURRENT, "INTERNAL", now + 120_000L);
-                var noExpiry = new ObservationMetadata("world", "session", "minecraft:overworld", "c",
-                        "test", request.topic(), 1L, now, ObservationMetadata.Freshness.CURRENT, "INTERNAL", 0L);
-                var wrongTopicDim = new ObservationMetadata("world", "session", "minecraft:the_nether", "c",
-                        "test", "entities", 1L, now, ObservationMetadata.Freshness.CURRENT, "INTERNAL", now + 60_000L);
-                return new Response(Status.OK, request.topic(), "snap", 1L, Coverage.FULL, "",
-                        List.of(WorldObservationService.Item.of(Map.of("k", "v"))), 0L, wrongWorld);
-            }
-            @Override public Response refresh(Request request) { refreshes.incrementAndGet(); throw new AssertionError("no refresh"); }
-        };
-        String text = WorldFocusProjector.render(store, bad, new PlanningQuery(c, "goal", "", List.of()),
+    private interface MetaFactory { ObservationMetadata make(String topic, long now); }
+
+    private static void assertUnknown(com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore svc, WorldObservationService obs, UUID c, long now) {
+        String text = WorldFocusProjector.render(svc, obs, new PlanningQuery(c, "goal", "", List.of()),
                 "world", "session", now + 100);
         assertTrue(text.contains("UNKNOWN"), text);
         assertFalse(text.contains("k=v"), "不得泄旧值/错身份值: " + text);
+    }
+
+    @Test void identityMismatchVariantsAreUnknown() {
+        var svc = new com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore();
+        UUID c = UUID.randomUUID();
+        long now = 3_000_000L;
+        svc.pin(c, "world", "session", "minecraft:overworld", "environment", now, 60_000L, 0, 0, 0);
+        List<MetaFactory> bad = List.of(
+                (topic, t) -> new ObservationMetadata("other-world", "session", "minecraft:overworld", "c",
+                        "test", topic, 1L, t, ObservationMetadata.Freshness.CURRENT, "INTERNAL", t + 60_000L),
+                (topic, t) -> new ObservationMetadata("world", "other-session", "minecraft:overworld", "c",
+                        "test", topic, 1L, t, ObservationMetadata.Freshness.CURRENT, "INTERNAL", t + 60_000L),
+                (topic, t) -> new ObservationMetadata("world", "session", "minecraft:the_nether", "c",
+                        "test", topic, 1L, t, ObservationMetadata.Freshness.CURRENT, "INTERNAL", t + 60_000L),
+                (topic, t) -> new ObservationMetadata("world", "session", "minecraft:overworld", "c",
+                        "test", topic, 1L, t + 60_000L, ObservationMetadata.Freshness.CURRENT, "INTERNAL", t + 120_000L),
+                (topic, t) -> new ObservationMetadata("world", "session", "minecraft:overworld", "c",
+                        "test", topic, 1L, t, ObservationMetadata.Freshness.CURRENT, "INTERNAL", 0L),
+                (topic, t) -> new ObservationMetadata("world", "session", "minecraft:overworld", "c",
+                        "test", topic, 1L, t, ObservationMetadata.Freshness.STALE, "INTERNAL", t + 60_000L));
+        for (MetaFactory f : bad) {
+            AtomicInteger reads = new AtomicInteger(), refreshes = new AtomicInteger();
+            var obs = new WorldObservationService() {
+                @Override public Response read(Request request) {
+                    reads.incrementAndGet();
+                    return new Response(Status.OK, request.topic(), "snap", 1L, Coverage.FULL, "",
+                            List.of(WorldObservationService.Item.of(Map.of("k", "v"))), 0L, f.make(request.topic(), now));
+                }
+                @Override public Response refresh(Request request) { refreshes.incrementAndGet(); throw new AssertionError("no refresh"); }
+            };
+            assertUnknown(svc, obs, c, now);
+            assertEquals(0, refreshes.get());
+        }
     }
 
 }
