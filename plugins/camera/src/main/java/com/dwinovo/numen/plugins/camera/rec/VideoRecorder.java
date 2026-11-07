@@ -436,8 +436,23 @@ public final class VideoRecorder {
                 }
             }
         }
+        // 2026-11-08：本机 ffmpeg 既不在 PATH、也不在 WinGet，实际在 D:\rdd\tools\ffmpeg\bin。
+        // 于是 locateFfmpeg() 一律返回 null —— 每一次 take 都只留 PNG、从未生成过 mp4，
+        // 之前看到的 base.mp4 / highlight.mp4 全是外部剪辑工具补的。
+        // 顺序：项目自带位置优先（它是本机唯一确定存在的），再退回 WinGet 扫描。
+        String[] known = {
+                "D:\\rdd\\tools\\ffmpeg\\bin\\ffmpeg.exe",
+                "D:\\rdd\\tools\\ffmpeg\\ffmpeg.exe",
+        };
+        for (String k : known) {
+            File f = new File(k);
+            if (f.isFile()) {
+                return f;
+            }
+        }
         File winget = new File(System.getProperty("user.home"),
-                "AppData/Local/Microsoft/WinGet/Packages");
+                "AppData" + java.io.File.separator + "Local" + java.io.File.separator
+                        + "Microsoft" + java.io.File.separator + "WinGet" + java.io.File.separator + "Packages");
         File[] pkgs = winget.listFiles();
         if (pkgs != null) {
             for (File p : pkgs) {

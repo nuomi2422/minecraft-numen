@@ -322,6 +322,31 @@ public final class CameraRig {
         return dampedPitch;
     }
 
+    /**
+     * 镜头离目标眼睛多近就隐藏目标模型。
+     *
+     * <p><b>为什么需要</b>（2026-11-08 主人反馈"第一人称脸贴脸、镜头合进头里"）：遮挡切
+     * 第一人称时 {@code applyOcclusion} 把机位压到眼睛位置，但<b>同伴的模型照样在渲染</b> ——
+     * 于是镜头等于嵌在头骨里，看到的是头颅内壁和头发。MC 只对本地玩家自动隐藏模型，对
+     * 别的实体不管，所以必须自己在渲染层跳过。
+     *
+     * <p><b>0.8 格</b>：比眼高还近就藏、退开立刻恢复。绝不用隐身药水 —— 那会改世界状态。
+     */
+    public static final float HIDE_MODEL_DISTANCE = 0.8f;
+
+    /** 这一帧该不该跳过该实体的模型渲染（只针对当前跟拍目标，别误伤别人）。 */
+    public static boolean shouldHideModel(Entity e) {
+        if (e == null || !isActive() || e != target) {
+            return false;
+        }
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null || mc.gameRenderer == null) {
+            return false;
+        }
+        return mc.gameRenderer.getMainCamera().getPosition()
+                .distanceTo(e.getEyePosition(1.0f)) < HIDE_MODEL_DISTANCE;
+    }
+
     /** 供相机侧做「第三人称朝向 → 目标视线」混合用，跨 ±180 也走最短路。 */
     public static float lerpYaw(float from, float to, float t) {
         return lerpAngle(from, to, t);

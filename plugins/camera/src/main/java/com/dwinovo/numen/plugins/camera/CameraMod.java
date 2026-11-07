@@ -13,11 +13,15 @@ import com.dwinovo.numen.plugins.camera.tether.CompanionTether;
 import com.mojang.logging.LogUtils;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.AbstractClientPlayer;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
+import net.neoforged.neoforge.client.event.RenderNameTagEvent;
+import net.neoforged.neoforge.client.event.RenderPlayerEvent;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.common.util.TriState;
 
 import org.slf4j.Logger;
 
@@ -55,6 +59,9 @@ public final class CameraMod {
         // 把 IModBusEvent 类的事件（注册表、生命周期那些）挂到游戏总线上会直接炸。
         NeoForge.EVENT_BUS.addListener(this::onRegisterCommands);
         NeoForge.EVENT_BUS.addListener(this::onClientTickPost);
+        // 贴脸时藏模型 / 藏名牌（纯渲染层，见下面两个方法的注释）
+        NeoForge.EVENT_BUS.addListener(this::onRenderPlayer);
+        NeoForge.EVENT_BUS.addListener(this::onRenderNameTag);
         // 外部 AI 的控制口。起不来（端口被占）只记日志，不影响 /cam 的任何功能。
         DirectorServer.start();
         LOGGER.info("[numencam] 已装载。/cam help 看用法，cam.json 在 {}",
@@ -64,6 +71,26 @@ public final class CameraMod {
     private void onRegisterCommands(RegisterClientCommandsEvent event) {
         CameraCommands.register(event.getDispatcher());
         LOGGER.info("[numencam] /cam 已注册");
+    }
+
+    /**
+     * 镜头钻进目标头部时跳过它的模型渲染（2026-11-08）。
+     *
+     * <p><b>只在渲染层取消</b>：实体、世界状态、服务端数据一个字都没动，退出 0.8 格外
+     * 立刻恢复正常。主人原话"第一人称太脸贴脸，镜头合进头里了"—— 根因是遮挡切第一人称
+     * 时把机位压到了眼睛上，而 MC 只隐藏本地玩家自己的模型。
+     */
+    private void onRenderPlayer(RenderPlayerEvent.Pre event) {
+        if (event.getEntity() instanceof AbstractClientPlayer player && CameraRig.shouldHideModel(player)) {
+            event.setCanceled(true);
+        }
+    }
+
+    /** 同理：贴脸时名牌会糊满镜头，一起收掉。 */
+    private void onRenderNameTag(RenderNameTagEvent event) {
+        if (CameraRig.shouldHideModel(event.getEntity())) {
+            event.setCanRender(TriState.FALSE);
+        }
     }
 
     private void onClientTickPost(ClientTickEvent.Post event) {
