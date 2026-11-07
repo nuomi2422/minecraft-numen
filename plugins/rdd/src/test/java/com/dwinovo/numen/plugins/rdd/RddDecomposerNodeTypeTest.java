@@ -51,6 +51,7 @@ class RddDecomposerNodeTypeTest {
         String prompt = RddDecomposer.systemPrompt();
         assertTrue(prompt.contains("DAILY") && prompt.contains("重复维护"), prompt);
         assertTrue(prompt.contains("至少 1 条 node_type=DAILY"), prompt);
+        assertTrue(prompt.contains("维护农田") && prompt.contains("intervalGameDays"), prompt);
         var schema = RddDecomposer.decomposeSchema().toString();
         assertTrue(schema.contains("node_type") && schema.contains("recurrence")
                 && schema.contains("requiresFarmBuilt"), schema);
