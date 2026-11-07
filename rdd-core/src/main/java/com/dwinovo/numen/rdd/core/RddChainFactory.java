@@ -147,6 +147,21 @@ public final class RddChainFactory {
                 List.of(new PrimaryGoal("primary-" + suffix, obj, subtasks)));
     }
 
+    /** 2026-11-08: shared runtime injection path (lazy expansion + replan) that must keep nodeType/recurrence. */
+    public static List<Subtask> subtasksFromSpecs(String primaryId, int revision, List<SubtaskSpec> specs) {
+        if (primaryId == null || primaryId.isBlank()) throw new IllegalArgumentException("primaryId required");
+        if (specs == null) throw new IllegalArgumentException("specs required");
+        List<Subtask> out = new ArrayList<>(specs.size());
+        for (int i = 0; i < specs.size(); i++) {
+            SubtaskSpec sp = specs.get(i);
+            validateCondition(sp.condition(), i);
+            out.add(new Subtask(primaryId + "-r" + revision + "-" + i, sp.description(),
+                    DetectionMode.HARD_CODED, sp.condition(), 0, 0, false, sp.body(),
+                    sp.nodeType(), sp.recurrence()));
+        }
+        return out;
+    }
+
     /** 确定性条件必须可被 {@link HardCodedEvaluator} 判定：asset_key 非空；minimum（若有）非负且是非负整数。 */
     private static void validateCondition(Map<String, Object> condition, int index) {
         if (condition == null) {

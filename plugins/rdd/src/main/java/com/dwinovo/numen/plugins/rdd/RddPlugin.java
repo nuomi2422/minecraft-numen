@@ -1406,18 +1406,13 @@ private static String withAssets(UUID companionId, String rddContext) {
                             publishTaskSnapshot(companionId, "replan_fallback_resume");
                             return;
                         }
-                        java.util.List<Subtask> subs = new java.util.ArrayList<>();
+                        java.util.List<Subtask> subs;
                         // 2026-09-30 深审 R05/codex 两轮：二级 id 原来恒为 `primaryId-rN`，
                         // 每次重规划都复用同一批名字 → 上一轮的 PAUSE/COUNTER 回执
                         // 即使 taskId 相同也能通过消费侧校验，作用到新计划的同 id 二级上。
                         // 计划代次进 id（代次本体在 TaskChain，随链持久化，重启不撞号）。
                         int rev = nextPlanRevision(companionId, chain);
-                        for (int i = 0; i < specs.size(); i++) {
-                            SubtaskSpec sp = specs.get(i);
-                            subs.add(new Subtask(primaryId + "-r" + rev + "-" + i,
-                                    sp.description(), com.dwinovo.numen.rdd.api.DetectionMode.HARD_CODED, sp.condition(),
-                                    0, 0, false, sp.body(), sp.nodeType(), sp.recurrence()));
-                        }
+                        subs = RddChainFactory.subtasksFromSpecs(primaryId, rev, specs);
                         chain.replaceCurrentSubtasks(subs);
                         RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废
                         saveRuntimes();

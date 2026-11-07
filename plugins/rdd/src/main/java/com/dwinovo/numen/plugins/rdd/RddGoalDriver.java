@@ -163,17 +163,12 @@ final class RddGoalDriver {
                 failure = "no usable subtasks (empty or legal-but-unexecutable after strict parse)";
             } else {
                 try {
-                    List<Subtask> subs = new ArrayList<>(specs.size());
+                    List<Subtask> subs;
                     // 2026-09-30 深审 R05/codex：懒展开与重规划**共用**计划代次，
                     // 否则两套 id 命名（`-sN` / `-r{rev}-N`）可能撞，且回执/指标无法区分来源。
                     int rev = chain.nextPlanRevision();
-                    for (int i = 0; i < specs.size(); i++) {
-                        SubtaskSpec sp = specs.get(i);
-                        // id 以当前一级 id + 代次为前缀 → 跨级/跨重试/跨重启全局唯一
-                        subs.add(new Subtask(pid + "-r" + rev + "-" + i,
-                                sp.description(), com.dwinovo.numen.rdd.api.DetectionMode.HARD_CODED, sp.condition(),
-                                0, 0, false, sp.body(), sp.nodeType(), sp.recurrence()));
-                    }
+                    // id 以当前一级 id + 代次为前缀 → 跨级/跨重试/跨重启全局唯一
+                    subs = com.dwinovo.numen.rdd.core.RddChainFactory.subtasksFromSpecs(pid, rev, specs);
                     rt.expandCurrentPrimary(subs); // core 校验：非空/重复/已展开/状态合法
                     ok = true;
                 } catch (RuntimeException ex) {
