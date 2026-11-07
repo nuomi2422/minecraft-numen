@@ -105,7 +105,7 @@ public abstract class MixinCamera {
 
         switch (CameraRig.mode()) {
             case ORBIT -> numencam$orbit(target, partialTick);
-            case LOCK -> numencam$lock(target);
+            case LOCK -> numencam$lock(target, partialTick);
             case CINEMATIC -> numencam$cinematic(target, partialTick);
             case SHOULDER, OFF -> numencam$shoulder(target, partialTick);
         }
@@ -114,10 +114,15 @@ public abstract class MixinCamera {
         // 各模式先把「第三人称该站哪」算出来，这里再按遮挡情况压向眼睛。
         // 状态机在 CameraRig：被挡 0.25s 内切进去、至少停 10 秒、之后 2 秒缓出来。
         Vec3 eyeNow = target.getEyePosition(partialTick);
-        this.setPosition(CameraRig.applyOcclusion(this.level, target, this.position, eyeNow));
-        if (CameraRig.occBlend() > 0.5f) {
-            // 第一人称要跟目标的视线；否则 ORBIT/LOCK 会出现「镜头瞄自己」的退化朝向。
-            this.setRotation(target.getViewYRot(partialTick), target.getViewXRot(partialTick));
+        this.setPosition(CameraRig.applyOcclusion(this.level, target, this.position, eyeNow, partialTick));
+        float occ = CameraRig.occBlend();
+        if (occ > 0f) {
+            // 第一人称要跟目标的视线（否则 ORBIT/LOCK 会出现「镜头瞄自己」的退化朝向）。
+            // ★ 2026-11-07：朝向按同一系数混合，不再「>0.5 就整段换掉」——
+            //   旧版跨过 0.5 的那一帧朝向会瞬跳一次，观感是抽一下。
+            this.setRotation(
+                    CameraRig.lerpYaw(this.yRot, target.getViewYRot(partialTick), occ),
+                    this.xRot + (target.getViewXRot(partialTick) - this.xRot) * occ);
         }
         ci.cancel();
     }
@@ -129,8 +134,11 @@ public abstract class MixinCamera {
         this.setRotation(target.getViewYRot(pt), target.getViewXRot(pt));
         this.setPosition(eye);
         // move(x,y,z) 的局部轴：-x=后退, y=上, z=横移
-        this.numencam$move(-numencam$maxZoom(CameraRig.distance()), CameraRig.height(), CameraRig.shoulder());
-        CameraRig.damp(this.position, this.yRot, this.xRot, 1.0f);
+        // 穿墙拉近距离按 tick 缓变（CameraRig.smoothZoom）：8 角点射线是逐帧重算的，
+        // 直接用它会让镜头在墙边一帧一跳。lambda=1 表示位移本身不做阻尼。
+        float back = CameraRig.smoothZoom(this.numencam$maxZoom(CameraRig.distance()), pt);
+        this.numencam$move(-back, CameraRig.height(), CameraRig.shoulder());
+        CameraRig.damp(this.position, this.yRot, this.xRot, 1.0f, pt);
     }
 
     // ── 模式：轨道（世界方位角固定，不跟目标转身）────────────────────────────
@@ -146,9 +154,24 @@ public abstract class MixinCamera {
         // ★ 2026-11-02：ORBIT 原本不躲方块，树林里必然拍到树叶墙。
         //   这里从目标眼睛往镜头打一条线，被挡就把镜头收到障碍物前面。
         cam = numencam$keepLineOfSight(cam, eye);
+        // 被挡时 keepLineOfSight 会一次把镜头收到障碍前；方向不动、只把距离缓变，
+        // 否则树丛里每帧都会「收进来又弹出去」。
+        cam = numencam$smoothToward(cam, eye, pt);
         this.setPosition(cam);
         numencam$aimAt(cam, eye);
-        CameraRig.damp(this.position, this.yRot, this.xRot, 1.0f);
+        CameraRig.damp(this.position, this.yRot, this.xRot, 1.0f, pt);
+    }
+
+    /** 沿「眼睛→机位」这条线把距离缓变到位，方向保持不动。 */
+    @Unique
+    private Vec3 numencam$smoothToward(Vec3 cam, Vec3 eye, float pt) {
+        Vec3 dir = cam.subtract(eye);
+        double len = dir.length();
+        if (len < 1.0e-4) {
+            return cam;
+        }
+        float want = CameraRig.smoothZoom((float) len, pt);
+        return eye.add(dir.normalize().scale(want));
     }
 
     // ── 视线保护：目标↔镜头之间不能有方块 ──────────────────────────────────
@@ -170,13 +193,14 @@ public abstract class MixinCamera {
 
     // ── 模式：固定机位（只转头）────────────────────────────────────────────
     @Unique
-    private void numencam$lock(Entity target) {
+    private void numencam$lock(Entity target, float pt) {
         Vec3 eye = new Vec3(target.getX(), target.getY() + 1.5, target.getZ());
         Vec3 cam = numencam$keepLineOfSight(
                 new Vec3(CameraRig.lockX(), CameraRig.lockY(), CameraRig.lockZ()), eye);
+        cam = numencam$smoothToward(cam, eye, pt);
         this.setPosition(cam);
         numencam$aimAt(cam, eye);
-        CameraRig.damp(this.position, this.yRot, this.xRot, 1.0f);
+        CameraRig.damp(this.position, this.yRot, this.xRot, 1.0f, pt);
     }
 
     // ── 模式：电影（越肩 + 俯角偏置 + 跨帧阻尼）──────────────────────────────
@@ -185,11 +209,16 @@ public abstract class MixinCamera {
         Vec3 eye = numencam$interpolatedEye(target, pt);
         this.setRotation(target.getViewYRot(pt), target.getViewXRot(pt) + CameraRig.pitchBias());
         this.setPosition(eye);
-        this.numencam$move(-numencam$maxZoom(CameraRig.distance()), CameraRig.height(), CameraRig.shoulder());
+        float back = CameraRig.smoothZoom(this.numencam$maxZoom(CameraRig.distance()), pt);
+        this.numencam$move(-back, CameraRig.height(), CameraRig.shoulder());
 
-        // 阻尼：朝当前位置收敛，lambda 越小越"重"（长镜不抖）
-        CameraRig.damp(this.position, this.yRot, this.xRot, 0.15f);
+        // 阻尼：位移与朝向都缓（lambda 是「每 tick」的，见 CameraRig.damp）。
+        CameraRig.damp(this.position, this.yRot, this.xRot, CameraRig.CINEMATIC_LAMBDA, pt);
         this.setPosition(CameraRig.dampedPosition());
+        // ★ 2026-11-07：旧版只把位移设回去，damp() 算出的 dampedYaw/dampedPitch 没人用 ——
+        //   结果位移是缓的、转身还是 1:1 跟着目标脑袋甩。目标的视角包 20Hz 才更新一次，
+        //   一转急弯画面就整块甩一下，那也是"抖"。这里把朝向也接上。
+        this.setRotation(CameraRig.dampedYaw(), CameraRig.dampedPitch());
     }
 
     // ── 抄自原版：partial-tick 插值的脚部位置 ────────────────────────────────

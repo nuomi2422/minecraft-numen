@@ -6,6 +6,7 @@ import com.google.gson.JsonParser;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.AbstractClientPlayer;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.BlockGetter;
@@ -115,6 +116,43 @@ public final class CameraRig {
     private static int tickCounter;
     private static long lastSeenMs;
 
+    /**
+     * 客户端 tick 计数：<b>每 tick 必 +1</b>，与渲染帧数无关。
+     *
+     * <p>为什么非要单独一个计数器（2026-11-07）：机位算法跑在 {@code Camera#setup} 里，
+     * <b>一渲染帧一次</b>（60~144 次/秒）；而本类里所有「缓变 / 滞留」常数都是按 tick 写的
+     * （20 次/秒）。两者混用时 {@code OCC_HOLD_TICKS = 200} 本意是停 10 秒，在 60fps 下
+     * 只停 3.3 秒、144fps 下只停 1.4 秒 —— 用来防闪的滞回等于没有，过树丛就反复切。
+     * 所以缓变与滞留一律以本计数器为准，帧内只做插值。
+     */
+    private static volatile long clientTicks;
+
+    /** 镜头距离每 tick 朝目标收敛的比例：0.35 ≈ 8 tick 走到 95%。见 {@link #smoothZoom}。 */
+    private static final float ZOOM_LAMBDA_PER_TICK = 0.35f;
+
+    /**
+     * CINEMATIC 的阻尼强度（<b>每 tick</b>）。
+     *
+     * <p>0.35 ≈ 0.14 秒时间常数：目标以 4 格/秒 走时镜头落后约 0.6 格，肉眼看是「有重量」
+     * 而不是「追不上」。旧版写 0.15 且按帧乘，60fps 下等于 0.06 秒——几乎等于没阻尼，
+     * 所以 CINEMATIC 名存实亡。
+     */
+    public static final float CINEMATIC_LAMBDA = 0.35f;
+
+    /** {@link #smoothZoom} 的「上一 tick / 本 tick」两个端点。 */
+    private static float zoomPrev = Float.NaN;
+    private static float zoomTarget = Float.NaN;
+    private static long zoomTick = Long.MIN_VALUE;
+
+    /** {@link #damp} 的「上一 tick / 本 tick」两个端点（位移与朝向各一套）。 */
+    private static Vec3 dampPrevPos;
+    private static Vec3 dampTargetPos;
+    private static float dampPrevYaw = Float.NaN;
+    private static float dampTargetYaw = Float.NaN;
+    private static float dampPrevPitch = Float.NaN;
+    private static float dampTargetPitch = Float.NaN;
+    private static long dampTick = Long.MIN_VALUE;
+
     private CameraRig() {
     }
 
@@ -221,6 +259,9 @@ public final class CameraRig {
 
     /** 每 tick 调一次：按节奏重读配置文件（指令刚改过的那一小段时间内跳过）。 */
     public static void tick() {
+        // ★ 必须在两个提前 return 之前：clientTicks 是「缓变/滞留按 tick 推进」的唯一依据，
+        //   漏掉任何一个 tick 都会让 10 秒滞留缩水。
+        clientTicks++;
         if (holdFileTicks > 0) {
             holdFileTicks--;
             return;
@@ -230,17 +271,60 @@ public final class CameraRig {
         reload();
     }
 
-    /** CINEMATIC 跨帧阻尼：朝目标机位收敛，避免逐帧硬切导致的跳变。 */
-    public static void damp(Vec3 desired, float desiredYaw, float desiredPitch, float lambda) {
-        if (dampedPos == null) {
+    /**
+     * 跨帧阻尼：朝目标机位收敛，避免逐帧硬切导致的跳变。
+     *
+     * <p><b>lambda 是「每 tick」的比例，不是每帧</b>（2026-11-07 改）。旧版每个渲染帧乘一次，
+     * 于是同一个 0.15 在 60fps 下等于 0.06 秒收敛、30fps 下 0.22 秒 ——「重」的程度跟着
+     * 帧率变。现在每 tick 推进一步，帧内用 {@code pt} 在上下两个 tick 端点之间插值，
+     * 所以画面既平滑又与帧率无关。
+     *
+     * <p>{@code lambda >= 1} 表示<b>不做阻尼</b>：原样透传、一帧都不许延迟。越肩/轨道
+     * 要贴着目标，多插一 tick 就是 50ms 拖影。
+     */
+    public static void damp(Vec3 desired, float desiredYaw, float desiredPitch, float lambda, float pt) {
+        if (lambda >= 1f) {
             dampedPos = desired;
             dampedYaw = desiredYaw;
             dampedPitch = desiredPitch;
             return;
         }
-        dampedPos = dampedPos.lerp(desired, lambda);
-        dampedYaw = lerpAngle(dampedYaw, desiredYaw, lambda);
-        dampedPitch = dampedPitch + (desiredPitch - dampedPitch) * lambda;
+        long now = clientTicks;
+        if (dampTargetPos == null || now != dampTick) {
+            dampTick = now;
+            if (dampTargetPos == null || Float.isNaN(dampPrevYaw)) {
+                dampPrevPos = desired;
+                dampPrevYaw = desiredYaw;
+                dampPrevPitch = desiredPitch;
+                dampTargetPos = desired;
+                dampTargetYaw = desiredYaw;
+                dampTargetPitch = desiredPitch;
+            } else {
+                dampPrevPos = dampTargetPos;
+                dampPrevYaw = dampTargetYaw;
+                dampPrevPitch = dampTargetPitch;
+                dampTargetPos = dampTargetPos.lerp(desired, lambda);
+                dampTargetYaw = lerpAngle(dampTargetYaw, desiredYaw, lambda);
+                dampTargetPitch = dampTargetPitch + (desiredPitch - dampTargetPitch) * lambda;
+            }
+        }
+        dampedPos = dampPrevPos.lerp(dampTargetPos, pt);
+        dampedYaw = lerpAngle(dampPrevYaw, dampTargetYaw, pt);
+        dampedPitch = dampPrevPitch + (dampTargetPitch - dampPrevPitch) * pt;
+    }
+
+    /** 阻尼后的朝向。CINEMATIC 必须把它设回相机，否则「转身阻尼」只是算了个寂寞。 */
+    public static float dampedYaw() {
+        return dampedYaw;
+    }
+
+    public static float dampedPitch() {
+        return dampedPitch;
+    }
+
+    /** 供相机侧做「第三人称朝向 → 目标视线」混合用，跨 ±180 也走最短路。 */
+    public static float lerpYaw(float from, float to, float t) {
+        return lerpAngle(from, to, t);
     }
 
     /** 最短路径角度插值（yaw 跨 ±180 时不能直接线性插，否则会绕远路甩镜头）。 */
@@ -255,6 +339,49 @@ public final class CameraRig {
         dampedPos = null;
         dampedYaw = Float.NaN;
         dampedPitch = Float.NaN;
+        dampPrevPos = null;
+        dampTargetPos = null;
+        dampPrevYaw = Float.NaN;
+        dampTargetYaw = Float.NaN;
+        dampPrevPitch = Float.NaN;
+        dampTargetPitch = Float.NaN;
+        dampTick = Long.MIN_VALUE;
+        resetZoom();
+    }
+
+    /**
+     * 把「这一帧想要的镜头距离」缓变（约 8 tick 收敛），再按 partialTick 插值输出。
+     *
+     * <p>为什么必须有它（2026-11-07）：穿墙拉近（{@code numencam$maxZoom} 的 8 角点射线）
+     * 和视线裁剪（{@code numencam$keepLineOfSight}）都是<b>逐帧重算的世界查询</b>。目标在
+     * 树丛/墙角附近走动时，命中距离会一帧一个值、一帧跳好几格，镜头就被硬拽过去再硬弹
+     * 回来 —— 看着像"抖过去抖过来"，其实是<b>距离在跳</b>，不是相机在晃。
+     *
+     * <p>040 施工单 §3.3 要求「与上一帧做 8 tick 线性过渡」，2026-11-07 这轮才真正落地。
+     * 按 tick 而不是按帧推进：按帧的话 144fps 下过渡只剩 0.055 秒，等于没过渡。
+     */
+    public static float smoothZoom(float desired, float pt) {
+        if (desired < 0.3f) {
+            desired = 0.3f;   // 别把镜头塞进目标眼睛
+        }
+        long now = clientTicks;
+        if (Float.isNaN(zoomTarget)) {
+            zoomPrev = desired;
+            zoomTarget = desired;
+            zoomTick = now;
+        } else if (now != zoomTick) {
+            zoomTick = now;
+            zoomPrev = zoomTarget;
+            zoomTarget = zoomTarget + (desired - zoomTarget) * ZOOM_LAMBDA_PER_TICK;
+        }
+        return Mth.lerp(pt, zoomPrev, zoomTarget);
+    }
+
+    /** 切模式/换目标时丢掉距离缓变，免得从上一场的位置飘过来。 */
+    public static void resetZoom() {
+        zoomPrev = Float.NaN;
+        zoomTarget = Float.NaN;
+        zoomTick = Long.MIN_VALUE;
     }
 
     /** 配置文件路径。 */
@@ -482,8 +609,19 @@ public final class CameraRig {
     //
     // 为什么需要 10 秒滞留：树丛/墙角里射线会一两帧就 MISS，没有滞留就会来回闪。
 
-    /** 0 = 第三人称，1 = 完全第一人称。 */
+    /**
+     * 遮挡混合系数：0 = 第三人称，1 = 完全第一人称。
+     *
+     * <p>三个值分工（2026-11-07）：{@link #occBlend} 是<b>上一 tick</b> 的值、
+     * {@link #occBlendTarget} 是<b>本 tick</b> 该到的值，两者之间按 partialTick 插值得到
+     * {@link #occBlendNow} 输出给相机。<b>状态只在 tick 上推进</b>，帧内只插值 ——
+     * 否则 60fps 下「停 10 秒」会缩成 3.3 秒。
+     */
     private static volatile float occBlend;
+    private static volatile float occBlendTarget;
+    private static volatile float occBlendNow;
+    /** 状态机上一次推进发生在哪个 tick。 */
+    private static long occTick = Long.MIN_VALUE;
     /** 还要保持第一人称多少 tick（用户要求至少 10 秒 = 200 tick）。 */
     private static int occHoldTicks;
 
@@ -493,14 +631,18 @@ public final class CameraRig {
     /** 缓出来用 40 tick（2s）——要慢，这是用户要的「缓慢变回第三人称」。 */
     private static final int OCC_OUT_TICKS = 40;
 
+    /** 本帧的混合系数（已按 partialTick 插值）。 */
     public static float occBlend() {
-        return occBlend;
+        return occBlendNow;
     }
 
     /** 关掉遮挡切换时把状态归零，别把上一次的混合系数留在下一次机位里。 */
     public static void resetOcclusion() {
         occBlend = 0f;
+        occBlendTarget = 0f;
+        occBlendNow = 0f;
         occHoldTicks = 0;
+        occTick = Long.MIN_VALUE;
     }
 
     /**
@@ -512,7 +654,7 @@ public final class CameraRig {
      * @param eye    目标眼睛位置
      * @return 这一帧实际该站的位置
      */
-    public static Vec3 applyOcclusion(BlockGetter level, Entity target, Vec3 third, Vec3 eye) {
+    public static Vec3 applyOcclusion(BlockGetter level, Entity target, Vec3 third, Vec3 eye, float pt) {
         if (level == null || target == null || third == null || eye == null || !isActive()) {
             resetOcclusion();
             return third;
@@ -528,17 +670,26 @@ public final class CameraRig {
             blocked = hit.getType() != HitResult.Type.MISS
                     && hit.getLocation().distanceTo(eye) < len - 0.6;
         }
-        if (blocked) {
-            occHoldTicks = OCC_HOLD_TICKS;
-            occBlend = Math.min(1f, occBlend + 1f / OCC_IN_TICKS);
-        } else if (occHoldTicks > 0) {
-            occHoldTicks--;
-        } else if (occBlend > 0f) {
-            occBlend = Math.max(0f, occBlend - 1f / OCC_OUT_TICKS);
+        // ★ 状态机每 tick 只推进一步（2026-11-07）。本方法是「每渲染帧」调一次的，
+        //   旧版直接在这里递减 occHoldTicks，于是 200 tick 的「10 秒滞留」在 60fps 下
+        //   只剩 3.3 秒、144fps 下只剩 1.4 秒 —— 防闪的滞回失效，过树丛就来回切。
+        long now = clientTicks;
+        if (now != occTick) {
+            occTick = now;
+            occBlend = occBlendTarget;          // 上一 tick 的目标成为这一 tick 的起点
+            if (blocked) {
+                occHoldTicks = OCC_HOLD_TICKS;
+                occBlendTarget = Math.min(1f, occBlendTarget + 1f / OCC_IN_TICKS);
+            } else if (occHoldTicks > 0) {
+                occHoldTicks--;
+            } else if (occBlendTarget > 0f) {
+                occBlendTarget = Math.max(0f, occBlendTarget - 1f / OCC_OUT_TICKS);
+            }
         }
-        if (occBlend <= 0f) {
+        occBlendNow = Mth.lerp(pt, occBlend, occBlendTarget);
+        if (occBlendNow <= 0f) {
             return third;
         }
-        return third.lerp(eye, occBlend);
+        return third.lerp(eye, occBlendNow);
     }
 }

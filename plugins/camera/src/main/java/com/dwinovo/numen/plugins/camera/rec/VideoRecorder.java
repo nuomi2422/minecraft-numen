@@ -113,6 +113,15 @@ public final class VideoRecorder {
     private static volatile Process ffmpegProc;
 
     private static volatile long startMs;
+    /**
+     * 这一条 take <b>实际达成</b>的帧率（落盘帧数 / 真实秒数）。
+     *
+     * <p>为什么不能直接拿 requestedFps 去编：抓帧挂在客户端 tick 上，客户端一卡就掉 tick，
+     * 而 ffmpeg 是按固定帧率编的 —— 成片于是比真实时间快（或慢）。
+     * 2026-11-02 实测一条「要 6fps」的 take：390 帧 / 60 秒 = 实际 6.5fps，
+     * 按 6 编出来 65 秒，整段慢 8%。帧率非整除时更糟（要 8 实际 6.67）。
+     */
+    private static volatile float achievedFps;
     private static volatile String lastResult = "还没录过。/cam rec start [fps]";
 
     private VideoRecorder() {
@@ -161,6 +170,7 @@ public final class VideoRecorder {
         dropped = 0;
         failed = 0;
         haveLastHash = false;
+        achievedFps = 0f;          // 新 take 从 0 起算，别继承上一条的达成帧率
         VideoRecorder.dedupe = dedupe;
         tickCounter = 0;
         startMs = System.currentTimeMillis();
@@ -300,13 +310,15 @@ public final class VideoRecorder {
                 if (pendingWrites > 0) {
                     return;     // 还在写，下一 tick 再看
                 }
+                // 先算实际帧率再写元数据：顺序反了会把上一条 take 的旧值写进 numencam.txt。
+                achievedFps = computeAchievedFps();
                 writeMeta(d);
                 File exe = locateFfmpeg();
                 if (exe == null) {
                     sealPhase = SEAL_NONE;
                     lastResult = "封盘完成。" + summary(d)
                             + "\n⚠ 没找到 ffmpeg，只留了 PNG 序列。装好 ffmpeg 后自己合："
-                            + "\n  ffmpeg -y -framerate " + requestedFps
+                            + "\n  ffmpeg -y -framerate " + String.format(Locale.ROOT, "%.3f", achievedFps)
                             + " -i \"" + new File(d, "f_%05d.png").getAbsolutePath() + "\""
                             + " -c:v libx264 -pix_fmt yuv420p"
                             + " -vf scale=trunc(iw/2)*2:trunc(ih/2)*2 \"" + new File(d, "numencam.mp4").getAbsolutePath() + "\"";
@@ -342,12 +354,33 @@ public final class VideoRecorder {
                 requestedFps, written, dropped, failed, d.getAbsolutePath());
     }
 
+    /**
+     * 实际达成帧率 = 落盘帧数 / 真实秒数。
+     *
+     * <p>拿不到合理值（帧太少、时间太短、或算出来离谱）就退回请求值 —— 宁可慢一点，
+     * 也不要拿一个 0.03fps 之类的噪声去编 ffmpeg。
+     */
+    private static float computeAchievedFps() {
+        long ms = System.currentTimeMillis() - startMs;
+        if (written > 1 && ms > 500) {
+            float f = written * 1000f / ms;
+            if (f >= 0.5f && f <= 60f) {
+                return f;
+            }
+        }
+        return requestedFps;
+    }
+
     private static void writeMeta(File d) {
         long secs = Math.max(1, (System.currentTimeMillis() - startMs) / 1000);
         try {
             Files.writeString(d.toPath().resolve("numencam.txt"),
                     "fps=" + requestedFps + "\nframes=" + written + "\ndropped=" + dropped
-                            + "\nfailed=" + failed + "\nduration_s=" + secs + "\n",
+                            + "\nfailed=" + failed + "\nduration_s=" + secs
+                            // 2026-11-07 起多这一行：把「请求的帧率」和「实际编进 mp4 的帧率」
+                            // 分开记，回看素材时才知道这段画面是不是被改过速度。
+                            + "\nfps_encode=" + String.format(Locale.ROOT, "%.3f", achievedFps > 0.1f ? achievedFps : (float) requestedFps)
+                            + "\n",
                     StandardCharsets.UTF_8);
         } catch (IOException ignored) {
             // 元数据写不了不影响视频本身
@@ -361,7 +394,9 @@ public final class VideoRecorder {
         cmd.add(exe.getAbsolutePath());
         cmd.add("-y");
         cmd.add("-framerate");
-        cmd.add(String.valueOf(requestedFps));
+        // 用实际达成帧率而不是请求值：请求 6 实际是 6.67，按 6 编就是慢放。
+        cmd.add(String.format(Locale.ROOT, "%.6f",
+                achievedFps > 0.1f ? achievedFps : (float) requestedFps));
         cmd.add("-i");
         cmd.add(new File(d, "f_%05d.png").getAbsolutePath());
         cmd.add("-c:v");
