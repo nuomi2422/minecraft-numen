@@ -1,6 +1,8 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import com.dwinovo.numen.rdd.api.NodeType;
 import com.dwinovo.numen.rdd.api.PrimarySpec;
+import com.dwinovo.numen.rdd.api.RecurrenceSpec;
 import com.dwinovo.numen.rdd.api.SubtaskSpec;
 
 import java.util.ArrayList;
@@ -307,7 +309,27 @@ final class RddPlanGuard {
             // 违规的可选升级（dropped 那批）绝不因此复活。
             return new Filtered(List.copyOf(heldOnes), dropped, reused);
         }
-        return new Filtered(List.copyOf(allowed), dropped, reused);
+        List<SubtaskSpec> normalized = new ArrayList<>(allowed.size());
+        boolean farmObjective = objective != null && objective.matches(".*(农田|田|作物|小麦|麦|南瓜|收割|补种).*");
+        for (SubtaskSpec spec : allowed) {
+            if (spec.nodeType() == NodeType.MAIN && looksMaintenance(spec.description())) {
+                RddMonitor.publish("plan_node_downgraded", Map.of(
+                        "reason", "maintenance/wait/growth step must not block mainline",
+                        "description", spec.description() == null ? "" : spec.description()));
+                normalized.add(new SubtaskSpec(spec.description(), spec.condition(), spec.body(),
+                        NodeType.DAILY, RecurrenceSpec.daily(farmObjective)));
+            } else {
+                normalized.add(spec);
+            }
+        }
+        return new Filtered(List.copyOf(normalized), dropped, reused);
+    }
+
+    /** 2026-11-08: repeating care/harvest steps are DAILY; one-off construction stays MAIN. */
+    static boolean looksMaintenance(String description) {
+        if (description == null || description.isBlank()) return false;
+        String d = description;
+        return d.matches(".*(收割|收麦|收成熟|成熟就收|补种|每日|每天|日常|维护|巡检|喂养|存粮|反复|循环).*");
     }
 
     /**

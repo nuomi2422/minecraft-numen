@@ -373,4 +373,22 @@ class RddPlanGuardTest {
         assertEquals(NodeType.DAILY, filtered.allowed().get(0).nodeType(), "守门器不得把 DAILY 归一成 MAIN");
         assertNotNull(filtered.allowed().get(0).recurrence());
     }
+
+    @Test void harvestWaitNodeDowngradesToDaily() {
+        SubtaskSpec harvest = new SubtaskSpec("收割小麦到 9",
+                Map.of("asset_key", "minecraft:wheat", "minimum", 9), null, NodeType.MAIN, null);
+        var filtered = RddPlanGuard.filterSubtasks(List.of(harvest), "维护农田", Map.of());
+        assertEquals(1, filtered.allowed().size(), filtered.dropped().toString());
+        assertEquals(NodeType.DAILY, filtered.allowed().get(0).nodeType(), "等待/收获类不得留在主线");
+        assertNotNull(filtered.allowed().get(0).recurrence());
+        assertTrue(filtered.allowed().get(0).recurrence().requiresFarmBuilt());
+    }
+
+    @Test void initialFarmingConstructionStaysMain() {
+        SubtaskSpec construction = new SubtaskSpec("开垦并初始播种",
+                Map.of("asset_key", "minecraft:wheat_seeds", "minimum", 1), null, NodeType.MAIN, null);
+        var filtered = RddPlanGuard.filterSubtasks(List.of(construction), "建农田", Map.of());
+        assertEquals(1, filtered.allowed().size(), filtered.dropped().toString());
+        assertEquals(NodeType.MAIN, filtered.allowed().get(0).nodeType(), "一次性建设仍为主线");
+    }
 }

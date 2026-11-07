@@ -27,7 +27,7 @@ public final class DailyMaintenanceSideTaskType implements SideTaskType {
         if (key.isBlank()) return SideTaskVerdict.skip("daily task missing asset_key");
         int held = world.countItem(task.companionId(), key);
         if (held >= minimum) return SideTaskVerdict.complete("daily condition met: " + key + " " + held + "/" + minimum);
-        return SideTaskVerdict.keep("todo", Map.of());
+        return SideTaskVerdict.keep("todo", task.data());
     }
 
     @Override public String renderContext(SideTask task, SideTaskWorldPort world) {

@@ -212,4 +212,20 @@ class SideTaskRecurringTest {
         assertEquals(1, ev.count("side_task_due"), "只有 g2 的 spec 应保留");
         assertEquals("daily:g2:b", ev.payloads.get(ev.events.indexOf("side_task_due")).get("specId"));
     }
+
+    @Test void dailyContinueKeepsConditionData() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new DailyMaintenanceSideTaskType());
+        e.registerRecurring(new RecurringSideTaskSpec("dk", DailyMaintenanceSideTaskType.TYPE_ID, 1, 0,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true, false,
+                Map.of("description", "x", "asset_key", "minecraft:wheat", "minimum", "9")),
+                DailyMaintenanceSideTaskType.TYPE_ID);
+        FakeWorldPort w = new FakeWorldPort().at(100, 0);
+        e.tick(C, w, null, false);
+        e.tick(C, w, null, false); // CONTINUE must not wipe data
+        assertTrue(e.isActive(C));
+        assertEquals("minecraft:wheat", e.current(C).orElseThrow().data().get("asset_key"),
+                "CONTINUE 后 data 被 verdict.data 覆盖为空 = 下一拍 missing asset_key");
+    }
 }
