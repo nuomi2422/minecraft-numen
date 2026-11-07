@@ -1414,6 +1414,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                         int rev = nextPlanRevision(companionId, chain);
                         subs = RddChainFactory.subtasksFromSpecs(primaryId, rev, specs);
                         chain.replaceCurrentSubtasks(subs);
+                        SideTaskHost.registerDailySpecs(chain);
                         RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废
                         saveRuntimes();
                         publishTaskSnapshot(companionId, "replanned");

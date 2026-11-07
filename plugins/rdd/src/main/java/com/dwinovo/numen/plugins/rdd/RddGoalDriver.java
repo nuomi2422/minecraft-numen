@@ -170,6 +170,7 @@ final class RddGoalDriver {
                     // id 以当前一级 id + 代次为前缀 → 跨级/跨重试/跨重启全局唯一
                     subs = buildInjection(pid, rev, specs);
                     rt.expandCurrentPrimary(subs); // core 校验：非空/重复/已展开/状态合法
+                    SideTaskHost.registerDailySpecs(chain);
                     ok = true;
                 } catch (RuntimeException ex) {
                     failure = "expansion rejected by core: " + ex.getMessage();
