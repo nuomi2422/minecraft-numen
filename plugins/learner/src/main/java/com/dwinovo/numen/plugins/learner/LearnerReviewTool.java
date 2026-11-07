@@ -883,8 +883,14 @@ final class LearnerReviewTool implements NumenTool {
                     .storable(draftObj, gateHardFail)) {
                 // 2026-11-02：原来这里静默 continue —— 判定了 WRITE_EXPERIENCE 却连一条
                 // outcome 都没有，事后无法区分「没交草稿」和「草稿不合格」。如实记下。
-                outcomes.add(java.util.Map.of("memo_id", String.valueOf(one.get("memo_id")),
-                        "outcome", "SKIPPED", "reason", "not storable (no draft shell / no type / gate hard-fail)"));
+                var diag = LearnerChainDiagnostics.qualificationRejected("not storable (no draft shell / no type / gate hard-fail)");
+                var skipped = new java.util.LinkedHashMap<String, Object>();
+                skipped.put("memo_id", String.valueOf(one.get("memo_id")));
+                skipped.put("outcome", diag.outcome());
+                skipped.put("reason", diag.message());
+                skipped.put("diagnostic_event", diag.event());
+                skipped.put("retryable", diag.retryable());
+                outcomes.add(skipped);
                 continue;
             }
             Map<?, ?> dm = (Map<?, ?>) draftObj;
@@ -1078,8 +1084,14 @@ final class LearnerReviewTool implements NumenTool {
                             "reason", why));
                 }
             } catch (Throwable t) {
-                outcomes.add(java.util.Map.of("memo_id", memoId, "outcome", "FAILED",
-                        "reason", String.valueOf(t)));
+                var diag = LearnerChainDiagnostics.storeFailed(String.valueOf(t));
+                var failed = new java.util.LinkedHashMap<String, Object>();
+                failed.put("memo_id", memoId);
+                failed.put("outcome", diag.outcome());
+                failed.put("reason", diag.message());
+                failed.put("diagnostic_event", diag.event());
+                failed.put("retryable", diag.retryable());
+                outcomes.add(failed);
             }
         }
         if (!outcomes.isEmpty()) {
