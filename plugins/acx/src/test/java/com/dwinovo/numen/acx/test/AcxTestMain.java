@@ -178,14 +178,28 @@ private static void realAcLib() {
             eq(0, rep.errors().size(), "错误: " + rep.errors());
         });
 
+        T.test("真实积木清单：未知 block（sow_nearby）strict 必须 FAIL", () -> {
+            Path d = tmpDir().resolve("badlib");
+            try {
+                Files.createDirectories(d.resolve("stable"));
+                Files.writeString(d.resolve("stable/bad.ac"),
+                        "{\"name\":\"bad_sow\",\"version\":\"1\",\"steps\":[{\"id\":\"s\",\"block\":\"sow_nearby\"}]}");
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
+            var rep2 = AcxLoader.loadAll(d, numenRegistry(), false, true);
+            T.isTrue(rep2.registered().isEmpty(), "未知积木不得注册");
+            contains(rep2.errors().toString(), "sow_nearby", "错误要点名未知 block");
+        });
+
         T.test("ac-lib 零字段引用 warning（$ref 都指向真机实测过的输出字段）", () -> {
             eq(0, rep.warnings().size(), "warning: " + rep.warnings());
         });
 
-        T.test("12 个 stable 全注册、0 个 beta", () -> {
+        T.test("13 个 stable 全注册、0 个 beta", () -> {
             // 2026-10-09：11 → 12，新增 lure_animals_into_pen（引羊 v6：按 type 筛羊 + 三趟线性）。
             // 总数是硬断言，涨了必须显式改这里——这正是它存在的意义（覆盖度变化不许静默通过）。
-            eq(12, rep.registered().size(), "stable 数: " + rep.registered().keySet());
+            eq(13, rep.registered().size(), "stable 数: " + rep.registered().keySet());
             eq(0, rep.betaOnly().size(), "beta 数: " + rep.betaOnly().keySet());
             T.isTrue(rep.registered().containsKey("ore_scan_inspect"), "实测形状脚本在");
             T.isTrue(rep.registered().containsKey("timeout_demo"), "按 AC 限额脚本在");
@@ -1387,20 +1401,19 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
         });
     }
 
-    // ── 15. 版本库（人工批准 + 回滚） ───────────────────────────────
+    // ── 15. 版本库（发布自动晋级 + 回滚） ───────────────────────────
 
     private static void library() {
-        T.group("15 版本库：publish 不上线，approve 才上线，能回滚");
+        T.group("15 版本库：publish 静态校验通过即自动晋级 active；approve 兼容；能回滚");
 
         T.test("publish 只写版本，不切 active", () -> {
             Path f = tmpDir().resolve("lib.json");
             Fake.Registry reg = new Fake.Registry().add(Fake.fixed("blk", Map.of()));
             FileAcxLibrary lib = new FileAcxLibrary(f, reg);
             lib.publish(def(step("s", "blk", Map.of())), "初版");
-            T.isTrue(!lib.isApproved("t"), "未批准");
+            T.isTrue(lib.isApproved("t"), "发布即自动晋级");
             T.isTrue(lib.versions("t").contains("1"), "版本已写入");
-            var e = throwsA(IllegalStateException.class, () -> lib.active("t"));
-            contains(e.getMessage(), "未人工批准上线", "拒绝理由");
+            eq("t", lib.active("t").name(), "自动生效可加载");
         });
 
         T.test("approve 后 active 才可用", () -> {
@@ -1471,7 +1484,7 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
     private static void learnerDraftAdoption() {
         T.group("19 学习者 AC 草稿采纳：只进库不上线，坏草稿写回原因");
 
-        T.test("合法草稿 → 进版本库但**未上线**（active 取不到）", () -> {
+        T.test("合法草稿 → 进版本库并自动晋级（active 可取）", () -> {
             Path cfg = tmpDir();
             Fake.Registry reg = new Fake.Registry().add(Fake.fixed("blk", Map.of()));
             FileAcxLibrary lib = new FileAcxLibrary(cfg.resolve("acx/library.json"), reg);
@@ -1484,9 +1497,8 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             eq(1, rep.adopted(), "采纳数");
             eq(0, rep.rejected(), "不该有拒收");
             T.isTrue(lib.hasAnyVersion("eat_when_hungry"), "版本已写进库");
-            T.isTrue(!lib.isApproved("eat_when_hungry"), "**没有**被批准上线");
-            var e = throwsA(IllegalStateException.class, () -> lib.active("eat_when_hungry"));
-            contains(e.getMessage(), "未人工批准上线", "拒绝理由要说明白");
+            T.isTrue(lib.isApproved("eat_when_hungry"), "采纳即自动晋级（2026-11-07 无人工门）");
+            notNull(lib.active("eat_when_hungry"), "自动生效可加载");
         });
 
         T.test("回填 ADOPTED 并留下 consumer_ref；再扫一次不再重复采纳", () -> {
@@ -2621,16 +2633,15 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
                     "★ 观测炸了不影响执行");
         });
 
-        T.test("生命周期：GENERATED→PENDING→STABLE，只有 STABLE 能 active", () -> {
+        T.test("生命周期：publish 自动 STABLE；approve 兼容；STABLE 可 active", () -> {
             Path f = tmpDir().resolve("b4-lib.json");
             Fake.Registry reg = new Fake.Registry().add(Fake.fixed("blk", Map.of()));
             FileAcxLibrary lib = new FileAcxLibrary(f, reg);
             lib.publish(def(step("s", "blk", Map.of())), "初版");
-            eq(AcxLifecycleState.GENERATED, lib.status("t", "1"), "刚发布");
-            lib.markPending("t", "1", "跑过 3 次");
-            eq(AcxLifecycleState.PENDING, lib.status("t", "1"), "有运行标记");
-            lib.approve("t", "1", "user", "验过了");
-            eq(AcxLifecycleState.STABLE, lib.status("t", "1"), "批准");
+            eq(AcxLifecycleState.STABLE, lib.status("t", "1"), "发布即自动 STABLE");
+            eq("machine:auto", lib.verifiedBy("t", "1"), "证据来源");
+            lib.approve("t", "1", "compat", "兼容路径");
+            eq(AcxLifecycleState.STABLE, lib.status("t", "1"), "兼容批准后仍 STABLE");
             eq("1", lib.activeVersion("t"), "active");
             notNull(lib.active("t"), "可加载");
         });
@@ -2676,7 +2687,8 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             eq("1", lib.activeVersion("t"), "回到 v1");
             lib.approve("t", "2", "user", "再上");
             eq("2", lib.activeVersion("t"), "再切回 v2");
-            throwsA(IllegalStateException.class, () -> lib.rollback("t", "3", "v3 没批过"));
+            lib.rollback("t", "3", "v3 自动 STABLE 可回滚");
+            eq("3", lib.activeVersion("t"), "回到 v3");
         });
 
         T.test("生命周期落盘往返；旧档（无 status）按 active=STABLE 兼容", () -> {
@@ -2684,13 +2696,12 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             Fake.Registry reg = new Fake.Registry().add(Fake.fixed("blk", Map.of()));
             FileAcxLibrary lib = new FileAcxLibrary(f, reg);
             lib.publish(def(step("s", "blk", Map.of())), "v1");
-            lib.markPending("t", "1", "跑过");
             lib.publish(new AcxDefinition("t", "2", "", List.of(),
                     List.of(step("s", "blk", Map.of())), "", ""), "v2");
             lib.reject("t", "2", "坏");
             FileAcxLibrary lib2 = new FileAcxLibrary(f, reg);
             lib2.load();
-            eq(AcxLifecycleState.PENDING, lib2.status("t", "1"), "PENDING 读回");
+            eq(AcxLifecycleState.STABLE, lib2.status("t", "1"), "自动 STABLE 读回");
             eq(AcxLifecycleState.REJECTED, lib2.status("t", "2"), "REJECTED 读回");
 
             Path f2 = tmpDir().resolve("legacy-lib.json");
@@ -3032,7 +3043,7 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             T.contains(String.valueOf(unk.get("message")), "未知", "说明未知");
         });
 
-        T.test("门面：publish → approve → 回滚（人工批准不可绕过）", () -> {
+        T.test("门面：publish 自动晋级 → approve 兼容 → 回滚", () -> {
             Fake.resetCalls();
             Fake.Registry blocks = new Fake.Registry().add(Fake.fixed("ok", Map.of()));
             AcxRunner r = runner(blocks).build();
@@ -3043,8 +3054,7 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             String v2 = "{\"name\":\"t\",\"version\":\"2\",\"steps\":[{\"id\":\"s1\",\"block\":\"ok\"}]}";
             Map<String, Object> pub1 = facade.publish(Map.of("ac_json", v1));
             T.isTrue(Boolean.TRUE.equals(pub1.get("success")), "发布成功");
-            T.eq("GENERATED", castData(pub1).get("status"), "发布后 GENERATED");
-            T.eq(Boolean.FALSE, castData(pub1).get("active"), "不自动切 active");
+            T.eq("STABLE", castData(pub1).get("status"), "发布后自动 STABLE");
             Map<String, Object> ap1 = facade.approve(Map.of("name", "t", "version", "1"));
             T.isTrue(Boolean.TRUE.equals(ap1.get("success")), "批准成功");
             T.eq("1", castData(ap1).get("active_version"), "v1 生效");
@@ -3298,7 +3308,7 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
     private static void facadeHardening() {
         T.group("23 真机硬化：观测接口容错 + 版本库安全查询");
 
-        T.test("★ acx_library 遇「只有未批准版本」的 AC 不炸（观测接口不该整体失败）", () -> {
+        T.test("★ acx_library：已发布即 active；未上线单列不炸", () -> {
             Path d = tmpDir();
             AcxRegistryLike blocks = null;
             Fake.Registry reg = new Fake.Registry().add(Fake.fixed("get_self_status", Fake.params("hp", 20)));
@@ -3320,8 +3330,8 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             Map<?, ?> data = (Map<?, ?>) out.get("data");
             T.notNull(data.get("active"), "active 表在");
             eq("1", ((Map<?, ?>) data.get("active")).get("approved"), "已批准的有 active 版本");
-            T.notNull(data.get("not_online"), "★ 未上线的单列出来而不是抛异常");
-            T.isTrue(((Map<?, ?>) data.get("not_online")).containsKey("waiting"), "waiting 在 not_online 里");
+            T.notNull(data.get("not_online"), "not_online 表在（可为空）");
+            eq("1", ((Map<?, ?>) data.get("active")).get("waiting"), "自动晋级后 waiting 也在 active");
         });
 
         T.test("hasAnyVersion 对未知名字返回 false（versions(name) 会抛，不能拿它判首次）", () -> {
@@ -3335,12 +3345,12 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
                     reg);
             lib.publish(def, "");
             T.isTrue(lib.hasAnyVersion("x"), "发布过 → true");
-            T.isTrue(!lib.isOnline("x"), "只发布未批准 → 还不在线");
+            T.isTrue(lib.isOnline("x"), "发布即自动在线");
             lib.approve("x", "1", "t", "");
-            T.isTrue(lib.isOnline("x"), "批准后 → 在线");
+            T.isTrue(lib.isOnline("x"), "兼容 approve 仍在线");
         });
 
-        T.test("未批准的 AC 按名执行仍被拒（自动批准那道闸只对 jar 自带脚本开）", () -> {
+        T.test("已发布 AC 按名执行立即可用（无人工门）", () -> {
             Path d = tmpDir();
             Fake.Registry reg = new Fake.Registry().add(Fake.fixed("get_self_status", Fake.params("hp", 20)));
             FileAcxLibrary lib = new FileAcxLibrary(d.resolve("library.json"), reg);
@@ -3352,9 +3362,7 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
                     AcxRunner.builder().tools(reg).build(), Runnable::run);
             AcxFacade f = new AcxFacade(sm, lib::active, lib::version, reg, lib);
             Map<String, Object> out = f.execute(Map.of("ac_name", "y", "input", Map.of()));
-            eq(false, out.get("success"), "未批准不得执行");
-            String msg = String.valueOf(out.get("message"));
-            T.isTrue(msg.contains("批准"), "拒绝理由要说清要人工批准: " + msg);
+            eq(true, out.get("success"), "自动生效可执行");
         });
     }
 

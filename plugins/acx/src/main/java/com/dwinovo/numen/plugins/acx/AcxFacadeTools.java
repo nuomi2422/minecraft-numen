@@ -182,8 +182,7 @@ public final class AcxFacadeTools {
     public static final class Publish extends FacadeTool {
         public Publish(AcxPlugin plugin) {
             super(plugin, "acx_publish",
-                    "发布一个 ACX 新版本（状态 GENERATED，不生效）。静态校验通过才入版本库，"
-                            + "等 acx_approve 人工批准。",
+                    "发布一个 ACX 新版本：静态校验通过即自动晋级 STABLE 并切 active（verifiedBy=machine:auto）。",
                     Schema.object()
                             .string("ac_json", "AC 定义 JSON")
                             .optionalString("note", "版本备注")
@@ -199,7 +198,7 @@ public final class AcxFacadeTools {
     public static final class Approve extends FacadeTool {
         public Approve(AcxPlugin plugin) {
             super(plugin, "acx_approve",
-                    "人工批准一个已发布版本并切为 active（状态 STABLE）。",
+                    "兼容别名：批准并切 active（2026-11-07 起不再要求人工；发布已自动生效）。",
                     Schema.object()
                             .string("name", "AC 名")
                             .string("version", "版本号")

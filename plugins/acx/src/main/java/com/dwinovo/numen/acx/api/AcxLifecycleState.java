@@ -4,7 +4,7 @@ package com.dwinovo.numen.acx.api;
  * AC 版本的生命周期（用户架构原话：{@code generated → 待验证/待使用 → 上线 / 删或重写}）。
  *
  * <pre>
- *   GENERATED ──运行标记出现──→ PENDING ──人工批准──→ STABLE（唯一可作为生产 active）
+ *   GENERATED ──静态校验通过──→ STABLE（自动晋级，verifiedBy=machine:auto；唯一可作为生产 active）
  *       │                        │                     │
  *       └──────────人工否决──────┴─────────────────────┴──→ REJECTED ──reopen──→ GENERATED
  * </pre>
@@ -17,10 +17,10 @@ public enum AcxLifecycleState {
     /** 刚发布：作者（游戏内 AI / 执行 AI）写出来的原样，还没跑过。 */
     GENERATED,
 
-    /** 已经有运行标记（跑过至少一次），等人或验证链看质量统计。 */
+    /** 兼容保留：历史版本可能有此状态；自动晋级不再经过它。 */
     PENDING,
 
-    /** 人工批准上线，可作为 active 版本被宿主调用。 */
+    /** 校验通过、可 active（2026-11-07 起静态校验通过即自动到达）。 */
     STABLE,
 
     /** 不可用：坏剧本 / 反复失败 / 被否决。保留在库里可回查，但绝不 active。 */

@@ -321,7 +321,7 @@ public final class AcxPlugin implements NumenPlugin {
             autoApproveBundled(library, load);
 
             // ★ B6/S2：把学习者产出的 AC 草稿接进来（此前 Verdict.acScriptDraft 只进回执，无人消费）。
-            //   采纳 = publish 成 GENERATED，**不 approve** —— 上线仍需人工 acx_approve，
+            //   采纳 = publish 成 GENERATED，**不 approve** —— 上线仍需acx_approve 兼容别名，
             //   与 63 §8「游戏内可以写 AC，发布要过闸」一致。
             //   放在 autoApproveBundled 之后：jar 内置脚本的自动批准只认 jar 里那份，
             //   学习者草稿绝不能借那条路自动上线。
@@ -334,7 +334,7 @@ public final class AcxPlugin implements NumenPlugin {
                 if (adopted.adopted() > 0 || adopted.rejected() > 0) {
                     LOG.info("[acx] 学习者 AC 草稿采纳: 采纳 " + adopted.adopted()
                             + " 拒收 " + adopted.rejected() + " 待处理 " + adopted.scanned()
-                            + "（GENERATED，需人工 acx_approve 才上线）");
+                            + "（GENERATED，需acx_approve 兼容别名 才上线）");
                 }
             } catch (RuntimeException e) {
                 // 采纳失败不许拖垮 acx 初始化：草稿还在投递箱里，下次启动或手工调工具再试
@@ -387,7 +387,7 @@ public final class AcxPlugin implements NumenPlugin {
      * <p>策略：<b>只对「版本库里从没见过的 jar 自带脚本」</b>做 publish + approve。
      * 理由：随 jar 发布的脚本等价于随插件版本发布的代码，天然已审；自动批准省掉每次发版
      * 都要人点一次。但玩家/学习者在游戏里改过的脚本<b>不</b>自动批准 —— 它已经进过库，
-     * 走 GENERATED/PENDING，必须 {@code acx_approve} 人工放行，人工批准那道闸才不形同虚设。
+     * 静态校验通过即自动晋级 STABLE（verifiedBy=machine:auto）；{@code acx_approve} 仅为兼容别名。
      * 用户自己放进 config 的 .ac 不在 jar 内置脚本名单 名单里，同样不自动批准。</p>
      */
     /**
@@ -446,7 +446,7 @@ public final class AcxPlugin implements NumenPlugin {
                 String version = library.publish(def, "jar 内置脚本，随插件版本发布",
                         new java.util.HashSet<>(load.registered().keySet()));
                 library.approve(def.name(), version, "acx-builtin",
-                        "随 jar 发布视为已审；此后任何修改都需人工 acx_approve");
+                        "随 jar 发布视为已审；此后任何修改都需acx_approve 兼容别名");
                 approved.add(def.name() + "@" + version);
             } catch (RuntimeException e) {
                 LOG.warn("[acx] 内置脚本未能上线（不影响其余）: {} -> {}", def.name(), e.getMessage());

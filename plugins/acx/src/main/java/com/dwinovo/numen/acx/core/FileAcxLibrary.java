@@ -19,13 +19,13 @@ import com.dwinovo.numen.acx.api.AcxStep;
 import com.dwinovo.numen.acx.api.AcxToolRegistry;
 
 /**
- * 版本库：{@code publish}（写新版本，状态 GENERATED）→ {@code markPending}（有运行标记后）→
- * {@code approve}（人工批准切 active，状态 STABLE）→ {@code rollback}（切回旧 STABLE 版本）。
+ * 版本库：{@code publish}（静态校验通过即自动晋级 STABLE 并切 active，2026-11-07 起无人工门）→
+ * {@code rollback}（切回旧 STABLE 版本）。{@code approve} 保留为兼容别名（不再要求人）。
  * 另提供 {@code reject}（否决，不清库）与 {@code reopen}（重开重写）。
  *
  * <p><b>与现有 AC 的关键差别</b>：现有 {@code FileAcVersionStore.latest(name)} 取版本号最大的
  * 即生效，{@code ac_publish} 一发就上线，没有人工闸门、没有回滚、没有状态。ACX 把
- * {@code 晋级门与状态机.md} 里那句「进入生产仍需人工批准」落到代码上，并给每个版本
+ * 把「发布静态校验通过即自动晋级」落到代码上（2026-11-07 主人决定），并给每个版本
  * 独立状态（{@link AcxLifecycleState}）。</p>
  *
  * <p>落盘格式（{@code ac-library.json}）：</p>
@@ -86,6 +86,8 @@ public final class FileAcxLibrary {
         long statusAt;
         String statusNote;
         String rejectedReason;
+        /** 自动/人工校验来源：machine:auto 或兼容批准者。 */
+        String verifiedBy = "";
     }
 
     static final class Entry {
@@ -169,7 +171,8 @@ public final class FileAcxLibrary {
     // ═══════════════════════════════════════════════════════════════════
 
     /**
-     * 发布一个新版本，状态 {@link AcxLifecycleState#GENERATED}。<b>只写入 versions，不切 active</b>。
+     * 发布一个新版本：静态校验通过即自动晋级 {@link AcxLifecycleState#STABLE} 并切 active
+     * （verifiedBy=machine:auto，2026-11-07 主人决定：学习/发布无人工审批）。
      *
      * @return 新版本号
      * @throws IllegalArgumentException 静态校验不过时抛出，且不动任何已有状态
@@ -189,18 +192,22 @@ public final class FileAcxLibrary {
         v.definition = def;
         v.publishedAt = System.currentTimeMillis();
         v.note = note == null ? "" : note;
-        v.status = AcxLifecycleState.GENERATED;
+        v.status = AcxLifecycleState.STABLE;
         v.statusAt = v.publishedAt;
-        v.statusNote = "";
+        v.statusNote = "auto:static-validation";
+        v.verifiedBy = "machine:auto";
         v.rejectedReason = "";
         e.versions.put(def.version(), v);
+        e.activeVersion = def.version();
+        e.approvedBy = "machine:auto";
+        e.approvedAt = v.publishedAt;
         persist();
-        LOG.info("[acx] 已发布 " + def.name() + " v" + def.version()
-                + "（GENERATED，待验证/待批准，active 仍是 " + e.activeVersion + "）");
+        LOG.info("[acx] 已发布并自动晋级 " + def.name() + " v" + def.version()
+                + "（STABLE，verifiedBy=machine:auto，active 已切）");
         return def.version();
     }
 
-    /** 运行标记出现后把版本从 GENERATED 抬到 PENDING（等人工看质量统计）。 */
+    /** 运行标记出现后把版本从 GENERATED 抬到 PENDING（兼容保留；自动晋级路径不再使用）。 */
     public void markPending(String name, String version, String note) {
         Version v = requireVersion(name, version);
         if (!v.status.canTransitionTo(AcxLifecycleState.PENDING)) {
@@ -214,7 +221,7 @@ public final class FileAcxLibrary {
         LOG.info("[acx] " + name + " v" + version + " → PENDING");
     }
 
-    /** 人工批准并切 active。生产上线的唯一入口。 */
+    /** 兼容别名：批准并切 active（2026-11-07 起不再要求人；发布已自动晋级）。 */
     public void approve(String name, String version, String approver, String note) {
         Entry e = require(name);
         Version v = requireVersion(name, version);
@@ -290,11 +297,11 @@ public final class FileAcxLibrary {
         return out;
     }
 
-    /** 取当前生效版本。没批准过就抛「等人工批准」，不偷偷拿最新版。 */
+    /** 取当前生效版本；没有 STABLE 版本就抛错，不偷偷拿最新版。 */
     public AcxDefinition active(String name) {
         Entry e = require(name);
         if (e.activeVersion == null) {
-            throw new IllegalStateException(name + " 已发布但未人工批准上线（待批准版本: " + e.versions.keySet() + "）");
+            throw new IllegalStateException(name + " 已发布但没有 STABLE 版本（active 未设置；版本: " + e.versions.keySet() + "）");
         }
         Version v = e.versions.get(e.activeVersion);
         if (v == null || !v.status.isActive()) {
@@ -314,6 +321,10 @@ public final class FileAcxLibrary {
 
     public String activeVersion(String name) {
         return require(name).activeVersion;
+    }
+
+    public String verifiedBy(String name, String version) {
+        return requireVersion(name, version).verifiedBy;
     }
 
     public boolean isApproved(String name) {
@@ -381,6 +392,7 @@ public final class FileAcxLibrary {
                 vm.put("status_at", v.getValue().statusAt);
                 vm.put("status_note", v.getValue().statusNote);
                 vm.put("rejected_reason", v.getValue().rejectedReason);
+                vm.put("verified_by", v.getValue().verifiedBy);
                 vs.put(v.getKey(), vm);
             }
             em.put("versions", vs);
@@ -439,6 +451,7 @@ public final class FileAcxLibrary {
                         v.statusAt = vm.get("status_at") == null ? 0 : asLong(vm.get("status_at"));
                         v.statusNote = vm.get("status_note") == null ? "" : String.valueOf(vm.get("status_note"));
                         v.rejectedReason = vm.get("rejected_reason") == null ? "" : String.valueOf(vm.get("rejected_reason"));
+                        v.verifiedBy = vm.get("verified_by") == null ? "" : String.valueOf(vm.get("verified_by"));
                         e.versions.put(ver, v);
                     }
                 }

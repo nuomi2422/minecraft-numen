@@ -28,13 +28,6 @@
       }
     },
     {
-      "id": "sow",
-      "block": "sow_nearby",
-      "params": {
-        "radius": 24
-      }
-    },
-    {
       "id": "pickup",
       "block": "collect_items",
       "params": {

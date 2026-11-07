@@ -23,9 +23,9 @@ import com.dwinovo.numen.acx.api.AcxDefinition;
  * {@code config/numen/artifact-outbox/AC_SCRIPT/<companion>/<artifact_id>.json} 这个
  * <b>文件形状</b>。改形状要同时改两边，本文件与上游各有契约测试。
  *
- * <p><b>采纳 = publish 成 GENERATED，永远不是上线。</b> 这是本类最重要的一条语义：
+ * <p><b>采纳 = publish；2026-11-07 起发布即自动晋级 STABLE 并切 active（无人工门）。</b>
  * {@link FileAcxLibrary#approve} 是生产上线的唯一入口，它需要人调用。学习者产的草稿
- * 进库后状态是 GENERATED，要人工 {@code acx_approve} 才切 active ——
+ * 静态校验不过仍拒绝；通过即 machine:auto 生效 ——
  * 与 {@code 63 §8}「游戏内 AI 写 AC 可以，但发布要过闸」一致。
  * <b>本类不调用 approve，也不该由任何自动路径调用它。</b>
  *
@@ -152,7 +152,7 @@ public final class AcxArtifactAdopter {
             try {
                 String published = library.publish(def, noteFor(it), knownAcNames);
                 adopted++;
-                String detail = "已进版本库，状态 GENERATED；上线仍需人工 acx_approve";
+                String detail = "已进版本库：静态校验通过即 STABLE（verifiedBy=machine:auto）";
                 rows.add(new Adopted(artifactId, name, published, "ADOPTED", detail));
                 writeBack(it, "ADOPTED", detail, name + "@" + published);
             } catch (RuntimeException e) {
@@ -171,7 +171,7 @@ public final class AcxArtifactAdopter {
         return "学习者复审产物（review=" + str(it, K_REVIEW)
                 + " memo=" + str(it, K_MEMO)
                 + " companion=" + str(it, K_COMPANION)
-                + "）；GENERATED 待人工批准";
+                + "）；GENERATED 旧语义已改为发布即自动晋级";
     }
 
     /**

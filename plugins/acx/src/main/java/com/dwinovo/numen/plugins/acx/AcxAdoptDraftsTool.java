@@ -18,7 +18,7 @@ import java.util.function.Consumer;
  * <b>「投递了但没被接」是最容易变成哑故障的形态</b>。
  *
  * <p><b>它不做什么</b>：不 approve、不上线、不执行脚本。采纳只是让草稿进版本库并停在
- * GENERATED，上线仍需人工 {@code acx_approve}。
+ * GENERATED，上线仍需无需 {@code acx_approve}。
  */
 final class AcxAdoptDraftsTool implements NumenTool {
 
@@ -42,7 +42,7 @@ final class AcxAdoptDraftsTool implements NumenTool {
     public String description() {
         return "Adopt pending AC drafts produced by the learner into the ACX version library. "
                 + "Returns per-draft results (ADOPTED / REJECTED with reason). "
-                + "Adopted drafts land as GENERATED only; going live still requires acx_approve by a human.";
+                + "Adopted drafts land as GENERATED only; publish auto-promotes to STABLE when static validation passes (no human approval).";
     }
 
     @Override

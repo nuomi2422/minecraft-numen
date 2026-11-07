@@ -243,7 +243,7 @@ public final class AcxFacade {
 
     // ── 版本库门面（挂了 library 才有） ─────────────────────────────────
 
-    /** 发布一个新版本（GENERATED，不切 active）。参数：{@code ac_json}、可选 {@code note}。 */
+    /** 发布新版本：静态校验通过即自动晋级 STABLE 并切 active（无人工门）。 */
     public Map<String, Object> publish(Map<String, Object> req) {
         if (library == null) {
             return err("本门面未挂载版本库，不能发布");
@@ -264,14 +264,15 @@ public final class AcxFacade {
             data.put("name", def.name());
             data.put("version", version);
             data.put("status", library.status(def.name(), version).name());
-            data.put("active", false);
-            return ok("已发布（未生效，等人工批准）", data);
+            data.put("active", true);
+            data.put("active_version", version);
+            return ok("已发布并自动晋级 STABLE（verifiedBy=machine:auto）", data);
         } catch (RuntimeException e) {
             return err(e.getMessage());
         }
     }
 
-    /** 人工批准并切为 active。参数：{@code name}、{@code version}、可选 {@code approver}/{@code note}。 */
+    /** 兼容别名：批准并切 active（不再要求人工）。参数同旧。 */
     public Map<String, Object> approve(Map<String, Object> req) {
         if (library == null) {
             return err("本门面未挂载版本库，不能批准");
@@ -282,7 +283,15 @@ public final class AcxFacade {
             return err("需要 name 和 version");
         }
         try {
-            library.approve(name, version, strOr(req.get("approver"), "unknown"), strOr(req.get("note"), ""));
+            // 兼容别名也不得绕过静态校验：非 STABLE 旧版本先按同一套 validate 复核。
+            if (library.status(name, version) != com.dwinovo.numen.acx.api.AcxLifecycleState.STABLE) {
+                AcxDefinition def = library.version(name, version);
+                List<String> problems = library.validate(def, new java.util.HashSet<>(library.names()));
+                if (!problems.isEmpty()) {
+                    return err("校验不通过: " + String.join("; ", problems));
+                }
+            }
+            library.approve(name, version, strOr(req.get("approver"), "machine:auto"), strOr(req.get("note"), ""));
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("name", name);
             data.put("ac_name", name);
@@ -328,7 +337,7 @@ public final class AcxFacade {
         for (String name : library.names()) {
             // 观测接口必须容错：某条 AC 只有未批准版本时只是「没上线」，不是整体失败
             if (!library.isOnline(name)) {
-                pending.put(name, "未上线（等人工批准）");
+                pending.put(name, "未上线（无 STABLE 版本）");
                 continue;
             }
             try {

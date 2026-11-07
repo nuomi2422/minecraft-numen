@@ -64,11 +64,10 @@ public class AcxFarmContinueOfflineTest {
         System.out.println("DBG calls=" + Fake.calls.order + " status=" + r.status() + " steps=" + r.completedStepIndex());
         check(r.status() == AcxStatus.SUCCESS, "status=" + r.status() + " reason=" + r.errorMessage());
         check(farmPort.calls.size() == 3, "farmPort=" + farmPort.calls.size() + " status=" + r.status() + " vars=" + r.vars() + " reason=" + r.errorMessage());
-        check(Fake.calls.count("sow_nearby") == 1, "sow calls=" + Fake.calls.count("sow_nearby"));
         check(((Number) r.vars().get("continue")).doubleValue() == 0, "continue=" + r.vars().get("continue"));
         System.out.println("CANDIDATE_FILE ok file=" + file + " sha256=" + hex(file) + " version=" + def.version()
                 + " status=" + r.status() + " farmPort=" + farmPort.calls.size()
-                + " sows=" + Fake.calls.count("sow_nearby") + " continue=" + r.vars().get("continue"));
+                + " continue=" + r.vars().get("continue"));
     }
 
     @Test
