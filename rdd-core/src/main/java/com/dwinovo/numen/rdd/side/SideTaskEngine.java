@@ -82,6 +82,22 @@ public final class SideTaskEngine {
         recurringTypes.keySet().removeIf(id -> id.startsWith(prefix));
     }
 
+    /** 2026-11-08: SURVIVAL report forces a task even when thresholds are not met; idempotent. */
+    public boolean startNow(SideTaskType type, UUID companionId, SideTaskWorldPort world,
+                            MainlineResumeToken token, Map<String, String> data) {
+        if (type == null || runtime.current(companionId).isPresent()) return false;
+        long now = world.gameTime();
+        long day = world.gameDay();
+        long generation = runtime.nextGeneration();
+        SideTask task = type.create(new SideTaskType.CreationContext(
+                companionId, type.typeId() + "-" + generation + "-" + shortId(companionId), generation,
+                day, now, now + type.deadlineTicks(), token, data));
+        if (!runtime.activate(task)) return false;
+        events.publish("side_task_created", base(task));
+        events.publish("side_task_activated", base(task));
+        return true;
+    }
+
     public void clearRecurring() {
         recurringSpecs.clear();
         recurringTypes.clear();

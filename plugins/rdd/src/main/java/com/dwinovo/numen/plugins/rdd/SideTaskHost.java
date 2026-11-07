@@ -66,11 +66,14 @@ final class SideTaskHost {
         if (ap == null) return;
         UUID id = ap.getUUID();
         if ("food_supply".equals(currentTypeId(id))) return;
-        FORCED_FOOD.add(id);
         com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(ap,
                 "SURVIVAL report: " + (reason == null ? "" : reason));
         RddMonitor.publish("survival_food_requested", java.util.Map.of(
                 "companionId", id.toString(), "reason", reason == null ? "" : reason));
+        HostWorldPort port = new HostWorldPort(ap);
+        boolean started = ENGINE.startNow(new com.dwinovo.numen.rdd.side.FoodSupplySideTaskType(), id, port,
+                currentMainlineToken(id), java.util.Map.of("reason", reason == null ? "" : reason));
+        if (!started) FORCED_FOOD.add(id);
     }
     private static volatile Path sideDir;
 

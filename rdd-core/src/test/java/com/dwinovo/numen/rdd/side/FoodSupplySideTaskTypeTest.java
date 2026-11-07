@@ -42,4 +42,15 @@ class FoodSupplySideTaskTypeTest {
         assertFalse(e.isActive(C));
         assertTrue(ev.saw("side_task_completed"));
     }
+
+    @Test void forcedStartIgnoresThresholdAndIsIdempotent() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new FoodSupplySideTaskType());
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(20, 20, 9);
+        assertTrue(e.startNow(new FoodSupplySideTaskType(), C, w, null, Map.of("reason", "test")));
+        assertTrue(e.isActive(C));
+        assertFalse(e.startNow(new FoodSupplySideTaskType(), C, w, null, Map.of()), "重复上报不得重建");
+        assertEquals("test", e.current(C).orElseThrow().data().get("reason"));
+    }
 }
