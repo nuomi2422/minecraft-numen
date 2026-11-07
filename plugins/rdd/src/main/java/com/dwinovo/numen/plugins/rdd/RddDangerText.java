@@ -23,6 +23,17 @@ final class RddDangerText {
      * <p>为什么要它：以前 `return ""` 同时表示"没有危险"和"读不到"，两者在上下文里长得一样。
      * 空串会让执行 AI 以为"安全"，而真相是"根本没看见"。宁可占几个 token，也不给假的安全感。
      */
+    /** 局部覆盖：没看见敌怪不等于周边安全（READY_PARTIAL 专用）。 */
+    /** 纯函数：0 只在“可证明没有”时给空串；否则给局部覆盖警告。 */
+    static String absenceText(int hostiles, boolean absenceProven) {
+        if (hostiles > 0) return null;
+        return absenceProven ? "" : partialMarker();
+    }
+
+    static String partialMarker() {
+        return "<danger>局部覆盖未见敌怪，周边未扫全——这不等于安全</danger>";
+    }
+
     static String unknownMarker() {
         return "<danger>敌怪状态未知（没读到观测，tick 采样也没有数据）——这不等于安全</danger>";
     }

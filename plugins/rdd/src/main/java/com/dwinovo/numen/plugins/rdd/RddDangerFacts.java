@@ -146,7 +146,8 @@ final class RddDangerFacts {
             if (svc == null) return null;
             String dim = body.level().dimension().location().toString();
             var pos = body.blockPosition();
-            int[] out = new int[2];
+            int[] out = new int[3];
+            out[2] = 1; // 1=可证明没有（READY）；0=局部覆盖
             Map<String, Integer> kinds = new LinkedHashMap<>();
             for (int i = 0; i < 2; i++) {
                 int r = i == 0 ? RddDangerText.SCAN_RADIUS : RddDangerText.CLOSE_RADIUS;
@@ -158,6 +159,7 @@ final class RddDangerFacts {
                 // ObservationMap 把 FULL&&!stale 之外的一律标 Status.PARTIAL，所以必须看 Readiness。
                 var readable = usability(resp);
                 if (!readable.canReportPresence()) return null;
+                if (!readable.canProveAbsence()) out[2] = 0;
                 if (resp.items().isEmpty()) return null;
                 Object c = resp.items().get(0).values().get("count");
                 if (!(c instanceof Number n)) return null;
@@ -325,7 +327,8 @@ final class RddDangerFacts {
                 LOG_LOCAL_AT.merge(body.getUUID(), 1, Integer::sum);
             }
             if (hostiles == 0) {
-                return "";
+                // READY 才能把 0 当“没有”；READY_PARTIAL 必须给非安全文案。
+                return RddDangerText.absenceText(0, observed != null && observed[2] == 1);
             }
             StringBuilder kindText = new StringBuilder();
             int shown = 0;

@@ -361,6 +361,10 @@ final class RddContainerMemory {
                     || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING) {
                 return null;
             }
+            // 2026-11-07 P0b：局部覆盖不能当“已知为空”。非 READY 返回 null，交给 readDirect 兜底。
+            if (!RddContainerObservationGate.canTrustEmpty(resp.status(), resp.coverage())) {
+                return null;
+            }
             Map<String, Integer> out = new LinkedHashMap<>();
             for (var item : resp.items()) {
                 Object idObj = item.values().get("item");

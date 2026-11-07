@@ -62,6 +62,20 @@ class RddDangerFactsTest {
     }
 
     @Test
+    void READY零敌怪才为空_PARTIAL零敌怪必须提示未扫全() {
+        assertEquals("", RddDangerText.absenceText(0, true), "READY 可证明没有");
+        String partial = RddDangerText.absenceText(0, false);
+        assertNotNull(partial, "PARTIAL 不得当安全");
+        assertTrue(partial.contains("局部") && partial.contains("未扫全"), "要说明局部覆盖: " + partial);
+        assertTrue(partial.contains("不等于安全"), "不能说安全: " + partial);
+    }
+
+    @Test
+    void UNKNOWN时用未知文案() {
+        assertTrue(RddDangerText.unknownMarker().contains("未知") && RddDangerText.unknownMarker().contains("不等于安全"));
+    }
+
+    @Test
     void 长度有界() {
         String many = "a、b、c、d、e、f、g、h";
         String b = RddDangerText.block(99, 99, 5, many);
