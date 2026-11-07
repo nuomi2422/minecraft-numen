@@ -121,8 +121,16 @@ public final class ObservationCapability implements WorldObservationService {
             }
             case ENVIRONMENT -> ObservationRequest.environment(request.dimension());
             case CONTAINERS -> ObservationRequest.containers(request.dimension(), s.get("container"));
-            case ENTITIES -> ObservationRequest.entities(request.dimension(), box(s.get("box")),
-                    s.get("type"), s.getOrDefault("category", "all"));
+            case ENTITIES -> {
+                var b = box(s.get("box"));
+                long volume = b.volume();
+                if (volume > 274_625L) {
+                    throw new IllegalArgumentException("entities box volume " + volume
+                            + " exceeds 274625 (65^3); use a box <=65x65x65 or radius<=32");
+                }
+                yield ObservationRequest.entities(request.dimension(), b,
+                        s.get("type"), s.getOrDefault("category", "all"));
+            }
             case BLOCKS -> {
                 if (!s.containsKey("blocks")) throw new IllegalArgumentException("blocks requires selector blocks");
                 int samples = Integer.parseInt(s.getOrDefault("samples", "0"));
