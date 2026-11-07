@@ -67,6 +67,13 @@ public final class SideTaskEngine {
     }
 
     /** 2026-11-08: register a recurring/daily spec; it never wakes the body while busy. */
+    /** Read-only handled probe: null = UNKNOWN (no key), true/false = recorded day equals today. */
+    public Boolean handledToday(UUID companionId, String worldId, String specId, long gameDay) {
+        String key = companionId + "|" + worldId + "|" + specId + "|" + gameDay;
+        Long handled = recurringHandled.get(key);
+        return handled == null ? null : handled == gameDay;
+    }
+
     public void clearRecurring() {
         recurringSpecs.clear();
         recurringTypes.clear();
@@ -354,7 +361,11 @@ public final class SideTaskEngine {
             if (!spec.dueOn(day)) continue;
             String key = companionId + "|" + world.worldId() + "|" + spec.scheduleId() + "|" + day;
             Long handled = recurringHandled.get(key);
-            if (handled != null && handled == day) continue;
+            if (handled != null && handled == day) {
+                System.out.println("[rdd] daily handled spec=" + spec.scheduleId() + " day=" + day
+                        + " interval=" + spec.intervalGameDays() + " anchor=" + spec.anchorGameDay());
+                continue;
+            }
             if (spec.promptOnly()) {
                 recurringHandled.put(key, day);
                 Map<String, Object> due = new LinkedHashMap<>();
@@ -362,11 +373,14 @@ public final class SideTaskEngine {
                 due.put("specId", spec.scheduleId());
                 due.put("gameDay", day);
                 due.put("promptOnly", true);
+                System.out.println("[rdd] daily due spec=" + spec.scheduleId() + " day=" + day
+                        + " interval=" + spec.intervalGameDays() + " anchor=" + spec.anchorGameDay());
                 events.publish("side_task_due", due);
                 continue;
             }
             SideTaskType type = typeId == null ? null : types.get(typeId);
             if (type == null) continue;
+            System.out.println("[rdd] recurring create spec=" + spec.scheduleId() + " dataKeys=" + spec.data().keySet());
             MainlineResumeToken token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
             long generation = runtime.nextGeneration();
             SideTask task = type.create(new SideTaskType.CreationContext(
@@ -432,6 +446,11 @@ public final class SideTaskEngine {
             deferred.addProperty(e.getKey(), e.getValue());
         }
         root.add("deferredUntil", deferred);
+        JsonObject recurring = new JsonObject();
+        for (Map.Entry<String, Long> e : recurringHandled.entrySet()) {
+            recurring.addProperty(e.getKey(), e.getValue());
+        }
+        root.add("recurringHandled", recurring);
         return GSON.toJson(root);
     }
 
@@ -447,6 +466,12 @@ public final class SideTaskEngine {
         if (root.has("handledGameDay")) {
             for (var entry : root.getAsJsonObject("handledGameDay").entrySet()) {
                 handledGameDay.put(entry.getKey(), entry.getValue().getAsLong());
+            }
+        }
+        recurringHandled.clear();
+        if (root.has("recurringHandled")) {
+            for (var entry : root.getAsJsonObject("recurringHandled").entrySet()) {
+                recurringHandled.put(entry.getKey(), entry.getValue().getAsLong());
             }
         }
         deferredUntil.clear();

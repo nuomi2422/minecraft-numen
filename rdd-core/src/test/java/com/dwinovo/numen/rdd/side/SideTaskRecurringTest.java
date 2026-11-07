@@ -179,4 +179,24 @@ class SideTaskRecurringTest {
         restored.restore(json);
         assertEquals("minecraft:wheat", restored.current(C).orElseThrow().data().get("asset_key"));
     }
+
+    @Test void handledTodayReadsMemoryAndPersists() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new DailyMaintenanceSideTaskType());
+        e.registerRecurring(new RecurringSideTaskSpec("dh", DailyMaintenanceSideTaskType.TYPE_ID, 1, 0,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true, false,
+                Map.of("description", "x", "asset_key", "minecraft:wheat", "minimum", "1")),
+                DailyMaintenanceSideTaskType.TYPE_ID);
+        assertNull(e.handledToday(C, "minecraft:overworld", "dh", 0), "未 due 前应为 UNKNOWN");
+        FakeWorldPort w = new FakeWorldPort().at(100, 0);
+        e.tick(C, w, null, false);
+        assertEquals(Boolean.TRUE, e.handledToday(C, "minecraft:overworld", "dh", 0));
+        assertNotEquals(Boolean.TRUE, e.handledToday(C, "minecraft:overworld", "dh", 1));
+        String json = e.toJson();
+        SideTaskEngine restored = new SideTaskEngine(ev, token -> token);
+        restored.restore(json);
+        assertEquals(Boolean.TRUE, restored.handledToday(C, "minecraft:overworld", "dh", 0),
+                "recurringHandled 必须随快照持久化");
+    }
 }
