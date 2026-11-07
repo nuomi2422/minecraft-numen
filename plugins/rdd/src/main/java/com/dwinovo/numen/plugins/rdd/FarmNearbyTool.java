@@ -18,6 +18,8 @@ import net.minecraft.world.level.block.state.properties.Property;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 /**
@@ -33,6 +35,7 @@ import java.util.function.Consumer;
 final class FarmNearbyTool implements NumenTool {
 
     static final int MAX_RADIUS = 32;
+    private static final Map<UUID, RddFarmScanGuard.State> EMPTY_SCANS = new ConcurrentHashMap<>();
 
     @Override
     public String name() {
@@ -68,6 +71,7 @@ final class FarmNearbyTool implements NumenTool {
             }
             BlockPos center = self.blockPosition();
             int harvested = 0;
+            long fingerprint = 1L;
             BlockPos.MutableBlockPos cur = new BlockPos.MutableBlockPos();
             for (int dx = -radius; dx <= radius; dx++) {
                 for (int dz = -radius; dz <= radius; dz++) {
@@ -76,9 +80,11 @@ final class FarmNearbyTool implements NumenTool {
                         cur.set(center.getX() + dx, center.getY() + dy, center.getZ() + dz);
                         if (!level.hasChunkAt(cur)) continue;
                         BlockState st = level.getBlockState(cur);
-                        if (!ScanMatureCropsTool.isMature(st)) continue;
                         IntegerProperty age = ageProperty(st);
                         if (age == null) continue;
+                        fingerprint = fingerprint * 31L + cur.immutable().hashCode() * 31L
+                                + ((Integer) st.getValue(age));
+                        if (!ScanMatureCropsTool.isMature(st)) continue;
                         BlockPos pos = cur.immutable();
                         BlockEntity be = st.hasBlockEntity() ? level.getBlockEntity(pos) : null;
                         List<ItemStack> drops = Block.getDrops(st, level, pos, be, self, self.getMainHandItem());
@@ -94,8 +100,11 @@ final class FarmNearbyTool implements NumenTool {
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("harvested", harvested);
             data.put("radius", radius);
-            reply.accept(TaskResult.ok("harvested + regrown " + harvested + " mature crop(s) in radius " + radius,
-                    data).toJson());
+            String hint = RddFarmScanGuard.observe(EMPTY_SCANS, self.getUUID(),
+                    System.currentTimeMillis(), harvested, fingerprint);
+            if (hint != null) data.put("hint", hint);
+            reply.accept(TaskResult.ok("harvested + regrown " + harvested + " mature crop(s) in radius " + radius
+                    + (hint == null ? "" : "；" + hint), data).toJson());
         } catch (RuntimeException ex) {
             reply.accept(TaskResult.fail("farm_nearby error: " + ex.getMessage()).toJson());
         }

@@ -69,13 +69,36 @@ public final class CraftOps {
     /** The clickable geometry of an open crafting surface. */
     private record Grid(int w, int h, int[] cells, int result) {}
 
+    /** Execution contract: already-have gate; damaged equipment still allows replacement. */
+    static String alreadyHaveMessage(int have, int want, boolean force, boolean anyDamaged) {
+        if (force || anyDamaged || have < want) return null;
+        return "already have " + have + "x in your backpack (usable); not crafting another. "
+                + "If you really need a second one, call craft again with force=true.";
+    }
+
     public String craft(String item_id, Integer count, NumenPlayer self) {
+        return craft(item_id, count, false, self);
+    }
+
+    public String craft(String item_id, Integer count, Boolean force, NumenPlayer self) {
         Item target = ToolArgs.parseItem(item_id);
         int want = count == null ? 1 : Math.clamp(count, 1, 256);
         if (!(self.level() instanceof ServerLevel level)) {
             return TaskResult.fail("crafting needs a server level.").toJson();
         }
         String name = BuiltInRegistries.ITEM.getKey(target).getPath();
+        int have = PlayerInv.count(self.getInventory(), target);
+        boolean anyDamaged = false;
+        for (ItemStack stack : self.getInventory().items) {
+            if (!stack.isEmpty() && stack.is(target) && stack.isDamageableItem() && stack.getDamageValue() > 0) {
+                anyDamaged = true;
+                break;
+            }
+        }
+        String already = alreadyHaveMessage(have, want, Boolean.TRUE.equals(force), anyDamaged);
+        if (already != null) {
+            return TaskResult.fail(already).toJson();
+        }
 
         List<Cand> candidates = candidatesFor(level, target);
         if (candidates.isEmpty()) {

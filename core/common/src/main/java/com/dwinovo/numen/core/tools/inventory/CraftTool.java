@@ -16,7 +16,7 @@ public final class CraftTool implements NumenTool {
     private static final Gson GSON = new Gson();
     private final CraftOps impl = new CraftOps();
 
-    private record Args(String item_id, Integer count) {}
+    private record Args(String item_id, Integer count, Boolean force) {}
 
     @Override
     public String name() {
@@ -41,12 +41,13 @@ public final class CraftTool implements NumenTool {
         return Schema.object()
                 .string("item_id", "Namespaced id of the item to craft, e.g. minecraft:iron_pickaxe.")
                 .optionalInteger("count", "How many of the item you want (default 1).", 1, 256)
+                .optionalBoolean("force", "Craft anyway even if you already carry enough of it (default false).")
                 .build();
     }
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer self, Consumer<String> reply) {
         Args a = GSON.fromJson(args, Args.class);
-        reply.accept(impl.craft(a.item_id(), a.count(), self));
+        reply.accept(impl.craft(a.item_id(), a.count(), a.force(), self));
     }
 }
