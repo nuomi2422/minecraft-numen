@@ -135,6 +135,7 @@ final class SideTaskHost {
                     LOG.info("[rdd] daily spec {} asset={} min={}", sub.id(), key, data.get("minimum"));
                     // stable across replans: description hash, not sub.id/planRevision
                     String specId = "daily:" + chain.goal().id() + ":" + Integer.toHexString(sub.description().hashCode());
+                    LOG.info("[rdd] daily spec register {} interval={} anchor={}", specId, rec.intervalGameDays(), chain.planRevision());
                     ENGINE.registerRecurring(new com.dwinovo.numen.rdd.side.RecurringSideTaskSpec(
                             specId, com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType.TYPE_ID,
                             rec.intervalGameDays(), chain.planRevision(),
