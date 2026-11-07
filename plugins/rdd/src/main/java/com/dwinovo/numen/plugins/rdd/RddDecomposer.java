@@ -12,6 +12,8 @@ import com.dwinovo.numen.platform.Services;
 import com.dwinovo.numen.platform.services.INumenConfig;
 import com.dwinovo.numen.rdd.api.Goal;
 import com.dwinovo.numen.rdd.api.SubtaskSpec;
+import com.dwinovo.numen.rdd.api.NodeType;
+import com.dwinovo.numen.rdd.api.RecurrenceSpec;
 import com.dwinovo.numen.rdd.core.PlanningAssetSnapshot;
 import com.dwinovo.numen.rdd.core.RddChainFactory;
 import com.google.gson.Gson;
@@ -464,11 +466,15 @@ final class RddDecomposer {
         if (cond == null) {
             return null;
         }
+        NodeType nodeType = parseNodeType(o);
+        if (nodeType == null) return null;
+        RecurrenceSpec recurrence = parseRecurrence(o);
+        if (o.has("recurrence") && recurrence == null) return null;
         if (cond.has("type") && !"inventory".equals(cond.get("type").getAsString())) {
             Map<String, Object> fact = new LinkedHashMap<>();
             for (var entry : cond.entrySet()) fact.put(entry.getKey(), toPlain(entry.getValue()));
             return com.dwinovo.numen.rdd.core.WorldFactConditions.valid(fact)
-                    ? new SubtaskSpec(description, fact, null) : null;
+                    ? new SubtaskSpec(description, fact, null, nodeType, recurrence) : null;
         }
         String assetKey = cond.has("asset_key") ? cond.get("asset_key").getAsString() : null;
         // 资产键形状不可执行(裸键/占位如 goal/大写) 永不匹配背包键 -> 判不可用丢弃，
@@ -500,7 +506,31 @@ final class RddDecomposer {
         if (cond.has("optional") && cond.get("optional").isJsonPrimitive()
                 && cond.getAsJsonPrimitive("optional").isBoolean())
             condition.put("optional", cond.get("optional").getAsBoolean());
-        return new SubtaskSpec(description, condition, null);
+        return new SubtaskSpec(description, condition, null, nodeType, recurrence);
+    }
+
+    /** Optional node_type; null = invalid (caller drops), missing = MAIN. */
+    private static NodeType parseNodeType(JsonObject o) {
+        if (!o.has("node_type") || o.get("node_type").isJsonNull()) return NodeType.MAIN;
+        if (!o.get("node_type").isJsonPrimitive()) return null;
+        try { return NodeType.valueOf(o.get("node_type").getAsString().trim().toUpperCase()); }
+        catch (RuntimeException ignored) { return null; }
+    }
+
+    /** Optional recurrence object; null when absent or invalid. */
+    private static RecurrenceSpec parseRecurrence(JsonObject o) {
+        if (!o.has("recurrence") || o.get("recurrence").isJsonNull()) return null;
+        if (!o.get("recurrence").isJsonObject()) return null;
+        JsonObject r = o.getAsJsonObject("recurrence");
+        int interval = r.has("intervalGameDays") ? r.get("intervalGameDays").getAsInt() : 1;
+        if (interval <= 0) return null;
+        RecurrenceSpec.MissedPolicy policy = RecurrenceSpec.MissedPolicy.SKIP;
+        if (r.has("missedPolicy")) {
+            try { policy = RecurrenceSpec.MissedPolicy.valueOf(r.get("missedPolicy").getAsString().trim().toUpperCase()); }
+            catch (RuntimeException ignored) { return null; }
+        }
+        boolean farmGate = r.has("requiresFarmBuilt") && r.get("requiresFarmBuilt").getAsBoolean();
+        return new RecurrenceSpec(interval, policy, farmGate);
     }
 
     /** Gson JsonElement → 纯 JVM 值（String/Number/Boolean/null/Map/List）。 */

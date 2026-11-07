@@ -10,7 +10,9 @@ public record Subtask(
         long detectionIntervalSeconds,
         int maxAiChecks,
         boolean recheckOnUnchanged,
-        BodyInstruction body) {
+        BodyInstruction body,
+        NodeType nodeType,
+        RecurrenceSpec recurrence) {
     public Subtask {
         if (id == null || id.isBlank()) throw new IllegalArgumentException("subtask id required");
         if (description == null || description.isBlank()) throw new IllegalArgumentException("subtask description required");
@@ -22,28 +24,37 @@ public record Subtask(
         if (detectionMode == DetectionMode.AI_ASSISTED && (detectionIntervalSeconds <= 0 || maxAiChecks <= 0)) {
             throw new IllegalArgumentException("AI-assisted subtask interval and max checks must be positive");
         }
+        nodeType = nodeType == null ? NodeType.MAIN : nodeType;
+    }
+
+    /** 旧 8 参构造（含 body）：默认 MAIN、无周期，旧测试/调用语义不变。 */
+    public Subtask(String id, String description, DetectionMode detectionMode, Map<String, Object> condition,
+                   long detectionIntervalSeconds, int maxAiChecks, boolean recheckOnUnchanged, BodyInstruction body) {
+        this(id, description, detectionMode, condition, detectionIntervalSeconds, maxAiChecks,
+                recheckOnUnchanged, body, NodeType.MAIN, null);
     }
 
     /** 无身体指令的便捷构造（body = null）。 */
     public Subtask(String id, String description, DetectionMode detectionMode, Map<String, Object> condition,
                    long detectionIntervalSeconds, int maxAiChecks, boolean recheckOnUnchanged) {
-        this(id, description, detectionMode, condition, detectionIntervalSeconds, maxAiChecks, recheckOnUnchanged, null);
+        this(id, description, detectionMode, condition, detectionIntervalSeconds, maxAiChecks, recheckOnUnchanged, null,
+                NodeType.MAIN, null);
     }
 
     public static Subtask hardCoded(String id, String description, Map<String, Object> condition) {
-        return new Subtask(id, description, DetectionMode.HARD_CODED, condition, 0, 0, false, null);
+        return new Subtask(id, description, DetectionMode.HARD_CODED, condition, 0, 0, false, null, NodeType.MAIN, null);
     }
 
     /** 带身体执行指令的硬编码二级目标（如收集 N 个某物品）。 */
     public static Subtask hardCoded(String id, String description, Map<String, Object> condition,
                                     BodyInstruction body) {
-        return new Subtask(id, description, DetectionMode.HARD_CODED, condition, 0, 0, false, body);
+        return new Subtask(id, description, DetectionMode.HARD_CODED, condition, 0, 0, false, body, NodeType.MAIN, null);
     }
 
     public static Subtask aiAssisted(String id, String description, long intervalSeconds, int maxChecks,
                                      boolean recheckOnUnchanged) {
         return new Subtask(id, description, DetectionMode.AI_ASSISTED, Map.of(), intervalSeconds, maxChecks,
-                recheckOnUnchanged, null);
+                recheckOnUnchanged, null, NodeType.MAIN, null);
     }
 
     /**
@@ -58,6 +69,6 @@ public record Subtask(
      */
     public Subtask withCondition(Map<String, Object> nextCondition) {
         return new Subtask(id, description, detectionMode, nextCondition,
-                detectionIntervalSeconds, maxAiChecks, recheckOnUnchanged, body);
+                detectionIntervalSeconds, maxAiChecks, recheckOnUnchanged, body, nodeType, recurrence);
     }
 }

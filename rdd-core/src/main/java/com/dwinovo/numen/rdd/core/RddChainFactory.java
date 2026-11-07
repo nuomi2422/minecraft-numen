@@ -136,11 +136,12 @@ public final class RddChainFactory {
         for (int i = 0; i < specs.size(); i++) {
             SubtaskSpec spec = specs.get(i);
             validateCondition(spec.condition(), i);
-            subtasks.add(Subtask.hardCoded(
+            subtasks.add(new Subtask(
                     "subtask-" + suffix + "-" + i,
                     spec.description(),
-                    spec.condition(),
-                    spec.body()));
+                    DetectionMode.HARD_CODED,
+                    spec.condition(), 0, 0, false, spec.body(),
+                    spec.nodeType(), spec.recurrence()));
         }
         return new Goal("goal-" + suffix, obj,
                 List.of(new PrimaryGoal("primary-" + suffix, obj, subtasks)));
