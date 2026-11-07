@@ -2672,6 +2672,19 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             eq(1, lib.versions("t").size(), "版本仍在库中可回查");
         });
 
+        T.test("REJECTED 版本 approve 兼容别名不得救活", () -> {
+            Path f = tmpDir().resolve("rej-lib.json");
+            Fake.Registry reg = new Fake.Registry().add(Fake.fixed("blk", Map.of()));
+            FileAcxLibrary lib = new FileAcxLibrary(f, reg);
+            lib.publish(def(step("s", "blk", Map.of())), "初版");
+            lib.reject("t", "1", "坏");
+            AcxSessionManager sm = new AcxSessionManager(runner(reg).build(), Runnable::run);
+            AcxFacade facade = new AcxFacade(sm, lib::active, lib::version, reg, lib);
+            Map<String, Object> out = facade.approve(Map.of("name", "t", "version", "1"));
+            T.isTrue(Boolean.FALSE.equals(out.get("success")), "必须拒绝");
+            T.isTrue(String.valueOf(out.get("message")).contains("否决"), "理由: " + out.get("message"));
+        });
+
         T.test("rollback 只能到 STABLE 版本", () -> {
             Path f = tmpDir().resolve("b4-lib.json");
             Fake.Registry reg = new Fake.Registry().add(Fake.fixed("blk", Map.of()));
