@@ -16,6 +16,7 @@ final class FakeWorldPort implements SideTaskWorldPort {
     boolean inCombat;
     boolean bodyBusy;
     boolean spawnBound;
+    final Map<String, Integer> items = new HashMap<>();
     String mainlineObjective;
     private final Map<UUID, Boolean> sleeping = new HashMap<>();
     private final Map<UUID, Wake> wakes = new HashMap<>();
@@ -69,6 +70,11 @@ final class FakeWorldPort implements SideTaskWorldPort {
 
     FakeWorldPort objective(String value) {
         this.mainlineObjective = value;
+        return this;
+    }
+
+    FakeWorldPort item(String id, int count) {
+        items.put(id, count);
         return this;
     }
 
@@ -136,5 +142,10 @@ final class FakeWorldPort implements SideTaskWorldPort {
     @Override
     public String mainlineObjective(UUID companionId) {
         return mainlineObjective;
+    }
+
+    @Override
+    public int countItem(UUID companionId, String itemId) {
+        return items.getOrDefault(itemId, 0);
     }
 }

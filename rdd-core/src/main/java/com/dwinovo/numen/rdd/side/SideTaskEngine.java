@@ -367,7 +367,7 @@ public final class SideTaskEngine {
             long generation = runtime.nextGeneration();
             SideTask task = type.create(new SideTaskType.CreationContext(
                     companionId, typeId + "-" + generation + "-" + shortId(companionId), generation,
-                    day, now, now + type.deadlineTicks(), token, Map.of()));
+                    day, now, now + type.deadlineTicks(), token, spec.data()));
             if (runtime.activate(task)) {
                 recurringHandled.put(key, day);
                 Map<String, Object> due = base(task);

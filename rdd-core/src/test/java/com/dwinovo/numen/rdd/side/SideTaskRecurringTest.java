@@ -83,19 +83,51 @@ class SideTaskRecurringTest {
         assertTrue(e.isActive(C), "跨世界键必须独立");
     }
 
-    @Test void promptOnlyEmitsDueWithoutOccupyingBody() {
+    @Test void promptOnlyStillSupportedForNonExecutableHints() {
         RecordingEvents ev = new RecordingEvents();
         SideTaskEngine e = new SideTaskEngine(ev, token -> token);
         e.registerRecurring(new RecurringSideTaskSpec("p", "daily_hint", 1, 0,
                 RecurringSideTaskSpec.MissedPolicy.SKIP, true, true), "daily_hint");
         FakeWorldPort w = new FakeWorldPort().at(100, 0);
         e.tick(C, w, null, false);
-        assertFalse(e.isActive(C), "prompt-only 不占身体");
+        assertFalse(e.isActive(C));
         assertEquals(1, ev.count("side_task_due"));
+    }
+
+    @Test void dailyTypeCreatesExecutableSideTaskAndCompletes() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new DailyMaintenanceSideTaskType());
+        var data = Map.of("description", "收麦", "asset_key", "minecraft:wheat", "minimum", "1");
+        e.registerRecurring(new RecurringSideTaskSpec("d", DailyMaintenanceSideTaskType.TYPE_ID, 1, 0,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true, false, data),
+                DailyMaintenanceSideTaskType.TYPE_ID);
+        FakeWorldPort w = new FakeWorldPort().at(100, 0);
         e.tick(C, w, null, false);
-        assertEquals(1, ev.count("side_task_due"), "同日只提示一次");
-        w.at(300, 1);
+        assertTrue(e.isActive(C), "daily 必须真的创建 active 支线");
+        assertTrue(ev.saw("side_task_created"));
+        assertTrue(ev.saw("side_task_activated"));
+        w.item("minecraft:wheat", 1);
         e.tick(C, w, null, false);
-        assertEquals(2, ev.count("side_task_due"), "次日再提示");
+        assertFalse(e.isActive(C));
+        assertTrue(ev.saw("side_task_completed"));
+        assertTrue(ev.saw("side_task_resumed_mainline"));
+    }
+
+    @Test void dailyTypeTtlExpiresSilently() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new DailyMaintenanceSideTaskType());
+        e.registerRecurring(new RecurringSideTaskSpec("d2", DailyMaintenanceSideTaskType.TYPE_ID, 1, 0,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true, false,
+                Map.of("description", "x", "asset_key", "minecraft:wheat", "minimum", "9")),
+                DailyMaintenanceSideTaskType.TYPE_ID);
+        FakeWorldPort w = new FakeWorldPort().at(100, 0);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C));
+        w.at(100 + 20L * 60L * 10L + 1, 0);
+        e.tick(C, w, null, false);
+        assertFalse(e.isActive(C));
+        assertTrue(ev.saw("side_task_skipped"));
     }
 }

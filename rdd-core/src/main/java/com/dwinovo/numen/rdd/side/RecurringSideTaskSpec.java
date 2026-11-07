@@ -1,5 +1,7 @@
 package com.dwinovo.numen.rdd.side;
 
+import java.util.Map;
+
 /**
  * 周期支线模板规格（<b>只预留接口，本轮不实现农田逻辑</b>）。
  *
@@ -13,7 +15,15 @@ public record RecurringSideTaskSpec(
         long anchorGameDay,
         MissedPolicy missedPolicy,
         boolean enabled,
-        boolean promptOnly) {
+        boolean promptOnly,
+        Map<String, String> data) {
+
+    /** 7 参旧构造：无 payload。 */
+    public RecurringSideTaskSpec(String scheduleId, String templateId, int intervalGameDays,
+                                 long anchorGameDay, MissedPolicy missedPolicy, boolean enabled,
+                                 boolean promptOnly) {
+        this(scheduleId, templateId, intervalGameDays, anchorGameDay, missedPolicy, enabled, promptOnly, Map.of());
+    }
 
     /** 旧构造：默认占据身体的支线（非 prompt-only）。 */
     public RecurringSideTaskSpec(String scheduleId, String templateId, int intervalGameDays,
@@ -26,6 +36,10 @@ public record RecurringSideTaskSpec(
         SKIP,
         /** 下一拍补做。 */
         CATCH_UP
+    }
+
+    public RecurringSideTaskSpec {
+        data = data == null ? Map.of() : Map.copyOf(data);
     }
 
     public boolean dueOn(long gameDay) {

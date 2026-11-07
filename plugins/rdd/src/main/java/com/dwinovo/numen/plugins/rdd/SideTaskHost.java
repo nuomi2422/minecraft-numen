@@ -64,6 +64,7 @@ final class SideTaskHost {
         ENGINE.registerType(new com.dwinovo.numen.rdd.side.recovery.RecoverySideTaskType());
         ENGINE.registerTrigger(new com.dwinovo.numen.rdd.side.recovery.RecoverySideTaskTrigger());
         ENGINE.registerType(DEATH_RECOVERY_TYPE);
+        ENGINE.registerType(new com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType());
         ENGINE.registerTrigger(new DeathRecoverySideTaskTrigger());
         SleepWakeWatcher.install();
         NeoForge.EVENT_BUS.addListener((ServerStoppedEvent event) -> onServerStopped());
@@ -106,7 +107,7 @@ final class SideTaskHost {
         restore();
     }
 
-    /** 2026-11-08: planner DAILY nodes become prompt-only recurring specs (no body occupation). */
+    /** 2026-11-08: planner DAILY nodes become real executable recurring side tasks. */
     static void registerDailySpecs(com.dwinovo.numen.rdd.core.TaskChain chain) {
         try {
             ENGINE.clearRecurring();
@@ -114,13 +115,22 @@ final class SideTaskHost {
             for (var primary : chain.goal().primaryGoals()) {
                 for (var sub : primary.subtasks()) {
                     if (sub.nodeType() != com.dwinovo.numen.rdd.api.NodeType.DAILY || sub.recurrence() == null) continue;
-                    String specId = "daily:" + chain.goal().id() + ":" + sub.id() + "|r" + chain.planRevision();
                     var rec = sub.recurrence();
+                    var data = new java.util.LinkedHashMap<String, String>();
+                    data.put("description", sub.description());
+                    Object key = sub.condition().get("asset_key");
+                    if (key instanceof String k) data.put("asset_key", k);
+                    Object min = sub.condition().get("minimum");
+                    data.put("minimum", String.valueOf(min instanceof Number n ? Math.max(1, n.intValue()) : 1));
+                    data.put("requires_farm_built", String.valueOf(rec.requiresFarmBuilt()));
+                    String specId = "daily:" + chain.goal().id() + ":" + sub.id() + "|r" + chain.planRevision();
                     ENGINE.registerRecurring(new com.dwinovo.numen.rdd.side.RecurringSideTaskSpec(
-                            specId, "daily_hint", rec.intervalGameDays(), chain.planRevision(),
+                            specId, com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType.TYPE_ID,
+                            rec.intervalGameDays(), chain.planRevision(),
                             rec.missedPolicy() == com.dwinovo.numen.rdd.api.RecurrenceSpec.MissedPolicy.CATCH_UP
                                     ? com.dwinovo.numen.rdd.side.RecurringSideTaskSpec.MissedPolicy.CATCH_UP
-                                    : com.dwinovo.numen.rdd.side.RecurringSideTaskSpec.MissedPolicy.SKIP, true, true), "daily_hint");
+                                    : com.dwinovo.numen.rdd.side.RecurringSideTaskSpec.MissedPolicy.SKIP,
+                            true, false, data), com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType.TYPE_ID);
                 }
             }
         } catch (RuntimeException ignored) {
