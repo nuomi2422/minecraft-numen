@@ -31,7 +31,10 @@ class RddEnvBlockTest {
                 WorldObservationService.Coverage.FULL,null,List.of(WorldObservationService.Item.of(v)),0,meta);
     }
     private static String render(Map<String,Object> v) {
-        return RddEnvBlock.render(ID,response(v,ObservationMetadata.Freshness.CURRENT,NOW-100,NOW+2900,ID.toString()),NOW);
+        return render(v, true);
+    }
+    private static String render(Map<String,Object> v, boolean includeBackpackCount) {
+        return RddEnvBlock.render(ID,response(v,ObservationMetadata.Freshness.CURRENT,NOW-100,NOW+2900,ID.toString()),NOW,includeBackpackCount);
     }
     @Test void usesDecimalProjectionWithoutDoubleCountingHandsOrArmor() {
         String s=render(values());
@@ -40,6 +43,17 @@ class RddEnvBlockTest {
         assertFalse(s.contains("背包 3种"));
         assertTrue(s.contains("持续掉血 未观测")); assertFalse(s.contains("正在持续掉血"));
     }
+    @Test void executionViewDropsBackpackCountButKeepsOtherFacts() {
+        String full = render(values(), true);
+        String exec = render(values(), false);
+        assertTrue(exec.length() < full.length(), "执行视图应至少少一行背包计数");
+        assertFalse(exec.contains("背包 "), "执行视图不得重复背包计数: " + exec);
+        assertTrue(exec.contains("身体 血量"), "血量必须在: " + exec);
+        assertTrue(exec.contains("饥饿"), "饥饿必须在: " + exec);
+        assertTrue(exec.contains("关键物品"), "关键物品行必须仍在: " + exec);
+        assertTrue(exec.contains("位置/脚下/周边/持续掉血 未观测"), "位置行必须仍在: " + exec);
+    }
+
     @Test void missingInventoryIsUnknownButObservedEmptyIsZero() {
         var v=values(); v.remove("main"); assertTrue(render(v).contains("背包 未知"));
         var slots=new ArrayList<Map<String,Object>>(); for(int i=0;i<36;i++)slots.add(slot(i,"",0));

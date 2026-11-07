@@ -1,6 +1,9 @@
 package com.dwinovo.numen.plugins.rdd;
 
 import org.junit.jupiter.api.Test;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
@@ -72,6 +75,27 @@ class RddRoleViewsTest {
         Map<String, Object> ok = new LinkedHashMap<>(facts().values());
         ok.put("self.current", true); ok.put("self.identified", true); ok.put("self.coverageFull", true);
         assertEquals("4", RddRoleViews.planningInventory(new RddRoleViews.Facts(ok, facts().sourceRefs())));
+    }
+
+    @Test void renderingDoesNotChangeSourceFiles() throws Exception {
+        Path dir = Files.createTempDirectory("rdd-view-hash");
+        Path obs = dir.resolve("observations.json");
+        Path task = dir.resolve("rdd-task.json");
+        Files.writeString(obs, "{\"count\":4}");
+        Files.writeString(task, "{\"planRevision\":8}");
+        String before = hash(obs) + "|" + hash(task);
+        RddRoleViews.execution(facts());
+        RddRoleViews.planning(facts());
+        RddRoleViews.review(facts());
+        RddRoleViews.external(facts());
+        assertEquals(before, hash(obs) + "|" + hash(task), "渲染前后源文件字节必须不变");
+    }
+
+    private static String hash(Path p) throws Exception {
+        byte[] d = MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(p));
+        StringBuilder sb = new StringBuilder();
+        for (byte b : d) sb.append(String.format("%02x", b));
+        return sb.toString();
     }
 
     @Test void executionCountUsesDetailAndDoesNotMutateSource() {

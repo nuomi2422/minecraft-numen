@@ -773,7 +773,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         //   只写事实、不写建议；≤12 行 / ≤400 字符，超了截断。见 rdd架构\常驻环境块-轻量方案-20261028.md
         try {
             {
-                String env = RddEnvBlock.build(companionId);
+                String env = RddEnvBlock.buildForExecution(companionId);
                 org.slf4j.LoggerFactory.getLogger(RddPlugin.class).info(
                         "[rdd-env] built len={} subject={}", env.length(), companionId);
                 if (!env.isEmpty()) {

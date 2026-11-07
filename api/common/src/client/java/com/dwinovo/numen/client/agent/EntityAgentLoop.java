@@ -2942,7 +2942,7 @@ public final class EntityAgentLoop {
         }
         inventoryMissingLogged = false;
         if (snapshot == inventoryRenderedFrom) return inventoryRendered;
-        inventoryRendered = renderInventory(snapshot);
+        inventoryRendered = renderInventoryForExecution(snapshot);
         inventoryRenderedFrom = snapshot;
         // 这行只在快照真换了新的时才打,所以"年龄"读的是"这段时间背包没变过",不是延迟。
         // 背包明明变了却不见这一行,才是链路断了。
@@ -3010,6 +3010,17 @@ public final class EntityAgentLoop {
  */
 @Deprecated(forRemoval = true)
 private static final int INVENTORY_CATALOG_MAX = 20;
+
+/**
+ * Execution-only rendering contract (2026-11-07 B1): detailed backpack lives in
+ * {@code <runtime_state><inventory>carrying=…</inventory>}; RDD {@code <env>} may omit its
+ * "N种M件" count. Planning/review never call this path.
+ */
+public static final String INVENTORY_DETAIL_OWNER = "runtime_state.execution";
+
+static String renderInventoryForExecution(ClientNumenState.Snapshot snapshot) {
+    return renderInventory(snapshot);
+}
 
 static String renderInventory(ClientNumenState.Snapshot snapshot) {
         java.util.Map<String, Integer> totals = new java.util.TreeMap<>();

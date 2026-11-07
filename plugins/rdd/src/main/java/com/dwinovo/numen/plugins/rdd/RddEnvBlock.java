@@ -14,16 +14,28 @@ import java.util.*;
 final class RddEnvBlock {
     private RddEnvBlock() {}
     static String build(UUID subject) {
+        return build(subject, true);
+    }
+
+    /** Execution view: backpack detail lives in runtime_state.inventory; env keeps only counts. */
+    static String buildForExecution(UUID subject) {
+        return build(subject, false);
+    }
+
+    private static String build(UUID subject, boolean includeBackpackCount) {
         try {
-            return build(subject, NumenPlugins.capability(WorldObservationService.class), System::currentTimeMillis);
+            return build(subject, NumenPlugins.capability(WorldObservationService.class), System::currentTimeMillis, includeBackpackCount);
         } catch (RuntimeException | LinkageError unavailable) {
             return unknown();
         }
     }
     static String build(UUID subject, WorldObservationService service, long nowMs) {
-        return build(subject, service, () -> nowMs);
+        return build(subject, service, () -> nowMs, true);
     }
     static String build(UUID subject, WorldObservationService service, java.util.function.LongSupplier clock) {
+        return build(subject, service, clock, true);
+    }
+    static String build(UUID subject, WorldObservationService service, java.util.function.LongSupplier clock, boolean includeBackpackCount) {
         if (subject == null || service == null) return unknown();
         try {
             var self = service.readSelf("rdd-env", subject, 3_000L);
@@ -38,7 +50,7 @@ final class RddEnvBlock {
             }
             // Read the clock AFTER all provider calls; a slow cached read can cross expiry.
             long now = clock.getAsLong();
-            String env = render(subject, self, now);
+            String env = render(subject, self, now, includeBackpackCount);
             if (self == null || !current(subject, self.metadata(), now) || env.equals(unknown())) return env;
             try { env = appendFact(env, weather(self.metadata(), environment, now)); }
             catch (RuntimeException | LinkageError optionalUnavailable) { env = appendFact(env, "时间/天气 未观测"); }
@@ -76,6 +88,9 @@ final class RddEnvBlock {
         return "时间 "+time+" · 天气 "+(w instanceof String s ? shortText(s,24) : "未知");
     }
     static String render(UUID subject, WorldObservationService.Response response, long nowMs) {
+        return render(subject, response, nowMs, true);
+    }
+    static String render(UUID subject, WorldObservationService.Response response, long nowMs, boolean includeBackpackCount) {
         if (response == null || !"self".equals(response.topic()) || response.items().size() != 1
                 || (response.status() != WorldObservationService.Status.OK && response.status() != WorldObservationService.Status.PARTIAL)
                 || response.coverage() != WorldObservationService.Coverage.FULL) return unknown();
@@ -95,7 +110,7 @@ final class RddEnvBlock {
         StringBuilder out = new StringBuilder("<env>\n");
         out.append("维度 ").append(shortText(dimension, 64)).append("（采样）\n");
         out.append("手上 ").append(main).append(" · 副手 ").append(off).append('\n');
-        out.append("背包 ").append(inventory).append('\n');
+        if (includeBackpackCount) out.append("背包 ").append(inventory).append('\n');
         out.append("身体 血量").append(number(masked(item,"hp") ? null : values.get("hp")))
                 .append(" · 饥饿").append(number(masked(item,"food") ? null : values.get("food"))).append('\n');
         // A low HP value alone is NOT evidence of ongoing damage. No unsafe geometry fallback.
