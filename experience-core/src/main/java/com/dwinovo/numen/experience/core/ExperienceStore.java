@@ -151,6 +151,9 @@ public final class ExperienceStore {
         }
         ensureLoaded();
         ExperienceEntry normalized = canonicalize(entry);
+        ExperienceEntry previous = null;
+        int previousIndex = -1;
+        boolean added = false;
 
         int index = indexOf(normalized.id());
         if (index < 0) {
@@ -170,10 +173,13 @@ public final class ExperienceStore {
         if (index < 0) {
             stored = normalized;
             mirror.add(stored);
+            added = true;
             // ★ LC1（78 号 §2.2）：新条目（首次入库）没有旧证据可隔离，正文本就是这一版。
             LOG.info("[experience] learned '{}' ({})", stored.title(), stored.type());
         } else {
             ExperienceEntry old = mirror.get(index);
+            previous = old;
+            previousIndex = index;
             // ★★ LC1（78 号 §2.2）：同身份更新正文时，旧成熟度/验证次数不许跟着新内容走。
             //   正文指纹（ContentIdentity，只吃命题字段）变了 = 验证过的命题不复存在：
             //   旧正文验证十次、learn 一版新正文进来仍然显示可信 —— 学习线就越攒越不可靠。
@@ -194,7 +200,14 @@ public final class ExperienceStore {
                 LOG.info("[experience] merged '{}' (now {})", stored.title(), stored.maturity());
             }
         }
-        persist();
+        LOG.info("[experience] committed '{}' (in-memory) — waiting for disk store", stored.title());
+        if (!persist()) {
+            // 2026-11-07 C0: committed != stored. Roll back the in-memory change and tell the caller.
+            if (added) mirror.remove(mirror.size() - 1);
+            else if (previousIndex >= 0 && previous != null) mirror.set(previousIndex, previous);
+            throw new IllegalStateException("experience NOT stored (IO failure); change rolled back; retry is idempotent");
+        }
+        LOG.info("[experience] stored '{}'", stored.title());
         return stored;
     }
 
@@ -1003,8 +1016,8 @@ public final class ExperienceStore {
         }
     }
 
-    /** 全量原子重写：temp 文件 → ATOMIC_MOVE 替换。 */
-    private void persist() {
+    /** 全量原子重写：temp 文件 → ATOMIC_MOVE 替换。@return true=确实落盘，false=IO 失败（调用方必须区分）。 */
+    private boolean persist() {
         try {
             if (file.getParent() != null) {
                 Files.createDirectories(file.getParent());
@@ -1021,8 +1034,10 @@ public final class ExperienceStore {
             } catch (AtomicMoveNotSupportedException ex) {
                 Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
             }
+            return true;
         } catch (IOException ex) {
-            LOG.warn("[experience] failed to persist {}: {}", file, ex.toString());
+            LOG.error("[experience] FAILED to persist {} (NOT STORED): {}", file, ex.toString());
+            return false;
         }
     }
 }
