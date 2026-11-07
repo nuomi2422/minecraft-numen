@@ -199,4 +199,17 @@ class SideTaskRecurringTest {
         assertEquals(Boolean.TRUE, restored.handledToday(C, "minecraft:overworld", "dh", 0),
                 "recurringHandled 必须随快照持久化");
     }
+
+    @Test void clearRecurringForGoalKeepsOtherGoals() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerRecurring(new RecurringSideTaskSpec("daily:g1:a", "daily_hint", 1, 0,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true, true), "daily_hint");
+        e.registerRecurring(new RecurringSideTaskSpec("daily:g2:b", "daily_hint", 1, 0,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true, true), "daily_hint");
+        e.clearRecurringForGoal("g1");
+        e.tick(C, new FakeWorldPort().at(100, 0), null, false);
+        assertEquals(1, ev.count("side_task_due"), "只有 g2 的 spec 应保留");
+        assertEquals("daily:g2:b", ev.payloads.get(ev.events.indexOf("side_task_due")).get("specId"));
+    }
 }

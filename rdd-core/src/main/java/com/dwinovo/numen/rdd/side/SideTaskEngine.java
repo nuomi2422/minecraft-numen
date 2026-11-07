@@ -74,6 +74,14 @@ public final class SideTaskEngine {
         return handled == null ? null : handled == gameDay;
     }
 
+    /** Replace only this goal's recurring specs; other goals keep theirs. */
+    public void clearRecurringForGoal(String goalId) {
+        if (goalId == null || goalId.isBlank()) return;
+        String prefix = "daily:" + goalId + ":";
+        recurringSpecs.keySet().removeIf(id -> id.startsWith(prefix));
+        recurringTypes.keySet().removeIf(id -> id.startsWith(prefix));
+    }
+
     public void clearRecurring() {
         recurringSpecs.clear();
         recurringTypes.clear();

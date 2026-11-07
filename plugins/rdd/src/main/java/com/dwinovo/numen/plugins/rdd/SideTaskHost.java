@@ -110,8 +110,8 @@ final class SideTaskHost {
     /** 2026-11-08: planner DAILY nodes become real executable recurring side tasks. */
     static void registerDailySpecs(com.dwinovo.numen.rdd.core.TaskChain chain) {
         try {
-            ENGINE.clearRecurring();
             if (chain == null || chain.goal() == null) return;
+            java.util.List<com.dwinovo.numen.rdd.side.RecurringSideTaskSpec> built = new java.util.ArrayList<>();
             for (var primary : chain.goal().primaryGoals()) {
                 for (var sub : primary.subtasks()) {
                     if (sub.nodeType() != com.dwinovo.numen.rdd.api.NodeType.DAILY || sub.recurrence() == null) continue;
@@ -136,14 +136,22 @@ final class SideTaskHost {
                     // stable across replans: description hash, not sub.id/planRevision
                     String specId = "daily:" + chain.goal().id() + ":" + Integer.toHexString(sub.description().hashCode());
                     LOG.info("[rdd] daily spec register {} interval={} anchor={}", specId, rec.intervalGameDays(), chain.planRevision());
-                    ENGINE.registerRecurring(new com.dwinovo.numen.rdd.side.RecurringSideTaskSpec(
+                    built.add(new com.dwinovo.numen.rdd.side.RecurringSideTaskSpec(
                             specId, com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType.TYPE_ID,
                             rec.intervalGameDays(), chain.planRevision(),
                             rec.missedPolicy() == com.dwinovo.numen.rdd.api.RecurrenceSpec.MissedPolicy.CATCH_UP
                                     ? com.dwinovo.numen.rdd.side.RecurringSideTaskSpec.MissedPolicy.CATCH_UP
                                     : com.dwinovo.numen.rdd.side.RecurringSideTaskSpec.MissedPolicy.SKIP,
-                            true, false, data), com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType.TYPE_ID);
+                            true, false, data));
                 }
+            }
+            if (built.isEmpty()) {
+                LOG.info("[rdd] daily specs: chain has no executable DAILY; keep existing specs");
+                return;
+            }
+            ENGINE.clearRecurringForGoal(chain.goal().id());
+            for (var spec : built) {
+                ENGINE.registerRecurring(spec, com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType.TYPE_ID);
             }
         } catch (RuntimeException ignored) {
             // spec registration must never break chain creation
