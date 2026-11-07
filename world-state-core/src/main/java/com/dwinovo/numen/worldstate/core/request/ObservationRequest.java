@@ -37,8 +37,16 @@ public record ObservationRequest(Topic topic, String dimension, String target, S
     }
 
     /** 实体计数请求：范围内的某类实体，或某类别（passive/all）。 */
+    /** entities 盒体积上限：65³（与采集器预算一致）。唯一校验点，工具与 capability/batch 路径共用。 */
+    public static final long MAX_ENTITIES_BOX_VOLUME = 274_625L;
+
     public static ObservationRequest entities(String dimension, Bounds box, String entityType, String category) {
         if (box == null) throw new IllegalArgumentException("bounds required for entities");
+        long volume = box.volume();
+        if (volume > MAX_ENTITIES_BOX_VOLUME) {
+            throw new IllegalArgumentException("entities box volume " + volume + " exceeds "
+                    + MAX_ENTITIES_BOX_VOLUME + " (65^3); use a box <=65x65x65 or radius<=32");
+        }
         String type = entityType == null || entityType.isBlank() ? null : entityType.trim();
         String cat = type != null ? null : (category == null || category.isBlank() ? "all" : category.trim());
         String filter = type != null ? "type=" + type : "category=" + cat;

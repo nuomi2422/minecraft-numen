@@ -61,6 +61,24 @@ class WorldStateArgsTest {
     }
 
     @Test
+    void entitiesOversizeBoxRejectedWithLimit() {
+        var out = WorldStateArgs.forReadRefresh(Topic.ENTITIES,
+                json("{\"action\":\"read\",\"topic\":\"entities\",\"x1\":-200,\"y1\":-200,\"z1\":-200,\"x2\":200,\"y2\":200,\"z2\":200}"),
+                "minecraft:overworld");
+        assertFalse(out.ok(), "400³ 必须拒绝");
+        assertTrue(out.error().contains("274625") && out.error().contains("65"), "要有上限和建议盒: " + out.error());
+        assertFalse(out.error().contains("no observation"), "不能伪装成未采集: " + out.error());
+    }
+
+    @Test
+    void entitiesLegalBoxAccepted() {
+        var out = WorldStateArgs.forReadRefresh(Topic.ENTITIES,
+                json("{\"action\":\"read\",\"topic\":\"entities\",\"x1\":0,\"y1\":0,\"z1\":0,\"x2\":64,\"y2\":64,\"z2\":64}"),
+                "minecraft:overworld");
+        assertTrue(out.ok(), out.error());
+    }
+
+    @Test
     void blocksWithoutBoxFails() {
         var out = WorldStateArgs.forReadRefresh(Topic.BLOCKS,
                 json("{\"action\":\"read\",\"topic\":\"blocks\",\"block\":\"minecraft:stone\"}"),

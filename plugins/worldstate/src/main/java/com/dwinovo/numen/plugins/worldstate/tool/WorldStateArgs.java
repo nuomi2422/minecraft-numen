@@ -40,11 +40,16 @@ public final class WorldStateArgs {
             return Outcome.fail("world_state: topic is required for action=read|refresh"
                     + " (environment|entities|blocks|containers|self; facilities is defined but not wired yet)");
         }
-        ObservationRequest request = buildRequest(args, topic, dimension);
-        if (request == null) {
-            return Outcome.fail(missingFieldMessage(topic));
+        try {
+            ObservationRequest request = buildRequest(args, topic, dimension);
+            if (request == null) {
+                return Outcome.fail(missingFieldMessage(topic));
+            }
+            return Outcome.ok(request);
+        } catch (IllegalArgumentException e) {
+            // 非法参数要给出上限/建议盒，不能伪装成“还没采集”。
+            return Outcome.fail("world_state: " + e.getMessage());
         }
-        return Outcome.ok(request);
     }
 
     /** 缺字段的明确报错（042 R1-3：非法 selector / 缺字段要能一眼看出来）。 */
