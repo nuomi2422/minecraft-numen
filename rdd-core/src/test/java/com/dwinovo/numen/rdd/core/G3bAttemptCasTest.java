@@ -153,4 +153,18 @@ class G3bAttemptCasTest {
         assertEquals(1, subs.get(0).get("attempts"), "当前二级 attempts=1 进快照");
         assertEquals(0, subs.get(1).get("attempts"), "未开跑的二级 attempts=0");
     }
+
+    @Test void lateReceiptFromOldWindowAttemptNeverAdvancesNewAttempt() {
+        TaskChain c = chain();
+        c.startCurrent();                 // attempt 1 (old window)
+        c.markFailed("s1", "窗口结束");
+        c.retrySubtask("s1");
+        c.startCurrent();                 // attempt 2 (new window)
+        long v = c.stateVersion();
+
+        assertFalse(c.applyHardCodedResult("s1", true, 1), "旧窗口 attempt=1 的迟到回执必须被忽略");
+        assertEquals(com.dwinovo.numen.rdd.api.SubtaskStatus.RUNNING, c.currentSubtaskStatus());
+        assertEquals(v, c.stateVersion(), "被忽略的迟到回执不得推进 stateVersion");
+        assertEquals(1, c.staleResultsIgnored());
+    }
 }

@@ -108,4 +108,19 @@ class PlanningAssetSnapshotTest {
         assertTrue(PlanningAssetSnapshot.worldClaims(r).containsKey("world:base"));
         assertFalse(PlanningAssetSnapshot.worldClaims(r).containsKey("minecraft:bread"), "背包不进世界 claims");
     }
+
+    @Test void assetChangeChangesPlanningAvailabilityAndClaims() {
+        AssetRegistry r = new AssetRegistry();
+        var before = PlanningAssetSnapshot.from(Map.of("minecraft:iron_ingot", 3), r);
+        var after = PlanningAssetSnapshot.from(Map.of("minecraft:iron_ingot", 1), r);
+        assertEquals(3, before.availableCounts().get("minecraft:iron_ingot"));
+        assertEquals(1, after.availableCounts().get("minecraft:iron_ingot"),
+                "资产从 3 变 1，规划可用量必须跟着变");
+        assertNotEquals(before.availableCounts(), after.availableCounts());
+
+        var lost = PlanningAssetSnapshot.from(Map.of(), r);
+        assertTrue(!lost.availableCounts().containsKey("minecraft:iron_ingot")
+                        || lost.availableCounts().get("minecraft:iron_ingot") == 0,
+                "资产归零后规划不得继续显示 3");
+    }
 }

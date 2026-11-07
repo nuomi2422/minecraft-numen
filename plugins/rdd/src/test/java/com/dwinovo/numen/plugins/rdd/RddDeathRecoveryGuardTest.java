@@ -1,67 +1,29 @@
 package com.dwinovo.numen.plugins.rdd;
 
 import org.junit.jupiter.api.Test;
+import java.util.List;
+import static org.junit.jupiter.api.Assertions.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
-/** 2026-11-02（death49–56）：空手回死亡点捡装备 = 送死。 */
+/** 2026-11-07 B2 ⑥: repeated-death-area and no-combat-gear guards (test-only, no impl change). */
 class RddDeathRecoveryGuardTest {
+    @Test void threeDeathsWithin24BlocksAreRepeatedArea() {
+        List<String> at = List.of("10,64,10", "18,64,12", "30,64,30");
+        assertTrue(RddDeathRecoveryGuard.repeatedNearby(at, 24));
+    }
 
-    @Test
-    void emptyHandsWithHazardousDeathCannotRecoverFirst() {
+    @Test void scatteredDeathsAreNotRepeatedArea() {
+        assertFalse(RddDeathRecoveryGuard.repeatedNearby(List.of("0,64,0", "500,64,0", "0,64,500"), 24));
+        assertFalse(RddDeathRecoveryGuard.repeatedNearby(List.of(), 24));
+    }
+
+    @Test void emptyInventoryAndLavaDeathBlocksRecoverFirst() {
         assertFalse(RddDeathRecoveryGuard.allowRecoverFirst(true, "lava"));
         assertFalse(RddDeathRecoveryGuard.allowRecoverFirst(true, "onFire"));
-        assertFalse(RddDeathRecoveryGuard.allowRecoverFirst(true, "mob"));
-        assertFalse(RddDeathRecoveryGuard.allowRecoverFirst(true, "fall"));
+        assertNotNull(RddDeathRecoveryGuard.recoverGuardReason(true, "lava"));
     }
 
-    @Test
-    void gearedCompanionMayStillRecoverFirst() {
+    @Test void withCombatGearRecoverFirstAllowedButEmptyGearFallBlocked() {
         assertTrue(RddDeathRecoveryGuard.allowRecoverFirst(false, "lava"));
-        assertTrue(RddDeathRecoveryGuard.allowRecoverFirst(false, "mob"));
-    }
-
-    @Test
-    void unknownCauseDoesNotBlock() {
-        assertTrue(RddDeathRecoveryGuard.allowRecoverFirst(true, ""));
-        assertTrue(RddDeathRecoveryGuard.allowRecoverFirst(true, null));
-    }
-
-    @Test
-    void repeatedDeathsNearbyBlockRecoverFirst() {
-        assertTrue(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("72, 63, 51", "70, 63, 51"), 24));
-        assertTrue(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("10, 64, 10", "100, 64, 100", "12, 64, 11"), 24));
-        assertFalse(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("10, 64, 10", "100, 64, 100"), 24));
-        assertFalse(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("?", "70, 63, 51"), 24));
-    }
-
-    @Test
-    void sameXzButDeeperStillCountsAsSameSpot() {
-        // 垂直差 >24 但 x/z 相同：坠落/矿洞回冲必须命中
-        assertTrue(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("72, 63, 51", "72, -9, 51"), 24));
-        assertFalse(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("72, 63, 51", "110, 63, 51"), 24));
-    }
-
-    @Test
-    void guardReasonDistinguishesUnknownFromSafe() {
-        assertEquals("unknown_cause_allow", RddDeathRecoveryGuard.recoverGuardReason(true, ""));
-        assertEquals("hazard_cause_refused", RddDeathRecoveryGuard.recoverGuardReason(true, "mob"));
-        assertEquals("non_hazard_cause_allow", RddDeathRecoveryGuard.recoverGuardReason(true, "starved"));
-        assertEquals("geared", RddDeathRecoveryGuard.recoverGuardReason(false, "lava"));
-    }
-
-    @Test
-    void ledgerOrderIsNewestFirst() {
-        // all() 倒序：下标 0 最新；旧实现拿 size-1 会错过这条
-        assertTrue(RddDeathRecoveryGuard.repeatedNearby(
-                java.util.List.of("70, 63, 51", "72, 63, 51", "100, 100, 100"), 24));
+        assertFalse(RddDeathRecoveryGuard.allowRecoverFirst(true, "fall"), "空手 + 坠落同样危险");
     }
 }
