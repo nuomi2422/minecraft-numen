@@ -176,6 +176,64 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     private Vec3 wanderTarget;
 
     private String note = "done";
+    private com.dwinovo.numen.core.task.light.AutoLightSession lighting;
+    private int lightMaterialStart;
+    private final com.dwinovo.numen.core.task.light.AutoLightSession.Port lightPort =
+            new com.dwinovo.numen.core.task.light.AutoLightSession.Port() {
+        public Object worldIdentity() { return player.level(); }
+        public boolean loaded(BlockPos p) {
+            var level=player.level();
+            return !level.isOutsideBuildHeight(p) && !level.isOutsideBuildHeight(p.below())
+                    && level.hasChunkAt(p) && level.hasChunkAt(p.below());
+        }
+        public int maxLocalRawBrightness(BlockPos p) { return player.level().getMaxLocalRawBrightness(p); }
+        // Conservatively only empty air: never replace plants, water, containers or any occupied cell.
+        public boolean replaceable(BlockPos p) { return player.level().getBlockState(p).isAir(); }
+        public boolean canSupportStandingTorch(BlockPos p) {
+            return net.minecraft.world.level.block.Blocks.TORCH.defaultBlockState().canSurvive(player.level(),p);
+        }
+        public boolean alreadyTorch(BlockPos p) { return player.level().getBlockState(p).is(net.minecraft.world.level.block.Blocks.TORCH); }
+        public boolean permitted(BlockPos p) {
+            return player.level().getWorldBorder().isWithinBounds(p)
+                    && player.level().mayInteract(player,p) && player.level().mayInteract(player,p.below())
+                    && player.mayUseItemAt(p.below(),net.minecraft.core.Direction.UP,
+                            new ItemStack(net.minecraft.world.item.Items.TORCH));
+        }
+        public boolean materialPrivilegeValid() {
+            return r.consumeMaterials || com.dwinovo.numen.core.WorkProfile.of(player).freeMaterials();
+        }
+        public boolean hasMaterial() { return !r.consumeMaterials || inv.findSlot(net.minecraft.world.item.Items.TORCH,true)>=0; }
+        public int approach(BlockPos p) {
+            if (player.distanceToSqr(Vec3.atCenterOf(p))<=16) { stopNav(); return 1; }
+            if (nav==null) nav=PlayerNav.to(player,
+                    () -> new GoalCompiler.Compiled(NavGoal.nearGround(p,3.0),new LongOpenHashSet()),
+                    WALK_SPEED, () -> false, BuildCompanionTask.this);
+            return switch(nav.tick()) {
+                case ARRIVED -> { stopNav(); yield 1; }
+                case FAILED -> { stopNav(); yield -1; }
+                case RUNNING -> 0;
+            };
+        }
+        public void place(BlockPos p) {
+            var target=new BuildTaskRecord.Target(net.minecraft.world.level.block.Blocks.TORCH,
+                    net.minecraft.world.item.Items.TORCH,p,"minecraft:torch",null,null,null).asItemPlace();
+            boolean crouching=player.isShiftKeyDown();
+            player.setShiftKeyDown(true); // Do not activate an interactive support instead of placing on it.
+            try { placeWithItem(target,p); }
+            finally { player.setShiftKeyDown(crouching); }
+            if (alreadyTorch(p)) r.placedOne();
+        }
+    };
+
+    private TaskState tickLighting() {
+        lighting.tick(lightPort);
+        if (!lighting.done()) return TaskState.RUNNING;
+        stopNav();
+        if (lighting.complete()) return TaskState.SUCCESS;
+        fail("auto_light stopped: " + lighting.reason(),
+                lighting.reason().equals("materials_exhausted") ? FailureType.NO_MATERIAL : FailureType.TARGET_LOST);
+        return TaskState.FAILED;
+    }
 
     public BuildCompanionTask(NumenPlayer player, BuildTaskRecord record) {
         super(player, record);
@@ -191,7 +249,7 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
 
     @Override
     protected List<Precondition> preconditions() {
-        return List.of(this::checkExistingBlocks, this::checkMaterials);
+        return r.autoLight != null ? List.of() : List.of(this::checkExistingBlocks, this::checkMaterials);
     }
 
     /**
@@ -248,6 +306,11 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
 
     @Override
     protected void onStart() {
+        if (r.autoLight != null) {
+            lighting=new com.dwinovo.numen.core.task.light.AutoLightSession(r.autoLight,player.level());
+            lightMaterialStart=inv.mainInventoryCount(net.minecraft.world.item.Items.TORCH);
+            return;
+        }
         observedCompleted = new LongOpenHashSet();
         skippedPos = new LongOpenHashSet();
         computeSite();
@@ -262,6 +325,7 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
 
     @Override
     protected TaskState onTick() {
+        if (lighting != null) return tickLighting();
         // 蹲姿由施工分支决定并保持:落位只在批次刻发生,若每 tick 复位成站立,
         // 中间那些刻就会把她弹起来,看起来是在抖而不是在蹲着贴边放。
         player.setShiftKeyDown(phase == Phase.WORK && show.crouching());
@@ -682,7 +746,8 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
             var result = player.gameMode.useItemOn(player, player.level(),
                     player.getMainHandItem(), net.minecraft.world.InteractionHand.MAIN_HAND,
                     new net.minecraft.world.phys.BlockHitResult(
-                            Vec3.atCenterOf(pos), net.minecraft.core.Direction.UP, pos, false));
+                            r.autoLight == null ? Vec3.atCenterOf(pos) : Vec3.atCenterOf(pos.below()).add(0,0.5,0),
+                            net.minecraft.core.Direction.UP, r.autoLight == null ? pos : pos.below(), false));
             if (result.consumesAction()) {
                 player.swing(net.minecraft.world.InteractionHand.MAIN_HAND);
             }
@@ -1385,12 +1450,14 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     /** 施工就是改地形:挖错块、搭脚手架、被自己封顶时拆一块出去,都是这个任务的本分。 */
     @Override
     public com.dwinovo.numen.core.pathing.moves.TerrainPermit permit() {
-        return com.dwinovo.numen.core.pathing.moves.TerrainPermit.TERRAFORM;
+        return r.autoLight != null ? com.dwinovo.numen.core.pathing.moves.TerrainPermit.PRESERVE
+                : com.dwinovo.numen.core.pathing.moves.TerrainPermit.TERRAFORM;
     }
 
     @Override
     public void stop(NumenPlayer companion, StopReason why) {
         super.stop(companion, why);
+        if (lighting != null && why != StopReason.PREEMPTED) lighting.stop("cancelled");
         // 让位时摘掉放置提供者;下一次 onTick 每刻都会重新登记(registerProvider 幂等),
         // 所以不需要一个"恢复"钩子——原来那个 resume() 全代码库零调用者,是死代码。
         unregisterProvider();
@@ -1415,6 +1482,11 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
      */
     @Override
     protected Map<String, Object> resultData() {
+        if (lighting != null) {
+            Map<String,Object> data=new HashMap<>(lighting.data());
+            data.put("torch_inventory_net_used", lightMaterialStart-inv.mainInventoryCount(net.minecraft.world.item.Items.TORCH));
+            return data;
+        }
         Map<String, Object> data = new HashMap<>();
         data.put("requested", r.targets.size());
         data.put("completed", r.completed());
@@ -1437,6 +1509,8 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
 
     @Override
     protected String successMessage() {
+        if (lighting != null) return "auto_light placed " + r.placed() + " standing torch(es); " + lighting.reason()
+                + "; current lighting only, not permanent night protection";
         return "built " + r.completed() + "/" + r.targets.size()
                 + " block(s); placed " + r.placed() + ", cleared " + r.broken()
                 + (damagedCells > 0
@@ -1448,12 +1522,14 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
 
     @Override
     protected String timeoutMessage() {
+        if (lighting != null) { lighting.stop("time_budget"); return "auto_light time budget; placed " + r.placed(); }
         return "timed out while building; completed " + r.completed() + "/" + r.targets.size()
                 + " (" + note + ")";
     }
 
     @Override
     protected String cancelledMessage() {
+        if (lighting != null) { lighting.stop("cancelled"); return "auto_light cancelled; placed " + r.placed(); }
         return "build interrupted after " + r.completed() + "/" + r.targets.size() + " block(s)";
     }
 }

@@ -3,7 +3,7 @@
 ## Touhou Little Maid (TartaricAcid/TouhouLittleMaid)
 
 - Upstream: https://github.com/TartaricAcid/TouhouLittleMaid (1.21 branch, commit 207647c85740b1d0971de6040d6dd57cea62528c)
-- Use here: reference for "keep bottom root, harvest upper sugar-cane segments" task behavior only.
+- Use here: references for "keep bottom root, harvest upper sugar-cane segments" and current-darkness standing-torch selection (MaidTorchMoveTask / TaskTorch, raw brightness < 9). AutoLightSession / LightDeficitPlanner use original bounded build integration, not upstream setBlock or inventory shrink; no assets copied.
 - Implementation in this repository (`SugarCaneCompanionTask`, `SugarCaneHarvestSession`) is original; no upstream code or assets copied.
 - License: MIT. Full text (upstream):
   Copyright (c) 2019-2024 tartaric_acid, for the code part

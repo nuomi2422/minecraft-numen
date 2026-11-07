@@ -23,6 +23,15 @@ public final class BuildTaskRecord extends TaskRecord {
     public static final String TOOL_NAME = "build";
 
     public final List<Target> targets;
+    /** Null for all legacy set/blueprint records; no legacy constructor or serialization field changes. */
+    public com.dwinovo.numen.core.task.light.AutoLightRequest autoLight;
+
+    public static BuildTaskRecord autoLight(String callId, long deadline,
+            com.dwinovo.numen.core.task.light.AutoLightRequest request, boolean consume) {
+        BuildTaskRecord record = new BuildTaskRecord(callId, deadline, List.of(), false, consume, true);
+        record.autoLight = java.util.Objects.requireNonNull(request);
+        return record;
+    }
     /**
      * 目标格上已经有东西时怎么办(四档见 {@link ReplaceMode})。
      *
@@ -265,6 +274,7 @@ public final class BuildTaskRecord extends TaskRecord {
      * 工具 id 不写进来,需要它的地方(运行时状态的 tool 属性、派发回执)本来就有。
      */
     public String describe() {
+        if (autoLight != null) return "即时照明 已放 " + placed + " / 上限 " + autoLight.maxLights();
         return "搭建 " + completed + "/" + targets.size();
     }
 

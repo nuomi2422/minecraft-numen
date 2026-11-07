@@ -71,7 +71,12 @@ public final class BuildTool implements NumenTool {
 
     @Override
     public String description() {
-        return "Construct or clear blocks as ONE background task, expressed as a single ordered `ops` stream — "
+        return "auto_light: ONE standalone op with x1,y1,z1..x2,y2,z2 specifying TORCH CELLS (not supports), "
+                + "volume <=16384; optional block_id must be minecraft:torch. max_lights 1..256(default64), "
+                + "max_scans 1..16384(default16384), max_ticks 1..12000(default2400). Places standing torches "
+                + "only where CURRENT raw brightness <9, no permanent night protection. No replacement, "
+                + "no mixing with other ops. Accepted is not completed; inspect task_finished placed/stop_reason. "
+                + "Otherwise construct or clear blocks as ONE background task, expressed as a single ordered ops stream — "
                 + "write ops in build order, later ops overwrite earlier cells. Load the building_design skill "
                 + "(load_skill) BEFORE designing anything non-trivial. Ops: `set` one cell (block_id, x,y,z, "
                 + "optional facing/axis/half/properties — precise details like stairs and torches; a bare "
@@ -115,7 +120,7 @@ public final class BuildTool implements NumenTool {
         Map<String, Object> props = new LinkedHashMap<>();
         props.put("op", Map.of("type", "string",
                 "enum", List.of("set", "box", "walls", "line", "cylinder", "sphere",
-                        "roof", "set_door", "scatter")));
+                        "roof", "set_door", "scatter", "auto_light")));
         props.put("block_id", Map.of("type", "string",
                 "description", "Block for this op, e.g. minecraft:stone_bricks; minecraft:air clears. "
                         + "May be a weighted mix — \"stone_bricks*8, mossy_stone_bricks*2, "
@@ -205,7 +210,13 @@ public final class BuildTool implements NumenTool {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("type", "object");
         item.put("properties", props);
-        item.put("required", List.of("op", "block_id"));
+        props.put("max_lights", Map.of("type", "integer", "minimum", 1, "maximum", 256,
+                "description", "auto_light placement budget, default 64."));
+        props.put("max_scans", Map.of("type", "integer", "minimum", 1, "maximum", 16384,
+                "description", "auto_light total cell scan budget, default 16384."));
+        props.put("max_ticks", Map.of("type", "integer", "minimum", 1, "maximum", 12000,
+                "description", "auto_light active tick budget including navigation, default 2400."));
+        item.put("required", List.of("op"));
         item.put("additionalProperties", false);
 
         Map<String, Object> ops = new LinkedHashMap<>();
@@ -248,6 +259,14 @@ public final class BuildTool implements NumenTool {
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion,
                              Consumer<String> reply) {
+        // Parse auto_light BEFORE Gson's permissive Integer coercion. Never expand it into torch ops.
+        var lighting = parseAutoLight(args);
+        if (lighting != null) {
+            boolean consume = !com.dwinovo.numen.core.WorkProfile.of(companion).freeMaterials();
+            setTask(companion, BuildTaskRecord.autoLight(toolCallId,
+                    ctx(toolCallId, companion).deadline(lighting.maxTicks() + 20L), lighting, consume), args, reply);
+            return;
+        }
         Args parsed = ToolArgs.fromJson(args, Args.class);
         if (parsed.ops() == null || parsed.ops().isEmpty()) {
             throw new IllegalArgumentException("ops must contain at least one instruction");
@@ -274,6 +293,22 @@ public final class BuildTool implements NumenTool {
         setTask(companion, new BuildTaskRecord(toolCallId,
                 ctx(toolCallId, companion).deadline(timeout), targets, replaceExisting,
                 consume), args, reply);
+    }
+
+    /** Shared production parser seam: auto_light is exactly one standalone op, not a blueprint. */
+    public static com.dwinovo.numen.core.task.light.AutoLightRequest parseAutoLight(JsonObject args) {
+        if (!args.has("ops") || !args.get("ops").isJsonArray()) return null;
+        var ops = args.getAsJsonArray("ops");
+        for (var element : ops) {
+            if (element.isJsonObject() && element.getAsJsonObject().has("op")
+                    && "auto_light".equals(element.getAsJsonObject().get("op").getAsString())) {
+                if (ops.size() != 1) throw new IllegalArgumentException("auto_light must be the only op");
+                for (String key : args.keySet()) if (!key.equals("ops"))
+                    throw new IllegalArgumentException("auto_light does not accept " + key);
+                return com.dwinovo.numen.core.task.light.AutoLightRequest.parse(element.getAsJsonObject());
+            }
+        }
+        return null;
     }
 
     /** 一条指令展开为目标格集。set/set_door 携带状态;体积算子单一方块类型。 */
