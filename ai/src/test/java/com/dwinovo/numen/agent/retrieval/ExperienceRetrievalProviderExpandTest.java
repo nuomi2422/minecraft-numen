@@ -25,6 +25,11 @@ class ExperienceRetrievalProviderExpandTest {
                 body, hash, "experience", true, true);
     }
 
+    private static ExperienceEntryRead state(boolean retracted, boolean retrievable) {
+        return new ExperienceEntryRead("exp:r", EntryKind.EXPERIENCE, "t", "s", List.of(), List.of(),
+                List.of(), Maturity.VERIFIED, 1, retracted, "body", "h", "experience", true, retrievable);
+    }
+
     private static ExpansionRequest req(int maxChars) {
         return new ExpansionRequest("q", RetrievalRole.EXECUTOR, maxChars, "");
     }
@@ -78,5 +83,27 @@ class ExperienceRetrievalProviderExpandTest {
         });
         p.expand(new EntryRef("exp:e1"), req(0));
         assertEquals(1, reads.get(), "expand 不许反复扫库");
+    }
+
+    @Test void retractedEntryExpandReturnsRetracted() {
+        ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("experience",
+                () -> List.of(state(true, true)));
+        Result.Err<EntryBody> err = assertInstanceOf(Result.Err.class,
+                p.expand(new EntryRef("exp:r"), req(0)));
+        assertEquals("RETRACTED", err.code());
+    }
+
+    @Test void nonRetrievableEntryExpandReturnsRetracted() {
+        ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("experience",
+                () -> List.of(state(false, false)));
+        Result.Err<EntryBody> err = assertInstanceOf(Result.Err.class,
+                p.expand(new EntryRef("exp:r"), req(0)));
+        assertEquals("RETRACTED", err.code());
+    }
+
+    @Test void liveEntryStillExpands() {
+        ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("experience",
+                () -> List.of(state(false, true)));
+        assertInstanceOf(Result.Ok.class, p.expand(new EntryRef("exp:r"), req(0)));
     }
 }

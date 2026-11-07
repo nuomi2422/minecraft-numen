@@ -293,6 +293,9 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
         int max = request == null ? 0 : request.maxChars();
         for (ExperienceEntryRead e : raw) {
             if (e == null || !ref.value().equals(e.entryRef())) continue;
+            if (e.retracted() || !e.retrievable()) {
+                return new Result.Err<>("RETRACTED", "entry is retracted or not retrievable: " + ref.value());
+            }
             String content = e.bodyContent() == null ? "" : e.bodyContent();
             boolean truncated = false;
             if (max > 0 && content.length() > max) {
