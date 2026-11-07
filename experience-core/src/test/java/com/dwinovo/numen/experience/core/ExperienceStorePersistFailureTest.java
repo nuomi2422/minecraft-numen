@@ -2,6 +2,7 @@ package com.dwinovo.numen.experience.core;
 
 import com.dwinovo.numen.experience.api.ExperienceEntry;
 import com.dwinovo.numen.experience.api.ExperienceType;
+import com.dwinovo.numen.experience.api.PublicationState;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -58,5 +59,47 @@ class ExperienceStorePersistFailureTest {
         ExperienceEntry retried = s.learn(entry("同一命题", "乙"));
         assertEquals(first.id(), retried.id(), "同 canonical id 重试必须归并");
         assertEquals(1, ExperienceStore.at(file).all().size(), "重试不得产生重复条目");
+    }
+
+    private static void poison(Path file) throws Exception {
+        Files.delete(file);
+        Files.createDirectory(file);
+    }
+
+    private static void heal(Path file) throws Exception {
+        Files.delete(file);
+    }
+
+    @Test
+    void retractFailureRollsBackAndIsVisible() throws Exception {
+        Path file = dir.resolve("retract.jsonl");
+        ExperienceStore s = ExperienceStore.at(file);
+        ExperienceEntry e = s.learn(entry("撤回也要真落盘", "甲"));
+        poison(file);
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> s.retract(e.id(), "证据不足"));
+        assertTrue(ex.getMessage().contains("retract") && ex.getMessage().contains("NOT stored"), ex.getMessage());
+        assertFalse(s.all().get(0).retracted(), "失败后内存必须回滚成未撤回");
+        heal(file);
+        assertTrue(s.retract(e.id(), "证据不足").retracted(), "恢复后重试成功");
+        assertTrue(ExperienceStore.at(file).all().get(0).retracted(), "重试后确实落盘");
+    }
+
+    @Test
+    void publishFailureRollsBackAndIsVisible() throws Exception {
+        Path file = dir.resolve("publish.jsonl");
+        ExperienceStore s = ExperienceStore.at(file);
+        ExperienceEntry e = s.learn(entry("发布也要真落盘", "甲"));
+        PublicationState original = e.publication();
+        PublicationState target = PublicationState.SUSPENDED;
+        assertTrue(original.canTransitionTo(target), "测试前提：原状态可迁到目标");
+        poison(file);
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> s.publish(e.id(), target, "test"));
+        assertTrue(ex.getMessage().contains("publish") && ex.getMessage().contains("NOT stored"), ex.getMessage());
+        assertEquals(original, s.all().get(0).publication(), "失败后发布状态必须回滚");
+        heal(file);
+        assertTrue(s.publish(e.id(), target, "test").ok());
+        assertEquals(target, ExperienceStore.at(file).all().get(0).publication(), "重试后确实落盘");
     }
 }

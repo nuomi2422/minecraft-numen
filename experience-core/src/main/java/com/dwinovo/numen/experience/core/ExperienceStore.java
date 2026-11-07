@@ -314,8 +314,9 @@ public final class ExperienceStore {
 
         ExperienceEntry updated = old.withEvidence(maturity, verifiedCount, verifiedAt, counterexamples)
                 .withConsecutiveFailures(consecutiveFailures);
+        java.util.List<ExperienceEntry> before = java.util.List.copyOf(mirror);
         mirror.set(index, updated);
-        persist();
+        persistOrRollback(before, "evidence update");
         if (demoted) {
             LOG.info("[experience] '{}' demoted to {} after {} consecutive failures",
                     updated.title(), updated.maturity(), DEMOTE_AFTER_CONSECUTIVE_FAILURES);
@@ -369,8 +370,9 @@ public final class ExperienceStore {
             LOG.info("[experience] '{}' already retracted; reason updated", old.title());
         }
         ExperienceEntry updated = old.retracted(reason.trim());
+        java.util.List<ExperienceEntry> before = java.util.List.copyOf(mirror);
         mirror.set(index, updated);
-        persist();
+        persistOrRollback(before, "retract");
         LOG.info("[experience] retracted '{}' ({})", updated.title(), reason.trim());
         return updated;
     }
@@ -422,8 +424,9 @@ public final class ExperienceStore {
                             + "或修订正文后重新走 TRIAL。");
         }
         ExperienceEntry updated = old.withPublication(target);
+        java.util.List<ExperienceEntry> before = java.util.List.copyOf(mirror);
         mirror.set(index, updated);
-        persist();
+        persistOrRollback(before, "publish");
         LOG.info("[experience] publication {} -> {} ({})", cur, target,
                 note == null ? "" : note.trim());
         return new PublishResult(updated, "OK", cur + " -> " + target);
@@ -446,8 +449,9 @@ public final class ExperienceStore {
             return old;
         }
         ExperienceEntry updated = old.unretracted();
+        java.util.List<ExperienceEntry> before = java.util.List.copyOf(mirror);
         mirror.set(index, updated);
-        persist();
+        persistOrRollback(before, "reinstate");
         LOG.info("[experience] reinstated '{}'", updated.title());
         return updated;
     }
@@ -485,8 +489,9 @@ public final class ExperienceStore {
             return null;
         }
         ExperienceEntry updated = newer.supersedes(olderId);
+        java.util.List<ExperienceEntry> before = java.util.List.copyOf(mirror);
         mirror.set(newerIndex, updated);
-        persist();
+        persistOrRollback(before, "supersede");
         LOG.info("[experience] '{}' now supersedes '{}'", updated.title(), olderId);
         return mirror.get(indexOf(olderId));
     }
@@ -1004,7 +1009,7 @@ public final class ExperienceStore {
                 Files.copy(file, backup, StandardCopyOption.COPY_ATTRIBUTES);
                 LOG.info("[experience] backed up legacy-shaped {} to {}", file, backup.getFileName());
             }
-            persist();   // 逐行 JSONL + temp + ATOMIC_MOVE
+            if (!persist()) throw new IllegalStateException("experience migration NOT stored (IO failure)");
             int n = loadStats.total();
             LOG.info("[experience] migrated {} from legacy array shape to line-delimited JSONL ({} entries)",
                     file.getFileName(), n);
@@ -1014,6 +1019,18 @@ public final class ExperienceStore {
             LOG.warn("[experience] failed to migrate {}: {}", file, ex.toString());
             return loadStats.total();
         }
+    }
+
+    /** 2026-11-07 C0: mutators must roll back and fail loudly when the disk write fails. */
+    private void persistOrRollback(java.util.List<ExperienceEntry> before, String action) {
+        if (persist()) {
+            LOG.info("[experience] stored after {} (committed -> stored)", action);
+            return;
+        }
+        mirror.clear();
+        mirror.addAll(before);
+        throw new IllegalStateException("experience " + action
+                + " NOT stored (IO failure); change rolled back; retry is idempotent");
     }
 
     /** 全量原子重写：temp 文件 → ATOMIC_MOVE 替换。@return true=确实落盘，false=IO 失败（调用方必须区分）。 */
