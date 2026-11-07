@@ -36,7 +36,7 @@ final class RddConcernTool implements NumenTool {
 
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .string("kind", "ACCEPT / REJECT / COUNTER / PAUSE")
+                .string("kind", "ACCEPT / REJECT / COUNTER / PAUSE / SURVIVAL")
                 .string("expected_subtask_id", "Current subtask ID from rdd_status.")
                 .string("reason", "为什么这样回执（REJECT/COUNTER/PAUSE 必填）。")
                 .string("suggestion", "COUNTER 时的替代方案（人话）。")
@@ -50,6 +50,12 @@ final class RddConcernTool implements NumenTool {
             String reason = get(args, "reason");
             String suggestion = get(args, "suggestion");
             if (kind.isBlank()) throw new IllegalArgumentException("kind required");
+            if ("SURVIVAL".equalsIgnoreCase(kind.trim())) {
+                SideTaskHost.requestFoodSupply(companion, reason);
+                reply.accept(com.dwinovo.numen.task.TaskResult.ok(
+                        "SURVIVAL recorded; food supply side task requested").toJson());
+                return;
+            }
             TaskNegotiation n = TaskNegotiation.parse(kind, taskId, reason, suggestion);
             // 校验：回执必须针对当前二级（防张冠李戴）
             RddRuntime rt = RddPlugin.runtime(companion.getUUID());

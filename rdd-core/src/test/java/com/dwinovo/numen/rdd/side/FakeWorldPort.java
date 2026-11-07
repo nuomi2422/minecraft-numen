@@ -16,6 +16,9 @@ final class FakeWorldPort implements SideTaskWorldPort {
     boolean inCombat;
     boolean bodyBusy;
     boolean spawnBound;
+    int hunger = -1;
+    int health = -1;
+    int edible = -1;
     final Map<String, Integer> items = new HashMap<>();
     String mainlineObjective;
     private final Map<UUID, Boolean> sleeping = new HashMap<>();
@@ -71,6 +74,10 @@ final class FakeWorldPort implements SideTaskWorldPort {
     FakeWorldPort objective(String value) {
         this.mainlineObjective = value;
         return this;
+    }
+
+    FakeWorldPort survival(int hunger, int health, int edible) {
+        this.hunger = hunger; this.health = health; this.edible = edible; return this;
     }
 
     FakeWorldPort item(String id, int count) {
@@ -148,4 +155,8 @@ final class FakeWorldPort implements SideTaskWorldPort {
     public int countItem(UUID companionId, String itemId) {
         return items.getOrDefault(itemId, 0);
     }
+
+    @Override public int hunger(UUID companionId) { return hunger; }
+    @Override public int health(UUID companionId) { return health; }
+    @Override public int edibleCount(UUID companionId) { return edible; }
 }

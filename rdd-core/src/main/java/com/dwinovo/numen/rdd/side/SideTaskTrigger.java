@@ -34,6 +34,10 @@ public interface SideTaskTrigger {
         return true;
     }
 
-    record Context(UUID companionId, String worldId, long gameDay, long dayTime, boolean hasDayNightCycle) {
+    record Context(UUID companionId, String worldId, long gameDay, long dayTime, boolean hasDayNightCycle,
+                   int hunger, int health, int edibleCount) {
+        public Context(UUID companionId, String worldId, long gameDay, long dayTime, boolean hasDayNightCycle) {
+            this(companionId, worldId, gameDay, dayTime, hasDayNightCycle, -1, -1, -1);
+        }
     }
 }

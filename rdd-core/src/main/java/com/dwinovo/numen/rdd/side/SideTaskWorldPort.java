@@ -35,6 +35,11 @@ public interface SideTaskWorldPort {
 
     boolean isDay();
 
+    /** 2026-11-08: survival facts for food supply; -1 = UNKNOWN (never treat as 0). */
+    default int hunger(UUID companionId) { return -1; }
+    default int health(UUID companionId) { return -1; }
+    default int edibleCount(UUID companionId) { return -1; }
+
     /** 消费一次"睡着→醒"边沿；返回 {@link Wake#NONE} 表示没有。每次调用只返回一次。 */
     Wake pollWake(UUID companionId);
 

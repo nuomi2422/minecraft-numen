@@ -55,6 +55,23 @@ final class SideTaskHost {
     /** 支线拍醒的重复间隔（tick，约 4 分钟）：支线 active 期间至少这么久再补一次提醒。 */
     private static final long NUDGE_REPEAT_TICKS = 4L * 60L * 20L;
     private static final Map<UUID, Long> LAST_NUDGE_GAME_TIME = new ConcurrentHashMap<>();
+    /** 2026-11-08: after a food task settles, do not rebuild for 5 real minutes. */
+    private static final Map<UUID, Long> LAST_FOOD_DONE_MS = new ConcurrentHashMap<>();
+    private static final long FOOD_COOLDOWN_MS = 5L * 60L * 1000L;
+    /** SURVIVAL report forces one food task even if thresholds are not otherwise met. */
+    private static final java.util.Set<UUID> FORCED_FOOD = ConcurrentHashMap.newKeySet();
+
+    /** Called by report_task_concern(kind=SURVIVAL): request a food side task now. */
+    static void requestFoodSupply(com.dwinovo.numen.entity.NumenPlayer ap, String reason) {
+        if (ap == null) return;
+        UUID id = ap.getUUID();
+        if ("food_supply".equals(currentTypeId(id))) return;
+        FORCED_FOOD.add(id);
+        com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(ap,
+                "SURVIVAL report: " + (reason == null ? "" : reason));
+        RddMonitor.publish("survival_food_requested", java.util.Map.of(
+                "companionId", id.toString(), "reason", reason == null ? "" : reason));
+    }
     private static volatile Path sideDir;
 
     static {
@@ -65,6 +82,8 @@ final class SideTaskHost {
         ENGINE.registerTrigger(new com.dwinovo.numen.rdd.side.recovery.RecoverySideTaskTrigger());
         ENGINE.registerType(DEATH_RECOVERY_TYPE);
         ENGINE.registerType(new com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType());
+        ENGINE.registerType(new com.dwinovo.numen.rdd.side.FoodSupplySideTaskType());
+        ENGINE.registerTrigger(new com.dwinovo.numen.rdd.side.FoodSupplySideTaskTrigger());
         ENGINE.registerTrigger(new DeathRecoverySideTaskTrigger());
         SleepWakeWatcher.install();
         NeoForge.EVENT_BUS.addListener((ServerStoppedEvent event) -> onServerStopped());
@@ -238,6 +257,15 @@ final class SideTaskHost {
         try {
             HostWorldPort port = new HostWorldPort(ap);
             boolean wasActive = ENGINE.isActive(companionId);
+            String wasType = currentTypeId(companionId);
+            boolean foodCooldown = com.dwinovo.numen.rdd.side.FoodSupplyPolicy.cooldownActive(
+                    System.currentTimeMillis(), LAST_FOOD_DONE_MS.getOrDefault(companionId, 0L));
+            boolean foodCritical = !foodCooldown && !ENGINE.isActive(companionId)
+                    && (FORCED_FOOD.contains(companionId) || foodCritical(port, companionId));
+            if (foodCritical) {
+                com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(ap,
+                        "survival food supply preempts mainline");
+            }
             if (!wasActive) {
                 port.pollWake(companionId); // 无支线时排空陈旧醒来边沿，避免泄漏到下一晚
             }
@@ -245,6 +273,12 @@ final class SideTaskHost {
             boolean deathOccupying = RddRepairDispatch.lastRepair(companionId) != null;
             ENGINE.tick(companionId, port, token, deathOccupying);
             boolean nowActive = ENGINE.isActive(companionId);
+            if (FORCED_FOOD.contains(companionId) && "food_supply".equals(currentTypeId(companionId))) {
+                FORCED_FOOD.remove(companionId);
+            }
+            if (wasActive && "food_supply".equals(wasType) && !nowActive) {
+                LAST_FOOD_DONE_MS.put(companionId, System.currentTimeMillis());
+            }
             refreshContext(companionId, port);
             nudgeIfNeeded(companionId, port, wasActive, nowActive);
             persist();
@@ -310,6 +344,25 @@ final class SideTaskHost {
         @Override public String worldId() { return ap.level().dimension().location().toString(); }
         @Override public boolean isSleeping(UUID companionId) { return ap.isSleeping(); }
         @Override public boolean isDay() { return ap.level().isDay(); }
+        @Override public int hunger(UUID companionId) {
+            try { return ap.getFoodData().getFoodLevel(); } catch (RuntimeException e) { return -1; }
+        }
+        @Override public int health(UUID companionId) {
+            try { return (int) Math.ceil(ap.getHealth()); } catch (RuntimeException e) { return -1; }
+        }
+        @Override public int edibleCount(UUID companionId) {
+            try {
+                int n = 0;
+                var inv = ap.getInventory();
+                for (int i = 0; i < inv.getContainerSize(); i++) {
+                    var st = inv.getItem(i);
+                    if (!st.isEmpty() && st.get(net.minecraft.core.component.DataComponents.FOOD) != null) {
+                        n += st.getCount();
+                    }
+                }
+                return n;
+            } catch (RuntimeException e) { return -1; }
+        }
         @Override public Wake pollWake(UUID companionId) { return SleepWakeWatcher.poll(companionId); }
         @Override public int countItem(UUID companionId, String itemId) {
             // 2026-10-23 恢复支线：按物品 id 数背包（只读）。解析失败/未知 id → 0。
@@ -558,5 +611,11 @@ final class SideTaskHost {
         } catch (Exception ex) {
             LOG.warn("[rdd] 恢复支线状态失败: {}", ex.toString());
         }
+    }
+
+    /** Idempotent critical check; UNKNOWN values never trigger. */
+    private static boolean foodCritical(HostWorldPort port, UUID companionId) {
+        return com.dwinovo.numen.rdd.side.FoodSupplyPolicy.critical(
+                port.hunger(companionId), port.health(companionId), port.edibleCount(companionId));
     }
 }

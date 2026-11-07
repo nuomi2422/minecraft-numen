@@ -198,7 +198,8 @@ public final class SideTaskEngine {
                 }
             }
             if (!trigger.fires(new SideTaskTrigger.Context(
-                    companionId, world.worldId(), day, world.dayTime(), world.hasDayNightCycle()))) {
+                    companionId, world.worldId(), day, world.dayTime(), world.hasDayNightCycle(),
+                    world.hunger(companionId), world.health(companionId), world.edibleCount(companionId)))) {
                 continue;
             }
             SideTaskType type = types.get(trigger.typeId());
