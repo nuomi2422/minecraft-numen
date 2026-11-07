@@ -119,11 +119,15 @@ final class SideTaskHost {
                     var data = new java.util.LinkedHashMap<String, String>();
                     data.put("description", sub.description());
                     Object key = sub.condition().get("asset_key");
-                    if (key instanceof String k) data.put("asset_key", k);
+                    if (!(key instanceof String) || ((String) key).isBlank()) key = sub.condition().get("block");
+                    if (!(key instanceof String) || ((String) key).isBlank()) key = sub.condition().get("item");
+                    if (!(key instanceof String) || ((String) key).isBlank()) continue; // no countable asset -> not an executable daily
+                    data.put("asset_key", (String) key);
                     Object min = sub.condition().get("minimum");
                     data.put("minimum", String.valueOf(min instanceof Number n ? Math.max(1, n.intValue()) : 1));
                     data.put("requires_farm_built", String.valueOf(rec.requiresFarmBuilt()));
-                    String specId = "daily:" + chain.goal().id() + ":" + sub.id() + "|r" + chain.planRevision();
+                    // stable across replans: description hash, not sub.id/planRevision
+                    String specId = "daily:" + chain.goal().id() + ":" + Integer.toHexString(sub.description().hashCode());
                     ENGINE.registerRecurring(new com.dwinovo.numen.rdd.side.RecurringSideTaskSpec(
                             specId, com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType.TYPE_ID,
                             rec.intervalGameDays(), chain.planRevision(),
