@@ -63,6 +63,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * （只读缓存，不读世界）；{@link #replanBlock} 在重规划路径（服务端线程）。
  */
 final class RddFactContext {
+    /** Dedupe for satisfied-but-spent warnings (companion|key). */
+    private static final java.util.Set<String> SPENT_LOGGED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private static final Logger LOG = LoggerFactory.getLogger("rdd-facts");
 
@@ -454,6 +456,25 @@ final class RddFactContext {
      * <p>★ G1c：{@code reservedByKey} 非空时给对应行追加「（已预留 N）」——让执行 AI
      * 看见「这批里有多少件已经被许给别的需求」，而不是把全部现有量都当自己可用。
      */
+    static String stickyKey(String primaryId, int planRevision, int attempt, Need need) {
+        return primaryId + "|r" + planRevision + "|a" + attempt + "|" + need.display();
+    }
+
+    static String displayKey(Need need) { return need.display(); }
+
+    /** Sticky keys that are recorded satisfied but the inventory is now below minimum (debug only). */
+    static java.util.List<String> satisfiedButSpent(List<Need> needs, Map<String, Integer> held,
+                                                    Set<String> satisfiedKeys) {
+        if (satisfiedKeys == null || satisfiedKeys.isEmpty()) return List.of();
+        java.util.List<String> out = new ArrayList<>();
+        for (Need need : needs) {
+            if (satisfiedKeys.contains(displayKey(need)) && have(need, held) < need.minimum()) {
+                out.add(displayKey(need));
+            }
+        }
+        return out;
+    }
+
     static String renderNeedsBlock(List<Need> needs, Map<String, Integer> held) {
         return renderNeedsBlock(needs, held, Map.of(), Map.of());
     }
@@ -470,9 +491,17 @@ final class RddFactContext {
     static String renderNeedsBlock(List<Need> needs, Map<String, Integer> held,
                                    Map<String, Integer> reservedByKey,
                                    Map<String, String> transformNotes) {
+        return renderNeedsBlock(needs, held, reservedByKey, transformNotes, Set.of());
+    }
+
+    static String renderNeedsBlock(List<Need> needs, Map<String, Integer> held,
+                                   Map<String, Integer> reservedByKey,
+                                   Map<String, String> transformNotes,
+                                   Set<String> satisfiedKeys) {
         List<Need> unmet = new ArrayList<>();
         for (Need need : needs) {
-            if (have(need, held) < need.minimum()) {
+            if (have(need, held) < need.minimum()
+                    && (satisfiedKeys == null || !satisfiedKeys.contains(displayKey(need)))) {
                 unmet.add(need);
             }
         }
@@ -1032,9 +1061,39 @@ final class RddFactContext {
             if (RddPlugin.lastInventoryAtMillis(companionId) == null) {
                 return "";
             }
-            return renderNeedsBlock(needsOf(primary), RddPlugin.lastInventory(companionId),
+            List<Need> needs = needsOf(primary);
+            Map<String, Integer> held = RddPlugin.lastInventory(companionId);
+            Set<String> satisfied = new LinkedHashSet<>(rt.chain().satisfiedNeedKeys());
+            int attempt = rt.chain().currentSubtask() == null ? 0 : rt.chain().attempts(rt.chain().currentSubtask().id());
+            for (Need need : needs) {
+                if (have(need, held) >= need.minimum()) {
+                    String key = stickyKey(primary.id(), rt.chain().planRevision(), attempt, need);
+                    rt.chain().recordSatisfiedNeed(key);
+                    satisfied.add(key);
+                }
+            }
+            // Sticky keys are scoped by revision/attempt; convert to display form for rendering.
+            Set<String> stickyDisplay = new LinkedHashSet<>();
+            for (Need need : needs) {
+                String key = stickyKey(primary.id(), rt.chain().planRevision(), attempt, need);
+                if (satisfied.contains(key)) stickyDisplay.add(displayKey(need));
+            }
+            for (Need need : needs) {
+                if (stickyDisplay.contains(displayKey(need)) && have(need, held) < need.minimum()) {
+                    String dedupe = companionId + "|" + displayKey(need);
+                    if (SPENT_LOGGED.add(dedupe)) {
+                        RddMonitor.publish("need_consumed_after_satisfied", Map.of(
+                                "companionId", companionId.toString(),
+                                "need", displayKey(need),
+                                "held", have(need, held),
+                                "minimum", need.minimum(),
+                                "importance", need.importance().name()));
+                    }
+                }
+            }
+            return renderNeedsBlock(needs, held,
                     reservedFor(companionId, primary.id()),
-                    transformNotes(companionId, System.currentTimeMillis()));
+                    transformNotes(companionId, System.currentTimeMillis()), stickyDisplay);
         } catch (RuntimeException ex) {
             return "";   // 增强块，绝不能拖崩上下文构建
         }

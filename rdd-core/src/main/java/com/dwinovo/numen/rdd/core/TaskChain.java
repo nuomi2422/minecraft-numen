@@ -84,6 +84,8 @@ public final class TaskChain {
      * 全部阶段命中 → 链直接 COMPLETED。跨重绑继承由 {@code CompletedFactStore} 查询后注入。
      */
     private final Set<String> satisfiedStages = new LinkedHashSet<>();
+    /** 2026-11-07: sticky satisfied need keys (primaryId+planRevision+attempt+display). */
+    private final Set<String> satisfiedNeedKeys = new LinkedHashSet<>();
 
     /**
      * G3b：安全相关状态提交版本（IC75-r1 §15.2 的 {@code stateVersion} 最小落地）。
@@ -228,7 +230,11 @@ public final class TaskChain {
     }
 
     /** 推进计划代次，返回新值。宿主在**每次生成/替换二级之前**调它。 */
-    public synchronized int nextPlanRevision() { return ++planRevision; }
+    public synchronized int nextPlanRevision() {
+        planRevision++;
+        satisfiedNeedKeys.clear();
+        return planRevision;
+    }
 
     /**
      * 从链上<b>实际存在的二级 id</b> 反推代次下限（2026-09-30 深审/codex P1-1）。
@@ -577,6 +583,20 @@ public final class TaskChain {
 
     /** G3b：被忽略的陈旧结果次数（只读；区分「判定没跑」与「跑了但被 CAS 挡掉」）。 */
     public synchronized int staleResultsIgnored() { return staleResultsIgnored; }
+
+    /** 2026-11-07 sticky needs: record a need that has been observed satisfied. */
+    public synchronized void recordSatisfiedNeed(String key) {
+        if (key != null && !key.isBlank()) satisfiedNeedKeys.add(key);
+    }
+
+    public synchronized void recordSatisfiedNeeds(java.util.Collection<String> keys) {
+        if (keys != null) for (String k : keys) recordSatisfiedNeed(k);
+    }
+
+    public synchronized Set<String> satisfiedNeedKeys() { return Set.copyOf(satisfiedNeedKeys); }
+
+    /** Debug/tests: sticky key that is no longer covered by inventory. */
+    public synchronized boolean isSatisfiedNeed(String key) { return satisfiedNeedKeys.contains(key); }
 
     // ---- G3e：安全点凭据（签发/校验/消费/作废）----
 
@@ -1527,6 +1547,7 @@ public final class TaskChain {
         view.put("chainInstanceId", chainInstanceId);   // §15.2：链实例身份进快照（监测台对账读数口）
         view.put("description", goal.description());
         view.put("satisfiedStages", List.copyOf(satisfiedStages));
+        view.put("satisfiedNeedKeys", List.copyOf(satisfiedNeedKeys));
         // 2026-10-28：哪些一级是"被事实达成/提前收口"的（键 → 理由）。只观测，不参与判定。
         view.put("settledStages", Map.copyOf(settleReasons));
         view.put("primaryStatus", primaryStatus.name());
@@ -1578,6 +1599,9 @@ public final class TaskChain {
             sat.add(k);
         }
         o.add("satisfiedStages", sat);
+        JsonArray needSat = new JsonArray();
+        for (String k : satisfiedNeedKeys) needSat.add(k);
+        o.add("satisfiedNeedKeys", needSat);
         o.addProperty("primaryIndex", primaryIndex);
         o.addProperty("subtaskIndex", subtaskIndex);
         o.addProperty("planRevision", planRevision);
@@ -1674,6 +1698,11 @@ public final class TaskChain {
                     }
                 }
                 chain.acquireBaselines.put(entry.getKey(), Map.copyOf(baseline));
+            }
+        }
+        if (o.has("satisfiedNeedKeys") && o.get("satisfiedNeedKeys").isJsonArray()) {
+            for (JsonElement e : o.getAsJsonArray("satisfiedNeedKeys")) {
+                if (!e.isJsonNull()) chain.satisfiedNeedKeys.add(e.getAsString());
             }
         }
         if (o.has("lastStartedAtMillis")) {
