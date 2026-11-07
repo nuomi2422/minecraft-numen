@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.api.NumenPlugins;
+import com.dwinovo.numen.api.observation.ObservationBatch;
 import com.dwinovo.numen.api.observation.WorldObservationService;
 import com.dwinovo.numen.entity.NumenPlayer;
 
@@ -43,26 +44,18 @@ final class RddObservation {
             if (last != null && gameTime - last < CADENCE_TICKS) return;
             LAST.put(ap.getUUID(), gameTime);
             String dim = ap.level().dimension().location().toString();
-            WorldObservationService.Response resp = svc.refresh(
-                    new WorldObservationService.Request("rdd-env", dim, "environment", Map.of(), 0L, 1, 0L));
-            // blocks 主题：身边有没有箱子/岩浆/门（039 U2b 的消费者）。
-            // 盒子与 RddEnvBlock 旧扫描同口径（±8 水平、±12 垂直）。
-            var pos = ap.blockPosition();
-            String box = (pos.getX() - 8) + "," + (pos.getY() - 12) + "," + (pos.getZ() - 8) + ","
-                    + (pos.getX() + 8) + "," + (pos.getY() + 12) + "," + (pos.getZ() + 8);
-            svc.refresh(new WorldObservationService.Request("rdd-env", dim, "blocks",
-                    Map.of("box", box, "blocks", NEARBY_IDS), 0L, 32, 0L));
-            // entities 主题（039 U5#7）：危险实体 —— 两个盒子：扫描半径 / 贴身半径。
-            svc.refresh(new WorldObservationService.Request("rdd-env", dim, "entities",
-                    Map.of("box", dangerBox(pos, RddDangerText.SCAN_RADIUS), "category", "hostile"), 0L, 64, 0L));
-            svc.refresh(new WorldObservationService.Request("rdd-env", dim, "entities",
-                    Map.of("box", dangerBox(pos, RddDangerText.CLOSE_RADIUS), "category", "hostile"), 0L, 64, 0L));
-            if (resp != null && resp.status() == WorldObservationService.Status.ERROR) {
-                // 限频：只在状态变化时打一条，避免每 5 秒刷屏
+            // 2026-11-07：四主题合并成一次 batchRead（整体 deadline 1000ms），逐条判缺失/错误。
+            ObservationBatch.Result result = svc.batchRead(RddObservationBatch.query(dim, ap.blockPosition().getX(), ap.blockPosition().getY(), ap.blockPosition().getZ()));
+            var summary = RddObservationBatch.summarize(result);
+            boolean degraded = !summary.missingTopics().isEmpty() || !summary.errorTopics().isEmpty();
+            if (degraded || (result != null && !result.coherent())) {
+                // 限频：只在有主题缺失/错误/非同刻时打一条，避免每 5 秒刷屏。
                 Long prevErr = ERR_AT.get(ap.getUUID());
                 if (prevErr == null || gameTime - prevErr > 200L) {
                     ERR_AT.put(ap.getUUID(), gameTime);
-                    LOG.warn("[rdd-obs] environment refresh failed: {}", resp.reason());
+                    LOG.warn("[rdd-obs] batch degraded: missing={} error={} coherent={} reason={}",
+                            summary.missingTopics(), summary.errorTopics(),
+                            result != null && result.coherent(), result == null ? "null" : result.reason());
                 }
             }
         } catch (RuntimeException | LinkageError ignored) {
