@@ -1414,8 +1414,9 @@ private static String withAssets(UUID companionId, String rddContext) {
                         int rev = nextPlanRevision(companionId, chain);
                         for (int i = 0; i < specs.size(); i++) {
                             SubtaskSpec sp = specs.get(i);
-                            subs.add(Subtask.hardCoded(primaryId + "-r" + rev + "-" + i,
-                                    sp.description(), sp.condition(), sp.body()));
+                            subs.add(new Subtask(primaryId + "-r" + rev + "-" + i,
+                                    sp.description(), com.dwinovo.numen.rdd.api.DetectionMode.HARD_CODED, sp.condition(),
+                                    0, 0, false, sp.body(), sp.nodeType(), sp.recurrence()));
                         }
                         chain.replaceCurrentSubtasks(subs);
                         RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废

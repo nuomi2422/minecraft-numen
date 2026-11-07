@@ -170,8 +170,9 @@ final class RddGoalDriver {
                     for (int i = 0; i < specs.size(); i++) {
                         SubtaskSpec sp = specs.get(i);
                         // id 以当前一级 id + 代次为前缀 → 跨级/跨重试/跨重启全局唯一
-                        subs.add(Subtask.hardCoded(pid + "-r" + rev + "-" + i,
-                                sp.description(), sp.condition(), sp.body()));
+                        subs.add(new Subtask(pid + "-r" + rev + "-" + i,
+                                sp.description(), com.dwinovo.numen.rdd.api.DetectionMode.HARD_CODED, sp.condition(),
+                                0, 0, false, sp.body(), sp.nodeType(), sp.recurrence()));
                     }
                     rt.expandCurrentPrimary(subs); // core 校验：非空/重复/已展开/状态合法
                     ok = true;
