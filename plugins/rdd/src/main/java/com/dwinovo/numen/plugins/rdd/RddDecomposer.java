@@ -650,6 +650,9 @@ final class RddDecomposer {
                     + "（钻石镐能挖黑曜石 → 不必先做石镐/铁镐；已有铁镐 → 不必再走石镐）；"
                     + "反过来，工具够好但缺材料时直接用更好的工具去取那个材料（有钻石镐但缺铁 → 直接挖铁），"
                     + "不要为了走完时代顺序先凑中间档。"
+                    + "**节点类型（2026-11-08）**：每个子步骤加 node_type=MAIN|DAILY|SIDE。"
+                    + "重复维护型（收割/补种/喂动物/存粮/照明巡检）=DAILY，并给 recurrence{intervalGameDays:1,missedPolicy:\"SKIP\",requiresFarmBuilt:true|false}；"
+                    + "一次性建设/开垦/建仓/合成=MAIN；等待作物成熟不得让整条主线停在 MAIN，应拆出 DAILY 并让 MAIN 只保留建设类。"
                     + "只给完成条件，不要派身体动作。"
                     + "通用食物/木头/垫脚方块需求优先用 condition:{group:food|wood|blocks,minimum:数量}，组内按物品总数相加，禁止同时给asset_key。"
                     + "food只计直接可食用的东西，生肉/腐肉也计（捡回来就算推进），不计小麦/干草/生土豆/种子；wood原木和木板按件计，不换算配方。指定合成原料仍用asset_key。"
@@ -670,6 +673,11 @@ final class RddDecomposer {
                     + "精确 ID 与 #tag 都接受：村庄要写 minecraft:village_plains 等五个之一，或直接用 #minecraft:village；海底神殿是 minecraft:monument 不是 ocean_monument。"
                     + "base只要求本人已绑定的可重生床完整可用；附近箱子和熔炉不再当硬门（建成它们会另排步骤，不要塞进 base）。structure须本人到达已加载结构，击杀须本人统计，不以实体消失当击败。"
                     + "没有对应验收器的部分不要伪造物品替代。只输出 decompose_goal 工具调用，不要写多余文字。";
+
+    /** Test-only accessors: prompt/schema are part of the planner contract. */
+    static String systemPrompt() { return SYSTEM_PROMPT; }
+
+    static java.util.Map<String, Object> decomposeSchema() { return DECOMPOSE_TOOL.parameterSchema(); }
 
     static String decompositionPrompt(String objective, Map<String, Integer> held,
                                       List<String> completedStages) {
@@ -881,7 +889,15 @@ final class RddDecomposer {
                                     "type", "object",
                                     "description", "确定性完成条件",
                                     "properties", conditionProps,
-                                    "required", List.of())),
+                                    "required", List.of()),
+                            "node_type", Map.of("type", "string", "enum", List.of("MAIN", "DAILY", "SIDE"),
+                                    "description", "重复维护=DAILY（不阻塞主线）；一次性建设=MAIN；可选支线=SIDE。缺省 MAIN。"),
+                            "recurrence", Map.of("type", "object",
+                                    "description", "DAILY 周期；intervalGameDays=1, missedPolicy=SKIP, requiresFarmBuilt=是否需先建成农田。",
+                                    "properties", Map.of(
+                                            "intervalGameDays", Map.of("type", "integer"),
+                                            "missedPolicy", Map.of("type", "string", "enum", List.of("SKIP", "CATCH_UP")),
+                                            "requiresFarmBuilt", Map.of("type", "boolean")))),
                     "required", List.of("description", "condition"));
             return Map.of(
                     "type", "object",
