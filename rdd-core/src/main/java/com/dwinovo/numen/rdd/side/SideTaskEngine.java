@@ -35,6 +35,11 @@ public final class SideTaskEngine {
     private final Map<String, Long> handledGameDay = new HashMap<>();
     /** 去重键 → 推迟到该 gameTime 之前不再重新决策（"推迟到安全停顿点"）。用单调 gameTime，不受 /time set 影响。 */
     private final Map<String, Long> deferredUntil = new HashMap<>();
+    /** 2026-11-08: recurring specs by specId + their task type. */
+    private final Map<String, RecurringSideTaskSpec> recurringSpecs = new LinkedHashMap<>();
+    private final Map<String, String> recurringTypes = new HashMap<>();
+    /** companion|world|spec|gameDay — recurring one-shot per day. */
+    private final Map<String, Long> recurringHandled = new HashMap<>();
     /** 宿主约每 20 tick 调一次 tick；推迟冷却不得小于一拍，否则每拍都会重新决策。 */
     private static final int MIN_DEFER_TICKS = 20;
     private final SideTaskEvents events;
@@ -59,6 +64,13 @@ public final class SideTaskEngine {
 
     public void registerTrigger(SideTaskTrigger trigger) {
         triggers.add(trigger);
+    }
+
+    /** 2026-11-08: register a recurring/daily spec; it never wakes the body while busy. */
+    public void registerRecurring(RecurringSideTaskSpec spec, String typeId) {
+        if (spec == null || typeId == null || typeId.isBlank()) return;
+        recurringSpecs.put(spec.scheduleId(), spec);
+        recurringTypes.put(spec.scheduleId(), typeId);
     }
 
     public SideTaskType typeOf(String typeId) {
@@ -136,6 +148,12 @@ public final class SideTaskEngine {
         }
         long now = world.gameTime();
         long day = world.gameDay();
+        if (!deathSideTaskOccupying && !world.bodyBusy(companionId)) {
+            if (tickRecurring(companionId, world, mainlineToken, day, now)) {
+                return;
+            }
+        }
+
         for (SideTaskTrigger trigger : triggers) {
             if (deathSideTaskOccupying && !trigger.allowedWhileDeathOccupying()) {
                 continue;
@@ -253,6 +271,7 @@ public final class SideTaskEngine {
         Map<String, Object> data = base(task);
         data.put("state", state.name());
         data.put("reason", reason == null ? "" : reason);
+        data.put("reason", reason == null ? "" : reason);
         events.publish(event, data);
         resumeMainline(task);
     }
@@ -316,6 +335,35 @@ public final class SideTaskEngine {
         runtime.clearAll();
         handledGameDay.clear();
         deferredUntil.clear();
+    }
+
+    private boolean tickRecurring(UUID companionId, SideTaskWorldPort world,
+                                  MainlineResumeToken mainlineToken, long day, long now) {
+        for (var e : recurringSpecs.entrySet()) {
+            RecurringSideTaskSpec spec = e.getValue();
+            String typeId = recurringTypes.get(e.getKey());
+            SideTaskType type = typeId == null ? null : types.get(typeId);
+            if (type == null || !spec.dueOn(day)) continue;
+            String key = companionId + "|" + world.worldId() + "|" + spec.scheduleId() + "|" + day;
+            Long handled = recurringHandled.get(key);
+            if (handled != null && handled == day) continue;
+            MainlineResumeToken token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
+            long generation = runtime.nextGeneration();
+            SideTask task = type.create(new SideTaskType.CreationContext(
+                    companionId, typeId + "-" + generation + "-" + shortId(companionId), generation,
+                    day, now, now + type.deadlineTicks(), token, Map.of()));
+            if (runtime.activate(task)) {
+                recurringHandled.put(key, day);
+                Map<String, Object> due = base(task);
+                due.put("specId", spec.scheduleId());
+                due.put("gameDay", day);
+                events.publish("side_task_due", due);
+                events.publish("side_task_created", base(task));
+                events.publish("side_task_activated", base(task));
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String handledKey(UUID companionId, String worldId, String typeId) {
