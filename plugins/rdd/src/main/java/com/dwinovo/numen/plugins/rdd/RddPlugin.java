@@ -1133,6 +1133,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                     "note", "inherited stage facts cleared; first primary must be re-earned"));
         }
         RUNTIMES.put(companionId, new RddRuntime(fresh, assets(companionId)));
+        SideTaskHost.registerDailySpecs(fresh);
         // 【架构概念 2/4 接线】一级目标生成时同步产出"需求清单"（元件检测的需求侧）。
         // 只产"事实"，不在这里做裁决（裁决归 DetectionArbitration），更不在这里改规划。
         // 2026-10-06：清单不再"算完即丢"——RddFactContext 缓存它，并在检测 tick 里持续对账；
@@ -2660,6 +2661,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
                     String json = Files.readString(f, StandardCharsets.UTF_8);
                     TaskChain chain = TaskChain.fromJson(json);
                     RUNTIMES.put(uuid, new RddRuntime(chain, assets(uuid)));
+        SideTaskHost.registerDailySpecs(chain);
                     // 懒链可能停靠在未展开一级：currentSubtask()=null，报阶段而非 NPE
                     Subtask restored = chain.currentSubtask();
                     String curLabel = restored != null

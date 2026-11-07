@@ -67,6 +67,11 @@ public final class SideTaskEngine {
     }
 
     /** 2026-11-08: register a recurring/daily spec; it never wakes the body while busy. */
+    public void clearRecurring() {
+        recurringSpecs.clear();
+        recurringTypes.clear();
+    }
+
     public void registerRecurring(RecurringSideTaskSpec spec, String typeId) {
         if (spec == null || typeId == null || typeId.isBlank()) return;
         recurringSpecs.put(spec.scheduleId(), spec);
@@ -342,11 +347,22 @@ public final class SideTaskEngine {
         for (var e : recurringSpecs.entrySet()) {
             RecurringSideTaskSpec spec = e.getValue();
             String typeId = recurringTypes.get(e.getKey());
-            SideTaskType type = typeId == null ? null : types.get(typeId);
-            if (type == null || !spec.dueOn(day)) continue;
+            if (!spec.dueOn(day)) continue;
             String key = companionId + "|" + world.worldId() + "|" + spec.scheduleId() + "|" + day;
             Long handled = recurringHandled.get(key);
             if (handled != null && handled == day) continue;
+            if (spec.promptOnly()) {
+                recurringHandled.put(key, day);
+                Map<String, Object> due = new LinkedHashMap<>();
+                due.put("companionId", companionId.toString());
+                due.put("specId", spec.scheduleId());
+                due.put("gameDay", day);
+                due.put("promptOnly", true);
+                events.publish("side_task_due", due);
+                continue;
+            }
+            SideTaskType type = typeId == null ? null : types.get(typeId);
+            if (type == null) continue;
             MainlineResumeToken token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
             long generation = runtime.nextGeneration();
             SideTask task = type.create(new SideTaskType.CreationContext(

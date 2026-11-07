@@ -82,4 +82,20 @@ class SideTaskRecurringTest {
         e.tick(C, w, null, false);
         assertTrue(e.isActive(C), "跨世界键必须独立");
     }
+
+    @Test void promptOnlyEmitsDueWithoutOccupyingBody() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerRecurring(new RecurringSideTaskSpec("p", "daily_hint", 1, 0,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true, true), "daily_hint");
+        FakeWorldPort w = new FakeWorldPort().at(100, 0);
+        e.tick(C, w, null, false);
+        assertFalse(e.isActive(C), "prompt-only 不占身体");
+        assertEquals(1, ev.count("side_task_due"));
+        e.tick(C, w, null, false);
+        assertEquals(1, ev.count("side_task_due"), "同日只提示一次");
+        w.at(300, 1);
+        e.tick(C, w, null, false);
+        assertEquals(2, ev.count("side_task_due"), "次日再提示");
+    }
 }

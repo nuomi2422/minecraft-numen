@@ -106,6 +106,28 @@ final class SideTaskHost {
         restore();
     }
 
+    /** 2026-11-08: planner DAILY nodes become prompt-only recurring specs (no body occupation). */
+    static void registerDailySpecs(com.dwinovo.numen.rdd.core.TaskChain chain) {
+        try {
+            ENGINE.clearRecurring();
+            if (chain == null || chain.goal() == null) return;
+            for (var primary : chain.goal().primaryGoals()) {
+                for (var sub : primary.subtasks()) {
+                    if (sub.nodeType() != com.dwinovo.numen.rdd.api.NodeType.DAILY || sub.recurrence() == null) continue;
+                    String specId = "daily:" + chain.goal().id() + ":" + sub.id() + "|r" + chain.planRevision();
+                    var rec = sub.recurrence();
+                    ENGINE.registerRecurring(new com.dwinovo.numen.rdd.side.RecurringSideTaskSpec(
+                            specId, "daily_hint", rec.intervalGameDays(), chain.planRevision(),
+                            rec.missedPolicy() == com.dwinovo.numen.rdd.api.RecurrenceSpec.MissedPolicy.CATCH_UP
+                                    ? com.dwinovo.numen.rdd.side.RecurringSideTaskSpec.MissedPolicy.CATCH_UP
+                                    : com.dwinovo.numen.rdd.side.RecurringSideTaskSpec.MissedPolicy.SKIP, true, true), "daily_hint");
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // spec registration must never break chain creation
+        }
+    }
+
     static boolean isActive(UUID companionId) {
         return companionId != null && ENGINE.isActive(companionId);
     }

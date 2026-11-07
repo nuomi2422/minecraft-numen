@@ -12,7 +12,14 @@ public record RecurringSideTaskSpec(
         int intervalGameDays,
         long anchorGameDay,
         MissedPolicy missedPolicy,
-        boolean enabled) {
+        boolean enabled,
+        boolean promptOnly) {
+
+    /** 旧构造：默认占据身体的支线（非 prompt-only）。 */
+    public RecurringSideTaskSpec(String scheduleId, String templateId, int intervalGameDays,
+                                 long anchorGameDay, MissedPolicy missedPolicy, boolean enabled) {
+        this(scheduleId, templateId, intervalGameDays, anchorGameDay, missedPolicy, enabled, false);
+    }
 
     public enum MissedPolicy {
         /** 错过就跳过这一拍。 */
