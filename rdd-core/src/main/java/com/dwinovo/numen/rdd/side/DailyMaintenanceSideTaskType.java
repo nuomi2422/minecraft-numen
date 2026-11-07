@@ -18,6 +18,7 @@ public final class DailyMaintenanceSideTaskType implements SideTaskType {
     }
 
     @Override public SideTaskVerdict evaluate(SideTask task, SideTaskWorldPort world) {
+        System.out.println("[rdd] daily evaluate id=" + task.instanceId() + " dataKeys=" + task.data().keySet());
         if (task.pastDeadline(world.gameTime())) return SideTaskVerdict.skip("daily ttl expired");
         String key = task.data().getOrDefault("asset_key", "");
         int minimum;
