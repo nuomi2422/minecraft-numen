@@ -55,16 +55,16 @@ class LlmObservationTest {
             // E0 计量：每次调用收尾都会补一条 llm_usage（成功与失败都发），所以这里是四条。
             // 2026-10-20 同步：本断言曾长期红着（期望三条、实际四条）——常红等于把这套警报器烧掉，
             // 真回归来了没人会看第二眼。判定只放行「多了 llm_usage」这一种已知增量。
-            assertEquals(List.of("llm_request", "llm_request", "llm_response", "llm_usage"),
+            assertEquals(List.of("llm_request", "llm_throttled", "llm_request", "llm_response", "llm_usage"),
                     events.stream().map(Event::type).toList());
             assertEquals(2, received.size());
             assertEquals(received.get(0), events.get(0).data().get("request"));
-            assertEquals(received.get(1), events.get(1).data().get("request"));
+            assertEquals(received.get(1), events.get(2).data().get("request"));
             assertEquals(1, events.get(0).data().get("attempt"));
-            assertEquals(2, events.get(1).data().get("attempt"));
-            assertEquals("dispatched", events.get(1).data().get("status"));
-            assertEquals(1, events.stream().map(e -> e.data().get("requestId")).distinct().count());
-            JsonObject response = (JsonObject) events.get(2).data().get("response");
+            assertEquals(2, events.get(2).data().get("attempt"));
+            assertEquals("dispatched", events.get(2).data().get("status"));
+            assertEquals(1, events.stream().map(e -> e.data().get("requestId")).filter(java.util.Objects::nonNull).distinct().count());
+            JsonObject response = (JsonObject) events.get(3).data().get("response");
             assertEquals("{\"count\":", response.getAsJsonArray("tool_calls").get(0).getAsJsonObject().get("arguments").getAsString());
             assertFalse(events.toString().contains("test-secret"));
             assertFalse(events.toString().contains("do not record"));
@@ -116,7 +116,7 @@ class LlmObservationTest {
                     new LlmObservation("numen", "id", "execution", (type, data) -> events.add(new Event(type, data))));
             assertThrows(java.util.concurrent.ExecutionException.class, () -> future.get(10, TimeUnit.SECONDS));
             // 失败也发 llm_usage（usageState=UNKNOWN）：失败路径同样要能被计量聚合看见。
-            assertEquals(List.of("llm_request", "llm_failure", "llm_usage"),
+            assertEquals(List.of("llm_request", "llm_unavailable", "llm_failure", "llm_usage"),
                     events.stream().map(Event::type).toList());
             assertEquals(events.get(0).data().get("requestId"), events.get(1).data().get("requestId"));
             assertFalse(events.toString().contains("private server body"));
