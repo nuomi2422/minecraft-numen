@@ -152,16 +152,23 @@ final class ScanMatureCropsTool implements NumenTool {
             var resp = svc.read(req);
             // 2026-11-07：不看 freshness/coverage 会把“扫不全”当“没有成熟作物”。
             // 非完整（PARTIAL/过期/截断）先 refresh 一次；仍不完整就返回 null（读不到 ≠ 没有）。
+            // 2026-11-07 修正：说“有”用 presenceUsable（OK+CURRENT 即可，采样 PARTIAL 也算数），
+            // 只有“没看到任何成熟作物”时才要求 complete()（FULL+未截断）才能断言“没有”。
             if (resp != null
                     && resp.status() != com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR
-                    && !RddCropsObservationGate.complete(resp.status(), resp.coverage(),
-                            resp.metadata().freshness(), resp.items().size(), 64)) {
+                    && !RddCropsObservationGate.presenceUsable(resp.status(), resp.metadata().freshness())) {
                 resp = svc.refresh(req);
             }
             if (resp == null
                     || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR
                     || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING
-                    || !RddCropsObservationGate.complete(resp.status(), resp.coverage(),
+                    || !RddCropsObservationGate.presenceUsable(resp.status(), resp.metadata().freshness())) {
+                return null;
+            }
+            // 有命中：部分覆盖也照用（找到成熟作物本身就是“有”的证据）；
+            // 没命中：必须完整覆盖且未截断，才允许调用方说“没有”。
+            if (resp.items().isEmpty()
+                    && !RddCropsObservationGate.complete(resp.status(), resp.coverage(),
                             resp.metadata().freshness(), resp.items().size(), 64)) {
                 return null;
             }

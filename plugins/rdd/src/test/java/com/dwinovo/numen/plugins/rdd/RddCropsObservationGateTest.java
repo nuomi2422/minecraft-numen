@@ -15,6 +15,16 @@ class RddCropsObservationGateTest {
         assertTrue(RddCropsObservationGate.complete(WorldObservationService.Status.OK,
                 WorldObservationService.Coverage.FULL, ObservationMetadata.Freshness.CURRENT, 3, 64));
     }
+    /** 2026-11-07 修正：说“有”不需要扫全——采样查询天生 PARTIAL，不能因此丢掉已看到的成熟作物。 */
+    @Test void presenceUsableAcceptsPartialButNotStaleOrError() {
+        assertTrue(RddCropsObservationGate.presenceUsable(WorldObservationService.Status.OK,
+                ObservationMetadata.Freshness.CURRENT), "OK+CURRENT 即可说“有”");
+        assertFalse(RddCropsObservationGate.presenceUsable(WorldObservationService.Status.OK,
+                ObservationMetadata.Freshness.STALE), "过期样本不能当现在");
+        assertFalse(RddCropsObservationGate.presenceUsable(WorldObservationService.Status.ERROR,
+                ObservationMetadata.Freshness.CURRENT), "ERROR 不可用");
+    }
+
     @Test void partialOrStaleOrTruncatedNotComplete() {
         assertFalse(RddCropsObservationGate.complete(WorldObservationService.Status.PARTIAL,
                 WorldObservationService.Coverage.PARTIAL, ObservationMetadata.Freshness.CURRENT, 3, 64));
