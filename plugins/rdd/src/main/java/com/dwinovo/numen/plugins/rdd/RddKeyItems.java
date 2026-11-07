@@ -32,7 +32,10 @@ final class RddKeyItems {
             "minecraft:potato", "minecraft:beetroot", "minecraft:sweet_berries", "minecraft:melon_slice");
 
     /** @return 行文本；null=该行不显示（库存未知/无关键物品）。 */
-    static String line(Object rawSlots) {
+    static String line(Object rawSlots) { return line(rawSlots, Integer.MAX_VALUE); }
+
+    /** 预算内版本：只截关键物品行本身，超长带省略标记；null=整行不显示。 */
+    static String line(Object rawSlots, int maxChars) {
         if (!(rawSlots instanceof List<?> slots) || slots.size() != 36) return null;
         Map<String, Integer> counts = new LinkedHashMap<>();
         for (Object o : slots) {
@@ -52,9 +55,14 @@ final class RddKeyItems {
             int n = counts.get(id);
             shown.add(id.replace("minecraft:", "") + (n > 1 ? "×" + n : ""));
         }
-        String s = String.join("、", shown);
-        if (ids.size() > MAX) s += "…（省略" + (ids.size() - MAX) + "种）";
-        return "关键物品 " + s;
+        while (true) {
+            String s = String.join("、", shown);
+            int omitted = ids.size() - shown.size();
+            String tail = omitted > 0 ? "…（省略" + omitted + "种）" : "";
+            String line = "关键物品 " + s + tail;
+            if (line.length() <= maxChars || shown.isEmpty()) return line;
+            shown.remove(shown.size() - 1);
+        }
     }
 
     private static boolean wanted(String id) {

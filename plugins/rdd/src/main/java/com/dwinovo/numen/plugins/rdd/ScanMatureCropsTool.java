@@ -79,8 +79,17 @@ final class ScanMatureCropsTool implements NumenTool {
         // 039 U5#8：先试统一观测（一次 blocks 查询点名 7 种"满熟"规格 + 样本），
         // 拿到坐标后本地算距离/排序；观测不可用再回退本地扫描（工具级兜底，不是第二真源）。
         List<Hit> obsHits = viaObservation(self, center, radius);
-        boolean fromObservation = obsHits != null;
-        List<Hit> hits = fromObservation ? obsHits : localScan(level, center, radius);
+        if (obsHits == null) {
+            // 观测不完整/过期：明确告诉模型“读不到”，不能变成空列表冒充“没有”。
+            JsonObject o = new JsonObject();
+            o.add("crops", new JsonArray());
+            o.addProperty("count", 0);
+            o.addProperty("incomplete", true);
+            o.addProperty("note", RddCropsObservationGate.incompleteNote());
+            reply.accept(GSON.toJson(o));
+            return;
+        }
+        List<Hit> hits = obsHits;
         hits.sort(Comparator.comparingDouble(Hit::distance));
         int limit = Math.min(hits.size(), MAX_RESULTS);
         JsonArray arr = new JsonArray();
@@ -103,7 +112,7 @@ final class ScanMatureCropsTool implements NumenTool {
         root.addProperty("radius_searched", radius);
         root.addProperty("truncated", hits.size() > MAX_RESULTS);
         // 观测路径给的是"每规格最近 N 个"的样本合并，count 是**观测到的**数量而不是全量计数
-        root.addProperty("sampled", fromObservation);
+        root.addProperty("sampled", true);
         JsonObject c = new JsonObject();
         c.addProperty("x", center.getX());
         c.addProperty("y", center.getY());

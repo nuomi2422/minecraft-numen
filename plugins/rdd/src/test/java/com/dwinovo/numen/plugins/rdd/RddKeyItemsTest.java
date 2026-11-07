@@ -44,6 +44,18 @@ class RddKeyItemsTest {
         assertNotNull(line);
         assertTrue(line.contains("…（省略4种）"), line);
     }
+    @Test void budgetTruncatesOnlyKeyLineWithEllipsis() {
+        String[] ids = {"minecraft:iron_pickaxe","minecraft:iron_axe","minecraft:iron_shovel","minecraft:iron_hoe",
+                "minecraft:iron_sword","minecraft:diamond_pickaxe","minecraft:diamond_axe","minecraft:diamond_shovel",
+                "minecraft:diamond_hoe","minecraft:diamond_sword","minecraft:bow","minecraft:crossbow"};
+        Object[] many = new Object[ids.length];
+        for (int i = 0; i < ids.length; i++) many[i] = item(ids[i], 1);
+        String line = RddKeyItems.line(slots(many), 60);
+        assertNotNull(line);
+        assertTrue(line.length() <= 60, "必须在预算内: " + line.length());
+        assertTrue(line.contains("省略"), "截断要有省略标记: " + line);
+        assertTrue(line.startsWith("关键物品 "), "关键物品行本身才截，前缀保留: " + line);
+    }
     @Test void sortedByItemId() {
         String line = RddKeyItems.line(slots(item("minecraft:wheat", 1), item("minecraft:iron_chestplate", 1)));
         assertTrue(line.indexOf("iron_chestplate") < line.indexOf("wheat"), line);
