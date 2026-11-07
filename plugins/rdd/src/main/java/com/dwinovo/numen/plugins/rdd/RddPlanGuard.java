@@ -244,7 +244,7 @@ final class RddPlanGuard {
             // 但至少要让语义原样到达判定层，而不是悄悄降成 hold。
             if (s.condition().containsKey("mode")) cond.put("mode", s.condition().get("mode"));
             if (s.condition().containsKey("optional")) cond.put("optional", s.condition().get("optional"));
-            return new SubtaskSpec(s.description(), cond, s.body());
+            return new SubtaskSpec(s.description(), cond, s.body(), s.nodeType(), s.recurrence());
         }
         return s;
     }

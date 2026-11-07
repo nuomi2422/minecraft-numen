@@ -1,6 +1,8 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import com.dwinovo.numen.rdd.api.NodeType;
 import com.dwinovo.numen.rdd.api.PrimarySpec;
+import com.dwinovo.numen.rdd.api.RecurrenceSpec;
 import com.dwinovo.numen.rdd.api.SubtaskSpec;
 import org.junit.jupiter.api.Test;
 
@@ -8,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -358,5 +361,16 @@ class RddPlanGuardTest {
         assertTrue(RddPlanGuard.filterStages(null, "通关MC").allowed().isEmpty());
         assertTrue(RddPlanGuard.filterStages(List.of(), "通关MC").allowed().isEmpty());
         assertTrue(RddPlanGuard.filterStages(List.of(), "通关MC").dropped().isEmpty());
+    }
+
+    @Test
+    void filterPreservesNodeTypeAndRecurrence() {
+        SubtaskSpec daily = new SubtaskSpec("每日收麦补种",
+                Map.of("asset_key", "minecraft:wheat", "minimum", 1), null,
+                NodeType.DAILY, RecurrenceSpec.daily(true));
+        var filtered = RddPlanGuard.filterSubtasks(List.of(daily), "维护农田", Map.of("minecraft:wheat", 5));
+        assertEquals(1, filtered.allowed().size(), filtered.dropped().toString());
+        assertEquals(NodeType.DAILY, filtered.allowed().get(0).nodeType(), "守门器不得把 DAILY 归一成 MAIN");
+        assertNotNull(filtered.allowed().get(0).recurrence());
     }
 }
