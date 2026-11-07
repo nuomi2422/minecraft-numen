@@ -79,17 +79,16 @@ final class ScanMatureCropsTool implements NumenTool {
         // 039 U5#8：先试统一观测（一次 blocks 查询点名 7 种"满熟"规格 + 样本），
         // 拿到坐标后本地算距离/排序；观测不可用再回退本地扫描（工具级兜底，不是第二真源）。
         List<Hit> obsHits = viaObservation(self, center, radius);
-        if (obsHits == null) {
-            // 观测不完整/过期：明确告诉模型“读不到”，不能变成空列表冒充“没有”。
-            JsonObject o = new JsonObject();
-            o.add("crops", new JsonArray());
-            o.addProperty("count", 0);
-            o.addProperty("incomplete", true);
-            o.addProperty("note", RddCropsObservationGate.incompleteNote());
-            reply.accept(GSON.toJson(o));
-            return;
+        // 2026-11-07 修正（第二次）：观测拿不到就回本地扫描兜底。
+        // 教训：把“读不到”直接回给模型会让工具常年不可用——实机已验证观察到 0 命中的同时
+        // farm_nearby 在同一片田收到 3 株成熟作物，说明观测路径本身没数据，不是田里没有。
+        boolean fromObservation = obsHits != null;
+        List<Hit> hits;
+        if (fromObservation) {
+            hits = obsHits;
+        } else {
+            hits = localScan(level, center, radius);
         }
-        List<Hit> hits = obsHits;
         hits.sort(Comparator.comparingDouble(Hit::distance));
         int limit = Math.min(hits.size(), MAX_RESULTS);
         JsonArray arr = new JsonArray();
@@ -112,7 +111,11 @@ final class ScanMatureCropsTool implements NumenTool {
         root.addProperty("radius_searched", radius);
         root.addProperty("truncated", hits.size() > MAX_RESULTS);
         // 观测路径给的是"每规格最近 N 个"的样本合并，count 是**观测到的**数量而不是全量计数
-        root.addProperty("sampled", true);
+        root.addProperty("sampled", fromObservation);
+        if (!fromObservation) {
+            // 本地扫描只覆盖已加载区块：没找到≠整个区域没有，如实说明。
+            root.addProperty("note", "本地扫描（观测不可用时的兜底）：只覆盖已加载区块，未加载处未检查");
+        }
         JsonObject c = new JsonObject();
         c.addProperty("x", center.getX());
         c.addProperty("y", center.getY());
