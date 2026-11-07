@@ -50,4 +50,22 @@ test { useJUnitPlatform() }
 tasks.named('jar', Jar) {
     dependsOn(':rdd-core:jar')
     from({ project(':rdd-core').sourceSets.main.output })
+    // 2026-11-08: fail fast if embedded rdd-core classes are stale (incremental reuse).
+    doLast {
+        def coreClass = project(':rdd-core').layout.buildDirectory
+                .file('classes/java/main/com/dwinovo/numen/rdd/side/SideTaskEngine.class').get().asFile
+        def zip = new java.util.zip.ZipFile(archiveFile.get().asFile)
+        try {
+            def entry = zip.getEntry('com/dwinovo/numen/rdd/side/SideTaskEngine.class')
+            if (entry == null) throw new GradleException('embedded SideTaskEngine.class missing')
+            def md = java.security.MessageDigest.getInstance('SHA-256')
+            def jarHash = md.digest(zip.getInputStream(entry).bytes)
+            def buildHash = md.digest(coreClass.bytes)
+            if (!java.util.Arrays.equals(jarHash, buildHash)) {
+                throw new GradleException('stale embedded rdd-core: SideTaskEngine.class differs from build output; run :plugins:rdd:jar --rerun-tasks')
+            }
+        } finally {
+            zip.close()
+        }
+    }
 }
