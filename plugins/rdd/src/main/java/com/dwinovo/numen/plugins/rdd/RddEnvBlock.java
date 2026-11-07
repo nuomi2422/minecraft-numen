@@ -96,6 +96,10 @@ final class RddEnvBlock {
         out.append("维度 ").append(shortText(dimension, 64)).append("（采样）\n");
         out.append("手上 ").append(main).append(" · 副手 ").append(off).append('\n');
         out.append("背包 ").append(inventory).append('\n');
+        if (!inventoryUnknown) {
+            String key = RddKeyItems.line(values.get("main"));
+            if (key != null && out.length() + key.length() + 1 < 390) out.append(key).append('\n');
+        }
         out.append("身体 血量").append(number(masked(item,"hp") ? null : values.get("hp")))
                 .append(" · 饥饿").append(number(masked(item,"food") ? null : values.get("food"))).append('\n');
         // A low HP value alone is NOT evidence of ongoing damage. No unsafe geometry fallback.

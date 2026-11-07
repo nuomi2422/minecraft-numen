@@ -141,12 +141,19 @@ final class ScanMatureCropsTool implements NumenTool {
                     java.util.Map.of("box", box, "blocks", MATURE_SPECS, "samples", String.valueOf(MAX_RESULTS)),
                     0L, 64, 0L);
             var resp = svc.read(req);
-            if (resp == null || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING) {
-                if (resp != null) resp = svc.refresh(req);   // 只在"没有观测"时刷一次
+            // 2026-11-07：不看 freshness/coverage 会把“扫不全”当“没有成熟作物”。
+            // 非完整（PARTIAL/过期/截断）先 refresh 一次；仍不完整就返回 null（读不到 ≠ 没有）。
+            if (resp != null
+                    && resp.status() != com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR
+                    && !RddCropsObservationGate.complete(resp.status(), resp.coverage(),
+                            resp.metadata().freshness(), resp.items().size(), 64)) {
+                resp = svc.refresh(req);
             }
             if (resp == null
                     || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.ERROR
-                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING) {
+                    || resp.status() == com.dwinovo.numen.api.observation.WorldObservationService.Status.PENDING
+                    || !RddCropsObservationGate.complete(resp.status(), resp.coverage(),
+                            resp.metadata().freshness(), resp.items().size(), 64)) {
                 return null;
             }
             List<Hit> out = new ArrayList<>();
