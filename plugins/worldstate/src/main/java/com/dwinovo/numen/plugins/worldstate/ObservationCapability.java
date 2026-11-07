@@ -94,8 +94,11 @@ public final class ObservationCapability implements WorldObservationService {
             if (mc == null) return Response.error(request.topic(), "no server");
             if (!mc.isSameThread()) return Response.error(request.topic(), "refresh requires server thread; read is cache-only");
             var result = host.refresh(mc, req);
+            long durationMs = (System.nanoTime() - start) / 1_000_000L;
             WorldStateMonitor.publish("cap_refresh", Map.of("topic", request.topic(),
-                    "ok", result != null && result.success(), "status", result == null ? "null" : result.status().name()));
+                    "ok", result != null && result.success(),
+                    "status", result == null ? "null" : result.status().name(),
+                    "durationMs", durationMs, "boxVolume", boxVolume(request.selector())));
             if (result == null || !result.success())
                 return Response.error(request.topic(), result == null ? "refresh returned null"
                         : "refresh failed: " + result.message() + " (" + result.reason() + ")");
@@ -169,5 +172,18 @@ public final class ObservationCapability implements WorldObservationService {
             out.add(Item.of(v));
         } else throw new IllegalArgumentException("unsupported payload type");
         return List.copyOf(out);
+    }
+
+    /** Best-effort box volume for timeout forensics; 0 when selector is not a box. */
+    static long boxVolume(java.util.Map<String, String> selector) {
+        if (selector == null) return 0L;
+        try {
+            long radius = selector.containsKey("radius") ? Long.parseLong(selector.get("radius")) : -1L;
+            if (radius > 0) return (2 * radius + 1) * (2 * radius + 1) * (2 * radius + 1);
+            long dx = selector.containsKey("dx") ? Long.parseLong(selector.get("dx")) : 0L;
+            long dy = selector.containsKey("dy") ? Long.parseLong(selector.get("dy")) : 0L;
+            long dz = selector.containsKey("dz") ? Long.parseLong(selector.get("dz")) : 0L;
+            return Math.max(0L, dx * dy * dz);
+        } catch (RuntimeException ignored) { return 0L; }
     }
 }

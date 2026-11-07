@@ -51,12 +51,18 @@ import java.util.function.Consumer;
  */
 public final class HttpLlmTransport {
 
+    /** 2026-11-07: visible retry/throttle events (code, attempt, nextAt) for the caller. */
+    public interface RetryListener {
+        void onRetry(int code, int attempt, long delayMs, long nextAtMillis);
+        default void onGiveUp(int code, int attempts) {}
+    }
+
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(120);
 
     // Retry policy: the exact constants openai-python / openai-node / anthropic-sdk
     // ship (Stainless family): 2 retries, min(0.5s × 2ⁿ, 8s) backoff, ≤25% jitter.
-    private static final int MAX_RETRIES = 2;
+    private static final int MAX_RETRIES = 8;
     private static final long INITIAL_RETRY_DELAY_MS = 500;
     private static final long MAX_RETRY_DELAY_MS = 8_000;
     /** Inter-chunk idle threshold. The JDK request timeout only covers up to response
@@ -155,7 +161,7 @@ public final class HttpLlmTransport {
     public CompletableFuture<Void> postSse(String url, String apiKey, JsonObject body,
                                             Consumer<JsonObject> chunkHandler,
                                             java.util.function.BiConsumer<Integer, String> onDispatch) {
-        return postSseAttempt(url, apiKey, body, chunkHandler, 0, onDispatch, java.util.Map.of());
+        return postSse(url, apiKey, body, chunkHandler, onDispatch, java.util.Map.of(), null);
     }
 
     /**
@@ -172,8 +178,16 @@ public final class HttpLlmTransport {
                                             Consumer<JsonObject> chunkHandler,
                                             java.util.function.BiConsumer<Integer, String> onDispatch,
                                             java.util.Map<String, String> perRequest) {
+        return postSse(url, apiKey, body, chunkHandler, onDispatch, perRequest, null);
+    }
+
+    public CompletableFuture<Void> postSse(String url, String apiKey, JsonObject body,
+                                            Consumer<JsonObject> chunkHandler,
+                                            java.util.function.BiConsumer<Integer, String> onDispatch,
+                                            java.util.Map<String, String> perRequest,
+                                            RetryListener retryListener) {
         return postSseAttempt(url, apiKey, body, chunkHandler, 0, onDispatch,
-                perRequest == null ? java.util.Map.of() : perRequest);
+                perRequest == null ? java.util.Map.of() : perRequest, retryListener);
     }
 
     /**
@@ -191,7 +205,8 @@ public final class HttpLlmTransport {
     private CompletableFuture<Void> postSseAttempt(String url, String apiKey, JsonObject body,
                                                    Consumer<JsonObject> chunkHandler, int attempt,
                                                    java.util.function.BiConsumer<Integer, String> onDispatch,
-                                                   java.util.Map<String, String> perRequest) {
+                                                   java.util.Map<String, String> perRequest,
+                                                   RetryListener retryListener) {
         String requestId = nextRequestId() + (attempt > 0 ? "r" + attempt : "");
         String bodyStr = body.toString();
         long t0 = System.nanoTime();
@@ -243,10 +258,13 @@ public final class HttpLlmTransport {
                 // delivered chunk is the turn layer's decision.
                 if (attempt < MAX_RETRIES && chunkCount.get() == 0) {
                     return retryAfterDelay(url, apiKey, body, chunkHandler, attempt,
-                            computeBackoffMs(attempt), requestId, String.valueOf(cause), onDispatch, perRequest);
+                            computeBackoffMs(attempt), requestId, String.valueOf(cause), onDispatch, perRequest, retryListener, -1);
                 }
                 AiLog.LOG.warn("[numen-http][{}] ✗ {} in {}ms ({} chunks)",
                         requestId, cause, elapsedMs, chunkCount.get());
+                if (retryListener != null) {
+                    try { retryListener.onGiveUp(-1, attempt + 1); } catch (RuntimeException ignored) {}
+                }
                 return CompletableFuture.<Void>failedFuture(cause);
             }
             int status = resp.statusCode();
@@ -266,7 +284,10 @@ public final class HttpLlmTransport {
                         .filter(v -> v > 0 && v <= 60_000)
                         .orElse(computeBackoffMs(attempt));
                 return retryAfterDelay(url, apiKey, body, chunkHandler, attempt,
-                        delay, requestId, "HTTP " + status, onDispatch, perRequest);
+                        delay, requestId, "HTTP " + status, onDispatch, perRequest, retryListener, status);
+            }
+            if (retryListener != null) {
+                try { retryListener.onGiveUp(status, attempt + 1); } catch (RuntimeException ignored) {}
             }
             return CompletableFuture.<Void>failedFuture(new LlmHttpException(status, body2));
         }).thenCompose(f -> f);
@@ -276,11 +297,16 @@ public final class HttpLlmTransport {
 Consumer<JsonObject> chunkHandler, int attempt,
                                                      long delayMs, String requestId, String reason,
                                                      java.util.function.BiConsumer<Integer, String> onDispatch,
-                                                     java.util.Map<String, String> perRequest) {
+                                                     java.util.Map<String, String> perRequest,
+                                                     RetryListener retryListener, int code) {
         AiLog.LOG.warn("[numen-http][{}] retrying in {}ms (attempt {}/{}) — {}",
                 requestId, delayMs, attempt + 1, MAX_RETRIES, reason);
+        if (retryListener != null) {
+            try { retryListener.onRetry(code, attempt + 1, delayMs, System.currentTimeMillis() + delayMs); }
+            catch (RuntimeException ignored) {}
+        }
         return CompletableFuture.supplyAsync(
-                        () -> postSseAttempt(url, apiKey, body, chunkHandler, attempt + 1, onDispatch, perRequest),
+                        () -> postSseAttempt(url, apiKey, body, chunkHandler, attempt + 1, onDispatch, perRequest, retryListener),
                         CompletableFuture.delayedExecutor(delayMs, java.util.concurrent.TimeUnit.MILLISECONDS))
                 .thenCompose(f -> f);
     }
@@ -337,8 +363,7 @@ Consumer<JsonObject> chunkHandler, int attempt,
 
     /** {@code min(0.5s × 2ⁿ, 8s)} shaved by up to 25% jitter — the exact Stainless-SDK curve. */
     private static long computeBackoffMs(int attempt) {
-        double sleepMs = Math.min(INITIAL_RETRY_DELAY_MS * Math.pow(2.0, attempt), MAX_RETRY_DELAY_MS);
-        return (long) (sleepMs * (1.0 - 0.25 * java.util.concurrent.ThreadLocalRandom.current().nextDouble()));
+        return LlmRetryPolicy.jitteredDelayMs(attempt, java.util.concurrent.ThreadLocalRandom.current().nextDouble());
     }
 
     // ---- internals ----

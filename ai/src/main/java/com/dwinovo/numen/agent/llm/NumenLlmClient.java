@@ -337,7 +337,23 @@ public final class NumenLlmClient {
                 if (observation != null) observation.publish("llm_request", model, java.util.Map.of(
                         "status", "dispatched", "attempt", attempt, "transportRequestId", transportId,
                         "provider", provider.name(), "request", body), apiKey);
-            }, perRequestSessionHeaders(observation));
+            }, perRequestSessionHeaders(observation), new com.dwinovo.numen.agent.http.HttpLlmTransport.RetryListener() {
+                @Override public void onRetry(int code, int attempt, long delayMs, long nextAtMillis) {
+                    if (observation == null) return;
+                    try {
+                        observation.publish("llm_throttled", model, java.util.Map.of(
+                                "code", code, "attempt", attempt, "delayMs", delayMs,
+                                "nextAt", nextAtMillis, "provider", provider.name()), apiKey);
+                    } catch (RuntimeException ignored) {}
+                }
+                @Override public void onGiveUp(int code, int attempts) {
+                    if (observation == null) return;
+                    try {
+                        observation.publish("llm_unavailable", model, java.util.Map.of(
+                                "code", code, "attempts", attempts, "provider", provider.name()), apiKey);
+                    } catch (RuntimeException ignored) {}
+                }
+            });
         } catch (RuntimeException error) {
             pending = CompletableFuture.failedFuture(error);
         }
