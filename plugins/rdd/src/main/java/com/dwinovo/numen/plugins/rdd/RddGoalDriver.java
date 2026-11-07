@@ -168,7 +168,7 @@ final class RddGoalDriver {
                     // 否则两套 id 命名（`-sN` / `-r{rev}-N`）可能撞，且回执/指标无法区分来源。
                     int rev = chain.nextPlanRevision();
                     // id 以当前一级 id + 代次为前缀 → 跨级/跨重试/跨重启全局唯一
-                    subs = com.dwinovo.numen.rdd.core.RddChainFactory.subtasksFromSpecs(pid, rev, specs);
+                    subs = buildInjection(pid, rev, specs);
                     rt.expandCurrentPrimary(subs); // core 校验：非空/重复/已展开/状态合法
                     ok = true;
                 } catch (RuntimeException ex) {
@@ -223,5 +223,10 @@ final class RddGoalDriver {
     /** Server stopped: no in-flight expansion or cooldown belongs to the next world. */
     static void clearAll() {
         STATES.clear();
+    }
+
+    /** Package-private runtime injection seam: fixed specs in, Subtask list out (must keep DAILY). */
+    static List<Subtask> buildInjection(String primaryId, int revision, List<SubtaskSpec> specs) {
+        return com.dwinovo.numen.rdd.core.RddChainFactory.subtasksFromSpecs(primaryId, revision, specs);
     }
 }
