@@ -118,14 +118,21 @@ final class SideTaskHost {
                     var rec = sub.recurrence();
                     var data = new java.util.LinkedHashMap<String, String>();
                     data.put("description", sub.description());
-                    Object key = sub.condition().get("asset_key");
+                    Object key0 = sub.condition().get("asset_key");
+                    LOG.info("[rdd] daily candidate {} type={} condition={} asset_key0={}", sub.id(),
+                            sub.condition().get("type"), sub.condition(), key0);
+                    Object key = key0;
                     if (!(key instanceof String) || ((String) key).isBlank()) key = sub.condition().get("block");
                     if (!(key instanceof String) || ((String) key).isBlank()) key = sub.condition().get("item");
-                    if (!(key instanceof String) || ((String) key).isBlank()) continue; // no countable asset -> not an executable daily
+                    if (!(key instanceof String) || ((String) key).isBlank()) {
+                        LOG.info("[rdd] daily candidate {} skipped: no countable asset_key/block/item", sub.id());
+                        continue; // no countable asset -> not an executable daily
+                    }
                     data.put("asset_key", (String) key);
                     Object min = sub.condition().get("minimum");
                     data.put("minimum", String.valueOf(min instanceof Number n ? Math.max(1, n.intValue()) : 1));
                     data.put("requires_farm_built", String.valueOf(rec.requiresFarmBuilt()));
+                    LOG.info("[rdd] daily spec {} asset={} min={}", sub.id(), key, data.get("minimum"));
                     // stable across replans: description hash, not sub.id/planRevision
                     String specId = "daily:" + chain.goal().id() + ":" + Integer.toHexString(sub.description().hashCode());
                     ENGINE.registerRecurring(new com.dwinovo.numen.rdd.side.RecurringSideTaskSpec(
@@ -321,7 +328,7 @@ final class SideTaskHost {
          */
         @Override public boolean isSpawnBound(UUID companionId) { return ap.getRespawnPosition() != null; }
         @Override public boolean bodyBusy(UUID companionId) {
-            return com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companionId) != null;
+            return com.dwinovo.numen.task.CompanionTickDispatcher.isExecutingAction(companionId);
         }
         @Override public String mainlineObjective(UUID companionId) { return mainlineObjectiveText(companionId); }
 

@@ -130,4 +130,22 @@ class SideTaskRecurringTest {
         assertFalse(e.isActive(C));
         assertTrue(ev.saw("side_task_skipped"));
     }
+
+    @Test void activeDailyYieldsWhenMainlineNeedsBody() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new DailyMaintenanceSideTaskType());
+        e.registerRecurring(new RecurringSideTaskSpec("dy", DailyMaintenanceSideTaskType.TYPE_ID, 1, 0,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true, false,
+                Map.of("description", "x", "asset_key", "minecraft:wheat", "minimum", "9")),
+                DailyMaintenanceSideTaskType.TYPE_ID);
+        FakeWorldPort w = new FakeWorldPort().at(100, 0);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C));
+        w.bodyBusy(true);
+        e.tick(C, w, null, false);
+        assertFalse(e.isActive(C), "主线要身体时 daily 必须让位");
+        assertTrue(ev.saw("side_task_cancelled"));
+        assertTrue(ev.saw("side_task_resumed_mainline"));
+    }
 }

@@ -144,6 +144,10 @@ public final class SideTaskEngine {
                 cancel(companionId, "world has no day-night cycle (" + world.worldId() + "); side task can never finish");
                 return;
             }
+            if (world.bodyBusy(companionId) && "daily_maintenance".equals(running.typeId())) {
+                finish(running, SideTaskState.CANCELLED, "mainline needs body; daily yields");
+                return;
+            }
             advance(active.get(), world);
             return;
             }

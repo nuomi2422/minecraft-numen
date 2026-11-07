@@ -155,6 +155,22 @@ public final class CompanionTickDispatcher {
      * {@code NumenDeathPayload} already resolves the in-flight tool call with the death cause (so a
      * second result here would be a duplicate the client ignores).
      */
+    /** 2026-11-08: true only when the body is actually executing an action; waiting timers/conditions are idle. */
+    public static boolean isExecutingAction(UUID companionUuid) {
+        TaskRecord r = currentTaskFor(companionUuid);
+        if (r == null) return false;
+        TaskState st = r.getState();
+        if (st != TaskState.PENDING && st != TaskState.RUNNING) return false;
+        return isActionTool(r.getToolName());
+    }
+
+    /** Pure classification seam for tests: waiting tools do not occupy the body. */
+    static boolean isActionTool(String toolName) {
+        if (toolName == null || toolName.isBlank()) return false;
+        String n = toolName.toLowerCase(java.util.Locale.ROOT);
+        return !(n.contains("wait") || n.contains("timer") || n.contains("sleep") || n.contains("idle"));
+    }
+
     public static void clearActiveTask(NumenPlayer player) {
         CompanionBrain brain = BRAINS.get(player.getUUID());   // never create: a late death
         if (brain != null) brain.dropActiveNoResult(player);   // event must not leak a brain
