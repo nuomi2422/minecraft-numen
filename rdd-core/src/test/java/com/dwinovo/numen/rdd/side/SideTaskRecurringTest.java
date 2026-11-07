@@ -148,4 +148,35 @@ class SideTaskRecurringTest {
         assertTrue(ev.saw("side_task_cancelled"));
         assertTrue(ev.saw("side_task_resumed_mainline"));
     }
+
+    @Test void specDataReachesSideTask() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new DailyMaintenanceSideTaskType());
+        var data = Map.of("description", "x", "asset_key", "minecraft:wheat", "minimum", "1");
+        e.registerRecurring(new RecurringSideTaskSpec("d3", DailyMaintenanceSideTaskType.TYPE_ID, 1, 0,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true, false, data),
+                DailyMaintenanceSideTaskType.TYPE_ID);
+        e.tick(C, new FakeWorldPort().at(100, 0), null, false);
+        assertTrue(e.isActive(C));
+        assertEquals("minecraft:wheat", e.current(C).orElseThrow().data().get("asset_key"),
+                "spec.data -> CreationContext.data -> SideTask.data 不得丢");
+        assertEquals("1", e.current(C).orElseThrow().data().get("minimum"));
+    }
+
+    @Test void specDataSurvivesRuntimeSnapshot() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new DailyMaintenanceSideTaskType());
+        e.registerRecurring(new RecurringSideTaskSpec("d4", DailyMaintenanceSideTaskType.TYPE_ID, 1, 0,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true, false,
+                Map.of("description", "x", "asset_key", "minecraft:wheat", "minimum", "1")),
+                DailyMaintenanceSideTaskType.TYPE_ID);
+        e.tick(C, new FakeWorldPort().at(100, 0), null, false);
+        String json = e.toJson();
+        SideTaskEngine restored = new SideTaskEngine(ev, token -> token);
+        restored.registerType(new DailyMaintenanceSideTaskType());
+        restored.restore(json);
+        assertEquals("minecraft:wheat", restored.current(C).orElseThrow().data().get("asset_key"));
+    }
 }
