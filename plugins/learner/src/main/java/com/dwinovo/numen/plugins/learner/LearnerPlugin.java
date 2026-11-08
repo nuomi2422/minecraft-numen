@@ -444,6 +444,7 @@ public final class LearnerPlugin implements NumenPlugin {
     static void recordReview(String at, int verdictCount) {
         lastReviewAt = at;
         lastVerdictCount = verdictCount;
+        LOG.info("[learner] review state record at={} verdicts={} dir={}", at, verdictCount, configDir);
         saveReviewState(configDir, at, verdictCount);
     }
 
@@ -453,10 +454,15 @@ public final class LearnerPlugin implements NumenPlugin {
         try {
             java.nio.file.Files.createDirectories(dir);
             String json = "{\"last_review_at\":\"" + (at == null ? "" : at) + "\",\"last_verdict_count\":" + verdictCount + "}";
-            java.nio.file.Files.writeString(dir.resolve("learner-review-state.json"), json,
-                    java.nio.charset.StandardCharsets.UTF_8);
-        } catch (RuntimeException | java.io.IOException ignored) {
-            // 只是状态展示，写不进去不能影响复盘主流程
+            java.nio.file.Path target = dir.resolve("learner-review-state.json");
+            java.nio.file.Path tmp = dir.resolve("learner-review-state.json.tmp");
+            java.nio.file.Files.writeString(tmp, json, java.nio.charset.StandardCharsets.UTF_8);
+            java.nio.file.Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            LOG.info("[learner] review state written {}", target);
+        } catch (RuntimeException | java.io.IOException e) {
+            // 2026-11-08 bug-12: do not swallow silently; state was unreadable while reviews completed.
+            LOG.warn("[learner] review state write failed dir={}: {}", dir, e.toString());
         }
     }
 

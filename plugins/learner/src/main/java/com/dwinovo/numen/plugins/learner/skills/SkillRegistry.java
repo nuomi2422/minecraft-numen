@@ -242,6 +242,44 @@ public final class SkillRegistry {
     }
 
     /** 近重复提示（不拦截）：先按共享触发词收敛，再算 trigram Jaccard。 */
+    /** 2026-11-08 bug-11: structured family key beats text similarity for retry-budget skills. */
+    public static String family(ArtifactDraft c) {
+        if (c == null) return null;
+        return familyOf(c.name(), c.purpose(), c.triggerConditions());
+    }
+
+    public static String family(SkillEntry e) {
+        if (e == null) return null;
+        return familyOf(e.name(), e.purpose(), e.triggerConditions());
+    }
+
+    private static String familyOf(String name, String purpose, java.util.List<String> triggers) {
+        String t = ((name == null ? "" : name) + " " + (purpose == null ? "" : purpose) + " "
+                + (triggers == null ? "" : String.join(" ", triggers))).toLowerCase(java.util.Locale.ROOT);
+        boolean retry = t.contains("retry budget") || t.contains("重试预算") || t.contains("retry-budget")
+                || t.contains("same subtask restarted") || t.contains("loop_detected")
+                || (t.contains("attempts=") && (t.contains("subtask") || t.contains("重开")));
+        return retry ? "retry-budget/subtask-restart" : null;
+    }
+
+    /** true when candidate duplicates existingId by structured family or text near-duplicate. */
+    public boolean isDuplicate(ArtifactDraft candidate, String existingId) {
+        if (candidate == null || existingId == null) return false;
+        SkillEntry existing = byId.get(existingId);
+        if (existing == null) return false;
+        String f = family(candidate);
+        if (f != null && f.equals(family(existing))) return true;
+        return nearDuplicates(candidate, 0.25).stream().anyMatch(n -> existingId.equals(n.existingId()));
+    }
+
+    /** First existing id in the same structured family, or null. */
+    public String duplicateOf(ArtifactDraft candidate) {
+        String f = family(candidate);
+        if (f == null) return null;
+        for (SkillEntry e : byId.values()) if (f.equals(family(e))) return e.skillId();
+        return null;
+    }
+
     public java.util.List<NearDuplicate> nearDuplicates(ArtifactDraft candidate, double threshold) {
         java.util.List<NearDuplicate> out = new java.util.ArrayList<>();
         if (candidate == null) return out;

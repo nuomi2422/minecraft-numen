@@ -66,10 +66,17 @@ final class SideTaskHost {
         if (ap == null) return;
         UUID id = ap.getUUID();
         if ("food_supply".equals(currentTypeId(id))) return;
+        long nowMs = System.currentTimeMillis();
+        if (com.dwinovo.numen.rdd.side.FoodSupplyPolicy.cooldownActive(
+                nowMs, LAST_FOOD_DONE_MS.getOrDefault(id, 0L))) return;
+        LAST_FOOD_DONE_MS.put(id, nowMs); // claim the slot before the async report can race
         com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(ap,
                 "SURVIVAL report: " + (reason == null ? "" : reason));
         RddMonitor.publish("survival_food_requested", java.util.Map.of(
                 "companionId", id.toString(), "reason", reason == null ? "" : reason));
+        if (ENGINE.isActive(id)) {
+            ENGINE.cancel(id, "SURVIVAL food supply takes precedence");
+        }
         HostWorldPort port = new HostWorldPort(ap);
         boolean started = ENGINE.startNow(new com.dwinovo.numen.rdd.side.FoodSupplySideTaskType(), id, port,
                 currentMainlineToken(id), java.util.Map.of("reason", reason == null ? "" : reason));
