@@ -81,6 +81,8 @@ public final class VideoRecorder {
     /** 2026-11-09: per-capture metadata so "render stalled vs duplicate capture" is testable. */
     private static java.io.BufferedWriter frameLog;
     private static File frameLogFile;
+    /** capture -> written PNG mapping with IO timings (separate from queue-time frames.csv). */
+    private static java.io.BufferedWriter writeLog;
 
     /**
      * 落盘文件名用的<b>连续</b>序号，和 {@link #frameIndex}（抓帧计数）分开。
@@ -183,6 +185,9 @@ public final class VideoRecorder {
             frameLog = Files.newBufferedWriter(frameLogFile.toPath(), StandardCharsets.UTF_8);
             frameLog.write("capture,epochNanos,gameTime,cameraX,cameraY,cameraZ\n");
             frameLog.flush();
+            writeLog = Files.newBufferedWriter(new File(d, "writes.csv").toPath(), StandardCharsets.UTF_8);
+            writeLog.write("capture,png,ioStartNanos,ioDoneNanos\n");
+            writeLog.flush();
         } catch (IOException e) {
             frameLog = null;
         }
@@ -269,8 +274,20 @@ public final class VideoRecorder {
                             dropped++;   // 画面一动没动，别浪费一张 PNG（默认关，见 dedupe 字段注）
                         } else {
                             // 文件名用落盘计数 outIndex，保证 f_00000,f_00001,... 连续无缺口。
-                            File target = new File(dir, String.format(Locale.ROOT, "f_%05d.png", outIndex++));
+                            final int pngIndex;
+                            synchronized (VideoRecorder.class) { pngIndex = outIndex++; }
+                            File target = new File(dir, String.format(Locale.ROOT, "f_%05d.png", pngIndex));
+                            long ioStart = System.nanoTime();
                             img.writeToFile(target);
+                            long ioDone = System.nanoTime();
+                            synchronized (VideoRecorder.class) {
+                                if (writeLog != null) {
+                                    try {
+                                        writeLog.write(captureNo + "," + pngIndex + "," + ioStart + "," + ioDone + "\n");
+                                        writeLog.flush();
+                                    } catch (IOException ignored) { }
+                                }
+                            }
                             written++;
                         }
                         lastSampleHash = h;
@@ -347,6 +364,7 @@ public final class VideoRecorder {
                 // 先算实际帧率再写元数据：顺序反了会把上一条 take 的旧值写进 numencam.txt。
                 achievedFps = computeAchievedFps();
                 closeFrameLog();
+                if (writeLog != null) { try { writeLog.close(); } catch (IOException ignored) { } writeLog = null; }
                 writeMeta(d);
                 File exe = locateFfmpeg();
                 if (exe == null) {
