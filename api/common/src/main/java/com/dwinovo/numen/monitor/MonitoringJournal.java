@@ -86,6 +86,19 @@ public final class MonitoringJournal implements AutoCloseable {
         }
     }
 
+    /** Producer-captured identity token; use when the event crosses an async/server boundary. */
+    public void publish(String category, String type, Map<String, ?> data,
+                        com.dwinovo.numen.api.WorldContextStamp.Token token) {
+        if (!running.get() || category == null || type == null) return;
+        String safeCategory = safeToken(category);
+        String safeType = safeToken(type);
+        Map<String, Object> copy = new LinkedHashMap<>();
+        if (data != null) copy.putAll(data);
+        Map<String, String> identity = token == null ? null : token.identity();
+        Entry entry = new Entry(safeCategory, safeType, copy, System.currentTimeMillis(), identity);
+        if (!queue.offer(entry)) dropped++;
+    }
+
     public long droppedCount() {
         return dropped;
     }

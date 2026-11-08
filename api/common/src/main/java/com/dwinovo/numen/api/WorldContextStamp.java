@@ -8,6 +8,9 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class WorldContextStamp {
     private static final AtomicReference<Map<String, String>> STAMP = new AtomicReference<>();
 
+    public record Token(Map<String, String> identity, long epoch) {}
+    private static final java.util.concurrent.atomic.AtomicLong EPOCH = new java.util.concurrent.atomic.AtomicLong();
+
     private WorldContextStamp() {}
 
     public static void set(String worldId, String serverSession) {
@@ -15,9 +18,13 @@ public final class WorldContextStamp {
             STAMP.set(null);
             return;
         }
+        EPOCH.incrementAndGet();
         STAMP.set(Map.of("world_id", worldId, "server_session", serverSession));
     }
 
     public static Map<String, String> snapshot() { return STAMP.get(); }
-    public static void clear() { STAMP.set(null); }
+
+    /** Capture at producer time; pass the token across async boundaries. */
+    public static Token capture() { return new Token(STAMP.get(), EPOCH.get()); }
+    public static void clear() { EPOCH.incrementAndGet(); STAMP.set(null); }
 }
