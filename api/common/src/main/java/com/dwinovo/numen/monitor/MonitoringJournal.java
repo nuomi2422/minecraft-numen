@@ -33,7 +33,7 @@ public final class MonitoringJournal implements AutoCloseable {
     private static final String SESSION_ID = java.util.UUID.randomUUID().toString();
 
     private record Entry(String category, String type, Map<String, Object> data, long time,
-                         Map<String, String> identity) {}
+                         Map<String, String> identity, long epoch) {}
 
     private final BlockingQueue<Entry> queue = new ArrayBlockingQueue<>(DEFAULT_CAPACITY);
     private final AtomicBoolean running = new AtomicBoolean(true);
@@ -80,7 +80,8 @@ public final class MonitoringJournal implements AutoCloseable {
         Map<String, Object> copy = new LinkedHashMap<>();
         if (data != null) copy.putAll(data);
         Entry entry = new Entry(safeCategory, safeType, copy, System.currentTimeMillis(),
-                com.dwinovo.numen.api.WorldContextStamp.snapshot());
+                com.dwinovo.numen.api.WorldContextStamp.snapshot(),
+                com.dwinovo.numen.api.WorldContextStamp.epoch());
         if (!queue.offer(entry)) {
             dropped++;
         }
@@ -95,7 +96,8 @@ public final class MonitoringJournal implements AutoCloseable {
         Map<String, Object> copy = new LinkedHashMap<>();
         if (data != null) copy.putAll(data);
         Map<String, String> identity = token == null ? null : token.identity();
-        Entry entry = new Entry(safeCategory, safeType, copy, System.currentTimeMillis(), identity);
+        Entry entry = new Entry(safeCategory, safeType, copy, System.currentTimeMillis(), identity,
+                token == null ? 0L : token.epoch());
         if (!queue.offer(entry)) dropped++;
     }
 
@@ -150,7 +152,10 @@ public final class MonitoringJournal implements AutoCloseable {
             envelope.put("event_id", entry.category() + "-" + entry.time() + "-" + queue.size());
             envelope.put("session", SESSION_ID);
             envelope.put("timestamp", Instant.ofEpochMilli(entry.time()).toString());
-            if (entry.identity() != null) envelope.putAll(entry.identity());
+            if (entry.identity() != null) {
+                envelope.putAll(entry.identity());
+                envelope.put("world_epoch", entry.epoch());
+            }
             envelope.put("source", "numen");
             envelope.put("category", entry.category());
             envelope.put("type", entry.type());

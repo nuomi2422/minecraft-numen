@@ -26,5 +26,6 @@ public final class WorldContextStamp {
 
     /** Capture at producer time; pass the token across async boundaries. */
     public static Token capture() { return new Token(STAMP.get(), EPOCH.get()); }
+    public static long epoch() { return EPOCH.get(); }
     public static void clear() { EPOCH.incrementAndGet(); STAMP.set(null); }
 }
