@@ -323,6 +323,7 @@ public final class VideoRecorder {
         } catch (RuntimeException e) {
             pendingWrites--;
             failed++;
+            captureQueued = false;
         }
     }
 
