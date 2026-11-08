@@ -35,17 +35,15 @@ class SkillRegistryFamilyTest {
         assertNull(SkillRegistry.family(mine));
     }
 
-    @Test void fourthActiveFamilyEntryIsRejected() {
+    @Test void sameFamilyAdditionIsRejectedAsDuplicate() {
         SkillRegistry r = new SkillRegistry();
-        for (int i = 1; i <= 3; i++) {
-            var d = draft("重试预算家族 " + i, "same subtask restarted attempts=" + i + " 重试预算",
-                    List.of("same subtask restarted beyond retry budget"));
-            assertEquals(SkillRegistry.Outcome.REGISTERED, r.register(d, "sk-f" + i, "body:f" + i).outcome());
-        }
-        var fourth = draft("重试预算家族 4", "same subtask restarted attempts=4 重试预算",
+        var first = draft("重试预算家族 1", "same subtask restarted attempts=1 重试预算",
                 List.of("same subtask restarted beyond retry budget"));
-        var decision = r.register(fourth, "sk-f4", "body:f4");
-        assertEquals(SkillRegistry.Outcome.LIMIT, decision.outcome(), "第 4 条同族必须被拒");
+        assertEquals(SkillRegistry.Outcome.REGISTERED, r.register(first, "sk-f1", "body:f1").outcome());
+        var second = draft("重试预算家族 2", "same subtask restarted attempts=2 重试预算",
+                List.of("same subtask restarted beyond retry budget"));
+        var decision = r.register(second, "sk-f2", "body:f2");
+        assertEquals(SkillRegistry.Outcome.LIMIT, decision.outcome(), "同族第二条必须先归并，不得直接写");
         assertFalse(decision.stored());
     }
 }

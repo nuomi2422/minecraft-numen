@@ -149,6 +149,11 @@ public final class SkillRegistry {
      */
     public Decision register(ArtifactDraft artifact, String skillId, String bodyRef, boolean trial) {
         if (artifact != null) {
+            String duplicateOf = duplicateOf(artifact);
+            if (duplicateOf != null && !duplicateOf.equals(skillId)) {
+                return new Decision(Outcome.LIMIT, byId.get(duplicateOf),
+                        "same-family duplicate of " + duplicateOf + "; merge instead of adding");
+            }
             String fam = family(artifact);
             if (fam != null) {
                 int active = 0;
