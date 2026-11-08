@@ -34,4 +34,18 @@ class SkillRegistryFamilyTest {
         assertFalse(r.isDuplicate(mine, "sk-ret"));
         assertNull(SkillRegistry.family(mine));
     }
+
+    @Test void fourthActiveFamilyEntryIsRejected() {
+        SkillRegistry r = new SkillRegistry();
+        for (int i = 1; i <= 3; i++) {
+            var d = draft("重试预算家族 " + i, "same subtask restarted attempts=" + i + " 重试预算",
+                    List.of("same subtask restarted beyond retry budget"));
+            assertEquals(SkillRegistry.Outcome.REGISTERED, r.register(d, "sk-f" + i, "body:f" + i).outcome());
+        }
+        var fourth = draft("重试预算家族 4", "same subtask restarted attempts=4 重试预算",
+                List.of("same subtask restarted beyond retry budget"));
+        var decision = r.register(fourth, "sk-f4", "body:f4");
+        assertEquals(SkillRegistry.Outcome.LIMIT, decision.outcome(), "第 4 条同族必须被拒");
+        assertFalse(decision.stored());
+    }
 }

@@ -55,7 +55,9 @@ public final class SkillRegistry {
         /** 命中同指纹不同内容：修订（旧版本进 supersedes）。 */
         REVISE,
         /** 同名不同指纹：冲突，需人工定夺。 */
-        CONFLICT
+        CONFLICT,
+        /** 同族已有 3 条活跃条目：先归并再写。 */
+        LIMIT
     }
 
     /**
@@ -146,6 +148,21 @@ public final class SkillRegistry {
      *              这样 `retrievable()` 与检索侧才可能真的区别对待（而不是日志里多一行）
      */
     public Decision register(ArtifactDraft artifact, String skillId, String bodyRef, boolean trial) {
+        if (artifact != null) {
+            String fam = family(artifact);
+            if (fam != null) {
+                int active = 0;
+                for (SkillEntry e : byId.values()) {
+                    if (fam.equals(family(e)) && (e.status() == SkillStatus.DRAFT || e.status() == SkillStatus.TRIAL)) {
+                        active++;
+                    }
+                }
+                if (active >= 3) {
+                    return new Decision(Outcome.LIMIT, null,
+                            "same-family active limit 3 reached (" + fam + "); merge before adding");
+                }
+            }
+        }
         if (artifact == null) {
             return new Decision(Outcome.CONFLICT, null, "no_artifact");
         }
@@ -257,6 +274,7 @@ public final class SkillRegistry {
         String t = ((name == null ? "" : name) + " " + (purpose == null ? "" : purpose) + " "
                 + (triggers == null ? "" : String.join(" ", triggers))).toLowerCase(java.util.Locale.ROOT);
         boolean retry = t.contains("retry budget") || t.contains("重试预算") || t.contains("retry-budget")
+                || (t.contains("重试") && t.contains("预算")) || (t.contains("replan") && t.contains("预算"))
                 || t.contains("same subtask restarted") || t.contains("loop_detected")
                 || (t.contains("attempts=") && (t.contains("subtask") || t.contains("重开")));
         return retry ? "retry-budget/subtask-restart" : null;
