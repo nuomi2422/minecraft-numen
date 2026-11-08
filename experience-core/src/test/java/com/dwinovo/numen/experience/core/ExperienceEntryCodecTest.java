@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -169,5 +170,27 @@ class ExperienceEntryCodecTest {
         ExperienceEntry e = ExperienceEntry.builder()
                 .type(ExperienceType.TOOL_DEFECT).title("t").description("d").build();
         assertEquals(e.contentFingerprint(), e.toJson().get("content_fingerprint").getAsString());
+    }
+
+    @Test
+    void contentChangeChangesSerializedFingerprint() {
+        ExperienceEntry a = ExperienceEntry.builder().type(ExperienceType.TOOL_DEFECT)
+                .title("t").description("body-one").build();
+        ExperienceEntry b = ExperienceEntry.builder().type(ExperienceType.TOOL_DEFECT)
+                .title("t").description("body-two").build();
+        String fa = a.toJson().get("content_fingerprint").getAsString();
+        String fb = b.toJson().get("content_fingerprint").getAsString();
+        assertNotEquals(fa, fb, "正文变更必须改变 fingerprint");
+        System.out.println("[fp-proof] contentFingerprint=" + a.contentFingerprint() + " serialized=" + fa);
+        assertEquals(a.contentFingerprint(), fa);
+    }
+
+    @Test
+    void oldJsonWithoutFingerprintIsRecomputedNotFabricated() {
+        ExperienceEntry old = ExperienceEntry.fromJson(JsonParser.parseString(
+                "{\"id\":\"x\",\"type\":\"TOOL_DEFECT\",\"title\":\"t\",\"description\":\"d\"}")
+                .getAsJsonObject());
+        String f = old.toJson().get("content_fingerprint").getAsString();
+        assertEquals(old.contentFingerprint(), f, "旧档按当前正文计算，缺字段不伪造");
     }
 }
