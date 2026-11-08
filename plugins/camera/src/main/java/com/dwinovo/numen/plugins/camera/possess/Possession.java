@@ -82,6 +82,8 @@ public final class Possession {
     private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(Possession.class);
     private static long lastFollowLog;
     private static long lastMissingLog;
+    /** 2026-11-09: opt-in diagnostics; default off (no flood after normal launch). */
+    private static final boolean DIAG = Boolean.parseBoolean(System.getProperty("numencam.diag", "false"));
 
     /** 请求发出后的宽限 tick：这段时间内不判「镜头被收回」，否则刚发完就被自己取消。 */
     private static volatile int graceTicks;
@@ -274,7 +276,7 @@ public final class Possession {
             // 期间不停重绑；连续 20 秒都找不回来才真正退出。
             missingTicks++;
             long nowNs = System.nanoTime();
-            if (missingTicks == 1 || nowNs - lastMissingLog > 10_000_000_000L) {
+            if (DIAG && (missingTicks == 1 || nowNs - lastMissingLog > 10_000_000_000L)) {
                 lastMissingLog = nowNs;
                 String uuid = targetUuid == null ? "null" : targetUuid.toString().substring(0, 8);
                 String camType = cam == null ? "null" : cam.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(cam));
@@ -284,7 +286,7 @@ public final class Possession {
                         mc.level.dimension().location(), targetName, uuid, camType, cam == mc.player);
             }
             if (missingTicks > GIVE_UP_TICKS) {
-                LOGGER.info("[numencam] release diag ticks={} targetName={} targetUuid={} self={},{},{} dim={} reason=camera-reverted-to-player",
+                if (DIAG) LOGGER.info("[numencam] release diag ticks={} targetName={} targetUuid={} self={},{},{} dim={} reason=camera-reverted-to-player",
                         missingTicks, targetName, targetUuid == null ? "null" : targetUuid.toString().substring(0, 8),
                         String.format("%.1f", mc.player.getX()), String.format("%.1f", mc.player.getY()), String.format("%.1f", mc.player.getZ()),
                         mc.level.dimension().location());
@@ -348,7 +350,7 @@ public final class Possession {
                         name, targetUuid != null ? targetUuid.toString().substring(0, 8) : "null", self != null);
                 return;
             }
-            if (System.nanoTime() - lastFollowLog > 5_000_000_000L) {
+            if (DIAG && System.nanoTime() - lastFollowLog > 5_000_000_000L) {
                 lastFollowLog = System.nanoTime();
                 LOGGER.info("[numencam] follow probe self={},{},{} dim={} target={},{},{} dim={} getCamera={} entityTypes={}/{}",
                         String.format("%.1f", self.getX()), String.format("%.1f", self.getY()), String.format("%.1f", self.getZ()), self.level().dimension().location(),
