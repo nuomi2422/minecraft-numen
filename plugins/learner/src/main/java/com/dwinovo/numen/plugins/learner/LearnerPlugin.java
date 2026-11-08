@@ -218,43 +218,42 @@ public final class LearnerPlugin implements NumenPlugin {
     record ReviewRecord(String reviewId, UUID companionId, String state, int reviewing,
                         int verdictCount, String reason, List<Map<String, Object>> verdicts) {}
 
+    /** 2026-11-08 bug-17: strong-kill startup restore; testable independent of NumenApi. */
+    static int restoreInterruptedReview(Path dir, java.util.function.Function<UUID, com.dwinovo.numen.plugins.learner.core.MemoQueue> queues) {
+        if (dir == null) return 0;
+        String[] sentinel = readReviewSentinel(dir);
+        if (sentinel == null) return 0;
+        long age = -1L;
+        try { age = Long.parseLong(sentinel[1]); } catch (RuntimeException ignored) { }
+        String rid = sentinel[0] == null ? "" : sentinel[0];
+        String companion = sentinel.length > 2 ? sentinel[2] : "";
+        var batch = com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.load(dir, rid);
+        int restored = -1;
+        if (!batch.isEmpty() && companion != null && !companion.isBlank() && queues != null) {
+            try {
+                restored = queues.apply(UUID.fromString(companion)).restore(batch);
+                if (restored == batch.size()) {
+                    com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.delete(dir, rid);
+                }
+            } catch (RuntimeException ignored) { restored = -1; }
+        }
+        LearnerMonitor.publish("review_interrupted", Map.of(
+                "review_id", rid,
+                "age_ms", age,
+                "restored", restored < 0 ? "UNKNOWN" : String.valueOf(restored),
+                "reason", "world/process restarted while review was in flight"));
+        // 恢复失败必须保留哨兵，下一次启动重试；只有成功或没有 batch 可恢复时才清。
+        if (restored == batch.size() || (batch.isEmpty() && restored < 0)) clearReviewSentinel(dir, rid);
+        return restored;
+    }
+
     @Override
     public void setup(NumenApi numen) {
         configDir = numen.configDir();
         loadReviewState(configDir);   // 2026-11-05：last_review_at 以前只在内存里，重启即空，容易误判「复盘没跑」
         // 2026-11-03（外部学习者 #508/#516）：上一进程若死在复盘飞行中，哨兵还在 —— 如实记一条再清。
         //   已经两次实机（20:37、20:49）出现「复盘在飞 + 世界重启」：那次复盘在任何账本里都没有痕迹。
-        try {
-            String[] sentinel = readReviewSentinel(configDir);
-            if (sentinel != null) {
-                long age = -1L;
-                try {
-                    age = Long.parseLong(sentinel[1]);
-                } catch (RuntimeException ignored) {
-                    // 解析不了就按 -1 记，别编数字
-                }
-                String rid = sentinel[0] == null ? "" : sentinel[0];
-                String companion = sentinel.length > 2 ? sentinel[2] : "";
-                var batch = com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.load(configDir, rid);
-                int restored = -1;
-                if (!batch.isEmpty() && companion != null && !companion.isBlank()) {
-                    try {
-                        restored = queue(UUID.fromString(companion)).restore(batch);
-                        if (restored == batch.size()) {
-                            com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.delete(configDir, rid);
-                        }
-                    } catch (RuntimeException ignored) { restored = -1; }
-                }
-                com.dwinovo.numen.plugins.learner.LearnerMonitor.publish("review_interrupted", Map.of(
-                        "review_id", rid,
-                        "age_ms", age,
-                        "restored", restored < 0 ? "UNKNOWN" : String.valueOf(restored),
-                        "reason", "world/process restarted while review was in flight"));
-                if (restored < 0 || restored == batch.size()) clearReviewSentinel(configDir, rid);
-            }
-        } catch (RuntimeException ignored) {
-            // 哨兵读取失败不影响启动
-        }
+        restoreInterruptedReview(configDir, LearnerPlugin::queue);
         numenApi = numen;   // E2：复盘提醒的系统通道
         // E1 自动入队（81 号 §14.4）：记下 configDir 并读开关；tick 由 LearnerMod 挂。
         LearnerAutoIntake.install(configDir);
