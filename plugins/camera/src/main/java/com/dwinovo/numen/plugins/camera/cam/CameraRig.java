@@ -604,6 +604,13 @@ public final class CameraRig {
     }
 
     /** 钉住机位。不传坐标就钉在本地玩家当前站的地方。 */
+    /** 2026-11-08: follow tracking re-anchor; no file write, no mode flip. */
+    public static void reanchorLock(double x, double y, double z) {
+        lockX = x;
+        lockY = y;
+        lockZ = z;
+    }
+
     public static String setLock(double x, double y, double z) {
         lockX = x;
         lockY = y;

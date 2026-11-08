@@ -179,8 +179,10 @@ public final class CompanionTether {
                 double dx = CameraRig.lockX() - t.getX();
                 double dy = CameraRig.lockY() - t.getY();
                 double dz = CameraRig.lockZ() - t.getZ();
-                if (dx * dx + dy * dy + dz * dz > maxDist * maxDist) {
-                    CameraRig.setLock(t.getX() + 1.5, t.getY() + 2.0, t.getZ() + 1.5);
+                // Keep the anchor near the target while following; a fixed world anchor
+                // lets the target walk out of frame or leaves the camera over old chunks.
+                if (dx * dx + dy * dy + dz * dz > 8.0 * 8.0) {
+                    CameraRig.reanchorLock(t.getX() + 1.5, t.getY() + 2.0, t.getZ() + 1.5);
                 }
             }
             if (t.distanceTo(mc.player) > maxDist && cooldownTicks == 0) {
