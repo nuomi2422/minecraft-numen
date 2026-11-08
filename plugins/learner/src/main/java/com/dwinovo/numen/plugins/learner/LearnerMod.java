@@ -4,6 +4,7 @@ import com.dwinovo.numen.api.NumenPlugins;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 
 /**
  * learner 的 NeoForge 入口：注册插件 + 挂自动入队的服务端 tick。
@@ -20,6 +21,11 @@ public final class LearnerMod {
     public LearnerMod() {
         NumenPlugins.register(new LearnerPlugin());
         NeoForge.EVENT_BUS.addListener(this::onServerTick);
+        NeoForge.EVENT_BUS.addListener(this::onServerStopping);
+    }
+
+    private void onServerStopping(ServerStoppingEvent event) {
+        LearnerPlugin.abortInFlight();
     }
 
     private void onServerTick(ServerTickEvent.Pre event) {

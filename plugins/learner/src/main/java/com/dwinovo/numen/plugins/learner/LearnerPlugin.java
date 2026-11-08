@@ -384,6 +384,47 @@ public final class LearnerPlugin implements NumenPlugin {
      * 每个同伴最近一次复盘真正开始的时刻（2026-11-02：自动复盘用它判断「上次提醒有没有人响应」）。
      * 按同伴存，不是全局 —— 多同伴时全局值会被别的同伴压掉，自动复盘就会误判。
      */
+    /** 2026-11-08 bug-17: graceful shutdown terminal + queue restore (one per review). */
+    private static final java.util.Map<String, Inflight> INFLIGHT = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.Set<String> ABORTED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private record Inflight(Runnable restore) {}
+
+    static void registerInflight(String reviewId, Runnable restore) {
+        if (reviewId != null && restore != null) INFLIGHT.put(reviewId, new Inflight(restore));
+    }
+
+    static void completeInflight(String reviewId) {
+        if (reviewId != null) INFLIGHT.remove(reviewId);
+    }
+
+    static boolean wasAborted(String reviewId) {
+        return reviewId != null && ABORTED.contains(reviewId);
+    }
+
+    /** ServerStopping/Stopped: terminal event + restore exactly once. */
+    static int abortInFlight() {
+        int n = 0;
+        for (var e : new java.util.ArrayList<>(INFLIGHT.entrySet())) {
+            String id = e.getKey();
+            if (!INFLIGHT.remove(id, e.getValue())) continue;
+            ABORTED.add(id);
+            boolean restored = true;
+            try { e.getValue().restore().run(); } catch (RuntimeException ex) { restored = false; }
+            if (restored) {
+                finishReview(id, "INTERRUPTED", 0);
+                LearnerMonitor.publish("review_interrupted", java.util.Map.of(
+                        "review_id", id, "reason", "server stopping", "restore", "OK"));
+            } else {
+                // keep sentinel/state for next-start retry; do not claim terminal
+                LearnerMonitor.publish("review_interrupted", java.util.Map.of(
+                        "review_id", id, "reason", "server stopping", "restore", "FAILED"));
+            }
+            n++;
+        }
+        return n;
+    }
+
     private static final java.util.Map<UUID, Long> LAST_REVIEW_STARTED =
             new java.util.concurrent.ConcurrentHashMap<>();
 
