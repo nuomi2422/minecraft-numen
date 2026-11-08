@@ -32,7 +32,8 @@ public final class MonitoringJournal implements AutoCloseable {
     /** 进程级运行标识：tools/events 同由本 writer 落盘，消费者可据此跨文件关联（旧行缺字段=unknown）。 */
     private static final String SESSION_ID = java.util.UUID.randomUUID().toString();
 
-    private record Entry(String category, String type, Map<String, Object> data, long time) {}
+    private record Entry(String category, String type, Map<String, Object> data, long time,
+                         Map<String, String> identity) {}
 
     private final BlockingQueue<Entry> queue = new ArrayBlockingQueue<>(DEFAULT_CAPACITY);
     private final AtomicBoolean running = new AtomicBoolean(true);
@@ -78,7 +79,8 @@ public final class MonitoringJournal implements AutoCloseable {
         String safeType = safeToken(type);
         Map<String, Object> copy = new LinkedHashMap<>();
         if (data != null) copy.putAll(data);
-        Entry entry = new Entry(safeCategory, safeType, copy, System.currentTimeMillis());
+        Entry entry = new Entry(safeCategory, safeType, copy, System.currentTimeMillis(),
+                com.dwinovo.numen.api.WorldContextStamp.snapshot());
         if (!queue.offer(entry)) {
             dropped++;
         }
@@ -135,8 +137,7 @@ public final class MonitoringJournal implements AutoCloseable {
             envelope.put("event_id", entry.category() + "-" + entry.time() + "-" + queue.size());
             envelope.put("session", SESSION_ID);
             envelope.put("timestamp", Instant.ofEpochMilli(entry.time()).toString());
-            java.util.Map<String, String> stamp = com.dwinovo.numen.api.WorldContextStamp.snapshot();
-            if (stamp != null) envelope.putAll(stamp);
+            if (entry.identity() != null) envelope.putAll(entry.identity());
             envelope.put("source", "numen");
             envelope.put("category", entry.category());
             envelope.put("type", entry.type());
