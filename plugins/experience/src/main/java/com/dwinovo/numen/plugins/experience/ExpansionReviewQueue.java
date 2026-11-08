@@ -16,14 +16,14 @@ public final class ExpansionReviewQueue {
     private ExpansionReviewQueue() {}
 
     /** @return true when a new line was appended; false for duplicate/IO failure. */
-    public static synchronized boolean enqueue(Path configDir, String ref, String version, String useId) {
+    public static synchronized boolean enqueue(Path configDir, java.util.UUID companion, String ref, String version, String useId) {
         if (configDir == null || ref == null || ref.isBlank()) return false;
-        String key = ref + "\u0000" + (version == null ? "" : version) + "\u0000" + (useId == null ? "" : useId);
+        String key = String.valueOf(companion) + "\u0000" + ref + "\u0000" + (version == null ? "" : version) + "\u0000" + (useId == null ? "" : useId);
         if (!SEEN.add(key)) return false;
         try {
             Files.createDirectories(configDir);
             Path f = configDir.resolve(FILE);
-            String json = "{\"ref\":\"" + esc(ref) + "\",\"version\":\"" + esc(version == null ? "" : version)
+            String json = "{\"companion\":\"" + esc(String.valueOf(companion)) + "\",\"ref\":\"" + esc(ref) + "\",\"version\":\"" + esc(version == null ? "" : version)
                     + "\",\"use_id\":\"" + esc(useId == null ? "" : useId)
                     + "\",\"at\":" + System.currentTimeMillis() + "}";
             Files.writeString(f, json + System.lineSeparator(), StandardCharsets.UTF_8,
@@ -32,6 +32,46 @@ public final class ExpansionReviewQueue {
         } catch (IOException e) {
             SEEN.remove(key);
             return false;
+        }
+    }
+
+    /** 2026-11-08 C1 worker: take up to max entries, leaving the rest in place. */
+    public static synchronized java.util.List<Entry> take(Path configDir, int max) {
+        java.util.List<Entry> out = new java.util.ArrayList<>();
+        if (configDir == null || max <= 0) return out;
+        Path f = configDir.resolve(FILE);
+        if (!Files.exists(f)) return out;
+        try {
+            java.util.List<String> lines = Files.readAllLines(f, StandardCharsets.UTF_8);
+            java.util.List<String> rest = new java.util.ArrayList<>();
+            for (String line : lines) {
+                if (line == null || line.isBlank()) continue;
+                if (out.size() < max) {
+                    Entry e = parse(line);
+                    if (e != null) { out.add(e); continue; }
+                }
+                rest.add(line);
+            }
+            Path tmp = f.resolveSibling(FILE + ".tmp");
+            Files.writeString(tmp, rest.isEmpty() ? "" : String.join(System.lineSeparator(), rest) + System.lineSeparator(),
+                    StandardCharsets.UTF_8);
+            Files.move(tmp, f, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            return out;
+        } catch (IOException | RuntimeException e) {
+            return java.util.List.of();
+        }
+    }
+
+    public record Entry(String companion, String ref, String version, String useId) {}
+
+    private static Entry parse(String line) {
+        try {
+            var o = com.google.gson.JsonParser.parseString(line).getAsJsonObject();
+            return new Entry(o.get("companion").getAsString(), o.get("ref").getAsString(),
+                    o.get("version").getAsString(), o.get("use_id").getAsString());
+        } catch (RuntimeException e) {
+            return null;
         }
     }
 

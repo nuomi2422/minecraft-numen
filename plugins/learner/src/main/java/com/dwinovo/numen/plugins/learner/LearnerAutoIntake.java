@@ -421,6 +421,7 @@ final class LearnerAutoIntake {
 
         // 冷却已过的「被抑制候选」放回队列（与入队同一条 append 路径；写不进就放回暂存区）
         int deferredAdmitted = admitDeferred(enqueuedBy);
+        try { ExpansionReviewIntake.scan(configDirCache, queueResolver); } catch (RuntimeException ignored) { }
 
         // TTL 归档（低频旁路，158 §8）：只归档不删证据；样本层没启用时是 no-op。
         // 时长可配（learner-sample-ttl.json）；7 天是**未校准**初值，写死等于在队列长期满的情况下永不归档。
