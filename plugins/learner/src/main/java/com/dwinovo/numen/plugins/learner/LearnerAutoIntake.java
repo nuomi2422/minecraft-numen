@@ -513,7 +513,11 @@ final class LearnerAutoIntake {
                 if (ok && inQueue) {
                     admitted++;
                     enqueuedBy.merge(id, 1, Integer::sum);
-                    appendEnqueuedJournal(e.memo().id());
+                    // 2026-11-08 bug-16: suppressed re-admit must not append the journal again.
+                    if (ENQUEUED.add(e.memo().id())) {
+                        if (ENQUEUED.size() > MAX_ENQUEUED_KEYS) trimEnqueuedKeys();
+                        appendEnqueuedJournal(e.memo().id());
+                    }
                     LearnerMonitor.publish("suppressed_admitted", Map.of(
                             "memo_id", e.memo().id(),
                             "fingerprint", e.fingerprint(),
