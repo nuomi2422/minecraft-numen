@@ -313,7 +313,7 @@ public final class Possession {
         if (server == null || mc.player == null) {
             return;
         }
-        rebindCooldown = 10;
+        rebindCooldown = 20; // 1s: keep the body at the target so its chunks load
         UUID selfId = mc.player.getUUID();
         String name = targetName;
         server.execute(() -> {
@@ -325,7 +325,10 @@ public final class Possession {
             if (self.getCamera() != target) {
                 self.setCamera(target);
             }
-            if (self.distanceTo(target) > 48.0) {
+            // 2026-11-09: 1s body refresh. The old >48 gate let the body lag ~10 blocks
+            // behind the camera entity; with render distance 2 the target's chunks then
+            // arrived late (sky/floating-chunk frames). Keep body co-located with target.
+            if (self.distanceTo(target) > 1.0) {
                 self.connection.teleport(target.getX(), target.getY(), target.getZ(), self.getYRot(), self.getXRot());
             }
         });
