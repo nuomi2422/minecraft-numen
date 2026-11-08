@@ -78,6 +78,9 @@ public final class VideoRecorder {
     private static volatile int written;
     private static volatile int dropped;
     private static volatile int failed;
+    /** 2026-11-09: per-capture metadata so "render stalled vs duplicate capture" is testable. */
+    private static java.io.BufferedWriter frameLog;
+    private static File frameLogFile;
 
     /**
      * 落盘文件名用的<b>连续</b>序号，和 {@link #frameIndex}（抓帧计数）分开。
@@ -175,6 +178,14 @@ public final class VideoRecorder {
         tickCounter = 0;
         startMs = System.currentTimeMillis();
         recording = true;
+        frameLogFile = new File(d, "frames.csv");
+        try {
+            frameLog = Files.newBufferedWriter(frameLogFile.toPath(), StandardCharsets.UTF_8);
+            frameLog.write("capture,epochNanos,gameTime,cameraX,cameraY,cameraZ\n");
+            frameLog.flush();
+        } catch (IOException e) {
+            frameLog = null;
+        }
         lastResult = "开始录像。";
         return String.format(Locale.ROOT,
                 "开始录像：%d fps（每 %d tick 一帧），上限 %d 帧，去重=%s → %s",
@@ -226,6 +237,22 @@ public final class VideoRecorder {
         frameIndex++;
         pendingWrites++;
         try {
+            final int captureNo = frameIndex;
+            final long captureNanos = System.nanoTime();
+            final long gameTime = mc.level == null ? -1L : mc.level.getGameTime();
+            var ce = mc.getCameraEntity();
+            final double cx = ce == null ? 0 : ce.getX(), cy = ce == null ? 0 : ce.getY(), cz = ce == null ? 0 : ce.getZ();
+            synchronized (VideoRecorder.class) {
+                if (frameLog != null) {
+                    try {
+                        frameLog.write(captureNo + "," + captureNanos + "," + gameTime + ","
+                                + String.format(Locale.ROOT, "%.3f,%.3f,%.3f", cx, cy, cz) + "\n");
+                        frameLog.flush();
+                    } catch (IOException ignored) {
+                        // Diagnostics must not break recording.
+                    }
+                }
+            }
             RenderSystem.recordRenderCall(() -> {
                 NativeImage img;
                 try {
@@ -299,6 +326,13 @@ public final class VideoRecorder {
      * 被卡住就是「游戏冻住」。用户看到「录像把游戏卡死了」会直接把这功能删了，
      * 而卡死的原因只是我在等一个外部进程。
      */
+    private static synchronized void closeFrameLog() {
+        if (frameLog != null) {
+            try { frameLog.close(); } catch (IOException ignored) { }
+            frameLog = null;
+        }
+    }
+
     private static void stepSeal() {
         File d = dir;
         if (d == null) {
@@ -312,6 +346,7 @@ public final class VideoRecorder {
                 }
                 // 先算实际帧率再写元数据：顺序反了会把上一条 take 的旧值写进 numencam.txt。
                 achievedFps = computeAchievedFps();
+                closeFrameLog();
                 writeMeta(d);
                 File exe = locateFfmpeg();
                 if (exe == null) {
