@@ -329,4 +329,33 @@ class ExperienceRetrievalProviderTest {
         assertTrue(ExperienceRetrievalProvider.factHolds("hp<=6", facts59), "5.9 应命中 <=6");
     }
 
+
+    @Test void familyFoldLeavesOneSlotAndUnrelatedSurvives() {
+        ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("exp", sourceOf(
+                entry("r1", "引擎的重试预算按同一子任务重启记账 attempts=3", Maturity.VERIFIED, false, List.of(), List.of()),
+                entry("r2", "引擎的重试预算按同一子任务重启记账 attempts=3 重复稿", Maturity.VERIFIED, false, List.of(), List.of()),
+                entry("r3", "引擎的重试预算按同一子任务重启记账 再次重复", Maturity.VERIFIED, false, List.of(), List.of()),
+                entry("r4", "引擎的重试预算按同一子任务重启记账 第四稿", Maturity.VERIFIED, false, List.of(), List.of()),
+                entry("r5", "引擎的重试预算按同一子任务重启记账 第五稿", Maturity.VERIFIED, false, List.of(), List.of()),
+                entry("r6", "引擎的重试预算按同一子任务重启记账 第六稿", Maturity.VERIFIED, false, List.of(), List.of()),
+                entry("u1", "mine 的 no path out", Maturity.VERIFIED, false, List.of(), List.of()),
+                entry("u2", "goto 的净位移", Maturity.VERIFIED, false, List.of(), List.of()),
+                entry("u3", "interact_at 遮挡", Maturity.VERIFIED, false, List.of(), List.of()),
+                entry("u4", "task_stop 幂等", Maturity.VERIFIED, false, List.of(), List.of())));
+        SearchPage page = p.search(query(RetrievalRole.EXECUTOR, "同一子任务 重试预算 attempts", 8));
+        long family = page.entries().stream().filter(r -> r.descriptor().title().contains("重试预算")).count();
+        assertEquals(1, family, "同族只占 1 个名额: " + page.entries().size());
+        assertEquals(5, page.entries().size(), "1 族 + 4 异族");
+        assertTrue(page.entries().stream().anyMatch(r -> r.descriptor().entryRef().equals("u4")), "异族不被挤掉");
+    }
+
+    @Test void canonicalWinsWhenFamilyFolded() {
+        ExperienceRetrievalProvider p = new ExperienceRetrievalProvider("exp", sourceOf(
+                entry("canonical", "引擎对同一 subtask 被重启/重试的次数按 subtask id 单调记账 attempts threshold", Maturity.VERIFIED, false, List.of(), List.of()),
+                entry("dup", "引擎的重试预算按同一子任务重启记账 重复稿", Maturity.OBSERVED, false, List.of(), List.of()),
+                entry("u1", "mine 的 no path out", Maturity.VERIFIED, false, List.of(), List.of())));
+        SearchPage page = p.search(query(RetrievalRole.EXECUTOR, "同一 subtask 重试预算 attempts threshold", 8));
+        assertEquals("canonical", page.entries().stream().filter(r -> r.descriptor().title().contains("重试预算") || r.descriptor().title().contains("同一 subtask"))
+                .findFirst().orElseThrow().descriptor().entryRef());
+    }
 }

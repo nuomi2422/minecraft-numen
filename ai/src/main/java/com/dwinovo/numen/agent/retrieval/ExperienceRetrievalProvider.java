@@ -105,6 +105,7 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
 
         List<RetrievedEntry> kept = new ArrayList<>();
         Set<String> seen = new TreeSet<>();
+        Set<String> foldedFamilies = new java.util.HashSet<>();
         List<Gap> gaps = new ArrayList<>();
         int cap = query.budget() == null ? 0 : query.budget().maxCandidates();
         for (RetrievedEntry r : all) {
@@ -114,6 +115,11 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
                 continue;
             }
             if (seen.contains(ref)) continue;   // 同 ref 在 provider 内已出现
+            String family = familyKey(r.descriptor());
+            if (family != null && !foldedFamilies.add(family)) {
+                gaps.add(new Gap(id, "FAMILY_FOLD", "同族折叠: " + family + " / " + safeTitle(r)));
+                continue;
+            }
             if (cap > 0 && kept.size() >= cap) {
                 gaps.add(new Gap(id, "MAX_CANDIDATES", "maxCandidates=" + cap + " 之后截断"));
                 break;
@@ -193,6 +199,19 @@ public final class ExperienceRetrievalProvider implements RetrievalProvider {
 
     private static boolean isCjk(char c) {
         return (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3400 && c <= 0x4DBF);
+    }
+
+    /** 2026-11-08 bug-11/C16: fold same-topic entries after ranking so duplicates do not eat the delivery budget. */
+    private static String familyKey(EntryDescriptor d) {
+        if (d == null) return null;
+        String t = ((d.title() == null ? "" : d.title()) + " " + (d.summary() == null ? "" : d.summary()))
+                .toLowerCase(java.util.Locale.ROOT);
+        boolean retry = t.contains("重试预算") || t.contains("retry budget") || t.contains("replan 重试")
+                || (t.contains("重试") && t.contains("预算"))
+                || t.contains("同一 subtask") || t.contains("同一子任务");
+        boolean signal = t.contains("attempts") || t.contains("预算") || t.contains("retry")
+                || t.contains("重启") || t.contains("subtask");
+        return retry && signal ? "retry-budget/subtask-restart" : null;
     }
 
     /** 诊断用：复刻 {@link #toEntry} 的拒收理由，只为了在日志里说清楚「为什么没进去」。 */
