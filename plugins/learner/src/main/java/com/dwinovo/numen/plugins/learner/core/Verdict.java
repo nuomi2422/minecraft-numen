@@ -122,6 +122,22 @@ public record Verdict(
      *
      * <p>容忍模型把 JSON 包在 ```json 代码块里 —— 这在实际调用里非常常见。
      */
+    /** 2026-11-08 bug-18: accept common model noise without accepting a fabricated id. */
+    static String normalizeMemoId(String raw) {
+        if (raw == null) return "";
+        String s = raw.trim();
+        while (s.length() >= 2 && ((s.startsWith("\"") && s.endsWith("\"")) || (s.startsWith("'") && s.endsWith("'")))) {
+            s = s.substring(1, s.length() - 1).trim();
+        }
+        String lower = s.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("memo ")) s = s.substring(5).trim();
+        else if (lower.startsWith("memo:")) s = s.substring(5).trim();
+        while (s.length() >= 2 && ((s.startsWith("\"") && s.endsWith("\"")) || (s.startsWith("'") && s.endsWith("'")))) {
+            s = s.substring(1, s.length() - 1).trim();
+        }
+        return s.trim();
+    }
+
     public static Verdict parse(String fallbackMemoId, String rawLlmText) {
         if (rawLlmText == null || rawLlmText.isBlank()) {
             return null;
@@ -142,6 +158,7 @@ public record Verdict(
             if (jsonMemoId.isBlank()) {
                 jsonMemoId = fallbackMemoId == null ? "" : fallbackMemoId.trim();
             }
+            jsonMemoId = normalizeMemoId(jsonMemoId);
             if (jsonMemoId.isBlank()) {
                 return null;
             }

@@ -163,6 +163,9 @@ final class LearnerReviewer {
               "efficiency":"...","evidence":"...","experienceType":"FAILURE"},"ac_script_draft":"",
               "carrier_draft":"","self_compile_request":"","rewritten_query":["..."]}]}
 
+            ★ memo_id 只写裸 id（例如 ai-instr-123-1），不要写 "memo " 前缀、引号或说明文字；
+              写错会导致整轮 UNPARSEABLE。
+
             ★★ evidence 必填（2026-11-06）：actions 含 WRITE_EXPERIENCE 时，experience.evidence
                **必须是非空数组**，例句：["event:<window_first>","block:360,66,636"]；
                空数组会被判 claim_without_evidence 并触发一次补证据重试。不许编造 id。

@@ -183,4 +183,33 @@ class VerdictTest {
         assertEquals("b", v.carrierDraft());
         assertEquals("c", v.selfCompileRequest());
     }
+
+    @Test
+    void normalizesMemoPrefixAndQuotes() {
+        String json = """
+                {"memo_id":"memo 'm-77'","actions":["WRITE_EXPERIENCE"],"confidence":0.8,
+                 "reasoning":"x","experience_draft":"d"}""";
+        assertEquals("m-77", Verdict.normalizeMemoId("memo 'm-77'"), "normalize direct");
+        Verdict v = Verdict.parse("", json);
+        assertNotNull(v);
+        assertEquals("m-77", v.memoId(), "模型常见的 memo 前缀/引号应归一，不应整轮 UNPARSEABLE");
+    }
+
+    @Test
+    void normalizesMemoColonPrefix() {
+        String json = """
+                {"memo_id":"memo:m-88","actions":["NO_ACTION"],"confidence":0.5}""";
+        Verdict v = Verdict.parse("", json);
+        assertNotNull(v);
+        assertEquals("m-88", v.memoId());
+    }
+
+    @Test
+    void normalizesBareMemoPrefix() {
+        String json = """
+                {"memo_id":"memo m-99","actions":["NO_ACTION"],"confidence":0.5}""";
+        Verdict v = Verdict.parse("", json);
+        assertNotNull(v);
+        assertEquals("m-99", v.memoId());
+    }
 }
