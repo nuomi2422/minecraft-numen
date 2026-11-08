@@ -84,6 +84,13 @@ public final class Possession {
     private static long lastMissingLog;
     /** 2026-11-09: opt-in diagnostics; default off (no flood after normal launch). */
     private static final boolean DIAG = Boolean.parseBoolean(System.getProperty("numencam.diag", "false"));
+    private static final int DIAG_MAX_LINES = Integer.parseInt(System.getProperty("numencam.diag.lines", "60"));
+    private static final long DIAG_DEADLINE_NS = System.nanoTime()
+            + Long.parseLong(System.getProperty("numencam.diag.seconds", "300")) * 1_000_000_000L;
+    private static final java.util.concurrent.atomic.AtomicInteger DIAG_LINES = new java.util.concurrent.atomic.AtomicInteger();
+    private static boolean diagOn() {
+        return DIAG && DIAG_LINES.get() < DIAG_MAX_LINES && System.nanoTime() < DIAG_DEADLINE_NS;
+    }
 
     /** 请求发出后的宽限 tick：这段时间内不判「镜头被收回」，否则刚发完就被自己取消。 */
     private static volatile int graceTicks;
@@ -276,17 +283,18 @@ public final class Possession {
             // 期间不停重绑；连续 20 秒都找不回来才真正退出。
             missingTicks++;
             long nowNs = System.nanoTime();
-            if (DIAG && (missingTicks == 1 || nowNs - lastMissingLog > 10_000_000_000L)) {
+            if (diagOn() && (missingTicks == 1 || nowNs - lastMissingLog > 10_000_000_000L)) {
                 lastMissingLog = nowNs;
                 String uuid = targetUuid == null ? "null" : targetUuid.toString().substring(0, 8);
                 String camType = cam == null ? "null" : cam.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(cam));
+                DIAG_LINES.incrementAndGet();
                 LOGGER.info("[numencam] missing diag ticks={} active={} self={},{},{} dim={} targetName={} targetUuid={} camEntity={} camIsPlayer={}",
                         missingTicks, active,
                         String.format("%.1f", mc.player.getX()), String.format("%.1f", mc.player.getY()), String.format("%.1f", mc.player.getZ()),
                         mc.level.dimension().location(), targetName, uuid, camType, cam == mc.player);
             }
             if (missingTicks > GIVE_UP_TICKS) {
-                if (DIAG) LOGGER.info("[numencam] release diag ticks={} targetName={} targetUuid={} self={},{},{} dim={} reason=camera-reverted-to-player",
+                if (diagOn()) LOGGER.info("[numencam] release diag ticks={} targetName={} targetUuid={} self={},{},{} dim={} reason=camera-reverted-to-player",
                         missingTicks, targetName, targetUuid == null ? "null" : targetUuid.toString().substring(0, 8),
                         String.format("%.1f", mc.player.getX()), String.format("%.1f", mc.player.getY()), String.format("%.1f", mc.player.getZ()),
                         mc.level.dimension().location());
@@ -350,8 +358,9 @@ public final class Possession {
                         name, targetUuid != null ? targetUuid.toString().substring(0, 8) : "null", self != null);
                 return;
             }
-            if (DIAG && System.nanoTime() - lastFollowLog > 5_000_000_000L) {
+            if (diagOn() && System.nanoTime() - lastFollowLog > 5_000_000_000L) {
                 lastFollowLog = System.nanoTime();
+                DIAG_LINES.incrementAndGet();
                 LOGGER.info("[numencam] follow probe self={},{},{} dim={} target={},{},{} dim={} getCamera={} entityTypes={}/{}",
                         String.format("%.1f", self.getX()), String.format("%.1f", self.getY()), String.format("%.1f", self.getZ()), self.level().dimension().location(),
                         String.format("%.1f", target.getX()), String.format("%.1f", target.getY()), String.format("%.1f", target.getZ()), target.level().dimension().location(),
