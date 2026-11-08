@@ -3,7 +3,9 @@ package com.dwinovo.numen.plugins.worldstate;
 import com.dwinovo.numen.api.NumenPlugins;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
+import com.dwinovo.numen.api.WorldContextStamp;
 
 /**
  * 世界观测模块的模组入口。构造期把 {@link WorldStatePlugin} 挂进 Numen 引擎。
@@ -23,9 +25,17 @@ public final class WorldStateMod {
         // （服务恢复后它们已经不可信），其它主题一条不动——它们要留着跟磁盘历史对账。
         // 注册方式沿用 SettlementMod / SideTaskHost 的现有写法：构造期挂 NeoForge.EVENT_BUS，
         // 不新造 hook；Fabric 侧本仓没有 worldstate 入口，故不声明双加载器。
+        NeoForge.EVENT_BUS.addListener((ServerStartedEvent event) -> {
+            WorldStateService service = SERVICE;
+            if (service != null) {
+                WorldContextStamp.set(WorldStateService.worldId(event.getServer()),
+                        service.sessionId(event.getServer()));
+            }
+        });
         NeoForge.EVENT_BUS.addListener((ServerStoppedEvent event) -> {
             WorldStateService service = SERVICE;
             if (service != null) service.invalidateAllSelf();
+            WorldContextStamp.clear();
         });
         // 常驻环境块的周期刷新：每 tick 只做一次时间比较，到点才去刷（不每 tick 刷）。
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.tick.ServerTickEvent.Post event) -> {
