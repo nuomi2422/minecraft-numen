@@ -297,8 +297,6 @@ final class LearnerReviewTool implements NumenTool {
             List<Memo> batch, LearnerReviewer.ReviewOutcome outcome, PriorRoundReader.Read priorRead) {
         if (LearnerPlugin.wasAborted(reviewId)) return; // shutdown already restored + terminal
         LearnerPlugin.completeInflight(reviewId);
-        com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.delete(
-                LearnerPlugin.configDir(), reviewId);
         if (!outcome.ok()) {
             int restored = queue.restore(batch);
             // 2026-11-05：额度类失败（HTTP 429 / GoUsageLimit）不是"这次运气不好"，而是这个号没额度了。
@@ -335,6 +333,14 @@ final class LearnerReviewTool implements NumenTool {
             String gate = com.dwinovo.numen.plugins.learner.core.RetrievalGate.problem(v);
             if (gate != null) {
                 retrievalRejected.add(v.memoId() + ": " + gate);
+                continue;
+            }
+            Memo targetMemo = batch.stream().filter(m -> m.id().equals(v.memoId())).findFirst().orElse(null);
+            var targetCheck = ReviewTargetGate.check(LearnerPlugin.configDir(), id, targetMemo);
+            if (!targetCheck.ok()) {
+                retrievalRejected.add(v.memoId() + ": target:" + targetCheck.reason());
+                LearnerMonitor.publish("review_target_skipped", Map.of(
+                        "review_id", reviewId, "memo_id", v.memoId(), "reason", targetCheck.reason()));
                 continue;
             }
             judged.add(v.memoId());

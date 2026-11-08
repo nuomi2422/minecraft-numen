@@ -467,6 +467,8 @@ public final class LearnerPlugin implements NumenPlugin {
                 new ReviewRecord(rec.reviewId(), rec.companionId(), state, rec.reviewing(),
                         verdictCount, state.startsWith("NO_") || state.startsWith("FAILED") ? state : rec.reason(),
                         rec.verdicts()));
+        // 2026-11-08 bug-17: only a terminal review may delete its durable batch.
+        com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.delete(configDir, reviewId);
     }
 
     static void setReviewVerdicts(String reviewId, List<Map<String, Object>> verdicts) {
