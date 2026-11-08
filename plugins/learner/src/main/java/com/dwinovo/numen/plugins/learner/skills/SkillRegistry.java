@@ -278,9 +278,10 @@ public final class SkillRegistry {
     private static String familyOf(String name, String purpose, java.util.List<String> triggers) {
         String t = ((name == null ? "" : name) + " " + (purpose == null ? "" : purpose) + " "
                 + (triggers == null ? "" : String.join(" ", triggers))).toLowerCase(java.util.Locale.ROOT);
-        boolean retry = t.contains("retry budget") || t.contains("重试预算") || t.contains("retry-budget")
-                || (t.contains("重试") && t.contains("预算")) || (t.contains("replan") && t.contains("预算"))
-                || t.contains("same subtask restarted") || t.contains("loop_detected")
+        boolean retry = t.contains("retry budget") || t.contains("retry-budget")
+                || t.contains("same subtask restarted")
+                || t.contains("同一子任务") && (t.contains("重试") || t.contains("预算") || t.contains("replan"))
+                || t.contains("replan 重试预算")
                 || (t.contains("attempts=") && (t.contains("subtask") || t.contains("重开")));
         return retry ? "retry-budget/subtask-restart" : null;
     }
