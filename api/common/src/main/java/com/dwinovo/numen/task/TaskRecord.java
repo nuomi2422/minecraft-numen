@@ -2,6 +2,7 @@ package com.dwinovo.numen.task;
 import com.dwinovo.numen.task.TaskResult;
 
 import java.util.concurrent.atomic.AtomicLong;
+import com.dwinovo.numen.api.WorldContextStamp;
 
 /**
  * Mutable descriptor of an in-flight task. The {@link com.dwinovo.numen.agent.tool.NumenTool tool layer}
@@ -30,6 +31,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public abstract class TaskRecord {
 
     private static final AtomicLong ID_SOURCE = new AtomicLong();
+    /** 2026-11-09 A1: identity captured when the record is constructed (dispatch time). */
+    private final WorldContextStamp.Token identityToken = WorldContextStamp.capture();
 
     /** Monotonically increasing internal id; only used for logging / dedup. */
     /**
@@ -75,6 +78,7 @@ public abstract class TaskRecord {
     }
 
     public final long getId() { return id; }
+    public final WorldContextStamp.Token identityToken() { return identityToken; }
     public final String getToolName() { return toolName; }
     public final String getToolCallId() { return toolCallId; }
     public final long getDeadlineGameTime() { return deadlineGameTime; }

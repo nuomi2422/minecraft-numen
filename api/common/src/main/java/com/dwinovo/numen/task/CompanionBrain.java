@@ -418,7 +418,7 @@ final class CompanionBrain {
             jd.put("success", rec.getState() == TaskState.SUCCESS);
             String json = result == null ? "" : result.toJson();
             jd.put("result", json.length() <= 2000 ? json : json.substring(0, 2000) + "...");
-            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("tools", "tool_result", jd);
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("tools", "tool_result", jd, rec.identityToken());
         } catch (RuntimeException ignored) { /* 观测层不许影响派发 */ }
     }
 
@@ -442,7 +442,7 @@ final class CompanionBrain {
                     jd.put("noshot", noshot);
                 }
             }
-            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("tools", "tool_result", jd);
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("tools", "tool_result", jd, rec.identityToken());
         } catch (RuntimeException ignored) { /* journaling must never break the task path */ }
     }
 }
