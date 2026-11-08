@@ -348,6 +348,13 @@ public final class Possession {
                         name, targetUuid != null ? targetUuid.toString().substring(0, 8) : "null", self != null);
                 return;
             }
+            if (System.nanoTime() - lastFollowLog > 5_000_000_000L) {
+                lastFollowLog = System.nanoTime();
+                LOGGER.info("[numencam] follow probe self={},{},{} dim={} target={},{},{} dim={} getCamera={} entityTypes={}/{}",
+                        String.format("%.1f", self.getX()), String.format("%.1f", self.getY()), String.format("%.1f", self.getZ()), self.level().dimension().location(),
+                        String.format("%.1f", target.getX()), String.format("%.1f", target.getY()), String.format("%.1f", target.getZ()), target.level().dimension().location(),
+                        self.getCamera() == target ? "target" : "other", self.getClass().getSimpleName(), target.getClass().getSimpleName());
+            }
             if (self.getCamera() != target) {
                 self.setCamera(target);
             }
