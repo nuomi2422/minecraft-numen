@@ -77,6 +77,11 @@ public final class Possession {
 
     /** 当前附身目标名（空 = 没附身）。 */
     private static volatile String targetName = "";
+    /** 2026-11-09: UUID resolved at possess time; rebind must not depend on name lookup. */
+    private static volatile java.util.UUID targetUuid;
+    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(Possession.class);
+    private static long lastFollowLog;
+    private static long lastMissingLog;
 
     /** 请求发出后的宽限 tick：这段时间内不判「镜头被收回」，否则刚发完就被自己取消。 */
     private static volatile int graceTicks;
@@ -159,16 +164,18 @@ public final class Possession {
         // packet determines the view; forcing THIRD_PERSON_BACK is a divergence and can desync.
         active = true;
         targetName = n;
+        targetUuid = clientSideUuid(n, mc);
         graceTicks = 40;
 
+        final java.util.UUID targetUuidLocal = targetUuid;
         server.execute(() -> {
             ServerPlayer self = server.getPlayerList().getPlayer(mc.player.getUUID());
             if (self == null) {
                 fail("服务端找不到你的玩家实体（世界可能正在退出）");
                 return;
             }
-            ServerPlayer target = targetUuid != null
-                    ? server.getPlayerList().getPlayer(targetUuid)
+            ServerPlayer target = targetUuidLocal != null
+                    ? server.getPlayerList().getPlayer(targetUuidLocal)
                     : server.getPlayerList().getPlayerByName(n);
             if (target == null) {
                 fail("服务端玩家列表里没有叫 " + n + " 的同伴（可能已休眠，或不在这个存档里）");
@@ -266,7 +273,21 @@ public final class Possession {
             // 同伴一夜死十几次，等于全程都在弹。现在改成：先给它一段时间重生，
             // 期间不停重绑；连续 20 秒都找不回来才真正退出。
             missingTicks++;
+            long nowNs = System.nanoTime();
+            if (missingTicks == 1 || nowNs - lastMissingLog > 10_000_000_000L) {
+                lastMissingLog = nowNs;
+                String uuid = targetUuid == null ? "null" : targetUuid.toString().substring(0, 8);
+                String camType = cam == null ? "null" : cam.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(cam));
+                LOGGER.info("[numencam] missing diag ticks={} active={} self={},{},{} dim={} targetName={} targetUuid={} camEntity={} camIsPlayer={}",
+                        missingTicks, active,
+                        String.format("%.1f", mc.player.getX()), String.format("%.1f", mc.player.getY()), String.format("%.1f", mc.player.getZ()),
+                        mc.level.dimension().location(), targetName, uuid, camType, cam == mc.player);
+            }
             if (missingTicks > GIVE_UP_TICKS) {
+                LOGGER.info("[numencam] release diag ticks={} targetName={} targetUuid={} self={},{},{} dim={} reason=camera-reverted-to-player",
+                        missingTicks, targetName, targetUuid == null ? "null" : targetUuid.toString().substring(0, 8),
+                        String.format("%.1f", mc.player.getX()), String.format("%.1f", mc.player.getY()), String.format("%.1f", mc.player.getZ()),
+                        mc.level.dimension().location());
                 restoreCameraType(mc);
                 deactivate();
                 IntegratedServer server = mc.getSingleplayerServer();
@@ -318,8 +339,13 @@ public final class Possession {
         String name = targetName;
         server.execute(() -> {
             ServerPlayer self = server.getPlayerList().getPlayer(selfId);
-            ServerPlayer target = server.getPlayerList().getPlayerByName(name);
+            ServerPlayer target = targetUuid != null
+                    ? server.getPlayerList().getPlayer(targetUuid)
+                    : server.getPlayerList().getPlayerByName(name);
             if (self == null || target == null) {
+                // Keep a masked diagnostic: name-vs-UUID resolution is the suspected gap.
+                LOGGER.debug("[numencam] rebind target unresolved name={} uuid={} self={}",
+                        name, targetUuid != null ? targetUuid.toString().substring(0, 8) : "null", self != null);
                 return;
             }
             if (self.getCamera() != target) {
