@@ -205,7 +205,22 @@ final class LearnerReviewTool implements NumenTool {
         final List<Memo> batch = taken;
         final String reviewId = "rev-" + System.currentTimeMillis() + "-" + Math.abs(batch.get(0).id().hashCode() % 1000);
         LearnerPlugin.beginReview(reviewId, id, "RUNNING", batch.size());
-        LearnerPlugin.registerInflight(reviewId, () -> queue.restore(batch));
+        // 2026-11-08 bug-17: durable claim before any async work; failure => put batch back.
+        boolean claimed = com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.save(
+                LearnerPlugin.configDir(), reviewId, batch);
+        LearnerPlugin.registerInflight(reviewId, () -> {
+            queue.restore(batch);
+            com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.delete(
+                    LearnerPlugin.configDir(), reviewId);
+        });
+        if (!claimed) {
+            queue.restore(batch);
+            LearnerPlugin.finishReview(reviewId, "CLAIM_FAILED", 0);
+            LearnerMonitor.publish("review_failed", Map.of("review_id", reviewId,
+                    "companion", id.toString(), "reason", "CLAIM_FAILED", "restored", batch.size()));
+            reply.accept(TaskResult.fail("learner_review: cannot persist batch claim").toJson());
+            return;
+        }
 
         // ★ 上轮回顾（架构 owner 2026-10-03 第 3 条 + 答 (a)）：
         //   「循环由 AI 自己在下一轮 learner_review 里看着上轮结果再改」。
@@ -282,6 +297,8 @@ final class LearnerReviewTool implements NumenTool {
             List<Memo> batch, LearnerReviewer.ReviewOutcome outcome, PriorRoundReader.Read priorRead) {
         if (LearnerPlugin.wasAborted(reviewId)) return; // shutdown already restored + terminal
         LearnerPlugin.completeInflight(reviewId);
+        com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.delete(
+                LearnerPlugin.configDir(), reviewId);
         if (!outcome.ok()) {
             int restored = queue.restore(batch);
             // 2026-11-05：额度类失败（HTTP 429 / GoUsageLimit）不是"这次运气不好"，而是这个号没额度了。

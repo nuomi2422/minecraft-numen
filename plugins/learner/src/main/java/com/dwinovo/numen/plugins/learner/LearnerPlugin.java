@@ -233,11 +233,24 @@ public final class LearnerPlugin implements NumenPlugin {
                 } catch (RuntimeException ignored) {
                     // 解析不了就按 -1 记，别编数字
                 }
+                String rid = sentinel[0] == null ? "" : sentinel[0];
+                String companion = sentinel.length > 2 ? sentinel[2] : "";
+                var batch = com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.load(configDir, rid);
+                int restored = -1;
+                if (!batch.isEmpty() && companion != null && !companion.isBlank()) {
+                    try {
+                        restored = queue(UUID.fromString(companion)).restore(batch);
+                        if (restored == batch.size()) {
+                            com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.delete(configDir, rid);
+                        }
+                    } catch (RuntimeException ignored) { restored = -1; }
+                }
                 com.dwinovo.numen.plugins.learner.LearnerMonitor.publish("review_interrupted", Map.of(
-                        "review_id", sentinel[0] == null ? "" : sentinel[0],
+                        "review_id", rid,
                         "age_ms", age,
+                        "restored", restored < 0 ? "UNKNOWN" : String.valueOf(restored),
                         "reason", "world/process restarted while review was in flight"));
-                clearReviewSentinel(configDir, sentinel[0]);
+                if (restored < 0 || restored == batch.size()) clearReviewSentinel(configDir, rid);
             }
         } catch (RuntimeException ignored) {
             // 哨兵读取失败不影响启动
@@ -596,7 +609,11 @@ public final class LearnerPlugin implements NumenPlugin {
                     .compile("\"started_at\"\\s*:\\s*(\\d+)").matcher(text);
             if (t.find()) startedAt = Long.parseLong(t.group(1));
             long age = startedAt > 0 ? System.currentTimeMillis() - startedAt : -1L;
-            return new String[] { id, String.valueOf(age) };
+            String companion = "";
+            java.util.regex.Matcher c = java.util.regex.Pattern
+                    .compile("\"companion\"\s*:\s*\"([^\"]*)\"").matcher(text);
+            if (c.find()) companion = c.group(1);
+            return new String[] { id, String.valueOf(age), companion };
         } catch (Exception ignored) {
             return null;
         }
