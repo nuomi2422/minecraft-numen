@@ -185,7 +185,7 @@ public final class VideoRecorder {
         frameLogFile = new File(d, "frames.csv");
         try {
             frameLog = Files.newBufferedWriter(frameLogFile.toPath(), StandardCharsets.UTF_8);
-            frameLog.write("capture,epochNanos,gameTime,cameraX,cameraY,cameraZ\n");
+            frameLog.write("capture,epochNanos,gameTime,cameraX,cameraY,cameraZ,fps\n");
             frameLog.flush();
             writeLog = Files.newBufferedWriter(new File(d, "writes.csv").toPath(), StandardCharsets.UTF_8);
             writeLog.write("capture,png,ioStartNanos,ioDoneNanos\n");
@@ -256,7 +256,7 @@ public final class VideoRecorder {
                 if (frameLog != null) {
                     try {
                         frameLog.write(captureNo + "," + captureNanos + "," + gameTime + ","
-                                + String.format(Locale.ROOT, "%.3f,%.3f,%.3f", cx, cy, cz) + "\n");
+                                + String.format(Locale.ROOT, "%.3f,%.3f,%.3f", cx, cy, cz) + "," + mc.getFps() + "\n");
                         frameLog.flush();
                     } catch (IOException ignored) {
                         // Diagnostics must not break recording.
