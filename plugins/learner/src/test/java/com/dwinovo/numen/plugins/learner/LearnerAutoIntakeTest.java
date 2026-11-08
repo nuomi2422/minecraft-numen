@@ -396,4 +396,31 @@ class LearnerAutoIntakeTest {
         // instrumentation.jsonl 不存在：读失败 → 0 入队 + 不抛（增强旁路不许拖垮调用方）
         assertEquals(0, LearnerAutoIntake.scanOnce());
     }
+
+    @Test
+    void suppressedReadmitAppendsJournalOnlyOnce() throws Exception {
+        java.util.UUID id = java.util.UUID.fromString(COMPANION);
+        long recent = System.currentTimeMillis() - 11 * 60 * 1000;
+        var memo = new com.dwinovo.numen.plugins.learner.core.Memo(
+                "ai-instr-bug16-readmit", "p", "death", "tried", "snap", recent);
+        Path journal = tmp.resolve("learner-enqueued.jsonl");
+        long before = Files.exists(journal) ? Files.readAllLines(journal).size() : 0;
+
+        com.dwinovo.numen.plugins.learner.core.SuppressedStore.append(
+                tmp, id, memo, "fp-bug16", "SUPPRESSED_COOLDOWN", recent);
+        writeInstrumentation(tmp.resolve("monitor"));
+        var m = LearnerAutoIntake.class.getDeclaredMethod("admitDeferred", java.util.Map.class);
+        m.setAccessible(true);
+        int n = (int) m.invoke(null, new java.util.HashMap<java.util.UUID, Integer>());
+        assertTrue(n >= 1, "冷却到期应放回");
+        assertEquals(before + 1, Files.readAllLines(journal).size(), "首次放回 journal +1");
+
+        // 同一 id 再进暂存区并放回：内存 ENQUEUED 已含它，journal 不得再写。
+        com.dwinovo.numen.plugins.learner.core.SuppressedStore.append(
+                tmp, id, memo, "fp-bug16", "SUPPRESSED_COOLDOWN", recent);
+        int n2 = (int) m.invoke(null, new java.util.HashMap<java.util.UUID, Integer>());
+        // admitted 可能仍计一次，但 journal 不得再追加（bug-16 的验收点）。
+        assertEquals(before + 1, Files.readAllLines(journal).size(), "重复放回不得重复记账");
+        assertTrue(n2 >= 0);
+    }
 }
