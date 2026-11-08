@@ -167,16 +167,16 @@ public final class Possession {
             return possessRemote(n, mc);
         }
 
-        UUID targetUuid = clientSideUuid(n, mc);
+        UUID resolvedUuid = clientSideUuid(n, mc);
         previousMode = mc.gameMode.getPlayerMode();
         // Strict vanilla /spectate: do NOT force a client CameraType. The server camera
         // packet determines the view; forcing THIRD_PERSON_BACK is a divergence and can desync.
         active = true;
         targetName = n;
-        targetUuid = clientSideUuid(n, mc);
+        targetUuid = resolvedUuid;
         graceTicks = 40;
 
-        final java.util.UUID targetUuidLocal = targetUuid;
+        final java.util.UUID targetUuidLocal = resolvedUuid;
         server.execute(() -> {
             ServerPlayer self = server.getPlayerList().getPlayer(mc.player.getUUID());
             if (self == null) {
@@ -194,6 +194,9 @@ public final class Possession {
                 fail("目标是你自己");
                 return;
             }
+            // Server is authoritative: clientSideUuid can return null for Numen players.
+            // Backfill the static so the client rebind path has a real UUID.
+            Possession.targetUuid = target.getUUID();
             GameType prev = self.gameMode.getGameModeForPlayer();
             previousMode = prev;
             writeRecord(n, prev);
