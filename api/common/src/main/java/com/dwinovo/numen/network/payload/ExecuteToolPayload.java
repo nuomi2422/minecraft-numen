@@ -5,6 +5,7 @@ import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.ToolRegistry;
 import com.dwinovo.numen.task.TaskResult;
 import com.dwinovo.numen.monitor.MonitoringJournal;
+import com.dwinovo.numen.api.WorldContextStamp;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.minecraft.core.UUIDUtil;
@@ -111,7 +112,7 @@ public record ExecuteToolPayload(UUID entityUuid,
             companion = com.dwinovo.numen.entity.Companions.respawn(server, p.entityUuid());
         }
         if (companion != null) {
-            handleCompanion(p, player, companion);
+            handleCompanion(p, player, companion, WorldContextStamp.capture());
             return;
         }
         replyError(player, p, "companion not found (never summoned, or its data is gone)");
@@ -124,7 +125,8 @@ public record ExecuteToolPayload(UUID entityUuid,
      * move_to + auto_mine), so they reply with a clear not-yet message.
      */
     private static void handleCompanion(ExecuteToolPayload p, ServerPlayer player,
-                                        com.dwinovo.numen.entity.NumenPlayer companion) {
+                                        com.dwinovo.numen.entity.NumenPlayer companion,
+                                        WorldContextStamp.Token identityToken) {
         if (!companion.isOwnedByPlayer(player.getUUID())) {
             replyError(player, p, "not the owner");
             return;
@@ -151,7 +153,7 @@ public record ExecuteToolPayload(UUID entityUuid,
             // 补成 server（事实，不是猜），让写入者标签从源头成立。
             MonitoringJournal.get().publish("tools", "tool_result", Map.of(
                     "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
-                    "tool", p.toolName(), "journaled_by", "server", "result", truncate(json)));
+                    "tool", p.toolName(), "journaled_by", "server", "result", truncate(json)), identityToken);
             com.dwinovo.numen.agent.tool.ToolCallLoopWatch.onSucceeded(p.entityUuid(), p.toolName());
             com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
                     new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
