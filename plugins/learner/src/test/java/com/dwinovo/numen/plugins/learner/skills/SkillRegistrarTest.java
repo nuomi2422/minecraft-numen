@@ -119,4 +119,23 @@ class SkillRegistrarTest {
         assertEquals(0, SkillRegistrar.register(dir, draft(), true).total());
         assertTrue(SkillRegistrar.register(null, draft(artifact("p", "b", "s")), true).total() == 0);
     }
+
+    @Test
+    void emptyBodyIsNotRegisteredAsDeliverable(@TempDir Path dir) {
+        var r = SkillRegistrar.register(dir, draft(artifact("p", "", "s-empty")), true);
+        assertEquals(0, r.total(), "空正文不得登记");
+        assertFalse(r.ok(), "body_missing 必须可见");
+        assertTrue(r.error().contains("body_missing=1"), r.error());
+        assertFalse(Files.exists(dir.resolve("skills.jsonl")), "空正文不得落技能目录");
+    }
+
+    @Test
+    void bodyIsPersistedAndReadable(@TempDir Path dir) throws IOException {
+        var r = SkillRegistrar.register(dir, draft(artifact("p", "正文步骤", "s-body")), true);
+        assertEquals(1, r.registered());
+        SkillRegistry reopened = SkillRegistry.open(dir.resolve("skills.jsonl"));
+        var entry = reopened.all().stream().filter(e -> e.foundingSamples().contains("s-body")).findFirst().orElseThrow();
+        assertTrue(entry.bodyRef().startsWith("skill-body:"), entry.bodyRef());
+        assertEquals("正文步骤", SkillBodyStore.read(dir, entry.bodyRef()));
+    }
 }

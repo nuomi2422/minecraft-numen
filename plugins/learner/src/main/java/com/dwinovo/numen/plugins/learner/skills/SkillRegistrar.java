@@ -101,14 +101,19 @@ public final class SkillRegistrar {
         }
         try {
             SkillRegistry registry = registryFor(configDir);
-            int reg = 0, reuse = 0, revise = 0, conflict = 0;
+            int reg = 0, reuse = 0, revise = 0, conflict = 0, bodyMissing = 0;
             for (int i = 0; i < draft.artifacts().size(); i++) {
                 ArtifactDraft a = draft.artifacts().get(i);
                 String skillId = skillIdOf(a);
                 // bodyRef 必须包含**内容**指纹：否则正文改了 bodyRef 不变，
                 // SkillRegistry 会判成 REUSE（同一份内容），修订永远发生不了。
                 String stored = SkillBodyStore.write(configDir, skillId, 1, a.contentHash(), a.body());
-                String bodyRef = stored != null ? stored : "draft:" + skillId + ":" + a.contentHash();
+                if (stored == null) {
+                    // 2026-11-08 046-A: body missing must not become a deliverable skill.
+                    bodyMissing++;
+                    continue;
+                }
+                String bodyRef = stored;
                 boolean trial = trialIndexes != null && trialIndexes.contains(i);
                 SkillRegistry.Decision d = registry.register(a, skillId, bodyRef, trial);
                 switch (d.outcome()) {
@@ -118,7 +123,8 @@ public final class SkillRegistrar {
                     case CONFLICT -> conflict++;
                 }
             }
-            return new Report(reg, reuse, revise, conflict, "");
+            String warn = bodyMissing > 0 ? "body_missing=" + bodyMissing : "";
+            return new Report(reg, reuse, revise, conflict, warn);
         } catch (RuntimeException e) {
             // 旁路写失败不许炸复盘：目录少一条比复盘失败好。
             return new Report(0, 0, 0, 0, e.getClass().getSimpleName() + ": " + e.getMessage());
