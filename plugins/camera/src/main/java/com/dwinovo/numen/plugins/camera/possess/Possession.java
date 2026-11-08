@@ -155,12 +155,8 @@ public final class Possession {
 
         UUID targetUuid = clientSideUuid(n, mc);
         previousMode = mc.gameMode.getPlayerMode();
-        // 附身 = 「镜头分出去 + 挂到目标身上」，但只有第三人称才看得见目标自己。
-        // 第一人称会变成「从它眼睛里往外看」，那就不是拍它了 —— 用户要的是它的第三人称。
-        previousCameraType = mc.options.getCameraType();
-        if (previousCameraType != CameraType.THIRD_PERSON_BACK) {
-            mc.options.setCameraType(CameraType.THIRD_PERSON_BACK);
-        }
+        // Strict vanilla /spectate: do NOT force a client CameraType. The server camera
+        // packet determines the view; forcing THIRD_PERSON_BACK is a divergence and can desync.
         active = true;
         targetName = n;
         graceTicks = 40;

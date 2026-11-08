@@ -71,7 +71,7 @@ public final class CompanionTether {
      * <p>静默传送不刷聊天栏，但每传一次都要重收一片区块；按 tick 连续补传会把区块
      * 加载线程打满（症状是画面贴图一格一格地才出来）。所以要低频。
      */
-    private static final int TP_MIN_GAP_TICKS = 40;
+    private static final int TP_MIN_GAP_TICKS = 20;
 
     /**
      * 超过这个距离就主动传过去（只在目标可见时判）。
@@ -154,10 +154,6 @@ public final class CompanionTether {
         }
         // 附身期间服务端每 tick 都在把我搬到镜头实体身上，这里再补传就是两条路抢同一个位置
         // —— 表现是位置抖动 + 偶尔被服务端校正拉回。附身优先，牵引让位。
-        if (com.dwinovo.numen.plugins.camera.possess.Possession.isActive()) {
-            lostTicks = 0;
-            return;
-        }
         if (!follow) {
             recoverFromCrash(mc);
             lostTicks = 0;
@@ -185,8 +181,10 @@ public final class CompanionTether {
                     CameraRig.reanchorLock(t.getX() + 1.5, t.getY() + 2.0, t.getZ() + 1.5);
                 }
             }
-            if (t.distanceTo(mc.player) > maxDist && cooldownTicks == 0) {
-                tpTo((AbstractClientPlayer) t, "超出 " + (long) maxDist + " 格");
+            // 2026-11-08: coexist with Possession — keep the entity camera binding,
+            // but also refresh the body position once per second so nearby chunks stream.
+            if (t.distanceTo(mc.player) > 0.5 && cooldownTicks == 0) {
+                tpTo((AbstractClientPlayer) t, "1s refresh");
             }
             return;
         }

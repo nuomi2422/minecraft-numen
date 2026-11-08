@@ -343,6 +343,13 @@ public final class CameraRig {
         if (mc == null || mc.gameRenderer == null) {
             return false;
         }
+        // 2026-11-08: vanilla /spectate hides the camera entity itself in first person.
+        // Possession bypasses the rig, so isActive() is false here; mirror that rule explicitly.
+        if (com.dwinovo.numen.plugins.camera.possess.Possession.isActive()
+                && mc.getCameraEntity() == e
+                && mc.options.getCameraType().isFirstPerson()) {
+            return true;
+        }
         return mc.gameRenderer.getMainCamera().getPosition()
                 .distanceTo(e.getEyePosition(1.0f)) < HIDE_MODEL_DISTANCE;
     }
