@@ -33,11 +33,27 @@ class ReviewTargetGateTest {
         Files.writeString(dir.resolve("experience-" + C + ".jsonl"),
                 "{\"id\":\"e1\",\"publication\":\"TRIAL\",\"retracted\":false}\n");
         var c = ReviewTargetGate.check(dir, C, memo("exp:e1", "v1"));
-        assertTrue(c.ok(), "版本不可核时不冒充已核，但存在/未撤回可继续");
+        assertFalse(c.ok(), "版本不可核不得当有效 verdict");
         assertEquals("VERSION_UNVERIFIED", c.reason());
     }
 
     @Test void nonExpansionMemoNotGated() {
         assertTrue(ReviewTargetGate.check(null, C, new Memo("x", "p", "learning", "t", "s", 1L, "learning", List.of())).ok());
+    }
+
+    @Test void exactVersionMatches(@TempDir Path dir) throws Exception {
+        Files.writeString(dir.resolve("experience-" + C + ".jsonl"),
+                "{\"id\":\"e1\",\"publication\":\"TRIAL\",\"retracted\":false,\"content_fingerprint\":\"v1\"}\n");
+        var c = ReviewTargetGate.check(dir, C, memo("exp:e1", "v1"));
+        assertTrue(c.ok(), c.reason());
+        assertEquals("OK", c.reason());
+    }
+
+    @Test void versionMismatchFailsClosed(@TempDir Path dir) throws Exception {
+        Files.writeString(dir.resolve("experience-" + C + ".jsonl"),
+                "{\"id\":\"e1\",\"publication\":\"TRIAL\",\"retracted\":false,\"content_fingerprint\":\"v2\"}\n");
+        var c = ReviewTargetGate.check(dir, C, memo("exp:e1", "v1"));
+        assertFalse(c.ok());
+        assertEquals("VERSION_MISMATCH", c.reason());
     }
 }

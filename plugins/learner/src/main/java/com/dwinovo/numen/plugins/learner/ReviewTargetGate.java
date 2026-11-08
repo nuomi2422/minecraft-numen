@@ -34,8 +34,11 @@ public final class ReviewTargetGate {
                 String pub = o.has("publication") && !o.get("publication").isJsonNull()
                         ? o.get("publication").getAsString() : "";
                 if ("REVOKED".equalsIgnoreCase(pub)) return new Check(false, "REVOKED");
-                // Current experience schema has no content fingerprint column; do not pretend it matches.
-                return new Check(true, "VERSION_UNVERIFIED");
+                String current = o.has("content_fingerprint") && !o.get("content_fingerprint").isJsonNull()
+                        ? o.get("content_fingerprint").getAsString() : "";
+                if (current.isBlank()) return new Check(false, "VERSION_UNVERIFIED");
+                if (!current.equals(version)) return new Check(false, "VERSION_MISMATCH");
+                return new Check(true, "OK");
             }
             return new Check(false, "MISSING");
         } catch (IOException | RuntimeException e) {

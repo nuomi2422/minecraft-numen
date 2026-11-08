@@ -403,6 +403,8 @@ public record ExperienceEntry(
         o.addProperty("consecutive_failures", Math.max(0, consecutiveFailures));
         // G6a：一律写出来（与 E8 五个字段同理由：能区分「显式 PUBLISHED」和「老文件没这个键」）
         o.addProperty("publication", (publication == null ? PublicationState.PUBLISHED : publication).name());
+        // 2026-11-08 bug-17/C1: durable content identity for cross-process version binding.
+        o.addProperty("content_fingerprint", contentFingerprint());
         return o;
     }
 

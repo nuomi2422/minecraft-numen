@@ -163,4 +163,11 @@ class ExperienceEntryCodecTest {
         assertEquals(1, e.sevenFieldsFilled(),
                 "★ 只有 derivation 非空 ⇒ 计数必须是 1（空串覆盖 + 纯空白都不算填）");
     }
+
+    @Test
+    void jsonCarriesContentFingerprintForVersionBinding() {
+        ExperienceEntry e = ExperienceEntry.builder()
+                .type(ExperienceType.TOOL_DEFECT).title("t").description("d").build();
+        assertEquals(e.contentFingerprint(), e.toJson().get("content_fingerprint").getAsString());
+    }
 }

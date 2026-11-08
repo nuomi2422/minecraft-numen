@@ -101,7 +101,7 @@ public record ExperienceDraft(
             // G6a（2026-10-22 由 G6b 补）：经验库加了 publication 字段，学习者这边没跟 ——
             // 契约清单必须同步，否则 ExperienceDraftKeysBindToRealEntryTest 会红（已实测红过）。
             // 注意：只进「契约清单」，**不进 WRITTEN_KEYS** —— 草稿不该宣称自己的发布状态。
-            "publication");
+            "publication", "content_fingerprint");
 
     /** 本映射实际会写的键（其余由记录层落盘时补，或刻意不写）。 */
     public static final List<String> WRITTEN_KEYS = List.of(
