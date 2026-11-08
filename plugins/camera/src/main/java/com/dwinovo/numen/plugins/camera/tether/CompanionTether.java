@@ -173,6 +173,16 @@ public final class CompanionTether {
         Entity t = CameraRig.resolveTarget();
         if (t != null) {
             lostTicks = 0;
+            // 2026-11-08: LOCK is a world anchor; follow must move the anchor with the target.
+            // Otherwise the spectator body teleports while the camera stays over old chunks -> void.
+            if (CameraRig.mode() == CameraRig.Mode.LOCK) {
+                double dx = CameraRig.lockX() - t.getX();
+                double dy = CameraRig.lockY() - t.getY();
+                double dz = CameraRig.lockZ() - t.getZ();
+                if (dx * dx + dy * dy + dz * dz > maxDist * maxDist) {
+                    CameraRig.setLock(t.getX() + 1.5, t.getY() + 2.0, t.getZ() + 1.5);
+                }
+            }
             if (t.distanceTo(mc.player) > maxDist && cooldownTicks == 0) {
                 tpTo((AbstractClientPlayer) t, "超出 " + (long) maxDist + " 格");
             }
