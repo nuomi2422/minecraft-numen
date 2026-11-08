@@ -75,6 +75,9 @@ public final class VideoRecorder {
     private static int tickCounter;
     private static volatile int frameIndex;
     private static volatile int pendingWrites;
+    /** 2026-11-09: one queued screenshot per render frame; Minecraft can run up to 10 ticks
+     * before the next frame, which otherwise queues 10 captures against the same framebuffer. */
+    private static volatile boolean captureQueued;
     private static volatile int written;
     private static volatile int dropped;
     private static volatile int failed;
@@ -177,6 +180,7 @@ public final class VideoRecorder {
         dropped = 0;
         failed = 0;
         haveLastHash = false;
+        captureQueued = false;
         achievedFps = 0f;          // 新 take 从 0 起算，别继承上一条的达成帧率
         VideoRecorder.dedupe = dedupe;
         tickCounter = 0;
@@ -208,6 +212,7 @@ public final class VideoRecorder {
             return "没在录。" + status();
         }
         recording = false;
+        captureQueued = false;
         sealPhase = SEAL_WAIT_IO;
         return "已停，等最后 " + pendingWrites + " 帧写完就自动封盘（看 /cam rec status）。";
     }
@@ -240,12 +245,14 @@ public final class VideoRecorder {
             return;
         }
         tickCounter = 0;
+        if (captureQueued) { return; }
         capture(mc);
     }
 
     private static void capture(Minecraft mc) {
         frameIndex++;
         pendingWrites++;
+        captureQueued = true;
         try {
             final int captureNo = frameIndex;
             final long captureNanos = System.nanoTime();
@@ -264,6 +271,7 @@ public final class VideoRecorder {
                 }
             }
             RenderSystem.recordRenderCall(() -> {
+                captureQueued = false;
                 synchronized (VideoRecorder.class) {
                     if (renderLog != null) {
                         try { renderLog.write(captureNo + "," + System.nanoTime() + "\n"); renderLog.flush(); }
