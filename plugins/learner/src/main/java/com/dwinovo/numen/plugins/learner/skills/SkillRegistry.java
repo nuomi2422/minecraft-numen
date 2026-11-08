@@ -174,7 +174,7 @@ public final class SkillRegistry {
         SkillEntry candidate = new SkillEntry(
                 skillId, 1, artifact.kind(), artifact.name(), artifact.purpose(),
                 artifact.audience(), artifact.triggerConditions(), artifact.excludeConditions(),
-                artifact.preconditions(), artifact.risk(), "",
+                artifact.preconditions(), artifact.risk() == null || artifact.risk().isBlank() ? "UNKNOWN" : artifact.risk(), "UNKNOWN",
                 trial ? SkillStatus.TRIAL : SkillStatus.DRAFT, bodyRef,
                 List.of(), artifact.sampleRefs(), List.of(), List.of());
 

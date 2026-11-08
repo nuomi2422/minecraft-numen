@@ -172,4 +172,12 @@ class SkillRegistryTest {
         assertTrue(other.isEmpty(), "不同触发词不应报近重复");
     }
 
+
+    @Test void missingRiskAndEvidenceAreUnknownNotBlank() {
+        SkillRegistry r = new SkillRegistry();
+        var d = r.register(artifact("n", "p", "b", "s-u"), "sk-u", "skill-body:x.md");
+        assertEquals(SkillRegistry.Outcome.REGISTERED, d.outcome());
+        assertEquals("UNKNOWN", d.entry().risk());
+        assertEquals("UNKNOWN", d.entry().evidenceLevel());
+    }
 }
