@@ -189,7 +189,7 @@ public final class VideoRecorder {
         frameLogFile = new File(d, "frames.csv");
         try {
             frameLog = Files.newBufferedWriter(frameLogFile.toPath(), StandardCharsets.UTF_8);
-            frameLog.write("capture,epochNanos,gameTime,cameraX,cameraY,cameraZ,fps\n");
+            frameLog.write("capture,epochNanos,gameTime,serverTick,cameraX,cameraY,cameraZ,fps\n");
             frameLog.flush();
             writeLog = Files.newBufferedWriter(new File(d, "writes.csv").toPath(), StandardCharsets.UTF_8);
             writeLog.write("capture,png,ioStartNanos,ioDoneNanos\n");
@@ -257,12 +257,13 @@ public final class VideoRecorder {
             final int captureNo = frameIndex;
             final long captureNanos = System.nanoTime();
             final long gameTime = mc.level == null ? -1L : mc.level.getGameTime();
+            final long serverTick = mc.getSingleplayerServer() == null ? -1L : mc.getSingleplayerServer().getTickCount();
             var ce = mc.getCameraEntity();
             final double cx = ce == null ? 0 : ce.getX(), cy = ce == null ? 0 : ce.getY(), cz = ce == null ? 0 : ce.getZ();
             synchronized (VideoRecorder.class) {
                 if (frameLog != null) {
                     try {
-                        frameLog.write(captureNo + "," + captureNanos + "," + gameTime + ","
+                        frameLog.write(captureNo + "," + captureNanos + "," + gameTime + "," + serverTick + ","
                                 + String.format(Locale.ROOT, "%.3f,%.3f,%.3f", cx, cy, cz) + "," + mc.getFps() + "\n");
                         frameLog.flush();
                     } catch (IOException ignored) {
