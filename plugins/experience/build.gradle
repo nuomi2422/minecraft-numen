@@ -20,6 +20,8 @@ dependencies {
     // G5d：桥要用统一检索契约。numen-plugin 约定已给 compileOnly project(':ai')，
     // 但 compileOnly 不会被 testCompileClasspath 继承 → 测试要显式加一次。
     testImplementation project(':ai')
+    // 2026-11-08 C1: cross-plugin E2E chain test only (experience expand -> learner intake -> gate).
+    testImplementation project(':plugins:learner')
     // 规划知识适配器(PlanningKnowledge/GuideKnowledge/ExperienceKnowledgeSource)的纯逻辑单测。
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'

@@ -49,9 +49,12 @@ public final class ExpansionReviewIntake {
                     continue; // consumed: retracted/missing must not be retried
                 }
                 String memoId = "expand-review:" + ref + "@" + version + "#" + use;
+                com.google.gson.JsonObject snap = new com.google.gson.JsonObject();
+                snap.addProperty("ref", ref);
+                snap.addProperty("version", version);
+                snap.addProperty("use_id", use);
                 Memo memo = new Memo(memoId, "复核展开正文 " + ref, "EXPERIENCE_EXPAND",
-                        "ref=" + ref + " version=" + version + " use_id=" + use,
-                        "expansion review requested after expand delivery", System.currentTimeMillis());
+                        "expansion review requested after expand delivery", snap.toString(), System.currentTimeMillis());
                 boolean ok;
                 try { ok = q.append(memo); } catch (RuntimeException e) { ok = false; }
                 if (ok || q.contains(memoId)) {

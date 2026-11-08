@@ -19,8 +19,20 @@ public final class ReviewTargetGate {
     public static Check check(Path configDir, UUID companion, Memo memo) {
         if (memo == null || !"EXPERIENCE_EXPAND".equals(memo.stage())) return new Check(true, "");
         String snap = memo.snapshot() == null ? "" : memo.snapshot();
-        String ref = field(snap, "ref");
-        String version = field(snap, "version");
+        String ref;
+        String version;
+        if (snap.trim().startsWith("{")) {
+            try {
+                JsonObject o = JsonParser.parseString(snap).getAsJsonObject();
+                ref = o.has("ref") ? o.get("ref").getAsString() : null;
+                version = o.has("version") ? o.get("version").getAsString() : null;
+            } catch (RuntimeException e) {
+                return new Check(false, "BAD_SNAPSHOT");
+            }
+        } else {
+            ref = field(snap, "ref");
+            version = field(snap, "version");
+        }
         if (ref == null || !ref.startsWith("exp:")) return new Check(false, "BAD_REF");
         if (version == null || version.isBlank()) return new Check(false, "VERSION_UNKNOWN");
         Path f = configDir.resolve("experience-" + companion + ".jsonl");
