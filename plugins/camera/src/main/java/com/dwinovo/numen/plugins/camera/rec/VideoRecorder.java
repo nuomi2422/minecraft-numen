@@ -83,6 +83,8 @@ public final class VideoRecorder {
     private static File frameLogFile;
     /** capture -> written PNG mapping with IO timings (separate from queue-time frames.csv). */
     private static java.io.BufferedWriter writeLog;
+    /** capture -> render-thread callback time (the missing middle point). */
+    private static java.io.BufferedWriter renderLog;
 
     /**
      * 落盘文件名用的<b>连续</b>序号，和 {@link #frameIndex}（抓帧计数）分开。
@@ -188,6 +190,9 @@ public final class VideoRecorder {
             writeLog = Files.newBufferedWriter(new File(d, "writes.csv").toPath(), StandardCharsets.UTF_8);
             writeLog.write("capture,png,ioStartNanos,ioDoneNanos\n");
             writeLog.flush();
+            renderLog = Files.newBufferedWriter(new File(d, "renders.csv").toPath(), StandardCharsets.UTF_8);
+            renderLog.write("capture,renderNanos\n");
+            renderLog.flush();
         } catch (IOException e) {
             frameLog = null;
         }
@@ -259,6 +264,12 @@ public final class VideoRecorder {
                 }
             }
             RenderSystem.recordRenderCall(() -> {
+                synchronized (VideoRecorder.class) {
+                    if (renderLog != null) {
+                        try { renderLog.write(captureNo + "," + System.nanoTime() + "\n"); renderLog.flush(); }
+                        catch (IOException ignored) { }
+                    }
+                }
                 NativeImage img;
                 try {
                     img = Screenshot.takeScreenshot(mc.getMainRenderTarget());
@@ -365,6 +376,7 @@ public final class VideoRecorder {
                 achievedFps = computeAchievedFps();
                 closeFrameLog();
                 if (writeLog != null) { try { writeLog.close(); } catch (IOException ignored) { } writeLog = null; }
+                if (renderLog != null) { try { renderLog.close(); } catch (IOException ignored) { } renderLog = null; }
                 writeMeta(d);
                 File exe = locateFfmpeg();
                 if (exe == null) {
