@@ -84,6 +84,14 @@ final class ExperienceExpandTool implements NumenTool {
                     r.ref(), version, ExposureLedger.KIND_EXPANDED,
                     toolCallId, r.truncated(), System.currentTimeMillis()));
             try {
+                if (ExpansionReviewQueue.enqueue(ExperiencePlugin.configDir(), r.ref(), version, String.valueOf(toolCallId))) {
+                    ExperienceMonitor.publish("expansion_review_queued", java.util.Map.of(
+                            "ref", r.ref(), "version", version, "use_id", String.valueOf(toolCallId)));
+                }
+            } catch (Throwable ignore) {
+                // queue is best-effort; delivery already recorded
+            }
+            try {
                 ExperienceMonitor.publish("expanded", java.util.Map.of(
                         "ref", r.ref(),
                         "version", version,
