@@ -484,17 +484,26 @@ public final class CameraRig {
                 String want = o.get("possess").getAsString().trim();
                 boolean changed = !want.equals(possessRequest);
                 possessRequest = want;
-                if (possessArmed && changed) {
-                    // 值变了才动手：文件扳机不能变成「每 20 tick 重试一次」的刷屏源。
-                    String msg = want.isEmpty()
-                            ? com.dwinovo.numen.plugins.camera.possess.Possession.release()
-                            : com.dwinovo.numen.plugins.camera.possess.Possession.possess(want);
-                    LOGGER.info("[numencam] cam.json possess={} -> {}", want.isEmpty() ? "(空)" : want, msg);
-                    // 也打到聊天栏：文件扳机是「没人敲指令」的路径，回执必须自己找地方说。
-                    com.dwinovo.numen.plugins.camera.possess.Possession.announce("cam.json possess=" + (want.isEmpty() ? "(空)" : want));
+                // 2026-11-08: first load must also act; previously possessArmed=false swallowed it,
+                // then changed=false on later reloads -> auto-bind never happened at world join.
+                Minecraft mc = Minecraft.getInstance();
+                if (!possessArmed || changed) {
+                    // First reload often happens before the integrated server/world exists.
+                    // Keep possessArmed=false so a later reload retries after join; otherwise
+                    // possessRequest is already equal and auto-bind silently never fires.
+                    if (want.isEmpty() || (mc.player != null && mc.level != null)) {
+                        String msg = want.isEmpty()
+                                ? com.dwinovo.numen.plugins.camera.possess.Possession.release()
+                                : com.dwinovo.numen.plugins.camera.possess.Possession.possess(want);
+                        LOGGER.info("[numencam] cam.json possess={} -> {}", want.isEmpty() ? "(空)" : want, msg);
+                        com.dwinovo.numen.plugins.camera.possess.Possession.announce("cam.json possess=" + (want.isEmpty() ? "(空)" : want));
+                        possessArmed = true;
+                    }
+                } else {
+                    possessArmed = true;
                 }
             }
-            possessArmed = true;
+            if (!o.has("possess")) possessArmed = true;
         } catch (RuntimeException e) {
             // 字段类型不对（比如 distance 写成字符串）——同样保留旧配置，别崩。
         }
