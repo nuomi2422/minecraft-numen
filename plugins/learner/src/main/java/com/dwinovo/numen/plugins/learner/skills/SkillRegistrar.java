@@ -107,7 +107,8 @@ public final class SkillRegistrar {
                 String skillId = skillIdOf(a);
                 // bodyRef 必须包含**内容**指纹：否则正文改了 bodyRef 不变，
                 // SkillRegistry 会判成 REUSE（同一份内容），修订永远发生不了。
-                String bodyRef = "draft:" + skillId + ":" + a.contentHash();
+                String stored = SkillBodyStore.write(configDir, skillId, 1, a.contentHash(), a.body());
+                String bodyRef = stored != null ? stored : "draft:" + skillId + ":" + a.contentHash();
                 boolean trial = trialIndexes != null && trialIndexes.contains(i);
                 SkillRegistry.Decision d = registry.register(a, skillId, bodyRef, trial);
                 switch (d.outcome()) {
