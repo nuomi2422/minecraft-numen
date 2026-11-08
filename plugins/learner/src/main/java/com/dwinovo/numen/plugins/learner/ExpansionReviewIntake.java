@@ -42,6 +42,12 @@ public final class ExpansionReviewIntake {
                 try { id = UUID.fromString(cs); } catch (RuntimeException bad) { rest.add(line); continue; }
                 MemoQueue q = queues.apply(id);
                 if (q == null) { rest.add(line); continue; }
+                String unavailable = unavailableReason(configDir, id, ref);
+                if (unavailable != null) {
+                    com.dwinovo.numen.plugins.learner.LearnerMonitor.publish("expansion_review_skipped",
+                            java.util.Map.of("ref", ref, "version", version, "use_id", use, "reason", unavailable));
+                    continue; // consumed: retracted/missing must not be retried
+                }
                 String memoId = "expand-review:" + ref + "@" + version + "#" + use;
                 Memo memo = new Memo(memoId, "复核展开正文 " + ref, "EXPERIENCE_EXPAND",
                         "ref=" + ref + " version=" + version + " use_id=" + use,
@@ -63,6 +69,27 @@ public final class ExpansionReviewIntake {
             return 0;
         }
         return admitted;
+    }
+
+    /** null = still available; otherwise skip reason. Version mismatch is left to review (not encoded in JSON). */
+    private static String unavailableReason(Path configDir, UUID companion, String ref) {
+        if (!ref.startsWith("exp:")) return "unsupported_ref";
+        String id = ref.substring(4);
+        Path f = configDir.resolve("experience-" + companion + ".jsonl");
+        if (!Files.isRegularFile(f)) return "experience_file_missing";
+        try {
+            for (String line : Files.readAllLines(f, StandardCharsets.UTF_8)) {
+                if (line == null || !line.contains("\"id\":\"" + id + "\"")) continue;
+                JsonObject o = JsonParser.parseString(line).getAsJsonObject();
+                if (o.has("retracted") && o.get("retracted").getAsBoolean()) return "retracted";
+                String pub = str(o, "publication");
+                if ("REVOKED".equalsIgnoreCase(pub)) return "revoked";
+                return null;
+            }
+            return "missing";
+        } catch (IOException | RuntimeException e) {
+            return "read_failed";
+        }
     }
 
     private static String str(JsonObject o, String k) {
