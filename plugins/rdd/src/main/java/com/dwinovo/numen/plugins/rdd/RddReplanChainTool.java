@@ -75,6 +75,11 @@ final class RddReplanChainTool implements NumenTool {
                 return;
             }
             TaskChain chain = rt.chain();
+            String lifecycleError = lifecycleError(chain);
+            if (!lifecycleError.isEmpty()) {
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail(lifecycleError).toJson());
+                return;
+            }
             String raw = str(args, "stages").trim();
             String reason = str(args, "reason");
             if (raw.isBlank()) {
@@ -115,6 +120,20 @@ final class RddReplanChainTool implements NumenTool {
         } catch (RuntimeException ex) {
             reply.accept(com.dwinovo.numen.task.TaskResult.fail("chain replan failed: " + ex.getMessage()).toJson());
         }
+    }
+
+    /** Replanning must not resurrect a finished chain or bypass owner standby. */
+    static String lifecycleError(TaskChain chain) {
+        if (chain == null) return "no active RDD task chain";
+        if (chain.primaryStatus() == com.dwinovo.numen.rdd.api.PrimaryGoalStatus.COMPLETED
+                || chain.primaryStatus() == com.dwinovo.numen.rdd.api.PrimaryGoalStatus.FAILED) {
+            return "replan refused: chain is already " + chain.primaryStatus();
+        }
+        var cur = chain.currentSubtask();
+        if (cur != null && chain.isOwnerPause(cur.id())) {
+            return "replan refused: owner standby is active; resume before replanning";
+        }
+        return "";
     }
 
     private static String str(JsonObject args, String key) {
