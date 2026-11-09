@@ -6,6 +6,16 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class RationaleContextTest {
     @Test
+    void staleGenerationCannotOverwriteNewer() {
+        UUID id = UUID.randomUUID();
+        RationaleContext.set(id, new RationaleContext.Entry("新理由足够长", "", "new", ""), 10);
+        RationaleContext.set(id, new RationaleContext.Entry("旧理由也够长", "", "old", ""), 9);
+        String xml = RationaleContext.render(id);
+        assertTrue(xml.contains("新理由足够长"));
+        assertFalse(xml.contains("旧理由也够长"));
+    }
+
+    @Test
     void acceptsShortCausalAndRejectsMultilingualGeneric() {
         assertTrue(RationaleContext.substantiveWhy("怕僵尸"));
         assertTrue(RationaleContext.substantiveWhy("因为害怕僵尸所以取盾"));

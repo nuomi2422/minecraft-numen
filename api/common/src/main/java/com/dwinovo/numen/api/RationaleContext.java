@@ -9,12 +9,25 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class RationaleContext {
     public record Entry(String why, String risks, String source, String conditions) {}
     private static final Map<UUID, Entry> ENTRIES = new ConcurrentHashMap<>();
+    private static final Map<UUID, Long> GENERATIONS = new ConcurrentHashMap<>();
 
     private RationaleContext() {}
 
     public static void set(UUID companionId, Entry entry) {
         if (companionId == null || entry == null) return;
+        long g = GENERATIONS.merge(companionId, 1L, Long::sum);
         ENTRIES.put(companionId, entry);
+    }
+
+    /** Higher generation wins; stale async callbacks are ignored. */
+    public static void set(UUID companionId, Entry entry, long generation) {
+        if (companionId == null || entry == null) return;
+        long[] accepted = {0};
+        GENERATIONS.compute(companionId, (id, old) -> {
+            long next = old == null ? generation : Math.max(old, generation);
+            if (old == null || generation >= old) { ENTRIES.put(id, entry); accepted[0] = 1; }
+            return next;
+        });
     }
     public static Entry get(UUID companionId) { return companionId == null ? null : ENTRIES.get(companionId); }
 
@@ -33,7 +46,11 @@ public final class RationaleContext {
                 || t.equals("wie geplant") || t.equals("comme prévu") || t.equals("según lo previsto")
                 || t.equals("как планировалось"));
     }
-    public static void clear(UUID companionId) { if (companionId != null) ENTRIES.remove(companionId); }
+    public static void clear(UUID companionId) {
+        if (companionId == null) return;
+        ENTRIES.remove(companionId);
+        GENERATIONS.remove(companionId);
+    }
 
     public static String render(UUID companionId) {
         Entry e = get(companionId);
