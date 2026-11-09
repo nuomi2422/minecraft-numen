@@ -61,6 +61,8 @@ final class RddSettleStageTool implements NumenTool {
                 .string("reason", "What makes this stage unnecessary or already achieved (required, reviewable).")
                 .bool("verified", "If true, require every condition of the target stage to match server world facts before settling.")
                 .bool("verify_final_goal", "If true (with verified), also require the final primary stage conditions to match.")
+                .string("state_version", "Required with verified: chain stateVersion the caller observed; stale -> refused.")
+                .string("plan_revision", "Required with verified: chain planRevision the caller observed; stale -> refused.")
                 .build();
     }
 
@@ -95,6 +97,11 @@ final class RddSettleStageTool implements NumenTool {
             String flagError = verifyFlagError(args);
             if (!flagError.isEmpty()) {
                 reply.accept(com.dwinovo.numen.task.TaskResult.fail(flagError).toJson());
+                return;
+            }
+            String generationError = verified ? generationError(chain, args) : "";
+            if (!generationError.isEmpty()) {
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail(generationError).toJson());
                 return;
             }
             if (verified) {
@@ -184,6 +191,29 @@ final class RddSettleStageTool implements NumenTool {
             return matches != null && matches.test(sub);
         } catch (RuntimeException e) {
             return false;   // unknown/error is not evidence; tool will report unmet and not settle
+        }
+    }
+
+    /** verified must bind to the exact chain generation the caller observed; missing is refused. */
+    static String generationError(TaskChain chain, JsonObject args) {
+        if (chain == null) return "settle refused: no chain";
+        Long state = longArg(args, "state_version");
+        Long revision = longArg(args, "plan_revision");
+        if (state == null || revision == null) {
+            return "settle refused: verified requires state_version and plan_revision from rdd_status";
+        }
+        if (state != chain.stateVersion() || revision != chain.planRevision()) {
+            return "settle refused: stale generation (state=" + state + "/" + chain.stateVersion()
+                    + ", revision=" + revision + "/" + chain.planRevision() + ")";
+        }
+        return "";
+    }
+
+    private static Long longArg(JsonObject args, String key) {
+        try {
+            return args != null && args.has(key) && !args.get(key).isJsonNull() ? args.get(key).getAsLong() : null;
+        } catch (RuntimeException e) {
+            return null;
         }
     }
 
