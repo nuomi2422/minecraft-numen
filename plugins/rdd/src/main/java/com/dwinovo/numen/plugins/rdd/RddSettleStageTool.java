@@ -59,6 +59,7 @@ final class RddSettleStageTool implements NumenTool {
         return Schema.object()
                 .string("primary_id", "Stage id to settle. Use \"current\" (or omit) for the stage you are on now.")
                 .string("reason", "What makes this stage unnecessary or already achieved (required, reviewable).")
+                .bool("verified", "If true, require every condition of the target stage to match server world facts before settling.")
                 .build();
     }
 
@@ -87,6 +88,24 @@ final class RddSettleStageTool implements NumenTool {
                 reply.accept(com.dwinovo.numen.task.TaskResult.fail(
                         "settle refused: unknown stage '" + targetId + "'; known stages: " + known).toJson());
                 return;
+            }
+            boolean verified = args.has("verified") && args.get("verified").getAsBoolean();
+            if (verified) {
+                PrimaryGoal target = null;
+                for (PrimaryGoal p : chain.goal().primaryGoals()) if (p.id().equals(targetId)) target = p;
+                Map<String, Integer> counts = RddDetector.countInventory(companion);
+                List<String> unmet = new ArrayList<>();
+                if (target != null) {
+                    for (var sub : target.subtasks()) {
+                        if (!RddDetector.conditionMatches(companion, sub, counts)) unmet.add(sub.id());
+                    }
+                }
+                if (target == null || !unmet.isEmpty()) {
+                    reply.accept(com.dwinovo.numen.task.TaskResult.fail(
+                            "settle refused: verified=true but world facts do not satisfy stage '" + targetId
+                                    + "' unmet=" + unmet).toJson());
+                    return;
+                }
             }
             long before = chain.stateVersion();
             String desc = chain.settlePrimaryByFact(targetId, reason);
