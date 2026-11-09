@@ -258,7 +258,7 @@ public final class ExperienceStore {
             }
         }
         if (index < 0) {
-            receipts.reportIfTracked(id);
+            if (id == null || !id.startsWith("skill:")) receipts.reportIfTracked(id);
             return null;
         }
         receipts.report(id);
