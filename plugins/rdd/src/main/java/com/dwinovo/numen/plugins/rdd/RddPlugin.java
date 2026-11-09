@@ -639,9 +639,17 @@ public final class RddPlugin implements NumenPlugin {
     }
 
     /** Mandatory RDD state; observation does not own task progress. */
+    private static String sideContextFor(UUID uuid) {
+        ServerPlayer body = RddCompanionBody.get(uuid);
+        if (body == null || body.level().getServer() == null) return SideTaskHost.contextFor(uuid, null, null);
+        var provider = com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.ServerIdentityProvider.class);
+        var snap = provider == null ? null : provider.snapshot(body.level().getServer());
+        return SideTaskHost.contextFor(uuid, snap == null ? null : snap.worldId(), snap == null ? null : snap.serverSession());
+    }
+
     private static String renderStateContext(UUID uuid) {
             // 2026-10-08 支线接管：支线 active 时当前目标投影为睡觉支线，主线上下文让位。
-            String sideContext = SideTaskHost.contextFor(uuid);
+            String sideContext = sideContextFor(uuid);
             if (sideContext != null) {
                 return withAssets(uuid, sideContext);
             }

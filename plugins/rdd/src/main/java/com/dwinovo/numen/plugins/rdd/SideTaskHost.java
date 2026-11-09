@@ -212,10 +212,13 @@ final class SideTaskHost {
     }
 
     static String contextFor(UUID companionId) {
+        // No current request identity at this call site: fail closed, never use the global stamp.
+        return contextFor(companionId, null, null);
+    }
+
+    static String contextFor(UUID companionId, String currentWorldId, String currentSession) {
         if (companionId == null) return null;
-        Map<String, String> now = com.dwinovo.numen.api.WorldContextStamp.snapshot();
-        return SIDE_CONTEXT.render(companionId,
-                now == null ? null : now.get("world_id"), now == null ? null : now.get("server_session"));
+        return SIDE_CONTEXT.render(companionId, currentWorldId, currentSession);
     }
 
     /** 当前支线类型 id（无支线 → null）：给"拒绝"工具做旧回执校验（防拒错一条）。 */
