@@ -155,6 +155,12 @@ public final class MonitoringJournal implements AutoCloseable {
             if (entry.identity() != null) {
                 envelope.putAll(entry.identity());
                 envelope.put("world_epoch", entry.epoch());
+                java.util.Map<String, String> current = com.dwinovo.numen.api.WorldContextStamp.snapshot();
+                if (current != null && !current.equals(entry.identity())) {
+                    envelope.put("stamp_conflict", true);
+                    envelope.put("stamp_world_id", current.getOrDefault("world_id", ""));
+                    envelope.put("stamp_server_session", current.getOrDefault("server_session", ""));
+                }
             }
             envelope.put("source", "numen");
             envelope.put("category", entry.category());

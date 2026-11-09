@@ -78,6 +78,8 @@ class WorldContextStampTest {
         assertEquals("world-A", a.get("world_id").getAsString());
         assertEquals("session-A", a.get("server_session").getAsString());
         assertEquals(tokenA.epoch(), a.get("world_epoch").getAsLong());
+        assertTrue(a.get("stamp_conflict").getAsBoolean());
+        assertEquals("world-B", a.get("stamp_world_id").getAsString());
         assertEquals("world-B", b.get("world_id").getAsString());
         assertFalse(c.has("world_id"));
         assertFalse(c.has("server_session"));
