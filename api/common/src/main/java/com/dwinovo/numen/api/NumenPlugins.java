@@ -312,8 +312,9 @@ public final class NumenPlugins {
      * 视角<b>本来就该不同</b>（75 号 §15.5 IC08）——EXECUTOR 只信 VERIFIED、非撤回、非 WARNING；
      * 合成一条缝就等于把两种视图混成一个，判据再也测不出来。
      */
-    private record ExecutorEntry(KnowledgeContributor contributor, int priority, String owner) {}
+    private record ExecutorEntry(KnowledgeContributor contributor, int priority, String owner, long seq) {}
     private static final List<ExecutorEntry> EXECUTOR = new CopyOnWriteArrayList<>();
+    private static final java.util.concurrent.atomic.AtomicLong EXECUTOR_SEQ = new java.util.concurrent.atomic.AtomicLong();
 
     /**
      * 执行角色知识的总字符上限。
@@ -357,7 +358,7 @@ public final class NumenPlugins {
     static void clearExecutorForTest() { EXECUTOR.clear(); }
 
     private static void registerExecutor(KnowledgeContributor contributor, int priority, String owner) {
-        EXECUTOR.add(new ExecutorEntry(contributor, priority, owner));
+        EXECUTOR.add(new ExecutorEntry(contributor, priority, owner, EXECUTOR_SEQ.incrementAndGet()));
     }
 
     /** 汇总所有插件为这只同伴的执行请求贡献的知识。<b>引擎内部调用</b>。 */
@@ -368,8 +369,14 @@ public final class NumenPlugins {
     /** 引擎内部调用：当前注册的执行知识贡献者快照（聚合时用，避免聚合中被并发注册）。 */
     public static List<KnowledgeContributor> executorContributors() {
         return EXECUTOR.stream()
-                .sorted(java.util.Comparator.comparingInt(ExecutorEntry::priority).reversed()
-                        .thenComparing(ExecutorEntry::owner))
+                .sorted((a, b) -> {
+                    int p = Integer.compare(b.priority(), a.priority());
+                    if (p != 0) return p;
+                    // All-default (0) registrations keep legacy insertion order.
+                    if (a.priority() == 0 && b.priority() == 0) return Long.compare(a.seq(), b.seq());
+                    int o = a.owner().compareTo(b.owner());
+                    return o != 0 ? o : Long.compare(a.seq(), b.seq());
+                })
                 .map(ExecutorEntry::contributor).toList();
     }
 

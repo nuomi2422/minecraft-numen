@@ -20,8 +20,8 @@ class ExecutorPriorityTest {
         NumenPlugins.contributeExecutorKnowledge(a, 0, "a");
         var list = NumenPlugins.executorContributors();
         assertSame(high, list.get(0));
-        assertSame(a, list.get(1));
+        assertSame(low, list.get(1));
         assertSame(b, list.get(2));
-        assertSame(low, list.get(3));
+        assertSame(a, list.get(3));
     }
 }
