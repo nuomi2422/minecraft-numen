@@ -60,6 +60,7 @@ final class RddSettleStageTool implements NumenTool {
                 .string("primary_id", "Stage id to settle. Use \"current\" (or omit) for the stage you are on now.")
                 .string("reason", "What makes this stage unnecessary or already achieved (required, reviewable).")
                 .bool("verified", "If true, require every condition of the target stage to match server world facts before settling.")
+                .bool("verify_final_goal", "If true (with verified), also require the final primary stage conditions to match.")
                 .build();
     }
 
@@ -98,6 +99,14 @@ final class RddSettleStageTool implements NumenTool {
                 if (target != null) {
                     for (var sub : target.subtasks()) {
                         if (!RddDetector.conditionMatches(companion, sub, counts)) unmet.add(sub.id());
+                    }
+                }
+                if (args.has("verify_final_goal") && args.get("verify_final_goal").getAsBoolean()) {
+                    var goals = chain.goal().primaryGoals();
+                    if (!goals.isEmpty()) {
+                        for (var sub : goals.get(goals.size() - 1).subtasks()) {
+                            if (!RddDetector.conditionMatches(companion, sub, counts)) unmet.add("final:" + sub.id());
+                        }
                     }
                 }
                 if (target == null || !unmet.isEmpty()) {
