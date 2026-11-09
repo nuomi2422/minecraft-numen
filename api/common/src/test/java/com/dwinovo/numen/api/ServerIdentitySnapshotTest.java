@@ -1,0 +1,38 @@
+package com.dwinovo.numen.api;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+class ServerIdentitySnapshotTest {
+    private final ServerIdentityProvider.Snapshot A = new ServerIdentityProvider.Snapshot("world-A", "session-A");
+    private final ServerIdentityProvider.Snapshot B = new ServerIdentityProvider.Snapshot("world-B", "session-B");
+
+    @AfterEach void clear() { WorldContextStamp.clear(); }
+
+    @Test void mapsConcreteSnapshotNotGlobalCurrent() {
+        var a = WorldContextStamp.tokenFrom(A);
+        WorldContextStamp.set("world-B", "session-B");
+        var b = WorldContextStamp.tokenFrom(B);
+        assertEquals("world-A", a.identity().get("world_id"));
+        assertEquals("world-B", b.identity().get("world_id"));
+    }
+
+    @Test void nullAndBlankAreUnknown() {
+        assertNull(WorldContextStamp.tokenFrom(null).identity());
+        assertNull(WorldContextStamp.tokenFrom(new ServerIdentityProvider.Snapshot("", "s")).identity());
+        assertNull(WorldContextStamp.tokenFrom(new ServerIdentityProvider.Snapshot("w", "")).identity());
+    }
+
+    @Test void sameWorldDifferentSessionStaysDistinct() {
+        var one = WorldContextStamp.tokenFrom(new ServerIdentityProvider.Snapshot("same", "s1"));
+        var two = WorldContextStamp.tokenFrom(new ServerIdentityProvider.Snapshot("same", "s2"));
+        assertNotEquals(one.identity().get("server_session"), two.identity().get("server_session"));
+    }
+
+    @Test void multipleServersDoNotShare() {
+        var one = WorldContextStamp.tokenFrom(A);
+        var two = WorldContextStamp.tokenFrom(B);
+        assertNotEquals(one.identity().get("world_id"), two.identity().get("world_id"));
+    }
+}

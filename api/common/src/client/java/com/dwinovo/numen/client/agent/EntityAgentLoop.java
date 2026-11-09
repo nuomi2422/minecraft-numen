@@ -2752,6 +2752,7 @@ public final class EntityAgentLoop {
         fr.put("whyStatus", com.dwinovo.numen.api.RationaleContext.whyStatus(rationale));
         fr.put("risksPresent", rationale != null && rationale.risks() != null && !rationale.risks().isBlank());
         fr.put("sourcePresent", rationale != null && rationale.source() != null && !rationale.source().isBlank());
+        fr.put("rationaleSource", rationale == null ? "" : String.valueOf(rationale.source()));
         fr.put("conditionsPresent", rationale != null && rationale.conditions() != null && !rationale.conditions().isBlank());
         com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "final_request", fr);
     }
