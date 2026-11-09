@@ -21,6 +21,36 @@ class WorldContextStampTest {
     @AfterEach void resetStamp() { WorldContextStamp.clear(); }
 
     @Test
+    void sameWorldDifferentSessionStaysDistinct() {
+        WorldContextStamp.set("same-world", "session-1");
+        var a = WorldContextStamp.capture();
+        WorldContextStamp.set("same-world", "session-2");
+        var b = WorldContextStamp.capture();
+        assertEquals("session-1", a.identity().get("server_session"));
+        assertEquals("session-2", b.identity().get("server_session"));
+    }
+
+    @Test
+    void tokenCapturedBeforeStopRemainsOldIdentity() {
+        WorldContextStamp.set("world-A", "session-A");
+        var beforeStop = WorldContextStamp.capture();
+        WorldContextStamp.clear();
+        var afterStop = WorldContextStamp.capture();
+        assertEquals("world-A", beforeStop.identity().get("world_id"));
+        assertFalse(afterStop.identity() != null);
+    }
+
+    @Test
+    void differentServersDoNotShareIdentity() {
+        WorldContextStamp.set("world-1", "session-1");
+        var one = WorldContextStamp.capture();
+        WorldContextStamp.set("world-2", "session-2");
+        var two = WorldContextStamp.capture();
+        assertFalse(one.identity().get("world_id").equals(two.identity().get("world_id")));
+        assertFalse(one.identity().get("server_session").equals(two.identity().get("server_session")));
+    }
+
+    @Test
     void tokenSurvivesWorldSwitchAndNullTokenIsUnknown() throws Exception {
         WorldContextStamp.set("world-A", "session-A");
         WorldContextStamp.Token tokenA = WorldContextStamp.capture();
