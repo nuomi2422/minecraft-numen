@@ -91,6 +91,7 @@ final class RddSettleStageTool implements NumenTool {
                 return;
             }
             boolean verified = args.has("verified") && args.get("verified").getAsBoolean();
+            boolean verifyFinalGoal = args.has("verify_final_goal") && args.get("verify_final_goal").getAsBoolean();
             if (verified) {
                 PrimaryGoal target = null;
                 for (PrimaryGoal p : chain.goal().primaryGoals()) if (p.id().equals(targetId)) target = p;
@@ -110,6 +111,13 @@ final class RddSettleStageTool implements NumenTool {
                     }
                 }
                 if (target == null || !unmet.isEmpty()) {
+                    java.util.Map<String, Object> rej = new java.util.LinkedHashMap<>();
+                    rej.put("companionId", companion.getUUID().toString());
+                    rej.put("primary", targetId);
+                    rej.put("verified", true);
+                    rej.put("verify_final_goal", args.has("verify_final_goal") && args.get("verify_final_goal").getAsBoolean());
+                    rej.put("unmet", unmet);
+                    RddMonitor.publish("primary_settle_rejected", rej);
                     reply.accept(com.dwinovo.numen.task.TaskResult.fail(
                             "settle refused: verified=true but world facts do not satisfy stage '" + targetId
                                     + "' unmet=" + unmet).toJson());
@@ -132,6 +140,9 @@ final class RddSettleStageTool implements NumenTool {
             data.put("stateVersionAfter", chain.stateVersion());
             data.put("primaryStatus", chain.primaryStatus().name());
             data.put("currentPrimary", chain.currentPrimary().id());
+            data.put("verified", verified);
+            data.put("verify_final_goal", verifyFinalGoal);
+            data.put("unmet", java.util.List.of());
             RddMonitor.publish("primary_settled_by_fact", data);
 
             Map<String, Object> out = new LinkedHashMap<>();
