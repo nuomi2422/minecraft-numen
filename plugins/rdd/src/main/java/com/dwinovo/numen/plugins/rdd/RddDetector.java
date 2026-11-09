@@ -893,11 +893,16 @@ final class RddDetector {
                             && conditionMatches(ap, s, counts)))
                     .toList();
             if (verified.size() != proposal.subtaskIds().size() || verified.isEmpty()) return;
-            String key = proposal.chainInstanceId() + "|" + proposal.planRevision() + "|" + proposal.stateVersion()
-                    + "|" + verified;
+            java.util.Map<String, String> stamp = com.dwinovo.numen.api.WorldContextStamp.snapshot();
+            String world = stamp == null ? "" : stamp.getOrDefault("world_id", "");
+            String session = stamp == null ? "" : stamp.getOrDefault("server_session", "");
+            String key = world + "|" + session + "|" + proposal.chainInstanceId() + "|" + proposal.planRevision()
+                    + "|" + proposal.stateVersion() + "|" + verified;
             if (key.equals(EARLY_PROPOSAL_SENT.put(ap.getUUID(), key))) return;
             java.util.Map<String, Object> data = new java.util.LinkedHashMap<>();
             data.put("companionId", ap.getUUID().toString());
+            data.put("worldId", world);
+            data.put("serverSession", session);
             data.put("chainInstanceId", proposal.chainInstanceId());
             data.put("planRevision", proposal.planRevision());
             data.put("stateVersion", proposal.stateVersion());
