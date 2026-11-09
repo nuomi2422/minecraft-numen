@@ -10,7 +10,7 @@ public final class RddEarlyCompletionProposal {
     public record Proposal(List<String> subtaskIds, long planRevision, String chainInstanceId,
                            long stateVersion, Map<String, Integer> evidence, long sampledAtMillis) {}
 
-    /** Aligns with the existing carry-hint stale window (RddCarryHint.STALE_MS = 10s); not a new policy constant. */
+    /** 暂用技术策略：参考既有 RddCarryHint.STALE_MS=10s，不是主人定值，也不是跨数据源契约。 */
     public static final long STALE_MS = 10_000L;
 
     private RddEarlyCompletionProposal() {}
