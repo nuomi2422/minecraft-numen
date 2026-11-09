@@ -374,6 +374,7 @@ public final class NumenPlugins {
     }
 
     private static void publishKnowledgeGap(UUID companion, int index, String reason, String detail) {
+        if (reason == null || !KnowledgeGaps.allow(companion, index, reason, System.currentTimeMillis())) return;
         try {
             var data = new java.util.LinkedHashMap<String, Object>();
             data.put("companion_id", String.valueOf(companion));
@@ -402,15 +403,15 @@ public final class NumenPlugins {
             } catch (Throwable e) {
                 failed++;
                 Constants.LOG.error("[numen] 插件的执行知识算不出来,这一段跳过", e);
-                publishKnowledgeGap(companion, accepted, "read-failed", e.getClass().getSimpleName());
+                publishKnowledgeGap(companion, accepted, KnowledgeGaps.reasonFor(null, e), e.getClass().getSimpleName());
                 continue;
             }
             if (f == null) {
-                publishKnowledgeGap(companion, accepted, "body-missing", "null");
-                continue;
+                continue; // no result is not a gap
             }
             if (f.text() == null || f.text().isBlank()) {
-                if (!f.refs().isEmpty()) publishKnowledgeGap(companion, accepted, "body-missing", "blank-with-refs");
+                String reason = KnowledgeGaps.reasonFor(f, null);
+                if (reason != null) publishKnowledgeGap(companion, accepted, reason, "blank-with-refs");
                 continue;
             }
             String piece = sb.length() == 0 ? f.text() : PLANNING_KNOWLEDGE_SEPARATOR + f.text();
