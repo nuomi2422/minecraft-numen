@@ -205,22 +205,22 @@ final class SideTaskHost {
     }
 
     /** 执行 AI 上下文：支线 active 时返回完整 {@code <rdd>…</rdd>}，否则 null。只读缓存。 */
+    /** Pure seam: stale/missing identity must not leak the old block. */
+    static String decorateContext(String block, String cachedWorldId, String cachedSession,
+                                  String dimension, long sampledGameTime,
+                                  String currentWorldId, String currentSession) {
+        return SideContextDecorator.decorate(block, cachedWorldId, cachedSession, dimension, sampledGameTime,
+                currentWorldId, currentSession);
+    }
+
     static String contextFor(UUID companionId) {
         if (companionId == null) return null;
         CachedContext cached = SIDE_CONTEXT.get(companionId);
         if (cached == null) return null;
         Map<String, String> now = com.dwinovo.numen.api.WorldContextStamp.snapshot();
-        boolean same = now != null && cached.saveWorldId().equals(now.get("world_id"))
-                && cached.serverSession().equals(now.get("server_session"));
-        if (!same) {
-            return "<rdd><enabled>true</enabled><active>false</active>"
-                    + "<side_context_status>UNKNOWN</side_context_status>"
-                    + "<note>支线上下文来源/生命周期不匹配，不注入旧事实；请重新评估当前目标。</note></rdd>";
-        }
-        return cached.block().replace("</rdd>",
-                "<side_context_status>CURRENT</side_context_status>"
-                        + "<side_context_dimension>" + cached.dimension() + "</side_context_dimension>"
-                        + "<side_context_sampled_game_time>" + cached.sampledGameTime() + "</side_context_sampled_game_time></rdd>");
+        return decorateContext(cached.block(), cached.saveWorldId(), cached.serverSession(),
+                cached.dimension(), cached.sampledGameTime(),
+                now == null ? null : now.get("world_id"), now == null ? null : now.get("server_session"));
     }
 
     /** 当前支线类型 id（无支线 → null）：给"拒绝"工具做旧回执校验（防拒错一条）。 */
