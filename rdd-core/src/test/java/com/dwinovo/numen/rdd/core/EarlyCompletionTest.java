@@ -25,5 +25,6 @@ class EarlyCompletionTest {
         assertEquals(List.of(oneDiamond, iron), got);
         assertEquals(SubtaskStatus.PENDING, chain.currentSubtaskStatus());
         assertTrue(EarlyCompletion.satisfied(chain, Map.of("minecraft:diamond", 1), 999L).isEmpty());
+        assertTrue(EarlyCompletion.satisfied(chain, Map.of("minecraft:diamond", 1), chain.planRevision(), "other-chain").isEmpty());
     }
 }

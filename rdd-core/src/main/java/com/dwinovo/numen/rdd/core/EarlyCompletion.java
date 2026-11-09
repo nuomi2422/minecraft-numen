@@ -15,6 +15,14 @@ public final class EarlyCompletion {
         return satisfied(chain, counts);
     }
 
+    /** Same scan, additionally binding the owning chain instance. */
+    public static List<Subtask> satisfied(TaskChain chain, Map<String, Integer> counts,
+                                          long expectedPlanRevision, String expectedChainInstanceId) {
+        if (chain == null || expectedChainInstanceId == null
+                || !expectedChainInstanceId.equals(chain.chainInstanceId())) return List.of();
+        return satisfied(chain, counts, expectedPlanRevision);
+    }
+
     public static List<Subtask> satisfied(TaskChain chain, Map<String, Integer> counts) {
         List<Subtask> out = new ArrayList<>();
         if (chain == null || counts == null) return out;
