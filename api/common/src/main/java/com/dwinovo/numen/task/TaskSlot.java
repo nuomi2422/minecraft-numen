@@ -104,6 +104,7 @@ final class TaskSlot {
             settle();
         }
         rec.setState(TaskState.RUNNING);
+        rec.bindIdentity(com.dwinovo.numen.api.WorldContextStamp.capture(companion.level().getServer()));
         rec.markStarted(companion.level().getGameTime());
         task = TaskFactory.create(companion, rec);
         record = rec;

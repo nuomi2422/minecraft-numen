@@ -112,7 +112,7 @@ public record ExecuteToolPayload(UUID entityUuid,
             companion = com.dwinovo.numen.entity.Companions.respawn(server, p.entityUuid());
         }
         if (companion != null) {
-            handleCompanion(p, player, companion, WorldContextStamp.capture());
+            handleCompanion(p, player, companion, WorldContextStamp.capture(player.level().getServer()));
             return;
         }
         replyError(player, p, "companion not found (never summoned, or its data is gone)");

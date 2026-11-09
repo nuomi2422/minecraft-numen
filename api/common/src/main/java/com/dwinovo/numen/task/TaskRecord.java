@@ -31,8 +31,8 @@ import com.dwinovo.numen.api.WorldContextStamp;
 public abstract class TaskRecord {
 
     private static final AtomicLong ID_SOURCE = new AtomicLong();
-    /** 2026-11-09 A1: identity captured when the record is constructed (dispatch time). */
-    private final WorldContextStamp.Token identityToken = WorldContextStamp.capture();
+    /** 2026-11-09 A1: bound from the dispatch server object by TaskSlot.put. */
+    private WorldContextStamp.Token identityToken;
 
     /** Monotonically increasing internal id; only used for logging / dedup. */
     /**
@@ -79,6 +79,7 @@ public abstract class TaskRecord {
 
     public final long getId() { return id; }
     public final WorldContextStamp.Token identityToken() { return identityToken; }
+    public final void bindIdentity(WorldContextStamp.Token token) { if (identityToken == null) identityToken = token; }
     public final String getToolName() { return toolName; }
     public final String getToolCallId() { return toolCallId; }
     public final long getDeadlineGameTime() { return deadlineGameTime; }

@@ -236,6 +236,15 @@ public final class WorldStateService {
         return sessionFor(server);
     }
 
+    /** 2026-11-09 A1: independent snapshot for the exact server object; null when unknown. */
+    public com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identitySnapshot(MinecraftServer server) {
+        if (server == null) return null;
+        String w = worldId(server);
+        String s = sessionFor(server);
+        if (w == null || w.isBlank() || s == null || s.isBlank()) return null;
+        return new com.dwinovo.numen.api.ServerIdentityProvider.Snapshot(w, s);
+    }
+
     private static synchronized String sessionFor(MinecraftServer server) {
         if (server == null) return "";
         var entries = SERVER_SESSIONS.entrySet().iterator();
