@@ -296,6 +296,18 @@ public final class TaskChain {
     }
     public synchronized PrimaryGoal currentPrimary() { return goal.primaryGoals().get(primaryIndex); }
 
+    /** 2026-11-09: read-only list of not-yet-terminal subtasks, for early-completion checks. */
+    public synchronized java.util.List<Subtask> pendingSubtasks() {
+        java.util.List<Subtask> out = new java.util.ArrayList<>();
+        for (PrimaryGoal p : goal.primaryGoals()) {
+            for (Subtask s : p.subtasks()) {
+                SubtaskStatus st = statuses.get(s.id());
+                if (st == SubtaskStatus.PENDING) out.add(s);
+            }
+        }
+        return out;
+    }
+
     /**
      * 当前一级的所有前置资产(waitFor)是否都被 counts 满足（无 waitFor → true）。
      *
