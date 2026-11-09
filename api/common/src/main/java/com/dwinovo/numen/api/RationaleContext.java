@@ -28,6 +28,10 @@ public final class RationaleContext {
         return b.append("</rationale>").toString();
     }
     private static void append(StringBuilder b, String k, String v) {
-        if (v != null && !v.isBlank()) b.append('<').append(k).append('>').append(v).append("</").append(k).append('>');
+        if (v != null && !v.isBlank()) {
+            String safe = v.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+            if (safe.length() > 500) safe = safe.substring(0, 500) + "...";
+            b.append('<').append(k).append('>').append(safe).append("</").append(k).append('>');
+        }
     }
 }
