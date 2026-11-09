@@ -31,9 +31,10 @@ public final class MonitoringJournal implements AutoCloseable {
     private static final MonitoringJournal INSTANCE = new MonitoringJournal();
     /** 进程级运行标识：tools/events 同由本 writer 落盘，消费者可据此跨文件关联（旧行缺字段=unknown）。 */
     private static final String SESSION_ID = java.util.UUID.randomUUID().toString();
+    private static final java.util.concurrent.atomic.AtomicLong EVENT_SEQ = new java.util.concurrent.atomic.AtomicLong();
 
     private record Entry(String category, String type, Map<String, Object> data, long time,
-                         Map<String, String> identity, long epoch) {}
+                         Map<String, String> identity, long epoch, long seq) {}
 
     private final BlockingQueue<Entry> queue = new ArrayBlockingQueue<>(DEFAULT_CAPACITY);
     private final AtomicBoolean running = new AtomicBoolean(true);
@@ -81,7 +82,7 @@ public final class MonitoringJournal implements AutoCloseable {
         if (data != null) copy.putAll(data);
         Entry entry = new Entry(safeCategory, safeType, copy, System.currentTimeMillis(),
                 com.dwinovo.numen.api.WorldContextStamp.snapshot(),
-                com.dwinovo.numen.api.WorldContextStamp.epoch());
+                com.dwinovo.numen.api.WorldContextStamp.epoch(), EVENT_SEQ.incrementAndGet());
         if (!queue.offer(entry)) {
             dropped++;
         }
@@ -97,7 +98,7 @@ public final class MonitoringJournal implements AutoCloseable {
         if (data != null) copy.putAll(data);
         Map<String, String> identity = token == null ? null : token.identity();
         Entry entry = new Entry(safeCategory, safeType, copy, System.currentTimeMillis(), identity,
-                token == null ? 0L : token.epoch());
+                token == null ? 0L : token.epoch(), EVENT_SEQ.incrementAndGet());
         if (!queue.offer(entry)) dropped++;
     }
 
@@ -150,6 +151,7 @@ public final class MonitoringJournal implements AutoCloseable {
             Map<String, Object> envelope = new LinkedHashMap<>();
             envelope.put("schema_version", 1);
             envelope.put("event_id", entry.category() + "-" + entry.time() + "-" + queue.size());
+            envelope.put("event_seq", entry.seq());
             envelope.put("session", SESSION_ID);
             envelope.put("timestamp", Instant.ofEpochMilli(entry.time()).toString());
             if (entry.identity() != null) {
