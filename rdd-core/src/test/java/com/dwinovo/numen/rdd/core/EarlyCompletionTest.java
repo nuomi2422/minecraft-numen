@@ -12,6 +12,15 @@ class EarlyCompletionTest {
     }
 
     @Test
+    void oneStackCannotSatisfyTwoPendingSteps() {
+        Subtask a = item("a", "minecraft:diamond", 1);
+        Subtask b = item("b", "minecraft:diamond", 1);
+        TaskChain chain = new TaskChain(new Goal("g", "g", List.of(new PrimaryGoal("p", "p", List.of(a, b)))));
+        assertTrue(EarlyCompletion.satisfied(chain, Map.of("minecraft:diamond", 1)).isEmpty());
+        assertEquals(List.of(a, b), EarlyCompletion.satisfied(chain, Map.of("minecraft:diamond", 2)));
+    }
+
+    @Test
     void onlyInventorySatisfiedPendingSubtasks() {
         Subtask oneDiamond = item("a", "minecraft:diamond", 1);
         Subtask twoDiamond = item("b", "minecraft:diamond", 2);
@@ -21,8 +30,8 @@ class EarlyCompletionTest {
         TaskChain chain = new TaskChain(new Goal("g", "g", List.of(
                 new PrimaryGoal("p1", "p1", List.of(oneDiamond, twoDiamond)),
                 new PrimaryGoal("p2", "p2", List.of(iron, chestDiamond)))));
-        var got = EarlyCompletion.satisfied(chain, Map.of("minecraft:diamond", 1, "minecraft:iron_ingot", 1));
-        assertEquals(List.of(oneDiamond, iron), got);
+        var got = EarlyCompletion.satisfied(chain, Map.of("minecraft:diamond", 3, "minecraft:iron_ingot", 1));
+        assertEquals(List.of(oneDiamond, twoDiamond, iron), got);
         assertEquals(SubtaskStatus.PENDING, chain.currentSubtaskStatus());
         assertTrue(EarlyCompletion.satisfied(chain, Map.of("minecraft:diamond", 1), 999L).isEmpty());
         assertTrue(EarlyCompletion.satisfied(chain, Map.of("minecraft:diamond", 1), chain.planRevision(), "other-chain").isEmpty());

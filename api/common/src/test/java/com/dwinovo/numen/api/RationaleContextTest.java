@@ -13,6 +13,7 @@ class RationaleContextTest {
         String xml = RationaleContext.render(id);
         assertTrue(xml.contains("新理由足够长"));
         assertFalse(xml.contains("旧理由也够长"));
+        assertEquals(10L, RationaleContext.generation(id));
     }
 
     @Test

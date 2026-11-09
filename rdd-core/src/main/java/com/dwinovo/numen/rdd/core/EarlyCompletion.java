@@ -26,6 +26,7 @@ public final class EarlyCompletion {
     public static List<Subtask> satisfied(TaskChain chain, Map<String, Integer> counts) {
         List<Subtask> out = new ArrayList<>();
         if (chain == null || counts == null) return out;
+        java.util.Map<String, Integer> required = new java.util.HashMap<>();
         for (Subtask task : chain.pendingSubtasks()) {
             Map<String, Object> c = task.condition();
             if (c == null || !"item".equals(c.get("type"))) continue;
@@ -34,8 +35,18 @@ public final class EarlyCompletion {
             Object source = c.get("source");
             if (source != null && !"inventory".equals(String.valueOf(source))) continue;
             if (HardCodedEvaluator.minimumOf(c) <= 0) continue;
-            if (HardCodedEvaluator.matches(c, counts, null)) out.add(task);
+            if (HardCodedEvaluator.matches(c, counts, null)) {
+                String item = String.valueOf(c.get("item"));
+                required.merge(item, HardCodedEvaluator.minimumOf(c), Integer::sum);
+                out.add(task);
+            }
         }
+        // Shared-item guard: total requirement across pending steps must fit in the same counts.
+        out.removeIf(task -> {
+            String item = String.valueOf(task.condition().get("item"));
+            int need = required.getOrDefault(item, 0);
+            return need > counts.getOrDefault(item, 0);
+        });
         return out;
     }
 }

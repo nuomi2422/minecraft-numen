@@ -30,6 +30,7 @@ public final class RationaleContext {
         });
     }
     public static Entry get(UUID companionId) { return companionId == null ? null : ENTRIES.get(companionId); }
+    public static long generation(UUID companionId) { return companionId == null ? 0L : GENERATIONS.getOrDefault(companionId, 0L); }
 
     /** Reject generic restatements that are not a causal reason. Heuristic, not proof. */
     public static String whyStatus(Entry e) {
