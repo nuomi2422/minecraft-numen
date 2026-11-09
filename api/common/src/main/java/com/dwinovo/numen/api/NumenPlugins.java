@@ -373,6 +373,19 @@ public final class NumenPlugins {
      * {@code request_delivered} 归零。现在按条目边界判定：能找到 {@code ref="<ref>" ... </entry>}
      * 且闭合标签在保留前缀内的记 false，跨切点/找不到边界的才记 true（保守）。
      */
+    private static void publishKnowledgeBudget(UUID companion, int accepted, int truncated, int skipped, int chars) {
+        try {
+            var data = new java.util.LinkedHashMap<String, Object>();
+            data.put("companion_id", String.valueOf(companion));
+            data.put("accepted", accepted);
+            data.put("truncated", truncated);
+            data.put("skipped_contributors", skipped);
+            data.put("chars", chars);
+            data.put("limit", MAX_EXECUTOR_KNOWLEDGE_CHARS);
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "knowledge_budget", data);
+        } catch (RuntimeException ignored) { }
+    }
+
     private static void publishKnowledgeGapCounts(UUID companion, java.util.Map<String, Integer> counts) {
         try {
             var data = new java.util.LinkedHashMap<String, Object>();
@@ -409,7 +422,8 @@ public final class NumenPlugins {
         int accepted = 0;
         int failed = 0;
         int truncated = 0;
-        for (KnowledgeContributor c : contributors) {
+        for (int ci = 0; ci < contributors.size(); ci++) {
+            KnowledgeContributor c = contributors.get(ci);
             KnowledgeFragment f;
             try {
                 f = c.contribute(companion, obj);
