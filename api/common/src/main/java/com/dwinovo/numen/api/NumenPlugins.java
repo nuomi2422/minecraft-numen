@@ -369,6 +369,16 @@ public final class NumenPlugins {
      * {@code request_delivered} 归零。现在按条目边界判定：能找到 {@code ref="<ref>" ... </entry>}
      * 且闭合标签在保留前缀内的记 false，跨切点/找不到边界的才记 true（保守）。
      */
+    private static void publishKnowledgeGap(UUID companion, int index, String reason) {
+        try {
+            var data = new java.util.LinkedHashMap<String, Object>();
+            data.put("companion_id", String.valueOf(companion));
+            data.put("contributor_index", index);
+            data.put("reason", reason);
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "knowledge_gap", data);
+        } catch (RuntimeException ignored) { }
+    }
+
     public static KnowledgeFragment aggregateExecutorKnowledgeFragment(
             List<KnowledgeContributor> contributors, UUID companion, String objective) {
         if (contributors == null || contributors.isEmpty() || companion == null) {
@@ -387,6 +397,7 @@ public final class NumenPlugins {
             } catch (Throwable e) {
                 failed++;
                 Constants.LOG.error("[numen] 插件的执行知识算不出来,这一段跳过", e);
+                publishKnowledgeGap(companion, accepted, e.getClass().getSimpleName());
                 continue;
             }
             if (f == null || f.text() == null || f.text().isBlank()) {
