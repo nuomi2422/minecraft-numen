@@ -2830,9 +2830,8 @@ public final class EntityAgentLoop {
             sections.add(runtimeSection(SECTION_EXECUTOR_KNOWLEDGE, executorKnowledge,
                     PRIORITY_EXECUTOR_KNOWLEDGE));
         }
-        if (rationale != null && !rationale.isBlank()) {
-            sections.add(runtimeSection(SECTION_RATIONALE, rationale, PRIORITY_RATIONALE));
-        }
+        var rationaleSection = rationaleSection(entityUuid);
+        if (rationaleSection != null) sections.add(rationaleSection);
         return sections;
     }
 
@@ -2843,6 +2842,13 @@ public final class EntityAgentLoop {
     private static final int PRIORITY_RIDING = 30;
     private static final int PRIORITY_EFFECTS = 20;
     private static final int PRIORITY_INVENTORY = 10;       // 工具可重取，且通常最大 → 第一个丢
+
+    /** 044 §0.7: extractable rationale section; null means omit, not empty section. */
+    static ContextBudget.Section rationaleSection(UUID companionId) {
+        String rationale = com.dwinovo.numen.api.RationaleContext.render(companionId);
+        if (rationale == null || rationale.isBlank()) return null;
+        return runtimeSection(SECTION_RATIONALE, rationale, PRIORITY_RATIONALE);
+    }
 
     private static ContextBudget.Section runtimeSection(String name, String text, int priority) {
         return new ContextBudget.Section(name, text, false, estimateTokensOfText(text), priority);
