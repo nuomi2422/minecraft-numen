@@ -24,4 +24,18 @@ class RddEarlyCompletionProposalTest {
         assertNull(RddEarlyCompletionProposal.propose(chain, Map.of("minecraft:diamond", 1)));
         assertNull(RddEarlyCompletionProposal.propose(chain, null));
     }
+
+    @Test void renderIsUnverifiedOnlyWithIdentityAndFreshSample() {
+        Subtask a = item("a");
+        TaskChain chain = new TaskChain(new Goal("g", "g", List.of(new PrimaryGoal("p", "p", List.of(a)))));
+        var p = RddEarlyCompletionProposal.propose(chain, Map.of("minecraft:diamond", 1));
+        assertNotNull(p);
+        String ok = RddEarlyCompletionProposal.render(p, "w", "s", p.sampledAtMillis());
+        assertTrue(ok.contains("status=\"UNVERIFIED\""));
+        assertTrue(ok.contains("a"));
+        assertTrue(RddEarlyCompletionProposal.render(p, null, "s", p.sampledAtMillis()).contains("UNKNOWN"));
+        String expired = RddEarlyCompletionProposal.render(p, "w", "s", p.sampledAtMillis() + 180_000L);
+        assertTrue(expired.contains("UNKNOWN"));
+        assertFalse(expired.contains(">a<"), "expired notice must not carry old ids");
+    }
 }

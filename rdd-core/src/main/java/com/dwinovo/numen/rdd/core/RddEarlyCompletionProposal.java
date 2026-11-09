@@ -10,6 +10,9 @@ public final class RddEarlyCompletionProposal {
     public record Proposal(List<String> subtaskIds, long planRevision, String chainInstanceId,
                            long stateVersion, Map<String, Integer> evidence, long sampledAtMillis) {}
 
+    /** Aligns with the existing carry-hint stale window (RddCarryHint.STALE_MS = 10s); not a new policy constant. */
+    public static final long STALE_MS = 10_000L;
+
     private RddEarlyCompletionProposal() {}
 
     public static Proposal propose(TaskChain chain, Map<String, Integer> inventoryCounts) {
@@ -29,7 +32,7 @@ public final class RddEarlyCompletionProposal {
     public static String render(Proposal p, String currentWorld, String currentSession, long nowMillis) {
         if (p == null) return "";
         if (currentWorld == null || currentSession == null
-                || nowMillis - p.sampledAtMillis() < 0 || nowMillis - p.sampledAtMillis() > 120_000L) {
+                || nowMillis - p.sampledAtMillis() < 0 || nowMillis - p.sampledAtMillis() > STALE_MS) {
             return "<early_completion_proposal status=\"UNKNOWN\"/>";
         }
         return "<early_completion_proposal status=\"UNVERIFIED\" chain=\"" + p.chainInstanceId()
