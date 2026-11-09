@@ -441,6 +441,7 @@ public final class RddPlugin implements NumenPlugin {
         CALLBACKS.clear(() -> {
             DECOMPOSING.clear();
             RddGoalDriver.clearAll();
+            RddCompanionBody.clearAll();
             BODY.clear();
             RUNTIMES.clear();
             ASSETS.clear();
