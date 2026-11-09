@@ -29,17 +29,27 @@ public final class WorldContextStamp {
     public static Token capture() { return new Token(STAMP.get(), EPOCH.get()); }
     public static long epoch() { return EPOCH.get(); }
 
-    /** Independent path: ask the host for identity of this exact server object. */
-    public static Token capture(MinecraftServer server) {
-        if (server == null) return new Token(null, 0L);
-        var provider = NumenPlugins.capability(ServerIdentityProvider.class);
-        if (provider == null) return new Token(null, 0L);
-        var snap = provider.snapshot(server);
+    public static Token tokenFrom(ServerIdentityProvider.Snapshot snap) {
         if (snap == null || snap.worldId() == null || snap.worldId().isBlank()
                 || snap.serverSession() == null || snap.serverSession().isBlank()) {
             return new Token(null, 0L);
         }
         return new Token(Map.of("world_id", snap.worldId(), "server_session", snap.serverSession()), EPOCH.get());
+    }
+
+    /** Independent path: ask the host for identity of this exact server object. */
+    private static volatile Token TEST_TOKEN;
+
+    /** Package/test seam: inject a concrete identity without constructing a MinecraftServer. */
+    public static void installForTest(Token token) { TEST_TOKEN = token; }
+    public static void resetForTest() { TEST_TOKEN = null; }
+    public static Token captureForTest() { return TEST_TOKEN; }
+
+    public static Token capture(MinecraftServer server) {
+        if (server == null) return new Token(null, 0L);
+        var provider = NumenPlugins.capability(ServerIdentityProvider.class);
+        if (provider == null) return new Token(null, 0L);
+        return tokenFrom(provider.snapshot(server));
     }
     public static void clear() { EPOCH.incrementAndGet(); STAMP.set(null); }
 }

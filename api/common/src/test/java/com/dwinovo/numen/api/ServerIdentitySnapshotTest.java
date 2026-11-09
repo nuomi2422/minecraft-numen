@@ -8,7 +8,7 @@ class ServerIdentitySnapshotTest {
     private final ServerIdentityProvider.Snapshot A = new ServerIdentityProvider.Snapshot("world-A", "session-A");
     private final ServerIdentityProvider.Snapshot B = new ServerIdentityProvider.Snapshot("world-B", "session-B");
 
-    @AfterEach void clear() { WorldContextStamp.clear(); }
+    @AfterEach void clear() { WorldContextStamp.clear(); WorldContextStamp.resetForTest(); }
 
     @Test void mapsConcreteSnapshotNotGlobalCurrent() {
         var a = WorldContextStamp.tokenFrom(A);
@@ -16,6 +16,12 @@ class ServerIdentitySnapshotTest {
         var b = WorldContextStamp.tokenFrom(B);
         assertEquals("world-A", a.identity().get("world_id"));
         assertEquals("world-B", b.identity().get("world_id"));
+    }
+
+    @Test void injectedTokenIsReturnedWithoutServer() {
+        var token = WorldContextStamp.tokenFrom(A);
+        WorldContextStamp.installForTest(token);
+        assertSame(token, WorldContextStamp.captureForTest());
     }
 
     @Test void nullAndBlankAreUnknown() {
