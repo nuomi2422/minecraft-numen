@@ -425,6 +425,9 @@ final class RddDetector {
             if (SideTaskHost.isActive(ap.getUUID())) {
                 return;
             }
+            if (ps == PrimaryGoalStatus.ACTIVE) {
+                maybePublishEarlyProposal(ap, chain, counts);
+            }
             // ★ 2026-10-31（本会话实测）：REPLANNING 的兜底计时表只在"超时"分支里清，
             //   链正常回到 ACTIVE 时没人清 —— 下一次 REPLANNING 会从**上一次进入的时刻**起算，
             //   把 5 分钟的兜底算成 17~33 分钟（waited_ms = 1975744 / 1831659 / 1045416）。
@@ -878,6 +881,33 @@ final class RddDetector {
      *
      * @return true = 本 tick 已处理（调用方应 return，不再照旧推进）
      */
+    private static final java.util.Map<java.util.UUID, String> EARLY_PROPOSAL_SENT = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Propose only; never settle/skip. Re-verifies each hit with the existing server-side fact predicate. */
+    private static void maybePublishEarlyProposal(NumenPlayer ap, TaskChain chain, java.util.Map<String, Integer> counts) {
+        try {
+            var proposal = com.dwinovo.numen.rdd.core.RddEarlyCompletionProposal.propose(chain, counts);
+            if (proposal == null) return;
+            var verified = proposal.subtaskIds().stream()
+                    .filter(id -> chain.pendingSubtasks().stream().anyMatch(s -> s.id().equals(id)
+                            && conditionMatches(ap, s, counts)))
+                    .toList();
+            if (verified.size() != proposal.subtaskIds().size() || verified.isEmpty()) return;
+            String key = proposal.chainInstanceId() + "|" + proposal.planRevision() + "|" + proposal.stateVersion()
+                    + "|" + verified;
+            if (key.equals(EARLY_PROPOSAL_SENT.put(ap.getUUID(), key))) return;
+            java.util.Map<String, Object> data = new java.util.LinkedHashMap<>();
+            data.put("companionId", ap.getUUID().toString());
+            data.put("chainInstanceId", proposal.chainInstanceId());
+            data.put("planRevision", proposal.planRevision());
+            data.put("stateVersion", proposal.stateVersion());
+            data.put("subtasks", verified);
+            data.put("evidence", proposal.evidence());
+            data.put("source", "early_completion_proposal");
+            RddMonitor.publish("early_completion_proposal", data);
+        } catch (RuntimeException ignored) { }
+    }
+
     private boolean tickNegotiation(NumenPlayer ap, RddRuntime rt, TaskChain chain) {
         com.dwinovo.numen.rdd.fail.TaskNegotiation n = RddNegotiationInbox.peek(ap.getUUID());
         if (n == null || (!n.needsSupervisorAction() && !n.isPauseRequest())) {
