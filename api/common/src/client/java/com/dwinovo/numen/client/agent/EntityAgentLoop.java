@@ -2742,6 +2742,17 @@ public final class EntityAgentLoop {
                 "companion_id", entityUuid.toString(), "turn", convo.turnCount(),
                 "origin", origin, "attempt", attempt,
                 "source", "request_context", "target", "numen", "context", xml));
+        var rationale = com.dwinovo.numen.api.RationaleContext.get(entityUuid);
+        java.util.Map<String, Object> fr = new java.util.LinkedHashMap<>();
+        fr.put("companion_id", entityUuid.toString());
+        fr.put("requestKind", "execute");
+        fr.put("turn", convo.turnCount());
+        fr.put("rationalePresent", rationale != null);
+        fr.put("whyPresent", rationale != null && rationale.why() != null && !rationale.why().isBlank());
+        fr.put("risksPresent", rationale != null && rationale.risks() != null && !rationale.risks().isBlank());
+        fr.put("sourcePresent", rationale != null && rationale.source() != null && !rationale.source().isBlank());
+        fr.put("conditionsPresent", rationale != null && rationale.conditions() != null && !rationale.conditions().isBlank());
+        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "final_request", fr);
     }
 
     /** 段落名进丢弃原因与 monitor 事件，必须稳定可 grep。 */
