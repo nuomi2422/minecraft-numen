@@ -16,9 +16,11 @@ class EarlyCompletionTest {
         Subtask oneDiamond = item("a", "minecraft:diamond", 1);
         Subtask twoDiamond = item("b", "minecraft:diamond", 2);
         Subtask iron = item("c", "minecraft:iron_ingot", 1);
+        Subtask chestDiamond = Subtask.hardCoded("d", "chest",
+                Map.of("type", "item", "item", "minecraft:diamond", "minimum", 1, "source", "chest"));
         TaskChain chain = new TaskChain(new Goal("g", "g", List.of(
                 new PrimaryGoal("p1", "p1", List.of(oneDiamond, twoDiamond)),
-                new PrimaryGoal("p2", "p2", List.of(iron)))));
+                new PrimaryGoal("p2", "p2", List.of(iron, chestDiamond)))));
         var got = EarlyCompletion.satisfied(chain, Map.of("minecraft:diamond", 1, "minecraft:iron_ingot", 1));
         assertEquals(List.of(oneDiamond, iron), got);
         assertEquals(SubtaskStatus.PENDING, chain.currentSubtaskStatus());

@@ -18,6 +18,8 @@ public final class EarlyCompletion {
             if (c == null || !"item".equals(c.get("type"))) continue;
             Object mode = c.get("mode");
             if (mode != null && !HardCodedEvaluator.MODE_HOLD.equals(String.valueOf(mode))) continue;
+            Object source = c.get("source");
+            if (source != null && !"inventory".equals(String.valueOf(source))) continue;
             if (HardCodedEvaluator.minimumOf(c) <= 0) continue;
             if (HardCodedEvaluator.matches(c, counts, null)) out.add(task);
         }
