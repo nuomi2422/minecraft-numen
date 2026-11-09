@@ -92,6 +92,11 @@ final class RddSettleStageTool implements NumenTool {
             }
             boolean verified = args.has("verified") && args.get("verified").getAsBoolean();
             boolean verifyFinalGoal = args.has("verify_final_goal") && args.get("verify_final_goal").getAsBoolean();
+            if (verifyFinalGoal && !verified) {
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail(
+                        "settle refused: verify_final_goal requires verified=true; no facts were checked").toJson());
+                return;
+            }
             if (verified) {
                 PrimaryGoal target = null;
                 for (PrimaryGoal p : chain.goal().primaryGoals()) if (p.id().equals(targetId)) target = p;
