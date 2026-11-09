@@ -6,6 +6,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class RationaleContextTest {
     @Test
+    void acceptsShortCausalAndRejectsMultilingualGeneric() {
+        assertTrue(RationaleContext.substantiveWhy("怕僵尸"));
+        assertTrue(RationaleContext.substantiveWhy("因为害怕僵尸所以取盾"));
+        assertFalse(RationaleContext.substantiveWhy("comme prévu"));
+        assertFalse(RationaleContext.substantiveWhy(""));
+        assertEquals("ABSENT", RationaleContext.whyStatus(null));
+        assertEquals("GENERIC", RationaleContext.whyStatus(new RationaleContext.Entry("按计划", "", "s", "")));
+        assertEquals("PRESENT", RationaleContext.whyStatus(new RationaleContext.Entry("怕僵尸", "", "s", "")));
+    }
+
+    @Test
     void genericWhyIsOmittedAndCompanionsIsolated() {
         UUID a = UUID.randomUUID();
         UUID b = UUID.randomUUID();

@@ -19,12 +19,19 @@ public final class RationaleContext {
     public static Entry get(UUID companionId) { return companionId == null ? null : ENTRIES.get(companionId); }
 
     /** Reject generic restatements that are not a causal reason. Heuristic, not proof. */
+    public static String whyStatus(Entry e) {
+        if (e == null || e.why() == null || e.why().isBlank()) return "ABSENT";
+        return substantiveWhy(e.why()) ? "PRESENT" : "GENERIC";
+    }
+
     public static boolean substantiveWhy(String why) {
         if (why == null) return false;
         String t = why.trim().toLowerCase(java.util.Locale.ROOT);
-        if (t.length() < 8) return false;
+        if (t.length() < 3) return false;
         return !(t.equals("按计划") || t.equals("按计划继续") || t.equals("继续") || t.equals("用户说") || t.equals("主人说")
-                || t.equals("as planned") || t.equals("continue") || t.equals("user said"));
+                || t.equals("as planned") || t.equals("continue") || t.equals("user said")
+                || t.equals("wie geplant") || t.equals("comme prévu") || t.equals("según lo previsto")
+                || t.equals("как планировалось"));
     }
     public static void clear(UUID companionId) { if (companionId != null) ENTRIES.remove(companionId); }
 
