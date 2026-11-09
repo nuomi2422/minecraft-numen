@@ -112,6 +112,8 @@ final class RddSettleStageTool implements NumenTool {
             // 跨链继承：写进完成事实库，重提同一目标时同一阶段自动跳过（与"跑完了"同一待遇）。
             RddPlugin.recordStageFact(companion.getUUID(), chain.goal(), desc);
             RddPlugin.saveRuntimes();
+            com.dwinovo.numen.api.RationaleContext.set(companion.getUUID(),
+                    new com.dwinovo.numen.api.RationaleContext.Entry(reason, "", "rdd_settle_stage", "verified=" + verified));
             RddPlugin.publishTaskSnapshot(companion.getUUID(), "stage_settled_by_fact");
 
             Map<String, Object> data = new LinkedHashMap<>();
