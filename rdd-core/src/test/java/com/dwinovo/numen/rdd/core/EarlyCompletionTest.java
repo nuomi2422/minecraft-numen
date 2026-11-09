@@ -21,6 +21,17 @@ class EarlyCompletionTest {
     }
 
     @Test
+    void malformedOrNonItemConditionsAreNotCompleted() {
+        Subtask block = Subtask.hardCoded("b", "block", Map.of("type", "block", "block", "minecraft:stone"));
+        Subtask zero = item("z", "minecraft:diamond", 0);
+        Subtask negative = item("n", "minecraft:diamond", -1);
+        TaskChain chain = new TaskChain(new Goal("g", "g", List.of(new PrimaryGoal("p", "p", List.of(block, zero, negative)))));
+        assertTrue(EarlyCompletion.satisfied(chain, Map.of("minecraft:diamond", 99)).isEmpty(),
+                "non-item/zero/negative conditions are incomplete, not satisfied");
+        assertTrue(EarlyCompletion.satisfied(chain, null).isEmpty());
+    }
+
+    @Test
     void sharedItemAcrossPrimaryGoalsIsNotDoubleCounted() {
         Subtask a = item("a", "minecraft:diamond", 1);
         Subtask b = item("b", "minecraft:diamond", 1);
