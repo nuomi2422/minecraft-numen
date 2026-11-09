@@ -674,8 +674,6 @@ public final class RddPlugin implements NumenPlugin {
                         + "<state>stage_reached_expanding</state>"
                         + "<current_phase>" + escape(chain.currentPrimary().description()) + "</current_phase></rdd>");
             }
-            com.dwinovo.numen.api.RationaleContext.set(uuid, new com.dwinovo.numen.api.RationaleContext.Entry(
-                    current.description(), "", "rdd-chain:" + chain.chainInstanceId(), String.valueOf(current.condition())));
             return withAssets(uuid, "<rdd><enabled>true</enabled><active>true</active>"
                     + "<primary_status>" + chain.primaryStatus() + "</primary_status>"
                     + "<subtask>" + escape(current.id()) + "</subtask>"
