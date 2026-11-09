@@ -882,6 +882,22 @@ final class RddDetector {
      * @return true = 本 tick 已处理（调用方应 return，不再照旧推进）
      */
     private static final java.util.Map<java.util.UUID, String> EARLY_PROPOSAL_SENT = new java.util.concurrent.ConcurrentHashMap<>();
+    private record EarlyLatest(com.dwinovo.numen.rdd.core.RddEarlyCompletionProposal.Proposal p,
+                               String world, String session) {}
+    private static final java.util.Map<java.util.UUID, EarlyLatest> EARLY_PROPOSAL_LATEST = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Planner-visible read-only notice; mismatched/expired identity yields UNKNOWN and no old ids. */
+    static String earlyProposalNotice(java.util.UUID id, String currentWorld, String currentSession) {
+        EarlyLatest latest = id == null ? null : EARLY_PROPOSAL_LATEST.get(id);
+        if (latest == null) return "";
+        long now = System.currentTimeMillis();
+        if (currentWorld == null || currentSession == null
+                || !java.util.Objects.equals(latest.world(), currentWorld)
+                || !java.util.Objects.equals(latest.session(), currentSession)) {
+            return com.dwinovo.numen.rdd.core.RddEarlyCompletionProposal.render(latest.p(), null, null, now);
+        }
+        return com.dwinovo.numen.rdd.core.RddEarlyCompletionProposal.render(latest.p(), currentWorld, currentSession, now);
+    }
 
     private static com.dwinovo.numen.api.ServerIdentityProvider.Snapshot proposalIdentity(NumenPlayer ap) {
         try {
@@ -923,6 +939,7 @@ final class RddDetector {
             data.put("sampledAtMillis", System.currentTimeMillis());
             data.put("source", "early_completion_proposal");
             RddMonitor.publish("early_completion_proposal", data);
+            EARLY_PROPOSAL_LATEST.put(ap.getUUID(), new EarlyLatest(proposal, world, session));
         } catch (RuntimeException ignored) { }
     }
 

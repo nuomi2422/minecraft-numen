@@ -8,7 +8,7 @@ import java.util.Map;
 /** Read-only proposal: facts already satisfy some pending subtasks; it never settles or skips anything. */
 public final class RddEarlyCompletionProposal {
     public record Proposal(List<String> subtaskIds, long planRevision, String chainInstanceId,
-                           long stateVersion, Map<String, Integer> evidence) {}
+                           long stateVersion, Map<String, Integer> evidence, long sampledAtMillis) {}
 
     private RddEarlyCompletionProposal() {}
 
@@ -22,6 +22,18 @@ public final class RddEarlyCompletionProposal {
             if (item != null) evidence.put(String.valueOf(item), inventoryCounts.getOrDefault(String.valueOf(item), 0));
         }
         return new Proposal(hit.stream().map(Subtask::id).toList(), chain.planRevision(),
-                chain.chainInstanceId(), chain.stateVersion(), evidence);
+                chain.chainInstanceId(), chain.stateVersion(), evidence, System.currentTimeMillis());
+    }
+
+    /** Planner-readable, never verified: matching request identity -> UNVERIFIED; absent/mismatch/expired -> UNKNOWN. */
+    public static String render(Proposal p, String currentWorld, String currentSession, long nowMillis) {
+        if (p == null) return "";
+        if (currentWorld == null || currentSession == null
+                || nowMillis - p.sampledAtMillis() < 0 || nowMillis - p.sampledAtMillis() > 120_000L) {
+            return "<early_completion_proposal status=\"UNKNOWN\"/>";
+        }
+        return "<early_completion_proposal status=\"UNVERIFIED\" chain=\"" + p.chainInstanceId()
+                + "\" plan_revision=\"" + p.planRevision() + "\" sampled_at_ms=\"" + p.sampledAtMillis()
+                + "\">" + String.join(",", p.subtaskIds()) + "</early_completion_proposal>";
     }
 }

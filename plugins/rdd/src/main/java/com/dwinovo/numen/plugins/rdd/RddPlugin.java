@@ -375,6 +375,8 @@ public final class RddPlugin implements NumenPlugin {
         });
         numen.contributeState("rdd", "runtime", true, 100, uuid -> {
             String requiredContext = renderStateContext(uuid);
+            String earlyNotice = earlyProposalNoticeFor(uuid);
+            if (!earlyNotice.isEmpty()) requiredContext = requiredContext + "\n" + earlyNotice;
             // 2026-11-06: monitor is the pre-budget String, not final-request delivery evidence.
             // Include optional text once without rerunning the stateful renderer.
             String basePlaybook = renderBasePlaybook(uuid);
@@ -646,6 +648,23 @@ public final class RddPlugin implements NumenPlugin {
         var provider = com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.ServerIdentityProvider.class);
         var snap = provider == null ? null : provider.snapshot(body.level().getServer());
         return SideTaskHost.contextFor(uuid, snap == null ? null : snap.worldId(), snap == null ? null : snap.serverSession());
+    }
+
+    /** Read-only planner notice; current request-server identity comes from the body, never a global stamp. */
+    private static String earlyProposalNoticeFor(UUID uuid) {
+        try {
+            ServerPlayer body = RddCompanionBody.get(uuid);
+            if (body == null || body.level() == null || body.level().getServer() == null) {
+                return RddDetector.earlyProposalNotice(uuid, null, null);
+            }
+            var provider = com.dwinovo.numen.api.NumenPlugins.capability(
+                    com.dwinovo.numen.api.ServerIdentityProvider.class);
+            var snap = provider == null ? null : provider.snapshot(body.level().getServer());
+            return RddDetector.earlyProposalNotice(uuid,
+                    snap == null ? null : snap.worldId(), snap == null ? null : snap.serverSession());
+        } catch (RuntimeException e) {
+            return "";
+        }
     }
 
     private static String renderStateContext(UUID uuid) {
