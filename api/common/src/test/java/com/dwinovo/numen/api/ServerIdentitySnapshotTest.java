@@ -24,6 +24,15 @@ class ServerIdentitySnapshotTest {
         assertSame(token, WorldContextStamp.captureForTest());
     }
 
+    @Test void injectedTokenWinsOverCurrentStampConflict() {
+        var old = WorldContextStamp.tokenFrom(A);
+        WorldContextStamp.set("world-B", "session-B");
+        WorldContextStamp.installForTest(old);
+        assertEquals("world-A", WorldContextStamp.captureForTest().identity().get("world_id"));
+        WorldContextStamp.resetForTest();
+        assertNull(WorldContextStamp.captureForTest());
+    }
+
     @Test void nullAndBlankAreUnknown() {
         assertNull(WorldContextStamp.tokenFrom(null).identity());
         assertNull(WorldContextStamp.tokenFrom(new ServerIdentityProvider.Snapshot("", "s")).identity());
