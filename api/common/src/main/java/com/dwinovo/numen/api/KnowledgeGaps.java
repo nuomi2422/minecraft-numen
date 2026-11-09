@@ -13,6 +13,7 @@ final class KnowledgeGaps {
 
     /** null result is "no result", not a gap; blank with refs is a missing body. */
     static String reasonFor(NumenPlugins.KnowledgeFragment f, Throwable error) {
+        if (error instanceof KnowledgeGapException ge) return ge.reason() == KnowledgeGapException.Reason.BODY_MISSING ? "body-missing" : "read-failed";
         if (error != null) return "read-failed";
         if (f == null) return null;
         if ((f.text() == null || f.text().isBlank()) && !f.refs().isEmpty()) return "body-missing";

@@ -16,6 +16,10 @@ class KnowledgeGapsTest {
     }
     @Test void exceptionIsReadFailed() {
         assertEquals("read-failed", KnowledgeGaps.reasonFor(null, new RuntimeException()));
+        assertEquals("body-missing", KnowledgeGaps.reasonFor(null,
+                new KnowledgeGapException(KnowledgeGapException.Reason.BODY_MISSING, "x")));
+        assertEquals("read-failed", KnowledgeGaps.reasonFor(null,
+                new KnowledgeGapException(KnowledgeGapException.Reason.READ_FAILED, "x")));
     }
     @Test void validBodyIsNotGap() {
         assertNull(KnowledgeGaps.reasonFor(NumenPlugins.KnowledgeFragment.ofText("ok"), null));

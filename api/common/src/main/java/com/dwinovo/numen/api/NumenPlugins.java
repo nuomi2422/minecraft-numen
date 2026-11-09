@@ -403,7 +403,7 @@ public final class NumenPlugins {
             } catch (Throwable e) {
                 failed++;
                 Constants.LOG.error("[numen] 插件的执行知识算不出来,这一段跳过", e);
-                publishKnowledgeGap(companion, accepted, KnowledgeGaps.reasonFor(null, e), e.getClass().getSimpleName());
+                publishKnowledgeGap(companion, accepted, KnowledgeGaps.reasonFor(null, e), e instanceof KnowledgeGapException ge ? ge.reason().name().toLowerCase(java.util.Locale.ROOT) : e.getClass().getSimpleName());
                 continue;
             }
             if (f == null) {
