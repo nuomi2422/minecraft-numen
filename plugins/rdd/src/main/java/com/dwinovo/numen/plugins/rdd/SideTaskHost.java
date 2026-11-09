@@ -212,11 +212,15 @@ final class SideTaskHost {
         Map<String, String> now = com.dwinovo.numen.api.WorldContextStamp.snapshot();
         boolean same = now != null && cached.saveWorldId().equals(now.get("world_id"))
                 && cached.serverSession().equals(now.get("server_session"));
-        String status = same ? "CURRENT" : "UNKNOWN";
-        String meta = "<side_context_status>" + status + "</side_context_status>"
-                + "<side_context_dimension>" + cached.dimension() + "</side_context_dimension>"
-                + "<side_context_sampled_game_time>" + cached.sampledGameTime() + "</side_context_sampled_game_time>";
-        return cached.block().replace("</rdd>", meta + "</rdd>");
+        if (!same) {
+            return "<rdd><enabled>true</enabled><active>false</active>"
+                    + "<side_context_status>UNKNOWN</side_context_status>"
+                    + "<note>支线上下文来源/生命周期不匹配，不注入旧事实；请重新评估当前目标。</note></rdd>";
+        }
+        return cached.block().replace("</rdd>",
+                "<side_context_status>CURRENT</side_context_status>"
+                        + "<side_context_dimension>" + cached.dimension() + "</side_context_dimension>"
+                        + "<side_context_sampled_game_time>" + cached.sampledGameTime() + "</side_context_sampled_game_time></rdd>");
     }
 
     /** 当前支线类型 id（无支线 → null）：给"拒绝"工具做旧回执校验（防拒错一条）。 */
