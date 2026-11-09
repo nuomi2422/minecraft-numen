@@ -45,6 +45,26 @@ class ServerIdentitySnapshotTest {
         assertNotEquals(one.identity().get("server_session"), two.identity().get("server_session"));
     }
 
+    @Test void aToBSwitchDoesNotLeakOldTokenAfterClear() {
+        var oldA = WorldContextStamp.tokenFrom(A);
+        WorldContextStamp.installForTest(oldA);
+        WorldContextStamp.set("world-B", "session-B");
+        assertEquals("world-A", WorldContextStamp.captureForTest().identity().get("world_id"),
+                "in-flight request keeps its producer token across A→B");
+        WorldContextStamp.resetForTest();
+        var currentB = WorldContextStamp.snapshot();
+        assertNotNull(currentB, "process stamp keeps B");
+        assertEquals("world-B", currentB.get("world_id"), "new request captures B");
+        assertNotEquals("world-A", currentB.get("world_id"));
+    }
+
+    @Test void clearMeansNoCurrentServerNotOldToken() {
+        WorldContextStamp.installForTest(WorldContextStamp.tokenFrom(A));
+        WorldContextStamp.set("world-A", "session-A");
+        WorldContextStamp.clear();
+        assertNull(WorldContextStamp.snapshot());
+    }
+
     @Test void multipleServersDoNotShare() {
         var one = WorldContextStamp.tokenFrom(A);
         var two = WorldContextStamp.tokenFrom(B);
