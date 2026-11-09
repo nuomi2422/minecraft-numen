@@ -29,9 +29,11 @@ public final class RddEarlyCompletionProposal {
     }
 
     /** Planner-readable, never verified: matching request identity -> UNVERIFIED; absent/mismatch/expired -> UNKNOWN. */
-    public static String render(Proposal p, String currentWorld, String currentSession, long nowMillis) {
+    public static String render(Proposal p, String expectedWorld, String expectedSession,
+                                String currentWorld, String currentSession, long nowMillis) {
         if (p == null) return "";
-        if (currentWorld == null || currentSession == null
+        if (expectedWorld == null || expectedSession == null || currentWorld == null || currentSession == null
+                || !expectedWorld.equals(currentWorld) || !expectedSession.equals(currentSession)
                 || nowMillis - p.sampledAtMillis() < 0 || nowMillis - p.sampledAtMillis() > STALE_MS) {
             return "<early_completion_proposal status=\"UNKNOWN\"/>";
         }

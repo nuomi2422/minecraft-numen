@@ -898,9 +898,11 @@ final class RddDetector {
                 || !java.util.Objects.equals(latest.p().chainInstanceId(), currentChainId)
                 || latest.p().planRevision() != currentRevision
                 || latest.p().stateVersion() != currentStateVersion) {
-            return com.dwinovo.numen.rdd.core.RddEarlyCompletionProposal.render(latest.p(), null, null, now);
+            return com.dwinovo.numen.rdd.core.RddEarlyCompletionProposal.render(
+                    latest.p(), latest.world(), latest.session(), null, null, now);
         }
-        return com.dwinovo.numen.rdd.core.RddEarlyCompletionProposal.render(latest.p(), currentWorld, currentSession, now);
+        return com.dwinovo.numen.rdd.core.RddEarlyCompletionProposal.render(
+                latest.p(), latest.world(), latest.session(), currentWorld, currentSession, now);
     }
 
     private static com.dwinovo.numen.api.ServerIdentityProvider.Snapshot proposalIdentity(NumenPlayer ap) {

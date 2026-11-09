@@ -25,17 +25,21 @@ class RddEarlyCompletionProposalTest {
         assertNull(RddEarlyCompletionProposal.propose(chain, null));
     }
 
-    @Test void renderIsUnverifiedOnlyWithIdentityAndFreshSample() {
+    @Test void renderIsUnverifiedOnlyWithMatchingIdentityAndFreshSample() {
         Subtask a = item("a");
         TaskChain chain = new TaskChain(new Goal("g", "g", List.of(new PrimaryGoal("p", "p", List.of(a)))));
         var p = RddEarlyCompletionProposal.propose(chain, Map.of("minecraft:diamond", 1));
         assertNotNull(p);
-        String ok = RddEarlyCompletionProposal.render(p, "w", "s", p.sampledAtMillis());
+        String ok = RddEarlyCompletionProposal.render(p, "w", "s", "w", "s", p.sampledAtMillis());
         assertTrue(ok.contains("status=\"UNVERIFIED\""));
         assertTrue(ok.contains("a"));
-        assertTrue(RddEarlyCompletionProposal.render(p, null, "s", p.sampledAtMillis()).contains("UNKNOWN"));
-        String expired = RddEarlyCompletionProposal.render(p, "w", "s", p.sampledAtMillis() + 180_000L);
+        assertTrue(RddEarlyCompletionProposal.render(p, "w", "s", "other", "s", p.sampledAtMillis())
+                .contains("UNKNOWN"), "different world must not show old facts");
+        assertTrue(RddEarlyCompletionProposal.render(p, "w", "s", "w", "other", p.sampledAtMillis())
+                .contains("UNKNOWN"), "different session must not show old facts");
+        String expired = RddEarlyCompletionProposal.render(p, "w", "s", "w", "s", p.sampledAtMillis() + 180_000L);
         assertTrue(expired.contains("UNKNOWN"));
         assertFalse(expired.contains(">a<"), "expired notice must not carry old ids");
+        assertTrue(RddEarlyCompletionProposal.render(p, "w", "s", null, null, p.sampledAtMillis()).contains("UNKNOWN"));
     }
 }
