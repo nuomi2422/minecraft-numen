@@ -101,20 +101,8 @@ final class RddSettleStageTool implements NumenTool {
                 PrimaryGoal target = null;
                 for (PrimaryGoal p : chain.goal().primaryGoals()) if (p.id().equals(targetId)) target = p;
                 Map<String, Integer> counts = RddDetector.countInventory(companion);
-                List<String> unmet = new ArrayList<>();
-                if (target != null) {
-                    for (var sub : target.subtasks()) {
-                        if (!RddDetector.conditionMatches(companion, sub, counts)) unmet.add(sub.id());
-                    }
-                }
-                if (args.has("verify_final_goal") && args.get("verify_final_goal").getAsBoolean()) {
-                    var goals = chain.goal().primaryGoals();
-                    if (!goals.isEmpty()) {
-                        for (var sub : goals.get(goals.size() - 1).subtasks()) {
-                            if (!RddDetector.conditionMatches(companion, sub, counts)) unmet.add("final:" + sub.id());
-                        }
-                    }
-                }
+                List<String> unmet = unmetConditions(target, chain.goal(), verifyFinalGoal,
+                        sub -> RddDetector.conditionMatches(companion, sub, counts));
                 if (target == null || !unmet.isEmpty()) {
                     java.util.Map<String, Object> rej = new java.util.LinkedHashMap<>();
                     rej.put("companionId", companion.getUUID().toString());
@@ -161,6 +149,23 @@ final class RddSettleStageTool implements NumenTool {
         } catch (RuntimeException ex) {
             reply.accept(com.dwinovo.numen.task.TaskResult.fail("settle failed: " + ex.getMessage()).toJson());
         }
+    }
+
+    /** Selection only: target subtasks, plus final-primary subtasks when requested; predicate decides match. */
+    static List<String> unmetConditions(PrimaryGoal target, com.dwinovo.numen.rdd.api.Goal goal,
+                                        boolean verifyFinalGoal,
+                                        java.util.function.Predicate<com.dwinovo.numen.rdd.api.Subtask> matches) {
+        List<String> unmet = new ArrayList<>();
+        if (target != null) {
+            for (var sub : target.subtasks()) if (!matches.test(sub)) unmet.add(sub.id());
+        }
+        if (verifyFinalGoal && goal != null && !goal.primaryGoals().isEmpty()) {
+            var goals = goal.primaryGoals();
+            for (var sub : goals.get(goals.size() - 1).subtasks()) {
+                if (!matches.test(sub)) unmet.add("final:" + sub.id());
+            }
+        }
+        return unmet;
     }
 
     /** Parse the real tool args; missing fields keep old defaults (both false). */
