@@ -6,6 +6,18 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class RationaleContextTest {
     @Test
+    void genericWhyIsOmittedAndCompanionsIsolated() {
+        UUID a = UUID.randomUUID();
+        UUID b = UUID.randomUUID();
+        RationaleContext.set(a, new RationaleContext.Entry("按计划继续", "", "src", "c"));
+        RationaleContext.set(b, new RationaleContext.Entry("需要钻石镐才能挖黑曜石", "", "src", "c"));
+        assertFalse(RationaleContext.render(a).contains("<why>"));
+        assertFalse(RationaleContext.render(a).contains("按计划继续"));
+        assertTrue(RationaleContext.render(b).contains("钻石镐"));
+        assertFalse(RationaleContext.render(a).contains("钻石镐"));
+    }
+
+    @Test
     void escapesXmlAndCapsLength() {
         UUID id = UUID.randomUUID();
         RationaleContext.set(id, new RationaleContext.Entry("<script>" + "x".repeat(600), "", "src", "c"));
@@ -18,9 +30,9 @@ class RationaleContextTest {
     @Test
     void rendersOnlyPresentFieldsAndClears() {
         UUID id = UUID.randomUUID();
-        RationaleContext.set(id, new RationaleContext.Entry("why", "", "src", "cond"));
+        RationaleContext.set(id, new RationaleContext.Entry("because diamond is needed", "", "src", "cond"));
         String xml = RationaleContext.render(id);
-        assertTrue(xml.contains("<why>why</why>"));
+        assertTrue(xml.contains("<why>because diamond is needed</why>"));
         assertTrue(xml.contains("<source>src</source>"));
         assertFalse(xml.contains("<risks>"));
         RationaleContext.clear(id);

@@ -2748,7 +2748,7 @@ public final class EntityAgentLoop {
         fr.put("requestKind", "execute");
         fr.put("turn", convo.turnCount());
         fr.put("rationalePresent", rationale != null);
-        fr.put("whyPresent", rationale != null && rationale.why() != null && !rationale.why().isBlank());
+        fr.put("whyPresent", rationale != null && com.dwinovo.numen.api.RationaleContext.substantiveWhy(rationale.why()));
         fr.put("risksPresent", rationale != null && rationale.risks() != null && !rationale.risks().isBlank());
         fr.put("sourcePresent", rationale != null && rationale.source() != null && !rationale.source().isBlank());
         fr.put("conditionsPresent", rationale != null && rationale.conditions() != null && !rationale.conditions().isBlank());

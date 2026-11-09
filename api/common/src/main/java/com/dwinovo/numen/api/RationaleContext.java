@@ -17,13 +17,23 @@ public final class RationaleContext {
         ENTRIES.put(companionId, entry);
     }
     public static Entry get(UUID companionId) { return companionId == null ? null : ENTRIES.get(companionId); }
+
+    /** Reject generic restatements that are not a causal reason. Heuristic, not proof. */
+    public static boolean substantiveWhy(String why) {
+        if (why == null) return false;
+        String t = why.trim().toLowerCase(java.util.Locale.ROOT);
+        if (t.length() < 8) return false;
+        return !(t.equals("按计划") || t.equals("按计划继续") || t.equals("继续") || t.equals("用户说") || t.equals("主人说")
+                || t.equals("as planned") || t.equals("continue") || t.equals("user said"));
+    }
     public static void clear(UUID companionId) { if (companionId != null) ENTRIES.remove(companionId); }
 
     public static String render(UUID companionId) {
         Entry e = get(companionId);
         if (e == null) return "";
         StringBuilder b = new StringBuilder("<rationale>");
-        append(b, "why", e.why()); append(b, "risks", e.risks());
+        if (substantiveWhy(e.why())) append(b, "why", e.why());
+        append(b, "risks", e.risks());
         append(b, "source", e.source()); append(b, "conditions", e.conditions());
         return b.append("</rationale>").toString();
     }
