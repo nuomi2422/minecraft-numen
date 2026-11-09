@@ -59,6 +59,9 @@ final class RddPatchTool implements NumenTool {
                 .integer("base_state_version", "The state_version you observed (CAS base).",
                         Integer.MIN_VALUE, Integer.MAX_VALUE)
                 .string("reason", "Why this patch is needed (goes into the receipt and logs).")
+                .string("risks", "Optional concrete risks/uncertainties for this patch.")
+                .string("conditions", "Optional conditions under which this patch applies.")
+                .string("rationale_source", "Optional provenance/experience source for the rationale.")
                 .string("ops", "JSON array, each: {\"op\":\"ADD_NODE|REPLACE_PENDING|DROP_PENDING\","
                         + "\"node_id\":\"...\",\"description\":\"...\",\"condition\":{...}}. "
                         + "description/condition required for ADD and REPLACE; ignored for DROP.")
@@ -145,7 +148,7 @@ final class RddPatchTool implements NumenTool {
                     "stateVersion", String.valueOf(committed.stateVersion()),
                     "reason", reason));
             com.dwinovo.numen.api.RationaleContext.set(companion.getUUID(),
-                    new com.dwinovo.numen.api.RationaleContext.Entry(reason, "", "planner_tool:rdd_patch:" + patchId, ""), committed.stateVersion());
+                    RddRationale.from(args, "planner_tool:rdd_patch:" + patchId), committed.stateVersion());
             RddPlugin.publishTaskSnapshot(companion.getUUID(), "plan_patch_committed");
             reply.accept(com.dwinovo.numen.task.TaskResult.ok("plan patch committed", Map.of(
                     "patch_id", patchId,

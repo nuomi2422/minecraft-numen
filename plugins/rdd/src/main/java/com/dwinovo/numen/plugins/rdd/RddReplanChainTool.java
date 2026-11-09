@@ -60,6 +60,9 @@ final class RddReplanChainTool implements NumenTool {
         return Schema.object()
                 .string("stages", "JSON array of {theme, wait_for?} — the new remaining stages, in order. [] = none left.")
                 .string("reason", "Why the remaining road is invalid (goes into the receipt and monitor event).")
+                .string("risks", "Optional concrete risks/uncertainties for the new road.")
+                .string("conditions", "Optional conditions under which the new road applies.")
+                .string("rationale_source", "Optional provenance/experience source for the rationale.")
                 .build();
     }
 
@@ -98,7 +101,7 @@ final class RddReplanChainTool implements NumenTool {
             int count = chain.replaceFuturePrimaries(goals);
             RddPlugin.saveRuntimes();
             com.dwinovo.numen.api.RationaleContext.set(companion.getUUID(),
-                    new com.dwinovo.numen.api.RationaleContext.Entry(reason == null ? "" : reason, "", "planner_tool:rdd_replan_chain", ""), version + 1);
+                    RddRationale.from(args, "planner_tool:rdd_replan_chain"), version + 1);
             RddPlugin.publishTaskSnapshot(companion.getUUID(), "future_plan_rewritten");
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("companionId", companion.getUUID().toString());
