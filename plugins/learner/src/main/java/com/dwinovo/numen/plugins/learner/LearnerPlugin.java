@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.learner;
 
 import com.dwinovo.numen.api.NumenApi;
+import com.dwinovo.numen.plugins.learner.skills.SkillsKnowledgeContributor;
 import com.dwinovo.numen.api.NumenPlugin;
 import com.dwinovo.numen.plugins.learner.core.MemoQueue;
 import org.slf4j.Logger;
@@ -260,6 +261,14 @@ public final class LearnerPlugin implements NumenPlugin {
         LearnerAutoIntake.installDefaultQueueResolver();
         // E1 shadow：学习角色的预算策略（与客户端同一份文件，幂等）。
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
+        SkillsKnowledgeContributor plannerSkills = new SkillsKnowledgeContributor(configDir, "PLANNER", 0);
+        SkillsKnowledgeContributor executorSkills = new SkillsKnowledgeContributor(configDir, "EXECUTOR", 0);
+        numen.contributePlanningKnowledge(query -> {
+            var f = plannerSkills.contribute(query.companion(), query.objective());
+            return f == null ? "" : f.text();
+        });
+        numen.contributeExecutorKnowledge((com.dwinovo.numen.api.NumenPlugins.KnowledgeContributor)
+                (companion, objective) -> executorSkills.contribute(companion, objective));
         numen.registerTool(new LearnerNoteTool());
         numen.registerTool(new LearnerReviewTool());
         numen.registerTool(new LearnerStatusTool());
