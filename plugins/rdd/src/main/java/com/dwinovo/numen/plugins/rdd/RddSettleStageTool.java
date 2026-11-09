@@ -92,9 +92,9 @@ final class RddSettleStageTool implements NumenTool {
             }
             boolean verified = args.has("verified") && args.get("verified").getAsBoolean();
             boolean verifyFinalGoal = args.has("verify_final_goal") && args.get("verify_final_goal").getAsBoolean();
-            if (verifyFinalGoal && !verified) {
-                reply.accept(com.dwinovo.numen.task.TaskResult.fail(
-                        "settle refused: verify_final_goal requires verified=true; no facts were checked").toJson());
+            String flagError = verifyFlagError(args);
+            if (!flagError.isEmpty()) {
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail(flagError).toJson());
                 return;
             }
             if (verified) {
@@ -161,6 +161,21 @@ final class RddSettleStageTool implements NumenTool {
         } catch (RuntimeException ex) {
             reply.accept(com.dwinovo.numen.task.TaskResult.fail("settle failed: " + ex.getMessage()).toJson());
         }
+    }
+
+    /** Parse the real tool args; missing fields keep old defaults (both false). */
+    static String verifyFlagError(JsonObject args) {
+        boolean verified = args != null && args.has("verified") && !args.get("verified").isJsonNull()
+                && args.get("verified").getAsBoolean();
+        boolean verifyFinalGoal = args != null && args.has("verify_final_goal")
+                && !args.get("verify_final_goal").isJsonNull() && args.get("verify_final_goal").getAsBoolean();
+        return verifyFlagError(verified, verifyFinalGoal);
+    }
+
+    /** Shared by tool and fixture tests: verify_final_goal is meaningless without verified facts. */
+    static String verifyFlagError(boolean verified, boolean verifyFinalGoal) {
+        return verifyFinalGoal && !verified
+                ? "settle refused: verify_final_goal requires verified=true; no facts were checked" : "";
     }
 
     private static String str(JsonObject args, String key) {
