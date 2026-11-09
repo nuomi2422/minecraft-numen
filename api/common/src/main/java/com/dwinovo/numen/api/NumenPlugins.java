@@ -312,7 +312,8 @@ public final class NumenPlugins {
      * 视角<b>本来就该不同</b>（75 号 §15.5 IC08）——EXECUTOR 只信 VERIFIED、非撤回、非 WARNING；
      * 合成一条缝就等于把两种视图混成一个，判据再也测不出来。
      */
-    private static final List<KnowledgeContributor> EXECUTOR = new CopyOnWriteArrayList<>();
+    private record ExecutorEntry(KnowledgeContributor contributor, int priority, String owner) {}
+    private static final List<ExecutorEntry> EXECUTOR = new CopyOnWriteArrayList<>();
 
     /**
      * 执行角色知识的总字符上限。
@@ -331,7 +332,7 @@ public final class NumenPlugins {
 
     /** 老形态：拿不到 objective（G5e 起的插件都这么注册）。等价于「objective 永远为空」。 */
     public static void contributeExecutorKnowledge(Function<UUID, String> fragment) {
-        if (fragment != null) EXECUTOR.add((uuid, objective) -> KnowledgeFragment.ofText(fragment.apply(uuid)));
+        if (fragment != null) registerExecutor((uuid, objective) -> KnowledgeFragment.ofText(fragment.apply(uuid)), 0, fragment.getClass().getName());
     }
 
     /**
@@ -339,13 +340,24 @@ public final class NumenPlugins {
      * 不传 objective 时，目录 provider 会一条都不放（防止把经验挤掉）。
      */
     public static void contributeExecutorKnowledge(BiFunction<UUID, String, String> fragment) {
-        if (fragment != null) EXECUTOR.add(
-                (uuid, objective) -> KnowledgeFragment.ofText(fragment.apply(uuid, objective)));
+        if (fragment != null) registerExecutor(
+                (uuid, objective) -> KnowledgeFragment.ofText(fragment.apply(uuid, objective)), 0, fragment.getClass().getName());
     }
 
     /** G5g+（80 号契约 §2）：片段形态注册 —— 贡献者自带 refs，聚合层据此记账。 */
     public static void contributeExecutorKnowledge(KnowledgeContributor contributor) {
-        if (contributor != null) EXECUTOR.add(contributor);
+        if (contributor != null) registerExecutor(contributor, 0, contributor.getClass().getName());
+    }
+
+    /** Optional priority; higher first, ties by owner/class name (not registration order). */
+    public static void contributeExecutorKnowledge(KnowledgeContributor contributor, int priority, String owner) {
+        if (contributor != null) registerExecutor(contributor, priority, owner == null ? contributor.getClass().getName() : owner);
+    }
+
+    static void clearExecutorForTest() { EXECUTOR.clear(); }
+
+    private static void registerExecutor(KnowledgeContributor contributor, int priority, String owner) {
+        EXECUTOR.add(new ExecutorEntry(contributor, priority, owner));
     }
 
     /** 汇总所有插件为这只同伴的执行请求贡献的知识。<b>引擎内部调用</b>。 */
@@ -355,12 +367,15 @@ public final class NumenPlugins {
 
     /** 引擎内部调用：当前注册的执行知识贡献者快照（聚合时用，避免聚合中被并发注册）。 */
     public static List<KnowledgeContributor> executorContributors() {
-        return List.copyOf(EXECUTOR);
+        return EXECUTOR.stream()
+                .sorted(java.util.Comparator.comparingInt(ExecutorEntry::priority).reversed()
+                        .thenComparing(ExecutorEntry::owner))
+                .map(ExecutorEntry::contributor).toList();
     }
 
     /** G5g：带上「她此刻在干什么」（objective）—— 目录 provider 按它过滤。 */
     public static String executorKnowledge(UUID companion, String objective) {
-        return aggregateExecutorKnowledgeFragment(EXECUTOR, companion, objective == null ? "" : objective).text();
+        return aggregateExecutorKnowledgeFragment(executorContributors(), companion, objective == null ? "" : objective).text();
     }
 
     /**
