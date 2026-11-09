@@ -10,6 +10,11 @@ import java.util.Map;
 public final class EarlyCompletion {
     private EarlyCompletion() {}
 
+    public static List<Subtask> satisfied(TaskChain chain, Map<String, Integer> counts, long expectedPlanRevision) {
+        if (chain == null || chain.planRevision() != expectedPlanRevision) return List.of();
+        return satisfied(chain, counts);
+    }
+
     public static List<Subtask> satisfied(TaskChain chain, Map<String, Integer> counts) {
         List<Subtask> out = new ArrayList<>();
         if (chain == null || counts == null) return out;
