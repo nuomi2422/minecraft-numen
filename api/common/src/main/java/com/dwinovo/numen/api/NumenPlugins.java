@@ -408,12 +408,27 @@ public final class NumenPlugins {
         } catch (RuntimeException ignored) { }
     }
 
+    static java.util.Map<String, Object> knowledgeGapCountsPayload(UUID companion, java.util.Map<String, Integer> counts) {
+        var clean = new java.util.LinkedHashMap<String, Integer>();
+        if (counts != null) counts.forEach((k, v) -> { if (k != null && v != null && v > 0) clean.put(k, v); });
+        var data = new java.util.LinkedHashMap<String, Object>();
+        data.put("companion_id", String.valueOf(companion));
+        data.put("counts", java.util.Map.copyOf(clean));
+        return data;
+    }
+
+    static java.util.Map<String, Object> knowledgeGapReasonPayload(UUID companion, int index, String reason, String detail) {
+        var data = new java.util.LinkedHashMap<String, Object>();
+        data.put("companion_id", String.valueOf(companion));
+        data.put("contributor_index", index);
+        data.put("reason", reason);
+        data.put("detail", detail == null ? "" : detail);
+        return data;
+    }
+
     private static void publishKnowledgeGapCounts(UUID companion, java.util.Map<String, Integer> counts) {
         try {
-            var data = new java.util.LinkedHashMap<String, Object>();
-            data.put("companion_id", String.valueOf(companion));
-            data.put("counts", counts);
-            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "knowledge_gap", data);
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "knowledge_gap", knowledgeGapCountsPayload(companion, counts));
         } catch (RuntimeException ignored) { }
     }
 
@@ -424,12 +439,7 @@ public final class NumenPlugins {
     private static void publishKnowledgeGap(UUID companion, int index, String reason, String detail) {
         if (reason == null || !KnowledgeGaps.allow(companion, index, reason, System.currentTimeMillis())) return;
         try {
-            var data = new java.util.LinkedHashMap<String, Object>();
-            data.put("companion_id", String.valueOf(companion));
-            data.put("contributor_index", index);
-            data.put("reason", reason);
-            data.put("detail", detail);
-            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "knowledge_gap", data);
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "knowledge_gap", knowledgeGapReasonPayload(companion, index, reason, detail));
         } catch (RuntimeException ignored) { }
     }
 
