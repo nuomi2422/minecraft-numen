@@ -883,6 +883,17 @@ final class RddDetector {
      */
     private static final java.util.Map<java.util.UUID, String> EARLY_PROPOSAL_SENT = new java.util.concurrent.ConcurrentHashMap<>();
 
+    private static com.dwinovo.numen.api.ServerIdentityProvider.Snapshot proposalIdentity(NumenPlayer ap) {
+        try {
+            if (ap == null || ap.level() == null || ap.level().getServer() == null) return null;
+            var provider = com.dwinovo.numen.api.NumenPlugins.capability(
+                    com.dwinovo.numen.api.ServerIdentityProvider.class);
+            return provider == null ? null : provider.snapshot(ap.level().getServer());
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
     /** Propose only; never settle/skip. Re-verifies each hit with the existing server-side fact predicate. */
     private static void maybePublishEarlyProposal(NumenPlayer ap, TaskChain chain, java.util.Map<String, Integer> counts) {
         try {
@@ -893,11 +904,12 @@ final class RddDetector {
                             && conditionMatches(ap, s, counts)))
                     .toList();
             if (verified.size() != proposal.subtaskIds().size() || verified.isEmpty()) return;
-            java.util.Map<String, String> stamp = com.dwinovo.numen.api.WorldContextStamp.snapshot();
-            String world = stamp == null ? "" : stamp.getOrDefault("world_id", "");
-            String session = stamp == null ? "" : stamp.getOrDefault("server_session", "");
-            String key = world + "|" + session + "|" + proposal.chainInstanceId() + "|" + proposal.planRevision()
-                    + "|" + proposal.stateVersion() + "|" + verified;
+            var identity = proposalIdentity(ap);
+            if (identity == null) return;   // no request-server identity: UNKNOWN, do not publish
+            String world = identity.worldId();
+            String session = identity.serverSession();
+            String key = ap.getUUID() + "|" + world + "|" + session + "|" + proposal.chainInstanceId()
+                    + "|" + proposal.planRevision() + "|" + proposal.stateVersion() + "|" + verified;
             if (key.equals(EARLY_PROPOSAL_SENT.put(ap.getUUID(), key))) return;
             java.util.Map<String, Object> data = new java.util.LinkedHashMap<>();
             data.put("companionId", ap.getUUID().toString());
@@ -908,6 +920,7 @@ final class RddDetector {
             data.put("stateVersion", proposal.stateVersion());
             data.put("subtasks", verified);
             data.put("evidence", proposal.evidence());
+            data.put("sampledAtMillis", System.currentTimeMillis());
             data.put("source", "early_completion_proposal");
             RddMonitor.publish("early_completion_proposal", data);
         } catch (RuntimeException ignored) { }
