@@ -25,4 +25,12 @@ class SideContextStoreTest {
         assertTrue(s.render(a, "w1", "s2").contains("<side_context_status>UNKNOWN</side_context_status>"));
         assertTrue(s.render(null, "w1", "s1") == null);
     }
+
+    @Test void crossWorldAndSessionTogetherLeaksNoOldFacts() {
+        UUID a = UUID.randomUUID(); SideContextStore s = new SideContextStore();
+        s.put(a, BLOCK, "world-A", "session-A", "dim-A", 1);
+        String out = s.render(a, "world-B", "session-B");
+        assertTrue(out.contains("<side_context_status>UNKNOWN</side_context_status>"));
+        assertFalse(out.contains("old</side_task>"));
+    }
 }
