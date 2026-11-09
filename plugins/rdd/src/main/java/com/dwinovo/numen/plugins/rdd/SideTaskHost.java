@@ -51,7 +51,9 @@ final class SideTaskHost {
     private static final SideTaskEngine ENGINE =
             new SideTaskEngine(SideTaskHost::publish, SideTaskHost::validateMainline);
     /** 支线上下文缓存：主线程 tick 写入，上下文构建只读（可能在非主线程被调）。 */
-    private static final Map<UUID, String> SIDE_CONTEXT = new ConcurrentHashMap<>();
+    private record CachedContext(String block, String saveWorldId, String serverSession,
+                                 String dimension, long sampledGameTime) {}
+    private static final Map<UUID, CachedContext> SIDE_CONTEXT = new ConcurrentHashMap<>();
     /** 支线拍醒的重复间隔（tick，约 4 分钟）：支线 active 期间至少这么久再补一次提醒。 */
     private static final long NUDGE_REPEAT_TICKS = 4L * 60L * 20L;
     private static final Map<UUID, Long> LAST_NUDGE_GAME_TIME = new ConcurrentHashMap<>();
@@ -204,7 +206,17 @@ final class SideTaskHost {
 
     /** 执行 AI 上下文：支线 active 时返回完整 {@code <rdd>…</rdd>}，否则 null。只读缓存。 */
     static String contextFor(UUID companionId) {
-        return companionId == null ? null : SIDE_CONTEXT.get(companionId);
+        if (companionId == null) return null;
+        CachedContext cached = SIDE_CONTEXT.get(companionId);
+        if (cached == null) return null;
+        Map<String, String> now = com.dwinovo.numen.api.WorldContextStamp.snapshot();
+        boolean same = now != null && cached.saveWorldId().equals(now.get("world_id"))
+                && cached.serverSession().equals(now.get("server_session"));
+        String status = same ? "CURRENT" : "UNKNOWN";
+        String meta = "<side_context_status>" + status + "</side_context_status>"
+                + "<side_context_dimension>" + cached.dimension() + "</side_context_dimension>"
+                + "<side_context_sampled_game_time>" + cached.sampledGameTime() + "</side_context_sampled_game_time>";
+        return cached.block().replace("</rdd>", meta + "</rdd>");
     }
 
     /** 当前支线类型 id（无支线 → null）：给"拒绝"工具做旧回执校验（防拒错一条）。 */
@@ -554,7 +566,11 @@ final class SideTaskHost {
                 + "用 rdd_decline_side 说明理由即可放弃 —— 拒绝会记成 DECLINED（不是失败）。</instruction>"
                 + type.renderContext(task, port)
                 + "</rdd>";
-        SIDE_CONTEXT.put(companionId, block);
+        Map<String, String> stamp = com.dwinovo.numen.api.WorldContextStamp.snapshot();
+        SIDE_CONTEXT.put(companionId, new CachedContext(block,
+                stamp == null ? "" : stamp.getOrDefault("world_id", ""),
+                stamp == null ? "" : stamp.getOrDefault("server_session", ""),
+                String.valueOf(port.worldId()), port.gameTime()));
     }
 
     // ---- 事件 + 落盘 ----
