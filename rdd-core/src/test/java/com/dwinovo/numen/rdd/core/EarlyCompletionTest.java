@@ -21,6 +21,18 @@ class EarlyCompletionTest {
     }
 
     @Test
+    void sharedItemAcrossPrimaryGoalsIsNotDoubleCounted() {
+        Subtask a = item("a", "minecraft:diamond", 1);
+        Subtask b = item("b", "minecraft:diamond", 1);
+        TaskChain chain = new TaskChain(new Goal("g", "g", List.of(
+                new PrimaryGoal("p1", "p1", List.of(a)),
+                new PrimaryGoal("p2", "p2", List.of(b)))));
+        assertTrue(EarlyCompletion.satisfied(chain, Map.of("minecraft:diamond", 1)).isEmpty(),
+                "one item cannot satisfy two pending steps across primaries");
+        assertEquals(List.of(a, b), EarlyCompletion.satisfied(chain, Map.of("minecraft:diamond", 2)));
+    }
+
+    @Test
     void onlyInventorySatisfiedPendingSubtasks() {
         Subtask oneDiamond = item("a", "minecraft:diamond", 1);
         Subtask twoDiamond = item("b", "minecraft:diamond", 2);
