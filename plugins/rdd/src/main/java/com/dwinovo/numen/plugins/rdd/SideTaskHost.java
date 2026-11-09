@@ -51,9 +51,7 @@ final class SideTaskHost {
     private static final SideTaskEngine ENGINE =
             new SideTaskEngine(SideTaskHost::publish, SideTaskHost::validateMainline);
     /** 支线上下文缓存：主线程 tick 写入，上下文构建只读（可能在非主线程被调）。 */
-    private record CachedContext(String block, String saveWorldId, String serverSession,
-                                 String dimension, long sampledGameTime) {}
-    private static final Map<UUID, CachedContext> SIDE_CONTEXT = new ConcurrentHashMap<>();
+    private static final SideContextStore SIDE_CONTEXT = new SideContextStore();
     /** 支线拍醒的重复间隔（tick，约 4 分钟）：支线 active 期间至少这么久再补一次提醒。 */
     private static final long NUDGE_REPEAT_TICKS = 4L * 60L * 20L;
     private static final Map<UUID, Long> LAST_NUDGE_GAME_TIME = new ConcurrentHashMap<>();
@@ -215,11 +213,8 @@ final class SideTaskHost {
 
     static String contextFor(UUID companionId) {
         if (companionId == null) return null;
-        CachedContext cached = SIDE_CONTEXT.get(companionId);
-        if (cached == null) return null;
         Map<String, String> now = com.dwinovo.numen.api.WorldContextStamp.snapshot();
-        return decorateContext(cached.block(), cached.saveWorldId(), cached.serverSession(),
-                cached.dimension(), cached.sampledGameTime(),
+        return SIDE_CONTEXT.render(companionId,
                 now == null ? null : now.get("world_id"), now == null ? null : now.get("server_session"));
     }
 
@@ -571,10 +566,10 @@ final class SideTaskHost {
                 + type.renderContext(task, port)
                 + "</rdd>";
         Map<String, String> stamp = com.dwinovo.numen.api.WorldContextStamp.snapshot();
-        SIDE_CONTEXT.put(companionId, new CachedContext(block,
+        SIDE_CONTEXT.put(companionId, block,
                 stamp == null ? "" : stamp.getOrDefault("world_id", ""),
                 stamp == null ? "" : stamp.getOrDefault("server_session", ""),
-                String.valueOf(port.worldId()), port.gameTime()));
+                String.valueOf(port.worldId()), port.gameTime());
     }
 
     // ---- 事件 + 落盘 ----
