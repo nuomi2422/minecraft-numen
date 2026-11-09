@@ -52,6 +52,18 @@ class PresentationReceiptTest {
         return out;
     }
 
+    @Test
+    void foreignSkillRefDoesNotSwallowExperiencePending() {
+        ExperienceMemory m = memory();
+        String id = m.learn(entry("熔岩湖挖矿先铺水")).id();
+        m.recall("熔岩湖", 5, null, List.of(), PresentationReceipt.SURFACE_RECALL_TOOL, true);
+        assertEquals(1, m.receipts().pendingCount());
+        assertNull(m.recordEvidence("skill:sk-x", true, ""));
+        assertEquals(1, m.receipts().pendingCount(), "foreign ref must not clear experience pending");
+        assertNotNull(m.recordEvidence(id, true, ""));
+        assertEquals(0, m.receipts().pendingCount());
+    }
+
     // ---- 1. 只有「AI 主动要」的呈现才进待回报 ----
 
     /**

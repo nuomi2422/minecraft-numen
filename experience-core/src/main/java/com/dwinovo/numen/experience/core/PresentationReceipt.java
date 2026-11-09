@@ -151,6 +151,11 @@ public final class PresentationReceipt {
         }
     }
 
+    /** Clear only when the id was actually presented; foreign refs (e.g. skill:) must not swallow experience pending. */
+    public synchronized boolean reportIfTracked(String id) {
+        return id != null && pending.remove(id) != null;
+    }
+
     /** 待回报清单（首次主动召回序）。空 = 本局还没有 AI 主动召回过任何经验。 */
     public synchronized List<Shown> pendingReports() {
         if (pending.isEmpty()) {

@@ -244,7 +244,6 @@ public final class ExperienceStore {
         ensureLoaded();
         // ★ E7：一次「回报」不管成没成都算数 —— 连 id 打不中也要清掉待回报，
         //   否则 AI 会一遍遍看到同一条根本不存在的 id，反复来问同一个问题。
-        receipts.report(id);
         int index = indexOf(id);
         if (index < 0) {
             index = indexByLegacyId(id);
@@ -259,8 +258,10 @@ public final class ExperienceStore {
             }
         }
         if (index < 0) {
+            receipts.reportIfTracked(id);
             return null;
         }
+        receipts.report(id);
         ExperienceEntry old = mirror.get(index);
         List<String> counterexamples = old.counterexamples();
         ExperienceMaturity maturity = old.maturity();
