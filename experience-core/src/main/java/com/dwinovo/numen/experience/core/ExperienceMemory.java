@@ -43,6 +43,8 @@ public final class ExperienceMemory {
         return store.recordEvidence(id, success, note);
     }
 
+    public long foreignRefsSeen() { return store.foreignRefsSeen(); }
+
     /**
      * LC1：按 id 只读取条目（工具层晋级门用它算「当前版本指纹」，不改库）。
      * 与 {@link #recordEvidence} 同一套 id 解析（含旧拼写兜底）。

@@ -94,6 +94,7 @@ public final class ExperienceStore {
      * 不落盘（跨重启的那次任务早就结束，回报已无意义）。</p>
      */
     private final PresentationReceipt receipts = new PresentationReceipt();
+    private final java.util.concurrent.atomic.AtomicLong foreignRefs = new java.util.concurrent.atomic.AtomicLong();
 
     private ExperienceStore(Path file) {
         this.file = file;
@@ -258,7 +259,11 @@ public final class ExperienceStore {
             }
         }
         if (index < 0) {
-            if (id == null || !id.startsWith("skill:")) receipts.reportIfTracked(id);
+            if (id != null && id.startsWith("skill:")) {
+                foreignRefs.incrementAndGet();
+                return null; // unsupported foreign ref: never consume experience pending
+            }
+            receipts.reportIfTracked(id);
             return null;
         }
         receipts.report(id);
@@ -352,6 +357,9 @@ public final class ExperienceStore {
      * @param reason <b>必填且不许空</b> —— 撤回一条经验而不写理由，等于让别人猜
      * @return 撤回后的条目；id 不存在时返回 {@code null}（不静默成功）
      */
+    /** Count of foreign (skill:) refs passed to recordEvidence; diagnostic only, does not mean adoption. */
+    public long foreignRefsSeen() { return foreignRefs.get(); }
+
     public synchronized ExperienceEntry retract(String id, String reason) {
         if (reason == null || reason.isBlank()) {
             throw new IllegalArgumentException("retract requires a reason: id=" + id);

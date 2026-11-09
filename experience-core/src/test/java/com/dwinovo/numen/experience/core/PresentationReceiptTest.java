@@ -60,6 +60,7 @@ class PresentationReceiptTest {
         assertEquals(1, m.receipts().pendingCount());
         assertNull(m.recordEvidence("skill:sk-x", true, ""));
         assertEquals(1, m.receipts().pendingCount(), "foreign ref must not clear experience pending");
+        assertEquals(1, m.foreignRefsSeen());
         assertNotNull(m.recordEvidence(id, true, ""));
         assertEquals(0, m.receipts().pendingCount());
     }
