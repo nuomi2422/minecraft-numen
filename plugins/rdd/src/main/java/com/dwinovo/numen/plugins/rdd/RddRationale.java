@@ -7,6 +7,10 @@ import com.google.gson.JsonObject;
 final class RddRationale {
     private RddRationale() {}
 
+    static boolean fresh(long rationaleGeneration, long chainStateVersion) {
+        return rationaleGeneration == chainStateVersion;
+    }
+
     static RationaleContext.Entry from(JsonObject args, String defaultSource) {
         String why = str(args, "reason");
         String risks = str(args, "risks");

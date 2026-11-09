@@ -686,6 +686,10 @@ public final class RddPlugin implements NumenPlugin {
                 return withAssets(uuid, "<rdd><enabled>true</enabled><active>false</active></rdd>");
             }
             TaskChain chain = runtime.chain();
+            if (com.dwinovo.numen.api.RationaleContext.get(uuid) != null
+                    && !RddRationale.fresh(com.dwinovo.numen.api.RationaleContext.generation(uuid), chain.stateVersion())) {
+                com.dwinovo.numen.api.RationaleContext.clear(uuid);
+            }
             // 2026-10-31（V-20261031-10 旁记）：链已完成时不能再把最后一个子任务当「当前目标」注入。
             // B5 实测：primary/subtask 都是 COMPLETED，但 runtime_state 仍 active=true + current_task
             // 「清点圆石堆」，AI 在「只放工作台」目标下照样去做了支线（目标漂移）。
