@@ -64,9 +64,9 @@ class SkillsKnowledgeContributorTest {
         ArtifactDraft d = new ArtifactDraft(ArtifactKind.EXPERIENCE, "name-x", "purpose-x", "body",
                 List.of("夜"), List.of(), List.of(), "", List.of(), List.of("memo-1"), "PLANNER");
         SkillRegistry.open(dir.resolve("skills.jsonl")).register(d, "sk-x", "/nonexistent/body", true);
-        org.junit.jupiter.api.Assertions.assertThrows(com.dwinovo.numen.api.KnowledgeGapException.class,
-                () -> new SkillsKnowledgeContributor(dir, "PLANNER", 800).contribute(UUID.randomUUID(), "x"),
-                "正文缺失 = 类型化 gap，不静默");
+        var f = new SkillsKnowledgeContributor(dir, "PLANNER", 800).contribute(UUID.randomUUID(), "x");
+        assertEquals(1, f.gapCounts().get("body-missing"));
+        assertTrue(f.text().isEmpty());
     }
 
     @Test

@@ -21,13 +21,13 @@ class SkillsGapTest {
     @TempDir Path dir;
 
     @Test
-    void missingBodyReturnsNull() throws IOException {
+    void missingBodyIsSkippedAndCounted() throws IOException {
         ArtifactDraft d = new ArtifactDraft(ArtifactKind.EXPERIENCE, "n", "p", "b",
                 List.of("x"), List.of(), List.of(), "", List.of(), List.of("m"), "PLANNER");
         SkillRegistry.open(dir.resolve("skills.jsonl")).register(d, "sk-m", "/no/such/body", true);
-        var ex = org.junit.jupiter.api.Assertions.assertThrows(com.dwinovo.numen.api.KnowledgeGapException.class,
-                () -> new SkillsKnowledgeContributor(dir, "PLANNER", 0).contribute(UUID.randomUUID(), "x"));
-        assertEquals(com.dwinovo.numen.api.KnowledgeGapException.Reason.BODY_MISSING, ex.reason());
+        var f = new SkillsKnowledgeContributor(dir, "PLANNER", 0).contribute(UUID.randomUUID(), "x");
+        assertEquals(1, f.gapCounts().get("body-missing"));
+        assertTrue(f.text().isEmpty());
     }
 
     @Test

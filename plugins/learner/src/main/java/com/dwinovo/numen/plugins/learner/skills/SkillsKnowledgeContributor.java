@@ -36,6 +36,7 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
         List<NumenPlugins.DeliveredRef> refs = new ArrayList<>();
         StringBuilder text = new StringBuilder();
         boolean truncated = false;
+        java.util.Map<String, Integer> gaps = new java.util.LinkedHashMap<>();
         SkillRegistry registry;
         try {
             registry = SkillRegistry.open(configDir.resolve("skills.jsonl"));
@@ -44,13 +45,16 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
             LOG.warning("[skills-retrieval] registry unavailable: " + e.getClass().getSimpleName());
             throw new KnowledgeGapException(KnowledgeGapException.Reason.READ_FAILED, "read_failed");
         }
+        int index = 0;
         for (SkillEntry e : registry.retrievable()) {
+            index++;
             if (!audienceMatches(e.audience())) continue;
             String ref = "skill:" + e.skillId();
             String body = SkillBodyStore.read(configDir, e.bodyRef());
             if (body == null || body.isBlank()) {
-                // 契约（主干活聚合器 76c595caf）：缺正文抛 typed BODY_MISSING，由聚合器映射 body-missing
-                throw new KnowledgeGapException(KnowledgeGapException.Reason.BODY_MISSING, "body_missing");
+                gaps.merge("body-missing", 1, Integer::sum);
+                LOG.warning("[skills-retrieval] body missing ref=" + ref + " bodyRef=" + e.bodyRef());
+                continue;
             }
             // 条目边界是统一检索按条记账的契约（NumenPlugins.refFullyIncluded 依赖 ref=…</entry>）
             String block = "<entry ref=\"" + ref + "\">[" + e.name() + "] " + e.purpose() + "\n" + body + "\n</entry>\n";
@@ -58,9 +62,8 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
             text.append(block);
             refs.add(new NumenPlugins.DeliveredRef(ref, "v" + e.version(), false));
         }
-        if (refs.isEmpty() && text.length() == 0) return null;   // 完全无结果
-        // 有 refs 但正文空：原样返给聚合器，由它记 blank-with-refs
-        return new NumenPlugins.KnowledgeFragment(text.toString(), refs);
+        if (refs.isEmpty() && gaps.isEmpty()) return null;   // 完全无结果
+        return new NumenPlugins.KnowledgeFragment(text.toString(), refs, gaps);
     }
 
 

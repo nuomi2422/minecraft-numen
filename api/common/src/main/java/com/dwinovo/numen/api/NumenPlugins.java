@@ -289,14 +289,16 @@ public final class NumenPlugins {
      * 一个贡献者片段：正文 + 它引用的条目。
      * 旧贡献者（只回字符串）用 {@link #ofText} 包装，refs 为空 —— 聚合器不会为它记账。
      */
-    public record KnowledgeFragment(String text, List<DeliveredRef> refs) {
+    public record KnowledgeFragment(String text, List<DeliveredRef> refs, java.util.Map<String, Integer> gapCounts) {
+        public KnowledgeFragment(String text, List<DeliveredRef> refs) { this(text, refs, java.util.Map.of()); }
         public KnowledgeFragment {
             text = text == null ? "" : text;
             refs = refs == null ? List.<DeliveredRef>of() : List.copyOf(refs);
+            gapCounts = gapCounts == null ? java.util.Map.of() : java.util.Map.copyOf(gapCounts);
         }
 
         public static KnowledgeFragment ofText(String text) {
-            return new KnowledgeFragment(text, List.of());
+            return new KnowledgeFragment(text, List.of(), java.util.Map.of());
         }
     }
 
@@ -371,6 +373,15 @@ public final class NumenPlugins {
      * {@code request_delivered} 归零。现在按条目边界判定：能找到 {@code ref="<ref>" ... </entry>}
      * 且闭合标签在保留前缀内的记 false，跨切点/找不到边界的才记 true（保守）。
      */
+    private static void publishKnowledgeGapCounts(UUID companion, java.util.Map<String, Integer> counts) {
+        try {
+            var data = new java.util.LinkedHashMap<String, Object>();
+            data.put("companion_id", String.valueOf(companion));
+            data.put("counts", counts);
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "knowledge_gap", data);
+        } catch (RuntimeException ignored) { }
+    }
+
     private static void publishKnowledgeGap(UUID companion, int index, String reason) {
         publishKnowledgeGap(companion, index, reason, "");
     }
@@ -411,6 +422,7 @@ public final class NumenPlugins {
             if (f == null) {
                 continue; // no result is not a gap
             }
+            if (f.gapCounts() != null && !f.gapCounts().isEmpty()) publishKnowledgeGapCounts(companion, f.gapCounts());
             if (f.text() == null || f.text().isBlank()) {
                 String reason = KnowledgeGaps.reasonFor(f, null);
                 if (reason != null) publishKnowledgeGap(companion, accepted, reason, "blank-with-refs");
