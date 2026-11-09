@@ -65,6 +65,18 @@ class ServerIdentitySnapshotTest {
         assertNull(WorldContextStamp.snapshot());
     }
 
+    @Test void stopAndNewServerDoesNotReuseOldEpoch() {
+        WorldContextStamp.set("world-A", "session-A");
+        var old = WorldContextStamp.capture();
+        assertEquals("world-A", old.identity().get("world_id"));
+        WorldContextStamp.clear();
+        assertNull(WorldContextStamp.snapshot(), "stop must withdraw the stamp");
+        WorldContextStamp.set("world-B", "session-B");
+        var next = WorldContextStamp.capture();
+        assertEquals("world-B", next.identity().get("world_id"));
+        assertTrue(next.epoch() > old.epoch(), "new server session must not reuse old epoch");
+    }
+
     @Test void multipleServersDoNotShare() {
         var one = WorldContextStamp.tokenFrom(A);
         var two = WorldContextStamp.tokenFrom(B);
