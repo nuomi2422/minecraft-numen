@@ -4,6 +4,7 @@ import com.dwinovo.numen.rdd.api.*;
 import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 import static org.junit.jupiter.api.Assertions.*;
 
 class RddSettleStageUnmetTest {
@@ -21,6 +22,15 @@ class RddSettleStageUnmetTest {
                 RddSettleStageTool.unmetConditions(target, goal, true, s -> s.id().equals("a")));
         assertEquals(List.of("a", "final:b"),
                 RddSettleStageTool.unmetConditions(target, goal, true, s -> false));
-        assertTrue(RddSettleStageTool.unmetConditions(null, goal, false, s -> false).isEmpty());
+        assertEquals(List.of("no_target"), RddSettleStageTool.unmetConditions(null, goal, false, s -> false));
+    }
+
+    @Test void missingFinalAndThrowingPredicateFailClosed() {
+        Goal one = new Goal("g", "g", List.of(new PrimaryGoal("p", "p", List.of(item("a")))));
+        assertEquals(List.of("no_final_goal"),
+                RddSettleStageTool.unmetConditions(one.primaryGoals().get(0), null, true, s -> true));
+        Predicate<Subtask> boom = s -> { throw new IllegalStateException("boom"); };
+        assertEquals(List.of("a"),
+                RddSettleStageTool.unmetConditions(one.primaryGoals().get(0), one, false, boom));
     }
 }

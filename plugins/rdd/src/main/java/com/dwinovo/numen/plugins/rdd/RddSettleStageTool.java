@@ -156,16 +156,35 @@ final class RddSettleStageTool implements NumenTool {
                                         boolean verifyFinalGoal,
                                         java.util.function.Predicate<com.dwinovo.numen.rdd.api.Subtask> matches) {
         List<String> unmet = new ArrayList<>();
-        if (target != null) {
-            for (var sub : target.subtasks()) if (!matches.test(sub)) unmet.add(sub.id());
+        if (target == null) return List.of("no_target");
+        if (target.subtasks().isEmpty()) unmet.add("no_conditions");
+        for (var sub : target.subtasks()) {
+            if (!matchesSafely(matches, sub)) unmet.add(sub.id());
         }
-        if (verifyFinalGoal && goal != null && !goal.primaryGoals().isEmpty()) {
-            var goals = goal.primaryGoals();
-            for (var sub : goals.get(goals.size() - 1).subtasks()) {
-                if (!matches.test(sub)) unmet.add("final:" + sub.id());
+        if (verifyFinalGoal) {
+            if (goal == null || goal.primaryGoals().isEmpty()) {
+                unmet.add("no_final_goal");
+            } else {
+                var goals = goal.primaryGoals();
+                var finalGoal = goals.get(goals.size() - 1);
+                // target == final is already checked above; do not add duplicate final: ids.
+                if (!finalGoal.id().equals(target.id())) {
+                    for (var sub : finalGoal.subtasks()) {
+                        if (!matchesSafely(matches, sub)) unmet.add("final:" + sub.id());
+                    }
+                }
             }
         }
         return unmet;
+    }
+
+    private static boolean matchesSafely(java.util.function.Predicate<com.dwinovo.numen.rdd.api.Subtask> matches,
+                                         com.dwinovo.numen.rdd.api.Subtask sub) {
+        try {
+            return matches != null && matches.test(sub);
+        } catch (RuntimeException e) {
+            return false;   // unknown/error is not evidence; tool will report unmet and not settle
+        }
     }
 
     /** Parse the real tool args; missing fields keep old defaults (both false). */
