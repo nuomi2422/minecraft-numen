@@ -370,11 +370,16 @@ public final class NumenPlugins {
      * 且闭合标签在保留前缀内的记 false，跨切点/找不到边界的才记 true（保守）。
      */
     private static void publishKnowledgeGap(UUID companion, int index, String reason) {
+        publishKnowledgeGap(companion, index, reason, "");
+    }
+
+    private static void publishKnowledgeGap(UUID companion, int index, String reason, String detail) {
         try {
             var data = new java.util.LinkedHashMap<String, Object>();
             data.put("companion_id", String.valueOf(companion));
             data.put("contributor_index", index);
             data.put("reason", reason);
+            data.put("detail", detail);
             com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", "knowledge_gap", data);
         } catch (RuntimeException ignored) { }
     }
@@ -397,10 +402,15 @@ public final class NumenPlugins {
             } catch (Throwable e) {
                 failed++;
                 Constants.LOG.error("[numen] 插件的执行知识算不出来,这一段跳过", e);
-                publishKnowledgeGap(companion, accepted, e.getClass().getSimpleName());
+                publishKnowledgeGap(companion, accepted, "read-failed", e.getClass().getSimpleName());
                 continue;
             }
-            if (f == null || f.text() == null || f.text().isBlank()) {
+            if (f == null) {
+                publishKnowledgeGap(companion, accepted, "body-missing", "null");
+                continue;
+            }
+            if (f.text() == null || f.text().isBlank()) {
+                if (!f.refs().isEmpty()) publishKnowledgeGap(companion, accepted, "body-missing", "blank-with-refs");
                 continue;
             }
             String piece = sb.length() == 0 ? f.text() : PLANNING_KNOWLEDGE_SEPARATOR + f.text();
