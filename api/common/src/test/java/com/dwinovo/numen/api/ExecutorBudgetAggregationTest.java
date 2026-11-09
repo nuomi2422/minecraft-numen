@@ -24,6 +24,13 @@ class ExecutorBudgetAggregationTest {
         assertTrue(out.refs().get(1).truncated());
     }
 
+    @Test void completeEntryBeforeCutStaysDelivered() {
+        var out = agg(List.of(entryContributor("r1", 3970), entryContributor("r2", 100)));
+        assertEquals(2, out.refs().size());
+        assertFalse(out.refs().get(0).truncated());
+        assertTrue(out.refs().get(1).truncated());
+    }
+
     @Test void laterContributorStarvedButFirstStays() {
         var out = agg(List.of(c("first", 4200), c("second", 100)));
         assertTrue(out.text().contains("first"));
@@ -40,6 +47,12 @@ class ExecutorBudgetAggregationTest {
 
     private static NumenPlugins.KnowledgeFragment agg(List<NumenPlugins.KnowledgeContributor> cs) {
         return NumenPlugins.aggregateExecutorKnowledgeFragment(cs, UUID.randomUUID(), "obj");
+    }
+
+    private static NumenPlugins.KnowledgeContributor entryContributor(String ref, int pad) {
+        String entry = "<entry ref=\"" + ref + "\">" + "x".repeat(pad) + "</entry>";
+        return (id, obj) -> new NumenPlugins.KnowledgeFragment(entry,
+                List.of(new NumenPlugins.DeliveredRef(ref, "v1", false)));
     }
 
     private static NumenPlugins.KnowledgeContributor c(String s, int n) {
