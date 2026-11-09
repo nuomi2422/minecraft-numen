@@ -650,6 +650,7 @@ public final class RddPlugin implements NumenPlugin {
             }
             RddRuntime runtime = RUNTIMES.get(uuid);
             if (runtime == null) {
+                com.dwinovo.numen.api.RationaleContext.clear(uuid);
                 return withAssets(uuid, "<rdd><enabled>true</enabled><active>false</active></rdd>");
             }
             TaskChain chain = runtime.chain();
@@ -658,6 +659,7 @@ public final class RddPlugin implements NumenPlugin {
             // 「清点圆石堆」，AI 在「只放工作台」目标下照样去做了支线（目标漂移）。
             if (chain.primaryStatus() == PrimaryGoalStatus.COMPLETED
                     && chain.currentSubtaskStatus() == SubtaskStatus.COMPLETED) {
+                com.dwinovo.numen.api.RationaleContext.clear(uuid);
                 return withAssets(uuid, "<rdd><enabled>true</enabled><active>false</active>"
                         + "<primary_status>COMPLETED</primary_status>"
                         + "<state>chain_completed</state>"
@@ -665,12 +667,15 @@ public final class RddPlugin implements NumenPlugin {
             }
             Subtask current = chain.currentSubtask();
             if (current == null) {
+                com.dwinovo.numen.api.RationaleContext.clear(uuid);
                 // 当前一级已到达但未展开(懒加载)：诚实报阶段主题，不伪造可执行节点
                 return withAssets(uuid, "<rdd><enabled>true</enabled><active>true</active>"
                         + "<primary_status>" + chain.primaryStatus() + "</primary_status>"
                         + "<state>stage_reached_expanding</state>"
                         + "<current_phase>" + escape(chain.currentPrimary().description()) + "</current_phase></rdd>");
             }
+            com.dwinovo.numen.api.RationaleContext.set(uuid, new com.dwinovo.numen.api.RationaleContext.Entry(
+                    current.description(), "", "rdd-chain:" + chain.chainInstanceId(), String.valueOf(current.condition())));
             return withAssets(uuid, "<rdd><enabled>true</enabled><active>true</active>"
                     + "<primary_status>" + chain.primaryStatus() + "</primary_status>"
                     + "<subtask>" + escape(current.id()) + "</subtask>"

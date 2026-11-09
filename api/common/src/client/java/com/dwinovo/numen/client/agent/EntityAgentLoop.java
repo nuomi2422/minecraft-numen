@@ -2752,6 +2752,7 @@ public final class EntityAgentLoop {
     private static final String SECTION_PLUGINS = "plugin_fragments";
     /** G5e：执行角色检索块（`<retrieved_knowledge role="executor">`）。 */
     private static final String SECTION_EXECUTOR_KNOWLEDGE = "executor_knowledge";
+    private static final String SECTION_RATIONALE = "rationale";
 
     /**
      * 运行期状态切段（<b>顺序＝拼进提示词的顺序</b>，与接入前逐字节一致）。
@@ -2780,7 +2781,8 @@ public final class EntityAgentLoop {
         // G5g：objective 不能只用核心 current_task —— 实机里它是空的，
         // 而她此刻的活写在**插件片段**里（RDD 任务链镜像的 <current_task>…<subtask_status>）。
         // 所以两段拼起来再截断，交给工具目录做相关性过滤。
-        String objectiveForRetrieval = currentTask + " " + plugins;
+        String rationale = com.dwinovo.numen.api.RationaleContext.render(entityUuid);
+        String objectiveForRetrieval = currentTask + " " + plugins + " " + rationale;
         if (objectiveForRetrieval.length() > 400) {
             objectiveForRetrieval = objectiveForRetrieval.substring(0, 400);
         }
@@ -2814,11 +2816,15 @@ public final class EntityAgentLoop {
             sections.add(runtimeSection(SECTION_EXECUTOR_KNOWLEDGE, executorKnowledge,
                     PRIORITY_EXECUTOR_KNOWLEDGE));
         }
+        if (rationale != null && !rationale.isBlank()) {
+            sections.add(runtimeSection(SECTION_RATIONALE, rationale, PRIORITY_RATIONALE));
+        }
         return sections;
     }
 
     private static final int PRIORITY_CURRENT_TASK = 100;   // 必知区，优先级只作记录
     private static final int PRIORITY_PLUGINS = 40;         // 必知区（任务链镜像 / 需求缺口），优先级只作记录
+    private static final int PRIORITY_RATIONALE = 34;   // 044 §0.7: structured why, optional
     private static final int PRIORITY_EXECUTOR_KNOWLEDGE = 35;  // G5e：可丢（参考目录），低于是必知区
     private static final int PRIORITY_RIDING = 30;
     private static final int PRIORITY_EFFECTS = 20;
