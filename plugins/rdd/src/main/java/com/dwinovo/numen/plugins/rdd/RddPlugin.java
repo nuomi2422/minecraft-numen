@@ -655,13 +655,17 @@ public final class RddPlugin implements NumenPlugin {
         try {
             ServerPlayer body = RddCompanionBody.get(uuid);
             if (body == null || body.level() == null || body.level().getServer() == null) {
-                return RddDetector.earlyProposalNotice(uuid, null, null);
+                return RddDetector.earlyProposalNotice(uuid, null, null, null, -1L, -1L);
             }
             var provider = com.dwinovo.numen.api.NumenPlugins.capability(
                     com.dwinovo.numen.api.ServerIdentityProvider.class);
             var snap = provider == null ? null : provider.snapshot(body.level().getServer());
+            RddRuntime rt = runtime(uuid);
             return RddDetector.earlyProposalNotice(uuid,
-                    snap == null ? null : snap.worldId(), snap == null ? null : snap.serverSession());
+                    snap == null ? null : snap.worldId(), snap == null ? null : snap.serverSession(),
+                    rt == null ? null : rt.chain().chainInstanceId(),
+                    rt == null ? -1L : rt.chain().planRevision(),
+                    rt == null ? -1L : rt.chain().stateVersion());
         } catch (RuntimeException e) {
             return "";
         }

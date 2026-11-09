@@ -887,13 +887,17 @@ final class RddDetector {
     private static final java.util.Map<java.util.UUID, EarlyLatest> EARLY_PROPOSAL_LATEST = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Planner-visible read-only notice; mismatched/expired identity yields UNKNOWN and no old ids. */
-    static String earlyProposalNotice(java.util.UUID id, String currentWorld, String currentSession) {
+    static String earlyProposalNotice(java.util.UUID id, String currentWorld, String currentSession,
+                                       String currentChainId, long currentRevision, long currentStateVersion) {
         EarlyLatest latest = id == null ? null : EARLY_PROPOSAL_LATEST.get(id);
         if (latest == null) return "";
         long now = System.currentTimeMillis();
         if (currentWorld == null || currentSession == null
                 || !java.util.Objects.equals(latest.world(), currentWorld)
-                || !java.util.Objects.equals(latest.session(), currentSession)) {
+                || !java.util.Objects.equals(latest.session(), currentSession)
+                || !java.util.Objects.equals(latest.p().chainInstanceId(), currentChainId)
+                || latest.p().planRevision() != currentRevision
+                || latest.p().stateVersion() != currentStateVersion) {
             return com.dwinovo.numen.rdd.core.RddEarlyCompletionProposal.render(latest.p(), null, null, now);
         }
         return com.dwinovo.numen.rdd.core.RddEarlyCompletionProposal.render(latest.p(), currentWorld, currentSession, now);
