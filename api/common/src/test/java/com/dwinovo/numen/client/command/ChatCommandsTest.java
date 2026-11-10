@@ -17,6 +17,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ChatCommandsTest {
 
     @Test
+    void stopIsRegisteredAsARealClientCommand() {
+        assertNotNull(ChatCommands.find(null, "stop"), "/stop must be registered, not sent to the model as chat");
+    }
+
+    @Test
     void onlyASlashMakesItACommand() {
         assertTrue(ChatCommands.isCommand("/skills"));
         assertTrue(ChatCommands.isCommand("   /skills  "), "两边的空白不该影响判断");
