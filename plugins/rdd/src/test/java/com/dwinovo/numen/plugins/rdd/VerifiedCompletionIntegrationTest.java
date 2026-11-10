@@ -2,6 +2,8 @@ package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.rdd.api.Goal;
 import com.dwinovo.numen.rdd.api.PrimaryGoal;
+import com.dwinovo.numen.rdd.api.Subtask;
+import com.dwinovo.numen.rdd.core.TaskChain;
 import com.dwinovo.numen.rdd.fact.CompletedFactStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -74,6 +76,38 @@ class VerifiedCompletionIntegrationTest {
         CompletedFactStore reloaded = RddFactStore.load(dir, companion);
         assertTrue(reloaded.satisfiedStageKeys(unrelated).isEmpty(), "另一条目标血缘不得继承别人的完成事实");
         assertFalse(reloaded.satisfiedStageKeys(first).isEmpty());
+    }
+
+    /**
+     * verified 不能凭空给：先过生产的条件核验入口 {@code RddSettleStageTool.unmetConditions}，
+     * 只有它返回空（条件真满足）才允许结算并写库；不满足时一个字节都不写。
+     *
+     * <p>世界事实来源仍是 {@code RddDetector}（需要 Minecraft 运行时），这里用谓词替代它，
+     * 所以本测试证明的是"条件核验入口→结算→写库"这段链路，不代表实机世界事实已验。
+     */
+    @Test void verifiedOnlyAfterConditionsReportedMet(@TempDir Path dir) {
+        UUID companion = UUID.randomUUID();
+        Subtask diamond = Subtask.hardCoded("a", "采钻石",
+                java.util.Map.of("type", "item", "item", "minecraft:diamond", "minimum", 1));
+        Goal g = new Goal("goal-int-8", "integration",
+                List.of(new PrimaryGoal("primary-0", "iron stage", List.of(diamond))));
+        CompletedFactStore store = new CompletedFactStore();
+
+        // 条件不满足：核验入口必须报出 unmet，此时不得写入。
+        List<String> unmet = RddSettleStageTool.unmetConditions(g.primaryGoals().get(0), g, false, s -> false);
+        assertEquals(List.of("a"), unmet);
+        assertFalse(Files.exists(dir.resolve(companion + ".json")));
+
+        // 条件满足：核验通过 → 结算 → 生产写入点落盘。
+        TaskChain chain = new TaskChain(g);
+        chain.startCurrent();
+        List<String> met = RddSettleStageTool.unmetConditions(chain.currentPrimary(), chain.goal(), false, s -> true);
+        assertTrue(met.isEmpty(), "条件满足时核验入口应返回空");
+        chain.settlePrimaryByFact(chain.currentPrimary().id(), "世界事实已核验", met.isEmpty());
+        assertFalse(chain.satisfiedStages().isEmpty(), "核验通过才写入满意阶段");
+        assertTrue(CompletionFactWriter.persist(dir, companion, store, chain.goal(), chain.currentPrimary().description(), 1L));
+        assertTrue(Files.isRegularFile(dir.resolve(companion + ".json")));
+        assertFalse(RddFactStore.load(dir, companion).satisfiedStageKeys(g).isEmpty());
     }
 
     @Test void failedSaveDoesNotClaimSuccess(@TempDir Path dir) {
