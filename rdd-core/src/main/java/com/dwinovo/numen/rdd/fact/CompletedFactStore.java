@@ -48,6 +48,23 @@ public final class CompletedFactStore {
 
     public CompletedFactStore() {}
 
+    /** P1-C: private candidate; preserve the bounded detail sequence exactly. */
+    public synchronized CompletedFactStore copyForCompletionCommit() {
+        CompletedFactStore copy = new CompletedFactStore();
+        copy.stages.putAll(stages);
+        copy.subtasks.putAll(subtasks);
+        copy.nextSubtaskSeq = nextSubtaskSeq;
+        return copy;
+    }
+
+    /** Called only after the completion's disk projections are durable. */
+    public synchronized void publishCompletionCommit(CompletedFactStore candidate) {
+        if (candidate == this) return;
+        stages.clear(); stages.putAll(candidate.stages);
+        subtasks.clear(); subtasks.putAll(candidate.subtasks);
+        nextSubtaskSeq = candidate.nextSubtaskSeq;
+    }
+
     /** 记录"某血缘下某战略阶段已完成"。同(血缘,键)重复记录以最新覆盖。 */
     public synchronized void recordStage(Goal goal, String primaryDescription, long atMillis, String evidence) {
         if (goal == null || primaryDescription == null) {

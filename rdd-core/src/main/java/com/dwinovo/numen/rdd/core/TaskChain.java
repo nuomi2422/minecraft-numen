@@ -174,6 +174,53 @@ public final class TaskChain {
             primaryStatus = PrimaryGoalStatus.PENDING;
         }
     }
+    /** P1-C (2026-11-11): exact private completion candidate, never restart sanitization. */
+    public synchronized TaskChain copyForCompletionCommit() {
+        TaskChain copy = new TaskChain(goal);
+        copy.copyCompletionStateFrom(this);
+        return copy;
+    }
+
+    /** Publish a durable completion without replacing the chain object held by consumers.
+     * Caller holds this chain's monitor from candidate preparation through disk commit.
+     */
+    public synchronized void publishCompletionCommit(TaskChain candidate, long expectedVersion) {
+        Objects.requireNonNull(candidate);
+        if (!chainInstanceId.equals(candidate.chainInstanceId) || stateVersion != expectedVersion) {
+            throw new IllegalStateException("completion candidate no longer matches live chain");
+        }
+        copyCompletionStateFrom(candidate);
+    }
+
+    // All instance state copied in one place. Records/immutable specifications may be shared.
+    private void copyCompletionStateFrom(TaskChain source) {
+        goal = source.goal;
+        statuses.clear(); statuses.putAll(source.statuses);
+        skipReasons.clear(); skipReasons.putAll(source.skipReasons);
+        pauseReasons.clear(); pauseReasons.putAll(source.pauseReasons);
+        attempts.clear(); attempts.putAll(source.attempts);
+        acquireBaselines.clear();
+        source.acquireBaselines.forEach((key, value) -> acquireBaselines.put(key, new LinkedHashMap<>(value)));
+        unobservedBaselines.clear(); unobservedBaselines.addAll(source.unobservedBaselines);
+        statDeltaEnabled = source.statDeltaEnabled;
+        primaryIndex = source.primaryIndex; subtaskIndex = source.subtaskIndex;
+        planRevision = source.planRevision; primaryStatus = source.primaryStatus;
+        activeExecutionId = source.activeExecutionId; lastStartedAtMillis = source.lastStartedAtMillis;
+        satisfiedStages.clear(); satisfiedStages.addAll(source.satisfiedStages);
+        waivedStageKeys.clear(); waivedStageKeys.putAll(source.waivedStageKeys);
+        satisfiedNeedKeys.clear(); satisfiedNeedKeys.addAll(source.satisfiedNeedKeys);
+        stateVersion = source.stateVersion; staleResultsIgnored = source.staleResultsIgnored;
+        ownerEpoch = source.ownerEpoch; outstandingSafePoint = source.outstandingSafePoint;
+        safePointSeq = source.safePointSeq; chainInstanceId = source.chainInstanceId;
+        committedPatches.clear();
+        source.committedPatches.forEach(entry -> committedPatches.addLast(Map.entry(entry.getKey(), entry.getValue())));
+        settleReasons.clear(); settleReasons.putAll(source.settleReasons);
+        lastSanitization = source.lastSanitization == null ? null : new SanitizationReport(
+                List.copyOf(source.lastSanitization.droppedStatuses()), List.copyOf(source.lastSanitization.registeredAsPending()),
+                List.copyOf(source.lastSanitization.droppedAttempts()), List.copyOf(source.lastSanitization.droppedSkipReasons()),
+                List.copyOf(source.lastSanitization.droppedPauseReasons()), List.copyOf(source.lastSanitization.droppedAcquireBaselines()));
+    }
+
     public Goal goal() { return goal; }
 
     /**
