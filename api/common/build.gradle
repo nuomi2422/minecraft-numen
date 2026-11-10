@@ -103,6 +103,11 @@ test {
     useJUnitPlatform {
         excludeTags 'mc'
     }
+    // Managed test-only mutations isolate fresh XML per invocation; ordinary builds
+    // keep the default location. Unset env var = unchanged behaviour.
+    if (System.getenv('RDD_TEST_REPORT_DIR')) {
+        reports.junitXml.outputLocation = file(System.getenv('RDD_TEST_REPORT_DIR'))
+    }
 }
 
 // 服务端安全门:主源码集不得引用 Minecraft 客户端类。源码集隔离挡得住
