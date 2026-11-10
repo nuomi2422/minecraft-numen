@@ -115,7 +115,7 @@ public final class RationaleContext {
     public static String renderApplicable(UUID companionId, long planRevision, String chainInstanceId) {
         State s = state(companionId);
         if (!applicable(s, planRevision, chainInstanceId, CURRENT_CHAIN.get(companionId))) return "";
-        return renderEntry(s.entry());
+        return renderEntryInternal(s.entry());
     }
 
     /** Reject generic restatements that are not a causal reason. Heuristic, not proof. */
@@ -149,16 +149,19 @@ public final class RationaleContext {
         if (s == null || s.entry() == null) return "";
         String declared = CURRENT_CHAIN.get(companionId);
         if (declared == null || s.chain() == null || !declared.equals(s.chain())) return "";
-        return renderEntry(s.entry());
+        return renderEntryInternal(s.entry());
     }
 
     /** Diagnostic/inspection only: raw stored entry, never for a prompt. Callers must say so. */
     public static String peek(UUID companionId) {
         State s = state(companionId);
-        return s == null ? "" : renderEntry(s.entry());
+        return s == null ? "" : renderEntryInternal(s.entry());
     }
 
-    private static String renderEntry(Entry e) {
+    /** Render a caller-supplied entry (e.g. a planning request that has no chain yet). */
+    public static String renderEntry(Entry e) { return renderEntryInternal(e); }
+
+    private static String renderEntryInternal(Entry e) {
         if (e == null) return "";
         StringBuilder b = new StringBuilder("<rationale>");
         if (substantiveWhy(e.why())) append(b, "why", e.why());

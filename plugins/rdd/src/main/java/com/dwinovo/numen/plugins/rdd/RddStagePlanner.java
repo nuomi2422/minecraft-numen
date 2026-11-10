@@ -32,6 +32,15 @@ final class RddStagePlanner {
 
     /** 主入口：异步规划一级清单，回调收到可用的 PrimarySpec 列表（失败=空表）。 */
     static void planStages(UUID companionId, String objective, Consumer<List<PrimarySpec>> done) {
+        planStages(companionId, objective, null, done);
+    }
+
+    /**
+     * @param why 发起方随目标带来的结构化理由；建链前还没有链，所以不查 RationaleContext 的链作用域。
+     */
+    static void planStages(UUID companionId, String objective,
+                           com.dwinovo.numen.api.RationaleContext.Entry why,
+                           Consumer<List<PrimarySpec>> done) {
         // 注入"当前真实背包"：规划师要站在已有资产上推进，不倒退重规划已持有的装备/设施。
         // 再贴上经验知识（无知识时与原来逐字相同）。
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
@@ -58,9 +67,18 @@ final class RddStagePlanner {
         // 044 §0.7: the planning request must also carry the structured why. Execution already
         // renders this section; planning used to omit it, so the planner never saw the reason,
         // risks, provenance or applicability that the executor got.
+        // 建链前的规划：用发起方带进来的理由（no chain yet），没有就退回到链作用域判定。
+        String whyText = why != null
+                ? com.dwinovo.numen.api.RationaleContext.renderEntry(why)
+                : freshRationale(companionId);
+        RddMonitor.publish("plan_final_request", java.util.Map.of(
+                "companionId", companionId.toString(),
+                "requestKind", "plan",
+                "rationalePresent", !whyText.isBlank(),
+                "rationaleFrom", why != null ? "submitter" : "chain_scope"));
         String userContent = withRationale(RddPlanningKnowledge.withKnowledge(
                 RddPlanningKnowledge.HOST, companionId, base, objective, "stage_a", List.of()),
-                freshRationale(companionId));
+                whyText);
         RddDecomposer.llmAsk(companionId, "stage_a", userContent, PLAN_SYSTEM, PLAN_TOOL,
                 args -> {
                     RddPlanGuard.Stages guarded = RddPlanGuard.filterStages(parse(args), objective);

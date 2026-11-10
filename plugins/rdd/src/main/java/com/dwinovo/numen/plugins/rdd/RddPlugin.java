@@ -473,6 +473,19 @@ public final class RddPlugin implements NumenPlugin {
      * 与 {@code /goal} 的唯一区别是 {@code source} 标签（监测台区分发起方）与可选的引擎目标登记。
      * <b>不旁路任何规划语义</b>：Stage-A、绑定、失败回落全部同一段代码。
      */
+    /**
+     * 044 §0.7：规划发生在建链之前，此时还没有链可绑定，所以"为什么"只能由发起方随目标带进来。
+     * 一次性消费，不落盘、不跨目标复用。
+     */
+    private static final java.util.Map<UUID, com.dwinovo.numen.api.RationaleContext.Entry> PENDING_PLAN_WHY
+            = new java.util.concurrent.ConcurrentHashMap<>();
+
+    static void stashPlanRationale(UUID companionId, com.dwinovo.numen.api.RationaleContext.Entry why) {
+        if (companionId == null) return;
+        if (why == null) PENDING_PLAN_WHY.remove(companionId);
+        else PENDING_PLAN_WHY.put(companionId, why);
+    }
+
     static void beginPlanning(MinecraftServer server, RddCallbackGuard.Ticket ticket,
                               String objective, String source) {
         beginPlanning(server, ticket, objective, source, 0L);
@@ -504,7 +517,7 @@ public final class RddPlugin implements NumenPlugin {
         RddMonitor.publish("supervisor_input", Map.of(
                 "companionId", uuid.toString(), "objective", objective,
                 "source", source, "target", "rdd"));
-        RddStagePlanner.planStages(uuid, objective, stages -> onServer(server, ticket, () -> {
+        RddStagePlanner.planStages(uuid, objective, PENDING_PLAN_WHY.remove(uuid), stages -> onServer(server, ticket, () -> {
             if (!stages.isEmpty()) {
                 try {
                     bindCurrent(uuid, RddChainFactory.fromStages(uuid, objective, stages), restartRequested);
@@ -540,6 +553,17 @@ public final class RddPlugin implements NumenPlugin {
      *   <li>同伴不在线 / 无服务器 → 显式拒绝（回执给外部脚本，不静默丢）。</li>
      * </ul>
      */
+    static String submitSupervisorGoal(UUID companionId, String objective, boolean register, String source,
+                                       com.dwinovo.numen.api.RationaleContext.Entry why) {
+        stashPlanRationale(companionId, why);
+        try {
+            return submitSupervisorGoal(companionId, objective, register, source);
+        } finally {
+            // 没用上就不留；用了的话 beginPlanning 已 remove。
+            PENDING_PLAN_WHY.remove(companionId);
+        }
+    }
+
     static String submitSupervisorGoal(UUID companionId, String objective, boolean register, String source) {
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
         if (server == null) {

@@ -35,7 +35,9 @@ public final class RddSupervisorSubmitTool implements NumenTool {
 
     private static final Gson GSON = new Gson();
 
-    private record Input(String objective, Boolean register) {}
+    /** 044 §0.7：发起目标的人可以随目标带上结构化理由，规划请求会原样带上它。 */
+    private record Input(String objective, Boolean register, String reason, String risks,
+                         String conditions, String rationale_source) {}
 
     @Override
     public String name() {
@@ -76,8 +78,12 @@ public final class RddSupervisorSubmitTool implements NumenTool {
                 return;
             }
             boolean register = input.register() == null || input.register();
+            com.dwinovo.numen.api.RationaleContext.Entry why = new com.dwinovo.numen.api.RationaleContext.Entry(
+                    input.reason(), input.risks(), input.rationale_source(), input.conditions());
+            RddPlugin.stashPlanRationale(companion.getUUID(),
+                    input.reason() == null || input.reason().isBlank() ? null : why);
             String result = RddPlugin.submitSupervisorGoal(
-                    companion.getUUID(), objective, register, "rdd_supervisor_submit");
+                    companion.getUUID(), objective, register, "rdd_supervisor_submit", why);
             reply.accept(com.dwinovo.numen.task.TaskResult.ok(result, Map.of(
                     "objective", objective, "register", register)).toJson());
         } catch (RuntimeException ex) {
