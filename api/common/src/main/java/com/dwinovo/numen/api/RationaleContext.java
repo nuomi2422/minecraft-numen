@@ -140,7 +140,20 @@ public final class RationaleContext {
         CURRENT_CHAIN.remove(companionId);
     }
 
+    /**
+     * Production render for prompt sections. Only an entry written for the chain the host
+     * currently declares is emitted; anything else is history and must not reach a request.
+     */
     public static String render(UUID companionId) {
+        State s = state(companionId);
+        if (s == null || s.entry() == null) return "";
+        String declared = CURRENT_CHAIN.get(companionId);
+        if (declared == null || s.chain() == null || !declared.equals(s.chain())) return "";
+        return renderEntry(s.entry());
+    }
+
+    /** Diagnostic/inspection only: raw stored entry, never for a prompt. Callers must say so. */
+    public static String peek(UUID companionId) {
         State s = state(companionId);
         return s == null ? "" : renderEntry(s.entry());
     }

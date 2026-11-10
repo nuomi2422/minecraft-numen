@@ -26,6 +26,22 @@ class RddSettleStageUnmetTest {
         assertEquals(List.of("no_target"), RddSettleStageTool.unmetConditions(null, goal, false, s -> false));
     }
 
+    @Test void settlingOneStageLeavesOtherStagesDependenciesAlone() {
+        PrimaryGoal a = new PrimaryGoal("p1", "iron stage", List.of(item("iron")));
+        PrimaryGoal b = new PrimaryGoal("p2", "diamond stage", List.of(item("diamond")));
+        TaskChain chain = new TaskChain(new Goal("g4", "g4", List.of(a, b)));
+        chain.startCurrent();
+        // p2 becomes unnecessary; that must not mark p1's own step as skipped or done.
+        chain.settlePrimaryByFact("p2", "总目标已达成，钻石这一级不需要");
+        assertEquals(com.dwinovo.numen.rdd.api.SubtaskStatus.RUNNING, chain.subtaskStatuses().get("iron"),
+                "the current stage keeps running; settling a future stage does not stop it");
+        assertEquals(com.dwinovo.numen.rdd.api.SubtaskStatus.PENDING, chain.subtaskStatuses().get("diamond"),
+                "a future stage settled by fact records a reason; it is not executed");
+        assertEquals("p1", chain.currentPrimary().id(), "cursor must not jump over unfinished work");
+        assertTrue(chain.settledStages().containsKey("p2"));
+        assertFalse(chain.settledStages().containsKey("p1"));
+    }
+
     @Test void repeatedSettlementIsDetected() {
         PrimaryGoal a = new PrimaryGoal("p1", "first", List.of(item("a")));
         PrimaryGoal b = new PrimaryGoal("p2", "future", List.of(item("b")));

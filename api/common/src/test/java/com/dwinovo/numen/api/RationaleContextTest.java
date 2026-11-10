@@ -10,7 +10,7 @@ class RationaleContextTest {
         UUID id = UUID.randomUUID();
         RationaleContext.set(id, new RationaleContext.Entry("新理由足够长", "", "new", ""), 10);
         RationaleContext.set(id, new RationaleContext.Entry("旧理由也够长", "", "old", ""), 9);
-        String xml = RationaleContext.render(id);
+        String xml = RationaleContext.peek(id);
         assertTrue(xml.contains("新理由足够长"));
         assertFalse(xml.contains("旧理由也够长"));
         assertEquals(10L, RationaleContext.generation(id));
@@ -132,7 +132,7 @@ class RationaleContextTest {
         // only the diagnostic peek (render/get) may still show the stored history.
         assertEquals("", RationaleContext.renderApplicable(id, 1L, "chain-1"),
                 "withdrawn declaration must not keep feeding the old reason into prompts");
-        assertTrue(RationaleContext.render(id).contains("声明有效时写入"),
+        assertTrue(RationaleContext.peek(id).contains("声明有效时写入"),
                 "diagnostic peek keeps history, and is not a fresh-render path");
     }
 
@@ -176,17 +176,17 @@ class RationaleContextTest {
         UUID b = UUID.randomUUID();
         RationaleContext.set(a, new RationaleContext.Entry("按计划继续", "", "src", "c"));
         RationaleContext.set(b, new RationaleContext.Entry("需要钻石镐才能挖黑曜石", "", "src", "c"));
-        assertFalse(RationaleContext.render(a).contains("<why>"));
-        assertFalse(RationaleContext.render(a).contains("按计划继续"));
-        assertTrue(RationaleContext.render(b).contains("钻石镐"));
-        assertFalse(RationaleContext.render(a).contains("钻石镐"));
+        assertFalse(RationaleContext.peek(a).contains("<why>"));
+        assertFalse(RationaleContext.peek(a).contains("按计划继续"));
+        assertTrue(RationaleContext.peek(b).contains("钻石镐"));
+        assertFalse(RationaleContext.peek(a).contains("钻石镐"));
     }
 
     @Test
     void escapesXmlAndCapsLength() {
         UUID id = UUID.randomUUID();
         RationaleContext.set(id, new RationaleContext.Entry("<script>" + "x".repeat(600), "", "src", "c"));
-        String xml = RationaleContext.render(id);
+        String xml = RationaleContext.peek(id);
         assertFalse(xml.contains("<script>"));
         assertTrue(xml.contains("&lt;script&gt;"));
         assertTrue(xml.length() < 700);
@@ -196,11 +196,11 @@ class RationaleContextTest {
     void rendersOnlyPresentFieldsAndClears() {
         UUID id = UUID.randomUUID();
         RationaleContext.set(id, new RationaleContext.Entry("because diamond is needed", "", "src", "cond"));
-        String xml = RationaleContext.render(id);
+        String xml = RationaleContext.peek(id);
         assertTrue(xml.contains("<why>because diamond is needed</why>"));
         assertTrue(xml.contains("<source>src</source>"));
         assertFalse(xml.contains("<risks>"));
         RationaleContext.clear(id);
-        assertEquals("", RationaleContext.render(id));
+        assertEquals("", RationaleContext.peek(id));
     }
 }
