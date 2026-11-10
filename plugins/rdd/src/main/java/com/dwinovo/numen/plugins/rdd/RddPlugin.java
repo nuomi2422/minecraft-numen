@@ -2164,14 +2164,24 @@ private static String safeDeathAttacker(NumenPlayer body) {
     }
 
     /** 记录"某战略阶段已被可靠完成"并落盘（P0）。失败只记日志，不影响主流程。 */
+    /**
+     * 仅供离线测试：把完成事实的落盘目录指到临时目录并清空内存缓存。
+     *
+     * <p>为什么需要：{@code recordStageFact} 是"verified 结算 → 完成库"的唯一生产写入点，
+     * 但 {@code factsDir} 只在插件初始化时设置，离线测试无法触达真实路径，只能去测存储层，
+     * 于是"生产有没有真的写"始终没有证据（2026-11-10 及其之前的覆盖缺口）。
+     */
+    static void useFactsDirForTest(Path directory) {
+        factsDir = directory;
+        FACTS.clear();
+    }
+
     static void recordStageFact(UUID companionId, Goal goal, String primaryDescription) {
         if (companionId == null || goal == null || primaryDescription == null) return;
-        try {
-            CompletedFactStore store = facts(companionId);
-            store.recordStage(goal, primaryDescription, System.currentTimeMillis(), "primary confirmed");
-            RddFactStore.save(factsDir, companionId, store);
-        } catch (IOException ex) {
-            LOG.warn("[rdd] 保存完成事实失败 {}: {}", companionId, ex.toString());
+        // 写入逻辑收在 CompletionFactWriter（离线可测，生产与测试同一路径）。
+        if (!CompletionFactWriter.persist(factsDir, companionId, facts(companionId), goal,
+                primaryDescription, System.currentTimeMillis())) {
+            LOG.warn("[rdd] 保存完成事实失败 {}", companionId);
         }
     }
 
