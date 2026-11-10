@@ -26,6 +26,19 @@ class RddSettleStageUnmetTest {
         assertEquals(List.of("no_target"), RddSettleStageTool.unmetConditions(null, goal, false, s -> false));
     }
 
+    @Test void repeatedSettlementIsDetected() {
+        PrimaryGoal a = new PrimaryGoal("p1", "first", List.of(item("a")));
+        PrimaryGoal b = new PrimaryGoal("p2", "future", List.of(item("b")));
+        TaskChain chain = new TaskChain(new Goal("g3", "g3", List.of(a, b)));
+        assertFalse(RddSettleStageTool.alreadySettled(chain, "p2"));
+        chain.startCurrent();
+        chain.settlePrimaryByFact("p2", "未来阶段不再需要");
+        assertTrue(RddSettleStageTool.alreadySettled(chain, "p2"),
+                "a second identical report must be refused, not counted twice");
+        assertFalse(RddSettleStageTool.alreadySettled(chain, "p1"));
+        assertFalse(RddSettleStageTool.alreadySettled(null, "p2"));
+    }
+
     @Test void onlyTheLastStageEndsTheGoal() {
         PrimaryGoal a = new PrimaryGoal("p1", "first", List.of(item("a")));
         PrimaryGoal b = new PrimaryGoal("p2", "last", List.of(item("b")));

@@ -8,53 +8,87 @@ import java.util.concurrent.ConcurrentHashMap;
  * Absent/partial = omitted; consumers must not treat it as proof. */
 public final class RationaleContext {
     public record Entry(String why, String risks, String source, String conditions) {}
-    private static final Map<UUID, Entry> ENTRIES = new ConcurrentHashMap<>();
-    private static final Map<UUID, Long> GENERATIONS = new ConcurrentHashMap<>();
-    /** Chain instance the entry was written for. No chain = unscoped = never treated as fresh. */
-    private static final Map<UUID, String> CHAINS = new ConcurrentHashMap<>();
+
+    /**
+     * One immutable snapshot per companion. Entry, generation and chain must be read
+     * together: keeping them in separate maps let a concurrent write pair the old reason
+     * with the new generation (or the new chain), so "this is the current why" could be
+     * assembled from two different writes.
+     */
+    private record State(Entry entry, long generation, String chain) {}
+
+    private static final Map<UUID, State> STATES = new ConcurrentHashMap<>();
 
     private RationaleContext() {}
 
     public static void set(UUID companionId, Entry entry) {
         if (companionId == null || entry == null) return;
-        long g = GENERATIONS.merge(companionId, 1L, Long::sum);
-        ENTRIES.put(companionId, entry);
+        STATES.compute(companionId, (id, old) -> new State(entry,
+                old == null ? 1L : old.generation() + 1L, old == null ? null : old.chain()));
     }
 
     /** Higher generation wins; stale async callbacks are ignored. */
     public static void set(UUID companionId, Entry entry, long generation) {
-        if (companionId == null || entry == null) return;
-        long[] accepted = {0};
-        GENERATIONS.compute(companionId, (id, old) -> {
-            long next = old == null ? generation : Math.max(old, generation);
-            if (old == null || generation >= old) { ENTRIES.put(id, entry); accepted[0] = 1; }
-            return next;
-        });
+        set(companionId, entry, generation, null);
     }
+
     /** Scoped write: the entry belongs to one chain instance. Legacy setters stay unscoped. */
     public static void set(UUID companionId, Entry entry, long generation, String chainInstanceId) {
         if (companionId == null || entry == null) return;
-        if (chainInstanceId == null || chainInstanceId.isBlank()) { set(companionId, entry, generation); return; }
-        set(companionId, entry, generation);
-        CHAINS.put(companionId, chainInstanceId);
+        boolean scoped = chainInstanceId != null && !chainInstanceId.isBlank();
+        STATES.compute(companionId, (id, old) -> {
+            if (old == null) return new State(entry, generation, scoped ? chainInstanceId : null);
+            if (generation < old.generation()) {
+                // Keep the newer reason intact; a late callback must not relabel its scope either.
+                return old;
+            }
+            return new State(entry, generation, scoped ? chainInstanceId : old.chain());
+        });
     }
 
-    public static Entry get(UUID companionId) { return companionId == null ? null : ENTRIES.get(companionId); }
+    private static State state(UUID companionId) { return companionId == null ? null : STATES.get(companionId); }
+
+    public static Entry get(UUID companionId) {
+        State s = state(companionId);
+        return s == null ? null : s.entry();
+    }
 
     /** Chain instance the current entry was written for; null when unscoped/unknown. */
-    public static String chain(UUID companionId) { return companionId == null ? null : CHAINS.get(companionId); }
+    public static String chain(UUID companionId) {
+        State s = state(companionId);
+        return s == null ? null : s.chain();
+    }
+
+    public static long generation(UUID companionId) {
+        State s = state(companionId);
+        return s == null ? 0L : s.generation();
+    }
 
     /**
-     * Only a scoped entry from the same chain instance and plan revision may be shown as current.
-     * Unscoped legacy entries and unknown chains are not fresh — absence of evidence is not evidence.
+     * Only a scoped entry from the same chain instance and plan revision may be shown as
+     * current. Unscoped legacy entries and unknown chains are not fresh — absence of
+     * evidence is not evidence.
      */
     public static boolean applicable(UUID companionId, long planRevision, String chainInstanceId) {
-        if (companionId == null || chainInstanceId == null || chainInstanceId.isBlank()) return false;
-        if (ENTRIES.get(companionId) == null) return false;
-        if (GENERATIONS.getOrDefault(companionId, -1L) != planRevision) return false;
-        return chainInstanceId.equals(CHAINS.get(companionId));
+        return applicable(state(companionId), planRevision, chainInstanceId);
     }
-    public static long generation(UUID companionId) { return companionId == null ? 0L : GENERATIONS.getOrDefault(companionId, 0L); }
+
+    private static boolean applicable(State s, long planRevision, String chainInstanceId) {
+        if (s == null || s.entry() == null) return false;
+        if (chainInstanceId == null || chainInstanceId.isBlank()) return false;
+        if (s.generation() != planRevision) return false;
+        return chainInstanceId.equals(s.chain());
+    }
+
+    /**
+     * Atomic check-and-render: the decision and the text come from ONE snapshot, so a
+     * concurrent write cannot pass the check with the new state and render the old entry.
+     */
+    public static String renderApplicable(UUID companionId, long planRevision, String chainInstanceId) {
+        State s = state(companionId);
+        if (!applicable(s, planRevision, chainInstanceId)) return "";
+        return renderEntry(s.entry());
+    }
 
     /** Reject generic restatements that are not a causal reason. Heuristic, not proof. */
     public static String whyStatus(Entry e) {
@@ -71,15 +105,18 @@ public final class RationaleContext {
                 || t.equals("wie geplant") || t.equals("comme prévu") || t.equals("según lo previsto")
                 || t.equals("как планировалось"));
     }
+
     public static void clear(UUID companionId) {
         if (companionId == null) return;
-        ENTRIES.remove(companionId);
-        GENERATIONS.remove(companionId);
-        CHAINS.remove(companionId);
+        STATES.remove(companionId);
     }
 
     public static String render(UUID companionId) {
-        Entry e = get(companionId);
+        State s = state(companionId);
+        return s == null ? "" : renderEntry(s.entry());
+    }
+
+    private static String renderEntry(Entry e) {
         if (e == null) return "";
         StringBuilder b = new StringBuilder("<rationale>");
         if (substantiveWhy(e.why())) append(b, "why", e.why());
@@ -87,6 +124,7 @@ public final class RationaleContext {
         append(b, "source", e.source()); append(b, "conditions", e.conditions());
         return b.append("</rationale>").toString();
     }
+
     private static void append(StringBuilder b, String k, String v) {
         if (v != null && !v.isBlank()) {
             String safe = v.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");

@@ -100,6 +100,14 @@ final class RddSettleStageTool implements NumenTool {
                 reply.accept(com.dwinovo.numen.task.TaskResult.fail(flagError).toJson());
                 return;
             }
+            // 044 §0.7: a repeated report must not settle the same stage twice (duplicate receipts
+            // would read as a second completion). The first settlement is the fact; later ones hold.
+            if (alreadySettled(chain, targetId)) {
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail(
+                        "settle refused: stage '" + targetId + "' was already settled by fact ("
+                                + chain.settledStages().get(targetId) + "); nothing to settle").toJson());
+                return;
+            }
             // 2026-11-10 (044 §0.7): settling the LAST stage ends the whole goal. A self-report
             // must not close the objective, so that one case always needs server-side facts.
             // Earlier stages keep the planner's "no longer needed" judgement path unchanged.
@@ -170,6 +178,11 @@ final class RddSettleStageTool implements NumenTool {
         } catch (RuntimeException ex) {
             reply.accept(com.dwinovo.numen.task.TaskResult.fail("settle failed: " + ex.getMessage()).toJson());
         }
+    }
+
+    /** A stage already settled by fact must not be settled again (duplicate receipts). */
+    static boolean alreadySettled(com.dwinovo.numen.rdd.core.TaskChain chain, String primaryId) {
+        return chain != null && primaryId != null && chain.settledStages().containsKey(primaryId);
     }
 
     /**

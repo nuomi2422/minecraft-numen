@@ -184,9 +184,10 @@ final class RddStagePlanner {
         var runtime = RddPlugin.runtime(companionId);
         if (runtime == null) return "";
         var chain = runtime.chain();
-        if (!com.dwinovo.numen.api.RationaleContext.applicable(
-                companionId, chain.planRevision(), chain.chainInstanceId())) return "";
-        return com.dwinovo.numen.api.RationaleContext.render(companionId);
+        // Atomic check-and-render: one snapshot decides both, so a concurrent write cannot
+        // pass the check with new state and then render a different entry.
+        return com.dwinovo.numen.api.RationaleContext.renderApplicable(
+                companionId, chain.planRevision(), chain.chainInstanceId());
     }
 
     /** Append the rationale section verbatim when present; blank input leaves the prompt unchanged. */

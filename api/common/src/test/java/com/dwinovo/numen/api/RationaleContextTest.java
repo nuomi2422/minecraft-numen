@@ -29,6 +29,27 @@ class RationaleContextTest {
     }
 
     @Test
+    void checkAndRenderUseOneSnapshot() {
+        UUID id = UUID.randomUUID();
+        RationaleContext.set(id, new RationaleContext.Entry("链一的原因足够长", "", "src", ""), 5L, "chain-1");
+        assertTrue(RationaleContext.renderApplicable(id, 5L, "chain-1").contains("链一的原因足够长"));
+        // A newer write for another chain must not be rendered under the old chain's identity.
+        RationaleContext.set(id, new RationaleContext.Entry("链二的原因足够长", "", "src", ""), 5L, "chain-2");
+        assertEquals("", RationaleContext.renderApplicable(id, 5L, "chain-1"));
+        assertTrue(RationaleContext.renderApplicable(id, 5L, "chain-2").contains("链二的原因足够长"));
+    }
+
+    @Test
+    void lateCallbackCannotRelabelScope() {
+        UUID id = UUID.randomUUID();
+        RationaleContext.set(id, new RationaleContext.Entry("新的已绑定原因", "", "src", ""), 6L, "chain-new");
+        RationaleContext.set(id, new RationaleContext.Entry("迟到的旧回调原因", "", "src", ""), 5L, "chain-old");
+        assertTrue(RationaleContext.renderApplicable(id, 6L, "chain-new").contains("新的已绑定原因"));
+        assertEquals("", RationaleContext.renderApplicable(id, 5L, "chain-old"),
+                "a stale callback must not resurrect its own chain scope");
+    }
+
+    @Test
     void unscopedLegacyEntryIsNeverFresh() {
         UUID id = UUID.randomUUID();
         RationaleContext.set(id, new RationaleContext.Entry("旧写法没有链绑定", "", "src", ""), 5L);
