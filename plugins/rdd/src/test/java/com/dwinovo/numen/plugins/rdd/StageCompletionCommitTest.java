@@ -47,6 +47,39 @@ class StageCompletionCommitTest {
         assertEquals(1, RddFactStore.load(factsDir, id).stageCount());
     }
 
+    @Test void factsFailureBlocksActualReplanConsumerUntilSameStageRetry(@TempDir Path dir) throws Exception {
+        UUID id = UUID.randomUUID();
+        TaskChain chain = chain();
+        var facts = new CompletedFactStore();
+        Path factsDir = dir.resolve("facts");
+        Files.writeString(factsDir, "blocked");
+        var commit = new StageCompletionCommit(dir.resolve("tasks"), factsDir);
+        assertFalse(commit.settle(id, chain, facts, "first", "verified", true, 1L).committed());
+        long version = chain.stateVersion();
+        String before = chain.toJson();
+        var future = List.of(PrimaryGoal.unexpanded("replacement", "new future", List.of()));
+        assertThrows(IllegalStateException.class, () -> RddReplanChainTool.replaceFuturePrimaries(
+                chain, future, () -> commit.hasPending(id)));
+        assertEquals(version, chain.stateVersion());
+        assertEquals(before, chain.toJson());
+        assertEquals(0, facts.stageCount());
+        Files.delete(factsDir);
+        assertTrue(commit.retryPending(id, chain, facts).committed());
+        assertEquals("second", chain.currentPrimary().id());
+        assertEquals(1, facts.stageCount());
+        assertFalse(commit.hasPending(id));
+    }
+
+    @Test void noPendingKeepsActualReplanConsumerBehavior() {
+        TaskChain chain = chain();
+        long version = chain.stateVersion();
+        var future = List.of(PrimaryGoal.unexpanded("replacement", "new future", List.of()));
+        assertEquals(1, RddReplanChainTool.replaceFuturePrimaries(chain, future, () -> false));
+        assertEquals(version + 1, chain.stateVersion());
+        assertEquals("first", chain.currentPrimary().id());
+        assertEquals("replacement", chain.goal().primaryGoals().get(1).id());
+    }
+
     @Test void taskWriteFailureLeavesPublishedMemoryUnchanged(@TempDir Path dir) throws Exception {
         UUID id = UUID.randomUUID();
         TaskChain chain = chain();

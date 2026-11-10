@@ -103,7 +103,7 @@ final class RddReplanChainTool implements NumenTool {
                         "primary-" + suffix + "-v" + (version + 1) + "-" + i,
                         spec.description(), spec.waitFor()));
             }
-            int count = chain.replaceFuturePrimaries(goals);
+            int count = replaceFuturePrimaries(chain, goals, () -> RddPlugin.completionPending(companion.getUUID()));
             RddPlugin.saveRuntimes();
             com.dwinovo.numen.api.RationaleContext.set(companion.getUUID(),
                     RddRationale.from(args, "planner_tool:rdd_replan_chain"), chain.planRevision(),
@@ -121,6 +121,17 @@ final class RddReplanChainTool implements NumenTool {
         } catch (RuntimeException ex) {
             reply.accept(com.dwinovo.numen.task.TaskResult.fail("chain replan failed: " + ex.getMessage()).toJson());
         }
+    }
+
+    /** P1-C (2026-11-11): a pending stage owns its baseVersion until retry finishes.
+     * This is the actual mutation consumer used above; the supplier permits storage-failure regression tests.
+     */
+    static int replaceFuturePrimaries(TaskChain chain, List<PrimaryGoal> goals,
+                                     java.util.function.BooleanSupplier completionPending) {
+        if (completionPending.getAsBoolean()) {
+            throw new IllegalStateException("replan refused: stage completion is pending; retry completion before replanning");
+        }
+        return chain.replaceFuturePrimaries(goals);
     }
 
     /** Replanning must not resurrect a finished chain or bypass owner standby. */
