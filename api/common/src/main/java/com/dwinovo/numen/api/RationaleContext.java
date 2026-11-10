@@ -92,12 +92,18 @@ public final class RationaleContext {
      * evidence is not evidence.
      */
     public static boolean applicable(UUID companionId, long planRevision, String chainInstanceId) {
-        return applicable(state(companionId), planRevision, chainInstanceId);
+        if (companionId == null || chainInstanceId == null || chainInstanceId.isBlank()) return false;
+        return applicable(state(companionId), planRevision, chainInstanceId,
+                CURRENT_CHAIN.get(companionId));
     }
 
-    private static boolean applicable(State s, long planRevision, String chainInstanceId) {
+    /**
+     * A fresh read also needs the host's current declaration: after clear() or after the host
+     * withdrew (no runtime), the stored entry is history, not something to send again.
+     */
+    private static boolean applicable(State s, long planRevision, String chainInstanceId, String declared) {
         if (s == null || s.entry() == null) return false;
-        if (chainInstanceId == null || chainInstanceId.isBlank()) return false;
+        if (declared == null || !declared.equals(chainInstanceId)) return false;
         if (s.generation() != planRevision) return false;
         return chainInstanceId.equals(s.chain());
     }
@@ -108,7 +114,7 @@ public final class RationaleContext {
      */
     public static String renderApplicable(UUID companionId, long planRevision, String chainInstanceId) {
         State s = state(companionId);
-        if (!applicable(s, planRevision, chainInstanceId)) return "";
+        if (!applicable(s, planRevision, chainInstanceId, CURRENT_CHAIN.get(companionId))) return "";
         return renderEntry(s.entry());
     }
 

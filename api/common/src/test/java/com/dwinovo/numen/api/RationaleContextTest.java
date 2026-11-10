@@ -128,8 +128,12 @@ class RationaleContextTest {
         assertNotNull(RationaleContext.get(id));
         RationaleContext.noteCurrentChain(id, null);
         RationaleContext.set(id, new RationaleContext.Entry("撤声明后写入", "", "src", ""), 2L, "chain-1");
-        assertTrue(RationaleContext.renderApplicable(id, 1L, "chain-1").contains("声明有效时写入"),
-                "a write after withdrawal must not replace the last authorised entry");
+        // Production fresh read must send nothing once the host withdrew the declaration;
+        // only the diagnostic peek (render/get) may still show the stored history.
+        assertEquals("", RationaleContext.renderApplicable(id, 1L, "chain-1"),
+                "withdrawn declaration must not keep feeding the old reason into prompts");
+        assertTrue(RationaleContext.render(id).contains("声明有效时写入"),
+                "diagnostic peek keeps history, and is not a fresh-render path");
     }
 
     @Test
@@ -151,6 +155,8 @@ class RationaleContextTest {
         RationaleContext.clear(id);
         assertNull(RationaleContext.chain(id));
         assertFalse(RationaleContext.applicable(id, 3L, "chain-9"));
+        assertEquals("", RationaleContext.renderApplicable(id, 3L, "chain-9"),
+                "after clear the fresh-render path must be empty");
     }
 
     @Test
