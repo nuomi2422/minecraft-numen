@@ -73,6 +73,10 @@ sourceSets {
 
 test {
     useJUnitPlatform()
+    // 2026-11-11: isolate managed test-only XML per attempt, matching api/rdd.
+    if (System.getenv('RDD_TEST_REPORT_DIR')) {
+        reports.junitXml.outputLocation = file(System.getenv('RDD_TEST_REPORT_DIR'))
+    }
 }
 
 // 服务端安全门:numen-core 的 common 全部是服务端代码(工具/任务/寻路/
