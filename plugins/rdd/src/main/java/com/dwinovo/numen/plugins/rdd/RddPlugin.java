@@ -686,6 +686,9 @@ public final class RddPlugin implements NumenPlugin {
                 return withAssets(uuid, "<rdd><enabled>true</enabled><active>false</active></rdd>");
             }
             TaskChain chain = runtime.chain();
+            // Declare the chain the host actually runs, so late callbacks from a finished chain
+            // cannot overwrite (or be presented as) the current context.
+            com.dwinovo.numen.api.RationaleContext.noteCurrentChain(uuid, chain.chainInstanceId());
             // Scope-aware: same plan revision on a different chain instance is NOT the same context.
             if (com.dwinovo.numen.api.RationaleContext.get(uuid) != null
                     && !com.dwinovo.numen.api.RationaleContext.applicable(

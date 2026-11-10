@@ -33,10 +33,45 @@ class RationaleContextTest {
         UUID id = UUID.randomUUID();
         RationaleContext.set(id, new RationaleContext.Entry("链一的原因足够长", "", "src", ""), 5L, "chain-1");
         assertTrue(RationaleContext.renderApplicable(id, 5L, "chain-1").contains("链一的原因足够长"));
-        // A newer write for another chain must not be rendered under the old chain's identity.
+        // A write for another chain must not be rendered under the old chain's identity; the host
+        // declares the switch first, which is what makes the new chain authoritative.
+        RationaleContext.noteCurrentChain(id, "chain-2");
         RationaleContext.set(id, new RationaleContext.Entry("链二的原因足够长", "", "src", ""), 5L, "chain-2");
         assertEquals("", RationaleContext.renderApplicable(id, 5L, "chain-1"));
         assertTrue(RationaleContext.renderApplicable(id, 5L, "chain-2").contains("链二的原因足够长"));
+    }
+
+    @Test
+    void newChainWithLowerRevisionIsAccepted() {
+        UUID id = UUID.randomUUID();
+        RationaleContext.noteCurrentChain(id, "chain-old");
+        RationaleContext.set(id, new RationaleContext.Entry("旧链最后一条原因", "", "src", ""), 100L, "chain-old");
+        // Chain restarts: revisions begin again at 1, and numeric ordering must not block it.
+        RationaleContext.noteCurrentChain(id, "chain-new");
+        RationaleContext.set(id, new RationaleContext.Entry("新链第一条原因", "", "src", ""), 1L, "chain-new");
+        assertTrue(RationaleContext.renderApplicable(id, 1L, "chain-new").contains("新链第一条原因"));
+    }
+
+    @Test
+    void lateWriteFromFinishedChainIsRejected() {
+        UUID id = UUID.randomUUID();
+        RationaleContext.noteCurrentChain(id, "chain-new");
+        RationaleContext.set(id, new RationaleContext.Entry("当前链合法原因", "", "src", ""), 1L, "chain-new");
+        // Same revision number, but a chain the host is no longer running.
+        RationaleContext.set(id, new RationaleContext.Entry("旧链迟到原因", "", "src", ""), 1L, "chain-old");
+        assertTrue(RationaleContext.renderApplicable(id, 1L, "chain-new").contains("当前链合法原因"),
+                "a finished chain must not overwrite the current context even at the same revision");
+        assertEquals("", RationaleContext.renderApplicable(id, 1L, "chain-old"));
+    }
+
+    @Test
+    void sameChainLowerRevisionIsStale() {
+        UUID id = UUID.randomUUID();
+        RationaleContext.noteCurrentChain(id, "chain-1");
+        RationaleContext.set(id, new RationaleContext.Entry("较新原因文本", "", "src", ""), 4L, "chain-1");
+        RationaleContext.set(id, new RationaleContext.Entry("同链较旧原因", "", "src", ""), 3L, "chain-1");
+        assertTrue(RationaleContext.renderApplicable(id, 4L, "chain-1").contains("较新原因文本"));
+        assertEquals("", RationaleContext.renderApplicable(id, 3L, "chain-1"));
     }
 
     @Test

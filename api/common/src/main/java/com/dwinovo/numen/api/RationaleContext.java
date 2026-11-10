@@ -18,6 +18,12 @@ public final class RationaleContext {
     private record State(Entry entry, long generation, String chain) {}
 
     private static final Map<UUID, State> STATES = new ConcurrentHashMap<>();
+    /**
+     * Chain the host currently runs for this companion. Declared by the host on every context
+     * build, because a plan revision counter restarts per chain: comparing numbers across chains
+     * would let an old chain's high revision block a new chain's low one, and vice versa.
+     */
+    private static final Map<UUID, String> CURRENT_CHAIN = new ConcurrentHashMap<>();
 
     private RationaleContext() {}
 
@@ -32,17 +38,34 @@ public final class RationaleContext {
         set(companionId, entry, generation, null);
     }
 
+    /** Host declares which chain it is actually running; stale callbacks from other chains are then refused. */
+    public static void noteCurrentChain(UUID companionId, String chainInstanceId) {
+        if (companionId == null) return;
+        if (chainInstanceId == null || chainInstanceId.isBlank()) CURRENT_CHAIN.remove(companionId);
+        else CURRENT_CHAIN.put(companionId, chainInstanceId);
+    }
+
     /** Scoped write: the entry belongs to one chain instance. Legacy setters stay unscoped. */
     public static void set(UUID companionId, Entry entry, long generation, String chainInstanceId) {
         if (companionId == null || entry == null) return;
         boolean scoped = chainInstanceId != null && !chainInstanceId.isBlank();
         STATES.compute(companionId, (id, old) -> {
             if (old == null) return new State(entry, generation, scoped ? chainInstanceId : null);
-            if (generation < old.generation()) {
-                // Keep the newer reason intact; a late callback must not relabel its scope either.
-                return old;
+            if (!scoped) {
+                // Legacy unscoped writes keep the old rule: a lower generation never overwrites.
+                return generation < old.generation() ? old : new State(entry, generation, old.chain());
             }
-            return new State(entry, generation, scoped ? chainInstanceId : old.chain());
+            String oldChain = old.chain();
+            if (oldChain != null && oldChain.equals(chainInstanceId)) {
+                // Revision counters restart per chain, so only same-chain writes may be ordered by it.
+                return generation < old.generation() ? old : new State(entry, generation, chainInstanceId);
+            }
+            // A write for a different chain. Upgrade an unscoped entry; otherwise only the chain the
+            // host declared as current may replace it — a finished chain's late callback may not.
+            if (oldChain == null) return new State(entry, generation, chainInstanceId);
+            String current = CURRENT_CHAIN.get(id);
+            return current != null && current.equals(chainInstanceId)
+                    ? new State(entry, generation, chainInstanceId) : old;
         });
     }
 
@@ -109,6 +132,7 @@ public final class RationaleContext {
     public static void clear(UUID companionId) {
         if (companionId == null) return;
         STATES.remove(companionId);
+        CURRENT_CHAIN.remove(companionId);
     }
 
     public static String render(UUID companionId) {
