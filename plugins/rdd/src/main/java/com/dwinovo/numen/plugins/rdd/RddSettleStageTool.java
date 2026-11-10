@@ -111,7 +111,9 @@ final class RddSettleStageTool implements NumenTool {
             // 2026-11-10 (044 §0.7): settling the LAST stage ends the whole goal. A self-report
             // must not close the objective, so that one case always needs server-side facts.
             // Earlier stages keep the planner's "no longer needed" judgement path unchanged.
-            if (!verified && isFinalStage(chain, targetId)) {
+            // Waiving the last unfinished stage would end the goal just like settling it, so the
+            // same fact requirement applies even when the stage is not the literal last one.
+            if (!verified && (isFinalStage(chain, targetId) || chain.waivingWouldEndGoal(targetId))) {
                 RddMonitor.publish("primary_settle_rejected", java.util.Map.of(
                         "companionId", companion.getUUID().toString(), "primary", targetId,
                         "verified", false, "reason", "final-stage-requires-facts"));

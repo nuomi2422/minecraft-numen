@@ -73,6 +73,22 @@ class RddSettleStageFlagsTest {
         assertEquals(active.planRevision(), done.data().get("plan_revision"));
     }
 
+    @Test void statusSeparatesCompletionFromWaiver() {
+        Subtask a = Subtask.hardCoded("a", "a", Map.of("type", "item", "item", "minecraft:diamond", "minimum", 1));
+        TaskChain c = new TaskChain(new Goal("g", "g", List.of(
+                new PrimaryGoal("p", "first", List.of(a)),
+                PrimaryGoal.unexpanded("later", "later", null))));
+        var before = RddStatusTool.projectChain(c).data();
+        assertEquals(0, ((java.util.List<?>) before.get("satisfied_stages")).size());
+        assertEquals(0, ((java.util.List<?>) before.get("waived_stages")).size());
+        c.startCurrent();
+        c.settlePrimaryByFact("p", "改用现有装备", false);
+        var afterWaiver = RddStatusTool.projectChain(c).data();
+        assertEquals(0, ((java.util.List<?>) afterWaiver.get("satisfied_stages")).size(),
+                "a waiver must not appear as a completion fact");
+        assertEquals(1, ((java.util.List<?>) afterWaiver.get("waived_stages")).size());
+    }
+
     @Test void settledStagesAreVisibleForBeforeAfterComparison() {
         TaskChain c = chain();
         assertTrue(((Map<?, ?>) RddStatusTool.projectChain(c).data().get("settled_stages")).isEmpty());

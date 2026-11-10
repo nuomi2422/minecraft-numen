@@ -89,7 +89,7 @@ public final class TaskChain {
      * 只用来让本条链跳过，**不写进 satisfiedStages**——否则一次自述就会被当作"已完成"继承到
      * 后续重提的同一目标里。旧存档没有这个字段 = 空集。
      */
-    private final Set<String> waivedStageKeys = new LinkedHashSet<>();
+    private final java.util.Map<String, Integer> waivedStageKeys = new java.util.LinkedHashMap<>();
     /** 2026-11-07: sticky satisfied need keys (primaryId+planRevision+attempt+display). */
     private final Set<String> satisfiedNeedKeys = new LinkedHashSet<>();
 
@@ -1243,13 +1243,18 @@ public final class TaskChain {
         if (idx < primaryIndex) {
             throw new IllegalStateException("cannot settle a stage behind the cursor: " + primaryId);
         }
+        // A waiver must never make the goal complete, even through later cursor scans.
+        // Refuse before changing any facts or version; callers may replan instead.
+        if (!verifiedCompletion && waivingWouldEndGoal(primaryId)) {
+            throw new IllegalStateException("cannot waive last remaining stage without verified goal facts");
+        }
         PrimaryGoal target = all.get(idx);
         String stageKey = StageKeyNormalizer.normalize(target.description());
         if (verifiedCompletion) {
             satisfiedStages.add(stageKey);
         } else {
             // 未核验的"不再需要"只在本条链跳过；继承完成事实必须另有世界事实。
-            waivedStageKeys.add(stageKey);
+            waivedStageKeys.put(primaryId, planRevision);
         }
         settleReasons.put(primaryId, reason);
         stateVersion++;            // 计划事实变化 = 安全提交
@@ -1401,7 +1406,10 @@ public final class TaskChain {
     /** 跳过条件：已完成事实，或本条链内的"放弃"决定（后者不跨链继承）。 */
     private boolean isSkipped(int index) {
         if (isSatisfied(index)) return true;
-        return waivedStageKeys.contains(StageKeyNormalizer.normalize(goal.primaryGoals().get(index).description()));
+        // Waivers are keyed by the stage id of THIS plan. A replan mints new ids, so a new stage
+        // that happens to reuse the theme is asked again instead of inheriting an old waiver.
+        Integer revision = waivedStageKeys.get(goal.primaryGoals().get(index).id());
+        return revision != null && revision == planRevision;
     }
 
     /** 从 start 起找第一个未被完成事实命中的一级下标；全部命中返回 -1。 */
@@ -1421,7 +1429,22 @@ public final class TaskChain {
 
     /** 本条链内被"放弃"的阶段键（没有世界事实核验，不跨链继承）。 */
     public synchronized Set<String> waivedStages() {
-        return Set.copyOf(waivedStageKeys);
+        return Set.copyOf(waivedStageKeys.keySet());
+    }
+
+    /** 是否只剩"放弃"的阶段未走完：此时再放弃就等于结束总目标，必须另有世界事实。 */
+    public synchronized boolean waivingWouldEndGoal(String primaryId) {
+        if (primaryId == null) return false;
+        var all = goal.primaryGoals();
+        for (int i = 0; i < all.size(); i++) {
+            if (all.get(i).id().equals(primaryId)) {
+                for (int j = i + 1; j < all.size(); j++) {
+                    if (!isSkipped(j)) return false;
+                }
+                return true;
+            }
+        }
+        return false;
     }
 
     public synchronized void markFailed(String subtaskId, String reason) {
@@ -1642,9 +1665,9 @@ public final class TaskChain {
             sat.add(k);
         }
         o.add("satisfiedStages", sat);
-        JsonArray waived = new JsonArray();
-        for (String k : waivedStageKeys) {
-            waived.add(k);
+        JsonObject waived = new JsonObject();
+        for (Map.Entry<String, Integer> e : waivedStageKeys.entrySet()) {
+            waived.addProperty(e.getKey(), e.getValue());
         }
         o.add("waivedStages", waived);
         JsonArray needSat = new JsonArray();
@@ -1768,9 +1791,16 @@ public final class TaskChain {
             chain.ownerEpoch = o.get("ownerEpoch").getAsLong();
         }
         // 完成事实继承层（P0）：旧链无此字段 → 空集（向后兼容）
-        if (o.has("waivedStages") && o.get("waivedStages").isJsonArray()) {
-            for (JsonElement el : o.getAsJsonArray("waivedStages")) {
-                chain.waivedStageKeys.add(el.getAsString());
+        if (o.has("waivedStages") && !o.get("waivedStages").isJsonObject()) {
+            throw new IllegalArgumentException("unrecognised waivedStages format: cannot safely restore waiver identity");
+        }
+        if (o.has("waivedStages") && o.get("waivedStages").isJsonObject()) {
+            for (Map.Entry<String, JsonElement> e : o.getAsJsonObject("waivedStages").entrySet()) {
+                try {
+                    chain.waivedStageKeys.put(e.getKey(), e.getValue().getAsInt());
+                } catch (RuntimeException ex) {
+                    throw new IllegalArgumentException("invalid waivedStages revision for " + e.getKey(), ex);
+                }
             }
         }
         if (o.has("satisfiedStages") && o.get("satisfiedStages").isJsonArray()) {

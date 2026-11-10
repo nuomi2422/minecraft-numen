@@ -63,6 +63,55 @@ class RddSettleStageUnmetTest {
         assertTrue(verifiedChain.waivedStages().isEmpty());
     }
 
+    @Test void waiverOnlyAppliesToItsOwnPlanRevision() {
+        PrimaryGoal a = new PrimaryGoal("p1", "current", List.of(item("a")));
+        PrimaryGoal b = new PrimaryGoal("p2", "same theme", List.of(item("b")));
+        PrimaryGoal c = new PrimaryGoal("p3", "tail", List.of(item("c")));
+        TaskChain chain = new TaskChain(new Goal("g8", "g8", List.of(a, b, c)));
+        chain.startCurrent();
+        chain.settlePrimaryByFact("p2", "不要旧阶段", false);
+        chain.replaceFuturePrimaries(List.of(PrimaryGoal.unexpanded("new-p2", "same theme", null)));
+        assertFalse(chain.waivingWouldEndGoal("p1"), "new same-theme id must remain open");
+
+        TaskChain sameId = new TaskChain(new Goal("g9", "g9", List.of(a, b, c)));
+        sameId.startCurrent();
+        sameId.settlePrimaryByFact("p2", "旧代放弃", false);
+        sameId.settlePrimaryByFact("p3", "fixture: verified tail", true);
+        assertTrue(sameId.waivingWouldEndGoal("p1"), "same-revision p2 waiver is active");
+        sameId.nextPlanRevision();
+        assertFalse(sameId.waivingWouldEndGoal("p1"), "same id in new plan revision must become open");
+        assertEquals(1, sameId.waivedStages().size(), "historical waiver remains visible, not active");
+    }
+
+    @Test void waivingTheLastOpenStageWouldEndTheGoal() {
+        PrimaryGoal a = new PrimaryGoal("p1", "only open stage", List.of(item("a")));
+        PrimaryGoal b = new PrimaryGoal("p2", "future stage", List.of(item("b")));
+        TaskChain chain = new TaskChain(new Goal("g9", "g9", List.of(a, b)));
+        chain.startCurrent();
+        assertTrue(chain.waivingWouldEndGoal("p2"),
+                "p2 is the last planned stage, so waiving it leaves nothing after it");
+        long before = chain.stateVersion();
+        assertThrows(IllegalStateException.class, () -> chain.settlePrimaryByFact("p2", "先放弃这一级", false));
+        assertEquals(before, chain.stateVersion());
+        assertTrue(chain.waivedStages().isEmpty());
+        assertTrue(chain.satisfiedStages().isEmpty());
+        // The refused request must not poison a subsequent legitimate plan.
+        chain.replaceFuturePrimaries(List.of(PrimaryGoal.unexpanded("p-new", "new tail", null)));
+        chain.settlePrimaryByFact("p1", "alternate route", false);
+        assertEquals("p-new", chain.currentPrimary().id());
+        assertTrue(chain.satisfiedStages().isEmpty());
+    }
+
+    @Test void ambiguousLegacyWaiverArrayCannotSilentlyDisappear() {
+        TaskChain chain = new TaskChain(new Goal("legacy", "legacy", List.of(
+                new PrimaryGoal("p", "stage", List.of(item("x"))))));
+        var json = com.google.gson.JsonParser.parseString(chain.toJson()).getAsJsonObject();
+        json.add("waivedStages", new com.google.gson.JsonArray());
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> TaskChain.fromJson(json.toString()));
+        assertTrue(ex.getMessage().contains("waivedStages"));
+    }
+
     @Test void waivedStageSurvivesRestartWithoutBecomingCompletion() {
         PrimaryGoal a = new PrimaryGoal("p1", "iron stage", List.of(item("iron")));
         PrimaryGoal b = new PrimaryGoal("p2", "later stage", List.of(item("later")));

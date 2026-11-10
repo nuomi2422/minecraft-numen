@@ -112,6 +112,10 @@ final class RddStatusTool implements NumenTool {
             // caller prove "nothing was settled" before/after a refused request instead of
             // inferring it from the absence of a change event.
             fields.put("settled_stages", Map.copyOf(chain.settledStages()));
+            // Completion facts vs in-chain waivers must be distinguishable at read time,
+            // otherwise a "no longer needed" judgement looks like an achieved stage.
+            fields.put("satisfied_stages", java.util.List.copyOf(chain.satisfiedStages()));
+            fields.put("waived_stages", java.util.List.copyOf(chain.waivedStages()));
             if (current != null) {
                 fields.put("subtask", current.id());
                 fields.put("subtask_status", chain.currentSubtaskStatus().name());
