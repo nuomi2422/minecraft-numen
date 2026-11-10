@@ -1169,8 +1169,8 @@ public final class EntityAgentLoop {
         abort();
         // 2026-11-10 实机（COV-r1）：空闲时按停止只清了队列、**没上闩**（上闩只在"忙"分支里），
         // 随后低血量预警/重生这类急件又把回合拉起来，停后 60 秒派发 10 条。
-        // 主人的"停"必须与忙闲无关一律上闩：只有主人继续（/stop resume 或再说一句）才能解除。
-        turnPause = AgentTurnPause.OWNER_INTERRUPT;
+        // 与忙闲无关一律上闩；判定收在 OwnerStopLatch（生产与单测共用同一策略）。
+        turnPause = OwnerStopLatch.afterOwnerStop(turnPause);
         int queued = queue.size();
         // takeEntries 走的是 EventQueue 自己的口径：取走全部并清空，顺带把溢出记账
         // 折成一条说明（我们只要计数，所以拿它的返回值不用）。
@@ -1198,7 +1198,7 @@ public final class EntityAgentLoop {
      */
     public boolean ownerResume() {
         boolean wasLatched = turnPause == AgentTurnPause.OWNER_INTERRUPT;
-        turnPause = AgentTurnPause.NONE;
+        turnPause = OwnerStopLatch.afterOwnerResume(turnPause);
         if (wasLatched) {
             Constants.LOG.info("[numen-entity#{}] owner resumed (OWNER_INTERRUPT latch cleared)", entityUuid);
         }
@@ -1533,7 +1533,8 @@ public final class EntityAgentLoop {
      * 可以反复问,所以<b>不存在"错过的排空"</b>,也就不需要记住"我刚才想排空"。
      */
     private void maybeDrain() {
-        if (paused()) {
+        // 2026-11-10：主人叫停期间（含急件）一律不开轮——与 ownerStop 共用 OwnerStopLatch。
+        if (!OwnerStopLatch.allowsTurnStart(turnPause) || paused()) {
             return;   // 停牌不开口——也别把"主动开轮"的日志刷成噪音
         }
         int level = com.dwinovo.numen.client.data.ClientPrefs.initiativeLevel();
