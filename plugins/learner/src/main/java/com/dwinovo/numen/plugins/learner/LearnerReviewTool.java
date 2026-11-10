@@ -322,6 +322,16 @@ final class LearnerReviewTool implements NumenTool {
         // P1 修复：只 commit「确实拿到判定」的条目，其余 restore 回去。
         // 绝不能因为「至少解析出一条」就删掉整批。
         java.util.Set<String> judged = new java.util.HashSet<>();
+        ReviewCompletion completion = new ReviewCompletion(batch,
+                memo -> ReviewTargetGate.check(LearnerPlugin.configDir(), id, memo));
+        for (Memo memo : batch) {
+            var target = completion.target(memo.id());
+            if (!target.ok()) {
+                LearnerMonitor.publish("review_target_skipped", Map.of(
+                        "review_id", reviewId, "memo_id", memo.id(), "reason", target.reason(),
+                        "terminal", target.terminal(), "snapshot", memo.snapshot() == null ? "" : memo.snapshot()));
+            }
+        }
         // ★ G6b Z2/Z3：写经验之前必须先看过库里有什么，且决策要过机核
         //   （REUSE/REVISE 指向检索到的条目；有高相似命中不许 NEW）。
         //   不过闸的 memo **不 commit**（下面会 restore 回去），拒因随事件落盘。
@@ -335,12 +345,9 @@ final class LearnerReviewTool implements NumenTool {
                 retrievalRejected.add(v.memoId() + ": " + gate);
                 continue;
             }
-            Memo targetMemo = batch.stream().filter(m -> m.id().equals(v.memoId())).findFirst().orElse(null);
-            var targetCheck = ReviewTargetGate.check(LearnerPlugin.configDir(), id, targetMemo);
-            if (!targetCheck.ok()) {
-                retrievalRejected.add(v.memoId() + ": target:" + targetCheck.reason());
-                LearnerMonitor.publish("review_target_skipped", Map.of(
-                        "review_id", reviewId, "memo_id", v.memoId(), "reason", targetCheck.reason()));
+            if (!completion.permits(v.memoId())) {
+                var target = completion.target(v.memoId());
+                retrievalRejected.add(v.memoId() + ": target:" + (target == null ? "NOT_IN_BATCH" : target.reason()));
                 continue;
             }
             judged.add(v.memoId());
@@ -354,6 +361,8 @@ final class LearnerReviewTool implements NumenTool {
                 com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.mode(LearnerPlugin.configDir());
         if (contractMode != com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.Mode.OFF) {
             for (Verdict v : outcome.verdicts()) {
+                // C1: invalid targets must not reach contract/register side effects (even shadow mode).
+                if (!completion.effective(v.memoId(), judged)) continue;
                 if (v.memoId() == null || v.memoId().isBlank()) {
                     continue;
                 }
@@ -467,18 +476,9 @@ final class LearnerReviewTool implements NumenTool {
             }
         }
 
-        List<Memo> toCommit = new ArrayList<>();
-        List<Memo> toRestore = new ArrayList<>();
-        for (Memo m : batch) {
-            if (judged.contains(m.id())) {
-                toCommit.add(m);
-            } else {
-                toRestore.add(m);
-            }
-        }
-
-        int removed = toCommit.isEmpty() ? 0 : queue.commitDrain(toCommit);
-        int restored = toRestore.isEmpty() ? 0 : queue.restore(toRestore);
+        var settlement = completion.settle(queue, batch, judged);
+        int removed = settlement.committed();
+        int restored = settlement.restored();
         int depth = queue.size();
 
         List<Map<String, Object>> rendered = new ArrayList<>();
@@ -491,7 +491,7 @@ final class LearnerReviewTool implements NumenTool {
         //    正确判据不是前缀猜测，而是**是不是这批里的真实 memo id** —— 直接复用上面那个
         //    `judged`（它就是本批真实 id 集合）。"?" 不在其中，仍会被挡住。
         for (Verdict v : outcome.verdicts()) {
-            if (v.memoId() == null || !judged.contains(v.memoId())) {
+            if (v.memoId() == null || !completion.effective(v.memoId(), judged)) {
                 // 防御：绝不允许 "?" 这类占位 id 流进监测台/下游
                 continue;
             }
@@ -687,6 +687,7 @@ final class LearnerReviewTool implements NumenTool {
         reviewedEv.put("reviewed", rendered.size());
         reviewedEv.put("committed", removed);
         reviewedEv.put("restored", restored);
+        reviewedEv.put("terminal_skipped", settlement.terminalSkipped());
         reviewedEv.put("queue_depth", depth);
         reviewedEv.put("verdicts", rendered);
         // ★ 上轮回读的读数也进这条事件：E2 那次「它到底有没有去看」的判断之所以要靠人工翻日志，

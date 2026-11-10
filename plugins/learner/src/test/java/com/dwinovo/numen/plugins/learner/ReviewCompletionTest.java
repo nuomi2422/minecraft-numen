@@ -1,0 +1,91 @@
+package com.dwinovo.numen.plugins.learner;
+
+import com.dwinovo.numen.plugins.learner.core.Memo;
+import com.dwinovo.numen.plugins.learner.core.MemoQueue;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.*;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import static org.junit.jupiter.api.Assertions.*;
+
+/** 2026-11-11 C1: production completion selection + real temporary MemoQueue, no model or live data. */
+class ReviewCompletionTest {
+    private static final UUID A = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID B = UUID.fromString("22222222-2222-2222-2222-222222222222");
+    private static Memo memo(String version, String use) {
+        return new Memo("expand-review:exp:e1@"+version+"#"+use,"review", "EXPERIENCE_EXPAND", "expand",
+                "{\"ref\":\"exp:e1\",\"version\":\""+version+"\",\"use_id\":\""+use+"\"}",1L);
+    }
+    private static void entry(Path dir, UUID id, String version, boolean retracted, String publication) throws Exception {
+        Files.writeString(dir.resolve("experience-"+id+".jsonl"),"{\"id\":\"e1\",\"content_fingerprint\":\""+version+
+                "\",\"retracted\":"+retracted+",\"publication\":\""+publication+"\"}\n");
+    }
+    private static ReviewCompletion check(Path dir, UUID id, List<Memo> batch) {
+        return new ReviewCompletion(batch,m -> ReviewTargetGate.check(dir,id,m));
+    }
+    @Test void versionChangedRetiresOldWithoutArtifactAndNewVersionAdvances(@TempDir Path dir) throws Exception {
+        entry(dir,A,"v2",false,"TRIAL");
+        Memo old=memo("v1","u1"), fresh=memo("v2","u2");
+        MemoQueue q=new MemoQueue(dir.resolve("memo-A.json"));q.append(old);q.append(fresh);
+        var batch=q.drain(10);var completion=check(dir,A,batch);
+        Set<String> judged=new HashSet<>();for(Memo m:batch)if(completion.permits(m.id()))judged.add(m.id());
+        AtomicInteger artifacts=new AtomicInteger();
+        for(Memo m:batch)if(completion.effective(m.id(),judged))artifacts.incrementAndGet();
+        assertFalse(completion.effective(old.id(),Set.of(old.id())),"even stale preselected verdict cannot write");
+        assertEquals(1,artifacts.get());
+        var result=completion.settle(q,batch,judged);
+        assertEquals(1,result.terminalSkipped());assertEquals(1,result.committed());assertEquals(0,q.size());
+        q.append(old);assertEquals(0,q.size(),"existing persistent seen prevents revival");
+    }
+    @Test void retractedAndRevokedAreTerminalNotLearned(@TempDir Path dir) throws Exception {
+        for(String reason:List.of("RETRACTED","REVOKED")) {
+            entry(dir,A,"v1",reason.equals("RETRACTED"),reason.equals("REVOKED")?"REVOKED":"TRIAL");
+            Memo m=memo("v1",reason);MemoQueue q=new MemoQueue(dir.resolve(reason+".json"));q.append(m);
+            var c=check(dir,A,q.drain(2));assertEquals(reason,c.target(m.id()).reason());
+            assertFalse(c.effective(m.id(),Set.of(m.id())));
+            var r=c.settle(q,q.drain(2),Set.of());assertEquals(1,r.terminalSkipped());assertEquals(0,r.committed());assertEquals(0,q.size());
+        }
+    }
+    @Test void everyUnknownReasonRemainsRetryable(@TempDir Path dir) {
+        for(String reason:List.of("READ_FAILED","EXPERIENCE_FILE_MISSING","VERSION_UNKNOWN","VERSION_UNVERIFIED","MISSING","BAD_SNAPSHOT","BAD_REF")) {
+            Memo m=memo("v1",reason);MemoQueue q=new MemoQueue(dir.resolve(reason+".json"));q.append(m);
+            var c=new ReviewCompletion(q.drain(2),x->new ReviewTargetGate.Check(false,reason));
+            assertFalse(c.terminal(m.id()));assertFalse(c.effective(m.id(),Set.of(m.id())));
+            var r=c.settle(q,q.drain(2),Set.of());assertEquals(0,r.terminalSkipped());assertEquals(0,r.committed());assertEquals(1,q.size());
+        }
+    }
+    @Test void actualReaderFailureAndUnknownFingerprintStayQueued(@TempDir Path dir) throws Exception {
+        Memo m=memo("v1","unknown");MemoQueue q=new MemoQueue(dir.resolve("m.json"));q.append(m);
+        entry(dir,A,"",false,"TRIAL");var c=check(dir,A,q.drain(2));
+        assertEquals("VERSION_UNVERIFIED",c.target(m.id()).reason());c.settle(q,q.drain(2),Set.of());assertEquals(1,q.size());
+        Files.writeString(dir.resolve("experience-"+A+".jsonl"),"{\"id\":\"e1\",BROKEN\n");
+        c=check(dir,A,q.drain(2));assertEquals("READ_FAILED",c.target(m.id()).reason());c.settle(q,q.drain(2),Set.of());assertEquals(1,q.size());
+    }
+    @Test void companionFilesAndMixedBatchRemainIndependent(@TempDir Path dir) throws Exception {
+        entry(dir,A,"v2",false,"TRIAL");entry(dir,B,"v1",false,"TRIAL");Memo m=memo("v1","same-use");
+        MemoQueue qa=new MemoQueue(dir.resolve("a.json")),qb=new MemoQueue(dir.resolve("b.json"));qa.append(m);qb.append(m);
+        var ca=check(dir,A,qa.drain(2));var cb=check(dir,B,qb.drain(2));
+        assertTrue(ca.terminal(m.id()));assertTrue(cb.permits(m.id()));
+        ca.settle(qa,qa.drain(2),Set.of());cb.settle(qb,qb.drain(2),Set.of(m.id()));assertEquals(0,qa.size());assertEquals(0,qb.size());
+    }
+    @Test void mixedTerminalValidAndUnknownBatchCanAdvance(@TempDir Path dir) {
+        Memo old=memo("v1","old"), valid=memo("v2","new"), retry=memo("","unknown");
+        MemoQueue q=new MemoQueue(dir.resolve("mixed.json"));for(Memo m:List.of(old,valid,retry))q.append(m);
+        var batch=q.drain(10);
+        var c=new ReviewCompletion(batch,m->m.id().equals(old.id())?new ReviewTargetGate.Check(false,"VERSION_MISMATCH"):
+                m.id().equals(valid.id())?new ReviewTargetGate.Check(true,"OK"):new ReviewTargetGate.Check(false,"READ_FAILED"));
+        var r=c.settle(q,batch,Set.of(valid.id()));
+        assertEquals(1,r.committed());assertEquals(1,r.terminalSkipped());
+        assertEquals(List.of(retry.id()),q.drain(10).stream().map(Memo::id).toList());
+    }
+    @Test void productionCompletePinsSideEffectGateAndRealSettlement() throws Exception {
+        Path cur=Paths.get("").toAbsolutePath(),src=null;
+        for(;cur!=null;cur=cur.getParent()) {Path p=cur.resolve("src/main/java/com/dwinovo/numen/plugins/learner/LearnerReviewTool.java");if(Files.isRegularFile(p)){src=p;break;}}
+        assertNotNull(src);String text=Files.readString(src);
+        int gate=text.indexOf("if (!completion.effective(v.memoId(), judged)) continue;");
+        assertTrue(gate>=0);assertTrue(text.indexOf("var regReport",gate)>gate,"source pin only: contract/register follows selection");
+        assertTrue(text.contains("completion.settle(queue, batch, judged)"));
+        assertTrue(text.contains("reviewedEv.put(\"terminal_skipped\", settlement.terminalSkipped())"));
+    }
+}

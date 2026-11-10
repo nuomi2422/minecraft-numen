@@ -14,7 +14,13 @@ import java.util.UUID;
 public final class ReviewTargetGate {
     private ReviewTargetGate() {}
 
-    public record Check(boolean ok, String reason) {}
+    public record Check(boolean ok, String reason) {
+        /** 2026-11-11 C1: only definite invalidation terminates an old expansion memo.
+         * Missing/IO/unknown version remain retryable; no new inference from absence. */
+        public boolean terminal() {
+            return !ok && java.util.Set.of("VERSION_MISMATCH", "RETRACTED", "REVOKED").contains(reason);
+        }
+    }
 
     public static Check check(Path configDir, UUID companion, Memo memo) {
         if (memo == null || !"EXPERIENCE_EXPAND".equals(memo.stage())) return new Check(true, "");
