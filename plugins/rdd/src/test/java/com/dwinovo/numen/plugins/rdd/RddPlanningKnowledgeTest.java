@@ -32,6 +32,38 @@ class RddPlanningKnowledgeTest {
         return (companion, objective, stage, knownFailures) -> text;
     }
 
+    // 2026-11-11 B1: inject the existing provider seam but run the REAL host aggregation.
+    // No live LLM request; base task/doctrine remains outside the optional knowledge cap.
+    private static void wholeBudgetFinalRequest(String stage, String base) {
+        String huge = "<reference>" + "x".repeat(2377) + "</reference>";
+        String correction = "<correction>避开岩浆</correction>";
+        RddPlanningKnowledge.Provider hostBudget = (id, objective, actualStage, failures) -> {
+            assertEquals(COMPANION, id); assertEquals(stage, actualStage);
+            assertEquals(List.of("no path"), failures);
+            return com.dwinovo.numen.api.NumenPlugins.aggregatePlanningKnowledge(
+                    List.of(q -> huge, q -> correction),
+                    com.dwinovo.numen.api.PlanningQuery.of(id, objective, actualStage, failures));
+        };
+        String fullBase = "<required>KEEP_GOAL_AND_SURVIVAL</required>" + base;
+        String request = RddPlanningKnowledge.withKnowledge(hostBudget, COMPANION, fullBase, "挖钻石", stage, List.of("no path"));
+        String expectedBase = RddPlanningKnowledge.withKnowledge(stub(""), COMPANION, fullBase, "挖钻石", stage, List.of("no path"));
+        assertEquals(expectedBase + "\n" + correction, request);
+        assertFalse(request.contains("<reference>"));
+        RddPlanningKnowledge.Provider allRejected = (id, objective, actualStage, failures) ->
+                com.dwinovo.numen.api.NumenPlugins.aggregatePlanningKnowledge(List.of(q -> huge),
+                        com.dwinovo.numen.api.PlanningQuery.of(id, objective, actualStage, failures));
+        assertEquals(expectedBase, RddPlanningKnowledge.withKnowledge(allRejected, COMPANION, fullBase, "挖钻石", stage, List.of("no path")));
+    }
+    @Test void stageAWholeHostBudgetReachesFinalPrompt() {
+        wholeBudgetFinalRequest("stage_a", RddStagePlanner.planningPrompt("通关MC", HELD));
+    }
+    @Test void stageBWholeHostBudgetReachesFinalPrompt() {
+        wholeBudgetFinalRequest("stage_b", RddDecomposer.decompositionPrompt("挖钻石", HELD, List.of("铁器时代")));
+    }
+    @Test void fallbackWholeHostBudgetReachesFinalPrompt() {
+        wholeBudgetFinalRequest("fallback", RddDecomposer.decompositionPrompt("挖钻石", HELD, List.of()));
+    }
+
     // ---------- 核心：三个规划入口的最终请求都要含经验 ----------
 
     @Test

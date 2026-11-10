@@ -200,8 +200,8 @@ public final class NumenPlugins {
      * <ul>
      *   <li><b>稳定分隔符</b>——非空片段之间固定用 {@link #PLANNING_KNOWLEDGE_SEPARATOR},
      *       首尾不加,拼出来逐字节可预期。</li>
-     *   <li><b>总字符上限</b>——超过 {@link #MAX_PLANNING_KNOWLEDGE_CHARS} 就截断,
-     *       后面的贡献者不再追加。</li>
+     *   <li><b>总字符上限</b>——2026-11-11 B1: 超出剩余预算整片拒收，继续看后续短片；
+     *       不切断参考里的限制/闭合标签，不承诺全局公平。</li>
      *   <li><b>故障隔离</b>——某个插件算炸了(含 {@code Error},例如缺类)只丢它自己那段,
      *       其余贡献者与整条规划请求都不受影响。</li>
      * </ul>
@@ -227,15 +227,16 @@ public final class NumenPlugins {
         StringBuilder sb = new StringBuilder();
         int accepted = 0;
         int failed = 0;
-        int truncated = 0;
-        for (PlanningKnowledgeContributor c : contributors) {
+        int rejected = 0;
+        for (int index = 0; index < contributors.size(); index++) {
+            PlanningKnowledgeContributor c = contributors.get(index);
             String fragment;
             try {
                 fragment = c.knowledgeFor(query);
             } catch (Throwable e) {
                 failed++;
                 Constants.LOG.error("[numen] 插件的规划知识算不出来,这一段跳过", e);
-                publishKnowledgeGap(query.companion(), accepted, KnowledgeGaps.reasonFor(null, e),
+                publishKnowledgeGap(query.companion(), index, KnowledgeGaps.reasonFor(null, e),
                         e instanceof KnowledgeGapException ge ? ge.reason().name().toLowerCase(java.util.Locale.ROOT) : e.getClass().getSimpleName());
                 continue;
             }
@@ -245,19 +246,18 @@ public final class NumenPlugins {
             String piece = sb.length() == 0 ? fragment : PLANNING_KNOWLEDGE_SEPARATOR + fragment;
             int room = MAX_PLANNING_KNOWLEDGE_CHARS - sb.length();
             if (piece.length() > room) {
-                if (room > 0) {
-                    sb.append(piece, 0, room);
-                }
-                truncated++;
-                break; // 预算已满,后面的贡献者不再追加
+                // 044 B1: optional reference must remain whole; later short corrections may still fit.
+                rejected++;
+                publishKnowledgeGap(query.companion(), index, "budget-rejected", "planning-whole-fragment");
+                continue;
             }
             sb.append(piece);
             accepted++;
         }
-        if (truncated > 0 || failed > 0) {
-            // 简短观测:只报计数与预算,不含任何正文
-            Constants.LOG.info("[numen] planning knowledge aggregated: contributors={} failed={} truncated={} chars={}/{}",
-                    accepted, failed, truncated, sb.length(), MAX_PLANNING_KNOWLEDGE_CHARS);
+        if (rejected > 0 || failed > 0) {
+            // 整片拒收不算交付；仍用既有缺口通道，不增加预算协议。
+            Constants.LOG.info("[numen] planning knowledge aggregated: contributors={} failed={} budget_rejected={} chars={}/{}",
+                    accepted, failed, rejected, sb.length(), MAX_PLANNING_KNOWLEDGE_CHARS);
         }
         return sb.toString();
     }

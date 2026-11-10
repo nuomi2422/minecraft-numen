@@ -58,13 +58,13 @@ class PlanningKnowledgeAggregationTest {
     // ---------- 宿主总预算（不信任贡献者自觉限流） ----------
 
     @Test
-    void 超出宿主总上限时截断() {
+    void 超出宿主总上限整片拒收() {
         int cap = NumenPlugins.MAX_PLANNING_KNOWLEDGE_CHARS;
         String oversized = "x".repeat(cap + 500);
 
         String out = NumenPlugins.aggregatePlanningKnowledge(List.of(fixed(oversized)), QUERY);
 
-        assertEquals(cap, out.length(), "宿主必须自己把总量压在上限内");
+        assertEquals("", out, "2026-11-11 B1契约：不截半片，完整可选块放不下就拒收");
     }
 
     @Test
@@ -80,15 +80,42 @@ class PlanningKnowledgeAggregationTest {
     }
 
     @Test
-    void 多贡献者累加超预算时_前面完整保留_末尾截断() {
+    void 多贡献者累加超预算时_整片拒收并继续后续短片() {
         int cap = NumenPlugins.MAX_PLANNING_KNOWLEDGE_CHARS;
         String head = "h".repeat(cap - 10);
         String tail = "t".repeat(200);
 
-        String out = NumenPlugins.aggregatePlanningKnowledge(List.of(fixed(head), fixed(tail)), QUERY);
+        String out = NumenPlugins.aggregatePlanningKnowledge(List.of(fixed(head), fixed(tail), fixed("SHORT")), QUERY);
 
-        assertEquals(cap, out.length());
-        assertTrue(out.startsWith(head), "先到的贡献者应完整保留");
+        assertEquals(head + NumenPlugins.PLANNING_KNOWLEDGE_SEPARATOR + "SHORT", out);
+        assertFalse(out.contains("tt"), "拒收整个超余量片，不含半截");
+        assertTrue(out.length() <= cap);
+    }
+
+    @Test
+    void oversizedClosedReferenceIsRejectedAndLaterShortCorrectionSurvives() {
+        String closed = "<reference>" + "x".repeat(2377) + "</reference>"; // exactly 2400
+        assertEquals(2400, closed.length());
+        String out = NumenPlugins.aggregatePlanningKnowledge(List.of(fixed(closed), fixed("<correction>别挖脚下</correction>")), QUERY);
+        assertEquals("<correction>别挖脚下</correction>", out);
+    }
+
+    @Test
+    void stableOrderIsNotFairSchedulingAndSeparatorMustFitWhole() {
+        String a = "a".repeat(1200), b = "b".repeat(1000);
+        assertEquals(a, NumenPlugins.aggregatePlanningKnowledge(List.of(fixed(a),fixed(b)),QUERY));
+        assertEquals(b, NumenPlugins.aggregatePlanningKnowledge(List.of(fixed(b),fixed(a)),QUERY));
+        String head = "h".repeat(1998);
+        assertEquals(head + "\nZ", NumenPlugins.aggregatePlanningKnowledge(List.of(fixed(head),fixed("Z")),QUERY));
+        assertEquals(head, NumenPlugins.aggregatePlanningKnowledge(List.of(fixed(head),fixed("ZZ")),QUERY));
+    }
+
+    @Test
+    void companionsReceiveOnlyTheirOwnQueryAndReference() {
+        UUID other = UUID.fromString("22222222-2222-2222-2222-222222222222");
+        PlanningKnowledgeContributor source = q -> q.companion().equals(other) ? "B" : "A";
+        assertEquals("A", NumenPlugins.aggregatePlanningKnowledge(List.of(source),QUERY));
+        assertEquals("B", NumenPlugins.aggregatePlanningKnowledge(List.of(source),PlanningQuery.of(other,"B-goal","stage_a",List.of())));
     }
 
     // ---------- 故障隔离 ----------
