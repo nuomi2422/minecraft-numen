@@ -686,8 +686,10 @@ public final class RddPlugin implements NumenPlugin {
                 return withAssets(uuid, "<rdd><enabled>true</enabled><active>false</active></rdd>");
             }
             TaskChain chain = runtime.chain();
+            // Scope-aware: same plan revision on a different chain instance is NOT the same context.
             if (com.dwinovo.numen.api.RationaleContext.get(uuid) != null
-                    && !RddRationale.fresh(com.dwinovo.numen.api.RationaleContext.generation(uuid), chain.planRevision())) {
+                    && !com.dwinovo.numen.api.RationaleContext.applicable(
+                            uuid, chain.planRevision(), chain.chainInstanceId())) {
                 com.dwinovo.numen.api.RationaleContext.clear(uuid);
             }
             // 2026-10-31（V-20261031-10 旁记）：链已完成时不能再把最后一个子任务当「当前目标」注入。

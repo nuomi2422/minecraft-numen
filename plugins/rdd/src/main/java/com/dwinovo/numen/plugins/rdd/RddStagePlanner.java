@@ -183,9 +183,9 @@ final class RddStagePlanner {
         if (companionId == null) return "";
         var runtime = RddPlugin.runtime(companionId);
         if (runtime == null) return "";
-        boolean hasEntry = com.dwinovo.numen.api.RationaleContext.get(companionId) != null;
-        long generation = com.dwinovo.numen.api.RationaleContext.generation(companionId);
-        if (!rationaleApplicable(hasEntry, generation, runtime.chain().planRevision())) return "";
+        var chain = runtime.chain();
+        if (!com.dwinovo.numen.api.RationaleContext.applicable(
+                companionId, chain.planRevision(), chain.chainInstanceId())) return "";
         return com.dwinovo.numen.api.RationaleContext.render(companionId);
     }
 

@@ -10,6 +10,8 @@ public final class RationaleContext {
     public record Entry(String why, String risks, String source, String conditions) {}
     private static final Map<UUID, Entry> ENTRIES = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> GENERATIONS = new ConcurrentHashMap<>();
+    /** Chain instance the entry was written for. No chain = unscoped = never treated as fresh. */
+    private static final Map<UUID, String> CHAINS = new ConcurrentHashMap<>();
 
     private RationaleContext() {}
 
@@ -29,7 +31,29 @@ public final class RationaleContext {
             return next;
         });
     }
+    /** Scoped write: the entry belongs to one chain instance. Legacy setters stay unscoped. */
+    public static void set(UUID companionId, Entry entry, long generation, String chainInstanceId) {
+        if (companionId == null || entry == null) return;
+        if (chainInstanceId == null || chainInstanceId.isBlank()) { set(companionId, entry, generation); return; }
+        set(companionId, entry, generation);
+        CHAINS.put(companionId, chainInstanceId);
+    }
+
     public static Entry get(UUID companionId) { return companionId == null ? null : ENTRIES.get(companionId); }
+
+    /** Chain instance the current entry was written for; null when unscoped/unknown. */
+    public static String chain(UUID companionId) { return companionId == null ? null : CHAINS.get(companionId); }
+
+    /**
+     * Only a scoped entry from the same chain instance and plan revision may be shown as current.
+     * Unscoped legacy entries and unknown chains are not fresh — absence of evidence is not evidence.
+     */
+    public static boolean applicable(UUID companionId, long planRevision, String chainInstanceId) {
+        if (companionId == null || chainInstanceId == null || chainInstanceId.isBlank()) return false;
+        if (ENTRIES.get(companionId) == null) return false;
+        if (GENERATIONS.getOrDefault(companionId, -1L) != planRevision) return false;
+        return chainInstanceId.equals(CHAINS.get(companionId));
+    }
     public static long generation(UUID companionId) { return companionId == null ? 0L : GENERATIONS.getOrDefault(companionId, 0L); }
 
     /** Reject generic restatements that are not a causal reason. Heuristic, not proof. */
@@ -51,6 +75,7 @@ public final class RationaleContext {
         if (companionId == null) return;
         ENTRIES.remove(companionId);
         GENERATIONS.remove(companionId);
+        CHAINS.remove(companionId);
     }
 
     public static String render(UUID companionId) {

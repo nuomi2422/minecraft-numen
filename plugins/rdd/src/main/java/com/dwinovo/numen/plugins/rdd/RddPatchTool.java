@@ -148,7 +148,8 @@ final class RddPatchTool implements NumenTool {
                     "stateVersion", String.valueOf(committed.stateVersion()),
                     "reason", reason));
             com.dwinovo.numen.api.RationaleContext.set(companion.getUUID(),
-                    RddRationale.from(args, "planner_tool:rdd_patch:" + patchId), chain.planRevision());
+                    RddRationale.from(args, "planner_tool:rdd_patch:" + patchId), chain.planRevision(),
+                    chain.chainInstanceId());
             RddPlugin.publishTaskSnapshot(companion.getUUID(), "plan_patch_committed");
             reply.accept(com.dwinovo.numen.task.TaskResult.ok("plan patch committed", Map.of(
                     "patch_id", patchId,

@@ -106,7 +106,8 @@ final class RddReplanChainTool implements NumenTool {
             int count = chain.replaceFuturePrimaries(goals);
             RddPlugin.saveRuntimes();
             com.dwinovo.numen.api.RationaleContext.set(companion.getUUID(),
-                    RddRationale.from(args, "planner_tool:rdd_replan_chain"), chain.planRevision());
+                    RddRationale.from(args, "planner_tool:rdd_replan_chain"), chain.planRevision(),
+                    chain.chainInstanceId());
             RddPlugin.publishTaskSnapshot(companion.getUUID(), "future_plan_rewritten");
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("companionId", companion.getUUID().toString());

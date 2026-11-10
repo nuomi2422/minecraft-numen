@@ -17,6 +17,38 @@ class RationaleContextTest {
     }
 
     @Test
+    void sameRevisionOnAnotherChainIsNotCurrent() {
+        UUID id = UUID.randomUUID();
+        RationaleContext.set(id, new RationaleContext.Entry("钻石镐可直接挖黑曜石", "", "src", "cond"), 5L, "chain-1");
+        assertTrue(RationaleContext.applicable(id, 5L, "chain-1"));
+        assertFalse(RationaleContext.applicable(id, 5L, "chain-2"),
+                "same plan revision on a different chain instance must not reuse the why");
+        assertFalse(RationaleContext.applicable(id, 4L, "chain-1"));
+        assertFalse(RationaleContext.applicable(id, 5L, null), "unknown chain is not evidence");
+        assertFalse(RationaleContext.applicable(id, 5L, " "));
+    }
+
+    @Test
+    void unscopedLegacyEntryIsNeverFresh() {
+        UUID id = UUID.randomUUID();
+        RationaleContext.set(id, new RationaleContext.Entry("旧写法没有链绑定", "", "src", ""), 5L);
+        assertNotNull(RationaleContext.get(id));
+        assertNull(RationaleContext.chain(id));
+        assertFalse(RationaleContext.applicable(id, 5L, "chain-1"),
+                "legacy/unscoped entry must not be presented as current");
+    }
+
+    @Test
+    void clearDropsChainScopeToo() {
+        UUID id = UUID.randomUUID();
+        RationaleContext.set(id, new RationaleContext.Entry("有链绑定", "", "src", ""), 3L, "chain-9");
+        assertTrue(RationaleContext.applicable(id, 3L, "chain-9"));
+        RationaleContext.clear(id);
+        assertNull(RationaleContext.chain(id));
+        assertFalse(RationaleContext.applicable(id, 3L, "chain-9"));
+    }
+
+    @Test
     void acceptsShortCausalAndRejectsMultilingualGeneric() {
         assertTrue(RationaleContext.substantiveWhy("怕僵尸"));
         assertTrue(RationaleContext.substantiveWhy("因为害怕僵尸所以取盾"));
