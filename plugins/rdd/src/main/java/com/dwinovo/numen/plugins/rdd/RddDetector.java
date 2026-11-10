@@ -358,9 +358,6 @@ final class RddDetector {
     private void tickRuntime(NumenPlayer ap, RddRuntime rt) {
         try {
             TaskChain chain = rt.chain();
-            // 044 §0.7：把"当前链"每秒声明一次，而不是只在构建上下文时声明。
-            // 理由段在拼提示词时就要用这个声明；上下文构建若不是同一步，就会读到"无声明"→整段被丢。
-            com.dwinovo.numen.api.RationaleContext.noteCurrentChain(ap.getUUID(), chain.chainInstanceId());
             PrimaryGoalStatus ps = chain.primaryStatus();
             // 真实背包先扫+缓存（规划注入数据源）；缓存是女仆属性，收尾/监督态也照常更新。
             Map<String, Integer> counts = countInventory(ap);
