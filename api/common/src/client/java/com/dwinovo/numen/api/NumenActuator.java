@@ -251,14 +251,23 @@ public final class NumenActuator {
      * 驾驶模式(非 assist)下内置 AI 停轮,注入会被拒(TO_EXTERNAL_BRAIN)。
      */
     public static CompletableFuture<Boolean> enqueue(UUID companion, String text) {
-        CompletableFuture<Boolean> f = new CompletableFuture<>();
+        return enqueueReceipt(companion, text).thenApply((r) -> r.delivery() == Delivery.QUEUED
+                || r.delivery() == Delivery.SEEN || r.delivery() == Delivery.HANDED_OFF);
+    }
+
+    /** R-06：同一次真实 dispatch 的回执版本；旧 Boolean 版本委托到这里，保证两条入口只跑一次 dispatch。 */
+    public static CompletableFuture<NumenGateway.EnqueueReceipt> enqueueReceipt(UUID companion, String text) {
+        CompletableFuture<NumenGateway.EnqueueReceipt> f = new CompletableFuture<>();
         if (companion == null || text == null || text.isBlank()) {
-            f.complete(false);
+            f.complete(NumenGateway.EnqueueReceipt.rejected(companion));
             return f;
         }
         Minecraft.getInstance().execute(() -> {
-            var d = NumenGateway.enqueue(companion, text);
-            f.complete(d == Delivery.QUEUED || d == Delivery.SEEN || d == Delivery.HANDED_OFF);
+            try {
+                f.complete(NumenGateway.enqueueReceipt(companion, text));
+            } catch (RuntimeException ex) {
+                f.completeExceptionally(ex);
+            }
         });
         return f;
     }

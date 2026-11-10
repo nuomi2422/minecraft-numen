@@ -277,6 +277,10 @@ public final class McpServer {
                         + "与 say 不同:say 只是让同伴说话;enqueue 是让它当作任务去执行。"
                         + "驾驶模式(非 assist)下内置 AI 停轮,注入会被拒。",
                 enqueueSchema()));
+        tools.add(toolDef("enqueue_receipt",
+                "同 enqueue，但返回 JSON 回执：delivery/commandId/companionUuid/identityStatus/worldId/serverSession/epoch。"
+                        + "accepted 不等于生效；identityStatus=NO_IDENTITY 表示联机或实例身份未知。",
+                enqueueSchema()));
 
         // 2026-11-02 主人定：「看不见 ≠ 不存在」。白名单把 100+ 个工具挡在 MCP 清单外之后，
         // 外部 AI 只知道剩下 7 个，连被挡掉的名字都拿不到，只能说"没有这个能力"。
@@ -465,6 +469,7 @@ public final class McpServer {
                 case "get_events" -> handleGetEvents(args);
                 case "say" -> handleSay(args);
                 case "enqueue" -> handleEnqueue(args);
+                case "enqueue_receipt" -> handleEnqueueReceipt(args);
                 case "list_tools" -> content(listToolCatalogue(), false);
                 default -> handleToolInvoke(name, args);
             };
@@ -595,6 +600,30 @@ public final class McpServer {
         }
         boolean ok = NumenActuator.enqueue(target, text).get(CONTROL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         return content(ok ? "enqueued" : "could not enqueue — is the companion live or is MCP in driving mode?", !ok);
+    }
+
+    /** R-06：receipt 版本（新工具，不动旧 enqueue 的文本回执）。 */
+    private JsonObject handleEnqueueReceipt(JsonObject args) throws Exception {
+        UUID target = resolveCompanion(args);
+        if (target == null) {
+            return content("enqueue_receipt needs a companion argument", true);
+        }
+        String text = args.has("text") && !args.get("text").isJsonNull()
+                ? args.get("text").getAsString().trim() : "";
+        if (text.isEmpty()) {
+            return content("enqueue_receipt needs a non-empty text", true);
+        }
+        var r = NumenActuator.enqueueReceipt(target, text).get(CONTROL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        JsonObject o = new JsonObject();
+        o.addProperty("delivery", r.delivery().name());
+        o.addProperty("commandId", r.commandId());
+        o.addProperty("companionUuid", r.companionUuid() == null ? null : r.companionUuid().toString());
+        o.addProperty("identityStatus", r.identityStatus().name());
+        o.addProperty("worldId", r.worldId());
+        o.addProperty("serverSession", r.serverSession());
+        o.addProperty("epoch", r.epoch());
+        // accepted != effective：这里只报受理结果，生效要等 owner_stop 回执。
+        return content(o.toString(), r.delivery() == com.dwinovo.numen.api.Delivery.REJECTED);
     }
 
     private JsonObject handleToolInvoke(String toolName, JsonObject args) throws Exception {

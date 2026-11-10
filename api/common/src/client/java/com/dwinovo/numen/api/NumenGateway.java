@@ -50,13 +50,16 @@ public final class NumenGateway {
     private static String dispatchCommand(EntityAgentLoop loop, String message) {
         if (!ChatCommands.isCommand(message)) return null;
         String id = UUID.randomUUID().toString();
+        // R-06：嵌套命令不能吃掉外层 id；保存并在 finally 恢复。
+        String previous = CURRENT_COMMAND_ID.get();
         CURRENT_COMMAND_ID.set(id);
         try {
             ChatCommands.runIfCommand(loop, message, reply ->
                     com.dwinovo.numen.Constants.LOG.info("[numen-gw] 命令执行回话[{}]: {}", id, reply));
             return id;
         } finally {
-            CURRENT_COMMAND_ID.remove();
+            if (previous == null) CURRENT_COMMAND_ID.remove();
+            else CURRENT_COMMAND_ID.set(previous);
         }
     }
 
@@ -80,24 +83,42 @@ public final class NumenGateway {
      * @param companion the companion entity's UUID
      * @param message   delivered exactly as given — formatting is the caller's business
      */
-    public static Delivery enqueue(UUID companion, String message) {
-        if (companion == null || message == null || message.isBlank()) return Delivery.REJECTED;
+    /** 2026-11-10 R-06：不可变回执。accepted != effective：commandId 只代表本次命令已在本地受理，不代表 stop 已生效。 */
+    public record EnqueueReceipt(
+            Delivery delivery,
+            String commandId,
+            UUID companionUuid,
+            IdentityStatus identityStatus,
+            String worldId,
+            String serverSession,
+            long epoch) {
+        public enum IdentityStatus { OK, NO_IDENTITY, NOT_APPLICABLE }
+
+        public static EnqueueReceipt rejected(UUID companion) {
+            return new EnqueueReceipt(Delivery.REJECTED, null, companion, IdentityStatus.NOT_APPLICABLE, null, null, 0L);
+        }
+
+        public static EnqueueReceipt handedOff(UUID companion) {
+            return new EnqueueReceipt(Delivery.HANDED_OFF, null, companion, IdentityStatus.NOT_APPLICABLE, null, null, 0L);
+        }
+    }
+
+    /** 与 enqueue 共用同一次真实执行（不另走一条 dispatch），但把 commandId 与实例身份原样回传。 */
+    public static EnqueueReceipt enqueueReceipt(UUID companion, String message) {
+        if (companion == null || message == null || message.isBlank()) return EnqueueReceipt.rejected(companion);
         boolean known = AgentLoopRegistry.get(companion).isPresent()
                 || com.dwinovo.numen.client.agent.NumenRoster.instance().name(companion) != null;
-        if (!known) return Delivery.REJECTED;
+        if (!known) return EnqueueReceipt.rejected(companion);
         Minecraft mc = Minecraft.getInstance();
         if (!mc.isSameThread()) {
-            mc.execute(() -> {
-                EntityAgentLoop l = AgentLoopRegistry.getOrCreate(companion);
-                if (!dispatchIfCommand(l, message)) {
-                    l.submitPrompt(message);
-                }
-            });
-            return Delivery.HANDED_OFF;
+            mc.execute(() -> runOnMain(companion, message));
+            return EnqueueReceipt.handedOff(companion);
         }
+        return runOnMain(companion, message);
+    }
+
+    private static EnqueueReceipt runOnMain(UUID companion, String message) {
         EntityAgentLoop loop = AgentLoopRegistry.getOrCreate(companion);
-        // 斜杠命令是主人对客户端说的话——外部通道也一样:以 / 开头就本地跑完,不进
-        // "主人说话"队列、不喂模型、不被驾驶闸门拦(命令是主人动作,不是给 AI 的话)。
         String commandId = dispatchCommand(loop, message);
         if (commandId != null) {
             String cmd = message.trim();
@@ -106,16 +127,32 @@ public final class NumenGateway {
             com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "command_dispatch", java.util.Map.of(
                     "companion_id", companion.toString(), "command", name, "delivery", "SEEN",
                     "correlation_id", commandId));
-            return Delivery.SEEN;
+            return receipt(Delivery.SEEN, commandId, companion);
         }
         boolean pressed = loop.submitPrompt(message);
-        // 外脑<b>驾驶</b>期间内脑恒为停牌,那个 boolean 恒真却什么也不说明——报驾驶席,
-        // 判据取自 isExternallyDriven() 这一处真源,不另猜。
-        // assist 协助模式不驾驶:外脑喂目标/提示,内置 AI 保持执行,故不拒。
-        if (loop.isExternallyDriven()) return Delivery.TO_EXTERNAL_BRAIN;
-        return pressed ? Delivery.QUEUED : Delivery.SEEN;
+        if (loop.isExternallyDriven()) return receipt(Delivery.TO_EXTERNAL_BRAIN, null, companion);
+        return receipt(pressed ? Delivery.QUEUED : Delivery.SEEN, null, companion);
     }
 
+    /** 单机在具体 server 上采样身份；联机拿不到 server 就 NO_IDENTITY（不猜、不读全局 stamp）。 */
+    private static EnqueueReceipt receipt(Delivery delivery, String commandId, UUID companion) {
+        Minecraft mc = Minecraft.getInstance();
+        var server = mc.getSingleplayerServer();
+        if (server == null) {
+            return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, null, null, 0L);
+        }
+        var token = WorldContextStamp.capture(server);
+        var identity = token.identity();
+        if (identity == null || identity.get("world_id") == null || identity.get("server_session") == null) {
+            return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, null, null, token.epoch());
+        }
+        return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.OK,
+                identity.get("world_id"), identity.get("server_session"), token.epoch());
+    }
+
+    public static Delivery enqueue(UUID companion, String message) {
+        return enqueueReceipt(companion, message).delivery();
+    }
     /**
      * G4c S107b：把一条<b>系统事件</b>交给同伴（「目标还在，接着干」这类），<b>不冒充主人</b>。
      *

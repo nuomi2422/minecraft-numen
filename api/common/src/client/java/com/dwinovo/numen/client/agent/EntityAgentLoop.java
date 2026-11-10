@@ -1184,6 +1184,19 @@ public final class EntityAgentLoop {
         stopData.put("drained", queued);
         stopData.put("overflow_dropped", dropped);
         if (commandId != null) stopData.put("command_correlation_id", commandId);
+        // 2026-11-10 R-06：显式带上本实例身份（与 enqueueReceipt 同源 capture(server)），
+        // 不靠信封发布时的全局 stamp 回退；取不到就写 NO_IDENTITY。
+        var server = net.minecraft.client.Minecraft.getInstance().getSingleplayerServer();
+        var token = com.dwinovo.numen.api.WorldContextStamp.capture(server);
+        var identity = token.identity();
+        if (identity != null && identity.get("world_id") != null && identity.get("server_session") != null) {
+            stopData.put("world_id", identity.get("world_id"));
+            stopData.put("server_session", identity.get("server_session"));
+            stopData.put("stamp_epoch", token.epoch());
+            stopData.put("identity_status", "OK");
+        } else {
+            stopData.put("identity_status", "NO_IDENTITY");
+        }
         com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "owner_stop", stopData);
         return new StopReport(wasBusy, queued, dropped);
     }
