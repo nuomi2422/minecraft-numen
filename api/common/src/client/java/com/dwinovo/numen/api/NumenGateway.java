@@ -80,6 +80,11 @@ public final class NumenGateway {
         // 斜杠命令是主人对客户端说的话——外部通道也一样:以 / 开头就本地跑完,不进
         // "主人说话"队列、不喂模型、不被驾驶闸门拦(命令是主人动作,不是给 AI 的话)。
         if (dispatchIfCommand(loop, message)) {
+            String cmd = message.trim();
+            int sp = cmd.indexOf(' ');
+            String name = sp < 0 ? cmd : cmd.substring(0, sp);
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "command_dispatch", java.util.Map.of(
+                    "companion_id", companion.toString(), "command", name, "delivery", "SEEN"));
             return Delivery.SEEN;
         }
         boolean pressed = loop.submitPrompt(message);
@@ -117,6 +122,11 @@ public final class NumenGateway {
         }
         EntityAgentLoop loop = AgentLoopRegistry.getOrCreate(companion);
         if (dispatchIfCommand(loop, message)) {
+            String cmd = message.trim();
+            int sp = cmd.indexOf(' ');
+            String name = sp < 0 ? cmd : cmd.substring(0, sp);
+            com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "command_dispatch", java.util.Map.of(
+                    "companion_id", companion.toString(), "command", name, "delivery", "SEEN"));
             return Delivery.SEEN;
         }
         boolean pressed = loop.submitSystemPrompt(message);
