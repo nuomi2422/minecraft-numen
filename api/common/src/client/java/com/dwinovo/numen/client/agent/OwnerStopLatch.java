@@ -26,6 +26,10 @@ public final class OwnerStopLatch {
     /**
      * 主人明确继续（/stop resume 或主人再说一句）。
      *
+     * <p>恢复途径（2026-11-10 核对）：BLOCKED/RECOVERABLE_FAILURE **不**由本方法解除，但它们不会被永久卡死——
+     * 主人再说一句话走 {@code enqueueOwnerWords} 会把暂停清零（旧实现里 resume 也只是这条路径的别名），
+     * 端点/预算恢复后按各自既有路径放行。本方法只是不"顺手"替它们解闩。
+     *
      * <p>只解除 OWNER_INTERRUPT；端点被拒（BLOCKED）、可恢复失败等其他暂停原因**保持不动**——
      * 旧实现是一律置 NONE，等于"主人说继续"顺手把端点熔断也解了，语义更宽。这里收窄，
      * 属有意变更（2026-11-10）。

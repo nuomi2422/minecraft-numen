@@ -39,6 +39,19 @@ class OwnerStopLatchTest {
         assertEquals(AgentTurnPause.BLOCKED, OwnerStopLatch.afterOwnerResume(AgentTurnPause.BLOCKED));
     }
 
+    @Test void resumeDoesNotSilentlyClearEndpointBlock() {
+        // 收窄后的语义：/stop resume 只解主人叫停，不顺手解端点熔断。
+        assertEquals(AgentTurnPause.BLOCKED, OwnerStopLatch.afterOwnerResume(AgentTurnPause.BLOCKED));
+        assertEquals(AgentTurnPause.RECOVERABLE_FAILURE,
+                OwnerStopLatch.afterOwnerResume(AgentTurnPause.RECOVERABLE_FAILURE));
+    }
+
+    @Test void ownerInterruptRemainsRecoverableThroughResume() {
+        // 用户不会被永久卡住：主人叫停一定可通过 resume 解除。
+        AgentTurnPause latched = OwnerStopLatch.afterOwnerStop(AgentTurnPause.NONE);
+        assertEquals(AgentTurnPause.NONE, OwnerStopLatch.afterOwnerResume(latched));
+    }
+
     @Test void latchIsPerCallerStateNotGlobal() {
         AgentTurnPause other = OwnerStopLatch.afterOwnerStop(AgentTurnPause.NONE);
         // 另一个同伴拿着自己的状态：不受影响（纯函数无全局量）。
