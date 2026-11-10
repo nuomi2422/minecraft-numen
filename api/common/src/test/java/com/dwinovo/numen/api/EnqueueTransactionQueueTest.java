@@ -27,21 +27,26 @@ class EnqueueTransactionQueueTest {
         ServerSample currentServer = new ServerSample("w", "s", 7, new Object(), new Object());
         boolean clientThread = true;
         boolean failServerSample;
-        CompletableFuture<ServerSample> lastServerFuture;
+        boolean inClientTask;
+        boolean inServerTask;
+        int rejectClientScheduleAt = -1;
+        int clientScheduleCalls;
 
         @Override
         public ClientBinding captureClient(UUID companion) {
+            if (!inClientTask) throw new IllegalStateException("captureClient must run on the client queue");
             return currentClient;
         }
 
         @Override
         public CompletableFuture<ServerSample> sampleServerAsync(UUID companion) {
-            lastServerFuture = new CompletableFuture<>();
+            CompletableFuture<ServerSample> local = new CompletableFuture<>();
             serverQueue.add(() -> {
-                if (failServerSample) lastServerFuture.completeExceptionally(new IllegalStateException("sample boom"));
-                else lastServerFuture.complete(currentServer);
+                if (!inServerTask) throw new IllegalStateException("server capture must run on the server queue");
+                if (failServerSample) local.completeExceptionally(new IllegalStateException("sample boom"));
+                else local.complete(currentServer);
             });
-            return lastServerFuture;
+            return local;
         }
 
         @Override
@@ -51,19 +56,31 @@ class EnqueueTransactionQueueTest {
 
         @Override
         public void executeOnClient(Runnable task) {
+            clientScheduleCalls++;
+            if (clientScheduleCalls == rejectClientScheduleAt) throw new IllegalStateException("client queue rejected");
             clientQueue.add(task);
         }
 
         void runClient() {
             List<Runnable> batch = new ArrayList<>(clientQueue);
             clientQueue.clear();
-            for (Runnable r : batch) r.run();
+            inClientTask = true;
+            try {
+                for (Runnable r : batch) r.run();
+            } finally {
+                inClientTask = false;
+            }
         }
 
         void runServer() {
             List<Runnable> batch = new ArrayList<>(serverQueue);
             serverQueue.clear();
-            for (Runnable r : batch) r.run();
+            inServerTask = true;
+            try {
+                for (Runnable r : batch) r.run();
+            } finally {
+                inServerTask = false;
+            }
         }
     }
 
@@ -79,11 +96,15 @@ class EnqueueTransactionQueueTest {
 
     /** Modeled old flow: client-side sample missing -> precheck rejects -> 0 dispatch. */
     private static int modeledOldFlow(TwoQueue scheduling, CountingDispatch dispatch) {
-        EnqueueScheduling.ClientBinding binding = scheduling.captureClient(UUID.randomUUID());
-        EnqueueScheduling.ServerSample serverOnClient = new EnqueueScheduling.ServerSample(null, null, 0L, null, null);
-        if (!binding.ready() || !serverOnClient.hasIdentity()) return 0;
-        dispatch.dispatch(UUID.randomUUID(), "/stop");
-        return dispatch.calls.get();
+        int[] result = {0};
+        scheduling.executeOnClient(() -> {
+            EnqueueScheduling.ClientBinding binding = scheduling.captureClient(UUID.randomUUID());
+            EnqueueScheduling.ServerSample serverOnClient = new EnqueueScheduling.ServerSample(null, null, 0L, null, null);
+            if (binding.ready() && serverOnClient.hasIdentity()) dispatch.dispatch(UUID.randomUUID(), "/stop");
+            result[0] = dispatch.calls.get();
+        });
+        scheduling.runClient();
+        return result[0];
     }
 
     @Test
@@ -91,6 +112,59 @@ class EnqueueTransactionQueueTest {
         TwoQueue scheduling = new TwoQueue();
         CountingDispatch dispatch = new CountingDispatch();
         assertEquals(0, modeledOldFlow(scheduling, dispatch));
+    }
+
+
+    @Test
+    void oldActuatorConsumerStillExecutesOnceWithoutServerIdentity() {
+        TwoQueue scheduling = new TwoQueue();
+        scheduling.clientThread = false;
+        CountingDispatch dispatch = new CountingDispatch();
+        UUID companion = UUID.randomUUID();
+        var future = NumenActuator.enqueueLegacyForTest(companion, "hello", scheduling, dispatch, true);
+        assertEquals(0, dispatch.calls.get(), "queued until client runs");
+        scheduling.runClient();
+        scheduling.runClient(); // legacy off-thread path schedules its own client task
+        assertEquals(true, future.join());
+        assertEquals(1, dispatch.calls.get(), "legacy consumer executes exactly once");
+    }
+
+    @Test
+    void clientScheduleRejectionCompletesFutureAndDispatchesNothing() {
+        TwoQueue scheduling = new TwoQueue();
+        scheduling.rejectClientScheduleAt = 2; // first = initial task, second = post-sample continuation
+        CountingDispatch dispatch = new CountingDispatch();
+        var future = NumenGateway.enqueueReceiptAsync(UUID.randomUUID(), "/stop", scheduling, dispatch, true);
+        scheduling.runClient();
+        scheduling.runServer();
+        assertThrows(java.util.concurrent.CompletionException.class, future::join);
+        assertEquals(0, dispatch.calls.get());
+    }
+
+    @Test
+    void dualTargetOutOfOrderDoesNotCross() {
+        TwoQueue scheduling = new TwoQueue();
+        List<UUID> dispatched = new ArrayList<>();
+        var dispatch = new NumenGateway.EnqueueDispatch() {
+            @Override
+            public NumenGateway.Executed dispatch(UUID companion, String message) {
+                dispatched.add(companion);
+                return new NumenGateway.Executed(Delivery.SEEN, "cmd-" + companion);
+            }
+        };
+        UUID a = UUID.randomUUID();
+        UUID b = UUID.randomUUID();
+        var fa = NumenGateway.enqueueReceiptAsync(a, "/stop", scheduling, dispatch, true);
+        var fb = NumenGateway.enqueueReceiptAsync(b, "/stop", scheduling, dispatch, true);
+        scheduling.runClient();
+        scheduling.runServer();
+        scheduling.runClient();
+        scheduling.runServer();
+        assertEquals(NumenGateway.EnqueueReceipt.IdentityStatus.OK, fa.join().identityStatus());
+        assertEquals(NumenGateway.EnqueueReceipt.IdentityStatus.OK, fb.join().identityStatus());
+        assertEquals(2, dispatched.size());
+        assertEquals(1, dispatched.stream().filter(x -> x.equals(a)).count());
+        assertEquals(1, dispatched.stream().filter(x -> x.equals(b)).count());
     }
 
     @Test

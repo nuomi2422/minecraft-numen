@@ -250,9 +250,35 @@ public final class NumenActuator {
      * 与 say 的区别:say 只是让同伴说话;enqueue 是让它当作任务去规划执行。
      * 驾驶模式(非 assist)下内置 AI 停轮,注入会被拒(TO_EXTERNAL_BRAIN)。
      */
+    /** 旧 Boolean 入口：保持原执行语义（联机也执行），不经过新回执的权威门。 */
     public static CompletableFuture<Boolean> enqueue(UUID companion, String text) {
-        return enqueueReceipt(companion, text).thenApply((r) -> r.delivery() == Delivery.QUEUED
-                || r.delivery() == Delivery.SEEN || r.delivery() == Delivery.HANDED_OFF);
+        return enqueueLegacyForTest(companion, text, null, null, false);
+    }
+
+    /** 可注入的旧消费者映射（测试用；生产传 null 用真实调度/dispatch）。 */
+    static CompletableFuture<Boolean> enqueueLegacyForTest(UUID companion, String text,
+            com.dwinovo.numen.api.EnqueueScheduling scheduling,
+            com.dwinovo.numen.api.NumenGateway.EnqueueDispatch dispatch, boolean assumeKnown) {
+        CompletableFuture<Boolean> f = new CompletableFuture<>();
+        if (companion == null || text == null || text.isBlank()) { f.complete(false); return f; }
+        if (scheduling == null) {
+            Minecraft.getInstance().execute(() -> {
+                try { f.complete(mapDelivery(NumenGateway.enqueue(companion, text))); }
+                catch (RuntimeException ex) { f.completeExceptionally(ex); }
+            });
+        } else {
+            scheduling.executeOnClient(() -> {
+                try {
+                    f.complete(mapDelivery(NumenGateway.enqueueLegacy(companion, text, scheduling,
+                            dispatch == null ? NumenGateway.defaultDispatch() : dispatch, assumeKnown)));
+                } catch (RuntimeException ex) { f.completeExceptionally(ex); }
+            });
+        }
+        return f;
+    }
+
+    private static boolean mapDelivery(Delivery d) {
+        return d == Delivery.QUEUED || d == Delivery.SEEN || d == Delivery.HANDED_OFF;
     }
 
     /** R-06：同一次真实 dispatch 的回执版本；旧 Boolean 版本委托到这里，保证两条入口只跑一次 dispatch。 */

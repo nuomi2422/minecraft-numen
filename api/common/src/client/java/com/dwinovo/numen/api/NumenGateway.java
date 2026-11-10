@@ -120,6 +120,8 @@ public final class NumenGateway {
 
     private static final EnqueueDispatch DEFAULT_DISPATCH = NumenGateway::execute;
 
+    static EnqueueDispatch defaultDispatch() { return DEFAULT_DISPATCH; }
+
     /** 旧接口：语义不变（联机照旧执行；跨线程 HANDED_OFF）。 */
     public static Delivery enqueue(UUID companion, String message) {
         return enqueueLegacy(companion, message, DEFAULT_SCHEDULING, DEFAULT_DISPATCH, false);
@@ -169,14 +171,15 @@ public final class NumenGateway {
                         return;
                     }
                     scheduling.sampleServerAsync(companion).whenComplete((server, sampleError) -> {
-                        if (sampleError != null || server == null) {
-                            done.complete(statusOf(new Executed(Delivery.REJECTED, null), companion,
-                                    EnqueueReceipt.IdentityStatus.NO_IDENTITY, null));
-                            return;
-                        }
-                        scheduling.executeOnClient(() -> {
-                            try {
-                                EnqueueScheduling.ClientBinding second = scheduling.captureClient(companion);
+                        try {
+                            if (sampleError != null || server == null) {
+                                done.complete(statusOf(new Executed(Delivery.REJECTED, null), companion,
+                                        EnqueueReceipt.IdentityStatus.NO_IDENTITY, null));
+                                return;
+                            }
+                            scheduling.executeOnClient(() -> {
+                                try {
+                                    EnqueueScheduling.ClientBinding second = scheduling.captureClient(companion);
                                 EnqueueReceipt gate = precheck(companion, first, second, server);
                                 if (gate != null) { done.complete(gate); return; }
                                 WorldContextStamp.Token token = tokenOf(server);
@@ -193,6 +196,9 @@ public final class NumenGateway {
                                 done.completeExceptionally(t);
                             }
                         });
+                        } catch (Throwable t) {
+                            done.completeExceptionally(t);
+                        }
                     });
                 } catch (Throwable t) {
                     done.completeExceptionally(t);
