@@ -93,6 +93,15 @@ class VerifiedCompletionIntegrationTest {
                 List.of(new PrimaryGoal("primary-0", "iron stage", List.of(diamond))));
         CompletedFactStore store = new CompletedFactStore();
 
+        // 走**生产条件入口** RddDetector.conditionMatches（type=item 分支不碰 ap，可传 null）：
+        // counts 为空 = 背包没有；有 1 颗 = 满足；"容器/别处有"不进 counts，因此仍判不满足。
+        java.util.function.Predicate<Subtask> fromInventory = s ->
+                RddDetector.conditionMatches(null, s, java.util.Map.of("minecraft:diamond", 1));
+        java.util.function.Predicate<Subtask> fromChestOnly = s ->
+                RddDetector.conditionMatches(null, s, java.util.Map.of());
+        assertTrue(fromInventory.test(diamond), "背包有 1 颗应判满足");
+        assertFalse(fromChestOnly.test(diamond), "只有箱子有、背包没有 → 不得判完成");
+
         // 条件不满足：核验入口必须报出 unmet，此时不得写入。
         List<String> unmet = RddSettleStageTool.unmetConditions(g.primaryGoals().get(0), g, false, s -> false);
         assertEquals(List.of("a"), unmet);
@@ -101,7 +110,7 @@ class VerifiedCompletionIntegrationTest {
         // 条件满足：核验通过 → 结算 → 生产写入点落盘。
         TaskChain chain = new TaskChain(g);
         chain.startCurrent();
-        List<String> met = RddSettleStageTool.unmetConditions(chain.currentPrimary(), chain.goal(), false, s -> true);
+        List<String> met = RddSettleStageTool.unmetConditions(chain.currentPrimary(), chain.goal(), false, fromInventory);
         assertTrue(met.isEmpty(), "条件满足时核验入口应返回空");
         chain.settlePrimaryByFact(chain.currentPrimary().id(), "世界事实已核验", met.isEmpty());
         assertFalse(chain.satisfiedStages().isEmpty(), "核验通过才写入满意阶段");
