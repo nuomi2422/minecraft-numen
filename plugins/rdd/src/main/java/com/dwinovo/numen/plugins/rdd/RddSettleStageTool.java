@@ -100,6 +100,19 @@ final class RddSettleStageTool implements NumenTool {
                 reply.accept(com.dwinovo.numen.task.TaskResult.fail(flagError).toJson());
                 return;
             }
+            // 2026-11-10 (044 §0.7): settling the LAST stage ends the whole goal. A self-report
+            // must not close the objective, so that one case always needs server-side facts.
+            // Earlier stages keep the planner's "no longer needed" judgement path unchanged.
+            if (!verified && isFinalStage(chain, targetId)) {
+                RddMonitor.publish("primary_settle_rejected", java.util.Map.of(
+                        "companionId", companion.getUUID().toString(), "primary", targetId,
+                        "verified", false, "reason", "final-stage-requires-facts"));
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail(
+                        "settle refused: '" + targetId + "' is the final stage; settling it completes the goal, "
+                                + "so verified=true with state_version, plan_revision and chain_instance_id "
+                                + "from a fresh rdd_status is required").toJson());
+                return;
+            }
             String generationError = verified ? generationError(chain, args) : "";
             if (!generationError.isEmpty()) {
                 reply.accept(com.dwinovo.numen.task.TaskResult.fail(generationError).toJson());
@@ -157,6 +170,13 @@ final class RddSettleStageTool implements NumenTool {
         } catch (RuntimeException ex) {
             reply.accept(com.dwinovo.numen.task.TaskResult.fail("settle failed: " + ex.getMessage()).toJson());
         }
+    }
+
+    /** The last primary stage: settling it is what ends the whole goal. */
+    static boolean isFinalStage(com.dwinovo.numen.rdd.core.TaskChain chain, String primaryId) {
+        if (chain == null || chain.goal() == null || primaryId == null || primaryId.isBlank()) return false;
+        var goals = chain.goal().primaryGoals();
+        return !goals.isEmpty() && goals.get(goals.size() - 1).id().equals(primaryId);
     }
 
     /** Selection only: target subtasks, plus final-primary subtasks when requested; predicate decides match. */

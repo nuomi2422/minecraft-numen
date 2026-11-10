@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.rdd.api.*;
+import com.dwinovo.numen.rdd.core.TaskChain;
 import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +24,17 @@ class RddSettleStageUnmetTest {
         assertEquals(List.of("a", "final:b"),
                 RddSettleStageTool.unmetConditions(target, goal, true, s -> false));
         assertEquals(List.of("no_target"), RddSettleStageTool.unmetConditions(null, goal, false, s -> false));
+    }
+
+    @Test void onlyTheLastStageEndsTheGoal() {
+        PrimaryGoal a = new PrimaryGoal("p1", "first", List.of(item("a")));
+        PrimaryGoal b = new PrimaryGoal("p2", "last", List.of(item("b")));
+        TaskChain chain = new TaskChain(new Goal("g", "g", List.of(a, b)));
+        assertFalse(RddSettleStageTool.isFinalStage(chain, "p1"));
+        assertTrue(RddSettleStageTool.isFinalStage(chain, "p2"));
+        assertFalse(RddSettleStageTool.isFinalStage(chain, "p9"));
+        assertFalse(RddSettleStageTool.isFinalStage(chain, ""));
+        assertFalse(RddSettleStageTool.isFinalStage(null, "p2"));
     }
 
     @Test void unexpandedFinalCannotBeVacuouslyVerified() {
