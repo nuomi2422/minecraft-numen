@@ -510,6 +510,20 @@ class RddMainlineWiringPinTest {
     }
 
     @Test
+    void passiveWorldAssetsBeforeAbsentRuntime() throws Exception {
+        String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
+        String observer = "RddWorldAssetObserver.observe(ap, RddPlugin.assets(ap.getUUID()))";
+        int call = src.indexOf(observer);
+        int runtime = src.indexOf("RddRuntime rt = RddPlugin.runtime(ap.getUUID());", src.indexOf("SideTaskHost.tick(server, ap);"));
+        assertTrue(call >= 0 && call < runtime);
+        assertEquals(call, src.lastIndexOf("RddWorldAssetObserver.observe"));
+        assertTrue(src.lastIndexOf("if (worldAssetTick == 0)", call) > src.indexOf("SideTaskHost.tick(server, ap);"));
+        assertOrder(src.substring(call, runtime), observer, "RddPlugin.saveAssets(ap.getUUID())", "RddPlugin.publishAssetSnapshot");
+        assertContains(plugin(), "new RddRuntime(chain, assets(uuid))", "same owner registry");
+        assertContains(plugin(), "ASSETS.computeIfAbsent(companionId", "owner isolation");
+    }
+
+    @Test
     void b01_runtimeProjectionUsesLiveGoalAndPhaseAndKeepsSideFirst() {
         // Explicit source pin, not a claim of executing Minecraft/RDD rendering.
         String fields = methodBody(plugin(), "retrievalTaskFields", "chain.goal().description()");

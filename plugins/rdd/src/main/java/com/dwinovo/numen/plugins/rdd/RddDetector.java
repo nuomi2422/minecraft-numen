@@ -199,6 +199,16 @@ final class RddDetector {
             // 2026-10-08 正式睡觉支线：不要求必须有主线链——睡觉是基本的夜间行为，
             // 无链时也能触发（主线恢复令牌为空即可）。先驱动支线，再走主线检测（支线 active 时主线冻结）。
             SideTaskHost.tick(server, ap);
+            // 2026-11-11: nearby machines must be observed even without a task chain.
+            if (worldAssetTick == 0) {
+                try {
+                    RddWorldAssetObserver.Result observed = RddWorldAssetObserver.observe(ap, RddPlugin.assets(ap.getUUID()));
+                    RddPlugin.saveAssets(ap.getUUID());
+                    RddPlugin.publishAssetSnapshot(ap.getUUID(), "lazy_world_observation", observed);
+                } catch (RuntimeException ex) {
+                    LOG.warn("[rdd] passive world asset observation failed {}: {}", ap.getUUID(), ex.toString());
+                }
+            }
             RddRuntime rt = RddPlugin.runtime(ap.getUUID());
             if (rt == null) {
                 continue;
@@ -421,9 +431,6 @@ final class RddDetector {
             // 关键：NOT_VERIFIABLE **不算满足**——读不到/过期不许被当成"有了"。
             if (assetTick == 0) evaluateGearCondition(ap, ap.level().getGameTime());
             if (worldAssetTick == 0) {
-                RddWorldAssetObserver.Result observed = RddWorldAssetObserver.observe(ap, rt.assets());
-                RddPlugin.saveAssets(ap.getUUID());
-                RddPlugin.publishAssetSnapshot(ap.getUUID(), "lazy_world_observation", observed);
                 // 第三批 N1 消费：共同事实快照 + 需求检测（30 秒一拍；只产事实与事件，不做裁决）。
                 // 用本拍真实背包 counts（不是注册表缓存）—— 规划侧文档定调"实时扫描是持有唯一真相"。
                 RddFactContext.tick(ap.getUUID(), ap.level().dimension().location().toString(), rt, counts);
