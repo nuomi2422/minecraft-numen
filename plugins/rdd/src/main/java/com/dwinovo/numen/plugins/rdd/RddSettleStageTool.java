@@ -172,7 +172,12 @@ final class RddSettleStageTool implements NumenTool {
         }
     }
 
-    /** The last primary stage: settling it is what ends the whole goal. */
+    /**
+     * The last planned primary stage: settling it leaves no later stage, so
+     * {@code settlePrimaryByFact} moves the chain to COMPLETED — i.e. it ends the goal.
+     * A later continuation is a new plan/chain, not an existing stage, so "last in this
+     * goal's list" is the right test; it must not be confused with "the current stage".
+     */
     static boolean isFinalStage(com.dwinovo.numen.rdd.core.TaskChain chain, String primaryId) {
         if (chain == null || chain.goal() == null || primaryId == null || primaryId.isBlank()) return false;
         var goals = chain.goal().primaryGoals();

@@ -37,6 +37,22 @@ class RddSettleStageUnmetTest {
         assertFalse(RddSettleStageTool.isFinalStage(null, "p2"));
     }
 
+    @Test void singleStageChainIsBothFirstAndFinal() {
+        TaskChain one = new TaskChain(new Goal("g1", "g1", List.of(
+                new PrimaryGoal("only", "only stage", List.of(item("a"))))));
+        assertTrue(RddSettleStageTool.isFinalStage(one, "only"),
+                "settling the only stage must also close the goal");
+    }
+
+    @Test void lastStageStaysFinalWhenEarlierStagesRemainUnsatisfied() {
+        PrimaryGoal a = new PrimaryGoal("p1", "first", List.of(item("a")));
+        PrimaryGoal b = new PrimaryGoal("p2", "second", List.of(item("b")));
+        TaskChain chain = new TaskChain(new Goal("g2", "g2", List.of(a, b)));
+        // The cursor sitting on p1 must not make p2 stop being the goal-ending stage.
+        assertTrue(RddSettleStageTool.isFinalStage(chain, "p2"));
+        assertFalse(RddSettleStageTool.isFinalStage(chain, "p1"));
+    }
+
     @Test void unexpandedFinalCannotBeVacuouslyVerified() {
         PrimaryGoal target = new PrimaryGoal("p1", "target", List.of(item("a")));
         PrimaryGoal finalGoal = PrimaryGoal.unexpanded("p2", "final goal not yet expanded", null);
