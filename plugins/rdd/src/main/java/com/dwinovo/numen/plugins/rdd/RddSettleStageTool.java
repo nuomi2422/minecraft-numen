@@ -63,6 +63,7 @@ final class RddSettleStageTool implements NumenTool {
                 .bool("verify_final_goal", "If true (with verified), also require the final primary stage conditions to match.")
                 .string("state_version", "Required with verified: chain stateVersion the caller observed; stale -> refused.")
                 .string("plan_revision", "Required with verified: chain planRevision the caller observed; stale -> refused.")
+                .string("chain_instance_id", "Required with verified: exact chain_instance_id from fresh rdd_status; another chain is refused.")
                 .build();
     }
 
@@ -200,6 +201,9 @@ final class RddSettleStageTool implements NumenTool {
     /** verified must bind to the exact chain generation the caller observed; missing is refused. */
     static String generationError(TaskChain chain, JsonObject args) {
         if (chain == null) return "settle refused: no chain";
+        String chainId = str(args, "chain_instance_id").trim();
+        if (chainId.isEmpty()) return "settle refused: verified requires chain_instance_id from fresh rdd_status";
+        if (!chainId.equals(chain.chainInstanceId())) return "settle refused: stale chain_instance_id; refresh rdd_status";
         Long state = longArg(args, "state_version");
         Long revision = longArg(args, "plan_revision");
         if (state == null || revision == null) {

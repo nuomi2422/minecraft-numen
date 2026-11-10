@@ -76,14 +76,23 @@ class RddSettleStageFlagsTest {
     @Test void verifiedRequiresExactGeneration() {
         TaskChain c = chain();
         JsonObject missing = args(true, false);
+        assertTrue(RddSettleStageTool.generationError(c, missing).contains("requires chain_instance_id"));
+        missing.addProperty("chain_instance_id", c.chainInstanceId());
         assertTrue(RddSettleStageTool.generationError(c, missing).contains("requires state_version"));
 
         JsonObject exact = args(true, false);
+        exact.addProperty("chain_instance_id", c.chainInstanceId());
         exact.addProperty("state_version", c.stateVersion());
         exact.addProperty("plan_revision", c.planRevision());
         assertEquals("", RddSettleStageTool.generationError(c, exact));
 
+        TaskChain replacement = chain();
+        assertEquals(c.stateVersion(), replacement.stateVersion());
+        assertEquals(c.planRevision(), replacement.planRevision());
+        assertTrue(RddSettleStageTool.generationError(replacement, exact).contains("stale chain_instance_id"));
+
         JsonObject stale = args(true, false);
+        stale.addProperty("chain_instance_id", c.chainInstanceId());
         stale.addProperty("state_version", c.stateVersion() + 1);
         stale.addProperty("plan_revision", c.planRevision());
         assertTrue(RddSettleStageTool.generationError(c, stale).contains("stale generation"));
