@@ -49,4 +49,10 @@ dependencies {
     testImplementation project(':rdd-core')
 }
 
-test { useJUnitPlatform() }
+test {
+    useJUnitPlatform()
+    // 2026-11-11: managed test-only receipts belong to the isolated attempt.
+    if (System.getenv('RDD_TEST_REPORT_DIR')) {
+        reports.junitXml.outputLocation = file(System.getenv('RDD_TEST_REPORT_DIR'))
+    }
+}
