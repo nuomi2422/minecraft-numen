@@ -177,6 +177,8 @@ final class RddSettleStageTool implements NumenTool {
             out.put("description", desc);
             out.put("current_primary", chain.currentPrimary().id());
             out.put("primary_status", chain.primaryStatus().name());
+            // 回执直接说明这一次是否被记为"完成事实"，调用方不必去翻监控事件。
+            out.put("recorded_as_completion", verified);
             reply.accept(com.dwinovo.numen.task.TaskResult.ok(
                     "stage settled by fact: " + desc + " → now at " + chain.currentPrimary().id()
                             + " (" + chain.primaryStatus() + ")", out).toJson());

@@ -1616,6 +1616,8 @@ public final class TaskChain {
         view.put("satisfiedNeedKeys", List.copyOf(satisfiedNeedKeys));
         // 2026-10-28：哪些一级是"被事实达成/提前收口"的（键 → 理由）。只观测，不参与判定。
         view.put("settledStages", Map.copyOf(settleReasons));
+        // 044 §0.7：放弃（未核验）与完成事实必须能分开观测，否则只能靠游标前移去猜。
+        view.put("waivedStages", Map.copyOf(waivedStageKeys));
         view.put("primaryStatus", primaryStatus.name());
         view.put("primaryIndex", primaryIndex);
         view.put("subtaskIndex", subtaskIndex);

@@ -87,6 +87,12 @@ class RddSettleStageFlagsTest {
         assertEquals(0, ((java.util.List<?>) afterWaiver.get("satisfied_stages")).size(),
                 "a waiver must not appear as a completion fact");
         assertEquals(1, ((java.util.List<?>) afterWaiver.get("waived_stages")).size());
+        // The chain snapshot (monitor/judge side) must agree with the tool view; otherwise the
+        // only way to see a waiver would be to infer it from the cursor moving on.
+        Map<String, String> snapshotWaived = (Map<String, String>) c.snapshot().get("waivedStages");
+        assertEquals(1, snapshotWaived.size());
+        assertEquals("p", snapshotWaived.keySet().iterator().next());
+        assertEquals(snapshotWaived.keySet(), new java.util.HashSet<>((java.util.List<?>) afterWaiver.get("waived_stages")));
     }
 
     @Test void settledStagesAreVisibleForBeforeAfterComparison() {
