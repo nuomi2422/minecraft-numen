@@ -94,11 +94,30 @@ final class RddWorldAssetObserver {
         if (!(companion.level() instanceof ServerLevel level)) return 0;
         BlockPos origin = companion.blockPosition();
         String dimension = level.dimension().location().toString();
+        var identityProvider = com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.ServerIdentityProvider.class);
+        com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity = null;
+        try { if (identityProvider != null) identity = identityProvider.snapshot(level.getServer()); }
+        catch (RuntimeException unavailable) { /* no authority: only unstamped positive sightings */ }
+        final var currentIdentity = identity;
+        // Independent old-point budget BEFORE the new-machine scan's early break.
+        MachinePointRecheck.check(registry, identity == null ? null : identity.worldId(),
+                identity == null ? null : identity.serverSession(), dimension,
+                new MachinePointRecheck.Point(origin.getX(), origin.getY(), origin.getZ()), 32,
+                new MachinePointRecheck.Reader() {
+                    public boolean loaded(MachinePointRecheck.Point p) { return level.hasChunkAt(new BlockPos(p.x(),p.y(),p.z())); }
+                    public String block(MachinePointRecheck.Point p) {
+                        return BuiltInRegistries.BLOCK.getKey(level.getBlockState(new BlockPos(p.x(),p.y(),p.z())).getBlock()).toString();
+                    }
+                }, evidence -> {
+                    evidence.put("companion_id", companion.getUUID().toString());
+                    RddMonitor.publish("asset_machine_invalidated", evidence);
+                });
         int count = 0;
         Set<String> clustered = new java.util.HashSet<>();
         outer:
         for (BlockPos cursor : BlockPos.betweenClosed(origin.offset(-MACHINE_RADIUS, -MACHINE_Y_RADIUS, -MACHINE_RADIUS),
                 origin.offset(MACHINE_RADIUS, MACHINE_Y_RADIUS, MACHINE_RADIUS))) {
+            if (!level.hasChunkAt(cursor)) continue; // do not force-load a missing chunk
             var state = level.getBlockState(cursor);
             String blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
             boolean tracked = FunctionalBlockTypes.isTracked(blockId);
@@ -118,6 +137,11 @@ final class RddWorldAssetObserver {
             if (portal && !clustered.add(cluster)) continue;
             Map<String, Object> value = common("machine", blockId, dimension, pos, "LAZY");
             value.put("block", blockId);
+            if (currentIdentity != null && currentIdentity.worldId() != null && !currentIdentity.worldId().isBlank()) {
+                value.put("world_id", currentIdentity.worldId());
+                if (currentIdentity.serverSession() != null && !currentIdentity.serverSession().isBlank())
+                    value.put("server_session", currentIdentity.serverSession());
+            }
             if (capabilities != null && !capabilities.isBlank()) {
                 value.put("summary", capabilities.length() > 500 ? capabilities.substring(0, 500) : capabilities);
             }
