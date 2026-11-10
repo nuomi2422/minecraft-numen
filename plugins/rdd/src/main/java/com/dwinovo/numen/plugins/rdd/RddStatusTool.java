@@ -108,6 +108,10 @@ final class RddStatusTool implements NumenTool {
             fields.put("goal", chain.goal().id());
             fields.put("primary_goal", chain.currentPrimary().id());
             fields.put("primary_status", chain.primaryStatus().name());
+            // Read-only view of stages settled by fact, from the same snapshot. It lets a
+            // caller prove "nothing was settled" before/after a refused request instead of
+            // inferring it from the absence of a change event.
+            fields.put("settled_stages", Map.copyOf(chain.settledStages()));
             if (current != null) {
                 fields.put("subtask", current.id());
                 fields.put("subtask_status", chain.currentSubtaskStatus().name());

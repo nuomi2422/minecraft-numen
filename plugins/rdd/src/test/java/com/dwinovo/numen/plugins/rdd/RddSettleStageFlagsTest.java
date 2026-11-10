@@ -73,6 +73,19 @@ class RddSettleStageFlagsTest {
         assertEquals(active.planRevision(), done.data().get("plan_revision"));
     }
 
+    @Test void settledStagesAreVisibleForBeforeAfterComparison() {
+        TaskChain c = chain();
+        assertTrue(((Map<?, ?>) RddStatusTool.projectChain(c).data().get("settled_stages")).isEmpty());
+        c.startCurrent();
+        long before = c.stateVersion();
+        c.settlePrimaryByFact("p", "verified fixture: stage no longer needed");
+        var after = RddStatusTool.projectChain(c).data();
+        Map<?, ?> settled = (Map<?, ?>) after.get("settled_stages");
+        assertEquals(1, settled.size());
+        assertEquals("verified fixture: stage no longer needed", settled.get("p"));
+        assertTrue(((Number) after.get("state_version")).longValue() > before);
+    }
+
     @Test void verifiedRequiresExactGeneration() {
         TaskChain c = chain();
         JsonObject missing = args(true, false);
