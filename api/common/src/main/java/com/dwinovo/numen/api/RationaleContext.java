@@ -50,22 +50,21 @@ public final class RationaleContext {
         if (companionId == null || entry == null) return;
         boolean scoped = chainInstanceId != null && !chainInstanceId.isBlank();
         STATES.compute(companionId, (id, old) -> {
-            if (old == null) return new State(entry, generation, scoped ? chainInstanceId : null);
             if (!scoped) {
+                if (old == null) return new State(entry, generation, null);
                 // Legacy unscoped writes keep the old rule: a lower generation never overwrites.
                 return generation < old.generation() ? old : new State(entry, generation, old.chain());
             }
-            String oldChain = old.chain();
-            if (oldChain != null && oldChain.equals(chainInstanceId)) {
-                // Revision counters restart per chain, so only same-chain writes may be ordered by it.
-                return generation < old.generation() ? old : new State(entry, generation, chainInstanceId);
-            }
-            // A write for a different chain. Upgrade an unscoped entry; otherwise only the chain the
-            // host declared as current may replace it — a finished chain's late callback may not.
-            if (oldChain == null) return new State(entry, generation, chainInstanceId);
+            // A scoped write is only authorised for the chain the host currently declares.
+            // Without a declaration the writer has no standing: a late callback from a finished
+            // chain must not create or replace an entry (no first-write resurrection after clear).
             String current = CURRENT_CHAIN.get(id);
-            return current != null && current.equals(chainInstanceId)
-                    ? new State(entry, generation, chainInstanceId) : old;
+            if (current == null || !current.equals(chainInstanceId)) return old;
+            if (old == null) return new State(entry, generation, chainInstanceId);
+            boolean sameChain = old.chain() != null && old.chain().equals(chainInstanceId);
+            // Revision counters restart per chain, so only same-chain writes may be ordered by it.
+            if (sameChain && generation < old.generation()) return old;
+            return new State(entry, generation, chainInstanceId);
         });
     }
 

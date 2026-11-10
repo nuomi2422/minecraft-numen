@@ -19,6 +19,7 @@ class RationaleContextTest {
     @Test
     void sameRevisionOnAnotherChainIsNotCurrent() {
         UUID id = UUID.randomUUID();
+        RationaleContext.noteCurrentChain(id, "chain-1");
         RationaleContext.set(id, new RationaleContext.Entry("钻石镐可直接挖黑曜石", "", "src", "cond"), 5L, "chain-1");
         assertTrue(RationaleContext.applicable(id, 5L, "chain-1"));
         assertFalse(RationaleContext.applicable(id, 5L, "chain-2"),
@@ -31,6 +32,7 @@ class RationaleContextTest {
     @Test
     void checkAndRenderUseOneSnapshot() {
         UUID id = UUID.randomUUID();
+        RationaleContext.noteCurrentChain(id, "chain-1");
         RationaleContext.set(id, new RationaleContext.Entry("链一的原因足够长", "", "src", ""), 5L, "chain-1");
         assertTrue(RationaleContext.renderApplicable(id, 5L, "chain-1").contains("链一的原因足够长"));
         // A write for another chain must not be rendered under the old chain's identity; the host
@@ -77,11 +79,57 @@ class RationaleContextTest {
     @Test
     void lateCallbackCannotRelabelScope() {
         UUID id = UUID.randomUUID();
+        RationaleContext.noteCurrentChain(id, "chain-new");
         RationaleContext.set(id, new RationaleContext.Entry("新的已绑定原因", "", "src", ""), 6L, "chain-new");
         RationaleContext.set(id, new RationaleContext.Entry("迟到的旧回调原因", "", "src", ""), 5L, "chain-old");
         assertTrue(RationaleContext.renderApplicable(id, 6L, "chain-new").contains("新的已绑定原因"));
         assertEquals("", RationaleContext.renderApplicable(id, 5L, "chain-old"),
                 "a stale callback must not resurrect its own chain scope");
+    }
+
+    @Test
+    void afterClearALateCallbackCannotResurrectAScopedEntry() {
+        UUID id = UUID.randomUUID();
+        RationaleContext.noteCurrentChain(id, "chain-1");
+        RationaleContext.set(id, new RationaleContext.Entry("已存在的当前原因", "", "src", ""), 2L, "chain-1");
+        RationaleContext.clear(id);
+        // clear() withdraws the declaration too; a late writer has no standing any more.
+        RationaleContext.set(id, new RationaleContext.Entry("清空后迟到的旧回调", "", "src", ""), 2L, "chain-1");
+        assertNull(RationaleContext.get(id), "a cleared context must stay cleared");
+        assertEquals("", RationaleContext.renderApplicable(id, 2L, "chain-1"));
+    }
+
+    @Test
+    void writerWithoutDeclarationIsRefused() {
+        UUID id = UUID.randomUUID();
+        RationaleContext.set(id, new RationaleContext.Entry("未声明链时的写入", "", "src", ""), 1L, "chain-1");
+        assertNull(RationaleContext.get(id), "no declared current chain means no authorised writer");
+    }
+
+    @Test
+    void twoInterleavedRequestsCannotBothClaimCurrent() {
+        UUID id = UUID.randomUUID();
+        // Request A declares chain-A and writes; request B then declares chain-B and writes.
+        RationaleContext.noteCurrentChain(id, "chain-A");
+        RationaleContext.set(id, new RationaleContext.Entry("请求A的原因文本", "", "src", ""), 3L, "chain-A");
+        RationaleContext.noteCurrentChain(id, "chain-B");
+        RationaleContext.set(id, new RationaleContext.Entry("请求B的原因文本", "", "src", ""), 1L, "chain-B");
+        // A late write from A (older request, no longer declared) must fail.
+        RationaleContext.set(id, new RationaleContext.Entry("请求A迟到回写", "", "src", ""), 4L, "chain-A");
+        assertTrue(RationaleContext.renderApplicable(id, 1L, "chain-B").contains("请求B的原因文本"));
+        assertEquals("", RationaleContext.renderApplicable(id, 4L, "chain-A"));
+    }
+
+    @Test
+    void withdrawingDeclarationRemovesAuthority() {
+        UUID id = UUID.randomUUID();
+        RationaleContext.noteCurrentChain(id, "chain-1");
+        RationaleContext.set(id, new RationaleContext.Entry("声明有效时写入", "", "src", ""), 1L, "chain-1");
+        assertNotNull(RationaleContext.get(id));
+        RationaleContext.noteCurrentChain(id, null);
+        RationaleContext.set(id, new RationaleContext.Entry("撤声明后写入", "", "src", ""), 2L, "chain-1");
+        assertTrue(RationaleContext.renderApplicable(id, 1L, "chain-1").contains("声明有效时写入"),
+                "a write after withdrawal must not replace the last authorised entry");
     }
 
     @Test
@@ -97,6 +145,7 @@ class RationaleContextTest {
     @Test
     void clearDropsChainScopeToo() {
         UUID id = UUID.randomUUID();
+        RationaleContext.noteCurrentChain(id, "chain-9");
         RationaleContext.set(id, new RationaleContext.Entry("有链绑定", "", "src", ""), 3L, "chain-9");
         assertTrue(RationaleContext.applicable(id, 3L, "chain-9"));
         RationaleContext.clear(id);
