@@ -1167,6 +1167,10 @@ public final class EntityAgentLoop {
         boolean wasBusy = isBusy();
         int dropped = queue.droppedCount();
         abort();
+        // 2026-11-10 实机（COV-r1）：空闲时按停止只清了队列、**没上闩**（上闩只在"忙"分支里），
+        // 随后低血量预警/重生这类急件又把回合拉起来，停后 60 秒派发 10 条。
+        // 主人的"停"必须与忙闲无关一律上闩：只有主人继续（/stop resume 或再说一句）才能解除。
+        turnPause = AgentTurnPause.OWNER_INTERRUPT;
         int queued = queue.size();
         // takeEntries 走的是 EventQueue 自己的口径：取走全部并清空，顺带把溢出记账
         // 折成一条说明（我们只要计数，所以拿它的返回值不用）。
