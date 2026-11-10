@@ -83,13 +83,12 @@ public final class NumenGateway {
      * @param companion the companion entity's UUID
      * @param message   delivered exactly as given — formatting is the caller's business
      */
-    /** R-06: production scheduling seam; tests pass their own instance explicitly (no mutable global hook). */
+    /** R-08: production scheduling seam; tests pass their own instance explicitly (no mutable global hook). */
     private static final EnqueueScheduling DEFAULT_SCHEDULING = new MinecraftEnqueueScheduling();
 
     /** 事务内身份上下文：只在同一同步调用栈里有效（finally 恢复），不用来跨异步回传。 */
     private static final ThreadLocal<WorldContextStamp.Token> CURRENT_IDENTITY = new ThreadLocal<>();
 
-    /** 本次命令执行上下文的身份 token（无则 null）；owner_stop 读它保证与 enqueue 同源。 */
     public static WorldContextStamp.Token currentIdentityToken() { return CURRENT_IDENTITY.get(); }
 
     /** 2026-11-10 R-06：不可变回执。accepted != effective：commandId 只代表本地受理，不代表 stop 已生效。 */
@@ -116,47 +115,32 @@ public final class NumenGateway {
     /** 一次真实 dispatch 的结果。 */
     record Executed(Delivery delivery, String commandId) {}
 
-    /** 唯一真实 dispatch 的抽象（生产走 AgentLoop；夹具可数调用次数，仍走同一入口）。 */
+    /** 唯一真实 dispatch 的抽象（生产走 AgentLoop；夹具可数调用次数）。 */
     interface EnqueueDispatch { Executed dispatch(UUID companion, String message); }
 
     private static final EnqueueDispatch DEFAULT_DISPATCH = NumenGateway::execute;
 
     /** 旧接口：语义不变（联机照旧执行；跨线程 HANDED_OFF）。 */
     public static Delivery enqueue(UUID companion, String message) {
+        return enqueueLegacy(companion, message, DEFAULT_SCHEDULING, DEFAULT_DISPATCH, false);
+    }
+
+    static Delivery enqueueLegacy(UUID companion, String message,
+                                  EnqueueScheduling scheduling, EnqueueDispatch dispatch, boolean assumeKnown) {
         if (companion == null || message == null || message.isBlank()) return Delivery.REJECTED;
-        boolean known = AgentLoopRegistry.get(companion).isPresent()
-                || com.dwinovo.numen.client.agent.NumenRoster.instance().name(companion) != null;
-        if (!known) return Delivery.REJECTED;
-        Minecraft mc = Minecraft.getInstance();
-        if (!mc.isSameThread()) {
-            mc.execute(() -> DEFAULT_DISPATCH.dispatch(companion, message));
-            return Delivery.HANDED_OFF;
-        }
-        return DEFAULT_DISPATCH.dispatch(companion, message).delivery();
-    }
-
-    /** 回执路径（client-only 同步内层）；非 client 线程返回 HANDED_OFF，不承诺回执。 */
-    public static EnqueueReceipt enqueueReceipt(UUID companion, String message) {
-        return enqueueReceipt(companion, message, DEFAULT_SCHEDULING, DEFAULT_DISPATCH, false);
-    }
-
-    static EnqueueReceipt enqueueReceipt(UUID companion, String message,
-                                         EnqueueScheduling scheduling, EnqueueDispatch dispatch, boolean assumeKnown) {
-        if (companion == null || message == null || message.isBlank()) return EnqueueReceipt.rejected(companion);
         if (!assumeKnown) {
             boolean known = AgentLoopRegistry.get(companion).isPresent()
                     || com.dwinovo.numen.client.agent.NumenRoster.instance().name(companion) != null;
-            if (!known) return EnqueueReceipt.rejected(companion);
+            if (!known) return Delivery.REJECTED;
         }
-        if (!scheduling.onClientThread()) return EnqueueReceipt.handedOff(companion);
-        EnqueueScheduling.Sample before = scheduling.sampleNow(companion);
-        EnqueueScheduling.Sample pre = scheduling.sampleNow(companion);
-        EnqueueReceipt gate = precheck(companion, before, pre);
-        if (gate != null) return gate;
-        return runTransaction(companion, message, before, scheduling, dispatch);
+        if (!scheduling.onClientThread()) {
+            scheduling.executeOnClient(() -> dispatch.dispatch(companion, message));
+            return Delivery.HANDED_OFF;
+        }
+        return dispatch.dispatch(companion, message).delivery();
     }
 
-    /** 异步入口：client 调度 -> server 线程采样 -> client 执行；全程不 join/get。 */
+    /** 新回执入口：client 捕绑定 -> server 采样 -> client 复核执行 -> 异步 post 复核。 */
     public static java.util.concurrent.CompletableFuture<EnqueueReceipt> enqueueReceiptAsync(
             UUID companion, String message) {
         return enqueueReceiptAsync(companion, message, DEFAULT_SCHEDULING, DEFAULT_DISPATCH, false);
@@ -170,72 +154,84 @@ public final class NumenGateway {
             done.complete(EnqueueReceipt.rejected(companion));
             return done;
         }
-        scheduling.executeOnClient(() -> {
-            if (!assumeKnown) {
-                boolean known = AgentLoopRegistry.get(companion).isPresent()
-                        || com.dwinovo.numen.client.agent.NumenRoster.instance().name(companion) != null;
-                if (!known) { done.complete(EnqueueReceipt.rejected(companion)); return; }
-            }
-            scheduling.sampleAsync(companion).whenComplete((before, error) -> {
-                if (error != null) {
-                    done.complete(statusOf(new Executed(Delivery.REJECTED, null), companion,
-                            EnqueueReceipt.IdentityStatus.NO_IDENTITY, EnqueueScheduling.Sample.missing()));
-                    return;
-                }
-                scheduling.executeOnClient(() -> {
-                    try {
-                        EnqueueScheduling.Sample pre = scheduling.sampleNow(companion);
-                        EnqueueReceipt gate = precheck(companion, before, pre);
-                        if (gate != null) { done.complete(gate); return; }
-                        done.complete(runTransaction(companion, message, before, scheduling, dispatch));
-                    } catch (RuntimeException ex) {
-                        done.completeExceptionally(ex);
+        try {
+            scheduling.executeOnClient(() -> {
+                try {
+                    if (!assumeKnown) {
+                        boolean known = AgentLoopRegistry.get(companion).isPresent()
+                                || com.dwinovo.numen.client.agent.NumenRoster.instance().name(companion) != null;
+                        if (!known) { done.complete(EnqueueReceipt.rejected(companion)); return; }
                     }
-                });
+                    EnqueueScheduling.ClientBinding first = scheduling.captureClient(companion);
+                    if (first == null || !first.ready()) {
+                        done.complete(statusOf(new Executed(Delivery.REJECTED, null), companion,
+                                EnqueueReceipt.IdentityStatus.NO_IDENTITY, null));
+                        return;
+                    }
+                    scheduling.sampleServerAsync(companion).whenComplete((server, sampleError) -> {
+                        if (sampleError != null || server == null) {
+                            done.complete(statusOf(new Executed(Delivery.REJECTED, null), companion,
+                                    EnqueueReceipt.IdentityStatus.NO_IDENTITY, null));
+                            return;
+                        }
+                        scheduling.executeOnClient(() -> {
+                            try {
+                                EnqueueScheduling.ClientBinding second = scheduling.captureClient(companion);
+                                EnqueueReceipt gate = precheck(companion, first, second, server);
+                                if (gate != null) { done.complete(gate); return; }
+                                WorldContextStamp.Token token = tokenOf(server);
+                                Executed[] holder = new Executed[1];
+                                withIdentityToken(token, () -> holder[0] = dispatch.dispatch(companion, message));
+                                scheduling.sampleServerAsync(companion).whenComplete((post, postError) -> {
+                                    try {
+                                        done.complete(evaluate(companion, server, postError == null ? post : null, holder[0]));
+                                    } catch (Throwable t) {
+                                        done.completeExceptionally(t);
+                                    }
+                                });
+                            } catch (Throwable t) {
+                                done.completeExceptionally(t);
+                            }
+                        });
+                    });
+                } catch (Throwable t) {
+                    done.completeExceptionally(t);
+                }
             });
-        });
+        } catch (Throwable t) {
+            done.completeExceptionally(t);
+        }
         return done;
     }
 
-    /** 执行前门：身份/实体/level/server 绑定齐全，且两次采样同一主体；否则不执行。 */
-    private static EnqueueReceipt precheck(UUID companion, EnqueueScheduling.Sample before, EnqueueScheduling.Sample pre) {
-        if (before == null || !before.hasIdentity()) {
+    /** 执行前门：client 绑定两次采样一致且 ready；server 身份/实体齐全；否则不执行。 */
+    private static EnqueueReceipt precheck(UUID companion, EnqueueScheduling.ClientBinding first,
+                                           EnqueueScheduling.ClientBinding second, EnqueueScheduling.ServerSample server) {
+        if (first == null || !first.ready() || second == null || !second.ready() || !first.sameAs(second)) {
             return statusOf(new Executed(Delivery.REJECTED, null), companion,
-                    EnqueueReceipt.IdentityStatus.NO_IDENTITY, before);
+                    EnqueueReceipt.IdentityStatus.CONNECTION_CHANGED, server);
         }
-        if (!before.ready() || pre == null || !pre.ready()) {
+        if (server == null || !server.hasIdentity()) {
             return statusOf(new Executed(Delivery.REJECTED, null), companion,
-                    EnqueueReceipt.IdentityStatus.TARGET_CHANGED, before);
+                    EnqueueReceipt.IdentityStatus.NO_IDENTITY, server);
         }
-        if (!before.sameSubject(pre)) {
+        if (server.entityRef() == null) {
             return statusOf(new Executed(Delivery.REJECTED, null), companion,
-                    EnqueueReceipt.IdentityStatus.CONNECTION_CHANGED, before);
+                    EnqueueReceipt.IdentityStatus.TARGET_CHANGED, server);
         }
         return null;
     }
 
-    private static EnqueueReceipt runTransaction(UUID companion, String message, EnqueueScheduling.Sample before,
-                                                 EnqueueScheduling scheduling, EnqueueDispatch dispatch) {
-        WorldContextStamp.Token token = tokenOf(before);
-        Executed[] holder = new Executed[1];
-        withIdentityToken(token, () -> holder[0] = dispatch.dispatch(companion, message));
-        EnqueueScheduling.Sample after = scheduling.sampleNow(companion);
-        return evaluate(companion, before, after, holder[0], scheduling.liveTargetUuid(companion));
-    }
-
-    /** 执行后判定（包内可见：离线夹具直接验证矩阵）。 */
-    static EnqueueReceipt evaluate(UUID companion, EnqueueScheduling.Sample before,
-                                   EnqueueScheduling.Sample after, Executed executed, UUID liveTargetUuid) {
-        if (before == null || !before.ready()) {
-            return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, after != null ? after : before);
+    /** 执行后判定：post 缺失/不一致只能算已尝试但归属失效。 */
+    static EnqueueReceipt evaluate(UUID companion, EnqueueScheduling.ServerSample before,
+                                   EnqueueScheduling.ServerSample after, Executed executed) {
+        if (before == null || !before.hasIdentity() || before.entityRef() == null) {
+            return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, before);
         }
-        if (after == null || !after.ready()) {
-            return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, after != null ? after : before);
+        if (after == null || !after.hasIdentity()) {
+            return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.ATTEMPTED_BUT_INVALID, before);
         }
-        if (!before.sameSubject(after)) {
-            return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.ATTEMPTED_BUT_INVALID, after);
-        }
-        if (liveTargetUuid == null || !liveTargetUuid.equals(companion)) {
+        if (!before.sameAs(after)) {
             return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.ATTEMPTED_BUT_INVALID, after);
         }
         return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.OK, after);
@@ -254,14 +250,14 @@ public final class NumenGateway {
     }
 
     private static EnqueueReceipt statusOf(Executed executed, UUID companion,
-                                           EnqueueReceipt.IdentityStatus status, EnqueueScheduling.Sample sample) {
+                                           EnqueueReceipt.IdentityStatus status, EnqueueScheduling.ServerSample sample) {
         String world = sample == null ? null : sample.worldId();
         String session = sample == null ? null : sample.serverSession();
         long epoch = sample == null ? 0L : sample.epoch();
         return new EnqueueReceipt(executed.delivery(), executed.commandId(), companion, status, world, session, epoch);
     }
 
-    private static WorldContextStamp.Token tokenOf(EnqueueScheduling.Sample sample) {
+    private static WorldContextStamp.Token tokenOf(EnqueueScheduling.ServerSample sample) {
         if (sample == null || !sample.hasIdentity()) return new WorldContextStamp.Token(null, 0L);
         return new WorldContextStamp.Token(java.util.Map.of(
                 "world_id", sample.worldId(), "server_session", sample.serverSession()), sample.epoch());
