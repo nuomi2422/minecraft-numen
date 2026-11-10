@@ -34,6 +34,45 @@ class RddSettleStageFlagsTest {
         assertFalse(RddSettleStageTool.verifyFlagError(args(true, true)).length() > 0);
     }
 
+    @Test void statusGenerationRoundTripsWithoutStringCoercion() {
+        TaskChain c = chain();
+        Map<String, Object> fields = RddStatusTool.generationFields(c);
+        assertEquals(c.chainInstanceId(), fields.get("chain_instance_id"));
+        assertInstanceOf(Number.class, fields.get("state_version"));
+        assertInstanceOf(Number.class, fields.get("plan_revision"));
+        JsonObject serialized = com.google.gson.JsonParser.parseString(
+                new com.google.gson.Gson().toJson(fields)).getAsJsonObject();
+        assertTrue(serialized.get("state_version").getAsJsonPrimitive().isNumber());
+        assertTrue(serialized.get("plan_revision").getAsJsonPrimitive().isNumber());
+        assertEquals("", RddSettleStageTool.generationError(c, serialized));
+        assertTrue(RddStatusTool.generationFields(null).isEmpty());
+    }
+
+    @Test void statusProjectionDistinguishesActiveAwaitingAndCompleted() {
+        TaskChain active = chain();
+        var live = RddStatusTool.projectChain(active);
+        assertEquals(true, live.data().get("active"));
+        assertEquals("a", live.data().get("subtask"));
+        assertNotNull(live.data().get("state_version"));
+
+        TaskChain waiting = new TaskChain(new Goal("gw", "gw", List.of(
+                PrimaryGoal.unexpanded("lazy", "lazy stage", null))));
+        var lazy = RddStatusTool.projectChain(waiting);
+        assertNull(lazy.current());
+        assertFalse(lazy.data().containsKey("subtask"));
+        assertEquals(waiting.chainInstanceId(), lazy.data().get("chain_instance_id"));
+
+        active.startCurrent();
+        active.applyHardCodedResult("a", true);
+        active.applySupervisorDecision(new SupervisorDecision(
+                SupervisorDecisionType.CONFIRM, "p", "verified"));
+        var done = RddStatusTool.projectChain(active);
+        assertEquals(true, done.completed());
+        assertEquals(false, done.data().get("active"));
+        assertEquals(true, done.data().get("completed"));
+        assertEquals(active.planRevision(), done.data().get("plan_revision"));
+    }
+
     @Test void verifiedRequiresExactGeneration() {
         TaskChain c = chain();
         JsonObject missing = args(true, false);

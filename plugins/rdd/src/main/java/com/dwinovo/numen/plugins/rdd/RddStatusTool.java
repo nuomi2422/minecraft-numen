@@ -31,37 +31,38 @@ final class RddStatusTool implements NumenTool {
             return;
         }
         var chain0 = runtime.chain();
-        // 2026-11-03：末级完成后链仍报 active=true，面板/AI 会以为还有活；这里明确终态。
-        if (chain0.primaryStatus() == PrimaryGoalStatus.COMPLETED
-                && chain0.currentSubtaskStatus() == SubtaskStatus.COMPLETED) {
-            reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain is complete", Map.of(
-                    "active", false, "completed", true,
-                    "goal", chain0.goal().id(),
-                    "primary_goal", chain0.currentPrimary().id(),
-                    "primary_status", "COMPLETED",
-                    "subtask", chain0.currentSubtask().id(),
-                    "subtask_status", "COMPLETED")).toJson());
+        final ChainProjection projection = projectChain(chain0);
+        // This is a point-in-time status sample, not a lock or authority to mutate.
+        // Runtime replacement can still occur after the final identity check; the
+        // mutation consumer must bind chain_instance_id as well as the versions.
+        if (projection.completed()) {
+            if (RddPlugin.runtime(uuid) != runtime) {
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail("RDD runtime changed during status snapshot; retry").toJson());
+                return;
+            }
+            reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain is complete", projection.data()).toJson());
             return;
         }
-        var current = runtime.chain().currentSubtask();
+        var current = projection.current();
+        if (RddPlugin.runtime(uuid) != runtime) {
+            reply.accept(com.dwinovo.numen.task.TaskResult.fail("RDD runtime changed during status snapshot; retry").toJson());
+            return;
+        }
         var inventory = RddDetector.countInventory(companion);
         var groups = Map.of("food", com.dwinovo.numen.rdd.core.InventoryGroups.count("food", inventory),
                 "wood", com.dwinovo.numen.rdd.core.InventoryGroups.count("wood", inventory),
                 "blocks", com.dwinovo.numen.rdd.core.InventoryGroups.count("blocks", inventory));
         if (current == null) {
-            reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain is awaiting expansion", Map.of(
-                    "active", true, "goal", runtime.chain().goal().id(),
-                    "primary_goal", runtime.chain().currentPrimary().id(),
-                    "primary_status", runtime.chain().primaryStatus().name(), "condition_groups", groups)).toJson());
+            Map<String, Object> awaiting = new java.util.LinkedHashMap<>(projection.data());
+            awaiting.put("condition_groups", groups);
+            if (RddPlugin.runtime(uuid) != runtime) {
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail("RDD runtime changed during status snapshot; retry").toJson());
+                return;
+            }
+            reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain is awaiting expansion", awaiting).toJson());
             return;
         }
-        Map<String, Object> out = new java.util.LinkedHashMap<>();
-        out.put("active", true);
-        out.put("goal", runtime.chain().goal().id());
-        out.put("primary_goal", runtime.chain().currentPrimary().id());
-        out.put("primary_status", runtime.chain().primaryStatus().name());
-        out.put("subtask", current.id());
-        out.put("subtask_status", runtime.chain().currentSubtaskStatus().name());
+        Map<String, Object> out = new java.util.LinkedHashMap<>(projection.data());
         out.put("condition_groups", groups);
         out.put("condition", current.condition());
         if ("advancement".equals(current.condition().get("type"))) {
@@ -86,6 +87,43 @@ final class RddStatusTool implements NumenTool {
             out.put("condition_matches", RddDetector.conditionMatches(companion, current, inventory));
         }
         out.put("assets", runtime.assets().snapshot().size());
+        if (RddPlugin.runtime(uuid) != runtime) {
+            reply.accept(com.dwinovo.numen.task.TaskResult.fail("RDD runtime changed during status snapshot; retry").toJson());
+            return;
+        }
         reply.accept(com.dwinovo.numen.task.TaskResult.ok("RDD task chain is active", out).toJson());
+    }
+
+    record ChainProjection(Map<String, Object> data, Subtask current, boolean completed) {}
+
+    /** Capture only chain-owned immutable data under the monitor; providers and callbacks run outside. */
+    static ChainProjection projectChain(com.dwinovo.numen.rdd.core.TaskChain chain) {
+        synchronized (chain) {
+            Subtask current = chain.currentSubtask();
+            boolean complete = current != null && chain.primaryStatus() == PrimaryGoalStatus.COMPLETED
+                    && chain.currentSubtaskStatus() == SubtaskStatus.COMPLETED;
+            Map<String, Object> fields = new java.util.LinkedHashMap<>(generationFields(chain));
+            fields.put("active", !complete);
+            if (complete) fields.put("completed", true);
+            fields.put("goal", chain.goal().id());
+            fields.put("primary_goal", chain.currentPrimary().id());
+            fields.put("primary_status", chain.primaryStatus().name());
+            if (current != null) {
+                fields.put("subtask", current.id());
+                fields.put("subtask_status", chain.currentSubtaskStatus().name());
+            }
+            return new ChainProjection(Map.copyOf(fields), current, complete);
+        }
+    }
+
+    /** Generation values are sampled from the same chain under its monitor. */
+    static Map<String, Object> generationFields(com.dwinovo.numen.rdd.core.TaskChain chain) {
+        if (chain == null) return Map.of();
+        synchronized (chain) {
+            String id = chain.chainInstanceId();
+            if (id == null || id.isBlank()) return Map.of();
+            return Map.of("chain_instance_id", id, "state_version", chain.stateVersion(),
+                    "plan_revision", chain.planRevision());
+        }
     }
 }
