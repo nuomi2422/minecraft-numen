@@ -35,13 +35,16 @@ final class RddFactStore {
     }
 
     static void save(Path directory, UUID companionId, CompletedFactStore store) throws IOException {
-        if (directory == null || companionId == null || store == null) {
-            return;
-        }
+        if (store == null) throw new IOException("completion facts candidate missing");
+        saveJson(directory, companionId, store.toJson());
+    }
+
+    static void saveJson(Path directory, UUID companionId, String json) throws IOException {
+        if (directory == null || companionId == null || json == null) throw new IOException("completion facts storage missing");
         Files.createDirectories(directory);
         Path target = directory.resolve(companionId + ".json");
         Path temporary = directory.resolve(companionId + ".json.tmp");
-        Files.writeString(temporary, store.toJson(), StandardCharsets.UTF_8);
+        Files.writeString(temporary, json, StandardCharsets.UTF_8);
         Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
     }
 }

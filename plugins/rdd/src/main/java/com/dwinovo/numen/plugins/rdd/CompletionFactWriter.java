@@ -27,12 +27,16 @@ final class CompletionFactWriter {
                 || goal == null || primaryDescription == null) {
             return false;
         }
-        store.recordStage(goal, primaryDescription, atMillis, "primary confirmed");
-        try {
-            RddFactStore.save(factsDir, companionId, store);
-            return true;
-        } catch (IOException ex) {
-            return false;
+        synchronized (store) {
+            CompletedFactStore candidate = store.copyForCompletionCommit();
+            candidate.recordStage(goal, primaryDescription, atMillis, "primary confirmed");
+            try {
+                RddFactStore.save(factsDir, companionId, candidate);
+                store.publishCompletionCommit(candidate);
+                return true;
+            } catch (IOException ex) {
+                return false;
+            }
         }
     }
 }

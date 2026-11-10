@@ -203,6 +203,15 @@ final class RddDetector {
             if (rt == null) {
                 continue;
             }
+            // P1-C: finish the same pending stage before further primary-chain mutations/dispatch.
+            if (RddPlugin.completionPending(ap.getUUID())) {
+                RddPlugin.retryPendingCompletion(ap.getUUID(), rt);
+                continue;
+            }
+            if (rt.chain().primaryStatus() == PrimaryGoalStatus.AWAITING_SUPERVISOR) {
+                RddPlugin.finishResolvedPrimary(ap.getUUID(), rt);
+                if (RddPlugin.completionPending(ap.getUUID())) continue;
+            }
             // 2026-11-06 生存抢占：hunger<10/hp<8 时停当前身体任务并重规划（重规划会命中计划前闸直出进食链）。
             survivalPreempt(ap, tick);
             tickRuntime(ap, rt);
@@ -1339,12 +1348,12 @@ final class RddDetector {
         RddPlugin.recordSubtaskFact(ap.getUUID(), chain.goal(), chain.currentPrimary().description(), current.description());
         if (chain.primaryStatus() == PrimaryGoalStatus.AWAITING_SUPERVISOR) {
             PrimaryGoal completedPrimary = chain.currentPrimary();
-            rt.applySupervisor(new SupervisorDecision(
-                    SupervisorDecisionType.CONFIRM,
-                    chain.currentPrimary().id(),
-                    "all hard-coded conditions met in the real world"));
-            // P0：把"该阶段已完成"记为可靠事实（跨重绑/跨重启继承，防已达成阶段被重跑）
-            RddPlugin.recordStageFact(ap.getUUID(), chain.goal(), completedPrimary.description());
+            var completion = RddPlugin.confirmStageCompletion(ap.getUUID(), rt,
+                    "all hard-coded conditions met in the real world");
+            if (!completion.committed()) {
+                LOG.warn("[rdd] primary completion pending {}: {}", ap.getUUID(), completion.error());
+                return false;
+            }
             LOG.info("[rdd] 一级目标完成: {}", completedPrimary.description());
             RddMonitor.publish("goal_completed", Map.of(
                     "goal", completedPrimary.id(), "description", completedPrimary.description(),

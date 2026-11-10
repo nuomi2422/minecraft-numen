@@ -149,12 +149,12 @@ final class RddSettleStageTool implements NumenTool {
                 }
             }
             long before = chain.stateVersion();
-            String desc = chain.settlePrimaryByFact(targetId, reason, verified);
-            // 只有核验过的事实才进跨链完成库；未核验的"不再需要"只让本条链跳过。
-            if (verified) {
-                RddPlugin.recordStageFact(companion.getUUID(), chain.goal(), desc);
+            var completion = RddPlugin.settleStageCompletion(companion.getUUID(), rt, targetId, reason, verified);
+            if (!completion.committed()) {
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail(completion.error()).toJson());
+                return;
             }
-            RddPlugin.saveRuntimes();
+            String desc = completion.description();
             RddPlugin.publishTaskSnapshot(companion.getUUID(), "stage_settled_by_fact");
 
             Map<String, Object> data = new LinkedHashMap<>();
@@ -167,7 +167,7 @@ final class RddSettleStageTool implements NumenTool {
             data.put("primaryStatus", chain.primaryStatus().name());
             data.put("currentPrimary", chain.currentPrimary().id());
             data.put("verified", verified);
-            data.put("recorded_as_completion", verified);
+            data.put("recorded_as_completion", completion.recordedAsCompletion());
             data.put("verify_final_goal", verifyFinalGoal);
             data.put("unmet", java.util.List.of());
             RddMonitor.publish("primary_settled_by_fact", data);
@@ -178,7 +178,7 @@ final class RddSettleStageTool implements NumenTool {
             out.put("current_primary", chain.currentPrimary().id());
             out.put("primary_status", chain.primaryStatus().name());
             // 回执直接说明这一次是否被记为"完成事实"，调用方不必去翻监控事件。
-            out.put("recorded_as_completion", verified);
+            out.put("recorded_as_completion", completion.recordedAsCompletion());
             reply.accept(com.dwinovo.numen.task.TaskResult.ok(
                     "stage settled by fact: " + desc + " → now at " + chain.currentPrimary().id()
                             + " (" + chain.primaryStatus() + ")", out).toJson());

@@ -129,6 +129,7 @@ class VerifiedCompletionIntegrationTest {
             Files.writeString(blocked, "x");
             assertFalse(CompletionFactWriter.persist(blocked, companion, store, g, "iron stage", 1L),
                     "写盘失败必须返回 false，不能假装成功");
+            assertEquals(0, store.stageCount(), "failed save must not pollute published completion facts");
         });
     }
 }

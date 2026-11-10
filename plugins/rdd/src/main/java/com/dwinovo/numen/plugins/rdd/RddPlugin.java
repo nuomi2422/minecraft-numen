@@ -180,6 +180,7 @@ public final class RddPlugin implements NumenPlugin {
         tasksDir = numen.configDir().resolve("rdd-tasks");
         assetsDir = numen.configDir().resolve("rdd-assets");
         factsDir = numen.configDir().resolve("rdd-facts");
+        completionCommit = new StageCompletionCommit(tasksDir, factsDir);
         historyDir = numen.configDir().resolve("rdd-history");
         ledgerDir = numen.configDir().resolve("rdd-ledger");
         semanticsDir = numen.configDir().resolve("rdd-semantics");
@@ -427,11 +428,12 @@ public final class RddPlugin implements NumenPlugin {
         var chain = runtime.chain();
         if (chain.primaryStatus() != com.dwinovo.numen.rdd.api.PrimaryGoalStatus.AWAITING_SUPERVISOR) return;
         String primary = chain.currentPrimary().id();
-        String primaryDesc = chain.currentPrimary().description();
-        runtime.applySupervisor(new com.dwinovo.numen.rdd.api.SupervisorDecision(
-                com.dwinovo.numen.rdd.api.SupervisorDecisionType.CONFIRM, primary,
-                "required conditions verified; optional omissions remain SKIPPED, not world achievements"));
-        recordStageFact(companionId, chain.goal(), primaryDesc);
+        var completion = confirmStageCompletion(companionId, runtime,
+                "required conditions verified; optional omissions remain SKIPPED, not world achievements");
+        if (!completion.committed()) {
+            LOG.warn("[rdd] stage completion not committed {}: {}", companionId, completion.error());
+            return;
+        }
         RddMonitor.publish("primary_resolved", Map.of("companionId", companionId.toString(), "primary", primary,
                 "reason", "verified required steps; optional steps may be skipped"));
     }
@@ -2011,7 +2013,15 @@ private static String safeDeathAttacker(NumenPlayer body) {
     /** P0 完成事实仓库（磁盘为真身，内存缓存）。 */
     public static CompletedFactStore facts(UUID companionId) {
         if (companionId == null) return new CompletedFactStore();
-        return FACTS.computeIfAbsent(companionId, id -> RddFactStore.load(factsDir, id));
+        return FACTS.computeIfAbsent(companionId, id -> {
+            if (completionPending(id)) {
+                // Never cache a half-projected completion. Runtime retry retains its published facts object.
+                if (RUNTIMES.containsKey(id) || !completionCommit().recover(id).committed()) {
+                    throw new IllegalStateException("completion recovery pending; facts not published");
+                }
+            }
+            return RddFactStore.load(factsDir, id);
+        });
     }
 
     /** P2.1 资产历史仓库（磁盘为真身，内存缓存）；Lost≠Gone 的长期恢复线索。 */
@@ -2163,7 +2173,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
         }
     }
 
-    /** 记录"某战略阶段已被可靠完成"并落盘（P0）。失败只记日志，不影响主流程。 */
+    /** Legacy facts-only adapter. Stage completion must use the structured completion commit below. */
     /**
      * 仅供离线测试：把完成事实的落盘目录指到临时目录并清空内存缓存。
      *
@@ -2174,6 +2184,30 @@ private static String safeDeathAttacker(NumenPlayer body) {
     static void useFactsDirForTest(Path directory) {
         factsDir = directory;
         FACTS.clear();
+    }
+
+    private static StageCompletionCommit completionCommit;
+
+    static synchronized StageCompletionCommit completionCommit() {
+        if (completionCommit == null) completionCommit = new StageCompletionCommit(tasksDir, factsDir);
+        return completionCommit;
+    }
+
+    static StageCompletionCommit.Result settleStageCompletion(UUID id, RddRuntime runtime,
+            String primaryId, String reason, boolean verified) {
+        return completionCommit().settle(id, runtime.chain(), facts(id), primaryId, reason, verified, System.currentTimeMillis());
+    }
+
+    static StageCompletionCommit.Result confirmStageCompletion(UUID id, RddRuntime runtime, String reason) {
+        return completionCommit().confirm(id, runtime.chain(), facts(id), reason, System.currentTimeMillis());
+    }
+
+    static boolean completionPending(UUID id) { return completionCommit().hasPending(id); }
+
+    static boolean retryPendingCompletion(UUID id, RddRuntime runtime) {
+        var result = completionCommit().retryPending(id, runtime.chain(), facts(id));
+        if (!result.committed()) LOG.warn("[rdd] completion still pending {}: {}", id, result.error());
+        return result.committed();
     }
 
     static void recordStageFact(UUID companionId, Goal goal, String primaryDescription) {
@@ -2360,6 +2394,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
      */
     private static void discardPreviousGoalState(UUID companionId, String newObjective) {
         if (companionId == null) return;
+        if (completionPending(companionId)) throw new IllegalStateException("finish pending stage completion before replacing goal");
         RddRuntime previous = RUNTIMES.remove(companionId);
         BODY.remove(companionId);
         RddGoalDriver.clear(companionId);
@@ -2406,6 +2441,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
 
     private static void removeCurrent(UUID companionId) {
         if (companionId == null) return;
+        if (completionPending(companionId)) throw new IllegalStateException("finish pending stage completion before clearing goal");
         try {
             RddTaskHandoff.remove(tasksDir, companionId, () -> {
                 DECOMPOSING.remove(companionId);
@@ -2708,11 +2744,9 @@ private static String safeDeathAttacker(NumenPlayer body) {
         try {
             Files.createDirectories(tasksDir);
             for (Map.Entry<UUID, RddRuntime> e : RUNTIMES.entrySet()) {
+                if (!completionCommit().canSave(e.getKey())) continue;
                 try {
-                    Path tmp = tasksDir.resolve(e.getKey() + ".json.tmp");
-                    Files.writeString(tmp, e.getValue().chain().toJson(), StandardCharsets.UTF_8);
-                    Files.move(tmp, tasksDir.resolve(e.getKey() + ".json"),
-                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    completionCommit().saveRuntime(e.getKey(), e.getValue().chain());
                 } catch (IOException ex) {
                     LOG.warn("[rdd] 保存任务失败 {}: {}", e.getKey(), ex.toString());
                 }
@@ -2725,11 +2759,20 @@ private static String safeDeathAttacker(NumenPlayer body) {
     /** 游戏重启恢复：磁盘有任务但内存没有 → 加载为 RddRuntime（幂等）。 */
     public static void restoreRuntimes() {
         if (tasksDir == null || !Files.isDirectory(tasksDir)) return;
+        // Pending files may exist even if the first tasks projection never reached its final path.
+        try (var pending = Files.list(tasksDir)) {
+            pending.filter(f -> f.getFileName().toString().endsWith(".completion-pending")).forEach(f -> {
+                try {
+                    UUID id = UUID.fromString(f.getFileName().toString().replace(".completion-pending", ""));
+                    if (!RUNTIMES.containsKey(id) && completionCommit().recover(id).committed()) FACTS.remove(id);
+                } catch (RuntimeException ex) { LOG.warn("[rdd] pending completion recovery failed: {}", f, ex); }
+            });
+        } catch (IOException ex) { LOG.warn("[rdd] cannot scan pending completions", ex); }
         try (var stream = Files.list(tasksDir)) {
             stream.filter(f -> f.getFileName().toString().endsWith(".json")).forEach(f -> {
                 try {
                     UUID uuid = UUID.fromString(f.getFileName().toString().replace(".json", ""));
-                    if (RUNTIMES.containsKey(uuid)) return;
+                    if (RUNTIMES.containsKey(uuid) || completionPending(uuid)) return;
                     String json = Files.readString(f, StandardCharsets.UTF_8);
                     TaskChain chain = TaskChain.fromJson(json);
                     RUNTIMES.put(uuid, new RddRuntime(chain, assets(uuid)));

@@ -274,7 +274,7 @@ class RddMainlineWiringPinTest {
     // ═══════════════════════════════════════════════════════════════
 
     private static String completeSubtaskBody() {
-        return methodBody(detector(), "completeSubtask", "recordStageFact");
+        return methodBody(detector(), "completeSubtask", "confirmStageCompletion");
     }
 
     @Test
@@ -307,8 +307,8 @@ class RddMainlineWiringPinTest {
         assertOrder(body,
                 "RddPlugin.recordSubtaskFact(",
                 "PrimaryGoalStatus.AWAITING_SUPERVISOR",
-                "rt.applySupervisor(",
-                "RddPlugin.recordStageFact(",
+                "RddPlugin.confirmStageCompletion(",
+                "if (!completion.committed())",
                 "RddMonitor.publish(\"goal_completed\"");
     }
 
@@ -324,7 +324,7 @@ class RddMainlineWiringPinTest {
     @Test
     void m4_completedEventIsPublishedOnlyAfterRealConfirmation() {
         String body = completeSubtaskBody();
-        int confirmed = body.indexOf("rt.applySupervisor(");
+        int confirmed = body.indexOf("if (!completion.committed())");
         int goalDone = body.indexOf("RddMonitor.publish(\"goal_completed\"");
         int guard = body.indexOf("PrimaryGoalStatus.AWAITING_SUPERVISOR");
         assertTrue(guard < confirmed && confirmed < goalDone,
@@ -347,11 +347,11 @@ class RddMainlineWiringPinTest {
 
     @Test
     void m5_optionalSkipPathAlsoConfirmsAndRecords() {
-        String body = methodBody(plugin(), "finishResolvedPrimary", "recordStageFact");
+        String body = methodBody(plugin(), "finishResolvedPrimary", "confirmStageCompletion");
         assertOrder(body,
                 "PrimaryGoalStatus.AWAITING_SUPERVISOR",
-                "applySupervisor(",
-                "recordStageFact(",
+                "confirmStageCompletion(",
+                "if (!completion.committed())",
                 "\"primary_resolved\"");
         assertContains(body, "verified required steps; optional steps may be skipped",
                 "★ 这条 reason 文案是「哪些必做步骤已被验证、哪些可选项被跳过」的对外声明。"
@@ -359,10 +359,10 @@ class RddMainlineWiringPinTest {
     }
 
     @Test
-    void m5_recordStageFactPersistsToDisk() {
-        String body = methodBody(plugin(), "recordStageFact", "RddFactStore.save");
-        assertContains(body, "recordStage(", "必须真的写一条阶段记录");
-        assertContains(body, "RddFactStore.save(",
+    void m5_completionCommitPersistsToDisk() {
+        String body = read(pluginSourceDir(), "StageCompletionCommit.java");
+        assertContains(body, "nextFacts.recordStage(", "private completion candidate must include the stage fact");
+        assertContains(body, "RddFactStore.saveJson(",
                 "★ 必须落盘。改动前 recordStageFact 只在内存里 recordSubtaskFact 而不 save —— "
                         + "阶段完成事实一重启就全丢（RL-15：凡状态必须活得过重启）");
     }
@@ -498,4 +498,15 @@ class RddMainlineWiringPinTest {
                 "nudgeBucket(",
                 "nudge 必须写进【状态桶】，不能退回 per-companion 全局");
     }
+    @Test
+    void p1c_settleReplyAndRestartConsumersUseCommittedResult() {
+        String settle = methodBody(read(pluginSourceDir(), "RddSettleStageTool.java"), "onServerCall", "settleStageCompletion");
+        assertOrder(settle, "settleStageCompletion(", "if (!completion.committed())", "TaskResult.ok(");
+        assertContains(settle, "completion.recordedAsCompletion()", "receipt must use actual commit result");
+        String restore = methodBody(plugin(), "restoreRuntimes", "completion-pending");
+        assertOrder(restore, "completionCommit().recover(id)", "TaskChain.fromJson(json)", "RUNTIMES.put");
+        String save = methodBody(plugin(), "saveRuntimes", "saveRuntime");
+        assertContains(save, "completionCommit().saveRuntime(", "ordinary save must share the pending-aware consumer");
+    }
+
 }
