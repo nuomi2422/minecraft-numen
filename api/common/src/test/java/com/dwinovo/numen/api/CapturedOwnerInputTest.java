@@ -25,9 +25,7 @@ class CapturedOwnerInputTest {
         var old = input.capture();
         input.ownerStopped();
         // Resume changes only the existing pause latch, never admission epoch.
-        var resumed = com.dwinovo.numen.client.agent.OwnerStopLatch.afterOwnerResume(
-                com.dwinovo.numen.client.agent.AgentTurnPause.OWNER_INTERRUPT);
-        assertEquals(com.dwinovo.numen.client.agent.AgentTurnPause.NONE, resumed);
+        com.dwinovo.numen.client.agent.OwnerStopTestBridge.assertOwnerResumeClearsLatch();
         var scheduling = new EnqueueTransactionQueueTest.TwoQueue();
         var dispatch = new EnqueueTransactionQueueTest.CountingDispatch();
         assertEquals(Delivery.REJECTED, NumenGateway.enqueueCaptured(id, "old", old, scheduling, dispatch, () -> input));
