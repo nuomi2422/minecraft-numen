@@ -556,12 +556,9 @@ public final class RddPlugin implements NumenPlugin {
     static String submitSupervisorGoal(UUID companionId, String objective, boolean register, String source,
                                        com.dwinovo.numen.api.RationaleContext.Entry why) {
         stashPlanRationale(companionId, why);
-        try {
-            return submitSupervisorGoal(companionId, objective, register, source);
-        } finally {
-            // 没用上就不留；用了的话 beginPlanning 已 remove。
-            PENDING_PLAN_WHY.remove(companionId);
-        }
+        // 不能在这里 finally 清掉：目标提交返回后规划可能还没跑（挂起/回执路径），
+        // 清早了规划就读不到理由。真正的消费点是 beginPlanning 里的 remove。
+        return submitSupervisorGoal(companionId, objective, register, source);
     }
 
     static String submitSupervisorGoal(UUID companionId, String objective, boolean register, String source) {
