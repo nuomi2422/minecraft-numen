@@ -2748,6 +2748,9 @@ public final class EntityAgentLoop {
         var rationale = com.dwinovo.numen.api.RationaleContext.get(entityUuid);
         java.util.Map<String, Object> fr = new java.util.LinkedHashMap<>();
         fr.put("companion_id", entityUuid.toString());
+        // 与 llm_request 的 companionId 同拼写，覆盖模块才能把两边绑到同一具身体；
+        // 注意：只补这一项**不会**让覆盖变 verified（还缺同源 requestId 与真实验证实现）。
+        fr.put("companionId", entityUuid.toString());
         fr.put("requestKind", "execute");
         fr.put("turn", convo.turnCount());
         fr.put("rationalePresent", rationale != null);
