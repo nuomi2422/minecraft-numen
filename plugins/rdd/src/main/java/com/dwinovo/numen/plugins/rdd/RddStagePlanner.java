@@ -55,8 +55,12 @@ final class RddStagePlanner {
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
                         + facts + "\n" + planningPrompt(objective, snapshot),
                 RddPlanningPolicy.block(objective, "stage_a"));
-        String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
-                base, objective, "stage_a", List.of());
+        // 044 §0.7: the planning request must also carry the structured why. Execution already
+        // renders this section; planning used to omit it, so the planner never saw the reason,
+        // risks, provenance or applicability that the executor got.
+        String userContent = withRationale(RddPlanningKnowledge.withKnowledge(
+                RddPlanningKnowledge.HOST, companionId, base, objective, "stage_a", List.of()),
+                com.dwinovo.numen.api.RationaleContext.render(companionId));
         RddDecomposer.llmAsk(companionId, "stage_a", userContent, PLAN_SYSTEM, PLAN_TOOL,
                 args -> {
                     RddPlanGuard.Stages guarded = RddPlanGuard.filterStages(parse(args), objective);
@@ -164,6 +168,13 @@ final class RddStagePlanner {
                     //   注意这是规划期的先验；运行期还能用 rdd_settle_stage 把已经没意义的阶段收口。
                     + "**能力优先于流程**：若现有的东西已经能完成某个阶段的目的（已有钻石镐 → 石镐/铁镐阶段没有意义；"
                     + "已有铁镐 → 不必再排石镐阶段），就不要排那个阶段；目标是「到终点」，不是「把时代列表走一遍」。\n";
+
+    /** Append the rationale section verbatim when present; blank input leaves the prompt unchanged. */
+    static String withRationale(String content, String rationale) {
+        if (content == null) return "";
+        if (rationale == null || rationale.isBlank()) return content;
+        return content + "\n" + rationale;
+    }
 
     static String planningPrompt(String objective, Map<String, Integer> held) {
         return planningPrompt(objective, held, "");

@@ -11,6 +11,16 @@ import static org.junit.jupiter.api.Assertions.*;
 /** RddStagePlanner.parse 纯容错解析单测（Stage-A 一级清单，批B-2；不触 LLM/网络/MC）。 */
 class RddStagePlannerParseTest {
 
+    @Test void planningRequestCarriesRationaleWhenPresent() {
+        String render = "<rationale><why>钻石镐可直接挖黑曜石</why><risks>下界风险</risks></rationale>";
+        String with = RddStagePlanner.withRationale("base", render);
+        assertTrue(with.startsWith("base"), "original prompt must stay intact");
+        assertTrue(with.contains(render), "planner must receive the exact rationale section");
+        assertEquals("base", RddStagePlanner.withRationale("base", ""), "absent rationale adds nothing");
+        assertEquals("base", RddStagePlanner.withRationale("base", null));
+        assertEquals("", RddStagePlanner.withRationale(null, render));
+    }
+
     @Test void parsesStagesWithOptionalWaitFor() {
         String json = """
                 {"stages":[
