@@ -11,6 +11,13 @@ import static org.junit.jupiter.api.Assertions.*;
 /** RddStagePlanner.parse 纯容错解析单测（Stage-A 一级清单，批B-2；不触 LLM/网络/MC）。 */
 class RddStagePlannerParseTest {
 
+    @Test void staleRationaleIsNotPresentedAsCurrent() {
+        assertTrue(RddStagePlanner.rationaleApplicable(true, 7L, 7L), "same revision is current");
+        assertFalse(RddStagePlanner.rationaleApplicable(true, 6L, 7L), "older revision is stale");
+        assertFalse(RddStagePlanner.rationaleApplicable(true, 8L, 7L), "future revision is not trusted either");
+        assertFalse(RddStagePlanner.rationaleApplicable(false, 7L, 7L), "no entry means no rationale");
+    }
+
     @Test void planningRequestCarriesRationaleWhenPresent() {
         String render = "<rationale><why>钻石镐可直接挖黑曜石</why><risks>下界风险</risks></rationale>";
         String with = RddStagePlanner.withRationale("base", render);

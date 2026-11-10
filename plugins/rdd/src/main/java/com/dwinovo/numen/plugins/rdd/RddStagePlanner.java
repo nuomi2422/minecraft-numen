@@ -60,7 +60,7 @@ final class RddStagePlanner {
         // risks, provenance or applicability that the executor got.
         String userContent = withRationale(RddPlanningKnowledge.withKnowledge(
                 RddPlanningKnowledge.HOST, companionId, base, objective, "stage_a", List.of()),
-                com.dwinovo.numen.api.RationaleContext.render(companionId));
+                freshRationale(companionId));
         RddDecomposer.llmAsk(companionId, "stage_a", userContent, PLAN_SYSTEM, PLAN_TOOL,
                 args -> {
                     RddPlanGuard.Stages guarded = RddPlanGuard.filterStages(parse(args), objective);
@@ -168,6 +168,26 @@ final class RddStagePlanner {
                     //   注意这是规划期的先验；运行期还能用 rdd_settle_stage 把已经没意义的阶段收口。
                     + "**能力优先于流程**：若现有的东西已经能完成某个阶段的目的（已有钻石镐 → 石镐/铁镐阶段没有意义；"
                     + "已有铁镐 → 不必再排石镐阶段），就不要排那个阶段；目标是「到终点」，不是「把时代列表走一遍」。\n";
+
+    /** Same rule the execution prompt applies: an entry from another plan revision is stale, not "current". */
+    static boolean rationaleApplicable(boolean hasEntry, long rationaleGeneration, long chainPlanRevision) {
+        return hasEntry && RddRationale.fresh(rationaleGeneration, chainPlanRevision);
+    }
+
+    /**
+     * Rationale for a planning request. The entry is keyed by companion and stamped with the
+     * planRevision it was written for, so anything else (no chain yet, newer plan, restart with
+     * a different revision) is treated as stale and omitted rather than presented as current.
+     */
+    static String freshRationale(java.util.UUID companionId) {
+        if (companionId == null) return "";
+        var runtime = RddPlugin.runtime(companionId);
+        if (runtime == null) return "";
+        boolean hasEntry = com.dwinovo.numen.api.RationaleContext.get(companionId) != null;
+        long generation = com.dwinovo.numen.api.RationaleContext.generation(companionId);
+        if (!rationaleApplicable(hasEntry, generation, runtime.chain().planRevision())) return "";
+        return com.dwinovo.numen.api.RationaleContext.render(companionId);
+    }
 
     /** Append the rationale section verbatim when present; blank input leaves the prompt unchanged. */
     static String withRationale(String content, String rationale) {
