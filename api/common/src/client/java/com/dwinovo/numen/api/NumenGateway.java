@@ -127,6 +127,41 @@ public final class NumenGateway {
         return enqueueLegacy(companion, message, DEFAULT_SCHEDULING, DEFAULT_DISPATCH, false);
     }
 
+    /** Capture before asynchronous input starts, not when its callback arrives. Client thread only. */
+    public static com.dwinovo.numen.client.agent.OwnerInputAdmission.Ticket captureOwnerInput(UUID companion) {
+        if (companion == null || !DEFAULT_SCHEDULING.onClientThread()) return null;
+        boolean known = AgentLoopRegistry.get(companion).isPresent()
+                || com.dwinovo.numen.client.agent.NumenRoster.instance().name(companion) != null;
+        return known ? AgentLoopRegistry.getOrCreate(companion).ownerInputAdmission().capture() : null;
+    }
+
+    /** Voice/other captured input: validate before command dispatch as well as before owner prompt submission. */
+    public static Delivery enqueueCaptured(UUID companion, String message,
+            com.dwinovo.numen.client.agent.OwnerInputAdmission.Ticket ticket) {
+        return enqueueCaptured(companion, message, ticket, DEFAULT_SCHEDULING, DEFAULT_DISPATCH,
+                () -> AgentLoopRegistry.get(companion).map(EntityAgentLoop::ownerInputAdmission).orElse(null));
+    }
+
+    static Delivery enqueueCaptured(UUID companion, String message,
+            com.dwinovo.numen.client.agent.OwnerInputAdmission.Ticket ticket,
+            EnqueueScheduling scheduling, EnqueueDispatch dispatch,
+            java.util.function.Supplier<com.dwinovo.numen.client.agent.OwnerInputAdmission> currentLoop) {
+        if (companion == null || message == null || message.isBlank() || ticket == null) return Delivery.REJECTED;
+        if (!scheduling.onClientThread()) {
+            scheduling.executeOnClient(() -> dispatchCaptured(companion, message, ticket, dispatch, currentLoop));
+            return Delivery.HANDED_OFF;
+        }
+        return dispatchCaptured(companion, message, ticket, dispatch, currentLoop);
+    }
+
+    private static Delivery dispatchCaptured(UUID companion, String message,
+            com.dwinovo.numen.client.agent.OwnerInputAdmission.Ticket ticket, EnqueueDispatch dispatch,
+            java.util.function.Supplier<com.dwinovo.numen.client.agent.OwnerInputAdmission> currentLoop) {
+        var current = currentLoop.get();
+        if (current == null || !current.accepts(companion, ticket)) return Delivery.REJECTED;
+        return dispatch.dispatch(companion, message).delivery();
+    }
+
     static Delivery enqueueLegacy(UUID companion, String message,
                                   EnqueueScheduling scheduling, EnqueueDispatch dispatch, boolean assumeKnown) {
         if (companion == null || message == null || message.isBlank()) return Delivery.REJECTED;

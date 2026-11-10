@@ -20,6 +20,29 @@ public final class QuickVoice {
     /** 松开到转写结果落地之间的等待态(批量后端要跑一趟 HTTP)。 */
     private static boolean transcribing;
     private static NumenRoster.Entry target;
+    private static Capture activeCapture;
+
+    /** One STT start owns its callbacks; late callbacks cannot clear a newer recording. */
+    static final class Capture {
+        final NumenRoster.Entry target;
+        final com.dwinovo.numen.client.agent.OwnerInputAdmission.Ticket ticket;
+        Capture(NumenRoster.Entry target, com.dwinovo.numen.client.agent.OwnerInputAdmission.Ticket ticket) {
+            this.target = target; this.ticket = ticket;
+        }
+    }
+
+    static boolean updateCapture(Capture capture, Runnable update) {
+        if (capture == null || activeCapture != capture) return false;
+        update.run();
+        return true;
+    }
+
+    static Capture beginCapture(NumenRoster.Entry target,
+            com.dwinovo.numen.client.agent.OwnerInputAdmission.Ticket ticket) {
+        Capture capture = new Capture(target, ticket);
+        activeCapture = capture;
+        return capture;
+    }
     private static String livePartial = "";
     private static String notice;
     private static long noticeUntilMs;
@@ -37,16 +60,19 @@ public final class QuickVoice {
             flash("先按轮盘键选一位同伴,或把准星对准它");
             return;
         }
+        var ticket = NumenGateway.captureOwnerInput(t.uuid());
+        if (ticket == null) { flash("同伴尚未就绪，请再试一次"); return; }
+        Capture capture = beginCapture(t, ticket);
         target = t;
         livePartial = "";
         boolean ok = VoiceInputController.start(Services.CONFIG,
-                partial -> livePartial = partial,
-                QuickVoice::deliver,
-                status -> { recording = false; transcribing = false; flash(status); });
+                partial -> updateCapture(capture, () -> livePartial = partial),
+                text -> deliver(capture, text),
+                status -> updateCapture(capture, () -> {
+                    recording = false; transcribing = false; target = null; activeCapture = null; flash(status);
+                }));
         recording = ok;
-        if (!ok) {
-            target = null;
-        }
+        if (!ok) updateCapture(capture, () -> { target = null; activeCapture = null; });
     }
 
     /** 按键松开:停采集,进入转写等待态,最终转写异步回 {@link #deliver}。 */
@@ -58,18 +84,17 @@ public final class QuickVoice {
         }
     }
 
-    private static void deliver(String text) {
-        NumenRoster.Entry t = target;
-        target = null;
-        livePartial = "";
-        recording = false;
-        transcribing = false;
+    private static void deliver(Capture capture, String text) {
+        if (!updateCapture(capture, () -> {
+            target = null; livePartial = ""; recording = false; transcribing = false; activeCapture = null;
+        })) return;
+        NumenRoster.Entry t = capture.target;
         String said = text == null ? "" : text.trim();
         if (t == null || said.isEmpty()) {
             if (said.isEmpty()) flash("没听清,再试一次");
             return;
         }
-        Delivery sent = NumenGateway.enqueue(t.uuid(), said);
+        Delivery sent = NumenGateway.enqueueCaptured(t.uuid(), said, capture.ticket);
         if (sent != Delivery.REJECTED) {
             ChatLines.owner(t.name(), said, true);
         } else {
@@ -105,6 +130,7 @@ public final class QuickVoice {
     }
 
     public static void clear() {
+        activeCapture = null;
         recording = false;
         transcribing = false;
         target = null;

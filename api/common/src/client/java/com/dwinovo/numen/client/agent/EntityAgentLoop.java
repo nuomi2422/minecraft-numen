@@ -412,6 +412,9 @@ public final class EntityAgentLoop {
      * spliced back into the conversation or dispatch its tool calls.
      */
     private int turnGeneration = 0;
+    private final OwnerInputAdmission ownerInputAdmission;
+
+    public OwnerInputAdmission ownerInputAdmission() { return ownerInputAdmission; }
 
     /**
      * The PHYSICAL transcript for the chat GUI: every message ever exchanged
@@ -429,6 +432,7 @@ public final class EntityAgentLoop {
 
     EntityAgentLoop(UUID entityUuid) {
         this.entityUuid = entityUuid;
+        this.ownerInputAdmission = new OwnerInputAdmission(entityUuid);
         Path numenRoot = Minecraft.getInstance().gameDirectory.toPath()
                 .resolve("config").resolve(com.dwinovo.numen.Constants.CONFIG_ROOT);
         this.log = ConvoLog.atFile(CompanionHome.chat(entityUuid));
@@ -1167,6 +1171,7 @@ public final class EntityAgentLoop {
     public UUID targetUuid() { return entityUuid; }
 
     public StopReport ownerStop() {
+        ownerInputAdmission.ownerStopped(); // invalidate pre-stop input even while idle; resume never resets it
         boolean wasBusy = isBusy();
         int dropped = queue.droppedCount();
         abort();
