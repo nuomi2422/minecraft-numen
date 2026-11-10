@@ -176,6 +176,9 @@ final class RddSettleStageTool implements NumenTool {
                 var finalGoal = goals.get(goals.size() - 1);
                 // target == final is already checked above; do not add duplicate final: ids.
                 if (!finalGoal.id().equals(target.id())) {
+                    // An unexpanded final stage has no checkable goal predicate;
+                    // vacuous truth must never authorize verified early settlement.
+                    if (finalGoal.subtasks().isEmpty()) unmet.add("final:no_conditions");
                     for (var sub : finalGoal.subtasks()) {
                         if (!matchesSafely(matches, sub)) unmet.add("final:" + sub.id());
                     }

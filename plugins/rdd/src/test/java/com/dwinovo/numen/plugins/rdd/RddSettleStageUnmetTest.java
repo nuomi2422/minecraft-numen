@@ -25,6 +25,15 @@ class RddSettleStageUnmetTest {
         assertEquals(List.of("no_target"), RddSettleStageTool.unmetConditions(null, goal, false, s -> false));
     }
 
+    @Test void unexpandedFinalCannotBeVacuouslyVerified() {
+        PrimaryGoal target = new PrimaryGoal("p1", "target", List.of(item("a")));
+        PrimaryGoal finalGoal = PrimaryGoal.unexpanded("p2", "final goal not yet expanded", null);
+        Goal goal = new Goal("g", "g", List.of(target, finalGoal));
+        assertEquals(List.of("final:no_conditions"),
+                RddSettleStageTool.unmetConditions(target, goal, true, sub -> true));
+        assertTrue(RddSettleStageTool.unmetConditions(target, goal, false, sub -> true).isEmpty());
+    }
+
     @Test void missingFinalAndThrowingPredicateFailClosed() {
         Goal one = new Goal("g", "g", List.of(new PrimaryGoal("p", "p", List.of(item("a")))));
         assertEquals(List.of("no_final_goal"),

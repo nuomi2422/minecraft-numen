@@ -42,7 +42,13 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-test { useJUnitPlatform() }
+test {
+    useJUnitPlatform()
+    // Managed test-only mutations isolate fresh XML; ordinary builds retain defaults.
+    if (System.getenv('RDD_TEST_REPORT_DIR')) {
+        reports.junitXml.outputLocation = file(System.getenv('RDD_TEST_REPORT_DIR'))
+    }
+}
 
 // The numen-plugin convention exposes host APIs as compileOnly. RDD's own
 // runtime must travel with the standalone plugin, otherwise RddRuntime would
