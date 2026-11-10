@@ -113,8 +113,13 @@ public final class NumenGateway {
         }
     }
 
-    /** 一次真实 dispatch 的结果（只给回执路径用；旧 Delivery 由它投影）。 */
+    /** 一次真实 dispatch 的结果。 */
     record Executed(Delivery delivery, String commandId) {}
+
+    /** 唯一真实 dispatch 的抽象（生产走 AgentLoop；夹具可数调用次数，仍走同一入口）。 */
+    interface EnqueueDispatch { Executed dispatch(UUID companion, String message); }
+
+    private static final EnqueueDispatch DEFAULT_DISPATCH = NumenGateway::execute;
 
     /** 旧接口：语义不变（联机照旧执行；跨线程 HANDED_OFF）。 */
     public static Delivery enqueue(UUID companion, String message) {
@@ -124,55 +129,107 @@ public final class NumenGateway {
         if (!known) return Delivery.REJECTED;
         Minecraft mc = Minecraft.getInstance();
         if (!mc.isSameThread()) {
-            mc.execute(() -> execute(companion, message));
+            mc.execute(() -> DEFAULT_DISPATCH.dispatch(companion, message));
             return Delivery.HANDED_OFF;
         }
-        return execute(companion, message).delivery();
+        return DEFAULT_DISPATCH.dispatch(companion, message).delivery();
     }
 
-    /** 回执路径（client-only 同步内层）；非 client 线程直接返回 HANDED_OFF，不承诺执行回执。 */
+    /** 回执路径（client-only 同步内层）；非 client 线程返回 HANDED_OFF，不承诺回执。 */
     public static EnqueueReceipt enqueueReceipt(UUID companion, String message) {
-        return enqueueReceipt(companion, message, DEFAULT_SCHEDULING);
+        return enqueueReceipt(companion, message, DEFAULT_SCHEDULING, DEFAULT_DISPATCH, false);
     }
 
-    static EnqueueReceipt enqueueReceipt(UUID companion, String message, EnqueueScheduling scheduling) {
+    static EnqueueReceipt enqueueReceipt(UUID companion, String message,
+                                         EnqueueScheduling scheduling, EnqueueDispatch dispatch, boolean assumeKnown) {
         if (companion == null || message == null || message.isBlank()) return EnqueueReceipt.rejected(companion);
-        boolean known = AgentLoopRegistry.get(companion).isPresent()
-                || com.dwinovo.numen.client.agent.NumenRoster.instance().name(companion) != null;
-        if (!known) return EnqueueReceipt.rejected(companion);
+        if (!assumeKnown) {
+            boolean known = AgentLoopRegistry.get(companion).isPresent()
+                    || com.dwinovo.numen.client.agent.NumenRoster.instance().name(companion) != null;
+            if (!known) return EnqueueReceipt.rejected(companion);
+        }
         if (!scheduling.onClientThread()) return EnqueueReceipt.handedOff(companion);
-
         EnqueueScheduling.Sample before = scheduling.sampleNow(companion);
         EnqueueScheduling.Sample pre = scheduling.sampleNow(companion);
-        // 执行前：已采到身份时才要求连接/代次未变；未采到身份时仍执行（旧语义），但回执只能 NO_IDENTITY。
-        if (before.hasIdentity() && !before.sameSubject(pre)) {
-            return statusOf(new Executed(Delivery.SEEN, null), companion, EnqueueReceipt.IdentityStatus.CONNECTION_CHANGED, before);
-        }
-        if (before.hasIdentity() && before.entityRef() == null) {
-            return statusOf(new Executed(Delivery.SEEN, null), companion, EnqueueReceipt.IdentityStatus.TARGET_CHANGED, before);
-        }
-
-        WorldContextStamp.Token token = tokenOf(before);
-        WorldContextStamp.Token previous = CURRENT_IDENTITY.get();
-        CURRENT_IDENTITY.set(token);
-        Executed executed;
-        try {
-            executed = execute(companion, message);
-        } finally {
-            if (previous == null) CURRENT_IDENTITY.remove();
-            else CURRENT_IDENTITY.set(previous);
-        }
-        EnqueueScheduling.Sample after = scheduling.sampleNow(companion);
-        return evaluate(companion, before, after, executed, scheduling.liveTargetUuid(companion));
+        EnqueueReceipt gate = precheck(companion, before, pre);
+        if (gate != null) return gate;
+        return runTransaction(companion, message, before, scheduling, dispatch);
     }
 
-    /** 执行后判定（包内可见：离线夹具直接验证矩阵，不需要 MC）。 */
+    /** 异步入口：client 调度 -> server 线程采样 -> client 执行；全程不 join/get。 */
+    public static java.util.concurrent.CompletableFuture<EnqueueReceipt> enqueueReceiptAsync(
+            UUID companion, String message) {
+        return enqueueReceiptAsync(companion, message, DEFAULT_SCHEDULING, DEFAULT_DISPATCH, false);
+    }
+
+    static java.util.concurrent.CompletableFuture<EnqueueReceipt> enqueueReceiptAsync(
+            UUID companion, String message, EnqueueScheduling scheduling,
+            EnqueueDispatch dispatch, boolean assumeKnown) {
+        java.util.concurrent.CompletableFuture<EnqueueReceipt> done = new java.util.concurrent.CompletableFuture<>();
+        if (companion == null || message == null || message.isBlank()) {
+            done.complete(EnqueueReceipt.rejected(companion));
+            return done;
+        }
+        scheduling.executeOnClient(() -> {
+            if (!assumeKnown) {
+                boolean known = AgentLoopRegistry.get(companion).isPresent()
+                        || com.dwinovo.numen.client.agent.NumenRoster.instance().name(companion) != null;
+                if (!known) { done.complete(EnqueueReceipt.rejected(companion)); return; }
+            }
+            scheduling.sampleAsync(companion).whenComplete((before, error) -> {
+                if (error != null) {
+                    done.complete(statusOf(new Executed(Delivery.REJECTED, null), companion,
+                            EnqueueReceipt.IdentityStatus.NO_IDENTITY, EnqueueScheduling.Sample.missing()));
+                    return;
+                }
+                scheduling.executeOnClient(() -> {
+                    try {
+                        EnqueueScheduling.Sample pre = scheduling.sampleNow(companion);
+                        EnqueueReceipt gate = precheck(companion, before, pre);
+                        if (gate != null) { done.complete(gate); return; }
+                        done.complete(runTransaction(companion, message, before, scheduling, dispatch));
+                    } catch (RuntimeException ex) {
+                        done.completeExceptionally(ex);
+                    }
+                });
+            });
+        });
+        return done;
+    }
+
+    /** 执行前门：身份/实体/level/server 绑定齐全，且两次采样同一主体；否则不执行。 */
+    private static EnqueueReceipt precheck(UUID companion, EnqueueScheduling.Sample before, EnqueueScheduling.Sample pre) {
+        if (before == null || !before.hasIdentity()) {
+            return statusOf(new Executed(Delivery.REJECTED, null), companion,
+                    EnqueueReceipt.IdentityStatus.NO_IDENTITY, before);
+        }
+        if (!before.ready() || pre == null || !pre.ready()) {
+            return statusOf(new Executed(Delivery.REJECTED, null), companion,
+                    EnqueueReceipt.IdentityStatus.TARGET_CHANGED, before);
+        }
+        if (!before.sameSubject(pre)) {
+            return statusOf(new Executed(Delivery.REJECTED, null), companion,
+                    EnqueueReceipt.IdentityStatus.CONNECTION_CHANGED, before);
+        }
+        return null;
+    }
+
+    private static EnqueueReceipt runTransaction(UUID companion, String message, EnqueueScheduling.Sample before,
+                                                 EnqueueScheduling scheduling, EnqueueDispatch dispatch) {
+        WorldContextStamp.Token token = tokenOf(before);
+        Executed[] holder = new Executed[1];
+        withIdentityToken(token, () -> holder[0] = dispatch.dispatch(companion, message));
+        EnqueueScheduling.Sample after = scheduling.sampleNow(companion);
+        return evaluate(companion, before, after, holder[0], scheduling.liveTargetUuid(companion));
+    }
+
+    /** 执行后判定（包内可见：离线夹具直接验证矩阵）。 */
     static EnqueueReceipt evaluate(UUID companion, EnqueueScheduling.Sample before,
                                    EnqueueScheduling.Sample after, Executed executed, UUID liveTargetUuid) {
-        if (!before.hasIdentity()) {
+        if (before == null || !before.ready()) {
             return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, after != null ? after : before);
         }
-        if (after == null || !after.hasIdentity()) {
+        if (after == null || !after.ready()) {
             return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, after != null ? after : before);
         }
         if (!before.sameSubject(after)) {
@@ -181,11 +238,19 @@ public final class NumenGateway {
         if (liveTargetUuid == null || !liveTargetUuid.equals(companion)) {
             return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.ATTEMPTED_BUT_INVALID, after);
         }
-        if (before.entityRef() == null || after.entityRef() == null
-                || before.entityRef() != after.entityRef()) {
-            return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.ATTEMPTED_BUT_INVALID, after);
-        }
         return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.OK, after);
+    }
+
+    /** 同步事务上下文：嵌套时保存/恢复外层 token，异常路径也恢复（不用于异步回传）。 */
+    static void withIdentityToken(WorldContextStamp.Token token, Runnable action) {
+        WorldContextStamp.Token previous = CURRENT_IDENTITY.get();
+        CURRENT_IDENTITY.set(token);
+        try {
+            action.run();
+        } finally {
+            if (previous == null) CURRENT_IDENTITY.remove();
+            else CURRENT_IDENTITY.set(previous);
+        }
     }
 
     private static EnqueueReceipt statusOf(Executed executed, UUID companion,

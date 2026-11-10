@@ -257,19 +257,11 @@ public final class NumenActuator {
 
     /** R-06：同一次真实 dispatch 的回执版本；旧 Boolean 版本委托到这里，保证两条入口只跑一次 dispatch。 */
     public static CompletableFuture<NumenGateway.EnqueueReceipt> enqueueReceipt(UUID companion, String text) {
-        CompletableFuture<NumenGateway.EnqueueReceipt> f = new CompletableFuture<>();
         if (companion == null || text == null || text.isBlank()) {
-            f.complete(NumenGateway.EnqueueReceipt.rejected(companion));
-            return f;
+            return CompletableFuture.completedFuture(NumenGateway.EnqueueReceipt.rejected(companion));
         }
-        Minecraft.getInstance().execute(() -> {
-            try {
-                f.complete(NumenGateway.enqueueReceipt(companion, text));
-            } catch (RuntimeException ex) {
-                f.completeExceptionally(ex);
-            }
-        });
-        return f;
+        // 异步事务：client 调度 -> 具体 server 线程采样 -> client 执行（不 join/get）。
+        return NumenGateway.enqueueReceiptAsync(companion, text);
     }
 
     public static CompletableFuture<String> invoke(UUID companion, String toolName, String argsJson) {

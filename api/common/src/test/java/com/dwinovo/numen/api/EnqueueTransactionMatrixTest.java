@@ -14,7 +14,7 @@ class EnqueueTransactionMatrixTest {
 
     private static EnqueueScheduling.Sample sample(String world, String session, long epoch,
                                                     String conn, Object entity) {
-        return new EnqueueScheduling.Sample(world, session, epoch, conn, entity, entity, null);
+        return new EnqueueScheduling.Sample(world, session, epoch, conn, entity, entity, entity);
     }
 
     /** Old logic at 5e6b67665 (epoch-only, missing-before passes), copied here to stay runnable. */
