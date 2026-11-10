@@ -694,6 +694,14 @@ public final class RddPlugin implements NumenPlugin {
         }
     }
 
+    /** Same live chain as the mandatory rdd/runtime fragment; no stored duplicate objective. */
+    static String retrievalTaskFields(TaskChain chain) {
+        synchronized (chain) {
+            return "<goal_objective>" + escape(chain.goal().description()) + "</goal_objective>"
+                    + "<current_phase>" + escape(chain.currentPrimary().description()) + "</current_phase>";
+        }
+    }
+
     private static String renderStateContext(UUID uuid) {
             // 2026-10-08 支线接管：支线 active 时当前目标投影为睡觉支线，主线上下文让位。
             String sideContext = sideContextFor(uuid);
@@ -736,10 +744,11 @@ public final class RddPlugin implements NumenPlugin {
                 return withAssets(uuid, "<rdd><enabled>true</enabled><active>true</active>"
                         + "<primary_status>" + chain.primaryStatus() + "</primary_status>"
                         + "<state>stage_reached_expanding</state>"
-                        + "<current_phase>" + escape(chain.currentPrimary().description()) + "</current_phase></rdd>");
+                        + retrievalTaskFields(chain) + "</rdd>");
             }
             return withAssets(uuid, "<rdd><enabled>true</enabled><active>true</active>"
                     + "<primary_status>" + chain.primaryStatus() + "</primary_status>"
+                    + retrievalTaskFields(chain)
                     + "<subtask>" + escape(current.id()) + "</subtask>"
                     + "<current_task>" + escape(current.description()) + "</current_task>"
                     + "<done_when>" + escape(String.valueOf(current.condition())) + "</done_when>"

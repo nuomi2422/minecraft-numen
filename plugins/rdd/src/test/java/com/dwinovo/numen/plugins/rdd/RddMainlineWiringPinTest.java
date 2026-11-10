@@ -509,4 +509,17 @@ class RddMainlineWiringPinTest {
         assertContains(save, "completionCommit().saveRuntime(", "ordinary save must share the pending-aware consumer");
     }
 
+    @Test
+    void b01_runtimeProjectionUsesLiveGoalAndPhaseAndKeepsSideFirst() {
+        // Explicit source pin, not a claim of executing Minecraft/RDD rendering.
+        String fields = methodBody(plugin(), "retrievalTaskFields", "chain.goal().description()");
+        assertContains(fields, "<goal_objective>", "publish live overall objective");
+        assertContains(fields, "chain.currentPrimary().description()", "publish live stage, not cached text");
+        assertContains(fields, "<current_phase>", "stage tag matches the query reader");
+        assertFalse(fields.contains("<current_task>"), "lazy phase must not invent an executable step");
+        String render = methodBody(plugin(), "renderStateContext", "retrievalTaskFields");
+        assertOrder(render, "sideContextFor(uuid)", "DECOMPOSING.contains", "runtime == null", "retrievalTaskFields(chain)");
+        assertContains(render, "<current_task>", "expanded branch still renders actual current subtask");
+    }
+
 }

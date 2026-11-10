@@ -2826,17 +2826,14 @@ public final class EntityAgentLoop {
         // 2026-11-06: enumerate once; required task/safety facts stay mandatory, explicitly optional text can fold.
         var pluginEntries = com.dwinovo.numen.api.NumenPlugins.stateFragmentEntries(entityUuid);
         String pluginFacts = com.dwinovo.numen.api.NumenPlugins.stateFactsOf(pluginEntries);
-        String plugins = pluginFacts + pluginEntries.stream().filter(com.dwinovo.numen.api.StateFragment::mandatory)
-                .map(com.dwinovo.numen.api.StateFragment::text).collect(java.util.stream.Collectors.joining());
+        // Retrieval below uses this same evaluated snapshot, never arbitrary plugin prefixes.
         // G5e：执行角色的检索块（统一检索 EXECUTOR 视图）。空 = 不追加（不塞空标题）。
-        // G5g：objective 不能只用核心 current_task —— 实机里它是空的，
-        // 而她此刻的活写在**插件片段**里（RDD 任务链镜像的 <current_task>…<subtask_status>）。
-        // 所以两段拼起来再截断，交给工具目录做相关性过滤。
+        // B0/B1: query task fields first, each bounded; body/XML boilerplate cannot consume the task budget.
+        // Reuse pluginEntries already sampled above; do not invoke state contributors twice.
         String rationale = com.dwinovo.numen.api.RationaleContext.render(entityUuid);
-        String objectiveForRetrieval = currentTask + " " + plugins + " " + rationale;
-        if (objectiveForRetrieval.length() > 400) {
-            objectiveForRetrieval = objectiveForRetrieval.substring(0, 400);
-        }
+        String objectiveForRetrieval = com.dwinovo.numen.api.ExecutorRetrievalInput.build(
+                pluginEntries, goal == null ? "" : goal.objective(),
+                this.currentTask == null ? "" : this.currentTask.describe(), rationale);
         // G5g+（80 号 §2）：改用片段版聚合 —— 正文与「哪些条目被装进来了」是同一次计算的产物，
         // 「称重的东西」和「放进去的东西」必须同源（同一段上面那段注释的纪律）。
         com.dwinovo.numen.api.NumenPlugins.KnowledgeFragment executorFragment =
