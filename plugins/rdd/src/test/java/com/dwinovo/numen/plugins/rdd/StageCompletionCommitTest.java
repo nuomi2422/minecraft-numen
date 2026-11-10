@@ -143,7 +143,10 @@ class StageCompletionCommitTest {
     @Test void finalTaskProjectionFailureIsPendingAndRetryable(@TempDir Path dir) throws Exception {
         UUID id = UUID.randomUUID();
         Path tasks = dir.resolve("tasks");
-        Files.createDirectories(tasks.resolve(id + ".json"));
+        Path blockedTarget = tasks.resolve(id + ".json").toAbsolutePath().normalize();
+        Files.createDirectories(blockedTarget);
+        Path sentinel = blockedTarget.resolve("task-projection-blocker.txt");
+        Files.writeString(sentinel, "must remain unchanged until explicit fixture repair");
         TaskChain chain = chain();
         String before = chain.toJson();
         var facts = new CompletedFactStore();
@@ -152,7 +155,12 @@ class StageCompletionCommitTest {
         assertTrue(commit.hasPending(id));
         assertEquals(before, chain.toJson());
         assertEquals(0, facts.stageCount());
-        Files.delete(tasks.resolve(id + ".json"));
+        assertEquals("must remain unchanged until explicit fixture repair", Files.readString(sentinel));
+        assertFalse(Files.exists(dir.resolve("facts").resolve(id + ".json")), "TASK projection fails before FACTS projection");
+        assertEquals(dir.toAbsolutePath().normalize().resolve("tasks").resolve(id + ".json"), blockedTarget);
+        assertEquals(blockedTarget, sentinel.getParent(), "delete only the explicit temporary fixture child");
+        Files.delete(sentinel);
+        Files.delete(blockedTarget);
         assertTrue(commit.retryPending(id, chain, facts).committed());
         assertEquals("second", chain.currentPrimary().id());
     }
