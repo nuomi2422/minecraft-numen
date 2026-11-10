@@ -8,8 +8,11 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 /**
- * R-06锛氬叆闃熷洖鎵х殑褰㈢姸涓庤竟鐣屻€? *
- * <p>accepted 涓嶇瓑浜庣敓鏁堬細鍥炴墽鍙瘉鏄庢湰鍦板彈鐞嗭紱stop 鏄惁鐢熸晥瑕佺瓑 owner_stop 鍥炴墽銆? */
+ * R-06: enqueue receipt shape and boundaries.
+ *
+ * <p>accepted is not effective: the receipt only proves local acceptance;
+ * whether the stop took effect still waits for the owner_stop receipt.
+ */
 class EnqueueReceiptTest {
 
     @Test
@@ -47,6 +50,21 @@ class EnqueueReceiptTest {
     }
 
     @Test
+    void instanceAndTargetChangesAreDistinctStatuses() {
+        UUID c = UUID.randomUUID();
+        var changed = new NumenGateway.EnqueueReceipt(
+                Delivery.SEEN, "cmd-1", c,
+                NumenGateway.EnqueueReceipt.IdentityStatus.INSTANCE_CHANGED,
+                "world-A", "session-A", 8L);
+        assertEquals(NumenGateway.EnqueueReceipt.IdentityStatus.INSTANCE_CHANGED, changed.identityStatus());
+        var retargeted = new NumenGateway.EnqueueReceipt(
+                Delivery.SEEN, "cmd-1", c,
+                NumenGateway.EnqueueReceipt.IdentityStatus.TARGET_CHANGED,
+                "world-A", "session-A", 7L);
+        assertEquals(NumenGateway.EnqueueReceipt.IdentityStatus.TARGET_CHANGED, retargeted.identityStatus());
+    }
+
+    @Test
     void noIdentityIsExplicitNotGuessed() {
         UUID c = UUID.randomUUID();
         var r = new NumenGateway.EnqueueReceipt(
@@ -57,4 +75,3 @@ class EnqueueReceiptTest {
         assertNull(r.worldId());
     }
 }
-

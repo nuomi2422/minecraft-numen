@@ -1163,6 +1163,9 @@ public final class EntityAgentLoop {
      *
      * @return 如实报出：当时在不在忙、倒掉几条、其中几条是溢出丢的
      */
+    /** R-06：本次 loop 绑定的目标 UUID（runner 用来核对采样后目标未被替换）。 */
+    public UUID targetUuid() { return entityUuid; }
+
     public StopReport ownerStop() {
         boolean wasBusy = isBusy();
         int dropped = queue.droppedCount();
@@ -1186,8 +1189,12 @@ public final class EntityAgentLoop {
         if (commandId != null) stopData.put("command_correlation_id", commandId);
         // 2026-11-10 R-06：显式带上本实例身份（与 enqueueReceipt 同源 capture(server)），
         // 不靠信封发布时的全局 stamp 回退；取不到就写 NO_IDENTITY。
-        var server = net.minecraft.client.Minecraft.getInstance().getSingleplayerServer();
-        var token = com.dwinovo.numen.api.WorldContextStamp.capture(server);
+        // 与 enqueue 同事务：优先用命令上下文里的 token，避免异时读全局。
+        var token = com.dwinovo.numen.api.NumenGateway.currentIdentityToken();
+        if (token == null) {
+            var server = net.minecraft.client.Minecraft.getInstance().getSingleplayerServer();
+            token = com.dwinovo.numen.api.WorldContextStamp.capture(server);
+        }
         var identity = token.identity();
         if (identity != null && identity.get("world_id") != null && identity.get("server_session") != null) {
             stopData.put("world_id", identity.get("world_id"));

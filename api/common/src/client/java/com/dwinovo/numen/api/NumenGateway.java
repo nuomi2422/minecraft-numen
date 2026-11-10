@@ -92,7 +92,7 @@ public final class NumenGateway {
             String worldId,
             String serverSession,
             long epoch) {
-        public enum IdentityStatus { OK, NO_IDENTITY, NOT_APPLICABLE }
+        public enum IdentityStatus { OK, NO_IDENTITY, INSTANCE_CHANGED, TARGET_CHANGED, NOT_APPLICABLE }
 
         public static EnqueueReceipt rejected(UUID companion) {
             return new EnqueueReceipt(Delivery.REJECTED, null, companion, IdentityStatus.NOT_APPLICABLE, null, null, 0L);
@@ -117,9 +117,26 @@ public final class NumenGateway {
         return runOnMain(companion, message);
     }
 
+    /** 事务内身份上下文：同步执行期间有效（不跨异步），owner_stop 读它保证与 enqueue 同源。 */
+    private static final ThreadLocal<WorldContextStamp.Token> CURRENT_IDENTITY = new ThreadLocal<>();
+
+    /** 本次命令执行上下文的身份 token（无则 null）。 */
+    public static WorldContextStamp.Token currentIdentityToken() { return CURRENT_IDENTITY.get(); }
+
     private static EnqueueReceipt runOnMain(UUID companion, String message) {
         EntityAgentLoop loop = AgentLoopRegistry.getOrCreate(companion);
-        String commandId = dispatchCommand(loop, message);
+        WorldContextStamp.Token before = sampleIdentity();
+        WorldContextStamp.Token previous = CURRENT_IDENTITY.get();
+        CURRENT_IDENTITY.set(before);
+        String commandId;
+        boolean pressed = false;
+        try {
+            commandId = dispatchCommand(loop, message);
+            if (commandId == null) pressed = loop.submitPrompt(message);
+        } finally {
+            if (previous == null) CURRENT_IDENTITY.remove();
+            else CURRENT_IDENTITY.set(previous);
+        }
         if (commandId != null) {
             String cmd = message.trim();
             int sp = cmd.indexOf(' ');
@@ -127,29 +144,38 @@ public final class NumenGateway {
             com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "command_dispatch", java.util.Map.of(
                     "companion_id", companion.toString(), "command", name, "delivery", "SEEN",
                     "correlation_id", commandId));
-            return receipt(Delivery.SEEN, commandId, companion);
         }
-        boolean pressed = loop.submitPrompt(message);
-        if (loop.isExternallyDriven()) return receipt(Delivery.TO_EXTERNAL_BRAIN, null, companion);
-        return receipt(pressed ? Delivery.QUEUED : Delivery.SEEN, null, companion);
+        Delivery delivery = commandId != null
+                ? Delivery.SEEN
+                : (loop.isExternallyDriven() ? Delivery.TO_EXTERNAL_BRAIN : (pressed ? Delivery.QUEUED : Delivery.SEEN));
+        return receipt(delivery, commandId, companion, before, loop.targetUuid());
     }
 
     /** 单机在具体 server 上采样身份；联机拿不到 server 就 NO_IDENTITY（不猜、不读全局 stamp）。 */
-    private static EnqueueReceipt receipt(Delivery delivery, String commandId, UUID companion) {
-        Minecraft mc = Minecraft.getInstance();
-        var server = mc.getSingleplayerServer();
-        if (server == null) {
-            return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, null, null, 0L);
-        }
-        var token = WorldContextStamp.capture(server);
-        var identity = token.identity();
-        if (identity == null || identity.get("world_id") == null || identity.get("server_session") == null) {
-            return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, null, null, token.epoch());
-        }
-        return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.OK,
-                identity.get("world_id"), identity.get("server_session"), token.epoch());
+    private static WorldContextStamp.Token sampleIdentity() {
+        var server = Minecraft.getInstance().getSingleplayerServer();
+        if (server == null) return new WorldContextStamp.Token(null, 0L);
+        return WorldContextStamp.capture(server);
     }
 
+    private static EnqueueReceipt receipt(Delivery delivery, String commandId, UUID companion,
+                                         WorldContextStamp.Token before, UUID targetNow) {
+        WorldContextStamp.Token after = sampleIdentity();
+        var identity = after.identity();
+        if (identity == null || identity.get("world_id") == null || identity.get("server_session") == null) {
+            return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, null, null, after.epoch());
+        }
+        if (before != null && before.identity() != null && before.epoch() != after.epoch()) {
+            return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.INSTANCE_CHANGED,
+                    identity.get("world_id"), identity.get("server_session"), after.epoch());
+        }
+        if (targetNow == null || !targetNow.equals(companion)) {
+            return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.TARGET_CHANGED,
+                    identity.get("world_id"), identity.get("server_session"), after.epoch());
+        }
+        return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.OK,
+                identity.get("world_id"), identity.get("server_session"), after.epoch());
+    }
     public static Delivery enqueue(UUID companion, String message) {
         return enqueueReceipt(companion, message).delivery();
     }
