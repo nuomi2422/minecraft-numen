@@ -83,7 +83,16 @@ public final class NumenGateway {
      * @param companion the companion entity's UUID
      * @param message   delivered exactly as given — formatting is the caller's business
      */
-    /** 2026-11-10 R-06：不可变回执。accepted != effective：commandId 只代表本次命令已在本地受理，不代表 stop 已生效。 */
+    /** R-06: production scheduling seam; tests pass their own instance explicitly (no mutable global hook). */
+    private static final EnqueueScheduling DEFAULT_SCHEDULING = new MinecraftEnqueueScheduling();
+
+    /** 事务内身份上下文：只在同一同步调用栈里有效（finally 恢复），不用来跨异步回传。 */
+    private static final ThreadLocal<WorldContextStamp.Token> CURRENT_IDENTITY = new ThreadLocal<>();
+
+    /** 本次命令执行上下文的身份 token（无则 null）；owner_stop 读它保证与 enqueue 同源。 */
+    public static WorldContextStamp.Token currentIdentityToken() { return CURRENT_IDENTITY.get(); }
+
+    /** 2026-11-10 R-06：不可变回执。accepted != effective：commandId 只代表本地受理，不代表 stop 已生效。 */
     public record EnqueueReceipt(
             Delivery delivery,
             String commandId,
@@ -92,7 +101,8 @@ public final class NumenGateway {
             String worldId,
             String serverSession,
             long epoch) {
-        public enum IdentityStatus { OK, NO_IDENTITY, INSTANCE_CHANGED, TARGET_CHANGED, NOT_APPLICABLE }
+        public enum IdentityStatus { OK, NO_IDENTITY, CONNECTION_CHANGED, TARGET_CHANGED,
+            ATTEMPTED_BUT_INVALID, NOT_APPLICABLE }
 
         public static EnqueueReceipt rejected(UUID companion) {
             return new EnqueueReceipt(Delivery.REJECTED, null, companion, IdentityStatus.NOT_APPLICABLE, null, null, 0L);
@@ -103,81 +113,111 @@ public final class NumenGateway {
         }
     }
 
-    /** 与 enqueue 共用同一次真实执行（不另走一条 dispatch），但把 commandId 与实例身份原样回传。 */
+    /** 一次真实 dispatch 的结果（只给回执路径用；旧 Delivery 由它投影）。 */
+    record Executed(Delivery delivery, String commandId) {}
+
+    /** 旧接口：语义不变（联机照旧执行；跨线程 HANDED_OFF）。 */
+    public static Delivery enqueue(UUID companion, String message) {
+        if (companion == null || message == null || message.isBlank()) return Delivery.REJECTED;
+        boolean known = AgentLoopRegistry.get(companion).isPresent()
+                || com.dwinovo.numen.client.agent.NumenRoster.instance().name(companion) != null;
+        if (!known) return Delivery.REJECTED;
+        Minecraft mc = Minecraft.getInstance();
+        if (!mc.isSameThread()) {
+            mc.execute(() -> execute(companion, message));
+            return Delivery.HANDED_OFF;
+        }
+        return execute(companion, message).delivery();
+    }
+
+    /** 回执路径（client-only 同步内层）；非 client 线程直接返回 HANDED_OFF，不承诺执行回执。 */
     public static EnqueueReceipt enqueueReceipt(UUID companion, String message) {
+        return enqueueReceipt(companion, message, DEFAULT_SCHEDULING);
+    }
+
+    static EnqueueReceipt enqueueReceipt(UUID companion, String message, EnqueueScheduling scheduling) {
         if (companion == null || message == null || message.isBlank()) return EnqueueReceipt.rejected(companion);
         boolean known = AgentLoopRegistry.get(companion).isPresent()
                 || com.dwinovo.numen.client.agent.NumenRoster.instance().name(companion) != null;
         if (!known) return EnqueueReceipt.rejected(companion);
-        Minecraft mc = Minecraft.getInstance();
-        if (!mc.isSameThread()) {
-            mc.execute(() -> runOnMain(companion, message));
-            return EnqueueReceipt.handedOff(companion);
+        if (!scheduling.onClientThread()) return EnqueueReceipt.handedOff(companion);
+
+        EnqueueScheduling.Sample before = scheduling.sampleNow(companion);
+        EnqueueScheduling.Sample pre = scheduling.sampleNow(companion);
+        // 执行前：已采到身份时才要求连接/代次未变；未采到身份时仍执行（旧语义），但回执只能 NO_IDENTITY。
+        if (before.hasIdentity() && !before.sameSubject(pre)) {
+            return statusOf(new Executed(Delivery.SEEN, null), companion, EnqueueReceipt.IdentityStatus.CONNECTION_CHANGED, before);
         }
-        return runOnMain(companion, message);
-    }
+        if (before.hasIdentity() && before.entityRef() == null) {
+            return statusOf(new Executed(Delivery.SEEN, null), companion, EnqueueReceipt.IdentityStatus.TARGET_CHANGED, before);
+        }
 
-    /** 事务内身份上下文：同步执行期间有效（不跨异步），owner_stop 读它保证与 enqueue 同源。 */
-    private static final ThreadLocal<WorldContextStamp.Token> CURRENT_IDENTITY = new ThreadLocal<>();
-
-    /** 本次命令执行上下文的身份 token（无则 null）。 */
-    public static WorldContextStamp.Token currentIdentityToken() { return CURRENT_IDENTITY.get(); }
-
-    private static EnqueueReceipt runOnMain(UUID companion, String message) {
-        EntityAgentLoop loop = AgentLoopRegistry.getOrCreate(companion);
-        WorldContextStamp.Token before = sampleIdentity();
+        WorldContextStamp.Token token = tokenOf(before);
         WorldContextStamp.Token previous = CURRENT_IDENTITY.get();
-        CURRENT_IDENTITY.set(before);
-        String commandId;
-        boolean pressed = false;
+        CURRENT_IDENTITY.set(token);
+        Executed executed;
         try {
-            commandId = dispatchCommand(loop, message);
-            if (commandId == null) pressed = loop.submitPrompt(message);
+            executed = execute(companion, message);
         } finally {
             if (previous == null) CURRENT_IDENTITY.remove();
             else CURRENT_IDENTITY.set(previous);
         }
+        EnqueueScheduling.Sample after = scheduling.sampleNow(companion);
+        return evaluate(companion, before, after, executed, scheduling.liveTargetUuid(companion));
+    }
+
+    /** 执行后判定（包内可见：离线夹具直接验证矩阵，不需要 MC）。 */
+    static EnqueueReceipt evaluate(UUID companion, EnqueueScheduling.Sample before,
+                                   EnqueueScheduling.Sample after, Executed executed, UUID liveTargetUuid) {
+        if (!before.hasIdentity()) {
+            return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, after != null ? after : before);
+        }
+        if (after == null || !after.hasIdentity()) {
+            return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, after != null ? after : before);
+        }
+        if (!before.sameSubject(after)) {
+            return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.ATTEMPTED_BUT_INVALID, after);
+        }
+        if (liveTargetUuid == null || !liveTargetUuid.equals(companion)) {
+            return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.ATTEMPTED_BUT_INVALID, after);
+        }
+        if (before.entityRef() == null || after.entityRef() == null
+                || before.entityRef() != after.entityRef()) {
+            return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.ATTEMPTED_BUT_INVALID, after);
+        }
+        return statusOf(executed, companion, EnqueueReceipt.IdentityStatus.OK, after);
+    }
+
+    private static EnqueueReceipt statusOf(Executed executed, UUID companion,
+                                           EnqueueReceipt.IdentityStatus status, EnqueueScheduling.Sample sample) {
+        String world = sample == null ? null : sample.worldId();
+        String session = sample == null ? null : sample.serverSession();
+        long epoch = sample == null ? 0L : sample.epoch();
+        return new EnqueueReceipt(executed.delivery(), executed.commandId(), companion, status, world, session, epoch);
+    }
+
+    private static WorldContextStamp.Token tokenOf(EnqueueScheduling.Sample sample) {
+        if (sample == null || !sample.hasIdentity()) return new WorldContextStamp.Token(null, 0L);
+        return new WorldContextStamp.Token(java.util.Map.of(
+                "world_id", sample.worldId(), "server_session", sample.serverSession()), sample.epoch());
+    }
+
+    /** 唯一执行点：dispatch 或 prompt；命令路径显式带 token 发布。 */
+    private static Executed execute(UUID companion, String message) {
+        EntityAgentLoop loop = AgentLoopRegistry.getOrCreate(companion);
+        String commandId = dispatchCommand(loop, message);
         if (commandId != null) {
             String cmd = message.trim();
             int sp = cmd.indexOf(' ');
             String name = sp < 0 ? cmd : cmd.substring(0, sp);
             com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "command_dispatch", java.util.Map.of(
                     "companion_id", companion.toString(), "command", name, "delivery", "SEEN",
-                    "correlation_id", commandId));
+                    "correlation_id", commandId), CURRENT_IDENTITY.get());
+            return new Executed(Delivery.SEEN, commandId);
         }
-        Delivery delivery = commandId != null
-                ? Delivery.SEEN
-                : (loop.isExternallyDriven() ? Delivery.TO_EXTERNAL_BRAIN : (pressed ? Delivery.QUEUED : Delivery.SEEN));
-        return receipt(delivery, commandId, companion, before, loop.targetUuid());
-    }
-
-    /** 单机在具体 server 上采样身份；联机拿不到 server 就 NO_IDENTITY（不猜、不读全局 stamp）。 */
-    private static WorldContextStamp.Token sampleIdentity() {
-        var server = Minecraft.getInstance().getSingleplayerServer();
-        if (server == null) return new WorldContextStamp.Token(null, 0L);
-        return WorldContextStamp.capture(server);
-    }
-
-    private static EnqueueReceipt receipt(Delivery delivery, String commandId, UUID companion,
-                                         WorldContextStamp.Token before, UUID targetNow) {
-        WorldContextStamp.Token after = sampleIdentity();
-        var identity = after.identity();
-        if (identity == null || identity.get("world_id") == null || identity.get("server_session") == null) {
-            return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.NO_IDENTITY, null, null, after.epoch());
-        }
-        if (before != null && before.identity() != null && before.epoch() != after.epoch()) {
-            return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.INSTANCE_CHANGED,
-                    identity.get("world_id"), identity.get("server_session"), after.epoch());
-        }
-        if (targetNow == null || !targetNow.equals(companion)) {
-            return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.TARGET_CHANGED,
-                    identity.get("world_id"), identity.get("server_session"), after.epoch());
-        }
-        return new EnqueueReceipt(delivery, commandId, companion, EnqueueReceipt.IdentityStatus.OK,
-                identity.get("world_id"), identity.get("server_session"), after.epoch());
-    }
-    public static Delivery enqueue(UUID companion, String message) {
-        return enqueueReceipt(companion, message).delivery();
+        boolean pressed = loop.submitPrompt(message);
+        if (loop.isExternallyDriven()) return new Executed(Delivery.TO_EXTERNAL_BRAIN, null);
+        return new Executed(pressed ? Delivery.QUEUED : Delivery.SEEN, null);
     }
     /**
      * G4c S107b：把一条<b>系统事件</b>交给同伴（「目标还在，接着干」这类），<b>不冒充主人</b>。

@@ -1204,7 +1204,8 @@ public final class EntityAgentLoop {
         } else {
             stopData.put("identity_status", "NO_IDENTITY");
         }
-        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "owner_stop", stopData);
+        // R-06：与 dispatch 同一个 token 发布（信封与 data 同源，不靠全局 stamp 回退）。
+        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "owner_stop", stopData, token);
         return new StopReport(wasBusy, queued, dropped);
     }
 

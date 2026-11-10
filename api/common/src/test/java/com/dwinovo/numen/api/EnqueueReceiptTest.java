@@ -54,9 +54,9 @@ class EnqueueReceiptTest {
         UUID c = UUID.randomUUID();
         var changed = new NumenGateway.EnqueueReceipt(
                 Delivery.SEEN, "cmd-1", c,
-                NumenGateway.EnqueueReceipt.IdentityStatus.INSTANCE_CHANGED,
+                NumenGateway.EnqueueReceipt.IdentityStatus.CONNECTION_CHANGED,
                 "world-A", "session-A", 8L);
-        assertEquals(NumenGateway.EnqueueReceipt.IdentityStatus.INSTANCE_CHANGED, changed.identityStatus());
+        assertEquals(NumenGateway.EnqueueReceipt.IdentityStatus.CONNECTION_CHANGED, changed.identityStatus());
         var retargeted = new NumenGateway.EnqueueReceipt(
                 Delivery.SEEN, "cmd-1", c,
                 NumenGateway.EnqueueReceipt.IdentityStatus.TARGET_CHANGED,
