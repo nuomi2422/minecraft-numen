@@ -1173,11 +1173,14 @@ public final class EntityAgentLoop {
         queue.takeEntries(System.currentTimeMillis());
         Constants.LOG.info("[numen-entity#{}] owner stop: busy={}, drained {} queued (+{} overflow-dropped)",
                 entityUuid, wasBusy, queued, dropped);
-        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "owner_stop", java.util.Map.of(
-                "companion_id", entityUuid.toString(),
-                "was_busy", wasBusy,
-                "drained", queued,
-                "overflow_dropped", dropped));
+        String commandId = com.dwinovo.numen.api.NumenGateway.currentCommandId();
+        java.util.Map<String, Object> stopData = new java.util.LinkedHashMap<>();
+        stopData.put("companion_id", entityUuid.toString());
+        stopData.put("was_busy", wasBusy);
+        stopData.put("drained", queued);
+        stopData.put("overflow_dropped", dropped);
+        if (commandId != null) stopData.put("command_correlation_id", commandId);
+        com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "owner_stop", stopData);
         return new StopReport(wasBusy, queued, dropped);
     }
 

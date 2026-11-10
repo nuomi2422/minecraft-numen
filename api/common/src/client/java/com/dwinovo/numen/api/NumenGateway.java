@@ -39,7 +39,26 @@ import java.util.UUID;
  */
 public final class NumenGateway {
 
+    private static final ThreadLocal<String> CURRENT_COMMAND_ID = new ThreadLocal<>();
+
+    /** Correlation id of the client command currently executing on this thread, or null. */
+    public static String currentCommandId() { return CURRENT_COMMAND_ID.get(); }
+
     private NumenGateway() {}
+
+    /** Run a slash command and return its correlation id; null means it was not a command. */
+    private static String dispatchCommand(EntityAgentLoop loop, String message) {
+        if (!ChatCommands.isCommand(message)) return null;
+        String id = UUID.randomUUID().toString();
+        CURRENT_COMMAND_ID.set(id);
+        try {
+            ChatCommands.runIfCommand(loop, message, reply ->
+                    com.dwinovo.numen.Constants.LOG.info("[numen-gw] 命令执行回话[{}]: {}", id, reply));
+            return id;
+        } finally {
+            CURRENT_COMMAND_ID.remove();
+        }
+    }
 
 
     /**
@@ -79,12 +98,14 @@ public final class NumenGateway {
         EntityAgentLoop loop = AgentLoopRegistry.getOrCreate(companion);
         // 斜杠命令是主人对客户端说的话——外部通道也一样:以 / 开头就本地跑完,不进
         // "主人说话"队列、不喂模型、不被驾驶闸门拦(命令是主人动作,不是给 AI 的话)。
-        if (dispatchIfCommand(loop, message)) {
+        String commandId = dispatchCommand(loop, message);
+        if (commandId != null) {
             String cmd = message.trim();
             int sp = cmd.indexOf(' ');
             String name = sp < 0 ? cmd : cmd.substring(0, sp);
             com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "command_dispatch", java.util.Map.of(
-                    "companion_id", companion.toString(), "command", name, "delivery", "SEEN"));
+                    "companion_id", companion.toString(), "command", name, "delivery", "SEEN",
+                    "correlation_id", commandId));
             return Delivery.SEEN;
         }
         boolean pressed = loop.submitPrompt(message);
@@ -121,12 +142,14 @@ public final class NumenGateway {
             return Delivery.HANDED_OFF;
         }
         EntityAgentLoop loop = AgentLoopRegistry.getOrCreate(companion);
-        if (dispatchIfCommand(loop, message)) {
+        String commandId = dispatchCommand(loop, message);
+        if (commandId != null) {
             String cmd = message.trim();
             int sp = cmd.indexOf(' ');
             String name = sp < 0 ? cmd : cmd.substring(0, sp);
             com.dwinovo.numen.monitor.MonitoringJournal.get().publish("ai", "command_dispatch", java.util.Map.of(
-                    "companion_id", companion.toString(), "command", name, "delivery", "SEEN"));
+                    "companion_id", companion.toString(), "command", name, "delivery", "SEEN",
+                    "correlation_id", commandId));
             return Delivery.SEEN;
         }
         boolean pressed = loop.submitSystemPrompt(message);
