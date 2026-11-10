@@ -147,9 +147,11 @@ final class RddSettleStageTool implements NumenTool {
                 }
             }
             long before = chain.stateVersion();
-            String desc = chain.settlePrimaryByFact(targetId, reason);
-            // 跨链继承：写进完成事实库，重提同一目标时同一阶段自动跳过（与"跑完了"同一待遇）。
-            RddPlugin.recordStageFact(companion.getUUID(), chain.goal(), desc);
+            String desc = chain.settlePrimaryByFact(targetId, reason, verified);
+            // 只有核验过的事实才进跨链完成库；未核验的"不再需要"只让本条链跳过。
+            if (verified) {
+                RddPlugin.recordStageFact(companion.getUUID(), chain.goal(), desc);
+            }
             RddPlugin.saveRuntimes();
             RddPlugin.publishTaskSnapshot(companion.getUUID(), "stage_settled_by_fact");
 
@@ -163,6 +165,7 @@ final class RddSettleStageTool implements NumenTool {
             data.put("primaryStatus", chain.primaryStatus().name());
             data.put("currentPrimary", chain.currentPrimary().id());
             data.put("verified", verified);
+            data.put("recorded_as_completion", verified);
             data.put("verify_final_goal", verifyFinalGoal);
             data.put("unmet", java.util.List.of());
             RddMonitor.publish("primary_settled_by_fact", data);

@@ -42,6 +42,38 @@ class RddSettleStageUnmetTest {
         assertFalse(chain.settledStages().containsKey("p1"));
     }
 
+    @Test void unverifiedSettlementSkipsButIsNotACompletionFact() {
+        PrimaryGoal a = new PrimaryGoal("p1", "iron stage", List.of(item("iron")));
+        PrimaryGoal b = new PrimaryGoal("p2", "later stage", List.of(item("later")));
+        TaskChain chain = new TaskChain(new Goal("g5", "g5", List.of(a, b)));
+        chain.startCurrent();
+        // Planner says the current stage is unnecessary, with no verified world facts.
+        chain.settlePrimaryByFact("p1", "改用现成装备，不再单独做这一步", false);
+        assertTrue(chain.satisfiedStages().isEmpty(),
+                "an unverified waiver must not become a completion fact");
+        assertEquals(1, chain.waivedStages().size(), "but the waiver is recorded for this chain");
+        assertEquals("p2", chain.currentPrimary().id(), "a waiver still advances past the stage");
+
+        // A verified settlement does write the completion fact.
+        TaskChain verifiedChain = new TaskChain(new Goal("g6", "g6", List.of(a, b)));
+        verifiedChain.startCurrent();
+        verifiedChain.settlePrimaryByFact("p1", "钻石镐已在背包", true);
+        assertEquals(1, verifiedChain.satisfiedStages().size(),
+                "verified settlement is inherited as completion");
+        assertTrue(verifiedChain.waivedStages().isEmpty());
+    }
+
+    @Test void waivedStageSurvivesRestartWithoutBecomingCompletion() {
+        PrimaryGoal a = new PrimaryGoal("p1", "iron stage", List.of(item("iron")));
+        PrimaryGoal b = new PrimaryGoal("p2", "later stage", List.of(item("later")));
+        TaskChain chain = new TaskChain(new Goal("g7", "g7", List.of(a, b)));
+        chain.startCurrent();
+        chain.settlePrimaryByFact("p1", "这条链不需要这一步", false);
+        TaskChain restored = TaskChain.fromJson(chain.toJson());
+        assertTrue(restored.satisfiedStages().isEmpty(), "restart must not upgrade a waiver");
+        assertEquals(1, restored.waivedStages().size());
+    }
+
     @Test void repeatedSettlementIsDetected() {
         PrimaryGoal a = new PrimaryGoal("p1", "first", List.of(item("a")));
         PrimaryGoal b = new PrimaryGoal("p2", "future", List.of(item("b")));

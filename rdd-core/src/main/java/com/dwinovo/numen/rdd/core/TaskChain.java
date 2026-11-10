@@ -84,6 +84,12 @@ public final class TaskChain {
      * 全部阶段命中 → 链直接 COMPLETED。跨重绑继承由 {@code CompletedFactStore} 查询后注入。
      */
     private final Set<String> satisfiedStages = new LinkedHashSet<>();
+    /**
+     * 044 §0.7（2026-11-10）：被规划者判为「不必再做」但没有服务端事实核验的阶段键。
+     * 只用来让本条链跳过，**不写进 satisfiedStages**——否则一次自述就会被当作"已完成"继承到
+     * 后续重提的同一目标里。旧存档没有这个字段 = 空集。
+     */
+    private final Set<String> waivedStageKeys = new LinkedHashSet<>();
     /** 2026-11-07: sticky satisfied need keys (primaryId+planRevision+attempt+display). */
     private final Set<String> satisfiedNeedKeys = new LinkedHashSet<>();
 
@@ -1205,6 +1211,14 @@ public final class TaskChain {
      * @return 被收口的那一级的主题（回执用）
      */
     public synchronized String settlePrimaryByFact(String primaryId, String reason) {
+        return settlePrimaryByFact(primaryId, reason, true);
+    }
+
+    /**
+     * @param verifiedCompletion true = 有服务端事实核验过，写进完成事实（跨链继承）；
+     *                           false = 规划者判断"不必再做"，只在本条链跳过，**不算完成**。
+     */
+    public synchronized String settlePrimaryByFact(String primaryId, String reason, boolean verifiedCompletion) {
         requireNoOutstandingSafePoint("settle a stage by fact");
         if (primaryId == null || primaryId.isBlank()) {
             throw new IllegalArgumentException("primary id required");
@@ -1230,7 +1244,13 @@ public final class TaskChain {
             throw new IllegalStateException("cannot settle a stage behind the cursor: " + primaryId);
         }
         PrimaryGoal target = all.get(idx);
-        satisfiedStages.add(StageKeyNormalizer.normalize(target.description()));
+        String stageKey = StageKeyNormalizer.normalize(target.description());
+        if (verifiedCompletion) {
+            satisfiedStages.add(stageKey);
+        } else {
+            // 未核验的"不再需要"只在本条链跳过；继承完成事实必须另有世界事实。
+            waivedStageKeys.add(stageKey);
+        }
         settleReasons.put(primaryId, reason);
         stateVersion++;            // 计划事实变化 = 安全提交
         if (idx == primaryIndex) {
@@ -1378,10 +1398,16 @@ public final class TaskChain {
         return satisfiedStages.contains(StageKeyNormalizer.normalize(goal.primaryGoals().get(index).description()));
     }
 
+    /** 跳过条件：已完成事实，或本条链内的"放弃"决定（后者不跨链继承）。 */
+    private boolean isSkipped(int index) {
+        if (isSatisfied(index)) return true;
+        return waivedStageKeys.contains(StageKeyNormalizer.normalize(goal.primaryGoals().get(index).description()));
+    }
+
     /** 从 start 起找第一个未被完成事实命中的一级下标；全部命中返回 -1。 */
     private int firstUnsatisfiedFrom(int start) {
         for (int i = Math.max(0, start); i < goal.primaryGoals().size(); i++) {
-            if (!isSatisfied(i)) {
+            if (!isSkipped(i)) {
                 return i;
             }
         }
@@ -1391,6 +1417,11 @@ public final class TaskChain {
     /** 只读：当前链继承的已完成阶段键集合。 */
     public synchronized Set<String> satisfiedStages() {
         return Set.copyOf(satisfiedStages);
+    }
+
+    /** 本条链内被"放弃"的阶段键（没有世界事实核验，不跨链继承）。 */
+    public synchronized Set<String> waivedStages() {
+        return Set.copyOf(waivedStageKeys);
     }
 
     public synchronized void markFailed(String subtaskId, String reason) {
@@ -1611,6 +1642,11 @@ public final class TaskChain {
             sat.add(k);
         }
         o.add("satisfiedStages", sat);
+        JsonArray waived = new JsonArray();
+        for (String k : waivedStageKeys) {
+            waived.add(k);
+        }
+        o.add("waivedStages", waived);
         JsonArray needSat = new JsonArray();
         for (String k : satisfiedNeedKeys) needSat.add(k);
         o.add("satisfiedNeedKeys", needSat);
@@ -1732,6 +1768,11 @@ public final class TaskChain {
             chain.ownerEpoch = o.get("ownerEpoch").getAsLong();
         }
         // 完成事实继承层（P0）：旧链无此字段 → 空集（向后兼容）
+        if (o.has("waivedStages") && o.get("waivedStages").isJsonArray()) {
+            for (JsonElement el : o.getAsJsonArray("waivedStages")) {
+                chain.waivedStageKeys.add(el.getAsString());
+            }
+        }
         if (o.has("satisfiedStages") && o.get("satisfiedStages").isJsonArray()) {
             for (JsonElement el : o.getAsJsonArray("satisfiedStages")) {
                 chain.satisfiedStages.add(el.getAsString());
