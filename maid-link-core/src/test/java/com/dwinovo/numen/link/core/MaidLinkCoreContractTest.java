@@ -83,12 +83,12 @@ class MaidLinkCoreContractTest {
         assertEquals(Code.BUSY,p.apply(0,Map.of(CHAT,crossChat()),Set.of("neutral-adapter")).code());
         assertTrue(p.drain(0,Set.of(CHAT)).ok());
         assertFalse(p.valid(ticket));
-        assertEquals(Code.BUSY,p.begin(0,CHAT,Set.of()).check().code());
-        assertEquals(Code.BUSY,p.apply(0,Map.of(CHAT,crossChat()),Set.of("neutral-adapter")).code());
+        assertEquals(Code.BUSY,p.begin(1,CHAT,Set.of()).check().code());
+        assertEquals(Code.BUSY,p.apply(1,Map.of(CHAT,crossChat()),Set.of("neutral-adapter")).code());
         assertTrue(p.finish(ticket));
-        assertTrue(p.apply(0,Map.of(CHAT,crossChat()),Set.of("neutral-adapter")).ok());
+        assertTrue(p.apply(1,Map.of(CHAT,crossChat()),Set.of("neutral-adapter")).ok());
         assertFalse(p.valid(ticket));
-        assertEquals("msc-profile",p.begin(1,CHAT,Set.of("neutral-adapter")).ticket().choice().profile());
+        assertEquals("msc-profile",p.begin(2,CHAT,Set.of("neutral-adapter")).ticket().choice().profile());
     }
     @Test void switchingChatDoesNotCancelWork() {
         var p = policy(); var work = p.begin(0,WORK,Set.of()).ticket();
@@ -100,10 +100,28 @@ class MaidLinkCoreContractTest {
     @Test void failedSwitchCanResumeOldChoiceWithoutOldCallbacks() {
         var p = policy(); var old = p.begin(0,CHAT,Set.of()).ticket();
         p.drain(0,Set.of(CHAT)); p.finish(old);
-        assertEquals(Code.UNAVAILABLE,p.apply(0,Map.of(CHAT,crossChat()),Set.of()).code());
-        assertTrue(p.resume(0,CHAT).ok());
+        assertEquals(Code.UNAVAILABLE,p.apply(1,Map.of(CHAT,crossChat()),Set.of()).code());
+        assertTrue(p.resume(1,CHAT).ok());
         assertFalse(p.valid(old));
-        assertEquals(nativeChat(),p.begin(0,CHAT,Set.of()).ticket().choice());
+        assertEquals(nativeChat(),p.begin(2,CHAT,Set.of()).ticket().choice());
+    }
+    @Test void staleResumeCannotUndoLaterDrain() {
+        var p=policy();var work=p.begin(0,WORK,Set.of()).ticket();
+        assertTrue(p.drain(0,Set.of(CHAT)).ok());
+        assertTrue(p.resume(1,CHAT).ok());
+        assertEquals(Code.STALE,p.drain(0,Set.of(CHAT)).code());
+        assertTrue(p.drain(2,Set.of(CHAT)).ok());
+        assertEquals(Code.STALE,p.resume(1,CHAT).code());
+        assertEquals(Code.BUSY,p.begin(3,CHAT,Set.of()).check().code());
+        assertTrue(p.valid(work));
+        assertEquals(Code.STALE,p.begin(0,WORK,Set.of()).check().code());
+        assertTrue(p.resume(3,CHAT).ok());
+        assertTrue(p.begin(4,CHAT,Set.of()).check().ok());
+    }
+    @Test void duplicateDrainAtCurrentRevisionIsIdempotent() {
+        var p=policy();p.drain(0,Set.of(CHAT));
+        assertTrue(p.drain(1,Set.of(CHAT)).ok());assertEquals(1,p.snapshot().revision());
+        p.resume(1,CHAT);assertTrue(p.resume(2,CHAT).ok());assertEquals(2,p.snapshot().revision());
     }
     @Test void disabledChoiceCannotRunAndDoesNotClearProfile() {
         var p=policy(); var disabled = new Choice(false,"native-chat",Mode.NATIVE,"native-profile");

@@ -52,10 +52,17 @@ public final class LinkPolicy {
     public synchronized Check drain(long expectedRevision, Set<Slot> slots) {
         if (!open || revision != expectedRevision) return new Check(Code.STALE, "policy-session-or-revision");
         if (!choices.keySet().containsAll(slots)) return new Check(Code.UNSUPPORTED, "unknown-slot");
-        // Revocation fences output immediately; actual work remains counted until acknowledged stopped.
-        for (Slot slot : slots) {
-            if (draining.add(slot)) epochs.put(slot, Math.incrementExact(epochs.get(slot)));
-        }
+        // 2026-11-10 audit: a delayed resume must not undo a newer drain (ABA).
+        // Control transitions participate in revision CAS; tickets still use per-slot epochs.
+        var changed = new HashSet<>(Set.copyOf(slots));
+        changed.removeAll(draining);
+        if (changed.isEmpty()) return Check.yes();
+        long next = Math.incrementExact(revision);
+        var nextEpochs = new HashMap<Slot, Long>();
+        for (Slot slot : changed) nextEpochs.put(slot, Math.incrementExact(epochs.get(slot)));
+        draining.addAll(changed);
+        epochs.putAll(nextEpochs);
+        revision = next;
         return Check.yes();
     }
     /** Atomic patch, not a full replacement. Unrelated slots/tickets keep working. */
@@ -85,7 +92,11 @@ public final class LinkPolicy {
         if (!open || revision != expectedRevision) return new Check(Code.STALE, "policy-session-or-revision");
         if (!choices.containsKey(slot)) return new Check(Code.UNSUPPORTED, "unknown-slot");
         if (inFlight.stream().anyMatch(t -> t.slot.equals(slot))) return new Check(Code.BUSY, "not-drained");
-        draining.remove(slot);
+        if (draining.contains(slot)) {
+            long next = Math.incrementExact(revision);
+            draining.remove(slot);
+            revision = next;
+        }
         return Check.yes();
     }
     public synchronized Admission begin(long expectedRevision, Slot slot, Set<String> available) {
