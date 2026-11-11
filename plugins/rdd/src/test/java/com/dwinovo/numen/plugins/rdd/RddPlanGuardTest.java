@@ -345,6 +345,10 @@ class RddPlanGuardTest {
                 bind.condition(), Map.of("minecraft:blue_bed", 1)), "holding a bed does not prove bound respawn");
         var white = spec("获取一张白色床供染色", "minecraft:white_bed", 1);
         assertEquals(white, RddPlanGuard.normalizeCondition(white));
+        var yellow = spec("获取黄色的一张床", "minecraft:yellow_bed", 1);
+        assertEquals(yellow, RddPlanGuard.normalizeCondition(yellow));
+        var black = spec("获取黑色的一张床", "minecraft:black_bed", 1);
+        assertEquals(black, RddPlanGuard.normalizeCondition(black));
         var craft = spec("合成一张床", "minecraft:white_bed", 1);
         assertEquals(craft, RddPlanGuard.normalizeCondition(craft));
     }
