@@ -76,6 +76,20 @@ class RddSurvivalDoctrineTest {
         assertEquals(List.of("plugin:rdd:runtime"), tight.keptNames());
         assertEquals(List.of("plugin:rdd:execution_reasons"), tight.droppedNames());
         assertEquals("hp=1 danger=3 current-task", tight.kept().getFirst().text());
+        // One previously uncovered consumer: real provider JSON serialization AFTER budget.
+        // No credential, transport, Minecraft loop, or external model is invoked here.
+        var provider = new com.dwinovo.numen.agent.provider.OpenAIProvider();
+        String keptText = roomy.kept().stream().map(s -> s.text()).collect(java.util.stream.Collectors.joining("\n"));
+        var wire = provider.buildRequestBody("offline-fixture", "system",
+                List.of(provider.buildUserMessage(keptText)), new com.google.gson.JsonArray());
+        assertTrue(wire.toString().contains("快速粮储"));
+        assertTrue(wire.toString().contains("没有干草按距离与安全换村"));
+        assertFalse(wire.toString().contains("图书馆"));
+        String tightText = tight.kept().stream().map(s -> s.text()).collect(java.util.stream.Collectors.joining("\n"));
+        var tightWire = provider.buildRequestBody("offline-fixture", "system",
+                List.of(provider.buildUserMessage(tightText)), new com.google.gson.JsonArray());
+        assertTrue(tightWire.toString().contains("hp=1 danger=3 current-task"));
+        assertFalse(tightWire.toString().contains("execution_reasons"));
     }
 
     @Test
