@@ -160,15 +160,17 @@ final class LearnerReviewer {
             {"verdicts":[{"memo_id":"...","actions":["WRITE_EXPERIENCE"],"confidence":0.7,
               "reasoning":"...","experience":{"mechanism":"...","preconditions":"...",
               "failureConditions":"...","observableSignal":"...","derivation":"...",
-              "efficiency":"...","evidence":"...","experienceType":"FAILURE"},"ac_script_draft":"",
+              "efficiency":"...","evidence":"event:<已有事件id>","experienceType":"FAILURE"},"ac_script_draft":"",
               "carrier_draft":"","self_compile_request":"","rewritten_query":["..."]}]}
 
             ★ memo_id 只写裸 id（例如 ai-instr-123-1），不要写 "memo " 前缀、引号或说明文字；
               写错会导致整轮 UNPARSEABLE。
 
-            ★★ evidence 必填（2026-11-06）：actions 含 WRITE_EXPERIENCE 时，experience.evidence
-               **必须是非空数组**，例句：["event:<window_first>","block:360,66,636"]；
-               空数组会被判 claim_without_evidence 并触发一次补证据重试。不许编造 id。
+            ★★ evidence 必填（2026-11-12 统一旧字符串口径）：actions 含 WRITE_EXPERIENCE 时，
+               experience.evidence 必须是非空字符串，例如 "event:<已有事件id>"，不要输出数组。
+               只引用现场已有的 event:/block:/context: 来源，多个引用可用换行分隔。
+               确有 window_first 或其它现成 id 才能引用；无证据就留空并在 reasoning 说明，
+               缺证仍会被质量门拒收并触发一次补证据重试。不许编造或猜补 id，引用尚需真实性核验。
             ★ 先检索再写（G6b，硬要求）：每条备忘录下面会给出「库里可能的相关条目」——
               那是检索结果，**相似度不要自己重判**（[同一件事] / [只是相关] 由检索给出）。
               actions 里含 WRITE_EXPERIENCE 时，**必须**同时给出 retrieval 段：
@@ -187,6 +189,24 @@ final class LearnerReviewer {
             .formatted(com.dwinovo.numen.plugins.learner.core.Experience.promptSpec());
 
     private LearnerReviewer() {}
+
+    /** 实际发送的基础 SYSTEM；只读纯接缝，不触发配置读取或 LLM。 */
+    static String systemPrompt() {
+        return SYSTEM;
+    }
+
+    /**
+     * 2026-11-12：补证重试与实际基础提示统一 String 格式。
+     * 原重试仍命令数组，解析后会再次丢证；不用测试副本，生产调用复用此纯 builder。
+     */
+    static String evidenceRetrySystem(String system) {
+        return system + "\n\n[必须补证据] 上一批 verdict 里有 WRITE_EXPERIENCE 但 experience.evidence 为空。"
+                + "每条 WRITE_EXPERIENCE 的 experience.evidence 必须是非空字符串，不要输出数组"
+                + "（如 \"event:<已有事件id>\"；多个引用可用换行分隔）。"
+                + "只引用现场已有的 event:/block:/context: 来源，确有 window_first 或其它现成 id 才能引用。"
+                + "没有证据就留空并在 reasoning 说明，缺证仍会被质量门拒收。不许编造或猜补 id；"
+                + "保留引用不等于已经核验其真实性。";
+    }
 
     /**
      * 复盘一批备忘录。<b>不带</b>上轮回顾的入口（见 {@link #withPriorRound}）。
@@ -310,7 +330,7 @@ final class LearnerReviewer {
         LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
                 cfg.getBaseUrl(), cfg.getProxy(), "auto");
 
-        String system = SYSTEM + "\n\n"
+        String system = systemPrompt() + "\n\n"
                 // ★ 2026-10-06：把「真的有哪些积木」摆进 system。
                 //   此前 AI 只能照抄模板里那个手写示例，而示例里写着不存在的 block "move"；
                 //   连拒三次后它学会交只读空壳（实测：low_hp_flee_before_drink 只跑 1 步就 SUCCESS）。
@@ -335,9 +355,7 @@ final class LearnerReviewer {
                 if (syntaxTruncation) {
                     if (hasBlankEvidence(out)) {
                         LOG.warn("[learner] 复盘产物缺 evidence，带补证据要求重试一次");
-                        String evSystem = system + "\n\n[必须补证据] 上一批 verdict 里有 WRITE_EXPERIENCE 但 "
-                                + "experience.evidence 为空。每条 WRITE_EXPERIENCE 必须给**非空数组** experience.evidence"
-                                + "（如 [\"event:<window_first>\",\"block:360,66,636\"]）；仍为空就会被判 claim_without_evidence。不许编造 id。";
+                        String evSystem = evidenceRetrySystem(system);
                         return callOnce(ep, user, evSystem, observation, timeoutSeconds, memos)
                                 .thenApply(next -> next.ok() ? next : out);
                     }

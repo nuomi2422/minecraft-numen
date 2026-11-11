@@ -1,5 +1,6 @@
 package com.dwinovo.numen.plugins.learner.core;
 
+import com.dwinovo.numen.plugins.learner.contract.EvidenceRef;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -303,11 +304,36 @@ public record Experience(
                 optString(o, "observableSignal"),
                 optString(o, "derivation"),
                 optString(o, "efficiency"),
-                optString(o, "evidence"),
+                parseEvidence(o.get("evidence")),
                 optString(o, "experienceType"),
                 // A6（98 号）：可选 audience（数组或单字符串）；缺省 = 空 = 不标注
                 optStringList(o, "audience"));
         return x.filledCount() == 0 ? null : x;
+    }
+
+    /**
+     * 2026-11-12：兼容原响应的引用数组，canonical 与旧存储仍为 String。
+     * learner.jsonl L30480 的三条非空数组曾被 optString 丢空，导致 Q0 缺证拒收。
+     * 不用通用 primitive 强转：数值/布尔不是证据；其它字段的旧兼容不受影响。
+     * 这里只搬运已有引用，不从 memo 补证，也不把格式可解析当成真实性已核验。
+     */
+    private static String parseEvidence(JsonElement value) {
+        if (value == null || value.isJsonNull()) return "";
+        if (value.isJsonPrimitive()) {
+            return value.getAsJsonPrimitive().isString() ? value.getAsString() : "";
+        }
+        if (!value.isJsonArray()) return "";
+        java.util.List<String> references = new java.util.ArrayList<>();
+        for (JsonElement item : value.getAsJsonArray()) {
+            if (!item.isJsonPrimitive() || !item.getAsJsonPrimitive().isString()) continue;
+            try {
+                EvidenceRef reference = EvidenceRef.parse(item.getAsString());
+                if (reference.kind() != EvidenceRef.Kind.OTHER) references.add(reference.toString());
+            } catch (IllegalArgumentException ignored) {
+                // 空引用/id 仍是缺失；mixed 数组保留其它合法引用与原有顺序。
+            }
+        }
+        return String.join("\n", references);
     }
 
     /** A6（98 号）：读可选字符串数组（也容忍单字符串）；缺失 = 空列表。 */
@@ -348,9 +374,13 @@ public record Experience(
                 + "\"observableSignal\":\"在世界里看得到的判据\","
                 + "\"derivation\":\"从信号到动作的因果链\","
                 + "\"efficiency\":\"相比朴素做法省多少\","
-                + "\"evidence\":\"从哪来的\","
+                + "\"evidence\":\"event:<已有事件id>\","
                 + "\"experienceType\":\"五选一\","
                 + "\"audience\":[\"planner\",\"executor\",\"learner\"]}\n"
+                + "experience.evidence 必须是非空字符串，引用已有的 event:/block:/context: 来源，"
+                + "例如 \"event:<已有事件id>\"；多个引用可用换行分隔，不要输出数组。"
+                + "只有现场提供了相应 id 才能引用；没有证据就留空并在 reasoning 说明，不许编造或猜补。"
+                + "保留引用不等于已经核验其真实性。\n"
                 + "audience 是**可选**的「这条给谁用」：怎么规划/先做什么给 planner；"
                 + "这一步具体怎么操作/工具怎么用给 executor；复盘方法本身给 learner。"
                 + "可多选；**说不清就不写**（不写 = 不标注，不会因此不合格）。\n"

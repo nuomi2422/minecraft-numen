@@ -397,6 +397,12 @@ public class ExperienceSevenFieldsTest {
     }
 
     @Test
+    void legacyEvidenceStringsKeepExistingTrimBehavior() {
+        Verdict verdict = evidenceVerdict(new Gson().toJson("  旧散文来源 + 截图路径  "));
+        assertEquals("旧散文来源 + 截图路径", verdict.experience().evidence());
+    }
+
+    @Test
     void missingEmptyAndNullEvidenceNeverBorrowMemoReferences() {
         for (String evidence : java.util.Arrays.asList(null, "null", "\"\"", "\"  \"", "[]")) {
             assertEvidenceRejected(evidence);
@@ -406,6 +412,7 @@ public class ExperienceSevenFieldsTest {
     @Test
     void nonStringAndWhollyInvalidEvidenceRemainRejected() {
         for (String evidence : List.of("{}", "123", "true",
+                "[\"event: \",\"block: \",\"context: \"]",
                 "[null,123,false,{},[],\"\",\"  \",\"no-prefix\",\"other:bad\",\"event:\",\"block:\",\"context:\"]")) {
             assertEvidenceRejected(evidence);
         }
