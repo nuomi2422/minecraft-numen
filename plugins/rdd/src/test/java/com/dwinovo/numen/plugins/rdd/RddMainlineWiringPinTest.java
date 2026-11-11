@@ -542,6 +542,17 @@ class RddMainlineWiringPinTest {
     }
 
     @Test
+    void executorReasonsUseOptionalLiveStageContributionAndSuppressSideOrInactive() {
+        String src = plugin();
+        assertContains(src, "\"execution_reasons\", false, 6, RddPlugin::renderExecutionReasons", "optional budgeted contribution");
+        String render = methodBody(src, "renderExecutionReasons", "sideContextFor");
+        assertOrder(render, "sideContextFor(companionId)", "RUNTIMES.get(companionId)", "chain.currentSubtask()", "RddSurvivalDoctrine.executionBlock");
+        assertContains(render, "DECOMPOSING.contains(companionId)", "do not leak old mainline while planning");
+        assertContains(render, "chain.primaryStatus() != PrimaryGoalStatus.ACTIVE", "no completed/pending chain reasons");
+        assertContains(render, "chain.currentPrimary().description(), current.description()", "read current stage without per-owner selection cache");
+    }
+
+    @Test
     void b01_runtimeProjectionUsesLiveGoalAndPhaseAndKeepsSideFirst() {
         // Explicit source pin, not a claim of executing Minecraft/RDD rendering.
         String fields = methodBody(plugin(), "retrievalTaskFields", "chain.goal().description()");

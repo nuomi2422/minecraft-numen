@@ -64,6 +64,18 @@ class RddSurvivalDoctrineTest {
         assertEquals("", RddSurvivalDoctrine.executionBlock("清点圆石", "放工作台"));
         assertEquals("", RddSurvivalDoctrine.executionBlock(null, null));
         assertTrue(home.length() < 1600);
+        var sections = List.of(
+                new com.dwinovo.numen.agent.context.ContextBudget.Section("plugin:rdd:runtime", "hp=1 danger=3 current-task", true, 10, 100),
+                new com.dwinovo.numen.agent.context.ContextBudget.Section("plugin:rdd:execution_reasons", home, false, 100, 6));
+        var roomy = com.dwinovo.numen.agent.context.ContextBudget.allocate(
+                com.dwinovo.numen.agent.context.ContextBudget.unlimited(), sections);
+        assertTrue(roomy.keptNames().contains("plugin:rdd:execution_reasons"));
+        var tight = com.dwinovo.numen.agent.context.ContextBudget.allocate(
+                new com.dwinovo.numen.agent.context.ContextBudget(0, 0, 0, 0L, 30L, 0L, "test"), sections);
+        assertFalse(tight.denied());
+        assertEquals(List.of("plugin:rdd:runtime"), tight.keptNames());
+        assertEquals(List.of("plugin:rdd:execution_reasons"), tight.droppedNames());
+        assertEquals("hp=1 danger=3 current-task", tight.kept().getFirst().text());
     }
 
     @Test
