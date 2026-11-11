@@ -607,25 +607,16 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         // wrong, reconsider) vs a check-in (journey healthy but longer than the cap —
         // resuming is the right move).
         boolean stalled = nav == null || nav.stallTicks() > PROGRESS_GRACE_TICKS;
-        // 2026-10-31 实机（166）：超时分支原来只给"换个近路点/scan_blocks"这类泛泛建议，
-        // **没有**分段路点；而 blocked() 分支对 >128 格已经会给具体坐标。
-        // 结果同一段 188 格距离，走 blocked 会拿到 "First goto x=.. z=.."，走超时只拿到空话 ——
-        // 模型于是反复重试同一目标（19:13 又一次 188.0 格超时）。
-        // 这里把同一套分段建议搬到超时分支：>128 格就给出具体中继点。
+        // 2026-11-12 tools.jsonl:13385: share target-axis advice with blocked();
+        // YLEVEL has no horizontal destination, while real >128-block XZ goals keep a 64-block relay.
         String advise;
         if (!stalled) {
             advise = "the journey was still progressing and simply exceeded its check-in budget;"
                     + " call goto again with the same target to resume.";
         } else {
-            double h = Math.sqrt(horizontalDistSqr(bx, bz));
-            if (h > 128) {
-                double step = Math.min(64, h);
-                double wx = player.getX() + (bx - player.getX()) * (step / h);
-                double wz = player.getZ() + (bz - player.getZ()) * (step / h);
-                advise = String.format("progress had stopped — likely blocked, and this target is %.0f blocks away"
-                        + " (too far for one path). First goto x=%d z=%d (about %.0f blocks toward it; omit y,"
-                        + " it resolves to the surface), then call goto again for the final target.",
-                        h, (int) Math.round(wx), (int) Math.round(wz), step);
+            String recovery = recoveryAdvice();
+            if (recovery != null) {
+                advise = "progress had stopped — likely blocked. " + recovery;
             } else {
                 advise = "progress had stopped — likely blocked; call goto again to retry, or"
                         + " try a nearer waypoint / scan_blocks for a way through.";
@@ -656,6 +647,21 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
             boatLeg.stop();   // 中途被取消/让位:收桨,别让船带着按下的前进键漂走
             boatLeg = null;
         }
+    }
+
+    /** Diagnostic targets only; never resolve a surface or start a FIND scan for advice. */
+    private String recoveryAdvice() {
+        NavGoal target = switch (r.kind) {
+            case BLOCK -> NavGoal.exact(blockTarget);
+            case COLUMN -> NavGoal.column(bx, bz);
+            case YLEVEL -> NavGoal.yLevel(by);
+            case FIND -> {
+                BlockPos nearest = finder == null ? null : finder.nearest();
+                yield nearest == null ? null : NavGoal.getToBlock(nearest);
+            }
+        };
+        return NavGoalDiagnostics.recoveryAdvice(target,
+                player.getX(), player.blockPosition().getY(), player.getZ());
     }
 
     /** The give-up message for a planner failure that wasn't close enough to count as arrival.
@@ -700,15 +706,9 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         if (nav.failType() != FailureType.TERRAIN_BLOCKED) {
             // 2026-10-31（B46 实测）：目标 344 格外时 goto 直接 "no path to target"，AI 重复同一目标 5 次；
             // 泛泛的 "try a nearer waypoint" 没被采纳。超过 128 格时给出**具体分段路点**。
-            double h = Math.sqrt(horizontalDistSqr(bx, bz));
-            if (h > 128) {
-                double step = Math.min(64, h);
-                double wx = player.getX() + (bx - player.getX()) * (step / h);
-                double wz = player.getZ() + (bz - player.getZ()) * (step / h);
-                advice = String.format(" This target is %.0f blocks away — too far for one path."
-                        + " First goto x=%d z=%d (about %.0f blocks toward it; omit y, it resolves to the surface),"
-                        + " then call goto again for the final target.",
-                        h, (int) Math.round(wx), (int) Math.round(wz), step);
+            String recovery = recoveryAdvice();
+            if (recovery != null) {
+                advice = " " + recovery;
             } else {
                 advice = ScaffoldMaterials.shortageAdvice(player);
                 if (advice == null) {

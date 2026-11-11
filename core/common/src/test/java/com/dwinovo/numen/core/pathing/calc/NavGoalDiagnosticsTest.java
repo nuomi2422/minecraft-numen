@@ -117,4 +117,99 @@ class NavGoalDiagnosticsTest {
         assertEquals("from 0, 0, 0 toward 3, 4, 0, about 5 blocks away",
                 NavGoalDiagnostics.approachGeometry(custom, BlockPos.ZERO));
     }
+    // tools.jsonl:13385 / context.jsonl:278, call_00_u1wc0blnoffrn0ik8qlyd7j4.
+    // Static fixture only until the managed exact test channel runs these commits.
+    @Test
+    void liveElevationOnlyRequestDoesNotSuggestWalkingTowardWorldOrigin() {
+        var args = JsonParser.parseString(
+                "{\"x\":null,\"y\":76,\"z\":null,\"may_alter_terrain\":true}").getAsJsonObject();
+        assertTrue(args.get("x").isJsonNull());
+        assertTrue(args.get("z").isJsonNull());
+        MoveToTaskRecord record = new MoveToTaskRecord("call_00_u1wc0blnoffrn0ik8qlyd7j4", 0,
+                null, args.get("y").getAsDouble(), null, null, true);
+        assertEquals(MoveToTaskRecord.Kind.YLEVEL, record.kind);
+        NavGoal goal = NavGoal.yLevel((int) Math.floor(record.y));
+        assertEquals("stopped at elevation y=52, 24 blocks short",
+                NavGoalDiagnostics.stoppedGeometry(goal, 0, 52));
+        assertEquals("from 30451, 52, 30260 toward elevation y=76, about 24 blocks vertically",
+                NavGoalDiagnostics.approachGeometry(goal, new BlockPos(30451, 52, 30260)));
+        assertEquals("The target elevation is y=76, 24 blocks above you."
+                        + " Look for stairs or a ladder toward that elevation; no horizontal destination was requested.",
+                NavGoalDiagnostics.recoveryAdvice(goal, 30451, 52, 30260));
+    }
+
+    @Test
+    void elevationAdviceIgnoresHorizontalPositionIncludingNegativeAndZeroCoordinates() {
+        for (double[] xz : new double[][]{{30451.75, 30260.25}, {-30451.75, -30260.25}, {0, 0}}) {
+            String below = NavGoalDiagnostics.recoveryAdvice(NavGoal.yLevel(0), xz[0], 52, xz[1]);
+            assertEquals("The target elevation is y=0, 52 blocks below you."
+                    + " Look for stairs or a ladder toward that elevation; no horizontal destination was requested.", below);
+            assertFalse(below.contains("First goto"));
+            assertFalse(below.contains("too far"));
+            assertFalse(below.contains("x="));
+            assertFalse(below.contains("z="));
+        }
+        assertEquals("The requested elevation y=0 matches the current feet height; recheck the current position before retrying.",
+                NavGoalDiagnostics.recoveryAdvice(NavGoal.yLevel(0), -30000, 0, 40000));
+    }
+
+    @Test
+    void realBlockAndColumnRetainSixtyFourBlockRelayInTargetDirection() {
+        String expected = "This target is 500 blocks away — too far for one path."
+                + " First goto x=-30038 z=-40051 (about 64 blocks toward it; omit y, it resolves to the surface),"
+                + " then call goto again for the final target.";
+        for (NavGoal goal : new NavGoal[]{
+                NavGoal.exact(new BlockPos(-30300, 0, -40400)),
+                NavGoal.column(-30300, -40400),
+                NavGoal.columnAt(-30300, -40400, 0, 2),
+                NavGoal.getToBlock(new BlockPos(-30300, 0, -40400))}) {
+            assertEquals(expected, NavGoalDiagnostics.recoveryAdvice(goal, -29999.5, 52, -39999.5));
+        }
+    }
+
+    @Test
+    void realZeroCoordinatesRemainHorizontalTargetsAndFeetPrecisionIsKept() {
+        assertEquals("This target is 500 blocks away — too far for one path."
+                        + " First goto x=262 z=349 (about 64 blocks toward it; omit y, it resolves to the surface),"
+                        + " then call goto again for the final target.",
+                NavGoalDiagnostics.recoveryAdvice(NavGoal.column(0, 0), 300.5, 52, 400.5));
+        assertEquals("This target is 300 blocks away — too far for one path."
+                        + " First goto x=236 z=300 (about 64 blocks toward it; omit y, it resolves to the surface),"
+                        + " then call goto again for the final target.",
+                NavGoalDiagnostics.recoveryAdvice(NavGoal.exact(new BlockPos(0, 0, 300)), 300.25, 52, 300));
+    }
+
+    @Test
+    void shortRangeAndThresholdLeaveExistingCallerAdviceInCharge() {
+        assertNull(NavGoalDiagnostics.recoveryAdvice(NavGoal.column(30479, 30223), 30470, 10, 30228));
+        assertNull(NavGoalDiagnostics.recoveryAdvice(NavGoal.column(128, 0), 0.5, 52, 0.5));
+        assertNull(NavGoalDiagnostics.recoveryAdvice(NavGoal.exact(new BlockPos(0, -200, 0)), 0, 200, 0));
+        assertTrue(NavGoalDiagnostics.recoveryAdvice(NavGoal.column(129, 0), 0.5, 52, 0.5)
+                .contains("First goto x=64 z=0"));
+    }
+
+    @Test
+    void missingFindTargetStaysUnknownAndUnrecognizedGoalsDoNotInventCoordinates() {
+        String unknown = "The target location is unknown; use scan_blocks to locate a target before choosing a waypoint.";
+        assertEquals(unknown, NavGoalDiagnostics.recoveryAdvice(null, 30451, 52, 30260));
+        assertEquals(unknown, NavGoalDiagnostics.recoveryAdvice(null, 0, 52, 0));
+        NavGoal unrecognized = new NavGoal() {
+            @Override public boolean isAt(BlockPos p) { throw new AssertionError("arrival must not run"); }
+            @Override public double heuristic(BlockPos p) { throw new AssertionError("search must not run"); }
+            @Override public BlockPos center() { throw new AssertionError("unknown axes must not be guessed"); }
+        };
+        assertEquals(unknown, NavGoalDiagnostics.recoveryAdvice(unrecognized, -30000, 52, -40000));
+    }
+
+    @Test
+    void anonymousColumnAdviceUsesOnlyCenterWithoutEvaluatingNavigation() {
+        NavGoal retry = new NavGoalDiagnostics.ColumnTarget() {
+            @Override public boolean isAt(BlockPos p) { throw new AssertionError("arrival must not run"); }
+            @Override public double heuristic(BlockPos p) { throw new AssertionError("search must not run"); }
+            @Override public BlockPos center() { return new BlockPos(-30300, 0, -40400); }
+        };
+        assertEquals(NavGoalDiagnostics.recoveryAdvice(NavGoal.column(-30300, -40400), -30000, 52, -40000),
+                NavGoalDiagnostics.recoveryAdvice(retry, -30000, 52, -40000));
+    }
+
 }
