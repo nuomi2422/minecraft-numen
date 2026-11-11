@@ -7,6 +7,8 @@ import net.minecraft.core.BlockPos;
  * 2026-11-12: tools.jsonl:12419/12424 used COLUMN's representative y=0 as a real
  * target height. Keep this projection separate from arrival, search and movement.
  * No world access or goal evaluation: center() is read only to describe coordinates.
+ * 2026-11-12 tools.jsonl:13385: recovery advice also respects the requested axes;
+ * a YLEVEL center uses placeholder XZ and must never become a waypoint.
  */
 public final class NavGoalDiagnostics {
     private NavGoalDiagnostics() { }
@@ -53,7 +55,22 @@ public final class NavGoalDiagnostics {
      * coordinates only: diagnostics must not scan terrain or evaluate a goal.
      */
     public static String recoveryAdvice(NavGoal goal, double feetX, int feetY, double feetZ) {
-        BlockPos target = goal == null ? BlockPos.ZERO : goal.center();
+        if (goal instanceof NavGoal.YLevel g) {
+            long dy = (long) g.level - feetY;
+            if (dy == 0) {
+                return "The requested elevation y=" + g.level
+                        + " matches the current feet height; recheck the current position before retrying.";
+            }
+            return String.format("The target elevation is y=%d, %d blocks %s you."
+                    + " Look for stairs or a ladder toward that elevation; no horizontal destination was requested.",
+                    g.level, Math.abs(dy), dy > 0 ? "above" : "below");
+        }
+        // Only these goals supplied real XZ axes. A missing FIND target is UNKNOWN,
+        // and an unrecognized goal's representative center is not a destination.
+        if (!(isColumn(goal) || goal instanceof NavGoal.Exact || goal instanceof NavGoal.GetToBlock)) {
+            return "The target location is unknown; use scan_blocks to locate a target before choosing a waypoint.";
+        }
+        BlockPos target = goal.center();
         // Match goto's existing cell-center horizontalDistSqr, including its 128-block boundary.
         double dx = target.getX() + 0.5 - feetX;
         double dz = target.getZ() + 0.5 - feetZ;
