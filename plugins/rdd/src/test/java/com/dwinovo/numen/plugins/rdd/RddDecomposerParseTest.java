@@ -10,6 +10,31 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** RddDecomposer.parse 纯容错解析的单测（不触 LLM/网络/MC）。 */
 class RddDecomposerParseTest {
+    @Test
+    @SuppressWarnings("unchecked")
+    void maturitySchemaAndParserPreservePropertiesWithoutChangingLegacy() {
+        var schema = RddDecomposer.decomposeSchema();
+        var root = (java.util.Map<String,Object>) schema.get("properties");
+        var subs = (java.util.Map<String,Object>) root.get("subtasks");
+        var item = (java.util.Map<String,Object>) subs.get("items");
+        var fields = (java.util.Map<String,Object>) item.get("properties");
+        var condition = (java.util.Map<String,Object>) fields.get("condition");
+        var props = (java.util.Map<String,Object>) condition.get("properties");
+        assertTrue(props.containsKey("block"));
+        assertTrue(props.containsKey("radius"));
+        var state = (java.util.Map<String,Object>) props.get("properties");
+        assertEquals("object", state.get("type"));
+        assertEquals(java.util.Map.of("type", "string"), state.get("additionalProperties"));
+        String prefix = "{\"subtasks\":[{\"description\":\"observe maturity\",\"condition\":{\"type\":\"block_nearby\",\"block\":\"minecraft:wheat\",\"radius\":1";
+        var mature = RddDecomposer.parse(prefix + ",\"properties\":{\"age\":\"7\"}}}]}");
+        assertEquals(1, mature.size());
+        assertEquals(java.util.Map.of("age", "7"), mature.get(0).condition().get("properties"));
+        assertTrue(RddDecomposer.parse(prefix + ",\"properties\":{\"age\":7}}]}").isEmpty());
+        var old = RddDecomposer.parse(prefix + "}}]}");
+        assertEquals(1, old.size());
+        assertFalse(old.get(0).condition().containsKey("properties"));
+    }
+
     @Test void parsesGroupWithoutInventingSingleItemRequirement() {
         var specs = RddDecomposer.parse("{\"subtasks\":[{\"description\":\"food supply\",\"condition\":{\"group\":\"food\",\"minimum\":16}}]}");
         assertEquals(1, specs.size());

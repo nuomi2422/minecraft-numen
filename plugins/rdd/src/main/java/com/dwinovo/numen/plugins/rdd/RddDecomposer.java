@@ -652,7 +652,7 @@ final class RddDecomposer {
                     + "不要为了走完时代顺序先凑中间档。"
                     + "**节点类型（2026-11-08）**：每个子步骤加 node_type=MAIN|DAILY|SIDE。"
                     + "重复维护型（收割/补种/喂动物/存粮/照明巡检）=DAILY，并给 recurrence{intervalGameDays:1,missedPolicy:\"SKIP\",requiresFarmBuilt:true|false}；"
-                    + "一次性建设/开垦/建仓/合成=MAIN；等待作物成熟不得让整条主线停在 MAIN，应拆出 DAILY 并让 MAIN 只保留建设类。**硬规则**：若目标含“维护/每天/每日/日常/收割/补种/喂养/存粮/巡检”等重复维护语义，输出**至少 1 条 node_type=DAILY** 的子步骤，不得全部标 MAIN；否则视为未完成本目标分类。例：目标“维护农田”至少输出 {\"description\":\"每天收成熟小麦并补种\",\"condition\":{\"type\":\"block_nearby\",\"block\":\"minecraft:wheat\",\"radius\":8},\"node_type\":\"DAILY\",\"recurrence\":{\"intervalGameDays\":1,\"missedPolicy\":\"SKIP\",\"requiresFarmBuilt\":true}}。"
+                    + "一次性建设/开垦/建仓/合成=MAIN；等待作物成熟不得让整条主线停在 MAIN，应拆出 DAILY 并让 MAIN 只保留建设类。**硬规则**：若目标含“维护/每天/每日/日常/收割/补种/喂养/存粮/巡检”等重复维护语义，输出**至少 1 条 node_type=DAILY** 的子步骤，不得全部标 MAIN；否则视为未完成本目标分类。例：目标“维护农田”至少输出 {\"description\":\"每天检查田里仍有已种小麦（仅存在验收，不证明成熟、收获或补种动作）\",\"condition\":{\"type\":\"block_nearby\",\"block\":\"minecraft:wheat\",\"radius\":8},\"node_type\":\"DAILY\",\"recurrence\":{\"intervalGameDays\":1,\"missedPolicy\":\"SKIP\",\"requiresFarmBuilt\":true}}。"
                     + "只给完成条件，不要派身体动作。"
                     + "通用食物/木头/垫脚方块需求优先用 condition:{group:food|wood|blocks,minimum:数量}，组内按物品总数相加，禁止同时给asset_key。"
                     + "food只计直接可食用的东西，生肉/腐肉也计（捡回来就算推进），不计小麦/干草/生土豆/种子；wood原木和木板按件计，不换算配方。指定合成原料仍用asset_key。"
@@ -850,6 +850,8 @@ final class RddDecomposer {
         return sb.toString();
     }
 
+    static Map<String, Object> decomposeSchema() { return DECOMPOSE_TOOL.parameterSchema(); }
+
     /** 合成工具：让 LLM 直接以结构化 JSON 返回分解结果（引擎没有 response_format:json_object）。 */
     private static final IToolSpec DECOMPOSE_TOOL = new IToolSpec() {
         @Override public String name() { return "decompose_goal"; }
@@ -861,6 +863,10 @@ final class RddDecomposer {
         @Override public Map<String, Object> parameterSchema() {
             // 2026-09-29 放宽：optional=true 对任何类型生效（判定层已同步放宽），不只是补充食物。
             Map<String, Object> conditionProps = Map.ofEntries(
+                    Map.entry("block", Map.of("type", "string", "description", "Exact block ID or #tag for block_nearby.")),
+                    Map.entry("radius", Map.of("type", "integer", "minimum", 1, "maximum", 16)),
+                    Map.entry("properties", Map.of("type", "object", "additionalProperties", Map.of("type", "string"),
+                            "description", "Required block-state values; mature wheat needs {age: '7'}. Omit only for presence checks.")),
                     Map.entry("type", Map.of("type", "string", "enum",
                             List.of("inventory", "advancement", "structure", "entity_killed", "base",
                                     "biome", "block_nearby", "container_nearby",
