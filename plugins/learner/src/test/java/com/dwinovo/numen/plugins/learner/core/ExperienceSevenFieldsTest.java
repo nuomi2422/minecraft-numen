@@ -1,5 +1,7 @@
 package com.dwinovo.numen.plugins.learner.core;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
@@ -24,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>所以本类把「格式」钉成代码：模型必须交出 7 个具名字段，
  * 拿不出来就<b>如实说拿不出来</b>，而不是把一段话说得像有结构。
  */
-class ExperienceSevenFieldsTest {
+public class ExperienceSevenFieldsTest {
 
     private static final String GOOD = "{\"mechanism\":\"下界竖井要先探底再往下挖\","
             + "\"preconditions\":\"y<=-12 且垂直通道\","
@@ -243,5 +245,238 @@ class ExperienceSevenFieldsTest {
 
     private static Experience parseWithType(String type) {
         return parse(GOOD.replace("\"EXECUTION\"", "\"" + type + "\""));
+    }
+
+    // 2026-11-12 原件：learner.jsonl L30479 request / L30480 response；
+    // requestId c0355981-dcc4-414b-850b-f68e672ef3e3，transport lr-293。
+    // L30491 三条仅 Q0 硬失败，L30492 stored=0；不外推其它批次。
+    // 原 verdict 仅省略 retrieval 和空产物键，不将 SHADOW 结果当落库资格。
+    private static final String ORIGINAL_EVIDENCE_BATCH = """
+            {
+              "verdicts": [
+                {
+                  "memo_id": "ai-instr-78281859238400-10",
+                  "actions": ["WRITE_EXPERIENCE"],
+                  "confidence": 0.72,
+                  "reasoning": "三个窗口(12:51/12:53/13:04)同一 task=primary-a43d753e-0 都是 attempts=3、threshold=3、fromNegotiation=false，背包 29→28→27（世界真变了）预算却没回退；命中[同一件事]已有条目，故 REVISE：把「跨窗口累积 + 执行期同烧 + 窗口内零调用不等于没发生」补进已有条目，不另立 NEW。缺席行动：窗口内未换失败形态、未上报重规划。",
+                  "experience": {
+                    "mechanism": "replan 预算由引擎按失败形态记账：同一 subtask 同一形态失败累加 attempts，达 context.threshold 即判 loop_detected 停车。计数是引擎侧累积事实，跨窗口、跨时间、世界状态变化都不回退；执行期(fromNegotiation=false)与协商期共用同一计数。",
+                    "preconditions": "task=primary-a43d753e-0 同一 subtask 以同一失败形态连续失败；attempts 每次失败 +1；threshold=3；fromNegotiation=false|true 均计入；窗口内 tool_calls=0 不代表没发生",
+                    "failureConditions": "失败形态或 task id 已变、人类已重置链/换新 primary 时不适用；把它当成『再试一次就好』的依据会在第 3 次直接停车；仅凭窗口内无动作记录断定空转不可靠（读不到≠没发生）",
+                    "observableSignal": "attempts=3, threshold=3, fromNegotiation=false, reason=failure replan budget exhausted (loop), task=primary-a43d753e-0, items 29→28→27, 窗口内 tool_calls=0",
+                    "derivation": "看到 attempts 逼近 threshold 而失败形态未变 → 同形态重试只烧预算不解决问题 → 必须在第 threshold 次前换成可执行的不同动作或上报重规划；已 loop_detected 只能由外部重启链/换 primary 解除",
+                    "efficiency": "省掉 threshold-1 次必然失败的重试与 10~20 分钟窗口消耗，并避免把『世界状态变了』误判成预算已重置",
+                    "evidence": ["event:instr-78281859238400-10","event:instr-77552257470500-4","event:instr-77612563973300-5"],
+                    "experienceType": "FAILURE",
+                    "audience": ["planner","executor"]
+                  },
+                  "rewritten_query": ["replan budget exhausted loop_detected attempts threshold","重试预算 跨窗口 累积 fromNegotiation=false","同一 primary 多次 loop 停车 不停机对策"]
+                },
+                {
+                  "memo_id": "ai-instr-77552257470500-4",
+                  "actions": ["WRITE_EXPERIENCE"],
+                  "confidence": 0.7,
+                  "reasoning": "与上一条同一 primary-a43d753e-0、同一 attempts=3/threshold=3/fromNegotiation=false，仅窗口不同（items 29→28）；机制已被[同一件事]条目覆盖，无新增维度，故 REUSE，不再生产近似重复条目（前轮近似重复已被质量门 REJECT）。",
+                  "experience": {
+                    "mechanism": "同一 subtask 以同一失败形态重复失败时引擎累加 attempts，达 threshold 判 loop 停车；该计数跨窗口保留，背包数量/时间变化都不清零。",
+                    "preconditions": "task=primary-a43d753e-0；失败形态未变；attempts=3；threshold=3；fromNegotiation=false",
+                    "failureConditions": "失败形态已变、或链已被人类重启时不要把旧窗口的 attempts 当现状；据此认定『必然还会停车』而不看形态会误判",
+                    "observableSignal": "attempts=3, threshold=3, fromNegotiation=false, task=primary-a43d753e-0, items 29→28, 窗口内 tool_calls=0",
+                    "derivation": "读到同一 task 再次 attempts=3 且形态未变 → 视为同一条已耗尽的预算，不做同形态重试，直接走换动作或上报",
+                    "efficiency": "避免重复投入一个 window 的试错时间",
+                    "evidence": ["event:instr-77552257470500-4"],
+                    "experienceType": "FAILURE",
+                    "audience": ["planner"]
+                  },
+                  "rewritten_query": ["replan budget exhausted 同一 primary 第二窗口","loop_detected attempts=3 threshold=3"]
+                },
+                {
+                  "memo_id": "ai-instr-77612563973300-5",
+                  "actions": ["WRITE_EXPERIENCE"],
+                  "confidence": 0.7,
+                  "reasoning": "第三个窗口，同样 task=primary-a43d753e-0/attempts=3/threshold=3/fromNegotiation=false，items 29→28；与前面两块及库内[同一件事]同一机制，无新维度（窗口内无工具调用不等于没发生，不足以支撑新机制），REUSE 已有条目。",
+                  "experience": {
+                    "mechanism": "引擎对同一 subtask 的 replan 失败按形态计 attempts，达 threshold 判 loop 停车；计数不随窗口切换、时间推移或背包变化回退。",
+                    "preconditions": "task=primary-a43d753e-0；同一失败形态；attempts=3；threshold=3；fromNegotiation=false",
+                    "failureConditions": "链已重启或 primary 已更换时旧计数不再适用；用本条解释『换形态后的新失败』会误判为又是预算问题",
+                    "observableSignal": "attempts=3, threshold=3, fromNegotiation=false, reason=failure replan budget exhausted (loop), task=primary-a43d753e-0, tool_calls=0",
+                    "derivation": "同一 task 第三次出现该形态 → 判定为预算已耗尽，停止同形态重试，交给外部重启/换 primary",
+                    "efficiency": "省去再来一轮必然停车的时间窗",
+                    "evidence": ["event:instr-77612563973300-5"],
+                    "experienceType": "FAILURE",
+                    "audience": ["planner"]
+                  },
+                  "rewritten_query": ["loop_detected 第三窗口 预算不回退","replan budget exhausted 换 primary 才能解除"]
+                }
+              ]
+            }
+            """;
+
+    /** Reviewer 同包测试复用一份原响应；每次返回新树，避免测试互相污染。 */
+    public static JsonArray originalEvidenceBatch() {
+        return obj(ORIGINAL_EVIDENCE_BATCH).getAsJsonArray("verdicts");
+    }
+
+    // request 的 memo 三段逐字保留；createdAt 不参与门禁，用 0 不编造时间。
+    private static final List<Memo> ORIGINAL_MEMOS = List.of(
+            new Memo("ai-instr-78281859238400-10", "[T2/loop_detected]  / task=primary-a43d753e-0 / reason=failure replan budget exhausted (loop)", "loop_detected", "重试预算耗尽于第 N 次=3", "context.attempts=3, context.fromNegotiation=false, context.threshold=3, companionId=a43d753e-790d-472b-8d5b-dc18ac0afbc0, reason=failure replan budget exhausted (loop), task=primary-a43d753e-0, window_first=instr-78281859238400-10", 0L),
+            new Memo("ai-instr-77552257470500-4", "[T2/loop_detected]  / task=primary-a43d753e-0 / reason=failure replan budget exhausted (loop)", "loop_detected", "重试预算耗尽于第 N 次=3", "context.threshold=3, companionId=a43d753e-790d-472b-8d5b-dc18ac0afbc0, reason=failure replan budget exhausted (loop), task=primary-a43d753e-0, context.attempts=3, context.fromNegotiation=false, window_first=instr-77552257470500-4", 0L),
+            new Memo("ai-instr-77612563973300-5", "[T2/loop_detected]  / task=primary-a43d753e-0 / reason=failure replan budget exhausted (loop)", "loop_detected", "重试预算耗尽于第 N 次=3", "context.threshold=3, companionId=a43d753e-790d-472b-8d5b-dc18ac0afbc0, reason=failure replan budget exhausted (loop), task=primary-a43d753e-0, context.attempts=3, context.fromNegotiation=false, window_first=instr-77612563973300-5", 0L)
+    );
+
+    private static Verdict evidenceVerdict(String evidenceJson) {
+        JsonObject experience = obj(GOOD);
+        if (evidenceJson == null) {
+            experience.remove("evidence");
+        } else {
+            experience.add("evidence", JsonParser.parseString(evidenceJson));
+        }
+        JsonObject verdict = new JsonObject();
+        verdict.addProperty("memo_id", "m-evidence");
+        verdict.add("actions", JsonParser.parseString("[\"WRITE_EXPERIENCE\"]"));
+        verdict.add("experience", experience);
+        return Verdict.parse("m-evidence", verdict.toString());
+    }
+
+    private static Memo evidenceMemo() {
+        // 合成边界样本，有出处也不能替缺失的 experience.evidence 补证。
+        return new Memo("m-evidence", "竖井下潜遇到危险", "mining", "先探底再下潜",
+                "hp=12/20, armor=none, window_first=must-not-fill-evidence", 0L,
+                Memo.CATEGORY_LEARNING, List.of("must-not-fill-evidence"));
+    }
+
+    private static ExperienceQualityGate.Result quality(Verdict verdict, Memo memo) {
+        ExperienceDraft draft = ExperienceDraft.from(verdict, memo);
+        return ExperienceQualityGate.evaluate(verdict.experience(), memo,
+                draft.entry().get("description").getAsString());
+    }
+
+    private static boolean storable(Verdict verdict, Memo memo, ExperienceQualityGate.Result gate) {
+        ExperienceDraft draft = ExperienceDraft.from(verdict, memo);
+        Gson gson = new Gson();
+        return ExperiencePersistencePolicy.storable(Map.of(
+                "entry", gson.fromJson(draft.toJson(), Map.class),
+                "mapping", gson.fromJson(draft.explain(), Map.class)), gate.hasHardFailure());
+    }
+
+    private static void assertReferencesInOrder(String evidence, List<String> references) {
+        int previous = -1;
+        for (String reference : references) {
+            int at = evidence.indexOf(reference, previous + 1);
+            assertTrue(at > previous, "引用缺失或乱序：" + reference + " in " + evidence);
+            previous = at;
+        }
+    }
+
+    @Test
+    void legalEvidenceArraysPreserveEventBlockAndContextReferences() {
+        List<String> references = List.of("event:fixture-event", "block:360,66,636", "context:dc-turn-3");
+        Verdict verdict = evidenceVerdict(new Gson().toJson(references));
+        assertNotNull(verdict);
+        assertNotNull(verdict.experience());
+        assertReferencesInOrder(verdict.experience().evidence(), references);
+        assertTrue(verdict.experience().acceptable());
+        JsonObject serialized = obj(verdict.toJson()).getAsJsonObject("experience");
+        assertTrue(serialized.get("evidence").isJsonPrimitive());
+        assertTrue(serialized.getAsJsonPrimitive("evidence").isString(),
+                "canonical JSON 仍是旧 String 字段，不把数组传播给消费者");
+        assertEquals(verdict.experience().evidence(), serialized.get("evidence").getAsString());
+        assertEquals(verdict.experience().evidence(),
+                ExperienceDraft.from(verdict, evidenceMemo()).entry().get("evidence").getAsString());
+    }
+
+    @Test
+    void legacyEvidenceStringsKeepTheirOriginalContent() {
+        for (String evidence : List.of("ep7 t2000 commentary 原话 + 截图路径", "event:old-id",
+                "旧散文来源 + 截图路径")) {
+            Verdict verdict = evidenceVerdict(new Gson().toJson(evidence));
+            assertEquals(evidence, verdict.experience().evidence());
+            assertEquals(evidence, ExperienceDraft.from(verdict, evidenceMemo()).entry()
+                    .get("evidence").getAsString());
+        }
+    }
+
+    @Test
+    void missingEmptyAndNullEvidenceNeverBorrowMemoReferences() {
+        for (String evidence : java.util.Arrays.asList(null, "null", "\"\"", "\"  \"", "[]")) {
+            assertEvidenceRejected(evidence);
+        }
+    }
+
+    @Test
+    void nonStringAndWhollyInvalidEvidenceRemainRejected() {
+        for (String evidence : List.of("{}", "123", "true",
+                "[null,123,false,{},[],\"\",\"  \",\"no-prefix\",\"other:bad\",\"event:\",\"block:\",\"context:\"]")) {
+            assertEvidenceRejected(evidence);
+        }
+    }
+
+    private static void assertEvidenceRejected(String evidenceJson) {
+        Verdict verdict = evidenceVerdict(evidenceJson);
+        assertNotNull(verdict.experience());
+        assertTrue(verdict.experience().evidence().isBlank(), "坏证据不能变成数据：" + evidenceJson);
+        assertFalse(verdict.experience().acceptable());
+        ExperienceQualityGate.Result gate = quality(verdict, evidenceMemo());
+        assertEquals(List.of("Q0"), gate.failedIds(), "仅隔离证据缺失，其他必需输入保持完整");
+        assertEquals(ExperienceQualityGate.Verdict.REJECT, gate.verdict());
+        assertFalse(storable(verdict, evidenceMemo(), gate));
+        assertTrue(ExperienceDraft.from(verdict, evidenceMemo()).entry().get("evidence").getAsString().isBlank(),
+                "不能拿 memo.evidence 或 window_first 替这条 experience 补证");
+        assertFalse(obj(verdict.toJson()).getAsJsonObject("experience").has("evidence"));
+    }
+
+    @Test
+    void mixedEvidenceArrayKeepsOnlyUsableStringReferences() {
+        Verdict verdict = evidenceVerdict(
+                "[null,17,false,{},[],\"\",\"no-prefix\",\"other:bad\",\"event:\","
+                        + "\"event:good-1\",\"block:dc-turn-3\",\"context:dc-turn-3\"]");
+        String evidence = verdict.experience().evidence();
+        assertReferencesInOrder(evidence, List.of("event:good-1", "block:dc-turn-3", "context:dc-turn-3"));
+        for (String invalid : List.of("null", "17", "false", "{", "[", "no-prefix", "other:bad")) {
+            assertFalse(evidence.contains(invalid), evidence);
+        }
+        assertEquals(1, evidence.split("event:", -1).length - 1, "空 id 项不得混入：" + evidence);
+    }
+
+    @Test
+    void originalThreeVerdictsKeepEvidenceThroughQualityAndDraftStorageEligibility() {
+        JsonArray originals = originalEvidenceBatch();
+        assertEquals(3, originals.size());
+        for (int i = 0; i < originals.size(); i++) {
+            JsonObject raw = originals.get(i).getAsJsonObject();
+            Memo memo = ORIGINAL_MEMOS.get(i);
+            Verdict verdict = Verdict.parse(memo.id(), raw.toString());
+            assertNotNull(verdict, memo.id());
+            assertTrue(verdict.actions().contains(Verdict.Action.WRITE_EXPERIENCE));
+            List<String> references = new java.util.ArrayList<>();
+            raw.getAsJsonObject("experience").getAsJsonArray("evidence")
+                    .forEach(ref -> references.add(ref.getAsString()));
+            assertReferencesInOrder(verdict.experience().evidence(), references);
+            assertEquals("FAILURE", verdict.experience().typeName());
+            ExperienceQualityGate.Result gate = quality(verdict, memo);
+            assertTrue(gate.failedIds().isEmpty(), memo.id() + ": " + gate.failedIds());
+            assertEquals(ExperienceQualityGate.Verdict.REVIEW_REQUIRED, gate.verdict(),
+                    "保留引用不等于已核验正文/证据真伪，更不等于可发布");
+            assertTrue(gate.undecidableIds().contains("Q4"));
+            assertTrue(storable(verdict, memo, gate), "仅既有 DRAFT 落库资格，不实际存储");
+            assertEquals(verdict.experience().evidence(),
+                    ExperienceDraft.from(verdict, memo).entry().get("evidence").getAsString());
+        }
+    }
+
+    @Test
+    void originalVerdictsStillFailQ0WhenTheirEvidenceIsActuallyMissing() {
+        JsonArray originals = originalEvidenceBatch();
+        for (int i = 0; i < originals.size(); i++) {
+            JsonObject raw = originals.get(i).getAsJsonObject();
+            raw.getAsJsonObject("experience").remove("evidence");
+            Memo memo = ORIGINAL_MEMOS.get(i);
+            Verdict verdict = Verdict.parse(memo.id(), raw.toString());
+            assertTrue(verdict.experience().evidence().isBlank());
+            ExperienceQualityGate.Result gate = quality(verdict, memo);
+            assertEquals(List.of("Q0"), gate.failedIds());
+            assertEquals(ExperienceQualityGate.Verdict.REJECT, gate.verdict());
+            assertFalse(storable(verdict, memo, gate), "memo 快照仍有 window_first 也不许补证");
+        }
     }
 }
