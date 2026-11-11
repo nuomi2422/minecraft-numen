@@ -341,6 +341,19 @@ final class RddDetector {
     /** 生存抢占（2026-11-06）：与计划前闸同一判据；先 task_stop 当前身体任务，再重规划，60s 冷却防刷屏。 */
     private static void survivalPreempt(com.dwinovo.numen.entity.NumenPlayer ap, long tick) {
         try {
+            // 2026-11-11: hunger while first expansion is pending is not a failed execution.
+            // Reuse the lazy driver even when a survival side task owns the body.
+            RddRuntime runtime = RddPlugin.runtime(ap.getUUID());
+            if (runtime == null) return;
+            TaskChain chain = runtime.chain();
+            if (chain.primaryStatus() == PrimaryGoalStatus.PENDING
+                    && chain.currentPrimary().unexpanded()) {
+                RddGoalDriver.needExpansion(ap.getUUID());
+                return;
+            }
+            // Side ownership only delays the mainline; never spend its failure budget.
+            if (SideTaskHost.isActive(ap.getUUID())
+                    || chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return;
             long now = System.currentTimeMillis();
             Long last = SURVIVAL_PREEMPT_AT.get(ap.getUUID());
             if (last != null && now - last < 60_000L) return;

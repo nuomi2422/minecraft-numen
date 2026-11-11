@@ -510,6 +510,16 @@ class RddMainlineWiringPinTest {
     }
 
     @Test
+    void pendingSurvivalUsesFirstExpansionWithoutFailureBudget() throws Exception {
+        String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
+        String body = methodBody(src, "survivalPreempt", "RddGoalDriver.needExpansion");
+        assertOrder(body, "PrimaryGoalStatus.PENDING", "RddGoalDriver.needExpansion", "SideTaskHost.isActive", "SURVIVAL_PREEMPT_AT.get", "RddPlugin.requestReplan");
+        assertContains(body, "chain.currentPrimary().unexpanded()", "only lazy pending stages expand");
+        assertContains(body, "chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return", "non-active execution never enters stuck replan");
+        assertContains(body, "RddPlugin.requestReplan", "active survival handling remains wired");
+    }
+
+    @Test
     void passiveWorldAssetsBeforeAbsentRuntime() throws Exception {
         String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
         String observer = "RddWorldAssetObserver.observe(ap, RddPlugin.assets(ap.getUUID()))";
