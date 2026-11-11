@@ -330,6 +330,25 @@ class RddPlanGuardTest {
         assertEquals(1, guarded.dropped().size());
     }
 
+    @Test
+    void genericBedAcquisitionUsesExistingFamilyWithoutBindingRespawn() {
+        var raw = new SubtaskSpec("在村里或周边弄到一张床（村里房子直接拿现成床最好；没有就用 3 羊毛 + 3 木板合成白色床，羊毛来自羊或村庄羊毛）",
+                Map.of("asset_key", "minecraft:white_bed", "minimum", 1), null, NodeType.MAIN, null);
+        var normalized = RddPlanGuard.normalizeConditions(List.of(raw)).get(0);
+        assertEquals("minecraft:bed", normalized.condition().get("asset_key"));
+        assertTrue(com.dwinovo.numen.rdd.core.HardCodedEvaluator.matches(
+                normalized.condition(), Map.of("minecraft:blue_bed", 1)));
+        assertFalse(com.dwinovo.numen.rdd.core.HardCodedEvaluator.matches(normalized.condition(), Map.of()));
+        var bind = new SubtaskSpec("放床并真正睡过，绑定重生点", Map.of("type", "base"), null);
+        assertEquals(bind, RddPlanGuard.normalizeCondition(bind));
+        assertFalse(com.dwinovo.numen.rdd.core.HardCodedEvaluator.matches(
+                bind.condition(), Map.of("minecraft:blue_bed", 1)), "holding a bed does not prove bound respawn");
+        var white = spec("获取一张白色床供染色", "minecraft:white_bed", 1);
+        assertEquals(white, RddPlanGuard.normalizeCondition(white));
+        var craft = spec("合成一张床", "minecraft:white_bed", 1);
+        assertEquals(craft, RddPlanGuard.normalizeCondition(craft));
+    }
+
     // ---------- Stage-A 主题过滤 ----------
 
     @Test

@@ -229,6 +229,22 @@ final class RddPlanGuard {
         if (s == null) return null;
         String d = s.description() == null ? "" : s.description();
         Object key = s.condition().get("asset_key");
+        // 2026-11-11 village trace: "get a bed; otherwise craft a white bed" emitted
+        // an exact white-bed predicate despite observed blue beds. Normalize only the
+        // explicitly colour-neutral acquisition purpose, not crafting/dyeing requirements.
+        String purpose = d.split("[（(]", 2)[0];
+        boolean anyBed = purpose.contains("一张床") || purpose.contains("任意颜色床")
+                || purpose.contains("任意颜色的床");
+        boolean acquiringBed = purpose.contains("弄到") || purpose.contains("获取")
+                || purpose.contains("取得") || purpose.contains("收集");
+        if (key instanceof String k && k.matches("minecraft:[a-z_]+_bed")
+                && anyBed && acquiringBed && !purpose.contains("合成")
+                && !purpose.contains("染色") && !purpose.contains("白色")
+                && !purpose.contains("蓝色") && !purpose.contains("红色")) {
+            Map<String, Object> cond = new java.util.LinkedHashMap<>(s.condition());
+            cond.put("asset_key", "minecraft:bed"); // existing inventory family alias
+            return new SubtaskSpec(s.description(), cond, s.body(), s.nodeType(), s.recurrence());
+        }
         boolean multi = d.contains("都行") || d.contains("任意") || d.contains("任选") || d.contains("或");
         boolean placing = d.contains("垫") || d.contains("铺") || d.contains("落脚台") || d.contains("搭") || d.contains("放");
         if (key instanceof String k && PLACE_MATERIALS.contains(k) && multi && placing) {
