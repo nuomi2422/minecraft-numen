@@ -177,6 +177,7 @@ public final class RddPlugin implements NumenPlugin {
     @Override
     public void setup(NumenApi numen) {
         numenApi = numen;
+        numen.capability(com.dwinovo.numen.api.CompanionWorldReset.class, RddPlugin::resetCurrentWorld);
         tasksDir = numen.configDir().resolve("rdd-tasks");
         assetsDir = numen.configDir().resolve("rdd-assets");
         factsDir = numen.configDir().resolve("rdd-facts");
@@ -342,6 +343,9 @@ public final class RddPlugin implements NumenPlugin {
             // 优先用内存锚点（死亡时记的，带维度）；重启后内存已清 → 回落读同伴**自己的** live respawn 点位
             // （原版持久化在 .dat，重启不丢）——修 V3 实测的"重启后死亡落世界出生点"。
             BedAnchor anchor = BED_RESPAWN_PREFERENCE.remove(uuid);
+            // Live forced ground is authoritative over a stale in-memory bed. A later live bed
+            // still follows the existing bed route; unbound companions retain the old default.
+            if (applyPersonalGroundRespawn(body)) return;
             BlockPos bedPos = anchor == null ? null : anchor.pos();
             if (bedPos == null || bedPos.equals(BlockPos.ZERO)) {
                 try {
@@ -2004,6 +2008,40 @@ private static String safeDeathAttacker(NumenPlayer body) {
         }
     }
 
+    /**
+     * 2026-11-11: consume vanilla /spawnpoint ground locally, not owner/shared world spawn.
+     * Vanilla forced-position validation alone permits unsupported air, so also require its
+     * safe-dismount floor/hazard/collision check. No raw-coordinate fallback or new search.
+     * Returns true for a ground binding even if unsafe: never revive a stale cached bed instead.
+     */
+    private static boolean applyPersonalGroundRespawn(NumenPlayer body) {
+        BlockPos personal = body.getRespawnPosition();
+        if (personal == null || !body.isRespawnForced()) return false;
+        ServerLevel target = body.getServer().getLevel(body.getRespawnDimension());
+        boolean liveBed = target != null && target.getBlockState(personal).getBlock() instanceof BedBlock;
+        if (!RddPersonalRespawnPolicy.useGround(personal != null, body.isRespawnForced(), liveBed)) return false;
+        try {
+            if (target == null) return true;
+            var transition = body.findRespawnPositionAndUseSpawnBlock(true,
+                    net.minecraft.world.level.portal.DimensionTransition.DO_NOTHING);
+            if (transition.missingRespawnBlock() || transition.newLevel() != target) return true;
+            Vec3 stand = net.minecraft.world.entity.vehicle.DismountHelper.findSafeDismountLocation(
+                    body.getType(), target, personal, true);
+            if (stand == null) return true;
+            // The vanilla safe standing position can differ in Y (slabs); never bypass its result.
+            if (body.serverLevel() == target) {
+                body.moveTo(stand.x, stand.y, stand.z, body.getRespawnAngle(), body.getXRot());
+            } else {
+                body.teleportTo(target, stand.x, stand.y, stand.z, body.getRespawnAngle(), body.getXRot());
+            }
+            LOG.info("[rdd] {} personal ground respawn: {} @ {}", body.getUUID(), personal,
+                    target.dimension().location());
+        } catch (RuntimeException e) {
+            LOG.warn("[rdd] personal ground respawn skipped {}: {}", body.getUUID(), e.toString());
+        }
+        return true;
+    }
+
     /** 床边安全落点：优先 BedBlock 标准站立位，异常/无解时回落床心（X/Z 偏移 0.5）。 */
     private static Vec3 bedStandPos(ServerLevel level, BlockPos bed, NumenPlayer body) {
         try {
@@ -2439,6 +2477,42 @@ private static String safeDeathAttacker(NumenPlayer body) {
         return companionId != null && (RUNTIMES.containsKey(companionId)
                 || DECOMPOSING.contains(companionId)
                 || BODY.containsKey(companionId));
+    }
+
+    /** External owner reset: current-world state only; history/experience/skills are untouched. */
+    private static Map<String, Object> resetCurrentWorld(NumenPlayer body) throws Exception {
+        UUID id = body.getUUID();
+        if (!body.getServer().isSameThread()) throw new IllegalStateException("server thread required");
+        if (completionPending(id)) throw new IllegalStateException("stage completion is still pending");
+        if (tasksDir == null || assetsDir == null) throw new IllegalStateException("reset stores unavailable");
+        var stop = com.dwinovo.numen.agent.tool.ToolRegistry.get("task_stop");
+        if (stop == null) throw new IllegalStateException("body stop unavailable; reset refused");
+        stop.onServerCall("external-reset-" + id, new com.google.gson.JsonObject(), body, r -> { });
+        CALLBACKS.replace(id); // invalidate old asynchronous planner callbacks before clearing
+        removeCurrent(id);
+        if (RUNTIMES.containsKey(id) || java.nio.file.Files.exists(tasksDir.resolve(id + ".json")))
+            throw new IllegalStateException("task removal incomplete; reset stopped");
+        AssetRegistry empty = new AssetRegistry();
+        RddAssetStore.save(assetsDir, id, empty); // prove disk write before replacing current memory
+        ASSETS.put(id, empty);
+        RddHomeAnchor.clear(id);
+        RddBaseAnchor.clear(id);
+        clearBedRespawnPreference(id);
+        body.setRespawnPosition(body.level().dimension(), null, 0.0f, false, false);
+        body.getInventory().clearContent();
+        body.getInventory().setChanged();
+        body.containerMenu.broadcastChanges();
+        cacheInventory(id, Map.of());
+        int remaining = 0;
+        for (int i = 0; i < body.getInventory().getContainerSize(); i++)
+            if (!body.getInventory().getItem(i).isEmpty()) remaining++;
+        if (remaining != 0) throw new IllegalStateException("inventory reset incomplete");
+        RddMonitor.publish("external_world_reset", Map.of("companionId", id.toString(),
+                "intervened", true, "inventorySlotsRemaining", remaining,
+                "preserved", "experience/why/skills/AC/model/history"));
+        return Map.of("intervened", true, "companionUuid", id.toString(),
+                "chainCleared", true, "assetsCleared", true, "homeCleared", true,
+                "inventorySlotsRemaining", remaining, "preserved", "experience/why/skills/AC/model/history");
     }
 
     public static void remove(UUID companionId) {

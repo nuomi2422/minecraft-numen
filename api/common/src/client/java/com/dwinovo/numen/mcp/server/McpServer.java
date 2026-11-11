@@ -249,6 +249,12 @@ public final class McpServer {
     private JsonObject toolsListResult() {
         JsonArray tools = new JsonArray();
 
+        tools.add(toolDef("server_command",
+                "Authenticated external owner only: silent local server command; audited INTERVENED. Requires companion, world_id, server_session, command, confirm=true. Not a game AI tool.",
+                externalControlSchema(false)));
+        tools.add(toolDef("reset_companion_world",
+                "Authenticated external owner only: reset this companion current-world chain/assets/home/inventory. Requires backup receipt and identity; preserves experience and skills.",
+                externalControlSchema(true)));
         tools.add(toolDef("list_companions",
                 "List the owner's live Minecraft companions (name + id). Call this first to see who you can drive.",
                 objectSchema(null, false)));
@@ -463,6 +469,8 @@ public final class McpServer {
     private JsonObject dispatchToolCall(String name, JsonObject args) {
         try {
             return switch (name) {
+                case "server_command" -> handleExternalControl(args, false);
+                case "reset_companion_world" -> handleExternalControl(args, true);
                 case "list_companions" -> content(listCompanions(), false);
                 case "create_companion" -> handleCreate(args);
                 case "delete_companion" -> handleDelete(args);
@@ -624,6 +632,36 @@ public final class McpServer {
         o.addProperty("epoch", r.epoch());
         // accepted != effective：这里只报受理结果，生效要等 owner_stop 回执。
         return content(o.toString(), r.delivery() == com.dwinovo.numen.api.Delivery.REJECTED);
+    }
+
+    private static JsonObject externalControlSchema(boolean reset) {
+        JsonObject schema = new JsonObject();
+        schema.addProperty("type", "object");
+        JsonObject props = new JsonObject();
+        for (String key : new String[]{"companion", "world_id", "server_session", reset ? "backup_receipt" : "command"}) {
+            JsonObject field = new JsonObject(); field.addProperty("type", "string"); props.add(key, field);
+        }
+        JsonObject confirm = new JsonObject(); confirm.addProperty("type", "boolean"); props.add("confirm", confirm);
+        schema.add("properties", props);
+        JsonArray required = new JsonArray(); props.keySet().forEach(required::add); schema.add("required", required);
+        schema.addProperty("additionalProperties", false);
+        return schema;
+    }
+
+    private JsonObject handleExternalControl(JsonObject args, boolean reset) throws Exception {
+        // Existing HTTP bearer authentication is mandatory for elevated external operations.
+        if (config.token().isBlank()) return content("external control requires configured authentication", true);
+        if (!args.has("confirm") || !args.get("confirm").isJsonPrimitive()
+                || !args.get("confirm").getAsJsonPrimitive().isBoolean() || !args.get("confirm").getAsBoolean())
+            return content("explicit confirm=true required", true);
+        UUID target = resolveCompanion(args);
+        if (target == null) return content("owned live companion required", true);
+        if (reset && (!args.has("backup_receipt") || args.get("backup_receipt").getAsString().isBlank()))
+            return content("backup receipt required before reset", true);
+        var out = com.dwinovo.numen.api.ExternalServerControl.call(target,
+                args.get("world_id").getAsString(), args.get("server_session").getAsString(),
+                reset ? "" : args.get("command").getAsString(), reset).get(config.callTimeoutSeconds(), TimeUnit.SECONDS);
+        return content(new com.google.gson.Gson().toJson(out), false);
     }
 
     private JsonObject handleToolInvoke(String toolName, JsonObject args) throws Exception {

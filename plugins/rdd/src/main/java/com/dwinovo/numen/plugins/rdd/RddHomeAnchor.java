@@ -51,6 +51,13 @@ final class RddHomeAnchor {
     /** 与其它缓存同目录（由 RddPlugin 在初始化时写入 FACTS_DIR）。 */
     static volatile Path DIR;
 
+    /** Explicit current-world reset, unlike best-effort context persistence. */
+    static void clear(UUID id) throws java.io.IOException {
+        if (id == null || DIR == null) throw new java.io.IOException("home store unavailable");
+        Files.deleteIfExists(fileFor(id));
+        CACHE.remove(id);
+    }
+
     private static Path fileFor(UUID id) {
         Path dir = DIR;
         return dir == null ? null : dir.resolve("home-anchor-" + id + ".json");
