@@ -334,7 +334,20 @@ class RddPlanGuardTest {
     void genericBedAcquisitionUsesExistingFamilyWithoutBindingRespawn() {
         var raw = new SubtaskSpec("在村里或周边弄到一张床（村里房子直接拿现成床最好；没有就用 3 羊毛 + 3 木板合成白色床，羊毛来自羊或村庄羊毛）",
                 Map.of("asset_key", "minecraft:white_bed", "minimum", 1), null, NodeType.MAIN, null);
-        var normalized = RddPlanGuard.normalizeConditions(List.of(raw)).get(0);
+        // Exercise the production JSON parser before normalization and evaluator.
+        var jsonStep = new com.google.gson.JsonObject();
+        jsonStep.addProperty("description", raw.description());
+        var jsonCondition = new com.google.gson.JsonObject();
+        jsonCondition.addProperty("asset_key", "minecraft:white_bed");
+        jsonCondition.addProperty("minimum", 1);
+        jsonStep.add("condition", jsonCondition);
+        var jsonSteps = new com.google.gson.JsonArray();
+        jsonSteps.add(jsonStep);
+        var jsonPlan = new com.google.gson.JsonObject();
+        jsonPlan.add("subtasks", jsonSteps);
+        var parsed = RddDecomposer.parse(jsonPlan.toString());
+        assertEquals(1, parsed.size());
+        var normalized = RddPlanGuard.normalizeConditions(parsed).get(0);
         assertEquals("minecraft:bed", normalized.condition().get("asset_key"));
         assertTrue(com.dwinovo.numen.rdd.core.HardCodedEvaluator.matches(
                 normalized.condition(), Map.of("minecraft:blue_bed", 1)));
