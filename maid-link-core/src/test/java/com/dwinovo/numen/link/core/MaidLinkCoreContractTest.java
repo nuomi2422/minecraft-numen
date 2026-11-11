@@ -236,4 +236,204 @@ class MaidLinkCoreContractTest {
         assertTrue(p.valid(output));assertEquals(State.SUCCEEDED,d.state(request));
         assertEquals("msc-profile",output.choice().profile());
     }
+
+    // 052/P1-P4 offline extensions, 2026-11-11. No runtime/game adapter is used.
+    static LinkConfiguration.Selection selection(Choice choice) {
+        return new LinkConfiguration.Selection(choice, "1");
+    }
+    static LinkConfiguration.Document configuration() {
+        return new LinkConfiguration.Document(1, 7, Map.of(CHAT, selection(nativeChat()),
+            WORK, selection(new Choice(false, "missing-disabled-provider", Mode.DELEGATE, "酒狐 档案:\n第二行"))));
+    }
+    @Test void configurationRoundTripPreservesDisabledChoiceProfileVersionAndRevision() {
+        var document=configuration();
+        assertEquals(document,LinkConfiguration.decode(LinkConfiguration.encode(document)));
+        assertTrue(LinkConfiguration.validate(document,binding(false),catalog(),Set.of()).ok());
+        assertThrows(UnsupportedOperationException.class,()->document.selections().clear());
+    }
+    @Test void configurationRejectsUnknownSchemaAndNegativeRevision() {
+        String text=LinkConfiguration.encode(configuration());
+        assertThrows(IllegalArgumentException.class,()->LinkConfiguration.decode(text.replace("schema=1","schema=2")));
+        assertThrows(IllegalArgumentException.class,()->LinkConfiguration.decode(text.replace("revision=7","revision=-1")));
+    }
+    @Test void configurationRejectsDuplicateEscapedAndUnknownKeys() {
+        String text=LinkConfiguration.encode(configuration());
+        for(String extra:List.of("\nschema=1", "\n\\u0073chema=1", "\nadmin.command=run", "\nslot.NUMEN.CHAT.extra=bad"))
+            assertThrows(IllegalArgumentException.class,()->LinkConfiguration.decode(text+extra));
+    }
+    @Test void configurationRejectsPartialSlotAndInvalidEnumsOrBoolean() {
+        String text=LinkConfiguration.encode(configuration());
+        for(String broken:List.of(text.replace("enabled=true","enabled=yes"),
+                text.replace("mode=NATIVE","mode=UNKNOWN"),text.replace("slot.NUMEN.CHAT","slot.ROBOT.CHAT"),
+                text.replaceAll("(?m)^slot.NUMEN.CHAT.version=.*\\R?","")))
+            assertThrows(IllegalArgumentException.class,()->LinkConfiguration.decode(broken));
+    }
+    @Test void configurationRejectsOversizedInputAndBlankProvider() {
+        assertThrows(IllegalArgumentException.class,()->LinkConfiguration.decode("x".repeat(65_537)));
+        assertThrows(IllegalArgumentException.class,()->LinkConfiguration.decode(
+            LinkConfiguration.encode(configuration()).replace("provider=native-chat","provider=")));
+    }
+    @Test void configurationRejectsProviderVersionDriftAndMissingDependencies() {
+        var changed=new LinkConfiguration.Document(1,0,Map.of(CHAT,
+            new LinkConfiguration.Selection(nativeChat(),"2")));
+        assertEquals(Code.STALE,LinkConfiguration.validate(changed,binding(false),catalog(),Set.of()).code());
+        var cross=new LinkConfiguration.Document(1,0,Map.of(CHAT,selection(crossChat())));
+        assertEquals(Code.UNAVAILABLE,LinkConfiguration.validate(cross,binding(false),catalog(),Set.of()).code());
+        assertTrue(LinkConfiguration.validate(cross,binding(false),catalog(),Set.of("neutral-adapter")).ok());
+    }
+    @Test void configurationBadSaveLeavesExistingFileUntouched(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var file=dir.resolve("link.properties");java.nio.file.Files.writeString(file,"original");
+        var bad=new LinkConfiguration.Document(1,0,Map.of(CHAT,
+            new LinkConfiguration.Selection(nativeChat(),"wrong-version")));
+        assertThrows(IllegalArgumentException.class,()->LinkConfiguration.save(file,bad,binding(false),catalog(),Set.of()));
+        assertEquals("original",java.nio.file.Files.readString(file));
+        try(var paths=java.nio.file.Files.list(dir)){assertEquals(1,paths.count());}
+    }
+    @Test void configurationGoodSaveReplacesOnlySelectedFile(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var file=dir.resolve("link.properties");java.nio.file.Files.writeString(file,"original");
+        LinkConfiguration.save(file,configuration(),binding(false),catalog(),Set.of());
+        assertEquals(configuration(),LinkConfiguration.decode(java.nio.file.Files.readString(file)));
+        try(var paths=java.nio.file.Files.list(dir)){assertEquals(1,paths.count());}
+    }
+    static Map<Slot,LinkConfiguration.Selection> nativeTemplate() {
+        return Map.of(CHAT,selection(nativeChat()),
+            WORK,selection(new Choice(true,"work",Mode.NATIVE,"worker")),
+            new Slot(Side.MAID,Capability.CHAT),selection(new Choice(true,"msc-bound",Mode.NATIVE,"soul")));
+    }
+    @Test void presetsAllowEitherNativePairWithoutOtherBody() {
+        var numen=LinkPresets.create(LinkPresets.Preset.NATIVE_NUMEN,0,binding(false),nativeTemplate(),catalog(),Set.of());
+        assertTrue(numen.choices().get(CHAT).enabled());assertTrue(numen.choices().get(WORK).enabled());
+        assertFalse(numen.choices().containsKey(new Slot(Side.MAID,Capability.CHAT)));
+        var maidBinding=new Binding("b","o","w","s",Map.of(Side.MAID,new Body(Side.MAID,"m")));
+        var maid=LinkPresets.create(LinkPresets.Preset.NATIVE_MAID,0,maidBinding,nativeTemplate(),catalog(),Set.of());
+        assertEquals(Set.of(new Slot(Side.MAID,Capability.CHAT)),maid.choices().keySet());
+    }
+    @Test void coexistPresetKeepsBothChatsAndNativeExecution() {
+        var doc=LinkPresets.create(LinkPresets.Preset.COEXIST,3,binding(true),nativeTemplate(),catalog(),Set.of());
+        assertEquals(3,doc.revision());assertTrue(doc.choices().values().stream().allMatch(Choice::enabled));
+        assertTrue(doc.choices().values().stream().allMatch(c->c.mode()==Mode.NATIVE));
+    }
+    @Test void spokespersonPresetMutesOnlyNumenSpeechAndKeepsProfiles() {
+        var doc=LinkPresets.create(LinkPresets.Preset.SPOKESPERSON,0,binding(true),nativeTemplate(),catalog(),Set.of());
+        assertFalse(doc.choices().get(CHAT).enabled());
+        assertEquals("native-profile",doc.choices().get(CHAT).profile());
+        assertTrue(doc.choices().get(WORK).enabled());
+        assertTrue(doc.choices().get(new Slot(Side.MAID,Capability.CHAT)).enabled());
+    }
+    @Test void singleSidePresetOnDualBindingExplicitlyDisablesOtherSide() {
+        var doc=LinkPresets.create(LinkPresets.Preset.NATIVE_NUMEN,0,binding(true),nativeTemplate(),catalog(),Set.of());
+        var maid=doc.choices().get(new Slot(Side.MAID,Capability.CHAT));
+        assertFalse(maid.enabled());assertEquals("soul",maid.profile());
+    }
+    @Test void presetsRejectUnboundCoexistAndCrossCapabilityTemplates() {
+        assertThrows(IllegalArgumentException.class,()->LinkPresets.create(LinkPresets.Preset.COEXIST,
+            0,binding(false),nativeTemplate(),catalog(),Set.of()));
+        var bad=new HashMap<>(nativeTemplate());bad.put(CHAT,selection(crossChat()));
+        assertThrows(IllegalArgumentException.class,()->LinkPresets.create(LinkPresets.Preset.COEXIST,
+            0,binding(true),bad,catalog(),Set.of("neutral-adapter")));
+    }
+    @Test void viewHasUnknownHostStatusRatherThanInferringReadyFromSnapshot() {
+        var view=LinkStatusView.render(policy().snapshot(),catalog(),Map.of());
+        assertTrue(view.rows().stream().allMatch(r->r.status().code()==Code.UNKNOWN));
+        assertEquals("1",view.rows().getFirst().providerVersion());
+        assertThrows(UnsupportedOperationException.class,()->view.rows().clear());
+    }
+    @Test void viewPreservesTrustedBusyAndDisabledState() {
+        var p=policy();p.apply(0,Map.of(CHAT,new Choice(false,"native-chat",Mode.NATIVE,"native-profile")),Set.of());
+        var view=LinkStatusView.render(p.snapshot(),catalog(),Map.of(WORK,new Check(Code.BUSY,"draining")));
+        assertEquals(Code.DENIED,view.rows().stream().filter(r->r.slot().equals(CHAT)).findFirst().orElseThrow().status().code());
+        assertEquals(Code.BUSY,view.rows().stream().filter(r->r.slot().equals(WORK)).findFirst().orElseThrow().status().code());
+    }
+    @Test void uiPatchReturnsBusyAndStaleWithoutDrainingOrResuming() {
+        var p=policy();var ticket=p.begin(0,CHAT,Set.of()).ticket();
+        var busy=LinkStatusView.submit(p,0,Map.of(CHAT,crossChat()),Set.of("neutral-adapter"));
+        assertEquals(Code.BUSY,busy.check().code());assertTrue(p.valid(ticket));assertEquals(0,busy.snapshot().revision());
+        p.finish(ticket);
+        var accepted=LinkStatusView.submit(p,0,Map.of(CHAT,crossChat()),Set.of("neutral-adapter"));
+        assertTrue(accepted.check().ok());assertEquals(1,accepted.snapshot().revision());
+        assertEquals(Code.STALE,LinkStatusView.submit(p,0,Map.of(CHAT,nativeChat()),Set.of()).check().code());
+    }
+    @Test void documentSubmissionPinsVersionAndRejectsStaleRevisionWithoutChangingPolicy() {
+        var p=policy();var before=p.snapshot();
+        var bad=new LinkConfiguration.Document(1,0,Map.of(CHAT,new LinkConfiguration.Selection(nativeChat(),"2")));
+        assertEquals(Code.STALE,LinkStatusView.submitDocument(p,bad,binding(false),catalog(),Set.of()).check().code());
+        assertEquals(before,p.snapshot());
+        var stale=new LinkConfiguration.Document(1,7,Map.of(CHAT,selection(nativeChat())));
+        assertEquals(Code.STALE,LinkStatusView.submitDocument(p,stale,binding(false),catalog(),Set.of()).check().code());
+        assertEquals(before,p.snapshot());
+        var ticket=p.begin(0,CHAT,Set.of()).ticket();
+        var valid=new LinkConfiguration.Document(1,0,Map.of(CHAT,selection(crossChat())));
+        assertEquals(Code.BUSY,LinkStatusView.submitDocument(p,valid,binding(false),catalog(),Set.of("neutral-adapter")).check().code());
+        p.finish(ticket);
+        assertTrue(LinkStatusView.submitDocument(p,valid,binding(false),catalog(),Set.of("neutral-adapter")).check().ok());
+        assertEquals(crossChat(),p.snapshot().choices().get(CHAT));
+    }
+    @Test void mutedSpokespersonTemplateStillChecksProviderAndVersion() {
+        var bad=new HashMap<>(nativeTemplate());
+        bad.put(CHAT,new LinkConfiguration.Selection(nativeChat(),"wrong"));
+        assertThrows(IllegalArgumentException.class,()->LinkPresets.create(LinkPresets.Preset.SPOKESPERSON,
+            0,binding(true),bad,catalog(),Set.of()));
+    }
+    @Test void nativeSinglePairIgnoresUnavailableProviderOfDisabledOtherPair() {
+        var template=new HashMap<>(nativeTemplate());
+        template.put(new Slot(Side.MAID,Capability.CHAT),selection(new Choice(true,"not-installed",Mode.NATIVE,"soul")));
+        var doc=LinkPresets.create(LinkPresets.Preset.NATIVE_NUMEN,0,binding(true),template,catalog(),Set.of());
+        assertFalse(doc.choices().get(new Slot(Side.MAID,Capability.CHAT)).enabled());
+        assertTrue(doc.choices().get(CHAT).enabled());
+    }
+    static com.dwinovo.numen.worldstate.core.observation.ObservationKey observationKey() {
+        return new com.dwinovo.numen.worldstate.core.observation.ObservationKey("world","minecraft:overworld",
+            com.dwinovo.numen.worldstate.core.model.Topic.CONTAINERS,"block:1,2,3","");
+    }
+    static com.dwinovo.numen.worldstate.core.query.ReadResult observed(
+            String session,com.dwinovo.numen.worldstate.core.model.Freshness freshness,
+            com.dwinovo.numen.worldstate.core.model.Coverage coverage) {
+        var key=observationKey();
+        var payload=new com.dwinovo.numen.worldstate.core.observation.payload.ContainerPayload(
+            key.dimension(),key.target(),27,Map.of());
+        var observation=new com.dwinovo.numen.worldstate.core.observation.Observation(key,payload,"cache-fixture",
+            com.dwinovo.numen.worldstate.core.model.Origin.DIRECT,10,100,coverage,freshness,1,1,session);
+        return com.dwinovo.numen.worldstate.core.query.ReadResult.present(observation,freshness,10,coverage,"cached sample");
+    }
+    @Test void observationProjectionPreservesExactSourceAndDoesNotClaimPossession() {
+        var source=observed("session",com.dwinovo.numen.worldstate.core.model.Freshness.CURRENT,
+            com.dwinovo.numen.worldstate.core.model.Coverage.COMPLETE);
+        var view=LinkObservationView.project(binding(false),observationKey(),Check.yes(),source,110,20);
+        assertTrue(view.check().ok());assertSame(source,view.source());assertTrue(view.currentComplete());
+        assertEquals("cached-observation-only",view.check().reason());
+    }
+    @Test void observationProjectionRejectsWrongWorldSessionAndUnauthorizedAudience() {
+        var source=observed("other-session",com.dwinovo.numen.worldstate.core.model.Freshness.CURRENT,
+            com.dwinovo.numen.worldstate.core.model.Coverage.COMPLETE);
+        var view=LinkObservationView.project(binding(false),observationKey(),Check.yes(),source,110,20);
+        assertEquals(Code.STALE,view.check().code());assertNull(view.source());
+        var denied=LinkObservationView.project(binding(false),observationKey(),new Check(Code.DENIED,"owner-mismatch"),source,110,20);
+        assertEquals(Code.DENIED,denied.check().code());assertNull(denied.source());
+        var other=new Binding("b","o","another-world","session",binding(false).bodies());
+        assertEquals(Code.DENIED,LinkObservationView.project(other,observationKey(),Check.yes(),source,110,20).check().code());
+    }
+    @Test void observationProjectionNeverTurnsMissingOrUnavailableIntoEmpty() {
+        var missing=com.dwinovo.numen.worldstate.core.query.ReadResult.missing(observationKey());
+        assertEquals(Code.UNKNOWN,LinkObservationView.project(binding(false),observationKey(),Check.yes(),missing,110,20).check().code());
+        assertEquals(Code.UNAVAILABLE,LinkObservationView.project(binding(false),observationKey(),Check.yes(),null,110,20).check().code());
+    }
+    @Test void observationProjectionKeepsStalePartialHistoricalUnknown() {
+        for(var freshness:com.dwinovo.numen.worldstate.core.model.Freshness.values())
+            for(var coverage:com.dwinovo.numen.worldstate.core.model.Coverage.values()) {
+                var source=observed("session",freshness,coverage);
+                var view=LinkObservationView.project(binding(false),observationKey(),Check.yes(),source,110,20);
+                boolean expected=freshness==com.dwinovo.numen.worldstate.core.model.Freshness.CURRENT
+                    && coverage==com.dwinovo.numen.worldstate.core.model.Coverage.COMPLETE;
+                assertEquals(expected,view.currentComplete());assertEquals(expected,view.check().ok());
+                assertSame(source,view.source());
+            }
+    }
+    @Test void observationProjectionRechecksAgeAndRejectsFutureClock() {
+        var source=observed("session",com.dwinovo.numen.worldstate.core.model.Freshness.CURRENT,
+            com.dwinovo.numen.worldstate.core.model.Coverage.COMPLETE);
+        assertFalse(LinkObservationView.project(binding(false),observationKey(),Check.yes(),source,121,20).currentComplete());
+        assertFalse(LinkObservationView.project(binding(false),observationKey(),Check.yes(),source,99,20).currentComplete());
+        assertTrue(LinkObservationView.project(binding(false),observationKey(),Check.yes(),source,120,20).currentComplete());
+        assertThrows(IllegalArgumentException.class,()->LinkObservationView.project(binding(false),observationKey(),Check.yes(),source,110,0));
+    }
 }
