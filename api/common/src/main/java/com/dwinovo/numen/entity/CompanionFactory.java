@@ -114,7 +114,9 @@ public final class CompanionFactory {
         }
         player.setGameMode(mode);
         // 身体齐了、进了玩家列表,插件此刻可以对它下命令(改外观、发指令都需要它在列表里)
-        CompanionEvents.fire(CompanionEvent.SPAWN, player);
+        player.setSpawningAfterDeath(reg != null && reg.diedAt() > 0L);
+        try { CompanionEvents.fire(CompanionEvent.SPAWN, player); }
+        finally { player.setSpawningAfterDeath(false); }
         return player;
     }
 

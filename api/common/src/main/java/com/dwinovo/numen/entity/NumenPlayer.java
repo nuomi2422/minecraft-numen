@@ -41,6 +41,10 @@ public final class NumenPlayer extends ServerPlayer {
 
     /** Owner's player UUID. Null only transiently before the first assignment. */
     private UUID ownerUuid;
+    private boolean spawningAfterDeath;
+    /** Transient factory context, not persisted; false for living dormancy restoration. */
+    public boolean isSpawningAfterDeath() { return spawningAfterDeath; }
+    public void setSpawningAfterDeath(boolean value) { spawningAfterDeath = value; }
 
     /** Latched once we've handled this body's death, so the post-death routine runs exactly once. */
     private boolean deathHandled;

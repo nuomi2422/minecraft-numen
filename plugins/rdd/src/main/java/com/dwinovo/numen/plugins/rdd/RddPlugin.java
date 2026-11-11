@@ -345,6 +345,7 @@ public final class RddPlugin implements NumenPlugin {
             BedAnchor anchor = BED_RESPAWN_PREFERENCE.remove(uuid);
             // Live forced ground is authoritative over a stale in-memory bed. A later live bed
             // still follows the existing bed route; unbound companions retain the old default.
+            if (!body.isSpawningAfterDeath()) return; // living dormancy keeps its saved position
             if (applyPersonalGroundRespawn(body)) return;
             BlockPos bedPos = anchor == null ? null : anchor.pos();
             if (bedPos == null || bedPos.equals(BlockPos.ZERO)) {

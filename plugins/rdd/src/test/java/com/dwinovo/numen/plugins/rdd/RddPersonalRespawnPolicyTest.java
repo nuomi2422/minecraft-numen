@@ -46,7 +46,8 @@ class RddPersonalRespawnPolicyTest {
         int take = src.indexOf("BED_RESPAWN_PREFERENCE.remove(uuid)", spawn);
         int personal = src.indexOf("if (applyPersonalGroundRespawn(body)) return;", take);
         int bed = src.indexOf("BlockPos bedPos =", take);
-        assertTrue(spawn >= 0 && take > spawn && personal > take && bed > personal);
+        int death = src.indexOf("if (!body.isSpawningAfterDeath()) return;", take);
+        assertTrue(spawn >= 0 && take > spawn && death > take && personal > death && bed > personal);
     }
 
     @Test void shellUsesPersonalDimensionAndVanillaValidationBeforeMoving() throws Exception {
