@@ -67,8 +67,11 @@ final class SideTaskHost {
         UUID id = ap.getUUID();
         if ("food_supply".equals(currentTypeId(id))) return;
         long nowMs = System.currentTimeMillis();
-        if (com.dwinovo.numen.rdd.side.FoodSupplyPolicy.cooldownActive(
-                nowMs, LAST_FOOD_DONE_MS.getOrDefault(id, 0L))) return;
+        HostWorldPort port = new HostWorldPort(ap);
+        if (com.dwinovo.numen.rdd.side.FoodSupplyPolicy.cooldownBlocks(
+                com.dwinovo.numen.rdd.side.FoodSupplyPolicy.cooldownActive(
+                        nowMs, LAST_FOOD_DONE_MS.getOrDefault(id, 0L)),
+                port.hunger(id), port.health(id), port.edibleCount(id))) return;
         LAST_FOOD_DONE_MS.put(id, nowMs); // claim the slot before the async report can race
         com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(ap,
                 "SURVIVAL report: " + (reason == null ? "" : reason));
@@ -77,7 +80,6 @@ final class SideTaskHost {
         if (ENGINE.isActive(id)) {
             ENGINE.cancel(id, "SURVIVAL food supply takes precedence");
         }
-        HostWorldPort port = new HostWorldPort(ap);
         boolean started = ENGINE.startNow(new com.dwinovo.numen.rdd.side.FoodSupplySideTaskType(), id, port,
                 currentMainlineToken(id), java.util.Map.of("reason", reason == null ? "" : reason));
         if (!started) FORCED_FOOD.add(id);
@@ -93,7 +95,11 @@ final class SideTaskHost {
         ENGINE.registerType(DEATH_RECOVERY_TYPE);
         ENGINE.registerType(new com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType());
         ENGINE.registerType(new com.dwinovo.numen.rdd.side.FoodSupplySideTaskType());
-        ENGINE.registerTrigger(new com.dwinovo.numen.rdd.side.FoodSupplySideTaskTrigger());
+        ENGINE.registerTrigger(new com.dwinovo.numen.rdd.side.FoodSupplySideTaskTrigger(ctx ->
+                !com.dwinovo.numen.rdd.side.FoodSupplyPolicy.cooldownBlocks(
+                        com.dwinovo.numen.rdd.side.FoodSupplyPolicy.cooldownActive(
+                                System.currentTimeMillis(), LAST_FOOD_DONE_MS.getOrDefault(ctx.companionId(), 0L)),
+                        ctx.hunger(), ctx.health(), ctx.edibleCount())));
         ENGINE.registerTrigger(new DeathRecoverySideTaskTrigger());
         SleepWakeWatcher.install();
         NeoForge.EVENT_BUS.addListener((ServerStoppedEvent event) -> onServerStopped());
@@ -282,8 +288,10 @@ final class SideTaskHost {
             HostWorldPort port = new HostWorldPort(ap);
             boolean wasActive = ENGINE.isActive(companionId);
             String wasType = currentTypeId(companionId);
-            boolean foodCooldown = com.dwinovo.numen.rdd.side.FoodSupplyPolicy.cooldownActive(
-                    System.currentTimeMillis(), LAST_FOOD_DONE_MS.getOrDefault(companionId, 0L));
+            boolean foodCooldown = com.dwinovo.numen.rdd.side.FoodSupplyPolicy.cooldownBlocks(
+                    com.dwinovo.numen.rdd.side.FoodSupplyPolicy.cooldownActive(
+                            System.currentTimeMillis(), LAST_FOOD_DONE_MS.getOrDefault(companionId, 0L)),
+                    port.hunger(companionId), port.health(companionId), port.edibleCount(companionId));
             boolean foodCritical = !foodCooldown && !ENGINE.isActive(companionId)
                     && (FORCED_FOOD.contains(companionId) || foodCritical(port, companionId));
             if (foodCritical) {
@@ -643,7 +651,7 @@ final class SideTaskHost {
 
     /** Idempotent critical check; UNKNOWN values never trigger. */
     private static boolean foodCritical(HostWorldPort port, UUID companionId) {
-        return com.dwinovo.numen.rdd.side.FoodSupplyPolicy.critical(
+        return com.dwinovo.numen.rdd.side.FoodSupplyPolicy.needsSupply(
                 port.hunger(companionId), port.health(companionId), port.edibleCount(companionId));
     }
 }

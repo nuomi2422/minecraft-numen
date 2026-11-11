@@ -43,6 +43,140 @@ class FoodSupplySideTaskTypeTest {
         assertTrue(ev.saw("side_task_completed"));
     }
 
+
+    @Test void completionWhileStillCriticalWaitsForHostCooldown() {
+        CooldownHost host = new CooldownHost();
+        // Raw sample: hunger=14 edible=0 completes while low hp still triggers food.
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(14, 8, 0);
+        host.tick(C, w);
+        host.tick(C, w);
+        assertEquals(1, host.events.count("side_task_completed"));
+        assertFalse(host.engine.isActive(C));
+        host.nowMs += FoodSupplyPolicy.COOLDOWN_MS - 1;
+        host.tick(C, w);
+        assertFalse(host.engine.isActive(C), "automatic trigger must honor the host cooldown");
+        assertEquals(1, host.events.count("side_task_created"));
+        host.nowMs++;
+        host.tick(C, w);
+        assertTrue(host.engine.isActive(C), "persistent need may retry at the cooldown boundary");
+        assertEquals(2, host.events.count("side_task_created"));
+    }
+
+    @Test void timedOutLowHpTaskCannotImmediatelyRecreateWithoutFoodDeficit() {
+        CooldownHost host = new CooldownHost();
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(7, 8, 0);
+        host.tick(C, w);
+        long deadline = host.engine.current(C).orElseThrow().deadlineGameTime();
+        w.at(deadline + 1, 0);
+        host.tick(C, w);
+        assertTrue(host.events.saw("side_task_skipped"));
+        host.tick(C, w);
+        assertFalse(host.engine.isActive(C));
+        assertEquals(1, host.events.count("side_task_created"));
+        host.nowMs += FoodSupplyPolicy.COOLDOWN_MS;
+        host.tick(C, w);
+        assertTrue(host.engine.isActive(C));
+    }
+
+    @Test void cooldownBelongsToOnlyTheSettledCompanion() {
+        CooldownHost host = new CooldownHost();
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(14, 8, 0);
+        host.tick(C, w);
+        host.tick(C, w);
+        host.tick(C, w);
+        assertFalse(host.engine.isActive(C));
+        UUID other = UUID.fromString("00000000-0000-0000-0000-0000000000bb");
+        host.tick(other, w);
+        assertTrue(host.engine.isActive(other), "another companion has no food cooldown");
+    }
+
+    @Test void admissionCooldownDoesNotBlockActiveTaskCompletion() {
+        CooldownHost host = new CooldownHost();
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(3, 20, 0);
+        host.tick(C, w);
+        // SURVIVAL's startNow path claims the host slot before its active task is evaluated.
+        host.lastDoneMs.put(C, host.nowMs);
+        w.survival(14, 20, 0);
+        host.tick(C, w);
+        assertFalse(host.engine.isActive(C));
+        assertTrue(host.events.saw("side_task_completed"));
+    }
+
+    @Test void realFoodDeficitDuringCooldownMustStillStartSupply() {
+        CooldownHost host = new CooldownHost();
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(14, 8, 0);
+        host.tick(C, w);
+        host.tick(C, w);
+        assertFalse(host.engine.isActive(C));
+        host.nowMs += 1_000L;
+        w.survival(3, 8, 0);
+        host.tick(C, w);
+        assertTrue(host.engine.isActive(C), "new critical hunger with no food must bypass cooldown");
+    }
+
+    @Test void lowHungerWithEnoughFoodMustNotCreateCompletedTaskLoop() {
+        CooldownHost host = new CooldownHost();
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(3, 8, 2);
+        host.tick(C, w);
+        assertFalse(host.engine.isActive(C), "existing food already meets supply completion; eating owns it");
+        host.tick(C, w);
+        host.nowMs += FoodSupplyPolicy.COOLDOWN_MS;
+        host.tick(C, w);
+        assertEquals(0, host.events.count("side_task_created"));
+    }
+
+    @Test void cooldownExceptionUsesExistingHungerThresholdsAndConfirmedEmptyInventory() {
+        assertFalse(FoodSupplyPolicy.cooldownBlocks(true, 6, 20, 0));
+        assertTrue(FoodSupplyPolicy.cooldownBlocks(true, 7, 8, 0));
+        assertTrue(FoodSupplyPolicy.cooldownBlocks(true, 3, 8, 1));
+        assertTrue(FoodSupplyPolicy.cooldownBlocks(true, 3, 8, -1));
+        assertTrue(FoodSupplyPolicy.cooldownBlocks(true, -1, 8, 0));
+        assertTrue(FoodSupplyPolicy.cooldownBlocks(true, 3, 0, 0));
+    }
+
+    @Test void timedOutTaskCanRestartForPersistentCriticalFoodDeficit() {
+        CooldownHost host = new CooldownHost();
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(3, 20, 0);
+        host.tick(C, w);
+        w.at(host.engine.current(C).orElseThrow().deadlineGameTime(), 0);
+        host.tick(C, w);
+        assertTrue(host.events.saw("side_task_skipped"));
+        host.tick(C, w);
+        assertTrue(host.engine.isActive(C), "time-based retry suppression cannot suppress real food deficit");
+    }
+
+    @Test void explicitSurvivalRequestUsesTheSameCooldownException() {
+        long settledAt = 1000L;
+        boolean coolingDown = FoodSupplyPolicy.cooldownActive(settledAt + 1000L, settledAt);
+        assertTrue(FoodSupplyPolicy.cooldownBlocks(coolingDown, 14, 8, 0));
+        assertFalse(FoodSupplyPolicy.cooldownBlocks(coolingDown, 3, 8, 0),
+                "the host requestFoodSupply gate must admit the new deficit");
+        assertTrue(FoodSupplyPolicy.cooldownBlocks(coolingDown, 3, 8, 2));
+    }
+
+    /** Uses the real engine/trigger with the host's existing settlement bookkeeping. */
+    private static final class CooldownHost {
+        long nowMs = 1_000L;
+        final Map<UUID, Long> lastDoneMs = new java.util.HashMap<>();
+        final RecordingEvents events = new RecordingEvents();
+        final SideTaskEngine engine = new SideTaskEngine(events, token -> token);
+
+        CooldownHost() {
+            engine.registerType(new FoodSupplySideTaskType());
+            engine.registerTrigger(new FoodSupplySideTaskTrigger(ctx ->
+                    !FoodSupplyPolicy.cooldownBlocks(
+                            FoodSupplyPolicy.cooldownActive(nowMs, lastDoneMs.getOrDefault(ctx.companionId(), 0L)),
+                            ctx.hunger(), ctx.health(), ctx.edibleCount())));
+        }
+
+        void tick(UUID id, FakeWorldPort world) {
+            boolean wasFood = engine.current(id)
+                    .map(t -> FoodSupplySideTaskType.TYPE_ID.equals(t.typeId())).orElse(false);
+            engine.tick(id, world, null, false);
+            if (wasFood && !engine.isActive(id)) lastDoneMs.put(id, nowMs);
+        }
+    }
+
     @Test void forcedStartIgnoresThresholdAndIsIdempotent() {
         RecordingEvents ev = new RecordingEvents();
         SideTaskEngine e = new SideTaskEngine(ev, token -> token);
