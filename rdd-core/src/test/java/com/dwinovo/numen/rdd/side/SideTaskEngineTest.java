@@ -5,6 +5,8 @@ import com.dwinovo.numen.rdd.side.sleep.SleepSideTaskType;
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
+import java.util.Map;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -411,5 +413,65 @@ class SideTaskEngineTest {
         }
 
         @Override public String renderContext(SideTask task, SideTaskWorldPort world) { return ""; }
+    }
+
+    @Test
+    void recurringSnapshotKeepsSpecAndSeparateTypeBinding() {
+        SideTaskEngine source = new SideTaskEngine(SideTaskEvents.NOOP, token -> token);
+        RecurringSideTaskSpec spec = new RecurringSideTaskSpec("daily:g:template", "planner_template", 3, 5,
+                RecurringSideTaskSpec.MissedPolicy.CATCH_UP, false, true, Map.of("asset_key", "minecraft:wheat"));
+        source.registerRecurring(spec, "actual_engine_type");
+        SideTaskEngine restored = new SideTaskEngine(SideTaskEvents.NOOP, token -> token);
+        restored.restore(source.toJson());
+        assertEquals(spec, restored.recurringSpec(spec.scheduleId()));
+        var json = com.google.gson.JsonParser.parseString(restored.toJson()).getAsJsonObject();
+        assertEquals("actual_engine_type", json.getAsJsonObject("recurringTypes").get(spec.scheduleId()).getAsString());
+    }
+
+    @Test
+    void legacySchemaTwoRestoresRuntimeWithoutInventingUnsavedSchedules() {
+        SideTaskEngine source = engine(new RecordingEvents());
+        source.tick(C, new FakeWorldPort().at(WINDOW, 0L), null, false);
+        String instance = source.current(C).orElseThrow().instanceId();
+        source.registerRecurring(new RecurringSideTaskSpec("not-in-old-file", "daily", 2, 1,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true), "daily");
+        var json = com.google.gson.JsonParser.parseString(source.toJson()).getAsJsonObject();
+        json.addProperty("schema", 2);
+        json.remove("recurringSpecs");
+        json.remove("recurringTypes");
+        SideTaskEngine restored = engine(new RecordingEvents());
+        restored.restore(json.toString());
+        assertEquals(instance, restored.current(C).orElseThrow().instanceId());
+        assertNull(restored.recurringSpec("not-in-old-file"), "old schema never saved a schedule to recover");
+    }
+
+    @Test
+    void malformedRecurringSnapshotFailsBeforeChangingExistingState() {
+        RecurringSideTaskSpec spec = new RecurringSideTaskSpec("daily:g:a", "daily", 2, 1,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true);
+        SideTaskEngine target = engine(new RecordingEvents());
+        target.tick(C, new FakeWorldPort().at(WINDOW, 0L), null, false);
+        target.registerRecurring(spec, "daily");
+        String before = target.toJson();
+        for (String fault : java.util.List.of("missing-map", "wrong-type-keys", "missing-anchor", "zero-interval",
+                "fractional-anchor", "unknown-policy", "wrong-identity", "null-spec", "missing-both-maps", "non-string-payload")) {
+            var json = com.google.gson.JsonParser.parseString(before).getAsJsonObject();
+            var record = json.getAsJsonObject("recurringSpecs").getAsJsonObject(spec.scheduleId());
+            switch (fault) {
+                case "missing-map" -> json.remove("recurringTypes");
+                case "missing-both-maps" -> { json.remove("recurringSpecs"); json.remove("recurringTypes"); }
+                case "non-string-payload" -> record.getAsJsonObject("data").addProperty("minimum", 1);
+                case "wrong-type-keys" -> json.getAsJsonObject("recurringTypes").remove(spec.scheduleId());
+                case "missing-anchor" -> record.remove("anchorGameDay");
+                case "zero-interval" -> record.addProperty("intervalGameDays", 0);
+                case "fractional-anchor" -> record.addProperty("anchorGameDay", 1.5);
+                case "unknown-policy" -> record.addProperty("missedPolicy", "NOT_A_POLICY");
+                case "wrong-identity" -> record.addProperty("scheduleId", "another-id");
+                case "null-spec" -> json.getAsJsonObject("recurringSpecs").add(spec.scheduleId(), com.google.gson.JsonNull.INSTANCE);
+                default -> throw new AssertionError(fault);
+            }
+            assertThrows(IllegalArgumentException.class, () -> target.restore(json.toString()), fault);
+            assertEquals(before, target.toJson(), "a bad schedule must not partially restore runtime or handled state: " + fault);
+        }
     }
 }

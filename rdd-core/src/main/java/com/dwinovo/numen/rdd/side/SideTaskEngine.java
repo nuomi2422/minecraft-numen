@@ -109,6 +109,11 @@ public final class SideTaskEngine {
         recurringTypes.put(spec.scheduleId(), typeId);
     }
 
+    /** 2026-11-12: immutable schedule probe; UNKNOWN is null, never a reconstructed schedule. */
+    public RecurringSideTaskSpec recurringSpec(String scheduleId) {
+        return recurringSpecs.get(scheduleId);
+    }
+
     public SideTaskType typeOf(String typeId) {
         return types.get(typeId);
     }
@@ -459,7 +464,7 @@ public final class SideTaskEngine {
 
     public String toJson() {
         JsonObject root = new JsonObject();
-        root.addProperty("schema", 2);
+        root.addProperty("schema", 3);
         root.add("runtime", runtime.toJsonObject());
         JsonObject handled = new JsonObject();
         for (Map.Entry<String, Long> e : handledGameDay.entrySet()) {
@@ -476,6 +481,8 @@ public final class SideTaskEngine {
             recurring.addProperty(e.getKey(), e.getValue());
         }
         root.add("recurringHandled", recurring);
+        root.add("recurringSpecs", GSON.toJsonTree(recurringSpecs));
+        root.add("recurringTypes", GSON.toJsonTree(recurringTypes));
         return GSON.toJson(root);
     }
 
@@ -484,6 +491,67 @@ public final class SideTaskEngine {
             return;
         }
         JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+        // Validate the added snapshot before mutating existing runtime/handled state.
+        // Schema 2 had no templates: absence is UNKNOWN, not evidence of a restored schedule.
+        boolean hasSpecs = root.has("recurringSpecs");
+        boolean hasTypes = root.has("recurringTypes");
+        Map<String, RecurringSideTaskSpec> savedSpecs = new LinkedHashMap<>();
+        Map<String, String> savedTypes = new LinkedHashMap<>();
+        if (hasSpecs != hasTypes || (root.has("schema") && root.get("schema").getAsInt() >= 3 && !hasSpecs)) {
+            throw new IllegalArgumentException("incomplete recurring schedule snapshot");
+        }
+        if (hasSpecs) {
+            if (!root.get("recurringSpecs").isJsonObject() || !root.get("recurringTypes").isJsonObject()) {
+                throw new IllegalArgumentException("recurring schedule snapshot must contain two objects");
+            }
+            for (var entry : root.getAsJsonObject("recurringSpecs").entrySet()) {
+                if (!entry.getValue().isJsonObject()) throw new IllegalArgumentException("invalid recurring spec: " + entry.getKey());
+                JsonObject record = entry.getValue().getAsJsonObject();
+                for (String field : List.of("scheduleId", "templateId", "intervalGameDays", "anchorGameDay",
+                        "missedPolicy", "enabled", "promptOnly", "data")) {
+                    if (!record.has(field) || record.get(field).isJsonNull()) {
+                        throw new IllegalArgumentException("recurring spec missing " + field + ": " + entry.getKey());
+                    }
+                }
+                if (!record.get("data").isJsonObject()
+                        || !record.get("scheduleId").isJsonPrimitive() || !record.getAsJsonPrimitive("scheduleId").isString()
+                        || !record.get("templateId").isJsonPrimitive() || !record.getAsJsonPrimitive("templateId").isString()
+                        || !record.get("intervalGameDays").isJsonPrimitive() || !record.getAsJsonPrimitive("intervalGameDays").isNumber()
+                        || !record.get("anchorGameDay").isJsonPrimitive() || !record.getAsJsonPrimitive("anchorGameDay").isNumber()
+                        || !record.get("missedPolicy").isJsonPrimitive() || !record.getAsJsonPrimitive("missedPolicy").isString()
+                        || !record.get("enabled").isJsonPrimitive() || !record.getAsJsonPrimitive("enabled").isBoolean()
+                        || !record.get("promptOnly").isJsonPrimitive() || !record.getAsJsonPrimitive("promptOnly").isBoolean()) {
+                    throw new IllegalArgumentException("invalid recurring spec fields: " + entry.getKey());
+                }
+                for (var datum : record.getAsJsonObject("data").entrySet()) {
+                    if (!datum.getValue().isJsonPrimitive() || !datum.getValue().getAsJsonPrimitive().isString()) {
+                        throw new IllegalArgumentException("invalid recurring payload: " + entry.getKey());
+                    }
+                }
+                try {
+                    record.getAsJsonPrimitive("intervalGameDays").getAsBigDecimal().intValueExact();
+                    record.getAsJsonPrimitive("anchorGameDay").getAsBigDecimal().longValueExact();
+                    RecurringSideTaskSpec spec = GSON.fromJson(record, RecurringSideTaskSpec.class);
+                    if (!entry.getKey().equals(spec.scheduleId()) || spec.scheduleId().isBlank()
+                            || spec.templateId().isBlank() || spec.intervalGameDays() <= 0 || spec.missedPolicy() == null) {
+                        throw new IllegalArgumentException("invalid recurring spec identity or schedule: " + entry.getKey());
+                    }
+                    savedSpecs.put(entry.getKey(), spec);
+                } catch (RuntimeException ex) {
+                    throw new IllegalArgumentException("invalid recurring spec: " + entry.getKey(), ex);
+                }
+            }
+            for (var entry : root.getAsJsonObject("recurringTypes").entrySet()) {
+                if (!entry.getValue().isJsonPrimitive() || !entry.getValue().getAsJsonPrimitive().isString()
+                        || entry.getValue().getAsString().isBlank()) {
+                    throw new IllegalArgumentException("invalid recurring type: " + entry.getKey());
+                }
+                savedTypes.put(entry.getKey(), entry.getValue().getAsString());
+            }
+            if (!savedSpecs.keySet().equals(savedTypes.keySet())) {
+                throw new IllegalArgumentException("recurring specs and types must have matching schedule ids");
+            }
+        }
         if (root.has("runtime")) {
             runtime.restore(root.getAsJsonObject("runtime"));
         }
@@ -498,6 +566,12 @@ public final class SideTaskEngine {
             for (var entry : root.getAsJsonObject("recurringHandled").entrySet()) {
                 recurringHandled.put(entry.getKey(), entry.getValue().getAsLong());
             }
+        }
+        if (hasSpecs) {
+            recurringSpecs.clear();
+            recurringSpecs.putAll(savedSpecs);
+            recurringTypes.clear();
+            recurringTypes.putAll(savedTypes);
         }
         deferredUntil.clear();
         if (root.has("deferredUntil")) {

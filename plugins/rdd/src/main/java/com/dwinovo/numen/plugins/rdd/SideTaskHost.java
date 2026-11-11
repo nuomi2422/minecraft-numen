@@ -144,11 +144,52 @@ final class SideTaskHost {
 
     /** 2026-11-08: planner DAILY nodes become real executable recurring side tasks. */
     static void registerDailySpecs(com.dwinovo.numen.rdd.core.TaskChain chain) {
-        try {
-            if (chain == null || chain.goal() == null) return;
-            java.util.List<com.dwinovo.numen.rdd.side.RecurringSideTaskSpec> built = new java.util.ArrayList<>();
-            for (var primary : chain.goal().primaryGoals()) {
-                for (var sub : primary.subtasks()) {
+        DailyRegistration.registerChain(chain, ENGINE);
+        persist();
+    }
+
+    /** Restore registration is separate from explicit new-plan updates. */
+    static void restoreDailySpecs(TaskChain chain) {
+        DailyRegistration.restoreChain(chain, ENGINE);
+        persist();
+    }
+
+    /** 2026-11-12: keep legal DAILY candidates even when mainline installation is rejected. */
+    static void registerDailyCandidates(com.dwinovo.numen.rdd.core.TaskChain chain,
+                                       java.util.List<Subtask> candidates) {
+        DailyRegistration.register(chain, candidates, ENGINE);
+        persist(); // a rejected main plan still owns a durable legal DAILY registration
+    }
+
+    /** Pure registration seam: loading it does not install MC event listeners. */
+    static final class DailyRegistration {
+        private static final Logger LOG = LoggerFactory.getLogger(DailyRegistration.class);
+
+        static void restoreChain(TaskChain chain, SideTaskEngine engine) {
+            registerChain(chain, engine, true);
+        }
+
+        static void registerChain(TaskChain chain, SideTaskEngine engine) {
+            registerChain(chain, engine, false);
+        }
+
+        private static void registerChain(TaskChain chain, SideTaskEngine engine, boolean missingOnly) {
+            if (chain == null) return;
+            register(chain, chain.goal().primaryGoals().stream()
+                    .flatMap(primary -> primary.subtasks().stream()).toList(), engine, missingOnly);
+        }
+
+        static void register(com.dwinovo.numen.rdd.core.TaskChain chain,
+                             java.util.List<Subtask> candidates, SideTaskEngine engine) {
+            register(chain, candidates, engine, false);
+        }
+
+        private static void register(TaskChain chain, java.util.List<Subtask> candidates,
+                                     SideTaskEngine engine, boolean missingOnly) {
+            try {
+                if (chain == null || chain.goal() == null) return;
+                java.util.List<com.dwinovo.numen.rdd.side.RecurringSideTaskSpec> built = new java.util.ArrayList<>();
+                for (var sub : candidates) {
                     if (sub.nodeType() != com.dwinovo.numen.rdd.api.NodeType.DAILY || sub.recurrence() == null) continue;
                     var rec = sub.recurrence();
                     var data = new java.util.LinkedHashMap<String, String>();
@@ -179,17 +220,25 @@ final class SideTaskHost {
                                     : com.dwinovo.numen.rdd.side.RecurringSideTaskSpec.MissedPolicy.SKIP,
                             true, false, data));
                 }
+                if (built.isEmpty()) {
+                    LOG.info("[rdd] daily specs: chain has no executable DAILY; keep existing specs");
+                    return;
+                }
+                for (var spec : built) {
+                    var previous = engine.recurringSpec(spec.scheduleId());
+                    // 2026-11-12: a saved chain may predate a newer rejected DAILY candidate snapshot.
+                    if (missingOnly && previous != null) continue;
+                    // Same template retry keeps its due day; a different template is an explicit replacement.
+                    if (previous != null && spec.templateId().equals(previous.templateId())) {
+                        spec = new com.dwinovo.numen.rdd.side.RecurringSideTaskSpec(
+                                spec.scheduleId(), spec.templateId(), spec.intervalGameDays(), previous.anchorGameDay(),
+                                spec.missedPolicy(), spec.enabled(), spec.promptOnly(), spec.data());
+                    }
+                    engine.registerRecurring(spec, com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType.TYPE_ID);
+                }
+            } catch (RuntimeException ignored) {
+                // spec registration must never break chain creation
             }
-            if (built.isEmpty()) {
-                LOG.info("[rdd] daily specs: chain has no executable DAILY; keep existing specs");
-                return;
-            }
-            ENGINE.clearRecurringForGoal(chain.goal().id());
-            for (var spec : built) {
-                ENGINE.registerRecurring(spec, com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType.TYPE_ID);
-            }
-        } catch (RuntimeException ignored) {
-            // spec registration must never break chain creation
         }
     }
 

@@ -169,8 +169,8 @@ final class RddGoalDriver {
                     int rev = chain.nextPlanRevision();
                     // id 以当前一级 id + 代次为前缀 → 跨级/跨重试/跨重启全局唯一
                     subs = buildInjection(pid, rev, specs);
-                    rt.expandCurrentPrimary(subs); // core 校验：非空/重复/已展开/状态合法
-                    SideTaskHost.registerDailySpecs(chain);
+                    acceptPlan(subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
+                            () -> rt.expandCurrentPrimary(subs)); // reject all-DAILY through the existing retry budget
                     ok = true;
                 } catch (RuntimeException ex) {
                     failure = "expansion rejected by core: " + ex.getMessage();
@@ -224,6 +224,13 @@ final class RddGoalDriver {
     /** Server stopped: no in-flight expansion or cooldown belongs to the next world. */
     static void clearAll() {
         STATES.clear();
+    }
+
+    /** Register DAILY before mainline validation; both expansion and replanning use this order. */
+    static void acceptPlan(List<Subtask> subs, java.util.function.Consumer<List<Subtask>> registerDaily,
+                           Runnable installMainline) {
+        registerDaily.accept(subs);
+        installMainline.run();
     }
 
     /** Package-private runtime injection seam: fixed specs in, Subtask list out (must keep DAILY). */

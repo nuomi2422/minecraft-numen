@@ -1508,8 +1508,8 @@ private static String withAssets(UUID companionId, String rddContext) {
                         // 计划代次进 id（代次本体在 TaskChain，随链持久化，重启不撞号）。
                         int rev = nextPlanRevision(companionId, chain);
                         subs = RddChainFactory.subtasksFromSpecs(primaryId, rev, specs);
-                        chain.replaceCurrentSubtasks(subs);
-                        SideTaskHost.registerDailySpecs(chain);
+                        RddGoalDriver.acceptPlan(subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
+                                () -> chain.replaceCurrentSubtasks(subs));
                         RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废
                         saveRuntimes();
                         publishTaskSnapshot(companionId, "replanned");
@@ -2874,11 +2874,19 @@ private static String safeDeathAttacker(NumenPlayer body) {
                     String json = Files.readString(f, StandardCharsets.UTF_8);
                     TaskChain chain = TaskChain.fromJson(json);
                     RUNTIMES.put(uuid, new RddRuntime(chain, assets(uuid)));
-        SideTaskHost.registerDailySpecs(chain);
+                    SideTaskHost.restoreDailySpecs(chain);
+                    if (chain.primaryStatus() == PrimaryGoalStatus.REPLANNING && chain.currentSubtask() == null
+                            && !chain.currentPrimary().unexpanded()) {
+                        RddMonitor.publish("chain_restore_replanning", Map.of("companionId", uuid.toString(),
+                                "primary", chain.currentPrimary().id(),
+                                "reason", "saved plan contains only DAILY; goal retained and requires a mainline plan"));
+                        publishTaskSnapshot(uuid, "chain_restore_replanning");
+                    }
                     // 懒链可能停靠在未展开一级：currentSubtask()=null，报阶段而非 NPE
                     Subtask restored = chain.currentSubtask();
                     String curLabel = restored != null
-                            ? restored.id() : ("unexpanded:" + chain.currentPrimary().id());
+                            ? restored.id() : ((chain.currentPrimary().unexpanded() ? "unexpanded:" : "replan_required:")
+                                    + chain.currentPrimary().id());
                     LOG.info("[rdd] 恢复任务链 {}（当前二级 {}）", uuid, curLabel);
                 } catch (Exception ex) {
                     LOG.warn("[rdd] 恢复任务失败 {}: {}", f.getFileName(), ex.toString());

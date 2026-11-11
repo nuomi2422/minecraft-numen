@@ -173,6 +173,7 @@ public final class TaskChain {
             primaryIndex = first;
             primaryStatus = PrimaryGoalStatus.PENDING;
         }
+        routeDailySources();
     }
     /** P1-C (2026-11-11): exact private completion candidate, never restart sanitization. */
     public synchronized TaskChain copyForCompletionCommit() {
@@ -253,6 +254,7 @@ public final class TaskChain {
         this.lastStartedAtMillis = 0L;
         this.planRevision++;
         this.stateVersion++;
+        routeDailySources();
     }
     public synchronized PrimaryGoalStatus primaryStatus() { return primaryStatus; }
 
@@ -340,12 +342,14 @@ public final class TaskChain {
     }
 
     /**
-     * 当前指针指向的二级目标。当前一级为未展开（懒加载、0 个二级）时返回 null——
+     * 当前指针指向的主线二级目标。未展开或仅有 DAILY 声明而无可执行主线时返回 null——
      * 链上没有可运行的当前二级，宿主应先把已生成二级注入再激活；null 不是合法可执行节点。
      */
     public synchronized Subtask currentSubtask() {
         PrimaryGoal cur = currentPrimary();
-        return cur.unexpanded() ? null : cur.subtasks().get(subtaskIndex);
+        if (cur.unexpanded()) return null;
+        Subtask selected = cur.subtasks().get(subtaskIndex);
+        return NodeTypePolicy.countsTowardMainline(selected.nodeType()) ? selected : null;
     }
     public synchronized PrimaryGoal currentPrimary() { return goal.primaryGoals().get(primaryIndex); }
 
@@ -355,7 +359,7 @@ public final class TaskChain {
         for (PrimaryGoal p : goal.primaryGoals()) {
             for (Subtask s : p.subtasks()) {
                 SubtaskStatus st = statuses.get(s.id());
-                if (st == SubtaskStatus.PENDING) out.add(s);
+                if (st == SubtaskStatus.PENDING && NodeTypePolicy.countsTowardMainline(s.nodeType())) out.add(s);
             }
         }
         return out;
@@ -432,6 +436,8 @@ public final class TaskChain {
             primaryStatus = PrimaryGoalStatus.WAITING;
             return false;
         }
+        requireMainline(currentPrimary().subtasks());
+        routeDailySources();
         primaryStatus = PrimaryGoalStatus.ACTIVE;
         if (statuses.get(currentSubtask().id()) == SubtaskStatus.PENDING) {
             // G3a：激活也是「开跑一次」——走统一入口计数（IC03）。基线仍按本路径的既有语义：
@@ -454,6 +460,8 @@ public final class TaskChain {
             primaryStatus = PrimaryGoalStatus.WAITING;
             return false;
         }
+        requireMainline(currentPrimary().subtasks());
+        routeDailySources();
         primaryStatus = PrimaryGoalStatus.ACTIVE;
         if (statuses.get(currentSubtask().id()) == SubtaskStatus.PENDING) {
             // G3a：统一入口（计数 + 执行身份作废 + 开工时刻），本路径照旧拍基线
@@ -484,6 +492,8 @@ public final class TaskChain {
             primaryStatus = PrimaryGoalStatus.WAITING;
             return false;
         }
+        requireMainline(currentPrimary().subtasks());
+        routeDailySources();
         primaryStatus = PrimaryGoalStatus.ACTIVE;
         if (statuses.get(currentSubtask().id()) == SubtaskStatus.PENDING) {
             // G3a：统一入口（计数 + 执行身份作废 + 开工时刻），本路径照旧拍基线
@@ -497,6 +507,8 @@ public final class TaskChain {
             throw new IllegalStateException("current primary unexpanded; expandCurrentPrimary(...) before start: "
                     + currentPrimary().id());
         }
+        requireMainline(currentPrimary().subtasks());
+        routeDailySources();
         if (primaryStatus == PrimaryGoalStatus.PENDING) primaryStatus = PrimaryGoalStatus.ACTIVE;
         if (primaryStatus != PrimaryGoalStatus.ACTIVE) throw new IllegalStateException("current subtask cannot start");
         beginAttempt(currentSubtask().id(), null, false);
@@ -821,6 +833,7 @@ public final class TaskChain {
                 throw new IllegalArgumentException("subtask id already used in chain: " + s.id());
             }
         }
+        requireMainline(generated);
         List<PrimaryGoal> primaries = new ArrayList<>(goal.primaryGoals());
         primaries.set(primaryIndex,
                 new PrimaryGoal(cur.id(), cur.description(), List.copyOf(generated), cur.waitFor(), false));
@@ -829,6 +842,7 @@ public final class TaskChain {
             statuses.put(s.id(), SubtaskStatus.PENDING);
         }
         subtaskIndex = 0;
+        routeDailySources();
         stateVersion++;   // G3b：展开注入 = 计划结构变化（安全提交）
     }
 
@@ -902,6 +916,7 @@ public final class TaskChain {
             // 绝不落到 WAITING——WAITING 是"缺前置资产"语义，二者的退出通道完全不同。
             case NEED_MORE_EVIDENCE, DEFER -> { /* 停在监督等待，等新的 CONFIRM/REJECT/REPLAN */ }
         }
+        routeDailySources();
     }
 
     /** REPLANNING 出口：宿主决定沿用现有二级计划 → 本级二级全量重置 PENDING，回到 PENDING 走依赖门/激活重跑。 */
@@ -909,7 +924,9 @@ public final class TaskChain {
         if (primaryStatus != PrimaryGoalStatus.REPLANNING) throw new IllegalStateException("not replanning: " + primaryStatus);
         PrimaryGoal cur = currentPrimary();
         if (cur.unexpanded()) throw new IllegalStateException("unexpanded primary cannot resume replanning: " + cur.id());
+        requireMainline(cur.subtasks());
         for (Subtask s : cur.subtasks()) {
+            if (!NodeTypePolicy.countsTowardMainline(s.nodeType())) continue; // recurring history is not a mainline retry
             statuses.put(s.id(), SubtaskStatus.PENDING);
             skipReasons.remove(s.id());
             pauseReasons.remove(s.id());
@@ -917,6 +934,7 @@ public final class TaskChain {
         }
         subtaskIndex = 0;
         primaryStatus = PrimaryGoalStatus.PENDING;
+        routeDailySources();
         clearExecutionMetadata(); // 重跑 = 旧执行身份/启动时间作废
     }
 
@@ -1017,6 +1035,7 @@ public final class TaskChain {
             if (statuses.containsKey(s.id()) && !wasInPrimary(cur.id(), s.id()))
                 throw new IllegalArgumentException("subtask id used outside the replaced primary: " + s.id());
         }
+        requireMainline(generated);
         List<Subtask> old = cur.subtasks();
         Set<String> freed = new HashSet<>();
         for (Subtask s : old) freed.add(s.id());
@@ -1035,6 +1054,7 @@ public final class TaskChain {
         }
         subtaskIndex = 0;
         primaryStatus = PrimaryGoalStatus.PENDING;
+        routeDailySources();
         clearExecutionMetadata(); // 换计划 = 旧执行身份/启动时间作废
     }
 
@@ -1087,6 +1107,7 @@ public final class TaskChain {
                 forgetAcquireBaseline(id);
             }
         }
+        routeDailySources();
         stateVersion++;            // G3c：补丁提交 = 安全提交
         committedPatches.addLast(Map.entry(patch.patchId(), stateVersion));
         while (committedPatches.size() > 16) {
@@ -1322,6 +1343,7 @@ public final class TaskChain {
                 primaryIndex = next;
                 primaryStatus = PrimaryGoalStatus.PENDING;
             }
+            routeDailySources();
             clearExecutionMetadata();   // 收口 = 旧的执行身份/启动时刻作废
         }
         return target.description();
@@ -1417,6 +1439,9 @@ public final class TaskChain {
         }
         if (working.isEmpty()) {
             return new PatchCheck(PlanPatch.Receipt.rejected("WOULD_EMPTY", "patch left no nodes"), null);
+        }
+        if (working.stream().noneMatch(sub -> NodeTypePolicy.countsTowardMainline(sub.nodeType()))) {
+            return new PatchCheck(PlanPatch.Receipt.rejected("NO_MAINLINE", "DAILY sources cannot be the entire main plan"), null);
         }
         return new PatchCheck(PlanPatch.Receipt.ok(stateVersion), List.copyOf(working));
     }
@@ -1614,7 +1639,8 @@ public final class TaskChain {
                 if (pauseReasons.containsKey(subtask.id())) item.put("pauseReason", pauseReasons.get(subtask.id()));
                 item.put("detectionMode", subtask.detectionMode().name());
                 item.put("condition", subtask.condition());
-                item.put("current", p == primaryIndex && s == subtaskIndex);
+                item.put("current", p == primaryIndex && s == subtaskIndex
+                        && NodeTypePolicy.countsTowardMainline(subtask.nodeType()));
                 // G3b：尝试次数进快照（G3a 的债：此前只能读持久化文件核对 IC03）
                 item.put("attempts", attempts.getOrDefault(subtask.id(), 0));
                 // ★ D20-C2（75号 15.4 基线可见性）：把 acquire 基线的存在性与取值暴露进快照。
@@ -1686,8 +1712,9 @@ public final class TaskChain {
         view.put("safePoint", safePoint);
         PrimaryGoal current = currentPrimary();
         view.put("currentPrimaryId", current.id());
-        // 当前一级未展开时诚实报"无当前二级"，而不是伪造占位节点。
-        view.put("currentSubtaskId", current.unexpanded() ? null : currentSubtask().id());
+        // 未展开或旧全 DAILY 停靠时诚实报"无可执行二级"，而不是派发周期声明。
+        Subtask selected = currentSubtask();
+        view.put("currentSubtaskId", selected == null ? null : selected.id());
         if (primaryStatus == PrimaryGoalStatus.WAITING && !current.waitFor().isEmpty()) {
             view.put("waitingFor", currentPrimary().waitFor().stream().map(AssetRequirement::assetKey).toList());
         }
@@ -1765,6 +1792,7 @@ public final class TaskChain {
             throw new IllegalArgumentException("restored status table missing");
         }
         chain.statuses.clear();
+        chain.skipReasons.clear(); // discard constructor routing defaults before loading persisted history
         for (String k : st.keySet()) {
             chain.statuses.put(k, SubtaskStatus.valueOf(st.get(k).getAsString()));
         }
@@ -1860,6 +1888,8 @@ public final class TaskChain {
         if (o.has("activeExecutionId") && !o.get("activeExecutionId").isJsonNull()) {
             chain.activeExecutionId = o.get("activeExecutionId").getAsString();
         }
+        chain.validateRestoredState();
+        chain.restoreMainlineRoute();
         // 在途执行归一（P0-4）：必须基于恢复后的状态表判，不能基于未恢复的链。
         if (chain.primaryStatus == PrimaryGoalStatus.ACTIVE) {
             Subtask cur = chain.currentSubtask();
@@ -1874,14 +1904,89 @@ public final class TaskChain {
         if (chain.primaryStatus == PrimaryGoalStatus.RECOVERING) {
             chain.activeExecutionId = null;
         }
-        chain.validateRestoredState();
         // 拍板 1：清理留账——validateRestoredState 内部把账写到 chain.lastSanitization。
         return chain;
     }
 
+
+    /** 2026-11-12: DAILY is handed to the existing recurring engine, never verified main work. */
+    private static void requireMainline(List<Subtask> subtasks) {
+        if (subtasks.stream().noneMatch(s -> NodeTypePolicy.countsTowardMainline(s.nodeType()))) {
+            throw new IllegalArgumentException("plan requires a mainline subtask; DAILY delegated to recurring side tasks");
+        }
+    }
+
+    private int nextMainlineIndex(int from) {
+        List<Subtask> subtasks = currentPrimary().subtasks();
+        for (int i = from; i < subtasks.size(); i++) {
+            if (NodeTypePolicy.countsTowardMainline(subtasks.get(i).nodeType())) return i;
+        }
+        return -1;
+    }
+
+    private void routeDailySources() {
+        // 2026-11-12: routing is not a migration of work already recorded in past stages.
+        if (primaryStatus == PrimaryGoalStatus.COMPLETED) return;
+        for (int index = primaryIndex; index < goal.primaryGoals().size(); index++) {
+            PrimaryGoal primary = goal.primaryGoals().get(index);
+            for (Subtask sub : primary.subtasks()) {
+                SubtaskStatus recorded = statuses.get(sub.id());
+                if (!NodeTypePolicy.countsTowardMainline(sub.nodeType())
+                        && recorded != SubtaskStatus.COMPLETED && recorded != SubtaskStatus.FAILED
+                        && recorded != SubtaskStatus.SKIPPED && recorded != SubtaskStatus.INVALIDATED) {
+                    statuses.put(sub.id(), SubtaskStatus.SKIPPED);
+                    skipReasons.put(sub.id(), "DAILY delegated to recurring side tasks; not mainline completion");
+                    pauseReasons.remove(sub.id());
+                }
+            }
+        }
+        if (currentPrimary().unexpanded()) return;
+        int next = nextMainlineIndex(subtaskIndex);
+        if (next >= 0) subtaskIndex = next;
+    }
+
+    /** Old DAILY receipts must not resume a DAILY body or manufacture a verified stage. */
+    private void restoreMainlineRoute() {
+        if (currentPrimary().unexpanded()) { routeDailySources(); return; }
+        if (nextMainlineIndex(0) < 0) {
+            // Retain old goals and their declarations. A new valid main plan is required, not a load failure.
+            if (primaryStatus != PrimaryGoalStatus.COMPLETED && primaryStatus != PrimaryGoalStatus.FAILED) {
+                primaryStatus = PrimaryGoalStatus.REPLANNING;
+                clearExecutionMetadata();
+            }
+            routeDailySources();
+            return;
+        }
+        boolean wasDaily = !NodeTypePolicy.countsTowardMainline(currentPrimary().subtasks().get(subtaskIndex).nodeType());
+        int next = nextMainlineIndex(subtaskIndex);
+        routeDailySources();
+        if (!wasDaily) return;
+        clearExecutionMetadata();
+        if (next < 0) {
+            // A legacy trailing DAILY may only leave behind already terminal main work.
+            for (int i = currentPrimary().subtasks().size() - 1; i >= 0; i--) {
+                Subtask sub = currentPrimary().subtasks().get(i);
+                if (NodeTypePolicy.countsTowardMainline(sub.nodeType())) {
+                    subtaskIndex = i;
+                    break;
+                }
+            }
+            if (primaryStatus == PrimaryGoalStatus.ACTIVE || primaryStatus == PrimaryGoalStatus.RECOVERING) {
+                if (currentSubtaskStatus() != SubtaskStatus.COMPLETED && currentSubtaskStatus() != SubtaskStatus.SKIPPED) {
+                    throw new IllegalArgumentException("legacy DAILY cursor has unfinished main work behind it");
+                }
+                primaryStatus = PrimaryGoalStatus.AWAITING_SUPERVISOR;
+            }
+        } else if ((primaryStatus == PrimaryGoalStatus.ACTIVE || primaryStatus == PrimaryGoalStatus.RECOVERING)
+                && currentSubtaskStatus() == SubtaskStatus.PENDING) {
+            primaryStatus = PrimaryGoalStatus.PENDING;
+        }
+    }
+
     private void advanceOrAwait() {
         activeExecutionId = null; // 二级离开 RUNNING：宿主执行身份作废
-        if (subtaskIndex + 1 < currentPrimary().subtasks().size()) { subtaskIndex++; return; }
+        int next = nextMainlineIndex(subtaskIndex + 1);
+        if (next >= 0) { subtaskIndex = next; return; }
         primaryStatus = PrimaryGoalStatus.AWAITING_SUPERVISOR;
     }
     private void requireCurrent(String id) { if (id == null || currentSubtask() == null || !currentSubtask().id().equals(id)) throw new IllegalArgumentException("stale subtask: " + id); }
