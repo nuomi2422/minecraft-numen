@@ -850,8 +850,6 @@ final class RddDecomposer {
         return sb.toString();
     }
 
-    static Map<String, Object> decomposeSchema() { return DECOMPOSE_TOOL.parameterSchema(); }
-
     /** 合成工具：让 LLM 直接以结构化 JSON 返回分解结果（引擎没有 response_format:json_object）。 */
     private static final IToolSpec DECOMPOSE_TOOL = new IToolSpec() {
         @Override public String name() { return "decompose_goal"; }
