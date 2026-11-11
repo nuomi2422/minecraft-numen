@@ -114,8 +114,8 @@ public final class CandidateGate {
     /**
      * 判一条事件。
      *
-     * @param sourceType  源事件的原始 {@code type}（不是 kind 家族 —— 「饿死」和「被打死」归因方向相反，
-     *                   压成同一个 kind 就没法写经验了）
+     * @param sourceType  源事件的原始 {@code type}（保留事件标签；starvation_death 是死亡时食物条为 0 的代理，
+     *                   不能据此推断直接死因，须结合 observation 中的死因和攻击者字段）
      * @param observation 源事件 {@code data} 已压平的一层（点路径 → 标量）
      * @param seenBefore  同一 {@link #fingerprint} 在此之前出现过几次；0 = 第一次见
      */
@@ -164,7 +164,7 @@ public final class CandidateGate {
     /** T2 的分类型判定；返回 {@code null} 表示「认不出来的类型」，交 UNDECIDABLE。 */
     private static Status decideT2(String type, Map<String, Object> obs) {
         switch (type) {
-            // 「被玩家打死」与「被怪打死」归因方向相反，RddPlugin:684-696 就是为此拆开两个 type 的
+            // 两类死亡都入队；源标签不裁决直接死因，原始归因字段保留给复盘。
             case "death":
             case "starvation_death":
             case "loop_detected":
@@ -190,7 +190,8 @@ public final class CandidateGate {
 
     private static final Map<String, String> T2_WHY = Map.of(
             "death", "同伴死亡（59 §4.1 T2 反例，价值最高）",
-            "starvation_death", "饿死（与被打死归因方向不同，单列一类）",
+            // 2026-11-11 instr-326035445924100-1: hunger0 标签与 mob/Zombie 死因同时存在。
+            "starvation_death", "死亡时食物条为 0 的代理事件；不据此判定直接饿死，直接死因须核对 deathCauseId/deathKind/deathAttacker（59 §4.1 T2）",
             "loop_detected", "同一子任务超出重试预算 = 这次没成",
             "repeat_gather", "采集步骤到达重试上限 = 这次没成",
             "recovery_failed", "死亡后恢复动作卡住 = 这次没成",

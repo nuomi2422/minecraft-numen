@@ -48,8 +48,8 @@ class CandidateGateTest {
     }
 
     /**
-     * 「饿死」与「被打死」必须分开判：B6 之前的 {@code kindOf} 把两者压成同一个 death 家族，
-     * 而 RddPlugin:684-696 特意拆成两个 type 就是因为归因方向相反。
+     * 两类源事件标签保留各自解释，但都建议入队；不能把 hunger0 代理等同于直接饿死。
+     * 此处保留旧的一致输入，下方用真实冲突输入核对归因字段和消费者。
      */
     @Test
     void starvationDeathIsDistinguishedFromBeingKilled() {
@@ -61,6 +61,45 @@ class CandidateGateTest {
         assertTrue(killed.enqueue());
         assertFalse(whyOf(starving, "T2").equals(whyOf(killed, "T2")),
                 "the two death types must not share one explanation");
+    }
+
+    /** 2026-11-11 instrumentation:815, instr-326035445924100-1: hunger proxy and mob cause coexist. */
+    @Test
+    void hungerProxyKeepsTheRealMobCauseThroughIntake() {
+        String line = """
+                {"schema_version":1,"event_id":"instr-326035445924100-1","timestamp":"2026-11-11T11:14:33.878482200Z","source":"numen","category":"rdd_instrumentation","type":"starvation_death","game_time":6471057,"data":{"companionId":"a43d753e-790d-472b-8d5b-dc18ac0afbc0","task":"","deathSeq":12,"deathCauseId":"mob","deathCauseMsg":"RDD was slain by Zombie","deathKind":"mob","lastDamageId":"mob","lastDamageName":"Zombie","deathAttacker":"Zombie","reason":"starvation","context":{"posX":20252,"posY":69,"isNight":true,"dimension":"minecraft:overworld","posZ":20115,"dayTime":15238,"lastObservedInventory":{},"invalidatedEntries":0,"bedDimension":"minecraft:overworld","bedDistance":495.99193541830897,"blockLight":0,"skyLight":15,"sleeping":false,"canSeeSky":true,"hasBed":true,"bedX":20506,"bedY":73,"bedZ":20541},"recent_trace":[],"trace_len":0,"trace_capacity":32}}
+                """;
+        FeedbackEvent ev = FeedbackChannel.parseLine(line, "historical-controlled-sample");
+        assertNotNull(ev);
+        assertEquals("instr-326035445924100-1", ev.eventId());
+        assertEquals("starvation_death", ev.sourceType());
+        assertEquals("death", ev.kind());
+        Map<String, Object> original = Map.copyOf(ev.observation());
+        assertEquals("mob", original.get("deathCauseId"));
+        assertEquals("mob", original.get("deathKind"));
+        assertEquals("Zombie", original.get("deathAttacker"));
+        assertEquals("RDD was slain by Zombie", original.get("deathCauseMsg"));
+        assertEquals("starvation", original.get("reason"));
+        String fingerprint = "starvation_death|deathcauseid=mob|deathattacker=zombie|deathkind=mob|reason=starvation";
+        assertEquals(fingerprint, CandidateGate.fingerprint(ev.sourceType(), original));
+        for (int seen : List.of(0, 1)) {
+            var d = CandidateGate.evaluate(ev.sourceType(), ev.observation(), seen);
+            assertTrue(d.enqueue());
+            assertEquals("T2", d.primaryTrigger());
+            assertEquals(CandidateGate.Status.MATCH, statusOf(d, "T2"));
+            assertEquals(seen == 0 ? CandidateGate.Status.NO_MATCH : CandidateGate.Status.MATCH, statusOf(d, "T3"));
+            assertEquals(original, ev.observation(), "explanation must not rewrite source attribution");
+            assertEquals(fingerprint, CandidateGate.fingerprint(ev.sourceType(), ev.observation()));
+            Memo memo = CandidateMemo.from(ev, d);
+            assertEquals("[T2/starvation_death]  / deathCauseId=mob / deathAttacker=Zombie / deathKind=mob / reason=starvation", memo.problem());
+            assertEquals("starvation_death", memo.stage());
+            assertTrue(memo.snapshot().contains("deathCauseMsg=RDD was slain by Zombie"));
+            assertTrue(memo.snapshot().contains("window_first=instr-326035445924100-1"));
+            assertEquals("deathCauseId=mob|deathAttacker=Zombie|deathKind=mob|reason=starvation",
+                    com.dwinovo.numen.plugins.learner.sample.SampleIntakeAdapter.causeOf(ev));
+            assertEquals("死亡时食物条为 0 的代理事件；不据此判定直接饿死，直接死因须核对 deathCauseId/deathKind/deathAttacker（59 §4.1 T2）",
+                    whyOf(d, "T2"), "candidate explanation must distinguish proxy state from direct cause");
+        }
     }
 
     @Test
