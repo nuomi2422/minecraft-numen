@@ -510,6 +510,14 @@ class RddMainlineWiringPinTest {
     }
 
     @Test
+    void blockPropertyFilterIsAppliedBeforeAnyBlockCanMatch() throws Exception {
+        String src = Files.readString(pluginSourceDir().resolve("RddWorldFacts.java"));
+        String body = methodBody(src, "blockNearby", "blockPropertiesMatch");
+        assertOrder(body, "validBlockProperties", "state.getValues()", "blockPropertiesMatch", "one.test(state)");
+        assertContains(body, "condition.containsKey(\"properties\")", "old callers retain presence-only semantics");
+    }
+
+    @Test
     void pendingSurvivalUsesFirstExpansionWithoutFailureBudget() throws Exception {
         String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
         String body = methodBody(src, "survivalPreempt", "RddGoalDriver.needExpansion");

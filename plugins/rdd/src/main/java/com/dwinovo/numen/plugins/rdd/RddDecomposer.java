@@ -657,7 +657,7 @@ final class RddDecomposer {
                     + "通用食物/木头/垫脚方块需求优先用 condition:{group:food|wood|blocks,minimum:数量}，组内按物品总数相加，禁止同时给asset_key。"
                     + "food只计直接可食用的东西，生肉/腐肉也计（捡回来就算推进），不计小麦/干草/生土豆/种子；wood原木和木板按件计，不换算配方。指定合成原料仍用asset_key。"
                     + "种子种植不要用 item_used 验收（右键点击会把失败点击也算进去，实测种子没少仍判完成）；"
-                    + "用 type=block_nearby 验收作物方块（wheat/beetroots/carrots/potatoes 等）或 container_at 验收收获物。"
+                    + "用 type=block_nearby 验收作物方块（wheat/beetroots/carrots/potatoes 等）；若目标是成熟小麦必须加 properties:{age:\"7\"}，不带 properties 只证明存在、不证明成熟；或 container_at 验收收获物。"
                     + "世界条件可用type=advancement(advancement ID)、entity_killed(entity ID,minimum)、structure(structure ID 或 #tag，可选dimension)、base(可选dimension)。"
                     + "另外三种读周围环境：type=biome(biome ID 或 #tag) 判「站在什么群系」；"
                     + "type=block_nearby(block ID 或 #tag, radius) 判「附近有没有这类方块」（矿石/刷怪笼/草捆这类没方块实体的也能查到，默认半径8，上限16）；"

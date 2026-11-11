@@ -371,7 +371,16 @@ public final class RddWorldFacts {
             if (single == null) return false;
             hits.add(single);
         }
+        if (condition.containsKey("properties")
+                && !WorldFactConditions.validBlockProperties(condition.get("properties"))) return false;
         Predicate<BlockState> hit = state -> {
+            if (condition.containsKey("properties")) {
+                Map<String, String> actual = new java.util.LinkedHashMap<>();
+                for (var entry : state.getValues().entrySet()) {
+                    actual.put(entry.getKey().getName(), String.valueOf(entry.getValue()));
+                }
+                if (!WorldFactConditions.blockPropertiesMatch(condition.get("properties"), actual)) return false;
+            }
             for (Predicate<BlockState> one : hits) {
                 if (one.test(state)) return true;
             }

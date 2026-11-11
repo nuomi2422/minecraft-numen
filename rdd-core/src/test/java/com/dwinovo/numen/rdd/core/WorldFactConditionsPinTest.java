@@ -214,6 +214,19 @@ class WorldFactConditionsPinTest {
     }
 
     @Test
+    void blockPropertiesDistinguishMatureFromImmatureAndMissing() {
+        var mature = Map.of("age", "7");
+        assertTrue(WorldFactConditions.valid(c("type", "block_nearby", "block", "minecraft:wheat", "properties", mature)));
+        assertFalse(WorldFactConditions.blockPropertiesMatch(mature, Map.of("age", "6")));
+        assertTrue(WorldFactConditions.blockPropertiesMatch(mature, Map.of("age", "7")));
+        assertFalse(WorldFactConditions.blockPropertiesMatch(mature, Map.of()));
+        assertFalse(WorldFactConditions.blockPropertiesMatch(mature, null));
+        assertTrue(WorldFactConditions.valid(c("type", "block_nearby", "block", "minecraft:wheat")));
+        assertFalse(WorldFactConditions.valid(c("type", "block_nearby", "block", "minecraft:wheat", "properties", "age=7")));
+        assertFalse(WorldFactConditions.valid(c("type", "block_nearby", "block", "minecraft:wheat", "properties", Map.of("age", 7))));
+    }
+
+    @Test
     void blockNearbyNeedsABlockAndABoundedRadius() {
         assertTrue(WorldFactConditions.valid(c("type", "block_nearby", "block", "minecraft:diamond_ore")));
         assertTrue(WorldFactConditions.valid(c("type", "block_nearby", "block", "#minecraft:ores", "radius", 16)));

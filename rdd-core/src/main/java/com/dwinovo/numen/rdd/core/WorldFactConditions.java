@@ -59,7 +59,8 @@ public final class WorldFactConditions {
             case "block_nearby" -> (tag(condition.get("block")) || blockList(condition.get("blocks")))
                     && radius(condition.get("radius"), MAX_NEARBY_RADIUS)
                     && optionalPositive(condition.get("minimum"))
-                    && optionalAnchor(condition.get("anchor"));
+                    && optionalAnchor(condition.get("anchor"))
+                    && (!condition.containsKey("properties") || validBlockProperties(condition.get("properties")));
             case "container_nearby" -> tag(condition.get("item"))
                     && radius(condition.get("radius"), MAX_NEARBY_RADIUS)
                     && positive(condition.getOrDefault("minimum", 1));
@@ -94,6 +95,25 @@ public final class WorldFactConditions {
      * 装备事实只表示当前槽位内容，不证明本步穿戴动作或完整套装。
      * 未实现的字段（例如 mode=acquire）不能悄悄退化成当前持有。
      */
+    /** 2026-11-11: wheat existence must not satisfy a maturity requirement. */
+    public static boolean validBlockProperties(Object raw) {
+        if (!(raw instanceof Map<?, ?> map) || map.size() > 16) return false;
+        for (var e : map.entrySet()) {
+            if (!(e.getKey() instanceof String k) || !k.matches("[a-z0-9_]+")
+                    || !(e.getValue() instanceof String v) || !v.matches("[a-z0-9_]+")) return false;
+        }
+        return true;
+    }
+
+    /** Missing properties fail closed; callers omit this check for legacy presence-only matches. */
+    public static boolean blockPropertiesMatch(Object expected, Map<String, String> actual) {
+        if (!validBlockProperties(expected) || actual == null) return false;
+        for (var e : ((Map<?, ?>) expected).entrySet()) {
+            if (!e.getValue().equals(actual.get(e.getKey()))) return false;
+        }
+        return true;
+    }
+
     private static boolean equipmentValid(Map<String, Object> condition) {
         if (!Set.of("type", "item", "slot", "minimum", "dimension", "optional")
                 .containsAll(condition.keySet())) return false;
