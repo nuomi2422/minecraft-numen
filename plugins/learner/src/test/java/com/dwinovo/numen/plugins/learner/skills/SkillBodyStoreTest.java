@@ -9,7 +9,8 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 2026-11-08 046-A: body must be readable after write/restart; no path traversal. */
 class SkillBodyStoreTest {
     @Test void writeThenReadRoundTrip(@TempDir Path dir) {
-        String ref = SkillBodyStore.write(dir, "sk-test", 1, "abc123", "# body\nstep");
+        String body = "# body\nstep";
+        String ref = SkillBodyStore.write(dir, "sk-test", 1, Integer.toHexString(body.hashCode()), body);
         assertNotNull(ref);
         assertTrue(ref.startsWith("skill-body:"));
         assertEquals("# body\nstep", SkillBodyStore.read(dir, ref));

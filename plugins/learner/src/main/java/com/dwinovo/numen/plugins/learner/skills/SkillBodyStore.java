@@ -33,7 +33,13 @@ public final class SkillBodyStore {
         if (configDir == null || bodyRef == null || !bodyRef.startsWith("skill-body:")) return null;
         try {
             Path f = configDir.resolve("skill-bodies").resolve(bodyRef.substring("skill-body:".length()));
-            return Files.exists(f) ? Files.readString(f, StandardCharsets.UTF_8) : null;
+            if (!Files.exists(f)) return null;
+            String body = Files.readString(f, StandardCharsets.UTF_8);
+            // 2026-11-11: files may change after registration. Check the text read for delivery,
+            // using the existing content fingerprint; legacy/nohash refs remain integrity UNKNOWN.
+            var checksum = java.util.regex.Pattern.compile("@v\\d+-([0-9a-f]+)\\.md$").matcher(bodyRef);
+            if (checksum.find() && !Integer.toHexString(body.hashCode()).equals(checksum.group(1))) return null;
+            return body;
         } catch (IOException | RuntimeException e) {
             return null;
         }
