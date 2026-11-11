@@ -310,14 +310,19 @@ class RddPlanGuardTest {
             if (d.startsWith("铁装：")) iron = i;
         }
         assertTrue(home >= 0 && iron > home && trading > iron);
-        assertFalse(planned.stream().anyMatch(s -> s.description().equals(RddRiskPlanning.PREP_STAGE_DESC)),
-                "existing purposeful equipment preparation makes generic preparation unnecessary");
+        assertTrue(home < java.util.stream.IntStream.range(0, planned.size())
+                .filter(i -> planned.get(i).description().equals(RddRiskPlanning.PREP_STAGE_DESC))
+                .findFirst().orElse(planned.size()), "generic safety prep must not replace or precede preserved home supply");
         var chain = com.dwinovo.numen.rdd.core.RddChainFactory.fromStages(java.util.UUID.randomUUID(), "通关MC", planned);
-        assertNotNull(chain);
+        assertEquals(planned.stream().map(PrimarySpec::description).toList(),
+                chain.primaryGoals().stream().map(p -> p.description()).toList());
     }
 
     @Test
     void basicVillagersAndEquipmentDoNotUnlockLargeAutomation() {
+        String prompt = RddPlanningPolicy.block("通关MC", "stage_a");
+        assertTrue(prompt.contains("基本村庄供食、安家、交易与装备准备"));
+        assertFalse(RddPlanningPolicy.deferredOptional("通关MC").contains("村民交易体系"));
         var stages = List.of(new PrimarySpec("收村民农田、全套铁甲、基本交易所", List.of()),
                 new PrimarySpec("大型红石自动化刷铁机", List.of()));
         var guarded = RddPlanGuard.filterStages(stages, "通关MC");
