@@ -41,8 +41,10 @@ final class RddPlanningPolicy {
 
     /** 主题级可选分支关键词：出现在 Stage-A 主题里即视为可选工程。 */
     static final List<String> OPTIONAL_THEME_KEYWORDS = List.of(
-            "生电", "自动化", "交易所", "村民", "刷铁机", "刷怪塔", "农场", "树场", "羊毛机",
-            "分类存储", "信标", "满级", "全套", "顶级附魔");
+            // 2026-11-11: villagers, basic trading and equipment sets are not large optional engineering.
+            // The old bare-word test deleted the actual village food/home and trading stages.
+            "生电", "自动化", "刷铁机", "刷怪塔", "农场", "树场", "羊毛机",
+            "分类存储", "信标", "满级", "顶级附魔");
 
     /** 主人明确点名要这些时，可选升级才放行。 */
     static final List<String> REQUEST_KEYWORDS = List.of(

@@ -1,0 +1,96 @@
+{
+  "stages": [
+    {
+      "theme": "石器时代：砍树做木板木棍出木镐，木镐挖 6 个石头做石镐+石斧，到手立刻停手（不额外囤木头石头、不造设施）。出口：背包有石镐和石斧。",
+      "wait_for": []
+    },
+    {
+      "theme": "安家：带着石镐石斧出发找到村庄，弄到一张床并在较大房子内睡一次绑定重生点（床留在基地不挖走），把干草块搬回基地拆成面包当主食，收村民农田作物并补种，食物存箱子。出口：有床有睡过的基地、有面包存货。",
+      "wait_for": [
+        {
+          "asset_key": "minecraft:stone_pickaxe",
+          "minimum": 1
+        },
+        {
+          "asset_key": "minecraft:stone_axe",
+          "minimum": 1
+        }
+      ]
+    },
+    {
+      "theme": "铁装：用石质装备在浅层挖煤与铁，熔炼后优先做一套铁甲+铁盾+两个铁桶，再打两套铁甲与铁工具存箱备用；一处挖空就换矿点，不下深层。出口：身上有铁甲/铁盾，箱内有备用套。",
+      "wait_for": [
+        {
+          "asset_key": "minecraft:stone_pickaxe",
+          "minimum": 1
+        }
+      ]
+    },
+    {
+      "theme": "基地收口与交易雏形：只保核心屋（能睡有门）、箱子阵列、村民交易所三样；引村民进交易所配床与工作台（图书管理员/盔甲匠/武器匠/农民），平台火把防刷怪，不养牛羊不种田。出口：交易所成型且有至少一个锁定的职业村民。",
+      "wait_for": [
+        {
+          "asset_key": "minecraft:iron_ingot",
+          "minimum": 3
+        }
+      ]
+    },
+    {
+      "theme": "铁换绿宝石换钻石套：用浅层挖来的铁锭向盔甲匠/武器匠换绿宝石，凑够一套钻石甲+钻石剑即停不囤第二套；交易到 10 多级立刻用于附魔或铁砧，不囤经验。出口：身上有钻石甲与钻石武器。",
+      "wait_for": [
+        {
+          "asset_key": "minecraft:iron_ingot",
+          "minimum": 8
+        }
+      ]
+    },
+    {
+      "theme": "下界准备：在基地收集燧石与铁锭做打火石，凑 10 个黑曜石（废墟传送门框可直接挖取），另备食物、垫脚方块与铁甲防护。出口：背包有打火石与黑曜石 10，具备开通下界的条件。",
+      "wait_for": [
+        {
+          "asset_key": "minecraft:diamond_pickaxe",
+          "minimum": 1
+        },
+        {
+          "asset_key": "minecraft:iron_ingot",
+          "minimum": 1
+        }
+      ]
+    },
+    {
+      "theme": "下界取烈焰棒与末影珍珠：造好并点亮传送门进下界，找到下界堡垒（nether_bricks 结构）打烈焰人收集烈焰棒，安全处击杀末影人收集末影珍珠；穿铁甲、不当床用、不靠水保命，背包满或危险就回主世界。出口：烈焰棒与末影珍珠各有定量存货。",
+      "wait_for": [
+        {
+          "asset_key": "minecraft:flint_and_steel",
+          "minimum": 1
+        },
+        {
+          "asset_key": "minecraft:obsidian",
+          "minimum": 10
+        }
+      ]
+    },
+    {
+      "theme": "末地准备与定位：把珍珠与烈焰粉合成末影之眼，配足食物/垫脚/投掷补给，用末影之眼找出要塞并走到底下的末地传送门房间。出口：站在末地传送门房间、眼睛已就位。",
+      "wait_for": [
+        {
+          "asset_key": "minecraft:ender_pearl",
+          "minimum": 12
+        },
+        {
+          "asset_key": "minecraft:blaze_rod",
+          "minimum": 7
+        }
+      ]
+    },
+    {
+      "theme": "终局：放入末影之眼进入末地，先逐个破坏末影水晶再打末影龙，带足垫脚与食物防摔，龙死即通关。出口：末影龙死亡、通关成就达成。",
+      "wait_for": [
+        {
+          "asset_key": "minecraft:ender_eye",
+          "minimum": 12
+        }
+      ]
+    }
+  ]
+}

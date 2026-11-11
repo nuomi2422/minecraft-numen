@@ -287,6 +287,44 @@ class RddPlanGuardTest {
                 "书架是违规项，不得因为「其余步骤全已持有」而被放回执行");
     }
 
+    @Test
+    void realVillageSupplyAndTradingSurviveActualStageAPostProcessing() throws Exception {
+        String json;
+        try (var in = getClass().getResourceAsStream("/real-win-stage-a-20261111.json")) {
+            assertNotNull(in);
+            json = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        var raw = RddStagePlanner.parse(json);
+        assertEquals(9, raw.size());
+        var guarded = RddPlanGuard.filterStages(raw, "通关MC");
+        assertTrue(guarded.dropped().isEmpty());
+        assertEquals(raw, guarded.allowed());
+        var prepared = RddRiskPlanning.ensurePrepStage(
+                RddRiskPlanning.ensureSmeltPrepStage(guarded.allowed(), Map.of()), 12);
+        var planned = RddRiskPlanning.injectWaitFor(prepared, Map.of());
+        int home = -1, trading = -1, iron = -1;
+        for (int i = 0; i < planned.size(); i++) {
+            String d = planned.get(i).description();
+            if (d.startsWith("安家：")) home = i;
+            if (d.startsWith("基地收口与交易雏形")) trading = i;
+            if (d.startsWith("铁装：")) iron = i;
+        }
+        assertTrue(home >= 0 && iron > home && trading > iron);
+        assertFalse(planned.stream().anyMatch(s -> s.description().equals(RddRiskPlanning.PREP_STAGE_DESC)),
+                "existing purposeful equipment preparation makes generic preparation unnecessary");
+        var chain = com.dwinovo.numen.rdd.core.RddChainFactory.fromStages(java.util.UUID.randomUUID(), "通关MC", planned);
+        assertNotNull(chain);
+    }
+
+    @Test
+    void basicVillagersAndEquipmentDoNotUnlockLargeAutomation() {
+        var stages = List.of(new PrimarySpec("收村民农田、全套铁甲、基本交易所", List.of()),
+                new PrimarySpec("大型红石自动化刷铁机", List.of()));
+        var guarded = RddPlanGuard.filterStages(stages, "通关MC");
+        assertEquals(List.of(stages.get(0)), guarded.allowed());
+        assertEquals(1, guarded.dropped().size());
+    }
+
     // ---------- Stage-A 主题过滤 ----------
 
     @Test
@@ -318,7 +356,7 @@ class RddPlanGuardTest {
         // 回归：模型只给了可选分支，绝不能被「别清空」的保护放回执行
         List<PrimarySpec> stages = List.of(
                 new PrimarySpec("生电：刷铁机", List.of()),
-                new PrimarySpec("村民交易所", List.of()));
+                new PrimarySpec("大型自动化交易所", List.of()));
 
         RddPlanGuard.Stages out = RddPlanGuard.filterStages(stages, "通关MC");
 
