@@ -398,6 +398,8 @@ public final class RddPlugin implements NumenPlugin {
             return requiredContext;
         });
         numen.contributeState("rdd", "base_playbook", false, 5, RddPlugin::renderBasePlaybook);
+        // Optional: never displace mandatory body/safety state under prompt pressure.
+        numen.contributeState("rdd", "execution_reasons", false, 6, RddPlugin::renderExecutionReasons);
     }
 
     /** Model-requested task correction: only explicitly optional food may be skipped. */
@@ -653,6 +655,18 @@ public final class RddPlugin implements NumenPlugin {
         RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
         onServer(server, ticket, () -> beginPlanning(server, ticket, obj, "rdd_restart_mainline", requestId));
         return "mainline restart accepted: old chain discarded, new objective is being planned from scratch";
+    }
+
+    private static String renderExecutionReasons(UUID companionId) {
+        if (sideContextFor(companionId) != null || DECOMPOSING.contains(companionId)) return "";
+        RddRuntime rt = RUNTIMES.get(companionId);
+        if (rt == null) return "";
+        TaskChain chain = rt.chain();
+        synchronized (chain) {
+            Subtask current = chain.currentSubtask();
+            if (current == null || chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return "";
+            return RddSurvivalDoctrine.executionBlock(chain.currentPrimary().description(), current.description());
+        }
     }
 
     /** Optional construction workflow only; reads the same task strings as the former inline block. */

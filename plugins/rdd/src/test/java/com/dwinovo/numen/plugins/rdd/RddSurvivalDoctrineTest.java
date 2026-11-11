@@ -49,6 +49,24 @@ class RddSurvivalDoctrineTest {
     }
 
     @Test
+    void executorOnlyGetsRelevantReasonsAndNeverCachesPreviousTask() throws Exception {
+        installFakeGameDirWith("## 为什么这样规划\n"
+                + "- **为什么先找有干草的村庄**：快速粮储；床房恢复。没有干草按距离与安全换村。\n"
+                + "- **为什么建基地和基本交易所**：实际报价可用才交易，不中断食物。\n"
+                + "- **为什么要塞图书馆有经济价值**：后期取书。\n"
+                + "- **为什么先保护一、不急着保护四**：保护IV不是先决条件。\n");
+        String home = RddSurvivalDoctrine.executionBlock("安家", "获取一张床");
+        assertTrue(home.contains("快速粮储"));
+        assertTrue(home.contains("没有干草按距离与安全换村"));
+        assertTrue(home.contains("survival-doctrine.md"));
+        assertFalse(home.contains("图书馆"));
+        assertFalse(home.contains("保护IV"));
+        assertEquals("", RddSurvivalDoctrine.executionBlock("清点圆石", "放工作台"));
+        assertEquals("", RddSurvivalDoctrine.executionBlock(null, null));
+        assertTrue(home.length() < 1600);
+    }
+
+    @Test
     void 文件存在时block含标题与正文() throws Exception {
         installFakeGameDirWith("先挖木头，做木镐，再去村庄。");
         String block = RddSurvivalDoctrine.block();

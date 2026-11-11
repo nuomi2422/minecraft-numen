@@ -98,6 +98,27 @@ final class RddSurvivalDoctrine {
         }
     }
 
+    /** 2026-11-11: executor lacked the owner's reasons at village arrival. Select
+     * only current-stage reasons from the same source, never the full late-game guide.
+     * No per-companion cache: a new chain/stage cannot inherit an old selection. */
+    static String executionBlock(String phase, String step) {
+        String task = (phase == null ? "" : phase) + " " + (step == null ? "" : step);
+        if (!(task.contains("安家") || task.contains("村庄") || task.contains("干草"))) return "";
+        String source = block();
+        StringBuilder selected = new StringBuilder();
+        for (String line : source.split("\\R")) {
+            if (line.startsWith("- **为什么先找有干草的村庄**")
+                    || line.startsWith("- **为什么建基地和基本交易所**") && task.contains("安家")) {
+                // Keep complete conditions, not an arbitrarily truncated instruction.
+                if (selected.length() + line.length() <= 1400) selected.append(line).append('\n');
+            }
+        }
+        if (selected.isEmpty()) return "";
+        return "<execution_reasons source='config/numen/survival-doctrine.md'>\n"
+                + "当前阶段参考原因；按当前资源、距离、安全和已有资产取舍，不是额外任务。\n"
+                + selected + "</execution_reasons>";
+    }
+
     /** 测试/诊断用：强制丢弃缓存。 */
     static void invalidate() {
         cached = null;
