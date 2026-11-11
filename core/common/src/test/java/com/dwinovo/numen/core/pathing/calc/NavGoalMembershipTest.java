@@ -88,4 +88,17 @@ class NavGoalMembershipTest {
         assertTrue(exact.isAt(T), "exact stance: feet at the ore");
         assertFalse(exact.isAt(T.below()), "exact stance: one below rejected");
     }
+    @Test
+    void columnReferenceAndUnconstrainedColumnKeepTheirExistingNavigationMath() {
+        NavGoal loose = NavGoal.column(30430, 30160);
+        NavGoal band = NavGoal.columnAt(30430, 30160, 64, 3);
+        org.junit.jupiter.api.Assertions.assertEquals(new BlockPos(30430, 0, 30160), loose.center());
+        org.junit.jupiter.api.Assertions.assertEquals(loose.center(), band.center());
+        assertTrue(loose.isAt(new BlockPos(30430, -60, 30160)));
+        assertTrue(band.isAt(new BlockPos(30430, 67, 30160)));
+        assertFalse(band.isAt(new BlockPos(30430, 68, 30160)));
+        BlockPos from = new BlockPos(30439, 64, 30194);
+        org.junit.jupiter.api.Assertions.assertEquals(loose.heuristic(from), band.heuristic(from));
+        org.junit.jupiter.api.Assertions.assertEquals(loose.heuristic(from.above(100)), loose.heuristic(from));
+    }
 }

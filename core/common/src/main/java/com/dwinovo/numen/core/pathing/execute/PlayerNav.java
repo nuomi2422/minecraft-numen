@@ -12,6 +12,7 @@ import com.dwinovo.numen.core.pathing.bridge.ContextFactory;
 import com.dwinovo.numen.core.pathing.bridge.PoolSearchDispatcher;
 import com.dwinovo.numen.core.pathing.bridge.SearchHandle;
 import com.dwinovo.numen.core.pathing.calc.NavGoal;
+import com.dwinovo.numen.core.pathing.calc.NavGoalDiagnostics;
 import com.dwinovo.numen.core.pathing.execute.PathExecutor;
 import com.dwinovo.numen.core.pathing.execute.PathingCore;
 import com.dwinovo.numen.core.pathing.goal.GoalCompiler;
@@ -554,10 +555,10 @@ public final class PlayerNav {
         BlockPos center = goal.center();
         // 措辞对任何任务都成立:goto 自己重发带标记,别的任务先 goto 开路再做事
         String reason = String.format(
-                "no route without altering terrain (from %s toward %s, about %.0f blocks away). %s would %s."
+                "no route without altering terrain (%s). %s would %s."
                         + " Altering terrain needs consent: if that is acceptable, goto there with"
                         + " may_alter_terrain=true; otherwise pick another spot or ask.",
-                feet.toShortString(), center.toShortString(), Math.sqrt(feet.distSqr(center)),
+                NavGoalDiagnostics.approachGeometry(goal, feet),
                 result.getType() == PathCalcResult.Type.SUCCESS_TO_GOAL
                         ? "The cheapest route through" : "Even the first leg of a route through",
                 bill.describe());
@@ -575,11 +576,10 @@ public final class PlayerNav {
     private String noPathAutopsy(NavGoal goal, String qualifier) {
         BlockPos feet = PathExecutor.playerFeet(player);
         BlockPos center = goal.center();
-        double dist = Math.sqrt(feet.distSqr(center));
         StringBuilder r = new StringBuilder("no path to target").append(qualifier);
-        r.append(String.format(" (from %s toward %s, about %.0f blocks away;"
+        r.append(String.format(" (%s;"
                         + " the search burned its whole budget without finding a route",
-                feet.toShortString(), center.toShortString(), dist));
+                NavGoalDiagnostics.approachGeometry(goal, feet)));
         if (lastSearchContext != null && !lastSearchContext.hasThrowaway) {
             // hasThrowaway=false does NOT mean she is carrying nothing. It is equally false when
             // placement was never permitted this call (may_alter_terrain unset), and then not a

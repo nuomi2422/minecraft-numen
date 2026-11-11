@@ -25,4 +25,11 @@ class MoveToTaskRecordTest {
                 () -> new MoveToTaskRecord("t3", 0L, 0d, 65d, 0d, null, false));
         assertTrue(ex.getMessage().contains("placeholder"), ex.getMessage());
     }
+    @Test
+    void explicitZeroYIsARealBlockHeight() {
+        MoveToTaskRecord r = new MoveToTaskRecord("explicit-zero", 0L, 30430d, 0d, 30160d, null, true);
+        assertEquals(MoveToTaskRecord.Kind.BLOCK, r.kind);
+        assertEquals(0d, r.y);
+        assertTrue(r.mayAlterTerrain);
+    }
 }

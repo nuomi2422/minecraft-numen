@@ -6,6 +6,7 @@ import com.dwinovo.numen.task.TaskState;
 
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.core.pathing.calc.NavGoal;
+import com.dwinovo.numen.core.pathing.calc.NavGoalDiagnostics;
 import com.dwinovo.numen.core.pathing.execute.PlayerNav;
 import com.dwinovo.numen.core.pathing.execute.OscillationPolicy;
 import com.dwinovo.numen.core.task.base.AbstractCompanionTask;
@@ -471,7 +472,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         // needs a Y this kind doesn't have; heuristic/center reuse the column's own).
         NavGoal column = NavGoal.column(bx, bz);
         double radiusSqr = NEAR_SUCCESS_RADIUS * NEAR_SUCCESS_RADIUS;
-        return new NavGoal() {
+        return new NavGoalDiagnostics.ColumnTarget() {
             @Override public boolean isAt(BlockPos feet) {
                 double dx = feet.getX() - bx;
                 double dz = feet.getZ() - bz;
@@ -676,15 +677,14 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         //
         // 所以这里把水平/垂直**拆成两个数**，垂直为主因时明说是垂直。判定用的还是同一份
         // repDistance()，只是不再让一个垂直主导的三维数冒充水平距离。
+        // 2026-11-12 tools.jsonl:12419/12424: COLUMN 的 by=0 只是占位，不能据此报低 64 格。
         String geometry = switch (r.kind) {
-            case BLOCK, COLUMN -> {
-                double h = Math.sqrt(horizontalDistSqr(bx, bz));
-                int dy = by - gy;
-                yield String.format("stopped %.1f blocks short horizontally and %d blocks %s you",
-                        h, Math.abs(dy), dy > 0 ? "above" : "below");
-            }
-            case YLEVEL -> String.format("stopped at elevation y=%d, %d blocks short",
-                    gy, Math.abs(gy - by));
+            case BLOCK -> NavGoalDiagnostics.stoppedGeometry(NavGoal.exact(blockTarget),
+                    Math.sqrt(horizontalDistSqr(bx, bz)), gy);
+            // Diagnostic-only column: do not re-scan the surface just to report a failure.
+            case COLUMN -> NavGoalDiagnostics.stoppedGeometry(NavGoal.column(bx, bz),
+                    Math.sqrt(horizontalDistSqr(bx, bz)), gy);
+            case YLEVEL -> NavGoalDiagnostics.stoppedGeometry(NavGoal.yLevel(by), 0, gy);
             case FIND -> {
                 BlockPos n = finder.nearest();
                 yield n == null
