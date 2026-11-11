@@ -39,8 +39,49 @@ class AnnounceTextTest {
         String s = AnnounceText.reviewLine(2, 2, 0, 1, 0, 0, 0);
         assertNotNull(s);
         assertTrue(s.contains("2 条判定"), "要说判了几条: " + s);
-        assertTrue(s.contains("入库 2"), "要说入了几条: " + s);
+        assertEquals("[Numen/学习者] 复审了 2 条判定，已结算 2 条待审项；AC 草稿 1 条在等采纳", s);
         assertTrue(s.contains("AC 草稿 1 条"), "要说产物落了几条: " + s);
+    }
+
+    /** Selected source fields from learner.jsonl:30491-30493, rev-1794424382617-713 (2026-11-11T19:14:23Z). */
+    @Test
+    void settledThreeButStoredZeroDoesNotAnnounceKnowledgeStorage() {
+        var reviewed = com.google.gson.JsonParser.parseString("""
+                {"schema_version":1,"event_id":"learner-354824014070800","timestamp":"2026-11-11T19:14:23.569898500Z","source":"numen","category":"learner","type":"reviewed","data":{"review_id":"rev-1794424382617-713","companion":"a43d753e-790d-472b-8d5b-dc18ac0afbc0","reviewed":3,"committed":3,"restored":0}}
+                """).getAsJsonObject().getAsJsonObject("data");
+        var learned = com.google.gson.JsonParser.parseString("""
+                {"schema_version":1,"event_id":"learner-354824015052300","timestamp":"2026-11-11T19:14:23.570918100Z","source":"numen","category":"learner","type":"auto_learn","data":{"companion":"a43d753e-790d-472b-8d5b-dc18ac0afbc0","stored":0,"results":[{"memo_id":"ai-instr-78281859238400-10","outcome":"REJECTED","reason":"qualification rejected: not storable (no draft shell / no type / gate hard-fail); no entry stored","diagnostic_event":"experience_qualification_rejected","retryable":false},{"memo_id":"ai-instr-77552257470500-4","outcome":"REJECTED","reason":"qualification rejected: not storable (no draft shell / no type / gate hard-fail); no entry stored","diagnostic_event":"experience_qualification_rejected","retryable":false},{"memo_id":"ai-instr-77612563973300-5","outcome":"REJECTED","reason":"qualification rejected: not storable (no draft shell / no type / gate hard-fail); no entry stored","diagnostic_event":"experience_qualification_rejected","retryable":false}]}}
+                """).getAsJsonObject().getAsJsonObject("data");
+        var announced = com.google.gson.JsonParser.parseString("""
+                {"schema_version":1,"event_id":"learner-354824100520300","timestamp":"2026-11-11T19:14:23.656310100Z","source":"numen","category":"learner","type":"announce","data":{"companion":"a43d753e-790d-472b-8d5b-dc18ac0afbc0","said":true,"enabled":true,"min_gap_seconds":90,"reason":"OK","verdicts":3,"committed":3,"restored":0,"ac_landed":4,"ac_adopted":100,"carrier_pending":0,"ac_rejected":0}}
+                """).getAsJsonObject().getAsJsonObject("data");
+        assertEquals("rev-1794424382617-713", reviewed.get("review_id").getAsString());
+        assertEquals(reviewed.get("companion"), learned.get("companion"));
+        assertEquals(reviewed.get("companion"), announced.get("companion"));
+        assertEquals(3, reviewed.get("committed").getAsInt());
+        assertEquals(0, learned.get("stored").getAsInt());
+        assertEquals(3, learned.getAsJsonArray("results").size());
+        for (var result : learned.getAsJsonArray("results")) {
+            assertEquals("REJECTED", result.getAsJsonObject().get("outcome").getAsString());
+            assertEquals("experience_qualification_rejected",
+                    result.getAsJsonObject().get("diagnostic_event").getAsString());
+        }
+        assertTrue(announced.get("said").getAsBoolean());
+        assertEquals(reviewed.get("reviewed"), announced.get("verdicts"));
+        assertEquals(reviewed.get("committed"), announced.get("committed"));
+        assertEquals(reviewed.get("restored"), announced.get("restored"));
+        String line = AnnounceText.reviewLine(announced.get("verdicts").getAsInt(),
+                announced.get("committed").getAsInt(), announced.get("restored").getAsInt(),
+                announced.get("ac_landed").getAsInt(), announced.get("carrier_pending").getAsInt(),
+                announced.get("ac_rejected").getAsInt(), announced.get("ac_adopted").getAsInt());
+        assertEquals("[Numen/学习者] 复审了 3 条判定，已结算 3 条待审项；AC 草稿 4 条在等采纳；已采纳 100 条(在版本库，未上线)", line);
+        assertFalse(line.contains("入库"), "queue settlement is not persistence; all three were rejected");
+    }
+
+    @Test
+    void settlementKeepsRestorationAndAllAcCountsSeparate() {
+        assertEquals("[Numen/学习者] 复审了 7 条判定，已结算 3 条待审项，退回 4 条(没判出来，不丢)；AC 草稿 2 条在等采纳；已采纳 5 条(在版本库，未上线)；携带器草稿 6 条待审批；有 1 条 AC 草稿被拒收(原因见监测台)",
+                AnnounceText.reviewLine(7, 3, 4, 2, 6, 1, 5));
     }
 
     @Test

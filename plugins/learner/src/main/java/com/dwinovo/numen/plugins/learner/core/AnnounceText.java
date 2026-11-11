@@ -84,7 +84,10 @@ public final class AnnounceText {
     /**
      * 把一条复审结果拼成一句话。
      *
-     * <p><b>只报事实</b>：学了几条、产物落了什么、下游拒了什么。
+     * <p><b>只报事实</b>：待审项结算了几条、草稿处于什么状态、下游拒了什么。
+     * 2026-11-12：rev-1794424382617-713 结算 3 条但经验入库 0 条，不能把结算数称为入库数。
+     *
+     * @param committed 从待审队列结算移除的条数，不表示经验持久化条数
      *
      * @return 可以是 null（没什么可说的就别开口 —— 沉默优于噪声）
      */
@@ -97,7 +100,7 @@ public final class AnnounceText {
         }
         StringBuilder sb = new StringBuilder("[Numen/学习者] 复审了 ").append(verdictCount).append(" 条判定");
         if (committed > 0) {
-            sb.append("，入库 ").append(committed).append(" 条");
+            sb.append("，已结算 ").append(committed).append(" 条待审项");
         }
         if (restored > 0) {
             // 还原是真事实，必须说：主人要知道有东西没被判掉
