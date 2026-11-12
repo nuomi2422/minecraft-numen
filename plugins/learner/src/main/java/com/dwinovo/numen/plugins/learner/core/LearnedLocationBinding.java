@@ -50,7 +50,7 @@ public final class LearnedLocationBinding {
                 }
             }
             // Only traverse executable structure. Description/evidence may describe old JSON steps.
-            for (String key : new String[]{"steps", "params", "then", "else", "branches", "body"}) {
+            for (String key : new String[]{"steps", "children", "params", "then", "else", "branches", "body"}) {
                 JsonElement child = object.get(key);
                 if (child != null && (child.isJsonObject() || child.isJsonArray())) {
                     String why = inspect(child, path + "." + key);
@@ -62,7 +62,14 @@ public final class LearnedLocationBinding {
     }
 
     private static boolean literalNumber(JsonElement value) {
-        if (value == null || !value.isJsonPrimitive()) return false;
+        if (value == null) return false;
+        // AcxParamBinder resolves $from first, then $default when the current reference is absent.
+        // Neither a literal source nor a historical fallback is a current observation.
+        if (value.isJsonObject() && value.getAsJsonObject().has("$from")) {
+            JsonObject descriptor = value.getAsJsonObject();
+            return literalNumber(descriptor.get("$from")) || literalNumber(descriptor.get("$default"));
+        }
+        if (!value.isJsonPrimitive()) return false;
         var primitive = value.getAsJsonPrimitive();
         if (primitive.isNumber()) return true;
         if (!primitive.isString()) return false;

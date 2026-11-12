@@ -135,6 +135,16 @@ public final class AcxArtifactAdopter {
                 writeBack(it, "REJECTED", why, "");
                 continue;
             }
+            // 2026-11-12 046: legacy PENDING files bypass learner's new producer gate.
+            // Check this learned-artifact entrance only; manual world-specific library publication
+            // retains its existing contract. Parsed children come from the real ACX loader.
+            String location = locationProblem(def);
+            if (!location.isEmpty()) {
+                rejected++;
+                rows.add(new Adopted(artifactId, name, version, "REJECTED", location));
+                writeBack(it, "REJECTED", location, "");
+                continue;
+            }
             // 静态校验 problems 原样带出来：门禁拦下时人要能知道**为什么**
             List<String> problems = library.validate(def, knownAcNames);
             if (!problems.isEmpty()) {
@@ -166,6 +176,35 @@ public final class AcxArtifactAdopter {
     }
 
     // ── 内部 ──────────────────────────────────────────────────────────────
+
+    private static String locationProblem(AcxDefinition definition) {
+        for (var top : definition.steps()) {
+            for (var step : top.flattenSelfAndDescendants()) {
+                if (!"goto".equals(step.block())) continue;
+                for (String axis : new String[]{"x", "y", "z"}) {
+                    if (literalLocationNumber(step.params().get(axis))) {
+                        return "location-binding-required: step " + step.id() + ".params." + axis
+                                + " 含历史绝对位置或回退值；用当前观测的 $input/本次步骤输出重新绑定，"
+                                + "保留原 world/session 证据，不得将旧地点当当前事实";
+                    }
+                }
+            }
+        }
+        return "";
+    }
+
+    // No learner import/second parser: values are from AcxLoader's existing definition model.
+    // Mirrors AcxParamBinder's $from -> $default path, including numeric strings.
+    private static boolean literalLocationNumber(Object value) {
+        if (value instanceof Number) return true;
+        if (value instanceof Map<?, ?> descriptor && descriptor.containsKey("$from")) {
+            return literalLocationNumber(descriptor.get("$from"))
+                    || literalLocationNumber(descriptor.get("$default"));
+        }
+        if (!(value instanceof String text)) return false;
+        try { new java.math.BigDecimal(text.trim()); return true; }
+        catch (NumberFormatException dynamicOrOther) { return false; }
+    }
 
     private String noteFor(Map<String, Object> it) {
         return "学习者复审产物（review=" + str(it, K_REVIEW)
