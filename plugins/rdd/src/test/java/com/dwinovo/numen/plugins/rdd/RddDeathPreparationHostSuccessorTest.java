@@ -575,4 +575,138 @@ class RddDeathPreparationHostSuccessorTest {
         assertEquals(reads, f.equipmentReads, "future identity must fail before current SELF supplier");
         assertFalse(DeathPreparationHost.settlementIdentity(f.id, 29, before, f.live));
     }
+
+    /** Actual empty planner result -> engine terminal -> unverified settlement, with no active side left. */
+    private static Fixture pausedAtBody30() {
+        var f = new Fixture();
+        f.record(Map.of(), 30);
+        f.prepare();
+        assertEquals(1, f.callbacks.size());
+        f.callbacks.get(0).accept(List.of());
+        f.engine.tick(f.id, f, f.token(), false);
+        assertFalse(f.engine.isActive(f.id));
+        assertEquals(1, f.terminal.size());
+        String payload = String.valueOf(f.terminal.get(0).get("prepareResume"));
+        var terminal = DeathPreparation.resumeTask(payload);
+        assertTrue(DeathPreparationHost.settlementIdentity(f.id, 29, terminal, f.live));
+        assertTrue(DeathPreparation.settle(f.chain, payload, false, "planner unavailable"));
+        var paused = DeathPreparation.pausedTask(f.chain);
+        assertNotNull(paused);
+        assertEquals("29", paused.data().get("death_seq"));
+        assertEquals("30", paused.data().get("prepare_death_seq"));
+        assertEquals("0", paused.data().get("prepare_retries"));
+        assertTrue(f.chain.isPaused("iron"));
+        assertFalse(f.engine.isActive(f.id));
+        return f;
+    }
+
+    /** Same production entry as SideTaskHost; only MC nudge/persistence shell effects are controlled. */
+    private static boolean recheckPaused(Fixture f) {
+        return DeathPreparationHost.holdRecoveryPause(f.id, f.engine, f.chain, f, () -> {
+            f.tick();
+            f.persist();
+        });
+    }
+
+    @Test void pausedBody30ThenEmpty31RequestsFreshPreparationOnlyWhenRetryIsEligible() {
+        // Admission controls run before the candidate-red liveness assertion below.
+        for (String blocked : List.of("nonempty", "chain", "subject", "owner", "budget")) {
+            var c = pausedAtBody30();
+            var old = DeathPreparation.pausedTask(c.chain);
+            if (blocked.equals("budget")) {
+                var data = new LinkedHashMap<>(old.data());
+                data.put("prepare_retries", "2");
+                c.chain.resumeFromPaused("iron");
+                assertTrue(DeathPreparation.settle(c.chain, DeathPreparation.resumePayload(old.withData(data)),
+                        false, "retry budget exhausted"));
+            }
+            c.record(blocked.equals("nonempty") ? Map.of(CHEST, 1) : Map.of(), 31);
+            c.now = Long.parseLong(old.data().get("prepare_retry_at"));
+            if (blocked.equals("chain")) c.chain.nextPlanRevision();
+            if (blocked.equals("owner")) {
+                c.chain.resumeFromPaused("iron");
+                c.chain.pauseSubtask("iron", TaskChain.OWNER_PAUSE_REASON);
+                assertTrue(c.chain.isOwnerPause("iron"));
+            }
+            String pause = c.chain.pauseReason("iron");
+            if (blocked.equals("subject")) {
+                DeathPreparationHost.holdRecoveryPause(UUID.randomUUID(), c.engine, c.chain, c,
+                        () -> fail("wrong subject must not reopen"));
+            } else recheckPaused(c);
+            assertTrue(c.chain.isPaused("iron"), blocked);
+            assertEquals(pause, c.chain.pauseReason("iron"), blocked);
+            assertFalse(c.engine.isActive(c.id), blocked);
+            assertEquals(1, c.callbacks.size(), blocked);
+        }
+        var f = pausedAtBody30();
+        var old = DeathPreparation.pausedTask(f.chain);
+        var history = f.chain.satisfiedStages();
+        var trade = f.chain.currentPrimary().subtasks();
+        long retryAt = Long.parseLong(old.data().get("prepare_retry_at"));
+        f.record(Map.of(), 31); // production empty deaths do not enqueue another recovery side
+        f.now = retryAt - 1;
+        assertTrue(recheckPaused(f));
+        assertFalse(f.engine.isActive(f.id), "MISSING cannot bypass the existing 60s retry time");
+        assertEquals(1, f.callbacks.size());
+        f.now = retryAt;
+        f.sample = self(f.id, false, false, true);
+        String pause = f.chain.pauseReason("iron");
+        int stopped = f.stopped;
+        assertTrue(recheckPaused(f));
+        assertEquals(pause, f.chain.pauseReason("iron"), "UNKNOWN keeps the original paused payload");
+        assertEquals(stopped, f.stopped);
+        assertFalse(f.engine.isActive(f.id));
+        assertEquals(1, f.callbacks.size());
+        f.sample = self(f.id, false, false, false);
+        assertEquals(SideTaskWorldPort.PreparationState.MISSING,
+                RddDeathEquipment.facts(f.sample, old, Map.of(), null).state(), "independent current SELF is missing");
+        assertFalse(DeathPreparationHost.settlementIdentity(f.id, 29, old, f.live), "old30 terminal stays stale");
+        assertTrue(recheckPaused(f), "fresh preparation keeps the original main step paused");
+        // Expected red on the unchanged entry: old30 facts are UNKNOWN, so no fresh31 side is reopened.
+        assertTrue(f.engine.isActive(f.id), "eligible paused recovery must rebind to proven empty body31");
+        assertEquals("31", f.active().data().get("prepare_death_seq"));
+        assertEquals("29", f.active().data().get("death_seq"));
+        assertEquals("1", f.active().data().get("prepare_retries"));
+        assertEquals(2, f.callbacks.size(), "one fresh31 request through the real host callback");
+        String request = f.active().data().get("prepare_request");
+        assertNotNull(request);
+        assertTrue(recheckPaused(f));
+        assertEquals(request, f.active().data().get("prepare_request"));
+        assertEquals(2, f.callbacks.size());
+        assertFalse(DeathPreparationHost.settlementIdentity(f.id, 29, old, f.live));
+        assertTrue(f.chain.isPaused("iron"));
+        assertEquals(history, f.chain.satisfiedStages());
+        assertEquals(trade, f.chain.currentPrimary().subtasks());
+        assertEquals("iron", f.chain.currentSubtask().id());
+        assertNotNull(RddDeathLedger.openDeath(f.id, 29));
+    }
+
+    @Test void pausedBody30ThenEmpty31RechecksCurrentReadyWithoutReusingOldTerminal() {
+        var f = pausedAtBody30();
+        var old = DeathPreparation.pausedTask(f.chain);
+        var history = f.chain.satisfiedStages();
+        var trade = f.chain.currentPrimary().subtasks();
+        f.record(Map.of(), 31);
+        f.now = Long.parseLong(old.data().get("prepare_retry_at"));
+        f.sample = self(f.id, false, false, true);
+        String pause = f.chain.pauseReason("iron");
+        assertTrue(recheckPaused(f));
+        assertEquals(pause, f.chain.pauseReason("iron"));
+        assertFalse(f.engine.isActive(f.id));
+        f.sample = self(f.id, true, false, false);
+        assertEquals(SideTaskWorldPort.PreparationState.READY,
+                RddDeathEquipment.facts(f.sample, old, Map.of(), null).state(), "current SELF really wears the obligation");
+        assertFalse(DeathPreparationHost.settlementIdentity(f.id, 29, old, f.live), "current SELF cannot authenticate old30");
+        // Expected red on the unchanged entry: the paused marker30 blocks even a current READY sample.
+        assertFalse(recheckPaused(f), "fresh31 READY must release recovery pause through current evidence");
+        assertFalse(f.chain.isPaused("iron"));
+        assertFalse(f.engine.isActive(f.id));
+        assertEquals(1, f.callbacks.size(), "READY does not request another preparation plan");
+        assertFalse(DeathPreparationHost.settlementIdentity(f.id, 29, old, f.live));
+        assertEquals(history, f.chain.satisfiedStages());
+        assertEquals(trade, f.chain.currentPrimary().subtasks());
+        assertEquals("iron", f.chain.currentSubtask().id());
+        assertNotNull(RddDeathLedger.openDeath(f.id, 29));
+        assertEquals(RddDeathLedger.State.UNVERIFIED, RddDeathLedger.latest(f.id).state());
+    }
 }
