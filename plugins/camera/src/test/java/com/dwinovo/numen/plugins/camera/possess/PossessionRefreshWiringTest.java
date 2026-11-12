@@ -47,11 +47,12 @@ class PossessionRefreshWiringTest {
 
     @Test void queuedWorkUsesCapturedBindingAndUuidBeforeMutatingObserver() throws IOException {
         String follow = method(source("possess/Possession.java"), "private static void rebindAndFollow()");
+        assertTrue(follow.indexOf("UUID expectedTarget = targetUuid;") >= 0);
         assertTrue(follow.indexOf("UUID expectedTarget = targetUuid;") < follow.indexOf("server.execute("));
         assertTrue(follow.indexOf("long scheduledVersion = bindingVersion.get();") < follow.indexOf("server.execute("));
         assertTrue(follow.contains("getPlayer(expectedTarget)"));
         assertFalse(follow.contains("getPlayerByName"), "known UUID must not switch to a same-name player");
-        int decision = follow.indexOf("FollowRefresh.mayRefresh(");
+        int decision = follow.indexOf("FollowRefresh.plan(");
         assertTrue(decision >= 0, "production must consume pure safety decision");
         assertTrue(decision < follow.indexOf("self.setCamera(target)"));
         assertTrue(decision < follow.indexOf("self.connection.teleport("));
@@ -61,7 +62,7 @@ class PossessionRefreshWiringTest {
 
     @Test void crossDimensionMovesOnlyObserverThenRebinds() throws IOException {
         String follow = method(source("possess/Possession.java"), "private static void rebindAndFollow()");
-        int dimension = follow.indexOf("if (self.serverLevel() != target.serverLevel())");
+        int dimension = follow.indexOf("if (action == FollowRefresh.Action.CHANGE_DIMENSION)");
         int move = follow.indexOf("self.teleportTo(target.serverLevel()");
         int camera = follow.indexOf("self.setCamera(target)");
         assertTrue(dimension >= 0 && dimension < move && move < camera, "cross-dimension API first; it resets camera");

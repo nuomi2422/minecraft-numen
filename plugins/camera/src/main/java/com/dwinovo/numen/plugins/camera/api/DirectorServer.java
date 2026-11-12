@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.camera.api;
 
 import com.dwinovo.numen.plugins.camera.cam.CameraRig;
 import com.dwinovo.numen.plugins.camera.lens.Lens;
+import com.dwinovo.numen.plugins.camera.possess.Possession;
 import com.dwinovo.numen.plugins.camera.rec.VideoRecorder;
 import com.dwinovo.numen.plugins.camera.tether.CompanionTether;
 
@@ -294,6 +295,18 @@ public final class DirectorServer {
         o.addProperty("target", CameraRig.targetName());
         Entity t = CameraRig.currentTarget();
         o.addProperty("targetVisible", t != null);
+
+        // Rig OFF / tether false do not mean vanilla spectate has been released.
+        JsonObject possession = new JsonObject();
+        possession.addProperty("active", Possession.isActive());
+        possession.addProperty("target", Possession.targetName());
+        possession.addProperty("targetUuid", Possession.targetUuid());
+        Entity cameraEntity = mc.getCameraEntity();
+        possession.addProperty("cameraMatchesTarget", Possession.isActive() && cameraEntity != null
+                && cameraEntity.getUUID().toString().equals(Possession.targetUuid()));
+        possession.addProperty("positionRefreshRequests", Possession.positionRefreshRequests());
+        possession.addProperty("status", Possession.status());
+        o.add("possession", possession);
 
         JsonObject cam = new JsonObject();
         Camera c = mc.gameRenderer.getMainCamera();

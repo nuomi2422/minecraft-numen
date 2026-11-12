@@ -79,6 +79,11 @@ public final class Possession {
     private static volatile String targetName = "";
     /** 2026-11-09: UUID resolved at possess time; rebind must not depend on name lookup. */
     private static volatile java.util.UUID targetUuid;
+    /** Invalidate queued work on release/rebind/world exit, including release then same UUID. */
+    private static final java.util.concurrent.atomic.AtomicLong bindingVersion = new java.util.concurrent.atomic.AtomicLong();
+    private static volatile boolean releasing;
+    /** Explicit connection.teleport calls returned; not client ACKs or proof of rendered chunks. */
+    private static volatile long positionRefreshRequests;
     private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(Possession.class);
     private static long lastFollowLog;
     private static long lastMissingLog;
@@ -101,7 +106,7 @@ public final class Possession {
     /** 目标暂时不在的累计 tick（死亡 / 卸载 / 重生窗口）。 */
     private static int missingTicks;
 
-    /** 重绑 + 补传的节流，10 tick 一次。 */
+    /** 重绑 + 观察者位置包的节流，20 个客户端 tick 一次。 */
     private static int rebindCooldown;
 
     /** 本进程只做一次「上次是否停在观察者」的恢复。 */
@@ -125,6 +130,15 @@ public final class Possession {
 
     public static String targetName() {
         return targetName;
+    }
+
+    public static String targetUuid() {
+        UUID id = targetUuid;
+        return id == null ? "" : id.toString();
+    }
+
+    public static long positionRefreshRequests() {
+        return positionRefreshRequests;
     }
 
     /** 给 {@code /cam status} 用的一行。 */
@@ -171,6 +185,10 @@ public final class Possession {
         previousMode = mc.gameMode.getPlayerMode();
         // Strict vanilla /spectate: do NOT force a client CameraType. The server camera
         // packet determines the view; forcing THIRD_PERSON_BACK is a divergence and can desync.
+        long requestVersion = bindingVersion.incrementAndGet();
+        UUID observerId = mc.player.getUUID();
+        releasing = false;
+        positionRefreshRequests = 0;
         active = true;
         targetName = n;
         targetUuid = resolvedUuid;
@@ -178,7 +196,9 @@ public final class Possession {
 
         final java.util.UUID targetUuidLocal = resolvedUuid;
         server.execute(() -> {
-            ServerPlayer self = server.getPlayerList().getPlayer(mc.player.getUUID());
+            if (!active || releasing || bindingVersion.get() != requestVersion
+                    || mc.getSingleplayerServer() != server) return;
+            ServerPlayer self = server.getPlayerList().getPlayer(observerId);
             if (self == null) {
                 fail("服务端找不到你的玩家实体（世界可能正在退出）");
                 return;
@@ -227,13 +247,18 @@ public final class Possession {
         if (!active) {
             return "现在没附身。";
         }
+        releasing = true;
+        bindingVersion.incrementAndGet();
         restoreCameraType(mc);
         IntegratedServer server = mc.getSingleplayerServer();
         if (server == null) {
             return releaseRemote(mc);
         }
+        UUID observerId = mc.player == null ? null : mc.player.getUUID();
+        long releaseVersion = bindingVersion.get();
         server.execute(() -> {
-            ServerPlayer self = mc.player == null ? null : server.getPlayerList().getPlayer(mc.player.getUUID());
+            if (mc.getSingleplayerServer() != server || bindingVersion.get() != releaseVersion) return;
+            ServerPlayer self = observerId == null ? null : server.getPlayerList().getPlayer(observerId);
             if (self == null) {
                 deactivate();
                 clearRecord();
@@ -262,6 +287,7 @@ public final class Possession {
         Minecraft mc = Minecraft.getInstance();
         flush(mc);
         if (mc.player == null || mc.level == null) {
+            if (active) deactivate(); // queued follow work must not outlive this world visit
             return;
         }
         recoverIfNeeded(mc);
@@ -326,7 +352,7 @@ public final class Possession {
     }
 
     /**
-     * 每 10 tick 校正一次：镜头必须真的绑在目标身上，身体必须真的在目标附近。
+     * 每 20 个客户端 tick 校正一次：重绑原 UUID，并给摄影者发原版位置包（约 1 秒）。
      *
      * <h2>为什么要「重绑」</h2>
      * 目标死亡后重生是一个**新实体**，服务端的 {@code camera} 字段仍然指着那个已经
@@ -334,33 +360,35 @@ public final class Possession {
      * 而不是名字，因为名字一样但实体 id 变了。
      *
      * <h2>为什么要「补传身体」</h2>
-     * 服务端 {@code absMoveTo} 确实每 tick 跟着镜头走，但**它在区块加载之前就开始跟了**：
-     * 目标跨区 / 被传送 / 重生到几百格外时，身体位置是对的、客户端却没收到周围的区块，
-     * 表现就是「人在那儿但镜头是空的」。显式传一次能把区块请求提前打出去。
+     * 原版 {@code ServerPlayer.tick} 会 {@code absMoveTo} 并更新服务端区块跟踪，但不会
+     * 因此每 tick 发本地玩家位置包。身体已同位不是客户端已同步的证据，故到期仍走
+     * {@code connection.teleport}；收到包、区块网格和最终画面是否正常须分别实机核验。
      */
     private static void rebindAndFollow() {
-        if (rebindCooldown > 0 || targetName == null || targetName.isEmpty()) {
+        if (releasing || rebindCooldown > 0 || targetName == null || targetName.isEmpty()) {
             return;
         }
         Minecraft mc = Minecraft.getInstance();
         IntegratedServer server = mc.getSingleplayerServer();
-        if (server == null || mc.player == null) {
+        UUID expectedTarget = targetUuid;
+        if (server == null || mc.player == null || expectedTarget == null) {
             return;
         }
-        rebindCooldown = 20; // 1s: keep the body at the target so its chunks load
+        rebindCooldown = 20; // keep the existing ~1s client-tick cadence, not a distance threshold
         UUID selfId = mc.player.getUUID();
-        String name = targetName;
+        long scheduledVersion = bindingVersion.get();
+        FollowRefresh.Binding scheduled = new FollowRefresh.Binding(scheduledVersion, selfId, expectedTarget);
         server.execute(() -> {
+            if (mc.getSingleplayerServer() != server) return;
             ServerPlayer self = server.getPlayerList().getPlayer(selfId);
-            ServerPlayer target = targetUuid != null
-                    ? server.getPlayerList().getPlayer(targetUuid)
-                    : server.getPlayerList().getPlayerByName(name);
-            if (self == null || target == null) {
-                // Keep a masked diagnostic: name-vs-UUID resolution is the suspected gap.
-                LOGGER.debug("[numencam] rebind target unresolved name={} uuid={} self={}",
-                        name, targetUuid != null ? targetUuid.toString().substring(0, 8) : "null", self != null);
-                return;
-            }
+            ServerPlayer target = server.getPlayerList().getPlayer(expectedTarget);
+            if (self == null || target == null) return; // wait for this UUID, never switch by name
+            FollowRefresh.Binding current = new FollowRefresh.Binding(bindingVersion.get(),
+                    mc.player == null ? null : mc.player.getUUID(), targetUuid);
+            FollowRefresh.Action action = FollowRefresh.plan(active && !releasing, scheduled, current, target.getUUID(),
+                    self.gameMode.getGameModeForPlayer() == GameType.SPECTATOR, target.isAlive(),
+                    self.serverLevel() == target.serverLevel());
+            if (action == FollowRefresh.Action.NONE) return;
             if (diagOn() && System.nanoTime() - lastFollowLog > 5_000_000_000L) {
                 lastFollowLog = System.nanoTime();
                 DIAG_LINES.incrementAndGet();
@@ -369,15 +397,18 @@ public final class Possession {
                         String.format("%.1f", target.getX()), String.format("%.1f", target.getY()), String.format("%.1f", target.getZ()), target.level().dimension().location(),
                         self.getCamera() == target ? "target" : "other", self.getClass().getSimpleName(), target.getClass().getSimpleName());
             }
+            if (action == FollowRefresh.Action.CHANGE_DIMENSION) {
+                // Only move the observer. Vanilla cross-dimension teleport resets the camera.
+                self.teleportTo(target.serverLevel(), target.getX(), target.getY(), target.getZ(), self.getYRot(), self.getXRot());
+                if (self.serverLevel() != target.serverLevel()) return; // dimension change refused
+            }
             if (self.getCamera() != target) {
                 self.setCamera(target);
             }
-            // 2026-11-09: 1s body refresh. The old >48 gate let the body lag ~10 blocks
-            // behind the camera entity; with render distance 2 the target's chunks then
-            // arrived late (sky/floating-chunk frames). Keep body co-located with target.
-            if (self.distanceTo(target) > 1.0) {
-                self.connection.teleport(target.getX(), target.getY(), target.getZ(), self.getYRot(), self.getXRot());
-            }
+            // Vanilla spectate tick does absMoveTo + chunkSource.move, NOT this position packet.
+            // The server distance can already be zero; still refresh the local observer once due.
+            self.connection.teleport(target.getX(), target.getY(), target.getZ(), self.getYRot(), self.getXRot());
+            positionRefreshRequests++; // request dispatched, not an ACK or proof of rendered chunks
         });
     }
 
@@ -389,6 +420,10 @@ public final class Possession {
                     + "单人存档不需要（本模块直接走集成服务端）。";
         }
         previousMode = mc.gameMode.getPlayerMode();
+        bindingVersion.incrementAndGet();
+        releasing = false;
+        positionRefreshRequests = 0;
+        targetUuid = clientSideUuid(n, mc);
         active = true;
         targetName = n;
         graceTicks = 100;
@@ -445,6 +480,9 @@ public final class Possession {
     // ── 状态与回执 ───────────────────────────────────────────────────────────
 
     private static void deactivate() {
+        bindingVersion.incrementAndGet();
+        targetUuid = null;
+        releasing = false;
         missingTicks = 0;
         rebindCooldown = 0;
         active = false;
