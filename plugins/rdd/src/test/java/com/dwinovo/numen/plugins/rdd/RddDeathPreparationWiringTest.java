@@ -13,14 +13,15 @@ class RddDeathPreparationWiringTest {
         return Files.readString(root.resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/"+name+".java"));
     }
     @Test void acceptedStrategyUsesRecoveryPlannerAndNeverReplacesTradingPlan() throws Exception {
-        String host=source("SideTaskHost");
+        String host=source("SideTaskHost"), seam=source("DeathPreparationHost");
         assertTrue(host.contains("DeathPreparation.choose(ENGINE, companionId, parsed)"));
         assertTrue(host.contains("tickDeathPreparation(ap, port)"));
-        assertTrue(host.contains("DeathPreparation.attach(ENGINE, id, rt.chain(), semantics, slots)"));
-        assertTrue(host.contains("RddDecomposer.decomposeSpecsWithHint(id, objective, 0, java.util.List.of(), hint"));
+        assertTrue(host.contains("DeathPreparationHost.tick(ap.getUUID(), ENGINE, port"));
+        assertTrue(seam.contains("DeathPreparation.attach(engine, id, rt.chain(), semantics, slots)"));
+        assertTrue(host.contains("RddDecomposer.decomposeSpecsWithHint("));
         assertTrue(host.contains("RddPlugin.onServer(server, ticket"));
-        assertTrue(host.contains("live.chain() == chain"));
-        assertTrue(host.contains("String.valueOf(latest.seq()).equals(deathSeq)"));
+        assertTrue(seam.contains("live.chain() == chain"));
+        assertTrue(seam.contains("String.valueOf(latest.seq()).equals(deathSeq)"));
         assertFalse(host.contains("replaceCurrentSubtasks"));
     }
     @Test void pausedRecoveryProjectionAndBoundedRecheckAreWiredToFinalHostConsumers() throws Exception {

@@ -433,48 +433,27 @@ final class SideTaskHost {
 
     /** Existing Stage-B decomposer plans a recovery objective, never the current trading theme. */
     private static void tickDeathPreparation(NumenPlayer ap, HostWorldPort port) {
-        UUID id = ap.getUUID();
-        if (!isDeathRecoveryActive(id)) return;
-        var rt = RddPlugin.runtime(id);
-        if (rt == null) return;
-        var active = ENGINE.current(id).orElse(null);
-        var latestBatch = com.dwinovo.numen.rdd.core.RddDeathLedger.latest(id);
-        if (active == null || latestBatch != null
-                && !String.valueOf(latestBatch.seq()).equals(active.data().get("death_seq"))) return;
-        var semantics = RddSemanticsStore.semantics(id);
-        Map<String, String> slots = new java.util.LinkedHashMap<>();
-        for (var primary : rt.chain().goal().primaryGoals()) {
-            for (var requirement : primary.waitFor()) declareWearSlot(requirement.assetKey(), slots);
-            for (var sub : primary.subtasks()) if (sub.condition().get("asset_key") instanceof String key)
-                declareWearSlot(key, slots);
-        }
-        for (var key : semantics.keySet()) declareWearSlot(key, slots);
-        com.dwinovo.numen.rdd.side.death.DeathPreparation.attach(ENGINE, id, rt.chain(), semantics, slots);
-        com.dwinovo.numen.rdd.side.death.DeathPreparation.tick(ENGINE, id, rt.chain(), port,
-                (objective, hint, done) -> {
-                    var server = ap.getServer();
-                    var ticket = RddPlugin.planningTicket(id);
-                    if (server == null) { done.accept(java.util.List.of()); return; }
-                    var chain = rt.chain();
-                    var recovery = ENGINE.current(id).orElse(null);
-                    String deathSeq = recovery == null ? "" : recovery.data().getOrDefault("death_seq", "");
-                    RddDecomposer.decomposeSpecsWithHint(id, objective, 0, java.util.List.of(), hint,
-                            specs -> RddPlugin.onServer(server, ticket, () -> {
-                                var live = RddPlugin.runtime(id);
-                                var latest = com.dwinovo.numen.rdd.core.RddDeathLedger.latest(id);
-                                if (live != null && live.chain() == chain
-                                        && (latest == null || String.valueOf(latest.seq()).equals(deathSeq))) {
-                                    done.accept(specs);
-                                    persist();
-                                }
-                            }));
-                });
-        var preparing = ENGINE.current(id).orElse(null);
-        if (preparing != null && "true".equals(preparing.data().get("prepare_required"))
-                && !"true".equals(preparing.data().get("prepare_body_stopped"))) {
-            com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(ap, "death preparation preempts original action");
-            ENGINE.setData(id, "prepare_body_stopped", "true");
-        }
+        DeathPreparationHost.tick(ap.getUUID(), ENGINE, port, new DeathPreparationHost.Access() {
+            @Override public RddRuntime runtime(UUID id) { return RddPlugin.runtime(id); }
+            @Override public Map<String, com.dwinovo.numen.rdd.policy.AssetSemantics> semantics(UUID id) {
+                return RddSemanticsStore.semantics(id);
+            }
+            @Override public void declareWearSlot(String key, Map<String, String> slots) {
+                SideTaskHost.declareWearSlot(key, slots);
+            }
+            @Override public com.dwinovo.numen.rdd.side.death.DeathPreparation.Planner capturePlanner(UUID id) {
+                var server = ap.getServer();
+                var ticket = RddPlugin.planningTicket(id);
+                if (server == null) return null;
+                return (objective, hint, done) -> RddDecomposer.decomposeSpecsWithHint(
+                        id, objective, 0, java.util.List.of(), hint,
+                        specs -> RddPlugin.onServer(server, ticket, () -> done.accept(specs)));
+            }
+            @Override public void stopBody() {
+                com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(ap, "death preparation preempts original action");
+            }
+            @Override public void persist() { SideTaskHost.persist(); }
+        });
     }
 
     /** Registry-declared armor/shield slots only: no suffix/free-text equipment classifier. */
@@ -702,12 +681,9 @@ final class SideTaskHost {
                     com.dwinovo.numen.api.WorldContextStamp.snapshot(), System.currentTimeMillis());
         }
         @Override public PreparationFacts deathPreparationFacts(UUID companionId, SideTask task) {
-            if (!ap.getUUID().equals(companionId)) return PreparationFacts.unknown("subject_mismatch");
-            var latest = com.dwinovo.numen.rdd.core.RddDeathLedger.latest(companionId);
-            if (latest != null && !String.valueOf(latest.seq()).equals(task.data().get("death_seq")))
-                return PreparationFacts.unknown("stale_death_batch");
-            return RddDeathEquipment.facts(equipmentSample(), task, RddRepairDispatch.backupFromBase(companionId),
-                    HostWorldPort::equipmentTag);
+            return DeathPreparationHost.facts(ap.getUUID(), companionId, task,
+                    () -> RddDeathEquipment.facts(equipmentSample(), task, RddRepairDispatch.backupFromBase(companionId),
+                            HostWorldPort::equipmentTag));
         }
         @Override public Boolean deathPreparationCondition(UUID companionId, Map<String, Object> condition) {
             if (!ap.getUUID().equals(companionId)) return null;
