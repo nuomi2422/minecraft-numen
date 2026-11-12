@@ -25,13 +25,14 @@ class RddDeathPreparationWiringTest {
         assertFalse(host.contains("replaceCurrentSubtasks"));
     }
     @Test void pausedRecoveryProjectionAndBoundedRecheckAreWiredToFinalHostConsumers() throws Exception {
-        String plugin=source("RddPlugin"),host=source("SideTaskHost");
+        String plugin=source("RddPlugin"),host=source("SideTaskHost"),seam=source("DeathPreparationHost");
         int render=plugin.indexOf("private static String renderStateContext");
         assertTrue(render>=0);
         String renderer=plugin.substring(render,plugin.indexOf("private static String carryHint",render));
         assertTrue(renderer.contains("DeathPreparation.pausedContext(chain)"),"final runtime provider must project recovery, not instruct continued trade");
         assertTrue(renderer.indexOf("DeathPreparation.pausedContext(chain)")<renderer.indexOf("retrievalTaskFields(chain)"));
-        assertTrue(host.contains("DeathPreparation.reopenPaused(ENGINE, ap.getUUID(), chain"),"existing paused recheck must have an actual bounded recovery consumer");
+        assertTrue(host.contains("DeathPreparationHost.holdRecoveryPause(ap.getUUID(), ENGINE, chain, port"));
+        assertTrue(seam.contains("DeathPreparation.reopenPaused(engine, id, chain, port)"),"existing paused recheck must have an actual bounded recovery consumer");
     }
     @Test void terminalCommitRechecksPreparationAndPauseHasNoOrdinaryConditionTimeoutBypass() throws Exception {
         String plugin=source("RddPlugin"), detector=source("RddDetector"), host=source("SideTaskHost");

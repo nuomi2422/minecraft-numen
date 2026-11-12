@@ -48,6 +48,14 @@ final class DeathPreparationHost {
                     + "|" + task.data().getOrDefault("prepare_retries", "0") : "");
     }
 
+    /** 2026-11-13: preserve the actual paused host order so successor liveness can be tested offline. */
+    static boolean holdRecoveryPause(UUID id, SideTaskEngine engine, com.dwinovo.numen.rdd.core.TaskChain chain,
+                                     SideTaskWorldPort port, Runnable retryActivated) {
+        if (!DeathPreparation.holdPaused(chain, id, port)) return false;
+        if (DeathPreparation.reopenPaused(engine, id, chain, port)) retryActivated.run();
+        return true;
+    }
+
     private static final String PREPARATION_BATCH = "prepare_death_seq";
 
     private DeathPreparationHost() {}
