@@ -95,8 +95,8 @@ public final class Possession {
     /** 请求发出后的宽限 tick：这段时间内不判「镜头被收回」，否则刚发完就被自己取消。 */
     private static volatile int graceTicks;
 
-    /** 目标连续"不在"多少 tick 才放弃附身。400 tick = 20 秒，够一次死亡重生。 */
-    private static final int GIVE_UP_TICKS = 400;
+    /** 目标连续"不在"多少 tick 才放弃附身。1200 tick = 60 秒，保留死亡复活窗口（2026-11-12）。 */
+    private static final int GIVE_UP_TICKS = 1200;
 
     /** 目标暂时不在的累计 tick（死亡 / 卸载 / 重生窗口）。 */
     private static int missingTicks;
@@ -283,7 +283,7 @@ public final class Possession {
             // ⚠ 2026-10-31 用户实测反馈的 bug 就在这一行：以前这里**立刻退出附身**，
             // 于是「同伴被僵尸打死 → 镜头瞬间弹回几百格外的旁观者身体 → 拍不了了」。
             // 同伴一夜死十几次，等于全程都在弹。现在改成：先给它一段时间重生，
-            // 期间不停重绑；连续 20 秒都找不回来才真正退出。
+            // 期间不停重绑；连续 60 秒都找不回来才真正退出。
             missingTicks++;
             long nowNs = System.nanoTime();
             if (diagOn() && (missingTicks == 1 || nowNs - lastMissingLog > 10_000_000_000L)) {

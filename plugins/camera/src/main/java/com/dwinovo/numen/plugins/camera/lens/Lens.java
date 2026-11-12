@@ -48,6 +48,9 @@ public final class Lens {
     /** 加夜视之前玩家本来就有没有。 */
     private static volatile boolean nvPreexisting;
 
+    /** 本次进世界已处理夜视；显式关闭后不重开，退世界才重置（2026-11-12）。 */
+    private static boolean worldJoinHandled;
+
     private static volatile String status = "默认（没改亮度和夜视）";
 
     private Lens() {
@@ -91,6 +94,7 @@ public final class Lens {
         if (mc.player == null) {
             return "还没进世界";
         }
+        worldJoinHandled = mc.level != null;
         if (on) {
             if (mc.player.hasEffect(MobEffects.NIGHT_VISION)) {
                 status = "夜视已开（本来就有，不是我们加的）";
@@ -119,6 +123,8 @@ public final class Lens {
     /** 精确还原亮度，并收掉我们加的夜视。幂等。 */
     public static void restore() {
         Minecraft mc = Minecraft.getInstance();
+        // /off 或 restore 可能先于本 tick 的 Lens.tick；也要阻止本次世界自动重开。
+        worldJoinHandled = mc.level != null;
         if (mc.options != null && !Float.isNaN(savedGamma)) {
             mc.options.gamma().set((double) savedGamma);
             mc.options.save();
@@ -132,11 +138,20 @@ public final class Lens {
         status = "默认（没改亮度和夜视）";
     }
 
-    /** 退出世界时自动还原 —— 别把亮度留在别人的存档里。 */
+    /** 进世界就绪后开一次本地摄影者夜视；退出还原，不因绑定/维度/手动关闭反复开启。 */
     public static void tick() {
         Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null && (!Float.isNaN(savedGamma) || nvOurs)) {
-            restore();
+        if (mc.level == null) {
+            if (!Float.isNaN(savedGamma) || nvOurs) {
+                restore();
+            }
+            worldJoinHandled = false;
+            return;
+        }
+        if (!worldJoinHandled && mc.player != null) {
+            worldJoinHandled = true;
+            // 复用本地玩家效果与原干预日志；不操作被跟拍的 AI 或服务端实体。
+            setNightVision(true);
         }
     }
 
