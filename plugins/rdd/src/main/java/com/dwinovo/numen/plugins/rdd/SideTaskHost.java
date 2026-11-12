@@ -478,7 +478,14 @@ final class SideTaskHost {
 
     /** Called only for recovery_not_verified pauses; fresh equipment evidence is the sole release. */
     static boolean holdRecoveryPause(NumenPlayer ap, TaskChain chain) {
-        return com.dwinovo.numen.rdd.side.death.DeathPreparation.holdPaused(chain, ap.getUUID(), new HostWorldPort(ap));
+        HostWorldPort port = new HostWorldPort(ap);
+        if (!com.dwinovo.numen.rdd.side.death.DeathPreparation.holdPaused(chain, ap.getUUID(), port)) return false;
+        if (com.dwinovo.numen.rdd.side.death.DeathPreparation.reopenPaused(ENGINE, ap.getUUID(), chain, port)) {
+            tickDeathPreparation(ap, port);
+            RddPlugin.nudge(ap.getUUID(), "[恢复复评] 原步骤仍暂停；请按恢复条件补齐当前装备，完成后再继续原主线。");
+            persist();
+        }
+        return true;
     }
 
     // ---- 世界端口 ----

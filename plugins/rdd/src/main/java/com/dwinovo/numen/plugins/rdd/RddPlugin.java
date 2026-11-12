@@ -750,6 +750,8 @@ public final class RddPlugin implements NumenPlugin {
                             uuid, chain.planRevision(), chain.chainInstanceId())) {
                 com.dwinovo.numen.api.RationaleContext.clear(uuid);
             }
+            String recoveryContext = com.dwinovo.numen.rdd.side.death.DeathPreparation.pausedContext(chain);
+            if (!recoveryContext.isBlank()) return withAssets(uuid, recoveryContext);
             // 2026-10-31（V-20261031-10 旁记）：链已完成时不能再把最后一个子任务当「当前目标」注入。
             // B5 实测：primary/subtask 都是 COMPLETED，但 runtime_state 仍 active=true + current_task
             // 「清点圆石堆」，AI 在「只放工作台」目标下照样去做了支线（目标漂移）。
@@ -1550,7 +1552,9 @@ private static String withAssets(UUID companionId, String rddContext) {
                     preparationIdentityValid = false; // still settle this batch's physical pickup facts below
                 }
             }
-            String key = companionId + "|" + seq;
+            var prepareTask = com.dwinovo.numen.rdd.side.death.DeathPreparation.resumeTask(preparePayload);
+            String key = companionId + "|" + seq + (preparationHandled && prepareTask != null
+                    ? "|prepare:" + prepareTask.data().getOrDefault("prepare_retries", "0") : "");
             if (!DEATH_SETTLEMENTS.add(key)) return;
             // 2026-10-31：产出侧写的是 terminal_reason（下划线），这里原先只读驼峰键
             // deathRecoveryTerminalReason —— 两者对不上，terminal 永远为空，

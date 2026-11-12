@@ -167,6 +167,27 @@ class DeathPreparationFlowTest {
         assertEquals("0",restored.data().get("prepare_index"));
         assertTrue(restored.data().get("prepare_reason").contains("MISSING"));
     }
+    @Test void pausedPayloadProjectionAndBoundedRecheckActuallyRequestsRecoveryAgain() {
+        var c=chain(); var p=new Port(); var events=new ArrayList<Map<String,Object>>(); var engine=engine(c,p,events);
+        DeathPreparation.choose(engine,C,DeathRecoveryDecision.PREPARE_AND_REPLAN);
+        DeathPreparation.tick(engine,C,c,p,(o,h,d)->d.accept(List.of()));
+        engine.tick(C,p,token(c),false);
+        assertFalse(engine.isActive(C));
+        assertTrue(DeathPreparation.settle(c,String.valueOf(events.get(0).get("prepareResume")),false,"temporary planner failure"));
+        assertTrue(DeathPreparation.pausedContext(c).contains("iron_chestplate"));
+        assertTrue(DeathPreparation.pausedContext(c).contains("recovery_not_verified"));
+        assertFalse(DeathPreparation.reopenPaused(engine,C,c,p),"no every-tick retries");
+        p.now+=1200;
+        assertTrue(DeathPreparation.reopenPaused(engine,C,c,p));
+        AtomicInteger called=new AtomicInteger();
+        DeathPreparation.tick(engine,C,c,p,(o,h,d)->{called.incrementAndGet();d.accept(List.of(new SubtaskSpec("wear chest again",CHEST,null)));});
+        assertEquals(1,called.get());
+        engine.tick(C,p,token(c),false); assertTrue(c.isPaused("iron"));
+        p.preparation=SideTaskWorldPort.PreparationState.READY;
+        engine.tick(C,p,token(c),false); assertFalse(engine.isActive(C));
+        assertTrue(DeathPreparation.settle(c,String.valueOf(events.get(1).get("prepareResume")),true,"ready"));
+        assertFalse(c.isPaused("iron")); assertEquals("iron",c.currentSubtask().id());
+    }
     @Test void materialsAndUnreachedFutureLoadoutDoNotBecomeDeathEquipmentObligations() {
         var c = new TaskChain(new Goal("g", "gear words alone", List.of(
             new PrimaryGoal("now", "trade iron armor words", List.of(Subtask.hardCoded("wheat", "wheat", Map.of("asset_key","minecraft:wheat","minimum",9)))),

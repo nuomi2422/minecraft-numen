@@ -98,10 +98,13 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
             if (ready) return SideTaskVerdict.complete("当前装备槽与明确备用需求已核验；恢复原主线", data);
             if (task.pastDeadline(world.gameTime())) {
                 data.put("prepare_reason", "recovery_not_verified: " + incomplete);
+                data.put("prepare_retry_at", String.valueOf(world.gameTime() + 1200L));
                 return SideTaskVerdict.skip("装备整备未核验，保护线到期；不冒充完成或物理丢失", data);
             }
-            if ("REJECTED".equals(data.get("prepare_plan_state")))
+            if ("REJECTED".equals(data.get("prepare_plan_state"))) {
+                data.put("prepare_retry_at", String.valueOf(world.gameTime() + 1200L));
                 return SideTaskVerdict.skip("装备恢复计划不可用；未核验并暂停原步骤，不伪造完成", data);
+            }
             return SideTaskVerdict.keep(PHASE_REEQUIP, data);
         }
         if (decision == DeathRecoveryDecision.ABANDON_RECOVERY) {
