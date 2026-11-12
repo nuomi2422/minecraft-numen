@@ -754,4 +754,25 @@ class RddDeathPreparationHostSuccessorTest {
         assertEquals(stopped, f.stopped);
         assertEquals(persisted, f.persisted, "retry callback is not invoked after activation refusal");
     }
+
+    @Test void pausedSuccessorMissingThenUnknownDoesNotCommitCandidate() {
+        var f = pausedAtBody30();
+        var old = DeathPreparation.pausedTask(f.chain);
+        f.record(Map.of(), 31);
+        f.now = Long.parseLong(old.data().get("prepare_retry_at"));
+        String pause = f.chain.pauseReason("iron");
+        int stopped = f.stopped, persisted = f.persisted;
+        int[] reads = {0};
+        f.beforeEquipmentRead = () -> {
+            if (++reads[0] >= 2) f.sample = self(f.id, false, false, true);
+        };
+        assertTrue(recheckPaused(f));
+        assertTrue(reads[0] >= 2, "initial MISSING must reach the current SELF recheck that becomes UNKNOWN");
+        assertEquals(pause, f.chain.pauseReason("iron"), "failed evidence recheck cannot commit body31 or clear body30's plan");
+        assertFalse(f.engine.isActive(f.id));
+        assertEquals(1, f.callbacks.size());
+        assertEquals(stopped, f.stopped);
+        assertEquals(persisted, f.persisted);
+        assertFalse(DeathPreparationHost.settlementIdentity(f.id, 29, old, f.live));
+    }
 }
