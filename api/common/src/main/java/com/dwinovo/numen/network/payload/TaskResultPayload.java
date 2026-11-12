@@ -20,8 +20,8 @@ import java.util.UUID;
  *
  * <h2>Pairing</h2>
  * {@link #toolCallId} matches the one in the originating {@link ExecuteToolPayload}
- * and, transitively, the LLM's tool_call.id — this is the field that
- * threads request→execution→reply through the network boundary.
+ * and is the per-send wire ID. ServerToolTransport resolves that key to the original
+ * ToolCall, whose unchanged model ID is used for the conversation result.
  *
  * <h2>Result body</h2>
  * Pre-serialised JSON string ({@link com.dwinovo.numen.task.TaskResult#toJson}).

@@ -60,6 +60,25 @@ public final class LocalToolCallLog {
     private LocalToolCallLog() {
     }
 
+    /**
+     * 2026-11-12: associate a model call with this send's independent wire ID.
+     * The existing tools stream needs both IDs to join client and server evidence;
+     * a second tool_call/tool_result would duplicate the server's authoritative writer.
+     * This records only a client association attempt, not server acceptance, persistence
+     * or verified execution. Reuse publish's exception isolation so journal failure cannot
+     * block ship or its reply. No resolver, durable mapping or alternate ledger is created.
+     */
+    public static void publishTransportBinding(UUID companionId, String modelCallId,
+                                               String wireCallId, String tool) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("model_call_id", modelCallId == null ? "" : modelCallId);
+        data.put("wire_call_id", wireCallId == null ? "" : wireCallId);
+        data.put("companion_id", companionId == null ? "" : companionId.toString());
+        data.put("tool", tool == null ? "" : tool);
+        data.put("journaled_by", "client-transport");
+        publish("tool_transport_binding", data);
+    }
+
     /** 反射结果缓存。工具类数量有限，且 invoke 的形状在运行期不变。 */
     private static final Map<Class<?>, Boolean> LOCAL_OVERRIDE = new ConcurrentHashMap<>();
 
