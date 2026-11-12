@@ -709,4 +709,20 @@ class RddDeathPreparationHostSuccessorTest {
         assertNotNull(RddDeathLedger.openDeath(f.id, 29));
         assertEquals(RddDeathLedger.State.UNVERIFIED, RddDeathLedger.latest(f.id).state());
     }
+
+    @Test void pausedEmptySuccessorBeforeRetryTimePreservesExactPausePayload() {
+        var f = pausedAtBody30();
+        var old = DeathPreparation.pausedTask(f.chain);
+        f.record(Map.of(), 31);
+        f.now = Long.parseLong(old.data().get("prepare_retry_at")) - 1;
+        assertEquals(SideTaskWorldPort.PreparationState.MISSING,
+                RddDeathEquipment.facts(f.sample, old, Map.of(), null).state());
+        String pause = f.chain.pauseReason("iron");
+        int stopped = f.stopped;
+        assertTrue(recheckPaused(f));
+        assertEquals(pause, f.chain.pauseReason("iron"), "not due means no body marker, plan, request, or budget rewrite");
+        assertFalse(f.engine.isActive(f.id));
+        assertEquals(1, f.callbacks.size());
+        assertEquals(stopped, f.stopped);
+    }
 }
