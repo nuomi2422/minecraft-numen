@@ -61,7 +61,12 @@ class PublishBoundaryBodyTest {
                  "validationSignals":[],"foundingSamples":["memo-1"],
                  "supersedes":["old@v1","old@v2"],"conflicts":[]}
                 """.formatted(status.name(), ref);
-        Files.writeString(dir.resolve("skills.jsonl"), json);
+        // 2026-11-12: open() reads JSONL one line at a time; a pretty JSON object is skipped.
+        Files.writeString(dir.resolve("skills.jsonl"),
+                com.google.gson.JsonParser.parseString(json).toString() + "\n");
+        SkillRegistry loaded = open(dir);
+        assertEquals(0, loaded.skippedLines(), "legacy fixture must load as one JSONL record");
+        assertTrue(loaded.get("old").isPresent(), "legacy fixture must expose the original entry");
     }
 
     private static void unchanged(Path dir, SkillRegistry reg, SkillEntry before, String disk) throws IOException {
