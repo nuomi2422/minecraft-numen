@@ -65,6 +65,8 @@ final class SkillTaskFeedback {
             if (body == null || body.isBlank()) throw new IllegalArgumentException("技能正文缺失/损坏");
             String digest = digest(body);
             if (action.equals("ADOPT_SKILL")) {
+                String location = com.dwinovo.numen.plugins.learner.core.LearnedLocationBinding.problem(body);
+                if (!location.isEmpty()) throw new IllegalArgumentException(location);
                 adopt(callId, task, ref, version, skill.bodyRef(), digest, body, tasks, token, reply);
             } else {
                 report(task, ref, version, skill, digest, tasks, token, ledger, reply);

@@ -142,6 +142,7 @@ public final class ArtifactOutbox {
                     "正文 " + body.length() + " 字符超过上限 " + MAX_BODY_CHARS + "，已拒收（截断会把错误藏起来）",
                     "");
         }
+        String location = kind == Kind.AC_SCRIPT ? LearnedLocationBinding.problem(body) : "";
         String hash = hash16(body);
         String safeName = sanitize(name == null || name.isBlank() ? kind.wire() : name);
         String artifactId = kind.wire() + "-" + companionId + "-" + sanitize(memoId) + "-" + hash;
@@ -155,6 +156,8 @@ public final class ArtifactOutbox {
             // 真撞了就如实报出来，不当成成功。
             String existing = readString(file);
             if (existing != null && existing.contains(hash)) {
+                // A rejected location draft stays rejected on retry; do not describe it as pending.
+                if (!location.isEmpty()) return new Delivery(artifactId, "REJECTED", location, file.toString());
                 return new Delivery(artifactId, "DUPLICATE", "这份草稿已经投过了（幂等，未重复写）",
                         file.toString());
             }
@@ -173,12 +176,13 @@ public final class ArtifactOutbox {
         o.addProperty("name", safeName);
         o.addProperty("body", body);
         o.addProperty("content_hash", hash);
-        o.addProperty("status", Status.PENDING.name());
-        o.addProperty("status_detail", "已交出，等下游表态");
+        o.addProperty("status", location.isEmpty() ? Status.PENDING.name() : Status.REJECTED.name());
+        o.addProperty("status_detail", location.isEmpty() ? "已交出，等下游表态" : location);
         o.addProperty("consumer_ref", "");
         o.addProperty("submitted_at", now);
         o.addProperty("updated_at", now);
-        JsonArrayShim.history(o, now, Status.PENDING.name(), "submitted");
+        JsonArrayShim.history(o, now, location.isEmpty() ? Status.PENDING.name() : Status.REJECTED.name(),
+                location.isEmpty() ? "submitted" : location);
 
         try {
             writeAtomic(file, GSON.toJson(o));
@@ -186,6 +190,7 @@ public final class ArtifactOutbox {
             // 落盘失败必须看得见：返回 FAILED + 原因，不吞成「已投递」
             return new Delivery(artifactId, "FAILED", "投递箱落盘失败: " + e, "");
         }
+        if (!location.isEmpty()) return new Delivery(artifactId, "REJECTED", location, file.toString());
         return new Delivery(artifactId, "LANDED", "已写入投递箱（尚未生效）", file.toString());
     }
 

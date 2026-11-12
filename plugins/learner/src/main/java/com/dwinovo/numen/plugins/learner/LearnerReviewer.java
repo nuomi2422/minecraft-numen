@@ -88,7 +88,12 @@ final class LearnerReviewer {
                   "steps":[{"id":"read","block":"get_self_status","params":{}},
                            {"id":"gate","block":"guard",
                             "params":{"conditions":[{"field":"$read.hp","op":"<","value":4}]}},
-                           {"id":"retreat","block":"goto","params":{"x":0,"y":0,"z":0}}]}
+                           {"id":"retreat","block":"goto","params":{"x":"$input.retreat.x","y":"$input.retreat.y","z":"$input.retreat.z"}}]}
+                 2026-11-12：历史工作台 2,88,-3 曾被写进可复用 goto.params 并直接交付当前任务。
+                 普通过程技能的位置必须用 ACX 已支持的 $input.<当前观测字段> 或本次步骤输出引用；
+                 如示例 retreat 由调用方从当前观测重新取值，缺输入应补观测，不能把旧坐标当默认值。
+                 世界专属资产/地点只能在说明与 evidence 保留原 world/session/事件边界，执行前重新核验；
+                 不得把历史坐标写成 goto.params 的固定 x/y/z。不要删除历史证据，也不要编造当前核验。
                  硬要求：
                    - 每个 step 必须有 **id**（唯一）、**block**（工具名）、**params**（对象）
                    - 用的是 block/params，**不是** action/args

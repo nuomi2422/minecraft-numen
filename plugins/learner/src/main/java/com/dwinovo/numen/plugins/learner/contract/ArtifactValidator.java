@@ -55,6 +55,8 @@ public final class ArtifactValidator {
         if (d.evidence().isEmpty()) {
             out.add(new Violation("artifact_without_evidence", "产物没有证据引用，无法追溯来源"));
         }
+        String location = com.dwinovo.numen.plugins.learner.core.LearnedLocationBinding.problem(d.body());
+        if (!location.isEmpty()) out.add(new Violation("location-binding-required", location));
         return new Verdict(out.isEmpty(), out);
     }
 }

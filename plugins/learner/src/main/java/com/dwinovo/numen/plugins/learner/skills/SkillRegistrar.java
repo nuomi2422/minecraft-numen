@@ -101,9 +101,13 @@ public final class SkillRegistrar {
         }
         try {
             SkillRegistry registry = registryFor(configDir);
-            int reg = 0, reuse = 0, revise = 0, conflict = 0, bodyMissing = 0;
+            int reg = 0, reuse = 0, revise = 0, conflict = 0, bodyMissing = 0, locationUnbound = 0;
             for (int i = 0; i < draft.artifacts().size(); i++) {
                 ArtifactDraft a = draft.artifacts().get(i);
+                if (!com.dwinovo.numen.plugins.learner.core.LearnedLocationBinding.problem(a.body()).isEmpty()) {
+                    locationUnbound++;
+                    continue;
+                }
                 String skillId = skillIdOf(a);
                 // bodyRef 必须包含**内容**指纹：否则正文改了 bodyRef 不变，
                 // SkillRegistry 会判成 REUSE（同一份内容），修订永远发生不了。
@@ -126,6 +130,8 @@ public final class SkillRegistrar {
                 }
             }
             String warn = bodyMissing > 0 ? "body_missing=" + bodyMissing : "";
+            if (locationUnbound > 0) warn += (warn.isEmpty() ? "" : "; ")
+                    + "location-binding-required=" + locationUnbound;
             return new Report(reg, reuse, revise, conflict, warn);
         } catch (RuntimeException e) {
             // 旁路写失败不许炸复盘：目录少一条比复盘失败好。

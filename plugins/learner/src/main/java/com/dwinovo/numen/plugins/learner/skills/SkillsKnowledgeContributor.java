@@ -56,6 +56,10 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
                 LOG.warning("[skills-retrieval] body missing ref=" + ref + " bodyRef=" + e.bodyRef());
                 continue;
             }
+            if (!com.dwinovo.numen.plugins.learner.core.LearnedLocationBinding.problem(body).isEmpty()) {
+                gaps.merge("location-binding-required", 1, Integer::sum);
+                continue; // original body/version remains on disk; no ref receipt for suppressed text
+            }
             // 条目边界是统一检索按条记账的契约（NumenPlugins.refFullyIncluded 依赖 ref=…</entry>）
             // 2026-11-12: model-facing text must expose the registry vN required by adopt_skill;
             // DeliveredRef metadata is not model-visible, and a body JSON version is not this version.
