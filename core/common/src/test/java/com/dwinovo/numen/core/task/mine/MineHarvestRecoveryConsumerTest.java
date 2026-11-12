@@ -22,9 +22,10 @@ import static org.junit.jupiter.api.Assertions.*;
  * V06 recovery regression (2026-11-12): a rejected mine suggested equipping a
  * stone pick, then rejected the same request after that equip succeeded.
  * Compiles the exact production preconditions() and canHarvest() methods and
- * the production Precondition/FailureType definitions, then consumes the returned
+ * noOreFailure() and production Precondition/FailureType/TaskState definitions, then consumes the returned
  * Failure. No copied harvest algorithm or production-message snapshot.
- * MC boundaries supply tool/drop eligibility, inventory slots and WorkProfile;
+ * The late branch is a source-confirmed sibling defect, not a second V06 game incident.
+ * MC boundaries supply tool/drop eligibility, inventory slots, remembered targets and WorkProfile;
  * vanilla tier tags, actual digging, async transport and model behavior are not
  * simulated. This keeps the failed recovery test independent of MC bootstrap;
  * a source/fixture compiler failure is a setup error, never a business red.
@@ -45,6 +46,8 @@ class MineHarvestRecoveryConsumerTest {
                 "    protected List<Precondition> preconditions() {");
         String harvest = method(Files.readString(main.resolve("pathing/util/BlockHelper.java")),
                 "    public static boolean canHarvest(Container inv, BlockState state) {");
+        String late = method(Files.readString(main.resolve("task/mine/MineCompanionTask.java")),
+                "    private TaskState noOreFailure() {");
         Path src = temp.resolve("src"), out = temp.resolve("classes");
         Files.createDirectories(out);
         List<String> args = new ArrayList<>(List.of("-encoding", "UTF-8", "-proc:none", "-d", out.toString()));
@@ -53,12 +56,13 @@ class MineHarvestRecoveryConsumerTest {
         add(src, args, "com/dwinovo/numen/core/FailureType.java",
                 Files.readString(main.resolve("FailureType.java")));
         add(src, args, "com/dwinovo/numen/task/TaskState.java",
-                "package com.dwinovo.numen.task; public enum TaskState { RUNNING, SUCCESS, FAILED }");
+                Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/task/TaskState.java")));
         add(src, args, "fixture/HarvestFixture.java", """
                 package fixture;
                 import java.util.*;
                 import com.dwinovo.numen.core.FailureType;
                 import com.dwinovo.numen.core.task.base.Precondition;
+                import com.dwinovo.numen.task.TaskState;
                 public class HarvestFixture {
                     // Boundary data: eligibility is supplied, not calculated from a tier table.
                     static class BlockState {
@@ -96,11 +100,32 @@ class MineHarvestRecoveryConsumerTest {
                 HARVEST_METHOD
                     }
                     static class Request {
-                        List<Block> targets; String label="diamond_ore+1";
+                        List<Block> targets; String label="diamond_ore+1"; int mined;
+                        int getMined() { return mined; }
                     }
                     final Player player; final Request r;
+                    final Set<Integer> unharvestable=new HashSet<>(), unworkable=new HashSet<>();
+                    Precondition.Failure terminal; int failureCalls;
+                    void fail(String message, FailureType type) {
+                        terminal=new Precondition.Failure(message,type); failureCalls++;
+                    }
                     HarvestFixture(Player player, Request r) { this.player=player; this.r=r; }
                 PRECONDITIONS_METHOD
+                LATE_METHOD
+                    public static Map<String,Object> runLate(String scenario, int gathered) {
+                        Request request=new Request(); request.mined=gathered;
+                        HarvestFixture task=new HarvestFixture(new Player(),request);
+                        switch(scenario) {
+                            // Boundary: prune's remembered target sets, not a second prune algorithm.
+                            case "unharvestable" -> task.unharvestable.addAll(Set.of(1,2));
+                            case "unworkable" -> task.unworkable.add(1);
+                            case "empty" -> { }
+                            default -> throw new IllegalArgumentException(scenario);
+                        }
+                        TaskState state=task.noOreFailure();
+                        return Map.of("state",state.name(), "type",task.terminal.type().name(),
+                                "message",task.terminal.message(), "failureCalls",task.failureCalls);
+                    }
                     public static Map<String,Object> run(String scenario, int slot) {
                         Player player=new Player(); Request request=new Request();
                         Block high=new Block("high",true), low=new Block("low",true);
@@ -127,7 +152,7 @@ class MineHarvestRecoveryConsumerTest {
                                 "reads", player.inventory.reads);
                     }
                 }
-                """.replace("HARVEST_METHOD", harvest).replace("PRECONDITIONS_METHOD", gate));
+                """.replace("HARVEST_METHOD", harvest).replace("PRECONDITIONS_METHOD", gate).replace("LATE_METHOD", late));
         var compiler = ToolProvider.getSystemJavaCompiler();
         assertNotNull(compiler, "JDK compiler is required for the real-method consumer");
         var diagnostics = new ByteArrayOutputStream();
@@ -199,6 +224,48 @@ class MineHarvestRecoveryConsumerTest {
         assertTrue(message.contains("obtain") && message.contains("retry"), "acquire a qualifying tool before retrying: " + message);
         assertTrue(message.contains("same") && message.contains("will not"), "distinguish acquisition from moving the same tool: " + message);
         assertFalse(message.contains("break_block"), "do not suggest bypassing the no-drop refusal");
+    }
+
+    @Test void lateUnharvestableKeepsFailedWrongToolAndGatheredCount() throws Exception {
+        var result = runLate("unharvestable", 4);
+        assertEquals("FAILED", result.get("state"));
+        assertEquals("WRONG_TOOL", result.get("type"));
+        assertEquals(1, result.get("failureCalls"));
+        String message = (String) result.get("message");
+        assertTrue(message.startsWith("found 2 diamond_ore+1"), message);
+        assertTrue(message.contains("gathered 4"), message);
+    }
+
+    @Test void lateRecoveryAlsoRequiresAcquisitionInsteadOfEquippingTheSameTool() throws Exception {
+        var result = runLate("unharvestable", 4);
+        assertEquals("FAILED", result.get("state"));
+        assertEquals("WRONG_TOOL", result.get("type"));
+        String message = ((String) result.get("message")).toLowerCase(java.util.Locale.ROOT);
+        assertFalse(message.contains("equip_item"), message);
+        assertFalse(message.contains("break_block"), message);
+        assertTrue(message.contains("inventory"), message);
+        assertTrue(message.contains("type") && message.contains("tier"), message);
+        assertTrue(message.contains("obtain") && message.contains("retry"), message);
+        assertTrue(message.contains("same") && message.contains("will not"), message);
+    }
+
+    @Test void lateUnworkableAndEmptyRetainTheirExistingReasons() throws Exception {
+        var unworkable = runLate("unworkable", 0);
+        assertEquals("FAILED", unworkable.get("state"));
+        assertEquals("NO_PATH", unworkable.get("type"));
+        assertEquals(1, unworkable.get("failureCalls"));
+        assertEquals("found 1 diamond_ore+1 nearby but no clear shot at any of them from any stance I could take; gathered 0",
+                unworkable.get("message"));
+        var empty = runLate("empty", 0);
+        assertEquals("FAILED", empty.get("state"));
+        assertEquals("MINED_OUT", empty.get("type"));
+        assertEquals(1, empty.get("failureCalls"));
+        assertEquals("no reachable diamond_ore+1 found in the loaded area around me", empty.get("message"));
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String,Object> runLate(String scenario, int gathered) throws Exception {
+        return (Map<String,Object>) fixture.getMethod("runLate", String.class, int.class).invoke(null, scenario, gathered);
     }
 
     @SuppressWarnings("unchecked")
