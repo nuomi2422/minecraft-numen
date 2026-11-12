@@ -261,4 +261,17 @@ class RddSurvivalDoctrineTest {
                 assertFalse(wire.contains(reason));
         }
     }
+
+    @Test
+    void coreHouseBaseConstructionAndTradingHallReceiveExistingBaseReason() throws Exception {
+        installExecutionReasons();
+        for (String[] task : List.of(new String[]{"核心屋", "集中储物"},
+                new String[]{"基地建设", "加固房屋"}, new String[]{"稳定补给", "整理交易所"})) {
+            assertSelectedReason(task[0], task[1], TRADE_REASON);
+            String tight = executionRequest(task[0], task[1], true).toString();
+            assertTrue(tight.contains("hp=1 danger=3 current-task"));
+            assertFalse(tight.contains("execution_reasons"));
+        }
+        assertEquals("", RddSurvivalDoctrine.executionBlock("清点圆石", "放工作台"));
+    }
 }
