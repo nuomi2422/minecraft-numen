@@ -39,7 +39,8 @@ import static org.junit.jupiter.api.Assertions.*;
  * - TaskRecord.publicId() is "t" + its own internal sequence. CurrentTaskPayload mirror and
  *   sleep_interrupt use that public ID, NOT getToolCallId; those exact-match checks are separate.
  * - TaskRecord.isExternalCall uses the "mcp-" prefix; a future built-in wire ID must not
- *   accidentally select the external route. External MCP IDs never pass through this transport.
+ *   accidentally select the external route. Actuator MCP IDs also pass through this transport;
+ *   their existing mcp- namespace must be retained on the wire.
  * - Wire uniqueness does not revoke an ExecuteToolPayload already sent to the server.
  *   Server admission, owner/BLOCKED loop state, persistence and real network ordering are
  *   outside this test. The abort positive checks transport targeting, not the full owner loop.

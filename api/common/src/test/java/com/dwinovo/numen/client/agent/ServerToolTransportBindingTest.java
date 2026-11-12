@@ -112,7 +112,7 @@ class ServerToolTransportBindingTest {
                   }
                   public static Map<String,Object> unique() {
                     setup(); UUID a=UUID.randomUUID(), b=UUID.randomUUID();
-                    String model="mcp-"+"p".repeat(124); List<String> results=new ArrayList<>();
+                    String model="p".repeat(128); List<String> results=new ArrayList<>();
                     List<String> ids=new ArrayList<>(); List<String> originalIds=new ArrayList<>();
                     for (int i=0;i<8;i++) {
                       UUID who=i%2==0?a:b;
