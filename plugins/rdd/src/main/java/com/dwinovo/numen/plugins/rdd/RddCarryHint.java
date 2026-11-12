@@ -298,7 +298,7 @@ final class RddCarryHint {
                         .append(esc(shorten(h.facts(), 120))).append("\">")
                         .append(esc(shorten(h.advice(), 200))).append("</alarm>");
             }
-            sb.append("<note>这些是提醒，不是指令；是否处理由你按当前任务判断，**不要为了提醒中断当前目标**。过期（stale）的提醒只作历史参考。</note>");
+            sb.append(RddAlarmResponseText.note(alarms, facts, System.currentTimeMillis()));
             sb.append("</alarms>");
         }
         return new Rendered(sb.toString(), alarms);
