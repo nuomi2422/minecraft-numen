@@ -35,6 +35,8 @@ class RddDeathPreparationWiringTest {
     }
     @Test void terminalCommitRechecksPreparationAndPauseHasNoOrdinaryConditionTimeoutBypass() throws Exception {
         String plugin=source("RddPlugin"), detector=source("RddDetector"), host=source("SideTaskHost");
+        assertTrue(plugin.contains("DeathPreparationHost.settlementIdentity(companionId, seq, task, rt)"));
+        assertTrue(plugin.contains("DeathPreparationHost.settlementKey(companionId, seq, preparationHandled, prepareTask)"));
         assertTrue(plugin.contains("SideTaskHost.deathPreparationResult(companionId, preparePayload)"));
         assertTrue(plugin.contains("DeathPreparation.settle(rt.chain(), preparePayload, prepareVerified, prepareReason)"));
         assertTrue(plugin.contains("boolean shouldReplan = !recovered && !preparationHandled"));

@@ -1542,19 +1542,14 @@ private static String withAssets(UUID companionId, String rddContext) {
             if (preparationHandled) {
                 var task = com.dwinovo.numen.rdd.side.death.DeathPreparation.resumeTask(preparePayload);
                 var rt = runtime(companionId);
-                var latest = RddDeathLedger.latest(companionId);
-                if (task == null || rt == null
-                        || !com.dwinovo.numen.rdd.side.death.DeathPreparation.sameChain(task, rt.chain())
-                        || !String.valueOf(seq).equals(task.data().get("death_seq"))
-                        || latest != null && latest.seq() != seq) {
+                if (!DeathPreparationHost.settlementIdentity(companionId, seq, task, rt)) {
                     RddMonitor.publish("death_prepare_settlement_rejected", Map.of(
                             "companionId", companionId.toString(), "deathSeq", seq, "reason", "stale_recovery_identity"));
                     preparationIdentityValid = false; // still settle this batch's physical pickup facts below
                 }
             }
             var prepareTask = com.dwinovo.numen.rdd.side.death.DeathPreparation.resumeTask(preparePayload);
-            String key = companionId + "|" + seq + (preparationHandled && prepareTask != null
-                    ? "|prepare:" + prepareTask.data().getOrDefault("prepare_retries", "0") : "");
+            String key = DeathPreparationHost.settlementKey(companionId, seq, preparationHandled, prepareTask);
             if (!DEATH_SETTLEMENTS.add(key)) return;
             // 2026-10-31：产出侧写的是 terminal_reason（下划线），这里原先只读驼峰键
             // deathRecoveryTerminalReason —— 两者对不上，terminal 永远为空，

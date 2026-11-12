@@ -33,6 +33,19 @@ final class DeathPreparationHost {
         void persist();
     }
 
+    /** 2026-11-13: mechanically shared with the actual plugin settlement consumer. */
+    static boolean settlementIdentity(UUID id, int dropSeq, SideTask task, RddRuntime runtime) {
+        var latest = RddDeathLedger.latest(id);
+        return task != null && runtime != null && DeathPreparation.sameChain(task, runtime.chain())
+                && String.valueOf(dropSeq).equals(task.data().get("death_seq"))
+                && (latest == null || latest.seq() == dropSeq);
+    }
+
+    static String settlementKey(UUID id, int dropSeq, boolean preparationHandled, SideTask task) {
+        return id + "|" + dropSeq + (preparationHandled && task != null
+                ? "|prepare:" + task.data().getOrDefault("prepare_retries", "0") : "");
+    }
+
     private static final String PREPARATION_BATCH = "prepare_death_seq";
 
     private DeathPreparationHost() {}
