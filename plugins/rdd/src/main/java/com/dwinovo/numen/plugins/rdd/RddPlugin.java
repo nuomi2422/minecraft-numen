@@ -534,7 +534,12 @@ public final class RddPlugin implements NumenPlugin {
                             "companionId", uuid.toString(), "objective", objective, "stages", stages.size(),
                             // A2（94 号）：阶段名必须机读——否则「任务图里有没有准备节点」只能靠文档口号。
                             "stageNames", stages.stream().map(com.dwinovo.numen.rdd.api.PrimarySpec::description).toList()));
-                    publishTaskSnapshot(uuid, "goal_staged");
+                    // Exact original server was revalidated by onServer before this callback.
+                    // Only this producer is migrated; missing identity remains UNKNOWN.
+                    com.dwinovo.numen.api.WorldContextStamp.Token observationToken = null;
+                    try { observationToken = com.dwinovo.numen.api.WorldContextStamp.capture(server); }
+                    catch (RuntimeException | LinkageError unavailable) { /* observation is optional */ }
+                    publishTaskSnapshot(uuid, "goal_staged", observationToken);
                     // First primary stays unexpanded; Detector reports the boundary to GoalDriver.
                     LOG.info("[rdd] Stage-A 规划 {} 级已绑定 {}:{}", stages.size(), uuid, objective);
                 } catch (RuntimeException ex) {
@@ -3106,6 +3111,12 @@ private static String safeDeathAttacker(NumenPlayer body) {
      * 提供，监测台优先读它；这里只留一个计数供页面显示规模。
      */
     public static void publishTaskSnapshot(UUID companionId, String reason) {
+        publishTaskSnapshot(companionId, reason, null);
+    }
+
+    /** Explicit producer token; legacy callers deliberately remain world/server UNKNOWN. */
+    static void publishTaskSnapshot(UUID companionId, String reason,
+                                    com.dwinovo.numen.api.WorldContextStamp.Token token) {
         if (companionId == null) return;
         RddRuntime runtime = RUNTIMES.get(companionId);
         if (runtime == null) return;
@@ -3117,7 +3128,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
         data.put("taskId", runtime.chain().goal().id());
         data.put("subtaskId", runtime.snapshot().get("currentSubtaskId"));
         // 2026-11-05：内容没变就不发（审计实测 348 条里只有 8 种内容，重复率 98%）
-        RddMonitor.publishIfChanged("taskchain_snapshot", data);
+        RddMonitor.publishIfChanged("taskchain_snapshot", data, token);
     }
 
     /**

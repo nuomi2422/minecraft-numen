@@ -73,25 +73,26 @@ public final class MonitoringJournal implements AutoCloseable {
         root = Objects.requireNonNull(configDir, "configDir").resolve("monitor");
     }
 
-    /** 非阻塞投递；队列满时只丢弃观测，不阻塞 Numen 主流程。 */
+    /** 非阻塞投递；旧调用保持 void 与原来的 producer-time 全局捕获语义。 */
     public void publish(String category, String type, Map<String, ?> data) {
-        if (!running.get() || category == null || type == null) return;
-        String safeCategory = safeToken(category);
-        String safeType = safeToken(type);
-        Map<String, Object> copy = new LinkedHashMap<>();
-        if (data != null) copy.putAll(data);
-        Entry entry = new Entry(safeCategory, safeType, copy, System.currentTimeMillis(),
-                com.dwinovo.numen.api.WorldContextStamp.snapshot(),
-                com.dwinovo.numen.api.WorldContextStamp.epoch(), EVENT_SEQ.incrementAndGet());
-        if (!queue.offer(entry)) {
-            dropped++;
-        }
+        tryPublish(category, type, data, com.dwinovo.numen.api.WorldContextStamp.capture());
     }
 
-    /** Producer-captured identity token; use when the event crosses an async/server boundary. */
+    /** Producer-captured identity token; null is UNKNOWN, never a late global fallback. */
     public void publish(String category, String type, Map<String, ?> data,
                         com.dwinovo.numen.api.WorldContextStamp.Token token) {
-        if (!running.get() || category == null || type == null) return;
+        tryPublish(category, type, data, token);
+    }
+
+    /**
+     * 2026-11-12: shared plugin sink needs the real queue acknowledgement, not another writer.
+     * True means accepted into this bounded queue only: NOT persisted, delivered or model-visible.
+     * Existing void entry points delegate here without changing their binary signatures.
+     * Run/session and sequence remain owned by this journal; missing producer identity stays unknown.
+     */
+    public boolean tryPublish(String category, String type, Map<String, ?> data,
+                              com.dwinovo.numen.api.WorldContextStamp.Token token) {
+        if (!running.get() || category == null || type == null) return false;
         String safeCategory = safeToken(category);
         String safeType = safeToken(type);
         Map<String, Object> copy = new LinkedHashMap<>();
@@ -99,7 +100,9 @@ public final class MonitoringJournal implements AutoCloseable {
         Map<String, String> identity = token == null ? null : token.identity();
         Entry entry = new Entry(safeCategory, safeType, copy, System.currentTimeMillis(), identity,
                 token == null ? 0L : token.epoch(), EVENT_SEQ.incrementAndGet());
-        if (!queue.offer(entry)) dropped++;
+        boolean accepted = queue.offer(entry);
+        if (!accepted) dropped++;
+        return accepted;
     }
 
     public long droppedCount() {

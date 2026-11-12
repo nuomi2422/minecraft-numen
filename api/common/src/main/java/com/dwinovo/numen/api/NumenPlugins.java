@@ -57,6 +57,17 @@ public final class NumenPlugins {
         return impl == null ? null : type.cast(impl);
     }
 
+    /**
+     * 2026-11-12: thin public facade over the existing host journal, not a plugin-owned writer.
+     * Producer captures its exact server token before async dispatch; null means UNKNOWN.
+     * True acknowledges queue acceptance only, never persistence or consumer delivery.
+     * This keeps the internal journal out of the slim API and reuses its own run ID/sequence.
+     */
+    public static boolean tryPublishMonitor(String category, String type, java.util.Map<String, ?> data,
+                                            WorldContextStamp.Token token) {
+        return com.dwinovo.numen.monitor.MonitoringJournal.get().tryPublish(category, type, data, token);
+    }
+
     private NumenPlugins() {}
 
     /** 登记一个插件。可在任何时候调用,通常在你模组的构造期。 */
