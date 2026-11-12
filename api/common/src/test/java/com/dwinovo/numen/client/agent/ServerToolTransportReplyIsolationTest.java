@@ -84,7 +84,7 @@ class ServerToolTransportReplyIsolationTest {
         sources.put("com.dwinovo.numen.agent.tool.ToolAliases",
                 "package com.dwinovo.numen.agent.tool; public class ToolAliases {public static String resolve(String s){return s;}}");
         sources.put("com.dwinovo.numen.agent.tool.LocalToolCallLog",
-                "package com.dwinovo.numen.agent.tool; public class LocalToolCallLog {public static boolean runsLocally(NumenTool t){return false;} public static void publishSynthetic(Object...a){} public static void publishResult(Object...a){} public static void publishCall(Object...a){} public static void publishRejected(Object...a){}}");
+                "package com.dwinovo.numen.agent.tool; public class LocalToolCallLog {public static void publishTransportBinding(java.util.UUID companionId,String modelId,String wireId,String tool){} public static boolean runsLocally(NumenTool t){return false;} public static void publishSynthetic(Object...a){} public static void publishResult(Object...a){} public static void publishCall(Object...a){} public static void publishRejected(Object...a){}}");
         sources.put("com.dwinovo.numen.agent.tool.ToolDisclosure",
                 "package com.dwinovo.numen.agent.tool; public class ToolDisclosure {public static String notExpanded(String s){return s;}}");
         sources.put("com.dwinovo.numen.task.TaskResult",
