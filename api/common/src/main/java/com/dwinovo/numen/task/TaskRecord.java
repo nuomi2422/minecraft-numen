@@ -86,6 +86,52 @@ public abstract class TaskRecord {
     public final TaskState getState() { return state; }
     public final TaskResult getResult() { return result; }
 
+    /**
+     * 2026-11-12 046-F: one model selection whose complete server reply returned normally.
+     * Retained on the original task; proves neither client receipt nor causal effectiveness.
+     * Strings keep this API independent of learner types.
+     */
+    public record SkillSelection(String skillRef, String version, String bodyRef, String bodyDigest,
+                                 String selectionCallId, String companionId, WorldContextStamp.Token token) {
+        public SkillSelection {
+            for (String value : new String[]{skillRef, version, bodyRef, bodyDigest, selectionCallId, companionId}) {
+                if (value == null || value.isBlank()) throw new IllegalArgumentException("Incomplete skill selection");
+            }
+            if (!completeIdentity(token)) throw new IllegalArgumentException("Unknown selection identity");
+            token = new WorldContextStamp.Token(java.util.Map.copyOf(token.identity()), token.epoch());
+        }
+
+        /** Retrying the same choice preserves the first complete reply's call id. */
+        public boolean sameChoice(SkillSelection other) {
+            return other != null && skillRef.equals(other.skillRef) && version.equals(other.version)
+                    && bodyRef.equals(other.bodyRef) && bodyDigest.equals(other.bodyDigest)
+                    && companionId.equals(other.companionId) && token.equals(other.token);
+        }
+    }
+
+    private SkillSelection skillSelection;
+    public final SkillSelection skillSelection() { return skillSelection; }
+
+    public static boolean completeIdentity(WorldContextStamp.Token token) {
+        if (token == null || token.identity() == null || token.epoch() <= 0) return false;
+        String world = token.identity().get("world_id");
+        String session = token.identity().get("server_session");
+        return world != null && !world.isBlank() && session != null && !session.isBlank();
+    }
+
+    /** Tick-thread only: preflight before reply, bind after complete reply returns normally. */
+    public final boolean canBindSkillSelection(SkillSelection selection) {
+        return state == TaskState.RUNNING && selection != null && completeIdentity(identityToken)
+                && identityToken.equals(selection.token())
+                && (skillSelection == null || skillSelection.sameChoice(selection));
+    }
+
+    public final boolean bindSkillSelection(SkillSelection selection) {
+        if (!canBindSkillSelection(selection)) return false;
+        if (skillSelection == null) skillSelection = selection;
+        return true;
+    }
+
     /** Push the deadline later (never earlier). Tick-thread only, like all reads. */
     public final void extendDeadlineTo(long gameTime) {
         if (gameTime > deadlineGameTime) deadlineGameTime = gameTime;

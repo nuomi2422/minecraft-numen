@@ -59,6 +59,8 @@ final class LearnerUsageTool implements NumenTool {
     public String description() {
         return "产物使用账本：学习产出被下游拿去用之后，把「呈现→采用→执行→结果」记下来，"
                 + "让下一轮复审看得见上轮产出到底有没有用、结果如何。"
+                + "adopt_skill=在正在运行的精确 task_id 中选择指定版并返回完整正文；"
+                + "report_skill=从该原任务终态记待审候选，不接受自报 outcome，不证明技能有效。"
                 + "★ reflect=从 ACX 运行记录反射**真实执行结果**（非自报的事实源，优先用这个）。"
                 + "★ 被用过且成功**只是候选关联，不构成有效性证据** —— "
                 + "只有 claim_validity（必须给理由）才算证据。";
@@ -73,9 +75,12 @@ final class LearnerUsageTool implements NumenTool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .optionalEnum("action",
-                        "record | report | claim_validity | reflect | by_memo",
-                        "record", "report", "claim_validity", "reflect", "by_memo")
-                .optionalString("artifact_id", "Which artifact (from report). Required except for report.")
+                        "record | report | claim_validity | reflect | by_memo | adopt_skill | report_skill",
+                        "record", "report", "claim_validity", "reflect", "by_memo", "adopt_skill", "report_skill")
+                .optionalString("task_id", "Required for adopt_skill/report_skill: exact original task public id.")
+                .optionalString("skill_ref", "Required for adopt_skill/report_skill: canonical skill:<id>.")
+                .optionalString("version", "Required for adopt_skill/report_skill: exact version, e.g. v1.")
+                .optionalString("artifact_id", "Required for record/claim_validity: artifact from report.")
                 .optionalEnum("kind", "Artifact kind: AC_SCRIPT | CARRIER | SELF_COMPILE_REQUEST | EXPERIENCE",
                         "AC_SCRIPT", "CARRIER", "SELF_COMPILE_REQUEST", "EXPERIENCE")
                 .optionalString("name", "Artifact name, for readability in the ledger.")
@@ -99,10 +104,34 @@ final class LearnerUsageTool implements NumenTool {
                 reply.accept(TaskResult.fail("使用账本未初始化（插件 setup 没跑完？）").toJson());
                 return;
             }
+            if (action.equals("ADOPT_SKILL") || action.equals("REPORT_SKILL")) {
+                TaskAccess tasks = taskOverride;
+                if (tasks == null && companion != null) {
+                    tasks = new TaskAccess() {
+                        public java.util.UUID companionId() { return companion.getUUID(); }
+                        public com.dwinovo.numen.api.WorldContextStamp.Token identity() {
+                            return com.dwinovo.numen.api.WorldContextStamp.capture(companion.level().getServer());
+                        }
+                        public com.dwinovo.numen.task.TaskRecord current() {
+                            return com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companion.getUUID());
+                        }
+                        public com.dwinovo.numen.task.TaskRecord finished(String taskId) {
+                            return com.dwinovo.numen.task.CompanionTickDispatcher.finishedTaskFor(companion.getUUID(), taskId);
+                        }
+                    };
+                }
+                SkillTaskFeedback.handle(action, toolCallId, args,
+                        configOverride == null ? LearnerPlugin.configDir() : configOverride, ul, tasks, reply);
+                return;
+            }
             Map<String, Object> data = new LinkedHashMap<>();
             switch (action) {
                 case "RECORD" -> {
                     String id = str(args, "artifact_id", "").trim();
+                    if (id.startsWith("skill:")) {
+                        reply.accept(TaskResult.fail("skill 命名空间只接受 adopt_skill/report_skill，不能自报结果或有效性").toJson());
+                        return;
+                    }
                     if (id.isBlank()) {
                         reply.accept(TaskResult.fail("record 需要 artifact_id").toJson());
                         return;
@@ -149,6 +178,10 @@ final class LearnerUsageTool implements NumenTool {
                 }
                 case "CLAIM_VALIDITY" -> {
                     String id = str(args, "artifact_id", "").trim();
+                    if (id.startsWith("skill:")) {
+                        reply.accept(TaskResult.fail("skill 命名空间只接受 adopt_skill/report_skill，不能自报结果或有效性").toJson());
+                        return;
+                    }
                     String reason = str(args, "reason", "").trim();
                     if (id.isBlank() || reason.isBlank()) {
                         reply.accept(TaskResult.fail(
@@ -202,7 +235,7 @@ final class LearnerUsageTool implements NumenTool {
                     reply.accept(TaskResult.ok("learner_usage by_memo", data).toJson());
                 }
                 default -> reply.accept(TaskResult.fail(
-                        "action 只认 record/report/claim_validity/reflect/by_memo，收到: " + action).toJson());
+                        "action 只认 record/report/claim_validity/reflect/by_memo/adopt_skill/report_skill，收到: " + action).toJson());
             }
         } catch (UsageLedger.LateArrival e) {
             // 迟到事件要**显式**告诉调用方，别让它看起来像普通失败

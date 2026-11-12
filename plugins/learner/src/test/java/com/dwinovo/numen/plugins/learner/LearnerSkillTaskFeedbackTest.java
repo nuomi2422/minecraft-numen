@@ -247,4 +247,44 @@ class LearnerSkillTaskFeedbackTest {
         ok(call(a)); assertEquals(1, rows().size());
         a = new JsonObject(); a.addProperty("action", "report"); ok(call(a));
     }
+
+    @Test void pendingTaskAndMissingBodyCannotCreateABinding() throws Exception {
+        task.setState(TaskState.PENDING);
+        rejected(call(args("adopt_skill")));
+        task.setState(TaskState.RUNNING);
+        Files.delete(dir.resolve("skill-bodies").resolve(bodyRef.substring("skill-body:".length())));
+        rejected(call(args("adopt_skill")));
+        tasks.finish(TaskState.SUCCESS);
+        rejected(call(args("report_skill")));
+        noRows();
+    }
+    @Test void retryWithAnotherReplyCallRetainsOriginalSelectionCall() {
+        adopt();
+        AtomicReference<String> response = new AtomicReference<>();
+        tool.onServerCall("retry-call", args("adopt_skill"), null, response::set);
+        ok(JsonParser.parseString(response.get()).getAsJsonObject());
+        tasks.finish(TaskState.SUCCESS);
+        ok(call(args("report_skill")));
+        JsonObject detail = JsonParser.parseString(rows().get(0).detail()).getAsJsonObject();
+        assertEquals("selection-call", detail.get("selection_call_id").getAsString());
+    }
+    @Test void conflictingTerminalReplayCannotOverwriteOriginalFact() {
+        adopt(); tasks.finish(TaskState.SUCCESS);
+        ok(call(args("report_skill")));
+        task.setState(TaskState.FAILED);
+        rejected(call(args("report_skill")));
+        assertEquals(1, rows().size());
+        assertEquals(UsageLedger.Outcome.SUCCESS, rows().get(0).outcome());
+    }
+    @Test void equalJavaHashDoesNotPermitReplacingTheSelectedBody() throws Exception {
+        assertEquals("Aa".hashCode(), "BB".hashCode());
+        registry.register(artifact("Aa"), "sk-1", writeBody("Aa"), true);
+        JsonObject a = args("adopt_skill"); a.addProperty("version", "v2");
+        ok(call(a));
+        String selectedRef = registry.get("sk-1").orElseThrow().bodyRef();
+        Files.writeString(dir.resolve("skill-bodies").resolve(selectedRef.substring("skill-body:".length())), "BB");
+        tasks.finish(TaskState.SUCCESS);
+        a.addProperty("action", "report_skill");
+        rejected(call(a)); noRows();
+    }
 }

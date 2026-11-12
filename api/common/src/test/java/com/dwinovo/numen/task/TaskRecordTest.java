@@ -84,4 +84,48 @@ class TaskRecordTest {
         bounded.extendDeadlineTo(1500L);
         org.junit.jupiter.api.Assertions.assertEquals(2000L, bounded.getDeadlineGameTime());
     }
+
+    private static com.dwinovo.numen.api.WorldContextStamp.Token selectionToken(java.util.Map<String, String> identity) {
+        return new com.dwinovo.numen.api.WorldContextStamp.Token(identity, 7);
+    }
+
+    private static TaskRecord.SkillSelection choice(String version, String call,
+            com.dwinovo.numen.api.WorldContextStamp.Token token) {
+        return new TaskRecord.SkillSelection("skill:sk-1", version, "skill-body:body.md", "digest",
+                call, "companion", token);
+    }
+
+    @Test void selectionCopiesIdentityAndRetainsTheFirstCompleteReply() {
+        java.util.Map<String, String> identity = new java.util.HashMap<>(
+                java.util.Map.of("world_id", "world", "server_session", "session"));
+        var token = selectionToken(identity);
+        Fake task = new Fake(1000);
+        task.bindIdentity(token);
+        task.setState(TaskState.RUNNING);
+        var first = choice("v1", "first-reply", token);
+        assertTrue(task.bindSkillSelection(first));
+        assertTrue(task.bindSkillSelection(choice("v1", "retry-reply", token)));
+        org.junit.jupiter.api.Assertions.assertSame(first, task.skillSelection());
+        identity.put("world_id", "mutated");
+        org.junit.jupiter.api.Assertions.assertEquals("world", first.token().identity().get("world_id"));
+        org.junit.jupiter.api.Assertions.assertThrows(UnsupportedOperationException.class,
+                () -> first.token().identity().put("world_id", "other"));
+    }
+
+    @Test void selectionCannotBindPendingTerminalChangedVersionOrUnknownIdentity() {
+        var token = selectionToken(java.util.Map.of("world_id", "world", "server_session", "session"));
+        Fake task = new Fake(1000);
+        task.bindIdentity(token);
+        assertFalse(task.bindSkillSelection(choice("v1", "reply", token)));
+        task.setState(TaskState.RUNNING);
+        assertTrue(task.bindSkillSelection(choice("v1", "reply", token)));
+        assertFalse(task.bindSkillSelection(choice("v2", "reply2", token)));
+        task.setState(TaskState.SUCCESS);
+        assertFalse(task.bindSkillSelection(choice("v1", "late-reply", token)));
+        Fake unknown = new Fake(1000);
+        unknown.setState(TaskState.RUNNING);
+        assertFalse(unknown.bindSkillSelection(choice("v1", "reply", token)));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> choice("v1", "reply", new com.dwinovo.numen.api.WorldContextStamp.Token(null, 0)));
+    }
 }
