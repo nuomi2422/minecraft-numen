@@ -70,6 +70,7 @@ class RddDeathPreparationHostSuccessorTest {
         final List<Consumer<List<SubtaskSpec>>> callbacks = new ArrayList<>();
         RddDeathEquipment.Sample sample = self(id, false, false, false);
         int equipmentReads, stopped, persisted;
+        Runnable beforeEquipmentRead = () -> { };
         long now = 1000;
 
         Fixture() {
@@ -143,6 +144,7 @@ class RddDeathPreparationHostSuccessorTest {
         }
         public PreparationFacts deathPreparationFacts(UUID subject, SideTask task) {
             return DeathPreparationHost.facts(subject, id, task, () -> {
+                beforeEquipmentRead.run();
                 equipmentReads++;
                 return RddDeathEquipment.facts(sample, task, Map.of(), null);
             });
@@ -724,5 +726,32 @@ class RddDeathPreparationHostSuccessorTest {
         assertFalse(f.engine.isActive(f.id));
         assertEquals(1, f.callbacks.size());
         assertEquals(stopped, f.stopped);
+    }
+
+    @Test void pausedSuccessorActivationRefusalPreservesPauseAndNewSideOwner() {
+        var f = pausedAtBody30();
+        var old = DeathPreparation.pausedTask(f.chain);
+        f.record(Map.of(), 31);
+        f.now = Long.parseLong(old.data().get("prepare_retry_at"));
+        String pause = f.chain.pauseReason("iron");
+        int stopped = f.stopped, persisted = f.persisted;
+        int[] reads = {0};
+        SideTask[] occupant = {null};
+        // Controlled reentrant port boundary: real startNow wins after admission but before retry activate.
+        // This exercises the runtime's actual single-owner refusal, not a live MC concurrency claim.
+        f.beforeEquipmentRead = () -> {
+            if (++reads[0] == 2) {
+                assertTrue(f.engine.startNow(new DeathRecoverySideTaskType(), f.id, f, f.token(),
+                        Map.of("death_seq", "31")));
+                occupant[0] = f.active();
+            }
+        };
+        assertTrue(recheckPaused(f));
+        assertNotNull(occupant[0], "the fixture must reach actual activation contention");
+        assertSame(occupant[0], f.active(), "a failed retry cannot replace the new side owner");
+        assertEquals(pause, f.chain.pauseReason("iron"), "failed activation must not commit a fresh pause or retry budget");
+        assertEquals(1, f.callbacks.size());
+        assertEquals(stopped, f.stopped);
+        assertEquals(persisted, f.persisted, "retry callback is not invoked after activation refusal");
     }
 }
