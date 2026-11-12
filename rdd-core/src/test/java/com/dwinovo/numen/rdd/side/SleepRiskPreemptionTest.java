@@ -64,7 +64,7 @@ class SleepRiskPreemptionTest {
                     return switch (method.getName()) {
                         case "gameTime", "dayTime" -> now;
                         case "gameDay" -> 0L;
-                        case "hasDayNightCycle", "bodyBusy" -> true;
+                        case "hasDayNightCycle", "bodyBusy", "sleepMayInterrupt" -> true;
                         case "worldId" -> "minecraft:overworld";
                         case "mainlineObjective" -> objective;
                         case "pollWake" -> SideTaskWorldPort.Wake.NONE;
