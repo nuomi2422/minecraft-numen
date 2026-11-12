@@ -478,4 +478,101 @@ class RddDeathPreparationHostSuccessorTest {
             assertEquals(before, f.active(), "rejected admission must not mutate side data: " + blocked);
         }
     }
+
+    @Test void terminalPayloadRetainsFreshBodyAndRejectsOlderReadyEvent() {
+        var f = new Fixture();
+        f.prepare();
+        String oldPayload = DeathPreparation.resumePayload(f.active());
+        f.record(Map.of(), 30);
+        f.sample = self(f.id, true, false, false);
+        var old = DeathPreparation.resumeTask(oldPayload);
+        assertFalse(DeathPreparationHost.settlementIdentity(f.id, 29, old, f.live),
+                "current wearing never authenticates an old body's terminal event");
+        f.tick();
+        f.engine.tick(f.id, f, f.token(), false);
+        var fresh = DeathPreparation.resumeTask(String.valueOf(f.terminal.get(0).get("prepareResume")));
+        assertNotNull(fresh);
+        assertEquals("30", fresh.data().get("prepare_death_seq"), "bounded terminal serialization retains body identity");
+        assertTrue(DeathPreparationHost.settlementIdentity(f.id, 29, fresh, f.live));
+        assertFalse(DeathPreparationHost.settlementIdentity(f.id, 30, fresh, f.live), "event seq remains drop source");
+        assertFalse(DeathPreparationHost.settlementIdentity(UUID.randomUUID(), 29, fresh, f.live));
+        f.chain.nextPlanRevision();
+        assertFalse(DeathPreparationHost.settlementIdentity(f.id, 29, fresh, f.live));
+    }
+
+    @Test void settlementDedupSeparatesBodyAndSideGenerationsButRejectsExactReplay() {
+        var f = new Fixture();
+        var t = f.active();
+        var data = new LinkedHashMap<>(t.data());
+        data.put("prepare_death_seq", "30");
+        var body30 = t.withData(data);
+        data.put("prepare_death_seq", "31");
+        var body31 = t.withData(data);
+        String key30 = DeathPreparationHost.settlementKey(f.id, 29, true, body30);
+        String key31 = DeathPreparationHost.settlementKey(f.id, 29, true, body31);
+        var settled = new HashSet<String>();
+        assertTrue(settled.add(key30));
+        assertTrue(settled.add(key31), "old body settlement must not consume the fresh body's key");
+        assertFalse(settled.add(DeathPreparationHost.settlementKey(f.id, 29, true, body31)));
+        var newer = new SideTask(t.companionId(), t.instanceId() + "-new", t.typeId(), t.generation() + 1,
+                t.scheduledGameDay(), t.createdAtGameTime(), t.deadlineGameTime(), t.state(), t.phase(),
+                body31.data(), t.mainlineToken());
+        assertNotEquals(key31, DeathPreparationHost.settlementKey(f.id, 29, true, newer));
+        assertEquals(f.id + "|29", DeathPreparationHost.settlementKey(f.id, 29, false, null),
+                "physical drop-only settlement key stays unchanged");
+    }
+
+    @Test void legitimateDropClosureDoesNotInvalidateFreshBodyTerminalFacts() {
+        for (boolean recovered : List.of(false, true)) {
+            var f = new Fixture();
+            f.record(Map.of(), 30);
+            f.prepare();
+            var data = new LinkedHashMap<>(f.active().data());
+            data.put("prepare_death_seq", "30");
+            var fresh = f.active().withData(data);
+            assertTrue(DeathPreparationHost.settlementIdentity(f.id, 29, fresh, f.live));
+            if (recovered) RddDeathLedger.confirmRecovered(f.id, 29, "actual source pickup evidence");
+            else RddDeathLedger.confirmLost(f.id, 29, "actual source loaded-absent evidence");
+            assertNull(RddDeathLedger.openDeath(f.id, 29));
+            f.sample = self(f.id, true, false, false);
+            assertTrue(DeathPreparationHost.settlementIdentity(f.id, 29, fresh, f.live));
+            assertEquals(SideTaskWorldPort.PreparationState.READY, f.deathPreparationFacts(f.id, fresh).state(),
+                    "commit-boundary fact read follows physical closure in the actual plugin");
+            assertEquals(RddDeathLedger.State.UNVERIFIED, RddDeathLedger.latest(f.id).state());
+        }
+    }
+
+    @Test void unknownSuccessorSelfPreservesOldPlanRequestAndStopStateUntilTrusted() {
+        var f = new Fixture();
+        var old = f.pending();
+        old.accept(PLAN);
+        var before = f.active();
+        int stopped = f.stopped;
+        f.record(Map.of(), 30);
+        f.sample = self(f.id, false, false, true);
+        f.tick();
+        assertEquals(before, f.active(), "UNKNOWN must not clear a plan/request or bind a speculative body");
+        assertEquals(stopped, f.stopped);
+        assertEquals(1, f.callbacks.size());
+        f.sample = self(f.id, false, false, false);
+        f.tick();
+        assertEquals(2, f.callbacks.size());
+        f.noInstalledPlan();
+        assertEquals(stopped + 1, f.stopped);
+    }
+
+    @Test void futureBodyMarkerCannotAuthorizeFactsOrReplaceCurrentRequest() {
+        var f = new Fixture();
+        f.pending();
+        f.record(Map.of(), 30);
+        f.engine.setData(f.id, "prepare_death_seq", "999");
+        var before = f.active();
+        int reads = f.equipmentReads;
+        f.tick();
+        assertEquals(before, f.active(), "a future marker is invalid, not permission to rebind");
+        assertEquals(1, f.callbacks.size());
+        assertEquals(SideTaskWorldPort.PreparationState.UNKNOWN, f.deathPreparationFacts(f.id, before).state());
+        assertEquals(reads, f.equipmentReads, "future identity must fail before current SELF supplier");
+        assertFalse(DeathPreparationHost.settlementIdentity(f.id, 29, before, f.live));
+    }
 }
