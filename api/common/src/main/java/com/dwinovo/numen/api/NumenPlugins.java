@@ -461,7 +461,8 @@ public final class NumenPlugins {
                 f = c.contribute(companion, obj);
             } catch (Throwable e) {
                 failed++;
-                Constants.LOG.error("[numen] 插件的执行知识算不出来,这一段跳过", e);
+                // 2026-11-12: slim API consumers have SLF4J but not the unrelated Constants class.
+                org.slf4j.LoggerFactory.getLogger("Numen").error("[numen] 插件的执行知识算不出来,这一段跳过", e);
                 publishKnowledgeGap(companion, accepted, KnowledgeGaps.reasonFor(null, e), e instanceof KnowledgeGapException ge ? ge.reason().name().toLowerCase(java.util.Locale.ROOT) : e.getClass().getSimpleName());
                 continue;
             }
@@ -498,7 +499,7 @@ public final class NumenPlugins {
             }
         }
         if (truncated > 0 || failed > 0) {
-            Constants.LOG.info("[numen] executor knowledge aggregated: contributors={} failed={} truncated={} chars={}/{}",
+            org.slf4j.LoggerFactory.getLogger("Numen").info("[numen] executor knowledge aggregated: contributors={} failed={} truncated={} chars={}/{}",
                     accepted, failed, truncated, sb.length(), MAX_EXECUTOR_KNOWLEDGE_CHARS);
         }
         return new KnowledgeFragment(sb.toString(), delivered);
