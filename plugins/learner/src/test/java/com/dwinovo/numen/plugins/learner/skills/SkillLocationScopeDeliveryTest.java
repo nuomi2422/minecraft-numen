@@ -30,10 +30,25 @@ class SkillLocationScopeDeliveryTest {
         return ReviewContractAdapter.toSubmission(verdict, "sample", Submission.Mode.INTERNAL);
     }
     private void legacy(String id, String body) {
-        var art = generated(body).artifacts().get(0);
+        var source = generated(body).artifacts().get(0);
+        // Each legacy case is an independent entry, not a revision of one shared fingerprint.
+        // 2026-11-12: integration XML exposed 2 expected gaps vs 1 after legitimate coalescing.
+        var art = new ArtifactDraft(source.kind(), source.name() + " fixture " + id,
+                source.purpose() + " fixture " + id, source.body(), source.triggerConditions(),
+                source.excludeConditions(), source.preconditions(), source.risk(), source.evidence(),
+                source.sampleRefs(), source.audience());
         var ref = SkillBodyStore.write(dir, id, 1, art.contentHash(), body);
         assertNotNull(ref);
-        SkillRegistrar.registryFor(dir).register(art, id, ref, true);
+        var registry = SkillRegistrar.registryFor(dir);
+        int before = registry.size();
+        assertEquals(SkillRegistry.Outcome.REGISTERED, registry.register(art, id, ref, true).outcome());
+        assertEquals(before + 1, registry.size(), "fixture must create its own entry");
+        var entry = registry.get(id).orElseThrow();
+        assertEquals(id, entry.skillId());
+        assertEquals(1, entry.version());
+        assertEquals(SkillStatus.TRIAL, entry.status());
+        assertEquals(ref, entry.bodyRef());
+        assertEquals(body, SkillBodyStore.read(dir, entry.bodyRef()));
     }
     private static List<String> nestedAndFallbackBodies() {
         String plain = body("{\"x\":2,\"y\":88,\"z\":-3}");
