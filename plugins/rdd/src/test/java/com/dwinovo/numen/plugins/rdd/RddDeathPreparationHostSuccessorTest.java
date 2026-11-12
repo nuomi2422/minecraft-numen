@@ -308,4 +308,174 @@ class RddDeathPreparationHostSuccessorTest {
         assertTrue(f.terminal.isEmpty());
         assertEquals(mainline, f.chain.toJson());
     }
+
+    @Test void freshSuccessorRequestInstallsWhileOldCallbackIsRejectedBeforeAndAfter() {
+        var f = new Fixture();
+        String mainline = f.chain.toJson();
+        var old = f.pending();
+        String oldRequest = f.active().data().get("prepare_request");
+        f.record(Map.of(), 30);
+        old.accept(PLAN);
+        f.noInstalledPlan();
+        f.tick();
+        f.tick();
+        assertEquals(2, f.callbacks.size(), "one fresh request after the original in-flight request");
+        assertNotEquals(oldRequest, f.active().data().get("prepare_request"));
+        assertEquals("29", f.active().data().get("death_seq"), "drop source remains batch29");
+        old.accept(PLAN);
+        f.noInstalledPlan();
+        assertEquals(0, f.persisted);
+        f.callbacks.get(1).accept(PLAN);
+        assertEquals("READY", f.active().data().get("prepare_plan_state"));
+        String installed = f.active().data().get(DeathPreparation.PLAN);
+        old.accept(List.of());
+        assertEquals(installed, f.active().data().get(DeathPreparation.PLAN));
+        assertEquals(1, f.persisted, "stale callback never reaches the installer");
+        f.engine.tick(f.id, f, f.token(), false);
+        assertTrue(f.engine.isActive(f.id), "accepted plan is not equipment READY");
+        f.sample = self(f.id, true, false, false);
+        f.tick();
+        f.engine.tick(f.id, f, f.token(), false);
+        assertFalse(f.engine.isActive(f.id));
+        var restored = DeathPreparation.resumeTask(String.valueOf(f.terminal.get(0).get("prepareResume")));
+        assertNotNull(restored);
+        assertEquals(SideTaskWorldPort.PreparationState.READY,
+                f.deathPreparationFacts(f.id, restored).state(), "terminal host consumer rechecks current SELF");
+        assertTrue(DeathPreparation.settle(f.chain, String.valueOf(f.terminal.get(0).get("prepareResume")), true, "worn"));
+        assertEquals(mainline, f.chain.toJson());
+        assertNotNull(RddDeathLedger.openDeath(f.id, 29));
+    }
+
+    @Test void eachEmptySuccessorInvalidatesPreviousPlanAndRequestsOnlyOnce() {
+        var f = new Fixture();
+        f.record(Map.of(), 30);
+        assertTrue(DeathPreparation.choose(f.engine, f.id, DeathRecoveryDecision.FETCH_BACKUP_THEN_CONTINUE));
+        f.tick();
+        assertEquals(1, f.callbacks.size());
+        var callback30 = f.callbacks.get(0);
+        callback30.accept(PLAN);
+        assertTrue(f.active().data().containsKey(DeathPreparation.PLAN));
+        String request30 = f.active().data().get("prepare_request");
+        f.record(Map.of(), 31);
+        f.tick();
+        f.tick();
+        assertEquals(2, f.callbacks.size());
+        assertNotEquals(request30, f.active().data().get("prepare_request"));
+        f.noInstalledPlan();
+        callback30.accept(PLAN);
+        f.noInstalledPlan();
+        f.callbacks.get(1).accept(PLAN);
+        assertTrue(f.active().data().containsKey(DeathPreparation.PLAN));
+        assertEquals("29", f.active().data().get("death_seq"));
+        assertNotNull(RddDeathLedger.openDeath(f.id, 29));
+        assertEquals(2, f.stopped, "each new body binding stops the obsolete preparation action once");
+    }
+
+    @Test void nonemptyUnknownOrEvictedSuccessorEvidenceNeverAuthorizesRebinding() {
+        for (String gap : List.of("nonempty", "unknown_items", "evicted_source", "malformed_source")) {
+            var f = new Fixture();
+            if (gap.equals("nonempty")) {
+                f.record(Map.of(CHEST, 1), 30);
+                f.record(Map.of(), 31);
+            } else if (gap.equals("unknown_items")) {
+                RddDeathLedger.record(f.id, 300, 30000, DIM + " 0 64 0", 1, Map.of(), "unknown_items");
+            } else if (gap.equals("evicted_source")) {
+                for (int seq = 30; seq <= 37; seq++) f.record(Map.of(), seq);
+                assertNull(RddDeathLedger.openDeath(f.id, 29));
+            } else {
+                f.record(Map.of(), 30);
+                f.engine.setData(f.id, "death_seq", "unknown");
+            }
+            // A persisted marker alone must not bypass the actual ledger proof.
+            f.engine.setData(f.id, "prepare_death_seq", String.valueOf(RddDeathLedger.latest(f.id).seq()));
+            assertTrue(DeathPreparation.choose(f.engine, f.id, DeathRecoveryDecision.PREPARE_AND_REPLAN));
+            int reads = f.equipmentReads;
+            f.tick();
+            assertEquals(0, f.callbacks.size(), gap);
+            assertEquals(SideTaskWorldPort.PreparationState.UNKNOWN,
+                    f.deathPreparationFacts(f.id, f.active()).state(), gap);
+            assertEquals(reads, f.equipmentReads, "invalid lineage stays lazy: " + gap);
+        }
+    }
+
+    @Test void successorUnknownSelfWaitsForTrustedMissingWithoutCompleting() {
+        var f = new Fixture();
+        f.record(Map.of(), 30);
+        f.sample = self(f.id, false, false, true);
+        f.prepare();
+        assertEquals(0, f.callbacks.size());
+        assertEquals(SideTaskWorldPort.PreparationState.UNKNOWN, f.deathPreparationFacts(f.id, f.active()).state());
+        f.engine.tick(f.id, f, f.token(), false);
+        assertTrue(f.engine.isActive(f.id));
+        f.sample = self(f.id, false, true, false);
+        f.tick();
+        f.tick();
+        assertEquals(1, f.callbacks.size(), "current trustworthy MISSING may now request preparation");
+        f.callbacks.get(0).accept(PLAN);
+        f.engine.tick(f.id, f, f.token(), false);
+        assertTrue(f.engine.isActive(f.id), "carried replacement still does not satisfy worn slot");
+        assertTrue(f.terminal.isEmpty());
+    }
+
+    @Test void freshSuccessorCallbackStillChecksChainSideIdentityChoiceRequestAndRevision() {
+        for (String drift : List.of("chain", "instance", "generation", "choice", "request", "revision")) {
+            var f = new Fixture();
+            f.record(Map.of(), 30);
+            f.prepare();
+            assertEquals(1, f.callbacks.size(), drift);
+            var t = f.active();
+            if (drift.equals("chain")) f.live = new RddRuntime(TaskChain.fromJson(f.chain.toJson()), new AssetRegistry());
+            else if (drift.equals("instance") || drift.equals("generation"))
+                f.engine.runtime().replace(new SideTask(t.companionId(),
+                        drift.equals("instance") ? t.instanceId() + "-new" : t.instanceId(), t.typeId(),
+                        drift.equals("generation") ? t.generation() + 1 : t.generation(), t.scheduledGameDay(),
+                        t.createdAtGameTime(), t.deadlineGameTime(), t.state(), t.phase(), t.data(), t.mainlineToken()));
+            else if (drift.equals("choice")) DeathPreparation.choose(f.engine, f.id, DeathRecoveryDecision.FETCH_BACKUP_THEN_CONTINUE);
+            else if (drift.equals("request")) f.engine.setData(f.id, "prepare_request", "replacement");
+            else f.chain.nextPlanRevision();
+            f.callbacks.get(0).accept(PLAN);
+            assertFalse(f.active().data().containsKey(DeathPreparation.PLAN), drift);
+        }
+    }
+
+    @Test void successorPausePayloadRechecksCurrentSelfWithoutTrustingTransientMarker() {
+        var f = new Fixture();
+        var history = f.chain.satisfiedStages();
+        var trade = f.chain.currentPrimary().subtasks();
+        f.record(Map.of(), 30);
+        f.prepare();
+        assertEquals(1, f.callbacks.size());
+        f.callbacks.get(0).accept(List.of()); // existing bounded failed-plan pause path
+        f.engine.tick(f.id, f, f.token(), false);
+        assertFalse(f.engine.isActive(f.id));
+        String payload = String.valueOf(f.terminal.get(0).get("prepareResume"));
+        assertTrue(DeathPreparation.settle(f.chain, payload, false, "planner unavailable"));
+        assertTrue(f.chain.isPaused("iron"));
+        f.sample = self(f.id, false, false, true);
+        assertTrue(DeathPreparation.holdPaused(f.chain, f.id, f));
+        f.sample = self(f.id, true, false, false);
+        assertFalse(DeathPreparation.holdPaused(f.chain, f.id, f));
+        assertFalse(f.chain.isPaused("iron"));
+        assertEquals(history, f.chain.satisfiedStages());
+        assertEquals(trade, f.chain.currentPrimary().subtasks());
+        assertEquals("iron", f.chain.currentSubtask().id());
+    }
+
+    @Test void emptySuccessorNeverRebindsWithoutPreparingChoiceOrMatchingChain() {
+        for (String blocked : List.of("recover", "abandon", "reset", "invalid", "chain")) {
+            var f = new Fixture();
+            f.record(Map.of(), 30);
+            if (blocked.equals("abandon")) DeathPreparation.choose(f.engine, f.id, DeathRecoveryDecision.ABANDON_RECOVERY);
+            else if (blocked.equals("reset")) DeathPreparation.choose(f.engine, f.id, DeathRecoveryDecision.RESET_AND_RESTART);
+            else if (blocked.equals("invalid")) f.engine.setData(f.id, "decision", "unrecognized");
+            else if (blocked.equals("chain")) {
+                DeathPreparation.choose(f.engine, f.id, DeathRecoveryDecision.PREPARE_AND_REPLAN);
+                f.chain.nextPlanRevision();
+            }
+            var before = f.active();
+            f.tick();
+            assertEquals(0, f.callbacks.size(), blocked);
+            assertEquals(before, f.active(), "rejected admission must not mutate side data: " + blocked);
+        }
+    }
 }
