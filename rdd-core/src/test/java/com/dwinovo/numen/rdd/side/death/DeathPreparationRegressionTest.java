@@ -28,6 +28,7 @@ class DeathPreparationRegressionTest {
     }
     private static SideTaskEngine engine(Port port) {
         var engine = new SideTaskEngine(null, token -> token);
+        engine.registerType(new DeathRecoverySideTaskType());
         assertTrue(engine.startNow(new DeathRecoverySideTaskType(), C, port, null,
                 Map.of("death_seq", "7")));
         return engine;
