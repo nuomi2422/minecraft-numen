@@ -117,7 +117,7 @@ class PublishBoundaryBodyTest {
         assertEquals(1, reg.retrievable().size());
         var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contribute(UUID.randomUUID(), "night");
         assertNotNull(fragment);
-        assertEquals(List.of("skill:sk-ok"), fragment.refs().stream().map(r -> r.ref()).toList());
+        assertEquals(List.of("skill:sk-ok"), fragment.refs().stream().map(r -> r.entryRef()).toList());
         assertTrue(fragment.text().contains("real steps"));
     }
 
