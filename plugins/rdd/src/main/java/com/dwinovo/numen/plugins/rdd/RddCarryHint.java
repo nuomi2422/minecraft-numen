@@ -44,8 +44,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * 原因：{@code contributeState} 在构建上下文时被调用，<b>不保证在主线程</b>；
  * 而 {@code getHealth} / {@code getInventory} / {@code getEntities} 离开主线程不安全。
  *
- * <p><b>★ 不得成为新的目标漂移源</b>：{@code note} 里明写「不要为了携带而中断当前目标」。
- * 携带 AI 跑去拿护甲而放弃当前任务，是注入型设计最典型的失效。
+ * <p><b>★ 不得成为新的目标漂移源</b>：普通携带建议不改当前任务；当前可信生存风险按现场重新评估。
+ * 2026-11-12 V05：旧绝对“不中断”与已修 alarm 生存例外同时进入最终请求；保普通防漂移，不以携带提示否决保命。
  *
  * <p><b>异常一律不注入</b>：本类全程 try/catch —— {@code renderStateContext} 在每次
  * 上下文构建时被调用，<b>不能被携带器拖崩</b>。
@@ -277,7 +277,7 @@ final class RddCarryHint {
                 }
                 sb.append("<item>").append(esc(item)).append("</item>");
             }
-            sb.append("<note>这些是建议，不是指令。是否采纳由你按当前任务判断；**不要为了携带而中断当前目标**。</note>");
+            sb.append("<note>这些是建议，不是指令。一般不要仅为携带建议偏离当前任务；当前可信生存风险变化时，按现场威胁和身体状态重新评估非生存动作。未知或过期提示不作为自动抢占依据。</note>");
             sb.append("</carry>");
         }
         if (!alarms.isEmpty()) {
