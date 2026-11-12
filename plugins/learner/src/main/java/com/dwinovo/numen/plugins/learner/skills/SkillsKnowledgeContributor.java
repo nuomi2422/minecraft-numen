@@ -57,10 +57,13 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
                 continue;
             }
             // 条目边界是统一检索按条记账的契约（NumenPlugins.refFullyIncluded 依赖 ref=…</entry>）
-            String block = "<entry ref=\"" + ref + "\">[" + e.name() + "] " + e.purpose() + "\n" + body + "\n</entry>\n";
+            // 2026-11-12: model-facing text must expose the registry vN required by adopt_skill;
+            // DeliveredRef metadata is not model-visible, and a body JSON version is not this version.
+            String version = "v" + e.version();
+            String block = "<entry ref=\"" + ref + "\">@" + version + " [" + e.name() + "] " + e.purpose() + "\n" + body + "\n</entry>\n";
             if (maxChars > 0 && text.length() + block.length() > maxChars) { truncated = true; break; }
             text.append(block);
-            refs.add(new NumenPlugins.DeliveredRef(ref, "v" + e.version(), false));
+            refs.add(new NumenPlugins.DeliveredRef(ref, version, false));
         }
         if (refs.isEmpty() && gaps.isEmpty()) return null;   // 完全无结果
         return new NumenPlugins.KnowledgeFragment(text.toString(), refs, gaps);
