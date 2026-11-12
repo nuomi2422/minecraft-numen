@@ -325,7 +325,7 @@ public final class DeathPreparation {
                 && chain.pauseReason(chain.currentSubtask().id()).startsWith("recovery_not_verified:")) {
             SideTask existing = pausedTask(chain);
             if (existing != null && integer(existing.data().get("prepare_retries")) == integer(task.data().get("prepare_retries"))
-                    && List.of(PLAN, "prepare_plan_state", "prepare_index")
+                    && List.of(PLAN, "prepare_plan_state", "prepare_index", "prepare_death_seq")
                     .stream().allMatch(k -> Objects.equals(existing.data().get(k), task.data().get(k)))) return true;
             chain.resumeFromPaused(chain.currentSubtask().id());
         }
@@ -360,16 +360,22 @@ public final class DeathPreparation {
                 + "</note></rdd>";
     }
 
+    /** 2026-11-13: share the existing read-only retry gate before a host commits a fresh paused body. */
+    public static boolean retryDue(SideTask task, SideTaskWorldPort world) {
+        int retries = integer(task.data().get("prepare_retries"));
+        long at;
+        try { at = Long.parseLong(task.data().getOrDefault("prepare_retry_at", String.valueOf(task.deadlineGameTime() + 1200L))); }
+        catch (RuntimeException invalid) { return false; }
+        return retries < 2 && world.gameTime() >= at;
+    }
+
     /** Existing paused recheck may retry twice, >=60s apart; no separate scheduler or unbounded loop. */
     public static boolean reopenPaused(SideTaskEngine engine, UUID id, TaskChain chain, SideTaskWorldPort world) {
         SideTask old = pausedTask(chain);
         if (old == null || !sameChain(old, chain) || notApplicable(old) || engine.isActive(id)) return false;
         if (world.deathPreparationFacts(id, old).state() != SideTaskWorldPort.PreparationState.MISSING) return false;
+        if (!retryDue(old, world)) return false;
         int retries = integer(old.data().get("prepare_retries"));
-        long at;
-        try { at = Long.parseLong(old.data().getOrDefault("prepare_retry_at", String.valueOf(old.deadlineGameTime() + 1200L))); }
-        catch (RuntimeException invalid) { return false; }
-        if (retries >= 2 || world.gameTime() < at) return false;
         var data = new LinkedHashMap<>(old.data());
         data.put("prepare_retries", String.valueOf(retries + 1));
         data.put("prepare_retry_at", String.valueOf(world.gameTime() + 1200L));

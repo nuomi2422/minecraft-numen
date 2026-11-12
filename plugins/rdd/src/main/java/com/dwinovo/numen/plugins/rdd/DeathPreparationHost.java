@@ -48,9 +48,31 @@ final class DeathPreparationHost {
                     + "|" + task.data().getOrDefault("prepare_retries", "0") : "");
     }
 
-    /** 2026-11-13: preserve the actual paused host order so successor liveness can be tested offline. */
+    /** 2026-11-13: recheck a proven fresh paused body before the existing bounded retry path. */
     static boolean holdRecoveryPause(UUID id, SideTaskEngine engine, com.dwinovo.numen.rdd.core.TaskChain chain,
                                      SideTaskWorldPort port, Runnable retryActivated) {
+        var paused = DeathPreparation.pausedTask(chain);
+        var latest = RddDeathLedger.latest(id);
+        if (!engine.isActive(id) && paused != null && latest != null && id.equals(paused.companionId())
+                && DeathPreparation.sameChain(paused, chain)
+                && bodySeq(paused) >= sequence(paused.data().get("death_seq"))
+                && bodySeq(paused) < latest.seq() && emptySuccessors(id, paused, latest)) {
+            var data = new java.util.LinkedHashMap<>(paused.data());
+            data.put(PREPARATION_BATCH, String.valueOf(latest.seq()));
+            var candidate = paused.withData(data);
+            // Current evidence belongs to this candidate; old pause/terminal facts stay stale.
+            var evidence = port.deathPreparationFacts(id, candidate);
+            if (evidence.state() == SideTaskWorldPort.PreparationState.READY)
+                return !DeathPreparation.settle(chain, DeathPreparation.resumePayload(candidate), true, evidence.reason());
+            if (evidence.state() != SideTaskWorldPort.PreparationState.MISSING
+                    || !DeathPreparation.retryDue(paused, port)) return true;
+            // UNKNOWN, not-due and exhausted retries return before any live pause or plan write.
+            for (String key : java.util.List.of("prepare_request", DeathPreparation.PLAN,
+                    "prepare_descriptions", "prepare_index", "prepare_plan_state", "prepare_body_stopped")) data.remove(key);
+            data.put("prepare_reason", evidence.reason());
+            if (!DeathPreparation.settle(chain, DeathPreparation.resumePayload(paused.withData(data)),
+                    false, evidence.reason())) return true;
+        }
         if (!DeathPreparation.holdPaused(chain, id, port)) return false;
         if (DeathPreparation.reopenPaused(engine, id, chain, port)) retryActivated.run();
         return true;
