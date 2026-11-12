@@ -283,7 +283,7 @@ public final class DeathPreparation {
         var data = new LinkedHashMap<String, String>();
         for (String key : List.of(TARGETS, PLAN, "prepare_scope", "prepare_descriptions", "prepare_index",
                 "prepare_reason", "prepare_plan_state", "prepare_retries", "prepare_retry_at", "death_seq",
-                "decision", "drop_terminal", "dimension", "death_at")) {
+                "decision", "drop_terminal", "dimension", "death_at", "prepare_death_seq")) {
             String value = task.data().get(key);
             if (value != null && value.length() <= MAX_JSON) data.put(key, value);
         }

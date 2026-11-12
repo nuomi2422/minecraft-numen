@@ -33,17 +33,19 @@ final class DeathPreparationHost {
         void persist();
     }
 
-    /** 2026-11-13: mechanically shared with the actual plugin settlement consumer. */
+    /** Shared with the actual plugin commit boundary; current SELF cannot authenticate an old event. */
     static boolean settlementIdentity(UUID id, int dropSeq, SideTask task, RddRuntime runtime) {
-        var latest = RddDeathLedger.latest(id);
-        return task != null && runtime != null && DeathPreparation.sameChain(task, runtime.chain())
+        return task != null && runtime != null && id.equals(task.companionId())
+                && DeathPreparation.sameChain(task, runtime.chain())
                 && String.valueOf(dropSeq).equals(task.data().get("death_seq"))
-                && (latest == null || latest.seq() == dropSeq);
+                && currentBody(id, task, RddDeathLedger.latest(id));
     }
 
     static String settlementKey(UUID id, int dropSeq, boolean preparationHandled, SideTask task) {
         return id + "|" + dropSeq + (preparationHandled && task != null
-                ? "|prepare:" + task.data().getOrDefault("prepare_retries", "0") : "");
+                ? "|prepare:" + task.data().getOrDefault(PREPARATION_BATCH, task.data().getOrDefault("death_seq", ""))
+                    + "|" + task.instanceId() + "|" + task.generation()
+                    + "|" + task.data().getOrDefault("prepare_retries", "0") : "");
     }
 
     private static final String PREPARATION_BATCH = "prepare_death_seq";
@@ -57,21 +59,12 @@ final class DeathPreparationHost {
         if (rt == null) return;
         var active = engine.current(id).orElse(null);
         var latestBatch = RddDeathLedger.latest(id);
-        if (active == null || latestBatch == null) return;
-        if (latestBatch != null && !String.valueOf(latestBatch.seq()).equals(active.data().get("death_seq"))) {
-            if (!id.equals(active.companionId()) || !DeathPreparation.sameChain(active, rt.chain())
-                    || !emptySuccessors(id, active, latestBatch)) return;
-            String batch = String.valueOf(latestBatch.seq());
-            if (!batch.equals(active.data().get(PREPARATION_BATCH))) {
-                var data = new java.util.LinkedHashMap<>(active.data());
-                data.put(PREPARATION_BATCH, batch);
-                // A new body cannot execute or accept a plan requested before this death.
-                for (String key : java.util.List.of("prepare_request", DeathPreparation.PLAN,
-                        "prepare_descriptions", "prepare_index", "prepare_plan_state", "prepare_body_stopped"))
-                    data.remove(key);
-                engine.runtime().replace(active.withData(data));
-            }
-        }
+        if (active == null || latestBatch == null || !id.equals(active.companionId())
+                || !DeathPreparation.sameChain(active, rt.chain())) return;
+        int bodySeq = bodySeq(active), dropSeq = sequence(active.data().get("death_seq"));
+        if (bodySeq < dropSeq || bodySeq > latestBatch.seq()) return;
+        boolean successor = !String.valueOf(latestBatch.seq()).equals(active.data().get("death_seq"));
+        if (successor && !emptySuccessors(id, active, latestBatch)) return;
         var semantics = host.semantics(id);
         Map<String, String> slots = new java.util.LinkedHashMap<>();
         for (var primary : rt.chain().goal().primaryGoals()) {
@@ -81,6 +74,21 @@ final class DeathPreparationHost {
         }
         for (var key : semantics.keySet()) host.declareWearSlot(key, slots);
         DeathPreparation.attach(engine, id, rt.chain(), semantics, slots);
+        if (successor) {
+            var current = engine.current(id).orElseThrow();
+            String batch = String.valueOf(latestBatch.seq());
+            if (!batch.equals(current.data().get(PREPARATION_BATCH))) {
+                var data = new java.util.LinkedHashMap<>(current.data());
+                data.put(PREPARATION_BATCH, batch);
+                // Project a candidate identity for independent SELF evidence; UNKNOWN must not mutate live state.
+                var evidence = port.deathPreparationFacts(id, current.withData(data));
+                if (evidence.state() == SideTaskWorldPort.PreparationState.UNKNOWN) return;
+                for (String key : java.util.List.of("prepare_request", DeathPreparation.PLAN,
+                        "prepare_descriptions", "prepare_index", "prepare_plan_state")) data.remove(key);
+                if (evidence.state() == SideTaskWorldPort.PreparationState.MISSING) data.remove("prepare_body_stopped");
+                engine.runtime().replace(current.withData(data));
+            }
+        }
         DeathPreparation.tick(engine, id, rt.chain(), port,
                 (objective, hint, done) -> {
                     var planner = host.capturePlanner(id);
@@ -97,8 +105,7 @@ final class DeathPreparationHost {
                         var latest = RddDeathLedger.latest(id);
                         if (live != null && live.chain() == chain
                                 && (latest == null || String.valueOf(latest.seq()).equals(deathSeq))
-                                && (recovery == null || !recovery.data().containsKey(PREPARATION_BATCH)
-                                    || latest != null && emptySuccessors(id, recovery, latest))) {
+                                && recovery != null && currentBody(id, recovery, latest)) {
                             done.accept(specs);
                             host.persist();
                         }
@@ -117,12 +124,27 @@ final class DeathPreparationHost {
         if (!subject.equals(companionId) || task == null || !companionId.equals(task.companionId()))
             return SideTaskWorldPort.PreparationFacts.unknown("subject_mismatch");
         var latest = RddDeathLedger.latest(companionId);
-        if (latest == null || !String.valueOf(latest.seq()).equals(task.data().get("death_seq"))
-                && !emptySuccessors(companionId, task, latest))
+        if (!currentBody(companionId, task, latest))
             return SideTaskWorldPort.PreparationFacts.unknown("stale_death_batch");
-        // Re-prove lineage even for terminal/pause payloads, whose bounded core schema omits the marker.
+        // An explicit body marker survives terminal/pause serialization. No latest-body reinterpretation of old payloads.
         // The supplier is independent current SELF; the old death_seq is still only a drop source.
         return read.get();
+    }
+
+    private static int sequence(String raw) {
+        try { return Integer.parseInt(raw); }
+        catch (NumberFormatException invalid) { return -1; }
+    }
+
+    private static int bodySeq(SideTask task) {
+        return sequence(task.data().getOrDefault(PREPARATION_BATCH, task.data().get("death_seq")));
+    }
+
+    private static boolean currentBody(UUID id, SideTask task, RddDeathLedger.Death latest) {
+        if (task == null || latest == null || !id.equals(task.companionId())
+                || !DeathRecoverySideTaskTrigger.TYPE_ID.equals(task.typeId()) || bodySeq(task) != latest.seq()) return false;
+        return String.valueOf(latest.seq()).equals(task.data().get("death_seq"))
+                || emptySuccessors(id, task, latest);
     }
 
     /** No inference from a marker or an empty item map alone: every intervening batch must exist. */
@@ -146,8 +168,8 @@ final class DeathPreparationHost {
                     || previous == null || found.gameTime() < previous.gameTime()) return false;
             previous = found;
         }
+        // The plugin can legitimately close the drop source before its final current-equipment check.
         return origin != null && !origin.lostItems().isEmpty()
-                && origin.state() == RddDeathLedger.State.UNVERIFIED
                 && previous != null && previous.equals(latest);
     }
 }
