@@ -10,12 +10,14 @@ import com.dwinovo.numen.task.TaskRecord;
 import com.dwinovo.numen.task.TaskResult;
 import com.dwinovo.numen.task.TaskState;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -129,6 +131,17 @@ final class SkillTaskFeedback {
         detail.addProperty("epoch", token.epoch());
         detail.addProperty("skill_ref", ref);
         detail.addProperty("version", version);
+        JsonArray taskIdentity = new JsonArray();
+        taskIdentity.add(token.identity().get("world_id"));
+        taskIdentity.add(token.identity().get("server_session"));
+        taskIdentity.add(token.epoch());
+        taskIdentity.add(choice.companionId());
+        taskIdentity.add(task.publicId());
+        taskIdentity.add(task.getToolCallId());
+        // Reversible original host fields; never accept a caller-supplied fact identity.
+        String encodedTask = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(taskIdentity.toString().getBytes(StandardCharsets.UTF_8));
+        detail.add("task_identity", taskIdentity);
         // Stable original task key, independent of report call id, time and terminal state.
         String factKey = digest(detail.toString());
         String prefix = "task-skill:" + factKey + ":";
@@ -140,7 +153,7 @@ final class SkillTaskFeedback {
         detail.addProperty("terminal_state", state.name());
         detail.addProperty("meaning", "模型选择+服务端完整回复+原任务终态，待审候选；非因果有效");
         // Existing ledger cancellation semantics are per artifact. Isolate each original task fact.
-        String artifactId = ref + "@" + version + "#task:" + factKey;
+        String artifactId = ref + "@" + version + "#task=" + encodedTask;
         UsageLedger.Entry result = null;
         synchronized (ledger) {
             if (!ledger.readable()) throw new IllegalStateException("使用账本不可读，不能判断幂等");
