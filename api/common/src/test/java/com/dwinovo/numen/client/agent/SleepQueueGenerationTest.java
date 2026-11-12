@@ -73,7 +73,7 @@ class SleepQueueGenerationTest {
               UUID entityUuid=UUID.randomUUID(); int turnGeneration;
               boolean awaitingLlmResponse=true,compacting=true,dead,external,turnRetried=true;
               String turnPause="NONE",goal="original";int cursor=7,retries=2,streamClears;
-              record CurrentTask(String taskId){}
+              record CurrentTask(String id){}
               CurrentTask currentTask=new CurrentTask("body-1");
               ConvoState convo=new ConvoState();
               Presenter presenter=new Presenter();
