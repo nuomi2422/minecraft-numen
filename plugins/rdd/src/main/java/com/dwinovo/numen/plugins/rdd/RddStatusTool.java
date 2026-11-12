@@ -116,9 +116,26 @@ final class RddStatusTool implements NumenTool {
             // otherwise a "no longer needed" judgement looks like an achieved stage.
             fields.put("satisfied_stages", java.util.List.copyOf(chain.satisfiedStages()));
             fields.put("waived_stages", java.util.List.copyOf(chain.waivedStages()));
+            // 049: reuse the existing declaration extractor under the same generation lock.
+            // Do not read the unversioned manifest cache or evaluate it with held counts:
+            // acquire targets are not hold requirements and missing declarations are unknown.
+            var primary = chain.currentPrimary();
+            var manifest = RddRequirementDetector.forPrimary(primary, chain.goal().id());
+            fields.put("requirements", Map.of(
+                    "source", "RddRequirementDetector.forPrimary",
+                    "declared", manifest.requirements(),
+                    "completeness", "UNKNOWN",
+                    "satisfaction", "UNKNOWN",
+                    "reason", primary.unexpanded()
+                            ? "Primary is unexpanded; preparation requirements and current satisfaction are not established"
+                            : "Partial declaration projection: waitFor and condition.asset_key only; "
+                            + "empty is not no requirements. No held counts, acquire delta or world verification sampled"));
             if (current != null) {
                 fields.put("subtask", current.id());
                 fields.put("subtask_status", chain.currentSubtaskStatus().name());
+                fields.put("node_type", current.nodeType().name());
+                fields.put("node_declaration_source", "TaskChain.currentSubtask; legacy missing nodeType defaults MAIN");
+                if (current.recurrence() != null) fields.put("recurrence", current.recurrence());
             }
             return new ChainProjection(Map.copyOf(fields), current, complete);
         }

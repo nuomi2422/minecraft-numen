@@ -1634,6 +1634,9 @@ public final class TaskChain {
                 Map<String, Object> item = new LinkedHashMap<>();
                 item.put("id", subtask.id());
                 item.put("description", subtask.description());
+                // 049: expose existing declarations; DAILY routing/skip is not completion.
+                item.put("nodeType", subtask.nodeType().name());
+                if (subtask.recurrence() != null) item.put("recurrence", subtask.recurrence());
                 item.put("status", statuses.get(subtask.id()).name());
                 if (skipReasons.containsKey(subtask.id())) item.put("skipReason", skipReasons.get(subtask.id()));
                 if (pauseReasons.containsKey(subtask.id())) item.put("pauseReason", pauseReasons.get(subtask.id()));
@@ -1697,6 +1700,7 @@ public final class TaskChain {
         // G3b：把「这一步开跑过几次」「安全状态变过几次」「挡掉过几次陈旧结果」带进快照 ——
         // 监测台据此能核对 IC03/IC06，不用去翻持久化文件（V-20261020-21 的债）。
         view.put("stateVersion", stateVersion);
+        view.put("planRevision", planRevision);
         view.put("staleResultsIgnored", staleResultsIgnored);
         // G3e：安全点凭据的可见性——「为什么现在不能换计划」必须能一句话说清，
         // 而不是只能靠「调用抛了 SAFE_POINT_PENDING」去猜。
