@@ -389,6 +389,22 @@ public final class SideTaskEngine {
             RecurringSideTaskSpec spec = e.getValue();
             String typeId = recurringTypes.get(e.getKey());
             if (!spec.dueOn(day)) continue;
+            MainlineResumeToken token = null;
+            boolean plannerDaily = spec.scheduleId().startsWith("daily:");
+            if (plannerDaily) {
+                // 2026-11-12: Host shares this engine across goals. Qualify before prompt/due/handled too.
+                // Use the live validator, not a companion guessed from the goal id or a second owner table.
+                if (mainlineToken == null || !companionId.equals(mainlineToken.companionId())
+                        || mainlineValidator == null) continue;
+                token = mainlineValidator.validate(mainlineToken);
+                if (token == null || !companionId.equals(token.companionId())
+                        || token.goalId() == null || token.goalId().isBlank()) continue;
+                String goalPrefix = "daily:" + token.goalId() + ":";
+                // Exact last boundary keeps goal-b4 separate from goal-b49 and goal-b4:child.
+                if (!spec.scheduleId().startsWith(goalPrefix)
+                        || spec.scheduleId().lastIndexOf(':') != goalPrefix.length() - 1
+                        || spec.scheduleId().length() == goalPrefix.length()) continue;
+            }
             String key = companionId + "|" + world.worldId() + "|" + spec.scheduleId() + "|" + day;
             Long handled = recurringHandled.get(key);
             if (handled != null && handled == day) {
@@ -411,7 +427,7 @@ public final class SideTaskEngine {
             SideTaskType type = typeId == null ? null : types.get(typeId);
             if (type == null) continue;
             System.out.println("[rdd] recurring create spec=" + spec.scheduleId() + " dataKeys=" + spec.data().keySet());
-            MainlineResumeToken token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
+            if (!plannerDaily) token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
             long generation = runtime.nextGeneration();
             SideTask task = type.create(new SideTaskType.CreationContext(
                     companionId, typeId + "-" + generation + "-" + shortId(companionId), generation,
