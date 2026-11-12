@@ -60,18 +60,16 @@ final class DeathPreparationHost {
             var data = new java.util.LinkedHashMap<>(paused.data());
             data.put(PREPARATION_BATCH, String.valueOf(latest.seq()));
             var candidate = paused.withData(data);
-            // Current evidence belongs to this candidate; old pause/terminal facts stay stale.
+            // Project current SELF without rewriting the old pause or admitting its stale terminal.
             var evidence = port.deathPreparationFacts(id, candidate);
+            if (engine.isActive(id)) return true;
             if (evidence.state() == SideTaskWorldPort.PreparationState.READY)
                 return !DeathPreparation.settle(chain, DeathPreparation.resumePayload(candidate), true, evidence.reason());
-            if (evidence.state() != SideTaskWorldPort.PreparationState.MISSING
-                    || !DeathPreparation.retryDue(paused, port)) return true;
-            // UNKNOWN, not-due and exhausted retries return before any live pause or plan write.
-            for (String key : java.util.List.of("prepare_request", DeathPreparation.PLAN,
-                    "prepare_descriptions", "prepare_index", "prepare_plan_state", "prepare_body_stopped")) data.remove(key);
-            data.put("prepare_reason", evidence.reason());
-            if (!DeathPreparation.settle(chain, DeathPreparation.resumePayload(paused.withData(data)),
-                    false, evidence.reason())) return true;
+            if (evidence.state() == SideTaskWorldPort.PreparationState.MISSING) {
+                data.put("prepare_reason", evidence.reason());
+                if (DeathPreparation.reopenPaused(engine, id, chain, port, paused.withData(data))) retryActivated.run();
+            }
+            return true;
         }
         if (!DeathPreparation.holdPaused(chain, id, port)) return false;
         if (DeathPreparation.reopenPaused(engine, id, chain, port)) retryActivated.run();
