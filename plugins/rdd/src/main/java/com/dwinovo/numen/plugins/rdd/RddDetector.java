@@ -256,6 +256,14 @@ final class RddDetector {
             return;
         }
 
+        // Recovery pauses require the missing equipment, not the original trading condition or a timeout.
+        if (chain.pauseReason(cur.id()) != null && chain.pauseReason(cur.id()).startsWith("recovery_not_verified:")) {
+            if (!SideTaskHost.holdRecoveryPause(ap, chain)) {
+                rt.clearPaused(cur.id());
+                RddPlugin.publishTaskSnapshot(ap.getUUID(), "recovery_equipment_verified_resumed");
+            }
+            return;
+        }
         // ① 条件其实已经满足了（规划器改过单、或她其实能做到）→ 通融：立刻开回来。
         if (conditionMatches(ap, cur, counts)) {
             try {

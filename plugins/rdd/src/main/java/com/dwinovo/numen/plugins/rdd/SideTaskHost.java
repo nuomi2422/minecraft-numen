@@ -295,9 +295,11 @@ final class SideTaskHost {
         com.dwinovo.numen.rdd.side.death.DeathRecoveryDecision parsed =
                 com.dwinovo.numen.rdd.side.death.DeathRecoveryDecision.parse(decision);
         if (parsed == null) return false;
-        boolean set = ENGINE.setData(companionId,
-                com.dwinovo.numen.rdd.side.death.DeathRecoverySideTaskType.KEY_DECISION,
-                parsed.name());
+        boolean set = com.dwinovo.numen.rdd.side.death.DeathPreparation.choose(ENGINE, companionId, parsed);
+        if (set) {
+            NumenPlayer body = RddCompanionBody.get(companionId);
+            if (body != null) tickDeathPreparation(body, new HostWorldPort(body));
+        }
         if (set) {
             RddMonitor.publish("death_recovery_decision", Map.of(
                     "companionId", companionId.toString(),
@@ -352,6 +354,8 @@ final class SideTaskHost {
             }
             MainlineResumeToken token = currentMainlineToken(companionId);
             boolean deathOccupying = RddRepairDispatch.lastRepair(companionId) != null;
+            // Death-only preparation owns its data/plan; the original mainline remains untouched.
+            tickDeathPreparation(ap, port);
             ENGINE.tick(companionId, port, token, deathOccupying);
             boolean nowActive = ENGINE.isActive(companionId);
             if (FORCED_FOOD.contains(companionId) && "food_supply".equals(currentTypeId(companionId))) {
@@ -407,6 +411,74 @@ final class SideTaskHost {
         ENGINE.onServerStopped();
         SIDE_CONTEXT.clear();
         SleepWakeWatcher.clearAll();
+    }
+
+    /** Existing Stage-B decomposer plans a recovery objective, never the current trading theme. */
+    private static void tickDeathPreparation(NumenPlayer ap, HostWorldPort port) {
+        UUID id = ap.getUUID();
+        if (!isDeathRecoveryActive(id)) return;
+        var rt = RddPlugin.runtime(id);
+        if (rt == null) return;
+        var active = ENGINE.current(id).orElse(null);
+        var latestBatch = com.dwinovo.numen.rdd.core.RddDeathLedger.latest(id);
+        if (active == null || latestBatch != null
+                && !String.valueOf(latestBatch.seq()).equals(active.data().get("death_seq"))) return;
+        var semantics = RddSemanticsStore.semantics(id);
+        Map<String, String> slots = new java.util.LinkedHashMap<>();
+        for (var primary : rt.chain().goal().primaryGoals()) {
+            for (var requirement : primary.waitFor()) declareWearSlot(requirement.assetKey(), slots);
+            for (var sub : primary.subtasks()) if (sub.condition().get("asset_key") instanceof String key)
+                declareWearSlot(key, slots);
+        }
+        for (var key : semantics.keySet()) declareWearSlot(key, slots);
+        com.dwinovo.numen.rdd.side.death.DeathPreparation.attach(ENGINE, id, rt.chain(), semantics, slots);
+        com.dwinovo.numen.rdd.side.death.DeathPreparation.tick(ENGINE, id, rt.chain(), port,
+                (objective, hint, done) -> {
+                    var server = ap.getServer();
+                    var ticket = RddPlugin.planningTicket(id);
+                    if (server == null) { done.accept(java.util.List.of()); return; }
+                    var chain = rt.chain();
+                    var recovery = ENGINE.current(id).orElse(null);
+                    String deathSeq = recovery == null ? "" : recovery.data().getOrDefault("death_seq", "");
+                    RddDecomposer.decomposeSpecsWithHint(id, objective, 0, java.util.List.of(), hint,
+                            specs -> RddPlugin.onServer(server, ticket, () -> {
+                                var live = RddPlugin.runtime(id);
+                                var latest = com.dwinovo.numen.rdd.core.RddDeathLedger.latest(id);
+                                if (live != null && live.chain() == chain
+                                        && (latest == null || String.valueOf(latest.seq()).equals(deathSeq))) {
+                                    done.accept(specs);
+                                    persist();
+                                }
+                            }));
+                });
+        var preparing = ENGINE.current(id).orElse(null);
+        if (preparing != null && "true".equals(preparing.data().get("prepare_required"))
+                && !"true".equals(preparing.data().get("prepare_body_stopped"))) {
+            com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(ap, "death preparation preempts original action");
+            ENGINE.setData(id, "prepare_body_stopped", "true");
+        }
+    }
+
+    /** Registry-declared armor/shield slots only: no suffix/free-text equipment classifier. */
+    private static void declareWearSlot(String key, Map<String, String> slots) {
+        if (key == null) return;
+        ResourceLocation location = ResourceLocation.tryParse(key);
+        if (location == null) return;
+        var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(location);
+        if (item instanceof net.minecraft.world.item.ArmorItem armor) slots.put(key, armor.getEquipmentSlot().getName());
+        else if (item instanceof net.minecraft.world.item.ShieldItem) slots.put(key, "offhand");
+    }
+
+    static SideTaskWorldPort.PreparationFacts deathPreparationResult(UUID id, String payload) {
+        var body = RddCompanionBody.get(id);
+        var task = com.dwinovo.numen.rdd.side.death.DeathPreparation.resumeTask(payload);
+        if (body == null || task == null) return SideTaskWorldPort.PreparationFacts.unknown("recovery_subject_unavailable");
+        return new HostWorldPort(body).deathPreparationFacts(id, task);
+    }
+
+    /** Called only for recovery_not_verified pauses; fresh equipment evidence is the sole release. */
+    static boolean holdRecoveryPause(NumenPlayer ap, TaskChain chain) {
+        return com.dwinovo.numen.rdd.side.death.DeathPreparation.holdPaused(chain, ap.getUUID(), new HostWorldPort(ap));
     }
 
     // ---- 世界端口 ----
@@ -520,6 +592,37 @@ final class SideTaskHost {
             }
         }
 
+        private RddDeathEquipment.Sample equipment;
+        private boolean equipmentRead;
+        private RddDeathEquipment.Sample equipmentSample() {
+            if (equipmentRead) return equipment;
+            equipmentRead = true;
+            var service = com.dwinovo.numen.api.NumenPlugins.capability(
+                    com.dwinovo.numen.api.observation.WorldObservationService.class);
+            return equipment = RddDeathEquipment.read(service, ap.getUUID(), worldId(),
+                    com.dwinovo.numen.api.WorldContextStamp.snapshot(), System.currentTimeMillis());
+        }
+        @Override public PreparationFacts deathPreparationFacts(UUID companionId, SideTask task) {
+            if (!ap.getUUID().equals(companionId)) return PreparationFacts.unknown("subject_mismatch");
+            var latest = com.dwinovo.numen.rdd.core.RddDeathLedger.latest(companionId);
+            if (latest != null && !String.valueOf(latest.seq()).equals(task.data().get("death_seq")))
+                return PreparationFacts.unknown("stale_death_batch");
+            return RddDeathEquipment.facts(equipmentSample(), task, RddRepairDispatch.backupFromBase(companionId),
+                    HostWorldPort::equipmentTag);
+        }
+        @Override public Boolean deathPreparationCondition(UUID companionId, Map<String, Object> condition) {
+            if (!ap.getUUID().equals(companionId)) return null;
+            return RddDeathEquipment.condition(equipmentSample(), condition, HostWorldPort::equipmentTag);
+        }
+        private static boolean equipmentTag(String tag, String item) {
+            var tagId = ResourceLocation.tryParse(tag.substring(1));
+            var itemId = ResourceLocation.tryParse(item);
+            if (tagId == null || itemId == null) return false;
+            var resolved = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(itemId);
+            return new net.minecraft.world.item.ItemStack(resolved).is(net.minecraft.tags.TagKey.create(
+                    net.minecraft.core.registries.Registries.ITEM, tagId));
+        }
+
         private static BlockPos parseDeathAt(String raw) {
             if (raw == null || raw.isBlank()) return null;
             String[] parts = raw.replace(" ", "").split(",");
@@ -592,6 +695,8 @@ final class SideTaskHost {
             Subtask current = chain.currentSubtask();
             String primaryId = chain.currentPrimary() == null ? null : chain.currentPrimary().id();
             String subtaskId = current == null ? null : current.id();
+            if (current != null && chain.isPaused(current.id()) && chain.pauseReason(current.id()) != null
+                    && chain.pauseReason(current.id()).startsWith("recovery_not_verified:")) return null;
             if (!token.matches(chain.chainInstanceId(), chain.goal().id(), primaryId, subtaskId,
                     chain.planRevision())) {
                 return null;

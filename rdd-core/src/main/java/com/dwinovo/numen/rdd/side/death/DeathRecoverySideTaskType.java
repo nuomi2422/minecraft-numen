@@ -70,6 +70,39 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
             data.put("decision_rejected", "unknown_strategy");
             data.put(KEY_DECISION, "PENDING");
         }
+        // Pickup settlement cannot stand in for current equipped-slot evidence.
+        boolean prepare = DeathPreparation.prepares(decision)
+                || "true".equals(data.get("prepare_required"));
+        SideTaskWorldPort.PreparationFacts preparation = null;
+        if (!prepare && decision != DeathRecoveryDecision.RESET_AND_RESTART
+                && task.data().containsKey(DeathPreparation.TARGETS)
+                && (facts.dropState() == SideTaskWorldPort.DeathDropState.RECOVERED
+                    || facts.dropState() == SideTaskWorldPort.DeathDropState.DROPS_ABSENT)) {
+            preparation = world.deathPreparationFacts(task.companionId(), task);
+            prepare = preparation.state() != SideTaskWorldPort.PreparationState.READY;
+        }
+        if (prepare) {
+            if (preparation == null) preparation = world.deathPreparationFacts(task.companionId(), task);
+            data.put("prepare_required", "true");
+            String incomplete = "REJECTED".equals(data.get("prepare_plan_state"))
+                    ? "preparation_plan_rejected_or_unavailable; " + preparation.reason() : preparation.reason();
+            data.put("prepare_reason", incomplete);
+            if (facts.dropState() == SideTaskWorldPort.DeathDropState.DROPS_ABSENT)
+                data.put("drop_terminal", RecoveryTerminal.CONFIRMED_ABSENT);
+            if (facts.dropState() == SideTaskWorldPort.DeathDropState.RECOVERED)
+                data.put("drop_terminal", RecoveryTerminal.RECOVERED);
+            data.put("terminal_reason", data.getOrDefault("drop_terminal", ""));
+            boolean ready = preparation.state() == SideTaskWorldPort.PreparationState.READY;
+            data.put("prepare_verified", Boolean.toString(ready));
+            if (ready) return SideTaskVerdict.complete("当前装备槽与明确备用需求已核验；恢复原主线", data);
+            if (task.pastDeadline(world.gameTime())) {
+                data.put("prepare_reason", "recovery_not_verified: " + incomplete);
+                return SideTaskVerdict.skip("装备整备未核验，保护线到期；不冒充完成或物理丢失", data);
+            }
+            if ("REJECTED".equals(data.get("prepare_plan_state")))
+                return SideTaskVerdict.skip("装备恢复计划不可用；未核验并暂停原步骤，不伪造完成", data);
+            return SideTaskVerdict.keep(PHASE_REEQUIP, data);
+        }
         if (decision == DeathRecoveryDecision.ABANDON_RECOVERY) {
             data.put("terminal_reason", "executor_declined_recovery");
             return SideTaskVerdict.skip("执行 AI 在有限策略中选择放弃回收；交给损失影响分析", data);
@@ -125,6 +158,13 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
                 + "\" dimension=\"" + esc(dimension) + "\" death_at=\"" + esc(at)
                 + "\" drop_state=\"" + esc(state) + "\" dangerous=\"" + esc(dangerous)
                 + "\" backup_available=\"" + esc(backup) + ">"
+                + ("true".equals(task.data().get("prepare_required")) || DeathPreparation.prepares(
+                        DeathRecoveryDecision.parse(task.data().get("decision")))
+                    ? "当前先整备装备，不继续原交易步骤。下一恢复步骤：" + esc(DeathPreparation.context(task))
+                        + "；准入条件=" + esc(task.data().getOrDefault(DeathPreparation.TARGETS, "[]"))
+                        + "；未完成原因=" + esc(task.data().getOrDefault("prepare_reason", "unknown"))
+                        + "。掉落不存在不能当作装备齐备；背包里有甲但未穿也不完成。"
+                    : "")
                 + "死亡恢复支线已接管，主线计算暂时冻结。先判断这批掉落是否值得回收："
                 + "危险、距离、维度、区块加载状态、备用装备和原目标都要一起看。"
                 + "若有备用装备且回死亡点会再次送命，先取备用/重新装战，再决定是否回收；"

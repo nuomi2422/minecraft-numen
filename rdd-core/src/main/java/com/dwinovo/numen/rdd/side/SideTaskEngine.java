@@ -467,6 +467,13 @@ public final class SideTaskEngine {
         if (task.data().containsKey("death_seq")) {
             data.put("deathSeq", task.data().get("death_seq"));
             data.put("deathRecoveryTerminalReason", task.data().getOrDefault("terminal_reason", ""));
+            // Death-only result envelope; do not equate pickup/prepare/mainline resumption.
+            if (task.data().containsKey(com.dwinovo.numen.rdd.side.death.DeathPreparation.TARGETS)
+                    || task.data().containsKey("prepare_required")) {
+                data.put("prepareVerified", task.data().getOrDefault("prepare_verified", "false"));
+                data.put("prepareReason", task.data().getOrDefault("prepare_reason", "not verified"));
+                data.put("prepareResume", com.dwinovo.numen.rdd.side.death.DeathPreparation.resumePayload(task));
+            }
         }
         if (task.mainlineToken() != null) {
             data.put("mainlineGoalId", task.mainlineToken().goalId());

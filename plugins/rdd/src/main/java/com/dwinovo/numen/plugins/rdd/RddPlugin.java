@@ -1534,6 +1534,22 @@ private static String withAssets(UUID companionId, String rddContext) {
         try {
             int seq = Integer.parseInt(String.valueOf(data.getOrDefault("deathSeq", "-1")));
             if (seq < 0) return;
+            String preparePayload = String.valueOf(data.getOrDefault("prepareResume", ""));
+            boolean preparationHandled = !preparePayload.isBlank();
+            boolean preparationIdentityValid = true;
+            if (preparationHandled) {
+                var task = com.dwinovo.numen.rdd.side.death.DeathPreparation.resumeTask(preparePayload);
+                var rt = runtime(companionId);
+                var latest = RddDeathLedger.latest(companionId);
+                if (task == null || rt == null
+                        || !com.dwinovo.numen.rdd.side.death.DeathPreparation.sameChain(task, rt.chain())
+                        || !String.valueOf(seq).equals(task.data().get("death_seq"))
+                        || latest != null && latest.seq() != seq) {
+                    RddMonitor.publish("death_prepare_settlement_rejected", Map.of(
+                            "companionId", companionId.toString(), "deathSeq", seq, "reason", "stale_recovery_identity"));
+                    preparationIdentityValid = false; // still settle this batch's physical pickup facts below
+                }
+            }
             String key = companionId + "|" + seq;
             if (!DEATH_SETTLEMENTS.add(key)) return;
             // 2026-10-31：产出侧写的是 terminal_reason（下划线），这里原先只读驼峰键
@@ -1555,7 +1571,23 @@ private static String withAssets(UUID companionId, String rddContext) {
             Map<String, Integer> counts = lastInventory(companionId);
             RddRepairDispatch.recomputeAfterDeath(companionId, counts, confirmedLost,
                     recovered ? "recovered" : (confirmedLost ? "confirmed_lost" : "unverified_settlement"), seq);
-            boolean shouldReplan = !recovered;
+            boolean prepareVerified = false;
+            String prepareReason = String.valueOf(data.getOrDefault("prepareReason", "not verified"));
+            if (preparationHandled && preparationIdentityValid) {
+                // Recheck at the commit boundary; an old COMPLETE event is not current wearing evidence.
+                var evidence = SideTaskHost.deathPreparationResult(companionId, preparePayload);
+                prepareVerified = evidence.state() == com.dwinovo.numen.rdd.side.SideTaskWorldPort.PreparationState.READY;
+                prepareReason = (prepareVerified ? "" : prepareReason + "; ") + evidence.reason();
+                var rt = runtime(companionId);
+                com.dwinovo.numen.rdd.side.death.DeathPreparation.settle(rt.chain(), preparePayload, prepareVerified, prepareReason);
+                if (!prepareVerified) {
+                    var body = RddCompanionBody.get(companionId);
+                    if (body != null) com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(body, "recovery_not_verified");
+                }
+                saveRuntimes();
+                publishTaskSnapshot(companionId, prepareVerified ? "death_prepare_verified" : "death_prepare_unverified_paused");
+            }
+            boolean shouldReplan = !recovered && !preparationHandled;
             Map<String, Object> settlement = new LinkedHashMap<>();
             settlement.put("companionId", companionId.toString());
             settlement.put("deathSeq", seq);
@@ -1571,7 +1603,12 @@ private static String withAssets(UUID companionId, String rddContext) {
             }
             settlement.put("ledgerState", recovered ? "RECOVERED" : (confirmedLost ? "CONFIRMED_LOST" : "UNVERIFIED"));
             settlement.put("replanRequested", shouldReplan);
-            settlement.put("inventoryKnown", !counts.isEmpty());
+            settlement.put("inventoryKnown", lastInventoryAtMillis(companionId) != null);
+            if (preparationHandled) {
+                settlement.put("prepareVerified", prepareVerified);
+                settlement.put("prepareReason", prepareReason);
+                settlement.put("mainlineRecovery", prepareVerified ? "original_plan_continues" : "paused_recovery_not_verified");
+            }
             RddMonitor.publish("death_recovery_settled", settlement);
             if (shouldReplan) {
                 // 结算时当前二级通常还是 RUNNING（人不是"卡住"，是计划所依据的事实变了）。

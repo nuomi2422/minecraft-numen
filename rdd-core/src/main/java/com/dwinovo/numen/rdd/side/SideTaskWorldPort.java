@@ -108,6 +108,28 @@ public interface SideTaskWorldPort {
         }
     }
 
+    /** Death preparation is current ability, not recovered-drop history. Missing ports stay UNKNOWN. */
+    enum PreparationState { READY, MISSING, UNKNOWN }
+    record PreparationFacts(PreparationState state, String reason,
+                            java.util.Map<String, Integer> held, java.util.Map<String, Integer> backup) {
+        public PreparationFacts {
+            state = state == null ? PreparationState.UNKNOWN : state;
+            reason = reason == null ? "" : reason;
+            held = held == null ? java.util.Map.of() : java.util.Map.copyOf(held);
+            backup = backup == null ? java.util.Map.of() : java.util.Map.copyOf(backup);
+        }
+        public static PreparationFacts unknown(String reason) {
+            return new PreparationFacts(PreparationState.UNKNOWN, reason, java.util.Map.of(), java.util.Map.of());
+        }
+    }
+    default PreparationFacts deathPreparationFacts(UUID companionId, SideTask task) {
+        return PreparationFacts.unknown("current equipment not observed");
+    }
+    /** Per-step current condition; null means unverified, never missing/false. */
+    default Boolean deathPreparationCondition(UUID companionId, java.util.Map<String, Object> condition) {
+        return null;
+    }
+
     /** Host must report loaded/observed facts; the core never turns UNKNOWN into absence. */
     default DeathRecoveryFacts deathRecoveryFacts(UUID companionId, SideTask task) {
         return DeathRecoveryFacts.unknown("death-drop facts not observed yet");
