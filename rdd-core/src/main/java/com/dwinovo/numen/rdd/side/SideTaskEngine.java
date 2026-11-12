@@ -214,7 +214,9 @@ public final class SideTaskEngine {
                 }
                 // 推迟冷却：未到点不重新决策（避免每拍重复决策）。
                 Long until = deferredUntil.get(key);
-                if (until != null && now < until) {
+                if (until != null && now < until
+                        && !(com.dwinovo.numen.rdd.side.sleep.SleepSideTaskType.TYPE_ID.equals(trigger.typeId())
+                        && com.dwinovo.numen.rdd.side.sleep.SleepSideTaskType.reconsiderDeferred(companionId, world))) {
                     continue;
                 }
             }

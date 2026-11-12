@@ -106,10 +106,21 @@ public final class SleepSideTaskType implements SideTaskType {
         if (world.inCombat(companionId)) {
             return SideTaskDecision.defer(COMBAT_RETRY_TICKS, "in_combat");
         }
-        if (world.bodyBusy(companionId)) {
+        // Live 2026-11-12: waiting for every mine/build to end starved sleep through repeated deaths.
+        // Only current positive threat evidence permits a known non-survival owner to yield.
+        // UNKNOWN/CLEAR and explicit night intent never become an automatic nightly interrupt.
+        if (world.bodyBusy(companionId) && !(world.sleepRisk(companionId) == SideTaskWorldPort.SleepRisk.HOSTILES
+                && world.sleepMayInterrupt(companionId))) {
             return SideTaskDecision.defer(BUSY_RETRY_TICKS, "mid_operation");
         }
         return SideTaskDecision.EXECUTE;
+    }
+
+    /** Cheap current-fact exception to a prior defer, not another timer/risk state machine. */
+    public static boolean reconsiderDeferred(UUID companionId, SideTaskWorldPort world) {
+        return world.sleepRisk(companionId) == SideTaskWorldPort.SleepRisk.HOSTILES
+                && !world.inCombat(companionId)
+                && (!world.bodyBusy(companionId) || world.sleepMayInterrupt(companionId));
     }
 
     @Override
@@ -195,9 +206,9 @@ public final class SleepSideTaskType implements SideTaskType {
                 + "**不需要睡满一夜**：系统观察到你睡着，或检测到出生点新绑上后，这条支线就完成、主线恢复。"
                 + "★ 时限：从触发算起约 2 分钟内没绑上出生点，系统会自动撤回主线（记 SKIPPED，不算失败）——"
                 + "所以附近没床时**别硬找、别干等**，直接 rdd_decline_side 写清理由。"
-                + "★ 若附近根本没有床（也来不及杀羊做床），就【挖三填一】保命："
-                + "原地向下挖 3 格成一个 1×1 竖井，自己站进去，再用方块把头顶那格封住（三面墙一面顶），"
-                + "躲在里面熬到天亮——没有床也能活下来，别在夜里硬顶怪物。"
+                + "★ 先脱离眼前攻击，再判断睡眠；正在被打不要强睡或原地硬挖。"
+                + "无床时先用已有安全庇护或撤离；只有确认脚下可挖、无岩浆/坠落危险且来得及时，才可选【挖三填一】临时庇护。"
+                + "地下/已有安全庇护不必为了睡觉回到危险地面；未知不等于安全，也不是每晚必须睡或必须挖坑。"
                 // 2026-10-24 实机：模型把"挖三填一"反复在心里演练，每轮都先 get_self_status 再重新规划，
                 // 十几轮没有一个动作落地（P0 卡死）。把"读状态不算进展"直接写进它的上下文。
                 + "★★ 读一次 get_self_status 就够：**重复读状态不算进展**。"

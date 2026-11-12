@@ -45,6 +45,15 @@ public interface SideTaskWorldPort {
 
     // ---- 决策用事实（默认无此概念，宿主按需实现） ----
 
+    /** Current nearby-hostile evidence only; CLEAR is not a promise of global safety. */
+    enum SleepRisk { UNKNOWN, CLEAR, HOSTILES }
+
+    /** 2026-11-12: cached production observation; stale/unidentified/unsupported stays UNKNOWN. */
+    default SleepRisk sleepRisk(UUID companionId) { return SleepRisk.UNKNOWN; }
+
+    /** Only a known non-survival built-in action may yield; external/unknown owners never do. */
+    default boolean sleepMayInterrupt(UUID companionId) { return false; }
+
     /** 是否正在战斗/受伤（宿主用 {@code hurtTime} 等）。默认 false。 */
     default boolean inCombat(UUID companionId) {
         return false;

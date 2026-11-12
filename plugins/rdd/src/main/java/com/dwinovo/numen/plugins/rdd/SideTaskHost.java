@@ -354,9 +354,27 @@ final class SideTaskHost {
             }
             MainlineResumeToken token = currentMainlineToken(companionId);
             boolean deathOccupying = RddRepairDispatch.lastRepair(companionId) != null;
-            // Death-only preparation owns its data/plan; the original mainline remains untouched.
+            // Preserve death preparation before the single arbitration tick; sleep only adds its handoff.
             tickDeathPreparation(ap, port);
-            ENGINE.tick(companionId, port, token, deathOccupying);
+            SleepSafety.tick(ENGINE, companionId, port, token, deathOccupying, () -> {
+                // Same server thread: stop ONLY the action whose owner was admitted, not a replacement.
+                var action = com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companionId);
+                if (action == null || action != port.sleepAction || !SleepSafety.mayInterrupt(action.isExternalCall(), action.getToolName())
+                        || ap.isSleeping() || ap.hurtTime > 0) return false;
+                var bodyState = RddPlugin.bodyState(companionId);
+                var stopped = com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(ap,
+                        "sleep: current nearby hostiles interrupt non-survival work");
+                if (stopped != action) return false;
+                // A natural side interrupt is not a failed mainline attempt. Leave chain/token intact.
+                if (token != null && validateMainline(token) != null && bodyState != null
+                        && bodyState == RddPlugin.bodyState(companionId)
+                        && java.util.Objects.equals(bodyState.subtaskId(), token.subtaskId())) {
+                    RddPlugin.clearBody(companionId);
+                }
+                RddMonitor.publish("sleep_body_interrupted", Map.of("companionId", companionId.toString(),
+                        "taskId", stopped.publicId(), "tool", stopped.getToolName(), "reason", "current nearby hostiles"));
+                return true;
+            });
             boolean nowActive = ENGINE.isActive(companionId);
             if (FORCED_FOOD.contains(companionId) && "food_supply".equals(currentTypeId(companionId))) {
                 FORCED_FOOD.remove(companionId);
@@ -488,10 +506,60 @@ final class SideTaskHost {
         return true;
     }
 
+    /**
+     * Sleep-only host seam: real Engine arbitration precedes one existing task_stop-style cancellation.
+     * No new body controller or fact cache; nested pure code is testable without loading NeoForge.
+     * stopActive does NOT invalidate client LLM/tool queues; that wider lifecycle gap is separate.
+     */
+    static final class SleepSafety {
+        static boolean mayInterrupt(boolean external, String tool) {
+            if (external || tool == null) return false;
+            // Positive allowlist: unknown tools, combat, escape, eating, and sleep retain ownership.
+            return java.util.Set.of("mine", "build", "craft", "collect_items", "farm_nearby",
+                    "farm_cell", "sow_nearby", "fishing").contains(tool);
+        }
+
+        static void tick(SideTaskEngine engine, UUID id, SideTaskWorldPort port,
+                         MainlineResumeToken token, boolean death, java.util.function.BooleanSupplier interrupt) {
+            boolean wasActive = engine.isActive(id);
+            engine.tick(id, port, token, death);
+            SideTask now = engine.current(id).orElse(null);
+            if (!wasActive && now != null && SleepSideTaskType.TYPE_ID.equals(now.typeId())
+                    && !death && !port.isSleeping(id) && !port.inCombat(id) && port.bodyBusy(id)
+                    && port.sleepRisk(id) == SideTaskWorldPort.SleepRisk.HOSTILES && port.sleepMayInterrupt(id)) {
+                if (!interrupt.getAsBoolean()) engine.cancel(id, "sleep body owner changed before interruption");
+            }
+        }
+
+        static SideTaskWorldPort.SleepRisk risk(
+                com.dwinovo.numen.api.observation.WorldObservationService.Response response,
+                String world, String session, String dimension, long nowMs) {
+            var unknown = SideTaskWorldPort.SleepRisk.UNKNOWN;
+            if (response == null || !"entities".equals(response.topic()) || response.items().size() != 1) return unknown;
+            var meta = response.metadata();
+            if (!meta.identified() || !meta.worldId().equals(world) || !meta.serverSession().equals(session)
+                    || !meta.dimension().equals(dimension)
+                    || meta.freshness() != com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT
+                    || meta.observedAtMs() > nowMs || nowMs - meta.observedAtMs() > 6_000L
+                    || meta.validUntilMs() <= nowMs) return unknown;
+            var item = response.items().get(0);
+            var ready = com.dwinovo.numen.api.observation.Readiness.assess(response.status(), response.coverage(),
+                    java.util.Set.of("count"), item.values().keySet(), item.unknownFields(), item.staleFields());
+            if (!ready.canReportPresence() || item.unknownFields().contains("") || item.staleFields().contains("")) return unknown;
+            Object raw = item.values().get("count");
+            if (!(raw instanceof Number count) || !Double.isFinite(count.doubleValue())
+                    || count.doubleValue() < 0 || count.doubleValue() != Math.rint(count.doubleValue())) return unknown;
+            if (count.doubleValue() > 0) return SideTaskWorldPort.SleepRisk.HOSTILES;
+            return ready.canProveAbsence() ? SideTaskWorldPort.SleepRisk.CLEAR : unknown;
+        }
+    }
+
     // ---- 世界端口 ----
 
     private static final class HostWorldPort implements SideTaskWorldPort {
         private final NumenPlayer ap;
+        private SleepRisk sleepRisk;
+        private com.dwinovo.numen.task.TaskRecord sleepAction;
 
         HostWorldPort(NumenPlayer ap) {
             this.ap = ap;
@@ -542,6 +610,30 @@ final class SideTaskHost {
             } catch (RuntimeException ex) {
                 return 0;
             }
+        }
+        @Override public SleepRisk sleepRisk(UUID companionId) {
+            if (sleepRisk != null) return sleepRisk;
+            sleepRisk = SleepRisk.UNKNOWN;
+            try {
+                var service = com.dwinovo.numen.api.NumenPlugins.capability(
+                        com.dwinovo.numen.api.observation.WorldObservationService.class);
+                var identities = com.dwinovo.numen.api.NumenPlugins.capability(
+                        com.dwinovo.numen.api.ServerIdentityProvider.class);
+                var identity = identities == null ? null : identities.snapshot(ap.level().getServer());
+                if (service == null || identity == null) return sleepRisk;
+                var response = service.read(new com.dwinovo.numen.api.observation.WorldObservationService.Request(
+                        "rdd-sleep", worldId(), "entities", Map.of("box",
+                        RddObservation.dangerBox(ap.blockPosition(), RddDangerText.CLOSE_RADIUS),
+                        "category", "hostile"), 6_000L, 64, 0L));
+                sleepRisk = SleepSafety.risk(response, identity.worldId(), identity.serverSession(),
+                        worldId(), System.currentTimeMillis());
+            } catch (RuntimeException | LinkageError unavailable) { /* UNKNOWN, no local scan fallback. */ }
+            return sleepRisk;
+        }
+        @Override public boolean sleepMayInterrupt(UUID companionId) {
+            var task = com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companionId);
+            if (sleepAction == null) sleepAction = task;
+            return task != null && task == sleepAction && SleepSafety.mayInterrupt(task.isExternalCall(), task.getToolName());
         }
         @Override public boolean inCombat(UUID companionId) { return ap.hurtTime > 0; }
         /**
