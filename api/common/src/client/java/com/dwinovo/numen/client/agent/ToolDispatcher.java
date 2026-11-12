@@ -241,9 +241,12 @@ public final class ToolDispatcher {
     }
 
     private void complete(ToolInvocation inv, String resultJson) {
-        if (inFlight.remove(inv.id()) == null) {
-            return;   // already settled by cancel/timeout, or a duplicate/late reply
+        // 2026-11-12: providers may reuse IDs in a new turn. An old callback must
+        // match the original invocation object, not consume the new call with that ID.
+        if (inFlight.get(inv.id()) != inv) {
+            return;   // already settled, or belongs to an older cancelled batch
         }
+        inFlight.remove(inv.id());
         deadlineMillis = 0;
         Long startedAt = startedAtMillis.remove(inv.id());
         if (startedAt != null) {

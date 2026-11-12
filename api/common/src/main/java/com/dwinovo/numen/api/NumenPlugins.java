@@ -68,6 +68,15 @@ public final class NumenPlugins {
         return com.dwinovo.numen.monitor.MonitoringJournal.get().tryPublish(category, type, data, token);
     }
 
+    /**
+     * Thin server facade for the sleep host; the API implementation owns notification/stop order.
+     * 2026-11-12: do not enqueue a normal urgent nudge here, as it cannot cancel a busy turn.
+     */
+    public static boolean interruptForSleep(com.dwinovo.numen.entity.NumenPlayer companion,
+                                            com.dwinovo.numen.task.TaskRecord expected) {
+        return API.interruptForSleep(companion, expected);
+    }
+
     private NumenPlugins() {}
 
     /** 登记一个插件。可在任何时候调用,通常在你模组的构造期。 */
@@ -668,6 +677,27 @@ public final class NumenPlugins {
     }
 
     private static final class Impl implements NumenApi {
+
+        @Override
+        public boolean interruptForSleep(com.dwinovo.numen.entity.NumenPlayer companion,
+                                         com.dwinovo.numen.task.TaskRecord expected) {
+            if (companion == null || expected == null || companion.getServer() == null
+                    || !companion.getServer().isSameThread() || companion.isDeadOrDying()
+                    || companion.isSleeping() || companion.hurtTime > 0
+                    || expected != com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companion.getUUID())
+                    || expected.isExternalCall()
+                    || !java.util.Set.of("mine", "build", "craft", "collect_items", "farm_nearby",
+                            "farm_cell", "sow_nearby", "fishing").contains(expected.getToolName())) return false;
+            var owner = companion.resolveOwnerPlayer();
+            if (owner == null) return false; // No outbox: a stale sleep cancellation must never replay on login.
+            com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(owner,
+                    new com.dwinovo.numen.network.payload.NumenEventPayload(companion.getUUID(),
+                            NumenApi.SLEEP_INTERRUPT, expected.publicId(), System.currentTimeMillis(), false));
+            // Same server thread, exact record still owns the body. Send order is intentional:
+            // stopActive settles the task and may publish a result/event that advances the client.
+            return com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(companion,
+                    "sleep: current nearby hostiles interrupt non-survival work") == expected;
+        }
 
         @Override
         @SuppressWarnings("unchecked")

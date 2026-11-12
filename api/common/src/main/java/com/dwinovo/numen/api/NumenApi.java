@@ -32,6 +32,21 @@ import java.util.function.Function;
  */
 public interface NumenApi {
 
+    /** Online-only control entry, consumed before ordinary event queue admission. */
+    String SLEEP_INTERRUPT = "sleep_interrupt";
+
+    /**
+     * Server tick only: hand the exact current internal action to an already admitted sleep
+     * side task. The host must first verify current sleep risk. Sends client invalidation
+     * before stopping the body, so a stop result cannot drain the old tool batch first.
+     * False means no handoff; old implementations fail closed. This never means owner stop,
+     * never clears a goal, and never promises that the client has acknowledged delivery.
+     */
+    default boolean interruptForSleep(com.dwinovo.numen.entity.NumenPlayer companion,
+                                      com.dwinovo.numen.task.TaskRecord expected) {
+        return false;
+    }
+
     /**
      * 按接口登记一份能力实现（宿主侧调用），以及按接口查找（消费者侧调用）。
      *

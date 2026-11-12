@@ -362,9 +362,9 @@ final class SideTaskHost {
                 if (action == null || action != port.sleepAction || !SleepSafety.mayInterrupt(action.isExternalCall(), action.getToolName())
                         || ap.isSleeping() || ap.hurtTime > 0) return false;
                 var bodyState = RddPlugin.bodyState(companionId);
-                var stopped = com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(ap,
-                        "sleep: current nearby hostiles interrupt non-survival work");
-                if (stopped != action) return false;
+                // The API sends client turn invalidation BEFORE stopActive can emit a result.
+                if (!com.dwinovo.numen.api.NumenPlugins.interruptForSleep(ap, action)) return false;
+                var stopped = action;
                 // A natural side interrupt is not a failed mainline attempt. Leave chain/token intact.
                 if (token != null && validateMainline(token) != null && bodyState != null
                         && bodyState == RddPlugin.bodyState(companionId)
@@ -509,7 +509,7 @@ final class SideTaskHost {
     /**
      * Sleep-only host seam: real Engine arbitration precedes one existing task_stop-style cancellation.
      * No new body controller or fact cache; nested pure code is testable without loading NeoForge.
-     * stopActive does NOT invalidate client LLM/tool queues; that wider lifecycle gap is separate.
+     * The API handoff invalidates the client turn/queue before the exact server stop result.
      */
     static final class SleepSafety {
         static boolean mayInterrupt(boolean external, String tool) {

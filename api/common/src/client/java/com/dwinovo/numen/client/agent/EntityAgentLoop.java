@@ -1334,6 +1334,35 @@ public final class EntityAgentLoop {
         }
     }
 
+    /**
+     * Natural sleep handoff, received on the client thread before the stopped body's result.
+     * WHY (2026-11-12): stopActive alone leaves old LLM/serial tools able to resume mining.
+     * Unlike abort(), retain the goal, inbox, owner pause, turn count and retry budgets.
+     * The exact current-task mirror also makes duplicate/stale control entries harmless.
+     */
+    public boolean interruptForSleep(String taskId) {
+        if (taskId == null || taskId.isBlank() || dead || isExternallyDriven() || stoppedByOwner()
+                || currentTask == null || !taskId.equals(currentTask.id())) return false;
+        turnGeneration++; // Existing response, compaction and presenter guards reject the old generation.
+        boolean wasAwaitingLlm = awaitingLlmResponse;
+        currentTask = null;
+        awaitingLlmResponse = false;
+        compacting = false;
+        presenter.interruptVoice();
+        presenter.clearPartial();
+        presenter.finishStreamLine();
+        List<String> cancelled = dispatcher.cancelAndDrain(false); // Server already owns the precise stop.
+        for (String id : cancelled) {
+            convo.addToolResult(id, "{\"success\":false,\"message\":\"interrupted for current sleep safety\"}");
+        }
+        if (wasAwaitingLlm && cancelled.isEmpty() && convo.lastMessage() instanceof ConvoState.Msg.User) {
+            convo.addAssistant(new AssistantTurn("(当前睡觉避险接管，原目标保留)", List.of(), null));
+        }
+        Constants.LOG.info("[numen-entity#{}] sleep handoff task={} cancelledTools={} generation={}",
+                entityUuid, taskId, cancelled.size(), turnGeneration);
+        return true; // Ordinary side-task event wakes the new turn; this control entry never resumes owner stop.
+    }
+
     // ---- external control (an MCP client / Claude drives the body directly) ----
 
     /**
@@ -1536,6 +1565,10 @@ public final class EntityAgentLoop {
      * <p>死着也照收:每条都盖着真实时间戳,复活后模型看得出哪些发生在死亡之前。
      */
     public void pushEvent(String type, String text, long ts, boolean urgent) {
+        if (com.dwinovo.numen.api.NumenApi.SLEEP_INTERRUPT.equals(type)) {
+            interruptForSleep(text);
+            return; // Online control, never a durable/replayed model event or owner wake.
+        }
         enqueueBothQueues(type, text, ts > 0 ? ts : System.currentTimeMillis(), urgent);
         Constants.LOG.info("[numen-entity#{}] queued {}{}: {}",
                 entityUuid, type, urgent ? " URGENT" : "", truncate(text, 120));
