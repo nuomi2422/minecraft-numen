@@ -74,6 +74,25 @@ class DeathPreparationScopeRegressionTest {
         assertFalse(terminal.get(0).containsKey("prepareResume"));
         assertEquals("mine",c.currentSubtask().id());
     }
+    @Test void corruptedOrOverBudgetDeclarationsRemainUnknownNotNoObligation() {
+        var c=trading(); var p=new Port(); var events=new ArrayList<Map<String,Object>>(); var engine=start(c,p,events,Map.of());
+        var task=engine.current(C).orElseThrow(); var data=new LinkedHashMap<>(task.data());
+        data.put(DeathPreparation.TARGETS,"not-json"); engine.runtime().replace(task.withData(data));
+        assertFalse(DeathPreparation.notApplicable(engine.current(C).orElseThrow()));
+        DeathPreparation.tick(engine,C,c,p,(o,h,d)->fail("corrupt declaration is not known absence"));
+        engine.tick(C,p,token(c),false); assertTrue(engine.isActive(C));
+        List<Subtask> many=new ArrayList<>();
+        for(int i=0;i<17;i++) many.add(Subtask.hardCoded("gear-"+i,"gear",Map.of("type","equipment","item","minecraft:gear_"+i,"slot","any")));
+        many.add(Subtask.hardCoded("current","trade",Map.of("asset_key","minecraft:emerald","minimum",20)));
+        var big=new TaskChain(new Goal("g","many declarations",List.of(new PrimaryGoal("p","gear",many))));
+        big.startCurrent();
+        for(int i=0;i<17;i++) { big.applyHardCodedResult("gear-"+i,true); if(i<16)big.startCurrent(); }
+        big.startCurrent();
+        var bigEngine=start(big,p,new ArrayList<>(),Map.of());
+        var bigTask=bigEngine.current(C).orElseThrow();
+        assertEquals("UNKNOWN",bigTask.data().get("prepare_scope"));
+        assertFalse(DeathPreparation.notApplicable(bigTask));
+    }
     @Test void futureDiamondTierCannotReplaceHistoricalIronObligationAndUnknownStillHolds() {
         var c=new TaskChain(new Goal("g","finish",List.of(
                 new PrimaryGoal("gear","iron equipment",List.of(Subtask.hardCoded("old-wear","wear iron",wear(IRON)))),

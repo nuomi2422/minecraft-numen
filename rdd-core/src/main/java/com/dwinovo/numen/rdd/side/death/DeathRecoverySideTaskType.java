@@ -71,10 +71,11 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
             data.put(KEY_DECISION, "PENDING");
         }
         // Pickup settlement cannot stand in for current equipped-slot evidence.
-        boolean prepare = DeathPreparation.prepares(decision)
-                || "true".equals(data.get("prepare_required"));
+        boolean notApplicable = DeathPreparation.notApplicable(task);
+        boolean prepare = !notApplicable && (DeathPreparation.prepares(decision)
+                || "true".equals(data.get("prepare_required")));
         SideTaskWorldPort.PreparationFacts preparation = null;
-        if (!prepare && decision != DeathRecoveryDecision.RESET_AND_RESTART
+        if (!prepare && !notApplicable && decision != DeathRecoveryDecision.RESET_AND_RESTART
                 && task.data().containsKey(DeathPreparation.TARGETS)
                 && (facts.dropState() == SideTaskWorldPort.DeathDropState.RECOVERED
                     || facts.dropState() == SideTaskWorldPort.DeathDropState.DROPS_ABSENT)) {

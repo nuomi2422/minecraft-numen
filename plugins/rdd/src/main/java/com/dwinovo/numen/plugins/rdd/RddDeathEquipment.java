@@ -112,7 +112,8 @@ final class RddDeathEquipment {
 
     static PreparationFacts facts(Sample sample, SideTask task, Map<String, Integer> backup, BiPredicate<String, String> match) {
         List<Map<String, Object>> targets = DeathPreparation.conditions(task, DeathPreparation.TARGETS);
-        if (targets.isEmpty()) return PreparationFacts.unknown("no_applicable_equipment_declaration");
+        if (targets.isEmpty()) return PreparationFacts.unknown(DeathPreparation.notApplicable(task)
+                ? "no_applicable_equipment_obligation" : "equipment_declaration_unverified");
         if (sample == null) return PreparationFacts.unknown("self_equipment_unverified_after_refresh");
         List<String> missing = new ArrayList<>();
         for (Map<String, Object> c : targets) {

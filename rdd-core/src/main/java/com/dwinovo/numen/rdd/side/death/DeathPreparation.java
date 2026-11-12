@@ -26,48 +26,78 @@ public final class DeathPreparation {
         void plan(String objective, String hint, Consumer<List<SubtaskSpec>> done);
     }
 
-    /** Only reached/current equipment conditions; a future endgame loadout is not due now. */
+    private record Selection(String scope, List<Map<String, Object>> targets, String reason) {}
+    private static Selection unknownSelection(String reason) { return new Selection("UNKNOWN", List.of(), reason); }
+
     public static List<Map<String, Object>> targets(TaskChain chain, Map<String, AssetSemantics> semantics,
                                                     Map<String, String> wearSlots) {
-        if (chain == null || chain.goal() == null) return List.of();
+        return select(chain, semantics, wearSlots).targets();
+    }
+
+    /** Stop at the real current subtask, not the end of its primary's future plan. */
+    private static Selection select(TaskChain chain, Map<String, AssetSemantics> semantics,
+                                    Map<String, String> wearSlots) {
+        if (chain == null || chain.goal() == null || chain.currentPrimary() == null)
+            return unknownSelection("recovery_chain_unavailable");
         Map<String, Map<String, Object>> selected = new LinkedHashMap<>();
+        Set<String> reached = new LinkedHashSet<>(), later = new LinkedHashSet<>();
+        boolean boundary = false;
         for (PrimaryGoal primary : chain.goal().primaryGoals()) {
-            for (AssetRequirement requirement : primary.waitFor()) {
-                addDeclared(selected, requirement.assetKey(), requirement.minimum(), wearSlots);
-            }
+            boolean current = primary.id().equals(chain.currentPrimary().id());
             for (Subtask sub : primary.subtasks()) {
+                if (boundary) { declarationKey(sub.condition()).ifPresent(later::add); continue; }
                 Map<String, Object> c = sub.condition();
-                if ("equipment".equals(c.get("type")) && WorldFactConditions.valid(c)
-                        && !Boolean.TRUE.equals(c.get("optional"))
-                        && chain.subtaskStatuses().get(sub.id()) != SubtaskStatus.SKIPPED) {
-                    // A newer explicit requirement for the same slot supersedes the older tier.
-                    selected.put(wearKey(c), c);
-                } else if (chain.subtaskStatuses().get(sub.id()) != SubtaskStatus.SKIPPED
-                        && !Boolean.TRUE.equals(c.get("optional")) && c.get("asset_key") instanceof String key) {
-                    Object raw = c.getOrDefault("minimum", 1);
-                    if (raw instanceof Number n && n.doubleValue() == n.intValue() && n.intValue() > 0)
+                if (chain.subtaskStatuses().get(sub.id()) != SubtaskStatus.SKIPPED
+                        && !Boolean.TRUE.equals(c.get("optional"))) {
+                    declarationKey(c).ifPresent(reached::add);
+                    if ("equipment".equals(c.get("type"))) {
+                        if (!WorldFactConditions.valid(c)) return unknownSelection("invalid_equipment_declaration");
+                        selected.put(wearKey(c), c);
+                    } else if (c.get("asset_key") instanceof String key && wearSlots != null && wearSlots.containsKey(key)) {
+                        Object raw = c.getOrDefault("minimum", 1);
+                        if (!(raw instanceof Number n) || n.doubleValue() != n.intValue() || n.intValue() <= 0)
+                            return unknownSelection("invalid_equipment_quantity");
                         addDeclared(selected, key, n.intValue(), wearSlots);
+                    }
+                }
+                if (current && chain.currentSubtask() != null && sub.id().equals(chain.currentSubtask().id())) boundary = true;
+            }
+            if (current) boundary = true;
+        }
+        for (PrimaryGoal primary : chain.goal().primaryGoals()) {
+            boolean current = primary.id().equals(chain.currentPrimary().id());
+            for (AssetRequirement requirement : primary.waitFor()) {
+                // Entry declarations cannot smuggle in the current primary's later equipment output.
+                if (!current || reached.contains(requirement.assetKey()) || !later.contains(requirement.assetKey())) {
+                    addDeclared(selected, requirement.assetKey(), requirement.minimum(), wearSlots);
+                    reached.add(requirement.assetKey());
                 }
             }
-            if (primary.id().equals(chain.currentPrimary().id())) break;
+            if (current) break;
         }
         if (semantics != null) for (AssetSemantics s : semantics.values()) {
-            if (s == null || s.nature() != AssetSemantics.Nature.EQUIPMENT || !s.important()
-                    || !chain.goal().id().equals(s.servesGoal()) || !s.requiredCapability().matches("[1-9][0-9]{0,3}")) continue;
+            if (s == null || !reached.contains(s.assetKey()) || s.nature() != AssetSemantics.Nature.EQUIPMENT
+                    || !s.important() || !chain.goal().id().equals(s.servesGoal())) continue;
+            if (!s.requiredCapability().matches("[1-9][0-9]{0,3}")) return unknownSelection("equipment_quantity_not_declared");
             int minimum = Integer.parseInt(s.requiredCapability());
             String slot = wearSlots == null ? null : wearSlots.get(s.assetKey());
             if (slot == null) {
-                // An explicitly typed tool requirement can be held; do not invent a wearing slot.
                 selected.put("stock:" + s.assetKey(), Map.of("asset_key", s.assetKey(), "minimum", minimum, "mode", "hold"));
                 continue;
             }
             var wear = Map.<String, Object>of("type", "equipment", "item", s.assetKey(), "slot", slot);
             selected.putIfAbsent(wearKey(wear), wear);
-            if (minimum > 1) selected.put("stock:" + s.assetKey(),
-                    Map.of("asset_key", s.assetKey(), "minimum", minimum, "mode", "hold"));
+            if (minimum > 1) selected.put("stock:" + s.assetKey(), Map.of("asset_key", s.assetKey(), "minimum", minimum, "mode", "hold"));
         }
-        if (selected.size() > MAX_TARGETS) return List.of(); // insufficient bounded contract, not partial success
-        return List.copyOf(selected.values());
+        if (selected.size() > MAX_TARGETS || JSON.toJson(selected.values()).length() > MAX_JSON)
+            return unknownSelection("equipment_declarations_over_budget");
+        return new Selection(selected.isEmpty() ? "NONE" : "DECLARED", List.copyOf(selected.values()),
+                selected.isEmpty() ? "no_applicable_equipment_obligation" : "equipment_recheck_required");
+    }
+
+    private static Optional<String> declarationKey(Map<String, Object> c) {
+        Object raw = "equipment".equals(c.get("type")) ? c.get("item") : c.get("asset_key");
+        return raw instanceof String s ? Optional.of(s) : Optional.empty();
     }
 
     private static String wearKey(Map<String, Object> c) {
@@ -93,13 +123,20 @@ public final class DeathPreparation {
         if (task == null || !DeathRecoverySideTaskType.TYPE_ID.equals(task.typeId()) || !sameChain(task, chain)) return false;
         if (task.data().containsKey(TARGETS)) return true;
         var data = new LinkedHashMap<>(task.data());
-        var targets = targets(chain, semantics, slots);
-        String encoded = JSON.toJson(targets);
-        if (encoded.length() > MAX_JSON) { targets = List.of(); encoded = "[]"; }
-        data.put(TARGETS, encoded);
-        data.put("prepare_reason", targets.isEmpty() ? "no_applicable_equipment_declaration" : "equipment_recheck_required");
+        Selection selection = select(chain, semantics, slots);
+        data.put(TARGETS, JSON.toJson(selection.targets()));
+        data.put("prepare_scope", selection.scope());
+        data.put("prepare_reason", selection.reason());
         engine.runtime().replace(task.withData(data));
         return true;
+    }
+
+    /** NONE is a successful selector result, never a parse-error fallback. */
+    public static boolean notApplicable(SideTask task) {
+        if (task == null || !"NONE".equals(task.data().get("prepare_scope"))) return false;
+        try {
+            return JsonParser.parseString(task.data().getOrDefault(TARGETS, "null")).getAsJsonArray().isEmpty();
+        } catch (RuntimeException ex) { return false; }
     }
 
     public static boolean choose(SideTaskEngine engine, UUID id, DeathRecoveryDecision decision) {
@@ -113,7 +150,7 @@ public final class DeathPreparation {
         data.remove("prepare_descriptions");
         data.remove("prepare_index");
         data.remove("prepare_plan_state");
-        if (prepares(decision)) data.put("prepare_required", "true");
+        if (prepares(decision) && !notApplicable(task)) data.put("prepare_required", "true");
         else data.remove("prepare_required");
         engine.runtime().replace(task.withData(data));
         return true;
@@ -127,7 +164,7 @@ public final class DeathPreparation {
     /** Tick consumes current evidence and requests one bounded plan, without moving the mainline cursor. */
     public static void tick(SideTaskEngine engine, UUID id, TaskChain chain, SideTaskWorldPort world, Planner planner) {
         SideTask task = engine.current(id).orElse(null);
-        if (task == null || !DeathRecoverySideTaskType.TYPE_ID.equals(task.typeId()) || !sameChain(task, chain)) return;
+        if (task == null || !DeathRecoverySideTaskType.TYPE_ID.equals(task.typeId()) || !sameChain(task, chain) || notApplicable(task)) return;
         DeathRecoveryDecision decision = DeathRecoveryDecision.parse(task.data().get("decision"));
         if (decision == DeathRecoveryDecision.RESET_AND_RESTART) return;
         var facts = world.deathPreparationFacts(id, task);
