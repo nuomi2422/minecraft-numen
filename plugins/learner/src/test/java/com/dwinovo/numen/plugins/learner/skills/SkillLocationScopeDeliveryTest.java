@@ -94,6 +94,32 @@ class SkillLocationScopeDeliveryTest {
         assertEquals("REJECTED", delivery.status());
         assertTrue(outbox.pending(ArtifactOutbox.Kind.AC_SCRIPT).isEmpty());
     }
+    @Test void selfDeclaredWorldOrVerificationDoesNotAuthorizeStaticGoto() {
+        String original = body("{\"x\":2,\"y\":88,\"z\":-3}").replace("\"version\":\"1\",",
+            "\"version\":\"1\",\"world_id\":\"old-world\",\"server_session\":\"old-session\",\"verified\":true,");
+        legacy("world-specific", original);
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contribute(UUID.randomUUID(), "craft");
+        assertNotNull(fragment); assertTrue(fragment.refs().isEmpty());
+        assertEquals(original, SkillBodyStore.read(dir, SkillRegistrar.registryFor(dir).get("world-specific").orElseThrow().bodyRef()));
+    }
+    @Test void ordinaryHistoryProseAndNonLocationNumbersAreNotSuppressed() {
+        String original = "{\"description\":\"原世界 old-world 会话 old-session 旧工作台2,88,-3，仅历史证据\",\"count\":12,\"evidence\":[\"block:2,88,-3\"]}";
+        legacy("prose", original);
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contribute(UUID.randomUUID(), "craft");
+        assertNotNull(fragment); assertTrue(fragment.text().contains(original));
+        assertEquals(1, fragment.refs().size()); assertTrue(fragment.gapCounts().isEmpty());
+    }
+    @Test void retryOfRejectedStaticDraftDoesNotBecomeAPendingDuplicate() {
+        var outbox = new ArtifactOutbox(dir.resolve("artifact-outbox"));
+        UUID companion = UUID.randomUUID();
+        String original = body("{\"x\":2,\"y\":88,\"z\":-3}");
+        var first = outbox.submit(ArtifactOutbox.Kind.AC_SCRIPT, companion, "review", "memo", "table", original);
+        var again = outbox.submit(ArtifactOutbox.Kind.AC_SCRIPT, companion, "review", "memo", "table", original);
+        assertEquals("REJECTED", first.status()); assertEquals("REJECTED", again.status());
+        assertEquals(first.artifactId(), again.artifactId());
+        assertTrue(outbox.pending(ArtifactOutbox.Kind.AC_SCRIPT).isEmpty());
+    }
+
     @Test void parameterizedAcStillEntersExistingOutboxUnchanged() {
         var outbox = new ArtifactOutbox(dir.resolve("artifact-outbox"));
         String original = body("{\"x\":\"$input.table.x\",\"y\":\"$input.table.y\",\"z\":\"$input.table.z\"}");
