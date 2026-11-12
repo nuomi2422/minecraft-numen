@@ -214,15 +214,14 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
                     b -> BlockHelper.canHarvest(player.getInventory(), b.defaultBlockState()));
             if (!anyHarvestable) {
                 return new Precondition.Failure(
-                        "can't harvest " + r.label + " with the current tools — mining it would"
-                        + " destroy it without any drop."
-                        // 2026-10-31 实机（166）：这条只说「Equip a suitable tool (e.g. a pickaxe)」，
-                        // 模型 7 分钟后装的是 iron_sword（不是镐），然后又来挖黑曜石 —— 空转 7 分钟。
-                        // 改为把「必须先用 equip_item 装备镐类工具」写成具体动作，并点名要用哪一类。
-                        + " First call equip_item with a pickaxe-class tool (diamond_pickaxe / iron_pickaxe /"
-                        + " stone_pickaxe) so it is in your main hand, THEN call mine again."
-                        + " Holding one in the backpack is not enough — mining uses the tool in hand."
-                        + " (To destroy a block regardless of drops, use break_block instead.)",
+                        // 2026-11-12 V06: equipping the same stone pick did not change this
+                        // whole-inventory predicate. Recovery requires a qualifying tool,
+                        // not moving an insufficient one between inventory slots.
+                        "can't harvest " + r.label + " with the current inventory — no carried tool can"
+                        + " harvest any requested target. Mining it would destroy it without drops."
+                        + " Check the target's required tool type and tier; obtain a tool that can"
+                        + " harvest it, then retry mine."
+                        + " Merely moving the same insufficient tool into your main hand will not help.",
                         FailureType.WRONG_TOOL);
             }
             return null;
@@ -953,11 +952,12 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
     private TaskState noOreFailure() {
         if (!unharvestable.isEmpty()) {
             // Targets exist but the carried tools can't make them drop — the actionable
-            // problem is the tool, not the deposit. Names the escape hatches explicitly.
+            // problem is missing tool capability, not the deposit or its inventory slot.
             fail("found " + unharvestable.size() + " " + r.label + " but none can be harvested with"
-                    + " the current tools (mining would destroy them without any drop); gathered "
-                    + r.getMined() + ". Equip a better tool (equip_item) and retry; to just destroy"
-                    + " blocks regardless of drops, use break_block.",
+                    + " the current inventory (mining would destroy them without any drop); gathered "
+                    + r.getMined() + ". Check the target's required tool type and tier; obtain"
+                    + " a tool that can harvest it, then retry mine."
+                    + " Merely moving the same insufficient tool into your main hand will not help.",
                     FailureType.WRONG_TOOL);
             return TaskState.FAILED;
         }
