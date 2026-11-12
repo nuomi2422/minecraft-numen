@@ -1,7 +1,6 @@
 package com.dwinovo.numen.plugins.learner;
 
 import com.dwinovo.numen.api.WorldContextStamp;
-import com.dwinovo.numen.network.payload.TaskResultPayload;
 import com.dwinovo.numen.plugins.learner.core.UsageLedger;
 import com.dwinovo.numen.plugins.learner.skills.SkillBodyStore;
 import com.dwinovo.numen.plugins.learner.skills.SkillEntry;
@@ -93,7 +92,7 @@ final class SkillTaskFeedback {
         data.put("body", body);
         data.put("meaning", "模型在运行中选择此版；服务端完整回复，不证明客户端收到、按正文执行或因果有效");
         String json = TaskResult.ok("技能完整正文；选择与原任务结果只作待审候选", data).toJson();
-        if (json.length() > TaskResultPayload.MAX_RESULT_JSON_LENGTH) {
+        if (json.length() > TaskResult.MAX_RESULT_JSON_LENGTH) {
             throw new IllegalArgumentException("完整回复超过正常工具报文上限；拒绝截断后绑定");
         }
         if (!send(reply, json)) return;

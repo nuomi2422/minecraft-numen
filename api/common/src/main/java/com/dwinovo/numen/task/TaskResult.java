@@ -34,6 +34,13 @@ public record TaskResult(boolean success,
                          boolean interrupted,
                          Map<String, Object> data) {
 
+    /**
+     * 2026-11-12 046-F: shared normal tool-result packet limit, in Java string characters.
+     * Public here so plugin tools can reject incomplete delivery without importing network internals.
+     * The network payload keeps its existing clamp and codec behaviour using this single source.
+     */
+    public static final int MAX_RESULT_JSON_LENGTH = 16 * 1024;
+
     private static final Gson GSON = new Gson();
 
     public static TaskResult ok(String message, Map<String, Object> data) {

@@ -33,7 +33,8 @@ public record TaskResultPayload(UUID entityUuid,
                                  String resultJson) implements CustomPacketPayload {
 
     public static final int MAX_TOOL_CALL_ID_LENGTH = 128;
-    public static final int MAX_RESULT_JSON_LENGTH = 16 * 1024;
+    /** Compatibility alias; the public task API owns the normal result limit. */
+    public static final int MAX_RESULT_JSON_LENGTH = com.dwinovo.numen.task.TaskResult.MAX_RESULT_JSON_LENGTH;
 
     /**
      * 出口硬闸：{@code ByteBufCodecs.stringUtf8(MAX_RESULT_JSON_LENGTH)} 在编码超长字符串时抛
