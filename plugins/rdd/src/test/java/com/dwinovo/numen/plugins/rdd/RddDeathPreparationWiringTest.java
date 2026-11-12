@@ -23,6 +23,15 @@ class RddDeathPreparationWiringTest {
         assertTrue(host.contains("String.valueOf(latest.seq()).equals(deathSeq)"));
         assertFalse(host.contains("replaceCurrentSubtasks"));
     }
+    @Test void pausedRecoveryProjectionAndBoundedRecheckAreWiredToFinalHostConsumers() throws Exception {
+        String plugin=source("RddPlugin"),host=source("SideTaskHost");
+        int render=plugin.indexOf("private static String renderStateContext");
+        assertTrue(render>=0);
+        String renderer=plugin.substring(render,plugin.indexOf("private static String carryHint",render));
+        assertTrue(renderer.contains("DeathPreparation.pausedContext(chain)"),"final runtime provider must project recovery, not instruct continued trade");
+        assertTrue(renderer.indexOf("DeathPreparation.pausedContext(chain)")<renderer.indexOf("retrievalTaskFields(chain)"));
+        assertTrue(host.contains("DeathPreparation.reopenPaused(ENGINE, ap.getUUID(), chain"),"existing paused recheck must have an actual bounded recovery consumer");
+    }
     @Test void terminalCommitRechecksPreparationAndPauseHasNoOrdinaryConditionTimeoutBypass() throws Exception {
         String plugin=source("RddPlugin"), detector=source("RddDetector"), host=source("SideTaskHost");
         assertTrue(plugin.contains("SideTaskHost.deathPreparationResult(companionId, preparePayload)"));

@@ -151,6 +151,22 @@ class DeathPreparationFlowTest {
         assertFalse(DeathPreparation.holdPaused(chain, C, port));
         assertFalse(chain.isPaused("iron"));
     }
+    @Test void terminalResumePayloadRetainsActualRecoveryInputAfterSideTaskContextIsRemoved() {
+        var c=chain(); var p=new Port(); var events=new ArrayList<Map<String,Object>>(); var engine=engine(c,p,events);
+        DeathPreparation.choose(engine,C,DeathRecoveryDecision.PREPARE_AND_REPLAN);
+        DeathPreparation.tick(engine,C,c,p,(o,h,d)->d.accept(List.of(new SubtaskSpec("fetch and wear chest",CHEST,null))));
+        var active=engine.current(C).orElseThrow(); var data=new LinkedHashMap<>(active.data());
+        data.put("prepare_index","0"); data.put("prepare_reason","path temporarily unavailable");
+        data.put("prepare_retry_at","25000"); data.put("prepare_retries","0"); engine.runtime().replace(active.withData(data));
+        p.now+=DeathRecoverySideTaskType.DEADLINE_TICKS;
+        engine.tick(C,p,token(c),false); assertFalse(engine.isActive(C));
+        var restored=DeathPreparation.resumeTask(String.valueOf(events.get(0).get("prepareResume")));
+        assertNotNull(restored);
+        assertTrue(restored.data().containsKey(DeathPreparation.PLAN),"terminal side context removal must not erase the bounded actual preparation plan");
+        assertTrue(restored.data().containsKey("prepare_descriptions"));
+        assertEquals("0",restored.data().get("prepare_index"));
+        assertTrue(restored.data().get("prepare_reason").contains("MISSING"));
+    }
     @Test void materialsAndUnreachedFutureLoadoutDoNotBecomeDeathEquipmentObligations() {
         var c = new TaskChain(new Goal("g", "gear words alone", List.of(
             new PrimaryGoal("now", "trade iron armor words", List.of(Subtask.hardCoded("wheat", "wheat", Map.of("asset_key","minecraft:wheat","minimum",9)))),
