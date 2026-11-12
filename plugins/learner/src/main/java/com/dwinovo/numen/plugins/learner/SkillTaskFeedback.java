@@ -130,14 +130,17 @@ final class SkillTaskFeedback {
         detail.addProperty("skill_ref", ref);
         detail.addProperty("version", version);
         // Stable original task key, independent of report call id, time and terminal state.
-        String prefix = "task-skill:" + digest(detail.toString()) + ":";
+        String factKey = digest(detail.toString());
+        String prefix = "task-skill:" + factKey + ":";
         String source = prefix + state.name();
+        detail.addProperty("task_fact_key", factKey);
         detail.addProperty("selection_call_id", choice.selectionCallId());
         detail.addProperty("body_ref", choice.bodyRef());
         detail.addProperty("body_digest", choice.bodyDigest());
         detail.addProperty("terminal_state", state.name());
         detail.addProperty("meaning", "模型选择+服务端完整回复+原任务终态，待审候选；非因果有效");
-        String artifactId = ref + "@" + version;
+        // Existing ledger cancellation semantics are per artifact. Isolate each original task fact.
+        String artifactId = ref + "@" + version + "#task:" + factKey;
         UsageLedger.Entry result = null;
         synchronized (ledger) {
             if (!ledger.readable()) throw new IllegalStateException("使用账本不可读，不能判断幂等");
@@ -160,7 +163,7 @@ final class SkillTaskFeedback {
         data.put("task_id", task.publicId());
         data.put("terminal_state", state.name());
         data.put("original_task_outcome", outcome.name());
-        data.put("note", "仅记待审候选；未声明有效性或提升证据。账本保留既有取消后不翻成功规则。");
+        data.put("note", "仅记待审候选；未声明有效性或提升证据。同技能不同原任务独立记账。");
         send(reply, TaskResult.ok("原任务结果待审候选", data).toJson());
     }
 

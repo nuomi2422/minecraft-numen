@@ -118,7 +118,7 @@ class LearnerSkillTaskFeedbackTest {
         ok(call(args("report_skill")));
         assertEquals(1, rows().size());
         UsageLedger.Entry e = rows().get(0);
-        assertEquals("skill:sk-1@v1", e.artifactId());
+        assertTrue(e.artifactId().matches("skill:sk-1@v1#task:[0-9a-f]{64}"));
         assertEquals("EXPERIENCE", e.kind());
         assertEquals(UsageLedger.Phase.RESULT, e.phase());
         assertEquals(UsageLedger.Outcome.SUCCESS, e.outcome());
@@ -128,6 +128,7 @@ class LearnerSkillTaskFeedbackTest {
         assertFalse(e.source().startsWith("acx-run:"));
         JsonObject detail = JsonParser.parseString(e.detail()).getAsJsonObject();
         assertEquals(task.publicId(), detail.get("task_id").getAsString());
+        assertEquals("skill:sk-1@v1#task:" + detail.get("task_fact_key").getAsString(), e.artifactId());
         assertEquals("action-call", detail.get("task_tool_call_id").getAsString());
         assertEquals("selection-call", detail.get("selection_call_id").getAsString());
         assertEquals("SUCCESS", detail.get("terminal_state").getAsString());
@@ -286,5 +287,27 @@ class LearnerSkillTaskFeedbackTest {
         tasks.finish(TaskState.SUCCESS);
         a.addProperty("action", "report_skill");
         rejected(call(a)); noRows();
+    }
+
+    @Test void cancelledTaskCannotPoisonLaterSuccessForTheSameSkillVersion() {
+        adopt(); tasks.finish(TaskState.CANCELLED);
+        ok(call(args("report_skill")));
+        String cancelledArtifact = rows().get(0).artifactId();
+        task = new Work("second-action");
+        task.bindIdentity(tasks.stamp);
+        task.setState(TaskState.RUNNING);
+        tasks.active = task;
+        adopt(); tasks.finish(TaskState.SUCCESS);
+        LearnerUsageTool reloaded = new LearnerUsageTool(dir, new UsageLedger(dir), tasks);
+        ok(call(reloaded, args("report_skill")));
+        ok(call(reloaded, args("report_skill")));
+        List<UsageLedger.Entry> facts = rows();
+        assertEquals(2, facts.size());
+        assertEquals(UsageLedger.Outcome.CANCELED, facts.get(0).outcome());
+        assertEquals(UsageLedger.Outcome.SUCCESS, facts.get(1).outcome());
+        assertNotEquals(cancelledArtifact, facts.get(1).artifactId());
+        assertTrue(facts.stream().allMatch(e -> e.artifactId().startsWith("skill:sk-1@v1#task:")));
+        assertEquals(2, new UsageLedger(dir).conclusions().size());
+        assertEquals(1, new UsageLedger(dir).associationCandidates().size());
     }
 }
