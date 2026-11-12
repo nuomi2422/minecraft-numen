@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * The candidate expects one fresh request; stale callbacks must still be rejected.
  * Uses the production seam rather than source assertions or a copied eligibility rule.
  * MC dispatch, server tickets, live world identity and the eight live deaths are not proven here.
+ * Synthetic SELF stamps exercise projection shape; they do not authenticate a real world/session.
  */
 class RddDeathPreparationHostSuccessorTest {
     private static final String DIM = "minecraft:overworld", CHEST = "minecraft:iron_chestplate";
@@ -68,7 +69,7 @@ class RddDeathPreparationHostSuccessorTest {
         }, value -> value);
         final List<Consumer<List<SubtaskSpec>>> callbacks = new ArrayList<>();
         RddDeathEquipment.Sample sample = self(id, false, false, false);
-        int semanticsReads, equipmentReads, stopped, persisted;
+        int equipmentReads, stopped, persisted;
         long now = 1000;
 
         Fixture() {
@@ -111,7 +112,7 @@ class RddDeathPreparationHostSuccessorTest {
         }
         public RddRuntime runtime(UUID subject) { return id.equals(subject) ? live : null; }
         public Map<String, AssetSemantics> semantics(UUID subject) {
-            assertEquals(id, subject); semanticsReads++; return Map.of();
+            assertEquals(id, subject); return Map.of();
         }
         public void declareWearSlot(String key, Map<String, String> slots) { }
         public DeathPreparation.Planner capturePlanner(UUID subject) {
@@ -133,7 +134,9 @@ class RddDeathPreparationHostSuccessorTest {
         public boolean isDay() { return true; }
         public Wake pollWake(UUID subject) { return Wake.NONE; }
         public DeathRecoveryFacts deathRecoveryFacts(UUID subject, SideTask task) {
-            assertEquals("29", task.data().get("death_seq"));
+            if (!"29".equals(task.data().get("death_seq")))
+                return new DeathRecoveryFacts(DeathDropState.UNKNOWN, false, false, true,
+                        "bounded fixture: no drop observation for this batch");
             assertNotNull(RddDeathLedger.openDeath(id, 29));
             return new DeathRecoveryFacts(DeathDropState.DROPS_PRESENT, false, false, true,
                     "bounded fixture: original batch29 drops remain observed");
@@ -154,6 +157,7 @@ class RddDeathPreparationHostSuccessorTest {
         var f = new Fixture();
         String mainline = f.chain.toJson();
         var old = f.active();
+        assertEquals("29", old.data().get("death_seq"), "initial recovery batch");
         var successor = f.record(Map.of(), 30); // empty production deaths do not start a new recovery
         assertEquals(30, successor.seq());
         assertTrue(successor.lostItems().isEmpty());
@@ -161,18 +165,15 @@ class RddDeathPreparationHostSuccessorTest {
         assertEquals(SideTaskWorldPort.PreparationState.MISSING, f.rawFacts().state(),
                 "current trustworthy SELF still lacks the historical chest obligation");
         assertTrue(DeathPreparation.choose(f.engine, f.id, DeathRecoveryDecision.PREPARE_AND_REPLAN));
-        int reads = f.equipmentReads, declarations = f.semanticsReads;
         f.tick();
         f.tick();
-        assertEquals(old.instanceId(), f.active().instanceId());
-        assertEquals("29", f.active().data().get("death_seq"));
-        assertEquals(declarations, f.semanticsReads, "latest-seq admission currently returns before attach/tick");
-        assertEquals(reads, f.equipmentReads);
-        var gated = f.deathPreparationFacts(f.id, f.active());
-        assertEquals(SideTaskWorldPort.PreparationState.UNKNOWN, gated.state());
-        assertEquals("stale_death_batch", gated.reason());
-        assertEquals(reads, f.equipmentReads, "the second gate also suppresses SELF reads");
+        // cb53 returns before attach/tick; its facts gate also reports stale_death_batch.
+        // Those diagnostics are not success criteria: a repair may establish a fresh side identity/batch.
         assertNotNull(RddDeathLedger.openDeath(f.id, 29));
+        assertEquals(SideTaskWorldPort.DeathDropState.DROPS_PRESENT,
+                f.deathRecoveryFacts(f.id, old).dropState(), "original drop evidence stays bound to batch29");
+        assertEquals(RddDeathLedger.State.UNVERIFIED, RddDeathLedger.latest(f.id).state(),
+                "an empty successor is not evidence of confirmed loss");
         assertTrue(RddDeathLedger.all(f.id).stream().noneMatch(d -> d.state() == RddDeathLedger.State.CONFIRMED_LOST));
         assertEquals(mainline, f.chain.toJson(), "keep current trade and historical completion");
         // Expected candidate red on cb53: 0 requests. This asserts liveness, not a chosen business repair.
