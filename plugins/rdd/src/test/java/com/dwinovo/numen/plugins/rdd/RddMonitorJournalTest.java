@@ -32,6 +32,9 @@ class RddMonitorJournalTest {
         Method facade = contract(NumenPlugins.class, "tryPublishMonitor", String.class, String.class, Map.class, WorldContextStamp.Token.class);
         Method offer = contract(MonitoringJournal.class, "tryPublish", String.class, String.class, Map.class, WorldContextStamp.Token.class);
         MonitoringJournal journal = MonitoringJournal.get();
+        var rootField = MonitoringJournal.class.getDeclaredField("root");
+        rootField.setAccessible(true);
+        Object previousRoot = rootField.get(journal);
         synchronized (journal) {
             Method cleanup = MonitoringJournal.class.getDeclaredMethod("closeWriters");
             cleanup.setAccessible(true);
@@ -95,11 +98,14 @@ class RddMonitorJournalTest {
             assertTrue(retry.get("event_seq").getAsLong() > task.get("event_seq").getAsLong());
         } finally {
             WorldContextStamp.clear();
-            // Leave the singleton alive for other real journal tests in this JVM.
+            // Drain this fixture and restore configuration, leaving the singleton alive.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            while (journal.queueSize() > 0 && System.nanoTime() < deadline) Thread.sleep(10);
             synchronized (journal) {
                 Method cleanup = MonitoringJournal.class.getDeclaredMethod("closeWriters");
                 cleanup.setAccessible(true);
                 cleanup.invoke(journal);
+                rootField.set(journal, previousRoot);
             }
         }
     }
