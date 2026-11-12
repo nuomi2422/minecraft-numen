@@ -109,6 +109,16 @@ class LearnerSkillTaskFeedbackTest {
     private List<UsageLedger.Entry> rows() { return new UsageLedger(dir).all(); }
     private void noRows() { assertTrue(rows().isEmpty(), "rejection must not create result facts"); }
 
+    @Test void realChildrenAndDescriptorFallbackCannotBindToCurrentTask() {
+        for (String body : List.of(
+                "{\"steps\":[{\"id\":\"gate\",\"block\":\"if\",\"params\":{\"field\":\"$input.ready\",\"op\":\"==\",\"value\":true},\"children\":[{\"id\":\"go\",\"block\":\"goto\",\"params\":{\"x\":2,\"y\":88,\"z\":-3}}]}]}",
+                "{\"steps\":[{\"id\":\"go\",\"block\":\"goto\",\"params\":{\"x\":{\"$from\":\"$input.table.x\",\"$default\":2},\"y\":\"$input.table.y\",\"z\":\"$input.table.z\"}}]}")) {
+            registry.register(artifact(body), "sk-1", writeBody(body), true);
+            JsonObject a = args("adopt_skill");
+            a.addProperty("version", "v" + registry.get("sk-1").orElseThrow().version());
+            rejected(call(a)); assertNull(task.skillSelection()); noRows();
+        }
+    }
     @Test void legacyStaticGotoCannotBindEvenToACurrentTask() {
         String body = "{\"steps\":[{\"id\":\"go\",\"block\":\"goto\",\"params\":{\"x\":2,\"y\":88,\"z\":-3}}]}";
         registry.register(artifact(body), "sk-1", writeBody(body), true);

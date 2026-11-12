@@ -35,6 +35,31 @@ class SkillLocationScopeDeliveryTest {
         assertNotNull(ref);
         SkillRegistrar.registryFor(dir).register(art, id, ref, true);
     }
+    private static List<String> nestedAndFallbackBodies() {
+        String plain = body("{\"x\":2,\"y\":88,\"z\":-3}");
+        var root = com.google.gson.JsonParser.parseString(plain).getAsJsonObject();
+        var children = root.getAsJsonArray("steps");
+        var control = com.google.gson.JsonParser.parseString("{\"id\":\"gate\",\"block\":\"if\",\"params\":{\"field\":\"$input.ready\",\"op\":\"==\",\"value\":true}}").getAsJsonObject();
+        control.add("children", children);
+        var outer = new com.google.gson.JsonArray(); outer.add(control); root.add("steps", outer);
+        String fallback = body("{\"x\":{\"$from\":\"$input.table.x\",\"$default\":2},\"y\":{\"$from\":\"$input.table.y\",\"$default\":88},\"z\":{\"$from\":\"$input.table.z\",\"$default\":-3}}");
+        return List.of(root.toString(), fallback);
+    }
+    @Test void realChildrenAndDescriptorFallbackFailTheGeneratedContract() {
+        for (String original : nestedAndFallbackBodies()) {
+            var draft = generated(original);
+            assertFalse(ArtifactValidator.validate(draft.artifacts().get(0)).accepted(), original);
+            assertEquals(0, SkillRegistrar.register(dir, draft, true, Set.of(0)).total());
+        }
+    }
+    @Test void realChildrenAndDescriptorFallbackAreNotDeliveredFromLegacyRegistry() {
+        int i = 0;
+        for (String original : nestedAndFallbackBodies()) legacy("bypass-" + i++, original);
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contribute(UUID.randomUUID(), "craft");
+        assertNotNull(fragment); assertTrue(fragment.refs().isEmpty()); assertTrue(fragment.text().isEmpty());
+        assertEquals(2, fragment.gapCounts().get("location-binding-required"));
+    }
+
     @Test void generatedStaticGotoIsRejectedBeforeRegistration() {
         var draft = generated(body("{\"x\":2,\"y\":88,\"z\":-3,\"may_alter_terrain\":true}"));
         assertFalse(ArtifactValidator.validate(draft.artifacts().get(0)).accepted());

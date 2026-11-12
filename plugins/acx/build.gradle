@@ -91,6 +91,10 @@ tasks.register('acxOfflineTest', JavaExec) {
 test {
     dependsOn tasks.named('acxFixture')
     useJUnitPlatform()
+    // 2026-11-12: managed test-only XML must belong to its isolated attempt.
+    if (System.getenv('RDD_TEST_REPORT_DIR')) {
+        reports.junitXml.outputLocation = file(System.getenv('RDD_TEST_REPORT_DIR'))
+    }
     testLogging {
         events 'passed', 'failed', 'skipped'
         showStandardStreams = false
