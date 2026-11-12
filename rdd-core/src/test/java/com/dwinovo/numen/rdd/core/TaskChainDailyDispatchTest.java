@@ -113,6 +113,46 @@ class TaskChainDailyDispatchTest {
         assertDailyRetained(chain, "daily");
     }
 
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> projectedSubtasks(TaskChain chain) {
+        var primaries = (List<Map<String, Object>>) chain.snapshot().get("primaries");
+        return (List<Map<String, Object>>) primaries.get(0).get("subtasks");
+    }
+
+    @Test void snapshotPreservesNodeDeclarationsWithoutPromotingSkippedDaily() {
+        TaskChain chain = chain(daily("daily"), main("main"));
+        chain.activateCurrent(Map.of());
+        String before = chain.toJson();
+        var view = chain.snapshot();
+        assertEquals(chain.planRevision(), view.get("planRevision"));
+        assertEquals(chain.stateVersion(), view.get("stateVersion"));
+        assertEquals("g", view.get("goalId"));
+        var rows = projectedSubtasks(chain);
+        assertEquals("DAILY", rows.get(0).get("nodeType"));
+        assertEquals(SCHEDULE, rows.get(0).get("recurrence"));
+        assertEquals("SKIPPED", rows.get(0).get("status"));
+        assertEquals(chain.skipReason("daily"), rows.get(0).get("skipReason"));
+        assertEquals(false, rows.get(0).get("current"));
+        assertEquals("MAIN", rows.get(1).get("nodeType"));
+        assertEquals("RUNNING", rows.get(1).get("status"));
+        assertEquals(true, rows.get(1).get("current"));
+        assertFalse(rows.get(1).containsKey("recurrence"));
+        assertTrue(chain.satisfiedStages().isEmpty(), "skip is not verified completion");
+        assertEquals(before, chain.toJson(), "projection cannot mutate persistent state");
+    }
+
+    @Test void snapshotKeepsHoldAndAcquireConditionsSeparate() {
+        var hold = Subtask.hardCoded("hold", "hold iron", Map.of(
+                "asset_key", "minecraft:iron_ingot", "minimum", 1, "mode", "hold"));
+        var acquire = Subtask.hardCoded("acquire", "acquire iron", Map.of(
+                "asset_key", "minecraft:iron_ingot", "minimum", 1, "mode", "acquire"));
+        var rows = projectedSubtasks(chain(hold, acquire));
+        assertEquals(hold.condition(), rows.get(0).get("condition"));
+        assertEquals(acquire.condition(), rows.get(1).get("condition"));
+        assertFalse(rows.get(1).containsKey("condition_matches"), "declaration is not observation");
+        assertEquals(false, rows.get(1).get("acquireBaselineCaptured"));
+    }
+
     @Test void legacyJsonWithoutNodeTypeStillDispatchesMain() {
         TaskChain original = chain(main("legacy"));
         var json = com.google.gson.JsonParser.parseString(original.toJson()).getAsJsonObject();
@@ -125,6 +165,7 @@ class TaskChainDailyDispatchTest {
         assertFalse(oldJson.contains("nodeType"));
         TaskChain restored = TaskChain.fromJson(oldJson);
         assertEquals(NodeType.MAIN, restored.currentSubtask().nodeType());
+        assertEquals("MAIN", projectedSubtasks(restored).get(0).get("nodeType"));
         assertTrue(restored.activateCurrent(Map.of()));
         assertEquals("legacy", restored.currentSubtask().id());
         assertTrue(restored.applyHardCodedResult("legacy", true));

@@ -48,6 +48,42 @@ class RddSettleStageFlagsTest {
         assertTrue(RddStatusTool.generationFields(null).isEmpty());
     }
 
+    @Test void statusProjectsExistingRequirementsWithoutInventingSatisfactionOrRisk() {
+        Subtask acquire = Subtask.hardCoded("get", "get iron", Map.of(
+                "asset_key", "minecraft:iron_ingot", "minimum", 3, "mode", "acquire"));
+        TaskChain c = new TaskChain(new Goal("g", "g", List.of(new PrimaryGoal("p", "p",
+                List.of(acquire), List.of(new AssetRequirement("minecraft:shield", 1))))));
+        String before = c.toJson();
+        var fields = RddStatusTool.projectChain(c).data();
+        assertEquals("MAIN", fields.get("node_type"));
+        Map<?, ?> requirements = (Map<?, ?>) fields.get("requirements");
+        assertNotNull(requirements, "status must expose the existing requirement projection");
+        assertEquals("RddRequirementDetector.forPrimary", requirements.get("source"));
+        assertEquals("UNKNOWN", requirements.get("satisfaction"));
+        assertEquals("UNKNOWN", requirements.get("completeness"));
+        var declared = (List<?>) requirements.get("declared");
+        assertEquals(RddRequirementDetector.forPrimary(c.currentPrimary(), "g").requirements(), declared);
+        var shield = (com.dwinovo.numen.rdd.policy.RequirementManifest.Requirement) declared.get(0);
+        assertEquals(com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.CRITICAL, shield.importance());
+        assertFalse(fields.containsKey("risk"), "importance is not a risk assessment");
+        assertEquals(before, c.toJson(), "read-only status cannot open the dependency gate");
+    }
+
+    @Test void missingRequirementDeclarationIsUnknownNotEmptyVerified() {
+        TaskChain c = chain(); // existing item-only condition has no detector asset_key
+        var fields = RddStatusTool.projectChain(c).data();
+        Map<?, ?> requirements = (Map<?, ?>) fields.get("requirements");
+        assertNotNull(requirements);
+        assertEquals("UNKNOWN", requirements.get("completeness"));
+        assertEquals("UNKNOWN", requirements.get("satisfaction"));
+        assertTrue(((List<?>) requirements.get("declared")).isEmpty());
+        assertFalse(((String) requirements.get("reason")).isBlank());
+        TaskChain lazy = new TaskChain(new Goal("g", "g", List.of(PrimaryGoal.unexpanded("p", "p", null))));
+        var lazyRequirements = (Map<?, ?>) RddStatusTool.projectChain(lazy).data().get("requirements");
+        assertEquals("UNKNOWN", lazyRequirements.get("completeness"));
+        assertFalse(RddStatusTool.projectChain(lazy).data().containsKey("node_type"));
+    }
+
     @Test void statusProjectionDistinguishesActiveAwaitingAndCompleted() {
         TaskChain active = chain();
         var live = RddStatusTool.projectChain(active);
