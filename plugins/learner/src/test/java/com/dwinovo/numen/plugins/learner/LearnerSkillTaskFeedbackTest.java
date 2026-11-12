@@ -147,7 +147,7 @@ class LearnerSkillTaskFeedbackTest {
     }
     @Test void failureTimeoutAndCancelRemainDistinctTaskFacts() {
         TaskState[] states = {TaskState.FAILED, TaskState.TIMEOUT, TaskState.CANCELLED};
-        UsageLedger.Outcome[] outcomes = {UsageLedger.Outcome.FAIL, UsageLedger.Outcome.CANCELED, UsageLedger.Outcome.CANCELED};
+        UsageLedger.Outcome[] outcomes = {UsageLedger.Outcome.FAIL, UsageLedger.Outcome.FAIL, UsageLedger.Outcome.CANCELED};
         for (int i = 0; i < states.length; i++) {
             task = new Work("action-" + i);
             task.bindIdentity(tasks.stamp);

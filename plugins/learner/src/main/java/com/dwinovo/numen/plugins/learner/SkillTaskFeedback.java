@@ -118,8 +118,9 @@ final class SkillTaskFeedback {
         }
         UsageLedger.Outcome outcome = switch (state) {
             case SUCCESS -> UsageLedger.Outcome.SUCCESS;
-            case FAILED -> UsageLedger.Outcome.FAIL;
-            case TIMEOUT, CANCELLED -> UsageLedger.Outcome.CANCELED;
+            // TaskRecord deadline exhaustion is a failure; ACX wall-clock termination has its own contract.
+            case FAILED, TIMEOUT -> UsageLedger.Outcome.FAIL;
+            case CANCELLED -> UsageLedger.Outcome.CANCELED;
             default -> throw new IllegalArgumentException("未知原任务终态");
         };
         JsonObject detail = new JsonObject();
