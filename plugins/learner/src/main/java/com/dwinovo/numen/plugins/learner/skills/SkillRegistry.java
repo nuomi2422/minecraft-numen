@@ -42,7 +42,7 @@ import java.util.Set;
  * 条目 → 样本：`foundingSamples`；样本 → 条目：{@link #skillsOfSample}。
  * 单向链接等于查不到"这条经验是从哪来的"，那正是 158 §3.2 要消灭的断链。
  *
- * <p>纯 JVM、无 IO，可离线单测。
+ * <p>纯 JVM，可离线单测；持久化目录在发布时读取正文。
  */
 public final class SkillRegistry {
 
@@ -144,8 +144,8 @@ public final class SkillRegistry {
     /**
      * 登记一条产物为 Skill 条目，并指定它是否只准进试用态。
      *
-     * @param trial 权限矩阵判成 `TRIAL_ONLY` 时传 true —— 状态记 {@link SkillStatus#TRIAL}，
-     *              这样 `retrievable()` 与检索侧才可能真的区别对待（而不是日志里多一行）
+     * @param trial 权限矩阵判成 `TRIAL_ONLY` 时传 true；正文可读才记 {@link SkillStatus#TRIAL}，
+     *              缺正文的新条目留 DRAFT 并在 Decision.reason 说明（2026-11-12 046-P）
      */
     public Decision register(ArtifactDraft artifact, String skillId, String bodyRef, boolean trial) {
         if (artifact != null) {
@@ -171,11 +171,14 @@ public final class SkillRegistry {
         if (artifact == null) {
             return new Decision(Outcome.CONFLICT, null, "no_artifact");
         }
+        boolean bodyReadable = strictBodyOk(bodyRef);
+        String bodyNote = trial && !bodyReadable
+                ? "body-unreadable: trial request kept DRAFT; " : "";
         SkillEntry candidate = new SkillEntry(
                 skillId, 1, artifact.kind(), artifact.name(), artifact.purpose(),
                 artifact.audience(), artifact.triggerConditions(), artifact.excludeConditions(),
                 artifact.preconditions(), artifact.risk() == null || artifact.risk().isBlank() ? "UNKNOWN" : artifact.risk(), "UNKNOWN",
-                trial ? SkillStatus.TRIAL : SkillStatus.DRAFT, bodyRef,
+                trial && bodyReadable ? SkillStatus.TRIAL : SkillStatus.DRAFT, bodyRef,
                 List.of(), artifact.sampleRefs(), List.of(), List.of());
 
         String fp = candidate.fingerprint();
@@ -185,7 +188,14 @@ public final class SkillRegistry {
             if (existing.bodyRef().equals(candidate.bodyRef())) {
                 // 同指纹同正文：复用，不新增版本（否则每次复盘都会涨版本号）。
                 return new Decision(Outcome.REUSE, existing,
-                        "同指纹同正文，复用 " + existing.skillId() + "@v" + existing.version());
+                        (trial && !bodyReadable ? "body-unreadable: reuse keeps existing state; " : "")
+                                + "同指纹同正文，复用 " + existing.skillId() + "@v" + existing.version());
+            }
+            // 2026-11-12 046-P: revise preserves status. A bad replacement must not
+            // inherit TRIAL/PUBLISHED or discard an already readable DRAFT body.
+            if (!bodyReadable && (trial || existing.status().retrievable() || strictBodyOk(existing.bodyRef()))) {
+                return new Decision(Outcome.CONFLICT, existing,
+                        "body-unreadable: revision rejected; keeping " + existing.skillId() + "@v" + existing.version());
             }
             SkillEntry revised = existing.revise(candidate.bodyRef(), candidate.foundingSamples());
             store(revised);
@@ -203,7 +213,7 @@ public final class SkillRegistry {
         }
 
         store(candidate);
-        return new Decision(Outcome.REGISTERED, candidate, "新条目 " + candidate.skillId() + "@v1");
+        return new Decision(Outcome.REGISTERED, candidate, bodyNote + "新条目 " + candidate.skillId() + "@v1");
     }
 
     /**
@@ -251,6 +261,10 @@ public final class SkillRegistry {
         }
         if (current.status() == SkillStatus.REVOKED) {
             return new Decision(Outcome.CONFLICT, current, "revoked skill cannot be promoted: " + skillId);
+        }
+        if (!strictBodyOk(current.bodyRef())) {
+            return new Decision(Outcome.CONFLICT, current,
+                    "body-unreadable: promotion rejected for " + skillId);
         }
         java.util.List<String> nextSupersedes = new java.util.ArrayList<>(current.supersedes());
         nextSupersedes.add(current.skillId() + "@v" + current.version());
@@ -346,6 +360,18 @@ public final class SkillRegistry {
         for (String s : a) if (b.contains(s)) inter++;
         int union = a.size() + b.size() - inter;
         return union == 0 ? 0.0 : (double) inter / union;
+    }
+
+    /**
+     * 2026-11-12 046-P: publication uses the delivery reader, not a plausible ref.
+     * A draft: ref or unreadable file once entered TRIAL through public methods.
+     * Memory-only previews cannot establish readability; legacy loading stays unchanged.
+     * This read is a serial boundary check, not a lock against later file changes.
+     */
+    private boolean strictBodyOk(String bodyRef) {
+        if (file == null) return false;
+        String body = SkillBodyStore.read(file.toAbsolutePath().getParent(), bodyRef);
+        return body != null && !body.isBlank();
     }
 
     private void store(SkillEntry e) {

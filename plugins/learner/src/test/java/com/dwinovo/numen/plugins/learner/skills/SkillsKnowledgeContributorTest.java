@@ -63,7 +63,11 @@ class SkillsKnowledgeContributorTest {
     void missingBodyIsNotDelivered() throws IOException {
         ArtifactDraft d = new ArtifactDraft(ArtifactKind.EXPERIENCE, "name-x", "purpose-x", "body",
                 List.of("夜"), List.of(), List.of(), "", List.of(), List.of("memo-1"), "PLANNER");
-        SkillRegistry.open(dir.resolve("skills.jsonl")).register(d, "sk-x", "/nonexistent/body", true);
+        // 2026-11-12: simulate the historical bad row, not a new publication bypass.
+        SkillEntry old = new SkillEntry("sk-x", 1, d.kind(), d.name(), d.purpose(), d.audience(),
+                d.triggerConditions(), d.excludeConditions(), d.preconditions(), d.risk(), "UNKNOWN",
+                SkillStatus.TRIAL, "/nonexistent/body", List.of(), d.sampleRefs(), List.of(), List.of());
+        java.nio.file.Files.writeString(dir.resolve("skills.jsonl"), SkillRegistry.toJson(old) + "\n");
         var f = new SkillsKnowledgeContributor(dir, "PLANNER", 800).contribute(UUID.randomUUID(), "x");
         assertEquals(1, f.gapCounts().get("body-missing"));
         assertTrue(f.text().isEmpty());

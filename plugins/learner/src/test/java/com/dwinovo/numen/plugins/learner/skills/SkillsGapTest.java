@@ -23,7 +23,12 @@ class SkillsGapTest {
     private void register(String id, String bodyRef, String body) throws IOException {
         ArtifactDraft d = new ArtifactDraft(ArtifactKind.EXPERIENCE, "n-" + id, "p-" + id, body,
                 List.of("x"), List.of(), List.of(), "", List.of(), List.of("m-" + id), "PLANNER");
-        SkillRegistry.open(dir.resolve("skills.jsonl")).register(d, id, bodyRef, true);
+        // 2026-11-12: old TRIAL rows may lack bodies; load original JSON instead of bypassing the new gate.
+        SkillEntry old = new SkillEntry(id, 1, d.kind(), d.name(), d.purpose(), d.audience(),
+                d.triggerConditions(), d.excludeConditions(), d.preconditions(), d.risk(), "UNKNOWN",
+                SkillStatus.TRIAL, bodyRef, List.of(), d.sampleRefs(), List.of(), List.of());
+        Files.writeString(dir.resolve("skills.jsonl"), SkillRegistry.toJson(old) + "\n",
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
     }
 
     @Test

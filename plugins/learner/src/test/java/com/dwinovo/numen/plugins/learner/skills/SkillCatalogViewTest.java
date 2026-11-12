@@ -39,7 +39,7 @@ class SkillCatalogViewTest {
     void 有条目时按状态分开数(@TempDir Path dir) throws IOException {
         SkillRegistry reg = SkillRegistry.open(dir.resolve("skills.jsonl"));
         reg.register(artifact("夜间别出门"), "sk-1", "body:1");
-        reg.register(artifact("白天别下矿"), "sk-2", "body:2", true);   // 试用
+        reg.register(artifact("白天别下矿"), "sk-2", SkillBodyStore.write(dir, "sk-2", 1, Integer.toHexString("body".hashCode()), "body"), true);   // 试用
 
         Map<String, Object> s = SkillCatalogView.stats(dir);
         assertEquals(true, s.get("exists"));

@@ -35,7 +35,7 @@ class SkillRegistryPromoteTest {
     @Test
     void 草案升成试用后真的可检索(@TempDir Path dir) throws IOException {
         SkillRegistry reg = SkillRegistry.open(dir.resolve("skills.jsonl"));
-        reg.register(artifact("夜里在洞口停留会被围"), "sk-1", "body:1");
+        reg.register(artifact("夜里在洞口停留会被围"), "sk-1", SkillBodyStore.write(dir, "sk-1", 1, Integer.toHexString("v1".hashCode()), "v1"));
         assertFalse(reg.get("sk-1").orElseThrow().status().retrievable(), "DRAFT 不该可检索");
 
         SkillRegistry.Decision d = reg.promote("sk-1", "质量门 PASS");
@@ -57,7 +57,7 @@ class SkillRegistryPromoteTest {
     @Test
     void 已升格的重复调用幂等(@TempDir Path dir) throws IOException {
         SkillRegistry reg = SkillRegistry.open(dir.resolve("skills.jsonl"));
-        reg.register(artifact("p"), "sk-1", "body:1");
+        reg.register(artifact("p"), "sk-1", SkillBodyStore.write(dir, "sk-1", 1, Integer.toHexString("v1".hashCode()), "v1"));
         reg.promote("sk-1", "first");
         SkillRegistry.Decision again = reg.promote("sk-1", "second");
         assertEquals(SkillRegistry.Outcome.REUSE, again.outcome());
@@ -67,7 +67,7 @@ class SkillRegistryPromoteTest {
     @Test
     void 已撤回的不能升格(@TempDir Path dir) throws IOException {
         SkillRegistry reg = SkillRegistry.open(dir.resolve("skills.jsonl"));
-        reg.register(artifact("p"), "sk-1", "body:1");
+        reg.register(artifact("p"), "sk-1", SkillBodyStore.write(dir, "sk-1", 1, Integer.toHexString("v1".hashCode()), "v1"));
         reg.retire("sk-1", "wrong");
         assertEquals(SkillRegistry.Outcome.CONFLICT, reg.promote("sk-1", "x").outcome());
     }

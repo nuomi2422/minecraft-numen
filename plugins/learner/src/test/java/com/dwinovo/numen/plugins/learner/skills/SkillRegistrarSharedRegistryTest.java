@@ -45,7 +45,7 @@ class SkillRegistrarSharedRegistryTest {
     void 管理侧改动不会被随后的登记覆盖(@TempDir Path dir) throws IOException {
         // 先把目录缓存起来（模拟复盘侧早早就持有实例）
         SkillRegistry shared = SkillRegistrar.registryFor(dir);
-        shared.register(artifact("夜里在洞口停留会被围"), "sk-1", "body:1");
+        shared.register(artifact("夜里在洞口停留会被围"), "sk-1", SkillBodyStore.write(dir, "sk-1", 1, Integer.toHexString("body".hashCode()), "body"));
 
         // 管理侧升格（与复盘共用同一实例）
         assertEquals(SkillRegistry.Outcome.REVISE, shared.promote("sk-1", "ok").outcome());

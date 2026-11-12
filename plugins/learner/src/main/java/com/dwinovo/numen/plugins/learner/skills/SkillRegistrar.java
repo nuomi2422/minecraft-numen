@@ -116,6 +116,8 @@ public final class SkillRegistrar {
                 String bodyRef = stored;
                 boolean trial = trialIndexes != null && trialIndexes.contains(i);
                 SkillRegistry.Decision d = registry.register(a, skillId, bodyRef, trial);
+                // 2026-11-12 046-P: writer success alone does not prove the reader accepts it.
+                if (d.reason().startsWith("body-unreadable:")) bodyMissing++;
                 switch (d.outcome()) {
                     case REGISTERED -> reg++;
                     case REUSE -> reuse++;
