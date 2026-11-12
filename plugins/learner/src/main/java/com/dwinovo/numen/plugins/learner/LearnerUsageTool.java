@@ -27,6 +27,28 @@ import java.util.function.Consumer;
  * 时间上的先后不是因果：「被呈现过 + 后来成功了」只进<b>候选关联</b>清单等审。
  */
 final class LearnerUsageTool implements NumenTool {
+    /** 2026-11-12 046-F: thin host boundary for tests without a Minecraft server.
+     * Production resolves the live companion and exact server, never a global identity snapshot. */
+    interface TaskAccess {
+        java.util.UUID companionId();
+        com.dwinovo.numen.api.WorldContextStamp.Token identity();
+        com.dwinovo.numen.task.TaskRecord current();
+        com.dwinovo.numen.task.TaskRecord finished(String taskId);
+    }
+
+    private final java.nio.file.Path configOverride;
+    private final UsageLedger ledgerOverride;
+    private final TaskAccess taskOverride;
+
+    LearnerUsageTool() { this(null, null, null); }
+
+    // Package-only test constructor; the registered production tool always uses the default constructor.
+    LearnerUsageTool(java.nio.file.Path configDir, UsageLedger ledger, TaskAccess tasks) {
+        this.configOverride = configDir;
+        this.ledgerOverride = ledger;
+        this.taskOverride = tasks;
+    }
+
 
     @Override
     public String name() {
@@ -72,7 +94,7 @@ final class LearnerUsageTool implements NumenTool {
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
         String action = str(args, "action", "report").trim().toUpperCase(java.util.Locale.ROOT);
         try {
-            UsageLedger ul = LearnerPlugin.usageLedger();
+            UsageLedger ul = ledgerOverride == null ? LearnerPlugin.usageLedger() : ledgerOverride;
             if (ul == null) {
                 reply.accept(TaskResult.fail("使用账本未初始化（插件 setup 没跑完？）").toJson());
                 return;
