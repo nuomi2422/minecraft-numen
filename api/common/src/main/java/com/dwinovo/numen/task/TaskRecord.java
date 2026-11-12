@@ -48,9 +48,11 @@ public abstract class TaskRecord {
     /** Stable name of the originating tool (matches {@code NumenTool.name()}). */
     private final String toolName;
     /**
-     * The {@code id} field from the LLM's {@code tool_call} — must be echoed
-     * verbatim in the {@code tool_call_id} of the role:tool response, or the
-     * upstream API responds 400.
+     * Execution call ID received by the server: a per-send wire ID for default
+     * transport calls, or the caller's execution ID for other entry points.
+     * The existing mcp- namespace identifies external routing. Server results echo
+     * this ID; ServerToolTransport retains the original ToolCall for model or
+     * actuator replies. This value is not necessarily an upstream model call ID.
      */
     private final String toolCallId;
     /**

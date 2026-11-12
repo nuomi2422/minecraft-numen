@@ -21,7 +21,7 @@ import java.util.UUID;
  * <h2>Pairing</h2>
  * {@link #toolCallId} matches the one in the originating {@link ExecuteToolPayload}
  * and is the per-send wire ID. ServerToolTransport resolves that key to the original
- * ToolCall, whose unchanged model ID is used for the conversation result.
+ * ToolCall, whose original model or actuator ID remains associated with its reply.
  *
  * <h2>Result body</h2>
  * Pre-serialised JSON string ({@link com.dwinovo.numen.task.TaskResult#toJson}).

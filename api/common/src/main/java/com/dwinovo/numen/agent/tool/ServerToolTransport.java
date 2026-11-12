@@ -17,8 +17,10 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>WHY (2026-11-12): model IDs can repeat after cancellation or across companions.
  * Reusing them as wire keys lets an old result consume a new ToolCall. Each send
- * therefore gets its own 41-character, non-MCP wire ID; the parked ToolCall retains
- * the model ID for the conversation. No payload schema or server admission changes.
+ * therefore gets its own bounded wire ID (41 characters built-in, 45 external);
+ * Actuator mcp- calls retain that namespace for existing server routing. The parked
+ * ToolCall retains its original model or actuator ID. This is not independent caller
+ * authentication. No payload schema or server admission changes.
  * Unlike a generation platform or stale-ID cache, the existing in-flight map suffices.
  * This isolates replies; it does not revoke ExecuteToolPayload packets already sent.
  */
@@ -31,9 +33,11 @@ public final class ServerToolTransport {
     /** Ship a body-bound tool under a fresh wire key while retaining its model call. */
     public static void ship(ToolCall call) {
         UUID entity = call.ctx().entityUuid();
+        // Preserve the existing external routing namespace; this is not authentication.
+        String prefix = call.id() != null && call.id().startsWith("mcp-") ? "mcp-wire-" : "wire-";
         String wireId;
         do {
-            wireId = "wire-" + UUID.randomUUID();
+            wireId = prefix + UUID.randomUUID();
         } while (IN_FLIGHT.putIfAbsent(wireId, call) != null);
         // Client association only: neither server acceptance nor a durable-log acknowledgement.
         LocalToolCallLog.publishTransportBinding(entity, call.id(), wireId, call.toolName());
