@@ -71,6 +71,14 @@ class RddGoalDriverInjectionTest {
         return engine;
     }
 
+    /** Same detached token fields as the production Host; no fabricated companion from a goal id. */
+    private static MainlineResumeToken mainlineToken(TaskChain chain, UUID id) {
+        Subtask current = chain.currentSubtask();
+        return new MainlineResumeToken(id, chain.chainInstanceId(), chain.goal().id(),
+                chain.currentPrimary() == null ? null : chain.currentPrimary().id(),
+                current == null ? null : current.id(), chain.planRevision(), chain.planRevision());
+    }
+
     private static final class World implements SideTaskWorldPort {
         long day = 1;
         int wheat;
@@ -95,8 +103,31 @@ class RddGoalDriverInjectionTest {
         assertTrue(chain.currentPrimary().unexpanded());
         assertTrue(chain.satisfiedStages().isEmpty());
         UUID id = UUID.randomUUID();
-        engine.tick(id, new World(), null, false);
+        engine.tick(id, new World(), mainlineToken(chain, id), false);
         assertEquals(DailyMaintenanceSideTaskType.TYPE_ID, engine.runtime().current(id).orElseThrow().typeId());
+    }
+
+    @Test void hostRegisteredDailyDoesNotRunForAnotherGoalsCurrentToken() {
+        TaskChain own = emptyChain();
+        TaskChain foreign = new TaskChain(new Goal("other-g", "foreign farm", List.of(
+                PrimaryGoal.unexpanded("p", "prepare", List.of()))));
+        var events = new java.util.ArrayList<String>();
+        SideTaskEngine engine = new SideTaskEngine((event, data) -> events.add(event), token -> token);
+        engine.registerType(new DailyMaintenanceSideTaskType());
+        List<Subtask> foreignDaily = dailyCandidates(foreign);
+        SideTaskHost.DailyRegistration.register(foreign, foreignDaily, engine);
+        UUID id = UUID.randomUUID();
+        World world = new World();
+        String foreignId = "daily:other-g:" + Integer.toHexString(foreignDaily.get(0).description().hashCode());
+        engine.tick(id, world, mainlineToken(own, id), false);
+        assertTrue(engine.current(id).isEmpty());
+        assertTrue(events.isEmpty());
+        assertNull(engine.handledToday(id, world.worldId(), foreignId, world.day));
+        SideTaskHost.DailyRegistration.register(own, dailyCandidates(own), engine);
+        engine.tick(id, world, mainlineToken(own, id), false);
+        assertEquals(own.goal().id(), engine.current(id).orElseThrow().mainlineToken().goalId());
+        assertEquals(1, java.util.Collections.frequency(events, "side_task_due"));
+        assertNull(engine.handledToday(id, world.worldId(), foreignId, world.day));
     }
 
     @Test void repeatedCandidateRegistrationDoesNotMoveDueDay() {
@@ -110,7 +141,7 @@ class RddGoalDriverInjectionTest {
         World world = new World();
         world.day = 3; // the original interval-two schedule is due
         UUID id = UUID.randomUUID();
-        engine.tick(id, world, null, false);
+        engine.tick(id, world, mainlineToken(chain, id), false);
         assertTrue(engine.runtime().current(id).isPresent(), "retry must not postpone day 3 to day 4");
         assertEquals("2", engine.runtime().current(id).orElseThrow().data().get("minimum"),
                 "preserving the due anchor must still update valid template data");
@@ -123,16 +154,16 @@ class RddGoalDriverInjectionTest {
         SideTaskHost.DailyRegistration.register(chain, first, engine);
         UUID id = UUID.randomUUID();
         World world = new World();
-        engine.tick(id, world, null, false);
+        engine.tick(id, world, mainlineToken(chain, id), false);
         String instance = engine.runtime().current(id).orElseThrow().instanceId();
         SideTaskHost.DailyRegistration.register(chain, dailyCandidates(chain), engine);
-        engine.tick(id, world, null, false);
+        engine.tick(id, world, mainlineToken(chain, id), false);
         assertEquals(instance, engine.runtime().current(id).orElseThrow().instanceId());
         world.wheat = 1;
-        engine.tick(id, world, null, false);
+        engine.tick(id, world, mainlineToken(chain, id), false);
         assertTrue(engine.runtime().current(id).isEmpty());
         SideTaskHost.DailyRegistration.register(chain, dailyCandidates(chain), engine);
-        engine.tick(id, world, null, false);
+        engine.tick(id, world, mainlineToken(chain, id), false);
         assertTrue(engine.runtime().current(id).isEmpty(), "handled day must not create a second occurrence");
         String specId = "daily:g:" + Integer.toHexString(first.get(0).description().hashCode());
         assertEquals(Boolean.TRUE, engine.handledToday(id, world.worldId(), specId, world.day));
@@ -153,7 +184,7 @@ class RddGoalDriverInjectionTest {
         assertEquals("old", chain.currentSubtask().id());
         assertTrue(chain.satisfiedStages().isEmpty());
         UUID id = UUID.randomUUID();
-        engine.tick(id, new World(), null, false);
+        engine.tick(id, new World(), mainlineToken(chain, id), false);
         assertTrue(engine.runtime().current(id).isPresent());
     }
 
@@ -187,7 +218,7 @@ class RddGoalDriverInjectionTest {
         assertEquals(1, installed.anchorGameDay(), "a different template must take the new candidate anchor");
         assertEquals("1", installed.data().get("minimum"));
         UUID id = UUID.randomUUID();
-        engine.tick(id, new World(), null, false);
+        engine.tick(id, new World(), mainlineToken(chain, id), false);
         assertEquals(DailyMaintenanceSideTaskType.TYPE_ID, engine.runtime().current(id).orElseThrow().typeId(),
                 "registration must replace the actual engine type as well as its spec");
     }
@@ -217,7 +248,7 @@ class RddGoalDriverInjectionTest {
         SideTaskEngine engine = engine();
         SideTaskHost.DailyRegistration.registerChain(restored, engine);
         UUID id = UUID.randomUUID();
-        engine.tick(id, new World(), null, false);
+        engine.tick(id, new World(), mainlineToken(restored, id), false);
         assertTrue(engine.runtime().current(id).isPresent(), "restore must retain the DAILY source for registration");
         var facts = new com.dwinovo.numen.rdd.fact.CompletedFactStore();
         var commit = new StageCompletionCommit(dir.resolve("tasks"), dir.resolve("facts"));
@@ -258,10 +289,10 @@ class RddGoalDriverInjectionTest {
         World world = new World();
         UUID id = UUID.randomUUID();
         world.day = 2;
-        restored.tick(id, world, null, false);
+        restored.tick(id, world, mainlineToken(chain, id), false);
         assertTrue(restored.runtime().current(id).isEmpty(), "restoring must not shift the original day 3 to day 2");
         world.day = 3;
-        restored.tick(id, world, null, false);
+        restored.tick(id, world, mainlineToken(chain, id), false);
         assertEquals(DailyMaintenanceSideTaskType.TYPE_ID, restored.runtime().current(id).orElseThrow().typeId());
         assertEquals("2", restored.runtime().current(id).orElseThrow().data().get("minimum"));
         assertEquals(1, restored.recurringSpec(specId).anchorGameDay());
@@ -280,7 +311,7 @@ class RddGoalDriverInjectionTest {
         source.registerRecurring(other, "other_type");
         UUID id = UUID.randomUUID();
         World world = new World();
-        source.tick(id, world, null, false);
+        source.tick(id, world, mainlineToken(chain, id), false);
         String instance = source.runtime().current(id).orElseThrow().instanceId();
         java.nio.file.Path file = dir.resolve("side-tasks.json");
         java.nio.file.Files.writeString(file, source.toJson());
@@ -289,16 +320,16 @@ class RddGoalDriverInjectionTest {
         assertEquals(instance, restored.runtime().current(id).orElseThrow().instanceId());
         assertEquals(Boolean.TRUE, restored.handledToday(id, world.worldId(), specId, world.day));
         SideTaskHost.DailyRegistration.register(chain, dailyCandidates(chain), restored);
-        restored.tick(id, world, null, false);
+        restored.tick(id, world, mainlineToken(chain, id), false);
         assertEquals(instance, restored.runtime().current(id).orElseThrow().instanceId());
         world.wheat = 1;
-        restored.tick(id, world, null, false);
+        restored.tick(id, world, mainlineToken(chain, id), false);
         assertTrue(restored.runtime().current(id).isEmpty());
         java.nio.file.Files.writeString(file, restored.toJson());
         SideTaskEngine twice = engine();
         twice.restore(java.nio.file.Files.readString(file));
         SideTaskHost.DailyRegistration.register(chain, dailyCandidates(chain), twice);
-        twice.tick(id, world, null, false);
+        twice.tick(id, world, mainlineToken(chain, id), false);
         assertTrue(twice.runtime().current(id).isEmpty(), "saved handled occurrence must not recreate after restart");
         assertEquals(Boolean.TRUE, twice.handledToday(id, world.worldId(), specId, world.day));
         assertEquals(other, twice.recurringSpec(other.scheduleId()));
@@ -339,10 +370,10 @@ class RddGoalDriverInjectionTest {
         World world = new World();
         UUID id = UUID.randomUUID();
         world.day = 3;
-        restored.tick(id, world, null, false);
+        restored.tick(id, world, mainlineToken(chain, id), false);
         assertTrue(restored.runtime().current(id).isEmpty(), "stale chain must not restore the old day-3 due time");
         world.day = 4;
-        restored.tick(id, world, null, false);
+        restored.tick(id, world, mainlineToken(chain, id), false);
         assertEquals("2", restored.runtime().current(id).orElseThrow().data().get("minimum"));
 
         var legacyJson = com.google.gson.JsonParser.parseString(source.toJson()).getAsJsonObject();

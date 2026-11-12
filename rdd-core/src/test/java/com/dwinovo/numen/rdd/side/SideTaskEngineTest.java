@@ -415,6 +415,175 @@ class SideTaskEngineTest {
         @Override public String renderContext(SideTask task, SideTaskWorldPort world) { return ""; }
     }
 
+    // 2026-11-12: shared engine must qualify planner DAILY before any due/handled/body side effect.
+    @Test
+    void plannerDailyFromOtherGoalDoesNotConsumeOccurrence() {
+        for (boolean promptOnly : java.util.List.of(false, true)) {
+            RecordingEvents events = new RecordingEvents();
+            SideTaskEngine engine = dailyEngine(events, token -> token);
+            RecurringSideTaskSpec foreign = dailySpec("daily:goalB:x", promptOnly);
+            engine.registerRecurring(foreign, DailyMaintenanceSideTaskType.TYPE_ID);
+            FakeWorldPort world = new FakeWorldPort().at(100L, 0L);
+            assertRecurringIgnored(engine, events, world, dailyToken(C, "goalA"));
+            assertNull(engine.handledToday(C, world.worldId(), foreign.scheduleId(), 0L));
+
+            MainlineResumeToken valid = dailyToken(C, "goalB");
+            engine.tick(C, world, valid, false);
+            assertEquals(1, events.count("side_task_due"));
+            assertEquals(!promptOnly, engine.isActive(C));
+            assertEquals(Boolean.TRUE, engine.handledToday(C, world.worldId(), foreign.scheduleId(), 0L));
+            if (!promptOnly) assertEquals(valid, engine.current(C).orElseThrow().mainlineToken());
+        }
+    }
+
+    @Test
+    void plannerDailyMatchesWholeGoalRatherThanPrefixOrSubstring() {
+        for (String[] goals : java.util.List.of(new String[]{"goal-b4", "goal-b49"},
+                new String[]{"goal-b49", "goal-b4"}, new String[]{"goal-b4", "goal-b4:child"})) {
+            RecordingEvents events = new RecordingEvents();
+            SideTaskEngine engine = dailyEngine(events, token -> token);
+            engine.registerRecurring(dailySpec("daily:" + goals[1] + ":x", false), DailyMaintenanceSideTaskType.TYPE_ID);
+            FakeWorldPort world = new FakeWorldPort().at(100L, 0L);
+            assertRecurringIgnored(engine, events, world, dailyToken(C, goals[0]));
+            engine.tick(C, world, dailyToken(C, goals[1]), false);
+            assertTrue(engine.isActive(C), "the exact goal, including a colon, remains eligible");
+        }
+    }
+
+    @Test
+    void plannerDailyRequiresPresentValidTokenForTickCompanion() {
+        UUID other = UUID.fromString("00000000-0000-0000-0000-0000000000bb");
+        for (boolean promptOnly : java.util.List.of(false, true)) {
+            RecordingEvents events = new RecordingEvents();
+            SideTaskEngine engine = dailyEngine(events, token -> token);
+            engine.registerRecurring(dailySpec("daily:goalA:x", promptOnly), DailyMaintenanceSideTaskType.TYPE_ID);
+            FakeWorldPort world = new FakeWorldPort().at(100L, 0L);
+            assertRecurringIgnored(engine, events, world, null);
+            assertRecurringIgnored(engine, events, world, dailyToken(other, "goalA"));
+            assertRecurringIgnored(engine, events, world, dailyToken(C, ""));
+            assertRecurringIgnored(engine, events, world, dailyToken(C, null));
+        }
+    }
+
+    @Test
+    void plannerDailyHonorsValidatorRejectionAndValidatedIdentity() {
+        UUID other = UUID.fromString("00000000-0000-0000-0000-0000000000bb");
+        MainlineResumeToken valid = dailyToken(C, "goalA");
+        for (boolean promptOnly : java.util.List.of(false, true)) {
+            for (MainlineValidator validator : java.util.Arrays.<MainlineValidator>asList(null, token -> null,
+                    token -> dailyToken(other, "goalA"), token -> dailyToken(C, "goalB"))) {
+                RecordingEvents events = new RecordingEvents();
+                SideTaskEngine engine = dailyEngine(events, validator);
+                engine.registerRecurring(dailySpec("daily:goalA:x", promptOnly), DailyMaintenanceSideTaskType.TYPE_ID);
+                assertRecurringIgnored(engine, events, new FakeWorldPort().at(100L, 0L), valid);
+            }
+            RecordingEvents events = new RecordingEvents();
+            SideTaskEngine engine = dailyEngine(events, token -> valid.equals(token) ? token : null);
+            engine.registerRecurring(dailySpec("daily:goalA:x", promptOnly), DailyMaintenanceSideTaskType.TYPE_ID);
+            FakeWorldPort world = new FakeWorldPort().at(100L, 0L);
+            assertRecurringIgnored(engine, events, world,
+                    new MainlineResumeToken(C, "old-chain", "goalA", "p", "s", 1, 1));
+            assertRecurringIgnored(engine, events, world,
+                    new MainlineResumeToken(C, valid.chainInstanceId(), "goalA", "p", "s", 0, 0));
+            engine.tick(C, world, valid, false);
+            assertEquals(1, events.count("side_task_due"));
+        }
+    }
+
+    @Test
+    void foreignPlannerDailyDoesNotBlockOwnDueOrConsumeGeneration() {
+        RecordingEvents events = new RecordingEvents();
+        SideTaskEngine engine = dailyEngine(events, token -> token);
+        engine.registerRecurring(dailySpec("daily:goalB:x", false), DailyMaintenanceSideTaskType.TYPE_ID);
+        engine.registerRecurring(dailySpec("daily:goalA:x", false), DailyMaintenanceSideTaskType.TYPE_ID);
+        FakeWorldPort world = new FakeWorldPort().at(100L, 0L);
+        engine.tick(C, world, dailyToken(C, "goalA"), false);
+        assertEquals("goalA", engine.current(C).orElseThrow().mainlineToken().goalId());
+        assertEquals(1L, engine.current(C).orElseThrow().generation());
+        assertEquals(1, events.count("side_task_due"));
+        assertEquals("daily:goalA:x", events.payloads.get(events.events.indexOf("side_task_due")).get("specId"));
+        assertNull(engine.handledToday(C, world.worldId(), "daily:goalB:x", 0L));
+    }
+
+    @Test
+    void restoredPlannerDailyStillQualifiesGoalBeforeConsumingOccurrence() {
+        RecordingEvents events = new RecordingEvents();
+        SideTaskEngine source = dailyEngine(new RecordingEvents(), token -> token);
+        RecurringSideTaskSpec foreign = dailySpec("daily:goalB:x", false);
+        source.registerRecurring(foreign, DailyMaintenanceSideTaskType.TYPE_ID);
+        SideTaskEngine restored = dailyEngine(events, token -> token);
+        restored.restore(source.toJson());
+        assertEquals(foreign, restored.recurringSpec(foreign.scheduleId()));
+        FakeWorldPort world = new FakeWorldPort().at(100L, 0L);
+        assertRecurringIgnored(restored, events, world, dailyToken(C, "goalA"));
+        restored.tick(C, world, dailyToken(C, "goalB"), false);
+        assertTrue(restored.isActive(C));
+        assertEquals(1, events.count("side_task_due"));
+    }
+
+    @Test
+    void plannerDailyYieldAndRestoreKeepSameDayHandledOccurrence() {
+        RecordingEvents events = new RecordingEvents();
+        SideTaskEngine engine = dailyEngine(events, token -> token);
+        String specId = "daily:goalA:x";
+        engine.registerRecurring(dailySpec(specId, false), DailyMaintenanceSideTaskType.TYPE_ID);
+        MainlineResumeToken valid = dailyToken(C, "goalA");
+        FakeWorldPort world = new FakeWorldPort().at(100L, 0L);
+        engine.tick(C, world, valid, false);
+        engine.tick(C, world.bodyBusy(true), valid, false);
+        assertFalse(engine.isActive(C));
+        assertEquals(1, events.count("side_task_cancelled"));
+        assertEquals(Boolean.TRUE, engine.handledToday(C, world.worldId(), specId, 0L));
+        engine.tick(C, world.bodyBusy(false), valid, false);
+        assertEquals(1, events.count("side_task_due"));
+        SideTaskEngine restored = dailyEngine(events, token -> token);
+        restored.restore(engine.toJson());
+        restored.tick(C, world, valid, false);
+        assertFalse(restored.isActive(C));
+        assertEquals(1, events.count("side_task_due"));
+        restored.tick(C, world.at(24_100L, 1L), valid, false);
+        assertTrue(restored.isActive(C), "the next due day must still work");
+    }
+
+    @Test
+    void genericRecurringWithoutPlannerNamespaceKeepsNullTokenBehavior() {
+        for (boolean promptOnly : java.util.List.of(false, true)) {
+            RecordingEvents events = new RecordingEvents();
+            SideTaskEngine engine = dailyEngine(events, null);
+            engine.registerRecurring(dailySpec("daily", promptOnly), DailyMaintenanceSideTaskType.TYPE_ID);
+            FakeWorldPort world = new FakeWorldPort().at(100L, 0L);
+            engine.tick(C, world, null, false);
+            assertEquals(1, events.count("side_task_due"));
+            assertEquals(!promptOnly, engine.isActive(C));
+            assertEquals(Boolean.TRUE, engine.handledToday(C, world.worldId(), "daily", 0L));
+        }
+    }
+
+    private static SideTaskEngine dailyEngine(RecordingEvents events, MainlineValidator validator) {
+        SideTaskEngine engine = new SideTaskEngine(events, validator);
+        engine.registerType(new DailyMaintenanceSideTaskType());
+        return engine;
+    }
+
+    private static RecurringSideTaskSpec dailySpec(String id, boolean promptOnly) {
+        return new RecurringSideTaskSpec(id, DailyMaintenanceSideTaskType.TYPE_ID, 1, 0,
+                RecurringSideTaskSpec.MissedPolicy.SKIP, true, promptOnly,
+                Map.of("asset_key", "minecraft:wheat", "minimum", "1"));
+    }
+
+    private static MainlineResumeToken dailyToken(UUID companionId, String goalId) {
+        return new MainlineResumeToken(companionId, "chain-" + goalId, goalId, "p", "s", 1, 1);
+    }
+
+    private static void assertRecurringIgnored(SideTaskEngine engine, RecordingEvents events,
+                                               FakeWorldPort world, MainlineResumeToken token) {
+        String before = engine.toJson();
+        engine.tick(C, world, token, false);
+        assertFalse(engine.isActive(C));
+        assertEquals(before, engine.toJson(), "ineligible DAILY must not consume generation or handled state");
+        assertTrue(events.events.isEmpty(), "no due, created or activated event is legal before qualification");
+    }
+
     @Test
     void recurringSnapshotKeepsSpecAndSeparateTypeBinding() {
         SideTaskEngine source = new SideTaskEngine(SideTaskEvents.NOOP, token -> token);
