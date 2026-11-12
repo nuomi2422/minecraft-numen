@@ -109,6 +109,26 @@ class LearnerSkillTaskFeedbackTest {
     private List<UsageLedger.Entry> rows() { return new UsageLedger(dir).all(); }
     private void noRows() { assertTrue(rows().isEmpty(), "rejection must not create result facts"); }
 
+    @Test void legacyStaticGotoCannotBindEvenToACurrentTask() {
+        String body = "{\"steps\":[{\"id\":\"go\",\"block\":\"goto\",\"params\":{\"x\":2,\"y\":88,\"z\":-3}}]}";
+        registry.register(artifact(body), "sk-1", writeBody(body), true);
+        JsonObject a = args("adopt_skill"); a.addProperty("version", "v2");
+        rejected(call(a));
+        assertNull(task.skillSelection());
+        tasks.finish(TaskState.SUCCESS);
+        a.addProperty("action", "report_skill"); rejected(call(a)); noRows();
+    }
+    @Test void parameterizedGotoAdoptionKeepsTheExactBodyAndNormalReporting() {
+        String body = "{\"steps\":[{\"id\":\"go\",\"block\":\"goto\",\"params\":{\"x\":\"$input.table.x\",\"y\":\"$input.table.y\",\"z\":\"$input.table.z\"}}]}";
+        registry.register(artifact(body), "sk-1", writeBody(body), true);
+        JsonObject a = args("adopt_skill"); a.addProperty("version", "v2");
+        var result = call(a); ok(result);
+        assertEquals(body, result.getAsJsonObject("data").get("body").getAsString());
+        tasks.finish(TaskState.SUCCESS);
+        a.addProperty("action", "report_skill"); ok(call(a));
+        assertEquals(1, rows().size());
+    }
+
     @Test void completeReplyThenOriginalSuccessIsOneReviewCandidateAfterReload() {
         JsonObject adopted = call(args("adopt_skill"));
         ok(adopted);
