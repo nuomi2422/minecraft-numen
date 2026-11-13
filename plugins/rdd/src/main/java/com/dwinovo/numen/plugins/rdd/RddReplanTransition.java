@@ -1,8 +1,10 @@
 package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.rdd.core.TaskChain;
+import com.dwinovo.numen.rdd.api.PrimaryGoalStatus;
 
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * 044 B2 · 重规划准入的唯一消费者（2026-11-13 提取；同日由 f82 真红基线推进到修复批）。
@@ -37,6 +39,8 @@ final class RddReplanTransition {
     /** 准入结果；除 ACCEPTED 外都表示链未进入 REPLANNING。 */
     enum Outcome {
         ACCEPTED,
+        /** 同链同 primary 的生存供食意图仍在，同型抢占不重复换计划/停体/花预算。 */
+        DUPLICATE_SURVIVAL_PENDING,
         BUDGET_EXHAUSTED,
         NOT_ACTIVE,
         NOT_EXPANDED,
@@ -52,11 +56,178 @@ final class RddReplanTransition {
         }
     }
 
+    /**
+     * 生存供食意图（typed 局部状态）。
+     *
+     * <p>生命周期：PENDING（重规划已被接受，尚未证明新计划真的落链）→ APPLIED（replace 成功，
+     * 绑定当时的 chain.planRevision）。只认 token 身份：旧回调不得清/改新意图。
+     * 只记录程序来源、链身份与计划代次，不从 description/reason 文本推断。
+     */
+    enum SurvivalState { PENDING, APPLIED }
+
+    record SurvivalIntent(String chainInstanceId, String primaryId, RddSurvivalGate.Decision decision,
+                          Object token, SurvivalState state, int requestedPlanRevision, Integer appliedPlanRevision) {
+    }
+
+    private static final Map<java.util.UUID, SurvivalIntent> SURVIVAL_INTENTS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    // 原 Detector 的同一份 60s 冷却；与意图一起失效，避免安全/死亡后新风险吃旧冷却。
+    static final Map<UUID, Long> SURVIVAL_PREEMPT_AT = new java.util.concurrent.ConcurrentHashMap<>();
+
     private RddReplanTransition() {
     }
 
     /**
-     * 一次重规划请求：判预算 →（旧行为）计数 → 转换状态 → 接受后回调。
+     * V04 三次 rev29/30/31 都是有效食物计划，却被同型饥饿反复替换（2026-11-13）。
+     * 因此在预算/转换/停体之前核同一 typed 意图；不能靠加预算、延长冷却或描述文本认食物计划。
+     * PENDING 无明确结果仍是 UNKNOWN；APPLIED 只保护实际应用的那一代计划。
+     */
+    static Result requestSurvival(UUID companionId, TaskChain chain, RddSurvivalGate.Decision decision,
+                                  String reason, Map<String, Integer> counts, String budgetKey, int limit,
+                                  Runnable onAccepted, Object token) {
+        if (companionId == null || token == null || decision == null || decision == RddSurvivalGate.Decision.NONE
+                || chain == null || chain.currentPrimary() == null) {
+            return new Result(Outcome.ILLEGAL, "survival requires typed decision, owner and token");
+        }
+        SurvivalIntent current = SURVIVAL_INTENTS.get(companionId);
+        if (current != null && sameScope(current, chain) && current.decision() == decision
+                && (current.state() == SurvivalState.PENDING
+                        ? current.requestedPlanRevision() == chain.planRevision()
+                        : current.appliedPlanRevision() == chain.planRevision())) {
+            return new Result(Outcome.DUPLICATE_SURVIVAL_PENDING, "same survival intent is still pending");
+        }
+        // 新请求被拒绝时不能先抹掉旧有效意图；仅真正接受的新请求才替换它。
+        String chainId = chain.chainInstanceId();
+        String primaryId = chain.currentPrimary().id();
+        int requestedRevision = chain.planRevision();
+        try {
+            return request(chain, Trigger.SURVIVAL, reason, counts, budgetKey, limit, () -> {
+                // 接受后、停体回调前装 PENDING：回调异常/失效不能被返回后的 put 复活。
+                SURVIVAL_INTENTS.put(companionId, new SurvivalIntent(chainId, primaryId, decision,
+                        token, SurvivalState.PENDING, requestedRevision, null));
+                if (onAccepted != null) onAccepted.run();
+            });
+        } catch (RuntimeException ex) {
+            abortPlan(companionId, token, chain);
+            throw ex;
+        }
+    }
+
+    private static boolean sameScope(SurvivalIntent intent, TaskChain chain) {
+        return chain != null && chain.currentPrimary() != null
+                && intent.chainInstanceId().equals(chain.chainInstanceId())
+                && intent.primaryId().equals(chain.currentPrimary().id());
+    }
+
+    /**
+     * 新计划 replace 成功后才绑定 appliedPlanRevision；旧回调 token 不匹配时什么都不做，
+     * 因此“旧回调清掉新意图”不会发生。
+     */
+    static void markApplied(UUID companionId, Object token, int appliedPlanRevision) {
+        if (companionId == null) return;
+        SURVIVAL_INTENTS.computeIfPresent(companionId, (id, cur) -> cur.token() == token
+                ? new SurvivalIntent(cur.chainInstanceId(), cur.primaryId(), cur.decision(), token,
+                        SurvivalState.APPLIED, cur.requestedPlanRevision(), appliedPlanRevision)
+                : cur);
+    }
+
+    /**
+     * 空回/替换异常/server 缺失导致回落原计划：明确失败才释放（允许重试）。
+     * 旧 token 不碰新意图；UNKNOWN（本轮未回调）不在此释放。
+     */
+    static void markAborted(UUID companionId, Object token) {
+        if (companionId == null) return;
+        SURVIVAL_INTENTS.computeIfPresent(companionId, (id, cur) -> {
+            if (cur.token() != token) return cur;
+            SURVIVAL_PREEMPT_AT.remove(id);
+            return null;
+        });
+    }
+
+    /** 明确应用失败的真实消费者；旧 callback 不得回退新意图正在使用的链。 */
+    static void abortPlan(UUID companionId, Object token, TaskChain chain) {
+        SurvivalIntent current = companionId == null ? null : SURVIVAL_INTENTS.get(companionId);
+        if (current != null && current.token() != token) return;
+        markAborted(companionId, token);
+        // 安全观测可能已清 marker，原有效回调仍须回落；旧生命周期回调由原 ticket 拦截。
+        if ((current == null || sameScope(current, chain)) && chain != null
+                && chain.primaryStatus() == PrimaryGoalStatus.REPLANNING) {
+            chain.resumeFromReplanning();
+        }
+    }
+
+    /** 服务端适配器只交实际server引用；缺失判定与释放在同一可执行消费者中。 */
+    static boolean requirePlanningServer(UUID companionId, Object token, TaskChain chain, Object server) {
+        if (server != null) return true;
+        abortPlan(companionId, token, chain);
+        return false;
+    }
+
+    enum SurvivalApplyOutcome { APPLIED, EMPTY_FALLBACK, STALE_IGNORED }
+
+    /**
+     * 2026-11-13：空回、替换失败和替换后观测失败必须分开，不能靠宿主源码pin签通过。
+     * 真正的替换由原宿主动作执行；本消费者负责判空、失败释放、成功绑定实际rev。
+     * 保存/发布放在绑定之后、释放catch之外：已落链的计划不能因观测异常失去保护。
+     */
+    static <T> SurvivalApplyOutcome applySurvivalPlan(UUID companionId, Object token, TaskChain chain,
+                                                     java.util.List<?> specs, java.util.function.Supplier<T> replace,
+                                                     java.util.function.Consumer<T> afterApplied) {
+        SurvivalIntent current = companionId == null ? null : SURVIVAL_INTENTS.get(companionId);
+        // 2026-11-13：旧token的成功替换也会改rev，必须在执行任何动作之前拒绝。
+        // 安全观测已清marker且没有新意图时，仍由原CallbackGuard判断原票有效性。
+        if (current != null && current.token() != token) return SurvivalApplyOutcome.STALE_IGNORED;
+        if (specs == null || specs.isEmpty()) {
+            abortPlan(companionId, token, chain);
+            return SurvivalApplyOutcome.EMPTY_FALLBACK;
+        }
+        T applied;
+        try {
+            applied = replace.get();
+        } catch (RuntimeException ex) {
+            abortPlan(companionId, token, chain);
+            throw ex;
+        }
+        markApplied(companionId, token, chain.planRevision());
+        afterApplied.accept(applied);
+        return SurvivalApplyOutcome.APPLIED;
+    }
+
+    /** NONE 仅代表风险消退，不是供食完成；清同一份冷却使随后新风险可重新评估。 */
+    static void observeSafe(UUID companionId) {
+        invalidate(companionId);
+    }
+
+    static boolean hasSurvivalIntent(UUID companionId) {
+        return companionId != null && SURVIVAL_INTENTS.containsKey(companionId);
+    }
+
+    /** 撤销 runtime / 换目标 / external_world_reset 共用，不改链历史或预算。 */
+    static void invalidate(UUID companionId) {
+        if (companionId == null) return;
+        SURVIVAL_INTENTS.remove(companionId);
+        SURVIVAL_PREEMPT_AT.remove(companionId);
+    }
+
+    /** 死亡打断 PENDING：先作废原异步票，再回落原链，不能留下永远 REPLANNING。 */
+    static void onDeath(UUID companionId, TaskChain chain, Runnable invalidatePlanning) {
+        // 即使刚观察过安全并清了 marker，死亡前的规划也属于旧身体，仍须作废原票。
+        invalidatePlanning.run();
+        invalidate(companionId);
+        if (chain != null && chain.primaryStatus() == PrimaryGoalStatus.REPLANNING) {
+            chain.resumeFromReplanning();
+        }
+    }
+
+    /** ServerStoppedEvent：静态内存不得带进同存档的下一次 server。 */
+    static void clearAll() {
+        SURVIVAL_INTENTS.clear();
+        SURVIVAL_PREEMPT_AT.clear();
+    }
+
+    /**
+     * 一次重规划请求：判预算 → 转换成功 → 记账 → 接受后回调。
      *
      * @param counts    调用方的预算表（生产是 {@code RddPlugin.REPLAN_COUNTS}）
      * @param budgetKey 预算键（失败/生存共用，协商带 {@code |nego}）

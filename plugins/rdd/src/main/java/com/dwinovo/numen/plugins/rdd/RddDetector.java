@@ -354,6 +354,15 @@ final class RddDetector {
             RddRuntime runtime = RddPlugin.runtime(ap.getUUID());
             if (runtime == null) return;
             TaskChain chain = runtime.chain();
+            // 安全观测必须在 unexpanded/side/status/cooldown 早退之前：短暂 hunger>=10 也要能释放上一轮
+            // 生存意图与冷却，否则再跌回 9 会被旧 marker/冷却吞掉（V04 之后的设计要求）。
+            int hunger = ap.getFoodData().getFoodLevel();
+            double hp = ap.getHealth();
+            boolean safe = hunger >= 10 && hp >= 8.0;
+            if (safe) {
+                // 风险消退释放意图和同一份冷却，不代表完成供食承诺。
+                RddReplanTransition.observeSafe(ap.getUUID());
+            }
             if (chain.primaryStatus() == PrimaryGoalStatus.PENDING
                     && chain.currentPrimary().unexpanded()) {
                 RddGoalDriver.needExpansion(ap.getUUID());
@@ -362,11 +371,10 @@ final class RddDetector {
             // Side ownership only delays the mainline; never spend its failure budget.
             if (SideTaskHost.isActive(ap.getUUID())
                     || chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return;
+            if (safe) return;
             long now = System.currentTimeMillis();
             Long last = SURVIVAL_PREEMPT_AT.get(ap.getUUID());
             if (last != null && now - last < 60_000L) return;
-            int hunger = ap.getFoodData().getFoodLevel();
-            double hp = ap.getHealth();
             int free = 0;
             int size = Math.min(36, ap.getInventory().getContainerSize());
             for (int i = 0; i < size; i++) {
@@ -388,7 +396,10 @@ final class RddDetector {
                         decision, hunger, hp, free);
                 return;
             }
-            SURVIVAL_PREEMPT_AT.put(ap.getUUID(), now);
+            // 同步无 server/空回/启动异常可能已经释放；不能在返回后复活旧冷却。
+            if (RddReplanTransition.hasSurvivalIntent(ap.getUUID())) {
+                SURVIVAL_PREEMPT_AT.put(ap.getUUID(), now);
+            }
             RddMonitor.publish("survival_preempt", java.util.Map.of(
                     "decision", decision.name(), "hunger", hunger, "hp", hp, "free_slots", free));
             LOG.info("[rdd] 生存抢占 {} hunger={} hp={} free={}", decision, hunger, hp, free);
@@ -397,7 +408,8 @@ final class RddDetector {
         }
     }
 
-    private static final java.util.Map<java.util.UUID, Long> SURVIVAL_PREEMPT_AT = new java.util.concurrent.ConcurrentHashMap<>();
+    // 仍是原60秒冷却，唯一实例迁到意图消费者，失效事件/安全观测一并清。
+    private static final java.util.Map<java.util.UUID, Long> SURVIVAL_PREEMPT_AT = RddReplanTransition.SURVIVAL_PREEMPT_AT;
 
     private void tickRuntime(NumenPlayer ap, RddRuntime rt) {
         try {
