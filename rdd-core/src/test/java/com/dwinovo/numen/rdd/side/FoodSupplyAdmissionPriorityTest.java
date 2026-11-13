@@ -10,12 +10,15 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * 2026-11-13 V06 diagnostic: critical food admission competes with a due planner DAILY.
- * Run this class through the managed test-only entry; it has not been run on ec1b.
+ * Run this class through the managed test-only entry. The original eight tests on
+ * 5968 produced one DAILY-before-food failure and seven passing controls; added
+ * predicate-count/pending-owner tests are not run yet.
  * A policy-only test misses Engine.tick's earlier tickRecurring return, so use the real
  * engine, food trigger, DAILY type/spec and token validation; only world/events are fakes.
  * The counterexample starts with no active side task/death/cooldown; controls preserve
@@ -166,6 +169,163 @@ class FoodSupplyAdmissionPriorityTest {
         } finally {
             SleepSideTaskTrigger.setEnabled(wasEnabled);
         }
+    }
+
+    // 2026-11-13: count the production trigger's injected cooldown predicate, not a fake fires().
+    // With non-null Engine contexts every fires() enters this predicate exactly once.
+    @Test
+    void dueDailyChecksAllowedCooldownExactlyOnceBeforeFoodAdmission() {
+        RecordingEvents events = new RecordingEvents();
+        AtomicInteger checks = new AtomicInteger();
+        SideTaskEngine engine = countedFoodEngine(events, checks);
+        registerDueDaily(engine);
+        FakeWorldPort world = world(5, 6, 0);
+        assertFalse(FoodSupplyPolicy.cooldownBlocks(true, 5, 6, 0),
+                "a fresh critical empty-stock deficit bypasses the existing cooldown");
+
+        engine.tick(C, world, TOKEN, false);
+
+        assertEquals(1, checks.get(), "the registered cooldown predicate must run once, not be bypassed");
+        assertEquals(FoodSupplySideTaskType.TYPE_ID, engine.current(C).orElseThrow().typeId());
+        assertNotEquals(Boolean.TRUE, engine.handledToday(C, world.worldId(), DAILY_ID, 31L));
+        assertEquals(1, events.count("side_task_created"));
+    }
+
+    @Test
+    void dueDailyChecksDeniedCooldownExactlyOnceAndStillAdmitsDaily() {
+        RecordingEvents events = new RecordingEvents();
+        AtomicInteger checks = new AtomicInteger();
+        SideTaskEngine engine = countedFoodEngine(events, checks);
+        registerDueDaily(engine);
+        FakeWorldPort world = world(12, 6, 1);
+        assertTrue(FoodSupplyPolicy.needsSupply(12, 6, 1));
+        assertTrue(FoodSupplyPolicy.cooldownBlocks(true, 12, 6, 1),
+                "low hp with one edible item still respects the existing cooldown");
+
+        engine.tick(C, world, TOKEN, false);
+
+        assertEquals(1, checks.get(), "a false cooldown result must also be evaluated only once");
+        assertEquals(DailyMaintenanceSideTaskType.TYPE_ID, engine.current(C).orElseThrow().typeId());
+        assertEquals(Boolean.TRUE, engine.handledToday(C, world.worldId(), DAILY_ID, 31L));
+        assertEquals(1, events.count("side_task_created"));
+    }
+
+    @Test
+    void noDueDailyChecksAllowedCooldownExactlyOnce() {
+        RecordingEvents events = new RecordingEvents();
+        AtomicInteger checks = new AtomicInteger();
+        SideTaskEngine engine = countedFoodEngine(events, checks);
+
+        engine.tick(C, world(5, 6, 0), TOKEN, false);
+
+        assertEquals(1, checks.get());
+        assertEquals(FoodSupplySideTaskType.TYPE_ID, engine.current(C).orElseThrow().typeId());
+        assertEquals(1, events.count("side_task_created"));
+    }
+
+    @Test
+    void noDueDailyChecksDeniedCooldownExactlyOnceWithoutCreatingFood() {
+        RecordingEvents events = new RecordingEvents();
+        AtomicInteger checks = new AtomicInteger();
+        SideTaskEngine engine = countedFoodEngine(events, checks);
+
+        engine.tick(C, world(12, 6, 1), TOKEN, false);
+
+        assertEquals(1, checks.get(), "a denied probe must not be retried by the fallback trigger loop");
+        assertTrue(engine.current(C).isEmpty());
+        assertEquals(0, events.count("side_task_created"));
+    }
+
+    @Test
+    void existingRecoveryDoesNotEvaluateFoodCooldownAgain() {
+        RecordingEvents events = new RecordingEvents();
+        AtomicInteger checks = new AtomicInteger();
+        SideTaskEngine engine = countedFoodEngine(events, checks);
+        FakeWorldPort world = world(18, 20, 0);
+        RecoverySideTaskTrigger.expect(C, "minecraft:flint_and_steel", 1);
+        try {
+            engine.tick(C, world, TOKEN, false);
+            SideTask recovery = engine.current(C).orElseThrow();
+            assertEquals(RecoverySideTaskType.TYPE_ID, recovery.typeId());
+            assertEquals(0, checks.get(), "recovery precedes food in the host registration order");
+
+            assertExistingOwnerRetained(engine, events, world, recovery, false);
+
+            assertEquals(0, checks.get(), "an existing owner must return before automatic food admission");
+        } finally {
+            RecoverySideTaskTrigger.withdraw(C);
+        }
+    }
+
+    @Test
+    void pendingSleepKeepsTriggerOrderWhenCriticalFoodDefersDueDaily() {
+        RecordingEvents events = new RecordingEvents();
+        AtomicInteger checks = new AtomicInteger();
+        SideTaskEngine engine = countedFoodEngine(events, checks);
+        registerDueDaily(engine);
+        FakeWorldPort world = world(5, 6, 0).day(false)
+                .dayTime(31L * 24_000L + 13_000L);
+        boolean wasEnabled = SleepSideTaskTrigger.enabled();
+        SleepSideTaskTrigger.setEnabled(true);
+        try {
+            engine.tick(C, world, TOKEN, false);
+
+            SideTask selected = engine.current(C).orElseThrow();
+            assertEquals(SleepSideTaskType.TYPE_ID, selected.typeId(),
+                    "daily yielding for food must not move food ahead of the pending sleep trigger");
+            assertSame(TOKEN, selected.mainlineToken());
+            assertEquals(1, checks.get());
+            assertEquals(1, events.count("side_task_created"));
+            assertNotEquals(Boolean.TRUE, engine.handledToday(C, world.worldId(), DAILY_ID, 31L));
+        } finally {
+            SleepSideTaskTrigger.setEnabled(wasEnabled);
+        }
+    }
+
+    @Test
+    void pendingRecoveryKeepsItsPayloadWhenCriticalFoodDefersDueDaily() {
+        RecordingEvents events = new RecordingEvents();
+        AtomicInteger checks = new AtomicInteger();
+        SideTaskEngine engine = countedFoodEngine(events, checks);
+        registerDueDaily(engine);
+        FakeWorldPort world = world(5, 6, 0);
+        RecoverySideTaskTrigger.expect(C, "minecraft:flint_and_steel", 1);
+        try {
+            engine.tick(C, world, TOKEN, false);
+
+            SideTask selected = engine.current(C).orElseThrow();
+            assertEquals(RecoverySideTaskType.TYPE_ID, selected.typeId(),
+                    "daily yielding for food must not move food ahead of the pending recovery trigger");
+            assertEquals("minecraft:flint_and_steel", selected.data().get("item"));
+            assertEquals("1", selected.data().get("count"));
+            assertTrue(RecoverySideTaskTrigger.take(C).isEmpty(), "create must consume exactly this payload");
+            assertSame(TOKEN, selected.mainlineToken());
+            assertEquals(1, checks.get());
+            assertEquals(1, events.count("side_task_created"));
+            assertNotEquals(Boolean.TRUE, engine.handledToday(C, world.worldId(), DAILY_ID, 31L));
+        } finally {
+            RecoverySideTaskTrigger.withdraw(C);
+        }
+    }
+
+    private static SideTaskEngine countedFoodEngine(RecordingEvents events, AtomicInteger checks) {
+        SideTaskEngine engine = new SideTaskEngine(events, token -> TOKEN.equals(token) ? token : null);
+        engine.registerType(new DailyMaintenanceSideTaskType());
+        engine.registerType(new SleepSideTaskType());
+        engine.registerType(new RecoverySideTaskType());
+        engine.registerType(new FoodSupplySideTaskType());
+        engine.registerType(new DeathRecoverySideTaskType());
+        // Match SideTaskHost's real order; do not insert a fake warmup/owner/priority trigger.
+        engine.registerTrigger(new SleepSideTaskTrigger());
+        engine.registerTrigger(new RecoverySideTaskTrigger());
+        engine.registerTrigger(new FoodSupplySideTaskTrigger(ctx -> {
+            checks.incrementAndGet();
+            // Same policy as the host, fixed clock inputs so no sleep or wall-clock race is needed.
+            boolean coolingDown = FoodSupplyPolicy.cooldownActive(1_000_001L, 1_000_000L);
+            return !FoodSupplyPolicy.cooldownBlocks(coolingDown, ctx.hunger(), ctx.health(), ctx.edibleCount());
+        }));
+        engine.registerTrigger(new DeathRecoverySideTaskTrigger());
+        return engine;
     }
 
     private static void assertExistingOwnerRetained(SideTaskEngine engine, RecordingEvents events,
