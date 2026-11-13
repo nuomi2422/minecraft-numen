@@ -1495,13 +1495,10 @@ private static String withAssets(UUID companionId, String rddContext) {
         try {
             String theme = chain.currentPrimary().description();
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-            if (server == null) {
-                // 明确未应用：仅匹配 token 可释放/回落，不把入口 accepted 当永久保护。
-                if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
-                    RddReplanTransition.abortPlan(companionId, survivalToken, chain);
-                } else {
-                    chain.resumeFromReplanning();
-                }
+            boolean survival = trigger == RddReplanTransition.Trigger.SURVIVAL;
+            if (survival ? !RddReplanTransition.requirePlanningServer(companionId, survivalToken, chain, server)
+                    : server == null) {
+                if (!survival) chain.resumeFromReplanning();
                 return true;
             }
             var snap = planningSnapshot(companionId);
@@ -1574,43 +1571,41 @@ private static String withAssets(UUID companionId, String rddContext) {
             RddDecomposer.decomposeSpecsWithHint(companionId, theme, planningAttempt,
                     new java.util.ArrayList<>(chain.satisfiedStages()), hint,
                     specs -> onServer(server, ticket, () -> {
-                        boolean applied = false;
                         try {
-                            if (specs == null || specs.isEmpty()) {
-                                if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
-                                    RddReplanTransition.abortPlan(companionId, survivalToken, chain);
-                                } else {
-                                    chain.resumeFromReplanning();
+                            java.util.function.Supplier<java.util.List<Subtask>> replace = () -> {
+                                // 2026-09-30 深审 R05/codex 两轮：二级 id 原来恒为 `primaryId-rN`，
+                                // 每次重规划都复用同一批名字 → 上一轮的 PAUSE/COUNTER 回执
+                                // 即使 taskId 相同也能通过消费侧校验，作用到新计划的同 id 二级上。
+                                // 计划代次进 id（代次本体在 TaskChain，随链持久化，重启不撞号）。
+                                int rev = nextPlanRevision(companionId, chain);
+                                var subs = RddChainFactory.subtasksFromSpecs(primaryId, rev, specs);
+                                RddGoalDriver.acceptPlan(subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
+                                        () -> chain.replaceCurrentSubtasks(subs));
+                                return subs;
+                            };
+                            java.util.function.Consumer<java.util.List<Subtask>> afterApplied = subs -> {
+                                RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废
+                                saveRuntimes();
+                                publishTaskSnapshot(companionId, "replanned");
+                                RddMonitor.publish("replanned", Map.of("companionId", companionId.toString(),
+                                        "primary", primaryId, "theme", theme,
+                                        "subtasks", subs.size(), "planRevision", chain.planRevision()));
+                            };
+                            if (survival) {
+                                if (!RddReplanTransition.applySurvivalPlan(companionId, survivalToken, chain,
+                                        specs, replace, afterApplied)) {
+                                    publishTaskSnapshot(companionId, "replan_fallback_resume");
                                 }
+                            } else if (specs == null || specs.isEmpty()) {
+                                chain.resumeFromReplanning();
                                 publishTaskSnapshot(companionId, "replan_fallback_resume");
-                                return;
-                            }
-                            java.util.List<Subtask> subs;
-                            // 2026-09-30 深审 R05/codex 两轮：二级 id 原来恒为 `primaryId-rN`，
-                            // 每次重规划都复用同一批名字 → 上一轮的 PAUSE/COUNTER 回执
-                            // 即使 taskId 相同也能通过消费侧校验，作用到新计划的同 id 二级上。
-                            // 计划代次进 id（代次本体在 TaskChain，随链持久化，重启不撞号）。
-                            int rev = nextPlanRevision(companionId, chain);
-                            subs = RddChainFactory.subtasksFromSpecs(primaryId, rev, specs);
-                            RddGoalDriver.acceptPlan(subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
-                                    () -> chain.replaceCurrentSubtasks(subs));
-                            applied = true;
-                            if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
-                                // 只有替换成功才绑定 applied：旧回调 token 不匹配时什么都不做。
-                                RddReplanTransition.markApplied(companionId, survivalToken, chain.planRevision());
-                            }
-                            RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废
-                            saveRuntimes();
-                            publishTaskSnapshot(companionId, "replanned");
-                            RddMonitor.publish("replanned", Map.of("companionId", companionId.toString(),
-                                    "primary", primaryId, "theme", theme,
-                                    "subtasks", subs.size(), "planRevision", rev));
-                        } catch (RuntimeException ex) {
-                            LOG.warn("[rdd] 重规划替换失败，回落重跑现有 {}: {}", companionId, ex.toString());
-                            if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
-                                // replace 已成功时，后续保存/观测异常不能抹掉实际应用的意图。
-                                if (!applied) RddReplanTransition.abortPlan(companionId, survivalToken, chain);
                             } else {
+                                afterApplied.accept(replace.get());
+                            }
+                        } catch (RuntimeException ex) {
+                            LOG.warn("[rdd] 重规划应用或后续保存/观测失败 {}: {}", companionId, ex.toString());
+                            // 生存消费者已区分替换前/后；普通失败/协商保留原回落行为。
+                            if (!survival) {
                                 try { chain.resumeFromReplanning(); } catch (RuntimeException ignore) { }
                             }
                         }

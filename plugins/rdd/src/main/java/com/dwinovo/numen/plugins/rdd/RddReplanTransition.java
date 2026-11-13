@@ -157,6 +157,37 @@ final class RddReplanTransition {
         }
     }
 
+    /** 服务端适配器只交实际server引用；缺失判定与释放在同一可执行消费者中。 */
+    static boolean requirePlanningServer(UUID companionId, Object token, TaskChain chain, Object server) {
+        if (server != null) return true;
+        abortPlan(companionId, token, chain);
+        return false;
+    }
+
+    /**
+     * 2026-11-13：空回、替换失败和替换后观测失败必须分开，不能靠宿主源码pin签通过。
+     * 真正的替换由原宿主动作执行；本消费者负责判空、失败释放、成功绑定实际rev。
+     * 保存/发布放在绑定之后、释放catch之外：已落链的计划不能因观测异常失去保护。
+     */
+    static <T> boolean applySurvivalPlan(UUID companionId, Object token, TaskChain chain,
+                                       java.util.List<?> specs, java.util.function.Supplier<T> replace,
+                                       java.util.function.Consumer<T> afterApplied) {
+        if (specs == null || specs.isEmpty()) {
+            abortPlan(companionId, token, chain);
+            return false;
+        }
+        T applied;
+        try {
+            applied = replace.get();
+        } catch (RuntimeException ex) {
+            abortPlan(companionId, token, chain);
+            throw ex;
+        }
+        markApplied(companionId, token, chain.planRevision());
+        afterApplied.accept(applied);
+        return true;
+    }
+
     /** NONE 仅代表风险消退，不是供食完成；清同一份冷却使随后新风险可重新评估。 */
     static void observeSafe(UUID companionId) {
         invalidate(companionId);

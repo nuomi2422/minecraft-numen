@@ -3,8 +3,6 @@ package com.dwinovo.numen.plugins.rdd;
 import com.dwinovo.numen.rdd.api.Goal;
 import com.dwinovo.numen.rdd.api.PrimaryGoal;
 import com.dwinovo.numen.rdd.api.PrimaryGoalStatus;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import com.dwinovo.numen.rdd.api.Subtask;
 import com.dwinovo.numen.rdd.core.TaskChain;
@@ -34,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * </ul>
  *
  * <p>c53 原 XML 为9项/3断言红/6过；R2补守卫并保原断言。新增用真实TaskChain、
- * 原CallbackGuard及生产共用失效/回落消费者验证边界；源码接线pin不冒MC加载或供食效果。
+ * 原CallbackGuard及生产共用服务端/应用判定消费者验证边界；MC壳事件接线与供食效果未覆盖。
  */
 class RddSurvivalIntentTest {
 
@@ -67,7 +65,7 @@ class RddSurvivalIntentTest {
         Fixture f = new Fixture(UUID.randomUUID(), "goal-intent-abort");
         Object first = new Object();
         assertTrue(f.request(first).accepted());
-        // 宿主空回/替换异常/server=null 统一走 markAborted：明确失败才释放，允许重试。
+        // 原九项中的token释放单元控制；宿主失败判定由后面的共用消费者测试覆盖。
         RddReplanTransition.markAborted(f.id, first);
         f.applyPlan(new Object());
         assertTrue(f.request(new Object()).accepted(), "空回退后同一危险应允许重新抢占");
@@ -202,12 +200,16 @@ class RddSurvivalIntentTest {
     }
 
     @Test
-    void noServerFallbackConsumerReleasesAndResumes() {
+    void missingPlanningServerUsesSharedPredicateAndResumes() {
         Fixture f = new Fixture(UUID.randomUUID(), "server-missing");
         Object token = new Object();
         assertTrue(f.request(token).accepted());
         RddReplanTransition.SURVIVAL_PREEMPT_AT.put(f.id, 1_000L);
-        RddReplanTransition.abortPlan(f.id, token, f.chain); // Plugin server==null共用消费者
+        assertTrue(RddReplanTransition.requirePlanningServer(f.id, token, f.chain, new Object()));
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+        assertEquals(RddReplanTransition.Outcome.DUPLICATE_SURVIVAL_PENDING, f.request(new Object()).outcome(),
+                "服务端存在且尚无回调仍是UNKNOWN，不释放");
+        assertFalse(RddReplanTransition.requirePlanningServer(f.id, token, f.chain, null));
         assertFalse(RddReplanTransition.hasSurvivalIntent(f.id));
         assertFalse(RddReplanTransition.SURVIVAL_PREEMPT_AT.containsKey(f.id));
         assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
@@ -221,7 +223,9 @@ class RddSurvivalIntentTest {
         Object token = new Object();
         assertTrue(f.request(token).accepted());
         RddReplanTransition.observeSafe(f.id);
-        RddReplanTransition.abortPlan(f.id, token, f.chain);
+        assertFalse(RddReplanTransition.applySurvivalPlan(f.id, token, f.chain, null,
+                () -> { throw new AssertionError("null回调不得执行替换"); },
+                ignored -> fail("null回调不得保存/发布")));
         assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
         assertTrue(f.chain.activateCurrent(Map.of()));
         assertTrue(f.request(new Object()).accepted());
@@ -232,9 +236,13 @@ class RddSurvivalIntentTest {
         Fixture f = new Fixture(UUID.randomUUID(), "replacement-rejected");
         Object token = new Object();
         assertTrue(f.request(token).accepted());
-        f.chain.nextPlanRevision();
-        assertThrows(IllegalArgumentException.class, () -> f.chain.replaceCurrentSubtasks(List.of()));
-        RddReplanTransition.abortPlan(f.id, token, f.chain);
+        assertThrows(IllegalArgumentException.class, () -> RddReplanTransition.applySurvivalPlan(
+                f.id, token, f.chain, List.of("nonempty-spec"),
+                () -> {
+                    f.chain.nextPlanRevision();
+                    f.chain.replaceCurrentSubtasks(List.of()); // 真TaskChain拒绝，异常由生产消费者释放
+                    return null;
+                }, ignored -> fail("替换拒绝不得保存/发布")));
         assertFalse(RddReplanTransition.hasSurvivalIntent(f.id));
         assertTrue(f.chain.activateCurrent(Map.of()));
         assertTrue(f.request(new Object()).accepted());
@@ -395,35 +403,103 @@ class RddSurvivalIntentTest {
         assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
     }
 
-    /** 只验证MC壳调用点，不冒称已执行MC事件或得到世界效果。 */
     @Test
-    void hostFailureAndLifecycleEdgesAreWiredToTestedConsumers() throws Exception {
-        Path src = Path.of("src/main/java/com/dwinovo/numen/plugins/rdd");
-        String plugin = Files.readString(src.resolve("RddPlugin.java"));
-        String detector = Files.readString(src.resolve("RddDetector.java"));
-        assertTrue(plugin.contains("CompanionEvent.DEATH, body -> onCompanionDeath(body)"));
-        assertTrue(plugin.contains("RddReplanTransition.onDeath(companionId,"));
-        assertTrue(plugin.contains("ServerStoppedEvent event) -> clearWorldState()"));
-        assertTrue(plugin.contains("RddReplanTransition.clearAll();"));
-        assertTrue(plugin.contains("RUNTIMES.remove(companionId);\n        RddReplanTransition.invalidate(companionId);"));
-        assertTrue(plugin.contains("RUNTIMES.remove(companionId);\n                RddReplanTransition.invalidate(companionId);"));
-        assertTrue(plugin.contains("removeCurrent(id);"), "external_world_reset沿原撤销入口");
-        assertTrue(plugin.indexOf("if (server == null)", plugin.indexOf("boolean fromNegotiation = trigger"))
-                < plugin.indexOf("RddReplanTransition.abortPlan(companionId, survivalToken, chain)"));
-        int empty = plugin.indexOf("if (specs == null || specs.isEmpty())");
-        assertTrue(plugin.substring(empty, plugin.indexOf("replan_fallback_resume", empty)).contains("RddReplanTransition.abortPlan"));
-        int failed = plugin.indexOf("重规划替换失败，回落重跑现有");
-        assertTrue(plugin.substring(failed, plugin.indexOf("return true;", failed)).contains("RddReplanTransition.abortPlan"));
-        assertTrue(plugin.contains("组装/发起规划同步失败也是已知失败"));
-        assertTrue(plugin.contains("if (!applied) RddReplanTransition.abortPlan"), "应用成功后观测异常不抹marker");
-        assertTrue(plugin.contains("RddReplanTransition.markApplied(companionId, survivalToken, chain.planRevision())"));
-        assertTrue(detector.contains("SURVIVAL_PREEMPT_AT = RddReplanTransition.SURVIVAL_PREEMPT_AT"));
-        int start = detector.indexOf("private static void survivalPreempt");
-        int safe = detector.indexOf("RddReplanTransition.observeSafe", start);
-        assertTrue(safe > start && safe < detector.indexOf("RddGoalDriver.needExpansion", start));
-        assertTrue(safe < detector.indexOf("SideTaskHost.isActive", start));
-        assertTrue(safe < detector.indexOf("SURVIVAL_PREEMPT_AT.get", start));
-        assertTrue(detector.contains("now - last < 60_000L"), "原冷却阈值不扩大");
+    void emptySpecsUsesSharedApplicationConsumerWithoutReplacing() {
+        Fixture f = new Fixture(UUID.randomUUID(), "empty-specs");
+        Object token = new Object();
+        assertTrue(f.request(token).accepted());
+        int rev = f.chain.planRevision();
+        RddReplanTransition.SURVIVAL_PREEMPT_AT.put(f.id, 1_000L);
+        assertFalse(RddReplanTransition.applySurvivalPlan(f.id, token, f.chain, List.of(),
+                () -> { throw new AssertionError("空specs不得替换"); },
+                ignored -> fail("空specs不得保存/发布")));
+        assertEquals(rev, f.chain.planRevision());
+        assertFalse(RddReplanTransition.hasSurvivalIntent(f.id));
+        assertFalse(RddReplanTransition.SURVIVAL_PREEMPT_AT.containsKey(f.id));
+        assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
+        assertTrue(f.chain.activateCurrent(Map.of()));
+        assertTrue(f.request(new Object()).accepted());
+    }
+
+    @Test
+    void preReplacementFailureReleasesWithoutClaimingApplication() {
+        Fixture f = new Fixture(UUID.randomUUID(), "before-replace");
+        Object token = new Object();
+        assertTrue(f.request(token).accepted());
+        int rev = f.chain.planRevision();
+        assertThrows(IllegalStateException.class, () -> RddReplanTransition.applySurvivalPlan(
+                f.id, token, f.chain, List.of("spec"),
+                () -> { throw new IllegalStateException("conversion failed before replace"); },
+                ignored -> fail("替换前失败不得保存/发布")));
+        assertEquals(rev, f.chain.planRevision());
+        assertFalse(RddReplanTransition.hasSurvivalIntent(f.id));
+        assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
+        assertTrue(f.chain.activateCurrent(Map.of()));
+        assertTrue(f.request(new Object()).accepted());
+    }
+
+    @Test
+    void successfulApplicationBindsRealRevisionBeforeObserver() {
+        Fixture f = new Fixture(UUID.randomUUID(), "applied-before-observer");
+        Object token = new Object();
+        assertTrue(f.request(token).accepted());
+        int rev = f.chain.planRevision();
+        AtomicInteger observed = new AtomicInteger();
+        assertTrue(RddReplanTransition.applySurvivalPlan(f.id, token, f.chain, List.of("spec"),
+                f::replacePlan, subs -> {
+                    assertEquals(1, subs.size());
+                    assertEquals(rev + 1, f.chain.planRevision());
+                    assertEquals(RddReplanTransition.Outcome.DUPLICATE_SURVIVAL_PENDING,
+                            f.request(new Object()).outcome(), "观察时已绑定实际rev，而非仍记请求rev");
+                    observed.incrementAndGet();
+                }));
+        assertEquals(1, observed.get());
+        assertTrue(f.chain.activateCurrent(Map.of()));
+        assertEquals(RddReplanTransition.Outcome.DUPLICATE_SURVIVAL_PENDING, f.request(new Object()).outcome());
+        assertEquals(1, f.used());
+    }
+
+    @Test
+    void observerFailureAfterReplacementRetainsAppliedIntent() {
+        Fixture f = new Fixture(UUID.randomUUID(), "after-replace-observer");
+        Object token = new Object();
+        assertTrue(f.request(token).accepted());
+        int rev = f.chain.planRevision();
+        RddReplanTransition.SURVIVAL_PREEMPT_AT.put(f.id, 1_000L);
+        assertThrows(IllegalStateException.class, () -> RddReplanTransition.applySurvivalPlan(
+                f.id, token, f.chain, List.of("spec"), f::replacePlan,
+                ignored -> { throw new IllegalStateException("post-apply save/publish action failed"); }));
+        assertEquals(rev + 1, f.chain.planRevision());
+        assertTrue(RddReplanTransition.hasSurvivalIntent(f.id), "已应用不因后续动作失败而释放");
+        assertTrue(RddReplanTransition.SURVIVAL_PREEMPT_AT.containsKey(f.id));
+        assertTrue(f.chain.activateCurrent(Map.of()));
+        assertEquals(RddReplanTransition.Outcome.DUPLICATE_SURVIVAL_PENDING, f.request(new Object()).outcome());
+        assertEquals(1, f.used());
+    }
+
+    @Test
+    void oldFailureConsumersCannotResumeNewPendingPlan() {
+        Fixture f = new Fixture(UUID.randomUUID(), "stale-failure-consumers");
+        Object old = new Object();
+        assertTrue(f.request(old).accepted());
+        RddReplanTransition.abortPlan(f.id, old, f.chain);
+        assertTrue(f.chain.activateCurrent(Map.of()));
+        Object current = new Object();
+        assertTrue(f.request(current).accepted());
+        RddReplanTransition.SURVIVAL_PREEMPT_AT.put(f.id, 2_000L);
+        long state = f.chain.stateVersion();
+        assertFalse(RddReplanTransition.requirePlanningServer(f.id, old, f.chain, null));
+        assertFalse(RddReplanTransition.applySurvivalPlan(f.id, old, f.chain, List.of(),
+                () -> { throw new AssertionError("旧空回不得替换"); }, ignored -> fail("旧空回不得发布")));
+        assertThrows(IllegalStateException.class, () -> RddReplanTransition.applySurvivalPlan(
+                f.id, old, f.chain, List.of("old-spec"),
+                () -> { throw new IllegalStateException("obsolete conversion failed"); },
+                ignored -> fail("旧失败不得发布")));
+        assertEquals(state, f.chain.stateVersion(), "旧失败不得回落新REPLANNING");
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+        assertEquals(Long.valueOf(2_000L), RddReplanTransition.SURVIVAL_PREEMPT_AT.get(f.id));
+        assertEquals(RddReplanTransition.Outcome.DUPLICATE_SURVIVAL_PENDING, f.request(new Object()).outcome());
+        assertEquals(2, f.used());
     }
 
     /** 真 TaskChain + 真预算表；意图 key 用固定 companionId（生产同一 UUID）。 */
@@ -472,11 +548,17 @@ class RddSurvivalIntentTest {
                     REASON, counts, key(), LIMIT, callbacks::incrementAndGet, token);
         }
 
-        /** 模拟宿主 replace 成功：新 rev 落链后才绑定 applied。 */
+        /** 测试只提供真实替换动作，不复制产品的空回/异常/应用判定。 */
+        List<Subtask> replacePlan() {
+            chain.nextPlanRevision();
+            var subs = List.of(Subtask.hardCoded("s2", "先弄到吃的", Map.of("group", "food")));
+            chain.replaceCurrentSubtasks(subs);
+            return subs;
+        }
+
+        /** 原九项的生命周期夹具：新 rev 落链后绑定 applied。 */
         void applyPlan(Object token) {
-            chain.nextPlanRevision(); // 与生产nextPlanRevision→replace相同，不把换计划当自动增rev
-            chain.replaceCurrentSubtasks(List.of(
-                    Subtask.hardCoded("s2", "先弄到吃的", Map.of("group", "food"))));
+            replacePlan();
             assertTrue(chain.activateCurrent(Map.of()), "新计划应能过依赖门进入 ACTIVE");
             appliedRevision = chain.planRevision();
             RddReplanTransition.markApplied(id, token, appliedRevision);
