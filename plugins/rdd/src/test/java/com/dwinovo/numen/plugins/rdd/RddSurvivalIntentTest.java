@@ -597,7 +597,9 @@ class RddSurvivalIntentTest {
     @Test
     void pendingRestartWaitsForRestoredDailyBeforeStartingOriginalTimeout() {
         Fixture f = new Fixture(UUID.randomUUID(), "pending-restart-daily");
-        assertTrue(f.request(new Object()).accepted()); // 真实接受，但不 apply，也不伪造规划回包。
+        RddCallbackGuard guard = new RddCallbackGuard();
+        var ticket = guard.replace(f.id);
+        assertTrue(f.request(ticket).accepted()); // 真实接受，但不 apply，也不伪造规划回包。
         assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
         String identity = f.chain.chainInstanceId();
         int revision = f.chain.planRevision();
@@ -622,10 +624,12 @@ class RddSurvivalIntentTest {
         assertTrue(beforeStop.startNow(daily, f.id, world, token,
                 Map.of("asset_key", "minecraft:bread", "minimum", "1")));
         var savedDaily = beforeStop.current(f.id).orElseThrow();
+        assertTrue(guard.isCurrent(ticket), "保存前原请求票仍有效");
         String savedChain = f.chain.toJson();
         String savedSides = beforeStop.toJson();
 
-        new RddCallbackGuard().clear(RddReplanTransition::clearAll);
+        guard.clear(RddReplanTransition::clearAll);
+        assertFalse(guard.isCurrent(ticket), "停机清同一个 guard 后原请求票已失效");
         beforeStop.onServerStopped();
         TaskChain restored = TaskChain.fromJson(savedChain);
         assertEquals(PrimaryGoalStatus.REPLANNING, restored.primaryStatus(), "pending 保存后不转 ACTIVE/RECOVERING");
