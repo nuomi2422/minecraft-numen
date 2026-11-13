@@ -150,10 +150,16 @@ public final class SkillDeliveryEvidence {
         key.add(ctx.worldId());
         key.add(ctx.serverSession());
         key.add(ctx.epoch());
-        key.add(useKey);
-        key.add(ctx.taskId() == null ? "" : ctx.taskId());
-        key.add(ctx.toolCallId() == null ? "" : ctx.toolCallId());
-        key.add(ctx.requestId());
+        if ("task".equals(useKey)) {
+            // 同一 body 任务跨多轮 request 只一条：任务幂等键里**不能**有 requestId。
+            key.add("task");
+            key.add(nz(ctx.taskId()));
+            key.add(nz(ctx.toolCallId()));
+        } else {
+            // 没有 body 任务才用原 requestId 当 delivery-only episode 键。
+            key.add("episode");
+            key.add(ctx.requestId());
+        }
         return ref.entryRef() + "@" + ref.version() + "#k=" + sha256(key.toString());
     }
 
@@ -168,6 +174,7 @@ public final class SkillDeliveryEvidence {
         o.addProperty("phase", nz(ctx.phase()));
         o.addProperty("task_id", nz(ctx.taskId()));
         o.addProperty("tool_call_id", nz(ctx.toolCallId()));
+        o.addProperty("request_id", nz(ctx.requestId()));
         o.addProperty("use_key", useKey);
         o.addProperty("delivery_only", "episode".equals(useKey));
         return o.toString();

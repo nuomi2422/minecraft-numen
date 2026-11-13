@@ -6,10 +6,12 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -134,6 +136,38 @@ class SkillDeliveryEvidenceTest {
         for (var f : tasks) written += f.get().written();
         pool.shutdown();
         assertEquals(1, written, "同一 ledger 上 read+append 同锁，并发只写一条");
+        assertEquals(1, ledger.all().size());
+    }
+
+    @Test
+    void taskArtifactIdDoesNotDependOnRequestId() {
+        var a = SkillDeliveryEvidence.artifactId(ctx("req-1", W, S, 1, "t-9", "call-9"), ref("sk-a", "v1"), "task");
+        var b = SkillDeliveryEvidence.artifactId(ctx("req-2", W, S, 1, "t-9", "call-9"), ref("sk-a", "v1"), "task");
+        assertEquals(a, b, "任务幂等键不含 requestId：同一 body 任务跨轮只一条");
+        var e1 = SkillDeliveryEvidence.artifactId(ctx("req-1", W, S, 1, null, null), ref("sk-a", "v1"), "episode");
+        var e2 = SkillDeliveryEvidence.artifactId(ctx("req-2", W, S, 1, null, null), ref("sk-a", "v1"), "episode");
+        assertNotEquals(e1, e2, "没有任务时 episode 按 requestId 区分");
+    }
+
+    @Test
+    void directoryAtLedgerPathReportsIoFailureWithoutSuccessClaim() throws IOException {
+        Path cfg = dir.resolve("cfg-dir");
+        Files.createDirectories(cfg.resolve("usage-ledger.jsonl"));
+        UsageLedger ledger = new UsageLedger(cfg);
+        var result = SkillDeliveryEvidence.record(ctx("req-1", W, S, 1, null, null, ref("sk-a", "v1")), ledger);
+        assertTrue(result.ioFailed(), "写不进去必须如实报 IO 失败");
+        assertEquals(0, result.written());
+    }
+
+    @Test
+    void corruptLineIsSkippedButDoesNotCauseDoubleWriteOfTheSameKey() throws IOException {
+        Path cfg = dir.resolve("cfg-bad");
+        Files.createDirectories(cfg);
+        UsageLedger ledger = new UsageLedger(cfg);
+        SkillDeliveryEvidence.record(ctx("req-1", W, S, 1, null, null, ref("sk-a", "v1")), ledger);
+        Files.writeString(ledger.file(), "{not json}\n", StandardOpenOption.APPEND);
+        var replay = SkillDeliveryEvidence.record(ctx("req-1", W, S, 1, null, null, ref("sk-a", "v1")), ledger);
+        assertEquals(0, replay.written(), "坏行被跳过，但真行仍在，不得双写");
         assertEquals(1, ledger.all().size());
     }
 
