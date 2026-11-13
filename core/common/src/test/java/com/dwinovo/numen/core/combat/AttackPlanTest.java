@@ -281,6 +281,20 @@ class AttackPlanTest {
         assertEquals(Action.DONE, AttackPlan.decide(field(true, true, stranger), null).action());
     }
 
+    /** V02: one scanned foe need not belong to an unqualified defensive action. */
+    @Test void aNearbyNonEngagingUnauthorizedFoeDoesNotRequireAKill() {
+        Foe observed = new Foe(153, 9.5, false, false, false, true, false);
+        assertEquals(Action.DONE, AttackPlan.decide(field(true, false, observed), null).action());
+    }
+
+    /** The same observed body can be targeted explicitly without enlarging default authorization. */
+    @Test void theSameNonEngagingFoeCanBeSelectedWhenExplicitlyAuthorized() {
+        Foe named = new Foe(153, 9.5, false, false, false, true, true);
+        Move move = AttackPlan.decide(field(true, false, named), null);
+        assertEquals(Action.SKIRMISH, move.action());
+        assertEquals(153, move.foeId());
+    }
+
     // ==================== 有人贴到危险半径里了 ====================
 
     /**
