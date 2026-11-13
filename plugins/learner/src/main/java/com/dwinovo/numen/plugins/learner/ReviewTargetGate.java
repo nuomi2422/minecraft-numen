@@ -23,17 +23,33 @@ public final class ReviewTargetGate {
     }
 
     /**
-     * 2026-11-13 C1 mechanical consumer seam: freeze commit-time context tests first.
-     * The two tokens describe this review, not the historical sample's world/session.
-     * This baseline deliberately delegates unchanged until the new counterexamples run.
+     * 2026-11-13: the same server object can change identity while a skill review is in flight.
+     * Gate this review's start/commit tokens, never the durable historical sample's scope:
+     * comparing an old sample to the new server would make restored C0 memos retry forever.
+     * These checks do not authenticate a ledger fact, judge validity, or alter the old expansion gate.
      */
     public static Check check(Path configDir, UUID companion, Memo memo,
                               com.dwinovo.numen.api.WorldContextStamp.Token reviewStart,
                               com.dwinovo.numen.api.WorldContextStamp.Token current) {
-        return check(configDir, companion, memo);
+        if (!skillReview(memo)) return check(configDir, companion, memo);
+        if (companion == null || !complete(reviewStart) || !complete(current))
+            return new Check(false, "REVIEW_CONTEXT_UNKNOWN");
+        if (!reviewStart.equals(current)) return new Check(false, "REVIEW_CONTEXT_CHANGED");
+        return new Check(true, "OK");
+    }
+
+    private static boolean skillReview(Memo memo) {
+        return memo != null && ("skill_delivery".equals(memo.stage()) || "skill_task_result".equals(memo.stage()));
+    }
+
+    private static boolean complete(com.dwinovo.numen.api.WorldContextStamp.Token token) {
+        return token != null && token.epoch() > 0 && token.identity() != null
+                && token.identity().get("world_id") != null && !token.identity().get("world_id").isBlank()
+                && token.identity().get("server_session") != null && !token.identity().get("server_session").isBlank();
     }
 
     public static Check check(Path configDir, UUID companion, Memo memo) {
+        if (skillReview(memo)) return new Check(false, "REVIEW_CONTEXT_UNKNOWN");
         if (memo == null || !"EXPERIENCE_EXPAND".equals(memo.stage())) return new Check(true, "");
         String snap = memo.snapshot() == null ? "" : memo.snapshot();
         String ref;

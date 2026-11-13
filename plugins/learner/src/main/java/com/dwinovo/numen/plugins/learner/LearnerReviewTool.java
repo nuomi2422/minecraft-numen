@@ -203,8 +203,7 @@ final class LearnerReviewTool implements NumenTool {
         }
 
         // 2026-11-13: keep this review's identity across async work; historical memo identity is separate.
-        final com.dwinovo.numen.api.WorldContextStamp.Token reviewStart =
-                com.dwinovo.numen.api.WorldContextStamp.capture(capturedServer);
+        final com.dwinovo.numen.api.WorldContextStamp.Token reviewStart = captureReviewContext(capturedServer);
         final List<Memo> batch = taken;
         final String reviewId = "rev-" + System.currentTimeMillis() + "-" + Math.abs(batch.get(0).id().hashCode() % 1000);
         LearnerPlugin.beginReview(reviewId, id, "RUNNING", batch.size());
@@ -284,6 +283,15 @@ final class LearnerReviewTool implements NumenTool {
      *
      * <p>包级可见：单测直接钉正反例，不需要起游戏。
      */
+    /** A missing/failing provider is UNKNOWN, never permission and never an abandoned drained batch. */
+    private static com.dwinovo.numen.api.WorldContextStamp.Token captureReviewContext(MinecraftServer server) {
+        try {
+            return com.dwinovo.numen.api.WorldContextStamp.capture(server);
+        } catch (RuntimeException | LinkageError unavailable) {
+            return null;
+        }
+    }
+
     static boolean isQuotaExhausted(String why) {
         if (why == null) return false;
         String s = why.toLowerCase(java.util.Locale.ROOT);
@@ -326,7 +334,7 @@ final class LearnerReviewTool implements NumenTool {
         // P1 修复：只 commit「确实拿到判定」的条目，其余 restore 回去。
         // 绝不能因为「至少解析出一条」就删掉整批。
         java.util.Set<String> judged = new java.util.HashSet<>();
-        var reviewCurrent = com.dwinovo.numen.api.WorldContextStamp.capture(ServerLifecycleHooks.getCurrentServer());
+        var reviewCurrent = captureReviewContext(ServerLifecycleHooks.getCurrentServer());
         ReviewCompletion completion = new ReviewCompletion(batch,
                 memo -> ReviewTargetGate.check(LearnerPlugin.configDir(), id, memo, reviewStart, reviewCurrent));
         for (Memo memo : batch) {
