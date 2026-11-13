@@ -307,6 +307,23 @@ class RddSurvivalIntentTest {
         assertEquals(identity, restored.chainInstanceId());
         assertEquals(revision, restored.planRevision());
         assertFalse(RddReplanTransition.SURVIVAL_PREEMPT_AT.containsKey(f.id));
+        // 2026-11-13真实79项唯一红：fromJson按原协议恢复为RECOVERING，须先由宿主确认续跑。
+        assertEquals(PrimaryGoalStatus.RECOVERING, restored.primaryStatus());
+        int used = f.used();
+        int callbacks = f.callbacks();
+        long version = restored.stateVersion();
+        var recovering = RddReplanTransition.requestSurvival(f.id, restored, RddSurvivalGate.Decision.SEEK_FOOD_FIRST,
+                REASON, f.counts, f.key(), LIMIT, f.callbacks::incrementAndGet, new Object());
+        assertEquals(RddReplanTransition.Outcome.NOT_ACTIVE, recovering.outcome());
+        assertFalse(recovering.accepted(), "恢复裁决前不放松ACTIVE准入");
+        assertEquals(used, f.used(), "恢复前拒绝不耗预算");
+        assertEquals(callbacks, f.callbacks(), "恢复前拒绝不触发停体回调");
+        assertEquals(version, restored.stateVersion());
+        assertFalse(RddReplanTransition.hasSurvivalIntent(f.id));
+        restored.resumeFromRecovering(); // 与Detector原恢复路径相同，不伪造ACTIVE或改生产准入。
+        assertEquals(PrimaryGoalStatus.ACTIVE, restored.primaryStatus());
+        assertEquals(identity, restored.chainInstanceId());
+        assertEquals(revision, restored.planRevision());
         assertTrue(RddReplanTransition.requestSurvival(f.id, restored, RddSurvivalGate.Decision.SEEK_FOOD_FIRST,
                 REASON, f.counts, f.key(), LIMIT, f.callbacks::incrementAndGet, new Object()).accepted());
         queued.forEach(Runnable::run);
