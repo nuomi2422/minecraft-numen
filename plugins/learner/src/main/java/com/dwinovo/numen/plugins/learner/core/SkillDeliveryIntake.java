@@ -151,6 +151,15 @@ public final class SkillDeliveryIntake {
                 selection.resultChannel(), physicalAdded);
     }
 
+    /**
+     * 2026-11-13 C1 RESULT red-batch seam. Intentionally delegates to the verified delivery-only run.
+     * RESULT intake is not implemented here yet; freeze real-producer assertions before changing the loop.
+     */
+    public static Scan runWithTaskResults(List<UsageLedger.Entry> rows, Scope scope, MemoQueue queue,
+                                          EnqueuedJournal journal, Admission admission, long now, int budget) {
+        return run(rows, scope, queue, journal, admission, now, budget);
+    }
+
     /** 幂等键：sd- + sha256(artifactId)。 */
     public static String memoIdOf(UsageLedger.Entry row) {
         if (row == null || row.artifactId() == null || row.artifactId().isBlank()) return "";
