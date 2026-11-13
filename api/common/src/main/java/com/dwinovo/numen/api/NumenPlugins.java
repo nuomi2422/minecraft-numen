@@ -548,6 +548,34 @@ public final class NumenPlugins {
         return close + "</entry>".length() <= room;
     }
 
+    /**
+     * 2026-11-13 C1: producer-captured context for one actual request dispatch.
+     * Missing identity is retained as missing, never replaced with a synthetic episode.
+     * This is delivery evidence only, not adoption, execution, or effectiveness.
+     */
+    public record DeliveredContext(UUID companion, WorldContextStamp.Token worldToken,
+                                   String requestId, String phase, String role,
+                                   String taskId, String taskToolCallId, List<DeliveredRef> refs) {
+        public DeliveredContext {
+            if (worldToken != null && worldToken.identity() != null) {
+                worldToken = new WorldContextStamp.Token(java.util.Map.copyOf(worldToken.identity()), worldToken.epoch());
+            }
+            requestId = requestId == null ? "" : requestId;
+            phase = phase == null ? "" : phase;
+            role = role == null ? "" : role;
+            taskId = taskId == null ? "" : taskId;
+            taskToolCallId = taskToolCallId == null ? "" : taskToolCallId;
+            refs = refs == null ? List.of() : List.copyOf(refs);
+        }
+    }
+
+    private static final List<Consumer<DeliveredContext>> CONTEXT_DELIVERED_SINKS = new CopyOnWriteArrayList<>();
+
+    /** Additional consumer of the same delivery, not a second knowledge store. */
+    public static void sinkRequestDeliveredWithContext(Consumer<DeliveredContext> sink) {
+        if (sink != null) CONTEXT_DELIVERED_SINKS.add(sink);
+    }
+
     /** 落账终点：经验插件注册后，每轮把「真保留的 refs」交给它记 ExposureLedger。 */
     private static final List<java.util.function.BiConsumer<UUID, List<DeliveredRef>>> DELIVERED_SINKS
             = new CopyOnWriteArrayList<>();
@@ -562,23 +590,58 @@ public final class NumenPlugins {
      * 每个终点单独 try/catch —— 账本挂了不能挡请求（观测旁路纪律）。
      */
     public static void requestDelivered(UUID companion, List<DeliveredRef> refs) {
-        if (companion == null || refs == null || refs.isEmpty() || DELIVERED_SINKS.isEmpty()) {
-            return;
-        }
-        List<DeliveredRef> kept = new ArrayList<>();
-        for (DeliveredRef r : refs) {
-            if (!r.truncated()) {
-                kept.add(r);
-            }
-        }
-        if (kept.isEmpty()) {
-            return;
-        }
+        requestDelivered(new DeliveredContext(companion, null, "", "", "", "", "", refs));
+    }
+
+    /** Pure attribution guard: the live owner must be the task rendered into this request. */
+    public static boolean deliveryTaskMatches(String sampledTaskId, String currentTaskId,
+                                             WorldContextStamp.Token requestToken,
+                                             WorldContextStamp.Token taskToken) {
+        String sampled = sampledTaskId == null ? "" : sampledTaskId;
+        String current = currentTaskId == null ? "" : currentTaskId;
+        if (sampled.isEmpty() && current.isEmpty()) return true; // truly task-free delivery only
+        if (sampled.isEmpty() || !sampled.equals(current) || requestToken == null
+                || requestToken.identity() == null || requestToken.epoch() <= 0) return false;
+        String world = requestToken.identity().get("world_id");
+        String server = requestToken.identity().get("server_session");
+        return world != null && !world.isBlank() && server != null && !server.isBlank()
+                && requestToken.equals(taskToken);
+    }
+
+    /**
+     * Actual transport observation consumer, shared by normal and turn-level retry hosts.
+     * A composition event or mismatched request cannot consume the pending candidate.
+     * The one-shot reference belongs to this original request, not a global cache/ledger.
+     */
+    public static void deliveryDispatched(
+            java.util.concurrent.atomic.AtomicReference<DeliveredContext> pending,
+            String type, java.util.Map<String, ?> event) {
+        if (pending == null || !"llm_request".equals(type) || event == null
+                || !"dispatched".equals(event.get("status"))) return;
+        DeliveredContext captured = pending.get();
+        if (captured == null || captured.requestId().isBlank()
+                || !captured.requestId().equals(event.get("requestId"))) return;
+        if (pending.compareAndSet(captured, null)) requestDelivered(captured);
+    }
+
+    public static void requestDelivered(DeliveredContext context) {
+        if (context == null || context.companion() == null || context.refs().isEmpty()) return;
+        List<DeliveredRef> kept = context.refs().stream().filter(r -> !r.truncated()).toList();
+        if (kept.isEmpty()) return;
+        DeliveredContext delivered = new DeliveredContext(context.companion(), context.worldToken(),
+                context.requestId(), context.phase(), context.role(), context.taskId(), context.taskToolCallId(), kept);
         for (java.util.function.BiConsumer<UUID, List<DeliveredRef>> sink : DELIVERED_SINKS) {
             try {
-                sink.accept(companion, kept);
+                sink.accept(delivered.companion(), kept);
             } catch (Throwable e) {
                 Constants.LOG.error("[numen] request_delivered 落账失败（观测旁路，不挡请求）", e);
+            }
+        }
+        for (Consumer<DeliveredContext> sink : CONTEXT_DELIVERED_SINKS) {
+            try {
+                sink.accept(delivered);
+            } catch (Throwable e) {
+                Constants.LOG.error("[numen] contextual delivery sink failed (request continues)", e);
             }
         }
     }

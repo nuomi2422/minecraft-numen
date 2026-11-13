@@ -64,6 +64,8 @@ class LlmObservationTest {
             assertEquals(2, events.get(2).data().get("attempt"));
             assertEquals("dispatched", events.get(2).data().get("status"));
             assertEquals(1, events.stream().map(e -> e.data().get("requestId")).filter(java.util.Objects::nonNull).distinct().count());
+            assertTrue(events.stream().allMatch(e -> observation.requestId().equals(e.data().get("requestId"))),
+                    "A delivery consumer must use the original dispatch id, including transport retries");
             JsonObject response = (JsonObject) events.get(3).data().get("response");
             assertEquals("{\"count\":", response.getAsJsonArray("tool_calls").get(0).getAsJsonObject().get("arguments").getAsString());
             assertFalse(events.toString().contains("test-secret"));
