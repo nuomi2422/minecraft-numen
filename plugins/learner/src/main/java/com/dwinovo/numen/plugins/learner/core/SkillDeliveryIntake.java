@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.learner.core;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -84,7 +85,9 @@ public final class SkillDeliveryIntake {
                                                     Set<String> reviewedArtifactIds, int budget) {
         if (budget <= 0) return List.of();
         List<UsageLedger.Entry> out = new ArrayList<>();
-        for (Delivery delivery : classify(rows, scope).due()) {
+        for (Candidate candidate : classify(rows, scope, false).due()) {
+            if (!(candidate instanceof DeliveryCandidate)) continue;
+            Delivery delivery = ((DeliveryCandidate) candidate).delivery();
             String id = memoIdOf(delivery.row());
             if (alreadyEnqueued != null && alreadyEnqueued.contains(id)) continue;
             if (reviewedArtifactIds != null && reviewedArtifactIds.contains(delivery.row().artifactId())) continue;
@@ -97,16 +100,31 @@ public final class SkillDeliveryIntake {
     /** 执行一轮：事务内 append → 验证 → 才 remember。budget 由调用方传既有上限。 */
     public static Scan run(List<UsageLedger.Entry> rows, Scope scope, MemoQueue queue,
                            EnqueuedJournal journal, Admission admission, long now, int budget) {
-        Selection selection = classify(rows, scope);
+        // Delivery-only legacy contract stays exactly as the verified 98-test loop.
+        return execute(classify(rows, scope, false), scope, queue, journal, admission, now, budget);
+    }
+
+    /**
+     * 2026-11-13 C1 RESULT merge seam: delivery and task-result candidates share one original loop,
+     * one physical budget and one unconfirmed-write break. Splitting them would double-spend or lose
+     * the cross-type stop; this method is the only entry that admits task results.
+     */
+    public static Scan runWithTaskResults(List<UsageLedger.Entry> rows, Scope scope, MemoQueue queue,
+                                          EnqueuedJournal journal, Admission admission, long now, int budget) {
+        return execute(classify(rows, scope, true), scope, queue, journal, admission, now, budget);
+    }
+
+    private static Scan execute(Selection selection, Scope scope, MemoQueue queue, EnqueuedJournal journal,
+                                Admission admission, long now, int budget) {
         int enqueued = 0, duplicate = 0, suppressed = 0, failed = 0, physicalAdded = 0;
-        if (budget > 0) for (Delivery delivery : selection.due()) {
+        if (budget > 0) for (Candidate candidate : selection.due()) {
             if (physicalAdded >= budget) break;
-            String id = memoIdOf(delivery.row());
+            String id = candidate.id();
             boolean[] added = {false}, unconfirmed = {false};
             try {
                 if (journal.contains(id)) { duplicate++; continue; }
                 boolean[] attempted = {false}, existing = {false}, committed = {false};
-                boolean admitted = admission.admitIfEnqueued(scope.companionId(), fingerprint(delivery), now, () -> {
+                boolean admitted = admission.admitIfEnqueued(scope.companionId(), candidate.fingerprint(), now, () -> {
                     attempted[0] = true;
                     // Queue write may have succeeded before an earlier journal failure. Repair only;
                     // do not append another memo, spend budget or commit a second cooldown.
@@ -115,9 +133,7 @@ public final class SkillDeliveryIntake {
                         existing[0] = true;
                         return false;
                     }
-                    Memo memo = new Memo(id, "完整正文已交付：" + delivery.ref() + "@" + delivery.version(),
-                            "skill_delivery", "仅为正文交付待审；未证明采用、原任务结果或有效性。",
-                            delivery.row().detail(), now);
+                    Memo memo = candidate.memo(now);
                     boolean appended;
                     unconfirmed[0] = true;
                     try {
@@ -152,30 +168,103 @@ public final class SkillDeliveryIntake {
     }
 
     /**
-     * 2026-11-13 C1 RESULT red-batch seam. Intentionally delegates to the verified delivery-only run.
-     * RESULT intake is not implemented here yet; freeze real-producer assertions before changing the loop.
-     */
-    public static Scan runWithTaskResults(List<UsageLedger.Entry> rows, Scope scope, MemoQueue queue,
-                                          EnqueuedJournal journal, Admission admission, long now, int budget) {
-        return run(rows, scope, queue, journal, admission, now, budget);
-    }
-
-    /**
      * Stable typed boundary for the result intake and review gate (2026-11-13).
      * Full original Entry plus decoded identity; body fields retain the selected original version.
-     * The adapters below are red-batch stubs, so no unvalidated fact is returned yet.
      */
     public record TaskResultFact(UsageLedger.Entry entry, Scope scope, String ref, String version,
                                  String taskId, String taskCall, String bodyRef, String bodyDigest) {}
 
-    /** Planned shared row parser; implementation will reuse the existing taskResult identity checks. */
+    /** One typed parser: the existing private taskResult identity checks are the only algorithm. */
     public static TaskResultFact taskResultOf(UsageLedger.Entry row) {
-        return null; // Red-batch ABI only: unknown is never an authorized fact.
+        TaskUse use = taskResult(row);
+        if (use == null) return null;
+        try {
+            JsonObject detail = JsonParser.parseString(row.detail()).getAsJsonObject();
+            return new TaskResultFact(row, use.scope(), use.ref(), use.version(), use.taskId(), use.taskCall(),
+                    optionalText(detail, "body_ref"), optionalText(detail, "body_digest"));
+        } catch (RuntimeException malformed) {
+            return null;
+        }
     }
 
-    /** Planned snapshot adapter to the same row parser; no second identity algorithm. */
+    /** Snapshot adapter to the same row parser; the nested Entry JSON must round-trip without loss. */
     public static TaskResultFact taskResultFromSnapshot(String snapshot) {
-        return null; // Red-batch ABI only; no production consumer is wired.
+        if (snapshot == null || snapshot.isBlank()) return null;
+        try {
+            return taskResultOf(entryFromSnapshot(JsonParser.parseString(snapshot).getAsJsonObject()));
+        } catch (RuntimeException malformed) {
+            return null;
+        }
+    }
+
+    /** Entry -> snapshot JSON; detail is the parsed object, never a re-escaped or hand-built string. */
+    private static String entrySnapshot(UsageLedger.Entry row) {
+        JsonObject out = new JsonObject();
+        out.addProperty("artifact_id", row.artifactId());
+        out.addProperty("kind", row.kind());
+        out.addProperty("name", row.name());
+        out.addProperty("phase", row.phase() == null ? null : row.phase().name());
+        out.addProperty("outcome", row.outcome() == null ? null : row.outcome().name());
+        out.add("detail", JsonParser.parseString(row.detail()).getAsJsonObject());
+        out.addProperty("source", row.source());
+        out.addProperty("at", row.at());
+        out.addProperty("validity_claimed", row.validityClaimed());
+        out.addProperty("companion_id", row.companionId());
+        out.addProperty("evidence", row.evidence() == null ? null : row.evidence().name());
+        return out.toString();
+    }
+
+    private static UsageLedger.Entry entryFromSnapshot(JsonObject row) {
+        JsonElement detail = row.get("detail");
+        if (detail == null || !detail.isJsonObject()) throw new IllegalArgumentException("detail");
+        String phase = stringField(row, "phase"), outcome = stringField(row, "outcome");
+        String evidence = stringField(row, "evidence");
+        boolean claimed = row.has("validity_claimed") && !row.get("validity_claimed").isJsonNull()
+                && row.get("validity_claimed").getAsBoolean();
+        return new UsageLedger.Entry(stringField(row, "artifact_id"), stringField(row, "kind"),
+                stringField(row, "name"),
+                phase == null ? null : UsageLedger.Phase.valueOf(phase),
+                outcome == null ? null : UsageLedger.Outcome.valueOf(outcome),
+                detail.getAsJsonObject().toString(), stringField(row, "source"), stringField(row, "at"),
+                claimed, stringField(row, "companion_id"),
+                evidence == null ? null : UsageLedger.EvidenceLevel.valueOf(evidence));
+    }
+
+    private static String stringField(JsonObject row, String name) {
+        JsonElement value = row.get(name);
+        return value == null || value.isJsonNull() ? null : value.getAsString();
+    }
+
+    private interface Candidate {
+        String id();
+        String fingerprint();
+        Memo memo(long now);
+    }
+
+    private record DeliveryCandidate(Delivery delivery) implements Candidate {
+        public String id() { return memoIdOf(delivery.row()); }
+        public String fingerprint() { return SkillDeliveryIntake.fingerprint(delivery); }
+        public Memo memo(long now) {
+            return new Memo(id(), "完整正文已交付：" + delivery.ref() + "@" + delivery.version(),
+                    "skill_delivery", "仅为正文交付待审；未证明采用、原任务结果或有效性。",
+                    delivery.row().detail(), now);
+        }
+    }
+
+    private record ResultCandidate(UsageLedger.Entry row, TaskResultFact fact) implements Candidate {
+        public String id() { return resultMemoIdOf(row); }
+        public String fingerprint() { return "skill_task_result:" + row.artifactId(); }
+        public Memo memo(long now) {
+            return new Memo(id(), "原任务结果待审：" + fact.ref() + "@" + fact.version(),
+                    "skill_task_result", "完整原任务结果；未证明采用或有效性。",
+                    entrySnapshot(row), now);
+        }
+    }
+
+    /** 幂等键：sr- + sha256(artifactId)。 */
+    public static String resultMemoIdOf(UsageLedger.Entry row) {
+        if (row == null || row.artifactId() == null || row.artifactId().isBlank()) return "";
+        return "sr-" + sha256(row.artifactId());
     }
 
     /** 幂等键：sd- + sha256(artifactId)。 */
@@ -192,9 +281,9 @@ public final class SkillDeliveryIntake {
             return taskId.isEmpty() ? null : new TaskUse(scope, ref, version, taskId, taskCall);
         }
     }
-    private record Selection(List<Delivery> due, int foreignScope, int resultChannel) {}
+    private record Selection(List<Candidate> due, int foreignScope, int resultChannel) {}
 
-    private static Selection classify(List<UsageLedger.Entry> rows, Scope scope) {
+    private static Selection classify(List<UsageLedger.Entry> rows, Scope scope, boolean includeResults) {
         if (scope == null || !scope.complete() || rows == null) return new Selection(List.of(), 0, 0);
         Map<LedgerKey, UsageLedger.Entry> latest = new LinkedHashMap<>();
         for (UsageLedger.Entry row : rows) {
@@ -210,19 +299,26 @@ public final class SkillDeliveryIntake {
             TaskUse use = taskResult(row);
             if (use != null) results.add(use);
         }
-        List<Delivery> due = new ArrayList<>();
+        List<Candidate> due = new ArrayList<>();
         int foreign = 0, resultChannel = 0;
         for (UsageLedger.Entry row : latest.values()) {
             Delivery delivery = delivery(row);
-            if (delivery == null) continue;
-            if (!scope.equals(delivery.scope())) { foreign++; continue; }
-            if (row.phase() == UsageLedger.Phase.RESULT
-                    || results.contains(delivery.taskUse())) {
-                resultChannel++;
-            } else if (row.phase() == UsageLedger.Phase.PRESENTED
-                    && row.outcome() == UsageLedger.Outcome.UNKNOWN) {
-                due.add(delivery);
+            if (delivery != null) {
+                if (!scope.equals(delivery.scope())) { foreign++; continue; }
+                if (row.phase() == UsageLedger.Phase.RESULT
+                        || results.contains(delivery.taskUse())) {
+                    resultChannel++;
+                } else if (row.phase() == UsageLedger.Phase.PRESENTED
+                        && row.outcome() == UsageLedger.Outcome.UNKNOWN) {
+                    due.add(new DeliveryCandidate(delivery));
+                }
+                continue;
             }
+            if (!includeResults) continue;
+            TaskResultFact fact = taskResultOf(row);
+            if (fact == null) continue;
+            if (!scope.equals(fact.scope())) { foreign++; continue; }
+            due.add(new ResultCandidate(row, fact));
         }
         return new Selection(List.copyOf(due), foreign, resultChannel);
     }
