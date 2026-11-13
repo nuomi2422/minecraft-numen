@@ -472,64 +472,50 @@ final class RddDetector {
                 // 用本拍真实背包 counts（不是注册表缓存）—— 规划侧文档定调"实时扫描是持有唯一真相"。
                 RddFactContext.tick(ap.getUUID(), ap.level().dimension().location().toString(), rt, counts);
             }
-            // 2026-10-08 支线接管：支线 active 时主线冻结——不推进当前二级、不累计 stall、
-            // 不消耗 retry/replan 预算，只保留上面已完成的背包/世界被动观测。监督跟着支线走
-            // （支线自己的 deadline 已在 SideTaskHost 内处理）。
-            if (SideTaskHost.isActive(ap.getUUID())) {
+            // 2026-11-13 V05/V06：原观测后消费者，保留本拍捕获的 ps 和同一计时表。
+            Map<String, Integer> countsAtAdmission = counts; // 下游会重新赋值 counts；宿主捕获此处原快照。
+            if (RddMainlineAdmission.stopAfterObservation(ap.getUUID(), chain, ps,
+                    replanEnteredAt, System::currentTimeMillis, new RddMainlineAdmission.Host() {
+                        @Override public boolean sideActive() {
+                            return SideTaskHost.isActive(ap.getUUID());
+                        }
+                        @Override public void activeProposal() {
+                            maybePublishEarlyProposal(ap, chain, countsAtAdmission);
+                        }
+                        @Override public boolean negotiate() {
+                            return tickNegotiation(ap, rt, chain);
+                        }
+                        @Override public void watchParked() {
+                            tryAcceptSatisfiedWhileParked(ap, rt, chain, ps);
+                            try {
+                                Subtask parked = chain.currentSubtask();
+                                if (parked != null) parkedWatcher.watch(ap, rt, parked);
+                            } catch (RuntimeException ignored) { /* fail-soft: 监督异常不得拖垮 tick */ }
+                        }
+                        @Override public void recovering() {
+                            RddPlugin.publishTaskSnapshot(ap.getUUID(), "chain_recovering");
+                            RddMonitor.publish("chain_recovering", Map.of(
+                                    "companionId", ap.getUUID().toString(),
+                                    "primary", chain.currentPrimary().id(),
+                                    "reason", "in-flight chain restored after restart; resuming under live observation"));
+                            rt.resumeFromRecovering();
+                        }
+                        @Override public void timeoutResumed(long waitedMs) {
+                            RddPlugin.clearBody(ap.getUUID());
+                            RddMonitor.publish("replanning_timed_out", Map.of(
+                                    "companionId", ap.getUUID().toString(),
+                                    "waited_ms", waitedMs,
+                                    "action", "resumeFromReplanning (回退重跑旧计划)"));
+                            RddPlugin.publishTaskSnapshot(ap.getUUID(), "replanning_timeout_resumed");
+                        }
+                        @Override public void timeoutFailed(long waitedMs, RuntimeException failure) {
+                            RddMonitor.publish("replanning_timed_out", Map.of(
+                                    "companionId", ap.getUUID().toString(),
+                                    "waited_ms", waitedMs,
+                                    "action", "resume failed: " + failure));
+                        }
+                    })) {
                 return;
-            }
-            if (ps == PrimaryGoalStatus.ACTIVE) {
-                maybePublishEarlyProposal(ap, chain, counts);
-            }
-            // ★ 2026-10-31（本会话实测）：REPLANNING 的兜底计时表只在"超时"分支里清，
-            //   链正常回到 ACTIVE 时没人清 —— 下一次 REPLANNING 会从**上一次进入的时刻**起算，
-            //   把 5 分钟的兜底算成 17~33 分钟（waited_ms = 1975744 / 1831659 / 1045416）。
-            //   做法：只要当前不是 REPLANNING，就把计时表清空；进入时自然从 null 重新记。
-            if (ps != PrimaryGoalStatus.REPLANNING) {
-                replanEnteredAt.remove(ap.getUUID());
-            }
-            // Supervisor ↔ Numen 双向协商：士兵对命令回了 REJECT/COUNTER → 指挥官改单/重规划。
-            if (tickNegotiation(ap, rt, chain)) {
-                return;   // 已按士兵反馈处理（改单/重规划/停车），本 tick 不再照旧推进
-            }
-            // 监督/收尾态不由检测驱动。
-            if (ps == PrimaryGoalStatus.AWAITING_SUPERVISOR
-                    || ps == PrimaryGoalStatus.REPLANNING
-                    || ps == PrimaryGoalStatus.COMPLETED
-                    || ps == PrimaryGoalStatus.FAILED) {
-                // 监督扩面（2026-09-27）：REPLANNING/FAILED 原先直接 return，卡住时无人拍醒 → 静默停。
-                // 复用 RddParkedWatcher：长期无进展就催 AI（不动状态机，只补"催工"）。
-                if (ps == PrimaryGoalStatus.REPLANNING || ps == PrimaryGoalStatus.FAILED) {
-                    // 计时起点由上面的"非 REPLANNING 即清账"保证；这里不再重复判断。
-                    // ★ 2026-10-28 实机（本会话链卡死的直接原因）：
-                    //   重规划请求发出后，LLM 调用失败/预算被拒 → 状态机**留在 REPLANNING 出不来**，
-                    //   而 REPLANNING 冻结主线（实测 primary_status=REPLANNING 卡了 20+ 分钟，
-                    //   `replanned` 停在 02:27，之后既没成功也没回落）。
-                    //   → 超时回落：REPLANNING 超过 REPLAN_TIMEOUT_MS 仍未回 ACTIVE，就 resumeFromReplanning()
-                    //     回退重跑旧计划并发显式事件。宁可回退干活，也不要整条链静默停摆。
-                    if (ps == PrimaryGoalStatus.REPLANNING && replanTimedOut(ap, rt, chain)) {
-                        return;
-                    }
-                    // 停车态「已达成」先裁决：条件早就满足却停在 REPLANNING 时（实测 cond=true
-                    // 仍原地不动、AI 白干），退回正常流程让既有 EarlyAchievement 接管。
-                    tryAcceptSatisfiedWhileParked(ap, rt, chain, ps);
-                    try {
-                        Subtask parked = chain.currentSubtask();
-                        if (parked != null) parkedWatcher.watch(ap, rt, parked);
-                    } catch (RuntimeException ignored) { /* fail-soft: 监督异常不得拖垮 tick */ }
-                }
-                return;
-            }
-            // P0-4 重启恢复：在途链恢复为 RECOVERING 后不许静默瞒报续跑——先发恢复事件，
-            // 再按真实资产检测照常推进（资产已满足会走 early-achievement 直接验收；
-            // 未满足就恢复监督/卡死/重试，与 FAILED 的"真实资产推进照常"哲学一致）。
-            if (ps == PrimaryGoalStatus.RECOVERING) {
-                RddPlugin.publishTaskSnapshot(ap.getUUID(), "chain_recovering");
-                RddMonitor.publish("chain_recovering", Map.of(
-                        "companionId", ap.getUUID().toString(),
-                        "primary", chain.currentPrimary().id(),
-                        "reason", "in-flight chain restored after restart; resuming under live observation"));
-                rt.resumeFromRecovering();
             }
             // 刚推进到新的当前一级(PENDING/WAITING)：先过依赖门(wait_for)，没过就保持 WAITING 不派给 AI。
             if (ps == PrimaryGoalStatus.PENDING || ps == PrimaryGoalStatus.WAITING) {
@@ -1181,48 +1167,10 @@ final class RddDetector {
      * 监督扩面（2026-09-27）：非 ACTIVE 的停滞态（WAITING 待料 / REPLANNING / FAILED）也走停泊守望，
      * 长时间无进展就催 AI（复用 RddParkedWatcher），不再静默停。fail-soft，不改变状态机。
      */
-    /** REPLANNING 超时阈值：进去多久还没回来就回落重跑旧计划（宁可回退，不要静默停摆）。 */
-    private static final long REPLAN_TIMEOUT_MS = 5 * 60 * 1000L;
-
     /** 每次进入 REPLANNING 的时刻（uuid → ms）；回到 ACTIVE 后清掉。 */
     private final java.util.Map<UUID, Long> replanEnteredAt = new java.util.concurrent.ConcurrentHashMap<>();
 
 
-    /**
-     * REPLANNING 卡死兜底（2026-10-28 实机）：重规划发出去后若既没成功也没回落，
-     * 状态机就会永远留在 REPLANNING（冻结主线、外部看着像静默死亡）。
-     * 超过阈值 → 直接 {@code resumeFromReplanning()} 回落重跑现有计划，并显式发事件。
-     *
-     * @return true 表示本 tick 已处理（调用方直接 return）
-     */
-    private boolean replanTimedOut(NumenPlayer ap, RddRuntime rt, TaskChain chain) {
-        UUID uuid = ap.getUUID();
-        long now = System.currentTimeMillis();
-        Long since = replanEnteredAt.get(uuid);
-        if (since == null) {
-            replanEnteredAt.put(uuid, now);
-            return false;
-        }
-        if (now - since < REPLAN_TIMEOUT_MS) {
-            return false;
-        }
-        replanEnteredAt.remove(uuid);
-        try {
-            chain.resumeFromReplanning();
-            RddPlugin.clearBody(uuid);
-            RddMonitor.publish("replanning_timed_out", Map.of(
-                    "companionId", uuid.toString(),
-                    "waited_ms", now - since,
-                    "action", "resumeFromReplanning (回退重跑旧计划)"));
-            RddPlugin.publishTaskSnapshot(uuid, "replanning_timeout_resumed");
-        } catch (RuntimeException ex) {
-            RddMonitor.publish("replanning_timed_out", Map.of(
-                    "companionId", uuid.toString(),
-                    "waited_ms", now - since,
-                    "action", "resume failed: " + ex));
-        }
-        return true;
-    }
     private void watchParkedIfStuck(NumenPlayer ap, RddRuntime rt, TaskChain chain) {
         try {
             Subtask cur = chain.currentSubtask();

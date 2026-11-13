@@ -7,6 +7,12 @@ import com.dwinovo.numen.plugins.rdd.RddReplanTransition.SurvivalApplyOutcome;
 import java.util.ArrayList;
 import com.dwinovo.numen.rdd.api.Subtask;
 import com.dwinovo.numen.rdd.core.TaskChain;
+import com.dwinovo.numen.rdd.api.SubtaskStatus;
+import com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType;
+import com.dwinovo.numen.rdd.side.MainlineResumeToken;
+import com.dwinovo.numen.rdd.side.SideTaskEngine;
+import com.dwinovo.numen.rdd.side.SideTaskWorldPort;
+import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -14,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -584,6 +591,129 @@ class RddSurvivalIntentTest {
         assertFalse(RddReplanTransition.hasSurvivalIntent(f.id), "安全释放后不复活marker");
         assertTrue(f.chain.activateCurrent(Map.of()));
         assertTrue(f.request(new Object()).accepted(), "随后新风险可重新请求");
+    }
+
+    /** V05/V06：回调撤销与业务恢复分开验；支线先返期间不承诺固定五分钟墙钟恢复。 */
+    @Test
+    void pendingRestartWaitsForRestoredDailyBeforeStartingOriginalTimeout() {
+        Fixture f = new Fixture(UUID.randomUUID(), "pending-restart-daily");
+        assertTrue(f.request(new Object()).accepted()); // 真实接受，但不 apply，也不伪造规划回包。
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+        String identity = f.chain.chainInstanceId();
+        int revision = f.chain.planRevision();
+        String subtaskId = f.chain.currentSubtask().id();
+        var attempts = JsonParser.parseString(f.chain.toJson()).getAsJsonObject().getAsJsonObject("attempts").deepCopy();
+        AtomicLong gameTime = new AtomicLong(7_186_485L);
+        SideTaskWorldPort world = new SideTaskWorldPort() {
+            @Override public long gameTime() { return gameTime.get(); }
+            @Override public long dayTime() { return gameTime.get() % 24_000L; }
+            @Override public long gameDay() { return gameTime.get() / 24_000L; }
+            @Override public boolean hasDayNightCycle() { return true; }
+            @Override public String worldId() { return "minecraft:overworld"; }
+            @Override public boolean isSleeping(UUID id) { return false; }
+            @Override public boolean isDay() { return true; }
+            @Override public Wake pollWake(UUID id) { return Wake.NONE; }
+        };
+        var daily = new DailyMaintenanceSideTaskType();
+        var token = new MainlineResumeToken(f.id, identity, f.chain.goal().id(),
+                f.chain.currentPrimary().id(), subtaskId, revision, 1L);
+        SideTaskEngine beforeStop = new SideTaskEngine(null, candidate -> candidate);
+        beforeStop.registerType(daily);
+        assertTrue(beforeStop.startNow(daily, f.id, world, token,
+                Map.of("asset_key", "minecraft:bread", "minimum", "1")));
+        var savedDaily = beforeStop.current(f.id).orElseThrow();
+        String savedChain = f.chain.toJson();
+        String savedSides = beforeStop.toJson();
+
+        new RddCallbackGuard().clear(RddReplanTransition::clearAll);
+        beforeStop.onServerStopped();
+        TaskChain restored = TaskChain.fromJson(savedChain);
+        assertEquals(PrimaryGoalStatus.REPLANNING, restored.primaryStatus(), "pending 保存后不转 ACTIVE/RECOVERING");
+        assertEquals(identity, restored.chainInstanceId());
+        assertEquals(revision, restored.planRevision());
+        assertFalse(RddReplanTransition.hasSurvivalIntent(f.id));
+        List<String> sideEvents = new ArrayList<>();
+        List<Map<String, Object>> resumeEvents = new ArrayList<>();
+        SideTaskEngine engine = new SideTaskEngine((event, data) -> {
+            sideEvents.add(event);
+            if (event.equals("side_task_resumed_mainline")) resumeEvents.add(Map.copyOf(data));
+        }, candidate -> candidate != null && f.id.equals(candidate.companionId())
+                && candidate.matches(restored.chainInstanceId(), restored.goal().id(),
+                restored.currentPrimary().id(), restored.currentSubtask().id(), restored.planRevision())
+                ? candidate : null);
+        engine.registerType(daily);
+        engine.restore(savedSides);
+        assertEquals(savedDaily, engine.current(f.id).orElseThrow(), "恢复同一 daily 实例、代次、deadline 和主线令牌");
+
+        Map<UUID, Long> enteredAt = new HashMap<>(); // Detector 实例重建后原表为空。
+        AtomicLong wallClock = new AtomicLong(1_000_000L);
+        AtomicInteger clockReads = new AtomicInteger();
+        AtomicInteger parked = new AtomicInteger();
+        AtomicInteger timeoutEffects = new AtomicInteger();
+        List<String> calls = new ArrayList<>();
+        RddMainlineAdmission.Host host = new RddMainlineAdmission.Host() {
+            @Override public boolean sideActive() { calls.add("side"); return engine.isActive(f.id); }
+            @Override public void activeProposal() { fail("本用例没有 ACTIVE 拍"); }
+            @Override public boolean negotiate() { calls.add("negotiate"); return false; }
+            @Override public void watchParked() { calls.add("parked"); parked.incrementAndGet(); }
+            @Override public void recovering() { fail("REPLANNING 不走 RECOVERING"); }
+            @Override public void timeoutResumed(long waitedMs) {
+                assertEquals(300_000L, waitedMs);
+                assertEquals(PrimaryGoalStatus.PENDING, restored.primaryStatus(), "先由真实链回退，再调用宿主副作用");
+                timeoutEffects.incrementAndGet();
+            }
+            @Override public void timeoutFailed(long waitedMs, RuntimeException failure) {
+                fail("原消费者不应回退失败", failure);
+            }
+        };
+        java.util.function.BooleanSupplier visit = () -> RddMainlineAdmission.stopAfterObservation(
+                f.id, restored, restored.primaryStatus(), enteredAt,
+                () -> { clockReads.incrementAndGet(); return wallClock.get(); }, host);
+        assertTrue(visit.getAsBoolean());
+        wallClock.addAndGet(600_001L); // 即使墙钟已过五分钟，活跃支线仍先返。
+        gameTime.set(savedDaily.deadlineGameTime() - 1);
+        engine.tick(f.id, world, token, false);
+        assertTrue(engine.isActive(f.id));
+        assertTrue(visit.getAsBoolean());
+        assertEquals(List.of("side", "side"), calls);
+        assertEquals(0, clockReads.get());
+        assertTrue(enteredAt.isEmpty());
+        assertEquals(0, parked.get());
+        assertEquals(PrimaryGoalStatus.REPLANNING, restored.primaryStatus());
+
+        gameTime.set(savedDaily.deadlineGameTime());
+        engine.tick(f.id, world, token, false); // 真 engine/evaluate/finish 移除，不手工清 active。
+        assertTrue(engine.current(f.id).isEmpty());
+        assertEquals(List.of("side_task_skipped", "side_task_resumed_mainline"), sideEvents);
+        assertEquals(1, resumeEvents.size());
+        assertEquals(Boolean.TRUE, resumeEvents.get(0).get("mainlineResumed"));
+        long t0 = wallClock.get();
+        calls.clear();
+        assertTrue(visit.getAsBoolean());
+        assertEquals(List.of("side", "negotiate", "parked"), calls);
+        assertEquals(Long.valueOf(t0), enteredAt.get(f.id), "首次真正走到 timeout 消费者才记时");
+        assertEquals(PrimaryGoalStatus.REPLANNING, restored.primaryStatus());
+        wallClock.set(t0 + 299_999L);
+        assertTrue(visit.getAsBoolean());
+        assertEquals(PrimaryGoalStatus.REPLANNING, restored.primaryStatus());
+        assertEquals(Long.valueOf(t0), enteredAt.get(f.id));
+        assertEquals(2, parked.get());
+        assertEquals(0, timeoutEffects.get());
+
+        wallClock.set(t0 + 300_000L);
+        assertTrue(visit.getAsBoolean());
+        assertEquals(PrimaryGoalStatus.PENDING, restored.primaryStatus());
+        assertEquals(SubtaskStatus.PENDING, restored.currentSubtaskStatus());
+        assertTrue(enteredAt.isEmpty());
+        assertEquals(3, clockReads.get());
+        assertEquals(1, timeoutEffects.get());
+        assertEquals(2, parked.get(), "超时回退当拍不再跑停车宿主");
+        assertEquals(identity, restored.chainInstanceId());
+        assertEquals(revision, restored.planRevision());
+        assertEquals(subtaskId, restored.currentSubtask().id());
+        assertEquals(attempts, JsonParser.parseString(restored.toJson()).getAsJsonObject().getAsJsonObject("attempts"));
+        assertEquals(1, f.used(), "重启/支线/timeout 不退还或额外消耗 failure 预算");
+        assertEquals(1, f.callbacks(), "恢复回退不触发生存接受/停体回调");
     }
 
     /** 真 TaskChain + 真预算表；意图 key 用固定 companionId（生产同一 UUID）。 */
