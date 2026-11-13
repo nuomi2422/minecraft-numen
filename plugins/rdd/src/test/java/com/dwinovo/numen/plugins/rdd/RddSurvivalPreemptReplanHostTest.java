@@ -61,6 +61,21 @@ class RddSurvivalPreemptReplanHostTest {
     }
 
     @Test
+    void typedSurvivalSourceFromRunningMustBeAccepted() throws Exception {
+        Harness h = new Harness();
+        try {
+            boolean accepted = RddPlugin.requestReplanForSurvival(h.id,
+                    RddSurvivalGate.Decision.SEEK_FOOD_FIRST, 9, 20.0, 16);
+            assertTrue(accepted,
+                    "程序来源（typed）的生存抢占从 RUNNING 必须能进重规划；首阶段接缝原样委托旧入口，故本断言真红");
+            assertNotEquals(SubtaskStatus.FAILED, h.chain.currentSubtaskStatus(), "抢占不是失败，不得伪标");
+            assertNotEquals(SubtaskStatus.STALLED, h.chain.currentSubtaskStatus(), "抢占不是卡死，不得伪标");
+        } finally {
+            h.close();
+        }
+    }
+
+    @Test
     void nonSurvivalReasonOnRunningIsStillRefusedWithoutSpending() throws Exception {
         Harness h = new Harness();
         try {
