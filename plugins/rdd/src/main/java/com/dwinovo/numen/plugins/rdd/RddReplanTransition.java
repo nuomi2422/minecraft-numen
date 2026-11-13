@@ -5,7 +5,7 @@ import com.dwinovo.numen.rdd.core.TaskChain;
 import java.util.Map;
 
 /**
- * 044 B2 · 重规划准入的唯一消费者（2026-11-13 首阶段机械提取，行为与提取前逐字一致）。
+ * 044 B2 · 重规划准入的唯一消费者（2026-11-13 提取；同日由 f82 真红基线推进到修复批）。
  *
  * <p><b>为什么要这个类</b>：V03 实机（{@code attack-core-V03/latest.log:15906-15927}）里，
  * 生存抢占在 RUNNING 上走失败驱动入口，被 {@code TaskChain.enterReplanningFromStuck} 抛
@@ -17,18 +17,21 @@ import java.util.Map;
  * 接受后清理身体派发记录），不是链自己的状态机；并且 {@code plugins:rdd} 的测试 JVM 没有 MC 类，
  * 放进独立纯 JVM 类后，测试用真 {@link TaskChain} 调它即可，不必加载 {@code RddPlugin}。
  *
- * <p><b>首阶段刻意保留的旧行为</b>：
+ * <p><b>2026-11-13 修复批（相对 f82 红基线）</b>：
  * <ul>
- *   <li>预算先判、<b>先 merge 再转换</b>（所以“拒绝也花 1 次”仍会发生，是真反例的一部分）；</li>
- *   <li>{@link Trigger#SURVIVAL} 仍走 {@code enterReplanningFromStuck}，RUNNING 仍被拒；</li>
- *   <li>协商/失败各自的 key 与上限、预算耗尽后的 park 观测都由调用方原位保留。</li>
+ *   <li>预算改为<b>转换成功后才记账</b>：拒绝一律不花，接受才花一次有界预算；</li>
+ *   <li>{@link Trigger#SURVIVAL} 复用现成的 ACTIVE 事实变化转换（{@code enterReplanningFromNegotiation}），
+ *       不再被 {@code enterReplanningFromStuck} 的 RUNNING 条件拒绝；FAILURE 的 STUCK guard 原样保留；</li>
+ *   <li>不把旧二级伪标成 FAILED/STALLED；协商/失败各自的 key 与上限、预算耗尽后的 park 观测原位不动；</li>
+ *   <li>{@link #planningAttempt(Trigger)}：只有 FAILURE 让规划器看到“上一版被判不可执行”(1)，
+ *       协商/生存抢占传 0，宿主必须直接用这个值而不是按 {@code fromNegotiation} 猜。</li>
  * </ul>
  *
  * <p><b>触发源只表达来源</b>：{@link Trigger} 是程序给的；reason 文本只解释，不参与路由。
  */
 final class RddReplanTransition {
 
-    /** 谁发起的重规划。首阶段三者中 SURVIVAL 与 FAILURE 同路。 */
+    /** 谁发起的重规划：失败卡死 / 士兵协商 / 生存（安全）抢占。 */
     enum Trigger { FAILURE, NEGOTIATION, SURVIVAL }
 
     /** 准入结果；除 ACCEPTED 外都表示链未进入 REPLANNING。 */
@@ -69,22 +72,33 @@ final class RddReplanTransition {
         if (used >= limit) {
             return new Result(Outcome.BUDGET_EXHAUSTED, "replan budget exhausted: " + used + "/" + limit);
         }
-        // 首阶段机械提取：保留“先计数、后转换”的旧行为，拒绝仍消耗预算（V03 冻结反例依赖它）。
-        counts.merge(budgetKey, 1, Integer::sum);
         try {
-            if (trigger == Trigger.NEGOTIATION) {
+            if (trigger == Trigger.NEGOTIATION || trigger == Trigger.SURVIVAL) {
+                // 事实变化类（协商、生存抢占）复用现成的 ACTIVE 转换：允许 RUNNING，
+                // 且不把旧二级伪标成 FAILED/STALLED；STUCK guard 原样保留给 FAILURE。
                 chain.enterReplanningFromNegotiation(reason);
             } else {
-                // SURVIVAL 首阶段与 FAILURE 同路：RUNNING 仍会被明确拒绝，不伪标 STUCK。
                 chain.enterReplanningFromStuck(reason);
             }
         } catch (RuntimeException ex) {
+            // 拒绝不记账：只有真的进 REPLANNING 才花掉一次有界预算。
             return new Result(classify(ex), ex.toString());
         }
+        counts.merge(budgetKey, 1, Integer::sum);
         if (onAccepted != null) {
             onAccepted.run();
         }
         return new Result(Outcome.ACCEPTED, "");
+    }
+
+    /**
+     * 规划器 attempt 语义：只有<b>失败驱动</b>才表示“上一版被判不可执行”（1）；
+     * 协商与生存抢占是事实变化（0），否则会给规划器灌“上一版不可执行”的假话。
+     *
+     * <p>宿主必须直接用这个值，不能再按 {@code fromNegotiation} 三元判断——SURVIVAL 不是协商。
+     */
+    static int planningAttempt(Trigger trigger) {
+        return trigger == Trigger.FAILURE ? 1 : 0;
     }
 
     /**

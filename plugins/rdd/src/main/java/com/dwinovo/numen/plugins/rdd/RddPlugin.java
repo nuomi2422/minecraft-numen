@@ -1522,9 +1522,11 @@ private static String withAssets(UUID companionId, String rddContext) {
             LOG.warn("[rdd] 重规划事实块生成失败 {}: {}", companionId, ex.toString());
         }
         RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
-        // attempt：协商不是"上一版被判不可执行"，故传 0，让 prompt 走非失败分支。
+        // attempt：只有失败驱动才表示"上一版被判不可执行"（1）；协商与生存抢占是事实变化（0）。
+        // 2026-11-13：不能再按 fromNegotiation 三元判断 —— SURVIVAL 走事实变化入口但不是协商。
+        int planningAttempt = RddReplanTransition.planningAttempt(trigger);
         // completedStages 也不能丢（重规划与懒展开在这一项上曾不一致）。
-        RddDecomposer.decomposeSpecsWithHint(companionId, theme, fromNegotiation ? 0 : 1,
+        RddDecomposer.decomposeSpecsWithHint(companionId, theme, planningAttempt,
                 new java.util.ArrayList<>(chain.satisfiedStages()), hint,
                 specs -> onServer(server, ticket, () -> {
                     try {
