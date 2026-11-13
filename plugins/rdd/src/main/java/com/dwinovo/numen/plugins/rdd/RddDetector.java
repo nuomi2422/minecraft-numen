@@ -384,7 +384,7 @@ final class RddDetector {
             } catch (RuntimeException ignored) {
                 // task_stop 不可用不阻断重规划
             }
-            RddPlugin.requestReplan(ap.getUUID(), "survival " + decision + " hunger=" + hunger + " hp=" + hp + " free=" + free);
+            RddPlugin.requestReplanForSurvival(ap.getUUID(), decision, hunger, hp, free);
             RddMonitor.publish("survival_preempt", java.util.Map.of(
                     "decision", decision.name(), "hunger", hunger, "hp", hp, "free_slots", free));
             LOG.info("[rdd] 生存抢占 {} hunger={} hp={} free={}", decision, hunger, hp, free);

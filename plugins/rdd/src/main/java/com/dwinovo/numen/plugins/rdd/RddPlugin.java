@@ -1265,6 +1265,24 @@ private static String withAssets(UUID companionId, String rddContext) {
     }
 
     /**
+     * 生存抢占的 <b>typed 程序来源入口</b>（2026-11-13 首阶段机械接缝）。
+     *
+     * <p>为什么叫“机械接缝”：V03 实机（latest.log:15906-15927）里，生存抢占先从 RUNNING 被两参
+     * 失败驱动入口拒绝，链停在 ACTIVE、没有新任务。要能对“真实消费者”写正控，调用点必须带上
+     * <b>程序来源</b>（{@link RddSurvivalGate.Decision}），而不是靠 reason 文本前缀授权
+     * （指挥官 2026-11-13：原因文本只解释，不作状态/授权来源）。
+     *
+     * <p>本阶段<b>行为原样委托</b>两参失败驱动入口：参数只用来拼同一条 reason，RUNNING 仍会被
+     * {@code enterReplanningFromStuck} 拒绝，V03 反例保持真红。后续产品修复在此显式走“事实变化”
+     * 转换，不复制 TaskChain 同形方法、不删 STUCK guard、不改预算上限或 park 政策。
+     */
+    static boolean requestReplanForSurvival(UUID companionId, RddSurvivalGate.Decision decision,
+                                            int hunger, double hp, int freeSlots) {
+        return requestReplan(companionId,
+                "survival " + decision + " hunger=" + hunger + " hp=" + hp + " free=" + freeSlots);
+    }
+
+    /**
      * 重规划（带来源标记 + **士兵的具体建议**）。
      *
      * <p>{@code fromNegotiation=true} 时用**独立的协商预算**——士兵的反馈不该被"失败驱动的
