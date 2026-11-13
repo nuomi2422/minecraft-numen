@@ -176,7 +176,7 @@ public final class SkillDeliveryIntake {
 
     /** One typed parser: the existing private taskResult identity checks are the only algorithm. */
     public static TaskResultFact taskResultOf(UsageLedger.Entry row) {
-        if (row == null) return null;
+        if (row == null || !completeEntry(row)) return null;
         TaskUse use = taskResult(row);
         if (use == null) return null;
         try {
@@ -229,6 +229,17 @@ public final class SkillDeliveryIntake {
                 detail.getAsJsonObject().toString(), requiredText(row, "source"), requiredText(row, "at"),
                 claimed.getAsBoolean(), requiredText(row, "companion_id"),
                 UsageLedger.EvidenceLevel.valueOf(requiredText(row, "evidence")));
+    }
+
+    /** Shared Entry completeness: typed rows and snapshot round-trips must both pass before any fact. */
+    private static boolean completeEntry(UsageLedger.Entry row) {
+        return row.phase() != null && row.outcome() != null && row.evidence() != null
+                && !blank(row.artifactId()) && !blank(row.kind()) && !blank(row.name())
+                && !blank(row.at()) && !blank(row.source()) && !blank(row.companionId());
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
     }
 
     /** Strict: missing/null/non-string/blank metadata is not a complete Entry; never coerce or default. */

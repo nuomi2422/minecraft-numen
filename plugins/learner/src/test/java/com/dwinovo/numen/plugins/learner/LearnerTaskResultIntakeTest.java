@@ -397,4 +397,33 @@ class LearnerTaskResultIntakeTest {
                 () -> assertNull(SkillDeliveryIntake.taskResultFromSnapshot("null")),
                 () -> assertNull(SkillDeliveryIntake.taskResultOf(null)));
     }
+
+    /** Full original row is the positive control; each missing metadata field must refuse the typed fact. */
+    @Test void typedEntryWithBlankMetadataIsNotAResultFact() throws Exception {
+        configure("typed-complete");
+        var row = result("sk-typed", "typed-call", TaskState.SUCCESS);
+        assertNotNull(SkillDeliveryIntake.taskResultOf(row), "complete real row must stay a typed fact");
+        assertAll(
+                () -> assertNull(SkillDeliveryIntake.taskResultOf(rebuild(row, "", row.kind(), row.name(),
+                        row.source(), row.at(), row.companionId(), row.evidence())), "blank artifact_id"),
+                () -> assertNull(SkillDeliveryIntake.taskResultOf(rebuild(row, row.artifactId(), "", row.name(),
+                        row.source(), row.at(), row.companionId(), row.evidence())), "blank kind"),
+                () -> assertNull(SkillDeliveryIntake.taskResultOf(rebuild(row, row.artifactId(), row.kind(), "",
+                        row.source(), row.at(), row.companionId(), row.evidence())), "blank name"),
+                () -> assertNull(SkillDeliveryIntake.taskResultOf(rebuild(row, row.artifactId(), row.kind(), row.name(),
+                        "", row.at(), row.companionId(), row.evidence())), "blank source"),
+                () -> assertNull(SkillDeliveryIntake.taskResultOf(rebuild(row, row.artifactId(), row.kind(), row.name(),
+                        row.source(), "", row.companionId(), row.evidence())), "blank at"),
+                () -> assertNull(SkillDeliveryIntake.taskResultOf(rebuild(row, row.artifactId(), row.kind(), row.name(),
+                        row.source(), row.at(), "", row.evidence())), "blank companion_id"),
+                () -> assertNull(SkillDeliveryIntake.taskResultOf(rebuild(row, row.artifactId(), row.kind(), row.name(),
+                        row.source(), row.at(), row.companionId(), null)), "null evidence"));
+    }
+
+    private static UsageLedger.Entry rebuild(UsageLedger.Entry row, String artifactId, String kind, String name,
+                                             String source, String at, String companionId,
+                                             UsageLedger.EvidenceLevel evidence) {
+        return new UsageLedger.Entry(artifactId, kind, name, row.phase(), row.outcome(), row.detail(),
+                source, at, row.validityClaimed(), companionId, evidence);
+    }
 }
