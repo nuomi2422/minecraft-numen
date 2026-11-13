@@ -32,6 +32,9 @@ public final class LlmObservation {
      * 而它是穿过 {@code chatStreaming(..., observation)} 的唯一身份载体，
      * 所以按同伴聚合「在飞」状态<b>不需要改任何调用方</b>。
      */
+    /** Original per-call identity; consumers must not generate a second id for this request. */
+    public String requestId() { return requestId; }
+
     public String companionId() {
         return companionId;
     }

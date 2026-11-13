@@ -331,6 +331,9 @@ public final class EntityAgentLoop {
 
     /** 预构建但还没发出去的 runtime_state XML / plan；真正发请求前由 publishPendingRuntimeState 发布。 */
     private String pendingRuntimeStateXml;
+    /** Exact task rendered into this pending body; never re-sample it at dispatch. */
+    private String renderedDeliveryTaskId = "";
+    private String pendingDeliveryTaskId = "";
     private com.dwinovo.numen.agent.context.ContextBudget.Allocation pendingRuntimeStatePlan;
     /** 预构建时被 replay 裁过、但还没到发请求时刻的日志；真正发请求时补打一次。 */
     private String pendingReplayLog;
@@ -1665,6 +1668,27 @@ public final class EntityAgentLoop {
                 (type, data) -> com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", type, data));
     }
 
+    /** Capture the identity of this exact host, not a later global stamp in an async callback. */
+    private com.dwinovo.numen.api.WorldContextStamp.Token captureDeliveryToken() {
+        try {
+            return com.dwinovo.numen.api.WorldContextStamp.capture(Minecraft.getInstance().getSingleplayerServer());
+        } catch (RuntimeException ignored) {
+            return null; // Multiplayer/unknown host stays delivery-only without an attributed candidate.
+        }
+    }
+
+    private com.dwinovo.numen.agent.llm.LlmObservation observeExecutionRequest(String phase,
+            com.dwinovo.numen.api.WorldContextStamp.Token token,
+            java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext> delivery) {
+        return new com.dwinovo.numen.agent.llm.LlmObservation("numen", entityUuid.toString(), phase,
+                (type, data) -> {
+                    com.dwinovo.numen.monitor.MonitoringJournal.get().publish("context", type, data, token);
+                    // Budget refusal or composition alone is not delivery. Transport retries share one
+                    // original request and consume this captured candidate at most once.
+                    com.dwinovo.numen.api.NumenPlugins.deliveryDispatched(delivery, type, data);
+                });
+    }
+
     /** The provider-library entry id this companion talks through, or null (= global). */
     public String providerEntryId() {
         return providerEntryId;
@@ -2125,7 +2149,10 @@ public final class EntityAgentLoop {
         retryingTurn = false;   // 新开的一轮永远不是「重试中」
 
         // A-M2：到这里才发布 runtime_state —— turn 已是本轮，且被拦轮次永远不会走到这里。
-        publishPendingRuntimeState();
+        var delivery = new java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext>();
+        var deliveryToken = captureDeliveryToken();
+        var executionObservation = observeExecutionRequest("execution", deliveryToken, delivery);
+        publishPendingRuntimeState(executionObservation, deliveryToken, delivery);
 
         // A-M4：每轮（只在 execution 配了限额时）留一条判额对照，供 20 轮自动核。
         if (BudgetPolicy.roleHasLimit("execution")) {
@@ -2173,7 +2200,7 @@ public final class EntityAgentLoop {
         NumenLlmClient llm = client();
         llm.chatStreaming(snapshot, tools, systemPrompt,
                         presenter.tapForUi(gen, vt.sink(), llm.provider()::extractReasoningDelta),
-                        observeRequest("execution"))
+                        executionObservation)
                 .whenComplete((res, err) -> {
                     vt.finish().run();
                     bounceBackToMain(gen, res, err);
@@ -2703,6 +2730,7 @@ public final class EntityAgentLoop {
             // A-M2：先只暂存。被预算/上下文/压缩闸拦下的轮次永远不会走到发布点，
             // 于是不会留下「她看见了什么」的假记录，turn 也不会滞后一轮。
             pendingRuntimeStateXml = xml;
+            pendingDeliveryTaskId = renderedDeliveryTaskId;
             pendingRuntimeStatePlan = plan;
             pendingRuntimeOrigin = origin;
             pendingRuntimeAttempt = attempt;
@@ -2711,7 +2739,10 @@ public final class EntityAgentLoop {
     }
 
     /** 所有闸通过、incrementTurn 之后调用：发布预构建的 runtime_state，恰好一次。 */
-    private void publishPendingRuntimeState() {
+    private void publishPendingRuntimeState(
+            com.dwinovo.numen.agent.llm.LlmObservation observation,
+            com.dwinovo.numen.api.WorldContextStamp.Token token,
+            java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext> delivery) {
         String xml = pendingRuntimeStateXml;
         if (xml == null) return;
         pendingRuntimeStateXml = null;
@@ -2722,7 +2753,9 @@ public final class EntityAgentLoop {
         pendingRuntimeOrigin = "execution";
         pendingRuntimeAttempt = 1;
         if (plan != null && (plan.denied() || plan.truncated())) publishContextBudget(plan);
-        deliverKnowledgeRefs(plan);
+        String sampledTaskId = pendingDeliveryTaskId;
+        pendingDeliveryTaskId = "";
+        deliverKnowledgeRefs(plan, observation, token, delivery, sampledTaskId);
         String replay = pendingReplayLog;
         pendingReplayLog = null;
         if (replay != null) Constants.LOG.info(replay);
@@ -2740,6 +2773,14 @@ public final class EntityAgentLoop {
      * 账本本身是会话内的（ExposureLedger），经验插件侧还会发 monitor 事件留审计。
      */
     private void deliverKnowledgeRefs(ContextBudget.Allocation plan) {
+        deliverKnowledgeRefs(plan, null, null, null, "");
+    }
+
+    private void deliverKnowledgeRefs(ContextBudget.Allocation plan,
+            com.dwinovo.numen.agent.llm.LlmObservation observation,
+            com.dwinovo.numen.api.WorldContextStamp.Token token,
+            java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext> delivery,
+            String sampledTaskId) {
         List<com.dwinovo.numen.api.NumenPlugins.DeliveredRef> refs = pendingDeliveredRefs;
         pendingDeliveredRefs = new ArrayList<>();
         if (refs == null || refs.isEmpty()) {
@@ -2751,7 +2792,26 @@ public final class EntityAgentLoop {
         if (!kept) {
             return; // 段被裁：不记（先裁后记）
         }
-        com.dwinovo.numen.api.NumenPlugins.requestDelivered(entityUuid, refs);
+        if (observation == null || delivery == null) {
+            // Legacy callers have no original request identity; never manufacture one.
+            com.dwinovo.numen.api.NumenPlugins.requestDelivered(entityUuid, refs);
+            return;
+        }
+        String taskId = "", taskCallId = "";
+        var task = com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(entityUuid);
+        var evidenceToken = token;
+        if (!com.dwinovo.numen.api.NumenPlugins.deliveryTaskMatches(sampledTaskId,
+                task == null ? "" : task.publicId(), token, task == null ? null : task.identityToken())) {
+            // A replaced/ended/old-world task is not an idle episode. Never attach task B
+            // to a body about A, nor turn stale task identity into a new-world candidate.
+            evidenceToken = null;
+        } else if (task != null) {
+            taskId = task.publicId();
+            taskCallId = task.getToolCallId() == null ? "" : task.getToolCallId();
+        }
+        // Captured now, consumed only by this observation's actual llm_request dispatch event.
+        delivery.set(new com.dwinovo.numen.api.NumenPlugins.DeliveredContext(entityUuid, evidenceToken,
+                observation.requestId(), observation.phase(), "EXECUTOR", taskId, taskCallId, refs));
     }
 
     /**
@@ -2982,6 +3042,7 @@ public final class EntityAgentLoop {
     /** Live async-task state, recomputed for every worker request and never persisted. */
     private String currentTaskXml() {
         CurrentTask task = currentTask;
+        renderedDeliveryTaskId = task == null ? "" : task.id();
         if (task == null) return "";
         long elapsed = Math.max(0, System.currentTimeMillis() - task.sinceMs()) / 1000;
         // 有没有"干完"这回事,决定她该等还是该换:有终点的活等它的 task_finished;
@@ -3361,10 +3422,13 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                 }
                 String retrySystem = composeSystemPrompt();
                 inFlightTrimmedEstimate = estimateRequestTokens(retrySnapshot, retryTools, retrySystem);
-                publishPendingRuntimeState();
+                var retryDelivery = new java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext>();
+                var retryToken = captureDeliveryToken();
+                var retryObservation = observeExecutionRequest("execution_retry", retryToken, retryDelivery);
+                publishPendingRuntimeState(retryObservation, retryToken, retryDelivery);
                 llm2.chatStreaming(retrySnapshot, retryTools, retrySystem,
                                 presenter.tapForUi(gen2, vt2.sink(), llm2.provider()::extractReasoningDelta),
-                                observeRequest("execution_retry"))
+                                retryObservation)
                         .whenComplete((r2, e2) -> {
                             vt2.finish().run();
                             bounceBackToMain(gen2, r2, e2);

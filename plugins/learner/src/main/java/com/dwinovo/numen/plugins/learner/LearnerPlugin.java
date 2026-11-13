@@ -80,6 +80,9 @@ public final class LearnerPlugin implements NumenPlugin {
      */
     private static volatile com.dwinovo.numen.plugins.learner.core.UsageLedger usageLedger;
 
+    /** 2026-11-13 C1：交付上下文 sink 只注册一次；多次 setup 不重复挂。 */
+    private static volatile boolean deliverySinkRegistered;
+
     /**
      * 自编译请求的<b>取件契约</b>（B6/S2 收口，2026-10-05）。
      *
@@ -334,6 +337,14 @@ public final class LearnerPlugin implements NumenPlugin {
         // 且刻意没有「自动判定有效性」的口子。
         usageLedger = new com.dwinovo.numen.plugins.learner.core.UsageLedger(configDir);
         numen.registerTool(new LearnerUsageTool());
+        // 2026-11-13 C1：最终请求交付上下文 → 现有 UsageLedger 的 PRESENTED/UNKNOWN。
+        //   旧两参 sink（经验插件 ExposureLedger）保持原样；缺 requestId/worldToken 的 context
+        //   由 SkillDeliveryEvidence 判 NO_IDENTITY 直接丢弃，不造伪 episode、不触发复核。
+        if (!deliverySinkRegistered) {
+            deliverySinkRegistered = true;
+            com.dwinovo.numen.api.NumenPlugins.sinkRequestDeliveredWithContext(
+                    DeliveryContextSink.forLedger(usageLedger));
+        }
         // 自编译请求的取件契约：把「没人消费」这条边补上。
         // ★ 只做流程（列出/认领/标注），**不写代码** —— 写码归外层工程流（B11）。
         selfCompileRequests = new com.dwinovo.numen.plugins.learner.core.SelfCompileRequests(outbox, configDir);

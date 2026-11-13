@@ -56,6 +56,10 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    // Managed attempts isolate fresh receipts; normal test output keeps its default.
+    if (System.getenv('RDD_TEST_REPORT_DIR')) {
+        reports.junitXml.outputLocation = file(System.getenv('RDD_TEST_REPORT_DIR'))
+    }
 }
 
 publishing {
