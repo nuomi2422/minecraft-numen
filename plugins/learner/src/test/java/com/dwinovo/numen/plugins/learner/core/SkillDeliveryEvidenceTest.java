@@ -47,7 +47,7 @@ class SkillDeliveryEvidenceTest {
         assertEquals(UsageLedger.Phase.PRESENTED, e.phase());
         assertEquals(UsageLedger.Outcome.UNKNOWN, e.outcome());
         assertEquals(C, e.companionId());
-        assertTrue(e.artifactId().contains("skill:sk-a@v1#episode=req-1"));
+        assertTrue(e.artifactId().startsWith("skill:sk-a@v1#k="), "幂等键用摘要，不拼冒号/井号串联");
         assertEquals(SkillDeliveryEvidence.SOURCE_PREFIX + "req-1", e.source());
         assertTrue(e.detail().contains("\"delivery_only\":true"));
     }
@@ -71,7 +71,7 @@ class SkillDeliveryEvidenceTest {
         assertEquals(1, r1.written());
         assertEquals(0, r2.written(), "同一 body 任务的多轮请求只应有一条候选");
         assertEquals(1, ledger.all().size());
-        assertTrue(ledger.all().get(0).artifactId().contains("#task=t-9:call-9"));
+        assertTrue(ledger.all().get(0).detail().contains("\"use_key\":\"task\""), "有 body 任务按 task 归并");
         assertTrue(ledger.all().get(0).detail().contains("\"delivery_only\":false"));
     }
 
@@ -94,6 +94,47 @@ class SkillDeliveryEvidenceTest {
         assertTrue(noWorld.noIdentity());
         assertTrue(noEpoch.noIdentity());
         assertEquals(0, ledger.all().size(), "缺身份不落行、不造 episode=UNKNOWN 伪候选");
+    }
+
+    @Test
+    void halfTaskIdentityIsRejectedInsteadOfFallingBackToDeliveryOnly() {
+        UsageLedger ledger = new UsageLedger(dir);
+        // 有 taskId 无 toolCallId / 有 toolCallId 无 taskId：不许退回 episode 掩盖半身份。
+        var noCall = SkillDeliveryEvidence.record(ctx("req-1", W, S, 1, "t-9", "", ref("sk-a", "v1")), ledger);
+        var noTask = SkillDeliveryEvidence.record(ctx("req-2", W, S, 1, "", "call-9", ref("sk-a", "v1")), ledger);
+        assertTrue(noCall.noIdentity());
+        assertTrue(noTask.noIdentity());
+        assertEquals(0, ledger.all().size());
+    }
+
+    @Test
+    void epochMustBePositive() {
+        UsageLedger ledger = new UsageLedger(dir);
+        var result = SkillDeliveryEvidence.record(ctx("req-1", W, S, 0, null, null, ref("sk-a", "v1")), ledger);
+        assertTrue(result.noIdentity(), "epoch=0 是默认占位，不算真实 world token");
+        assertEquals(0, ledger.all().size());
+    }
+
+    @Test
+    void concurrentCallbacksWriteOnlyOnce() throws Exception {
+        UsageLedger ledger = new UsageLedger(dir);
+        var input = ctx("req-1", W, S, 1, null, null, ref("sk-a", "v1"));
+        int n = 4;
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(n);
+        var done = new java.util.concurrent.CountDownLatch(1);
+        var tasks = new java.util.ArrayList<java.util.concurrent.Future<SkillDeliveryEvidence.Result>>();
+        for (int i = 0; i < n; i++) {
+            tasks.add(pool.submit(() -> {
+                done.await();
+                return SkillDeliveryEvidence.record(input, ledger);
+            }));
+        }
+        done.countDown();
+        int written = 0;
+        for (var f : tasks) written += f.get().written();
+        pool.shutdown();
+        assertEquals(1, written, "同一 ledger 上 read+append 同锁，并发只写一条");
+        assertEquals(1, ledger.all().size());
     }
 
     @Test

@@ -80,6 +80,9 @@ public final class LearnerPlugin implements NumenPlugin {
      */
     private static volatile com.dwinovo.numen.plugins.learner.core.UsageLedger usageLedger;
 
+    /** 2026-11-13 C1：交付上下文 sink 只注册一次；多次 setup 不重复挂。 */
+    private static volatile boolean deliverySinkRegistered;
+
     /**
      * 自编译请求的<b>取件契约</b>（B6/S2 收口，2026-10-05）。
      *
@@ -177,6 +180,45 @@ public final class LearnerPlugin implements NumenPlugin {
 
     static com.dwinovo.numen.plugins.learner.core.UsageLedger usageLedger() {
         return usageLedger;
+    }
+
+    /**
+     * 2026-11-13 C1: 父 API 的交付上下文 → 中性 Context → UsageLedger PRESENTED/UNKNOWN。
+     *
+     * <p>只做字段映射，不做任何成功/采用判断：身份不全由 SkillDeliveryEvidence 判 NO_IDENTITY
+     * 直接拒写；body 任务存在时按 taskId+toolCallId 归并，同一任务多轮请求只留一条候选。
+     */
+    static void consumeDeliveredContext(com.dwinovo.numen.api.NumenPlugins.DeliveredContext ctx,
+                                        com.dwinovo.numen.plugins.learner.core.UsageLedger ledger) {
+        if (ctx == null || ledger == null) return;
+        com.dwinovo.numen.api.WorldContextStamp.Token token = ctx.worldToken();
+        String worldId = "";
+        String serverSession = "";
+        long epoch = -1L;
+        if (token != null) {
+            java.util.Map<String, String> identity = token.identity();
+            if (identity != null) {
+                worldId = identity.getOrDefault("world_id", "");
+                serverSession = identity.getOrDefault("server_session", "");
+            }
+            epoch = token.epoch();
+        }
+        java.util.List<com.dwinovo.numen.plugins.learner.core.SkillDeliveryEvidence.Ref> refs =
+                new java.util.ArrayList<>();
+        if (ctx.refs() != null) {
+            for (com.dwinovo.numen.api.NumenPlugins.DeliveredRef r : ctx.refs()) {
+                if (r != null) {
+                    refs.add(new com.dwinovo.numen.plugins.learner.core.SkillDeliveryEvidence.Ref(
+                            r.entryRef(), r.version()));
+                }
+            }
+        }
+        com.dwinovo.numen.plugins.learner.core.SkillDeliveryEvidence.record(
+                new com.dwinovo.numen.plugins.learner.core.SkillDeliveryEvidence.Context(
+                        ctx.requestId(), worldId, serverSession, epoch,
+                        ctx.companion() == null ? "" : ctx.companion().toString(),
+                        ctx.role(), ctx.taskId(), ctx.taskToolCallId(), refs),
+                ledger);
     }
 
     static com.dwinovo.numen.plugins.learner.core.SelfCompileRequests selfCompileRequests() {
@@ -334,6 +376,14 @@ public final class LearnerPlugin implements NumenPlugin {
         // 且刻意没有「自动判定有效性」的口子。
         usageLedger = new com.dwinovo.numen.plugins.learner.core.UsageLedger(configDir);
         numen.registerTool(new LearnerUsageTool());
+        // 2026-11-13 C1：最终请求交付上下文 → 现有 UsageLedger 的 PRESENTED/UNKNOWN。
+        //   旧两参 sink（经验插件 ExposureLedger）保持原样；缺 requestId/worldToken 的 context
+        //   由 SkillDeliveryEvidence 判 NO_IDENTITY 直接丢弃，不造伪 episode、不触发复核。
+        if (!deliverySinkRegistered) {
+            deliverySinkRegistered = true;
+            com.dwinovo.numen.api.NumenPlugins.sinkRequestDeliveredWithContext(
+                    ctx -> consumeDeliveredContext(ctx, usageLedger));
+        }
         // 自编译请求的取件契约：把「没人消费」这条边补上。
         // ★ 只做流程（列出/认领/标注），**不写代码** —— 写码归外层工程流（B11）。
         selfCompileRequests = new com.dwinovo.numen.plugins.learner.core.SelfCompileRequests(outbox, configDir);
