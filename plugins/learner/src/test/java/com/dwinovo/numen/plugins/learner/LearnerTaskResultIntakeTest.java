@@ -426,4 +426,28 @@ class LearnerTaskResultIntakeTest {
         return new UsageLedger.Entry(artifactId, kind, name, row.phase(), row.outcome(), row.detail(),
                 source, at, row.validityClaimed(), companionId, evidence);
     }
+
+    /** New merged run must not let an incomplete RESULT suppress a complete delivery for the same task. */
+    @Test void badMetadataResultDoesNotSuppressACompleteDeliveryInNewRun() throws Exception {
+        configure("join-consistency");
+        Work work = adopt("sk-join", "join-action");
+        var delivered = delivery("sk-join", "join-delivery", work);
+        var result = report("sk-join", work, TaskState.SUCCESS);
+        List<String> lines = Files.readAllLines(ledger.file());
+        assertEquals(2, lines.size());
+        JsonObject resultRaw = JsonParser.parseString(lines.get(1)).getAsJsonObject();
+        resultRaw.addProperty("at", "");
+        Files.writeString(ledger.file(), lines.get(0) + "\n" + resultRaw + "\n");
+        var snapshot = ledger.readSnapshot();
+        assertEquals(UsageLedger.ReadStatus.READY, snapshot.status());
+        var scan = SkillDeliveryIntake.runWithTaskResults(snapshot.rows(), CURRENT, queue, intakeJournal,
+                StormGuard::admitIfEnqueued, 1000L, 16);
+        assertAll(
+                () -> assertEquals(1, scan.enqueued(), "complete delivery must still enqueue"),
+                () -> assertEquals(1, queue.size()),
+                () -> assertEquals(List.of(SkillDeliveryIntake.memoIdOf(delivered)),
+                        queue.all().stream().map(Memo::id).toList()),
+                () -> assertFalse(intakeJournal.contains(SkillDeliveryIntake.resultMemoIdOf(result)),
+                        "incomplete RESULT must not become a typed fact or suppress the delivery"));
+    }
 }

@@ -313,8 +313,17 @@ public final class SkillDeliveryIntake {
         // Join only complete original facts in memory; do not rewrite either producer's artifact format.
         Set<TaskUse> results = new HashSet<>();
         for (UsageLedger.Entry row : latest.values()) {
-            TaskUse use = taskResult(row);
-            if (use != null) results.add(use);
+            if (includeResults) {
+                // New merged run: only a complete typed result fact may suppress a delivery.
+                TaskResultFact fact = taskResultOf(row);
+                if (fact != null) results.add(new TaskUse(fact.scope(), fact.ref(), fact.version(),
+                        fact.taskId(), fact.taskCall()));
+            } else {
+                // Legacy delivery-only run keeps the original loose join: its sd snapshot is detail-only,
+                // so it must not retroactively require complete Entry metadata.
+                TaskUse use = taskResult(row);
+                if (use != null) results.add(use);
+            }
         }
         List<Candidate> due = new ArrayList<>();
         int foreign = 0, resultChannel = 0;
