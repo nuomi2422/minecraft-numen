@@ -3,6 +3,7 @@ package com.dwinovo.numen.plugins.rdd;
 import com.dwinovo.numen.rdd.core.TaskChain;
 
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * 044 B2 · 重规划准入的唯一消费者（2026-11-13 提取；同日由 f82 真红基线推进到修复批）。
