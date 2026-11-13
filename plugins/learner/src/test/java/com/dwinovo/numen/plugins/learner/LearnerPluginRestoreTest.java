@@ -116,6 +116,66 @@ class LearnerPluginRestoreTest {
         assertEquals(batch, ReviewBatchStore.load(dir, reviewId), "retain exact original objects for a later retry");
     }
 
+    /**
+     * 2026-11-13 new-3 negative control for "size-only" success checks: the queue depth
+     * (MAX_QUEUE) equals batch.size(), yet one original object is gone because restore()
+     * drops what does not fit in a full queue. Comparing counts alone would clear the claim.
+     * Controlled API fixture (public commitDrain + append), NOT proof that V02 lost a memo.
+     */
+    @Test void sameDepthAsBatchSizeStillRequiresEveryOriginalObject(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("memos.json");
+        MemoQueue queue = new MemoQueue(file);
+        for (int i = 0; i < MemoQueue.MAX_QUEUE; i++) assertTrue(queue.append(memo("original-" + i)));
+        List<Memo> batch = queue.drain(MemoQueue.MAX_QUEUE);
+        assertEquals(MemoQueue.MAX_QUEUE, batch.size());
+        String reviewId = "rev-startup-depth-equals-batch";
+        assertTrue(ReviewBatchStore.save(dir, reviewId, batch));
+        LearnerPlugin.writeReviewSentinel(dir, reviewId, C);
+        assertEquals(1, queue.commitDrain(List.of(batch.get(0))));
+        assertTrue(queue.append(memo("replacement")));
+        assertEquals(MemoQueue.MAX_QUEUE, queue.size(), "depth == batch.size(): a count-only criterion would pass");
+        assertEquals(-1, LearnerPlugin.restoreInterruptedReview(dir, companion -> new MemoQueue(file)),
+                "one missing original must keep the claim even when total depth matches the batch");
+        List<Memo> reloaded = new MemoQueue(file).all();
+        assertEquals(MemoQueue.MAX_QUEUE, reloaded.size());
+        assertEquals(0L, reloaded.stream().filter(m -> batch.get(0).id().equals(m.id())).count());
+        for (Memo original : batch.subList(1, batch.size())) {
+            assertEquals(1L, reloaded.stream().filter(m -> original.equals(m)).count());
+        }
+        assertTrue(Files.exists(ReviewBatchStore.file(dir, reviewId)));
+        assertTrue(Files.exists(dir.resolve(LearnerPlugin.REVIEW_SENTINEL)));
+        assertEquals(batch, ReviewBatchStore.load(dir, reviewId));
+    }
+
+    /**
+     * 2026-11-13 new-3 negative control: a memo with the same id but a different body is
+     * not the claimed object. store.restore() dedupes by id, so the wrong body would
+     * survive and a count-only criterion would still report success.
+     */
+    @Test void sameIdDifferentMemoBodyIsNotDurable(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("memos.json");
+        MemoQueue queue = new MemoQueue(file);
+        assertTrue(queue.append(memo("dup-1")));
+        List<Memo> batch = queue.drain(1);
+        String reviewId = "rev-startup-same-id-different-body";
+        assertTrue(ReviewBatchStore.save(dir, reviewId, batch));
+        LearnerPlugin.writeReviewSentinel(dir, reviewId, C);
+        // Controlled fixture: public removal + re-insert under the same id with another body
+        // (append() would refuse an already-seen id, so the public restore port is used).
+        assertEquals(1, queue.commitDrain(batch));
+        Memo impostor = new Memo("dup-1", "other problem", "other stage", "other tried",
+                "other snapshot", 999L, "learning", List.of());
+        assertEquals(1, queue.restore(List.of(impostor)));
+        assertEquals(-1, LearnerPlugin.restoreInterruptedReview(dir, companion -> new MemoQueue(file)),
+                "same id with a different body must not count as the original memo");
+        List<Memo> reloaded = new MemoQueue(file).all();
+        assertEquals(1, reloaded.size());
+        assertEquals(impostor, reloaded.get(0), "the impostor body is not silently overwritten");
+        assertTrue(Files.exists(ReviewBatchStore.file(dir, reviewId)));
+        assertTrue(Files.exists(dir.resolve(LearnerPlugin.REVIEW_SENTINEL)));
+        assertEquals(batch, ReviewBatchStore.load(dir, reviewId));
+    }
+
     @Test void drainedBatchRestoresSameIdsOnce(@TempDir Path dir) throws Exception {
         MemoQueue q = new MemoQueue(dir.resolve("memos.json"));
         q.append(memo("m1"));

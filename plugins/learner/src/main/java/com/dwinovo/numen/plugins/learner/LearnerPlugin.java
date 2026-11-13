@@ -232,9 +232,31 @@ public final class LearnerPlugin implements NumenPlugin {
         int restored = -1;
         if (!batch.isEmpty() && companion != null && !companion.isBlank() && queues != null) {
             try {
-                restored = queues.apply(UUID.fromString(companion)).restore(batch);
-                if (restored == batch.size()) {
-                    com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.delete(dir, rid);
+                com.dwinovo.numen.plugins.learner.core.MemoQueue queue = queues.apply(UUID.fromString(companion));
+                // MemoQueue.restore 的返回值是「总队列深度」，不是「本批恢复了几条」——
+                // 它的契约不在本批修改范围，所以成功判据必须回读落盘列表，而不是比较两个数。
+                // 2026-11-13 新三号：满队列时 64 条全在也返回 64，按 restored==batch.size()
+                // 判断会永远清不掉认领，观测还会把总深度报成恢复条数。
+                queue.restore(batch);
+                java.util.List<com.dwinovo.numen.plugins.learner.core.Memo> durable = queue.all();
+                boolean everyOriginalDurable = true;
+                java.util.Set<String> claimedIds = new java.util.HashSet<>();
+                for (com.dwinovo.numen.plugins.learner.core.Memo claimed : batch) {
+                    if (!claimedIds.add(claimed.id())) everyOriginalDurable = false;   // 认领自身重复 id
+                    int occurrences = 0;
+                    for (com.dwinovo.numen.plugins.learner.core.Memo stored : durable) {
+                        if (stored != null && claimed.id().equals(stored.id())) {
+                            occurrences++;
+                            // 同 id 不同正文：restore 按 id 跳过，内容永远不会被纠正 ⇒ 不算耐久。
+                            if (!claimed.equals(stored)) everyOriginalDurable = false;
+                        }
+                    }
+                    if (occurrences != 1) everyOriginalDurable = false;   // 缺项或被重复身份占位
+                }
+                // 删批失败（delete 返回 false，含 IO 异常）不得包装成「已清」：
+                // 认领留着，哨兵也留着，下一次启动照原语义重试。
+                if (everyOriginalDurable && com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.delete(dir, rid)) {
+                    restored = batch.size();
                 }
             } catch (RuntimeException ignored) { restored = -1; }
         }
