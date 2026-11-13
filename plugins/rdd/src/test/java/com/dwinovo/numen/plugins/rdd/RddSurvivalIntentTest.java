@@ -115,6 +115,45 @@ class RddSurvivalIntentTest {
         assertTrue(newChain.request(new Object()).accepted(), "换链实例后旧意图过期，允许新抢占");
     }
 
+    /** PENDING 未回（无 markApplied/markAborted）：UNKNOWN 不自动释放，同型仍应被抑制。 */
+    @Test
+    void unknownPendingIntentKeepsSuppression() {
+        Fixture f = new Fixture(UUID.randomUUID(), "goal-intent-unknown");
+        Object first = new Object();
+        assertTrue(f.request(first).accepted());
+        // 没有应用回调、也没有明确失败回调：宿主此后回落到原计划并重新 ACTIVE（UNKNOWN）。
+        f.chain.resumeFromReplanning();
+        assertTrue(f.chain.activateCurrent(Map.of()));
+        RddReplanTransition.Result retry = f.request(new Object());
+        assertFalse(retry.accepted(), "UNKNOWN 不自动释放：PENDING 未回时同型仍应被抑制");
+        assertEquals(RddReplanTransition.Outcome.DUPLICATE_SURVIVAL_PENDING, retry.outcome());
+        assertEquals(1, f.used(), "被抑制的请求不得再花预算");
+    }
+
+    /** 同一 low hunger 下 SEEK→EAT 是新的生存动作，不应被旧 SEEK 意图压住。 */
+    @Test
+    void decisionEscalationAllowsNewPreemption() {
+        Fixture f = new Fixture(UUID.randomUUID(), "goal-intent-eat");
+        Object first = new Object();
+        assertTrue(f.request(RddSurvivalGate.Decision.SEEK_FOOD_FIRST, first).accepted());
+        f.applyPlan(first);
+        assertTrue(f.request(RddSurvivalGate.Decision.EAT_FIRST, new Object()).accepted(),
+                "SEEK 意图不压 EAT：背包已有食物时允许新的进食抢占");
+    }
+
+    /** primary 换了（不是同一次生存意图的作用域）→ 允许新抢占。 */
+    @Test
+    void primaryChangeReleasesIntent() {
+        UUID companion = UUID.randomUUID();
+        Fixture oldPrimary = new Fixture(companion, "goal-intent-primary", "primary-0");
+        Object first = new Object();
+        assertTrue(oldPrimary.request(first).accepted());
+        oldPrimary.applyPlan(first);
+
+        Fixture newPrimary = new Fixture(companion, "goal-intent-primary", "primary-9");
+        assertTrue(newPrimary.request(new Object()).accepted(), "换 primary 后旧意图过期，允许新抢占");
+    }
+
     /** 真 TaskChain + 真预算表；意图 key 用固定 companionId（生产同一 UUID）。 */
     private static final class Fixture {
         final UUID id;
@@ -123,17 +162,24 @@ class RddSurvivalIntentTest {
         final TaskChain chain;
         private int appliedRevision;
 
+        final String primaryId;
+
         Fixture(UUID id, String chainGoalId) {
+            this(id, chainGoalId, "primary-0");
+        }
+
+        Fixture(UUID id, String chainGoalId, String primaryId) {
             this.id = id;
+            this.primaryId = primaryId;
             this.chain = new TaskChain(new Goal(chainGoalId, "044 B2 生存意图",
-                    List.of(PrimaryGoal.unexpanded("primary-0", "先弄到吃的", List.of()))));
+                    List.of(PrimaryGoal.unexpanded(primaryId, "先弄到吃的", List.of()))));
             chain.expandCurrentPrimary(List.of(
                     Subtask.hardCoded("s0", "走到熔炉边", Map.of("asset_key", "minecraft:furnace"))));
             chain.startCurrent();
         }
 
         String key() {
-            return id + "|primary-0";
+            return id + "|" + primaryId;
         }
 
         int used() {
@@ -145,7 +191,11 @@ class RddSurvivalIntentTest {
         }
 
         RddReplanTransition.Result request(Object token) {
-            return RddReplanTransition.requestSurvival(id, chain, RddSurvivalGate.Decision.SEEK_FOOD_FIRST,
+            return request(RddSurvivalGate.Decision.SEEK_FOOD_FIRST, token);
+        }
+
+        RddReplanTransition.Result request(RddSurvivalGate.Decision decision, Object token) {
+            return RddReplanTransition.requestSurvival(id, chain, decision,
                     REASON, counts, key(), LIMIT, callbacks::incrementAndGet, token);
         }
 
