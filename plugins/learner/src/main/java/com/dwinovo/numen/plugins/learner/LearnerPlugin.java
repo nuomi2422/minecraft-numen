@@ -463,6 +463,10 @@ public final class LearnerPlugin implements NumenPlugin {
 
     /** 2026-11-14: observation rejection never changes restore/abort business semantics. */
     static int abortInFlight(com.dwinovo.numen.api.WorldContextStamp.Token current) {
+        return abortInFlight(current, false);
+    }
+
+    private static int abortInFlight(com.dwinovo.numen.api.WorldContextStamp.Token current, boolean legacy) {
         int n = 0;
         for (var e : new java.util.ArrayList<>(INFLIGHT.entrySet())) {
             String id = e.getKey();
@@ -477,7 +481,7 @@ public final class LearnerPlugin implements NumenPlugin {
             var data = java.util.Map.of("review_id", id, "reason", "server stopping",
                     "restore", restored ? "OK" : "FAILED");
             var observation = e.getValue().observation(); // Keep the removed entry's original handle.
-            if (observation == null) LearnerMonitor.publish("review_interrupted", data);
+            if (legacy || observation == null) LearnerMonitor.publish("review_interrupted", data);
             else observation.publish("review_interrupted", data, current);
             n++;
         }
@@ -486,7 +490,8 @@ public final class LearnerPlugin implements NumenPlugin {
 
     /** ServerStopping/Stopped: legacy callers keep terminal + restore exactly once, with UNKNOWN scope. */
     static int abortInFlight() {
-        return abortInFlight(null);
+        // Explicit old ABI diagnostic, including mixed new registration; not a fallback for token rejection.
+        return abortInFlight(null, true);
     }
 
     private static final java.util.Map<UUID, Long> LAST_REVIEW_STARTED =

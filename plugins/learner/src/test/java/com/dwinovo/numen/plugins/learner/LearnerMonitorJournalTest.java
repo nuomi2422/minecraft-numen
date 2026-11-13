@@ -201,6 +201,42 @@ class LearnerMonitorJournalTest {
             assertFalse(old.has("server_session"));
             assertFalse(old.has("world_epoch"));
             assertEquals("1", old.getAsJsonObject("data").get("restored").getAsString());
+
+            // The old no-argument ABI deliberately diagnoses UNKNOWN even after new scoped registration.
+            String mixed = "legacy-abort-new-handle-" + UUID.randomUUID();
+            var mixedStart = WorldContextStamp.capture();
+            var mixedHandle = LearnerPlugin.beginReview(mixed, f.companion, "RUNNING", 1, mixedStart);
+            var mixedRestores = new java.util.concurrent.atomic.AtomicInteger();
+            LearnerPlugin.registerInflight(mixed, mixedRestores::incrementAndGet, mixedHandle);
+            WorldContextStamp.set("after-mixed-world", "after-mixed-server");
+            assertEquals(1, LearnerPlugin.abortInFlight());
+            assertEquals(0, LearnerPlugin.abortInFlight());
+            assertEquals(1, mixedRestores.get());
+            assertEquals("INTERRUPTED", LearnerPlugin.review(mixed).state());
+            f.barrier();
+            var mixedRows = f.requireRows(mixed, "review_started", "review_interrupted");
+            assertEquals(mixedStart.identity().get("world_id"), mixedRows.get(0).get("world_id").getAsString());
+            var unknownAbort = mixedRows.get(1);
+            assertFalse(unknownAbort.has("world_id"));
+            assertFalse(unknownAbort.has("server_session"));
+            assertFalse(unknownAbort.has("world_epoch"));
+            assertEquals(session, unknownAbort.get("session").getAsString());
+            assertEquals("OK", unknownAbort.getAsJsonObject("data").get("restore").getAsString());
+
+            // The token overload must never convert a stale scoped rejection into an UNKNOWN row.
+            String late = "scoped-abort-no-fallback-" + UUID.randomUUID();
+            var lateStart = WorldContextStamp.capture();
+            var lateHandle = LearnerPlugin.beginReview(late, f.companion, "RUNNING", 1, lateStart);
+            var lateRestores = new java.util.concurrent.atomic.AtomicInteger();
+            LearnerPlugin.registerInflight(late, lateRestores::incrementAndGet, lateHandle);
+            WorldContextStamp.set("late-world", "late-server");
+            assertEquals(1, LearnerPlugin.abortInFlight(WorldContextStamp.capture()));
+            assertEquals(0, LearnerPlugin.abortInFlight(WorldContextStamp.capture()));
+            assertEquals(1, lateRestores.get());
+            assertEquals("INTERRUPTED", LearnerPlugin.review(late).state());
+            f.barrier();
+            f.requireRows(late, "review_started");
+
         }
     }
 
