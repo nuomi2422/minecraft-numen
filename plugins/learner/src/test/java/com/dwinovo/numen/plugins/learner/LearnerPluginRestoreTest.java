@@ -19,6 +19,42 @@ class LearnerPluginRestoreTest {
         return new Memo(id, "p", "stage", "tried", "snap", 123L, "learning", List.of());
     }
 
+    /**
+     * 2026-11-13 characterization: a full snapshot queue already contains the three
+     * claimed IDs. Production restore returns total depth (64), not batch size (3).
+     * This is a controlled startup-consumer test, not proof of V02's next restart.
+     */
+    @Test void fullQueueStartupKeepsEachClaimedIdOnceButRetainsClaimWhenTotalsDiffer(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("memos.json");
+        MemoQueue queue = new MemoQueue(file);
+        for (int i = 0; i < MemoQueue.MAX_QUEUE; i++) assertTrue(queue.append(memo("original-" + i)));
+        assertEquals(64, queue.size());
+        List<Memo> batch = queue.drain(3);
+        assertEquals(List.of("original-0", "original-1", "original-2"), batch.stream().map(Memo::id).toList());
+        assertEquals(64, new MemoQueue(file).size());
+        String reviewId = "rev-startup-full64-existing";
+        assertTrue(ReviewBatchStore.save(dir, reviewId, batch));
+        assertEquals(batch, ReviewBatchStore.load(dir, reviewId));
+        LearnerPlugin.writeReviewSentinel(dir, reviewId, C);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            assertEquals(64, LearnerPlugin.restoreInterruptedReview(dir, companion -> {
+                assertEquals(C, companion, "restore must resolve the sentinel's original companion");
+                return new MemoQueue(file);
+            }));
+            List<Memo> reloaded = new MemoQueue(file).all();
+            assertEquals(64, reloaded.size());
+            for (Memo original : batch) {
+                assertEquals(1L, reloaded.stream().filter(m -> original.id().equals(m.id())).count());
+                assertEquals(original, reloaded.stream().filter(m -> original.id().equals(m.id())).findFirst().orElseThrow());
+            }
+            // Characterize current cleanup criterion (total depth == batch size), not
+            // actual loss: these durable IDs are present even though the claim remains.
+            assertTrue(Files.exists(ReviewBatchStore.file(dir, reviewId)));
+            assertTrue(Files.exists(dir.resolve(LearnerPlugin.REVIEW_SENTINEL)));
+            assertEquals(batch, ReviewBatchStore.load(dir, reviewId));
+        }
+    }
+
     @Test void drainedBatchRestoresSameIdsOnce(@TempDir Path dir) throws Exception {
         MemoQueue q = new MemoQueue(dir.resolve("memos.json"));
         q.append(memo("m1"));
