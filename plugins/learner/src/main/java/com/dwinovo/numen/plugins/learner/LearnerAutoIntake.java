@@ -546,9 +546,12 @@ final class LearnerAutoIntake {
                     SkillDeliveryIntake.Scan result = SkillDeliveryIntake.run(snapshot.rows(), current.forOwner(owner),
                             queueResolver.apply(owner), journal, StormGuard::admitIfEnqueued,
                             System.currentTimeMillis(), remaining);
+                    // 每 owner 在末段只 run 一次；核按物理新增限额，宿主成功数仍只计持久成功。
+                    int remainingAfter = remaining - result.physicalAdded();
                     if (result.enqueued() > 0) enqueuedBy.merge(owner, result.enqueued(), Integer::sum);
                     LearnerMonitor.publish("auto_intake_delivery", Map.of(
                             "companion_id", owner.toString(), "remaining_budget", remaining,
+                            "physical_added", result.physicalAdded(), "remaining_budget_after", remainingAfter,
                             "enqueued", result.enqueued(), "foreign_scope", result.foreignScope(),
                             "duplicate", result.duplicate(), "storm_suppressed", result.stormSuppressed(),
                             "failed", result.failed(), "result_channel", result.resultChannel()));

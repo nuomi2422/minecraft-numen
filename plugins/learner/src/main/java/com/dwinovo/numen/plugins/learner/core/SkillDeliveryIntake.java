@@ -46,13 +46,15 @@ public final class SkillDeliveryIntake {
     }
 
     /**
-     * 一次扫描读数。
+     * 一次扫描读数。{@code enqueued} 只计 queue+journal 持久成功；
+     * {@code physicalAdded} 计本轮 append 前不存在、append 后确认存在的 memo，journal 失败也占预算。
+     * 修复 journal、历史 seen、满队列与准入拒绝不算物理新增。
      *
      * <p>{@code resultChannel} = 交付已有同 artifact 的最新 RESULT，或完整原任务身份精确匹配 RESULT：
      * 只说明这条有动作结果、**不代表学习者已经复审过**；它不再走“交付候选”，避免旧 PRESENTED 重入。
      */
     public record Scan(int enqueued, int foreignScope, int duplicate, int stormSuppressed,
-                       int failed, int resultChannel) {}
+                       int failed, int resultChannel, int physicalAdded) {}
 
     /** 既有持久去重；remember 须先持久化、后更新 contains，失败抛异常（宿主接线属后批）。 */
     public interface EnqueuedJournal {
@@ -96,10 +98,11 @@ public final class SkillDeliveryIntake {
     public static Scan run(List<UsageLedger.Entry> rows, Scope scope, MemoQueue queue,
                            EnqueuedJournal journal, Admission admission, long now, int budget) {
         Selection selection = classify(rows, scope);
-        int enqueued = 0, duplicate = 0, suppressed = 0, failed = 0;
+        int enqueued = 0, duplicate = 0, suppressed = 0, failed = 0, physicalAdded = 0;
         if (budget > 0) for (Delivery delivery : selection.due()) {
-            if (enqueued >= budget) break;
+            if (physicalAdded >= budget) break;
             String id = memoIdOf(delivery.row());
+            boolean[] added = {false}, unconfirmed = {false};
             try {
                 if (journal.contains(id)) { duplicate++; continue; }
                 boolean[] attempted = {false}, existing = {false}, committed = {false};
@@ -115,8 +118,17 @@ public final class SkillDeliveryIntake {
                     Memo memo = new Memo(id, "完整正文已交付：" + delivery.ref() + "@" + delivery.version(),
                             "skill_delivery", "仅为正文交付待审；未证明采用、原任务结果或有效性。",
                             delivery.row().detail(), now);
-                    if (!queue.append(memo)) return false;
-                    if (!queue.contains(id)) {
+                    boolean appended;
+                    unconfirmed[0] = true;
+                    try {
+                        appended = queue.append(memo);
+                    } finally {
+                        // 2026-11-13: count a write even if append throws after persisting it.
+                        added[0] = queue.contains(id);
+                        unconfirmed[0] = false;
+                    }
+                    if (!appended) return false;
+                    if (!added[0]) {
                         existing[0] = true; // append=true can mean historical seen, not a current entry.
                         return false;
                     }
@@ -130,9 +142,13 @@ public final class SkillDeliveryIntake {
                 else failed++;
             } catch (RuntimeException failure) {
                 failed++; // Keep the ledger candidate retryable; no journal or cooldown success claim.
+            } finally {
+                if (added[0]) physicalAdded++; // Spend the original budget before the next candidate.
             }
+            if (unconfirmed[0]) break; // An unreadable post-write queue cannot authorize more writes.
         }
-        return new Scan(enqueued, selection.foreignScope(), duplicate, suppressed, failed, selection.resultChannel());
+        return new Scan(enqueued, selection.foreignScope(), duplicate, suppressed, failed,
+                selection.resultChannel(), physicalAdded);
     }
 
     /** 幂等键：sd- + sha256(artifactId)。 */
