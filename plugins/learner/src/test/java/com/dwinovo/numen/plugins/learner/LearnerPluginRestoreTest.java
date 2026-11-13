@@ -4,6 +4,7 @@ import com.dwinovo.numen.plugins.learner.core.Memo;
 import com.dwinovo.numen.plugins.learner.core.MemoQueue;
 import com.dwinovo.numen.plugins.learner.core.ReviewBatchStore;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -26,6 +27,7 @@ class LearnerPluginRestoreTest {
      * are durable, retaining the sentinel may reflect a total-depth/batch-count mismatch.
      * This is a controlled startup-consumer test, not proof of V02's next restart.
      */
+    @Disabled("Legacy total-depth/batch-count mismatch frozen in 536e78006; superseded by intended cleanup contract below")
     @Test void legacyFullQueueStartupKeepsEachClaimedIdOnceButRetainsClaimWhenTotalsDiffer(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("memos.json");
         MemoQueue queue = new MemoQueue(file);
@@ -56,6 +58,62 @@ class LearnerPluginRestoreTest {
             assertTrue(Files.exists(dir.resolve(LearnerPlugin.REVIEW_SENTINEL)));
             assertEquals(batch, ReviewBatchStore.load(dir, reviewId));
         }
+    }
+
+    /** Intended contract: durable inclusion of the exact batch, not total queue depth. */
+    @Test void fullQueueWithAllOriginalMemosReportsThreeAndClearsItsOwnRetryEvidence(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("memos.json");
+        MemoQueue queue = new MemoQueue(file);
+        for (int i = 0; i < MemoQueue.MAX_QUEUE; i++) assertTrue(queue.append(memo("original-" + i)));
+        List<Memo> batch = queue.drain(3);
+        assertEquals(List.of("original-0", "original-1", "original-2"), batch.stream().map(Memo::id).toList());
+        assertEquals(64, queue.size(), "normal drain leaves original memos in the queue");
+        String reviewId = "rev-startup-full64-intended";
+        assertTrue(ReviewBatchStore.save(dir, reviewId, batch));
+        LearnerPlugin.writeReviewSentinel(dir, reviewId, C);
+        assertEquals(3, LearnerPlugin.restoreInterruptedReview(dir, companion -> {
+            assertEquals(C, companion);
+            return new MemoQueue(file);
+        }), "report restored batch members, not total queue depth 64");
+        List<Memo> reloaded = new MemoQueue(file).all();
+        assertEquals(64, reloaded.size());
+        for (Memo original : batch) {
+            assertEquals(1L, reloaded.stream().filter(m -> original.id().equals(m.id())).count());
+            assertEquals(original, reloaded.stream().filter(m -> original.id().equals(m.id())).findFirst().orElseThrow());
+        }
+        assertFalse(Files.exists(ReviewBatchStore.file(dir, reviewId)), "all exact batch objects are durable: clear this claim");
+        assertFalse(Files.exists(dir.resolve(LearnerPlugin.REVIEW_SENTINEL)));
+        assertEquals(0, LearnerPlugin.restoreInterruptedReview(dir, companion -> {
+            fail("completed startup recovery must not resolve or restore the batch twice");
+            return new MemoQueue(file);
+        }));
+    }
+
+    @Test void fullQueueMissingOneOriginalMemoKeepsDurableRetryEvidence(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("memos.json");
+        MemoQueue queue = new MemoQueue(file);
+        for (int i = 0; i < MemoQueue.MAX_QUEUE; i++) assertTrue(queue.append(memo("original-" + i)));
+        List<Memo> batch = queue.drain(3);
+        assertEquals(3, batch.size());
+        String reviewId = "rev-startup-full64-missing-one";
+        assertTrue(ReviewBatchStore.save(dir, reviewId, batch));
+        LearnerPlugin.writeReviewSentinel(dir, reviewId, C);
+        // Controlled API counterexample only: public removal + refill. Normal snapshot
+        // drain does not do this, and this fixture does NOT prove V02 lost any memo.
+        assertEquals(1, queue.commitDrain(List.of(batch.get(2))));
+        assertTrue(queue.append(memo("replacement")));
+        assertEquals(64, queue.size());
+        assertEquals(-1, LearnerPlugin.restoreInterruptedReview(dir, companion -> new MemoQueue(file)),
+                "a full queue with a missing batch member must not report successful batch recovery");
+        List<Memo> reloaded = new MemoQueue(file).all();
+        assertEquals(64, reloaded.size());
+        for (Memo original : batch.subList(0, 2)) {
+            assertEquals(1L, reloaded.stream().filter(m -> original.equals(m)).count());
+        }
+        assertEquals(0L, reloaded.stream().filter(m -> batch.get(2).id().equals(m.id())).count());
+        assertTrue(Files.exists(ReviewBatchStore.file(dir, reviewId)));
+        assertTrue(Files.exists(dir.resolve(LearnerPlugin.REVIEW_SENTINEL)));
+        assertEquals(batch, ReviewBatchStore.load(dir, reviewId), "retain exact original objects for a later retry");
     }
 
     @Test void drainedBatchRestoresSameIdsOnce(@TempDir Path dir) throws Exception {
