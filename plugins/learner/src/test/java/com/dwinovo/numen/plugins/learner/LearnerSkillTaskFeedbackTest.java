@@ -467,6 +467,84 @@ class LearnerSkillTaskFeedbackTest {
         assertEquals(2, rows().size());
     }
 
+    /**
+     * C1-B: actual delivery + actual adopt/report facts enter the actual host scan.
+     * Replay each real producer variant as a complete disk ledger, not singleton run(row) calls.
+     */
+    @Test void realHostScanKeepsExactResultJoinAndOriginalIdentityBoundaries() throws Exception {
+        var joined = deliver("host-joined", task.publicId(), task.getToolCallId(),
+                "skill:sk-1", "v1", deliveryScope());
+        adopt(); tasks.finish(TaskState.SUCCESS); ok(call(args("report_skill")));
+        String joinedLedger = Files.readString(ledger.file());
+        List<UsageLedger.Entry> variants = List.of(
+                deliver("host-wrong-task", "other-task", task.getToolCallId(),
+                        "skill:sk-1", "v1", deliveryScope()),
+                deliver("host-wrong-call", task.publicId(), "other-call",
+                        "skill:sk-1", "v1", deliveryScope()),
+                deliver("host-selection", task.publicId(), "selection-call",
+                        "skill:sk-1", "v1", deliveryScope()),
+                deliver("host-version", task.publicId(), task.getToolCallId(),
+                        "skill:sk-1", "v2", deliveryScope()),
+                deliver("host-episode", "", "", "skill:sk-1", "v1", deliveryScope()));
+        List<String> allLines = Files.readAllLines(ledger.file());
+        Map<String, Object> old = new HashMap<>();
+        for (String name : List.of("configDirCache", "enabled", "queueResolver", "deliveryLedgerReader")) {
+            var field = LearnerAutoIntake.class.getDeclaredField(name);
+            field.setAccessible(true);
+            old.put(name, field.get(null));
+        }
+        var keyField = LearnerAutoIntake.class.getDeclaredField("ENQUEUED");
+        keyField.setAccessible(true);
+        @SuppressWarnings("unchecked") var keys = (java.util.Set<String>) keyField.get(null);
+        var oldKeys = new java.util.HashSet<>(keys);
+        var cursorField = LearnerAutoIntake.class.getDeclaredField("CURSORS");
+        cursorField.setAccessible(true);
+        @SuppressWarnings("unchecked") var cursors = (Map<String, Long>) cursorField.get(null);
+        var oldCursors = new HashMap<>(cursors);
+        var hostQueue = new MemoQueue(dir.resolve("host-memos.json"));
+        try {
+            for (var entry : Map.of("configDirCache", (Object) dir, "enabled", true).entrySet()) {
+                var field = LearnerAutoIntake.class.getDeclaredField(entry.getKey());
+                field.setAccessible(true);
+                field.set(null, entry.getValue());
+            }
+            keys.clear();
+            cursors.clear();
+            LearnerAutoIntake.installQueueResolverForTest(owner -> {
+                assertEquals(C, owner);
+                return hostQueue;
+            });
+            var reads = new java.util.concurrent.atomic.AtomicInteger();
+            LearnerAutoIntake.installDeliveryLedgerReaderForTest(() -> {
+                reads.incrementAndGet();
+                return ledger.readSnapshot();
+            });
+            for (int i = 0; i < variants.size(); i++) {
+                // Both joined rows plus one real producer row; the entire file is passed to the host.
+                Files.writeString(ledger.file(), joinedLedger + allLines.get(i + 2) + "\n");
+                com.dwinovo.numen.plugins.learner.core.StormGuard.resetForTest();
+                assertEquals(1, LearnerAutoIntake.scanOnce(() ->
+                        new LearnerAutoIntake.DeliveryScope("world", "session", 7)));
+                assertEquals(i + 1, reads.get(), "one full ledger snapshot per host scan");
+                assertTrue(hostQueue.contains(SkillDeliveryIntake.memoIdOf(variants.get(i))));
+                assertFalse(hostQueue.contains(SkillDeliveryIntake.memoIdOf(joined)),
+                        "EXPERIENCE result with exact original task/call must classify joined delivery");
+                assertEquals(i + 1, hostQueue.size());
+                assertEquals(3, ledger.all().size(), "consumer must not create adoption/result/validity facts");
+                assertNull(LearnerPlugin.runningReview(C));
+            }
+        } finally {
+            keys.clear(); keys.addAll(oldKeys);
+            cursors.clear(); cursors.putAll(oldCursors);
+            for (var entry : old.entrySet()) {
+                var field = LearnerAutoIntake.class.getDeclaredField(entry.getKey());
+                field.setAccessible(true);
+                field.set(null, entry.getValue());
+            }
+            com.dwinovo.numen.plugins.learner.core.StormGuard.resetForTest();
+        }
+    }
+
     @Test void realTaskDeliveryWithoutAReportedResultStillEnqueues() {
         var delivery = deliver("req-pending", task.publicId(), task.getToolCallId(),
                 "skill:sk-1", "v1", deliveryScope());

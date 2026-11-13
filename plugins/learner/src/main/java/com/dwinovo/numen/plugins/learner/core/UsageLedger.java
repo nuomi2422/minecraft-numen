@@ -257,38 +257,64 @@ public final class UsageLedger {
         return best;
     }
 
-    /** 全账（按写入顺序）。 */
+    /** 全账（按写入顺序）；保留旧口：坏行跳过，读失败返回已解析/空列表。 */
     public synchronized List<Entry> all() {
+        return new ArrayList<>(readLedger(false).rows());
+    }
+
+    /** C1-B 单次读的完整性；空文件 READY，缺文件和读坏/坏行各有明确状态。 */
+    public enum ReadStatus { READY, MISSING, UNREADABLE, MALFORMED }
+
+    public record ReadSnapshot(List<Entry> rows, ReadStatus status, int malformedLines) {
+        public ReadSnapshot { rows = List.copyOf(rows); }
+    }
+
+    /**
+     * 复用原读口和解析器，一次读取即返回行与完整性，避免 readable()+all() 的双读/竞态。
+     * 部分可读的旧 all() 仍能诊断；新交付消费者只有 READY 才能相信“没有 RESULT”。
+     */
+    public synchronized ReadSnapshot readSnapshot() {
+        return readLedger(true);
+    }
+
+    private ReadSnapshot readLedger(boolean diagnostic) {
         List<Entry> out = new ArrayList<>();
-        if (!Files.isRegularFile(file)) {
-            return out;
-        }
+        int malformed = 0;
+        // all() 继续保留旧的非普通文件空表语义；新诊断口实际读一次以区别目录/拒读。
+        if (!diagnostic && !Files.isRegularFile(file))
+            return new ReadSnapshot(out, ReadStatus.MISSING, 0);
         try {
             for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
                 String s = line.trim();
-                if (s.isEmpty()) {
-                    continue;
-                }
+                if (s.isEmpty()) continue;
                 JsonObject o;
                 try {
                     o = JsonParser.parseString(s).getAsJsonObject();
                 } catch (RuntimeException ex) {
-                    // 坏行跳过但**不删**（append-only 账本，坏了要留给人看）
+                    malformed++; // 原 all() 同样跳过 JSON 坏行，不改 append-only 原件。
                     continue;
                 }
-                Phase p = Phase.of(str(o, "phase"));
-                if (p == null) {
-                    continue;
+                Phase phase = Phase.of(str(o, "phase"));
+                if (phase == null) { malformed++; continue; }
+                try {
+                    out.add(new Entry(str(o, "artifact_id"), str(o, "kind"), str(o, "name"), phase,
+                            outcomeOf(str(o, "outcome")), str(o, "detail"), str(o, "source"),
+                            str(o, "at"), o.has("validity_claim") && o.get("validity_claim").getAsBoolean(),
+                            str(o, "companion_id"), parseEvidence(o, source0(o))));
+                } catch (RuntimeException ex) {
+                    if (!diagnostic) throw ex; // 保留旧 all() 对坏字段类型的异常语义。
+                    malformed++; // 新诊断口显式标坏行，不把丢失事实当成不存在。
                 }
-                out.add(new Entry(str(o, "artifact_id"), str(o, "kind"), str(o, "name"), p,
-                        outcomeOf(str(o, "outcome")), str(o, "detail"), str(o, "source"),
-                        str(o, "at"), o.has("validity_claim") && o.get("validity_claim").getAsBoolean(),
-                        str(o, "companion_id"), parseEvidence(o, source0(o))));
             }
-        } catch (IOException e) {
-            return out;
+        } catch (java.nio.file.NoSuchFileException missing) {
+            return new ReadSnapshot(out, ReadStatus.MISSING, malformed);
+        } catch (IOException unreadable) {
+            return new ReadSnapshot(out, ReadStatus.UNREADABLE, malformed);
+        } catch (SecurityException unreadable) {
+            if (!diagnostic) throw unreadable;
+            return new ReadSnapshot(out, ReadStatus.UNREADABLE, malformed);
         }
-        return out;
+        return new ReadSnapshot(out, malformed == 0 ? ReadStatus.READY : ReadStatus.MALFORMED, malformed);
     }
 
     /** 每个产物的最终结论（最新阶段的那条）。 */

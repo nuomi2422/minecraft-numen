@@ -7,6 +7,8 @@ import com.dwinovo.numen.plugins.learner.core.FeedbackEvent;
 import com.dwinovo.numen.plugins.learner.core.Memo;
 import com.dwinovo.numen.plugins.learner.core.MemoQueue;
 import com.dwinovo.numen.plugins.learner.core.StormGuard;
+import com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake;
+import com.dwinovo.numen.plugins.learner.core.UsageLedger;
 import com.dwinovo.numen.plugins.learner.core.SuppressedStore;
 import com.dwinovo.numen.plugins.learner.core.T3Seen;
 import net.neoforged.fml.loading.FMLPaths;
@@ -152,6 +154,24 @@ final class LearnerAutoIntake {
     // 触碰 LearnerPlugin，而它的类链要 NeoForge（纯 JVM 单测 NoClassDefFoundError）。
     private static volatile java.util.function.Function<UUID, MemoQueue> queueResolver;
 
+    /** C1-B：只传实际 server 捕获的身份；缺失不从账本反推当前世界。 */
+    record DeliveryScope(String worldId, String serverSession, long epoch) {
+        boolean complete() {
+            return worldId != null && !worldId.isBlank()
+                    && serverSession != null && !serverSession.isBlank() && epoch > 0;
+        }
+        SkillDeliveryIntake.Scope forOwner(UUID owner) {
+            return new SkillDeliveryIntake.Scope(worldId, serverSession, epoch, owner.toString());
+        }
+    }
+
+    // 与 queueResolver 同样延迟安装，纯 JVM 消费者测试不加载 LearnerPlugin/MC。
+    private static volatile java.util.function.Supplier<UsageLedger.ReadSnapshot> deliveryLedgerReader;
+
+    static void installDeliveryLedgerReaderForTest(java.util.function.Supplier<UsageLedger.ReadSnapshot> reader) {
+        deliveryLedgerReader = reader;
+    }
+
     /** setup 时调一次：记下 configDir、读开关、重建跨会话 T3 计数。 */
     static void install(Path configDir) {
         configDirCache = configDir;
@@ -261,6 +281,12 @@ final class LearnerAutoIntake {
         if (queueResolver == null) {
             queueResolver = LearnerPlugin::queue;
         }
+        if (deliveryLedgerReader == null) {
+            deliveryLedgerReader = () -> {
+                UsageLedger ledger = LearnerPlugin.usageLedger();
+                return ledger == null ? null : ledger.readSnapshot();
+            };
+        }
     }
 
     /** 测试接缝：换队列解析器。生产代码不许调。 */
@@ -270,11 +296,15 @@ final class LearnerAutoIntake {
 
     /** 每 tick 由 LearnerMod 调；内部自己节流。观测/入队任何异常都不外抛。 */
     static void onServerTick(long gameTimeTicks) {
+        onServerTick(gameTimeTicks, null);
+    }
+
+    static void onServerTick(long gameTimeTicks, java.util.function.Supplier<DeliveryScope> currentScope) {
         try {
             if (configDirCache == null || !maybeReloadToggle()) return;
             if (!enabled) return;
             if (gameTimeTicks <= 0 || gameTimeTicks % SCAN_INTERVAL_TICKS != 0) return;
-            scanOnce();
+            scanOnce(currentScope);
             // B1（契约 §4③）：普通工具失败的确定性采集（聚合后入同一个队列，不另造通道）
             try {
                 ToolFailureIntake.scanOnce(configDirCache, queueResolver);
@@ -319,10 +349,29 @@ final class LearnerAutoIntake {
 
     /** 一次扫描：拉增量 → 逐条判定 → 入队 → 落事件。返回本轮入队数（测试用）。 */
     static int scanOnce() {
-        // 开关也挡直调（测试/未来别的调用方）：关了就是关了，不许绕过。
-        if (!enabled) return 0;
+        return scanOnce(null);
+    }
+
+    /**
+     * C1-B（2026-11-13）：真实扫描的末段消费交付快照。
+     * 保留 instrumentation/deferred 的旧优先级和提前退出；其无增量/读失败不代表 ledger 没有交付。
+     * currentScope 由 MC 薄壳惰性捕获；开关/null 配置之后才读一次完整账本。
+     */
+    static int scanOnce(java.util.function.Supplier<DeliveryScope> currentScope) {
+        if (!enabled || configDirCache == null) return 0;
+        Map<UUID, Integer> enqueuedBy = new LinkedHashMap<>();
+        try {
+            scanInstrumentation(enqueuedBy);
+        } catch (RuntimeException | java.io.IOError failure) {
+            LearnerMonitor.publish("auto_intake_failed", Map.of("reason", "instrumentation_failed: " + safe(failure)));
+        }
+        // 最后消费；异常隔离，不能阻断 tick 后续的 ToolFailureIntake/nudge。
+        scanDeliveries(currentScope, enqueuedBy);
+        return enqueuedBy.values().stream().mapToInt(Integer::intValue).sum();
+    }
+
+    private static int scanInstrumentation(Map<UUID, Integer> enqueuedBy) {
         Path dir = configDirCache;
-        if (dir == null) return 0;
         String generation = FeedbackChannel.generationForConfigDir(dir);
         long cursor = loadCursor(generation);
         Path jsonl = dir.resolve("monitor/instrumentation.jsonl");
@@ -341,7 +390,6 @@ final class LearnerAutoIntake {
         }
 
         // 事件归属的同伴各建一条队列；无主事件如实跳过（手动口同款三态）
-        Map<UUID, Integer> enqueuedBy = new LinkedHashMap<>();
         int rejected = 0, unattributed = 0, stormSuppressed = 0, dupSkipped = 0, queueFull = 0, stale = 0;
         long nowMs = System.currentTimeMillis();
 
@@ -457,6 +505,79 @@ final class LearnerAutoIntake {
         return enqueuedBy.values().stream().mapToInt(Integer::intValue).sum();
     }
 
+
+    /**
+     * 一次读完整 ledger，再按 owner 跑一次原 Intake；绝不逐行 run（会丢 RESULT/latest 关联）。
+     * 宿主只传旧预算余量；物理写入后 journal 失败的预算事务仍由 Intake 负责，不用队列深度猜成功。
+     */
+    private static void scanDeliveries(java.util.function.Supplier<DeliveryScope> currentScope,
+                                       Map<UUID, Integer> enqueuedBy) {
+        if (deliveryLedgerReader == null || currentScope == null || queueResolver == null) return;
+        try {
+            UsageLedger.ReadSnapshot snapshot = deliveryLedgerReader.get();
+            if (snapshot == null) {
+                LearnerMonitor.publish("auto_intake_delivery_failed", Map.of("reason", "ledger_not_ready"));
+                return;
+            }
+            if (snapshot.status() != UsageLedger.ReadStatus.READY) {
+                LearnerMonitor.publish("auto_intake_delivery_failed", Map.of(
+                        "reason", "ledger_" + snapshot.status().name().toLowerCase(java.util.Locale.ROOT),
+                        "malformed_lines", snapshot.malformedLines()));
+                return; // 丢失的坏行可能是 RESULT，部分可读不可冒完整账。
+            }
+            DeliveryScope current = currentScope.get();
+            if (current == null || !current.complete()) {
+                LearnerMonitor.publish("auto_intake_delivery_failed", Map.of("reason", "scope_unknown"));
+                return;
+            }
+            java.util.Set<UUID> owners = new java.util.LinkedHashSet<>();
+            for (UsageLedger.Entry row : snapshot.rows()) {
+                try { owners.add(UUID.fromString(row.companionId())); }
+                catch (IllegalArgumentException ignored) { /* 缺失/非 UUID 的 owner 不猜归属。 */ }
+            }
+            SkillDeliveryIntake.EnqueuedJournal journal = new SkillDeliveryIntake.EnqueuedJournal() {
+                public boolean contains(String id) { return ENQUEUED.contains(id); }
+                public void remember(String id) { rememberDelivery(id); }
+            };
+            for (UUID owner : owners) {
+                int remaining = MAX_ENQUEUE_PER_SCAN - enqueuedBy.getOrDefault(owner, 0);
+                if (remaining <= 0) continue;
+                try {
+                    SkillDeliveryIntake.Scan result = SkillDeliveryIntake.run(snapshot.rows(), current.forOwner(owner),
+                            queueResolver.apply(owner), journal, StormGuard::admitIfEnqueued,
+                            System.currentTimeMillis(), remaining);
+                    if (result.enqueued() > 0) enqueuedBy.merge(owner, result.enqueued(), Integer::sum);
+                    LearnerMonitor.publish("auto_intake_delivery", Map.of(
+                            "companion_id", owner.toString(), "remaining_budget", remaining,
+                            "enqueued", result.enqueued(), "foreign_scope", result.foreignScope(),
+                            "duplicate", result.duplicate(), "storm_suppressed", result.stormSuppressed(),
+                            "failed", result.failed(), "result_channel", result.resultChannel()));
+                } catch (RuntimeException | java.io.IOError failure) {
+                    LearnerMonitor.publish("auto_intake_delivery_failed", Map.of(
+                            "companion_id", owner.toString(), "reason", safe(failure)));
+                }
+            }
+        } catch (RuntimeException | java.io.IOError | LinkageError failure) {
+            LearnerMonitor.publish("auto_intake_delivery_failed", Map.of("reason", safe(failure)));
+        }
+    }
+
+    /** sd- 原 journal 严格适配：同文件先写成再更新可见集合；旧 ai- 宽松写口保持原样。 */
+    private static void rememberDelivery(String memoId) {
+        Path dir = configDirCache;
+        if (dir == null) throw new IllegalStateException("delivery journal config unavailable");
+        try {
+            Files.createDirectories(dir);
+            Files.writeString(dir.resolve(ENQUEUED_JOURNAL), GSON.toJson(Map.of("id", memoId)) + "\n",
+                    StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND);
+        } catch (java.io.IOException failure) {
+            throw new java.io.UncheckedIOException(failure);
+        }
+        // 旧裁剪会清空集合；先腾空间再发布本条，避免刚落盘又被误报 contains=false。
+        if (ENQUEUED.size() >= MAX_ENQUEUED_KEYS) trimEnqueuedKeys();
+        ENQUEUED.add(memoId);
+    }
 
     /**
      * 把冷却已过的「被抑制候选」放回队列（2026-10-26）。

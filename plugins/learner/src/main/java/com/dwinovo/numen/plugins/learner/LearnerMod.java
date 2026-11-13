@@ -30,7 +30,14 @@ public final class LearnerMod {
 
     private void onServerTick(ServerTickEvent.Pre event) {
         if (event.getServer() != null) {
-            LearnerAutoIntake.onServerTick(event.getServer().getTickCount());
+            LearnerAutoIntake.onServerTick(event.getServer().getTickCount(), () -> {
+                // 2026-11-13 C1-B：只在到期扫描时问实际 server 的既有身份 provider。
+                var token = com.dwinovo.numen.api.WorldContextStamp.capture(event.getServer());
+                var identity = token.identity();
+                if (identity == null) return null;
+                return new LearnerAutoIntake.DeliveryScope(identity.get("world_id"),
+                        identity.get("server_session"), token.epoch());
+            });
         }
     }
 }
