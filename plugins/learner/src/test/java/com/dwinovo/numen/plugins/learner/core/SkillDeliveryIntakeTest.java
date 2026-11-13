@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -331,6 +332,142 @@ class SkillDeliveryIntakeTest {
                 Set.of(), Set.of(), 1));
     }
 
+    /**
+     * 2026-11-13: durable success stays zero on journal failure, but real queue writes
+     * must still obey the caller's existing budget; counters alone cannot prove this.
+     */
+    @Test
+    void journalFailureCannotExceedPhysicalEnqueueBudget() throws IOException {
+        UsageLedger ledger = new UsageLedger(dir);
+        var produced = SkillDeliveryEvidence.record(new SkillDeliveryEvidence.Context(
+                "req-physical-budget", W, S, 1L, C, "EXECUTOR", "execution", "", "",
+                List.of(new SkillDeliveryEvidence.Ref("skill:sk-budget-a", "v1"),
+                        new SkillDeliveryEvidence.Ref("skill:sk-budget-b", "v1"))), ledger);
+        assertEquals(2, produced.written());
+        assertFalse(produced.ioFailed());
+        assertEquals(2, ledger.all().stream().map(UsageLedger.Entry::artifactId).distinct().count());
+        Path journalFile = Files.createDirectory(dir.resolve("unwritable-budget-journal"));
+        var journal = fileJournal(journalFile);
+        MemoQueue queue = new MemoQueue(dir.resolve("budget-memos.json"));
+        int before = new MemoQueue(queue.file()).size();
+        Set<String> deliveryFingerprints = new HashSet<>();
+        // Capture the real admission keys without executing any queue write.
+        SkillDeliveryIntake.run(ledger.all(), scope(W), queue, journal,
+                (c, fp, now, once) -> { deliveryFingerprints.add(fp); return false; }, 1000L, 1);
+        assertEquals(2, deliveryFingerprints.size(), "the two real deliveries must have different fingerprints");
+        assertEquals(before, new MemoQueue(queue.file()).size());
+        StormGuard.resetForTest();
+        try {
+            var scan = SkillDeliveryIntake.run(ledger.all(), scope(W), queue, journal,
+                    StormGuard::admitIfEnqueued, 1000L, 1);
+            int physicalNew = new MemoQueue(queue.file()).size() - before;
+            assertAll(
+                    () -> assertTrue(physicalNew <= 1, "budget=1 must cap physical new memos even when journal keeps failing"),
+                    () -> assertTrue(physicalNew > 0, "the positive control must reach a real queue write"),
+                    () -> assertEquals(physicalNew, scan.physicalAdded(), "receipt must match the fresh queue read"),
+                    () -> assertEquals(0, scan.enqueued(), "enqueued still means durable queue+journal success"),
+                    () -> assertTrue(scan.failed() > 0),
+                    () -> {
+                        assertTrue(Files.isDirectory(journalFile));
+                        for (var delivery : ledger.all())
+                            assertFalse(journal.contains(SkillDeliveryIntake.memoIdOf(delivery)));
+                    },
+                    () -> {
+                        for (String fp : deliveryFingerprints)
+                            assertTrue(StormGuard.admitIfEnqueued(C, fp, 1000L, () -> true),
+                                    "failed journal transactions must leave cooldown uncommitted");
+                    });
+        } finally {
+            StormGuard.resetForTest();
+        }
+    }
+
+    /** 2026-11-13 F3: use a real disk fault and the same journal instance, then reload. */
+    @Test
+    void diskJournalFailureRetriesRepairsAndReloadsWithoutDuplicateMemo() throws IOException {
+        UsageLedger ledger = new UsageLedger(dir);
+        var produced = SkillDeliveryEvidence.record(new SkillDeliveryEvidence.Context(
+                "req-disk-retry", W, S, 1L, C, "EXECUTOR", "execution", "", "",
+                List.of(new SkillDeliveryEvidence.Ref("skill:sk-disk-retry", "v1"))), ledger);
+        assertEquals(1, produced.written());
+        assertFalse(produced.ioFailed());
+        String memoId = SkillDeliveryIntake.memoIdOf(ledger.all().get(0));
+        Path journalFile = Files.createDirectory(dir.resolve("unwritable-retry-journal"));
+        var journal = fileJournal(journalFile);
+        MemoQueue queue = new MemoQueue(dir.resolve("retry-memos.json"));
+        int[] calls = {0, 0}; // admission, transaction callback
+        Set<String> originalFingerprints = new HashSet<>();
+        SkillDeliveryIntake.Admission admission = (c, fp, now, once) -> {
+            originalFingerprints.add(fp);
+            calls[0]++;
+            return StormGuard.admitIfEnqueued(c, fp, now, () -> {
+                calls[1]++;
+                return once.getAsBoolean();
+            });
+        };
+        StormGuard.resetForTest();
+        try {
+            var first = SkillDeliveryIntake.run(ledger.all(), scope(W), queue, journal,
+                    admission, 1000L, 1);
+            assertEquals(1, first.failed());
+            assertEquals(0, first.enqueued());
+            assertEquals(1, first.physicalAdded());
+            assertFalse(journal.contains(memoId), "failed disk append must not poison in-memory dedup");
+            assertFalse(fileJournal(journalFile).contains(memoId));
+            assertEquals(1, new MemoQueue(queue.file()).size());
+            String queueAfterFailure = Files.readString(queue.file());
+            var stillFailed = SkillDeliveryIntake.run(ledger.all(), scope(W), queue, journal,
+                    admission, 1000L, 1);
+            assertEquals(1, stillFailed.failed(), "same journal must actually retry IO while the fault persists");
+            assertEquals(0, stillFailed.duplicate(), "failed IO is not a remembered success");
+            assertEquals(0, stillFailed.enqueued());
+            assertEquals(0, stillFailed.physicalAdded());
+            assertFalse(journal.contains(memoId));
+            assertFalse(fileJournal(journalFile).contains(memoId));
+            assertEquals(1, new MemoQueue(queue.file()).size());
+            assertEquals(queueAfterFailure, Files.readString(queue.file()));
+            Files.delete(journalFile); // Remove only the empty fault directory under this test's TempDir.
+            var repaired = SkillDeliveryIntake.run(ledger.all(), scope(W), queue, journal,
+                    admission, 1000L, 1);
+            assertEquals(0, repaired.failed());
+            assertEquals(0, repaired.enqueued(), "journal repair is not a fresh physical queue write");
+            assertEquals(0, repaired.physicalAdded());
+            assertEquals(1, repaired.duplicate());
+            assertTrue(journal.contains(memoId));
+            assertEquals(3, calls[0]);
+            assertEquals(3, calls[1], "both failures and repair must reach the real transaction at the same time");
+            assertEquals(1, new MemoQueue(queue.file()).size());
+            assertEquals(queueAfterFailure, Files.readString(queue.file()));
+            var written = Files.readAllLines(journalFile);
+            assertEquals(1, written.size());
+            assertEquals(memoId, JsonParser.parseString(written.get(0)).getAsJsonObject().get("id").getAsString());
+            assertEquals(1, originalFingerprints.size());
+            int[] repairProbeCalls = {0};
+            for (String fp : originalFingerprints) {
+                assertTrue(StormGuard.admitIfEnqueued(C, fp, 1000L, () -> { repairProbeCalls[0]++; return true; }),
+                        "repair-only success must not commit cooldown before this direct same-time probe");
+            }
+            assertEquals(1, repairProbeCalls[0]);
+            var reloadedJournal = fileJournal(journalFile);
+            MemoQueue reloadedQueue = new MemoQueue(queue.file());
+            assertTrue(reloadedJournal.contains(memoId), "dedup must survive a new journal instance");
+            var reloaded = SkillDeliveryIntake.run(ledger.all(), scope(W), reloadedQueue, reloadedJournal,
+                    admission, 1000L, 1);
+            assertEquals(0, reloaded.enqueued());
+            assertEquals(0, reloaded.physicalAdded());
+            assertEquals(0, reloaded.failed());
+            assertEquals(1, reloaded.duplicate());
+            assertEquals(3, calls[0], "reloaded journal must skip admission, not rely on queue seen");
+            assertEquals(3, calls[1]);
+            assertEquals(List.of(memoId), reloadedQueue.all().stream().map(Memo::id).toList());
+            assertEquals(queueAfterFailure, Files.readString(reloadedQueue.file()));
+            assertEquals(written, Files.readAllLines(journalFile), "replay must not append another journal row");
+            assertEquals(1, ledger.all().size(), "intake must not add adoption, result or effectiveness facts");
+        } finally {
+            StormGuard.resetForTest();
+        }
+    }
+
     /** 盘上 journal（与 LearnerAutoIntake.learner-enqueued.jsonl 同形：一行 {"id":...}）。 */
     private static SkillDeliveryIntake.EnqueuedJournal fileJournal(Path file) throws IOException {
         Set<String> ids = new HashSet<>();
@@ -347,11 +484,11 @@ class SkillDeliveryIntakeTest {
         return new SkillDeliveryIntake.EnqueuedJournal() {
             public boolean contains(String memoId) { return ids.contains(memoId); }
             public void remember(String memoId) {
-                ids.add(memoId);
                 try {
                     Files.writeString(file, "{\"id\":\"" + memoId + "\"}\n",
                             java.nio.file.StandardOpenOption.CREATE,
                             java.nio.file.StandardOpenOption.APPEND);
+                    ids.add(memoId); // 2026-11-13 F3: failed disk write must not claim in-memory success.
                 } catch (IOException e) {
                     throw new IllegalStateException("journal write failed", e);
                 }
