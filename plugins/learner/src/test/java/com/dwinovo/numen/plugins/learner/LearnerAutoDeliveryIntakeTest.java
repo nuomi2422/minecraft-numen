@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * C1-B 2026-11-13: drive the real scanOnce, disk ledger, original journal and MemoQueue.
  * Only existing host inputs are injected; no imitation controller, LLM or game is invoked.
- * Physical append-after-journal-failure budget counterexamples belong to the separate Intake batch.
+ * The shared-budget fault case verifies this host against the independently maintained Intake core.
  */
 class LearnerAutoDeliveryIntakeTest {
     @TempDir Path dir;
@@ -266,6 +266,77 @@ class LearnerAutoDeliveryIntakeTest {
         assertEquals(1, reads.get(), "one snapshot shared across both owners");
         assertEquals(1, scan(), "leftover delivery is retryable next scan with no new events");
         assertEquals(17, queue(A).size());
+    }
+
+    @Test void journalFailureAfterInstrumentationStillSharesPhysicalBudgetAndRecovers() throws Exception {
+        instrumentation(15);
+        var first = delivery("shared-fault-first", A, "shared-fault-first");
+        var later = delivery("shared-fault-later", A, "shared-fault-later");
+        String firstId = SkillDeliveryIntake.memoIdOf(first);
+        String laterId = SkillDeliveryIntake.memoIdOf(later);
+        assertNotEquals(firstId, laterId);
+        Set<String> oldIds = new HashSet<>();
+        for (int i = 0; i < 15; i++) oldIds.add("ai-ev-" + i);
+        List<String> oldJournal = new ArrayList<>();
+        Path backup = dir.resolve("successful-instrumentation-journal.jsonl");
+        LearnerAutoIntake.installDeliveryLedgerReaderForTest(() -> {
+            reads.incrementAndGet();
+            try {
+                // This existing seam runs after the real instrumentation/deferred segment.
+                var disk = new MemoQueue(queue(A).file());
+                assertEquals(oldIds, disk.all().stream().map(Memo::id).collect(java.util.stream.Collectors.toSet()));
+                assertEquals(15, disk.size());
+                assertTrue(Files.isRegularFile(journal()));
+                oldJournal.addAll(Files.readAllLines(journal()));
+                assertEquals(15, oldJournal.size());
+                assertEquals(oldIds, oldJournal.stream().map(line -> com.google.gson.JsonParser.parseString(line)
+                        .getAsJsonObject().get("id").getAsString()).collect(java.util.stream.Collectors.toSet()));
+                Files.move(journal(), backup); // Preserve all successful legacy writes before blocking sd writes.
+                Files.createDirectory(journal()); // Persistent real IO failure at the original journal path.
+            } catch (java.io.IOException failure) {
+                throw new java.io.UncheckedIOException(failure);
+            }
+            return ledger.readSnapshot();
+        });
+        int failedScan = scan();
+        List<Memo> afterFailure = List.copyOf(new MemoQueue(queue(A).file()).all());
+        Set<String> failedKeys = new HashSet<>(keys());
+        boolean faultStillPresent = Files.isDirectory(journal());
+        assertTrue(faultStillPresent);
+        Files.delete(journal()); // Only this test's known empty @TempDir fault directory.
+        Files.move(backup, journal());
+        LearnerAutoIntake.installDeliveryLedgerReaderForTest(() -> {
+            reads.incrementAndGet();
+            return ledger.readSnapshot();
+        });
+        int repairedScan = scan();
+        var afterRepair = new MemoQueue(queue(A).file());
+        List<String> repairedJournal = Files.readAllLines(journal());
+        List<String> repairedIds = repairedJournal.stream().map(line -> com.google.gson.JsonParser.parseString(line)
+                .getAsJsonObject().get("id").getAsString()).toList();
+        keys().clear();
+        queues.clear();
+        LearnerAutoIntake.install(dir);
+        int replay = scan();
+        assertAll(
+                () -> assertEquals(15, failedScan, "only the fifteen legacy entries durably succeeded"),
+                () -> assertEquals(1, afterFailure.stream().filter(m -> m.stage().equals("skill_delivery")).count(),
+                        "the remaining one physical slot applies even when every sd journal write fails"),
+                () -> assertTrue(afterFailure.size() <= 16, "one scan must never physically add more than sixteen"),
+                () -> assertTrue(failedKeys.containsAll(oldIds)),
+                () -> assertFalse(failedKeys.contains(firstId), "sd durable success remains zero"),
+                () -> assertFalse(failedKeys.contains(laterId), "sd durable success remains zero"),
+                () -> assertEquals(1, repairedScan, "repair the existing sd without counting it new, then admit the other"),
+                () -> assertEquals(17, afterRepair.size()),
+                () -> assertTrue(afterRepair.contains(firstId) && afterRepair.contains(laterId)),
+                () -> assertEquals(oldJournal, repairedJournal.subList(0, 15), "preserve legacy journal verbatim"),
+                () -> assertEquals(17, repairedIds.size()),
+                () -> assertEquals(1, Collections.frequency(repairedIds, firstId)),
+                () -> assertEquals(1, Collections.frequency(repairedIds, laterId)),
+                () -> assertEquals(0, replay, "real journal reload prevents all delivery replay"),
+                () -> assertEquals(17, queue(A).size()),
+                () -> assertEquals(repairedJournal, Files.readAllLines(journal())),
+                () -> assertEquals(3, reads.get(), "one complete ledger read in each real scan"));
     }
 
     @Test void fullPriorOwnerBudgetDoesNotJournalOrCoolDownDelivery() throws Exception {
