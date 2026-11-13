@@ -579,6 +579,32 @@ public final class LearnerPlugin implements NumenPlugin {
         }
     }
 
+    // ── 2026-11-13 red batch: restart-safe auto-review state ABI ────────────────
+    // The real consumer is maybeNudgeReview: after a restart it must decide from the
+    // persisted ReviewState file, not from in-memory maps. These stubs deliberately
+    // fail closed until the atomic, merge-preserving writer is implemented.
+    record ReviewTimes(long lastNudgeAt, long lastAutoReviewAt, long lastReviewStartedAt) {}
+
+    record ReviewStateRead(boolean known, ReviewTimes times) {
+        static ReviewStateRead unknown() { return new ReviewStateRead(false, null); }
+    }
+
+    static void rememberNudge(java.nio.file.Path dir, java.util.UUID companion, long at) {
+        // red-batch stub: persist last_nudge_at without dropping other state fields
+    }
+
+    static void rememberReviewStarted(java.nio.file.Path dir, java.util.UUID companion, long at) {
+        // red-batch stub: persist last_review_started_at
+    }
+
+    static void rememberAutoReview(java.nio.file.Path dir, java.util.UUID companion, long at) {
+        // red-batch stub: persist last_auto_review_at
+    }
+
+    static ReviewStateRead readReviewTimes(java.nio.file.Path dir, java.util.UUID companion) {
+        return ReviewStateRead.unknown(); // red-batch stub: never claim a known time
+    }
+
     static String lastReviewAt() {
         return lastReviewAt;
     }
