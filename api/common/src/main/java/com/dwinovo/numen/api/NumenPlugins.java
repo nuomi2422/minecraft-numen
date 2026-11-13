@@ -569,20 +569,14 @@ public final class NumenPlugins {
         }
     }
 
-    private static final List<Consumer<DeliveredContext>> CONTEXT_DELIVERED_SINKS = new CopyOnWriteArrayList<>();
-
     /** Additional consumer of the same delivery, not a second knowledge store. */
     public static void sinkRequestDeliveredWithContext(Consumer<DeliveredContext> sink) {
-        if (sink != null) CONTEXT_DELIVERED_SINKS.add(sink);
+        DeliveredContextDispatch.sinkRequestDeliveredWithContext(sink);
     }
-
-    /** 落账终点：经验插件注册后，每轮把「真保留的 refs」交给它记 ExposureLedger。 */
-    private static final List<java.util.function.BiConsumer<UUID, List<DeliveredRef>>> DELIVERED_SINKS
-            = new CopyOnWriteArrayList<>();
 
     /** 注册交付账本终点（api 不依赖 experience-core，由插件侧自己调 ExposureLedger.record）。 */
     public static void sinkRequestDelivered(java.util.function.BiConsumer<UUID, List<DeliveredRef>> sink) {
-        if (sink != null) DELIVERED_SINKS.add(sink);
+        DeliveredContextDispatch.sinkRequestDelivered(sink);
     }
 
     /**
@@ -616,34 +610,11 @@ public final class NumenPlugins {
     public static void deliveryDispatched(
             java.util.concurrent.atomic.AtomicReference<DeliveredContext> pending,
             String type, java.util.Map<String, ?> event) {
-        if (pending == null || !"llm_request".equals(type) || event == null
-                || !"dispatched".equals(event.get("status"))) return;
-        DeliveredContext captured = pending.get();
-        if (captured == null || captured.requestId().isBlank()
-                || !captured.requestId().equals(event.get("requestId"))) return;
-        if (pending.compareAndSet(captured, null)) requestDelivered(captured);
+        DeliveredContextDispatch.deliveryDispatched(pending, type, event);
     }
 
     public static void requestDelivered(DeliveredContext context) {
-        if (context == null || context.companion() == null || context.refs().isEmpty()) return;
-        List<DeliveredRef> kept = context.refs().stream().filter(r -> !r.truncated()).toList();
-        if (kept.isEmpty()) return;
-        DeliveredContext delivered = new DeliveredContext(context.companion(), context.worldToken(),
-                context.requestId(), context.phase(), context.role(), context.taskId(), context.taskToolCallId(), kept);
-        for (java.util.function.BiConsumer<UUID, List<DeliveredRef>> sink : DELIVERED_SINKS) {
-            try {
-                sink.accept(delivered.companion(), kept);
-            } catch (Throwable e) {
-                Constants.LOG.error("[numen] request_delivered 落账失败（观测旁路，不挡请求）", e);
-            }
-        }
-        for (Consumer<DeliveredContext> sink : CONTEXT_DELIVERED_SINKS) {
-            try {
-                sink.accept(delivered);
-            } catch (Throwable e) {
-                Constants.LOG.error("[numen] contextual delivery sink failed (request continues)", e);
-            }
-        }
+        DeliveredContextDispatch.requestDelivered(context);
     }
 
     /**

@@ -1,11 +1,14 @@
 package com.dwinovo.numen.plugins.learner;
 
 import com.dwinovo.numen.api.NumenPlugins;
+import com.dwinovo.numen.api.DeliveredContextDispatch;
 import com.dwinovo.numen.api.WorldContextStamp;
 import com.dwinovo.numen.plugins.learner.core.UsageLedger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -14,9 +17,11 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /**
- * 2026-11-13 C1 真实注册路径：{@code NumenPlugins.deliveryDispatched → context sink → UsageLedger}。
+ * 2026-11-13 C1 真实注册路径：{@code DeliveredContextDispatch.deliveryDispatched → context sink → UsageLedger}。
  * 不是直接调中性 helper：这里注册的是 setup 同一段 {@link DeliveryContextSink}，
  * 由父 API 的真实派发纯函数（llm_request/dispatched + requestId CAS）触发。
  */
@@ -32,14 +37,37 @@ class DeliveryDispatchIntegrationTest {
     }
 
     private static void dispatch(AtomicReference<NumenPlugins.DeliveredContext> pending, String requestId) {
-        NumenPlugins.deliveryDispatched(pending, "llm_request",
+        DeliveredContextDispatch.deliveryDispatched(pending, "llm_request",
                 Map.of("status", "dispatched", "requestId", requestId));
     }
 
+    /** Source wiring only: avoid initializing the MC facade while pinning its real delegates. */
+    private static void assertProductionFacadeDelegates() throws IOException {
+        Path root = Path.of("").toAbsolutePath();
+        while (root != null && !Files.isRegularFile(root.resolve(
+                "api/common/src/main/java/com/dwinovo/numen/api/NumenPlugins.java"))) {
+            root = root.getParent();
+        }
+        assertTrue(root != null, "source tree must be available for the production wiring check");
+        String facade = Files.readString(root.resolve(
+                "api/common/src/main/java/com/dwinovo/numen/api/NumenPlugins.java"));
+        assertTrue(facade.contains("DeliveredContextDispatch.sinkRequestDeliveredWithContext(sink);"));
+        assertTrue(facade.contains("DeliveredContextDispatch.sinkRequestDelivered(sink);"));
+        assertTrue(facade.contains("DeliveredContextDispatch.deliveryDispatched(pending, type, event);"));
+        assertTrue(facade.contains("DeliveredContextDispatch.requestDelivered(context);"));
+        assertFalse(facade.contains("CONTEXT_DELIVERED_SINKS"), "facade must not retain a parallel sink table");
+        assertFalse(facade.contains("DELIVERED_SINKS"), "facade must not retain a parallel legacy table");
+        String setup = Files.readString(root.resolve(
+                "plugins/learner/src/main/java/com/dwinovo/numen/plugins/learner/LearnerPlugin.java"));
+        assertTrue(setup.contains("NumenPlugins.sinkRequestDeliveredWithContext("));
+        assertTrue(setup.contains("DeliveryContextSink.forLedger("), "setup must register the same ledger mapping");
+    }
+
     @Test
-    void realDispatchWritesOneRowAndReplayAddsNothing() {
+    void realDispatchWritesOneRowAndReplayAddsNothing() throws IOException {
+        assertProductionFacadeDelegates();
         UsageLedger ledger = new UsageLedger(dir);
-        NumenPlugins.sinkRequestDeliveredWithContext(DeliveryContextSink.forLedger(ledger));
+        DeliveredContextDispatch.sinkRequestDeliveredWithContext(DeliveryContextSink.forLedger(ledger));
 
         var pending = new AtomicReference<>(ctx("req-int-1"));
         dispatch(pending, "req-int-1");
@@ -56,7 +84,7 @@ class DeliveryDispatchIntegrationTest {
     @Test
     void missingOrMismatchedRequestIdNeverReachesTheSink() {
         UsageLedger ledger = new UsageLedger(dir);
-        NumenPlugins.sinkRequestDeliveredWithContext(DeliveryContextSink.forLedger(ledger));
+        DeliveredContextDispatch.sinkRequestDeliveredWithContext(DeliveryContextSink.forLedger(ledger));
 
         var blank = new AtomicReference<>(ctx(""));
         dispatch(blank, "");
@@ -67,7 +95,7 @@ class DeliveryDispatchIntegrationTest {
         assertEquals(0, ledger.all().size(), "派发事件 requestId 不匹配不消费");
 
         var notDispatched = new AtomicReference<>(ctx("req-a"));
-        NumenPlugins.deliveryDispatched(notDispatched, "llm_request",
+        DeliveredContextDispatch.deliveryDispatched(notDispatched, "llm_request",
                 Map.of("status", "composed", "requestId", "req-a"));
         assertEquals(0, ledger.all().size(), "组装/未派发不记");
     }
