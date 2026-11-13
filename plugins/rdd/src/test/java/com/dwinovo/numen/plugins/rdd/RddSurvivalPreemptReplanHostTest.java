@@ -18,72 +18,130 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * 044 B2 · 生存抢占 → 重规划 → 恢复主线：<b>真实宿主消费者反例</b>（test-only，冻结于 2026-11-13）。
+ * 044 B2 · 生存抢占 → 重规划 → 恢复主线：真实宿主控制组（test-only，2026-11-13）。
  *
- * <p><b>V03 原件</b>：{@code D:/rdd/workspace/.tmp/attack-core-V03/latest.log:15906-15927} 与
- * {@code events.jsonl:17834}。t9(goto) 在 02:24:49 被内部取消（CANCELLED，不是外部 close），
- * 同一刻 {@code RddDetector.survivalPreempt} 判定 SEEK_FOOD_FIRST hunger=9 hp=20，
- * 随后 {@code RddPlugin} 打印「无法进入重规划 … current subtask is not stuck: RUNNING」，之后没有新任务。
+ * <p><b>V03 原件</b>：{@code attack-core-V03/latest.log:15906-15927}、{@code events.jsonl:17834}。
+ * t9(goto) 02:24:49 内部取消（CANCELLED，不是外部 close），同刻 SEEK_FOOD_FIRST hunger=9 hp=20，
+ * 随后「无法进入重规划 … current subtask is not stuck: RUNNING」，之后没有新任务。
  *
- * <p><b>调用链</b>（ef5ad8ec）：
- * {@code RddDetector.survivalPreempt}（L380 先记 60s 冷却 → L382 task_stop → L387 requestReplan）
- * → {@code RddPlugin.requestReplan}（L1416 先 merge REPLAN_COUNTS → L1425 enterReplanningFromStuck）
- * → {@code TaskChain.enterReplanningFromStuck}（L996 要求 FAILED/STALLED，RUNNING 直接抛）
- * → 被 L1427 捕获吞掉、返回 false。于是：链仍 ACTIVE、二级仍 RUNNING、身体已停、没有重规划、没有新任务。
+ * <p><b>调用链</b>（ef5ad8ec）：{@code RddDetector.survivalPreempt} L380 记冷却 → L382 task_stop →
+ * L387 {@code RddPlugin.requestReplan(uuid, reason)}（两参＝失败驱动）→ L1416 先 merge REPLAN_COUNTS →
+ * L1425 {@code enterReplanningFromStuck} → {@code TaskChain} L996 要求 FAILED/STALLED → RUNNING 抛 →
+ * L1427 捕获吞掉、返回 false。
  *
- * <p>相邻的死亡结算（RddPlugin L1613-1618）已经因为「人不是卡住，是计划所依据的事实变了」而走
- * 允许 RUNNING 的入口；生存抢占是同一类「事实变化/主动抢占」，不是 STUCK。
+ * <p><b>按指挥官 2026-11-13 决定</b>：原因文本只解释、不作状态/授权来源；不新增无限抢占额度、
+ * 不改上限/park 政策；只有被合法宿主转换接受的请求才花原有有界预算，被拒绝一律不花；
+ * 不复制 TaskChain 同形方法、不删 STUCK guard。因此本文件不按 reason 前缀断言抢占放行，
+ * 只冻结这些控制；typed 入口由产品授权后再补对应用例。
  *
- * <p>本测试只断言<b>宿主消费者必须满足的最小契约</b>，不测 TaskChain 独立方法，也不改任何产品代码：
- * <ol>
- *   <li>RUNNING 上的生存抢占请求必须被宿主接受（不能靠伪标 FAILED/STALLED 或删 guard 换绿）；</li>
- *   <li>被拒绝的重规划请求不得先花掉 failure 预算（旧代码在进入状态机前就计数）；</li>
- *   <li>已在 REPLANNING 的链不得被迟到的重复抢占再开一次。</li>
- * </ol>
- *
- * <p>现状（ef5ad8ec）第一条与第二条断言为红，即本批要冻结的真实反例；产品修复必须让它们变绿，
- * 且不要求修改本文件。
+ * <p>现状（ef5ad8ec）红：拒绝仍花预算（用例 1/2/4）；进入重规划后旧身体派发记录仍冒充在飞（用例 6）。
+ * 绿：旧 STUCK 正控（3）、旧执行身份在链层被作废（5）。
  */
 class RddSurvivalPreemptReplanHostTest {
 
+    /** 与 V03 现场一致的抢占原因文本（只作说明，不作授权）。 */
     private static final String SURVIVAL_REASON = "survival SEEK_FOOD_FIRST hunger=9 hp=20 free=16";
 
     @Test
-    void survivalPreemptionFromRunningIsAcceptedByHost() throws Exception {
+    void reasonTextDoesNotAuthorizePreemptionAndRefusalIsFree() throws Exception {
         Harness h = new Harness();
         try {
             assertEquals(SubtaskStatus.RUNNING, h.chain.currentSubtaskStatus(),
                     "前提：二级在跑时被生存抢占（V03 t9 正在 goto）");
             boolean accepted = RddPlugin.requestReplan(h.id, SURVIVAL_REASON);
-            assertTrue(accepted,
-                    "生存抢占从 RUNNING 进入重规划必须被宿主接受；现状返回 false，链停在 ACTIVE、无新任务");
-            assertNotEquals(SubtaskStatus.FAILED, h.chain.currentSubtaskStatus(),
-                    "抢占不是失败：不得为了进重规划把当前二级伪造成 FAILED");
-            assertNotEquals(SubtaskStatus.STALLED, h.chain.currentSubtaskStatus(),
-                    "抢占不是卡死：不得为了进重规划把当前二级伪造成 STALLED");
-            assertNotEquals(PrimaryGoalStatus.ACTIVE, h.chain.primaryStatus(),
-                    "被接受的重规划必须真的离开 ACTIVE；本夹具无服务端，宿主按既有路径回落到 PENDING");
+            assertFalse(accepted,
+                    "原因文本只解释：两参失败驱动不得因为 reason 写着 survival 就改走允许 RUNNING 的状态路径");
+            assertEquals(SubtaskStatus.RUNNING, h.chain.currentSubtaskStatus(), "被拒绝后不得伪造 FAILED/STALLED");
+            assertEquals(PrimaryGoalStatus.ACTIVE, h.chain.primaryStatus(), "被拒绝就该保持原状");
+            assertEquals(0, h.failureBudgetUsed(),
+                    "被拒绝的重规划不得先花 failure 预算（RddPlugin L1416 在状态转换前就 merge）");
         } finally {
             h.close();
         }
     }
 
     @Test
-    void refusedReplanMustNotBurnFailureBudget() throws Exception {
+    void nonSurvivalReasonOnRunningIsStillRefusedWithoutSpending() throws Exception {
         Harness h = new Harness();
         try {
-            h.chain.enterReplanningFromNegotiation("soldier COUNTER: 计划前提不成立");
-            assertEquals(PrimaryGoalStatus.REPLANNING, h.chain.primaryStatus());
-            boolean accepted = RddPlugin.requestReplan(h.id, SURVIVAL_REASON);
-            assertFalse(accepted, "已经在 REPLANNING 的链不得被迟到的重复抢占再开一次");
-            assertEquals(0, h.failureBudgetUsed(),
-                    "被拒绝的重规划请求不得先花掉 failure 预算（RddPlugin L1416 在状态转换前就 merge）");
+            boolean accepted = RddPlugin.requestReplan(h.id, "挖不到");
+            assertFalse(accepted, "普通原因在 RUNNING 上同样必须被拒：不得顺带放宽旧路由");
+            assertEquals(SubtaskStatus.RUNNING, h.chain.currentSubtaskStatus());
+            assertEquals(0, h.failureBudgetUsed(), "拒绝不花预算，与原因文本无关");
         } finally {
             h.close();
         }
     }
 
-    /** 真 TaskChain + 真 RddRuntime；只通过反射装到 RddPlugin 的私有注册表上，不新建状态机。 */
+    @Test
+    void duplicateRequestWhileReplanningIsRefusedWithoutSpending() throws Exception {
+        Harness h = new Harness();
+        try {
+            h.chain.enterReplanningFromNegotiation("soldier COUNTER: 计划前提不成立");
+            assertEquals(PrimaryGoalStatus.REPLANNING, h.chain.primaryStatus());
+            boolean accepted = RddPlugin.requestReplan(h.id, SURVIVAL_REASON);
+            assertFalse(accepted, "已在 REPLANNING 的链不得被迟到的重复请求再开一次");
+            assertEquals(0, h.failureBudgetUsed(), "重复/旧身份请求被拒时不得花预算");
+        } finally {
+            h.close();
+        }
+    }
+
+    @Test
+    void stuckFailureRouteStillAcceptedWithExactlyOneBudget() throws Exception {
+        Harness h = new Harness();
+        try {
+            h.chain.markFailed("s0", "挖不到");
+            assertEquals(SubtaskStatus.FAILED, h.chain.currentSubtaskStatus());
+            boolean accepted = RddPlugin.requestReplan(h.id, "挖不到");
+            assertTrue(accepted, "旧正常 STUCK 重规划路由不得回归");
+            assertEquals(1, h.failureBudgetUsed(), "被接受的一次重规划恰好花 1 次 failure 预算");
+            assertNotEquals(SubtaskStatus.FAILED, h.chain.currentSubtaskStatus(),
+                    "进入重规划后旧二级不该再被当作当前 FAILED（无服务端时宿主回落到 PENDING）");
+        } finally {
+            h.close();
+        }
+    }
+
+    @Test
+    void acceptedReplanVoidsOldExecutionIdentityAndLateDuplicateStaysFree() throws Exception {
+        Harness h = new Harness();
+        try {
+            h.chain.bindExecution("s0", "exec-v03-t9");
+            assertEquals("exec-v03-t9", h.chain.activeExecutionId());
+            h.chain.markFailed("s0", "挖不到");
+            assertTrue(RddPlugin.requestReplan(h.id, "挖不到"));
+            assertNull(h.chain.activeExecutionId(), "进入重规划即作废旧执行身份（TaskChain.clearExecutionMetadata）");
+            int used = h.failureBudgetUsed();
+            boolean late = RddPlugin.requestReplan(h.id, "挖不到");
+            assertFalse(late, "旧身份/重复事件不得再开一次重规划");
+            assertEquals(used, h.failureBudgetUsed(), "被拒的迟到请求不得再花预算");
+        } finally {
+            h.close();
+        }
+    }
+
+    /**
+     * 身体派发记录（RddPlugin.BODY，非同一条链的 execution id）在进入重规划后仍指着旧二级。
+     * 若新计划复用同一二级 id，{@code RddBodyDispatcher.maybeSubmit} L42-44 会因
+     * {@code state.subtaskId().equals(current.id())} 直接 return —— 新计划永远不派发。
+     */
+    @Test
+    void acceptedReplanMustNotLeaveOldBodyDispatchStanding() throws Exception {
+        Harness h = new Harness();
+        try {
+            RddPlugin.rememberBody(h.id, "s0", 1);
+            assertEquals("s0", RddPlugin.bodyState(h.id).subtaskId());
+            h.chain.markFailed("s0", "挖不到");
+            assertTrue(RddPlugin.requestReplan(h.id, "挖不到"));
+            assertNull(RddPlugin.bodyState(h.id),
+                    "宿主接受重规划后，旧身体派发记录必须清掉，不能继续冒充 s0 在飞");
+        } finally {
+            h.close();
+        }
+    }
+
+    /** 真 TaskChain + 真 RddRuntime；只通过反射装到 RddPlugin 私有注册表，不新建状态机。 */
     private static final class Harness {
         final UUID id = UUID.randomUUID();
         final TaskChain chain = new TaskChain(new Goal("goal-b2",
@@ -92,7 +150,7 @@ class RddSurvivalPreemptReplanHostTest {
 
         Harness() throws Exception {
             chain.expandCurrentPrimary(List.of(
-                    Subtask.hardCoded("s0", "走到熔炉边", Map.of("asset_key", "minecraft:furnace"), null)));
+                    Subtask.hardCoded("s0", "走到熔炉边", Map.of("asset_key", "minecraft:furnace"))));
             chain.startCurrent();
             installRuntime(id, new RddRuntime(chain, new AssetRegistry()));
         }
@@ -108,6 +166,7 @@ class RddSurvivalPreemptReplanHostTest {
         void close() throws Exception {
             clearRuntime(id);
             budgetMap("REPLAN_COUNTS").remove(budgetKey());
+            RddPlugin.clearBody(id);
         }
     }
 
