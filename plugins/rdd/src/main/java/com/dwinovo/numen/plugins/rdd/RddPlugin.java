@@ -1265,16 +1265,18 @@ private static String withAssets(UUID companionId, String rddContext) {
     }
 
     /**
-     * 生存抢占的 <b>typed 程序来源入口</b>（2026-11-13 首阶段机械接缝）。
+     * 生存抢占的 <b>typed 程序来源入口</b>。
      *
-     * <p>为什么叫“机械接缝”：V03 实机（latest.log:15906-15927）里，生存抢占先从 RUNNING 被两参
-     * 失败驱动入口拒绝，链停在 ACTIVE、没有新任务。要能对“真实消费者”写正控，调用点必须带上
-     * <b>程序来源</b>（{@link RddSurvivalGate.Decision}），而不是靠 reason 文本前缀授权
-     * （指挥官 2026-11-13：原因文本只解释，不作状态/授权来源）。
+     * <p>V03 实机（latest.log:15906-15927）：生存抢占从 RUNNING 被两参失败驱动入口拒绝，
+     * 链停在 ACTIVE、没有新任务。调用点必须带<b>程序来源</b>（{@link RddSurvivalGate.Decision}），
+     * 不靠 reason 文本前缀授权（原因文本只解释，不作状态/授权来源）。
      *
-     * <p>本阶段<b>行为原样委托</b>两参失败驱动入口：参数只用来拼同一条 reason，RUNNING 仍会被
-     * {@code enterReplanningFromStuck} 拒绝，V03 反例保持真红。后续产品修复在此显式走“事实变化”
-     * 转换，不复制 TaskChain 同形方法、不删 STUCK guard、不改预算上限或 park 政策。
+     * <p>2026-11-13 修复：SURVIVAL 走 {@link RddReplanTransition} 的 ACTIVE 事实变化转换，
+     * 由同一消费者做预算与接受回调；不复制 TaskChain 同形方法、不删 STUCK guard。
+     *
+     * <p><b>skipRecoverySideTask = true</b>：生存抢占不是“缺装备/丢东西”的失败驱动重规划。
+     * 否则最近死过时 {@code isMissingAssetCause} 会走恢复支线/插节点并直接 return true，
+     * 而链根本没进 REPLANNING、捕获的原动作也没停 —— Detector 会把“恢复支线已点名”签成“已抢占”。
      */
     static boolean requestReplanForSurvival(UUID companionId, RddSurvivalGate.Decision decision,
                                             int hunger, double hp, int freeSlots,
@@ -1283,7 +1285,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 只在接受后的同步回调里停“进入前捕获的那个任务对象”；拒绝零副作用。
         return requestReplan(companionId,
                 "survival " + decision + " hunger=" + hunger + " hp=" + hp + " free=" + freeSlots,
-                RddReplanTransition.Trigger.SURVIVAL, null, false,
+                RddReplanTransition.Trigger.SURVIVAL, null, true,
                 () -> {
                     if (expectedBody != null && RddCompanionBody.get(companionId) == expectedBody) {
                         stopPreemptedOwner(companionId, expectedAction);
@@ -1396,7 +1398,7 @@ private static String withAssets(UUID companionId, String rddContext) {
 
     /**
      * 重规划主入口（触发源显式）：预算、状态转换、接受后清理都在 {@link RddReplanTransition} 一处完成，
-     * 这里只做资料组装与观测。2026-11-13 首阶段与提取前行为逐字一致。
+     * 这里只做资料组装与观测（预算/转换/接受回调都在 {@link RddReplanTransition}）。
      */
     private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,
                                          String soldierHint, boolean skipRecoverySideTask) {
@@ -1407,7 +1409,10 @@ private static String withAssets(UUID companionId, String rddContext) {
                                          String soldierHint, boolean skipRecoverySideTask,
                                          Runnable acceptedSideEffect) {
         boolean fromNegotiation = trigger == RddReplanTransition.Trigger.NEGOTIATION;
-        if (!skipRecoverySideTask && !fromNegotiation && isMissingAssetCause(companionId, reason)) {
+        // 只有普通失败驱动才可能走“缺失型恢复”路由；SURVIVAL 的 skip=true 保证它一定进 REPLANNING，
+        // 不会被恢复支线/插节点提前 return（否则 Detector 会把“已点名恢复”误签成“已抢占”）。
+        if (RddReplanTransition.usesRecoveryRoute(trigger, skipRecoverySideTask)
+                && isMissingAssetCause(companionId, reason)) {
             // 2026-10-23（主人要求）：首选**派恢复支线**——主线由 SideTaskHost 冻结，支线跑完自动恢复，
             // 完全不改编主线计划。只有支线通道不可用（例如没有活跃身体）才退回"插节点"。
             String what = describeMissing(companionId);
@@ -1455,7 +1460,9 @@ private static String withAssets(UUID companionId, String rddContext) {
             Map<String, Object> loopData = new LinkedHashMap<>();
             loopData.put("companionId", companionId.toString());
             loopData.put("task", primaryId);
-            loopData.put("reason", (fromNegotiation ? "negotiation" : "failure") + " replan budget exhausted (loop)");
+            String exhaustedCause = trigger == RddReplanTransition.Trigger.NEGOTIATION ? "negotiation"
+                    : trigger == RddReplanTransition.Trigger.SURVIVAL ? "survival" : "failure";
+            loopData.put("reason", exhaustedCause + " replan budget exhausted (loop)");
             loopData.put("context", Map.of("attempts", used, "threshold", limit, "fromNegotiation", fromNegotiation));
             RddInstrumentation.publishAt(RddInstrumentation.LOOP_DETECTED, loopData, gt);
             if (RddInstrumentation.recentDeath(companionId, gt)) {

@@ -102,6 +102,15 @@ final class RddReplanTransition {
     }
 
     /**
+     * 恢复路由判定：只有“普通失败驱动、且调用方没跳过恢复”的请求才可能走缺失型恢复
+     * （派恢复支线 / 插恢复节点）。生存抢占与协商都不走恢复路由，保证 typed 入口一定进
+     * REPLANNING，不会被恢复支线提前 return 而让 Detector 把“已点名恢复”误签成“已抢占”。
+     */
+    static boolean usesRecoveryRoute(Trigger trigger, boolean skipRecoverySideTask) {
+        return trigger == Trigger.FAILURE && !skipRecoverySideTask;
+    }
+
+    /**
      * 规划器 attempt 语义：只有<b>失败驱动</b>才表示“上一版被判不可执行”（1）；
      * 协商与生存抢占是事实变化（0），否则会给规划器灌“上一版不可执行”的假话。
      *

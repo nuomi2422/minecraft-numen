@@ -537,6 +537,10 @@ class RddMainlineWiringPinTest {
     void survivalPreemptionSignedOnlyWhenAcceptedAndClearsStaleBodyOnAccept() throws Exception {
         String plugin = plugin();
         assertContains(plugin, "RddReplanTransition.request(", "重规划准入/预算只有一个消费者");
+        assertContains(plugin, "RddReplanTransition.usesRecoveryRoute(",
+                "恢复路由只留给普通失败驱动");
+        assertContains(plugin, "Trigger.SURVIVAL, null, true,",
+                "typed 生存入口必须 skip 恢复支线，保证真的进 REPLANNING");
         assertContains(plugin, "cur == captured ? null : cur",
                 "只按引用清本次 BODY 记录；并发替换出的新记录不碰");
         assertContains(plugin, "RddReplanTransition.ownsCapturedBody(expectedAction",

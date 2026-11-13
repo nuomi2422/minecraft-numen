@@ -141,6 +141,19 @@ class RddSurvivalPreemptReplanHostTest {
         assertFalse(RddReplanTransition.ownsCapturedBody(null, captured), "没捕获到原动作时只重规划、不停体");
     }
 
+    /** 恢复路由只属于普通失败驱动；生存/协商不得被恢复支线提前 return。 */
+    @Test
+    void recoveryRouteIsFailureOnly() {
+        assertTrue(RddReplanTransition.usesRecoveryRoute(RddReplanTransition.Trigger.FAILURE, false),
+                "普通失败可走缺失型恢复");
+        assertFalse(RddReplanTransition.usesRecoveryRoute(RddReplanTransition.Trigger.FAILURE, true),
+                "显式跳过恢复时不走");
+        assertFalse(RddReplanTransition.usesRecoveryRoute(RddReplanTransition.Trigger.SURVIVAL, false),
+                "生存抢占不得被恢复支线提前 return（否则 Detector 会把“已点名恢复”误签成“已抢占”）");
+        assertFalse(RddReplanTransition.usesRecoveryRoute(RddReplanTransition.Trigger.NEGOTIATION, false),
+                "协商不走恢复路由");
+    }
+
     /** 规划器 attempt：只有普通失败是 1；生存/协商是事实变化，必须 0，不能伪造"上一版不可执行"。 */
     @Test
     void planningAttemptIsZeroForSurvivalAndOneForFailure() {
