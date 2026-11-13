@@ -6,15 +6,20 @@ import com.dwinovo.numen.api.WorldContextStamp;
 import com.dwinovo.numen.plugins.learner.core.UsageLedger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.Logger;
 
 import java.io.IOException;
+import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -98,5 +103,73 @@ class DeliveryDispatchIntegrationTest {
         DeliveredContextDispatch.deliveryDispatched(notDispatched, "llm_request",
                 Map.of("status", "composed", "requestId", "req-a"));
         assertEquals(0, ledger.all().size(), "组装/未派发不记");
+    }
+
+    private record Warning(String template, List<Object> fields) {}
+
+    /** Capture the actual SLF4J warn call; the dispatch, sink and filesystem remain real. */
+    private static Logger captureWarnings(List<Warning> warnings) {
+        return (Logger) Proxy.newProxyInstance(Logger.class.getClassLoader(), new Class<?>[]{Logger.class},
+                (proxy, method, args) -> {
+                    if ("warn".equals(method.getName())) {
+                        warnings.add(new Warning((String) args[0], List.of((Object[]) args[1])));
+                    }
+                    return method.getReturnType() == boolean.class ? false : null;
+                });
+    }
+
+    @Test
+    void blockedConfigReportsIoFailureAndExplicitRedeliveryRepairsOnce() throws IOException {
+        Path blockedConfig = dir.resolve("blocked-config");
+        Files.writeString(blockedConfig, "occupied by a regular file");
+        assertIoFailureAndExplicitRepair(new UsageLedger(blockedConfig), blockedConfig, "req-io-config");
+    }
+
+    @Test
+    void directoryAtLedgerReportsIoFailureAndExplicitRedeliveryRepairsOnce() throws IOException {
+        UsageLedger ledger = new UsageLedger(dir.resolve("directory-ledger"));
+        Files.createDirectories(ledger.file());
+        assertIoFailureAndExplicitRepair(ledger, ledger.file(), "req-io-ledger");
+    }
+
+    private static void assertIoFailureAndExplicitRepair(UsageLedger ledger, Path obstruction,
+                                                        String requestId) throws IOException {
+        List<Warning> warnings = new ArrayList<>();
+        DeliveredContextDispatch.sinkRequestDeliveredWithContext(
+                DeliveryContextSink.forLedger(ledger, captureWarnings(warnings)));
+        AtomicInteger followingSink = new AtomicInteger();
+        DeliveredContextDispatch.sinkRequestDeliveredWithContext(delivered -> {
+            if (requestId.equals(delivered.requestId())) followingSink.incrementAndGet();
+        });
+
+        var pending = new AtomicReference<>(ctx(requestId));
+        assertDoesNotThrow(() -> dispatch(pending, requestId), "IO failure must not block the request");
+        assertNull(pending.get(), "failed delivery still consumes the original dispatch CAS");
+        assertEquals(1, followingSink.get(), "the following registered sink must still run");
+        assertTrue(ledger.all().isEmpty(), "IO failure must not fabricate a PRESENTED row");
+        assertTrue(Files.exists(obstruction), "the real filesystem obstruction remains intact");
+        assertEquals(1, warnings.size(), "the returned ioFailed flag must reach the diagnostic exit");
+        Warning warning = warnings.get(0);
+        assertTrue(warning.template().contains("ioFailed=true"));
+        assertEquals(List.of(requestId, C, ledger.file(), 0, 0), warning.fields(),
+                "diagnostic identifies the failed request and reports written=0");
+
+        Files.delete(obstruction);
+        dispatch(pending, requestId);
+        assertTrue(ledger.all().isEmpty(), "repair alone must not replay an already consumed CAS");
+        assertEquals(1, followingSink.get());
+        assertEquals(1, warnings.size());
+
+        assertDoesNotThrow(() -> dispatch(new AtomicReference<>(ctx(requestId)), requestId));
+        assertEquals(1, ledger.all().size(), "explicit redelivery repairs the same ledger once");
+        assertEquals(UsageLedger.Phase.PRESENTED, ledger.all().get(0).phase());
+        assertEquals(UsageLedger.Outcome.UNKNOWN, ledger.all().get(0).outcome());
+        assertEquals(2, followingSink.get());
+        assertEquals(1, warnings.size(), "successful repair must not emit another IO failure");
+
+        dispatch(new AtomicReference<>(ctx(requestId)), requestId);
+        assertEquals(1, ledger.all().size(), "repeated explicit delivery must not append a duplicate");
+        assertEquals(3, followingSink.get(), "ledger dedup must not suppress other dispatch sinks");
+        assertEquals(1, warnings.size());
     }
 }
