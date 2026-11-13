@@ -24,6 +24,13 @@ import static org.junit.jupiter.api.Assertions.*;
  * t9(goto) 02:24:49 内部取消（CANCELLED，不是外部 close），同刻 SEEK_FOOD_FIRST hunger=9 hp=20，
  * 随后「无法进入重规划 … current subtask is not stuck: RUNNING」，之后没有新任务。
  *
+ * <p><b>同窗补证（rdd.jsonl:1304-1316，2026-11-13 02:55Z 回读）</b>：该窗 rdd.jsonl 只有一条
+ * {@code survival_preempt}（1304，02:24:49.597）。02:25:10.470 sleep 支线 created+activated
+ * （1306/1307，SEEKING_BED，mainlineSubtaskId=primary-a43d753e-8-r28-3），02:25:50 与 02:26:50 两次
+ * {@code stalled}（1312/1316）。所以“之后没有新任务”不能全归因于 60s 冷却或 RUNNING guard：
+ * 支线 active 后 {@code RddDetector} L363-364 让位，主线被冻结到停游。本批不修 sleep 优先级、
+ * 不改“饥饿是否可中断支线”，只把这段作为“恢复主线仍不可证”的边界记在这里。
+ *
  * <p><b>调用链</b>（ef5ad8ec）：{@code RddDetector.survivalPreempt} L380 记冷却 → L382 task_stop →
  * L387 {@code RddPlugin.requestReplan(uuid, reason)}（两参＝失败驱动）→ L1416 先 merge REPLAN_COUNTS →
  * L1425 {@code enterReplanningFromStuck} → {@code TaskChain} L996 要求 FAILED/STALLED → RUNNING 抛 →
