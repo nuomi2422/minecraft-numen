@@ -1279,7 +1279,8 @@ private static String withAssets(UUID companionId, String rddContext) {
     static boolean requestReplanForSurvival(UUID companionId, RddSurvivalGate.Decision decision,
                                             int hunger, double hp, int freeSlots) {
         return requestReplan(companionId,
-                "survival " + decision + " hunger=" + hunger + " hp=" + hp + " free=" + freeSlots);
+                "survival " + decision + " hunger=" + hunger + " hp=" + hp + " free=" + freeSlots,
+                RddReplanTransition.Trigger.SURVIVAL, null, false);
     }
 
     /**
@@ -1380,6 +1381,18 @@ private static String withAssets(UUID companionId, String rddContext) {
 
     private static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation,
                                          String soldierHint, boolean skipRecoverySideTask) {
+        return requestReplan(companionId, reason,
+                fromNegotiation ? RddReplanTransition.Trigger.NEGOTIATION : RddReplanTransition.Trigger.FAILURE,
+                soldierHint, skipRecoverySideTask);
+    }
+
+    /**
+     * 重规划主入口（触发源显式）：预算、状态转换、接受后清理都在 {@link RddReplanTransition} 一处完成，
+     * 这里只做资料组装与观测。2026-11-13 首阶段与提取前行为逐字一致。
+     */
+    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,
+                                         String soldierHint, boolean skipRecoverySideTask) {
+        boolean fromNegotiation = trigger == RddReplanTransition.Trigger.NEGOTIATION;
         if (!skipRecoverySideTask && !fromNegotiation && isMissingAssetCause(companionId, reason)) {
             // 2026-10-23（主人要求）：首选**派恢复支线**——主线由 SideTaskHost 冻结，支线跑完自动恢复，
             // 完全不改编主线计划。只有支线通道不可用（例如没有活跃身体）才退回"插节点"。
@@ -1406,13 +1419,17 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 下一行会 NPE，被外层 catch 吞成一句 warn，看起来像"重规划没发生"。
         if (chain.currentPrimary() == null) return false;
         // 预算：失败驱动按 (同伴|一级) 最多 MAX_REPLAN_PER_PRIMARY 次；协商驱动用独立 key+上限。
+        // 2026-11-13：预算检查、记账、状态转换统一由 RddReplanTransition 这一处完成
+        // （首阶段保留“先记账后转换”的旧行为），这里只算 key 并保留预算耗尽后的观测。
         String primaryId = chain.currentPrimary().id();
         String key = fromNegotiation
                 ? companionId + "|" + primaryId + "|nego"
                 : companionId + "|" + primaryId;
         int limit = fromNegotiation ? MAX_NEGOTIATION_REPLANS_PER_PRIMARY : MAX_REPLAN_PER_PRIMARY;
         int used = REPLAN_COUNTS.getOrDefault(key, 0);
-        if (used >= limit) {
+        RddReplanTransition.Result transition = RddReplanTransition.request(
+                chain, trigger, reason, REPLAN_COUNTS, key, limit, () -> clearBody(companionId));
+        if (transition.outcome() == RddReplanTransition.Outcome.BUDGET_EXHAUSTED) {
             long gt = RddInstrumentation.currentGameTimeTicks();
             Map<String, Object> loopData = new LinkedHashMap<>();
             loopData.put("companionId", companionId.toString());
@@ -1431,19 +1448,8 @@ private static String withAssets(UUID companionId, String rddContext) {
             LOG.warn("[rdd] 重规划预算耗尽，回落停车 {}:{}", companionId, primaryId);
             return false;
         }
-        REPLAN_COUNTS.merge(key, 1, Integer::sum);
-        try {
-            // 2026-09-29 断线修复：协商（士兵在干活途中上报）与卡死是**两种不同来源**，
-            // 必须走不同入口。旧代码一律用 enterReplanningFromStuck，它要求当前二级
-            // FAILED/STALLED；而士兵唯一合理的上报时机是 RUNNING → 抛异常 → return false
-            // → soldierHint（在下方才拼装）永远送不到规划器。实机症状：军师不听士兵。
-            if (fromNegotiation) {
-                chain.enterReplanningFromNegotiation(reason);
-            } else {
-                chain.enterReplanningFromStuck(reason);
-            }
-        } catch (RuntimeException ex) {
-            LOG.warn("[rdd] 无法进入重规划 {}: {}", companionId, ex.toString());
+        if (!transition.accepted()) {
+            LOG.warn("[rdd] 无法进入重规划 {}: {}", companionId, transition.error());
             return false;
         }
         String theme = chain.currentPrimary().description();
