@@ -29,7 +29,7 @@ class LearnerPluginDeliveryMappingTest {
     void mapsFullContextIntoOnePresentedUnknownRow() {
         UsageLedger ledger = new UsageLedger(dir);
         var token = new WorldContextStamp.Token(Map.of("world_id", "live-x", "server_session", "s-1"), 1L);
-        LearnerPlugin.consumeDeliveredContext(ctx(token), ledger);
+        DeliveryContextSink.accept(ctx(token), ledger);
 
         assertEquals(1, ledger.all().size());
         UsageLedger.Entry e = ledger.all().get(0);
@@ -43,7 +43,7 @@ class LearnerPluginDeliveryMappingTest {
     @Test
     void missingWorldTokenWritesNothing() {
         UsageLedger ledger = new UsageLedger(dir);
-        LearnerPlugin.consumeDeliveredContext(ctx(new WorldContextStamp.Token(null, 0L)), ledger);
+        DeliveryContextSink.accept(ctx(new WorldContextStamp.Token(null, 0L)), ledger);
         assertTrue(ledger.all().isEmpty(), "旧世界/无身份不落新候选，也不伪造 episode");
     }
 }
