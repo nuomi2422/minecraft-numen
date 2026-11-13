@@ -356,4 +356,45 @@ class LearnerTaskResultIntakeTest {
                             1000L, () -> true), "failed append/journal repair cannot consume cooldown");
                 });
     }
+
+    @Test void snapshotAdapterRejectsIncompleteOrCoercedEntryMetadata() throws Exception {
+        configure("snapshot-strict");
+        var row = result("sk-snapshot", "snapshot-call", TaskState.SUCCESS);
+        var scan = SkillDeliveryIntake.runWithTaskResults(ledger.all(), CURRENT, queue, intakeJournal,
+                StormGuard::admitIfEnqueued, 1000L, 16);
+        assertEquals(1, scan.enqueued());
+        Memo memo = queue.all().stream().filter(m -> m.id().equals(resultIdUnchecked(row))).findFirst().orElseThrow();
+        assertNotNull(SkillDeliveryIntake.taskResultFromSnapshot(memo.snapshot()),
+                "control snapshot must be a complete typed Entry");
+        JsonObject good = JsonParser.parseString(memo.snapshot()).getAsJsonObject();
+        List<String> required = List.of("artifact_id", "kind", "name", "phase", "outcome", "source", "at",
+                "companion_id", "evidence");
+        assertAll(required.stream().map(name -> (Executable) () -> {
+            JsonObject missing = good.deepCopy();
+            missing.remove(name);
+            assertNull(SkillDeliveryIntake.taskResultFromSnapshot(missing.toString()), "missing " + name);
+        }));
+        assertAll(required.stream().map(name -> (Executable) () -> {
+            JsonObject numeric = good.deepCopy();
+            numeric.addProperty(name, 7);
+            assertNull(SkillDeliveryIntake.taskResultFromSnapshot(numeric.toString()), "numeric " + name);
+        }));
+        JsonObject noClaim = good.deepCopy();
+        noClaim.remove("validity_claimed");
+        JsonObject numberClaim = good.deepCopy();
+        numberClaim.addProperty("validity_claimed", 1);
+        JsonObject stringDetail = good.deepCopy();
+        stringDetail.addProperty("detail", "{}");
+        JsonObject blankAt = good.deepCopy();
+        blankAt.addProperty("at", " ");
+        assertAll(
+                () -> assertNull(SkillDeliveryIntake.taskResultFromSnapshot(noClaim.toString()), "missing validity_claimed"),
+                () -> assertNull(SkillDeliveryIntake.taskResultFromSnapshot(numberClaim.toString()), "numeric validity_claimed"),
+                () -> assertNull(SkillDeliveryIntake.taskResultFromSnapshot(stringDetail.toString()), "detail must be object"),
+                () -> assertNull(SkillDeliveryIntake.taskResultFromSnapshot(blankAt.toString()), "blank at"),
+                () -> assertNull(SkillDeliveryIntake.taskResultFromSnapshot("")),
+                () -> assertNull(SkillDeliveryIntake.taskResultFromSnapshot("{}")),
+                () -> assertNull(SkillDeliveryIntake.taskResultFromSnapshot("null")),
+                () -> assertNull(SkillDeliveryIntake.taskResultOf(null)));
+    }
 }

@@ -176,6 +176,7 @@ public final class SkillDeliveryIntake {
 
     /** One typed parser: the existing private taskResult identity checks are the only algorithm. */
     public static TaskResultFact taskResultOf(UsageLedger.Entry row) {
+        if (row == null) return null;
         TaskUse use = taskResult(row);
         if (use == null) return null;
         try {
@@ -217,22 +218,27 @@ public final class SkillDeliveryIntake {
     private static UsageLedger.Entry entryFromSnapshot(JsonObject row) {
         JsonElement detail = row.get("detail");
         if (detail == null || !detail.isJsonObject()) throw new IllegalArgumentException("detail");
-        String phase = stringField(row, "phase"), outcome = stringField(row, "outcome");
-        String evidence = stringField(row, "evidence");
-        boolean claimed = row.has("validity_claimed") && !row.get("validity_claimed").isJsonNull()
-                && row.get("validity_claimed").getAsBoolean();
-        return new UsageLedger.Entry(stringField(row, "artifact_id"), stringField(row, "kind"),
-                stringField(row, "name"),
-                phase == null ? null : UsageLedger.Phase.valueOf(phase),
-                outcome == null ? null : UsageLedger.Outcome.valueOf(outcome),
-                detail.getAsJsonObject().toString(), stringField(row, "source"), stringField(row, "at"),
-                claimed, stringField(row, "companion_id"),
-                evidence == null ? null : UsageLedger.EvidenceLevel.valueOf(evidence));
+        JsonElement claimed = row.get("validity_claimed");
+        if (claimed == null || !claimed.isJsonPrimitive() || !claimed.getAsJsonPrimitive().isBoolean())
+            throw new IllegalArgumentException("validity_claimed");
+        String phase = requiredText(row, "phase"), outcome = requiredText(row, "outcome");
+        return new UsageLedger.Entry(requiredText(row, "artifact_id"), requiredText(row, "kind"),
+                requiredText(row, "name"),
+                UsageLedger.Phase.valueOf(phase),
+                UsageLedger.Outcome.valueOf(outcome),
+                detail.getAsJsonObject().toString(), requiredText(row, "source"), requiredText(row, "at"),
+                claimed.getAsBoolean(), requiredText(row, "companion_id"),
+                UsageLedger.EvidenceLevel.valueOf(requiredText(row, "evidence")));
     }
 
-    private static String stringField(JsonObject row, String name) {
+    /** Strict: missing/null/non-string/blank metadata is not a complete Entry; never coerce or default. */
+    private static String requiredText(JsonObject row, String name) {
         JsonElement value = row.get(name);
-        return value == null || value.isJsonNull() ? null : value.getAsString();
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString())
+            throw new IllegalArgumentException("missing or non-string " + name);
+        String text = value.getAsString();
+        if (text.isBlank()) throw new IllegalArgumentException("blank " + name);
+        return text;
     }
 
     private interface Candidate {
