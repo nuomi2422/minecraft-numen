@@ -95,9 +95,15 @@ class LearnerTaskResultIntakeTest {
             String body = "exact original steps " + skill;
             String bodyRef = SkillBodyStore.write(dir, skill, 1, Integer.toHexString(body.hashCode()), body);
             assertNotNull(bodyRef);
-            registry.register(new ArtifactDraft(ArtifactKind.EXPERIENCE, skill, "stay safe", body,
-                    List.of("night"), List.of(), List.of(), "LOW", List.of(), List.of("memo-1"), "EXECUTOR"),
-                    skill, bodyRef, true);
+            // 2026-11-13: ArtifactDraft fingerprint is kind|purpose|triggers|excludes|audience (no name/body),
+            // so a shared "stay safe"/"night" draft merges into the first skill id and the second id is absent.
+            // Keep every fixture skill's purpose/trigger unique, and assert the registry stored this exact id at v1.
+            var decision = registry.register(new ArtifactDraft(ArtifactKind.EXPERIENCE, skill,
+                    "stay safe for " + skill, body, List.of("night " + skill), List.of(), List.of(), "LOW",
+                    List.of(), List.of("memo-1"), "EXECUTOR"), skill, bodyRef, true);
+            assertTrue(decision.stored(), "fixture registration must store its own skill: " + decision.reason());
+            assertEquals(skill, decision.entry().skillId(), "fixture registration must not revise another id");
+            assertEquals(1, decision.entry().version(), "fresh fixture skill must be v1");
         }
         Work work = new Work(call);
         work.bindIdentity(tasks.stamp);
