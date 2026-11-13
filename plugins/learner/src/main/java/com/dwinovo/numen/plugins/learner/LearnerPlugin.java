@@ -603,8 +603,14 @@ public final class LearnerPlugin implements NumenPlugin {
     /** null = no file (known empty); throws on unreadable/corrupt so callers can stay UNKNOWN. */
     private static com.google.gson.JsonObject readStateObject(java.nio.file.Path dir) throws java.io.IOException {
         java.nio.file.Path f = reviewStateFile(dir);
-        if (f == null || !java.nio.file.Files.isRegularFile(f)) return null;
-        String raw = java.nio.file.Files.readString(f, java.nio.charset.StandardCharsets.UTF_8);
+        if (f == null) throw new java.io.IOException("review state dir unavailable");
+        String raw;
+        try {
+            raw = java.nio.file.Files.readString(f, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.nio.file.NoSuchFileException missing) {
+            return null; // only a confirmed absent file is a known empty migration
+        }
+        // Directory/permission/etc. propagate as unreadable -> UNKNOWN, never "missing".
         return com.google.gson.JsonParser.parseString(raw).getAsJsonObject();
     }
 
@@ -624,13 +630,24 @@ public final class LearnerPlugin implements NumenPlugin {
     }
 
     private static com.google.gson.JsonObject companionNode(com.google.gson.JsonObject root, java.util.UUID companion) {
-        com.google.gson.JsonObject companions = root.has("companions") && root.get("companions").isJsonObject()
-                ? root.getAsJsonObject("companions") : new com.google.gson.JsonObject();
+        com.google.gson.JsonElement existing = root.get("companions");
+        if (existing != null && !existing.isJsonNull() && !existing.isJsonObject()) {
+            throw new IllegalArgumentException("companions is not an object");
+        }
+        com.google.gson.JsonObject companions = existing == null || existing.isJsonNull()
+                ? new com.google.gson.JsonObject() : existing.getAsJsonObject();
         root.add("companions", companions);
         String key = String.valueOf(companion);
-        com.google.gson.JsonObject node = companions.has(key) && companions.get(key).isJsonObject()
-                ? companions.getAsJsonObject(key) : new com.google.gson.JsonObject();
+        com.google.gson.JsonElement owner = companions.get(key);
+        if (owner != null && !owner.isJsonNull() && !owner.isJsonObject()) {
+            throw new IllegalArgumentException("companion node is not an object");
+        }
+        com.google.gson.JsonObject node = owner == null || owner.isJsonNull()
+                ? new com.google.gson.JsonObject() : owner.getAsJsonObject();
         companions.add(key, node);
+        for (String field : new String[] {"last_nudge_at", "last_auto_review_at", "last_review_started_at"}) {
+            if (clock(node, field) == null) throw new IllegalArgumentException("invalid clock " + field);
+        }
         return node;
     }
 
@@ -666,19 +683,33 @@ public final class LearnerPlugin implements NumenPlugin {
             return ReviewStateRead.unknown(); // never claim "not nudged" from a corrupt file
         }
         if (root == null) return ReviewStateRead.none();
-        if (!root.has("companions") || !root.get("companions").isJsonObject()) return ReviewStateRead.none();
-        com.google.gson.JsonObject companions = root.getAsJsonObject("companions");
+        com.google.gson.JsonElement companionsEl = root.get("companions");
+        if (companionsEl == null || companionsEl.isJsonNull()) return ReviewStateRead.none();
+        if (!companionsEl.isJsonObject()) return ReviewStateRead.unknown();
+        com.google.gson.JsonObject companions = companionsEl.getAsJsonObject();
         String key = String.valueOf(companion);
-        if (!companions.has(key) || !companions.get(key).isJsonObject()) return ReviewStateRead.none();
-        com.google.gson.JsonObject node = companions.getAsJsonObject(key);
-        return new ReviewStateRead(true, new ReviewTimes(longField(node, "last_nudge_at"),
-                longField(node, "last_auto_review_at"), longField(node, "last_review_started_at")));
+        com.google.gson.JsonElement owner = companions.get(key);
+        if (owner == null || owner.isJsonNull()) return ReviewStateRead.none();
+        if (!owner.isJsonObject()) return ReviewStateRead.unknown();
+        com.google.gson.JsonObject node = owner.getAsJsonObject();
+        Long nudge = clock(node, "last_nudge_at");
+        Long auto = clock(node, "last_auto_review_at");
+        Long started = clock(node, "last_review_started_at");
+        if (nudge == null || auto == null || started == null) return ReviewStateRead.unknown();
+        return new ReviewStateRead(true, new ReviewTimes(nudge, auto, started));
     }
 
-    private static long longField(com.google.gson.JsonObject node, String name) {
+    /** absent -> 0 (old migration); any invalid clock -> null (UNKNOWN, writers must refuse). */
+    private static Long clock(com.google.gson.JsonObject node, String name) {
         var v = node.get(name);
-        if (v == null || v.isJsonNull() || !v.isJsonPrimitive() || !v.getAsJsonPrimitive().isNumber()) return 0L;
-        return v.getAsLong();
+        if (v == null || v.isJsonNull()) return 0L;
+        if (!v.isJsonPrimitive() || !v.getAsJsonPrimitive().isNumber()) return null;
+        try {
+            long value = v.getAsBigDecimal().longValueExact();
+            return value < 0 ? null : value;
+        } catch (ArithmeticException | NumberFormatException invalid) {
+            return null;
+        }
     }
 
     static String lastReviewAt() {

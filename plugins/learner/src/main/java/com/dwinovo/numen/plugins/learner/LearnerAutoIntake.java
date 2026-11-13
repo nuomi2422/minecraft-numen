@@ -143,6 +143,12 @@ final class LearnerAutoIntake {
     /** 深度达到该值才催（太少不值得打断执行）。 */
     static final int REVIEW_NUDGE_MIN_DEPTH = 3;
     private static final Map<UUID, Long> LAST_REVIEW_NUDGE = new ConcurrentHashMap<>();
+    /** Test seam: production null -> LearnerPlugin.nudgeSystem; runs the real maybeNudge path offline. */
+    private static volatile java.util.function.BiPredicate<java.util.UUID, String> nudgeSenderForTest;
+
+    static void installNudgeSenderForTest(java.util.function.BiPredicate<java.util.UUID, String> sender) {
+        nudgeSenderForTest = sender;
+    }
 
     /**
      * 队列解析器：生产用 LearnerPlugin::queue；测试注入直建 MemoQueue。
@@ -710,14 +716,19 @@ final class LearnerAutoIntake {
                 // Read the durable prior reminder BEFORE writing this one; a restarted process must
                 // not treat its own fresh nudge as an unanswered old reminder.
                 LearnerPlugin.ReviewStateRead persisted = LearnerPlugin.readReviewTimes(configDirCache, id);
+                if (persisted.known() && persisted.times().lastNudgeAt() > 0L) {
+                    // Seed the original claim clock from disk: a restart inside the 10-minute window
+                    // must neither re-send nor refresh last_nudge_at.
+                    LAST_REVIEW_NUDGE.merge(id, persisted.times().lastNudgeAt(), Math::max);
+                }
                 Long prevNudge = null;
                 if (persisted.known()) {
-                    long memory = LAST_REVIEW_NUDGE.getOrDefault(id, 0L);
-                    long prev = Math.max(memory, persisted.times().lastNudgeAt());
+                    long prev = LAST_REVIEW_NUDGE.getOrDefault(id, 0L);
                     if (prev > 0L) prevNudge = prev;
                 }
                 if (!claimNudge(LAST_REVIEW_NUDGE, id, gateDepth, now)) continue;
-                boolean sent = LearnerPlugin.nudgeSystem(id, nudgeText(depth));
+                var sender = nudgeSenderForTest;
+                boolean sent = sender != null ? sender.test(id, nudgeText(depth)) : LearnerPlugin.nudgeSystem(id, nudgeText(depth));
                 if (sent) {
                     LearnerMonitor.publish("review_nudge_sent", Map.of(
                             "companionId", id.toString(), "queue_depth", depth));
@@ -725,8 +736,11 @@ final class LearnerAutoIntake {
                     // 上一次提醒之后一条 review 都没启动 → 这一跳不能继续押在执行 AI 自觉上。
                     long startedAt = Math.max(LearnerPlugin.lastReviewStartedMs(id),
                             persisted.known() ? persisted.times().lastReviewStartedAt() : 0L);
-                    Long lastAuto = persisted.known() && persisted.times().lastAutoReviewAt() > 0L
-                            ? persisted.times().lastAutoReviewAt() : LAST_AUTO_REVIEW_AT.get(id);
+                    Long lastAuto = LAST_AUTO_REVIEW_AT.get(id);
+                    if (persisted.known() && persisted.times().lastAutoReviewAt() > 0L) {
+                        lastAuto = lastAuto == null ? persisted.times().lastAutoReviewAt()
+                                : Math.max(lastAuto, persisted.times().lastAutoReviewAt());
+                    }
                     boolean running = LearnerPlugin.runningReview(id) != null;
                     if (!persisted.known()) {
                         skipped(id, depth, "state_unknown");
