@@ -377,14 +377,18 @@ final class RddDetector {
             boolean hasFood = RddSurvivalGate.hasEdibleFood(countInventory(ap));
             var decision = RddSurvivalGate.evaluate(hunger, hp, free, false, hasFood);
             if (decision == RddSurvivalGate.Decision.NONE) return;
-            SURVIVAL_PREEMPT_AT.put(ap.getUUID(), now);
-            try {
-                var stop = com.dwinovo.numen.agent.tool.ToolRegistry.get("task_stop");
-                if (stop != null) stop.onServerCall("survival-" + now, new com.google.gson.JsonObject(), ap, r -> { });
-            } catch (RuntimeException ignored) {
-                // task_stop 不可用不阻断重规划
+            // 2026-11-13（接受后才记抢占）：捕获进入前的身体 owner，传给宿主；只有真的进了
+            // REPLANNING 才在同线程同步回调里停“这一个”任务、才记 60s 冷却、才发抢占观测。
+            // 拒绝时不停身体、不记冷却，避免 V03 那种“身体停了、链还在 ACTIVE、没有新任务”。
+            var expectedAction = com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(ap.getUUID());
+            boolean accepted = RddPlugin.requestReplanForSurvival(ap.getUUID(), decision, hunger, hp, free,
+                    expectedAction, ap);
+            if (!accepted) {
+                LOG.info("[rdd] 生存抢占未进入重规划（拒绝不记冷却、不停身体） {} hunger={} hp={} free={}",
+                        decision, hunger, hp, free);
+                return;
             }
-            RddPlugin.requestReplan(ap.getUUID(), "survival " + decision + " hunger=" + hunger + " hp=" + hp + " free=" + free);
+            SURVIVAL_PREEMPT_AT.put(ap.getUUID(), now);
             RddMonitor.publish("survival_preempt", java.util.Map.of(
                     "decision", decision.name(), "hunger", hunger, "hp", hp, "free_slots", free));
             LOG.info("[rdd] 生存抢占 {} hunger={} hp={} free={}", decision, hunger, hp, free);

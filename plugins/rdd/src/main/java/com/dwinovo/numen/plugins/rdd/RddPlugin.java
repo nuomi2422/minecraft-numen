@@ -1265,6 +1265,35 @@ private static String withAssets(UUID companionId, String rddContext) {
     }
 
     /**
+     * 生存抢占的 <b>typed 程序来源入口</b>。
+     *
+     * <p>V03 实机（latest.log:15906-15927）：生存抢占从 RUNNING 被两参失败驱动入口拒绝，
+     * 链停在 ACTIVE、没有新任务。调用点必须带<b>程序来源</b>（{@link RddSurvivalGate.Decision}），
+     * 不靠 reason 文本前缀授权（原因文本只解释，不作状态/授权来源）。
+     *
+     * <p>2026-11-13 修复：SURVIVAL 走 {@link RddReplanTransition} 的 ACTIVE 事实变化转换，
+     * 由同一消费者做预算与接受回调；不复制 TaskChain 同形方法、不删 STUCK guard。
+     *
+     * <p><b>skipRecoverySideTask = true</b>：生存抢占不是“缺装备/丢东西”的失败驱动重规划。
+     * 否则最近死过时 {@code isMissingAssetCause} 会走恢复支线/插节点并直接 return true，
+     * 而链根本没进 REPLANNING、捕获的原动作也没停 —— Detector 会把“恢复支线已点名”签成“已抢占”。
+     */
+    static boolean requestReplanForSurvival(UUID companionId, RddSurvivalGate.Decision decision,
+                                            int hunger, double hp, int freeSlots,
+                                            com.dwinovo.numen.task.TaskRecord expectedAction,
+                                            NumenPlayer expectedBody) {
+        // 只在接受后的同步回调里停“进入前捕获的那个任务对象”；拒绝零副作用。
+        return requestReplan(companionId,
+                "survival " + decision + " hunger=" + hunger + " hp=" + hp + " free=" + freeSlots,
+                RddReplanTransition.Trigger.SURVIVAL, null, true,
+                () -> {
+                    if (expectedBody != null && RddCompanionBody.get(companionId) == expectedBody) {
+                        stopPreemptedOwner(companionId, expectedAction);
+                    }
+                });
+    }
+
+    /**
      * 重规划（带来源标记 + **士兵的具体建议**）。
      *
      * <p>{@code fromNegotiation=true} 时用**独立的协商预算**——士兵的反馈不该被"失败驱动的
@@ -1362,7 +1391,28 @@ private static String withAssets(UUID companionId, String rddContext) {
 
     private static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation,
                                          String soldierHint, boolean skipRecoverySideTask) {
-        if (!skipRecoverySideTask && !fromNegotiation && isMissingAssetCause(companionId, reason)) {
+        return requestReplan(companionId, reason,
+                fromNegotiation ? RddReplanTransition.Trigger.NEGOTIATION : RddReplanTransition.Trigger.FAILURE,
+                soldierHint, skipRecoverySideTask);
+    }
+
+    /**
+     * 重规划主入口（触发源显式）：预算、状态转换、接受后清理都在 {@link RddReplanTransition} 一处完成，
+     * 这里只做资料组装与观测（预算/转换/接受回调都在 {@link RddReplanTransition}）。
+     */
+    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,
+                                         String soldierHint, boolean skipRecoverySideTask) {
+        return requestReplan(companionId, reason, trigger, soldierHint, skipRecoverySideTask, null);
+    }
+
+    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,
+                                         String soldierHint, boolean skipRecoverySideTask,
+                                         Runnable acceptedSideEffect) {
+        boolean fromNegotiation = trigger == RddReplanTransition.Trigger.NEGOTIATION;
+        // 只有普通失败驱动才可能走“缺失型恢复”路由；SURVIVAL 的 skip=true 保证它一定进 REPLANNING，
+        // 不会被恢复支线/插节点提前 return（否则 Detector 会把“已点名恢复”误签成“已抢占”）。
+        if (RddReplanTransition.usesRecoveryRoute(trigger, skipRecoverySideTask)
+                && isMissingAssetCause(companionId, reason)) {
             // 2026-10-23（主人要求）：首选**派恢复支线**——主线由 SideTaskHost 冻结，支线跑完自动恢复，
             // 完全不改编主线计划。只有支线通道不可用（例如没有活跃身体）才退回"插节点"。
             String what = describeMissing(companionId);
@@ -1388,18 +1438,31 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 下一行会 NPE，被外层 catch 吞成一句 warn，看起来像"重规划没发生"。
         if (chain.currentPrimary() == null) return false;
         // 预算：失败驱动按 (同伴|一级) 最多 MAX_REPLAN_PER_PRIMARY 次；协商驱动用独立 key+上限。
+        // 2026-11-13：预算检查、记账、状态转换统一由 RddReplanTransition 这一处完成
+        // （首阶段保留“先记账后转换”的旧行为），这里只算 key 并保留预算耗尽后的观测。
         String primaryId = chain.currentPrimary().id();
         String key = fromNegotiation
                 ? companionId + "|" + primaryId + "|nego"
                 : companionId + "|" + primaryId;
         int limit = fromNegotiation ? MAX_NEGOTIATION_REPLANS_PER_PRIMARY : MAX_REPLAN_PER_PRIMARY;
         int used = REPLAN_COUNTS.getOrDefault(key, 0);
-        if (used >= limit) {
+        // 接受后只清“进入前捕获的那个 BODY 记录实例”；并发替换出的新记录不碰（引用相等，不走 equals）。
+        // 正常失败路线接受时也会清本次记录：这是净新增，需实机复核它的旧路线影响。
+        BodyState capturedBody = bodyState(companionId);
+        RddReplanTransition.Result transition = RddReplanTransition.request(
+                chain, trigger, reason, REPLAN_COUNTS, key, limit,
+                () -> {
+                    if (acceptedSideEffect != null) acceptedSideEffect.run();
+                    clearBodyIfSame(companionId, capturedBody);
+                });
+        if (transition.outcome() == RddReplanTransition.Outcome.BUDGET_EXHAUSTED) {
             long gt = RddInstrumentation.currentGameTimeTicks();
             Map<String, Object> loopData = new LinkedHashMap<>();
             loopData.put("companionId", companionId.toString());
             loopData.put("task", primaryId);
-            loopData.put("reason", (fromNegotiation ? "negotiation" : "failure") + " replan budget exhausted (loop)");
+            String exhaustedCause = trigger == RddReplanTransition.Trigger.NEGOTIATION ? "negotiation"
+                    : trigger == RddReplanTransition.Trigger.SURVIVAL ? "survival" : "failure";
+            loopData.put("reason", exhaustedCause + " replan budget exhausted (loop)");
             loopData.put("context", Map.of("attempts", used, "threshold", limit, "fromNegotiation", fromNegotiation));
             RddInstrumentation.publishAt(RddInstrumentation.LOOP_DETECTED, loopData, gt);
             if (RddInstrumentation.recentDeath(companionId, gt)) {
@@ -1413,19 +1476,8 @@ private static String withAssets(UUID companionId, String rddContext) {
             LOG.warn("[rdd] 重规划预算耗尽，回落停车 {}:{}", companionId, primaryId);
             return false;
         }
-        REPLAN_COUNTS.merge(key, 1, Integer::sum);
-        try {
-            // 2026-09-29 断线修复：协商（士兵在干活途中上报）与卡死是**两种不同来源**，
-            // 必须走不同入口。旧代码一律用 enterReplanningFromStuck，它要求当前二级
-            // FAILED/STALLED；而士兵唯一合理的上报时机是 RUNNING → 抛异常 → return false
-            // → soldierHint（在下方才拼装）永远送不到规划器。实机症状：军师不听士兵。
-            if (fromNegotiation) {
-                chain.enterReplanningFromNegotiation(reason);
-            } else {
-                chain.enterReplanningFromStuck(reason);
-            }
-        } catch (RuntimeException ex) {
-            LOG.warn("[rdd] 无法进入重规划 {}: {}", companionId, ex.toString());
+        if (!transition.accepted()) {
+            LOG.warn("[rdd] 无法进入重规划 {}: {}", companionId, transition.error());
             return false;
         }
         String theme = chain.currentPrimary().description();
@@ -1497,9 +1549,11 @@ private static String withAssets(UUID companionId, String rddContext) {
             LOG.warn("[rdd] 重规划事实块生成失败 {}: {}", companionId, ex.toString());
         }
         RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
-        // attempt：协商不是"上一版被判不可执行"，故传 0，让 prompt 走非失败分支。
+        // attempt：只有失败驱动才表示"上一版被判不可执行"（1）；协商与生存抢占是事实变化（0）。
+        // 2026-11-13：不能再按 fromNegotiation 三元判断 —— SURVIVAL 走事实变化入口但不是协商。
+        int planningAttempt = RddReplanTransition.planningAttempt(trigger);
         // completedStages 也不能丢（重规划与懒展开在这一项上曾不一致）。
-        RddDecomposer.decomposeSpecsWithHint(companionId, theme, fromNegotiation ? 0 : 1,
+        RddDecomposer.decomposeSpecsWithHint(companionId, theme, planningAttempt,
                 new java.util.ArrayList<>(chain.satisfiedStages()), hint,
                 specs -> onServer(server, ticket, () -> {
                     try {
@@ -2485,6 +2539,34 @@ private static String safeDeathAttacker(NumenPlayer body) {
 
     public static void clearBody(UUID companionId) {
         if (companionId != null) BODY.remove(companionId);
+    }
+
+    /**
+     * 只清“进入重规划前捕获的那个 BODY 记录实例”。
+     *
+     * <p>并发替换可能已经写入新记录；{@code BodyState} 是 record，{@code remove(key, value)} 走 equals，
+     * 同 subtaskId/submitCount 的替换记录会被误清，所以这里用引用相等 {@code cur == captured}。
+     */
+    private static void clearBodyIfSame(UUID companionId, BodyState captured) {
+        if (companionId == null || captured == null) return;
+        BODY.computeIfPresent(companionId, (key, cur) -> cur == captured ? null : cur);
+    }
+
+    /**
+     * 生存抢占只停“进入前捕获的那个任务对象”：槽里仍是同一 {@code TaskRecord} 实例才停，
+     * 被替换/已清空一律不碰；没有捕获到原动作时只重规划、不停体。
+     */
+    private static void stopPreemptedOwner(UUID companionId, com.dwinovo.numen.task.TaskRecord expectedAction) {
+        if (expectedAction == null) return;
+        if (!RddReplanTransition.ownsCapturedBody(expectedAction,
+                com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companionId))) {
+            LOG.info("[rdd] 生存抢占跳过停体：原任务已被替换或已清空 {}", companionId);
+            return;
+        }
+        var body = RddCompanionBody.get(companionId);
+        if (body != null) {
+            com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(body, "survival preempt");
+        }
     }
 
     public static String nextBodyCallId() {
