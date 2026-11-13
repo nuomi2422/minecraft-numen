@@ -44,7 +44,14 @@ public final class NumenPlugins {
     /** 客户端接上来了没有。它同时就是"我现在是不是客户端"的答案。 */
     private static volatile boolean clientReady;
 
-    private static final NumenApi API = new Impl();
+    /**
+     * 2026-11-14: monitor-only callers must not initialize Minecraft host services.
+     * The real journal diagnostic failed loading CustomPacketPayload in new Impl().
+     * Delay that same singleton until plugin setup or sleep actually needs the host.
+     */
+    private static final class ApiHolder {
+        private static final NumenApi INSTANCE = new Impl();
+    }
 
     /** 按接口登记的能力（039 U1：跨插件只读能力的公开取用口）。 */
     private static final java.util.concurrent.ConcurrentHashMap<Class<?>, Object> CAPABILITIES =
@@ -74,7 +81,7 @@ public final class NumenPlugins {
      */
     public static boolean interruptForSleep(com.dwinovo.numen.entity.NumenPlayer companion,
                                             com.dwinovo.numen.task.TaskRecord expected) {
-        return API.interruptForSleep(companion, expected);
+        return ApiHolder.INSTANCE.interruptForSleep(companion, expected);
     }
 
     private NumenPlugins() {}
@@ -83,7 +90,7 @@ public final class NumenPlugins {
     public static void register(NumenPlugin plugin) {
         if (plugin == null) return;
         try {
-            plugin.setup(API);
+            plugin.setup(ApiHolder.INSTANCE);
         } catch (RuntimeException e) {
             Constants.LOG.error("[numen] 插件登记失败,它挂的东西可能只生效了一半", e);
         }

@@ -29,7 +29,11 @@ class RddMonitorJournalTest {
     @Test void realFacadeSharesRunPreservesCapturedIdentityAndRetriesQueueRejection() throws Exception {
         Method publish = contract(RddMonitor.class, "publish", String.class, Map.class, WorldContextStamp.Token.class);
         Method changed = contract(RddMonitor.class, "publishIfChanged", String.class, Map.class, WorldContextStamp.Token.class);
-        Method facade = contract(NumenPlugins.class, "tryPublishMonitor", String.class, String.class, Map.class, WorldContextStamp.Token.class);
+        // 2026-11-14: getMethod enumerated unrelated MC signatures and failed on ServerPlayer.
+        // Keep the exact public static boolean contract without enumerating host methods.
+        java.lang.invoke.MethodHandles.publicLookup().findStatic(NumenPlugins.class, "tryPublishMonitor",
+                java.lang.invoke.MethodType.methodType(boolean.class,
+                        String.class, String.class, Map.class, WorldContextStamp.Token.class));
         Method offer = contract(MonitoringJournal.class, "tryPublish", String.class, String.class, Map.class, WorldContextStamp.Token.class);
         MonitoringJournal journal = MonitoringJournal.get();
         var rootField = MonitoringJournal.class.getDeclaredField("root");
@@ -48,7 +52,7 @@ class RddMonitorJournalTest {
             var a = WorldContextStamp.capture();
             synchronized (journal) {
                 assertTrue(invoke(publish, null, "taskchain_snapshot", data, a));
-                assertTrue(invoke(facade, null, "context", "final_request", data, a));
+                assertTrue(NumenPlugins.tryPublishMonitor("context", "final_request", data, a));
                 WorldContextStamp.set("world-B", "server-B");
             }
             var task = await(root.resolve("monitor/rdd.jsonl"), "taskchain_snapshot", marker);
@@ -107,6 +111,145 @@ class RddMonitorJournalTest {
                 cleanup.invoke(journal);
                 rootField.set(journal, previousRoot);
             }
+        }
+    }
+
+
+    /**
+     * 2026-11-13 A1: real future completion after a world switch must retain A,
+     * while B and missing-token events remain separate. No fake sink or MC server.
+     * This exercises serialization, not execution of the Minecraft host callback.
+     */
+    @Test void planningEventsSerializeMixedScopesAndLateCallbackWithoutInventingRequestId() throws Exception {
+        MonitoringJournal journal = MonitoringJournal.get();
+        var rootField = MonitoringJournal.class.getDeclaredField("root");
+        rootField.setAccessible(true);
+        Object previousRoot = rootField.get(journal);
+        Method cleanup = MonitoringJournal.class.getDeclaredMethod("closeWriters");
+        cleanup.setAccessible(true);
+        synchronized (journal) {
+            cleanup.invoke(journal);
+            journal.configure(root);
+        }
+        String marker = UUID.randomUUID().toString();
+        Map<String, ?> data = Map.of("fixture", marker, "companionId", "same-companion",
+                "primary", "same-primary", "subtask", "same-subtask");
+        try {
+            WorldContextStamp.set("planning-A", "server-A");
+            var original = WorldContextStamp.capture();
+            var pending = new java.util.concurrent.CompletableFuture<Void>();
+            var late = pending.thenRun(() ->
+                    assertTrue(RddMonitor.publish("replanned", data, original)));
+            WorldContextStamp.set("planning-B", "server-B");
+            var current = WorldContextStamp.capture();
+            assertTrue(pending.complete(null));
+            late.get(8, TimeUnit.SECONDS);
+            var old = await(root.resolve("monitor/rdd.jsonl"), "replanned", marker);
+            assertEquals("planning-A", old.get("world_id").getAsString());
+            assertEquals("server-A", old.get("server_session").getAsString());
+            assertEquals(original.epoch(), old.get("world_epoch").getAsLong());
+            assertTrue(old.get("stamp_conflict").getAsBoolean());
+            assertEquals("planning-B", old.get("stamp_world_id").getAsString());
+
+            long previousSeq = old.get("event_seq").getAsLong();
+            for (String type : List.of("survival_preempt", "replanned", "replan_exhausted",
+                    "goal_kickoff", "goal_kickoff_skipped")) {
+                String scopedMarker = marker + "-" + type;
+                Map<String, ?> sameData = Map.of("fixture", scopedMarker,
+                        "companionId", "same-companion", "primary", "same-primary");
+                // Keep B installed until all writes finish, making conflict assertions deterministic.
+                assertTrue(RddMonitor.publish(type, sameData, original));
+                assertTrue(RddMonitor.publish(type, sameData, current));
+                assertTrue(RddMonitor.publish(type, sameData));
+                var rows = awaitCount(root.resolve("monitor/rdd.jsonl"), type, scopedMarker, 3);
+                assertEquals(3, rows.size());
+                assertEquals("planning-A", rows.get(0).get("world_id").getAsString());
+                assertEquals("server-A", rows.get(0).get("server_session").getAsString());
+                assertEquals(original.epoch(), rows.get(0).get("world_epoch").getAsLong());
+                assertTrue(rows.get(0).get("stamp_conflict").getAsBoolean());
+                assertEquals("planning-B", rows.get(1).get("world_id").getAsString());
+                assertEquals("server-B", rows.get(1).get("server_session").getAsString());
+                assertEquals(current.epoch(), rows.get(1).get("world_epoch").getAsLong());
+                assertFalse(rows.get(1).has("stamp_conflict"));
+                assertFalse(rows.get(2).has("world_id"));
+                assertFalse(rows.get(2).has("server_session"));
+                assertFalse(rows.get(2).has("world_epoch"));
+                for (var row : rows) {
+                    assertEquals(old.get("session"), row.get("session"));
+                    assertTrue(row.get("event_seq").getAsLong() > previousSeq);
+                    previousSeq = row.get("event_seq").getAsLong();
+                    assertFalse(row.has("requestId"));
+                    assertFalse(row.getAsJsonObject("data").has("requestId"),
+                            "nearby context is not a request correlation");
+                }
+            }
+            // Invoke the real pure guard, which has no actual server and must stay UNKNOWN.
+            String description = "日常巡检-" + marker;
+            var spec = new com.dwinovo.numen.rdd.api.SubtaskSpec(description,
+                    Map.of("asset_key", "minecraft:cobblestone", "minimum", 1), null);
+            var filtered = RddPlanGuard.filterSubtasks(List.of(spec), "日常维护", Map.of());
+            assertEquals(com.dwinovo.numen.rdd.api.NodeType.DAILY, filtered.allowed().get(0).nodeType());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            JsonObject guard = null;
+            do {
+                guard = rows(root.resolve("monitor/rdd.jsonl")).stream()
+                        .filter(r -> "plan_node_downgraded".equals(r.get("type").getAsString()))
+                        .filter(r -> description.equals(r.getAsJsonObject("data").get("description").getAsString()))
+                        .findFirst().orElse(null);
+                if (guard == null) Thread.sleep(10);
+            } while (guard == null && System.nanoTime() < deadline);
+            assertNotNull(guard, "real guard observation must flush");
+            assertFalse(guard.has("world_id"), "pure guard must not adopt global world B");
+            assertFalse(guard.has("server_session"));
+            assertFalse(guard.getAsJsonObject("data").has("requestId"));
+        } finally {
+            WorldContextStamp.clear();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            while (journal.queueSize() > 0 && System.nanoTime() < deadline) Thread.sleep(10);
+            synchronized (journal) {
+                cleanup.invoke(journal);
+                rootField.set(journal, previousRoot);
+            }
+        }
+    }
+
+    /**
+     * 2026-11-13: c89 failed while getMethod enumerated unrelated Minecraft signatures,
+     * and the adapter hid its own underlying failure behind false. Call the existing
+     * facade directly so JUnit retains its original Throwable; do not mock its sink.
+     * Run this method alone in a fresh worker when diagnosing first initialization.
+     */
+    @Test void directFacadePublicationExposesOriginalFailureWithoutMethodEnumeration() throws Exception {
+        MonitoringJournal journal = MonitoringJournal.get();
+        var rootField = MonitoringJournal.class.getDeclaredField("root");
+        rootField.setAccessible(true);
+        Object previousRoot = rootField.get(journal);
+        Method cleanup = MonitoringJournal.class.getDeclaredMethod("closeWriters");
+        cleanup.setAccessible(true);
+        synchronized (journal) {
+            cleanup.invoke(journal);
+            journal.configure(root);
+        }
+        // Resource cleanup suppresses its own failure onto an original publication failure.
+        try (AutoCloseable restore = () -> {
+            WorldContextStamp.clear();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            while (journal.queueSize() > 0 && System.nanoTime() < deadline) Thread.sleep(10);
+            synchronized (journal) {
+                cleanup.invoke(journal);
+                rootField.set(journal, previousRoot);
+            }
+        }) {
+            String marker = UUID.randomUUID().toString();
+            WorldContextStamp.set("diagnostic-world", "diagnostic-server");
+            var token = WorldContextStamp.capture();
+            // Deliberately bypass RddMonitor's catch, not the real production facade.
+            assertTrue(NumenPlugins.tryPublishMonitor("rdd", "direct_facade_diagnostic",
+                    Map.of("fixture", marker), token), "the real singleton queue must accept");
+            var written = await(root.resolve("monitor/rdd.jsonl"), "direct_facade_diagnostic", marker);
+            assertEquals("diagnostic-world", written.get("world_id").getAsString());
+            assertEquals("diagnostic-server", written.get("server_session").getAsString());
+            assertEquals(token.epoch(), written.get("world_epoch").getAsLong());
         }
     }
 

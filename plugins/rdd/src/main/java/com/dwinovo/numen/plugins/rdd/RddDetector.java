@@ -388,6 +388,7 @@ final class RddDetector {
             // 2026-11-13（接受后才记抢占）：捕获进入前的身体 owner，传给宿主；只有真的进了
             // REPLANNING 才在同线程同步回调里停“这一个”任务、才记 60s 冷却、才发抢占观测。
             // 拒绝时不停身体、不记冷却，避免 V03 那种“身体停了、链还在 ACTIVE、没有新任务”。
+            var observationToken = RddPlugin.captureObservationToken(ap.getServer());
             var expectedAction = com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(ap.getUUID());
             boolean accepted = RddPlugin.requestReplanForSurvival(ap.getUUID(), decision, hunger, hp, free,
                     expectedAction, ap);
@@ -401,7 +402,8 @@ final class RddDetector {
                 SURVIVAL_PREEMPT_AT.put(ap.getUUID(), now);
             }
             RddMonitor.publish("survival_preempt", java.util.Map.of(
-                    "decision", decision.name(), "hunger", hunger, "hp", hp, "free_slots", free));
+                    "companionId", ap.getUUID().toString(),
+                    "decision", decision.name(), "hunger", hunger, "hp", hp, "free_slots", free), observationToken);
             LOG.info("[rdd] 生存抢占 {} hunger={} hp={} free={}", decision, hunger, hp, free);
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 生存抢占失败: {}", ex.toString());
@@ -681,7 +683,7 @@ final class RddDetector {
             }
             // 开工拍醒：一级的可执行二级已经起来了 → 推一句让内置 AI 动手（每个一级一次，失败下 tick 重试）。
             // 放在 EarlyAchievement 连跳之后，拍醒的一定是真正在执行的那个二级。
-            RddPlugin.kickoffNudge(ap.getUUID(), chain);
+            RddPlugin.kickoffNudge(ap.getUUID(), chain, RddPlugin.captureObservationToken(ap.getServer()));
             Subtask current = chain.currentSubtask();
             // AI_ASSISTED 二级交还 AI 驱动，不做卡死监督（保持原语义）。
             if (current.detectionMode() != DetectionMode.HARD_CODED) {

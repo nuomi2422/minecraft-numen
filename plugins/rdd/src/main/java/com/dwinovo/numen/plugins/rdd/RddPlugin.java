@@ -1162,14 +1162,15 @@ private static String withAssets(UUID companionId, String rddContext) {
     private static void decomposeSinglePass(MinecraftServer server, RddCallbackGuard.Ticket ticket,
                                             String objective, boolean restartRequested) {
         UUID uuid = ticket.companionId();
+        var observationToken = captureObservationToken(server);
         RddDecomposer.decompose(uuid, objective, goal -> onServer(server, ticket, () -> {
             try {
                 bindCurrent(uuid, goal, restartRequested);
                 RddRuntime runtime = runtime(uuid);
                 if (runtime != null) {
                     runtime.startCurrent();
-                    publishTaskSnapshot(uuid, "goal_decomposed");
-                    kickoffNudge(uuid, runtime.chain());
+                    publishTaskSnapshot(uuid, "goal_decomposed", observationToken);
+                    kickoffNudge(uuid, runtime.chain(), observationToken);
                 }
                 LOG.info("[rdd] 目标分解完成并启动 {}:{}", uuid, goal.description());
             } catch (RuntimeException ex) {
@@ -1450,6 +1451,10 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 预算：失败驱动按 (同伴|一级) 最多 MAX_REPLAN_PER_PRIMARY 次；协商驱动用独立 key+上限。
         // 2026-11-13：预算检查、记账、状态转换统一由 RddReplanTransition 这一处完成
         // 仅转换成功才记账；这里只算 key 并保留预算耗尽后的观测。
+        // 2026-11-13 A1: freeze the request server before budget events or async dispatch.
+        // The same server and token travel through onServer; late callbacks never recapture a world.
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        var observationToken = captureObservationToken(server);
         String primaryId = chain.currentPrimary().id();
         String key = fromNegotiation
                 ? companionId + "|" + primaryId + "|nego"
@@ -1484,7 +1489,7 @@ private static String withAssets(UUID companionId, String rddContext) {
             }
             RddMonitor.publish("replan_exhausted", Map.of(
                     "companionId", companionId.toString(), "primary", primaryId,
-                    "attempts", used, "reason", "replan budget exhausted; park instead"));
+                    "attempts", used, "reason", "replan budget exhausted; park instead"), observationToken);
             LOG.warn("[rdd] 重规划预算耗尽，回落停车 {}:{}", companionId, primaryId);
             return false;
         }
@@ -1494,7 +1499,6 @@ private static String withAssets(UUID companionId, String rddContext) {
         }
         try {
             String theme = chain.currentPrimary().description();
-            MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
             boolean survival = trigger == RddReplanTransition.Trigger.SURVIVAL;
             if (survival ? !RddReplanTransition.requirePlanningServer(companionId, survivalToken, chain, server)
                     : server == null) {
@@ -1586,20 +1590,20 @@ private static String withAssets(UUID companionId, String rddContext) {
                             java.util.function.Consumer<java.util.List<Subtask>> afterApplied = subs -> {
                                 RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废
                                 saveRuntimes();
-                                publishTaskSnapshot(companionId, "replanned");
+                                publishTaskSnapshot(companionId, "replanned", observationToken);
                                 RddMonitor.publish("replanned", Map.of("companionId", companionId.toString(),
                                         "primary", primaryId, "theme", theme,
-                                        "subtasks", subs.size(), "planRevision", chain.planRevision()));
+                                        "subtasks", subs.size(), "planRevision", chain.planRevision()), observationToken);
                             };
                             if (survival) {
                                 var application = RddReplanTransition.applySurvivalPlan(companionId, survivalToken, chain,
                                         specs, replace, afterApplied);
                                 if (application == RddReplanTransition.SurvivalApplyOutcome.EMPTY_FALLBACK) {
-                                    publishTaskSnapshot(companionId, "replan_fallback_resume");
+                                    publishTaskSnapshot(companionId, "replan_fallback_resume", observationToken);
                                 } // STALE_IGNORED不应用，也不伪报空回落。
                             } else if (specs == null || specs.isEmpty()) {
                                 chain.resumeFromReplanning();
-                                publishTaskSnapshot(companionId, "replan_fallback_resume");
+                                publishTaskSnapshot(companionId, "replan_fallback_resume", observationToken);
                             } else {
                                 afterApplied.accept(replace.get());
                             }
@@ -3197,26 +3201,32 @@ private static String safeDeathAttacker(NumenPlayer body) {
      * 否则被总闸挡一次就永久哑火（RddStallWatcher 记过的同类事故）。
      */
     static boolean kickoffNudge(UUID companionId, TaskChain chain) {
+        return kickoffNudge(companionId, chain, null);
+    }
+
+    /** Producer-supplied token only; legacy callers and absent identity stay UNKNOWN. */
+    static boolean kickoffNudge(UUID companionId, TaskChain chain,
+                                com.dwinovo.numen.api.WorldContextStamp.Token observationToken) {
         if (companionId == null || chain == null) return false;
         if (!supervisionEnabled || numenApi == null) {
-            kickoffSkip(companionId, chain, "supervision_off_or_no_api");
+            kickoffSkip(companionId, chain, "supervision_off_or_no_api", observationToken);
             return false;
         }
         if (bodySubmissionEnabled) {
-            kickoffSkip(companionId, chain, "body_dispatch_enabled");
+            kickoffSkip(companionId, chain, "body_dispatch_enabled", observationToken);
             return false;
         }
         if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) {
-            kickoffSkip(companionId, chain, "primary_not_active");
+            kickoffSkip(companionId, chain, "primary_not_active", observationToken);
             return false;
         }
         Subtask cur = chain.currentSubtask();
         if (cur == null || chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) {
-            kickoffSkip(companionId, chain, cur == null ? "no_current_subtask" : "subtask_not_running");
+            kickoffSkip(companionId, chain, cur == null ? "no_current_subtask" : "subtask_not_running", observationToken);
             return false;
         }
         if (cur.id().equals(KICKOFF_SENT.get(companionId))) {
-            kickoffSkip(companionId, chain, "already_kicked_off");
+            kickoffSkip(companionId, chain, "already_kicked_off", observationToken);
             return false;
         }
         if (!nudgeAllowed(companionId)) {
@@ -3227,7 +3237,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
                 + "先调用工具真正执行，不要只回文字；做完把结果报回来，我核对真实资产后再推进下一步。"
                 + "如果这一步现在做不了，用 report_task_concern 上报卡点，不要默默无视。";
         if (!nudge(companionId, msg)) {                                // 发失败不记账 → 下个 tick 重试
-            kickoffSkip(companionId, chain, "nudge_failed");
+            kickoffSkip(companionId, chain, "nudge_failed", observationToken);
             return false;
         }
         KICKOFF_SENT.put(companionId, cur.id());
@@ -3235,12 +3245,13 @@ private static String safeDeathAttacker(NumenPlayer body) {
         data.put("primary", chain.currentPrimary().id());
         data.put("subtask", cur.id());
         data.put("reason", "kickoff: a subtask just entered RUNNING");
-        RddMonitor.publish("goal_kickoff", data);
+        RddMonitor.publish("goal_kickoff", data, observationToken);
         LOG.info("[rdd] 开工拍醒 {} 二级 {}", companionId, cur.id());
         return true;
     }
 
-    private static void kickoffSkip(UUID companionId, TaskChain chain, String reason) {
+    private static void kickoffSkip(UUID companionId, TaskChain chain, String reason,
+                                    com.dwinovo.numen.api.WorldContextStamp.Token observationToken) {
         String key = chain != null && chain.currentSubtask() != null
                 ? chain.currentSubtask().id() : "none";
         if (key.equals(KICKOFF_SKIP_LOGGED.get(companionId))) return;   // 同二级只记一次
@@ -3252,13 +3263,25 @@ private static String safeDeathAttacker(NumenPlayer body) {
                 "reason", reason,
                 "bodyDispatch", bodySubmissionEnabled,
                 "supervision", supervisionEnabled,
-                "apiBound", numenApi != null));
+                "apiBound", numenApi != null), observationToken);
     }
 
     /** rdd_submit 用：AI 自己刚提交并启动的单，不需要再"开工拍醒"一次。 */
     static void markKickoffHandled(UUID companionId, String subtaskId) {
         if (companionId != null && subtaskId != null) {
             KICKOFF_SENT.put(companionId, subtaskId);
+        }
+    }
+
+    /**
+     * 2026-11-13 A1: optional observation identity from the exact producer server.
+     * Missing host/provider stays UNKNOWN; never fall back to the process-global stamp.
+     */
+    static com.dwinovo.numen.api.WorldContextStamp.Token captureObservationToken(MinecraftServer server) {
+        try {
+            return com.dwinovo.numen.api.WorldContextStamp.capture(server);
+        } catch (RuntimeException | LinkageError unavailable) {
+            return null; // observation failure must not cancel planning or change task budgets
         }
     }
 
