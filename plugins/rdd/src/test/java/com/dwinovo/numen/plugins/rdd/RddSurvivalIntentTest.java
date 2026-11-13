@@ -3,6 +3,7 @@ package com.dwinovo.numen.plugins.rdd;
 import com.dwinovo.numen.rdd.api.Goal;
 import com.dwinovo.numen.rdd.api.PrimaryGoal;
 import com.dwinovo.numen.rdd.api.PrimaryGoalStatus;
+import com.dwinovo.numen.plugins.rdd.RddReplanTransition.SurvivalApplyOutcome;
 import java.util.ArrayList;
 import com.dwinovo.numen.rdd.api.Subtask;
 import com.dwinovo.numen.rdd.core.TaskChain;
@@ -223,7 +224,8 @@ class RddSurvivalIntentTest {
         Object token = new Object();
         assertTrue(f.request(token).accepted());
         RddReplanTransition.observeSafe(f.id);
-        assertFalse(RddReplanTransition.applySurvivalPlan(f.id, token, f.chain, null,
+        assertEquals(SurvivalApplyOutcome.EMPTY_FALLBACK,
+                RddReplanTransition.applySurvivalPlan(f.id, token, f.chain, null,
                 () -> { throw new AssertionError("null回调不得执行替换"); },
                 ignored -> fail("null回调不得保存/发布")));
         assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
@@ -410,7 +412,8 @@ class RddSurvivalIntentTest {
         assertTrue(f.request(token).accepted());
         int rev = f.chain.planRevision();
         RddReplanTransition.SURVIVAL_PREEMPT_AT.put(f.id, 1_000L);
-        assertFalse(RddReplanTransition.applySurvivalPlan(f.id, token, f.chain, List.of(),
+        assertEquals(SurvivalApplyOutcome.EMPTY_FALLBACK,
+                RddReplanTransition.applySurvivalPlan(f.id, token, f.chain, List.of(),
                 () -> { throw new AssertionError("空specs不得替换"); },
                 ignored -> fail("空specs不得保存/发布")));
         assertEquals(rev, f.chain.planRevision());
@@ -445,7 +448,8 @@ class RddSurvivalIntentTest {
         assertTrue(f.request(token).accepted());
         int rev = f.chain.planRevision();
         AtomicInteger observed = new AtomicInteger();
-        assertTrue(RddReplanTransition.applySurvivalPlan(f.id, token, f.chain, List.of("spec"),
+        assertEquals(SurvivalApplyOutcome.APPLIED,
+                RddReplanTransition.applySurvivalPlan(f.id, token, f.chain, List.of("spec"),
                 f::replacePlan, subs -> {
                     assertEquals(1, subs.size());
                     assertEquals(rev + 1, f.chain.planRevision());
@@ -489,17 +493,80 @@ class RddSurvivalIntentTest {
         RddReplanTransition.SURVIVAL_PREEMPT_AT.put(f.id, 2_000L);
         long state = f.chain.stateVersion();
         assertFalse(RddReplanTransition.requirePlanningServer(f.id, old, f.chain, null));
-        assertFalse(RddReplanTransition.applySurvivalPlan(f.id, old, f.chain, List.of(),
-                () -> { throw new AssertionError("旧空回不得替换"); }, ignored -> fail("旧空回不得发布")));
-        assertThrows(IllegalStateException.class, () -> RddReplanTransition.applySurvivalPlan(
-                f.id, old, f.chain, List.of("old-spec"),
-                () -> { throw new IllegalStateException("obsolete conversion failed"); },
-                ignored -> fail("旧失败不得发布")));
+        assertEquals(SurvivalApplyOutcome.STALE_IGNORED,
+                RddReplanTransition.applySurvivalPlan(f.id, old, f.chain, List.of(),
+                        () -> { throw new AssertionError("旧空回不得替换"); }, ignored -> fail("旧空回不得发布")));
+        assertEquals(SurvivalApplyOutcome.STALE_IGNORED,
+                RddReplanTransition.applySurvivalPlan(f.id, old, f.chain, List.of("old-spec"),
+                        () -> { throw new AssertionError("旧转换不得运行"); },
+                        ignored -> fail("旧失败不得发布")));
         assertEquals(state, f.chain.stateVersion(), "旧失败不得回落新REPLANNING");
         assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
         assertEquals(Long.valueOf(2_000L), RddReplanTransition.SURVIVAL_PREEMPT_AT.get(f.id));
         assertEquals(RddReplanTransition.Outcome.DUPLICATE_SURVIVAL_PENDING, f.request(new Object()).outcome());
         assertEquals(2, f.used());
+    }
+
+    @Test
+    void oldSuccessfulApplyCannotReplaceOrObserveNewPendingPlan() {
+        Fixture f = new Fixture(UUID.randomUUID(), "stale-successful-apply");
+        Object old = new Object();
+        assertTrue(f.request(old).accepted());
+        RddReplanTransition.abortPlan(f.id, old, f.chain);
+        assertTrue(f.chain.activateCurrent(Map.of()));
+        Object current = new Object();
+        assertTrue(f.request(current).accepted());
+        RddReplanTransition.SURVIVAL_PREEMPT_AT.put(f.id, 2_000L);
+        int revision = f.chain.planRevision();
+        long state = f.chain.stateVersion();
+        AtomicInteger replacements = new AtomicInteger();
+        AtomicInteger observations = new AtomicInteger();
+
+        assertEquals(SurvivalApplyOutcome.STALE_IGNORED,
+                RddReplanTransition.applySurvivalPlan(f.id, old, f.chain, List.of("valid-old-spec"),
+                        () -> {
+                            replacements.incrementAndGet();
+                            return f.replacePlan(); // 若执行，会真实推进rev并替换TaskChain
+                        }, ignored -> observations.incrementAndGet()));
+
+        assertEquals(0, replacements.get(), "旧token必须在真实替换前拒绝");
+        assertEquals(0, observations.get(), "旧回调不得保存/发布");
+        assertEquals(revision, f.chain.planRevision());
+        assertEquals(state, f.chain.stateVersion());
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+        assertTrue(RddReplanTransition.hasSurvivalIntent(f.id));
+        assertEquals(Long.valueOf(2_000L), RddReplanTransition.SURVIVAL_PREEMPT_AT.get(f.id));
+        assertEquals(RddReplanTransition.Outcome.DUPLICATE_SURVIVAL_PENDING, f.request(new Object()).outcome());
+        assertEquals(2, f.used());
+        assertEquals(2, f.callbacks());
+    }
+
+    @Test
+    void safetyClearedMarkerStillAllowsOriginalValidTicketToApply() {
+        Fixture f = new Fixture(UUID.randomUUID(), "safe-original-apply");
+        Object token = new Object();
+        assertTrue(f.request(token).accepted());
+        RddCallbackGuard guard = new RddCallbackGuard();
+        var ticket = guard.replace(f.id);
+        RddReplanTransition.observeSafe(f.id);
+        assertFalse(RddReplanTransition.hasSurvivalIntent(f.id));
+        int revision = f.chain.planRevision();
+        AtomicInteger replacements = new AtomicInteger();
+        AtomicInteger observations = new AtomicInteger();
+
+        guard.dispatch(ticket, Runnable::run, () -> assertEquals(SurvivalApplyOutcome.APPLIED,
+                RddReplanTransition.applySurvivalPlan(f.id, token, f.chain, List.of("valid-spec"),
+                        () -> {
+                            replacements.incrementAndGet();
+                            return f.replacePlan();
+                        }, ignored -> observations.incrementAndGet())));
+
+        assertEquals(1, replacements.get());
+        assertEquals(1, observations.get());
+        assertEquals(revision + 1, f.chain.planRevision());
+        assertFalse(RddReplanTransition.hasSurvivalIntent(f.id), "安全释放后不复活marker");
+        assertTrue(f.chain.activateCurrent(Map.of()));
+        assertTrue(f.request(new Object()).accepted(), "随后新风险可重新请求");
     }
 
     /** 真 TaskChain + 真预算表；意图 key 用固定 companionId（生产同一 UUID）。 */

@@ -164,17 +164,23 @@ final class RddReplanTransition {
         return false;
     }
 
+    enum SurvivalApplyOutcome { APPLIED, EMPTY_FALLBACK, STALE_IGNORED }
+
     /**
      * 2026-11-13：空回、替换失败和替换后观测失败必须分开，不能靠宿主源码pin签通过。
      * 真正的替换由原宿主动作执行；本消费者负责判空、失败释放、成功绑定实际rev。
      * 保存/发布放在绑定之后、释放catch之外：已落链的计划不能因观测异常失去保护。
      */
-    static <T> boolean applySurvivalPlan(UUID companionId, Object token, TaskChain chain,
-                                       java.util.List<?> specs, java.util.function.Supplier<T> replace,
-                                       java.util.function.Consumer<T> afterApplied) {
+    static <T> SurvivalApplyOutcome applySurvivalPlan(UUID companionId, Object token, TaskChain chain,
+                                                     java.util.List<?> specs, java.util.function.Supplier<T> replace,
+                                                     java.util.function.Consumer<T> afterApplied) {
+        SurvivalIntent current = companionId == null ? null : SURVIVAL_INTENTS.get(companionId);
+        // 2026-11-13：旧token的成功替换也会改rev，必须在执行任何动作之前拒绝。
+        // 安全观测已清marker且没有新意图时，仍由原CallbackGuard判断原票有效性。
+        if (current != null && current.token() != token) return SurvivalApplyOutcome.STALE_IGNORED;
         if (specs == null || specs.isEmpty()) {
             abortPlan(companionId, token, chain);
-            return false;
+            return SurvivalApplyOutcome.EMPTY_FALLBACK;
         }
         T applied;
         try {
@@ -185,7 +191,7 @@ final class RddReplanTransition {
         }
         markApplied(companionId, token, chain.planRevision());
         afterApplied.accept(applied);
-        return true;
+        return SurvivalApplyOutcome.APPLIED;
     }
 
     /** NONE 仅代表风险消退，不是供食完成；清同一份冷却使随后新风险可重新评估。 */

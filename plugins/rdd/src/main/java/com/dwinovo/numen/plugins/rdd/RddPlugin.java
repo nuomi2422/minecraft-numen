@@ -1592,10 +1592,11 @@ private static String withAssets(UUID companionId, String rddContext) {
                                         "subtasks", subs.size(), "planRevision", chain.planRevision()));
                             };
                             if (survival) {
-                                if (!RddReplanTransition.applySurvivalPlan(companionId, survivalToken, chain,
-                                        specs, replace, afterApplied)) {
+                                var application = RddReplanTransition.applySurvivalPlan(companionId, survivalToken, chain,
+                                        specs, replace, afterApplied);
+                                if (application == RddReplanTransition.SurvivalApplyOutcome.EMPTY_FALLBACK) {
                                     publishTaskSnapshot(companionId, "replan_fallback_resume");
-                                }
+                                } // STALE_IGNORED不应用，也不伪报空回落。
                             } else if (specs == null || specs.isEmpty()) {
                                 chain.resumeFromReplanning();
                                 publishTaskSnapshot(companionId, "replan_fallback_resume");
