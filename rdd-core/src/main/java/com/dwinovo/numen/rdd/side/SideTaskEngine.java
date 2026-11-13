@@ -7,6 +7,7 @@ import com.google.gson.JsonParser;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -193,8 +194,10 @@ public final class SideTaskEngine {
         }
         long now = world.gameTime();
         long day = world.gameDay();
+        // One tick only: the DAILY probe and original trigger loop share even a false result.
+        Map<SideTaskTrigger, Boolean> foodTriggerResults = new IdentityHashMap<>();
         if (!deathSideTaskOccupying && !world.bodyBusy(companionId)) {
-            if (tickRecurring(companionId, world, mainlineToken, day, now)) {
+            if (tickRecurring(companionId, world, mainlineToken, day, now, foodTriggerResults)) {
                 return;
             }
         }
@@ -220,9 +223,11 @@ public final class SideTaskEngine {
                     continue;
                 }
             }
-            if (!trigger.fires(new SideTaskTrigger.Context(
+            Boolean cachedFoodFires = foodTriggerResults.get(trigger);
+            boolean fires = cachedFoodFires != null ? cachedFoodFires : trigger.fires(new SideTaskTrigger.Context(
                     companionId, world.worldId(), day, world.dayTime(), world.hasDayNightCycle(),
-                    world.hunger(companionId), world.health(companionId), world.edibleCount(companionId)))) {
+                    world.hunger(companionId), world.health(companionId), world.edibleCount(companionId)));
+            if (!fires) {
                 continue;
             }
             SideTaskType type = types.get(trigger.typeId());
@@ -386,7 +391,8 @@ public final class SideTaskEngine {
     }
 
     private boolean tickRecurring(UUID companionId, SideTaskWorldPort world,
-                                  MainlineResumeToken mainlineToken, long day, long now) {
+                                  MainlineResumeToken mainlineToken, long day, long now,
+                                  Map<SideTaskTrigger, Boolean> foodTriggerResults) {
         for (var e : recurringSpecs.entrySet()) {
             RecurringSideTaskSpec spec = e.getValue();
             String typeId = recurringTypes.get(e.getKey());
@@ -428,6 +434,19 @@ public final class SideTaskEngine {
             }
             SideTaskType type = typeId == null ? null : types.get(typeId);
             if (type == null) continue;
+            if (plannerDaily) {
+                // 2026-11-13: five admission assertions failed because DAILY returned before food.
+                // Ask the registered production trigger only here, after scope/handled/prompt checks;
+                // keep its host cooldown and let the original trigger order decide the actual owner.
+                SideTaskTrigger food = triggerOf(FoodSupplySideTaskType.TYPE_ID);
+                if (food instanceof FoodSupplySideTaskTrigger && types.containsKey(FoodSupplySideTaskType.TYPE_ID)) {
+                    boolean foodFires = foodTriggerResults.computeIfAbsent(food, trigger -> trigger.fires(
+                            new SideTaskTrigger.Context(companionId, world.worldId(), day, world.dayTime(),
+                                    world.hasDayNightCycle(), world.hunger(companionId),
+                                    world.health(companionId), world.edibleCount(companionId))));
+                    if (foodFires) continue; // Do not spend this DAILY occurrence while food needs admission.
+                }
+            }
             System.out.println("[rdd] recurring create spec=" + spec.scheduleId() + " dataKeys=" + spec.data().keySet());
             if (!plannerDaily) token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
             long generation = runtime.nextGeneration();
