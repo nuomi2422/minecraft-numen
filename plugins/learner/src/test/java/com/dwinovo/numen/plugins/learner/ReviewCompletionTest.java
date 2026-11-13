@@ -135,4 +135,75 @@ class ReviewCompletionTest {
         assertTrue(text.contains("completion.settle(queue, batch, judged)"));
         assertTrue(text.contains("reviewedEv.put(\"terminal_skipped\", settlement.terminalSkipped())"));
     }
+
+    @Test void skillDeliveryUnknownContextSurvivesReloadAndCommitsOnlyUnderNewStableToken(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("delivery-restart.json");
+        Memo m = new Memo("delivery-restart", "review", "skill_delivery", "historical delivery sample",
+                "{\"world_id\":\"old-world\",\"server_session\":\"old-server\",\"epoch\":1,\"request_id\":\"94ef928e\"}", 11L);
+        MemoQueue first = new MemoQueue(file);
+        assertTrue(first.append(m));
+        List<Memo> batch = first.drain(2);
+        var start = new com.dwinovo.numen.api.WorldContextStamp.Token(Map.of("world_id", "live-world", "server_session", "live-server"), 7);
+        var current = new com.dwinovo.numen.api.WorldContextStamp.Token(Map.of("world_id", "live-world", "server_session", "live-server"), 8);
+        var completion = new ReviewCompletion(batch, x -> ReviewTargetGate.check(dir, A, x, start, current));
+        assertAll(
+                () -> assertEquals("REVIEW_CONTEXT_CHANGED", completion.target(m.id()).reason()),
+                () -> assertFalse(completion.terminal(m.id()), "changed context is retryable, not terminal"),
+                () -> assertFalse(completion.effective(m.id(), Set.of(m.id())), "judged alone must not authorize"));
+        var restored = completion.settle(first, batch, Set.of(m.id()));
+        assertAll(
+                () -> assertEquals(0, restored.committed()),
+                () -> assertEquals(0, restored.terminalSkipped()),
+                () -> assertEquals(1, restored.restored()),
+                () -> assertEquals(1, first.size()));
+        MemoQueue reloaded = new MemoQueue(file);
+        assertAll(
+                () -> assertEquals(1, reloaded.size()),
+                () -> assertEquals(m.snapshot(), reloaded.all().get(0).snapshot()),
+                () -> assertEquals(m.id(), reloaded.all().get(0).id()));
+        List<Memo> second = reloaded.drain(2);
+        var stable = new com.dwinovo.numen.api.WorldContextStamp.Token(Map.of("world_id", "live-world", "server_session", "live-server"), 9);
+        var again = new ReviewCompletion(second, x -> ReviewTargetGate.check(dir, A, x, stable, stable));
+        assertTrue(again.effective(m.id(), Set.of(m.id())));
+        var settled = again.settle(reloaded, second, Set.of(m.id()));
+        assertAll(
+                () -> assertEquals(1, settled.committed()),
+                () -> assertEquals(0, settled.terminalSkipped()),
+                () -> assertEquals(0, reloaded.size()));
+    }
+
+    @Test void skillTaskResultMissingContextSurvivesReloadAndCommitsUnderStableToken(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("result-restart.json");
+        Memo m = new Memo("result-restart", "review", "skill_task_result", "historical result sample",
+                "{\"world_id\":\"old-world\",\"server_session\":\"old-server\",\"epoch\":1,\"result_id\":\"r1\"}", 12L);
+        MemoQueue first = new MemoQueue(file);
+        assertTrue(first.append(m));
+        List<Memo> batch = first.drain(2);
+        var incomplete = new com.dwinovo.numen.api.WorldContextStamp.Token(Map.of("world_id", "live-world"), 5);
+        assertAll(
+                () -> assertEquals("REVIEW_CONTEXT_UNKNOWN", ReviewTargetGate.check(dir, A, m, incomplete, incomplete).reason()),
+                () -> assertEquals("REVIEW_CONTEXT_UNKNOWN", ReviewTargetGate.check(dir, A, m, null, incomplete).reason()),
+                () -> assertFalse(ReviewTargetGate.check(dir, A, m, incomplete, incomplete).terminal()));
+        var completion = new ReviewCompletion(batch, x -> ReviewTargetGate.check(dir, A, x, incomplete, incomplete));
+        assertFalse(completion.effective(m.id(), Set.of(m.id())));
+        var restored = completion.settle(first, batch, Set.of(m.id()));
+        assertAll(
+                () -> assertEquals(0, restored.committed()),
+                () -> assertEquals(0, restored.terminalSkipped()),
+                () -> assertEquals(1, restored.restored()),
+                () -> assertEquals(1, first.size()));
+        MemoQueue reloaded = new MemoQueue(file);
+        assertAll(
+                () -> assertEquals(1, reloaded.size()),
+                () -> assertEquals(m.snapshot(), reloaded.all().get(0).snapshot()));
+        List<Memo> second = reloaded.drain(2);
+        var stable = new com.dwinovo.numen.api.WorldContextStamp.Token(Map.of("world_id", "live-world", "server_session", "live-server"), 5);
+        var again = new ReviewCompletion(second, x -> ReviewTargetGate.check(dir, A, x, stable, stable));
+        assertTrue(again.effective(m.id(), Set.of(m.id())));
+        var settled = again.settle(reloaded, second, Set.of(m.id()));
+        assertAll(
+                () -> assertEquals(1, settled.committed()),
+                () -> assertEquals(0, settled.terminalSkipped()),
+                () -> assertEquals(0, reloaded.size()));
+    }
 }
