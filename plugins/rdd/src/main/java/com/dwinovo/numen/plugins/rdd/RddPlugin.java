@@ -1427,8 +1427,9 @@ private static String withAssets(UUID companionId, String rddContext) {
                 : companionId + "|" + primaryId;
         int limit = fromNegotiation ? MAX_NEGOTIATION_REPLANS_PER_PRIMARY : MAX_REPLAN_PER_PRIMARY;
         int used = REPLAN_COUNTS.getOrDefault(key, 0);
+        // 红基线宿主传空回调：清身体派发记录是产品修复批的净新增，不混进机械提取。
         RddReplanTransition.Result transition = RddReplanTransition.request(
-                chain, trigger, reason, REPLAN_COUNTS, key, limit, () -> clearBody(companionId));
+                chain, trigger, reason, REPLAN_COUNTS, key, limit, null);
         if (transition.outcome() == RddReplanTransition.Outcome.BUDGET_EXHAUSTED) {
             long gt = RddInstrumentation.currentGameTimeTicks();
             Map<String, Object> loopData = new LinkedHashMap<>();

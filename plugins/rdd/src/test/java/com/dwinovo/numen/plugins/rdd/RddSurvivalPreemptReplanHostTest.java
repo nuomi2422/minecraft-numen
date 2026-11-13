@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.*;
  *   <li>已 REPLANNING 的重复请求被拒且不花（红）；</li>
  *   <li>旧 STUCK 正控：FAILED 接受、恰好花 1 次（绿）；</li>
  *   <li>接受即作废旧执行身份；迟到重复被拒且不再花（绿）；</li>
- *   <li>接受回调只在 ACCEPTED 触发一次、拒绝零次（绿；**不证明** MC 派发被清）；</li>
+ *   <li>接受回调只在 ACCEPTED 触发一次、拒绝零次（绿；红基线宿主传空回调，**不证明** MC 派发被清）；</li>
  *   <li>SURVIVAL 触发从 RUNNING 必须能进重规划（现状走失败路径被拒 → 红，这是 V03 的可执行反例）。</li>
  * </ol>
  */
@@ -104,7 +104,8 @@ class RddSurvivalPreemptReplanHostTest {
     /**
      * 回调契约：ACCEPTED 恰好一次，拒绝零次。
      *
-     * <p>真实宿主把它接成 {@code clearBody(companionId)} 一行；这里只证明“接受才回调、只回调一次”，
+     * <p>红基线里真实宿主传空回调（机械提取不夹带净新增）；产品修复批才把它接成
+     * {@code clearBody(companionId)} 并单独注明。这里只证明“接受才回调、只回调一次”，
      * **不证明** MC 侧身体派发真的被清掉——那需要带 MC 的运行环境，本模块单测没有。
      */
     @Test
