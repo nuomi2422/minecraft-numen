@@ -475,6 +475,12 @@ class LearnerSkillTaskFeedbackTest {
         var joined = deliver("host-joined", task.publicId(), task.getToolCallId(),
                 "skill:sk-1", "v1", deliveryScope());
         adopt(); tasks.finish(TaskState.SUCCESS); ok(call(args("report_skill")));
+        var originalRows = rows();
+        assertEquals(2, originalRows.size(), "real delivery and original RESULT are both present before host scan");
+        var originalResult = originalRows.get(1);
+        assertEquals(UsageLedger.Phase.RESULT, originalResult.phase());
+        assertNotNull(SkillDeliveryIntake.taskResultOf(originalResult));
+        String resultMemoId = SkillDeliveryIntake.resultMemoIdOf(originalResult);
         String joinedLedger = Files.readString(ledger.file());
         List<UsageLedger.Entry> variants = List.of(
                 deliver("host-wrong-task", "other-task", task.getToolCallId(),
@@ -523,13 +529,21 @@ class LearnerSkillTaskFeedbackTest {
                 // Both joined rows plus one real producer row; the entire file is passed to the host.
                 Files.writeString(ledger.file(), joinedLedger + allLines.get(i + 2) + "\n");
                 com.dwinovo.numen.plugins.learner.core.StormGuard.resetForTest();
-                assertEquals(1, LearnerAutoIntake.scanOnce(() ->
+                // 2026-11-14: merged host admits the original RESULT once, plus each unmatched delivery.
+                assertEquals(i == 0 ? 2 : 1, LearnerAutoIntake.scanOnce(() ->
                         new LearnerAutoIntake.DeliveryScope("world", "session", 7)));
                 assertEquals(i + 1, reads.get(), "one full ledger snapshot per host scan");
                 assertTrue(hostQueue.contains(SkillDeliveryIntake.memoIdOf(variants.get(i))));
                 assertFalse(hostQueue.contains(SkillDeliveryIntake.memoIdOf(joined)),
                         "EXPERIENCE result with exact original task/call must classify joined delivery");
-                assertEquals(i + 1, hostQueue.size());
+                var resultMemos = hostQueue.all().stream().filter(m -> resultMemoId.equals(m.id())).toList();
+                assertEquals(1, resultMemos.size(), "one independent sr must survive every original RESULT replay");
+                var resultMemo = resultMemos.get(0);
+                assertEquals("skill_task_result", resultMemo.stage());
+                var decoded = SkillDeliveryIntake.taskResultFromSnapshot(resultMemo.snapshot());
+                assertNotNull(decoded, "host RESULT snapshot must retain the original typed identity");
+                assertEquals(originalResult, decoded.entry(), "round-trip every original RESULT Entry field");
+                assertEquals(i + 2, hostQueue.size());
                 assertEquals(3, ledger.all().size(), "consumer must not create adoption/result/validity facts");
                 assertNull(LearnerPlugin.runningReview(C));
             }
