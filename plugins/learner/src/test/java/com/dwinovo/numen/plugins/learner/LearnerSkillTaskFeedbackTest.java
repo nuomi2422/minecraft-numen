@@ -4,6 +4,9 @@ import com.dwinovo.numen.api.WorldContextStamp;
 import com.dwinovo.numen.plugins.learner.contract.ArtifactDraft;
 import com.dwinovo.numen.plugins.learner.contract.ArtifactKind;
 import com.dwinovo.numen.plugins.learner.core.UsageLedger;
+import com.dwinovo.numen.plugins.learner.core.MemoQueue;
+import com.dwinovo.numen.plugins.learner.core.SkillDeliveryEvidence;
+import com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake;
 import com.dwinovo.numen.plugins.learner.skills.SkillBodyStore;
 import com.dwinovo.numen.plugins.learner.skills.SkillRegistrar;
 import com.dwinovo.numen.plugins.learner.skills.SkillRegistry;
@@ -397,4 +400,186 @@ class LearnerSkillTaskFeedbackTest {
         assertEquals(2, new UsageLedger(dir).conclusions().size());
         assertEquals(1, new UsageLedger(dir).associationCandidates().size());
     }
+
+    // 2026-11-13 C1: join real delivery and original task-result producers.
+    // These helpers reuse the normal usage tool and persisted ledger; only task lookup is injected.
+    private UsageLedger.Entry deliver(String request, String taskId, String taskCall, String ref,
+                                      String version, SkillDeliveryIntake.Scope scope) {
+        var result = SkillDeliveryEvidence.record(new SkillDeliveryEvidence.Context(request,
+                scope.worldId(), scope.serverSession(), scope.epoch(), scope.companionId(),
+                "EXECUTOR", "execution", taskId, taskCall,
+                List.of(new SkillDeliveryEvidence.Ref(ref, version))), ledger);
+        assertEquals(1, result.written());
+        assertFalse(result.ioFailed());
+        return rows().stream().filter(e -> result.artifacts().contains(e.artifactId())).findFirst().orElseThrow();
+    }
+
+    private SkillDeliveryIntake.Scope deliveryScope() {
+        return new SkillDeliveryIntake.Scope("world", "session", 7L, C.toString());
+    }
+
+    private static SkillDeliveryIntake.EnqueuedJournal deliveryJournal() {
+        return new SkillDeliveryIntake.EnqueuedJournal() {
+            private final java.util.Set<String> ids = new java.util.HashSet<>();
+            public boolean contains(String id) { return ids.contains(id); }
+            public void remember(String id) { ids.add(id); }
+        };
+    }
+
+    private void assertDeliveryRemains(List<UsageLedger.Entry> facts, UsageLedger.Entry delivery,
+                                       SkillDeliveryIntake.Scope scope, String queueName) {
+        assertEquals(List.of(delivery), SkillDeliveryIntake.selectDue(facts, scope,
+                java.util.Set.of(), java.util.Set.of(), 16));
+        MemoQueue queue = new MemoQueue(dir.resolve(queueName));
+        int before = rows().size();
+        var scan = SkillDeliveryIntake.run(facts, scope, queue, deliveryJournal(),
+                (c, fp, now, once) -> once.getAsBoolean(), 1000L, 16);
+        assertEquals(1, scan.enqueued());
+        assertEquals(0, scan.resultChannel());
+        assertEquals(1, queue.all().size());
+        assertEquals("skill_delivery", queue.all().get(0).stage());
+        assertEquals(before, rows().size(), "intake must not write adoption, result or effectiveness facts");
+        assertNull(LearnerPlugin.runningReview(C), "intake must not start review");
+    }
+
+    @Test void realDeliveryAndOriginalResultJoinAcrossDifferentArtifactFormats() {
+        var delivery = deliver("req-join", task.publicId(), task.getToolCallId(),
+                "skill:sk-1", "v1", deliveryScope());
+        adopt(); tasks.finish(TaskState.SUCCESS); ok(call(args("report_skill")));
+        var result = rows().get(1);
+        assertNotEquals(delivery.artifactId(), result.artifactId());
+        assertEquals("EXPERIENCE", result.kind(), "real result kind is the skill's artifact kind");
+        assertEquals(UsageLedger.EvidenceLevel.NONE, result.evidence());
+        assertFalse(result.validityClaimed());
+        for (boolean reverse : List.of(false, true)) {
+            var facts = new java.util.ArrayList<>(rows());
+            if (reverse) java.util.Collections.reverse(facts);
+            assertTrue(SkillDeliveryIntake.selectDue(facts, deliveryScope(),
+                    java.util.Set.of(), java.util.Set.of(), 16).isEmpty());
+            MemoQueue queue = new MemoQueue(dir.resolve("joined-" + reverse + ".json"));
+            var scan = SkillDeliveryIntake.run(facts, deliveryScope(), queue, deliveryJournal(),
+                    (c, fp, now, once) -> once.getAsBoolean(), 1000L, 16);
+            assertEquals(0, scan.enqueued());
+            assertEquals(1, scan.resultChannel(), "classified delivery, not a completed learning review");
+            assertTrue(queue.all().isEmpty());
+            assertNull(LearnerPlugin.runningReview(C));
+        }
+        assertEquals(2, rows().size());
+    }
+
+    @Test void realTaskDeliveryWithoutAReportedResultStillEnqueues() {
+        var delivery = deliver("req-pending", task.publicId(), task.getToolCallId(),
+                "skill:sk-1", "v1", deliveryScope());
+        assertDeliveryRemains(rows(), delivery, deliveryScope(), "unreported.json");
+    }
+
+    @Test void originalTaskAndCallMatchExactlyAndSelectionCallCannotSubstitute() {
+        var otherTask = new Work(task.getToolCallId());
+        var wrongTask = deliver("req-other-task", otherTask.publicId(), otherTask.getToolCallId(),
+                "skill:sk-1", "v1", deliveryScope());
+        var wrongCall = deliver("req-other-call", task.publicId(), "another-action-call",
+                "skill:sk-1", "v1", deliveryScope());
+        var selectionCall = deliver("req-selection-call", task.publicId(), "selection-call",
+                "skill:sk-1", "v1", deliveryScope());
+        adopt(); tasks.finish(TaskState.SUCCESS); ok(call(args("report_skill")));
+        var result = rows().get(3);
+        for (var delivery : List.of(wrongTask, wrongCall, selectionCall)) {
+            assertDeliveryRemains(List.of(result, delivery), delivery, deliveryScope(),
+                    "different-" + SkillDeliveryIntake.memoIdOf(delivery) + ".json");
+        }
+    }
+
+    @Test void worldSessionEpochAndCompanionCannotBorrowAnotherResult() {
+        adopt(); tasks.finish(TaskState.SUCCESS); ok(call(args("report_skill")));
+        var result = rows().get(0);
+        var scopes = List.of(new SkillDeliveryIntake.Scope("other-world", "session", 7, C.toString()),
+                new SkillDeliveryIntake.Scope("world", "other-session", 7, C.toString()),
+                new SkillDeliveryIntake.Scope("world", "session", 8, C.toString()),
+                new SkillDeliveryIntake.Scope("world", "session", 7, UUID.randomUUID().toString()));
+        int i = 0;
+        for (var scope : scopes) {
+            var delivery = deliver("req-scope-" + i, task.publicId(), task.getToolCallId(),
+                    "skill:sk-1", "v1", scope);
+            assertDeliveryRemains(List.of(delivery, result), delivery, scope, "scope-" + i++ + ".json");
+        }
+    }
+
+    @Test void realOtherSkillResultDoesNotSuppressTheDeliveredSkill() {
+        var delivery = deliver("req-ref", task.publicId(), task.getToolCallId(),
+                "skill:sk-1", "v1", deliveryScope());
+        String otherBody = SkillBodyStore.write(dir, "sk-2", 1, Integer.toHexString("other original steps".hashCode()), "other original steps");
+        ArtifactDraft other = new ArtifactDraft(ArtifactKind.EXPERIENCE, "other safe steps", "cross a bridge",
+                "other original steps", List.of("night"), List.of(), List.of(), "LOW", List.of(),
+                List.of("memo-2"), "EXECUTOR");
+        var registered = registry.register(other, "sk-2", otherBody, true);
+        assertEquals(SkillRegistry.Outcome.REGISTERED, registered.outcome());
+        assertEquals("sk-2", registered.entry().skillId());
+        JsonObject choose = args("adopt_skill"); choose.addProperty("skill_ref", "skill:sk-2");
+        ok(call(choose)); tasks.finish(TaskState.SUCCESS);
+        choose.addProperty("action", "report_skill"); ok(call(choose));
+        assertDeliveryRemains(rows(), delivery, deliveryScope(), "other-ref.json");
+    }
+
+    @Test void realNextVersionResultDoesNotSuppressTheDeliveredOldVersion() {
+        var delivery = deliver("req-version", task.publicId(), task.getToolCallId(),
+                "skill:sk-1", "v1", deliveryScope());
+        registry.register(artifact("revised steps"), "sk-1", writeBody("revised steps"), true);
+        JsonObject choose = args("adopt_skill"); choose.addProperty("version", "v2");
+        ok(call(choose)); tasks.finish(TaskState.SUCCESS);
+        choose.addProperty("action", "report_skill"); ok(call(choose));
+        assertDeliveryRemains(rows(), delivery, deliveryScope(), "other-version.json");
+    }
+
+    @Test void episodeDeliveryCannotBorrowASameReferenceTaskResult() {
+        var delivery = deliver("req-episode", "", "", "skill:sk-1", "v1", deliveryScope());
+        adopt(); tasks.finish(TaskState.SUCCESS); ok(call(args("report_skill")));
+        assertDeliveryRemains(rows(), delivery, deliveryScope(), "episode.json");
+    }
+
+    @Test void incompleteOrForeignNamespaceResultCannotSuppressDelivery() {
+        var delivery = deliver("req-incomplete", task.publicId(), task.getToolCallId(),
+                "skill:sk-1", "v1", deliveryScope());
+        adopt(); tasks.finish(TaskState.SUCCESS); ok(call(args("report_skill")));
+        var result = rows().get(1);
+        var fields = List.of("skill_ref", "version", "world_id", "server_session", "epoch",
+                "companion_id", "task_id", "task_tool_call_id", "task_identity");
+        int i = 0;
+        for (String field : fields) {
+            JsonObject detail = JsonParser.parseString(result.detail()).getAsJsonObject();
+            detail.remove(field);
+            var incomplete = ledger.append(result.artifactId(), result.kind(), result.name(), result.phase(),
+                    result.outcome(), detail.toString(), result.source(), result.companionId());
+            assertDeliveryRemains(List.of(delivery, incomplete), delivery, deliveryScope(),
+                    "incomplete-" + i++ + ".json");
+        }
+        var foreignSource = ledger.append(result.artifactId(), result.kind(), result.name(), result.phase(),
+                result.outcome(), result.detail(), "manual:test", result.companionId());
+        assertDeliveryRemains(List.of(delivery, foreignSource), delivery, deliveryScope(), "foreign-source.json");
+        var badDetail = ledger.append(result.artifactId(), result.kind(), result.name(), result.phase(),
+                result.outcome(), "{broken", result.source(), result.companionId());
+        assertDeliveryRemains(List.of(delivery, badDetail), delivery, deliveryScope(), "broken-detail.json");
+    }
+
+    @Test void oneRealResultOnlyClassifiesItsExactDeliveryInEitherRowOrder() {
+        var matching = deliver("req-matching", task.publicId(), task.getToolCallId(),
+                "skill:sk-1", "v1", deliveryScope());
+        Work another = new Work("another-original-call");
+        var remaining = deliver("req-remaining", another.publicId(), another.getToolCallId(),
+                "skill:sk-1", "v1", deliveryScope());
+        adopt(); tasks.finish(TaskState.SUCCESS); ok(call(args("report_skill")));
+        for (boolean reverse : List.of(false, true)) {
+            var facts = new java.util.ArrayList<>(rows());
+            if (reverse) java.util.Collections.reverse(facts);
+            assertEquals(List.of(remaining), SkillDeliveryIntake.selectDue(facts, deliveryScope(),
+                    java.util.Set.of(), java.util.Set.of(), 16));
+            MemoQueue queue = new MemoQueue(dir.resolve("one-to-many-" + reverse + ".json"));
+            var scan = SkillDeliveryIntake.run(facts, deliveryScope(), queue, deliveryJournal(),
+                    (c, fp, now, once) -> once.getAsBoolean(), 1000L, 16);
+            assertEquals(1, scan.enqueued());
+            assertEquals(1, scan.resultChannel());
+            assertTrue(queue.contains(SkillDeliveryIntake.memoIdOf(remaining)));
+            assertFalse(queue.contains(SkillDeliveryIntake.memoIdOf(matching)));
+        }
+    }
+
 }

@@ -98,6 +98,38 @@ public final class StormGuard {
         return new Ruling(true, "ALLOW", COOLDOWN_MILLIS, st.suppressed, nowMillis);
     }
 
+    /**
+     * 2026-11-13 C1：单一入队事务入口。
+     *
+     * <p>契约：与本类共用同一 STATES/冷却判定——窗口内拒绝则 suppressed++、**不调用** once；
+     * 允许时在锁内执行 {@code once}（append + contains 验证），**只有 once 返回 true 才写
+     * lastAdmittedAt**；返回 false/抛异常不吃冷却，下一轮立即允许重试。旧 admit 语义不变。
+     *
+     * <p>原事务反例已取得真实断言红；有界队列 IO 留在同锁内，不增加预占或第二套状态。
+     */
+    public static synchronized boolean admitIfEnqueued(String companionId, String fingerprint,
+                                                       long nowMillis, java.util.function.BooleanSupplier once) {
+        String key = keyOf(companionId, fingerprint);
+        State st = STATES.get(key);
+        if (st == null) {
+            if (STATES.size() >= MAX_TRACKED) STATES.clear();
+            st = new State();
+            STATES.put(key, st);
+        }
+        if (st.lastAdmittedAt != Long.MIN_VALUE
+                && nowMillis - st.lastAdmittedAt < COOLDOWN_MILLIS) {
+            st.suppressed++;
+            return false;
+        }
+        try {
+            if (!once.getAsBoolean()) return false;
+        } catch (RuntimeException failedEnqueue) {
+            return false; // No successful transaction, so leave the cooldown uncommitted.
+        }
+        st.lastAdmittedAt = nowMillis;
+        return true;
+    }
+
     /** 某键目前的抑制读数（只读）。 */
     public static synchronized int suppressedTotal(String companionId, String fingerprint) {
         State st = STATES.get(keyOf(companionId, fingerprint));

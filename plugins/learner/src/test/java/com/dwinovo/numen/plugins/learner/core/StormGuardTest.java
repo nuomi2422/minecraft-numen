@@ -104,4 +104,42 @@ class StormGuardTest {
                 .anyMatch(t -> t.status() == CandidateGate.Status.MATCH);
         assertTrue(t3Match, "第 3 次出现的 T3 模式判定必须照常成立");
     }
+
+    // ── 2026-11-13 C1：admitIfEnqueued 单一入队事务（先红，实现待接）──────────
+
+    @Test
+    void 入队事务_拒绝时不执行append且计一次抑制() {
+        int[] calls = {0};
+        boolean first = StormGuard.admitIfEnqueued(A, FP, 1_000_000L, () -> { calls[0]++; return true; });
+        assertTrue(first, "窗口空 → 允许并执行 append 验证");
+        assertEquals(1, calls[0]);
+        boolean second = StormGuard.admitIfEnqueued(A, FP, 1_000_100L, () -> { calls[0]++; return true; });
+        assertFalse(second, "同窗口 → 抑制");
+        assertEquals(1, calls[0], "被抑制不得执行 append");
+        assertEquals(1, StormGuard.suppressedTotal(A, FP));
+    }
+
+    @Test
+    void 入队事务_append失败不吃冷却_下一轮立即允许() {
+        boolean failed = StormGuard.admitIfEnqueued(A, FP, 1_000_000L, () -> false);
+        assertFalse(failed, "append 没成功不能报成功");
+        boolean retried = StormGuard.admitIfEnqueued(A, FP, 1_000_001L, () -> true);
+        assertTrue(retried, "失败未提交 lastAdmittedAt，下一轮立即允许");
+    }
+
+    @Test
+    void 入队事务_异常不吃冷却() {
+        boolean thrown = StormGuard.admitIfEnqueued(A, FP, 1_000_000L,
+                () -> { throw new IllegalStateException("io"); });
+        assertFalse(thrown, "异常不能冒成功");
+        assertTrue(StormGuard.admitIfEnqueued(A, FP, 1_000_001L, () -> true),
+                "异常不得消耗冷却，下一轮立即允许");
+    }
+
+    @Test
+    void 旧admit与新事务共享同一窗口() {
+        assertTrue(StormGuard.admit(A, FP, 1_000_000L).allow(), "旧 admit 先提交");
+        assertFalse(StormGuard.admitIfEnqueued(A, FP, 1_000_001L, () -> true),
+                "旧 admit 已提交的窗口，新事务同窗口必须抑制");
+    }
 }
