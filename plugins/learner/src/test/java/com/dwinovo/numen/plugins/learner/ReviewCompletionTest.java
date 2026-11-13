@@ -79,6 +79,53 @@ class ReviewCompletionTest {
         assertEquals(1,r.committed());assertEquals(1,r.terminalSkipped());
         assertEquals(List.of(retry.id()),q.drain(10).stream().map(Memo::id).toList());
     }
+    @Test void changedReviewContextRestoresSampleWithoutRegisteringArtifacts(@TempDir Path dir) {
+        Memo m = new Memo("delivery-context-race", "review", "skill_delivery", "historical sample",
+                "{\"world_id\":\"historical-world\",\"server_session\":\"historic\",\"epoch\":1}", 1L);
+        MemoQueue q = new MemoQueue(dir.resolve("delivery-context.json"));
+        assertTrue(q.append(m));
+        var batch = q.drain(2);
+        var start = new com.dwinovo.numen.api.WorldContextStamp.Token(Map.of("world_id", "w", "server_session", "s"), 3);
+        var changed = new com.dwinovo.numen.api.WorldContextStamp.Token(Map.of("world_id", "w", "server_session", "s"), 4);
+        var completion = new ReviewCompletion(batch, x -> ReviewTargetGate.check(dir, A, x, start, changed));
+        AtomicInteger artifacts = new AtomicInteger();
+        if (completion.effective(m.id(), Set.of(m.id()))) artifacts.incrementAndGet();
+        var settlement = completion.settle(q, batch, Set.of(m.id()));
+        assertAll(() -> assertEquals(0, artifacts.get()),
+                () -> assertEquals(0, settlement.committed()),
+                () -> assertEquals(0, settlement.terminalSkipped()),
+                () -> assertEquals(1, q.size()),
+                () -> assertEquals(m.snapshot(), q.all().get(0).snapshot()));
+    }
+    @Test void restartedReviewCanFinishHistoricalSampleWithItsNewStableContext(@TempDir Path dir) {
+        Memo m = new Memo("historical-result", "review", "skill_task_result", "historical fact, not a live command",
+                "{\"world_id\":\"old-world\",\"server_session\":\"old-server\",\"epoch\":1}", 1L);
+        MemoQueue q = new MemoQueue(dir.resolve("historical-result.json"));
+        assertTrue(q.append(m));
+        var batch = q.drain(2);
+        var start = new com.dwinovo.numen.api.WorldContextStamp.Token(Map.of("world_id", "new-world", "server_session", "new-server"), 9);
+        var current = new com.dwinovo.numen.api.WorldContextStamp.Token(Map.of("server_session", "new-server", "world_id", "new-world"), 9);
+        var completion = new ReviewCompletion(batch, x -> ReviewTargetGate.check(dir, A, x, start, current));
+        assertTrue(completion.effective(m.id(), Set.of(m.id())));
+        var settlement = completion.settle(q, batch, Set.of(m.id()));
+        assertEquals(1, settlement.committed());
+        assertEquals(0, q.size());
+    }
+    @Test void productionUsesTheOriginalReviewTokenAtTheCommitGate() throws Exception {
+        Path cur = Paths.get("").toAbsolutePath(), src = null;
+        for (; cur != null; cur = cur.getParent()) {
+            Path p = cur.resolve("src/main/java/com/dwinovo/numen/plugins/learner/LearnerReviewTool.java");
+            if (Files.isRegularFile(p)) { src = p; break; }
+        }
+        assertNotNull(src);
+        String text = Files.readString(src);
+        int start = text.indexOf("final com.dwinovo.numen.api.WorldContextStamp.Token reviewStart");
+        int async = text.indexOf("Thread.ofVirtual().name(\"learner-review-");
+        assertTrue(start >= 0 && start < async, "source wiring only: original review token captured before async work");
+        assertTrue(text.contains("batch, outcome, priorRead, reviewStart)"));
+        assertTrue(text.contains("id, memo, reviewStart, reviewCurrent)"));
+    }
+
     @Test void productionCompletePinsSideEffectGateAndRealSettlement() throws Exception {
         Path cur=Paths.get("").toAbsolutePath(),src=null;
         for(;cur!=null;cur=cur.getParent()) {Path p=cur.resolve("src/main/java/com/dwinovo/numen/plugins/learner/LearnerReviewTool.java");if(Files.isRegularFile(p)){src=p;break;}}

@@ -22,6 +22,17 @@ public final class ReviewTargetGate {
         }
     }
 
+    /**
+     * 2026-11-13 C1 mechanical consumer seam: freeze commit-time context tests first.
+     * The two tokens describe this review, not the historical sample's world/session.
+     * This baseline deliberately delegates unchanged until the new counterexamples run.
+     */
+    public static Check check(Path configDir, UUID companion, Memo memo,
+                              com.dwinovo.numen.api.WorldContextStamp.Token reviewStart,
+                              com.dwinovo.numen.api.WorldContextStamp.Token current) {
+        return check(configDir, companion, memo);
+    }
+
     public static Check check(Path configDir, UUID companion, Memo memo) {
         if (memo == null || !"EXPERIENCE_EXPAND".equals(memo.stage())) return new Check(true, "");
         String snap = memo.snapshot() == null ? "" : memo.snapshot();

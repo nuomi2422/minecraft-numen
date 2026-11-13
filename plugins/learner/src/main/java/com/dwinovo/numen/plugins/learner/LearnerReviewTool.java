@@ -202,6 +202,9 @@ final class LearnerReviewTool implements NumenTool {
             return;
         }
 
+        // 2026-11-13: keep this review's identity across async work; historical memo identity is separate.
+        final com.dwinovo.numen.api.WorldContextStamp.Token reviewStart =
+                com.dwinovo.numen.api.WorldContextStamp.capture(capturedServer);
         final List<Memo> batch = taken;
         final String reviewId = "rev-" + System.currentTimeMillis() + "-" + Math.abs(batch.get(0).id().hashCode() % 1000);
         LearnerPlugin.beginReview(reviewId, id, "RUNNING", batch.size());
@@ -268,7 +271,7 @@ final class LearnerReviewTool implements NumenTool {
                         "review_id", reviewId, "companion", id.toString(), "restored", batch.size()));
                 return;
             }
-        capturedServer.execute(() -> completeOnServer(queue, id, reviewId, batch, outcome, priorRead));
+        capturedServer.execute(() -> completeOnServer(queue, id, reviewId, batch, outcome, priorRead, reviewStart));
     });
 }
 
@@ -294,7 +297,8 @@ final class LearnerReviewTool implements NumenTool {
 
     /** 在主线程收尾：commit 或 restore，然后把可查状态交给 learner_status。 */
     private void completeOnServer(MemoQueue queue, UUID id, String reviewId,
-            List<Memo> batch, LearnerReviewer.ReviewOutcome outcome, PriorRoundReader.Read priorRead) {
+            List<Memo> batch, LearnerReviewer.ReviewOutcome outcome, PriorRoundReader.Read priorRead,
+            com.dwinovo.numen.api.WorldContextStamp.Token reviewStart) {
         if (LearnerPlugin.wasAborted(reviewId)) return; // shutdown already restored + terminal
         LearnerPlugin.completeInflight(reviewId);
         if (!outcome.ok()) {
@@ -322,8 +326,9 @@ final class LearnerReviewTool implements NumenTool {
         // P1 修复：只 commit「确实拿到判定」的条目，其余 restore 回去。
         // 绝不能因为「至少解析出一条」就删掉整批。
         java.util.Set<String> judged = new java.util.HashSet<>();
+        var reviewCurrent = com.dwinovo.numen.api.WorldContextStamp.capture(ServerLifecycleHooks.getCurrentServer());
         ReviewCompletion completion = new ReviewCompletion(batch,
-                memo -> ReviewTargetGate.check(LearnerPlugin.configDir(), id, memo));
+                memo -> ReviewTargetGate.check(LearnerPlugin.configDir(), id, memo, reviewStart, reviewCurrent));
         for (Memo memo : batch) {
             var target = completion.target(memo.id());
             if (!target.ok()) {
