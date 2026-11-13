@@ -29,7 +29,7 @@ class SkillDeliveryEvidenceTest {
                                                      long epoch, String taskId, String toolCallId,
                                                      SkillDeliveryEvidence.Ref... refs) {
         return new SkillDeliveryEvidence.Context(requestId, worldId, serverSession, epoch,
-                C, "EXECUTOR", taskId, toolCallId, List.of(refs));
+                C, "EXECUTOR", "execution", taskId, toolCallId, List.of(refs));
     }
 
     private static SkillDeliveryEvidence.Ref ref(String id, String version) {
