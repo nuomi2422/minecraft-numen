@@ -22,9 +22,11 @@ class LearnerPluginRestoreTest {
     /**
      * 2026-11-13 characterization: a full snapshot queue already contains the three
      * claimed IDs. Production restore returns total depth (64), not batch size (3).
+     * Legacy behavior only, NOT the desired cleanup contract: when all original IDs
+     * are durable, retaining the sentinel may reflect a total-depth/batch-count mismatch.
      * This is a controlled startup-consumer test, not proof of V02's next restart.
      */
-    @Test void fullQueueStartupKeepsEachClaimedIdOnceButRetainsClaimWhenTotalsDiffer(@TempDir Path dir) throws Exception {
+    @Test void legacyFullQueueStartupKeepsEachClaimedIdOnceButRetainsClaimWhenTotalsDiffer(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("memos.json");
         MemoQueue queue = new MemoQueue(file);
         for (int i = 0; i < MemoQueue.MAX_QUEUE; i++) assertTrue(queue.append(memo("original-" + i)));
@@ -49,6 +51,7 @@ class LearnerPluginRestoreTest {
             }
             // Characterize current cleanup criterion (total depth == batch size), not
             // actual loss: these durable IDs are present even though the claim remains.
+            // Keeping the files is observed legacy behavior, not an assertion that it is correct.
             assertTrue(Files.exists(ReviewBatchStore.file(dir, reviewId)));
             assertTrue(Files.exists(dir.resolve(LearnerPlugin.REVIEW_SENTINEL)));
             assertEquals(batch, ReviewBatchStore.load(dir, reviewId));
