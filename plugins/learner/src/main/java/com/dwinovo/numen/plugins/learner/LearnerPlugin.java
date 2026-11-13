@@ -442,15 +442,15 @@ public final class LearnerPlugin implements NumenPlugin {
     private static final java.util.Map<String, Inflight> INFLIGHT = new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.Set<String> ABORTED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-    private record Inflight(Runnable restore) {}
+    private record Inflight(Runnable restore, ReviewObservation observation) {}
 
-    /** 2026-11-14 red ABI: retain the old registration behavior; no handle binding yet. */
+    /** 2026-11-14: retain the same review handle through graceful restoration. */
     static void registerInflight(String reviewId, Runnable restore, ReviewObservation observation) {
-        registerInflight(reviewId, restore);
+        if (reviewId != null && restore != null) INFLIGHT.put(reviewId, new Inflight(restore, observation));
     }
 
     static void registerInflight(String reviewId, Runnable restore) {
-        if (reviewId != null && restore != null) INFLIGHT.put(reviewId, new Inflight(restore));
+        registerInflight(reviewId, restore, null); // Old callers have no producer scope.
     }
 
     static void completeInflight(String reviewId) {
@@ -461,13 +461,8 @@ public final class LearnerPlugin implements NumenPlugin {
         return reviewId != null && ABORTED.contains(reviewId);
     }
 
-    /** 2026-11-14 red ABI: observation context must not change old restore/abort semantics. */
+    /** 2026-11-14: observation rejection never changes restore/abort business semantics. */
     static int abortInFlight(com.dwinovo.numen.api.WorldContextStamp.Token current) {
-        return abortInFlight();
-    }
-
-    /** ServerStopping/Stopped: terminal event + restore exactly once. */
-    static int abortInFlight() {
         int n = 0;
         for (var e : new java.util.ArrayList<>(INFLIGHT.entrySet())) {
             String id = e.getKey();
@@ -477,16 +472,21 @@ public final class LearnerPlugin implements NumenPlugin {
             try { e.getValue().restore().run(); } catch (RuntimeException ex) { restored = false; }
             if (restored) {
                 finishReview(id, "INTERRUPTED", 0);
-                LearnerMonitor.publish("review_interrupted", java.util.Map.of(
-                        "review_id", id, "reason", "server stopping", "restore", "OK"));
-            } else {
-                // keep sentinel/state for next-start retry; do not claim terminal
-                LearnerMonitor.publish("review_interrupted", java.util.Map.of(
-                        "review_id", id, "reason", "server stopping", "restore", "FAILED"));
             }
+            // Failed restore keeps sentinel/state for next-start retry; never claim a terminal.
+            var data = java.util.Map.of("review_id", id, "reason", "server stopping",
+                    "restore", restored ? "OK" : "FAILED");
+            var observation = e.getValue().observation(); // Keep the removed entry's original handle.
+            if (observation == null) LearnerMonitor.publish("review_interrupted", data);
+            else observation.publish("review_interrupted", data, current);
             n++;
         }
         return n;
+    }
+
+    /** ServerStopping/Stopped: legacy callers keep terminal + restore exactly once, with UNKNOWN scope. */
+    static int abortInFlight() {
+        return abortInFlight(null);
     }
 
     private static final java.util.Map<UUID, Long> LAST_REVIEW_STARTED =
@@ -497,14 +497,9 @@ public final class LearnerPlugin implements NumenPlugin {
         return v == null ? 0L : v;
     }
 
-    /** 2026-11-14 red ABI: start the real old lifecycle, then freeze only its producer token. */
+    /** 2026-11-14: create one handle before async work; observation never controls the old lifecycle. */
     static ReviewObservation beginReview(String reviewId, UUID companionId, String state, int reviewing,
                                          com.dwinovo.numen.api.WorldContextStamp.Token start) {
-        beginReview(reviewId, companionId, state, reviewing);
-        return new ReviewObservation(start);
-    }
-
-    static void beginReview(String reviewId, UUID companionId, String state, int reviewing) {
         REVIEWS.put(reviewId, new ReviewRecord(reviewId, companionId, state, reviewing, 0, "", List.of()));
         if (companionId != null) {
             long started = System.currentTimeMillis();
@@ -515,13 +510,20 @@ public final class LearnerPlugin implements NumenPlugin {
         }
         evictOld();
         writeReviewSentinel(configDir, reviewId, companionId);
-        // 2026-11-02：观测缺口 —— 之前只有 nudge_sent/finished，没有「复盘真的开始了」。
-        // 18:37 的 nudge 后没有 review、也没有任何事件，只能靠事后推断。
-        // 加了这行，「nudge 发了但 review 未启动」就变成可计算的事实（缺 review_started）。
-        com.dwinovo.numen.plugins.learner.LearnerMonitor.publish("review_started", java.util.Map.of(
-                "review_id", reviewId,
-                "companion", companionId == null ? "" : companionId.toString(),
-                "reviewing", reviewing));
+        var observation = new ReviewObservation(start);
+        observation.publish("review_started", reviewStartedData(reviewId, companionId, reviewing), start);
+        return observation;
+    }
+
+    static void beginReview(String reviewId, UUID companionId, String state, int reviewing) {
+        beginReview(reviewId, companionId, state, reviewing, null);
+        // No captured token in the old signature: exactly one UNKNOWN row, never global backfill.
+        LearnerMonitor.publish("review_started", reviewStartedData(reviewId, companionId, reviewing));
+    }
+
+    private static Map<String, Object> reviewStartedData(String reviewId, UUID companionId, int reviewing) {
+        return java.util.Map.of("review_id", reviewId,
+                "companion", companionId == null ? "" : companionId.toString(), "reviewing", reviewing);
     }
 
     static void finishReview(String reviewId, String state, int verdictCount) {

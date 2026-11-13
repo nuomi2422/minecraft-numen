@@ -25,7 +25,8 @@ public final class LearnerMod {
     }
 
     private void onServerStopping(ServerStoppingEvent event) {
-        LearnerPlugin.abortInFlight();
+        // 2026-11-14: compare the event's raw server reference before capturing actual current scope.
+        LearnerPlugin.abortInFlight(LearnerReviewTool.observationCurrent(event.getServer()));
     }
 
     private void onServerTick(ServerTickEvent.Pre event) {

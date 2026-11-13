@@ -206,7 +206,8 @@ final class LearnerReviewTool implements NumenTool {
         final com.dwinovo.numen.api.WorldContextStamp.Token reviewStart = captureReviewContext(capturedServer);
         final List<Memo> batch = taken;
         final String reviewId = "rev-" + System.currentTimeMillis() + "-" + Math.abs(batch.get(0).id().hashCode() % 1000);
-        LearnerPlugin.beginReview(reviewId, id, "RUNNING", batch.size());
+        final ReviewObservation observation = LearnerPlugin.beginReview(reviewId, id, "RUNNING", batch.size(),
+                capturedServer == ServerLifecycleHooks.getCurrentServer() ? reviewStart : null);
         // 2026-11-08 bug-17: durable claim before any async work; failure => put batch back.
         boolean claimed = com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.save(
                 LearnerPlugin.configDir(), reviewId, batch);
@@ -214,12 +215,13 @@ final class LearnerReviewTool implements NumenTool {
             queue.restore(batch);
             com.dwinovo.numen.plugins.learner.core.ReviewBatchStore.delete(
                     LearnerPlugin.configDir(), reviewId);
-        });
+        }, observation);
         if (!claimed) {
             queue.restore(batch);
             LearnerPlugin.finishReview(reviewId, "CLAIM_FAILED", 0);
-            LearnerMonitor.publish("review_failed", Map.of("review_id", reviewId,
-                    "companion", id.toString(), "reason", "CLAIM_FAILED", "restored", batch.size()));
+            observation.publish("review_failed", Map.of("review_id", reviewId,
+                    "companion", id.toString(), "reason", "CLAIM_FAILED", "restored", batch.size()),
+                    observationCurrent(capturedServer));
             reply.accept(TaskResult.fail("learner_review: cannot persist batch claim").toJson());
             return;
         }
@@ -266,11 +268,13 @@ final class LearnerReviewTool implements NumenTool {
                 queue.restore(batch);
                 // 注：STALE_WORLD 是换档丢弃，不是 provider 失败，刻意不记 noteReviewFailed。
                 LearnerPlugin.finishReview(reviewId, "STALE_WORLD", 0);
-                LearnerMonitor.publish("review_stale", Map.of(
-                        "review_id", reviewId, "companion", id.toString(), "restored", batch.size()));
+                // The raw server mismatch above is already known: do not recapture the old object.
+                observation.publish("review_stale", Map.of(
+                        "review_id", reviewId, "companion", id.toString(), "restored", batch.size()), null);
                 return;
             }
-        capturedServer.execute(() -> completeOnServer(queue, id, reviewId, batch, outcome, priorRead, reviewStart));
+        capturedServer.execute(() -> completeOnServer(capturedServer, observation,
+                queue, id, reviewId, batch, outcome, priorRead, reviewStart));
     });
 }
 
@@ -292,6 +296,17 @@ final class LearnerReviewTool implements NumenTool {
         }
     }
 
+    /** 2026-11-14: monitor-only current capture; an old server reference is never a current scope. */
+    static com.dwinovo.numen.api.WorldContextStamp.Token observationCurrent(MinecraftServer capturedServer) {
+        try {
+            MinecraftServer current = ServerLifecycleHooks.getCurrentServer();
+            if (current == null || current != capturedServer) return null;
+            return captureReviewContext(current);
+        } catch (RuntimeException | LinkageError unavailable) {
+            return null;
+        }
+    }
+
     static boolean isQuotaExhausted(String why) {
         if (why == null) return false;
         String s = why.toLowerCase(java.util.Locale.ROOT);
@@ -304,8 +319,9 @@ final class LearnerReviewTool implements NumenTool {
     }
 
     /** 在主线程收尾：commit 或 restore，然后把可查状态交给 learner_status。 */
-    private void completeOnServer(MemoQueue queue, UUID id, String reviewId,
-            List<Memo> batch, LearnerReviewer.ReviewOutcome outcome, PriorRoundReader.Read priorRead,
+    private void completeOnServer(MinecraftServer capturedServer, ReviewObservation observation,
+            MemoQueue queue, UUID id, String reviewId, List<Memo> batch,
+            LearnerReviewer.ReviewOutcome outcome, PriorRoundReader.Read priorRead,
             com.dwinovo.numen.api.WorldContextStamp.Token reviewStart) {
         if (LearnerPlugin.wasAborted(reviewId)) return; // shutdown already restored + terminal
         LearnerPlugin.completeInflight(reviewId);
@@ -319,15 +335,17 @@ final class LearnerReviewTool implements NumenTool {
             // learner_review 提示“换账号”，短退避内也不会真正重发。只有**明确额度类**才锁闸。
             if (isQuotaExhausted(why)) {
                 com.dwinovo.numen.plugins.learner.core.ReviewQuotaGate.blockQuota(System.currentTimeMillis());
-                LearnerMonitor.publish("review_quota_blocked", Map.of("reason", why));
+                observation.publish("review_quota_blocked", Map.of(
+                        "review_id", reviewId, "companion", id.toString(), "reason", why),
+                        observationCurrent(capturedServer));
             }
             // 2026-11-02：失败退避 —— 下次 nudge 冷却改成 30/60 分钟（L2 禁止失败驱动的高频重试）。
             LearnerAutoIntake.noteReviewFailed(id);
             LearnerPlugin.finishReview(reviewId, outcome.reason(), 0);
-            LearnerMonitor.publish("review_failed", Map.of(
+            observation.publish("review_failed", Map.of(
                     "review_id", reviewId, "companion", id.toString(),
                     "reason", outcome.reason(), "restored", restored,
-                    "queue_depth", restored));
+                    "queue_depth", restored), observationCurrent(capturedServer));
             return;
         }
 
@@ -717,7 +735,7 @@ final class LearnerReviewTool implements NumenTool {
             cg.put("rows", contractRows);
             reviewedEv.put("contract_gate", cg);
         }
-        LearnerMonitor.publish("reviewed", reviewedEv);
+        observation.publish("reviewed", reviewedEv, observationCurrent(capturedServer));
         LearnerPlugin.setReviewVerdicts(reviewId, rendered);
 
         // ★ 2026-10-27（19 轮学习曲线暴露的结构问题①）：

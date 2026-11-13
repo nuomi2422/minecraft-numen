@@ -1,48 +1,22 @@
 package com.dwinovo.numen.plugins.learner;
 
-import com.google.gson.Gson;
-import net.neoforged.fml.loading.FMLPaths;
-
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
-import java.time.Instant;
-import java.util.LinkedHashMap;
+import com.dwinovo.numen.api.NumenPlugins;
 import java.util.Map;
 
 /**
- * learner 模块的观测出口：往 {@code config/numen/monitor/learner.jsonl} 追加 JSON 行。
- *
- * <p>抄 {@code ExperienceMonitor}（plugins/experience/.../ExperienceMonitor.java）：
- * 不依赖引擎内部类，插件自己写文件，行格式与 MonitoringJournal 对齐，监测台可原样解析。
+ * 2026-11-14: legacy learner observations use the host's single bounded journal.
+ * WHY: the private FML writer omitted the shared session/sequence and could silently disappear.
+ * Two-argument callers have no captured identity, so remain UNKNOWN even with a current world.
+ * No private-file fallback: acceptance, persistence and delivery are separate facts.
  */
 final class LearnerMonitor {
-
-    private static final Gson GSON = new Gson();
-
     private LearnerMonitor() {}
 
     static void publish(String type, Map<String, ?> data) {
         try {
-            Path dir = FMLPaths.GAMEDIR.get().resolve("config").resolve("numen").resolve("monitor");
-            Files.createDirectories(dir);
-            Path file = dir.resolve("learner.jsonl");
-
-            Map<String, Object> envelope = new LinkedHashMap<>();
-            envelope.put("schema_version", 1);
-            envelope.put("event_id", "learner-" + System.nanoTime());
-            envelope.put("timestamp", Instant.now().toString());
-            envelope.put("source", "numen");
-            envelope.put("category", "learner");
-            envelope.put("type", type);
-            envelope.put("data", data == null ? Map.of() : data);
-
-            Files.writeString(file, GSON.toJson(envelope) + "\n", StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } catch (Exception | NoClassDefFoundError ignored) {
-            // 观测失败不影响 learner 主流程。NoClassDefFoundError：纯 JVM 单测没有
-            // FMLPaths（NeoForge 类链）—— 观测面缺席时静默，不拖垮入队本身。
+            NumenPlugins.tryPublishMonitor("learner", type, data, null);
+        } catch (RuntimeException | LinkageError unavailable) {
+            // This observation side channel must not interrupt review, restore, or queue operations.
         }
     }
 }

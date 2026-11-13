@@ -1,15 +1,17 @@
 package com.dwinovo.numen.plugins.learner;
 
+import com.dwinovo.numen.api.NumenPlugins;
 import com.dwinovo.numen.api.WorldContextStamp;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
- * 2026-11-14: red-contract ABI for one review's producer-captured observation token.
- * WHY: reviewStart already crosses async work, but lifecycle events still use the old writer.
- * This freezes that token only; it is not a review permission gate or a second world registry.
- * The red stub forwards unchanged legacy publication and cannot claim a shared-queue ACK.
+ * 2026-11-14: one review's immutable producer token for lifecycle observation only.
+ * WHY: the red journal tests found missing lifecycle rows after a real queue barrier.
+ * Compare with the supplied current token before enqueue; never borrow a later world.
+ * No world registry or permission gate: rejection must not stop review or restoration.
  */
 record ReviewObservation(WorldContextStamp.Token start) {
     ReviewObservation {
@@ -20,8 +22,23 @@ record ReviewObservation(WorldContextStamp.Token start) {
     }
 
     boolean publish(String type, Map<String, ?> data, WorldContextStamp.Token current) {
-        // Red ABI only: no scope guard, shared sink, current-token capture or business decision.
-        LearnerMonitor.publish(type, data);
-        return false; // Legacy void writer supplies no shared-journal queue acknowledgement.
+        if (!known(start) || !known(current) || !start.equals(current)) return false;
+        try {
+            // ACK is queue acceptance only. A later writer conflict keeps this original start envelope.
+            return NumenPlugins.tryPublishMonitor("learner", type, data, start);
+        } catch (RuntimeException | LinkageError unavailable) {
+            return false; // Observation failure does not change business state; fatal errors still escape.
+        }
+    }
+
+    private static boolean known(WorldContextStamp.Token token) {
+        return token != null && token.epoch() > 0 && token.identity() != null
+                && knownId(token.identity().get("world_id")) && knownId(token.identity().get("server_session"));
+    }
+
+    private static boolean knownId(String id) {
+        if (id == null || id.isBlank()) return false;
+        String normalized = id.strip().toLowerCase(Locale.ROOT);
+        return !normalized.equals("unknown") && !normalized.startsWith("unknown-");
     }
 }

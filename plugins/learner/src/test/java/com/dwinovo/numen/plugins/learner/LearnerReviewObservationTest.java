@@ -139,6 +139,39 @@ class LearnerReviewObservationTest {
         }
     }
 
+    /** 2026-11-14: source pins prove thin production wiring only, not an executed Minecraft callback. */
+    @Test void productionToolAndStopHookCarryTheCapturedHandleAndCompareActualServerFirst() throws Exception {
+        Path source = null;
+        for (Path cursor = Path.of("").toAbsolutePath(); cursor != null; cursor = cursor.getParent()) {
+            Path candidate = cursor.resolve("src/main/java/com/dwinovo/numen/plugins/learner");
+            if (!Files.isDirectory(candidate))
+                candidate = cursor.resolve("plugins/learner/src/main/java/com/dwinovo/numen/plugins/learner");
+            if (Files.isRegularFile(candidate.resolve("LearnerReviewTool.java"))) {
+                source = candidate;
+                break;
+            }
+        }
+        assertNotNull(source, "source pin requires this checkout, not a packaged runtime");
+        String tool = Files.readString(source.resolve("LearnerReviewTool.java"));
+        String mod = Files.readString(source.resolve("LearnerMod.java"));
+        assertTrue(tool.contains("final ReviewObservation observation = LearnerPlugin.beginReview("));
+        assertTrue(tool.contains("capturedServer == ServerLifecycleHooks.getCurrentServer() ? reviewStart : null"));
+        assertTrue(tool.contains("}, observation);"));
+        assertTrue(tool.contains("completeOnServer(capturedServer, observation,"));
+        assertTrue(tool.contains("batch, outcome, priorRead, reviewStart));"));
+        String current = tool.substring(tool.indexOf("    static com.dwinovo.numen.api.WorldContextStamp.Token observationCurrent("),
+                tool.indexOf("    static boolean isQuotaExhausted("));
+        assertTrue(current.contains("MinecraftServer current = ServerLifecycleHooks.getCurrentServer();"));
+        assertTrue(current.contains("if (current == null || current != capturedServer) return null;"));
+        assertTrue(current.contains("return captureReviewContext(current);"));
+        assertFalse(current.contains("captureReviewContext(capturedServer)"));
+        for (String type : List.of("review_stale", "review_failed", "review_quota_blocked", "reviewed")) {
+            assertTrue(tool.contains("observation.publish(\"" + type + "\""));
+            assertFalse(tool.contains("LearnerMonitor.publish(\"" + type + "\""));
+        }
+        assertTrue(mod.contains("LearnerPlugin.abortInFlight(LearnerReviewTool.observationCurrent(event.getServer()));"));
+    }
+
     private static Memo memo(String id) {
         return new Memo(id, "fixture", "stage", "tried", "snapshot", 123L, "learning", List.of());
     }
