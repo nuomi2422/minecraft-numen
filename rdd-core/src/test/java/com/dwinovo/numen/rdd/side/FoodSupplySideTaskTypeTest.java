@@ -46,10 +46,12 @@ class FoodSupplySideTaskTypeTest {
 
     @Test void completionWhileStillCriticalWaitsForHostCooldown() {
         CooldownHost host = new CooldownHost();
-        // Raw sample: hunger=14 edible=0 completes while low hp still triggers food.
+        // 2026-11-14: settle with real stock, then restore the deficit to test the same cooldown.
         FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(14, 8, 0);
         host.tick(C, w);
+        w.survival(14, 8, 2);
         host.tick(C, w);
+        w.survival(14, 8, 0);
         assertEquals(1, host.events.count("side_task_completed"));
         assertFalse(host.engine.isActive(C));
         host.nowMs += FoodSupplyPolicy.COOLDOWN_MS - 1;
@@ -82,7 +84,10 @@ class FoodSupplySideTaskTypeTest {
         CooldownHost host = new CooldownHost();
         FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(14, 8, 0);
         host.tick(C, w);
+        // 2026-11-14: valid stock settlement preserves the companion-isolation assertion below.
+        w.survival(14, 8, 2);
         host.tick(C, w);
+        w.survival(14, 8, 0);
         host.tick(C, w);
         assertFalse(host.engine.isActive(C));
         UUID other = UUID.fromString("00000000-0000-0000-0000-0000000000bb");
@@ -106,7 +111,10 @@ class FoodSupplySideTaskTypeTest {
         CooldownHost host = new CooldownHost();
         FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(14, 8, 0);
         host.tick(C, w);
+        // 2026-11-14: settle on two items; the later empty critical-hunger deficit is unchanged.
+        w.survival(14, 8, 2);
         host.tick(C, w);
+        w.survival(14, 8, 0);
         assertFalse(host.engine.isActive(C));
         host.nowMs += 1_000L;
         w.survival(3, 8, 0);
@@ -223,6 +231,66 @@ class FoodSupplySideTaskTypeTest {
         w.at(120, 0).survival(14, 20, 0);
         e.tick(C, w, null, false);
         assertFalse(e.isActive(C), "preserve the existing healthy hunger-14 completion boundary");
+        assertTrue(ev.saw("side_task_completed"));
+    }
+
+    /** 2026-11-14: preserve the existing hp-8, hunger-14 and two-item supply boundaries. */
+    @Test void hp8StillRequiresTwoFoodItemsAtHunger14() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new FoodSupplySideTaskType());
+        e.registerTrigger(new FoodSupplySideTaskTrigger());
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(14, 8, 1);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C));
+        e.tick(C, w.at(120, 0), null, false);
+        assertTrue(e.isActive(C), "hp 8 remains critical; hunger 14 plus one item cannot settle supply");
+        assertFalse(ev.saw("side_task_completed"));
+    }
+
+    @Test void hp9AndHunger14CompleteWithoutStock() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new FoodSupplySideTaskType());
+        e.registerTrigger(new FoodSupplySideTaskTrigger());
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(3, 9, 0);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C));
+        w.at(120, 0).survival(14, 9, 0);
+        e.tick(C, w, null, false);
+        assertFalse(e.isActive(C), "hp above 8 and hunger at 14 satisfy the healthy completion path");
+        assertTrue(ev.saw("side_task_completed"));
+    }
+
+    @Test void healthyHpWithHunger13StillNeedsSupplyStock() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new FoodSupplySideTaskType());
+        e.registerTrigger(new FoodSupplySideTaskTrigger());
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(3, 9, 0);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C));
+        w.at(120, 0).survival(13, 9, 0);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C), "healthy hp alone cannot lower the existing hunger-14 boundary");
+        assertFalse(ev.saw("side_task_completed"));
+    }
+
+    @Test void unknownVitalsNeedConfirmedStockForCompletion() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new FoodSupplySideTaskType());
+        e.registerTrigger(new FoodSupplySideTaskTrigger());
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(3, 9, 0);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C));
+        w.at(120, 0).survival(-1, -1, -1);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C), "UNKNOWN hunger, hp and stock cannot prove completion");
+        assertFalse(ev.saw("side_task_completed"));
+        w.at(140, 0).survival(-1, -1, 2);
+        e.tick(C, w, null, false);
+        assertFalse(e.isActive(C), "two confirmed items complete supply even while vitals remain UNKNOWN");
         assertTrue(ev.saw("side_task_completed"));
     }
 

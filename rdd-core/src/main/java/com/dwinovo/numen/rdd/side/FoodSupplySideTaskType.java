@@ -21,7 +21,7 @@ public final class FoodSupplySideTaskType implements SideTaskType {
         if (task.pastDeadline(world.gameTime())) return SideTaskVerdict.skip("food supply ttl expired");
         int hunger = world.hunger(task.companionId());
         int edible = world.edibleCount(task.companionId());
-        if (hunger >= 14 || edible >= 2) {
+        if (FoodSupplyPolicy.supplyComplete(hunger, world.health(task.companionId()), edible)) {
             return SideTaskVerdict.complete("food supply done: hunger=" + hunger + " edible=" + edible,
                     task.data());
         }
@@ -34,6 +34,7 @@ public final class FoodSupplySideTaskType implements SideTaskType {
         int edible = world.edibleCount(task.companionId());
         return "[survival] 找吃的优先于主线。当前 hunger=" + hunger + " hp=" + hp + " 可食物=" + edible
                 + "。按现场条件选一条：①附近动物击杀并捡肉/熟肉；②村庄干草块/箱子找现成食物；"
-                + "③水边钓鱼。拿到能吃的先吃，目标 hunger>=14 或可食物>=2；找不到就用 rdd_decline_side 说明。";
+                + "③水边钓鱼。拿到能吃的先吃；可食物>=2 即完成补给，或血量脱离危急且 hunger>=14 也可完成；"
+                + "低血量或血量未知时仍须备齐两份，进食与回血另算。找不到就用 rdd_decline_side 说明。";
     }
 }
