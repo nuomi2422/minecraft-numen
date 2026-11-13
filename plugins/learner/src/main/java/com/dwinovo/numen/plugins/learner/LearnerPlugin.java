@@ -444,6 +444,11 @@ public final class LearnerPlugin implements NumenPlugin {
 
     private record Inflight(Runnable restore) {}
 
+    /** 2026-11-14 red ABI: retain the old registration behavior; no handle binding yet. */
+    static void registerInflight(String reviewId, Runnable restore, ReviewObservation observation) {
+        registerInflight(reviewId, restore);
+    }
+
     static void registerInflight(String reviewId, Runnable restore) {
         if (reviewId != null && restore != null) INFLIGHT.put(reviewId, new Inflight(restore));
     }
@@ -454,6 +459,11 @@ public final class LearnerPlugin implements NumenPlugin {
 
     static boolean wasAborted(String reviewId) {
         return reviewId != null && ABORTED.contains(reviewId);
+    }
+
+    /** 2026-11-14 red ABI: observation context must not change old restore/abort semantics. */
+    static int abortInFlight(com.dwinovo.numen.api.WorldContextStamp.Token current) {
+        return abortInFlight();
     }
 
     /** ServerStopping/Stopped: terminal event + restore exactly once. */
@@ -485,6 +495,13 @@ public final class LearnerPlugin implements NumenPlugin {
     static long lastReviewStartedMs(UUID companionId) {
         Long v = companionId == null ? null : LAST_REVIEW_STARTED.get(companionId);
         return v == null ? 0L : v;
+    }
+
+    /** 2026-11-14 red ABI: start the real old lifecycle, then freeze only its producer token. */
+    static ReviewObservation beginReview(String reviewId, UUID companionId, String state, int reviewing,
+                                         com.dwinovo.numen.api.WorldContextStamp.Token start) {
+        beginReview(reviewId, companionId, state, reviewing);
+        return new ReviewObservation(start);
     }
 
     static void beginReview(String reviewId, UUID companionId, String state, int reviewing) {

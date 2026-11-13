@@ -34,6 +34,8 @@ dependencies {
     // ⚠️ 主编译靠 compileOnly 就够，但 **compileOnly 不会被 testCompileClasspath 继承**，
     //    所以测试要显式加 api jar，否则 CarrierChainTest 报「找不到 com.dwinovo.numen.api.carrier」。
     testImplementation files(project(':api:neoforge').tasks.named('apiJar'))
+    // 2026-11-14: the slim apiJar excludes monitor/**; real journal tests need api:common, as in RDD.
+    testImplementation project(':api:common')
     // 2026-10-31（V-20261031-16 旁记）：testCompileJava 缺 com.dwinovo.numen.agent.provider.IToolSpec
     // （ai 的类被 api:neoforge 的**发布 jar** 平铺，apiJar 任务不含 ai）；测试显式加 ai project。
     testImplementation project(':ai')
