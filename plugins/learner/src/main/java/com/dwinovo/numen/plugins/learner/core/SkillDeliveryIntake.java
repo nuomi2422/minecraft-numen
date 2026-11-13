@@ -160,6 +160,24 @@ public final class SkillDeliveryIntake {
         return run(rows, scope, queue, journal, admission, now, budget);
     }
 
+    /**
+     * Stable typed boundary for the result intake and review gate (2026-11-13).
+     * Full original Entry plus decoded identity; body fields retain the selected original version.
+     * The adapters below are red-batch stubs, so no unvalidated fact is returned yet.
+     */
+    public record TaskResultFact(UsageLedger.Entry entry, Scope scope, String ref, String version,
+                                 String taskId, String taskCall, String bodyRef, String bodyDigest) {}
+
+    /** Planned shared row parser; implementation will reuse the existing taskResult identity checks. */
+    public static TaskResultFact taskResultOf(UsageLedger.Entry row) {
+        return null; // Red-batch ABI only: unknown is never an authorized fact.
+    }
+
+    /** Planned snapshot adapter to the same row parser; no second identity algorithm. */
+    public static TaskResultFact taskResultFromSnapshot(String snapshot) {
+        return null; // Red-batch ABI only; no production consumer is wired.
+    }
+
     /** 幂等键：sd- + sha256(artifactId)。 */
     public static String memoIdOf(UsageLedger.Entry row) {
         if (row == null || row.artifactId() == null || row.artifactId().isBlank()) return "";

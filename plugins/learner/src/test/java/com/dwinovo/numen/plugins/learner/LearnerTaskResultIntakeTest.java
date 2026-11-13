@@ -142,16 +142,27 @@ class LearnerTaskResultIntakeTest {
         Memo memo = queue.all().stream().filter(m -> m.id().equals(resultIdUnchecked(row))).findFirst().orElseThrow();
         assertEquals("skill_task_result", memo.stage());
         JsonObject snapshot = JsonParser.parseString(memo.snapshot()).getAsJsonObject();
-        for (var entry : JsonParser.parseString(row.detail()).getAsJsonObject().entrySet())
-            assertEquals(entry.getValue(), snapshot.get(entry.getKey()), "original detail field " + entry.getKey());
+        assertEquals(JsonParser.parseString(row.detail()).getAsJsonObject(), snapshot.getAsJsonObject("detail"),
+                "complete original detail object; never substitute current registry content");
         assertEquals(row.artifactId(), snapshot.get("artifact_id").getAsString());
         assertEquals(row.source(), snapshot.get("source").getAsString());
         assertEquals(row.at(), snapshot.get("at").getAsString());
+        assertEquals(row.kind(), snapshot.get("kind").getAsString());
+        assertEquals(row.name(), snapshot.get("name").getAsString());
+        assertEquals(row.companionId(), snapshot.get("companion_id").getAsString());
         assertEquals("RESULT", snapshot.get("phase").getAsString());
         assertEquals(row.outcome().name(), snapshot.get("outcome").getAsString());
-        assertEquals("NONE", snapshot.get("evidence").getAsString());
+        assertEquals(row.evidence().name(), snapshot.get("evidence").getAsString());
+        assertEquals(row.validityClaimed(), snapshot.get("validity_claimed").getAsBoolean());
         assertFalse(snapshot.has("event_id"), "taskCall/factKey/artifactId must not masquerade as an event");
+        assertFalse(snapshot.getAsJsonObject("detail").has("event_id"));
         assertFalse(row.validityClaimed()); assertEquals(UsageLedger.EvidenceLevel.NONE, row.evidence());
+        var original = SkillDeliveryIntake.taskResultOf(row);
+        var decoded = SkillDeliveryIntake.taskResultFromSnapshot(memo.snapshot());
+        assertNotNull(original, "shared parser must accept the real original fact");
+        assertNotNull(decoded, "snapshot must round-trip through the same shared identity parser");
+        assertEquals(row, decoded.entry(), "retain every original Entry field");
+        assertEquals(original, decoded);
     }
     private static String resultIdUnchecked(UsageLedger.Entry row) {
         try { return resultId(row); } catch (Exception failure) { throw new IllegalStateException(failure); }
