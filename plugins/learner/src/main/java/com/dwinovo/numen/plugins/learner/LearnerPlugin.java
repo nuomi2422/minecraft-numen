@@ -631,18 +631,18 @@ public final class LearnerPlugin implements NumenPlugin {
 
     private static com.google.gson.JsonObject companionNode(com.google.gson.JsonObject root, java.util.UUID companion) {
         com.google.gson.JsonElement existing = root.get("companions");
-        if (existing != null && !existing.isJsonNull() && !existing.isJsonObject()) {
+        if (existing != null && !existing.isJsonObject()) {
             throw new IllegalArgumentException("companions is not an object");
         }
-        com.google.gson.JsonObject companions = existing == null || existing.isJsonNull()
+        com.google.gson.JsonObject companions = existing == null
                 ? new com.google.gson.JsonObject() : existing.getAsJsonObject();
         root.add("companions", companions);
         String key = String.valueOf(companion);
         com.google.gson.JsonElement owner = companions.get(key);
-        if (owner != null && !owner.isJsonNull() && !owner.isJsonObject()) {
+        if (owner != null && !owner.isJsonObject()) {
             throw new IllegalArgumentException("companion node is not an object");
         }
-        com.google.gson.JsonObject node = owner == null || owner.isJsonNull()
+        com.google.gson.JsonObject node = owner == null
                 ? new com.google.gson.JsonObject() : owner.getAsJsonObject();
         companions.add(key, node);
         for (String field : new String[] {"last_nudge_at", "last_auto_review_at", "last_review_started_at"}) {
@@ -684,12 +684,14 @@ public final class LearnerPlugin implements NumenPlugin {
         }
         if (root == null) return ReviewStateRead.none();
         com.google.gson.JsonElement companionsEl = root.get("companions");
-        if (companionsEl == null || companionsEl.isJsonNull()) return ReviewStateRead.none();
+        if (companionsEl == null) return ReviewStateRead.none();
+        if (companionsEl.isJsonNull()) return ReviewStateRead.unknown();
         if (!companionsEl.isJsonObject()) return ReviewStateRead.unknown();
         com.google.gson.JsonObject companions = companionsEl.getAsJsonObject();
         String key = String.valueOf(companion);
         com.google.gson.JsonElement owner = companions.get(key);
-        if (owner == null || owner.isJsonNull()) return ReviewStateRead.none();
+        if (owner == null) return ReviewStateRead.none();
+        if (owner.isJsonNull()) return ReviewStateRead.unknown();
         if (!owner.isJsonObject()) return ReviewStateRead.unknown();
         com.google.gson.JsonObject node = owner.getAsJsonObject();
         Long nudge = clock(node, "last_nudge_at");
@@ -702,7 +704,8 @@ public final class LearnerPlugin implements NumenPlugin {
     /** absent -> 0 (old migration); any invalid clock -> null (UNKNOWN, writers must refuse). */
     private static Long clock(com.google.gson.JsonObject node, String name) {
         var v = node.get(name);
-        if (v == null || v.isJsonNull()) return 0L;
+        if (v == null) return 0L; // absent key keeps the old migration value
+        if (v.isJsonNull()) return null; // explicit null is a bad type, not "missing"
         if (!v.isJsonPrimitive() || !v.getAsJsonPrimitive().isNumber()) return null;
         try {
             long value = v.getAsBigDecimal().longValueExact();
