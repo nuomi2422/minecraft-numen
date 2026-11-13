@@ -1427,9 +1427,11 @@ private static String withAssets(UUID companionId, String rddContext) {
                 : companionId + "|" + primaryId;
         int limit = fromNegotiation ? MAX_NEGOTIATION_REPLANS_PER_PRIMARY : MAX_REPLAN_PER_PRIMARY;
         int used = REPLAN_COUNTS.getOrDefault(key, 0);
-        // 红基线宿主传空回调：清身体派发记录是产品修复批的净新增，不混进机械提取。
+        // 接受后清掉旧身体派发记录：换计划/回落时旧 subtaskId 不能继续冒充“已派发”，
+        // 否则新计划复用同一 id 时 maybeSubmit 会直接跳过。仅接受时执行，拒绝零副作用。
+        // 注：这是相对提取前的净新增，正常失败路线的旧身体记录也会在“接受”时被清，需实机复核。
         RddReplanTransition.Result transition = RddReplanTransition.request(
-                chain, trigger, reason, REPLAN_COUNTS, key, limit, null);
+                chain, trigger, reason, REPLAN_COUNTS, key, limit, () -> clearBody(companionId));
         if (transition.outcome() == RddReplanTransition.Outcome.BUDGET_EXHAUSTED) {
             long gt = RddInstrumentation.currentGameTimeTicks();
             Map<String, Object> loopData = new LinkedHashMap<>();

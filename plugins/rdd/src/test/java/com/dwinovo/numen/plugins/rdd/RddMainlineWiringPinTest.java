@@ -527,6 +527,24 @@ class RddMainlineWiringPinTest {
         assertContains(body, "RddPlugin.requestReplan", "active survival handling remains wired");
     }
 
+    /**
+     * 2026-11-13（044 B2 修复批）：抢占只在真正进入 REPLANNING 后才记冷却/停身体；
+     * 接受转换时由宿主清掉旧身体派发记录。
+     *
+     * <p>这是接线断言，只证明源码顺序与调用存在，<b>不</b>证明 MC 实跑效果。
+     */
+    @Test
+    void survivalPreemptionSignedOnlyWhenAcceptedAndClearsStaleBodyOnAccept() throws Exception {
+        String plugin = plugin();
+        assertContains(plugin, "RddReplanTransition.request(", "重规划准入/预算只有一个消费者");
+        assertContains(plugin, "() -> clearBody(companionId)",
+                "接受转换后清旧身体派发记录（拒绝零副作用）");
+        String body = methodBody(detector(), "survivalPreempt", "RddGoalDriver.needExpansion");
+        assertOrder(body, "RddPlugin.requestReplanForSurvival", "if (!accepted)", "SURVIVAL_PREEMPT_AT.put",
+                "ToolRegistry.get(\"task_stop\")");
+        assertContains(body, "生存抢占未进入重规划", "拒绝时不发抢占观测");
+    }
+
     @Test
     void passiveWorldAssetsBeforeAbsentRuntime() throws Exception {
         String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
