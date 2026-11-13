@@ -1277,10 +1277,18 @@ private static String withAssets(UUID companionId, String rddContext) {
      * 转换，不复制 TaskChain 同形方法、不删 STUCK guard、不改预算上限或 park 政策。
      */
     static boolean requestReplanForSurvival(UUID companionId, RddSurvivalGate.Decision decision,
-                                            int hunger, double hp, int freeSlots) {
+                                            int hunger, double hp, int freeSlots,
+                                            com.dwinovo.numen.task.TaskRecord expectedAction,
+                                            NumenPlayer expectedBody) {
+        // 只在接受后的同步回调里停“进入前捕获的那个任务对象”；拒绝零副作用。
         return requestReplan(companionId,
                 "survival " + decision + " hunger=" + hunger + " hp=" + hp + " free=" + freeSlots,
-                RddReplanTransition.Trigger.SURVIVAL, null, false);
+                RddReplanTransition.Trigger.SURVIVAL, null, false,
+                () -> {
+                    if (expectedBody != null && RddCompanionBody.get(companionId) == expectedBody) {
+                        stopPreemptedOwner(companionId, expectedAction);
+                    }
+                });
     }
 
     /**
@@ -1392,6 +1400,12 @@ private static String withAssets(UUID companionId, String rddContext) {
      */
     private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,
                                          String soldierHint, boolean skipRecoverySideTask) {
+        return requestReplan(companionId, reason, trigger, soldierHint, skipRecoverySideTask, null);
+    }
+
+    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,
+                                         String soldierHint, boolean skipRecoverySideTask,
+                                         Runnable acceptedSideEffect) {
         boolean fromNegotiation = trigger == RddReplanTransition.Trigger.NEGOTIATION;
         if (!skipRecoverySideTask && !fromNegotiation && isMissingAssetCause(companionId, reason)) {
             // 2026-10-23（主人要求）：首选**派恢复支线**——主线由 SideTaskHost 冻结，支线跑完自动恢复，
@@ -1427,11 +1441,15 @@ private static String withAssets(UUID companionId, String rddContext) {
                 : companionId + "|" + primaryId;
         int limit = fromNegotiation ? MAX_NEGOTIATION_REPLANS_PER_PRIMARY : MAX_REPLAN_PER_PRIMARY;
         int used = REPLAN_COUNTS.getOrDefault(key, 0);
-        // 接受后清掉旧身体派发记录：换计划/回落时旧 subtaskId 不能继续冒充“已派发”，
-        // 否则新计划复用同一 id 时 maybeSubmit 会直接跳过。仅接受时执行，拒绝零副作用。
-        // 注：这是相对提取前的净新增，正常失败路线的旧身体记录也会在“接受”时被清，需实机复核。
+        // 接受后只清“进入前捕获的那个 BODY 记录实例”；并发替换出的新记录不碰（引用相等，不走 equals）。
+        // 正常失败路线接受时也会清本次记录：这是净新增，需实机复核它的旧路线影响。
+        BodyState capturedBody = bodyState(companionId);
         RddReplanTransition.Result transition = RddReplanTransition.request(
-                chain, trigger, reason, REPLAN_COUNTS, key, limit, () -> clearBody(companionId));
+                chain, trigger, reason, REPLAN_COUNTS, key, limit,
+                () -> {
+                    if (acceptedSideEffect != null) acceptedSideEffect.run();
+                    clearBodyIfSame(companionId, capturedBody);
+                });
         if (transition.outcome() == RddReplanTransition.Outcome.BUDGET_EXHAUSTED) {
             long gt = RddInstrumentation.currentGameTimeTicks();
             Map<String, Object> loopData = new LinkedHashMap<>();
@@ -2514,6 +2532,34 @@ private static String safeDeathAttacker(NumenPlayer body) {
 
     public static void clearBody(UUID companionId) {
         if (companionId != null) BODY.remove(companionId);
+    }
+
+    /**
+     * 只清“进入重规划前捕获的那个 BODY 记录实例”。
+     *
+     * <p>并发替换可能已经写入新记录；{@code BodyState} 是 record，{@code remove(key, value)} 走 equals，
+     * 同 subtaskId/submitCount 的替换记录会被误清，所以这里用引用相等 {@code cur == captured}。
+     */
+    private static void clearBodyIfSame(UUID companionId, BodyState captured) {
+        if (companionId == null || captured == null) return;
+        BODY.computeIfPresent(companionId, (key, cur) -> cur == captured ? null : cur);
+    }
+
+    /**
+     * 生存抢占只停“进入前捕获的那个任务对象”：槽里仍是同一 {@code TaskRecord} 实例才停，
+     * 被替换/已清空一律不碰；没有捕获到原动作时只重规划、不停体。
+     */
+    private static void stopPreemptedOwner(UUID companionId, com.dwinovo.numen.task.TaskRecord expectedAction) {
+        if (expectedAction == null) return;
+        if (!RddReplanTransition.ownsCapturedBody(expectedAction,
+                com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(companionId))) {
+            LOG.info("[rdd] 生存抢占跳过停体：原任务已被替换或已清空 {}", companionId);
+            return;
+        }
+        var body = RddCompanionBody.get(companionId);
+        if (body != null) {
+            com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(body, "survival preempt");
+        }
     }
 
     public static String nextBodyCallId() {

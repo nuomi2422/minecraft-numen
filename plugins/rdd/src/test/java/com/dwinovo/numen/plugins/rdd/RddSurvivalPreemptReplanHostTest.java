@@ -132,6 +132,15 @@ class RddSurvivalPreemptReplanHostTest {
         assertNotEquals(SubtaskStatus.STALLED, f.chain.currentSubtaskStatus(), "抢占不是卡死，不得伪标");
     }
 
+    /** 捕获的 owner 身份判定：同一原对象才停；被替换或没捕获到一律不停（无第二本账）。 */
+    @Test
+    void capturedOwnerIdentityDecidesStop() {
+        Object captured = new Object();
+        assertTrue(RddReplanTransition.ownsCapturedBody(captured, captured), "同一原对象才允许停");
+        assertFalse(RddReplanTransition.ownsCapturedBody(captured, new Object()), "被替换的任务不得停");
+        assertFalse(RddReplanTransition.ownsCapturedBody(null, captured), "没捕获到原动作时只重规划、不停体");
+    }
+
     /** 规划器 attempt：只有普通失败是 1；生存/协商是事实变化，必须 0，不能伪造"上一版不可执行"。 */
     @Test
     void planningAttemptIsZeroForSurvivalAndOneForFailure() {

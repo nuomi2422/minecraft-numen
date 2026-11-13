@@ -537,12 +537,17 @@ class RddMainlineWiringPinTest {
     void survivalPreemptionSignedOnlyWhenAcceptedAndClearsStaleBodyOnAccept() throws Exception {
         String plugin = plugin();
         assertContains(plugin, "RddReplanTransition.request(", "重规划准入/预算只有一个消费者");
-        assertContains(plugin, "() -> clearBody(companionId)",
-                "接受转换后清旧身体派发记录（拒绝零副作用）");
+        assertContains(plugin, "cur == captured ? null : cur",
+                "只按引用清本次 BODY 记录；并发替换出的新记录不碰");
+        assertContains(plugin, "RddReplanTransition.ownsCapturedBody(expectedAction",
+                "只停进入前捕获的同一任务对象");
+        assertContains(plugin, "stopActive(body, \"survival preempt\")",
+                "停体只发生在接受回调里");
         String body = methodBody(detector(), "survivalPreempt", "RddGoalDriver.needExpansion");
-        assertOrder(body, "RddPlugin.requestReplanForSurvival", "if (!accepted)", "SURVIVAL_PREEMPT_AT.put",
-                "ToolRegistry.get(\"task_stop\")");
+        assertOrder(body, "RddPlugin.requestReplanForSurvival", "if (!accepted)", "SURVIVAL_PREEMPT_AT.put");
         assertContains(body, "生存抢占未进入重规划", "拒绝时不发抢占观测");
+        assertFalse(body.contains("ToolRegistry.get(\"task_stop\")"),
+                "生存抢占不得用全局 task_stop：拒绝时会误停、接受后可能停掉替换动作");
     }
 
     @Test

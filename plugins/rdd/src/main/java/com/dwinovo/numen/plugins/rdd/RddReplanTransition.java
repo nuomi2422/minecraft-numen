@@ -92,6 +92,16 @@ final class RddReplanTransition {
     }
 
     /**
+     * 身体抢占的所有权判定：只停“进入前捕获的那个任务对象”。
+     *
+     * <p>{@code TaskSlot.record} 在槽里是稳定实例，换任务才换对象，所以同实例 = 同 owner；
+     * 被替换（新动作已经派发）或已清空，一律不碰。纯对象相等判定，不建第二本账。
+     */
+    static boolean ownsCapturedBody(Object expectedAction, Object currentAction) {
+        return expectedAction != null && expectedAction == currentAction;
+    }
+
+    /**
      * 规划器 attempt 语义：只有<b>失败驱动</b>才表示“上一版被判不可执行”（1）；
      * 协商与生存抢占是事实变化（0），否则会给规划器灌“上一版不可执行”的假话。
      *
