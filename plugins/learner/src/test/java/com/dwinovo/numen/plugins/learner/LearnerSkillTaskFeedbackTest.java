@@ -109,6 +109,54 @@ class LearnerSkillTaskFeedbackTest {
     private List<UsageLedger.Entry> rows() { return new UsageLedger(dir).all(); }
     private void noRows() { assertTrue(rows().isEmpty(), "rejection must not create result facts"); }
 
+    /**
+     * 2026-11-13 characterization, not a requested product change: an RDD logical
+     * step is not a body TaskRecord. Synchronous craft does not create a RUNNING
+     * body record; do not keep setup's injected Work and call that craft support.
+     */
+    @Test void emptyBodyCannotAdoptUsingAnRddLogicalStepId() {
+        tasks.active = null;
+        JsonObject logical = args("adopt_skill");
+        logical.addProperty("task_id", "chain-8e3b:p8:s1");
+        JsonObject response = call(logical);
+        rejected(response);
+        assertTrue(response.get("message").getAsString().contains("精确 task_id 无原任务记录"));
+        assertNull(tasks.current());
+        assertTrue(tasks.done.isEmpty());
+        assertNull(task.skillSelection());
+        noRows();
+    }
+
+    @Test void emptyBodyCannotReuseARealOldTerminalIdAsACraftSelection() {
+        tasks.finish(TaskState.SUCCESS);
+        assertSame(task, tasks.finished(task.publicId()), "the old id is real, not an absent-record fixture");
+        assertNull(tasks.current());
+        rejected(call(args("adopt_skill")));
+        assertNull(task.skillSelection());
+        rejected(call(args("report_skill")));
+        assertSame(task, tasks.finished(task.publicId()));
+        noRows();
+    }
+
+    @Test void runningBodySelectionStillWorksButIsNotSynchronousCraftSupport() {
+        // This is the existing live-task port, not a claim that CraftTool creates Work.
+        assertSame(task, tasks.current());
+        assertEquals(TaskState.RUNNING, task.getState());
+        JsonObject response = call(args("adopt_skill"));
+        ok(response);
+        assertEquals(task.publicId(), response.getAsJsonObject("data").get("task_id").getAsString());
+        assertEquals("exact original steps", response.getAsJsonObject("data").get("body").getAsString());
+        assertEquals("skill:sk-1", task.skillSelection().skillRef());
+        assertEquals("v1", task.skillSelection().version());
+        noRows();
+        tasks.finish(TaskState.SUCCESS);
+        noRows(); // Explicit report remains required by the current contract.
+        ok(call(args("report_skill")));
+        assertEquals(1, rows().size());
+        assertEquals(UsageLedger.Phase.RESULT, rows().get(0).phase());
+        assertEquals(UsageLedger.EvidenceLevel.NONE, rows().get(0).evidence());
+    }
+
     @Test void realChildrenAndDescriptorFallbackCannotBindToCurrentTask() {
         for (String body : List.of(
                 "{\"steps\":[{\"id\":\"gate\",\"block\":\"if\",\"params\":{\"field\":\"$input.ready\",\"op\":\"==\",\"value\":true},\"children\":[{\"id\":\"go\",\"block\":\"goto\",\"params\":{\"x\":2,\"y\":88,\"z\":-3}}]}]}",
