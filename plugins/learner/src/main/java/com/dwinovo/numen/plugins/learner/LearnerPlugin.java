@@ -490,7 +490,11 @@ public final class LearnerPlugin implements NumenPlugin {
     static void beginReview(String reviewId, UUID companionId, String state, int reviewing) {
         REVIEWS.put(reviewId, new ReviewRecord(reviewId, companionId, state, reviewing, 0, "", List.of()));
         if (companionId != null) {
-            LAST_REVIEW_STARTED.put(companionId, System.currentTimeMillis());
+            long started = System.currentTimeMillis();
+            LAST_REVIEW_STARTED.put(companionId, started);
+            if (!rememberReviewStarted(configDir, companionId, started)) {
+                LOG.warn("[learner] review start time not persisted for {}", companionId);
+            }
         }
         evictOld();
         writeReviewSentinel(configDir, reviewId, companionId);
@@ -550,13 +554,11 @@ public final class LearnerPlugin implements NumenPlugin {
         if (dir == null) return;
         try {
             java.nio.file.Files.createDirectories(dir);
-            String json = "{\"last_review_at\":\"" + (at == null ? "" : at) + "\",\"last_verdict_count\":" + verdictCount + "}";
-            java.nio.file.Path target = dir.resolve("learner-review-state.json");
-            java.nio.file.Path tmp = dir.resolve("learner-review-state.json.tmp");
-            java.nio.file.Files.writeString(tmp, json, java.nio.charset.StandardCharsets.UTF_8);
-            java.nio.file.Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-            LOG.info("[learner] review state written {}", target);
+            mergeState(dir, root -> {
+                root.addProperty("last_review_at", at == null ? "" : at);
+                root.addProperty("last_verdict_count", verdictCount);
+            });
+            LOG.info("[learner] review state written {}", reviewStateFile(dir));
         } catch (RuntimeException | java.io.IOException e) {
             // 2026-11-08 bug-12: do not swallow silently; state was unreadable while reviews completed.
             LOG.warn("[learner] review state write failed dir={}: {}", dir, e.toString());
@@ -576,6 +578,140 @@ public final class LearnerPlugin implements NumenPlugin {
             if (o.has("last_verdict_count")) lastVerdictCount = o.get("last_verdict_count").getAsInt();
         } catch (RuntimeException | java.io.IOException ignored) {
             // 文件坏了就保持空——宁可不显示，也不显示错的
+        }
+    }
+
+    // ── 2026-11-13: restart-safe auto-review state on the existing ReviewState file ──
+    // One lock serializes completion/nudge/start/autostart writers; every write merges into
+    // the existing root object so unknown fields and other companions survive. A missing file
+    // is a known empty migration; an unreadable/corrupt file is UNKNOWN and is never rewritten.
+    private static final Object REVIEW_STATE_LOCK = new Object();
+
+    record ReviewTimes(long lastNudgeAt, long lastAutoReviewAt, long lastReviewStartedAt) {
+        static final ReviewTimes NONE = new ReviewTimes(0L, 0L, 0L);
+    }
+
+    record ReviewStateRead(boolean known, ReviewTimes times) {
+        static ReviewStateRead unknown() { return new ReviewStateRead(false, null); }
+        static ReviewStateRead none() { return new ReviewStateRead(true, ReviewTimes.NONE); }
+    }
+
+    private static java.nio.file.Path reviewStateFile(java.nio.file.Path dir) {
+        return dir == null ? null : dir.resolve("learner-review-state.json");
+    }
+
+    /** null = no file (known empty); throws on unreadable/corrupt so callers can stay UNKNOWN. */
+    private static com.google.gson.JsonObject readStateObject(java.nio.file.Path dir) throws java.io.IOException {
+        java.nio.file.Path f = reviewStateFile(dir);
+        if (f == null) throw new java.io.IOException("review state dir unavailable");
+        String raw;
+        try {
+            raw = java.nio.file.Files.readString(f, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.nio.file.NoSuchFileException missing) {
+            return null; // only a confirmed absent file is a known empty migration
+        }
+        // Directory/permission/etc. propagate as unreadable -> UNKNOWN, never "missing".
+        return com.google.gson.JsonParser.parseString(raw).getAsJsonObject();
+    }
+
+    private static void mergeState(java.nio.file.Path dir,
+                                   java.util.function.Consumer<com.google.gson.JsonObject> mutate) throws java.io.IOException {
+        if (dir == null || reviewStateFile(dir) == null) throw new java.io.IOException("review state dir unavailable");
+        java.nio.file.Files.createDirectories(dir);
+        synchronized (REVIEW_STATE_LOCK) {
+            com.google.gson.JsonObject root = readStateObject(dir);
+            if (root == null) root = new com.google.gson.JsonObject();
+            mutate.accept(root);
+            java.nio.file.Path tmp = dir.resolve("learner-review-state.json.tmp");
+            java.nio.file.Files.writeString(tmp, root.toString(), java.nio.charset.StandardCharsets.UTF_8);
+            java.nio.file.Files.move(tmp, reviewStateFile(dir), java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        }
+    }
+
+    private static com.google.gson.JsonObject companionNode(com.google.gson.JsonObject root, java.util.UUID companion) {
+        com.google.gson.JsonElement existing = root.get("companions");
+        if (existing != null && !existing.isJsonObject()) {
+            throw new IllegalArgumentException("companions is not an object");
+        }
+        com.google.gson.JsonObject companions = existing == null
+                ? new com.google.gson.JsonObject() : existing.getAsJsonObject();
+        root.add("companions", companions);
+        String key = String.valueOf(companion);
+        com.google.gson.JsonElement owner = companions.get(key);
+        if (owner != null && !owner.isJsonObject()) {
+            throw new IllegalArgumentException("companion node is not an object");
+        }
+        com.google.gson.JsonObject node = owner == null
+                ? new com.google.gson.JsonObject() : owner.getAsJsonObject();
+        companions.add(key, node);
+        for (String field : new String[] {"last_nudge_at", "last_auto_review_at", "last_review_started_at"}) {
+            if (clock(node, field) == null) throw new IllegalArgumentException("invalid clock " + field);
+        }
+        return node;
+    }
+
+    private static boolean writeCompanionTime(java.nio.file.Path dir, java.util.UUID companion, String field, long at) {
+        if (dir == null || companion == null) return false;
+        try {
+            mergeState(dir, root -> companionNode(root, companion).addProperty(field, at));
+            return true;
+        } catch (RuntimeException | java.io.IOException e) {
+            LOG.warn("[learner] review state write failed dir={} field={}: {}", dir, field, e.toString());
+            return false;
+        }
+    }
+
+    static boolean rememberNudge(java.nio.file.Path dir, java.util.UUID companion, long at) {
+        return writeCompanionTime(dir, companion, "last_nudge_at", at);
+    }
+
+    static boolean rememberReviewStarted(java.nio.file.Path dir, java.util.UUID companion, long at) {
+        return writeCompanionTime(dir, companion, "last_review_started_at", at);
+    }
+
+    static boolean rememberAutoReview(java.nio.file.Path dir, java.util.UUID companion, long at) {
+        return writeCompanionTime(dir, companion, "last_auto_review_at", at);
+    }
+
+    static ReviewStateRead readReviewTimes(java.nio.file.Path dir, java.util.UUID companion) {
+        if (dir == null || companion == null) return ReviewStateRead.unknown();
+        com.google.gson.JsonObject root;
+        try {
+            root = readStateObject(dir);
+        } catch (RuntimeException | java.io.IOException e) {
+            return ReviewStateRead.unknown(); // never claim "not nudged" from a corrupt file
+        }
+        if (root == null) return ReviewStateRead.none();
+        com.google.gson.JsonElement companionsEl = root.get("companions");
+        if (companionsEl == null) return ReviewStateRead.none();
+        if (companionsEl.isJsonNull()) return ReviewStateRead.unknown();
+        if (!companionsEl.isJsonObject()) return ReviewStateRead.unknown();
+        com.google.gson.JsonObject companions = companionsEl.getAsJsonObject();
+        String key = String.valueOf(companion);
+        com.google.gson.JsonElement owner = companions.get(key);
+        if (owner == null) return ReviewStateRead.none();
+        if (owner.isJsonNull()) return ReviewStateRead.unknown();
+        if (!owner.isJsonObject()) return ReviewStateRead.unknown();
+        com.google.gson.JsonObject node = owner.getAsJsonObject();
+        Long nudge = clock(node, "last_nudge_at");
+        Long auto = clock(node, "last_auto_review_at");
+        Long started = clock(node, "last_review_started_at");
+        if (nudge == null || auto == null || started == null) return ReviewStateRead.unknown();
+        return new ReviewStateRead(true, new ReviewTimes(nudge, auto, started));
+    }
+
+    /** absent -> 0 (old migration); any invalid clock -> null (UNKNOWN, writers must refuse). */
+    private static Long clock(com.google.gson.JsonObject node, String name) {
+        var v = node.get(name);
+        if (v == null) return 0L; // absent key keeps the old migration value
+        if (v.isJsonNull()) return null; // explicit null is a bad type, not "missing"
+        if (!v.isJsonPrimitive() || !v.getAsJsonPrimitive().isNumber()) return null;
+        try {
+            long value = v.getAsBigDecimal().longValueExact();
+            return value < 0 ? null : value;
+        } catch (ArithmeticException | NumberFormatException invalid) {
+            return null;
         }
     }
 

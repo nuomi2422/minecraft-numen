@@ -143,6 +143,12 @@ final class LearnerAutoIntake {
     /** 深度达到该值才催（太少不值得打断执行）。 */
     static final int REVIEW_NUDGE_MIN_DEPTH = 3;
     private static final Map<UUID, Long> LAST_REVIEW_NUDGE = new ConcurrentHashMap<>();
+    /** Test seam: production null -> LearnerPlugin.nudgeSystem; runs the real maybeNudge path offline. */
+    private static volatile java.util.function.BiPredicate<java.util.UUID, String> nudgeSenderForTest;
+
+    static void installNudgeSenderForTest(java.util.function.BiPredicate<java.util.UUID, String> sender) {
+        nudgeSenderForTest = sender;
+    }
 
     /**
      * 队列解析器：生产用 LearnerPlugin::queue；测试注入直建 MemoQueue。
@@ -707,16 +713,40 @@ final class LearnerAutoIntake {
                 // 真实深度用于报告/事件（不许造假数）；gateDepth 只用于门槛判断。
                 int gateDepth = effectiveDepth(depth, hasDeath || staleEnough(oldestAgeMs));
                 if (nudgeBlocked(NUDGE_UNDELIVERABLE_UNTIL, id, now)) continue;
-                Long prevNudge = LAST_REVIEW_NUDGE.get(id);
+                // Read the durable prior reminder BEFORE writing this one; a restarted process must
+                // not treat its own fresh nudge as an unanswered old reminder.
+                LearnerPlugin.ReviewStateRead persisted = LearnerPlugin.readReviewTimes(configDirCache, id);
+                if (persisted.known() && persisted.times().lastNudgeAt() > 0L) {
+                    // Seed the original claim clock from disk: a restart inside the 10-minute window
+                    // must neither re-send nor refresh last_nudge_at.
+                    LAST_REVIEW_NUDGE.merge(id, persisted.times().lastNudgeAt(), Math::max);
+                }
+                Long prevNudge = null;
+                if (persisted.known()) {
+                    long prev = LAST_REVIEW_NUDGE.getOrDefault(id, 0L);
+                    if (prev > 0L) prevNudge = prev;
+                }
                 if (!claimNudge(LAST_REVIEW_NUDGE, id, gateDepth, now)) continue;
-                boolean sent = LearnerPlugin.nudgeSystem(id, nudgeText(depth));
+                var sender = nudgeSenderForTest;
+                boolean sent = sender != null ? sender.test(id, nudgeText(depth)) : LearnerPlugin.nudgeSystem(id, nudgeText(depth));
                 if (sent) {
                     LearnerMonitor.publish("review_nudge_sent", Map.of(
                             "companionId", id.toString(), "queue_depth", depth));
+                    boolean nudgePersisted = LearnerPlugin.rememberNudge(configDirCache, id, now);
                     // 上一次提醒之后一条 review 都没启动 → 这一跳不能继续押在执行 AI 自觉上。
-                    long startedAt = LearnerPlugin.lastReviewStartedMs(id);
+                    long startedAt = Math.max(LearnerPlugin.lastReviewStartedMs(id),
+                            persisted.known() ? persisted.times().lastReviewStartedAt() : 0L);
+                    Long lastAuto = LAST_AUTO_REVIEW_AT.get(id);
+                    if (persisted.known() && persisted.times().lastAutoReviewAt() > 0L) {
+                        lastAuto = lastAuto == null ? persisted.times().lastAutoReviewAt()
+                                : Math.max(lastAuto, persisted.times().lastAutoReviewAt());
+                    }
                     boolean running = LearnerPlugin.runningReview(id) != null;
-                    if (autoReviewDue(prevNudge, startedAt, LAST_AUTO_REVIEW_AT.get(id), now, gateDepth, running)) {
+                    if (!persisted.known()) {
+                        skipped(id, depth, "state_unknown");
+                    } else if (!nudgePersisted) {
+                        skipped(id, depth, "state_write_failed");
+                    } else if (autoReviewDue(prevNudge, startedAt, lastAuto, now, gateDepth, running)) {
                         maybeAutoReview(id, depth, gateDepth, now);
                     }
                 } else {
@@ -794,21 +824,26 @@ final class LearnerAutoIntake {
         return gateDepth >= REVIEW_NUDGE_MIN_DEPTH && realDepth > 0;
     }
 
-    private static void maybeAutoReview(UUID id, int realDepth, int gateDepth, long now) {
+    private static boolean maybeAutoReview(UUID id, int realDepth, int gateDepth, long now) {
         try {
             if (!secondHopAdmits(realDepth, gateDepth)) {
                 skipped(id, realDepth, realDepth <= 0 ? "real_depth_zero" : "gate_too_shallow");
-                return;
+                return false;
             }
             Long last = LAST_AUTO_REVIEW_AT.get(id);
-            if (last != null && now - last < AUTO_REVIEW_COOLDOWN_MS) { skipped(id, realDepth, "cooldown"); return; }
-            if (LearnerPlugin.runningReview(id) != null) { skipped(id, realDepth, "review_running"); return; }
+            if (last != null && now - last < AUTO_REVIEW_COOLDOWN_MS) { skipped(id, realDepth, "cooldown"); return false; }
+            if (LearnerPlugin.runningReview(id) != null) { skipped(id, realDepth, "review_running"); return false; }
             var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
-            if (server == null) { skipped(id, realDepth, "no_server"); return; }
+            if (server == null) { skipped(id, realDepth, "no_server"); return false; }
             var companion = com.dwinovo.numen.entity.NumenPlayer.findByUuid(server, id);
-            if (companion == null) { skipped(id, realDepth, "no_companion"); return; }
+            if (companion == null) { skipped(id, realDepth, "no_companion"); return false; }
             var tool = com.dwinovo.numen.agent.tool.ToolRegistry.get("learner_review");
-            if (tool == null) { skipped(id, realDepth, "no_tool"); return; }
+            if (tool == null) { skipped(id, realDepth, "no_tool"); return false; }
+            // Persist the automatic-start marker BEFORE any LLM side effect; a failed write must not start.
+            if (!LearnerPlugin.rememberAutoReview(LearnerPlugin.configDir(), id, now)) {
+                skipped(id, realDepth, "state_write_failed");
+                return false;
+            }
             LAST_AUTO_REVIEW_AT.put(id, now);
             java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
             ev.put("companion", id.toString());
@@ -816,11 +851,13 @@ final class LearnerAutoIntake {
             ev.put("reason", "nudge_unanswered");
             LearnerMonitor.publish("auto_review_started", ev);
             tool.onServerCall("auto-review-" + now, new com.google.gson.JsonObject(), companion, reply -> { });
+            return true;
         } catch (RuntimeException | NoClassDefFoundError e) {
             String msg = String.valueOf(e);
             LearnerMonitor.publish("auto_review_failed", java.util.Map.of(
                     "companion", id.toString(),
                     "error", msg.substring(0, Math.min(200, msg.length()))));
+            return false;
         }
     }
 
