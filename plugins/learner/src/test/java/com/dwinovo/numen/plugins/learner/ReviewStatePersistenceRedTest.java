@@ -3,6 +3,7 @@ package com.dwinovo.numen.plugins.learner;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -18,23 +19,35 @@ import static org.junit.jupiter.api.Assertions.*;
  * 2026-11-13 red batch: auto review after restart must be driven by the persisted
  * ReviewState file, not by in-memory maps. Controls drive the real consumers
  * (recordReview / remember* / readReviewTimes) and the real autoReviewDue decision.
- * No Java, no world, no game.
+ * pure JVM/offline: no world or game.
  */
 class ReviewStatePersistenceRedTest {
     private static final UUID C = UUID.fromString("a43d753e-790d-472b-8d5b-dc18ac0afbc0");
 
     @TempDir Path dir;
 
-    @AfterEach void clearConfigDir() throws Exception {
-        Field f = LearnerPlugin.class.getDeclaredField("configDir");
+    private Object oldConfigDir, oldLastReviewAt, oldLastVerdictCount;
+
+    private static Field field(String name) throws Exception {
+        Field f = LearnerPlugin.class.getDeclaredField(name);
         f.setAccessible(true);
-        f.set(null, null);
+        return f;
+    }
+
+    @BeforeEach void captureGlobals() throws Exception {
+        oldConfigDir = field("configDir").get(null);
+        oldLastReviewAt = field("lastReviewAt").get(null);
+        oldLastVerdictCount = field("lastVerdictCount").get(null);
+    }
+
+    @AfterEach void restoreGlobals() throws Exception {
+        field("configDir").set(null, oldConfigDir);
+        field("lastReviewAt").set(null, oldLastReviewAt);
+        field("lastVerdictCount").set(null, oldLastVerdictCount);
     }
 
     private void install(Path d) throws Exception {
-        Field f = LearnerPlugin.class.getDeclaredField("configDir");
-        f.setAccessible(true);
-        f.set(null, d);
+        field("configDir").set(null, d);
     }
 
     private Path stateFile() { return dir.resolve("learner-review-state.json"); }
