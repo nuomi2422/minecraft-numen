@@ -37,6 +37,8 @@ final class RddReplanTransition {
     /** 准入结果；除 ACCEPTED 外都表示链未进入 REPLANNING。 */
     enum Outcome {
         ACCEPTED,
+        /** 同链同 primary 的生存供食意图仍在，同型抢占不重复换计划/停体/花预算。 */
+        DUPLICATE_SURVIVAL_PENDING,
         BUDGET_EXHAUSTED,
         NOT_ACTIVE,
         NOT_EXPANDED,
@@ -52,7 +54,64 @@ final class RddReplanTransition {
         }
     }
 
+    /**
+     * 生存供食意图（typed 局部状态）。
+     *
+     * <p>生命周期：PENDING（重规划已被接受，尚未证明新计划真的落链）→ APPLIED（replace 成功，
+     * 绑定当时的 chain.planRevision）。只认 token 身份：旧回调不得清/改新意图。
+     * 只记录程序来源、链身份与计划代次，不从 description/reason 文本推断。
+     */
+    enum SurvivalState { PENDING, APPLIED }
+
+    record SurvivalIntent(String chainInstanceId, String primaryId, RddSurvivalGate.Decision decision,
+                          Object token, SurvivalState state, Integer appliedPlanRevision) {
+    }
+
+    private static final Map<java.util.UUID, SurvivalIntent> SURVIVAL_INTENTS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     private RddReplanTransition() {
+    }
+
+    /**
+     * 生存抢占入口（机械接缝阶段）：行为与原 request 一致，只记录接受后的 PENDING 意图；
+     * 读意图做重复抑制在下一提交接上（先冻结红）。
+     */
+    static Result requestSurvival(UUID companionId, TaskChain chain, RddSurvivalGate.Decision decision,
+                                  String reason, Map<String, Integer> counts, String budgetKey, int limit,
+                                  Runnable onAccepted, Object token) {
+        Result result = request(chain, Trigger.SURVIVAL, reason, counts, budgetKey, limit, onAccepted);
+        if (result.accepted() && companionId != null && chain.currentPrimary() != null) {
+            SURVIVAL_INTENTS.put(companionId, new SurvivalIntent(chain.chainInstanceId(),
+                    chain.currentPrimary().id(), decision, token, SurvivalState.PENDING, null));
+        }
+        return result;
+    }
+
+    /**
+     * 新计划 replace 成功后才绑定 appliedPlanRevision；旧回调 token 不匹配时什么都不做，
+     * 因此“旧回调清掉新意图”不会发生。
+     */
+    static void markApplied(UUID companionId, Object token, int appliedPlanRevision) {
+        if (companionId == null) return;
+        SURVIVAL_INTENTS.computeIfPresent(companionId, (id, cur) -> cur.token() == token
+                ? new SurvivalIntent(cur.chainInstanceId(), cur.primaryId(), cur.decision(), token,
+                        SurvivalState.APPLIED, appliedPlanRevision)
+                : cur);
+    }
+
+    /**
+     * 空回/替换异常/server 缺失导致回落原计划：明确失败才释放（允许重试）。
+     * 旧 token 不碰新意图；UNKNOWN（本轮未回调）不在此释放。
+     */
+    static void markAborted(UUID companionId, Object token) {
+        if (companionId == null) return;
+        SURVIVAL_INTENTS.computeIfPresent(companionId, (id, cur) -> cur.token() == token ? null : cur);
+    }
+
+    /** 观察到安全（hunger>=10 && hp>=8）时释放意图；之后再危险允许重新抢占。 */
+    static void observeSafe(UUID companionId) {
+        if (companionId != null) SURVIVAL_INTENTS.remove(companionId);
     }
 
     /**

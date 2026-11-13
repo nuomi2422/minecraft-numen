@@ -354,6 +354,15 @@ final class RddDetector {
             RddRuntime runtime = RddPlugin.runtime(ap.getUUID());
             if (runtime == null) return;
             TaskChain chain = runtime.chain();
+            // 安全观测必须在 unexpanded/side/status/cooldown 早退之前：短暂 hunger>=10 也要能释放上一轮
+            // 生存意图与冷却，否则再跌回 9 会被旧 marker/冷却吞掉（V04 之后的设计要求）。
+            int hunger = ap.getFoodData().getFoodLevel();
+            double hp = ap.getHealth();
+            boolean safe = hunger >= 10 && hp >= 8.0;
+            if (safe) {
+                // 机械接缝阶段只通知释放点（读意图的守卫在下一提交接上；冷却清理也随守卫一起接）。
+                RddReplanTransition.observeSafe(ap.getUUID());
+            }
             if (chain.primaryStatus() == PrimaryGoalStatus.PENDING
                     && chain.currentPrimary().unexpanded()) {
                 RddGoalDriver.needExpansion(ap.getUUID());
@@ -362,11 +371,10 @@ final class RddDetector {
             // Side ownership only delays the mainline; never spend its failure budget.
             if (SideTaskHost.isActive(ap.getUUID())
                     || chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return;
+            if (safe) return;
             long now = System.currentTimeMillis();
             Long last = SURVIVAL_PREEMPT_AT.get(ap.getUUID());
             if (last != null && now - last < 60_000L) return;
-            int hunger = ap.getFoodData().getFoodLevel();
-            double hp = ap.getHealth();
             int free = 0;
             int size = Math.min(36, ap.getInventory().getContainerSize());
             for (int i = 0; i < size; i++) {

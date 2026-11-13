@@ -1283,6 +1283,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                                             com.dwinovo.numen.task.TaskRecord expectedAction,
                                             NumenPlayer expectedBody) {
         // 只在接受后的同步回调里停“进入前捕获的那个任务对象”；拒绝零副作用。
+        Object token = new Object();
         return requestReplan(companionId,
                 "survival " + decision + " hunger=" + hunger + " hp=" + hp + " free=" + freeSlots,
                 RddReplanTransition.Trigger.SURVIVAL, null, true,
@@ -1290,7 +1291,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                     if (expectedBody != null && RddCompanionBody.get(companionId) == expectedBody) {
                         stopPreemptedOwner(companionId, expectedAction);
                     }
-                });
+                }, decision, token);
     }
 
     /**
@@ -1408,6 +1409,14 @@ private static String withAssets(UUID companionId, String rddContext) {
     private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,
                                          String soldierHint, boolean skipRecoverySideTask,
                                          Runnable acceptedSideEffect) {
+        return requestReplan(companionId, reason, trigger, soldierHint, skipRecoverySideTask,
+                acceptedSideEffect, null, null);
+    }
+
+    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,
+                                         String soldierHint, boolean skipRecoverySideTask,
+                                         Runnable acceptedSideEffect,
+                                         RddSurvivalGate.Decision survivalDecision, Object survivalToken) {
         boolean fromNegotiation = trigger == RddReplanTransition.Trigger.NEGOTIATION;
         // 只有普通失败驱动才可能走“缺失型恢复”路由；SURVIVAL 的 skip=true 保证它一定进 REPLANNING，
         // 不会被恢复支线/插节点提前 return（否则 Detector 会把“已点名恢复”误签成“已抢占”）。
@@ -1449,12 +1458,14 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 接受后只清“进入前捕获的那个 BODY 记录实例”；并发替换出的新记录不碰（引用相等，不走 equals）。
         // 正常失败路线接受时也会清本次记录：这是净新增，需实机复核它的旧路线影响。
         BodyState capturedBody = bodyState(companionId);
-        RddReplanTransition.Result transition = RddReplanTransition.request(
-                chain, trigger, reason, REPLAN_COUNTS, key, limit,
-                () -> {
-                    if (acceptedSideEffect != null) acceptedSideEffect.run();
-                    clearBodyIfSame(companionId, capturedBody);
-                });
+        Runnable onAccepted = () -> {
+            if (acceptedSideEffect != null) acceptedSideEffect.run();
+            clearBodyIfSame(companionId, capturedBody);
+        };
+        RddReplanTransition.Result transition = trigger == RddReplanTransition.Trigger.SURVIVAL
+                ? RddReplanTransition.requestSurvival(companionId, chain, survivalDecision, reason,
+                        REPLAN_COUNTS, key, limit, onAccepted, survivalToken)
+                : RddReplanTransition.request(chain, trigger, reason, REPLAN_COUNTS, key, limit, onAccepted);
         if (transition.outcome() == RddReplanTransition.Outcome.BUDGET_EXHAUSTED) {
             long gt = RddInstrumentation.currentGameTimeTicks();
             Map<String, Object> loopData = new LinkedHashMap<>();
@@ -1484,6 +1495,10 @@ private static String withAssets(UUID companionId, String rddContext) {
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
         if (server == null) {
             chain.resumeFromReplanning();
+            // 没服务端=这次应用没发生：明确失败释放意图（允许重试），不是 UNKNOWN。
+            if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
+                RddReplanTransition.markAborted(companionId, survivalToken);
+            }
             return true;
         }
         var snap = planningSnapshot(companionId);
@@ -1559,6 +1574,9 @@ private static String withAssets(UUID companionId, String rddContext) {
                     try {
                         if (specs == null || specs.isEmpty()) {
                             chain.resumeFromReplanning();
+                            if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
+                                RddReplanTransition.markAborted(companionId, survivalToken);
+                            }
                             publishTaskSnapshot(companionId, "replan_fallback_resume");
                             return;
                         }
@@ -1571,6 +1589,10 @@ private static String withAssets(UUID companionId, String rddContext) {
                         subs = RddChainFactory.subtasksFromSpecs(primaryId, rev, specs);
                         RddGoalDriver.acceptPlan(subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
                                 () -> chain.replaceCurrentSubtasks(subs));
+                        if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
+                            // 只有替换成功才绑定 applied：旧回调 token 不匹配时什么都不做。
+                            RddReplanTransition.markApplied(companionId, survivalToken, chain.planRevision());
+                        }
                         RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废
                         saveRuntimes();
                         publishTaskSnapshot(companionId, "replanned");
@@ -1580,6 +1602,9 @@ private static String withAssets(UUID companionId, String rddContext) {
                     } catch (RuntimeException ex) {
                         LOG.warn("[rdd] 重规划替换失败，回落重跑现有 {}: {}", companionId, ex.toString());
                         try { chain.resumeFromReplanning(); } catch (RuntimeException ignore) { }
+                        if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
+                            RddReplanTransition.markAborted(companionId, survivalToken);
+                        }
                     }
                 }));
         return true;
