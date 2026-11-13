@@ -154,6 +154,78 @@ class FoodSupplySideTaskTypeTest {
         assertTrue(FoodSupplyPolicy.cooldownBlocks(coolingDown, 3, 8, 2));
     }
 
+    /**
+     * 2026-11-14: V13 created low-hp supply at hunger 15, then completed without two food items.
+     * Drive the existing engine, type and trigger with FakeWorldPort; supply is not healing/eating.
+     */
+    @Test void lowHpAndHunger15WithoutFoodMustNotCompleteSupply() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new FoodSupplySideTaskType());
+        e.registerTrigger(new FoodSupplySideTaskTrigger());
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(15, 4, 0);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C), "the real critical-health trigger must start supply");
+        e.tick(C, w.at(120, 0), null, false);
+        assertTrue(e.isActive(C), "high hunger is not recovery or a two-item supply while hp stays low");
+        assertFalse(ev.saw("side_task_completed"), "no replenishment occurred");
+    }
+
+    @Test void lowHpAndHunger15WithOneEdibleMustNotCompleteSupply() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new FoodSupplySideTaskType());
+        e.registerTrigger(new FoodSupplySideTaskTrigger());
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(15, 4, 1);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C), "one edible item remains below the existing supply stock");
+        e.tick(C, w.at(120, 0), null, false);
+        assertTrue(e.isActive(C), "one item plus high hunger cannot settle the low-hp supply task");
+        assertFalse(ev.saw("side_task_completed"));
+    }
+
+    @Test void unknownHealthAfterLowHpStartMustNotCountAsHealthyCompletion() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new FoodSupplySideTaskType());
+        e.registerTrigger(new FoodSupplySideTaskTrigger());
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(15, 4, 0);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C));
+        w.at(120, 0).survival(15, -1, 0);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C), "UNKNOWN health does not prove that the low-hp need ended");
+        assertFalse(ev.saw("side_task_completed"));
+    }
+
+    @Test void twoEdibleItemsCompleteSupplyWhileHealthRemainsLow() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new FoodSupplySideTaskType());
+        e.registerTrigger(new FoodSupplySideTaskTrigger());
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(15, 4, 0);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C));
+        w.at(120, 0).survival(15, 4, 2);
+        e.tick(C, w, null, false);
+        assertFalse(e.isActive(C), "two confirmed edible items finish supply; eating/healing is separate");
+        assertTrue(ev.saw("side_task_completed"));
+    }
+
+    @Test void healthyHunger14WithoutStockStillCompletesActiveSupply() {
+        RecordingEvents ev = new RecordingEvents();
+        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
+        e.registerType(new FoodSupplySideTaskType());
+        e.registerTrigger(new FoodSupplySideTaskTrigger());
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).survival(4, 20, 0);
+        e.tick(C, w, null, false);
+        assertTrue(e.isActive(C));
+        w.at(120, 0).survival(14, 20, 0);
+        e.tick(C, w, null, false);
+        assertFalse(e.isActive(C), "preserve the existing healthy hunger-14 completion boundary");
+        assertTrue(ev.saw("side_task_completed"));
+    }
+
     /** Uses the real engine/trigger with the host's existing settlement bookkeeping. */
     private static final class CooldownHost {
         long nowMs = 1_000L;
