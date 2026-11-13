@@ -360,7 +360,7 @@ final class RddDetector {
             double hp = ap.getHealth();
             boolean safe = hunger >= 10 && hp >= 8.0;
             if (safe) {
-                // 机械接缝阶段只通知释放点（读意图的守卫在下一提交接上；冷却清理也随守卫一起接）。
+                // 风险消退释放意图和同一份冷却，不代表完成供食承诺。
                 RddReplanTransition.observeSafe(ap.getUUID());
             }
             if (chain.primaryStatus() == PrimaryGoalStatus.PENDING
@@ -396,7 +396,10 @@ final class RddDetector {
                         decision, hunger, hp, free);
                 return;
             }
-            SURVIVAL_PREEMPT_AT.put(ap.getUUID(), now);
+            // 同步无 server/空回/启动异常可能已经释放；不能在返回后复活旧冷却。
+            if (RddReplanTransition.hasSurvivalIntent(ap.getUUID())) {
+                SURVIVAL_PREEMPT_AT.put(ap.getUUID(), now);
+            }
             RddMonitor.publish("survival_preempt", java.util.Map.of(
                     "decision", decision.name(), "hunger", hunger, "hp", hp, "free_slots", free));
             LOG.info("[rdd] 生存抢占 {} hunger={} hp={} free={}", decision, hunger, hp, free);
@@ -405,7 +408,8 @@ final class RddDetector {
         }
     }
 
-    private static final java.util.Map<java.util.UUID, Long> SURVIVAL_PREEMPT_AT = new java.util.concurrent.ConcurrentHashMap<>();
+    // 仍是原60秒冷却，唯一实例迁到意图消费者，失效事件/安全观测一并清。
+    private static final java.util.Map<java.util.UUID, Long> SURVIVAL_PREEMPT_AT = RddReplanTransition.SURVIVAL_PREEMPT_AT;
 
     private void tickRuntime(NumenPlayer ap, RddRuntime rt) {
         try {

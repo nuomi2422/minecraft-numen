@@ -450,6 +450,7 @@ public final class RddPlugin implements NumenPlugin {
     /** Disk handoffs survive; in-flight planning and cached world observations do not. */
     private static void clearWorldState() {
         CALLBACKS.clear(() -> {
+            RddReplanTransition.clearAll();
             DECOMPOSING.clear();
             RddGoalDriver.clearAll();
             RddCompanionBody.clearAll();
@@ -1448,7 +1449,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (chain.currentPrimary() == null) return false;
         // 预算：失败驱动按 (同伴|一级) 最多 MAX_REPLAN_PER_PRIMARY 次；协商驱动用独立 key+上限。
         // 2026-11-13：预算检查、记账、状态转换统一由 RddReplanTransition 这一处完成
-        // （首阶段保留“先记账后转换”的旧行为），这里只算 key 并保留预算耗尽后的观测。
+        // 仅转换成功才记账；这里只算 key 并保留预算耗尽后的观测。
         String primaryId = chain.currentPrimary().id();
         String key = fromNegotiation
                 ? companionId + "|" + primaryId + "|nego"
@@ -1491,123 +1492,137 @@ private static String withAssets(UUID companionId, String rddContext) {
             LOG.warn("[rdd] 无法进入重规划 {}: {}", companionId, transition.error());
             return false;
         }
-        String theme = chain.currentPrimary().description();
-        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-        if (server == null) {
-            chain.resumeFromReplanning();
-            // 没服务端=这次应用没发生：明确失败释放意图（允许重试），不是 UNKNOWN。
-            if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
-                RddReplanTransition.markAborted(companionId, survivalToken);
-            }
-            return true;
-        }
-        var snap = planningSnapshot(companionId);
-        var level = RiskGate.levelForText(theme);
-        var gaps = ResourceBudget.missingFor(level, snap.availableCounts());
-        Goal goal = chain.goal();
-        var ctx = ReplanContextBuilder.build(goal.description(), primaryId,
-                chain.currentSubtask() == null ? null : chain.currentSubtask().id(),
-                // 2026-09-29：协商不等于"上一版不可执行"。硬编码 UNKNOWN 会让
-                // decomposeSpecsWithHint(attempt>=1) 注入「上一版被判不可执行」的假话，
-                // 还会把该假话喂进经验召回查询串 → 召回"改 asset_key 形状"类经验（方向错）。
-                FailureEvent.of(null, primaryId,
-                        fromNegotiation ? FailureKind.NEGOTIATION : FailureKind.UNKNOWN,
-                        reason == null ? "" : reason),
-                new java.util.ArrayList<>(chain.satisfiedStages()),
-                snap.availableCounts(), level, gaps, java.util.List.of());
-        String hint = ReplanContextBuilder.render(ctx);
-        if (soldierHint != null && !soldierHint.isBlank()) {
-            // 士兵的具体建议（COUNTER 的可选项 / REJECT 的理由）必须进规划器输入，
-            // 否则规划器只看到"士兵报了 COUNTER"却拿不到它建议怎么改 → 只能原样重规划。
-            // 2026-11-01（主人纠偏）：这里上报的是**判定与证据**，不是命令。
-            // 原措辞「必须采纳其一」把执行层的结论抬成了硬约束，与实机相悖——
-            // 规划器有权不同意，只要写明理由（例如实测表明该工具做不到）。
-            hint = hint + "\n\n## 执行层（士兵）上报的判定与证据（供你判断，不是命令；不同意请写明理由并给出不同做法）\n"
-                    + soldierHint.strip();
-        }
-        // 2026-09-29「重规划没变化」修复之一：规划器此前**从未看到上一版的完整二级清单**，
-        // 它只拿到一个 theme，在同一个信息集上再推一次 → 必然得到同一个结果。
-        // 把旧计划显式给它，才能"做出不同的计划"。
-        String previous = renderPreviousPlanForReplan(chain);
-        if (!previous.isBlank()) {
-            hint = hint + "\n\n## 上一版的二级计划（**不要原样重复**，指出它的错处并给出不同做法）\n" + previous;
-        }
-        // 2026-10-28（主人第二点）：重规划此前只有"当前一级 + 上一版二级"——它在猜三件事：
-        // 后面还要走什么、已经做过什么、此刻站在哪/手上有什么。三样都补上，才谈得上"全局"。
-        String remainingPlan = renderRemainingPlanForReplan(chain);
-        if (!remainingPlan.isBlank()) {
-            hint = hint + "\n\n## 后面还要走的阶段（可以保留、调整，或整段重写；别把已完成的又排一遍）\n"
-                    + remainingPlan;
-        }
-        String doneWork = renderDoneForReplan(chain);
-        if (!doneWork.isBlank()) {
-            hint = hint + "\n\n## 这条链已经做过的事（已成事实，不要重复规划）\n" + doneWork;
-        }
-        String situation = replanSituation(companionId);
-        if (!situation.isBlank()) {
-            hint = hint + "\n\n" + situation;
-        }
-        // 2026-10-28（主人）：规划者要看得见"手上这些东西能干什么、能替代什么"，
-        // 否则"用钻石镐直接挖铁、不走石镐→铁镐"这种判断没有依据。
-        String capabilities = RddCapabilityBrief.block(companionId);
-        if (!capabilities.isBlank()) {
-            hint = hint + "\n\n## 现有能力与可替代（判断'哪一级已经没必要走'的依据）\n" + capabilities;
-        }
-        // 第三批 N1 消费：把「需求 × 持有对账 + 近期阶段事实」作为只读事实块送进规划器输入。
-        // 只陈述事实（缺口数字 ≠「没做」），生成失败绝不影响重规划本身。
         try {
-            String factsBlock = RddFactContext.replanBlock(companionId);
-            if (!factsBlock.isBlank()) {
-                hint = hint + "\n\n" + factsBlock;
+            String theme = chain.currentPrimary().description();
+            MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+            if (server == null) {
+                // 明确未应用：仅匹配 token 可释放/回落，不把入口 accepted 当永久保护。
+                if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
+                    RddReplanTransition.abortPlan(companionId, survivalToken, chain);
+                } else {
+                    chain.resumeFromReplanning();
+                }
+                return true;
             }
-        } catch (RuntimeException ex) {
-            LOG.warn("[rdd] 重规划事实块生成失败 {}: {}", companionId, ex.toString());
-        }
-        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
-        // attempt：只有失败驱动才表示"上一版被判不可执行"（1）；协商与生存抢占是事实变化（0）。
-        // 2026-11-13：不能再按 fromNegotiation 三元判断 —— SURVIVAL 走事实变化入口但不是协商。
-        int planningAttempt = RddReplanTransition.planningAttempt(trigger);
-        // completedStages 也不能丢（重规划与懒展开在这一项上曾不一致）。
-        RddDecomposer.decomposeSpecsWithHint(companionId, theme, planningAttempt,
-                new java.util.ArrayList<>(chain.satisfiedStages()), hint,
-                specs -> onServer(server, ticket, () -> {
-                    try {
-                        if (specs == null || specs.isEmpty()) {
-                            chain.resumeFromReplanning();
-                            if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
-                                RddReplanTransition.markAborted(companionId, survivalToken);
+            var snap = planningSnapshot(companionId);
+            var level = RiskGate.levelForText(theme);
+            var gaps = ResourceBudget.missingFor(level, snap.availableCounts());
+            Goal goal = chain.goal();
+            var ctx = ReplanContextBuilder.build(goal.description(), primaryId,
+                    chain.currentSubtask() == null ? null : chain.currentSubtask().id(),
+                    // 2026-09-29：协商不等于"上一版不可执行"。硬编码 UNKNOWN 会让
+                    // decomposeSpecsWithHint(attempt>=1) 注入「上一版被判不可执行」的假话，
+                    // 还会把该假话喂进经验召回查询串 → 召回"改 asset_key 形状"类经验（方向错）。
+                    FailureEvent.of(null, primaryId,
+                            fromNegotiation ? FailureKind.NEGOTIATION : FailureKind.UNKNOWN,
+                            reason == null ? "" : reason),
+                    new java.util.ArrayList<>(chain.satisfiedStages()),
+                    snap.availableCounts(), level, gaps, java.util.List.of());
+            String hint = ReplanContextBuilder.render(ctx);
+            if (soldierHint != null && !soldierHint.isBlank()) {
+                // 士兵的具体建议（COUNTER 的可选项 / REJECT 的理由）必须进规划器输入，
+                // 否则规划器只看到"士兵报了 COUNTER"却拿不到它建议怎么改 → 只能原样重规划。
+                // 2026-11-01（主人纠偏）：这里上报的是**判定与证据**，不是命令。
+                // 原措辞「必须采纳其一」把执行层的结论抬成了硬约束，与实机相悖——
+                // 规划器有权不同意，只要写明理由（例如实测表明该工具做不到）。
+                hint = hint + "\n\n## 执行层（士兵）上报的判定与证据（供你判断，不是命令；不同意请写明理由并给出不同做法）\n"
+                        + soldierHint.strip();
+            }
+            // 2026-09-29「重规划没变化」修复之一：规划器此前**从未看到上一版的完整二级清单**，
+            // 它只拿到一个 theme，在同一个信息集上再推一次 → 必然得到同一个结果。
+            // 把旧计划显式给它，才能"做出不同的计划"。
+            String previous = renderPreviousPlanForReplan(chain);
+            if (!previous.isBlank()) {
+                hint = hint + "\n\n## 上一版的二级计划（**不要原样重复**，指出它的错处并给出不同做法）\n" + previous;
+            }
+            // 2026-10-28（主人第二点）：重规划此前只有"当前一级 + 上一版二级"——它在猜三件事：
+            // 后面还要走什么、已经做过什么、此刻站在哪/手上有什么。三样都补上，才谈得上"全局"。
+            String remainingPlan = renderRemainingPlanForReplan(chain);
+            if (!remainingPlan.isBlank()) {
+                hint = hint + "\n\n## 后面还要走的阶段（可以保留、调整，或整段重写；别把已完成的又排一遍）\n"
+                        + remainingPlan;
+            }
+            String doneWork = renderDoneForReplan(chain);
+            if (!doneWork.isBlank()) {
+                hint = hint + "\n\n## 这条链已经做过的事（已成事实，不要重复规划）\n" + doneWork;
+            }
+            String situation = replanSituation(companionId);
+            if (!situation.isBlank()) {
+                hint = hint + "\n\n" + situation;
+            }
+            // 2026-10-28（主人）：规划者要看得见"手上这些东西能干什么、能替代什么"，
+            // 否则"用钻石镐直接挖铁、不走石镐→铁镐"这种判断没有依据。
+            String capabilities = RddCapabilityBrief.block(companionId);
+            if (!capabilities.isBlank()) {
+                hint = hint + "\n\n## 现有能力与可替代（判断'哪一级已经没必要走'的依据）\n" + capabilities;
+            }
+            // 第三批 N1 消费：把「需求 × 持有对账 + 近期阶段事实」作为只读事实块送进规划器输入。
+            // 只陈述事实（缺口数字 ≠「没做」），生成失败绝不影响重规划本身。
+            try {
+                String factsBlock = RddFactContext.replanBlock(companionId);
+                if (!factsBlock.isBlank()) {
+                    hint = hint + "\n\n" + factsBlock;
+                }
+            } catch (RuntimeException ex) {
+                LOG.warn("[rdd] 重规划事实块生成失败 {}: {}", companionId, ex.toString());
+            }
+            RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+            // attempt：只有失败驱动才表示"上一版被判不可执行"（1）；协商与生存抢占是事实变化（0）。
+            // 2026-11-13：不能再按 fromNegotiation 三元判断 —— SURVIVAL 走事实变化入口但不是协商。
+            int planningAttempt = RddReplanTransition.planningAttempt(trigger);
+            // completedStages 也不能丢（重规划与懒展开在这一项上曾不一致）。
+            RddDecomposer.decomposeSpecsWithHint(companionId, theme, planningAttempt,
+                    new java.util.ArrayList<>(chain.satisfiedStages()), hint,
+                    specs -> onServer(server, ticket, () -> {
+                        boolean applied = false;
+                        try {
+                            if (specs == null || specs.isEmpty()) {
+                                if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
+                                    RddReplanTransition.abortPlan(companionId, survivalToken, chain);
+                                } else {
+                                    chain.resumeFromReplanning();
+                                }
+                                publishTaskSnapshot(companionId, "replan_fallback_resume");
+                                return;
                             }
-                            publishTaskSnapshot(companionId, "replan_fallback_resume");
-                            return;
+                            java.util.List<Subtask> subs;
+                            // 2026-09-30 深审 R05/codex 两轮：二级 id 原来恒为 `primaryId-rN`，
+                            // 每次重规划都复用同一批名字 → 上一轮的 PAUSE/COUNTER 回执
+                            // 即使 taskId 相同也能通过消费侧校验，作用到新计划的同 id 二级上。
+                            // 计划代次进 id（代次本体在 TaskChain，随链持久化，重启不撞号）。
+                            int rev = nextPlanRevision(companionId, chain);
+                            subs = RddChainFactory.subtasksFromSpecs(primaryId, rev, specs);
+                            RddGoalDriver.acceptPlan(subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
+                                    () -> chain.replaceCurrentSubtasks(subs));
+                            applied = true;
+                            if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
+                                // 只有替换成功才绑定 applied：旧回调 token 不匹配时什么都不做。
+                                RddReplanTransition.markApplied(companionId, survivalToken, chain.planRevision());
+                            }
+                            RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废
+                            saveRuntimes();
+                            publishTaskSnapshot(companionId, "replanned");
+                            RddMonitor.publish("replanned", Map.of("companionId", companionId.toString(),
+                                    "primary", primaryId, "theme", theme,
+                                    "subtasks", subs.size(), "planRevision", rev));
+                        } catch (RuntimeException ex) {
+                            LOG.warn("[rdd] 重规划替换失败，回落重跑现有 {}: {}", companionId, ex.toString());
+                            if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
+                                // replace 已成功时，后续保存/观测异常不能抹掉实际应用的意图。
+                                if (!applied) RddReplanTransition.abortPlan(companionId, survivalToken, chain);
+                            } else {
+                                try { chain.resumeFromReplanning(); } catch (RuntimeException ignore) { }
+                            }
                         }
-                        java.util.List<Subtask> subs;
-                        // 2026-09-30 深审 R05/codex 两轮：二级 id 原来恒为 `primaryId-rN`，
-                        // 每次重规划都复用同一批名字 → 上一轮的 PAUSE/COUNTER 回执
-                        // 即使 taskId 相同也能通过消费侧校验，作用到新计划的同 id 二级上。
-                        // 计划代次进 id（代次本体在 TaskChain，随链持久化，重启不撞号）。
-                        int rev = nextPlanRevision(companionId, chain);
-                        subs = RddChainFactory.subtasksFromSpecs(primaryId, rev, specs);
-                        RddGoalDriver.acceptPlan(subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
-                                () -> chain.replaceCurrentSubtasks(subs));
-                        if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
-                            // 只有替换成功才绑定 applied：旧回调 token 不匹配时什么都不做。
-                            RddReplanTransition.markApplied(companionId, survivalToken, chain.planRevision());
-                        }
-                        RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废
-                        saveRuntimes();
-                        publishTaskSnapshot(companionId, "replanned");
-                        RddMonitor.publish("replanned", Map.of("companionId", companionId.toString(),
-                                "primary", primaryId, "theme", theme,
-                                "subtasks", subs.size(), "planRevision", rev));
-                    } catch (RuntimeException ex) {
-                        LOG.warn("[rdd] 重规划替换失败，回落重跑现有 {}: {}", companionId, ex.toString());
-                        try { chain.resumeFromReplanning(); } catch (RuntimeException ignore) { }
-                        if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
-                            RddReplanTransition.markAborted(companionId, survivalToken);
-                        }
-                    }
-                }));
-        return true;
+                    }));
+            return true;
+        } catch (RuntimeException ex) {
+            // 组装/发起规划同步失败也是已知失败；无回调的在飞请求仍保留 UNKNOWN。
+            if (trigger == RddReplanTransition.Trigger.SURVIVAL) {
+                RddReplanTransition.abortPlan(companionId, survivalToken, chain);
+            }
+            throw ex;
+        }
     }
 
     static void onDeathRecoverySettled(UUID companionId, Map<String, Object> data) {
@@ -1722,6 +1737,10 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (body == null) return;
         UUID companionId = body.getUUID();
         if (companionId == null) return;
+        // 死亡失效不靠持久 chainId 猜身体代次；先撤本次在飞生存计划，再走原死亡恢复。
+        RddRuntime survivalRuntime = RUNTIMES.get(companionId);
+        RddReplanTransition.onDeath(companionId, survivalRuntime == null ? null : survivalRuntime.chain(),
+                () -> CALLBACKS.replace(companionId));
         // F2：任何写台账之前先恢复磁盘上的旧账（顺序反了会用旧账覆盖本次记录）
         ensureLedgerLoaded(companionId);
         try {
@@ -2606,6 +2625,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
         if (companionId == null) return;
         if (completionPending(companionId)) throw new IllegalStateException("finish pending stage completion before replacing goal");
         RddRuntime previous = RUNTIMES.remove(companionId);
+        RddReplanTransition.invalidate(companionId);
         BODY.remove(companionId);
         RddGoalDriver.clear(companionId);
         RddNegotiationInbox.clear(companionId);
@@ -2696,6 +2716,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
                     publishTaskSnapshot(companionId, "task_removed");
                 }
                 RUNTIMES.remove(companionId);
+                RddReplanTransition.invalidate(companionId);
                 BODY.remove(companionId);
                 LAST_CONTEXT.remove(companionId);
                 LAST_EXPANSION_REPORT.remove(companionId);
