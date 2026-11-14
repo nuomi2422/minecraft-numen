@@ -71,10 +71,19 @@ class RddGoalDriverInjectionTest {
         // Both the live chain and the persisted consumer must wait for the original food12 predicate.
         for (TaskChain consumer : List.of(chain, TaskChain.fromJson(chain.toJson()))) {
             SideTaskHost.DailyRegistration.registerChain(consumer, engine);
-            assertEquals(subs.get(0), consumer.currentSubtask());
-            assertEquals(description, consumer.currentSubtask().description());
-            assertEquals(parsed.get(0).condition(), consumer.currentSubtask().condition());
-            assertEquals(NodeType.MAIN, consumer.currentSubtask().nodeType());
+            Subtask restored = consumer.currentSubtask();
+            // JSON has no Java integer wrappers: Gson reads 12 back as 12.0. Keep every field check,
+            // and compare condition numbers by value so restore fidelity is still proven, not weakened.
+            assertEquals(subs.get(0).id(), restored.id());
+            assertEquals(subs.get(0).detectionMode(), restored.detectionMode());
+            assertEquals(subs.get(0).detectionIntervalSeconds(), restored.detectionIntervalSeconds());
+            assertEquals(subs.get(0).maxAiChecks(), restored.maxAiChecks());
+            assertEquals(subs.get(0).recheckOnUnchanged(), restored.recheckOnUnchanged());
+            assertEquals(subs.get(0).body(), restored.body());
+            assertEquals(conditionValues(subs.get(0).condition()), conditionValues(restored.condition()));
+            assertEquals(description, restored.description());
+            assertEquals(conditionValues(parsed.get(0).condition()), conditionValues(restored.condition()));
+            assertEquals(NodeType.MAIN, restored.nodeType());
             String dailyId = "daily:g:" + Integer.toHexString(description.hashCode());
             assertNull(engine.recurringSpec(dailyId), "one-trip food must never be registered as recurring work");
             assertFalse(consumer.applyHardCodedResult(subs.get(0).id(),
@@ -89,6 +98,15 @@ class RddGoalDriverInjectionTest {
             assertEquals(SubtaskStatus.COMPLETED, consumer.subtaskStatuses().get(subs.get(0).id()));
             assertTrue(consumer.satisfiedStages().isEmpty(), "food completion is not verified stage completion");
         }
+    }
+
+    /** Numbers in a JSON map have no wrapper identity: Gson reads 12 back as 12.0. Compare by value. */
+    private static Map<String, Object> conditionValues(Map<String, Object> condition) {
+        var out = new java.util.LinkedHashMap<String, Object>();
+        for (var entry : condition.entrySet()) {
+            out.put(entry.getKey(), entry.getValue() instanceof Number n ? (Object) n.doubleValue() : entry.getValue());
+        }
+        return out;
     }
 
     @Test void guardedRecurringHarvestStillRegistersDailyAndDispatchesItsMainTail() {
