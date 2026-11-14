@@ -17,5 +17,17 @@ class RddExternalResetWiringTest {
         assertTrue(body.contains("inventory reset incomplete"));
         assertFalse(body.contains("historyDir"));
         assertFalse(body.contains("ledgerDir"));
+        // Wiring only: the native Player setters/readback still need an owned-runtime test, not a fake MC host.
+        int xpReset = body.indexOf("body.setExperienceLevels(0);");
+        assertTrue(xpReset > body.indexOf("inventory reset incomplete"));
+        assertTrue(body.contains("body.setExperiencePoints(0);"));
+        assertTrue(body.contains("body.totalExperience = 0;"));
+        assertTrue(body.contains("body.experienceLevel == 0 && body.totalExperience == 0 && body.experienceProgress == 0.0f"));
+        assertTrue(body.indexOf("physical experience reset incomplete") < body.indexOf("RddMonitor.publish(\"external_world_reset\""));
+        assertTrue(body.contains("\"level\", body.experienceLevel"));
+        assertTrue(body.contains("\"total\", body.totalExperience, \"progress\", body.experienceProgress"));
+        assertTrue(body.contains("\"cleared\", physicalExperienceCleared"));
+        assertEquals(2, body.split("\"physicalExperience\", physicalExperience", -1).length - 1);
+        assertEquals(s.indexOf("body.setExperienceLevels(0);"), s.lastIndexOf("body.setExperienceLevels(0);"));
     }
 }
