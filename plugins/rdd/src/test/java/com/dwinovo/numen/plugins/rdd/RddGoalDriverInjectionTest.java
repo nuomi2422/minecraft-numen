@@ -481,4 +481,51 @@ class RddGoalDriverInjectionTest {
                 "normal new-goal registration must retain its explicit update semantics");
     }
 
+
+    // 2026-11-15 RED: a typed block_nearby DAILY must not be flattened to asset_key.
+    @Test void typedBlockDailyConditionSurvivesRegistrationAndEngineRoundTrip() {
+        TaskChain chain = emptyChain();
+        Subtask block = new Subtask("d-block", "block crops daily", DetectionMode.HARD_CODED,
+                Map.of("type", "block_nearby", "block", "#minecraft:crops", "radius", 16.0),
+                0, 0, false, null, NodeType.DAILY, RecurrenceSpec.daily(true));
+        SideTaskEngine engine = engine();
+
+        SideTaskHost.DailyRegistration.register(chain, List.of(block), engine);
+
+        String specId = "daily:" + chain.goal().id() + ":" + Integer.toHexString(block.description().hashCode());
+        RecurringSideTaskSpec spec = engine.recurringSpec(specId);
+        assertNotNull(spec, "typed DAILY must register a recurring spec");
+        assertEquals("block_nearby", spec.data().get("type"),
+                "producer must keep condition.type instead of flattening it away");
+        assertEquals("#minecraft:crops", spec.data().get("block"),
+                "producer must keep condition.block instead of flattening it to asset_key");
+        assertNotNull(spec.data().get("radius"), "producer must keep condition.radius");
+        assertEquals(16.0, Double.parseDouble(spec.data().get("radius")), 1e-9);
+
+        SideTaskEngine restored = engine();
+        restored.restore(engine.toJson());
+        RecurringSideTaskSpec after = restored.recurringSpec(specId);
+        assertNotNull(after, "typed spec must survive engine snapshot round-trip");
+        assertEquals("block_nearby", after.data().get("type"));
+        assertEquals("#minecraft:crops", after.data().get("block"));
+        assertEquals(16.0, Double.parseDouble(after.data().get("radius")), 1e-9);
+    }
+
+    // 2026-11-15: legacy asset_key/item DAILY must stay usable after the same producer.
+    @Test void legacyAssetKeyDailyKeepsItemAndMinimum() {
+        TaskChain chain = emptyChain();
+        Subtask item = new Subtask("d-item", "legacy wheat daily", DetectionMode.HARD_CODED,
+                Map.of("asset_key", "minecraft:wheat", "minimum", 1),
+                0, 0, false, null, NodeType.DAILY, RecurrenceSpec.daily(true));
+        SideTaskEngine engine = engine();
+
+        SideTaskHost.DailyRegistration.register(chain, List.of(item), engine);
+
+        String specId = "daily:" + chain.goal().id() + ":" + Integer.toHexString(item.description().hashCode());
+        RecurringSideTaskSpec spec = engine.recurringSpec(specId);
+        assertNotNull(spec, "legacy DAILY must still register a recurring spec");
+        assertEquals("minecraft:wheat", spec.data().get("asset_key"),
+                "legacy asset_key item predicate must stay usable");
+        assertEquals("1", spec.data().get("minimum"));
+    }
 }
