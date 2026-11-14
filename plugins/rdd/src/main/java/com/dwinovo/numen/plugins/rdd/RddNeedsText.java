@@ -64,7 +64,7 @@ final class RddNeedsText {
         if (foodCount < 0) {
             return "<food_hint>背包可食物数量未知（UNKNOWN，不按 0）：先清点或查一次状态再判断，别把未知当成没吃的。</food_hint>";
         }
-        String reserve = reserveSentence(foodCount);
+        String reserve = reserveSentence(hunger, foodCount);
         if (hunger < 0) {
             return "<food_hint>饱食度未知（UNKNOWN）：不做饿/吃判断。" + reserve + "</food_hint>";
         }
@@ -91,8 +91,10 @@ final class RddNeedsText {
     }
 
     /** Advisory only: unknown reserve is UNKNOWN (never 0); no owner/cooldown/route changes. */
-    private static String reserveSentence(int foodCount) {
+    private static String reserveSentence(int hunger, int foodCount) {
         if (foodCount >= RESERVE_TARGET) return "";
+        // Reuse the original emergency policy; hp is unknown in this seam and must not be invented.
+        if (com.dwinovo.numen.rdd.side.FoodSupplyPolicy.critical(hunger, -1, foodCount)) return "";
         return "长期备货建议：随身+可用储备合计 " + RESERVE_TARGET + " 份（非紧急，不抢当前任务）；"
                 + "随身已观测 " + foodCount + " 份；备用库存覆盖未知（UNKNOWN，不按 0）；"
                 + "若当前主线本身是补给路线，不另拉路线。";
