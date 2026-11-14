@@ -62,8 +62,10 @@ final class RddMainlineAdmission {
         }
         if (now - since < REPLAN_TIMEOUT_MS) return false;
         replanEnteredAt.remove(companionId);
+        var pending = RddReplanTransition.pendingSurvival(companionId, chain);
         try {
             chain.resumeFromReplanning();
+            RddReplanTransition.releaseTimedOutSurvival(companionId, chain, pending);
             host.timeoutResumed(now - since);
         } catch (RuntimeException ex) {
             host.timeoutFailed(now - since, ex);

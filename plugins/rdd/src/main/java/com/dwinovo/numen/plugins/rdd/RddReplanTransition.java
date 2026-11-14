@@ -213,6 +213,24 @@ final class RddReplanTransition {
                 && current.requestedPlanRevision() == owner.planRevision();
     }
 
+    /** Capture only this chain/revision's pending callback before attempting the original timeout resume. */
+    static SurvivalIntent pendingSurvival(UUID companionId, TaskChain chain) {
+        SurvivalIntent current = companionId == null ? null : SURVIVAL_INTENTS.get(companionId);
+        return current != null && current.state() == SurvivalState.PENDING && sameScope(current, chain)
+                && current.requestedPlanRevision() == chain.planRevision() ? current : null;
+    }
+
+    /** Successful timeout only: neither APPLIED nor a replacement token may be cleared by the old wait. */
+    static void releaseTimedOutSurvival(UUID companionId, TaskChain chain, SurvivalIntent expected) {
+        if (companionId == null || expected == null) return;
+        SURVIVAL_INTENTS.computeIfPresent(companionId, (id, current) -> {
+            if (current != expected || current.state() != SurvivalState.PENDING || !sameScope(current, chain)
+                    || current.requestedPlanRevision() != chain.planRevision()) return current;
+            SURVIVAL_PREEMPT_AT.remove(id);
+            return null;
+        });
+    }
+
     /** 撤销 runtime / 换目标 / external_world_reset 共用，不改链历史或预算。 */
     static void invalidate(UUID companionId) {
         if (companionId == null) return;
