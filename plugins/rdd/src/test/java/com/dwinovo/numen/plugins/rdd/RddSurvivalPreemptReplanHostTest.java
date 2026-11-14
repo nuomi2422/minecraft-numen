@@ -1,6 +1,16 @@
 package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.rdd.api.Goal;
+import com.dwinovo.numen.rdd.api.NodeType;
+import com.dwinovo.numen.rdd.api.RecurrenceSpec;
+import com.dwinovo.numen.rdd.api.SubtaskSpec;
+import com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType;
+import com.dwinovo.numen.rdd.side.FoodSupplyPolicy;
+import com.dwinovo.numen.rdd.side.FoodSupplySideTaskTrigger;
+import com.dwinovo.numen.rdd.side.FoodSupplySideTaskType;
+import com.dwinovo.numen.rdd.side.MainlineResumeToken;
+import com.dwinovo.numen.rdd.side.SideTaskEngine;
+import com.dwinovo.numen.rdd.side.SideTaskWorldPort;
 import com.dwinovo.numen.rdd.api.PrimaryGoal;
 import com.dwinovo.numen.rdd.api.PrimaryGoalStatus;
 import com.dwinovo.numen.rdd.api.Subtask;
@@ -161,6 +171,84 @@ class RddSurvivalPreemptReplanHostTest {
                 "普通失败：上一版确实被判不可执行");
         assertEquals(0, RddReplanTransition.planningAttempt(RddReplanTransition.Trigger.SURVIVAL),
                 "生存抢占是事实变化：不得给规划器伪造上一版不可执行");
+    }
+
+    /**
+     * V24: rdd108 stage-B dispatched at 11:19:48.033Z, EAT_FIRST at .034,
+     * then daily_maintenance at .201; the planner returned only at 11:20:04.538Z.
+     * Exercise the original SleepSafety -> Engine consumer while its real typed intent is pending,
+     * not a test-side "if pending" arbiter. The port supplies only body/cooldown facts.
+     */
+    @Test
+    void pendingSurvivalPlannerMustNotSpendOrActivateDueDailyBeforeCallback() {
+        Fixture f = new Fixture();
+        Object ticket = new Object();
+        var world = new PendingDailyWorld();
+        var events = new java.util.ArrayList<String>();
+        var engine = new SideTaskEngine((event, data) -> events.add(event), token -> token);
+        engine.registerType(new DailyMaintenanceSideTaskType());
+        engine.registerType(new FoodSupplySideTaskType());
+        engine.registerTrigger(new FoodSupplySideTaskTrigger(ctx -> !FoodSupplyPolicy.cooldownBlocks(
+                true, ctx.hunger(), ctx.health(), ctx.edibleCount())));
+        var daily = RddGoalDriver.buildInjection(f.chain.currentPrimary().id(), f.chain.planRevision(),
+                List.of(new SubtaskSpec("收掉成熟小麦并补种", Map.of("asset_key", "minecraft:wheat", "minimum", 1),
+                        null, NodeType.DAILY, RecurrenceSpec.daily(false))));
+        SideTaskHost.DailyRegistration.register(f.chain, daily, engine);
+        String specId = "daily:" + f.chain.goal().id() + ":"
+                + Integer.toHexString(daily.get(0).description().hashCode());
+        try {
+            assertEquals(RddSurvivalGate.Decision.EAT_FIRST,
+                    RddSurvivalGate.evaluate(world.hunger(f.id), world.health(f.id), 31, false,
+                            world.edibleCount(f.id) > 0));
+            assertTrue(RddReplanTransition.requestSurvival(f.id, f.chain, RddSurvivalGate.Decision.EAT_FIRST,
+                    "survival EAT_FIRST hunger=6 hp=16 edible=1", f.counts, f.key(), LIMIT,
+                    f.callbacks::incrementAndGet, ticket).accepted());
+            assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+            assertTrue(RddReplanTransition.hasSurvivalIntent(f.id));
+            assertFalse(world.bodyBusy(f.id), "pending model work is not an actual body action");
+            var token = new MainlineResumeToken(f.id, f.chain.chainInstanceId(), f.chain.goal().id(),
+                    f.chain.currentPrimary().id(), f.chain.currentSubtask().id(),
+                    f.chain.planRevision(), f.chain.planRevision());
+            long version = f.chain.stateVersion();
+            SideTaskHost.SleepSafety.tick(engine, f.id, world, token, false,
+                    () -> { fail("daytime idle body must not be interrupted for sleep"); return false; });
+            assertAll("fresh pending EAT_FIRST owns the decision window, not the body slot",
+                    () -> assertTrue(engine.current(f.id).isEmpty(), "DAILY must not take side context before survival callback"),
+                    () -> assertNull(engine.handledToday(f.id, world.worldId(), specId, world.gameDay()),
+                            "blocked DAILY must retain its original due occurrence"),
+                    () -> assertTrue(events.isEmpty(), "no premature due/created/activated receipt"),
+                    () -> assertEquals(version, f.chain.stateVersion(), "side admission does not rewrite the mainline"));
+
+            assertEquals(RddReplanTransition.SurvivalApplyOutcome.EMPTY_FALLBACK,
+                    RddReplanTransition.applySurvivalPlan(f.id, ticket, f.chain, List.of(),
+                            () -> { fail("EMPTY callback must not replace the plan"); return List.of(); }, ignored -> {}));
+            assertFalse(RddReplanTransition.hasSurvivalIntent(f.id));
+            world.now += 20;
+            SideTaskHost.SleepSafety.tick(engine, f.id, world, token, false, () -> false);
+            assertEquals(DailyMaintenanceSideTaskType.TYPE_ID, engine.current(f.id).orElseThrow().typeId(),
+                    "after explicit callback release, the same due DAILY is admitted by original rules");
+            assertEquals(Boolean.TRUE, engine.handledToday(f.id, world.worldId(), specId, world.gameDay()));
+            assertEquals(1, java.util.Collections.frequency(events, "side_task_activated"));
+        } finally {
+            RddReplanTransition.invalidate(f.id);
+        }
+    }
+
+    /** Facts only: V24 post-supply cooldown, one uneaten fish, empty body slot; no admission logic. */
+    private static final class PendingDailyWorld implements SideTaskWorldPort {
+        long now = 40L * 24_000L + 6_000L;
+        public long gameTime() { return now; }
+        public long dayTime() { return 6_000L; }
+        public long gameDay() { return 40L; }
+        public boolean hasDayNightCycle() { return true; }
+        public String worldId() { return "minecraft:overworld"; }
+        public boolean isSleeping(UUID id) { return false; }
+        public boolean isDay() { return true; }
+        public Wake pollWake(UUID id) { return Wake.NONE; }
+        public int hunger(UUID id) { return 6; }
+        public int health(UUID id) { return 16; }
+        public int edibleCount(UUID id) { return 1; }
+        public boolean bodyBusy(UUID id) { return false; }
     }
 
     /** 真 TaskChain + 真预算表；触发源显式传入，不靠 reason 文本。 */
