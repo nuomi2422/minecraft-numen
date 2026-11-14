@@ -197,18 +197,28 @@ final class SideTaskHost {
                     Object key0 = sub.condition().get("asset_key");
                     LOG.info("[rdd] daily candidate {} type={} condition={} asset_key0={}", sub.id(),
                             sub.condition().get("type"), sub.condition(), key0);
-                    Object key = key0;
-                    if (!(key instanceof String) || ((String) key).isBlank()) key = sub.condition().get("block");
-                    if (!(key instanceof String) || ((String) key).isBlank()) key = sub.condition().get("item");
-                    if (!(key instanceof String) || ((String) key).isBlank()) {
-                        LOG.info("[rdd] daily candidate {} skipped: no countable asset_key/block/item", sub.id());
-                        continue; // no countable asset -> not an executable daily
+                    boolean typedBlock = "block_nearby".equals(String.valueOf(sub.condition().get("type")))
+                            && com.dwinovo.numen.rdd.core.WorldFactConditions.valid(sub.condition());
+                    if (typedBlock) {
+                        // Keep the complete typed condition (type/block and optional radius/dimension/
+                        // anchor/properties) instead of flattening block into an inventory asset_key.
+                        data.put("condition", new com.google.gson.Gson().toJson(sub.condition()));
+                        data.put("requires_farm_built", String.valueOf(rec.requiresFarmBuilt()));
+                        LOG.info("[rdd] daily spec {} typed=block_nearby; condition JSON kept", sub.id());
+                    } else {
+                        Object key = key0;
+                        if (!(key instanceof String) || ((String) key).isBlank()) key = sub.condition().get("block");
+                        if (!(key instanceof String) || ((String) key).isBlank()) key = sub.condition().get("item");
+                        if (!(key instanceof String) || ((String) key).isBlank()) {
+                            LOG.info("[rdd] daily candidate {} skipped: no countable asset_key/block/item", sub.id());
+                            continue; // no countable asset -> not an executable daily
+                        }
+                        data.put("asset_key", (String) key);
+                        Object min = sub.condition().get("minimum");
+                        data.put("minimum", String.valueOf(min instanceof Number n ? Math.max(1, n.intValue()) : 1));
+                        data.put("requires_farm_built", String.valueOf(rec.requiresFarmBuilt()));
+                        LOG.info("[rdd] daily spec {} asset={} min={}", sub.id(), key, data.get("minimum"));
                     }
-                    data.put("asset_key", (String) key);
-                    Object min = sub.condition().get("minimum");
-                    data.put("minimum", String.valueOf(min instanceof Number n ? Math.max(1, n.intValue()) : 1));
-                    data.put("requires_farm_built", String.valueOf(rec.requiresFarmBuilt()));
-                    LOG.info("[rdd] daily spec {} asset={} min={}", sub.id(), key, data.get("minimum"));
                     // stable across replans: description hash, not sub.id/planRevision
                     String specId = "daily:" + chain.goal().id() + ":" + Integer.toHexString(sub.description().hashCode());
                     LOG.info("[rdd] daily spec register {} interval={} anchor={}", specId, rec.intervalGameDays(), chain.planRevision());
