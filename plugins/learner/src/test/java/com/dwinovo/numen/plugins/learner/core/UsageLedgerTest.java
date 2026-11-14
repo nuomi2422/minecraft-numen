@@ -123,6 +123,55 @@ class UsageLedgerTest {
                         UsageLedger.Outcome.SUCCESS, "", "x"));
     }
 
+    /**
+     * 2026-11-14 C-line: completion may beat an asynchronous execution acknowledgement.
+     * This is a legal arrival order, not permission to regress the artifact's phase.
+     * Exercise the real append-only ledger and reopen it after the delayed callback.
+     */
+    @Test
+    void asynchronousExecutedAfterResult_isRejectedAndKeepsDurableResult() throws Exception {
+        Path dir = tmp("async-late-execution");
+        UsageLedger ledger = new UsageLedger(dir);
+        var callbackReady = new java.util.concurrent.CountDownLatch(1);
+        var resultPersisted = new java.util.concurrent.CountDownLatch(1);
+        var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            var late = executor.submit(() -> {
+                callbackReady.countDown();
+                assertTrue(resultPersisted.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                        "the execution callback must arrive after the real RESULT is durable");
+                return assertThrows(UsageLedger.LateArrival.class, () -> ledger.append(
+                        "async-artifact", "AC_SCRIPT", "async-action", UsageLedger.Phase.EXECUTED,
+                        UsageLedger.Outcome.UNKNOWN, "delayed execution acknowledgement",
+                        "acx-run:async-run", C.toString()));
+            });
+            try {
+                assertTrue(callbackReady.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                UsageLedger.Entry result = ledger.append("async-artifact", "AC_SCRIPT", "async-action",
+                        UsageLedger.Phase.RESULT, UsageLedger.Outcome.SUCCESS, "completion arrived first",
+                        "acx-run:async-run", C.toString());
+                byte[] before = java.nio.file.Files.readAllBytes(ledger.file());
+                resultPersisted.countDown();
+                UsageLedger.LateArrival rejected = late.get(5, java.util.concurrent.TimeUnit.SECONDS);
+
+                assertEquals(UsageLedger.Phase.RESULT, rejected.seen);
+                assertEquals(UsageLedger.Phase.EXECUTED, rejected.arriving);
+                org.junit.jupiter.api.Assertions.assertArrayEquals(before,
+                        java.nio.file.Files.readAllBytes(ledger.file()),
+                        "rejected late execution must not append a rollback or alter the RESULT bytes");
+                UsageLedger reopened = new UsageLedger(dir);
+                assertEquals(List.of(result), reopened.all(), "reopen the actual journal, not a cached model");
+                assertEquals(result, reopened.latestOf("async-artifact"));
+                assertFalse(result.validityClaimed(), "completion is not an efficacy claim");
+                assertFalse(result.humanReviewed());
+            } finally {
+                resultPersisted.countDown();
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
     @Test
     void blankArtifactId_isRejected() {
         UsageLedger ul = new UsageLedger(tmp("h"));

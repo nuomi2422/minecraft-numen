@@ -327,6 +327,122 @@ class AcxExecutionReflectorTest {
                 "读不到时必须明说「不是没有运行」: " + rep.notes());
     }
 
+    /**
+     * 2026-11-14 C-line: reproduce the production rescan, not a replacement ledger model.
+     * monitor/acx.jsonl currently retains a legitimate PAUSED (accepted async task) -> SUCCESS
+     * pair for run 5d2b7e37. A later review replays its EXECUTED after RESULT is durable.
+     * Rejecting that old phase must not discard a following, independently adopted result.
+     * These are isolated fixtures; no V16 snapshot or world identity is invented here.
+     */
+    @Test
+    void pausedResumeRescan_preservesResultAndPersistsFollowingArtifact() throws Exception {
+        Path d = tmp("paused-rescan-tail");
+        ArtifactOutbox ob = outboxWith(d);
+        String originalId = ob.list(ArtifactOutbox.Kind.AC_SCRIPT).get(0).get("artifact_id").getAsString();
+        UsageLedger ul = new UsageLedger(d);
+        Path rec = records(d,
+                run("paused-then-success", "low_hp_flee", "1", "PAUSED", "null"),
+                run("paused-then-success", "low_hp_flee", "1", "SUCCESS", "null"));
+        var reflector = new AcxExecutionReflector(ob, ul);
+        assertEquals(2, reflector.reflect(rec, true).reflected(), "real initial EXECUTED -> RESULT scan");
+        UsageLedger.Entry original = new UsageLedger(d).latestOf(originalId);
+        assertEquals(UsageLedger.Phase.RESULT, original.phase());
+        assertEquals(UsageLedger.Outcome.SUCCESS, original.outcome());
+        byte[] before = Files.readAllBytes(ul.file());
+
+        ArtifactOutbox.Delivery next = ob.submit(ArtifactOutbox.Kind.AC_SCRIPT, C, "rev-next", "m-next",
+                "independent_action", "{\"name\":\"independent_action\"}");
+        ob.mark(next.artifactId(), ArtifactOutbox.Status.ADOPTED, "isolated accepted fixture", "independent_action@1");
+        var callbackReady = new java.util.concurrent.CountDownLatch(1);
+        var newReceiptPersisted = new java.util.concurrent.CountDownLatch(1);
+        var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            var pending = executor.submit(() -> {
+                callbackReady.countDown();
+                assertTrue(newReceiptPersisted.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                        "the second reflection must run after the new monitor receipt is written");
+                // Same production scanner sees the retained old PAUSED before the new terminal row.
+                return reflector.reflect(rec, true);
+            });
+            try {
+                assertTrue(callbackReady.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                Files.writeString(rec, run("new-independent-run", "independent_action", "1", "SUCCESS", "null") + "\n",
+                        StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
+                newReceiptPersisted.countDown();
+                AcxExecutionReflector.Report report = null;
+                UsageLedger.LateArrival rejected = null;
+                try {
+                    report = pending.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (java.util.concurrent.ExecutionException failed) {
+                    // Capture only the known business rejection so durable-file assertions also run.
+                    // Any different exception is still a test error, never a successful receipt.
+                    if (!(failed.getCause() instanceof UsageLedger.LateArrival late)) throw failed;
+                    rejected = late;
+                }
+                UsageLedger.LateArrival observedRejection = rejected;
+                UsageLedger reopened = new UsageLedger(d);
+                var snapshot = reopened.readSnapshot();
+                UsageLedger.Entry nextResult = reopened.latestOf(next.artifactId());
+                byte[] after = Files.readAllBytes(ul.file());
+                org.junit.jupiter.api.Assertions.assertAll(
+                        () -> org.junit.jupiter.api.Assertions.assertNull(observedRejection,
+                                "a stale EXECUTED must not abort the entire reflection scan"),
+                        () -> assertEquals(UsageLedger.ReadStatus.READY, snapshot.status()),
+                        () -> assertEquals(original, reopened.latestOf(originalId), "original RESULT is unchanged"),
+                        () -> org.junit.jupiter.api.Assertions.assertArrayEquals(before,
+                                java.util.Arrays.copyOf(after, before.length), "original journal prefix is immutable"),
+                        () -> org.junit.jupiter.api.Assertions.assertNotNull(nextResult,
+                                "the following independent artifact must have a durable RESULT, not just no exception"),
+                        () -> assertEquals(1L, snapshot.rows().stream()
+                                .filter(e -> e.artifactId().equals(next.artifactId()))
+                                .filter(e -> e.phase() == UsageLedger.Phase.RESULT)
+                                .filter(e -> e.outcome() == UsageLedger.Outcome.SUCCESS)
+                                .filter(e -> e.source().equals("acx-run:new-independent-run"))
+                                .filter(e -> e.companionId().equals(C.toString())).count()),
+                        () -> assertEquals(3, snapshot.rows().size(), "no replayed EXECUTED row is appended"));
+                org.junit.jupiter.api.Assertions.assertNotNull(report);
+                assertEquals(1, report.reflected());
+                assertEquals(UsageLedger.Phase.RESULT, nextResult.phase());
+                assertFalse(nextResult.validityClaimed(), "a runtime result must not be promoted into efficacy");
+                assertFalse(nextResult.humanReviewed());
+            } finally {
+                newReceiptPersisted.countDown();
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    /** Control: an already-known terminal row alone does not block a new artifact. */
+    @Test
+    void terminalOnlyRescan_persistsFollowingIndependentResultOnce() throws Exception {
+        Path d = tmp("terminal-rescan-tail");
+        ArtifactOutbox ob = outboxWith(d);
+        UsageLedger ul = new UsageLedger(d);
+        Path rec = records(d, run("known-terminal", "low_hp_flee", "1", "SUCCESS", "null"));
+        var reflector = new AcxExecutionReflector(ob, ul);
+        assertEquals(1, reflector.reflect(rec, true).reflected());
+        byte[] before = Files.readAllBytes(ul.file());
+        ArtifactOutbox.Delivery next = ob.submit(ArtifactOutbox.Kind.AC_SCRIPT, C, "rev-next", "m-next",
+                "independent_action", "{\"name\":\"independent_action\"}");
+        ob.mark(next.artifactId(), ArtifactOutbox.Status.ADOPTED, "isolated accepted fixture", "independent_action@1");
+        Files.writeString(rec, run("next-terminal", "independent_action", "1", "SUCCESS", "null") + "\n",
+                StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
+
+        assertEquals(1, reflector.reflect(rec, true).reflected());
+        UsageLedger reopened = new UsageLedger(d);
+        UsageLedger.Entry result = reopened.latestOf(next.artifactId());
+        org.junit.jupiter.api.Assertions.assertNotNull(result, "read back the actual durable ledger");
+        assertEquals(UsageLedger.Phase.RESULT, result.phase());
+        assertEquals(UsageLedger.Outcome.SUCCESS, result.outcome());
+        assertEquals("acx-run:next-terminal", result.source());
+        assertEquals(C.toString(), result.companionId());
+        org.junit.jupiter.api.Assertions.assertArrayEquals(before,
+                java.util.Arrays.copyOf(Files.readAllBytes(ul.file()), before.length));
+        assertEquals(0, reflector.reflect(rec, true).reflected());
+        assertEquals(2, new UsageLedger(d).readSnapshot().rows().size());
+    }
+
     @Test
     void reflectedEntryCarriesCompanionSoIsolationStillWorks() throws Exception {
         Path d = tmp("companion");
