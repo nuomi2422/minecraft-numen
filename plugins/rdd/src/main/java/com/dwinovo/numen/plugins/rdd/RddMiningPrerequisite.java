@@ -60,7 +60,9 @@ final class RddMiningPrerequisite {
         if (evidence.correctForDrops().containsValue(true)) return "";
         // A preceding admitted tool condition must execute first. It is NOT a current
         // capability fact: keep both steps and require native recheck when mining runs.
-        if (prepared.stream().anyMatch(id -> !evidence.correctForDrops().containsKey(id))) return "";
+        // A new same-ID stack may have different components: current native false only
+        // describes the old stack, not the pending replacement verified by its condition.
+        if (!prepared.isEmpty()) return "";
         return "采集能力矛盾（" + evidence.source() + "，captured_at=" + evidence.capturedAtMs() + "）："
                 + String.join("/", evidence.correctForDrops().keySet()) + " 没有可取得 " + OBSIDIAN + " 掉落的工具；"
                 + "浇筑仅形成世界方块，不能满足背包到手条件。先补可采工具准备或换取得方式并说明理由；"
