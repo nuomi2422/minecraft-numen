@@ -103,4 +103,20 @@ class RddNeedsTextTest {
         assertTrue(s.contains("合计 10 份"), "储备建议与饥饿判断分开");
         assertTrue(s.contains("随身已观测 3 份"));
     }
+    @Test
+    void 饥饿危急分支不追加十份储备目标() {
+        String starving = RddNeedsText.food(3, 0);
+        assertTrue(starving.contains("没有能直接吃的东西"), "危急仍给原找食物句");
+        assertFalse(starving.contains("合计 10 份"), "危急不把 2 份目标拖成 10 份");
+        String low = RddNeedsText.food(0, 2);
+        assertTrue(low.contains("很饿"));
+        assertFalse(low.contains("合计 10 份"));
+    }
+
+    @Test
+    void 普通饥饿仍有eat并给软十份建议() {
+        String s = RddNeedsText.food(11, 3);
+        assertTrue(s.contains("eat"));
+        assertTrue(s.contains("合计 10 份"), "非危急才出现长期软建议");
+    }
 }
