@@ -538,6 +538,26 @@ class RddPlanGuardTest {
         assertTrue(chain.satisfiedStages().isEmpty());
     }
 
+
+    @Test void movementBeforeMissingArmorReasonCannotBeRemovedAsPreparationWhy() {
+        var dangerous = parsePreparationStep("食物回补：先前往下界要塞取食物但没有护甲等于送死",
+                Map.of("type", "inventory", "group", "food", "minimum", 4));
+        var tail = parsePreparationStep("补足火把供地表照明", Map.of("asset_key", "minecraft:torch", "minimum", 8));
+        var guarded = RddPlanGuard.filterSubtasks(List.of(dangerous, tail), "通关MC", Map.of());
+        assertTrue(guarded.allowed().isEmpty(), "the explicit travel action must remain, and its food step cannot be dropped alone");
+        assertTrue(guarded.dropped().stream().anyMatch(reason -> reason.contains("护甲")));
+        assertTrue(installPreparationPlan(guarded.allowed()).currentPrimary().unexpanded());
+    }
+
+    @Test void travelAfterSafePreparationStillCannotBorrowItsMissingArmorReason() {
+        var dangerous = parsePreparationStep("先在主世界补充食物。前往下界要塞取食物但没有护甲意味着死亡",
+                Map.of("type", "inventory", "group", "food", "minimum", 4));
+        var guarded = RddPlanGuard.filterSubtasks(List.of(dangerous), "通关MC", Map.of());
+        assertTrue(guarded.allowed().isEmpty(), "a later explicit travel action is not a lack-subject risk explanation");
+        assertTrue(guarded.dropped().stream().anyMatch(reason -> reason.contains("护甲")));
+        assertTrue(installPreparationPlan(guarded.allowed()).currentPrimary().unexpanded());
+    }
+
     private static SubtaskSpec parsePreparationStep(String description, Map<String, Object> condition) {
         String json = new com.google.gson.Gson().toJson(Map.of("subtasks", List.of(Map.of(
                 "description", description, "condition", condition, "node_type", "MAIN"))));
