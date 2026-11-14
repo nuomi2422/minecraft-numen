@@ -279,6 +279,11 @@ final class RddPlanGuard {
      * @param held      当前真实背包（判定哪些已经持有）
      */
     static Filtered filterSubtasks(List<SubtaskSpec> specs, String objective, Map<String, Integer> held) {
+        return filterSubtasks(specs, objective, held, null); // IDs alone do not prove datapack/tool capability.
+    }
+
+    static Filtered filterSubtasks(List<SubtaskSpec> specs, String objective, Map<String, Integer> held,
+                                   RddMiningPrerequisite.Evidence evidence) {
         if (specs == null || specs.isEmpty()) {
             return new Filtered(List.of(), List.of(), List.of());
         }
@@ -291,7 +296,16 @@ final class RddPlanGuard {
         List<SubtaskSpec> heldOnes = new ArrayList<>();
         List<String> dropped = new ArrayList<>();
         List<String> reused = new ArrayList<>();
+        java.util.Set<String> prepared = new java.util.LinkedHashSet<>();
         for (SubtaskSpec spec : specs) {
+            String capabilityConflict = alreadyHeld(spec, held) ? ""
+                    : RddMiningPrerequisite.contradiction(spec, held, evidence, prepared);
+            if (!capabilityConflict.isBlank()) {
+                dropped.add(capabilityConflict + "：" + spec.description());
+                // A required acquisition cannot simply vanish while its dependent tail installs.
+                // Return to the existing bounded planning recovery; never change its predicate.
+                return new Filtered(List.of(), List.copyOf(dropped), List.copyOf(reused));
+            }
             // 2026-11-02（169 T2 最小版）：判据不覆盖描述 → 丢弃该步（宁可不执行，也不要假过）。
             // 实机：r25-1「铁剑 + 32 块方块」condition 只验铁剑，方块凑没凑齐都不影响判定。
             List<String> toolMissing = toolGaps(spec, effectiveHeld);
@@ -320,6 +334,7 @@ final class RddPlanGuard {
                 continue;
             }
             allowed.add(spec);
+            prepared.addAll(RddMiningPrerequisite.preparedTools(spec));
             producedToolIds(spec.description()).forEach(id -> effectiveHeld.merge(id, 1, Math::max));
         }
 

@@ -274,6 +274,7 @@ final class RddDecomposer {
                 cfg.getBaseUrl(), cfg.getProxy(), plannerReasoningEffort());
         // 经验知识贴进最终请求正文（无知识时与原来逐字相同）
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
+        var miningContext = RddMiningCapabilityCheck.capture(companionId);
         String userContent = fallbackRequestContent(companionId, objective, why, snapshot, RddPlanningKnowledge.HOST);
         RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
         NumenLlmClient.forEndpoint(ep)
@@ -294,8 +295,8 @@ final class RddDecomposer {
                     }
                     LlmToolCall call = turn.toolCalls().get(0);
                     // 守门：硬规则由代码执行，模型不听也要拦住（未要求的可选升级、已持有的资产）
-                    RddPlanGuard.Filtered guarded = RddPlanGuard.filterSubtasks(
-                            parse(call.arguments()), objective, snapshot.availableCounts());
+                    RddMiningCapabilityCheck.filter(miningContext, parse(call.arguments()), objective,
+                            snapshot.availableCounts(), guarded -> {
                     RddPlanningKnowledge.publishPolicy(companionId, "fallback",
                             RddPlanningPolicy.appliedRules(objective, "fallback"),
                             guarded.dropped(), guarded.reused());
@@ -348,6 +349,7 @@ final class RddDecomposer {
                         LOG.warn("[rdd] 分解规格非法，回落占位链: {}", ex.toString());
                         done.accept(fallbackGoal(companionId, objective));
                     }
+                    });
                 }));
     }
 
@@ -361,7 +363,8 @@ final class RddDecomposer {
                 : "";
         return RddStagePlanner.withRationale(RddPlanningKnowledge.withKnowledge(knowledge, companionId,
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
-                        + homeHint + decompositionPrompt(objective, snapshot, List.of()),
+                        + homeHint + decompositionPrompt(objective, snapshot, List.of())
+                        + RddMiningPrerequisite.prompt(objective),
                 objective, "fallback", List.of()), com.dwinovo.numen.api.RationaleContext.renderEntry(why));
     }
 
@@ -400,6 +403,7 @@ final class RddDecomposer {
             knownFailures.add("上一次生成的子步骤被判定不可执行");
         }
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
+        var miningContext = RddMiningCapabilityCheck.capture(companionId);
         dispatchStageB(companionId, themeObjective, owner, ownerRevision, attempt, completedStages, extraHint,
                 snapshot, knownFailures, RddPlanningKnowledge.HOST,
                 () -> {
@@ -408,13 +412,13 @@ final class RddDecomposer {
                 }, userContent -> RddDecomposer.llmAsk(companionId, "stage_b", userContent,
                 SYSTEM_PROMPT, DECOMPOSE_TOOL,
                 args -> {
-                    RddPlanGuard.Filtered guarded = RddPlanGuard.filterSubtasks(
-                            RddPlanGuard.normalizeConditions(parse(args)), themeObjective,
-                            snapshot.availableCounts());
-                    RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
-                            RddPlanningPolicy.appliedRules(themeObjective, "stage_b"),
-                            guarded.dropped(), guarded.reused());
-                    done.accept(guarded.allowed());
+                    RddMiningCapabilityCheck.filter(miningContext, RddPlanGuard.normalizeConditions(parse(args)),
+                            themeObjective, snapshot.availableCounts(), guarded -> {
+                        RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
+                                RddPlanningPolicy.appliedRules(themeObjective, "stage_b"),
+                                guarded.dropped(), guarded.reused());
+                        done.accept(guarded.allowed());
+                    });
                 },
                 () -> done.accept(List.of())));
     }

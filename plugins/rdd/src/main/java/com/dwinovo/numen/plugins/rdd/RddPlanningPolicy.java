@@ -155,6 +155,7 @@ final class RddPlanningPolicy {
 
         // 2) 复用现有资产
         sb.append("- 复用现有资产：背包里已有的工具/装备/设施不得重复获取；只有会被消耗的材料才按实际消耗补量。\n");
+        sb.append(RddMiningPrerequisite.prompt(objective));
 
         // 3) 可验收
         sb.append("- 每步可验收：condition 必须给真实 asset_key + minimum，或可核对的世界事实；")
@@ -188,6 +189,7 @@ final class RddPlanningPolicy {
             rules.add("optional-deferred");
         }
         rules.add("reuse-held-assets");
+        if (RddMiningPrerequisite.relevant(objective)) rules.add("scoped-harvest-prerequisite");
         rules.add("verifiable-conditions");
         for (String risk : riskKinds(objective, stage)) {
             rules.add("risk:" + risk);
