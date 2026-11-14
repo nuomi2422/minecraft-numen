@@ -203,6 +203,16 @@ final class RddReplanTransition {
         return companionId != null && SURVIVAL_INTENTS.containsKey(companionId);
     }
 
+    /** Pending callback only; APPLIED is no longer waiting, not proof that food was obtained or eaten. */
+    static boolean deferPlannerDaily(UUID companionId, com.dwinovo.numen.rdd.side.MainlineResumeToken owner) {
+        if (companionId == null || owner == null || !companionId.equals(owner.companionId())) return false;
+        SurvivalIntent current = SURVIVAL_INTENTS.get(companionId);
+        return current != null && current.state() == SurvivalState.PENDING
+                && current.chainInstanceId().equals(owner.chainInstanceId())
+                && current.primaryId().equals(owner.primaryId())
+                && current.requestedPlanRevision() == owner.planRevision();
+    }
+
     /** 撤销 runtime / 换目标 / external_world_reset 共用，不改链历史或预算。 */
     static void invalidate(UUID companionId) {
         if (companionId == null) return;

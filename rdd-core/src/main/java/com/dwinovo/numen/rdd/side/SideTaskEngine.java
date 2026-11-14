@@ -149,6 +149,12 @@ public final class SideTaskEngine {
 
     public void tick(UUID companionId, SideTaskWorldPort world,
                      MainlineResumeToken mainlineToken, boolean deathSideTaskOccupying) {
+        tick(companionId, world, mainlineToken, deathSideTaskOccupying, false);
+    }
+
+    /** Defer only executable planner DAILY admission while the host awaits a scoped survival plan. */
+    public void tick(UUID companionId, SideTaskWorldPort world,
+                     MainlineResumeToken mainlineToken, boolean deathSideTaskOccupying, boolean deferPlannerDaily) {
         Objects.requireNonNull(companionId, "companionId");
         Objects.requireNonNull(world, "world");
 
@@ -197,7 +203,7 @@ public final class SideTaskEngine {
         // One tick only: the DAILY probe and original trigger loop share even a false result.
         Map<SideTaskTrigger, Boolean> foodTriggerResults = new IdentityHashMap<>();
         if (!deathSideTaskOccupying && !world.bodyBusy(companionId)) {
-            if (tickRecurring(companionId, world, mainlineToken, day, now, foodTriggerResults)) {
+            if (tickRecurring(companionId, world, mainlineToken, day, now, foodTriggerResults, deferPlannerDaily)) {
                 return;
             }
         }
@@ -392,7 +398,7 @@ public final class SideTaskEngine {
 
     private boolean tickRecurring(UUID companionId, SideTaskWorldPort world,
                                   MainlineResumeToken mainlineToken, long day, long now,
-                                  Map<SideTaskTrigger, Boolean> foodTriggerResults) {
+                                  Map<SideTaskTrigger, Boolean> foodTriggerResults, boolean deferPlannerDaily) {
         for (var e : recurringSpecs.entrySet()) {
             RecurringSideTaskSpec spec = e.getValue();
             String typeId = recurringTypes.get(e.getKey());
@@ -435,6 +441,9 @@ public final class SideTaskEngine {
             SideTaskType type = typeId == null ? null : types.get(typeId);
             if (type == null) continue;
             if (plannerDaily) {
+                // V24: awaiting survival planning is not bodyBusy. Keep this occurrence unspent;
+                // prompt-only reminders above and the original sleep/death/food trigger loop remain live.
+                if (deferPlannerDaily) continue;
                 // 2026-11-13: five admission assertions failed because DAILY returned before food.
                 // Ask the registered production trigger only here, after scope/handled/prompt checks;
                 // keep its host cooldown and let the original trigger order decide the actual owner.
