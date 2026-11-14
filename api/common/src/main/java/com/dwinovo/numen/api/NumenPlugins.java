@@ -574,31 +574,44 @@ public final class NumenPlugins {
      *         否则为可直接追加的装配结果（长度 ≤ room）。
      */
     private static String assembledStructuredPiece(String piece, int room) {
-        int open = piece.indexOf("<retrieved_knowledge");
-        if (open < 0) return null;
-        int openEnd = piece.indexOf('>', open);
+        if (piece == null) return null;
+        // 只认「恰好以 wrapper 开头」：聚合层可能拼了精确的 separator 前缀，别容任意 preface。
+        String body = piece.startsWith(PLANNING_KNOWLEDGE_SEPARATOR)
+                ? piece.substring(PLANNING_KNOWLEDGE_SEPARATOR.length()) : piece;
+        String lead = piece.substring(0, piece.length() - body.length());   // 聚合层自带的分隔符要保留
+        final String name = "<retrieved_knowledge";
+        if (!body.startsWith(name)) return null;
+        if (body.length() > name.length()) {
+            char after = body.charAt(name.length());
+            if (after != '>' && !Character.isWhitespace(after)) return null;   // 名字边界
+        }
+        int openEnd = body.indexOf('>');
         if (openEnd < 0) return null;
-        int close = piece.lastIndexOf("</retrieved_knowledge>");
+        final String tail = "</retrieved_knowledge>";
+        int close = body.lastIndexOf(tail);
         if (close < openEnd) return null;                       // 不完整 wrapper → 旧路径
-        String head = piece.substring(0, openEnd + 1);
-        String body = piece.substring(openEnd + 1, close);
+        if (!body.substring(close + tail.length()).isBlank()) return null;  // close 后杂文本 → 旧路径
+        String head = lead + body.substring(0, openEnd + 1);
+        String inner = body.substring(openEnd + 1, close);
         List<String> segments = new ArrayList<>();
         int cursor = 0;
         while (true) {
-            int start = body.indexOf("<entry ", cursor);
+            int start = inner.indexOf("<entry ", cursor);
             if (start < 0) {
-                if (!body.substring(cursor).isBlank()) return null;   // 结构外杂文本 → 旧路径
+                if (!inner.substring(cursor).isBlank()) return null;       // entry 外杂文本 → 旧路径
                 break;
             }
-            if (!body.substring(cursor, start).isBlank()) return null;
-            int next = body.indexOf("<entry ", start + 1);
-            String segment = body.substring(start, next < 0 ? body.length() : next);
-            if (!segment.contains("</entry>")) return null;           // 半条 entry → 旧路径
-            segments.add(segment);
-            cursor = next < 0 ? body.length() : next;
+            if (!inner.substring(cursor, start).isBlank()) return null;
+            int closeEntry = inner.indexOf("</entry>", start);
+            if (closeEntry < 0) return null;                               // 半条 entry → 旧路径
+            int after = closeEntry + "</entry>".length();
+            int next = inner.indexOf("<entry ", after);
+            int segmentEnd = next < 0 ? inner.length() : next;
+            if (!inner.substring(after, segmentEnd).isBlank()) return null; // 闭合后杂文本 → 旧路径
+            segments.add(inner.substring(start, segmentEnd));
+            cursor = segmentEnd;
         }
         if (segments.isEmpty()) return null;
-        String tail = "</retrieved_knowledge>";
         StringBuilder out = new StringBuilder(head);
         for (String segment : segments) {
             if (out.length() + segment.length() + tail.length() > room) break;

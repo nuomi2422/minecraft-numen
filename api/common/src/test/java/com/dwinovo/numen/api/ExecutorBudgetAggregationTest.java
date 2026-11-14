@@ -94,8 +94,10 @@ class ExecutorBudgetAggregationTest {
     }
 
     @Test void structuredWrapperAfterPlainContributorKeepsSeparatorAndWholeEntries() {
-        List<String> refs = List.of("exp:failure|p1", "exp:failure|p2", "exp:failure|p3");
-        String block = wrapperBlock(refs, 900);
+        List<String> refs = List.of("exp:failure|p1", "exp:failure|p2", "exp:failure|p3",
+                "exp:failure|p4", "exp:failure|p5");
+        String block = wrapperBlock(refs, 850);
+        assertTrue(block.length() > NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS, "夹具必须真的超预算");
         List<NumenPlugins.DeliveredRef> delivered = new ArrayList<>();
         for (String ref : refs) delivered.add(new NumenPlugins.DeliveredRef(ref, "v1", false));
 
@@ -106,7 +108,29 @@ class ExecutorBudgetAggregationTest {
         assertTrue(out.text().length() <= NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS);
         assertEquals(count(out.text(), "<entry "), count(out.text(), "</entry>"), "不得切穿 entry");
         assertTrue(out.text().endsWith("</retrieved_knowledge>"), "装下后必须补闭合尾巴");
-        assertTrue(refs.stream().anyMatch(r -> !refOf(out, r).truncated()), "装进去的条目记完整");
+        for (int i = 0; i < 4; i++) {
+            assertTrue(out.text().contains(entry(refs.get(i), 850)), "前 4 条整条: " + refs.get(i));
+            assertFalse(refOf(out, refs.get(i)).truncated(), "装进去的条目记完整: " + refs.get(i));
+        }
+        assertTrue(refOf(out, refs.get(4)).truncated(), "第 5 条装不下必须记截断");
+    }
+
+    @Test void wrapperWithTrailingTextFallsBackToRawCut() {
+        List<String> refs = List.of("exp:failure|t1", "exp:failure|t2", "exp:failure|t3");
+        String block = wrapperBlock(refs, 1500) + "\n尾巴文本";
+        assertTrue(block.length() > NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS, "夹具必须真的超预算");
+        List<NumenPlugins.DeliveredRef> delivered = new ArrayList<>();
+        for (String ref : refs) delivered.add(new NumenPlugins.DeliveredRef(ref, "v1", false));
+
+        var out = agg(List.of((id, obj) -> new NumenPlugins.KnowledgeFragment(block, delivered)));
+
+        // close 之后还有正文 → 不认结构，走旧 raw 前缀硬切。
+        assertTrue(out.text().length() <= NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS);
+        assertTrue(block.startsWith(out.text()), "raw 行为：保前缀");
+        assertFalse(out.text().contains("</retrieved_knowledge>"), "尾部杂文本时不得补闭合");
+        assertFalse(refOf(out, refs.get(0)).truncated(), "raw 前缀里完整的条目仍记完整");
+        assertFalse(refOf(out, refs.get(1)).truncated());
+        assertTrue(refOf(out, refs.get(2)).truncated(), "被 raw 切断的条目记截断");
     }
 
     @Test void structuredWrapperWithNoRoomEmitsNoRemnantAndMarksAllTruncated() {
