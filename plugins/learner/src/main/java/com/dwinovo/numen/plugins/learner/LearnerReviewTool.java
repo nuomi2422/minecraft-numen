@@ -351,9 +351,12 @@ final class LearnerReviewTool implements NumenTool {
 
         // P1 修复：只 commit「确实拿到判定」的条目，其余 restore 回去。
         // 绝不能因为「至少解析出一条」就删掉整批。
-        var reviewCurrent = captureReviewContext(ServerLifecycleHooks.getCurrentServer());
-        ReviewCompletion completion = new ReviewCompletion(batch,
-                memo -> ReviewTargetGate.check(LearnerPlugin.configDir(), id, memo, reviewStart, reviewCurrent));
+        ReviewCompletion completion = new ReviewCompletion(batch, memo -> {
+            var reviewCurrent = observationCurrent(capturedServer);
+            return ReviewTargetGate.check(LearnerPlugin.configDir(), id, memo, reviewStart, reviewCurrent);
+        });
+        var consumed = completion.consume(LearnerPlugin.configDir(), queue, batch, outcome.verdicts(),
+                LearnerMonitor::publish);
         for (Memo memo : batch) {
             var target = completion.target(memo.id());
             if (!target.ok()) {
@@ -362,8 +365,6 @@ final class LearnerReviewTool implements NumenTool {
                         "terminal", target.terminal(), "snapshot", memo.snapshot() == null ? "" : memo.snapshot()));
             }
         }
-        var consumed = completion.consume(LearnerPlugin.configDir(), queue, batch, outcome.verdicts(),
-                LearnerMonitor::publish);
         var judged = consumed.judged();
         var retrievalRejected = consumed.retrievalRejected();
         var contractRows = consumed.contractRows();
