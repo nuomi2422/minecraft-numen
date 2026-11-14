@@ -1,5 +1,6 @@
 package com.dwinovo.numen.rdd.side;
 
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -136,6 +137,14 @@ public interface SideTaskWorldPort {
     }
     /** Per-step current condition; null means unverified, never missing/false. */
     default Boolean deathPreparationCondition(UUID companionId, java.util.Map<String, Object> condition) {
+        return null;
+    }
+
+    /**
+     * Daily typed world condition only; null = not verified, never an absence/completion.
+     * Default is read-only UNKNOWN; a host may implement the actual world predicate.
+     */
+    default Boolean dailyCondition(UUID companionId, Map<String, Object> condition) {
         return null;
     }
 

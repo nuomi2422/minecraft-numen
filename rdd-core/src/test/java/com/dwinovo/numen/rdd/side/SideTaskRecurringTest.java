@@ -229,4 +229,67 @@ class SideTaskRecurringTest {
         assertEquals("minecraft:wheat", e.current(C).orElseThrow().data().get("asset_key"),
                 "CONTINUE 后 data 被 verdict.data 覆盖为空 = 下一拍 missing asset_key");
     }
+
+    @Test void typedWorldTrueCompletesWithZeroStock() {
+        DailyWorldPort world = new DailyWorldPort(0, Boolean.TRUE);
+        SideTaskVerdict verdict = new DailyMaintenanceSideTaskType().evaluate(typedDaily(), world);
+        assertEquals(SideTaskVerdict.Kind.COMPLETE, verdict.kind());
+        assertEquals(C, world.seenCompanion);
+        assertNotNull(world.seenCondition);
+        assertEquals("block_nearby", world.seenCondition.get("type"));
+        assertEquals("minecraft:wheat", world.seenCondition.get("block"));
+        assertTrue(world.seenCondition.containsKey("radius"));
+    }
+
+    @Test void typedWorldFalseKeepsEvenWithStock() {
+        DailyWorldPort world = new DailyWorldPort(1, Boolean.FALSE);
+        SideTaskVerdict verdict = new DailyMaintenanceSideTaskType().evaluate(typedDaily(), world);
+        assertEquals(SideTaskVerdict.Kind.CONTINUE, verdict.kind());
+        assertEquals(C, world.seenCompanion);
+    }
+
+    @Test void typedWorldUnknownKeepsAndDoesNotFallbackToStock() {
+        DailyWorldPort world = new DailyWorldPort(1, null);
+        SideTaskVerdict verdict = new DailyMaintenanceSideTaskType().evaluate(typedDaily(), world);
+        assertEquals(SideTaskVerdict.Kind.CONTINUE, verdict.kind());
+        assertEquals(C, world.seenCompanion);
+    }
+
+    private static SideTask typedDaily() {
+        return new SideTask(C, "typed-daily", DailyMaintenanceSideTaskType.TYPE_ID,
+                0, 0, 100, 100 + 20L * 60L * 10L,
+                SideTaskState.ACTIVE, "todo",
+                Map.of("description", "typed", "asset_key", "minecraft:wheat", "minimum", "1",
+                        "condition", "{\"type\":\"block_nearby\",\"block\":\"minecraft:wheat\",\"radius\":8}"),
+                null);
+    }
+
+    /** Test-only boundary fake: delegates no production logic, records the exact daily condition. */
+    private static final class DailyWorldPort implements SideTaskWorldPort {
+        final int stock;
+        final Boolean condition;
+        UUID seenCompanion;
+        Map<String, Object> seenCondition;
+
+        DailyWorldPort(int stock, Boolean condition) {
+            this.stock = stock;
+            this.condition = condition;
+        }
+
+        @Override public long gameTime() { return 100; }
+        @Override public long dayTime() { return 100; }
+        @Override public long gameDay() { return 0; }
+        @Override public boolean hasDayNightCycle() { return true; }
+        @Override public String worldId() { return "minecraft:overworld"; }
+        @Override public boolean isSleeping(UUID companionId) { return false; }
+        @Override public boolean isDay() { return true; }
+        @Override public Wake pollWake(UUID companionId) { return Wake.NONE; }
+        @Override public int countItem(UUID companionId, String itemId) { return stock; }
+
+        @Override public Boolean dailyCondition(UUID companionId, Map<String, Object> condition) {
+            this.seenCompanion = companionId;
+            this.seenCondition = condition;
+            return this.condition;
+        }
+    }
 }
