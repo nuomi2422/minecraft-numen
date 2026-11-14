@@ -519,7 +519,7 @@ final class SideTaskHost {
         static void tick(SideTaskEngine engine, UUID id, SideTaskWorldPort port,
                          MainlineResumeToken token, boolean death, java.util.function.BooleanSupplier interrupt) {
             boolean wasActive = engine.isActive(id);
-            engine.tick(id, port, token, death);
+            engine.tick(id, port, token, death, RddReplanTransition.deferPlannerDaily(id, token));
             SideTask now = engine.current(id).orElse(null);
             if (!wasActive && now != null && SleepSideTaskType.TYPE_ID.equals(now.typeId())
                     && !death && !port.isSleeping(id) && !port.inCombat(id) && port.bodyBusy(id)
