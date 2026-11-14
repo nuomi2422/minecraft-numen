@@ -2668,7 +2668,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
                 || BODY.containsKey(companionId));
     }
 
-    /** External owner reset: current-world state only; history/experience/skills are untouched. */
+    /** External owner reset: current-world state including physical XP; learned experience/history/skills are untouched. */
     private static Map<String, Object> resetCurrentWorld(NumenPlayer body) throws Exception {
         UUID id = body.getUUID();
         if (!body.getServer().isSameThread()) throw new IllegalStateException("server thread required");
@@ -2699,13 +2699,22 @@ private static String safeDeathAttacker(NumenPlayer body) {
         for (int i = 0; i < body.getInventory().getContainerSize(); i++)
             if (!body.getInventory().getItem(i).isEmpty()) remaining++;
         if (remaining != 0) throw new IllegalStateException("inventory reset incomplete");
+        // Owner reset also clears this player's physical XP; learned experience/history remain untouched.
+        body.setExperienceLevels(0);
+        body.setExperiencePoints(0);
+        body.totalExperience = 0;
+        boolean physicalExperienceCleared = body.experienceLevel == 0 && body.totalExperience == 0 && body.experienceProgress == 0.0f;
+        if (!physicalExperienceCleared) throw new IllegalStateException("physical experience reset incomplete");
+        Map<String, Object> physicalExperience = Map.of("level", body.experienceLevel,
+                "total", body.totalExperience, "progress", body.experienceProgress, "cleared", physicalExperienceCleared);
         RddFactStore.retireStageInheritance(factsDir, id, completedFacts);
         RddMonitor.publish("external_world_reset", Map.of("companionId", id.toString(),
-                "intervened", true, "inventorySlotsRemaining", remaining,
+                "intervened", true, "inventorySlotsRemaining", remaining, "physicalExperience", physicalExperience,
                 "preserved", "experience/why/skills/AC/model/history"));
         return Map.of("intervened", true, "companionUuid", id.toString(),
                 "chainCleared", true, "assetsCleared", true, "homeCleared", true,
-                "inventorySlotsRemaining", remaining, "preserved", "experience/why/skills/AC/model/history");
+                "inventorySlotsRemaining", remaining, "physicalExperience", physicalExperience,
+                "preserved", "experience/why/skills/AC/model/history");
     }
 
     public static void remove(UUID companionId) {
