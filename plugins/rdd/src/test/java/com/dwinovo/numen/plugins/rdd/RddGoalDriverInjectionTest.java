@@ -482,12 +482,18 @@ class RddGoalDriverInjectionTest {
     }
 
 
-    // 2026-11-15 RED: a typed block_nearby DAILY must not be flattened to asset_key.
+    // 2026-11-15 RED: the complete typed condition must persist as one JSON string in data.condition.
     @Test void typedBlockDailyConditionSurvivesRegistrationAndEngineRoundTrip() {
         TaskChain chain = emptyChain();
+        Map<String, Object> condition = Map.of(
+                "type", "block_nearby",
+                "block", "#minecraft:crops",
+                "radius", 16.0,
+                "dimension", "minecraft:overworld",
+                "anchor", "62139,64,-62120",
+                "properties", Map.of("age", "7"));
         Subtask block = new Subtask("d-block", "block crops daily", DetectionMode.HARD_CODED,
-                Map.of("type", "block_nearby", "block", "#minecraft:crops", "radius", 16.0),
-                0, 0, false, null, NodeType.DAILY, RecurrenceSpec.daily(true));
+                condition, 0, 0, false, null, NodeType.DAILY, RecurrenceSpec.daily(true));
         SideTaskEngine engine = engine();
 
         SideTaskHost.DailyRegistration.register(chain, List.of(block), engine);
@@ -495,20 +501,22 @@ class RddGoalDriverInjectionTest {
         String specId = "daily:" + chain.goal().id() + ":" + Integer.toHexString(block.description().hashCode());
         RecurringSideTaskSpec spec = engine.recurringSpec(specId);
         assertNotNull(spec, "typed DAILY must register a recurring spec");
-        assertEquals("block_nearby", spec.data().get("type"),
-                "producer must keep condition.type instead of flattening it away");
-        assertEquals("#minecraft:crops", spec.data().get("block"),
-                "producer must keep condition.block instead of flattening it to asset_key");
-        assertNotNull(spec.data().get("radius"), "producer must keep condition.radius");
-        assertEquals(16.0, Double.parseDouble(spec.data().get("radius")), 1e-9);
+        String json = spec.data().get("condition");
+        assertNotNull(json, "producer must persist the complete condition as one JSON string");
+        assertEquals(condition, new com.google.gson.Gson().fromJson(json, Map.class),
+                "condition JSON must keep type/block/radius/dimension/anchor/properties");
+        assertNull(spec.data().get("type"), "no parallel scalar type copy is expected");
+        assertNull(spec.data().get("block"), "no parallel scalar block copy is expected");
+        assertNull(spec.data().get("radius"), "no parallel scalar radius copy is expected");
 
         SideTaskEngine restored = engine();
         restored.restore(engine.toJson());
         RecurringSideTaskSpec after = restored.recurringSpec(specId);
         assertNotNull(after, "typed spec must survive engine snapshot round-trip");
-        assertEquals("block_nearby", after.data().get("type"));
-        assertEquals("#minecraft:crops", after.data().get("block"));
-        assertEquals(16.0, Double.parseDouble(after.data().get("radius")), 1e-9);
+        String afterJson = after.data().get("condition");
+        assertNotNull(afterJson, "restored spec must keep data.condition");
+        assertEquals(condition, new com.google.gson.Gson().fromJson(afterJson, Map.class),
+                "restored condition JSON must be equivalent to the original map");
     }
 
     // 2026-11-15: legacy asset_key/item DAILY must stay usable after the same producer.
