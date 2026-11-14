@@ -549,6 +549,81 @@ class LearnerTaskResultIntakeTest {
         assertTrue(text.contains("memos, prior, rejections, usageText, hitsByMemo, slicesByMemo"));
     }
 
+
+    @Test void clippedExactCallResultMustRemainUnknownInsteadOfAnUnqualifiedTrace() throws Exception {
+        configure("review-trace-clip");
+        result("sk-clip", "clip-call", TaskState.SUCCESS);
+        assertEquals(1, enqueueCount());
+        Memo memo = queue.all().get(0);
+        Files.createDirectories(dir.resolve("monitor"));
+        Path tools = dir.resolve("monitor/tools.jsonl");
+        Files.writeString(tools, linkedTool("event-180", "world", "session", 7,
+                OWNER.toString(), "clip-call", "x".repeat(180)) + "\n");
+        String exact = TrajectorySlices.forMemo(dir, OWNER, memo);
+        assertTrue(exact.contains("trace_status=EXACT_CALL"), "exactly 180 characters fit without clipping");
+        Files.writeString(tools, linkedTool("event-181", "world", "session", 7,
+                OWNER.toString(), "clip-call", "x".repeat(181)) + "\n");
+        String clipped = TrajectorySlices.forMemo(dir, OWNER, memo);
+        assertAll(
+                () -> assertTrue(clipped.contains("trace_status=UNKNOWN_LIMIT"), "one clipped result is incomplete evidence"),
+                () -> assertFalse(clipped.contains("trace_status=EXACT_CALL")),
+                () -> assertTrue(clipped.contains("event-181"), "the exact event identity remains available"),
+                () -> assertTrue(clipped.contains("…")),
+                () -> assertTrue(clipped.length() <= 2400));
+    }
+
+    @Test void traceRowCapKeepsOnlyOriginalTailRowsAndMarksLimit() throws Exception {
+        configure("review-trace-rows");
+        result("sk-rows", "row-call", TaskState.SUCCESS);
+        assertEquals(1, enqueueCount());
+        Memo memo = queue.all().get(0);
+        Files.createDirectories(dir.resolve("monitor"));
+        StringBuilder lines = new StringBuilder();
+        for (int i = 0; i < 6; i++) lines.append(linkedTool("event-row-" + i, "world", "session", 7,
+                OWNER.toString(), "row-call", "original-row-" + i)).append('\n');
+        Files.writeString(dir.resolve("monitor/tools.jsonl"), lines);
+        assertTrue(TrajectorySlices.forMemo(dir, OWNER, memo).contains("trace_status=EXACT_CALL"));
+        lines.append(linkedTool("event-row-6", "world", "session", 7, OWNER.toString(), "row-call", "original-row-6")).append('\n');
+        Files.writeString(dir.resolve("monitor/tools.jsonl"), lines);
+        String limited = TrajectorySlices.forMemo(dir, OWNER, memo);
+        assertAll(
+                () -> assertTrue(limited.contains("trace_status=UNKNOWN_LIMIT")),
+                () -> assertFalse(limited.contains("event-row-0")),
+                () -> assertTrue(limited.contains("event-row-1") && limited.contains("event-row-6")),
+                () -> assertTrue(limited.length() <= 2400));
+    }
+
+    @Test void boundedTraceTailCannotPretendTheEntireOriginalJournalWasRead() throws Exception {
+        configure("review-trace-tail");
+        result("sk-tail", "tail-call", TaskState.SUCCESS);
+        assertEquals(1, enqueueCount());
+        Files.createDirectories(dir.resolve("monitor"));
+        Files.writeString(dir.resolve("monitor/tools.jsonl"), "x".repeat(4 * 1024 * 1024 + 20) + "\n"
+                + linkedTool("event-tail-exact", "world", "session", 7, OWNER.toString(), "tail-call", "original-tail-result") + "\n");
+        String limited = TrajectorySlices.forMemo(dir, OWNER, queue.all().get(0));
+        assertAll(
+                () -> assertTrue(limited.contains("trace_status=UNKNOWN_LIMIT")),
+                () -> assertTrue(limited.contains("event-tail-exact")),
+                () -> assertFalse(limited.contains("xxxxxxxx")),
+                () -> assertTrue(limited.length() <= 2400));
+    }
+
+    @Test void originalBodyRefCannotEscapeTheExistingBodyStore() throws Exception {
+        configure("review-body-store");
+        result("sk-store", "store-call", TaskState.SUCCESS);
+        assertEquals(1, enqueueCount());
+        Memo original = queue.all().get(0);
+        String secret = "DO_NOT_INCLUDE_OUTSIDE_BODY_STORE";
+        Files.writeString(dir.resolve("outside-body.txt"), secret);
+        JsonObject snapshot = JsonParser.parseString(original.snapshot()).getAsJsonObject();
+        snapshot.getAsJsonObject("detail").addProperty("body_ref", "skill-body:../outside-body.txt");
+        snapshot.getAsJsonObject("detail").addProperty("body_digest", HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(secret.getBytes(StandardCharsets.UTF_8))));
+        Memo escaped = new Memo(original.id(), original.problem(), original.stage(), original.tried(), snapshot.toString(), original.createdAt());
+        String slice = TrajectorySlices.forMemo(dir, OWNER, escaped);
+        assertAll(() -> assertTrue(slice.contains("body_status=UNKNOWN")), () -> assertFalse(slice.contains(secret)));
+    }
+
     private static String reviewPrompt(Memo memo, String slice) {
         return PriorRound.buildUserPrompt(List.of(memo), PriorRound.Summary.none(), null, "",
                 Map.of(), Map.of(memo.id(), slice));
