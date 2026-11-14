@@ -418,12 +418,12 @@ final class RddDecomposer {
 
     /**
      * Stage-B final-content seam, called by the real request path above.
-     * Red freeze (2026-11-14): preserve the original prompt byte-for-byte; the existing
-     * scoped rationale is deliberately not consumed until the isolated red has real XML.
+     * The existing applicable rationale must reach Stage-B just as it reaches Stage-A,
+     * so decomposition retains the reasons behind the current chain.
      * No output schema, invented reason, API change or persistence is introduced here.
      */
     static String stageBRequestContent(String knowledgeContent, String applicableRationale) {
-        return knowledgeContent;
+        return RddStagePlanner.withRationale(knowledgeContent, applicableRationale);
     }
 
     /**
