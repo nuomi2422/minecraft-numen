@@ -110,7 +110,7 @@ class ExperienceStoreRetrievalBridgeTest {
 
         String longMechanism = "挖".repeat(ExperienceStoreRetrievalBridge.MAX_BODY_CHARS * 3);
         ExperienceEntryRead longBody = ExperienceStoreRetrievalBridge.convert(
-                base("e6", "矿洞安全", ExperienceMaturity.VERIFIED).mechanism(longMechanism).build());
+                base("e6", "矿洞安全", ExperienceMaturity.VERIFIED).failureConditions("").evidence("").mechanism(longMechanism).build());
         assertNotNull(longBody);
         assertEquals(ExperienceStoreRetrievalBridge.MAX_BODY_CHARS + 1, longBody.bodyContent().length(),
                 "截断后要带一个省略号，长度 = 上限 + 1");
