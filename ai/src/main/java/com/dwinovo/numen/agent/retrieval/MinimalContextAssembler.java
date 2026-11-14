@@ -70,7 +70,7 @@ public final class MinimalContextAssembler {
             if (maxChars > 0 && used + cost > maxChars) {
                 reasons.add("max_chars=" + maxChars);
                 gaps.add(new Gap("assembler", "MAX_CHARS", "再进下一条会顶爆字符预算"));
-                break;
+                continue; // Optional entry does not fit; later entries must still respect the same budget.
             }
             seenRefs.add(ref);
             kept.add(e);

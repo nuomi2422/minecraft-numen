@@ -74,6 +74,50 @@ class MinimalContextAssemblerTest {
         assertTrue(s.gaps().stream().anyMatch(g -> "QUERY_NULL".equals(g.code())));
     }
 
+
+    @Test
+    void skippingOversizedOptionalStillHonorsDedupCandidateCapAndMandatoryOverflow() {
+        List<RetrievedEntry> candidates = new java.util.ArrayList<>();
+        candidates.add(e("oversized", "long", "x".repeat(2400)));
+        candidates.add(e("kept-0", "first", "original body"));
+        candidates.add(e("kept-0", "duplicate", "duplicate must not consume a slot"));
+        for (int i = 1; i <= 8; i++) candidates.add(e("kept-" + i, "title-" + i, "body-" + i));
+        String objective = "Keep this original objective.";
+        ContextSnapshot s = MinimalContextAssembler.buildContext("optional-skip", q(objective, 2400, 8), candidates);
+        assertEquals(List.of("kept-0", "kept-1", "kept-2", "kept-3", "kept-4", "kept-5", "kept-6", "kept-7"),
+                s.directory().stream().map(x -> x.descriptor().entryRef()).toList());
+        assertEquals("original body", s.directory().getFirst().body().content());
+        assertEquals(List.of(objective), s.mandatoryConstraints());
+        assertEquals(ContextSnapshot.Status.PARTIAL, s.status());
+        assertTrue(s.truncationReasons().contains("max_chars=2400"));
+        assertTrue(s.truncationReasons().contains("max_candidates=8"));
+        assertTrue(s.gaps().stream().anyMatch(g -> g.code().equals("MAX_CHARS")));
+        assertTrue(s.gaps().stream().anyMatch(g -> g.code().equals("MAX_CANDIDATES")));
+        int used = objective.length() + s.directory().stream().mapToInt(x -> x.descriptor().title().length()
+                + x.descriptor().summary().length() + x.body().content().length()).sum();
+        assertTrue(used <= 2400, "skipping cannot enlarge the character budget");
+        String mandatory = "m".repeat(2401);
+        ContextSnapshot denied = MinimalContextAssembler.buildContext("mandatory-still-denied", q(mandatory, 2400, 8), candidates);
+        assertEquals(ContextSnapshot.Status.DENIED, denied.status());
+        assertEquals(List.of(mandatory), denied.mandatoryConstraints());
+        assertTrue(denied.directory().isEmpty(), "an optional skip cannot bypass a mandatory overflow");
+        assertTrue(denied.gaps().stream().anyMatch(g -> g.code().equals("CONSTRAINT_OVERFLOW")));
+    }
+
+    @Test
+    void skippedEntryDoesNotSpendRemainingCharactersAndExactBoundaryStillHolds() {
+        ContextSnapshot s = MinimalContextAssembler.buildContext("exact-remaining", q("goal", 40, 8), List.of(
+                e("first", "a", "1"), e("too-large-for-remainder", "b", "x".repeat(31)),
+                e("exact-fit", "c", "y".repeat(25)), e("over-boundary", "d", "z")));
+        assertEquals(List.of("first", "exact-fit"), s.directory().stream().map(x -> x.descriptor().entryRef()).toList());
+        int used = "goal".length() + s.directory().stream().mapToInt(x -> x.descriptor().title().length()
+                + x.descriptor().summary().length() + x.body().content().length()).sum();
+        assertEquals(40, used, "the exact original cost boundary remains inclusive, never enlarged");
+        assertEquals(ContextSnapshot.Status.PARTIAL, s.status());
+        assertTrue(s.truncationReasons().contains("max_chars=40"));
+        assertTrue(s.gaps().stream().anyMatch(g -> g.code().equals("MAX_CHARS")));
+    }
+
     @Test
     void emptyCandidatesIsOkNotPartial() {
         ContextSnapshot s = MinimalContextAssembler.buildContext("snap-6",
