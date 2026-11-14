@@ -26,6 +26,7 @@ final class ReviewCompletion {
     boolean effective(String memoId, Set<String> judged) {
         return permits(memoId) && judged.contains(memoId);
     }
+    /** restored counts this batch's exact durable retry memos, never total queue depth or new insertions. */
     record Settlement(int committed, int restored, int terminalSkipped) {}
     Settlement settle(MemoQueue queue, List<Memo> batch, Set<String> judged) {
         List<Memo> valid = new ArrayList<>(), retired = new ArrayList<>(), retry = new ArrayList<>();
@@ -36,7 +37,22 @@ final class ReviewCompletion {
         }
         int committed = valid.isEmpty() ? 0 : queue.commitDrain(valid);
         int terminalSkipped = retired.isEmpty() ? 0 : queue.commitDrain(retired);
-        int restored = retry.isEmpty() ? 0 : queue.restore(retry);
+        int restored = 0;
+        if (!retry.isEmpty()) {
+            queue.restore(retry); // Legacy return is total queue depth; keep every other consumer's contract.
+            List<Memo> durable = queue.all(); // Real post-write read; failures propagate, never invent success.
+            for (Memo original : retry) {
+                int occurrences = 0;
+                boolean exact = false;
+                for (Memo stored : durable) {
+                    if (original.id().equals(stored.id())) {
+                        occurrences++;
+                        exact = original.equals(stored);
+                    }
+                }
+                if (occurrences == 1 && exact) restored++;
+            }
+        }
         return new Settlement(committed, restored, terminalSkipped);
     }
 }
