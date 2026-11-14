@@ -153,7 +153,8 @@ final class RddPlanGuard {
         if (!preparationStep(description)) return description;
         List<String> actions = new ArrayList<>();
         for (String clause : description.split("[，。；,;、\n]")) {
-            boolean lack = clause.matches(".*(空手|空着|缺少|缺乏|不足|没有|未备齐).*");
+            // The cause must be the clause subject, not a trailing excuse after a travel action.
+            boolean lack = clause.stripLeading().matches("(空手|背包空着|空着|缺少|缺乏|不足|没有|未备齐).*");
             boolean consequence = clause.matches(".*(等于|意味着)(送死|死亡)\\s*");
             boolean directive = clause.matches(".*(现在|立即|立刻|直接|马上|击杀|攻击|挑战).*");
             if (!lack || !consequence || directive) actions.add(clause);
