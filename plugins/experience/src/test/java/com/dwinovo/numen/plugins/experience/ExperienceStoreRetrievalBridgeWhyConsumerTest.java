@@ -137,4 +137,35 @@ class ExperienceStoreRetrievalBridgeWhyConsumerTest {
         var page = new ExperienceRetrievalProvider("experience", ExperienceStoreRetrievalBridge.sourceFor(memory)).search(query);
         assertEquals(Applicability.UNKNOWN, page.entries().getFirst().applicability(), "rendering must not manufacture PASS");
     }
+
+    @Test
+    void longNewFieldsKeepMechanismAndActionInsideTheSameBoundedEntry() {
+        String why = "WHY_PREFIX " + "why tail ".repeat(100);
+        String conditions = "CONDITION_PREFIX " + "condition tail ".repeat(100);
+        ExperienceMemory memory = memory(owner().rationale(why).preconditions(conditions)
+                .mechanism("MECHANISM_PREFIX keep usable supplies.")
+                .recommendedResponse("ACTION_PREFIX replenish before travel.").build());
+        var executor = render(memory, TASK, 2400, RetrievalRole.EXECUTOR);
+        int start = executor.text().indexOf('>', executor.text().indexOf("<entry ")) + 1;
+        String body = executor.text().substring(start, executor.text().indexOf("</entry>", start));
+        assertAll(
+                () -> assertTrue(body.contains("WHY_PREFIX") && body.contains("CONDITION_PREFIX"), "both new fields get a visible excerpt"),
+                () -> assertTrue(body.contains("MECHANISM_PREFIX") && body.contains("ACTION_PREFIX"), "new prose cannot consume every action slot"),
+                () -> assertTrue(body.contains("…") && !body.contains(why) && !body.contains(conditions), "long field excerpts are visibly incomplete"),
+                () -> assertTrue(body.length() <= memory.all().getFirst().title().length() + ExperienceStoreRetrievalBridge.MAX_BODY_CHARS + 2));
+    }
+
+    @Test
+    void entriesWithoutNewFieldsRetainTheExactLegacyBodyBytes() {
+        ExperienceMemory memory = memory(owner().rationale("").preconditions("")
+                .mechanism("  legacy mechanism  ").recommendedResponse("  legacy action  ").build());
+        String original = "legacy mechanism\n推荐处理: legacy action";
+        assertEquals(original, ExperienceStoreRetrievalBridge.snapshot(memory).getFirst().bodyContent());
+        String longMechanism = "m".repeat(ExperienceStoreRetrievalBridge.MAX_BODY_CHARS + 20);
+        ExperienceMemory longMemory = ExperienceMemory.at(dir.resolve("legacy-long.jsonl"), new LexicalExperienceRetriever());
+        longMemory.learn(owner().rationale("").preconditions("")
+                .mechanism(longMechanism).recommendedResponse("old action").build());
+        assertEquals("m".repeat(ExperienceStoreRetrievalBridge.MAX_BODY_CHARS) + "…",
+                ExperienceStoreRetrievalBridge.snapshot(longMemory).getFirst().bodyContent());
+    }
 }
