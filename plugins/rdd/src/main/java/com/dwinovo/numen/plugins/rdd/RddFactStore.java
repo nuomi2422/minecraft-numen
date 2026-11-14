@@ -34,6 +34,17 @@ final class RddFactStore {
         }
     }
 
+    /** Commit the external reset boundary without deleting history or publishing a failed write. */
+    static void retireStageInheritance(Path directory, UUID companionId, CompletedFactStore store) throws IOException {
+        if (store == null) throw new IOException("completion facts store missing");
+        synchronized (store) {
+            CompletedFactStore candidate = store.copyForCompletionCommit();
+            candidate.retireStageInheritance();
+            save(directory, companionId, candidate);
+            store.publishCompletionCommit(candidate);
+        }
+    }
+
     static void save(Path directory, UUID companionId, CompletedFactStore store) throws IOException {
         if (store == null) throw new IOException("completion facts candidate missing");
         saveJson(directory, companionId, store.toJson());

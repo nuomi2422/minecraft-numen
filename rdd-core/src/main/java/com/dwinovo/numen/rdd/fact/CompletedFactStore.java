@@ -37,6 +37,8 @@ public final class CompletedFactStore {
 
     private final Map<String, StageFact> stages = new LinkedHashMap<>();
     private final Map<String, SubtaskFact> subtasks = new LinkedHashMap<>();
+    /** Historical records remain readable; only current-world completion inheritance is retired. */
+    private final Set<String> retiredStageKeys = new LinkedHashSet<>();
     /**
      * 辅助留档的**私有单调序号**（2026-11-04，CF-01）。
      *
@@ -53,6 +55,7 @@ public final class CompletedFactStore {
         CompletedFactStore copy = new CompletedFactStore();
         copy.stages.putAll(stages);
         copy.subtasks.putAll(subtasks);
+        copy.retiredStageKeys.addAll(retiredStageKeys);
         copy.nextSubtaskSeq = nextSubtaskSeq;
         return copy;
     }
@@ -62,6 +65,7 @@ public final class CompletedFactStore {
         if (candidate == this) return;
         stages.clear(); stages.putAll(candidate.stages);
         subtasks.clear(); subtasks.putAll(candidate.subtasks);
+        retiredStageKeys.clear(); retiredStageKeys.addAll(candidate.retiredStageKeys);
         nextSubtaskSeq = candidate.nextSubtaskSeq;
     }
 
@@ -72,10 +76,17 @@ public final class CompletedFactStore {
         }
         String lineage = GoalLineage.of(goal);
         String key = StageKeyNormalizer.normalize(primaryDescription);
-        stages.put(lineage + COMPOSITE_SEP + key, new StageFact(
+        String compositeKey = lineage + COMPOSITE_SEP + key;
+        stages.put(compositeKey, new StageFact(
                 lineage, goal.id(), GoalLineage.fingerprint(goal.description()),
                 key, primaryDescription, atMillis,
                 evidence == null ? "completed" : evidence));
+        retiredStageKeys.remove(compositeKey); // A real new completion earns inheritance again.
+    }
+
+    /** External reset boundary: preserve the historical records, not their current capability claim. */
+    public synchronized void retireStageInheritance() {
+        retiredStageKeys.addAll(stages.keySet());
     }
 
     /** 留档一条二级完成细节（有界，超出淘汰最旧）。 */
@@ -114,7 +125,9 @@ public final class CompletedFactStore {
         }
         String fp = GoalLineage.fingerprint(goal.description());
         Set<String> similar = new LinkedHashSet<>();
-        for (StageFact f : stages.values()) {
+        for (Map.Entry<String, StageFact> entry : stages.entrySet()) {
+            if (retiredStageKeys.contains(entry.getKey())) continue;
+            StageFact f = entry.getValue();
             // 2026-11-04（CF-01）：导入的历史记录可能缺 goalId —— 只留档、不参与继承，
             // 并且绝不能把整次查询打成 NPE（缺字段的旧数据不许连坐正常记录）。
             if (f.goalId() == null || !f.goalId().equals(goal.id())) {
@@ -129,7 +142,9 @@ public final class CompletedFactStore {
 
     private Set<String> keysOfLineage(String lineage) {
         Set<String> out = new LinkedHashSet<>();
-        for (StageFact f : stages.values()) {
+        for (Map.Entry<String, StageFact> entry : stages.entrySet()) {
+            if (retiredStageKeys.contains(entry.getKey())) continue;
+            StageFact f = entry.getValue();
             if (f.goalId() == null) {
                 continue;   // 缺 goalId 的导入记录不纳入可继承阶段（CF-01）
             }
@@ -171,6 +186,11 @@ public final class CompletedFactStore {
             ua.add(j);
         }
         o.add("subtasks", ua);
+        if (!retiredStageKeys.isEmpty()) {
+            JsonArray retired = new JsonArray();
+            retiredStageKeys.forEach(retired::add);
+            o.add("retiredStageKeys", retired);
+        }
         return GSON.toJson(o);
     }
 
@@ -202,6 +222,22 @@ public final class CompletedFactStore {
                         // CF-01：单条坏阶段记录跳过即可，不许把整仓当空（那等于把历史完成事实全抹了）。
                     }
                 }
+            }
+            if (o.has("retiredStageKeys")) {
+                JsonElement retired = o.get("retiredStageKeys");
+                boolean valid = retired != null && retired.isJsonArray();
+                if (valid) {
+                    for (JsonElement el : retired.getAsJsonArray()) {
+                        if (el == null || !el.isJsonPrimitive() || !el.getAsJsonPrimitive().isString()
+                                || !store.stages.containsKey(el.getAsString())) {
+                            valid = false;
+                            break;
+                        }
+                        store.retiredStageKeys.add(el.getAsString());
+                    }
+                }
+                // Present-but-invalid boundary must not revive historical capabilities.
+                if (!valid) store.retireStageInheritance();
             }
             JsonArray ua = o.getAsJsonArray("subtasks");
             if (ua != null) {

@@ -119,6 +119,118 @@ class VerifiedCompletionIntegrationTest {
         assertFalse(RddFactStore.load(dir, companion).satisfiedStageKeys(g).isEmpty());
     }
 
+    /** Exercises the real reset-tail transaction and ordinary TaskChain consumer, not the MC/API reset. */
+    @Test void externalResetRetiresHistoryAndOrdinaryBindMustStillReachIron(@TempDir Path dir) throws Exception {
+        UUID companion = UUID.randomUUID();
+        Goal stages = goal("goal-a43d753e", "开局", "安家", "准备与补给", "先下矿挖铁矿石", "终局");
+        Goal g = new Goal(stages.id(), "通关MC", stages.primaryGoals());
+        CompletedFactStore store = new CompletedFactStore();
+        store.recordStage(g, "先下矿挖铁矿石", 1L, "old verified iron");
+        store.recordSubtask(g, "先下矿挖铁矿石", "old iron acquisition", 1L);
+        RddFactStore.save(dir, companion, store);
+        Path file = dir.resolve(companion + ".json");
+        String before = Files.readString(file);
+
+        TaskChain continuation = new TaskChain(g, RddFactStore.load(dir, companion).satisfiedStageKeys(g));
+        finishThreeStartupStages(continuation);
+        assertEquals("primary-4", continuation.currentPrimary().id(),
+                "without reset, the existing ordinary consumer still reuses old iron completion");
+
+        RddFactStore.retireStageInheritance(dir, companion, store);
+        CompletedFactStore reloaded = RddFactStore.load(dir, companion);
+        String after = Files.readString(file);
+        assertAll(
+                () -> assertEquals(historyArray(before, "stages"), historyArray(after, "stages"),
+                        "reset metadata must not rewrite historical stage payloads"),
+                () -> assertEquals(historyArray(before, "subtasks"), historyArray(after, "subtasks")),
+                () -> assertEquals(1, reloaded.stageCount()),
+                () -> assertTrue(store.satisfiedStageKeys(g).isEmpty(), "published reset boundary"),
+                () -> assertTrue(reloaded.satisfiedStageKeys(g).isEmpty(), "boundary survives disk reload"));
+        TaskChain fresh = new TaskChain(g, reloaded.satisfiedStageKeys(g));
+        assertEquals(g.id(), fresh.goal().id());
+        assertEquals(g.description(), fresh.goal().description());
+        assertTrue(fresh.satisfiedStages().isEmpty());
+        finishThreeStartupStages(fresh);
+        assertEquals("primary-3", fresh.currentPrimary().id(),
+                "after p0/p1/p2, retired historical iron must not skip this start's p3");
+        TaskChain resumed = TaskChain.fromJson(fresh.toJson());
+        assertEquals("primary-3", resumed.currentPrimary().id(), "saved chain also resumes at iron");
+    }
+
+    @Test void newCompletionCanBeReusedAndNextResetRetiresItAgain(@TempDir Path dir) throws Exception {
+        UUID companion = UUID.randomUUID();
+        Goal g = goal("goal-reset-reearn", "iron stage", "armor stage");
+        CompletedFactStore store = new CompletedFactStore();
+        assertTrue(CompletionFactWriter.persist(dir, companion, store, g, "iron stage", 1L));
+        RddFactStore.retireStageInheritance(dir, companion, store);
+        CompletedFactStore afterReentry = RddFactStore.load(dir, companion);
+        assertTrue(afterReentry.satisfiedStageKeys(g).isEmpty());
+        assertTrue(CompletionFactWriter.persist(dir, companion, afterReentry, g, "iron stage", 2L),
+                "real completion writer must clear only the re-earned key's retirement");
+        CompletedFactStore earned = RddFactStore.load(dir, companion);
+        assertEquals("primary-1", new TaskChain(g, earned.satisfiedStageKeys(g)).currentPrimary().id());
+        assertEquals(1, earned.stageCount(), "same composite key keeps the existing overwrite semantics");
+        RddFactStore.retireStageInheritance(dir, companion, earned);
+        assertTrue(RddFactStore.load(dir, companion).satisfiedStageKeys(g).isEmpty());
+        assertEquals(1, earned.stageCount());
+    }
+
+    @Test void failedRetirementWriteDoesNotPublishOrChangeAuthoritativeFacts(@TempDir Path dir) throws Exception {
+        UUID companion = UUID.randomUUID();
+        Goal g = goal("goal-reset-write-failure", "iron stage", "armor stage");
+        CompletedFactStore store = new CompletedFactStore();
+        assertTrue(CompletionFactWriter.persist(dir, companion, store, g, "iron stage", 1L));
+        Path file = dir.resolve(companion + ".json");
+        byte[] before = Files.readAllBytes(file);
+        String beforeMemory = store.toJson();
+        Path blocked = Files.createDirectory(dir.resolve(companion + ".json.tmp"));
+        Files.writeString(blocked.resolve("keep"), "do not remove");
+        assertThrows(java.io.IOException.class, () -> RddFactStore.retireStageInheritance(dir, companion, store));
+        assertAll(
+                () -> assertEquals(beforeMemory, store.toJson(), "failed reset-tail transaction is not published"),
+                () -> assertArrayEquals(before, Files.readAllBytes(file)),
+                () -> assertFalse(RddFactStore.load(dir, companion).satisfiedStageKeys(g).isEmpty()),
+                () -> assertEquals("do not remove", Files.readString(blocked.resolve("keep"))));
+    }
+
+    @Test void retirementIsPerCompanionAndMissingStorageCannotPublish(@TempDir Path dir) throws Exception {
+        UUID companion = UUID.randomUUID();
+        UUID other = UUID.randomUUID();
+        Goal g = goal("goal-shared-text", "iron stage", "armor stage");
+        CompletedFactStore target = new CompletedFactStore();
+        CompletedFactStore unaffected = new CompletedFactStore();
+        assertTrue(CompletionFactWriter.persist(dir, companion, target, g, "iron stage", 1L));
+        assertTrue(CompletionFactWriter.persist(dir, other, unaffected, g, "iron stage", 1L));
+        byte[] otherBefore = Files.readAllBytes(dir.resolve(other + ".json"));
+        RddFactStore.retireStageInheritance(dir, companion, target);
+        assertTrue(RddFactStore.load(dir, companion).satisfiedStageKeys(g).isEmpty());
+        assertArrayEquals(otherBefore, Files.readAllBytes(dir.resolve(other + ".json")));
+        assertFalse(unaffected.satisfiedStageKeys(g).isEmpty());
+        assertFalse(RddFactStore.load(dir, other).satisfiedStageKeys(g).isEmpty());
+        String before = unaffected.toJson();
+        assertThrows(java.io.IOException.class, () -> RddFactStore.retireStageInheritance(null, other, unaffected));
+        assertEquals(before, unaffected.toJson(), "missing storage must not retire the live store");
+    }
+
+    private static void finishThreeStartupStages(TaskChain chain) {
+        for (int i = 0; i < 3; i++) {
+            String primary = "primary-" + i;
+            String subtask = "startup-" + i;
+            assertEquals(primary, chain.currentPrimary().id());
+            chain.expandCurrentPrimary(List.of(Subtask.hardCoded(subtask, "complete " + primary,
+                    java.util.Map.of("asset_key", "minecraft:dirt", "minimum", 1))));
+            chain.startCurrent();
+            chain.applyHardCodedResult(subtask, true);
+            assertEquals(com.dwinovo.numen.rdd.api.PrimaryGoalStatus.AWAITING_SUPERVISOR, chain.primaryStatus());
+            chain.applySupervisorDecision(new com.dwinovo.numen.rdd.api.SupervisorDecision(
+                    com.dwinovo.numen.rdd.api.SupervisorDecisionType.CONFIRM, primary, "fixture completion"));
+        }
+    }
+
+    private static String historyArray(String json, String key) {
+        return com.google.gson.JsonParser.parseString(json).getAsJsonObject().getAsJsonArray(key).toString();
+    }
+
     @Test void failedSaveDoesNotClaimSuccess(@TempDir Path dir) {
         UUID companion = UUID.randomUUID();
         Goal g = goal("goal-int-7", "iron stage");

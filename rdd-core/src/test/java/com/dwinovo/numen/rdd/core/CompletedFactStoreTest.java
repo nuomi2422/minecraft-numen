@@ -334,6 +334,104 @@ class CompletedFactStoreTest {
         assertEquals(6, kept.size(), "重复时间戳不是同一个事件，不能合并: " + kept);
     }
 
+    @Test
+    void retiredStagesKeepHistoryButCannotSatisfyExactOrSimilarGoalsAfterReload() {
+        Goal goal = stagedGoal("goal-a43d753e", "击败末影龙", "先下矿挖铁矿石", "铁装");
+        Goal similar = stagedGoal(goal.id(), "击败末影龙任务", "先下矿挖铁矿石", "铁装");
+        CompletedFactStore store = new CompletedFactStore();
+        store.recordStage(goal, "先下矿挖铁矿石", 1L, "old verified completion");
+        store.recordSubtask(goal, "先下矿挖铁矿石", "old iron acquisition", 1L);
+        String before = store.toJson();
+        assertFalse(com.google.gson.JsonParser.parseString(before).getAsJsonObject().has("retiredStageKeys"),
+                "legacy stores need no new field until a reset retires something");
+        assertFalse(store.satisfiedStageKeys(goal).isEmpty(), "ordinary continuation still inherits");
+        assertFalse(store.satisfiedStageKeys(similar).isEmpty(), "pin the real similar-lineage branch");
+
+        store.retireStageInheritance();
+        store.retireStageInheritance();
+        CompletedFactStore restored = CompletedFactStore.fromJson(store.toJson());
+        assertAll(
+                () -> assertEquals(1, restored.stageCount(), "reset does not delete historical stages"),
+                () -> assertEquals(store.stageFacts(), restored.stageFacts()),
+                () -> assertTrue(restored.satisfiedStageKeys(goal).isEmpty(), "exact lineage must not re-inherit"),
+                () -> assertTrue(restored.satisfiedStageKeys(similar).isEmpty(), "similar lineage must not re-inherit"),
+                () -> assertEquals(historyArray(before, "stages"), historyArray(restored.toJson(), "stages")),
+                () -> assertEquals(historyArray(before, "subtasks"), historyArray(restored.toJson(), "subtasks")));
+        TaskChain fresh = new TaskChain(goal, restored.satisfiedStageKeys(goal));
+        assertEquals(goal.id(), fresh.goal().id(), "a reset must not rename the external goal");
+        assertEquals("primary-0", fresh.currentPrimary().id());
+        assertTrue(fresh.satisfiedStages().isEmpty());
+        assertFalse(CompletedFactStore.fromJson(before).satisfiedStageKeys(goal).isEmpty(),
+                "old JSON without the optional retirement field keeps normal continuation semantics");
+    }
+
+    @Test
+    void realNewCompletionReactivatesOnlyItsCompositeKeyAndCanBeRetiredAgain() {
+        Goal goal = stagedGoal("goal-a43d753e", "通关MC", "先下矿挖铁矿石", "铁装");
+        Goal other = stagedGoal("goal-other", goal.description(), "先下矿挖铁矿石");
+        CompletedFactStore store = new CompletedFactStore();
+        store.recordStage(goal, "先下矿挖铁矿石", 1L, "old iron");
+        store.recordStage(goal, "铁装", 1L, "old armor");
+        store.recordStage(other, "先下矿挖铁矿石", 1L, "other goal");
+        store.retireStageInheritance();
+        store.recordStage(goal, "先下矿挖铁矿石", 2L, "new verified iron");
+        assertEquals(java.util.Set.of(StageKeyNormalizer.normalize("先下矿挖铁矿石")),
+                store.satisfiedStageKeys(goal));
+        assertTrue(store.satisfiedStageKeys(other).isEmpty(), "unretire only the same lineage and stage");
+        assertEquals(3, store.stageCount(), "retain existing same-key overwrite semantics, not an event archive");
+        assertEquals("new verified iron", store.stageFacts().get(0).evidence());
+        store.retireStageInheritance();
+        assertTrue(CompletedFactStore.fromJson(store.toJson()).satisfiedStageKeys(goal).isEmpty());
+    }
+
+    @Test
+    void completionCandidatesCopyAndPublishRetirementWithoutLeakingUnpublishedChanges() {
+        Goal goal = stagedGoal("goal-a43d753e", "通关MC", "先下矿挖铁矿石", "铁装");
+        CompletedFactStore store = new CompletedFactStore();
+        store.recordStage(goal, "先下矿挖铁矿石", 1L, "old iron");
+        CompletedFactStore resetCandidate = store.copyForCompletionCommit();
+        resetCandidate.retireStageInheritance();
+        assertFalse(store.satisfiedStageKeys(goal).isEmpty(), "unpublished reset must not affect live facts");
+        store.publishCompletionCommit(resetCandidate);
+        assertTrue(store.satisfiedStageKeys(goal).isEmpty());
+
+        CompletedFactStore completion = store.copyForCompletionCommit();
+        completion.recordStage(goal, "铁装", 2L, "new armor");
+        store.publishCompletionCommit(completion);
+        assertEquals(java.util.Set.of(StageKeyNormalizer.normalize("铁装")), store.satisfiedStageKeys(goal),
+                "publishing another completion must not resurrect retired iron");
+        CompletedFactStore reearned = store.copyForCompletionCommit();
+        reearned.recordStage(goal, "先下矿挖铁矿石", 3L, "new iron");
+        assertEquals(1, store.satisfiedStageKeys(goal).size(), "private candidate remains unpublished");
+        store.publishCompletionCommit(reearned);
+        assertEquals(2, CompletedFactStore.fromJson(store.toJson()).satisfiedStageKeys(goal).size());
+    }
+
+    @Test
+    void malformedRetirementMetadataFailsClosedWithoutErasingHistory() {
+        Goal goal = stagedGoal("goal-a43d753e", "通关MC", "先下矿挖铁矿石", "铁装");
+        CompletedFactStore store = new CompletedFactStore();
+        store.recordStage(goal, "先下矿挖铁矿石", 1L, "old iron");
+        store.recordStage(goal, "铁装", 1L, "old armor");
+        store.recordSubtask(goal, "先下矿挖铁矿石", "old subtask", 1L);
+        String history = store.toJson();
+        for (String bad : List.of("null", "{}", "123", "[123]", "[null]", "[\"foreign-composite-key\"]")) {
+            com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(history).getAsJsonObject();
+            json.add("retiredStageKeys", com.google.gson.JsonParser.parseString(bad));
+            CompletedFactStore restored = CompletedFactStore.fromJson(json.toString());
+            assertTrue(restored.satisfiedStageKeys(goal).isEmpty(), "invalid boundary must not revive: " + bad);
+            assertEquals(2, restored.stageCount(), "invalid metadata must not erase historical stages: " + bad);
+            assertEquals(historyArray(history, "stages"), historyArray(restored.toJson(), "stages"));
+            assertEquals(historyArray(history, "subtasks"), historyArray(restored.toJson(), "subtasks"));
+        }
+        assertEquals(2, CompletedFactStore.fromJson(history).satisfiedStageKeys(goal).size(),
+                "absent optional field is the legacy positive control, not a corrupt boundary");
+    }
+
+    private static String historyArray(String json, String key) {
+        return com.google.gson.JsonParser.parseString(json).getAsJsonObject().getAsJsonArray(key).toString();
+    }
+
     private static List<String> subtaskRaws(String json) {
         List<String> out = new java.util.ArrayList<>();
         com.google.gson.JsonArray arr = com.google.gson.JsonParser.parseString(json)
