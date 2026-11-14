@@ -106,8 +106,10 @@ final class SkillReviewInput {
                     String event = str(envelope, "event_id");
                     if (event.isBlank()) continue; // no fabricated trace/event identity
                     if (data.has("task_id") && !fact.taskId().equals(str(data, "task_id"))) continue;
-                    rows.add("event:" + clip(event, 100) + " tool=" + clip(str(data, "tool"), 80)
-                            + " result=" + clip(str(data, "result"), 180));
+                    String tool = str(data, "tool"), result = str(data, "result");
+                    if (event.length() > 100 || tool.length() > 80 || result.length() > 180) limited = true;
+                    rows.add("event:" + clip(event, 100) + " tool=" + clip(tool, 80)
+                            + " result=" + clip(result, 180));
                     if (rows.size() > TRACE_ROWS) { rows.remove(0); limited = true; }
                 } catch (RuntimeException malformed) { limited = true; }
             }
