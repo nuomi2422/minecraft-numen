@@ -68,22 +68,32 @@ class RddGoalDriverInjectionTest {
         RddGoalDriver.acceptPlan(subs, candidates -> SideTaskHost.DailyRegistration.register(chain, candidates, engine),
                 () -> chain.expandCurrentPrimary(subs));
         assertTrue(chain.activateCurrent(Map.of("minecraft:salmon", 2)));
-        // Both the live chain and the persisted consumer must wait for the original food12 predicate.
-        for (TaskChain consumer : List.of(chain, TaskChain.fromJson(chain.toJson()))) {
+        // A restart lands in RECOVERING; only the original exit puts it back to ACTIVE.
+        TaskChain restoredChain = TaskChain.fromJson(chain.toJson());
+        assertEquals(PrimaryGoalStatus.RECOVERING, restoredChain.primaryStatus(), "restart must re-enter RECOVERING");
+        restoredChain.resumeFromRecovering();
+        assertEquals(PrimaryGoalStatus.ACTIVE, restoredChain.primaryStatus(), "recovery must exit through resumeFromRecovering");
+        assertEquals(PrimaryGoalStatus.ACTIVE, chain.primaryStatus(), "the live chain stays ACTIVE");
+        // Both the live chain and the restored consumer must wait for the original food12 predicate.
+        for (TaskChain consumer : List.of(chain, restoredChain)) {
             SideTaskHost.DailyRegistration.registerChain(consumer, engine);
-            Subtask restored = consumer.currentSubtask();
+            Subtask current = consumer.currentSubtask();
             // JSON has no Java integer wrappers: Gson reads 12 back as 12.0. Keep every field check,
             // and compare condition numbers by value so restore fidelity is still proven, not weakened.
-            assertEquals(subs.get(0).id(), restored.id());
-            assertEquals(subs.get(0).detectionMode(), restored.detectionMode());
-            assertEquals(subs.get(0).detectionIntervalSeconds(), restored.detectionIntervalSeconds());
-            assertEquals(subs.get(0).maxAiChecks(), restored.maxAiChecks());
-            assertEquals(subs.get(0).recheckOnUnchanged(), restored.recheckOnUnchanged());
-            assertEquals(subs.get(0).body(), restored.body());
-            assertEquals(conditionValues(subs.get(0).condition()), conditionValues(restored.condition()));
-            assertEquals(description, restored.description());
-            assertEquals(conditionValues(parsed.get(0).condition()), conditionValues(restored.condition()));
-            assertEquals(NodeType.MAIN, restored.nodeType());
+            assertEquals(subs.get(0).id(), current.id());
+            assertEquals(subs.get(0).detectionMode(), current.detectionMode());
+            assertEquals(subs.get(0).detectionIntervalSeconds(), current.detectionIntervalSeconds());
+            assertEquals(subs.get(0).maxAiChecks(), current.maxAiChecks());
+            assertEquals(subs.get(0).recheckOnUnchanged(), current.recheckOnUnchanged());
+            assertEquals(subs.get(0).body(), current.body());
+            assertEquals(conditionValues(subs.get(0).condition()), conditionValues(current.condition()));
+            assertEquals(description, current.description());
+            assertEquals(conditionValues(parsed.get(0).condition()), conditionValues(current.condition()));
+            assertEquals(NodeType.MAIN, current.nodeType());
+            // The restored threshold must stay exactly 12: 12.5/12.9 would silently move the predicate.
+            double minimum = ((Number) current.condition().get("minimum")).doubleValue();
+            assertEquals(12.0, minimum);
+            assertTrue(minimum != 12.5 && minimum != 12.9, "food minimum must stay exactly 12");
             String dailyId = "daily:g:" + Integer.toHexString(description.hashCode());
             assertNull(engine.recurringSpec(dailyId), "one-trip food must never be registered as recurring work");
             assertFalse(consumer.applyHardCodedResult(subs.get(0).id(),
