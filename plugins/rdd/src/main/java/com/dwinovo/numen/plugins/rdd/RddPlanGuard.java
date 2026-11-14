@@ -396,6 +396,11 @@ final class RddPlanGuard {
     static boolean looksMaintenance(String description) {
         if (description == null || description.isBlank()) return false;
         String d = description;
+        // A stocking action with an explicit quota handoff is one trip's gate; a harvest/replant source is not its recurrence.
+        boolean recurring = d.matches(".*(每日|每天|日常|维护|巡检|喂养|反复|循环).*");
+        boolean stockGate = d.split("[。；;\n]", 2)[0].matches("\\s*把.+补到.+")
+                && d.matches(".*攒到[^。；;\n]*就走下一步.*");
+        if (stockGate && !recurring) return false;
         return d.matches(".*(收割|收麦|收成熟|成熟就收|补种|每日|每天|日常|维护|巡检|喂养|存粮|反复|循环).*");
     }
 

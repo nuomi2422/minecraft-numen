@@ -591,6 +591,19 @@ class RddPlanGuardTest {
         }
     }
 
+    @Test void oneTripStockQuotaWithAHarvestSourceStaysMainButRepeatedCareRemainsDaily() {
+        var quota = parsePreparationStep("把食物补到本趟出行所需的量：至少 8 份。来源优先箱子存货，也可在现成农田收获后补种。起步攒到 8 份就走下一步。",
+                Map.of("group", "food", "minimum", 8));
+        var prepared = RddPlanGuard.filterSubtasks(List.of(quota), "通关MC", Map.of());
+        assertEquals(List.of(quota), prepared.allowed(), "an alternative farm source does not change the one-trip inventory gate");
+        var recurring = parsePreparationStep("把食物补到每天出行所需的量：至少 8 份，每日收割成熟作物后补种。攒到 8 份就走下一步。",
+                Map.of("group", "food", "minimum", 8));
+        var daily = RddPlanGuard.filterSubtasks(List.of(recurring), "维护农田", Map.of()).allowed();
+        assertEquals(1, daily.size());
+        assertEquals(NodeType.DAILY, daily.getFirst().nodeType(), "a quota must not erase explicit recurring care");
+        assertEquals(RecurrenceSpec.daily(true), daily.getFirst().recurrence());
+    }
+
     private static SubtaskSpec parsePreparationStep(String description, Map<String, Object> condition) {
         String json = new com.google.gson.Gson().toJson(Map.of("subtasks", List.of(Map.of(
                 "description", description, "condition", condition, "node_type", "MAIN"))));
