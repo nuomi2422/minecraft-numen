@@ -9,6 +9,7 @@ import com.dwinovo.numen.rdd.core.PlanningAssetSnapshot;
 import com.dwinovo.numen.rdd.core.TaskChain;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -269,6 +270,99 @@ class RddSubmissionRationaleHandoffTest {
                 < driver.indexOf("int rev = chain.nextPlanRevision();"));
         assertTrue(source("RddStagePlanner").contains("dispatchStages(companionId, objective, why"));
         assertTrue(source("RddDecomposer").contains("fallbackRequestContent(companionId, objective, why"));
+    }
+
+
+    @Test
+    void acceptedOwnerReasonFieldsMustBeInTheActualRuntimePayload(@TempDir Path dir) throws Exception {
+        pending.put(id, submitter());
+        start(guard.replace(id));
+        completeStages();
+        TaskChain accepted = live.get();
+        RddRationale.expand(id, accepted, live::get, () -> expand(accepted));
+        assertEquals(RationaleContext.renderEntry(submitter()), RationaleContext.render(id));
+        String payload = saveActualRuntime(dir, id, accepted);
+        var saved = com.google.gson.JsonParser.parseString(payload).getAsJsonObject();
+        assertEquals(accepted.chainInstanceId(), saved.get("chainInstanceId").getAsString());
+        assertEquals(accepted.planRevision(), saved.get("planRevision").getAsInt());
+        var fields = serializedStrings(saved);
+        assertAll(
+                () -> assertTrue(fields.contains(submitter().why()), "accepted why must survive the real save boundary"),
+                () -> assertTrue(fields.contains(submitter().risks()), "accepted risks must survive the real save boundary"),
+                () -> assertTrue(fields.contains(submitter().source()), "accepted source must survive the real save boundary"),
+                () -> assertTrue(fields.contains(submitter().conditions()), "accepted applicability must survive the real save boundary"));
+    }
+
+    @Test
+    void sameChainAndRevisionReloadMustReachStageBAndExecutorRender(@TempDir Path dir) throws Exception {
+        pending.put(id, submitter());
+        start(guard.replace(id));
+        completeStages();
+        TaskChain accepted = live.get();
+        RddRationale.expand(id, accepted, live::get, () -> expand(accepted));
+        String payload = saveActualRuntime(dir, id, accepted);
+        // Model a cold process for this companion: no retained static reason can mask disk loss.
+        RationaleContext.clear(id);
+        assertEquals("", RationaleContext.render(id));
+        TaskChain restored = TaskChain.fromJson(payload); // Same codec called by restoreRuntimes.
+        live.set(restored);
+        assertEquals(accepted.chainInstanceId(), restored.chainInstanceId());
+        assertEquals(accepted.planRevision(), restored.planRevision());
+        RddRationale.refreshContext(id, restored); // Existing executor context consumer; no invented restore adapter.
+        String stageB = firstStageB(); // Actual dispatchStageB final request consumer.
+        String expected = RationaleContext.renderEntry(submitter());
+        assertAll(
+                () -> assertTrue(stageB.endsWith(expected), "the reloaded owner reason must reach actual Stage-B dispatch"),
+                () -> assertEquals(expected, RationaleContext.render(id), "the same durable reason must reach executor rendering"),
+                () -> assertTrue(RationaleContext.applicable(id, restored.planRevision(), restored.chainInstanceId())),
+                () -> assertEquals(accepted.goal().id(), restored.goal().id(), "reason recovery must not create a new objective"),
+                () -> assertEquals(accepted.goal().description(), restored.goal().description()));
+    }
+
+    @Test
+    void runtimePayloadCannotBorrowRejectedForeignOrOldRevisionReasons(@TempDir Path dir) throws Exception {
+        UUID other = UUID.randomUUID();
+        TaskChain accepted = chain(THEME);
+        live.set(accepted);
+        RddRationale.bound(id, accepted, submitter(), live::get);
+        TaskChain rejected = chain("fixture-only rejected restart objective");
+        var rejectedWhy = new RationaleContext.Entry("REJECTED_OWNER_WHY", "REJECTED_RISK", "rejected:source", "REJECTED_CONDITION");
+        RddRationale.bound(id, rejected, rejectedWhy, live::get);
+        TaskChain foreign = chain("fixture-only other companion objective");
+        var foreignWhy = new RationaleContext.Entry("OTHER_COMPANION_WHY", "OTHER_RISK", "foreign:source", "OTHER_CONDITION");
+        try {
+            RddRationale.bound(other, foreign, foreignWhy, () -> foreign);
+            String payload = saveActualRuntime(dir, id, accepted);
+            var fields = serializedStrings(com.google.gson.JsonParser.parseString(payload));
+            assertFalse(fields.contains(rejectedWhy.why()), "an unaccepted owner cannot be made durable");
+            assertFalse(fields.contains(foreignWhy.why()), "one companion's file cannot borrow another companion's reason");
+            accepted.nextPlanRevision(); // Without an accepted rationale-carry install, the old reason is stale.
+            payload = saveActualRuntime(dir, id, accepted);
+            // The codec may retain scoped history, but the new revision must never borrow it as current.
+            RationaleContext.clear(id);
+            live.set(TaskChain.fromJson(payload));
+            RddRationale.refreshContext(id, live.get());
+            assertEquals("", RationaleContext.render(id));
+            assertFalse(firstStageB().contains("<rationale>"));
+        } finally { RationaleContext.clear(other); }
+    }
+
+    /** Original RddPlugin.saveRuntimes consumer and exact task file, not a parallel rationale store. */
+    private static String saveActualRuntime(Path dir, UUID companion, TaskChain chain) throws Exception {
+        Path tasks = dir.resolve("rdd-tasks");
+        StageCompletionCommit writer = new StageCompletionCommit(tasks, dir.resolve("facts"));
+        assertTrue(writer.saveRuntime(companion, chain));
+        return Files.readString(tasks.resolve(companion + ".json"));
+    }
+
+    /** No proposed schema is assumed: inspect actual scalar values encoded by the current payload writer. */
+    private static List<String> serializedStrings(com.google.gson.JsonElement value) {
+        List<String> out = new ArrayList<>();
+        if (value == null || value.isJsonNull()) return out;
+        if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()) out.add(value.getAsString());
+        else if (value.isJsonObject()) value.getAsJsonObject().entrySet().forEach(e -> out.addAll(serializedStrings(e.getValue())));
+        else if (value.isJsonArray()) value.getAsJsonArray().forEach(e -> out.addAll(serializedStrings(e)));
+        return out;
     }
 
     private void start(RddCallbackGuard.Ticket ticket) {
