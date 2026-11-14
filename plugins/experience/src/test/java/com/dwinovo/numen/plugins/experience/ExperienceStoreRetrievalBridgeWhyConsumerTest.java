@@ -241,6 +241,58 @@ class ExperienceStoreRetrievalBridgeWhyConsumerTest {
                 <= ExperienceStoreRetrievalBridge.MAX_BODY_CHARS, "risks/source share the same cap with mechanism/action");
     }
 
+
+    @Test
+    void oversizedHigherRankedOptionalEntryCannotHideFittingPlannerTeaching() {
+        ExperienceMemory memory = storedTeaching("planner-budget.jsonl", PublicationState.TRIAL);
+        var teaching = memory.all().getFirst(); String teachingRef = "exp:" + teaching.id();
+        var observed = new java.util.ArrayList<ExperienceStoreRetrievalBridge.Rendered>();
+        java.util.UUID companion = java.util.UUID.randomUUID();
+        assertEquals(8, PlanningKnowledge.DEFAULT_MAX_ITEMS);
+        assertEquals(2400, PlanningKnowledge.DEFAULT_MAX_CHARS);
+        String alone = ExperiencePlanningRouter.knowledgeFor(companion, TASK, "stage_b", List.of(), true,
+                ignored -> memory, observed::add);
+        assertTrue(alone.contains("ref=\"" + teachingRef + "\""), "the original router must first prove the teaching fits alone");
+        String aloneBody = bodyFor(observed.getFirst(), teachingRef);
+        assertTrue(aloneBody.contains(teaching.rationale()) && aloneBody.contains(teaching.failureConditions())
+                && aloneBody.contains(teaching.evidence()) && aloneBody.contains(teaching.preconditions()));
+        var blocker = memory.learn(ExperienceEntry.builder().type(ExperienceType.POLICY)
+                .title(TASK + " oversized optional background")
+                .description(TASK + " " + "optional background ".repeat(200))
+                .mechanism("Fixture optional background, not an action.")
+                .triggerStrings(List.of(TASK)).maturity(ExperienceMaturity.OBSERVED).verifiedCount(0)
+                .publication(PublicationState.TRIAL).build());
+        var query = new RetrievalQuery("planner-budget", companion.toString(), "", RetrievalRole.PLANNER, TASK,
+                List.of(), List.of(), List.of(), 1, "", new RetrievalBudget(8, 0, 0, 0, 2400, 0, "none"), "ACTIVE");
+        var page = new ExperienceRetrievalProvider("experience", ExperienceStoreRetrievalBridge.sourceFor(memory)).search(query);
+        assertEquals(2, page.entries().size(), "both entries pass the unchanged provider/role/candidate gates");
+        var first = page.entries().getFirst(); var second = page.entries().getLast();
+        assertEquals("exp:" + blocker.id(), first.descriptor().entryRef(), "more matching query terms must put the long entry first");
+        assertEquals(teachingRef, second.descriptor().entryRef());
+        assertTrue(ExperienceRetrievalProvider.relevanceScore(TASK, first.descriptor())
+                > ExperienceRetrievalProvider.relevanceScore(TASK, second.descriptor()));
+        // Pin the original assembler's title + summary + body cost, not just rendered-body length.
+        int firstCost = first.descriptor().title().length() + first.descriptor().summary().length() + first.body().content().length();
+        int teachingCost = second.descriptor().title().length() + second.descriptor().summary().length() + second.body().content().length();
+        assertTrue(firstCost + TASK.length() > 2400, "the high-ranked background really cannot fit");
+        assertTrue(teachingCost + TASK.length() < 2400, "the later teaching really can fit without any larger budget");
+        observed.clear();
+        String actual = ExperiencePlanningRouter.knowledgeFor(companion, TASK, "stage_b", List.of(), true,
+                ignored -> memory, observed::add); // Actual Router -> Bridge -> Provider -> Assembler, no substitute host.
+        assertEquals(1, observed.size());
+        assertEquals(actual, observed.getFirst().text());
+        assertEquals("planner", observed.getFirst().role());
+        assertTrue(observed.getFirst().truncationReasons().contains("max_chars=2400"), "oversized background remains an explicit budget exclusion");
+        assertFalse(actual.contains("ref=\"exp:" + blocker.id() + "\""), "do not admit the oversized entry or enlarge its budget");
+        String deliveredBody = bodyFor(observed.getFirst(), teachingRef);
+        assertAll(
+                () -> assertTrue(deliveredBody.contains(teaching.rationale())),
+                () -> assertTrue(deliveredBody.contains(teaching.failureConditions())),
+                () -> assertTrue(deliveredBody.contains(teaching.evidence())),
+                () -> assertTrue(deliveredBody.contains(teaching.preconditions())),
+                () -> assertTrue(actual.length() <= 2400));
+    }
+
     @Test
     void entriesWithoutNewFieldsRetainTheExactLegacyBodyBytes() {
         ExperienceMemory memory = memory(owner().rationale("").preconditions("").failureConditions("").evidence("")
