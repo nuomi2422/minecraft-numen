@@ -50,8 +50,7 @@ final class RddNeedsFacts {
             // 增强块，跳过
         }
         try {
-            // B2: no current reserve-inventory authority in this batch (LAST_INVENTORY keeps death
-            // history / Map and AT clear separately), so pass null = UNKNOWN rather than a 5-min cache.
+            // B2: no current reserve-inventory authority is read in this batch; the hint text says UNKNOWN (not 0).
             sb.append(RddNeedsText.food(body.getFoodData().getFoodLevel(), countFood(body)));
         } catch (RuntimeException ignored) {
             // 增强块，跳过

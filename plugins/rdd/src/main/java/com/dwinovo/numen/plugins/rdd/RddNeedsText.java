@@ -51,12 +51,6 @@ final class RddNeedsText {
         return sb.toString();
     }
 
-    /**
-     * 食物提示。
-     *
-     * @param hunger    当前饱食度（0~20）
-     * @param foodCount 背包里可直接吃的件数
-     */
     /** Soft long-term reserve target; NOT the emergency 2-item food_supply policy. */
     static final int RESERVE_TARGET = 10;
 
@@ -67,12 +61,18 @@ final class RddNeedsText {
      * @param foodCount 背包里可直接吃的件数
      */
     static String food(int hunger, int foodCount) {
+        if (foodCount < 0) {
+            return "<food_hint>背包可食物数量未知（UNKNOWN，不按 0）：先清点或查一次状态再判断，别把未知当成没吃的。</food_hint>";
+        }
         String reserve = reserveSentence(foodCount);
+        if (hunger < 0) {
+            return "<food_hint>饱食度未知（UNKNOWN）：不做饿/吃判断。" + reserve + "</food_hint>";
+        }
         if (hunger >= HUNGRY_AT) {
             if (foodCount >= RESERVE_TARGET) return "";
             if (foodCount > 0) {
                 return "<food_hint>你现在还不饿（" + hunger + "/20），随身有 " + foodCount + " 份能直接吃的——"
-                        + "不必现在吃，但趁现在把长期储备补齐更稳。" + reserve + "</food_hint>";
+                        + "不必现在吃，方便时顺路把长期储备补一补即可。" + reserve + "</food_hint>";
             }
             return "<food_hint>你现在还不饿（" + hunger + "/20），但背包里**一份能吃的都没有**——"
                     + "趁现在补上：打猎、摘果子、收作物，或者回仓库取存粮。"
