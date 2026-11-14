@@ -97,9 +97,8 @@ class ReviewCompletionTest {
                 () -> assertEquals(1, q.size()),
                 () -> assertEquals(m.snapshot(), q.all().get(0).snapshot()));
     }
-    @Test void restartedReviewCanFinishHistoricalSampleWithItsNewStableContext(@TempDir Path dir) {
-        Memo m = new Memo("historical-result", "review", "skill_task_result", "historical fact, not a live command",
-                "{\"world_id\":\"old-world\",\"server_session\":\"old-server\",\"epoch\":1}", 1L);
+    @Test void restartedReviewCanFinishHistoricalSampleWithItsNewStableContext(@TempDir Path dir) throws Exception {
+        Memo m = new ReviewTargetGateTest.SkillFixture(dir, A).sample("skill_task_result");
         MemoQueue q = new MemoQueue(dir.resolve("historical-result.json"));
         assertTrue(q.append(m));
         var batch = q.drain(2);
@@ -138,8 +137,7 @@ class ReviewCompletionTest {
 
     @Test void skillDeliveryUnknownContextSurvivesReloadAndCommitsOnlyUnderNewStableToken(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("delivery-restart.json");
-        Memo m = new Memo("delivery-restart", "review", "skill_delivery", "historical delivery sample",
-                "{\"world_id\":\"old-world\",\"server_session\":\"old-server\",\"epoch\":1,\"request_id\":\"94ef928e\"}", 11L);
+        Memo m = new ReviewTargetGateTest.SkillFixture(dir, A).sample("skill_delivery");
         MemoQueue first = new MemoQueue(file);
         assertTrue(first.append(m));
         List<Memo> batch = first.drain(2);
@@ -174,8 +172,7 @@ class ReviewCompletionTest {
 
     @Test void skillTaskResultMissingContextSurvivesReloadAndCommitsUnderStableToken(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("result-restart.json");
-        Memo m = new Memo("result-restart", "review", "skill_task_result", "historical result sample",
-                "{\"world_id\":\"old-world\",\"server_session\":\"old-server\",\"epoch\":1,\"result_id\":\"r1\"}", 12L);
+        Memo m = new ReviewTargetGateTest.SkillFixture(dir, A).sample("skill_task_result");
         MemoQueue first = new MemoQueue(file);
         assertTrue(first.append(m));
         List<Memo> batch = first.drain(2);
