@@ -140,6 +140,27 @@ final class RddPlanGuard {
         return false;
     }
 
+    /** A preparation reason is not its current action; keep original text/predicate for downstream use. */
+    private static boolean preparationStep(String description) {
+        if (description == null) return false;
+        String first = description.split("[。；;\n]", 2)[0];
+        return first.matches(".*(回补|补给|补充|补齐|备齐|准备).*");
+    }
+
+    /** Only explicit lack -> fatal consequence clauses in preparation are explanatory.
+     * Immediate travel/combat remains an action, including mixed clauses; no food-keyword exemption. */
+    private static String currentRiskActions(String description) {
+        if (!preparationStep(description)) return description;
+        List<String> actions = new ArrayList<>();
+        for (String clause : description.split("[，。；,;、\n]")) {
+            boolean lack = clause.matches(".*(空手|空着|缺少|缺乏|不足|没有|未备齐).*");
+            boolean consequence = clause.matches(".*(等于|意味着)(送死|死亡)\\s*");
+            boolean directive = clause.matches(".*(现在|立即|立刻|直接|马上|击杀|攻击|挑战).*");
+            if (!lack || !consequence || directive) actions.add(clause);
+        }
+        return String.join("，", actions);
+    }
+
     /**
      * 2026-11-02（实机 r25-2）：描述写「用钻石镐去取黑曜石」，背包里却只有石镐——
      * 石镐挖黑曜石不掉落，这一步从出生就是死的。判据只认 obsidian，永远等不到。
@@ -160,8 +181,9 @@ final class RddPlanGuard {
         // 2026-11-02（实机 r28-3/death49–58）：往「下界/要塞/烈焰/传送门」去的步骤，背包没甲就不该发布。
         // 2026-11-03 实机：整段 negatedNether 会误伤「途中不下界，打烈焰人」这类混合句，
         // 而「不要进入下界」又不在固定否定串里。改为**按分句**判：否定只作用于本分句。
-        com.dwinovo.numen.rdd.policy.RiskLevel risk = com.dwinovo.numen.rdd.policy.RiskGate.levelForText(d);
-        boolean netherBound = clauseNetherBound(d)
+        String riskActions = currentRiskActions(d);
+        com.dwinovo.numen.rdd.policy.RiskLevel risk = com.dwinovo.numen.rdd.policy.RiskGate.levelForText(riskActions);
+        boolean netherBound = clauseNetherBound(riskActions)
                 || risk == com.dwinovo.numen.rdd.policy.RiskLevel.NETHER
                 || risk == com.dwinovo.numen.rdd.policy.RiskLevel.END;
         boolean hasArmor = held.getOrDefault("minecraft:iron_chestplate", 0) > 0
@@ -313,6 +335,9 @@ final class RddPlanGuard {
                 dropped.add("工具前提不成立（缺 " + String.join("/", toolMissing)
                         + "）→ 先补工具或换一条走法："
                         + (spec.description() == null ? "" : spec.description()));
+                // A mixed preparation/dangerous action cannot lose its prerequisite while a tail installs.
+                if (preparationStep(spec.description()) && toolMissing.stream().anyMatch(g -> g.startsWith("护甲")))
+                    return new Filtered(List.of(), List.copyOf(dropped), List.copyOf(reused));
                 continue;
             }
             List<String> gaps = predicateGaps(spec);
