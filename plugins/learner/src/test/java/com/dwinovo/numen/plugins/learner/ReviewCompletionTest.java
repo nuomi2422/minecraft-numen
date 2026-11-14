@@ -367,7 +367,7 @@ class ReviewCompletionTest {
         assertTrue(accepted.result().accepted(), accepted.codes().toString());
         return new ReviewTargetGateTest.SkillFixture(dir, A, draft);
     }
-    private static Memo ordinary(String id) {
+    private static Memo ordinaryWithEvidence(String id) {
         return new Memo(id, "body revision", "learning", "revised derivation only", "", 1L, "learning", List.of(EVENT));
     }
     private static Memo withEvidence(Memo original) {
@@ -400,7 +400,7 @@ class ReviewCompletionTest {
     }
     private static void laterTarget(Path dir, String stage, String mode) throws Exception {
         var f = seeded(dir, "sequential target");
-        Memo first = ordinary("revision-first"), later = f.sample(stage);
+        Memo first = ordinaryWithEvidence("revision-first"), later = f.sample(stage);
         if (mode != null) Files.writeString(dir.resolve(ReviewContractGate.FILE_NAME), "{\"mode\":\"" + mode + "\"}");
         MemoQueue q = pending(dir, first, later);
         var batch = q.drain(3);
@@ -451,7 +451,7 @@ class ReviewCompletionTest {
     }
     @Test void aLaterRevisionMustNotRetroactivelyRestoreAnAlreadyConsumedSample(@TempDir Path dir) throws Exception {
         var f = seeded(dir, "non retroactive target");
-        Memo consumed = f.sample("skill_task_result"), revision = ordinary("middle-revision"), later = f.sample("skill_task_result");
+        Memo consumed = f.sample("skill_task_result"), revision = ordinaryWithEvidence("middle-revision"), later = f.sample("skill_task_result");
         assertNotEquals(consumed.id(), later.id());
         MemoQueue q = pending(dir, consumed, revision, later); var batch = q.drain(3); var c = current(dir, batch);
         var done = consume(c, dir, q, batch, noAction(consumed), write(revision.id(), "non retroactive target", "middle body B"), noAction(later));
@@ -463,7 +463,7 @@ class ReviewCompletionTest {
     }
     @Test void revisingOneSkillDoesNotBlockAnotherSkillsOriginalResult(@TempDir Path dir) throws Exception {
         var first = seeded(dir, "independent first"); var other = seeded(dir, "independent second");
-        Memo revision = ordinary("independent-revision"), result = other.sample("skill_task_result");
+        Memo revision = ordinaryWithEvidence("independent-revision"), result = other.sample("skill_task_result");
         assertNotEquals(first.skill, other.skill);
         MemoQueue q = pending(dir, revision, result); var batch = q.drain(3); var c = current(dir, batch);
         var done = consume(c, dir, q, batch, write(revision.id(), "independent first", "independent body B"), noAction(result));
@@ -482,7 +482,7 @@ class ReviewCompletionTest {
                 () -> assertEquals(0, done.settlement().terminalSkipped()), () -> restoredOriginal(q, sample));
     }
     @Test void failedBodyWriteDoesNotPretendTheEarlierSkillWasRevised(@TempDir Path dir) throws Exception {
-        var f = seeded(dir, "body failure target"); Memo first = ordinary("write-fails"), result = f.sample("skill_task_result");
+        var f = seeded(dir, "body failure target"); Memo first = ordinaryWithEvidence("write-fails"), result = f.sample("skill_task_result");
         Verdict revision = write(first.id(), "body failure target", "blocked body B"); var artifact = adapted(revision).artifacts().getFirst();
         Files.createDirectory(dir.resolve("skill-bodies").resolve(f.skill + "@v1-" + artifact.contentHash() + ".md.tmp"));
         MemoQueue q = pending(dir, first, result); var batch = q.drain(3); var c = current(dir, batch);
