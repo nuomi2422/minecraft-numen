@@ -2,6 +2,10 @@ package com.dwinovo.numen.plugins.learner;
 
 import com.dwinovo.numen.plugins.learner.core.Memo;
 import com.dwinovo.numen.plugins.learner.core.MemoQueue;
+import com.dwinovo.numen.plugins.learner.core.ReviewBatchStore;
+import com.dwinovo.numen.plugins.learner.core.RetrievalGate;
+import com.dwinovo.numen.plugins.learner.core.Verdict;
+import com.google.gson.Gson;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.*;
@@ -170,6 +174,131 @@ class ReviewCompletionTest {
                 () -> assertEquals(1, settled.committed()),
                 () -> assertEquals(0, settled.terminalSkipped()),
                 () -> assertEquals(0, reloaded.size()));
+    }
+
+
+    /** V18 IDs and retrieval shape, not a live replay or evidence that any sample was lost. */
+    @Test void v18ThreeMatchedVerdictsReportOnlyTwoDurableRetriesNotQueueDepth(@TempDir Path dir) throws Exception {
+        List<Memo> originals = List.of(
+                ordinary("tf-craft-d3f42996-tools-1794427275663-0"),
+                ordinary("ai-instr-358825343625100-8"),
+                ordinary("tf-mine-664867ab-tools-1794428156223-1"));
+        MemoQueue queue = fullQueue(dir.resolve("v18.json"), originals);
+        List<Memo> before = queue.all(), batch = queue.drain(3);
+        List<Verdict> verdicts = List.of(
+                retrieved(originals.get(0).id(), "NEW"),
+                retrieved(originals.get(1).id(), "REVISE"),
+                retrieved(originals.get(2).id(), "NEW"));
+        assertEquals(batch.stream().map(Memo::id).toList(), verdicts.stream().map(Verdict::memoId).toList(),
+                "all three responses target the actual batch; Z3 rejection is not an ID mismatch");
+        ReviewCompletion completion = new ReviewCompletion(batch, m -> new ReviewTargetGate.Check(true, "OK"));
+        Set<String> judged = new HashSet<>();
+        for (Verdict verdict : verdicts) {
+            if (RetrievalGate.problem(verdict) == null && completion.permits(verdict.memoId())) judged.add(verdict.memoId());
+        }
+        assertEquals(Set.of(originals.get(1).id()), judged, "keep the original Z3 guard");
+        var result = completion.settle(queue, batch, judged);
+        List<Memo> expected = new ArrayList<>(before);
+        expected.remove(originals.get(1));
+        assertAll(
+                () -> assertEquals(1, result.committed()),
+                () -> assertEquals(2, result.restored(), "count only this review's durable retries, not 63 pending memos"),
+                () -> assertEquals(0, result.terminalSkipped()),
+                () -> assertEquals(63, queue.size()),
+                () -> assertEquals(expected, new MemoQueue(queue.file()).all(), "all unrelated/historical memos stay exact"));
+    }
+
+    @Test void fullSnapshotQueueReportsThreeExistingRetriesNot64(@TempDir Path dir) {
+        List<Memo> originals = List.of(ordinary("a"), ordinary("b"), ordinary("c"));
+        MemoQueue queue = fullQueue(dir.resolve("full.json"), originals);
+        List<Memo> before = queue.all(), batch = queue.drain(3);
+        var result = retryCompletion(batch).settle(queue, batch, Set.of());
+        assertAll(
+                () -> assertEquals(0, result.committed()),
+                () -> assertEquals(3, result.restored(), "already durable snapshot members still count as retry-ready"),
+                () -> assertEquals(64, queue.size()),
+                () -> assertEquals(before, new MemoQueue(queue.file()).all()));
+    }
+
+    /** Controlled public-API counterexample: not a claim of V18 loss during normal snapshot drain. */
+    @Test void fullQueueMissingOriginalDoesNotClaimThatRetryWasRestored(@TempDir Path dir) {
+        List<Memo> originals = List.of(ordinary("a"), ordinary("b"), ordinary("c"));
+        MemoQueue queue = fullQueue(dir.resolve("missing.json"), originals);
+        List<Memo> batch = queue.drain(3);
+        assertEquals(1, queue.commitDrain(List.of(originals.get(2))));
+        assertTrue(queue.append(ordinary("replacement")));
+        List<Memo> before = queue.all();
+        var result = retryCompletion(batch).settle(queue, batch, Set.of());
+        assertAll(
+                () -> assertEquals(2, result.restored(), "queue full: the missing original was NOT restored"),
+                () -> assertEquals(0, result.committed()),
+                () -> assertEquals(64, queue.size()),
+                () -> assertEquals(before, new MemoQueue(queue.file()).all()));
+    }
+
+    @Test void sameIdDifferentBodyDoesNotCountAsOriginalDurableRetry(@TempDir Path dir) throws Exception {
+        List<Memo> originals = List.of(ordinary("a"), ordinary("b"), ordinary("c"));
+        MemoQueue queue = fullQueue(dir.resolve("changed.json"), originals);
+        List<Memo> batch = queue.drain(3), changed = new ArrayList<>(queue.all());
+        changed.set(0, new Memo("a", "different body", "learning", "other tried", "other snapshot", 2L));
+        Files.writeString(queue.file(), new Gson().toJson(changed));
+        var result = retryCompletion(batch).settle(queue, batch, Set.of());
+        assertAll(
+                () -> assertEquals(2, result.restored(), "ID occupancy alone is not the original sample"),
+                () -> assertEquals(changed, new MemoQueue(queue.file()).all(), "do not overwrite the conflicting record"));
+    }
+
+    @Test void duplicateIdDoesNotCountAsExactlyOneOriginalDurableRetry(@TempDir Path dir) throws Exception {
+        List<Memo> originals = List.of(ordinary("a"), ordinary("b"), ordinary("c"));
+        MemoQueue queue = fullQueue(dir.resolve("duplicate.json"), originals);
+        List<Memo> batch = queue.drain(3), duplicated = new ArrayList<>(queue.all());
+        duplicated.set(3, originals.get(0));
+        Files.writeString(queue.file(), new Gson().toJson(duplicated));
+        var result = retryCompletion(batch).settle(queue, batch, Set.of());
+        assertAll(
+                () -> assertEquals(2, result.restored(), "ambiguous duplicate identity is not one durable original"),
+                () -> assertEquals(duplicated, new MemoQueue(queue.file()).all(), "do not repair history as a side effect"));
+    }
+
+    @Test void actualRestoreWriteFailureCannotProduceSuccessReceiptOrDiscardClaim(@TempDir Path dir) throws Exception {
+        List<Memo> batch = List.of(ordinary("claimed-a"), ordinary("claimed-b"), ordinary("claimed-c"));
+        String reviewId = "rev-write-failure";
+        assertTrue(ReviewBatchStore.save(dir, reviewId, batch));
+        Path claim = ReviewBatchStore.file(dir, reviewId);
+        byte[] claimedBytes = Files.readAllBytes(claim);
+        Path blocker = dir.resolve("blocked-parent");
+        Files.writeString(blocker, "not a directory");
+        MemoQueue queue = new MemoQueue(blocker.resolve("memos.json"));
+        assertThrows(IllegalStateException.class, () -> retryCompletion(batch).settle(queue, batch, Set.of()));
+        assertAll(
+                () -> assertEquals("not a directory", Files.readString(blocker)),
+                () -> assertArrayEquals(claimedBytes, Files.readAllBytes(claim)),
+                () -> assertEquals(batch, ReviewBatchStore.load(dir, reviewId)));
+    }
+
+    private static Memo ordinary(String id) {
+        return new Memo(id, "historical problem " + id, "learning", "original tried", "original snapshot", 1L);
+    }
+
+    private static MemoQueue fullQueue(Path file, List<Memo> originals) {
+        MemoQueue queue = new MemoQueue(file);
+        for (Memo memo : originals) assertTrue(queue.append(memo));
+        for (int i = originals.size(); i < MemoQueue.MAX_QUEUE; i++) assertTrue(queue.append(ordinary("outside-review-" + i)));
+        assertEquals(64, queue.size());
+        return queue;
+    }
+
+    private static ReviewCompletion retryCompletion(List<Memo> batch) {
+        return new ReviewCompletion(batch, m -> new ReviewTargetGate.Check(true, "OK"));
+    }
+
+    private static Verdict retrieved(String id, String decision) {
+        Verdict verdict = Verdict.parse("?", "{\"memo_id\":\"" + id + "\",\"actions\":[\"WRITE_EXPERIENCE\"],"
+                + "\"confidence\":0.7,\"reasoning\":\"V18 retrieval shape\",\"retrieval\":{\"decision\":\"" + decision
+                + "\",\"reason\":\"recorded high-similarity hit\",\"hits\":[{\"entry_ref\":\"exp:existing\","
+                + "\"title\":\"existing entry\",\"why\":\"retrieved\",\"high_similarity\":true}]}}");
+        assertNotNull(verdict);
+        return verdict;
     }
 
     @Test void skillTaskResultMissingContextSurvivesReloadAndCommitsUnderStableToken(@TempDir Path dir) throws Exception {
