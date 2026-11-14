@@ -506,13 +506,23 @@ public final class NumenPlugins {
             int room = MAX_EXECUTOR_KNOWLEDGE_CHARS - sb.length();
             if (piece.length() > room) {
                 if (room > 0) {
-                    sb.append(piece, 0, room);
-                    // 装了一部分：片段算「截断交付」，但 refs 要按条目边界分开记账：
-                    // 完整落在保留前缀内的条目仍是完整交付（2026-10-31 修正）。
                     truncated++;
-                    for (DeliveredRef r : f.refs()) {
-                        boolean cut = !refFullyIncluded(piece, room, r.entryRef());
-                        delivered.add(new DeliveredRef(r.entryRef(), r.version(), cut));
+                    String assembled = assembledStructuredPiece(piece, room);
+                    if (assembled != null) {
+                        // 完整 <retrieved_knowledge> 包装：只装完整 entry + 闭合尾巴。装不下的条目
+                        // 整个不装（不留半条残骸），refs 按实际保留边界记账（2026-11-15）。
+                        sb.append(assembled);
+                        for (DeliveredRef r : f.refs()) {
+                            boolean cut = !refFullyIncluded(assembled, assembled.length(), r.entryRef());
+                            delivered.add(new DeliveredRef(r.entryRef(), r.version(), cut));
+                        }
+                    } else {
+                        // 旧行为：plain / 不完整 wrapper / 无法识别结构 → 前缀硬切。
+                        sb.append(piece, 0, room);
+                        for (DeliveredRef r : f.refs()) {
+                            boolean cut = !refFullyIncluded(piece, room, r.entryRef());
+                            delivered.add(new DeliveredRef(r.entryRef(), r.version(), cut));
+                        }
                     }
                 }
                 // room<=0：预算已满、这个片段一个字节都没装进去 ——
@@ -553,6 +563,49 @@ public final class NumenPlugins {
             return false;
         }
         return close + "</entry>".length() <= room;
+    }
+
+    /**
+     * 2026-11-15：仅当片段是一个**完整** {@code <retrieved_knowledge …>…</retrieved_knowledge>} 包装时，
+     * 按 entry 边界装配：完整 entry 依序装入并预留闭合尾巴；装不下的条目整个跳过，不留半条残骸。
+     * 不识别结构（plain / 不完整 wrapper / 夹着结构外文本）一律返回 {@code null}，交回旧的前缀硬切。
+     *
+     * @return {@code null} = 不是完整结构包装；{@code ""} = 是完整包装但连首条都装不下（不输出残骸）；
+     *         否则为可直接追加的装配结果（长度 ≤ room）。
+     */
+    private static String assembledStructuredPiece(String piece, int room) {
+        int open = piece.indexOf("<retrieved_knowledge");
+        if (open < 0) return null;
+        int openEnd = piece.indexOf('>', open);
+        if (openEnd < 0) return null;
+        int close = piece.lastIndexOf("</retrieved_knowledge>");
+        if (close < openEnd) return null;                       // 不完整 wrapper → 旧路径
+        String head = piece.substring(0, openEnd + 1);
+        String body = piece.substring(openEnd + 1, close);
+        List<String> segments = new ArrayList<>();
+        int cursor = 0;
+        while (true) {
+            int start = body.indexOf("<entry ", cursor);
+            if (start < 0) {
+                if (!body.substring(cursor).isBlank()) return null;   // 结构外杂文本 → 旧路径
+                break;
+            }
+            if (!body.substring(cursor, start).isBlank()) return null;
+            int next = body.indexOf("<entry ", start + 1);
+            String segment = body.substring(start, next < 0 ? body.length() : next);
+            if (!segment.contains("</entry>")) return null;           // 半条 entry → 旧路径
+            segments.add(segment);
+            cursor = next < 0 ? body.length() : next;
+        }
+        if (segments.isEmpty()) return null;
+        String tail = "</retrieved_knowledge>";
+        StringBuilder out = new StringBuilder(head);
+        for (String segment : segments) {
+            if (out.length() + segment.length() + tail.length() > room) break;
+            out.append(segment);
+        }
+        if (out.length() <= head.length()) return "";   // 连一条都装不下：不留残骸
+        return out.append(tail).toString();
     }
 
     /**
