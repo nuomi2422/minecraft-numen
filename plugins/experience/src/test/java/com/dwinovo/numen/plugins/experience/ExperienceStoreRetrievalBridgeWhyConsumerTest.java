@@ -188,6 +188,13 @@ class ExperienceStoreRetrievalBridgeWhyConsumerTest {
         assertFalse(executor.text().contains("maturity=\"VERIFIED\""));
         assertEquals(ExperienceMaturity.OBSERVED, source.maturity());
         assertEquals(0, source.verifiedCount());
+        var planner = render(memory, TASK, 2400, RetrievalRole.PLANNER);
+        String plannerBody = bodyFor(planner, sourceRef);
+        assertAll(
+                () -> assertTrue(plannerBody.contains(source.rationale()), "same-ref planner body lost stored why"),
+                () -> assertTrue(plannerBody.contains(source.failureConditions()), "same-ref planner body lost stored risks"),
+                () -> assertTrue(plannerBody.contains(source.evidence()), "same-ref planner body lost original evidence/source reference"),
+                () -> assertTrue(plannerBody.contains(source.preconditions()), "same-ref planner body lost stored conditions"));
         assertAll(
                 () -> assertTrue(body.contains(source.rationale()), "same-ref body lost stored why"),
                 () -> assertTrue(body.contains(source.failureConditions()), "same-ref body lost stored risks"),
