@@ -527,10 +527,12 @@ public final class RddPlugin implements NumenPlugin {
         RddMonitor.publish("supervisor_input", Map.of(
                 "companionId", uuid.toString(), "objective", objective,
                 "source", source, "target", "rdd"));
-        RddStagePlanner.planStages(uuid, objective, PENDING_PLAN_WHY.remove(uuid), stages -> onServer(server, ticket, () -> {
+        RddRationale.planSubmission(uuid, PENDING_PLAN_WHY,
+                (why, done) -> RddStagePlanner.planStages(uuid, objective, why, done),
+                (stages, why) -> onServer(server, ticket, () -> {
             if (!stages.isEmpty()) {
                 try {
-                    bindCurrent(uuid, RddChainFactory.fromStages(uuid, objective, stages), restartRequested);
+                    bindCurrent(uuid, RddChainFactory.fromStages(uuid, objective, stages), restartRequested, why);
                     RddMonitor.publish("goal_staged", Map.of(
                             "companionId", uuid.toString(), "objective", objective, "stages", stages.size(),
                             // A2（94 号）：阶段名必须机读——否则「任务图里有没有准备节点」只能靠文档口号。
@@ -546,14 +548,14 @@ public final class RddPlugin implements NumenPlugin {
                 } catch (RuntimeException ex) {
                     LOG.warn("[rdd] Stage-A 装配失败，回落单遍分解: {}", ex.toString());
                     DECOMPOSING.add(uuid);
-                    decomposeSinglePass(server, ticket, objective, restartRequested);
+                    decomposeSinglePass(server, ticket, objective, restartRequested, why);
                     return;
                 }
                 DECOMPOSING.remove(uuid);
                 return;
             }
             // Fallback belongs to this submission too; a later /goal invalidates both callbacks.
-            decomposeSinglePass(server, ticket, objective, restartRequested);
+            decomposeSinglePass(server, ticket, objective, restartRequested, why);
         }));
         LOG.info("[rdd] 接管目标，Stage-A 规划中 {}:{} (source={})", uuid, objective, source);
     }
@@ -744,13 +746,7 @@ public final class RddPlugin implements NumenPlugin {
             TaskChain chain = runtime.chain();
             // Declare the chain the host actually runs, so late callbacks from a finished chain
             // cannot overwrite (or be presented as) the current context.
-            com.dwinovo.numen.api.RationaleContext.noteCurrentChain(uuid, chain.chainInstanceId());
-            // Scope-aware: same plan revision on a different chain instance is NOT the same context.
-            if (com.dwinovo.numen.api.RationaleContext.get(uuid) != null
-                    && !com.dwinovo.numen.api.RationaleContext.applicable(
-                            uuid, chain.planRevision(), chain.chainInstanceId())) {
-                com.dwinovo.numen.api.RationaleContext.clear(uuid);
-            }
+            RddRationale.refreshContext(uuid, chain);
             String recoveryContext = com.dwinovo.numen.rdd.side.death.DeathPreparation.pausedContext(chain);
             if (!recoveryContext.isBlank()) return withAssets(uuid, recoveryContext);
             // 2026-10-31（V-20261031-10 旁记）：链已完成时不能再把最后一个子任务当「当前目标」注入。
@@ -766,7 +762,6 @@ public final class RddPlugin implements NumenPlugin {
             }
             Subtask current = chain.currentSubtask();
             if (current == null) {
-                com.dwinovo.numen.api.RationaleContext.clear(uuid);
                 // 当前一级已到达但未展开(懒加载)：诚实报阶段主题，不伪造可执行节点
                 return withAssets(uuid, "<rdd><enabled>true</enabled><active>true</active>"
                         + "<primary_status>" + chain.primaryStatus() + "</primary_status>"
@@ -1160,12 +1155,13 @@ private static String withAssets(UUID companionId, String rddContext) {
 
     /** Stage-A 退化回落：今天的单遍 decompose -> bind + startCurrent（目标不被吞，行为不劣化）。 */
     private static void decomposeSinglePass(MinecraftServer server, RddCallbackGuard.Ticket ticket,
-                                            String objective, boolean restartRequested) {
+                                            String objective, boolean restartRequested,
+                                            com.dwinovo.numen.api.RationaleContext.Entry why) {
         UUID uuid = ticket.companionId();
         var observationToken = captureObservationToken(server);
-        RddDecomposer.decompose(uuid, objective, goal -> onServer(server, ticket, () -> {
+        RddDecomposer.decompose(uuid, objective, why, goal -> onServer(server, ticket, () -> {
             try {
-                bindCurrent(uuid, goal, restartRequested);
+                bindCurrent(uuid, goal, restartRequested, why);
                 RddRuntime runtime = runtime(uuid);
                 if (runtime != null) {
                     runtime.startCurrent();
@@ -1200,6 +1196,11 @@ private static String withAssets(UUID companionId, String rddContext) {
      *                  绑好后立即清一次并 bump planRevision/stateVersion（169 T6 / 170 §5.1）。
      */
     private static void bindCurrent(UUID companionId, Goal goal, boolean restarted) {
+        bindCurrent(companionId, goal, restarted, null);
+    }
+
+    private static void bindCurrent(UUID companionId, Goal goal, boolean restarted,
+                                    com.dwinovo.numen.api.RationaleContext.Entry why) {
         BODY.remove(companionId);
         DECOMPOSING.remove(companionId);
         // 换目标 = 旧支线作废：立即取消，且不恢复旧主线（新链自己重新选择）。
@@ -1237,6 +1238,10 @@ private static String withAssets(UUID companionId, String rddContext) {
                     "note", "inherited stage facts cleared; first primary must be re-earned"));
         }
         RUNTIMES.put(companionId, new RddRuntime(fresh, assets(companionId)));
+        RddRationale.bound(companionId, fresh, why, () -> {
+            var current = runtime(companionId);
+            return current == null ? null : current.chain();
+        });
         SideTaskHost.registerDailySpecs(fresh);
         // 【架构概念 2/4 接线】一级目标生成时同步产出"需求清单"（元件检测的需求侧）。
         // 只产"事实"，不在这里做裁决（裁决归 DetectionArbitration），更不在这里改规划。
