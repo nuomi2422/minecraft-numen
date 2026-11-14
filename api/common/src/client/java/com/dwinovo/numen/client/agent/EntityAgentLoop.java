@@ -523,13 +523,16 @@ public final class EntityAgentLoop {
             dead = true;
             Constants.LOG.info("[numen-entity#{}] 恢复时她还死着 — 停牌等复活", entityUuid);
         }
-        List<ConvoState.Msg> history = log.load(ConvoLog.DEFAULT_LOAD_LIMIT);
+        // One read/parse pass yields both views (2026-11-15): restore used to load the log twice,
+        // which doubled startup cost on a multi-megabyte chat.jsonl.
+        ConvoLog.Restore restored = log.loadForRestore(ConvoLog.DEFAULT_LOAD_LIMIT);
+        List<ConvoState.Msg> history = restored.history();
         if (history.isEmpty()) return;
         convo.preload(history);
         // The visible transcript replays the raw file order (dividers included),
         // NOT the compacted view — preload before healing so the synthetic
         // messages below land after it via the sink.
-        display.addAll(log.loadDisplay(ConvoLog.DEFAULT_LOAD_LIMIT));
+        display.addAll(restored.display());
 
         List<String> dangling = ConvoLog.unansweredToolCallIds(history);
         for (String id : dangling) {

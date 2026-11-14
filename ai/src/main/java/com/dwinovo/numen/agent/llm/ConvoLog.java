@@ -263,17 +263,22 @@ public final class ConvoLog {
     // ---- read ----
 
     /**
-     * Load the protocol-valid tail of the conversation for the LLM: messages only (events skipped), the
-     * last {@code limit} extended backwards to the nearest {@code user} message so the slice starts at a
-     * turn boundary. A {@code compact} event restarts the replay from its summary + preserved tail;
-     * a {@code clear} event restarts it from nothing.
+     * Both derived views of the log, produced from ONE read/parse pass. Restore needs the LLM tail and
+     * the GUI transcript at the same instant; reading the (potentially huge) file twice doubled the
+     * startup cost for identical input.
+     *
+     * <p>Semantics are exactly those of {@link #load} and {@link #loadDisplay}: the history view skips
+     * events, restarts at compact/clear boundaries and walks back to the nearest user message; the
+     * display view keeps the physical order, turning compact/clear/persona-change into divider lines
+     * and trimming to the last {@code limit} entries without a user-boundary walk.
      */
-    public List<ConvoState.Msg> load(int limit) {
-        if (!Files.isRegularFile(file)) return List.of();
-
-        List<ConvoState.Msg> all = new ArrayList<>();
-        try {
-            for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+    public Restore loadForRestore(int limit) {
+        List<ConvoState.Msg> history = new ArrayList<>();
+        List<ConvoState.Msg> display = new ArrayList<>();
+        if (!Files.isRegularFile(file)) return new Restore(List.of(), List.of());
+        try (var reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
                 if (line.isBlank()) continue;
                 JsonObject o = tryParse(line);
                 if (o == null) {
@@ -282,32 +287,45 @@ public final class ConvoLog {
                 }
                 String type = eventType(o);
                 if (type != null) {                              // event record
-                    if (EV_COMPACT.equals(type)) {
-                        all.clear();
-                        all.add(new ConvoState.Msg.User(str(o.get("content"))));
-                        if (o.has("preserved") && o.get("preserved").isJsonArray()) {
-                            for (JsonElement el : o.getAsJsonArray("preserved")) {
-                                ConvoState.Msg m = decodeMessage(el.getAsJsonObject());
-                                if (m != null) all.add(m);
+                    switch (type) {
+                        case EV_COMPACT -> {
+                            history.clear();
+                            history.add(new ConvoState.Msg.User(str(o.get("content"))));
+                            if (o.has("preserved") && o.get("preserved").isJsonArray()) {
+                                for (JsonElement el : o.getAsJsonArray("preserved")) {
+                                    ConvoState.Msg m = decodeMessage(el.getAsJsonObject());
+                                    if (m != null) history.add(m);
+                                }
                             }
+                            display.add(new ConvoState.Msg.User(COMPACT_DIVIDER));
                         }
-                    } else if (EV_CLEAR.equals(type)) {
-                        all.clear();   // 白纸重来:无摘要、无保留
+                        case EV_CLEAR -> {
+                            history.clear();   // 白纸重来:无摘要、无保留
+                            display.add(new ConvoState.Msg.User(CLEAR_DIVIDER));
+                        }
+                        case EV_PERSONA -> display.add(new ConvoState.Msg.User(PERSONA_DIVIDER));
+                        default -> { }     // header / goal / unknown → neither view
                     }
-                    // header / persona-change / goal / unknown → not part of the LLM context
                     continue;
                 }
                 ConvoState.Msg m = decodeMessage(o);             // message record
-                if (m != null) all.add(m);                       // unknown role → skip (forward-compat)
+                if (m != null) {                                  // unknown role → skip (forward-compat)
+                    history.add(m);
+                    display.add(m);
+                }
             }
         } catch (IOException ex) {
             AiLog.LOG.warn("[numen-convo] failed to read {}: {}", file, ex.toString());
-            return List.of();
+            return new Restore(List.of(), List.of());
         }
-        if (all.size() <= limit) return all;
+        return new Restore(tailForModel(history, limit), tailForDisplay(display, limit));
+    }
 
-        // Tail-trim, then walk back to the nearest user message (a slice opening on a tool result or
-        // mid-chain assistant turn is rejected by the API; a conversation always begins with user).
+    /** LLM tail: last {@code limit} messages, walked back to the nearest user message (may exceed limit). */
+    private List<ConvoState.Msg> tailForModel(List<ConvoState.Msg> all, int limit) {
+        if (all.size() <= limit) return new ArrayList<>(all);
+        // A slice opening on a tool result or mid-chain assistant turn is rejected by the API; a
+        // conversation always begins with user.
         int start = all.size() - limit;
         while (start > 0 && !(all.get(start) instanceof ConvoState.Msg.User)) {
             start--;
@@ -318,6 +336,30 @@ public final class ConvoLog {
         return new ArrayList<>(tail);
     }
 
+    /** GUI tail: the physical last {@code limit} entries, no user-boundary walk. */
+    private List<ConvoState.Msg> tailForDisplay(List<ConvoState.Msg> all, int limit) {
+        if (all.size() <= limit) return new ArrayList<>(all);
+        return new ArrayList<>(all.subList(all.size() - limit, all.size()));
+    }
+
+    /**
+     * Load the protocol-valid tail of the conversation for the LLM: messages only (events skipped), the
+     * last {@code limit} extended backwards to the nearest {@code user} message so the slice starts at a
+     * turn boundary. A {@code compact} event restarts the replay from its summary + preserved tail;
+     * a {@code clear} event restarts it from nothing.
+     */
+    public List<ConvoState.Msg> load(int limit) {
+        return loadForRestore(limit).history();
+    }
+
+    /** The two derived views of one restore, produced from a single pass over the file. */
+    public record Restore(List<ConvoState.Msg> history, List<ConvoState.Msg> display) {
+        public Restore {
+            history = history == null ? List.of() : List.copyOf(history);
+            display = display == null ? List.of() : List.copyOf(display);
+        }
+    }
+
     /**
      * Load the PHYSICAL tail for the chat GUI: messages in file order; {@code compact}, {@code clear}
      * and {@code persona-change} events become sentinel divider messages instead of restarting or
@@ -325,34 +367,7 @@ public final class ConvoLog {
      * or clearing.
      */
     public List<ConvoState.Msg> loadDisplay(int limit) {
-        if (!Files.isRegularFile(file)) return List.of();
-
-        List<ConvoState.Msg> all = new ArrayList<>();
-        try {
-            for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
-                if (line.isBlank()) continue;
-                JsonObject o = tryParse(line);
-                if (o == null) {
-                    AiLog.LOG.warn("[numen-convo] skipping unparsable line in {}", file.getFileName());
-                    continue;
-                }
-                String type = eventType(o);
-                if (type != null) {                              // event record
-                    if (EV_COMPACT.equals(type)) all.add(new ConvoState.Msg.User(COMPACT_DIVIDER));
-                    else if (EV_CLEAR.equals(type)) all.add(new ConvoState.Msg.User(CLEAR_DIVIDER));
-                    else if (EV_PERSONA.equals(type)) all.add(new ConvoState.Msg.User(PERSONA_DIVIDER));
-                    // header / goal / unknown → not shown
-                    continue;
-                }
-                ConvoState.Msg m = decodeMessage(o);
-                if (m != null) all.add(m);
-            }
-        } catch (IOException ex) {
-            AiLog.LOG.warn("[numen-convo] failed to read {}: {}", file, ex.toString());
-            return List.of();
-        }
-        if (all.size() <= limit) return all;
-        return new ArrayList<>(all.subList(all.size() - limit, all.size()));
+        return loadForRestore(limit).display();
     }
 
     /**
