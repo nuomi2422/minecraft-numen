@@ -60,6 +60,28 @@ final class RddStagePlanner {
         org.slf4j.LoggerFactory.getLogger(RddStagePlanner.class)
                 .info("[rdd-facts] 事实包长度={} 片段={}", facts.length(),
                         facts.length() > 120 ? facts.substring(0, 120).replace("\n", " ") : facts.replace("\n", " "));
+        dispatchStages(companionId, objective, why, snapshot, facts, RddPlanningKnowledge.HOST,
+                () -> freshRationale(companionId), userContent ->
+                RddDecomposer.llmAsk(companionId, "stage_a", userContent, PLAN_SYSTEM, PLAN_TOOL,
+                args -> {
+                    RddPlanGuard.Stages guarded = RddPlanGuard.filterStages(parse(args), objective);
+                    List<PrimarySpec> withSmeltPrep = RddRiskPlanning.ensureSmeltPrepStage(
+                            guarded.allowed(), snapshot.availableCounts());
+                    List<PrimarySpec> prepared = RddRiskPlanning.ensurePrepStage(withSmeltPrep, RddChainFactory.MAX_STAGES);
+                    List<PrimarySpec> planned = RddRiskPlanning.injectWaitFor(prepared, snapshot.availableCounts());
+                    RddPlanningKnowledge.publishPolicy(companionId, "stage_a",
+                            RddPlanningPolicy.appliedRules(objective, "stage_a"),
+                            guarded.dropped(), List.of());
+                    done.accept(planned);
+                },
+                () -> done.accept(List.of())));
+    }
+
+    /** The real Stage-A prompt/provider/final-send path, with only host facts and transport supplied. */
+    static void dispatchStages(UUID companionId, String objective,
+                               com.dwinovo.numen.api.RationaleContext.Entry why, PlanningAssetSnapshot snapshot,
+                               String facts, RddPlanningKnowledge.Provider knowledge,
+                               java.util.function.Supplier<String> currentRationale, Consumer<String> send) {
         String base = RddPlanningKnowledge.attach(
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
                         + facts + "\n" + planningPrompt(objective, snapshot),
@@ -70,30 +92,16 @@ final class RddStagePlanner {
         // 建链前的规划：用发起方带进来的理由（no chain yet），没有就退回到链作用域判定。
         String whyText = why != null
                 ? com.dwinovo.numen.api.RationaleContext.renderEntry(why)
-                : freshRationale(companionId);
+                : currentRationale.get();
         RddMonitor.publish("plan_final_request", java.util.Map.of(
                 "companionId", companionId.toString(),
                 "requestKind", "plan",
                 "rationalePresent", !whyText.isBlank(),
                 "rationaleFrom", why != null ? "submitter" : "chain_scope"));
         String userContent = withRationale(RddPlanningKnowledge.withKnowledge(
-                RddPlanningKnowledge.HOST, companionId, base, objective, "stage_a", List.of()),
+                knowledge, companionId, base, objective, "stage_a", List.of()),
                 whyText);
-        RddDecomposer.llmAsk(companionId, "stage_a", userContent, PLAN_SYSTEM, PLAN_TOOL,
-                args -> {
-                    RddPlanGuard.Stages guarded = RddPlanGuard.filterStages(parse(args), objective);
-                    // P2.2：高风险阶段自动补 wait_for 硬门（提前备装，由依赖门强制）
-                    // A2（94 号）：先保证任务图里有「准备与补给」节点（规划师可能不写），再挂硬门。
-                    List<PrimarySpec> withSmeltPrep = RddRiskPlanning.ensureSmeltPrepStage(
-                            guarded.allowed(), snapshot.availableCounts());
-                    List<PrimarySpec> prepared = RddRiskPlanning.ensurePrepStage(withSmeltPrep, RddChainFactory.MAX_STAGES);
-                    List<PrimarySpec> planned = RddRiskPlanning.injectWaitFor(prepared, snapshot.availableCounts());
-                    RddPlanningKnowledge.publishPolicy(companionId, "stage_a",
-                            RddPlanningPolicy.appliedRules(objective, "stage_a"),
-                            guarded.dropped(), List.of());
-                    done.accept(planned);
-                },
-                () -> done.accept(List.of()));
+        send.accept(userContent);
     }
 
     /**

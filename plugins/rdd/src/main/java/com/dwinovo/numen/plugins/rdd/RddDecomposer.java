@@ -240,6 +240,11 @@ final class RddDecomposer {
 
     /** 主入口：异步分解目标，回调收到一个可用的 Goal（成功=分解链，失败=占位链）。 */
     static void decompose(UUID companionId, String objective, Consumer<Goal> done) {
+        decompose(companionId, objective, null, done);
+    }
+
+    static void decompose(UUID companionId, String objective,
+                          com.dwinovo.numen.api.RationaleContext.Entry why, Consumer<Goal> done) {
         // 2026-11-06 生存闸（内容层唯一判据）：hunger<10 / hp<8 时跳过常规分解，直出进食首任务。
         try {
             Goal survival = survivalFirst(companionId, objective);
@@ -269,15 +274,7 @@ final class RddDecomposer {
                 cfg.getBaseUrl(), cfg.getProxy(), plannerReasoningEffort());
         // 经验知识贴进最终请求正文（无知识时与原来逐字相同）
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
-        // 167 §B1 接线：建家顺序只给分解器一次（不是常驻上下文），且只在目标提到建家/安家时贴。
-        String homeHint = mentionsHome(objective)
-                ? System.lineSeparator() + System.lineSeparator()
-                  + com.dwinovo.numen.rdd.policy.HomeBuildPlan.hint() + System.lineSeparator()
-                : "";
-        String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
-                RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
-                        + homeHint + decompositionPrompt(objective, snapshot, List.of()),
-                objective, "fallback", List.of());
+        String userContent = fallbackRequestContent(companionId, objective, why, snapshot, RddPlanningKnowledge.HOST);
         RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
         NumenLlmClient.forEndpoint(ep)
                 .chatStreaming(List.of(new ConvoState.Msg.User(userContent)),
@@ -352,6 +349,20 @@ final class RddDecomposer {
                         done.accept(fallbackGoal(companionId, objective));
                     }
                 }));
+    }
+
+    /** Actual single-pass final content; no host reads, so failed Stage-A handoff is directly testable. */
+    static String fallbackRequestContent(UUID companionId, String objective,
+                                         com.dwinovo.numen.api.RationaleContext.Entry why,
+                                         PlanningAssetSnapshot snapshot, RddPlanningKnowledge.Provider knowledge) {
+        String homeHint = mentionsHome(objective)
+                ? System.lineSeparator() + System.lineSeparator()
+                  + com.dwinovo.numen.rdd.policy.HomeBuildPlan.hint() + System.lineSeparator()
+                : "";
+        return RddStagePlanner.withRationale(RddPlanningKnowledge.withKnowledge(knowledge, companionId,
+                RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
+                        + homeHint + decompositionPrompt(objective, snapshot, List.of()),
+                objective, "fallback", List.of()), com.dwinovo.numen.api.RationaleContext.renderEntry(why));
     }
 
     /**

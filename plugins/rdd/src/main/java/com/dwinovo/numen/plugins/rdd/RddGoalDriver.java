@@ -164,14 +164,16 @@ final class RddGoalDriver {
                 failure = "no usable subtasks (empty or legal-but-unexecutable after strict parse)";
             } else {
                 try {
-                    List<Subtask> subs;
-                    // 2026-09-30 深审 R05/codex：懒展开与重规划**共用**计划代次，
-                    // 否则两套 id 命名（`-sN` / `-r{rev}-N`）可能撞，且回执/指标无法区分来源。
-                    int rev = chain.nextPlanRevision();
-                    // id 以当前一级 id + 代次为前缀 → 跨级/跨重试/跨重启全局唯一
-                    subs = buildInjection(pid, rev, specs);
-                    acceptPlan(subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
-                            () -> rt.expandCurrentPrimary(subs)); // reject all-DAILY through the existing retry budget
+                    RddRationale.expand(companionId, chain, () -> {
+                        var current = RddPlugin.runtime(companionId);
+                        return current == null ? null : current.chain();
+                    }, () -> {
+                        // Lazy expansion and replanning share the persisted plan revision.
+                        int rev = chain.nextPlanRevision();
+                        List<Subtask> subs = buildInjection(pid, rev, specs);
+                        acceptPlan(subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
+                                () -> rt.expandCurrentPrimary(subs)); // all-DAILY still uses the existing retry budget
+                    });
                     ok = true;
                 } catch (RuntimeException ex) {
                     failure = "expansion rejected by core: " + ex.getMessage();
