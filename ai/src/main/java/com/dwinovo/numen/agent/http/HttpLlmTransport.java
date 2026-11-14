@@ -276,6 +276,15 @@ public final class HttpLlmTransport {
             String body2 = resp.body() == null ? "" : resp.body();
             AiLog.LOG.warn("[numen-http][{}] ✗ {} in {}ms — body: {}",
                     requestId, status, elapsedMs, truncate(body2, 500));
+            if (status == 429 && isTypedWeeklyQuota(body2)) {
+                // Explicit weekly quota exhaustion is not a transient rate limit: do not
+                // spend the bounded retry window waiting for a reset. Keep the original
+                // body in the exception so callers can carry the provider's reason.
+                if (retryListener != null) {
+                    try { retryListener.onGiveUp(status, attempt + 1); } catch (RuntimeException ignored) {}
+                }
+                return CompletableFuture.<Void>failedFuture(new LlmHttpException(status, body2));
+            }
             if (!shouldRetryStatus(status, resp.headers())) {
                 logRejectedRequest(requestId, status, body);
             }
@@ -344,6 +353,25 @@ Consumer<JsonObject> chunkHandler, int attempt,
             if ("false".equalsIgnoreCase(override.get())) return false;
         }
         return status == 408 || status == 409 || status == 429 || status >= 500;
+    }
+
+    /** Exact typed weekly quota marker; malformed, partial or ordinary 429 bodies stay retryable. */
+    private static boolean isTypedWeeklyQuota(String body) {
+        try {
+            JsonElement parsed = JsonParser.parseString(body);
+            if (!parsed.isJsonObject()) return false;
+            JsonObject root = parsed.getAsJsonObject();
+            if (!root.has("error") || !root.get("error").isJsonObject()) return false;
+            JsonObject error = root.getAsJsonObject("error");
+            if (!error.has("type") || !error.get("type").isJsonPrimitive()) return false;
+            if (!"GoUsageLimitError".equals(error.get("type").getAsString())) return false;
+            if (!root.has("metadata") || !root.get("metadata").isJsonObject()) return false;
+            JsonObject metadata = root.getAsJsonObject("metadata");
+            if (!metadata.has("limitName") || !metadata.get("limitName").isJsonPrimitive()) return false;
+            return "weekly".equals(metadata.get("limitName").getAsString());
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     /** Server-directed delay: {@code retry-after-ms} (float ms) first, then
