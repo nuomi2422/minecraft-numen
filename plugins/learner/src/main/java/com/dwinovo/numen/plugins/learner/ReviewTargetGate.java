@@ -35,7 +35,63 @@ public final class ReviewTargetGate {
         if (companion == null || !complete(reviewStart) || !complete(current))
             return new Check(false, "REVIEW_CONTEXT_UNKNOWN");
         if (!reviewStart.equals(current)) return new Check(false, "REVIEW_CONTEXT_CHANGED");
-        return new Check(true, "OK");
+        return skillTarget(configDir, companion, memo);
+    }
+
+
+    /** Current target permission is separate from the durable sample's historical world identity.
+     * Skill lifecycle failures remain nonterminal: this gate must not invent a policy deleting old facts. */
+    private static Check skillTarget(Path dir, UUID companion, Memo memo) {
+        String ref, version, bodyRef = "", bodyDigest = "";
+        try {
+            if ("skill_task_result".equals(memo.stage())) {
+                var fact = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.taskResultFromSnapshot(memo.snapshot());
+                if (fact == null) return new Check(false, "SKILL_SNAPSHOT_UNKNOWN");
+                if (!companion.toString().equals(fact.scope().companionId()))
+                    return new Check(false, "SKILL_COMPANION_MISMATCH");
+                ref = fact.ref(); version = fact.version();
+                bodyRef = fact.bodyRef(); bodyDigest = fact.bodyDigest();
+                if (bodyRef.isBlank() || bodyDigest.isBlank()) return new Check(false, "SKILL_BODY_UNKNOWN");
+            } else {
+                // Existing delivery memos contain the original detail object, not a new Entry schema.
+                JsonObject detail = JsonParser.parseString(memo.snapshot()).getAsJsonObject();
+                ref = text(detail, "skill_ref"); version = text(detail, "version");
+            }
+            if (!ref.matches("skill:[^\\s:@]+") || !version.matches("v[1-9][0-9]*"))
+                return new Check(false, "SKILL_SNAPSHOT_UNKNOWN");
+        } catch (RuntimeException malformed) {
+            return new Check(false, "SKILL_SNAPSHOT_UNKNOWN");
+        }
+        if (dir == null) return new Check(false, "SKILL_REGISTRY_UNKNOWN");
+        Path file = dir.resolve("skills.jsonl");
+        if (!Files.isRegularFile(file)) return new Check(false, "SKILL_REGISTRY_UNKNOWN");
+        try {
+            // Read the current durable registry, not a possibly older writer cache.
+            var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(file);
+            if (registry.skippedLines() > 0) return new Check(false, "SKILL_REGISTRY_UNKNOWN");
+            var skill = registry.get(ref.substring("skill:".length())).orElse(null);
+            if (skill == null) return new Check(false, "SKILL_TARGET_MISSING");
+            if (skill.status() == com.dwinovo.numen.plugins.learner.skills.SkillStatus.REVOKED)
+                return new Check(false, "SKILL_REVOKED");
+            if (!version.equals("v" + skill.version())) return new Check(false, "SKILL_VERSION_CHANGED");
+            if (!skill.status().retrievable()) return new Check(false, "SKILL_NOT_RETRIEVABLE");
+            String body = com.dwinovo.numen.plugins.learner.skills.SkillBodyStore.read(dir, skill.bodyRef());
+            if (body == null || body.isBlank()) return new Check(false, "SKILL_BODY_UNKNOWN");
+            if ("skill_task_result".equals(memo.stage()) && (!bodyRef.equals(skill.bodyRef())
+                    || !bodyDigest.equals(SkillTaskFeedback.digest(body))))
+                return new Check(false, "SKILL_BODY_MISMATCH");
+            // Delivery has no historical body digest: current readability is not proof of old delivered bytes.
+            return new Check(true, "OK");
+        } catch (IOException | RuntimeException unreadable) {
+            return new Check(false, "SKILL_REGISTRY_UNKNOWN");
+        }
+    }
+
+    private static String text(JsonObject object, String key) {
+        var value = object.get(key);
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString())
+            throw new IllegalArgumentException(key);
+        return value.getAsString();
     }
 
     private static boolean skillReview(Memo memo) {
