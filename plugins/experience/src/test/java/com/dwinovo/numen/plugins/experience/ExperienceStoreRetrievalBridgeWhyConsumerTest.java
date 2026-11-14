@@ -222,15 +222,34 @@ class ExperienceStoreRetrievalBridgeWhyConsumerTest {
         return rendered.text().substring(start, end);
     }
 
+
+    @Test
+    void risksAndSourceAloneReachActualBodiesInsideTheSameCharacterBudget() {
+        ExperienceMemory memory = memory(owner().rationale("").preconditions("")
+                .failureConditions("RISK_ONLY unsafe exit.").evidence("fixture:source-only-9")
+                .mechanism("MECHANISM_ONLY " + "route ".repeat(90)).recommendedResponse("ACTION_ONLY replenish safely.")
+                .tags(List.of()).build());
+        var source = memory.all().getFirst();
+        assertTrue(source.rationale().isEmpty() && source.preconditions().isEmpty());
+        for (RetrievalRole role : List.of(RetrievalRole.PLANNER, RetrievalRole.EXECUTOR)) {
+            String body = bodyFor(render(memory, TASK, 2400, role), ref(memory));
+            assertTrue(body.contains(source.failureConditions()), "risk-only must enter the existing nonempty-field branch");
+            assertTrue(body.contains(source.evidence()), "source-only must not become a made-up provider reference");
+            assertFalse(body.contains("理由:") || body.contains("适用条件:"), "empty source fields remain absent");
+        }
+        assertTrue(ExperienceStoreRetrievalBridge.snapshot(memory).getFirst().bodyContent().length()
+                <= ExperienceStoreRetrievalBridge.MAX_BODY_CHARS, "risks/source share the same cap with mechanism/action");
+    }
+
     @Test
     void entriesWithoutNewFieldsRetainTheExactLegacyBodyBytes() {
-        ExperienceMemory memory = memory(owner().rationale("").preconditions("")
+        ExperienceMemory memory = memory(owner().rationale("").preconditions("").failureConditions("").evidence("")
                 .mechanism("  legacy mechanism  ").recommendedResponse("  legacy action  ").build());
         String original = "legacy mechanism\n推荐处理: legacy action";
         assertEquals(original, ExperienceStoreRetrievalBridge.snapshot(memory).getFirst().bodyContent());
         String longMechanism = "m".repeat(ExperienceStoreRetrievalBridge.MAX_BODY_CHARS + 20);
         ExperienceMemory longMemory = ExperienceMemory.at(dir.resolve("legacy-long.jsonl"), new LexicalExperienceRetriever());
-        longMemory.learn(owner().rationale("").preconditions("")
+        longMemory.learn(owner().rationale("").preconditions("").failureConditions("").evidence("")
                 .mechanism(longMechanism).recommendedResponse("old action").build());
         assertEquals("m".repeat(ExperienceStoreRetrievalBridge.MAX_BODY_CHARS) + "…",
                 ExperienceStoreRetrievalBridge.snapshot(longMemory).getFirst().bodyContent());
