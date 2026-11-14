@@ -8,6 +8,8 @@ import com.dwinovo.numen.rdd.core.TaskChain;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -19,8 +21,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * 044 B1: existing, applicable reasons must reach the actual Stage-B request consumer.
- * WHY (2026-11-14): Stage-A appends freshRationale, while Stage-B sends only knowledge.
- * This is an isolated red candidate, not a replay of V16 or evidence of its root cause.
+ * WHY (2026-11-14): the original three cases preserve the missing-why delivery regression;
+ * consumer cases reject old-theme/new-owner pairing. No case replays V16 or proves its cause.
  * Use only the managed plugins:rdd test selector after the parent grants the Java slot.
  * Real RationaleContext scope/revision checks are used, not an always-fresh fake; all
  * reason text below is explicitly synthetic and never enters a natural runtime input.
@@ -226,6 +228,126 @@ class RddStageBRationaleRequestTest {
         assertTrue(sent.getFirst().endsWith(RationaleContext.renderApplicable(
                 companionId, revision, owner.chainInstanceId())));
         assertTrue(sent.getFirst().contains("<why>"));
+    }
+
+    @Test
+    void runtimeWithdrawalDuringKnowledgeOmitsReasonEvenIfDeclarationLags() {
+        TaskChain owner = owner("fixture-only withdrawn runtime theme");
+        declareReason(owner, fixtureReason());
+        AtomicReference<TaskChain> live = new AtomicReference<>(owner);
+        List<String> sent = dispatch(owner, owner.planRevision(), owner.currentPrimary().description(), live,
+                (id, theme, stage, failures) -> {
+                    live.set(null);
+                    return KNOWLEDGE;
+                });
+        assertEquals(1, sent.size());
+        assertNoReason(sent.getFirst());
+        assertTrue(RationaleContext.applicable(companionId, owner.planRevision(), owner.chainInstanceId()),
+                "lagging context alone must not authorise a withdrawn runtime");
+    }
+
+    @Test
+    void replacementRuntimeCannotReuseOldDeclarationEvenWhenOldReasonStillLooksApplicable() {
+        TaskChain owner = owner("fixture-only declaration lag OLD_THEME");
+        declareReason(owner, fixtureReason());
+        TaskChain replacement = owner("fixture-only declaration lag NEW_THEME");
+        AtomicReference<TaskChain> live = new AtomicReference<>(owner);
+        List<String> sent = dispatch(owner, owner.planRevision(), owner.currentPrimary().description(), live,
+                (id, theme, stage, failures) -> {
+                    live.set(replacement);
+                    // Deliberately do not update RationaleContext: lifecycle declarations can lag.
+                    return KNOWLEDGE;
+                });
+        assertTrue(RationaleContext.applicable(companionId, owner.planRevision(), owner.chainInstanceId()));
+        assertEquals(1, sent.size());
+        assertNoReason(sent.getFirst());
+    }
+
+    @Test
+    void callerCapturedRevisionBeforeEntryCannotBeUpgradedByTheCurrentReason() {
+        TaskChain owner = owner("fixture-only pre-entry old revision theme");
+        long revision = owner.planRevision();
+        owner.nextPlanRevision();
+        declareReason(owner, replacementReason());
+        List<String> sent = dispatch(owner, revision, owner.currentPrimary().description(),
+                new AtomicReference<>(owner), (id, theme, stage, failures) -> KNOWLEDGE);
+        assertEquals(1, sent.size());
+        assertNoReason(sent.getFirst());
+    }
+
+    @Test
+    void matchingChainAndRevisionStillRequireTheCurrentHostDeclaration() {
+        TaskChain owner = owner("fixture-only withdrawn declaration theme");
+        declareReason(owner, fixtureReason());
+        List<String> sent = dispatch(owner, owner.planRevision(), owner.currentPrimary().description(),
+                new AtomicReference<>(owner), (id, theme, stage, failures) -> {
+                    RationaleContext.noteCurrentChain(companionId, null);
+                    return KNOWLEDGE;
+                });
+        assertEquals(1, sent.size());
+        assertNoReason(sent.getFirst());
+        assertFalse(RationaleContext.peek(companionId).isBlank(), "stored text remains history");
+    }
+
+    @Test
+    void progressedCurrentRevisionStillSendsTheMatchingReason() {
+        TaskChain owner = owner("fixture-only progressed theme");
+        owner.nextPlanRevision();
+        long revision = owner.planRevision();
+        declareReason(owner, fixtureReason());
+        List<String> sent = dispatch(owner, revision, owner.currentPrimary().description(),
+                new AtomicReference<>(owner), (id, theme, stage, failures) -> KNOWLEDGE);
+        assertEquals(1, sent.size());
+        assertTrue(sent.getFirst().contains("fixture-only progressed theme"));
+        assertTrue(sent.getFirst().contains("<why>"));
+        assertTrue(sent.getFirst().endsWith(RationaleContext.renderApplicable(
+                companionId, revision, owner.chainInstanceId())));
+    }
+
+    @Test
+    void replacementOwnerPlanningItsOwnThemeKeepsItsOwnReason() {
+        TaskChain previous = owner("fixture-only previous OLD_THEME");
+        declareReason(previous, fixtureReason());
+        TaskChain replacement = owner("fixture-only replacement NEW_THEME");
+        declareReason(replacement, replacementReason());
+        List<String> sent = dispatch(replacement, replacement.planRevision(),
+                replacement.currentPrimary().description(), new AtomicReference<>(replacement),
+                (id, theme, stage, failures) -> KNOWLEDGE);
+        assertEquals(1, sent.size());
+        assertTrue(sent.getFirst().contains("NEW_THEME"));
+        assertFalse(sent.getFirst().contains("OLD_THEME"));
+        assertTrue(sent.getFirst().contains("NEW_OWNER_REASON"));
+        assertTrue(sent.getFirst().endsWith(RationaleContext.renderApplicable(
+                companionId, replacement.planRevision(), replacement.chainInstanceId())));
+    }
+
+    @Test
+    void realLazyAndReplanCallersCarryTheirCapturedOwnerIntoTheProductionDispatch() throws Exception {
+        // Source pins supplement the executable dispatch tests. They do not claim an MC tick ran.
+        String driver = source("RddGoalDriver");
+        assertTrue(driver.contains("long ownerRevision = chain.planRevision();"));
+        assertTrue(driver.indexOf("long ownerRevision = chain.planRevision();")
+                < driver.indexOf("PrimaryGoal cur = chain.currentPrimary();"));
+        assertTrue(driver.contains("RddDecomposer.decomposeSpecs(companionId, chain, ownerRevision, cur.description()"));
+        String plugin = source("RddPlugin");
+        assertTrue(plugin.contains("long ownerRevision = chain.planRevision();"));
+        assertTrue(plugin.indexOf("long ownerRevision = chain.planRevision();")
+                < plugin.indexOf("String theme = chain.currentPrimary().description();"));
+        assertTrue(plugin.contains("RddDecomposer.decomposeSpecsWithHint(companionId, chain, ownerRevision, theme"));
+        String decomposer = source("RddDecomposer");
+        assertTrue(decomposer.contains("dispatchStageB(companionId, themeObjective, owner, ownerRevision"));
+        assertTrue(decomposer.contains("userContent -> RddDecomposer.llmAsk(companionId, \"stage_b\", userContent"));
+        assertTrue(decomposer.contains("send.accept(stageBRequestContent(userContent, rationale));"));
+        assertFalse(decomposer.contains("RddStagePlanner.freshRationale(companionId)"),
+                "no alternate Stage-B dispatch may silently reread an unrelated runtime");
+    }
+
+    private static String source(String name) throws Exception {
+        for (Path root = Path.of("").toAbsolutePath(); root != null; root = root.getParent()) {
+            Path path = root.resolve("src/main/java/com/dwinovo/numen/plugins/rdd/" + name + ".java");
+            if (Files.isRegularFile(path)) return Files.readString(path);
+        }
+        throw new AssertionError("cannot find production source for " + name);
     }
 
     private TaskChain owner(String theme) {
