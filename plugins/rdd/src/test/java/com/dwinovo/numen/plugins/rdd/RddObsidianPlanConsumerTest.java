@@ -24,6 +24,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * Use the parent's managed plugins:rdd TestOnly selector; no MC lifecycle is claimed.
  * Not a mirrored feasibility helper: prompt, parser, guard, buildInjection, acceptPlan
  * and TaskChain are the existing production consumers. Synthetic controls are explicit.
+ * Follow-up premise correction: item IDs cannot prove a datapack. The initial 95677
+ * regression remains frozen; business cases here supply a fresh explicit native projection.
+ * No-evidence cases MUST stay UNKNOWN; the native shell itself is not a live-game test.
  */
 class RddObsidianPlanConsumerTest {
     private static final String THEME = "下界取烈焰棒与末影珍珠：进下界找到堡垒，打烈焰人取得烈焰棒，同时击杀末影人收集末影珍珠，之后回主世界";
@@ -112,7 +115,7 @@ class RddObsidianPlanConsumerTest {
 
     @Test void moddedToolAbilityIsUnknownNotGuessedFromItsNameOrTier() {
         SubtaskSpec step = obsidian("用 mod:powered_pickaxe 开采黑曜石到手10个");
-        assertEquals(List.of(step), guard(List.of(step), Map.of(
+        assertEquals(List.of(step), RddPlanGuard.filterSubtasks(List.of(step), THEME, Map.of(
                 "mod:powered_pickaxe", 1, "minecraft:iron_pickaxe", 1)).allowed());
     }
 
@@ -129,6 +132,87 @@ class RddObsidianPlanConsumerTest {
         assertEquals(List.of(cast, other), guard(List.of(cast, other), IRON).allowed());
     }
 
+    @Test void knownIronIdsWithoutNativeCapabilityEvidenceStayUnknown() {
+        SubtaskSpec step = obsidian(ORIGINAL);
+        assertEquals(List.of(step), RddPlanGuard.filterSubtasks(List.of(step), THEME, IRON).allowed());
+    }
+
+    @Test void staleFutureMismatchedAndPartialProjectionsAreNotCurrentInability() {
+        SubtaskSpec step = obsidian("开采黑曜石到手10个");
+        long now = System.currentTimeMillis();
+        for (var stale : List.of(evidence(IRON, Map.of("minecraft:iron_pickaxe", false), now - 10_000L),
+                evidence(IRON, Map.of("minecraft:iron_pickaxe", false), now + 60_000L),
+                evidence(Map.of("minecraft:iron_pickaxe", 1), Map.of("minecraft:iron_pickaxe", false), now),
+                new RddMiningPrerequisite.Evidence(IRON, Map.of("minecraft:iron_pickaxe", false), "fixture:partial native coverage", now, false))) {
+            assertEquals(List.of(step), RddPlanGuard.filterSubtasks(List.of(step), THEME, IRON, stale).allowed());
+        }
+    }
+
+    @Test void modFoodCannotBypassACompleteKnownNoCorrectToolProjection() {
+        Map<String, Integer> held = Map.of("minecraft:iron_pickaxe", 1, "mod:food", 3);
+        var nativeResult = evidence(held, Map.of("minecraft:iron_pickaxe", false, "mod:food", false), System.currentTimeMillis());
+        assertTrue(RddPlanGuard.filterSubtasks(List.of(obsidian("开采黑曜石到手10个")), THEME, held, nativeResult).allowed().isEmpty());
+    }
+
+    @Test void modToolActualNativePositiveAndNegativeAreRespectedWithoutTierGuessing() {
+        Map<String, Integer> held = Map.of("mod:powered_pickaxe", 1, "minecraft:iron_pickaxe", 1);
+        SubtaskSpec step = obsidian("用 mod:powered_pickaxe 开采黑曜石到手10个");
+        var negative = evidence(held, Map.of("mod:powered_pickaxe", false, "minecraft:iron_pickaxe", false), System.currentTimeMillis());
+        assertTrue(RddPlanGuard.filterSubtasks(List.of(step), THEME, held, negative).allowed().isEmpty());
+        var positive = evidence(held, Map.of("mod:powered_pickaxe", true, "minecraft:iron_pickaxe", false), System.currentTimeMillis());
+        assertEquals(List.of(step), RddPlanGuard.filterSubtasks(List.of(step), THEME, held, positive).allowed());
+    }
+
+    @Test void datapackOrItemComponentMakingActualIronCorrectOverridesStaticVanillaAdvice() {
+        Map<String, Integer> held = Map.of("minecraft:iron_pickaxe", 1);
+        SubtaskSpec step = obsidian("用铁镐开采黑曜石到手10个");
+        var changed = evidence(held, Map.of("minecraft:iron_pickaxe", true), System.currentTimeMillis());
+        assertEquals(List.of(step), RddPlanGuard.filterSubtasks(List.of(step), THEME, held, changed).allowed());
+    }
+
+    @Test void mentioningToolPreparationWithoutItsConditionCannotBypassKnownInability() {
+        SubtaskSpec notPrep = parse("制作钻石镐前先取木棍", Map.of("asset_key", "minecraft:stick", "minimum", 1));
+        assertTrue(guard(List.of(notPrep, obsidian("开采黑曜石到手10个")), IRON).allowed().isEmpty());
+    }
+
+    @Test void noToolCanStillCastWorldBlocksButCastingCannotSatisfyItemInventory() {
+        SubtaskSpec impossible = obsidian("用水桶浇筑黑曜石，背包到手10个");
+        assertTrue(guard(List.of(impossible), IRON).allowed().isEmpty());
+    }
+
+    @Test void alreadyHeldObsidianHoldTargetDoesNotRequireMiningAgain() {
+        Map<String, Integer> held = Map.of("minecraft:iron_pickaxe", 1, "minecraft:obsidian", 10);
+        SubtaskSpec step = obsidian("开采黑曜石到手10个");
+        var nativeResult = evidence(held, Map.of("minecraft:iron_pickaxe", false, "minecraft:obsidian", false), System.currentTimeMillis());
+        var guarded = RddPlanGuard.filterSubtasks(List.of(step), THEME, held, nativeResult);
+        assertEquals(List.of(step), guarded.allowed());
+        assertEquals(List.of("minecraft:obsidian"), guarded.reused());
+    }
+
+    @Test void actualNoCorrectToolCannotBeOverriddenByADefaultDiamondToolName() {
+        Map<String, Integer> held = Map.of("minecraft:diamond_pickaxe", 1);
+        SubtaskSpec step = obsidian("用 diamond_pickaxe 开采黑曜石到手10个");
+        var denied = evidence(held, Map.of("minecraft:diamond_pickaxe", false), System.currentTimeMillis());
+        assertTrue(RddPlanGuard.filterSubtasks(List.of(step), THEME, held, denied).allowed().isEmpty());
+    }
+
+    @Test void productionShellKeepsNativeProjectionOnCapturedServerAndFeedsBothRealGuards() throws Exception {
+        java.nio.file.Path root = java.nio.file.Path.of("").toAbsolutePath();
+        while (root != null && !java.nio.file.Files.isRegularFile(root.resolve("plugins/rdd/build.gradle"))) root = root.getParent();
+        assertNotNull(root);
+        String base = "plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/";
+        String shell = java.nio.file.Files.readString(root.resolve(base + "RddMiningCapabilityCheck.java"));
+        String producer = java.nio.file.Files.readString(root.resolve(base + "RddDecomposer.java"));
+        assertTrue(shell.indexOf("server.execute(() -> {") < shell.indexOf("RddDetector.countInventory(body)"));
+        assertTrue(shell.indexOf("RddDetector.countInventory(body)") < shell.indexOf("stack.isCorrectToolForDrops(target)"));
+        assertTrue(shell.contains("scope.equals(context.scope())"));
+        assertTrue(shell.contains("body == RddCompanionBody.get(companionId)"));
+        assertFalse(shell.contains("new ItemStack"), "must inspect actual component-bearing stacks");
+        assertFalse(shell.contains("getBlockState("), "no world scan");
+        assertEquals(2, producer.split("RddMiningCapabilityCheck.filter", -1).length - 1);
+        assertEquals(2, producer.split("RddMiningCapabilityCheck.capture", -1).length - 1);
+    }
+
     private static SubtaskSpec obsidian(String description) {
         return parse(description, Map.of("asset_key", "minecraft:obsidian", "minimum", 10));
     }
@@ -141,7 +225,19 @@ class RddObsidianPlanConsumerTest {
     }
 
     private static RddPlanGuard.Filtered guard(List<SubtaskSpec> specs, Map<String, Integer> held) {
-        return RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(specs), THEME, held);
+        boolean toolsObserved = held != null && held.keySet().stream().anyMatch(id -> id.endsWith("_pickaxe"));
+        Map<String, Boolean> actualNative = new java.util.LinkedHashMap<>();
+        if (toolsObserved) held.keySet().forEach(id -> actualNative.put(id,
+                id.equals("minecraft:diamond_pickaxe") || id.equals("minecraft:netherite_pickaxe")));
+        // Explicit fixture projection; NOT an implementation of native harvesting.
+        // Per-case overrides below prove the consumer does not infer native ability from IDs.
+        return RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(specs), THEME, held,
+                toolsObserved ? evidence(held, actualNative, System.currentTimeMillis()) : null);
+    }
+
+    private static RddMiningPrerequisite.Evidence evidence(Map<String, Integer> inventory,
+                                                          Map<String, Boolean> correct, long atMs) {
+        return new RddMiningPrerequisite.Evidence(inventory, correct, "fixture:native actual-stacks, not world evidence", atMs, true);
     }
 
     private static TaskChain chain() {

@@ -278,6 +278,12 @@ final class RddPlanGuard {
      * @param objective 当前一级主题（判定主人是否要求了可选升级）
      * @param held      当前真实背包（判定哪些已经持有）
      */
+    /** Native evidence reaches this real consumer, but red still has the old acceptance behavior. */
+    static Filtered filterSubtasks(List<SubtaskSpec> specs, String objective, Map<String, Integer> held,
+                                   RddMiningPrerequisite.Evidence evidence) {
+        return filterSubtasks(specs, objective, held);
+    }
+
     static Filtered filterSubtasks(List<SubtaskSpec> specs, String objective, Map<String, Integer> held) {
         if (specs == null || specs.isEmpty()) {
             return new Filtered(List.of(), List.of(), List.of());
