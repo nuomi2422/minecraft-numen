@@ -53,6 +53,64 @@ class RddGoalDriverInjectionTest {
         assertNotEquals(SubtaskStatus.COMPLETED, chain.subtaskStatuses().get(subs.get(0).id()));
     }
 
+    // V25 new-rdd:144/146: replay the original description/predicate through real consumers, not a factory-only MAIN.
+    @Test void foodTwelvePreparationSurvivesDailyRegistrationAndRestoreBeforeItsTail() {
+        String description = "把食物补到能支撑一整个下界/找要塞来回的量：至少 12 份直接可食用的东西（生肉也计，后面可以在基地熔炉烤熟再吃；小麦/种子不算）。来源按优先级：基地与村庄箱子里的存货 → 夜里或水边打猎（牛/羊/猪/鸡/鲑鱼）→ 现成农田收获后补种。起步攒到 12 份就走下一步，别在野外无限狩猎。";
+        var parsed = RddDecomposer.parse(new com.google.gson.Gson().toJson(Map.of("subtasks", List.of(
+                Map.of("description", description, "condition", Map.of("group", "food", "minimum", 12), "node_type", "MAIN"),
+                Map.of("description", "补足火把供地表照明", "condition", Map.of("asset_key", "minecraft:torch", "minimum", 8), "node_type", "MAIN")))));
+        assertEquals(2, parsed.size());
+        var guarded = RddPlanGuard.filterSubtasks(parsed, "末地准备与定位要塞", Map.of("minecraft:salmon", 2));
+        assertEquals(parsed, guarded.allowed(), guarded.dropped().toString());
+        TaskChain chain = emptyChain();
+        var subs = RddGoalDriver.buildInjection("p", chain.nextPlanRevision(), guarded.allowed());
+        SideTaskEngine engine = engine();
+        RddGoalDriver.acceptPlan(subs, candidates -> SideTaskHost.DailyRegistration.register(chain, candidates, engine),
+                () -> chain.expandCurrentPrimary(subs));
+        assertTrue(chain.activateCurrent(Map.of("minecraft:salmon", 2)));
+        // Both the live chain and the persisted consumer must wait for the original food12 predicate.
+        for (TaskChain consumer : List.of(chain, TaskChain.fromJson(chain.toJson()))) {
+            SideTaskHost.DailyRegistration.registerChain(consumer, engine);
+            assertEquals(subs.get(0), consumer.currentSubtask());
+            assertEquals(description, consumer.currentSubtask().description());
+            assertEquals(parsed.get(0).condition(), consumer.currentSubtask().condition());
+            assertEquals(NodeType.MAIN, consumer.currentSubtask().nodeType());
+            String dailyId = "daily:g:" + Integer.toHexString(description.hashCode());
+            assertNull(engine.recurringSpec(dailyId), "one-trip food must never be registered as recurring work");
+            assertFalse(consumer.applyHardCodedResult(subs.get(0).id(),
+                    com.dwinovo.numen.rdd.core.HardCodedEvaluator.matches(consumer.currentSubtask().condition(), Map.of("minecraft:salmon", 11))));
+            assertEquals(subs.get(0).id(), consumer.currentSubtask().id(), "food11 cannot dispatch the torch tail");
+            assertEquals(SubtaskStatus.RUNNING, consumer.subtaskStatuses().get(subs.get(0).id()));
+            assertEquals(SubtaskStatus.PENDING, consumer.subtaskStatuses().get(subs.get(1).id()));
+            assertTrue(consumer.satisfiedStages().isEmpty());
+            assertTrue(consumer.applyHardCodedResult(subs.get(0).id(),
+                    com.dwinovo.numen.rdd.core.HardCodedEvaluator.matches(consumer.currentSubtask().condition(), Map.of("minecraft:salmon", 12))));
+            assertEquals(subs.get(1).id(), consumer.currentSubtask().id(), "only food12 may advance to the original legal tail");
+            assertEquals(SubtaskStatus.COMPLETED, consumer.subtaskStatuses().get(subs.get(0).id()));
+            assertTrue(consumer.satisfiedStages().isEmpty(), "food completion is not verified stage completion");
+        }
+    }
+
+    @Test void guardedRecurringHarvestStillRegistersDailyAndDispatchesItsMainTail() {
+        var harvest = new SubtaskSpec("每日收割成熟小麦后补种", Map.of("asset_key", "minecraft:wheat", "minimum", 1), null);
+        var tail = new SubtaskSpec("补足火把供地表照明", Map.of("asset_key", "minecraft:torch", "minimum", 8), null);
+        var guarded = RddPlanGuard.filterSubtasks(List.of(harvest, tail), "维护农田", Map.of());
+        assertEquals(2, guarded.allowed().size(), guarded.dropped().toString());
+        assertEquals(NodeType.DAILY, guarded.allowed().get(0).nodeType());
+        assertEquals(RecurrenceSpec.daily(true), guarded.allowed().get(0).recurrence());
+        TaskChain chain = emptyChain();
+        var subs = RddGoalDriver.buildInjection("p", chain.nextPlanRevision(), guarded.allowed());
+        SideTaskEngine engine = engine();
+        RddGoalDriver.acceptPlan(subs, candidates -> SideTaskHost.DailyRegistration.register(chain, candidates, engine),
+                () -> chain.expandCurrentPrimary(subs));
+        assertTrue(chain.activateCurrent(Map.of()));
+        assertEquals(subs.get(1).id(), chain.currentSubtask().id());
+        assertEquals(SubtaskStatus.SKIPPED, chain.subtaskStatuses().get(subs.get(0).id()));
+        String dailyId = "daily:g:" + Integer.toHexString(harvest.description().hashCode());
+        assertNotNull(engine.recurringSpec(dailyId));
+        assertTrue(chain.satisfiedStages().isEmpty());
+    }
+
     private static TaskChain emptyChain() {
         return new TaskChain(new Goal("g", "iron equipment",
                 List.of(PrimaryGoal.unexpanded("p", "prepare", List.of()))));
