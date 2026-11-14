@@ -257,14 +257,41 @@ public final class ExperienceStoreRetrievalBridge {
     }
 
     /**
-     * 正文 = 机制 + 推荐处理（七字段里对「下次怎么做」最有用的两段）。
-     *
-     * <p>超过 {@link #MAX_BODY_CHARS} 截断并带省略号——截断是显式的，
-     * 不让下游把半句话当完整句子读。
+     * 同一正文携带已有机制/处理/理由/适用条件；空字段省略，不推断新理由。
+     * 新字段共享原字符预算，长字段显式截短；没有新字段的旧正文保持逐字不变。
      */
     private static String body(ExperienceEntry e) {
         String mechanism = nz(e.mechanism());
         String response = nz(e.recommendedResponse());
+        String why = nz(e.rationale()).trim();
+        String conditions = nz(e.preconditions()).trim();
+        if (!why.isBlank() || !conditions.isBlank()) {
+            List<String> parts = new ArrayList<>(4);
+            if (!mechanism.isBlank()) parts.add(mechanism.trim());
+            if (!response.isBlank()) parts.add("推荐处理: " + response.trim());
+            if (!why.isBlank()) parts.add("理由: " + why);
+            if (!conditions.isBlank()) parts.add("适用条件: " + conditions);
+            int[] widths = new int[parts.size()];
+            int remaining = MAX_BODY_CHARS - (parts.size() - 1); // includes labels, newlines and clip marks
+            // Four local slots share the cap: short fields release space, long ones cannot erase actions.
+            while (remaining > 0) {
+                boolean allocated = false;
+                for (int i = 0; i < parts.size() && remaining > 0; i++) {
+                    if (widths[i] >= parts.get(i).length()) continue;
+                    widths[i]++;
+                    remaining--;
+                    allocated = true;
+                }
+                if (!allocated) break;
+            }
+            StringBuilder text = new StringBuilder();
+            for (int i = 0; i < parts.size(); i++) {
+                if (i > 0) text.append('\n');
+                String part = parts.get(i);
+                text.append(part.length() <= widths[i] ? part : part.substring(0, widths[i] - 1) + "…");
+            }
+            return text.toString();
+        }
         StringBuilder sb = new StringBuilder();
         if (!mechanism.isBlank()) sb.append(mechanism.trim());
         if (!response.isBlank()) {
