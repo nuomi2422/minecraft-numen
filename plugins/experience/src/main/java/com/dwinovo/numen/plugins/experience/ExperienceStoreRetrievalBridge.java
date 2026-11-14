@@ -257,7 +257,7 @@ public final class ExperienceStoreRetrievalBridge {
     }
 
     /**
-     * 同一正文携带已有机制/处理/理由/适用条件；空字段省略，不推断新理由。
+     * 同一正文携带已有机制/处理/理由/风险/来源/适用条件；空字段省略，不推断新理由。
      * 新字段共享原字符预算，长字段显式截短；没有新字段的旧正文保持逐字不变。
      */
     private static String body(ExperienceEntry e) {
@@ -265,15 +265,19 @@ public final class ExperienceStoreRetrievalBridge {
         String response = nz(e.recommendedResponse());
         String why = nz(e.rationale()).trim();
         String conditions = nz(e.preconditions()).trim();
-        if (!why.isBlank() || !conditions.isBlank()) {
-            List<String> parts = new ArrayList<>(4);
+        String risks = nz(e.failureConditions()).trim();
+        String source = nz(e.evidence()).trim();
+        if (!why.isBlank() || !conditions.isBlank() || !risks.isBlank() || !source.isBlank()) {
+            List<String> parts = new ArrayList<>(6);
             if (!mechanism.isBlank()) parts.add(mechanism.trim());
             if (!response.isBlank()) parts.add("推荐处理: " + response.trim());
             if (!why.isBlank()) parts.add("理由: " + why);
+            if (!risks.isBlank()) parts.add("风险: " + risks);
+            if (!source.isBlank()) parts.add("来源: " + source);
             if (!conditions.isBlank()) parts.add("适用条件: " + conditions);
             int[] widths = new int[parts.size()];
             int remaining = MAX_BODY_CHARS - (parts.size() - 1); // includes labels, newlines and clip marks
-            // Four local slots share the cap: short fields release space, long ones cannot erase actions.
+            // Nonempty local slots share the cap: short fields release space, long ones cannot erase actions.
             while (remaining > 0) {
                 boolean allocated = false;
                 for (int i = 0; i < parts.size() && remaining > 0; i++) {
