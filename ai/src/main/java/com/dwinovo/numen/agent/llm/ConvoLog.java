@@ -263,18 +263,24 @@ public final class ConvoLog {
     // ---- read ----
 
     /**
-     * Both derived views of the log, produced from ONE read/parse pass. Restore needs the LLM tail and
-     * the GUI transcript at the same instant; reading the (potentially huge) file twice doubled the
-     * startup cost for identical input.
+     * Both derived views of one log, produced from a single read/parse pass. Restore used to walk the
+     * file twice (two full passes, one per view); the same lines can fill both views.
      *
-     * <p>Semantics are exactly those of {@link #load} and {@link #loadDisplay}: the history view skips
-     * events, restarts at compact/clear boundaries and walks back to the nearest user message; the
-     * display view keeps the physical order, turning compact/clear/persona-change into divider lines
-     * and trimming to the last {@code limit} entries without a user-boundary walk.
+     * <p>Each view is only built when asked for: {@link #loadDisplay} keeps its historical contract of
+     * never decoding {@code preserved} entries, so the display-only path must not pay for (or fail on)
+     * the history view. Per-view semantics are exactly those of {@link #load} and {@link #loadDisplay}.
      */
     public Restore loadForRestore(int limit) {
-        List<ConvoState.Msg> history = new ArrayList<>();
-        List<ConvoState.Msg> display = new ArrayList<>();
+        return readViews(limit, true, true);
+    }
+
+    /**
+     * One read/parse pass; a view is materialised only when its {@code want*} flag is set. Only the
+     * requested view performs its own compact decode / tail trim, so neither API can depend on the other.
+     */
+    private Restore readViews(int limit, boolean wantHistory, boolean wantDisplay) {
+        List<ConvoState.Msg> history = wantHistory ? new ArrayList<>() : List.of();
+        List<ConvoState.Msg> display = wantDisplay ? new ArrayList<>() : List.of();
         if (!Files.isRegularFile(file)) return new Restore(List.of(), List.of());
         try (var reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             String line;
@@ -289,36 +295,42 @@ public final class ConvoLog {
                 if (type != null) {                              // event record
                     switch (type) {
                         case EV_COMPACT -> {
-                            history.clear();
-                            history.add(new ConvoState.Msg.User(str(o.get("content"))));
-                            if (o.has("preserved") && o.get("preserved").isJsonArray()) {
-                                for (JsonElement el : o.getAsJsonArray("preserved")) {
-                                    ConvoState.Msg m = decodeMessage(el.getAsJsonObject());
-                                    if (m != null) history.add(m);
+                            // 只有模型视图 decode preserved；display 历来只画分隔线，不能为 GUI 引入新失败。
+                            if (wantHistory) {
+                                history.clear();
+                                history.add(new ConvoState.Msg.User(str(o.get("content"))));
+                                if (o.has("preserved") && o.get("preserved").isJsonArray()) {
+                                    for (JsonElement el : o.getAsJsonArray("preserved")) {
+                                        ConvoState.Msg m = decodeMessage(el.getAsJsonObject());
+                                        if (m != null) history.add(m);
+                                    }
                                 }
                             }
-                            display.add(new ConvoState.Msg.User(COMPACT_DIVIDER));
+                            if (wantDisplay) display.add(new ConvoState.Msg.User(COMPACT_DIVIDER));
                         }
                         case EV_CLEAR -> {
-                            history.clear();   // 白纸重来:无摘要、无保留
-                            display.add(new ConvoState.Msg.User(CLEAR_DIVIDER));
+                            if (wantHistory) history.clear();   // 白纸重来:无摘要、无保留
+                            if (wantDisplay) display.add(new ConvoState.Msg.User(CLEAR_DIVIDER));
                         }
-                        case EV_PERSONA -> display.add(new ConvoState.Msg.User(PERSONA_DIVIDER));
+                        case EV_PERSONA -> {
+                            if (wantDisplay) display.add(new ConvoState.Msg.User(PERSONA_DIVIDER));
+                        }
                         default -> { }     // header / goal / unknown → neither view
                     }
                     continue;
                 }
                 ConvoState.Msg m = decodeMessage(o);             // message record
                 if (m != null) {                                  // unknown role → skip (forward-compat)
-                    history.add(m);
-                    display.add(m);
+                    if (wantHistory) history.add(m);
+                    if (wantDisplay) display.add(m);
                 }
             }
         } catch (IOException ex) {
             AiLog.LOG.warn("[numen-convo] failed to read {}: {}", file, ex.toString());
             return new Restore(List.of(), List.of());
         }
-        return new Restore(tailForModel(history, limit), tailForDisplay(display, limit));
+        return new Restore(wantHistory ? tailForModel(history, limit) : List.of(),
+                wantDisplay ? tailForDisplay(display, limit) : List.of());
     }
 
     /** LLM tail: last {@code limit} messages, walked back to the nearest user message (may exceed limit). */
@@ -349,15 +361,11 @@ public final class ConvoLog {
      * a {@code clear} event restarts it from nothing.
      */
     public List<ConvoState.Msg> load(int limit) {
-        return loadForRestore(limit).history();
+        return readViews(limit, true, false).history();
     }
 
     /** The two derived views of one restore, produced from a single pass over the file. */
     public record Restore(List<ConvoState.Msg> history, List<ConvoState.Msg> display) {
-        public Restore {
-            history = history == null ? List.of() : List.copyOf(history);
-            display = display == null ? List.of() : List.copyOf(display);
-        }
     }
 
     /**
@@ -367,7 +375,7 @@ public final class ConvoLog {
      * or clearing.
      */
     public List<ConvoState.Msg> loadDisplay(int limit) {
-        return loadForRestore(limit).display();
+        return readViews(limit, false, true).display();
     }
 
     /**
