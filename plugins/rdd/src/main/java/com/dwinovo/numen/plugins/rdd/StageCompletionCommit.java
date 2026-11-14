@@ -30,7 +30,7 @@ final class StageCompletionCommit {
     boolean canSave(UUID id) { return !hasPending(id); }
     synchronized boolean saveRuntime(UUID id, TaskChain chain) throws IOException {
         if (!canSave(id)) return false;
-        synchronized (chain) { write(tasksDir.resolve(id + ".json"), chain.toJson()); }
+        synchronized (chain) { write(tasksDir.resolve(id + ".json"), RddRationale.taskJson(id, chain, chain)); }
         return true;
     }
 
@@ -83,7 +83,7 @@ final class StageCompletionCommit {
                         intent.addProperty("baseVersion", base);
                         intent.addProperty("verified", verified);
                         intent.addProperty("description", description);
-                        intent.addProperty("chainJson", next.toJson());
+                        intent.addProperty("chainJson", RddRationale.taskJson(id, live, next));
                         intent.addProperty("factsJson", nextFacts.toJson());
                         candidate = new Prepared(next, nextFacts, base);
                         // Publish intent before either final projection. Any IO failure leaves live objects untouched.

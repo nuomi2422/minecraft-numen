@@ -308,7 +308,8 @@ class RddSubmissionRationaleHandoffTest {
         live.set(restored);
         assertEquals(accepted.chainInstanceId(), restored.chainInstanceId());
         assertEquals(accepted.planRevision(), restored.planRevision());
-        RddRationale.refreshContext(id, restored); // Existing executor context consumer; no invented restore adapter.
+        RddRationale.restore(id, restored, payload, live::get); // The same function called after real RUNTIMES installation.
+        RddRationale.refreshContext(id, restored); // Existing executor context consumer after persisted reason restoration.
         String stageB = firstStageB(); // Actual dispatchStageB final request consumer.
         String expected = RationaleContext.renderEntry(submitter());
         assertAll(

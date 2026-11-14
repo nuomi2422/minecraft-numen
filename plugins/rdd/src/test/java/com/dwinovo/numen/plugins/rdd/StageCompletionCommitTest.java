@@ -188,6 +188,99 @@ class StageCompletionCommitTest {
         assertTrue(restart.hasPending(id));
     }
 
+
+    @Test void frozenPendingReasonSurvivesEveryWriteInterruptionWithoutBorrowingLiveMemory(@TempDir Path dir) throws Exception {
+        for (StageCompletionCommit.WritePoint failAt : StageCompletionCommit.WritePoint.values()) {
+            UUID id = UUID.randomUUID(); Path base = dir.resolve(failAt.name());
+            Path tasks = base.resolve("tasks"); TaskChain live = chain();
+            var why = new com.dwinovo.numen.api.RationaleContext.Entry("accepted causal reason " + failAt,
+                    "accepted risk", "fixture:accepted", "same accepted chain and revision");
+            var later = new com.dwinovo.numen.api.RationaleContext.Entry("LATER_REASON_MUST_NOT_REPLACE_FROZEN",
+                    "later risk", "fixture:later", "later condition");
+            RddRationale.bound(id, live, why, () -> live);
+            try {
+                var writer = new StageCompletionCommit(tasks, base.resolve("facts"), point -> {
+                    if (point == failAt) throw new IOException("controlled interruption at " + point);
+                });
+                assertTrue(writer.saveRuntime(id, live));
+                String savedBefore = Files.readString(tasks.resolve(id + ".json"));
+                String chainBefore = live.toJson(); var facts = new CompletedFactStore();
+                assertFalse(writer.settle(id, live, facts, "first", "verified", true, 1L).committed());
+                assertEquals(chainBefore, live.toJson());
+                assertEquals(why, com.dwinovo.numen.api.RationaleContext.get(id), "IO failure cannot publish a replacement reason");
+                Path pending = tasks.resolve(id + ".completion-pending");
+                String frozenIntent = Files.readString(pending);
+                String frozenChain = com.google.gson.JsonParser.parseString(frozenIntent).getAsJsonObject().get("chainJson").getAsString();
+                String projectedBefore = Files.readString(tasks.resolve(id + ".json"));
+                RddRationale.bound(id, live, later, () -> live);
+                assertFalse(writer.saveRuntime(id, live), "normal saves cannot overwrite an outstanding completion intent");
+                assertEquals(projectedBefore, Files.readString(tasks.resolve(id + ".json")));
+                assertEquals(frozenIntent, Files.readString(pending));
+                com.dwinovo.numen.api.RationaleContext.clear(id); // Cold process: pending recovery cannot read live why.
+                var restarted = new StageCompletionCommit(tasks, base.resolve("facts"));
+                assertTrue(restarted.recover(id).committed());
+                String replayed = Files.readString(tasks.resolve(id + ".json"));
+                assertEquals(frozenChain, replayed, "project/recover must write the exact frozen task payload");
+                assertFalse(replayed.contains(later.why()));
+                TaskChain restored = TaskChain.fromJson(replayed);
+                assertTrue(RddRationale.restore(id, restored, replayed, () -> restored));
+                assertEquals(why, com.dwinovo.numen.api.RationaleContext.get(id));
+                assertEquals("second", restored.currentPrimary().id());
+                assertFalse(restarted.hasPending(id));
+                if (failAt == StageCompletionCommit.WritePoint.INTENT_WRITTEN)
+                    assertEquals(savedBefore, projectedBefore, "intent write failure leaves the original task projection intact");
+            } finally { com.dwinovo.numen.api.RationaleContext.clear(id); }
+        }
+    }
+
+    @Test void optionalBadScopeAndLegacyPayloadCannotCorruptRestoredChain(@TempDir Path dir) throws Exception {
+        UUID id = UUID.randomUUID(); TaskChain accepted = chain();
+        var why = new com.dwinovo.numen.api.RationaleContext.Entry("accepted restart reason", "risk", "fixture:source", "scope");
+        RddRationale.bound(id, accepted, why, () -> accepted);
+        try {
+            Path tasks = dir.resolve("tasks");
+            var writer = new StageCompletionCommit(tasks, dir.resolve("facts"));
+            assertTrue(writer.saveRuntime(id, accepted));
+            String encoded = Files.readString(tasks.resolve(id + ".json"));
+            var original = com.google.gson.JsonParser.parseString(encoded).getAsJsonObject();
+            assertTrue(original.has("rationale"));
+            for (String fault : List.of("missing", "malformed", "owner", "chain", "revision", "field", "uninstalled")) {
+                var changed = original.deepCopy();
+                if (fault.equals("missing")) changed.remove("rationale");
+                else if (fault.equals("malformed")) changed.addProperty("rationale", "invalid optional metadata");
+                else if (fault.equals("owner")) changed.getAsJsonObject("rationale").addProperty("companionId", UUID.randomUUID().toString());
+                else if (fault.equals("chain")) changed.getAsJsonObject("rationale").addProperty("chainInstanceId", "other-chain");
+                else if (fault.equals("revision")) changed.getAsJsonObject("rationale").addProperty("planRevision", accepted.planRevision() + 1);
+                else if (fault.equals("field")) changed.getAsJsonObject("rationale").addProperty("why", 7);
+                com.dwinovo.numen.api.RationaleContext.clear(id);
+                TaskChain restored = TaskChain.fromJson(changed.toString());
+                assertFalse(RddRationale.restore(id, restored, changed.toString(), () -> fault.equals("uninstalled") ? null : restored), fault);
+                RddRationale.refreshContext(id, restored);
+                assertEquals("", com.dwinovo.numen.api.RationaleContext.render(id), fault);
+                assertEquals(accepted.chainInstanceId(), restored.chainInstanceId());
+                assertEquals(accepted.planRevision(), restored.planRevision());
+                assertEquals(accepted.goal().id(), restored.goal().id());
+            }
+            com.dwinovo.numen.api.RationaleContext.clear(id);
+            TaskChain loaded = TaskChain.fromJson(encoded);
+            assertTrue(RddRationale.restore(id, loaded, encoded, () -> loaded));
+            assertTrue(writer.saveRuntime(id, loaded));
+            assertEquals(why, com.dwinovo.numen.api.RationaleContext.get(id));
+            assertTrue(Files.readString(tasks.resolve(id + ".json")).contains(why.why()), "later ordinary saves retain the restored same-file reason");
+            // No optional metadata keeps the exact legacy serializer output and old pending replay.
+            com.dwinovo.numen.api.RationaleContext.clear(id);
+            assertTrue(writer.saveRuntime(id, accepted));
+            assertEquals(accepted.toJson(), Files.readString(tasks.resolve(id + ".json")));
+            var interrupted = new StageCompletionCommit(tasks, dir.resolve("facts"), point -> {
+                if (point == StageCompletionCommit.WritePoint.INTENT_WRITTEN) throw new IOException("legacy interruption");
+            });
+            assertFalse(interrupted.settle(id, accepted, new CompletedFactStore(), "first", "verified", true, 1L).committed());
+            assertTrue(new StageCompletionCommit(tasks, dir.resolve("facts")).recover(id).committed());
+            TaskChain legacy = TaskChain.fromJson(Files.readString(tasks.resolve(id + ".json")));
+            assertEquals("second", legacy.currentPrimary().id());
+        } finally { com.dwinovo.numen.api.RationaleContext.clear(id); }
+    }
+
     @Test void staleStageCannotReplacePendingCommit(@TempDir Path dir) throws Exception {
         UUID id = UUID.randomUUID();
         TaskChain chain = chain();

@@ -3049,6 +3049,10 @@ private static String safeDeathAttacker(NumenPlayer body) {
                     String json = Files.readString(f, StandardCharsets.UTF_8);
                     TaskChain chain = TaskChain.fromJson(json);
                     RUNTIMES.put(uuid, new RddRuntime(chain, assets(uuid)));
+                    RddRationale.restore(uuid, chain, json, () -> {
+                        var installed = RUNTIMES.get(uuid);
+                        return installed == null ? null : installed.chain();
+                    });
                     SideTaskHost.restoreDailySpecs(chain);
                     if (chain.primaryStatus() == PrimaryGoalStatus.REPLANNING && chain.currentSubtask() == null
                             && !chain.currentPrimary().unexpanded()) {
