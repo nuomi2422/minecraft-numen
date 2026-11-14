@@ -2673,7 +2673,10 @@ private static String safeDeathAttacker(NumenPlayer body) {
         UUID id = body.getUUID();
         if (!body.getServer().isSameThread()) throw new IllegalStateException("server thread required");
         if (completionPending(id)) throw new IllegalStateException("stage completion is still pending");
-        if (tasksDir == null || assetsDir == null) throw new IllegalStateException("reset stores unavailable");
+        if (tasksDir == null || assetsDir == null || factsDir == null)
+            throw new IllegalStateException("reset stores unavailable");
+        Files.createDirectories(factsDir); // Check the boundary store before clearing the body.
+        CompletedFactStore completedFacts = facts(id);
         var stop = com.dwinovo.numen.agent.tool.ToolRegistry.get("task_stop");
         if (stop == null) throw new IllegalStateException("body stop unavailable; reset refused");
         stop.onServerCall("external-reset-" + id, new com.google.gson.JsonObject(), body, r -> { });
@@ -2696,6 +2699,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
         for (int i = 0; i < body.getInventory().getContainerSize(); i++)
             if (!body.getInventory().getItem(i).isEmpty()) remaining++;
         if (remaining != 0) throw new IllegalStateException("inventory reset incomplete");
+        RddFactStore.retireStageInheritance(factsDir, id, completedFacts);
         RddMonitor.publish("external_world_reset", Map.of("companionId", id.toString(),
                 "intervened", true, "inventorySlotsRemaining", remaining,
                 "preserved", "experience/why/skills/AC/model/history"));
