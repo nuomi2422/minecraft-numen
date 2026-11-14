@@ -58,6 +58,7 @@ final class RddGoalDriver {
                 return;
             }
             TaskChain chain = rt.chain();
+            long ownerRevision = chain.planRevision();
             if (!chain.currentPrimary().unexpanded()) {
                 return; // 已展开 / 非懒边界
             }
@@ -115,7 +116,7 @@ final class RddGoalDriver {
                 return;
             }
             var ticket = RddPlugin.planningTicket(companionId);
-            RddDecomposer.decomposeSpecs(companionId, cur.description(), attempt, completed,
+            RddDecomposer.decomposeSpecs(companionId, chain, ownerRevision, cur.description(), attempt, completed,
                     specs -> RddPlugin.onServer(server, ticket,
                             () -> finish(companionId, rt, st, cur.id(), request, specs)));
         } catch (RuntimeException ex) {

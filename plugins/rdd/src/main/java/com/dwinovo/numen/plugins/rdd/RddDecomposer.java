@@ -16,6 +16,7 @@ import com.dwinovo.numen.rdd.api.NodeType;
 import com.dwinovo.numen.rdd.api.RecurrenceSpec;
 import com.dwinovo.numen.rdd.core.PlanningAssetSnapshot;
 import com.dwinovo.numen.rdd.core.RddChainFactory;
+import com.dwinovo.numen.rdd.core.TaskChain;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -359,9 +360,10 @@ final class RddDecomposer {
      * 成功与否由宿主目标驱动器判定并走 §9 恢复，绝不在此回落占位假二级（asset_key="goal"
      * 这类不可执行节点不得冒充"展开成功"）。
      */
-    static void decomposeSpecs(UUID companionId, String themeObjective, int attempt,
+    static void decomposeSpecs(UUID companionId, TaskChain owner, long ownerRevision,
+                               String themeObjective, int attempt,
                                List<String> completedStages, Consumer<List<SubtaskSpec>> done) {
-        decomposeSpecsWithHint(companionId, themeObjective, attempt, completedStages, "", done);
+        decomposeSpecsWithHint(companionId, owner, ownerRevision, themeObjective, attempt, completedStages, "", done);
     }
 
     /**
@@ -371,13 +373,13 @@ final class RddDecomposer {
     static void decomposeSpecsWithHint(UUID companionId, String themeObjective, int attempt,
                                        List<String> completedStages, String extraHint,
                                        Consumer<List<SubtaskSpec>> done) {
-        // §9：重试带上下文修正——再次尝试时把"为何上次不可执行"喂回去，逼 LLM 给可检测的真实物品键。
-        String hint = attempt >= 1
-                ? "\n注意：上一次生成的子步骤被判定不可执行——每个 asset_key 必须是完整的小写命名空间 ID"
-                + "（如 minecraft:oak_log），condition 必须有真实可检测物品，minimum 取「拿到即算」的小值"
-                + "（采集类不要写「必须凑够 N 个」）。"
-                + "不要裸键/占位符/大写，不要用 \"goal\" 冒充物品。宁可少拆，不可拆出跑不动的步骤。"
-                : "";
+        decomposeSpecsWithHint(companionId, null, -1L, themeObjective, attempt, completedStages, extraHint, done);
+    }
+
+    /** The caller already owns the theme: carry that exact chain/revision, never infer it later. */
+    static void decomposeSpecsWithHint(UUID companionId, TaskChain owner, long ownerRevision,
+                                       String themeObjective, int attempt, List<String> completedStages,
+                                       String extraHint, Consumer<List<SubtaskSpec>> done) {
         // 2026-11-02：死亡原因/坐标也进 knownFailures（否则规划侧永远召不回死亡教训）。
         // 上一次被判定不可执行 → 把该失败事实一并交给知识侧，召回「这类失败该怎么办」的经验
         List<String> knownFailures = new java.util.ArrayList<>(RddDeathSpotFacts.knownFailuresFor(companionId));
@@ -385,24 +387,12 @@ final class RddDecomposer {
             knownFailures.add("上一次生成的子步骤被判定不可执行");
         }
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
-        String base = RddPlanningKnowledge.attach(
-                RddRiskPlanning.prepHint(themeObjective, snapshot.availableCounts())
-                        + decompositionPrompt(themeObjective, snapshot,
-                        completedStages == null ? List.of() : completedStages) + hint
-                        + (extraHint == null || extraHint.isBlank() ? "" : "\n\n" + extraHint),
-                RddPlanningPolicy.block(themeObjective, "stage_b"));
-        String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
-                base, themeObjective, "stage_b", knownFailures);
-        // 2026-11-02（r25-2→r26-0 实机：counter 说「门没有路」，新计划仍写「借同一扇门」）：
-        // 先证明失败原因到底有没有进 prompt——只记长度与关键词，不存正文。
-        LOG.info("[rdd] stage_b 请求 {} 字 | 失败上下文={} | 含不可达关键词={} | 含 3x3={}",
-                userContent.length(),
-                extraHint != null && !extraHint.isBlank(),
-                userContent.contains("no path") || userContent.contains("不可达")
-                        || userContent.contains("没有路"),
-                userContent.contains("3×3") || userContent.contains("3x3"));
-        RddDecomposer.llmAsk(companionId, "stage_b",
-                stageBRequestContent(userContent, RddStagePlanner.freshRationale(companionId)),
+        dispatchStageB(companionId, themeObjective, owner, ownerRevision, attempt, completedStages, extraHint,
+                snapshot, knownFailures, RddPlanningKnowledge.HOST,
+                () -> {
+                    var runtime = RddPlugin.runtime(companionId);
+                    return runtime == null ? null : runtime.chain();
+                }, userContent -> RddDecomposer.llmAsk(companionId, "stage_b", userContent,
                 SYSTEM_PROMPT, DECOMPOSE_TOOL,
                 args -> {
                     RddPlanGuard.Filtered guarded = RddPlanGuard.filterSubtasks(
@@ -413,7 +403,47 @@ final class RddDecomposer {
                             guarded.dropped(), guarded.reused());
                     done.accept(guarded.allowed());
                 },
-                () -> done.accept(List.of()));
+                () -> done.accept(List.of())));
+    }
+
+    /**
+     * The real Stage-B assembly and dispatch seam. Only host reads and transport are supplied;
+     * prompt, knowledge consumption and the final request are the production path, not a mirror.
+     * Caller identity is included so a controlled owner change can be tested without Minecraft.
+     */
+    static void dispatchStageB(UUID companionId, String themeObjective,
+                               TaskChain owner, long ownerRevision, int attempt,
+                               List<String> completedStages, String extraHint, PlanningAssetSnapshot snapshot,
+                               List<String> knownFailures, RddPlanningKnowledge.Provider knowledge,
+                               java.util.function.Supplier<TaskChain> currentChain,
+                               Consumer<String> send) {
+        String hint = attempt >= 1
+                ? "\n注意：上一次生成的子步骤被判定不可执行——每个 asset_key 必须是完整的小写命名空间 ID"
+                + "（如 minecraft:oak_log），condition 必须有真实可检测物品，minimum 取「拿到即算」的小值"
+                + "（采集类不要写「必须凑够 N 个」）。"
+                + "不要裸键/占位符/大写，不要用 \"goal\" 冒充物品。宁可少拆，不可拆出跑不动的步骤。"
+                : "";
+        String base = RddPlanningKnowledge.attach(
+                RddRiskPlanning.prepHint(themeObjective, snapshot.availableCounts())
+                        + decompositionPrompt(themeObjective, snapshot,
+                        completedStages == null ? List.of() : completedStages) + hint
+                        + (extraHint == null || extraHint.isBlank() ? "" : "\n\n" + extraHint),
+                RddPlanningPolicy.block(themeObjective, "stage_b"));
+        String userContent = RddPlanningKnowledge.withKnowledge(knowledge, companionId,
+                base, themeObjective, "stage_b", knownFailures);
+        // 2026-11-02（r25-2→r26-0 实机：counter 说「门没有路」，新计划仍写「借同一扇门」）：
+        // 先证明失败原因到底有没有进 prompt——只记长度与关键词，不存正文。
+        LOG.info("[rdd] stage_b 请求 {} 字 | 失败上下文={} | 含不可达关键词={} | 含 3x3={}",
+                userContent.length(),
+                extraHint != null && !extraHint.isBlank(),
+                userContent.contains("no path") || userContent.contains("不可达")
+                        || userContent.contains("没有路"),
+                userContent.contains("3×3") || userContent.contains("3x3"));
+        // Baseline behavior: read the latest runtime after consuming optional knowledge.
+        var chain = currentChain.get();
+        String rationale = chain == null ? "" : com.dwinovo.numen.api.RationaleContext.renderApplicable(
+                companionId, chain.planRevision(), chain.chainInstanceId());
+        send.accept(stageBRequestContent(userContent, rationale));
     }
 
     /**

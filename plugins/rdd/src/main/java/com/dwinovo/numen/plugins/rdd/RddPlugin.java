@@ -1498,6 +1498,7 @@ private static String withAssets(UUID companionId, String rddContext) {
             return false;
         }
         try {
+            long ownerRevision = chain.planRevision();
             String theme = chain.currentPrimary().description();
             boolean survival = trigger == RddReplanTransition.Trigger.SURVIVAL;
             if (survival ? !RddReplanTransition.requirePlanningServer(companionId, survivalToken, chain, server)
@@ -1572,7 +1573,7 @@ private static String withAssets(UUID companionId, String rddContext) {
             // 2026-11-13：不能再按 fromNegotiation 三元判断 —— SURVIVAL 走事实变化入口但不是协商。
             int planningAttempt = RddReplanTransition.planningAttempt(trigger);
             // completedStages 也不能丢（重规划与懒展开在这一项上曾不一致）。
-            RddDecomposer.decomposeSpecsWithHint(companionId, theme, planningAttempt,
+            RddDecomposer.decomposeSpecsWithHint(companionId, chain, ownerRevision, theme, planningAttempt,
                     new java.util.ArrayList<>(chain.satisfiedStages()), hint,
                     specs -> onServer(server, ticket, () -> {
                         try {
