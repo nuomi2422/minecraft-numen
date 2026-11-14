@@ -237,36 +237,48 @@ class ReviewTargetGateTest {
         static final String SKILL = "sk-review-target";
         final Path dir;
         final UUID owner;
+        final String skill;
         final SkillRegistry registry;
         final UsageLedger ledger;
         final WorldContextStamp.Token token = reviewToken("old-world", "old-server", 1);
         TaskRecord active, finished;
         int sequence;
         SkillFixture(Path dir, UUID owner) throws Exception {
+            this(dir, owner, null);
+        }
+        SkillFixture(Path dir, UUID owner, com.dwinovo.numen.plugins.learner.contract.Submission.Draft initial) throws Exception {
             this.dir = dir; this.owner = owner;
             Files.createDirectories(dir);
             registry = SkillRegistrar.registryFor(dir);
             ledger = new UsageLedger(dir);
-            revise("exact original skill body without coordinates");
+            if (initial == null) {
+                skill = SKILL;
+                revise("exact original skill body without coordinates");
+            } else {
+                skill = SkillRegistrar.skillIdOf(initial.artifacts().getFirst());
+                var registered = SkillRegistrar.register(dir, initial, true, Set.of(0));
+                assertEquals(1, registered.registered(), registered.toString());
+                assertEquals(SkillStatus.TRIAL, registry.get(skill).orElseThrow().status());
+            }
         }
         void revise(String body) {
-            String ref = SkillBodyStore.write(dir, SKILL, 1, Integer.toHexString(body.hashCode()), body);
+            String ref = SkillBodyStore.write(dir, skill, 1, Integer.toHexString(body.hashCode()), body);
             assertNotNull(ref);
             var d = registry.register(new ArtifactDraft(ArtifactKind.EXPERIENCE, "target review",
                     "target lifecycle review", body, List.of("target lifecycle"), List.of(), List.of(), "LOW",
-                    List.of(), List.of("original-memo"), "EXECUTOR"), SKILL, ref, true);
+                    List.of(), List.of("original-memo"), "EXECUTOR"), skill, ref, true);
             assertTrue(d.stored(), d.reason());
-            assertEquals(SKILL, d.entry().skillId());
+            assertEquals(skill, d.entry().skillId());
         }
         Path bodyFile() {
-            return dir.resolve("skill-bodies").resolve(registry.get(SKILL).orElseThrow().bodyRef().substring("skill-body:".length()));
+            return dir.resolve("skill-bodies").resolve(registry.get(skill).orElseThrow().bodyRef().substring("skill-body:".length()));
         }
         Memo sample(String stage) throws Exception {
-            String version = "v" + registry.get(SKILL).orElseThrow().version();
+            String version = "v" + registry.get(skill).orElseThrow().version();
             if (stage.equals("skill_delivery")) {
                 var r = SkillDeliveryEvidence.record(new SkillDeliveryEvidence.Context("request-" + ++sequence,
                         "old-world", "old-server", 1, owner.toString(), "EXECUTOR", "execution", "", "",
-                        List.of(new SkillDeliveryEvidence.Ref("skill:" + SKILL, version))), ledger);
+                        List.of(new SkillDeliveryEvidence.Ref("skill:" + skill, version))), ledger);
                 assertEquals(1, r.written());
             } else {
                 active = new TaskRecord("goto", "original-call-" + ++sequence, 1000) {};
@@ -299,7 +311,7 @@ class ReviewTargetGateTest {
         private void invoke(String action, String version) {
             JsonObject args = new JsonObject();
             args.addProperty("action", action);
-            args.addProperty("skill_ref", "skill:" + SKILL);
+            args.addProperty("skill_ref", "skill:" + skill);
             args.addProperty("version", version);
             args.addProperty("task_id", (active == null ? finished : active).publicId());
             AtomicReference<String> reply = new AtomicReference<>();
