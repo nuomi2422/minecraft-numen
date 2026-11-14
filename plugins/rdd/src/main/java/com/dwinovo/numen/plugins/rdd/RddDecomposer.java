@@ -277,7 +277,8 @@ final class RddDecomposer {
         var miningContext = RddMiningCapabilityCheck.capture(companionId);
         String userContent = RddPlanningKnowledge.withKnowledge(RddPlanningKnowledge.HOST, companionId,
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
-                        + homeHint + decompositionPrompt(objective, snapshot, List.of()),
+                        + homeHint + decompositionPrompt(objective, snapshot, List.of())
+                        + RddMiningPrerequisite.prompt(objective),
                 objective, "fallback", List.of());
         RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
         NumenLlmClient.forEndpoint(ep)
