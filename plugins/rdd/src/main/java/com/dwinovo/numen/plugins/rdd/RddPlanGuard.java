@@ -144,15 +144,21 @@ final class RddPlanGuard {
     private static boolean preparationStep(String description) {
         if (description == null) return false;
         String first = description.split("[。；;\n]", 2)[0];
-        return first.matches(".*(回补|补给|补充|补齐|备齐|准备).*");
+        return first.matches(".*(回补|补给|补充|补齐|备齐|准备|补到能支撑).*");
     }
 
-    /** Only explicit lack -> fatal consequence clauses in preparation are explanatory.
+    /** Explicit lack -> consequence and quantity-for-later-trip qualifiers are preparation WHY.
      * Immediate travel/combat remains an action, including mixed clauses; no food-keyword exemption. */
     private static String currentRiskActions(String description) {
         if (!preparationStep(description)) return description;
         List<String> actions = new ArrayList<>();
         for (String clause : description.split("[，。；,;、\n]")) {
+            // V25: strip only the future trip's quantity modifier, never the current stocking action or its tail.
+            var purpose = java.util.regex.Pattern.compile("^(\\s*把[^：:]*补到)能支撑([^：:]*来回)的量([：:].*)$").matcher(clause);
+            if (purpose.matches()
+                    && !purpose.group(2).matches(".*(现在|立即|立刻|直接|马上|出发|前往|进入|击杀|攻击|挑战).*")) {
+                clause = purpose.group(1) + "所需的量" + purpose.group(3);
+            }
             // The cause must be the clause subject, not a trailing excuse after a travel action.
             boolean lack = clause.stripLeading().matches("(空手|背包空着|空着|缺少|缺乏|不足|没有|未备齐).*");
             boolean consequence = clause.matches(".*(等于|意味着)(送死|死亡)\\s*");

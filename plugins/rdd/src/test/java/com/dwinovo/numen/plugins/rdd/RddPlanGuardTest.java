@@ -577,6 +577,20 @@ class RddPlanGuardTest {
                 () -> assertTrue(chain.satisfiedStages().isEmpty(), "admitting preparation is not verifying food or completing its theme"));
     }
 
+    @Test void futureTripQuantityCannotHideCurrentTravelInTheSameOrFollowingClause() {
+        for (String description : List.of(
+                "把食物补到能支撑下界/找要塞来回的量：至少12份，现在进入下界要塞击杀烈焰人",
+                "把食物补到能支撑下界/找要塞来回的量：至少12份然后出发进入下界",
+                "把食物补到能支撑立即进入下界来回的量：至少12份")) {
+            var mixed = parsePreparationStep(description, Map.of("group", "food", "minimum", 12));
+            var tail = parsePreparationStep("补足火把供地表照明", Map.of("asset_key", "minecraft:torch", "minimum", 8));
+            var guarded = RddPlanGuard.filterSubtasks(List.of(mixed, tail), "通关MC", Map.of());
+            assertTrue(guarded.allowed().isEmpty(), "future-purpose wording cannot authorize unarmored current travel: " + description);
+            assertTrue(guarded.dropped().stream().anyMatch(reason -> reason.contains("护甲")));
+            assertTrue(installPreparationPlan(guarded.allowed()).currentPrimary().unexpanded());
+        }
+    }
+
     private static SubtaskSpec parsePreparationStep(String description, Map<String, Object> condition) {
         String json = new com.google.gson.Gson().toJson(Map.of("subtasks", List.of(Map.of(
                 "description", description, "condition", condition, "node_type", "MAIN"))));
