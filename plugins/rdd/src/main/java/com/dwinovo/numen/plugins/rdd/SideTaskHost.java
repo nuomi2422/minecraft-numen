@@ -400,6 +400,7 @@ final class SideTaskHost {
     private static void nudgeIfNeeded(UUID companionId, SideTaskWorldPort port, boolean wasActive, boolean nowActive) {
         NudgeDelivery.sendIfNeeded(companionId, LAST_NUDGE_GAME_TIME, wasActive, nowActive,
                 nowActive ? port.gameTime() : 0L, () -> {
+                    if (!RddPlugin.nudgeAllowed(companionId)) return false;
                     String type = currentTypeId(companionId);
                     return RddPlugin.nudge(companionId, "[支线·" + (type == null ? "unknown" : type) + "·建议] "
                             + "当前支线仍在执行，主线暂时冻结。请按 <side_task> 中的事实和有限决策处理；"
@@ -411,7 +412,7 @@ final class SideTaskHost {
     /**
      * 2026-11-14: mechanically extracted delivery seam for the V16 rejected-reminder regression.
      * Uses the existing host map and repeat interval; tests supply only the Boolean send receipt.
-     * The original send-then-unconditional-put behavior is deliberately preserved for red coverage.
+     * Record the existing repeat clock only after the send port accepts the reminder.
      * No alternate RddPlugin throttle, Minecraft body, clock or state registry is introduced.
      */
     static final class NudgeDelivery {
@@ -428,8 +429,9 @@ final class SideTaskHost {
             if (wasActive && last != null && now - last < NUDGE_REPEAT_TICKS) {
                 return;
             }
-            send.getAsBoolean();
-            lastNudgeGameTime.put(companionId, now);
+            if (send.getAsBoolean()) {
+                lastNudgeGameTime.put(companionId, now);
+            }
         }
     }
 

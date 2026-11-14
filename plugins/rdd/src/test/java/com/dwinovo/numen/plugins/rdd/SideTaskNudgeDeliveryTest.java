@@ -116,4 +116,50 @@ class SideTaskNudgeDeliveryTest {
         assertAll(() -> assertEquals(1, aSends.get()), () -> assertEquals(1, bSends.get()),
                 () -> assertEquals(Map.of(A, 1000L, B, 1020L), last));
     }
+
+    @Test
+    void exceptionalSendDoesNotRecordASuccessfulReminder() {
+        Map<UUID, Long> last = new HashMap<>();
+        IllegalStateException failure = new IllegalStateException("send failed");
+
+        assertSame(failure, assertThrows(IllegalStateException.class,
+                () -> SideTaskHost.NudgeDelivery.sendIfNeeded(A, last, false, true, 1000L, () -> {
+                    throw failure;
+                })));
+        assertTrue(last.isEmpty());
+    }
+
+    @Test
+    void rejectedRepeatPreservesThePreviousSuccessfulTime() {
+        Map<UUID, Long> last = new HashMap<>();
+        last.put(A, 1000L);
+        AtomicInteger sends = new AtomicInteger();
+
+        SideTaskHost.NudgeDelivery.sendIfNeeded(A, last, true, true, 5800L, () -> {
+            sends.incrementAndGet();
+            return false;
+        });
+
+        assertEquals(1, sends.get(), "the previous repeat interval has elapsed");
+        assertEquals(Long.valueOf(1000L), last.get(A), "a rejection must preserve the prior success");
+    }
+
+    @Test
+    void failedAttemptsThenOneSuccessStartOnlyOneRepeatWindow() {
+        Map<UUID, Long> last = new HashMap<>();
+        AtomicInteger sends = new AtomicInteger();
+        for (long now : new long[]{1000L, 1020L, 1040L}) {
+            SideTaskHost.NudgeDelivery.sendIfNeeded(A, last, true, true, now,
+                    () -> sends.incrementAndGet() == 3);
+        }
+        assertEquals(3, sends.get());
+        assertEquals(Long.valueOf(1040L), last.get(A));
+
+        SideTaskHost.NudgeDelivery.sendIfNeeded(A, last, true, true, 1060L, () -> {
+            fail("the accepted reminder must suppress another send in its repeat window");
+            return true;
+        });
+        assertEquals(3, sends.get());
+        assertEquals(Long.valueOf(1040L), last.get(A));
+    }
 }
