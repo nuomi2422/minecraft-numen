@@ -85,4 +85,22 @@ class RddNeedsTextTest {
         assertTrue(s.contains("不另拉路线"), "主线若在补给不另拉；不假定村庄词=可达");
         assertFalse(s.contains("村庄"), "不得用村庄关键词猜补给路线");
     }
+    @Test
+    void 未知随身数量只报UNKNOWN不冒无食物不建议eat() {
+        String s = RddNeedsText.food(20, -1);
+        assertTrue(s.contains("UNKNOWN"), "未知数量必须明说 UNKNOWN");
+        assertTrue(s.contains("不按 0"));
+        assertFalse(s.contains("一份能吃的都没有"), "未知不能冒称没有");
+        assertFalse(s.contains("eat"), "未知不建议吃");
+    }
+
+    @Test
+    void 未知饱食度不冒充很饿且仍可给储备建议() {
+        String s = RddNeedsText.food(-1, 3);
+        assertTrue(s.contains("饱食度未知"), "未知饱食度要说 UNKNOWN");
+        assertFalse(s.contains("-1/20"), "不得写 -1/20");
+        assertFalse(s.contains("很饿"));
+        assertTrue(s.contains("合计 10 份"), "储备建议与饥饿判断分开");
+        assertTrue(s.contains("随身已观测 3 份"));
+    }
 }
