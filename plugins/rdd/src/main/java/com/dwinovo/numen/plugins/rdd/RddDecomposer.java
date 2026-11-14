@@ -359,10 +359,10 @@ final class RddDecomposer {
                 ? System.lineSeparator() + System.lineSeparator()
                   + com.dwinovo.numen.rdd.policy.HomeBuildPlan.hint() + System.lineSeparator()
                 : "";
-        return RddPlanningKnowledge.withKnowledge(knowledge, companionId,
+        return RddStagePlanner.withRationale(RddPlanningKnowledge.withKnowledge(knowledge, companionId,
                 RddRiskPlanning.prepHint(objective, snapshot.availableCounts())
                         + homeHint + decompositionPrompt(objective, snapshot, List.of()),
-                objective, "fallback", List.of());
+                objective, "fallback", List.of()), com.dwinovo.numen.api.RationaleContext.renderEntry(why));
     }
 
     /**

@@ -12,7 +12,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-/** Shared parser for planner-produced rationale; absent fields stay absent, never invented. */
+/** Rationale parsing and accepted-owner handoff; absent fields stay absent, never invented. */
 final class RddRationale {
     private RddRationale() {}
 
@@ -33,12 +33,19 @@ final class RddRationale {
                                BiConsumer<RationaleContext.Entry, Consumer<List<PrimarySpec>>> plan,
                                BiConsumer<List<PrimarySpec>, RationaleContext.Entry> accept) {
         RationaleContext.Entry why = pending.remove(id);
-        plan.accept(why, stages -> accept.accept(stages, null));
+        plan.accept(why, stages -> accept.accept(stages, why));
     }
 
     /** Called immediately after the accepted chain is installed, before its first context is published. */
     static void bound(UUID id, TaskChain accepted, RationaleContext.Entry why, Supplier<TaskChain> current) {
-        // Baseline: submission reasons only reached Stage-A, not the newly bound chain.
+        if (current.get() != accepted) return;
+        RationaleContext.noteCurrentChain(id, accepted.chainInstanceId());
+        if (why != null) RationaleContext.set(id, why, accepted.planRevision(), accepted.chainInstanceId());
+        else if (RationaleContext.get(id) != null
+                && !RationaleContext.applicable(id, accepted.planRevision(), accepted.chainInstanceId())) {
+            RationaleContext.clear(id);
+            RationaleContext.noteCurrentChain(id, accepted.chainInstanceId());
+        }
     }
 
     /** The host execution-context consumer declares its actual chain, then removes stale history. */
@@ -48,13 +55,23 @@ final class RddRationale {
                 && !RationaleContext.applicable(id, chain.planRevision(), chain.chainInstanceId())) {
             RationaleContext.clear(id);
         }
-        // Baseline unexpanded context discarded even an otherwise applicable chain reason.
-        if (chain.currentSubtask() == null) RationaleContext.clear(id);
+        // An unexpanded primary still belongs to this accepted objective; no body task is
+        // not a reason to discard its otherwise current rationale.
     }
 
     /** Actual lazy-plan installation seam; a failed install must not claim a successful new reason. */
     static void expand(UUID id, TaskChain owner, Supplier<TaskChain> current, Runnable install) {
-        install.run();
+        long revision = owner.planRevision();
+        RationaleContext.Entry why = RationaleContext.get(id);
+        boolean carry = why != null && current.get() == owner
+                && RationaleContext.applicable(id, revision, owner.chainInstanceId())
+                && RationaleContext.get(id) == why;
+        install.run(); // Throwing/rejected installs never advance the reason.
+        if (carry && current.get() == owner && owner.planRevision() == revision + 1L
+                && RationaleContext.applicable(id, revision, owner.chainInstanceId())
+                && RationaleContext.get(id) == why) {
+            RationaleContext.set(id, why, owner.planRevision(), owner.chainInstanceId());
+        }
     }
 
     private static String str(JsonObject args, String key) {
