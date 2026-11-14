@@ -478,7 +478,7 @@ final class RddDecomposer {
 
     /**
      * 容错解析 LLM 的 {@code decompose_goal} 参数 JSON → 规格列表。
-     * 坏 JSON / 缺 subtasks / 字段缺失 / 资产键不可执行 / 超上限，一律丢弃对应条目；解析彻底失败返回空列表
+     * 坏 JSON / 缺 subtasks 返回空；字段缺失 / 资产键不可执行丢弃对应条目；第 9 个合法条目使整批返回空列表
      * （调用方据此回落占位链或走 §9 失败恢复）。不对称错误代价：宁可失败，不可拿残缺链冒充真分解。
      */
     static List<SubtaskSpec> parse(String argumentsJson) {
@@ -499,8 +499,9 @@ final class RddDecomposer {
                 SubtaskSpec spec = parseOne(el.getAsJsonObject());
                 if (spec != null) {
                     out.add(spec);
-                    if (out.size() >= RddChainFactory.MAX_SUBTASKS) {
-                        break;
+                    if (out.size() > RddChainFactory.MAX_SUBTASKS) {
+                        LOG.warn("[rdd] 分解合法步骤超过上限 {}，整批拒绝，不能将截断前缀当完整计划", RddChainFactory.MAX_SUBTASKS);
+                        return List.of();
                     }
                 }
             }

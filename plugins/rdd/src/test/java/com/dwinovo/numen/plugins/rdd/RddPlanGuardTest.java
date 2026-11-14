@@ -463,6 +463,120 @@ class RddPlanGuardTest {
         assertTrue(filtered.allowed().get(0).recurrence().requiresFarmBuilt());
     }
 
+
+    // V22 original request 9f04f1d9-5d82-4f1f-88e9-1c3fce9eb43d, response
+    // call_b510429a428c47dea6d26514 / new-rdd L58; exact dropped step in L60.
+    // This isolated consumer counterexample does not replay the live plan or change the parser's eight-step cap.
+    private static final String V22_FOOD_PREPARATION = "食物回补：就地打猎（牛/猪/鸡）或捡掉落，烤熟后随身带 ≥4 个熟肉。背包空着进下界等于送死，这条不补满不进烈焰人阶段。";
+
+    @Test void v22FoodPreparationWhyMustNotLoseItsRealPredicateBeforeTheLegalTail() {
+        var food = parsePreparationStep(V22_FOOD_PREPARATION, Map.of("type", "inventory", "group", "food", "minimum", 4));
+        var tail = parsePreparationStep("补足火把供地表照明", Map.of("asset_key", "minecraft:torch", "minimum", 8));
+        assertTrue(RddPlanGuard.predicateGaps(food).isEmpty(), "the original food predicate is valid, not the reason for the drop");
+        var guarded = RddPlanGuard.filterSubtasks(List.of(food, tail), "下界取烈焰棒与末影珍珠", Map.of());
+        var chain = installPreparationPlan(guarded.allowed());
+        org.junit.jupiter.api.Assertions.assertAll(
+                () -> assertEquals(List.of(food, tail), guarded.allowed(), "preparation WHY is not a present dangerous action: " + guarded.dropped()),
+                () -> assertTrue(guarded.dropped().isEmpty(), guarded.dropped().toString()),
+                () -> assertEquals(V22_FOOD_PREPARATION, chain.currentSubtask().description(), "do not install the dependent tail without its food preparation"),
+                () -> assertEquals(food.condition(), chain.currentSubtask().condition()),
+                () -> assertFalse(com.dwinovo.numen.rdd.core.HardCodedEvaluator.matches(food.condition(), Map.of("minecraft:cooked_beef", 3))),
+                () -> assertTrue(com.dwinovo.numen.rdd.core.HardCodedEvaluator.matches(food.condition(), Map.of("minecraft:cooked_beef", 4))),
+                () -> assertTrue(chain.satisfiedStages().isEmpty(), "publishing preparation is not completing it"));
+    }
+
+    @Test void immediateNetherCombatStillCannotInstallWithoutArmor() {
+        var step = parsePreparationStep("现在进入下界要塞击杀烈焰人取得烈焰棒", Map.of("asset_key", "minecraft:blaze_rod", "minimum", 1));
+        var guarded = RddPlanGuard.filterSubtasks(List.of(step), "通关MC", Map.of());
+        var chain = installPreparationPlan(guarded.allowed());
+        assertTrue(guarded.allowed().isEmpty());
+        assertTrue(guarded.dropped().stream().anyMatch(reason -> reason.contains("护甲")));
+        assertTrue(chain.currentPrimary().unexpanded());
+        assertTrue(chain.satisfiedStages().isEmpty());
+    }
+
+    @Test void foodWordAndFoodPredicateDoNotDisguiseAnImmediateDangerousAction() {
+        var step = parsePreparationStep("食物回补：现在进入下界要塞击杀烈焰人，顺手捡食物", Map.of("type", "inventory", "group", "food", "minimum", 4));
+        var guarded = RddPlanGuard.filterSubtasks(List.of(step), "通关MC", Map.of());
+        assertTrue(guarded.allowed().isEmpty(), "neither a food keyword nor its predicate grants unarmored combat");
+        assertTrue(guarded.dropped().stream().anyMatch(reason -> reason.contains("护甲")));
+        assertTrue(installPreparationPlan(guarded.allowed()).currentPrimary().unexpanded());
+    }
+
+    @Test void explicitSafeFoodPreparationCanInstallBeforeOwningArmor() {
+        var step = parsePreparationStep("不要进入下界，先在主世界地表取食物补给", Map.of("type", "inventory", "group", "food", "minimum", 4));
+        var guarded = RddPlanGuard.filterSubtasks(List.of(step), "通关MC", Map.of());
+        assertEquals(List.of(step), guarded.allowed(), guarded.dropped().toString());
+        var chain = installPreparationPlan(guarded.allowed());
+        assertEquals(step.description(), chain.currentSubtask().description());
+        assertEquals(step.condition(), chain.currentSubtask().condition());
+        assertTrue(chain.satisfiedStages().isEmpty());
+    }
+
+
+    @Test void riskExplanationMustNotHideActualDangerOrInstallOnlyItsTail() {
+        for (String description : List.of(
+                "先在安全处补充粮食。空手进入下界意味着死亡。现在进入下界要塞击杀烈焰人，顺手捡食物",
+                "食物回补：现在进入下界要塞击杀烈焰人等于送死")) {
+            var mixed = parsePreparationStep(description, Map.of("type", "inventory", "group", "food", "minimum", 4));
+            var tail = parsePreparationStep("补足火把供地表照明", Map.of("asset_key", "minecraft:torch", "minimum", 8));
+            var guarded = RddPlanGuard.filterSubtasks(List.of(mixed, tail), "通关MC", Map.of());
+            assertTrue(guarded.allowed().isEmpty(), "ambiguous dangerous preparation must return the batch, not only drop food: " + guarded.dropped());
+            assertTrue(guarded.dropped().stream().anyMatch(reason -> reason.contains("护甲")));
+            assertTrue(installPreparationPlan(guarded.allowed()).currentPrimary().unexpanded());
+        }
+    }
+
+    @Test void explicitRiskReasonCannotReenterThroughTheSharedRiskClassifier() {
+        var safe = parsePreparationStep("先在主世界安全处补充粮食。空手进入下界意味着死亡。补齐前不要进入下界。",
+                Map.of("type", "inventory", "group", "food", "minimum", 4));
+        var guarded = RddPlanGuard.filterSubtasks(List.of(safe), "通关MC", Map.of());
+        assertEquals(List.of(safe), guarded.allowed(), guarded.dropped().toString());
+        var chain = installPreparationPlan(guarded.allowed());
+        assertEquals(safe.description(), chain.currentSubtask().description());
+        assertEquals(safe.condition(), chain.currentSubtask().condition());
+        assertTrue(chain.satisfiedStages().isEmpty());
+    }
+
+
+    @Test void movementBeforeMissingArmorReasonCannotBeRemovedAsPreparationWhy() {
+        var dangerous = parsePreparationStep("食物回补：先前往下界要塞取食物但没有护甲等于送死",
+                Map.of("type", "inventory", "group", "food", "minimum", 4));
+        var tail = parsePreparationStep("补足火把供地表照明", Map.of("asset_key", "minecraft:torch", "minimum", 8));
+        var guarded = RddPlanGuard.filterSubtasks(List.of(dangerous, tail), "通关MC", Map.of());
+        assertTrue(guarded.allowed().isEmpty(), "the explicit travel action must remain, and its food step cannot be dropped alone");
+        assertTrue(guarded.dropped().stream().anyMatch(reason -> reason.contains("护甲")));
+        assertTrue(installPreparationPlan(guarded.allowed()).currentPrimary().unexpanded());
+    }
+
+    @Test void travelAfterSafePreparationStillCannotBorrowItsMissingArmorReason() {
+        var dangerous = parsePreparationStep("先在主世界补充食物。前往下界要塞取食物但没有护甲意味着死亡",
+                Map.of("type", "inventory", "group", "food", "minimum", 4));
+        var guarded = RddPlanGuard.filterSubtasks(List.of(dangerous), "通关MC", Map.of());
+        assertTrue(guarded.allowed().isEmpty(), "a later explicit travel action is not a lack-subject risk explanation");
+        assertTrue(guarded.dropped().stream().anyMatch(reason -> reason.contains("护甲")));
+        assertTrue(installPreparationPlan(guarded.allowed()).currentPrimary().unexpanded());
+    }
+
+    private static SubtaskSpec parsePreparationStep(String description, Map<String, Object> condition) {
+        String json = new com.google.gson.Gson().toJson(Map.of("subtasks", List.of(Map.of(
+                "description", description, "condition", condition, "node_type", "MAIN"))));
+        var parsed = RddDecomposer.parse(json);
+        assertEquals(1, parsed.size(), "use the actual decomposer parser, not an ideal SubtaskSpec");
+        return parsed.getFirst();
+    }
+
+    private static com.dwinovo.numen.rdd.core.TaskChain installPreparationPlan(List<SubtaskSpec> accepted) {
+        var primary = com.dwinovo.numen.rdd.api.PrimaryGoal.unexpanded("food-prepare-p", "下界取烈焰棒与末影珍珠", List.of());
+        var chain = new com.dwinovo.numen.rdd.core.TaskChain(new com.dwinovo.numen.rdd.api.Goal("food-prepare-g", "通关MC", List.of(primary)));
+        if (!accepted.isEmpty()) {
+            var injection = RddGoalDriver.buildInjection(primary.id(), chain.nextPlanRevision(), accepted);
+            RddGoalDriver.acceptPlan(injection, ignored -> {}, () -> chain.expandCurrentPrimary(injection));
+            chain.activateCurrent(Map.of());
+        }
+        return chain;
+    }
+
     @Test void initialFarmingConstructionStaysMain() {
         SubtaskSpec construction = new SubtaskSpec("开垦并初始播种",
                 Map.of("asset_key", "minecraft:wheat_seeds", "minimum", 1), null, NodeType.MAIN, null);
