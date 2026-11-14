@@ -490,8 +490,10 @@ class RddGoalDriverInjectionTest {
                 "block", "#minecraft:crops",
                 "radius", 16.0,
                 "dimension", "minecraft:overworld",
-                "anchor", "62139,64,-62120",
+                "anchor", List.of(62139.0, 64.0, -62120.0),
                 "properties", Map.of("age", "7"));
+        assertTrue(com.dwinovo.numen.rdd.core.WorldFactConditions.valid(condition),
+                "fixture must be a legal WorldFactConditions predicate");
         Subtask block = new Subtask("d-block", "block crops daily", DetectionMode.HARD_CODED,
                 condition, 0, 0, false, null, NodeType.DAILY, RecurrenceSpec.daily(true));
         SideTaskEngine engine = engine();
