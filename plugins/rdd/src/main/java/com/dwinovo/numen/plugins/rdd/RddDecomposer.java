@@ -401,7 +401,8 @@ final class RddDecomposer {
                 userContent.contains("no path") || userContent.contains("不可达")
                         || userContent.contains("没有路"),
                 userContent.contains("3×3") || userContent.contains("3x3"));
-        RddDecomposer.llmAsk(companionId, "stage_b", userContent,
+        RddDecomposer.llmAsk(companionId, "stage_b",
+                stageBRequestContent(userContent, RddStagePlanner.freshRationale(companionId)),
                 SYSTEM_PROMPT, DECOMPOSE_TOOL,
                 args -> {
                     RddPlanGuard.Filtered guarded = RddPlanGuard.filterSubtasks(
@@ -413,6 +414,16 @@ final class RddDecomposer {
                     done.accept(guarded.allowed());
                 },
                 () -> done.accept(List.of()));
+    }
+
+    /**
+     * Stage-B final-content seam, called by the real request path above.
+     * Red freeze (2026-11-14): preserve the original prompt byte-for-byte; the existing
+     * scoped rationale is deliberately not consumed until the isolated red has real XML.
+     * No output schema, invented reason, API change or persistence is introduced here.
+     */
+    static String stageBRequestContent(String knowledgeContent, String applicableRationale) {
+        return knowledgeContent;
     }
 
     /**
