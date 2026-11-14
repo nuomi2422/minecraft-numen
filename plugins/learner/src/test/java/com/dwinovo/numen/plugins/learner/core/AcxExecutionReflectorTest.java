@@ -455,4 +455,98 @@ class AcxExecutionReflectorTest {
         assertEquals(C.toString(), e.companionId(),
                 "★ 回流条目必须带同伴 id，否则按同伴过滤时它对谁都不可见");
     }
+
+    /** Refused executions do not claim a duplicate or reserve a fresh run's terminal source. */
+    @Test
+    void crossRunExecutionAfterResult_isNotKnown_andFollowingTerminalIsDurable() throws Exception {
+        Path d = tmp("cross-run-tail");
+        ArtifactOutbox ob = outboxWith(d);
+        String artifactId = ob.list(ArtifactOutbox.Kind.AC_SCRIPT).get(0).get("artifact_id").getAsString();
+        UsageLedger ul = new UsageLedger(d);
+        ul.append(artifactId, "AC_SCRIPT", "low_hp_flee", UsageLedger.Phase.EXECUTED,
+                UsageLedger.Outcome.UNKNOWN, "execution only", "acx-run:execution-only", C.toString());
+        ul.append(artifactId, "AC_SCRIPT", "low_hp_flee", UsageLedger.Phase.RESULT,
+                UsageLedger.Outcome.SUCCESS, "previous run completed", "acx-run:previous", C.toString());
+        ul.append("unrelated-artifact", "AC_SCRIPT", "unrelated", UsageLedger.Phase.RESULT,
+                UsageLedger.Outcome.SUCCESS, "different artifact", "acx-run:execution-only", C.toString());
+        byte[] before = Files.readAllBytes(ul.file());
+        Path rec = records(d,
+                run("execution-only", "low_hp_flee", "1", "PAUSED", "null"),
+                run("fresh-run", "low_hp_flee", "1", "RUNNING", "null"));
+        var reflector = new AcxExecutionReflector(ob, ul);
+
+        var refused = reflector.reflect(rec, true);
+        assertEquals(0, refused.reflected());
+        assertEquals(0, refused.alreadyKnown(), "neither refused execution has a matching RESULT");
+        assertEquals(2, refused.skippedNotFinal());
+        assertEquals(2, refused.notes().size());
+        assertTrue(refused.notes().stream().allMatch(n -> n.contains("没有同 run 的 RESULT")),
+                "EXECUTED source or another artifact's RESULT is not coverage: " + refused.notes());
+        org.junit.jupiter.api.Assertions.assertArrayEquals(before, Files.readAllBytes(ul.file()));
+
+        Files.writeString(rec, run("fresh-run", "low_hp_flee", "1", "SUCCESS", "null") + "\n",
+                StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
+        var completed = reflector.reflect(rec, true);
+        assertEquals(1, completed.reflected(), "refusal must not reserve the fresh terminal source");
+        assertEquals(0, completed.alreadyKnown());
+        UsageLedger reopened = new UsageLedger(d);
+        var snapshot = reopened.readSnapshot();
+        assertEquals(UsageLedger.ReadStatus.READY, snapshot.status());
+        assertEquals(4, snapshot.rows().size(), "only the actual terminal was appended");
+        assertEquals(1L, snapshot.rows().stream().filter(e -> e.source().equals("acx-run:fresh-run")).count());
+        UsageLedger.Entry result = reopened.latestOf(artifactId);
+        assertEquals(UsageLedger.Phase.RESULT, result.phase());
+        assertEquals(UsageLedger.Outcome.SUCCESS, result.outcome());
+        assertEquals("acx-run:fresh-run", result.source());
+        assertEquals(C.toString(), result.companionId());
+        assertFalse(result.validityClaimed());
+        assertFalse(result.humanReviewed());
+        org.junit.jupiter.api.Assertions.assertArrayEquals(before,
+                java.util.Arrays.copyOf(Files.readAllBytes(ul.file()), before.length));
+
+        var rescan = reflector.reflect(rec, true);
+        assertEquals(0, rescan.reflected());
+        assertEquals(1, rescan.alreadyKnown(), "only the true terminal row is a known duplicate");
+        assertTrue(rescan.notes().stream().anyMatch(n -> n.contains("run fresh-run")
+                && n.contains("同产物同 source 的真实 RESULT 覆盖")));
+        assertTrue(rescan.notes().stream().anyMatch(n -> n.contains("run execution-only")
+                && n.contains("没有同 run 的 RESULT")));
+        assertEquals(4, new UsageLedger(d).readSnapshot().rows().size());
+    }
+
+    /** Even a same-run RESULT does not authorize silently accepting an unknown status. */
+    @Test
+    void unknownStatusAfterResult_keepsLateArrivalFailure() throws Exception {
+        Path d = tmp("unknown-after-result");
+        ArtifactOutbox ob = outboxWith(d);
+        String artifactId = ob.list(ArtifactOutbox.Kind.AC_SCRIPT).get(0).get("artifact_id").getAsString();
+        UsageLedger ul = new UsageLedger(d);
+        ul.append(artifactId, "AC_SCRIPT", "low_hp_flee", UsageLedger.Phase.RESULT,
+                UsageLedger.Outcome.SUCCESS, "real terminal", "acx-run:unknown-status", C.toString());
+        byte[] before = Files.readAllBytes(ul.file());
+        Path rec = records(d, run("unknown-status", "low_hp_flee", "1", "SOMETHING_NEW", "null"));
+
+        UsageLedger.LateArrival rejected = org.junit.jupiter.api.Assertions.assertThrows(
+                UsageLedger.LateArrival.class, () -> new AcxExecutionReflector(ob, ul).reflect(rec, true));
+        assertEquals(UsageLedger.Phase.RESULT, rejected.seen);
+        assertEquals(UsageLedger.Phase.EXECUTED, rejected.arriving);
+        org.junit.jupiter.api.Assertions.assertArrayEquals(before, Files.readAllBytes(ul.file()));
+        assertEquals(1, new UsageLedger(d).readSnapshot().rows().size());
+    }
+
+    /** Exercise a real filesystem write error, not a mocked ledger exception. */
+    @Test
+    void executionWriteFailure_isNotConvertedToSuccessfulReport() throws Exception {
+        Path d = tmp("write-failure");
+        ArtifactOutbox ob = outboxWith(d);
+        UsageLedger ul = new UsageLedger(d.resolve("broken-ledger"));
+        Files.createDirectories(ul.file()); // A directory cannot be opened as the append-only journal.
+        Path rec = records(d, run("write-failure", "low_hp_flee", "1", "PAUSED", "null"));
+
+        IllegalStateException failure = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class, () -> new AcxExecutionReflector(ob, ul).reflect(rec, true));
+        assertTrue(failure.getCause() instanceof java.io.IOException, "retain the real write cause: " + failure);
+        assertTrue(failure.getMessage().contains("写使用账本失败"));
+        assertTrue(Files.isDirectory(ul.file()), "no replacement journal or successful receipt was created");
+    }
 }

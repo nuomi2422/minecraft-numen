@@ -151,6 +151,7 @@ public final class AcxExecutionReflector {
             UsageLedger.Phase phase;
             UsageLedger.Outcome outcome;
             boolean terminal;
+            boolean knownNonTerminal = false;
             switch (r.status() == null ? "" : r.status().toUpperCase(java.util.Locale.ROOT)) {
                 case "SUCCESS", "COMPLETED" -> {
                     phase = UsageLedger.Phase.RESULT;
@@ -185,6 +186,7 @@ public final class AcxExecutionReflector {
                     //   而账本是 append-only，事后没法收回 —— 宁可只记 EXECUTED。
                     phase = UsageLedger.Phase.EXECUTED;
                     outcome = UsageLedger.Outcome.UNKNOWN;
+                    knownNonTerminal = true;
                     notFinal++;
                     terminal = false;
                 }
@@ -202,8 +204,28 @@ public final class AcxExecutionReflector {
                 continue;
             }
             String detail = buildDetail(r);
-            ledger.append(artifactId, "AC_SCRIPT", r.acName(), phase, outcome, detail, source,
-                    companionById.getOrDefault(artifactId, ""));
+            try {
+                ledger.append(artifactId, "AC_SCRIPT", r.acName(), phase, outcome, detail, source,
+                        companionById.getOrDefault(artifactId, ""));
+            } catch (UsageLedger.LateArrival late) {
+                // Only a known nonterminal acknowledgement may be refused without aborting the tail.
+                // Unknown status, other phase regressions and write failures retain their exceptions.
+                if (!knownNonTerminal || late.seen != UsageLedger.Phase.RESULT
+                        || late.arriving != UsageLedger.Phase.EXECUTED) {
+                    throw late;
+                }
+                // knownSources also contains EXECUTED: only an actual matching RESULT proves coverage.
+                boolean sameRunResult = ledger.all().stream().anyMatch(e -> artifactId.equals(e.artifactId())
+                        && source.equals(e.source()) && e.phase() == UsageLedger.Phase.RESULT);
+                if (sameRunResult) {
+                    notes.add("run " + r.runId() + " 的旧 " + r.status()
+                            + "/EXECUTED 已被同产物同 source 的真实 RESULT 覆盖，未重复入账");
+                } else {
+                    notes.add("run " + r.runId() + " 的 " + r.status()
+                            + "/EXECUTED 被产物已有 RESULT 拒绝；没有同 run 的 RESULT，未入账，继续等待真实终态");
+                }
+                continue; // No reflected/alreadyKnown increment or source reservation for a refused row.
+            }
             if (terminal) {
                 knownSources.add(source);
             }
