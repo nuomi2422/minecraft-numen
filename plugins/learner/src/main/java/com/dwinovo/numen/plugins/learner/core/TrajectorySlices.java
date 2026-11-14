@@ -48,6 +48,8 @@ public final class TrajectorySlices {
     /** 给一条 memo 生成切片文本；拿不到锚点或读失败时返回空串/诚实说明。 */
     public static String forMemo(Path configDir, UUID companionId, Memo memo) {
         if (configDir == null || memo == null) return "";
+        if ("skill_task_result".equals(memo.stage()) || "skill_delivery".equals(memo.stage()))
+            return SkillReviewInput.forMemo(configDir, companionId, memo, MAX_CHARS);
         String anchor = anchorOf(memo);
         if (anchor.isBlank()) return "";
         long t = anchorTime(configDir, anchor);
