@@ -195,7 +195,7 @@ public final class ExperienceStoreRetrievalBridge {
         // 只观测，不改行为；行首 EXP-BRIDGE 便于 grep。
         try {
             if (e != null && e.id() != null && !e.id().isBlank()) {
-                org.slf4j.LoggerFactory.getLogger("ExpBridge").info(
+                org.slf4j.LoggerFactory.getLogger("ExpBridge").debug(
                         "[EXP-BRIDGE] id={} pub={} retracted={} published={} retrievable={} trial={}",
                         e.id(),
                         e.publication(),
