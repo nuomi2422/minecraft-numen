@@ -513,6 +513,31 @@ class RddPlanGuardTest {
         assertTrue(chain.satisfiedStages().isEmpty());
     }
 
+
+    @Test void riskExplanationMustNotHideActualDangerOrInstallOnlyItsTail() {
+        for (String description : List.of(
+                "先在安全处补充粮食。空手进入下界意味着死亡。现在进入下界要塞击杀烈焰人，顺手捡食物",
+                "食物回补：现在进入下界要塞击杀烈焰人等于送死")) {
+            var mixed = parsePreparationStep(description, Map.of("type", "inventory", "group", "food", "minimum", 4));
+            var tail = parsePreparationStep("补足火把供地表照明", Map.of("asset_key", "minecraft:torch", "minimum", 8));
+            var guarded = RddPlanGuard.filterSubtasks(List.of(mixed, tail), "通关MC", Map.of());
+            assertTrue(guarded.allowed().isEmpty(), "ambiguous dangerous preparation must return the batch, not only drop food: " + guarded.dropped());
+            assertTrue(guarded.dropped().stream().anyMatch(reason -> reason.contains("护甲")));
+            assertTrue(installPreparationPlan(guarded.allowed()).currentPrimary().unexpanded());
+        }
+    }
+
+    @Test void explicitRiskReasonCannotReenterThroughTheSharedRiskClassifier() {
+        var safe = parsePreparationStep("先在主世界安全处补充粮食。空手进入下界意味着死亡。补齐前不要进入下界。",
+                Map.of("type", "inventory", "group", "food", "minimum", 4));
+        var guarded = RddPlanGuard.filterSubtasks(List.of(safe), "通关MC", Map.of());
+        assertEquals(List.of(safe), guarded.allowed(), guarded.dropped().toString());
+        var chain = installPreparationPlan(guarded.allowed());
+        assertEquals(safe.description(), chain.currentSubtask().description());
+        assertEquals(safe.condition(), chain.currentSubtask().condition());
+        assertTrue(chain.satisfiedStages().isEmpty());
+    }
+
     private static SubtaskSpec parsePreparationStep(String description, Map<String, Object> condition) {
         String json = new com.google.gson.Gson().toJson(Map.of("subtasks", List.of(Map.of(
                 "description", description, "condition", condition, "node_type", "MAIN"))));
