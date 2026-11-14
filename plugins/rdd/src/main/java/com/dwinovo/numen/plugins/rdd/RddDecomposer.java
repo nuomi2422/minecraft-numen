@@ -373,6 +373,8 @@ final class RddDecomposer {
     static void decomposeSpecsWithHint(UUID companionId, String themeObjective, int attempt,
                                        List<String> completedStages, String extraHint,
                                        Consumer<List<SubtaskSpec>> done) {
+        // Independent recovery objectives have no chain-theme owner. Keep planning, but
+        // omit chain rationale rather than attach the unrelated current mainline's reason.
         decomposeSpecsWithHint(companionId, null, -1L, themeObjective, attempt, completedStages, extraHint, done);
     }
 
@@ -439,10 +441,13 @@ final class RddDecomposer {
                 userContent.contains("no path") || userContent.contains("不可达")
                         || userContent.contains("没有路"),
                 userContent.contains("3×3") || userContent.contains("3x3"));
-        // Baseline behavior: read the latest runtime after consuming optional knowledge.
+        // Optional knowledge may replace the runtime or advance its plan. The theme still
+        // belongs to the caller: never borrow a replacement's reason, even at the same revision.
         var chain = currentChain.get();
-        String rationale = chain == null ? "" : com.dwinovo.numen.api.RationaleContext.renderApplicable(
-                companionId, chain.planRevision(), chain.chainInstanceId());
+        String rationale = owner != null && chain == owner && owner.planRevision() == ownerRevision
+                ? com.dwinovo.numen.api.RationaleContext.renderApplicable(
+                        companionId, ownerRevision, owner.chainInstanceId())
+                : "";
         send.accept(stageBRequestContent(userContent, rationale));
     }
 
