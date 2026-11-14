@@ -558,6 +558,25 @@ class RddPlanGuardTest {
         assertTrue(installPreparationPlan(guarded.allowed()).currentPrimary().unexpanded());
     }
 
+    // V25 new-rdd:144/146, request 99c0911a-1730-401a-899a-0ad58bb541b8: food for a later trip, not travel now.
+    @Test void v25RestockingForALaterNetherTripMustNotDropFoodTwelveBeforeTheLegalTail() {
+        String description = "把食物补到能支撑一整个下界/找要塞来回的量：至少 12 份直接可食用的东西（生肉也计，后面可以在基地熔炉烤熟再吃；小麦/种子不算）。来源按优先级：基地与村庄箱子里的存货 → 夜里或水边打猎（牛/羊/猪/鸡/鲑鱼）→ 现成农田收获后补种。起步攒到 12 份就走下一步，别在野外无限狩猎。";
+        var food = parsePreparationStep(description, Map.of("group", "food", "minimum", 12));
+        var tail = parsePreparationStep("补足火把供地表照明", Map.of("asset_key", "minecraft:torch", "minimum", 8));
+        assertTrue(RddPlanGuard.predicateGaps(food).isEmpty(), "the recorded food predicate is valid, not a missing tool or uncovered action");
+        var guarded = RddPlanGuard.filterSubtasks(List.of(food, tail), "末地准备与定位要塞", Map.of("minecraft:salmon", 2));
+        var chain = installPreparationPlan(guarded.allowed());
+        org.junit.jupiter.api.Assertions.assertAll(
+                () -> assertEquals(List.of(food, tail), guarded.allowed(), "food restocking for a later trip must not require armor: " + guarded.dropped()),
+                () -> assertTrue(guarded.dropped().isEmpty(), guarded.dropped().toString()),
+                () -> assertEquals(description, chain.currentSubtask().description(), "do not advance to the legal tail by silently deleting food12"),
+                () -> assertEquals(food.condition(), chain.currentSubtask().condition(), "retain the original group-food minimum12 predicate"),
+                () -> assertEquals(NodeType.MAIN, chain.currentSubtask().nodeType()),
+                () -> assertFalse(com.dwinovo.numen.rdd.core.HardCodedEvaluator.matches(food.condition(), Map.of("minecraft:salmon", 11))),
+                () -> assertTrue(com.dwinovo.numen.rdd.core.HardCodedEvaluator.matches(food.condition(), Map.of("minecraft:salmon", 12))),
+                () -> assertTrue(chain.satisfiedStages().isEmpty(), "admitting preparation is not verifying food or completing its theme"));
+    }
+
     private static SubtaskSpec parsePreparationStep(String description, Map<String, Object> condition) {
         String json = new com.google.gson.Gson().toJson(Map.of("subtasks", List.of(Map.of(
                 "description", description, "condition", condition, "node_type", "MAIN"))));
