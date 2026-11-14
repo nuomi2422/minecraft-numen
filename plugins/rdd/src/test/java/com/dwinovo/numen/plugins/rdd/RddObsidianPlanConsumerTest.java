@@ -213,6 +213,41 @@ class RddObsidianPlanConsumerTest {
         assertEquals(2, producer.split("RddMiningCapabilityCheck.capture", -1).length - 1);
     }
 
+    /** Same item ID does not make a newly crafted stack inherit an old stack's components. */
+    @Test void craftingReplacementOfSameKnownUnharvestableToolKeepsPreparationBeforeMining() {
+        Map<String, Integer> held = Map.of("minecraft:diamond_pickaxe", 1);
+        var currentStack = evidence(held, Map.of("minecraft:diamond_pickaxe", false), System.currentTimeMillis());
+        SubtaskSpec prep = parse("合成钻石镐作为新工具，采前核对新工具能力",
+                Map.of("type", "item_crafted", "item", "minecraft:diamond_pickaxe", "minimum", 1));
+        SubtaskSpec mine = obsidian("用钻石镐开采黑曜石到手10个");
+        var guarded = RddPlanGuard.filterSubtasks(List.of(prep, mine), THEME, held, currentStack);
+
+        assertEquals(List.of(prep, mine), guarded.allowed(), "old native false cannot veto a new same-ID preparation");
+        TaskChain chain = install(guarded.allowed(), held);
+        assertEquals(prep.description(), chain.currentSubtask().description());
+        assertEquals(prep.condition(), chain.currentSubtask().condition(), "new tool must really be crafted first");
+        assertEquals(mine.condition(), chain.currentPrimary().subtasks().get(1).condition());
+        assertEquals(Boolean.FALSE, currentStack.correctForDrops().get("minecraft:diamond_pickaxe"),
+                "planning a replacement must not fabricate current harvesting capability");
+        assertTrue(guarded.dropped().isEmpty());
+        assertTrue(chain.satisfiedStages().isEmpty(), "preparation is pending, not completed or waived");
+    }
+
+    @Test void sameToolReplacementRequiresARealEarlierToolConditionNotJustWords() {
+        Map<String, Integer> held = Map.of("minecraft:diamond_pickaxe", 1);
+        var currentStack = evidence(held, Map.of("minecraft:diamond_pickaxe", false), System.currentTimeMillis());
+        SubtaskSpec mine = obsidian("用钻石镐开采黑曜石到手10个");
+        SubtaskSpec prep = parse("合成钻石镐", Map.of("type", "item_crafted", "item", "minecraft:diamond_pickaxe", "minimum", 1));
+        SubtaskSpec mereWords = parse("合成钻石镐前先取木棍", Map.of("asset_key", "minecraft:stick", "minimum", 1));
+
+        for (List<SubtaskSpec> candidate : List.of(List.of(mine), List.of(mine, prep), List.of(mereWords, mine))) {
+            var rejected = RddPlanGuard.filterSubtasks(candidate, THEME, held, currentStack);
+            assertTrue(rejected.allowed().isEmpty(), "current incapable tool needs genuine preparation ahead of mining");
+            assertFalse(rejected.dropped().isEmpty());
+            assertTrue(install(rejected.allowed(), held).currentPrimary().unexpanded());
+        }
+    }
+
     private static SubtaskSpec obsidian(String description) {
         return parse(description, Map.of("asset_key", "minecraft:obsidian", "minimum", 10));
     }
