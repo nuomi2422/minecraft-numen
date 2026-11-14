@@ -199,7 +199,7 @@ final class SkillTaskFeedback {
         return args.get(key).getAsString();
     }
 
-    static String digest(String value) { // Same original-body SHA-256 for result producer and review consumer.
+    private static String digest(String value) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                     .digest(value.getBytes(StandardCharsets.UTF_8)));

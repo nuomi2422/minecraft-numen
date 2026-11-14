@@ -78,11 +78,12 @@ public final class ReviewTargetGate {
             String body = com.dwinovo.numen.plugins.learner.skills.SkillBodyStore.read(dir, skill.bodyRef());
             if (body == null || body.isBlank()) return new Check(false, "SKILL_BODY_UNKNOWN");
             if ("skill_task_result".equals(memo.stage()) && (!bodyRef.equals(skill.bodyRef())
-                    || !bodyDigest.equals(SkillTaskFeedback.digest(body))))
+                    || !bodyDigest.equals(java.util.HexFormat.of().formatHex(
+                            java.security.MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8))))))
                 return new Check(false, "SKILL_BODY_MISMATCH");
             // Delivery has no historical body digest: current readability is not proof of old delivered bytes.
             return new Check(true, "OK");
-        } catch (IOException | RuntimeException unreadable) {
+        } catch (IOException | java.security.NoSuchAlgorithmException | RuntimeException unreadable) {
             return new Check(false, "SKILL_REGISTRY_UNKNOWN");
         }
     }
