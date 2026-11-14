@@ -341,6 +341,57 @@ class RddSurvivalPreemptReplanHostTest {
         }
     }
 
+    /** Real five-minute admission recovery must release the same-revision wait before DAILY can run. */
+    @Test
+    void originalMainlineTimeoutReleasesPendingWaitAndPreservesSameDayDaily() {
+        Fixture f = new Fixture();
+        Object ticket = new Object();
+        var world = new PendingDailyWorld();
+        var engine = dueDailyEngine(f);
+        var enteredAt = new HashMap<UUID, Long>();
+        var clock = new java.util.concurrent.atomic.AtomicLong(1_000_000L);
+        var resumed = new AtomicInteger();
+        try {
+            assertTrue(RddReplanTransition.requestSurvival(f.id, f.chain, RddSurvivalGate.Decision.EAT_FIRST,
+                    "typed survival awaiting callback", f.counts, f.key(), LIMIT, null, ticket).accepted());
+            var owner = sideOwner(f);
+            var host = new RddMainlineAdmission.Host() {
+                public boolean sideActive() { return engine.isActive(f.id); }
+                public void activeProposal() { fail("REPLANNING does not publish an ACTIVE proposal"); }
+                public boolean negotiate() { return false; }
+                public void watchParked() {}
+                public void recovering() { fail("this is not a RECOVERING chain"); }
+                public void timeoutResumed(long waitedMs) {
+                    assertEquals(300_001L, waitedMs);
+                    assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
+                    assertFalse(RddReplanTransition.deferPlannerDaily(f.id, owner), "release precedes host observation");
+                    resumed.incrementAndGet();
+                }
+                public void timeoutFailed(long waitedMs, RuntimeException failure) { fail("real timeout resume must succeed", failure); }
+            };
+            assertTrue(RddMainlineAdmission.stopAfterObservation(f.id, f.chain, f.chain.primaryStatus(),
+                    enteredAt, clock::get, host));
+            SideTaskHost.SleepSafety.tick(engine, f.id, world, owner, false, () -> false);
+            assertTrue(engine.current(f.id).isEmpty(), "the due DAILY is unspent while the planner is pending");
+            assertTrue(RddReplanTransition.deferPlannerDaily(f.id, owner));
+            clock.addAndGet(300_001L);
+            assertTrue(RddMainlineAdmission.stopAfterObservation(f.id, f.chain, f.chain.primaryStatus(),
+                    enteredAt, clock::get, host));
+            assertEquals(1, resumed.get());
+            assertTrue(enteredAt.isEmpty());
+            assertEquals(owner.planRevision(), f.chain.planRevision(), "timeout does not hide the stale intent by changing revision");
+            assertEquals(owner.chainInstanceId(), f.chain.chainInstanceId());
+            assertFalse(RddReplanTransition.hasSurvivalIntent(f.id), "successful original fallback ends this callback wait");
+            assertEquals(1, f.used(), "timeout does not buy or spend another replan attempt");
+            SideTaskHost.SleepSafety.tick(engine, f.id, world, owner, false, () -> false);
+            assertEquals(DailyMaintenanceSideTaskType.TYPE_ID, engine.current(f.id).orElseThrow().typeId());
+            assertEquals(world.gameDay(), engine.current(f.id).orElseThrow().scheduledGameDay(),
+                    "the same-day pending occurrence survives without moving its schedule");
+        } finally {
+            RddReplanTransition.invalidate(f.id);
+        }
+    }
+
     private static MainlineResumeToken sideOwner(Fixture f) {
         return new MainlineResumeToken(f.id, f.chain.chainInstanceId(), f.chain.goal().id(),
                 f.chain.currentPrimary().id(), f.chain.currentSubtask().id(), f.chain.planRevision(), f.chain.planRevision());
