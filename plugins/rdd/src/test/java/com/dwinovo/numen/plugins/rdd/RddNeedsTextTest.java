@@ -52,12 +52,37 @@ class RddNeedsTextTest {
     }
 
     @Test
-    void 不饿就不说话() {
-        // 2026-10-28 改口径：**不饿但背包零食物**要提示（"趁现在补"），
-        // 因为实机她在下界 hunger=20 却一份吃的都没有，而下界没有农田和树。
-        assertNotEquals("", RddNeedsText.food(20, 0), "不饿但零食物也要提示：趁现在补");
-        assertNotEquals("", RddNeedsText.food(RddNeedsText.HUNGRY_AT, 0), "阈值上边界、零食物 → 提示补货");
-        assertEquals("", RddNeedsText.food(20, 3), "不饿且身上有吃的 → 安静");
-        assertNotEquals("", RddNeedsText.food(RddNeedsText.HUNGRY_AT - 1, 1), "阈值下一格要提示");
+    void 不饿但随身不足十份时给软储备建议_旧静默断言被新需求替代() {
+        // 2026-11-15 B2: 旧行为“健康随身3份→静默”被主人明确的 10 份软储备契约替代。
+        // 旧断言保留在 git 历史中；这里改为要求同一 food_hint 给出建议，且不抢任务。
+        String s = RddNeedsText.food(20, 3);
+        assertTrue(s.contains("<food_hint>"), "健康但 <10 份要提示（非紧急）");
+        assertEquals(1, s.split("<food_hint>", -1).length - 1, "只允许一个 food_hint");
+        assertTrue(s.contains("合计 10 份"), "建议目标是 10 份，不是紧急 2 份");
+        assertTrue(s.contains("随身已观测 3 份"));
+        assertTrue(s.contains("UNKNOWN"), "备用未知必须明说");
+        assertFalse(s.contains("备用 0 份"), "未知不能写成 0");
+        assertEquals("", RddNeedsText.food(20, 10), "随身 10 份已够，不再提示");
+        assertEquals("", RddNeedsText.food(20, 27), "随身富余 → 安静");
+    }
+
+    @Test
+    void 零库存与饥饿分支也带十份建议且不重复() {
+        String zero = RddNeedsText.food(20, 0);
+        assertTrue(zero.contains("一份能吃的都没有"));
+        assertTrue(zero.contains("合计 10 份"));
+        assertEquals(1, zero.split("<food_hint>", -1).length - 1);
+        String hungry = RddNeedsText.food(11, 3);
+        assertTrue(hungry.contains("eat"), "饿了先吃，建议不变");
+        assertTrue(hungry.contains("合计 10 份"));
+        assertEquals(1, hungry.split("<food_hint>", -1).length - 1);
+    }
+
+    @Test
+    void 建议文本声明不抢主线且不假定补给可达() {
+        String s = RddNeedsText.food(20, 9);
+        assertTrue(s.contains("不抢当前任务"), "软建议不能改变 owner/当前任务");
+        assertTrue(s.contains("不另拉路线"), "主线若在补给不另拉；不假定村庄词=可达");
+        assertFalse(s.contains("村庄"), "不得用村庄关键词猜补给路线");
     }
 }
