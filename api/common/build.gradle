@@ -86,6 +86,9 @@ sourceSets.configureEach {
 
 sourceSets {
     test {
+        // Exercise the same thin exporter and generated files used by ordinary API packaging.
+        java.srcDir rootProject.file('tools/api-language')
+        resources.srcDir project(':api:neoforge').layout.buildDirectory.dir('generated/api-language/resources')
         compileClasspath += sourceSets.main.compileClasspath
         runtimeClasspath += sourceSets.main.runtimeClasspath
         // 声线库/分句器等客户端类的 headless 测试要看得见 client 源码集
@@ -93,6 +96,8 @@ sourceSets {
         runtimeClasspath += sourceSets.client.output
     }
 }
+
+tasks.named('processTestResources') { dependsOn ':api:neoforge:generateApiLanguageResources' }
 
 test {
     useJUnitPlatform()

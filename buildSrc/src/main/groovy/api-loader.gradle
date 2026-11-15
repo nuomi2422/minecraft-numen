@@ -43,9 +43,34 @@ tasks.named('compileJava', JavaCompile) {
     source(configurations.commonClientJava)
 }
 
+// Ordinary clean jars need language JSON too. Compile only the pure catalogue and thin exporter;
+// using runData here would cycle through its own runtime processResources/classpath.
+def languageCatalogue = rootProject.file('api/common/src/main/java/com/dwinovo/numen/data/ModLanguageData.java')
+def languageEmitter = rootProject.file('tools/api-language/com/dwinovo/numen/buildtools/ApiLanguageExport.java')
+def languageResources = layout.buildDirectory.dir('generated/api-language/resources')
+def languagePaths = ['assets/numen_api/lang/en_us.json', 'assets/numen_api/lang/zh_cn.json']
+def compileApiLanguage = tasks.register('compileApiLanguageExporter', JavaCompile) {
+    source(languageCatalogue, languageEmitter)
+    classpath = files()
+    destinationDirectory = layout.buildDirectory.dir('generated/api-language/classes')
+    options.encoding = 'UTF-8'
+    javaCompiler = javaToolchains.compilerFor { languageVersion = JavaLanguageVersion.of(java_version) }
+}
+def exportApiLanguage = tasks.register('generateApiLanguageResources', JavaExec) {
+    dependsOn(compileApiLanguage)
+    classpath = files(compileApiLanguage.flatMap { it.destinationDirectory })
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(java_version) }
+    mainClass = 'com.dwinovo.numen.buildtools.ApiLanguageExport'
+    args(languageResources.get().asFile.absolutePath)
+    inputs.files(languageCatalogue, languageEmitter)
+    outputs.dir(languageResources)
+}
+// Old optional MC datagen outputs must not compete with the catalogue-derived pair below.
+sourceSets.main.resources.exclude(languagePaths)
 processResources {
-    dependsOn(configurations.commonResources)
-    from(configurations.commonResources)
+    dependsOn(configurations.commonResources, exportApiLanguage)
+    from(configurations.commonResources) { exclude(languagePaths) }
+    from(languageResources)
 }
 
 tasks.named('javadoc', Javadoc).configure {
@@ -56,12 +81,15 @@ tasks.named('javadoc', Javadoc).configure {
 }
 
 tasks.named('sourcesJar', Jar) {
+    dependsOn(exportApiLanguage)
+    from(languageResources)
+    from(languageEmitter) { into 'build-tools/api-language' }
     dependsOn(configurations.commonJava)
     from(configurations.commonJava)
     dependsOn(configurations.commonClientJava)
     from(configurations.commonClientJava)
     dependsOn(configurations.commonResources)
-    from(configurations.commonResources)
+    from(configurations.commonResources) { exclude(languagePaths) }
     from({ project(':ai').sourceSets.main.allSource })
     from({ project(':ui').sourceSets.main.allSource })
 }
