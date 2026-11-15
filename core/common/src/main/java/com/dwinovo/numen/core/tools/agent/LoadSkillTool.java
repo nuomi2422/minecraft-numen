@@ -13,7 +13,15 @@ import java.util.Map;
 public final class LoadSkillTool implements NumenTool {
 
     private static final Gson GSON = new Gson();
-    private final AgentOps impl = new AgentOps();
+    private final AgentOps impl;
+
+    public LoadSkillTool() {
+        this(new AgentOps());
+    }
+
+    LoadSkillTool(AgentOps impl) {
+        this.impl = java.util.Objects.requireNonNull(impl);
+    }
 
     private record Args(String name, String file, String ref) {}
 

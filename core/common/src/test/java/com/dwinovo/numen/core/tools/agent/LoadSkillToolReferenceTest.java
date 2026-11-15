@@ -4,7 +4,6 @@ import com.dwinovo.numen.agent.skill.SkillRegistry;
 import com.dwinovo.numen.agent.tool.ToolAnchor;
 import com.dwinovo.numen.agent.tool.ToolCall;
 import com.dwinovo.numen.api.LearnedSkillBodyResolver;
-import com.dwinovo.numen.api.NumenPlugins;
 import com.dwinovo.numen.core.tools.AgentOps;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.AfterEach;
@@ -22,34 +21,27 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Real ToolCall -> AgentOps -> registered capability, with no body or Minecraft host bootstrap. */
+/** Real ToolCall -> AgentOps -> supplied reader; production defaults to the existing capability lookup. */
 class LoadSkillToolReferenceTest {
     private static final String REF = "skill:sk-food@v7";
     private static final UUID COMPANION = UUID.fromString("00000000-0000-0000-0000-000000000017");
     @TempDir Path dir;
-    private Map<Class<?>, Object> capabilities;
-    private Object previous;
+    private final AtomicReference<LearnedSkillBodyResolver> reader = new AtomicReference<>();
+    private final LoadSkillTool tool = new LoadSkillTool(new AgentOps(reader::get));
     private Path previousSkillRoot;
-    private final LoadSkillTool tool = new LoadSkillTool();
+    private boolean scannedDirectory;
 
     @BeforeEach
-    @SuppressWarnings("unchecked")
-    void isolateOriginalCapabilitySlot() throws Exception {
-        // The existing map is the real lookup path. Avoid booting the unrelated MC host just to register a test reader.
-        var field = NumenPlugins.class.getDeclaredField("CAPABILITIES");
-        field.setAccessible(true);
-        capabilities = (Map<Class<?>, Object>) field.get(null);
-        previous = capabilities.remove(LearnedSkillBodyResolver.class);
+    void preserveDirectoryRoot() throws Exception {
+        // Preserve only the old directory loader fixture; no mutation of the capability registry.
         var root = SkillRegistry.class.getDeclaredField("userRoot");
         root.setAccessible(true);
         previousSkillRoot = (Path) root.get(SkillRegistry.instance());
     }
 
     @AfterEach
-    void restoreOriginalSlots() {
-        capabilities.remove(LearnedSkillBodyResolver.class);
-        if (previous != null) capabilities.put(LearnedSkillBodyResolver.class, previous);
-        SkillRegistry.instance().scan(previousSkillRoot);
+    void restoreDirectoryRoot() {
+        if (scannedDirectory) SkillRegistry.instance().scan(previousSkillRoot);
     }
 
     private String invoke(String args, ToolAnchor anchor) {
@@ -60,7 +52,7 @@ class LoadSkillToolReferenceTest {
     }
 
     private void reader(LearnedSkillBodyResolver resolver) {
-        capabilities.put(LearnedSkillBodyResolver.class, resolver);
+        reader.set(resolver);
     }
 
     @Test
@@ -96,6 +88,11 @@ class LoadSkillToolReferenceTest {
         String reply = invoke("{\"ref\":\"" + REF + "\"}", () -> COMPANION);
         assertTrue(reply.contains("learned-skill-resolver-unavailable"), reply);
         assertFalse(reply.contains("unknown skill:"), reply);
+        var defaultReply = new AtomicReference<String>();
+        new LoadSkillTool().invoke(new ToolCall("default-lookup", "load_skill",
+                "{\"ref\":\"" + REF + "\"}", () -> COMPANION, defaultReply::set));
+        assertNotNull(defaultReply.get());
+        assertTrue(defaultReply.get().contains("learned-skill-resolver-unavailable"), defaultReply.get());
     }
 
     @Test
@@ -155,6 +152,7 @@ class LoadSkillToolReferenceTest {
         Files.createDirectories(pack.resolve("references"));
         Files.writeString(pack.resolve("SKILL.md"), "---\nname: offline-supply-pack\ndescription: Offline supply fixture\n---\nRead " + REF + " only when needed.\n");
         Files.writeString(pack.resolve("references/food.md"), "Optional component: " + REF);
+        scannedDirectory = true;
         SkillRegistry.instance().scan(skills);
         var legacy = new AgentOps();
         String body = invoke("{\"name\":\"offline-supply-pack\"}", null);

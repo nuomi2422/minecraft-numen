@@ -19,6 +19,16 @@ import java.util.stream.Collectors;
  * with no server body and return their result directly.
  */
 public final class AgentOps {
+    private final java.util.function.Supplier<LearnedSkillBodyResolver> learnedSkills;
+
+    public AgentOps() {
+        this(() -> NumenPlugins.capability(LearnedSkillBodyResolver.class));
+    }
+
+    /** A reader lookup seam; production always defaults to the original capability port. */
+    public AgentOps(java.util.function.Supplier<LearnedSkillBodyResolver> learnedSkills) {
+        this.learnedSkills = java.util.Objects.requireNonNull(learnedSkills);
+    }
 
     public String loadSkill(String name, String file) {
         SkillRegistry registry = SkillRegistry.instance();
@@ -51,7 +61,7 @@ public final class AgentOps {
             throw new IllegalArgumentException("ref cannot be combined with name or file");
         LearnedSkillBodyResolver.Reference.parse(exactRef);
         if (companion == null) throw new IllegalArgumentException("learned skill context missing");
-        var resolver = NumenPlugins.capability(LearnedSkillBodyResolver.class);
+        var resolver = learnedSkills.get();
         if (resolver == null) throw new IllegalStateException("learned-skill-resolver-unavailable");
         var result = resolver.resolve(companion, exactRef, LearnedSkillBodyResolver.View.EXECUTOR);
         if (result == null || !exactRef.equals(result.exactRef()))
