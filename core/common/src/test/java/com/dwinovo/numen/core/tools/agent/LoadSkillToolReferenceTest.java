@@ -7,7 +7,6 @@ import com.dwinovo.numen.api.LearnedSkillBodyResolver;
 import com.dwinovo.numen.core.tools.AgentOps;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -28,20 +27,11 @@ class LoadSkillToolReferenceTest {
     @TempDir Path dir;
     private final AtomicReference<LearnedSkillBodyResolver> reader = new AtomicReference<>();
     private final LoadSkillTool tool = new LoadSkillTool(new AgentOps(reader::get));
-    private Path previousSkillRoot;
     private boolean scannedDirectory;
-
-    @BeforeEach
-    void preserveDirectoryRoot() throws Exception {
-        // Preserve only the old directory loader fixture; no mutation of the capability registry.
-        var root = SkillRegistry.class.getDeclaredField("userRoot");
-        root.setAccessible(true);
-        previousSkillRoot = (Path) root.get(SkillRegistry.instance());
-    }
 
     @AfterEach
     void restoreDirectoryRoot() {
-        if (scannedDirectory) SkillRegistry.instance().scan(previousSkillRoot);
+        if (scannedDirectory) SkillRegistry.instance().scan(null);
     }
 
     private String invoke(String args, ToolAnchor anchor) {
