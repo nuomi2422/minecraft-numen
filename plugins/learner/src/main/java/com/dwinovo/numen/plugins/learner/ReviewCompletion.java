@@ -18,6 +18,12 @@ final class ReviewCompletion {
         this.check = check;
         for (Memo memo : batch) targets.put(memo.id(), check.apply(memo));
     }
+    /** 2026-11-15: one late-callback decision seam; old semantics keep only the same-server branch. */
+    static boolean discardLate(boolean aborted, boolean sameServer, Runnable discardStale) {
+        if (sameServer) return false;
+        discardStale.run();
+        return true;
+    }
     boolean permits(String memoId) {
         var target = targets.get(memoId);
         return target != null && target.ok();

@@ -9,6 +9,7 @@ import org.junit.jupiter.api.AfterEach;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import java.lang.reflect.Field;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -336,6 +337,67 @@ class ReviewCompletionTest {
                 () -> assertEquals(1, settled.committed()),
                 () -> assertEquals(0, settled.terminalSkipped()),
                 () -> assertEquals(0, reloaded.size()));
+    }
+
+    /** 2026-11-15: late-callback seam with real MemoQueue and real LearnerPlugin terminal state. */
+    @Test void discardLateSkipsAbortedStaleAndKeepsCurrentThroughRealQueueAndTerminal(@TempDir Path dir) throws Exception {
+        Field cfg = LearnerPlugin.class.getDeclaredField("configDir");
+        cfg.setAccessible(true);
+        Object oldCfg = cfg.get(null);
+        cfg.set(null, dir);
+        try {
+            Memo memo = ordinary("late-callback");
+            MemoQueue queue = new MemoQueue(dir.resolve("late.json"));
+            assertTrue(queue.append(memo));
+            List<Memo> batch = queue.drain(1);
+
+            String aborted = "rev-late-aborted";
+            LearnerPlugin.beginReview(aborted, A, "RUNNING", 1);
+            AtomicInteger abortedRestores = new AtomicInteger();
+            AtomicInteger abortedPublishes = new AtomicInteger();
+            LearnerPlugin.registerInflight(aborted, () -> {
+                abortedRestores.incrementAndGet();
+                queue.restore(batch);
+            });
+            assertEquals(1, LearnerPlugin.abortInFlight());
+            assertEquals("INTERRUPTED", LearnerPlugin.review(aborted).state());
+            assertTrue(ReviewCompletion.discardLate(LearnerPlugin.wasAborted(aborted), false, () -> {
+                abortedRestores.incrementAndGet();
+                LearnerPlugin.finishReview(aborted, "STALE_WORLD", 0);
+                abortedPublishes.incrementAndGet();
+            }), "aborted+stale must be discarded");
+            assertEquals(1, abortedRestores.get(), "abort restored once; late branch must not restore again");
+            assertEquals(1, queue.size(), "queue keeps the one restored memo");
+            assertEquals(0, abortedPublishes.get(), "aborted late branch must not publish");
+            assertEquals("INTERRUPTED", LearnerPlugin.review(aborted).state(), "terminal must not be overwritten");
+
+            String stale = "rev-late-stale";
+            LearnerPlugin.beginReview(stale, A, "RUNNING", 1);
+            AtomicInteger staleRestores = new AtomicInteger();
+            AtomicInteger stalePublishes = new AtomicInteger();
+            assertTrue(ReviewCompletion.discardLate(false, false, () -> {
+                staleRestores.incrementAndGet();
+                queue.restore(batch);
+                LearnerPlugin.finishReview(stale, "STALE_WORLD", 0);
+                stalePublishes.incrementAndGet();
+            }));
+            assertEquals(1, staleRestores.get(), "true stale restores exactly once");
+            assertEquals("STALE_WORLD", LearnerPlugin.review(stale).state());
+            assertEquals(1, stalePublishes.get());
+            assertEquals(1, queue.size(), "restore deduplicates the same durable memo");
+            LearnerPlugin.completeInflight(stale);
+
+            String current = "rev-late-current";
+            LearnerPlugin.beginReview(current, A, "RUNNING", 1);
+            AtomicInteger currentRuns = new AtomicInteger();
+            assertFalse(ReviewCompletion.discardLate(false, true, currentRuns::incrementAndGet));
+            assertEquals(0, currentRuns.get(), "same server must proceed to completeOnServer, not discard");
+            assertEquals("RUNNING", LearnerPlugin.review(current).state());
+            LearnerPlugin.completeInflight(current);
+            LearnerPlugin.finishReview(current, "DONE", 0);
+        } finally {
+            cfg.set(null, oldCfg);
+        }
     }
 
     @AfterEach void clearSequentialRegistry() { SkillRegistrar.resetForTest(); }

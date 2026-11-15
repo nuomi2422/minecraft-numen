@@ -264,13 +264,14 @@ final class LearnerReviewTool implements NumenTool {
 
             // 回主线程前校验世界代际：换档后迟到结果直接丢弃
             MinecraftServer current = ServerLifecycleHooks.getCurrentServer();
-            if (current != capturedServer) {
+            if (ReviewCompletion.discardLate(LearnerPlugin.wasAborted(reviewId), current == capturedServer, () -> {
                 queue.restore(batch);
                 // 注：STALE_WORLD 是换档丢弃，不是 provider 失败，刻意不记 noteReviewFailed。
                 LearnerPlugin.finishReview(reviewId, "STALE_WORLD", 0);
                 // The raw server mismatch above is already known: do not recapture the old object.
                 observation.publish("review_stale", Map.of(
                         "review_id", reviewId, "companion", id.toString(), "restored", batch.size()), null);
+            })) {
                 return;
             }
         capturedServer.execute(() -> completeOnServer(capturedServer, observation,
