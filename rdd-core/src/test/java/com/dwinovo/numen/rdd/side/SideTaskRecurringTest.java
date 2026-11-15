@@ -238,7 +238,8 @@ class SideTaskRecurringTest {
         assertNotNull(world.seenCondition);
         assertEquals("block_nearby", world.seenCondition.get("type"));
         assertEquals("minecraft:wheat", world.seenCondition.get("block"));
-        assertTrue(world.seenCondition.containsKey("radius"));
+        assertEquals(8.0, ((Number) world.seenCondition.get("radius")).doubleValue());
+        assertFalse(world.seenCondition.containsKey("asset_key"));
     }
 
     @Test void typedWorldFalseKeepsEvenWithStock() {
@@ -255,13 +256,41 @@ class SideTaskRecurringTest {
         assertEquals(C, world.seenCompanion);
     }
 
+    @Test void malformedConditionKeepsWithoutCallingPortOrStock() {
+        DailyWorldPort world = new DailyWorldPort(1, Boolean.TRUE);
+        SideTaskVerdict verdict = new DailyMaintenanceSideTaskType().evaluate(dailyWithCondition("{bad json"), world);
+        assertEquals(SideTaskVerdict.Kind.CONTINUE, verdict.kind());
+        assertNull(world.seenCompanion, "malformed JSON must not reach the port");
+        assertNull(world.seenCondition);
+    }
+
+    @Test void nonBlockTypedConditionKeepsWithoutCallingPort() {
+        DailyWorldPort world = new DailyWorldPort(1, Boolean.TRUE);
+        SideTaskVerdict verdict = new DailyMaintenanceSideTaskType().evaluate(
+                dailyWithCondition("{\"type\":\"biome\",\"biome\":\"minecraft:plains\"}"), world);
+        assertEquals(SideTaskVerdict.Kind.CONTINUE, verdict.kind());
+        assertNull(world.seenCompanion);
+    }
+
+    @Test void legacyWithoutConditionStillUsesStock() {
+        DailyWorldPort world = new DailyWorldPort(1, Boolean.TRUE);
+        SideTaskVerdict verdict = new DailyMaintenanceSideTaskType().evaluate(dailyWithCondition(null), world);
+        assertEquals(SideTaskVerdict.Kind.COMPLETE, verdict.kind());
+        assertNull(world.seenCompanion);
+    }
+
     private static SideTask typedDaily() {
+        return dailyWithCondition("{\"type\":\"block_nearby\",\"block\":\"minecraft:wheat\",\"radius\":8}");
+    }
+
+    private static SideTask dailyWithCondition(String condition) {
+        Map<String, String> data = condition == null
+                ? Map.of("description", "typed", "asset_key", "minecraft:wheat", "minimum", "1")
+                : Map.of("description", "typed", "asset_key", "minecraft:wheat", "minimum", "1",
+                        "condition", condition);
         return new SideTask(C, "typed-daily", DailyMaintenanceSideTaskType.TYPE_ID,
                 0, 0, 100, 100 + 20L * 60L * 10L,
-                SideTaskState.ACTIVE, "todo",
-                Map.of("description", "typed", "asset_key", "minecraft:wheat", "minimum", "1",
-                        "condition", "{\"type\":\"block_nearby\",\"block\":\"minecraft:wheat\",\"radius\":8}"),
-                null);
+                SideTaskState.ACTIVE, "todo", data, null);
     }
 
     /** Test-only boundary fake: delegates no production logic, records the exact daily condition. */

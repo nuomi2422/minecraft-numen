@@ -1,11 +1,24 @@
 package com.dwinovo.numen.rdd.side;
 
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
+import com.dwinovo.numen.rdd.core.WorldFactConditions;
+
 import java.util.Map;
 
 /** 2026-11-08: executable daily side task (planner DAILY node -> real side task). */
 public final class DailyMaintenanceSideTaskType implements SideTaskType {
 
     public static final String TYPE_ID = "daily_maintenance";
+    private static final Gson GSON = new Gson();
+
+    private static Map<String, Object> parseCondition(String json) {
+        try {
+            return GSON.fromJson(json, new TypeToken<Map<String, Object>>() {}.getType());
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
 
     @Override public String typeId() { return TYPE_ID; }
 
@@ -20,6 +33,19 @@ public final class DailyMaintenanceSideTaskType implements SideTaskType {
     @Override public SideTaskVerdict evaluate(SideTask task, SideTaskWorldPort world) {
         System.out.println("[rdd] daily evaluate id=" + task.instanceId() + " dataKeys=" + task.data().keySet());
         if (task.pastDeadline(world.gameTime())) return SideTaskVerdict.skip("daily ttl expired");
+        String conditionJson = task.data().get("condition");
+        if (conditionJson != null) {
+            Map<String, Object> condition = parseCondition(conditionJson);
+            if (condition == null || !WorldFactConditions.valid(condition)
+                    || !"block_nearby".equals(condition.get("type"))) {
+                return SideTaskVerdict.keep("todo", task.data());
+            }
+            if (Boolean.TRUE.equals(world.dailyCondition(task.companionId(), condition))) {
+                return SideTaskVerdict.complete("daily typed condition met");
+            }
+            // FALSE and null/UNKNOWN are both not complete; never fall back to inventory.
+            return SideTaskVerdict.keep("todo", task.data());
+        }
         String key = task.data().getOrDefault("asset_key", "");
         int minimum;
         try { minimum = Integer.parseInt(task.data().getOrDefault("minimum", "1")); }
@@ -32,6 +58,10 @@ public final class DailyMaintenanceSideTaskType implements SideTaskType {
 
     @Override public String renderContext(SideTask task, SideTaskWorldPort world) {
         String desc = task.data().getOrDefault("description", "daily maintenance");
+        String condition = task.data().get("condition");
+        if (condition != null) {
+            return "[daily] " + desc + "（完成条件：" + condition + "；可延后，主线恢复即让位）";
+        }
         String key = task.data().getOrDefault("asset_key", "");
         String min = task.data().getOrDefault("minimum", "1");
         return "[daily] " + desc + "（完成条件：" + key + " ≥ " + min + "；可延后，主线恢复即让位）";
