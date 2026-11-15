@@ -80,6 +80,27 @@ class DeathPreparationScopeRegressionTest {
             assertEquals(original, c.toJson());
         }
     }
+    @Test void cancellingWaivedCandidateCannotRemoveAnIndependentCompletedEquipmentObligation() {
+        var legs = Map.<String,Object>of("type","equipment","item","minecraft:iron_leggings","slot","legs");
+        var c = new TaskChain(new Goal("g","finish",List.of(
+                new PrimaryGoal("waived","waived equipment",List.of(Subtask.hardCoded("old-legs","old leggings",legs))),
+                new PrimaryGoal("verified","later verified equipment",List.of(Subtask.hardCoded("later-legs","later leggings",legs))),
+                new PrimaryGoal("trade","trade",List.of(Subtask.hardCoded("iron","iron",Map.of("asset_key","minecraft:iron_ingot","minimum",8)))))));
+        c.startCurrent(); c.settlePrimaryByFact("waived","waived without wearing evidence",false);
+        c.startCurrent(); c.applyHardCodedResult("later-legs",true);
+        c.settlePrimaryByFact("verified","independent current equipment was verified",true); c.startCurrent();
+        String original = c.toJson(); var engine = start(c,new Port(),new ArrayList<>(),Map.of());
+        var task = engine.current(C).orElseThrow();
+        assertEquals(List.of(legs),DeathPreparation.conditions(task,DeathPreparation.TARGETS));
+        assertTrue(DeathPreparation.review(engine,C,c,task.instanceId(),task.generation(),"7",Map.of("old-legs","CANCELLED")));
+        var reviewed = engine.current(C).orElseThrow();
+        assertAll(
+                () -> assertEquals(List.of(legs),DeathPreparation.conditions(reviewed,DeathPreparation.TARGETS),
+                        "cancelling a waived candidate must preserve the independent completed declaration"),
+                () -> assertFalse(DeathPreparation.notApplicable(reviewed),"base wearing obligation must still reach current SELF"),
+                () -> assertEquals("DECLARED",reviewed.data().get("prepare_scope")));
+        assertEquals(original,c.toJson());
+    }
     @Test void staleAndInvalidReviewCannotMutateSideOrOriginalChain() {
         var c = waivedLegs(); var engine = start(c, new Port(), new ArrayList<>(), Map.of());
         var task = engine.current(C).orElseThrow(); String original = c.toJson();
