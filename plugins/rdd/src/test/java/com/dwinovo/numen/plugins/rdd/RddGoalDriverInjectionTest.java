@@ -167,7 +167,10 @@ class RddGoalDriverInjectionTest {
 
     private static final class World implements SideTaskWorldPort {
         long day = 1;
-        int wheat;
+        int wheat, stockReads, dailyReads;
+        UUID dailySubject;
+        Boolean dailyResult;
+        Map<String, Object> seenDailyCondition;
         public long gameTime() { return day * 24000; }
         public long dayTime() { return 0; }
         public long gameDay() { return day; }
@@ -176,7 +179,14 @@ class RddGoalDriverInjectionTest {
         public boolean isSleeping(UUID id) { return false; }
         public boolean isDay() { return true; }
         public Wake pollWake(UUID id) { return Wake.NONE; }
-        public int countItem(UUID id, String key) { return wheat; }
+        public int countItem(UUID id, String key) { stockReads++; return wheat; }
+        public Boolean dailyCondition(UUID id, Map<String, Object> condition) {
+            dailyReads++;
+            return SideTaskHost.dailyConditionFor(id, dailySubject, true, condition, actual -> {
+                seenDailyCondition = actual;
+                return dailyResult; // Test boundary only; no duplicate world predicate.
+            });
+        }
     }
 
     @Test void rejectedAllDailyExpansionStillRegistersExecutableDaily() {
@@ -519,6 +529,30 @@ class RddGoalDriverInjectionTest {
         assertNotNull(afterJson, "restored spec must keep data.condition");
         assertEquals(condition, new com.google.gson.Gson().fromJson(afterJson, Map.class),
                 "restored condition JSON must be equivalent to the original map");
+
+        UUID id = UUID.randomUUID();
+        World world = new World();
+        world.dailySubject = id;
+        world.wheat = 99; // Inventory cannot turn an unverified world predicate into success.
+        MainlineResumeToken token = mainlineToken(chain, id);
+        restored.tick(id, world, token, false);
+        SideTask active = restored.current(id).orElseThrow();
+        assertEquals(afterJson, active.data().get("condition"), "restored spec reaches the active task");
+        assertEquals(token, active.mainlineToken());
+        restored.tick(id, world, token, false); // UNKNOWN
+        assertTrue(restored.isActive(id), "UNKNOWN must not settle DAILY, even with stock");
+        assertEquals(condition, world.seenDailyCondition, "full typed map reaches the host seam");
+        world.dailyResult = Boolean.FALSE;
+        restored.tick(id, world, token, false);
+        assertTrue(restored.isActive(id), "FALSE must not settle DAILY, even with stock");
+        world.dailyResult = Boolean.TRUE;
+        world.wheat = 0;
+        SideTaskVerdict verified = new DailyMaintenanceSideTaskType().evaluate(restored.current(id).orElseThrow(), world);
+        assertEquals(SideTaskVerdict.Kind.COMPLETE, verified.kind());
+        restored.tick(id, world, token, false);
+        assertFalse(restored.isActive(id), "verified typed condition settles the original engine");
+        assertEquals(4, world.dailyReads, "only evaluations call the typed port, not creation");
+        assertEquals(0, world.stockReads, "typed DAILY must never consult inventory fallback");
     }
 
     // 2026-11-15: legacy asset_key/item DAILY must stay usable after the same producer.
