@@ -204,6 +204,130 @@ class RddDecomposerParseTest {
         root.add("subtasks", steps); return root;
     }
 
+    // Selected-profile consumer tests share the real send authorization seam; no live config/HTTP/MC.
+    @Test void selectedKeyWorksWithoutGlobalConfigAndKeepsPlannerOnlyEffortOverride() {
+        var f = new PlannerEndpointFixture();
+        var selected = endpoint("openai", "FAKE_PROFILE_A");
+        f.lookup = id -> java.util.concurrent.CompletableFuture.completedFuture(selected);
+        f.ask(f.a, "stage_a");
+        assertTrue(f.sent.isEmpty(), "endpoint completion must still enter the client queue");
+        f.runClient();
+        var actual = f.sent.getFirst();
+        assertEquals(selected.provider(), actual.provider());
+        assertEquals(selected.model(), actual.model());
+        assertEquals(selected.apiKey(), actual.apiKey());
+        assertEquals(selected.baseUrl(), actual.baseUrl());
+        assertEquals(selected.proxy(), actual.proxy());
+        assertEquals("low", actual.reasoningEffort());
+        assertEquals("high", selected.reasoningEffort(), "do not mutate the selected execution profile");
+        assertEquals(List.of("stage_a:0"), f.budgetChecks);
+        assertEquals(0, f.failures);
+    }
+
+    @Test void companionAndProviderChangesDriveBothPlannerStagesWithoutBorrowing() {
+        var f = new PlannerEndpointFixture();
+        var profiles = new java.util.HashMap<java.util.UUID, com.dwinovo.numen.agent.llm.LlmEndpoint>();
+        profiles.put(f.a, endpoint("openai", "FAKE_PROFILE_A"));
+        profiles.put(f.b, endpoint("deepseek", "FAKE_PROFILE_B"));
+        f.lookup = id -> java.util.concurrent.CompletableFuture.completedFuture(profiles.get(id));
+        f.ask(f.a, "stage_a"); f.ask(f.b, "stage_b"); f.runClient();
+        assertEquals("FAKE_PROFILE_A", f.sent.get(0).apiKey());
+        assertEquals("low", f.sent.get(0).reasoningEffort());
+        assertEquals("FAKE_PROFILE_B", f.sent.get(1).apiKey());
+        assertEquals("off", f.sent.get(1).reasoningEffort());
+        profiles.put(f.a, endpoint("deepseek", "FAKE_PROFILE_A_CHANGED"));
+        f.ask(f.a, "fallback"); f.runClient();
+        assertEquals("FAKE_PROFILE_A_CHANGED", f.sent.get(2).apiKey());
+        assertEquals("off", f.sent.get(2).reasoningEffort());
+        assertEquals(List.of(f.a, f.b, f.a), f.lookedUp);
+        assertEquals(List.of("stage_a:0", "stage_b:0", "fallback:0"), f.budgetChecks);
+    }
+
+    @Test void absentDeletedAndIncompleteEndpointsFailBeforeBudgetOrNetwork() {
+        for (String stage : List.of("stage_a", "stage_b", "fallback")) {
+            var f = new PlannerEndpointFixture();
+            f.lookup = id -> java.util.concurrent.CompletableFuture.completedFuture(null);
+            f.ask(f.a, stage);
+            f.lookup = id -> java.util.concurrent.CompletableFuture.completedFuture(endpoint("", ""));
+            f.ask(f.a, stage);
+            f.lookup = id -> java.util.concurrent.CompletableFuture.completedFuture(endpoint("openai", " "));
+            f.ask(f.a, stage); f.runClient();
+            assertTrue(f.sent.isEmpty()); assertTrue(f.budgetChecks.isEmpty());
+            assertEquals(3, f.failures);
+        }
+    }
+
+    @Test void originalStageBudgetRefusalStillPreventsEveryPlannerSend() {
+        for (String stage : List.of("stage_a", "stage_b", "fallback")) {
+            var f = new PlannerEndpointFixture(); f.allowed = false;
+            f.ask(f.a, stage); f.runClient();
+            assertEquals(List.of(stage + ":0"), f.budgetChecks);
+            assertTrue(f.sent.isEmpty()); assertEquals(1, f.failures);
+        }
+    }
+
+    @Test void lookupFailureAndQueuedWorldChangeInvokeOriginalFailureWithoutSending() {
+        var failed = new PlannerEndpointFixture();
+        failed.lookup = id -> java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("fixture lookup"));
+        failed.ask(failed.a, "stage_b"); failed.runClient();
+        assertEquals(1, failed.failures); assertTrue(failed.sent.isEmpty());
+        var changed = new PlannerEndpointFixture();
+        changed.ask(changed.a, "stage_a"); changed.generation.incrementAndGet(); changed.runClient();
+        assertEquals(1, changed.failures); assertTrue(changed.sent.isEmpty());
+        assertTrue(changed.budgetChecks.isEmpty());
+    }
+
+    @Test void failedEndpointFutureKeepsTheRealSinglePassPlaceholderAndObjective() {
+        var f = new PlannerEndpointFixture();
+        var goals = new java.util.ArrayList<com.dwinovo.numen.rdd.api.Goal>();
+        f.lookup = id -> java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("fixture lookup"));
+        f.ask(f.a, "fallback", () -> goals.add(RddDecomposer.fallbackGoal(f.a, "keep original objective")));
+        f.runClient();
+        assertTrue(f.sent.isEmpty()); assertEquals(1, goals.size());
+        assertEquals("keep original objective", goals.getFirst().description());
+        assertFalse(goals.getFirst().primaryGoals().isEmpty(), "failure must not swallow the goal");
+    }
+
+    @Test void synchronousLookupAndSendErrorsDoNotSkipFailureCallback() {
+        var f = new PlannerEndpointFixture();
+        f.lookup = id -> { throw new IllegalStateException("fixture resolver"); };
+        f.ask(f.a, "stage_a"); f.runClient();
+        assertEquals(1, f.failures); assertTrue(f.sent.isEmpty());
+        RddDecomposer.withPlannerEndpoint(f.a, "stage_b",
+                id -> java.util.concurrent.CompletableFuture.completedFuture(endpoint("openai", "FAKE_PROFILE_A")),
+                f.client::add, f.generation::get, (stage, estimate) -> true,
+                ep -> { throw new IllegalStateException("fixture transport setup"); }, () -> f.failures++);
+        f.runClient();
+        assertEquals(2, f.failures);
+    }
+
+    private static com.dwinovo.numen.agent.llm.LlmEndpoint endpoint(String provider, String key) {
+        return new com.dwinovo.numen.agent.llm.LlmEndpoint(provider, "fixture-model", key,
+                "https://fixture.invalid/v1", "fixture-proxy", "high");
+    }
+
+    private static final class PlannerEndpointFixture {
+        final java.util.UUID a = java.util.UUID.fromString("11111111-1111-1111-1111-111111111111");
+        final java.util.UUID b = java.util.UUID.fromString("22222222-2222-2222-2222-222222222222");
+        final java.util.List<Runnable> client = new java.util.ArrayList<>();
+        final java.util.List<com.dwinovo.numen.agent.llm.LlmEndpoint> sent = new java.util.ArrayList<>();
+        final java.util.List<java.util.UUID> lookedUp = new java.util.ArrayList<>();
+        final java.util.List<String> budgetChecks = new java.util.ArrayList<>();
+        final java.util.concurrent.atomic.AtomicLong generation = new java.util.concurrent.atomic.AtomicLong(7);
+        java.util.function.Function<java.util.UUID, java.util.concurrent.CompletableFuture<com.dwinovo.numen.agent.llm.LlmEndpoint>> lookup =
+                id -> java.util.concurrent.CompletableFuture.completedFuture(endpoint("openai", "FAKE_PROFILE_A"));
+        boolean allowed = true;
+        int failures;
+        void ask(java.util.UUID id, String stage) { ask(id, stage, () -> failures++); }
+        void ask(java.util.UUID id, String stage, Runnable onFail) {
+            RddDecomposer.withPlannerEndpoint(id, stage,
+                    requested -> { lookedUp.add(requested); return lookup.apply(requested); }, client::add,
+                    generation::get, (phase, estimate) -> { budgetChecks.add(phase + ":" + estimate); return allowed; },
+                    sent::add, onFail);
+        }
+        void runClient() { while (!client.isEmpty()) client.removeFirst().run(); }
+    }
+
     @Test void rejectsPlansOverMaxSubtasksWithoutReturningPrefix() {
         StringBuilder sb = new StringBuilder("{\"subtasks\":[");
         for (int i = 0; i < 20; i++) {
