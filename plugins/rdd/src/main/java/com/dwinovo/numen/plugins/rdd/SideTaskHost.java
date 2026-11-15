@@ -674,12 +674,12 @@ final class SideTaskHost {
         @Override public String mainlineObjective(UUID companionId) { return mainlineObjectiveText(companionId); }
 
         /**
-         * 2026-11-15: daily condition 的宿主接线（端口声明由 DS5 合源；本方法先按同一签名准备）。
+         * 2026-11-15: daily condition 的宿主接线。
          * 只接本同伴 + server 线程 + 原 {@code WorldFactConditions} 合法 + type=block_nearby；
          * 其余一律 UNKNOWN（null）。true/false 原样交给既有 {@link RddWorldFacts#matches}，
          * 不复制任何世界事实判定。
          */
-        Boolean dailyCondition(UUID companionId, Map<String, Object> condition) {
+        @Override public Boolean dailyCondition(UUID companionId, Map<String, Object> condition) {
             if (ap == null) return null;
             boolean serverThread = ap.getServer() != null && ap.getServer().isSameThread();
             return dailyConditionFor(companionId, ap.getUUID(), serverThread, condition,

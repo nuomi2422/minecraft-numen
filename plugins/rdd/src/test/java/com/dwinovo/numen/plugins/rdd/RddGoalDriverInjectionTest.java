@@ -538,4 +538,46 @@ class RddGoalDriverInjectionTest {
                 "legacy asset_key item predicate must stay usable");
         assertEquals("1", spec.data().get("minimum"));
     }
+
+    /**
+     * 2026-11-15: daily condition 宿主 seam 的控制用例组 —— 只钉四道闸与「同 Map 委托一次」，
+     * 不复制 RddWorldFacts 判定、不伪造世界。
+     */
+    @Test void dailyConditionForPinsSubjectThreadSchemaAndSingleDelegation() {
+        UUID self = UUID.randomUUID();
+        UUID other = UUID.randomUUID();
+        Map<String, Object> valid = Map.of("type", "block_nearby", "block", "minecraft:stone", "radius", 8);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+
+        assertNull(SideTaskHost.dailyConditionFor(other, self, true, valid, c -> { calls.incrementAndGet(); return true; }),
+                "wrong subject must be UNKNOWN");
+        assertEquals(0, calls.get(), "wrong subject must not reach the matcher");
+
+        assertNull(SideTaskHost.dailyConditionFor(self, self, false, valid, c -> { calls.incrementAndGet(); return true; }),
+                "non-server thread must be UNKNOWN");
+        assertEquals(0, calls.get(), "non-server thread must not reach the matcher");
+
+        assertNull(SideTaskHost.dailyConditionFor(self, self, true, null, c -> { calls.incrementAndGet(); return true; }));
+        assertNull(SideTaskHost.dailyConditionFor(self, self, true,
+                Map.of("type", "base", "asset_key", "minecraft:bed"),
+                c -> { calls.incrementAndGet(); return true; }), "invalid schema must be UNKNOWN");
+        assertEquals(0, calls.get(), "null/invalid schema must not reach the matcher");
+
+        assertNull(SideTaskHost.dailyConditionFor(self, self, true,
+                Map.of("type", "dimension", "dimension", "minecraft:overworld"),
+                c -> { calls.incrementAndGet(); return true; }), "only block_nearby is wired");
+        assertEquals(0, calls.get(), "valid non-block type must not reach the matcher");
+
+        var seen = new java.util.ArrayList<Map<String, Object>>();
+        assertEquals(Boolean.TRUE, SideTaskHost.dailyConditionFor(self, self, true, valid,
+                c -> { seen.add(c); return true; }));
+        assertEquals(Boolean.FALSE, SideTaskHost.dailyConditionFor(self, self, true, valid,
+                c -> { seen.add(c); return false; }));
+        assertEquals(2, seen.size(), "exactly one delegation per call");
+        assertSame(valid, seen.get(0), "same Map instance must be delegated");
+        assertSame(valid, seen.get(1), "same Map instance must be delegated");
+
+        assertNull(SideTaskHost.dailyConditionFor(self, self, true, valid,
+                c -> { throw new IllegalStateException("boom"); }), "matcher failure is UNKNOWN, not completion");
+    }
 }
