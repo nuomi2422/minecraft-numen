@@ -319,14 +319,11 @@ public final class NumenScreen extends Screen {
 
     private void layoutTabs() {
         String[] labels = tabLabels();
-        int x = left + panelW - PAD;
-        for (int i = labels.length - 1; i >= 0; i--) {
-            int w = font.width(labels[i]) + 10;
-            x -= w;
-            tabX[i] = x;
-            tabW[i] = w;
-            x -= 4;
+        int[] labelWidths = new int[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            labelWidths[i] = font.width(labels[i]);
         }
+        HeaderLayout.layoutTabs(left + PAD, panelW - PAD * 2, labelWidths, tabX, tabW);
     }
 
     /** Rebuild the widgets for the active tab. */
@@ -689,13 +686,7 @@ public final class NumenScreen extends Screen {
     /** 显示过滤统一走 {@link com.dwinovo.numen.client.chat.ChatDisplayMode}(可整体切换)。 */
     /** Truncate {@code s} with an ellipsis so it fits in {@code maxW} px. */
     private String clip(String s, int maxW) {
-        if (font.width(s) <= maxW) return s;
-        StringBuilder b = new StringBuilder();
-        for (int i = 0; i < s.length(); i++) {
-            if (font.width(b.toString() + s.charAt(i) + "…") > maxW) break;
-            b.append(s.charAt(i));
-        }
-        return b + "…";
+        return HeaderLayout.clip(s, maxW, font::width);
     }
 
     /** The active companion's current persona name (green marker in the list), or null. */
@@ -948,7 +939,7 @@ public final class NumenScreen extends Screen {
         if (!modalOpen() && !dismissOpen() && tab == Tab.CHAT && uuid != null) {
             headerLimit = renderUsage(g, mouseX, mouseY) - 8;
         }
-        String nm = clip(name == null ? "Numen" : name, Math.max(24, headerLimit - (left + PAD)));
+        String nm = clip(name == null ? "Numen" : name, HeaderLayout.nameWidth(headerLimit - (left + PAD)));
         txt(g, Component.literal(nm), left + PAD, top + 7, ON_BAND);
         int afterName = left + PAD + font.width(nm) + 6;
         // 名字旁的铅笔 = 编辑入口("名字在哪,编辑就在哪"的资料页定式);悬停亮 CTA。
@@ -1218,12 +1209,14 @@ public final class NumenScreen extends Screen {
     private void renderTabs(GuiGraphics g, int mouseX, int mouseY) {
         String[] labels = tabLabels();
         for (int i = 0; i < 3; i++) {
+            if (tabW[i] <= 0) continue;
             boolean active = tab == Tab.values()[i];
             boolean hover = mouseX >= tabX[i] && mouseX < tabX[i] + tabW[i]
                     && mouseY >= top && mouseY < top + HEADER_H;
             int color = (active || hover) ? ON_BAND : (0x00FFFFFF & ON_BAND) | 0xA0000000;   // dim on band
-            txt(g, Component.literal(labels[i]), tabX[i] + 5, top + 7, color);
-            if (active) {                                                                     // gold CTA underline
+            String label = HeaderLayout.tabLabel(labels[i], tabW[i], font::width);
+            if (!label.isEmpty()) txt(g, Component.literal(label), tabX[i] + 5, top + 7, color);
+            if (active && tabW[i] > 6) {                                                       // gold CTA underline
                 g.fill(tabX[i] + 3, top + HEADER_H - 4, tabX[i] + tabW[i] - 3, top + HEADER_H - 1, ACCENT);
             }
         }
@@ -1280,13 +1273,14 @@ public final class NumenScreen extends Screen {
         if (parts.isEmpty()) return tabX[0];
 
         int gap = font.width(" ");
-        int total = -gap;
-        for (String part : parts) {
-            total += font.width(part) + gap;
-        }
-        int tx = tabX[0] - 10 - total;
-        int x = tx;
+        int[] partWidths = new int[parts.size()];
         for (int k = 0; k < parts.size(); k++) {
+            partWidths[k] = font.width(parts.get(k));
+        }
+        HeaderLayout.Usage usage = HeaderLayout.usage(left + PAD, tabX[0] - (left + PAD), partWidths, gap);
+        int tx = usage.x();
+        int x = tx;
+        for (int k = 0; k < usage.count(); k++) {
             txt(g, Component.literal(parts.get(k)), x, top + 7, colors.get(k));
             x += font.width(parts.get(k)) + gap;
         }
