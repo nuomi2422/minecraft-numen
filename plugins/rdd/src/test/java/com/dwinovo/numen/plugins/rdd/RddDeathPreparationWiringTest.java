@@ -23,6 +23,9 @@ class RddDeathPreparationWiringTest {
         assertTrue(seam.contains("live.chain() == chain"));
         assertTrue(seam.contains("String.valueOf(latest.seq()).equals(deathSeq)"));
         assertFalse(host.contains("replaceCurrentSubtasks"));
+        assertTrue(host.contains("DeathPreparation.review(ENGINE, companionId, rt.chain()"));
+        assertTrue(source("RddChooseDeathRecoveryTool").contains(".optionalString(\"review\""));
+        assertTrue(source("RddChooseDeathRecoveryTool").contains("parsed.name(), reason, review, instance, generation, deathSeq"));
     }
     @Test void pausedRecoveryProjectionAndBoundedRecheckAreWiredToFinalHostConsumers() throws Exception {
         String plugin=source("RddPlugin"),host=source("SideTaskHost"),seam=source("DeathPreparationHost");

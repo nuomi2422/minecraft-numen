@@ -321,10 +321,25 @@ final class SideTaskHost {
      * 清掉上下文缓存、落盘。判定与事件全在 {@code SideTaskEngine.decline} —— 纯 JVM 那边可单测。
      */
     static boolean chooseDeathRecovery(UUID companionId, String decision, String reason) {
-        if (companionId == null || !isDeathRecoveryActive(companionId)) return false;
+        return chooseDeathRecovery(companionId, decision, reason, null, "", -1, "");
+    }
+
+    static boolean chooseDeathRecovery(UUID companionId, String decision, String reason, Map<String, String> review,
+                                       String instance, long generation, String deathSeq) {
+        if (companionId == null || (!isDeathRecoveryActive(companionId) && review == null)) return false;
         com.dwinovo.numen.rdd.side.death.DeathRecoveryDecision parsed =
                 com.dwinovo.numen.rdd.side.death.DeathRecoveryDecision.parse(decision);
         if (parsed == null) return false;
+        if (review != null) {
+            var rt = RddPlugin.runtime(companionId);
+            var task = ENGINE.current(companionId).orElseGet(() -> rt == null ? null
+                    : com.dwinovo.numen.rdd.side.death.DeathPreparation.pausedTask(rt.chain()));
+            int seq;
+            try { seq = Integer.parseInt(deathSeq); } catch (RuntimeException invalid) { return false; }
+            if (!DeathPreparationHost.settlementIdentity(companionId, seq, task, rt)
+                    || !com.dwinovo.numen.rdd.side.death.DeathPreparation.review(ENGINE, companionId, rt.chain(),
+                            instance, generation, deathSeq, review)) return false;
+        }
         boolean set = com.dwinovo.numen.rdd.side.death.DeathPreparation.choose(ENGINE, companionId, parsed);
         if (set) {
             NumenPlayer body = RddCompanionBody.get(companionId);

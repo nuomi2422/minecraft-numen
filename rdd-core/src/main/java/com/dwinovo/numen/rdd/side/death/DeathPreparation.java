@@ -121,19 +121,97 @@ public final class DeathPreparation {
                                  Map<String, AssetSemantics> semantics, Map<String, String> slots) {
         SideTask task = engine.current(id).orElse(null);
         if (task == null || !DeathRecoverySideTaskType.TYPE_ID.equals(task.typeId()) || !sameChain(task, chain)) return false;
-        if (task.data().containsKey(TARGETS)) return true;
+        if (task.data().containsKey(TARGETS) && task.data().containsKey("prepare_review_candidates")) return true;
         var data = new LinkedHashMap<>(task.data());
         Selection selection = select(chain, semantics, slots);
         data.put(TARGETS, JSON.toJson(selection.targets()));
         data.put("prepare_scope", selection.scope());
         data.put("prepare_reason", selection.reason());
+        var candidates = new LinkedHashMap<String, Map<String, Object>>();
+        for (PrimaryGoal primary : chain.goal().primaryGoals()) {
+            for (Subtask sub : primary.subtasks()) {
+                if (chain.hasStageWaiver(primary.id()) && chain.subtaskStatuses().get(sub.id()) == SubtaskStatus.SKIPPED
+                        && "equipment".equals(sub.condition().get("type")) && WorldFactConditions.valid(sub.condition())
+                        && !Boolean.TRUE.equals(sub.condition().get("optional"))) candidates.put(sub.id(), sub.condition());
+                if (primary.id().equals(chain.currentPrimary().id()) && chain.currentSubtask() != null
+                        && sub.id().equals(chain.currentSubtask().id())) break;
+            }
+            if (primary.id().equals(chain.currentPrimary().id())) break;
+        }
+        if (candidates.size() > MAX_TARGETS || JSON.toJson(candidates).length() > MAX_JSON) {
+            data.put("prepare_scope", "UNKNOWN"); data.put("prepare_reason", "equipment_review_over_budget");
+            data.put("prepare_review_candidates", "{}"); data.put("prepare_review_overflow", "true");
+            engine.runtime().replace(task.withData(data)); return true;
+        }
+        data.put("prepare_review_candidates", JSON.toJson(candidates));
+        if (!candidates.isEmpty()) {
+            data.put("prepare_scope", "UNKNOWN");
+            data.put("prepare_reason", "waived_equipment_requires_explicit_review");
+        }
         engine.runtime().replace(task.withData(data));
         return true;
     }
 
+    /** Review belongs to this captured side/death token; no historical declaration is rewritten. */
+    public static boolean review(SideTaskEngine engine, UUID id, TaskChain chain, String instance, long generation,
+                                 String deathSeq, Map<String, String> choices) {
+        SideTask task = engine.current(id).orElseGet(() -> pausedTask(chain));
+        if (task == null || !id.equals(task.companionId()) || (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE && chain.primaryStatus() != PrimaryGoalStatus.PENDING)
+                || !DeathRecoverySideTaskType.TYPE_ID.equals(task.typeId()) || !sameChain(task, chain) || !task.instanceId().equals(instance)
+                || task.generation() != generation || !Objects.equals(task.data().get("death_seq"), deathSeq)
+                || "true".equals(task.data().get("prepare_review_overflow"))
+                || choices == null || choices.isEmpty() || choices.size() > MAX_TARGETS) return false;
+        if (chain.currentSubtask() != null && chain.isPaused(chain.currentSubtask().id()) && pausedTask(chain) == null) return false;
+        try {
+            JsonObject candidates = JsonParser.parseString(task.data().getOrDefault("prepare_review_candidates", "{}")).getAsJsonObject();
+            var decisions = new LinkedHashMap<String, String>();
+            if (task.data().containsKey("prepare_review_decisions")) {
+                for (var e : JsonParser.parseString(task.data().get("prepare_review_decisions")).getAsJsonObject().entrySet())
+                    decisions.put(e.getKey(), e.getValue().getAsString());
+            }
+            for (var e : choices.entrySet()) {
+                if (!candidates.has(e.getKey()) || !List.of("RECHECK", "CANCELLED").contains(e.getValue())) return false;
+                decisions.put(e.getKey(), e.getValue());
+            }
+            var targets = new ArrayList<>(conditions(task, TARGETS));
+            for (var e : candidates.entrySet()) {
+                @SuppressWarnings("unchecked") Map<String, Object> condition = JSON.fromJson(e.getValue(), Map.class);
+                targets.removeIf(condition::equals);
+                if ("RECHECK".equals(decisions.get(e.getKey()))) targets.add(condition);
+            }
+            if (targets.size() > MAX_TARGETS || JSON.toJson(targets).length() > MAX_JSON) return false;
+            var data = new LinkedHashMap<>(task.data());
+            data.put(TARGETS, JSON.toJson(targets)); data.put("prepare_review_decisions", JSON.toJson(decisions));
+            boolean unresolved = candidates.entrySet().stream().anyMatch(e -> !decisions.containsKey(e.getKey()));
+            data.put("prepare_scope", unresolved ? "UNKNOWN" : targets.isEmpty() ? "NONE" : "DECLARED");
+            if (unresolved) data.put("prepare_required", "true");
+            else if (targets.isEmpty()) data.remove("prepare_required");
+            data.put("prepare_reason", unresolved ? "waived_equipment_requires_explicit_review" : "equipment_review_applied");
+            data.remove("prepare_request"); data.remove(PLAN); data.remove("prepare_descriptions");
+            data.remove("prepare_index"); data.remove("prepare_plan_state"); data.remove("prepare_verified");
+            SideTask updated = task.withData(data);
+            if (!engine.isActive(id)) {
+                if (!engine.runtime().activate(updated)) return false;
+                chain.updateDeathRecoveryPause(chain.currentSubtask().id(), pauseReason(resumePayload(updated), "equipment_review_applied"));
+            } else engine.runtime().replace(updated);
+            if (!unresolved && targets.isEmpty() && pausedTask(chain) != null) releasePause(chain);
+            return true;
+        } catch (RuntimeException invalid) { return false; }
+    }
+
+    public static boolean reviewPending(SideTask task) {
+        if (task == null || "true".equals(task.data().get("prepare_review_overflow"))) return true;
+        try {
+            JsonObject candidates = JsonParser.parseString(task.data().getOrDefault("prepare_review_candidates", "{}")).getAsJsonObject();
+            JsonObject decisions = JsonParser.parseString(task.data().getOrDefault("prepare_review_decisions", "{}")).getAsJsonObject();
+            return candidates.entrySet().stream().anyMatch(e -> !decisions.has(e.getKey())
+                    || !List.of("RECHECK", "CANCELLED").contains(decisions.get(e.getKey()).getAsString()));
+        } catch (RuntimeException invalid) { return true; }
+    }
+
     /** NONE is a successful selector result, never a parse-error fallback. */
     public static boolean notApplicable(SideTask task) {
-        if (task == null || !"NONE".equals(task.data().get("prepare_scope"))) return false;
+        if (task == null || reviewPending(task) || !"NONE".equals(task.data().get("prepare_scope"))) return false;
         try {
             return JsonParser.parseString(task.data().getOrDefault(TARGETS, "null")).getAsJsonArray().isEmpty();
         } catch (RuntimeException ex) { return false; }
@@ -167,6 +245,7 @@ public final class DeathPreparation {
         if (task == null || !DeathRecoverySideTaskType.TYPE_ID.equals(task.typeId()) || !sameChain(task, chain) || notApplicable(task)) return;
         DeathRecoveryDecision decision = DeathRecoveryDecision.parse(task.data().get("decision"));
         if (decision == DeathRecoveryDecision.RESET_AND_RESTART) return;
+        if (reviewPending(task)) return;
         var facts = world.deathPreparationFacts(id, task);
         var drops = world.deathRecoveryFacts(id, task).dropState();
         boolean terminalDrops = drops == SideTaskWorldPort.DeathDropState.DROPS_ABSENT
@@ -269,6 +348,7 @@ public final class DeathPreparation {
     }
 
     public static String context(SideTask task) {
+        if (reviewPending(task)) return "先用rdd_choose_death_recovery复评已放弃阶段的明确装备候选，不把放弃理由当穿戴事实";
         String raw = task.data().getOrDefault("prepare_descriptions", "[]");
         try {
             JsonArray descriptions = JsonParser.parseString(raw).getAsJsonArray();
@@ -283,7 +363,7 @@ public final class DeathPreparation {
         var data = new LinkedHashMap<String, String>();
         for (String key : List.of(TARGETS, PLAN, "prepare_scope", "prepare_descriptions", "prepare_index",
                 "prepare_reason", "prepare_plan_state", "prepare_retries", "prepare_retry_at", "death_seq",
-                "decision", "drop_terminal", "dimension", "death_at", "prepare_death_seq", "prepare_original_status")) {
+                "decision", "drop_terminal", "dimension", "death_at", "prepare_death_seq", "prepare_original_status", "prepare_review_candidates", "prepare_review_decisions", "prepare_review_overflow")) {
             String value = task.data().get(key);
             if (value != null && value.length() <= MAX_JSON) data.put(key, value);
         }
@@ -321,6 +401,7 @@ public final class DeathPreparation {
         if (held != null && (!Objects.equals(held.instanceId(), task.instanceId())
                 || held.generation() != task.generation()
                 || !Objects.equals(held.data().get("death_seq"), task.data().get("death_seq")))) return false;
+        if (verified && reviewPending(task)) return false;
         if (verified) {
             if (chain.currentSubtask() != null && chain.isPaused(chain.currentSubtask().id())
                     && chain.pauseReason(chain.currentSubtask().id()) != null
@@ -377,6 +458,9 @@ public final class DeathPreparation {
                 + xml(context(task)) + "</current_task><done_when>" + xml(task.data().getOrDefault(TARGETS, "[]"))
                 + "</done_when><note>原主步骤保留但尚不准入；先核实/补齐装备，背包有甲未穿不等于完成。"
                 + xml(task.data().getOrDefault("prepare_reason", "current equipment unverified"))
+                + (reviewPending(task) ? xml("待复评装备=" + task.data().getOrDefault("prepare_review_candidates", "{}")
+                    + "; 用rdd_choose_death_recovery的review提交id到RECHECK/CANCELLED，review_instance=" + task.instanceId()
+                    + ", review_generation=" + task.generation() + ", review_death_seq=" + task.data().getOrDefault("death_seq", "")) : "")
                 + "</note></rdd>";
     }
 
@@ -433,7 +517,7 @@ public final class DeathPreparation {
         try {
             var envelope = JsonParser.parseString(reason.substring("recovery_not_verified:".length())).getAsJsonObject();
             SideTask task = JSON.fromJson(envelope.get("resume").getAsString(), SideTask.class);
-            if (task != null && sameChain(task, chain)
+            if (task != null && !reviewPending(task) && sameChain(task, chain)
                     && (chain.primaryStatus() == PrimaryGoalStatus.ACTIVE || chain.primaryStatus() == PrimaryGoalStatus.PENDING)
                     && world.deathPreparationFacts(id, task).state() == SideTaskWorldPort.PreparationState.READY) {
                 releasePause(chain);

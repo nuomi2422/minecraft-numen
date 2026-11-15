@@ -59,6 +59,72 @@ class DeathPreparationScopeRegressionTest {
         assertTrue(DeathPreparation.targets(c, Map.of(), Map.of()).isEmpty(), "candidate alone must not force manufacturing");
         assertEquals(original, c.toJson(), "review must not rewrite waiver, original declarations or cursor");
     }
+    private static TaskChain waivedLegs() {
+        var c = new TaskChain(new Goal("g", "finish", List.of(
+                new PrimaryGoal("gear", "gear", List.of(Subtask.hardCoded("legs", "wear leggings", Map.of(
+                        "type", "equipment", "item", "minecraft:iron_leggings", "slot", "legs")))),
+                new PrimaryGoal("trade", "trade", List.of(Subtask.hardCoded("iron", "iron", Map.of("asset_key", "minecraft:iron_ingot", "minimum", 8)))))));
+        c.startCurrent(); c.settlePrimaryByFact("gear", "waived not verified", false); return c;
+    }
+    @Test void originalSideReviewAdmitsOnlyExplicitRecheckAndCancellationWithoutHistoryRewrite() {
+        for (String choice : List.of("RECHECK", "CANCELLED")) {
+            var c = waivedLegs(); c.nextPlanRevision(); // retained same-stage waiver from an earlier revision
+            String original = c.toJson(); var engine = start(c, new Port(), new ArrayList<>(), Map.of());
+            var task = engine.current(C).orElseThrow();
+            assertTrue(DeathPreparation.reviewPending(task));
+            assertTrue(DeathPreparation.review(engine, C, c, task.instanceId(), task.generation(), "7", Map.of("legs", choice)));
+            var reviewed = engine.current(C).orElseThrow();
+            assertFalse(DeathPreparation.reviewPending(reviewed));
+            assertEquals(choice.equals("RECHECK") ? 1 : 0, DeathPreparation.conditions(reviewed, DeathPreparation.TARGETS).size());
+            assertEquals(choice.equals("CANCELLED"), DeathPreparation.notApplicable(reviewed));
+            assertEquals(original, c.toJson());
+        }
+    }
+    @Test void staleAndInvalidReviewCannotMutateSideOrOriginalChain() {
+        var c = waivedLegs(); var engine = start(c, new Port(), new ArrayList<>(), Map.of());
+        var task = engine.current(C).orElseThrow(); String original = c.toJson();
+        assertFalse(DeathPreparation.review(engine,C,c,task.instanceId(),task.generation()+1,"7",Map.of("legs","RECHECK")));
+        assertFalse(DeathPreparation.review(engine,C,c,task.instanceId(),task.generation(),"8",Map.of("legs","RECHECK")));
+        assertFalse(DeathPreparation.review(engine,C,c,task.instanceId(),task.generation(),"7",Map.of("future","RECHECK")));
+        assertFalse(DeathPreparation.review(engine,C,c,task.instanceId(),task.generation(),"7",Map.of("legs","READY")));
+        assertFalse(DeathPreparation.review(engine,C,trading(),task.instanceId(),task.generation(),"7",Map.of("legs","RECHECK")));
+        assertEquals(task, engine.current(C).orElseThrow()); assertEquals(original,c.toJson());
+    }
+    @Test void timedOutReviewRemainsResolvableThroughSameCapturedSideChoice() {
+        var c = waivedLegs(); var p = new Port(); var terminal = new ArrayList<Map<String,Object>>();
+        var engine = start(c,p,terminal,Map.of()); var task = engine.current(C).orElseThrow();
+        p.now += DeathRecoverySideTaskType.DEADLINE_TICKS + 1; engine.tick(C,p,token(c),false);
+        assertFalse(engine.isActive(C));
+        assertTrue(DeathPreparation.settle(c,String.valueOf(terminal.get(0).get("prepareResume")),false,"review pending"));
+        assertTrue(c.isPaused("iron")); assertTrue(DeathPreparation.pausedContext(c).contains("review_instance"));
+        assertTrue(DeathPreparation.review(engine,C,c,task.instanceId(),task.generation(),"7",Map.of("legs","CANCELLED")));
+        assertTrue(engine.isActive(C)); assertFalse(c.isPaused("iron"));
+        assertEquals(SubtaskStatus.PENDING,c.currentSubtaskStatus()); assertEquals(0,c.attempts("iron"));
+    }
+    @Test void legacySideWithoutReviewFieldsIsReattachedAndOverflowNeverBecomesReady() {
+        var c = waivedLegs(); var engine = start(c,new Port(),new ArrayList<>(),Map.of());
+        var task = engine.current(C).orElseThrow(); var old = new LinkedHashMap<>(task.data());
+        old.remove("prepare_review_candidates"); old.put("prepare_scope","NONE");
+        engine.runtime().replace(task.withData(old));
+        assertTrue(DeathPreparation.attach(engine,C,c,Map.of(),Map.of()));
+        assertTrue(DeathPreparation.reviewPending(engine.current(C).orElseThrow()));
+        var overflow = new LinkedHashMap<>(task.data()); overflow.put("prepare_review_candidates","{}");
+        overflow.put("prepare_review_overflow","true"); overflow.put("prepare_scope","UNKNOWN");
+        var bounded = task.withData(overflow);
+        assertTrue(DeathPreparation.reviewPending(bounded)); assertFalse(DeathPreparation.notApplicable(bounded));
+        assertTrue(DeathPreparation.reviewPending(DeathPreparation.resumeTask(DeathPreparation.resumePayload(bounded))));
+    }
+    @Test void waivedOptionalAndFutureEquipmentDoNotBecomeReviewCandidates() {
+        var optional = new LinkedHashMap<String,Object>(wear(IRON)); optional.put("optional",true);
+        var c = new TaskChain(new Goal("g","finish",List.of(
+                new PrimaryGoal("old","old",List.of(Subtask.hardCoded("optional","optional",optional))),
+                new PrimaryGoal("now","now",List.of(Subtask.hardCoded("iron","iron",Map.of("asset_key","minecraft:iron_ingot","minimum",8)))),
+                new PrimaryGoal("future","future",List.of(Subtask.hardCoded("future-wear","future",wear(DIAMOND)))))));
+        c.startCurrent(); c.settlePrimaryByFact("old","waived",false);
+        var engine = start(c,new Port(),new ArrayList<>(),Map.of()); var task = engine.current(C).orElseThrow();
+        assertEquals("{}",task.data().get("prepare_review_candidates"));
+        assertTrue(DeathPreparation.notApplicable(task));
+    }
     @Test void ordinaryExplicitSkipDoesNotReintroduceTypedEquipmentAsAReviewCandidate() {
         var legs = Map.<String,Object>of("type", "equipment", "item", "minecraft:iron_leggings", "slot", "legs");
         var c = new TaskChain(new Goal("g", "finish", List.of(new PrimaryGoal("p", "trade", List.of(

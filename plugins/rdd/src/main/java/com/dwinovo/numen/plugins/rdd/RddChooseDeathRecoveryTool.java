@@ -42,6 +42,10 @@ final class RddChooseDeathRecoveryTool implements NumenTool {
         return Schema.object()
                 .string("decision", "One of the four fixed death recovery strategies")
                 .string("reason", "Short evidence-based reason for the choice")
+                .optionalString("review", "JSON candidate subtaskId to RECHECK or CANCELLED, only displayed waived equipment candidates")
+                .optionalString("review_instance", "Exact displayed side instance for review")
+                .optionalString("review_generation", "Exact displayed side generation for review")
+                .optionalString("review_death_seq", "Exact displayed death sequence for review")
                 .build();
     }
 
@@ -94,7 +98,22 @@ final class RddChooseDeathRecoveryTool implements NumenTool {
                 return;
             }
         }
-        if (!SideTaskHost.chooseDeathRecovery(companion.getUUID(), parsed.name(), reason)) {
+        Map<String, String> review = null;
+        String instance = "", deathSeq = ""; long generation = -1;
+        try {
+            if (args.has("review")) {
+                String rawReview = args.get("review").getAsString();
+                if (rawReview.length() > com.dwinovo.numen.rdd.side.death.DeathPreparation.MAX_JSON) throw new IllegalArgumentException();
+                review = new java.util.LinkedHashMap<>();
+                for (var e : com.google.gson.JsonParser.parseString(rawReview).getAsJsonObject().entrySet()) review.put(e.getKey(), e.getValue().getAsString());
+                instance = args.get("review_instance").getAsString();
+                generation = Long.parseLong(args.get("review_generation").getAsString());
+                deathSeq = args.get("review_death_seq").getAsString(); Integer.parseInt(deathSeq);
+            }
+        } catch (RuntimeException invalid) {
+            reply.accept(TaskResult.fail("invalid review or missing exact side/death identity").toJson()); return;
+        }
+        if (!SideTaskHost.chooseDeathRecovery(companion.getUUID(), parsed.name(), reason, review, instance, generation, deathSeq)) {
             reply.accept(TaskResult.fail("no active death_recovery side task or decision was stale").toJson());
             return;
         }

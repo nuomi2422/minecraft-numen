@@ -111,6 +111,7 @@ final class RddDeathEquipment {
     }
 
     static PreparationFacts facts(Sample sample, SideTask task, Map<String, Integer> backup, BiPredicate<String, String> match) {
+        if (DeathPreparation.reviewPending(task)) return PreparationFacts.unknown("waived_equipment_requires_explicit_review");
         List<Map<String, Object>> targets = DeathPreparation.conditions(task, DeathPreparation.TARGETS);
         if (targets.isEmpty()) return PreparationFacts.unknown(DeathPreparation.notApplicable(task)
                 ? "no_applicable_equipment_obligation" : "equipment_declaration_unverified");

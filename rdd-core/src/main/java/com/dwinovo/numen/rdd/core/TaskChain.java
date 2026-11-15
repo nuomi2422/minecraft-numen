@@ -1504,6 +1504,12 @@ public final class TaskChain {
         return Set.copyOf(waivedStageKeys.keySet());
     }
 
+    /** Retained same-stage waiver provenance, not equipment evidence or a current skip decision. */
+    public synchronized boolean hasStageWaiver(String primaryId) {
+        Integer revision = waivedStageKeys.get(primaryId);
+        return revision != null && revision >= 0 && revision <= planRevision;
+    }
+
     /** 是否只剩"放弃"的阶段未走完：此时再放弃就等于结束总目标，必须另有世界事实。 */
     public synchronized boolean waivingWouldEndGoal(String primaryId) {
         if (primaryId == null) return false;

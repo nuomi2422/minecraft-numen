@@ -72,7 +72,7 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
         }
         // Pickup settlement cannot stand in for current equipped-slot evidence.
         boolean notApplicable = DeathPreparation.notApplicable(task);
-        boolean prepare = !notApplicable && (DeathPreparation.prepares(decision)
+        boolean prepare = !notApplicable && ((DeathPreparation.reviewPending(task) && decision != DeathRecoveryDecision.RESET_AND_RESTART) || DeathPreparation.prepares(decision)
                 || "true".equals(data.get("prepare_required")));
         SideTaskWorldPort.PreparationFacts preparation = null;
         if (!prepare && !notApplicable && decision != DeathRecoveryDecision.RESET_AND_RESTART
@@ -84,6 +84,7 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
         }
         if (prepare) {
             if (preparation == null) preparation = world.deathPreparationFacts(task.companionId(), task);
+            if (DeathPreparation.reviewPending(task)) preparation = SideTaskWorldPort.PreparationFacts.unknown("waived_equipment_requires_explicit_review");
             data.put("prepare_required", "true");
             String incomplete = "REJECTED".equals(data.get("prepare_plan_state"))
                     ? "preparation_plan_rejected_or_unavailable; " + preparation.reason() : preparation.reason();
@@ -169,6 +170,9 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
                         + "；未完成原因=" + esc(task.data().getOrDefault("prepare_reason", "unknown"))
                         + "。掉落不存在不能当作装备齐备；背包里有甲但未穿也不完成。"
                     : "")
+                + (DeathPreparation.reviewPending(task) ? "待复评装备=" + esc(task.data().getOrDefault("prepare_review_candidates", "{}"))
+                    + "；阶段曾被放弃不代表当前穿戴，也不自动重造。调用原rdd_choose_death_recovery，review为候选id到RECHECK或CANCELLED的JSON，"
+                    + "并带review_instance=" + esc(task.instanceId()) + "、review_generation=" + task.generation() + "、review_death_seq=" + esc(seq) + "。" : "")
                 + "死亡恢复支线已接管，主线计算暂时冻结。先判断这批掉落是否值得回收："
                 + "危险、距离、维度、区块加载状态、备用装备和原目标都要一起看。"
                 + "若有备用装备且回死亡点会再次送命，先取备用/重新装战，再决定是否回收；"

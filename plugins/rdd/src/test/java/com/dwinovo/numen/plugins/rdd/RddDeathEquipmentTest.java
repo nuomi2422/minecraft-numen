@@ -70,6 +70,20 @@ class RddDeathEquipmentTest {
         assertNull(RddDeathEquipment.read(service,C,DIM,STAMP,1001));
         assertEquals(1,refreshes.get());
     }
+    @Test void unresolvedWaivedEquipmentCannotBeHiddenByReadyExistingTarget() {
+        var sample = RddDeathEquipment.sample(response(true,false,Set.of(),C.toString()),C,DIM,STAMP,1001);
+        var data = new LinkedHashMap<>(task().data());
+        data.put("prepare_review_candidates", "{\"legs\":{\"type\":\"equipment\",\"item\":\"minecraft:iron_leggings\",\"slot\":\"legs\"}}");
+        var unresolved = task().withData(data);
+        assertEquals(SideTaskWorldPort.PreparationState.UNKNOWN,RddDeathEquipment.facts(sample,unresolved,Map.of(),null).state());
+        assertEquals(SideTaskVerdict.Kind.CONTINUE,new DeathRecoverySideTaskType().evaluate(unresolved,port(sample)).kind());
+        data.put("prepare_review_decisions", "{\"legs\":\"CANCELLED\"}");
+        assertEquals(SideTaskWorldPort.PreparationState.READY,RddDeathEquipment.facts(sample,task().withData(data),Map.of(),null).state());
+        data.put("prepare_review_decisions", "{\"legs\":\"RECHECK\"}");
+        data.put(DeathPreparation.TARGETS,"[{\"type\":\"equipment\",\"item\":\"minecraft:iron_chestplate\",\"slot\":\"chest\"},"
+                + "{\"type\":\"equipment\",\"item\":\"minecraft:iron_leggings\",\"slot\":\"legs\"}]");
+        assertEquals(SideTaskWorldPort.PreparationState.MISSING,RddDeathEquipment.facts(sample,task().withData(data),Map.of(),null).state());
+    }
     @Test void explicitBackupQuantityMustRemainSatisfiedAfterWearing() {
         var sample = RddDeathEquipment.sample(response(true,false,Set.of(),C.toString()),C,DIM,STAMP,1001);
         assertTrue(RddDeathEquipment.condition(sample,CONDITION,null));
