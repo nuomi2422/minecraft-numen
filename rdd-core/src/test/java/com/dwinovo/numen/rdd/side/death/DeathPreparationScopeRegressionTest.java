@@ -101,6 +101,31 @@ class DeathPreparationScopeRegressionTest {
                 () -> assertEquals("DECLARED",reviewed.data().get("prepare_scope")));
         assertEquals(original,c.toJson());
     }
+    @Test void missingLegacyBaseRejectsReviewUntilOriginalAttachRebuildsIt() {
+        var c = waivedLegs(); var engine = start(c,new Port(),new ArrayList<>(),Map.of());
+        var task = engine.current(C).orElseThrow(); var legacy = new LinkedHashMap<>(task.data());
+        legacy.remove("prepare_base_targets");
+        engine.runtime().replace(task.withData(legacy)); var before = engine.current(C).orElseThrow();
+        assertFalse(DeathPreparation.review(engine,C,c,task.instanceId(),task.generation(),"7",Map.of("legs","CANCELLED")));
+        assertEquals(before,engine.current(C).orElseThrow());
+        assertTrue(DeathPreparation.attach(engine,C,c,Map.of(),Map.of()));
+        assertEquals("[]",engine.current(C).orElseThrow().data().get("prepare_base_targets"));
+        assertTrue(DeathPreparation.review(engine,C,c,task.instanceId(),task.generation(),"7",Map.of("legs","CANCELLED")));
+        assertTrue(DeathPreparation.notApplicable(engine.current(C).orElseThrow()));
+    }
+    @Test void repeatedReviewDeduplicatesAndPreservesBaseThroughResumePayload() {
+        var c = waivedLegs(); var engine = start(c,new Port(),new ArrayList<>(),Map.of());
+        var task = engine.current(C).orElseThrow(); String original = c.toJson();
+        for (int i=0;i<2;i++) assertTrue(DeathPreparation.review(engine,C,c,task.instanceId(),task.generation(),"7",Map.of("legs","RECHECK")));
+        var reviewed = engine.current(C).orElseThrow();
+        assertEquals(1,DeathPreparation.conditions(reviewed,DeathPreparation.TARGETS).size());
+        var restored = DeathPreparation.resumeTask(DeathPreparation.resumePayload(reviewed));
+        assertEquals("[]",restored.data().get("prepare_base_targets"));
+        assertEquals(reviewed.data().get(DeathPreparation.TARGETS),restored.data().get(DeathPreparation.TARGETS));
+        assertTrue(DeathPreparation.review(engine,C,c,task.instanceId(),task.generation(),"7",Map.of("legs","CANCELLED")));
+        assertTrue(DeathPreparation.notApplicable(engine.current(C).orElseThrow()));
+        assertEquals(original,c.toJson());
+    }
     @Test void staleAndInvalidReviewCannotMutateSideOrOriginalChain() {
         var c = waivedLegs(); var engine = start(c, new Port(), new ArrayList<>(), Map.of());
         var task = engine.current(C).orElseThrow(); String original = c.toJson();

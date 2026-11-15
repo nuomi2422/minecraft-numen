@@ -121,10 +121,14 @@ public final class DeathPreparation {
                                  Map<String, AssetSemantics> semantics, Map<String, String> slots) {
         SideTask task = engine.current(id).orElse(null);
         if (task == null || !DeathRecoverySideTaskType.TYPE_ID.equals(task.typeId()) || !sameChain(task, chain)) return false;
-        if (task.data().containsKey(TARGETS) && task.data().containsKey("prepare_review_candidates")) return true;
+        if (task.data().containsKey(TARGETS) && task.data().containsKey("prepare_review_candidates")
+                && task.data().containsKey("prepare_base_targets")) return true;
         var data = new LinkedHashMap<>(task.data());
         Selection selection = select(chain, semantics, slots);
         data.put(TARGETS, JSON.toJson(selection.targets()));
+        if (!"UNKNOWN".equals(selection.scope())) data.put("prepare_base_targets", JSON.toJson(selection.targets()));
+        else data.remove("prepare_base_targets");
+        data.remove("prepare_review_decisions"); // legacy rebuild requires review against the original selection again
         data.put("prepare_scope", selection.scope());
         data.put("prepare_reason", selection.reason());
         var candidates = new LinkedHashMap<String, Map<String, Object>>();
@@ -173,11 +177,14 @@ public final class DeathPreparation {
                 if (!candidates.has(e.getKey()) || !List.of("RECHECK", "CANCELLED").contains(e.getValue())) return false;
                 decisions.put(e.getKey(), e.getValue());
             }
-            var targets = new ArrayList<>(conditions(task, TARGETS));
+            // Missing legacy base cannot be guessed from merged targets; attach must rebuild with original semantics.
+            if (!task.data().containsKey("prepare_base_targets")) return false;
+            JsonArray base = JsonParser.parseString(task.data().get("prepare_base_targets")).getAsJsonArray();
+            var targets = new ArrayList<>(conditions(task, "prepare_base_targets"));
+            if (base.size() != targets.size()) return false;
             for (var e : candidates.entrySet()) {
                 @SuppressWarnings("unchecked") Map<String, Object> condition = JSON.fromJson(e.getValue(), Map.class);
-                targets.removeIf(condition::equals);
-                if ("RECHECK".equals(decisions.get(e.getKey()))) targets.add(condition);
+                if ("RECHECK".equals(decisions.get(e.getKey())) && !targets.contains(condition)) targets.add(condition);
             }
             if (targets.size() > MAX_TARGETS || JSON.toJson(targets).length() > MAX_JSON) return false;
             var data = new LinkedHashMap<>(task.data());
@@ -363,7 +370,7 @@ public final class DeathPreparation {
         var data = new LinkedHashMap<String, String>();
         for (String key : List.of(TARGETS, PLAN, "prepare_scope", "prepare_descriptions", "prepare_index",
                 "prepare_reason", "prepare_plan_state", "prepare_retries", "prepare_retry_at", "death_seq",
-                "decision", "drop_terminal", "dimension", "death_at", "prepare_death_seq", "prepare_original_status", "prepare_review_candidates", "prepare_review_decisions", "prepare_review_overflow")) {
+                "decision", "drop_terminal", "dimension", "death_at", "prepare_death_seq", "prepare_original_status", "prepare_review_candidates", "prepare_review_decisions", "prepare_review_overflow", "prepare_base_targets")) {
             String value = task.data().get(key);
             if (value != null && value.length() <= MAX_JSON) data.put(key, value);
         }
