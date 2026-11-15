@@ -400,6 +400,42 @@ class ReviewCompletionTest {
         }
     }
 
+    /** 2026-11-15: restore-failure abort stays dangling; a late stale callback must not overwrite it. */
+    @Test void abortRestoreFailureKeepsDanglingAndLateStaleMustNotOverwrite(@TempDir Path dir) throws Exception {
+        Field cfg = LearnerPlugin.class.getDeclaredField("configDir");
+        cfg.setAccessible(true);
+        Object oldCfg = cfg.get(null);
+        cfg.set(null, dir);
+        try {
+            String id = "rev-late-abort-failed";
+            Memo memo = ordinary("late-abort-failed");
+            MemoQueue queue = new MemoQueue(dir.resolve("late-abort-failed.json"));
+            assertTrue(queue.append(memo));
+            List<Memo> batch = queue.drain(1);
+            LearnerPlugin.beginReview(id, A, "RUNNING", 1);
+            assertTrue(ReviewBatchStore.save(dir, id, batch));
+            LearnerPlugin.registerInflight(id, () -> { throw new RuntimeException("restore failed"); });
+            LearnerPlugin.abortInFlight();
+            assertTrue(LearnerPlugin.wasAborted(id));
+            assertEquals("RUNNING", LearnerPlugin.review(id).state(), "failed restore must stay dangling, not terminal");
+            assertTrue(Files.exists(ReviewBatchStore.file(dir, id)), "durable batch stays for retry");
+            assertTrue(Files.exists(dir.resolve(LearnerPlugin.REVIEW_SENTINEL)), "sentinel stays for retry");
+            AtomicInteger staleRestores = new AtomicInteger();
+            assertTrue(ReviewCompletion.discardLate(LearnerPlugin.wasAborted(id), false, () -> {
+                staleRestores.incrementAndGet();
+                queue.restore(batch);
+                LearnerPlugin.finishReview(id, "STALE_WORLD", 0);
+            }));
+            assertEquals(0, staleRestores.get(), "aborted dangling review must not run the stale side effects");
+            assertEquals("RUNNING", LearnerPlugin.review(id).state(), "late stale must not overwrite dangling abort");
+            assertTrue(Files.exists(ReviewBatchStore.file(dir, id)), "durable batch must not be deleted");
+            assertTrue(Files.exists(dir.resolve(LearnerPlugin.REVIEW_SENTINEL)), "sentinel must not be deleted");
+            assertEquals(1, queue.size(), "no second restore side effect");
+        } finally {
+            cfg.set(null, oldCfg);
+        }
+    }
+
     @AfterEach void clearSequentialRegistry() { SkillRegistrar.resetForTest(); }
 
     private static final String EVENT = "tools-sequential-1-0";
