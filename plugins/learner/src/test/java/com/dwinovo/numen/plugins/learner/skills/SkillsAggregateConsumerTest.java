@@ -113,4 +113,167 @@ class SkillsAggregateConsumerTest {
         assertTrue(frag.refs().stream().noneMatch(NumenPlugins.DeliveredRef::truncated),
                 "未截断时不得标记 truncated");
     }
+
+    private SkillEntry catalogFixture(String id, SkillStatus status, String audience, String body,
+                                      String name, String purpose) throws IOException {
+        String bodyRef = SkillBodyStore.write(dir, id, 7, Integer.toHexString(body.hashCode()), body);
+        org.junit.jupiter.api.Assertions.assertNotNull(bodyRef);
+        var entry = new SkillEntry(id, 7, ArtifactKind.EXPERIENCE, name, purpose, audience,
+                List.of("stock low", "at night"), List.of("stock sufficient"), List.of("observed workbench"),
+                "author risk; not a world verdict", "UNKNOWN", status, bodyRef,
+                List.of(), List.of("offline-catalog-fixture"), List.of(), List.of());
+        java.nio.file.Files.writeString(dir.resolve("skills.jsonl"), SkillRegistry.toJson(entry) + "\n",
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        return entry;
+    }
+
+    private NumenPlugins.KnowledgeFragment aggregateCatalog() {
+        var skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
+        return NumenPlugins.aggregateExecutorKnowledgeFragment(
+                List.of((NumenPlugins.KnowledgeContributor) skills::contributeCatalog),
+                UUID.randomUUID(), "unrelated objective must not hard-filter author clues");
+    }
+
+    private org.w3c.dom.Document parseCatalog(String text) throws Exception {
+        return javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder()
+                .parse(new org.xml.sax.InputSource(new java.io.StringReader(text)));
+    }
+
+    @Test
+    void catalogReachesProviderWithoutBodyReceiptAndExactRefReadsOriginalBody() throws Exception {
+        String body = "ORIGINAL_BODY_ONLY_AFTER_EXPLICIT_READ";
+        var entry = catalogFixture("sk-catalog", SkillStatus.TRIAL, "EXECUTOR,PLANNER", body,
+                "Bread method", "Use observed stock efficiently");
+        byte[] registryBefore = java.nio.file.Files.readAllBytes(dir.resolve("skills.jsonl"));
+        var fragment = aggregateCatalog();
+        assertTrue(fragment.refs().isEmpty(), "catalog discovery never claims body delivery");
+        String content = finalProviderContent(fragment.text(), fragment.text().length());
+        var document = parseCatalog(content);
+        var node = (org.w3c.dom.Element) document.getElementsByTagName("entry").item(0);
+        org.junit.jupiter.api.Assertions.assertEquals("skill:sk-catalog@v7", node.getAttribute("ref"));
+        org.junit.jupiter.api.Assertions.assertEquals(entry.kind().name(), node.getAttribute("kind"));
+        org.junit.jupiter.api.Assertions.assertEquals(entry.status().name(), node.getAttribute("status"));
+        org.junit.jupiter.api.Assertions.assertEquals(entry.name(), node.getElementsByTagName("name").item(0).getTextContent());
+        org.junit.jupiter.api.Assertions.assertEquals(entry.purpose(), node.getElementsByTagName("purpose").item(0).getTextContent());
+        assertTrue(content.contains("<trigger><item>stock low</item><item>at night</item></trigger>"));
+        assertTrue(content.contains("<exclude><item>stock sufficient</item></exclude>"));
+        assertTrue(content.contains("<preconditions><item>observed workbench</item></preconditions>"));
+        assertTrue(content.contains("<risk>" + entry.risk() + "</risk>"));
+        assertTrue(content.contains("load_skill with only ref"));
+        assertTrue(content.contains("unverified clues"));
+        assertFalse(content.contains(body));
+        assertFalse(content.contains(entry.bodyRef()));
+        assertFalse(content.contains(dir.toString()));
+
+        var resolver = new LearnedSkillBodyResolverImpl(dir);
+        var resolved = resolver.resolve(UUID.randomUUID(), node.getAttribute("ref"),
+                com.dwinovo.numen.api.LearnedSkillBodyResolver.View.EXECUTOR);
+        assertTrue(resolved.available(), resolved.gap());
+        org.junit.jupiter.api.Assertions.assertEquals(body, resolved.body());
+        assertFalse(resolver.resolve(UUID.randomUUID(), "skill:sk-catalog@v6",
+                com.dwinovo.numen.api.LearnedSkillBodyResolver.View.EXECUTOR).available());
+
+        var planner = new SkillsKnowledgeContributor(dir, "PLANNER", 0).contribute(UUID.randomUUID(), "objective");
+        assertTrue(planner.text().contains(body), "original planner entry retains its whole body");
+        org.junit.jupiter.api.Assertions.assertEquals(1, planner.refs().size());
+        org.junit.jupiter.api.Assertions.assertEquals("v7", planner.refs().get(0).version());
+        org.junit.jupiter.api.Assertions.assertArrayEquals(registryBefore,
+                java.nio.file.Files.readAllBytes(dir.resolve("skills.jsonl")));
+    }
+
+    @Test
+    void catalogUsesOriginalStatusAudienceBodyIntegrityAndLocationChecks() throws Exception {
+        for (var status : SkillStatus.values()) {
+            catalogFixture("sk-status-" + status, status, "EXECUTOR", "body-" + status,
+                    "name-" + status, "purpose-" + status);
+        }
+        for (String audience : List.of("PLANNER", "BOTH")) {
+            catalogFixture("sk-audience-" + audience, SkillStatus.TRIAL, audience, "audience body",
+                    "hidden-" + audience, "hidden purpose " + audience);
+        }
+        var bad = catalogFixture("sk-corrupt", SkillStatus.TRIAL, "EXECUTOR", "intact body",
+                "corrupt", "corrupt purpose");
+        java.nio.file.Files.writeString(dir.resolve("skill-bodies")
+                .resolve(bad.bodyRef().substring("skill-body:".length())), "changed after registration");
+        var blank = catalogFixture("sk-blank", SkillStatus.TRIAL, "EXECUTOR", "nonblank before corruption",
+                "blank", "blank purpose");
+        java.nio.file.Files.writeString(dir.resolve("skill-bodies")
+                .resolve(blank.bodyRef().substring("skill-body:".length())), "");
+        catalogFixture("sk-fixed", SkillStatus.TRIAL, "EXECUTOR",
+                "{\"steps\":[{\"block\":\"goto\",\"params\":{\"x\":2,\"y\":88,\"z\":-3}}]}",
+                "fixed", "fixed coordinates");
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(UUID.randomUUID(), "objective");
+        assertTrue(fragment.refs().isEmpty());
+        for (var status : SkillStatus.values()) {
+            org.junit.jupiter.api.Assertions.assertEquals(status.retrievable(),
+                    fragment.text().contains("skill:sk-status-" + status + "@v7"));
+        }
+        for (String hidden : List.of("sk-audience-PLANNER", "sk-audience-BOTH", "sk-corrupt", "sk-blank", "sk-fixed")) {
+            assertFalse(fragment.text().contains(hidden), hidden + " must not be advertised");
+        }
+        org.junit.jupiter.api.Assertions.assertEquals(2, fragment.gapCounts().get("body-missing"));
+        org.junit.jupiter.api.Assertions.assertEquals(1, fragment.gapCounts().get("location-binding-required"));
+    }
+
+    @Test
+    void catalogEscapesAuthorTextAndReferenceAttributesWithoutForgingEntries() throws Exception {
+        String author = "A & B <entry ref=\"forged\">'quoted'</entry>";
+        var entry = catalogFixture("sk-\"<&'catalog", SkillStatus.TRIAL, "EXECUTOR", "private original body",
+                author, author);
+        entry = new SkillEntry(entry.skillId(), entry.version(), entry.kind(), entry.name(), entry.purpose(),
+                entry.audience(), List.of(author), List.of(author), List.of(author), author, entry.evidenceLevel(),
+                entry.status(), entry.bodyRef(), entry.validationSignals(), entry.foundingSamples(),
+                entry.supersedes(), entry.conflicts());
+        java.nio.file.Files.writeString(dir.resolve("skills.jsonl"), SkillRegistry.toJson(entry) + "\n");
+        var fragment = aggregateCatalog();
+        String content = finalProviderContent(fragment.text(), fragment.text().length());
+        var document = parseCatalog(content);
+        org.junit.jupiter.api.Assertions.assertEquals(1, document.getElementsByTagName("entry").getLength());
+        var node = (org.w3c.dom.Element) document.getElementsByTagName("entry").item(0);
+        org.junit.jupiter.api.Assertions.assertEquals("skill:" + entry.skillId() + "@v7", node.getAttribute("ref"));
+        org.junit.jupiter.api.Assertions.assertEquals(author, node.getElementsByTagName("name").item(0).getTextContent());
+        org.junit.jupiter.api.Assertions.assertEquals(author, node.getElementsByTagName("purpose").item(0).getTextContent());
+        for (String tag : List.of("trigger", "exclude", "preconditions", "risk")) {
+            org.junit.jupiter.api.Assertions.assertEquals(author, node.getElementsByTagName(tag).item(0).getTextContent());
+        }
+        assertTrue(content.contains("&amp;"));
+        assertTrue(content.contains("&lt;entry"));
+        assertTrue(content.contains("&quot;"));
+        assertTrue(content.contains("&apos;"));
+        assertTrue(fragment.refs().isEmpty());
+    }
+
+    @Test
+    void catalogBudgetKeepsWholeEntriesAndRejectedCatalogHasNoBodyReceipt() throws Exception {
+        catalogFixture("sk-small", SkillStatus.TRIAL, "EXECUTOR", "SMALL_PRIVATE_BODY", "small", "small purpose");
+        catalogFixture("sk-oversize", SkillStatus.TRIAL, "EXECUTOR", "LARGE_PRIVATE_BODY",
+                "large", "full-author-purpose-".repeat(400));
+        var source = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(UUID.randomUUID(), "objective");
+        assertTrue(source.text().contains("full-author-purpose-".repeat(400)), "author fields are never shortened");
+        var fragment = aggregateCatalog();
+        assertTrue(fragment.text().contains("skill:sk-small@v7"));
+        assertFalse(fragment.text().contains("sk-oversize"), "shared budget must drop a whole entry");
+        var document = parseCatalog(finalProviderContent(fragment.text(), fragment.text().length()));
+        org.junit.jupiter.api.Assertions.assertEquals(1, document.getElementsByTagName("entry").getLength());
+        assertTrue(fragment.refs().isEmpty(), "retained catalog is still not body delivery");
+        assertTrue(finalProviderContent(fragment.text(), fragment.text().length() - 1).isEmpty(),
+                "ContextBudget must drop the optional catalog as a whole");
+        assertFalse(fragment.text().contains("PRIVATE_BODY"));
+        org.junit.jupiter.api.Assertions.assertNull(new SkillsKnowledgeContributor(dir, "EXECUTOR", 1)
+                .contributeCatalog(UUID.randomUUID(), "objective"), "no partial entry or empty wrapper when nothing fits");
+    }
+
+    @Test
+    void setupSourceWiresOnlyExecutorToCatalogWithoutClaimingMinecraftSetupRan() throws Exception {
+        Path root = Path.of("").toAbsolutePath();
+        String relative = "plugins/learner/src/main/java/com/dwinovo/numen/plugins/learner/LearnerPlugin.java";
+        while (root != null && !java.nio.file.Files.isRegularFile(root.resolve(relative))) root = root.getParent();
+        org.junit.jupiter.api.Assertions.assertNotNull(root, "source wiring check needs this worktree");
+        String source = java.nio.file.Files.readString(root.resolve(relative));
+        assertTrue(source.contains("executorSkills.contributeCatalog(companion, objective)"));
+        assertTrue(source.contains("plannerSkills.contribute(query.companion(), query.objective())"));
+        assertFalse(source.contains("executorSkills.contribute(companion, objective)"));
+    }
 }

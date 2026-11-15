@@ -33,6 +33,18 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
 
     @Override
     public NumenPlugins.KnowledgeFragment contribute(UUID companion, String objective) {
+        return contribute(companion, objective, false);
+    }
+
+    /** Discovery metadata only: seeing this catalog is not delivery of a skill body. */
+    public NumenPlugins.KnowledgeFragment contributeCatalog(UUID companion, String objective) {
+        return contribute(companion, objective, true);
+    }
+
+    private static final String CATALOG_HEAD = "<retrieved_knowledge role=\"executor\" note=\"Catalog only; author conditions are unverified clues. Read one body using load_skill with only ref set to the exact entry ref.\">\n";
+    private static final String CATALOG_TAIL = "</retrieved_knowledge>";
+
+    private NumenPlugins.KnowledgeFragment contribute(UUID companion, String objective, boolean catalog) {
         List<NumenPlugins.DeliveredRef> refs = new ArrayList<>();
         StringBuilder text = new StringBuilder();
         boolean truncated = false;
@@ -64,15 +76,40 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
             // 2026-11-12: model-facing text must expose the registry vN required by adopt_skill;
             // DeliveredRef metadata is not model-visible, and a body JSON version is not this version.
             String version = "v" + e.version();
-            String block = "<entry ref=\"" + ref + "\">@" + version + " [" + e.name() + "] " + e.purpose() + "\n" + body + "\n</entry>\n";
-            if (maxChars > 0 && text.length() + block.length() > maxChars) { truncated = true; break; }
+            String block = catalog ? catalogEntry(e, ref + "@" + version)
+                    : "<entry ref=\"" + ref + "\">@" + version + " [" + e.name() + "] " + e.purpose() + "\n" + body + "\n</entry>\n";
+            int envelopeChars = catalog ? CATALOG_HEAD.length() + CATALOG_TAIL.length() : 0;
+            if (maxChars > 0 && text.length() + block.length() + envelopeChars > maxChars) { truncated = true; break; }
             text.append(block);
-            refs.add(new NumenPlugins.DeliveredRef(ref, version, false));
+            if (!catalog) refs.add(new NumenPlugins.DeliveredRef(ref, version, false));
         }
-        if (refs.isEmpty() && gaps.isEmpty()) return null;   // 完全无结果
-        return new NumenPlugins.KnowledgeFragment(text.toString(), refs, gaps);
+        if (text.isEmpty() && gaps.isEmpty()) return null;   // 完全无结果
+        String rendered = catalog && !text.isEmpty() ? CATALOG_HEAD + text + CATALOG_TAIL : text.toString();
+        return new NumenPlugins.KnowledgeFragment(rendered, refs, gaps);
     }
 
+
+    private static String catalogEntry(SkillEntry entry, String exactRef) {
+        return "<entry ref=\"" + xml(exactRef) + "\" kind=\"" + xml(entry.kind().name())
+                + "\" status=\"" + xml(entry.status().name()) + "\">\n"
+                + "<name>" + xml(entry.name()) + "</name>\n"
+                + "<purpose>" + xml(entry.purpose()) + "</purpose>\n"
+                + catalogConditions("trigger", entry.triggerConditions())
+                + catalogConditions("exclude", entry.excludeConditions())
+                + catalogConditions("preconditions", entry.preconditions())
+                + "<risk>" + xml(entry.risk()) + "</risk>\n</entry>\n";
+    }
+
+    private static String catalogConditions(String label, List<String> conditions) {
+        StringBuilder out = new StringBuilder("<" + label + ">");
+        for (String condition : conditions) out.append("<item>").append(xml(condition)).append("</item>");
+        return out.append("</").append(label).append(">\n").toString();
+    }
+
+    private static String xml(String value) {
+        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\"", "&quot;").replace("'", "&apos;");
+    }
 
     /** audience 为空 = 两视图都可见；否则逗号 token 精确匹配；未知取值不匹配。 */
     boolean audienceMatches(String audience) {

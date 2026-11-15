@@ -295,7 +295,7 @@ public final class LearnerPlugin implements NumenPlugin {
             return f == null ? "" : f.text();
         });
         numen.contributeExecutorKnowledge((com.dwinovo.numen.api.NumenPlugins.KnowledgeContributor)
-                (companion, objective) -> executorSkills.contribute(companion, objective));
+                (companion, objective) -> executorSkills.contributeCatalog(companion, objective));
         numen.registerTool(new LearnerNoteTool());
         numen.registerTool(new LearnerReviewTool());
         numen.registerTool(new LearnerStatusTool());
