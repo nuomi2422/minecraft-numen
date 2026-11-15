@@ -76,6 +76,14 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
             // 2026-11-12: model-facing text must expose the registry vN required by adopt_skill;
             // DeliveredRef metadata is not model-visible, and a body JSON version is not this version.
             String version = "v" + e.version();
+            if (catalog) {
+                try {
+                    com.dwinovo.numen.api.LearnedSkillBodyResolver.Reference.parse(ref + "@" + version);
+                } catch (IllegalArgumentException invalidReference) {
+                    gaps.merge("invalid-reference", 1, Integer::sum);
+                    continue;
+                }
+            }
             String block = catalog ? catalogEntry(e, ref + "@" + version)
                     : "<entry ref=\"" + ref + "\">@" + version + " [" + e.name() + "] " + e.purpose() + "\n" + body + "\n</entry>\n";
             int envelopeChars = catalog ? CATALOG_HEAD.length() + CATALOG_TAIL.length() : 0;
