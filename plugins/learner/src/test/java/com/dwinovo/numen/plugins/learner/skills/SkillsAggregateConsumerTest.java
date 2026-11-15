@@ -219,7 +219,7 @@ class SkillsAggregateConsumerTest {
     @Test
     void catalogEscapesAuthorTextAndReferenceAttributesWithoutForgingEntries() throws Exception {
         String author = "A & B <entry ref=\"forged\">'quoted'</entry>";
-        var entry = catalogFixture("sk-\"<&'catalog", SkillStatus.TRIAL, "EXECUTOR", "private original body",
+        var entry = catalogFixture("sk-escaped-catalog", SkillStatus.TRIAL, "EXECUTOR", "private original body",
                 author, author);
         entry = new SkillEntry(entry.skillId(), entry.version(), entry.kind(), entry.name(), entry.purpose(),
                 entry.audience(), List.of(author), List.of(author), List.of(author), author, entry.evidenceLevel(),
@@ -263,6 +263,32 @@ class SkillsAggregateConsumerTest {
         assertFalse(fragment.text().contains("PRIVATE_BODY"));
         org.junit.jupiter.api.Assertions.assertNull(new SkillsKnowledgeContributor(dir, "EXECUTOR", 1)
                 .contributeCatalog(UUID.randomUUID(), "objective"), "no partial entry or empty wrapper when nothing fits");
+    }
+
+    @Test
+    void catalogAdvertisesOnlyReferencesAcceptedByTheActualBodyReader() throws Exception {
+        catalogFixture("sk-valid", SkillStatus.TRIAL, "EXECUTOR", "VALID_EXACT_BODY", "valid", "valid purpose");
+        catalogFixture("sk-bad<&", SkillStatus.TRIAL, "EXECUTOR", "INVALID_ID_BODY", "legacy bad id", "keep original on disk");
+        byte[] original = java.nio.file.Files.readAllBytes(dir.resolve("skills.jsonl"));
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(UUID.randomUUID(), "objective");
+        var entries = parseCatalog(fragment.text()).getElementsByTagName("entry");
+        var advertised = new java.util.ArrayList<String>();
+        for (int i = 0; i < entries.getLength(); i++) {
+            advertised.add(((org.w3c.dom.Element) entries.item(i)).getAttribute("ref"));
+        }
+        org.junit.jupiter.api.Assertions.assertEquals(List.of("skill:sk-valid@v7"), advertised,
+                "a catalog must not advertise an identity its exact body reader cannot accept");
+        org.junit.jupiter.api.Assertions.assertEquals(1, fragment.gapCounts().get("invalid-reference"));
+        var resolver = new LearnedSkillBodyResolverImpl(dir);
+        for (String ref : advertised) {
+            com.dwinovo.numen.api.LearnedSkillBodyResolver.Reference.parse(ref);
+            assertTrue(resolver.resolve(UUID.randomUUID(), ref,
+                    com.dwinovo.numen.api.LearnedSkillBodyResolver.View.EXECUTOR).available());
+        }
+        assertTrue(fragment.refs().isEmpty());
+        org.junit.jupiter.api.Assertions.assertArrayEquals(original,
+                java.nio.file.Files.readAllBytes(dir.resolve("skills.jsonl")));
     }
 
     @Test
