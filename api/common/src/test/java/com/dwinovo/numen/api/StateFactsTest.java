@@ -48,6 +48,32 @@ class StateFactsTest {
         String night = NumenPlugins.stateFactsOf("<carry> … night=1 …</carry>");
         assertTrue(night.contains("night=1"), night);
     }
+    @Test void historicalTaskHpCannotOverrideCurrentEnvironmentHealth() {
+        String state = "<rdd><current_task>旧任务：血量3.2，先撤离</current_task>"
+                + "<why>上次血量2，不代表现在</why><env>\n身体 血量17.226 · 饥饿20\n</env></rdd>";
+        String facts = NumenPlugins.stateFactsOf(state);
+        assertTrue(facts.contains("hp=17.226"), facts);
+        assertFalse(facts.contains("hp=3.2"), facts);
+    }
+
+    @Test void unknownEnvironmentCannotBorrowHpFromTasksReasonsOrCarryText() {
+        String state = "<rdd><current_task>历史血量3.2</current_task><why>血量2</why>"
+                + "<carry>上次血量1 night=0 hostile=false</carry>"
+                + "<env>自身观测不可用；血量未知</env></rdd>";
+        String facts = NumenPlugins.stateFactsOf(state);
+        assertFalse(facts.contains("hp="), facts);
+        assertTrue(facts.contains("night=0"), facts);
+        assertTrue(facts.contains("hostile=0"), facts);
+    }
+
+    @Test void mandatoryRuntimeFragmentStillSeparatesPlanProseFromEnvironmentHp() {
+        var fragments = java.util.List.of(
+                new StateFragment("rdd", "runtime", "<rdd><current_task>历史血量3.2</current_task>"
+                        + "<env>身体 血量17.226 · 饥饿20</env></rdd>", true, 100),
+                new StateFragment("rdd", "guide", "<env>血量1</env>", false, 5));
+        assertEquals("<state_facts hp=17.226/>\n", NumenPlugins.stateFactsOf(fragments));
+    }
+
     @Test void percentDangerTextIsNotAbsoluteHp() {
         // 2026-11-06: RddDangerText 的“血量87%”是比例，不得提取为 hp=87（也不得回溯成 8）。
         assertFalse(NumenPlugins.stateFactsOf("<env> 血量87% </env>").contains("hp="));
