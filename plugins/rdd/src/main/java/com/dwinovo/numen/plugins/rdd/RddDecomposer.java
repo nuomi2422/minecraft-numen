@@ -126,7 +126,7 @@ final class RddDecomposer {
     private static <T> void withPlannerEndpoint(UUID companionId, String stage,
             java.util.function.Function<LlmEndpoint, java.util.concurrent.CompletableFuture<T>> send,
             Consumer<T> onResult, Runnable onFail) {
-        withPlannerEndpoint(companionId, stage, NumenGateway::companionEndpoint,
+        withPlannerEndpoint(companionId, stage, NumenGateway::plannerEndpoint,
                 task -> Minecraft.getInstance().execute(task), WorldContextStamp::epoch,
                 (phase, estimate) -> {
                     BudgetPolicy.Advice block = BudgetPolicy.checkBlock(phase, estimate);

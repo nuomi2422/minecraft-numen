@@ -335,6 +335,41 @@ class RddDecomposerParseTest {
         assertEquals(1, failures.get());
     }
 
+    @Test void plannerHttpFailureNeverResolvesOrSendsAnExecutionReplacement() {
+        for (String stage : List.of("stage_a", "stage_b", "fallback")) {
+            var client = new java.util.ArrayList<Runnable>();
+            var lookups = new java.util.concurrent.atomic.AtomicInteger();
+            var sends = new java.util.ArrayList<com.dwinovo.numen.agent.llm.LlmEndpoint>();
+            var failures = new java.util.concurrent.atomic.AtomicInteger();
+            RddDecomposer.withPlannerEndpoint(java.util.UUID.randomUUID(), stage,
+                    id -> { lookups.incrementAndGet(); return java.util.concurrent.CompletableFuture.completedFuture(
+                            endpoint("deepseek", "FAKE_INDEPENDENT_PLANNER_A")); },
+                    client::add, () -> 7L, (phase, estimate) -> true,
+                    selected -> { sends.add(selected); return java.util.concurrent.CompletableFuture.<String>failedFuture(
+                            new IllegalStateException("fixture HTTP 401 invalid planner")); },
+                    ignored -> fail("HTTP failure cannot produce a plan"), failures::incrementAndGet);
+            while (!client.isEmpty()) client.removeFirst().run();
+            assertEquals(1, lookups.get(), "failed independent planner must not resolve an execution replacement");
+            assertEquals(1, sends.size()); assertEquals("FAKE_INDEPENDENT_PLANNER_A", sends.getFirst().apiKey());
+            assertEquals("off", sends.getFirst().reasoningEffort()); assertEquals(1, failures.get());
+        }
+    }
+
+    @Test void oldPendingPlannerEndpointCannotSendAfterWorldGenerationChanges() {
+        for (String stage : List.of("stage_a", "stage_b", "fallback")) {
+            var f = new PlannerEndpointFixture();
+            var pending = new java.util.concurrent.CompletableFuture<com.dwinovo.numen.agent.llm.LlmEndpoint>();
+            f.lookup = id -> pending;
+            f.ask(f.a, stage);
+            assertTrue(f.client.isEmpty());
+            f.generation.incrementAndGet();
+            pending.complete(endpoint("deepseek", "FAKE_OLD_PLANNER_A"));
+            f.runClient();
+            assertTrue(f.sent.isEmpty()); assertTrue(f.budgetChecks.isEmpty());
+            assertEquals(1, f.failures); assertEquals(List.of(f.a), f.lookedUp);
+        }
+    }
+
     private static com.dwinovo.numen.agent.llm.LlmEndpoint endpoint(String provider, String key) {
         return new com.dwinovo.numen.agent.llm.LlmEndpoint(provider, "fixture-model", key,
                 "https://fixture.invalid/v1", "fixture-proxy", "high");

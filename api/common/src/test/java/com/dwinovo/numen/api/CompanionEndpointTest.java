@@ -120,6 +120,83 @@ class CompanionEndpointTest {
         assertEquals(1, f.bindingReads);
     }
 
+    // Real planner port baseline: independent-choice assertions expose execution-only selection.
+    @Test void independentPlannerWinsWithoutReadingOrRebindingExecution() {
+        Fixture f = new Fixture(); f.plannerId = "planner";
+        var planner = profile("deepseek", "FAKE_PLANNER_A");
+        f.profiles.put("planner", planner);
+        f.profiles.put("a", profile("openai", "FAKE_EXECUTOR_B"));
+        var selected = f.plannerLookup();
+        assertFalse(selected.isDone()); assertEquals(0, f.plannerReads);
+        f.queue.runAll();
+        assertSame(planner, selected.join());
+        assertEquals(1, f.plannerReads); assertEquals(0, f.bindingReads);
+        assertEquals(List.of("planner"), f.profileIds);
+        assertEquals("a", f.bindings.get(A));
+    }
+
+    @Test void onlyAnAbsentPlannerReferenceInheritsExecution() {
+        for (String absent : new String[] {null, "", " "}) {
+            Fixture f = new Fixture(); f.plannerId = absent;
+            var execution = profile("openai", "FAKE_EXECUTOR_B"); f.profiles.put("a", execution);
+            var selected = f.plannerLookup(); f.queue.runAll();
+            assertSame(execution, selected.join());
+            assertEquals(List.of("a"), f.profileIds); assertEquals("a", f.bindings.get(A));
+        }
+    }
+
+    @Test void deletedAndKeylessIndependentPlannerNeverBorrowExecutionCredentials() {
+        for (boolean keyless : List.of(false, true)) {
+            Fixture f = new Fixture(); f.plannerId = "planner";
+            f.profiles.put("a", profile("openai", "FAKE_EXECUTOR_B"));
+            if (keyless) f.profiles.put("planner", profile("deepseek", " "));
+            var selected = f.plannerLookup(); f.queue.runAll();
+            assertNotNull(selected.join());
+            assertFalse(selected.join().hasApiKey(), "configured but unusable is not unconfigured");
+            assertEquals(List.of("planner"), f.profileIds); assertEquals(0, f.bindingReads);
+        }
+    }
+
+    @Test void independentPlannerLookupFailureCannotTriggerExecutionFallback() {
+        Fixture f = new Fixture(); f.plannerId = "planner";
+        f.profiles.put("a", profile("openai", "FAKE_EXECUTOR_B"));
+        var selected = f.plannerLookup(id -> {
+            if ("planner".equals(id)) throw new IllegalStateException("fixture invalid planner");
+            return f.profiles.get(id);
+        });
+        f.queue.runAll();
+        assertThrows(CompletionException.class, selected::join); assertEquals(0, f.bindingReads);
+    }
+
+    @Test void plannerSwitchAndClearUseNextSelectionWithoutMutatingExecutionBinding() {
+        Fixture f = new Fixture();
+        var a = profile("deepseek", "FAKE_PLANNER_A");
+        var c = profile("openai", "FAKE_PLANNER_C");
+        var b = profile("openai", "FAKE_EXECUTOR_B");
+        f.profiles.put("planner-a", a); f.profiles.put("planner-c", c); f.profiles.put("a", b);
+        f.plannerId = "planner-a";
+        var first = f.plannerLookup(); f.queue.runAll(); assertSame(a, first.join());
+        f.plannerId = "planner-c";
+        var switched = f.plannerLookup(); f.queue.runAll(); assertSame(c, switched.join());
+        f.plannerId = null;
+        var inherited = f.plannerLookup(); f.queue.runAll(); assertSame(b, inherited.join());
+        assertEquals("a", f.bindings.get(A));
+        assertEquals(List.of("planner-a", "planner-c", "a"), f.profileIds);
+    }
+
+    @Test void plannerWorldChangeBeforeQueueOrDuringResolutionPublishesNoOldEndpoint() {
+        Fixture queued = new Fixture(); queued.plannerId = "planner";
+        var old = queued.plannerLookup(); queued.generation.incrementAndGet(); queued.queue.runAll();
+        assertNull(old.join()); assertEquals(0, queued.plannerReads); assertEquals(0, queued.bindingReads);
+        Fixture resolving = new Fixture(); resolving.plannerId = "planner";
+        var changed = resolving.plannerLookup(id -> {
+            if ("planner".equals(id)) resolving.generation.incrementAndGet();
+            return profile("deepseek", "FAKE_OLD_PLANNER");
+        });
+        resolving.queue.runAll();
+        assertNull(changed.join()); assertEquals(0, resolving.bindingReads);
+    }
+
     private static LlmEndpoint profile(String provider, String key) {
         return new LlmEndpoint(provider, "fixture-model", key, "https://fixture.invalid/v1", "fixture-proxy", "high");
     }
@@ -133,7 +210,21 @@ class CompanionEndpointTest {
         final List<UUID> bindingIds = new ArrayList<>();
         final List<String> profileIds = new ArrayList<>();
         boolean worldReady = true;
-        int bindingReads, resolverReads;
+        int bindingReads, resolverReads, plannerReads;
+        String plannerId;
+
+        CompletableFuture<LlmEndpoint> plannerLookup() {
+            return plannerLookup(id -> profiles.getOrDefault(id, EMPTY));
+        }
+
+        CompletableFuture<LlmEndpoint> plannerLookup(Function<String, LlmEndpoint> resolver) {
+            return NumenGateway.plannerEndpoint(A, queue,
+                    id -> { assertTrue(queue.client); return worldReady && known.contains(id); },
+                    () -> { assertTrue(queue.client); plannerReads++; return plannerId; },
+                    id -> { assertTrue(queue.client); bindingReads++; bindingIds.add(id); return bindings.get(id); },
+                    id -> { assertTrue(queue.client); resolverReads++; profileIds.add(id); return resolver.apply(id); },
+                    generation::get);
+        }
 
         CompletableFuture<LlmEndpoint> lookup(UUID companion) {
             return lookup(companion, id -> {

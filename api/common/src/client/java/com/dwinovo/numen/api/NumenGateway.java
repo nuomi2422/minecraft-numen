@@ -107,6 +107,29 @@ public final class NumenGateway {
                 id -> ProviderLibrary.instance().resolve(id), WorldContextStamp::epoch);
     }
 
+    /**
+     * Planner endpoint read port. The baseline preserves execution-only selection until the
+     * explicit planner choice is implemented and verified; it never creates another credential store.
+     */
+    public static java.util.concurrent.CompletableFuture<LlmEndpoint> plannerEndpoint(UUID companion) {
+        return plannerEndpoint(companion, DEFAULT_SCHEDULING, id -> {
+            Minecraft mc = Minecraft.getInstance();
+            NumenRoster roster = NumenRoster.instance();
+            return mc != null && mc.level != null && mc.getConnection() != null
+                    && roster.worldId() != null && roster.name(id) != null;
+        }, () -> null, id -> CompanionHome.binding(id).providerId(),
+                id -> ProviderLibrary.instance().resolve(id), WorldContextStamp::epoch);
+    }
+
+    /** Real planner resolver seam; test-first baseline intentionally still chooses execution. */
+    static java.util.concurrent.CompletableFuture<LlmEndpoint> plannerEndpoint(UUID companion,
+            EnqueueScheduling scheduling, java.util.function.Predicate<UUID> ready,
+            java.util.function.Supplier<String> plannerBinding,
+            java.util.function.Function<UUID, String> executionBinding,
+            java.util.function.Function<String, LlmEndpoint> resolve, java.util.function.LongSupplier generation) {
+        return companionEndpoint(companion, scheduling, ready, executionBinding, resolve, generation);
+    }
+
     /** Same resolver/queue path with only client stores and scheduling supplied for headless tests. */
     static java.util.concurrent.CompletableFuture<LlmEndpoint> companionEndpoint(UUID companion,
             EnqueueScheduling scheduling, java.util.function.Predicate<UUID> ready,
