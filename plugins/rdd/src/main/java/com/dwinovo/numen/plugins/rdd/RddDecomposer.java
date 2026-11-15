@@ -8,8 +8,8 @@ import com.dwinovo.numen.agent.llm.NumenLlmClient;
 import com.dwinovo.numen.agent.provider.AssistantTurn;
 import com.dwinovo.numen.agent.provider.IToolSpec;
 import com.dwinovo.numen.agent.provider.LlmToolCall;
-import com.dwinovo.numen.platform.Services;
-import com.dwinovo.numen.platform.services.INumenConfig;
+import com.dwinovo.numen.api.NumenGateway;
+import com.dwinovo.numen.api.WorldContextStamp;
 import com.dwinovo.numen.rdd.api.Goal;
 import com.dwinovo.numen.rdd.api.SubtaskSpec;
 import com.dwinovo.numen.rdd.api.NodeType;
@@ -38,7 +38,7 @@ import java.util.stream.Collectors;
  * 客户端侧的 LLM 目标分解器：把 {@code /goal} 的自然语言目标拆成多个带真实资产条件
  * （+可选身体指令）的 HARD_CODED 二级目标。
  *
- * <p>只在 GoalSinks sink（客户端主线程）调用；HTTP 在传输线程跑，结果经
+ * <p>宿主在线程内采集世界事实；仅端点解析与请求发送转到客户端，HTTP 在传输线程跑，结果经
  * {@code Minecraft.getInstance().execute} 弹回主线程。任何失败/无 key/坏 JSON
  * 都回落 {@link RddChainFactory#fromObjective} 占位链——目标绝不被吞。
  *
@@ -57,12 +57,12 @@ final class RddDecomposer {
      * 实测明显变快）；等 api jar 带上 effort-none 方言后这里自动升级成真正的 off，
      * 不需要再改这段代码。
      */
-    private static String plannerReasoningEffort() {
+    private static String plannerReasoningEffort(String provider) {
         String format = "";
         try {
             format = com.dwinovo.numen.agent.provider.ProviderRegistry
-                    .thinkingFormat(Services.CONFIG.getProvider());
-        } catch (Throwable ignored) {
+                    .thinkingFormat(provider);
+        } catch (RuntimeException ignored) {
             // 读不到站点方言就按 effort 族兜底
         }
         if (format == null || format.isBlank()
@@ -109,41 +109,81 @@ final class RddDecomposer {
 
     static void llmAsk(UUID companionId, String stage, String userContent, String system, IToolSpec tool,
                        Consumer<String> onArguments, Runnable onFail) {
-        // 现场事实进 prompt：让"重规划"能真正换方向，而不是拿同样的输入再写一遍。
-        userContent = situationBlock(companionId) + userContent;
-        INumenConfig cfg = Services.CONFIG;
-        if (cfg.getApiKey() == null || cfg.getApiKey().isBlank()) {
-            Minecraft.getInstance().execute(onFail);
-            return;
+        // Capture world facts on the caller's thread before waiting for the owner client.
+        String requestContent = situationBlock(companionId) + userContent;
+        withPlannerEndpoint(companionId, stage, ep -> {
+            RddPlugin.publishPlanningContext(companionId, stage, requestContent, system, tool);
+            return NumenLlmClient.forEndpoint(ep)
+                    .chatStreaming(List.of(new ConvoState.Msg.User(requestContent)), List.of(tool), system, null,
+                            new LlmObservation("supervisor", companionId.toString(), stage, RddMonitor::publish));
+        }, result -> {
+            AssistantTurn turn = result == null ? null : result.turn();
+            if (turn == null || !turn.hasToolCalls()) { onFail.run(); return; }
+            onArguments.accept(turn.toolCalls().get(0).arguments());
+        }, onFail);
+    }
+
+    private static <T> void withPlannerEndpoint(UUID companionId, String stage,
+            java.util.function.Function<LlmEndpoint, java.util.concurrent.CompletableFuture<T>> send,
+            Consumer<T> onResult, Runnable onFail) {
+        withPlannerEndpoint(companionId, stage, NumenGateway::companionEndpoint,
+                task -> Minecraft.getInstance().execute(task), WorldContextStamp::epoch,
+                (phase, estimate) -> {
+                    BudgetPolicy.Advice block = BudgetPolicy.checkBlock(phase, estimate);
+                    if (block == null) return true;
+                    notifyPlanningBlock(companionId, phase, block);
+                    return false;
+                }, send, onResult, onFail);
+    }
+
+    /** Both real sends use this seam; transport setup and caller callback failures stay distinct. */
+    static <T> void withPlannerEndpoint(UUID companionId, String stage,
+            java.util.function.Function<UUID, java.util.concurrent.CompletableFuture<LlmEndpoint>> lookup,
+            java.util.concurrent.Executor client, java.util.function.LongSupplier generation,
+            java.util.function.BiPredicate<String, Long> budget,
+            java.util.function.Function<LlmEndpoint, java.util.concurrent.CompletableFuture<T>> send,
+            Consumer<T> onResult, Runnable onFail) {
+        long originalGeneration = generation.getAsLong();
+        java.util.concurrent.CompletableFuture<LlmEndpoint> pending;
+        try { pending = lookup.apply(companionId); }
+        catch (RuntimeException unavailable) { pending = java.util.concurrent.CompletableFuture.failedFuture(unavailable); }
+        if (pending == null) pending = java.util.concurrent.CompletableFuture.completedFuture(null);
+        pending.whenComplete((selected, error) -> dispatchPlanner(client, () -> {
+            if (error != null || selected == null || !selected.hasApiKey()
+                    || generation.getAsLong() != originalGeneration) {
+                onFail.run();
+                return;
+            }
+            LlmEndpoint endpoint;
+            boolean allowed;
+            try {
+                endpoint = new LlmEndpoint(selected.provider(), selected.model(), selected.apiKey(),
+                        selected.baseUrl(), selected.proxy(), plannerReasoningEffort(selected.provider()));
+                allowed = budget.test(stage, 0L) && generation.getAsLong() == originalGeneration;
+            } catch (RuntimeException unavailable) {
+                onFail.run();
+                return;
+            }
+            if (!allowed) { onFail.run(); return; }
+            java.util.concurrent.CompletableFuture<T> response;
+            try { response = java.util.Objects.requireNonNull(send.apply(endpoint)); }
+            catch (RuntimeException failed) { onFail.run(); return; }
+            response.whenComplete((result, failed) -> dispatchPlanner(client, () -> {
+                if (failed != null) onFail.run();
+                else onResult.accept(result);
+            }, onFail));
+        }, onFail));
+    }
+
+    private static void dispatchPlanner(java.util.concurrent.Executor client, Runnable task, Runnable onFail) {
+        var started = new java.util.concurrent.atomic.AtomicBoolean();
+        try {
+            client.execute(() -> { started.set(true); task.run(); });
+        } catch (RuntimeException rejected) {
+            // An inline caller callback throwing is not a scheduling rejection; never fail it twice.
+            if (started.get()) throw rejected;
+            onFail.run();
         }
-        // 预算闸（E1 enforce）：planning 限额用尽 → 本次分解不发出，走 onFail
-        // （调用方据此回落占位链，绝不被吞）。shadow 模式恒为 null。
-        BudgetPolicy.Advice block = BudgetPolicy.checkBlock(stage, 0);
-        if (block != null) {
-            notifyPlanningBlock(companionId, stage, block);
-            Minecraft.getInstance().execute(onFail);
-            return;
-        }
-        LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
-                cfg.getBaseUrl(), cfg.getProxy(), plannerReasoningEffort());
-        RddPlugin.publishPlanningContext(companionId, stage, userContent, system, tool);
-        NumenLlmClient.forEndpoint(ep)
-                .chatStreaming(List.of(new ConvoState.Msg.User(userContent)),
-                        List.of(tool), system, null,
-                        new LlmObservation("supervisor", companionId.toString(), stage, RddMonitor::publish))
-                .whenComplete((result, error) -> Minecraft.getInstance().execute(() -> {
-                    if (error != null) {
-                        onFail.run();
-                        return;
-                    }
-                    AssistantTurn turn = result.turn();
-                    if (turn == null || !turn.hasToolCalls()) {
-                        onFail.run();
-                        return;
-                    }
-                    LlmToolCall call = turn.toolCalls().get(0);
-                    onArguments.accept(call.arguments());
-                }));
     }
 
     /**
@@ -191,7 +231,7 @@ final class RddDecomposer {
      * 这里按「<b>刚被预算拦过（15 秒内）</b>」决定要不要把原因写进目标正文，然后清掉 ——
      * 免得一次预算拦截的解释粘到十分钟后一个完全无关的失败上。
      */
-    private static Goal fallbackGoal(UUID companionId, String objective) {
+    static Goal fallbackGoal(UUID companionId, String objective) {
         if (companionId != null) {
             RecentBlock rb = RECENT_PLANNING_BLOCK.remove(companionId);
             if (rb != null && System.currentTimeMillis() - rb.atMs() <= 15_000L) {
@@ -255,102 +295,91 @@ final class RddDecomposer {
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 生存闸判定失败，按原流程分解: {}", ex.toString());
         }
-        INumenConfig cfg = Services.CONFIG;
-        if (cfg.getApiKey() == null || cfg.getApiKey().isBlank()) {
-            LOG.warn("[rdd] 未配置 LLM key，跳过分解，回落占位链");
-            Minecraft.getInstance().execute(() -> done.accept(fallbackGoal(companionId, objective)));
-            return;
-        }
-        // 预算闸（E1 enforce）：planning 限额用尽 → 不发出分解请求，直接回落占位链
-        // （目标绝不被吞；明确记事件与日志，不静默）。shadow 模式恒为 null。
-        BudgetPolicy.Advice block = BudgetPolicy.checkBlock("fallback", 0);
-        if (block != null) {
-            notifyPlanningBlock(companionId, "fallback", block);
-            LOG.warn("[rdd] planning 预算已用尽，跳过分解，回落占位链");
-            Minecraft.getInstance().execute(() -> done.accept(fallbackGoal(companionId, objective)));
-            return;
-        }
-        LlmEndpoint ep = new LlmEndpoint(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
-                cfg.getBaseUrl(), cfg.getProxy(), plannerReasoningEffort());
+        // 仍在原宿主线程采集事实；等待客户端端点时不重跑生存闸、资产或身体读取。
         // 经验知识贴进最终请求正文（无知识时与原来逐字相同）
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         var miningContext = RddMiningCapabilityCheck.capture(companionId);
         String userContent = fallbackRequestContent(companionId, objective, why, snapshot, RddPlanningKnowledge.HOST);
-        RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
-        NumenLlmClient.forEndpoint(ep)
-                .chatStreaming(List.of(new ConvoState.Msg.User(userContent)),
-                        List.of(DECOMPOSE_TOOL), SYSTEM_PROMPT, null,
-                        new LlmObservation("supervisor", companionId.toString(), "fallback", RddMonitor::publish))
-                .whenComplete((result, error) -> Minecraft.getInstance().execute(() -> {
-                    if (error != null) {
-                        LOG.warn("[rdd] 分解 LLM 调用失败，回落占位链: {}", error.toString());
-                        done.accept(fallbackGoal(companionId, objective));
-                        return;
-                    }
-                    AssistantTurn turn = result.turn();
-                    if (!turn.hasToolCalls()) {
-                        LOG.warn("[rdd] LLM 未调用分解工具，回落占位链");
-                        done.accept(fallbackGoal(companionId, objective));
-                        return;
-                    }
-                    LlmToolCall call = turn.toolCalls().get(0);
-                    // 守门：硬规则由代码执行，模型不听也要拦住（未要求的可选升级、已持有的资产）
-                    RddMiningCapabilityCheck.filter(miningContext, parse(call.arguments()), objective,
-                            snapshot.availableCounts(), guarded -> {
-                    RddPlanningKnowledge.publishPolicy(companionId, "fallback",
-                            RddPlanningPolicy.appliedRules(objective, "fallback"),
-                            guarded.dropped(), guarded.reused());
-                    List<SubtaskSpec> specs = guarded.allowed();
-                    if (specs.isEmpty()) {
-                        LOG.warn("[rdd] 分解结果不可用，回落占位链");
-                        done.accept(fallbackGoal(companionId, objective));
-                        return;
-                    }
-                    // 167 §19 第 4 条：输入里已经写明的「实测做不到」，不许再被排进计划。
-                    try {
-                        var facts = com.dwinovo.numen.rdd.policy.MeasuredFacts.extract(userContent);
-                        java.util.List<com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask> view2 =
-                                new java.util.ArrayList<>();
-                        for (SubtaskSpec spec : specs) {
-                            view2.add(new com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask(
-                                    spec.description(), spec.condition()));
+        Runnable onFail = () -> done.accept(fallbackGoal(companionId, objective));
+        withPlannerEndpoint(companionId, "fallback", ep -> {
+            RddPlugin.publishPlanningContext(companionId, "fallback", userContent, SYSTEM_PROMPT, DECOMPOSE_TOOL);
+            return NumenLlmClient.forEndpoint(ep)
+                    .chatStreaming(List.of(new ConvoState.Msg.User(userContent)),
+                            List.of(DECOMPOSE_TOOL), SYSTEM_PROMPT, null,
+                            new LlmObservation("supervisor", companionId.toString(), "fallback", RddMonitor::publish));
+        }, result -> {
+            if (result == null) {
+                LOG.warn("[rdd] 分解 LLM 调用失败，回落占位链");
+                onFail.run();
+                return;
+            }
+            AssistantTurn turn = result.turn();
+            if (turn == null || !turn.hasToolCalls()) {
+                LOG.warn("[rdd] LLM 未调用分解工具，回落占位链");
+                done.accept(fallbackGoal(companionId, objective));
+                return;
+            }
+            LlmToolCall call = turn.toolCalls().get(0);
+            // 守门：硬规则由代码执行，模型不听也要拦住（未要求的可选升级、已持有的资产）
+            RddMiningCapabilityCheck.filter(miningContext, parse(call.arguments()), objective,
+                    snapshot.availableCounts(), guarded -> {
+                        RddPlanningKnowledge.publishPolicy(companionId, "fallback",
+                                RddPlanningPolicy.appliedRules(objective, "fallback"),
+                                guarded.dropped(), guarded.reused());
+                        List<SubtaskSpec> specs = guarded.allowed();
+                        if (specs.isEmpty()) {
+                            LOG.warn("[rdd] 分解结果不可用，回落占位链");
+                            done.accept(fallbackGoal(companionId, objective));
+                            return;
                         }
-                        var violations = com.dwinovo.numen.rdd.policy.MeasuredFacts.violations(facts, view2);
-                        if (!violations.isEmpty()) {
-                            RddMonitor.publish("plan_violates_measured_fact", java.util.Map.of(
-                                    "companionId", companionId.toString(),
-                                    "violations", String.join(" | ", violations),
-                                    "note", "输入里已写明做不到，计划却又排了同样的步骤（167 §19）"));
+                        // 167 §19 第 4 条：输入里已经写明的「实测做不到」，不许再被排进计划。
+                        try {
+                            var facts = com.dwinovo.numen.rdd.policy.MeasuredFacts.extract(userContent);
+                            java.util.List<com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask> view2 =
+                                    new java.util.ArrayList<>();
+                            for (SubtaskSpec spec : specs) {
+                                view2.add(new com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask(
+                                        spec.description(), spec.condition()));
+                            }
+                            var violations = com.dwinovo.numen.rdd.policy.MeasuredFacts.violations(facts, view2);
+                            if (!violations.isEmpty()) {
+                                RddMonitor.publish("plan_violates_measured_fact", java.util.Map.of(
+                                        "companionId", companionId.toString(),
+                                        "violations", String.join(" | ", violations),
+                                        "note", "输入里已写明做不到，计划却又排了同样的步骤（167 §19）"));
+                            }
+                        } catch (RuntimeException ignored) {
+                            // 检查失败不影响分解
                         }
-                    } catch (RuntimeException ignored) {
-                        // 检查失败不影响分解
-                    }
-                    // 167 §17：计划自洽检查——只发事件、不拦、不改判据。
-                    try {
-                        java.util.List<com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask> view = new java.util.ArrayList<>();
-                        for (SubtaskSpec spec : specs) {
-                            view.add(new com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask(
-                                    spec.description(), spec.condition()));
+                        // 167 §17：计划自洽检查——只发事件、不拦、不改判据。
+                        try {
+                            java.util.List<com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask> view = new java.util.ArrayList<>();
+                            for (SubtaskSpec spec : specs) {
+                                view.add(new com.dwinovo.numen.rdd.policy.PlanConsistency.Subtask(
+                                        spec.description(), spec.condition()));
+                            }
+                            var warnings = com.dwinovo.numen.rdd.policy.PlanConsistency.check(objective, view);
+                            if (!warnings.isEmpty()) {
+                                RddMonitor.publish("plan_inconsistent", java.util.Map.of(
+                                        "companionId", companionId.toString(),
+                                        "objective", objective.length() > 120 ? objective.substring(0, 120) : objective,
+                                        "warnings", String.join(" | ", warnings),
+                                        "note", "正文写的数量大于子任务要求：照它执行会「造一半就算完成」（167 §17）"));
+                            }
+                        } catch (RuntimeException ignored) {
+                            // 检查失败不影响分解
                         }
-                        var warnings = com.dwinovo.numen.rdd.policy.PlanConsistency.check(objective, view);
-                        if (!warnings.isEmpty()) {
-                            RddMonitor.publish("plan_inconsistent", java.util.Map.of(
-                                    "companionId", companionId.toString(),
-                                    "objective", objective.length() > 120 ? objective.substring(0, 120) : objective,
-                                    "warnings", String.join(" | ", warnings),
-                                    "note", "正文写的数量大于子任务要求：照它执行会「造一半就算完成」（167 §17）"));
+                        Goal goal;
+                        try {
+                            goal = RddChainFactory.fromSpec(companionId, objective, specs);
+                        } catch (RuntimeException ex) {
+                            LOG.warn("[rdd] 分解规格非法，回落占位链");
+                            onFail.run();
+                            return;
                         }
-                    } catch (RuntimeException ignored) {
-                        // 检查失败不影响分解
-                    }
-                    try {
-                        done.accept(RddChainFactory.fromSpec(companionId, objective, specs));
-                    } catch (RuntimeException ex) {
-                        LOG.warn("[rdd] 分解规格非法，回落占位链: {}", ex.toString());
-                        done.accept(fallbackGoal(companionId, objective));
-                    }
+                        done.accept(goal); // Caller errors are not an LLM failure and must not trigger done twice.
                     });
-                }));
+        }, onFail);
     }
 
     /** Actual single-pass final content; no host reads, so failed Stage-A handoff is directly testable. */

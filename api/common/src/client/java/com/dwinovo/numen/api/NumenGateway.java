@@ -1,5 +1,9 @@
 package com.dwinovo.numen.api;
 
+import com.dwinovo.numen.agent.llm.LlmEndpoint;
+import com.dwinovo.numen.agent.llm.ProviderLibrary;
+import com.dwinovo.numen.client.agent.CompanionHome;
+import com.dwinovo.numen.client.agent.NumenRoster;
 import com.dwinovo.numen.client.agent.AgentLoopRegistry;
 import com.dwinovo.numen.client.agent.EntityAgentLoop;
 import com.dwinovo.numen.client.command.ChatCommands;
@@ -85,6 +89,54 @@ public final class NumenGateway {
      */
     /** R-08: production scheduling seam; tests pass their own instance explicitly (no mutable global hook). */
     private static final EnqueueScheduling DEFAULT_SCHEDULING = new MinecraftEnqueueScheduling();
+
+    /**
+     * Read this companion's selected endpoint on the owner client, without creating a loop or home.
+     * Unknown world/roster, missing binding or a world change while queued yields null; lookup/scheduling
+     * errors complete exceptionally. Deleted/keyless entries stay unusable, never global credentials.
+     * This is a configuration snapshot, not a connectivity check. It contains a secret: never log it
+     * (including endpoint.toString()). Callers may copy it to apply request-local planner effort only.
+     */
+    public static java.util.concurrent.CompletableFuture<LlmEndpoint> companionEndpoint(UUID companion) {
+        return companionEndpoint(companion, DEFAULT_SCHEDULING, id -> {
+            Minecraft mc = Minecraft.getInstance();
+            NumenRoster roster = NumenRoster.instance();
+            return mc != null && mc.level != null && mc.getConnection() != null
+                    && roster.worldId() != null && roster.name(id) != null;
+        }, id -> CompanionHome.binding(id).providerId(),
+                id -> ProviderLibrary.instance().resolve(id), WorldContextStamp::epoch);
+    }
+
+    /** Same resolver/queue path with only client stores and scheduling supplied for headless tests. */
+    static java.util.concurrent.CompletableFuture<LlmEndpoint> companionEndpoint(UUID companion,
+            EnqueueScheduling scheduling, java.util.function.Predicate<UUID> ready,
+            java.util.function.Function<UUID, String> binding,
+            java.util.function.Function<String, LlmEndpoint> resolve, java.util.function.LongSupplier generation) {
+        var result = new java.util.concurrent.CompletableFuture<LlmEndpoint>();
+        if (companion == null) { result.complete(null); return result; }
+        try {
+            long originalGeneration = generation.getAsLong();
+            Runnable lookup = () -> {
+                try {
+                    if (generation.getAsLong() != originalGeneration || !ready.test(companion)) {
+                        result.complete(null);
+                        return;
+                    }
+                    String selected = binding.apply(companion);
+                    LlmEndpoint endpoint = selected == null || selected.isBlank() ? null : resolve.apply(selected);
+                    result.complete(generation.getAsLong() == originalGeneration && ready.test(companion)
+                            ? endpoint : null);
+                } catch (RuntimeException failed) {
+                    result.completeExceptionally(failed);
+                }
+            };
+            if (scheduling.onClientThread()) lookup.run();
+            else scheduling.executeOnClient(lookup);
+        } catch (RuntimeException failed) {
+            result.completeExceptionally(failed);
+        }
+        return result;
+    }
 
     /** 事务内身份上下文：只在同一同步调用栈里有效（finally 恢复），不用来跨异步回传。 */
     private static final ThreadLocal<WorldContextStamp.Token> CURRENT_IDENTITY = new ThreadLocal<>();

@@ -296,9 +296,43 @@ class RddDecomposerParseTest {
         RddDecomposer.withPlannerEndpoint(f.a, "stage_b",
                 id -> java.util.concurrent.CompletableFuture.completedFuture(endpoint("openai", "FAKE_PROFILE_A")),
                 f.client::add, f.generation::get, (stage, estimate) -> true,
-                ep -> { throw new IllegalStateException("fixture transport setup"); }, () -> f.failures++);
+                ep -> { throw new IllegalStateException("fixture transport setup"); }, ignored -> {}, () -> f.failures++);
         f.runClient();
         assertEquals(2, f.failures);
+    }
+
+    @Test void clientSchedulingRejectionFailsExactlyOnceBeforeOrAfterTransport() {
+        for (int rejectAt : List.of(1, 2)) {
+            var schedules = new java.util.concurrent.atomic.AtomicInteger();
+            var sends = new java.util.concurrent.atomic.AtomicInteger();
+            var failures = new java.util.concurrent.atomic.AtomicInteger();
+            RddDecomposer.withPlannerEndpoint(java.util.UUID.randomUUID(), "fallback",
+                    id -> java.util.concurrent.CompletableFuture.completedFuture(endpoint("openai", "FAKE_PROFILE_A")),
+                    task -> { if (schedules.incrementAndGet() == rejectAt) throw new IllegalStateException("fixture queue"); task.run(); },
+                    () -> 7L, (stage, estimate) -> true,
+                    selected -> { sends.incrementAndGet(); return java.util.concurrent.CompletableFuture.completedFuture("{}"); },
+                    ignored -> fail("rejected callback must not run"), failures::incrementAndGet);
+            assertEquals(1, failures.get());
+            assertEquals(rejectAt - 1, sends.get());
+        }
+    }
+
+    @Test void throwingCallerCallbacksAreNeverReclassifiedOrInvokedTwice() {
+        var results = new java.util.concurrent.atomic.AtomicInteger();
+        var failures = new java.util.concurrent.atomic.AtomicInteger();
+        RddDecomposer.withPlannerEndpoint(java.util.UUID.randomUUID(), "stage_a",
+                id -> java.util.concurrent.CompletableFuture.completedFuture(endpoint("openai", "FAKE_PROFILE_A")),
+                Runnable::run, () -> 7L, (stage, estimate) -> true,
+                selected -> java.util.concurrent.CompletableFuture.completedFuture("{}"),
+                ignored -> { results.incrementAndGet(); throw new IllegalStateException("fixture caller result"); },
+                failures::incrementAndGet);
+        assertEquals(1, results.get()); assertEquals(0, failures.get());
+        RddDecomposer.withPlannerEndpoint(java.util.UUID.randomUUID(), "stage_b",
+                id -> java.util.concurrent.CompletableFuture.completedFuture(null),
+                Runnable::run, () -> 7L, (stage, estimate) -> true,
+                selected -> { throw new AssertionError("missing endpoint cannot send"); }, ignored -> {},
+                () -> { failures.incrementAndGet(); throw new IllegalStateException("fixture caller failure"); });
+        assertEquals(1, failures.get());
     }
 
     private static com.dwinovo.numen.agent.llm.LlmEndpoint endpoint(String provider, String key) {
@@ -323,7 +357,8 @@ class RddDecomposerParseTest {
             RddDecomposer.withPlannerEndpoint(id, stage,
                     requested -> { lookedUp.add(requested); return lookup.apply(requested); }, client::add,
                     generation::get, (phase, estimate) -> { budgetChecks.add(phase + ":" + estimate); return allowed; },
-                    sent::add, onFail);
+                    selected -> { sent.add(selected); return java.util.concurrent.CompletableFuture.completedFuture("{}"); },
+                    ignored -> {}, onFail);
         }
         void runClient() { while (!client.isEmpty()) client.removeFirst().run(); }
     }
