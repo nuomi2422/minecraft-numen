@@ -1,0 +1,408 @@
+{
+  "status": "OFFLINE SOURCE-ONLY CANDIDATE; not runtime/UI/legal validated",
+  "base_commit": "4d9907d931e90c2be319d0ecc86e4edc7d14cd84",
+  "generator": "tools/generate_preview_neutral_ui.py",
+  "generator_command": "python tools/generate_preview_neutral_ui.py",
+  "check_command": "python tools/generate_preview_neutral_ui.py --check",
+  "tested_environment": {
+    "python": "3.12.14",
+    "Pillow": "12.3.0"
+  },
+  "origin": "All 23 outputs independently drawn from new simple geometry on blank RGBA canvases. No upstream pixels decoded, copied, traced, or imitated; only baseline IHDR dimensions and file hashes read. No upstream names, logos, skins, or art drawn. Pure-white utility independently regenerated for tinting.",
+  "rights": "Generated outputs for this project. User ownership is not waived or reassigned; no CC0 or other new license selected. Existing source and upstream asset licenses remain unchanged. No written authorization from upstream or blanket legal approval claimed. This provenance is not distribution clearance.",
+  "scope": "Only 23 listed release PNGs, two displayName fields, this generator and provenance. Resource names/IDs stay for compatibility; no logic, dependencies, authors, version, license or Gradle properties changed. No Java/Gradle/build/deploy/game/config actions.",
+  "verification": "All 23 size/RGBA/hash/alpha checks passed; six unchanged mcmeta contracts checked before drawing. Panel uses stretch; nine-slice frame decoration stays within fixed borders. Runtime packing, in-game readability and legal release review remain unvalidated.",
+  "outputs": [
+    {
+      "path": "core/common/src/main/resources/numen.png",
+      "width": 512,
+      "height": 512,
+      "mode": "RGBA",
+      "alpha": "opaque",
+      "alpha_extrema": [
+        255,
+        255
+      ],
+      "bytes": 2058,
+      "baseline_sha256": "25844195303d73e53c639bba917f0e358362c5afe24a4217ff351538982b73f8",
+      "sha256": "071ff8447956027558403f8af8b97ef0750e828b4aec70377b97be178dd0a9cb"
+    },
+    {
+      "path": "api/common/src/main/resources/numen_api.png",
+      "width": 512,
+      "height": 512,
+      "mode": "RGBA",
+      "alpha": "opaque",
+      "alpha_extrema": [
+        255,
+        255
+      ],
+      "bytes": 2028,
+      "baseline_sha256": "25844195303d73e53c639bba917f0e358362c5afe24a4217ff351538982b73f8",
+      "sha256": "2203548661d4b4e2aea0c21ba62f9a76da8f34a0ed4af5c40fe34ded0a186e2c"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/white.png",
+      "width": 4,
+      "height": 4,
+      "mode": "RGBA",
+      "alpha": "opaque",
+      "alpha_extrema": [
+        255,
+        255
+      ],
+      "bytes": 164,
+      "baseline_sha256": "508e92238640e05034d4f6ac7d906a3288e82dbe047b7e8f55ff4d993a7523ef",
+      "sha256": "214be16c7e2f47e9fa0d5c2d953972b0c8f96e3f02585a5de6e9e120e7aaa93c"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/card.png",
+      "width": 172,
+      "height": 40,
+      "mode": "RGBA",
+      "alpha": "opaque",
+      "alpha_extrema": [
+        255,
+        255
+      ],
+      "bytes": 298,
+      "baseline_sha256": "441f1da0be67f28b3dcd6d30e602a4601fad38de6f1659a1679a32f9f38d3cf4",
+      "sha256": "bcbcc28ac69100a5620a34eea16f13e3551d591ac784b707f483279c9c739cba"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/panel.png",
+      "width": 380,
+      "height": 232,
+      "mode": "RGBA",
+      "alpha": "opaque",
+      "alpha_extrema": [
+        255,
+        255
+      ],
+      "bytes": 858,
+      "baseline_sha256": "87b29c07ec70040f94999e242634bc70a197f316876859263b5d808230c4ccd5",
+      "sha256": "fd05833c2062b5a73f7ec69deedd6fdc7a7ab0f774e9e16b5356532e6a3c94e1"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/chevron_down.png",
+      "width": 11,
+      "height": 6,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 191,
+      "baseline_sha256": "ad1ff16fec966027919bdbcb04a72c8cf82673ec57db70fd61a7b2e6ed848b3b",
+      "sha256": "73ab5dfbf1a5cb7f5baadd9a6d984a25fc19a91a131c838214ce34b96d5f5a97"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/chevron_up.png",
+      "width": 11,
+      "height": 6,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 194,
+      "baseline_sha256": "a78bf0cbe657a1b681b2f91caa1f1d394a2b238f67413e6d7e1454d96bfac6f9",
+      "sha256": "c1176e33bffad687591c67b43f9c7b1b64df2945aef6b7921af4b60ff035e728"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/scroll_thumb.png",
+      "width": 4,
+      "height": 10,
+      "mode": "RGBA",
+      "alpha": "opaque",
+      "alpha_extrema": [
+        255,
+        255
+      ],
+      "bytes": 182,
+      "baseline_sha256": "1290656f6a546597b21996210a4f0b421f36de3981aaf26afc967b848542ed04",
+      "sha256": "7ecbc8b81dc5e64da8fe32037e91abc05ac9b2f8b1ff74f6b8dca45251628710"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/scroll_track.png",
+      "width": 4,
+      "height": 8,
+      "mode": "RGBA",
+      "alpha": "opaque",
+      "alpha_extrema": [
+        255,
+        255
+      ],
+      "bytes": 180,
+      "baseline_sha256": "d04d83022f549454019e59147882670ae1d6a533d79eb7093ea447bb30a7a681",
+      "sha256": "1167604baded13fe5d24d73bd0762147da7e8ced620c315c4e02a2f18641120b"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/eye.png",
+      "width": 16,
+      "height": 16,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 224,
+      "baseline_sha256": "53ea27d8b1274e134fe748cfb547e952e7b38363e46b28361d867117b19e6b26",
+      "sha256": "236f526ff5e300dd6d90ffcbf9fb00debb00a8dd47ebaa3a498146500c78f6d9"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/eye_off.png",
+      "width": 16,
+      "height": 16,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 306,
+      "baseline_sha256": "2b6e133d6a63c453fff37b6ca822a5bb2c70a79cf5f798b81e9228abba075d61",
+      "sha256": "e7b907d44a4d0912579c08d548704a789dfce1243a4a8370d6bca9876c402826"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/slot.png",
+      "width": 16,
+      "height": 16,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 213,
+      "baseline_sha256": "9fe53df05e6dd17765fec628ed35c6d6c967f3ef4fa956da452d9ab9e671146c",
+      "sha256": "0ea25bd8772af89e57bc59514a5b704b7995419d1bcae3f74a5a47c0761fa6dd"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/slot_alt.png",
+      "width": 16,
+      "height": 16,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 213,
+      "baseline_sha256": "69377d327c4e51ad42fe332045c31afa18236da4842da443aaa0d07eca979861",
+      "sha256": "74503238982ee637a023f60c9cb4ea980168a9527870a5fd13fabecc1927c3b8"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/food_empty.png",
+      "width": 9,
+      "height": 9,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 206,
+      "baseline_sha256": "eb8d517fd19f30141ec3e28925ff8961546e4aff09517f56ab55db180580de63",
+      "sha256": "ae05cade8fe8f81ff4e088dccbc51ada93c318c2da8796af2b474f28afc869e2"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/food_full.png",
+      "width": 9,
+      "height": 9,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 206,
+      "baseline_sha256": "3bc414b9205749536cee5c28d61477940653145477a2a74cbd9573185c0b90ba",
+      "sha256": "284db40be072ae17a30866439c85b5d1396bde10cb989518c46b5dbdf07f68fd"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/food_half.png",
+      "width": 9,
+      "height": 9,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 206,
+      "baseline_sha256": "12b11237302a54da9c5be219ffd957b5eec0a744b721af7dbe1e0e23c6dda4c2",
+      "sha256": "a4f20a7ac1dbe0bae510c3c37a08bcb6d2867e534d946c878cce19f2f1d58fb8"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/heart_empty.png",
+      "width": 9,
+      "height": 9,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 209,
+      "baseline_sha256": "f2902a6e712d1d1472b7f66ada0d1bf2e71ce5fb1fde028b2c10972bd6af123e",
+      "sha256": "db01c537a8e7c2d949d27b0c1da88653da4f23edf39fb50c77294d176ade89c8"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/heart_full.png",
+      "width": 9,
+      "height": 9,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 209,
+      "baseline_sha256": "1559612145300642463f0f8eb782c0bb11424e35ed2cd8ed1fcf2fcb7a6c65dd",
+      "sha256": "fd795b18561f2666b161c5c6cf4414f3bc9dab0d40a9a01a86d501d52471fcf4"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/heart_half.png",
+      "width": 9,
+      "height": 9,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 218,
+      "baseline_sha256": "719c34959771c02ca41ac3e4bd5fbaa10ac926172d9142c0661e50a62479c9e2",
+      "sha256": "1012ecdd6d15b60e0c43481e203fc2cbb8aa1c4b42adde32bceb2fafc716d8e5"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/icon_compact.png",
+      "width": 11,
+      "height": 11,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 220,
+      "baseline_sha256": "28b8e28b441402ad3d76bf71bf9f2b306fc49424e73c75647c66014a9f8f8da4",
+      "sha256": "89660b05f5c82ff449e79495dd75b96dc2251910523ced5d16f63575e8b07c99"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/icon_mic.png",
+      "width": 11,
+      "height": 11,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 204,
+      "baseline_sha256": "463abe857470a391e7cf0f38d1daa9994b3a880485e2101b0d0ed89a16e108a0",
+      "sha256": "6eeae5df5a93e576683b3f87da9bcfa10d42964cf6364dbe11685639cfee415d"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/icon_send.png",
+      "width": 11,
+      "height": 11,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 202,
+      "baseline_sha256": "fa00d19ab5f3d29b375f22aeffcce40c7e2257da2a7f783a805afb75c68b30c4",
+      "sha256": "58faa6794d27965d1a174464a2643d3548adb750c7299d269c3bd2c324e70011"
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/icon_stop.png",
+      "width": 11,
+      "height": 11,
+      "mode": "RGBA",
+      "alpha": "transparent glyph/frame",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 196,
+      "baseline_sha256": "cc98c5de6efce1ffb0720f3621299d5ac3e6fb7ae88f3ea294e546432e19fda2",
+      "sha256": "fddc3eea77f59faaf099931085bea0263e1bf17ce9528ea9e92baf883df229ef"
+    }
+  ],
+  "unchanged_metadata": [
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/card.png.mcmeta",
+      "sha256": "2509c2ec54538b365de26a898692446683009ffda11a569ab5e0aecb6d99747d",
+      "scaling": {
+        "type": "nine_slice",
+        "width": 172,
+        "height": 40,
+        "border": {
+          "left": 2,
+          "top": 15,
+          "right": 2,
+          "bottom": 2
+        }
+      }
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/panel.png.mcmeta",
+      "sha256": "15638f800417c154271a07ac84de7d228bfdc177a81502faf4d2b0a8be8875a5",
+      "scaling": {
+        "type": "stretch"
+      }
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/scroll_thumb.png.mcmeta",
+      "sha256": "5ffd2e6fd08d91c1f10ed5f1506ff27a61344ec63697ee931ee5a7c3b7e79f9b",
+      "scaling": {
+        "type": "nine_slice",
+        "width": 4,
+        "height": 10,
+        "border": {
+          "left": 1,
+          "top": 2,
+          "right": 1,
+          "bottom": 2
+        }
+      }
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/scroll_track.png.mcmeta",
+      "sha256": "e390deb87b61f782718cfaf366d3a808b9d263053d96771241ed1c218718e31d",
+      "scaling": {
+        "type": "nine_slice",
+        "width": 4,
+        "height": 8,
+        "border": 1
+      }
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/slot.png.mcmeta",
+      "sha256": "d60a1132e7eda93c4b14698e917b310cc9a6e74c07d4831bef86d23b17e4e303",
+      "scaling": {
+        "type": "nine_slice",
+        "width": 16,
+        "height": 16,
+        "border": 2
+      }
+    },
+    {
+      "path": "api/common/src/main/resources/assets/numen_api/textures/gui/sprites/slot_alt.png.mcmeta",
+      "sha256": "d60a1132e7eda93c4b14698e917b310cc9a6e74c07d4831bef86d23b17e4e303",
+      "scaling": {
+        "type": "nine_slice",
+        "width": 16,
+        "height": 16,
+        "border": 2
+      }
+    }
+  ]
+}
