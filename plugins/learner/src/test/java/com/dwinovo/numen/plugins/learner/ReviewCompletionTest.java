@@ -9,7 +9,6 @@ import org.junit.jupiter.api.AfterEach;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import java.lang.reflect.Field;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -339,100 +338,85 @@ class ReviewCompletionTest {
                 () -> assertEquals(0, reloaded.size()));
     }
 
-    /** 2026-11-15: late-callback seam with real MemoQueue and real LearnerPlugin terminal state. */
-    @Test void discardLateSkipsAbortedStaleAndKeepsCurrentThroughRealQueueAndTerminal(@TempDir Path dir) throws Exception {
-        Field cfg = LearnerPlugin.class.getDeclaredField("configDir");
-        cfg.setAccessible(true);
-        Object oldCfg = cfg.get(null);
-        cfg.set(null, dir);
-        try {
-            Memo memo = ordinary("late-callback");
+    /** Late-callback tests use the existing journal fixture: no live state or un-restored globals. */
+    @Test void abortedStaleCallbackKeepsInterruptedTerminalAndOneRestore(@TempDir Path dir) throws Exception {
+        try (var f = new LearnerMonitorJournalTest.Fixture(dir)) {
             MemoQueue queue = new MemoQueue(dir.resolve("late.json"));
-            assertTrue(queue.append(memo));
+            assertTrue(queue.append(ordinary("late-callback")));
             List<Memo> batch = queue.drain(1);
-
-            String aborted = "rev-late-aborted";
-            LearnerPlugin.beginReview(aborted, A, "RUNNING", 1);
-            AtomicInteger abortedRestores = new AtomicInteger();
-            AtomicInteger abortedPublishes = new AtomicInteger();
-            LearnerPlugin.registerInflight(aborted, () -> {
-                abortedRestores.incrementAndGet();
-                queue.restore(batch);
-            });
+            String id = "rev-late-aborted";
+            LearnerPlugin.beginReview(id, f.companion, "RUNNING", 1);
+            AtomicInteger restores = new AtomicInteger(), publishes = new AtomicInteger();
+            LearnerPlugin.registerInflight(id, () -> { restores.incrementAndGet(); queue.restore(batch); });
             assertEquals(1, LearnerPlugin.abortInFlight());
-            assertEquals("INTERRUPTED", LearnerPlugin.review(aborted).state());
-            assertTrue(ReviewCompletion.discardLate(LearnerPlugin.wasAborted(aborted), false, () -> {
-                abortedRestores.incrementAndGet();
-                LearnerPlugin.finishReview(aborted, "STALE_WORLD", 0);
-                abortedPublishes.incrementAndGet();
-            }), "aborted+stale must be discarded");
-            assertEquals(1, abortedRestores.get(), "abort restored once; late branch must not restore again");
-            assertEquals(1, queue.size(), "queue keeps the one restored memo");
-            assertEquals(0, abortedPublishes.get(), "aborted late branch must not publish");
-            assertEquals("INTERRUPTED", LearnerPlugin.review(aborted).state(), "terminal must not be overwritten");
-
-            String stale = "rev-late-stale";
-            LearnerPlugin.beginReview(stale, A, "RUNNING", 1);
-            AtomicInteger staleRestores = new AtomicInteger();
-            AtomicInteger stalePublishes = new AtomicInteger();
-            assertTrue(ReviewCompletion.discardLate(false, false, () -> {
-                staleRestores.incrementAndGet();
+            assertEquals("INTERRUPTED", LearnerPlugin.review(id).state());
+            assertTrue(ReviewCompletion.discardLate(LearnerPlugin.wasAborted(id), false, () -> {
+                restores.incrementAndGet();
                 queue.restore(batch);
-                LearnerPlugin.finishReview(stale, "STALE_WORLD", 0);
-                stalePublishes.incrementAndGet();
+                LearnerPlugin.finishReview(id, "STALE_WORLD", 0);
+                publishes.incrementAndGet();
             }));
-            assertEquals(1, staleRestores.get(), "true stale restores exactly once");
-            assertEquals("STALE_WORLD", LearnerPlugin.review(stale).state());
-            assertEquals(1, stalePublishes.get());
-            assertEquals(1, queue.size(), "restore deduplicates the same durable memo");
-            LearnerPlugin.completeInflight(stale);
-
-            String current = "rev-late-current";
-            LearnerPlugin.beginReview(current, A, "RUNNING", 1);
-            AtomicInteger currentRuns = new AtomicInteger();
-            assertFalse(ReviewCompletion.discardLate(false, true, currentRuns::incrementAndGet));
-            assertEquals(0, currentRuns.get(), "same server must proceed to completeOnServer, not discard");
-            assertEquals("RUNNING", LearnerPlugin.review(current).state());
-            LearnerPlugin.completeInflight(current);
-            LearnerPlugin.finishReview(current, "DONE", 0);
-        } finally {
-            cfg.set(null, oldCfg);
+            assertAll(() -> assertEquals(1, restores.get(), "shutdown already restored exactly once"),
+                    () -> assertEquals(0, publishes.get(), "no stale publication after abort"),
+                    () -> assertEquals("INTERRUPTED", LearnerPlugin.review(id).state()),
+                    () -> assertEquals(batch, new MemoQueue(queue.file()).all()));
         }
     }
 
-    /** 2026-11-15: restore-failure abort stays dangling; a late stale callback must not overwrite it. */
-    @Test void abortRestoreFailureKeepsDanglingAndLateStaleMustNotOverwrite(@TempDir Path dir) throws Exception {
-        Field cfg = LearnerPlugin.class.getDeclaredField("configDir");
-        cfg.setAccessible(true);
-        Object oldCfg = cfg.get(null);
-        cfg.set(null, dir);
-        try {
-            String id = "rev-late-abort-failed";
-            Memo memo = ordinary("late-abort-failed");
-            MemoQueue queue = new MemoQueue(dir.resolve("late-abort-failed.json"));
-            assertTrue(queue.append(memo));
+    @Test void unabortedStaleCallbackStillRestoresAndFinishesOnce(@TempDir Path dir) throws Exception {
+        try (var f = new LearnerMonitorJournalTest.Fixture(dir)) {
+            MemoQueue queue = new MemoQueue(dir.resolve("stale.json"));
+            assertTrue(queue.append(ordinary("genuine-stale")));
             List<Memo> batch = queue.drain(1);
-            LearnerPlugin.beginReview(id, A, "RUNNING", 1);
+            String id = "rev-late-stale";
+            LearnerPlugin.beginReview(id, f.companion, "RUNNING", 1);
+            AtomicInteger restores = new AtomicInteger(), publishes = new AtomicInteger();
+            assertTrue(ReviewCompletion.discardLate(false, false, () -> {
+                restores.incrementAndGet();
+                queue.restore(batch);
+                LearnerPlugin.finishReview(id, "STALE_WORLD", 0);
+                publishes.incrementAndGet();
+            }));
+            assertAll(() -> assertEquals(1, restores.get()), () -> assertEquals(1, publishes.get()),
+                    () -> assertEquals("STALE_WORLD", LearnerPlugin.review(id).state()),
+                    () -> assertEquals(batch, new MemoQueue(queue.file()).all()));
+        }
+    }
+
+    @Test void currentUnabortedCallbackContinuesWithoutStaleSideEffects() {
+        AtomicInteger staleCalls = new AtomicInteger();
+        assertFalse(ReviewCompletion.discardLate(false, true, staleCalls::incrementAndGet));
+        assertEquals(0, staleCalls.get());
+    }
+
+    @Test void abortedCurrentCallbackDoesNotEnqueueMoreServerWork() {
+        AtomicInteger staleCalls = new AtomicInteger();
+        assertTrue(ReviewCompletion.discardLate(true, true, staleCalls::incrementAndGet));
+        assertEquals(0, staleCalls.get());
+    }
+
+    @Test void failedAbortRestoreKeepsDurableBatchAndDanglingTerminal(@TempDir Path dir) throws Exception {
+        try (var f = new LearnerMonitorJournalTest.Fixture(dir)) {
+            String id = "rev-late-abort-failed";
+            MemoQueue queue = new MemoQueue(dir.resolve("failed-abort.json"));
+            assertTrue(queue.append(ordinary("late-abort-failed")));
+            List<Memo> batch = queue.drain(1);
+            LearnerPlugin.beginReview(id, f.companion, "RUNNING", 1);
             assertTrue(ReviewBatchStore.save(dir, id, batch));
-            LearnerPlugin.registerInflight(id, () -> { throw new RuntimeException("restore failed"); });
-            LearnerPlugin.abortInFlight();
+            LearnerPlugin.registerInflight(id, () -> { throw new IllegalStateException("fixture restore failed"); });
+            assertEquals(1, LearnerPlugin.abortInFlight());
             assertTrue(LearnerPlugin.wasAborted(id));
-            assertEquals("RUNNING", LearnerPlugin.review(id).state(), "failed restore must stay dangling, not terminal");
-            assertTrue(Files.exists(ReviewBatchStore.file(dir, id)), "durable batch stays for retry");
-            assertTrue(Files.exists(dir.resolve(LearnerPlugin.REVIEW_SENTINEL)), "sentinel stays for retry");
-            AtomicInteger staleRestores = new AtomicInteger();
+            assertEquals("RUNNING", LearnerPlugin.review(id).state());
+            AtomicInteger staleCalls = new AtomicInteger();
             assertTrue(ReviewCompletion.discardLate(LearnerPlugin.wasAborted(id), false, () -> {
-                staleRestores.incrementAndGet();
+                staleCalls.incrementAndGet();
                 queue.restore(batch);
                 LearnerPlugin.finishReview(id, "STALE_WORLD", 0);
             }));
-            assertEquals(0, staleRestores.get(), "aborted dangling review must not run the stale side effects");
-            assertEquals("RUNNING", LearnerPlugin.review(id).state(), "late stale must not overwrite dangling abort");
-            assertTrue(Files.exists(ReviewBatchStore.file(dir, id)), "durable batch must not be deleted");
-            assertTrue(Files.exists(dir.resolve(LearnerPlugin.REVIEW_SENTINEL)), "sentinel must not be deleted");
-            assertEquals(1, queue.size(), "no second restore side effect");
-        } finally {
-            cfg.set(null, oldCfg);
+            assertAll(() -> assertEquals(0, staleCalls.get()),
+                    () -> assertEquals("RUNNING", LearnerPlugin.review(id).state()),
+                    () -> assertEquals(batch, ReviewBatchStore.load(dir, id)),
+                    () -> assertTrue(Files.exists(dir.resolve(LearnerPlugin.REVIEW_SENTINEL))));
         }
     }
 
