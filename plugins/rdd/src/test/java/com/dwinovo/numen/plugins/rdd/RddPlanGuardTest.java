@@ -4,6 +4,7 @@ import com.dwinovo.numen.rdd.api.NodeType;
 import com.dwinovo.numen.rdd.api.PrimarySpec;
 import com.dwinovo.numen.rdd.api.RecurrenceSpec;
 import com.dwinovo.numen.rdd.api.SubtaskSpec;
+import com.dwinovo.numen.rdd.api.SubtaskStatus;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -11,6 +12,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -602,6 +604,45 @@ class RddPlanGuardTest {
         assertEquals(1, daily.size());
         assertEquals(NodeType.DAILY, daily.getFirst().nodeType(), "a quota must not erase explicit recurring care");
         assertEquals(RecurrenceSpec.daily(true), daily.getFirst().recurrence());
+    }
+
+    @Test void boundedVillageBreadQuotaWithMatureWheatSourceMustStayMainAndBlockItsTail() {
+        String description = "补给到村级交易所需的量：把村里干草块/农田收获物拆合成面包，手上+基地箱里的面包凑到 9 个（3 只村民各 3 个用于促繁殖）。上一轮 4 个面包已吃/已计，不再纠缠旧计数；这里用「当前持有的面包」口径，缺 8 个，靠村内干草块与收成熟小麦补，不够时到村内其他房屋箱子找面包/小麦。不要在野外另开食物工程。";
+        var food = parsePreparationStep(description, Map.of("group", "food", "minimum", 9));
+        var tail = parsePreparationStep("补足火把供地表照明", Map.of("asset_key", "minecraft:torch", "minimum", 8));
+        assertEquals(NodeType.MAIN, food.nodeType(), "the actual parser receives an explicit MAIN node");
+        var guarded = RddPlanGuard.filterSubtasks(List.of(food, tail), "村级交易所", Map.of());
+        assertEquals(2, guarded.allowed().size(), guarded.dropped().toString());
+        var chain = installPreparationPlan(guarded.allowed());
+        var installed = chain.currentPrimary().subtasks();
+        org.junit.jupiter.api.Assertions.assertAll(
+                () -> assertTrue(guarded.dropped().isEmpty(), guarded.dropped().toString()),
+                () -> assertTrue(guarded.reused().isEmpty(), "this counterexample does not pretend the food quota is already held"),
+                () -> assertEquals(List.of(food, tail), guarded.allowed(), "a finite bread quota must retain its original description, condition and MAIN type"),
+                () -> assertEquals(NodeType.MAIN, guarded.allowed().getFirst().nodeType(), "harvesting is only one source for this bounded supply step"),
+                () -> assertNull(guarded.allowed().getFirst().recurrence(), "do not invent recurring work from a mature-wheat source"),
+                () -> assertEquals(description, chain.currentSubtask().description(), "the legal tail must wait for the original bread step"),
+                () -> assertEquals(food.condition(), installed.getFirst().condition(), "preserve group-food minimum9 without rewriting the predicate"),
+                () -> assertEquals(NodeType.MAIN, installed.getFirst().nodeType()),
+                () -> assertEquals(SubtaskStatus.RUNNING, chain.subtaskStatuses().get(installed.getFirst().id()), "bread preparation must not become DAILY/SKIPPED"),
+                () -> assertEquals(SubtaskStatus.PENDING, chain.subtaskStatuses().get(installed.get(1).id()), "do not start the tail before the food gate"),
+                () -> assertTrue(chain.satisfiedStages().isEmpty(), "installing a quota is not satisfying it"));
+    }
+
+    @Test void boundedVillageBreadQuotaDoesNotOverrideExplicitDailyOrRepeatedMaintenance() {
+        for (String description : List.of(
+                "补给到村级交易所需的量：把面包凑到 9 个，每日收成熟小麦后补种。",
+                "补给到村级交易所需的量：把面包凑到 9 个，反复收成熟小麦后补种。")) {
+            var food = parsePreparationStep(description, Map.of("group", "food", "minimum", 9));
+            var guarded = RddPlanGuard.filterSubtasks(List.of(food), "维护农田", Map.of());
+            assertTrue(guarded.dropped().isEmpty(), guarded.dropped().toString());
+            assertEquals(1, guarded.allowed().size(), description);
+            var daily = guarded.allowed().getFirst();
+            assertEquals(NodeType.DAILY, daily.nodeType(), "a finite quota must not erase explicit recurring care: " + description);
+            assertEquals(RecurrenceSpec.daily(true), daily.recurrence(), description);
+            assertEquals(description, daily.description());
+            assertEquals(food.condition(), daily.condition());
+        }
     }
 
     private static SubtaskSpec parsePreparationStep(String description, Map<String, Object> condition) {
