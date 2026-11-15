@@ -35,7 +35,8 @@ class DeathPreparationFlowTest {
             return preparation == PreparationState.UNKNOWN ? null : preparation == PreparationState.READY;
         }
     }
-    private static TaskChain chain() {
+    private static TaskChain chain() { return chain(true); }
+    private static TaskChain chain(boolean startTrade) {
         TaskChain chain = new TaskChain(new Goal("g", "finish", List.of(
                 new PrimaryGoal("gear", "equipment", List.of(Subtask.hardCoded("wear", "wear chest", CHEST))),
                 new PrimaryGoal("trade", "trade", List.of(
@@ -44,7 +45,7 @@ class DeathPreparationFlowTest {
         chain.startCurrent();
         chain.applyHardCodedResult("wear", true);
         chain.settlePrimaryByFact("gear", "current equipment verified", true);
-        chain.startCurrent();
+        if (startTrade) chain.startCurrent();
         return chain;
     }
     private static MainlineResumeToken token(TaskChain chain) {
@@ -187,6 +188,106 @@ class DeathPreparationFlowTest {
         engine.tick(C,p,token(c),false); assertFalse(engine.isActive(C));
         assertTrue(DeathPreparation.settle(c,String.valueOf(events.get(1).get("prepareResume")),true,"ready"));
         assertFalse(c.isPaused("iron")); assertEquals("iron",c.currentSubtask().id());
+    }
+    /** Real finish ordering, with only the MC host boundary replaced by synchronous callbacks.
+     * SIDE_TASK is a context projection, not a TaskChain state. PENDING is reached by the
+     * original prior-primary settlement; no invented state or reflection is used here.
+     */
+    private static final class TerminalHost {
+        final TaskChain chain;
+        final Port port = new Port();
+        final SideTaskEngine engine;
+        final List<String> order = new ArrayList<>();
+        final List<RuntimeException> settlementErrors = new ArrayList<>();
+        Map<String, Object> terminal;
+        Boolean resumed;
+        int oldGoalNudges;
+        TerminalHost(TaskChain chain) {
+            this.chain = chain;
+            engine = new SideTaskEngine((event, data) -> {
+                if (event.equals("side_task_completed") || event.equals("side_task_skipped")) {
+                    order.add("terminal");
+                    terminal = data;
+                    assertFalse(engineActive(), "finish removes the side before synchronous settlement");
+                    try {
+                        DeathPreparation.settle(chain, String.valueOf(data.get("prepareResume")),
+                                "true".equals(data.get("prepareVerified")), "terminal preparation evidence");
+                    } catch (RuntimeException ex) {
+                        // Match the existing RddPlugin/SideTaskHost catch boundary, not an ideal host.
+                        settlementErrors.add(ex);
+                    }
+                } else if (event.equals("side_task_resumed_mainline")) {
+                    order.add("resume-event");
+                    resumed = Boolean.TRUE.equals(data.get("mainlineResumed"));
+                    if (resumed) oldGoalNudges++;
+                }
+            }, captured -> {
+                order.add("validator");
+                // SideTaskHost.validateMainline: recovery pause + identity, no state normalization.
+                String id = chain.currentSubtask().id();
+                String reason = chain.pauseReason(id);
+                if (chain.isPaused(id) && reason != null && reason.startsWith("recovery_not_verified:")) return null;
+                return captured.matches(chain.chainInstanceId(), chain.goal().id(),
+                        chain.currentPrimary().id(), id, chain.planRevision()) ? captured : null;
+            });
+            var type = new DeathRecoverySideTaskType();
+            engine.registerType(type);
+            assertTrue(engine.startNow(type, C, port, token(chain), Map.of("death_seq", "47")));
+            assertTrue(DeathPreparation.attach(engine, C, chain, Map.of(), Map.of()));
+            assertTrue(DeathPreparation.choose(engine, C, DeathRecoveryDecision.PREPARE_AND_REPLAN));
+        }
+        boolean engineActive() { return engine.isActive(C); }
+        void finish(boolean verified) {
+            if (verified) port.preparation = SideTaskWorldPort.PreparationState.READY;
+            else port.now += DeathRecoverySideTaskType.DEADLINE_TICKS + 1;
+            engine.tick(C, port, token(chain), false);
+            assertFalse(engine.isActive(C));
+            assertNotNull(terminal, "registered real type must enter real engine finish");
+            assertEquals(List.of("terminal", "validator", "resume-event"), order);
+        }
+    }
+    @Test void pendingPrimaryUnverifiedRealFinishPausesBeforeResumeAndCannotNudgeOldGoal() {
+        var chain = chain(false);
+        assertEquals(PrimaryGoalStatus.PENDING, chain.primaryStatus());
+        var plan = chain.currentPrimary().subtasks(); var history = chain.satisfiedStages();
+        String identity = chain.chainInstanceId(); long revision = chain.planRevision();
+        var host = new TerminalHost(chain);
+        host.finish(false);
+        assertAll(
+                () -> assertTrue(host.settlementErrors.isEmpty(), "unverified settlement must not throw primary not active"),
+                () -> assertTrue(chain.isPaused("iron"), "PENDING old step must be paused before finish can release it"),
+                () -> assertEquals(Boolean.FALSE, host.resumed, "swallowed settlement failure must not license resume"),
+                () -> assertEquals(0, host.oldGoalNudges));
+        assertEquals(identity, chain.chainInstanceId()); assertEquals(revision, chain.planRevision());
+        assertEquals(plan, chain.currentPrimary().subtasks()); assertEquals(history, chain.satisfiedStages());
+        assertEquals("iron", chain.currentSubtask().id());
+    }
+    @Test void activeUnverifiedRealFinishPausesAndDuplicateSettlementDoesNotMoveHistory() {
+        var chain = chain(); var host = new TerminalHost(chain);
+        host.finish(false);
+        assertTrue(host.settlementErrors.isEmpty()); assertTrue(chain.isPaused("iron"));
+        assertEquals(Boolean.FALSE, host.resumed); assertEquals(0, host.oldGoalNudges);
+        String paused = chain.toJson();
+        assertTrue(DeathPreparation.settle(chain, String.valueOf(host.terminal.get("prepareResume")), false, "duplicate"));
+        assertEquals(paused, chain.toJson());
+    }
+    @Test void verifiedRealFinishPreservesOriginalContinuationForPendingAndActive() {
+        for (boolean active : List.of(false, true)) {
+            var chain = chain(active); var host = new TerminalHost(chain); String original = chain.toJson();
+            host.finish(true);
+            assertTrue(host.settlementErrors.isEmpty()); assertEquals(Boolean.TRUE, host.resumed);
+            assertEquals(original, chain.toJson(), "verified side completion must not rewrite original continuation");
+        }
+    }
+    @Test void terminalSettlementWrongChainAndOutdatedRevisionDoNotMutateOriginal() {
+        var chain = chain(); var host = new TerminalHost(chain); host.finish(false);
+        String payload = String.valueOf(host.terminal.get("prepareResume"));
+        var other = chain(); String otherBefore = other.toJson();
+        assertFalse(DeathPreparation.settle(other, payload, false, "other chain"));
+        assertEquals(otherBefore, other.toJson());
+        chain.nextPlanRevision(); String changed = chain.toJson();
+        assertFalse(DeathPreparation.settle(chain, payload, true, "outdated callback"));
+        assertEquals(changed, chain.toJson());
     }
     @Test void materialsAndUnreachedFutureLoadoutDoNotBecomeDeathEquipmentObligations() {
         var c = new TaskChain(new Goal("g", "gear words alone", List.of(
