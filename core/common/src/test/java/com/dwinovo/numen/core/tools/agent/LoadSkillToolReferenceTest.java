@@ -1,10 +1,17 @@
 package com.dwinovo.numen.core.tools.agent;
 
+import com.dwinovo.numen.agent.llm.ConvoLog;
+import com.dwinovo.numen.agent.llm.ConvoState;
+import com.dwinovo.numen.agent.provider.AssistantTurn;
+import com.dwinovo.numen.agent.provider.DeepSeekProvider;
+import com.dwinovo.numen.agent.provider.LlmToolCall;
 import com.dwinovo.numen.agent.skill.SkillRegistry;
 import com.dwinovo.numen.agent.tool.ToolAnchor;
 import com.dwinovo.numen.agent.tool.ToolCall;
 import com.dwinovo.numen.api.LearnedSkillBodyResolver;
 import com.dwinovo.numen.core.tools.AgentOps;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -12,6 +19,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -155,5 +163,81 @@ class LoadSkillToolReferenceTest {
         String component = invoke("{\"ref\":\"" + REF + "\"}", () -> COMPANION);
         assertEquals("expanded food body", JsonParser.parseString(component).getAsJsonObject().get("body").getAsString());
         assertEquals(1, calls.get());
+    }
+
+    @Test
+    void successfulReadSurvivesConversationLogAndNextDeepSeekMessages() {
+        String original = "  Observe edible stock.\r\n只用现有材料; quote: \"bread\"; path: C:\\food\\stock\t\n\n";
+        reader((companion, ref, view) -> new LearnedSkillBodyResolver.Resolution(ref, original, ""));
+
+        for (var message : invokeToNextToolMessages()) {
+            var response = JsonParser.parseString(message.get("content").getAsString()).getAsJsonObject();
+            assertTrue(response.get("success").getAsBoolean());
+            assertEquals(REF, response.get("ref").getAsString());
+            assertEquals(original, response.get("body").getAsString());
+        }
+    }
+
+    @Test
+    void refusedReadSurvivesConversationLogAndNextDeepSeekMessagesWithoutBody() {
+        reader((companion, ref, view) -> LearnedSkillBodyResolver.Resolution.refused(ref, "not-retrievable"));
+
+        for (var message : invokeToNextToolMessages()) {
+            String content = message.get("content").getAsString();
+            var response = JsonParser.parseString(content).getAsJsonObject();
+            assertFalse(response.get("success").getAsBoolean());
+            assertTrue(content.contains("not-retrievable"), content);
+            assertFalse(response.has("body"), content);
+        }
+    }
+
+    /** Offline pure seams only: actual tool completion, original log restore, then provider serialization. */
+    private List<JsonObject> invokeToNextToolMessages() {
+        String callId = "explicit-food-read";
+        String args = "{\"ref\":\"" + REF + "\"}";
+        var log = ConvoLog.atFile(dir.resolve("conversation.jsonl"));
+        var convo = new ConvoState(log::append);
+        convo.addUser("Read the exact learned component.");
+        convo.addAssistant(new AssistantTurn("", List.of(new LlmToolCall(callId, tool.name(), args)), null));
+        var reply = new AtomicReference<String>();
+        tool.invoke(new ToolCall(callId, tool.name(), args, () -> COMPANION, result -> {
+            reply.set(result);
+            convo.addToolResult(callId, result);
+        }));
+        assertNotNull(reply.get(), "the actual tool must settle into the conversation");
+
+        var restored = new ConvoState();
+        restored.preload(log.loadForRestore(ConvoLog.DEFAULT_LOAD_LIMIT).history());
+        assertEquals(convo.snapshot(), restored.snapshot(), "original log restore must preserve the conversation");
+
+        var provider = new DeepSeekProvider();
+        var toolMessages = new ArrayList<JsonObject>();
+        for (var snapshot : List.of(convo.snapshot(), restored.snapshot())) {
+            assertEquals(3, snapshot.size(), "one user, one assistant call, one actual tool result");
+            var user = assertInstanceOf(ConvoState.Msg.User.class, snapshot.get(0));
+            var assistant = assertInstanceOf(ConvoState.Msg.Assistant.class, snapshot.get(1));
+            var result = assertInstanceOf(ConvoState.Msg.Tool.class, snapshot.get(2));
+            assertEquals(callId, result.toolCallId());
+            assertEquals(reply.get(), result.content(), "completion JSON must remain verbatim");
+            var request = provider.buildRequestBody("offline-model", null, List.of(
+                    provider.buildUserMessage(user.content()),
+                    provider.assistantToRequestMessage(assistant.turn()),
+                    provider.buildToolResultMessage(result.toolCallId(), result.content())), new JsonArray());
+            var messages = JsonParser.parseString(request.toString()).getAsJsonObject().getAsJsonArray("messages");
+            assertEquals(3, messages.size());
+            assertEquals("user", messages.get(0).getAsJsonObject().get("role").getAsString());
+            var assistantMessage = messages.get(1).getAsJsonObject();
+            assertEquals("assistant", assistantMessage.get("role").getAsString());
+            var call = assistantMessage.getAsJsonArray("tool_calls").get(0).getAsJsonObject();
+            assertEquals(callId, call.get("id").getAsString());
+            assertEquals(tool.name(), call.getAsJsonObject("function").get("name").getAsString());
+            assertEquals(args, call.getAsJsonObject("function").get("arguments").getAsString());
+            var message = messages.get(2).getAsJsonObject();
+            assertEquals("tool", message.get("role").getAsString());
+            assertEquals(callId, message.get("tool_call_id").getAsString());
+            assertEquals(reply.get(), message.get("content").getAsString());
+            toolMessages.add(message);
+        }
+        return toolMessages;
     }
 }
