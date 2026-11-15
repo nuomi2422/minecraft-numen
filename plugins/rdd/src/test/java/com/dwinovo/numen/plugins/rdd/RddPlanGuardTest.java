@@ -645,6 +645,32 @@ class RddPlanGuardTest {
         }
     }
 
+    @Test void boundedWheatQuotaForBreedingAlsoRetainsItsOriginalMainPredicate() {
+        var quota = parsePreparationStep("补给到羊圈繁殖所需的量：把小麦凑到 18 个。靠现有农田收成熟小麦补齐，不另开农田。",
+                Map.of("asset_key", "minecraft:wheat", "minimum", 18));
+        var guarded = RddPlanGuard.filterSubtasks(List.of(quota), "繁殖准备", Map.of());
+        assertTrue(guarded.dropped().isEmpty(), guarded.dropped().toString());
+        assertEquals(List.of(quota), guarded.allowed(), "finite supply classification must not depend on bread or a particular quantity");
+        assertEquals(NodeType.MAIN, guarded.allowed().getFirst().nodeType());
+        assertNull(guarded.allowed().getFirst().recurrence());
+    }
+
+    @Test void supplyPurposeWithoutAnExplicitQuotaOrWithEverydayCareStillBecomesDaily() {
+        for (String description : List.of(
+                "补给到羊圈繁殖所需的量：把小麦凑到够用。收成熟小麦后补种。",
+                "补给到羊圈繁殖所需的量：把小麦凑到 18 个，每天收成熟小麦后补种。")) {
+            var step = parsePreparationStep(description, Map.of("asset_key", "minecraft:wheat", "minimum", 18));
+            var guarded = RddPlanGuard.filterSubtasks(List.of(step), "维护农田", Map.of());
+            assertTrue(guarded.dropped().isEmpty(), guarded.dropped().toString());
+            assertEquals(1, guarded.allowed().size(), description);
+            var daily = guarded.allowed().getFirst();
+            assertEquals(NodeType.DAILY, daily.nodeType(), "supply purpose alone must not bypass recurring harvest classification: " + description);
+            assertEquals(RecurrenceSpec.daily(true), daily.recurrence(), description);
+            assertEquals(description, daily.description());
+            assertEquals(step.condition(), daily.condition());
+        }
+    }
+
     private static SubtaskSpec parsePreparationStep(String description, Map<String, Object> condition) {
         String json = new com.google.gson.Gson().toJson(Map.of("subtasks", List.of(Map.of(
                 "description", description, "condition", condition, "node_type", "MAIN"))));
