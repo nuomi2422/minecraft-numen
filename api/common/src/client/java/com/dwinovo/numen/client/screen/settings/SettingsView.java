@@ -93,6 +93,7 @@ public final class SettingsView {
 
     // ---- 模型配置表单:NumenUI ProfileFormPanel(检测/思考/强度/toast/分类报错) ----
     private ProfileFormPanel providerForm;
+    private Dropdown plannerChoice;
     private ProfileFormPanel.Draft providerDraft = new ProfileFormPanel.Draft();
 
     private ProfileFormPanel providerForm() {
@@ -434,7 +435,8 @@ public final class SettingsView {
             }
             case PROVIDER -> {
                 // 列表面板始终在场(表单模态时作背景);删除确认是面板自己的浮层。
-                profileList().build(secX(), secY0() - 2, secW(), secBottom() - secY0() + 2,
+                buildPlannerChoice();
+                profileList().build(secX(), secY0() + 22, secW(), secBottom() - secY0() - 22,
                         left(), top(), panelW(), panelH());
                 if (addingProvider) buildProviderFormNew();
             }
@@ -470,6 +472,35 @@ public final class SettingsView {
     /** 本节的纵向锚点(相对 secY0):build 与 render 共读一份,按钮和标签才不会跑偏。 */
 
     // ---- Provider section: the library of named LLM provider configs companions select from ----
+
+    /** One optional planner selector over the same profile library; never changes execution binding. */
+    private void buildPlannerChoice() {
+        var lib = com.dwinovo.numen.agent.llm.ProviderLibrary.instance();
+        var items = new ArrayList<Dropdown.Item>();
+        items.add(new Dropdown.Item("", "规划模型：跟随当前执行同伴"));
+        for (var entry : lib.list()) {
+            items.add(new Dropdown.Item(entry.id(), "规划模型：" + entry.name()));
+        }
+        String selected = lib.plannerEntryId();
+        if (selected != null && lib.get(selected) == null) {
+            items.add(new Dropdown.Item(selected, "规划模型：配置已失效（不会借用执行配置）"));
+        }
+        plannerChoice = new Dropdown(items, selected == null ? "" : selected);
+        plannerChoice.setBounds(secX(), secY0() - 2, secW(), 18);
+        plannerChoice.setDropBottom(secBottom());
+    }
+
+    private boolean clickPlannerChoice(double mouseX, double mouseY) {
+        if (plannerChoice == null) return false;
+        String before = plannerChoice.selectedId();
+        if (!plannerChoice.mouseClicked(mouseX, mouseY)) return false;
+        if (!java.util.Objects.equals(before, plannerChoice.selectedId())) {
+            com.dwinovo.numen.agent.llm.ProviderLibrary.instance()
+                    .setPlannerEntryId(plannerChoice.selectedId());
+            host.rebuild();
+        }
+        return true;
+    }
 
     /** 表单卡里的 NumenUI 表单(检测/思考/强度/toast 齐备);卡壳照旧 formModal。 */
     private void buildProviderFormNew() {
@@ -1026,6 +1057,7 @@ public final class SettingsView {
         }
         profileList().render(surface, HostThemeColors.current(),
                 mouseX, mouseY, net.minecraft.Util.getMillis());
+        if (plannerChoice != null) plannerChoice.render(g, font(), mouseX, mouseY);
     }
 
     private void beginEditProvider(com.dwinovo.numen.agent.llm.ProviderLibrary.Entry e) {
@@ -1148,12 +1180,16 @@ public final class SettingsView {
                 && providerForm().mouseClicked(mouseX, mouseY, 0)) {
             return true;
         }
+        if (section == Section.PROVIDER && !addingProvider && plannerChoice != null
+                && plannerChoice.isOpen() && clickPlannerChoice(mouseX, mouseY)) return true;
         // NumenUI 列表面板:删除确认卡开着时面板吃掉一切(模态);
         // 平时接行/图标/开关/新建,没命中就放行给子导航。
         if (section == Section.PROVIDER && !addingProvider
                 && profileList().mouseClicked(mouseX, mouseY, 0)) {
             return true;
         }
+        if (section == Section.PROVIDER && !addingProvider
+                && clickPlannerChoice(mouseX, mouseY)) return true;
         if (section == Section.VOICE && !addingVoice
                 && voiceListPanel().mouseClicked(mouseX, mouseY, 0)) {
             return true;
@@ -1248,6 +1284,8 @@ public final class SettingsView {
     /** Wheel pass 1 (before the rail/chat checks, mirroring the old order): open dropdown
      *  lists first, then the voice form's own scroll. */
     public boolean mouseScrolledEarly(double mx, double my, double sy) {
+        if (section == Section.PROVIDER && !addingProvider && plannerChoice != null
+                && plannerChoice.mouseScrolled(mx, my, sy)) return true;
         if (section == Section.PROVIDER && addingProvider
                 && providerForm().mouseScrolled(mx, my, sy)) {
             return true;

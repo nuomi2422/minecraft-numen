@@ -57,6 +57,32 @@ public final class ProviderLibrary extends JsonLibrary<ProviderLibrary.Entry> {
     }
 
     private static ProviderLibrary instance;
+    private static final String LEGACY_PLANNER_ID = "legacy-global-planner";
+    private String plannerEntryId;
+    private boolean plannerChoicePresent;
+
+    /** Null explicitly inherits execution; a deleted non-null id stays selected and fails honestly. */
+    public String plannerEntryId() { return plannerEntryId; }
+
+    public void setPlannerEntryId(String id) {
+        plannerEntryId = id == null || id.isBlank() ? null : id;
+        plannerChoicePresent = true;
+        save();
+    }
+
+    /** Import old explicit API values once into this same library, without touching execution bindings.
+     * Default provider/model alone are not evidence of an old independent configuration.
+     */
+    void importLegacyPlanner(String provider, String model, String key, String baseUrl,
+                             String proxy, String effort) {
+        if (plannerChoicePresent || (!nb(key) && !nb(baseUrl))) return;
+        // Never overwrite a pre-existing entry (including a damaged or user-edited legacy entry).
+        entries.putIfAbsent(LEGACY_PLANNER_ID, new Entry(LEGACY_PLANNER_ID,
+                "旧全局规划配置（兼容导入）", provider, model, key, baseUrl, effort, proxy, 0, 0));
+        plannerEntryId = LEGACY_PLANNER_ID;
+        plannerChoicePresent = true;
+        save();
+    }
 
     private ProviderLibrary(java.nio.file.Path file) {
         super(file);
@@ -66,6 +92,11 @@ public final class ProviderLibrary extends JsonLibrary<ProviderLibrary.Entry> {
         if (instance == null) {
             instance = new ProviderLibrary(configDir().resolve("providers.json"));
             instance.load();
+            if (!instance.plannerChoicePresent) {
+                var cfg = Services.CONFIG;
+                instance.importLegacyPlanner(cfg.getProvider(), cfg.getModel(), cfg.getApiKey(),
+                        cfg.getBaseUrl(), cfg.getProxy(), cfg.getReasoningEffort());
+            }
         }
         return instance;
     }
@@ -155,9 +186,36 @@ public final class ProviderLibrary extends JsonLibrary<ProviderLibrary.Entry> {
 
     @Override
     protected void readExtra(JsonObject root) {
+        plannerChoicePresent = root.has("planner_provider");
+        if (!plannerChoicePresent || root.get("planner_provider").isJsonNull()) {
+            plannerEntryId = null;
+        } else if (root.get("planner_provider").isJsonPrimitive()
+                && root.getAsJsonPrimitive("planner_provider").isString()
+                && !root.get("planner_provider").getAsString().isBlank()) {
+            plannerEntryId = root.get("planner_provider").getAsString();
+        } else {
+            plannerEntryId = "invalid-planner-configuration"; // retain other entries; do not inherit
+        }
     }
 
     @Override
     protected void writeExtra(JsonObject root) {
+        if (plannerChoicePresent) {
+            root.add("planner_provider", plannerEntryId == null ? com.google.gson.JsonNull.INSTANCE
+                    : new com.google.gson.JsonPrimitive(plannerEntryId));
+        }
+    }
+
+    @Override
+    protected void resetExtra() {
+        plannerEntryId = null;
+        plannerChoicePresent = false;
+    }
+
+    @Override
+    protected void resetOnCorrupt() {
+        // Damaged explicit config is NOT permission to borrow the executor or old globals.
+        plannerEntryId = "invalid-planner-configuration";
+        plannerChoicePresent = true;
     }
 }

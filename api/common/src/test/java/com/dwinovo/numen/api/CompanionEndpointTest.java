@@ -120,7 +120,7 @@ class CompanionEndpointTest {
         assertEquals(1, f.bindingReads);
     }
 
-    // Real planner port baseline: independent-choice assertions expose execution-only selection.
+    // Same real planner port as RDD; an explicit choice must never borrow execution credentials.
     @Test void independentPlannerWinsWithoutReadingOrRebindingExecution() {
         Fixture f = new Fixture(); f.plannerId = "planner";
         var planner = profile("deepseek", "FAKE_PLANNER_A");
@@ -195,6 +195,68 @@ class CompanionEndpointTest {
         });
         resolving.queue.runAll();
         assertNull(changed.join()); assertEquals(0, resolving.bindingReads);
+    }
+
+    @Test void plannerReferenceRoundTripsAndDeletedSelectionNeverTurnsIntoInheritance(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var file = dir.resolve("providers.json");
+        var lib = profileLibrary(file);
+        var entry = lib.create("planner A", "deepseek", "fixture-model", "FAKE_ONLY", "https://fixture.invalid/v1", "high", "", 0);
+        lib.setPlannerEntryId(entry.id());
+        lib.remove(entry.id());
+        var loaded = profileLibrary(file); loadLibrary(loaded);
+        assertEquals(entry.id(), loaded.plannerEntryId(), "deleted explicit reference must not inherit");
+        assertNull(loaded.get(entry.id()));
+        loaded.setPlannerEntryId(null);
+        var inherited = profileLibrary(file); loadLibrary(inherited);
+        assertNull(inherited.plannerEntryId());
+        importLegacy(inherited, "FAKE_LEGACY", "https://old.invalid/v1");
+        assertNull(inherited.plannerEntryId(), "explicit inheritance must survive old global settings");
+        assertTrue(inherited.list().isEmpty());
+    }
+
+    @Test void legacyExplicitApiImportsOnceWithVisibleSourceButDefaultModelDoesNot(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var lib = profileLibrary(dir.resolve("providers.json"));
+        importLegacy(lib, "", "");
+        assertNull(lib.plannerEntryId()); assertTrue(lib.list().isEmpty());
+        importLegacy(lib, "", "https://legacy.invalid/v1");
+        assertEquals("legacy-global-planner", lib.plannerEntryId());
+        var original = lib.get(lib.plannerEntryId());
+        assertEquals("旧全局规划配置（兼容导入）", original.name());
+        assertEquals("", original.apiKey(), "incomplete legacy selection must stay independently incomplete");
+        importLegacy(lib, "FAKE_LATER", "https://changed.invalid/v1");
+        assertSame(original, lib.get(lib.plannerEntryId()));
+        assertEquals(1, lib.list().size());
+    }
+
+    @Test void corruptPlannerReferenceCannotSilentlyInheritOrImportGlobals(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var file = dir.resolve("providers.json");
+        java.nio.file.Files.writeString(file, "{\"entries\":[],\"planner_provider\":123}");
+        var lib = profileLibrary(file); loadLibrary(lib);
+        assertEquals("invalid-planner-configuration", lib.plannerEntryId());
+        importLegacy(lib, "FAKE_LEGACY", "https://old.invalid/v1");
+        assertEquals("invalid-planner-configuration", lib.plannerEntryId());
+        assertTrue(lib.list().isEmpty());
+    }
+
+    private static com.dwinovo.numen.agent.llm.ProviderLibrary profileLibrary(java.nio.file.Path path) throws Exception {
+        var constructor = com.dwinovo.numen.agent.llm.ProviderLibrary.class.getDeclaredConstructor(java.nio.file.Path.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(path);
+    }
+
+    private static void loadLibrary(com.dwinovo.numen.agent.llm.ProviderLibrary lib) throws Exception {
+        var load = com.dwinovo.numen.client.data.JsonLibrary.class.getDeclaredMethod("load");
+        load.setAccessible(true); load.invoke(lib);
+    }
+
+    private static void importLegacy(com.dwinovo.numen.agent.llm.ProviderLibrary lib, String key, String url) throws Exception {
+        var method = com.dwinovo.numen.agent.llm.ProviderLibrary.class.getDeclaredMethod("importLegacyPlanner",
+                String.class, String.class, String.class, String.class, String.class, String.class);
+        method.setAccessible(true);
+        method.invoke(lib, "openai", "gpt-5-2-mini", key, url, "", "auto");
     }
 
     private static LlmEndpoint profile(String provider, String key) {
