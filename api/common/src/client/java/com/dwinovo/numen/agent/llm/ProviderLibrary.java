@@ -187,7 +187,10 @@ public final class ProviderLibrary extends JsonLibrary<ProviderLibrary.Entry> {
     @Override
     protected void readExtra(JsonObject root) {
         plannerChoicePresent = root.has("planner_provider");
-        if (!plannerChoicePresent || root.get("planner_provider").isJsonNull()) {
+        if (!plannerChoicePresent || root.get("planner_provider").isJsonNull()
+                || (root.get("planner_provider").isJsonPrimitive()
+                && root.getAsJsonPrimitive("planner_provider").isString()
+                && root.get("planner_provider").getAsString().isEmpty())) {
             plannerEntryId = null;
         } else if (root.get("planner_provider").isJsonPrimitive()
                 && root.getAsJsonPrimitive("planner_provider").isString()
@@ -201,8 +204,8 @@ public final class ProviderLibrary extends JsonLibrary<ProviderLibrary.Entry> {
     @Override
     protected void writeExtra(JsonObject root) {
         if (plannerChoicePresent) {
-            root.add("planner_provider", plannerEntryId == null ? com.google.gson.JsonNull.INSTANCE
-                    : new com.google.gson.JsonPrimitive(plannerEntryId));
+            // Gson omits JsonNull by default; an empty string preserves explicit inheritance.
+            root.addProperty("planner_provider", plannerEntryId == null ? "" : plannerEntryId);
         }
     }
 
