@@ -17,6 +17,8 @@
 
 </div>
 
+> **本工作树说明（2026-11-15）**：这是基于上游 [Dwinovo/Numen](https://github.com/Dwinovo/minecraft-numen) 的 RDD 开发分支，包含上游代码、本仓修改与扩展插件；不代表官方发行，也不把整个目录宣称为本方原创。当前只做整备收敛，基线尚不是玩家即用预览版。工程与本轮排期唯一入口为 [044 总施工单](<D:/rdd/docs/rdd-docs/知识库/施工文档/044-验证先行的任务链与学习闭环总施工单.md#L678-L680>)，具体构建/部署遵循[工作区工程入口](<D:/rdd/workspace/AGENTS.md>)；后文保留上游产品介绍，不作为本分支所有能力已验收的声明。源代码、公共 API 与美术资源分别遵守 [LICENSE](<LICENSE>)、[LICENSE-API](<LICENSE-API>)、[LICENSE-ASSETS](<LICENSE-ASSETS>)；分发前核对应许可及依赖兼容。
+
 <p align="center">
   <img src="docs/numen-demo.gif" alt="Numen 实机演示：砍树 · 挖矿 · 合成 · 战斗 · 联动 Mekanism" width="640">
 </p>
