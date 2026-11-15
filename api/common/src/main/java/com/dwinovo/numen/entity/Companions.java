@@ -321,6 +321,7 @@ public final class Companions {
                     level.dimension().location(), owner.position());
         }
         Vec3 pos = SafeSpawn.findNear(level, owner.position());
+        String candidateReason = "owner_nearby";
         // 2026-11-02（学习线 death59）：owner 在 the_nether/the_end 时，findNear 会把同伴又拉回危险维度。
         // 这种维度下无条件退主世界，不管 findNear 是否命中（death59 复活在下界复现过）。
         boolean ownerInDangerDimension = level.dimension().equals(net.minecraft.world.level.Level.NETHER)
@@ -377,6 +378,7 @@ public final class Companions {
                 if (fallback != null) {
                     level = overworld;
                     pos = fallback;
+                    candidateReason = "world_spawn_fallback";
                 }
             }
         }
@@ -396,14 +398,17 @@ public final class Companions {
         body.setHealth(body.getMaxHealth());
         body.clearFire();
         CompanionRegistry.get(server).markAlive(uuid);
+        var candidate = new RespawnEventSnapshot.Landing(level.dimension().location().toString(), pos.x, pos.y, pos.z);
+        var respawnAttrs = RespawnEventSnapshot.attributes(candidate, candidateReason, () -> {
+            Vec3 actual = body.position();
+            return new RespawnEventSnapshot.Landing(body.serverLevel().dimension().location().toString(),
+                    actual.x, actual.y, actual.z);
+        });
         // H2（106 号）判据⑤：每次重生都留一条可观测记录（维度/坐标/来源）。
         com.dwinovo.numen.event.NumenEvents.emit(body,
                 com.dwinovo.numen.event.NumenEvents.Kind.RESPAWN,
-                java.util.Map.of(
-                        "dimension", level.dimension().location().toString(),
-                        "pos", pos.x + "," + pos.y + "," + pos.z,
-                        "reason", "owner_nearby"),
-                "你在 " + level.dimension().location() + " 重生了。", false);
+                respawnAttrs,
+                "你在 " + respawnAttrs.get("dimension") + " 重生了。", false);
         syncRosterToOwner(server, owner);
         Services.NETWORK.sendToPlayer(owner, new NumenRespawnPayload(uuid, entry.deathCause()));
         return true;
