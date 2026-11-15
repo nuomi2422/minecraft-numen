@@ -15,7 +15,7 @@ public final class LoadSkillTool implements NumenTool {
     private static final Gson GSON = new Gson();
     private final AgentOps impl = new AgentOps();
 
-    private record Args(String name, String file) {}
+    private record Args(String name, String file, String ref) {}
 
     @Override
     public String name() {
@@ -35,24 +35,35 @@ public final class LoadSkillTool implements NumenTool {
 
                 Use this tool to inject the skill's instructions and resources into the current conversation. The output contains detailed workflow guidance for the task.
 
-                The skill name must match one of the skills listed in your system prompt's <available_skills> block.
+                For directory skills, the name must match one of the skills listed in your system prompt's <available_skills> block.
 
-                A skill body may reference supporting files by relative path (e.g. references/roofs.md). Call this tool again with the same name plus `file` to read one — only when the body points you there.""";
+                A skill body may reference supporting files by relative path (e.g. references/roofs.md). Call this tool again with the same name plus `file` to read one — only when the body points you there.
+
+                To read an explicitly referenced learned component, pass only `ref` as skill:id@vN. This returns that exact eligible body, without adopting, executing, or recursively loading its references.""";
     }
 
     @Override
     public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .string("name", "The skill name from <available_skills> in the system prompt.")
-                .string("file", "Optional: relative path of a supporting file referenced by the skill body.")
+                .optionalString("name", "Directory skill name; required unless ref is supplied.")
+                .optionalString("file", "Optional relative supporting file, with name; mutually exclusive with ref.")
+                .optionalString("ref", "Exact learned component skill:id@vN; use without name or file.")
                 .build();
     }
 
     @Override
     public void invoke(ToolCall call) {
         try {
-            Args a = GSON.fromJson(call.rawArgs(), Args.class);
-            call.complete(impl.loadSkill(a.name(), a.file()));
+            var args = call.args();
+            Args a = GSON.fromJson(args, Args.class);
+            if (args.has("ref")) {
+                call.complete(impl.loadSkill(call.ctx() == null ? null : call.ctx().entityUuid(),
+                        a.name(), a.file(), a.ref()));
+            } else {
+                if (a.name() == null || a.name().isBlank())
+                    throw new IllegalArgumentException("name or exact ref is required");
+                call.complete(impl.loadSkill(a.name(), a.file()));
+            }
         } catch (RuntimeException ex) {
             call.complete(TaskResult.fail(ex.getMessage()).toJson());
         }

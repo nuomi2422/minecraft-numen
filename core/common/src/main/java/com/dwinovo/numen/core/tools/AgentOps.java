@@ -3,11 +3,14 @@ package com.dwinovo.numen.core.tools;
 import com.dwinovo.numen.agent.skill.SkillInfo;
 import com.dwinovo.numen.agent.skill.SkillInjection;
 import com.dwinovo.numen.agent.skill.SkillRegistry;
+import com.dwinovo.numen.api.LearnedSkillBodyResolver;
+import com.dwinovo.numen.api.NumenPlugins;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -40,6 +43,26 @@ public final class AgentOps {
 
         // 成型交给 SkillInjection:主人打斜杠命令走的是另一条路,进上下文的东西必须一样。
         return SkillInjection.body(maybe.get(), null);
+    }
+
+    /** Explicit learned-reference branch; the legacy two-argument loader stays unchanged. */
+    public String loadSkill(UUID companion, String name, String file, String exactRef) {
+        if (name != null || file != null)
+            throw new IllegalArgumentException("ref cannot be combined with name or file");
+        LearnedSkillBodyResolver.Reference.parse(exactRef);
+        if (companion == null) throw new IllegalArgumentException("learned skill context missing");
+        var resolver = NumenPlugins.capability(LearnedSkillBodyResolver.class);
+        if (resolver == null) throw new IllegalStateException("learned-skill-resolver-unavailable");
+        var result = resolver.resolve(companion, exactRef, LearnedSkillBodyResolver.View.EXECUTOR);
+        if (result == null || !exactRef.equals(result.exactRef()))
+            throw new IllegalStateException("learned skill resolver identity mismatch");
+        if (!result.available())
+            throw new IllegalArgumentException("learned skill unavailable: " + result.gap());
+        JsonObject response = new JsonObject();
+        response.addProperty("success", true);
+        response.addProperty("ref", exactRef);
+        response.addProperty("body", result.body());
+        return response.toString();
     }
 
     private static String quote(String s) {
