@@ -165,6 +165,26 @@ final class SideTaskHost {
     static final class DailyRegistration {
         private static final Logger LOG = LoggerFactory.getLogger(DailyRegistration.class);
 
+        /**
+         * 2026-11-15: daily condition 的纯可测 seam —— 只做「同伴/线程/schema/type」四道闸，然后
+         * **委托注入的既有 matcher**（生产是 {@link RddWorldFacts#matches}；测试可注入假函数）。
+         * 不在这里复制 WorldFacts 的任何判定；返回 null = UNKNOWN（调用方不得当完成）。
+         */
+        static Boolean dailyConditionFor(UUID subject, UUID self, boolean serverThread,
+                                         Map<String, Object> condition,
+                                         java.util.function.Function<Map<String, Object>, Boolean> matcher) {
+            if (subject == null || self == null || !subject.equals(self)) return null;   // 只接本同伴
+            if (!serverThread) return null;                                              // 非 server 线程不可用
+            if (condition == null) return null;
+            if (!com.dwinovo.numen.rdd.core.WorldFactConditions.valid(condition)) return null;  // 原 schema 判据
+            if (!"block_nearby".equals(String.valueOf(condition.get("type")))) return null;     // 只接已证类型
+            try {
+                return matcher.apply(condition);   // 真实判定只有一个入口：既有 matcher
+            } catch (RuntimeException unavailable) {
+                return null;                       // 未知 ≠ 完成
+            }
+        }
+
         static void restoreChain(TaskChain chain, SideTaskEngine engine) {
             registerChain(chain, engine, true);
         }
@@ -563,26 +583,6 @@ final class SideTaskHost {
 
     // ---- 世界端口 ----
 
-    /**
-     * 2026-11-15: daily condition 的纯可测 seam —— 只做「同伴/线程/schema/type」四道闸，然后
-     * **委托注入的既有 matcher**（生产是 {@link RddWorldFacts#matches}；测试可注入假函数）。
-     * 不在这里复制 WorldFacts 的任何判定；返回 null = UNKNOWN（调用方不得当完成）。
-     */
-    static Boolean dailyConditionFor(UUID subject, UUID self, boolean serverThread,
-                                     Map<String, Object> condition,
-                                     java.util.function.Function<Map<String, Object>, Boolean> matcher) {
-        if (subject == null || self == null || !subject.equals(self)) return null;   // 只接本同伴
-        if (!serverThread) return null;                                              // 非 server 线程不可用
-        if (condition == null) return null;
-        if (!com.dwinovo.numen.rdd.core.WorldFactConditions.valid(condition)) return null;  // 原 schema 判据
-        if (!"block_nearby".equals(String.valueOf(condition.get("type")))) return null;     // 只接已证类型
-        try {
-            return matcher.apply(condition);   // 真实判定只有一个入口：既有 matcher
-        } catch (RuntimeException unavailable) {
-            return null;                       // 未知 ≠ 完成
-        }
-    }
-
     private static final class HostWorldPort implements SideTaskWorldPort {
         private final NumenPlayer ap;
         private SleepRisk sleepRisk;
@@ -682,7 +682,7 @@ final class SideTaskHost {
         @Override public Boolean dailyCondition(UUID companionId, Map<String, Object> condition) {
             if (ap == null) return null;
             boolean serverThread = ap.getServer() != null && ap.getServer().isSameThread();
-            return dailyConditionFor(companionId, ap.getUUID(), serverThread, condition,
+            return DailyRegistration.dailyConditionFor(companionId, ap.getUUID(), serverThread, condition,
                     c -> RddWorldFacts.matches(ap, c));
         }
 
