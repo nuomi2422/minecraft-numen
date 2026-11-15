@@ -39,6 +39,40 @@ class DeathPreparationScopeRegressionTest {
         assertTrue(DeathPreparation.attach(engine,C,c,semantics,Map.of(IRON,"chest",DIAMOND,"chest")));
         return engine;
     }
+    @Test void waivedTypedLeggingsRemainAnUnresolvedSideReviewInsteadOfSilentNoObligation() {
+        var legs = Map.<String,Object>of("type", "equipment", "item", "minecraft:iron_leggings", "slot", "legs");
+        var c = new TaskChain(new Goal("g", "finish", List.of(
+                new PrimaryGoal("gear", "gear", List.of(Subtask.hardCoded("wear-legs", "wear leggings", legs))),
+                new PrimaryGoal("trade", "trade", List.of(Subtask.hardCoded("iron", "iron", Map.of("asset_key", "minecraft:iron_ingot", "minimum", 8)))))));
+        c.startCurrent();
+        c.settlePrimaryByFact("gear", "planner waived this stage; not wearing evidence", false);
+        assertEquals(SubtaskStatus.SKIPPED, c.subtaskStatuses().get("wear-legs"));
+        assertTrue(c.waivedStages().contains("gear"));
+        String original = c.toJson();
+        var p = new Port(); var engine = start(c, p, new ArrayList<>(), Map.of());
+        var task = engine.current(C).orElseThrow();
+        assertAll(
+                () -> assertFalse(DeathPreparation.notApplicable(task), "waived equipment requires an explicit review, not NONE"),
+                () -> assertEquals("UNKNOWN", task.data().get("prepare_scope"), "waiver is neither cancellation nor current equipment evidence"),
+                () -> assertTrue(task.data().getOrDefault("prepare_review_candidates", "").contains("wear-legs"),
+                        "original typed skipped step must survive as a finite review candidate"));
+        assertTrue(DeathPreparation.targets(c, Map.of(), Map.of()).isEmpty(), "candidate alone must not force manufacturing");
+        assertEquals(original, c.toJson(), "review must not rewrite waiver, original declarations or cursor");
+    }
+    @Test void ordinaryExplicitSkipDoesNotReintroduceTypedEquipmentAsAReviewCandidate() {
+        var legs = Map.<String,Object>of("type", "equipment", "item", "minecraft:iron_leggings", "slot", "legs");
+        var c = new TaskChain(new Goal("g", "finish", List.of(new PrimaryGoal("p", "trade", List.of(
+                Subtask.hardCoded("cancelled-legs", "cancel this equipment step", legs),
+                Subtask.hardCoded("iron", "iron", Map.of("asset_key", "minecraft:iron_ingot", "minimum", 8)))))));
+        c.startCurrent(); c.skipSubtask("cancelled-legs", "explicit planner cancellation"); c.startCurrent();
+        assertTrue(c.waivedStages().isEmpty()); String original = c.toJson();
+        var engine = start(c, new Port(), new ArrayList<>(), Map.of());
+        var task = engine.current(C).orElseThrow();
+        assertTrue(DeathPreparation.notApplicable(task));
+        assertFalse(task.data().getOrDefault("prepare_review_candidates", "").contains("cancelled-legs"));
+        assertTrue(DeathPreparation.targets(c, Map.of(), Map.of()).isEmpty());
+        assertEquals(original, c.toJson());
+    }
     @Test void noEquipmentObligationKeepsOriginalAbsentDropSettlementAndDoesNotPauseTrading() {
         var c=trading(); var p=new Port(); var terminal=new ArrayList<Map<String,Object>>(); var engine=start(c,p,terminal,Map.of());
         String before=c.toJson();
