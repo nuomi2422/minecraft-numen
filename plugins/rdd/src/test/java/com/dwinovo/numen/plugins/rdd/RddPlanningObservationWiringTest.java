@@ -33,7 +33,7 @@ class RddPlanningObservationWiringTest {
     @Test void replanCapturesOriginalServerBeforeBudgetAndCarriesItAcrossCallback() throws Exception {
         String body = between(source("RddPlugin"),
                 "RddSurvivalGate.Decision survivalDecision, Object survivalToken) {",
-                "static void onDeathRecoverySettled(");
+                "static boolean onDeathRecoverySettled(");
         int capture = body.indexOf("captureObservationToken(server)");
         int budget = body.indexOf("RddReplanTransition.Result transition");
         int dispatch = body.indexOf("RddDecomposer.decomposeSpecsWithHint");

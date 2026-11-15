@@ -1631,11 +1631,12 @@ private static String withAssets(UUID companionId, String rddContext) {
         }
     }
 
-    static void onDeathRecoverySettled(UUID companionId, Map<String, Object> data) {
-        if (companionId == null || data == null) return;
+    static boolean onDeathRecoverySettled(UUID companionId, Map<String, Object> data) {
+        if (companionId == null || data == null) return false;
+        String claimedKey = null;
         try {
             int seq = Integer.parseInt(String.valueOf(data.getOrDefault("deathSeq", "-1")));
-            if (seq < 0) return;
+            if (seq < 0) return false;
             String preparePayload = String.valueOf(data.getOrDefault("prepareResume", ""));
             boolean preparationHandled = !preparePayload.isBlank();
             boolean preparationIdentityValid = true;
@@ -1650,7 +1651,12 @@ private static String withAssets(UUID companionId, String rddContext) {
             }
             var prepareTask = com.dwinovo.numen.rdd.side.death.DeathPreparation.resumeTask(preparePayload);
             String key = DeathPreparationHost.settlementKey(companionId, seq, preparationHandled, prepareTask);
-            if (!DEATH_SETTLEMENTS.add(key)) return;
+            if (!DEATH_SETTLEMENTS.add(key)) return false;
+            claimedKey = key;
+            // Hold the actual current step before any fallible settlement work, not merely its resume event.
+            if (preparationHandled && preparationIdentityValid
+                    && !com.dwinovo.numen.rdd.side.death.DeathPreparation.settle(runtime(companionId).chain(),
+                            preparePayload, false, "preparation_settlement_in_progress")) return false;
             // 2026-10-31：产出侧写的是 terminal_reason（下划线），这里原先只读驼峰键
             // deathRecoveryTerminalReason —— 两者对不上，terminal 永远为空，
             // 于是 ledgerState 恒 UNVERIFIED、replanRequested 恒 true（实测 죽30/31 两次都是空）。
@@ -1678,7 +1684,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                 prepareVerified = evidence.state() == com.dwinovo.numen.rdd.side.SideTaskWorldPort.PreparationState.READY;
                 prepareReason = (prepareVerified ? "" : prepareReason + "; ") + evidence.reason();
                 var rt = runtime(companionId);
-                com.dwinovo.numen.rdd.side.death.DeathPreparation.settle(rt.chain(), preparePayload, prepareVerified, prepareReason);
+                if (!com.dwinovo.numen.rdd.side.death.DeathPreparation.settle(rt.chain(), preparePayload, prepareVerified, prepareReason)) return false;
                 if (!prepareVerified) {
                     var body = RddCompanionBody.get(companionId);
                     if (body != null) com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(body, "recovery_not_verified");
@@ -1717,8 +1723,11 @@ private static String withAssets(UUID companionId, String rddContext) {
                 requestReplan(companionId,
                         "death recovery settled seq=" + seq + " terminal=" + terminal, true, null, true);
             }
+            return preparationHandled && preparationIdentityValid && prepareVerified;
         } catch (RuntimeException ex) {
+            if (claimedKey != null) DEATH_SETTLEMENTS.remove(claimedKey);
             LOG.warn("[rdd] death recovery settlement failed {}: {}", companionId, ex.toString());
+            return false;
         }
     }
 

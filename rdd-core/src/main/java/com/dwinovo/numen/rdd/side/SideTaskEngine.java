@@ -332,12 +332,15 @@ public final class SideTaskEngine {
         data.put("reason", reason == null ? "" : reason);
         data.put("reason", reason == null ? "" : reason);
         events.publish(event, data);
-        resumeMainline(task);
+        resumeMainline(task, data);
     }
 
-    private void resumeMainline(SideTask task) {
+    private void resumeMainline(SideTask task, Map<String, Object> terminal) {
         MainlineResumeToken token = task.mainlineToken();
         boolean valid = token != null && (mainlineValidator == null || mainlineValidator.validate(token) != null);
+        // Only the synchronous host commit can license preparation continuation; missing/failed ACK is closed.
+        if (terminal.containsKey("prepareResume")
+                && !Boolean.TRUE.equals(terminal.get("prepareSettlementAccepted"))) valid = false;
         Map<String, Object> data = base(task);
         data.put("mainlineResumed", valid);
         events.publish("side_task_resumed_mainline", data);
@@ -376,7 +379,7 @@ public final class SideTaskEngine {
         data.put("reason", reason == null ? "" : reason);
         data.put("decidedBy", "executor");
         events.publish("side_task_declined", data);
-        resumeMainline(task);
+        resumeMainline(task, data);
         return true;
     }
 

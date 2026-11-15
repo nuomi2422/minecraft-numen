@@ -283,7 +283,7 @@ public final class DeathPreparation {
         var data = new LinkedHashMap<String, String>();
         for (String key : List.of(TARGETS, PLAN, "prepare_scope", "prepare_descriptions", "prepare_index",
                 "prepare_reason", "prepare_plan_state", "prepare_retries", "prepare_retry_at", "death_seq",
-                "decision", "drop_terminal", "dimension", "death_at", "prepare_death_seq")) {
+                "decision", "drop_terminal", "dimension", "death_at", "prepare_death_seq", "prepare_original_status")) {
             String value = task.data().get(key);
             if (value != null && value.length() <= MAX_JSON) data.put(key, value);
         }
@@ -312,12 +312,20 @@ public final class DeathPreparation {
     /** Preserve the current plan/cursor and all historical facts. Duplicate settlement is harmless. */
     public static boolean settle(TaskChain chain, String payload, boolean verified, String reason) {
         SideTask task = resumeTask(payload);
-        if (task == null || !sameChain(task, chain)) return false;
+        if (task == null || !DeathRecoverySideTaskType.TYPE_ID.equals(task.typeId()) || !sameChain(task, chain)) return false;
+        if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE && chain.primaryStatus() != PrimaryGoalStatus.PENDING) return false;
+        if (chain.currentSubtask() != null && chain.isPaused(chain.currentSubtask().id())
+                && (chain.pauseReason(chain.currentSubtask().id()) == null
+                    || !chain.pauseReason(chain.currentSubtask().id()).startsWith("recovery_not_verified:"))) return false;
+        SideTask held = pausedTask(chain);
+        if (held != null && (!Objects.equals(held.instanceId(), task.instanceId())
+                || held.generation() != task.generation()
+                || !Objects.equals(held.data().get("death_seq"), task.data().get("death_seq")))) return false;
         if (verified) {
             if (chain.currentSubtask() != null && chain.isPaused(chain.currentSubtask().id())
                     && chain.pauseReason(chain.currentSubtask().id()) != null
                     && chain.pauseReason(chain.currentSubtask().id()).startsWith("recovery_not_verified:"))
-                chain.resumeFromPaused(chain.currentSubtask().id());
+                releasePause(chain);
             return true;
         }
         if (chain.currentSubtask() == null) return true;
@@ -327,15 +335,27 @@ public final class DeathPreparation {
             if (existing != null && integer(existing.data().get("prepare_retries")) == integer(task.data().get("prepare_retries"))
                     && List.of(PLAN, "prepare_plan_state", "prepare_index")
                     .stream().allMatch(k -> Objects.equals(existing.data().get(k), task.data().get(k)))) return true;
-            chain.resumeFromPaused(chain.currentSubtask().id());
         }
-        if (!chain.isPaused(chain.currentSubtask().id())) {
-            var data = new LinkedHashMap<>(task.data());
-            data.putIfAbsent("prepare_retry_at", String.valueOf(task.deadlineGameTime() + 1200L));
-            data.putIfAbsent("prepare_retries", "0");
-            chain.pauseSubtask(chain.currentSubtask().id(), pauseReason(resumePayload(task.withData(data)), reason));
-        }
+        var data = new LinkedHashMap<>(task.data());
+        data.putIfAbsent("prepare_retry_at", String.valueOf(task.deadlineGameTime() + 1200L));
+        data.putIfAbsent("prepare_retries", "0");
+        SideTask existing = pausedTask(chain);
+        data.put("prepare_original_status", existing == null
+                ? chain.currentSubtaskStatus().name() : existing.data().getOrDefault("prepare_original_status", "RUNNING"));
+        String pause = pauseReason(resumePayload(task.withData(data)), reason);
+        if (chain.isPaused(chain.currentSubtask().id())) chain.updateDeathRecoveryPause(chain.currentSubtask().id(), pause);
+        else if (chain.primaryStatus() == PrimaryGoalStatus.PENDING)
+            chain.pausePendingForDeathRecovery(chain.currentSubtask().id(), pause);
+        else chain.pauseSubtask(chain.currentSubtask().id(), pause);
         return true;
+    }
+
+    private static void releasePause(TaskChain chain) {
+        SideTask paused = pausedTask(chain);
+        if (chain.primaryStatus() == PrimaryGoalStatus.PENDING
+                || (paused != null && "PENDING".equals(paused.data().get("prepare_original_status"))))
+            chain.resumePendingFromDeathRecovery(chain.currentSubtask().id());
+        else chain.resumeFromPaused(chain.currentSubtask().id());
     }
 
     public static SideTask pausedTask(TaskChain chain) {
@@ -369,7 +389,8 @@ public final class DeathPreparation {
     public static boolean reopenPaused(SideTaskEngine engine, UUID id, TaskChain chain, SideTaskWorldPort world,
                                        SideTask candidate) {
         SideTask old = pausedTask(chain);
-        if (old == null || !sameChain(old, chain) || notApplicable(old) || engine.isActive(id)) return false;
+        if (old == null || !sameChain(old, chain) || notApplicable(old) || engine.isActive(id)
+                || (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE && chain.primaryStatus() != PrimaryGoalStatus.PENDING)) return false;
         if (candidate == null || !id.equals(old.companionId()) || !id.equals(candidate.companionId())
                 || !old.typeId().equals(candidate.typeId()) || !old.instanceId().equals(candidate.instanceId())
                 || old.generation() != candidate.generation() || !Objects.equals(old.mainlineToken(), candidate.mainlineToken())
@@ -397,8 +418,7 @@ public final class DeathPreparation {
                 SideTaskState.ACTIVE, DeathRecoverySideTaskType.PHASE_REEQUIP, data, old.mainlineToken());
         if (!engine.runtime().activate(retry)) return false;
         // Keep retry budget in the existing pause payload too, surviving another terminal/restore.
-        chain.resumeFromPaused(chain.currentSubtask().id());
-        chain.pauseSubtask(chain.currentSubtask().id(), pauseReason(resumePayload(retry), factsReason(retry)));
+        chain.updateDeathRecoveryPause(chain.currentSubtask().id(), pauseReason(resumePayload(retry), factsReason(retry)));
         return true;
     }
 
@@ -414,8 +434,9 @@ public final class DeathPreparation {
             var envelope = JsonParser.parseString(reason.substring("recovery_not_verified:".length())).getAsJsonObject();
             SideTask task = JSON.fromJson(envelope.get("resume").getAsString(), SideTask.class);
             if (task != null && sameChain(task, chain)
+                    && (chain.primaryStatus() == PrimaryGoalStatus.ACTIVE || chain.primaryStatus() == PrimaryGoalStatus.PENDING)
                     && world.deathPreparationFacts(id, task).state() == SideTaskWorldPort.PreparationState.READY) {
-                chain.resumeFromPaused(chain.currentSubtask().id());
+                releasePause(chain);
                 return false;
             }
         } catch (RuntimeException ignored) { /* absent evidence remains paused, never owner-stop */ }

@@ -202,16 +202,25 @@ class DeathPreparationFlowTest {
         Map<String, Object> terminal;
         Boolean resumed;
         int oldGoalNudges;
+        boolean failSettlement;
+        boolean omitAcknowledgement;
+        boolean missingAtCommit;
+        boolean holdBeforeFailure;
         TerminalHost(TaskChain chain) {
             this.chain = chain;
             engine = new SideTaskEngine((event, data) -> {
-                if (event.equals("side_task_completed") || event.equals("side_task_skipped")) {
+                if (event.equals("side_task_completed") || event.equals("side_task_skipped") || event.equals("side_task_declined")) {
                     order.add("terminal");
                     terminal = data;
                     assertFalse(engineActive(), "finish removes the side before synchronous settlement");
                     try {
-                        DeathPreparation.settle(chain, String.valueOf(data.get("prepareResume")),
-                                "true".equals(data.get("prepareVerified")), "terminal preparation evidence");
+                        if (holdBeforeFailure) DeathPreparation.settle(chain, String.valueOf(data.get("prepareResume")),
+                                false, "preparation_settlement_in_progress");
+                        if (failSettlement) throw new IllegalStateException("deterministic commit failure");
+                        boolean verified = !missingAtCommit && "true".equals(data.get("prepareVerified"));
+                        boolean accepted = DeathPreparation.settle(chain, String.valueOf(data.get("prepareResume")),
+                                verified, "terminal preparation evidence");
+                        if (!omitAcknowledgement) data.put("prepareSettlementAccepted", accepted && verified);
                     } catch (RuntimeException ex) {
                         // Match the existing RddPlugin/SideTaskHost catch boundary, not an ideal host.
                         settlementErrors.add(ex);
@@ -288,6 +297,99 @@ class DeathPreparationFlowTest {
         chain.nextPlanRevision(); String changed = chain.toJson();
         assertFalse(DeathPreparation.settle(chain, payload, true, "outdated callback"));
         assertEquals(changed, chain.toJson());
+    }
+    @Test void pendingRecoveryRecheckAndVerifiedReleaseNeverStartAnAttempt() {
+        var chain = chain(false); var host = new TerminalHost(chain);
+        int attempts = chain.attempts("iron");
+        Object started = com.google.gson.JsonParser.parseString(chain.toJson()).getAsJsonObject().get("lastStartedAtMillis");
+        host.finish(false);
+        assertEquals(PrimaryGoalStatus.PENDING, chain.primaryStatus());
+        assertEquals(attempts, chain.attempts("iron"));
+        assertEquals(started, com.google.gson.JsonParser.parseString(chain.toJson()).getAsJsonObject().get("lastStartedAtMillis"));
+        String restored = TaskChain.fromJson(chain.toJson()).toJson();
+        assertEquals(SubtaskStatus.PAUSED, TaskChain.fromJson(restored).currentSubtaskStatus());
+        assertEquals(PrimaryGoalStatus.PENDING, TaskChain.fromJson(restored).primaryStatus());
+        String paused = chain.toJson();
+        var original = DeathPreparation.pausedTask(chain);
+        var staleData = new LinkedHashMap<>(original.data()); staleData.put("death_seq", "48");
+        assertFalse(DeathPreparation.settle(chain, DeathPreparation.resumePayload(original.withData(staleData)), true, "wrong death"));
+        assertEquals(paused, chain.toJson());
+        host.port.now += 1200;
+        assertTrue(DeathPreparation.reopenPaused(host.engine, C, chain, host.port));
+        assertTrue(chain.isPaused("iron")); assertEquals(attempts, chain.attempts("iron"));
+        host.port.preparation = SideTaskWorldPort.PreparationState.READY;
+        assertFalse(DeathPreparation.holdPaused(chain, C, host.port));
+        assertEquals(PrimaryGoalStatus.PENDING, chain.primaryStatus());
+        assertEquals(SubtaskStatus.PENDING, chain.currentSubtaskStatus());
+        assertEquals(attempts, chain.attempts("iron"));
+        assertEquals(started, com.google.gson.JsonParser.parseString(chain.toJson()).getAsJsonObject().get("lastStartedAtMillis"));
+    }
+    @Test void verifiedFlagWithoutSuccessfulSynchronousCommitCannotLicenseResume() {
+        for (boolean throwsAtCommit : List.of(false, true)) {
+            var chain = chain(); var host = new TerminalHost(chain);
+            host.failSettlement = throwsAtCommit; host.omitAcknowledgement = true;
+            String original = chain.toJson(); host.finish(true);
+            assertEquals(Boolean.FALSE, host.resumed); assertEquals(0, host.oldGoalNudges);
+            assertEquals(original, chain.toJson());
+            assertEquals(throwsAtCommit ? 1 : 0, host.settlementErrors.size());
+        }
+    }
+    @Test void actualPendingHoldSurvivesFailureBeforeSelfRecheckWithoutStartingExecution() {
+        var chain = chain(false); var host = new TerminalHost(chain);
+        host.holdBeforeFailure = true; host.failSettlement = true;
+        host.finish(true);
+        assertTrue(chain.isPaused("iron"), "failure must hold actual execution, not only suppress a resume event");
+        assertEquals(PrimaryGoalStatus.PENDING, chain.primaryStatus());
+        assertEquals(0, chain.attempts("iron")); assertEquals(Boolean.FALSE, host.resumed);
+        // Even another admission consumer passing its dependencies cannot start a PAUSED step.
+        assertTrue(chain.activateCurrent(Map.of()));
+        assertTrue(chain.isPaused("iron")); assertEquals(0, chain.attempts("iron"));
+    }
+    @Test void latestMissingEquipmentOverridesEarlierVerifiedEventAndDeclineUsesSameCommitGate() {
+        var chain = chain(); var host = new TerminalHost(chain); host.missingAtCommit = true;
+        host.finish(true);
+        assertEquals("true", host.terminal.get("prepareVerified"));
+        assertEquals(Boolean.FALSE, host.resumed); assertTrue(chain.isPaused("iron"));
+        var declined = new TerminalHost(chain());
+        assertTrue(declined.engine.decline(C, "cannot recover", "minecraft:overworld", 0));
+        assertEquals(Boolean.FALSE, declined.resumed); assertEquals(0, declined.oldGoalNudges);
+    }
+    @Test void genericPauseStillRejectsPendingAndRecoveryRejectionDoesNotChangeVersion() {
+        var chain = chain(false);
+        assertThrows(IllegalStateException.class, () -> chain.pauseSubtask("iron", "ordinary pause"));
+        String original = chain.toJson();
+        assertThrows(IllegalStateException.class, () -> chain.pausePendingForDeathRecovery("iron", "OWNER_PAUSE:standby"));
+        assertEquals(original, chain.toJson());
+    }
+    @Test void pendingRecoveryReleaseStillRequiresOriginalDependencyAdmission() {
+        var chain = new TaskChain(new Goal("g", "finish", List.of(new PrimaryGoal("gear", "gear", List.of(
+                Subtask.hardCoded("wear", "wear chest", CHEST)), List.of(new AssetRequirement("minecraft:iron_ingot", 8))))));
+        var host = new TerminalHost(chain); host.finish(false);
+        assertTrue(DeathPreparation.holdPaused(chain, C, host.port));
+        host.port.preparation = SideTaskWorldPort.PreparationState.READY;
+        assertFalse(DeathPreparation.holdPaused(chain, C, host.port));
+        assertEquals(0, chain.attempts("wear"));
+        assertEquals(SubtaskStatus.PENDING, chain.currentSubtaskStatus());
+        assertFalse(chain.activateCurrent(Map.of()));
+        assertEquals(PrimaryGoalStatus.WAITING, chain.primaryStatus());
+        assertEquals(0, chain.attempts("wear"));
+        assertTrue(chain.activateCurrent(Map.of("minecraft:iron_ingot", 8)));
+        assertEquals(1, chain.attempts("wear"));
+    }
+    @Test void otherPrimaryStatesAndOwnerPauseRejectSettlementWithoutMutation() {
+        var replanning = chain(); replanning.enterReplanningFromNegotiation("existing planner owns transition");
+        var recovering = TaskChain.fromJson(chain().toJson());
+        var owner = chain(); owner.pauseSubtask("iron", "OWNER_PAUSE:standby");
+        for (var chain : List.of(replanning, recovering, owner)) {
+            var host = new TerminalHost(chain); String original = chain.toJson();
+            var task = host.engine.current(C).orElseThrow(); String payload = DeathPreparation.resumePayload(task);
+            assertFalse(DeathPreparation.settle(chain, payload, false, "not permitted"));
+            assertFalse(DeathPreparation.settle(chain, payload, true, "not permitted"));
+            assertEquals(original, chain.toJson());
+            host.finish(true);
+            assertEquals(Boolean.FALSE, host.resumed); assertEquals(0, host.oldGoalNudges);
+            assertEquals(original, chain.toJson());
+        }
     }
     @Test void materialsAndUnreachedFutureLoadoutDoNotBecomeDeathEquipmentObligations() {
         var c = new TaskChain(new Goal("g", "gear words alone", List.of(

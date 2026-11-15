@@ -40,6 +40,13 @@ class RddDeathPreparationWiringTest {
         assertTrue(plugin.contains("DeathPreparationHost.settlementKey(companionId, seq, preparationHandled, prepareTask)"));
         assertTrue(plugin.contains("SideTaskHost.deathPreparationResult(companionId, preparePayload)"));
         assertTrue(plugin.contains("DeathPreparation.settle(rt.chain(), preparePayload, prepareVerified, prepareReason)"));
+        assertTrue(plugin.contains("return preparationHandled && preparationIdentityValid && prepareVerified"));
+        assertTrue(plugin.contains("DEATH_SETTLEMENTS.remove(claimedKey)"));
+        assertTrue(plugin.indexOf("\"preparation_settlement_in_progress\"") < plugin.indexOf("RddRepairDispatch.recomputeAfterDeath(companionId, counts, confirmedLost"));
+        assertEquals(3L, host.lines().filter(line -> line.contains("data.put(\"prepareSettlementAccepted\", RddPlugin.onDeathRecoverySettled")).count(),
+                "normal, decline and cancel copies must all return permission to the original terminal data");
+        assertTrue(detector.indexOf("handlePaused(ap, rt, chain, counts)", detector.indexOf("// Recheck recovery before wait_for"))
+                < detector.indexOf("if (ps == PrimaryGoalStatus.PENDING || ps == PrimaryGoalStatus.WAITING)"));
         assertTrue(plugin.contains("boolean shouldReplan = !recovered && !preparationHandled"));
         assertTrue(detector.indexOf("SideTaskHost.holdRecoveryPause(ap, chain)") < detector.indexOf("if (conditionMatches(ap, cur, counts))"));
         assertTrue(host.contains("RddDeathEquipment.read(service, ap.getUUID(), worldId()"));

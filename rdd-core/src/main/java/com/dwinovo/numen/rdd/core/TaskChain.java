@@ -1605,6 +1605,40 @@ public final class TaskChain {
         clearExecutionMetadata(); // 暂停 = 不再有在途执行，旧执行身份/启动时间作废
     }
 
+    /** Death recovery may hold an unstarted current step without starting an execution or bypassing dependencies. */
+    public synchronized void pausePendingForDeathRecovery(String subtaskId, String reason) {
+        requireCurrent(subtaskId);
+        if (primaryStatus != PrimaryGoalStatus.PENDING || statuses.get(subtaskId) != SubtaskStatus.PENDING
+                || reason == null || !reason.startsWith("recovery_not_verified:"))
+            throw new IllegalStateException("not an unstarted death recovery step");
+        statuses.put(subtaskId, SubtaskStatus.PAUSED);
+        pauseReasons.put(subtaskId, reason);
+        stateVersion++;
+    }
+
+    /** Replace only an existing recovery hold; no transient RUNNING state during bounded retries. */
+    public synchronized void updateDeathRecoveryPause(String subtaskId, String reason) {
+        requireCurrent(subtaskId);
+        if ((primaryStatus != PrimaryGoalStatus.PENDING && primaryStatus != PrimaryGoalStatus.ACTIVE)
+                || !isPaused(subtaskId) || pauseReasons.get(subtaskId) == null
+                || !pauseReasons.get(subtaskId).startsWith("recovery_not_verified:")
+                || reason == null || !reason.startsWith("recovery_not_verified:"))
+            throw new IllegalStateException("not a death recovery pause");
+        pauseReasons.put(subtaskId, reason);
+        stateVersion++;
+    }
+
+    /** Release an unstarted recovery hold back to admission, never directly to RUNNING. */
+    public synchronized void resumePendingFromDeathRecovery(String subtaskId) {
+        requireCurrent(subtaskId);
+        if ((primaryStatus != PrimaryGoalStatus.PENDING && primaryStatus != PrimaryGoalStatus.ACTIVE) || !isPaused(subtaskId)
+                || pauseReasons.get(subtaskId) == null || !pauseReasons.get(subtaskId).startsWith("recovery_not_verified:"))
+            throw new IllegalStateException("not a pending death recovery pause");
+        statuses.put(subtaskId, SubtaskStatus.PENDING);
+        pauseReasons.remove(subtaskId);
+        stateVersion++;
+    }
+
     /** 规划器改主意 → 把暂停的当前二级原地开回来（PAUSED → RUNNING，可直接续跑）。 */
     public synchronized void resumeFromPaused(String subtaskId) {
         stateVersion++;            // G3b：恢复 = 安全提交

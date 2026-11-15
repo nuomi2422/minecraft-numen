@@ -519,6 +519,13 @@ final class RddDetector {
                     })) {
                 return;
             }
+            // Recheck recovery before wait_for; releasing an unstarted step returns to admission next tick.
+            if (chain.currentSubtask() != null && chain.isPaused(chain.currentSubtask().id())
+                    && chain.pauseReason(chain.currentSubtask().id()) != null
+                    && chain.pauseReason(chain.currentSubtask().id()).startsWith("recovery_not_verified:")) {
+                handlePaused(ap, rt, chain, counts);
+                return;
+            }
             // 刚推进到新的当前一级(PENDING/WAITING)：先过依赖门(wait_for)，没过就保持 WAITING 不派给 AI。
             if (ps == PrimaryGoalStatus.PENDING || ps == PrimaryGoalStatus.WAITING) {
                 // 观察行(懒边界)：当前一级到达但未展开 -> 上报目标驱动器(展开权持有者)，Detector 绝不自己展开/调 LLM。
