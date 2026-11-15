@@ -74,6 +74,29 @@ class StateFactsTest {
         assertEquals("<state_facts hp=17.226/>\n", NumenPlugins.stateFactsOf(fragments));
     }
 
+    @Test void incidentSiblingEnvironmentWinsAndRealLowHealthRemainsLow() {
+        assertEquals("<state_facts hp=17.226276/>\n", NumenPlugins.stateFactsOf(
+                "<rdd><current_task>生存闸：血量 3.2，旧任务</current_task></rdd>"
+                        + "<env>身体 血量17.226276 · 饥饿17</env>"));
+        assertEquals("<state_facts hp=3.2/>\n", NumenPlugins.stateFactsOf(
+                "<current_task>旧血量18</current_task><env>身体 血量3.2 · 饥饿17</env>"));
+        assertFalse(NumenPlugins.stateFactsOf("<current_task>血量3.2</current_task>").contains("hp="));
+    }
+
+    @Test void incompleteSplitOptionalAndConflictingEnvironmentsCannotInventHealth() {
+        for (String state : java.util.List.of("<env>血量3.2", "血量3.2</env>",
+                "<env><why>血量3.2</why></env>", "<env>血量18</env><env>血量3.2</env>",
+                "<env>血量未知</env><env>血量18</env>", "<env>血量3.2<env>血量18</env>"))
+            assertFalse(NumenPlugins.stateFactsOf(state).contains("hp="), state);
+        assertFalse(NumenPlugins.stateFactsOf(java.util.List.of(
+                new StateFragment("rdd","first","<env>血量",true,100),
+                new StateFragment("rdd","second","3.2</env>",true,100))).contains("hp="));
+        assertFalse(NumenPlugins.stateFactsOf(java.util.List.of(
+                new StateFragment("rdd","task","<current_task>血量3.2</current_task>",true,100),
+                new StateFragment("other","guide","<env>血量18</env>",false,1))).contains("hp="));
+        assertEquals("<state_facts hp=3.2/>\n",NumenPlugins.stateFactsOf("<env>血量3.2</env><env>血量3.2</env>"));
+    }
+
     @Test void percentDangerTextIsNotAbsoluteHp() {
         // 2026-11-06: RddDangerText 的“血量87%”是比例，不得提取为 hp=87（也不得回溯成 8）。
         assertFalse(NumenPlugins.stateFactsOf("<env> 血量87% </env>").contains("hp="));

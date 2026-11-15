@@ -26,6 +26,19 @@ class ExecutorRetrievalInputTest {
         assertTrue(captured.get().length() <= 400);
         return captured.get();
     }
+    @Test void actualRetrievalConsumerKeepsTaskProseButUsesOnlyCurrentEnvironmentHp() {
+        String task = "生存闸：血量3.2，旧任务仍保留";
+        String q = consume(A,List.of(rdd(fields("继续原目标","原阶段",task)
+                + "<env>身体 血量17.226276 · 饥饿17</env>")),"","","");
+        assertTrue(q.contains("<state_facts hp=17.226276/>"),q);
+        assertTrue(q.contains("step:"+task),q);
+        assertFalse(q.contains("hp=3.2"),q);
+        String unknown = consume(A,List.of(rdd(fields("继续原目标","原阶段",task)
+                + "<env>自身观测不可用；血量未知</env>")),"","","");
+        assertFalse(unknown.contains("hp="),unknown);
+        assertTrue(unknown.contains("step:"+task),unknown);
+    }
+
     @Test void longBodyAndUnrelatedPluginPrefixCannotDisplaceRddTask() {
         var unrelated = new StateFragment("other", "runtime", "unrelated".repeat(600), true, 100);
         String q = consume(A, List.of(unrelated, rdd(fields("寻找下界要塞", "获取烈焰棒", "攻击烈焰人"))),
@@ -35,7 +48,7 @@ class ExecutorRetrievalInputTest {
     }
     @Test void everyLongTaskFieldAndFactsKeepTheirReservedShare() {
         String q = consume(A, List.of(rdd(fields("目标".repeat(500), "阶段".repeat(500), "子步".repeat(500))+
-                "血量 3 night=1 hostile=true bed=1 护甲=无")), "", "身体".repeat(500), "<why>理由"+"长".repeat(500)+"</why>");
+                "<env>血量 3 night=1 hostile=true bed=1 护甲=无</env>")), "", "身体".repeat(500), "<why>理由"+"长".repeat(500)+"</why>");
         for(String label : List.of("goal:","phase:","step:","body:","why:")) assertTrue(q.contains(label), label);
         assertTrue(q.contains("hp=3")); assertTrue(q.contains("night=1")); assertTrue(q.contains("hostile=1"));
         assertTrue(q.contains("<state_facts")); assertTrue(q.contains("/>"));

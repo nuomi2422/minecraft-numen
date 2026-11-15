@@ -166,7 +166,8 @@ public final class NumenPlugins {
         for (StateFragment fragment : fragments) {
             if (fragment.mandatory()) required.append(fragment.text());
         }
-        return stateFactsOf(required.toString());
+        return stateFactsOf(required.toString(), environmentHp(fragments.stream().filter(StateFragment::mandatory)
+                .map(StateFragment::text).toList()));
     }
 
     private static final java.util.regex.Pattern HP = java.util.regex.Pattern.compile("血量\\s*(\\d+(?:\\.\\d+)?)(?!\\s*[%％])(?![\\d.])");
@@ -177,10 +178,36 @@ public final class NumenPlugins {
      * 判据用的字面量来自 rdd 的 env/alarms 渲染，改那边措辞时这里要跟着改（测试会钉住）。
      */
     static String stateFactsOf(String state) {
+        return stateFactsOf(state, state == null ? null : environmentHp(List.of(state)));
+    }
+
+    /** HP comes only from a complete plain environment section within one mandatory fragment.
+     * Task/why/carry prose is not observation; conflicting or unknown samples stay unknown.
+     */
+    private static String environmentHp(List<String> fragments) {
+        String known = null;
+        var envPattern = java.util.regex.Pattern.compile("<env>([^<>]*)</env>");
+        for (String fragment : fragments) {
+            var env = envPattern.matcher(fragment);
+            int complete = 0;
+            while (env.find()) {
+                complete++;
+                var hp = HP.matcher(env.group(1));
+                if (!hp.find()) return null;
+                String value = hp.group(1);
+                if (hp.find() || (known != null && !known.equals(value))) return null;
+                known = value;
+            }
+            if (fragment.split("<env>", -1).length - 1 != complete
+                    || fragment.split("</env>", -1).length - 1 != complete) return null;
+        }
+        return known;
+    }
+
+    private static String stateFactsOf(String state, String hp) {
         if (state == null || state.isBlank()) return "";
         java.util.Map<String, String> f = new java.util.LinkedHashMap<>();
-        java.util.regex.Matcher hp = HP.matcher(state);
-        if (hp.find()) f.put("hp", hp.group(1));
+        if (hp != null) f.put("hp", hp);
         if (state.contains("正在持续掉血")) f.put("dmg", "1");
         if (state.contains("night=1") || state.matches("(?s).*<alarm[^>]*rule=\"night\".*")) {
             f.put("night", "1");

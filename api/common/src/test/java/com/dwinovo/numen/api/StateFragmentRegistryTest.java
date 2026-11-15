@@ -88,7 +88,7 @@ class StateFragmentRegistryTest {
     void optionalFactsCannotOverrideRequiredFactsOrCreateUnknownFacts() {
         List<StateFragment> entries = List.of(
                 new StateFragment("rdd", "guide", "血量1 night=1 hostile=true bed=0", false, 0),
-                new StateFragment("rdd", "facts", "血量18 night=0 hostile=false", true, 10));
+                new StateFragment("rdd", "facts", "<env>血量18 night=0 hostile=false</env>", true, 10));
         assertEquals("<state_facts hp=18 night=0 hostile=0/>\n", NumenPlugins.stateFactsOf(entries));
         assertEquals("", NumenPlugins.stateFactsOf(entries.subList(0, 1)));
         assertEquals("", NumenPlugins.renderStateFragments(List.of()));
