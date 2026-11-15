@@ -93,6 +93,64 @@ public class AcxFarmContinueOfflineTest {
         System.out.println("ACX_FARM_OFFLINE cases=9 failures=0 errors=0; unsafe_plain_set is an observed counterexample, not approval");
     }
 
+    /**
+     * 2026-11-16 LH2 preparation: host cancel must stop at a step boundary, not mid-tool,
+     * and resume must continue from the KEPT breakpoint (PAUSED host_cancelled, never CANCELLED).
+     * Drives the ACTUAL farm_maintain_loop.ac v3 through production loader + runner; the fake
+     * farm tool cancels itself on its first invocation only, then the second iteration harvests 0.
+     */
+    @Test
+    void hostCancelDuringFirstFarmPausesAtBoundaryThenResumes() throws Exception {
+        Path file = Path.of(System.getProperty("acx.candidate",
+                "scripts/stable/farm_maintain_loop.ac"));
+        check(Files.isRegularFile(file), "candidate missing: " + file);
+        Fake.resetCalls();
+        FakePorts.Scripted farmPort = FakePorts.Scripted.of("farm_nearby")
+                .then(fromTaskResult(GSON.toJson(Map.of("success", true, "message", "ok",
+                        "data", Map.of("harvested", 1)))))
+                .then(fromTaskResult(GSON.toJson(Map.of("success", true, "message", "ok",
+                        "data", Map.of("harvested", 0)))));
+        AcxTool delegate = PortToolAdapter.builder(farmPort).build();
+        Fake.Canceller canceller = new Fake.Canceller();
+        java.util.concurrent.atomic.AtomicInteger farms = new java.util.concurrent.atomic.AtomicInteger();
+        AcxTool farmThatCancelsOnce = new AcxTool() {
+            @Override public String name() { return delegate.name(); }
+            @Override public AcxToolSchema schema() { return delegate.schema(); }
+            @Override public AcxStepOutcome execute(Map<String, Object> params, AcxCallContext ctx) {
+                AcxStepOutcome out = delegate.execute(params, ctx);
+                if (farms.incrementAndGet() == 1) canceller.runner.cancel(ctx.runId());
+                return out;
+            }
+        };
+        Fake.Registry tools = new Fake.Registry()
+                .add(farmThatCancelsOnce)
+                .add(Fake.fixed("get_self_status", Map.of("hp", 20)));
+        AcxLoader.LoadReport loaded = AcxLoader.loadAll(file.getParent(), tools, false, false);
+        check(loaded.errors().isEmpty(), "loader errors: " + loaded.errors());
+        AcxDefinition def = loaded.registered().get("farm_maintain_loop");
+        check(def != null, "farm_maintain_loop not registered");
+        AcxRunner runner = AcxRunner.builder().tools(tools).build();
+        canceller.runner = runner;
+        AcxRunRecord paused = runner.run(def, Map.of());
+        check(paused.status() == AcxStatus.PAUSED, "host cancel must pause, got " + paused.status()
+                + " reason=" + paused.errorMessage());
+        check("host_cancelled".equals(paused.pausedReason()), "pausedReason=" + paused.pausedReason());
+        check(farms.get() == 1, "only the first farm call may happen before resume, farms=" + farms.get());
+        check(Fake.calls.count("get_self_status") == 1,
+                "read ran, done must not: get_self_status=" + Fake.calls.count("get_self_status"));
+        check(paused.completedStepIndex() == 2,
+                "breakpoint stays before the cycle step, got " + paused.completedStepIndex());
+        AcxRunRecord resumed = runner.resume(def, paused);
+        check(resumed.status() == AcxStatus.SUCCESS, "resume must finish, got " + resumed.status()
+                + " reason=" + resumed.errorMessage());
+        check(farms.get() == 2,
+                "resume re-enters the cycle from the kept breakpoint, farms=" + farms.get());
+        check(Fake.calls.count("get_self_status") == 2,
+                "read + done after resume, get_self_status=" + Fake.calls.count("get_self_status"));
+        System.out.println("ACX_FARM_CANCEL ok status=" + paused.status() + "/" + resumed.status()
+                + " reason=" + paused.pausedReason() + " farms=" + farms.get());
+    }
+
     private static FakePorts.Scripted port(int... harvested) {
         FakePorts.Scripted port = FakePorts.Scripted.of("farm_nearby");
         for (int n : harvested) {
