@@ -533,14 +533,76 @@ class RddDeathPreparationHostSuccessorTest {
             data.put("prepare_death_seq", "30");
             var fresh = f.active().withData(data);
             assertTrue(DeathPreparationHost.settlementIdentity(f.id, 29, fresh, f.live));
+            String payload = DeathPreparation.resumePayload(fresh);
+            var history = f.chain.satisfiedStages();
+            var trade = f.chain.currentPrimary().subtasks();
+            assertTrue(DeathPreparation.settle(f.chain, payload, false, "preparation_settlement_in_progress"));
             if (recovered) RddDeathLedger.confirmRecovered(f.id, 29, "actual source pickup evidence");
             else RddDeathLedger.confirmLost(f.id, 29, "actual source loaded-absent evidence");
             assertNull(RddDeathLedger.openDeath(f.id, 29));
             f.sample = self(f.id, true, false, false);
             assertTrue(DeathPreparationHost.settlementIdentity(f.id, 29, fresh, f.live));
-            assertEquals(SideTaskWorldPort.PreparationState.READY, f.deathPreparationFacts(f.id, fresh).state(),
+            var evidence = f.deathPreparationFacts(f.id, fresh);
+            assertEquals(SideTaskWorldPort.PreparationState.READY, evidence.state(),
                     "commit-boundary fact read follows physical closure in the actual plugin");
+            var result = DeathPreparationHost.settlePreparation(f.chain, payload, "old terminal reason", evidence);
+            assertTrue(result.accepted());
+            assertTrue(result.verified());
+            assertEquals(evidence.reason(), result.reason(), "READY replaces the old terminal reason");
+            assertFalse(f.chain.isPaused("iron"));
+            assertEquals(history, f.chain.satisfiedStages());
+            assertEquals(trade, f.chain.currentPrimary().subtasks());
+            assertEquals("iron", f.chain.currentSubtask().id());
             assertEquals(RddDeathLedger.State.UNVERIFIED, RddDeathLedger.latest(f.id).state());
+        }
+    }
+
+    @Test void preparationCommitConsumesCurrentSelfAndPreservesOriginalPlan() {
+        for (var state : SideTaskWorldPort.PreparationState.values()) {
+            var f = new Fixture();
+            f.prepare();
+            String payload = DeathPreparation.resumePayload(f.active());
+            var history = f.chain.satisfiedStages();
+            var trade = f.chain.currentPrimary().subtasks();
+            assertTrue(DeathPreparation.settle(f.chain, payload, false, "preparation_settlement_in_progress"));
+            f.sample = self(f.id, state == SideTaskWorldPort.PreparationState.READY, false,
+                    state == SideTaskWorldPort.PreparationState.UNKNOWN);
+            var evidence = f.deathPreparationFacts(f.id, DeathPreparation.resumeTask(payload));
+            assertEquals(state, evidence.state());
+            var result = DeathPreparationHost.settlePreparation(f.chain, payload, "terminal reason", evidence);
+            boolean ready = state == SideTaskWorldPort.PreparationState.READY;
+            assertTrue(result.accepted(), state.name());
+            assertEquals(ready, result.verified());
+            assertEquals(ready ? evidence.reason() : "terminal reason; " + evidence.reason(), result.reason());
+            assertEquals(!ready, f.chain.isPaused("iron"));
+            assertEquals(history, f.chain.satisfiedStages());
+            assertEquals(trade, f.chain.currentPrimary().subtasks());
+            assertEquals("iron", f.chain.currentSubtask().id());
+        }
+    }
+
+    @Test void preparationCommitKeepsRejectedPayloadRevisionAndOwnerPaused() {
+        for (String rejected : List.of("payload", "revision", "owner")) {
+            var f = new Fixture();
+            f.prepare();
+            var task = f.active();
+            String payload = DeathPreparation.resumePayload(task);
+            assertTrue(DeathPreparation.settle(f.chain, payload, false, "preparation_settlement_in_progress"));
+            f.sample = self(f.id, true, false, false);
+            var evidence = f.deathPreparationFacts(f.id, task);
+            assertEquals(SideTaskWorldPort.PreparationState.READY, evidence.state());
+            if (rejected.equals("payload")) payload = "{";
+            else if (rejected.equals("revision")) f.chain.nextPlanRevision();
+            else payload = DeathPreparation.resumePayload(new SideTask(task.companionId(),
+                    task.instanceId() + "-other", task.typeId(), task.generation() + 1,
+                    task.scheduledGameDay(), task.createdAtGameTime(), task.deadlineGameTime(),
+                    task.state(), task.phase(), task.data(), task.mainlineToken()));
+            String before = f.chain.toJson();
+            var result = DeathPreparationHost.settlePreparation(f.chain, payload, "old reason", evidence);
+            assertFalse(result.accepted(), rejected);
+            assertTrue(result.verified(), "fresh READY does not override settlement refusal");
+            assertEquals(evidence.reason(), result.reason());
+            assertEquals(before, f.chain.toJson(), rejected);
         }
     }
 

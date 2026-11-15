@@ -1681,10 +1681,11 @@ private static String withAssets(UUID companionId, String rddContext) {
             if (preparationHandled && preparationIdentityValid) {
                 // Recheck at the commit boundary; an old COMPLETE event is not current wearing evidence.
                 var evidence = SideTaskHost.deathPreparationResult(companionId, preparePayload);
-                prepareVerified = evidence.state() == com.dwinovo.numen.rdd.side.SideTaskWorldPort.PreparationState.READY;
-                prepareReason = (prepareVerified ? "" : prepareReason + "; ") + evidence.reason();
                 var rt = runtime(companionId);
-                if (!com.dwinovo.numen.rdd.side.death.DeathPreparation.settle(rt.chain(), preparePayload, prepareVerified, prepareReason)) return false;
+                var preparation = DeathPreparationHost.settlePreparation(rt.chain(), preparePayload, prepareReason, evidence);
+                if (!preparation.accepted()) return false;
+                prepareVerified = preparation.verified();
+                prepareReason = preparation.reason();
                 if (!prepareVerified) {
                     var body = RddCompanionBody.get(companionId);
                     if (body != null) com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(body, "recovery_not_verified");

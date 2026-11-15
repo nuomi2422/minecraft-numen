@@ -48,6 +48,16 @@ final class DeathPreparationHost {
                     + "|" + task.data().getOrDefault("prepare_retries", "0") : "");
     }
 
+    record PreparationSettlement(boolean accepted, boolean verified, String reason) {}
+
+    /** Consume the shell's commit-boundary SELF facts; identity, IO and body effects stay in the shell. */
+    static PreparationSettlement settlePreparation(com.dwinovo.numen.rdd.core.TaskChain chain, String payload,
+                                                    String previousReason, SideTaskWorldPort.PreparationFacts evidence) {
+        boolean verified = evidence.state() == SideTaskWorldPort.PreparationState.READY;
+        String reason = (verified ? "" : previousReason + "; ") + evidence.reason();
+        return new PreparationSettlement(DeathPreparation.settle(chain, payload, verified, reason), verified, reason);
+    }
+
     /** 2026-11-13: recheck a proven fresh paused body before the existing bounded retry path. */
     static boolean holdRecoveryPause(UUID id, SideTaskEngine engine, com.dwinovo.numen.rdd.core.TaskChain chain,
                                      SideTaskWorldPort port, Runnable retryActivated) {
