@@ -16,8 +16,8 @@ import java.util.function.Function;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Selected-endpoint facade regression source: same queued resolver as production, no Minecraft/config/HTTP.
- * Why not load ProviderLibrary here: that would read a player's credentials instead of fake sentinels.
+ * Selected-endpoint facade regressions: real queued resolver, no Minecraft/live config/HTTP.
+ * Use temporary ProviderLibrary stores rather than its singleton, so no player credentials are read.
  * Run through the existing api:common test entry when Java testing is authorized; source alone is not a pass.
  */
 class CompanionEndpointTest {
@@ -195,6 +195,78 @@ class CompanionEndpointTest {
         });
         resolving.queue.runAll();
         assertNull(changed.join()); assertEquals(0, resolving.bindingReads);
+    }
+
+    @Test void savedProfilesReloadIntoRealExecutionBindingAndIndependentPlanner(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var file = dir.resolve("providers.json");
+        var lib = profileLibrary(file);
+        var execution = lib.create("execution dummy", "openai", "executor-model", "FAKE_EXECUTOR_ONLY",
+                "https://executor.invalid/v1", "high", "executor-proxy", 0);
+        var planner = lib.create("planner dummy", "deepseek", "planner-model", "FAKE_PLANNER_ONLY",
+                "https://planner.invalid/v1", "off", "planner-proxy", 0);
+        lib.setPlannerEntryId(planner.id());
+        com.dwinovo.numen.client.agent.CompanionHome.init(dir);
+        try {
+            com.dwinovo.numen.client.agent.CompanionHome.bind(A,
+                    com.dwinovo.numen.client.agent.CompanionHome.Binding.EMPTY.withProvider(execution.id()));
+            var reloaded = profileLibrary(file); loadLibrary(reloaded);
+            com.dwinovo.numen.client.agent.CompanionHome.init(null);
+            com.dwinovo.numen.client.agent.CompanionHome.init(dir);
+            assertEquals(execution, reloaded.get(execution.id()));
+            assertEquals(planner, reloaded.get(planner.id()));
+            assertEquals(execution.id(), com.dwinovo.numen.client.agent.CompanionHome.binding(A).providerId());
+            var queue = new Queue();
+            Function<UUID, String> binding = id -> {
+                assertTrue(queue.client);
+                return com.dwinovo.numen.client.agent.CompanionHome.binding(id).providerId();
+            };
+            var actualExecution = NumenGateway.companionEndpoint(A, queue, id -> true,
+                    binding, reloaded::resolve, () -> 7L);
+            var actualPlanner = NumenGateway.plannerEndpoint(A, queue, id -> true,
+                    reloaded::plannerEntryId, binding, reloaded::resolve, () -> 7L);
+            assertFalse(actualExecution.isDone()); assertFalse(actualPlanner.isDone());
+            queue.runAll();
+            assertEquals(reloaded.resolve(execution.id()), actualExecution.join());
+            assertEquals(reloaded.resolve(planner.id()), actualPlanner.join());
+            assertEquals(execution.id(), com.dwinovo.numen.client.agent.CompanionHome.binding(A).providerId());
+        } finally {
+            com.dwinovo.numen.client.agent.CompanionHome.init(null);
+        }
+    }
+
+    @Test void explicitlyInheritedPlannerReloadsAndConsumesPersistedExecutionProfile(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var file = dir.resolve("providers.json");
+        var lib = profileLibrary(file);
+        var execution = lib.create("execution dummy", "openai", "executor-model", "FAKE_EXECUTOR_ONLY",
+                "https://executor.invalid/v1", "high", "executor-proxy", 0);
+        lib.setPlannerEntryId(null);
+        com.dwinovo.numen.client.agent.CompanionHome.init(dir);
+        try {
+            com.dwinovo.numen.client.agent.CompanionHome.bind(A,
+                    com.dwinovo.numen.client.agent.CompanionHome.Binding.EMPTY.withProvider(execution.id()));
+            var reloaded = profileLibrary(file); loadLibrary(reloaded);
+            com.dwinovo.numen.client.agent.CompanionHome.init(null);
+            com.dwinovo.numen.client.agent.CompanionHome.init(dir);
+            assertNull(reloaded.plannerEntryId());
+            assertEquals(execution, reloaded.get(execution.id()));
+            var queue = new Queue();
+            var resolvedIds = new ArrayList<String>();
+            var selected = NumenGateway.plannerEndpoint(A, queue, id -> true,
+                    reloaded::plannerEntryId,
+                    id -> {
+                        assertTrue(queue.client);
+                        return com.dwinovo.numen.client.agent.CompanionHome.binding(id).providerId();
+                    }, id -> { resolvedIds.add(id); return reloaded.resolve(id); }, () -> 7L);
+            assertFalse(selected.isDone());
+            queue.runAll();
+            assertEquals(reloaded.resolve(execution.id()), selected.join());
+            assertEquals(List.of(execution.id()), resolvedIds);
+            assertEquals(execution.id(), com.dwinovo.numen.client.agent.CompanionHome.binding(A).providerId());
+        } finally {
+            com.dwinovo.numen.client.agent.CompanionHome.init(null);
+        }
     }
 
     @Test void plannerReferenceRoundTripsAndDeletedSelectionNeverTurnsIntoInheritance(
