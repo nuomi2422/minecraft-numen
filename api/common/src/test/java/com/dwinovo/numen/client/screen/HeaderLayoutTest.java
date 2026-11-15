@@ -138,4 +138,30 @@ class HeaderLayoutTest {
         for (int i = 0; i < count; i++) total += parts[i] + (i == 0 ? 0 : GAP);
         return total;
     }
+
+    @Test
+    void renderedTabTextFitsItsAllocatedWidthIncludingPadding() {
+        String[] labels = {KEYS[0] + ".untranslated.long.key", KEYS[1] + ".untranslated.long.key",
+                KEYS[2] + ".untranslated.long.key"};
+        for (int available : new int[]{0, 1, 23, 24, 50, 364}) {
+            int[] tabX = new int[3], tabW = new int[3];
+            HeaderLayout.layoutTabs(LEFT, available, widths(labels), tabX, tabW);
+            for (int i = 0; i < labels.length; i++) {
+                // This is the exact text producer consumed by renderTabs, not just tab geometry.
+                String text = HeaderLayout.tabLabel(labels[i], tabW[i], HeaderLayoutTest::width);
+                assertTrue(width(text) <= Math.max(0, tabW[i] - 10), "actual label exceeds its padded tab");
+                if (!text.isEmpty()) {
+                    assertTrue(tabX[i] + 5 >= LEFT);
+                    assertTrue(tabX[i] + 5 + width(text) <= tabX[i] + tabW[i] - 5);
+                    assertTrue(tabX[i] + 5 + width(text) <= LEFT + available);
+                }
+            }
+        }
+        assertEquals("Chat", HeaderLayout.tabLabel("Chat", 34, HeaderLayoutTest::width));
+        assertEquals("", HeaderLayout.tabLabel("Chat", 0, HeaderLayoutTest::width));
+        assertEquals("", HeaderLayout.tabLabel("Chat", 15, HeaderLayoutTest::width));
+        assertEquals("…", HeaderLayout.tabLabel("Chat", 16, HeaderLayoutTest::width));
+        assertEquals("Persona", HeaderLayout.clip("Persona", 50, HeaderLayoutTest::width));
+        assertEquals("Re…", HeaderLayout.clip("Respawn 123s", 23, HeaderLayoutTest::width));
+    }
 }

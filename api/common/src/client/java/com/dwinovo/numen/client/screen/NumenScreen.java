@@ -1209,12 +1209,14 @@ public final class NumenScreen extends Screen {
     private void renderTabs(GuiGraphics g, int mouseX, int mouseY) {
         String[] labels = tabLabels();
         for (int i = 0; i < 3; i++) {
+            if (tabW[i] <= 0) continue;
             boolean active = tab == Tab.values()[i];
             boolean hover = mouseX >= tabX[i] && mouseX < tabX[i] + tabW[i]
                     && mouseY >= top && mouseY < top + HEADER_H;
             int color = (active || hover) ? ON_BAND : (0x00FFFFFF & ON_BAND) | 0xA0000000;   // dim on band
-            txt(g, Component.literal(labels[i]), tabX[i] + 5, top + 7, color);
-            if (active) {                                                                     // gold CTA underline
+            String label = HeaderLayout.tabLabel(labels[i], tabW[i], font::width);
+            if (!label.isEmpty()) txt(g, Component.literal(label), tabX[i] + 5, top + 7, color);
+            if (active && tabW[i] > 6) {                                                       // gold CTA underline
                 g.fill(tabX[i] + 3, top + HEADER_H - 4, tabX[i] + tabW[i] - 3, top + HEADER_H - 1, ACCENT);
             }
         }
