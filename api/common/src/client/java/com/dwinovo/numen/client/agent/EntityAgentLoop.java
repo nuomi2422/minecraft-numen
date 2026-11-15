@@ -1540,7 +1540,7 @@ public final class EntityAgentLoop {
         pushEvent(EventTypes.EVENT, com.dwinovo.numen.event.NumenEvents.compose(
                 dayTime, com.dwinovo.numen.event.NumenEvents.Kind.DEATH, null,
                 "你刚才死了(" + cause + "),背包里的东西全掉在死亡地点了;"
-                        + "现已在主人身边复活。先看看状况再决定下一步。"),
+                        + "现已复活。先确认当前位置和身体状况再决定下一步。"),
                 System.currentTimeMillis(), true);
         // dead 在开头已复位,停牌自动解除:下个 tick 一问熟度就发现急件,连同死亡
         // 期间攒下的一切(事件、主人说的话)一起走。

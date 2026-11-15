@@ -11,9 +11,13 @@ final class RespawnEventSnapshot {
 
     private RespawnEventSnapshot() {}
 
-    // Test-first extraction of the existing projection; no body relocation or spawn policy here.
+    // Read after Factory.spawn has completed every SPAWN callback; this never moves the body.
     static Map<String, String> attributes(Landing candidate, String candidateReason,
                                           Supplier<Landing> finalBody) {
-        return Map.of("dimension", candidate.dimension(), "pos", candidate.pos(), "reason", "owner_nearby");
+        Landing actual = finalBody.get();
+        String reason = candidate.equals(actual) ? candidateReason : "spawn_callback_relocated";
+        return Map.of("dimension", actual.dimension(), "pos", actual.pos(), "reason", reason,
+                "candidate_dimension", candidate.dimension(), "candidate_pos", candidate.pos(),
+                "candidate_reason", candidateReason);
     }
 }
