@@ -837,7 +837,7 @@ public final class TaskChain {
         requireMainline(generated);
         List<PrimaryGoal> primaries = new ArrayList<>(goal.primaryGoals());
         primaries.set(primaryIndex,
-                new PrimaryGoal(cur.id(), cur.description(), List.copyOf(generated), cur.waitFor(), false));
+                new PrimaryGoal(cur.id(), cur.description(), List.copyOf(generated), cur.waitFor(), false, cur.equipmentTarget()));
         goal = new Goal(goal.id(), goal.description(), primaries);
         for (Subtask s : generated) {
             statuses.put(s.id(), SubtaskStatus.PENDING);
@@ -1041,7 +1041,7 @@ public final class TaskChain {
         Set<String> freed = new HashSet<>();
         for (Subtask s : old) freed.add(s.id());
         List<PrimaryGoal> primaries = new ArrayList<>(goal.primaryGoals());
-        primaries.set(primaryIndex, new PrimaryGoal(cur.id(), cur.description(), List.copyOf(generated), cur.waitFor(), false));
+        primaries.set(primaryIndex, new PrimaryGoal(cur.id(), cur.description(), List.copyOf(generated), cur.waitFor(), false, cur.equipmentTarget()));
         goal = new Goal(goal.id(), goal.description(), primaries);
         for (String freedId : freed) {
             statuses.remove(freedId);
@@ -1093,7 +1093,7 @@ public final class TaskChain {
         PrimaryGoal cur = currentPrimary();
         List<PrimaryGoal> primaries = new ArrayList<>(goal.primaryGoals());
         primaries.set(primaryIndex,
-                new PrimaryGoal(cur.id(), cur.description(), List.copyOf(working), cur.waitFor(), false));
+                new PrimaryGoal(cur.id(), cur.description(), List.copyOf(working), cur.waitFor(), false, cur.equipmentTarget()));
         goal = new Goal(goal.id(), goal.description(), primaries);
         // 新增节点的状态表初始化；被删节点的运行时残留清掉（只可能是 PENDING，无基线/计数）
         for (Subtask s : working) {
@@ -1179,7 +1179,7 @@ public final class TaskChain {
         working.set(subtaskIndex, cur.withCondition(condition));
         List<PrimaryGoal> primaries = new ArrayList<>(goal.primaryGoals());
         primaries.set(primaryIndex, new PrimaryGoal(primary.id(), primary.description(),
-                List.copyOf(working), primary.waitFor(), false));
+                List.copyOf(working), primary.waitFor(), false, primary.equipmentTarget()));
         goal = new Goal(goal.id(), goal.description(), primaries);
         stateVersion++;            // 判据变了 = 安全提交（补丁/回执的 CAS 基准跟着走）
         return old;

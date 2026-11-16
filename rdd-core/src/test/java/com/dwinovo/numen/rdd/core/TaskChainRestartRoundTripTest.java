@@ -38,6 +38,57 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class TaskChainRestartRoundTripTest {
 
+    @Test
+    void equipmentTargetSurvivesFactoryExpansionReplacementRestartAndRaise() {
+        var slots = new LinkedHashMap<>(Map.of(
+                "feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                "chest", "minecraft:iron_chestplate", "head", "#minecraft:head_armor"));
+        var expected = Map.copyOf(slots);
+        var spec = new PrimarySpec("equipment", List.of(), slots);
+        slots.put("head", "minecraft:diamond_helmet");
+        assertEquals(expected, spec.equipmentTarget(), "spec must copy its caller's mutable map");
+        var c = new TaskChain(RddChainFactory.fromStages(
+                java.util.UUID.fromString("00000000-0000-0000-0000-000000000006"), "gear", List.of(spec)));
+        assertEquals(expected, c.currentPrimary().equipmentTarget());
+        assertThrows(UnsupportedOperationException.class,
+                () -> c.currentPrimary().equipmentTarget().put("head", "minecraft:diamond_helmet"));
+        c.expandCurrentPrimary(List.of(hc("first")));
+        assertEquals(expected, c.currentPrimary().equipmentTarget());
+        c.startCurrent();
+        c.enterReplanningFromNegotiation("different route, same obligation");
+        c.replaceCurrentSubtasks(List.of(hc("replacement")));
+        assertEquals(expected, c.currentPrimary().equipmentTarget());
+        var restored = TaskChain.fromJson(c.toJson());
+        assertEquals(expected, restored.currentPrimary().equipmentTarget());
+        restored.startCurrent();
+        assertEquals(1, restored.raiseCurrentMinimum("replacement", 2));
+        assertEquals(expected, restored.currentPrimary().equipmentTarget());
+        assertEquals(expected, TaskChain.fromJson(restored.toJson()).currentPrimary().equipmentTarget());
+    }
+
+    @Test
+    void legacyEquipmentObligationStaysAbsentAndInvalidTargetsAreRejected() {
+        var legacy = chain(new PrimaryGoal("p", "old equipment words", List.of(hc("s1"))));
+        legacy.startCurrent();
+        legacy.applyHardCodedResult("s1", true);
+        var oldJson = legacy.toJson();
+        assertFalse(oldJson.contains("equipmentTarget"), "legacy JSON has no typed obligation");
+        var restored = TaskChain.fromJson(oldJson);
+        assertNull(restored.currentPrimary().equipmentTarget());
+        assertEquals(SubtaskStatus.COMPLETED, restored.subtaskStatuses().get("s1"));
+        assertEquals(legacy.primaryStatus(), restored.primaryStatus());
+        assertNull(new PrimarySpec("legacy", List.of()).equipmentTarget());
+        assertNull(PrimaryGoal.unexpanded("old", "legacy", List.of()).equipmentTarget());
+        var invalid = List.of(Map.<String, String>of(), Map.of("chest", "minecraft:iron_chestplate"),
+                Map.of("feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                        "chest", "minecraft:iron_chestplate", "head", "not an id"));
+        for (var target : invalid) {
+            assertThrows(IllegalArgumentException.class, () -> new PrimarySpec("invalid", List.of(), target));
+            assertThrows(IllegalArgumentException.class,
+                    () -> PrimaryGoal.unexpanded("bad", "invalid", List.of(), target));
+        }
+    }
+
     // ── 夹具 ────────────────────────────────────────────────────────
 
     private static Subtask hc(String id) {

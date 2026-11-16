@@ -64,7 +64,7 @@ public final class RddChainFactory {
         for (int i = 0; i < stages.size(); i++) {
             PrimarySpec stage = stages.get(i);
             primaries.add(PrimaryGoal.unexpanded(
-                    "primary-" + suffix + "-" + i, stage.description(), stage.waitFor()));
+                    "primary-" + suffix + "-" + i, stage.description(), stage.waitFor(), stage.equipmentTarget()));
         }
         return new Goal("goal-" + suffix, obj, primaries);
     }
