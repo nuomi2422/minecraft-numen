@@ -51,6 +51,19 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class RddMainlineWiringPinTest {
 
+    @Test
+    void equipmentConditionsShareStrictRegistryTagMatcher() {
+        String facts = read(pluginSourceDir(), "RddWorldFacts.java");
+        String host = read(pluginSourceDir(), "SideTaskHost.java");
+        assertTrue(facts.contains("static boolean equipmentTag(String wanted, String actual)"));
+        assertFalse(facts.contains("private static boolean equipmentTag"), "package callers share the matcher");
+        assertTrue(facts.contains("!BuiltInRegistries.ITEM.containsKey(itemId)"), "unknown item must not resolve to air");
+        assertTrue(facts.contains("RddDeathEquipment.condition(sample, condition, RddWorldFacts::equipmentTag)"));
+        assertEquals(2, host.split("RddWorldFacts::equipmentTag", -1).length - 1, "facts and condition use the shared matcher");
+        assertFalse(host.contains("boolean equipmentTag("), "no second registry matcher in host");
+        assertFalse(host.contains("HostWorldPort::equipmentTag"));
+    }
+
     // ── 读源码 + 抽方法体 ───────────────────────────────────────────
 
     private static Path pluginSourceDir() {

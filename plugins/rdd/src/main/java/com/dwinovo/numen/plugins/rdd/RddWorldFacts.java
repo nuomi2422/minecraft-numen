@@ -242,7 +242,7 @@ public final class RddWorldFacts {
                 !off.isEmpty() && hit.test(off));
     }
 
-    private static boolean equipmentTag(String wanted, String actual) {
+    static boolean equipmentTag(String wanted, String actual) {
         ResourceLocation tagId = ResourceLocation.tryParse(WorldFactConditions.tagId(wanted));
         ResourceLocation itemId = ResourceLocation.tryParse(actual);
         if (tagId == null || itemId == null || !BuiltInRegistries.ITEM.containsKey(itemId)) return false;

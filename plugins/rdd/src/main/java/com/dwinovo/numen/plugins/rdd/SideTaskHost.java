@@ -759,19 +759,11 @@ final class SideTaskHost {
         @Override public PreparationFacts deathPreparationFacts(UUID companionId, SideTask task) {
             return DeathPreparationHost.facts(ap.getUUID(), companionId, task,
                     () -> RddDeathEquipment.facts(equipmentSample(), task, RddRepairDispatch.backupFromBase(companionId),
-                            HostWorldPort::equipmentTag));
+                            RddWorldFacts::equipmentTag));
         }
         @Override public Boolean deathPreparationCondition(UUID companionId, Map<String, Object> condition) {
             if (!ap.getUUID().equals(companionId)) return null;
-            return RddDeathEquipment.condition(equipmentSample(), condition, HostWorldPort::equipmentTag);
-        }
-        private static boolean equipmentTag(String tag, String item) {
-            var tagId = ResourceLocation.tryParse(tag.substring(1));
-            var itemId = ResourceLocation.tryParse(item);
-            if (tagId == null || itemId == null) return false;
-            var resolved = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(itemId);
-            return new net.minecraft.world.item.ItemStack(resolved).is(net.minecraft.tags.TagKey.create(
-                    net.minecraft.core.registries.Registries.ITEM, tagId));
+            return RddDeathEquipment.condition(equipmentSample(), condition, RddWorldFacts::equipmentTag);
         }
 
         private static BlockPos parseDeathAt(String raw) {
