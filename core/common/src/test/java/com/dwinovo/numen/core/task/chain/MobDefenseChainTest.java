@@ -18,26 +18,33 @@ class MobDefenseChainTest {
 
     @Test
     void tickScansOnceBeforeFightButStartLogKeepsFreshObservation() throws Exception {
-        var resource = MobDefenseChain.class.getResourceAsStream("MobDefenseChain.class");
-        assertTrue(resource != null);
-        byte[] bytes;
-        try (resource) { bytes = resource.readAllBytes(); }
-        var reader = new org.objectweb.asm.ClassReader(bytes);
-        int[] scans = new int[3];
-        reader.accept(new org.objectweb.asm.ClassVisitor(org.objectweb.asm.Opcodes.ASM9) {
-            @Override public org.objectweb.asm.MethodVisitor visitMethod(int access, String name, String desc,
-                    String signature, String[] exceptions) {
-                int slot = name.equals("tick") ? 0 : name.equals("canRun") ? 1 : name.equals("begin") ? 2 : -1;
-                if (slot < 0) return null;
-                return new org.objectweb.asm.MethodVisitor(org.objectweb.asm.Opcodes.ASM9) {
-                    @Override public void visitMethodInsn(int opcode, String owner, String method,
-                            String descriptor, boolean isInterface) {
-                        if (method.equals("dangersNear") && owner.endsWith("/MobDefenseChain")) scans[slot]++;
-                    }
-                };
-            }
-        }, 0);
-        org.junit.jupiter.api.Assertions.assertArrayEquals(new int[]{1, 1, 1}, scans);
+        // Source wiring regression only; not a simulated Minecraft combat test.
+        var root = java.nio.file.Path.of("").toAbsolutePath();
+        while (root != null && !java.nio.file.Files.isDirectory(root.resolve("core/common/src/main/java"))) {
+            root = root.getParent();
+        }
+        assertTrue(root != null, "must locate candidate source tree");
+        String source = java.nio.file.Files.readString(root.resolve(
+                "core/common/src/main/java/com/dwinovo/numen/core/task/chain/MobDefenseChain.java"));
+        String canRun = between(source, "public boolean canRun(NumenPlayer companion) {", "public TaskState tick(NumenPlayer companion) {");
+        String tick = between(source, "public TaskState tick(NumenPlayer companion) {", "private void begin(NumenPlayer companion) {");
+        String begin = between(source, "private void begin(NumenPlayer companion) {", "private static final long NO_DEADLINE");
+        org.junit.jupiter.api.Assertions.assertEquals(1, occurrences(canRun, "dangersNear(companion)"));
+        org.junit.jupiter.api.Assertions.assertEquals(1, occurrences(tick, "dangersNear(companion)"));
+        org.junit.jupiter.api.Assertions.assertEquals(1, occurrences(begin, "dangersNear(companion)"));
+        assertTrue(tick.contains("if (threat)"));
+        assertTrue(tick.contains("if (!threat)"));
+        assertTrue(begin.indexOf("fight.start(companion)") < begin.indexOf("dangersNear(companion)"));
+    }
+
+    private static String between(String source, String start, String end) {
+        int a = source.indexOf(start), b = source.indexOf(end, a + start.length());
+        assertTrue(a >= 0 && b > a, "source method boundaries must exist");
+        return source.substring(a, b);
+    }
+
+    private static int occurrences(String source, String needle) {
+        return (source.length() - source.replace(needle, "").length()) / needle.length();
     }
 
     @Test
