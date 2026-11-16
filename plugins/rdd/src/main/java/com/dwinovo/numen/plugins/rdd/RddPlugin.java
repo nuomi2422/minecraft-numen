@@ -2878,9 +2878,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
         }
         boolean on;
         try {
-            String content = Files.exists(bodyDispatchFlag)
-                    ? Files.readString(bodyDispatchFlag, StandardCharsets.UTF_8).trim() : "";
-            on = content.equalsIgnoreCase("on") || content.equalsIgnoreCase("run") || content.equals("1");
+            on = RddControlFlagReads.bodyDispatchEnabled(bodyDispatchFlag);
         } catch (IOException ex) {
             on = bodySubmissionEnabled; // 读失败保持当前
         }
@@ -2918,7 +2916,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
         if (pauseDisabledFlag == null) return;
         boolean disabled;
         try {
-            disabled = Files.exists(pauseDisabledFlag);
+            disabled = RddControlFlagReads.pauseDisabled(pauseDisabledFlag);
         } catch (RuntimeException ex) {
             disabled = !pauseEnabled;
         }
@@ -2936,10 +2934,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
         }
         boolean paused;
         try {
-            String content = Files.exists(supervisionFlag)
-                    ? Files.readString(supervisionFlag, StandardCharsets.UTF_8).trim() : "";
-            // 文件内容 "pause"/"0"/任意非空非 run → 暂停；删文件或写 "run" → 恢复
-            paused = !content.isEmpty() && !content.equalsIgnoreCase("run");
+            paused = RddControlFlagReads.supervisionPaused(supervisionFlag);
         } catch (IOException ex) {
             paused = !supervisionEnabled; // flag 读取失败保持当前状态
         }
