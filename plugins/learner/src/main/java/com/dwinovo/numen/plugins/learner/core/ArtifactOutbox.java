@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Predicate;
 
 /**
  * 学习者产物的<b>持久投递箱</b>（2026-10-04 夜间施工 · 第二批 B6/S2）。
@@ -229,6 +230,29 @@ public final class ArtifactOutbox {
 
     /** 按类别读出待下游处理的产物（有序、条数有上限）。 */
     public List<JsonObject> pending(Kind kind) {
+        return scan(kind, o -> Status.PENDING.name().equals(str(o, "status")));
+    }
+
+    /**
+     * 读出<b>任意状态</b>的产物记录（有序、条数有上限）。
+     *
+     * <p>为什么需要它（{@link #pending} 不够用）：
+     * <ul>
+     *   <li><b>人工/外层工程流要能看见被拒的</b> —— {@code pending} 只给 PENDING，
+     *       于是「AI 写了但下游拒收」这件事在读侧<b>完全不可见</b>，
+     *       那正是「回执说成功、实际没成」的哑故障形态。</li>
+     *   <li>携带器与自编译请求<b>还没有下游消费者</b>，它们的记录只会长期停在
+     *       {@code LANDED/PENDING} —— 全量列表是它们唯一能被看见的方式。</li>
+     * </ul>
+     *
+     * <p>每条附带 {@code _path}，方便人直接打开。坏文件跳过且<b>不删</b>（同 {@link #pending}）。
+     */
+    public List<JsonObject> list(Kind kind) {
+        return scan(kind, o -> true);
+    }
+
+    /** pending 与 list 共用的目录遍历：按同伴目录、文件名排序，坏文件跳过且不删，MAX_SCAN 截断。 */
+    private List<JsonObject> scan(Kind kind, Predicate<JsonObject> keep) {
         List<JsonObject> out = new ArrayList<>();
         Path dir = root.resolve(kind.wire());
         if (!Files.isDirectory(dir)) {
@@ -255,54 +279,7 @@ public final class ArtifactOutbox {
                 if (o == null) {
                     continue;
                 }
-                if (Status.PENDING.name().equals(str(o, "status"))) {
-                    o.addProperty("_path", f.toString());
-                    out.add(o);
-                }
-            }
-        }
-        return out;
-    }
-
-    /**
-     * 读出<b>任意状态</b>的产物记录（有序、条数有上限）。
-     *
-     * <p>为什么需要它（{@link #pending} 不够用）：
-     * <ul>
-     *   <li><b>人工/外层工程流要能看见被拒的</b> —— {@code pending} 只给 PENDING，
-     *       于是「AI 写了但下游拒收」这件事在读侧<b>完全不可见</b>，
-     *       那正是「回执说成功、实际没成」的哑故障形态。</li>
-     *   <li>携带器与自编译请求<b>还没有下游消费者</b>，它们的记录只会长期停在
-     *       {@code LANDED/PENDING} —— 全量列表是它们唯一能被看见的方式。</li>
-     * </ul>
-     *
-     * <p>每条附带 {@code _path}，方便人直接打开。坏文件跳过且<b>不删</b>（同 {@link #pending}）。
-     */
-    public List<JsonObject> list(Kind kind) {
-        List<JsonObject> out = new ArrayList<>();
-        Path dir = root.resolve(kind.wire());
-        if (!Files.isDirectory(dir)) {
-            return out;
-        }
-        List<Path> companions;
-        try (var s = Files.list(dir)) {
-            companions = s.filter(Files::isDirectory).sorted().toList();
-        } catch (IOException e) {
-            return out;
-        }
-        for (Path c : companions) {
-            List<Path> files;
-            try (var s = Files.list(c)) {
-                files = s.filter(p -> p.getFileName().toString().endsWith(".json")).sorted().toList();
-            } catch (IOException e) {
-                continue;
-            }
-            for (Path f : files) {
-                if (out.size() >= MAX_SCAN) {
-                    return out;
-                }
-                JsonObject o = parseQuietly(f);
-                if (o == null) {
+                if (!keep.test(o)) {
                     continue;
                 }
                 o.addProperty("_path", f.toString());
