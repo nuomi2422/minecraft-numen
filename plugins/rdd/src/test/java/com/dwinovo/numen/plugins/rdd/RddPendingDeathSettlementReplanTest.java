@@ -167,25 +167,32 @@ class RddPendingDeathSettlementReplanTest {
     }
 
     @Test void riskAndDependencyGatesRetainSameDeferredWithoutSpending(@TempDir Path dir) throws Exception {
+        boolean dependencyGateWasEnabled = TaskChain.dependencyGateActive();
+        // Production defaults this gate off by owner choice; exercise the existing enabled contract only here.
+        TaskChain.setDependencyGateEnabled(true);
+        try {
         Fixture f = new Fixture(dir, List.of(new AssetRequirement("minecraft:bread", 2)));
-        f.finishDropsAbsent();
-        Object pending = deferred().get(f.id);
-        setField("riskAllowed", false);
-        call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
-        assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
-        assertSame(pending, deferred().get(f.id));
-        setField("riskAllowed", true);
-        call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
-        assertEquals(PrimaryGoalStatus.WAITING, f.chain.primaryStatus());
-        assertSame(pending, deferred().get(f.id));
-        assertTrue(budget().isEmpty());
-        assertEquals(0, number("plannerRequests"));
-        assertFalse(trace().contains("kickoff_boundary"));
-        setField("observedCounts", Map.of("minecraft:bread", 2));
-        call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
-        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
-        assertEquals(1, number("plannerRequests"));
-        assertTrue(deferred().isEmpty());
+            f.finishDropsAbsent();
+            Object pending = deferred().get(f.id);
+            setField("riskAllowed", false);
+            call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
+            assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
+            assertSame(pending, deferred().get(f.id));
+            setField("riskAllowed", true);
+            call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
+            assertEquals(PrimaryGoalStatus.WAITING, f.chain.primaryStatus());
+            assertSame(pending, deferred().get(f.id));
+            assertTrue(budget().isEmpty());
+            assertEquals(0, number("plannerRequests"));
+            assertFalse(trace().contains("kickoff_boundary"));
+            setField("observedCounts", Map.of("minecraft:bread", 2));
+            call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
+            assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+            assertEquals(1, number("plannerRequests"));
+            assertTrue(deferred().isEmpty());
+            } finally {
+            TaskChain.setDependencyGateEnabled(dependencyGateWasEnabled);
+        }
     }
 
     @Test void secondConsumeOfSameOwnerDoesNotRequestOrChargeAgain(@TempDir Path dir) throws Exception {
