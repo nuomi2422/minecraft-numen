@@ -1,6 +1,7 @@
 package com.dwinovo.numen.rdd.core;
 
 import com.dwinovo.numen.rdd.api.*;
+import com.dwinovo.numen.rdd.core.TaskChainPatchValidator.PatchCheck;
 import com.dwinovo.numen.rdd.fact.StageKeyNormalizer;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -1354,8 +1355,6 @@ public final class TaskChain {
         return Map.copyOf(settleReasons);
     }
 
-    private record PatchCheck(PlanPatch.Receipt receipt, List<Subtask> working) {}
-
     private PatchCheck validatePatch(PlanPatch patch, long expectedVersion) {
         if (patch == null || patch.patchId() == null || patch.patchId().isBlank()) {
             return new PatchCheck(PlanPatch.Receipt.rejected("BAD_INPUT", "patch requires an id"), null);
@@ -1377,73 +1376,9 @@ public final class TaskChain {
                         "patch " + patch.patchId() + " was already committed at version " + e.getValue()), null);
             }
         }
-        List<Subtask> working = new ArrayList<>(currentPrimary().subtasks());
-        Set<String> allIds = new HashSet<>(statuses.keySet());
-        for (PlanPatch.Op op : patch.ops()) {
-            if (op == null || op.kind() == null || op.nodeId() == null || op.nodeId().isBlank()) {
-                return new PatchCheck(PlanPatch.Receipt.rejected("BAD_INPUT", "operation requires kind and nodeId"), null);
-            }
-            switch (op.kind()) {
-                case ADD_NODE -> {
-                    if (op.condition() == null || op.description() == null || op.description().isBlank()) {
-                        return new PatchCheck(PlanPatch.Receipt.rejected("BAD_INPUT",
-                                "ADD_NODE requires description and condition: " + op.nodeId()), null);
-                    }
-                    if (allIds.contains(op.nodeId()) || working.stream().anyMatch(s -> s.id().equals(op.nodeId()))) {
-                        return new PatchCheck(PlanPatch.Receipt.rejected("DUPLICATE_ID",
-                                "node id already used in chain: " + op.nodeId()), null);
-                    }
-                    working.add(Subtask.hardCoded(op.nodeId(), op.description(), op.condition()));
-                }
-                case REPLACE_PENDING, DROP_PENDING -> {
-                    int idx = -1;
-                    for (int i = 0; i < working.size(); i++) {
-                        if (working.get(i).id().equals(op.nodeId())) {
-                            idx = i;
-                            break;
-                        }
-                    }
-                    if (idx < 0) {
-                        return new PatchCheck(PlanPatch.Receipt.rejected("NODE_MISSING",
-                                "node not found in current primary: " + op.nodeId()), null);
-                    }
-                    if (statuses.get(op.nodeId()) != SubtaskStatus.PENDING) {
-                        return new PatchCheck(PlanPatch.Receipt.rejected("NODE_NOT_PENDING",
-                                "only not-yet-started nodes may be patched: " + op.nodeId()
-                                        + " is " + statuses.get(op.nodeId())), null);
-                    }
-                    // G3d 安全边界：只能改「当前节点及其之后」的待执行节点。
-                    // 改到当前索引之前的节点会让 subtaskIndex 错位（删一个前面的节点 =
-                    // 当前节点被挪到前一位，指针指向别人），那不是补丁，是重排。
-                    if (idx < subtaskIndex) {
-                        return new PatchCheck(PlanPatch.Receipt.rejected("NODE_BEFORE_CURSOR",
-                                "cannot patch a node before the current pointer: " + op.nodeId()), null);
-                    }
-                    if (op.kind() == PlanPatch.OpKind.DROP_PENDING) {
-                        if (working.size() <= 1) {
-                            return new PatchCheck(PlanPatch.Receipt.rejected("WOULD_EMPTY",
-                                    "patch would leave the current primary with no nodes"), null);
-                        }
-                        working.remove(idx);
-                    } else {
-                        if (op.condition() == null || op.description() == null || op.description().isBlank()) {
-                            return new PatchCheck(PlanPatch.Receipt.rejected("BAD_INPUT",
-                                    "REPLACE_PENDING requires description and condition: " + op.nodeId()), null);
-                        }
-                        Subtask old = working.get(idx);
-                        // 保留原 body（身体指令不属于补丁范围）；只换描述与完成条件
-                        working.set(idx, Subtask.hardCoded(op.nodeId(), op.description(), op.condition(), old.body()));
-                    }
-                }
-            }
-        }
-        if (working.isEmpty()) {
-            return new PatchCheck(PlanPatch.Receipt.rejected("WOULD_EMPTY", "patch left no nodes"), null);
-        }
-        if (working.stream().noneMatch(sub -> NodeTypePolicy.countsTowardMainline(sub.nodeType()))) {
-            return new PatchCheck(PlanPatch.Receipt.rejected("NO_MAINLINE", "DAILY sources cannot be the entire main plan"), null);
-        }
-        return new PatchCheck(PlanPatch.Receipt.ok(stateVersion), List.copyOf(working));
+        // Keep owner guards above the working-copy check, including the early input returns.
+        return TaskChainPatchValidator.checkOperations(
+                patch.ops(), currentPrimary().subtasks(), statuses, subtaskIndex, stateVersion);
     }
 
     /** RECOVERING 出口：停机恢复后宿主核实当前二级可继续 → 回到 ACTIVE，照常跑监督/完成判定。 */
