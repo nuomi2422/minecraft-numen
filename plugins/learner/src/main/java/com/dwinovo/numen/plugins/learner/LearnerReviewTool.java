@@ -1102,10 +1102,6 @@ final class LearnerReviewTool implements NumenTool {
         }
     }
 
-    private static long longOf(Object o) {
-        return o instanceof Number n ? n.longValue() : 0L;
-    }
-
     /**
      * 把这条判定的产物投进投递箱（B6/S2）。
      *

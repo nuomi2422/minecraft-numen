@@ -1,6 +1,5 @@
 package com.dwinovo.numen.plugins.learner.core;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -46,7 +45,6 @@ public final class FeedbackChannel {
     private FeedbackChannel() {
     }
 
-    private static final Gson GSON = new Gson();
 
     /** 单次拉取的行数上限。防止一次调用吐爆返回值（flow-gate/loop-gate 也会看返回体积）。 */
     public static final int MAX_LINES_PER_PULL = 200;

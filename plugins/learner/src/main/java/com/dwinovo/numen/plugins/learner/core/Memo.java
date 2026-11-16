@@ -314,29 +314,6 @@ public record Memo(
         return v.replaceAll("[^A-Za-z0-9_./-]", "").toLowerCase(java.util.Locale.ROOT);
     }
 
-    /** 明确为真：true/yes/1/有/存在，以及非否定词的非空物品名。 */
-    private static boolean truthy(String v) {
-        if (v == null) {
-            return false;
-        }
-        String t = v.trim();
-        if (t.isEmpty()) {
-            return false;
-        }
-        if (isNegative(t)) {
-            return false;
-        }
-        return !("false".equals(t) || "no".equals(t) || "0".equals(t) || "null".equals(t));
-    }
-
-    private static boolean isTrue(String v) {
-        if (v == null) {
-            return false;
-        }
-        String t = v.trim();
-        return "true".equals(t) || "yes".equals(t) || "1".equals(t) || "有".equals(t);
-    }
-
     private static boolean isNegative(String t) {
         return "none".equals(t) || "no".equals(t) || "false".equals(t) || "0".equals(t)
                 || "null".equals(t) || "nil".equals(t) || "无".equals(t) || "empty".equals(t);
@@ -354,15 +331,6 @@ public record Memo(
     private static boolean isAbsentToken(String t) {
         return "none".equals(t) || "no".equals(t) || "null".equals(t) || "nil".equals(t)
                 || "无".equals(t) || "empty".equals(t) || "unknown".equals(t) || "-".equals(t);
-    }
-
-    private static boolean containsAny(String hay, String... needles) {
-        for (String n : needles) {
-            if (hay.contains(n)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /** 从快照里粗抓血量，支持 {@code hp=12} / {@code "hp":12} / {@code 12/20}；抓不到返回 -1。 */

@@ -1,6 +1,5 @@
 package com.dwinovo.numen.plugins.learner.core;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -39,7 +38,6 @@ import java.util.UUID;
  */
 public final class SuppressedStore {
 
-    private static final Gson GSON = new Gson();
 
     private static final String PREFIX = "learner-suppressed-";
     private static final String SUFFIX = ".jsonl";

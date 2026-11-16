@@ -1,7 +1,6 @@
 package com.dwinovo.numen.plugins.learner.core;
 
 import com.dwinovo.numen.plugins.learner.contract.EvidenceRef;
-import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -72,7 +71,6 @@ public record Experience(
                 efficiency, evidence, experienceType, java.util.List.of());
     }
 
-    private static final Gson GSON = new Gson();
 
     /** 七字段的规范名（给 prompt 用，也给渲染用）。顺序即 {@code 45} §2 的顺序。 */
     public static final List<String> FIELDS = List.of(

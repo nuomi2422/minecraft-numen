@@ -302,14 +302,6 @@ final class LearnerIntakeTool implements NumenTool {
         return CandidateMemo.companionOf(ev);
     }
 
-    private static String str(Object v) {
-        if (v == null) {
-            return null;
-        }
-        String s = String.valueOf(v).trim();
-        return s.isEmpty() ? null : s;
-    }
-
     private static String nz(String s) {
         return s == null ? "" : s;
     }
