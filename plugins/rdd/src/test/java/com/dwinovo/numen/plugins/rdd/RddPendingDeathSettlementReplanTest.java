@@ -66,7 +66,7 @@ class RddPendingDeathSettlementReplanTest {
                 + method(source, "    static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation, String soldierHint) {")
                 + request
                 + "public static void detectorAdmission(UUID id) { var ap = new Body(id); var rt = runtime(id); var chain = rt.chain(); var ps = chain.primaryStatus();\n"
-                + admission + " SubtaskStatus status = chain.currentSubtaskStatus();\n"
+                + admission + " SubtaskStatus status = chain.currentSubtaskStatus(); Map<String,Integer> counts = countInventory(ap);\n"
                 + failed + " if (status == SubtaskStatus.RUNNING) trace.add(\"kickoff_boundary\"); }\n"
                 + detectorExcerpt(method(detector, "    private void parkRejectedDeathReplan("))
                 + detectorExcerpt(method(detector, "    private void handleSubtaskFailure("))
