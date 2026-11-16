@@ -33,11 +33,11 @@ final class DeathEquipmentDeclarations {
         for (PrimaryGoal primary : chain.goal().primaryGoals()) {
             boolean current = primary.id().equals(chain.currentPrimary().id());
             for (Subtask sub : primary.subtasks()) {
-                if (boundary) { declarationKey(sub.condition()).ifPresent(later::add); continue; }
+                if (boundary) { later.addAll(declarationKeys(sub.condition())); continue; }
                 Map<String, Object> c = sub.condition();
                 if (chain.subtaskStatuses().get(sub.id()) != SubtaskStatus.SKIPPED
                         && !Boolean.TRUE.equals(c.get("optional"))) {
-                    declarationKey(c).ifPresent(reached::add);
+                    reached.addAll(declarationKeys(c));
                     if ("equipment".equals(c.get("type"))) {
                         if (!WorldFactConditions.valid(c)) return unknownSelection("invalid_equipment_declaration");
                         selected.put(wearKey(c), c);
@@ -83,12 +83,19 @@ final class DeathEquipmentDeclarations {
                 selected.isEmpty() ? "no_applicable_equipment_obligation" : "equipment_recheck_required");
     }
 
-    private static Optional<String> declarationKey(Map<String, Object> c) {
+    private static Set<String> declarationKeys(Map<String, Object> c) {
+        if ("equipment".equals(c.get("type")) && c.containsKey("slots")) {
+            if (!WorldFactConditions.valid(c)) return Set.of();
+            var keys = new LinkedHashSet<String>();
+            for (Object wanted : ((Map<?, ?>) c.get("slots")).values()) keys.add((String) wanted);
+            return keys;
+        }
         Object raw = "equipment".equals(c.get("type")) ? c.get("item") : c.get("asset_key");
-        return raw instanceof String s ? Optional.of(s) : Optional.empty();
+        return raw instanceof String s ? Set.of(s) : Set.of();
     }
 
     private static String wearKey(Map<String, Object> c) {
+        if (c.containsKey("slots")) return "wear:armor-set:" + c.getOrDefault("dimension", "");
         String slot = String.valueOf(c.getOrDefault("slot", "any"));
         slot = switch (slot) { case "boots" -> "feet"; case "leggings" -> "legs";
             case "chestplate" -> "chest"; case "helmet" -> "head"; default -> slot; };

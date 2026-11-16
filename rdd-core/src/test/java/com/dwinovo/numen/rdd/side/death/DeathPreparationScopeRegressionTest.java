@@ -220,6 +220,60 @@ class DeathPreparationScopeRegressionTest {
         assertFalse(terminal.get(0).containsKey("prepareResume"));
         assertEquals("mine",c.currentSubtask().id());
     }
+    @Test void reachedArmorGroupStaysAtomicAndReachesAllFourImportantDeclarations() {
+        var slots = Map.of("feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                "chest", IRON, "head", "minecraft:iron_helmet");
+        var armor = Map.<String,Object>of("type", "equipment", "slots", slots, "dimension", "minecraft:overworld");
+        var c = new TaskChain(new Goal("g", "finish", List.of(new PrimaryGoal("p", "gear then trade", List.of(
+                Subtask.hardCoded("worn", "wear armor", armor),
+                Subtask.hardCoded("trade", "trade", Map.of("asset_key", "minecraft:emerald", "minimum", 20)),
+                Subtask.hardCoded("future", "later armor check", armor))))));
+        c.startCurrent(); c.applyHardCodedResult("worn", true); c.startCurrent();
+        String original = c.toJson();
+        assertEquals(List.of(armor), DeathPreparation.targets(c, Map.of(), Map.of()), "one atomic four-slot target, not four steps");
+        var semantics = new LinkedHashMap<String,AssetSemantics>();
+        for (String key : slots.values()) semantics.put(key, new AssetSemantics(key, AssetSemantics.Importance.IMPORTANT,
+                AssetSemantics.Nature.EQUIPMENT, "g", "2", "explicit declaration", List.of()));
+        var targets = DeathPreparation.targets(c, semantics, Map.of());
+        assertEquals(5, targets.size(), "each reached value must retain its important stock declaration despite a future recheck");
+        assertTrue(targets.contains(armor));
+        for (String key : slots.values()) assertTrue(targets.contains(Map.of("asset_key", key, "minimum", 2, "mode", "hold")), key);
+        var engine = start(c, new Port(), new ArrayList<>(), Map.of());
+        assertEquals(List.of(armor), DeathPreparation.conditions(engine.current(C).orElseThrow(), DeathPreparation.TARGETS));
+        assertEquals(original, c.toJson());
+    }
+    @Test void futureArmorGroupWaitsForCursorAndKeepsLegacySlotDedupSeparate() {
+        var slots = Map.of("feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                "chest", IRON, "head", "minecraft:iron_helmet");
+        var armor = Map.<String,Object>of("type", "equipment", "slots", slots);
+        var upgradedSlots = new LinkedHashMap<>(slots); upgradedSlots.put("chest", DIAMOND);
+        var upgraded = Map.<String,Object>of("type", "equipment", "slots", upgradedSlots);
+        var oldHead = Map.<String,Object>of("type", "equipment", "item", "minecraft:golden_helmet", "slot", "helmet");
+        var head = Map.<String,Object>of("type", "equipment", "item", "minecraft:diamond_helmet", "slot", "head");
+        var entry = slots.values().stream().map(AssetRequirement::new).toList();
+        var c = new TaskChain(new Goal("g", "finish", List.of(new PrimaryGoal("p", "gear", List.of(
+                Subtask.hardCoded("old-head", "old helmet", oldHead),
+                Subtask.hardCoded("head", "current helmet", head),
+                Subtask.hardCoded("mine", "mine", Map.of("asset_key", "minecraft:iron_ingot", "minimum", 8)),
+                Subtask.hardCoded("future", "future armor", armor),
+                Subtask.hardCoded("upgrade", "later armor", upgraded)), entry))));
+        c.startCurrent(); c.applyHardCodedResult("old-head", true); c.startCurrent();
+        c.applyHardCodedResult("head", true); c.startCurrent();
+        var wearSlots = new LinkedHashMap<String,String>();
+        var semantics = new LinkedHashMap<String,AssetSemantics>();
+        for (var slot : slots.entrySet()) {
+            wearSlots.put(slot.getValue(), slot.getKey());
+            semantics.put(slot.getValue(), new AssetSemantics(slot.getValue(), AssetSemantics.Importance.IMPORTANT,
+                    AssetSemantics.Nature.EQUIPMENT, "g", "2", "explicit declaration", List.of()));
+        }
+        String original = c.toJson();
+        assertEquals(List.of(head), DeathPreparation.targets(c, semantics, wearSlots), "future group values must also bound entry declarations");
+        assertEquals(original, c.toJson());
+        c.applyHardCodedResult("mine", true); c.startCurrent();
+        assertEquals(List.of(head, armor), DeathPreparation.targets(c, Map.of(), Map.of()), "head-only and atomic armor have separate owners");
+        c.applyHardCodedResult("future", true); c.startCurrent();
+        assertEquals(List.of(head, upgraded), DeathPreparation.targets(c, Map.of(), Map.of()), "later same-scope armor replaces only the prior whole group");
+    }
     @Test void corruptedOrOverBudgetDeclarationsRemainUnknownNotNoObligation() {
         var c=trading(); var p=new Port(); var events=new ArrayList<Map<String,Object>>(); var engine=start(c,p,events,Map.of());
         var task=engine.current(C).orElseThrow(); var data=new LinkedHashMap<>(task.data());

@@ -92,7 +92,7 @@ public final class WorldFactConditions {
     }
 
     /**
-     * 装备事实只表示当前槽位内容，不证明本步穿戴动作或完整套装。
+     * 装备事实只表示当前槽位内容，不证明本步穿戴动作完成。
      * 未实现的字段（例如 mode=acquire）不能悄悄退化成当前持有。
      */
     /** 2026-11-11: wheat existence must not satisfy a maturity requirement. */
@@ -115,6 +115,18 @@ public final class WorldFactConditions {
     }
 
     private static boolean equipmentValid(Map<String, Object> condition) {
+        if (condition.containsKey("slots")) {
+            if (!(condition.get("slots") instanceof Map<?, ?> slots)
+                    || !slots.keySet().equals(Set.of("feet", "legs", "chest", "head"))) return false;
+            var allowed = Set.of("type", "slots", "dimension", "optional");
+            for (Object key : condition.keySet()) {
+                if (key == null || !allowed.contains(key)) return false;
+            }
+            for (Object wanted : slots.values()) {
+                if (!tag(wanted)) return false;
+            }
+            return !condition.containsKey("optional") || condition.get("optional") instanceof Boolean;
+        }
         if (!Set.of("type", "item", "slot", "minimum", "dimension", "optional")
                 .containsAll(condition.keySet())) return false;
         if (!tag(condition.get("item"))) return false;
@@ -147,11 +159,13 @@ public final class WorldFactConditions {
         return equipmentSlotsSatisfied(condition, feet, legs, chest, head, false, false);
     }
 
-    /** 六个布尔量须来自同一次服务端采样；`any` 覆盖主手、副手与四护甲槽。 */
+    /** 六个布尔量须来自同一次服务端采样；`any` 覆盖主手、副手与四护甲槽。
+     *  `slots` 各护甲布尔量须匹配该槽自己的 wanted，四槽同时满足才通过，不证明本步穿戴动作。 */
     public static boolean equipmentSlotsSatisfied(Map<String, Object> condition,
                                                    boolean feet, boolean legs, boolean chest, boolean head,
                                                    boolean mainhand, boolean offhand) {
         if (!valid(condition) || !"equipment".equals(condition.get("type"))) return false;
+        if (condition.containsKey("slots")) return feet && legs && chest && head;
         int slot = condition.containsKey("slot") ? equipmentSlotIndex(condition.get("slot")) : -1;
         boolean[] matched = {feet, legs, chest, head, mainhand, offhand};
         int count = 0;
