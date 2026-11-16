@@ -352,6 +352,13 @@ final class RddPlanGuard {
                 dropped.add("判据不覆盖描述（" + String.join("；", gaps)
                         + "）→ 请拆成两步：先备方块、再备武器："
                         + (spec.description() == null ? "" : spec.description()));
+                // 2026-11-17 V02：必需 MAIN 步骤不能静默消失后只装可完成前缀；
+                // 回到既有有界空计划恢复。可选升级/维护类仍按原策略裁剪。
+                if (spec.nodeType() == NodeType.MAIN
+                        && !RddPlanningPolicy.optionalAsset(assetKeyOf(spec))
+                        && !looksMaintenance(spec.description())) {
+                    return new Filtered(List.of(), List.copyOf(dropped), List.copyOf(reused));
+                }
                 continue;
             }
             String assetKey = assetKeyOf(spec);

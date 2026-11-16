@@ -313,12 +313,13 @@ final class RddDecomposer {
             }
             LlmToolCall call = turn.toolCalls().get(0);
             // 守门：硬规则由代码执行，模型不听也要拦住（未要求的可选升级、已持有的资产）
-            RddMiningCapabilityCheck.filter(miningContext, parse(call.arguments()), objective,
+            var parsed = RddStageBSpecParser.parseDetailed(call.arguments());
+            RddMiningCapabilityCheck.filter(miningContext, parsed.specs(), objective,
                     snapshot.availableCounts(), guarded -> {
                         RddPlanningKnowledge.publishPolicy(companionId, "fallback",
                                 RddPlanningPolicy.appliedRules(objective, "fallback"),
                                 guarded.dropped(), guarded.reused());
-                        List<SubtaskSpec> specs = guarded.allowed();
+                        List<SubtaskSpec> specs = stageBPublished(parsed, guarded);
                         if (specs.isEmpty()) {
                             LOG.warn("[rdd] 分解结果不可用，回落占位链");
                             done.accept(fallbackGoal(companionId, objective));
@@ -419,6 +420,9 @@ final class RddDecomposer {
      * 可选升级裁剪、已持有复用、DAILY 跳过仍按原 allowed 发布。
      */
     static List<SubtaskSpec> stageBPublished(RddStageBSpecParser.Parsed parsed, RddPlanGuard.Filtered guarded) {
+        if (!parsed.skippedRequired().isEmpty()) {
+            return List.of();
+        }
         return guarded.allowed();
     }
 
