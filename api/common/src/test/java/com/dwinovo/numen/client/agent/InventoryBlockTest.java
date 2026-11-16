@@ -18,7 +18,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * 挂进请求的那块背包长什么样。它是模型每一轮都会读的东西——数错了、漏了主手,她会照着
- * 错的事实决定下一步,而且不会有任何报错。需要 MC 注册表。
+ * 错的事实决定下一步,而且不会有任何报错。需要 MC 注册表；默认 test 排除 mc 标签，
+ * bootstrap 失败还会 assume-skip，不能将这组算作纯 JVM 回归通过。
  */
 @Tag("mc")
 class InventoryBlockTest {
@@ -224,6 +225,38 @@ class InventoryBlockTest {
         String block = EntityAgentLoop.renderInventory(snapshot(0, ItemStack.EMPTY));
         assertTrue(block.contains("get_self_status"), block);
         assertTrue(block.contains("inspect_gui"), block);
+    }
+
+    @Test
+    void extractedRendererKeepsTheWholeInventoryBlockByteForByte() {
+        assumeTrue(booted, "requires Minecraft registry bootstrap; default test excludes mc");
+        var body = snapshot(0, new ItemStack(Items.TORCH, 12),
+                new ItemStack(Items.FURNACE, 64), new ItemStack(Items.DIRT, 3),
+                new ItemStack(Items.COBBLESTONE, 5), new ItemStack(Items.DIRT, 2));
+        String expected = "<inventory>Your backpack right now, totalled across all 36 backpack slots — trust it, "
+                + "do not spend a call on get_self_status to rediscover it. "
+                + "Call inspect_gui only when exact slots matter. A newer tool result wins over this."
+                + "\ncarrying=minecraft:furnace x64, minecraft:cobblestone x5, minecraft:dirt x5"
+                + "\nholding (already counted above)=main minecraft:furnace, off minecraft:torch</inventory>";
+        assertEquals(expected, BodySnapshotRenderer.renderInventory(body));
+        assertEquals(expected, EntityAgentLoop.renderInventory(body));
+        assertEquals(expected, EntityAgentLoop.renderInventoryForExecution(body));
+    }
+
+    @Test
+    void extractedEffectsKeepOrderInfiniteAndSubsecondWithoutExpiredSeparators() {
+        assumeTrue(booted, "requires Minecraft registry bootstrap; default test excludes mc");
+        var body = withEffects(1_000L,
+                new net.minecraft.world.effect.MobEffectInstance(
+                        net.minecraft.world.effect.MobEffects.POISON, 10, 0),
+                new net.minecraft.world.effect.MobEffectInstance(
+                        net.minecraft.world.effect.MobEffects.DAMAGE_RESISTANCE, -1, 1),
+                new net.minecraft.world.effect.MobEffectInstance(
+                        net.minecraft.world.effect.MobEffects.POISON, 19, 0));
+        assertEquals("resistance 2 (infinite), poison (0s left)",
+                BodySnapshotRenderer.renderEffects(body, 1_500L));
+        assertEquals(BodySnapshotRenderer.renderEffects(body, 1_500L),
+                EntityAgentLoop.renderEffects(body, 1_500L));
     }
 
     // ==================== mainHand 本身 ====================
