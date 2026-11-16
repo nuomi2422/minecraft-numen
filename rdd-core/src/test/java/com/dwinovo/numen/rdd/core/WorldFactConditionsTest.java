@@ -54,4 +54,91 @@ class WorldFactConditionsTest {
         explicitNull.put("minimum", null);
         assertFalse(WorldFactConditions.valid(explicitNull));
     }
+
+    @Test void equipmentSlotsSchemaAcceptsCompleteCanonicalArmorRequirements() {
+        var slots = Map.of("feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                "chest", "minecraft:iron_chestplate", "head", "minecraft:iron_helmet");
+        var fullArmor = Map.<String, Object>of("type", "equipment", "slots", slots);
+        var taggedSlots = Map.of("feet", "#minecraft:foot_armor", "legs", "#minecraft:leg_armor",
+                "chest", "#minecraft:chest_armor", "head", "#minecraft:head_armor");
+        assertAll(
+                () -> assertTrue(WorldFactConditions.valid(fullArmor), "A complete canonical armor map is a valid equipment fact"),
+                () -> assertTrue(WorldFactConditions.valid(Map.of("type", "equipment", "slots", taggedSlots))),
+                () -> assertTrue(WorldFactConditions.valid(Map.of("type", "equipment", "slots", slots,
+                        "dimension", "minecraft:overworld", "optional", true))),
+                () -> assertTrue(WorldFactConditions.valid(Map.of("type", "equipment", "slots", slots, "optional", false))));
+    }
+
+    @Test void equipmentSlotsRequireEveryArmorHitFromOneSampleNotHandsOrInventory() {
+        var fullArmor = Map.<String, Object>of("type", "equipment", "slots", Map.of(
+                "feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                "chest", "minecraft:iron_chestplate", "head", "minecraft:iron_helmet"));
+        // Each hit matches that slot against its own wanted item in the same server sample, not independent scans.
+        // This pure boolean core proves current full wear only, never that a wear action completed in this step.
+        assertAll(
+                () -> assertTrue(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, true, true, true, true)),
+                () -> assertTrue(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, true, true, true, true, false, false)),
+                () -> assertTrue(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, true, true, true, true, true, true)),
+                () -> assertFalse(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, false, true, true, true)),
+                () -> assertFalse(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, true, false, true, true)),
+                () -> assertFalse(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, true, true, false, true)),
+                () -> assertFalse(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, true, true, true, false)),
+                () -> assertFalse(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, false, true, true, true, true, true)),
+                () -> assertFalse(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, true, false, true, true, true, true)),
+                () -> assertFalse(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, true, true, false, true, true, true)),
+                () -> assertFalse(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, true, true, true, false, true, true)),
+                () -> assertFalse(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, false, false, false, false, true, true)),
+                () -> assertFalse(WorldFactConditions.equipmentSlotsSatisfied(fullArmor, false, false, false, false)),
+                () -> assertFalse(HardCodedEvaluator.matches(fullArmor, Map.of(
+                        "minecraft:iron_boots", 1, "minecraft:iron_leggings", 1,
+                        "minecraft:iron_chestplate", 1, "minecraft:iron_helmet", 1)), "A full set only in inventory is not worn armor"));
+    }
+
+    @Test void equipmentSlotsRejectPartialMixedAndMalformedRequirements() {
+        var slots = Map.of("feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                "chest", "minecraft:iron_chestplate", "head", "minecraft:iron_helmet");
+        for (String slot : slots.keySet()) {
+            var partial = new java.util.HashMap<String, Object>(slots);
+            partial.remove(slot);
+            assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "slots", partial)), "Missing " + slot);
+        }
+        for (String unknownSlot : java.util.List.of("boots", "leggings", "chestplate", "helmet", "mainhand", "offhand", "any", "HEAD")) {
+            var mixed = new java.util.HashMap<String, Object>(slots);
+            mixed.remove("head");
+            mixed.put(unknownSlot, "minecraft:iron_helmet");
+            assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "slots", mixed)), "Noncanonical slot " + unknownSlot);
+            var extra = new java.util.HashMap<String, Object>(slots);
+            extra.put(unknownSlot, "minecraft:iron_helmet");
+            assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "slots", extra)), "Extra slot " + unknownSlot);
+        }
+        for (String field : java.util.List.of("item", "slot", "minimum", "mode", "allof", "types")) {
+            var mixed = new java.util.HashMap<String, Object>(Map.of("type", "equipment", "slots", slots));
+            mixed.put(field, switch (field) {
+                case "minimum" -> 1;
+                case "item" -> "minecraft:iron_helmet";
+                case "slot" -> "any";
+                case "mode" -> "acquire";
+                default -> java.util.List.of(Map.of("type", "base"));
+            });
+            assertFalse(WorldFactConditions.valid(mixed), "slots must not mix with " + field);
+        }
+        for (String badId : java.util.List.of("iron_helmet", "not valid", "#", "#iron_helmet", "minecraft:", "minecraft:iron helmet")) {
+            var malformed = new java.util.HashMap<String, Object>(slots);
+            malformed.put("head", badId);
+            assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "slots", malformed)), "Bad item or tag " + badId);
+        }
+        var nullValue = new java.util.HashMap<String, Object>(slots);
+        nullValue.put("head", null);
+        assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "slots", nullValue)));
+        var mixedValueTypes = new java.util.HashMap<String, Object>(slots);
+        mixedValueTypes.put("head", 1);
+        assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "slots", mixedValueTypes)));
+        assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "slots", Map.of())));
+        assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "slots", "minecraft:iron_helmet")));
+        var nullSlots = new java.util.HashMap<String, Object>(Map.of("type", "equipment"));
+        nullSlots.put("slots", null);
+        assertFalse(WorldFactConditions.valid(nullSlots));
+        assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "slots", slots, "dimension", "not valid")));
+        assertFalse(WorldFactConditions.valid(Map.of("type", "equipment", "slots", slots, "optional", "true")));
+    }
 }
