@@ -10,6 +10,7 @@ import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -107,6 +108,52 @@ class RddStagePlannerParseTest {
         List<PrimarySpec> stages = RddStagePlanner.parse(sb.toString());
         assertEquals(12, stages.size());
         assertEquals("阶段0", stages.get(0).description());
+    }
+
+    @Test void equipmentTargetSurvivesRiskPoliciesWithoutBecomingAnInventoryGate() {
+        String armor = """
+                {"feet":"#minecraft:boots","legs":"minecraft:iron_leggings",
+                 "chest":"minecraft:iron_chestplate","head":"minecraft:iron_helmet"}""";
+        JsonObject expected = JsonParser.parseString(armor).getAsJsonObject();
+        List<PrimarySpec> parsed = RddStagePlanner.parse("""
+                {"stages":[
+                  {"theme":"收小麦做面包","equipment_target":%s,
+                   "wait_for":[{"asset_key":"minecraft:bread","minimum":4},
+                               {"asset_key":"minecraft:stone_pickaxe","minimum":1}]},
+                  {"theme":"下矿挖铁","equipment_target":%s,
+                   "wait_for":[{"asset_key":"minecraft:cobblestone","minimum":2}]},
+                  {"theme":"穿好铁靴、铁护腿、铁胸甲、铁头盔"}
+                ]}""".formatted(armor, armor));
+        List<PrimarySpec> prepared = RddRiskPlanning.ensureSmeltPrepStage(parsed, Map.of());
+        prepared = RddRiskPlanning.ensurePrepStage(prepared, RddChainFactory.MAX_STAGES);
+        List<PrimarySpec> planned = RddRiskPlanning.injectWaitFor(prepared, Map.of());
+        assertEquals(4, planned.size(), "the existing preparation insertion still runs");
+        assertEquals(RddRiskPlanning.PREP_STAGE_DESC, planned.get(1).description());
+        assertNull(planned.get(1).equipmentTarget(), "an inserted preparation stage must not inherit a target");
+        assertNull(planned.get(3).equipmentTarget(), "legacy Chinese themes must not invent a target");
+        assertEquals(1, planned.get(0).waitFor().size(), "self-produced bread is still pruned");
+        assertEquals("minecraft:stone_pickaxe", planned.get(0).waitFor().get(0).assetKey());
+        assertEquals(3, planned.get(2).waitFor().size(), "mining adds only the existing torch/bread gates");
+        assertTrue(planned.get(2).waitFor().stream().anyMatch(r ->
+                r.assetKey().equals("minecraft:cobblestone") && r.minimum() == 2));
+        JsonObject goal = new Gson().toJsonTree(RddChainFactory.fromStages(
+                UUID.fromString("04200000-0000-0000-0000-000000000007"), "继续探索", planned)).getAsJsonObject();
+        var primaries = goal.getAsJsonArray("primaryGoals");
+        for (int i : List.of(0, 2)) {
+            assertEquals(expected, primaries.get(i).getAsJsonObject().get("equipmentTarget"),
+                    "both risk-policy rebuilds must preserve all slots, including #tag");
+            assertEquals(new Gson().toJsonTree(planned.get(i).waitFor()),
+                    primaries.get(i).getAsJsonObject().get("waitFor"));
+        }
+        for (String bad : List.of("{}", armor.replace("#minecraft:boots", "boots"),
+                armor.replace("\"#minecraft:boots\"", "1"),
+                armor.replace("\"#minecraft:boots\"", "null"),
+                armor.replace("\"feet\"", "\"boots\""),
+                armor.replace("}", ",\"offhand\":\"minecraft:shield\"}"))) {
+            assertTrue(RddStagePlanner.parse("""
+                    {"stages":[{"theme":"合法前缀"},{"theme":"后续阶段","equipment_target":%s}]}
+                    """.formatted(bad)).isEmpty(), "explicit invalid target rejects the whole batch: " + bad);
+        }
     }
 
     @Test void explicitFourSlotStageTargetSurvivesFactoryAndRestart() {

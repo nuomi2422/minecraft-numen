@@ -118,7 +118,7 @@ final class RddRiskPlanning {
                 if (producesInStage(stage.description(), e.getKey())) continue;
                 wf.add(new AssetRequirement(e.getKey(), e.getValue()));
             }
-            out.add(new PrimarySpec(stage.description(), wf));
+            out.add(new PrimarySpec(stage.description(), wf, stage.equipmentTarget()));
         }
         return List.copyOf(out);
     }
@@ -131,7 +131,7 @@ final class RddRiskPlanning {
             if (!producesInStage(stage.description(), r.assetKey())) kept.add(r);
         }
         if (kept.size() == stage.waitFor().size()) return stage;
-        return new PrimarySpec(stage.description(), kept);
+        return new PrimarySpec(stage.description(), kept, stage.equipmentTarget());
     }
 
     /** 本阶段描述是否明确会产出该资产（只覆盖最容易自锁的几类）。 */

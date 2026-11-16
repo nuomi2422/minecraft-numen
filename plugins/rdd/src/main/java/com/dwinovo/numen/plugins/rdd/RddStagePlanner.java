@@ -5,12 +5,14 @@ import com.dwinovo.numen.rdd.api.AssetRequirement;
 import com.dwinovo.numen.rdd.api.PrimarySpec;
 import com.dwinovo.numen.rdd.core.PlanningAssetSnapshot;
 import com.dwinovo.numen.rdd.core.RddChainFactory;
+import com.dwinovo.numen.rdd.core.WorldFactConditions;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -107,7 +109,8 @@ final class RddStagePlanner {
     /**
      * 容错解析 plan_stages 参数 JSON → PrimarySpec 列表。
      * 阶段缺主题丢弃；wait_for 资产键不可执行（裸键/占位/大写）或 minimum 为负 → 整条门丢弃
-     * （阶段保留、无门也合法，跨级资产门是增强不是必须）。解析彻底失败返回空表。
+     * （阶段保留、无门也合法，跨级资产门是增强不是必须）。显式 equipment_target 非法则整批拒绝，
+     * 不丢字段/阶段或返回合法前缀；缺字段保留旧语义。解析彻底失败返回空表。
      */
     static List<PrimarySpec> parse(String argumentsJson) {
         List<PrimarySpec> out = new ArrayList<>();
@@ -125,19 +128,39 @@ final class RddStagePlanner {
                     continue;
                 }
                 JsonObject o = el.getAsJsonObject();
+                // 即使无主题或超过阶段上限，显式坏义务也不能被静默截掉。
+                Map<String, String> equipmentTarget = parseEquipmentTarget(o.get("equipment_target"));
+                if (out.size() >= RddChainFactory.MAX_STAGES) {
+                    continue;
+                }
                 String theme = o.has("theme") ? o.get("theme").getAsString() : null;
                 if (theme == null || theme.isBlank()) {
                     continue;
                 }
-                out.add(new PrimarySpec(theme.strip(), parseWaitFor(o.get("wait_for"))));
-                if (out.size() >= RddChainFactory.MAX_STAGES) {
-                    break;
-                }
+                out.add(new PrimarySpec(theme.strip(), parseWaitFor(o.get("wait_for")), equipmentTarget));
             }
         } catch (RuntimeException ex) {
             return List.of();
         }
         return out;
+    }
+
+    /** 缺字段 = 无新义务；显式值只转换字符串，四槽键与 ID/tag 规则由 core 的 slots4 schema 统一校验。 */
+    private static Map<String, String> parseEquipmentTarget(JsonElement raw) {
+        if (raw == null) return null;
+        if (!raw.isJsonObject()) throw new IllegalArgumentException("equipment_target must be a four-slot object");
+        Map<String, String> target = new LinkedHashMap<>();
+        for (var entry : raw.getAsJsonObject().entrySet()) {
+            JsonElement value = entry.getValue();
+            if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) {
+                throw new IllegalArgumentException("equipment_target values must be ID/tag strings");
+            }
+            target.put(entry.getKey(), value.getAsString());
+        }
+        if (!WorldFactConditions.valid(Map.of("type", "equipment", "slots", target))) {
+            throw new IllegalArgumentException("invalid equipment_target slots");
+        }
+        return target;
     }
 
     /** wait_for 可空；逐条取可用(资产键形状) + 非负 minimum（缺省 1），坏条丢弃整条门不进列表。 */
@@ -176,12 +199,19 @@ final class RddStagePlanner {
                     + "不是单个物品，也不是整条战役。阶段按依赖顺序排列，前面的阶段达成后才能进入下一个。"
                     + "若某阶段开工前背包必须先持有某物品，在 wait_for 给出真实 minecraft 命名空间 ID"
                     + "（如 minecraft:stone_pickaxe）和 minimum；无法确定的跨级前置不要硬写。"
+                    + "阶段若要求完成时四槽实穿装备，用 equipment_target 明确 feet/legs/chest/head 各槽 ID 或 #tag；"
+                    + "这是阶段输出义务，不是 wait_for 背包前置，单头盔/库存不能替代四槽实穿。"
+                    + "缺字段沿用旧语义，不从 theme 猜出装备义务。"
                     + "只输出 plan_stages 工具调用，不要写多余文字。";
 
     private static final String PLAN_BODY_TAIL =
             "请用 plan_stages 工具给出发展阶段清单。每个阶段包含：\n"
                     + "- theme：该阶段要达成的发展主线（可读、自含，能被据此拆出可执行的子步骤）\n"
                     + "- wait_for（可选）：进入该阶段前必须已持有的前置资产，{asset_key: 真实命名空间ID, minimum: 数量}\n"
+                    + "- equipment_target（可选）：本阶段完成时必须四槽同时实穿的输出义务，"
+                    + "{feet: ID/#tag, legs: ID/#tag, chest: ID/#tag, head: ID/#tag}；"
+                    + "四个 canonical 键必须全齐且无多余键，值为真实命名空间 ID 或 #tag。"
+                    + "单头盔、背包库存或 wait_for 都不能替代；未声明字段保持旧语义，不按 theme 猜义务。\n"
                     // 2026-10-28（主人口径）：数量分两类——
                     // ① 配方/规则能算死的（钻石镐 3 钻、下界门 10 黑曜石、末影之眼 12），照写实数量；
                     // ② 只有到现场才知道的（矿脉储量、林子木头、附近动物），别写大数，写小值起步，
@@ -311,7 +341,8 @@ final class RddStagePlanner {
         @Override public String description() {
             return "把主人的整条目标规划成按顺序推进的多个一级发展阶段（主题，不含具体子步骤）。"
                     + "每个阶段的 theme 描述该阶段要达成什么；可选的 wait_for 给进入该阶段前必须已持有的资产"
-                    + "（asset_key 必须是真实 minecraft 命名空间 ID）。";
+                    + "（asset_key 必须是真实 minecraft 命名空间 ID）；equipment_target 是完成时四槽同时实穿的输出义务，"
+                    + "不是背包前置；缺字段保留旧语义。";
         }
         @Override public Map<String, Object> parameterSchema() {
             return Map.of(
@@ -334,7 +365,17 @@ final class RddStagePlanner {
                                                                                     "description", "真实 minecraft 命名空间 ID，如 minecraft:stone_pickaxe"),
                                                                             "minimum", Map.of("type", "integer",
                                                                                     "description", "最少持有数量，缺省 1")),
-                                                                    "required", List.of("asset_key")))),
+                                                                    "required", List.of("asset_key"))),
+                                                    "equipment_target", Map.of(
+                                                            "type", "object",
+                                                            "description", "阶段完成时四槽同时实穿的输出义务（可选），不是背包前置；ID 或 #tag，四键全齐",
+                                                            "properties", Map.of(
+                                                                    "feet", Map.of("type", "string"),
+                                                                    "legs", Map.of("type", "string"),
+                                                                    "chest", Map.of("type", "string"),
+                                                                    "head", Map.of("type", "string")),
+                                                            "required", List.of("feet", "legs", "chest", "head"),
+                                                            "additionalProperties", false)),
                                             "required", List.of("theme")))),
                     "required", List.of("stages"));
         }

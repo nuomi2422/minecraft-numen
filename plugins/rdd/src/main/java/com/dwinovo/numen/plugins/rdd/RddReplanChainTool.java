@@ -101,7 +101,7 @@ final class RddReplanChainTool implements NumenTool {
                 // （旧 id 一律留在历史里，迟到的回执匹配不上新阶段）。
                 goals.add(PrimaryGoal.unexpanded(
                         "primary-" + suffix + "-v" + (version + 1) + "-" + i,
-                        spec.description(), spec.waitFor()));
+                        spec.description(), spec.waitFor(), spec.equipmentTarget()));
             }
             int count = replaceFuturePrimaries(chain, goals, () -> RddPlugin.completionPending(companion.getUUID()));
             RddPlugin.saveRuntimes();
