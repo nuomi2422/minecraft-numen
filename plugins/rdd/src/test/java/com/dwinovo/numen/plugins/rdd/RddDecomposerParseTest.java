@@ -507,4 +507,21 @@ class RddDecomposerParseTest {
         // Intentional contract replacement of capsAtMaxSubtasks: do not publish a truncated plan.
         assertTrue(specs.isEmpty(), "the ninth legal step invalidates the whole generated batch");
     }
+
+    // ---------- 2026-11-17 V02：必需丢弃后走真实共享空恢复，不装木材前缀 ----------
+
+    private static final String V02_SIX_STEP_JSON = "{\"subtasks\": [{\"description\": \"徒手砍针叶林附近的树，攒够原木（起步 3 个即可推进；看到就多砍几棵，够做木镐+石镐+石斧共约 5~6 个原木就停）\", \"condition\": {\"type\": \"inventory\", \"group\": \"wood\", \"minimum\": 6}, \"node_type\": \"MAIN\"}, {\"description\": \"把原木在 2x2 手搓成木板，再把木板竖排 2 个搓木棍（需工作台时才放工作台）\", \"condition\": {\"type\": \"item_crafted\", \"asset_key\": \"minecraft:stick\", \"minimum\": 4}, \"node_type\": \"MAIN\"}, {\"description\": \"用木板 3 + 木棍 2 在工作台 3x3 里合成木镐\", \"condition\": {\"type\": \"item_crafted\", \"asset_key\": \"minecraft:wooden_pickaxe\", \"minimum\": 1}, \"node_type\": \"MAIN\"}, {\"description\": \"用木镐在附近地表/裸露岩面挖 6 个圆石（正好够石镐+石斧，不多挖）\", \"condition\": {\"type\": \"block_mined\", \"block\": \"minecraft:stone\", \"minimum\": 6}, \"node_type\": \"MAIN\"}, {\"description\": \"圆石 3 + 木棍 2 合成石镐\", \"condition\": {\"type\": \"item_crafted\", \"asset_key\": \"minecraft:stone_pickaxe\", \"minimum\": 1}, \"node_type\": \"MAIN\"}, {\"description\": \"圆石 3 + 木棍 2 合成石斧；石镐石斧一到手即停手，不再砍树挖石，下一步立刻出发找村庄\", \"condition\": {\"type\": \"item_crafted\", \"asset_key\": \"minecraft:stone_axe\", \"minimum\": 1}, \"node_type\": \"MAIN\"}]}";
+
+    @Test
+    void v02RequiredDropsReachRealEmptyFallbackNotWoodPrefix() {
+        var parsed = RddStageBSpecParser.parseDetailed(V02_SIX_STEP_JSON);
+        assertEquals(2, parsed.specs().size());
+        assertEquals(4, parsed.skippedRequired().size());
+        var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()),
+                "立足开局：徒手砍树取原木→木板→木棍→木镐；用木镐在附近地表挖6个石头，做出石镐+石斧即停手",
+                java.util.Map.of());
+        var published = RddDecomposer.stageBPublished(parsed, filtered);
+        assertTrue(published.isEmpty(), "不能发布木材前缀");
+        assertRealEmptyFallback(published);
+    }
 }

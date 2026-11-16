@@ -346,7 +346,7 @@ final class RddPlanGuard {
                 if (preparationStep(spec.description()) && toolMissing.stream().anyMatch(g -> g.startsWith("护甲")))
                     return new Filtered(List.of(), List.copyOf(dropped), List.copyOf(reused));
                 // 2026-11-17 V02：必需 MAIN 步骤的工具前提也不能静默消失后只装可完成前缀。
-                if (requiredDrop(spec)) {
+                if (requiredDrop(spec, optionalAllowed)) {
                     return new Filtered(List.of(), List.copyOf(dropped), List.copyOf(reused));
                 }
                 continue;
@@ -358,7 +358,7 @@ final class RddPlanGuard {
                         + (spec.description() == null ? "" : spec.description()));
                 // 2026-11-17 V02：必需 MAIN 步骤不能静默消失后只装可完成前缀；
                 // 回到既有有界空计划恢复。可选升级/维护类仍按原策略裁剪。
-                if (requiredDrop(spec)) {
+                if (requiredDrop(spec, optionalAllowed)) {
                     return new Filtered(List.of(), List.copyOf(dropped), List.copyOf(reused));
                 }
                 continue;
@@ -401,13 +401,17 @@ final class RddPlanGuard {
         return new Filtered(List.copyOf(normalized), dropped, reused);
     }
 
-    /** Required = MAIN and not an optional (condition.optional / optional asset / maintenance) trim. */
-    private static boolean requiredDrop(SubtaskSpec spec) {
+    /**
+     * Required = MAIN and not an optional trim. Explicit condition.optional=true always trims;
+     * an optional-asset step trims only while the owner did not ask for it (optionalAllowed=false).
+     */
+    private static boolean requiredDrop(SubtaskSpec spec, boolean optionalAllowed) {
         Object opt = spec.condition() == null ? null : spec.condition().get("optional");
-        boolean optional = Boolean.TRUE.equals(opt);
+        boolean explicitOptional = Boolean.TRUE.equals(opt);
+        boolean unrequestedOptionalAsset = !optionalAllowed && RddPlanningPolicy.optionalAsset(assetKeyOf(spec));
         return spec.nodeType() == NodeType.MAIN
-                && !optional
-                && !RddPlanningPolicy.optionalAsset(assetKeyOf(spec))
+                && !explicitOptional
+                && !unrequestedOptionalAsset
                 && !looksMaintenance(spec.description());
     }
 

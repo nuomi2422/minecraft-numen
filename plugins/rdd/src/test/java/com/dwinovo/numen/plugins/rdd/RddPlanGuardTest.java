@@ -716,21 +716,27 @@ class RddPlanGuardTest {
                 "必需步骤被丢弃后不能把木材前缀当整级发布");
     }
 
-    // ---------- 2026-11-17 V02 正控：合法计划/可选裁剪/DAILY/已持有复用 ----------
+    // ---------- 2026-11-17 V02 正控：可选裁剪/显式 optional/DAILY/已持有复用 ----------
 
     @Test
-    void fullyLegalPlanStillPublishes() {
-        var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"合成木棍\",\"condition\":{\"type\":\"item_crafted\",\"item\":\"minecraft:stick\",\"minimum\":4},\"node_type\":\"MAIN\"}]}");
-        assertTrue(parsed.skippedRequired().isEmpty());
+    void unrequestedOptionalAssetTrimIsStillLegal() {
+        var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"备齐书架与 32 块方块\",\"condition\":{\"type\":\"inventory\",\"asset_key\":\"minecraft:bookshelf\",\"minimum\":1},\"node_type\":\"MAIN\"}]}");
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of());
-        assertEquals(2, RddDecomposer.stageBPublished(parsed, filtered).size());
+        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered).size(), "主人未点名时可裁剪书架");
     }
 
     @Test
-    void optionalUpgradeTrimIsStillLegal() {
+    void requestedOptionalAssetDropIsRequired() {
+        var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"备齐书架与 32 块方块\",\"condition\":{\"type\":\"inventory\",\"asset_key\":\"minecraft:bookshelf\",\"minimum\":1},\"node_type\":\"MAIN\"}]}");
+        var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "做书架", Map.of());
+        assertTrue(RddDecomposer.stageBPublished(parsed, filtered).isEmpty(), "主人明确点名书架时不能当可选裁剪");
+    }
+
+    @Test
+    void explicitOptionalBooleanTrueIsTrimmed() {
         var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"用钻石镐去挖 10 块黑曜石\",\"condition\":{\"type\":\"inventory\",\"asset_key\":\"minecraft:obsidian\",\"minimum\":10,\"optional\":true},\"node_type\":\"MAIN\"}]}");
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of());
-        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered).size(), "未获要求的可选升级仍可裁剪");
+        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered).size(), "显式 optional=true 可裁剪");
     }
 
     @Test
