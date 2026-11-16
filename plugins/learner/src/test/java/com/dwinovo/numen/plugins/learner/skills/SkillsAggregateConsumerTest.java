@@ -302,4 +302,76 @@ class SkillsAggregateConsumerTest {
         assertTrue(source.contains("plannerSkills.contribute(query.companion(), query.objective())"));
         assertFalse(source.contains("executorSkills.contribute(companion, objective)"));
     }
+
+    @Test
+    void truncatedExperienceLeavesRoomForOneActualCatalogContribution() throws Exception {
+        String privateBody = "PRIVATE_BODY_REQUIRES_EXPLICIT_READ";
+        var entry = catalogFixture("sk-after-experience", SkillStatus.TRIAL, "EXECUTOR", privateBody,
+                "Bread method", "Use observed stock");
+        var skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
+        UUID companion = UUID.randomUUID();
+        var catalog = skills.contributeCatalog(companion, "objective");
+        org.junit.jupiter.api.Assertions.assertNotNull(catalog);
+        String head = "<retrieved_knowledge role=\"executor\">";
+        String tail = "</retrieved_knowledge>";
+        String first = "<entry ref=\"exp:first\">" + "a".repeat(2300) + "</entry>";
+        String second = "<entry ref=\"exp:second\">" + "b".repeat(2200) + "</entry>";
+        String experience = head + first + second + tail;
+        assertTrue(experience.length() > NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS);
+        int remaining = NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS - (head + first + tail).length();
+        assertTrue(catalog.text().length() + NumenPlugins.PLANNING_KNOWLEDGE_SEPARATOR.length() <= remaining,
+                "the entire real catalog plus separator must fit after whole-entry trimming");
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        NumenPlugins.KnowledgeContributor experienceContributor = (c, o) -> new NumenPlugins.KnowledgeFragment(
+                experience, List.of(new NumenPlugins.DeliveredRef("exp:first", "v1", false),
+                        new NumenPlugins.DeliveredRef("exp:second", "v1", false)));
+        NumenPlugins.KnowledgeContributor catalogContributor = (c, o) -> {
+            calls.incrementAndGet();
+            return skills.contributeCatalog(c, o);
+        };
+
+        var fragment = NumenPlugins.aggregateExecutorKnowledgeFragment(
+                List.of(experienceContributor, catalogContributor), companion, "objective");
+
+        org.junit.jupiter.api.Assertions.assertEquals(1, calls.get(),
+                "trimming an earlier fragment must not skip a later catalog that fits");
+        assertTrue(fragment.text().length() <= NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS);
+        String content = finalProviderContent(fragment.text(), NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS);
+        org.junit.jupiter.api.Assertions.assertEquals(fragment.text(), content);
+        assertTrue(content.contains(head + first + tail), "keep the first experience entry and its closed wrapper");
+        assertFalse(content.contains("exp:second"), "drop the oversized second experience entry whole");
+        assertTrue(content.contains(catalog.text()), "retain the complete original catalog wrapper and metadata");
+        var document = parseCatalog("<root>" + content + "</root>");
+        org.junit.jupiter.api.Assertions.assertEquals(2, document.getElementsByTagName("entry").getLength());
+        var catalogNode = (org.w3c.dom.Element) document.getElementsByTagName("entry").item(1);
+        org.junit.jupiter.api.Assertions.assertEquals("skill:" + entry.skillId() + "@v7", catalogNode.getAttribute("ref"));
+        org.junit.jupiter.api.Assertions.assertEquals(entry.name(),
+                catalogNode.getElementsByTagName("name").item(0).getTextContent());
+        assertFalse(content.contains(privateBody));
+        org.junit.jupiter.api.Assertions.assertEquals(List.of(
+                new NumenPlugins.DeliveredRef("exp:first", "v1", false),
+                new NumenPlugins.DeliveredRef("exp:second", "v1", true)), fragment.refs(),
+                "catalog discovery must not create a skill body delivery receipt");
+    }
+
+    @Test
+    void legacyDraftReferenceTrialIsNotAdvertisedAndLeavesRegistryBytesUnchanged() throws Exception {
+        var entry = new SkillEntry("sk-legacy-draft", 1, ArtifactKind.ACX_REQUEST,
+                "Legacy trial", "Original draft reference is not a readable body", "EXECUTOR",
+                List.of("night"), List.of(), List.of(), "", "UNKNOWN", SkillStatus.TRIAL,
+                "draft:sk-legacy-draft:3b01fcf4", List.of(), List.of("legacy-sample"), List.of(), List.of());
+        Path registry = dir.resolve("skills.jsonl");
+        java.nio.file.Files.writeString(registry, SkillRegistry.toJson(entry) + "\n");
+        byte[] original = java.nio.file.Files.readAllBytes(registry);
+
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(UUID.randomUUID(), "objective");
+
+        org.junit.jupiter.api.Assertions.assertNotNull(fragment, "an unreadable body must report a gap");
+        org.junit.jupiter.api.Assertions.assertEquals(java.util.Map.of("body-missing", 1), fragment.gapCounts());
+        assertTrue(fragment.text().isEmpty(), "TRIAL alone must not advertise an unreadable legacy body");
+        assertTrue(fragment.refs().isEmpty());
+        org.junit.jupiter.api.Assertions.assertArrayEquals(original, java.nio.file.Files.readAllBytes(registry),
+                "reading a legacy trial must not migrate its body or change its status");
+    }
 }
