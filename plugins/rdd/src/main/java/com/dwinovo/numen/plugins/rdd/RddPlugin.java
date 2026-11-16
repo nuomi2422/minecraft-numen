@@ -1636,7 +1636,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         }
     }
 
-    /** Keep only expanded, not-yet-admitted work; WAITING means missing wait_for assets, not expansion. */
+    /** Keep expanded work until initial or restored admission; never resume it from settlement. */
     private static boolean deferDeathReplan(UUID companionId, int seq, String reason) {
         var rt = runtime(companionId);
         var death = RddDeathLedger.latest(companionId);
@@ -1644,7 +1644,8 @@ private static String withAssets(UUID companionId, String rddContext) {
         var chain = rt.chain();
         if (chain.currentPrimary() == null || chain.currentPrimary().unexpanded() || chain.currentSubtask() == null
                 || (chain.primaryStatus() != PrimaryGoalStatus.PENDING
-                    && chain.primaryStatus() != PrimaryGoalStatus.WAITING)) return false;
+                    && chain.primaryStatus() != PrimaryGoalStatus.WAITING
+                    && chain.primaryStatus() != PrimaryGoalStatus.RECOVERING)) return false;
         DEFERRED_DEATH_REPLANS.put(companionId, new DeferredDeath(chain, chain.currentPrimary().id(),
                 chain.planRevision(), seq, reason));
         return true;
