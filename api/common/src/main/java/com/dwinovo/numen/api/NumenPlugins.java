@@ -543,6 +543,8 @@ public final class NumenPlugins {
                             boolean cut = !refFullyIncluded(assembled, assembled.length(), r.entryRef());
                             delivered.add(new DeliveredRef(r.entryRef(), r.version(), cut));
                         }
+                        // Whole-entry trimming can leave room for a later contributor.
+                        if (sb.length() < MAX_EXECUTOR_KNOWLEDGE_CHARS) continue;
                     } else {
                         // 旧行为：plain / 不完整 wrapper / 无法识别结构 → 前缀硬切。
                         sb.append(piece, 0, room);
