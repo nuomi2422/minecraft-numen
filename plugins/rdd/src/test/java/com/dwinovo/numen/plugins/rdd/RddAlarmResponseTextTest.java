@@ -22,10 +22,10 @@ class RddAlarmResponseTextTest {
     private static String productionCarryNote() throws Exception {
         java.nio.file.Path root = java.nio.file.Path.of("").toAbsolutePath();
         while (root != null && !java.nio.file.Files.isRegularFile(root.resolve(
-                "plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddCarryHint.java"))) root = root.getParent();
+                "plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddCarryProjection.java"))) root = root.getParent();
         assertTrue(root != null, "production source must be present");
         String source = java.nio.file.Files.readString(root.resolve(
-                "plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddCarryHint.java"));
+                "plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddCarryProjection.java"));
         for (String line : source.split("\\R")) {
             String trimmed = line.trim();
             if (trimmed.startsWith("sb.append(\"<note>这些是建议，不是指令。")) {
