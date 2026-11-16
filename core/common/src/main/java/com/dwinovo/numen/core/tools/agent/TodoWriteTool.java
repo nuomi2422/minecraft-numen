@@ -6,7 +6,6 @@ import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.ToolCall;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.task.TaskResult;
-import com.google.gson.Gson;
 
 import java.util.List;
 import java.util.Map;
@@ -14,7 +13,6 @@ import java.util.Map;
 /** Client-local tool (raw NumenTool): maintain the agent's structured task list. */
 public final class TodoWriteTool implements NumenTool {
 
-    private static final Gson GSON = new Gson();
     private final AgentOps impl = new AgentOps();
 
     private record Args(List<AgentOps.Todo> todos) {}

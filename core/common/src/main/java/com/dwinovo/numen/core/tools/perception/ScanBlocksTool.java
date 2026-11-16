@@ -5,7 +5,6 @@ import com.dwinovo.numen.agent.tool.ToolArgs;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.entity.NumenPlayer;
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
 import java.util.List;
@@ -19,7 +18,6 @@ import java.util.function.Consumer;
  */
 public final class ScanBlocksTool implements NumenTool {
 
-    private static final Gson GSON = new Gson();
     private final ScanOps impl = new ScanOps();
 
     private record Args(int radius, List<String> block_ids) {}

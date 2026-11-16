@@ -7,7 +7,6 @@ import com.dwinovo.numen.agent.tool.ToolArgs;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.entity.NumenPlayer;
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
 import java.util.List;
@@ -17,7 +16,6 @@ import java.util.function.Consumer;
 /** World-action tool (raw NumenTool): gather blocks by type and quantity. */
 public final class AutoMineTool implements NumenTool {
 
-    private static final Gson GSON = new Gson();
     private final BlockActionOps impl = new BlockActionOps();
 
     private record Args(List<String> block_ids, int count) {}

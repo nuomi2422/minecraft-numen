@@ -5,7 +5,6 @@ import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.core.tools.CombatOps;
 import com.dwinovo.numen.entity.NumenPlayer;
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
 import java.util.List;
@@ -21,7 +20,6 @@ import static com.dwinovo.numen.task.TaskDispatch.setTask;
  */
 public final class AttackTool implements NumenTool {
 
-    private static final Gson GSON = new Gson();
     private final CombatOps impl = new CombatOps();
 
     private record Args(List<Integer> entity_ids) {}

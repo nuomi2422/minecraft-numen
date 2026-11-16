@@ -6,7 +6,6 @@ import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.core.task.sugarcane.SugarCaneTaskRecord;
 import com.dwinovo.numen.entity.NumenPlayer;
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
 import java.util.Map;
@@ -15,7 +14,6 @@ import java.util.function.Consumer;
 /** Bounded sugar-cane harvest tool (2026-11-07, record 008 9.1-9.3). BACKGROUND task. */
 public final class SugarCaneHarvestTool implements NumenTool {
 
-    private static final Gson GSON = new Gson();
     @Override public String name() { return SugarCaneTaskRecord.TOOL_NAME; }
 
     @Override public String description() {

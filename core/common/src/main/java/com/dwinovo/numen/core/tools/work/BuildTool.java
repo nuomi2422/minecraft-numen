@@ -9,7 +9,6 @@ import com.dwinovo.numen.core.build.BuildPalette;
 import com.dwinovo.numen.core.build.BuildShapes;
 import com.dwinovo.numen.core.task.build.BuildTaskRecord;
 import com.dwinovo.numen.entity.NumenPlayer;
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
 import net.minecraft.core.BlockPos;
@@ -29,7 +28,6 @@ import java.util.function.Consumer;
 /** Build a bounded set of explicit block cells as one background task. */
 public final class BuildTool implements NumenTool {
 
-    private static final Gson GSON = new Gson();
     private static final long MIN_TIMEOUT_TICKS = 60 * 20;
     private static final long TRAVEL_ALLOWANCE_TICKS = 40 * 20;
     /** 施工预计时长之上再留的余量(挪窝、翻层停顿、零进展重试都吃这笔)。 */

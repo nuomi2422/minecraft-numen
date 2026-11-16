@@ -5,7 +5,6 @@ import com.dwinovo.numen.agent.tool.ToolArgs;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.entity.NumenPlayer;
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
 import java.util.List;
@@ -15,7 +14,6 @@ import java.util.function.Consumer;
 /** Query tool (raw NumenTool): transfer items between slots in the open GUI; replies in place. */
 public final class TransferTool implements NumenTool {
 
-    private static final Gson GSON = new Gson();
     private final ContainerOps impl = new ContainerOps();
 
     private record Args(List<ContainerOps.Move> moves) {}

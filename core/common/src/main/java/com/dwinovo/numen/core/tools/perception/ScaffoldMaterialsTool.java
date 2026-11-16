@@ -5,7 +5,6 @@ import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.core.tools.ScaffoldOps;
 import com.dwinovo.numen.entity.NumenPlayer;
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
 import java.util.List;
@@ -20,7 +19,6 @@ import java.util.function.Consumer;
  */
 public final class ScaffoldMaterialsTool implements NumenTool {
 
-    private static final Gson GSON = new Gson();
     private final ScaffoldOps impl = new ScaffoldOps();
 
     private record Args(String action, List<String> block_ids) {}
