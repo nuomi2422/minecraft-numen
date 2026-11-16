@@ -58,12 +58,21 @@ class RddDecomposerPromptDelegationTest {
     // ---- 旧契约矩阵（不依赖复制渲染算法）----
 
     @Test
-    void worldAssetsAndVillageOverloadsAreIgnored() {
+    void worldAssetsIgnored_withinMapDomain() {
+        // 真实重载：Map 只有 3 参/4 参；4 参的 worldAssets 不参与输出。
         Map<String, Integer> held = new LinkedHashMap<>();
         held.put("minecraft:oak_log", 3);
         String plain = RddDecomposer.decompositionPrompt("建个木屋", held, List.of("阶段一"));
         assertEquals(plain, RddDecomposer.decompositionPrompt("建个木屋", held, List.of("阶段一"), "世界资产"));
-        assertEquals(plain, RddDecomposer.decompositionPrompt("建个木屋", held, List.of("阶段一"), "世界资产", "村庄块"));
+    }
+
+    @Test
+    void worldAssetsAndVillageIgnored_withinSnapshotDomain() {
+        // 真实重载：Snapshot 有 3/4/5 参；worldAssets/villageBlock 不参与输出。
+        PlanningAssetSnapshot snapshot = PlanningAssetSnapshot.from(Map.of("minecraft:oak_log", 3), new AssetRegistry());
+        String plain = RddDecomposer.decompositionPrompt("建个木屋", snapshot, List.of("阶段一"));
+        assertEquals(plain, RddDecomposer.decompositionPrompt("建个木屋", snapshot, List.of("阶段一"), "世界资产"));
+        assertEquals(plain, RddDecomposer.decompositionPrompt("建个木屋", snapshot, List.of("阶段一"), "世界资产", "村庄块"));
     }
 
     @Test
