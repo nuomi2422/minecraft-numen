@@ -26,4 +26,30 @@ class RddRiskGateExceptionThrottleTest {
         assertTrue(RddDetector.shouldPublishGatedSnapshot(UUID.randomUUID(), key, "riskgate_error"),
                 "换同伴要单独发一次");
     }
+
+    @Test
+    void disabledRiskGateAllowsHighRiskWithoutSampling() {
+        boolean original = RddDetector.riskGateActive();
+        try {
+            RddDetector.setRiskGateEnabled(false);
+            assertTrue(RddDetector.riskGateAllows(null, "进入下界挖矿"),
+                    "关闭风险门时不应采样，空同伴的高风险动作也放行");
+        } finally {
+            RddDetector.setRiskGateEnabled(original);
+        }
+    }
+
+    @Test
+    void enabledRiskGateSkipsNormalObservationButFailsClosedForHighRisk() {
+        boolean original = RddDetector.riskGateActive();
+        try {
+            RddDetector.setRiskGateEnabled(true);
+            assertTrue(RddDetector.riskGateAllows(null, "原地待命"),
+                    "NORMAL 不应触碰观测，空同伴也放行");
+            assertFalse(RddDetector.riskGateAllows(null, "进入下界挖矿"),
+                    "高风险的空同伴背包观测失败必须拒绝，遥测失败也不改变裁决");
+        } finally {
+            RddDetector.setRiskGateEnabled(original);
+        }
+    }
 }
