@@ -57,6 +57,95 @@ class RddDecomposerParseTest {
         assertEquals(specs.getFirst().condition(), goal.primaryGoals().getFirst().subtasks().getFirst().condition());
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void equipmentSlotsSurviveSchemaParsingNormalizationInstallationAndRestore() {
+        var root = (java.util.Map<String, Object>) RddDecomposer.decomposeSchema().get("properties");
+        var subtasks = (java.util.Map<String, Object>) root.get("subtasks");
+        var item = (java.util.Map<String, Object>) subtasks.get("items");
+        var fields = (java.util.Map<String, Object>) item.get("properties");
+        var condition = (java.util.Map<String, Object>) fields.get("condition");
+        var props = (java.util.Map<String, Object>) condition.get("properties");
+        var slots = (java.util.Map<String, Object>) props.get("slots");
+        var slotNames = java.util.Set.of("feet", "legs", "chest", "head");
+        assertEquals("object", slots.get("type"));
+        assertEquals(false, slots.get("additionalProperties"));
+        assertEquals(slotNames, java.util.Set.copyOf((List<String>) slots.get("required")));
+        var slotProps = (java.util.Map<String, Object>) slots.get("properties");
+        assertEquals(slotNames, slotProps.keySet());
+        slotProps.values().forEach(value -> assertEquals(java.util.Map.of("type", "string"), value));
+
+        var expectedSlots = java.util.Map.of("feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                "chest", "minecraft:iron_chestplate", "head", "#minecraft:head_armor");
+        String json = """
+                {"subtasks":[{"description":"wear full armor","condition":{"type":"equipment",
+                 "slots":{"feet":"minecraft:iron_boots","legs":"minecraft:iron_leggings",
+                 "chest":"minecraft:iron_chestplate","head":"#minecraft:head_armor"},
+                 "dimension":"minecraft:overworld","optional":false}},
+                 {"description":"wear full armor","condition":{"type":"equipment","item":"minecraft:iron_helmet","slot":"head"}},
+                 {"description":"legacy any","condition":{"type":"equipment","item":"minecraft:iron_helmet","slot":"any"}}]}
+                """;
+        var parsed = RddDecomposer.parse(json);
+        assertEquals(3, parsed.size());
+        assertEquals(java.util.Map.of("type", "equipment", "slots", expectedSlots,
+                "dimension", "minecraft:overworld", "optional", false), parsed.getFirst().condition());
+        var normalized = RddPlanGuard.normalizeConditions(parsed);
+        assertEquals(parsed, normalized, "normalization must not drop the explicit four-slot contract");
+        var goal = RddChainFactory.fromSpec(java.util.UUID.randomUUID(), "equipment", normalized);
+        assertEquals(normalized.getFirst().condition(), goal.primaryGoals().getFirst().subtasks().getFirst().condition());
+
+        var chain = unexpandedChain();
+        var injected = RddGoalDriver.buildInjection(chain.currentPrimary().id(), 1, normalized);
+        RddGoalDriver.acceptPlan(injected, ignored -> {}, () -> chain.expandCurrentPrimary(injected));
+        chain.startCurrent();
+        assertEquals(normalized.getFirst().condition(), chain.currentSubtask().condition());
+        var restored = com.dwinovo.numen.rdd.core.TaskChain.fromJson(chain.toJson());
+        assertEquals(normalized.getFirst().condition(), restored.currentSubtask().condition());
+        assertEquals(expectedSlots, restored.currentSubtask().condition().get("slots"));
+        assertTrue(restored.satisfiedStages().isEmpty(), "install/restore is not completion evidence");
+        assertEquals(3, restored.currentPrimary().subtasks().size());
+        for (int i = 1; i < 3; i++) {
+            var legacy = restored.currentPrimary().subtasks().get(i).condition();
+            assertEquals(parsed.get(i).condition(), legacy);
+            assertFalse(legacy.containsKey("slots"), "legacy single-item intent must not become a full set");
+        }
+        var headOnly = restored.currentPrimary().subtasks().get(1).condition();
+        assertTrue(com.dwinovo.numen.rdd.core.WorldFactConditions.equipmentSlotsSatisfied(
+                headOnly, false, false, false, true, false, false));
+        var any = restored.currentPrimary().subtasks().get(2).condition();
+        assertTrue(com.dwinovo.numen.rdd.core.WorldFactConditions.equipmentSlotsSatisfied(
+                any, false, false, false, false, true, false), "legacy any still includes the main hand");
+    }
+
+    @Test void invalidExplicitEquipmentSlotsRejectWholeBatchInsteadOfInstallingSevenStepPrefix() {
+        String fullSlots = """
+                {"feet":"minecraft:iron_boots","legs":"minecraft:iron_leggings",
+                 "chest":"minecraft:iron_chestplate","head":"minecraft:iron_helmet"}
+                """;
+        var mixed = new com.google.gson.JsonObject();
+        mixed.addProperty("type", "equipment");
+        mixed.add("slots", com.google.gson.JsonParser.parseString(fullSlots));
+        mixed.addProperty("item", "minecraft:iron_helmet");
+        mixed.addProperty("slot", "head");
+        mixed.addProperty("minimum", 1);
+        var malformed = mixed.deepCopy();
+        malformed.remove("item"); malformed.remove("slot"); malformed.remove("minimum");
+        malformed.addProperty("slots", "not-an-object");
+        var partial = malformed.deepCopy();
+        partial.add("slots", com.google.gson.JsonParser.parseString("{\"head\":\"minecraft:iron_helmet\"}"));
+        for (var bad : List.of(malformed, mixed, partial)) {
+            var raw = legalSteps(7);
+            var tail = new com.google.gson.JsonObject();
+            tail.addProperty("description", "explicit equipment requirement");
+            tail.add("condition", bad);
+            raw.getAsJsonArray("subtasks").add(tail);
+            var parsed = RddDecomposer.parse(raw.toString());
+            assertTrue(parsed.isEmpty(), () -> "bad explicit slots must reject all seven earlier steps: " + bad);
+            var guarded = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed), "通关MC", java.util.Map.of());
+            assertRealEmptyFallback(guarded.allowed());
+        }
+    }
+
     @Test void equipmentNullAndUnsupportedModeAreNotSilentlyConverted() {
         assertTrue(RddDecomposer.parse("{\"subtasks\":[{\"description\":\"equip\",\"condition\":{\"type\":\"equipment\",\"item\":\"minecraft:iron_boots\",\"slot\":null}}]}").isEmpty());
         assertTrue(RddDecomposer.parse("{\"subtasks\":[{\"description\":\"equip\",\"condition\":{\"type\":\"equipment\",\"item\":\"minecraft:iron_boots\",\"mode\":\"acquire\"}}]}").isEmpty());

@@ -507,7 +507,7 @@ final class RddDecomposer {
 
     /**
      * 容错解析 LLM 的 {@code decompose_goal} 参数 JSON → 规格列表。
-     * 坏 JSON / 缺 subtasks 返回空；字段缺失 / 资产键不可执行丢弃对应条目；第 9 个合法条目使整批返回空列表
+     * 坏 JSON / 缺 subtasks 返回空；字段缺失 / 资产键不可执行丢弃对应条目；显式 slots 条目非法或第 9 个合法条目使整批返回空列表
      * （调用方据此回落占位链或走 §9 失败恢复）。不对称错误代价：宁可失败，不可拿残缺链冒充真分解。
      */
     static List<SubtaskSpec> parse(String argumentsJson) {
@@ -525,7 +525,13 @@ final class RddDecomposer {
                 if (!el.isJsonObject()) {
                     continue;
                 }
-                SubtaskSpec spec = parseOne(el.getAsJsonObject());
+                JsonObject candidate = el.getAsJsonObject();
+                SubtaskSpec spec = parseOne(candidate);
+                if (spec == null && candidate.has("condition") && candidate.get("condition").isJsonObject()
+                        && candidate.getAsJsonObject("condition").has("slots")) {
+                    LOG.warn("[rdd] 显式 slots 步骤非法，整批拒绝，不能丢掉装备要求后发布前缀");
+                    return List.of();
+                }
                 if (spec != null) {
                     out.add(spec);
                     if (out.size() > RddChainFactory.MAX_SUBTASKS) {
@@ -831,8 +837,12 @@ final class RddDecomposer {
                     + "{type:entity_nearby,entity:minecraft:cow,radius:8}；"
                     + "{type:block_at,x:100,y:64,z:200,block:minecraft:crafting_table}；"
                     + "{type:container_at,x:100,y:64,z:200,item:minecraft:diamond,minimum:1}；"
-                    + "{type:equipment,item:minecraft:iron_chestplate,slot:chest} 只判此刻该装备槽，不证明穿戴动作或四槽同时齐全；"
-                    + "slot 可取 head/chest/legs/feet/mainhand/offhand/any；any=任一装备槽（含主副手）；"
+                    + "{type:equipment,slots:{feet:minecraft:iron_boots,legs:minecraft:iron_leggings,"
+                    + "chest:minecraft:iron_chestplate,head:minecraft:iron_helmet}} 判同一次检查中四槽当前同时实穿；"
+                    + "slots 的 feet/legs/chest/head 必须全齐，各值可用物品 ID 或 #tag，不得与 item/slot/minimum 混用；"
+                    + "整套护甲必须用这组四槽条件，不得拿头盔或任意单件代替整套；这不证明本步穿戴动作完成。"
+                    + "旧单件 {type:equipment,item:minecraft:iron_chestplate,slot:chest} 仍只判此刻该装备槽；"
+                    + "slot 可取 head/chest/legs/feet/mainhand/offhand/any；省略或 any=任一装备槽（含主副手），不代表四槽齐全；"
                     + "{type:shelter,minimum:20,radius:8}（床周围墙块≥minimum 且头顶≤2格有顶盖——「有个能挡雨的角落」，不要求像人盖的房）；"
                     + "{type:stocked,minimum:10,radius:8}（床周围容器里物品总件数≥minimum——「真把东西存进去了」，空箱子不算）；"
                     + "{type:lit,minimum:4,radius:8}（床周围光源≥minimum——夜里不刷怪）。\n"
@@ -968,6 +978,14 @@ final class RddDecomposer {
                     Map.entry("entity", Map.of("type", "string")),
                     Map.entry("item", Map.of("type", "string", "description", "Exact item ID or #item tag for world facts.")),
                     Map.entry("slot", Map.of("type", "string", "enum", List.of("head", "chest", "legs", "feet", "mainhand", "offhand", "any"))),
+                    Map.entry("slots", Map.of("type", "object",
+                            "properties", Map.of(
+                                    "feet", Map.of("type", "string"),
+                                    "legs", Map.of("type", "string"),
+                                    "chest", Map.of("type", "string"),
+                                    "head", Map.of("type", "string")),
+                            "required", List.of("feet", "legs", "chest", "head"),
+                            "additionalProperties", false)),
                     Map.entry("dimension", Map.of("type", "string")),
                     Map.entry("asset_key", Map.of("type", "string",
                             "description", "minecraft 物品命名空间ID，如 minecraft:oak_log")),
