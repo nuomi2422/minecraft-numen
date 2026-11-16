@@ -942,6 +942,27 @@ public final class RddWorldFacts {
         return WorldFactConditions.radiusOf(condition, WorldFactConditions.DEFAULT_BLOCK_RADIUS);
     }
 
+    /** 三个 D 组判据共用的床心扫描：水平 dx²+dz²≤r²，dy 含端点，未加载区块跳过；
+     *  visitor 返回 true = 提前停（stocked/lit 达标即停；shelter 恒 false 全扫）。 */
+    private interface AroundVisitor {
+        boolean visit(BlockPos pos);
+    }
+
+    private static void scanAround(ServerLevel level, BlockPos center, int radius, int dyMin, int dyMax,
+                                   AroundVisitor visitor) {
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                if (dx * dx + dz * dz > radius * radius) continue;
+                for (int dy = dyMin; dy <= dyMax; dy++) {
+                    cursor.set(center.getX() + dx, center.getY() + dy, center.getZ() + dz);
+                    if (!level.hasChunkAt(cursor)) continue;
+                    if (visitor.visit(cursor)) return;
+                }
+            }
+        }
+    }
+
     /**
      * shelter：床周围半径 R 内"围合"达标。
      * 判据（刻意可解释、可懒造）：墙块（solid 且不是床/门/火把这类功能性方块）≥ minimum（默认 20），
@@ -959,20 +980,12 @@ public final class RddWorldFacts {
         ServerLevel level = ap.serverLevel();
         int radius = baseRadius(condition);
         int minimum = WorldFactConditions.minimumOf(condition, 20);
-        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
-        int walls = 0;
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dz = -radius; dz <= radius; dz++) {
-                if (dx * dx + dz * dz > radius * radius) continue;
-                for (int dy = 0; dy <= 4; dy++) {
-                    cursor.set(bed.getX() + dx, bed.getY() + dy, bed.getZ() + dz);
-                    if (!level.hasChunkAt(cursor)) continue;
-                    var state = level.getBlockState(cursor);
-                    if (isWallLike(state)) walls++;
-                }
-            }
-        }
-        if (walls < minimum) return false;
+        int[] walls = {0};
+        scanAround(level, bed, radius, 0, 4, pos -> {
+            if (isWallLike(level.getBlockState(pos))) walls[0]++;
+            return false;
+        });
+        if (walls[0] < minimum) return false;
         // 顶盖：床正上方 1~2 格内有 solid
         for (int dy = 1; dy <= 2; dy++) {
             var above = level.getBlockState(bed.above(dy));
@@ -1002,23 +1015,16 @@ public final class RddWorldFacts {
         ServerLevel level = ap.serverLevel();
         int radius = baseRadius(condition);
         int minimum = WorldFactConditions.minimumOf(condition, 10);
-        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
-        int total = 0;
-        for (int dx = -radius; dx <= radius && total < minimum; dx++) {
-            for (int dz = -radius; dz <= radius && total < minimum; dz++) {
-                if (dx * dx + dz * dz > radius * radius) continue;
-                for (int dy = -2; dy <= 3 && total < minimum; dy++) {
-                    cursor.set(bed.getX() + dx, bed.getY() + dy, bed.getZ() + dz);
-                    if (!level.hasChunkAt(cursor)) continue;
-                    if (!(level.getBlockEntity(cursor) instanceof Container container)) continue;
-                    for (int slot = 0; slot < container.getContainerSize(); slot++) {
-                        ItemStack stack = container.getItem(slot);
-                        if (!stack.isEmpty()) total += stack.getCount();
-                    }
-                }
+        int[] total = {0};
+        scanAround(level, bed, radius, -2, 3, pos -> {
+            if (!(level.getBlockEntity(pos) instanceof Container container)) return false;
+            for (int slot = 0; slot < container.getContainerSize(); slot++) {
+                ItemStack stack = container.getItem(slot);
+                if (!stack.isEmpty()) total[0] += stack.getCount();
             }
-        }
-        return total >= minimum;
+            return total[0] >= minimum;
+        });
+        return total[0] >= minimum;
     }
 
     /** lit：床半径 R 内光源（火把/灯笼/萤石/海晶灯等，走 tag）≥ minimum（默认 4）。 */
@@ -1034,21 +1040,11 @@ public final class RddWorldFacts {
                 || state.is(Blocks.LANTERN) || state.is(Blocks.SOUL_LANTERN)
                 || state.is(Blocks.GLOWSTONE) || state.is(Blocks.SEA_LANTERN)
                 || state.is(Blocks.JACK_O_LANTERN) || state.is(Blocks.SHROOMLIGHT);
-        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
-        int found = 0;
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dz = -radius; dz <= radius; dz++) {
-                if (dx * dx + dz * dz > radius * radius) continue;
-                for (int dy = -2; dy <= 3; dy++) {
-                    cursor.set(bed.getX() + dx, bed.getY() + dy, bed.getZ() + dz);
-                    if (!level.hasChunkAt(cursor)) continue;
-                    if (isLight.test(level.getBlockState(cursor))) {
-                        found++;
-                        if (found >= minimum) return true;
-                    }
-                }
-            }
-        }
-        return false;
+        int[] found = {0};
+        scanAround(level, bed, radius, -2, 3, pos -> {
+            if (isLight.test(level.getBlockState(pos))) found[0]++;
+            return found[0] >= minimum;
+        });
+        return found[0] >= minimum;
     }
 }
