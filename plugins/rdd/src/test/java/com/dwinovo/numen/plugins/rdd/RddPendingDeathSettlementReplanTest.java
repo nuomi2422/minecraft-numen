@@ -48,7 +48,14 @@ class RddPendingDeathSettlementReplanTest {
         String admission = between(detector,
                 "            // 刚推进到新的当前一级(PENDING/WAITING)：",
                 "            SubtaskStatus status = chain.currentSubtaskStatus();");
+        String failed = between(detector, "            if (status == SubtaskStatus.FAILED) {",
+                "            if (status != SubtaskStatus.RUNNING) {");
         String generated = HEAD
+                + between(source, "    private record DeferredDeath(", "    /** 同伴自绑床位")
+                + detectorExcerpt(between(detector, "    private final Map<UUID, RetryState> retries", "    /** 已因"))
+                + between(detector, "    private static final int MAX_SUBTASK_RETRIES", "    /** 资产提前触发")
+                + method(source, "    private static boolean deferDeathReplan(")
+                + method(source, "    static boolean consumeDeferredDeathReplan(")
                 + method(source, "    static boolean onDeathRecoverySettled(")
                 + method(source, "    private static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation,")
                 + method(source, "    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,\n"
@@ -56,9 +63,19 @@ class RddPendingDeathSettlementReplanTest {
                 + method(source, "    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,\n"
                     + "                                         String soldierHint, boolean skipRecoverySideTask,\n"
                     + "                                         Runnable acceptedSideEffect)")
+                + method(source, "    static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation, String soldierHint) {")
                 + request
                 + "public static void detectorAdmission(UUID id) { var ap = new Body(id); var rt = runtime(id); var chain = rt.chain(); var ps = chain.primaryStatus();\n"
-                + admission + " trace.add(\"kickoff_boundary\"); }\n"
+                + admission + " SubtaskStatus status = chain.currentSubtaskStatus();\n"
+                + failed + " if (status == SubtaskStatus.RUNNING) trace.add(\"kickoff_boundary\"); }\n"
+                + detectorExcerpt(method(detector, "    private void parkRejectedDeathReplan("))
+                + detectorExcerpt(method(detector, "    private void handleSubtaskFailure("))
+                + method(detector, "    private static boolean hasBackupEquipment(")
+                + method(detector, "    private static boolean hasBase(")
+                + method(detector, "    private static String nudgeForPlan(")
+                + method(detector, "    private static com.dwinovo.numen.rdd.fail.TaskQualityReport.Reason failureKindToQuality(")
+                + detectorExcerpt(method(detector, "    private int rsSafeCount("))
+                + method(source, "    static boolean requestReplan(UUID companionId, String reason) {")
                 + "static class SideTaskHost {\n"
                 + method(Files.readString(plugin.resolve("SideTaskHost.java")).replace("\r\n", "\n"), "    private static void publish(")
                 + "static SideTaskWorldPort.PreparationFacts deathPreparationResult(UUID id, String payload) { throw new AssertionError(\"drop-only must not read preparation\"); }\n}\n"
@@ -67,12 +84,13 @@ class RddPendingDeathSettlementReplanTest {
         Files.writeString(java, generated, StandardCharsets.UTF_8);
         Path dispatcher = output.resolve("CompanionTickDispatcher.java");
         Files.writeString(dispatcher, "package com.dwinovo.numen.task; public class CompanionTickDispatcher { "
-                + "public static void stopActive(Object body, String reason) { throw new AssertionError(\"drop-only has no body stop\"); } }", StandardCharsets.UTF_8);
+                + "public static void stopActive(Object body, String reason) { throw new AssertionError(\"drop-only has no body stop\"); } "
+                + "public static Object currentTaskFor(java.util.UUID id) { return null; } }", StandardCharsets.UTF_8);
         List<String> args = new ArrayList<>(List.of("-encoding", "UTF-8", "-proc:none", "-classpath",
                 location(TaskChain.class) + File.pathSeparator + location(Gson.class) + File.pathSeparator
                         + System.getProperty("java.class.path"), "-d", output.toString(), java.toString(), dispatcher.toString()));
         // Compile the pure host dependencies unchanged, alongside the source-excerpt host.
-        for (String name : List.of("RddReplanTransition", "RddSurvivalGate", "DeathPreparationHost", "RddDeathLedgerStore"))
+        for (String name : List.of("RddReplanTransition", "RddSurvivalGate", "DeathPreparationHost", "RddDeathLedgerStore", "RddOptionalFood"))
             args.add(plugin.resolve(name + ".java").toString());
         var compiler = ToolProvider.getSystemJavaCompiler();
         assertNotNull(compiler, "JDK required by existing source-excerpt test pattern");
@@ -105,7 +123,8 @@ class RddPendingDeathSettlementReplanTest {
         assertEquals(0, number("plannerRequests"));
         assertTrue(budget().isEmpty(), "refused early request is free");
         assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
-        assertEquals(true, event("death_recovery_settled").get("replanRequested"));
+        assertEquals(false, event("death_recovery_settled").get("replanRequested"), "deferred is not accepted");
+        assertEquals(true, event("death_recovery_settled").get("replanDeferred"));
         assertEquals(false, f.terminal.get("prepareSettlementAccepted"));
         assertEquals(true, event("side_task_resumed_mainline").get("mainlineResumed"),
                 "the actual drop-only engine currently releases without preparation ACK");
@@ -147,6 +166,124 @@ class RddPendingDeathSettlementReplanTest {
         assertEquals(f.history, f.chain.satisfiedStages());
     }
 
+    @Test void riskAndDependencyGatesRetainSameDeferredWithoutSpending(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir, List.of(new AssetRequirement("minecraft:bread", 2)));
+        f.finishDropsAbsent();
+        Object pending = deferred().get(f.id);
+        setField("riskAllowed", false);
+        call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
+        assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
+        assertSame(pending, deferred().get(f.id));
+        setField("riskAllowed", true);
+        call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
+        assertEquals(PrimaryGoalStatus.WAITING, f.chain.primaryStatus());
+        assertSame(pending, deferred().get(f.id));
+        assertTrue(budget().isEmpty());
+        assertEquals(0, number("plannerRequests"));
+        assertFalse(trace().contains("kickoff_boundary"));
+        setField("observedCounts", Map.of("minecraft:bread", 2));
+        call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+        assertEquals(1, number("plannerRequests"));
+        assertTrue(deferred().isEmpty());
+    }
+
+    @Test void secondConsumeOfSameOwnerDoesNotRequestOrChargeAgain(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        f.finishDropsAbsent();
+        call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
+        String after = f.chain.toJson();
+        assertFalse(consume(f.id, f.chain));
+        assertEquals(after, f.chain.toJson());
+        assertEquals(1, number("plannerRequests"));
+        assertEquals(1, budget().values().stream().mapToInt(Integer::intValue).sum());
+    }
+
+    @Test void replacedChainAndOldCallerCannotMutateNewOwnerOrItsHandoff(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        f.finishDropsAbsent();
+        TaskChain replacement = TaskChain.fromJson(f.chain.toJson()); // even identical persisted IDs are not ownership
+        runtimes().put(f.id, new RddRuntime(replacement, new AssetRegistry()));
+        assertTrue(replacement.activateCurrentWithSnapshot(PlanningAssetSnapshot.from(Map.of(), new AssetRegistry())));
+        String before = replacement.toJson();
+        assertFalse(consume(f.id, replacement));
+        assertEquals(before, replacement.toJson());
+        assertTrue(deferred().isEmpty());
+        // A stale old caller must not erase a subsequently deferred handoff for this replacement.
+        TaskChain next = TaskChain.fromJson(f.chain.toJson());
+        runtimes().put(f.id, new RddRuntime(next, new AssetRegistry()));
+        assertTrue((Boolean) call("deferDeathReplan", new Class<?>[]{UUID.class, int.class, String.class}, f.id, 50, "same death new owner"));
+        Object pending = deferred().get(f.id);
+        assertFalse(consume(f.id, f.chain));
+        assertSame(pending, deferred().get(f.id));
+        assertEquals(0, number("plannerRequests"));
+        assertTrue(budget().isEmpty());
+    }
+
+    @Test void changedPlanRevisionDiscardsDeferredWithoutTouchingNewPlan(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        f.finishDropsAbsent();
+        f.chain.nextPlanRevision();
+        assertTrue(f.runtime.activateCurrentFromSnapshot(PlanningAssetSnapshot.from(Map.of(), f.runtime.assets())));
+        String before = f.chain.toJson();
+        assertFalse(consume(f.id, f.chain));
+        assertEquals(before, f.chain.toJson());
+        assertTrue(deferred().isEmpty());
+        assertTrue(budget().isEmpty());
+        assertEquals(0, number("plannerRequests"));
+    }
+
+    @Test void exhaustedBudgetParksAndNextFailureTickCannotRunOldPlan(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        f.finishDropsAbsent();
+        budget().put(f.id + "|trade|nego", 3);
+        assertRejectedRemainsParked(f);
+        assertEquals(3, budget().get(f.id + "|trade|nego"));
+        assertEquals(false, event("death_replan_consumed").get("replanAccepted"));
+    }
+
+    @Test void synchronousRequestFailureBeforeTransitionAlsoParks(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        f.finishDropsAbsent();
+        setField("captureFails", true); // real request throws at token capture, before transition/budget
+        assertRejectedRemainsParked(f);
+        assertTrue(budget().isEmpty());
+        assertEquals(false, event("death_replan_consumed").get("replanAccepted"));
+    }
+
+    @Test void ordinaryNegotiationStillCannotAdmitPending(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        String before = f.chain.toJson();
+        assertFalse((Boolean) call("requestReplan", new Class<?>[]{UUID.class, String.class, boolean.class, String.class, boolean.class},
+                f.id, "ordinary soldier negotiation", true, null, true));
+        assertEquals(before, f.chain.toJson());
+        assertTrue(budget().isEmpty());
+        assertTrue(deferred().isEmpty());
+        assertEquals(0, number("plannerRequests"));
+    }
+
+    private static void assertRejectedRemainsParked(Fixture f) throws Exception {
+        call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
+        assertEquals(SubtaskStatus.FAILED, f.chain.currentSubtaskStatus());
+        String parked = f.chain.toJson();
+        // This invokes the real FAILED consumer + handleSubtaskFailure, not just assertions about maps.
+        call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
+        call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
+        assertEquals(parked, f.chain.toJson(), "retry/start must not reopen the old plan on later ticks");
+        assertEquals(0, number("plannerRequests"));
+        assertFalse(trace().contains("kickoff_boundary"));
+        assertFalse(trace().contains("subtask_retry"));
+        assertTrue(deferred().isEmpty(), "a rejected claim is not put back for automatic retry");
+    }
+
+    private static boolean consume(UUID id, TaskChain chain) throws Exception {
+        return (Boolean) call("consumeDeferredDeathReplan", new Class<?>[]{UUID.class, TaskChain.class, Runnable.class}, id, chain,
+                (Runnable) () -> { throw new AssertionError("stale/duplicate must not park an owner"); });
+    }
+    @SuppressWarnings("unchecked") private static Map<UUID, Object> deferred() throws Exception { return (Map<UUID, Object>) field("DEFERRED_DEATH_REPLANS"); }
+    @SuppressWarnings("unchecked") private static Map<UUID, RddRuntime> runtimes() throws Exception { return (Map<UUID, RddRuntime>) field("RUNTIMES"); }
+    private static void setField(String name, Object value) throws Exception { var f = host.getDeclaredField(name); f.setAccessible(true); f.set(null, value); }
+
     private static final class Fixture implements SideTaskWorldPort {
         final UUID id = UUID.randomUUID();
         final TaskChain chain;
@@ -156,11 +293,12 @@ class RddPendingDeathSettlementReplanTest {
         DeathDropState drops = DeathDropState.UNKNOWN;
         Map<String, Object> terminal;
 
-        Fixture(Path dir) throws Exception {
+        Fixture(Path dir) throws Exception { this(dir, List.of()); }
+        Fixture(Path dir, List<AssetRequirement> waitFor) throws Exception {
             TaskChain initial = new TaskChain(new Goal("g", "finish trade", List.of(
                     new PrimaryGoal("prior", "verified shelter", List.of(Subtask.hardCoded("prior-0", "shelter", Map.of("minimum", 1)))),
                     new PrimaryGoal("trade", "collect emeralds", List.of(Subtask.hardCoded("trade-r3-0", "old emerald plan",
-                            Map.of("asset_key", "minecraft:emerald", "minimum", 20)))))));
+                            Map.of("asset_key", "minecraft:emerald", "minimum", 20))), waitFor))));
             initial.settlePrimaryByFact("prior", "bounded fixture world fact", true);
             for (int rev = 0; rev < 3; rev++) initial.nextPlanRevision();
             Path saved = dir.resolve("chain.json");
@@ -262,6 +400,11 @@ class RddPendingDeathSettlementReplanTest {
         int a = source.indexOf(start), b = source.indexOf(end, a);
         assertTrue(a >= 0 && b > a, "production consumer boundaries missing"); return source.substring(a, b);
     }
+    private static String detectorExcerpt(String source) {
+        // Only adapt the MC body type and instance storage to the existing static shell; rules stay source-loaded.
+        return source.replace("NumenPlayer", "Body").replace("private final ", "private static final ")
+                .replace("private void ", "private static void ").replace("private int ", "private static int ");
+    }
     private static String method(String source, String signature) {
         int start = source.indexOf(signature); assertTrue(start >= 0, "production method missing: " + signature);
         // All selected methods end at the next four-space method-closing brace. Nested blocks indent deeper.
@@ -272,6 +415,10 @@ class RddPendingDeathSettlementReplanTest {
     private static final String HEAD = """
             package com.dwinovo.numen.plugins.rdd;
             import java.util.*;
+            import java.util.concurrent.ConcurrentHashMap;
+            import com.dwinovo.numen.rdd.fail.*;
+            import com.dwinovo.numen.rdd.policy.*;
+            import com.dwinovo.numen.task.CompanionTickDispatcher;
             import java.nio.file.Path;
             import com.dwinovo.numen.rdd.api.*;
             import com.dwinovo.numen.rdd.core.*;
@@ -285,11 +432,15 @@ class RddPendingDeathSettlementReplanTest {
                 static final List<String> trace = new ArrayList<>();
                 static final Map<String,Map<String,Object>> events = new HashMap<>();
                 static int plannerRequests; static Path ledgerDir;
+                static boolean riskAllowed, captureFails;
+                static Map<String,Integer> observedCounts = Map.of();
                 static class Log { void info(String s,Object... a) {} void warn(String s,Object... a) {} }
                 static final Log LOG = new Log();
                 public static void reset(UUID id,RddRuntime rt,Path dir) {
                     RUNTIMES.clear(); RUNTIMES.put(id,rt); REPLAN_COUNTS.clear(); DEATH_SETTLEMENTS.clear();
                     trace.clear(); events.clear(); plannerRequests=0; ledgerDir=dir;
+                    DEFERRED_DEATH_REPLANS.clear(); retries.clear(); gapParked.clear();
+                    riskAllowed=true; captureFails=false; observedCounts=Map.of();
                 }
                 public static RddRuntime runtime(UUID id) { return RUNTIMES.get(id); }
                 public static void sideEvent(String e,Map<String,Object> d) { SideTaskHost.publish(e,d); }
@@ -301,12 +452,26 @@ class RddPendingDeathSettlementReplanTest {
                 static void warnLedgerStore(String e,Map<String,Object> d) { throw new AssertionError(e+d); }
                 static Map<String,Integer> lastInventory(UUID id) { return Map.of(); }
                 static Long lastInventoryAtMillis(UUID id) { return 1000L; }
-                static PlanningAssetSnapshot planningSnapshot(UUID id) { return PlanningAssetSnapshot.from(Map.of(),runtime(id).assets()); }
+                static PlanningAssetSnapshot planningSnapshot(UUID id) { return PlanningAssetSnapshot.from(observedCounts,runtime(id).assets()); }
                 static void saveRuntimes() {}
+                static boolean supervisionEnabled() { return true; }
+                static void clearBody(UUID id) { trace.add("clear_body"); }
+                static void nudge(UUID id,String text) { throw new AssertionError("unexpected automatic nudge: "+text); }
+                static void finishResolvedPrimary(UUID id,RddRuntime rt) { throw new AssertionError("not optional food"); }
+                static Map<String,Integer> countInventory(Body body) { return observedCounts; }
+                static boolean conditionMatches(Body body,Subtask task,Map<String,Integer> counts) { return HardCodedEvaluator.matches(task.condition(),counts); }
+                static boolean completeSubtask(Body body,RddRuntime rt,Subtask task) { throw new AssertionError("fixture unmet"); }
+                static class Watcher {
+                    void watch(Body b,RddRuntime rt,Subtask s) { trace.add("parked_watch"); }
+                    void clear(UUID id) {} void remove(UUID id) {}
+                }
+                static final Watcher parkedWatcher=new Watcher(), stallWatcher=new Watcher(), furnaceWatch=new Watcher();
+                static class RddTaskQualityReporter { static void report(Object... args) { throw new AssertionError("unexpected second failure route"); } }
+
                 static void publishTaskSnapshot(UUID id,String why) { trace.add(why); }
                 static class MinecraftServer {}
                 static class ServerLifecycleHooks { static MinecraftServer getCurrentServer() { return new MinecraftServer(); } }
-                static Object captureObservationToken(MinecraftServer s) { return s; }
+                static Object captureObservationToken(MinecraftServer s) { if (captureFails) throw new IllegalStateException("bounded token capture failure"); return s; }
                 static class BodyState {}
                 static BodyState bodyState(UUID id) { return null; }
                 static void clearBodyIfSame(UUID id,BodyState body) { trace.add("accepted_clear_body"); }
@@ -329,7 +494,8 @@ class RddPendingDeathSettlementReplanTest {
                     }
                 }
                 static class RddInstrumentation {
-                    static final String LOOP_DETECTED="loop", RECOVERY_FAILED="recovery_failed";
+                    static final String LOOP_DETECTED="loop", RECOVERY_FAILED="recovery_failed", REPEAT_GATHER="repeat_gather";
+                    static void publish(String e,Map<String,Object> d) { RddMonitor.publish(e,d); }
                     static long currentGameTimeTicks() { return 1000; }
                     static boolean recentDeath(UUID id,long t) { return true; }
                     static void publishAt(String e,Map<String,Object> d,long t) { RddMonitor.publish(e,d); }
@@ -338,7 +504,7 @@ class RddPendingDeathSettlementReplanTest {
                 record Body(UUID id) { UUID getUUID() { return id; } }
                 static class RddGoalDriver { static void needExpansion(UUID id) { throw new AssertionError("expanded fixture"); } }
                 static void reportExpansionNeeded(UUID id,String p,String description) { throw new AssertionError(); }
-                static boolean riskGateAllows(Body b,String description) { return true; }
+                static boolean riskGateAllows(Body b,String description) { return riskAllowed; }
                 static boolean shouldPublishGatedSnapshot(UUID id,String p,String... kind) { return false; }
                 static void publishWaitingOnce(Body b,String key,String e,Map<String,Object> d) { RddMonitor.publish(e,d); }
                 static void watchParkedIfStuck(Body b,RddRuntime rt,TaskChain c) {}

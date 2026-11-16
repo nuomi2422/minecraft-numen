@@ -564,6 +564,9 @@ final class RddDetector {
             if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) {
                 return;
             }
+            if (RddPlugin.consumeDeferredDeathReplan(ap.getUUID(), chain, () -> parkRejectedDeathReplan(ap, rt))) {
+                return;
+            }
             // 自动启动当前二级（首个由 sink 启动，推进后由这里继续；AI_ASSISTED 也在内）。
             if (chain.currentSubtaskStatus() == SubtaskStatus.PENDING) {
                 rt.startCurrent();
@@ -1185,6 +1188,23 @@ final class RddDetector {
             Subtask cur = chain.currentSubtask();
             if (cur != null) parkedWatcher.watch(ap, rt, cur);
         } catch (RuntimeException ignored) { /* fail-soft */ }
+    }
+
+    /** Activation has already started the chain-local attempt, never the body/kickoff. Reuse FAILED parking. */
+    private void parkRejectedDeathReplan(NumenPlayer ap, RddRuntime rt) {
+        var chain = rt.chain();
+        var current = chain.currentSubtask();
+        var status = chain.currentSubtaskStatus();
+        if (status == SubtaskStatus.RUNNING || status == SubtaskStatus.STALLED) {
+            chain.markFailed(current.id(), "death settlement could not replan; old plan must not dispatch");
+        }
+        retries.put(ap.getUUID(), new RetryState(current.id(), MAX_SUBTASK_RETRIES));
+        // Both are required: retries blocks retry/start; gapParked blocks another automatic failure replan.
+        gapParked.put(ap.getUUID(), current.id());
+        RddPlugin.clearBody(ap.getUUID());
+        parkedWatcher.watch(ap, rt, current);
+        RddPlugin.saveRuntimes();
+        RddPlugin.publishTaskSnapshot(ap.getUUID(), "death_replan_rejected_parked");
     }
 
     /** FAILED 二级的 Level 2 局部恢复：预算内重置重跑 + 拍醒提示换策略；预算耗尽 → Level 3。 */
