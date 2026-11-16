@@ -180,6 +180,15 @@ class MoveToArrivalConsumerTest {
                             new MoveToTaskRecord("radius",0,6185d,null,6130d,null,false));
                         return Map.of("close",t.closeEnoughToSucceed(),"retry",t.nearRetryGoal().isAt(p.world.feet));
                     }
+                    public static Map<String,Object> membershipScan(int fx, int fz, int sx, int sz) {
+                        NumenPlayer p=new NumenPlayer(); p.world.envelope="singleGap";
+                        p.world.feet=new BlockPos(6185+fx,80,6130+fz);
+                        p.start=new BlockPos(6185+sx,80,6130+sz); p.ground=true;
+                        MoveToCompanionTask t=new MoveToCompanionTask(p,
+                            new MoveToTaskRecord("scan",0,6185d,null,6130d,null,false));
+                        boolean reached=t.reached();
+                        return Map.of("reached",reached,"scans",p.world.scans);
+                    }
                     public static Map<String,Object> referenceChange() {
                         NumenPlayer p=new NumenPlayer(); p.world.envelope="singleGap";
                         p.world.feet=new BlockPos(6185,80,6130); p.start=p.world.feet; p.ground=true;
@@ -347,6 +356,18 @@ class MoveToArrivalConsumerTest {
         assertEquals(false, r.get("closeAfter"));
         assertEquals(true, r.get("frozenRetry"), "an already-built retry goal retains its creation reference");
         assertEquals(false, r.get("freshRetry"), "a new retry goal reads the changed reference");
+    }
+
+    @Test void columnMembershipRejectsEitherXzMismatchWithoutResolvingSurface() throws Exception {
+        Class<?>[] axes = {int.class, int.class, int.class, int.class};
+        for (int[] cells : new int[][]{{100,0,0,0}, {0,100,0,0}, {0,0,1,0}, {0,0,0,1}}) {
+            var r = probe("membershipScan", axes, cells[0], cells[1], cells[2], cells[3]);
+            assertEquals(false, r.get("reached"));
+            assertEquals(0, r.get("scans"), "a feet or pathStart XZ mismatch needs no reference scan");
+        }
+        var sameColumn = probe("membershipScan", axes, 0, 0, 0, 0);
+        assertEquals(true, sameColumn.get("reached"));
+        assertEquals(1, sameColumn.get("scans"), "same-column feet and pathStart still share one reference");
     }
 
     @SuppressWarnings("unchecked")

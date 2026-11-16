@@ -319,10 +319,18 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
      * "one block short, one step too far" fall.
      */
     private boolean reached() {
-        // One local reference for BOTH memberships; no persistent surface cache.
-        NavGoal column = r.kind == MoveToTaskRecord.Kind.COLUMN ? columnGoal() : null;
-        return inGoalCell(feet(), column)
-                && inGoalCell(com.dwinovo.numen.core.pathing.moves.Movement.pathStart(player), column);
+        if (r.kind == MoveToTaskRecord.Kind.COLUMN) {
+            BlockPos feet = feet();
+            // Keep the cheap XZ rejection before any surface scan (and before pathStart).
+            if (feet.getX() != bx || feet.getZ() != bz) return false;
+            BlockPos supported = com.dwinovo.numen.core.pathing.moves.Movement.pathStart(player);
+            if (supported.getX() != bx || supported.getZ() != bz) return false;
+            // One local reference for BOTH memberships; no persistent surface cache.
+            NavGoal column = columnGoal();
+            return inGoalCell(feet, column) && inGoalCell(supported, column);
+        }
+        return inGoalCell(feet(), null)
+                && inGoalCell(com.dwinovo.numen.core.pathing.moves.Movement.pathStart(player), null);
     }
 
     /** ONE membership definition per kind, shared with the search:
