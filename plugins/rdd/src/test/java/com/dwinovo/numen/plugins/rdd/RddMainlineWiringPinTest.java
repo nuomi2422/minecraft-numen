@@ -489,9 +489,9 @@ class RddMainlineWiringPinTest {
 
     @Test
     void supervisionGateStillShortCircuitsTheNudge() {
-        String body = methodBody(plugin(), "nudge", "supervisionEnabled");
+        String body = methodBody(read(pluginSourceDir(), "RddSupervisionNotifications.java"), "nudge", "supervisionEnabled");
         int gate = body.indexOf("supervisionEnabled");
-        int enqueue = body.indexOf("numenApi.enqueue");
+        int enqueue = body.indexOf("RddPlugin.notificationApi().enqueueSystem");
         assertTrue(gate >= 0 && gate < enqueue,
                 "★ supervisionEnabled 闸必须在 enqueue 之前判。这是「关掉监督就不再打扰同伴」"
                         + "的唯一保证；把它挪到 enqueue 之后 = 开关形同虚设（关了照样催）");
@@ -500,11 +500,11 @@ class RddMainlineWiringPinTest {
     @Test
     void theWholePinSetStillFindsTheRealFiles() {
         List<String> found = new ArrayList<>();
-        for (String f : List.of("RddDetector.java", "RddPlugin.java")) {
+        for (String f : List.of("RddDetector.java", "RddPlugin.java", "RddSupervisionNotifications.java")) {
             if (Files.isRegularFile(pluginSourceDir().resolve(f))) found.add(f);
         }
-        assertEquals(List.of("RddDetector.java", "RddPlugin.java"), found,
-                "★ 本类依赖的两个源文件必须都在原位。它们若被重命名/移动，本类会大面积 vacuous "
+        assertEquals(List.of("RddDetector.java", "RddPlugin.java", "RddSupervisionNotifications.java"), found,
+                "★ 本类依赖的三个源文件必须都在原位。它们若被重命名/移动，本类会大面积 vacuous "
                         + "fail —— 这时应该更新本类的定位方式，而不是删掉本类");
         assertTrue(Files.isDirectory(rddCoreSourceDir()) || true,
                 "rdd-core 源目录定位（当前不用于断言，保留以便将来扩展）");
@@ -516,7 +516,7 @@ class RddMainlineWiringPinTest {
 
     @Test
     void kickoffNudgeFiresPerSubtaskAndCannotBeThrottledAway() {
-        String body = methodBody(plugin(), "kickoffNudge", "KICKOFF_SENT");
+        String body = methodBody(read(pluginSourceDir(), "RddSupervisionNotifications.java"), "kickoffNudge", "KICKOFF_SENT");
         assertOrder(body,
                 "nudgeAllowed",
                 "clearNudgeThrottle",
@@ -529,7 +529,7 @@ class RddMainlineWiringPinTest {
                 "开工拍醒必须给合规出口，否则她只能瞎动或不动");
         assertContains(body, "bodySubmissionEnabled",
                 "身体驱动模式下拍醒 = 双驾驶，必须短路");
-        assertContains(methodBody(plugin(), "bindCurrent", "KICKOFF_SENT"), "clearNudgeThrottle",
+        assertContains(methodBody(plugin(), "bindCurrent", "RddSupervisionNotifications.clearKickoff"), "clearNudgeThrottle",
                 "换目标必须重开节流窗口，否则新目标首次开工拍醒会被 3 分钟总闸吞掉");
         assertContains(detector(), "RddPlugin.kickoffNudge(",
                 "Detector 的推进段必须接上开工拍醒（链生成后马上推 AI 动手）");
@@ -537,10 +537,10 @@ class RddMainlineWiringPinTest {
 
     @Test
     void nudgeThrottleIsPerStateNotGlobal() {
-        assertContains(methodBody(plugin(), "nudgeBucket", "currentSubtask"),
+        assertContains(methodBody(read(pluginSourceDir(), "RddSupervisionNotifications.java"), "nudgeBucket", "currentSubtask"),
                 "currentSubtask()",
                 "节流桶必须按当前二级分桶：per-companion 全局桶会让新阶段的开工被上一阶段的 3 分钟窗口吞掉");
-        assertContains(methodBody(plugin(), "nudge", "LAST_NUDGE_AT.put"),
+        assertContains(methodBody(read(pluginSourceDir(), "RddSupervisionNotifications.java"), "nudge", "LAST_NUDGE_AT.put"),
                 "nudgeBucket(",
                 "nudge 必须写进【状态桶】，不能退回 per-companion 全局");
     }
