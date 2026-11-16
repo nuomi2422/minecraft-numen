@@ -9,7 +9,6 @@ import java.util.function.IntSupplier;
 final class RddCarryProjection {
     private RddCarryProjection() {}
     private static final int MAX_ITEMS = 4;
-    private static final long STALE_MS = 10_000L;
     /** 一次渲染的产物：注入文本 + 本次命中的独立闹钟（供边沿埋点）。 */
     record Rendered(String xml, List<CarrierAlarms.Hit> alarms) {
         /**
@@ -59,7 +58,7 @@ final class RddCarryProjection {
             for (CarrierAlarms.Hit h : alarms) {
                 // A4（96 号）：每条提醒带采样时刻/年龄/来源/覆盖；过期显式标 stale，不冒充当前。
                 long ageMs = facts.capturedAtMs() > 0 ? Math.max(0, System.currentTimeMillis() - facts.capturedAtMs()) : -1;
-                boolean stale = ageMs > STALE_MS;
+                boolean stale = ageMs > RddCarryHint.STALE_MS;
                 sb.append("<alarm rule=\"").append(esc(h.rule())).append("\" v=\"").append(h.version())
                         .append("\" pri=\"").append(esc(h.prio()))
                         .append("\" asOf=\"").append(esc(facts.capturedAtMs() > 0

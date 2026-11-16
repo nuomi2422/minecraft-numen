@@ -70,6 +70,10 @@ class RddCarryProjectionTest {
         assertTrue(source.contains("() -> CarrierRuleStore.effective().size()"),"retain lazy second rule-count lookup");
         assertTrue(source.indexOf("if (!server.isSameThread())")<source.indexOf("CARRY_HINT_AT.put(companionId, now)"));
         assertTrue(source.contains("private static final long WAKE_COOLDOWN_MS = 30_000L"));
+        assertTrue(source.contains("static final long STALE_MS = 10_000L;"));
+        String projectionSource=Files.readString(root.resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddCarryProjection.java"));
+        assertTrue(projectionSource.contains("ageMs > RddCarryHint.STALE_MS"));
+        assertFalse(projectionSource.contains("long STALE_MS"),"host remains the single compile-time stale threshold owner");
         assertTrue(source.contains("if (body.isAlive() && !stale)"));
     }
 }

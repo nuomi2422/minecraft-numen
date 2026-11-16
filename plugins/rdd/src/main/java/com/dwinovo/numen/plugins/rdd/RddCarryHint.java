@@ -74,7 +74,7 @@ final class RddCarryHint {
     private static final double NEARBY_RADIUS = 16.0D;
 
     /** A4（96 号）：事实超过这个年龄就标 stale —— 旧事实可以看，但不能冒充当前。 */
-    private static final long STALE_MS = 10_000L;
+    static final long STALE_MS = 10_000L;
 
     /**
      * A4 判据② 的**测试探针**：`config/numen/carry-stale.json` = `{"staleMs":15000}` 时，
