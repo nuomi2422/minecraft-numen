@@ -86,6 +86,14 @@ class RddMainlineWiringPinTest {
             assertEquals(1, src.split("Stats\\." + stat, -1).length - 1, "one native routing entry per statistic");
             assertContains(routing, "Stats." + stat, "baseline and completion route to the original native statistic");
         }
+        for (String[] route : new String[][]{
+                {"item_crafted", "ITEM_CRAFTED", "ITEM"},
+                {"item_used", "ITEM_USED", "ITEM"},
+                {"item_picked_up", "ITEM_PICKED_UP", "ITEM"},
+                {"block_mined", "BLOCK_MINED", "BLOCK"}}) {
+            assertContains(routing, "case \"" + route[0] + "\" -> sumStat(ap, Stats." + route[1]
+                    + ", BuiltInRegistries." + route[2] + ", key, isTag)", "keep the exact native stat and registry for each condition");
+        }
         assertContains(routing, "default -> -1", "unsupported statistics stay UNKNOWN");
     }
 
