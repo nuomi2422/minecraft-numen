@@ -23,7 +23,6 @@ import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.biome.Climate;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Predicate;
 
@@ -203,23 +202,7 @@ public final class LocateBiomeCompanionTask extends AbstractCompanionTask<Locate
 
     @Override
     protected Map<String, Object> resultData() {
-        Map<String, Object> data = new HashMap<>();
-        data.put("biome", r.biome);
-        if (best != null) {
-            BlockPos me = player.blockPosition();
-            int dx = best.getX() - me.getX();
-            int dz = best.getZ() - me.getZ();
-            int dist = (int) Math.sqrt((double) dx * dx + (double) dz * dz);
-            data.put("found", true);
-            data.put("x", best.getX());
-            data.put("y", best.getY());
-            data.put("z", best.getZ());
-            data.put("direction", CompassUtil.compass(dx, dz));
-            data.put("horizontal_distance", dist);
-        } else {
-            data.put("found", false);
-        }
-        return data;
+        return LocateResultData.of("biome", r.biome, best, best == null ? null : player.blockPosition());
     }
 
     @Override

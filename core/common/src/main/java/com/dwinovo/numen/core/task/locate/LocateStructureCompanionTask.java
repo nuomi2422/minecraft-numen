@@ -304,23 +304,7 @@ public final class LocateStructureCompanionTask extends AbstractCompanionTask<Lo
 
     @Override
     protected Map<String, Object> resultData() {
-        Map<String, Object> data = new HashMap<>();
-        data.put("structure", r.structure);
-        if (best != null) {
-            BlockPos me = player.blockPosition();
-            int dx = best.getX() - me.getX();
-            int dz = best.getZ() - me.getZ();
-            int dist = (int) Math.sqrt((double) dx * dx + (double) dz * dz);
-            data.put("found", true);
-            data.put("x", best.getX());
-            data.put("y", best.getY());
-            data.put("z", best.getZ());
-            data.put("direction", CompassUtil.compass(dx, dz));
-            data.put("horizontal_distance", dist);
-        } else {
-            data.put("found", false);
-        }
-        return data;
+        return LocateResultData.of("structure", r.structure, best, best == null ? null : player.blockPosition());
     }
 
     @Override
