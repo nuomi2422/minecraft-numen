@@ -149,17 +149,7 @@ public final class RddWorldFacts {
             Object raw = "block_mined".equals(type) ? condition.get("block") : condition.get("item");
             ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
             if (key == null) return -1;
-            return switch (type) {
-                case "item_crafted" -> sumStat(ap, Stats.ITEM_CRAFTED, BuiltInRegistries.ITEM, key,
-                        WorldFactConditions.isTag(condition.get("item")));
-                case "item_used" -> sumStat(ap, Stats.ITEM_USED, BuiltInRegistries.ITEM, key,
-                        WorldFactConditions.isTag(condition.get("item")));
-                case "item_picked_up" -> sumStat(ap, Stats.ITEM_PICKED_UP, BuiltInRegistries.ITEM, key,
-                        WorldFactConditions.isTag(condition.get("item")));
-                case "block_mined" -> sumStat(ap, Stats.BLOCK_MINED, BuiltInRegistries.BLOCK, key,
-                        WorldFactConditions.isTag(condition.get("block")));
-                default -> -1;
-            };
+            return readStat(ap, type, key, WorldFactConditions.isTag(raw));
         } catch (RuntimeException ex) {
             return -1;
         }
@@ -186,10 +176,7 @@ public final class RddWorldFacts {
                 case "biome" -> biome(ap, condition);
                 case "block_nearby" -> blockNearby(ap, condition);
                 case "container_nearby" -> containerNearby(ap, condition);
-                case "block_mined" -> statBlockMined(ap, condition);
-                case "item_crafted" -> statItem(ap, Stats.ITEM_CRAFTED, condition);
-                case "item_used" -> statItem(ap, Stats.ITEM_USED, condition);
-                case "item_picked_up" -> statItem(ap, Stats.ITEM_PICKED_UP, condition);
+                case "block_mined", "item_crafted", "item_used", "item_picked_up" -> statMatches(ap, condition);
                 case "dimension" -> dimensionReached(ap, condition);
                 case "y_below" -> yBelow(ap, condition);
                 case "position_at" -> positionAt(ap, condition);
@@ -622,26 +609,25 @@ public final class RddWorldFacts {
 
     // ---- A 组：原版 Stats（判“真的做了 N 次”，不是“此刻背包里有”） ----
 
-    private static boolean statBlockMined(NumenPlayer ap, Map<String, Object> condition) {
-        ServerLevel level = ap.serverLevel();
-        if (!dimension(level, condition)) return false;
-        Object raw = condition.get("block");
+    private static boolean statMatches(NumenPlayer ap, Map<String, Object> condition) {
+        if (!dimension(ap.serverLevel(), condition)) return false;
+        String type = String.valueOf(condition.get("type"));
+        Object raw = "block_mined".equals(type) ? condition.get("block") : condition.get("item");
         ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
         if (key == null) return false;
         int minimum = WorldFactConditions.minimumOf(condition, 1);
-        return sumStat(ap, Stats.BLOCK_MINED, BuiltInRegistries.BLOCK, key,
-                WorldFactConditions.isTag(raw)) >= minimum;
+        return readStat(ap, type, key, WorldFactConditions.isTag(raw)) >= minimum;
     }
 
-    private static boolean statItem(NumenPlayer ap, StatType<Item> stat, Map<String, Object> condition) {
-        ServerLevel level = ap.serverLevel();
-        if (!dimension(level, condition)) return false;
-        Object raw = condition.get("item");
-        ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
-        if (key == null) return false;
-        int minimum = WorldFactConditions.minimumOf(condition, 1);
-        return sumStat(ap, stat, BuiltInRegistries.ITEM, key,
-                WorldFactConditions.isTag(raw)) >= minimum;
+    /** Shared native statistic routing; entry-point validation and UNKNOWN handling stay with callers. */
+    private static int readStat(NumenPlayer ap, String type, ResourceLocation key, boolean isTag) {
+        return switch (type) {
+            case "item_crafted" -> sumStat(ap, Stats.ITEM_CRAFTED, BuiltInRegistries.ITEM, key, isTag);
+            case "item_used" -> sumStat(ap, Stats.ITEM_USED, BuiltInRegistries.ITEM, key, isTag);
+            case "item_picked_up" -> sumStat(ap, Stats.ITEM_PICKED_UP, BuiltInRegistries.ITEM, key, isTag);
+            case "block_mined" -> sumStat(ap, Stats.BLOCK_MINED, BuiltInRegistries.BLOCK, key, isTag);
+            default -> -1;
+        };
     }
 
     /** 汇总某注册表对象（或整个 #tag 成员）在该统计类型上的终身值。 */

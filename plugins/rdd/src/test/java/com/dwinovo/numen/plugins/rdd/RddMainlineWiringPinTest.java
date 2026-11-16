@@ -64,6 +64,31 @@ class RddMainlineWiringPinTest {
         assertFalse(host.contains("HostWorldPort::equipmentTag"));
     }
 
+    @Test
+    void statisticBaselineAndCompletionShareNativeRoutingWithoutMergingEntryGuards() {
+        String src = read(pluginSourceDir(), "RddWorldFacts.java");
+        String baseline = methodBody(src, "statCount", "readStat(");
+        String completion = methodBody(src, "statMatches", "readStat(");
+        String routing = methodBody(src, "readStat", "Stats.ITEM_CRAFTED");
+        assertOrder(baseline, "WorldFactConditions.valid(condition)", "isSameThread()", "readStat(");
+        assertContains(baseline, "return -1", "invalid/unavailable baseline remains UNKNOWN");
+        assertContains(baseline, "catch (RuntimeException", "baseline retains its original read-failure boundary");
+        assertFalse(completion.contains("WorldFactConditions.valid"), "do not silently strengthen the legacy completion entry");
+        assertOrder(completion, "dimension(", "ResourceLocation.tryParse", "minimumOf(condition, 1)", "readStat(");
+        assertContains(completion, ">= minimum", "completion retains minimum comparison");
+        for (String body : List.of(baseline, completion)) {
+            assertContains(body, "\"block_mined\".equals(type) ? condition.get(\"block\") : condition.get(\"item\")", "block takes precedence over incidental item field");
+        }
+        assertContains(src, "case \"block_mined\", \"item_crafted\", \"item_used\", \"item_picked_up\" -> statMatches(ap, condition);", "all four completion consumers share the route");
+        assertFalse(src.contains("statBlockMined("));
+        assertFalse(src.contains("statItem("));
+        for (String stat : List.of("ITEM_CRAFTED", "ITEM_USED", "ITEM_PICKED_UP", "BLOCK_MINED")) {
+            assertEquals(1, src.split("Stats\\." + stat, -1).length - 1, "one native routing entry per statistic");
+            assertContains(routing, "Stats." + stat, "baseline and completion route to the original native statistic");
+        }
+        assertContains(routing, "default -> -1", "unsupported statistics stay UNKNOWN");
+    }
+
     // ── 读源码 + 抽方法体 ───────────────────────────────────────────
 
     private static Path pluginSourceDir() {
