@@ -614,4 +614,135 @@ class RddGoalDriverInjectionTest {
         assertNull(SideTaskHost.DailyRegistration.dailyConditionFor(self, self, true, valid,
                 c -> { throw new IllegalStateException("boom"); }), "matcher failure is UNKNOWN, not completion");
     }
+
+    @Test void equipmentOwnerRejectsIncompleteBatchesBeforeDailyRegistrationOrInstallation() {
+        Map<String, String> target = armorTarget("minecraft:iron_helmet");
+        Map<String, Object> full = Map.of("type", "equipment", "slots", target, "dimension", "minecraft:overworld");
+        var prefix = equipmentPrefix();
+        var sequential = new java.util.ArrayList<>(prefix.subList(0, 4));
+        for (String slot : List.of("feet", "legs", "chest", "head")) {
+            sequential.add(planStep("single " + slot,
+                    Map.of("type", "equipment", "slot", slot, "item", target.get(slot)), "MAIN"));
+        }
+        var badPlans = List.of(
+                withEquipmentTail(planStep("wear all four armor pieces", Map.of("type", "equipment",
+                        "item", "minecraft:iron_helmet", "slot", "head"), "MAIN")),
+                prefix, // No final equipment predicate: do not install the seven-step prefix.
+                sequential,
+                withEquipmentTail(planStep("optional armor", Map.of("type", "equipment", "slots", target, "optional", true), "MAIN")),
+                withEquipmentTail(planStep("daily armor", full, "DAILY")),
+                withEquipmentTail(planStep("inventory is not equipped", Map.of("asset_key", "minecraft:iron_helmet", "minimum", 1), "MAIN")),
+                withEquipmentTail(planStep("different wanted is not owner coverage", Map.of("type", "equipment",
+                        "slots", armorTarget("#minecraft:head_armor")), "MAIN")));
+        for (boolean replace : List.of(false, true)) {
+            for (var raw : badPlans) {
+                TaskChain chain = equipmentChain(target);
+                if (replace) {
+                    var initial = parseInjection(chain, withEquipmentTail(planStep("full armor", full, "MAIN")));
+                    RddGoalDriver.acceptPlan(chain.currentPrimary(), initial, ignored -> {}, () -> chain.expandCurrentPrimary(initial));
+                    chain.startCurrent();
+                    chain.enterReplanningFromNegotiation("fixture-only replacement");
+                }
+                var candidates = parseInjection(chain, raw);
+                String before = chain.toJson();
+                SideTaskEngine daily = engine();
+                int[] calls = {0, 0};
+                assertThrows(IllegalArgumentException.class, () -> RddGoalDriver.acceptPlan(chain.currentPrimary(), candidates, subs -> {
+                    calls[0]++;
+                    SideTaskHost.DailyRegistration.register(chain, subs, daily);
+                }, () -> {
+                    calls[1]++;
+                    if (replace) chain.replaceCurrentSubtasks(candidates);
+                    else chain.expandCurrentPrimary(candidates);
+                }), raw.toString());
+                assertArrayEquals(new int[]{0, 0}, calls, "coverage rejection must precede both side effects");
+                assertEquals(before, chain.toJson(), "no prefix or partial replacement may be installed");
+                String dailyId = "daily:" + chain.goal().id() + ":" + Integer.toHexString("fixture daily wheat".hashCode());
+                assertNull(daily.recurringSpec(dailyId));
+                TaskChain restored = TaskChain.fromJson(chain.toJson());
+                assertEquals(target, restored.currentPrimary().equipmentTarget());
+                for (int i = 0; i < chain.currentPrimary().subtasks().size(); i++) {
+                    assertEquals(chain.currentPrimary().subtasks().get(i).id(), restored.currentPrimary().subtasks().get(i).id());
+                    assertEquals(conditionValues(chain.currentPrimary().subtasks().get(i).condition()),
+                            conditionValues(restored.currentPrimary().subtasks().get(i).condition()));
+                }
+            }
+        }
+    }
+
+    @Test void exactEquipmentOwnerCoverageSurvivesExpansionReplacementAndRestoreWhileLegacyStaysLegacy() {
+        for (String head : List.of("minecraft:iron_helmet", "#minecraft:head_armor")) {
+            Map<String, String> target = armorTarget(head);
+            TaskChain chain = equipmentChain(target);
+            Map<String, Object> condition = Map.of("type", "equipment", "slots", target,
+                    "dimension", "minecraft:overworld", "optional", false);
+            SideTaskEngine daily = engine();
+            for (boolean replace : List.of(false, true)) {
+                if (replace) {
+                    chain.resumeFromRecovering();
+                    chain.enterReplanningFromNegotiation("fixture-only replacement");
+                }
+                TaskChain owner = chain;
+                var candidates = parseInjection(owner, withEquipmentTail(planStep("full armor", condition, "MAIN")));
+                var order = new java.util.ArrayList<String>();
+                RddGoalDriver.acceptPlan(owner.currentPrimary(), candidates, subs -> {
+                    order.add("daily");
+                    SideTaskHost.DailyRegistration.register(owner, subs, daily);
+                }, () -> {
+                    order.add("install");
+                    if (replace) owner.replaceCurrentSubtasks(candidates);
+                    else owner.expandCurrentPrimary(candidates);
+                });
+                assertEquals(List.of("daily", "install"), order);
+                owner.startCurrent();
+                chain = TaskChain.fromJson(owner.toJson());
+                assertEquals(target, chain.currentPrimary().equipmentTarget());
+                assertEquals(8, chain.currentPrimary().subtasks().size());
+                assertEquals(condition, chain.currentPrimary().subtasks().getLast().condition(), "dimension and exact id/#tag values must persist");
+                assertTrue(chain.satisfiedStages().isEmpty(), "admission and restore are not completion evidence");
+            }
+        }
+        // Same wording/predicate without an explicit owner target remains a legal legacy plan.
+        TaskChain legacy = emptyChain();
+        var headOnly = parseInjection(legacy, withEquipmentTail(planStep("wear all four armor pieces",
+                Map.of("type", "equipment", "item", "minecraft:iron_helmet", "slot", "head"), "MAIN")));
+        RddGoalDriver.acceptPlan(legacy.currentPrimary(), headOnly, ignored -> {}, () -> legacy.expandCurrentPrimary(headOnly));
+        assertNull(TaskChain.fromJson(legacy.toJson()).currentPrimary().equipmentTarget());
+        assertEquals("head", legacy.currentPrimary().subtasks().getLast().condition().get("slot"));
+    }
+
+    private static Map<String, String> armorTarget(String head) {
+        return Map.of("feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                "chest", "minecraft:iron_chestplate", "head", head);
+    }
+
+    private static TaskChain equipmentChain(Map<String, String> target) {
+        return new TaskChain(new Goal("g", "fixture equipment owner", List.of(
+                PrimaryGoal.unexpanded("p", "fixture wear all four armor pieces", List.of(), target))));
+    }
+
+    private static Map<String, Object> planStep(String description, Map<String, Object> condition, String nodeType) {
+        return Map.of("description", description, "condition", condition, "node_type", nodeType);
+    }
+
+    /** Synthetic eight-step shape; not a claim to reproduce the original runtime JSON. */
+    private static List<Map<String, Object>> equipmentPrefix() {
+        var prefix = new java.util.ArrayList<Map<String, Object>>();
+        prefix.add(planStep("fixture daily wheat", Map.of("asset_key", "minecraft:wheat", "minimum", 1), "DAILY"));
+        for (int i = 1; i < 7; i++) prefix.add(planStep("fixture preparation " + i,
+                Map.of("asset_key", "minecraft:iron_ingot", "minimum", i), "MAIN"));
+        return prefix;
+    }
+
+    private static List<Map<String, Object>> withEquipmentTail(Map<String, Object> tail) {
+        var raw = new java.util.ArrayList<>(equipmentPrefix());
+        raw.add(tail);
+        return raw;
+    }
+
+    private static List<Subtask> parseInjection(TaskChain chain, List<Map<String, Object>> raw) {
+        var parsed = RddDecomposer.parse(new com.google.gson.Gson().toJson(Map.of("subtasks", raw)));
+        assertEquals(raw.size(), parsed.size(), "fixtures must reach admission, not disappear during parsing");
+        return RddGoalDriver.buildInjection(chain.currentPrimary().id(), chain.nextPlanRevision(), parsed);
+    }
 }

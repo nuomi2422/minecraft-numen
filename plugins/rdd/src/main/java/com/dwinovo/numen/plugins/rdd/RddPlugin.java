@@ -1594,7 +1594,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                                 // 计划代次进 id（代次本体在 TaskChain，随链持久化，重启不撞号）。
                                 int rev = nextPlanRevision(companionId, chain);
                                 var subs = RddChainFactory.subtasksFromSpecs(primaryId, rev, specs);
-                                RddGoalDriver.acceptPlan(subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
+                                RddGoalDriver.acceptPlan(chain.currentPrimary(), subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
                                         () -> chain.replaceCurrentSubtasks(subs));
                                 return subs;
                             };

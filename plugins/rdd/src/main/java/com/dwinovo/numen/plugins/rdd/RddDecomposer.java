@@ -488,10 +488,18 @@ final class RddDecomposer {
         // Optional knowledge may replace the runtime or advance its plan. The theme still
         // belongs to the caller: never borrow a replacement's reason, even at the same revision.
         var chain = currentChain.get();
-        String rationale = owner != null && chain == owner && owner.planRevision() == ownerRevision
+        boolean applicableOwner = owner != null && chain == owner && owner.planRevision() == ownerRevision;
+        String rationale = applicableOwner
                 ? com.dwinovo.numen.api.RationaleContext.renderApplicable(
                         companionId, ownerRevision, owner.chainInstanceId())
                 : "";
+        Map<String, String> equipmentTarget = applicableOwner ? owner.currentPrimary().equipmentTarget() : null;
+        if (equipmentTarget != null) {
+            userContent += "\n\n## 当前一级的结构化装备目标\nequipment_target=" + GSON.toJson(equipmentTarget)
+                    + "\n必须包含一个非 optional 的 MAIN 子步骤：condition.type=equipment，condition.slots 与 equipment_target 四槽键值完全一致"
+                    + "（物品 ID / #tag 原样保留），在单次检测中同时覆盖 feet/legs/chest/head。"
+                    + "四个先后单槽检查、背包持有、仅 head、optional 或 DAILY 步骤均不能代替该整组条件；如有 dimension 约束须保留。";
+        }
         send.accept(stageBRequestContent(userContent, rationale));
     }
 

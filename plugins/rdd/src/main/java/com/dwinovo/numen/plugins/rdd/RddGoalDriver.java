@@ -1,5 +1,6 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import com.dwinovo.numen.rdd.api.NodeType;
 import com.dwinovo.numen.rdd.api.PrimaryGoal;
 import com.dwinovo.numen.rdd.api.Subtask;
 import com.dwinovo.numen.rdd.api.SubtaskSpec;
@@ -171,7 +172,7 @@ final class RddGoalDriver {
                         // Lazy expansion and replanning share the persisted plan revision.
                         int rev = chain.nextPlanRevision();
                         List<Subtask> subs = buildInjection(pid, rev, specs);
-                        acceptPlan(subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
+                        acceptPlan(chain.currentPrimary(), subs, candidates -> SideTaskHost.registerDailyCandidates(chain, candidates),
                                 () -> rt.expandCurrentPrimary(subs)); // all-DAILY still uses the existing retry budget
                     });
                     ok = true;
@@ -229,9 +230,23 @@ final class RddGoalDriver {
         STATES.clear();
     }
 
-    /** Register DAILY before mainline validation; both expansion and replanning use this order. */
+    /** Legacy owners have no equipment coverage contract; retain DAILY-before-install semantics. */
     static void acceptPlan(List<Subtask> subs, java.util.function.Consumer<List<Subtask>> registerDaily,
                            Runnable installMainline) {
+        acceptPlan(null, subs, registerDaily, installMainline);
+    }
+
+    /** Reject an incomplete owner-bound batch before either DAILY registration or mainline installation. */
+    static void acceptPlan(PrimaryGoal owner, List<Subtask> subs,
+                           java.util.function.Consumer<List<Subtask>> registerDaily, Runnable installMainline) {
+        Map<String, String> target = owner == null ? null : owner.equipmentTarget();
+        if (target != null && subs.stream().noneMatch(sub -> sub.nodeType() == NodeType.MAIN
+                && !Boolean.TRUE.equals(sub.condition().get("optional"))
+                && "equipment".equals(sub.condition().get("type"))
+                && com.dwinovo.numen.rdd.core.WorldFactConditions.valid(sub.condition())
+                && target.equals(sub.condition().get("slots")))) {
+            throw new IllegalArgumentException("plan must cover owner equipmentTarget in one non-optional MAIN equipment slots condition");
+        }
         registerDaily.accept(subs);
         installMainline.run();
     }
