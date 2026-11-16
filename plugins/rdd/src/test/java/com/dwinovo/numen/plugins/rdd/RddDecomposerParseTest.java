@@ -133,7 +133,13 @@ class RddDecomposerParseTest {
         malformed.addProperty("slots", "not-an-object");
         var partial = malformed.deepCopy();
         partial.add("slots", com.google.gson.JsonParser.parseString("{\"head\":\"minecraft:iron_helmet\"}"));
-        for (var bad : List.of(malformed, mixed, partial)) {
+        var inventory = partial.deepCopy();
+        inventory.addProperty("type", "inventory");
+        inventory.addProperty("asset_key", "minecraft:oak_log");
+        inventory.addProperty("minimum", 1);
+        var untyped = inventory.deepCopy();
+        untyped.remove("type");
+        for (var bad : List.of(malformed, mixed, partial, inventory, untyped)) {
             var raw = legalSteps(7);
             var tail = new com.google.gson.JsonObject();
             tail.addProperty("description", "explicit equipment requirement");
