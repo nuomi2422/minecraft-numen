@@ -943,13 +943,9 @@ public final class RddWorldFacts {
     }
 
     /** 三个 D 组判据共用的床心扫描：水平 dx²+dz²≤r²，dy 含端点，未加载区块跳过；
-     *  visitor 返回 true = 提前停（stocked/lit 达标即停；shelter 恒 false 全扫）。 */
-    private interface AroundVisitor {
-        boolean visit(BlockPos pos);
-    }
-
+     *  stopWhen 返回 true = 提前停（stocked/lit 达标即停；shelter 恒 false 全扫）。 */
     private static void scanAround(ServerLevel level, BlockPos center, int radius, int dyMin, int dyMax,
-                                   AroundVisitor visitor) {
+                                   Predicate<BlockPos> stopWhen) {
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
         for (int dx = -radius; dx <= radius; dx++) {
             for (int dz = -radius; dz <= radius; dz++) {
@@ -957,7 +953,7 @@ public final class RddWorldFacts {
                 for (int dy = dyMin; dy <= dyMax; dy++) {
                     cursor.set(center.getX() + dx, center.getY() + dy, center.getZ() + dz);
                     if (!level.hasChunkAt(cursor)) continue;
-                    if (visitor.visit(cursor)) return;
+                    if (stopWhen.test(cursor)) return;
                 }
             }
         }
