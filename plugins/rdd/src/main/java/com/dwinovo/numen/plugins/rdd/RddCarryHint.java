@@ -70,9 +70,6 @@ final class RddCarryHint {
     /** 刷新间隔：快照级变化不需要每 tick（比这更频繁只是白读世界）。 */
     private static final long REFRESH_MS = 2000L;
 
-    /** 携带清单**上限**：防上下文变长。只给缺项时通常 0~3 项。 */
-    private static final int MAX_ITEMS = 4;
-
     /** 避让半径：只关心「身边有没有威胁」，不做全图扫描。 */
     private static final double NEARBY_RADIUS = 16.0D;
 
@@ -165,7 +162,7 @@ final class RddCarryHint {
                 return;
             }
             long capturedAtMs = System.currentTimeMillis() - staleProbeMs();
-            Rendered rendered = render(body, capturedAtMs);
+            RddCarryProjection.Rendered rendered = render(body, capturedAtMs);
             publishAlarmEdges(body, rendered.alarms(), capturedAtMs);
             String hint = rendered.xml();
             String prev = CARRY_HINT.get(companionId);
@@ -198,28 +195,6 @@ final class RddCarryHint {
         }
     }
 
-    /** 一次渲染的产物：注入文本 + 本次命中的独立闹钟（供边沿埋点）。 */
-    private record Rendered(String xml, List<CarrierAlarms.Hit> alarms) {
-        /**
-         * 语义指纹：**携带项 + 闹钟规则**，<b>不含</b> {@code <basis>} 里的精确血量。
-         *
-         * <p>为什么需要它（2026-10-21 实机）：`REFRESH_MS=2000`，`<basis>` 里带着 `血量=有(19)`
-         * 这种会随回血变化的数字，于是「内容变了」每 2 秒都成立 → 日志 7 分钟 127 条、约 4 万行/天，
-         * 把当轮真正要看的事件（预算拦截/判定/复盘）全埋了。
-         * 注入内容一字不动，只是**日志按语义变化打**：血量从 19 变 20 不是新闻，携带项/闹钟变了才是。
-         */
-        String fingerprint() {
-            StringBuilder sb = new StringBuilder();
-            int start = xml.indexOf("<item>");
-            int end = xml.indexOf("</carry>");
-            if (start >= 0) sb.append(xml, start, end < 0 ? xml.length() : end);
-            for (CarrierAlarms.Hit h : alarms) {
-                sb.append('|').append(h.rule()).append('@').append(h.version());
-            }
-            return sb.toString();
-        }
-    }
-
     /**
      * 把携带器结论渲染成 {@code <carry>…</carry>} 与独立闹钟 {@code <alarms>…</alarms>}。
      * 快照缺失 / 两条通道都空 → 返回空串（B21：不写空标签）。
@@ -228,17 +203,17 @@ final class RddCarryHint {
      * 独立闹钟（{@link CarrierAlarms}，互不短路）。两条通道各自独立判空 ——
      * 旧链短路不再压掉闹钟，闹钟也不改写旧链的 basis。
      */
-    private static Rendered render(NumenPlayer body) {
+    private static RddCarryProjection.Rendered render(NumenPlayer body) {
         return render(body, System.currentTimeMillis());
     }
 
     /**
      * @param capturedAtMs 本拍采样时刻（A4：提醒要带 asOf/age，过期不能冒充当前）
      */
-    private static Rendered render(NumenPlayer body, long capturedAtMs) {
+    private static RddCarryProjection.Rendered render(NumenPlayer body, long capturedAtMs) {
         String snapshot = snapshot(body);
         if (snapshot.isEmpty()) {
-            return new Rendered("", List.of());
+            return new RddCarryProjection.Rendered("", List.of());
         }
         Map<String, String> kv = new LinkedHashMap<>();
         for (String part : snapshot.split("[,;]")) {
@@ -259,49 +234,7 @@ final class RddCarryHint {
         // 没人查得出来。所以生效链必须与审批落点读同一处。
         CarrierChain.Result r = CarrierChain.evaluate(CarrierRuleStore.effective(), facts);
         List<CarrierAlarms.Hit> alarms = RddAlarms.evaluate(facts);
-        if (r.carry().isEmpty() && alarms.isEmpty()) {
-            return new Rendered("", alarms);
-        }
-        StringBuilder sb = new StringBuilder();
-        if (!r.carry().isEmpty()) {
-            sb.append("<carry>");
-            sb.append("<basis>").append(esc(shorten(basisOf(facts, r), 200))).append("</basis>");
-            if (r.shortCircuited()) {
-                // ★ 短路信息必须让执行 AI 看到 —— 不说的话它会以为全部级都判过了
-                sb.append("<basis_note>").append(esc(basisNote(r))).append("</basis_note>");
-            }
-            int n = 0;
-            for (String item : r.carry()) {
-                if (n++ >= MAX_ITEMS) {
-                    break;
-                }
-                sb.append("<item>").append(esc(item)).append("</item>");
-            }
-            sb.append("<note>这些是建议，不是指令。一般不要仅为携带建议偏离当前任务；当前可信生存风险变化时，按现场威胁和身体状态重新评估非生存动作。未知或过期提示不作为自动抢占依据。</note>");
-            sb.append("</carry>");
-        }
-        if (!alarms.isEmpty()) {
-            sb.append("<alarms scope=\"nearby16\">");
-            for (CarrierAlarms.Hit h : alarms) {
-                // A4（96 号）：每条提醒带采样时刻/年龄/来源/覆盖；过期显式标 stale，不冒充当前。
-                long ageMs = facts.capturedAtMs() > 0 ? Math.max(0, System.currentTimeMillis() - facts.capturedAtMs()) : -1;
-                boolean stale = ageMs > STALE_MS;
-                sb.append("<alarm rule=\"").append(esc(h.rule())).append("\" v=\"").append(h.version())
-                        .append("\" pri=\"").append(esc(h.prio()))
-                        .append("\" asOf=\"").append(esc(facts.capturedAtMs() > 0
-                                ? java.time.Instant.ofEpochMilli(facts.capturedAtMs()).toString() : "unknown"))
-                        .append("\" age=\"").append(ageMs < 0 ? "unknown" : (ageMs / 1000) + "s")
-                        .append("\" source=\"").append(esc(facts.source()))
-                        .append("\" coverage=\"").append(esc(facts.coverage())).append("\"")
-                        .append(stale ? " stale=\"true\"" : "")
-                        .append(" facts=\"")
-                        .append(esc(shorten(h.facts(), 120))).append("\">")
-                        .append(esc(shorten(h.advice(), 200))).append("</alarm>");
-            }
-            sb.append(RddAlarmResponseText.note(alarms, facts, System.currentTimeMillis()));
-            sb.append("</alarms>");
-        }
-        return new Rendered(sb.toString(), alarms);
+        return RddCarryProjection.render(facts, r, alarms, () -> CarrierRuleStore.effective().size());
     }
 
     /**
@@ -385,20 +318,6 @@ final class RddCarryHint {
         } catch (RuntimeException ignored) {
             // 埋点是锦上添花，不许影响主链路
         }
-    }
-
-    private static String basisOf(CarrierChain.Facts f, CarrierChain.Result r) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("指向=").append(f.hostileNearby() ? "HOSTILE_NEARBY" : (f.passiveNearby() ? "PASSIVE_ONLY" : "NONE"));
-        sb.append(" 护甲=").append(f.hasRealArmor() ? "有" : "无");
-        sb.append(" 武器=").append(f.hasRealWeapon() ? "有" : "无");
-        sb.append(" 血量=").append(f.hpBand()).append(f.hasHp() ? ("(" + f.hp() + ")") : "");
-        return sb.toString();
-    }
-
-    private static String basisNote(CarrierChain.Result r) {
-        int notEvaluated = Math.max(0, CarrierRuleStore.effective().size() - r.stoppedAt() - 1);
-        return "第 " + (r.stoppedAt() + 1) + " 级不成立，后续 " + notEvaluated + " 项未求值";
     }
 
     /**
@@ -715,14 +634,5 @@ final class RddCarryHint {
         return s == null ? "" : s.trim().replaceAll("[^A-Za-z0-9_./-]", "").toLowerCase(Locale.ROOT);
     }
 
-    private static String shorten(String s, int n) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() > n ? s.substring(0, n - 1) + "…" : s;
-    }
 
-    private static String esc(String s) {
-        return s == null ? "" : s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
-    }
 }
