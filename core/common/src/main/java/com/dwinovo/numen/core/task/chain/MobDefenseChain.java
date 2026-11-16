@@ -120,11 +120,13 @@ public final class MobDefenseChain implements Task, Reflex {
 
     @Override
     public TaskState tick(NumenPlayer companion) {
-        if (!dangersNear(companion).isEmpty()) {
+        // Both checks occur before any combat action; keep one same-tick observation.
+        boolean threat = !dangersNear(companion).isEmpty();
+        if (threat) {
             dangerLastSeenTick = companion.level().getGameTime();
         }
         if (fight == null) {
-            if (dangersNear(companion).isEmpty()) {
+            if (!threat) {
                 return TaskState.RUNNING;   // 宽限期里的空转,别开新的一场
             }
             begin(companion);
