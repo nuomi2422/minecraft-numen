@@ -89,4 +89,73 @@ class RddDeathEquipmentTest {
         assertTrue(RddDeathEquipment.condition(sample,CONDITION,null));
         assertFalse(RddDeathEquipment.condition(sample,Map.of("asset_key",CHEST,"minimum",2),null));
     }
+
+    private static final String BOOTS = "minecraft:iron_boots", LEGS = "minecraft:iron_leggings", HELMET = "minecraft:iron_helmet";
+    private static final List<String> IRON_ARMOR = List.of(BOOTS,LEGS,CHEST,HELMET);
+    private static final Map<String,Object> FOUR_SLOT_CONDITION = Map.of("type","equipment","slots",
+            Map.of("feet",BOOTS,"legs",LEGS,"chest",CHEST,"head",HELMET));
+
+    private static SideTask fourSlotTask() {
+        var data = new LinkedHashMap<>(task().data());
+        data.put(DeathPreparation.TARGETS,"[{\"type\":\"equipment\",\"slots\":{\"feet\":\"minecraft:iron_boots\","
+                + "\"legs\":\"minecraft:iron_leggings\",\"chest\":\"minecraft:iron_chestplate\",\"head\":\"minecraft:iron_helmet\"}}]");
+        return task().withData(data);
+    }
+
+    private static WorldObservationService.Response withEquipment(WorldObservationService.Response base,
+            List<String> worn, List<String> carried, String offhand) {
+        var item = base.items().get(0);
+        var values = new LinkedHashMap<>(item.values());
+        List<Map<String,Object>> main = new ArrayList<>(), armor = new ArrayList<>();
+        for(int i=0;i<36;i++) main.add(slot(i,i<carried.size()?carried.get(i):""));
+        for(int i=0;i<4;i++) armor.add(slot(36+i,worn.get(i)));
+        values.put("main",main);
+        values.put("armor",armor);
+        values.put("offhand",slot(40,offhand));
+        return new WorldObservationService.Response(base.status(),base.topic(),base.snapshotId(),base.observedTick(),
+                base.coverage(),base.reason(),List.of(new WorldObservationService.Item(values,item.unknownFields(),item.staleFields())),
+                base.watermark(),base.metadata());
+    }
+
+    private static void assertFourSlotFacts(String reason, WorldObservationService.Response response,
+            boolean ready) {
+        var sample = RddDeathEquipment.sample(response,C,DIM,STAMP,1001);
+        assertNotNull(sample,reason);
+        assertAll(reason,
+                () -> assertEquals(Boolean.valueOf(ready),RddDeathEquipment.condition(sample,FOUR_SLOT_CONDITION,null)),
+                () -> assertEquals(ready ? SideTaskWorldPort.PreparationState.READY : SideTaskWorldPort.PreparationState.MISSING,
+                        RddDeathEquipment.facts(sample,fourSlotTask(),Map.of(),null).state()));
+    }
+
+    @Test void fourWornSlotsMustMatchTogetherInOneCurrentSelfSample() {
+        var base = response(false,false,Set.of(),C.toString());
+        var empty = List.of("","","","");
+        var missingHead = List.of(BOOTS,LEGS,CHEST,"");
+        assertAll(
+                () -> assertFourSlotFacts("all four worn",withEquipment(base,IRON_ARMOR,List.of(),""),true),
+                () -> assertFourSlotFacts("missing head",withEquipment(base,missingHead,List.of(),""),false),
+                () -> assertFourSlotFacts("helmet only",withEquipment(base,List.of("","","",HELMET),List.of(),""),false),
+                () -> assertFourSlotFacts("all four carried, none worn",withEquipment(base,empty,IRON_ARMOR,""),false),
+                () -> assertFourSlotFacts("boots and leggings in wrong slots",withEquipment(base,List.of(LEGS,BOOTS,CHEST,HELMET),List.of(),""),false),
+                () -> assertFourSlotFacts("mainhand cannot fill head",withEquipment(base,missingHead,List.of(HELMET),""),false),
+                () -> assertFourSlotFacts("offhand cannot fill head",withEquipment(base,missingHead,List.of(),HELMET),false));
+    }
+
+    @Test void maskedStaleOrWrongSubjectFourSlotSelfEvidenceRemainsUnknown() {
+        var worn = withEquipment(response(false,false,Set.of(),C.toString()),IRON_ARMOR,List.of(),"");
+        var stale = new WorldObservationService.Response(worn.status(),worn.topic(),worn.snapshotId(),worn.observedTick(),
+                worn.coverage(),worn.reason(),worn.items(),worn.watermark(),
+                worn.metadata().withFreshness(ObservationMetadata.Freshness.STALE));
+        var rejected = Map.of(
+                "masked armor",withEquipment(response(false,false,Set.of("armor[1].id"),C.toString()),IRON_ARMOR,List.of(),""),
+                "stale sample",stale,
+                "wrong subject",withEquipment(response(false,false,Set.of(),UUID.randomUUID().toString()),IRON_ARMOR,List.of(),""));
+        for(var entry : rejected.entrySet()) {
+            var sample = RddDeathEquipment.sample(entry.getValue(),C,DIM,STAMP,1001);
+            assertNull(sample,entry.getKey());
+            assertNull(RddDeathEquipment.condition(sample,FOUR_SLOT_CONDITION,null),entry.getKey());
+            assertEquals(SideTaskWorldPort.PreparationState.UNKNOWN,
+                    RddDeathEquipment.facts(sample,fourSlotTask(),Map.of(),null).state(),entry.getKey());
+        }
+    }
 }
