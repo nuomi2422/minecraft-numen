@@ -697,4 +697,23 @@ class RddPlanGuardTest {
         assertEquals(1, filtered.allowed().size(), filtered.dropped().toString());
         assertEquals(NodeType.MAIN, filtered.allowed().get(0).nodeType(), "一次性建设仍为主线");
     }
+
+    // ---------- 2026-11-17 V02：六步计划被 schema/guard 缩成木材前缀 ----------
+
+    /** 冻结的 V02 Stage-B 原始六步 JSON：四个 item_crafted 用 asset_key 会被 schema 拒，采石步会被 guard 拒。 */
+    private static final String V02_SIX_STEP_JSON = "{\"subtasks\": [{\"description\": \"徒手砍针叶林附近的树，攒够原木（起步 3 个即可推进；看到就多砍几棵，够做木镐+石镐+石斧共约 5~6 个原木就停）\", \"condition\": {\"type\": \"inventory\", \"group\": \"wood\", \"minimum\": 6}, \"node_type\": \"MAIN\"}, {\"description\": \"把原木在 2x2 手搓成木板，再把木板竖排 2 个搓木棍（需工作台时才放工作台）\", \"condition\": {\"type\": \"item_crafted\", \"asset_key\": \"minecraft:stick\", \"minimum\": 4}, \"node_type\": \"MAIN\"}, {\"description\": \"用木板 3 + 木棍 2 在工作台 3x3 里合成木镐\", \"condition\": {\"type\": \"item_crafted\", \"asset_key\": \"minecraft:wooden_pickaxe\", \"minimum\": 1}, \"node_type\": \"MAIN\"}, {\"description\": \"用木镐在附近地表/裸露岩面挖 6 个圆石（正好够石镐+石斧，不多挖）\", \"condition\": {\"type\": \"block_mined\", \"block\": \"minecraft:stone\", \"minimum\": 6}, \"node_type\": \"MAIN\"}, {\"description\": \"圆石 3 + 木棍 2 合成石镐\", \"condition\": {\"type\": \"item_crafted\", \"asset_key\": \"minecraft:stone_pickaxe\", \"minimum\": 1}, \"node_type\": \"MAIN\"}, {\"description\": \"圆石 3 + 木棍 2 合成石斧；石镐石斧一到手即停手，不再砍树挖石，下一步立刻出发找村庄\", \"condition\": {\"type\": \"item_crafted\", \"asset_key\": \"minecraft:stone_axe\", \"minimum\": 1}, \"node_type\": \"MAIN\"}]}";
+
+    @Test
+    void requiredStepsMustNotVanishIntoWoodOnlyPrefix() {
+        var parsed = RddStageBSpecParser.parseDetailed(V02_SIX_STEP_JSON);
+        assertEquals(1, parsed.specs().size(), "schema 会保留木材步");
+        assertEquals(4, parsed.skippedRequired().size(), "四个 item_crafted 用 asset_key 的 MAIN 步是必需丢弃");
+        var normalized = RddPlanGuard.normalizeConditions(parsed.specs());
+        var filtered = RddPlanGuard.filterSubtasks(normalized,
+                "立足开局：徒手砍树取原木→木板→木棍→木镐；用木镐在附近地表挖6个石头，做出石镐+石斧即停手",
+                Map.of());
+        assertEquals(1, filtered.allowed().size(), "当前 filter 只剩木材前缀（反例事实）");
+        assertTrue(RddDecomposer.stageBPublished(parsed, filtered).isEmpty(),
+                "必需步骤被丢弃后不能把木材前缀当整级发布");
+    }
 }

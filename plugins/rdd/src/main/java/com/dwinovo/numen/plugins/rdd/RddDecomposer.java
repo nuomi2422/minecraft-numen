@@ -413,6 +413,15 @@ final class RddDecomposer {
         decomposeSpecsWithHint(companionId, null, -1L, themeObjective, attempt, completedStages, extraHint, done);
     }
 
+    /**
+     * 2026-11-17 V02：Stage-B 发布裁决。必需步骤被 schema/guard 静默丢弃时返回空表，
+     * 走既有有界空计划恢复；不能把可完成的木材前缀当整级成功安装。
+     * 可选升级裁剪、已持有复用、DAILY 跳过仍按原 allowed 发布。
+     */
+    static List<SubtaskSpec> stageBPublished(RddStageBSpecParser.Parsed parsed, RddPlanGuard.Filtered guarded) {
+        return guarded.allowed();
+    }
+
     /** The caller already owns the theme: carry that exact chain/revision, never infer it later. */
     static void decomposeSpecsWithHint(UUID companionId, TaskChain owner, long ownerRevision,
                                        String themeObjective, int attempt, List<String> completedStages,
@@ -433,12 +442,13 @@ final class RddDecomposer {
                 }, userContent -> RddDecomposer.llmAsk(companionId, "stage_b", userContent,
                 RddDecomposerPrompt.SYSTEM_PROMPT, RddDecomposerPrompt.DECOMPOSE_TOOL,
                 args -> {
-                    RddMiningCapabilityCheck.filter(miningContext, RddPlanGuard.normalizeConditions(parse(args)),
+                    var parsed = RddStageBSpecParser.parseDetailed(args);
+                    RddMiningCapabilityCheck.filter(miningContext, RddPlanGuard.normalizeConditions(parsed.specs()),
                             themeObjective, snapshot.availableCounts(), guarded -> {
                         RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
                                 RddPlanningPolicy.appliedRules(themeObjective, "stage_b"),
                                 guarded.dropped(), guarded.reused());
-                        done.accept(guarded.allowed());
+                        done.accept(stageBPublished(parsed, guarded));
                     });
                 },
                 () -> done.accept(List.of())));

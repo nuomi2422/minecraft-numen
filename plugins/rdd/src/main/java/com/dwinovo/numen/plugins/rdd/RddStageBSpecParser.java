@@ -31,14 +31,25 @@ final class RddStageBSpecParser {
     private RddStageBSpecParser() {}
 
     static List<SubtaskSpec> parse(String argumentsJson) {
+        return parseDetailed(argumentsJson).specs();
+    }
+
+    /**
+     * 与 {@link #parse} 同一套解码；额外报告被 schema 丢弃的<b>必需</b>（MAIN）步骤，
+     * 让发布侧不能把"六步缩成木材前缀"当成功安装。可选/DAILY 的跳过不算必需丢弃。
+     */
+    record Parsed(List<SubtaskSpec> specs, List<String> skippedRequired) {}
+
+    static Parsed parseDetailed(String argumentsJson) {
         List<SubtaskSpec> out = new ArrayList<>();
+        List<String> skippedRequired = new ArrayList<>();
         if (argumentsJson == null || argumentsJson.isBlank()) {
-            return out;
+            return new Parsed(out, skippedRequired);
         }
         try {
             JsonObject root = GSON.fromJson(argumentsJson, JsonObject.class);
             if (root == null || !root.has("subtasks") || !root.get("subtasks").isJsonArray()) {
-                return out;
+                return new Parsed(out, skippedRequired);
             }
             JsonArray arr = root.getAsJsonArray("subtasks");
             for (JsonElement el : arr) {
@@ -50,21 +61,34 @@ final class RddStageBSpecParser {
                 if (spec == null && candidate.has("condition") && candidate.get("condition").isJsonObject()
                         && candidate.getAsJsonObject("condition").has("slots")) {
                     LOG.warn("[rdd] 显式 slots 步骤非法，整批拒绝，不能丢掉装备要求后发布前缀");
-                    return List.of();
+                    return new Parsed(List.of(), List.of("显式 slots 步骤非法，整批拒绝"));
                 }
                 if (spec != null) {
                     out.add(spec);
                     if (out.size() > RddChainFactory.MAX_SUBTASKS) {
                         LOG.warn("[rdd] 分解合法步骤超过上限 {}，整批拒绝，不能将截断前缀当完整计划", RddChainFactory.MAX_SUBTASKS);
-                        return List.of();
+                        return new Parsed(List.of(), List.of("合法步骤超过上限"));
                     }
+                } else if (requiredStep(candidate)) {
+                    skippedRequired.add(describe(candidate));
                 }
             }
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 分解 JSON 解析失败: {}", ex.toString());
-            return List.of();
+            return new Parsed(List.of(), List.of("分解 JSON 解析失败: " + ex));
         }
-        return out;
+        return new Parsed(out, skippedRequired);
+    }
+
+    /** Missing/default node_type = MAIN; explicit DAILY/SIDE are optional trims, not required drops. */
+    private static boolean requiredStep(JsonObject candidate) {
+        NodeType type = parseNodeType(candidate);
+        return type == null || type == NodeType.MAIN;
+    }
+
+    private static String describe(JsonObject candidate) {
+        String d = candidate.has("description") ? candidate.get("description").getAsString() : "";
+        return d == null || d.isBlank() ? "(未命名必需步骤)" : d;
     }
 
     /**
