@@ -16,9 +16,16 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Stage-B wire decoding only: pure spec JSON parsing; client async orchestration stays in RddDecomposer. */
+/**
+ * Stage-B wire decoding only: pure decompose_goal spec JSON parsing; client async orchestration stays in
+ * RddDecomposer. Separate from Stage-A's {@link RddStagePlanParser} because the two wire shapes and
+ * consumers differ; {@link RddDecomposer#parse} stays the public seam existing callers/tests use.
+ *
+ * <p>Log category is kept on {@link RddDecomposer} on purpose: moving pure decoding must not change an
+ * observable filter key.
+ */
 final class RddStageBSpecParser {
-    private static final Logger LOG = LoggerFactory.getLogger(RddStageBSpecParser.class);
+    private static final Logger LOG = LoggerFactory.getLogger(RddDecomposer.class);
     private static final Gson GSON = new Gson();
 
     private RddStageBSpecParser() {}
