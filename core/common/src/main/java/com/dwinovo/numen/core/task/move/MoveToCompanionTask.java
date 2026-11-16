@@ -23,8 +23,8 @@ import java.util.Map;
  * ({@link MoveToTaskRecord.Kind}):
  * <ul>
  *   <li>{@link MoveToTaskRecord.Kind#COLUMN} → {@link NavGoal#column}:
- *       reach the (x,z) location at any height — the default "go there", a wrong/
- *       absent Y can never make it unreachable;</li>
+ *       reach the (x,z) location within the existing resolved reference band;
+ *       without a reference, preserve the legacy any-height fallback;</li>
  *   <li>{@link MoveToTaskRecord.Kind#BLOCK} → {@link NavGoal#exact}: occupy exactly
  *       that cell; whatever occupies it has to be dug out, which only a goto with
  *       may_alter_terrain may do (the block form is how the caller says "walk up
@@ -319,17 +319,19 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
      * "one block short, one step too far" fall.
      */
     private boolean reached() {
-        return inGoalCell(feet())
-                && inGoalCell(com.dwinovo.numen.core.pathing.moves.Movement.pathStart(player));
+        // One local reference for BOTH memberships; no persistent surface cache.
+        NavGoal column = r.kind == MoveToTaskRecord.Kind.COLUMN ? columnGoal() : null;
+        return inGoalCell(feet(), column)
+                && inGoalCell(com.dwinovo.numen.core.pathing.moves.Movement.pathStart(player), column);
     }
 
     /** ONE membership definition per kind, shared with the search:
-     *  BLOCK (cell == target per arrival mode), COLUMN (x/z match),
+     *  BLOCK (cell == target per arrival mode), COLUMN (the same resolved Y band for both cells),
      *  YLEVEL (y match + on the ground). */
-    private boolean inGoalCell(BlockPos cell) {
+    private boolean inGoalCell(BlockPos cell, NavGoal column) {
         return switch (r.kind) {
             case BLOCK -> blockGoal().isAt(cell);
-            case COLUMN -> cell.getX() == bx && cell.getZ() == bz;
+            case COLUMN -> column.isAt(cell);
             case YLEVEL -> cell.getY() == by && player.onGround();
             case FIND -> finder.contract() != null && finder.contract().goal().isAt(cell);
         };
@@ -468,15 +470,17 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         if (r.kind == MoveToTaskRecord.Kind.BLOCK) {
             return NavGoal.near(blockTarget, NEAR_SUCCESS_RADIUS);
         }
-        // COLUMN: within the radius HORIZONTALLY at any height (NavGoal.near is 3D and
-        // needs a Y this kind doesn't have; heuristic/center reuse the column's own).
-        NavGoal column = NavGoal.column(bx, bz);
+        // Preserve the node-domain horizontal radius; snapshot the existing column reference
+        // once for this retry goal, just as the rung retains this goal object.
+        // Project only Y onto that column; the original XZ radius remains node-based.
+        NavGoal column = columnGoal();
         double radiusSqr = NEAR_SUCCESS_RADIUS * NEAR_SUCCESS_RADIUS;
         return new NavGoalDiagnostics.ColumnTarget() {
             @Override public boolean isAt(BlockPos feet) {
                 double dx = feet.getX() - bx;
                 double dz = feet.getZ() - bz;
-                return dx * dx + dz * dz <= radiusSqr;
+                return dx * dx + dz * dz <= radiusSqr
+                        && column.isAt(new BlockPos(bx, feet.getY(), bz));
             }
             @Override public double heuristic(BlockPos from) {
                 return column.heuristic(from);
@@ -501,10 +505,12 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         return switch (r.kind) {
             // ★ 2026-10-28 实机（#269）：BLOCK 原来**只看水平**——她站在目标正下方 48 格也被判 SUCCESS，
             //   而事件正文写着 "I did NOT reach it."（自相矛盾）。模型读到 status=done 就以为到了，
-            //   不再想办法上去。BLOCK 的语义是"到达那一格"，垂直必须一起算；COLUMN 本来就是"任意 y"。
+            //   不再想办法上去。BLOCK 的语义是"到达那一格"，垂直必须一起算；COLUMN 复用既有参考高度约束。
             case BLOCK -> horizontalDistSqr(bx, bz) <= NEAR_SUCCESS_RADIUS * NEAR_SUCCESS_RADIUS
                     && Math.abs(feet().getY() - by) <= VERTICAL_SUCCESS_SLACK;
-            case COLUMN -> horizontalDistSqr(bx, bz) <= NEAR_SUCCESS_RADIUS * NEAR_SUCCESS_RADIUS;
+            // Keep continuous body XZ distance; project only feet Y into the shared column rule.
+            case COLUMN -> horizontalDistSqr(bx, bz) <= NEAR_SUCCESS_RADIUS * NEAR_SUCCESS_RADIUS
+                    && columnGoal().isAt(new BlockPos(bx, feet().getY(), bz));
             case YLEVEL -> Math.abs(feet().getY() - by) <= 1;
             // FIND 候选众多,失败梯已在候选间轮换过,不设贴近成功档
             case FIND -> false;

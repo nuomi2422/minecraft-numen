@@ -123,21 +123,22 @@ class MoveToArrivalConsumerTest {
                         public Shape getCollisionShape(World w, BlockPos p) { return new Shape(empty); }
                     }
                     public static class World {
-                        public BlockPos feet; String envelope;
-                        public int getMinBuildHeight() { return -64; } public int getMaxBuildHeight() { return 320; }
+                        public BlockPos feet; String envelope; int groundY=79, scans;
+                        public int getMinBuildHeight() { return -64; }
+                        public int getMaxBuildHeight() { scans++; return 320; }
                         public State getBlockState(BlockPos p) {
                             boolean target=p.getX()==6185 && p.getZ()==6130;
                             // Collision emptiness only: no claimed safe player AABB.
                             boolean occupied=target && !envelope.equals("empty")
-                                && (p.getY()==79 || (envelope.equals("singleGap") && p.getY()==81));
+                                && (p.getY()==groundY || (envelope.equals("singleGap") && p.getY()==groundY+2));
                             return new State(!occupied);
                         }
                     }
                     public static class NumenPlayer {
                         public final World world=new World(); public BlockPos start;
-                        boolean ground, water;
+                        boolean ground, water; double extraX;
                         public World level() { return world; } public BlockPos blockPosition() { return world.feet; }
-                        public double getX() { return world.feet.getX()+0.5; }
+                        public double getX() { return world.feet.getX()+0.5+extraX; }
                         public double getY() { return world.feet.getY(); }
                         public double getZ() { return world.feet.getZ()+0.5; }
                         public boolean onGround() { return ground; } public boolean isInWater() { return water; }
@@ -170,6 +171,27 @@ class MoveToArrivalConsumerTest {
                         if(kind.equals("COLUMN") || kind.equals("BLOCK")) result.put("retry",t.nearRetryGoal().isAt(p.world.feet));
                         result.put("legacy",NavGoal.column(6185,6130).isAt(p.world.feet));
                         return result;
+                    }
+                    public static Map<String,Object> radius(double offset) {
+                        NumenPlayer p=new NumenPlayer(); p.world.envelope="singleGap";
+                        p.world.feet=new BlockPos(6188,80,6130); p.start=p.world.feet;
+                        p.ground=true; p.extraX=offset;
+                        MoveToCompanionTask t=new MoveToCompanionTask(p,
+                            new MoveToTaskRecord("radius",0,6185d,null,6130d,null,false));
+                        return Map.of("close",t.closeEnoughToSucceed(),"retry",t.nearRetryGoal().isAt(p.world.feet));
+                    }
+                    public static Map<String,Object> referenceChange() {
+                        NumenPlayer p=new NumenPlayer(); p.world.envelope="singleGap";
+                        p.world.feet=new BlockPos(6185,80,6130); p.start=p.world.feet; p.ground=true;
+                        MoveToCompanionTask t=new MoveToCompanionTask(p,
+                            new MoveToTaskRecord("refresh",0,6185d,null,6130d,null,false));
+                        int before=p.world.scans;
+                        boolean reached=t.reached(); int scans=p.world.scans-before;
+                        NavGoal retry=t.nearRetryGoal();
+                        p.world.groundY=89;
+                        return Map.of("before",reached,"membershipScans",scans,"after",t.reached(),
+                            "closeAfter",t.closeEnoughToSucceed(),"frozenRetry",retry.isAt(p.world.feet),
+                            "freshRetry",t.nearRetryGoal().isAt(p.world.feet));
                     }
                 """);
         for (String name : List.of("COLUMN_Y_TOLERANCE", "COLUMN_SCAN_UP", "COLUMN_SCAN_DOWN",
@@ -307,6 +329,29 @@ class MoveToArrivalConsumerTest {
             assertEquals(permit, r.get("permit")); assertEquals(permit ? "TERRAFORM" : "DEFAULT", r.get("terrain"));
             assertEquals("SUCCESS", r.get("earlyState"), "consent does not change arrival intent");
         }
+    }
+
+    @Test void nearSuccessRetainsContinuousBodyRadiusInsteadOfNodeRadius() throws Exception {
+        assertEquals(true, probe("radius", new Class<?>[]{double.class}, -0.1).get("close"));
+        assertEquals(true, probe("radius", new Class<?>[]{double.class}, 0.0).get("close"));
+        var outside = probe("radius", new Class<?>[]{double.class}, 0.1);
+        assertEquals(false, outside.get("close"), "body is 3.1 blocks away although its feet node is only 3 away");
+        assertEquals(true, outside.get("retry"), "retry keeps the original BlockPos radius");
+    }
+
+    @Test void liveMembershipRefreshesWithoutCachingButOneRetryGoalKeepsItsSnapshot() throws Exception {
+        var r = probe("referenceChange", new Class<?>[0]);
+        assertEquals(true, r.get("before"));
+        assertEquals(1, r.get("membershipScans"), "one reference scan shared by feet AND pathStart");
+        assertEquals(false, r.get("after"), "changed resolver reference must not stay cached");
+        assertEquals(false, r.get("closeAfter"));
+        assertEquals(true, r.get("frozenRetry"), "an already-built retry goal retains its creation reference");
+        assertEquals(false, r.get("freshRetry"), "a new retry goal reads the changed reference");
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String,Object> probe(String name, Class<?>[] types, Object... args) throws Exception {
+        return (Map<String,Object>) fixture.getMethod(name, types).invoke(null, args);
     }
 
     static Map<String,Object> column(String world, int fx, int fy, int sx, int sy,
