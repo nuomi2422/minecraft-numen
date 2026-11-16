@@ -134,4 +134,14 @@ class RddFactContextTest {
         // waitFor 也进清单（旧实现只收 subtask 的 asset_key）
         assertTrue(manifest.requirements().stream().anyMatch(r -> "minecraft:oak_log".equals(r.key())));
     }
+
+    @Test
+    void facadeDelegatesToPureNeedsRenderOwner() {
+        List<RddFactContext.Need> needs = RddFactContext.needsOf(goal());
+        Map<String, Integer> held = Map.of("minecraft:oak_log", 9, "minecraft:iron_ingot", 1, "minecraft:birch_log", 4);
+        assertEquals(RddNeedsRender.renderNeedsBlock(needs, held), RddFactContext.renderNeedsBlock(needs, held));
+        assertEquals(RddNeedsRender.unmetText(needs, held, Map.of()), RddFactContext.unmetText(needs, held, Map.of()));
+        assertEquals(RddNeedsRender.stickyKey("p", 3, 2, needs.get(1)),
+                RddFactContext.stickyKey("p", 3, 2, needs.get(1)));
+    }
 }
