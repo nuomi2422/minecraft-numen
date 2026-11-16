@@ -65,7 +65,10 @@ class RddPlanningObservationWiringTest {
     }
 
     @Test void kickoffLegacyStaysUnknownAndEveryExitCarriesSuppliedToken() throws Exception {
-        String body = between(source("RddPlugin"), "static boolean kickoffNudge(UUID", "/** rdd_submit 用");
+        String facade = between(source("RddPlugin"), "static boolean kickoffNudge(UUID", "/** rdd_submit 用");
+        assertTrue(facade.contains("return kickoffNudge(companionId, chain, null)"));
+        assertTrue(facade.contains("return RddSupervisionNotifications.kickoffNudge(companionId, chain, observationToken)"));
+        String body = between(source("RddSupervisionNotifications"), "static boolean kickoffNudge(UUID", "/** rdd_submit 用");
         assertTrue(body.contains("return kickoffNudge(companionId, chain, null)"));
         assertTrue(body.contains("WorldContextStamp.Token observationToken)"));
         for (String reason : new String[]{"supervision_off_or_no_api", "body_dispatch_enabled",
@@ -74,7 +77,7 @@ class RddPlanningObservationWiringTest {
         }
         assertTrue(body.contains("\"subtask_not_running\", observationToken)"));
         assertTrue(body.contains("RddMonitor.publish(\"goal_kickoff\", data, observationToken)"));
-        assertTrue(body.contains("\"apiBound\", numenApi != null), observationToken)"));
+        assertTrue(body.contains("\"apiBound\", RddPlugin.notificationApi() != null), observationToken)"));
         assertFalse(body.contains("capture("));
         assertFalse(body.contains("getCurrentServer("));
     }
