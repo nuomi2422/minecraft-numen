@@ -1538,18 +1538,18 @@ private static String withAssets(UUID companionId, String rddContext) {
             // 2026-09-29「重规划没变化」修复之一：规划器此前**从未看到上一版的完整二级清单**，
             // 它只拿到一个 theme，在同一个信息集上再推一次 → 必然得到同一个结果。
             // 把旧计划显式给它，才能"做出不同的计划"。
-            String previous = renderPreviousPlanForReplan(chain);
+            String previous = RddReplanPlanRenderer.renderPreviousPlanForReplan(chain);
             if (!previous.isBlank()) {
                 hint = hint + "\n\n## 上一版的二级计划（**不要原样重复**，指出它的错处并给出不同做法）\n" + previous;
             }
             // 2026-10-28（主人第二点）：重规划此前只有"当前一级 + 上一版二级"——它在猜三件事：
             // 后面还要走什么、已经做过什么、此刻站在哪/手上有什么。三样都补上，才谈得上"全局"。
-            String remainingPlan = renderRemainingPlanForReplan(chain);
+            String remainingPlan = RddReplanPlanRenderer.renderRemainingPlanForReplan(chain);
             if (!remainingPlan.isBlank()) {
                 hint = hint + "\n\n## 后面还要走的阶段（可以保留、调整，或整段重写；别把已完成的又排一遍）\n"
                         + remainingPlan;
             }
-            String doneWork = renderDoneForReplan(chain);
+            String doneWork = RddReplanPlanRenderer.renderDoneForReplan(chain);
             if (!doneWork.isBlank()) {
                 hint = hint + "\n\n## 这条链已经做过的事（已成事实，不要重复规划）\n" + doneWork;
             }
@@ -2768,145 +2768,6 @@ private static String safeDeathAttacker(NumenPlayer body) {
 
     static RddCallbackGuard.Ticket planningTicket(UUID companionId) {
         return CALLBACKS.current(companionId);
-    }
-
-    /**
-     * 把「上一版的二级清单」渲染给规划器（2026-09-29「重规划没变化」修复）。
-     *
-     * <p>为什么需要：重规划时规划器只拿到一级 theme，**从未看到旧计划长什么样**。
-     * 在同一个信息集上再推一次，必然得到同一个结果 —— 实机就是「重规划和之前
-     * 基本没什么区别」。显式给出旧计划后，它才有对照物可说「这里不对，换个做法」。
-     *
-     * <p>有界：最多 {@value #REPLAN_PLAN_ECHO_MAX} 条、每条描述截断，避免把规划
-     * prompt 撑爆（这本身也是「上下文瘦身」要管的量）。
-     */
-    private static final int REPLAN_PLAN_ECHO_MAX = 12;
-    private static final int REPLAN_PLAN_DESC_MAX = 120;
-
-    private static String renderPreviousPlanForReplan(TaskChain chain) {
-        try {
-            PrimaryGoal primary = chain.currentPrimary();
-            if (primary == null || primary.subtasks() == null || primary.subtasks().isEmpty()) {
-                return "";
-            }
-            StringBuilder sb = new StringBuilder();
-            int shown = 0;
-            for (Subtask s : primary.subtasks()) {
-                if (s == null || shown >= REPLAN_PLAN_ECHO_MAX) {
-                    break;
-                }
-                String desc = s.description() == null ? "" : s.description().trim();
-                if (desc.length() > REPLAN_PLAN_DESC_MAX) {
-                    desc = desc.substring(0, REPLAN_PLAN_DESC_MAX) + "…";
-                }
-                sb.append("  ").append(shown + 1).append(". ").append(desc);
-                java.util.Map<String, Object> cond = s.condition();
-                if (cond != null && !cond.isEmpty()) {
-                    sb.append("  [条件 ").append(cond.keySet()).append("]");
-                }
-                sb.append('\n');
-                shown++;
-            }
-            if (shown == 0) {
-                return "";
-            }
-            if (primary.subtasks().size() > shown) {
-                sb.append("  …（另有 ").append(primary.subtasks().size() - shown).append(" 条未列）\n");
-            }
-            return sb.toString().strip();
-        } catch (RuntimeException e) {
-            // 渲染旧计划失败不该阻断重规划：没有对照物只是质量下降，不是功能中断
-            LOG.warn("[rdd] 渲染上一版计划失败: {}", e.toString());
-            return "";
-        }
-    }
-
-    /**
-     * 重规划输入②：当前一级<b>之后</b>的一级（主题 + 前置门）。
-     *
-     * <p>2026-10-28（主人第二点）：「我知道我还有备用装备……他知道这个是什么东西、拿来做什么的，
-     * 所以他才好重新规划整条任务。当然还要把那个他之前做过的任务和后面还要做的任务全都发给他」。
-     * 此前后面几级从来没进过重规划 prompt —— 规划器只能看见眼前这一级，自然写不出
-     * "别去下界了，先回主世界补装备"这种跨阶段的判断。
-     */
-    private static String renderRemainingPlanForReplan(TaskChain chain) {
-        try {
-            StringBuilder sb = new StringBuilder();
-            java.util.List<PrimaryGoal> all = chain.goal().primaryGoals();
-            PrimaryGoal cur = chain.currentPrimary();
-            int idx = all.indexOf(cur);
-            for (int i = idx + 1; i >= 0 && i < all.size(); i++) {
-                PrimaryGoal p = all.get(i);
-                sb.append("  ").append(i - idx).append(". ").append(p.description());
-                if (!p.waitFor().isEmpty()) {
-                    sb.append("（进入前需持有：");
-                    java.util.List<String> needs = new java.util.ArrayList<>();
-                    for (var r : p.waitFor()) {
-                        needs.add(r.assetKey() + "×" + r.minimum());
-                    }
-                    sb.append(String.join("、", needs)).append("）");
-                }
-                sb.append('\n');
-            }
-            return sb.toString().strip();
-        } catch (RuntimeException e) {
-            return "";
-        }
-    }
-
-    /**
-     * 重规划输入③：这条链<b>已经做过的事</b>（终态 + 尝试次数）。
-     *
-     * <p>此前只给"已完成阶段键"（一句话），重规划无从知道"她上一次已经试了两次、都是怎么败的"。
-     * 有界（最多 {@value #REPLAN_DONE_MAX} 条），只列有终态的节点。
-     */
-    private static final int REPLAN_DONE_MAX = 20;
-
-    private static String renderDoneForReplan(TaskChain chain) {
-        try {
-            java.util.Map<String, com.dwinovo.numen.rdd.api.SubtaskStatus> statuses = chain.subtaskStatuses();
-            StringBuilder sb = new StringBuilder();
-            int shown = 0;
-            for (PrimaryGoal p : chain.goal().primaryGoals()) {
-                if (shown >= REPLAN_DONE_MAX) {
-                    break;
-                }
-                for (Subtask s : p.subtasks()) {
-                    if (shown >= REPLAN_DONE_MAX) {
-                        break;
-                    }
-                    var st = statuses.get(s.id());
-                    if (st == null) {
-                        continue;
-                    }
-                    String name = st.name();
-                    if (!("COMPLETED".equals(name) || "SKIPPED".equals(name)
-                            || "PAUSED".equals(name) || "FAILED".equals(name))) {
-                        continue;
-                    }
-                    String desc = s.description() == null ? "" : s.description().trim();
-                    if (desc.length() > REPLAN_PLAN_DESC_MAX) {
-                        desc = desc.substring(0, REPLAN_PLAN_DESC_MAX) + "…";
-                    }
-                    sb.append("  - [").append(name).append("] ").append(desc);
-                    int attempts = chain.attempts(s.id());
-                    if (attempts > 0) {
-                        sb.append("（试了 ").append(attempts).append(" 次）");
-                    }
-                    sb.append('\n');
-                    shown++;
-                }
-            }
-            if (shown == 0) {
-                return "";
-            }
-            if (sb.length() == 0) {
-                return "";
-            }
-            return sb.toString().strip();
-        } catch (RuntimeException e) {
-            return "";
-        }
     }
 
     /**
