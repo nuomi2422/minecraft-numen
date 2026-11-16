@@ -18,6 +18,20 @@ import static org.junit.jupiter.api.Assertions.*;
 /** RddStagePlanner.parse 纯容错解析单测（Stage-A 一级清单，批B-2；不触 LLM/网络/MC）。 */
 class RddStagePlannerParseTest {
 
+    @Test void extractedDecoderAndLegacyEntryKeepTheSameContract() {
+        Gson gson = new Gson();
+        for (String input : java.util.Arrays.asList(null, "", "not-json", "null", "{}",
+                gson.toJson(Map.of("stages", List.of())))) {
+            assertEquals(gson.toJson(RddStagePlanParser.parse(input)),
+                    gson.toJson(RddStagePlanner.parse(input)));
+        }
+        String valid = "{\"stages\":[{\"theme\":\" collect stone \"}]}";
+        var direct = RddStagePlanParser.parse(valid);
+        assertEquals(1, direct.size());
+        assertEquals("collect stone", direct.get(0).description());
+        assertEquals(gson.toJson(direct), gson.toJson(RddStagePlanner.parse(valid)));
+    }
+
     @Test void staleRationaleIsNotPresentedAsCurrent() {
         assertTrue(RddStagePlanner.rationaleApplicable(true, 7L, 7L), "same revision is current");
         assertFalse(RddStagePlanner.rationaleApplicable(true, 6L, 7L), "older revision is stale");
