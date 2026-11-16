@@ -2,9 +2,15 @@ package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.rdd.api.PrimarySpec;
 import com.dwinovo.numen.rdd.core.RddChainFactory;
+import com.dwinovo.numen.rdd.core.TaskChain;
+import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -101,5 +107,85 @@ class RddStagePlannerParseTest {
         List<PrimarySpec> stages = RddStagePlanner.parse(sb.toString());
         assertEquals(12, stages.size());
         assertEquals("阶段0", stages.get(0).description());
+    }
+
+    @Test void explicitFourSlotStageTargetSurvivesFactoryAndRestart() {
+        String armor = """
+                {"feet":"minecraft:iron_boots","legs":"minecraft:iron_leggings",
+                 "chest":"minecraft:iron_chestplate","head":"minecraft:iron_helmet"}""";
+        Gson gson = new Gson();
+        JsonObject expectedTarget = JsonParser.parseString(armor).getAsJsonObject();
+        List<PrimarySpec> stages = RddStagePlanner.parse("""
+                {"stages":[
+                  {"theme":"探索下一处安全地点","equipment_target":%s},
+                  {"theme":"建立补给点","equipment_target":%s,
+                   "wait_for":[{"asset_key":"minecraft:stone_pickaxe","minimum":1}]},
+                  {"theme":"穿好铁靴、铁护腿、铁胸甲、铁头盔"}
+                ]}""".formatted(armor, armor));
+        assertEquals(3, stages.size());
+        assertTrue(stages.get(0).waitFor().isEmpty(), "equipment is an obligation, not an inventory prerequisite");
+        assertEquals(1, stages.get(1).waitFor().size());
+        assertEquals("minecraft:stone_pickaxe", stages.get(1).waitFor().get(0).assetKey());
+        assertEquals(1, stages.get(1).waitFor().get(0).minimum());
+        assertTrue(stages.get(2).waitFor().isEmpty());
+        for (int i = 0; i < 2; i++) {
+            JsonObject stage = gson.toJsonTree(stages.get(i)).getAsJsonObject();
+            assertEquals(expectedTarget, stage.get("equipmentTarget"),
+                    "explicit four-slot obligation must survive Stage-A even without equipment words in theme");
+        }
+        JsonElement legacyTarget = gson.toJsonTree(stages.get(2)).getAsJsonObject().get("equipmentTarget");
+        assertTrue(legacyTarget == null || legacyTarget.isJsonNull()
+                        || legacyTarget.isJsonObject() && legacyTarget.getAsJsonObject().size() == 0,
+                "legacy theme alone must not invent a typed equipment obligation");
+
+        TaskChain chain = new TaskChain(RddChainFactory.fromStages(
+                UUID.fromString("04200000-0000-0000-0000-000000000006"), "继续探索", stages));
+        String saved = chain.toJson();
+        TaskChain restored = TaskChain.fromJson(saved);
+        for (String snapshot : List.of(saved, restored.toJson())) {
+            var primaries = JsonParser.parseString(snapshot).getAsJsonObject()
+                    .getAsJsonObject("goal").getAsJsonArray("primaryGoals");
+            assertEquals(3, primaries.size());
+            for (int i = 0; i < 2; i++) {
+                assertEquals(expectedTarget, primaries.get(i).getAsJsonObject().get("equipmentTarget"),
+                        "factory and restart must retain all four explicit equipment slots");
+            }
+            assertEquals(0, primaries.get(0).getAsJsonObject().getAsJsonArray("waitFor").size(),
+                    "equipment_target must not be converted into a waitFor inventory gate");
+            var waitFor = primaries.get(1).getAsJsonObject().getAsJsonArray("waitFor");
+            assertEquals(1, waitFor.size(), "only the separately declared inventory prerequisite belongs in waitFor");
+            assertEquals("minecraft:stone_pickaxe", waitFor.get(0).getAsJsonObject().get("assetKey").getAsString());
+            assertEquals(1, waitFor.get(0).getAsJsonObject().get("minimum").getAsInt());
+            JsonElement restoredLegacyTarget = primaries.get(2).getAsJsonObject().get("equipmentTarget");
+            assertTrue(restoredLegacyTarget == null || restoredLegacyTarget.isJsonNull()
+                            || restoredLegacyTarget.isJsonObject() && restoredLegacyTarget.getAsJsonObject().size() == 0,
+                    "factory and restart must not infer equipment from a legacy Chinese theme");
+            assertEquals(0, primaries.get(2).getAsJsonObject().getAsJsonArray("waitFor").size());
+        }
+    }
+
+    @Test void malformedExplicitEquipmentTargetRejectsWholeStageBatch() {
+        String armor = """
+                {"feet":"minecraft:iron_boots","legs":"minecraft:iron_leggings",
+                 "chest":"minecraft:iron_chestplate","head":"minecraft:iron_helmet"}""";
+        List<String> badTargets = List.of(
+                """
+                {"feet":"minecraft:iron_boots"}""",
+                """
+                ["minecraft:iron_boots","minecraft:iron_leggings","minecraft:iron_chestplate","minecraft:iron_helmet"]""",
+                "null",
+                """
+                {"minecraft:iron_boots":1,"minecraft:iron_leggings":1,
+                 "minecraft:iron_chestplate":1,"minecraft:iron_helmet":1}""");
+        for (String badTarget : badTargets) {
+            String json = """
+                    {"stages":[
+                      {"theme":"合法前缀阶段","equipment_target":%s},
+                      {"theme":"后续阶段","equipment_target":%s}
+                    ]}""".formatted(armor, badTarget);
+            assertTrue(RddStagePlanner.parse(json).isEmpty(),
+                    "malformed explicit target must reject the entire batch, not drop the field/stage or return a prefix: "
+                            + badTarget);
+        }
     }
 }
