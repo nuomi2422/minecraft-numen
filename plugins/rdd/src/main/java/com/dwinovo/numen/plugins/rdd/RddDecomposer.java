@@ -563,6 +563,9 @@ final class RddDecomposer {
         if (cond == null) {
             return null;
         }
+        if (cond.has("slots") && (!cond.has("type") || !"equipment".equals(cond.get("type").getAsString()))) {
+            return null;
+        }
         NodeType nodeType = parseNodeType(o);
         if (nodeType == null) return null;
         RecurrenceSpec recurrence = parseRecurrence(o);
