@@ -293,7 +293,10 @@ class RddPendingDeathSettlementReplanTest {
                 }
                 public static RddRuntime runtime(UUID id) { return RUNTIMES.get(id); }
                 public static void sideEvent(String e,Map<String,Object> d) { SideTaskHost.publish(e,d); }
-                static void saveLedger(UUID id) { RddDeathLedgerStore.save(ledgerDir,id,RddDeathLedger.snapshot(id)); }
+                static void saveLedger(UUID id) {
+                    try { RddDeathLedgerStore.save(ledgerDir,id,RddDeathLedger.snapshot(id)); }
+                    catch (java.io.IOException ex) { throw new java.io.UncheckedIOException(ex); }
+                }
                 static void ensureLedgerLoaded(UUID id) { RddDeathLedger.restore(id,RddDeathLedgerStore.load(ledgerDir,id)); }
                 static void warnLedgerStore(String e,Map<String,Object> d) { throw new AssertionError(e+d); }
                 static Map<String,Integer> lastInventory(UUID id) { return Map.of(); }
