@@ -502,10 +502,6 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
     }
 
 
-    /** 脚位到目标的最大垂直距离:站在目标正下方仰头,眼高 1.62 + 触及 4.5 ≈ 6.1,
-     *  即目标底面在脚上 6 格内仍可命中——波段最多下探到此,再深就算站得住也打不到了。 */
-    private static final int MAX_STANCE_DEPTH = 6;
-
 
     /** 该目标格是否真挖得成:挖穿成本无穷(挖不动/被硬禁)、禁挖判定命中
      *  (冰/虫蚀/贴液体/悬空落沙邻格/世界边界)、或上下都被基岩封死的都不算。

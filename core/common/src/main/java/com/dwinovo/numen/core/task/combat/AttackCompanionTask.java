@@ -74,8 +74,6 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
     private static final double CROSSBOW_SPEED = 3.15;
     /** 连续几发没能真的射出去就判这把武器不顶用。 */
     private static final int MAX_MISFIRES = 2;
-    /** 射击时与目标保持的最小距离——太近了弹道压得太平,而且白白挨打。 */
-    private static final double RANGED_MIN_DISTANCE = 5.0;
     /** 组装局面看多远:势场要绕开谁、无差别模式打谁,都取这个半径。 */
     private static final double FIELD_RADIUS = 12.0;
 
