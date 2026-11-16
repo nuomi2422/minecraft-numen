@@ -518,6 +518,10 @@ final class RddDecomposer {
 
     // ---------- prompt 与合成工具：渲染已拆到 RddDecomposerPrompt；原入口保持不变 ----------
 
+    /** 兼容旧测试/调用方的常量 API；真实归属 {@link RddDecomposerPrompt}。 */
+    static final int ID_LIST_MAX_IDS = RddDecomposerPrompt.ID_LIST_MAX_IDS;
+    static final int ID_LIST_MAX_CHARS = RddDecomposerPrompt.ID_LIST_MAX_CHARS;
+
     static String systemPrompt() { return RddDecomposerPrompt.systemPrompt(); }
 
     static java.util.Map<String, Object> decomposeSchema() { return RddDecomposerPrompt.decomposeSchema(); }
