@@ -94,6 +94,14 @@ final class RddDeathEquipment {
         if (dimension != null && !dimension.equals(sample.dimension())) return null;
         if ("equipment".equals(c.get("type"))) {
             if (!WorldFactConditions.valid(c)) return null;
+            if (c.get("slots") instanceof Map<?, ?> slots) {
+                // SELF armor order is feet, legs, chest, head; each slot has its own target.
+                return WorldFactConditions.equipmentSlotsSatisfied(c,
+                        hit((String) slots.get("feet"), sample.armor().get(0), match),
+                        hit((String) slots.get("legs"), sample.armor().get(1), match),
+                        hit((String) slots.get("chest"), sample.armor().get(2), match),
+                        hit((String) slots.get("head"), sample.armor().get(3), match));
+            }
             String wanted = String.valueOf(c.get("item"));
             boolean[] hits = new boolean[6];
             for (int i = 0; i < 4; i++) hits[i] = hit(wanted, sample.armor().get(i), match);

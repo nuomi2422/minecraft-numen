@@ -1,6 +1,9 @@
 package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.agent.FunctionalBlockTypes;
+import com.dwinovo.numen.api.NumenPlugins;
+import com.dwinovo.numen.api.WorldContextStamp;
+import com.dwinovo.numen.api.observation.WorldObservationService;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.rdd.core.WorldFactConditions;
 import net.minecraft.core.BlockPos;
@@ -99,6 +102,15 @@ public final class RddWorldFacts {
             };
             if (!present) out.add(field + "=" + raw);
         }
+        if ("equipment".equals(condition.get("type")) && condition.get("slots") instanceof Map<?, ?> slots) {
+            for (String slot : new String[]{"feet", "legs", "chest", "head"}) {
+                Object raw = slots.get(slot);
+                if (!WorldFactConditions.isTag(raw)) continue;
+                ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
+                if (key == null || BuiltInRegistries.ITEM.getTag(TagKey.create(Registries.ITEM, key)).isEmpty())
+                    out.add("slots." + slot + "=" + raw);
+            }
+        }
         return out;
     }
 
@@ -196,9 +208,16 @@ public final class RddWorldFacts {
         }
     }
 
-    /** 当前槽位事实，不证明本步是否执行过穿戴或四件是否同时齐全。 */
+    /** 当前槽位事实，不证明本步是否执行过穿戴；slots 逐槽核对同一帧四件实穿。 */
     private static boolean equipped(NumenPlayer ap, Map<String, Object> condition) {
         if (!WorldFactConditions.valid(condition) || !dimension(ap.serverLevel(), condition)) return false;
+        if (condition.containsKey("slots")) {
+            // Reuse the current/full, subject/world/session-bound SELF sample; never rescan on failure.
+            var sample = RddDeathEquipment.read(NumenPlugins.capability(WorldObservationService.class),
+                    ap.getUUID(), ap.serverLevel().dimension().location().toString(),
+                    WorldContextStamp.snapshot(), System.currentTimeMillis());
+            return Boolean.TRUE.equals(RddDeathEquipment.condition(sample, condition, RddWorldFacts::equipmentTag));
+        }
         Object raw = condition.get("item");
         ResourceLocation key = ResourceLocation.tryParse(WorldFactConditions.tagId(raw));
         if (key == null) return false;
@@ -221,6 +240,16 @@ public final class RddWorldFacts {
                 matched[0], matched[1], matched[2], matched[3],
                 !main.isEmpty() && hit.test(main),
                 !off.isEmpty() && hit.test(off));
+    }
+
+    private static boolean equipmentTag(String wanted, String actual) {
+        ResourceLocation tagId = ResourceLocation.tryParse(WorldFactConditions.tagId(wanted));
+        ResourceLocation itemId = ResourceLocation.tryParse(actual);
+        if (tagId == null || itemId == null || !BuiltInRegistries.ITEM.containsKey(itemId)) return false;
+        TagKey<Item> tag = TagKey.create(Registries.ITEM, tagId);
+        // Equipment has no semantic food fallback, and unknown IDs must not resolve to air.
+        return BuiltInRegistries.ITEM.getTag(tag).isPresent()
+                && new ItemStack(BuiltInRegistries.ITEM.get(itemId)).is(tag);
     }
 
     private static ResourceLocation id(Map<String, Object> condition, String key) {
