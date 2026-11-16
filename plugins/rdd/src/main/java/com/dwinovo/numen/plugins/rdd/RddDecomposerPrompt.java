@@ -1,0 +1,373 @@
+package com.dwinovo.numen.plugins.rdd;
+
+import com.dwinovo.numen.agent.provider.IToolSpec;
+import com.dwinovo.numen.rdd.core.PlanningAssetSnapshot;
+
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
+
+/** Decomposer prompt/schema rendering only; client orchestration stays in RddDecomposer. */
+final class RddDecomposerPrompt {
+    private RddDecomposerPrompt() {}
+
+    // ---------- prompt 与合成工具 ----------
+
+    static final String SYSTEM_PROMPT =
+            "你是 MC 女仆的目标分解器。把主人的目标拆成 1~8 个具体、按依赖顺序排列、可逐步检测的子步骤。"
+                    + "每个子步骤的 condition 必须用真实的 minecraft 物品命名空间 ID（如 minecraft:oak_log、"
+                    + "minecraft:iron_ingot）。**数量分两类，别搞混**："
+                    + "① 配方/规则能算死的，照样写准数（如钻石镐要 3 个钻石、下界传送门要 10 个黑曜石、"
+                    + "末影之眼要 12 个末影珍珠）——这些不用到现场猜；"
+                    + "② 只有到了现场才知道有多少的（这条矿脉有几块矿、这片林子有多少木头、附近有几只动物），"
+                    + "**不要把大目标写死**：minimum 先给一个小值（1~3）当「起步就算推进」，"
+                    + "到地方看清了再决定要不要继续挖/采。"
+                    + "**坐标类判据必须带 dimension**（container_at / block_at / position_at）："
+                    + "同一组 (x,y,z) 在主世界和下界是两个完全不同的地方——不写 dimension，"
+                    + "她换维度之后就会在**新维度的同名坐标**上找，永远找不到（实机 2026-10-28："
+                    + "她人在下界，判据却指向主世界基地的箱子 (119,63,707)，整步卡死）。\n"
+                    + "**判据要选「会留下来」的事实**：能用 dimension / advancement / 资产数量 / block_at 这类"
+                    + "**持续性**判据，就不要用「附近有某方块」这种**瞬时**判据来描述「已经达成」——"
+                    + "人一走开条件就变假，那一步永远判不过（实机 2026-10-28：「附近出现下界传送门」"
+                    + "在她走进下界几百格之后变成 false，链就卡在那儿）。"
+                    + "**换维度这类判据要给出\"先怎么办\"**：如果目标是 dimension=X 而当前不在 X、且身边没有**已点亮**的传送门，"
+                    + "第一步必须是**可执行的找路动作**（locate_structure ruined_portal / 找点火物 / 打烈焰人换火焰弹），"
+                    + "而不是把 dimension=X 本身当步骤——那一句她做不出任何动作，只会反复查状态。"
+                    // 2026-10-29（#L-08）：她的锚点门**是熄的**（<env> 的回家行会写「熄」），
+                    //   而下界点不着火（打火石要铁锭）。这时让她走回那扇门 = 白走一趟 53 格。
+                    //   正确下一步是找一座**已点亮**的废墟门。
+                    + "**如果 <env> 写着门是「熄」的、她又没有点火物，就别让她走回那扇死门**："
+                    + "下一步写成 locate_structure {structure:\"minecraft:ruined_portal\"} 找最近的废墟传送门"
+                    + "（废墟门多半是亮着的），走过去站进亮门即可回主世界；确实找不到亮门，再退回「火焰弹」（烈焰粉+火药+煤）。"
+                    + "**步骤必须是同伴自己用现有工具能完成的动作**：不要写 `/execute`、`/give`、`/tp` 这类主人侧命令，"
+                    + "也不要写\"让主人去做 X\"；写不出来就说明这一步当前做不到，应当改成\"先解决前置\"（找工具/找材料/换地点）。"
+                    + "**背包空的时候先排补给步骤**：手里没工具/没吃的（尤其在下界），第一步应当是\"弄到能用的最低限装备与食物\"（找堡垒箱子、捡金装备、挖黑砖做石具、打只疣猪兽烤了吃），"
+                    + "而不是执行需要材料的步骤——那类步骤在空手时必然失败（实机：她背包 36 格全空、紧邻堡垒，却被派了需要材料的活，只能 COUNTER）。"
+                    // 2026-11-06：AC 脚本写好了却没人用——planner 不知道库里有脚本，只能一步步调工具
+                    //  （实测手工种田一次 36–41 次调用、27–50 次 LLM 往返，只换到 2 株）。
+                    //  这条只让模型“先查库”，不强制它选脚本；库为空时自然退回原路径。
+                    + "**先用现成脚本，再考虑逐步动手**：遇到重复或多步的常规活（收割补种、挖矿、防御、巡逻），"
+                    + "先调 `acx_library` 看版本库里有没有现成脚本；有就用 `acx_execute ac_name=<名字>` 一次跑完，"
+                    + "不要把它拆成十几次单工具调用。没有匹配脚本才按普通子步骤拆。"
+                    // 2026-11-06 生存闸：hunger 6 仍被派走向/开路（10:37:33-11:03:20 共 25m47s，50 次调用仅 7 次进食/合成、eat 成功 0 次）。
+                    // 2026-11-06 二次修：原判据把"背包满"也当饥饿，会每轮先吃一次；改成三态，满包不是生存问题。
+                    + "**生存闸（三态，按 <env> 判）**："
+                    + "①EAT_FIRST：hunger<10 或 hp<8 → 第一个子任务必须是「（若背包满先腾格）→取/合成食物→eat」，不允许被其它目标抢占；"
+                    + "②MAKE_ROOM_FIRST：仅当背包无空槽 **且** 当前确有待捡/待合成/待给食物的动作时，第一步才是丢弃或存箱腾格；"
+                    + "③NONE：其余情况都不插进食——背包满本身不是生存问题，'吃完却捡不起来'才是需要缓冲区的理由；hunger>=18 且 hp 满时不要插食物步骤。"
+                    // 2026-10-28 主人定的语义（#289）：丢了核心装备就回头重新弄，除非它已经用不上。
+                    //   任务链就是为记这件事而生：“丢了什么 → 它本来是干什么用的 → 还要不要 → 要就重新拿回来”。
+                    + "**丢了核心装备（护甲/武器/镐/食物）时先规划「回头补齐」**：写明丢了什么、它原本用来干什么、现在还要不要——要就回去重新弄到手，用不上就明确写「这件不用了」。"
+                    + "不要因为已经走远了就硬往前推：空手进堡垒、空手打烈焰人几乎必死，那是浪费预算不是坚持。"
+                    // 2026-10-28 实机（#293）：她要"木板"，判据写成"某个坐标的容器里有木板≥1"，
+                    //   而她既没有那个容器、也没有现成木板（有 14 根绯红菌柄，该去合成）。
+                    //   这类判据对她不可执行 → 要求写成"背包/能力"口径。
+                    + "**要材料时用「背包里有多少」的口径，别写成「某个坐标的容器里有」**："
+                    + "例如要木板就写背包里 planks ≥ 4（她自己去合成/砍），"
+                    + "只有目标本来就是\"把东西放进某个已知箱子/从已知箱子取\"时才用 container_at，并且要写清那个箱子是怎么来的。"
+                    // 2026-10-28 实机（#149/#293）：链要 iron_sword，而下界**挖不出铁矿**——
+                    //   不给来源，她只能在原地挖；给了来源（堡垒箱子/金装备/回主世界），她才走得动。
+                    + "**要的东西在当前维度拿不到时，必须同时给出「来源」**："
+                    + "写明去哪类结构/哪种怪物/哪个箱子弄（例：下界要铁→去下界堡垒的箱子里翻铁锭/铁装备，或回主世界挖）；"
+                    + "给不出来源就说明这条当前做不到，改成当前维度可达的替代（例：先把石镐/食物做出来）。"
+                    // 2026-10-29 实机（水桶那级）：链只写 {asset_key: water_bucket}，她要 3 铁锭、手上只有 1，
+                    //   结果既不挖也不熔，只反复 inspect_block/interact_at 直到 STALLED。缺的不是目标，是"原料在哪"。
+                    + "**要的东西要自己合成、而原料不在背包里时，同样必须给出原料来源**："
+                    + "写明去哪类矿石/哪个层级/哪类结构弄（例：水桶要 3 铁锭 → 先挖 2 个铁矿石（Y<16 或山区地表），用熔炉+煤烧成锭）；"
+                    + "或者把这一级拆成\"先弄原料\"的前置级。**只写成品、不写原料出处 = 她会站在原地看方块。**"
+                    // 2026-10-29 实机（钻石那级）：判据只写 {asset_key: diamond}，她 10 分钟只 mine 一次、y 反而升到 64 ——
+                    //   知道要钻石，但不知道去哪找。规则从"合成原料"推广到"任何当前位置拿不到的资源"。
+                    + "**推广适用：任何一级，只要所需资源在当前位置拿不到，就必须写出「去哪拿」**——"
+                    + "矿石类写层级与地形（钻石：Y<16，优先深板岩层/峡谷剖面）；结构类写 locate_structure 的目标类型；"
+                    + "生物掉落写群系或时段；实在给不出就拆成「先往下挖/先探索」的前置级。**只写要什么、不写去哪拿 = 她会站在地表不动。**"
+                    // 2026-10-29 实机（primary-4）：链把"找要塞(stronghold)"排在"末影珍珠/末影之眼"之前——
+                    //   而找要塞必须用末影之眼定位（locate_structure 对要塞无效），顺序倒了她会长期空转。
+                    + "**末地路径的顺序是固定的，不得颠倒**：烈焰粉 + 末影珍珠 → 末影之眼 → 用它定位要塞(stronghold) → 进末地 → 屠龙。**禁止把找要塞/找末地传送门排在末影之眼之前**——没有眼睛根本定位不到要塞。"
+                    + "**相邻两级要用同一种材料时，合并成一次采集量**：像「3 铁锭做铁镐」后面紧跟「3 铁锭做水桶」，就应当写成一次「凑 6 铁锭」，而不是让她挖两趟；同类还有木棍/木板/圆石/煤炭。判据：写完一级后回看上一级，若原料重叠，把数量加起来落在前一级。"
+                    + "**判据是合成品时，必须把配方本身写进描述**：几乘几的格子、每种原料几份（例：末影之眼 = 末影珍珠 ×1 + 烈焰粉 ×1，2x2 手搓，不需要工作台）。只写「要 12 颗末影之眼」而不写配方，她会拿着材料反复查背包、就是不合成 —— 这是实机反复出现的形态。"
+                    + "**目标距离超过约 500 格时，必须拆成分段接近**：每段不超过 400 格，方向取总分方向；每段到达后再取下一段，并在每 300 格做一次 get_self_status 校准坐标。禁止把「走 1500 格」写成一个动作 —— 那样的单步 goto 大概率失败或卡死，人却以为在赶路。"
+                    + "**在水里不要硬 goto 长距离**：先上岸（goto 到最近的、比水面高 1 格的落脚点，或 build 一块方块垫脚爬上去），再继续赶路；要过河就沿行进方向搭桥铺方块。实机教训：她卡在河里 10 分钟只挪 3 格还倒退，而旁边 2 格就有露出水面的石头 —— 那时正确动作是上岸，不是反复 task_status。"
+                    // 2026-10-28（主人）：「我拿到了钻石镐，我直接可以去挖黑曜石了，那我挖铁镐就没有意义了」。
+                    //   这是与"丢了要回头补"对称的另一半：**能力覆盖 ≠ 流程顺序**。
+                    //   这里只写规矩；具体哪一级判掉，由规划者/执行侧看语义后用 rdd_settle_stage 决定。
+                    + "**能力优先于流程**：现有装备已经能完成某一步的目的时，那一步就不要排"
+                    + "（钻石镐能挖黑曜石 → 不必先做石镐/铁镐；已有铁镐 → 不必再走石镐）；"
+                    + "反过来，工具够好但缺材料时直接用更好的工具去取那个材料（有钻石镐但缺铁 → 直接挖铁），"
+                    + "不要为了走完时代顺序先凑中间档。"
+                    + "**节点类型（2026-11-08）**：每个子步骤加 node_type=MAIN|DAILY|SIDE。"
+                    + "重复维护型（收割/补种/喂动物/存粮/照明巡检）=DAILY，并给 recurrence{intervalGameDays:1,missedPolicy:\"SKIP\",requiresFarmBuilt:true|false}；"
+                    + "一次性建设/开垦/建仓/合成=MAIN；等待作物成熟不得让整条主线停在 MAIN，应拆出 DAILY 并让 MAIN 只保留建设类。**硬规则**：若目标含“维护/每天/每日/日常/收割/补种/喂养/存粮/巡检”等重复维护语义，输出**至少 1 条 node_type=DAILY** 的子步骤，不得全部标 MAIN；否则视为未完成本目标分类。例：目标“维护农田”至少输出 {\"description\":\"每天检查田里仍有已种小麦（仅存在验收，不证明成熟、收获或补种动作）\",\"condition\":{\"type\":\"block_nearby\",\"block\":\"minecraft:wheat\",\"radius\":8},\"node_type\":\"DAILY\",\"recurrence\":{\"intervalGameDays\":1,\"missedPolicy\":\"SKIP\",\"requiresFarmBuilt\":true}}。"
+                    + "只给完成条件，不要派身体动作。"
+                    + "通用食物/木头/垫脚方块需求优先用 condition:{group:food|wood|blocks,minimum:数量}，组内按物品总数相加，禁止同时给asset_key。"
+                    + "food只计直接可食用的东西，生肉/腐肉也计（捡回来就算推进），不计小麦/干草/生土豆/种子；wood原木和木板按件计，不换算配方。指定合成原料仍用asset_key。"
+                    + "种子种植不要用 item_used 验收（右键点击会把失败点击也算进去，实测种子没少仍判完成）；"
+                    + "用 type=block_nearby 验收作物方块（wheat/beetroots/carrots/potatoes 等）；若目标是成熟小麦必须加 properties:{age:\"7\"}，不带 properties 只证明存在、不证明成熟；或 container_at 验收收获物。"
+                    + "世界条件可用type=advancement(advancement ID)、entity_killed(entity ID,minimum)、structure(structure ID 或 #tag，可选dimension)、base(可选dimension)。"
+                    + "另外三种读周围环境：type=biome(biome ID 或 #tag) 判「站在什么群系」；"
+                    + "type=block_nearby(block ID 或 #tag, radius) 判「附近有没有这类方块」（矿石/刷怪笼/草捆这类没方块实体的也能查到，默认半径8，上限16）；"
+                    + "type=container_nearby(item ID 或 #tag, minimum, radius) 判「附近箱子里有没有这种东西」（默认半径8，上限16）；"
+                    + "type=block_mined(block ID 或 #tag, minimum) 与 item_crafted/item_used/item_picked_up(item ID 或 #tag, minimum) "
+                    + "默认判「从本步开始到现在真的做了 N 次」（delta，防历史统计冒充本次）；"
+                    + "只有确实要终身累计时才加 scope=lifetime（服务器权威、跨重启）。"
+                    + "type=dimension(dimension ID) 判「本人在某维度」；type=y_below(y, 可选dimension) 判「本人 Y≤y」；"
+                    + "type=position_at(x,y,z, 可选radius) 判「本人在该点附近」（默认半径4，上限16）；"
+                    + "type=entity_nearby(entity ID 或 #tag, radius) 判「附近有这种实体」；"
+                    + "type=block_at(x,y,z,block ID 或 #tag) 判「指定坐标是某方块」；"
+                    + "type=container_at(x,y,z,item ID 或 #tag, minimum) 判「指定坐标容器里有某物」。"
+                    + "精确 ID 与 #tag 都接受：村庄要写 minecraft:village_plains 等五个之一，或直接用 #minecraft:village；海底神殿是 minecraft:monument 不是 ocean_monument。"
+                    + "base只要求本人已绑定的可重生床完整可用；附近箱子和熔炉不再当硬门（建成它们会另排步骤，不要塞进 base）。structure须本人到达已加载结构，击杀须本人统计，不以实体消失当击败。"
+                    + "没有对应验收器的部分不要伪造物品替代。只输出 decompose_goal 工具调用，不要写多余文字。";
+
+    /** Test-only accessors: prompt/schema are part of the planner contract. */
+    static String systemPrompt() { return SYSTEM_PROMPT; }
+
+    static java.util.Map<String, Object> decomposeSchema() { return DECOMPOSE_TOOL.parameterSchema(); }
+
+    static String decompositionPrompt(String objective, Map<String, Integer> held,
+                                      List<String> completedStages) {
+        return decompositionPrompt(objective, held, completedStages, "");
+    }
+
+    static String decompositionPrompt(String objective, Map<String, Integer> held,
+                                      List<String> completedStages, String worldAssets) {
+        return composeDecompositionPrompt(objective, completedStages, renderHeldAssets(held), worldAssets);
+    }
+
+    /** P1.5：Planner 直接吃统一资产快照（含"已失去/不确定"显式告知）。 */
+    /** 拆解主路径（2026-10-07 起）：目标 + 已完成阶段 + 当前持有，不再贴世界资产/村庄/时间成本。 */
+    static String decompositionPrompt(String objective, PlanningAssetSnapshot snapshot,
+                                      List<String> completedStages) {
+        return composeDecompositionPrompt(objective, completedStages, renderHeldAssets(snapshot), "", "");
+    }
+
+    static String decompositionPrompt(String objective, PlanningAssetSnapshot snapshot,
+                                      List<String> completedStages, String worldAssets) {
+        return composeDecompositionPrompt(objective, completedStages, renderHeldAssets(snapshot), worldAssets, "");
+    }
+
+    /** P2-D：带已观测村庄事实块。 */
+    static String decompositionPrompt(String objective, PlanningAssetSnapshot snapshot,
+                                      List<String> completedStages, String worldAssets, String villageBlock) {
+        return composeDecompositionPrompt(objective, completedStages, renderHeldAssets(snapshot),
+                worldAssets, villageBlock);
+    }
+
+    private static String composeDecompositionPrompt(String objective, List<String> completedStages,
+                                                      String heldBlock, String worldAssets) {
+        return composeDecompositionPrompt(objective, completedStages, heldBlock, worldAssets, "");
+    }
+
+    private static String composeDecompositionPrompt(String objective, List<String> completedStages,
+                                                      String heldBlock, String worldAssets, String villageBlock) {
+        // 2026-10-07 用户裁决：世界资产块 / 村庄事实列表 / 可恢复线索 / P2-E 时间成本刻度 不再注入
+        // 规划 prompt —— 固定旧债，白烧 token（烧钱），还会盖过主人写进经验库的路线。
+        // 参数保留只为不动一串签名（调用点已不再传真值）；这些事实执行侧仍会按需观察。
+        return "主人的目标：" + objective + "\n\n"
+                + renderCompletedStages(completedStages)
+                + heldBlock
+                + "请用 decompose_goal 工具给出子步骤。每个子步骤包含：\n"
+                + "- description：这一步要做什么\n"
+                + "- condition：{asset_key: 物品命名空间ID, minimum: 需要数量}\n"
+                + "  或 {group: food|wood|blocks, minimum: 组内最低总数}；不要强求食物品种齐全。\n"
+                + "  床/羊毛/木板这类有颜色或树种变体的物品，写具体 ID（如 minecraft:white_bed）；"
+                + "写裸名（minecraft:bed）会按同族任意变体兜底，但优先写具体 ID。\n"
+                + "  世界事实：{type:base}；{type:advancement,advancement:minecraft:story/...}；"
+                + "{type:structure,structure:'#minecraft:village'}（或 minecraft:village_plains 等具体 ID）；"
+                + "{type:biome,biome:'#minecraft:is_forest'}（或 minecraft:desert 等具体 ID）；"
+                    + "{type:block_nearby,block:'#minecraft:ores',radius:8}；"
+                    + "{type:container_nearby,item:minecraft:wheat,minimum:16,radius:8}；"
+                    + "{type:entity_killed,entity:minecraft:ender_dragon,minimum:1}；"
+                    + "{type:block_mined,block:minecraft:stone,minimum:32}；"
+                    + "{type:item_crafted,item:minecraft:bread,minimum:3}；"
+                    + "{type:dimension,dimension:minecraft:the_nether}；{type:y_below,y:0}；"
+                    + "{type:position_at,x:100,y:64,z:200,radius:4}；"
+                    + "{type:entity_nearby,entity:minecraft:cow,radius:8}；"
+                    + "{type:block_at,x:100,y:64,z:200,block:minecraft:crafting_table}；"
+                    + "{type:container_at,x:100,y:64,z:200,item:minecraft:diamond,minimum:1}；"
+                    + "{type:equipment,slots:{feet:minecraft:iron_boots,legs:minecraft:iron_leggings,"
+                    + "chest:minecraft:iron_chestplate,head:minecraft:iron_helmet}} 判同一次检查中四槽当前同时实穿；"
+                    + "slots 的 feet/legs/chest/head 必须全齐，各值可用物品 ID 或 #tag，不得与 item/slot/minimum 混用；"
+                    + "整套护甲必须用这组四槽条件，不得拿头盔或任意单件代替整套；这不证明本步穿戴动作完成。"
+                    + "旧单件 {type:equipment,item:minecraft:iron_chestplate,slot:chest} 仍只判此刻该装备槽；"
+                    + "slot 可取 head/chest/legs/feet/mainhand/offhand/any；省略或 any=任一装备槽（含主副手），不代表四槽齐全；"
+                    + "{type:shelter,minimum:20,radius:8}（床周围墙块≥minimum 且头顶≤2格有顶盖——「有个能挡雨的角落」，不要求像人盖的房）；"
+                    + "{type:stocked,minimum:10,radius:8}（床周围容器里物品总件数≥minimum——「真把东西存进去了」，空箱子不算）；"
+                    + "{type:lit,minimum:4,radius:8}（床周围光源≥minimum——夜里不刷怪）。\n"
+                    + "  shelter/stocked/lit 都以重生床为圆心：没绑床=全判 false。安家链必须先放床并 sleep 绑点（{type:base}），"
+                    + "再逐步 shelter→stocked→lit；把 shelter 排在床前面=永远判假=链死锁。\n"
+                    + "  只用下面这些类型：advancement/structure/entity_killed/base/biome/block_nearby/container_nearby/"
+                    + "block_mined/item_crafted/item_used/item_picked_up/dimension/position_at/y_below/entity_nearby/block_at/container_at/shelter/stocked/lit/equipment，"
+                    + "写别的一律会被丢掉（整条步骤消失且不报错）。ID 不确定就用 #tag。\n"
+                + "  你只负责给「完成条件」，不要给身体动作指令 —— 身体只有一个驾驶员（执行 AI），"
+                + "派活是它的事，不是规划器的事。\n";
+    }
+
+    /** 已完成前置阶段上下文块（空则返回空串）。 */
+    private static String renderCompletedStages(List<String> completed) {
+        if (completed == null || completed.isEmpty()) {
+            return "";
+        }
+        return "【已达成的前置阶段】" + String.join(" → ", completed) + "\n\n";
+    }
+
+    /** 背包上下文块：空背包返回空串（不写"空"误导 LLM），非空按 key 排序保证输出稳定。 */
+    private static String renderHeldAssets(Map<String, Integer> held) {
+        if (held == null || held.isEmpty()) {
+            return "";
+        }
+        String items = new TreeMap<>(held).entrySet().stream()
+                .map(e -> "- " + e.getKey() + " ×" + e.getValue())
+                .collect(Collectors.joining("\n"));
+        return "【你当前已真实持有（背包扫描）：】\n" + items + "\n\n"
+                + "【拆解铁律】站在\"已经拥有上面这些\"继续推进：已持有的装备/工具/设施"
+                + "（如 wooden_pickaxe、crafting_table、stone_axe）不要再拆出\"重新获取/再做一把\"的子步骤，"
+                + "除非后面马上要消耗它。只规划把当前资产推进到本阶段目标还缺的部分；"
+                + "会消耗掉的（食物、合成/烧炼原料如 plank/stick/木炭）才按本阶段真实消耗补量。\n\n";
+    }
+
+    /** P1.5：来自统一快照的背包块——可持有 + 显式告知"已失去/不确定"。 */
+    /**
+     * 展示上限（2026-11-06 收紧）：**每列表最多 12 条**，两列表 + 两段省略标记**共享 240 字符总预算**；
+     * 语义标题不计入预算（标题是固定说明，不是内容）。只放整条 id，放不下就整条略过并给显式省略数。
+     */
+    static final int ID_LIST_MAX_IDS = 12;
+    static final int ID_LIST_MAX_CHARS = 240;
+
+    static String boundedIdList(java.util.List<String> ids) {
+        return boundedIdList(ids, ID_LIST_MAX_CHARS, 0);
+    }
+
+    /** 单列表入口：{@code reservedAfter} 是留给后续列表的最低省略标记额度。 */
+    static String boundedIdList(java.util.List<String> ids, int maxChars, int reservedAfter) {
+        if (ids == null || ids.isEmpty()) return "";
+        int total = 0;
+        for (String id : ids) if (id != null && !id.isBlank()) total++;
+        if (total == 0) return "";
+        int allow = Math.max(0, maxChars - reservedAfter);
+        for (int keep = Math.min(ID_LIST_MAX_IDS, total); keep >= 0; keep--) {
+            int omitted = total - keep;
+            String marker = omitted > 0 ? marker(omitted) : "";
+            String body = joinFirst(ids, keep);
+            if (body.length() + marker.length() <= allow) return body + marker;
+        }
+        return "";
+    }
+
+    static String marker(int n) {
+        return "（其余 " + n + " 条略）";
+    }
+
+    private static String joinFirst(java.util.List<String> ids, int keep) {
+        StringBuilder sb = new StringBuilder();
+        int shown = 0;
+        for (String id : ids) {
+            if (id == null || id.isBlank()) continue;
+            if (shown >= keep) break;
+            if (sb.length() > 0) sb.append("、");
+            sb.append(id);
+            shown++;
+        }
+        return sb.toString();
+    }
+
+    private static String renderHeldAssets(PlanningAssetSnapshot snap) {
+        StringBuilder sb = new StringBuilder();
+        if (snap != null && !snap.availableCounts().isEmpty()) {
+            String items = snap.availableCounts().entrySet().stream()
+                    .map(e -> "- " + e.getKey() + " ×" + e.getValue())
+                    .collect(Collectors.joining("\n"));
+            sb.append("【你当前已真实持有（背包扫描）：】\n").append(items).append("\n\n")
+                    .append("【拆解铁律】站在\"已经拥有上面这些\"继续推进：已持有的装备/工具/设施")
+                    .append("（如 wooden_pickaxe、crafting_table、stone_axe）不要再拆出\"重新获取/再做一把\"的子步骤，")
+                    .append("除非后面马上要消耗它。只规划把当前资产推进到本阶段目标还缺的部分；")
+                    .append("会消耗掉的（食物、合成/烧炼原料如 plank/stick/木炭）才按本阶段真实消耗补量。\n\n");
+        }
+        int used = 0;
+        if (snap != null && !snap.lostIds().isEmpty()) {
+            int reserve = snap.unknownIds().isEmpty() ? 0 : marker(snap.unknownIds().size()).length();
+            String lostText = boundedIdList(snap.lostIds(), ID_LIST_MAX_CHARS, reserve);
+            used += lostText.length();
+            sb.append("【已失去（死亡/掉落判定失效，绝不要假设还持有，需要就重新获取）：】")
+                    .append(lostText).append("\n\n");
+        }
+        if (snap != null && !snap.unknownIds().isEmpty()) {
+            int remaining = Math.max(0, ID_LIST_MAX_CHARS - used);
+            sb.append("【状态不确定（先核实再依赖）：】")
+                    .append(boundedIdList(snap.unknownIds(), remaining, 0)).append("\n\n");
+        }
+        return sb.toString();
+    }
+
+    /** 合成工具：让 LLM 直接以结构化 JSON 返回分解结果（引擎没有 response_format:json_object）。 */
+    static final IToolSpec DECOMPOSE_TOOL = new IToolSpec() {
+        @Override public String name() { return "decompose_goal"; }
+        @Override public String description() {
+            return "把主人的目标拆成可逐步检测的子步骤列表。"
+                    + "每个子步骤必须能被世界状态确定性判定：condition 里给 asset_key（minecraft 物品命名空间 ID）"
+                    + "和 minimum（数量）。只给完成条件，不给身体动作（身体只有一个驾驶员）。";
+        }
+        @Override public Map<String, Object> parameterSchema() {
+            // 2026-09-29 放宽：optional=true 对任何类型生效（判定层已同步放宽），不只是补充食物。
+            Map<String, Object> conditionProps = Map.ofEntries(
+                    Map.entry("block", Map.of("type", "string", "description", "Exact block ID or #tag for block_nearby.")),
+                    Map.entry("radius", Map.of("type", "integer", "minimum", 1, "maximum", 16)),
+                    Map.entry("properties", Map.of("type", "object", "additionalProperties", Map.of("type", "string"),
+                            "description", "Required block-state values; mature wheat needs {age: '7'}. Omit only for presence checks.")),
+                    Map.entry("type", Map.of("type", "string", "enum",
+                            List.of("inventory", "advancement", "structure", "entity_killed", "base",
+                                    "biome", "block_nearby", "container_nearby",
+                                    "block_mined", "item_crafted", "item_used", "item_picked_up",
+                                    "dimension", "position_at", "y_below",
+                                    "entity_nearby", "block_at", "container_at",
+                                    "shelter", "stocked", "lit", "equipment"))),
+                    Map.entry("advancement", Map.of("type", "string")),
+                    Map.entry("structure", Map.of("type", "string")),
+                    Map.entry("entity", Map.of("type", "string")),
+                    Map.entry("item", Map.of("type", "string", "description", "Exact item ID or #item tag for world facts.")),
+                    Map.entry("slot", Map.of("type", "string", "enum", List.of("head", "chest", "legs", "feet", "mainhand", "offhand", "any"))),
+                    Map.entry("slots", Map.of("type", "object",
+                            "properties", Map.of(
+                                    "feet", Map.of("type", "string"),
+                                    "legs", Map.of("type", "string"),
+                                    "chest", Map.of("type", "string"),
+                                    "head", Map.of("type", "string")),
+                            "required", List.of("feet", "legs", "chest", "head"),
+                            "additionalProperties", false)),
+                    Map.entry("dimension", Map.of("type", "string")),
+                    Map.entry("asset_key", Map.of("type", "string",
+                            "description", "minecraft 物品命名空间ID，如 minecraft:oak_log")),
+                    Map.entry("group", Map.of("type", "string", "enum", List.of("food", "wood", "blocks"))),
+                    Map.entry("optional", Map.of("type", "boolean", "description",
+                            "标 true 表示这个目标达成与否都不影响主线（可跳过，不会阻塞整条任务链）。"
+                                    + "只要不是必需物资/关键装备/主线进度，就标 true；不要滥用，必需项保持 false 或不标。")),
+                    Map.entry("minimum", Map.of("type", "integer", "description", "需要的最少数量")));
+            Map<String, Object> subtaskItem = Map.of(
+                    "type", "object",
+                    "properties", Map.of(
+                            "description", Map.of("type", "string", "description", "这一步做什么（给主人的可读说明）"),
+                            "condition", Map.of(
+                                    "type", "object",
+                                    "description", "确定性完成条件",
+                                    "properties", conditionProps,
+                                    "required", List.of()),
+                            "node_type", Map.of("type", "string", "enum", List.of("MAIN", "DAILY", "SIDE"),
+                                    "description", "重复维护=DAILY（不阻塞主线）；一次性建设=MAIN；可选支线=SIDE。缺省 MAIN。"),
+                            "recurrence", Map.of("type", "object",
+                                    "description", "DAILY 周期；intervalGameDays=1, missedPolicy=SKIP, requiresFarmBuilt=是否需先建成农田。",
+                                    "properties", Map.of(
+                                            "intervalGameDays", Map.of("type", "integer"),
+                                            "missedPolicy", Map.of("type", "string", "enum", List.of("SKIP", "CATCH_UP")),
+                                            "requiresFarmBuilt", Map.of("type", "boolean")))),
+                    "required", List.of("description", "condition"));
+            return Map.of(
+                    "type", "object",
+                    "properties", Map.of(
+                            "subtasks", Map.of(
+                                    "type", "array",
+                                    "items", subtaskItem)),
+                    "required", List.of("subtasks"));
+        }
+    };
+
+}
