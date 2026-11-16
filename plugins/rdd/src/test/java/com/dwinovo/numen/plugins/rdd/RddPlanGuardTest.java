@@ -706,13 +706,12 @@ class RddPlanGuardTest {
     @Test
     void requiredStepsMustNotVanishIntoWoodOnlyPrefix() {
         var parsed = RddStageBSpecParser.parseDetailed(V02_SIX_STEP_JSON);
-        assertEquals(1, parsed.specs().size(), "schema 会保留木材步");
+        assertEquals(2, parsed.specs().size(), "schema 保留木材与采石两步");
         assertEquals(4, parsed.skippedRequired().size(), "四个 item_crafted 用 asset_key 的 MAIN 步是必需丢弃");
         var normalized = RddPlanGuard.normalizeConditions(parsed.specs());
         var filtered = RddPlanGuard.filterSubtasks(normalized,
                 "立足开局：徒手砍树取原木→木板→木棍→木镐；用木镐在附近地表挖6个石头，做出石镐+石斧即停手",
                 Map.of());
-        assertEquals(1, filtered.allowed().size(), "当前 filter 只剩木材前缀（反例事实）");
         assertTrue(RddDecomposer.stageBPublished(parsed, filtered).isEmpty(),
                 "必需步骤被丢弃后不能把木材前缀当整级发布");
     }
@@ -721,7 +720,7 @@ class RddPlanGuardTest {
 
     @Test
     void fullyLegalPlanStillPublishes() {
-        var parsed = RddStageBSpecParser.parseDetailed({"subtasks":[{"description":"砍树取原木","condition":{"type":"inventory","group":"wood","minimum":6},"node_type":"MAIN"},{"description":"合成木棍","condition":{"type":"item_crafted","item":"minecraft:stick","minimum":4},"node_type":"MAIN"}]});
+        var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"合成木棍\",\"condition\":{\"type\":\"item_crafted\",\"item\":\"minecraft:stick\",\"minimum\":4},\"node_type\":\"MAIN\"}]}");
         assertTrue(parsed.skippedRequired().isEmpty());
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of());
         assertEquals(2, RddDecomposer.stageBPublished(parsed, filtered).size());
@@ -729,14 +728,14 @@ class RddPlanGuardTest {
 
     @Test
     void optionalUpgradeTrimIsStillLegal() {
-        var parsed = RddStageBSpecParser.parseDetailed({"subtasks":[{"description":"砍树取原木","condition":{"type":"inventory","group":"wood","minimum":6},"node_type":"MAIN"},{"description":"合成钻石镐","condition":{"type":"item_crafted","item":"minecraft:diamond_pickaxe","minimum":1},"node_type":"MAIN"}]});
+        var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"合成钻石镐\",\"condition\":{\"type\":\"item_crafted\",\"item\":\"minecraft:diamond_pickaxe\",\"minimum\":1},\"node_type\":\"MAIN\"}]}");
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of());
         assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered).size(), "未获要求的可选升级仍可裁剪");
     }
 
     @Test
     void dailySkipIsNotARequiredDrop() {
-        var parsed = RddStageBSpecParser.parseDetailed({"subtasks":[{"description":"砍树取原木","condition":{"type":"inventory","group":"wood","minimum":6},"node_type":"MAIN"},{"description":"每日巡检农田","condition":{"type":"item_crafted","asset_key":"minecraft:wheat","minimum":1},"node_type":"DAILY"}]});
+        var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"每日巡检农田\",\"condition\":{\"type\":\"item_crafted\",\"asset_key\":\"minecraft:wheat\",\"minimum\":1},\"node_type\":\"DAILY\"}]}");
         assertTrue(parsed.skippedRequired().isEmpty(), "DAILY 的 schema 跳过不是必需丢弃");
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of());
         assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered).size());
@@ -744,7 +743,7 @@ class RddPlanGuardTest {
 
     @Test
     void heldAssetsAreReusedNotRequiredDrops() {
-        var parsed = RddStageBSpecParser.parseDetailed({"subtasks":[{"description":"合成木棍","condition":{"type":"inventory","asset_key":"minecraft:stick","minimum":4},"node_type":"MAIN"}]});
+        var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"合成木棍\",\"condition\":{\"type\":\"inventory\",\"asset_key\":\"minecraft:stick\",\"minimum\":4},\"node_type\":\"MAIN\"}]}");
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of("minecraft:stick", 4));
         assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered).size(), "已持有复用仍发布");
     }

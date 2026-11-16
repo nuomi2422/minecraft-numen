@@ -345,6 +345,10 @@ final class RddPlanGuard {
                 // A mixed preparation/dangerous action cannot lose its prerequisite while a tail installs.
                 if (preparationStep(spec.description()) && toolMissing.stream().anyMatch(g -> g.startsWith("护甲")))
                     return new Filtered(List.of(), List.copyOf(dropped), List.copyOf(reused));
+                // 2026-11-17 V02：必需 MAIN 步骤的工具前提也不能静默消失后只装可完成前缀。
+                if (requiredDrop(spec)) {
+                    return new Filtered(List.of(), List.copyOf(dropped), List.copyOf(reused));
+                }
                 continue;
             }
             List<String> gaps = predicateGaps(spec);
@@ -354,9 +358,7 @@ final class RddPlanGuard {
                         + (spec.description() == null ? "" : spec.description()));
                 // 2026-11-17 V02：必需 MAIN 步骤不能静默消失后只装可完成前缀；
                 // 回到既有有界空计划恢复。可选升级/维护类仍按原策略裁剪。
-                if (spec.nodeType() == NodeType.MAIN
-                        && !RddPlanningPolicy.optionalAsset(assetKeyOf(spec))
-                        && !looksMaintenance(spec.description())) {
+                if (requiredDrop(spec)) {
                     return new Filtered(List.of(), List.copyOf(dropped), List.copyOf(reused));
                 }
                 continue;
@@ -397,6 +399,13 @@ final class RddPlanGuard {
             }
         }
         return new Filtered(List.copyOf(normalized), dropped, reused);
+    }
+
+    /** Required = MAIN and not an optional upgrade/maintenance trim; dropping it must not install a prefix. */
+    private static boolean requiredDrop(SubtaskSpec spec) {
+        return spec.nodeType() == NodeType.MAIN
+                && !RddPlanningPolicy.optionalAsset(assetKeyOf(spec))
+                && !looksMaintenance(spec.description());
     }
 
     /** 2026-11-08: repeating care/harvest steps are DAILY; one-off construction stays MAIN. */
