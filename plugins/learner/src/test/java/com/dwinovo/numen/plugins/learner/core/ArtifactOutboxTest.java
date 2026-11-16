@@ -229,6 +229,46 @@ class ArtifactOutboxTest {
         assertEquals(0, ob.pending(ArtifactOutbox.Kind.AC_SCRIPT).size());
     }
 
+    // ── 共享遍历的契约：排序、坏文件、MAX_SCAN 按入选结果截（f640 收敛后的直接行为控）──
+
+    @Test
+    void pending_ordersByCompanionThenFile_regardlessOfWriteOrder() {
+        ArtifactOutbox ob = new ArtifactOutbox(tmp("order1"));
+        // 先写 B 再写 A：目录必须按同伴排序，不受写入顺序影响
+        ob.submit(ArtifactOutbox.Kind.AC_SCRIPT, B, "r", "m-b", "n", "body-b");
+        ob.submit(ArtifactOutbox.Kind.AC_SCRIPT, A, "r", "m-c", "n", "body-c");
+        ob.submit(ArtifactOutbox.Kind.AC_SCRIPT, A, "r", "m-a", "n", "body-a");
+        List<JsonObject> pending = ob.pending(ArtifactOutbox.Kind.AC_SCRIPT);
+        assertEquals(3, pending.size());
+        assertEquals(A.toString(), pending.get(0).get("companion_id").getAsString());
+        assertEquals("m-a", pending.get(0).get("memo_id").getAsString());
+        assertEquals("m-c", pending.get(1).get("memo_id").getAsString());
+        assertEquals(B.toString(), pending.get(2).get("companion_id").getAsString());
+        // list 与 pending 共用同一遍历：全 PENDING 时顺序必须一致
+        List<String> p = pending.stream().map(o -> o.get("_path").getAsString()).toList();
+        List<String> l = ob.list(ArtifactOutbox.Kind.AC_SCRIPT).stream()
+                .map(o -> o.get("_path").getAsString()).toList();
+        assertEquals(p, l);
+    }
+
+    @Test
+    void pending_capsAtMaxScan_byIncludedResults_notScannedFiles() {
+        ArtifactOutbox ob = new ArtifactOutbox(tmp("cap1"));
+        // 先放 3 个非 PENDING 且文件名排在最前：它们被扫描但不该占 200 名额
+        for (int i = 0; i < 3; i++) {
+            ArtifactOutbox.Delivery d = ob.submit(ArtifactOutbox.Kind.AC_SCRIPT, A, "r",
+                    "0rej-" + i, "n", "rej-body-" + i);
+            ob.mark(d.artifactId(), ArtifactOutbox.Status.REJECTED, "x", null);
+        }
+        for (int i = 0; i < ArtifactOutbox.MAX_SCAN + 5; i++) {
+            ob.submit(ArtifactOutbox.Kind.AC_SCRIPT, B, "r", "m-" + i, "n", "body-" + i);
+        }
+        assertEquals(ArtifactOutbox.MAX_SCAN, ob.pending(ArtifactOutbox.Kind.AC_SCRIPT).size(),
+                "上限按『入选结果数』截；被拒文件不占名额");
+        assertEquals(ArtifactOutbox.MAX_SCAN, ob.list(ArtifactOutbox.Kind.AC_SCRIPT).size(),
+                "list 无状态过滤，也按自身结果数截到上限");
+    }
+
     /** 每个用例一个干净目录：重跑不许被上一轮的残留影响（残留会伪装成「重复提交」）。 */
     private static Path tmp(String name) {
         Path p = Path.of(System.getProperty("java.io.tmpdir"), "rdd-outbox-test", name);
