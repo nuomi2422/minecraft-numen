@@ -401,9 +401,12 @@ final class RddPlanGuard {
         return new Filtered(List.copyOf(normalized), dropped, reused);
     }
 
-    /** Required = MAIN and not an optional upgrade/maintenance trim; dropping it must not install a prefix. */
+    /** Required = MAIN and not an optional (condition.optional / optional asset / maintenance) trim. */
     private static boolean requiredDrop(SubtaskSpec spec) {
+        Object opt = spec.condition() == null ? null : spec.condition().get("optional");
+        boolean optional = Boolean.TRUE.equals(opt);
         return spec.nodeType() == NodeType.MAIN
+                && !optional
                 && !RddPlanningPolicy.optionalAsset(assetKeyOf(spec))
                 && !looksMaintenance(spec.description());
     }

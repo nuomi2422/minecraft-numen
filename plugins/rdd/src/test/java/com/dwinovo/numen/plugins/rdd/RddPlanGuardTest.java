@@ -728,7 +728,7 @@ class RddPlanGuardTest {
 
     @Test
     void optionalUpgradeTrimIsStillLegal() {
-        var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"合成钻石镐\",\"condition\":{\"type\":\"item_crafted\",\"item\":\"minecraft:diamond_pickaxe\",\"minimum\":1},\"node_type\":\"MAIN\"}]}");
+        var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"合成钻石镐\",\"condition\":{\"type\":\"item_crafted\",\"item\":\"minecraft:diamond_pickaxe\",\"minimum\":1,\"optional\":true},\"node_type\":\"MAIN\"}]}");
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of());
         assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered).size(), "未获要求的可选升级仍可裁剪");
     }

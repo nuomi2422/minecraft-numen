@@ -80,10 +80,17 @@ final class RddStageBSpecParser {
         return new Parsed(out, skippedRequired);
     }
 
-    /** Missing/default node_type = MAIN; explicit DAILY/SIDE are optional trims, not required drops. */
+    /** Required = MAIN and not an explicit condition.optional; DAILY/SIDE are optional trims too. */
     private static boolean requiredStep(JsonObject candidate) {
         NodeType type = parseNodeType(candidate);
-        return type == null || type == NodeType.MAIN;
+        if (type != null && type != NodeType.MAIN) {
+            return false;
+        }
+        JsonObject cond = candidate.has("condition") && candidate.get("condition").isJsonObject()
+                ? candidate.getAsJsonObject("condition") : null;
+        boolean optional = cond != null && cond.has("optional") && cond.get("optional").isJsonPrimitive()
+                && cond.getAsJsonPrimitive("optional").isBoolean() && cond.get("optional").getAsBoolean();
+        return !optional;
     }
 
     private static String describe(JsonObject candidate) {
