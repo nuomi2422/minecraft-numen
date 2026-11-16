@@ -40,16 +40,32 @@ class RddRiskGateExceptionThrottleTest {
     }
 
     @Test
-    void enabledRiskGateSkipsNormalObservationButFailsClosedForHighRisk() {
-        boolean original = RddDetector.riskGateActive();
-        try {
-            RddDetector.setRiskGateEnabled(true);
-            assertTrue(RddDetector.riskGateAllows(null, "原地待命"),
-                    "NORMAL 不应触碰观测，空同伴也放行");
-            assertFalse(RddDetector.riskGateAllows(null, "进入下界挖矿"),
-                    "高风险的空同伴背包观测失败必须拒绝，遥测失败也不改变裁决");
-        } finally {
-            RddDetector.setRiskGateEnabled(original);
-        }
+    void enabledRiskGateSkipsNormalObservationButFailsClosedForHighRisk() throws Exception {
+        // The plugin unit-test runtime has no Minecraft ServerPlayer; exercise the real
+        // pure guard and separately pin the real adapter delegation below, not a fake body.
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        com.dwinovo.numen.rdd.policy.RiskGateGuard.Facts failing = level -> {
+            calls.incrementAndGet();
+            throw new IllegalStateException("observation unavailable");
+        };
+        assertTrue(com.dwinovo.numen.rdd.policy.RiskGateGuard.decide(
+                com.dwinovo.numen.rdd.policy.RiskGate.levelForText("原地待命"), failing).allowed());
+        org.junit.jupiter.api.Assertions.assertEquals(0, calls.get(), "NORMAL must not sample");
+        var denied = com.dwinovo.numen.rdd.policy.RiskGateGuard.decide(
+                com.dwinovo.numen.rdd.policy.RiskGate.levelForText("进入下界挖矿"), failing);
+        assertFalse(denied.allowed(), "risky observation failure must deny");
+        org.junit.jupiter.api.Assertions.assertEquals(1, calls.get());
+        org.junit.jupiter.api.Assertions.assertEquals("gate_exception", denied.reason());
+        var root = java.nio.file.Path.of("").toAbsolutePath();
+        while (root != null && !java.nio.file.Files.isDirectory(root.resolve("plugins/rdd/src/main/java"))) root = root.getParent();
+        assertTrue(root != null, "candidate source tree required");
+        String admission = java.nio.file.Files.readString(root.resolve(
+                "plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddRiskAdmission.java"));
+        String detector = java.nio.file.Files.readString(root.resolve(
+                "plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddDetector.java"));
+        assertTrue(detector.contains("return RddRiskAdmission.riskGateAllows(ap, primaryDescription);"));
+        assertTrue(admission.contains("RiskGateGuard.decide(level, lv ->"));
+        assertTrue(admission.contains("return applyGateDecision(ap, primaryDescription, level, decision, inv);"));
+        assertTrue(admission.contains("return decision.allowed();"));
     }
 }
