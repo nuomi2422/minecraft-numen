@@ -505,10 +505,6 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
         r.strike(victim.getId());
     }
 
-    private boolean targetRecovering() {
-        return target instanceof LivingEntity living && living.hurtTime > 0;
-    }
-
     /**
      * 弓战斗:<b>和剑战斗同一段走位</b>,只是环换了一副(内沿 {@link #BOW_MIN_DISTANCE},
      * 外沿射程)。带内导航自然到达、她停下来,这时才拉弓 —— "什么时候该站定"不用另写。

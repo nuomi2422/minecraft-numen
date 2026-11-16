@@ -175,13 +175,6 @@ public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTask
     }
 
 
-    /** In-ladder nav causes the reposition rung handles; anything else kicks straight back to the LLM. */
-    private static boolean repositionable(FailureType type) {
-        return type == FailureType.NO_PATH || type == FailureType.TERRAIN_BLOCKED
-                || type == FailureType.BOXED_IN
-                || type == FailureType.OUT_OF_REACH || type == FailureType.STANCE_DUD;
-    }
-
     /**
      * 右键一块床 = 把这块床绑成自己的重生点（显式绑床，无需睡觉；同伴在替主人铺自己的基地）。
      * 原版右键床在无睡眠意图时不写重生点，所以这一步在这里显式补上。仅 USE + 单击床生效。

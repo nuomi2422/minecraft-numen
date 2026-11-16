@@ -507,18 +507,6 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
     private static final int MAX_STANCE_DEPTH = 6;
 
 
-    /**
-     * Is {@code pos} also part of what we're mining — a known target, a filter
-     * match, or already-broken air continuing the shaft? Used by {@link #coalesce}
-     * to read the vertical run a block sits in.
-     */
-    private boolean internalMiningGoal(CalculationContext ctx, BlockPos pos) {
-        if (knownOres.contains(pos)) return true;
-        net.minecraft.world.level.block.state.BlockState state = player.level().getBlockState(pos);
-        if (state.isAir()) return true;                         // broken-out air still continues the run
-        return r.targets.contains(state.getBlock()) && plausibleToBreak(ctx, pos, state);
-    }
-
     /** 该目标格是否真挖得成:挖穿成本无穷(挖不动/被硬禁)、禁挖判定命中
      *  (冰/虫蚀/贴液体/悬空落沙邻格/世界边界)、或上下都被基岩封死的都不算。
      *  包内共享:goto 的 FIND 候选入册走同一道剪枝。 */
