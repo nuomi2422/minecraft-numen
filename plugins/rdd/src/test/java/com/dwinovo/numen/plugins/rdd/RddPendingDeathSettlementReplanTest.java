@@ -23,7 +23,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * 2026-11-16: restored PENDING mainline -> drop-only terminal -> actual host replan consumer.
  * Parent-provided evidence: rdd.jsonl:1114-1125, session80640ed6/server58020cbe, death50,
  * PENDING r3/v17 -> confirmed loss -> replanRequested=true -> old r3-0 kickoff ACTIVE/v18.
- * WHY not startCurrent first: that bypasses the broken PENDING admission window.
+ * RECOVERING adjacency: monitor4bcb48b0/server7c72e557, ccfd r4, rdd.jsonl:519/534/537-547:
+ * confirmed loss reported requested=false/deferred=false before recovery resumed the unchanged plan.
+ * WHY not resume first: that bypasses the broken PENDING/RECOVERING settlement window.
  * Like AdvancementTickWiringRegressionTest, compile current source excerpts, not copied rules.
  * Run this exact class only through the parent's managed plugins:rdd TestOnly slot.
  * MC IO, observation, risk permission and post-admission LLM dispatch are bounded shell seams;
@@ -48,8 +50,12 @@ class RddPendingDeathSettlementReplanTest {
         String admission = between(detector,
                 "            // 刚推进到新的当前一级(PENDING/WAITING)：",
                 "            SubtaskStatus status = chain.currentSubtaskStatus();");
+        String recovering = between(detector, "                        @Override public void recovering() {",
+                "                        @Override public void timeoutResumed(long waitedMs) {");
         String failed = between(detector, "            if (status == SubtaskStatus.FAILED) {",
                 "            if (status != SubtaskStatus.RUNNING) {");
+        String downstream = admission + " SubtaskStatus status = chain.currentSubtaskStatus(); Map<String,Integer> counts = countInventory(ap);\n"
+                + failed + " if (status == SubtaskStatus.RUNNING) trace.add(\"kickoff_boundary\"); }\n";
         String generated = HEAD
                 + between(source, "    private record DeferredDeath(", "    /** 同伴自绑床位")
                 + detectorExcerpt(between(detector, "    private final Map<UUID, RetryState> retries", "    /** 已因"))
@@ -66,8 +72,16 @@ class RddPendingDeathSettlementReplanTest {
                 + method(source, "    static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation, String soldierHint) {")
                 + request
                 + "public static void detectorAdmission(UUID id) { var ap = new Body(id); var rt = runtime(id); var chain = rt.chain(); var ps = chain.primaryStatus();\n"
-                + admission + " SubtaskStatus status = chain.currentSubtaskStatus(); Map<String,Integer> counts = countInventory(ap);\n"
-                + failed + " if (status == SubtaskStatus.RUNNING) trace.add(\"kickoff_boundary\"); }\n"
+                + downstream
+                // Keep the original ten cases on their existing downstream harness. Only the new case
+                // needs the earlier recovery admission; both use the identical source-loaded downstream.
+                + "public static void detectorRecoveryAdmission(UUID id) { var ap = new Body(id); var rt = runtime(id); var chain = rt.chain(); var ps = chain.primaryStatus();\n"
+                + "if (RddMainlineAdmission.stopAfterObservation(id, chain, ps, replanEnteredAt, System::currentTimeMillis, new RddMainlineAdmission.Host() {\n"
+                + "public boolean sideActive() { return false; } public void activeProposal() {} public boolean negotiate() { return false; } public void watchParked() {}\n"
+                + recovering
+                + "public void timeoutResumed(long waitedMs) { throw new AssertionError(\"not a timeout fixture\"); }\n"
+                + "public void timeoutFailed(long waitedMs, RuntimeException failure) { throw new AssertionError(failure); } })) return;\n"
+                + downstream
                 + detectorExcerpt(method(detector, "    private void parkRejectedDeathReplan("))
                 + detectorExcerpt(method(detector, "    private void handleSubtaskFailure("))
                 + method(detector, "    private static boolean hasBackupEquipment(")
@@ -90,7 +104,7 @@ class RddPendingDeathSettlementReplanTest {
                 location(TaskChain.class) + File.pathSeparator + location(Gson.class) + File.pathSeparator
                         + System.getProperty("java.class.path"), "-d", output.toString(), java.toString(), dispatcher.toString()));
         // Compile the pure host dependencies unchanged, alongside the source-excerpt host.
-        for (String name : List.of("RddReplanTransition", "RddSurvivalGate", "DeathPreparationHost", "RddDeathLedgerStore", "RddOptionalFood"))
+        for (String name : List.of("RddReplanTransition", "RddSurvivalGate", "DeathPreparationHost", "RddDeathLedgerStore", "RddOptionalFood", "RddMainlineAdmission"))
             args.add(plugin.resolve(name + ".java").toString());
         var compiler = ToolProvider.getSystemJavaCompiler();
         assertNotNull(compiler, "JDK required by existing source-excerpt test pattern");
@@ -137,6 +151,44 @@ class RddPendingDeathSettlementReplanTest {
                 () -> assertFalse(trace().contains("kickoff_boundary"), "consume deferred loss before old kickoff boundary"),
                 () -> assertEquals(1, budget().values().stream().mapToInt(Integer::intValue).sum(), "only one accepted request spends budget"),
                 () -> assertEquals(f.history, f.chain.satisfiedStages(), "completed historical stages remain facts"));
+    }
+
+    @Test void restoredRecoveringLossMustBeConsumedOnceAfterRealResumeBeforeOldKickoff(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir, List.of(), true);
+        String recovering = f.chain.toJson();
+        String owner = f.chain.chainInstanceId();
+        String primary = f.chain.currentPrimary().id(), step = f.chain.currentSubtask().id();
+        int attempts = f.chain.attempts(step);
+        f.finishDropsAbsent();
+        assertEquals(recovering, f.chain.toJson(), "RECOVERING settlement must not resume or rewrite the mainline");
+        assertEquals(0, number("plannerRequests"), "the ordinary ACTIVE guard still refuses RECOVERING");
+        assertTrue(budget().isEmpty(), "no accepted request before live recovery admission");
+        assertEquals(false, event("death_recovery_settled").get("replanRequested"));
+        assertEquals(true, event("side_task_resumed_mainline").get("mainlineResumed"));
+
+        // No test-side resume: original Admission invokes the source-loaded Detector recovering callback,
+        // then the existing ACTIVE check/consume runs before the unchanged old kickoff boundary.
+        call("detectorRecoveryAdmission", new Class<?>[]{UUID.class}, f.id);
+        assertNotNull(event("chain_recovering"), "the real Detector recovering callback must run");
+        // Expected business RED on b650: requested 0, ACTIVE, old kickoff reached, accepted budget 0.
+        assertAll("confirmed loss must survive RECOVERING until real live recovery admission",
+                () -> assertEquals(true, event("death_recovery_settled").get("replanDeferred"), "retain the rejected loss request"),
+                () -> assertEquals(1, number("plannerRequests"), "accepted death replan must reach planner exactly once"),
+                () -> assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus(), "do not resume the unchanged old plan"),
+                () -> assertFalse(trace().contains("kickoff_boundary"), "consume after real resume but before old kickoff"),
+                () -> assertEquals(1, budget().values().stream().mapToInt(Integer::intValue).sum(), "only one accepted request spends budget"),
+                () -> assertSame(f.chain, runtimes().get(f.id).chain(), "do not replace the restored owner"),
+                () -> assertEquals(owner, f.chain.chainInstanceId()),
+                () -> assertEquals(primary, f.chain.currentPrimary().id()),
+                () -> assertEquals(step, f.chain.currentSubtask().id()),
+                () -> assertEquals(3, f.chain.planRevision(), "request alone does not install a new plan"),
+                () -> assertEquals(attempts, f.chain.attempts(step), "recovery is not a fresh old-plan attempt"),
+                () -> assertEquals(f.history, f.chain.satisfiedStages(), "completed historical stages remain facts"));
+        call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
+        assertFalse(consume(f.id, f.chain));
+        assertEquals(1, number("plannerRequests"));
+        assertEquals(1, budget().values().stream().mapToInt(Integer::intValue).sum());
+        assertFalse(trace().contains("kickoff_boundary"));
     }
 
     @Test void activeDropOnlyLossStillRequestsExactlyOnceWithoutRewritingHistory(@TempDir Path dir) throws Exception {
@@ -301,18 +353,30 @@ class RddPendingDeathSettlementReplanTest {
         Map<String, Object> terminal;
 
         Fixture(Path dir) throws Exception { this(dir, List.of()); }
-        Fixture(Path dir, List<AssetRequirement> waitFor) throws Exception {
+        Fixture(Path dir, List<AssetRequirement> waitFor) throws Exception { this(dir, waitFor, false); }
+        Fixture(Path dir, List<AssetRequirement> waitFor, boolean recovering) throws Exception {
             TaskChain initial = new TaskChain(new Goal("g", "finish trade", List.of(
                     new PrimaryGoal("prior", "verified shelter", List.of(Subtask.hardCoded("prior-0", "shelter", Map.of("minimum", 1)))),
                     new PrimaryGoal("trade", "collect emeralds", List.of(Subtask.hardCoded("trade-r3-0", "old emerald plan",
                             Map.of("asset_key", "minecraft:emerald", "minimum", 20))), waitFor))));
             initial.settlePrimaryByFact("prior", "bounded fixture world fact", true);
             for (int rev = 0; rev < 3; rev++) initial.nextPlanRevision();
+            if (recovering) {
+                assertTrue(initial.activateCurrentWithSnapshot(PlanningAssetSnapshot.from(Map.of(), new AssetRegistry())));
+                assertEquals(PrimaryGoalStatus.ACTIVE, initial.primaryStatus());
+                assertEquals(SubtaskStatus.RUNNING, initial.currentSubtaskStatus());
+            }
             Path saved = dir.resolve("chain.json");
             Files.writeString(saved, initial.toJson(), StandardCharsets.UTF_8);
             chain = TaskChain.fromJson(Files.readString(saved, StandardCharsets.UTF_8));
-            assertEquals(PrimaryGoalStatus.PENDING, chain.primaryStatus());
-            assertEquals(SubtaskStatus.PENDING, chain.currentSubtaskStatus());
+            if (recovering) {
+                assertEquals(PrimaryGoalStatus.RECOVERING, chain.primaryStatus(), "fromJson, not a hand-set status");
+                assertEquals(SubtaskStatus.RUNNING, chain.currentSubtaskStatus());
+                assertEquals(initial.chainInstanceId(), chain.chainInstanceId());
+            } else {
+                assertEquals(PrimaryGoalStatus.PENDING, chain.primaryStatus());
+                assertEquals(SubtaskStatus.PENDING, chain.currentSubtaskStatus());
+            }
             assertEquals(3, chain.planRevision());
             history = Set.copyOf(chain.satisfiedStages());
             assertFalse(history.isEmpty());
@@ -435,6 +499,7 @@ class RddPendingDeathSettlementReplanTest {
                 static final int MAX_REPLAN_PER_PRIMARY = 3, MAX_NEGOTIATION_REPLANS_PER_PRIMARY = 3;
                 static final Map<UUID,RddRuntime> RUNTIMES = new HashMap<>();
                 static final Map<String,Integer> REPLAN_COUNTS = new HashMap<>();
+                static final Map<UUID,Long> replanEnteredAt = new HashMap<>();
                 static final Set<String> DEATH_SETTLEMENTS = new HashSet<>();
                 static final List<String> trace = new ArrayList<>();
                 static final Map<String,Map<String,Object>> events = new HashMap<>();
@@ -445,7 +510,7 @@ class RddPendingDeathSettlementReplanTest {
                 static final Log LOG = new Log();
                 public static void reset(UUID id,RddRuntime rt,Path dir) {
                     RUNTIMES.clear(); RUNTIMES.put(id,rt); REPLAN_COUNTS.clear(); DEATH_SETTLEMENTS.clear();
-                    trace.clear(); events.clear(); plannerRequests=0; ledgerDir=dir;
+                    trace.clear(); events.clear(); replanEnteredAt.clear(); plannerRequests=0; ledgerDir=dir;
                     DEFERRED_DEATH_REPLANS.clear(); retries.clear(); gapParked.clear();
                     riskAllowed=true; captureFails=false; observedCounts=Map.of();
                 }
