@@ -319,7 +319,7 @@ final class RddDecomposer {
                         RddPlanningKnowledge.publishPolicy(companionId, "fallback",
                                 RddPlanningPolicy.appliedRules(objective, "fallback"),
                                 guarded.dropped(), guarded.reused());
-                        List<SubtaskSpec> specs = stageBPublished(parsed, guarded);
+                        List<SubtaskSpec> specs = stageBPublished(parsed, guarded, objective);
                         if (specs.isEmpty()) {
                             LOG.warn("[rdd] 分解结果不可用，回落占位链");
                             done.accept(fallbackGoal(companionId, objective));
@@ -419,9 +419,17 @@ final class RddDecomposer {
      * 走既有有界空计划恢复；不能把可完成的木材前缀当整级成功安装。
      * 可选升级裁剪、已持有复用、DAILY 跳过仍按原 allowed 发布。
      */
-    static List<SubtaskSpec> stageBPublished(RddStageBSpecParser.Parsed parsed, RddPlanGuard.Filtered guarded) {
-        if (!parsed.skippedRequired().isEmpty()) {
-            return List.of();
+    static List<SubtaskSpec> stageBPublished(RddStageBSpecParser.Parsed parsed, RddPlanGuard.Filtered guarded,
+                                             String objective) {
+        boolean optionalAllowed = RddPlanningPolicy.optionalAllowed(objective);
+        for (var skipped : parsed.skippedRequired()) {
+            boolean unrequestedOptional = !optionalAllowed
+                    && RddPlanningPolicy.optionalAsset(skipped.assetKey());
+            if (skipped.nodeType() == com.dwinovo.numen.rdd.api.NodeType.MAIN
+                    && !unrequestedOptional
+                    && !RddPlanGuard.looksMaintenance(skipped.description())) {
+                return List.of();
+            }
         }
         return guarded.allowed();
     }
@@ -452,7 +460,7 @@ final class RddDecomposer {
                         RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
                                 RddPlanningPolicy.appliedRules(themeObjective, "stage_b"),
                                 guarded.dropped(), guarded.reused());
-                        done.accept(stageBPublished(parsed, guarded));
+                        done.accept(stageBPublished(parsed, guarded, themeObjective));
                     });
                 },
                 () -> done.accept(List.of())));

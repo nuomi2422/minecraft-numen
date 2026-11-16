@@ -38,11 +38,13 @@ final class RddStageBSpecParser {
      * 与 {@link #parse} 同一套解码；额外报告被 schema 丢弃的<b>必需</b>（MAIN）步骤，
      * 让发布侧不能把"六步缩成木材前缀"当成功安装。可选/DAILY 的跳过不算必需丢弃。
      */
-    record Parsed(List<SubtaskSpec> specs, List<String> skippedRequired) {}
+    record Skipped(String description, String assetKey, NodeType nodeType) {}
+
+    record Parsed(List<SubtaskSpec> specs, List<Skipped> skippedRequired) {}
 
     static Parsed parseDetailed(String argumentsJson) {
         List<SubtaskSpec> out = new ArrayList<>();
-        List<String> skippedRequired = new ArrayList<>();
+        List<Skipped> skippedRequired = new ArrayList<>();
         if (argumentsJson == null || argumentsJson.isBlank()) {
             return new Parsed(out, skippedRequired);
         }
@@ -61,21 +63,21 @@ final class RddStageBSpecParser {
                 if (spec == null && candidate.has("condition") && candidate.get("condition").isJsonObject()
                         && candidate.getAsJsonObject("condition").has("slots")) {
                     LOG.warn("[rdd] 显式 slots 步骤非法，整批拒绝，不能丢掉装备要求后发布前缀");
-                    return new Parsed(List.of(), List.of("显式 slots 步骤非法，整批拒绝"));
+                    return new Parsed(List.of(), List.of(new Skipped("显式 slots 步骤非法，整批拒绝", "", NodeType.MAIN)));
                 }
                 if (spec != null) {
                     out.add(spec);
                     if (out.size() > RddChainFactory.MAX_SUBTASKS) {
                         LOG.warn("[rdd] 分解合法步骤超过上限 {}，整批拒绝，不能将截断前缀当完整计划", RddChainFactory.MAX_SUBTASKS);
-                        return new Parsed(List.of(), List.of("合法步骤超过上限"));
+                        return new Parsed(List.of(), List.of(new Skipped("合法步骤超过上限", "", NodeType.MAIN)));
                     }
                 } else if (requiredStep(candidate)) {
-                    skippedRequired.add(describe(candidate));
+                    skippedRequired.add(skipped(candidate));
                 }
             }
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 分解 JSON 解析失败: {}", ex.toString());
-            return new Parsed(List.of(), List.of("分解 JSON 解析失败: " + ex));
+            return new Parsed(List.of(), List.of(new Skipped("分解 JSON 解析失败", "", NodeType.MAIN)));
         }
         return new Parsed(out, skippedRequired);
     }
@@ -93,9 +95,16 @@ final class RddStageBSpecParser {
         return !optional;
     }
 
-    private static String describe(JsonObject candidate) {
+    /** Keep raw identity so the publication side can reuse the one existing policy classification. */
+    private static Skipped skipped(JsonObject candidate) {
         String d = candidate.has("description") ? candidate.get("description").getAsString() : "";
-        return d == null || d.isBlank() ? "(未命名必需步骤)" : d;
+        JsonObject cond = candidate.has("condition") && candidate.get("condition").isJsonObject()
+                ? candidate.getAsJsonObject("condition") : null;
+        String assetKey = cond != null && cond.has("asset_key") && cond.get("asset_key").isJsonPrimitive()
+                ? cond.get("asset_key").getAsString() : "";
+        NodeType type = parseNodeType(candidate);
+        return new Skipped(d == null || d.isBlank() ? "(未命名必需步骤)" : d, assetKey,
+                type == null ? NodeType.MAIN : type);
     }
 
     /**

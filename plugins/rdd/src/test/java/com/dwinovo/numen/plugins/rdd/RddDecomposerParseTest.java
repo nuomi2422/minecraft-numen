@@ -520,7 +520,7 @@ class RddDecomposerParseTest {
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()),
                 "立足开局：徒手砍树取原木→木板→木棍→木镐；用木镐在附近地表挖6个石头，做出石镐+石斧即停手",
                 java.util.Map.of());
-        var published = RddDecomposer.stageBPublished(parsed, filtered);
+        var published = RddDecomposer.stageBPublished(parsed, filtered, "立足开局：徒手砍树取原木→木板→木棍→木镐；用木镐在附近地表挖6个石头，做出石镐+石斧即停手");
         assertTrue(published.isEmpty(), "不能发布木材前缀");
         assertRealEmptyFallback(published);
     }

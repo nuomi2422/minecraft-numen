@@ -712,7 +712,7 @@ class RddPlanGuardTest {
         var filtered = RddPlanGuard.filterSubtasks(normalized,
                 "立足开局：徒手砍树取原木→木板→木棍→木镐；用木镐在附近地表挖6个石头，做出石镐+石斧即停手",
                 Map.of());
-        assertTrue(RddDecomposer.stageBPublished(parsed, filtered).isEmpty(),
+        assertTrue(RddDecomposer.stageBPublished(parsed, filtered, "立足开局：徒手砍树取原木→木板→木棍→木镐；用木镐在附近地表挖6个石头，做出石镐+石斧即停手").isEmpty(),
                 "必需步骤被丢弃后不能把木材前缀当整级发布");
     }
 
@@ -722,21 +722,21 @@ class RddPlanGuardTest {
     void unrequestedOptionalAssetTrimIsStillLegal() {
         var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"备齐书架与 32 块方块\",\"condition\":{\"type\":\"inventory\",\"asset_key\":\"minecraft:bookshelf\",\"minimum\":1},\"node_type\":\"MAIN\"}]}");
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of());
-        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered).size(), "主人未点名时可裁剪书架");
+        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered, "石器开局").size(), "主人未点名时可裁剪书架");
     }
 
     @Test
     void requestedOptionalAssetDropIsRequired() {
         var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"备齐书架与 32 块方块\",\"condition\":{\"type\":\"inventory\",\"asset_key\":\"minecraft:bookshelf\",\"minimum\":1},\"node_type\":\"MAIN\"}]}");
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "做书架", Map.of());
-        assertTrue(RddDecomposer.stageBPublished(parsed, filtered).isEmpty(), "主人明确点名书架时不能当可选裁剪");
+        assertTrue(RddDecomposer.stageBPublished(parsed, filtered, "做书架").isEmpty(), "主人明确点名书架时不能当可选裁剪");
     }
 
     @Test
     void explicitOptionalBooleanTrueIsTrimmed() {
         var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"用钻石镐去挖 10 块黑曜石\",\"condition\":{\"type\":\"inventory\",\"asset_key\":\"minecraft:obsidian\",\"minimum\":10,\"optional\":true},\"node_type\":\"MAIN\"}]}");
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of());
-        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered).size(), "显式 optional=true 可裁剪");
+        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered, "石器开局").size(), "显式 optional=true 可裁剪");
     }
 
     @Test
@@ -744,13 +744,42 @@ class RddPlanGuardTest {
         var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"type\":\"inventory\",\"group\":\"wood\",\"minimum\":6},\"node_type\":\"MAIN\"},{\"description\":\"每日巡检农田\",\"condition\":{\"type\":\"item_crafted\",\"asset_key\":\"minecraft:wheat\",\"minimum\":1},\"node_type\":\"DAILY\"}]}");
         assertTrue(parsed.skippedRequired().isEmpty(), "DAILY 的 schema 跳过不是必需丢弃");
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of());
-        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered).size());
+        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered, "石器开局").size());
     }
 
     @Test
     void heldAssetsAreReusedNotRequiredDrops() {
         var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"合成木棍\",\"condition\":{\"type\":\"inventory\",\"asset_key\":\"minecraft:stick\",\"minimum\":4},\"node_type\":\"MAIN\"}]}");
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of("minecraft:stick", 4));
-        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered).size(), "已持有复用仍发布");
+        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered, "石器开局").size(), "已持有复用仍发布");
+    }
+
+    // ---------- 2026-11-17 V02 误拒/必需丢弃成对控 ----------
+
+    @Test
+    void unrequestedOptionalAssetSchemaDropDoesNotClearLegalWood() {
+        var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"group\":\"wood\",\"minimum\":6}},{\"description\":\"合成书架\",\"condition\":{\"type\":\"item_crafted\",\"asset_key\":\"minecraft:bookshelf\",\"minimum\":1},\"node_type\":\"MAIN\"}]}");
+        assertEquals(1, parsed.specs().size(), "schema 仍严格拒书架错误字段");
+        var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of());
+        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered, "石器开局").size(),
+                "未点名的可选资产被 schema 拒时，不能清空合法 wood");
+        assertTrue(RddDecomposer.stageBPublished(parsed, filtered, "做书架").isEmpty(),
+                "同输入明确点名书架时必须拒绝不完整整批");
+    }
+
+    @Test
+    void toolGapRequiredDropIsRejected() {
+        var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"group\":\"wood\",\"minimum\":6}},{\"description\":\"用钻石镐去挖 10 块黑曜石\",\"condition\":{\"type\":\"inventory\",\"asset_key\":\"minecraft:obsidian\",\"minimum\":10},\"node_type\":\"MAIN\"}]}");
+        var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of());
+        assertTrue(RddDecomposer.stageBPublished(parsed, filtered, "石器开局").isEmpty(),
+                "必需工具依赖被 guard 丢弃时不能发布前缀");
+    }
+
+    @Test
+    void predicateGapRequiredDropIsRejected() {
+        var parsed = RddStageBSpecParser.parseDetailed("{\"subtasks\":[{\"description\":\"砍树取原木\",\"condition\":{\"group\":\"wood\",\"minimum\":6}},{\"description\":\"备齐铁剑与 32 块方块\",\"condition\":{\"type\":\"inventory\",\"asset_key\":\"minecraft:iron_sword\",\"minimum\":1},\"node_type\":\"MAIN\"}]}");
+        var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()), "石器开局", Map.of());
+        assertTrue(RddDecomposer.stageBPublished(parsed, filtered, "石器开局").isEmpty(),
+                "必需判据缺口被 guard 丢弃时不能发布前缀");
     }
 }
