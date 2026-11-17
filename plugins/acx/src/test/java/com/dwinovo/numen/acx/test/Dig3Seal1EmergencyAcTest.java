@@ -438,7 +438,7 @@ class Dig3Seal1EmergencyAcTest {
     void asyncDigPausesThenResumesWithVarsIntact() throws Exception {
         World w = new World();
         w.asyncDig = true;
-        Fake.Probe probe = new Fake.Probe().thenDone(new java.util.LinkedHashMap<>());
+        FakePorts.Probe probe = new FakePorts.Probe().thenDone(new java.util.LinkedHashMap<>());
         Fake.Registry reg = registry(w, probe);
         AcxLoader.LoadReport report = load(reg);
         AcxDefinition def = report.registered().get("dig3_seal1_emergency");
