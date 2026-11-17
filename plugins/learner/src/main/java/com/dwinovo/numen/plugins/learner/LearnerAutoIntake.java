@@ -390,10 +390,12 @@ final class LearnerAutoIntake {
                     "reason", "read_failed: " + safe(e), "cursor", cursor));
             return 0;
         }
-        if (events == null || events.isEmpty()) {
-            saveCursor(generation, pull.nextCursor);   // 没有新事件也推进游标（文件被截短时防卡死）
-            return 0;
+        if (events == null || !pull.readable) {
+            saveCursor(generation, pull.nextCursor);
+            return 0; // Failed/unknown reads retain the old refusal; delivery scanning remains outside.
         }
+        // A readable empty stream or consumed tail still services the existing deferred/TTL tail.
+        // Keep its original cursor save, shared scan budget and delivery ordering below.
 
         // 事件归属的同伴各建一条队列；无主事件如实跳过（手动口同款三态）
         int rejected = 0, unattributed = 0, stormSuppressed = 0, dupSkipped = 0, queueFull = 0, stale = 0;
