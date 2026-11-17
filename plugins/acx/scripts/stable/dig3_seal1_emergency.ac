@@ -1,7 +1,7 @@
 {
   "name": "dig3_seal1_emergency",
   "version": "1",
-  "description": "临时急用（非规范）：向下挖三格，身体落到坑底，向上封一格，检查四周缺口补上；只有身体确实在坑内且封顶方块后态成立才算成功。",
+  "description": "临时急用（非规范，唯一例外）：向下挖三格（就地、不赴工地）→身体真正落到坑底（同列同层、头脚两格为空）→把坑体四壁三个高度的缺口逐格补实→就地封住头顶一格→最后一段纯取证：身体位置、头脚两格、地板、封盖、四壁 12 格全部用真实方块后态复核。任何一条不成立都 FAIL。",
   "tags": [
     "shelter",
     "emergency",
@@ -10,10 +10,10 @@
     "temporary",
     "挖三填一"
   ],
-  "planner_notes": "2026-11-17 主人拍摄急用的唯一临时例外。只调用现成积木(build/goto/inspect_block/get_self_status/safety_check)，不新增AC框架、不瞬移刷物。执行顺序：读自身→安全检查→挖脚下三格→goto到坑底→复查身体Y确实下降→在头顶上一层封盖→再读身体与检查实际方块后态→四周同级缺口air则补。任一步失败按fail走，绝不在身体没进坑时报成功。",
-  "safety_notes": "液体/脚下无实体直接fail；封盖只在身体已确认入坑且inspect证实后态后继续；人在坑外时守卫先失败。临时债，后续删除或规范化替换。",
+  "planner_notes": "2026-11-17 主人拍摄急用的唯一临时例外。只用现成积木 build / goto / inspect_block / get_self_status 与引擎内置 guard / set / if / for。几何：脚所在格 y0=floor(pos.y)；挖 y0-1/y0-2/y0-3；落底后脚在 y0-3(y3)、占 y3/y2 两格；封盖格 y0-1(y1)；真正的地板是 y0-4(y4)。三个 build 全部带 in_place 锚点{ x, z, feet_y, head_y }（就地施工：不赴工地、不巡走，且每格放置前在服务端线程核身体仍在该列该高度、头脚两格为空、目标格不压身体），这样封盖这一笔在动作内部就被限制成『原地放一格』，不会先把她挪出坑再封。顺序：先入坑并核实同列同层→补四壁(y1/y2/y3 四向共 12 格)→复核身体仍在坑内且顶格为空→就地封顶→末段纯取证（read3 + 头脚/地板/封盖 + 四壁 12 格）后再判定，末段不插任何异步步，所以证据不会被 resume 丢掉。坐标与材料都存 $var（只有 vars 跨断点存活）。封盖/补缝每格吃 1 件 fill_block（默认 minecraft:dirt，可用 input.cap_block / input.fill_block 换），材料不够时 build 整单拒绝、一块都不放。",
+  "safety_notes": "拒绝条件：不是站立/脚下有岩浆或水/要挖的三格含基岩或液体/真正地板(y0-4)不是实体/身体没落到同列同层/头脚两格不空/四壁缺口补不死/顶格不是空的/封盖后态不是指定方块。安全判据一律用正向证明（is_solid==true、is_air==true、block==cap_block），不用『某某==false』这种缺失即放行的写法。就地能力是该窄依赖：build 新增的 in_place（BuildInPlace）挡在放置之前，身体一旦被挪出坑或被堵就整单失败、不放置；CANCELLED 由探针按 UNKNOWN 处理 30s 后转 FAIL，不会冒充成功。临时债：后续删除或规范化重做，不作为新 AC 框架模板。",
   "limits": {
-    "max_steps": 64,
+    "max_steps": 120,
     "max_timeout_ms": 300000
   },
   "steps": [
@@ -35,8 +35,25 @@
         "z0": {
           "$calc": "floor($read0.position.z)"
         },
-        "cap_y": {
+        "y1": {
           "$calc": "floor($read0.position.y) - 1"
+        },
+        "y2": {
+          "$calc": "floor($read0.position.y) - 2"
+        },
+        "y3": {
+          "$calc": "floor($read0.position.y) - 3"
+        },
+        "y4": {
+          "$calc": "floor($read0.position.y) - 4"
+        },
+        "cap_block": {
+          "$from": "$input.cap_block",
+          "$default": "minecraft:dirt"
+        },
+        "fill_block": {
+          "$from": "$input.fill_block",
+          "$default": "minecraft:dirt"
         }
       }
     },
@@ -46,7 +63,7 @@
       "params": {
         "x": "$var.x0",
         "y": {
-          "$calc": "$var.y0 - 1"
+          "$calc": "$var.y1"
         },
         "z": "$var.z0"
       }
@@ -57,7 +74,7 @@
       "params": {
         "x": "$var.x0",
         "y": {
-          "$calc": "$var.y0 - 2"
+          "$calc": "$var.y2"
         },
         "z": "$var.z0"
       }
@@ -68,25 +85,46 @@
       "params": {
         "x": "$var.x0",
         "y": {
-          "$calc": "$var.y0 - 3"
+          "$calc": "$var.y3"
         },
         "z": "$var.z0"
       }
     },
     {
-      "id": "guard_safe",
+      "id": "peek4",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y4"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "guard_pre",
       "block": "guard",
       "params": {
         "on_fail": "fail",
-        "message": "脚下三格有液体或缺可挖实体，拒绝挖三填一",
+        "message": "此处不适合挖三填一（不是站立/有液体/含基岩/真正地板不是实体）",
         "conditions": [
           {
-            "field": "$read0.in_lava",
+            "field": "$read0.on_ground",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$peek1.unbreakable",
             "op": "==",
             "value": false
           },
           {
-            "field": "$read0.in_water",
+            "field": "$peek2.unbreakable",
+            "op": "==",
+            "value": false
+          },
+          {
+            "field": "$peek3.unbreakable",
             "op": "==",
             "value": false
           },
@@ -106,7 +144,7 @@
             "value": false
           },
           {
-            "field": "$peek3.is_solid",
+            "field": "$peek4.is_solid",
             "op": "==",
             "value": true
           }
@@ -114,42 +152,64 @@
       }
     },
     {
-      "id": "dig1",
+      "id": "dig",
       "block": "build",
       "params": {
-        "op": "set",
-        "block_id": "minecraft:air",
-        "x": "$var.x0",
-        "y": {
-          "$calc": "$var.y0 - 1"
+        "in_place": {
+          "x": {
+            "$calc": "$var.x0"
+          },
+          "z": {
+            "$calc": "$var.z0"
+          },
+          "feet_y": {
+            "$calc": "$var.y0"
+          },
+          "head_y": {
+            "$calc": "$var.y0 + 1"
+          }
         },
-        "z": "$var.z0"
-      }
-    },
-    {
-      "id": "dig2",
-      "block": "build",
-      "params": {
-        "op": "set",
-        "block_id": "minecraft:air",
-        "x": "$var.x0",
-        "y": {
-          "$calc": "$var.y0 - 2"
-        },
-        "z": "$var.z0"
-      }
-    },
-    {
-      "id": "dig3",
-      "block": "build",
-      "params": {
-        "op": "set",
-        "block_id": "minecraft:air",
-        "x": "$var.x0",
-        "y": {
-          "$calc": "$var.y0 - 3"
-        },
-        "z": "$var.z0"
+        "ops": [
+          {
+            "op": "set",
+            "block_id": "minecraft:air",
+            "x": {
+              "$calc": "$var.x0"
+            },
+            "y": {
+              "$calc": "$var.y1"
+            },
+            "z": {
+              "$calc": "$var.z0"
+            }
+          },
+          {
+            "op": "set",
+            "block_id": "minecraft:air",
+            "x": {
+              "$calc": "$var.x0"
+            },
+            "y": {
+              "$calc": "$var.y2"
+            },
+            "z": {
+              "$calc": "$var.z0"
+            }
+          },
+          {
+            "op": "set",
+            "block_id": "minecraft:air",
+            "x": {
+              "$calc": "$var.x0"
+            },
+            "y": {
+              "$calc": "$var.y3"
+            },
+            "z": {
+              "$calc": "$var.z0"
+            }
+          }
+        ]
       }
     },
     {
@@ -160,11 +220,12 @@
           "$calc": "$var.x0 + 0.5"
         },
         "y": {
-          "$calc": "$var.y0 - 3"
+          "$calc": "$var.y3"
         },
         "z": {
           "$calc": "$var.z0 + 0.5"
-        }
+        },
+        "ignore_failure": true
       }
     },
     {
@@ -173,23 +234,404 @@
       "params": {}
     },
     {
+      "id": "inspect_feet",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y3"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "inspect_head",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y2"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
       "id": "guard_in_pit",
       "block": "guard",
       "params": {
         "on_fail": "fail",
-        "message": "身体没有落到坑底，禁止封盖",
+        "message": "身体没有真正落到坑底（必须同列、脚在 y3、头脚两格为空），禁止任何封堵",
         "conditions": [
           {
-            "field": "$read1.position.y",
-            "op": "<=",
+            "field": {
+              "$calc": "floor($read1.position.x)"
+            },
+            "op": "==",
             "value": {
-              "$calc": "$var.y0 - 2"
+              "$calc": "$var.x0"
             }
           },
           {
-            "field": "$read1.in_lava",
+            "field": {
+              "$calc": "floor($read1.position.z)"
+            },
             "op": "==",
-            "value": false
+            "value": {
+              "$calc": "$var.z0"
+            }
+          },
+          {
+            "field": {
+              "$calc": "($read1.position.y - $var.y3)"
+            },
+            "op": "<=",
+            "value": 0.2
+          },
+          {
+            "field": {
+              "$calc": "($read1.position.y - $var.y3)"
+            },
+            "op": ">=",
+            "value": -0.2
+          },
+          {
+            "field": "$inspect_feet.is_air",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$inspect_head.is_air",
+            "op": "==",
+            "value": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "gap_seal",
+      "block": "for",
+      "params": {
+        "list": [
+          {
+            "x": {
+              "$calc": "$var.x0 - 1"
+            },
+            "y": {
+              "$calc": "$var.y1"
+            },
+            "z": {
+              "$calc": "$var.z0"
+            }
+          },
+          {
+            "x": {
+              "$calc": "$var.x0 + 1"
+            },
+            "y": {
+              "$calc": "$var.y1"
+            },
+            "z": {
+              "$calc": "$var.z0"
+            }
+          },
+          {
+            "x": {
+              "$calc": "$var.x0"
+            },
+            "y": {
+              "$calc": "$var.y1"
+            },
+            "z": {
+              "$calc": "$var.z0 - 1"
+            }
+          },
+          {
+            "x": {
+              "$calc": "$var.x0"
+            },
+            "y": {
+              "$calc": "$var.y1"
+            },
+            "z": {
+              "$calc": "$var.z0 + 1"
+            }
+          },
+          {
+            "x": {
+              "$calc": "$var.x0 - 1"
+            },
+            "y": {
+              "$calc": "$var.y2"
+            },
+            "z": {
+              "$calc": "$var.z0"
+            }
+          },
+          {
+            "x": {
+              "$calc": "$var.x0 + 1"
+            },
+            "y": {
+              "$calc": "$var.y2"
+            },
+            "z": {
+              "$calc": "$var.z0"
+            }
+          },
+          {
+            "x": {
+              "$calc": "$var.x0"
+            },
+            "y": {
+              "$calc": "$var.y2"
+            },
+            "z": {
+              "$calc": "$var.z0 - 1"
+            }
+          },
+          {
+            "x": {
+              "$calc": "$var.x0"
+            },
+            "y": {
+              "$calc": "$var.y2"
+            },
+            "z": {
+              "$calc": "$var.z0 + 1"
+            }
+          },
+          {
+            "x": {
+              "$calc": "$var.x0 - 1"
+            },
+            "y": {
+              "$calc": "$var.y3"
+            },
+            "z": {
+              "$calc": "$var.z0"
+            }
+          },
+          {
+            "x": {
+              "$calc": "$var.x0 + 1"
+            },
+            "y": {
+              "$calc": "$var.y3"
+            },
+            "z": {
+              "$calc": "$var.z0"
+            }
+          },
+          {
+            "x": {
+              "$calc": "$var.x0"
+            },
+            "y": {
+              "$calc": "$var.y3"
+            },
+            "z": {
+              "$calc": "$var.z0 - 1"
+            }
+          },
+          {
+            "x": {
+              "$calc": "$var.x0"
+            },
+            "y": {
+              "$calc": "$var.y3"
+            },
+            "z": {
+              "$calc": "$var.z0 + 1"
+            }
+          }
+        ],
+        "as": "gap"
+      },
+      "children": [
+        {
+          "id": "gap_peek",
+          "block": "inspect_block",
+          "params": {
+            "x": {
+              "$calc": "$var.gap.x"
+            },
+            "y": {
+              "$calc": "$var.gap.y"
+            },
+            "z": {
+              "$calc": "$var.gap.z"
+            }
+          }
+        },
+        {
+          "id": "gap_if",
+          "block": "if",
+          "params": {
+            "condition": {
+              "field": "$gap_peek.is_solid",
+              "op": "==",
+              "value": false
+            }
+          },
+          "children": [
+            {
+              "id": "gap_fill",
+              "block": "build",
+              "params": {
+                "ops": [
+                  {
+                    "op": "set",
+                    "block_id": "$var.fill_block",
+                    "x": {
+                      "$calc": "$var.gap.x"
+                    },
+                    "y": {
+                      "$calc": "$var.gap.y"
+                    },
+                    "z": {
+                      "$calc": "$var.gap.z"
+                    }
+                  }
+                ],
+                "in_place": {
+                  "x": {
+                    "$calc": "$var.x0"
+                  },
+                  "z": {
+                    "$calc": "$var.z0"
+                  },
+                  "feet_y": {
+                    "$calc": "$var.y3"
+                  },
+                  "head_y": {
+                    "$calc": "$var.y2"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "gap_peek2",
+          "block": "inspect_block",
+          "params": {
+            "x": {
+              "$calc": "$var.gap.x"
+            },
+            "y": {
+              "$calc": "$var.gap.y"
+            },
+            "z": {
+              "$calc": "$var.gap.z"
+            }
+          }
+        },
+        {
+          "id": "gap_guard",
+          "block": "guard",
+          "params": {
+            "on_fail": "fail",
+            "message": "坑体缺口补不死（该格仍不是实体方块），不能算封好",
+            "condition": {
+              "field": "$gap_peek2.is_solid",
+              "op": "==",
+              "value": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "read2",
+      "block": "get_self_status",
+      "params": {}
+    },
+    {
+      "id": "inspect_feet2",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y3"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "inspect_head2",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y2"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "inspect_cap_target",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y1"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "guard_ready",
+      "block": "guard",
+      "params": {
+        "on_fail": "fail",
+        "message": "封盖前复核不成立：身体不在坑内，或身体两格被堵，或顶格已经不是空的",
+        "conditions": [
+          {
+            "field": {
+              "$calc": "floor($read2.position.x)"
+            },
+            "op": "==",
+            "value": {
+              "$calc": "$var.x0"
+            }
+          },
+          {
+            "field": {
+              "$calc": "floor($read2.position.z)"
+            },
+            "op": "==",
+            "value": {
+              "$calc": "$var.z0"
+            }
+          },
+          {
+            "field": {
+              "$calc": "($read2.position.y - $var.y3)"
+            },
+            "op": "<=",
+            "value": 0.2
+          },
+          {
+            "field": {
+              "$calc": "($read2.position.y - $var.y3)"
+            },
+            "op": ">=",
+            "value": -0.2
+          },
+          {
+            "field": "$inspect_feet2.is_air",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$inspect_head2.is_air",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$inspect_cap_target.is_air",
+            "op": "==",
+            "value": true
           }
         ]
       }
@@ -198,15 +640,39 @@
       "id": "cap",
       "block": "build",
       "params": {
-        "op": "set",
-        "block_id": "minecraft:dirt",
-        "x": "$var.x0",
-        "y": "$var.cap_y",
-        "z": "$var.z0"
+        "ops": [
+          {
+            "op": "set",
+            "block_id": "$var.cap_block",
+            "x": {
+              "$calc": "$var.x0"
+            },
+            "y": {
+              "$calc": "$var.y1"
+            },
+            "z": {
+              "$calc": "$var.z0"
+            }
+          }
+        ],
+        "in_place": {
+          "x": {
+            "$calc": "$var.x0"
+          },
+          "z": {
+            "$calc": "$var.z0"
+          },
+          "feet_y": {
+            "$calc": "$var.y3"
+          },
+          "head_y": {
+            "$calc": "$var.y2"
+          }
+        }
       }
     },
     {
-      "id": "read2",
+      "id": "read3",
       "block": "get_self_status",
       "params": {}
     },
@@ -215,21 +681,241 @@
       "block": "inspect_block",
       "params": {
         "x": "$var.x0",
-        "y": "$var.cap_y",
+        "y": {
+          "$calc": "$var.y1"
+        },
         "z": "$var.z0"
       }
     },
     {
-      "id": "guard_cap",
+      "id": "inspect_feet3",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y3"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "inspect_head3",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y2"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "inspect_floor3",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y4"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "wall1",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 - 1"
+        },
+        "y": {
+          "$calc": "$var.y1"
+        },
+        "z": {
+          "$calc": "$var.z0"
+        }
+      }
+    },
+    {
+      "id": "wall2",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 + 1"
+        },
+        "y": {
+          "$calc": "$var.y1"
+        },
+        "z": {
+          "$calc": "$var.z0"
+        }
+      }
+    },
+    {
+      "id": "wall3",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0"
+        },
+        "y": {
+          "$calc": "$var.y1"
+        },
+        "z": {
+          "$calc": "$var.z0 - 1"
+        }
+      }
+    },
+    {
+      "id": "wall4",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0"
+        },
+        "y": {
+          "$calc": "$var.y1"
+        },
+        "z": {
+          "$calc": "$var.z0 + 1"
+        }
+      }
+    },
+    {
+      "id": "wall5",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 - 1"
+        },
+        "y": {
+          "$calc": "$var.y2"
+        },
+        "z": {
+          "$calc": "$var.z0"
+        }
+      }
+    },
+    {
+      "id": "wall6",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 + 1"
+        },
+        "y": {
+          "$calc": "$var.y2"
+        },
+        "z": {
+          "$calc": "$var.z0"
+        }
+      }
+    },
+    {
+      "id": "wall7",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0"
+        },
+        "y": {
+          "$calc": "$var.y2"
+        },
+        "z": {
+          "$calc": "$var.z0 - 1"
+        }
+      }
+    },
+    {
+      "id": "wall8",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0"
+        },
+        "y": {
+          "$calc": "$var.y2"
+        },
+        "z": {
+          "$calc": "$var.z0 + 1"
+        }
+      }
+    },
+    {
+      "id": "wall9",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 - 1"
+        },
+        "y": {
+          "$calc": "$var.y3"
+        },
+        "z": {
+          "$calc": "$var.z0"
+        }
+      }
+    },
+    {
+      "id": "wall10",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 + 1"
+        },
+        "y": {
+          "$calc": "$var.y3"
+        },
+        "z": {
+          "$calc": "$var.z0"
+        }
+      }
+    },
+    {
+      "id": "wall11",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0"
+        },
+        "y": {
+          "$calc": "$var.y3"
+        },
+        "z": {
+          "$calc": "$var.z0 - 1"
+        }
+      }
+    },
+    {
+      "id": "wall12",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0"
+        },
+        "y": {
+          "$calc": "$var.y3"
+        },
+        "z": {
+          "$calc": "$var.z0 + 1"
+        }
+      }
+    },
+    {
+      "id": "guard_final",
       "block": "guard",
       "params": {
         "on_fail": "fail",
-        "message": "封盖方块后态不成立或身体不在坑内",
+        "message": "收尾取证不成立：封盖/地板/四壁后态不对，或身体已不在坑内，或身体两格被堵",
         "conditions": [
           {
             "field": "$inspect_cap.block",
             "op": "==",
-            "value": "minecraft:dirt"
+            "value": "$var.cap_block"
+          },
+          {
+            "field": "$inspect_cap.is_solid",
+            "op": "==",
+            "value": true
           },
           {
             "field": "$inspect_cap.is_air",
@@ -237,167 +923,119 @@
             "value": false
           },
           {
-            "field": "$read2.position.y",
-            "op": "<=",
+            "field": "$inspect_floor3.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$inspect_floor3.is_air",
+            "op": "==",
+            "value": false
+          },
+          {
+            "field": "$inspect_feet3.is_air",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$inspect_head3.is_air",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": {
+              "$calc": "floor($read3.position.x)"
+            },
+            "op": "==",
             "value": {
-              "$calc": "$var.y0 - 2"
+              "$calc": "$var.x0"
             }
+          },
+          {
+            "field": {
+              "$calc": "floor($read3.position.z)"
+            },
+            "op": "==",
+            "value": {
+              "$calc": "$var.z0"
+            }
+          },
+          {
+            "field": {
+              "$calc": "($read3.position.y - $var.y3)"
+            },
+            "op": "<=",
+            "value": 0.2
+          },
+          {
+            "field": {
+              "$calc": "($read3.position.y - $var.y3)"
+            },
+            "op": ">=",
+            "value": -0.2
+          },
+          {
+            "field": "$wall1.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$wall2.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$wall3.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$wall4.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$wall5.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$wall6.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$wall7.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$wall8.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$wall9.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$wall10.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$wall11.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$wall12.is_solid",
+            "op": "==",
+            "value": true
           }
         ]
       }
-    },
-    {
-      "id": "inspect_n",
-      "block": "inspect_block",
-      "params": {
-        "x": "$var.x0",
-        "y": "$var.cap_y",
-        "z": {
-          "$calc": "$var.z0 - 1"
-        }
-      }
-    },
-    {
-      "id": "inspect_s",
-      "block": "inspect_block",
-      "params": {
-        "x": "$var.x0",
-        "y": "$var.cap_y",
-        "z": {
-          "$calc": "$var.z0 + 1"
-        }
-      }
-    },
-    {
-      "id": "inspect_w",
-      "block": "inspect_block",
-      "params": {
-        "x": {
-          "$calc": "$var.x0 - 1"
-        },
-        "y": "$var.cap_y",
-        "z": "$var.z0"
-      }
-    },
-    {
-      "id": "inspect_e",
-      "block": "inspect_block",
-      "params": {
-        "x": {
-          "$calc": "$var.x0 + 1"
-        },
-        "y": "$var.cap_y",
-        "z": "$var.z0"
-      }
-    },
-    {
-      "id": "if_n",
-      "block": "if",
-      "params": {
-        "condition": {
-          "field": "$inspect_n.is_air",
-          "op": "==",
-          "value": true
-        }
-      },
-      "children": [
-        {
-          "id": "fill_n",
-          "block": "build",
-          "params": {
-            "op": "set",
-            "block_id": "minecraft:dirt",
-            "x": "$var.x0",
-            "y": "$var.cap_y",
-            "z": {
-              "$calc": "$var.z0 - 1"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": "if_s",
-      "block": "if",
-      "params": {
-        "condition": {
-          "field": "$inspect_s.is_air",
-          "op": "==",
-          "value": true
-        }
-      },
-      "children": [
-        {
-          "id": "fill_s",
-          "block": "build",
-          "params": {
-            "op": "set",
-            "block_id": "minecraft:dirt",
-            "x": "$var.x0",
-            "y": "$var.cap_y",
-            "z": {
-              "$calc": "$var.z0 + 1"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": "if_w",
-      "block": "if",
-      "params": {
-        "condition": {
-          "field": "$inspect_w.is_air",
-          "op": "==",
-          "value": true
-        }
-      },
-      "children": [
-        {
-          "id": "fill_w",
-          "block": "build",
-          "params": {
-            "op": "set",
-            "block_id": "minecraft:dirt",
-            "x": {
-              "$calc": "$var.x0 - 1"
-            },
-            "y": "$var.cap_y",
-            "z": "$var.z0"
-          }
-        }
-      ]
-    },
-    {
-      "id": "if_e",
-      "block": "if",
-      "params": {
-        "condition": {
-          "field": "$inspect_e.is_air",
-          "op": "==",
-          "value": true
-        }
-      },
-      "children": [
-        {
-          "id": "fill_e",
-          "block": "build",
-          "params": {
-            "op": "set",
-            "block_id": "minecraft:dirt",
-            "x": {
-              "$calc": "$var.x0 + 1"
-            },
-            "y": "$var.cap_y",
-            "z": "$var.z0"
-          }
-        }
-      ]
-    },
-    {
-      "id": "final_read",
-      "block": "get_self_status",
-      "params": {}
     }
   ]
 }

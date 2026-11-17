@@ -55,6 +55,15 @@ public final class BuildTaskRecord extends TaskRecord {
      * 分支伪装成可配开关——读代码的人会以为它有别的取值。
      */
     public final boolean replaceBlockEntities;
+    /**
+     * 就地施工闸门（工具层的 {@code in_place} 参数）。{@code null} = 老行为：
+     * 先赴工地、施工中巡走，放置前不核身体位置。非 null 时任务就地开工、不巡走，
+     * 且每格放置前核对身体仍在那个坑里，不满足就整单失败、不放置。
+     *
+     * <p>与 {@link #autoLight} 同性质：工具专用可选开关，由工具层在构造后设置，
+     * 不进任何既有构造器的参数表（那会把一个窄用途开关摊到所有调用点）。</p>
+     */
+    public BuildInPlace inPlace;
     public final boolean replaceExisting;
     /** 是否消耗背包材料:随能力画像而定(创造免耗材,生存逐格真扣)。 */
     public final boolean consumeMaterials;

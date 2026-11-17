@@ -7,6 +7,7 @@ import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.ToolArgs;
 import com.dwinovo.numen.core.build.BuildPalette;
 import com.dwinovo.numen.core.build.BuildShapes;
+import com.dwinovo.numen.core.task.build.BuildInPlace;
 import com.dwinovo.numen.core.task.build.BuildTaskRecord;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.google.gson.JsonObject;
@@ -47,7 +48,7 @@ public final class BuildTool implements NumenTool {
                 TRAVEL_ALLOWANCE_TICKS + (long) (build * TIMEOUT_SLACK));
     }
 
-    private record Args(List<OpSpec> ops, Boolean replace_existing) {}
+    private record Args(List<OpSpec> ops, Boolean replace_existing, Map<String, Object> in_place) {}
     private record OpSpec(String op, String block_id, Boolean hollow,
                           Integer x, Integer y, Integer z,
                           Integer x1, Integer y1, Integer z1,
@@ -228,6 +229,22 @@ public final class BuildTool implements NumenTool {
         rootProps.put("replace_existing", Map.of(
                 "type", "boolean",
                 "description", "Optional, default true. Clear wrong non-protected blocks at requested cells."));
+        // 就地施工（唯一用途受限的窄开关）：不赴工地、不巡走，且每格放置前核对身体仍在锚点坑里。
+        // 给「人已经在自己挖的坑里、要在头顶就地封一格」这类动作使用；不设 = 老行为。
+        rootProps.put("in_place", Map.of(
+                "type", List.of("object", "null"),
+                "description", "Optional. Work IN PLACE at an anchor instead of walking to the site: "
+                        + "no travel, no wandering, and before EVERY cell is placed the body must still be "
+                        + "in that column at that feet height with its two body cells free, and the target "
+                        + "cell must not be one of them — otherwise the whole order fails without placing. "
+                        + "Use it when the body's position matters (e.g. sealing the roof of the hole she "
+                        + "is standing in). Omit for the normal behaviour.",
+                "properties", Map.of(
+                        "x", Map.of("type", "integer", "description", "Anchor column X (the body's block X)."),
+                        "z", Map.of("type", "integer", "description", "Anchor column Z."),
+                        "feet_y", Map.of("type", "integer", "description", "Feet block Y the body must be at (±0.2)."),
+                        "head_y", Map.of("type", "integer", "description", "Head block Y (feet_y + 1).")),
+                "required", List.of("x", "z", "feet_y", "head_y")));
 
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("type", "object");
@@ -288,9 +305,41 @@ public final class BuildTool implements NumenTool {
         // 由任务预检并逐项报缺(见 BuildCompanionTask 的 checkMaterials)。
         boolean consume = !com.dwinovo.numen.core.WorkProfile.of(companion).freeMaterials();
         long timeout = timeoutTicksFor(targets.size(), consume);
-        setTask(companion, new BuildTaskRecord(toolCallId,
-                ctx(toolCallId, companion).deadline(timeout), targets, replaceExisting,
-                consume), args, reply);
+        BuildTaskRecord record = new BuildTaskRecord(toolCallId,
+                ctx(toolCallId, companion).deadline(timeout), targets, replaceExisting, consume);
+        if (parsed.in_place() != null) {
+            record.inPlace = parseInPlace(parsed.in_place());
+        }
+        setTask(companion, record, args, reply);
+    }
+
+    /** {@code in_place} 解析：四个整数，头必须紧挨脚（身体只有两格高）。 */
+    private static BuildInPlace parseInPlace(Map<String, Object> m) {
+        Integer x = intArg(m.get("x"));
+        Integer z = intArg(m.get("z"));
+        Integer feet = intArg(m.get("feet_y"));
+        Integer head = intArg(m.get("head_y"));
+        if (x == null || z == null || feet == null || head == null) {
+            throw new IllegalArgumentException("in_place needs integer x, z, feet_y, head_y");
+        }
+        if (head != feet + 1) {
+            throw new IllegalArgumentException("in_place head_y must be feet_y + 1 (the body is two cells tall)");
+        }
+        return new BuildInPlace(x, z, feet, head);
+    }
+
+    private static Integer intArg(Object v) {
+        if (v instanceof Number n) {
+            return n.intValue();
+        }
+        if (v instanceof String s) {
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return null;
     }
 
     /** Shared production parser seam: auto_light is exactly one standalone op, not a blueprint. */

@@ -111,6 +111,12 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     private LongOpenHashSet observedCompleted;
     private boolean providerRegistered;
     private Phase phase = Phase.TRAVEL;
+    /**
+     * {@code in_place} 闸门拒绝时的目标格。下一 tick 直接整单失败 —— 绝不在身体已经被挪出
+     * 锚点坑之后继续往下放。留成字段而不是立刻抛，是因为放置发生在遍历中途，
+     * 失败要走任务自己的 fail() 才能把 stop_reason 交代清楚。
+     */
+    private BlockPos inPlaceViolation;
     private int travelTicks;
 
     /** 工地包围盒(全体目标格的最小/最大角)。 */
@@ -320,12 +326,20 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         rebuildOrder();
         computePace();
         passStartCompleted = r.completed();
-        phase = Phase.TRAVEL;
+        // in_place：就地开工，不赴工地（TRAVEL 会寻路到工地外沿，可能把身体带离锚点坑）
+        phase = r.inPlace != null ? Phase.WORK : Phase.TRAVEL;
     }
 
     @Override
     protected TaskState onTick() {
         if (lighting != null) return tickLighting();
+        if (inPlaceViolation != null) {
+            // 就地闸门已经拒绝过一次：此刻身体不在锚点坑里（或被挪走了），
+            // 立刻整单失败并说明是哪一格，绝不"先封再检查"。
+            fail("in_place anchor broken before placing " + inPlaceViolation.toShortString()
+                    + " (body no longer in the anchored column/height)", FailureType.NO_PATH);
+            return TaskState.FAILED;
+        }
         // 蹲姿由施工分支决定并保持:落位只在批次刻发生,若每 tick 复位成站立,
         // 中间那些刻就会把她弹起来,看起来是在抖而不是在蹲着贴边放。
         player.setShiftKeyDown(phase == Phase.WORK && show.crouching());
@@ -405,6 +419,24 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     // ------------------------------------------------------------------
     // 二、施工
     // ------------------------------------------------------------------
+
+    /**
+     * in_place 判据：身体仍在锚点同列同高 + 头脚两格是空的 + 目标格不压身体。
+     *
+     * <p>头脚两格必须是空气，是为了确认「她此刻真的站在这两格空位里」——如果头脚被堵，
+     * 说明世界已经变了（有人往里放了方块），这时封顶就是在给一个不成立的姿势背书。</p>
+     */
+    private boolean inPlaceAllows(BlockPos target) {
+        BuildInPlace p = r.inPlace;
+        if (!p.anchorsBodyAt(player.getX(), player.getY(), player.getZ())) {
+            return false;
+        }
+        if (p.clipsBodyCell(target.getX(), target.getY(), target.getZ())) {
+            return false;
+        }
+        return rules.peek(new BlockPos(p.x(), p.feetY(), p.z())).isAir()
+                && rules.peek(new BlockPos(p.x(), p.headY(), p.z())).isAir();
+    }
 
     private TaskState tickWork() {
         tickWander();
@@ -535,6 +567,14 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
      */
     private BlockState processCell(BuildTaskRecord.Target target) {
         BlockPos pos = target.pos();
+        // ═══ in_place 闸门（工具层可选窄开关）═══
+        // 位置在材料/让路/方块实体保护**之前**：不满足就地条件就整单失败，而不是先放了再回去
+        // 看身体在不在。方块放下去不可撤销，而「身体被挪出坑之后封住一个空腔」正是这个开关
+        // 要消灭的那件事，所以它必须挡在放置之前，不能靠事后核对。
+        if (r.inPlace != null && !inPlaceAllows(pos)) {
+            inPlaceViolation = pos;
+            return null;
+        }
         BlockState desired = target.desiredState();
         if (desired != null && desired.getBlock() instanceof LiquidBlock) {
             return null;   // 流体不承接:布水与排水都不做
@@ -1022,6 +1062,9 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
      * 它天生就会的事;直线步进遇到墙、树、坎就一路顶着走满时限。
      */
     private void tickWander() {
+        if (r.inPlace != null) {
+            return;   // in_place：不巡走，身体必须留在锚点坑里
+        }
         if (wanderPoints.isEmpty()) {
             return;
         }
