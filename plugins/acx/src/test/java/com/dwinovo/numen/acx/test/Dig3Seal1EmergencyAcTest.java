@@ -397,7 +397,8 @@ class Dig3Seal1EmergencyAcTest {
         AcxRunRecord rec = run(w);
 
         assertEquals(AcxStatus.FAIL, rec.status(), "封盖没成立就不能报成功: " + rec.errorMessage());
-        assertEquals("guard_cap", rec.failedStep(), "应该停在封盖后态判定上");
+        // AC 现在把封盖放在最后一笔、末段用 guard_final 一次性取证，所以停在这里
+        assertEquals("guard_final", rec.failedStep(), "应该停在末段封盖后态取证上");
         assertEquals(AIR, w.block(8, 63, 8));
         assertFalse(w.hasDirt());
         assertEquals(2, w.buildCalls, "挖 + 封盖各一次，补缝一轮都不该跑");
