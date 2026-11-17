@@ -594,8 +594,9 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
                         + ", y=" + player.getY() + ", z=" + player.getZ()
                         + "; horizontal distance " + String.format(java.util.Locale.ROOT, "%.2f",
                                 Math.sqrt(horizontalDistSqr(bx, bz))) + " blocks; "
-                        + (dy == 0 ? "same elevation (vertical offset 0 blocks)"
-                                   : "vertical offset " + (dy > 0 ? "+" : "") + dy + " blocks from target")
+                        + (dy == 0 ? "same slab-aware feet elevation as target cell Y (feet vertical offset 0 blocks)"
+                                   : "slab-aware feet vertical offset " + (dy > 0 ? "+" : "") + dy
+                                           + " blocks from target cell Y")
                         + ".";
             }
             case COLUMN -> "reached the location x=" + bx + " z=" + bz

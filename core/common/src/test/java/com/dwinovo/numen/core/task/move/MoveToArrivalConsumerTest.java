@@ -404,7 +404,7 @@ class MoveToArrivalConsumerTest {
         String message = (String) r.get("message");
         assertEquals("accepted near the requested cell 385,51,624 (not the exact cell); actual position "
                 + "x=384.4245480558926, y=51.0, z=626.3000000119209; horizontal distance 2.10 blocks; "
-                + "same elevation (vertical offset 0 blocks).", message);
+                + "same slab-aware feet elevation as target cell Y (feet vertical offset 0 blocks).", message);
         for (String forbidden : List.of("shaft", "air", "BELOW", "did NOT reach", "HORIZONTAL")) {
             assertFalse(message.contains(forbidden), forbidden);
         }
@@ -423,7 +423,7 @@ class MoveToArrivalConsumerTest {
         assertEquals(true, r.get("close")); assertEquals(false, r.get("exact"));
         assertEquals("accepted near the requested cell 385,51,624 (not the exact cell); actual position "
                 + "x=386.5, y=51.0, z=624.5; horizontal distance 1.00 blocks; "
-                + "same elevation (vertical offset 0 blocks).", r.get("message"));
+                + "same slab-aware feet elevation as target cell Y (feet vertical offset 0 blocks).", r.get("message"));
     }
 
     @Test void inclusiveVerticalSlackReportsSignedFeetOffsets() throws Exception {
@@ -434,13 +434,13 @@ class MoveToArrivalConsumerTest {
         for (var r : List.of(above, below)) {
             assertEquals(true, r.get("close")); assertEquals(false, r.get("exact"));
         }
-        assertTrue(((String) above.get("message")).endsWith("vertical offset +2 blocks from target."));
-        assertTrue(((String) below.get("message")).endsWith("vertical offset -2 blocks from target."));
+        assertTrue(((String) above.get("message")).endsWith("slab-aware feet vertical offset +2 blocks from target cell Y."));
+        assertTrue(((String) below.get("message")).endsWith("slab-aware feet vertical offset -2 blocks from target cell Y."));
         assertTrue(((String) above.get("message")).contains("y=52.5"));
         assertTrue(((String) below.get("message")).contains("y=48.5"));
         var sameFeetY = blockCopy(386.5, 50.5, 624.5, 51, true, false);
         assertEquals(true, sameFeetY.get("close"));
-        assertTrue(((String) sameFeetY.get("message")).endsWith("same elevation (vertical offset 0 blocks)."));
+        assertTrue(((String) sameFeetY.get("message")).endsWith("same slab-aware feet elevation as target cell Y (feet vertical offset 0 blocks)."));
     }
 
     @Test void oneBeyondEitherVerticalSlackEdgeStillRejectsNearSuccess() throws Exception {
