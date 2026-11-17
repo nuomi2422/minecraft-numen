@@ -65,6 +65,11 @@ class BuildInPlaceTest {
                 Map.of("x", 8, "z", 8, "feet_y", "61.5", "head_y", "62")));
     }
 
+    /**
+     * 精度边界（写清楚，别当成全十进制保证）：JSON 数字经 Gson 一律是 double，
+     * 所以 61.000000000000001 这类超出 double 精度的写法会**等于** 61 并被接受；
+     * 这里能保证的只是「double 表示下不是整数就拒」，不是十进制词法层面的严格。
+     */
     @Test
     void parserRejectsNonFiniteAndOverflow() {
         assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
@@ -84,8 +89,10 @@ class BuildInPlaceTest {
         // int 溢出边界：feet_y=MAX 时 feet+1 在 int 里绕回 MIN，会让一对不相邻的 Y 通过
         assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
                 Map.of("x", 8, "z", 8, "feet_y", Integer.MAX_VALUE, "head_y", Integer.MIN_VALUE)));
-        assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
-                Map.of("x", 8, "z", 8, "feet_y", Integer.MIN_VALUE, "head_y", Integer.MIN_VALUE + 1)));
+        // 反方向的边界必须**照常接受**：MIN / MIN+1 是合法相邻，long 判定不能把它误杀
+        assertEquals(new BuildInPlace(8, 8, Integer.MIN_VALUE, Integer.MIN_VALUE + 1),
+                BuildInPlace.parse(Map.of("x", 8, "z", 8,
+                        "feet_y", Integer.MIN_VALUE, "head_y", Integer.MIN_VALUE + 1)));
         assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse("8,8,61,62"));
         assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(null));
     }

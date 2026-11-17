@@ -69,6 +69,9 @@ public record BuildInPlace(int x, int z, int feetY, int headY) {
             throw new IllegalArgumentException("in_place." + key + " must be a number, got "
                     + v.getClass().getSimpleName());
         }
+        // 整数性是在 double 表示上判的：JSON 数字到这一步已经是 double，所以像
+        // 61.000000000000001 这种超出 double 精度的写法会等于 61 并被接受。这是
+        // JSON→double 的精度天花板，不是刻意放宽；能保证的是「明显不是整数就拒」。
         if (!Double.isFinite(d) || d != Math.rint(d)) {
             throw new IllegalArgumentException("in_place." + key + " must be a whole finite number, got " + v);
         }
