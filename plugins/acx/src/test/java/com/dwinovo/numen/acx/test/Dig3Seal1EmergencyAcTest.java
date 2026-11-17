@@ -433,69 +433,60 @@ class Dig3Seal1EmergencyAcTest {
     }
 
     /**
-     * 补缝那一单走真实异步，而且要证明「完成是封顶的前置条件」而不是「受理就算完」。
+     * 补墙那一单走真实异步，而且要证明「原任务终态是封顶的前置条件」——
+     * 同一次 run、同一个 task_id、同一个 runner，不是另起一段。
      *
-     * <p>两段：</p>
      * <ol>
-     *   <li><b>受理但没完成</b>：回执照收、世界还是空气 → 首跑必须 PAUSED，不许封顶、不许再派第二单；
-     *       这时续跑（补缝仍未落成）也<b>绝不许</b>把盖封上 —— 封盖格必须还是空气。</li>
-     *   <li><b>真的完成了</b>：世界落成、探针报完成 → 同一次 run 续跑才允许封顶，
-     *       而且补缝只派过一次（没有重派）。</li>
+     *   <li>第一单挖完落地；补墙那单回 ACCEPTED 且<b>世界还没变</b> → 首跑 PAUSED；
+     *       此时封盖格必须是空气、build 只能有 2 单（挖 + 补墙）。</li>
+     *   <li>探针仍报 RUNNING（原任务没完成）→ 续跑必须再次 PAUSED（不是 FAIL、更不是 SUCCESS），
+     *       <b>绝不封顶、绝不重派</b>（build 仍 2 单）。</li>
+     *   <li>世界真的落成（DIRT）+ 探针报 DONE → 同一次 run 再续跑 → 才允许封顶：
+     *       SUCCESS、补齐、封盖在、build 恰好 3 单。</li>
      * </ol>
      *
-     * <p>引擎语义注记：{@code for} 的游标在"这一轮开始"时就前进，续跑从下一个元素继续，
-     * 被打断那格自己的逐格复核不会重跑。所以第一段能拦住封顶的<b>不是</b>逐格 guard，
-     * 而是封盖前那次「四壁 12 格全部实心」的复核（{@code guard_ready}）——本用例钉的正是它。</p>
+     * <p>为什么这条能证"终态前置"：补墙那一步在脚本里是<b>顶层 if 里的 build</b>，
+     * 续跑会重跑这个 if，于是同一个 build 步骤会被重新询问完成探针（同一 task_id）——
+     * 而不是像 for 体那样被游标跳过。第 2 段就是"原任务没完成时不许往下走"的直接证据。</p>
      */
     @Test
     void asyncWallFillMustFinishBeforeTheCap() throws Exception {
-        // ── 第一段：受理 ≠ 完成 ─────────────────────────────────────
         World w = new World();
-        w.set(7, 62, 8, AIR);
-        w.asyncCallIndex = 2;      // 第二单（补缝）回"受理"
-        w.applyOnAccept = false;   // 而且受理这一刻世界没变
-        FakePorts.Probe probe = new FakePorts.Probe().thenRunning("still filling");
+        w.set(7, 62, 8, AIR);      // 头层西侧一个真洞
+        w.asyncCallIndex = 2;      // 第二单（补墙）回"受理"
+        w.applyOnAccept = false;   // 受理这一刻世界还是空气
+        FakePorts.Probe probe = new FakePorts.Probe()
+                .thenRunning("still filling")          // 第 1 次续跑：没完成
+                .thenDone(new java.util.LinkedHashMap<>()); // 第 2 次续跑：完成了
         Fake.Registry reg = registry(w, probe);
         AcxLoader.LoadReport report = load(reg);
         AcxDefinition def = report.registered().get("dig3_seal1_emergency");
         AcxRunner runner = AcxRunner.builder().tools(reg).catalog(report.catalog()).build();
 
+        // ① 受理：世界没变，不许封顶、不许再派
         AcxRunRecord first = runner.run(def, Map.of());
         assertEquals(AcxStatus.PAUSED, first.status(),
-                "补缝受理必须停在 PAUSED，不能报成功: " + first.errorMessage());
+                "补墙受理必须停在 PAUSED，不能报成功: " + first.errorMessage());
         assertEquals(AIR, w.block(7, 62, 8), "受理 ≠ 完成：这一刻洞还没补上");
-        assertEquals(AIR, w.block(8, 63, 8), "★ 补缝没完成前不许封顶");
+        assertEquals(AIR, w.block(8, 63, 8), "★ 补墙没完成前不许封顶");
         assertEquals(2, w.buildCalls, "受理之后不许再派第二单");
 
-        AcxRunRecord blocked = runner.resume(def, first);
-        assertNotEquals(AcxStatus.SUCCESS, blocked.status(),
-                "补缝还没落成，续跑绝不能报成功");
-        assertEquals(AIR, w.block(8, 63, 8),
-                "★ 补缝没落成时，封盖格必须还是空气（不许先封再发现）");
-        assertEquals(2, w.buildCalls, "被拦下时也不许重派补缝");
+        // ② 原任务仍 RUNNING：续跑必须再停，且不许封顶、不许重派
+        AcxRunRecord waiting = runner.resume(def, first);
+        assertEquals(AcxStatus.PAUSED, waiting.status(),
+                "原任务还在跑时，续跑只能继续等: " + waiting.errorMessage());
+        assertEquals(AIR, w.block(8, 63, 8), "★ 任务没完成就绝不许封顶（不是先封再发现）");
+        assertEquals(2, w.buildCalls, "被拦住时不许重派补墙");
 
-        // ── 第二段：真的完成后才允许封顶 ───────────────────────────
-        World w2 = new World();
-        w2.set(7, 62, 8, AIR);
-        w2.asyncCallIndex = 2;
-        w2.applyOnAccept = false;
-        FakePorts.Probe probe2 = new FakePorts.Probe()
-                .thenDone(new java.util.LinkedHashMap<>())
-                .thenDone(new java.util.LinkedHashMap<>());
-        Fake.Registry reg2 = registry(w2, probe2);
-        AcxLoader.LoadReport report2 = load(reg2);
-        AcxRunner runner2 = AcxRunner.builder().tools(reg2).catalog(report2.catalog()).build();
-
-        AcxRunRecord first2 = runner2.run(def, Map.of());
-        assertEquals(AcxStatus.PAUSED, first2.status(), "补缝受理应当先停: " + first2.errorMessage());
-
-        w2.set(7, 62, 8, DIRT);    // 后台任务此刻真的完成了
-        AcxRunRecord second2 = runner2.resume(def, first2);
-        assertEquals(AcxStatus.SUCCESS, second2.status(),
-                "补缝真的完成后续跑才该成功: " + second2.errorMessage());
-        assertEquals(DIRT, w2.block(7, 62, 8), "补缝结果必须在");
-        assertEquals(DIRT, w2.block(8, 63, 8), "补完才封顶");
-        assertEquals(3, w2.buildCalls, "挖 + 补 + 封，补缝只派一次（无重派）");
+        // ③ 原任务真的完成：世界落成 + 探针 DONE，同一次 run 续跑才允许封顶
+        w.set(7, 62, 8, DIRT);
+        AcxRunRecord done = runner.resume(def, waiting);
+        assertEquals(AcxStatus.SUCCESS, done.status(),
+                "补墙真的完成后续跑才该成功: " + done.errorMessage());
+        assertEquals(DIRT, w.block(7, 62, 8), "补墙结果必须在");
+        assertEquals(DIRT, w.block(8, 63, 8), "补完才封顶");
+        assertEquals(3, w.buildCalls, "挖 + 补 + 封，补墙只派过一次（无重派）");
+        assertEquals(first.runId(), done.runId(), "★ 必须同一次 run、同一个 runId");
     }
 
     @Test
