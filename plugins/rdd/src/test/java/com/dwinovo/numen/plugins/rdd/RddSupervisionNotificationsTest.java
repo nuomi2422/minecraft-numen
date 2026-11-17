@@ -2,6 +2,8 @@ package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.rdd.api.*;
 import com.dwinovo.numen.rdd.core.*;
+import com.dwinovo.numen.rdd.side.SideTaskWorldPort;
+import java.lang.reflect.Proxy;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import javax.tools.ToolProvider;
@@ -12,7 +14,7 @@ import java.nio.file.*;
 import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Compile the complete current owner and real facade excerpts with a real TaskChain.
+/** Compile the complete current owner, real facades and real host nudge consumer with a real TaskChain.
  * Only NeoForge plugin binding, API enqueue, runtime projection and monitor IO are bounded shells.
  * This is not a Minecraft callback, event-bus initialization or client-delivery acknowledgement test.
  */
@@ -37,6 +39,11 @@ class RddSupervisionNotificationsTest {
         }
         throw new AssertionError("unbalanced method " + signature);
     }
+    private static String declaration(String source, String signature) {
+        int start = source.indexOf(signature);
+        assertTrue(start >= 0, signature);
+        return source.substring(start, source.indexOf(';', start) + 1);
+    }
     @BeforeAll static void compileRealOwnerAndFacades() throws Exception {
         Path src = root().resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd");
         String plugin = Files.readString(src.resolve("RddPlugin.java"));
@@ -50,6 +57,13 @@ class RddSupervisionNotificationsTest {
         Files.writeString(host, SHELL + facade + "\n}\n" + MONITOR);
         Path owner = output.resolve("RddSupervisionNotifications.java");
         Files.writeString(owner, Files.readString(src.resolve("RddSupervisionNotifications.java")));
+        String sideSource = Files.readString(src.resolve("SideTaskHost.java"));
+        Path sideHost = output.resolve("SideTaskHost.java");
+        Files.writeString(sideHost, SIDE_HOST_SHELL
+                + declaration(sideSource, "    private static final long NUDGE_REPEAT_TICKS") + "\n"
+                + declaration(sideSource, "    private static final Map<UUID, Long> LAST_NUDGE_GAME_TIME") + "\n"
+                + method(sideSource, "    private static void nudgeIfNeeded(UUID") + "\n"
+                + method(sideSource, "    static final class NudgeDelivery") + "\n}\n");
         Path runtime = output.resolve("RddRuntime.java");
         Files.writeString(runtime, "package com.dwinovo.numen.rdd.core; public class RddRuntime { private final TaskChain chain; public RddRuntime(TaskChain c){chain=c;} public TaskChain chain(){return chain;} public java.util.Map<String,Object> snapshot(){return java.util.Map.of(\"fixture\",true);} }");
         Path token = output.resolve("WorldContextStamp.java");
@@ -61,7 +75,7 @@ class RddSupervisionNotificationsTest {
         var compiler = ToolProvider.getSystemJavaCompiler();
         assertNotNull(compiler);
         assertEquals(0, compiler.run(null, null, null, "-encoding", "UTF-8", "-proc:none", "-classpath", cp,
-                "-d", output.toString(), host.toString(), owner.toString(), runtime.toString(), token.toString()),
+                "-d", output.toString(), host.toString(), owner.toString(), runtime.toString(), token.toString(), sideHost.toString()),
                 "compile current production methods before business assertions");
         loader = new URLClassLoader(new URL[]{output.toUri().toURL()}, RddSupervisionNotificationsTest.class.getClassLoader()) {
             @Override protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
@@ -75,6 +89,8 @@ class RddSupervisionNotificationsTest {
             }
         };
         harness = loader.loadClass(PKG + "RddPlugin");
+        assertEquals(output.toUri().toURL(), loader.loadClass(PKG + "SideTaskHost")
+                .getProtectionDomain().getCodeSource().getLocation());
         assertEquals(output.toUri().toURL(), harness.getProtectionDomain().getCodeSource().getLocation());
         assertEquals(output.toUri().toURL(), loader.loadClass(PKG + "RddSupervisionNotifications")
                 .getProtectionDomain().getCodeSource().getLocation());
@@ -85,7 +101,10 @@ class RddSupervisionNotificationsTest {
     }
     private static Object field(String name) throws Exception { var f = harness.getDeclaredField(name); f.setAccessible(true); return f.get(null); }
     @SuppressWarnings("unchecked") private static List<String> trace() throws Exception { return (List<String>) field("trace"); }
-    @BeforeEach void reset() throws Exception { call("reset", new Class<?>[0]); }
+    @BeforeEach void reset() throws Exception {
+        call("reset", new Class<?>[0]);
+        sideClocks().clear();
+    }
     private static TaskChain chain(String step, boolean running) {
         TaskChain chain = new TaskChain(new Goal("g", "fixture", List.of(new PrimaryGoal("p", "phase",
                 List.of(Subtask.hardCoded(step, "execute " + step, Map.of("asset_key", "minecraft:dirt", "minimum", 1)))))));
@@ -164,6 +183,99 @@ class RddSupervisionNotificationsTest {
         assertFalse(allowed(noRuntime)); call("clearNudgeThrottle",new Class<?>[]{UUID.class},noRuntime);
         assertTrue(allowed(noRuntime));
     }
+    private static Object sideCall(String name, Class<?>[] types, Object... args) throws Exception {
+        var m = loader.loadClass(PKG + "SideTaskHost").getDeclaredMethod(name, types);
+        m.setAccessible(true);
+        return m.invoke(null, args);
+    }
+    @SuppressWarnings("unchecked") private static Map<UUID, Long> sideClocks() throws Exception {
+        var f = loader.loadClass(PKG + "SideTaskHost").getDeclaredField("LAST_NUDGE_GAME_TIME");
+        f.setAccessible(true);
+        return (Map<UUID, Long>) f.get(null);
+    }
+    private static void sideNudge(UUID id, long gameTime, boolean wasActive, boolean nowActive) throws Exception {
+        // The actual core interface is shared by both class loaders; only the observed game tick is faked.
+        SideTaskWorldPort port = (SideTaskWorldPort) Proxy.newProxyInstance(
+                SideTaskWorldPort.class.getClassLoader(), new Class<?>[]{SideTaskWorldPort.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("gameTime")) return gameTime;
+                    throw new AssertionError("unexpected world read: " + method.getName());
+                });
+        sideCall("nudgeIfNeeded", new Class<?>[]{UUID.class, SideTaskWorldPort.class, boolean.class, boolean.class},
+                id, port, wasActive, nowActive);
+    }
+    private static long queued() throws Exception {
+        return trace().stream().filter(s -> s.startsWith("enqueueSystem:")).count();
+    }
+
+    @Test void newSleepActivationImmediatelyAfterMainlineNudgeDoesNotInherit180SecondThrottle() throws Exception {
+        UUID id = UUID.randomUUID(), other = UUID.randomUUID();
+        TaskChain mainline = chain("unchanged-mainline", true);
+        bind(id, mainline); bind(other, chain("other", true));
+        assertTrue(send(id, "mainline reminder immediately before sleep"));
+        assertTrue(send(other, "other companion reminder"));
+        assertFalse(allowed(id), "precondition: the real owner has a successful mainline throttle entry");
+        // No rebinding, kickoff, manual throttle clear or wall-clock wait between the two real consumers.
+        sideNudge(id, 1000L, false, true);
+        assertEquals(3L, queued(), "new sleep admission must enqueue now, not wait for the mainline 180s window");
+        assertTrue(trace().stream().anyMatch(s -> s.startsWith("enqueueSystem:[支线·sleep·建议]")));
+        assertEquals(Long.valueOf(1000L), sideClocks().get(id));
+        assertFalse(allowed(id), "successful sleep send must establish ordinary owner throttling again");
+        assertFalse(allowed(other), "sleep admission must not clear another companion's throttle");
+    }
+    @Test void activeSleepRepeatRetainsBothLocalClockAndGlobalSendAdmission() throws Exception {
+        UUID id = UUID.randomUUID(); bind(id, chain("a", true));
+        sideNudge(id, 1000L, false, true);
+        assertEquals(1L, queued()); assertEquals(Long.valueOf(1000L), sideClocks().get(id));
+        // Open only the global gate: the host's own four-minute repeat clock must still suppress.
+        call("clearNudgeThrottle", new Class<?>[]{UUID.class}, id);
+        sideNudge(id, 1001L, true, true);
+        assertEquals(1L, queued()); assertTrue(allowed(id));
+        assertEquals(Long.valueOf(1000L), sideClocks().get(id));
+        assertTrue(send(id, "another source before local repeat expires"));
+        sideNudge(id, 5800L, true, true);
+        assertEquals(2L, queued(), "already-active sleep must not repeatedly bypass the global gate");
+        assertEquals(Long.valueOf(1000L), sideClocks().get(id), "rejected repeat must not advance local success time");
+        call("clearNudgeThrottle", new Class<?>[]{UUID.class}, id);
+        sideNudge(id, 5801L, true, true);
+        assertEquals(3L, queued()); assertEquals(Long.valueOf(5801L), sideClocks().get(id));
+        sideNudge(id, 5802L, true, false);
+        assertFalse(sideClocks().containsKey(id)); assertEquals(3L, queued());
+    }
+    @Test void sleepConsumerPauseAndMissingApiDoNotDispatchOrSpendAndCanRetry() throws Exception {
+        for (String blocked : List.of("pause", "no_api")) {
+            UUID id = UUID.randomUUID(); bind(id, chain(blocked, true));
+            long before = queued(); mode(blocked);
+            sideNudge(id, 2000L, false, true);
+            assertEquals(before, queued(), blocked);
+            assertFalse(sideClocks().containsKey(id), blocked + " must not record a successful local clock");
+            mode("normal"); assertTrue(allowed(id), blocked + " must not spend global admission");
+            sideNudge(id, 2001L, true, true);
+            assertEquals(before + 1L, queued(), "retry on the next active tick after " + blocked);
+            assertEquals(Long.valueOf(2001L), sideClocks().get(id));
+        }
+    }
+    @Test void sleepConsumerFailedEnqueueDoesNotRecordSuccessAndNextActiveTickRetries() throws Exception {
+        UUID id = UUID.randomUUID(); bind(id, chain("a", true)); mode("enqueue_throw");
+        sideNudge(id, 3000L, false, true);
+        assertEquals(0L, queued()); assertFalse(sideClocks().containsKey(id)); assertTrue(allowed(id));
+        mode("normal"); sideNudge(id, 3001L, true, true);
+        assertEquals(1L, queued()); assertEquals(Long.valueOf(3001L), sideClocks().get(id));
+        assertFalse(allowed(id));
+    }
+
+    private static final String SIDE_HOST_SHELL = """
+        package com.dwinovo.numen.plugins.rdd;
+        import java.util.*;
+        import java.util.concurrent.ConcurrentHashMap;
+        import com.dwinovo.numen.rdd.side.SideTaskWorldPort;
+        import com.dwinovo.numen.rdd.side.sleep.SleepSideTaskType;
+        // Only the current side-task identity is a fixture; delivery and repeat accounting come from source.
+        public class SideTaskHost {
+            static String fixtureType = "sleep";
+            static String currentTypeId(UUID id){return fixtureType;}
+        """;
+
     private static final String MONITOR = """
         class RddMonitor {
             static void publish(String type,Map<String,Object> data){publish(type,data,null);}
