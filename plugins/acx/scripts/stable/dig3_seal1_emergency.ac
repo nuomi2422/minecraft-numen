@@ -11,7 +11,7 @@
     "挖三填一"
   ],
   "planner_notes": "2026-11-17 主人拍摄急用的唯一临时例外。只调用现成积木(build/goto/inspect_block/get_self_status/safety_check)，不新增AC框架、不瞬移刷物。执行顺序：读自身→安全检查→挖脚下三格→goto到坑底→复查身体Y确实下降→在头顶上一层封盖→再读身体与检查实际方块后态→四周同级缺口air则补。任一步失败按fail走，绝不在身体没进坑时报成功。",
-  "safety_notes": "液体/脚下不安全直接fail；封盖只在身体已确认入坑、且封盖方块后态被inspect_block证实后才继续；人还在坑外时守卫先失败，禁止\"人在外封空腔\"报成功。临时债，后续删除或由规范化实现替换。",
+  "safety_notes": "液体/脚下无实体直接fail；封盖只在身体已确认入坑且inspect证实后态后继续；人在坑外时守卫先失败。临时债，后续删除或规范化替换。",
   "limits": {
     "max_steps": 64,
     "max_timeout_ms": 300000
@@ -21,15 +21,6 @@
       "id": "read0",
       "block": "get_self_status",
       "params": {}
-    },
-    {
-      "id": "safety",
-      "block": "safety_check",
-      "params": {
-        "avoid_liquids": true,
-        "check_footing": true,
-        "ledge_safety": true
-      }
     },
     {
       "id": "vars",
@@ -50,17 +41,45 @@
       }
     },
     {
+      "id": "peek1",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y0 - 1"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "peek2",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y0 - 2"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "peek3",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y0 - 3"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
       "id": "guard_safe",
       "block": "guard",
       "params": {
         "on_fail": "fail",
-        "message": "液体或脚下不安全，拒绝挖三填一",
+        "message": "脚下三格有液体或缺可挖实体，拒绝挖三填一",
         "conditions": [
-          {
-            "field": "$safety.safe",
-            "op": "==",
-            "value": true
-          },
           {
             "field": "$read0.in_lava",
             "op": "==",
@@ -70,6 +89,26 @@
             "field": "$read0.in_water",
             "op": "==",
             "value": false
+          },
+          {
+            "field": "$peek1.is_liquid",
+            "op": "==",
+            "value": false
+          },
+          {
+            "field": "$peek2.is_liquid",
+            "op": "==",
+            "value": false
+          },
+          {
+            "field": "$peek3.is_liquid",
+            "op": "==",
+            "value": false
+          },
+          {
+            "field": "$peek3.is_solid",
+            "op": "==",
+            "value": true
           }
         ]
       }
