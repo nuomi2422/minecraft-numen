@@ -199,7 +199,7 @@ class BuildInPlaceConsumerTest {
         rec.append(between(record, "    public record Target(", "        public Target(BlockState desiredState,"));
         rec.append(nestedMember(record, "        public Target(BlockState desiredState,"));
         rec.append(nestedMember(record, "        public int materialCount()"));
-        rec.append(nestedMember(record, "        public boolean matches("));
+        rec.append(nestedMember(record, "        public boolean matches(BlockState state)"));
         rec.append("}\n}\n");
         add(src, args, "com/dwinovo/numen/core/task/build/BuildTaskRecord.java", rec.toString());
         add(src, args, "com/dwinovo/numen/core/task/build/ReplaceMode.java",
