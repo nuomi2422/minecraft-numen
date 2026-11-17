@@ -27,7 +27,7 @@ class RddStallWatcherConsumerTest {
     private static Class<?> harness;
     @BeforeAll static void compileWholeConsumer() throws Exception {
         var sources=new ArrayList<String>();
-        for(String name:List.of("RddStallWatcher","RddStallPolicy")) {
+        for(String name:List.of("RddStallWatcher","RddStallPolicy","RddFurnaceWatch")) {
             Path file=compiled.resolve(name+".java");
             Files.copy(root().resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/"+name+".java"),file);
             sources.add(file.toString());
@@ -115,7 +115,7 @@ class RddStallWatcherConsumerTest {
     }
     @Test void inFlightLlmSuppressesIdleReminderAtExistingThreshold() throws Exception {
         var f=new Fixture(true); f.set("llm",true); f.set("streak",3); f.ticks(12,false);
-        assertEquals(11,f.count()); assertEquals(0,f.events("llm_idle_stall"));
+        assertEquals(0,f.count()); assertEquals(0,f.events("llm_idle_stall"));
         f.set("llm",false); f.tick(); assertEquals(1,f.events("llm_idle_stall"));
     }
     @Test void registeredTimerClearsWindowUntilConsumed() throws Exception {
@@ -142,6 +142,69 @@ class RddStallWatcherConsumerTest {
         f.tick(); assertEquals(1,f.events("llm_idle_stall"));
     }
 
+    @Test void freshIdleLlmSurvivesFullStallAndFailureWindowsThenFinishes() throws Exception {
+        var f=new Fixture(true); f.set("llm",true); f.drive(66);
+        assertEquals(SubtaskStatus.RUNNING,f.chain.currentSubtaskStatus()); assertEquals(0,f.call("sent"));
+        f.set("llm",false); f.drive(16);
+        assertEquals(SubtaskStatus.STALLED,f.chain.currentSubtaskStatus());
+    }
+    @Test void stalledIdleLlmHoldsFailureWindowButRealProgressStillResumes() throws Exception {
+        var f=new Fixture(true); f.drive(16);
+        assertEquals(SubtaskStatus.STALLED,f.chain.currentSubtaskStatus());
+        int sent=(int)f.call("sent"); f.set("llm",true); f.drive(66);
+        assertEquals(SubtaskStatus.STALLED,f.chain.currentSubtaskStatus()); assertEquals(sent,f.call("sent"));
+        f.set("inventory",5); f.call("handle");
+        assertEquals(SubtaskStatus.RUNNING,f.chain.currentSubtaskStatus());
+    }
+    @Test void staleIdleLlmReleasesExistingStallAndFailurePath() throws Exception {
+        var f=new Fixture(true); f.set("llm",true); f.drive(66);
+        assertEquals(SubtaskStatus.RUNNING,f.chain.currentSubtaskStatus());
+        f.set("stale",true); f.drive(66);
+        assertEquals(SubtaskStatus.FAILED,f.chain.currentSubtaskStatus());
+    }
+    @Test void unknownLlmDoesNotExemptIdleWork() throws Exception {
+        var f=new Fixture(true); f.set("known",false); f.drive(16);
+        assertEquals(SubtaskStatus.STALLED,f.chain.currentSubtaskStatus());
+    }
+    @Test void inventoryFurnaceProductionContinuesBeyondBusyGrace() throws Exception {
+        var f=new Fixture(true); f.set("furnace",true);
+        for(int i=0;i<241;i++){f.set("cooking",i%200);f.set("output",i/200);f.drive(1);}
+        assertEquals(SubtaskStatus.RUNNING,f.chain.currentSubtaskStatus());
+        assertEquals(0,f.events("subtask_stalled")); assertEquals(0,f.events("dead_task_stall"));
+    }
+    @Test void inventoryBodyProductionContinuesBeyondBusyGrace() throws Exception {
+        var f=new Fixture(true); f.set("body",true); f.set("tool","build");
+        for(int i=0;i<241;i++){f.set("progress",i);f.drive(1);}
+        assertEquals(SubtaskStatus.RUNNING,f.chain.currentSubtaskStatus());
+        assertEquals(0,f.events("subtask_stalled")); assertEquals(0,f.events("dead_task_stall"));
+    }
+    @Test void stalledInventoryResumesOnFurnaceOrBodyProductionWithoutItemChange() throws Exception {
+        for(boolean furnace:List.of(true,false)){
+            var f=new Fixture(true);f.drive(16);
+            assertEquals(SubtaskStatus.STALLED,f.chain.currentSubtaskStatus());
+            if(furnace){f.set("furnace",true);f.set("output",1);}
+            else{f.set("body",true);f.set("tool","build");f.set("progress",1);}
+            f.call("handle");assertEquals(SubtaskStatus.RUNNING,f.chain.currentSubtaskStatus());
+            f.tick();assertEquals(1,f.count());
+        }
+    }
+    @Test void movingTargetsAndTaskIdentityDoNotCountAsInventoryWork() throws Exception {
+        var f=new Fixture(true);f.set("body",true);f.set("tool","goto");
+        for(int i=0;i<121;i++){f.set("x",i);f.set("progress",i);f.set("taskId","t"+i);f.drive(1);}
+        assertEquals(SubtaskStatus.STALLED,f.chain.currentSubtaskStatus());
+        assertEquals(1,f.events("dead_task_stall"));
+    }
+    @Test void burningFuelWithoutProductionStillStallsAtOriginalGrace() throws Exception {
+        var f=new Fixture(true);f.set("furnace",true);
+        for(int i=0;i<121;i++){f.set("fuel",1000-i);f.drive(1);}
+        assertEquals(SubtaskStatus.STALLED,f.chain.currentSubtaskStatus());
+    }
+    @Test void freshLlmDoesNotExemptFrozenBodyTask() throws Exception {
+        var f=new Fixture(true);f.set("body",true);f.set("llm",true);f.drive(121);
+        assertEquals(SubtaskStatus.STALLED,f.chain.currentSubtaskStatus());
+        assertEquals(1,f.events("dead_task_stall"));
+    }
+
     private static final class Fixture {
         final TaskChain chain; final RddRuntime rt; final Object host;
         Fixture(boolean inventory) throws Exception {
@@ -163,6 +226,7 @@ class RddStallWatcherConsumerTest {
         Object call(String name) throws Exception{return invoke(name,new Class<?>[0]);}
         void set(String key,Object value) throws Exception{invoke("set",new Class<?>[]{String.class,Object.class},key,value);}
         void tick() throws Exception{call("track");}
+        void drive(int n) throws Exception {for(int i=0;i<n;i++){if(chain.currentSubtaskStatus()==SubtaskStatus.RUNNING)tick();else if(chain.currentSubtaskStatus()==SubtaskStatus.STALLED)call("handle");}}
         void ticks(int n,boolean moving) throws Exception{for(int i=0;i<n;i++){if(moving)set("x",i+100);tick();}}
         int count() throws Exception{return (int)call("count");}
         int events(String name) throws Exception{return (int)invoke("events",new Class<?>[]{String.class},name);}
@@ -187,15 +251,17 @@ class RddStallWatcherConsumerTest {
             import com.dwinovo.numen.agent.llm.LlmActivity;
             public final class StallHarness {
                 static final List<String> emitted=new ArrayList<>();
-                static int sent,observations;
+                static int sent;
                 final NumenPlayer ap=new NumenPlayer();
                 final RddRuntime rt;
                 final RddStallWatcher owner=new RddStallWatcher(new RddFurnaceWatch());
+                final net.minecraft.world.inventory.AbstractFurnaceMenu furnace=new net.minecraft.world.inventory.AbstractFurnaceMenu(ap.level());
                 public StallHarness(RddRuntime rt) {
-                    this.rt=rt; emitted.clear(); sent=0; observations=0;
+                    this.rt=rt; emitted.clear(); sent=0;
                     RddPlugin.enabled=true; RddPlugin.allowed=true;
                     TimerRegistry.pending=false; CompanionTickDispatcher.active=false;
-                    CompanionTickDispatcher.progress=0; LlmActivity.flying=false; LlmActivity.streak=0;
+                    CompanionTickDispatcher.progress=0; CompanionTickDispatcher.tool="mine"; CompanionTickDispatcher.taskId="t1";
+                    LlmActivity.flying=false; LlmActivity.stale=false; LlmActivity.known=true; LlmActivity.streak=0;
                 }
                 public void track(){owner.track(ap,rt,rt.chain().currentSubtask());}
                 public void handle(){owner.handleStalled(ap,rt,rt.chain().currentSubtask());}
@@ -207,7 +273,7 @@ class RddStallWatcherConsumerTest {
                     return (int)m.invoke(st);
                 }
                 public int events(String name){return (int)emitted.stream().filter(name::equals).count();}
-                public int observations(){return observations;}
+                public int observations(){return ap.reads;}
                 public int sent(){return sent;}
                 public void set(String key,Object value){
                     switch(key){
@@ -216,6 +282,14 @@ class RddStallWatcherConsumerTest {
                         case "body" -> CompanionTickDispatcher.active=(Boolean)value;
                         case "progress" -> CompanionTickDispatcher.progress=(Integer)value;
                         case "llm" -> LlmActivity.flying=(Boolean)value;
+                        case "stale" -> LlmActivity.stale=(Boolean)value;
+                        case "known" -> LlmActivity.known=(Boolean)value;
+                        case "tool" -> CompanionTickDispatcher.tool=(String)value;
+                        case "taskId" -> CompanionTickDispatcher.taskId=(String)value;
+                        case "furnace" -> ap.containerMenu=(Boolean)value?furnace:null;
+                        case "cooking" -> furnace.cooking=(Integer)value;
+                        case "output" -> furnace.getSlot(2).getItem().count=(Integer)value;
+                        case "fuel" -> furnace.getSlot(1).getItem().count=(Integer)value;
                         case "streak" -> LlmActivity.streak=(Integer)value;
                         case "timer" -> TimerRegistry.pending=(Boolean)value;
                         case "supervision" -> RddPlugin.enabled=(Boolean)value;
@@ -240,21 +314,17 @@ class RddStallWatcherConsumerTest {
                     return out;
                 }
             }
-            final class RddFurnaceWatch {
-                record FurnaceWatch(net.minecraft.world.inventory.AbstractContainerMenu menu){}
-                FurnaceWatch track(NumenPlayer ap,RddRuntime rt,Subtask task){StallHarness.observations++;return null;}
-                static void appendContainer(StringBuilder b,net.minecraft.world.inventory.AbstractContainerMenu m,NumenPlayer ap){}
-            }
             """),
         Map.entry("NumenPlayer","""
             package com.dwinovo.numen.entity;
             public final class NumenPlayer extends net.minecraft.world.entity.player.Player {
                 private final java.util.UUID id=java.util.UUID.randomUUID();
-                public int x=100;
+                public int x=100,reads; private final Object level=new Object();
+                public Object level(){return level;}
                 public net.minecraft.world.inventory.AbstractContainerMenu containerMenu,inventoryMenu;
                 public java.util.UUID getUUID(){return id;}
                 public Object getServer(){return this;}
-                public net.minecraft.core.BlockPos blockPosition(){return new net.minecraft.core.BlockPos(x,68,100);}
+                public net.minecraft.core.BlockPos blockPosition(){reads++;return new net.minecraft.core.BlockPos(x,68,100);}
             }
             """),
         Map.entry("Player","""
@@ -290,21 +360,52 @@ class RddStallWatcherConsumerTest {
         Map.entry("AbstractContainerMenu","""
             package net.minecraft.world.inventory;
             public class AbstractContainerMenu {
-                public int getBurnProgress(){return 0;} public boolean isLit(){return false;}
-                public Slot getSlot(int n){return new Slot();}
+                public final java.util.List<Slot> slots=new java.util.ArrayList<>();
+                public Slot getSlot(int n){return slots.get(n);}
                 public static final class Slot {
-                    public net.minecraft.world.item.ItemStack getItem(){return new net.minecraft.world.item.ItemStack("empty",0);}
+                    public final Object container;public final int index;
+                    private final net.minecraft.world.item.ItemStack item;
+                    public Slot(Object c,int i,String id,int count){container=c;index=i;item=new net.minecraft.world.item.ItemStack(id,count);}
+                    public net.minecraft.world.item.ItemStack getItem(){return item;}
                 }
+            }
+            """),
+        Map.entry("AbstractFurnaceMenu","""
+            package net.minecraft.world.inventory;
+            public final class AbstractFurnaceMenu extends AbstractContainerMenu {
+                public static final int FUEL_SLOT=1;public int cooking;
+                public AbstractFurnaceMenu(Object level){
+                    var block=new net.minecraft.world.level.block.entity.BlockEntity(level);
+                    slots.add(new Slot(block,0,"minecraft:raw_iron",1));
+                    slots.add(new Slot(block,1,"minecraft:coal",10));
+                    slots.add(new Slot(block,2,"minecraft:iron_ingot",0));
+                }
+                public int getBurnProgress(){return cooking;}
+                public boolean isLit(){return true;}
+            }
+            """),
+        Map.entry("BlockEntity","""
+            package net.minecraft.world.level.block.entity;
+            public final class BlockEntity {
+                private final Object level;public BlockEntity(Object level){this.level=level;}
+                public boolean isRemoved(){return false;}public Object getLevel(){return level;}
+            }
+            """),
+        Map.entry("BuiltInRegistries","""
+            package net.minecraft.core.registries;
+            public final class BuiltInRegistries {
+                public static final Registry ITEM=new Registry();
+                public static final class Registry {public String getKey(net.minecraft.world.item.ItemStack item){return item.id;}}
             }
             """),
         Map.entry("CompanionTickDispatcher","""
             package com.dwinovo.numen.task;
             public final class CompanionTickDispatcher {
-                public static boolean active;public static int progress;
+                public static boolean active;public static int progress;public static String tool,taskId;
                 public static Body currentTaskFor(java.util.UUID id){return active?new Body():null;}
                 public static final class Body {
-                    public State getState(){return new State();}public String getToolName(){return "mine";}
-                    public String describe(){return "progress="+progress;}public String publicId(){return "t1";}
+                    public State getState(){return new State();}public String getToolName(){return tool;}
+                    public String describe(){return tool.equals("goto")?"走向 "+progress+",68,100":"搭建 "+progress+"/999";}public String publicId(){return taskId;}
                 }
                 public static final class State {public boolean isTerminal(){return false;}}
             }
@@ -320,15 +421,15 @@ class RddStallWatcherConsumerTest {
         Map.entry("LlmActivity","""
             package com.dwinovo.numen.agent.llm;
             public final class LlmActivity {
-                public static boolean flying;public static int streak;
+                public static boolean flying,stale,known;public static int streak;
                 public static Snapshot snapshot(String id){return new Snapshot();}
                 public static void markStaleReported(String id,long token){}
                 public static final class Snapshot {
-                    public boolean inFlight(){return flying;}public boolean stale(){return false;}
+                    public boolean inFlight(){return known&&flying;}public boolean stale(){return stale;}
                     public boolean staleUnreported(){return false;}public String phase(){return "execution";}
                     public int inFlightCount(){return flying?1:0;}public long oldestInFlightNanos(){return 0;}
                     public long oldestInFlightToken(){return 0;}public int consecutiveNoToolCallResponses(){return streak;}
-                    public boolean known(){return true;}public String lastFinish(){return "stop";}
+                    public boolean known(){return known;}public String lastFinish(){return "stop";}
                     public int lastToolCalls(){return 0;}
                 }
             }

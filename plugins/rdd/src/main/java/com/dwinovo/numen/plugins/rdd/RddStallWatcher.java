@@ -161,13 +161,13 @@ final class RddStallWatcher {
         }
         RddStallPolicy.Observation observation = observe(ap, rt, current);
         String fp = observation.fingerprint();
-        // 2026-10-29（#196）：库存类目标只认"东西变多"，走路不算进展。
+        // 库存窗口认背包和已观测生产进展，走路不算进展（保留 #196 的防绕圈边界）。
         //   原指纹含位置 ⇒ 她在地表绕圈就永远判不出卡住（实测该级 20 分钟无进展、规划者 76 分钟没被叫过）。
-        if (isInventoryTarget(current.condition())) fp = inventoryKey(ap);
+        if (isInventoryTarget(current.condition())) fp = inventoryKey(ap, observation);
         String stateKey = stateKey(ap, observation);
-        // 2026-10-29（#210 补刀）：库存类判据下 stateKey 也必须只用背包 —— 它是真进展的判据，
+        // 库存恢复键与窗口共用背包和生产进展，排除位置（保留 #210 的防抖边界），
         //   位置一变就 resumeFromStalled 把计数清零（我上一轮只改了 windowFp，漏了这条路径）。
-        if (isInventoryTarget(current.condition())) stateKey = inventoryKey(ap);
+        if (isInventoryTarget(current.condition())) stateKey = inventoryKey(ap, observation);
         StallState st = stalls.get(ap.getUUID());
         if (st == null || !st.subtaskId().equals(current.id())) {
             stalls.put(ap.getUUID(), new StallState(current.id(), fp, stateKey, 0, 0));
@@ -197,6 +197,8 @@ final class RddStallWatcher {
             com.dwinovo.numen.agent.llm.LlmActivity.markStaleReported(
                     ap.getUUID().toString(), llm.oldestInFlightToken());
         }
+        // A fresh idle request is still doing brain work: do not spend its stall window.
+        if (RddStallPolicy.llmIdle(observation.source()) && llmInFlight) return false;
         // LLM 空转拍醒（2026-10-01 重做）。用户指出："太高频又花钱，而且并不是真真正正的监督，
         // 检测也不正确；我进游戏了它又完成任务了" —— 三个问题分别对应下面三条：
         //
@@ -333,7 +335,7 @@ final class RddStallWatcher {
         String stateKey = stateKey(ap, observation);
         // 2026-10-29（#210 补刀）：库存类判据下 stateKey 也必须只用背包 —— 它是真进展的判据，
         //   位置一变就 resumeFromStalled 把计数清零（我上一轮只改了 windowFp，漏了这条路径）。
-        if (isInventoryTarget(current.condition())) stateKey = inventoryKey(ap);
+        if (isInventoryTarget(current.condition())) stateKey = inventoryKey(ap, observation);
         String windowFp = isInventoryTarget(current.condition()) ? stateKey : observation.fingerprint();
         StallState st = stalls.get(ap.getUUID());
         if (!RddPlugin.supervisionEnabled()) {
@@ -351,7 +353,9 @@ final class RddStallWatcher {
             stalls.put(ap.getUUID(), new StallState(current.id(), windowFp, stateKey, 0, 1));
             // ★ 2026-10-06：走 nudgeOnce —— 闸没放行就不发（原来直接调 nudge，
             //   被挡时只会在监测台留一条 nudge_throttled，提醒本身丢了）。
-            nudgeOnce(ap.getUUID(), "stalled_entry", stateKey, "你卡住了吗？缺什么工具或材料？");
+            if (!idleLlmInFlight(ap.getUUID(), observation)) {
+                nudgeOnce(ap.getUUID(), "stalled_entry", stateKey, "你卡住了吗？缺什么工具或材料？");
+            }
             return;
         }
         if (!st.stateFingerprint().equals(stateKey)) {
@@ -361,6 +365,8 @@ final class RddStallWatcher {
             stalls.put(ap.getUUID(), new StallState(current.id(), windowFp, stateKey, 0, 0));
             return;
         }
+        // Real progress above still wins; a fresh idle LLM must not renudge or fail on time alone.
+        if (idleLlmInFlight(ap.getUUID(), observation)) return;
         // 资产仍无变化：先给 AI 一个响应窗口，窗口内不打扰（AI 可能正在思考/规划）
         if (st.unchangedTicks() + 1 < STALL_RESPONSE_TICKS) {
             stalls.put(ap.getUUID(), new StallState(current.id(), st.windowFingerprint(), stateKey,
@@ -397,6 +403,12 @@ final class RddStallWatcher {
         // 而不是卡成「永远不花钱也永远不判失败」的死循环。
         stalls.put(ap.getUUID(), new StallState(current.id(), st.windowFingerprint(), stateKey,
                 0, st.nudges() + 1));
+    }
+
+    private static boolean idleLlmInFlight(UUID id, RddStallPolicy.Observation observation) {
+        if (!RddStallPolicy.llmIdle(observation.source())) return false;
+        var llm = com.dwinovo.numen.agent.llm.LlmActivity.snapshot(id.toString());
+        return llm.inFlight() && !llm.stale(); // UNKNOWN and the existing stale bound remain fail-open.
     }
 
     /**
@@ -455,7 +467,15 @@ final class RddStallWatcher {
         }
         var body = CompanionTickDispatcher.currentTaskFor(uuid);
         boolean active = body != null && !body.getState().isTerminal();
-        if (active) progress.append("|body=").append(body.getToolName()).append(':').append(body.describe());
+        // These existing describe() implementations expose harvested/completed/defeated counts.
+        // Movement targets, task IDs, elapsed time and deadlines are not inventory production.
+        boolean bodyCounter = active && switch (body.getToolName()) {
+            case "mine", "build", "collect_items", "fish", "attack" -> true;
+            default -> false;
+        };
+        if (active && (!isInventoryTarget(current.condition()) || bodyCounter)) {
+            progress.append("|body=").append(body.getToolName()).append(':').append(body.describe());
+        }
         String source = production ? "furnace_production" : active ? "body_task:" + body.publicId() : "idle";
         return new RddStallPolicy.Observation(fingerprint(ap), progress.toString(), production || active, source);
     }
@@ -513,12 +533,12 @@ final class RddStallWatcher {
         return cond.containsKey("asset_key") || cond.containsKey("group") || "item".equals(String.valueOf(t));
     }
 
-    /** 只含背包内容的指纹（不含位置）：同一堆东西 = 没有进展。 */
-    private static String inventoryKey(net.minecraft.world.entity.player.Player ap) {
+    /** Inventory and observed production share one window/recovery key; coordinates never count. */
+    private static String inventoryKey(net.minecraft.world.entity.player.Player ap, RddStallPolicy.Observation observation) {
         StringBuilder sb = new StringBuilder();
         for (net.minecraft.world.item.ItemStack s : ap.getInventory().items) {
             if (s == null || s.isEmpty()) continue;
             sb.append(s.getItem().builtInRegistryHolder().key().location()).append('x').append(s.getCount()).append(';');
         }
-        return sb.toString();
+        return sb.append("|work=").append(observation.workProgress()).toString();
     }}
