@@ -397,7 +397,7 @@ class RddRepairLossAnalysisTest {
                 record Entry(Observation observation) {}
                 record Observation(String type, long observedAt, Map<String,Object> value) {}
                 static List<Entry> worldAssets(AssetRegistry assets) {
-                    return List.of(new Entry(new Observation("world_base", System.currentTimeMillis(), Map.of("important_items", RddPlugin.backup))));
+                    return List.of(new Entry(new Observation("world_base", System.currentTimeMillis() - 1000L, Map.of("important_items", RddPlugin.backup))));
                 }
             }
             """;
