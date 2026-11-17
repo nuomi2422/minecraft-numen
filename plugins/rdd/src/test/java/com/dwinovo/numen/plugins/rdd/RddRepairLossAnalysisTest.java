@@ -100,7 +100,7 @@ class RddRepairLossAnalysisTest {
         final Class<?> host, owner;
         final UUID id = UUID.randomUUID();
         final com.dwinovo.numen.rdd.core.TaskChain chain = reviewChain();
-        final String before = chain.toJson();
+        String before = chain.toJson();
         ConsumerFixture() throws Exception {
             java.nio.file.Path root = java.nio.file.Path.of("").toAbsolutePath();
             while (root != null && !java.nio.file.Files.isDirectory(root.resolve("plugins/rdd/src/main/java"))) root = root.getParent();
@@ -296,6 +296,67 @@ class RddRepairLossAnalysisTest {
         }
     }
 
+    @Test void rejectedFinalStageAdviceCannotDeliverAfterRealChainCompletion() throws Exception {
+        try (var f = new ConsumerFixture()) {
+            f.chain.settlePrimaryByFact("current", "verified trade world fact", true);
+            assertEquals("future", f.chain.currentPrimary().id());
+            assertEquals(com.dwinovo.numen.rdd.api.PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
+            int revision = f.chain.planRevision();
+            f.host.getField("rejectNudge").setBoolean(null, true);
+            f.run(Map.of("minecraft:diamond_pickaxe", 1), Map.of(), Map.of(), true);
+            assertEquals(1, f.host.getField("adviceAttempts").getInt(null), "final-stage advice was actually rejected first");
+            assertTrue(f.nudges().isEmpty());
+            f.chain.settlePrimaryByFact("future", "verified final goal world fact", true);
+            assertEquals(com.dwinovo.numen.rdd.api.PrimaryGoalStatus.COMPLETED, f.chain.primaryStatus());
+            assertEquals("future", f.chain.currentPrimary().id(), "completion retains last primary, not null");
+            assertEquals(revision, f.chain.planRevision(), "completion alone must invalidate advice even without a revision change");
+            f.before = f.chain.toJson(); // only the explicit world-fact transitions above may change the fixture
+            f.host.getField("rejectNudge").setBoolean(null, false);
+            f.nextDetectorLedgerTick();
+            f.nextDetectorLedgerTick();
+            assertAll(
+                    () -> assertTrue(f.nudges().isEmpty(), "completed chain must not receive an old repair/review"),
+                    () -> assertEquals(1, f.host.getField("adviceAttempts").getInt(null)),
+                    () -> assertEquals(1, f.host.getField("recomputeEvents").getInt(null), "no repeated terminal observation"));
+        }
+    }
+
+    private static void cacheCurrentThenAdvanceToFuture(ConsumerFixture f) throws Exception {
+        Class<?> detector = f.loader.loadClass("com.dwinovo.numen.plugins.rdd.RddRequirementDetector");
+        var build = detector.getDeclaredMethod("forPrimary", com.dwinovo.numen.rdd.api.PrimaryGoal.class, String.class);
+        build.setAccessible(true);
+        Object cached = build.invoke(null, f.chain.currentPrimary(), f.chain.goal().id());
+        f.host.getField("cachedManifestOverride").set(null, cached);
+        f.chain.settlePrimaryByFact("current", "verified trade before cache refresh", true);
+        assertEquals("future", f.chain.currentPrimary().id());
+        f.before = f.chain.toJson();
+    }
+
+    @Test void stalePreviousPrimaryManifestCannotHideCurrentPrimaryCriticalLoss() throws Exception {
+        try (var f = new ConsumerFixture()) {
+            cacheCurrentThenAdvanceToFuture(f);
+            var result = f.run(Map.of("minecraft:diamond_pickaxe", 1), Map.of(), Map.of(), true);
+            assertNotNull(result);
+            assertAll(
+                    () -> assertEquals(com.dwinovo.numen.rdd.policy.LossImpactAnalyzer.Recommendation.SUPPLEMENT, result.recommendation()),
+                    () -> assertTrue(result.affectedGoals().stream().anyMatch(g -> g.requirementKey().equals("minecraft:diamond_pickaxe"))),
+                    () -> assertEquals(1, f.nudges().size()),
+                    () -> assertTrue(String.join("", f.nudges()).contains("rdd_replan_chain")));
+        }
+    }
+
+    @Test void stalePreviousPrimaryOnlyRequirementDoesNotProduceRepairOrReview() throws Exception {
+        try (var f = new ConsumerFixture()) {
+            cacheCurrentThenAdvanceToFuture(f);
+            var result = f.run(Map.of("minecraft:flint", 1), Map.of(), Map.of(), true);
+            assertNotNull(result);
+            assertAll(
+                    () -> assertEquals(com.dwinovo.numen.rdd.policy.LossImpactAnalyzer.Recommendation.NONE, result.recommendation()),
+                    () -> assertTrue(result.affectedGoals().isEmpty(), "old primary requirement is not a remaining demand"),
+                    () -> assertTrue(f.nudges().isEmpty()));
+        }
+    }
+
     private static final String HOST_SHELL = """
             package com.dwinovo.numen.plugins.rdd;
             import com.dwinovo.numen.rdd.core.*;
@@ -306,8 +367,9 @@ class RddRepairLossAnalysisTest {
                 public static Map<String,Integer> backup = Map.of();
                 public static List<String> nudges = new ArrayList<>();
                 public static boolean missingManifest, rejectNudge;
+                public static RequirementManifest.Manifest cachedManifestOverride;
                 public static int adviceAttempts, recomputeEvents;
-                public static void reset(UUID id, RddRuntime runtime) { rt = runtime; backup = Map.of(); nudges.clear(); missingManifest = false; rejectNudge = false; adviceAttempts = 0; recomputeEvents = 0; }
+                public static void reset(UUID id, RddRuntime runtime) { rt = runtime; backup = Map.of(); nudges.clear(); missingManifest = false; rejectNudge = false; adviceAttempts = 0; recomputeEvents = 0; cachedManifestOverride = null; }
                 static RddRuntime runtime(UUID id) { return rt; }
                 static void ensureLedgerLoaded(UUID id) {}
                 static boolean nudgeAllowed(UUID id) { return !rejectNudge; }
@@ -316,6 +378,7 @@ class RddRepairLossAnalysisTest {
             class RddFactContext {
                 static RequirementManifest.Manifest currentManifest(UUID id) {
                     if (RddPlugin.missingManifest) return null;
+                    if (RddPlugin.cachedManifestOverride != null) return RddPlugin.cachedManifestOverride;
                     return RddRequirementDetector.forPrimary(RddPlugin.rt.chain().currentPrimary(), RddPlugin.rt.chain().goal().id());
                 }
                 static RequirementManifest.Manifest ensureManifest(UUID id, com.dwinovo.numen.rdd.api.PrimaryGoal p, String gid) {
