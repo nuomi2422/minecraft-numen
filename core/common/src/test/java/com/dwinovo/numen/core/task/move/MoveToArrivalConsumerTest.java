@@ -24,7 +24,10 @@ import static org.junit.jupiter.api.Assertions.*;
  * Run this class with the parent-owned headless test runner. Compiler/fixture failures
  * are SETUP ERROR, not business red; no new helper from a proposed fix is required.
  * onTick stops BEFORE the boat branch: only its real early SUCCESS is exercised.
- * onStart, base lifecycle, navigation, support calculation and physics are NOT tested.
+ * successMessage/resultData are verbatim production members with parent signature shells.
+ * Calling them directly does NOT test lifecycle SUCCESS delivery or the nav FAILED/settle/retry
+ * branches that choose approximate success. onStart, base lifecycle, navigation, support
+ * calculation, collision safety and physics are NOT tested.
  * Feet/pathStart are independently supplied MC-boundary results. A solid/empty/nonempty
  * envelope supplies a KNOWN old-resolver reference, NOT safe headroom or the incident's
  * unknown surface. Ordinary two-air-cell ground is separately characterized as MIN_VALUE.
@@ -111,13 +114,18 @@ class MoveToArrivalConsumerTest {
                 class ArrivalBoundary {
                     final MoveToCompanionTask.NumenPlayer player; final MoveToTaskRecord r;
                     ArrivalBoundary(MoveToCompanionTask.NumenPlayer p, MoveToTaskRecord r) { player=p; this.r=r; }
+                    // Signature shells only, so production @Override annotations remain intact.
+                    protected String successMessage() { throw new UnsupportedOperationException(); }
+                    protected Map<String,Object> resultData() { throw new UnsupportedOperationException(); }
                 }
                 public final class MoveToCompanionTask extends ArrivalBoundary {
                     private final int bx, by, bz;
                     private final BlockPos blockTarget;
                     private Finder finder;
                     record Contract(NavGoal goal) { }
-                    record Finder(Contract contract) { }
+                    record Finder(Contract contract) {
+                        BlockPos nearest() { return contract == null ? null : contract.goal().center(); }
+                    }
                     public record Shape(boolean empty) { public boolean isEmpty() { return empty; } }
                     public record State(boolean empty) {
                         public Shape getCollisionShape(World w, BlockPos p) { return new Shape(empty); }
@@ -137,10 +145,14 @@ class MoveToArrivalConsumerTest {
                     public static class NumenPlayer {
                         public final World world=new World(); public BlockPos start;
                         boolean ground, water; double extraX;
-                        public World level() { return world; } public BlockPos blockPosition() { return world.feet; }
-                        public double getX() { return world.feet.getX()+0.5+extraX; }
-                        public double getY() { return world.feet.getY(); }
-                        public double getZ() { return world.feet.getZ()+0.5; }
+                        // Opt-in body coordinates; existing fixtures keep their exact old defaults.
+                        double[] position;
+                        public World level() { return world; }
+                        public BlockPos blockPosition() { return position == null ? world.feet
+                            : new BlockPos((int)Math.floor(position[0]),(int)Math.floor(position[1]),(int)Math.floor(position[2])); }
+                        public double getX() { return position == null ? world.feet.getX()+0.5+extraX : position[0]; }
+                        public double getY() { return position == null ? world.feet.getY() : position[1]; }
+                        public double getZ() { return position == null ? world.feet.getZ()+0.5 : position[2]; }
                         public boolean onGround() { return ground; } public boolean isInWater() { return water; }
                     }
                     static class OutsideEarlySlice extends RuntimeException { }
@@ -170,7 +182,20 @@ class MoveToArrivalConsumerTest {
                         result.put("close",t.closeEnoughToSucceed());
                         if(kind.equals("COLUMN") || kind.equals("BLOCK")) result.put("retry",t.nearRetryGoal().isAt(p.world.feet));
                         result.put("legacy",NavGoal.column(6185,6130).isAt(p.world.feet));
+                        result.put("message",t.successMessage());
                         return result;
+                    }
+                    public static Map<String,Object> blockCopy(double x, double y, double z, int feetY,
+                            boolean ground, boolean water) {
+                        NumenPlayer p=new NumenPlayer(); p.world.envelope="twoAir";
+                        // MC-boundary results are supplied, not a replacement feet/support resolver.
+                        p.world.feet=new BlockPos((int)Math.floor(x),feetY,(int)Math.floor(z));
+                        p.start=p.world.feet; p.position=new double[]{x,y,z}; p.ground=ground; p.water=water;
+                        MoveToCompanionTask t=new MoveToCompanionTask(p,
+                            new MoveToTaskRecord("copy",0,385d,51d,624d,null,false));
+                        // Probe keys below exist only in this test; production resultData is unchanged.
+                        return Map.of("close",t.closeEnoughToSucceed(),"exact",t.reached(),
+                            "message",t.successMessage(),"data",t.resultData());
                     }
                     public static Map<String,Object> radius(double offset) {
                         NumenPlayer p=new NumenPlayer(); p.world.envelope="singleGap";
@@ -215,6 +240,9 @@ class MoveToArrivalConsumerTest {
                 "    private double horizontalDistSqr(", "    private NavGoal blockGoal()")) {
             consumer.append(member(task, signature)).append('\n');
         }
+        // Preserve the real override declarations, using only the parent signature shells above.
+        consumer.append(member(task, "    @Override\n    protected String successMessage()")).append('\n');
+        consumer.append(member(task, "    @Override\n    protected Map<String, Object> resultData()")).append('\n');
         // Exact standOn statements; engine/sacred plumbing is outside these arrival assertions.
         String compiler = Files.readString(main.resolve("pathing/goal/GoalCompiler.java"));
         add(src, args, "com/dwinovo/numen/core/pathing/goal/GoalCompiler.java", """
@@ -368,6 +396,90 @@ class MoveToArrivalConsumerTest {
         var sameColumn = probe("membershipScan", axes, 0, 0, 0, 0);
         assertEquals(true, sameColumn.get("reached"));
         assertEquals(1, sameColumn.get("scans"), "same-column feet and pathStart still share one reference");
+    }
+
+    @Test void v04NearSuccessReportsActualPositionWithoutInventingVerticalFailure() throws Exception {
+        var r = blockCopy(384.4245480558926, 51, 626.3000000119209, 51, true, false);
+        assertEquals(true, r.get("close")); assertEquals(false, r.get("exact"));
+        String message = (String) r.get("message");
+        assertEquals("accepted near the requested cell 385,51,624 (not the exact cell); actual position "
+                + "x=384.4245480558926, y=51.0, z=626.3000000119209; horizontal distance 2.10 blocks; "
+                + "same slab-aware feet elevation as target cell Y (feet vertical offset 0 blocks).", message);
+        for (String forbidden : List.of("shaft", "air", "BELOW", "did NOT reach", "HORIZONTAL")) {
+            assertFalse(message.contains(forbidden), forbidden);
+        }
+        assertEquals(Map.of("final_x", 384.4245480558926, "final_y", 51.0,
+                "final_z", 626.3000000119209, "ground_y", 51), r.get("data"));
+    }
+
+    @Test void exactBlockKeepsOriginalSuccessCopy() throws Exception {
+        var r = blockCopy(385.5, 51, 624.5, 51, true, false);
+        assertEquals(true, r.get("exact")); assertEquals(true, r.get("close"));
+        assertEquals("reached the exact cell 385,51,624.", r.get("message"));
+    }
+
+    @Test void sameElevationWithLateralOffsetDoesNotClaimHorizontalArrival() throws Exception {
+        var r = blockCopy(386.5, 51, 624.5, 51, true, false);
+        assertEquals(true, r.get("close")); assertEquals(false, r.get("exact"));
+        assertEquals("accepted near the requested cell 385,51,624 (not the exact cell); actual position "
+                + "x=386.5, y=51.0, z=624.5; horizontal distance 1.00 blocks; "
+                + "same slab-aware feet elevation as target cell Y (feet vertical offset 0 blocks).", r.get("message"));
+    }
+
+    @Test void inclusiveVerticalSlackReportsSignedFeetOffsets() throws Exception {
+        // Deliberately split slab-aware feet, raw blockPosition and continuous body Y.
+        // These are boundary inputs only, NOT a simulation of slab/physics resolution.
+        var above = blockCopy(386.5, 52.5, 624.5, 53, true, false);
+        var below = blockCopy(386.5, 48.5, 624.5, 49, true, false);
+        for (var r : List.of(above, below)) {
+            assertEquals(true, r.get("close")); assertEquals(false, r.get("exact"));
+        }
+        assertTrue(((String) above.get("message")).endsWith("slab-aware feet vertical offset +2 blocks from target cell Y."));
+        assertTrue(((String) below.get("message")).endsWith("slab-aware feet vertical offset -2 blocks from target cell Y."));
+        assertTrue(((String) above.get("message")).contains("y=52.5"));
+        assertTrue(((String) below.get("message")).contains("y=48.5"));
+        var sameFeetY = blockCopy(386.5, 50.5, 624.5, 51, true, false);
+        assertEquals(true, sameFeetY.get("close"));
+        assertTrue(((String) sameFeetY.get("message")).endsWith("same slab-aware feet elevation as target cell Y (feet vertical offset 0 blocks)."));
+    }
+
+    @Test void oneBeyondEitherVerticalSlackEdgeStillRejectsNearSuccess() throws Exception {
+        for (int feetY : List.of(48, 54)) {
+            var r = blockCopy(386.5, feetY, 624.5, feetY, true, false);
+            assertEquals(false, r.get("close")); assertEquals(false, r.get("exact"));
+        }
+        // A direct copy probe is NOT evidence of SUCCESS when close/reached are both false.
+    }
+
+    @Test void blockNearSuccessKeepsGroundOrWaterGateNotAir() throws Exception {
+        assertEquals(true, blockCopy(386.5, 51, 624.5, 51, true, false).get("close"));
+        assertEquals(true, blockCopy(386.5, 51, 624.5, 51, false, true).get("close"));
+        assertEquals(false, blockCopy(386.5, 51, 624.5, 51, false, false).get("close"));
+    }
+
+    @Test void blockNearSuccessUsesContinuousRadiusAtThreeAndThreePointOne() throws Exception {
+        var edge = blockCopy(388.5, 51, 624.5, 51, true, false);
+        var outside = blockCopy(388.6, 51, 624.5, 51, true, false);
+        assertEquals(true, edge.get("close")); assertEquals(false, edge.get("exact"));
+        assertEquals(false, outside.get("close")); assertEquals(false, outside.get("exact"));
+        assertTrue(((String) edge.get("message")).contains("horizontal distance 3.00 blocks"));
+    }
+
+    @Test void columnLevelAndFindKeepOriginalSuccessCopy() throws Exception {
+        assertEquals("reached the location x=6185 z=6130 (standing on the ground at y=80).",
+                column("singleGap", 0, 80, 0, 80, true, false, false).get("message"));
+        assertEquals("reached elevation y=80.",
+                run("YLEVEL", "twoAir", 20, 80, 20, 80, true, false, false).get("message"));
+        assertEquals("reached elevation y=79 (requested y=80).",
+                run("YLEVEL", "twoAir", 20, 79, 20, 79, true, false, false).get("message"));
+        assertEquals("arrived beside minecraft:chest at 6185,80,6130 — within reach to use.",
+                run("FIND", "twoAir", 1, 80, 1, 80, true, false, false).get("message"));
+    }
+
+    static Map<String,Object> blockCopy(double x, double y, double z, int feetY,
+                                         boolean ground, boolean water) throws Exception {
+        return probe("blockCopy", new Class<?>[]{double.class, double.class, double.class,
+                int.class, boolean.class, boolean.class}, x, y, z, feetY, ground, water);
     }
 
     @SuppressWarnings("unchecked")

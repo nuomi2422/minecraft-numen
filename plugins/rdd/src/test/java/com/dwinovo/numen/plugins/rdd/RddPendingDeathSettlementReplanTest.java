@@ -58,7 +58,6 @@ class RddPendingDeathSettlementReplanTest {
         String downstream = admission + " SubtaskStatus status = chain.currentSubtaskStatus(); Map<String,Integer> counts = countInventory(ap);\n"
                 + failed + " if (status == SubtaskStatus.RUNNING) trace.add(\"kickoff_boundary\"); }\n";
         String generated = HEAD
-                + between(source, "    private record DeferredDeath(", "    /** 同伴自绑床位")
                 + detectorExcerpt(between(recovery, "    private final Map<UUID, RetryState> retries", "    private final RddFurnaceWatch"))
                 + between(recovery, "    private static final int MAX_SUBTASK_RETRIES", "    /** Level 2 重试计数")
                 + method(source, "    private static boolean deferDeathReplan(")
@@ -105,7 +104,7 @@ class RddPendingDeathSettlementReplanTest {
                 location(TaskChain.class) + File.pathSeparator + location(Gson.class) + File.pathSeparator
                         + System.getProperty("java.class.path"), "-d", output.toString(), java.toString(), dispatcher.toString()));
         // Compile the pure host dependencies unchanged, alongside the source-excerpt host.
-        for (String name : List.of("RddReplanTransition", "RddSurvivalGate", "DeathPreparationHost", "RddDeathLedgerStore", "RddOptionalFood", "RddMainlineAdmission"))
+        for (String name : List.of("RddReplanTransition", "RddSurvivalGate", "DeathPreparationHost", "RddDeathLedgerStore", "RddOptionalFood", "RddMainlineAdmission", "RddDeferredDeathReplan"))
             args.add(plugin.resolve(name + ".java").toString());
         var compiler = ToolProvider.getSystemJavaCompiler();
         assertNotNull(compiler, "JDK required by existing source-excerpt test pattern");
@@ -340,7 +339,11 @@ class RddPendingDeathSettlementReplanTest {
         return (Boolean) call("consumeDeferredDeathReplan", new Class<?>[]{UUID.class, TaskChain.class, Runnable.class}, id, chain,
                 (Runnable) () -> { throw new AssertionError("stale/duplicate must not park an owner"); });
     }
-    @SuppressWarnings("unchecked") private static Map<UUID, Object> deferred() throws Exception { return (Map<UUID, Object>) field("DEFERRED_DEATH_REPLANS"); }
+    @SuppressWarnings("unchecked") private static Map<UUID, Object> deferred() throws Exception {
+        var f = loader.loadClass(PACKAGE + "RddDeferredDeathReplan").getDeclaredField("PENDING");
+        f.setAccessible(true);
+        return (Map<UUID, Object>) f.get(null);
+    }
     @SuppressWarnings("unchecked") private static Map<UUID, RddRuntime> runtimes() throws Exception { return (Map<UUID, RddRuntime>) field("RUNTIMES"); }
     private static void setField(String name, Object value) throws Exception { var f = host.getDeclaredField(name); f.setAccessible(true); f.set(null, value); }
 
@@ -514,7 +517,7 @@ class RddPendingDeathSettlementReplanTest {
                 public static void reset(UUID id,RddRuntime rt,Path dir) {
                     RUNTIMES.clear(); RUNTIMES.put(id,rt); REPLAN_COUNTS.clear(); DEATH_SETTLEMENTS.clear();
                     trace.clear(); events.clear(); replanEnteredAt.clear(); plannerRequests=0; ledgerDir=dir;
-                    DEFERRED_DEATH_REPLANS.clear(); retries.clear(); gapParked.clear();
+                    RddDeferredDeathReplan.clearAll(); retries.clear(); gapParked.clear();
                     riskAllowed=true; captureFails=false; observedCounts=Map.of();
                 }
                 public static RddRuntime runtime(UUID id) { return RUNTIMES.get(id); }
