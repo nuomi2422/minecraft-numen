@@ -135,6 +135,11 @@ final class RddRepairLossAnalysis {
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death latest =
                     com.dwinovo.numen.rdd.core.RddDeathLedger.latest(companionId);
             if (latest == null || latest.lostItems().isEmpty()) return;
+            var owner = RddPlugin.runtime(companionId);
+            if (owner != null && owner.chain().primaryStatus() == com.dwinovo.numen.rdd.api.PrimaryGoalStatus.COMPLETED) {
+                REJECTED_ADVICE.keySet().removeIf(key -> key.startsWith(companionId + "|"));
+                return; // completed work cannot receive a delayed route-review request
+            }
             // Existing Detector cadence supplies fresh counts; retry only a rejected confirmed
             // advisory, preserving its original phase. Ordinary same-batch analysis stays latched.
             String prefix = companionId + "|" + latest.seq() + "|";
@@ -181,6 +186,11 @@ final class RddRepairLossAnalysis {
                                                              int seqHint) {
         try {
             if (companionId == null) return null;
+            var activeRuntime = RddPlugin.runtime(companionId);
+            if (activeRuntime != null && activeRuntime.chain().primaryStatus() == com.dwinovo.numen.rdd.api.PrimaryGoalStatus.COMPLETED) {
+                REJECTED_ADVICE.keySet().removeIf(key -> key.startsWith(companionId + "|"));
+                return null;
+            }
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death death = deathForRecompute(companionId, seqHint);
             if (death == null || death.lostItems().isEmpty()) return null;
             String dedupeKey = companionId + "|" + death.seq() + "|" + phase;
@@ -294,14 +304,14 @@ final class RddRepairLossAnalysis {
     /** Read declared remaining requirements only: no lazy expansion, cache overwrite or world read. */
     static List<RequirementManifest.Manifest> remainingManifests(
             com.dwinovo.numen.rdd.core.TaskChain chain, RequirementManifest.Manifest current) {
-        if (chain == null) return current == null ? List.of() : List.of(current);
+        if (chain == null || chain.primaryStatus() == com.dwinovo.numen.rdd.api.PrimaryGoalStatus.COMPLETED) return List.of();
         var all = chain.goal().primaryGoals();
         int index = all.indexOf(chain.currentPrimary());
         if (index < 0) return current == null ? List.of() : List.of(current);
         List<RequirementManifest.Manifest> out = new ArrayList<>();
         for (int i = index; i < all.size(); i++) {
-            out.add(i == index && current != null ? current
-                    : RddRequirementDetector.forPrimary(all.get(i), chain.goal().id()));
+            // The UUID cache may still describe the previous stage; read current declarations locally.
+            out.add(RddRequirementDetector.forPrimary(all.get(i), chain.goal().id()));
         }
         return List.copyOf(out);
     }
