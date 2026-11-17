@@ -224,6 +224,37 @@ public final class Menace {
         return found;
     }
 
+    /** A known shooter can hurt from outside melee reach; do not enlarge the melee movement ring. */
+    public static boolean rangedThreat(Mob foe, LivingEntity self) {
+        if (!rangedWithinEscapeRange(foe, self)) {
+            return false;
+        }
+        // A fresh real hit remains evidence even if the shooter has just moved behind cover.
+        // This is engagement evidence, not a claim of a clear/safe route to charge along.
+        int age = self.tickCount - self.getLastHurtByMobTimestamp();
+        boolean recentHit = self.getLastHurtByMob() == foe && age >= 0 && age <= 100;
+        return recentHit || (foe.getTarget() == self && foe.hasLineOfSight(self));
+    }
+
+    /** Validity/distance only: not sufficient to authorize a new fight without engagement evidence. */
+    public static boolean rangedWithinEscapeRange(Mob foe, LivingEntity self) {
+        return foe instanceof net.minecraft.world.entity.monster.RangedAttackMob
+                && hostile(foe) && foe.isAlive() && !foe.isRemoved() && foe.level() == self.level()
+                && !foe.isAlliedTo(self) && !self.isAlliedTo(foe)
+                && self.distanceToSqr(foe) <= FLEE_DISTANCE * FLEE_DISTANCE;
+    }
+
+    /** One candidate set shared by reflex admission and the attack consumer; distant bystanders stay out. */
+    public static List<Mob> combatantsAround(LivingEntity self, double localRadius) {
+        List<Mob> found = new ArrayList<>();
+        for (Mob mob : hostilesAround(self, Math.max(localRadius, FLEE_DISTANCE))) {
+            if (self.distanceToSqr(mob) <= localRadius * localRadius || rangedThreat(mob, self)) {
+                found.add(mob);
+            }
+        }
+        return found;
+    }
+
     /**
      * 战斗走位用的威胁场:间距取<b>裸</b>危险半径(不含格量化补偿)。
      *

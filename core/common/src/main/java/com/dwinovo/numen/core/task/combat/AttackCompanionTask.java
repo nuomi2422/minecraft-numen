@@ -152,6 +152,8 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
     private AttackPlan.Action lastLoggedAction;
     /** 上一刻的决定。判据靠它做迟滞与承诺,见 {@link AttackPlan#decide}。 */
     private AttackPlan.Move lastMove;
+    /** Identities authorized by the previous real field, not nearby bystanders or a second task owner. */
+    private java.util.Set<Integer> knownRangedEngagements = java.util.Set.of();
 
     /**
      * 逃跑的<b>落点</b>。一次挑定,跑到才换 —— 方向的连续性就是不绕圈的全部原因。
@@ -233,10 +235,22 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
      * 裂出来的新 id 因此自动进场,而点名的清单一裂开就作废了。
      */
     private Battlefield surveyField() {
-        hostiles = Menace.hostilesAround(player, FIELD_RADIUS);
+        // Keep only an already-known shooter's identity during an active retreat; LOS loss is not escape.
+        List<Mob> retreatingFrom = lastMove != null && lastMove.action() == AttackPlan.Action.DISENGAGE
+                ? hostiles.stream().filter(m -> knownRangedEngagements.contains(m.getId())
+                        && !r.terminal(m.getId()) && Menace.rangedWithinEscapeRange(m, player)).toList()
+                : List.of();
+        hostiles = r.indiscriminate ? Menace.combatantsAround(player, FIELD_RADIUS)
+                : Menace.hostilesAround(player, FIELD_RADIUS);
+        if (r.indiscriminate) {
+            for (Mob mob : retreatingFrom) {
+                if (!hostiles.contains(mob)) hostiles.add(mob);
+            }
+        }
         List<Battlefield.Foe> foes = new ArrayList<>();
         for (var mob : hostiles) {
-            boolean engaging = mob.getTarget() == player || mob == player.getLastHurtByMob();
+            boolean engaging = mob.getTarget() == player || mob == player.getLastHurtByMob()
+                    || (r.indiscriminate && retreatingFrom.contains(mob));
             boolean authorized = r.indiscriminate ? engaging : r.entityIds.contains(mob.getId());
             if (r.terminal(mob.getId())) {
                 // 打完了、丢了、或者走不到又射不到的:<b>整只移出局面</b>。留着当"还有东西在
@@ -267,12 +281,23 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                 }
             }
         }
+        knownRangedEngagements = foes.stream().filter(f -> f.engaging() && f.authorized())
+                .filter(f -> hostiles.stream().anyMatch(m -> m.getId() == f.id()
+                        && Menace.rangedWithinEscapeRange(m, player)))
+                .map(Battlefield.Foe::id).collect(java.util.stream.Collectors.toSet());
         Loadout loadout = Loadout.forTarget(player, player);
         return new Battlefield(
                 Menace.effectiveHealth(player),
                 reachToTarget(),
                 loadout.hasMelee(), loadout.hasRanged(),
                 retreatFailures >= MAX_RETREAT_FAILURES, foes);
+    }
+
+    /** Continue an existing retreat through brief loss of sight, never authorize a new fight. */
+    public boolean retreatingFromKnownRangedThreat() {
+        return r.indiscriminate && lastMove != null && lastMove.action() == AttackPlan.Action.DISENGAGE
+                && hostiles.stream().anyMatch(m -> knownRangedEngagements.contains(m.getId())
+                        && !r.terminal(m.getId()) && Menace.rangedWithinEscapeRange(m, player));
     }
 
     private static boolean containsId(List<Battlefield.Foe> foes, int id) {

@@ -34,9 +34,9 @@ import java.util.List;
  * 重派等于从头挖一遍。
  *
  * <h2>什么算危险</h2>
- * 看的是<b>它已经逼到多近</b>:还远就有时间(模型看得见它,该由模型决定),近了就没有提前量,
- * 当场接管。这条线按威胁类型取自 {@link Menace}——爬行者 7.5(引信开始倒退的距离)、
- * 末影水晶 12(爆炸威力的两倍)、寻常怪 {@link #MELEE_DANGER}。
+ * 近战和爆炸仍按原危险半径；远程敌人已经瞄准且有视线或刚造成真实伤害时，
+ * 不等它进入近战圈。候选与原 attack 共用；是否能打、该退仍由原战斗策略决定，
+ * 发现射手不等于证明有安全冲锋路线。
  */
 public final class MobDefenseChain implements Task, Reflex {
 
@@ -109,7 +109,7 @@ public final class MobDefenseChain implements Task, Reflex {
             return false;
         }
         if (fight != null) {
-            return threat; // 打着呢,但危险已经消失就立刻交还身体
+            return threat || fight.retreatingFromKnownRangedThreat(); // 失去射手视线不等于已完成退避
         }
         if (SurvivalDecisions.mobDefenseTriggered(threat)) {
             return true;
@@ -246,14 +246,14 @@ public final class MobDefenseChain implements Task, Reflex {
     private List<Mob> dangersNear(NumenPlayer companion) {
         LivingEntity attacker = companion.getLastHurtByMob();
         List<Mob> near = new ArrayList<>();
-        for (Mob m : Menace.hostilesAround(companion, SCAN_RADIUS)) {
+        for (Mob m : Menace.combatantsAround(companion, SCAN_RADIUS)) {
             if (m != attacker && m.getTarget() != companion) {
                 continue;
             }
 
             // "够危险了没有"与站位、退避问的是<b>同一个函数</b>:它自己的危险半径。
             // 用一条固定的线时每种怪都判错——爬行者要七格,僵尸两格就够。
-            if (Menace.tooClose(m, companion)) {
+            if (Menace.tooClose(m, companion) || Menace.rangedThreat(m, companion)) {
                 near.add(m);
             }
         }
