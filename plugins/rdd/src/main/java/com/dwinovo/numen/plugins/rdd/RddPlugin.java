@@ -121,9 +121,6 @@ public final class RddPlugin implements NumenPlugin {
     private static final Map<String, Integer> REPLAN_COUNTS = new ConcurrentHashMap<>();
     /** deathSeq settlement idempotency: one death episode may produce at most one planner handoff. */
     private static final Set<String> DEATH_SETTLEMENTS = ConcurrentHashMap.newKeySet();
-    // 2026-11-16 death50: settlement may precede legal primary admission; this is not an accepted request.
-    private record DeferredDeath(TaskChain owner, String primaryId, int planRevision, int deathSeq, String reason) {}
-    private static final Map<UUID, DeferredDeath> DEFERRED_DEATH_REPLANS = new ConcurrentHashMap<>();
     /** 同伴自绑床位复活锚点：companionId → 同伴自己的 respawn 床位（成功 sleep 时由原版写入）。复活(SPAWN)时 TP 到床旁。 */
     private static final Map<UUID, BedAnchor> BED_RESPAWN_PREFERENCE = new ConcurrentHashMap<>();
     /**
@@ -441,7 +438,7 @@ public final class RddPlugin implements NumenPlugin {
     private static void clearWorldState() {
         CALLBACKS.clear(() -> {
             RddReplanTransition.clearAll();
-            DEFERRED_DEATH_REPLANS.clear();
+            RddDeferredDeathReplan.clearAll();
             DECOMPOSING.clear();
             RddGoalDriver.clearAll();
             RddCompanionBody.clearAll();
@@ -1193,7 +1190,7 @@ private static String withAssets(UUID companionId, String rddContext) {
     private static void bindCurrent(UUID companionId, Goal goal, boolean restarted,
                                     com.dwinovo.numen.api.RationaleContext.Entry why) {
         BODY.remove(companionId);
-        DEFERRED_DEATH_REPLANS.remove(companionId);
+        RddDeferredDeathReplan.discard(companionId);
         DECOMPOSING.remove(companionId);
         // 换目标 = 旧支线作废：立即取消，且不恢复旧主线（新链自己重新选择）。
         SideTaskHost.cancel(companionId, "mainline goal replaced");
@@ -1633,26 +1630,20 @@ private static String withAssets(UUID companionId, String rddContext) {
                 || (chain.primaryStatus() != PrimaryGoalStatus.PENDING
                     && chain.primaryStatus() != PrimaryGoalStatus.WAITING
                     && chain.primaryStatus() != PrimaryGoalStatus.RECOVERING)) return false;
-        DEFERRED_DEATH_REPLANS.put(companionId, new DeferredDeath(chain, chain.currentPrimary().id(),
-                chain.planRevision(), seq, reason));
+        RddDeferredDeathReplan.defer(companionId, chain, seq, reason);
         return true;
     }
 
     /** After the original gates/activation, claim once before any old-plan dispatch. Rejection is not retryable. */
     static boolean consumeDeferredDeathReplan(UUID companionId, TaskChain owner, Runnable onRejected) {
-        var pending = DEFERRED_DEATH_REPLANS.get(companionId);
+        var pending = RddDeferredDeathReplan.peek(companionId);
         if (pending == null) return false;
         var rt = runtime(companionId);
         if (rt == null || rt.chain() != owner) return false; // an old caller cannot clear a replacement owner's handoff
         var death = RddDeathLedger.latest(companionId);
-        if (owner != pending.owner() || owner.currentPrimary() == null
-                || !pending.primaryId().equals(owner.currentPrimary().id())
-                || pending.planRevision() != owner.planRevision() || death == null || death.seq() != pending.deathSeq()) {
-            DEFERRED_DEATH_REPLANS.remove(companionId, pending);
-            return false;
-        }
-        if (owner.primaryStatus() != PrimaryGoalStatus.ACTIVE) return false;
-        if (!DEFERRED_DEATH_REPLANS.remove(companionId, pending)) return false;
+        var claimed = RddDeferredDeathReplan.claim(companionId, pending, owner,
+                death == null ? Integer.MIN_VALUE : death.seq(), true);
+        if (claimed == null) return false;
         boolean accepted = false;
         try {
             accepted = requestReplan(companionId, pending.reason(), true, null, true);
@@ -1792,7 +1783,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (body == null) return;
         UUID companionId = body.getUUID();
         if (companionId == null) return;
-        DEFERRED_DEATH_REPLANS.remove(companionId);
+        RddDeferredDeathReplan.discard(companionId);
         // 死亡失效不靠持久 chainId 猜身体代次；先撤本次在飞生存计划，再走原死亡恢复。
         RddRuntime survivalRuntime = RUNTIMES.get(companionId);
         RddReplanTransition.onDeath(companionId, survivalRuntime == null ? null : survivalRuntime.chain(),
@@ -2681,7 +2672,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
         if (companionId == null) return;
         if (completionPending(companionId)) throw new IllegalStateException("finish pending stage completion before replacing goal");
         RddRuntime previous = RUNTIMES.remove(companionId);
-        DEFERRED_DEATH_REPLANS.remove(companionId);
+        RddDeferredDeathReplan.discard(companionId);
         RddReplanTransition.invalidate(companionId);
         BODY.remove(companionId);
         RddGoalDriver.clear(companionId);
@@ -2786,7 +2777,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
                     publishTaskSnapshot(companionId, "task_removed");
                 }
                 RUNTIMES.remove(companionId);
-                DEFERRED_DEATH_REPLANS.remove(companionId);
+                RddDeferredDeathReplan.discard(companionId);
                 RddReplanTransition.invalidate(companionId);
                 BODY.remove(companionId);
                 LAST_CONTEXT.remove(companionId);
