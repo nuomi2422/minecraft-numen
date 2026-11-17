@@ -321,6 +321,37 @@ class RddPendingDeathSettlementReplanTest {
         assertEquals(0, number("plannerRequests"));
     }
 
+    @Test void absentInventoryTimestampMustReachSettlementRepairAsUnknown(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        setField("inventoryAt", null);
+        assertEquals(Map.of(), call("lastInventory", new Class<?>[]{UUID.class}, f.id),
+                "the accessor default is empty even when no inventory was observed");
+
+        f.finishDropsAbsent(); // actual SideTaskHost -> source-extracted onDeathRecoverySettled
+
+        assertNotNull(event("death_recovery_settled"), "the actual caller must complete settlement");
+        assertAll("missing observation timestamp is unknown, not observed empty inventory",
+                () -> assertEquals(1L, trace().stream().filter("recompute:confirmed_lost:50"::equals).count()),
+                () -> assertNull(field("recomputedCounts"), "caller must pass null despite lastInventory defaulting to Map.of()"),
+                () -> assertEquals(false, event("death_recovery_settled").get("inventoryKnown"),
+                        "actual settlement event must agree with the repair input"));
+    }
+
+    @Test void observedEmptyInventoryMustReachSettlementRepairAsKnownEmpty(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        assertEquals(1000L, field("inventoryAt"), "existing fixtures retain their observed timestamp");
+
+        f.finishDropsAbsent();
+
+        assertNotNull(event("death_recovery_settled"), "the actual caller must complete settlement");
+        assertAll("an observed empty inventory is known, not missing evidence",
+                () -> assertEquals(1L, trace().stream().filter("recompute:confirmed_lost:50"::equals).count()),
+                () -> assertNotNull(field("recomputedCounts"), "nonnull timestamp must preserve known empty counts"),
+                () -> assertEquals(Map.of(), field("recomputedCounts")),
+                () -> assertEquals(true, event("death_recovery_settled").get("inventoryKnown"),
+                        "actual settlement event must agree with the repair input"));
+    }
+
     private static void assertRejectedRemainsParked(Fixture f) throws Exception {
         call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
         assertEquals(SubtaskStatus.FAILED, f.chain.currentSubtaskStatus());
@@ -512,6 +543,8 @@ class RddPendingDeathSettlementReplanTest {
                 static int plannerRequests; static Path ledgerDir;
                 static boolean riskAllowed, captureFails;
                 static Map<String,Integer> observedCounts = Map.of();
+                static Long inventoryAt = 1000L;
+                static Map<String,Integer> recomputedCounts;
                 static class Log { void info(String s,Object... a) {} void warn(String s,Object... a) {} }
                 static final Log LOG = new Log();
                 public static void reset(UUID id,RddRuntime rt,Path dir) {
@@ -519,6 +552,7 @@ class RddPendingDeathSettlementReplanTest {
                     trace.clear(); events.clear(); replanEnteredAt.clear(); plannerRequests=0; ledgerDir=dir;
                     RddDeferredDeathReplan.clearAll(); retries.clear(); gapParked.clear();
                     riskAllowed=true; captureFails=false; observedCounts=Map.of();
+                    inventoryAt=1000L; recomputedCounts=null;
                 }
                 public static RddRuntime runtime(UUID id) { return RUNTIMES.get(id); }
                 public static void sideEvent(String e,Map<String,Object> d) { SideTaskHost.publish(e,d); }
@@ -529,7 +563,7 @@ class RddPendingDeathSettlementReplanTest {
                 static void ensureLedgerLoaded(UUID id) { RddDeathLedger.restore(id,RddDeathLedgerStore.load(ledgerDir,id)); }
                 static void warnLedgerStore(String e,Map<String,Object> d) { throw new AssertionError(e+d); }
                 static Map<String,Integer> lastInventory(UUID id) { return Map.of(); }
-                static Long lastInventoryAtMillis(UUID id) { return 1000L; }
+                static Long lastInventoryAtMillis(UUID id) { return inventoryAt; }
                 static PlanningAssetSnapshot planningSnapshot(UUID id) { return PlanningAssetSnapshot.from(observedCounts,runtime(id).assets()); }
                 static void saveRuntimes() {}
                 static boolean supervisionEnabled() { return true; }
@@ -563,6 +597,7 @@ class RddPendingDeathSettlementReplanTest {
                 static class RddRepairDispatch {
                     static void clearDeathRecoveryHandoff(UUID id,int seq) {}
                     static void recomputeAfterDeath(UUID id,Map<String,Integer> c,boolean lost,String phase,int seq) {
+                        recomputedCounts=c;
                         trace.add("recompute:"+phase+":"+seq);
                     }
                 }
