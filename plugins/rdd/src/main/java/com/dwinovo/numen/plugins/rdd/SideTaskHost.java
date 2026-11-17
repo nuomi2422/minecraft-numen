@@ -370,7 +370,11 @@ final class SideTaskHost {
         } catch (RuntimeException ignored) {
             // 拿不到世界信息 → 引擎按"只拒这一次"降级（不猜日子、不锁整晚）
         }
+        String declinedType = currentTypeId(companionId);
         boolean declined = ENGINE.decline(companionId, reason, worldId, gameDay);
+        if (declined && "food_supply".equals(declinedType)) {
+            LAST_FOOD_DONE_MS.put(companionId, System.currentTimeMillis());
+        }
         SIDE_CONTEXT.remove(companionId);
         LAST_NUDGE_GAME_TIME.remove(companionId);
         persist();

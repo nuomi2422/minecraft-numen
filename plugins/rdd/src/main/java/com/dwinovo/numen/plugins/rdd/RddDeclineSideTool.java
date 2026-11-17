@@ -17,7 +17,7 @@ import java.util.function.Consumer;
  *
  * <p>此前支线上下文写的是「你现在<b>最高优先</b>的目标」，工具面上也没有任何拒绝的出口 ——
  * 执行侧只能照着办。光改文案不够：拒绝之后得有地方落账（事件）、有地方收（回主线）、
- * 还得保证「今天别再问我同一件事」。这三件都在 {@code SideTaskHost.decline} 里做完，
+ * 还得按支线原有周期抑制重复询问。这三件都在 {@code SideTaskHost.decline} 里做完，
  * 本工具只负责把它变成一个她真能调的按钮。
  *
  * <h2>边界</h2>
@@ -33,12 +33,13 @@ final class RddDeclineSideTool implements NumenTool {
 
     @Override
     public String description() {
-        return "Decline the CURRENT side task (sleep / recovery / learner nudge) when going would be useless or lethal: "
+        return "Decline the CURRENT side task (food supply / sleep / recovery / learner nudge) when going would be useless or lethal: "
                 + "no weapon, mobs at the bed, no bed within reach, drops already unreachable, or you know you cannot finish it. "
                 + "A side task is a SUGGESTION with a cost, not an order — declining is a legitimate choice, and it must be "
                 + "explained with a concrete reason (what you observed). "
                 + "Effects: the side task ends as DECLINED (not cancelled, not failed), the mainline unfreezes immediately, "
-                + "and the same side-task type will not be offered again today. "
+                + "repeat offers follow its existing schedule: food supply has a 5-minute cooldown with an urgent hunger "
+                + "exception when no food is available; daily tasks wait until another game day; recovery can return after a new death. "
                 + "Do not use it to dodge work you could do; use it when the trip itself is the problem.";
     }
 
@@ -81,8 +82,13 @@ final class RddDeclineSideTool implements NumenTool {
                         "decline refused: side task already ended").toJson());
                 return;
             }
+            String schedule = switch (currentType) {
+                case "food_supply" -> "5-minute cooldown; urgent hunger with no food can trigger supply sooner";
+                case "death_recovery" -> "recovery can be offered after a new death";
+                default -> "repeat offers follow this side task's existing schedule";
+            };
             reply.accept(com.dwinovo.numen.task.TaskResult.ok(
-                    "side task declined (" + currentType + "); mainline resumed — do not wait for it again today",
+                    "side task declined (" + currentType + "); mainline resumed — " + schedule,
                     Map.of("type", currentType)).toJson());
         } catch (RuntimeException ex) {
             reply.accept(com.dwinovo.numen.task.TaskResult.fail("decline failed: " + ex.getMessage()).toJson());
