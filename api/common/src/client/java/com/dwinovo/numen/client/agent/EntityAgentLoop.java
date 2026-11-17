@@ -631,8 +631,9 @@ public final class EntityAgentLoop {
     /** 系统事件的入队实现（与 {@link #enqueueOwnerWords} 同形，只是类型与日志不同）。 */
     private boolean enqueueSystemEvent(String text) {
         boolean deferred = awaitingLlmResponse || dispatcher.busy();
-        enqueueBothQueues(com.dwinovo.numen.event.EventTypes.EVENT, text,
-                System.currentTimeMillis(), true);
+        // Supervision is a wake-worthy event, including after an empty LLM reply.
+        // Reuse urgent recovery so owner/configuration pauses and turn guards stay authoritative.
+        pushEvent(com.dwinovo.numen.event.EventTypes.EVENT, text, System.currentTimeMillis(), true);
         Constants.LOG.info("[numen-entity#{}] system event ({} chars){}: {}",
                 entityUuid, text.length(), deferred ? " — buffered (mid-turn)" : "", text);
         return true;
