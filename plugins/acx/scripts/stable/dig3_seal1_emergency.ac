@@ -1,0 +1,364 @@
+{
+  "name": "dig3_seal1_emergency",
+  "version": "1",
+  "description": "临时急用（非规范）：向下挖三格，身体落到坑底，向上封一格，检查四周缺口补上；只有身体确实在坑内且封顶方块后态成立才算成功。",
+  "tags": [
+    "shelter",
+    "emergency",
+    "dig",
+    "seal",
+    "temporary",
+    "挖三填一"
+  ],
+  "planner_notes": "2026-11-17 主人拍摄急用的唯一临时例外。只调用现成积木(build/goto/inspect_block/get_self_status/safety_check)，不新增AC框架、不瞬移刷物。执行顺序：读自身→安全检查→挖脚下三格→goto到坑底→复查身体Y确实下降→在头顶上一层封盖→再读身体与检查实际方块后态→四周同级缺口air则补。任一步失败按fail走，绝不在身体没进坑时报成功。",
+  "safety_notes": "液体/脚下不安全直接fail；封盖只在身体已确认入坑、且封盖方块后态被inspect_block证实后才继续；人还在坑外时守卫先失败，禁止\"人在外封空腔\"报成功。临时债，后续删除或由规范化实现替换。",
+  "limits": {
+    "max_steps": 64,
+    "max_timeout_ms": 300000
+  },
+  "steps": [
+    {
+      "id": "read0",
+      "block": "get_self_status",
+      "params": {}
+    },
+    {
+      "id": "safety",
+      "block": "safety_check",
+      "params": {
+        "avoid_liquids": true,
+        "check_footing": true,
+        "ledge_safety": true
+      }
+    },
+    {
+      "id": "vars",
+      "block": "set",
+      "params": {
+        "x0": {
+          "$calc": "floor($read0.position.x)"
+        },
+        "y0": {
+          "$calc": "floor($read0.position.y)"
+        },
+        "z0": {
+          "$calc": "floor($read0.position.z)"
+        },
+        "cap_y": {
+          "$calc": "floor($read0.position.y) - 1"
+        }
+      }
+    },
+    {
+      "id": "guard_safe",
+      "block": "guard",
+      "params": {
+        "on_fail": "fail",
+        "message": "液体或脚下不安全，拒绝挖三填一",
+        "conditions": [
+          {
+            "field": "$safety.safe",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$read0.in_lava",
+            "op": "==",
+            "value": false
+          },
+          {
+            "field": "$read0.in_water",
+            "op": "==",
+            "value": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "dig1",
+      "block": "build",
+      "params": {
+        "op": "set",
+        "block_id": "minecraft:air",
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y0 - 1"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "dig2",
+      "block": "build",
+      "params": {
+        "op": "set",
+        "block_id": "minecraft:air",
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y0 - 2"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "dig3",
+      "block": "build",
+      "params": {
+        "op": "set",
+        "block_id": "minecraft:air",
+        "x": "$var.x0",
+        "y": {
+          "$calc": "$var.y0 - 3"
+        },
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "descend",
+      "block": "goto",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 + 0.5"
+        },
+        "y": {
+          "$calc": "$var.y0 - 3"
+        },
+        "z": {
+          "$calc": "$var.z0 + 0.5"
+        }
+      }
+    },
+    {
+      "id": "read1",
+      "block": "get_self_status",
+      "params": {}
+    },
+    {
+      "id": "guard_in_pit",
+      "block": "guard",
+      "params": {
+        "on_fail": "fail",
+        "message": "身体没有落到坑底，禁止封盖",
+        "conditions": [
+          {
+            "field": "$read1.position.y",
+            "op": "<=",
+            "value": {
+              "$calc": "$var.y0 - 2"
+            }
+          },
+          {
+            "field": "$read1.in_lava",
+            "op": "==",
+            "value": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "cap",
+      "block": "build",
+      "params": {
+        "op": "set",
+        "block_id": "minecraft:dirt",
+        "x": "$var.x0",
+        "y": "$var.cap_y",
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "read2",
+      "block": "get_self_status",
+      "params": {}
+    },
+    {
+      "id": "inspect_cap",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": "$var.cap_y",
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "guard_cap",
+      "block": "guard",
+      "params": {
+        "on_fail": "fail",
+        "message": "封盖方块后态不成立或身体不在坑内",
+        "conditions": [
+          {
+            "field": "$inspect_cap.block",
+            "op": "==",
+            "value": "minecraft:dirt"
+          },
+          {
+            "field": "$inspect_cap.is_air",
+            "op": "==",
+            "value": false
+          },
+          {
+            "field": "$read2.position.y",
+            "op": "<=",
+            "value": {
+              "$calc": "$var.y0 - 2"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "inspect_n",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": "$var.cap_y",
+        "z": {
+          "$calc": "$var.z0 - 1"
+        }
+      }
+    },
+    {
+      "id": "inspect_s",
+      "block": "inspect_block",
+      "params": {
+        "x": "$var.x0",
+        "y": "$var.cap_y",
+        "z": {
+          "$calc": "$var.z0 + 1"
+        }
+      }
+    },
+    {
+      "id": "inspect_w",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 - 1"
+        },
+        "y": "$var.cap_y",
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "inspect_e",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 + 1"
+        },
+        "y": "$var.cap_y",
+        "z": "$var.z0"
+      }
+    },
+    {
+      "id": "if_n",
+      "block": "if",
+      "params": {
+        "condition": {
+          "field": "$inspect_n.is_air",
+          "op": "==",
+          "value": true
+        }
+      },
+      "children": [
+        {
+          "id": "fill_n",
+          "block": "build",
+          "params": {
+            "op": "set",
+            "block_id": "minecraft:dirt",
+            "x": "$var.x0",
+            "y": "$var.cap_y",
+            "z": {
+              "$calc": "$var.z0 - 1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "if_s",
+      "block": "if",
+      "params": {
+        "condition": {
+          "field": "$inspect_s.is_air",
+          "op": "==",
+          "value": true
+        }
+      },
+      "children": [
+        {
+          "id": "fill_s",
+          "block": "build",
+          "params": {
+            "op": "set",
+            "block_id": "minecraft:dirt",
+            "x": "$var.x0",
+            "y": "$var.cap_y",
+            "z": {
+              "$calc": "$var.z0 + 1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "if_w",
+      "block": "if",
+      "params": {
+        "condition": {
+          "field": "$inspect_w.is_air",
+          "op": "==",
+          "value": true
+        }
+      },
+      "children": [
+        {
+          "id": "fill_w",
+          "block": "build",
+          "params": {
+            "op": "set",
+            "block_id": "minecraft:dirt",
+            "x": {
+              "$calc": "$var.x0 - 1"
+            },
+            "y": "$var.cap_y",
+            "z": "$var.z0"
+          }
+        }
+      ]
+    },
+    {
+      "id": "if_e",
+      "block": "if",
+      "params": {
+        "condition": {
+          "field": "$inspect_e.is_air",
+          "op": "==",
+          "value": true
+        }
+      },
+      "children": [
+        {
+          "id": "fill_e",
+          "block": "build",
+          "params": {
+            "op": "set",
+            "block_id": "minecraft:dirt",
+            "x": {
+              "$calc": "$var.x0 + 1"
+            },
+            "y": "$var.cap_y",
+            "z": "$var.z0"
+          }
+        }
+      ]
+    },
+    {
+      "id": "final_read",
+      "block": "get_self_status",
+      "params": {}
+    }
+  ]
+}
