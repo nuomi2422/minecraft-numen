@@ -173,7 +173,7 @@ final class RddStallWatcher {
             stalls.put(ap.getUUID(), new StallState(current.id(), fp, stateKey, 0, 0));
             return false;
         }
-        RddStallPolicy.Check check = RddStallPolicy.check(st.windowFingerprint(), st.unchangedTicks(), observation);
+        RddStallPolicy.Check check = RddStallPolicy.check(st.windowFingerprint(), st.unchangedTicks(), fp, observation.waiting());
         if (check.changed()) {
             // Assets, container output, cooking, or body work counters changed.
             stalls.put(ap.getUUID(), new StallState(current.id(), fp, stateKey, 0, 0));
@@ -334,7 +334,7 @@ final class RddStallWatcher {
         // 2026-10-29（#210 补刀）：库存类判据下 stateKey 也必须只用背包 —— 它是真进展的判据，
         //   位置一变就 resumeFromStalled 把计数清零（我上一轮只改了 windowFp，漏了这条路径）。
         if (isInventoryTarget(current.condition())) stateKey = inventoryKey(ap);
-        String windowFp = observation.fingerprint();
+        String windowFp = isInventoryTarget(current.condition()) ? stateKey : observation.fingerprint();
         StallState st = stalls.get(ap.getUUID());
         if (!RddPlugin.supervisionEnabled()) {
             // 空转止血：暂停监督。AI 自己动了 → 回 RUNNING；否则保持卡住标记，绝不拍醒/绝不判失败。

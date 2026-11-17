@@ -182,10 +182,14 @@ static String parkedBucket(int x, int y, int z) {
     }
 
     static Check check(String previous, int unchanged, Observation observation) {
-        String fingerprint = observation.fingerprint();
+        return check(previous, unchanged, observation.fingerprint(), observation.waiting());
+    }
+
+    /** Compare exactly the window fingerprint selected and stored by the consumer. */
+    static Check check(String previous, int unchanged, String fingerprint, boolean waiting) {
         boolean changed = !fingerprint.equals(previous);
         int next = changed ? 0 : unchanged + 1;
         return new Check(fingerprint, next,
-                observation.waiting() ? WORK_GRACE_CHECKS : IDLE_GRACE_CHECKS, changed);
+                waiting ? WORK_GRACE_CHECKS : IDLE_GRACE_CHECKS, changed);
     }
 }
