@@ -2,6 +2,7 @@ package com.dwinovo.numen.acx.test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -75,6 +76,8 @@ class Dig3Seal1EmergencyAcTest {
         boolean asyncDig = false;
         /** 第 N 单 build（1 起）走"受理"；0 = 关闭。用来让补缝那一单异步。 */
         int asyncCallIndex = 0;
+        /** 受理时是否顺手把世界改了。false = 受理那一刻世界还是原样，完成由测试稍后补上。 */
+        boolean applyOnAccept = true;
 
         static String key(int x, int y, int z) {
             return x + "," + y + "," + z;
@@ -253,6 +256,10 @@ class Dig3Seal1EmergencyAcTest {
             if (!(raw instanceof List<?> ops)) {
                 return Result.failed("ops 必须是数组");
             }
+            if (asyncNow && !w.applyOnAccept) {
+                // 受理 ≠ 完成：回执照收，世界一个方块都没变（真正的任务还在后台跑）
+                return Result.accepted("t-build-" + w.buildCalls, new java.util.LinkedHashMap<>(), "accepted");
+            }
             for (Object o : ops) {
                 if (!(o instanceof Map<?, ?> op)) {
                     continue;
@@ -426,23 +433,28 @@ class Dig3Seal1EmergencyAcTest {
     }
 
     /**
-     * 补缝那一单走真实异步：受理即 PAUSED，之后同一次 run 用探针续跑，
-     * 补后重新取证、再封顶。
+     * 补缝那一单走真实异步，而且要证明「完成是封顶的前置条件」而不是「受理就算完」。
      *
-     * <p><b>引擎语义要说清</b>：{@code for} 的游标在"这一轮开始"时就前进，所以续跑会从
-     * <b>下一个元素</b>继续，被打断那一格自己的 {@code gap_peek2/gap_guard} 不会重跑。
-     * 也就是说这一格不被逐格复核，而是由末段 {@code guard_final} 对 12 格重新取证兜底 ——
-     * 补没补上在最后一定会暴露，绝不静默成功。本用例断言的正是"补上了"这条路。</p>
+     * <p>两段：</p>
+     * <ol>
+     *   <li><b>受理但没完成</b>：回执照收、世界还是空气 → 首跑必须 PAUSED，不许封顶、不许再派第二单；
+     *       这时续跑（补缝仍未落成）也<b>绝不许</b>把盖封上 —— 封盖格必须还是空气。</li>
+     *   <li><b>真的完成了</b>：世界落成、探针报完成 → 同一次 run 续跑才允许封顶，
+     *       而且补缝只派过一次（没有重派）。</li>
+     * </ol>
+     *
+     * <p>引擎语义注记：{@code for} 的游标在"这一轮开始"时就前进，续跑从下一个元素继续，
+     * 被打断那格自己的逐格复核不会重跑。所以第一段能拦住封顶的<b>不是</b>逐格 guard，
+     * 而是封盖前那次「四壁 12 格全部实心」的复核（{@code guard_ready}）——本用例钉的正是它。</p>
      */
     @Test
-    void asyncWallFillPausesThenResumesAndStillCaps() throws Exception {
+    void asyncWallFillMustFinishBeforeTheCap() throws Exception {
+        // ── 第一段：受理 ≠ 完成 ─────────────────────────────────────
         World w = new World();
         w.set(7, 62, 8, AIR);
-        w.asyncCallIndex = 2;   // 第二单 = 补缝那一单，回"受理"
-        // 探针备两次 DONE：无论引擎是"跳过被打断那格"还是"重跑它"，这条用例都只判行为结果
-        FakePorts.Probe probe = new FakePorts.Probe()
-                .thenDone(new java.util.LinkedHashMap<>())
-                .thenDone(new java.util.LinkedHashMap<>());
+        w.asyncCallIndex = 2;      // 第二单（补缝）回"受理"
+        w.applyOnAccept = false;   // 而且受理这一刻世界没变
+        FakePorts.Probe probe = new FakePorts.Probe().thenRunning("still filling");
         Fake.Registry reg = registry(w, probe);
         AcxLoader.LoadReport report = load(reg);
         AcxDefinition def = report.registered().get("dig3_seal1_emergency");
@@ -451,13 +463,39 @@ class Dig3Seal1EmergencyAcTest {
         AcxRunRecord first = runner.run(def, Map.of());
         assertEquals(AcxStatus.PAUSED, first.status(),
                 "补缝受理必须停在 PAUSED，不能报成功: " + first.errorMessage());
+        assertEquals(AIR, w.block(7, 62, 8), "受理 ≠ 完成：这一刻洞还没补上");
+        assertEquals(AIR, w.block(8, 63, 8), "★ 补缝没完成前不许封顶");
+        assertEquals(2, w.buildCalls, "受理之后不许再派第二单");
 
-        AcxRunRecord second = runner.resume(def, first);
-        assertEquals(AcxStatus.SUCCESS, second.status(), "续跑后应当补完并封顶: " + second.errorMessage());
-        // 不断言"探针问过几次"：那是引擎 for 游标的实现细节（跳过被打断那格 / 重跑它），
-        // 本条只钉行为——补完、封顶、身体还在坑里；那一格补不上时由末段 guard_final 兜底。
-        assertEquals(DIRT, w.block(7, 62, 8), "★ 被打断的那一格最终必须仍是补实的");
-        assertEquals(DIRT, w.block(8, 63, 8), "封顶仍要成立");
+        AcxRunRecord blocked = runner.resume(def, first);
+        assertNotEquals(AcxStatus.SUCCESS, blocked.status(),
+                "补缝还没落成，续跑绝不能报成功");
+        assertEquals(AIR, w.block(8, 63, 8),
+                "★ 补缝没落成时，封盖格必须还是空气（不许先封再发现）");
+        assertEquals(2, w.buildCalls, "被拦下时也不许重派补缝");
+
+        // ── 第二段：真的完成后才允许封顶 ───────────────────────────
+        World w2 = new World();
+        w2.set(7, 62, 8, AIR);
+        w2.asyncCallIndex = 2;
+        w2.applyOnAccept = false;
+        FakePorts.Probe probe2 = new FakePorts.Probe()
+                .thenDone(new java.util.LinkedHashMap<>())
+                .thenDone(new java.util.LinkedHashMap<>());
+        Fake.Registry reg2 = registry(w2, probe2);
+        AcxLoader.LoadReport report2 = load(reg2);
+        AcxRunner runner2 = AcxRunner.builder().tools(reg2).catalog(report2.catalog()).build();
+
+        AcxRunRecord first2 = runner2.run(def, Map.of());
+        assertEquals(AcxStatus.PAUSED, first2.status(), "补缝受理应当先停: " + first2.errorMessage());
+
+        w2.set(7, 62, 8, DIRT);    // 后台任务此刻真的完成了
+        AcxRunRecord second2 = runner2.resume(def, first2);
+        assertEquals(AcxStatus.SUCCESS, second2.status(),
+                "补缝真的完成后续跑才该成功: " + second2.errorMessage());
+        assertEquals(DIRT, w2.block(7, 62, 8), "补缝结果必须在");
+        assertEquals(DIRT, w2.block(8, 63, 8), "补完才封顶");
+        assertEquals(3, w2.buildCalls, "挖 + 补 + 封，补缝只派一次（无重派）");
     }
 
     @Test

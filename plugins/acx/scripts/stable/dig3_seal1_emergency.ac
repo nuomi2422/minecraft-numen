@@ -10,10 +10,10 @@
     "temporary",
     "挖三填一"
   ],
-  "planner_notes": "2026-11-17 主人拍摄急用的唯一临时例外。只用现成积木 build / goto / inspect_block / get_self_status 与引擎内置 guard / set / if / for。几何：脚所在格 y0=floor(pos.y)；挖 y0-1/y0-2/y0-3；落底后脚在 y0-3(y3)、占 y3/y2 两格；封盖格 y0-1(y1)；真正的地板是 y0-4(y4)。三个 build 全部带 in_place 锚点{ x, z, feet_y, head_y }（就地施工：不赴工地、不巡走，且每格放置前在服务端线程核身体仍在该列该高度、头脚两格为空、目标格不压身体），这样封盖这一笔在动作内部就被限制成『原地放一格』，不会先把她挪出坑再封。顺序：先入坑并核实同列同层→补四壁(y1/y2/y3 四向共 12 格)→复核身体仍在坑内且顶格为空→就地封顶→末段纯取证（read3 + 头脚/地板/封盖 + 四壁 12 格）后再判定，末段不插任何异步步，所以证据不会被 resume 丢掉。坐标与材料都存 $var（只有 vars 跨断点存活）。封盖/补缝每格吃 1 件 fill_block（默认 minecraft:dirt，可用 input.cap_block / input.fill_block 换），材料不够时 build 整单拒绝、一块都不放。",
+  "planner_notes": "2026-11-17 主人拍摄急用的唯一临时例外。只用现成积木 build / goto / inspect_block / get_self_status 与引擎内置 guard / set / if / for。几何：脚所在格 y0=floor(pos.y)；挖 y0-1/y0-2/y0-3；落底后脚在 y0-3(y3)、占 y3/y2 两格；封盖格 y0-1(y1)；真正的地板是 y0-4(y4)。三个 build 全部带 in_place 锚点{ x, z, feet_y, head_y }（就地施工：不赴工地、不巡走，且每格放置前在服务端线程核身体仍在该列该高度、头脚两格为空、目标格不压身体），这样封盖这一笔在动作内部就被限制成『原地放一格』，不会先把她挪出坑再封。顺序：先入坑并核实同列同层→补四壁(y1/y2/y3 四向共 12 格)→复核身体仍在坑内且顶格为空→**先逐格复核四壁 12 格实心**→就地封顶→末段纯取证（read3 + 头脚/地板/封盖 + 四壁 12 格）后再判定，末段不插任何异步步，所以证据不会被 resume 丢掉。坐标与材料都存 $var（只有 vars 跨断点存活）。封盖/补缝每格吃 1 件 fill_block（默认 minecraft:dirt，可用 input.cap_block / input.fill_block 换），材料不够时 build 整单拒绝、一块都不放。",
   "safety_notes": "拒绝条件：不是站立/脚下有岩浆或水/要挖的三格含基岩或液体/真正地板(y0-4)不是实体/身体没落到同列同层/头脚两格不空/四壁缺口补不死/顶格不是空的/封盖后态不是指定方块。安全判据一律用正向证明（is_solid==true、is_air==true、block==cap_block），不用『某某==false』这种缺失即放行的写法。就地能力是该窄依赖：build 新增的 in_place（BuildInPlace）挡在放置之前，身体一旦被挪出坑或被堵就整单失败、不放置；CANCELLED 由探针按 UNKNOWN 处理 30s 后转 FAIL，不会冒充成功。临时债：后续删除或规范化重做，不作为新 AC 框架模板。",
   "limits": {
-    "max_steps": 120,
+    "max_steps": 150,
     "max_timeout_ms": 300000
   },
   "steps": [
@@ -581,11 +581,191 @@
       }
     },
     {
+      "id": "pre1",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 - 1"
+        },
+        "y": {
+          "$calc": "$var.y1"
+        },
+        "z": {
+          "$calc": "$var.z0"
+        }
+      }
+    },
+    {
+      "id": "pre2",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 + 1"
+        },
+        "y": {
+          "$calc": "$var.y1"
+        },
+        "z": {
+          "$calc": "$var.z0"
+        }
+      }
+    },
+    {
+      "id": "pre3",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0"
+        },
+        "y": {
+          "$calc": "$var.y1"
+        },
+        "z": {
+          "$calc": "$var.z0 - 1"
+        }
+      }
+    },
+    {
+      "id": "pre4",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0"
+        },
+        "y": {
+          "$calc": "$var.y1"
+        },
+        "z": {
+          "$calc": "$var.z0 + 1"
+        }
+      }
+    },
+    {
+      "id": "pre5",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 - 1"
+        },
+        "y": {
+          "$calc": "$var.y2"
+        },
+        "z": {
+          "$calc": "$var.z0"
+        }
+      }
+    },
+    {
+      "id": "pre6",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 + 1"
+        },
+        "y": {
+          "$calc": "$var.y2"
+        },
+        "z": {
+          "$calc": "$var.z0"
+        }
+      }
+    },
+    {
+      "id": "pre7",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0"
+        },
+        "y": {
+          "$calc": "$var.y2"
+        },
+        "z": {
+          "$calc": "$var.z0 - 1"
+        }
+      }
+    },
+    {
+      "id": "pre8",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0"
+        },
+        "y": {
+          "$calc": "$var.y2"
+        },
+        "z": {
+          "$calc": "$var.z0 + 1"
+        }
+      }
+    },
+    {
+      "id": "pre9",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 - 1"
+        },
+        "y": {
+          "$calc": "$var.y3"
+        },
+        "z": {
+          "$calc": "$var.z0"
+        }
+      }
+    },
+    {
+      "id": "pre10",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0 + 1"
+        },
+        "y": {
+          "$calc": "$var.y3"
+        },
+        "z": {
+          "$calc": "$var.z0"
+        }
+      }
+    },
+    {
+      "id": "pre11",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0"
+        },
+        "y": {
+          "$calc": "$var.y3"
+        },
+        "z": {
+          "$calc": "$var.z0 - 1"
+        }
+      }
+    },
+    {
+      "id": "pre12",
+      "block": "inspect_block",
+      "params": {
+        "x": {
+          "$calc": "$var.x0"
+        },
+        "y": {
+          "$calc": "$var.y3"
+        },
+        "z": {
+          "$calc": "$var.z0 + 1"
+        }
+      }
+    },
+    {
       "id": "guard_ready",
       "block": "guard",
       "params": {
         "on_fail": "fail",
-        "message": "封盖前复核不成立：身体不在坑内，或身体两格被堵，或顶格已经不是空的",
+        "message": "封盖前复核不成立：身体不在坑内、身体两格被堵、顶格不空，或四壁 12 格没有全部实心（补缝可能还没落成）",
         "conditions": [
           {
             "field": {
@@ -631,6 +811,66 @@
           },
           {
             "field": "$inspect_cap_target.is_air",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$pre1.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$pre2.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$pre3.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$pre4.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$pre5.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$pre6.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$pre7.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$pre8.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$pre9.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$pre10.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$pre11.is_solid",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "$pre12.is_solid",
             "op": "==",
             "value": true
           }
