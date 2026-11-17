@@ -187,6 +187,12 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
 
     /** 地图不完整时连续无路的次数（见 {@link NoPathVerdict}）。 */
     private int coldMapFails;
+    /** Last failed route, valid only for the same task context; never a root-cause verdict. */
+    private NavigationFailure navigationFailure;
+
+    private record NavigationFailure(String reason, BlockPos feet,
+                                     Set<BlockPos> ores, Set<BlockPos> drops) {
+    }
     /** 上一次索引查询是否覆盖完整(构建预算未耗尽)。false = 冷区域仍在渐进构建,
      *  终局判定("附近没有目标")必须等它为 true 才能下。 */
     private boolean lastQueryComplete;
@@ -299,6 +305,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         int gathered = WorkProfile.of(player).dropsLoot()
                 ? Math.max(0, inventoryMatch() - baseline)
                 : brokenTargets;
+        if (gathered > r.getMined()) navigationFailure = null;
         r.setMined(gathered);
         if (gathered >= r.count) {
             progressNote = "gathered all requested";
@@ -315,6 +322,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         long tUpkeep = NavProfiler.begin();
         prune();
         maybeQuery();
+        invalidateNavigationFailure();
         NavProfiler.end("mine.upkeep", tUpkeep);
 
         // 0) Continue an in-progress dig, locked onto its block (no re-selection)
@@ -334,6 +342,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
 
         long tDrops = NavProfiler.begin();
         drops = droppedItems();
+        invalidateNavigationFailure();
         NavProfiler.end("mine.drops", tDrops);
 
         // 1) Mine any target we can already reach + see from here (no pathing) —
@@ -384,6 +393,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
             switch (nav.tick()) {
                 case RUNNING -> { return TaskState.RUNNING; }
                 case ARRIVED -> {
+                    navigationFailure = null;
                     // Arrival normally means an in-place target just became reachable — next tick step 1
                     // pauses the nav and digs. Only clear inputs here (pause), never tear the nav down:
                     // teardown would throw away the goal + any in-flight search and force a cold restart.
@@ -403,40 +413,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
                     }
                     return TaskState.RUNNING;   // a reachable shaft is handled next tick
                 }
-                case FAILED -> {
-                    // [ANCHOR nav-cold-map] 地图自己都说了还没查完，这个“没路”不算证据。
-                    //
-                    // 世界刚加载时共用索引是冷的，第一次查询烧完预算也扫不完请求半径
-                    // ({@code complete=false})，名单里可能只有几十格外的一簇，而脚边那片还没进图。
-                    // 拿这种半张图上的无路去永久拉黑一个好方块，是把“我还不知道”当成了“不可能”。
-                    //
-                    // 跟上面 ARRIVED-dud 是同一条纪律：拉黑只该给真正失败的路。
-                    if (NoPathVerdict.of(lastQueryComplete, coldMapFails)
-                            == NoPathVerdict.Verdict.REQUERY) {
-                        if (++coldMapFails == 1) {
-                            com.dwinovo.numen.core.Constants.LOG.info(
-                                    "[numen-task] mine nav failed ({}) 但目标图还没查完 —— 不拉黑，重查 | nearestOre={}",
-                                    nav.failType(), nearestOreInfo());
-                        }
-                        stopNav();
-                        queryCooldown = 0;   // 下一刻就接着建图，别干等冷却
-                        navReplanCooldown = NAV_REPLAN_MIN_GAP_TICKS;
-                        return TaskState.RUNNING;
-                    }
-                    // [ANCHOR nav-failed] 完整图上真的没路。
-                    //
-                    // <b>这句话的主语是"这一批",不是"最近那颗"。</b>复合目标撒在全部目标上,
-                    // 搜不出路的意思是一个都到不了 —— 拿"离脚最近的"顶罪只是猜,而猜错了不会
-                    // 报错(日志只会写"记下 X",而 X 看着完全合理)。所以这里什么都不记,
-                    // 重新规划;真的一直出不去,由 STALL_TICKS 收工。
-                    com.dwinovo.numen.core.Constants.LOG.info(
-                            "[numen-task] mine nav failed ({}): {} | 复合目标 {} 个,nearestOre={}",
-                            nav.failType(), nav.failReason(), knownOres.size(), nearestOreInfo());
-                    coldMapFails = 0;
-                    stopNav();
-                    navReplanCooldown = NAV_REPLAN_MIN_GAP_TICKS;
-                    return TaskState.RUNNING;
-                }
+                case FAILED -> { return retryFailedNavigation(); }
             }
         }
 
@@ -485,6 +462,64 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
             case FAILED -> { stopNav(); return TaskState.RUNNING; } // boxed in — rescan/retry
         }
         return TaskState.RUNNING;
+    }
+
+    /** Keep the route diagnostic across cooldown retries, but not across a changed context. */
+    private TaskState retryFailedNavigation() {
+        // [ANCHOR nav-cold-map] 地图自己都说了还没查完，这个“没路”不算证据。
+        //
+        // 世界刚加载时共用索引是冷的，第一次查询烧完预算也扫不完请求半径
+        // ({@code complete=false})，名单里可能只有几十格外的一簇，而脚边那片还没进图。
+        // 拿这种半张图上的无路去永久拉黑一个好方块，是把“我还不知道”当成了“不可能”。
+        //
+        // 跟上面 ARRIVED-dud 是同一条纪律：拉黑只该给真正失败的路。
+        if (NoPathVerdict.of(lastQueryComplete, coldMapFails)
+                == NoPathVerdict.Verdict.REQUERY) {
+            navigationFailure = null;
+            if (++coldMapFails == 1) {
+                com.dwinovo.numen.core.Constants.LOG.info(
+                        "[numen-task] mine nav failed ({}) 但目标图还没查完 —— 不拉黑，重查 | nearestOre={}",
+                        nav.failType(), nearestOreInfo());
+            }
+            stopNav();
+            queryCooldown = 0;   // 下一刻就接着建图，别干等冷却
+            navReplanCooldown = NAV_REPLAN_MIN_GAP_TICKS;
+            return TaskState.RUNNING;
+        }
+        // [ANCHOR nav-failed] 完整图上真的没路。
+        //
+        // <b>这句话的主语是"这一批",不是"最近那颗"。</b>复合目标撒在全部目标上,
+        // 搜不出路的意思是一个都到不了 —— 拿"离脚最近的"顶罪只是猜,而猜错了不会
+        // 报错(日志只会写"记下 X",而 X 看着完全合理)。所以这里什么都不记,
+        // 重新规划;真的一直出不去,由 STALL_TICKS 收工。
+        com.dwinovo.numen.core.Constants.LOG.info(
+                "[numen-task] mine nav failed ({}): {} | 复合目标 {} 个,nearestOre={}",
+                nav.failType(), nav.failReason(), knownOres.size(), nearestOreInfo());
+        navigationFailure = lastQueryComplete && nav.failReason() != null && !nav.failReason().isBlank()
+                ? new NavigationFailure(nav.failReason(), player.blockPosition(),
+                        Set.copyOf(knownOres), Set.copyOf(drops)) : null;
+        coldMapFails = 0;
+        stopNav();
+        navReplanCooldown = NAV_REPLAN_MIN_GAP_TICKS;
+        return TaskState.RUNNING;
+    }
+
+    private void invalidateNavigationFailure() {
+        if (navigationFailure != null && (!lastQueryComplete
+                || !navigationFailure.feet().equals(player.blockPosition())
+                || navigationFailure.ores().size() != knownOres.size()
+                || !navigationFailure.ores().containsAll(knownOres)
+                || !navigationFailure.drops().containsAll(drops)
+                || !drops.containsAll(navigationFailure.drops()))) {
+            navigationFailure = null;
+        }
+    }
+
+    private String navigationFailureSuffix() {
+        invalidateNavigationFailure();
+        return navigationFailure == null ? ""
+                : " Earlier navigation attempt failed (historical diagnostic; materials or placement permissions may have changed): "
+                        + navigationFailure.reason();
     }
 
     // ---- goals ----
@@ -701,6 +736,10 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
                 }
             }
             // PROGRESSING / BROKE_OCCLUDER — real progress; reset the stall counter.
+            case BROKE_OCCLUDER -> {
+                navigationFailure = null;
+                clearNoShot();
+            }
             default -> clearNoShot();
         }
     }
@@ -796,6 +835,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         TargetIndex.Result res = TargetIndex.query(sl, player.blockPosition(), r.targets,
                 MAX_ORES, QUERY_MAX_CHUNK_RADIUS, QUERY_BUILD_BUDGET);
         lastQueryComplete = res.complete();
+        if (!lastQueryComplete) navigationFailure = null;
         if (lastQueryComplete) {
             coldMapFails = 0;   // 图齐了，之前那几次无路不再算数
         }
@@ -876,6 +916,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
 
     /** 挖掉了一格,或者明显挪了窝 —— 两者都算进展,卡死计时重新起算。 */
     private void noteProgress() {
+        navigationFailure = null;
         lastProgressTick = player.level().getGameTime();
         lastProgressPos = player.blockPosition();
     }
@@ -923,7 +964,8 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
                 //   能清路的真实工具是 break_block；也可以先 goto 到地表开口再挖。
                 + " Two concrete next moves: (a) goto a surface opening first (x+z, omit y) and mine again from there;"
                 + " (b) if a block is walling you in, use break_block on that specific block, then mine again."
-                + " (mine already digs through natural terrain; this failure means no route exists at all.)",
+                + " (mine already digs through natural terrain; this failure means no route exists at all.)"
+                + navigationFailureSuffix(),
                 FailureType.NO_PATH);
         return TaskState.FAILED;
     }
@@ -954,6 +996,13 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
                     FailureType.MINED_OUT);
         }
         return TaskState.FAILED;
+    }
+
+    /** Forget the old diagnostic on preemption; leave the base's warm plan and inputs unchanged. */
+    @Override
+    public void stop(NumenPlayer companion, StopReason why) {
+        navigationFailure = null;
+        super.stop(companion, why);
     }
 
     /** Stop the nav AND clear the branch-mode flag (extends the base's nav release). */

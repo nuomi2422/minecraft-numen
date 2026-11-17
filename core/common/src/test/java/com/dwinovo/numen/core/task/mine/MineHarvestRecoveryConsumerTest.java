@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class MineHarvestRecoveryConsumerTest {
     @TempDir static Path temp;
     static URLClassLoader loader;
-    static Class<?> fixture;
+    static Class<?> fixture, navigationFixture;
 
     @BeforeAll static void compileProductionMethods() throws Exception {
         Path root = Path.of("").toAbsolutePath();
@@ -153,6 +153,7 @@ class MineHarvestRecoveryConsumerTest {
                     }
                 }
                 """.replace("HARVEST_METHOD", harvest).replace("PRECONDITIONS_METHOD", gate).replace("LATE_METHOD", late));
+        addNavigationFixture(main, src, args);
         var compiler = ToolProvider.getSystemJavaCompiler();
         assertNotNull(compiler, "JDK compiler is required for the real-method consumer");
         var diagnostics = new ByteArrayOutputStream();
@@ -161,6 +162,7 @@ class MineHarvestRecoveryConsumerTest {
                 + diagnostics.toString(StandardCharsets.UTF_8));
         loader = new URLClassLoader(new URL[]{out.toUri().toURL()}, ClassLoader.getPlatformClassLoader());
         fixture = loader.loadClass("fixture.HarvestFixture");
+        navigationFixture = loader.loadClass("fixture.NavigationFixture");
     }
 
     @AfterAll static void close() throws Exception { if (loader != null) loader.close(); }
@@ -271,6 +273,208 @@ class MineHarvestRecoveryConsumerTest {
     @SuppressWarnings("unchecked")
     static Map<String,Object> run(String scenario, int slot) throws Exception {
         return (Map<String,Object>) fixture.getMethod("run", String.class, int.class).invoke(null, scenario, slot);
+    }
+
+
+    // Compile the real retry, tick, progress, suspend and terminal consumers, not a copied policy.
+    static void addNavigationFixture(Path main, Path src, List<String> args) throws Exception {
+        // Red control may point only this consumer at the frozen pre-fix production file.
+        String control = System.getenv("RDD_MINE_NAV_SOURCE");
+        Path sourcePath = control == null ? main.resolve("task/mine/MineCompanionTask.java") : Path.of(control);
+        String source = Files.readString(sourcePath);
+        System.out.println("mine navigation consumer source=" + sourcePath + " sha256="
+                + java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                        .digest(source.getBytes(StandardCharsets.UTF_8))));
+        StringBuilder methods = new StringBuilder();
+        for (String signature : List.of("    protected TaskState onTick() {",
+                "    private TaskState retryFailedNavigation() {", "    private void invalidateNavigationFailure() {",
+                "    private String navigationFailureSuffix() {", "    private void noteProgress() {",
+                "    private TaskState stalledOut() {", "    private void mineProgress(BlockPos pos) {",
+                "    private void clearNoShot() {", "    protected Map<String, Object> resultData() {",
+                "    protected String successMessage() {")) {
+            if (source.contains(signature)) methods.append(method(source, signature)).append("\n");
+        }
+        String stopSignature = "    public void stop(NumenPlayer companion, StopReason why) {";
+        String baseStop = method(Files.readString(main.resolve("task/base/AbstractCompanionTask.java")), stopSignature);
+        if (source.contains(stopSignature)) methods.append(method(source, stopSignature));
+        int recordStart = source.indexOf("    private record NavigationFailure(");
+        int recordEnd = source.indexOf("\n    }", recordStart) + "\n    }".length();
+        String record = recordStart < 0 ? "" : source.substring(recordStart, recordEnd)
+                + "\n    NavigationFailure navigationFailure;";
+        add(src, args, "com/dwinovo/numen/core/task/mine/NoPathVerdict.java",
+                Files.readString(main.resolve("task/mine/NoPathVerdict.java")));
+        add(src, args, "com/dwinovo/numen/core/task/mine/PartialGather.java",
+                Files.readString(main.resolve("task/mine/PartialGather.java")));
+        add(src, args, "com/dwinovo/numen/core/Constants.java", """
+                package com.dwinovo.numen.core;
+                public class Constants {
+                    public static final Log LOG=new Log();
+                    public static class Log { public void info(String m,Object... args){} public void debug(String m,Object... args){} }
+                }
+                """);
+        add(src, args, "fixture/NavigationFixture.java", """
+                package fixture;
+                import java.util.*;
+                import com.dwinovo.numen.core.FailureType;
+                import com.dwinovo.numen.core.task.base.Precondition;
+                import com.dwinovo.numen.core.task.mine.NoPathVerdict;
+                import com.dwinovo.numen.core.task.mine.PartialGather;
+                import com.dwinovo.numen.task.TaskState;
+                import fixture.NavigationFixture.NumenPlayer;
+                import fixture.NavigationFixture.StopReason;
+                import fixture.NavigationFixture.InputDriver;
+                class SuspendBoundary {
+                    final NumenPlayer player = new NumenPlayer();
+                BASE_STOP
+                }
+                public class NavigationFixture extends SuspendBoundary {
+                    record BlockPos(int x,int y,int z) {
+                        double distSqr(BlockPos p) { return (x-p.x)*(x-p.x)+(y-p.y)*(y-p.y)+(z-p.z)*(z-p.z); }
+                        String toShortString(){return x+", "+y+", "+z;} BlockPos immutable(){return this;} int getY(){return y;}
+                    }
+                    static class Level { long now; BlockState getBlockState(BlockPos p){return new BlockState();} long getGameTime(){return now;} }
+                    static class BlockState { boolean isAir(){return false;} }
+                    static class NumenPlayer { BlockPos feet=new BlockPos(0,64,0); Level level=new Level(); int halts; boolean shifting=true;
+                        Level level(){return level;} BlockPos blockPosition(){return feet;} void setShiftKeyDown(boolean b){shifting=b;} }
+                    static class InputDriver { static void halt(NumenPlayer p){p.halts++;} }
+                    enum StopReason { PREEMPTED }
+                    enum NavState { RUNNING, ARRIVED, FAILED }
+                    static class PlayerNav {
+                        String reason; boolean planning,paused; NavState state=NavState.FAILED;
+                        PlayerNav(String reason){this.reason=reason;} String failReason(){return reason;}
+                        FailureType failType(){return FailureType.NO_PATH;} boolean planningInFlight(){return planning;}
+                        NavState tick(){return state;} void pause(){paused=true;}
+                        enum ContextProvider { TERRAFORM }
+                        static PlayerNav toRevalidating(NumenPlayer p,java.util.function.Supplier<Object> g,double s,
+                                java.util.function.BooleanSupplier b,ContextProvider c){return new PlayerNav("new route");}
+                        static PlayerNav toGoal(NumenPlayer p,java.util.function.Supplier<Object> g,double s,
+                                java.util.function.BooleanSupplier b,ContextProvider c){return new PlayerNav("branch");}
+                    }
+                    static class NavGoal { static Object runAway(BlockPos p,int y){return null;} }
+                    static class NavProfiler { static long begin(){return 0;} static void end(String s,long t){} }
+                    static class WorkProfile { static WorkProfile of(NumenPlayer p){return new WorkProfile();} boolean dropsLoot(){return true;} }
+                    static class Request {
+                        int count=5,mined; String label="stone+4"; long deadline=3000;
+                        int getMined(){return mined;} void setMined(int n){mined=n;}
+                        long getDeadlineGameTime(){return deadline;} void extendDeadlineTo(long n){deadline=n;}
+                    }
+                    static class Digger {
+                        enum Result { BROKE_TARGET, BROKE_OCCLUDER, NO_SHOT, PROGRESSING }
+                        Result next=Result.BROKE_TARGET; BlockPos current(){return null;}
+                        Result digStep(BlockPos p){return next;} void cancel(){}
+                    }
+                    final Request r=new Request(); final Digger digger=new Digger();
+                    final List<BlockPos> knownOres=new ArrayList<>(List.of(new BlockPos(3,57,4)));
+                    final Set<BlockPos> unworkable=new HashSet<>(); final Map<BlockPos,Long> anticipatedDrops=new HashMap<>();
+                    List<BlockPos> drops=List.of(), observedDrops=List.of(); PlayerNav nav;
+                    boolean lastQueryComplete=true,navIsBranch; int coldMapFails,queryCooldown,navReplanCooldown;
+                    int baseline,brokenTargets,branchTicks,branchY,noShotTicks,pickup; long lastProgressTick;
+                    BlockPos lastProgressPos=player.feet,branchPoint,noShotPos,reachable;
+                    String progressNote="done"; Precondition.Failure terminal;
+                    static final int STALL_TICKS=400,NAV_REPLAN_MIN_GAP_TICKS=20,MAX_NO_SHOT_TICKS=20,MAX_BRANCH_TICKS=600,DROP_LOITER_TICKS=5;
+                    static final double STALL_MOVE=2.0,MINE_SPEED=1.0; static final boolean EXPLORE_FOR_BLOCKS=false;
+                    void fail(String m,FailureType t){terminal=new Precondition.Failure(m,t);}
+                    void stopNav(){nav=null;navIsBranch=false;} String nearestOreInfo(){return "boundary ore";}
+                    void prune(){} void maybeQuery(){} Object oreFieldCompiled(){return null;}
+                    int inventoryMatch(){return pickup;} List<BlockPos> droppedItems(){return observedDrops;}
+                    BlockPos reachableTarget(){return reachable;} boolean reachable(BlockPos p){return true;}
+                    TaskState noOreFailure(){fail("empty",FailureType.MINED_OUT);return TaskState.FAILED;}
+                RECORD
+                METHODS
+                    public static Map<String,Object> run(String scenario) {
+                        NavigationFixture t=new NavigationFixture();
+                        if(scenario.equals("reorder")) t.knownOres.add(new BlockPos(5,57,6));
+                        if(scenario.equals("duplicateDrop")) t.observedDrops=List.of(new BlockPos(1,64,1));
+                        t.nav=new PlayerNav("scaffolding list is EMPTY; carrying dirt x6");
+                        TaskState first=t.onTick();
+                        if(first!=TaskState.RUNNING || t.navReplanCooldown!=20) throw new AssertionError("retry semantics");
+                        switch(scenario) {
+                            case "same" -> { }
+                            case "reorder" -> {Collections.reverse(t.knownOres);t.onTick();}
+                            case "duplicateDrop" -> {t.observedDrops=List.of(new BlockPos(1,64,1),new BlockPos(1,64,1));t.onTick();}
+                            case "replace" -> {t.nav=new PlayerNav("blocked by liquid");t.onTick();}
+                            case "blank" -> {t.nav=new PlayerNav(" ");t.onTick();}
+                            case "cold" -> {t.lastQueryComplete=false;t.nav=new PlayerNav("cold reason");t.onTick();t.lastQueryComplete=true;}
+                            case "coldLimit" -> {t.lastQueryComplete=false;t.coldMapFails=39;t.nav=new PlayerNav("cold limit");t.onTick();t.lastQueryComplete=true;}
+                            case "move" -> {t.player.feet=new BlockPos(1,64,0);t.onTick();t.player.feet=t.lastProgressPos;}
+                            case "target" -> {t.knownOres.add(new BlockPos(9,57,9));t.onTick();t.knownOres.remove(1);}
+                            case "drop" -> {t.observedDrops=List.of(new BlockPos(1,64,1));t.onTick();t.observedDrops=List.of();t.onTick();}
+                            case "break" -> t.mineProgress(t.knownOres.get(0));
+                            case "occluder" -> {t.digger.next=Digger.Result.BROKE_OCCLUDER;t.mineProgress(t.knownOres.get(0));}
+                            case "pickup" -> {t.pickup=1;t.onTick();t.pickup=0;t.r.setMined(0);}
+                            case "pause" -> {t.nav=new PlayerNav("warm plan");t.stop(t.player,StopReason.PREEMPTED);}
+                            case "pauseMoved" -> {t.stop(t.player,StopReason.PREEMPTED);t.player.feet=new BlockPos(1,64,0);t.onTick();t.player.feet=t.lastProgressPos;}
+                            case "arrive" -> {t.nav=new PlayerNav("old");t.nav.state=NavState.ARRIVED;t.reachable=new BlockPos(4,64,0);}
+                            case "partial" -> t.r.setMined(2);
+                            case "planning" -> {t.nav=new PlayerNav("pending");t.nav.planning=true;}
+                            case "fresh" -> t=new NavigationFixture();
+                            default -> throw new IllegalArgumentException(scenario);
+                        }
+                        if(scenario.equals("arrive")) {t.reachable=null;t.onTick();}
+                        if(scenario.equals("break")) t.knownOres.add(new BlockPos(3,57,4));
+                        t.player.level.now=400;
+                        TaskState end=t.stalledOut();
+                        Map<String,Object> out=new HashMap<>(t.resultData());
+                        out.put("state",end==null ? "RUNNING" : end.name());
+                        out.put("message",t.terminal==null ? "" : t.terminal.message());
+                        out.put("type",t.terminal==null ? "" : t.terminal.type().name());
+                        out.put("stops",t.player.halts);out.put("navPreserved",t.nav!=null);out.put("shifting",t.player.shifting);
+                        out.put("progressTick",t.lastProgressTick);
+                        return out;
+                    }
+                }
+                """.replace("BASE_STOP",baseStop).replace("RECORD",record).replace("METHODS",methods));
+    }
+
+    @Test void stalledMineDeliversLatestConstraintWithOriginalFailureAndRecovery() throws Exception {
+        var result=runNavigation("same");
+        assertEquals("FAILED",result.get("state"));assertEquals("NO_PATH",result.get("type"));
+        String message=(String)result.get("message");
+        assertTrue(message.contains("gathered 0") && message.contains("goto a surface opening"));
+        assertTrue(message.contains("break_block") && message.contains("scaffolding list is EMPTY"));
+        assertTrue(message.contains("historical diagnostic") && message.contains("permissions may have changed"));
+        assertEquals(false,result.get("navPreserved"));
+    }
+
+    @Test void sameGoalMembershipSurvivesOrderingAndDuplicateDropPositions() throws Exception {
+        for (String scenario : List.of("reorder", "duplicateDrop")) {
+            assertTrue(((String) runNavigation(scenario).get("message")).contains("scaffolding list is EMPTY"), scenario);
+        }
+    }
+
+    @Test void newerFailureReplacesOldConstraintAndBlankDoesNotResurrectIt() throws Exception {
+        String newer=(String)runNavigation("replace").get("message");
+        assertTrue(newer.contains("blocked by liquid"));assertFalse(newer.contains("EMPTY"));
+        assertFalse(((String)runNavigation("blank").get("message")).contains("Earlier navigation attempt failed"));
+    }
+
+    @Test void changedContextNeverLeaksAnOldConstraintEvenAfterReturning() throws Exception {
+        for(String scenario:List.of("cold","coldLimit","move","target","drop","break","occluder","pickup","pauseMoved","arrive","fresh")) {
+            var result=runNavigation(scenario);
+            assertEquals("FAILED",result.get("state"),scenario);
+            assertFalse(((String)result.get("message")).contains("Earlier navigation attempt failed"),scenario);
+            assertEquals("NO_PATH",result.get("type"),scenario);
+        }
+    }
+
+    @Test void pauseNeverReplaysAnOldDiagnosticAndKeepsTheWarmPlan() throws Exception {
+        var pause=runNavigation("pause");
+        assertEquals(1,pause.get("stops"));assertEquals(true,pause.get("navPreserved"));assertEquals(false,pause.get("shifting"));
+        assertFalse(((String)pause.get("message")).contains("Earlier navigation attempt failed"));
+    }
+
+    @Test void partialSuccessAndPlanningWaitRetainTheirOriginalSemantics() throws Exception {
+        var partial=runNavigation("partial");
+        assertEquals("SUCCESS",partial.get("state"));assertEquals("",partial.get("message"));
+        assertEquals(true,partial.get("partial"));assertEquals(3,partial.get("shortfall"));
+        var planning=runNavigation("planning");
+        assertEquals("RUNNING",planning.get("state"));assertEquals("",planning.get("message"));
+        assertEquals(1L,planning.get("progressTick"),"planning tick is still excluded from the stall clock");
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String,Object> runNavigation(String scenario) throws Exception {
+        return (Map<String,Object>)navigationFixture.getMethod("run",String.class).invoke(null,scenario);
     }
 
     static void assertWrongTool(Map<String,Object> result) {
