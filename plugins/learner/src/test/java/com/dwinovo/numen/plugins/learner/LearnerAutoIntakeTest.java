@@ -443,6 +443,28 @@ class LearnerAutoIntakeTest {
     }
 
     @Test
+    void emptyScanAttemptsFullQueueAndReturnsDueMemoToSuppressedStore() throws Exception {
+        Files.writeString(tmp.resolve("monitor/instrumentation.jsonl"), "", StandardCharsets.UTF_8);
+        var queue = queueForTest(COMPANION);
+        for (int i = 0; i < 64; i++) {
+            assertTrue(queue.append(new com.dwinovo.numen.plugins.learner.core.Memo(
+                    "full-probe-" + i, "p", "death", "t", "s", System.currentTimeMillis())));
+        }
+        suppressForScan("due-full-probe", 11L * 60_000L);
+        Path suppressed = com.dwinovo.numen.plugins.learner.core.SuppressedStore.fileFor(
+                tmp, java.util.UUID.fromString(COMPANION));
+        long beforeScan = System.currentTimeMillis();
+        assertEquals(0, LearnerAutoIntake.scanOnce());
+        assertEquals(64, queue.size());
+        assertEquals(1, com.dwinovo.numen.plugins.learner.core.SuppressedStore.size(tmp, java.util.UUID.fromString(COMPANION)));
+        var returned = com.google.gson.JsonParser.parseString(Files.readString(suppressed).trim()).getAsJsonObject();
+        assertEquals("due-full-probe", returned.get("id").getAsString());
+        assertTrue(returned.get("at").getAsLong() >= beforeScan,
+                "the original full-queue path must actually attempt admission and return the entry, not leave it untouched");
+        assertFalse(Files.exists(tmp.resolve("learner-enqueued.jsonl")));
+    }
+
+    @Test
     void unreadableScanDoesNotDrainDeferredWork() throws Exception {
         Files.createDirectory(tmp.resolve("monitor/instrumentation.jsonl"));
         suppressForScan("due-unreadable", 11L * 60_000L);
