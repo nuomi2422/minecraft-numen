@@ -1705,7 +1705,8 @@ private static String withAssets(UUID companionId, String rddContext) {
                 saveLedger(companionId);
             }
             // UNKNOWN（执行者放弃/保护线结束）仍然要进入规划上下文，但不伪造 CONFIRMED_LOST。
-            Map<String, Integer> counts = lastInventory(companionId);
+            Long inventoryAt = lastInventoryAtMillis(companionId);
+            Map<String, Integer> counts = inventoryAt == null ? null : lastInventory(companionId);
             RddRepairDispatch.recomputeAfterDeath(companionId, counts, confirmedLost,
                     recovered ? "recovered" : (confirmedLost ? "confirmed_lost" : "unverified_settlement"), seq);
             boolean prepareVerified = false;
@@ -1747,7 +1748,7 @@ private static String withAssets(UUID companionId, String rddContext) {
             settlement.put("ledgerState", recovered ? "RECOVERED" : (confirmedLost ? "CONFIRMED_LOST" : "UNVERIFIED"));
             settlement.put("replanRequested", replanAccepted);
             settlement.put("replanDeferred", replanDeferred);
-            settlement.put("inventoryKnown", lastInventoryAtMillis(companionId) != null);
+            settlement.put("inventoryKnown", counts != null);
             if (preparationHandled) {
                 settlement.put("prepareVerified", prepareVerified);
                 settlement.put("prepareReason", prepareReason);

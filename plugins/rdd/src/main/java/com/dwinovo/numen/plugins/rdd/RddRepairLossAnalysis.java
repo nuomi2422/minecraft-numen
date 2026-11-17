@@ -27,6 +27,11 @@ final class RddRepairLossAnalysis {
     private static final java.util.Set<String> RECOMPUTED =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
+    // Recompute events and successful advice are separate receipts. A rejected nudge may
+    // be retried only by another invocation of this same lifecycle phase and plan owner.
+    private record AdviceScope(com.dwinovo.numen.rdd.core.TaskChain chain, int revision, String primary) {}
+    private static final Map<String, AdviceScope> REJECTED_ADVICE = new java.util.concurrent.ConcurrentHashMap<>();
+
     /**
      * S1 读路径（死亡瞬间）：只报"库存未知"，不下够/不够结论。
      *
@@ -130,6 +135,18 @@ final class RddRepairLossAnalysis {
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death latest =
                     com.dwinovo.numen.rdd.core.RddDeathLedger.latest(companionId);
             if (latest == null || latest.lostItems().isEmpty()) return;
+            // Existing Detector cadence supplies fresh counts; retry only a rejected confirmed
+            // advisory, preserving its original phase. Ordinary same-batch analysis stays latched.
+            String prefix = companionId + "|" + latest.seq() + "|";
+            for (String key : List.copyOf(REJECTED_ADVICE.keySet())) {
+                if (key.startsWith(prefix)) {
+                    LAST_RECOMPUTED.put(companionId, (long) latest.seq());
+                    if (!RddPlugin.nudgeAllowed(companionId)) return; // read-only pause/API/throttle peek, no repeat logs
+                    recomputeAfterDeath(companionId, counts, true, key.substring(prefix.length()), latest.seq());
+                    return;
+                }
+                if (key.startsWith(companionId + "|")) REJECTED_ADVICE.remove(key);
+            }
             // 2026-10-29（本方法每 tick 都被调用）：同一笔死亡只重算一次，否则就是死循环。
             // 2026-11-06（热点）：日志必须放在幂等 guard **之后**，否则每 tick 两条 INFO 把
             // latest.log 撑到 4.6MB/6 分钟（12:40–12:41 实测）；"是否被调用"用每同伴一次 armed 保留。
@@ -167,8 +184,22 @@ final class RddRepairLossAnalysis {
             com.dwinovo.numen.rdd.core.RddDeathLedger.Death death = deathForRecompute(companionId, seqHint);
             if (death == null || death.lostItems().isEmpty()) return null;
             String dedupeKey = companionId + "|" + death.seq() + "|" + phase;
-            if (!RECOMPUTED.add(dedupeKey)) return null;   // 同一批次同一阶段只报一次
-            if (RECOMPUTED.size() > 256) RECOMPUTED.clear();   // 有界：死亡很多次也不让集合长成漏勺
+            boolean firstObservation = RECOMPUTED.add(dedupeKey);
+            var retryRuntime = RddPlugin.runtime(companionId);
+            var retryChain = retryRuntime == null ? null : retryRuntime.chain();
+            var retryPrimary = retryChain == null ? null : retryChain.currentPrimary();
+            AdviceScope scope = retryPrimary == null ? null
+                    : new AdviceScope(retryChain, retryChain.planRevision(), retryPrimary.id());
+            if (!firstObservation) {
+                var rejected = REJECTED_ADVICE.get(dedupeKey);
+                if (rejected == null) return null;
+                var latest = com.dwinovo.numen.rdd.core.RddDeathLedger.latest(companionId);
+                if (!rejected.equals(scope) || latest == null || latest.seq() != death.seq()) {
+                    REJECTED_ADVICE.remove(dedupeKey);
+                    return null; // never carry old advice into a new plan or death batch
+                }
+            }
+            if (RECOMPUTED.size() > 256) { RECOMPUTED.clear(); REJECTED_ADVICE.clear(); }   // 有界：死亡很多次也不让集合长成漏勺
 
             // ★ 2026-10-28 实机（#245）：清单缓存**重启即空**（只在"绑一级目标那一刻"写），
             //   于是重算拿不到需求清单 → 只能走下面"无清单也要留证"的兜底（noManifest=true），
@@ -191,7 +222,10 @@ final class RddRepairLossAnalysis {
                     // fail-soft：重建失败就退回下面的兜底（至少保住"丢了什么"这条事实）
                 }
             }
-            if (manifest0 == null) {
+            var runtime = RddPlugin.runtime(companionId);
+            var chain = runtime == null ? null : runtime.chain();
+            List<RequirementManifest.Manifest> manifests = remainingManifests(chain, manifest0);
+            if (manifests.isEmpty()) {
                 Map<String, Object> ev0 = new LinkedHashMap<>();
                 ev0.put("companionId", companionId.toString());
                 ev0.put("deathSeq", death.seq());
@@ -204,23 +238,15 @@ final class RddRepairLossAnalysis {
                 ev0.put("recommendation", "CONFIRM_STOCK");
                 ev0.put("summary", "没有当前目标清单，无法按目标算影响；但这次确实丢了 "
                         + death.lostItems().size() + " 种物品，先确认背包再决定补不补");
-                RddMonitor.publish("loss_impact_recomputed", ev0);
+                if (firstObservation) RddMonitor.publish("loss_impact_recomputed", ev0);
+                REJECTED_ADVICE.remove(dedupeKey);
                 return null;
             }
-            RequirementManifest.Manifest manifest = RddFactContext.currentManifest(companionId);
-            List<RequirementManifest.Manifest> manifests =
-                    manifest == null ? List.of() : List.of(manifest);
             Map<String, AssetSemantics> semantics =
                     RddSemanticsStore.forAnalyzer(RddSemanticsStore.semantics(companionId));
             Map<String, Integer> backup = backupFromBase(companionId);
-            LossImpactAnalyzer.LossImpact impact = LossImpactAnalyzer.analyze(
-                    new LinkedHashMap<>(death.lostItems()),
-                    counts == null ? Map.of() : counts,
-                    backup,
-                    manifests,
-                    semantics,
-                    lossConfirmed,
-                    counts != null);                 // 只有真扫过才算"库存未知解除"
+            LossImpactAnalyzer.LossImpact impact = analyzeRemainingLoss(
+                    manifests, death.lostItems(), counts, backup, semantics, lossConfirmed);
             // T4 实证（2026-11-03）：丢 8 cooked_beef、同分钟 hungry:P1/no_food，分析器仍给 NONE。
             // 食物损失 + 身体饥饿/无食物时，至少要 CONFIRM_STOCK，不能宣称“无重要影响”。
             impact = escalateFoodLossIfHungry(companionId, death.lostItems(), impact);
@@ -249,22 +275,82 @@ final class RddRepairLossAnalysis {
                 goals.add(gm);
             }
             ev.put("affectedGoals", goals);
-            RddMonitor.publish("loss_impact_recomputed", ev);
+            if (firstObservation) RddMonitor.publish("loss_impact_recomputed", ev);
 
             // 只在她"该改主意"的时候补一句：有备用 → 别去补货；确认缺口 → 去补。
             // CONFIRM_STOCK / NONE 不打扰（死亡那条 nudge 已经说过"先捡、先确认"）。
-            if (impact.recommendation() == LossImpactAnalyzer.Recommendation.SWAP_BACKUP) {
-                RddPlugin.nudge(companionId, "[损失影响] 回收这一趟结束：" + impact.summary()
-                        + "\n→ **基地备用/替代已经够用**：换装继续原目标即可，不必为了这几件回炉重做。"
-                        + "如果备用也已经被用掉，就说一声，再去补。");
-            } else if (impact.recommendation() == LossImpactAnalyzer.Recommendation.SUPPLEMENT) {
-                RddPlugin.nudge(companionId, "[损失影响] 回收结束，缺口确认：" + impact.summary()
-                        + "\n这几件是真缺（不是没找到），接下来按目标需要补上；别把'没捡到'当成'已经够了'。");
-            }
+            boolean delivered = deliverLossAdvice(impact, chain, text -> RddPlugin.nudge(companionId, text));
+            if (!delivered && scope != null
+                    && impact.recommendation() == LossImpactAnalyzer.Recommendation.SUPPLEMENT
+                    && impact.lossConfirmed() && impact.inventoryKnown() && impact.importantLoss())
+                REJECTED_ADVICE.put(dedupeKey, scope);
+            else REJECTED_ADVICE.remove(dedupeKey);
             return impact;
         } catch (RuntimeException ex) {
             return null;   // 增强旁路：分析炸了不影响支线结账
         }
+    }
+
+    /** Read declared remaining requirements only: no lazy expansion, cache overwrite or world read. */
+    static List<RequirementManifest.Manifest> remainingManifests(
+            com.dwinovo.numen.rdd.core.TaskChain chain, RequirementManifest.Manifest current) {
+        if (chain == null) return current == null ? List.of() : List.of(current);
+        var all = chain.goal().primaryGoals();
+        int index = all.indexOf(chain.currentPrimary());
+        if (index < 0) return current == null ? List.of() : List.of(current);
+        List<RequirementManifest.Manifest> out = new ArrayList<>();
+        for (int i = index; i < all.size(); i++) {
+            out.add(i == index && current != null ? current
+                    : RddRequirementDetector.forPrimary(all.get(i), chain.goal().id()));
+        }
+        return List.copyOf(out);
+    }
+
+    /** One transient union prevents per-stage derivation from marking another stage's keys stale. */
+    static LossImpactAnalyzer.LossImpact analyzeRemainingLoss(List<RequirementManifest.Manifest> manifests,
+            Map<String, Integer> lost, Map<String, Integer> counts, Map<String, Integer> backup,
+            Map<String, AssetSemantics> existing, boolean confirmed) {
+        List<RequirementManifest.Requirement> requirements = new ArrayList<>();
+        for (var manifest : manifests) requirements.addAll(manifest.requirements());
+        String goalId = manifests.isEmpty() ? "" : manifests.get(0).goalId();
+        Map<String, AssetSemantics> semantics = new LinkedHashMap<>(existing);
+        var derived = RddSemanticsStore.derive(new RequirementManifest.Manifest(goalId, requirements), goalId, null);
+        for (var entry : derived.entrySet()) {
+            var previous = semantics.get(entry.getKey());
+            if (previous == null || previous.importance() != AssetSemantics.Importance.IMPORTANT)
+                semantics.put(entry.getKey(), entry.getValue());
+        }
+        return LossImpactAnalyzer.analyze(lost, counts == null ? Map.of() : counts, backup,
+                manifests, semantics, confirmed, counts != null);
+    }
+
+    /** The original executor nudge is advisory; this never requests planning or mutates a chain. */
+    static boolean deliverLossAdvice(LossImpactAnalyzer.LossImpact impact,
+            com.dwinovo.numen.rdd.core.TaskChain chain, java.util.function.Predicate<String> nudge) {
+        if (impact.recommendation() == LossImpactAnalyzer.Recommendation.SWAP_BACKUP) {
+            return nudge.test("[损失影响] 回收这一趟结束：" + impact.summary()
+                    + "\n→ **基地备用/替代已经够用**：换装继续原目标即可，不必为了这几件回炉重做。"
+                    + "如果备用也已经被用掉，就说一声，再去补。");
+        } else if (impact.recommendation() == LossImpactAnalyzer.Recommendation.SUPPLEMENT) {
+            String review = "";
+            if (impact.lossConfirmed() && impact.inventoryKnown() && impact.importantLoss() && chain != null) {
+                StringBuilder stages = new StringBuilder();
+                var all = chain.goal().primaryGoals();
+                int index = all.indexOf(chain.currentPrimary());
+                for (int i = index; i >= 0 && i < all.size() && i < index + 12; i++) {
+                    var p = all.get(i);
+                    String line = p.description() + "；进入前需求：" + p.waitFor();
+                    stages.append("\n- ").append(line.length() > 240 ? line.substring(0, 240) + "…（本行截断）" : line);
+                }
+                if (all.size() > index + 12) stages.append("\n…其余阶段未列，请查看完整任务链。");
+                review = "\n本次确认的重要能力缺口可能影响后续阶段，请重新评估整条剩余路线及依赖是否仍可行。"
+                        + "可以保留原路、补齐能力或采用替代；仅当后续路线确实不成立时，调用 rdd_replan_chain 改当前阶段之后的阶段。"
+                        + "当前阶段与已完成事实不重置，不要因无关消耗重做整链。剩余阶段（最多12条）：" + stages;
+            }
+            return nudge.test("[损失影响] 回收结束，缺口确认：" + impact.summary()
+                    + "\n这几件是真缺（不是没找到），接下来按目标需要补上；别把'没捡到'当成'已经够了'。" + review);
+        }
+        return false;
     }
 
     /** 重算要盯的那次死亡：优先当前支线批次，批次已结账则用最近一条。 */
@@ -352,5 +438,6 @@ final class RddRepairLossAnalysis {
 
     static void remove(UUID companionId) {
         RECOMPUTED.removeIf(k -> companionId != null && k.startsWith(companionId.toString()));
+        REJECTED_ADVICE.keySet().removeIf(k -> companionId != null && k.startsWith(companionId.toString()));
     }
 }
