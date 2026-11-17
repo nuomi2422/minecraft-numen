@@ -47,6 +47,7 @@ class RddPendingDeathSettlementReplanTest {
         request = before(request, "        try {\n            long ownerRevision = chain.planRevision();")
                 + "        plannerRequests++; trace.add(\"planner_request\"); return true;\n    }\n";
         String detector = Files.readString(plugin.resolve("RddDetector.java")).replace("\r\n", "\n");
+        String recovery = Files.readString(plugin.resolve("RddFailureRecovery.java")).replace("\r\n", "\n");
         String admission = between(detector,
                 "            // 刚推进到新的当前一级(PENDING/WAITING)：",
                 "            SubtaskStatus status = chain.currentSubtaskStatus();");
@@ -58,8 +59,8 @@ class RddPendingDeathSettlementReplanTest {
                 + failed + " if (status == SubtaskStatus.RUNNING) trace.add(\"kickoff_boundary\"); }\n";
         String generated = HEAD
                 + between(source, "    private record DeferredDeath(", "    /** 同伴自绑床位")
-                + detectorExcerpt(between(detector, "    private final Map<UUID, RetryState> retries", "    /** 已因"))
-                + between(detector, "    private static final int MAX_SUBTASK_RETRIES", "    /** 资产提前触发")
+                + detectorExcerpt(between(recovery, "    private final Map<UUID, RetryState> retries", "    private final RddFurnaceWatch"))
+                + between(recovery, "    private static final int MAX_SUBTASK_RETRIES", "    /** Level 2 重试计数")
                 + method(source, "    private static boolean deferDeathReplan(")
                 + method(source, "    static boolean consumeDeferredDeathReplan(")
                 + method(source, "    static boolean onDeathRecoverySettled(")
@@ -82,13 +83,13 @@ class RddPendingDeathSettlementReplanTest {
                 + "public void timeoutResumed(long waitedMs) { throw new AssertionError(\"not a timeout fixture\"); }\n"
                 + "public void timeoutFailed(long waitedMs, RuntimeException failure) { throw new AssertionError(failure); } })) return;\n"
                 + downstream
-                + detectorExcerpt(method(detector, "    private void parkRejectedDeathReplan("))
-                + detectorExcerpt(method(detector, "    private void handleSubtaskFailure("))
-                + method(detector, "    private static boolean hasBackupEquipment(")
-                + method(detector, "    private static boolean hasBase(")
-                + method(detector, "    private static String nudgeForPlan(")
-                + method(detector, "    private static com.dwinovo.numen.rdd.fail.TaskQualityReport.Reason failureKindToQuality(")
-                + detectorExcerpt(method(detector, "    private int rsSafeCount("))
+                + detectorExcerpt(method(recovery, "    void parkRejectedDeathReplan("))
+                + detectorExcerpt(method(recovery, "    void handleSubtaskFailure("))
+                + method(recovery, "    private static boolean hasBackupEquipment(")
+                + method(recovery, "    private static boolean hasBase(")
+                + method(recovery, "    private static String nudgeForPlan(")
+                + method(recovery, "    private static com.dwinovo.numen.rdd.fail.TaskQualityReport.Reason failureKindToQuality(")
+                + detectorExcerpt(method(recovery, "    private int rsSafeCount("))
                 + method(source, "    static boolean requestReplan(UUID companionId, String reason) {")
                 + "static class SideTaskHost {\n"
                 + method(Files.readString(plugin.resolve("SideTaskHost.java")).replace("\r\n", "\n"), "    private static void publish(")
@@ -474,7 +475,9 @@ class RddPendingDeathSettlementReplanTest {
     private static String detectorExcerpt(String source) {
         // Only adapt the MC body type and instance storage to the existing static shell; rules stay source-loaded.
         return source.replace("NumenPlayer", "Body").replace("private final ", "private static final ")
-                .replace("private void ", "private static void ").replace("private int ", "private static int ");
+                .replace("private void ", "private static void ").replace("private int ", "private static int ")
+                .replace("    void parkRejectedDeathReplan(", "    private static void parkRejectedDeathReplan(")
+                .replace("    void handleSubtaskFailure(", "    private static void handleSubtaskFailure(");
     }
     private static String method(String source, String signature) {
         int start = source.indexOf(signature); assertTrue(start >= 0, "production method missing: " + signature);
