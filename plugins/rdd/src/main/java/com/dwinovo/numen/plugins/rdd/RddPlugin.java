@@ -1642,7 +1642,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (rt == null || rt.chain() != owner) return false; // an old caller cannot clear a replacement owner's handoff
         var death = RddDeathLedger.latest(companionId);
         var claimed = RddDeferredDeathReplan.claim(companionId, pending, owner,
-                death == null ? Integer.MIN_VALUE : death.seq(), true);
+                death == null ? Integer.MIN_VALUE : death.seq());
         if (claimed == null) return false;
         boolean accepted = false;
         try {

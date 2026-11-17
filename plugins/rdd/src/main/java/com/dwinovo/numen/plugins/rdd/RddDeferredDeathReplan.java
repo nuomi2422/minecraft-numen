@@ -41,15 +41,15 @@ final class RddDeferredDeathReplan {
     /**
      * Claim once, or drop a stale handoff.
      *
+     * <p>The caller has already rejected a non-current chain; that read stays in the host where the
+     * runtime lives, so this owner never re-reads it.
+     *
      * @param pending         the value observed by {@link #peek(UUID)}
      * @param latestDeathSeq  latest ledger seq, or {@link Integer#MIN_VALUE} when there is no death record
-     * @param ownerIsCurrent  whether the caller's chain is still the companion's runtime chain
      * @return the claimed handoff, or null when nothing is claimable now
      */
-    static Handoff claim(UUID companionId, Handoff pending, TaskChain owner, int latestDeathSeq, boolean ownerIsCurrent) {
+    static Handoff claim(UUID companionId, Handoff pending, TaskChain owner, int latestDeathSeq) {
         if (pending == null) return null;
-        // An old caller cannot clear a replacement owner's handoff.
-        if (!ownerIsCurrent) return null;
         if (owner != pending.owner() || owner.currentPrimary() == null
                 || !pending.primaryId().equals(owner.currentPrimary().id())
                 || pending.planRevision() != owner.planRevision()
