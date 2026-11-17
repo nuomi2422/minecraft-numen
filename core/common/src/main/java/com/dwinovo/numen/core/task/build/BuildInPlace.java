@@ -1,5 +1,7 @@
 package com.dwinovo.numen.core.task.build;
 
+import java.util.Map;
+
 /**
  * 「就地施工」闸门（{@code build} 的 {@code in_place} 参数）。
  *
@@ -21,6 +23,58 @@ package com.dwinovo.numen.core.task.build;
  * <p>本类刻意只依赖四个整数，好让「闸门判据」能在游戏外直接测。</p>
  */
 public record BuildInPlace(int x, int z, int feetY, int headY) {
+
+    /**
+     * 从工具参数解析（{@code {"x","z","feet_y","head_y"}}）。
+     *
+     * <p><b>为什么在这里而不是在工具里</b>：AC 直调走 {@code onServerCall}，参数<b>不</b>经过
+     * JSON schema 的整数校验，所以在工具里写 {@code Number.intValue()} 会把 61.5 静默截成 61 ——
+     * 一个错位的锚点会让闸门在错的格子上放行。所以判据放在这个零依赖的值对象里：
+     * 非数字、小数、NaN/∞、超出 int 范围、缺字段，一律响亮拒绝。</p>
+     */
+    public static BuildInPlace parse(Object raw) {
+        if (!(raw instanceof Map<?, ?> m)) {
+            throw new IllegalArgumentException(
+                    "in_place must be an object {x, z, feet_y, head_y}, got "
+                            + (raw == null ? "null" : raw.getClass().getSimpleName()));
+        }
+        int x = requireInt(m, "x");
+        int z = requireInt(m, "z");
+        int feet = requireInt(m, "feet_y");
+        int head = requireInt(m, "head_y");
+        if (head != feet + 1) {
+            throw new IllegalArgumentException("in_place head_y must be feet_y + 1 "
+                    + "(the body is two cells tall), got feet_y=" + feet + ", head_y=" + head);
+        }
+        return new BuildInPlace(x, z, feet, head);
+    }
+
+    private static int requireInt(Map<?, ?> m, String key) {
+        Object v = m.get(key);
+        if (v == null) {
+            throw new IllegalArgumentException("in_place." + key + " is required");
+        }
+        double d;
+        if (v instanceof Number n) {
+            d = n.doubleValue();
+        } else if (v instanceof String s) {
+            try {
+                d = Double.parseDouble(s.trim());
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("in_place." + key + " is not a number: " + v);
+            }
+        } else {
+            throw new IllegalArgumentException("in_place." + key + " must be a number, got "
+                    + v.getClass().getSimpleName());
+        }
+        if (!Double.isFinite(d) || d != Math.rint(d)) {
+            throw new IllegalArgumentException("in_place." + key + " must be a whole finite number, got " + v);
+        }
+        if (d < Integer.MIN_VALUE || d > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("in_place." + key + " is out of int range: " + v);
+        }
+        return (int) d;
+    }
 
     /** 身体是否仍锚在这个坑里：同列 + 脚的高度就在 feetY（±0.2 容差）。 */
     public boolean anchorsBodyAt(double bodyX, double bodyY, double bodyZ) {

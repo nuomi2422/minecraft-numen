@@ -1,7 +1,11 @@
 package com.dwinovo.numen.core.task.build;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
@@ -43,6 +47,42 @@ class BuildInPlaceTest {
         assertFalse(PIT.clipsBodyCell(8, 63, 8), "头顶上一层就是封盖那一格，合法");
         assertFalse(PIT.clipsBodyCell(7, 61, 8), "隔壁格不压身体");
         assertFalse(PIT.clipsBodyCell(8, 61, 9));
+    }
+
+    // ── 解析：AC 直调不过 JSON schema，所以这里必须自己把小数/NaN/溢出挡掉 ──
+
+    @Test
+    void parserAcceptsWholeNumbersOnlyWhenFieldsAreComplete() {
+        assertEquals(PIT, BuildInPlace.parse(Map.of("x", 8, "z", 8, "feet_y", 61, "head_y", 62)));
+        assertEquals(PIT, BuildInPlace.parse(Map.of("x", "8", "z", "8", "feet_y", "61", "head_y", "62")));
+    }
+
+    @Test
+    void parserRejectsFractionalAnchorInsteadOfTruncating() {
+        assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
+                Map.of("x", 8, "z", 8, "feet_y", 61.5, "head_y", 62)));
+        assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
+                Map.of("x", 8, "z", 8, "feet_y", "61.5", "head_y", "62")));
+    }
+
+    @Test
+    void parserRejectsNonFiniteAndOverflow() {
+        assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
+                Map.of("x", 8, "z", 8, "feet_y", Double.NaN, "head_y", 62)));
+        assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
+                Map.of("x", 8, "z", 8, "feet_y", Double.POSITIVE_INFINITY, "head_y", 62)));
+        assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
+                Map.of("x", 1e12, "z", 8, "feet_y", 61, "head_y", 62)));
+    }
+
+    @Test
+    void parserRejectsMissingFieldsAndWrongHeight() {
+        assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
+                Map.of("x", 8, "z", 8, "feet_y", 61)));
+        assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
+                Map.of("x", 8, "z", 8, "feet_y", 61, "head_y", 63)));
+        assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse("8,8,61,62"));
+        assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(null));
     }
 
     @Test

@@ -308,38 +308,9 @@ public final class BuildTool implements NumenTool {
         BuildTaskRecord record = new BuildTaskRecord(toolCallId,
                 ctx(toolCallId, companion).deadline(timeout), targets, replaceExisting, consume);
         if (parsed.in_place() != null) {
-            record.inPlace = parseInPlace(parsed.in_place());
+            record.inPlace = BuildInPlace.parse(parsed.in_place());
         }
         setTask(companion, record, args, reply);
-    }
-
-    /** {@code in_place} 解析：四个整数，头必须紧挨脚（身体只有两格高）。 */
-    private static BuildInPlace parseInPlace(Map<String, Object> m) {
-        Integer x = intArg(m.get("x"));
-        Integer z = intArg(m.get("z"));
-        Integer feet = intArg(m.get("feet_y"));
-        Integer head = intArg(m.get("head_y"));
-        if (x == null || z == null || feet == null || head == null) {
-            throw new IllegalArgumentException("in_place needs integer x, z, feet_y, head_y");
-        }
-        if (head != feet + 1) {
-            throw new IllegalArgumentException("in_place head_y must be feet_y + 1 (the body is two cells tall)");
-        }
-        return new BuildInPlace(x, z, feet, head);
-    }
-
-    private static Integer intArg(Object v) {
-        if (v instanceof Number n) {
-            return n.intValue();
-        }
-        if (v instanceof String s) {
-            try {
-                return Integer.parseInt(s.trim());
-            } catch (NumberFormatException e) {
-                return null;
-            }
-        }
-        return null;
     }
 
     /** Shared production parser seam: auto_light is exactly one standalone op, not a blueprint. */

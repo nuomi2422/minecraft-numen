@@ -71,6 +71,8 @@ class Dig3Seal1EmergencyAcTest {
         int buildCalls = 0;
         /** 带 in_place 锚点且身体确实在锚点上的 build 次数（闸门真的核过一遍）。 */
         int anchoredCalls = 0;
+        /** 第一单 build 回"受理"而不是"完成"（模拟后台任务在 PAUSED 期间跑完）。 */
+        boolean asyncDig = false;
 
         static String key(int x, int y, int z) {
             return x + "," + y + "," + z;
@@ -156,7 +158,7 @@ class Dig3Seal1EmergencyAcTest {
         }
     }
 
-    private static final class Inspect extends AcxToolPort {
+    private static final class Inspect implements AcxToolPort {
         private final World w;
 
         Inspect(World w) {
@@ -243,6 +245,7 @@ class Dig3Seal1EmergencyAcTest {
                 }
                 w.anchoredCalls++;
             }
+            boolean asyncNow = w.asyncDig && w.buildCalls == 1;
             Object raw = params.get("ops");
             if (!(raw instanceof List<?> ops)) {
                 return Result.failed("ops 必须是数组");
@@ -272,6 +275,10 @@ class Dig3Seal1EmergencyAcTest {
             }
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("placed", ops.size());
+            if (asyncNow) {
+                // 受理 ≠ 完成：世界在 PAUSED 期间被后台任务改完了，但这一步的回执只是"已受理"
+                return Result.accepted("t-dig", data, "accepted");
+            }
             return Result.completed(data, "ok");
         }
     }
@@ -411,12 +418,42 @@ class Dig3Seal1EmergencyAcTest {
     // ── 装配 ──────────────────────────────────────────────────────────
 
     private static Fake.Registry registry(World w) {
+        return registry(w, null);
+    }
+
+    private static Fake.Registry registry(World w, com.dwinovo.numen.acx.api.AcxCompletionProbe probe) {
         Fake.Registry reg = new Fake.Registry();
         reg.add(PortToolAdapter.builder(new SelfStatus(w)).build());
         reg.add(PortToolAdapter.builder(new Inspect(w)).build());
-        reg.add(PortToolAdapter.builder(new Build(w)).build());
+        reg.add(PortToolAdapter.builder(new Build(w)).probe(probe).build());
         reg.add(PortToolAdapter.builder(new Goto(w)).build());
         return reg;
+    }
+
+    /**
+     * 真 PAUSED → 探针 → resume：异步受理停在挖那一步，续跑时要能靠 vars 把坐标接上，
+     * 末段取证也不能依赖上一帧的 allOutputs（AcxRunner 每帧重建 allOutputs，只保 vars）。
+     */
+    @Test
+    void asyncDigPausesThenResumesWithVarsIntact() throws Exception {
+        World w = new World();
+        w.asyncDig = true;
+        Fake.Probe probe = new Fake.Probe().thenDone(new java.util.LinkedHashMap<>());
+        Fake.Registry reg = registry(w, probe);
+        AcxLoader.LoadReport report = load(reg);
+        AcxDefinition def = report.registered().get("dig3_seal1_emergency");
+        AcxRunner runner = AcxRunner.builder().tools(reg).catalog(report.catalog()).build();
+
+        AcxRunRecord first = runner.run(def, Map.of());
+        assertEquals(AcxStatus.PAUSED, first.status(),
+                "异步受理必须停在 PAUSED 而不是报成功: " + first.errorMessage());
+
+        AcxRunRecord second = runner.resume(def, first);
+        assertEquals(AcxStatus.SUCCESS, second.status(),
+                "续跑应当用 vars 里的坐标接上并走完: " + second.errorMessage());
+        assertEquals(61.0, w.y, 0.001);
+        assertEquals(DIRT, w.block(8, 63, 8));
+        assertFalse(probe.asked.isEmpty(), "续跑必须真的问过完成探针");
     }
 
     private static AcxLoader.LoadReport load(Fake.Registry reg) throws Exception {
