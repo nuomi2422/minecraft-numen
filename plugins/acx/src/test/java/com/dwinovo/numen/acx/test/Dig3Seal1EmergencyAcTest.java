@@ -73,6 +73,8 @@ class Dig3Seal1EmergencyAcTest {
         int anchoredCalls = 0;
         /** 第一单 build 回"受理"而不是"完成"（模拟后台任务在 PAUSED 期间跑完）。 */
         boolean asyncDig = false;
+        /** 第 N 单 build（1 起）走"受理"；0 = 关闭。用来让补缝那一单异步。 */
+        int asyncCallIndex = 0;
 
         static String key(int x, int y, int z) {
             return x + "," + y + "," + z;
@@ -245,7 +247,8 @@ class Dig3Seal1EmergencyAcTest {
                 }
                 w.anchoredCalls++;
             }
-            boolean asyncNow = w.asyncDig && w.buildCalls == 1;
+            boolean asyncNow = (w.asyncDig && w.buildCalls == 1)
+                    || (w.asyncCallIndex > 0 && w.buildCalls == w.asyncCallIndex);
             Object raw = params.get("ops");
             if (!(raw instanceof List<?> ops)) {
                 return Result.failed("ops 必须是数组");
@@ -402,6 +405,58 @@ class Dig3Seal1EmergencyAcTest {
         assertEquals(AIR, w.block(8, 63, 8));
         assertFalse(w.hasDirt());
         assertEquals(2, w.buildCalls, "挖 + 封盖各一次，补缝一轮都不该跑");
+    }
+
+    /**
+     * 真实的"墙上有洞"：头层西侧那格本来是空气。跑完之后它必须被补成封盖方块，
+     * 而且封顶仍然成立 —— 这是主人"检查洞并补"那条要求的直接用例
+     * （前面几条 happy path 的墙全是实心，gap_fill 一次都没跑过）。
+     */
+    @Test
+    void realWallGapIsFilledBeforeCapping() throws Exception {
+        World w = new World();
+        w.set(7, 62, 8, AIR);   // 头层西侧一个 1x1 洞
+        AcxRunRecord rec = run(w);
+
+        assertEquals(AcxStatus.SUCCESS, rec.status(), "有洞且能补，应当成功: " + rec.errorMessage());
+        assertEquals(DIRT, w.block(7, 62, 8), "★ 墙上的洞必须被补实");
+        assertEquals(DIRT, w.block(8, 63, 8), "洞补完才封顶，封盖仍要在");
+        assertEquals(61.0, w.y, 0.001, "身体仍在坑底");
+        assertEquals(3, w.buildCalls, "挖 + 补那一格 + 封盖，共三单");
+    }
+
+    /**
+     * 补缝那一单走真实异步：受理即 PAUSED，之后同一次 run 用探针续跑，
+     * 补后重新取证、再封顶。
+     *
+     * <p><b>引擎语义要说清</b>：{@code for} 的游标在"这一轮开始"时就前进，所以续跑会从
+     * <b>下一个元素</b>继续，被打断那一格自己的 {@code gap_peek2/gap_guard} 不会重跑。
+     * 也就是说这一格不被逐格复核，而是由末段 {@code guard_final} 对 12 格重新取证兜底 ——
+     * 补没补上在最后一定会暴露，绝不静默成功。本用例断言的正是"补上了"这条路。</p>
+     */
+    @Test
+    void asyncWallFillPausesThenResumesAndStillCaps() throws Exception {
+        World w = new World();
+        w.set(7, 62, 8, AIR);
+        w.asyncCallIndex = 2;   // 第二单 = 补缝那一单，回"受理"
+        FakePorts.Probe probe = new FakePorts.Probe().thenDone(new java.util.LinkedHashMap<>());
+        Fake.Registry reg = registry(w, probe);
+        AcxLoader.LoadReport report = load(reg);
+        AcxDefinition def = report.registered().get("dig3_seal1_emergency");
+        AcxRunner runner = AcxRunner.builder().tools(reg).catalog(report.catalog()).build();
+
+        AcxRunRecord first = runner.run(def, Map.of());
+        assertEquals(AcxStatus.PAUSED, first.status(),
+                "补缝受理必须停在 PAUSED，不能报成功: " + first.errorMessage());
+
+        AcxRunRecord second = runner.resume(def, first);
+        assertEquals(AcxStatus.SUCCESS, second.status(), "续跑后应当补完并封顶: " + second.errorMessage());
+        // 钉住引擎的 for 游标语义：续跑从"下一个元素"继续，被打断那格的挂账不会被重新询问，
+        // 所以那一格不靠探针确认，而由末段 guard_final 对 12 格重新取证兜底（补不上就 FAIL）。
+        assertTrue(probe.asked.isEmpty(),
+                "被打断那一格被跳过、不会重新询问探针；这条语义变了就要重审安全性由谁兜底");
+        assertEquals(DIRT, w.block(7, 62, 8), "★ 被打断的那一格最终必须仍是补实的");
+        assertEquals(DIRT, w.block(8, 63, 8), "封顶仍要成立");
     }
 
     @Test
