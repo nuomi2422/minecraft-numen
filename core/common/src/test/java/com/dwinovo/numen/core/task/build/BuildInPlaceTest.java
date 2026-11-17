@@ -81,6 +81,11 @@ class BuildInPlaceTest {
                 Map.of("x", 8, "z", 8, "feet_y", 61)));
         assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
                 Map.of("x", 8, "z", 8, "feet_y", 61, "head_y", 63)));
+        // int 溢出边界：feet_y=MAX 时 feet+1 在 int 里绕回 MIN，会让一对不相邻的 Y 通过
+        assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
+                Map.of("x", 8, "z", 8, "feet_y", Integer.MAX_VALUE, "head_y", Integer.MIN_VALUE)));
+        assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(
+                Map.of("x", 8, "z", 8, "feet_y", Integer.MIN_VALUE, "head_y", Integer.MIN_VALUE + 1)));
         assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse("8,8,61,62"));
         assertThrows(IllegalArgumentException.class, () -> BuildInPlace.parse(null));
     }

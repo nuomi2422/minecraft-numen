@@ -42,7 +42,9 @@ public record BuildInPlace(int x, int z, int feetY, int headY) {
         int z = requireInt(m, "z");
         int feet = requireInt(m, "feet_y");
         int head = requireInt(m, "head_y");
-        if (head != feet + 1) {
+        // 用 long 比较：feet_y = Integer.MAX_VALUE 时 feet + 1 会溢出成 Integer.MIN_VALUE，
+        // 于是一对"根本不相邻"的 Y 也能过闸，锚点落到不相干的高度上。
+        if ((long) head != (long) feet + 1L) {
             throw new IllegalArgumentException("in_place head_y must be feet_y + 1 "
                     + "(the body is two cells tall), got feet_y=" + feet + ", head_y=" + head);
         }
