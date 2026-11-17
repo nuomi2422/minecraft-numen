@@ -445,8 +445,13 @@ final class SideTaskHost {
     private static void nudgeIfNeeded(UUID companionId, SideTaskWorldPort port, boolean wasActive, boolean nowActive) {
         NudgeDelivery.sendIfNeeded(companionId, LAST_NUDGE_GAME_TIME, wasActive, nowActive,
                 nowActive ? port.gameTime() : 0L, () -> {
-                    if (!RddPlugin.nudgeAllowed(companionId)) return false;
                     String type = currentTypeId(companionId);
+                    // A new sleep owner must not inherit a mainline reminder cooldown.
+                    // Like kickoff, reset only this companion on admission; nudge still checks pause/API.
+                    if (!wasActive && SleepSideTaskType.TYPE_ID.equals(type)) {
+                        RddPlugin.clearNudgeThrottle(companionId);
+                    }
+                    if (!RddPlugin.nudgeAllowed(companionId)) return false;
                     return RddPlugin.nudge(companionId, "[支线·" + (type == null ? "unknown" : type) + "·建议] "
                             + "当前支线仍在执行，主线暂时冻结。请按 <side_task> 中的事实和有限决策处理；"
                             + "若现场判断不值得或无法完成，用 rdd_decline_side 写明观察到的原因，"
