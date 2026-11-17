@@ -445,7 +445,8 @@
             }
           }
         ],
-        "as": "gap"
+        "as": "gap",
+        "stagnant_limit": 24
       },
       "children": [
         {
