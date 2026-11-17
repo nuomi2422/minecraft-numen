@@ -470,6 +470,45 @@ class RddDecomposerParseTest {
                 "https://fixture.invalid/v1", "fixture-proxy", "high");
     }
 
+    @Test void admissionGenerationChangeAfterBudgetCannotSend() {
+        var generation = new java.util.concurrent.atomic.AtomicLong(7L);
+        var failures = new java.util.concurrent.atomic.AtomicInteger();
+        var sends = new java.util.concurrent.atomic.AtomicInteger();
+        RddDecomposer.withPlannerEndpoint(java.util.UUID.randomUUID(), "stage_b",
+                id -> java.util.concurrent.CompletableFuture.completedFuture(endpoint("openai", "FAKE_PROFILE_A")),
+                Runnable::run, generation::get, (stage, estimate) -> { generation.incrementAndGet(); return true; },
+                ep -> { sends.incrementAndGet(); return java.util.concurrent.CompletableFuture.completedFuture("{}"); },
+                ignored -> fail("stale admission cannot return"), failures::incrementAndGet);
+        assertEquals(0, sends.get()); assertEquals(1, failures.get());
+    }
+
+    @Test void transportOwnerAndOriginalFacadeKeepSameCallbackTrace() {
+        for (String stage : List.of("stage_a", "stage_b", "fallback")) {
+            var facade = new java.util.ArrayList<String>();
+            var owner = new java.util.ArrayList<String>();
+            for (boolean direct : List.of(false, true)) {
+                var trace = direct ? owner : facade;
+                java.util.function.Function<java.util.UUID, java.util.concurrent.CompletableFuture<com.dwinovo.numen.agent.llm.LlmEndpoint>> lookup = id -> {
+                    trace.add("lookup"); return java.util.concurrent.CompletableFuture.completedFuture(endpoint("openai", "FAKE_PROFILE_A"));
+                };
+                java.util.concurrent.Executor client = task -> { trace.add("client"); task.run(); };
+                java.util.function.BiPredicate<String, Long> budget = (phase, estimate) -> { trace.add(phase + ":" + estimate); return true; };
+                java.util.function.Function<com.dwinovo.numen.agent.llm.LlmEndpoint, java.util.concurrent.CompletableFuture<String>> send = ep -> {
+                    assertEquals("FAKE_PROFILE_A", ep.apiKey()); trace.add("send");
+                    return java.util.concurrent.CompletableFuture.completedFuture("arguments");
+                };
+                java.util.function.Consumer<String> result = value -> trace.add("result:" + value);
+                Runnable failure = () -> fail("successful endpoint must not fail");
+                if (direct) RddPlannerTransport.withPlannerEndpoint(java.util.UUID.randomUUID(), stage,
+                        lookup, client, () -> 7L, budget, send, result, failure);
+                else RddDecomposer.withPlannerEndpoint(java.util.UUID.randomUUID(), stage,
+                        lookup, client, () -> 7L, budget, send, result, failure);
+            }
+            assertEquals(List.of("lookup", "client", stage + ":0", "send", "client", "result:arguments"), facade);
+            assertEquals(facade, owner, "equivalence wiring only, not an independent old behavior golden");
+        }
+    }
+
     private static final class PlannerEndpointFixture {
         final java.util.UUID a = java.util.UUID.fromString("11111111-1111-1111-1111-111111111111");
         final java.util.UUID b = java.util.UUID.fromString("22222222-2222-2222-2222-222222222222");
