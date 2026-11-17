@@ -587,17 +587,17 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
                 if (feet().equals(blockTarget)) {
                     yield "reached the exact cell " + bx + "," + by + "," + bz + ".";
                 }
-                // 2026-10-02（stage 20261002-104007 候选2）：旧文案首词是 "arrived at location"，
-                // 可 closeEnoughToSucceed() 对 BLOCK 只看**水平**距离（:498），于是「站在目标正
-                // 下方 24 格」也算成功 → 模型读到 "arrived" 就以为到了，不会再抬头想办法。
-                // 现在首词如实说「只到水平位置」，并把垂直差顶到最前面。
-                int dy = by - gy;
-                yield "reached the HORIZONTAL position x=" + bx + " z=" + bz
-                        + ", but the target cell is y=" + by + " — " + Math.abs(dy) + " blocks "
-                        + (dy > 0 ? "ABOVE you (it is up in the air: pillar/stack up, or interact with a ladder, "
-                                  + "or re-issue goto with may_alter_terrain=true to build a way up)"
-                                  : "BELOW you (it is down a shaft: dig down or find another approach)")
-                        + ". I did NOT reach it.";
+                // Near-tolerance SUCCESS is not exact cell arrival; report geometry, not guessed terrain.
+                int dy = feet().getY() - by;
+                yield "accepted near the requested cell " + bx + "," + by + "," + bz
+                        + " (not the exact cell); actual position x=" + player.getX()
+                        + ", y=" + player.getY() + ", z=" + player.getZ()
+                        + "; horizontal distance " + String.format(java.util.Locale.ROOT, "%.2f",
+                                Math.sqrt(horizontalDistSqr(bx, bz))) + " blocks; "
+                        + (dy == 0 ? "same slab-aware feet elevation as target cell Y (feet vertical offset 0 blocks)"
+                                   : "slab-aware feet vertical offset " + (dy > 0 ? "+" : "") + dy
+                                           + " blocks from target cell Y")
+                        + ".";
             }
             case COLUMN -> "reached the location x=" + bx + " z=" + bz
                     + " (standing on the ground at y=" + gy + ").";
