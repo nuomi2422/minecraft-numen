@@ -397,6 +397,60 @@ class LearnerAutoIntakeTest {
         assertEquals(0, LearnerAutoIntake.scanOnce());
     }
 
+    private void suppressForScan(String memoId, long ageMillis) {
+        long at = System.currentTimeMillis() - ageMillis;
+        var id = java.util.UUID.fromString(COMPANION);
+        var memo = new com.dwinovo.numen.plugins.learner.core.Memo(memoId, "deferred", "death", "tried", "snapshot", at);
+        com.dwinovo.numen.plugins.learner.core.SuppressedStore.append(tmp, id, memo, "fp-" + memoId, "SUPPRESSED_COOLDOWN", at);
+    }
+
+    @Test
+    void emptyReadableScanReadmitsDueOnceWithoutAnExternalEvent() throws Exception {
+        Files.writeString(tmp.resolve("monitor/instrumentation.jsonl"), "", StandardCharsets.UTF_8);
+        suppressForScan("due-empty", 11L * 60_000L);
+        assertEquals(1, LearnerAutoIntake.scanOnce(), "due deferred work must not wait for a new event");
+        assertTrue(queueForTest(COMPANION).contains("due-empty"));
+        assertEquals(0, com.dwinovo.numen.plugins.learner.core.SuppressedStore.size(tmp, java.util.UUID.fromString(COMPANION)));
+        Path journal = tmp.resolve("learner-enqueued.jsonl");
+        assertEquals(1, Files.readAllLines(journal).size());
+        assertEquals(0, LearnerAutoIntake.scanOnce());
+        assertEquals(1, queueForTest(COMPANION).size());
+        assertEquals(1, Files.readAllLines(journal).size(), "second scan must not journal twice");
+    }
+
+    @Test
+    void consumedTailScanReadmitsDueWithoutAppendingAnotherEvent() throws Exception {
+        writeInstrumentation(tmp.resolve("monitor"), deathLine("already-consumed", COMPANION));
+        assertEquals(1, LearnerAutoIntake.scanOnce());
+        suppressForScan("due-at-tail", 11L * 60_000L);
+        assertEquals(1, LearnerAutoIntake.scanOnce(), "cursor at unchanged tail must still service due work");
+        assertTrue(queueForTest(COMPANION).contains("due-at-tail"));
+        assertEquals(2, queueForTest(COMPANION).size());
+        assertEquals(0, LearnerAutoIntake.scanOnce());
+    }
+
+    @Test
+    void emptyScanKeepsNotDueAndDisabledDeferredWork() throws Exception {
+        Files.writeString(tmp.resolve("monitor/instrumentation.jsonl"), "", StandardCharsets.UTF_8);
+        suppressForScan("not-due", 60_000L);
+        assertEquals(0, LearnerAutoIntake.scanOnce());
+        assertEquals(1, com.dwinovo.numen.plugins.learner.core.SuppressedStore.size(tmp, java.util.UUID.fromString(COMPANION)));
+        suppressForScan("due-but-disabled", 11L * 60_000L);
+        setStatic("enabled", false);
+        assertEquals(0, LearnerAutoIntake.scanOnce());
+        assertEquals(0, queueForTest(COMPANION).size());
+        assertEquals(2, com.dwinovo.numen.plugins.learner.core.SuppressedStore.size(tmp, java.util.UUID.fromString(COMPANION)));
+    }
+
+    @Test
+    void unreadableScanDoesNotDrainDeferredWork() throws Exception {
+        Files.createDirectory(tmp.resolve("monitor/instrumentation.jsonl"));
+        suppressForScan("due-unreadable", 11L * 60_000L);
+        assertEquals(0, LearnerAutoIntake.scanOnce());
+        assertEquals(0, queueForTest(COMPANION).size());
+        assertEquals(1, com.dwinovo.numen.plugins.learner.core.SuppressedStore.size(tmp, java.util.UUID.fromString(COMPANION)));
+    }
+
     @Test
     void suppressedReadmitAppendsJournalOnlyOnce() throws Exception {
         java.util.UUID id = java.util.UUID.fromString(COMPANION);
