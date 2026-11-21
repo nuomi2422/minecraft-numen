@@ -17,8 +17,18 @@ import java.util.UUID;
  */
 public record SelfPayload(String dimension, UUID companionUUID, List<Slot> main, List<Slot> armor,
                           Slot offhand, Integer selected, Float hp, Float maxHp, Integer food,
-                          Float saturation, List<Effect> effects, Vehicle vehicle, BodyTask bodyTask)
+                          Float saturation, List<Effect> effects, Vehicle vehicle, BodyTask bodyTask, Rest rest)
         implements ObservationPayload {
+    /** Legacy samples lack rest facts and remain unknown. */
+    public SelfPayload(String dimension, UUID companionUUID, List<Slot> main, List<Slot> armor,
+                       Slot offhand, Integer selected, Float hp, Float maxHp, Integer food,
+                       Float saturation, List<Effect> effects, Vehicle vehicle, BodyTask bodyTask) {
+        this(dimension, companionUUID, main, armor, offhand, selected, hp, maxHp, food, saturation,
+                effects, vehicle, bodyTask, null);
+    }
+
+    /** Coordinates and sleep state are sampled facts, not a claim that a bed is reachable. */
+    public record Rest(Integer x, Integer y, Integer z, Boolean sleeping, Boolean bedWorks) {}
     public SelfPayload {
         if (dimension == null || dimension.isBlank() || companionUUID == null)
             throw new IllegalArgumentException("self identity required");

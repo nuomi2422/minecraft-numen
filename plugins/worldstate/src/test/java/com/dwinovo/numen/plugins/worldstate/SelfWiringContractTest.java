@@ -33,7 +33,7 @@ class SelfWiringContractTest {
         main.set(0,new Slot(0,"minecraft:iron_sword",1,7,250,true));
         return new SelfPayload(DIM,UUID_SELF,main,armor,Slot.empty(40),0,20f,20f,20,5f,
                 List.of(new Effect("minecraft:speed",0,100,false,200L),new Effect("minecraft:night_vision",0,null,true,null)),
-                new Vehicle("",null),new BodyTask("","","",false,0L));
+                new Vehicle("",null),new BodyTask("","","",false,0L),new Rest(3,64,-2,false,true));
     }
     static Response response(Item item) {
         return new Response(Status.OK,"self","snapshot",100,Coverage.FULL,null,List.of(item),0,
@@ -43,6 +43,16 @@ class SelfWiringContractTest {
     static ObservationBatch.Query query() {
         JsonObject root = new JsonObject(); JsonArray q = new JsonArray(); q.add(args(TARGET)); root.add("queries",q);
         return WorldStateBatch.parse(root,CALLER,"q");
+    }
+
+    @Test void restProjectionPreservesKnownAndLegacyUnknown() {
+        var item = SelfObservationProjection.item(sample());
+        @SuppressWarnings("unchecked") var rest = (Map<String,Object>) item.values().get("rest");
+        assertEquals(3, ((Number) rest.get("x")).intValue());
+        assertEquals(false, rest.get("sleeping"));
+        assertEquals(true, rest.get("bedWorks"));
+        SelfPayload old = new SelfPayload(DIM,UUID_SELF,null,null,null,null,null,null,null,null,null,null,null);
+        assertTrue(SelfObservationProjection.item(old).unknownFields().contains("rest"));
     }
 
     @Test void effectExpiryRemainsInObservedTickDomainNotBodyElapsedGameTime() {

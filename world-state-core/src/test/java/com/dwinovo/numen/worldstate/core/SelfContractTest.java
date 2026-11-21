@@ -60,6 +60,15 @@ class SelfContractTest {
         return root.getAsJsonArray("observations").get(0).getAsJsonObject();
     }
 
+    @Test void legacyJsonWithoutRestRemainsReadableAndUnknown() {
+        var root = stored(full());
+        entry(root).getAsJsonObject("payload").remove("rest");
+        var loaded = ObservationJson.fromJson(root.toString());
+        assertEquals(1, loaded.size());
+        assertNull(((SelfPayload) loaded.getFirst().payload()).rest());
+        assertEquals(Freshness.HISTORICAL, loaded.getFirst().freshness());
+    }
+
     @Test void copiesCollectionsAndExposesOnlyImmutableValues() {
         List<Slot> main = slots(0, 36), armor = slots(36, 4);
         List<Effect> effects = new ArrayList<>(full().effects());

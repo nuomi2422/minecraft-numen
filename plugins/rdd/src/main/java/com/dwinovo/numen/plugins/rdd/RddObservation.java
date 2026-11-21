@@ -52,6 +52,7 @@ final class RddObservation {
                     + (pos.getX() + 8) + "," + (pos.getY() + 12) + "," + (pos.getZ() + 8);
             svc.refresh(new WorldObservationService.Request("rdd-env", dim, "blocks",
                     Map.of("box", box, "blocks", NEARBY_IDS), 0L, 32, 0L));
+            svc.refresh(nearbyBeds(dim, pos.getX(), pos.getY(), pos.getZ()));
             // entities 主题（039 U5#7）：危险实体 —— 两个盒子：扫描半径 / 贴身半径。
             svc.refresh(new WorldObservationService.Request("rdd-env", dim, "entities",
                     Map.of("box", dangerBox(pos, RddDangerText.SCAN_RADIUS), "category", "hostile"), 0L, 64, 0L));
@@ -68,6 +69,18 @@ final class RddObservation {
         } catch (RuntimeException | LinkageError ignored) {
             // 观测不该影响判定；能力缺席是正常情况
         }
+    }
+
+    // Read and refresh the same loaded-only box. Count both bed halves for absence;
+    // a separate row keeps occupancy distinct from bed presence.
+    static final String BEDS = "#minecraft:beds";
+    static final String UNOCCUPIED_BED_HEADS = BEDS + "[part=head,occupied=false]";
+    static final long BED_MAX_AGE_MS = 6_000L;
+    static WorldObservationService.Request nearbyBeds(String dimension, int x, int y, int z) {
+        String box = (x-4) + "," + (y-2) + "," + (z-4) + "," + (x+4) + "," + (y+2) + "," + (z+4);
+        return new WorldObservationService.Request("rdd-env", dimension, "blocks",
+                Map.of("box", box, "blocks", BEDS + "," + UNOCCUPIED_BED_HEADS, "samples", "1"),
+                BED_MAX_AGE_MS, 2, 50L);
     }
 
     /** 以方块位置为中心、半径 r 的整数盒（与实体扫描同口径）。 */

@@ -14,6 +14,9 @@ import com.dwinovo.numen.worldstate.core.request.ObservationRequest;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.world.level.block.BedBlock;
+import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.ArrayList;
@@ -40,6 +43,8 @@ public final class BlockCountWorldProvider implements WorldProvider {
      */
     static final long MAX_VOLUME = 274625L;   // 65³：与实体采集同一口径
 
+    private static final String UNOCCUPIED_BED_HEAD = "#minecraft:beds[part=head,occupied=false]";
+
     @Override public Topic topic() { return Topic.BLOCKS; }
 
     @Override public String id() { return "blocks"; }
@@ -65,6 +70,12 @@ public final class BlockCountWorldProvider implements WorldProvider {
             throw new ProviderException(FailReason.INVALID_REQUEST, "blocks request needs id=… filter");
         }
 
+        // Unknown or empty tags cannot support a negative observation.
+        boolean needsBeds = specs.stream().anyMatch(spec -> spec.equals("#minecraft:beds")
+                || spec.startsWith("#minecraft:beds["));
+        if (needsBeds && BuiltInRegistries.BLOCK.getTag(BlockTags.BEDS).filter(tag -> tag.size() > 0).isEmpty()) {
+            throw new ProviderException(FailReason.PROVIDER_ERROR, "beds tag unavailable");
+        }
         int scanned = 0;
         int skipped = 0;
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
@@ -98,7 +109,8 @@ public final class BlockCountWorldProvider implements WorldProvider {
                         // 同一个方块可能同时命中多条规格（无状态 spec 与前缀），都记上
                         if (matches(state, id, spec)) {
                             counts.merge(spec, 1, Integer::sum);
-                            if (samplesPerSpec > 0) {
+                            if (samplesPerSpec > 0 && (!UNOCCUPIED_BED_HEAD.equals(spec)
+                                    || validBedHead(level, box, cursor, state))) {
                                 var list = samples.computeIfAbsent(spec, k -> new java.util.ArrayList<>());
                                 BlockSpec.insertNearest(list,
                                         spec + "@" + cursor.getX() + "," + cursor.getY() + "," + cursor.getZ(),
@@ -123,6 +135,17 @@ public final class BlockCountWorldProvider implements WorldProvider {
         return ProviderResult.of(payload, coverage);
     }
 
+    /** A tagged block or an orphaned head is not a sampleable bed. */
+    private static boolean validBedHead(ServerLevel level, Bounds box, BlockPos head, BlockState state) {
+        if (!(state.getBlock() instanceof BedBlock)) return false;
+        var facing = state.getValue(BedBlock.FACING);
+        BlockPos foot = head.relative(facing.getOpposite());
+        if (!box.contains(foot.getX(), foot.getY(), foot.getZ()) || !level.hasChunkAt(foot)) return false;
+        var other = level.getBlockState(foot);
+        return other.is(state.getBlock()) && other.getValue(BedBlock.PART) == BedPart.FOOT
+                && other.getValue(BedBlock.FACING) == facing;
+    }
+
     /**
      * 一条规格是否命中这个方块状态。
      *
@@ -136,7 +159,7 @@ public final class BlockCountWorldProvider implements WorldProvider {
         String id = parts[0];
         Map<String, String> props = BlockSpec.parseProps(parts[1]);
         if (props == null) return false;
-        if (!id.equals(blockId)) return false;
+        if ("#minecraft:beds".equals(id) ? !state.is(BlockTags.BEDS) : !id.equals(blockId)) return false;
         if (props.isEmpty()) return true;
         var def = state.getBlock().getStateDefinition();
         for (Map.Entry<String, String> e : props.entrySet()) {

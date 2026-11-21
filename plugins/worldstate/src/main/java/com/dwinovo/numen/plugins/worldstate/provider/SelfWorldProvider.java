@@ -53,7 +53,9 @@ public final class SelfWorldProvider implements WorldProvider {
         BodyTask body = new BodyTask(task.id(), task.tool(), task.describe(), task.standing(), task.elapsedMs());
         SelfPayload self = new SelfPayload(sample.dimension(), sample.id(), main, armor,
                 slot(40, sample.slot(40)), sample.selected(), sample.hp(), sample.maxHp(), sample.food(),
-                sample.saturation(), effects, riding, body);
+                sample.saturation(), effects, riding, body,
+                new Rest(player.blockPosition().getX(), player.blockPosition().getY(), player.blockPosition().getZ(),
+                        player.isSleeping(), player.serverLevel().dimensionType().bedWorks()));
         return ProviderResult.of(self, Coverage.COMPLETE);
     }
 
