@@ -1,0 +1,67 @@
+package com.dwinovo.numen.plugins.learner.skills;
+
+import org.junit.jupiter.api.Test;
+import java.util.ArrayList;
+import java.util.List;
+import static org.junit.jupiter.api.Assertions.*;
+
+/** 056 §20: pure rendering only; no delivery or execution is inferred. */
+class CatalogEntryRendererTest {
+    private static CatalogEntryRenderer.Candidate candidate(String id, String name, String purpose) {
+        return new CatalogEntryRenderer.Candidate("skill:" + id + "@v1", name, purpose,
+                "EXECUTOR", "TRIAL", true, true, true);
+    }
+    @Test void liveSizedCandidatesFitThreeWithoutTruncation() {
+        List<CatalogEntryRenderer.Candidate> entries = new ArrayList<>();
+        for (int i = 0; i < 39; i++) entries.add(candidate("sk-"+i, "name-"+i, "purpose".repeat(26)));
+        var out = CatalogEntryRenderer.render(entries, "EXECUTOR", 1160);
+        assertEquals(3, out.entries().size());
+        assertEquals(39, out.decisions().size());
+        assertEquals("over-limit", out.decisions().get(3).reason());
+        assertTrue(out.entries().stream().allMatch(e -> e.length() <= 320));
+        assertTrue(out.fragment().length() <= 1160);
+        assertTrue(out.fragment().startsWith("<retrieved_knowledge>"));
+        assertTrue(out.fragment().endsWith("</retrieved_knowledge>"));
+    }
+    @Test void emptyLibraryIsNoMatchAndNoPlaceholder() {
+        var out = CatalogEntryRenderer.render(List.of(), "EXECUTOR", 1200);
+        assertEquals("no-match", out.reason());
+        assertTrue(out.fragment().isEmpty());
+    }
+    @Test void xmlEscapesOriginalFieldsWithoutPretendingConditionsAreInBody() {
+        var out = CatalogEntryRenderer.render(List.of(candidate("safe", "<&>\"'", "A & B < C > D \"Q\" 'S'")), "EXECUTOR", 1200);
+        assertEquals(1, out.entries().size());
+        String xml = out.fragment();
+        assertTrue(xml.contains("&lt;&amp;&gt;&quot;&apos;"));
+        assertTrue(xml.contains("A &amp; B &lt; C &gt; D &quot;Q&quot; &apos;S&apos;"));
+        assertFalse(xml.contains("see body"));
+    }
+    @Test void overlongEntryIsRejectedWithoutTruncationAndLaterCandidateSurvives() {
+        var out = CatalogEntryRenderer.render(List.of(candidate("long", "n", "x".repeat(400)),
+                candidate("good", "n", "short")), "EXECUTOR", 1200);
+        assertEquals("over-budget", out.decisions().get(0).reason());
+        assertEquals(1, out.entries().size());
+        assertTrue(out.fragment().contains("skill:good@v1"));
+        assertFalse(out.fragment().contains("skill:long@v1"));
+    }
+    @Test void knownConditionsRankBeforeUnknownAndOnlyOneUnknownWhenAllUnknown() {
+        var unknownA = new CatalogEntryRenderer.Candidate("skill:u1@v1", "u1", "purpose", "EXECUTOR", "TRIAL", true, false, true);
+        var unknownB = new CatalogEntryRenderer.Candidate("skill:u2@v1", "u2", "purpose", "EXECUTOR", "TRIAL", true, false, true);
+        var known = candidate("known", "known", "purpose");
+        var mixed = CatalogEntryRenderer.render(List.of(unknownA, known), "EXECUTOR", 1200);
+        assertTrue(mixed.fragment().indexOf("skill:known@v1") < mixed.fragment().indexOf("skill:u1@v1"));
+        var onlyUnknown = CatalogEntryRenderer.render(List.of(unknownA, unknownB), "EXECUTOR", 1200);
+        assertEquals(1, onlyUnknown.entries().size());
+        assertEquals("over-limit", onlyUnknown.decisions().get(1).reason());
+        assertTrue(onlyUnknown.fragment().contains("条件未核"));
+    }
+    @Test void omittedMetadataIsUnknownNotInferredFromBody() {
+        var unknown = new CatalogEntryRenderer.Candidate("skill:unknown@v1", "n", "purpose", "EXECUTOR", "TRIAL", true, false, true);
+        var out = CatalogEntryRenderer.render(List.of(unknown), "EXECUTOR", 1200);
+        assertEquals("condition-unknown", out.decisions().get(0).reason());
+        assertEquals(1, out.entries().size());
+        assertTrue(out.fragment().contains("conditions=\"UNKNOWN\""));
+        assertTrue(out.fragment().contains("条件未核"));
+        assertFalse(out.fragment().contains("see body"));
+    }
+}
