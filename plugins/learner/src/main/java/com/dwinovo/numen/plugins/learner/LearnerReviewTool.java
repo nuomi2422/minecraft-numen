@@ -249,6 +249,15 @@ final class LearnerReviewTool implements NumenTool {
 
         // 后台线程做 LLM 复盘（阻塞等待只发生在这里，不在服务器主线程）
         Thread.ofVirtual().name("learner-review-" + reviewId).start(() -> {
+            // 2026-11-22（主人止损）：入口到线程启动之间被关闸 → 不启动 LLM，批次回滚并如实标记。
+            if (!LearnerSwitch.enabled()) {
+                queue.restore(batch);
+                LearnerPlugin.finishReview(reviewId, "DISABLED", 0);
+                observation.publish("review_skipped", Map.of("review_id", reviewId,
+                        "companion", id.toString(), "reason", "learner_disabled", "restored", batch.size()),
+                        observationCurrent(capturedServer));
+                return;
+            }
             // ★ 拒收回喂（2026-10-05 实机教训）：投递箱读得到吗？读不到就传 null，
             //   RejectionFeedback 会**明说「读不到」**，不假装「没有拒收」。
             var ob = LearnerPlugin.outbox();
