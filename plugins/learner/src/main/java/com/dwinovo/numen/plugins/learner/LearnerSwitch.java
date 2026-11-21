@@ -69,8 +69,11 @@ final class LearnerSwitch {
                 return;
             }
             JsonObject o = JsonParser.parseString(Files.readString(f, StandardCharsets.UTF_8)).getAsJsonObject();
-            // 只有显式 true 才开；缺键、null、非法值一律关。
-            enabled = o.has("enabled") && !o.get("enabled").isJsonNull() && o.get("enabled").getAsBoolean();
+            // 只有 JSON 布尔 true 才开；字符串 "true"、数字 1、null、缺键一律关（Gson getAsBoolean 会把 "true" 也当 true，不能用）。
+            enabled = o.has("enabled")
+                    && o.get("enabled").isJsonPrimitive()
+                    && o.get("enabled").getAsJsonPrimitive().isBoolean()
+                    && o.get("enabled").getAsBoolean();
         } catch (RuntimeException | java.io.IOException e) {
             enabled = false;
             LOG.warn("[learner-switch] read {} failed, keeping learner OFF: {}", f, e.toString());

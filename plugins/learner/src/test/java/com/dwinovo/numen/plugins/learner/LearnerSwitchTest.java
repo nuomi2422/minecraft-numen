@@ -42,6 +42,16 @@ class LearnerSwitchTest {
         assertFalse(LearnerSwitch.enabled());
     }
 
+    @Test void stringTrueAndNumbersStayOff(@TempDir Path dir) throws Exception {
+        // Gson getAsBoolean 会把字符串 "true" 也转成 true —— 止损开关必须只认 JSON 布尔。
+        Files.writeString(dir.resolve(LearnerSwitch.FILE_NAME), "{\"enabled\": \"true\"}", StandardCharsets.UTF_8);
+        LearnerSwitch.reload(dir);
+        assertFalse(LearnerSwitch.enabled(), "字符串 \"true\" 不许开闸");
+        Files.writeString(dir.resolve(LearnerSwitch.FILE_NAME), "{\"enabled\": 1}", StandardCharsets.UTF_8);
+        LearnerSwitch.reload(dir);
+        assertFalse(LearnerSwitch.enabled(), "数字 1 不许开闸");
+    }
+
     @Test void nullDirIsOff() {
         LearnerSwitch.reload(null);
         assertFalse(LearnerSwitch.enabled());
