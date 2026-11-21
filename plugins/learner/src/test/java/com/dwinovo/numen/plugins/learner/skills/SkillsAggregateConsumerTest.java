@@ -140,6 +140,44 @@ class SkillsAggregateConsumerTest {
     }
 
     @Test
+    void compactCatalogHasBoundedCompleteEntriesAndNeverPretendsOmittedConditionsAreKnown() throws Exception {
+        var source = catalogFixture("compact-safe", SkillStatus.TRIAL, "EXECUTOR", "BODY_ONLY_BY_REF",
+                "安全过夜", "天黑先确认居所");
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(UUID.randomUUID(), "过夜");
+        assertNotNull(fragment);
+        var document = parseCatalog(fragment.text());
+        var entries = document.getElementsByTagName("entry");
+        assertEquals(1, entries.getLength());
+        var node = (org.w3c.dom.Element) entries.item(0);
+        assertEquals("skill:compact-safe@v7", node.getAttribute("ref"));
+        assertEquals(source.name(), node.getElementsByTagName("name").item(0).getTextContent());
+        assertEquals(source.purpose(), node.getElementsByTagName("purpose").item(0).getTextContent());
+        String oneEntry = fragment.text().substring(fragment.text().indexOf("<entry "),
+                fragment.text().indexOf("</entry>") + "</entry>".length());
+        assertTrue(oneEntry.length() <= 320, "entry must fit without truncating author fields");
+        assertFalse(fragment.text().contains("BODY_ONLY_BY_REF"));
+        assertTrue(fragment.refs().isEmpty());
+        boolean allConditionsPresent = oneEntry.contains("stock low") && oneEntry.contains("stock sufficient")
+                && oneEntry.contains("observed workbench") && oneEntry.contains("author risk");
+        assertTrue(allConditionsPresent || oneEntry.contains("UNKNOWN"),
+                "omitted metadata must be explicitly UNKNOWN; body cannot promise metadata");
+        assertFalse(oneEntry.contains("conditions 见 ref 正文"));
+    }
+
+    @Test
+    void compactCatalogRejectsUnsafeRawScriptAsPurposeRatherThanTruncatingOrInventing() throws Exception {
+        String rawPurpose = "{\"name\":\"old-ac\",\"steps\":[{\"block\":\"goto\"}]}";
+        catalogFixture("unsafe-raw", SkillStatus.TRIAL, "EXECUTOR", "ORIGINAL_BODY",
+                "legacy AC", rawPurpose);
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(UUID.randomUUID(), "任务");
+        assertNotNull(fragment, "rejected candidate must leave an observable gap");
+        assertFalse(fragment.text().contains("skill:unsafe-raw@v7"), "raw script is not a safe purpose");
+        assertFalse(fragment.gapCounts().isEmpty(), "do not turn an unsafe candidate into empty library");
+    }
+
+    @Test
     void catalogReachesProviderWithoutBodyReceiptAndExactRefReadsOriginalBody() throws Exception {
         String body = "ORIGINAL_BODY_ONLY_AFTER_EXPLICIT_READ";
         var entry = catalogFixture("sk-catalog", SkillStatus.TRIAL, "EXECUTOR,PLANNER", body,
