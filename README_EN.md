@@ -1,8 +1,8 @@
 <div align="center">
 
-# Numen · 言出法随
+# RDD · Minecraft source fork based on Numen
 
-### An AI companion that lives in your world
+### RDD development branch; not an official upstream release
 
 *言出法随 (yán chū fǎ suí) — you say it, and it becomes real.*
 
@@ -16,6 +16,56 @@
 [**Quick start**](#quick-start) · [**What it can do**](#what-it-can-do) · [**Extending it**](#extending-it) · [**External brain**](#external-brain) · [**Design**](#design) · [**FAQ**](#faq) · [**For developers**](#for-developers) · [**Roadmap**](#roadmap)
 
 </div>
+
+## Where you are and where to read
+
+Read **main** for RDD work. Other branches are not automatically the RDD release line. This repository contains upstream Numen and RDD modifications; attribution alone does not replace license compliance.
+
+- [Project front door — master](https://github.com/nuomi2422/restart-developmental-doer/tree/master)
+- [Public design documentation — main](https://github.com/nuomi2422/rdd-docs-public/tree/main) (sanitized publication; private records are not included)
+- [Engineering Harness — main](https://github.com/nuomi2422/rdd-harness/tree/main)
+- Private maintenance documentation: nuomi2422/rdd-docs, master; access is restricted.
+
+Start with rdd-core/ for task and asset logic, world-state-core/ for observations, experience-core/ and settlement-core/ for their domains; plugins/ adapts these to Minecraft. api/, core/ and ai/ contain the shared engine and its integration changes. The original Numen introduction below is upstream background, **not a claim that every RDD contract has shipped**.
+
+## RDD architecture and development status (2026-11-21)
+
+This is the RDD public development fork of [Dwinovo/Numen](https://github.com/Dwinovo/minecraft-numen), not an official upstream release. Upstream code, names and assets retain their attribution and licenses. RDD aims to test long-running autonomous tasks and reusable, improving capabilities in real Minecraft. **Some mechanisms exist; the complete preparation framework and its end-to-end effects are not yet fully validated.**
+
+### Four architectural lines, a shared factual foundation
+
+- **Runtime assurance:** planning owns goals/dependencies; the executor chooses among main, side and routine work using current facts, priorities and reasons. Supervision only repairs broken continuation. Important resource losses can invalidate route assumptions without a death event; after death, use available backup equipment before assessing recovery and replanning.
+- **Learning:** external learners currently lead evidence-based diagnosis, deduplication, method revision, trials and effect review. Future in-game composition uses the same bounded framework, not arbitrary system-code access.
+- **External engineering:** extends atomic capabilities and repairs framework gaps with versioned tests, controlled publication and rollback.
+- **Persistent assets:** useful bases, facilities, resources and explored maps retain location, availability, purpose, access constraints and freshness. Historical sightings are not proof of current availability.
+
+
+```text
+game observations / domain events
+  → identity-scoped incremental acquisition → observations
+  → bounded shared computation → derived storage/cache + invalidation
+  → exact reads / semantic retrieval
+  → tasks / AC / environment topics / assets / planner & executor
+  → actions and world outcomes → evidence, learning and revision
+```
+
+### AC and composable skills
+
+AC reads typed current-world parameters, computes/filter/sorts candidates, and uses variables, branches, bounded loops and result bindings to select atomic actions. It reuses the existing loader, runner, tool registry and body host. Versioned child ACs, temporary compositions, asynchronous feedback, cancellation and recovery are part of the preparation scope. Multiple AC runs may observe, calculate or wait concurrently, but competing body actions have **one authoritative arbitration point**. Preemption preserves progress; resumption rechecks the world rather than replaying a stale path.
+
+Tools must measure real phase-specific progress and attempt bounded local recovery. Movement is not mined yield, breaking is not pickup, and acceptance is not goal completion. Existing high-level tools remain available until replacements prove effects, cancellation and recovery.
+
+Experience, AC definitions, task templates, environment topics and facility methods remain independently discoverable and usable. A scenario skill references their versions rather than copying bodies or taking over execution. Retrieval uses goals and world conditions, delivering a small catalog before on-demand expansion. Content versions, AC runs, logical tasks, observations/caches and topic mounts retain distinct lifecycles. Discovery, expansion, adoption, invocation and world effects are separate evidence layers.
+
+### Preparation, not a completion claim
+
+Four parallel work packages cover tasks/supervision, AC/execution, world/environment/assets, and learning/composition/experiment tools, with a single integration lead. Sleeping through a night is the first integration example, **not the whole scope**; food supply, trading, mining under danger and important-loss recovery test reuse before formal full-game cycles.
+
+This architecture describes existing pieces plus incomplete contracts, not a fully shipped feature checklist. Source, offline tests, builds, installation/loading, actual calls and world effects are checked separately. Uploading is not deployment. The internal architecture MCP navigates sourced design; it is neither live world truth nor automatic work authorization.
+
+Source areas: [rdd-core](rdd-core), [world-state-core](world-state-core), [settlement-core](settlement-core), [experience-core](experience-core), [plugins](plugins), [api](api) and [core](core). See also [engineering Harness](https://github.com/nuomi2422/rdd-harness) and [project showcase](https://github.com/nuomi2422/restart-developmental-doer). Private operational records and local configurations are not included in this public introduction.
+
+---
 
 <p align="center">
   <img src="docs/numen-demo.gif" alt="Numen in action: chopping, mining, crafting, fighting, driving Mekanism machines" width="640">
