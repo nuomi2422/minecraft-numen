@@ -93,6 +93,12 @@ class AcxCompanionBridgeConsumerTest {
                 call("competingRunWaits"));
     }
 
+    @Test void cooperativeCancelAndLateReceiptKeepTheOccupiedBodyUnavailable() throws Exception {
+        assertEquals(List.of(true, true, true, "PAUSED", 0, true, true, true,
+                        "PAUSED", "body_busy", true, true, true, 0),
+                call("cancelledRunLateReceiptKeepsBodyBusy"));
+    }
+
     @Test void sameBodyCanObserveWhilePreviousRunWaitsForDrops() throws Exception {
         assertEquals(List.of(true, true, true, 1, true, true, true),
                 call("observeWhileMineWaits"));
@@ -725,6 +731,54 @@ class AcxCompanionBridgeConsumerTest {
                 } finally {
                     CompanionTickDispatcher.removeBody(f.b);
                     f.close();
+                }
+            }
+
+            public static List<Object> cancelledRunLateReceiptKeepsBodyBusy() throws Exception {
+                var entered = new java.util.concurrent.CountDownLatch(1);
+                var release = new java.util.concurrent.CountDownLatch(1);
+                var f = new MineReceiptFixture(true, null, entered, release, null);
+                Thread worker = null;
+                try {
+                    f.start();
+                    String oldRun = f.run;
+                    var old = f.plugin.sessions.session(oldRun);
+                    JsonObject oldArgs = f.status();
+                    worker = new Thread(f::drain, "cancel-held-body-call");
+                    worker.start();
+                    await(entered, "body must occupy its real task slot before cancellation");
+                    TaskRecord original = f.mine;
+                    boolean occupied = original != null && original.getState() == TaskState.RUNNING
+                            && CompanionTickDispatcher.currentTaskFor(f.a.getUUID()) == original;
+                    var cancellation = JsonParser.parseString(request(new AcxFacadeTools.Cancel(f.plugin), oldArgs, f.a)).getAsJsonObject();
+                    boolean cancelSent = cancellation.get("success").getAsBoolean()
+                            && cancellation.getAsJsonObject("data").get("cancel_requested").getAsBoolean();
+                    boolean heldAfterCancel = release.getCount() == 1 && old.isRunning()
+                            && CompanionTickDispatcher.currentTaskFor(f.a.getUUID()) == original
+                            && original.getState() == TaskState.RUNNING && !old.isBodyInvalidated();
+                    release.countDown();
+                    worker.join(2000);
+                    if (worker.isAlive() || f.deliver == null || old.record() == null)
+                        throw new AssertionError("SETUP ERROR: held dispatch did not return with its delayed receipt");
+                    AcxRunRecord cancelled = old.record();
+                    f.deliver.run(); // Only the receipt arrives; the body task is not settled or removed.
+                    boolean unchanged = cancelled.equals(old.record()) && !old.isRunning();
+                    boolean occupiedAfterReply = CompanionTickDispatcher.currentTaskFor(f.a.getUUID()) == original
+                            && original.getState() == TaskState.RUNNING;
+                    f.start();
+                    String competitor = f.run;
+                    f.drain();
+                    AcxRunRecord blocked = record(f);
+                    return List.of(occupied, cancelSent, heldAfterCancel, cancelled.status().name(),
+                            cancelled.completedStepIndex(), unchanged, occupiedAfterReply, !oldRun.equals(competitor),
+                            blocked.status().name(), blocked.pausedReason(),
+                            CompanionTickDispatcher.currentTaskFor(f.a.getUUID()) == original,
+                            original.getState() == TaskState.RUNNING,
+                            !f.plugin.sessions.session(competitor).ownsTask(original.publicId()), f.gathered.size());
+                } finally {
+                    release.countDown();
+                    if (worker != null) worker.join(2000);
+                    f.close(); // Fixture teardown only, after all assertions have been observed.
                 }
             }
 
