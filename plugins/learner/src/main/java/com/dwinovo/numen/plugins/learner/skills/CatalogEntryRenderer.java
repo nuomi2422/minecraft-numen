@@ -10,7 +10,8 @@ public final class CatalogEntryRenderer {
     private static final String HEAD = "<retrieved_knowledge>", TAIL = "</retrieved_knowledge>";
     private CatalogEntryRenderer() {}
 
-    /** All eligibility facts must be supplied by the owner; false does not mean globally absent. */
+    /** verified means caller checked provenance, complete body and location binding.
+     * It is not execution authorization, readiness, or evidence conditions were shown. */
     public record Candidate(String ref, String name, String purpose, String audience, String status,
                             boolean bodyReadable, boolean conditionsKnown, boolean verified) {}
     public record Decision(int inputIndex, String ref, boolean included, String reason) {}
@@ -27,18 +28,18 @@ public final class CatalogEntryRenderer {
             else ordered.add(i);
         }
         ordered.sort((a, b) -> Boolean.compare(!candidates.get(a).conditionsKnown(), !candidates.get(b).conditionsKnown()));
-        boolean includedKnown = false;
+        boolean includedUnknown = false;
         List<String> entries = new ArrayList<>();
         int used = HEAD.length() + TAIL.length();
         for (int index : ordered) {
             Candidate c = candidates.get(index);
-            if (entries.size() >= MAX_ENTRIES || (!includedKnown && !c.conditionsKnown() && !entries.isEmpty())) {
+            if (entries.size() >= MAX_ENTRIES || (!c.conditionsKnown() && includedUnknown)) {
                 decisions[index] = new Decision(index, c.ref(), false, "over-limit"); continue;
             }
             String item = "<entry ref=\"" + xml(c.ref()) + "\"" +
                     " conditions=\"UNKNOWN\">" +
                     "<name>" + xml(c.name()) + "</name><purpose>" + xml(c.purpose()) + "</purpose>" +
-                    "<note>条件未展示，须重新核验</note></entry>";
+                    "<note>条件未展示；按 ref 展开，执行前必核</note></entry>";
             if (item.length() > MAX_ENTRY_CHARS) {
                 decisions[index] = new Decision(index, c.ref(), false, "over-limit"); continue;
             }
@@ -46,7 +47,7 @@ public final class CatalogEntryRenderer {
                 decisions[index] = new Decision(index, c.ref(), false, "over-budget"); continue;
             }
             entries.add(item); used += item.length();
-            if (c.conditionsKnown()) includedKnown = true;
+            if (!c.conditionsKnown()) includedUnknown = true;
             decisions[index] = new Decision(index, c.ref(), true, c.conditionsKnown() ? "included" : "condition-unknown");
         }
         String fragment = entries.isEmpty() ? "" : HEAD + String.join("", entries) + TAIL;
@@ -82,6 +83,6 @@ public final class CatalogEntryRenderer {
     private static String safe(String value) { return value == null ? "" : value; }
     private static String xml(String value) {
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                .replace("\"", "&quot;").replace("'", "&apos;");
+                .replace("\"", "&quot;").replace("'", "&apos;").replace("\r", "&#13;");
     }
 }

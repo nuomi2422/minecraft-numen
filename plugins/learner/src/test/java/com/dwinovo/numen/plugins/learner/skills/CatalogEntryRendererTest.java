@@ -75,6 +75,26 @@ class CatalogEntryRendererTest {
         javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(
                 new java.io.ByteArrayInputStream(valid.fragment().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
+    @Test void allShownConditionsRemainUnknownEvenWhenMetadataKnown() {
+        var a = candidate("known1", "n", "purpose");
+        var b = candidate("known2", "n", "purpose");
+        var u = new CatalogEntryRenderer.Candidate("skill:u1@v1", "u", "purpose", "EXECUTOR", "TRIAL", true, false, true);
+        var v = new CatalogEntryRenderer.Candidate("skill:u2@v1", "u", "purpose", "EXECUTOR", "TRIAL", true, false, true);
+        var out = CatalogEntryRenderer.render(List.of(u, a, v, b), "EXECUTOR", 1200);
+        assertEquals(3, out.entries().size());
+        assertTrue(out.entries().stream().allMatch(x -> x.contains("conditions=\"UNKNOWN\"")));
+        assertEquals("over-limit", out.decisions().get(2).reason());
+        assertFalse(out.fragment().contains("authorized"));
+        assertFalse(out.fragment().contains("ready"));
+        assertTrue(out.fragment().contains("执行前必核"));
+    }
+    @Test void xmlCarriageReturnsRoundTripWithoutNormalization() throws Exception {
+        String name = "name\rnext\r\nlast";
+        var out = CatalogEntryRenderer.render(List.of(candidate("valid", name, "purpose")), "EXECUTOR", 1200);
+        var document = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(
+                new java.io.ByteArrayInputStream(out.fragment().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        assertEquals(name, document.getElementsByTagName("name").item(0).getTextContent());
+    }
     @Test void omittedMetadataIsUnknownNotInferredFromBody() {
         var unknown = new CatalogEntryRenderer.Candidate("skill:unknown@v1", "n", "purpose", "EXECUTOR", "TRIAL", true, false, true);
         var out = CatalogEntryRenderer.render(List.of(unknown), "EXECUTOR", 1200);
