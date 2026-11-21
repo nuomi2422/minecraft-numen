@@ -122,7 +122,21 @@ public final class RefreshService {
             Observation observation = new Observation(key, result.payload(), provider.id(), Origin.DIRECT,
                     ctx.gameTick(), ctx.nowMs(), result.coverage(), Freshness.CURRENT, revision,
                     provider.dataVersion(), ctx.serverSession());
-            store.put(observation);
+            if (!store.put(observation)) {
+                // 迟到的旧刷新：存储里已有不旧于本次的观测，本次采集值不能当当前值回
+                // （008「刷新迟到与到期瞬间」）。这里改回被接受的那份，保留它自己的
+                // revision / 采集时间 / 覆盖，并在 message 里说明本次被取代。
+                Optional<Observation> kept = store.get(key);
+                if (kept.isEmpty()) {
+                    return RefreshResult.failed(FailReason.SUPERSEDED,
+                            "collected revision " + revision
+                                    + " was superseded and the accepted observation is unreadable",
+                            elapsed(start));
+                }
+                return new RefreshResult(RefreshStatus.SUCCESS, kept.get(), FailReason.NONE,
+                        "superseded by revision " + kept.get().revision() + " (collected " + revision + ")",
+                        elapsed(start));
+            }
             return RefreshResult.ok(observation, elapsed(start));
         } catch (ProviderException e) {
             return RefreshResult.failed(e.reason(), e.getMessage() == null ? e.reason().name() : e.getMessage(),
