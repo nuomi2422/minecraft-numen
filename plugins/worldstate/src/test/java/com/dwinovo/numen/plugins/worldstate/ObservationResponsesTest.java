@@ -68,6 +68,19 @@ class ObservationResponsesTest {
         var r = mapped(null, request(0, 1), List.of(), 0, 1100);
         assertEquals(Status.PENDING, r.status()); assertFalse(r.metadata().identified());
     }
+    @Test void publicReadTreatsExpiryInstantAsStaleForTopicAndCallerBudget() {
+        var rr = sample(1000, Freshness.CURRENT);
+        for (long age : List.of(0L, 60_000L)) {
+            var before = ObservationResponses.map(rr, request(age, 1), List.of(), 0, 30_999, rr.key(), 30_000);
+            var atExpiry = ObservationResponses.map(rr, request(age, 1), List.of(), 0, 31_000, rr.key(), 30_000);
+            assertEquals(ObservationMetadata.Freshness.CURRENT, before.metadata().freshness());
+            assertEquals(Status.OK, before.status());
+            assertEquals(ObservationMetadata.Freshness.STALE, atExpiry.metadata().freshness());
+            assertEquals(Status.PARTIAL, atExpiry.status());
+        }
+        var callerExpiry = ObservationResponses.map(rr, request(1000, 1), List.of(), 0, 2000, rr.key(), 30_000);
+        assertEquals(ObservationMetadata.Freshness.STALE, callerExpiry.metadata().freshness());
+    }
     @Test void validUntilUsesTopicTtlUnlessCallerAgeIsStricter() {
         var zero = mapped(sample(1000, Freshness.CURRENT), request(0, 10), List.of(), 0, 1100);
         assertEquals(30_000L, zero.metadata().validUntilMs() - zero.metadata().observedAtMs());

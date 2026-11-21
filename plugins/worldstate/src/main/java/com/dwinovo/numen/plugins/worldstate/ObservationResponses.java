@@ -31,14 +31,15 @@ public final class ObservationResponses {
         if (expectedKey == null || !expectedKey.equals(o.key()))
             return Response.error(request.topic(), "observation key does not match requested world/target/filter");
         var f = ObservationMetadata.Freshness.valueOf(rr.freshness().name());
+        long validUntil = validUntil(o.epochMs(), topicTtlMs, request.maxAgeMs());
         if (o.epochMs() <= 0 || o.epochMs() > nowMs) f = ObservationMetadata.Freshness.UNKNOWN;
-        else if (f == ObservationMetadata.Freshness.CURRENT && request.maxAgeMs() > 0
-                && nowMs - o.epochMs() > request.maxAgeMs()) f = ObservationMetadata.Freshness.STALE;
+        else if (f == ObservationMetadata.Freshness.CURRENT && validUntil <= nowMs)
+            f = ObservationMetadata.Freshness.STALE;
         String target = o.key().target();
         String subject = target.startsWith("player:") ? target.substring(7) : "";
         var metadata = new ObservationMetadata(o.key().worldId(), o.serverSession(), o.key().dimension(),
                 subject, o.source(), o.key().canonical(), o.revision(), o.epochMs(), f, "SERVER_LOADED",
-                validUntil(o.epochMs(), topicTtlMs, request.maxAgeMs()));
+                validUntil);
         var basic = ObservationMap.map(rr.coverage(), rr.freshness(), true);
         boolean stale = f != ObservationMetadata.Freshness.CURRENT;
         int limit = request.maxItems() <= 0 ? 64 : Math.min(256, request.maxItems());
