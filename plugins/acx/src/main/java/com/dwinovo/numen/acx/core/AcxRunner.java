@@ -870,10 +870,6 @@ public final class AcxRunner {
         });
     }
 
-    private static boolean saveRecoveryPosition(Ctx c, String key, Map<String, Object> snapshot) {
-        return commitUnlessCancelled(c, () -> c.vars.put(key, snapshot));
-    }
-
     private AcxStepOutcome execControl(AcxStep step, AcxDefinition def, Map<String, Object> input,
                                        Map<String, Object> lastOutput,
                                        Map<String, Map<String, Object>> allOutputs, Ctx c, String path) {
@@ -1206,7 +1202,8 @@ public final class AcxRunner {
         return commitUnlessCancelled(c, () -> c.completedStepIndex = topIndex + 1);
     }
 
-    // Only publish prepared recovery state under the cancel lock. Tools, snapshots and notifications stay outside it.
+    // Serialize cancellation with publication of recovery position and its truncation marks.
+    // Snapshot construction also runs in the lock; tool calls and notifications do not.
     private static boolean commitUnlessCancelled(Ctx c, Runnable publishPosition) {
         synchronized (c.cancelFlag) {
             if (c.cancelFlag.get()) return false;
