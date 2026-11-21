@@ -164,7 +164,18 @@ public final class AcxRunner {
 
         AcxStepOutcome outcome;
         try {
+            if (resuming && c.vars.containsKey("_snapshot_truncated")) {
+                Object marker = c.vars.get("_snapshot_truncated");
+                if (!(marker instanceof Map<?, ?> truncated) || !(truncated.get("total") instanceof Number total)
+                        || !(truncated.get("kept") instanceof Number kept) || total.doubleValue() <= kept.doubleValue()
+                        || kept.doubleValue() != MAX_SNAPSHOT_ITEMS)
+                    throw new IncompleteSnapshotException("快照截断标记损坏；已执行项不回滚，先核世界与回执，重新观察后再决定");
+                throw new IncompleteSnapshotException("列表快照不完整（" + kept.intValue() + "/" + total.intValue()
+                        + "）；已执行项不回滚，先核世界与回执，重新规划剩余项");
+            }
             outcome = runFrame(def, input, c, startStepIndex, true, "");
+        } catch (IncompleteSnapshotException t) {
+            outcome = AcxStepOutcome.failed(t.getMessage());
         } catch (Throwable t) {
             // 执行器自身崩了也要留记录，否则现场丢失
             outcome = AcxStepOutcome.failed("执行器内部异常: " + t);
@@ -575,6 +586,8 @@ public final class AcxRunner {
             tools.find(name).ifPresent(tool -> tool.checkpointCommitted(scope));
         }
         clearRecoveryState(c, path);
+        // A top-level checkpoint invalidates the snapshots belonging to that completed step.
+        c.vars.remove("_snapshot_truncated");
     }
 
     private void commitRecoveryPosition(Ctx c, AcxStep step, String path) {
@@ -587,6 +600,7 @@ public final class AcxRunner {
 
     private static void clearRecoveryState(Ctx c, String path) {
         c.vars.keySet().removeIf(key -> key.startsWith("_params_" + path)
+                || key.startsWith("_snapshot_meta_" + path)
                 || key.startsWith("_cursor_" + path) || key.startsWith("_definition_" + path));
     }
 
@@ -826,23 +840,23 @@ public final class AcxRunner {
         return parseCondition(m);
     }
 
-    private static Map<String, Map<String, Object>> snapshotOutputs(Map<String, Map<String, Object>> outputs) {
+    private static Map<String, Map<String, Object>> snapshotOutputs(Ctx c, Map<String, Map<String, Object>> outputs) {
         Map<String, Map<String, Object>> saved = new LinkedHashMap<>();
-        outputs.forEach((step, data) -> saved.put(step, snapshotParams(data)));
+        outputs.forEach((step, data) -> saved.put(step, snapshotParams(c, data)));
         return saved;
     }
 
     private static boolean saveFramePosition(Ctx c, String key, int nextStep,
                                             Map<String, Object> output, Map<String, Map<String, Object>> outputs) {
-        return saveRecoveryPosition(c, key, Map.of("step", nextStep, "output", snapshotParams(output),
-                "outputs", snapshotOutputs(outputs)));
+        return commitUnlessCancelled(c, () -> c.vars.put(key, Map.of("step", nextStep, "output", snapshotParams(c, output),
+                "outputs", snapshotOutputs(c, outputs))));
     }
 
     private static boolean saveControlPosition(Ctx c, String key, int round, int child,
                                                boolean active, boolean progress, Map<String, Object> output,
                                                Map<String, Map<String, Object>> outputs) {
-        return saveRecoveryPosition(c, key, Map.of("round", round, "child", child, "active", active,
-                "progress", progress, "output", snapshotParams(output), "outputs", snapshotOutputs(outputs)));
+        return commitUnlessCancelled(c, () -> c.vars.put(key, Map.of("round", round, "child", child, "active", active,
+                "progress", progress, "output", snapshotParams(c, output), "outputs", snapshotOutputs(c, outputs))));
     }
 
     private static boolean saveRecoveryPosition(Ctx c, String key, Map<String, Object> snapshot) {
@@ -891,15 +905,41 @@ public final class AcxRunner {
         String controlKey = path;
         String snapKey = "_params_" + controlKey;
         String cursorKey = "_cursor_" + controlKey;
+        String snapshotMetaKey = "_snapshot_meta_" + controlKey;
         Object snapRaw = c.vars.get(snapKey);
         if (snapRaw instanceof Map<?, ?> snapped) {
             Map<String, Object> fromSnap = new LinkedHashMap<>();
             for (Map.Entry<?, ?> en : snapped.entrySet()) {
                 fromSnap.put(String.valueOf(en.getKey()), en.getValue());
             }
+            if (isFor && fromSnap.get("list") instanceof List<?> saved) {
+                Object cursorValue = c.vars.get(cursorKey);
+                int round = cursorValue instanceof Number n ? n.intValue()
+                        : cursorValue instanceof Map<?, ?> m ? AcxValueResolver.toInt(m.get("round"), 0) : 0;
+                boolean active = cursorValue instanceof Map<?, ?> m && Boolean.TRUE.equals(m.get("active"));
+                if (active && round >= saved.size())
+                    throw new IncompleteSnapshotException("列表快照游标越界；已执行项不回滚，先核世界与回执，重新观察后再决定");
+                Object meta = c.vars.get(snapshotMetaKey);
+                if (meta instanceof Map<?, ?> m && m.get("total") instanceof Number total
+                        && total.intValue() > saved.size()) {
+                    throw new IncompleteSnapshotException("列表快照不完整（" + saved.size() + "/" + total.intValue()
+                            + "）；已执行项不回滚，先核世界与回执，重新规划剩余项");
+                }
+                if (meta != null && (!(meta instanceof Map<?, ?> m)
+                        || !(m.get("total") instanceof Number total) || !(m.get("kept") instanceof Number kept)
+                        || total.doubleValue() != saved.size() || kept.doubleValue() != saved.size()))
+                    throw new IncompleteSnapshotException("快照元数据损坏；已执行项不回滚，先核世界与回执，重新观察后再决定");
+                if (meta == null && saved.size() >= MAX_SNAPSHOT_ITEMS)
+                    throw new IncompleteSnapshotException("旧版快照长度不可辨；已执行项不回滚，先核世界与回执，重新观察后再决定");
+            }
             resolved = fromSnap;
         } else {
-            c.vars.put(snapKey, snapshotParams(resolved));
+            Map<String, Object> snapshotInput = resolved;
+            if (!commitUnlessCancelled(c, () -> {
+                if (isFor && snapshotInput.get("list") instanceof List<?> original)
+                    c.vars.put(snapshotMetaKey, Map.of("total", original.size(), "kept", Math.min(original.size(), MAX_SNAPSHOT_ITEMS)));
+                c.vars.put(snapKey, snapshotParams(c, snapshotInput));
+            })) return cancelled(c);
         }
         if (isFor) {
             Object raw = resolved.get("list");
@@ -1100,8 +1140,8 @@ public final class AcxRunner {
         }
         if (!stoppedByStagnation && !stoppedByMaxIters) {
             // The caller may be cancelled before accepting this completed control's result.
-            if (!saveRecoveryPosition(c, cursorKey, Map.of("done", true, "output", snapshotParams(out),
-                    "outputs", snapshotOutputs(allOutputs)))) return cancelled(c);
+            if (!commitUnlessCancelled(c, () -> c.vars.put(cursorKey, Map.of("done", true, "output", snapshotParams(c, out),
+                    "outputs", snapshotOutputs(c, allOutputs))))) return cancelled(c);
         }
         return AcxStepOutcome.success(out, step.id() + " (" + (isWhile ? "while×" + iters : "if") + ")");
     }
@@ -1182,6 +1222,10 @@ public final class AcxRunner {
     }
 
     /** AC-B12：控制块参数快照最多保留的列表长度（记录不许被大列表撑爆）。 */
+    private static final class IncompleteSnapshotException extends RuntimeException {
+        private IncompleteSnapshotException(String message) { super(message); }
+    }
+
     static final int MAX_SNAPSHOT_ITEMS = 64;
 
     /**
@@ -1189,14 +1233,15 @@ public final class AcxRunner {
      *
      * <p>为什么只截断 List：断点续跑要的是「同一个列表 + 游标」，而列表长度没有上限；
      * 每条目都是一个小 Map，1000 条就能把记录撑成几十 KB。截到 64 条是个明确的取舍：
-     * 超长列表的续跑只处理前 64 项（剩下的靠重跑），比「记录膨胀到写不进盘」好。
+     * 超长列表首跑仍可完整执行；快照若截断，后续拒绝续跑并要求核实已发生的动作。
      */
-    private static Map<String, Object> snapshotParams(Map<String, Object> params) {
+    private static Map<String, Object> snapshotParams(Ctx c, Map<String, Object> params) {
         Map<String, Object> out = new LinkedHashMap<>();
         if (params == null) return out;
         for (Map.Entry<String, Object> e : params.entrySet()) {
             Object v = e.getValue();
             if (v instanceof List<?> l && l.size() > MAX_SNAPSHOT_ITEMS) {
+                c.vars.putIfAbsent("_snapshot_truncated", Map.of("total", l.size(), "kept", MAX_SNAPSHOT_ITEMS));
                 out.put(e.getKey(), new ArrayList<>(l.subList(0, MAX_SNAPSHOT_ITEMS)));
             } else {
                 out.put(e.getKey(), v);
