@@ -378,7 +378,7 @@ public final class SkillRegistry {
     /** Persist a management status transition before changing the live index.
      * This is a serial in-process boundary, not a cross-process transaction or fsync guarantee. */
     private boolean storeTransition(SkillEntry replacement) {
-        if (file == null) return false;
+        if (file == null) { index(replacement); return true; } // preserve explicit memory-only registry behavior
         if (skippedLines > 0) return false; // avoid rewriting a partially decoded registry
         try {
             Path parent = file.toAbsolutePath().getParent();
