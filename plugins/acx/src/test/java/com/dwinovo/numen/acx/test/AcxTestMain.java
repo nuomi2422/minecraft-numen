@@ -4221,6 +4221,22 @@ private static void takeDiag() {
                     .completedStepIndex(rec.completedStepIndex()).vars(corruptVars).build();
             eq(AcxStatus.FAIL, runner.resume(d, corrupt).status(), "损坏长度拒绝");
             eq(beforeLegacy, Fake.calls.count("mine"), "损坏记录拒续不派动作");
+            Map<String,Object> cursorVars = new LinkedHashMap<>(rec.vars());
+            cursorVars.put("_cursor_s1/", Map.of("round", 64, "child", 0, "active", true));
+            AcxRunRecord beyond = AcxRunRecord.builder().runId(rec.runId()).acName(rec.acName())
+                    .acVersion(rec.acVersion()).fingerprint(rec.fingerprint()).status(AcxStatus.PAUSED)
+                    .completedStepIndex(rec.completedStepIndex()).vars(cursorVars).build();
+            AcxRunRecord deniedCursor = runner.resume(d, beyond);
+            eq(AcxStatus.FAIL, deniedCursor.status(), "活动游标越界不可执行");
+            T.isTrue(deniedCursor.errorMessage().contains("游标越界"), "越界原因明确");
+            eq(beforeLegacy, Fake.calls.count("mine"), "越界记录拒续不派动作");
+            Map<String,Object> badMark = new LinkedHashMap<>(rec.vars());
+            badMark.put("_snapshot_truncated__cursor_s1/", "broken");
+            AcxRunRecord marked = AcxRunRecord.builder().runId(rec.runId()).acName(rec.acName())
+                    .acVersion(rec.acVersion()).fingerprint(rec.fingerprint()).status(AcxStatus.PAUSED)
+                    .completedStepIndex(rec.completedStepIndex()).vars(badMark).build();
+            eq(AcxStatus.FAIL, runner.resume(d, marked).status(), "损坏全局标记拒绝");
+            eq(beforeLegacy, Fake.calls.count("mine"), "坏标记不派动作");
             AcxRunRecord done = runner.resume(d, rec);
             eq(AcxStatus.SUCCESS, done.status(), "断点可恢复");
             eq(64, Fake.calls.count("mine"), "64项各执行一次");
