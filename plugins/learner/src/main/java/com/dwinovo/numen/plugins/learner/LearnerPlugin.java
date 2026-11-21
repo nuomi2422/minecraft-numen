@@ -276,6 +276,8 @@ public final class LearnerPlugin implements NumenPlugin {
     @Override
     public void setup(NumenApi numen) {
         configDir = numen.configDir();
+        // 2026-11-22（主人止损）：内置学习者总开关，默认关；见 LearnerSwitch。
+        LearnerSwitch.reload(configDir);
         loadReviewState(configDir);   // 2026-11-05：last_review_at 以前只在内存里，重启即空，容易误判「复盘没跑」
         // 2026-11-03（外部学习者 #508/#516）：上一进程若死在复盘飞行中，哨兵还在 —— 如实记一条再清。
         //   已经两次实机（20:37、20:49）出现「复盘在飞 + 世界重启」：那次复盘在任何账本里都没有痕迹。
