@@ -34,6 +34,25 @@ class FocusToolWiringTest {
         };
     }
 
+    @Test void sharedOwnersRemainProjectedUntilLastReleaseWithoutRefresh() {
+        UUID c=UUID.randomUUID(); FocusPinStore store=new FocusPinStore(); long now=1000L;
+        var legacy=FocusTools.pin(store,c,"world","session","minecraft:overworld","environment",now,60000,0);
+        var a=store.acquire(c,"world","session","minecraft:overworld","environment","","package-a",now,60000,0,0,0);
+        var b=store.acquire(c,"world","session","minecraft:overworld","environment","","package-b",now,60000,0,0,0);
+        assertEquals(legacy.id(),a.pin().id()); assertEquals(a.pin().id(),b.pin().id());
+        assertEquals(a.leaseId(),store.acquire(c,"world","session","minecraft:overworld","environment","","package-a",now+1,60000,0,0,0).leaseId());
+        AtomicInteger reads=new AtomicInteger(),refreshes=new AtomicInteger(); var obs=stub(reads,refreshes);
+        PlanningQuery q=new PlanningQuery(c,"goal","",List.of());
+        assertFalse(store.release(c,"package-b",a.leaseId()));
+        assertTrue(FocusTools.unpin(store,c,legacy.id()));
+        assertTrue(WorldFocusProjector.render(store,obs,q,"world","session",now+100).contains("environment="));
+        assertTrue(store.release(c,"package-a",a.leaseId()));
+        assertTrue(WorldFocusProjector.render(store,obs,q,"world","session",now+200).contains("environment="));
+        assertTrue(store.release(c,"package-b",b.leaseId()));
+        assertFalse(WorldFocusProjector.render(store,obs,q,"world","session",now+300).contains("environment="));
+        assertEquals(0,refreshes.get());
+    }
+
     @Test void pinTwiceProjectTwiceThenUnpin() {
         UUID c = UUID.randomUUID();
         FocusPinStore store = new FocusPinStore();
