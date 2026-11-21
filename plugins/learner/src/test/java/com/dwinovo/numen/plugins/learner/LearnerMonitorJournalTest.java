@@ -317,6 +317,29 @@ class LearnerMonitorJournalTest {
         } finally { com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.resetForTest(); }
     }
 
+    @Test void reusedInMemoryTrialWithoutPersistedRecordIsUnknownNotSuccess(@TempDir Path dir) throws Exception {
+        try (Fixture f = new Fixture(dir)) {
+            var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.registryFor(dir);
+            String body = "valid but registration cannot persist";
+            String ref = com.dwinovo.numen.plugins.learner.skills.SkillBodyStore.write(dir, "unpersisted", 1,
+                    Integer.toHexString(body.hashCode()), body);
+            Files.createDirectory(dir.resolve("skills.jsonl.tmp"));
+            var artifact = new com.dwinovo.numen.plugins.learner.contract.ArtifactDraft(
+                    com.dwinovo.numen.plugins.learner.contract.ArtifactKind.EXPERIENCE,
+                    "unpersisted", "purpose", body, List.of("night"), List.of(), List.of(), "LOW",
+                    List.of(), List.of("memo"), "PLANNER");
+            assertEquals("TRIAL", registry.register(artifact, "unpersisted", ref, true).entry().status().name());
+            assertTrue(com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(dir.resolve("skills.jsonl"))
+                    .get("unpersisted").isEmpty(), "fault injection must leave disk without entry");
+            JsonObject args = new JsonObject(); args.addProperty("action", "promote");
+            args.addProperty("skillId", "unpersisted"); args.addProperty("reason", "fixture"); args.addProperty("confirm", true);
+            AtomicReference<String> response = new AtomicReference<>();
+            new LearnerAdminTool().onServerCall("admin-call", args, null, response::set);
+            assertFalse(JsonParser.parseString(response.get()).getAsJsonObject().get("success").getAsBoolean(),
+                    "REUSE of memory-only entry cannot claim persistent success");
+        } finally { com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.resetForTest(); }
+    }
+
     @Test void legacyTrialAndPublishedWithUnreadableBodiesNeverReportSuccessfulPromotion(@TempDir Path dir) throws Exception {
         try (Fixture f = new Fixture(dir)) {
             for (String status : List.of("TRIAL", "PUBLISHED")) {
