@@ -649,17 +649,17 @@ public final class NumenPlugins {
         List<String> segments = new ArrayList<>();
         int cursor = 0;
         while (true) {
-            int start = inner.indexOf("<entry ", cursor);
+            int start = inner.indexOf("<entry ref=\"", cursor);
             if (start < 0) {
                 if (!inner.substring(cursor).isBlank()) return null;       // entry 外杂文本 → 旧路径
                 break;
             }
             if (!inner.substring(cursor, start).isBlank()) return null;
             int closeEntry = inner.indexOf("</entry>", start);
-            int nestedEntry = inner.indexOf("<entry", start + "<entry".length());
+            int nestedEntry = inner.indexOf("<entry ref=\"", start + "<entry ref=\"".length());
             if (closeEntry < 0 || (nestedEntry >= 0 && nestedEntry < closeEntry)) return null;                               // 半条 entry → 旧路径
             int after = closeEntry + "</entry>".length();
-            int next = inner.indexOf("<entry ", after);
+            int next = inner.indexOf("<entry ref=\"", after);
             int segmentEnd = next < 0 ? inner.length() : next;
             if (!inner.substring(after, segmentEnd).isBlank()) return null; // 闭合后杂文本 → 旧路径
             segments.add(inner.substring(start, segmentEnd));
@@ -672,28 +672,12 @@ public final class NumenPlugins {
             out.append(segment);
         }
         if (out.length() <= head.length()) return "";   // 连一条都装不下：不留残骸
-        String result = out.append(tail).toString();
-        return validKnowledgeXml(result.stripLeading()) ? result : null;
+        // The historical payload is prompt text, not strict XML: raw comparisons
+        // such as blockLight<=0 are legal content. Structure was bounded above.
+        return out.append(tail).toString();
     }
 
-    /** Reject malformed reconstruction; never resolve external entities or DTDs. */
-    private static boolean validKnowledgeXml(String xml) {
-        try {
-            var factory = javax.xml.parsers.DocumentBuilderFactory.newInstance();
-            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
-            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-            factory.setXIncludeAware(false);
-            factory.setExpandEntityReferences(false);
-            var builder = factory.newDocumentBuilder();
-            builder.setErrorHandler(new org.xml.sax.helpers.DefaultHandler() {
-                @Override public void error(org.xml.sax.SAXParseException e) throws org.xml.sax.SAXException { throw e; }
-                @Override public void fatalError(org.xml.sax.SAXParseException e) throws org.xml.sax.SAXException { throw e; }
-            });
-            var doc = builder.parse(new org.xml.sax.InputSource(new java.io.StringReader(xml)));
-            return "retrieved_knowledge".equals(doc.getDocumentElement().getTagName());
-        } catch (Exception badXml) { return false; }
-    }
+
 
     /**
      * 2026-11-13 C1: producer-captured context for one actual request dispatch.

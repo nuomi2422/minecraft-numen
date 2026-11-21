@@ -115,6 +115,31 @@ class ExecutorBudgetAggregationTest {
         assertTrue(refOf(out, refs.get(4)).truncated(), "第 5 条装不下必须记截断");
     }
 
+    @Test void realExperienceWithRawComparisonAndCatalogKeepsWholeEntries() throws Exception {
+        String actual;
+        try (var input = getClass().getResourceAsStream("/experience-20261121-fixture.txt")) {
+            assertNotNull(input);
+            actual = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        assertEquals(3357, actual.length());
+        assertTrue(actual.contains("blockLight<=0"));
+        String exp = actual + "\n<entry ref=\"exp:extra\">" + "x".repeat(800) + "</entry>";
+        exp = exp.replace("</retrieved_knowledge>\n<entry ref=\"exp:extra\">", "<entry ref=\"exp:extra\">") + "</retrieved_knowledge>";
+        String catalog = "<retrieved_knowledge><note>按 ref 展开；条件未知，执行前须以当前观测复核</note>"
+                + "<entry ref=\"skill:a@v1\">" + "a".repeat(150) + "</entry>"
+                + "<entry ref=\"skill:b@v1\">" + "b".repeat(150) + "</entry>"
+                + "<entry ref=\"skill:c@v1\">" + "c".repeat(150) + "</entry></retrieved_knowledge>";
+        String source = exp;
+        var out = agg(List.of((id,obj)->NumenPlugins.KnowledgeFragment.ofText(source),
+                (id,obj)->NumenPlugins.KnowledgeFragment.ofText(catalog)));
+        assertTrue(out.text().contains("blockLight<=0"));
+        assertTrue(out.text().contains("ref=\"exp:"));
+        assertTrue(out.text().contains("ref=\"skill:a@v1\""));
+        assertEquals(count(out.text(), "<entry "), count(out.text(), "</entry>"));
+        assertEquals(2, count(out.text(), "</retrieved_knowledge>"));
+        assertTrue(out.text().length() <= 4000);
+    }
+
     @Test void directoryNoteAndThreeEntriesAreNeverCutMidXml() {
         String head = "<retrieved_knowledge><note>按 ref 展开；条件未知，执行前须以当前观测复核</note>";
         String first = "<entry ref=\"a\">" + "a".repeat(230) + "</entry>";
