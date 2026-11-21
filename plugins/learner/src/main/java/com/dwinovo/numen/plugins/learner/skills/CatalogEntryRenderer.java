@@ -7,19 +7,28 @@ import java.util.Locale;
 /** Pure directory formatting, not an execution or delivery authorization. */
 public final class CatalogEntryRenderer {
     private static final int MAX_ENTRIES = 3, MAX_ENTRY_CHARS = 320;
-    private static final String HEAD = "<retrieved_knowledge><note>条件未知，执行前须以当前观测复核</note>", TAIL = "</retrieved_knowledge>";
+    private static final String HEAD = "<retrieved_knowledge><note>按 ref 展开；条件未知，执行前须以当前观测复核</note>", TAIL = "</retrieved_knowledge>";
     private CatalogEntryRenderer() {}
 
-    /** verified means caller checked provenance, complete body and location binding.
-     * It is not execution authorization, readiness, or evidence conditions were shown. */
+    /** bodyReadable means read and location binding passed; verified only denotes provenance evidence.
+     * Neither is execution authorization or evidence conditions were shown. */
     public record Candidate(String ref, String name, String purpose, String audience, String status,
-                            boolean bodyReadable, boolean conditionsKnown, boolean verified) {}
+                            boolean bodyReadable, boolean conditionsKnown, boolean verified, String availability) {
+        public Candidate(String ref, String name, String purpose, String audience, String status,
+                         boolean bodyReadable, boolean conditionsKnown, boolean verified) {
+            this(ref, name, purpose, audience, status, bodyReadable, conditionsKnown, verified, "");
+        }
+    }
     public record Decision(int inputIndex, String ref, boolean included, String reason, List<String> differences) {
         public Decision(int inputIndex, String ref, boolean included, String reason) {
             this(inputIndex, ref, included, reason, List.of());
         }
     }
-    public record Result(String fragment, List<String> entries, List<Decision> decisions, String reason) {}
+    public record Result(String fragment, List<String> entries, List<Decision> decisions, String reason) {
+        /** Complete independent XML wrappers; formatting only, not delivery proof. */
+        public String primary() { return entries.isEmpty() ? "" : HEAD + entries.get(0) + TAIL; }
+        public String remainder() { return entries.size() < 2 ? "" : HEAD + String.join("", entries.subList(1, entries.size())) + TAIL; }
+    }
 
     public static Result render(List<Candidate> candidates, String view, int budget) {
         if (candidates == null || candidates.isEmpty()) return new Result("", List.of(), List.of(), "no-match");
@@ -44,7 +53,8 @@ public final class CatalogEntryRenderer {
             if (rejected != null) decisions[i] = new Decision(i, c == null ? "" : safe(c.ref()), false, rejected);
             else ordered.add(i);
         }
-        ordered.sort((a, b) -> Boolean.compare(!candidates.get(a).conditionsKnown(), !candidates.get(b).conditionsKnown()));
+        ordered.sort(java.util.Comparator.<Integer, Boolean>comparing(i -> !candidates.get(i).conditionsKnown())
+                .thenComparing(i -> !candidates.get(i).verified()));
         boolean includedUnknown = false;
         List<String> entries = new ArrayList<>();
         int used = HEAD.length() + TAIL.length();
@@ -60,7 +70,8 @@ public final class CatalogEntryRenderer {
                 decisions[index] = new Decision(index, c.ref(), false, "over-limit"); continue;
             }
             String item = "<entry ref=\"" + xml(c.ref()) + "\" status=\"" + xml(c.status()) + "\"" +
-                    " conditions=\"UNKNOWN\">" +
+                    " conditions=\"UNKNOWN\" provenance=\"" + (c.verified() ? "VERIFIED" : "UNKNOWN") + "\"" +
+                    (c.availability().isEmpty() ? "" : " availability=\"" + xml(c.availability()) + "\"") + ">" +
                     "<name>" + xml(c.name()) + "</name><purpose>" + xml(c.purpose()) + "</purpose>" +
                     "</entry>";
             if (item.length() > MAX_ENTRY_CHARS) {
@@ -84,6 +95,7 @@ public final class CatalogEntryRenderer {
         if (!java.util.Objects.equals(a.status(), b.status())) diff.add("status");
         if (a.bodyReadable() != b.bodyReadable()) diff.add("bodyReadable");
         if (a.verified() != b.verified()) diff.add("verified");
+        if (!java.util.Objects.equals(a.availability(), b.availability())) diff.add("availability");
         return diff;
     }
     private static String qualification(Candidate c, String view) {
@@ -92,7 +104,9 @@ public final class CatalogEntryRenderer {
         try { com.dwinovo.numen.api.LearnedSkillBodyResolver.Reference.parse(c.ref()); }
         catch (IllegalArgumentException invalid) { return "not-verified"; }
         if (!c.bodyReadable()) return "body-missing";
-        if (!c.verified() || !("TRIAL".equals(c.status()) || "PUBLISHED".equals(c.status()))) return "not-verified";
+        if (!("TRIAL".equals(c.status()) || "PUBLISHED".equals(c.status()))) return "not-verified";
+        if (c.availability() == null || !(c.availability().isEmpty() || c.availability().equals("available")
+                || c.availability().equals("degraded"))) return "not-verified";
         // Intentional strictness for this new discovery surface only; legacy planner/resolver are unchanged.
         if (view == null || view.isBlank() || c.audience() == null || c.audience().isBlank()) return "audience-mismatch";
         {
