@@ -51,7 +51,7 @@ class AdvancementTickWiringRegressionTest {
         String status = Files.readString(plugin.resolve("RddStatusTool.java"), StandardCharsets.UTF_8);
         String harness = HOST_HEAD + "\nstatic class RddWorldFacts {\n"
                 + method(world, "    private static ResourceLocation id(") + "\n"
-                + method(world, "    private static boolean dimension(") + "\n"
+                + method(world, "    static boolean dimension(") + "\n"
                 + method(world, "    static com.dwinovo.numen.rdd.core.AdvancementVerification.Result advancementResult(") + "\n"
                 + WORLD_SEAMS + "\n}\nstatic class WorldFactProbeTool {\n"
                 + "static final Gson GSON = new Gson();\n"
