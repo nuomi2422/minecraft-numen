@@ -33,6 +33,7 @@ final class LearnerSwitch {
 
     private static volatile boolean enabled = false;
     private static volatile long lastReloadAt = 0L;
+    private static volatile boolean loggedOnce = false;
 
     private LearnerSwitch() {}
 
@@ -49,10 +50,12 @@ final class LearnerSwitch {
         reload(dir);
     }
 
-    /** 立即重读（setup 用），不受节流限制。 */
+    /** 立即重读（setup 用），不受节流限制。状态变化打一条 INFO，便于实机取证。 */
     static void reload(Path dir) {
+        boolean next;
         if (dir == null) {
-            enabled = false;
+            next = false;
+            apply(next, "configDir-null");
             return;
         }
         Path f = dir.resolve(FILE_NAME);
@@ -65,19 +68,29 @@ final class LearnerSwitch {
                 def.addProperty("enabled", false);
                 Files.writeString(f, new GsonBuilder().setPrettyPrinting().create().toJson(def) + "\n",
                         StandardCharsets.UTF_8);
-                enabled = false;
-                return;
+                next = false;
+            } else {
+                JsonObject o = JsonParser.parseString(Files.readString(f, StandardCharsets.UTF_8)).getAsJsonObject();
+                // 只有 JSON 布尔 true 才开；字符串 "true"、数字 1、null、缺键一律关（Gson getAsBoolean 会把 "true" 也当 true，不能用）。
+                next = o.has("enabled")
+                        && o.get("enabled").isJsonPrimitive()
+                        && o.get("enabled").getAsJsonPrimitive().isBoolean()
+                        && o.get("enabled").getAsBoolean();
             }
-            JsonObject o = JsonParser.parseString(Files.readString(f, StandardCharsets.UTF_8)).getAsJsonObject();
-            // 只有 JSON 布尔 true 才开；字符串 "true"、数字 1、null、缺键一律关（Gson getAsBoolean 会把 "true" 也当 true，不能用）。
-            enabled = o.has("enabled")
-                    && o.get("enabled").isJsonPrimitive()
-                    && o.get("enabled").getAsJsonPrimitive().isBoolean()
-                    && o.get("enabled").getAsBoolean();
         } catch (RuntimeException | java.io.IOException e) {
-            enabled = false;
+            next = false;
             LOG.warn("[learner-switch] read {} failed, keeping learner OFF: {}", f, e.toString());
         }
+        apply(next, f.toString());
+    }
+
+    /** 只在状态或首次加载时打日志，避免 10 秒一刷。 */
+    private static void apply(boolean next, String source) {
+        if (!loggedOnce || next != enabled) {
+            LOG.info("[learner-switch] internal learner is {} (source={})", next ? "ENABLED" : "DISABLED", source);
+            loggedOnce = true;
+        }
+        enabled = next;
     }
 
     /** 给工具用的拒绝文案（统一口径，便于日志检索）。 */
