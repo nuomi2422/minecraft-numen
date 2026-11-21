@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.acx;
 
 import com.dwinovo.numen.acx.core.AcxFacade;
+import com.dwinovo.numen.acx.api.AcxRunBinding;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.entity.NumenPlayer;
@@ -15,7 +16,7 @@ import java.util.function.Consumer;
 /**
  * ACX 的 8 个 Numen 门面工具薄壳（{@code acx_} 前缀）。
  *
- * <p>这一层只做三件事：绑定同伴 → 把 JsonObject 参数转成 Map → 把 {@link AcxFacade}
+ * <p>这一层只做三件事：捕获请求同伴身份 → 把 JsonObject 参数转成 Map → 把 {@link AcxFacade}
  * 的 Map 信封转成 {@link TaskResult}。业务语义全在 {@code acx-core} 的
  * {@link AcxFacade} 里（零 MC 依赖、离线可测）。</p>
  */
@@ -57,7 +58,6 @@ public final class AcxFacadeTools {
         @Override
         public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion,
                                  Consumer<String> reply) {
-            plugin.bindCompanion(companion);
             AcxFacade facade;
             try {
                 facade = plugin.facade();
@@ -74,7 +74,14 @@ public final class AcxFacadeTools {
             }
             Map<String, Object> resp;
             try {
-                resp = invoke(facade, req);
+                AcxRunBinding binding = AcxPlugin.bindingFor(companion);
+                resp = switch (name) {
+                    case "acx_execute" -> facade.executeBound(req, binding);
+                    case "acx_status" -> facade.statusBound(req, binding);
+                    case "acx_resume" -> facade.resumeBound(req, binding);
+                    case "acx_cancel" -> facade.cancelBound(req, binding);
+                    default -> invoke(facade, req);
+                };
             } catch (Throwable t) {
                 reply.accept(TaskResult.fail("ACX 门面异常: " + t).toJson());
                 return;

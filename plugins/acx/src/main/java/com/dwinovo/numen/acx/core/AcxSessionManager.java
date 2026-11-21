@@ -1,6 +1,7 @@
 package com.dwinovo.numen.acx.core;
 
 import com.dwinovo.numen.acx.api.AcxDefinition;
+import com.dwinovo.numen.acx.api.AcxRunBinding;
 import com.dwinovo.numen.acx.api.AcxRunRecord;
 import com.dwinovo.numen.acx.api.AcxStatus;
 
@@ -43,6 +44,8 @@ public final class AcxSessionManager {
     /** 一条执行会话。除定义/输入外全部可读；写只发生在会话层内部。 */
     public static final class Session {
         private final String runId;
+        private final String ownerId;
+        private volatile AcxRunBinding binding;
         private final AcxDefinition definition;
         private final Map<String, Object> input;
         private final long startedAtMillis;
@@ -50,10 +53,31 @@ public final class AcxSessionManager {
         private volatile AcxRunRecord record;
         private volatile Throwable error;
         private volatile boolean inFlight;
+        private volatile long attemptId;
         private volatile boolean cancelRequested;
+        private final java.util.Set<String> acceptedTaskIds = new java.util.HashSet<>();
 
-        private Session(String runId, AcxDefinition definition, Map<String, Object> input) {
+        /** Receipts belong to this session; never infer ownership from the current body slot. */
+        public synchronized void noteAcceptedTask(String taskId) {
+            if (binding != null && taskId != null && !taskId.isBlank()) acceptedTaskIds.add(taskId);
+        }
+
+        public synchronized boolean ownsTask(String taskId) {
+            return acceptedTaskIds.contains(taskId);
+        }
+
+        private synchronized boolean invalidateBody(Object bodyToken) {
+            if (binding == null || binding.bodyToken() != bodyToken) return false;
+            binding = null;
+            acceptedTaskIds.clear();
+            cancelRequested = inFlight;
+            return true;
+        }
+
+        private Session(String runId, AcxDefinition definition, Map<String, Object> input, AcxRunBinding binding) {
             this.runId = runId;
+            this.binding = Objects.requireNonNull(binding, "binding");
+            this.ownerId = binding.ownerId();
             this.definition = definition;
             this.input = input;
             this.startedAtMillis = System.currentTimeMillis();
@@ -61,6 +85,25 @@ public final class AcxSessionManager {
 
         public String runId() {
             return runId;
+        }
+
+        /** Immutable host identity; empty only for legacy host-free sessions. */
+        public String ownerId() {
+            return ownerId;
+        }
+
+        public boolean matchesBinding(AcxRunBinding caller) {
+            AcxRunBinding current = binding;
+            return current != null && current.matches(caller);
+        }
+
+        public Object bodyToken() {
+            AcxRunBinding current = binding;
+            return current == null ? null : current.bodyToken();
+        }
+
+        public boolean isBodyInvalidated() {
+            return binding == null;
         }
 
         public AcxDefinition definition() {
@@ -83,6 +126,11 @@ public final class AcxSessionManager {
         /** 会话内部错误（执行器自身异常、executor 拒收等）；正常终态走 record()。 */
         public Throwable error() {
             return error;
+        }
+
+        /** Monotonic in-session resume generation; not a second owner registry. */
+        public long attemptId() {
+            return attemptId;
         }
 
         public boolean isRunning() {
@@ -118,10 +166,19 @@ public final class AcxSessionManager {
      * <p>runId 由本层预生成并交给执行器 —— 这是「executionId 只有一份」的落点。</p>
      */
     public String start(AcxDefinition def, Map<String, Object> input) {
+        return start(def, input, "");
+    }
+
+    /** Bind before enqueueing: later requests cannot retarget this run. */
+    public String start(AcxDefinition def, Map<String, Object> input, String ownerId) {
+        return startBound(def, input, AcxRunBinding.named(ownerId));
+    }
+
+    public String startBound(AcxDefinition def, Map<String, Object> input, AcxRunBinding binding) {
         Objects.requireNonNull(def, "AC 定义不能为 null");
         Map<String, Object> in = input == null ? Map.of() : input;
         String runId = AcxRunRecord.shortUuid();
-        Session s = new Session(runId, def, in);
+        Session s = new Session(runId, def, in, binding);
         synchronized (sessions) {
             sessions.put(runId, s);
             s.inFlight = true;
@@ -168,7 +225,7 @@ public final class AcxSessionManager {
         AcxDefinition use;
         synchronized (sessions) {
             s = sessions.get(runId);
-            if (s == null || s.inFlight) {
+            if (s == null || s.inFlight || s.isBodyInvalidated()) {
                 return false;
             }
             prior = s.record;
@@ -177,6 +234,8 @@ public final class AcxSessionManager {
             }
             use = currentDefinition == null ? s.definition : currentDefinition;
             runner.checkResumable(use, prior);
+            s.cancelRequested = false;
+            s.attemptId++;
             s.inFlight = true;
         }
         Map<String, Object> in = newInput == null ? prior.input() : newInput;
@@ -187,15 +246,39 @@ public final class AcxSessionManager {
 
     /** 协作式取消：只置标志，积木轮询 {@link com.dwinovo.numen.acx.api.AcxTool.AcxCallContext#isCancelRequested()} 后收手。 */
     public boolean cancel(String runId) {
-        Session s = session(runId);
-        if (s == null || !s.isRunning()) {
-            return false;
-        }
-        boolean sent = runner.cancel(runId);
-        if (sent) {
+        synchronized (sessions) {
+            Session s = sessions.get(runId);
+            if (s == null || !s.inFlight || s.isBodyInvalidated()) return false;
+            // The session exists before the executor starts, when the runner has no flag yet.
             s.cancelRequested = true;
+            runner.cancel(runId);
+            return true;
         }
-        return sent;
+    }
+
+    /** Retire exactly the removed body, without stopping another body's host task. */
+    public void invalidateBody(Object bodyToken) {
+        if (bodyToken != null) invalidateBodies(bodyToken);
+    }
+
+    /** The host stopped; retire every bound body while keeping host-free sessions. */
+    public void invalidateHostedBodies() {
+        invalidateBodies(null);
+    }
+
+    private void invalidateBodies(Object exactBody) {
+        synchronized (sessions) {
+            for (Session s : sessions.values()) {
+                Object body = exactBody == null ? s.bodyToken() : exactBody;
+                if (body == null || !s.invalidateBody(body)) continue;
+                if (s.inFlight) {
+                    runner.cancel(s.runId);
+                } else {
+                    runner.discardRunReceipts(s.runId);
+                }
+            }
+            evictFinishedLocked();
+        }
     }
 
     public int size() {
@@ -228,13 +311,13 @@ public final class AcxSessionManager {
         }
     }
 
-    /** 清掉所有已结束会话，返回清除数（在跑的保留）。 */
+    /** Purge terminal sessions; retain pauses whose original body can still resume. */
     public int purgeFinished() {
         synchronized (sessions) {
             int removed = 0;
             Iterator<Map.Entry<String, Session>> it = sessions.entrySet().iterator();
             while (it.hasNext()) {
-                if (!it.next().getValue().inFlight) {
+                if (isEvictable(it.next().getValue())) {
                     it.remove();
                     removed++;
                 }
@@ -250,7 +333,20 @@ public final class AcxSessionManager {
             executor.execute(() -> {
                 AcxRunRecord r;
                 try {
-                    r = call.call();
+                    if (s.cancelRequested) {
+                        AcxRunRecord prior = s.record;
+                        r = AcxRunRecord.builder().runId(s.runId)
+                                .acName(s.definition.name()).acVersion(s.definition.version())
+                                .fingerprint(AcxFingerprint.of(s.definition))
+                                .input(prior == null ? s.input : prior.input())
+                                .status(AcxStatus.PAUSED)
+                                .completedStepIndex(prior == null ? 0 : prior.completedStepIndex())
+                                .vars(prior == null ? Map.of() : prior.vars())
+                                .pausedReason("cancel_requested_before_start")
+                                .timestamp(System.currentTimeMillis()).build();
+                    } else {
+                        r = call.call();
+                    }
                 } catch (Throwable t) {
                     finishWithError(s, t);
                     return;
@@ -268,6 +364,7 @@ public final class AcxSessionManager {
             s.record = r;
             s.inFlight = false;
             s.cancelRequested = false;
+            discardInvalidatedReceipts(s);
             evictFinishedLocked();
         }
     }
@@ -276,22 +373,33 @@ public final class AcxSessionManager {
         synchronized (sessions) {
             s.error = t;
             s.inFlight = false;
+            discardInvalidatedReceipts(s);
             LOG.warning("acx 会话 " + s.runId + " 异常: " + t);
         }
+    }
+
+    // The session lock excludes new attempts. The runner has returned and can no longer write a receipt.
+    private void discardInvalidatedReceipts(Session s) {
+        if (s.isBodyInvalidated()) runner.discardRunReceipts(s.runId);
+    }
+
+    private static boolean isEvictable(Session s) {
+        return !s.inFlight && (s.isBodyInvalidated() || s.error != null
+                || (s.record != null && s.record.status() != AcxStatus.PAUSED));
     }
 
     /** 保留的已完成会话超过上限时，从最老的开始淘汰。调用方须持有锁。 */
     private void evictFinishedLocked() {
         int finished = 0;
         for (Session s : sessions.values()) {
-            if (!s.inFlight) {
+            if (isEvictable(s)) {
                 finished++;
             }
         }
         while (finished > maxFinished) {
             Iterator<Map.Entry<String, Session>> it = sessions.entrySet().iterator();
             while (it.hasNext()) {
-                if (!it.next().getValue().inFlight) {
+                if (isEvictable(it.next().getValue())) {
                     it.remove();
                     finished--;
                     break;

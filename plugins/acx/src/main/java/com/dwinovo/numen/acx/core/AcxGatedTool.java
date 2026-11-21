@@ -70,6 +70,21 @@ public final class AcxGatedTool implements AcxTool {
     }
 
     @Override
+    public void checkpointCommitted(AcxCallContext ctx) {
+        inner.checkpointCommitted(ctx);
+    }
+
+    @Override
+    public void recoveryPositionCommitted(AcxCallContext ctx) {
+        inner.recoveryPositionCommitted(ctx);
+    }
+
+    @Override
+    public void discardRunReceipts(String runId) {
+        inner.discardRunReceipts(runId);
+    }
+
+    @Override
     public String toString() {
         return "AcxGatedTool(" + inner.name() + ")";
     }

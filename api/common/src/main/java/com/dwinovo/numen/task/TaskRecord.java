@@ -69,6 +69,11 @@ public abstract class TaskRecord {
     private TaskResult result;
     /** 异步派发的记录:受理时已经回执过 tool_call,收尾改走 task_finished 事件。 */
     private boolean async;
+    private boolean callerOwned;
+
+    /** Host-confirmed ownership for this accepted action; not persisted. */
+    public final boolean isCallerOwned() { return callerOwned; }
+    public final void markCallerOwned() { callerOwned = true; }
     /** 首次进入 RUNNING 的游戏刻;task_status 用它报已耗时。-1 = 还没开跑。 */
     private long startedGameTime = -1;
 

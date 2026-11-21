@@ -1,6 +1,7 @@
 package com.dwinovo.numen.acx.core;
 
 import com.dwinovo.numen.acx.api.AcxDefinition;
+import com.dwinovo.numen.acx.api.AcxRunBinding;
 import com.dwinovo.numen.acx.api.AcxRunRecord;
 import com.dwinovo.numen.acx.api.AcxStatus;
 import com.dwinovo.numen.acx.api.AcxToolRegistry;
@@ -121,10 +122,18 @@ public final class AcxFacade {
      * <p>立刻回执 RUNNING + run_id（对齐 Numen「已受理 ≠ 已完成」），终态用 status 查。</p>
      */
     public Map<String, Object> execute(Map<String, Object> req) {
+        return execute(req, "");
+    }
+
+    public Map<String, Object> execute(Map<String, Object> req, String ownerId) {
+        return executeBound(req, AcxRunBinding.named(ownerId));
+    }
+
+    public Map<String, Object> executeBound(Map<String, Object> req, AcxRunBinding binding) {
         try {
             AcxDefinition def = resolve(req);
             Map<String, Object> input = asMap(req.get("input"));
-            String runId = sessions.start(def, input);
+            String runId = sessions.startBound(def, input, binding);
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("run_id", runId);
             data.put("ac_name", def.name());
@@ -139,6 +148,14 @@ public final class AcxFacade {
 
     /** 查一次执行。参数：{@code run_id}。查询成功时 {@code data.status} 才是 AC 终态。 */
     public Map<String, Object> status(Map<String, Object> req) {
+        return status(req, "");
+    }
+
+    public Map<String, Object> status(Map<String, Object> req, String ownerId) {
+        return statusBound(req, AcxRunBinding.named(ownerId));
+    }
+
+    public Map<String, Object> statusBound(Map<String, Object> req, AcxRunBinding binding) {
         String runId = str(req.get("run_id"));
         if (runId == null) {
             return err("缺少 run_id");
@@ -146,6 +163,9 @@ public final class AcxFacade {
         AcxSessionManager.Session s = sessions.session(runId);
         if (s == null) {
             return err("未知 run_id: " + runId);
+        }
+        if (!s.matchesBinding(binding)) {
+            return err("run_id 不属于本同伴: " + runId);
         }
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("run_id", runId);
@@ -177,6 +197,14 @@ public final class AcxFacade {
      * 只有 PAUSED 能续；版本/指纹不符会被<b>同步拒绝</b>。
      */
     public Map<String, Object> resume(Map<String, Object> req) {
+        return resume(req, "");
+    }
+
+    public Map<String, Object> resume(Map<String, Object> req, String ownerId) {
+        return resumeBound(req, AcxRunBinding.named(ownerId));
+    }
+
+    public Map<String, Object> resumeBound(Map<String, Object> req, AcxRunBinding binding) {
         String runId = str(req.get("run_id"));
         if (runId == null) {
             return err("缺少 run_id");
@@ -184,6 +212,9 @@ public final class AcxFacade {
         AcxSessionManager.Session s = sessions.session(runId);
         if (s == null) {
             return err("未知 run_id: " + runId);
+        }
+        if (!s.matchesBinding(binding)) {
+            return err("run_id 不属于本同伴: " + runId);
         }
         if (s.isRunning()) {
             return err("仍在执行，不能续跑: " + runId);
@@ -220,6 +251,14 @@ public final class AcxFacade {
 
     /** 协作式取消。参数：{@code run_id}。 */
     public Map<String, Object> cancel(Map<String, Object> req) {
+        return cancel(req, "");
+    }
+
+    public Map<String, Object> cancel(Map<String, Object> req, String ownerId) {
+        return cancelBound(req, AcxRunBinding.named(ownerId));
+    }
+
+    public Map<String, Object> cancelBound(Map<String, Object> req, AcxRunBinding binding) {
         String runId = str(req.get("run_id"));
         if (runId == null) {
             return err("缺少 run_id");
@@ -227,6 +266,9 @@ public final class AcxFacade {
         AcxSessionManager.Session s = sessions.session(runId);
         if (s == null) {
             return err("未知 run_id: " + runId);
+        }
+        if (!s.matchesBinding(binding)) {
+            return err("run_id 不属于本同伴: " + runId);
         }
         if (!s.isRunning()) {
             return err("已结束，无需取消: " + runId);
