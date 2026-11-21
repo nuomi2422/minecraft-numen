@@ -129,6 +129,27 @@ class ExecutorBudgetAggregationTest {
         assertFalse(tiny.text().contains("<retrieved_knowledge>"));
     }
 
+    @Test void fullFragmentPreservesAlreadyTruncatedRef() {
+        var result = agg(List.of((id,obj) -> new NumenPlugins.KnowledgeFragment("short", List.of(
+                new NumenPlugins.DeliveredRef("earlier-cut", "v1", true)))));
+        assertTrue(refOf(result, "earlier-cut").truncated());
+    }
+
+    @Test void nestedEntriesCannotProduceBrokenWrapper() {
+        String block = "<retrieved_knowledge><entry ref=\"a\"><entry ref=\"b\">x</entry><entry ref=\"c\">" + "x".repeat(4100) + "</entry></retrieved_knowledge>";
+        var result = agg(List.of((id,obj) -> new NumenPlugins.KnowledgeFragment(block, List.of(
+                new NumenPlugins.DeliveredRef("a","v1",false), new NumenPlugins.DeliveredRef("b","v1",false)))));
+        assertTrue(result.text().isEmpty());
+        assertTrue(result.refs().stream().allMatch(NumenPlugins.DeliveredRef::truncated));
+    }
+
+    @Test void similarPlainPrefixRetainsLegacyRawCut() {
+        String plain = "<retrieved_knowledgeable " + "x".repeat(4500);
+        var result = agg(List.of((id,obj) -> NumenPlugins.KnowledgeFragment.ofText(plain)));
+        assertEquals(4000, result.text().length());
+        assertTrue(plain.startsWith(result.text()));
+    }
+
     @Test void wrapperWithTrailingTextIsRejectedWithoutPartialXml() {
         List<String> refs = List.of("exp:failure|t1", "exp:failure|t2", "exp:failure|t3");
         String block = wrapperBlock(refs, 1500) + "\n尾巴文本";

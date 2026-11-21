@@ -546,7 +546,7 @@ public final class NumenPlugins {
                         }
                         // Whole-entry trimming can leave room for a later contributor.
                         if (sb.length() < MAX_EXECUTOR_KNOWLEDGE_CHARS) continue;
-                    } else if (piece.stripLeading().startsWith("<retrieved_knowledge")) {
+                    } else if (isStructuredKnowledge(piece)) {
                         // A broken or unrecognized knowledge wrapper is never safe to prefix-cut.
                         publishKnowledgeGap(companion, ci, "budget-rejected", "structured-unrecognized");
                         for (DeliveredRef r : f.refs())
@@ -568,7 +568,7 @@ public final class NumenPlugins {
             sb.append(piece);
             accepted++;
             for (DeliveredRef r : f.refs()) {
-                delivered.add(new DeliveredRef(r.entryRef(), r.version(), false));
+                delivered.add(new DeliveredRef(r.entryRef(), r.version(), r.truncated()));
             }
         }
         if (truncated > 0 || failed > 0) {
@@ -609,6 +609,14 @@ public final class NumenPlugins {
      * @return {@code null} = 不是完整结构包装；{@code ""} = 是完整包装但连首条都装不下（不输出残骸）；
      *         否则为可直接追加的装配结果（长度 ≤ room）。
      */
+    private static boolean isStructuredKnowledge(String text) {
+        if (text == null) return false;
+        String s = text.stripLeading();
+        String name = "<retrieved_knowledge";
+        return s.startsWith(name) && s.length() > name.length()
+                && (s.charAt(name.length()) == '>' || Character.isWhitespace(s.charAt(name.length())));
+    }
+
     private static String assembledStructuredPiece(String piece, int room) {
         if (piece == null) return null;
         // 只认「恰好以 wrapper 开头」：聚合层可能拼了精确的 separator 前缀，别容任意 preface。
@@ -648,7 +656,8 @@ public final class NumenPlugins {
             }
             if (!inner.substring(cursor, start).isBlank()) return null;
             int closeEntry = inner.indexOf("</entry>", start);
-            if (closeEntry < 0) return null;                               // 半条 entry → 旧路径
+            int nestedEntry = inner.indexOf("<entry", start + "<entry".length());
+            if (closeEntry < 0 || (nestedEntry >= 0 && nestedEntry < closeEntry)) return null;                               // 半条 entry → 旧路径
             int after = closeEntry + "</entry>".length();
             int next = inner.indexOf("<entry ", after);
             int segmentEnd = next < 0 ? inner.length() : next;
@@ -663,7 +672,27 @@ public final class NumenPlugins {
             out.append(segment);
         }
         if (out.length() <= head.length()) return "";   // 连一条都装不下：不留残骸
-        return out.append(tail).toString();
+        String result = out.append(tail).toString();
+        return validKnowledgeXml(result.stripLeading()) ? result : null;
+    }
+
+    /** Reject malformed reconstruction; never resolve external entities or DTDs. */
+    private static boolean validKnowledgeXml(String xml) {
+        try {
+            var factory = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            factory.setXIncludeAware(false);
+            factory.setExpandEntityReferences(false);
+            var builder = factory.newDocumentBuilder();
+            builder.setErrorHandler(new org.xml.sax.helpers.DefaultHandler() {
+                @Override public void error(org.xml.sax.SAXParseException e) throws org.xml.sax.SAXException { throw e; }
+                @Override public void fatalError(org.xml.sax.SAXParseException e) throws org.xml.sax.SAXException { throw e; }
+            });
+            var doc = builder.parse(new org.xml.sax.InputSource(new java.io.StringReader(xml)));
+            return "retrieved_knowledge".equals(doc.getDocumentElement().getTagName());
+        } catch (Exception badXml) { return false; }
     }
 
     /**
