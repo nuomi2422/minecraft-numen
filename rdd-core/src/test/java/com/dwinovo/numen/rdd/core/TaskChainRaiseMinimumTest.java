@@ -44,8 +44,26 @@ class TaskChainRaiseMinimumTest {
                 () -> method.invoke(c, "p1-0", "minecraft:iron_pickaxe", 9));
         assertTrue(ex.getCause() instanceof IllegalArgumentException);
         assertEquals(3, c.currentMinimum("p1-0"));
+        long before = c.stateVersion();
+        int attempts = c.attempts("p1-0");
+        assertEquals(3, method.invoke(c, "p1-0", "minecraft:hay_block", 2));
+        assertEquals(before, c.stateVersion());
         assertEquals(3, method.invoke(c, "p1-0", "minecraft:hay_block", 9));
         assertEquals(9, c.currentMinimum("p1-0"));
+        assertEquals(attempts, c.attempts("p1-0"));
+        assertEquals(before + 1, c.stateVersion());
+        assertThrows(java.lang.reflect.InvocationTargetException.class, () -> method.invoke(c, "stale", "minecraft:hay_block", 10));
+    }
+
+    @Test
+    void yieldGroupOnlyAcceptsKnownMembers() {
+        TaskChain c = new TaskChain(new Goal("g", "food", List.of(new PrimaryGoal("p", "food", List.of(
+                Subtask.hardCoded("s", "food", Map.of("group", "food", "minimum", 1)))))));
+        c.startCurrent();
+        assertThrows(IllegalArgumentException.class, () -> c.raiseCurrentMinimumForAsset("s", "minecraft:hay_block", 9));
+        assertEquals(1, c.currentMinimum("s"));
+        assertEquals(1, c.raiseCurrentMinimumForAsset("s", "minecraft:bread", 3));
+        assertEquals(3, c.currentMinimum("s"));
     }
 
     @Test

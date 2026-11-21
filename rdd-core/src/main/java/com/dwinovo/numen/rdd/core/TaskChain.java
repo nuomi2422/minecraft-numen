@@ -1151,6 +1151,24 @@ public final class TaskChain {
      * @param newMinimum 新目标数量，必须<b>严格大于</b>当前值
      * @return 被替换掉的旧目标数量（调用方拿来回执"3 → 12"）
      */
+    /** Validate the reported item and mutate under the same chain lock. */
+    public synchronized int raiseCurrentMinimumForAsset(String subtaskId, String assetKey, int newMinimum) {
+        requireNoOutstandingSafePoint("raise target");
+        requireCurrent(subtaskId);
+        if (currentSubtaskStatus() != SubtaskStatus.RUNNING)
+            throw new IllegalStateException("only a RUNNING subtask can report yield");
+        Map<String, Object> condition = currentSubtask().condition();
+        Object asset = condition.get("asset_key");
+        Object group = condition.get("group");
+        boolean matches = assetKey != null && !assetKey.isBlank() &&
+                (asset instanceof String key && !key.isBlank() && group == null && key.equals(assetKey)
+                 || asset == null && group instanceof String g && InventoryGroups.known(g) && InventoryGroups.contains(g, assetKey));
+        if (!matches) throw new IllegalArgumentException("yield asset does not match current inventory condition");
+        int before = HardCodedEvaluator.minimumOf(condition);
+        if (before < 0) throw new IllegalStateException("current subtask has a malformed minimum");
+        return newMinimum > before ? raiseCurrentMinimum(subtaskId, newMinimum) : before;
+    }
+
     public synchronized int raiseCurrentMinimum(String subtaskId, int newMinimum) {
         requireNoOutstandingSafePoint("raise target");
         requireCurrent(subtaskId);

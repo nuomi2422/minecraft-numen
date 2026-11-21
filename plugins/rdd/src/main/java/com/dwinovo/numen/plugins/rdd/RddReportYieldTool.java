@@ -49,7 +49,7 @@ final class RddReportYieldTool implements NumenTool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .string("expected_subtask_id", "Current subtask ID from rdd_status.")
-                .string("asset_key", "The item you counted (real namespaced id), for the record.")
+                .string("asset_key", "The counted item (namespaced id); must match the current inventory condition.")
                 .integer("observed", "How many of this item you actually see here.", Integer.MIN_VALUE, Integer.MAX_VALUE)
                 .integer("take", "How many you will collect; defaults to observed.", Integer.MIN_VALUE, Integer.MAX_VALUE)
                 .build();
@@ -82,13 +82,11 @@ final class RddReportYieldTool implements NumenTool {
             if (observed < 0) {
                 throw new IllegalArgumentException("observed must be >= 0");
             }
-            int before = chain.currentMinimum(current.id());
-            boolean raised = false;
-            int applied = before;
-            if (take > before) {
-                int old = chain.raiseCurrentMinimum(current.id(), take);
-                raised = true;
-                applied = take;
+            int before = chain.raiseCurrentMinimumForAsset(current.id(), assetKey, take);
+            boolean raised = take > before;
+            int applied = raised ? take : before;
+            if (raised) {
+                int old = before;
                 RddMonitor.publish("yield_target_raised", data(companion, current.id(), assetKey, observed, old, take));
                 RddPlugin.saveRuntimes();
                 RddPlugin.publishTaskSnapshot(companion.getUUID(), "yield_target_raised");
