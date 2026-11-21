@@ -539,14 +539,21 @@ public final class NumenPlugins {
                         // 完整 <retrieved_knowledge> 包装：只装完整 entry + 闭合尾巴。装不下的条目
                         // 整个不装（不留半条残骸），refs 按实际保留边界记账（2026-11-15）。
                         sb.append(assembled);
+                        if (assembled.isEmpty()) publishKnowledgeGap(companion, ci, "budget-rejected", "structured-no-entry");
                         for (DeliveredRef r : f.refs()) {
                             boolean cut = !refFullyIncluded(assembled, assembled.length(), r.entryRef());
                             delivered.add(new DeliveredRef(r.entryRef(), r.version(), cut));
                         }
                         // Whole-entry trimming can leave room for a later contributor.
                         if (sb.length() < MAX_EXECUTOR_KNOWLEDGE_CHARS) continue;
+                    } else if (piece.stripLeading().startsWith("<retrieved_knowledge")) {
+                        // A broken or unrecognized knowledge wrapper is never safe to prefix-cut.
+                        publishKnowledgeGap(companion, ci, "budget-rejected", "structured-unrecognized");
+                        for (DeliveredRef r : f.refs())
+                            delivered.add(new DeliveredRef(r.entryRef(), r.version(), true));
+                        continue;
                     } else {
-                        // 旧行为：plain / 不完整 wrapper / 无法识别结构 → 前缀硬切。
+                        // Non-structured legacy text retains its prior prefix-cut behavior.
                         sb.append(piece, 0, room);
                         for (DeliveredRef r : f.refs()) {
                             boolean cut = !refFullyIncluded(piece, room, r.entryRef());
@@ -622,6 +629,15 @@ public final class NumenPlugins {
         if (!body.substring(close + tail.length()).isBlank()) return null;  // close 后杂文本 → 旧路径
         String head = lead + body.substring(0, openEnd + 1);
         String inner = body.substring(openEnd + 1, close);
+        // Allow only the known single note element before the first entry.
+        String stripped = inner.stripLeading();
+        if (stripped.startsWith("<note>")) {
+            int noteEnd = stripped.indexOf("</note>");
+            if (noteEnd < 0 || stripped.substring(6, noteEnd).contains("<")) return null;
+            int consumed = inner.length() - stripped.length() + noteEnd + "</note>".length();
+            head += inner.substring(0, consumed);
+            inner = inner.substring(consumed);
+        }
         List<String> segments = new ArrayList<>();
         int cursor = 0;
         while (true) {
