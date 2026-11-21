@@ -39,7 +39,7 @@ class CatalogEntryRendererTest {
     @Test void overlongEntryIsRejectedWithoutTruncationAndLaterCandidateSurvives() {
         var out = CatalogEntryRenderer.render(List.of(candidate("long", "n", "x".repeat(400)),
                 candidate("good", "n", "short")), "EXECUTOR", 1200);
-        assertEquals("over-budget", out.decisions().get(0).reason());
+        assertEquals("over-limit", out.decisions().get(0).reason());
         assertEquals(1, out.entries().size());
         assertTrue(out.fragment().contains("skill:good@v1"));
         assertFalse(out.fragment().contains("skill:long@v1"));
@@ -53,7 +53,27 @@ class CatalogEntryRendererTest {
         var onlyUnknown = CatalogEntryRenderer.render(List.of(unknownA, unknownB), "EXECUTOR", 1200);
         assertEquals(1, onlyUnknown.entries().size());
         assertEquals("over-limit", onlyUnknown.decisions().get(1).reason());
-        assertTrue(onlyUnknown.fragment().contains("条件未核"));
+        assertTrue(onlyUnknown.fragment().contains("条件未展示"));
+    }
+    @Test void onlyActuallyIncludedKnownCandidateLiftsUnknownLimit() {
+        var huge = candidate("huge", "known", "x".repeat(400));
+        var a = new CatalogEntryRenderer.Candidate("skill:u1@v1", "u1", "x", "EXECUTOR", "TRIAL", true, false, true);
+        var b = new CatalogEntryRenderer.Candidate("skill:u2@v1", "u2", "x", "EXECUTOR", "TRIAL", true, false, true);
+        var out = CatalogEntryRenderer.render(List.of(huge, a, b), "EXECUTOR", 1200);
+        assertEquals("over-limit", out.decisions().get(0).reason());
+        assertEquals(1, out.entries().size());
+        assertEquals("over-limit", out.decisions().get(2).reason());
+    }
+    @Test void invalidReferencesAndXmlControlCharactersCannotBeAdvertised() throws Exception {
+        for (String ref : List.of("skill:bad.id@v1", "skill:<id>@v1", "skill:id@v2147483648")) {
+            var bad = new CatalogEntryRenderer.Candidate(ref, "x", "y", "EXECUTOR", "TRIAL", true, true, true);
+            assertTrue(CatalogEntryRenderer.render(List.of(bad), "EXECUTOR", 1200).entries().isEmpty());
+        }
+        var badText = candidate("bad", "bad\u0001name", "purpose");
+        assertTrue(CatalogEntryRenderer.render(List.of(badText), "EXECUTOR", 1200).entries().isEmpty());
+        var valid = CatalogEntryRenderer.render(List.of(candidate("good", "emoji😀", "safe & sound")), "EXECUTOR", 1200);
+        javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(
+                new java.io.ByteArrayInputStream(valid.fragment().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
     @Test void omittedMetadataIsUnknownNotInferredFromBody() {
         var unknown = new CatalogEntryRenderer.Candidate("skill:unknown@v1", "n", "purpose", "EXECUTOR", "TRIAL", true, false, true);
@@ -61,7 +81,7 @@ class CatalogEntryRendererTest {
         assertEquals("condition-unknown", out.decisions().get(0).reason());
         assertEquals(1, out.entries().size());
         assertTrue(out.fragment().contains("conditions=\"UNKNOWN\""));
-        assertTrue(out.fragment().contains("条件未核"));
+        assertTrue(out.fragment().contains("条件未展示"));
         assertFalse(out.fragment().contains("see body"));
     }
 }

@@ -27,30 +27,36 @@ public final class CatalogEntryRenderer {
             else ordered.add(i);
         }
         ordered.sort((a, b) -> Boolean.compare(!candidates.get(a).conditionsKnown(), !candidates.get(b).conditionsKnown()));
-        boolean hasKnown = ordered.stream().anyMatch(i -> candidates.get(i).conditionsKnown());
+        boolean includedKnown = false;
         List<String> entries = new ArrayList<>();
         int used = HEAD.length() + TAIL.length();
         for (int index : ordered) {
             Candidate c = candidates.get(index);
-            if (entries.size() >= MAX_ENTRIES || (!hasKnown && !entries.isEmpty())) {
+            if (entries.size() >= MAX_ENTRIES || (!includedKnown && !c.conditionsKnown() && !entries.isEmpty())) {
                 decisions[index] = new Decision(index, c.ref(), false, "over-limit"); continue;
             }
             String item = "<entry ref=\"" + xml(c.ref()) + "\"" +
-                    (c.conditionsKnown() ? "" : " conditions=\"UNKNOWN\"") + ">" +
+                    " conditions=\"UNKNOWN\">" +
                     "<name>" + xml(c.name()) + "</name><purpose>" + xml(c.purpose()) + "</purpose>" +
-                    (c.conditionsKnown() ? "" : "<note>条件未核</note>") + "</entry>";
-            if (item.length() > MAX_ENTRY_CHARS || budget < 0 || used + item.length() > budget) {
+                    "<note>条件未展示，须重新核验</note></entry>";
+            if (item.length() > MAX_ENTRY_CHARS) {
+                decisions[index] = new Decision(index, c.ref(), false, "over-limit"); continue;
+            }
+            if (budget < 0 || used + item.length() > budget) {
                 decisions[index] = new Decision(index, c.ref(), false, "over-budget"); continue;
             }
             entries.add(item); used += item.length();
+            if (c.conditionsKnown()) includedKnown = true;
             decisions[index] = new Decision(index, c.ref(), true, c.conditionsKnown() ? "included" : "condition-unknown");
         }
         String fragment = entries.isEmpty() ? "" : HEAD + String.join("", entries) + TAIL;
         return new Result(fragment, List.copyOf(entries), List.of(decisions), entries.isEmpty() ? "no-qualified-entry" : "included");
     }
     private static String qualification(Candidate c, String view) {
-        if (c == null || c.ref() == null || !c.ref().matches("skill:[^\\s:@]+@v[1-9][0-9]*") ||
-                c.name() == null || c.name().isBlank() || c.purpose() == null || c.purpose().isBlank()) return "not-verified";
+        if (c == null || c.ref() == null || c.name() == null || c.name().isBlank()
+                || c.purpose() == null || c.purpose().isBlank() || !validXml(c.name()) || !validXml(c.purpose())) return "not-verified";
+        try { com.dwinovo.numen.api.LearnedSkillBodyResolver.Reference.parse(c.ref()); }
+        catch (IllegalArgumentException invalid) { return "not-verified"; }
         if (!c.bodyReadable()) return "body-missing";
         if (!c.verified() || !("TRIAL".equals(c.status()) || "PUBLISHED".equals(c.status()))) return "not-verified";
         if (view == null || view.isBlank()) return "audience-mismatch";
@@ -63,6 +69,15 @@ public final class CatalogEntryRenderer {
         String purpose = c.purpose().stripLeading();
         if (purpose.startsWith("{") || purpose.startsWith("[")) return "not-verified";
         return null;
+    }
+    private static boolean validXml(String text) {
+        for (int i = 0; i < text.length();) {
+            int cp = text.codePointAt(i);
+            if (!(cp == 9 || cp == 10 || cp == 13 || cp >= 0x20 && cp <= 0xD7FF
+                    || cp >= 0xE000 && cp <= 0xFFFD || cp >= 0x10000 && cp <= 0x10FFFF)) return false;
+            i += Character.charCount(cp);
+        }
+        return true;
     }
     private static String safe(String value) { return value == null ? "" : value; }
     private static String xml(String value) {
