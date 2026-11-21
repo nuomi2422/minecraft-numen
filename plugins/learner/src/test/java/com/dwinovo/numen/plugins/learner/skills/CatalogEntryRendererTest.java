@@ -20,6 +20,7 @@ class CatalogEntryRendererTest {
         assertEquals("over-limit", out.decisions().get(3).reason());
         assertTrue(out.entries().stream().allMatch(e -> e.length() <= 320));
         assertTrue(out.fragment().length() <= 1160);
+        assertTrue(out.fragment().contains("status=\"TRIAL\""));
         assertTrue(out.fragment().startsWith("<retrieved_knowledge>"));
         assertTrue(out.fragment().endsWith("</retrieved_knowledge>"));
     }

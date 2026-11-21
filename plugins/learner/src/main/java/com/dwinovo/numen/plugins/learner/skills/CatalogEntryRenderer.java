@@ -36,7 +36,7 @@ public final class CatalogEntryRenderer {
             if (entries.size() >= MAX_ENTRIES || (!c.conditionsKnown() && includedUnknown)) {
                 decisions[index] = new Decision(index, c.ref(), false, "over-limit"); continue;
             }
-            String item = "<entry ref=\"" + xml(c.ref()) + "\"" +
+            String item = "<entry ref=\"" + xml(c.ref()) + "\" status=\"" + xml(c.status()) + "\"" +
                     " conditions=\"UNKNOWN\">" +
                     "<name>" + xml(c.name()) + "</name><purpose>" + xml(c.purpose()) + "</purpose>" +
                     "<note>条件未展示；按 ref 展开，执行前必核</note></entry>";
