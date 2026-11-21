@@ -1160,7 +1160,9 @@ public final class TaskChain {
         Map<String, Object> condition = currentSubtask().condition();
         Object asset = condition.get("asset_key");
         Object group = condition.get("group");
-        boolean matches = assetKey != null && !assetKey.isBlank() &&
+        Object type = condition.get("type");
+        boolean inventoryType = type == null || "inventory".equals(type);
+        boolean matches = inventoryType && assetKey != null && !assetKey.isBlank() &&
                 (asset instanceof String key && !key.isBlank() && group == null && key.equals(assetKey)
                  || asset == null && group instanceof String g && InventoryGroups.known(g) && InventoryGroups.contains(g, assetKey));
         if (!matches) throw new IllegalArgumentException("yield asset does not match current inventory condition");
