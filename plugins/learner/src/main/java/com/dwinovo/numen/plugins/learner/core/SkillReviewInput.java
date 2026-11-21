@@ -106,15 +106,33 @@ final class SkillReviewInput {
                     String event = str(envelope, "event_id");
                     if (event.isBlank()) continue; // no fabricated trace/event identity
                     if (data.has("task_id") && !fact.taskId().equals(str(data, "task_id"))) continue;
+                    String writer = str(data, "journaled_by");
+                    if (!writer.equals("server") && !writer.equals("server-sync") && !writer.equals("server-async")) continue;
                     String tool = str(data, "tool"), result = str(data, "result");
-                    if (event.length() > 100 || tool.length() > 80 || result.length() > 180) limited = true;
+                    String kind = writer.equals("server-sync") ? "SYNC_TERMINAL"
+                            : writer.equals("server-async") ? "ASYNC_TERMINAL" : "SERVER_REPLY_UNKNOWN";
+                    String asyncStatus = str(data, "async_status");
+                    if (writer.equals("server") && isAsyncAcceptance(result)) kind = "ACCEPTANCE_ONLY";
+                    if (writer.equals("server-async") && asyncStatus.isBlank()) kind = "ASYNC_STATUS_UNKNOWN";
+                    if (event.length() > 100 || tool.length() > 80 || result.length() > 180 || asyncStatus.length() > 80) limited = true;
                     rows.add("event:" + clip(event, 100) + " tool=" + clip(tool, 80)
+                            + " writer=" + writer + " kind=" + kind
+                            + (asyncStatus.isBlank() ? "" : " async_status=" + clip(asyncStatus, 80))
                             + " result=" + clip(result, 180));
                     if (rows.size() > TRACE_ROWS) { rows.remove(0); limited = true; }
                 } catch (RuntimeException malformed) { limited = true; }
             }
         } catch (IOException | RuntimeException unavailable) { return new Trace(List.of(), true); }
         return new Trace(List.copyOf(rows), limited);
+    }
+
+    private static boolean isAsyncAcceptance(String result) {
+        try {
+            JsonObject root = JsonParser.parseString(result).getAsJsonObject();
+            JsonObject data = root.getAsJsonObject("data");
+            return data != null && data.has("async") && data.get("async").isJsonPrimitive()
+                    && data.getAsJsonPrimitive("async").isBoolean() && data.get("async").getAsBoolean();
+        } catch (RuntimeException unavailable) { return false; }
     }
 
     private static String str(JsonObject object, String key) {
