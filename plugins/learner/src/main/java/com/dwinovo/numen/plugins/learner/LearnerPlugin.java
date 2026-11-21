@@ -119,6 +119,12 @@ public final class LearnerPlugin implements NumenPlugin {
                 out.put("error", "revoked skill cannot be promoted: " + skillId);
                 return out;
             }
+            String body = com.dwinovo.numen.plugins.learner.skills.SkillBodyStore.read(configDir, before.bodyRef());
+            if (body == null || body.isBlank()) {
+                out.put("outcome", "CONFLICT");
+                out.put("error", "body-unreadable: skill cannot be delivered: " + skillId);
+                return out;
+            }
             var decision = registry.promote(skillId, reason);
             out.put("outcome", decision.outcome().name());
             out.put("decisionReason", decision.reason());
@@ -128,6 +134,11 @@ public final class LearnerPlugin implements NumenPlugin {
                 return out;
             }
             if (decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.REUSE) {
+                var disk = com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(configDir.resolve("skills.jsonl"));
+                if (disk.skippedLines() != 0 || !disk.get(skillId).filter(before::equals).isPresent()) {
+                    out.put("error", "UNKNOWN: in-memory skill does not match readable persisted registry");
+                    return out;
+                }
                 out.put("skillId", skillId); out.put("prevVersion", before.version());
                 out.put("newVersion", before.version()); out.put("status", before.status().name());
                 return out; // healthy idempotent no-op; never emit a new promotion event
@@ -169,6 +180,11 @@ public final class LearnerPlugin implements NumenPlugin {
                 return out;
             }
             if (decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.REUSE) {
+                var disk = com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(configDir.resolve("skills.jsonl"));
+                if (disk.skippedLines() != 0 || !disk.get(skillId).filter(before::equals).isPresent()) {
+                    out.put("error", "UNKNOWN: in-memory skill does not match readable persisted registry");
+                    return out;
+                }
                 out.put("skillId", skillId); out.put("prevVersion", before.version());
                 out.put("newVersion", before.version()); out.put("supersedes", before.supersedes());
                 return out; // already retired; no second retirement event

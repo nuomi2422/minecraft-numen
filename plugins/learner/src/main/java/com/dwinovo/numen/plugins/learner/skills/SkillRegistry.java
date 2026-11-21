@@ -257,7 +257,6 @@ public final class SkillRegistry {
             return new Decision(Outcome.CONFLICT, null, "unknown skillId: " + skillId);
         }
         if (current.status() == SkillStatus.TRIAL || current.status() == SkillStatus.PUBLISHED) {
-            if (!strictBodyOk(current.bodyRef())) return new Decision(Outcome.CONFLICT, current, "body-unreadable: existing skill cannot be delivered: " + skillId);
             return new Decision(Outcome.REUSE, current, "already promoted: " + skillId);
         }
         if (current.status() == SkillStatus.REVOKED) {
