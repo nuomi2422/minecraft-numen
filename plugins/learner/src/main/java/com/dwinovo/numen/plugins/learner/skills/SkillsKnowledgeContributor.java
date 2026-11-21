@@ -24,15 +24,31 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
     private final Path configDir;
     private final String view;
     private final int maxChars;
+    private final java.util.function.Function<UUID, OvernightSkillInput.WorldHint> overnightWorld;
 
     public SkillsKnowledgeContributor(Path configDir, String view, int maxChars) {
+        this(configDir, view, maxChars, companion -> OvernightSkillInput.WorldHint.UNKNOWN);
+    }
+
+    public SkillsKnowledgeContributor(Path configDir, String view, int maxChars,
+            java.util.function.Supplier<com.dwinovo.numen.api.observation.WorldObservationService> observations) {
+        this(configDir, view, maxChars, companion -> {
+            try { return OvernightSkillInput.read(observations.get(), companion); }
+            catch (RuntimeException | LinkageError unavailable) { return OvernightSkillInput.WorldHint.UNKNOWN; }
+        });
+    }
+
+    SkillsKnowledgeContributor(Path configDir, String view, int maxChars,
+            java.util.function.Function<UUID, OvernightSkillInput.WorldHint> overnightWorld) {
         this.configDir = configDir;
         this.view = view;
-        this.maxChars = maxChars;   // <=0 = 不自截断，交给消费方 ContextBudget（避免双重截断）
+        this.maxChars = maxChars;
+        this.overnightWorld = overnightWorld;
     }
 
     @Override
     public NumenPlugins.KnowledgeFragment contribute(UUID companion, String objective) {
+        // Preserve the existing body-delivery path for planner and legacy consumers.
         return contribute(companion, objective, false);
     }
 
@@ -42,6 +58,7 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
     }
 
     private static final String CATALOG_HEAD = "<retrieved_knowledge role=\"executor\" note=\"Catalog only; author conditions are unverified clues. Read one body using load_skill with only ref set to the exact entry ref.\">\n";
+    private static final String PLANNER_HEAD = CATALOG_HEAD.replace("role=\"executor\"", "role=\"planner\"");
     private static final String CATALOG_TAIL = "</retrieved_knowledge>";
 
     private NumenPlugins.KnowledgeFragment contribute(UUID companion, String objective, boolean catalog) {
@@ -57,10 +74,30 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
             LOG.warning("[skills-retrieval] registry unavailable: " + e.getClass().getSimpleName());
             throw new KnowledgeGapException(KnowledgeGapException.Reason.READ_FAILED, "read_failed");
         }
-        int index = 0;
-        for (SkillEntry e : registry.retrievable()) {
-            index++;
+        var resolver = new LearnedSkillBodyResolverImpl(configDir);
+        var consumerView = "PLANNER".equalsIgnoreCase(view)
+                ? com.dwinovo.numen.api.LearnedSkillBodyResolver.View.PLANNER
+                : com.dwinovo.numen.api.LearnedSkillBodyResolver.View.EXECUTOR;
+        List<SkillEntry> entries = new ArrayList<>(registry.retrievable());
+        boolean hasOvernight = entries.stream().anyMatch(e -> audienceMatches(e.audience()) && "overnight".equals(SceneSkillCatalog.scene(e)));
+        var worldHint = hasOvernight ? overnightWorld.apply(companion) : OvernightSkillInput.WorldHint.UNKNOWN;
+        boolean worldCue = OvernightSkillInput.worldCue(worldHint);
+        boolean sceneCue = entries.stream().anyMatch(e -> isScene(e) && (sceneCue(objective, e)
+                || (worldCue && "overnight".equals(SceneSkillCatalog.scene(e)))));
+        if (sceneCue && catalog) {
+            // Preserve planner body order until its retrieval contract is proven.
+            entries.sort(java.util.Comparator.comparing(e -> !(sceneCue(objective, e)
+                    || (worldCue && "overnight".equals(SceneSkillCatalog.scene(e))))));
+        }
+        for (SkillEntry e : entries) {
             if (!audienceMatches(e.audience())) continue;
+            String scene = SceneSkillCatalog.kind(e);
+            if ("invalid".equals(scene)) {
+                gaps.merge("invalid-scene-tag", 1, Integer::sum);
+                continue;
+            }
+            // No keyword hit is unknown relevance, not proof of inapplicability.
+            // Keep unmatched entries behind matching candidates within the existing budget.
             String ref = "skill:" + e.skillId();
             String body = SkillBodyStore.read(configDir, e.bodyRef());
             if (body == null || body.isBlank()) {
@@ -84,22 +121,53 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
                     continue;
                 }
             }
-            String block = catalog ? catalogEntry(e, ref + "@" + version)
+            if ("package".equals(scene) && SceneSkillCatalog.missingRequired(e, resolver, companion, consumerView)) {
+                gaps.merge("missing-required-component", 1, Integer::sum);
+                continue;
+            }
+            String block = catalog ? catalogEntry(e, ref + "@" + version, scene, resolver, companion, consumerView)
                     : "<entry ref=\"" + ref + "\">@" + version + " [" + e.name() + "] " + e.purpose() + "\n" + body + "\n</entry>\n";
+            if (catalog && !scene.isEmpty()) {
+                String cue = worldCue && "overnight".equals(SceneSkillCatalog.scene(e))
+                        ? "world_hint=" + worldHint + " " : "";
+                String note = "candidate_only applicability=UNKNOWN"
+                        + ("overnight".equals(SceneSkillCatalog.scene(e)) ? " bed=UNKNOWN" : "");
+                block = block.replace("</entry>\n", "<recall_note>" + cue + note
+                        + "</recall_note>\n</entry>\n");
+            }
             int envelopeChars = catalog ? CATALOG_HEAD.length() + CATALOG_TAIL.length() : 0;
-            if (maxChars > 0 && text.length() + block.length() + envelopeChars > maxChars) { truncated = true; break; }
+            if (maxChars > 0 && text.length() + block.length() + envelopeChars > maxChars) {
+                if (!catalog) { truncated = true; break; } // preserve legacy planner budget behavior
+                gaps.merge("budget-rejected", 1, Integer::sum);
+                continue; // skip whole entry; a later smaller candidate may still fit
+            }
             text.append(block);
             if (!catalog) refs.add(new NumenPlugins.DeliveredRef(ref, version, false));
         }
         if (text.isEmpty() && gaps.isEmpty()) return null;   // 完全无结果
-        String rendered = catalog && !text.isEmpty() ? CATALOG_HEAD + text + CATALOG_TAIL : text.toString();
+        String head = "PLANNER".equalsIgnoreCase(view) ? PLANNER_HEAD : CATALOG_HEAD;
+        String rendered = catalog && !text.isEmpty() ? head + text + CATALOG_TAIL : text.toString();
         return new NumenPlugins.KnowledgeFragment(rendered, refs, gaps);
     }
 
 
-    private static String catalogEntry(SkillEntry entry, String exactRef) {
+    private static boolean isScene(SkillEntry entry) {
+        return !SceneSkillCatalog.kind(entry).isEmpty();
+    }
+
+    private static boolean sceneCue(String objective, SkillEntry entry) {
+        String scene = SceneSkillCatalog.scene(entry);
+        return objective != null && !scene.isEmpty() && java.util.regex.Pattern.compile(
+                "(?i)(?<![a-z])" + java.util.regex.Pattern.quote(scene) + "(?![a-z])|"
+                        + "(?:" + SceneSkillCatalog.goalAlias(scene) + ")")
+                .matcher(objective).find();
+    }
+
+    private static String catalogEntry(SkillEntry entry, String exactRef, String scene, com.dwinovo.numen.api.LearnedSkillBodyResolver resolver, UUID companion, com.dwinovo.numen.api.LearnedSkillBodyResolver.View consumerView) {
         return "<entry ref=\"" + xml(exactRef) + "\" kind=\"" + xml(entry.kind().name())
-                + "\" status=\"" + xml(entry.status().name()) + "\">\n"
+                + "\" status=\"" + xml(entry.status().name())
+                + (scene.isEmpty() ? "" : "\" scene=\"" + xml(scene)
+                    + "\" availability=\"" + SceneSkillCatalog.availability(entry, resolver, companion, consumerView)) + "\">\n"
                 + "<name>" + xml(entry.name()) + "</name>\n"
                 + "<purpose>" + xml(entry.purpose()) + "</purpose>\n"
                 + catalogConditions("trigger", entry.triggerConditions())

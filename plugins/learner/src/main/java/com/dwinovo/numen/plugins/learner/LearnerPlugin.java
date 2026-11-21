@@ -288,8 +288,10 @@ public final class LearnerPlugin implements NumenPlugin {
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
         numen.capability(com.dwinovo.numen.api.LearnedSkillBodyResolver.class,
                 new com.dwinovo.numen.plugins.learner.skills.LearnedSkillBodyResolverImpl(configDir));
-        SkillsKnowledgeContributor plannerSkills = new SkillsKnowledgeContributor(configDir, "PLANNER", 0);
-        SkillsKnowledgeContributor executorSkills = new SkillsKnowledgeContributor(configDir, "EXECUTOR", 0);
+        java.util.function.Supplier<com.dwinovo.numen.api.observation.WorldObservationService> observations =
+                () -> com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.observation.WorldObservationService.class);
+        SkillsKnowledgeContributor plannerSkills = new SkillsKnowledgeContributor(configDir, "PLANNER", 0, observations);
+        SkillsKnowledgeContributor executorSkills = new SkillsKnowledgeContributor(configDir, "EXECUTOR", 0, observations);
         numen.contributePlanningKnowledge(query -> {
             var f = plannerSkills.contribute(query.companion(), query.objective());
             return f == null ? "" : f.text();

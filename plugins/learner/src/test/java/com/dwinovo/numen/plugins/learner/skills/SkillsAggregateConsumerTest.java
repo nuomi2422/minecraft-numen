@@ -1,6 +1,8 @@
 package com.dwinovo.numen.plugins.learner.skills;
 
 import com.dwinovo.numen.api.NumenPlugins;
+import com.dwinovo.numen.api.PlanningQuery;
+import com.dwinovo.numen.api.LearnedSkillBodyResolver;
 import com.dwinovo.numen.plugins.learner.contract.ArtifactDraft;
 import com.dwinovo.numen.plugins.learner.contract.ArtifactKind;
 import org.junit.jupiter.api.Test;
@@ -13,6 +15,9 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /** 2026-11-09（046-A）：真实统一检索聚合消费者接收 skills 条目并逐条记账。 */
 class SkillsAggregateConsumerTest {
@@ -44,16 +49,14 @@ class SkillsAggregateConsumerTest {
         }
         SkillsKnowledgeContributor skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
         var frag = NumenPlugins.aggregateExecutorKnowledgeFragment(
-                List.of((NumenPlugins.KnowledgeContributor) skills::contribute), UUID.randomUUID(), "objective");
+                List.of((NumenPlugins.KnowledgeContributor) skills::contributeCatalog), UUID.randomUUID(), "objective");
 
-        org.junit.jupiter.api.Assertions.assertEquals("v7", frag.refs().get(0).version());
-        assertTrue(frag.text().contains(body), "preserve the original body, including its unrelated version=1");
-        assertFalse(frag.refs().get(0).truncated());
+        assertTrue(frag.refs().isEmpty());
         String content = finalProviderContent(frag.text(), frag.text().length());
-        assertTrue(content.contains("<entry ref=\"skill:sk-version\">@v7 "),
-                "the final provider JSON must expose the exact version required by adopt_skill/report_skill");
-        assertTrue(content.contains(body), "ref, registry version and original body must survive together");
-        assertFalse(content.contains("@v1 "), "never infer registry version from body JSON");
+        assertTrue(content.contains("<entry ref=\"skill:sk-version@v7\""),
+                "the final provider JSON must expose the exact version required by load_skill");
+        assertFalse(content.contains(body), "catalog never exposes the original body");
+        assertFalse(content.contains("skill:sk-version@v1\""), "never infer registry version from body JSON");
     }
 
     /** Pure production seams only: character budget and provider serialization; never invokes a model. */
@@ -80,20 +83,19 @@ class SkillsAggregateConsumerTest {
         SkillRegistry.open(dir.resolve("skills.jsonl")).register(draft, id, bodyRef, true);
         SkillsKnowledgeContributor skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
         var frag = NumenPlugins.aggregateExecutorKnowledgeFragment(
-                List.of((NumenPlugins.KnowledgeContributor) skills::contribute), UUID.randomUUID(), "objective");
+                List.of((NumenPlugins.KnowledgeContributor) skills::contributeCatalog), UUID.randomUUID(), "objective");
 
-        assertTrue(frag.refs().get(0).truncated(), "a visible version header is not complete body delivery");
-        assertFalse(frag.text().contains("</entry>"), "fixture must actually cross the shared budget cut");
+        assertTrue(frag.refs().isEmpty());
+        assertTrue(frag.text().contains("</entry>"), "small catalog metadata remains whole");
         String content = finalProviderContent(frag.text(), frag.text().length());
-        assertTrue(content.contains("<entry ref=\"skill:sk-long\">@v1 "));
+        assertTrue(content.contains("<entry ref=\"skill:sk-long@v1\""));
         assertFalse(content.contains(body));
-        assertFalse(content.contains("</entry>"));
     }
 
     @Test
     void droppedKnowledgeHasNoVersionOrBodyInFinalProviderJson() throws IOException {
         register("sk-drop");
-        var frag = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contribute(UUID.randomUUID(), "objective");
+        var frag = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contributeCatalog(UUID.randomUUID(), "objective");
         String content = finalProviderContent(frag.text(), frag.text().length() - 1);
         assertTrue(content.isEmpty(), "optional knowledge is dropped whole, not a version-only delivery");
     }
@@ -104,14 +106,12 @@ class SkillsAggregateConsumerTest {
         register("sk-b");
         SkillsKnowledgeContributor skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
         var frag = NumenPlugins.aggregateExecutorKnowledgeFragment(
-                List.of((com.dwinovo.numen.api.NumenPlugins.KnowledgeContributor) (c, o) -> skills.contribute(c, o)),
+                List.of((com.dwinovo.numen.api.NumenPlugins.KnowledgeContributor) (c, o) -> skills.contributeCatalog(c, o)),
                 UUID.randomUUID(), "objective");
 
-        assertTrue(frag.text().contains("<entry ref=\"skill:sk-a\">"), "条目边界必须保留");
-        assertTrue(frag.text().contains("正文-sk-b"), "正文要经真实聚合进片段");
-        assertFalse(frag.refs().isEmpty(), "逐条 refs 要记账");
-        assertTrue(frag.refs().stream().noneMatch(NumenPlugins.DeliveredRef::truncated),
-                "未截断时不得标记 truncated");
+        assertTrue(frag.text().contains("<entry ref=\"skill:sk-a@v1\""), "目录精确引用边界必须保留");
+        assertFalse(frag.text().contains("正文-sk-b"), "正文不能经目录直接注入");
+        assertTrue(frag.refs().isEmpty(), "目录发现不记正文送达");
     }
 
     private SkillEntry catalogFixture(String id, SkillStatus status, String audience, String body,
@@ -174,9 +174,8 @@ class SkillsAggregateConsumerTest {
                 com.dwinovo.numen.api.LearnedSkillBodyResolver.View.EXECUTOR).available());
 
         var planner = new SkillsKnowledgeContributor(dir, "PLANNER", 0).contribute(UUID.randomUUID(), "objective");
-        assertTrue(planner.text().contains(body), "original planner entry retains its whole body");
+        assertTrue(planner.text().contains(body), "planner retains its existing body delivery");
         org.junit.jupiter.api.Assertions.assertEquals(1, planner.refs().size());
-        org.junit.jupiter.api.Assertions.assertEquals("v7", planner.refs().get(0).version());
         org.junit.jupiter.api.Assertions.assertArrayEquals(registryBefore,
                 java.nio.file.Files.readAllBytes(dir.resolve("skills.jsonl")));
     }
@@ -261,8 +260,23 @@ class SkillsAggregateConsumerTest {
         assertTrue(finalProviderContent(fragment.text(), fragment.text().length() - 1).isEmpty(),
                 "ContextBudget must drop the optional catalog as a whole");
         assertFalse(fragment.text().contains("PRIVATE_BODY"));
-        org.junit.jupiter.api.Assertions.assertNull(new SkillsKnowledgeContributor(dir, "EXECUTOR", 1)
-                .contributeCatalog(UUID.randomUUID(), "objective"), "no partial entry or empty wrapper when nothing fits");
+        var rejected = new SkillsKnowledgeContributor(dir, "EXECUTOR", 1)
+                .contributeCatalog(UUID.randomUUID(), "objective");
+        assertTrue(rejected.text().isEmpty(), "no partial entry or empty wrapper when nothing fits");
+        assertTrue(rejected.gapCounts().get("budget-rejected") > 0, "budget rejection is observable");
+    }
+
+    @Test
+    void localBudgetSkipsOversizedEntryAndRetainsLaterCompleteEntry() throws Exception {
+        catalogFixture("oversized-first", SkillStatus.TRIAL, "EXECUTOR", "body one", "large", "long ".repeat(500));
+        catalogFixture("small-later", SkillStatus.TRIAL, "EXECUTOR", "body two", "small", "brief");
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 1000)
+                .contributeCatalog(UUID.randomUUID(), "unrelated objective");
+        assertNotNull(fragment, "later complete entry fits the existing budget");
+        assertTrue(fragment.text().contains("skill:small-later@v7"));
+        assertFalse(fragment.text().contains("skill:oversized-first@v7"));
+        assertEquals(1, fragment.gapCounts().get("budget-rejected"));
+        assertEquals(1, parseCatalog(fragment.text()).getElementsByTagName("entry").getLength());
     }
 
     @Test
@@ -373,5 +387,246 @@ class SkillsAggregateConsumerTest {
         assertTrue(fragment.refs().isEmpty());
         org.junit.jupiter.api.Assertions.assertArrayEquals(original, java.nio.file.Files.readAllBytes(registry),
                 "reading a legacy trial must not migrate its body or change its status");
+    }
+    private static final UUID COMPANION = UUID.randomUUID();
+    private static final String PACK = "scene-overnight-pack";
+    private static final String STEP = "scene-sleep-check";
+    private static final String PACK_REF = "skill:" + PACK + "@v1";
+    private static final String STEP_REF = "skill:" + STEP + "@v1";
+    private static final String PACK_BODY = "PACK_BODY_REQUIRES_EXPLICIT_READ";
+    private static final String STEP_BODY = "STEP_BODY_REQUIRES_EXPLICIT_READ";
+
+    private void register(String id, String name, String purpose, String body,
+                          List<String> preconditions) throws Exception {
+        String bodyRef = SkillBodyStore.write(dir, id, 1, "fixture-" + id, body);
+        var draft = new ArtifactDraft(ArtifactKind.EXPERIENCE, name, purpose, body,
+                List.of("过夜", "overnight"), List.of(), preconditions, "UNKNOWN",
+                List.of(), List.of("offline-055-scene-fixture"), "PLANNER,EXECUTOR");
+        var decision = SkillRegistry.open(dir.resolve("skills.jsonl"))
+                .register(draft, id, bodyRef, true);
+        assertEquals(SkillRegistry.Outcome.REGISTERED, decision.outcome());
+    }
+
+    private void seed() throws Exception {
+        register(PACK, "安家过夜路线", "保主线并安排安全睡眠",
+                PACK_BODY, List.of("scene:overnight:package", "requires:" + STEP_REF));
+        register(STEP, "检查床与入睡条件", "只按当前事实检查，不发身体命令",
+                STEP_BODY, List.of("scene:overnight:component"));
+    }
+
+    @Test
+    void plannerReceivesExactRefCatalogInsteadOfFullBodies() throws Exception {
+        register("planner-catalog", "准备路线", "给规划看的用途", "PLANNER_PRIVATE_BODY", List.of());
+        var skills = new SkillsKnowledgeContributor(dir, "PLANNER", 0);
+        String out = NumenPlugins.aggregatePlanningKnowledge(List.of(query -> {
+            var fragment = skills.contribute(query.companion(), query.objective());
+            return fragment == null ? "" : fragment.text();
+        }), PlanningQuery.of(COMPANION, "准备路线", "stage", List.of()));
+        assertTrue(out.contains("skill:planner-catalog"));
+        assertTrue(out.contains("给规划看的用途"));
+        assertTrue(out.contains("PLANNER_PRIVATE_BODY"));
+    }
+
+    @Test
+    void goalDiscoversPackageAndIndependentComponentOnceWithoutOpeningBodies() throws Exception {
+        seed();
+        var skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
+        var fragment = skills.contributeCatalog(COMPANION, "今晚在村边安家过夜");
+        assertNotNull(fragment);
+        assertEquals(1, fragment.text().split("ref=\"" + PACK_REF + "\"", -1).length - 1);
+        assertEquals(1, fragment.text().split("ref=\"" + STEP_REF + "\"", -1).length - 1);
+        assertTrue(fragment.text().contains("requires:" + STEP_REF));
+        assertTrue(fragment.text().contains("availability=\"ready\""));
+        assertEquals(2, parseCatalog(fragment.text()).getElementsByTagName("entry").getLength());
+        assertFalse(fragment.text().contains(PACK_BODY));
+        assertFalse(fragment.text().contains(STEP_BODY));
+        assertTrue(fragment.refs().isEmpty(), "discovery is not body delivery or adoption");
+    }
+
+    @Test
+    void missingRequiredComponentRefusesPackageButMissingOptionalCanDegrade() throws Exception {
+        register("required-missing", "缺必需件", "不能执行",
+                "REQUIRED_PRIVATE", List.of("scene:overnight:package",
+                        "requires:skill:not-present@v1"));
+        register("optional-missing", "缺可选件", "可以降级",
+                "OPTIONAL_PRIVATE", List.of("scene:overnight:package",
+                        "optional:skill:not-present@v1"));
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(COMPANION, "今晚安家过夜");
+        assertNotNull(fragment);
+        assertFalse(fragment.text().contains("skill:required-missing@v1"));
+        var explicit = new LearnedSkillBodyResolverImpl(dir).resolve(COMPANION, "skill:required-missing@v1", LearnedSkillBodyResolver.View.EXECUTOR);
+        assertTrue(explicit.available(), "explicit inspection is not execution; this records the existing gap");
+        assertEquals("REQUIRED_PRIVATE", explicit.body());
+        assertTrue(fragment.text().contains("skill:optional-missing@v1"));
+        assertTrue(fragment.text().contains("degraded"));
+        assertTrue(fragment.gapCounts().containsKey("missing-required-component"));
+    }
+
+    @Test
+    void historicalOvernightComponentRecallsByGoalAndKeepsExactBodyChecks() throws Exception {
+        register("sk-357b28399f37", "安家过夜：睡前留断点",
+                "主世界安家过夜时保存主线断点，先核身位、床和风险再尝试睡眠",
+                "原候选正文只准精确展开", List.of("scene:overnight:component"));
+        var row = SkillRegistry.open(dir.resolve("skills.jsonl"));
+        var old = row.get("sk-357b28399f37").orElseThrow();
+        java.nio.file.Files.writeString(dir.resolve("skills.jsonl"), SkillRegistry.toJson(
+                new SkillEntry(old.skillId(), 2, old.kind(), old.name(), old.purpose(), "EXECUTOR",
+                        old.triggerConditions(), old.excludeConditions(), old.preconditions(), old.risk(),
+                        old.evidenceLevel(), old.status(), old.bodyRef(), old.validationSignals(),
+                        old.foundingSamples(), List.of(old.skillId() + "@v1"), old.conflicts())) + "\n",
+                java.nio.file.StandardOpenOption.APPEND);
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(COMPANION, "主世界安家过夜，保留主任务断点");
+        assertNotNull(fragment);
+        assertTrue(fragment.text().contains("skill:sk-357b28399f37@v2"));
+        assertFalse(fragment.text().contains("原候选正文只准精确展开"));
+        var resolver = new LearnedSkillBodyResolverImpl(dir);
+        assertEquals("原候选正文只准精确展开", resolver.resolve(COMPANION,
+                "skill:sk-357b28399f37@v2", LearnedSkillBodyResolver.View.EXECUTOR).body());
+        assertEquals("version-mismatch", resolver.resolve(COMPANION,
+                "skill:sk-357b28399f37@v1", LearnedSkillBodyResolver.View.EXECUTOR).gap());
+        assertEquals("audience-mismatch", resolver.resolve(COMPANION,
+                "skill:sk-357b28399f37@v2", LearnedSkillBodyResolver.View.PLANNER).gap());
+    }
+
+    @Test
+    void packageMustNotAdvertiseRequiredBodyUnavailableToExecutor() throws Exception {
+        var hidden = catalogFixture("sk-hidden-dep", SkillStatus.TRIAL, "PLANNER", "private body", "hidden", "hidden purpose");
+        var corrupt = catalogFixture("sk-corrupt-dep", SkillStatus.TRIAL, "EXECUTOR", "original body", "corrupt", "corrupt purpose");
+        java.nio.file.Files.writeString(dir.resolve("skill-bodies").resolve(corrupt.bodyRef().substring("skill-body:".length())), "tampered");
+        register("pack-hidden", "hidden package", "overnight", "package body", List.of("scene:overnight:package", "requires:skill:sk-hidden-dep@v7"));
+        var pack = catalogFixture("pack-corrupt", SkillStatus.TRIAL, "EXECUTOR", "second package body", "corrupt package", "corrupt package purpose");
+        var marked = new SkillEntry(pack.skillId(), pack.version(), pack.kind(), pack.name(), pack.purpose(), pack.audience(), pack.triggerConditions(), pack.excludeConditions(), List.of("scene:overnight:package", "requires:skill:sk-corrupt-dep@v7"), pack.risk(), pack.evidenceLevel(), pack.status(), pack.bodyRef(), pack.validationSignals(), pack.foundingSamples(), pack.supersedes(), pack.conflicts());
+        java.nio.file.Files.writeString(dir.resolve("skills.jsonl"), SkillRegistry.toJson(marked) + "\n", java.nio.file.StandardOpenOption.APPEND);
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contributeCatalog(COMPANION, "安家过夜");
+        assertNotNull(fragment);
+        assertFalse(fragment.text().contains("skill:pack-hidden@v1"));
+        assertFalse(fragment.text().contains("skill:pack-corrupt@v7"));
+        assertEquals(2, fragment.gapCounts().get("missing-required-component"));
+    }
+
+    @Test
+    void freshWorldCueSurfacesOvernightWithoutConfusingPromptTextForFacts() throws Exception {
+        seed();
+        register("trading-scene", "trade", "trading", "trade private body", List.of("scene:trading:component"));
+        var contributor = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0, companion -> {
+            assertEquals(COMPANION, companion);
+            return OvernightSkillInput.WorldHint.LATE_DAY;
+        });
+        var fragment = NumenPlugins.aggregateExecutorKnowledgeFragment(
+                List.of(contributor::contributeCatalog), COMPANION, "收集橡木");
+        assertTrue(fragment.text().contains(PACK_REF));
+        assertTrue(fragment.text().contains(STEP_REF));
+        assertTrue(fragment.text().contains("skill:trading-scene@v1"), "unmatched scene remains discoverable");
+        assertTrue(fragment.text().indexOf(PACK_REF) < fragment.text().indexOf("skill:trading-scene@v1"), "night prioritizes overnight, not unrelated scene");
+        assertTrue(fragment.text().contains("world_hint=LATE_DAY candidate_only applicability=UNKNOWN bed=UNKNOWN"));
+        assertFalse(fragment.text().contains(PACK_BODY));
+        assertTrue(fragment.refs().isEmpty());
+        var unavailable = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0,
+                companion -> OvernightSkillInput.WorldHint.UNKNOWN);
+        var neutral = unavailable.contributeCatalog(COMPANION, "<state_facts night=1/> 收集橡木");
+        assertFalse(neutral.text().contains("world_hint=LATE_DAY"), "prompt text must not create world evidence");
+    }
+
+    @Test
+    void worldCueRejectsStaleForeignOrChangedWorld() {
+        assertEquals(OvernightSkillInput.WorldHint.LATE_DAY, readWorldFixture(env("server-test", 10_001L, java.util.Set.of()), false));
+        assertEquals(OvernightSkillInput.WorldHint.UNKNOWN, readWorldFixture(env("server-test", 10_000L, java.util.Set.of()), false));
+        assertEquals(OvernightSkillInput.WorldHint.UNKNOWN, readWorldFixture(env("other-server", 10_001L, java.util.Set.of()), false));
+        assertEquals(OvernightSkillInput.WorldHint.UNKNOWN, readWorldFixture(env("server-test", 10_001L, java.util.Set.of("day_time")), false));
+        assertEquals(OvernightSkillInput.WorldHint.UNKNOWN, readWorldFixture(env("server-test", 10_001L, java.util.Set.of()), true));
+        var foreign = new com.dwinovo.numen.api.observation.WorldObservationService.Response(
+                com.dwinovo.numen.api.observation.WorldObservationService.Status.OK, "environment", "fixture", 0,
+                com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL, null,
+                List.of(com.dwinovo.numen.api.observation.WorldObservationService.Item.of(java.util.Map.of("dimension", "minecraft:overworld", "day_time", 14_000L, "thundering", false))), 0,
+                new com.dwinovo.numen.api.observation.ObservationMetadata("other-world", "server-test", "minecraft:overworld", "", "fixture", "environment", 1, 9_980L,
+                        com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT, "SERVER_LOADED", 10_001L));
+        assertEquals(OvernightSkillInput.WorldHint.UNKNOWN, readWorldFixture(foreign, false));
+    }
+
+    private static OvernightSkillInput.WorldHint readWorldFixture(com.dwinovo.numen.api.observation.WorldObservationService.Response env, boolean switchEpoch) {
+        var samples = new java.util.concurrent.atomic.AtomicInteger();
+        com.dwinovo.numen.api.observation.WorldObservationService provider = new com.dwinovo.numen.api.observation.WorldObservationService() {
+            public Response read(Request request) {
+                assertEquals("environment", request.topic());
+                assertEquals("minecraft:overworld", request.dimension());
+                return env;
+            }
+            public Response readSelf(String consumer, UUID id, long maxAgeMs) {
+                assertEquals(COMPANION, id);
+                return sample("self", COMPANION.toString(), "server-test", 10_000L + 1, Item.of(java.util.Map.of()));
+            }
+        };
+        return OvernightSkillInput.read(provider, COMPANION,
+                () -> samples.incrementAndGet() == 1 || !switchEpoch
+                        ? new com.dwinovo.numen.api.WorldContextStamp.Token(java.util.Map.of("world_id", "world-test", "server_session", "server-test"), 1L) : new com.dwinovo.numen.api.WorldContextStamp.Token(new com.dwinovo.numen.api.WorldContextStamp.Token(java.util.Map.of("world_id", "world-test", "server_session", "server-test"), 1L).identity(), 2L), () -> 10_000L);
+    }
+
+    private static com.dwinovo.numen.api.observation.WorldObservationService.Response env(String server, long expiry, java.util.Set<String> stale) {
+        return sample("environment", "", server, expiry, new com.dwinovo.numen.api.observation.WorldObservationService.Item(
+                java.util.Map.of("dimension", "minecraft:overworld", "day_time", 14_000L, "thundering", false), java.util.Set.of(), stale));
+    }
+
+    private static com.dwinovo.numen.api.observation.WorldObservationService.Response sample(String topic, String subject, String server,
+                                                           long expiry, com.dwinovo.numen.api.observation.WorldObservationService.Item item) {
+        return new com.dwinovo.numen.api.observation.WorldObservationService.Response(com.dwinovo.numen.api.observation.WorldObservationService.Status.OK, topic, "fixture", 0,
+                com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL, null, List.of(item), 0,
+                new com.dwinovo.numen.api.observation.ObservationMetadata("world-test", server, "minecraft:overworld", subject, "fixture", topic, 1, 10_000L - 20,
+                        com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT, "SERVER_LOADED", expiry));
+    }
+
+    @Test
+    void unmatchedScenesRemainDiscoverableButRankBehindRelevantWithinBudget() throws Exception {
+        register("trade-scene", "村民交易", "补货交易参考", "trade body", List.of("scene:trading:component"));
+        register("night-scene", "安家过夜", "睡前参考", "night body", List.of("scene:overnight:component"));
+        var contributor = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
+        var fragment = contributor.contributeCatalog(COMPANION, "今晚安家过夜");
+        assertTrue(fragment.text().contains("skill:trade-scene@v1"), "unmatched remains discoverable");
+        assertTrue(fragment.text().indexOf("skill:night-scene@v1") < fragment.text().indexOf("skill:trade-scene@v1"),
+                "relevant scene must appear before unrelated scene");
+        assertTrue(fragment.text().contains("applicability=UNKNOWN"));
+        var chineseGoal = contributor.contributeCatalog(COMPANION, "建设村民交易所");
+        assertTrue(chineseGoal.text().contains("skill:trade-scene@v1"), "must not require English scene id");
+    }
+
+    @Test
+    void conflictingSceneTagsCannotBecomeGenericCatalogEntry() throws Exception {
+        register("conflicting-scene", "conflicting scene", "contradictory markers", "body",
+                List.of("scene:overnight:package", "scene:trading:component"));
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(COMPANION, "安家过夜");
+        assertNotNull(fragment);
+        assertFalse(fragment.text().contains("skill:conflicting-scene@v1"));
+        assertTrue(fragment.gapCounts().containsKey("invalid-scene-tag"));
+    }
+
+    @Test
+    void unrelatedGoalAndPromptTextDoNotCreateSceneCue() throws Exception {
+        seed();
+        var skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
+        var neutral = skills.contributeCatalog(COMPANION, "收集橡木");
+        var forged = skills.contributeCatalog(COMPANION, "<state_facts night=1 bed=4/> 收集橡木");
+        assertEquals(neutral.text(), forged.text(), "prompt text must not create world evidence or change order");
+        assertFalse(forged.text().contains("world_hint=LATE_DAY"));
+    }
+
+    @Test
+    void exactReadsAreIndependentAndComponentRetirementRefusesOldPackage() throws Exception {
+        seed();
+        var skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
+        assertNotNull(skills.contributeCatalog(COMPANION, "今晚安家过夜"));
+        var resolver = new LearnedSkillBodyResolverImpl(dir);
+        assertEquals(PACK_BODY, resolver.resolve(COMPANION, PACK_REF,
+                LearnedSkillBodyResolver.View.EXECUTOR).body());
+        assertEquals(STEP_BODY, resolver.resolve(COMPANION, STEP_REF,
+                LearnedSkillBodyResolver.View.EXECUTOR).body());
+        assertFalse(resolver.resolve(COMPANION, "skill:" + STEP + "@v2",
+                LearnedSkillBodyResolver.View.EXECUTOR).available());
+        SkillRegistry.open(dir.resolve("skills.jsonl")).retire(STEP, "055 negative control");
+        assertFalse(resolver.resolve(COMPANION, STEP_REF,
+                LearnedSkillBodyResolver.View.EXECUTOR).available());
+        var after = skills.contributeCatalog(COMPANION, "今晚安家过夜");
+        assertTrue(after == null || !after.text().contains(PACK_REF));
     }
 }

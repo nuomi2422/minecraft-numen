@@ -130,6 +130,26 @@ class SkillRegistrarTest {
     }
 
     @Test
+    void acceptedPlannerDraftRequiresPromotionBeforeBodyReachesPlanningAggregator(@TempDir Path dir) throws IOException {
+        var art = new ArtifactDraft(ArtifactKind.EXPERIENCE, "离线规划参考", "检查条件后再规划", "PLANNER_BODY_SENTINEL",
+                List.of("离线"), List.of(), List.of(), "", List.of(EvidenceRef.parse("block:dc-1")), List.of("fixture"), "PLANNER");
+        assertEquals(1, SkillRegistrar.register(dir, draft(art), true).registered());
+        String id = SkillRegistrar.skillIdOf(art);
+        var contributor = new SkillsKnowledgeContributor(dir, "PLANNER", 0);
+        assertEquals(null, contributor.contribute(java.util.UUID.randomUUID(), "规划"), "DRAFT is not retrievable");
+        var promoted = SkillRegistrar.registryFor(dir).promote(id, "offline fixture");
+        assertEquals(SkillRegistry.Outcome.REVISE, promoted.outcome());
+        assertEquals(SkillStatus.TRIAL, promoted.entry().status());
+        var out = com.dwinovo.numen.api.NumenPlugins.aggregatePlanningKnowledge(List.of(q -> {
+            var f = contributor.contribute(q.companion(), q.objective());
+            return f == null ? "" : f.text();
+        }), com.dwinovo.numen.api.PlanningQuery.of(java.util.UUID.randomUUID(), "规划", "stage_b", List.of()));
+        assertTrue(out.contains("PLANNER_BODY_SENTINEL"));
+        assertFalse(new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contributeCatalog(java.util.UUID.randomUUID(), "规划") != null,
+                "planner-only body must not leak to executor");
+    }
+
+    @Test
     void bodyIsPersistedAndReadable(@TempDir Path dir) throws IOException {
         var r = SkillRegistrar.register(dir, draft(artifact("p", "正文步骤", "s-body")), true);
         assertEquals(1, r.registered());
