@@ -450,6 +450,29 @@ class LearnerTaskResultIntakeTest {
                 () -> assertEquals(memo, new MemoQueue(queue.file()).all().get(0)));
     }
 
+    @Test void exactCallReviewSeparatesAcceptanceTerminalAndRejectedReceipts() throws Exception {
+        configure("review-receipt-kinds");
+        result("sk-receipts", "receipt-wire", TaskState.SUCCESS);
+        assertEquals(1, enqueueCount());
+        Memo memo = queue.all().get(0);
+        Files.createDirectories(dir.resolve("monitor"));
+        JsonObject accepted = JsonParser.parseString(linkedTool("ev-accepted", "world", "session", 7,
+                OWNER.toString(), "receipt-wire", "{\"success\":true,\"data\":{\"async\":true}}" )).getAsJsonObject();
+        accepted.getAsJsonObject("data").addProperty("journaled_by", "server");
+        JsonObject terminal = JsonParser.parseString(linkedTool("ev-terminal", "world", "session", 7,
+                OWNER.toString(), "receipt-wire", "completed" )).getAsJsonObject();
+        terminal.getAsJsonObject("data").addProperty("async_status", "done");
+        JsonObject rejected = JsonParser.parseString(linkedTool("ev-rejected", "world", "session", 7,
+                OWNER.toString(), "receipt-wire", "REJECTED_NOT_EXECUTED" )).getAsJsonObject();
+        rejected.getAsJsonObject("data").addProperty("journaled_by", "server-reject");
+        Files.writeString(dir.resolve("monitor/tools.jsonl"), accepted + "\n" + terminal + "\n" + rejected + "\n");
+        String slice = TrajectorySlices.forMemo(dir, OWNER, memo);
+        assertAll(
+                () -> assertTrue(slice.contains("writer=server") && slice.contains("ACCEPTANCE_ONLY")),
+                () -> assertTrue(slice.contains("writer=server-async") && slice.contains("async_status=done")),
+                () -> assertFalse(slice.contains("REJECTED_NOT_EXECUTED")));
+    }
+
     @Test void missingExactTraceIsNotInventedFromNearbyCalls() throws Exception {
         configure("review-no-trace");
         result("sk-no-trace", "only-original-call", TaskState.SUCCESS);
