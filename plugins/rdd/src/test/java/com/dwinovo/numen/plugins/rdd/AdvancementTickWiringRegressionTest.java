@@ -49,16 +49,24 @@ class AdvancementTickWiringRegressionTest {
         String world = Files.readString(plugin.resolve("RddWorldFacts.java"), StandardCharsets.UTF_8);
         String probe = Files.readString(plugin.resolve("WorldFactProbeTool.java"), StandardCharsets.UTF_8);
         String status = Files.readString(plugin.resolve("RddStatusTool.java"), StandardCharsets.UTF_8);
+        String requirements = Files.readString(plugin.resolve("RddRequirementDetector.java"), StandardCharsets.UTF_8);
         String harness = HOST_HEAD + "\nstatic class RddWorldFacts {\n"
                 + method(world, "    private static ResourceLocation id(") + "\n"
-                + method(world, "    private static boolean dimension(") + "\n"
+                + method(world, "    static boolean dimension(") + "\n"
                 + method(world, "    static com.dwinovo.numen.rdd.core.AdvancementVerification.Result advancementResult(") + "\n"
                 + WORLD_SEAMS + "\n}\nstatic class WorldFactProbeTool {\n"
                 + "static final Gson GSON = new Gson();\n"
                 + method(probe, "    public String description()") + "\n"
                 + method(probe, "    public void onServerCall(") + "\n}\n"
+                + "static class RddRequirementDetector {\n"
+                + method(requirements, "    static RequirementManifest.Manifest forPrimary(") + "\n"
+                + method(requirements, "    private static void merge(") + "\n"
+                + method(requirements, "    private static RequirementManifest.Importance minSeverity(") + "\n}\n"
                 + "static class RddStatusTool {\n"
                 + method(status, "    @Override public String description()") + "\n"
+                + method(status, "    record ChainProjection(") + "\n"
+                + method(status, "    static ChainProjection projectChain(") + "\n"
+                + method(status, "    static Map<String, Object> generationFields(") + "\n"
                 + method(status, "    public void onServerCall(") + "\n}\n"
                 + HOST_TAIL;
         // The source has an @Override on the status description. This isolated host has
@@ -377,6 +385,7 @@ class AdvancementTickWiringRegressionTest {
             import com.google.gson.*;
             import com.dwinovo.numen.rdd.api.*;
             import com.dwinovo.numen.rdd.core.*;
+            import com.dwinovo.numen.rdd.policy.RequirementManifest;
             import com.dwinovo.numen.task.TaskResult;
             public class AdvancementDiagnosticHost {
                 static String scenario;
