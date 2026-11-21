@@ -63,6 +63,7 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
 
     private NumenPlugins.KnowledgeFragment contribute(UUID companion, String objective, boolean catalog) {
         List<NumenPlugins.DeliveredRef> refs = new ArrayList<>();
+        List<CatalogEntryRenderer.Candidate> candidates = new ArrayList<>();
         StringBuilder text = new StringBuilder();
         boolean truncated = false;
         java.util.Map<String, Integer> gaps = new java.util.LinkedHashMap<>();
@@ -125,6 +126,26 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
                 gaps.merge("missing-required-component", 1, Integer::sum);
                 continue;
             }
+            if (catalog) {
+                // Raw ACX purpose is not a verified authority projection; do not infer from its text.
+                if (e.kind() == com.dwinovo.numen.plugins.learner.contract.ArtifactKind.ACX_REQUEST) {
+                    gaps.merge("not-verified", 1, Integer::sum);
+                    continue;
+                }
+                String availability = scene.isEmpty() ? "" :
+                        ("degraded".equals(SceneSkillCatalog.availability(e, resolver, companion, consumerView))
+                                ? "degraded" : "available");
+                // Nonempty author text is not proof that conditions are verified.
+                boolean conditionsKnown = false;
+                // Existing Java body hash is not a provenance signature: keep source UNKNOWN.
+                String recall = scene.isEmpty() ? "" :
+                        (worldCue && "overnight".equals(SceneSkillCatalog.scene(e)) ? "world_hint=" + worldHint + " " : "")
+                        + "candidate_only applicability=UNKNOWN"
+                        + ("overnight".equals(SceneSkillCatalog.scene(e)) ? " bed=UNKNOWN" : "");
+                candidates.add(new CatalogEntryRenderer.Candidate(ref + "@" + version, e.name(), e.purpose(),
+                        e.audience(), e.status().name(), true, conditionsKnown, false, availability, recall));
+                continue;
+            }
             String block = catalog ? catalogEntry(e, ref + "@" + version, scene, resolver, companion, consumerView)
                     : "<entry ref=\"" + ref + "\">@" + version + " [" + e.name() + "] " + e.purpose() + "\n" + body + "\n</entry>\n";
             if (catalog && !scene.isEmpty()) {
@@ -143,6 +164,14 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
             }
             text.append(block);
             if (!catalog) refs.add(new NumenPlugins.DeliveredRef(ref, version, false));
+        }
+        if (catalog) {
+            var renderedCatalog = CatalogEntryRenderer.render(candidates, view, maxChars > 0 ? maxChars : 1160);
+            for (var decision : renderedCatalog.decisions()) {
+                if (!"included".equals(decision.reason())) gaps.merge(decision.reason(), 1, Integer::sum);
+            }
+            if (renderedCatalog.fragment().isEmpty() && gaps.isEmpty()) return null;
+            return new NumenPlugins.KnowledgeFragment(renderedCatalog.fragment(), List.of(), gaps);
         }
         if (text.isEmpty() && gaps.isEmpty()) return null;   // 完全无结果
         String head = "PLANNER".equalsIgnoreCase(view) ? PLANNER_HEAD : CATALOG_HEAD;
