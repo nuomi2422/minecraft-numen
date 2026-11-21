@@ -138,8 +138,12 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
                 // Nonempty author text is not proof that conditions are verified.
                 boolean conditionsKnown = false;
                 // Existing Java body hash is not a provenance signature: keep source UNKNOWN.
+                String recall = scene.isEmpty() ? "" :
+                        (worldCue && "overnight".equals(SceneSkillCatalog.scene(e)) ? "world_hint=" + worldHint + " " : "")
+                        + "candidate_only applicability=UNKNOWN"
+                        + ("overnight".equals(SceneSkillCatalog.scene(e)) ? " bed=UNKNOWN" : "");
                 candidates.add(new CatalogEntryRenderer.Candidate(ref + "@" + version, e.name(), e.purpose(),
-                        e.audience(), e.status().name(), true, conditionsKnown, false, availability));
+                        e.audience(), e.status().name(), true, conditionsKnown, false, availability, recall));
                 continue;
             }
             String block = catalog ? catalogEntry(e, ref + "@" + version, scene, resolver, companion, consumerView)

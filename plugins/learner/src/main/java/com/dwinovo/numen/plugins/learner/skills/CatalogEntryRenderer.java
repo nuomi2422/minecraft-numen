@@ -13,10 +13,10 @@ public final class CatalogEntryRenderer {
     /** bodyReadable means read and location binding passed; verified only denotes provenance evidence.
      * Neither is execution authorization or evidence conditions were shown. */
     public record Candidate(String ref, String name, String purpose, String audience, String status,
-                            boolean bodyReadable, boolean conditionsKnown, boolean verified, String availability) {
+                            boolean bodyReadable, boolean conditionsKnown, boolean verified, String availability, String recallNote) {
         public Candidate(String ref, String name, String purpose, String audience, String status,
                          boolean bodyReadable, boolean conditionsKnown, boolean verified) {
-            this(ref, name, purpose, audience, status, bodyReadable, conditionsKnown, verified, "");
+            this(ref, name, purpose, audience, status, bodyReadable, conditionsKnown, verified, "", "");
         }
     }
     public record Decision(int inputIndex, String ref, boolean included, String reason, List<String> differences) {
@@ -72,7 +72,7 @@ public final class CatalogEntryRenderer {
                     " conditions=\"UNKNOWN\" provenance=\"" + (c.verified() ? "VERIFIED" : "UNKNOWN") + "\"" +
                     (c.availability().isEmpty() ? "" : " availability=\"" + xml(c.availability()) + "\"") + ">" +
                     "<name>" + xml(c.name()) + "</name><purpose>" + xml(c.purpose()) + "</purpose>" +
-                    "</entry>";
+                    (c.recallNote().isEmpty() ? "" : "<recall_note>" + xml(c.recallNote()) + "</recall_note>") + "</entry>";
             if (item.length() > MAX_ENTRY_CHARS) {
                 decisions[index] = new Decision(index, c.ref(), false, "over-limit"); continue;
             }
@@ -94,6 +94,7 @@ public final class CatalogEntryRenderer {
         if (a.bodyReadable() != b.bodyReadable()) diff.add("bodyReadable");
         if (a.verified() != b.verified()) diff.add("verified");
         if (!java.util.Objects.equals(a.availability(), b.availability())) diff.add("availability");
+        if (!java.util.Objects.equals(a.recallNote(), b.recallNote())) diff.add("recallNote");
         return diff;
     }
     private static String qualification(Candidate c, String view) {
@@ -103,6 +104,7 @@ public final class CatalogEntryRenderer {
         catch (IllegalArgumentException invalid) { return "not-verified"; }
         if (!c.bodyReadable()) return "body-missing";
         if (!("TRIAL".equals(c.status()) || "PUBLISHED".equals(c.status()))) return "not-verified";
+        if (c.recallNote() == null || !validXml(c.recallNote())) return "not-verified";
         if (c.availability() == null || !(c.availability().isEmpty() || c.availability().equals("available")
                 || c.availability().equals("degraded"))) return "not-verified";
         if (view == null || view.isBlank()) return "audience-mismatch";

@@ -576,8 +576,8 @@ class SkillsAggregateConsumerTest {
         assertTrue(fragment.text().contains(STEP_REF));
         assertTrue(fragment.text().contains("skill:trading-scene@v1"), "unmatched scene remains discoverable");
         assertTrue(fragment.text().indexOf(PACK_REF) < fragment.text().indexOf("skill:trading-scene@v1"), "night prioritizes overnight, not unrelated scene");
+        assertTrue(fragment.text().contains("world_hint=LATE_DAY candidate_only applicability=UNKNOWN bed=UNKNOWN"));
         assertTrue(fragment.text().contains("conditions=\"UNKNOWN\""));
-        assertFalse(fragment.text().contains("world_hint=LATE_DAY"), "ranking evidence is not asserted to the model");
         assertFalse(fragment.text().contains(PACK_BODY));
         assertTrue(fragment.refs().isEmpty());
         var unavailable = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0,
