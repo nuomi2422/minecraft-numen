@@ -115,7 +115,21 @@ class ExecutorBudgetAggregationTest {
         assertTrue(refOf(out, refs.get(4)).truncated(), "第 5 条装不下必须记截断");
     }
 
-    @Test void wrapperWithTrailingTextFallsBackToRawCut() {
+    @Test void directoryNoteAndThreeEntriesAreNeverCutMidXml() {
+        String head = "<retrieved_knowledge><note>按 ref 展开；条件未知，执行前须以当前观测复核</note>";
+        String first = "<entry ref=\"a\">" + "a".repeat(230) + "</entry>";
+        String second = "<entry ref=\"b\">" + "b".repeat(220) + "</entry>";
+        String third = "<entry ref=\"c\">" + "c".repeat(190) + "</entry>";
+        String block = head + first + second + third + "</retrieved_knowledge>";
+        var out = agg(List.of(c("p", 3569), (id,obj) -> NumenPlugins.KnowledgeFragment.ofText(block)));
+        assertTrue(out.text().contains(first));
+        assertFalse(out.text().contains(second));
+        assertTrue(out.text().endsWith("</retrieved_knowledge>"));
+        var tiny = agg(List.of(c("p", 3900), (id,obj) -> NumenPlugins.KnowledgeFragment.ofText(block)));
+        assertFalse(tiny.text().contains("<retrieved_knowledge>"));
+    }
+
+    @Test void wrapperWithTrailingTextIsRejectedWithoutPartialXml() {
         List<String> refs = List.of("exp:failure|t1", "exp:failure|t2", "exp:failure|t3");
         String block = wrapperBlock(refs, 1500) + "\n尾巴文本";
         assertTrue(block.length() > NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS, "夹具必须真的超预算");
@@ -124,13 +138,8 @@ class ExecutorBudgetAggregationTest {
 
         var out = agg(List.of((id, obj) -> new NumenPlugins.KnowledgeFragment(block, delivered)));
 
-        // close 之后还有正文 → 不认结构，走旧 raw 前缀硬切。
-        assertTrue(out.text().length() <= NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS);
-        assertTrue(block.startsWith(out.text()), "raw 行为：保前缀");
-        assertFalse(out.text().contains("</retrieved_knowledge>"), "尾部杂文本时不得补闭合");
-        assertFalse(refOf(out, refs.get(0)).truncated(), "raw 前缀里完整的条目仍记完整");
-        assertFalse(refOf(out, refs.get(1)).truncated());
-        assertTrue(refOf(out, refs.get(2)).truncated(), "被 raw 切断的条目记截断");
+        assertTrue(out.text().isEmpty(), "unknown structured suffix must fail closed, never raw-cut");
+        for (String ref : refs) assertTrue(refOf(out, ref).truncated());
     }
 
     @Test void structuredWrapperWithNoRoomEmitsNoRemnantAndMarksAllTruncated() {
