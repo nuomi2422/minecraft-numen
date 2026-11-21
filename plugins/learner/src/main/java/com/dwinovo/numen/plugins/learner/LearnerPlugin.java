@@ -120,6 +120,18 @@ public final class LearnerPlugin implements NumenPlugin {
                 return out;
             }
             var decision = registry.promote(skillId, reason);
+            out.put("outcome", decision.outcome().name());
+            out.put("decisionReason", decision.reason());
+            if (decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.CONFLICT
+                    || decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.LIMIT) {
+                out.put("error", decision.reason());
+                return out;
+            }
+            if (decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.REUSE) {
+                out.put("skillId", skillId); out.put("prevVersion", before.version());
+                out.put("newVersion", before.version()); out.put("status", before.status().name());
+                return out; // healthy idempotent no-op; never emit a new promotion event
+            }
             java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
             ev.put("skillId", skillId);
             ev.put("reason", reason == null ? "" : reason);
@@ -149,6 +161,18 @@ public final class LearnerPlugin implements NumenPlugin {
                 return out;
             }
             var decision = registry.retire(skillId, reason);
+            out.put("outcome", decision.outcome().name());
+            out.put("decisionReason", decision.reason());
+            if (decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.CONFLICT
+                    || decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.LIMIT) {
+                out.put("error", decision.reason());
+                return out;
+            }
+            if (decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.REUSE) {
+                out.put("skillId", skillId); out.put("prevVersion", before.version());
+                out.put("newVersion", before.version()); out.put("supersedes", before.supersedes());
+                return out; // already retired; no second retirement event
+            }
             java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
             ev.put("skillId", skillId);
             ev.put("reason", reason == null ? "" : reason);
