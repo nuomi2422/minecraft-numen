@@ -3350,6 +3350,21 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                 presenter.clearPartial();                 // 失败那次的半截文字同理作废
                 NumenLlmClient llm2 = client();
                 var retrySnapshot = modelContextSnapshot(false, "execution", 2);
+                String retryContextProblem = contextBudgetProblem();
+                if (retryContextProblem != null) {
+                    pendingRuntimeStateXml = null;
+                    pendingRuntimeStatePlan = null;
+                    pendingDeliveredRefs = new ArrayList<>();
+                    pendingDeliveryTaskId = "";
+                    pendingRuntimeOrigin = "execution";
+                    pendingRuntimeAttempt = 1;
+                    awaitingLlmResponse = false;
+                    retryingTurn = false;
+                    vt2.finish().run();
+                    lastTurnError = retryContextProblem;
+                    failTurnKeepQueue();
+                    return;
+                }
                 var retryTools = new java.util.ArrayList<>(com.dwinovo.numen.agent.tool.ToolVisibility.forExecutor(ToolRegistry.all()));   // 同上：重跑同样走白名单
                 if (com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(entityUuid) != null) {
                     retryTools.removeIf(t -> "task_status".equals(t.name()));   // 任务运行中同样不发（见 V-20261031-38）

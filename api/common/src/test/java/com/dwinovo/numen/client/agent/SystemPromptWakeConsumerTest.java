@@ -69,6 +69,7 @@ class SystemPromptWakeConsumerTest {
         String goal = method(loop, "private void judgeGoal(");
         String goalBudget = between(goal, "        String contextProblem = contextBudgetProblem();", "        var delivery =");
         String response = method(loop, "private void handleResponse(");
+        String retryBudget = between(response, "                String retryContextProblem = contextBudgetProblem();", "                var retryTools =");
         String responseGuard = between(response, "        // Owner interrupted this turn",
                 "        if (err != null) {");
         String emptyResponse = between(response, "        AssistantTurn turn = res.turn();",
@@ -78,6 +79,7 @@ class SystemPromptWakeConsumerTest {
                 .append("long requestTokens = 1L;\n").append(budget).append(context)
                 .append("requests++; awaitingLlmResponse = true; return true;\n}\n")
                 .append("void goalBudgetGate() {\n").append(goalBudget).append("requests++;\n}\n")
+                .append("void retryBudgetGate() {\nvar vt2=new RetryVoice();\n").append(retryBudget).append("requests++;\n}\n")
                 .append("void emptyReply() {\n").append(responseGuard)
                 .append(emptyResponse).append("\n}\n");
 
@@ -166,7 +168,8 @@ class SystemPromptWakeConsumerTest {
                   String pendingRuntimeStateXml="candidate",pendingDeliveryTaskId="task",pendingRuntimeOrigin="goal_judging";
                   Object pendingRuntimeStatePlan=new Object();
                   List<Object> pendingDeliveredRefs=new ArrayList<>(List.of("ref"));
-                  int pendingRuntimeAttempt=1; boolean denyContext;
+                  int pendingRuntimeAttempt=1; boolean denyContext,retryingTurn; int voiceFinished;
+                  class RetryVoice {Runnable finish(){return () -> voiceFinished++;}}
                   Result res=new Result(new AssistantTurn("",List.of(),null));
                   EventQueue queue=new EventQueue(EventQueue.Journal.NONE);
                   ArrayDeque<EventQueue.Entry> externalTap=new ArrayDeque<>();
@@ -228,6 +231,11 @@ class SystemPromptWakeConsumerTest {
                   public static Map<String,Object> runGoal(String mode){WakeFixture f=new WakeFixture();f.mode=mode;f.denyContext=mode.equals("denied");f.throwBuild=mode.equals("build-fail");
                     try{f.judgeGoal();}catch(IllegalStateException expected){} return Map.of("requests",f.requests,"booked",f.booked,"refs",f.pendingDeliveredRefs.size());}
                   String contextBudgetProblem(){return denyContext ? "DENIED" : null;}
+                  public static Map<String,Object> runRetryBudget(boolean denied) {
+                    WakeFixture f=new WakeFixture(); f.denyContext=denied; f.awaitingLlmResponse=true; f.retryingTurn=true; f.retryBudgetGate();
+                    return Map.of("requests",f.requests,"refs",f.pendingDeliveredRefs.size(),"voiceFinished",f.voiceFinished,
+                        "awaiting",f.awaitingLlmResponse,"retrying",f.retryingTurn);
+                  }
                   public static Map<String,Object> runGoalBudget(boolean denied) {
                     WakeFixture f=new WakeFixture(); f.denyContext=denied; f.goalBudgetGate();
                     return Map.of("requests",f.requests,"refs",f.pendingDeliveredRefs.size(),
@@ -318,6 +326,14 @@ class SystemPromptWakeConsumerTest {
             assertEquals(scenario.equals("dispatch") || scenario.equals("retry") ? 1 : 0,result.get("booked"),scenario);
             if (scenario.equals("denied")) assertEquals(0,result.get("refs"));
         }
+    }
+
+    @Test void retryBudgetDenialDoesNotDispatchAndClearsState() throws Exception {
+        @SuppressWarnings("unchecked") var denied=(Map<String,Object>) fixture.getMethod("runRetryBudget",boolean.class).invoke(null,true);
+        @SuppressWarnings("unchecked") var ok=(Map<String,Object>) fixture.getMethod("runRetryBudget",boolean.class).invoke(null,false);
+        assertEquals(0,denied.get("requests")); assertEquals(0,denied.get("refs"));
+        assertEquals(1,denied.get("voiceFinished")); assertEquals(false,denied.get("awaiting")); assertEquals(false,denied.get("retrying"));
+        assertEquals(1,ok.get("requests")); assertEquals(1,ok.get("refs"));
     }
 
     @Test void goalBudgetUsesProductionGuardAndClearsDeniedCandidate() throws Exception {
