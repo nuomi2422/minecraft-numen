@@ -21,9 +21,9 @@ import java.util.function.Supplier;
  * <p><b>2026-11-04（037/T6 · ASYNC-01）</b>：超时不再只是"等不到"，而是要和"会不会补跑"绑在一起。
  * 改前：提交到服务端线程后 {@code future.get(timeout)} 超时，排队的 lambda 仍留在队列里，
  * 之后服务端线程照常执行 —— 调用方已经按 TIMEOUT 收场，副作用却晚到，这就是"超时后迟到执行"。
- * 现在排队闭包开头先用原子状态争用执行权：调用方放弃（超时/取消）时把状态 CAS 到 ABANDONED，
+ * 现在排队闭包开头先用原子状态争用执行权：调用方放弃（超时/等待被中断）时把状态 CAS 到 ABANDONED，
  * 闭包看到自己没抢到就<b>绝不调用 task.call()</b>。反过来，如果闭包已经开跑，
- * 超时方不得声称"撤销成功"，异常消息会明确写 {@code already started; outcome unknown}。</p>
+ * 停止等待的一方不得声称"撤销成功"，异常消息会明确写 {@code already started; outcome unknown}。</p>
  */
 public final class AcxHostGate implements AcxGameThreadGate {
 
@@ -107,6 +107,13 @@ public final class AcxHostGate implements AcxGameThreadGate {
             }
             throw new TimeoutException("acx gate timed out after " + timeoutMs
                     + "ms but the step had already started; outcome unknown, do not treat as cancelled");
+        } catch (InterruptedException interrupted) {
+            boolean abandoned = state.compareAndSet(QUEUED, ABANDONED);
+            InterruptedException waitEnded = new InterruptedException(abandoned
+                    ? "acx gate wait interrupted before the step started; it will not run later"
+                    : "acx gate wait interrupted but the step had already started; outcome unknown");
+            waitEnded.initCause(interrupted);
+            throw waitEnded;
         }
     }
 }

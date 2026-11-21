@@ -59,6 +59,8 @@ import com.dwinovo.numen.acx.api.Operator;
 public final class AcxRunner {
 
     private static final Logger LOG = Logger.getLogger(AcxRunner.class.getName());
+    private static final String CHILD_BINDING_PREFIX = "_definition_name:";
+    private static final String ATOMIC_TOOL_BINDING = "tool";
 
     private final AcxToolRegistry tools;
     private final AcxCatalog catalog;
@@ -146,6 +148,7 @@ public final class AcxRunner {
         cancels.put(runId, cancelFlag);
 
         Ctx c = new Ctx(runId, start, deadline, cancelFlag, effective, events, def.name(), startStepIndex, resuming);
+        c.definitionFingerprint = AcxFingerprint.of(def);
         if (seedVars != null) {
             c.vars.putAll(seedVars);
         }
@@ -161,13 +164,16 @@ public final class AcxRunner {
 
         AcxStepOutcome outcome;
         try {
-            outcome = runFrame(def, input, c, startStepIndex, true);
+            outcome = runFrame(def, input, c, startStepIndex, true, "");
         } catch (Throwable t) {
             // 执行器自身崩了也要留记录，否则现场丢失
             outcome = AcxStepOutcome.failed("执行器内部异常: " + t);
             LOG.warning("acx run " + runId + " 内部异常: " + t);
         }
 
+        if (outcome.isSuccess()) {
+            c.vars.keySet().removeIf(key -> key.startsWith(CHILD_BINDING_PREFIX));
+        }
         c.rec.status(outcome.status())
                 .completedStepIndex(c.completedStepIndex)
                 .currentStepId(c.currentStepId)
@@ -281,7 +287,9 @@ public final class AcxRunner {
         if (flag == null) {
             return false;
         }
-        flag.set(true);
+        synchronized (flag) {
+            flag.set(true);
+        }
         return true;
     }
 
@@ -289,12 +297,25 @@ public final class AcxRunner {
         return cancels.containsKey(runId);
     }
 
+    /**
+     * Releases receipt state when the session owner permanently retires an inactive run.
+     * The owner must forbid further attempts and wait for the last one to exit before calling.
+     */
+    public void discardRunReceipts(String runId) {
+        if (isRunning(runId)) {
+            throw new IllegalStateException("Cannot discard receipts while run is executing: " + runId);
+        }
+        for (String name : tools.names()) {
+            tools.find(name).ifPresent(tool -> tool.discardRunReceipts(runId));
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // 帧执行（每层子 AC 一帧）
     // ═══════════════════════════════════════════════════════════════════
 
     private AcxStepOutcome runFrame(AcxDefinition def, Map<String, Object> input,
-                                   Ctx c, int startIndex, boolean topLevel) {
+                                   Ctx c, int startIndex, boolean topLevel, String framePath) {
         if (c.callStack.contains(def.name())) {
             String chain = String.join(" → ", c.callStack) + " → " + def.name();
             emit(c, AcxEvent.Kind.CIRCUIT_RECURSION, null, null, Map.of("chain", chain));
@@ -309,6 +330,19 @@ public final class AcxRunner {
         Map<String, Object> in = input == null ? Map.of() : input;
         Map<String, Object> lastOutput = new LinkedHashMap<>();
         Map<String, Map<String, Object>> allOutputs = new LinkedHashMap<>();
+        String frameCursorKey = "_cursor_" + framePath;
+        // Child progress belongs to this frame until its parent's top-level checkpoint commits.
+        if (!topLevel && c.vars.get(frameCursorKey) instanceof Map<?, ?> position) {
+            startIndex = Math.max(0, AcxValueResolver.toInt(position.get("step"), 0));
+            if (position.get("output") instanceof Map<?, ?>) lastOutput = castMap(position.get("output"));
+            if (position.get("outputs") instanceof Map<?, ?> outputs) {
+                for (Map.Entry<?, ?> entry : outputs.entrySet()) {
+                    if (entry.getValue() instanceof Map<?, ?>) {
+                        allOutputs.put(String.valueOf(entry.getKey()), castMap(entry.getValue()));
+                    }
+                }
+            }
+        }
         if (startIndex == 0 && !def.preconditions().isEmpty()) {
             AcxStepOutcome blocked = checkPreconditions(def, in, c);
             if (blocked != null) {
@@ -322,6 +356,7 @@ public final class AcxRunner {
                     return breaker;
                 }
                 AcxStep step = def.steps().get(i);
+                String path = framePath + "s" + i + "/";
                 if (topLevel) {
                     // ★ 只有顶层步骤才写 currentStepId —— 子 AC 帧若也写，
                     //   记录里就会变成子 AC 内部某步的名字，resume 时定位不到父层调用点
@@ -329,7 +364,7 @@ public final class AcxRunner {
                 }
 
                 if (step.isControl()) {
-                    AcxStepOutcome r = execControl(step, def, in, lastOutput, allOutputs, c);
+                    AcxStepOutcome r = execControl(step, def, in, lastOutput, allOutputs, c, path);
                     lastOutput = r.output();
                     if (r.status() != AcxStatus.SUCCESS) {
                         return r;
@@ -346,12 +381,18 @@ public final class AcxRunner {
                         c.pausedReason = String.valueOf(r.output().get("_pause_reason"));
                         return AcxStepOutcome.paused(pauseMessage(def, step, r.output()), r.output());
                     }
-                    markStepCompleted(c, i);
+                    if (topLevel) {
+                        if (!markStepCompleted(c, i)) return cancelled(c);
+                        commitCheckpoint(c, step, path);
+                    } else {
+                        if (!saveFramePosition(c, frameCursorKey, i + 1, lastOutput, allOutputs)) return cancelled(c);
+                        commitRecoveryPosition(c, step, path);
+                    }
                     continue;
                 }
 
                 c.stepCounter[0]++;
-                AcxStepOutcome r = execLinear(step, def, in, lastOutput, allOutputs, c);
+                AcxStepOutcome r = execLinear(step, def, in, lastOutput, allOutputs, c, path);
                 if (r.isSuccess()) {
                     // ★ TODO AC-B19 修复（2026-10-06）：取消标志只在 checkCircuit（每步**之前**）看，
                     //   于是「宿主在最后一步在飞时取消、该步随后成功」的迟到回执会把终态翻回 SUCCESS。
@@ -362,8 +403,15 @@ public final class AcxRunner {
                     }
                     allOutputs.put(step.id(), r.output());
                     lastOutput = r.output();
-                    mergeProgress(c, r.output());
-                    markStepCompleted(c, i);
+                    Map<String, Object> progress = progressUpdate(c, r.output());
+                    if (topLevel) {
+                        if (!markStepCompleted(c, i)) return cancelled(c);
+                        commitCheckpoint(c, step, path);
+                    } else {
+                        if (!saveFramePosition(c, frameCursorKey, i + 1, lastOutput, allOutputs)) return cancelled(c);
+                        commitRecoveryPosition(c, step, path);
+                    }
+                    c.progress.putAll(progress);
                     continue;
                 }
                 if (r.status() == AcxStatus.PAUSED) {
@@ -377,6 +425,13 @@ public final class AcxRunner {
                             Map.of("reason", String.valueOf(r.message())));
                     lastOutput = withFailureDiag(lastOutput, step, r.message());
                     allOutputs.put(step.id(), lastOutput);
+                    if (topLevel) {
+                        if (!markStepCompleted(c, i)) return cancelled(c);
+                        commitCheckpoint(c, step, path);
+                    } else {
+                        if (!saveFramePosition(c, frameCursorKey, i + 1, lastOutput, allOutputs)) return cancelled(c);
+                        commitRecoveryPosition(c, step, path);
+                    }
                     continue;
                 }
                 c.failedStep = step.id();
@@ -513,16 +568,38 @@ public final class AcxRunner {
     // 单步执行：子 AC → 原子积木
     // ═══════════════════════════════════════════════════════════════════
 
+    private void commitCheckpoint(Ctx c, AcxStep step, String path) {
+        AcxTool.AcxCallContext scope = new CallCtx(c, step, path);
+        // A resumed control may skip completed children, so notify the registry once per checkpoint.
+        for (String name : tools.names()) {
+            tools.find(name).ifPresent(tool -> tool.checkpointCommitted(scope));
+        }
+        clearRecoveryState(c, path);
+    }
+
+    private void commitRecoveryPosition(Ctx c, AcxStep step, String path) {
+        AcxTool.AcxCallContext scope = new CallCtx(c, step, path);
+        for (String name : tools.names()) {
+            tools.find(name).ifPresent(tool -> tool.recoveryPositionCommitted(scope));
+        }
+        clearRecoveryState(c, path);
+    }
+
+    private static void clearRecoveryState(Ctx c, String path) {
+        c.vars.keySet().removeIf(key -> key.startsWith("_params_" + path)
+                || key.startsWith("_cursor_" + path) || key.startsWith("_definition_" + path));
+    }
+
     private AcxStepOutcome execLinear(AcxStep step, AcxDefinition def, Map<String, Object> input,
                                       Map<String, Object> lastOutput,
-                                      Map<String, Map<String, Object>> allOutputs, Ctx c) {
+                                      Map<String, Map<String, Object>> allOutputs, Ctx c, String path) {
         c.detailScratch = new LinkedHashMap<>();
         c.lastStepChangedVar = false;
         // ★ 嵌套控制块派发：children 里可以再套 if / while（真实 .ac 就有两层嵌套）。
         //   runFrame 只在顶层派发，execLinear 不派发的话嵌套控制块会被当成
         //   「引用了不存在的积木 if」而 FAIL。
         if (step.isControl()) {
-            return execControl(step, def, input, lastOutput, allOutputs, c);
+            return execControl(step, def, input, lastOutput, allOutputs, c, path);
         }
         Map<String, Object> params;
         try {
@@ -565,10 +642,34 @@ public final class AcxRunner {
             return AcxStepOutcome.success(Map.of("_set", written));
         }
 
-        // 顺序照 DD：先查子 AC，再查原子积木。控制块不查表（见 execControl）
-        Optional<AcxDefinition> sub = catalog.find(step.block());
+        // Keep the chosen definition for this run, even after the first call site commits.
+        String bindingKey = CHILD_BINDING_PREFIX + step.block();
+        String callBindingKey = "_definition_" + path;
+        // A suspended atomic call keeps its target even if a same-named AC is published later.
+        // Older records can also have a child fingerprint here.
+        Object bound = c.vars.getOrDefault(callBindingKey, c.vars.get(bindingKey));
+        Optional<AcxDefinition> sub;
+        if (bound == null) {
+            sub = catalog.find(step.block());
+        } else if (ATOMIC_TOOL_BINDING.equals(bound)) {
+            sub = Optional.empty();
+        } else {
+            String version = bound instanceof Map<?, ?> saved && saved.get("version") instanceof String v ? v : null;
+            Object fingerprint = bound instanceof Map<?, ?> saved ? saved.get("fingerprint") : bound;
+            sub = fingerprint instanceof String fp
+                    ? catalog.findBound(step.block(), version, fp) : Optional.empty();
+            if (sub.isEmpty()) {
+                String message = step.id() + " 已绑定子 AC 定义不可用: " + step.block()
+                        + (version == null ? "" : " v" + version);
+                emit(c, AcxEvent.Kind.STEP_FAILED, step.id(), AcxStatus.FAIL, Map.of("reason", message));
+                return AcxStepOutcome.failed(message);
+            }
+        }
         if (sub.isPresent()) {
-            return runFrame(sub.get(), params, c, 0, false);
+            AcxDefinition child = sub.get();
+            String fingerprint = AcxFingerprint.of(child);
+            c.vars.putIfAbsent(bindingKey, Map.of("version", child.version(), "fingerprint", fingerprint));
+            return runFrame(child, params, c, 0, false, path + "ac:" + fingerprint + "/");
         }
 
         AcxTool tool = tools.find(step.block()).orElse(null);
@@ -587,8 +688,8 @@ public final class AcxRunner {
         // 只问一次（断点那一步），后面的步不该被残留挂账拦住。
         if (c.resumeInFlightCheckPending) {
             c.resumeInFlightCheckPending = false;
-            if (tool.inFlight(new CallCtx(c, step))) {
-                AcxStatus st = tool.inFlightStatus(new CallCtx(c, step));
+            if (tool.inFlight(new CallCtx(c, step, path))) {
+                AcxStatus st = tool.inFlightStatus(new CallCtx(c, step, path));
                 if (st == AcxStatus.SUCCESS) {
                     emit(c, AcxEvent.Kind.STEP_SUCCEEDED, step.id(), AcxStatus.SUCCESS,
                             Map.of("delivered", true, "reason", "in-flight already finished; not re-sent"));
@@ -612,7 +713,7 @@ public final class AcxRunner {
         long stepStart = System.currentTimeMillis();
         AcxStepOutcome out;
         try {
-            out = tool.execute(params, new CallCtx(c, step));
+            out = tool.execute(params, new CallCtx(c, step, path));
         } catch (Throwable e) {
             // 用 Throwable 而非 RuntimeException：桥接 NumenTool 时 transport 层可能抛
             // NoClassDefFoundError（现有 AC 的 AcExecutor 也是这么防的）
@@ -626,6 +727,9 @@ public final class AcxRunner {
             emit(c, AcxEvent.Kind.STEP_FAILED, step.id(), AcxStatus.FAIL,
                     Map.of("reason", String.valueOf(r.message())));
             return r;
+        }
+        if (out.isSuccess() || out.status() == AcxStatus.PAUSED) {
+            c.vars.putIfAbsent(callBindingKey, ATOMIC_TOOL_BINDING);
         }
         if (!out.isSuccess()) {
             // ★ TODO AC-B20 修复（2026-10-06）：脚本在等 ≠ 身体动作已停（69 号第 1 组红线）。
@@ -722,9 +826,43 @@ public final class AcxRunner {
         return parseCondition(m);
     }
 
+    private static Map<String, Map<String, Object>> snapshotOutputs(Map<String, Map<String, Object>> outputs) {
+        Map<String, Map<String, Object>> saved = new LinkedHashMap<>();
+        outputs.forEach((step, data) -> saved.put(step, snapshotParams(data)));
+        return saved;
+    }
+
+    private static boolean saveFramePosition(Ctx c, String key, int nextStep,
+                                            Map<String, Object> output, Map<String, Map<String, Object>> outputs) {
+        return saveRecoveryPosition(c, key, Map.of("step", nextStep, "output", snapshotParams(output),
+                "outputs", snapshotOutputs(outputs)));
+    }
+
+    private static boolean saveControlPosition(Ctx c, String key, int round, int child,
+                                               boolean active, boolean progress, Map<String, Object> output,
+                                               Map<String, Map<String, Object>> outputs) {
+        return saveRecoveryPosition(c, key, Map.of("round", round, "child", child, "active", active,
+                "progress", progress, "output", snapshotParams(output), "outputs", snapshotOutputs(outputs)));
+    }
+
+    private static boolean saveRecoveryPosition(Ctx c, String key, Map<String, Object> snapshot) {
+        return commitUnlessCancelled(c, () -> c.vars.put(key, snapshot));
+    }
+
     private AcxStepOutcome execControl(AcxStep step, AcxDefinition def, Map<String, Object> input,
                                        Map<String, Object> lastOutput,
-                                       Map<String, Map<String, Object>> allOutputs, Ctx c) {
+                                       Map<String, Map<String, Object>> allOutputs, Ctx c, String path) {
+        Object completed = c.vars.get("_cursor_" + path);
+        if (completed instanceof Map<?, ?> position && Boolean.TRUE.equals(position.get("done"))) {
+            if (position.get("outputs") instanceof Map<?, ?> outputs) {
+                for (Map.Entry<?, ?> entry : outputs.entrySet()) {
+                    if (entry.getValue() instanceof Map<?, ?>) {
+                        allOutputs.put(String.valueOf(entry.getKey()), castMap(entry.getValue()));
+                    }
+                }
+            }
+            return AcxStepOutcome.success(castMap(position.get("output")), step.id() + " 已完成（未重做）");
+        }
         List<AcxStep> children = step.children();
         if (children == null || children.isEmpty()) {
             return AcxStepOutcome.failed(
@@ -750,8 +888,9 @@ public final class AcxRunner {
         // 断点续跑时 `$scan.matches` 这种「前序步骤输出」已不在 allOutputs 里（记录不持久化每步输出），
         // 解析出来是字面串 → for 直接失败。所以进循环前把解析好的参数快照进 vars（随记录持久化；
         // list 只留前 MAX_SNAPSHOT_ITEMS 条，免得记录膨胀），resume 时优先用快照。
-        String snapKey = "_params_" + step.id();
-        String cursorKey = "_cursor_" + step.id();
+        String controlKey = path;
+        String snapKey = "_params_" + controlKey;
+        String cursorKey = "_cursor_" + controlKey;
         Object snapRaw = c.vars.get(snapKey);
         if (snapRaw instanceof Map<?, ?> snapped) {
             Map<String, Object> fromSnap = new LinkedHashMap<>();
@@ -774,29 +913,44 @@ public final class AcxRunner {
                 forVar = String.valueOf(asRaw);
             }
         }
-        int maxIters = isWhile
-                ? AcxValueResolver.toInt(resolved.get("max_iters"), AcxLimits.DEFAULT_MAX_ITERS)
-                : (isFor ? Math.max(1, Math.min(forItems.size(),
-                        (resolved.get("max_iters") == null ? Integer.MAX_VALUE
-                                : AcxValueResolver.toInt(resolved.get("max_iters"), Integer.MAX_VALUE))))
-                : 1);
+        int maxIters = isFor ? Math.max(1, Math.min(forItems.size(),
+                resolved.get("max_iters") == null ? Integer.MAX_VALUE
+                        : AcxValueResolver.toInt(resolved.get("max_iters"), Integer.MAX_VALUE)))
+                : isWhile ? AcxValueResolver.toInt(resolved.get("max_iters"), AcxLimits.DEFAULT_MAX_ITERS) : 1;
         int stagnantLimit = isWhile
                 ? AcxValueResolver.toInt(resolved.get("stagnant_limit"), AcxLimits.DEFAULT_STAGNANT_LIMIT)
                 : AcxLimits.DEFAULT_STAGNANT_LIMIT;
         // ★ do_while：先跑一轮再判条件（默认 false = DD 的轮首求值）
         boolean doWhile = isWhile && boolFlag(resolved.get("do_while"));
 
-        // AC-B12：for 的游标也随 vars 持久化 —— resume 从「下一个未处理元素」接着走，
-        // 不重跑已处理过的元素（否则「逐株收」这类脚本会永远卡在第 0 项）。
+        // Extend the existing record cursor with the unfinished child and its outputs.
         int iters = 0;
-        if (isFor && c.vars.get(cursorKey) instanceof Number nb) {
-            iters = Math.max(0, nb.intValue());
+        int childIndex = 0;
+        boolean activeRound = false;
+        boolean savedRoundProgress = false;
+        Map<String, Object> cur = lastOutput;
+        Object cursor = c.vars.get(cursorKey);
+        if (cursor instanceof Number number && isFor) {
+            iters = Math.max(0, number.intValue());
+        } else if (cursor instanceof Map<?, ?> position) {
+            iters = Math.max(0, AcxValueResolver.toInt(position.get("round"), 0));
+            childIndex = Math.max(0, AcxValueResolver.toInt(position.get("child"), 0));
+            activeRound = Boolean.TRUE.equals(position.get("active"));
+            savedRoundProgress = Boolean.TRUE.equals(position.get("progress"));
+            if (position.get("output") instanceof Map<?, ?>) cur = castMap(position.get("output"));
+            if (position.get("outputs") instanceof Map<?, ?> outputs) {
+                for (Map.Entry<?, ?> entry : outputs.entrySet()) {
+                    if (entry.getValue() instanceof Map<?, ?>) {
+                        allOutputs.put(String.valueOf(entry.getKey()), castMap(entry.getValue()));
+                    }
+                }
+            }
         }
+        int roundsThisPass = 0;
         int stagnantRounds = 0;
         String ifUnmatched = null;
         boolean stoppedByStagnation = false;
         boolean stoppedByMaxIters = false;
-        Map<String, Object> cur = lastOutput;
 
         while (true) {
             AcxStepOutcome breaker = checkCircuit(c, def, 0);
@@ -804,10 +958,10 @@ public final class AcxRunner {
                 return breaker;
             }
             // do_while：第 1 轮无条件执行（条件源由本轮 body 刷新，第 2 轮起才读得到）
-            boolean condTrue = isFor ? iters < forItems.size()
+            boolean condTrue = activeRound || (isFor ? iters < forItems.size()
                     : (doWhile && iters == 0)
                     || cond == null
-                    || AcxConditionEvaluator.evaluate(condEachRound(condRaw, cond, cur, input, allOutputs, c), cur, input, allOutputs, c.vars);
+                    || AcxConditionEvaluator.evaluate(condEachRound(condRaw, cond, cur, input, allOutputs, c), cur, input, allOutputs, c.vars));
             if (!condTrue) {
                 if (!isWhile && condSpec != null) {
                     ifUnmatched = AcxConditionEvaluator.describeUnmatched(condEachRound(condRaw, cond, cur, input, allOutputs, c), cur, input, allOutputs);
@@ -815,14 +969,18 @@ public final class AcxRunner {
                 }
                 break;
             }
-            if (isFor && iters >= maxIters) {
+            if (!activeRound && isFor && iters >= maxIters) {
                 // 撞上显式 max_iters 截断 → 与 while 同语义：停下等续跑，不算成功
                 stoppedByMaxIters = true;
                 break;
             }
-            if (isWhile && iters >= maxIters) {
+            if (!activeRound && !isFor && isWhile && roundsThisPass >= maxIters) {
                 stoppedByMaxIters = true;
                 break;
+            }
+            if (!activeRound) {
+                childIndex = 0;
+                if (!saveControlPosition(c, cursorKey, iters, 0, true, false, cur, allOutputs)) return cancelled(c);
             }
             iters++;
             // AC-B10：循环状态写进变量 → children 里能用 $loop.iter / $loop.count
@@ -832,18 +990,21 @@ public final class AcxRunner {
                 // 元素写进变量 → children 里用 $var.<as> 取；$loop.total 给总数
                 c.vars.put(forVar, forItems.get(iters - 1));
                 c.vars.put("loop_total", (long) forItems.size());
-                // AC-B12：这一轮**开始**了就把游标记成「已处理到 iters」，body 中途暂停时
-                // 续跑会重跑当前元素（它本来就没做完，重跑是对的），但不会回到第 0 项。
-                c.vars.put(cursorKey, (long) iters);
+
             }
 
-            boolean roundHasProgress = false;
-            for (AcxStep child : children) {
+            boolean roundHasProgress = activeRound && savedRoundProgress;
+            for (int childAt = childIndex; childAt < children.size(); childAt++) {
+                AcxStep child = children.get(childAt);
+                AcxStepOutcome childBreaker = checkCircuit(c, def, 0);
+                if (childBreaker != null) return childBreaker;
                 c.stepCounter[0]++;
                 c.detailScratch = new LinkedHashMap<>();
-                AcxStepOutcome r = execLinear(child, def, input, cur, allOutputs, c);
+                AcxStepOutcome r = execLinear(child, def, input, cur, allOutputs, c,
+                        path + "r" + iters + "/c" + childAt + "/");
                 c.detailScratch = new LinkedHashMap<>();
                 if (r.isSuccess()) {
+                    if (c.cancelFlag.get()) return cancelled(c);
                     allOutputs.put(child.id(), r.output());
                     cur = r.output();
                     if (AcxProgress.hasRealProgress(r.output()) || c.lastStepChangedVar) {
@@ -856,6 +1017,9 @@ public final class AcxRunner {
                         merged.put("_paused_control", child.id());
                         return AcxStepOutcome.paused(
                                 pauseMessage(def, child, r.output()), r.output());
+                    }
+                    if (!saveControlPosition(c, cursorKey, iters - 1, childAt + 1, true, roundHasProgress, cur, allOutputs)) {
+                        return cancelled(c);
                     }
                     continue;
                 }
@@ -891,6 +1055,11 @@ public final class AcxRunner {
                 c.failedStep = child.id();
                 return r;
             }
+            if (!saveControlPosition(c, cursorKey, iters, 0, false, false, cur, allOutputs)) return cancelled(c);
+            commitRecoveryPosition(c, step, path + "r" + iters + "/");
+            activeRound = false;
+            childIndex = 0;
+            roundsThisPass++;
             if (!isWhile) {
                 break;
             }
@@ -906,7 +1075,7 @@ public final class AcxRunner {
             }
         }
 
-        c.loopCount += iters;
+        c.loopCount += roundsThisPass;
 
         Map<String, Object> out = new LinkedHashMap<>(cur == null ? Map.of() : cur);
         if (stoppedByStagnation) {
@@ -928,6 +1097,11 @@ public final class AcxRunner {
         }
         if (ifUnmatched != null) {
             out.put("_if_unmatched", ifUnmatched);
+        }
+        if (!stoppedByStagnation && !stoppedByMaxIters) {
+            // The caller may be cancelled before accepting this completed control's result.
+            if (!saveRecoveryPosition(c, cursorKey, Map.of("done", true, "output", snapshotParams(out),
+                    "outputs", snapshotOutputs(allOutputs)))) return cancelled(c);
         }
         return AcxStepOutcome.success(out, step.id() + " (" + (isWhile ? "while×" + iters : "if") + ")");
     }
@@ -976,8 +1150,17 @@ public final class AcxRunner {
         return AcxStepOutcome.paused("已被宿主取消（断点保留，可 resume）", out);
     }
 
-    private void markStepCompleted(Ctx c, int topIndex) {
-        c.completedStepIndex = topIndex + 1;
+    private static boolean markStepCompleted(Ctx c, int topIndex) {
+        return commitUnlessCancelled(c, () -> c.completedStepIndex = topIndex + 1);
+    }
+
+    // Only publish prepared recovery state under the cancel lock. Tools, snapshots and notifications stay outside it.
+    private static boolean commitUnlessCancelled(Ctx c, Runnable publishPosition) {
+        synchronized (c.cancelFlag) {
+            if (c.cancelFlag.get()) return false;
+            publishPosition.run();
+            return true;
+        }
     }
 
     /** 宽松布尔：真布尔直接取，字符串走 parseBoolean（.ac 里 "true"/"false" 两种写法都存在）。 */
@@ -1027,7 +1210,7 @@ public final class AcxRunner {
         if (output == null) {
             return;
         }
-        for (String key : new String[]{"task_id", "_accepted", "_completed", "_standing"}) {
+        for (String key : new String[]{"task_id", "_accepted", "_completed", "_standing", "_pause_reason", "body_action"}) {
             if (output.containsKey(key)) {
                 detail.put(key, output.get(key));
             }
@@ -1052,21 +1235,21 @@ public final class AcxRunner {
         return m;
     }
 
-    private static void mergeProgress(Ctx c, Map<String, Object> output) {
-        if (output == null || output.isEmpty()) {
-            return;
-        }
+    private static Map<String, Object> progressUpdate(Ctx c, Map<String, Object> output) {
+        if (output == null || output.isEmpty()) return Map.of();
+        Map<String, Object> updates = new LinkedHashMap<>();
         for (String f : AcxProgress.FIELDS) {
             Object v = output.get(f);
             if (v instanceof Number n) {
                 double cur = AcxValueResolver.toDouble(c.progress.get(f));
                 if (n.doubleValue() > cur) {
-                    c.progress.put(f, n);
+                    updates.put(f, n);
                 }
             } else if (v instanceof Boolean b && b) {
-                c.progress.put(f, b);
+                updates.put(f, b);
             }
         }
+        return updates;
     }
 
     private String pauseMessage(AcxDefinition def, AcxStep step, Map<String, Object> out) {
@@ -1134,6 +1317,7 @@ public final class AcxRunner {
 
     private static final class Ctx {
         final String runId;
+        String definitionFingerprint;
         final long start;
         final long deadline;
         final AtomicBoolean cancelFlag;
@@ -1184,10 +1368,15 @@ public final class AcxRunner {
     private final class CallCtx implements AcxTool.AcxCallContext {
         private final Ctx c;
         private final AcxStep step;
+        private final String path;
+        private final int iteration;
 
-        CallCtx(Ctx c, AcxStep step) {
+        CallCtx(Ctx c, AcxStep step, String path) {
             this.c = c;
             this.step = step;
+            this.path = path;
+            Object loop = c.vars.get("loop_iter");
+            this.iteration = loop instanceof Number n ? n.intValue() : 0;
         }
 
         @Override
@@ -1202,9 +1391,14 @@ public final class AcxRunner {
 
         @Override
         public String acName() {
-            // 顶层 AC 名（子 AC 帧不覆盖）—— 适配层受理挂账的键，resume 换 runId 也不能丢
+            // 顶层 AC 名（子 AC 帧不覆盖）；same-run resume 保留 runId。
             return c.acNameForEvents;
         }
+
+        @Override public String definitionFingerprint() { return c.definitionFingerprint; }
+        @Override public String invocationPath() { return path; }
+        @Override public boolean defersReceiptConsumption() { return true; }
+        @Override public boolean defersIgnoredFailureReceiptConsumption() { return ignoreFailure(step); }
 
         @Override
         public boolean isCancelRequested() {
@@ -1218,8 +1412,7 @@ public final class AcxRunner {
 
         @Override
         public int loopIter() {
-            Object v = c.vars.get("loop_iter");
-            return v instanceof Number n ? n.intValue() : 0;
+            return iteration;
         }
 
         @Override

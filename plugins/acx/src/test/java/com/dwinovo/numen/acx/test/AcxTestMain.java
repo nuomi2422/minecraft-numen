@@ -1745,14 +1745,15 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             Fake.Registry reg = new Fake.Registry().add(adapter);
             AcxRunner r = runner(reg).build();
 
-            AcxRunRecord a = r.run(defN("acA", step("s1", "goto", Map.of())), Map.of());
+            AcxDefinition aDef = defN("acA", step("s1", "goto", Map.of()));
+            AcxRunRecord a = r.run(aDef, Map.of());
             eq(AcxStatus.PAUSED, a.status(), "acA 受理即暂停");
             AcxRunRecord b = r.run(defN("acB", step("s1", "goto", Map.of())), Map.of());
             eq(AcxStatus.PAUSED, b.status(), "acB 受理即暂停");
             eq(2, port.invokeCount(), "★ 不同 AC 的受理账互不占用（键含 AC 名）");
             eq(2, adapter.pendingCount(), "两笔账都在");
 
-            AcxRunRecord a2 = r.run(defN("acA", step("s1", "goto", Map.of())), Map.of());
+            AcxRunRecord a2 = r.resume(aDef, a);
             eq(AcxStatus.PAUSED, a2.status(), "acA 再跑命中的是旧账");
             eq(2, port.invokeCount(), "★ 命中挂账不重发");
         });
@@ -1961,7 +1962,7 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             AcxRunRecord rec = r.run(d, Map.of());
             AcxRunRecord rec2 = r.resume(d, rec);
             eq(AcxStatus.FAIL, rec2.status(), "异步失败就是失败");
-            T.isTrue(rec2.errorMessage().contains("异步任务失败"),
+            T.isTrue(rec2.errorMessage().contains("挖不动"),
                     "错误信息: " + rec2.errorMessage());
             eq(0, adapter.pendingCount(), "账销掉");
             eq(1, port.invokeCount(), "不重发");
@@ -4030,18 +4031,26 @@ private static void takeDiag() {
             }
             Fake.Registry reg = new Fake.Registry()
                     .add(Fake.fixed("scan_blocks", Fake.params("matches", big)))
-                    .add(Fake.fixed("mine", Fake.params("mined", 1, "count", 1)));
+                    .add(Fake.fixed("mine", Fake.params("mined", 1, "count", 1)))
+                    .add(Fake.pauserOnce("mark", new Fake.PauseOnce(), "checkpoint"));
             AcxDefinition d = def(
                     step("scan", "scan_blocks", Fake.params("block_ids", "minecraft:stone", "radius", 8)),
-                    ctrl("each", "for", Fake.params("list", "$scan.matches", "as", "m", "max_iters", 1),
-                            step("dig", "mine", Fake.params("block_ids", "$var.m.block", "count", 1))));
-            AcxRunRecord rec = AcxRunner.builder().tools(reg).build().run(d, Map.of());
-            Object snap = rec.vars().get("_params_each");
+                    ctrl("each", "for", Fake.params("list", "$scan.matches", "as", "m"),
+                            step("dig", "mine", Fake.params("block_ids", "$var.m.block", "count", 1)),
+                            step("mark", "mark", Map.of())));
+            AcxRunner runner = AcxRunner.builder().tools(reg).build();
+            AcxRunRecord rec = runner.run(d, Map.of());
+            eq(AcxStatus.PAUSED, rec.status(), "检查断点时必须暂停");
+            Object snap = rec.vars().get("_params_s1/");
             T.notNull(snap, "快照应落在 vars 里");
             T.isTrue(snap instanceof Map, "快照是 Map");
             Object list = ((Map<?, ?>) snap).get("list");
             T.isTrue(list instanceof List<?>, "快照含 list");
             eq(64, ((List<?>) list).size(), "★ 只存前 64 条");
+            AcxRunRecord done = runner.resume(d, rec);
+            eq(AcxStatus.SUCCESS, done.status(), "断点可恢复 status=" + done.status() + " reason=" + done.pausedReason() + " error=" + done.errorMessage() + " vars=" + done.vars());
+            eq(64, Fake.calls.count("mine"), "保留的64项各执行一次，不重复");
+            T.isTrue(!done.vars().containsKey("_params_s1/"), "完成后清理快照");
         });
     }
 }

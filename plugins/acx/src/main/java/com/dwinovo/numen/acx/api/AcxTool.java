@@ -48,6 +48,21 @@ public interface AcxTool {
         return AcxStatus.PAUSED;
     }
 
+    /**
+     * 顶层断点已提交；ctx 的 invocationPath 是该顶层步骤的结构路径。
+     * 适配器此时才可消费本步骤及后代已处理的终态回执。断点提交前取消或暂停不会收到本通知。
+     */
+    default void checkpointCommitted(AcxCallContext ctx) { }
+
+    /**
+     * 已完成范围的局部恢复游标及输出已保存，恢复将跳过该范围。
+     * 可释放该结构路径下已处理的终态回执；不代表父顶层断点推进，也不消费未完成调用。
+     */
+    default void recoveryPositionCommitted(AcxCallContext ctx) { }
+
+    /** The owner has made the run non-resumable and its last execution attempt has exited. */
+    default void discardRunReceipts(String runId) { }
+
     /** 调用上下文：给积木回填取消检查、执行身份、事件上报。 */
     interface AcxCallContext {
 
@@ -61,8 +76,7 @@ public interface AcxTool {
         /**
          * 顶层 AC 名。
          *
-         * <p>适配层的「已受理」挂账不能拿 {@link #runId()} 当键 —— resume 每次
-         * {@code runFrom} 都生成新 runId，用它会永远对不上，resume 退化成重发命令。
+         * <p>fresh 使用独立 runId，显式 resume 保留原 runId。
          * 默认空串是为了老实现不用改（引擎自己会填）。</p>
          */
         default String acName() {
@@ -80,6 +94,18 @@ public interface AcxTool {
         default boolean isResuming() {
             return false;
         }
+
+        /** 顶层定义指纹；resume 由原指纹门保证不变。 */
+        default String definitionFingerprint() { return ""; }
+
+        /** 稳定结构位置，含父调用点、子定义指纹、循环轮次与子步索引。 */
+        default String invocationPath() { return ""; }
+
+        /** 是否由执行器在断点提交后显式消费回执。旧直接调用保持即时消费。 */
+        default boolean defersReceiptConsumption() { return false; }
+
+        /** 忽略迟到的失败回包前，先保存能越过该调用的恢复位置；普通失败保留重试语义。 */
+        default boolean defersIgnoredFailureReceiptConsumption() { return false; }
 
         /** 上报一条与本次调用相关的结构化事件。 */
         void emitDetail(String key, Object value);

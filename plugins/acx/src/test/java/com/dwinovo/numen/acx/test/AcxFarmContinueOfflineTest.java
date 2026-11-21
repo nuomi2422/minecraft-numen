@@ -45,6 +45,18 @@ public class AcxFarmContinueOfflineTest {
      * with read/sow/done steps) and run it through production loader + runner with fakes.
      */
     @Test
+    void emergencySiblingIsRejectedWhenCapabilitiesAreMissing() throws Exception {
+        Path file = Path.of(System.getProperty("acx.candidate", "scripts/stable/farm_maintain_loop.ac"));
+        var tools = new Fake.Registry()
+                .add(Fake.fixed("farm_nearby", Map.of()))
+                .add(Fake.fixed("get_self_status", Map.of("hp",20)))
+                .add(Fake.fixed("sow_nearby", Map.of()));
+        var loaded = AcxLoader.loadAll(file.getParent(), tools, false, false);
+        check(loaded.errors().stream().anyMatch(e -> e.contains("dig3_seal1_emergency") && e.contains("inspect_block")),
+                "missing emergency capabilities must stay visible: " + loaded.errors());
+    }
+
+    @Test
     void candidateFileRunsWithVerifiedShape() throws Exception {
         Path file = Path.of(System.getProperty("acx.candidate",
                 "scripts/stable/farm_maintain_loop.ac"));
@@ -55,6 +67,11 @@ public class AcxFarmContinueOfflineTest {
                 .add(PortToolAdapter.builder(farmPort).build())
                 .add(Fake.fixed("get_self_status", Map.of("hp", 20)))
                 .add(Fake.fixed("sow_nearby", Map.of("sown", 0, "seeds_left", 1, "empty_cells", 0)));
+        // loadAll validates every sibling definition; these are test-only stubs
+        // for the unrelated emergency script, never evidence of host capabilities.
+        tools.add(Fake.fixed("inspect_block", Map.of()))
+                .add(Fake.fixed("build", Map.of()))
+                .add(Fake.fixed("goto", Map.of()));
         AcxLoader.LoadReport loaded = AcxLoader.loadAll(file.getParent(), tools, false, false);
         check(loaded.errors().isEmpty(), "loader errors: " + loaded.errors());
         AcxDefinition def = loaded.registered().get("farm_maintain_loop");
@@ -110,14 +127,21 @@ public class AcxFarmContinueOfflineTest {
                         "data", Map.of("harvested", 1)))))
                 .then(fromTaskResult(GSON.toJson(Map.of("success", true, "message", "ok",
                         "data", Map.of("harvested", 0)))));
-        AcxTool delegate = PortToolAdapter.builder(farmPort).build();
+        PortToolAdapter delegate = PortToolAdapter.builder(farmPort).build();
         Fake.Canceller canceller = new Fake.Canceller();
         java.util.concurrent.atomic.AtomicInteger farms = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.List<String> trace = new java.util.ArrayList<>();
         AcxTool farmThatCancelsOnce = new AcxTool() {
             @Override public String name() { return delegate.name(); }
             @Override public AcxToolSchema schema() { return delegate.schema(); }
+            @Override public void checkpointCommitted(AcxCallContext ctx) { delegate.checkpointCommitted(ctx); }
+            @Override public void recoveryPositionCommitted(AcxCallContext ctx) { delegate.recoveryPositionCommitted(ctx); }
+            @Override public void discardRunReceipts(String runId) { delegate.discardRunReceipts(runId); }
             @Override public AcxStepOutcome execute(Map<String, Object> params, AcxCallContext ctx) {
+                int before = farmPort.invokeCount();
                 AcxStepOutcome out = delegate.execute(params, ctx);
+                trace.add("wrapper=" + (farms.get() + 1) + " port=" + before + "->" + farmPort.invokeCount()
+                        + " status=" + out.status() + " output=" + out.output());
                 if (farms.incrementAndGet() == 1) canceller.runner.cancel(ctx.runId());
                 return out;
             }
@@ -125,6 +149,11 @@ public class AcxFarmContinueOfflineTest {
         Fake.Registry tools = new Fake.Registry()
                 .add(farmThatCancelsOnce)
                 .add(Fake.fixed("get_self_status", Map.of("hp", 20)));
+        // loadAll validates every sibling definition; these are test-only stubs
+        // for the unrelated emergency script, never evidence of host capabilities.
+        tools.add(Fake.fixed("inspect_block", Map.of()))
+                .add(Fake.fixed("build", Map.of()))
+                .add(Fake.fixed("goto", Map.of()));
         AcxLoader.LoadReport loaded = AcxLoader.loadAll(file.getParent(), tools, false, false);
         check(loaded.errors().isEmpty(), "loader errors: " + loaded.errors());
         AcxDefinition def = loaded.registered().get("farm_maintain_loop");
@@ -143,8 +172,10 @@ public class AcxFarmContinueOfflineTest {
         AcxRunRecord resumed = runner.resume(def, paused);
         check(resumed.status() == AcxStatus.SUCCESS, "resume must finish, got " + resumed.status()
                 + " reason=" + resumed.errorMessage());
-        check(farms.get() == 2,
-                "resume re-enters the cycle from the kept breakpoint, farms=" + farms.get());
+        System.out.println("ACX_FARM_REPLAY_TRACE " + trace);
+        check(farmPort.invokeCount() == 2, "actual dispatches=" + farmPort.invokeCount() + " trace=" + trace);
+        check(delegate.pendingCount() == 0, "completed run must clear cached receipts: " + delegate.pendingCount());
+        check(farms.get() == 3, "expected cached replay then second iteration, trace=" + trace);
         check(Fake.calls.count("get_self_status") == 2,
                 "read + done after resume, get_self_status=" + Fake.calls.count("get_self_status"));
         System.out.println("ACX_FARM_CANCEL ok status=" + paused.status() + "/" + resumed.status()

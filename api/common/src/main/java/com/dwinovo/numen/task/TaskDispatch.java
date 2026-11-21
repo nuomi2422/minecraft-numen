@@ -4,6 +4,7 @@ import com.dwinovo.numen.agent.tool.api.ToolContext;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.google.gson.JsonObject;
 
+import java.util.Objects;
 import java.util.function.Consumer;
 
 /**
@@ -34,6 +35,54 @@ public final class TaskDispatch {
 
     private TaskDispatch() {}
 
+    private record CallerRecovery(NumenPlayer body, String callId) {
+        boolean matches(NumenPlayer companion, TaskRecord record) {
+            return body == companion && callId.equals(record.getToolCallId());
+        }
+    }
+    private static final ThreadLocal<CallerRecovery> CALLER_RECOVERY = new ThreadLocal<>();
+
+    /**
+     * Invoke a tool on the server thread when its caller owns recovery. Only a task accepted
+     * synchronously for this exact body and call ID skips the body's generic replay recipe.
+     * Keep the existing tool signature and routing IDs; an ID prefix alone is not this policy.
+     */
+    public static void withCallerOwnedRecovery(NumenPlayer companion, String callId, Runnable invoke) {
+        var previous = CALLER_RECOVERY.get();
+        CALLER_RECOVERY.set(new CallerRecovery(Objects.requireNonNull(companion), Objects.requireNonNull(callId)));
+        try {
+            invoke.run();
+        } finally {
+            if (previous == null) CALLER_RECOVERY.remove();
+            else CALLER_RECOVERY.set(previous);
+        }
+    }
+
+    /** A caller-owned task reached admission, but neither task slot was changed. */
+    public static final class BodyBusyException extends RuntimeException {
+        private final String blockingTaskId;
+
+        private BodyBusyException(TaskRecord occupying) {
+            super("身体正在执行 " + occupying.publicId() + "，本次未受理");
+            this.blockingTaskId = occupying.publicId();
+        }
+
+        public String blockingTaskId() { return blockingTaskId; }
+    }
+
+    private static boolean callerOwnsRecovery(NumenPlayer companion, TaskRecord record) {
+        var recovery = CALLER_RECOVERY.get();
+        return recovery != null && recovery.matches(companion, record);
+    }
+
+    // The host thread already owns admission; use the real slots before any mutation.
+    // Reflections and ordinary callers continue through their established arbitration.
+    private static void requireFreeBodySlot(NumenPlayer companion, TaskRecord current) {
+        if (current != null) throw new BodyBusyException(current);
+        TaskRecord sync = CompanionTickDispatcher.syncSlotFor(companion.getUUID()).record();
+        if (sync != null) throw new BodyBusyException(sync);
+    }
+
     /** 任务上下文:调用 id + 身体当前游戏刻(deadline 的起点)。 */
     public static ToolContext ctx(String toolCallId, NumenPlayer companion) {
         return new ToolContext(toolCallId, companion.level().getGameTime());
@@ -49,6 +98,9 @@ public final class TaskDispatch {
      * 反过来它有界短,插队也饿不死别人。
      */
     public static void runSync(NumenPlayer companion, TaskRecord record, Consumer<String> reply) {
+        if (callerOwnsRecovery(companion, record)) {
+            requireFreeBodySlot(companion, CompanionTickDispatcher.currentTaskFor(companion.getUUID()));
+        }
         CompanionTickDispatcher.syncSlotFor(companion.getUUID()).put(companion, record);
     }
 
@@ -58,7 +110,8 @@ public final class TaskDispatch {
      * <p>槽里原来那件活会被<b>替换</b>(收到取消结果),不拒绝新的——主人改主意是常态,
      * 而"她在挖矿所以不理你"是最直观的一种出戏。
      *
-     * <p><b>唯一拒绝的情形</b>:槽里那件是同一批工具调用里刚受理、一刻都还没跑过的。
+     * <p>由调用方持有恢复的动作遇到同步或当前槽占用就等待，不替换在飞动作。
+     * 其他调用继续走已有的归属和刚受理窗口判断。
      * 那说明模型在一个回合里连派两件活——它该拿到第一件的结果、看清状况再决定下一步,
      * 而不是盲目承诺。这条判据本地可判({@link TaskRecord#acceptedThisTick}),
      * 不用把回合 id 穿到服务端。
@@ -70,6 +123,8 @@ public final class TaskDispatch {
         // 这里只用能从既有字段推出来的身份（工具调用 id 的 mcp- 前缀），不动存档；
         // generation 还没上（需要新的槽状态），所以本批只挡"不同执行方"，不挡迟到回调。
         TaskRecord current = CompanionTickDispatcher.currentTaskFor(id);
+        boolean callerOwned = callerOwnsRecovery(companion, record);
+        if (callerOwned) requireFreeBodySlot(companion, current);
         if (current != null && !CompanionTickDispatcher.currentFreshlyAccepted(companion)) {
             TaskOwnership.Outcome outcome = TaskOwnership.decide(
                     new TaskOwnership.Current(current.publicId(),
@@ -97,10 +152,19 @@ public final class TaskDispatch {
                     + "真要换,下一回合直接派新的就是了。").toJson());
             return;
         }
+        // Host-confirmed at dispatch: only this exact body + call through the caller-owned
+        // entry marks the record. The marker is what a later sleep handoff may trust; the
+        // mcp- prefix alone never is. Read before put() so the accepted slot holds the mark.
+        if (callerOwned) record.markCallerOwned();
         record.markAsync();
         CompanionTickDispatcher.currentSlotFor(id).put(companion, record);
-        // 记下"她现在在做什么",服务器重启后照着重放一遍(见 TaskPersistence)。
-        TaskPersistence.remember(companion, record.getToolName(), args);
+        // The accepted task owns the slot now. If its caller owns recovery, the prior slot's
+        // recipe must not survive either; rejection paths above leave that recipe untouched.
+        if (callerOwned) {
+            TaskPersistence.forget(companion);
+        } else {
+            TaskPersistence.remember(companion, record.getToolName(), args);
+        }
         // 内置大脑靠 task_finished 事件收尾(别轮询);外部(MCP)夺舍收不到事件
         // (那条投给内置大脑,不是它),得自己轮询 task_status 到身体空闲,再感知确认。
         // 常驻的活没有终点,也就永远不会发 task_finished —— 回执必须说清楚,
