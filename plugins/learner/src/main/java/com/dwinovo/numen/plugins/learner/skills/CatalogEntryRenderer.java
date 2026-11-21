@@ -55,7 +55,6 @@ public final class CatalogEntryRenderer {
         }
         ordered.sort(java.util.Comparator.<Integer, Boolean>comparing(i -> !candidates.get(i).conditionsKnown())
                 .thenComparing(i -> !candidates.get(i).verified()));
-        boolean includedUnknown = false;
         List<String> entries = new ArrayList<>();
         int used = HEAD.length() + TAIL.length();
         java.util.Map<String, Candidate> seen = new java.util.HashMap<>();
@@ -66,7 +65,7 @@ public final class CatalogEntryRenderer {
                 decisions[index] = new Decision(index, c.ref(), false,
                         prior.conditionsKnown() != c.conditionsKnown() ? "duplicate-enriched" : "duplicate"); continue;
             }
-            if (entries.size() >= MAX_ENTRIES || (!c.conditionsKnown() && includedUnknown)) {
+            if (entries.size() >= MAX_ENTRIES) {
                 decisions[index] = new Decision(index, c.ref(), false, "over-limit"); continue;
             }
             String item = "<entry ref=\"" + xml(c.ref()) + "\" status=\"" + xml(c.status()) + "\"" +
@@ -81,7 +80,6 @@ public final class CatalogEntryRenderer {
                 decisions[index] = new Decision(index, c.ref(), false, "over-budget"); continue;
             }
             entries.add(item); used += item.length();
-            if (!c.conditionsKnown()) includedUnknown = true;
             decisions[index] = new Decision(index, c.ref(), true, c.conditionsKnown() ? "included" : "condition-unknown");
         }
         String fragment = entries.isEmpty() ? "" : HEAD + String.join("", entries) + TAIL;
@@ -107,9 +105,8 @@ public final class CatalogEntryRenderer {
         if (!("TRIAL".equals(c.status()) || "PUBLISHED".equals(c.status()))) return "not-verified";
         if (c.availability() == null || !(c.availability().isEmpty() || c.availability().equals("available")
                 || c.availability().equals("degraded"))) return "not-verified";
-        // Intentional strictness for this new discovery surface only; legacy planner/resolver are unchanged.
-        if (view == null || view.isBlank() || c.audience() == null || c.audience().isBlank()) return "audience-mismatch";
-        {
+        if (view == null || view.isBlank()) return "audience-mismatch";
+        if (c.audience() != null && !c.audience().isBlank()) {
             boolean match = false;
             for (String audience : c.audience().split(",")) if (audience.trim().equalsIgnoreCase(view.trim())) match = true;
             if (!match) return "audience-mismatch";

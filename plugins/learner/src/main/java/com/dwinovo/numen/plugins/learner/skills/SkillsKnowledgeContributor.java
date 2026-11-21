@@ -135,8 +135,8 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
                 String availability = scene.isEmpty() ? "" :
                         ("degraded".equals(SceneSkillCatalog.availability(e, resolver, companion, consumerView))
                                 ? "degraded" : "available");
-                boolean conditionsKnown = !e.triggerConditions().isEmpty() && !e.risk().isBlank()
-                        && !"UNKNOWN".equalsIgnoreCase(e.risk());
+                // Nonempty author text is not proof that conditions are verified.
+                boolean conditionsKnown = false;
                 // Existing Java body hash is not a provenance signature: keep source UNKNOWN.
                 candidates.add(new CatalogEntryRenderer.Candidate(ref + "@" + version, e.name(), e.purpose(),
                         e.audience(), e.status().name(), true, conditionsKnown, false, availability));

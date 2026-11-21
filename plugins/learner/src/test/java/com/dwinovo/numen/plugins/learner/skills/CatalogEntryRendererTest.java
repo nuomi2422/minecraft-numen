@@ -45,25 +45,25 @@ class CatalogEntryRendererTest {
         assertTrue(out.fragment().contains("skill:good@v1"));
         assertFalse(out.fragment().contains("skill:long@v1"));
     }
-    @Test void knownConditionsRankBeforeUnknownAndOnlyOneUnknownWhenAllUnknown() {
+    @Test void knownConditionsRankBeforeUnknownAndUnknownRemainsDiscoverable() {
         var unknownA = new CatalogEntryRenderer.Candidate("skill:u1@v1", "u1", "purpose", "EXECUTOR", "TRIAL", true, false, true);
         var unknownB = new CatalogEntryRenderer.Candidate("skill:u2@v1", "u2", "purpose", "EXECUTOR", "TRIAL", true, false, true);
         var known = candidate("known", "known", "purpose");
         var mixed = CatalogEntryRenderer.render(List.of(unknownA, known), "EXECUTOR", 1200);
         assertTrue(mixed.fragment().indexOf("skill:known@v1") < mixed.fragment().indexOf("skill:u1@v1"));
         var onlyUnknown = CatalogEntryRenderer.render(List.of(unknownA, unknownB), "EXECUTOR", 1200);
-        assertEquals(1, onlyUnknown.entries().size());
-        assertEquals("over-limit", onlyUnknown.decisions().get(1).reason());
+        assertEquals(2, onlyUnknown.entries().size());
+        assertEquals("condition-unknown", onlyUnknown.decisions().get(1).reason());
         assertTrue(onlyUnknown.fragment().contains("条件未知"));
     }
-    @Test void onlyActuallyIncludedKnownCandidateLiftsUnknownLimit() {
+    @Test void oversizedKnownDoesNotHideLaterUnknownCandidates() {
         var huge = candidate("huge", "known", "x".repeat(400));
         var a = new CatalogEntryRenderer.Candidate("skill:u1@v1", "u1", "x", "EXECUTOR", "TRIAL", true, false, true);
         var b = new CatalogEntryRenderer.Candidate("skill:u2@v1", "u2", "x", "EXECUTOR", "TRIAL", true, false, true);
         var out = CatalogEntryRenderer.render(List.of(huge, a, b), "EXECUTOR", 1200);
         assertEquals("over-limit", out.decisions().get(0).reason());
-        assertEquals(1, out.entries().size());
-        assertEquals("over-limit", out.decisions().get(2).reason());
+        assertEquals(2, out.entries().size());
+        assertEquals("condition-unknown", out.decisions().get(2).reason());
     }
     @Test void invalidReferencesAndXmlControlCharactersCannotBeAdvertised() throws Exception {
         for (String ref : List.of("skill:bad.id@v1", "skill:<id>@v1", "skill:id@v2147483648")) {
@@ -96,17 +96,17 @@ class CatalogEntryRendererTest {
                 new java.io.ByteArrayInputStream(out.fragment().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         assertEquals(name, document.getElementsByTagName("name").item(0).getTextContent());
     }
-    @Test void rejectsEmptyAudienceAndUnsafePurposeAndDeduplicatesExactRef() {
+    @Test void emptyAudienceIsWildcardUnsafePurposeRejectedAndRefDeduplicated() {
         var empty = new CatalogEntryRenderer.Candidate("skill:empty@v1", "n", "purpose", "", "TRIAL", true, true, true);
         var script = candidate("script", "n", "{\"steps\":[1]}");
         var unknown = new CatalogEntryRenderer.Candidate("skill:dup@v1", "n", "purpose", "EXECUTOR", "TRIAL", true, false, true);
         var known = candidate("dup", "n", "purpose");
         var out = CatalogEntryRenderer.render(List.of(empty, script, unknown, known), "EXECUTOR", 1200);
-        assertEquals("audience-mismatch", out.decisions().get(0).reason());
+        assertTrue(out.decisions().get(0).included());
         assertEquals("unsafe-purpose", out.decisions().get(1).reason());
         assertEquals("duplicate-enriched", out.decisions().get(2).reason());
         assertTrue(out.decisions().get(3).included());
-        assertEquals(1, out.entries().size());
+        assertEquals(2, out.entries().size());
     }
     @Test void sameReferenceWithConflictingFactsRejectsWholeGroup() {
         var a = candidate("same", "name", "purpose A");

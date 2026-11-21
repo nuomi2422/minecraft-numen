@@ -205,16 +205,16 @@ class SkillsAggregateConsumerTest {
         var document = parseCatalog(content);
         var node = (org.w3c.dom.Element) document.getElementsByTagName("entry").item(0);
         org.junit.jupiter.api.Assertions.assertEquals("skill:sk-catalog@v7", node.getAttribute("ref"));
-        org.junit.jupiter.api.Assertions.assertEquals(entry.kind().name(), node.getAttribute("kind"));
         org.junit.jupiter.api.Assertions.assertEquals(entry.status().name(), node.getAttribute("status"));
         org.junit.jupiter.api.Assertions.assertEquals(entry.name(), node.getElementsByTagName("name").item(0).getTextContent());
         org.junit.jupiter.api.Assertions.assertEquals(entry.purpose(), node.getElementsByTagName("purpose").item(0).getTextContent());
-        assertTrue(content.contains("<trigger><item>stock low</item><item>at night</item></trigger>"));
-        assertTrue(content.contains("<exclude><item>stock sufficient</item></exclude>"));
-        assertTrue(content.contains("<preconditions><item>observed workbench</item></preconditions>"));
-        assertTrue(content.contains("<risk>" + entry.risk() + "</risk>"));
-        assertTrue(content.contains("load_skill with only ref"));
-        assertTrue(content.contains("unverified clues"));
+        assertEquals("UNKNOWN", node.getAttribute("conditions"));
+        assertFalse(content.contains("stock low"));
+        assertFalse(content.contains("author risk"));
+        assertTrue(content.contains("按 ref 展开"));
+        assertTrue(content.contains("执行前须以当前观测复核"));
+        assertFalse(content.contains("ready"));
+        assertFalse(content.contains("authorized"));
         assertFalse(content.contains(body));
         assertFalse(content.contains(entry.bodyRef()));
         assertFalse(content.contains(dir.toString()));
@@ -287,9 +287,9 @@ class SkillsAggregateConsumerTest {
         org.junit.jupiter.api.Assertions.assertEquals("skill:" + entry.skillId() + "@v7", node.getAttribute("ref"));
         org.junit.jupiter.api.Assertions.assertEquals(author, node.getElementsByTagName("name").item(0).getTextContent());
         org.junit.jupiter.api.Assertions.assertEquals(author, node.getElementsByTagName("purpose").item(0).getTextContent());
-        for (String tag : List.of("trigger", "exclude", "preconditions", "risk")) {
-            org.junit.jupiter.api.Assertions.assertEquals(author, node.getElementsByTagName(tag).item(0).getTextContent());
-        }
+        for (String tag : List.of("trigger", "exclude", "preconditions", "risk"))
+            assertEquals(0, node.getElementsByTagName(tag).getLength());
+        assertEquals("UNKNOWN", node.getAttribute("conditions"));
         assertTrue(content.contains("&amp;"));
         assertTrue(content.contains("&lt;entry"));
         assertTrue(content.contains("&quot;"));
@@ -304,7 +304,8 @@ class SkillsAggregateConsumerTest {
                 "large", "full-author-purpose-".repeat(400));
         var source = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
                 .contributeCatalog(UUID.randomUUID(), "objective");
-        assertTrue(source.text().contains("full-author-purpose-".repeat(400)), "author fields are never shortened");
+        assertFalse(source.text().contains("sk-oversize"), "oversized author fields are rejected, never shortened");
+        assertTrue(source.gapCounts().get("over-limit") > 0);
         var fragment = aggregateCatalog();
         assertTrue(fragment.text().contains("skill:sk-small@v7"));
         assertFalse(fragment.text().contains("sk-oversize"), "shared budget must drop a whole entry");
@@ -317,7 +318,7 @@ class SkillsAggregateConsumerTest {
         var rejected = new SkillsKnowledgeContributor(dir, "EXECUTOR", 1)
                 .contributeCatalog(UUID.randomUUID(), "objective");
         assertTrue(rejected.text().isEmpty(), "no partial entry or empty wrapper when nothing fits");
-        assertTrue(rejected.gapCounts().get("budget-rejected") > 0, "budget rejection is observable");
+        assertTrue(rejected.gapCounts().get("over-budget") > 0, "budget rejection is observable");
     }
 
     @Test
@@ -329,7 +330,7 @@ class SkillsAggregateConsumerTest {
         assertNotNull(fragment, "later complete entry fits the existing budget");
         assertTrue(fragment.text().contains("skill:small-later@v7"));
         assertFalse(fragment.text().contains("skill:oversized-first@v7"));
-        assertEquals(1, fragment.gapCounts().get("budget-rejected"));
+        assertEquals(1, fragment.gapCounts().get("over-limit"));
         assertEquals(1, parseCatalog(fragment.text()).getElementsByTagName("entry").getLength());
     }
 
@@ -489,8 +490,9 @@ class SkillsAggregateConsumerTest {
         assertNotNull(fragment);
         assertEquals(1, fragment.text().split("ref=\"" + PACK_REF + "\"", -1).length - 1);
         assertEquals(1, fragment.text().split("ref=\"" + STEP_REF + "\"", -1).length - 1);
-        assertTrue(fragment.text().contains("requires:" + STEP_REF));
-        assertTrue(fragment.text().contains("availability=\"ready\""));
+        assertFalse(fragment.text().contains("requires:" + STEP_REF), "conditions are not shown as verified facts");
+        assertTrue(fragment.text().contains("conditions=\"UNKNOWN\""));
+        assertTrue(fragment.text().contains("availability=\"available\""));
         assertEquals(2, parseCatalog(fragment.text()).getElementsByTagName("entry").getLength());
         assertFalse(fragment.text().contains(PACK_BODY));
         assertFalse(fragment.text().contains(STEP_BODY));
@@ -574,7 +576,8 @@ class SkillsAggregateConsumerTest {
         assertTrue(fragment.text().contains(STEP_REF));
         assertTrue(fragment.text().contains("skill:trading-scene@v1"), "unmatched scene remains discoverable");
         assertTrue(fragment.text().indexOf(PACK_REF) < fragment.text().indexOf("skill:trading-scene@v1"), "night prioritizes overnight, not unrelated scene");
-        assertTrue(fragment.text().contains("world_hint=LATE_DAY candidate_only applicability=UNKNOWN bed=UNKNOWN"));
+        assertTrue(fragment.text().contains("conditions=\"UNKNOWN\""));
+        assertFalse(fragment.text().contains("world_hint=LATE_DAY"), "ranking evidence is not asserted to the model");
         assertFalse(fragment.text().contains(PACK_BODY));
         assertTrue(fragment.refs().isEmpty());
         var unavailable = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0,
@@ -639,7 +642,7 @@ class SkillsAggregateConsumerTest {
         assertTrue(fragment.text().contains("skill:trade-scene@v1"), "unmatched remains discoverable");
         assertTrue(fragment.text().indexOf("skill:night-scene@v1") < fragment.text().indexOf("skill:trade-scene@v1"),
                 "relevant scene must appear before unrelated scene");
-        assertTrue(fragment.text().contains("applicability=UNKNOWN"));
+        assertTrue(fragment.text().contains("conditions=\"UNKNOWN\""));
         var chineseGoal = contributor.contributeCatalog(COMPANION, "建设村民交易所");
         assertTrue(chineseGoal.text().contains("skill:trade-scene@v1"), "must not require English scene id");
     }
