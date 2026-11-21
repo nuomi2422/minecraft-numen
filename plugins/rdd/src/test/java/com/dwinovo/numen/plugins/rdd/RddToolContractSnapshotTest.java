@@ -83,9 +83,11 @@ class RddToolContractSnapshotTest {
         String src = read(fileName);
         Matcher open = Pattern.compile("String\\s+description\\(\\)\\s*\\{").matcher(src);
         assertTrue(open.find(), fileName + " 里找不到 description() 方法");
-        int start = open.end();
+        // 2026-11-22（指挥官修测试自身 off-by-one）：braceEnd 从 '{' 起扫，open.end() 已在 '{' 之后；
+        // 旧写法对任何 description 里不含花括号的工具都会扫到负深度而误报「括号没配平」。
+        int start = open.end() - 1;
         int end = braceEnd(src, start);
-        String body = src.substring(start, end);
+        String body = src.substring(start + 1, end);
         Matcher lit = Pattern.compile("\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(body);
         StringBuilder joined = new StringBuilder();
         while (lit.find()) joined.append(lit.group(1));
@@ -97,9 +99,11 @@ class RddToolContractSnapshotTest {
         String src = read(fileName);
         Matcher open = Pattern.compile("String\\s+description\\(\\)\\s*\\{").matcher(src);
         assertTrue(open.find(), fileName + " 里找不到 description() 方法");
-        int start = open.end();
+        // 2026-11-22（指挥官修测试自身 off-by-one）：braceEnd 从 '{' 起扫，open.end() 已在 '{' 之后；
+        // 旧写法对任何 description 里不含花括号的工具都会扫到负深度而误报「括号没配平」。
+        int start = open.end() - 1;
         int end = braceEnd(src, start);
-        String body = src.substring(start, end);
+        String body = src.substring(start + 1, end);
         Matcher lit = Pattern.compile("\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(body);
         StringBuilder joined = new StringBuilder();
         while (lit.find()) joined.append(lit.group(1));
