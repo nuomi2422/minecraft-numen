@@ -60,10 +60,16 @@ class RefreshSupersededTest {
 
         ObservationKey key = sheepBox().keyFor("live");
         // 另一个写入方（并发刷新/重放）已把同键推到 revision 5，且内容是 9 只。
-        assertTrue(store.put(TestSupport.observation(key, payload(9), 1_000L,
-                Coverage.COMPLETE, Freshness.CURRENT, 5L)));
+        assertTrue(store.put(new Observation(key, payload(9), "test", Origin.DIRECT, 0, 1_000L,
+                Coverage.COMPLETE, Freshness.CURRENT, 5L, 1, "session")));
 
-        RefreshResult result = service.refreshNow(new TestSupport.Ctx("live", 42L, 2_000L), sheepBox());
+        var ctx = new com.dwinovo.numen.worldstate.core.provider.CollectionContext() {
+            public String worldId() { return "live"; }
+            public String serverSession() { return "session"; }
+            public long gameTick() { return 42L; }
+            public long nowMs() { return 2_000L; }
+        };
+        RefreshResult result = service.refreshNow(ctx, sheepBox());
 
         assertTrue(result.success(), "被取代时应返回被接受的那份，而不是失败");
         assertEquals(5L, result.observation().revision(), "不得回本次采集的旧 revision");
@@ -71,6 +77,20 @@ class RefreshSupersededTest {
                 "不得把本次采集的 2 只当成当前值");
         assertTrue(result.message().contains("superseded"), "调用方要能看出本次被取代");
         assertEquals(5L, store.get(key).orElseThrow().revision(), "存储里的新值不能被旧刷新覆盖");
+    }
+
+    @Test
+    void rejectedRefreshCannotReturnObservationFromAnotherSession() {
+        InMemoryObservationStore store = new InMemoryObservationStore();
+        ProviderRegistry registry = new ProviderRegistry();
+        registry.register(new TestSupport.FakeEntitiesProvider());
+        RefreshService service = new RefreshService(registry, store, executor);
+        ObservationKey key = sheepBox().keyFor("live");
+        assertTrue(store.put(new Observation(key, payload(9), "test", Origin.DIRECT, 0, 1000,
+                Coverage.COMPLETE, Freshness.CURRENT, 5, 1, "old-session")));
+        var result = service.refreshNow(new TestSupport.Ctx("live", 42, 2000), sheepBox());
+        assertFalse(result.success(), "different session cannot be returned as current");
+        assertEquals(FailReason.SUPERSEDED, result.reason());
     }
 
     @Test

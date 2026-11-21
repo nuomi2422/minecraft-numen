@@ -127,7 +127,9 @@ public final class RefreshService {
                 // （008「刷新迟到与到期瞬间」）。这里改回被接受的那份，保留它自己的
                 // revision / 采集时间 / 覆盖，并在 message 里说明本次被取代。
                 Optional<Observation> kept = store.get(key);
-                if (kept.isEmpty()) {
+                String session = ctx.serverSession();
+                if (kept.isEmpty() || session == null || session.isBlank()
+                        || "unknown".equalsIgnoreCase(session) || !session.equals(kept.get().serverSession())) {
                     return RefreshResult.failed(FailReason.SUPERSEDED,
                             "collected revision " + revision
                                     + " was superseded and the accepted observation is unreadable",
