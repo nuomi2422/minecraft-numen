@@ -289,6 +289,34 @@ class LearnerMonitorJournalTest {
         }
     }
 
+    @Test void persistenceFailureCannotBeReportedAsPromotion(@TempDir Path dir) throws Exception {
+        try (Fixture f = new Fixture(dir)) {
+            var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.registryFor(dir);
+            String body = "persist fixture body";
+            String ref = com.dwinovo.numen.plugins.learner.skills.SkillBodyStore.write(dir, "persist", 1,
+                    Integer.toHexString(body.hashCode()), body);
+            var artifact = new com.dwinovo.numen.plugins.learner.contract.ArtifactDraft(
+                    com.dwinovo.numen.plugins.learner.contract.ArtifactKind.EXPERIENCE,
+                    "persist", "persist purpose", body, List.of("night"), List.of(), List.of(), "LOW",
+                    List.of(), List.of("memo"), "PLANNER");
+            registry.register(artifact, "persist", ref, false);
+            assertEquals("DRAFT", com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(dir.resolve("skills.jsonl"))
+                    .get("persist").orElseThrow().status().name());
+            Files.createDirectory(dir.resolve("skills.jsonl.tmp")); // fail the real persist after valid fixture creation
+            JsonObject args = new JsonObject(); args.addProperty("action", "promote");
+            args.addProperty("skillId", "persist"); args.addProperty("reason", "fixture"); args.addProperty("confirm", true);
+            AtomicReference<String> response = new AtomicReference<>();
+            new LearnerAdminTool().onServerCall("admin-call", args, null, response::set);
+            assertFalse(JsonParser.parseString(response.get()).getAsJsonObject().get("success").getAsBoolean(),
+                    "write failure cannot be claimed as durable promotion");
+            assertEquals("DRAFT", com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(dir.resolve("skills.jsonl"))
+                    .get("persist").orElseThrow().status().name());
+            f.barrier();
+            Path journal = dir.resolve("monitor/learner.jsonl");
+            if (Files.exists(journal)) assertTrue(Files.readAllLines(journal).stream().noneMatch(s -> s.contains("learner_promoted")));
+        } finally { com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.resetForTest(); }
+    }
+
     @Test void legacyTrialAndPublishedWithUnreadableBodiesNeverReportSuccessfulPromotion(@TempDir Path dir) throws Exception {
         try (Fixture f = new Fixture(dir)) {
             for (String status : List.of("TRIAL", "PUBLISHED")) {
