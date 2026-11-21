@@ -30,7 +30,13 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-test { useJUnitPlatform() }
+test {
+    useJUnitPlatform()
+    // Managed test-only attempts require their own fresh XML directory.
+    if (System.getenv('RDD_TEST_REPORT_DIR')) {
+        reports.junitXml.outputLocation = file(System.getenv('RDD_TEST_REPORT_DIR'))
+    }
+}
 
 tasks.named('jar', Jar) {
     dependsOn(':world-state-core:jar')
