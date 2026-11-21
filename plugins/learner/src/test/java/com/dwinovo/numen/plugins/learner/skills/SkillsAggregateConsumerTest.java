@@ -140,6 +140,19 @@ class SkillsAggregateConsumerTest {
     }
 
     @Test
+    void includedUnknownConditionsAreNotCountedAsRejectedGap() throws Exception {
+        catalogFixture("included-unknown", SkillStatus.TRIAL, "EXECUTOR", "body", "safe", "simple purpose");
+        catalogFixture("rejected-long", SkillStatus.TRIAL, "EXECUTOR", "body2", "long", "x".repeat(500));
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contributeCatalog(UUID.randomUUID(), "objective");
+        assertTrue(fragment.text().contains("skill:included-unknown@v7"));
+        assertTrue(fragment.text().contains("conditions=\"UNKNOWN\""));
+        assertFalse(fragment.text().contains("skill:rejected-long@v7"));
+        assertEquals(1, fragment.gapCounts().get("over-limit"));
+        assertFalse(fragment.gapCounts().containsKey("condition-unknown"), "included item is not a rejected gap");
+        assertTrue(fragment.refs().isEmpty(), "catalog is not body delivery");
+    }
+
+    @Test
     void compactCatalogHasBoundedCompleteEntriesAndNeverPretendsOmittedConditionsAreKnown() throws Exception {
         var source = catalogFixture("compact-safe", SkillStatus.TRIAL, "EXECUTOR", "BODY_ONLY_BY_REF",
                 "安全过夜", "天黑先确认居所");
