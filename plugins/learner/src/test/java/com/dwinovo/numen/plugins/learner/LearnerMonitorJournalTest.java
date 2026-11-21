@@ -247,7 +247,7 @@ class LearnerMonitorJournalTest {
                     {"v":1,"skillId":"old","version":1,"kind":"EXPERIENCE","name":"old",
                     "purpose":"old","audience":"PLANNER","triggerConditions":[],"excludeConditions":[],
                     "preconditions":[],"risk":"LOW","evidenceLevel":"UNKNOWN","status":"DRAFT",
-                    "bodyRef":"draft:old:abc","validationSignals":[],"foundingSamples":[],"supersedes":[],"conflicts":[]}
+                    "bodyRef":"draft:old:abc","validationSignals":[],"foundingSamples":["fixture"],"supersedes":[],"conflicts":[]}
                     """;
             Files.writeString(dir.resolve("skills.jsonl"), JsonParser.parseString(legacy).toString() + "\n");
             com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.resetForTest();
@@ -325,7 +325,7 @@ class LearnerMonitorJournalTest {
                         + "\"name\":\"old\",\"purpose\":\"old\",\"audience\":\"PLANNER\","
                         + "\"triggerConditions\":[],\"excludeConditions\":[],\"preconditions\":[],"
                         + "\"risk\":\"LOW\",\"evidenceLevel\":\"UNKNOWN\",\"status\":\"" + status + "\","
-                        + "\"bodyRef\":\"draft:old:abc\",\"validationSignals\":[],\"foundingSamples\":[],\"supersedes\":[],\"conflicts\":[]}";
+                        + "\"bodyRef\":\"draft:old:abc\",\"validationSignals\":[],\"foundingSamples\":[\"fixture\"],\"supersedes\":[],\"conflicts\":[]}";
                 Files.writeString(dir.resolve("skills.jsonl"), line + "\n", java.nio.file.StandardOpenOption.CREATE,
                         java.nio.file.StandardOpenOption.APPEND);
             }
