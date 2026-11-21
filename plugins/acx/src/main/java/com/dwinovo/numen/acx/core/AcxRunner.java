@@ -857,8 +857,17 @@ public final class AcxRunner {
     private static boolean saveControlPosition(Ctx c, String key, int round, int child,
                                                boolean active, boolean progress, Map<String, Object> output,
                                                Map<String, Map<String, Object>> outputs) {
-        return commitUnlessCancelled(c, () -> c.vars.put(key, Map.of("round", round, "child", child, "active", active,
-                "progress", progress, "output", snapshotParams(c, key, output), "outputs", snapshotOutputs(c, key, outputs))));
+        return saveControlPosition(c, key, round, child, active, progress, output, outputs, null);
+    }
+
+    private static boolean saveControlPosition(Ctx c, String key, int round, int child,
+                                               boolean active, boolean progress, Map<String, Object> output,
+                                               Map<String, Map<String, Object>> outputs, String completedChildPath) {
+        return commitUnlessCancelled(c, () -> {
+            c.vars.put(key, Map.of("round", round, "child", child, "active", active,
+                    "progress", progress, "output", snapshotParams(c, key, output), "outputs", snapshotOutputs(c, key, outputs)));
+            if (completedChildPath != null) clearRecoveryState(c, completedChildPath);
+        });
     }
 
     private static boolean saveRecoveryPosition(Ctx c, String key, Map<String, Object> snapshot) {
@@ -1060,12 +1069,10 @@ public final class AcxRunner {
                         return AcxStepOutcome.paused(
                                 pauseMessage(def, child, r.output()), r.output());
                     }
-                    if (!saveControlPosition(c, cursorKey, iters - 1, childAt + 1, true, roundHasProgress, cur, allOutputs)) {
+                    if (!saveControlPosition(c, cursorKey, iters - 1, childAt + 1, true, roundHasProgress, cur, allOutputs,
+                            path + "r" + iters + "/c" + childAt + "/")) {
                         return cancelled(c);
                     }
-                    // The parent cursor now skips this child. Its recovery-only
-                    // snapshots are obsolete; parent outputs were saved independently.
-                    clearRecoveryState(c, path + "r" + iters + "/c" + childAt + "/");
                     continue;
                 }
                 if (r.status() == AcxStatus.PAUSED) {
