@@ -46,6 +46,35 @@ class RddAssetStoreTest {
         assertTrue(context.length() <= 600);
     }
 
+    @Test void differentWorldsAtSameCoordinatesMustNotCollapseIntoOneLead() {
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(new Observation("old", "world_machine", "test", "minecraft:overworld", 10L,
+                Map.of("kind", "machine", "label", "furnace", "dimension", "minecraft:overworld",
+                        "world_id", "world-A", "x", 3, "y", 65, "z", 4, "summary", "world-A-marker")),
+                "asset-A", AssetScope.GLOBAL, null);
+        registry.apply(new Observation("new", "world_machine", "test", "minecraft:overworld", 20L,
+                Map.of("kind", "machine", "label", "furnace", "dimension", "minecraft:overworld",
+                        "world_id", "world-B", "x", 3, "y", 65, "z", 4, "summary", "world-B-marker")),
+                "asset-B", AssetScope.GLOBAL, null);
+        String context = RddAssetContext.render(registry, 2000);
+        assertTrue(context.contains("world-A-marker"), "one world's historical lead must not replace another's");
+        assertTrue(context.contains("world-B-marker"), "both distinct worlds must remain visible as historical leads");
+    }
+
+    @Test void newerNearbyVillageObservationIsNotHiddenByRicherOldLead() {
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(new Observation("old", "world_village", "rdd_world_observer", "minecraft:overworld", 10L,
+                Map.of("kind", "village", "label", "minecraft:village_plains", "dimension", "minecraft:overworld",
+                        "x", 15, "y", 64, "z", 0, "resources", Map.of("villagers", 10), "summary", "old villagers=10")),
+                "village|minecraft:overworld|0,0", AssetScope.GLOBAL, null);
+        registry.apply(new Observation("new", "world_village", "rdd_world_observer", "minecraft:overworld", 20L,
+                Map.of("kind", "village", "label", "minecraft:village_plains", "dimension", "minecraft:overworld",
+                        "x", 16, "y", 64, "z", 0, "resources", Map.of("villagers", 0), "summary", "new villagers=0")),
+                "village|minecraft:overworld|1,0", AssetScope.GLOBAL, null);
+        String context = RddAssetContext.render(registry, 2000);
+        assertTrue(context.contains("new villagers=0"), "newer scoped observation must not disappear behind richer history");
+    }
+
     private static Observation observation(String type, Map<String, Object> value) {
         return new Observation("obs-" + type, type, "test", "minecraft:overworld", 1L, value);
     }
