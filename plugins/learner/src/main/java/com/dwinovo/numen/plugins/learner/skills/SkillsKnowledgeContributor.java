@@ -168,7 +168,7 @@ public final class SkillsKnowledgeContributor implements NumenPlugins.KnowledgeC
         if (catalog) {
             var renderedCatalog = CatalogEntryRenderer.render(candidates, view, maxChars > 0 ? maxChars : 1160);
             for (var decision : renderedCatalog.decisions()) {
-                if (!"included".equals(decision.reason())) gaps.merge(decision.reason(), 1, Integer::sum);
+                if (!decision.included()) gaps.merge(decision.reason(), 1, Integer::sum);
             }
             if (renderedCatalog.fragment().isEmpty() && gaps.isEmpty()) return null;
             return new NumenPlugins.KnowledgeFragment(renderedCatalog.fragment(), List.of(), gaps);
