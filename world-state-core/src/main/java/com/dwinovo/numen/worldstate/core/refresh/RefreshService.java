@@ -47,7 +47,8 @@ public final class RefreshService {
     private final Executor executor;
     /** 修订号：按请求被采纳的先后单调递增，让迟到的旧刷新无法覆盖新观测。 */
     private final AtomicLong sequence = new AtomicLong();   // 构造时按存储最大修订号续号
-    private final ConcurrentHashMap<String, CompletableFuture<RefreshResult>> inFlight = new ConcurrentHashMap<>();
+    private record FlightKey(String observationKey, String serverSession) {}
+    private final ConcurrentHashMap<FlightKey, CompletableFuture<RefreshResult>> inFlight = new ConcurrentHashMap<>();
 
     public RefreshService(ProviderRegistry providers, ObservationStore store, Executor executor) {
         this.providers = providers;
@@ -71,7 +72,7 @@ public final class RefreshService {
      */
     public CompletableFuture<RefreshResult> submit(CollectionContext ctx, ObservationRequest request,
                                                    long timeoutMillis) {
-        String key = request.keyFor(ctx.worldId()).canonical();
+        var key = new FlightKey(request.keyFor(ctx.worldId()).canonical(), ctx.serverSession());
         AtomicBoolean owner = new AtomicBoolean(false);
         CompletableFuture<RefreshResult> future = inFlight.computeIfAbsent(key, k -> {
             owner.set(true);
