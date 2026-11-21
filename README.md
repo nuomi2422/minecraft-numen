@@ -17,7 +17,46 @@
 
 </div>
 
-> **本工作树说明（2026-11-15）**：这是基于上游 [Dwinovo/Numen](https://github.com/Dwinovo/minecraft-numen) 的 RDD 开发分支，包含上游代码、本仓修改与扩展插件；不代表官方发行，也不把整个目录宣称为本方原创。当前只做整备收敛，基线尚不是玩家即用预览版。工程与本轮排期唯一入口为 [044 总施工单](<D:/rdd/docs/rdd-docs/知识库/施工文档/044-验证先行的任务链与学习闭环总施工单.md#L678-L680>)，具体构建/部署遵循[工作区工程入口](<D:/rdd/workspace/AGENTS.md>)；后文保留上游产品介绍，不作为本分支所有能力已验收的声明。源代码、公共 API 与美术资源分别遵守 [LICENSE](<LICENSE>)、[LICENSE-API](<LICENSE-API>)、[LICENSE-ASSETS](<LICENSE-ASSETS>)；分发前核对应许可及依赖兼容。
+## RDD 架构与开发状态（2026-11-21）
+
+这是基于 [Dwinovo/Numen](https://github.com/Dwinovo/minecraft-numen) 的 RDD 公开开发 fork，不是上游官方发行，也不宣称上游代码与资源为本方原创。目标是在真实 Minecraft 中检验长程自主任务、可复用能力和持续改进；目前处于**轮回准备工程：已有部分实现，完整框架接线与效果尚未整体验收**。
+
+### 四条宏观线，一个共同事实底座
+
+- **运行时保证**：规划保目标与依赖，执行者结合当前世界、优先级和“为什么”选择主线/支线/日常；监督只兜正常接续断掉的情况，不代替调度。重要装备或设施损失可使路线前提失效，不限于死亡；死后先取用备用整备，再判断回收，按重要度和替代品选择继续、局补或重规划。
+- **学习**：外置学习者当前主力，从真实输入、选择、动作和世界后态查原因，查重后编写/修订方法并试用复核；内部学习者以后在同一受限框架内组合，不是当前前置。
+- **外部编程**：补原子能力和自有框架缺口，保版本、测试、受管发布与回退，不用提示词掩盖程序错误。
+- **沉淀资产**：保存有用途的基地、设施、资源和探索地图，记录在哪里、是否可用、怎么取用、来源和新鲜度；历史见过不等于现在可用。
+
+
+```text
+game observations / domain events
+  → identity-scoped incremental acquisition → observations
+  → bounded shared computation → derived storage/cache + invalidation
+  → exact reads / semantic retrieval
+  → tasks / AC / environment topics / assets / planner & executor
+  → actions and world outcomes → evidence, learning and revision
+```
+
+### AC：会观察和计算的程序能力，不是固定动作列表
+
+AC 直接读取有类型的世界参数，复用算术、比较、筛选、聚合和排序；通过变量、条件分支、有界循环及结果绑定选择原子动作。复用原 Loader/Runner、注册积木和身体宿主，支持版本固定的子 AC、临时组合、异步反馈与取消传播。多个 AC 可以同时观察、计算、等待，**同一身体资源只有一个仲裁出口**；需要抢占时保断点，安全后重新核现场，不盲续旧路径。
+
+工具按阶段核真实进展并有限自救：走动不等于采到矿，破块不等于入包，收到动作也不等于目标完成。计算和扫描成本同样需要验证。旧高层工具只有在替代保住效果、失败/取消/恢复后才逐项隐藏，保留实现和回退。
+
+### 独立组件与 skills 组装
+
+经验、AC、主/支/日常模板、环境专题、设施方法可分别登记、检索、展开和使用，也能由场景 skill 按版本引用；包不复制正文、不取得任务或身体写权。目标与世界条件共同召回少量目录，再按需取正文。内容版本、一次 AC 运行、逻辑任务、世界缓存与专题挂载各保生命周期，不能混成一种状态。看到目录、展开、采用、调用和世界有效分别取证。
+
+### 当前工程与证据边界
+
+准备工作分四包并行：任务/监督、AC/执行、世界/环境/资产、学习/组装/实验工具，由一名集成主工接线。**安家过夜是首个联调样例，不是总范围或完成标准**；还需以供食、交易、采矿遇险和重要损失恢复等场景复验，框架就绪后才进入正式通关轮回。
+
+上述包含已存在机制与待补契约，**不是全部已经实现或实机有效的功能清单**。源码、离线测试、构建、安装/加载、实际调用、世界效果分别验；上传不代表部署，单测数量与模型自述不代表能力完成。架构 MCP 是内部有来源的导航，不是世界真值或自动派工器。
+
+代码布局：[`rdd-core/`](rdd-core)、[`world-state-core/`](world-state-core)、[`settlement-core/`](settlement-core)、[`experience-core/`](experience-core)、[`plugins/`](plugins)、[`api/`](api)、[`core/`](core)。工程工具见 [rdd-harness](https://github.com/nuomi2422/rdd-harness)，项目门面见 [rdd-restart-doer](https://github.com/nuomi2422/rdd-restart-doer)。私有记录及本机配置不随公开介绍发布。
+
+---
 
 <p align="center">
   <img src="docs/numen-demo.gif" alt="Numen 实机演示：砍树 · 挖矿 · 合成 · 战斗 · 联动 Mekanism" width="640">
