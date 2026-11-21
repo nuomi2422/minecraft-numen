@@ -107,6 +107,22 @@ class RddAssetStoreTest {
         assertTrue(context.length() <= 600);
     }
 
+    @Test void budgetWithNearbyDuplicatesStaysBoundedAndDoesNotPretendComplete() {
+        AssetRegistry registry = new AssetRegistry();
+        for (int i = 0; i < 20; i++) {
+            registry.apply(new Observation("scan-" + i, "world_village", "test", "overworld", 100L + i,
+                    Map.of("kind", "village", "label", "v", "dimension", "overworld", "x", i, "y", 64, "z", 0,
+                            "summary", "village-" + i)), "village-" + i, AssetScope.GLOBAL, null);
+        }
+        registry.apply(new Observation("base", "world_base", "test", "overworld", 1L,
+                Map.of("kind", "base", "label", "home", "dimension", "overworld", "x", 100, "y", 64, "z", 0,
+                        "summary", "important-base")), "base", AssetScope.GLOBAL, null);
+        String context = RddAssetContext.render(registry, 600);
+        assertTrue(context.length() <= 600);
+        assertTrue(context.contains("re-check"));
+        assertTrue(context.contains("truncated=YES"), "bounded output must explicitly disclose omitted leads");
+    }
+
     private static Observation observation(String type, Map<String, Object> value) {
         return new Observation("obs-" + type, type, "test", "minecraft:overworld", 1L, value);
     }
