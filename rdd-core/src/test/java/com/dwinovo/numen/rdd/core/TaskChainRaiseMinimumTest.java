@@ -36,6 +36,19 @@ class TaskChainRaiseMinimumTest {
     }
 
     @Test
+    void yieldAssetMustBeCheckedInsideTheAtomicChainMutation() throws Exception {
+        TaskChain c = chain();
+        c.startCurrent();
+        var method = TaskChain.class.getMethod("raiseCurrentMinimumForAsset", String.class, String.class, int.class);
+        var ex = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> method.invoke(c, "p1-0", "minecraft:iron_pickaxe", 9));
+        assertTrue(ex.getCause() instanceof IllegalArgumentException);
+        assertEquals(3, c.currentMinimum("p1-0"));
+        assertEquals(3, method.invoke(c, "p1-0", "minecraft:hay_block", 9));
+        assertEquals(9, c.currentMinimum("p1-0"));
+    }
+
+    @Test
     void raisingTargetOnTheSpotIsAllowedAndKeepsAttemptsAndBaseline() {
         TaskChain c = chain();
         c.startCurrent();                    // p1-0: PENDING → RUNNING
