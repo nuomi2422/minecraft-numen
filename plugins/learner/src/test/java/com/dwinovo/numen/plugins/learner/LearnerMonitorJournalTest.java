@@ -241,6 +241,134 @@ class LearnerMonitorJournalTest {
     }
 
     /** Bounded fixture shared by the two test files; never replaces the journal sink or worker. */
+    @Test void adminPromotionAndRetirementOnlyReportRealTransitions(@TempDir Path dir) throws Exception {
+        try (Fixture f = new Fixture(dir)) {
+            String legacy = """
+                    {"v":1,"skillId":"old","version":1,"kind":"EXPERIENCE","name":"old",
+                    "purpose":"old","audience":"PLANNER","triggerConditions":[],"excludeConditions":[],
+                    "preconditions":[],"risk":"LOW","evidenceLevel":"UNKNOWN","status":"DRAFT",
+                    "bodyRef":"draft:old:abc","validationSignals":[],"foundingSamples":["fixture"],"supersedes":[],"conflicts":[]}
+                    """;
+            Files.writeString(dir.resolve("skills.jsonl"), JsonParser.parseString(legacy).toString() + "\n");
+            com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.resetForTest();
+            var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.registryFor(dir);
+            assertTrue(registry.get("old").isPresent());
+            var tool = new LearnerAdminTool();
+            java.util.function.BiFunction<String,String,JsonObject> invoke = (action, id) -> {
+                JsonObject args = new JsonObject(); args.addProperty("action", action);
+                args.addProperty("skillId", id); args.addProperty("reason", "fixture"); args.addProperty("confirm", true);
+                AtomicReference<String> response = new AtomicReference<>();
+                tool.onServerCall("admin-call", args, null, response::set);
+                return JsonParser.parseString(response.get()).getAsJsonObject();
+            };
+            JsonObject bad = invoke.apply("promote", "old");
+            assertFalse(bad.get("success").getAsBoolean(), "unreadable draft must not claim promotion");
+            assertTrue(bad.get("message").getAsString().contains("body-unreadable"));
+            String body = "valid original body";
+            String ref = com.dwinovo.numen.plugins.learner.skills.SkillBodyStore.write(dir, "good", 1,
+                    Integer.toHexString(body.hashCode()), body);
+            var artifact = new com.dwinovo.numen.plugins.learner.contract.ArtifactDraft(
+                    com.dwinovo.numen.plugins.learner.contract.ArtifactKind.EXPERIENCE,
+                    "good", "purpose", body, List.of("night"), List.of(), List.of(), "LOW",
+                    List.of(), List.of("memo"), "PLANNER");
+            assertNotNull(ref);
+            assertEquals("DRAFT", registry.register(artifact, "good", ref, false).entry().status().name());
+            assertTrue(invoke.apply("promote", "good").get("success").getAsBoolean());
+            invoke.apply("promote", "good"); // idempotent, must not emit another promotion
+            assertTrue(invoke.apply("retire", "good").get("success").getAsBoolean());
+            invoke.apply("retire", "good"); // idempotent, must not emit another retirement
+            f.barrier();
+            var rows = Files.readAllLines(dir.resolve("monitor/learner.jsonl")).stream()
+                    .map(s -> JsonParser.parseString(s).getAsJsonObject()).toList();
+            assertEquals(1, rows.stream().filter(e -> "learner_promoted".equals(e.get("type").getAsString())).count());
+            assertEquals(1, rows.stream().filter(e -> "learner_retired".equals(e.get("type").getAsString())).count());
+            assertEquals("REVOKED", com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(dir.resolve("skills.jsonl"))
+                    .get("good").orElseThrow().status().name());
+        } finally {
+            com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.resetForTest();
+        }
+    }
+
+    @Test void persistenceFailureCannotBeReportedAsPromotion(@TempDir Path dir) throws Exception {
+        try (Fixture f = new Fixture(dir)) {
+            var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.registryFor(dir);
+            String body = "persist fixture body";
+            String ref = com.dwinovo.numen.plugins.learner.skills.SkillBodyStore.write(dir, "persist", 1,
+                    Integer.toHexString(body.hashCode()), body);
+            var artifact = new com.dwinovo.numen.plugins.learner.contract.ArtifactDraft(
+                    com.dwinovo.numen.plugins.learner.contract.ArtifactKind.EXPERIENCE,
+                    "persist", "persist purpose", body, List.of("night"), List.of(), List.of(), "LOW",
+                    List.of(), List.of("memo"), "PLANNER");
+            registry.register(artifact, "persist", ref, false);
+            assertEquals("DRAFT", com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(dir.resolve("skills.jsonl"))
+                    .get("persist").orElseThrow().status().name());
+            Files.createDirectory(dir.resolve("skills.jsonl.tmp")); // fail the real persist after valid fixture creation
+            JsonObject args = new JsonObject(); args.addProperty("action", "promote");
+            args.addProperty("skillId", "persist"); args.addProperty("reason", "fixture"); args.addProperty("confirm", true);
+            AtomicReference<String> response = new AtomicReference<>();
+            new LearnerAdminTool().onServerCall("admin-call", args, null, response::set);
+            assertFalse(JsonParser.parseString(response.get()).getAsJsonObject().get("success").getAsBoolean(),
+                    "write failure cannot be claimed as durable promotion");
+            assertEquals("DRAFT", com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(dir.resolve("skills.jsonl"))
+                    .get("persist").orElseThrow().status().name());
+            f.barrier();
+            Path journal = dir.resolve("monitor/learner.jsonl");
+            if (Files.exists(journal)) assertTrue(Files.readAllLines(journal).stream().noneMatch(s -> s.contains("learner_promoted")));
+        } finally { com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.resetForTest(); }
+    }
+
+    @Test void reusedInMemoryTrialWithoutPersistedRecordIsUnknownNotSuccess(@TempDir Path dir) throws Exception {
+        try (Fixture f = new Fixture(dir)) {
+            var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.registryFor(dir);
+            String body = "valid but registration cannot persist";
+            String ref = com.dwinovo.numen.plugins.learner.skills.SkillBodyStore.write(dir, "unpersisted", 1,
+                    Integer.toHexString(body.hashCode()), body);
+            Files.createDirectory(dir.resolve("skills.jsonl.tmp"));
+            var artifact = new com.dwinovo.numen.plugins.learner.contract.ArtifactDraft(
+                    com.dwinovo.numen.plugins.learner.contract.ArtifactKind.EXPERIENCE,
+                    "unpersisted", "purpose", body, List.of("night"), List.of(), List.of(), "LOW",
+                    List.of(), List.of("memo"), "PLANNER");
+            assertEquals("TRIAL", registry.register(artifact, "unpersisted", ref, true).entry().status().name());
+            assertTrue(com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(dir.resolve("skills.jsonl"))
+                    .get("unpersisted").isEmpty(), "fault injection must leave disk without entry");
+            JsonObject args = new JsonObject(); args.addProperty("action", "promote");
+            args.addProperty("skillId", "unpersisted"); args.addProperty("reason", "fixture"); args.addProperty("confirm", true);
+            AtomicReference<String> response = new AtomicReference<>();
+            new LearnerAdminTool().onServerCall("admin-call", args, null, response::set);
+            assertFalse(JsonParser.parseString(response.get()).getAsJsonObject().get("success").getAsBoolean(),
+                    "REUSE of memory-only entry cannot claim persistent success");
+        } finally { com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.resetForTest(); }
+    }
+
+    @Test void legacyTrialAndPublishedWithUnreadableBodiesNeverReportSuccessfulPromotion(@TempDir Path dir) throws Exception {
+        try (Fixture f = new Fixture(dir)) {
+            for (String status : List.of("TRIAL", "PUBLISHED")) {
+                String id = "old-" + status.toLowerCase(java.util.Locale.ROOT);
+                String line = "{\"v\":1,\"skillId\":\"" + id + "\",\"version\":1,\"kind\":\"EXPERIENCE\","
+                        + "\"name\":\"old\",\"purpose\":\"old\",\"audience\":\"PLANNER\","
+                        + "\"triggerConditions\":[],\"excludeConditions\":[],\"preconditions\":[],"
+                        + "\"risk\":\"LOW\",\"evidenceLevel\":\"UNKNOWN\",\"status\":\"" + status + "\","
+                        + "\"bodyRef\":\"draft:old:abc\",\"validationSignals\":[],\"foundingSamples\":[\"fixture\"],\"supersedes\":[],\"conflicts\":[]}";
+                Files.writeString(dir.resolve("skills.jsonl"), line + "\n", java.nio.file.StandardOpenOption.CREATE,
+                        java.nio.file.StandardOpenOption.APPEND);
+            }
+            com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.resetForTest();
+            var tool = new LearnerAdminTool();
+            for (String id : List.of("old-trial", "old-published")) {
+                JsonObject args = new JsonObject(); args.addProperty("action", "promote");
+                args.addProperty("skillId", id); args.addProperty("reason", "fixture"); args.addProperty("confirm", true);
+                AtomicReference<String> response = new AtomicReference<>();
+                tool.onServerCall("admin-call", args, null, response::set);
+                JsonObject result = JsonParser.parseString(response.get()).getAsJsonObject();
+                assertFalse(result.get("success").getAsBoolean(), "unreadable " + id + " must not claim success");
+                assertTrue(result.get("message").getAsString().contains("body-unreadable"));
+            }
+            f.barrier();
+            Path journal = dir.resolve("monitor/learner.jsonl");
+            if (Files.exists(journal)) assertTrue(Files.readAllLines(journal).stream().noneMatch(s -> s.contains("learner_promoted")));
+        } finally { com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.resetForTest(); }
+    }
+
     static final class Fixture implements AutoCloseable {
         final Path config;
         final UUID companion = UUID.randomUUID();

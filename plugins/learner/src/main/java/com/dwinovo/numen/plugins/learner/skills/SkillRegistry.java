@@ -237,7 +237,7 @@ public final class SkillRegistry {
                 current.excludeConditions(), current.preconditions(), current.risk(),
                 current.evidenceLevel(), SkillStatus.REVOKED, current.bodyRef(),
                 current.validationSignals(), current.foundingSamples(), nextSupersedes, current.conflicts());
-        store(revoked);
+        if (!storeTransition(revoked)) return new Decision(Outcome.CONFLICT, current, "persist-failed: retirement not committed");
         return new Decision(Outcome.REVISE, revoked, "retired: " + (reason == null ? "" : reason));
     }
 
@@ -273,7 +273,7 @@ public final class SkillRegistry {
                 current.excludeConditions(), current.preconditions(), current.risk(),
                 current.evidenceLevel(), SkillStatus.TRIAL, current.bodyRef(),
                 current.validationSignals(), current.foundingSamples(), nextSupersedes, current.conflicts());
-        store(promoted);
+        if (!storeTransition(promoted)) return new Decision(Outcome.CONFLICT, current, "persist-failed: promotion not committed");
         return new Decision(Outcome.REVISE, promoted, "promoted: " + (reason == null ? "" : reason));
     }
 
@@ -372,6 +372,28 @@ public final class SkillRegistry {
         if (file == null) return false;
         String body = SkillBodyStore.read(file.toAbsolutePath().getParent(), bodyRef);
         return body != null && !body.isBlank();
+    }
+
+    /** Persist a management status transition before changing the live index.
+     * This is a serial in-process boundary, not a cross-process transaction or fsync guarantee. */
+    private boolean storeTransition(SkillEntry replacement) {
+        if (file == null) { index(replacement); return true; } // preserve explicit memory-only registry behavior
+        if (skippedLines > 0) return false; // avoid rewriting a partially decoded registry
+        try {
+            Path parent = file.toAbsolutePath().getParent();
+            if (parent != null) Files.createDirectories(parent);
+            StringBuilder sb = new StringBuilder();
+            for (SkillEntry entry : byId.values()) {
+                SkillEntry out = entry.skillId().equals(replacement.skillId()) ? replacement : entry;
+                sb.append(toJson(out).toString()).append('\n');
+            }
+            Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+            Files.writeString(tmp, sb.toString(), StandardCharsets.UTF_8);
+            try { Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); }
+            catch (AtomicMoveNotSupportedException e) { Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING); }
+            index(replacement);
+            return true;
+        } catch (IOException | RuntimeException failure) { return false; }
     }
 
     private void store(SkillEntry e) {

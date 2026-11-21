@@ -63,11 +63,14 @@ final class LearnerAdminTool implements NumenTool {
         Map<String, Object> result = "promote".equals(parsed.action())
                 ? LearnerPlugin.promoteSkill(parsed.skillId(), parsed.reason(), "external")
                 : LearnerPlugin.retireSkill(parsed.skillId(), parsed.reason(), "external");
-        if (result.containsKey("error")) {
-            reply.accept(TaskResult.fail("learner_admin: " + result.get("error")).toJson());
+        String outcome = String.valueOf(result.getOrDefault("outcome", ""));
+        if (result.containsKey("error") || !("REVISE".equals(outcome) || "REUSE".equals(outcome))) {
+            reply.accept(TaskResult.fail("learner_admin: " + result.getOrDefault("error",
+                    result.getOrDefault("decisionReason", "unexpected outcome: " + outcome))).toJson());
             return;
         }
-        String verb = "promote".equals(parsed.action()) ? "promoted" : "retired";
+        String verb = "REUSE".equals(outcome) ? "unchanged" :
+                ("promote".equals(parsed.action()) ? "promoted" : "retired");
         reply.accept(TaskResult.ok(verb + " " + parsed.skillId() + " -> " + result.get("outcome")
                 + " v" + result.get("newVersion"), result).toJson());
     }
