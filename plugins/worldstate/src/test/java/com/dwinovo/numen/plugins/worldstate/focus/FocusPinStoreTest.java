@@ -73,6 +73,16 @@ class FocusPinStoreTest {
         assertNotNull(st.acquire(c,W,S,D,"environment","v2","second",1000,60000,0,3,0));
     }
 
+    @Test void serializedWorldSwitchOldLeaseCannotReleaseNewPin() {
+        FocusPinStore st=new FocusPinStore(); UUID c=UUID.randomUUID();
+        var old=st.acquire(c,W,S,D,"environment","v1","owner",1000,60000,0,0,0);
+        var next=st.acquire(c,"world-2","session-2",D,"environment","v1","owner",1100,60000,0,0,0);
+        assertNotEquals(old.leaseId(),next.leaseId());
+        assertFalse(st.release(c,"owner",old.leaseId()));
+        assertEquals(1,st.active(c,"world-2","session-2",1200).size());
+        assertTrue(st.release(c,"owner",next.leaseId()));
+    }
+
     @Test void pinSurvivesTwoRoundsThenExpires() {
         FocusPinStore st = new FocusPinStore();
         UUID c = UUID.randomUUID();
