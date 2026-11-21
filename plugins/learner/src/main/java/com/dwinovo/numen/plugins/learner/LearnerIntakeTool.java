@@ -95,6 +95,10 @@ final class LearnerIntakeTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
+        if (!LearnerSwitch.enabled()) {
+            reply.accept(TaskResult.fail(LearnerSwitch.disabledMessage("learner_intake")).toJson());
+            return;
+        }
         try {
             Input in = GSON.fromJson(args, Input.class);
             long cursor = parseLong(nz(in == null ? null : in.cursor()), 0L);

@@ -113,6 +113,10 @@ final class LearnerReviewTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
+        if (!LearnerSwitch.enabled()) {
+            reply.accept(TaskResult.fail(LearnerSwitch.disabledMessage("learner_review")).toJson());
+            return;
+        }
         final UUID id;
         try {
             id = companion.getUUID();

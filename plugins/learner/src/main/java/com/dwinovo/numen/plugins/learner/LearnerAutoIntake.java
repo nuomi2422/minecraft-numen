@@ -308,6 +308,9 @@ final class LearnerAutoIntake {
     static void onServerTick(long gameTimeTicks, java.util.function.Supplier<DeliveryScope> currentScope) {
         try {
             if (configDirCache == null || !maybeReloadToggle()) return;
+            // 2026-11-22：总闸关 → 自动入队/复盘提醒/兜底复盘全停（省 LLM 钱）。
+            LearnerSwitch.reloadIfDue(configDirCache);
+            if (!LearnerSwitch.enabled()) return;
             if (!enabled) return;
             if (gameTimeTicks <= 0 || gameTimeTicks % SCAN_INTERVAL_TICKS != 0) return;
             scanOnce(currentScope);
