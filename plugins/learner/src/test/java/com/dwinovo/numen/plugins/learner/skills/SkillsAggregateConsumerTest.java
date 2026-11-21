@@ -178,6 +178,22 @@ class SkillsAggregateConsumerTest {
     }
 
     @Test
+    void compactCatalogRejectsRealAcKindScriptPurposeWithoutInventingSummary() throws Exception {
+        String body = "{\"name\":\"old-ac\",\"steps\":[{\"block\":\"observe\"}]}";
+        String bodyRef = SkillBodyStore.write(dir, "real-ac", 1, Integer.toHexString(body.hashCode()), body);
+        assertNotNull(bodyRef);
+        var entry = new SkillEntry("real-ac", 1, ArtifactKind.ACX_REQUEST, "AC from fixture", body,
+                "EXECUTOR", List.of("night"), List.of(), List.of(), "UNKNOWN", "UNKNOWN",
+                SkillStatus.TRIAL, bodyRef, List.of(), List.of("offline-fixture"), List.of(), List.of());
+        java.nio.file.Files.writeString(dir.resolve("skills.jsonl"), SkillRegistry.toJson(entry) + "\n",
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contributeCatalog(UUID.randomUUID(), "夜间");
+        assertNotNull(fragment);
+        assertFalse(fragment.text().contains("skill:real-ac@v1"), "script is not a safe human-readable purpose");
+        assertFalse(fragment.gapCounts().isEmpty(), "unsafe source must produce gap, not silent absence");
+    }
+
+    @Test
     void catalogReachesProviderWithoutBodyReceiptAndExactRefReadsOriginalBody() throws Exception {
         String body = "ORIGINAL_BODY_ONLY_AFTER_EXPLICIT_READ";
         var entry = catalogFixture("sk-catalog", SkillStatus.TRIAL, "EXECUTOR,PLANNER", body,
