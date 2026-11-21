@@ -144,6 +144,30 @@ class RequestDeliveredAggregationTest {
     }
 
     @Test
+    void goalDispatchKeepsOnlyUntruncatedRefsAndNeverBooksUnsentOrRetryTwice() {
+        UUID who = UUID.randomUUID();
+        AtomicReference<NumenPlugins.DeliveredContext> delivered = new AtomicReference<>();
+        AtomicInteger count = new AtomicInteger();
+        NumenPlugins.sinkRequestDeliveredWithContext(c -> {
+            if (who.equals(c.companion())) { delivered.set(c); count.incrementAndGet(); }
+        });
+        var token = new WorldContextStamp.Token(java.util.Map.of("world_id", "w", "server_session", "s"), 1L);
+        var pending = new AtomicReference<>(new NumenPlugins.DeliveredContext(who, token, "goal-1",
+                "goal_judging", "EXECUTOR", "", "", List.of(
+                new NumenPlugins.DeliveredRef("exp:whole", "v1", false),
+                new NumenPlugins.DeliveredRef("exp:cut", "v1", true))));
+        NumenPlugins.deliveryDispatched(pending, "llm_request", java.util.Map.of("status", "prepared", "requestId", "goal-1"));
+        NumenPlugins.deliveryDispatched(pending, "llm_request", java.util.Map.of("status", "dispatched", "requestId", "other"));
+        assertEquals(0, count.get(), "construction or another request cannot create an orphan ledger row");
+        var first = java.util.Map.of("status", "dispatched", "requestId", "goal-1", "attempt", 1, "transportRequestId", "wire-1");
+        NumenPlugins.deliveryDispatched(pending, "llm_request", first);
+        NumenPlugins.deliveryDispatched(pending, "llm_request", java.util.Map.of("status", "dispatched", "requestId", "goal-1", "attempt", 2, "transportRequestId", "wire-2"));
+        assertEquals(1, count.get());
+        assertEquals("goal_judging", delivered.get().phase());
+        assertEquals(List.of("exp:whole"), delivered.get().refs().stream().map(NumenPlugins.DeliveredRef::entryRef).toList());
+    }
+
+    @Test
     void contextualDeliveryPreservesOriginalIdentityAndFiltersBeforeBothConsumers() {
         UUID companion = UUID.randomUUID();
         AtomicReference<NumenPlugins.DeliveredContext> got = new AtomicReference<>();

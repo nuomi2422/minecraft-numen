@@ -994,7 +994,11 @@ public final class EntityAgentLoop {
      */
     private void judgeGoal() {
         var target = goal;
-        String facts = runtimeStateXml();
+        String facts = runtimeStateXml(false, "goal_judging", 1);
+        var delivery = new java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext>();
+        var deliveryToken = captureDeliveryToken();
+        var observation = observeExecutionRequest("goal_judging", deliveryToken, delivery);
+        publishPendingRuntimeState(observation, deliveryToken, delivery);
         String since = sinceGoalForJudge();
         goalJudging = true;
         final int gen = turnGeneration;
@@ -1004,7 +1008,7 @@ public final class EntityAgentLoop {
                                         target, facts, since))),
                         List.of(),
                         com.dwinovo.numen.agent.goal.GoalPrompts.evaluatorSystem(),
-                        null, observeRequest("goal_judging"))
+                        null, observation)
                 .whenComplete((res, err) -> Minecraft.getInstance().execute(
                         () -> finishJudging(gen, target, res, err)));
     }
@@ -2695,10 +2699,6 @@ public final class EntityAgentLoop {
      * 装得下则输出与接入前<b>逐字节相同</b>（没有则不写任何属性）。
      * 必知区（{@code <current_task>}）永不裁——裁了就是改语义。
      */
-    private String runtimeStateXml() {
-        return runtimeStateXml(true, "goal_judging", 1);
-    }
-
     /**
      * @param publish true = 立即发布（goal_judging 等独立请求）；
      *                false = 只构建 + 暂存，主轮等到所有闸通过、incrementTurn 之后由
@@ -2728,7 +2728,8 @@ public final class EntityAgentLoop {
         String xml = body.isEmpty() ? "" : "<runtime_state" + attributes + ">" + body + "</runtime_state>";
         if (publish) {
             if (plan.denied() || plan.truncated()) publishContextBudget(plan);
-            deliverKnowledgeRefs(plan);
+            // This path has no request identity and must never claim delivery.
+            pendingDeliveredRefs = new ArrayList<>();
             publishRuntimeState(xml, origin, attempt);
         } else {
             // A-M2：先只暂存。被预算/上下文/压缩闸拦下的轮次永远不会走到发布点，
@@ -2776,10 +2777,6 @@ public final class EntityAgentLoop {
      * <p>观测旁路：requestDelivered 内部逐 sink try/catch，账本挂了不挡请求。
      * 账本本身是会话内的（ExposureLedger），经验插件侧还会发 monitor 事件留审计。
      */
-    private void deliverKnowledgeRefs(ContextBudget.Allocation plan) {
-        deliverKnowledgeRefs(plan, null, null, null, "");
-    }
-
     private void deliverKnowledgeRefs(ContextBudget.Allocation plan,
             com.dwinovo.numen.agent.llm.LlmObservation observation,
             com.dwinovo.numen.api.WorldContextStamp.Token token,
@@ -2790,15 +2787,16 @@ public final class EntityAgentLoop {
         if (refs == null || refs.isEmpty()) {
             return;
         }
-        boolean kept = plan != null && plan.keptNames().contains(SECTION_EXECUTOR_KNOWLEDGE);
+        boolean kept = plan != null && !plan.denied() && plan.keptNames().contains(SECTION_EXECUTOR_KNOWLEDGE);
         // A5（97 号）：最终裁剪账本——per-ref kept/dropped + 原因。只观测，不改裁剪与预算数字。
         publishBudgetDecision(refs, kept, plan);
         if (!kept) {
             return; // 段被裁：不记（先裁后记）
         }
-        if (observation == null || delivery == null) {
-            // Legacy callers have no original request identity; never manufacture one.
-            com.dwinovo.numen.api.NumenPlugins.requestDelivered(entityUuid, refs);
+        if (observation == null || delivery == null || token == null || token.identity() == null
+                || token.identity().getOrDefault("world_id", "").isBlank()
+                || token.identity().getOrDefault("server_session", "").isBlank() || token.epoch() <= 0) {
+            // No trustworthy original request/world identity: do not create a delivery.
             return;
         }
         String taskId = "", taskCallId = "";
@@ -2808,6 +2806,7 @@ public final class EntityAgentLoop {
                 task == null ? "" : task.publicId(), token, task == null ? null : task.identityToken())) {
             // A replaced/ended/old-world task is not an idle episode. Never attach task B
             // to a body about A, nor turn stale task identity into a new-world candidate.
+            if ("goal_judging".equals(observation.phase())) return;
             evidenceToken = null;
         } else if (task != null) {
             taskId = task.publicId();
