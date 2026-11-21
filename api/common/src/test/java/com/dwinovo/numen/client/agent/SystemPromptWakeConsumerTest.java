@@ -73,6 +73,7 @@ class SystemPromptWakeConsumerTest {
                 "        if (err != null) {");
         String emptyResponse = between(response, "        AssistantTurn turn = res.turn();",
                 "        // True context size");
+        methods.append(goal).append('\n');
         methods.append("private boolean tryStartTurn() {\n").append(startGuards)
                 .append("long requestTokens = 1L;\n").append(budget).append(context)
                 .append("requests++; awaitingLlmResponse = true; return true;\n}\n")
@@ -97,6 +98,7 @@ class SystemPromptWakeConsumerTest {
                   public static boolean connected=true;
                   public static Minecraft getInstance(){return new Minecraft();}
                   public Object getConnection(){return connected?this:null;}
+                  public void execute(Runnable r){r.run();}
                 }
                 """);
         sources.put("com.dwinovo.numen.api.NumenApi", """
@@ -134,6 +136,17 @@ class SystemPromptWakeConsumerTest {
                 package net.minecraft.client.player;
                 public class AbstractClientPlayer {public Object level(){return null;}}
                 """);
+        sources.put("com.dwinovo.numen.api.NumenPlugins", """
+                package com.dwinovo.numen.api;
+                public class NumenPlugins { public static class DeliveredContext {} }
+                """);
+        sources.put("com.dwinovo.numen.agent.goal.GoalPrompts", """
+                package com.dwinovo.numen.agent.goal;
+                public class GoalPrompts {
+                  public static String evaluatorQuery(Object goal,String facts,String since){return facts;}
+                  public static String evaluatorSystem(){return "system";}
+                }
+                """);
         sources.put("com.dwinovo.numen.client.agent.WakeFixture", """
                 package com.dwinovo.numen.client.agent;
                 import java.util.*;
@@ -169,7 +182,7 @@ class SystemPromptWakeConsumerTest {
                   }
                   record Result(AssistantTurn turn){}
                   static class ConvoState {
-                    static class Msg {static class User extends Msg {}}
+                    static class Msg {static class User extends Msg {User(){} User(String s){}}}
                     List<Msg> messages=new ArrayList<>();List<String> texts=new ArrayList<>();
                     List<Msg> snapshot(){return messages;}
                     Msg lastMessage(){return messages.isEmpty()?null:messages.get(messages.size()-1);}
@@ -198,6 +211,22 @@ class SystemPromptWakeConsumerTest {
                   void performClear(){throw new AssertionError("not a clear control");}
                   void startCompaction(boolean automatic){throw new AssertionError("not a compact control");}
                   AbstractClientPlayer resolveEntity(){return null;}
+                  Object goal=new Object(); boolean goalJudging,throwBuild; int booked; String mode="none";
+                  java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext> goalPending;
+                  static class Observation {final String id="goal-request";}
+                  String runtimeStateXml(boolean publish,String origin,int attempt){if(throwBuild)throw new IllegalStateException("build failed");return "facts";}
+                  Object captureDeliveryToken(){return new Object();}
+                  Observation observeExecutionRequest(String phase,Object token,java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext> pending){goalPending=pending;return new Observation();}
+                  void publishPendingRuntimeState(Observation obs,Object token,java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext> pending){pending.set(new com.dwinovo.numen.api.NumenPlugins.DeliveredContext());}
+                  String sinceGoalForJudge(){return "";}
+                  class Client {java.util.concurrent.CompletableFuture<Object> chatStreaming(List<?> m,List<?> t,String s,Object chunk,Observation o){
+                    requests++; if(mode.equals("dispatch")||mode.equals("retry")){dispatch(o.id); if(mode.equals("retry"))dispatch(o.id);} else if(mode.equals("wrong"))dispatch("other");
+                    return new java.util.concurrent.CompletableFuture<>();}}
+                  Client client(){return new Client();}
+                  void dispatch(String id){if("goal-request".equals(id)&&goalPending.getAndSet(null)!=null)booked++;}
+                  void finishJudging(int gen,Object target,Object result,Throwable error){}
+                  public static Map<String,Object> runGoal(String mode){WakeFixture f=new WakeFixture();f.mode=mode;f.denyContext=mode.equals("denied");f.throwBuild=mode.equals("build-fail");
+                    try{f.judgeGoal();}catch(IllegalStateException expected){} return Map.of("requests",f.requests,"booked",f.booked,"refs",f.pendingDeliveredRefs.size());}
                   String contextBudgetProblem(){return denyContext ? "DENIED" : null;}
                   public static Map<String,Object> runGoalBudget(boolean denied) {
                     WakeFixture f=new WakeFixture(); f.denyContext=denied; f.goalBudgetGate();
@@ -280,6 +309,15 @@ class SystemPromptWakeConsumerTest {
     @SuppressWarnings("unchecked")
     static Map<String, Object> run(String scenario) throws Exception {
         return (Map<String, Object>) fixture.getMethod("run", String.class).invoke(null, scenario);
+    }
+
+    @Test void realGoalMethodOnlyBooksAfterMatchingDispatch() throws Exception {
+        for (String scenario : List.of("none", "wrong", "build-fail", "denied", "dispatch", "retry")) {
+            @SuppressWarnings("unchecked") var result=(Map<String,Object>) fixture.getMethod("runGoal",String.class).invoke(null,scenario);
+            assertEquals(scenario.equals("denied") || scenario.equals("build-fail") ? 0 : 1,result.get("requests"),scenario);
+            assertEquals(scenario.equals("dispatch") || scenario.equals("retry") ? 1 : 0,result.get("booked"),scenario);
+            if (scenario.equals("denied")) assertEquals(0,result.get("refs"));
+        }
     }
 
     @Test void goalBudgetUsesProductionGuardAndClearsDeniedCandidate() throws Exception {
