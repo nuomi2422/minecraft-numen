@@ -765,6 +765,7 @@ class AcxCompanionBridgeConsumerTest {
                     boolean unchanged = cancelled.equals(old.record()) && !old.isRunning();
                     boolean occupiedAfterReply = CompanionTickDispatcher.currentTaskFor(f.a.getUUID()) == original
                             && original.getState() == TaskState.RUNNING;
+                    f.a.gameTime += 21; // Defeat the independent freshly-accepted grace guard.
                     f.start();
                     String competitor = f.run;
                     f.drain();
