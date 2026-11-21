@@ -4023,6 +4023,38 @@ private static void takeDiag() {
             eq(3, Fake.calls.count("mine"), "★ 总共正好 3 次（游标避免了重跑）");
         });
 
+        T.test("子帧已结束其截断标记不误挡父后续暂停", () -> {
+            List<Object> big = new ArrayList<>();
+            for (int i = 0; i < 65; i++) big.add(Fake.params("x", i));
+            Fake.Registry reg = new Fake.Registry().add(Fake.fixed("scan_blocks", Fake.params("matches", big)))
+                    .add(Fake.fixed("done", Map.of())).add(Fake.pauserOnce("mark", new Fake.PauseOnce(), "later"));
+            AcxDefinition child = defN("child_ac", step("scan", "scan_blocks", Map.of()), step("done", "done", Map.of()));
+            AcxDefinition parent = defN("parent", ctrl("outer", "while",
+                    Fake.params("do_while", true, "max_iters", 1), step("call", "child", Map.of()), step("pause", "mark", Map.of())));
+            AcxRunner runner = AcxRunner.builder().tools(reg).catalog(AcxCatalog.of(Map.of("child", child))).build();
+            AcxRunRecord first = runner.run(parent, Map.of());
+            eq(AcxStatus.PAUSED, first.status(), "child完成后暂停");
+            AcxRunRecord resumed = runner.resume(parent, first);
+            T.isTrue(!resumed.errorMessage().contains("快照不完整"), "已过期子帧标记不得阻断 vars=" + first.vars());
+        });
+        T.test("父仍引用子帧大列表时截断必须拒续", () -> {
+            Fake.resetCalls();
+            List<Object> big = new ArrayList<>();
+            for (int i = 0; i < 65; i++) big.add(Fake.params("x", i));
+            Fake.Registry reg = new Fake.Registry().add(Fake.fixed("scan_blocks", Fake.params("matches", big)))
+                    .add(Fake.fixed("mine", Fake.params("mined", 1)))
+                    .add(Fake.pauserOnce("mark", new Fake.PauseOnce(), "later"));
+            AcxDefinition child = defN("child_ac", step("scan", "scan_blocks", Map.of()));
+            AcxDefinition parent = defN("parent", ctrl("outer", "while", Fake.params("do_while", true, "max_iters", 1),
+                    step("call", "child", Map.of()), step("pause", "mark", Map.of()),
+                    ctrl("each", "for", Fake.params("list", "$call.matches", "as", "m"), step("dig", "mine", Map.of()))));
+            AcxRunner runner = AcxRunner.builder().tools(reg).catalog(AcxCatalog.of(Map.of("child", child))).build();
+            AcxRunRecord first = runner.run(parent, Map.of());
+            eq(AcxStatus.PAUSED, first.status(), "输出后暂停");
+            AcxRunRecord resumed = runner.resume(parent, first);
+            eq(AcxStatus.FAIL, resumed.status(), "父仍需截断输出时必须拒续");
+            eq(0, Fake.calls.count("mine"), "不可消费截断输出");
+        });
         T.test("已完成截断快照不阻塞后续无关暂停", () -> {
             Fake.resetCalls();
             List<Object> big = new ArrayList<>();
@@ -4053,7 +4085,9 @@ private static void takeDiag() {
                 AcxDefinition d = def(step("scan", "scan_blocks", Map.of()),
                         ctrl("each", "for", Fake.params("list", "$scan.matches", "as", "m", "ignore_failure", true),
                                 step("dig", "mine", Map.of()), step("mark", "mark", Map.of())));
-                AcxRunner runner = AcxRunner.builder().tools(reg).build();
+                var ledger = new com.dwinovo.numen.acx.core.AcxQualityLedger();
+                List<Object> learned = new ArrayList<>();
+                AcxRunner runner = AcxRunner.builder().tools(reg).store(ledger).experienceSink(learned::add).build();
                 AcxRunRecord paused = runner.run(d, Map.of());
                 eq(AcxStatus.PAUSED, paused.status(), "先暂停");
                 int before = Fake.calls.count("mine");
@@ -4062,6 +4096,8 @@ private static void takeDiag() {
                 eq(before, Fake.calls.count("mine"), "拒续不得重放子动作");
                 T.isTrue(resumed.errorMessage().contains(String.valueOf(size)) && resumed.errorMessage().contains("64"), "说明原长和保留数");
                 T.isTrue(resumed.errorMessage().contains("不回滚"), "说明已执行项不回滚");
+                eq(0, ledger.stats(d.name(), d.version()).success(), "失败不得计成功");
+                eq(0, learned.size(), "失败不得回流成功经验");
                 Fake.resetCalls();
                 Fake.Registry straight = new Fake.Registry().add(Fake.fixed("scan_blocks", Fake.params("matches", big)))
                         .add(Fake.fixed("mine", Fake.params("mined", 1, "count", 1)));

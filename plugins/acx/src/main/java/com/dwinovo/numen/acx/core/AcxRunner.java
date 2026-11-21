@@ -164,8 +164,9 @@ public final class AcxRunner {
 
         AcxStepOutcome outcome;
         try {
-            if (resuming && c.vars.containsKey("_snapshot_truncated")) {
-                Object marker = c.vars.get("_snapshot_truncated");
+            if (resuming && c.vars.keySet().stream().anyMatch(k -> k.startsWith("_snapshot_truncated_"))) {
+                Object marker = c.vars.entrySet().stream().filter(e -> e.getKey().startsWith("_snapshot_truncated_"))
+                        .findFirst().orElseThrow().getValue();
                 if (!(marker instanceof Map<?, ?> truncated) || !(truncated.get("total") instanceof Number total)
                         || !(truncated.get("kept") instanceof Number kept) || total.doubleValue() <= kept.doubleValue()
                         || kept.doubleValue() != MAX_SNAPSHOT_ITEMS)
@@ -586,8 +587,7 @@ public final class AcxRunner {
             tools.find(name).ifPresent(tool -> tool.checkpointCommitted(scope));
         }
         clearRecoveryState(c, path);
-        // A top-level checkpoint invalidates the snapshots belonging to that completed step.
-        c.vars.remove("_snapshot_truncated");
+        // Scoped recovery markers are removed with their owning positions.
     }
 
     private void commitRecoveryPosition(Ctx c, AcxStep step, String path) {
@@ -601,6 +601,8 @@ public final class AcxRunner {
     private static void clearRecoveryState(Ctx c, String path) {
         c.vars.keySet().removeIf(key -> key.startsWith("_params_" + path)
                 || key.startsWith("_snapshot_meta_" + path)
+                || key.startsWith("_snapshot_truncated__cursor_" + path)
+                || key.startsWith("_snapshot_truncated__params_" + path)
                 || key.startsWith("_cursor_" + path) || key.startsWith("_definition_" + path));
     }
 
@@ -840,23 +842,23 @@ public final class AcxRunner {
         return parseCondition(m);
     }
 
-    private static Map<String, Map<String, Object>> snapshotOutputs(Ctx c, Map<String, Map<String, Object>> outputs) {
+    private static Map<String, Map<String, Object>> snapshotOutputs(Ctx c, String scope, Map<String, Map<String, Object>> outputs) {
         Map<String, Map<String, Object>> saved = new LinkedHashMap<>();
-        outputs.forEach((step, data) -> saved.put(step, snapshotParams(c, data)));
+        outputs.forEach((step, data) -> saved.put(step, snapshotParams(c, scope, data)));
         return saved;
     }
 
     private static boolean saveFramePosition(Ctx c, String key, int nextStep,
                                             Map<String, Object> output, Map<String, Map<String, Object>> outputs) {
-        return commitUnlessCancelled(c, () -> c.vars.put(key, Map.of("step", nextStep, "output", snapshotParams(c, output),
-                "outputs", snapshotOutputs(c, outputs))));
+        return commitUnlessCancelled(c, () -> c.vars.put(key, Map.of("step", nextStep, "output", snapshotParams(c, key, output),
+                "outputs", snapshotOutputs(c, key, outputs))));
     }
 
     private static boolean saveControlPosition(Ctx c, String key, int round, int child,
                                                boolean active, boolean progress, Map<String, Object> output,
                                                Map<String, Map<String, Object>> outputs) {
         return commitUnlessCancelled(c, () -> c.vars.put(key, Map.of("round", round, "child", child, "active", active,
-                "progress", progress, "output", snapshotParams(c, output), "outputs", snapshotOutputs(c, outputs))));
+                "progress", progress, "output", snapshotParams(c, key, output), "outputs", snapshotOutputs(c, key, outputs))));
     }
 
     private static boolean saveRecoveryPosition(Ctx c, String key, Map<String, Object> snapshot) {
@@ -938,7 +940,7 @@ public final class AcxRunner {
             if (!commitUnlessCancelled(c, () -> {
                 if (isFor && snapshotInput.get("list") instanceof List<?> original)
                     c.vars.put(snapshotMetaKey, Map.of("total", original.size(), "kept", Math.min(original.size(), MAX_SNAPSHOT_ITEMS)));
-                c.vars.put(snapKey, snapshotParams(c, snapshotInput));
+                c.vars.put(snapKey, snapshotParams(c, snapKey, snapshotInput));
             })) return cancelled(c);
         }
         if (isFor) {
@@ -1061,6 +1063,9 @@ public final class AcxRunner {
                     if (!saveControlPosition(c, cursorKey, iters - 1, childAt + 1, true, roundHasProgress, cur, allOutputs)) {
                         return cancelled(c);
                     }
+                    // The parent cursor now skips this child. Its recovery-only
+                    // snapshots are obsolete; parent outputs were saved independently.
+                    clearRecoveryState(c, path + "r" + iters + "/c" + childAt + "/");
                     continue;
                 }
                 if (r.status() == AcxStatus.PAUSED) {
@@ -1140,8 +1145,8 @@ public final class AcxRunner {
         }
         if (!stoppedByStagnation && !stoppedByMaxIters) {
             // The caller may be cancelled before accepting this completed control's result.
-            if (!commitUnlessCancelled(c, () -> c.vars.put(cursorKey, Map.of("done", true, "output", snapshotParams(c, out),
-                    "outputs", snapshotOutputs(c, allOutputs))))) return cancelled(c);
+            if (!commitUnlessCancelled(c, () -> c.vars.put(cursorKey, Map.of("done", true, "output", snapshotParams(c, cursorKey, out),
+                    "outputs", snapshotOutputs(c, cursorKey, allOutputs))))) return cancelled(c);
         }
         return AcxStepOutcome.success(out, step.id() + " (" + (isWhile ? "while×" + iters : "if") + ")");
     }
@@ -1235,13 +1240,13 @@ public final class AcxRunner {
      * 每条目都是一个小 Map，1000 条就能把记录撑成几十 KB。截到 64 条是个明确的取舍：
      * 超长列表首跑仍可完整执行；快照若截断，后续拒绝续跑并要求核实已发生的动作。
      */
-    private static Map<String, Object> snapshotParams(Ctx c, Map<String, Object> params) {
+    private static Map<String, Object> snapshotParams(Ctx c, String scope, Map<String, Object> params) {
         Map<String, Object> out = new LinkedHashMap<>();
         if (params == null) return out;
         for (Map.Entry<String, Object> e : params.entrySet()) {
             Object v = e.getValue();
             if (v instanceof List<?> l && l.size() > MAX_SNAPSHOT_ITEMS) {
-                c.vars.putIfAbsent("_snapshot_truncated", Map.of("total", l.size(), "kept", MAX_SNAPSHOT_ITEMS));
+                c.vars.putIfAbsent("_snapshot_truncated_" + scope, Map.of("total", l.size(), "kept", MAX_SNAPSHOT_ITEMS));
                 out.put(e.getKey(), new ArrayList<>(l.subList(0, MAX_SNAPSHOT_ITEMS)));
             } else {
                 out.put(e.getKey(), v);
