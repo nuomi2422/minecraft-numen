@@ -66,6 +66,8 @@ class SystemPromptWakeConsumerTest {
                 "        // 上下文预算闸");
         String context = between(start, "        String contextProblem = contextBudgetProblem();",
                 "        // Auto-compaction gate:");
+        String goal = method(loop, "private void judgeGoal(");
+        String goalBudget = between(goal, "        String contextProblem = contextBudgetProblem();", "        var delivery =");
         String response = method(loop, "private void handleResponse(");
         String responseGuard = between(response, "        // Owner interrupted this turn",
                 "        if (err != null) {");
@@ -74,6 +76,7 @@ class SystemPromptWakeConsumerTest {
         methods.append("private boolean tryStartTurn() {\n").append(startGuards)
                 .append("long requestTokens = 1L;\n").append(budget).append(context)
                 .append("requests++; awaitingLlmResponse = true; return true;\n}\n")
+                .append("void goalBudgetGate() {\n").append(goalBudget).append("requests++;\n}\n")
                 .append("void emptyReply() {\n").append(responseGuard)
                 .append(emptyResponse).append("\n}\n");
 
@@ -147,6 +150,10 @@ class SystemPromptWakeConsumerTest {
                   static final long CONTEXT_BUDGET_NOTICE_COOLDOWN_MS=1000;
                   static final int EXTERNAL_TAP_CAP=64;
                   String lastTurnError,budgetBlockedRole;
+                  String pendingRuntimeStateXml="candidate",pendingDeliveryTaskId="task",pendingRuntimeOrigin="goal_judging";
+                  Object pendingRuntimeStatePlan=new Object();
+                  List<Object> pendingDeliveredRefs=new ArrayList<>(List.of("ref"));
+                  int pendingRuntimeAttempt=1; boolean denyContext;
                   Result res=new Result(new AssistantTurn("",List.of(),null));
                   EventQueue queue=new EventQueue(EventQueue.Journal.NONE);
                   ArrayDeque<EventQueue.Entry> externalTap=new ArrayDeque<>();
@@ -191,7 +198,12 @@ class SystemPromptWakeConsumerTest {
                   void performClear(){throw new AssertionError("not a clear control");}
                   void startCompaction(boolean automatic){throw new AssertionError("not a compact control");}
                   AbstractClientPlayer resolveEntity(){return null;}
-                  String contextBudgetProblem(){return null;}
+                  String contextBudgetProblem(){return denyContext ? "DENIED" : null;}
+                  public static Map<String,Object> runGoalBudget(boolean denied) {
+                    WakeFixture f=new WakeFixture(); f.denyContext=denied; f.goalBudgetGate();
+                    return Map.of("requests",f.requests,"refs",f.pendingDeliveredRefs.size(),
+                        "planCleared",f.pendingRuntimeStatePlan==null,"xmlCleared",f.pendingRuntimeStateXml==null);
+                  }
                   String describeWindowReset(String role){return "later";}
                   METHODS
                   public static Map<String,Object> run(String scenario) {
@@ -268,6 +280,17 @@ class SystemPromptWakeConsumerTest {
     @SuppressWarnings("unchecked")
     static Map<String, Object> run(String scenario) throws Exception {
         return (Map<String, Object>) fixture.getMethod("run", String.class).invoke(null, scenario);
+    }
+
+    @Test void goalBudgetUsesProductionGuardAndClearsDeniedCandidate() throws Exception {
+        @SuppressWarnings("unchecked") var denied = (Map<String,Object>) fixture.getMethod("runGoalBudget", boolean.class).invoke(null, true);
+        @SuppressWarnings("unchecked") var ok = (Map<String,Object>) fixture.getMethod("runGoalBudget", boolean.class).invoke(null, false);
+        assertEquals(0, denied.get("requests"));
+        assertEquals(0, denied.get("refs"));
+        assertEquals(true, denied.get("planCleared"));
+        assertEquals(true, denied.get("xmlCleared"));
+        assertEquals(1, ok.get("requests"));
+        assertEquals(1, ok.get("refs"));
     }
 
     @Test void systemSupervisionResumesEmptyTurnFailure() throws Exception {

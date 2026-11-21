@@ -995,6 +995,23 @@ public final class EntityAgentLoop {
     private void judgeGoal() {
         var target = goal;
         String facts = runtimeStateXml(false, "goal_judging", 1);
+        String contextProblem = contextBudgetProblem();
+        if (contextProblem != null) {
+            pendingRuntimeStateXml = null;
+            pendingRuntimeStatePlan = null;
+            pendingDeliveredRefs = new ArrayList<>();
+            pendingDeliveryTaskId = "";
+            pendingRuntimeOrigin = "execution";
+            pendingRuntimeAttempt = 1;
+            long now = System.currentTimeMillis();
+            if (now - contextBudgetNoticeAtMs >= CONTEXT_BUDGET_NOTICE_COOLDOWN_MS) {
+                contextBudgetNoticeAtMs = now;
+                Constants.LOG.warn("[numen-entity#{}] 上下文预算拦截: {}", entityUuid, contextProblem);
+                com.dwinovo.numen.client.chat.ChatLines.notice(presenter.speakerName(), truncate(contextProblem, 160));
+            }
+            com.dwinovo.numen.client.hud.SpeechBubbles.clear(entityUuid);
+            return;
+        }
         var delivery = new java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext>();
         var deliveryToken = captureDeliveryToken();
         var observation = observeExecutionRequest("goal_judging", deliveryToken, delivery);
