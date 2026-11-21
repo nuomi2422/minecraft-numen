@@ -1,8 +1,8 @@
 <div align="center">
 
-# Numen · 言出法随
+# RDD · 基于 Numen 的 Minecraft 源码 fork
 
-### 一个住在你世界里的 AI 同伴
+### RDD 开发分支，非上游官方发行
 
 *言出法随（yán chū fǎ suí）——你说出口，它便成真。*
 
@@ -16,6 +16,20 @@
 [**快速开始**](#快速开始) · [**能做什么**](#能做什么) · [**扩展它**](#扩展它) · [**外接大脑**](#外接大脑) · [**设计**](#设计) · [**常见问题**](#常见问题) · [**给开发者**](#给开发者) · [**路线图**](#路线图)
 
 </div>
+
+## 你在哪，先看哪里
+
+**RDD 开发阅读分支是 main。** 不把其他分支、旧 redline-1 或上游版本线当成当前 RDD 发布入口。本仓包含上游 Numen 与 RDD 改动；署名不代替遵守许可证。
+
+| 仓库 | 负责什么 | 阅读分支 |
+|---|---|---|
+| [restart-developmental-doer](https://github.com/nuomi2422/restart-developmental-doer/tree/master) | 唯一总门面、项目地图与阅读顺序 | master |
+| [minecraft-numen](https://github.com/nuomi2422/minecraft-numen/tree/main) | 基于 Dwinovo/Numen 的 RDD 游戏源码 fork | main |
+| [rdd-harness](https://github.com/nuomi2422/rdd-harness/tree/main) | 外部 AI 的工程工具、验证和协作入口 | main |
+| [rdd-docs-public](https://github.com/nuomi2422/rdd-docs-public/tree/main) | 经审查脱敏的现行知识库发布版，不含旧历史 | main |
+| [rdd-docs](https://github.com/nuomi2422/rdd-docs/tree/master) | 私有维护主库、内部历史与敏感原证；需权限 | master |
+
+先看 rdd-core/ 的任务与资产逻辑，world-state-core/ 的观测，experience-core/ 与 settlement-core/ 的领域能力，plugins/ 的 Minecraft 适配；api/、core/、ai/ 是底座及其接缝。下方原 Numen 产品介绍作为上游背景保留，**不表示全部 RDD 架构已经交付**。
 
 ## RDD 架构与开发状态（2026-11-21）
 
@@ -54,7 +68,7 @@ AC 直接读取有类型的世界参数，复用算术、比较、筛选、聚�
 
 上述包含已存在机制与待补契约，**不是全部已经实现或实机有效的功能清单**。源码、离线测试、构建、安装/加载、实际调用、世界效果分别验；上传不代表部署，单测数量与模型自述不代表能力完成。架构 MCP 是内部有来源的导航，不是世界真值或自动派工器。
 
-代码布局：[`rdd-core/`](rdd-core)、[`world-state-core/`](world-state-core)、[`settlement-core/`](settlement-core)、[`experience-core/`](experience-core)、[`plugins/`](plugins)、[`api/`](api)、[`core/`](core)。工程工具见 [rdd-harness](https://github.com/nuomi2422/rdd-harness)，项目门面见 [rdd-restart-doer](https://github.com/nuomi2422/rdd-restart-doer)。私有记录及本机配置不随公开介绍发布。
+代码布局：[`rdd-core/`](rdd-core)、[`world-state-core/`](world-state-core)、[`settlement-core/`](settlement-core)、[`experience-core/`](experience-core)、[`plugins/`](plugins)、[`api/`](api)、[`core/`](core)。工程工具见 [rdd-harness](https://github.com/nuomi2422/rdd-harness)，项目门面见 [rdd-restart-doer](https://github.com/nuomi2422/restart-developmental-doer)。私有记录及本机配置不随公开介绍发布。
 
 ---
 

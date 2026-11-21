@@ -1,8 +1,8 @@
 <div align="center">
 
-# Numen · 言出法随
+# RDD · Minecraft source fork based on Numen
 
-### An AI companion that lives in your world
+### RDD development branch; not an official upstream release
 
 *言出法随 (yán chū fǎ suí) — you say it, and it becomes real.*
 
@@ -16,6 +16,17 @@
 [**Quick start**](#quick-start) · [**What it can do**](#what-it-can-do) · [**Extending it**](#extending-it) · [**External brain**](#external-brain) · [**Design**](#design) · [**FAQ**](#faq) · [**For developers**](#for-developers) · [**Roadmap**](#roadmap)
 
 </div>
+
+## Where you are and where to read
+
+Read **main** for RDD work. Other branches are not automatically the RDD release line. This repository contains upstream Numen and RDD modifications; attribution alone does not replace license compliance.
+
+- [Project front door — master](https://github.com/nuomi2422/restart-developmental-doer/tree/master)
+- [Public design documentation — main](https://github.com/nuomi2422/rdd-docs-public/tree/main) (sanitized publication; private records are not included)
+- [Engineering Harness — main](https://github.com/nuomi2422/rdd-harness/tree/main)
+- Private maintenance documentation: nuomi2422/rdd-docs, master; access is restricted.
+
+Start with rdd-core/ for task and asset logic, world-state-core/ for observations, experience-core/ and settlement-core/ for their domains; plugins/ adapts these to Minecraft. api/, core/ and ai/ contain the shared engine and its integration changes. The original Numen introduction below is upstream background, **not a claim that every RDD contract has shipped**.
 
 ## RDD architecture and development status (2026-11-21)
 
@@ -52,7 +63,7 @@ Four parallel work packages cover tasks/supervision, AC/execution, world/environ
 
 This architecture describes existing pieces plus incomplete contracts, not a fully shipped feature checklist. Source, offline tests, builds, installation/loading, actual calls and world effects are checked separately. Uploading is not deployment. The internal architecture MCP navigates sourced design; it is neither live world truth nor automatic work authorization.
 
-Source areas: [rdd-core](rdd-core), [world-state-core](world-state-core), [settlement-core](settlement-core), [experience-core](experience-core), [plugins](plugins), [api](api) and [core](core). See also [engineering Harness](https://github.com/nuomi2422/rdd-harness) and [project showcase](https://github.com/nuomi2422/rdd-restart-doer). Private operational records and local configurations are not included in this public introduction.
+Source areas: [rdd-core](rdd-core), [world-state-core](world-state-core), [settlement-core](settlement-core), [experience-core](experience-core), [plugins](plugins), [api](api) and [core](core). See also [engineering Harness](https://github.com/nuomi2422/rdd-harness) and [project showcase](https://github.com/nuomi2422/restart-developmental-doer). Private operational records and local configurations are not included in this public introduction.
 
 ---
 
