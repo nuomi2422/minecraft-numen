@@ -33,7 +33,8 @@ public final class ObservationResponses {
         var f = ObservationMetadata.Freshness.valueOf(rr.freshness().name());
         long validUntil = validUntil(o.epochMs(), topicTtlMs, request.maxAgeMs());
         if (o.epochMs() <= 0 || o.epochMs() > nowMs) f = ObservationMetadata.Freshness.UNKNOWN;
-        else if (f == ObservationMetadata.Freshness.CURRENT && validUntil <= nowMs)
+        // A nonpositive deadline means no computable window; keep the existing classification.
+        else if (f == ObservationMetadata.Freshness.CURRENT && validUntil > 0 && validUntil <= nowMs)
             f = ObservationMetadata.Freshness.STALE;
         String target = o.key().target();
         String subject = target.startsWith("player:") ? target.substring(7) : "";

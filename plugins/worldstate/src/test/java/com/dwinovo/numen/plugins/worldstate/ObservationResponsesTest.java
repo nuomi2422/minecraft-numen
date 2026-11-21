@@ -81,6 +81,12 @@ class ObservationResponsesTest {
         var callerExpiry = ObservationResponses.map(rr, request(1000, 1), List.of(), 0, 2000, rr.key(), 30_000);
         assertEquals(ObservationMetadata.Freshness.STALE, callerExpiry.metadata().freshness());
     }
+    @Test void uncomputableExpiryKeepsExistingFreshnessClassification() {
+        var rr = sample(1000, Freshness.CURRENT);
+        var response = ObservationResponses.map(rr, request(0, 1), List.of(), 0, 1100, rr.key(), -1);
+        assertEquals(0, response.metadata().validUntilMs());
+        assertEquals(ObservationMetadata.Freshness.CURRENT, response.metadata().freshness());
+    }
     @Test void validUntilUsesTopicTtlUnlessCallerAgeIsStricter() {
         var zero = mapped(sample(1000, Freshness.CURRENT), request(0, 10), List.of(), 0, 1100);
         assertEquals(30_000L, zero.metadata().validUntilMs() - zero.metadata().observedAtMs());
