@@ -13,8 +13,8 @@ import java.util.Map;
  * <p>2026-10-28：同一处村庄/要塞/矿井会被反复扫描，观测点差几格就生成新的 assetId
  * （实测 village_savanna 56 条、fortress 32 条、mineshaft 18 条）。原先按 observedAt
  * 倒序逐条渲染，最近几次扫描就能把注入块占满，真正有用的基地/仓储反而被挤掉。现在先按
- * (kind,label,dimension) + 邻近半径聚成一簇，每簇只留**信息最全**的一次观测（村庄看
- * 村民/箱子/作物，基地看设施/库存），再按时间倒序渲染。
+ * 仅在世界、类型、维度和观测位置均可证且完全一致时折叠；未知范围或不同位置
+ * 不合并，避免历史丰富线索盖掉更新的局部观测。仍按时间倒序、预算有界展示。
  */
 final class RddAssetContext {
     private RddAssetContext() {}
@@ -45,6 +45,10 @@ final class RddAssetContext {
                     : " source=" + claim.source() + " verified_at=" + claim.verifiedAtMillis();
             String line = "- kind=" + text(value.get("kind"))
                     + " label=" + text(value.getOrDefault("label", entry.assetId()))
+                    + " world=" + text(value.get("world_id"))
+                    + " observed_at=" + (entry.observation().observedAt() > 0 ? entry.observation().observedAt() : "UNKNOWN")
+                    + " source=" + text(entry.observation().source())
+                    + " scope=UNKNOWN coverage=UNKNOWN"
                     + " dimension=" + text(value.get("dimension"))
                     + " pos=" + text(value.get("x")) + "," + text(value.get("y")) + "," + text(value.get("z"))
                     + " refresh=" + text(value.getOrDefault("refresh_policy", "LAZY"))
@@ -58,84 +62,31 @@ final class RddAssetContext {
         return out.toString();
     }
 
-    /** 一次聚簇：同一 (kind,label,dimension)、观测点邻近的资产算同一处，保留信息最全的一条。 */
+    /** Only identical, known world and observation origin can be folded. Unknown scope stays separate. */
     private static List<Cluster> cluster(List<AssetRegistry.AssetEntry> assets) {
         List<Cluster> clusters = new ArrayList<>();
         for (var entry : assets) {
             Map<String, Object> value = entry.observation().value();
-            String key = text(value.get("kind")) + '|' + text(value.getOrDefault("label", entry.assetId()))
-                    + '|' + text(value.get("dimension"));
-            double x = number(value.get("x"));
-            double z = number(value.get("z"));
-            Cluster hit = null;
-            for (Cluster c : clusters) {
-                if (!c.key.equals(key)) continue;
-                if (!Double.isFinite(x) || !Double.isFinite(z)
-                        || Math.hypot(x - c.x, z - c.z) <= radius(value)) {
-                    hit = c;
-                    break;
-                }
-            }
-            long score = richness(value);
-            long at = entry.observation().observedAt();
-            if (hit == null) {
-                clusters.add(new Cluster(key, x, z, entry, score, at));
-            } else if (score > hit.score || (score == hit.score && at > hit.at)) {
-                hit.entry = entry;
-                hit.score = score;
-                hit.at = at;
-            }
+            Object world = value.get("world_id"), x = value.get("x"), y = value.get("y"), z = value.get("z");
+            boolean known = world instanceof String w && !w.isBlank()
+                    && x instanceof Number && y instanceof Number && z instanceof Number
+                    && Double.isFinite(((Number) x).doubleValue()) && Double.isFinite(((Number) y).doubleValue())
+                    && Double.isFinite(((Number) z).doubleValue());
+            String key = known ? text(world) + '|' + text(value.get("kind")) + '|'
+                    + text(value.getOrDefault("label", entry.assetId())) + '|' + text(value.get("dimension"))
+                    + '|' + x + '|' + y + '|' + z : null;
+            Cluster match = null;
+            if (key != null) for (Cluster c : clusters) if (key.equals(c.key)) { match = c; break; }
+            if (match == null) clusters.add(new Cluster(key, entry));
+            else if (entry.observation().observedAt() > match.entry.observation().observedAt()) match.entry = entry;
         }
-        clusters.sort(Comparator.comparingLong((Cluster c) -> c.at).reversed());
         return clusters;
     }
 
-    /** 已渲染的资产簇；可变的是「留哪一条」，簇本身不搬家。 */
     private static final class Cluster {
         final String key;
-        final double x;
-        final double z;
         AssetRegistry.AssetEntry entry;
-        long score;
-        long at;
-
-        Cluster(String key, double x, double z, AssetRegistry.AssetEntry entry, long score, long at) {
-            this.key = key;
-            this.x = x;
-            this.z = z;
-            this.entry = entry;
-            this.score = score;
-            this.at = at;
-        }
-    }
-
-    /** 折叠半径（格）：基地只容许重生点小漂移，村庄/结构按体量取大一些。 */
-    private static double radius(Map<String, Object> value) {
-        String kind = text(value.get("kind"));
-        if ("base".equals(kind)) return 96.0;
-        if ("village".equals(kind)) return 160.0;
-        return 128.0;
-    }
-
-    /**
-     * 「这条观测有多有用」：同一簇里优先保留见过村民/箱子/作物最多的一次，
-     * 而不是最后一次（最后一次常常是路过时的空扫描，villagers=0、chests=0）。
-     */
-    private static long richness(Map<String, Object> value) {
-        String kind = text(value.get("kind"));
-        if ("village".equals(kind)) {
-            if (value.get("resources") instanceof Map<?, ?> r) {
-                return number(r.get("villagers")) * 1000 + number(r.get("iron_golem")) * 200
-                        + number(r.get("chests")) * 50 + number(r.get("crops"));
-            }
-            return 0;
-        }
-        if ("base".equals(kind)) {
-            long facilities = value.get("facilities") instanceof List<?> l ? l.size() : 0;
-            long items = value.get("important_items") instanceof Map<?, ?> m ? m.size() : 0;
-            return facilities * 100 + items * 50;
-        }
-        return 0;
+        Cluster(String key, AssetRegistry.AssetEntry entry) { this.key = key; this.entry = entry; }
     }
 
     private static long number(Object value) {

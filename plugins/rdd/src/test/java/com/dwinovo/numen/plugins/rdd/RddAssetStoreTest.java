@@ -59,6 +59,9 @@ class RddAssetStoreTest {
         String context = RddAssetContext.render(registry, 2000);
         assertTrue(context.contains("world-A-marker"), "one world's historical lead must not replace another's");
         assertTrue(context.contains("world-B-marker"), "both distinct worlds must remain visible as historical leads");
+        assertTrue(context.contains("world=world-A") && context.contains("world=world-B"));
+        assertTrue(context.contains("observed_at=10") && context.contains("observed_at=20"));
+        assertTrue(context.contains("scope=UNKNOWN coverage=UNKNOWN"));
     }
 
     @Test void newerNearbyVillageObservationIsNotHiddenByRicherOldLead() {
@@ -73,6 +76,35 @@ class RddAssetStoreTest {
                 "village|minecraft:overworld|1,0", AssetScope.GLOBAL, null);
         String context = RddAssetContext.render(registry, 2000);
         assertTrue(context.contains("new villagers=0"), "newer scoped observation must not disappear behind richer history");
+        assertTrue(context.contains("old villagers=10"), "different-origin historical lead must remain distinct");
+        assertTrue(context.contains("source=rdd_world_observer"));
+    }
+
+    @Test void missingCoordinatesDoNotCollapseWithRealOrigin() {
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(observation("world_machine", Map.of("kind", "machine", "label", "furnace",
+                "dimension", "overworld", "summary", "unknown-position")), "unknown", AssetScope.GLOBAL, null);
+        registry.apply(observation("world_machine", Map.of("kind", "machine", "label", "furnace",
+                "dimension", "overworld", "x", 0, "y", 64, "z", 0, "summary", "known-origin")),
+                "origin", AssetScope.GLOBAL, null);
+        String context = RddAssetContext.render(registry, 2000);
+        assertTrue(context.contains("unknown-position"));
+        assertTrue(context.contains("known-origin"));
+    }
+
+    @Test void sameExactObservationIdentityKeepsOnlyLatestAndRemainsBounded() {
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(new Observation("one", "world_machine", "test", "overworld", 10L,
+                Map.of("kind", "machine", "label", "furnace", "dimension", "overworld", "x", 0, "y", 64, "z", 0, "summary", "old")),
+                "same", AssetScope.GLOBAL, null);
+        registry.apply(new Observation("two", "world_machine", "test", "overworld", 20L,
+                Map.of("kind", "machine", "label", "furnace", "dimension", "overworld", "x", 0, "y", 64, "z", 0, "summary", "new")),
+                "same", AssetScope.GLOBAL, null);
+        String context = RddAssetContext.render(registry, 600);
+        assertTrue(context.contains("new"));
+        assertFalse(context.contains("details=old"));
+        assertTrue(context.contains("re-check"));
+        assertTrue(context.length() <= 600);
     }
 
     private static Observation observation(String type, Map<String, Object> value) {
