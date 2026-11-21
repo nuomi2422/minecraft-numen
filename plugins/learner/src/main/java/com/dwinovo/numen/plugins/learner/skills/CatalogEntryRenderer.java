@@ -7,7 +7,7 @@ import java.util.Locale;
 /** Pure directory formatting, not an execution or delivery authorization. */
 public final class CatalogEntryRenderer {
     private static final int MAX_ENTRIES = 3, MAX_ENTRY_CHARS = 320;
-    private static final String HEAD = "<retrieved_knowledge>", TAIL = "</retrieved_knowledge>";
+    private static final String HEAD = "<retrieved_knowledge><note>条件未知，执行前须以当前观测复核</note>", TAIL = "</retrieved_knowledge>";
     private CatalogEntryRenderer() {}
 
     /** verified means caller checked provenance, complete body and location binding.
@@ -31,15 +31,19 @@ public final class CatalogEntryRenderer {
         boolean includedUnknown = false;
         List<String> entries = new ArrayList<>();
         int used = HEAD.length() + TAIL.length();
+        java.util.Set<String> seen = new java.util.HashSet<>();
         for (int index : ordered) {
             Candidate c = candidates.get(index);
+            if (!seen.add(c.ref())) {
+                decisions[index] = new Decision(index, c.ref(), false, "duplicate"); continue;
+            }
             if (entries.size() >= MAX_ENTRIES || (!c.conditionsKnown() && includedUnknown)) {
                 decisions[index] = new Decision(index, c.ref(), false, "over-limit"); continue;
             }
             String item = "<entry ref=\"" + xml(c.ref()) + "\" status=\"" + xml(c.status()) + "\"" +
                     " conditions=\"UNKNOWN\">" +
                     "<name>" + xml(c.name()) + "</name><purpose>" + xml(c.purpose()) + "</purpose>" +
-                    "<note>条件未展示；按 ref 展开，执行前必核</note></entry>";
+                    "</entry>";
             if (item.length() > MAX_ENTRY_CHARS) {
                 decisions[index] = new Decision(index, c.ref(), false, "over-limit"); continue;
             }
@@ -60,15 +64,15 @@ public final class CatalogEntryRenderer {
         catch (IllegalArgumentException invalid) { return "not-verified"; }
         if (!c.bodyReadable()) return "body-missing";
         if (!c.verified() || !("TRIAL".equals(c.status()) || "PUBLISHED".equals(c.status()))) return "not-verified";
-        if (view == null || view.isBlank()) return "audience-mismatch";
-        if (c.audience() != null && !c.audience().isBlank()) {
+        if (view == null || view.isBlank() || c.audience() == null || c.audience().isBlank()) return "audience-mismatch";
+        {
             boolean match = false;
             for (String audience : c.audience().split(",")) if (audience.trim().equalsIgnoreCase(view.trim())) match = true;
             if (!match) return "audience-mismatch";
         }
         // An AC JSON script copied into purpose is not a verified plain-language purpose.
         String purpose = c.purpose().stripLeading();
-        if (purpose.startsWith("{") || purpose.startsWith("[")) return "not-verified";
+        if (purpose.startsWith("{") || purpose.startsWith("[")) return "unsafe-purpose";
         return null;
     }
     private static boolean validXml(String text) {

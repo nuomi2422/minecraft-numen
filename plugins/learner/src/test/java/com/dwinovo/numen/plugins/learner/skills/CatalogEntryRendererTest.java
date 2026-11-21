@@ -54,7 +54,7 @@ class CatalogEntryRendererTest {
         var onlyUnknown = CatalogEntryRenderer.render(List.of(unknownA, unknownB), "EXECUTOR", 1200);
         assertEquals(1, onlyUnknown.entries().size());
         assertEquals("over-limit", onlyUnknown.decisions().get(1).reason());
-        assertTrue(onlyUnknown.fragment().contains("条件未展示"));
+        assertTrue(onlyUnknown.fragment().contains("条件未知"));
     }
     @Test void onlyActuallyIncludedKnownCandidateLiftsUnknownLimit() {
         var huge = candidate("huge", "known", "x".repeat(400));
@@ -87,7 +87,7 @@ class CatalogEntryRendererTest {
         assertEquals("over-limit", out.decisions().get(2).reason());
         assertFalse(out.fragment().contains("authorized"));
         assertFalse(out.fragment().contains("ready"));
-        assertTrue(out.fragment().contains("执行前必核"));
+        assertTrue(out.fragment().contains("执行前须以当前观测复核"));
     }
     @Test void xmlCarriageReturnsRoundTripWithoutNormalization() throws Exception {
         String name = "name\rnext\r\nlast";
@@ -96,13 +96,25 @@ class CatalogEntryRendererTest {
                 new java.io.ByteArrayInputStream(out.fragment().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         assertEquals(name, document.getElementsByTagName("name").item(0).getTextContent());
     }
+    @Test void rejectsEmptyAudienceAndUnsafePurposeAndDeduplicatesExactRef() {
+        var empty = new CatalogEntryRenderer.Candidate("skill:empty@v1", "n", "purpose", "", "TRIAL", true, true, true);
+        var script = candidate("script", "n", "{\"steps\":[1]}");
+        var unknown = new CatalogEntryRenderer.Candidate("skill:dup@v1", "n", "purpose", "EXECUTOR", "TRIAL", true, false, true);
+        var known = candidate("dup", "n", "purpose");
+        var out = CatalogEntryRenderer.render(List.of(empty, script, unknown, known), "EXECUTOR", 1200);
+        assertEquals("audience-mismatch", out.decisions().get(0).reason());
+        assertEquals("unsafe-purpose", out.decisions().get(1).reason());
+        assertEquals("duplicate", out.decisions().get(2).reason());
+        assertTrue(out.decisions().get(3).included());
+        assertEquals(1, out.entries().size());
+    }
     @Test void omittedMetadataIsUnknownNotInferredFromBody() {
         var unknown = new CatalogEntryRenderer.Candidate("skill:unknown@v1", "n", "purpose", "EXECUTOR", "TRIAL", true, false, true);
         var out = CatalogEntryRenderer.render(List.of(unknown), "EXECUTOR", 1200);
         assertEquals("condition-unknown", out.decisions().get(0).reason());
         assertEquals(1, out.entries().size());
         assertTrue(out.fragment().contains("conditions=\"UNKNOWN\""));
-        assertTrue(out.fragment().contains("条件未展示"));
+        assertTrue(out.fragment().contains("条件未知"));
         assertFalse(out.fragment().contains("see body"));
     }
 }
