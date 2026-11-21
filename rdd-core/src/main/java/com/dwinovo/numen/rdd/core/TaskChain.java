@@ -1162,9 +1162,12 @@ public final class TaskChain {
         Object group = condition.get("group");
         Object type = condition.get("type");
         boolean inventoryType = type == null || "inventory".equals(type);
+        String mode = HardCodedEvaluator.modeOf(condition);
         boolean matches = inventoryType && assetKey != null && !assetKey.isBlank() &&
                 (asset instanceof String key && !key.isBlank() && group == null && key.equals(assetKey)
-                 || asset == null && group instanceof String g && InventoryGroups.known(g) && InventoryGroups.contains(g, assetKey));
+                    && (HardCodedEvaluator.MODE_HOLD.equals(mode) || HardCodedEvaluator.MODE_ACQUIRE.equals(mode))
+                 || asset == null && group instanceof String g && InventoryGroups.known(g) && InventoryGroups.contains(g, assetKey)
+                    && HardCodedEvaluator.MODE_HOLD.equals(mode));
         if (!matches) throw new IllegalArgumentException("yield asset does not match current inventory condition");
         int before = HardCodedEvaluator.minimumOf(condition);
         if (before < 0) throw new IllegalStateException("current subtask has a malformed minimum");
