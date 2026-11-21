@@ -247,7 +247,9 @@ final class RddContainerMemory {
                 }
             }
         }
-        LOG.info("[rdd-storage] 扫描 原点={} 箱子命中={} 成行={}", origin, hits, lines.size());
+        // 2026-11-22（指挥官，三号同意）：每次扫描都打 INFO 会按 ~2s 节奏刷屏（实机 3 分钟 97 条、占日志 13%，多为 0 命中空扫）。
+        // 只把这条「扫描摘要」降到 DEBUG；失败 WARN 与回退/游标重置 INFO 保留，诊断可见性不变。
+        LOG.debug("[rdd-storage] 扫描 原点={} 箱子命中={} 成行={}", origin, hits, lines.size());
         if (lines.isEmpty()) return new Scan("", Map.of(), anyDirect);
         StringBuilder out = new StringBuilder("<storage nearby=\"").append(lines.size()).append('"')
                 .append(scanDirectAttr(anyDirect)).append('>')
