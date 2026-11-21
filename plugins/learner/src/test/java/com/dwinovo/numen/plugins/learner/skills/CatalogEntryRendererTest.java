@@ -104,9 +104,25 @@ class CatalogEntryRendererTest {
         var out = CatalogEntryRenderer.render(List.of(empty, script, unknown, known), "EXECUTOR", 1200);
         assertEquals("audience-mismatch", out.decisions().get(0).reason());
         assertEquals("unsafe-purpose", out.decisions().get(1).reason());
-        assertEquals("duplicate", out.decisions().get(2).reason());
+        assertEquals("duplicate-enriched", out.decisions().get(2).reason());
         assertTrue(out.decisions().get(3).included());
         assertEquals(1, out.entries().size());
+    }
+    @Test void sameReferenceWithConflictingFactsRejectsWholeGroup() {
+        var a = candidate("same", "name", "purpose A");
+        var b = candidate("same", "name", "purpose B");
+        var out = CatalogEntryRenderer.render(List.of(a, b), "EXECUTOR", 1200);
+        assertTrue(out.entries().isEmpty());
+        for (var decision : out.decisions()) {
+            assertEquals("ref-conflict", decision.reason());
+            assertTrue(decision.differences().contains("purpose"));
+        }
+    }
+    @Test void identicalReferencesDeduplicateWithoutUsingAnotherSlot() {
+        var a = candidate("same", "name", "purpose");
+        var out = CatalogEntryRenderer.render(List.of(a, a), "EXECUTOR", 1200);
+        assertEquals(1, out.entries().size());
+        assertEquals("duplicate", out.decisions().get(1).reason());
     }
     @Test void omittedMetadataIsUnknownNotInferredFromBody() {
         var unknown = new CatalogEntryRenderer.Candidate("skill:unknown@v1", "n", "purpose", "EXECUTOR", "TRIAL", true, false, true);

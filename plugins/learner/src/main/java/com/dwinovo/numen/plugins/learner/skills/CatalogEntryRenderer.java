@@ -14,14 +14,31 @@ public final class CatalogEntryRenderer {
      * It is not execution authorization, readiness, or evidence conditions were shown. */
     public record Candidate(String ref, String name, String purpose, String audience, String status,
                             boolean bodyReadable, boolean conditionsKnown, boolean verified) {}
-    public record Decision(int inputIndex, String ref, boolean included, String reason) {}
+    public record Decision(int inputIndex, String ref, boolean included, String reason, List<String> differences) {
+        public Decision(int inputIndex, String ref, boolean included, String reason) {
+            this(inputIndex, ref, included, reason, List.of());
+        }
+    }
     public record Result(String fragment, List<String> entries, List<Decision> decisions, String reason) {}
 
     public static Result render(List<Candidate> candidates, String view, int budget) {
         if (candidates == null || candidates.isEmpty()) return new Result("", List.of(), List.of(), "no-match");
         Decision[] decisions = new Decision[candidates.size()];
         List<Integer> ordered = new ArrayList<>();
+        java.util.Map<String, List<Integer>> groups = new java.util.LinkedHashMap<>();
         for (int i = 0; i < candidates.size(); i++) {
+            Candidate c = candidates.get(i);
+            if (c != null && c.ref() != null) groups.computeIfAbsent(c.ref(), k -> new ArrayList<>()).add(i);
+        }
+        for (List<Integer> group : groups.values()) {
+            Candidate first = candidates.get(group.get(0));
+            java.util.Set<String> differences = new java.util.LinkedHashSet<>();
+            for (int index : group) differences.addAll(differences(first, candidates.get(index)));
+            if (!differences.isEmpty()) for (int index : group)
+                decisions[index] = new Decision(index, first.ref(), false, "ref-conflict", List.copyOf(differences));
+        }
+        for (int i = 0; i < candidates.size(); i++) {
+            if (decisions[i] != null) continue;
             Candidate c = candidates.get(i);
             String rejected = qualification(c, view);
             if (rejected != null) decisions[i] = new Decision(i, c == null ? "" : safe(c.ref()), false, rejected);
@@ -31,11 +48,13 @@ public final class CatalogEntryRenderer {
         boolean includedUnknown = false;
         List<String> entries = new ArrayList<>();
         int used = HEAD.length() + TAIL.length();
-        java.util.Set<String> seen = new java.util.HashSet<>();
+        java.util.Map<String, Candidate> seen = new java.util.HashMap<>();
         for (int index : ordered) {
             Candidate c = candidates.get(index);
-            if (!seen.add(c.ref())) {
-                decisions[index] = new Decision(index, c.ref(), false, "duplicate"); continue;
+            Candidate prior = seen.putIfAbsent(c.ref(), c);
+            if (prior != null) {
+                decisions[index] = new Decision(index, c.ref(), false,
+                        prior.conditionsKnown() != c.conditionsKnown() ? "duplicate-enriched" : "duplicate"); continue;
             }
             if (entries.size() >= MAX_ENTRIES || (!c.conditionsKnown() && includedUnknown)) {
                 decisions[index] = new Decision(index, c.ref(), false, "over-limit"); continue;
@@ -57,6 +76,16 @@ public final class CatalogEntryRenderer {
         String fragment = entries.isEmpty() ? "" : HEAD + String.join("", entries) + TAIL;
         return new Result(fragment, List.copyOf(entries), List.of(decisions), entries.isEmpty() ? "no-qualified-entry" : "included");
     }
+    private static List<String> differences(Candidate a, Candidate b) {
+        List<String> diff = new ArrayList<>();
+        if (!java.util.Objects.equals(a.name(), b.name())) diff.add("name");
+        if (!java.util.Objects.equals(a.purpose(), b.purpose())) diff.add("purpose");
+        if (!java.util.Objects.equals(a.audience(), b.audience())) diff.add("audience");
+        if (!java.util.Objects.equals(a.status(), b.status())) diff.add("status");
+        if (a.bodyReadable() != b.bodyReadable()) diff.add("bodyReadable");
+        if (a.verified() != b.verified()) diff.add("verified");
+        return diff;
+    }
     private static String qualification(Candidate c, String view) {
         if (c == null || c.ref() == null || c.name() == null || c.name().isBlank()
                 || c.purpose() == null || c.purpose().isBlank() || !validXml(c.name()) || !validXml(c.purpose())) return "not-verified";
@@ -64,6 +93,7 @@ public final class CatalogEntryRenderer {
         catch (IllegalArgumentException invalid) { return "not-verified"; }
         if (!c.bodyReadable()) return "body-missing";
         if (!c.verified() || !("TRIAL".equals(c.status()) || "PUBLISHED".equals(c.status()))) return "not-verified";
+        // Intentional strictness for this new discovery surface only; legacy planner/resolver are unchanged.
         if (view == null || view.isBlank() || c.audience() == null || c.audience().isBlank()) return "audience-mismatch";
         {
             boolean match = false;
