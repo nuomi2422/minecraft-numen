@@ -2727,10 +2727,7 @@ public final class EntityAgentLoop {
         }
         String xml = body.isEmpty() ? "" : "<runtime_state" + attributes + ">" + body + "</runtime_state>";
         if (publish) {
-            if (plan.denied() || plan.truncated()) publishContextBudget(plan);
-            // This path has no request identity and must never claim delivery.
-            pendingDeliveredRefs = new ArrayList<>();
-            publishRuntimeState(xml, origin, attempt);
+            throw new IllegalStateException("runtime state requires request-bound dispatch");
         } else {
             // A-M2：先只暂存。被预算/上下文/压缩闸拦下的轮次永远不会走到发布点，
             // 于是不会留下「她看见了什么」的假记录，turn 也不会滞后一轮。
