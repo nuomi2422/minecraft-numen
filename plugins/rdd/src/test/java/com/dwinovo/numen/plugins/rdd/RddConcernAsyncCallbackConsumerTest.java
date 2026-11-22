@@ -92,7 +92,7 @@ public class RddConcernAsyncCallbackConsumerTest {
         javaSource(javac, "com.dwinovo.numen.agent.tool.Schema", """
                 package com.dwinovo.numen.agent.tool; import java.util.Map;
                 public class Schema { public static Schema object(){return new Schema();}
-                    public Schema string(String k,String d){return this;} public Map<String,Object> build(){return Map.of();} }
+                    public Schema string(String k,String d){return this;} public Schema optionalString(String k,String d){return this;} public Map<String,Object> build(){return Map.of();} }
                 """);
         javaSource(javac, "com.dwinovo.numen.entity.NumenPlayer", """
                 package com.dwinovo.numen.entity; import java.util.UUID;
@@ -224,6 +224,7 @@ public class RddConcernAsyncCallbackConsumerTest {
     @Test void explicitReviewCarriesOriginalEntryAndUnverifiedFixedStaysDeferred() {
         retrySameStep(); host.negotiate();
         String ref = (String) host.review().get("concern_ref");
+        assertFalse(JsonParser.parseString(host.requestReview("", "new evidence without a ref")).getAsJsonObject().get("success").getAsBoolean());
         assertFalse(JsonParser.parseString(host.requestReview(ref, "")).getAsJsonObject().get("success").getAsBoolean());
         assertEquals(1, host.plannerCalls());
         assertTrue(JsonParser.parseString(host.requestReview(ref, "new owner checked route; needs planner judgment")).getAsJsonObject().get("success").getAsBoolean());

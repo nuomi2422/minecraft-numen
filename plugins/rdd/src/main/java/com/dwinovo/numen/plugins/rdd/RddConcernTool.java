@@ -31,14 +31,16 @@ final class RddConcernTool implements NumenTool {
                 "当你认为当前 current_task 不合理/不可达/与目标不符时, 用它上报, 不要默默无视。" +
                 "选择依据: 你能想到**别的做法**就用 COUNTER; " +
                 "你**根本做不到且短期也不会变**(例如要求去 300 格外的地方、要求在末地拿东西)" +
-                "就用 PAUSE——COUNTER 会让指挥官换计划并继续消耗你的重试预算, 而 PAUSE 只是把它按住。";
+                "就用 PAUSE——COUNTER 会让指挥官换计划并继续消耗你的重试预算, 而 PAUSE 只是把它按住。" +
+                "rdd_status 的 concern_review 表示未核前提；只有当前负责人取得相关新观察或明确动作后, " +
+                "才用 kind=REVIEW、concern_ref 和 review_evidence 申请一次有界复核；模型建议不等已修正。";
     }
 
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .string("kind", "ACCEPT / REJECT / COUNTER / PAUSE / SURVIVAL / REVIEW")
-                .string("concern_ref", "REVIEW only: exact pending concern_ref shown by rdd_status.")
-                .string("review_evidence", "REVIEW only: relevant new observation or explicit owner action; unchanged retries are refused.")
+                .optionalString("concern_ref", "REVIEW only: exact pending concern_ref shown by rdd_status.")
+                .optionalString("review_evidence", "REVIEW only: relevant new observation or explicit owner action; unchanged retries are refused.")
                 .string("expected_subtask_id", "Current subtask ID from rdd_status.")
                 .string("reason", "为什么这样回执（REJECT/COUNTER/PAUSE 必填）。")
                 .string("suggestion", "COUNTER 时的替代方案（人话）。")
