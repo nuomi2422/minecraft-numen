@@ -55,6 +55,9 @@ class RddYieldConsumerTest {
   String handle=payload.substring(hs,he).replace("private static void handleCompanion", "public static void handleCompanion");
   int vs=payload.indexOf("    static boolean validYieldTicketReplyId("); int ve=payload.indexOf("    static String diagnosticArgs(",vs); assertTrue(vs>=0&&ve>vs);
   handle+=payload.substring(vs,ve);
+  int ds=payload.indexOf("    static String diagnosticArgs(",ve), de=payload.indexOf("    public static void replyError(",ds);
+  assertTrue(ds>=0 && de>ds, "production diagnostic helpers missing");
+  handle+=payload.substring(ds,de);
   files.put("com/dwinovo/numen/network/payload/ExecuteToolPayload.java", "package com.dwinovo.numen.network.payload; import java.util.*; import com.google.gson.*; import net.minecraft.server.level.ServerPlayer; import com.dwinovo.numen.agent.tool.*; import com.dwinovo.numen.api.WorldContextStamp; import com.dwinovo.numen.monitor.MonitoringJournal; public record ExecuteToolPayload(UUID entityUuid,String toolCallId,String toolName,String argumentsJson){ "+handle+" static void replyError(ServerPlayer p,ExecuteToolPayload q,String s){ com.dwinovo.numen.platform.Services.NETWORK.result=s;} static String truncate(String s){return s;} }");
   files.put("com/dwinovo/numen/api/Internal.java","package com.dwinovo.numen.api; public @interface Internal {}");
   files.put("net/minecraft/client/player/AbstractClientPlayer.java","package net.minecraft.client.player; public class AbstractClientPlayer {}");
