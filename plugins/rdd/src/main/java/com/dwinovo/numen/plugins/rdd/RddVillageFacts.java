@@ -28,7 +28,7 @@ final class RddVillageFacts {
             if (c != null) all.add(new Ranked(c, e));
         }
         if (all.isEmpty()) return "";
-        all.sort(java.util.Comparator.comparingInt((Ranked r) -> VillageRank.score(r.candidate())).reversed()
+        all.sort(java.util.Comparator.comparingLong((Ranked r) -> VillageRank.score(r.candidate())).reversed()
                 .thenComparing(r -> r.candidate().id() == null ? "" : r.candidate().id()));
         StringBuilder sb = new StringBuilder("<village_candidates>\n");
         sb.append("历史候选，不代表当前数量或准入；使用前到场重查。coverage=UNKNOWN。按「村民>箱子>作物>铁傀儡>书架」打分排序；这只是候选顺序，不是准入。\n");
@@ -42,7 +42,7 @@ final class RddVillageFacts {
                     .append(" observed_at=").append(c.observedAtMillis() > 0 ? c.observedAtMillis() : "UNKNOWN")
                     .append(" world=").append(safe(e.observation().value().get("world_id")))
                     .append(" source=").append(safe(e.observation().source()))
-                    .append(" score=").append(completeResources(e.observation().value()) ? Integer.toString(VillageRank.score(c)) : "UNKNOWN（不可完整比较）")
+                    .append(" score=").append(completeResources(e.observation().value()) ? Long.toString(VillageRank.score(c)) : "UNKNOWN（不可完整比较）")
                     .append(" villagers=").append(resource(e.observation().value(), "villagers"))
                     .append(" chests=").append(resource(e.observation().value(), "chests"))
                     .append(" crops=").append(resource(e.observation().value(), "crops"))

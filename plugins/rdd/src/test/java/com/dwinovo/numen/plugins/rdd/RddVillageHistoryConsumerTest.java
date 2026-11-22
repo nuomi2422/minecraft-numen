@@ -25,6 +25,8 @@ class RddVillageHistoryConsumerTest {
         RddAssetStore.save(temp, id, registry);
         String text = RddVillageFacts.blockFor(RddAssetStore.load(temp, id));
         assertTrue(text.contains("id=normal") && text.contains("score=0"), text);
+        assertTrue(text.contains("score=64424509410"), "valid nonnegative input must retain its long score: " + text);
+        assertTrue(text.indexOf("id=huge") < text.indexOf("id=normal"), "large positive score must rank first: " + text);
         assertFalse(text.contains("score=-30"), "valid nonnegative input must not wrap: " + text);
     }
 

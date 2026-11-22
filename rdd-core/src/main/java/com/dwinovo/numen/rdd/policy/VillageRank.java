@@ -23,14 +23,14 @@ public final class VillageRank {
     public record Candidate(String id, String dimension, int x, int y, int z,
                             Map<String, Integer> resources, long observedAtMillis) {}
 
-    public static int score(Candidate c) {
+    public static long score(Candidate c) {
         if (c == null) return 0;
         Map<String, Integer> r = c.resources() == null ? Map.of() : c.resources();
-        return count(r, "villagers") * 30
-                + count(r, "chests") * 10
-                + count(r, "crops") / 4
-                + count(r, "iron_golem") * 5
-                + count(r, "bookshelves") * 2;
+        return count(r, "villagers") * 30L
+                + count(r, "chests") * 10L
+                + count(r, "crops") / 4L
+                + count(r, "iron_golem") * 5L
+                + count(r, "bookshelves") * 2L;
     }
 
     private static int count(Map<String, Integer> m, String k) {
@@ -42,7 +42,7 @@ public final class VillageRank {
     public static List<Candidate> order(List<Candidate> candidates) {
         if (candidates == null) return List.of();
         List<Candidate> out = new ArrayList<>(candidates);
-        out.sort(Comparator.comparingInt(VillageRank::score).reversed()
+        out.sort(Comparator.comparingLong(VillageRank::score).reversed()
                 .thenComparing(c -> c.id() == null ? "" : c.id()));
         return List.copyOf(out);
     }
