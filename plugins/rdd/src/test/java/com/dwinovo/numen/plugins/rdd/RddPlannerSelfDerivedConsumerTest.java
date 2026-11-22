@@ -28,10 +28,13 @@ class RddPlannerSelfDerivedConsumerTest {
         add(src,args,"net/minecraft/server/level/ServerPlayer.java","package net.minecraft.server.level; public class ServerPlayer { public net.minecraft.core.BlockPos blockPosition(){return new net.minecraft.core.BlockPos();} public net.minecraft.world.level.Level level(){return new ServerLevel();} }");
         add(src,args,"net/neoforged/neoforge/server/ServerLifecycleHooks.java","package net.neoforged.neoforge.server; public class ServerLifecycleHooks { public static Server getCurrentServer(){return new Server();} public static class Server { public Players getPlayerList(){return new Players();} } public static class Players { public net.minecraft.server.level.ServerPlayer getPlayer(java.util.UUID id){return new net.minecraft.server.level.ServerPlayer();} } }");
         add(src,args,"org/slf4j/LoggerFactory.java","package org.slf4j; public class LoggerFactory { public static Log getLogger(Class<?> c){return new Log();} public static class Log { public void warn(String s,Object... a){} public void info(String s,Object... a){} } }");
-        add(src,args,"com/dwinovo/numen/api/RationaleContext.java","package com.dwinovo.numen.api; public class RationaleContext { public static class Entry {} }");
+        add(src,args,"com/dwinovo/numen/api/RationaleContext.java","package com.dwinovo.numen.api; public class RationaleContext { public static class Entry {} public static String renderEntry(Entry e){return \"\";} }");
         add(src,args,"com/dwinovo/numen/rdd/api/PrimarySpec.java","package com.dwinovo.numen.rdd.api; public class PrimarySpec {} ");
         add(src,args,"com/dwinovo/numen/rdd/core/PlanningAssetSnapshot.java","package com.dwinovo.numen.rdd.core; public class PlanningAssetSnapshot { public java.util.Map<String,Integer> availableCounts(){return java.util.Map.of();} public boolean hasInventoryScanTime(){return false;} }");
         add(src,args,"com/dwinovo/numen/rdd/core/RddChainFactory.java","package com.dwinovo.numen.rdd.core; public class RddChainFactory { public static int MAX_STAGES=12; }");
+        for (String name : List.of("ObservationMetadata", "WorldObservationService", "SelfInventoryQuery"))
+            add(src,args,"com/dwinovo/numen/api/observation/"+name+".java", Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/api/observation/"+name+".java")));
+        add(src,args,"com/dwinovo/numen/api/NumenPlugins.java", "package com.dwinovo.numen.api; public class NumenPlugins { public static <T> T capability(Class<T> type){return type.cast(com.dwinovo.numen.plugins.rdd.Probe.service);} }");
         add(src,args,"com/dwinovo/numen/plugins/rdd/RddPlannerFacts.java",facts);
         String source="""
             package com.dwinovo.numen.plugins.rdd;
@@ -39,26 +42,46 @@ class RddPlannerSelfDerivedConsumerTest {
             class RddContainerMemory { static String cached(UUID id){return \"\";} }
             class RddPlugin { static Object assets(UUID id){return null;} static PlanningAssetSnapshot planningSnapshot(UUID id){return new PlanningAssetSnapshot();} }
             class RddAssetContext { static String renderForPlanner(Object x,int n,String goal){return \"历史世界线索\";} }
-            class RddPlanningKnowledge { static Object HOST=new Object(); static void publishPolicy(Object... a){} }
+            class RddPlanningKnowledge { interface Provider {} static Provider HOST=new Provider(){}; static void publishPolicy(Object... a){} static String attach(String a,String b){return a+b;} static String withKnowledge(Provider p,UUID id,String base,String goal,String stage,List<?> failures){return base;} }
             class RddPlanGuard { record Stages(List<PrimarySpec> allowed,List<String> dropped) {} static Stages filterStages(List<PrimarySpec> x,String y){return new Stages(x,List.of());} }
-            class RddRiskPlanning { static List<PrimarySpec> ensureSmeltPrepStage(List<PrimarySpec> x,Map<String,Integer> y){return x;} static List<PrimarySpec> ensurePrepStage(List<PrimarySpec> x,int n){return x;} static List<PrimarySpec> injectWaitFor(List<PrimarySpec> x,Map<String,Integer> y){return x;} }
-            class RddPlanningPolicy { static String appliedRules(String a,String b){return \"\";} }
+            class RddRiskPlanning { static String prepHint(String x,Map<String,Integer> y){return "";} static List<PrimarySpec> ensureSmeltPrepStage(List<PrimarySpec> x,Map<String,Integer> y){return x;} static List<PrimarySpec> ensurePrepStage(List<PrimarySpec> x,int n){return x;} static List<PrimarySpec> injectWaitFor(List<PrimarySpec> x,Map<String,Integer> y){return x;} }
+            class RddPlanningPolicy { static String appliedRules(String a,String b){return "";} static String block(String a,String b){return "";} }
+            class RddMonitor { static void publish(String name,Map<?,?> data){} }
             class RddDecomposer { static String sent; static void llmAsk(UUID id,String stage,String text,Object sys,Object tool,Consumer<Object> ok,Runnable fail){sent=text;} }
             public class Probe {
               static final Object PLAN_SYSTEM=null,PLAN_TOOL=null;
+              public static com.dwinovo.numen.api.observation.WorldObservationService service;
+              public static void setup(UUID id, boolean missingFood) {
+                long now=System.currentTimeMillis(); var slots=new ArrayList<Map<String,Object>>();
+                for(int i=0;i<36;i++) { var slot=new HashMap<String,Object>();slot.put("slot",i);slot.put("id",i==0?"minecraft:bread":"");slot.put("count",i==0?3:0);if(!missingFood||i!=0)slot.put("edible",i==0);slots.add(slot); }
+                var meta=new com.dwinovo.numen.api.observation.ObservationMetadata("world","session","minecraft:overworld",id.toString(),"fixture","self",1,now-10,com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT,"SERVER_LOADED",now+300000);
+                var item=new com.dwinovo.numen.api.observation.WorldObservationService.Item(Map.of("main",slots,"companionUUID",id.toString(),"dimension","minecraft:overworld"),Set.of(),Set.of());
+                var response=new com.dwinovo.numen.api.observation.WorldObservationService.Response(com.dwinovo.numen.api.observation.WorldObservationService.Status.OK,"self","fixture",1,com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL,"",List.of(item),1,meta);
+                service=new com.dwinovo.numen.api.observation.WorldObservationService(){public com.dwinovo.numen.api.observation.WorldObservationService.Response read(com.dwinovo.numen.api.observation.WorldObservationService.Request request){return response;}};
+                var derived=com.dwinovo.numen.api.observation.SelfInventoryQuery.read(response,now);
+                if(missingFood ? derived.foodKnown() : (!derived.foodKnown() || derived.foodCount()!=3)) throw new AssertionError("fixture SELF query mismatch");
+              }
               static List<PrimarySpec> parse(Object a){return List.of();} static String freshRationale(UUID id){return \"\";}
-              static void dispatchStages(UUID id,String goal,com.dwinovo.numen.api.RationaleContext.Entry why,PlanningAssetSnapshot snap,String facts,Object host,Supplier<String> rationale,Consumer<String> send){send.accept(facts);}
-            """ + member(planner,"    static void planStages(UUID companionId, String objective,\n") + "\n}";
+              static String planningPrompt(String goal,PlanningAssetSnapshot snap){return goal;} static String withRationale(String content,String rationale){return content;}
+            """ + member(planner,"    static void planStages(UUID companionId, String objective,\n") + "\n"
+                + member(planner,"    static void dispatchStages(UUID companionId, String objective,") + "\n}";
         add(src,args,"com/dwinovo/numen/plugins/rdd/Probe.java",source);
         assertEquals(0,ToolProvider.getSystemJavaCompiler().run(null,null,null,args.toArray(String[]::new)),"SETUP: real planner/facts slice compile");
         // A detached fixture cannot claim a real server/provider; this verifies selected actual methods only.
         try(var loader=new URLClassLoader(new java.net.URL[]{out.toUri().toURL()},ClassLoader.getPlatformClassLoader())) {
             var probe=loader.loadClass("com.dwinovo.numen.plugins.rdd.Probe");
             var method=probe.getDeclaredMethod("planStages",UUID.class,String.class,loader.loadClass("com.dwinovo.numen.api.RationaleContext$Entry"),java.util.function.Consumer.class);method.setAccessible(true);
-            method.invoke(null,UUID.randomUUID(),"prepare food",null,(java.util.function.Consumer<Object>)x->{});
+            UUID id=UUID.randomUUID();var setup=probe.getMethod("setup",UUID.class,boolean.class); setup.invoke(null,id,false);
+            method.invoke(null,id,"prepare food",null,(java.util.function.Consumer<Object>)x->{});
             var decomp=loader.loadClass("com.dwinovo.numen.plugins.rdd.RddDecomposer");var field=decomp.getDeclaredField("sent");field.setAccessible(true);
-            String sent=(String)field.get(null);assertNotNull(sent);assertTrue(sent.contains("历史世界线索"));
-            assertTrue(sent.contains("可食储备"),sent);
+            String known=(String)field.get(null);assertNotNull(known);
+            setup.invoke(null,id,true); method.invoke(null,id,"prepare food",null,(java.util.function.Consumer<Object>)x->{});
+            String unknown=(String)field.get(null);
+            assertAll(() -> assertTrue(known.contains("历史世界线索"),known),
+                    () -> assertTrue(known.contains("可食储备 3件"),known),
+                    () -> assertTrue(unknown.contains("可食储备 未知"),unknown),
+                    () -> assertFalse(unknown.contains("可食储备 0件"),unknown),
+                    () -> assertTrue(known.indexOf("</situation>") < 420,known));
         }
     }
     private static String member(String text,String signature){int a=text.indexOf(signature), b=text.indexOf("\n    }",a);if(a<0||b<0)throw new IllegalStateException(signature);return text.substring(a,b+6);}
