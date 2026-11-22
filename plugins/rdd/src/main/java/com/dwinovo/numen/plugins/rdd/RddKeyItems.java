@@ -36,23 +36,20 @@ final class RddKeyItems {
 
     /** 预算内版本：只截关键物品行本身，超长带省略标记；null=整行不显示。 */
     static String line(Object rawSlots, int maxChars) {
-        if (!(rawSlots instanceof List<?> slots) || slots.size() != 36) return null;
-        Map<String, Integer> counts = new LinkedHashMap<>();
-        for (Object o : slots) {
-            if (!(o instanceof Map<?, ?> m)) continue;
-            Object id = m.get("id");
-            if (!(id instanceof String s) || s.isBlank()) continue;
-            int n = m.get("count") instanceof Number num ? Math.max(0, num.intValue()) : 1;
-            if (n <= 0) continue;
-            if (wanted(s)) counts.merge(s, n, Integer::sum);
-        }
+        return line(RddMainInventory.aggregate(rawSlots), maxChars);
+    }
+
+    static String line(RddMainInventory.Result result, int maxChars) {
+        if (result == null || !result.known()) return null;
+        Map<String, Long> counts = new LinkedHashMap<>();
+        result.counts().forEach((id, count) -> { if (wanted(id)) counts.put(id, count); });
         if (counts.isEmpty()) return null;
         List<String> ids = new ArrayList<>(counts.keySet());
         ids.sort(Comparator.naturalOrder());
         List<String> shown = new ArrayList<>(MAX);
         for (int i = 0; i < ids.size() && i < MAX; i++) {
             String id = ids.get(i);
-            int n = counts.get(id);
+            long n = counts.get(id);
             shown.add(id.replace("minecraft:", "") + (n > 1 ? "×" + n : ""));
         }
         while (true) {

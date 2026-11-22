@@ -135,7 +135,9 @@ final class RddEnvBlock {
         String off = stackMasked(item,"offhand") ? "未知" : slot(values.get("offhand"));
         boolean inventoryUnknown=masked(item,"main");
         for(int i=0;i<36&&!inventoryUnknown;i++) inventoryUnknown=stackMasked(item,"main["+i+"]");
-        String inventory = inventoryUnknown ? "未知" : inventory(values.get("main"));
+        RddMainInventory.Result mainInventory = inventoryUnknown ? null : RddMainInventory.aggregate(values.get("main"));
+        String inventory = mainInventory == null || !mainInventory.known() ? "未知"
+                : mainInventory.counts().size() + "种 " + mainInventory.total() + "件（主包36槽，手持不另加）";
         String dimension = meta.dimension().replace("minecraft:", "");
         StringBuilder out = new StringBuilder("<env>\n");
         out.append("维度 ").append(shortText(dimension, 64)).append("（采样）\n");
@@ -150,9 +152,9 @@ final class RddEnvBlock {
             String line = "床头候选 (" + bedCandidate + ")（采样，可达/可睡未核）\n";
             if (out.length() + line.length() + "</env>".length() <= 400) out.append(line);
         }
-        if (!inventoryUnknown) {
+        if (mainInventory != null && mainInventory.known()) {
             int remaining = 390 - out.length() - "\n</env>".length();
-            String key = RddKeyItems.line(values.get("main"), Math.max(0, remaining));
+            String key = RddKeyItems.line(mainInventory, Math.max(0, remaining));
             if (key != null && remaining > 0) out.append(key).append('\n');
         }
         out.append("</env>");
@@ -240,25 +242,6 @@ final class RddEnvBlock {
                 && meta.freshness() == ObservationMetadata.Freshness.CURRENT
                 && meta.observedAtMs() <= now && now - meta.observedAtMs() <= 3_000L
                 && meta.validUntilMs() > now;
-    }
-    private static String inventory(Object raw) {
-        if (!(raw instanceof List<?> slots) || slots.size() != 36) return "未知";
-        Map<String, Long> totals = new HashMap<>();
-        for (int i = 0; i < 36; i++) {
-            if (!(slots.get(i) instanceof Map<?,?> slot)) return "未知";
-            Long index = integer(slot.get("slot")), count = integer(slot.get("count"));
-            if (index == null || index != i || count == null || count < 0
-                    || !(slot.get("id") instanceof String id)) return "未知";
-            if (id.isEmpty()) { if (count != 0) return "未知"; continue; }
-            if (count > 0) {
-                try { totals.merge(id, count, Math::addExact); }
-                catch (ArithmeticException overflow) { return "未知"; }
-            }
-        }
-        long total = 0;
-        try { for(long n:totals.values()) total=Math.addExact(total,n); }
-        catch(ArithmeticException overflow) { return "未知"; }
-        return totals.size() + "种 " + total + "件（主包36槽，手持不另加）";
     }
     private static String slot(Object raw) {
         if (!(raw instanceof Map<?,?> value) || !(value.get("id") instanceof String id)) return "未知";
