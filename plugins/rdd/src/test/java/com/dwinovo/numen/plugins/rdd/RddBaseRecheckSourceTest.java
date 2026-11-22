@@ -105,7 +105,7 @@ class RddBaseRecheckSourceTest {
             public int hashCode(){return Objects.hash(x,y,z);}
         }
         class NumenPlayer { UUID getUUID(){return null;} }
-        class RddPlugin { static Identity current; static void captureHomeIdentity(NumenPlayer body, Identity identity, BlockPos anchor) { current = identity; } }
+        class RddPlugin { static Identity current; static void captureHomeIdentity(NumenPlayer body, Identity identity, BlockPos anchor, String dimension) { current = identity; } }
         class RddInstrumentation { static long currentGameTimeTicks(){return 0;} }
         class RddWorldFacts {
             record BaseSnapshot(String dimension, BlockPos spawn, boolean complete, List<String> facilities, Map<String,Integer> storedItems) {}

@@ -42,11 +42,11 @@ class RddHomeReserveFreshnessTest {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - TTL - 1, fullReserve());
 
-        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known(), "过期读数不算 known");
-        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID).stage(), "过期足量不得进 STOCKED");
-        assertEquals(List.of(), RddHomeFacts.HomeView.of(registry, now, ID).reserve().shortfall(), "未知沿用空列表协议");
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known(), "过期读数不算 known");
+        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").stage(), "过期足量不得进 STOCKED");
+        assertEquals(List.of(), RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().shortfall(), "未知沿用空列表协议");
 
-        String block = RddHomeFacts.blockFor(registry, null, now, ID);
+        String block = RddHomeFacts.blockFor(registry, null, now, ID, 372, 68, 715, "minecraft:overworld");
         assertTrue(block.contains("reserve=UNKNOWN"), block);
         assertTrue(block.contains("blocking=reserve_unobserved"), block);
         assertTrue(block.contains("next=scan_reserve_containers"), block);
@@ -58,13 +58,13 @@ class RddHomeReserveFreshnessTest {
         AssetRegistry atTtl = baseRegistry(now - TTL, fullReserve());
         AssetRegistry overTtl = baseRegistry(now - TTL - 1, fullReserve());
 
-        assertTrue(RddHomeFacts.HomeView.of(atTtl, now, ID).reserve().known(), "age=TTL 仍可用");
-        assertEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(atTtl, now, ID).stage());
-        assertTrue(RddHomeFacts.blockFor(atTtl, null, now, ID).contains("home_stage=STOCKED"));
+        assertTrue(RddHomeFacts.HomeView.of(atTtl, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known(), "age=TTL 仍可用");
+        assertEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(atTtl, now, ID, 372, 68, 715, "minecraft:overworld").stage());
+        assertTrue(RddHomeFacts.blockFor(atTtl, null, now, ID, 372, 68, 715, "minecraft:overworld").contains("home_stage=STOCKED"));
 
-        assertFalse(RddHomeFacts.HomeView.of(overTtl, now, ID).reserve().known(), "age=TTL+1 不可用");
-        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(overTtl, now, ID).stage());
-        assertTrue(RddHomeFacts.blockFor(overTtl, null, now, ID).contains("home_stage=RESPAWN_BOUND"));
+        assertFalse(RddHomeFacts.HomeView.of(overTtl, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known(), "age=TTL+1 不可用");
+        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(overTtl, now, ID, 372, 68, 715, "minecraft:overworld").stage());
+        assertTrue(RddHomeFacts.blockFor(overTtl, null, now, ID, 372, 68, 715, "minecraft:overworld").contains("home_stage=RESPAWN_BOUND"));
     }
 
     @Test
@@ -72,9 +72,9 @@ class RddHomeReserveFreshnessTest {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now + MINUTE, fullReserve());
 
-        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known(), "时间戳在未来不可信");
-        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID).stage());
-        String block = RddHomeFacts.blockFor(registry, null, now, ID);
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known(), "时间戳在未来不可信");
+        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").stage());
+        String block = RddHomeFacts.blockFor(registry, null, now, ID, 372, 68, 715, "minecraft:overworld");
         assertTrue(block.contains("reserve=UNKNOWN"), block);
     }
 
@@ -83,11 +83,11 @@ class RddHomeReserveFreshnessTest {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - MINUTE, Map.of());
 
-        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known(), "新鲜空 Map 是已知，不是未知");
-        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().shortfall().isEmpty(), "已知空要报真实缺口");
-        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID).stage());
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known(), "新鲜空 Map 是已知，不是未知");
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().shortfall().isEmpty(), "已知空要报真实缺口");
+        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").stage());
 
-        String block = RddHomeFacts.blockFor(registry, null, now, ID);
+        String block = RddHomeFacts.blockFor(registry, null, now, ID, 372, 68, 715, "minecraft:overworld");
         assertTrue(block.contains("reserve=KNOWN but no critical items"), block);
         assertTrue(block.contains("blocking=reserve_short:") || block.contains("blocking=reserve_missing"), block);
     }
@@ -100,12 +100,12 @@ class RddHomeReserveFreshnessTest {
         partial.put("minecraft:cooked_beef", 3);
         AssetRegistry registry = baseRegistry(now - MINUTE, partial);
 
-        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known());
-        List<String> gap = RddHomeFacts.HomeView.of(registry, now, ID).reserve().shortfall();
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known());
+        List<String> gap = RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().shortfall();
         assertTrue(gap.contains("cooked_beef 3/8"), gap.toString());
         assertTrue(gap.contains("torch 0/8"), gap.toString());
-        assertEquals(HomeStage.RESPAWN_BOUND, RddHomeFacts.HomeView.of(registry, now, ID).stage());
-        assertTrue(RddHomeFacts.blockFor(registry, null, now, ID).contains("next=stock_reserve_box"));
+        assertEquals(HomeStage.RESPAWN_BOUND, RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").stage());
+        assertTrue(RddHomeFacts.blockFor(registry, null, now, ID, 372, 68, 715, "minecraft:overworld").contains("next=stock_reserve_box"));
     }
 
     @Test
@@ -113,10 +113,10 @@ class RddHomeReserveFreshnessTest {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - MINUTE, fullReserve());
 
-        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known());
-        assertEquals(List.of(), RddHomeFacts.HomeView.of(registry, now, ID).reserve().shortfall());
-        assertEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID).stage(), "新鲜达标的结果与改前一致");
-        String block = RddHomeFacts.blockFor(registry, null, now, ID);
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known());
+        assertEquals(List.of(), RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().shortfall());
+        assertEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").stage(), "新鲜达标的结果与改前一致");
+        String block = RddHomeFacts.blockFor(registry, null, now, ID, 372, 68, 715, "minecraft:overworld");
         assertTrue(block.contains("home_stage=STOCKED"), block);
         assertTrue(block.contains("reserve=OK"), block);
     }
@@ -126,10 +126,10 @@ class RddHomeReserveFreshnessTest {
         long now = 1_700_000_000_000L;
         AssetRegistry empty = new AssetRegistry();
 
-        assertEquals(HomeStage.NO_HOME, RddHomeFacts.HomeView.of(empty, now, ID).stage());
-        assertFalse(RddHomeFacts.HomeView.of(empty, now, ID).reserve().known());
-        assertEquals(List.of(), RddHomeFacts.HomeView.of(empty, now, ID).reserve().shortfall());
-        String block = RddHomeFacts.blockFor(empty, null, now, ID);
+        assertEquals(HomeStage.NO_HOME, RddHomeFacts.HomeView.of(empty, now, ID, 372, 68, 715, "minecraft:overworld").stage());
+        assertFalse(RddHomeFacts.HomeView.of(empty, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known());
+        assertEquals(List.of(), RddHomeFacts.HomeView.of(empty, now, ID, 372, 68, 715, "minecraft:overworld").reserve().shortfall());
+        String block = RddHomeFacts.blockFor(empty, null, now, ID, 372, 68, 715, "minecraft:overworld");
         assertTrue(block.contains("home_stage=NO_HOME"), block);
         assertTrue(block.contains("reserve=UNKNOWN"), block);
         assertFalse(block.contains("reserve=0"), "未知不能写成 0: " + block);
@@ -139,12 +139,12 @@ class RddHomeReserveFreshnessTest {
     void newFreshObservationRecoversWithoutPermanentLock() {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - TTL - MINUTE, fullReserve());
-        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID).stage());
+        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").stage());
 
         observeBase(registry, now, fullReserve());   // 重新扫一次箱子
-        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known());
-        assertEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID).stage());
-        assertTrue(RddHomeFacts.blockFor(registry, null, now, ID).contains("reserve=OK"));
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known());
+        assertEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").stage());
+        assertTrue(RddHomeFacts.blockFor(registry, null, now, ID, 372, 68, 715, "minecraft:overworld").contains("reserve=OK"));
     }
 
     @Test
@@ -152,9 +152,9 @@ class RddHomeReserveFreshnessTest {
         long now = 1_700_000_000_000L;
         for (long age : new long[]{0L, MINUTE, TTL - 1, TTL, TTL + 1, TTL + 30 * MINUTE}) {
             AssetRegistry registry = baseRegistry(now - age, fullReserve());
-            boolean known = RddHomeFacts.HomeView.of(registry, now, ID).reserve().known();
-            boolean renderedUnknown = RddHomeFacts.blockFor(registry, null, now, ID).contains("reserve=UNKNOWN");
-            boolean stocked = RddHomeFacts.HomeView.of(registry, now, ID).stage() == HomeStage.STOCKED;
+            boolean known = RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known();
+            boolean renderedUnknown = RddHomeFacts.blockFor(registry, null, now, ID, 372, 68, 715, "minecraft:overworld").contains("reserve=UNKNOWN");
+            boolean stocked = RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").stage() == HomeStage.STOCKED;
             assertEquals(!known, renderedUnknown, "age=" + age + " 展示与判定必须同口径");
             assertEquals(known, stocked, "age=" + age + " 阶段必须与 known 同口径");
         }
@@ -169,7 +169,7 @@ class RddHomeReserveFreshnessTest {
         value.remove("world_id"); value.remove("server_session");
         registry.apply(new Observation(old.observationId(), old.type(), old.source(), old.environmentId(), old.observedAt(), value),
                 entry.assetId(), AssetScope.GLOBAL, null);
-        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known(), "missing world and session cannot prove current reserve");
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known(), "missing world and session cannot prove current reserve");
     }
 
     @Test void failedBedRecheckDoesNotTurnOldReserveIntoCurrentEvidence() {
@@ -177,7 +177,7 @@ class RddHomeReserveFreshnessTest {
         AssetRegistry registry = baseRegistry(now - MINUTE, fullReserve());
         // Simulate UNKNOWN result applied to the existing current entry; the observation remains retained.
         registry.markUnknown("world_base//372/68/715");
-        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known(), "unknown recheck is not current confirmation");
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known(), "unknown recheck is not current confirmation");
         assertTrue(registry.get("world_base//372/68/715").isPresent());
     }
 
@@ -191,24 +191,24 @@ class RddHomeReserveFreshnessTest {
         value.put("facilities", List.of("core_house")); value.put("important_items", fullReserve());
         registry.apply(new Observation("obs-base", "world_base", "rdd_world_observer", "minecraft:overworld",
                 now - MINUTE, value), "world_base//372/68/715", AssetScope.GLOBAL, null);
-        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known());
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known());
     }
 
     @Test void mismatchedWorldOrSessionIsUnknown() {
         long now = 1_700_000_000_000L;
         var registry = baseRegistry(now - MINUTE, fullReserve());
         assertFalse(RddHomeFacts.HomeView.of(registry, now,
-                new com.dwinovo.numen.api.ServerIdentityProvider.Snapshot("world-B", "session-A")).reserve().known());
+                new com.dwinovo.numen.api.ServerIdentityProvider.Snapshot("world-B", "session-A"), 372, 68, 715, "minecraft:overworld").reserve().known());
         assertFalse(RddHomeFacts.HomeView.of(registry, now,
-                new com.dwinovo.numen.api.ServerIdentityProvider.Snapshot("world-A", "session-B")).reserve().known());
-        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known());
+                new com.dwinovo.numen.api.ServerIdentityProvider.Snapshot("world-A", "session-B"), 372, 68, 715, "minecraft:overworld").reserve().known());
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known());
     }
 
     @Test void invalidBaseIsNotKnownEvenWithinTtl() {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - MINUTE, fullReserve());
         registry.invalidate("world_base//372/68/715"); // defensive case, not claimed as existing producer path
-        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known());
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known());
     }
 
     @Test void unidentifiedReserveMustNotPermitHighRiskThroughRealHomeGate() {
@@ -231,7 +231,7 @@ class RddHomeReserveFreshnessTest {
         value.put("facilities", List.of("core_house")); value.put("important_items", fullReserve());
         registry.apply(new Observation("fresh", "world_base", "rdd_world_observer", "minecraft:overworld",
                 now - MINUTE, value), "base", AssetScope.GLOBAL, null);
-        var view = RddHomeFacts.HomeView.of(registry, now, ID);
+        var view = RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld");
         var otherwiseAllowed = new com.dwinovo.numen.rdd.policy.RiskGate.Verdict(true,
                 com.dwinovo.numen.rdd.policy.RiskLevel.NETHER, List.of(), List.of());
         assertTrue(com.dwinovo.numen.rdd.policy.HomeGate.enforce(otherwiseAllowed, view.stage()).allowed());
@@ -240,14 +240,14 @@ class RddHomeReserveFreshnessTest {
     @Test void existingFourBlockRadiusBoundaryIsInclusive() {
         long now = 1_700_000_000_000L;
         var registry = baseRegistry(now - MINUTE, fullReserve());
-        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID, 376, 68, 715).reserve().known());
-        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID, 377, 68, 715).reserve().known());
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID, 376, 68, 715, "minecraft:overworld").reserve().known());
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID, 377, 68, 715, "minecraft:overworld").reserve().known());
     }
 
     @Test void explicitOutOfRangeAnchorIsUnknown() {
         long now = 1_700_000_000_000L;
         var registry = baseRegistry(now - MINUTE, fullReserve());
-        var view = RddHomeFacts.HomeView.of(registry, now, ID, 900, 68, 900);
+        var view = RddHomeFacts.HomeView.of(registry, now, ID, 900, 68, 900, "minecraft:overworld");
         assertFalse(view.reserve().known());
     }
 
@@ -262,11 +262,11 @@ class RddHomeReserveFreshnessTest {
                 "other-base", AssetScope.GLOBAL, null);
         try {
             RddHomeFacts.RESPX.set(372); RddHomeFacts.RESPY.set(68); RddHomeFacts.RESPZ.set(715);
-            var anchored = RddHomeFacts.HomeView.of(registry, now, ID);
+            var anchored = RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld");
             assertEquals("world_base//372/68/715", anchored.base().assetId());
             assertFalse(anchored.reserve().sufficient());
             RddHomeFacts.RESPX.remove(); RddHomeFacts.RESPY.remove(); RddHomeFacts.RESPZ.remove();
-            var missing = RddHomeFacts.HomeView.of(registry, now, ID);
+            var missing = RddHomeFacts.HomeView.of(registry, now, ID, null, null, null, "minecraft:overworld");
             assertAll(
                     () -> assertFalse(missing.reserve().known(), "no current anchor must not pick newer unrelated base"),
                     () -> { var allowed = new com.dwinovo.numen.rdd.policy.RiskGate.Verdict(true,
@@ -286,8 +286,10 @@ class RddHomeReserveFreshnessTest {
         other.put("facilities", List.of("core_house")); other.put("important_items", fullReserve());
         registry.apply(new Observation("other-dim", "world_base", "test", "minecraft:the_nether", now - MINUTE, other),
                 "base-nether", AssetScope.GLOBAL, null);
-        var view = RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715);
+        var view = RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:overworld");
         assertFalse(view.reserve().known(), "current overworld anchor must not use nether observation at same coordinates");
+        var nether = RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715, "minecraft:the_nether");
+        assertTrue(nether.reserve().known(), "matching dimension remains usable");
     }
 
     private static Map<String, Integer> fullReserve() {

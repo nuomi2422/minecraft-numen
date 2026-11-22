@@ -78,7 +78,8 @@ final class RddRiskAdmission {
             var homeIdentity = RddPlugin.cachedHomeIdentity(ap.getUUID());
             var home = RddHomeFacts.HomeView.of(baseRegistry, System.currentTimeMillis(),
                     homeIdentity == null ? null : homeIdentity.identity(), homeIdentity == null ? null : homeIdentity.x(),
-                    homeIdentity == null ? null : homeIdentity.y(), homeIdentity == null ? null : homeIdentity.z());
+                    homeIdentity == null ? null : homeIdentity.y(), homeIdentity == null ? null : homeIdentity.z(),
+                    homeIdentity == null ? null : homeIdentity.dimension());
             var verdict = com.dwinovo.numen.rdd.policy.RiskGate.checkWithBase(lv, inv, hasRecovery,
                     home.reserve().known(), home.reserve().shortfall());
             // 167 §B3：基地阶段是高风险动作的硬依赖（只收紧）。物资齐了但家里没底，同样不许进。

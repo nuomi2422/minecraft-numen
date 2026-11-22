@@ -29,6 +29,8 @@ class RddHomeIdentityLifecycleSourceTest {
         String body = Files.readString(plugin.resolve("RddCompanionBody.java"));
         String stamp = Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/api/WorldContextStamp.java"));
         String clear = method(production, "private static void clearWorldState(");
+        String detector = Files.readString(plugin.resolve("RddDetector.java"));
+        assertTrue(detector.contains("RddPlugin.recheckHomeBinding(ap);"), "server tick binding recheck must remain wired");
         assertTrue(production.contains("ServerStoppedEvent event) -> clearWorldState()"), "stop event wiring changed");
         assertTrue(clear.contains("RddCompanionBody.clearAll();"));
         assertTrue(clear.contains("HOME_IDENTITIES.clear();"));
@@ -50,7 +52,7 @@ class RddHomeIdentityLifecycleSourceTest {
                 public static <T> T capability(Class<T> type) { return type.cast(provider); }
             }
             """);
-        source(sources, "net/minecraft/core/BlockPos.java", "package net.minecraft.core; public class BlockPos { public int getX(){return 1;} public int getY(){return 64;} public int getZ(){return 2;} }");
+        source(sources, "net/minecraft/core/BlockPos.java", "package net.minecraft.core; public class BlockPos { public static final BlockPos ZERO=new BlockPos(0); private final int x; public BlockPos(){this(1);} public BlockPos(int x){this.x=x;} public int getX(){return x;} public int getY(){return 64;} public int getZ(){return 2;} public boolean equals(Object o){return o instanceof BlockPos p && x==p.x;} }");
         source(sources, "net/minecraft/server/MinecraftServer.java", """
             package net.minecraft.server;
             public class MinecraftServer {
@@ -68,6 +70,9 @@ class RddHomeIdentityLifecycleSourceTest {
                 public NumenPlayer(UUID id, MinecraftServer server) { this.id=id; this.server=server; }
                 public UUID getUUID() { return id; }
                 public MinecraftServer getServer() { return server; }
+                public net.minecraft.core.BlockPos getRespawnPosition() { return respawnX == 0 ? null : new net.minecraft.core.BlockPos(respawnX); }
+                public Dim getRespawnDimension() { return new Dim(); }
+                public static class Dim { public String location() { return "overworld"; } }
             }
             """);
         source(sources, "com/dwinovo/numen/rdd/core/AssetRegistry.java", """
@@ -80,6 +85,7 @@ class RddHomeIdentityLifecycleSourceTest {
             import java.util.*;
             final class RddPlugin {
             """ + fields + method(production, "static void captureHomeIdentity(")
+                + method(production, "static void recheckHomeBinding(")
                 + method(production, "static HomeIdentity cachedHomeIdentity(")
                 // Exact cleanup statements from the real stop handler; unrelated cleanup is not simulated.
                 + "static void stopFixture() { " + exact(clear, "RddCompanionBody.clearAll();")
@@ -92,7 +98,7 @@ class RddHomeIdentityLifecycleSourceTest {
             """ + method(observer, "static Result observe(") + """
             record Result(int bases, int structures, int machines, int entityGroups) {}
             static boolean failBase;
-            static int observeBase(NumenPlayer b, AssetRegistry r, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot i) { if (failBase) throw new RuntimeException("fixture scan failure"); RddPlugin.captureHomeIdentity(b, i, new net.minecraft.core.BlockPos()); return 1; }
+            static int observeBase(NumenPlayer b, AssetRegistry r, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot i) { if (failBase) throw new RuntimeException("fixture scan failure"); RddPlugin.captureHomeIdentity(b, i, new net.minecraft.core.BlockPos(), "overworld"); return 1; }
             static int observeStructures(NumenPlayer b, AssetRegistry r) { return 0; }
             static int observeVillages(NumenPlayer b, AssetRegistry r) { return 0; }
             static int observeMachines(NumenPlayer b, AssetRegistry r) { return 0; }
@@ -164,18 +170,22 @@ class RddHomeIdentityLifecycleSourceTest {
                 RddWorldAssetObserver.observe(bodyA, registry);
                 checks.add(seen.equals(List.of(server)));
                 checks.add(RddPlugin.cachedHomeIdentity(a) != null && snapshot.equals(RddPlugin.cachedHomeIdentity(a).identity()));
+                RddWorldAssetObserver.observe(bodyB, registry);
                 bodyA.respawnX = 20; // server-side rebinding, before next observation
-                checks.add(RddPlugin.cachedHomeIdentity(a) == null);
+                RddPlugin.recheckHomeBinding(bodyA);
+                checks.add(RddPlugin.cachedHomeIdentity(a) == null && RddPlugin.cachedHomeIdentity(b) != null);
+                bodyA.respawnX = 1; RddWorldAssetObserver.observe(bodyA, registry);
                 bodyA.respawnX = 0; // unbound, before next observation
+                RddPlugin.recheckHomeBinding(bodyA);
                 checks.add(RddPlugin.cachedHomeIdentity(a) == null);
-                bodyA.respawnX = 1;
+                bodyA.respawnX = 1; RddWorldAssetObserver.observe(bodyA, registry);
                 RddWorldAssetObserver.failBase = true;
                 try { RddWorldAssetObserver.observe(bodyA, registry); } catch (RuntimeException expected) { /* detector boundary */ }
                 checks.add(RddPlugin.cachedHomeIdentity(a) == null);
                 RddWorldAssetObserver.failBase = false;
                 RddWorldAssetObserver.observe(bodyA, registry);
                 seen.clear(); seen.add(server);
-                checks.add(RddPlugin.cachedHomeIdentity(b) == null);
+                checks.add(RddPlugin.cachedHomeIdentity(b) != null);
                 RddWorldAssetObserver.observe(bodyB, registry);
                 checks.add(seen.equals(List.of(server, otherServer)) && RddPlugin.cachedHomeIdentity(b) != null && snapshot.equals(RddPlugin.cachedHomeIdentity(b).identity()));
                 var replacement = new NumenPlayer(a, server); RddCompanionBody.remember(replacement);

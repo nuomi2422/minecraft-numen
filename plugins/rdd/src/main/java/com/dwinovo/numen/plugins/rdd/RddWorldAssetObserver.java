@@ -55,7 +55,7 @@ final class RddWorldAssetObserver {
         try {
             bases = observeBase(companion, registry, identity);
         } catch (RuntimeException failure) {
-            RddPlugin.captureHomeIdentity(companion, null, null);
+            RddPlugin.captureHomeIdentity(companion, null, null, null);
             throw failure;
         }
         int structures = observeStructures(companion, registry);
@@ -70,7 +70,8 @@ final class RddWorldAssetObserver {
                                    com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
         RddBaseFacts.BaseInspection inspection = RddBaseFacts.inspectBaseResult(companion, Map.of());
         RddWorldFacts.BaseSnapshot base = inspection.snapshot();
-        RddPlugin.captureHomeIdentity(companion, base == null ? null : identity, base == null ? null : base.spawn());
+        RddPlugin.captureHomeIdentity(companion, base == null ? null : identity, base == null ? null : base.spawn(),
+                base == null ? null : base.dimension());
         if (base == null) {
             markBaseRecheck(registry, identity, inspection);
             return 0;
