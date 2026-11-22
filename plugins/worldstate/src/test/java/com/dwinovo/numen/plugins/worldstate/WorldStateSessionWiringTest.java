@@ -524,10 +524,13 @@ class WorldStateSessionWiringTest {
         Class<?> modType=loader.loadClass(PKG+"WorldStateMod");
         Class<?> busType=loader.loadClass("net.neoforged.neoforge.common.NeoForge");
         Object bus=busType.getField("EVENT_BUS").get(null);
+        ((java.util.List<?>)bus.getClass().getField("listeners").get(bus)).clear();
         modType.getConstructor().newInstance();
         Object host=host(config.resolve("focus-event"));
         var bind=modType.getDeclaredMethod("bindService",serviceType); bind.setAccessible(true); bind.invoke(null,host);
         Object server=server(config.resolve("save"),true,false);
+        Class<?> started=loader.loadClass("net.neoforged.neoforge.event.server.ServerStartedEvent");
+        bus.getClass().getMethod("fire",Object.class).invoke(bus,started.getConstructor(serverType).newInstance(server));
         Object pins=serviceType.getMethod("focusPins").invoke(host);
         UUID c=UUID.randomUUID();
         pins.getClass().getMethod("pin",UUID.class,String.class,String.class,String.class,String.class,long.class,long.class,long.class,int.class,int.class)
@@ -543,6 +546,28 @@ class WorldStateSessionWiringTest {
         Class<?> stopped=loader.loadClass("net.neoforged.neoforge.event.server.ServerStoppedEvent");
         bus.getClass().getMethod("fire",Object.class).invoke(bus,stopped.getConstructor(serverType).newInstance(server));
         assertTrue(((java.util.List<?>)release.invoke(pins,c,"w","s",0L)).isEmpty());
+    }
+
+    @Test void oldServerStopDoesNotClearNewServerFocus() throws Exception {
+        Class<?> modType=loader.loadClass(PKG+"WorldStateMod");
+        Object bus=loader.loadClass("net.neoforged.neoforge.common.NeoForge").getField("EVENT_BUS").get(null);
+        ((java.util.List<?>)bus.getClass().getField("listeners").get(bus)).clear();
+        modType.getConstructor().newInstance(); Object host=host(config.resolve("old-stop"));
+        var bind=modType.getDeclaredMethod("bindService",serviceType); bind.setAccessible(true); bind.invoke(null,host);
+        Object oldServer=server(config.resolve("old"),true,false), newServer=server(config.resolve("new"),true,false);
+        Class<?> started=loader.loadClass("net.neoforged.neoforge.event.server.ServerStartedEvent");
+        Class<?> stopped=loader.loadClass("net.neoforged.neoforge.event.server.ServerStoppedEvent");
+        var fire=bus.getClass().getMethod("fire",Object.class);
+        fire.invoke(bus,started.getConstructor(serverType).newInstance(oldServer));
+        fire.invoke(bus,started.getConstructor(serverType).newInstance(newServer));
+        Object pins=serviceType.getMethod("focusPins").invoke(host); UUID id=UUID.randomUUID();
+        pins.getClass().getMethod("pin",UUID.class,String.class,String.class,String.class,String.class,long.class,long.class,long.class,int.class,int.class)
+                .invoke(pins,id,"new","session","d","environment",1000L,60000L,0L,0,0);
+        fire.invoke(bus,stopped.getConstructor(serverType).newInstance(oldServer));
+        var active=pins.getClass().getMethod("active",UUID.class,String.class,String.class,long.class);
+        assertEquals(1,((List<?>)active.invoke(pins,id,"new","session",1000L)).size());
+        fire.invoke(bus,stopped.getConstructor(serverType).newInstance(newServer));
+        assertTrue(((List<?>)active.invoke(pins,id,"new","session",1000L)).isEmpty());
     }
 
     private static String location(Class<?> type) throws Exception {
