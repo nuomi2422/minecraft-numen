@@ -83,6 +83,21 @@ class FocusPinStoreTest {
         assertTrue(st.release(c,"owner",next.leaseId()));
     }
 
+    @Test void staleLegacyUnpinCannotRemoveReacquiredLegacyHolder() {
+        FocusPinStore st=new FocusPinStore(); UUID c=UUID.randomUUID();
+        var first=st.pin(c,W,S,D,"environment",1000,60000,0,0,0);
+        var other=st.acquire(c,W,S,D,"environment","","package",1000,60000,0,0,0);
+        assertEquals(first.id(),other.pin().id());
+        assertTrue(st.unpin(c,first.id()));
+        var renewed=st.pin(c,W,S,D,"environment",1100,60000,0,0,0);
+        assertFalse(st.unpin(c,first.id()),"stale handle must not release newer legacy holder");
+        assertEquals(1,st.active(c,W,S,1200).size(),"other owner survives stale legacy unpin");
+        assertTrue(st.release(c,"package",other.leaseId()));
+        assertEquals(1,st.active(c,W,S,1300).size(),"reacquired legacy holder remains");
+        assertTrue(st.unpin(c,renewed.id()));
+        assertTrue(st.active(c,W,S,1400).isEmpty());
+    }
+
     @Test void pinSurvivesTwoRoundsThenExpires() {
         FocusPinStore st = new FocusPinStore();
         UUID c = UUID.randomUUID();
