@@ -468,15 +468,15 @@ class WorldStateSessionWiringTest {
         pins.getClass().getMethod("pin",UUID.class,String.class,String.class,String.class,String.class,long.class,long.class,long.class,int.class,int.class)
                 .invoke(pins,c,"w","s","d","environment",System.currentTimeMillis()-10000,1000L,0L,0,0);
         Class<?> post=loader.loadClass("net.neoforged.neoforge.event.tick.ServerTickEvent$Post");
-        Object event=post.getConstructor(serverType).newInstance(server);
-        bus.getClass().getMethod("fire",int.class,Object.class).invoke(bus,2,event);
+        Object event=post.getConstructor(java.util.function.BooleanSupplier.class,serverType).newInstance((java.util.function.BooleanSupplier) () -> true,server);
+        bus.getClass().getMethod("fire",Object.class).invoke(bus,event);
         var release=pins.getClass().getMethod("active",UUID.class,String.class,String.class,long.class);
         // Verify callback worked, not active() lazy cleanup: use old time before expiry.
         assertTrue(((java.util.List<?>)release.invoke(pins,c,"w","s",0L)).isEmpty());
         pins.getClass().getMethod("pin",UUID.class,String.class,String.class,String.class,String.class,long.class,long.class,long.class,int.class,int.class)
                 .invoke(pins,c,"w","s","d","environment",System.currentTimeMillis(),60000L,0L,0,0);
         Class<?> stopped=loader.loadClass("net.neoforged.neoforge.event.server.ServerStoppedEvent");
-        bus.getClass().getMethod("fire",int.class,Object.class).invoke(bus,1,stopped.getConstructor(serverType).newInstance(server));
+        bus.getClass().getMethod("fire",Object.class).invoke(bus,stopped.getConstructor(serverType).newInstance(server));
         assertTrue(((java.util.List<?>)release.invoke(pins,c,"w","s",0L)).isEmpty());
     }
 
@@ -501,13 +501,14 @@ class WorldStateSessionWiringTest {
                     public static class Bus {
                         public java.util.List<java.util.function.Consumer<Object>> listeners = new java.util.ArrayList<>();
                         @SuppressWarnings("unchecked") public <T> void addListener(java.util.function.Consumer<T> c) { listeners.add((java.util.function.Consumer<Object>)(Object)c); }
-                        public void fire(int index, Object event) { listeners.get(index).accept(event); }
+                        // Test boundary: drive only compatible typed callbacks; not NeoForge bus implementation.
+                        public void fire(Object event) { int delivered=0; for(var listener:listeners) { try { listener.accept(event); delivered++; } catch(ClassCastException wrongEventType) { /* unrelated typed lambda */ } } if(delivered!=1) throw new AssertionError("expected one typed callback, got "+delivered); }
                     }
                 }
                 """);
         sources.put("net.neoforged.neoforge.event.server.ServerStartedEvent", "package net.neoforged.neoforge.event.server; public record ServerStartedEvent(net.minecraft.server.MinecraftServer server) { public net.minecraft.server.MinecraftServer getServer(){return server;} }");
         sources.put("net.neoforged.neoforge.event.server.ServerStoppedEvent", "package net.neoforged.neoforge.event.server; public record ServerStoppedEvent(net.minecraft.server.MinecraftServer server) { public net.minecraft.server.MinecraftServer getServer(){return server;} }");
-        sources.put("net.neoforged.neoforge.event.tick.ServerTickEvent", "package net.neoforged.neoforge.event.tick; public class ServerTickEvent { public record Post(net.minecraft.server.MinecraftServer server) { public net.minecraft.server.MinecraftServer getServer(){return server;} } }");
+        sources.put("net.neoforged.neoforge.event.tick.ServerTickEvent", "package net.neoforged.neoforge.event.tick; public class ServerTickEvent { public record Post(java.util.function.BooleanSupplier hasTime, net.minecraft.server.MinecraftServer server) { public net.minecraft.server.MinecraftServer getServer(){return server;} } }");
         sources.put(PKG + "WorldStatePlugin", "package com.dwinovo.numen.plugins.worldstate; public class WorldStatePlugin implements com.dwinovo.numen.api.NumenPlugin { public void setup(com.dwinovo.numen.api.NumenApi api){} }");
         sources.put("net.minecraft.server.MinecraftServer", """
                 package net.minecraft.server;
