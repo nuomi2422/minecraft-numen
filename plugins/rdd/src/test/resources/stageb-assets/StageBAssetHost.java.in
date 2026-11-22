@@ -1,0 +1,64 @@
+package com.dwinovo.numen.plugins.rdd;
+import com.dwinovo.numen.rdd.api.*;
+import com.dwinovo.numen.rdd.core.*;
+import com.dwinovo.numen.agent.llm.ConvoState;
+import com.dwinovo.numen.agent.provider.*;
+import com.google.gson.*;
+import java.util.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import com.dwinovo.numen.plugins.rdd.RddStageBAssetDetailConsumerTest.Driver;
+
+public class StageBAssetHost implements Driver {
+    static StageBAssetHost live;
+    final UUID id=UUID.randomUUID(); final AssetRegistry registry=new AssetRegistry();
+    final TaskChain chain=new TaskChain(new Goal("g","fixture",List.of(new PrimaryGoal("p","fixture",List.of(Subtask.hardCoded("s","fixture",Map.of("minimum",1)))))));
+    final List<List<ConvoState.Msg>> requests=new ArrayList<>();final ArrayDeque<Runnable> server=new ArrayDeque<>();
+    CompletableFuture<Reply> pending;List<String> tools=List.of();List<SubtaskSpec> specs=List.of();
+    int readCount,done,budget=2;boolean current=true;
+    public StageBAssetHost(){live=this;registry.apply(new Observation("o","world_location","fixture","overworld",1,
+        Map.of("label","fixture-hidden-entry","world_id","world","dimension","overworld")),"base",AssetScope.GLOBAL,null);}
+    public void start(){RddDecomposer.decomposeSpecsWithHint(id,chain,chain.planRevision(),"bread",0,List.of(),"",s->{done++;specs=s;});}
+    public void respond(String name,String id,String args){var p=Objects.requireNonNull(pending);pending=null;p.complete(new Reply(new AssistantTurn("",List.of(new LlmToolCall(id,name,args)),new JsonObject())));}
+    public int requests(){return requests.size();} public int reads(){return readCount;} public int completions(){return done;}
+    public List<?> specs(){return specs;} public List<ConvoState.Msg> messages(){return requests.getLast();}public List<String> offered(){return tools;}
+    public void stale(String kind){current=false;} public void budget(int allowed){budget=allowed;}
+    public void drain(){while(!server.isEmpty())server.remove().run();}
+}
+record Reply(AssistantTurn turn) {}
+class RddDecomposer {
+    static String situationBlock(UUID id){return "facts";}
+    static <T> void withPlannerEndpoint(UUID id,String stage,Function<Object,CompletableFuture<T>> send,Consumer<T> done,Runnable fail){
+        if(StageBAssetHost.live.budget--<=0){fail.run();return;}send.apply(new Object()).whenComplete((r,e)->{if(e!=null)fail.run();else done.accept(r);});}
+    static void dispatchStageB(UUID id,String theme,TaskChain owner,long revision,int attempt,List<String> completed,String hint,
+        PlanningAssetSnapshot snapshot,List<String> failures,Object knowledge,Supplier<TaskChain> current,Consumer<String> send){send.accept("bounded catalog base; "+theme);}
+    static List<SubtaskSpec> stageBPublished(RddStageBSpecParser.Parsed parsed,RddPlanGuard.Filtered guarded,String theme){return guarded.allowed();}
+    // @METHODS@
+}
+class NumenLlmClient {
+    static NumenLlmClient forEndpoint(Object endpoint){return new NumenLlmClient();}
+    CompletableFuture<Reply> chatStreaming(List<ConvoState.Msg> messages,List<IToolSpec> tools,String system,Object chunk,LlmObservation obs){
+        var f=StageBAssetHost.live;f.requests.add(List.copyOf(messages));f.tools=tools.stream().map(IToolSpec::name).toList();f.pending=new CompletableFuture<>();return f.pending;}
+}
+class LlmObservation { LlmObservation(String role,String id,String stage,java.util.function.BiConsumer<String,Map<String,Object>> sink){} }
+class RddPlugin {
+    static void publishPlanningContext(Object... args){}
+    static RddRuntime runtime(UUID id){return new RddRuntime(StageBAssetHost.live.chain,StageBAssetHost.live.registry);}
+    static PlanningAssetSnapshot planningSnapshot(UUID id){return PlanningAssetSnapshot.from(Map.of(),StageBAssetHost.live.registry);}
+}
+class RddMonitor { static void publish(String name,Map<String,Object> data){} }
+class RddDeathSpotFacts { static List<String> knownFailuresFor(UUID id){return List.of();} }
+class RddPlanningKnowledge {static final Object HOST=new Object();static void publishPolicy(Object...args){} }
+class RddPlanningPolicy {static List<String> appliedRules(String theme,String stage){return List.of();} }
+class RddPlanGuard {
+    record Filtered(List<SubtaskSpec> allowed,List<String> dropped,List<String> reused){}
+    static List<SubtaskSpec> normalizeConditions(List<SubtaskSpec> specs){return specs;}
+}
+class RddMiningCapabilityCheck {
+    static Object capture(UUID id){return null;}
+    static void filter(Object context,List<SubtaskSpec> specs,String theme,Map<String,Integer> counts,Consumer<RddPlanGuard.Filtered> done){done.accept(new RddPlanGuard.Filtered(specs,List.of(),List.of()));}
+}
+class RddDecomposerPrompt {
+    static final String SYSTEM_PROMPT="system";
+    static final IToolSpec DECOMPOSE_TOOL=new IToolSpec(){public String name(){return "decompose_goal";}public String description(){return "plan";}public Map<String,Object> parameterSchema(){return Map.of();}};
+}
