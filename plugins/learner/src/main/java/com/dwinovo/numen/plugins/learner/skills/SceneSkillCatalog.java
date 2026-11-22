@@ -43,8 +43,9 @@ final class SceneSkillCatalog {
 
     static boolean missingRequired(SkillEntry entry, LearnedSkillBodyResolver resolver, UUID companion, LearnedSkillBodyResolver.View view) {
         for (String condition : entry.preconditions()) {
-            if (condition.startsWith("requires:") && !available(condition.substring("requires:".length()), resolver, companion, view)) {
-                return true;
+            if (condition.startsWith("requires:")) {
+                String ref = condition.substring("requires:".length());
+                if (ref.equals("skill:" + entry.id() + "@v" + entry.version()) || !available(ref, resolver, companion, view)) return true;
             }
         }
         return false;
