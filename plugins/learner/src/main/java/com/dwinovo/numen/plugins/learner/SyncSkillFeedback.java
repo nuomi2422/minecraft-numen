@@ -100,7 +100,12 @@ public final class SyncSkillFeedback implements SyncSkillCorrelation {
 
     /** Historical lookup requires the host's ledger, not a memo's self-reported provenance. */
     public Confirmed confirm(UsageLedger ledger, UsageLedger.Entry row) {
-        if (ledger == null || !ledger.containsSyncReceipt(row)) return null;
+        return ledger == null || row == null ? null : confirm(ledger.readSnapshot(), row);
+    }
+
+    /** Scan-local proof only; submission callers use the fresh host-ledger overload above. */
+    public Confirmed confirm(UsageLedger.ReadSnapshot snapshot, UsageLedger.Entry row) {
+        if (snapshot == null || !snapshot.containsSyncReceipt(row)) return null;
         try {
             JsonObject d = com.google.gson.JsonParser.parseString(row.detail()).getAsJsonObject();
             return new Confirmed("", required(d,"wire_id"), required(d,"target_tool"),

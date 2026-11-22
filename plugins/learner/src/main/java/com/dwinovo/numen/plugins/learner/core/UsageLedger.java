@@ -153,9 +153,19 @@ public final class UsageLedger {
     }
 
     private final Path file;
+    private final java.util.function.Consumer<Path> beforeRead;
 
-    public UsageLedger(Path configDir) {
+    public UsageLedger(Path configDir) { this(configDir, path -> {}); }
+
+    // Package-local I/O observation seam: observes real reads, never supplies ledger content.
+    UsageLedger(Path configDir, java.util.function.Consumer<Path> beforeRead) {
         this.file = configDir.resolve("usage-ledger.jsonl");
+        this.beforeRead = java.util.Objects.requireNonNull(beforeRead);
+    }
+
+    private List<String> readLines() throws IOException {
+        beforeRead.accept(file);
+        return Files.readAllLines(file, StandardCharsets.UTF_8);
     }
 
     public Path file() {
@@ -267,8 +277,23 @@ public final class UsageLedger {
     /** C1-B 单次读的完整性；空文件 READY，缺文件和读坏/坏行各有明确状态。 */
     public enum ReadStatus { READY, MISSING, UNREADABLE, MALFORMED }
 
-    public record ReadSnapshot(List<Entry> rows, ReadStatus status, int malformedLines) {
-        public ReadSnapshot { rows = List.copyOf(rows); }
+    /** Batch-local immutable view. Public row construction carries no receipt provenance. */
+    public static final class ReadSnapshot {
+        private final List<Entry> rows;
+        private final ReadStatus status;
+        private final int malformedLines;
+        private final java.util.Set<Entry> syncReceipts;
+        public ReadSnapshot(List<Entry> rows, ReadStatus status, int malformedLines) {
+            this(rows, status, malformedLines, java.util.Set.of());
+        }
+        private ReadSnapshot(List<Entry> rows, ReadStatus status, int malformedLines, java.util.Set<Entry> receipts) {
+            this.rows = List.copyOf(rows); this.status = status; this.malformedLines = malformedLines;
+            this.syncReceipts = status == ReadStatus.READY ? java.util.Set.copyOf(receipts) : java.util.Set.of();
+        }
+        public List<Entry> rows() { return rows; }
+        public ReadStatus status() { return status; }
+        public int malformedLines() { return malformedLines; }
+        public boolean containsSyncReceipt(Entry row) { return row != null && syncReceipts.contains(row); }
     }
 
     /**
@@ -281,12 +306,13 @@ public final class UsageLedger {
 
     private ReadSnapshot readLedger(boolean diagnostic) {
         List<Entry> out = new ArrayList<>();
+        java.util.Set<Entry> receipts = new java.util.HashSet<>();
         int malformed = 0;
         // all() 继续保留旧的非普通文件空表语义；新诊断口实际读一次以区别目录/拒读。
         if (!diagnostic && !Files.isRegularFile(file))
             return new ReadSnapshot(out, ReadStatus.MISSING, 0);
         try {
-            for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+            for (String line : readLines()) {
                 String s = line.trim();
                 if (s.isEmpty()) continue;
                 JsonObject o;
@@ -299,7 +325,14 @@ public final class UsageLedger {
                 Phase phase = Phase.of(str(o, "phase"));
                 if (phase == null) { malformed++; continue; }
                 try {
-                    out.add(parseEntry(o));
+                    Entry row = parseEntry(o);
+                    out.add(row);
+                    if (o.has("sync_receipt_fact")) {
+                        JsonElement marker = o.get("sync_receipt_fact");
+                        if (!marker.isJsonPrimitive() || !marker.getAsJsonPrimitive().isBoolean())
+                            throw new IllegalArgumentException("invalid receipt provenance marker");
+                        if (marker.getAsBoolean()) receipts.add(row);
+                    }
                 } catch (RuntimeException ex) {
                     if (!diagnostic) throw ex; // 保留旧 all() 对坏字段类型的异常语义。
                     malformed++; // 新诊断口显式标坏行，不把丢失事实当成不存在。
@@ -313,7 +346,7 @@ public final class UsageLedger {
             if (!diagnostic) throw unreadable;
             return new ReadSnapshot(out, ReadStatus.UNREADABLE, malformed);
         }
-        return new ReadSnapshot(out, malformed == 0 ? ReadStatus.READY : ReadStatus.MALFORMED, malformed);
+        return new ReadSnapshot(out, malformed == 0 ? ReadStatus.READY : ReadStatus.MALFORMED, malformed, receipts);
     }
 
     /** 每个产物的最终结论（最新阶段的那条）。 */
@@ -409,19 +442,7 @@ public final class UsageLedger {
     /** Resolve against this host ledger, never against caller-supplied detail/source strings alone.
      * Host filesystem writers remain inside the trust boundary; this is not a signature scheme. */
     public synchronized boolean containsSyncReceipt(Entry expected) {
-        if (expected == null) return false;
-        boolean found = false;
-        try {
-            for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
-                if (line.isBlank()) continue;
-                JsonObject object = JsonParser.parseString(line).getAsJsonObject();
-                Entry row = parseEntry(object);
-                if (row.phase() == null) return false; // Do not authenticate a partial malformed ledger.
-                if (object.has("sync_receipt_fact") && object.get("sync_receipt_fact").getAsBoolean()
-                        && expected.equals(row)) found = true;
-            }
-        } catch (IOException | RuntimeException unavailable) { return false; }
-        return found;
+        return expected != null && readSnapshot().containsSyncReceipt(expected);
     }
 
     private static Entry parseEntry(JsonObject o) {
