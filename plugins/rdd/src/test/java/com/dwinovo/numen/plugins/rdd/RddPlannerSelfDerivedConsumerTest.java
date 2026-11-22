@@ -25,7 +25,7 @@ class RddPlannerSelfDerivedConsumerTest {
         add(src,args,"net/minecraft/world/level/biome/Biome.java","package net.minecraft.world.level.biome; public class Biome {} ");
         add(src,args,"net/minecraft/world/level/Level.java","package net.minecraft.world.level; public class Level { public Key dimension(){return new Key();} public static class Key { public String location(){return \"minecraft:overworld\";} } }");
         add(src,args,"net/minecraft/server/level/ServerLevel.java","package net.minecraft.server.level; public class ServerLevel extends net.minecraft.world.level.Level { public Holder getBiome(net.minecraft.core.BlockPos p){return new Holder();} public static class Holder { public java.util.Optional<net.minecraft.world.level.Level.Key> unwrapKey(){return java.util.Optional.of(new net.minecraft.world.level.Level.Key());} } }");
-        add(src,args,"net/minecraft/server/level/ServerPlayer.java","package net.minecraft.server.level; public class ServerPlayer { public net.minecraft.core.BlockPos blockPosition(){return new net.minecraft.core.BlockPos();} public net.minecraft.world.level.Level level(){return new ServerLevel();} }");
+        add(src,args,"net/minecraft/server/level/ServerPlayer.java","package net.minecraft.server.level; public class ServerPlayer { public net.neoforged.neoforge.server.ServerLifecycleHooks.Server getServer(){return new net.neoforged.neoforge.server.ServerLifecycleHooks.Server();} public net.minecraft.core.BlockPos blockPosition(){return new net.minecraft.core.BlockPos();} public net.minecraft.world.level.Level level(){return new ServerLevel();} }");
         add(src,args,"net/neoforged/neoforge/server/ServerLifecycleHooks.java","package net.neoforged.neoforge.server; public class ServerLifecycleHooks { public static Server getCurrentServer(){return new Server();} public static class Server { public Players getPlayerList(){return new Players();} } public static class Players { public net.minecraft.server.level.ServerPlayer getPlayer(java.util.UUID id){return new net.minecraft.server.level.ServerPlayer();} } }");
         add(src,args,"org/slf4j/LoggerFactory.java","package org.slf4j; public class LoggerFactory { public static Log getLogger(Class<?> c){return new Log();} public static class Log { public void warn(String s,Object... a){} public void info(String s,Object... a){} } }");
         add(src,args,"com/dwinovo/numen/api/RationaleContext.java","package com.dwinovo.numen.api; public class RationaleContext { public static class Entry {} public static String renderEntry(Entry e){return \"\";} }");
@@ -34,6 +34,7 @@ class RddPlannerSelfDerivedConsumerTest {
         add(src,args,"com/dwinovo/numen/rdd/core/RddChainFactory.java","package com.dwinovo.numen.rdd.core; public class RddChainFactory { public static int MAX_STAGES=12; }");
         for (String name : List.of("ObservationMetadata", "WorldObservationService", "SelfInventoryQuery", "ObservationBatch", "ObservationBatchReader", "ChangesQuery", "ChangesV2Response", "Readiness", "WorldTime"))
             add(src,args,"com/dwinovo/numen/api/observation/"+name+".java", Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/api/observation/"+name+".java")));
+        add(src,args,"com/dwinovo/numen/api/WorldContextStamp.java", "package com.dwinovo.numen.api; public class WorldContextStamp { public record Token(java.util.Map<String,String> identity,long epoch) {} public static String world=\"world\"; public static Token capture(Object server){return new Token(java.util.Map.of(\"world_id\",world,\"server_session\",\"session\"),1);} }");
         add(src,args,"com/dwinovo/numen/api/NumenPlugins.java", "package com.dwinovo.numen.api; public class NumenPlugins { public static <T> T capability(Class<T> type){return type.cast(com.dwinovo.numen.plugins.rdd.Probe.service);} }");
         add(src,args,"com/dwinovo/numen/plugins/rdd/RddPlannerFacts.java",facts);
         String source="""
@@ -78,10 +79,13 @@ class RddPlannerSelfDerivedConsumerTest {
             String known=(String)field.get(null);assertNotNull(known);
             setup.invoke(null,id,true); method.invoke(null,id,"prepare food",null,(java.util.function.Consumer<Object>)x->{});
             String unknown=(String)field.get(null);
+            setup.invoke(null,id,false); var stamp=loader.loadClass("com.dwinovo.numen.api.WorldContextStamp"); stamp.getField("world").set(null,"other");
+            method.invoke(null,id,"prepare food",null,(java.util.function.Consumer<Object>)x->{}); String wrong=(String)field.get(null);
             assertAll(() -> assertTrue(known.contains("历史世界线索"),known),
                     () -> assertTrue(known.contains("可食储备 3件"),known),
                     () -> assertTrue(unknown.contains("可食储备 未知"),unknown),
                     () -> assertFalse(unknown.contains("可食储备 0件"),unknown),
+                    () -> assertTrue(wrong.contains("可食储备 未知") && !wrong.contains("可食储备 3件"),wrong),
                     () -> assertTrue(known.indexOf("</situation>") < 420,known));
         }
     }
