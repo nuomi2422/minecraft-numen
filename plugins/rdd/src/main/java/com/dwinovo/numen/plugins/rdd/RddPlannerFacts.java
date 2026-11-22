@@ -115,7 +115,8 @@ final class RddPlannerFacts {
             hand = h.toString();
         }
         return "<situation>\n位置：未观测（规划时没有玩家对象）\n"
-                + "手上：" + (hand.isEmpty() ? (observed ? "空" : "未观测") : hand) + "\n"
+                + (hand.isEmpty() ? (observed ? "手上：最近一次扫描为空，当前需核实" : "手上：未观测")
+                        : "手上：最近一次扫描 " + hand + "，当前需核实") + "\n"
                 + "箱子里/世界里：未观测\n</situation>";
     }
 
