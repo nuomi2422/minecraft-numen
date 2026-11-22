@@ -47,8 +47,14 @@ class RddBaseRecheckSourceTest {
             String id = "base|overworld|123";
             registry.apply(original, id, AssetScope.GLOBAL, null);
             registry.apply(observation("other", "world-B", "session-A"), "other-world", AssetScope.GLOBAL, null);
+            Observation otherBase = new Observation("same-world-other", "world_base", "fixture", "overworld", 1,
+                    Map.of("kind", "base", "world_id", "world-A", "server_session", "session-A",
+                            "dimension", "overworld", "x", 40, "y", 64, "z", 2));
+            registry.apply(otherBase, "other-base", AssetScope.GLOBAL, null);
             run.invoke(null, registry, "UNKNOWN", "world-A", "session-A");
+            assertEquals(AssetStatus.OBSERVED, registry.get("other-base").orElseThrow().status());
             assertEquals(AssetStatus.UNKNOWN, registry.get(id).orElseThrow().status());
+            assertNull(loader.loadClass("fixture.recheck.Fixture").getMethod("captured").invoke(null), "failed base recheck must clear current identity");
             assertFalse(PlanningAssetSnapshot.worldClaims(registry).containsKey(id));
             assertEquals(AssetStatus.OBSERVED, registry.get("other-world").orElseThrow().status());
             assertTrue(registry.history().contains(original));
@@ -58,10 +64,11 @@ class RddBaseRecheckSourceTest {
             assertTrue(registry.history().contains(original));
             assertEquals(AssetStatus.OBSERVED, registry.get("other-world").orElseThrow().status());
             run.invoke(null, registry, "OBSERVED", "world-A", "session-A");
+            assertNotNull(loader.loadClass("fixture.recheck.Fixture").getMethod("captured").invoke(null), "successful recheck must restore identity");
             assertEquals(AssetStatus.OBSERVED, registry.get(id).orElseThrow().status());
             assertTrue(PlanningAssetSnapshot.worldClaims(registry).containsKey(id));
             assertTrue(registry.history().contains(original));
-            assertEquals(3, registry.history().size());
+            assertEquals(4, registry.history().size());
         }
     }
 
@@ -81,6 +88,7 @@ class RddBaseRecheckSourceTest {
         import com.dwinovo.numen.rdd.core.AssetRegistry;
         public class Fixture {
             static final Map<UUID, Map<String, Long>> SEEN_TICK = new ConcurrentHashMap<>();
+            public static Object captured() { return RddPlugin.current; }
             public static void observe(AssetRegistry registry, String status, String world, String session) {
                 RddBaseFacts.next = RddBaseFacts.BaseStatus.valueOf(status);
                 observeBase(new NumenPlayer(), registry, new Identity(world, session));
@@ -97,6 +105,7 @@ class RddBaseRecheckSourceTest {
             public int hashCode(){return Objects.hash(x,y,z);}
         }
         class NumenPlayer { UUID getUUID(){return null;} }
+        class RddPlugin { static Identity current; static void captureHomeIdentity(NumenPlayer body, Identity identity) { current = identity; } }
         class RddInstrumentation { static long currentGameTimeTicks(){return 0;} }
         class RddWorldFacts {
             record BaseSnapshot(String dimension, BlockPos spawn, boolean complete, List<String> facilities, Map<String,Integer> storedItems) {}

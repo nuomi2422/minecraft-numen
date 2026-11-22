@@ -51,7 +51,6 @@ final class RddWorldAssetObserver {
         com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity = null;
         try { if (identityProvider != null) identity = identityProvider.snapshot(companion.getServer()); }
         catch (RuntimeException unavailable) { /* unknown identity */ }
-        RddPlugin.captureHomeIdentity(companion, identity);
         int bases = observeBase(companion, registry, identity);
         int structures = observeStructures(companion, registry);
         observeVillages(companion, registry);   // P2.3：村庄资源节点（供规划查“这村庄有啥”）
@@ -65,6 +64,7 @@ final class RddWorldAssetObserver {
                                    com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
         RddBaseFacts.BaseInspection inspection = RddBaseFacts.inspectBaseResult(companion, Map.of());
         RddWorldFacts.BaseSnapshot base = inspection.snapshot();
+        RddPlugin.captureHomeIdentity(companion, base == null ? null : identity);
         if (base == null) {
             markBaseRecheck(registry, identity, inspection);
             return 0;
@@ -101,7 +101,8 @@ final class RddWorldAssetObserver {
                     && v.get("x") instanceof Number x && x.intValue() == inspection.spawn().getX()
                     && v.get("y") instanceof Number y && y.intValue() == inspection.spawn().getY()
                     && v.get("z") instanceof Number z && z.intValue() == inspection.spawn().getZ();
-            if (exact && inspection.status() == RddBaseFacts.BaseStatus.ABSENT) registry.invalidate(entry.assetId());
+            if (!exact) continue;
+            if (inspection.status() == RddBaseFacts.BaseStatus.ABSENT) registry.invalidate(entry.assetId());
             else if (entry.status() == com.dwinovo.numen.rdd.api.AssetStatus.OBSERVED) registry.markUnknown(entry.assetId());
         }
     }

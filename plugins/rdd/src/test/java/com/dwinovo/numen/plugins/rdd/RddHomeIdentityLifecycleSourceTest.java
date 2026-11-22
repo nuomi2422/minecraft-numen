@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Source-extraction integration fixture: executes the current observer entry point,
  * identity cache, body registry and WorldContextStamp production method bodies.
- * Minecraft server/body, capability/provider, AssetRegistry and all world scans are
+ * Minecraft server/body, capability/provider, AssetRegistry and all world scans (including successful base capture) are
  * explicitly test doubles. This does not exercise the real identity provider, real
  * Minecraft, native event bus, base observation or complete stop cleanup.
  */
@@ -89,7 +89,7 @@ class RddHomeIdentityLifecycleSourceTest {
             final class RddWorldAssetObserver {
             """ + method(observer, "static Result observe(") + """
             record Result(int bases, int structures, int machines, int entityGroups) {}
-            static int observeBase(NumenPlayer b, AssetRegistry r, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot i) { return 0; }
+            static int observeBase(NumenPlayer b, AssetRegistry r, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot i) { RddPlugin.captureHomeIdentity(b, i); return 1; }
             static int observeStructures(NumenPlayer b, AssetRegistry r) { return 0; }
             static int observeVillages(NumenPlayer b, AssetRegistry r) { return 0; }
             static int observeMachines(NumenPlayer b, AssetRegistry r) { return 0; }
