@@ -90,6 +90,7 @@ class SyncReceiptIntakeTest {
         String review = com.dwinovo.numen.plugins.learner.core.TrajectorySlices.forMemo(dir, COMPANION, memo);
         assertTrue(review.contains("wire-exact")); assertTrue(review.contains("receipt=SUCCESS"));
         assertTrue(review.contains("evidence=NONE")); assertTrue(review.contains(body));
+        assertFalse(review.contains(id), "review input must not expose raw correlation id");
         assertTrue(com.dwinovo.numen.plugins.learner.core.TrajectorySlices.forMemo(dir, OWNER, queue.all().get(0)).contains("UNKNOWN"));
         assertEquals(0, com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(List.of(row), scope, queue, journal, (c, f, n, once) -> once.getAsBoolean(), 1, 1).enqueued());
         SkillRegistrar.registryFor(dir).retire("sk-1", "test retirement");
