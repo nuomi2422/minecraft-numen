@@ -49,7 +49,7 @@ class RddStageBAssetDetailConsumerTest {
         for(String type:List.of("RddAssetReadView","RddAssetContext","RddAssetStore","RddStageBSpecParser","RddKeys","RddCallbackGuard","RddPlannerTransport","RddDecomposerPrompt","RddGoalDriver","RddExpansionPolicy"))args.add(src.resolve(type+".java").toString());
         args.add(src.resolve("RddStageBAssetHost.java").toString());
         String plugin=Files.readString(src.resolve("RddPlugin.java"));
-        Files.writeString(generated,Files.readString(generated).replace("// @ON_SERVER@",method(plugin,"    static void onServer(MinecraftServer server,")));
+        Files.writeString(generated,Files.readString(generated).replace("// @ON_SERVER@",optionalMethods(plugin,"    static void onServer(MinecraftServer server,")));
         source(args,"net.minecraft.server.MinecraftServer","""
             package net.minecraft.server; import java.util.*;
             public class MinecraftServer { public final ArrayDeque<Runnable> queue=new ArrayDeque<>();public boolean same=true;

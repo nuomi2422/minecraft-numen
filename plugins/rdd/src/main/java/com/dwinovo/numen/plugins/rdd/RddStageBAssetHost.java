@@ -14,7 +14,7 @@ import java.util.function.Supplier;
 final class RddStageBAssetHost {
     record Context(UUID companionId, TaskChain owner, long revision, Object primary,
                    MinecraftServer server, NumenPlayer body, AssetRegistry registry,
-                   RddCallbackGuard.Ticket ticket, WorldContextStamp.Token world, String catalog) {}
+                   RddCallbackGuard.Ticket ticket, WorldContextStamp.Token world, String catalog, Runnable discarded) {}
     private RddStageBAssetHost() {}
 
     static Context capture(UUID id, TaskChain owner, long revision) {
@@ -26,7 +26,8 @@ final class RddStageBAssetHost {
         if (world == null || world.identity() == null) return null;
         Context context = new Context(id, owner, revision, owner.currentPrimary(), server, body,
                 RddPlugin.assets(id), RddPlugin.planningTicket(id), world,
-                RddAssetContext.render(RddPlugin.assets(id), 1200));
+                RddAssetContext.render(RddPlugin.assets(id), 1200),
+                RddGoalDriver.cancellationFor(id, owner, revision, body));
         return current(context) ? context : null;
     }
     static boolean current(Context context) {
@@ -42,15 +43,20 @@ final class RddStageBAssetHost {
                 && context.world().equals(WorldContextStamp.capture(context.server()));
     }
     static void dispatch(Context context, Runnable action) {
+        dispatch(context, action, context.discarded());
+    }
+    private static void dispatch(Context context, Runnable action, Runnable discarded) {
         RddPlugin.onServer(context.server(), context.ticket(), () -> {
-            if (current(context)) action.run();
-        });
+            if (current(context)) action.run(); else discarded.run();
+        }, discarded);
     }
     /** Called only inside the original server/ticket guard. No world scan or refresh. */
     static String read(Context context, com.google.gson.JsonObject args) {
         if (!current(context)) return null;
         String result = RddAssetsTool.dispatch(args, context.registry());
-        return current(context) ? result : null;
+        if (current(context)) return result;
+        context.discarded().run();
+        return null;
     }
     /** Endpoint and budget are already selected by the existing transport. */
     static <T> CompletableFuture<T> send(Context context, Supplier<CompletableFuture<T>> request) {
@@ -61,6 +67,9 @@ final class RddStageBAssetHost {
                     if (failure != null) response.completeExceptionally(failure); else response.complete(result);
                 });
             } catch (RuntimeException failure) { response.completeExceptionally(failure); }
+        }, () -> {
+            context.discarded().run();
+            response.completeExceptionally(new java.util.concurrent.CancellationException("original planning scope invalidated"));
         });
         return response;
     }

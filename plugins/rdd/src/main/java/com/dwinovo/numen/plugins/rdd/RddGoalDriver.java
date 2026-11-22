@@ -41,6 +41,9 @@ final class RddGoalDriver {
         boolean inFlight;
         boolean escalated;
         Object request;
+        RddRuntime owner;
+        long revision;
+        com.dwinovo.numen.entity.NumenPlayer body;
     }
 
     private RddGoalDriver() {}
@@ -71,8 +74,9 @@ final class RddGoalDriver {
             Object request;
             synchronized (st) {
                 String pid = cur.id();
-                if (!pid.equals(st.primaryId)) { // 换到新一级 → 重置预算/冷却/在途
+                if (!pid.equals(st.primaryId) || st.owner != rt) { // 换到新一级 → 重置预算/冷却/在途
                     st.primaryId = pid;
+                    st.owner = rt;
                     st.attempts = 0;
                     st.cooldownUntil = 0;
                     st.inFlight = false;
@@ -85,6 +89,8 @@ final class RddGoalDriver {
                     attempt = st.attempts;
                     st.inFlight = true;
                     st.request = new Object();
+                    st.revision = ownerRevision;
+                    st.body = RddCompanionBody.get(companionId);
                 } else {
                     attempt = 0;
                 }
@@ -216,6 +222,51 @@ final class RddGoalDriver {
                 LOG.warn("[rdd] 一级 {} 懒展开预算耗尽，停靠等主人换方向", pid);
             }
         }
+    }
+
+    /** Captures the actual lazy request only; ordinary replans have no expansion state to cancel. */
+    static Runnable cancellationFor(UUID id, TaskChain owner, long revision,
+                                    com.dwinovo.numen.entity.NumenPlayer body) {
+        State state = STATES.get(id);
+        if (state == null) return () -> {};
+        synchronized (state) {
+            if (!state.inFlight || state.owner == null || state.owner.chain() != owner
+                    || state.revision != revision || state.body != body) return () -> {};
+            RddRuntime runtime = state.owner;
+            Object request = state.request;
+            String primary = state.primaryId;
+            return () -> cancelExpansion(id, runtime, state, primary, request, revision, body);
+        }
+    }
+    private static void cancelExpansion(UUID id, RddRuntime owner, State state, String primary,
+                                        Object request, long revision, com.dwinovo.numen.entity.NumenPlayer body) {
+        synchronized (state) {
+            if (STATES.get(id) != state || RddPlugin.runtime(id) != owner || state.owner != owner
+                    || !state.inFlight || state.request != request || state.body != body
+                    || state.revision != revision || !state.primaryId.equals(primary)) return;
+            state.inFlight = false;
+            state.request = null;
+            state.body = null;
+            // Cancellation is not installation or success. Keep the admitted attempt bounded.
+            state.attempts++;
+            state.escalated = RddExpansionPolicy.budgetExhausted(state.attempts);
+            state.cooldownUntil = System.currentTimeMillis() + RddExpansionPolicy.EXPAND_COOLDOWN_MS;
+        }
+        RddMonitor.publish("expansion_cancelled", Map.of("companionId", id.toString(), "primary", primary,
+                "reason", "original planning body or scope invalidated"));
+    }
+    /** REMOVE may arrive without any model callback. An old body's REMOVE cannot cancel a new request. */
+    static void bodyRemoved(com.dwinovo.numen.entity.NumenPlayer body) {
+        if (body == null) return;
+        UUID id = body.getUUID();
+        State state = STATES.get(id);
+        if (state == null) return;
+        Runnable cancel;
+        synchronized (state) {
+            if (state.owner == null || state.body != body) return;
+            cancel = cancellationFor(id, state.owner.chain(), state.revision, body);
+        }
+        cancel.run();
     }
 
     /** 清除 per-同伴展开状态（目标被清/重绑时调用）。 */
