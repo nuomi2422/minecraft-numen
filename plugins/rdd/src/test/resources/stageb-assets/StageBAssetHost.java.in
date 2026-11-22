@@ -27,6 +27,7 @@ public class StageBAssetHost implements Driver {
 }
 record Reply(AssistantTurn turn) {}
 class RddDecomposer {
+    static final Gson GSON=new Gson();
     static String situationBlock(UUID id){return "facts";}
     static <T> void withPlannerEndpoint(UUID id,String stage,Function<Object,CompletableFuture<T>> send,Consumer<T> done,Runnable fail){
         if(StageBAssetHost.live.budget--<=0){fail.run();return;}send.apply(new Object()).whenComplete((r,e)->{if(e!=null)fail.run();else done.accept(r);});}
@@ -57,6 +58,10 @@ class RddPlanGuard {
 class RddMiningCapabilityCheck {
     static Object capture(UUID id){return null;}
     static void filter(Object context,List<SubtaskSpec> specs,String theme,Map<String,Integer> counts,Consumer<RddPlanGuard.Filtered> done){done.accept(new RddPlanGuard.Filtered(specs,List.of(),List.of()));}
+}
+class RddAssetsTool implements IToolSpec {
+    public String name(){return "rdd_assets";}public String description(){return "detail";}public Map<String,Object> parameterSchema(){return Map.of();}
+    static String dispatch(JsonObject args,AssetRegistry registry){return RddAssetReadView.dispatch(args,registry);}
 }
 class RddDecomposerPrompt {
     static final String SYSTEM_PROMPT="system";

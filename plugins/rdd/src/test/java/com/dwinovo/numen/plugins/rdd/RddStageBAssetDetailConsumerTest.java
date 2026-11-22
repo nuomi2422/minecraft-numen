@@ -45,7 +45,11 @@ class RddStageBAssetDetailConsumerTest {
             +Path.of(ConvoState.class.getProtectionDomain().getCodeSource().getLocation().toURI())+File.pathSeparator
             +Path.of(Driver.class.getProtectionDomain().getCodeSource().getLocation().toURI()),"-d",out.toString(),generated.toString()));
         for(String type:List.of("RddAssetReadView","RddAssetContext","RddAssetStore","RddStageBSpecParser","RddKeys","RddCallbackGuard"))args.add(src.resolve(type+".java").toString());
-        if(Files.exists(src.resolve("RddStageBAssetHost.java")))args.add(src.resolve("RddStageBAssetHost.java").toString());
+        // The server adapter is tested independently; this host drives the real request/reader/parser chain.
+        if(Files.exists(src.resolve("RddStageBAssetHost.java"))){
+            Path adapter=temp.resolve("RddStageBAssetHost.java");
+            Files.writeString(adapter,Files.readString(root.resolve("plugins/rdd/src/test/resources/stageb-assets/StageBAssetAdapter.java.in")));args.add(adapter.toString());
+        }
         assertEquals(0,ToolProvider.getSystemJavaCompiler().run(null,null,null,args.toArray(String[]::new)),"SETUP actual Stage-B consumers compile");
         loader=new URLClassLoader(new java.net.URL[]{out.toUri().toURL()},RddStageBAssetDetailConsumerTest.class.getClassLoader()){
             protected Class<?> loadClass(String name,boolean resolve)throws ClassNotFoundException{

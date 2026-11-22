@@ -90,6 +90,68 @@ final class RddDecomposer {
         }, onFail);
     }
 
+    /** Only normal owned Stage-B may request one exact asset detail, then one final plan. */
+    static void llmAskOwnedStageB(UUID companionId, TaskChain owner, long ownerRevision, String userContent,
+                                 Consumer<String> onArguments, Runnable onFail) {
+        if (owner == null) {
+            llmAsk(companionId, "stage_b", userContent, RddDecomposerPrompt.SYSTEM_PROMPT,
+                    RddDecomposerPrompt.DECOMPOSE_TOOL, onArguments, onFail);
+            return;
+        }
+        var scope = RddStageBAssetHost.capture(companionId, owner, ownerRevision);
+        if (scope == null) { onFail.run(); return; }
+        var settled = new java.util.concurrent.atomic.AtomicBoolean();
+        Consumer<String> complete = args -> { if (settled.compareAndSet(false, true)) onArguments.accept(args); };
+        Runnable fail = () -> RddStageBAssetHost.dispatch(scope, () -> {
+            if (settled.compareAndSet(false, true)) onFail.run();
+        });
+        String content = situationBlock(companionId) + userContent + "\n\n" + scope.catalog()
+                + "\nYou may call rdd_assets once with action=detail and one exact asset_id from the catalog. "
+                + "Historical detail is not current availability. After its tool result, call decompose_goal only. "
+                + "Use exactly one tool call per response. No refresh, catalog scan or repeated detail request.";
+        stageBAssetRound(companionId, scope, List.of(new ConvoState.Msg.User(content)), "", complete, fail);
+    }
+
+    private static void stageBAssetRound(UUID companionId, RddStageBAssetHost.Context scope,
+                                        List<ConvoState.Msg> messages, String detailCallId,
+                                        Consumer<String> complete, Runnable fail) {
+        var plan = RddDecomposerPrompt.DECOMPOSE_TOOL;
+        List<IToolSpec> tools = detailCallId.isEmpty() ? List.of(plan, new RddAssetsTool()) : List.of(plan);
+        withPlannerEndpoint(companionId, "stage_b", endpoint -> RddStageBAssetHost.send(scope, () -> {
+            RddPlugin.publishPlanningContext(companionId, "stage_b", GSON.toJson(messages),
+                    RddDecomposerPrompt.SYSTEM_PROMPT, plan);
+            return NumenLlmClient.forEndpoint(endpoint).chatStreaming(messages, tools,
+                    RddDecomposerPrompt.SYSTEM_PROMPT, null,
+                    new LlmObservation("supervisor", companionId.toString(), "stage_b", RddMonitor::publish));
+        }), result -> RddStageBAssetHost.dispatch(scope, () -> {
+            AssistantTurn turn = result == null ? null : result.turn();
+            if (turn == null || !turn.hasToolCalls() || turn.toolCalls().size() != 1) { fail.run(); return; }
+            LlmToolCall call = turn.toolCalls().getFirst();
+            if (call.id() == null || call.id().isBlank() || call.id().length() > 256
+                    || call.id().equals(detailCallId)) { fail.run(); return; }
+            if (plan.name().equals(call.name())) { complete.accept(call.arguments()); return; }
+            if (!detailCallId.isEmpty() || !"rdd_assets".equals(call.name())) { fail.run(); return; }
+            com.google.gson.JsonObject args;
+            try {
+                args = com.google.gson.JsonParser.parseString(call.arguments()).getAsJsonObject();
+                if (!args.keySet().equals(java.util.Set.of("action", "asset_id"))
+                        || !args.get("action").isJsonPrimitive() || !args.getAsJsonPrimitive("action").isString()
+                        || !"detail".equals(args.get("action").getAsString())
+                        || !args.get("asset_id").isJsonPrimitive() || !args.getAsJsonPrimitive("asset_id").isString()
+                        || args.get("asset_id").getAsString().isBlank()
+                        || args.get("asset_id").getAsString().length() > 1024) { fail.run(); return; }
+            } catch (RuntimeException invalid) { fail.run(); return; }
+            String reply = RddStageBAssetHost.read(scope, args);
+            if (reply == null) return; // Original scope lost: do not fail or read on behalf of a replacement.
+            RddMonitor.publish("stage_b_asset_detail", Map.of("companionId", companionId.toString(),
+                    "toolCallId", call.id(), "assetId", args.get("asset_id").getAsString(), "replyChars", reply.length()));
+            var followup = new ArrayList<ConvoState.Msg>(messages);
+            followup.add(new ConvoState.Msg.Assistant(turn));
+            followup.add(new ConvoState.Msg.Tool(call.id(), reply));
+            stageBAssetRound(companionId, scope, List.copyOf(followup), call.id(), complete, fail);
+        }), fail);
+    }
+
     /** Concern replies are correlated host requests, never generic first-tool arguments. */
     static void llmAskConcern(UUID companionId, String userContent,
                               Consumer<String> onArguments, Runnable onFail) {
@@ -405,8 +467,7 @@ final class RddDecomposer {
                 () -> {
                     var runtime = RddPlugin.runtime(companionId);
                     return runtime == null ? null : runtime.chain();
-                }, userContent -> RddDecomposer.llmAsk(companionId, "stage_b", userContent,
-                RddDecomposerPrompt.SYSTEM_PROMPT, RddDecomposerPrompt.DECOMPOSE_TOOL,
+                }, userContent -> RddDecomposer.llmAskOwnedStageB(companionId, owner, ownerRevision, userContent,
                 args -> {
                     var parsed = RddStageBSpecParser.parseDetailed(args);
                     RddMiningCapabilityCheck.filter(miningContext, RddPlanGuard.normalizeConditions(parsed.specs()),
