@@ -41,8 +41,7 @@ class RddPendingDeathSettlementReplanTest {
         Path plugin = root().resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd");
         String source = Files.readString(plugin.resolve("RddPlugin.java")).replace("\r\n", "\n");
         String request = method(source, "    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,\n"
-                + "                                         String soldierHint, boolean skipRecoverySideTask,\n"
-                + "                                         Runnable acceptedSideEffect,");
+                + "                                         String soldierHint, boolean skipRecoverySideTask, Runnable acceptedSideEffect,");
         // Stop at the real admission/LLM boundary; keep all budget, guard and accepted-side-effect code.
         request = before(request, "        try {\n            long ownerRevision = chain.planRevision();")
                 + "        plannerRequests++; trace.add(\"planner_request\"); return true;\n    }\n";
@@ -70,6 +69,9 @@ class RddPendingDeathSettlementReplanTest {
                     + "                                         String soldierHint, boolean skipRecoverySideTask,\n"
                     + "                                         Runnable acceptedSideEffect)")
                 + method(source, "    static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation, String soldierHint) {")
+                + method(source, "    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,\n"
+                    + "                                         String soldierHint, boolean skipRecoverySideTask,\n"
+                    + "                                         Runnable acceptedSideEffect,")
                 + request
                 + "public static void detectorAdmission(UUID id) { var ap = new Body(id); var rt = runtime(id); var chain = rt.chain(); var ps = chain.primaryStatus();\n"
                 + downstream
@@ -104,7 +106,7 @@ class RddPendingDeathSettlementReplanTest {
                 location(TaskChain.class) + File.pathSeparator + location(Gson.class) + File.pathSeparator
                         + System.getProperty("java.class.path"), "-d", output.toString(), java.toString(), dispatcher.toString()));
         // Compile the pure host dependencies unchanged, alongside the source-excerpt host.
-        for (String name : List.of("RddReplanTransition", "RddSurvivalGate", "DeathPreparationHost", "RddDeathLedgerStore", "RddOptionalFood", "RddMainlineAdmission", "RddDeferredDeathReplan"))
+        for (String name : List.of("RddReplanTransition", "RddSurvivalGate", "DeathPreparationHost", "RddDeathLedgerStore", "RddOptionalFood", "RddMainlineAdmission", "RddDeferredDeathReplan", "RddNegotiationInbox", "RddStageBSpecParser", "RddKeys"))
             args.add(plugin.resolve(name + ".java").toString());
         var compiler = ToolProvider.getSystemJavaCompiler();
         assertNotNull(compiler, "JDK required by existing source-excerpt test pattern");

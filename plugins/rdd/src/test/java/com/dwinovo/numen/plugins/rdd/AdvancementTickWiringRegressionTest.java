@@ -73,14 +73,22 @@ class AdvancementTickWiringRegressionTest {
         // no NumenTool dependency, so supply only the declaration inherited by that method.
         harness = harness.replace("static class RddStatusTool {\n", "static class RddStatusTool extends ToolDescription {\n");
         Path java = output.resolve("AdvancementDiagnosticHost.java");
+        // Bridge only Java package access; the snapshot itself comes from the actual bounded Inbox.
+        harness = harness.replace("RddNegotiationInbox.reviewSnapshot(",
+                "com.dwinovo.numen.plugins.rdd.AdvancementConcernAccess.reviewSnapshot(");
         Files.writeString(java, harness, StandardCharsets.UTF_8);
+        Path concernAccess = output.resolve("AdvancementConcernAccess.java");
+        Files.writeString(concernAccess, "package com.dwinovo.numen.plugins.rdd; public class AdvancementConcernAccess { "
+                + "public static java.util.Map<String,Object> reviewSnapshot(java.util.UUID id) { return RddNegotiationInbox.reviewSnapshot(id); } }", StandardCharsets.UTF_8);
         Path taskResult = root.resolve("api/common/src/main/java/com/dwinovo/numen/task/TaskResult.java");
         String classpath = location(AdvancementVerification.class) + File.pathSeparator + location(Gson.class)
                 + File.pathSeparator + System.getProperty("java.class.path");
         var compiler = ToolProvider.getSystemJavaCompiler();
         assertNotNull(compiler, "JDK required to compile current production sources");
         int result = compiler.run(null, null, null, "-encoding", "UTF-8", "-proc:none", "-classpath", classpath,
-                "-d", output.toString(), java.toString(), taskResult.toString());
+                "-d", output.toString(), java.toString(), taskResult.toString(), concernAccess.toString(),
+                plugin.resolve("RddNegotiationInbox.java").toString(), plugin.resolve("RddStageBSpecParser.java").toString(),
+                plugin.resolve("RddKeys.java").toString());
         assertEquals(0, result, "isolated host could not compile extracted production methods");
         // 2026-11-05（042 R2）：测试运行时也带了 api:common，父加载器里可能有同名的 TaskResult，
         // 会盖掉"本次编译出来的那份"。这里对 TaskResult 用 child-first，保证断言测的是编译产物。
@@ -88,7 +96,11 @@ class AdvancementTickWiringRegressionTest {
                 AdvancementTickWiringRegressionTest.class.getClassLoader()) {
             @Override
             protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-                if ("com.dwinovo.numen.task.TaskResult".equals(name)) {
+                if ("com.dwinovo.numen.task.TaskResult".equals(name)
+                        || name.startsWith("com.dwinovo.numen.plugins.rdd.RddNegotiationInbox")
+                        || name.startsWith("com.dwinovo.numen.plugins.rdd.RddStageBSpecParser")
+                        || name.equals("com.dwinovo.numen.plugins.rdd.RddKeys")
+                        || name.equals("com.dwinovo.numen.plugins.rdd.AdvancementConcernAccess")) {
                     Class<?> c = findClass(name);
                     if (resolve) resolveClass(c);
                     return c;
