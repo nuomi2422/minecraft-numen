@@ -94,6 +94,14 @@ class AcxCompanionBridgeConsumerTest {
                 call("competingRunWaits"));
     }
 
+    @Test void nestedCancelLateReceiptCannotReleaseNewOwner() throws Exception {
+        assertEquals(List.of(true, true, true, true, true, true, 2), call("nestedCancelLateReceiptCannotReleaseNewOwner"));
+    }
+
+    @Test void nestedBodySuccessReachesParent() throws Exception {
+        assertEquals(List.of("SUCCESS", 1, List.of(4)), call("nestedBodySuccessReachesParent"));
+    }
+
     @Test void cooperativeCancelAndLateReceiptKeepTheOccupiedBodyUnavailable() throws Exception {
         assertEquals(List.of(true, true, true, "PAUSED", 0, true, true, true,
                         "PAUSED", "body_busy", true, true, true, 0),
@@ -758,6 +766,46 @@ class AcxCompanionBridgeConsumerTest {
                 }
             }
 
+            public static List<Object> nestedCancelLateReceiptCannotReleaseNewOwner() throws Exception {
+                var entered = new java.util.concurrent.CountDownLatch(1);
+                var release = new java.util.concurrent.CountDownLatch(1);
+                var f = new MineReceiptFixture(true, null, entered, release, null, true);
+                Thread worker = null;
+                try {
+                    WorldContextStamp.epoch=1;
+                    f.start(); String oldRun=f.run; var old=f.plugin.sessions.session(oldRun);
+                    var oldArgs=f.status(); worker=new Thread(f::drain, "nested-held-body-call"); worker.start();
+                    await(entered, "nested child must occupy body before cancel");
+                    TaskRecord original=f.mine;
+                    boolean occupied=original!=null && CompanionTickDispatcher.currentTaskFor(f.a.getUUID())==original;
+                    var cancel=JsonParser.parseString(request(new AcxFacadeTools.Cancel(f.plugin),oldArgs,f.a)).getAsJsonObject();
+                    boolean sent=cancel.get("success").getAsBoolean();
+                    release.countDown(); worker.join(2000);
+                    if(worker.isAlive() || f.deliver==null || old.record()==null) throw new AssertionError("SETUP ERROR: delayed receipt unavailable");
+                    var cancelled=old.record(); Runnable oldReceipt=f.deliver;
+                    boolean paused=cancelled.status()==AcxStatus.PAUSED;
+                    // The original body is explicitly terminal before a new run owns the slot.
+                    f.finish(original, TaskState.SUCCESS);
+                    f.start(); String newRun=f.run; f.drain(); TaskRecord replacement=f.mine;
+                    if(f.deliver==null) throw new AssertionError("SETUP ERROR: new acceptance missing");
+                    f.deliver.run(); resumeAndDrain(f);
+                    boolean newer=replacement!=null && replacement!=original && CompanionTickDispatcher.currentTaskFor(f.a.getUUID())==replacement
+                            && f.plugin.sessions.session(newRun).ownsTask(replacement.publicId());
+                    oldReceipt.run();
+                    boolean isolated=CompanionTickDispatcher.currentTaskFor(f.a.getUUID())==replacement && cancelled.equals(old.record());
+                    int before=f.invoked.size();
+                    f.run=oldRun; resumeAndDrain(f);
+                    boolean noReplay=f.invoked.size()==before && CompanionTickDispatcher.currentTaskFor(f.a.getUUID())==replacement;
+                    f.run=newRun;
+                    return List.of(occupied,sent,paused,newer,isolated,noReplay,f.invoked.size());
+                } finally { release.countDown(); if(worker!=null) worker.join(2000); f.close(); }
+            }
+            public static List<Object> nestedBodySuccessReachesParent() {
+                var f=new MineReceiptFixture(false,null,null,null,null,true);
+                try { WorldContextStamp.epoch=1; f.start(); f.drain(); f.finish(f.mine,TaskState.SUCCESS); resumeAndDrain(f);
+                    return List.of(record(f).status().name(),f.invoked.size(),f.gathered);
+                } finally { f.close(); }
+            }
             public static List<Object> cancelledRunLateReceiptKeepsBodyBusy() throws Exception {
                 var entered = new java.util.concurrent.CountDownLatch(1);
                 var release = new java.util.concurrent.CountDownLatch(1);
@@ -922,7 +970,10 @@ class AcxCompanionBridgeConsumerTest {
                 MineReceiptFixture(boolean late) { this(late, null, null, null, null); }
                 MineReceiptFixture(boolean late, java.util.concurrent.Executor executor,
                         java.util.concurrent.CountDownLatch entered, java.util.concurrent.CountDownLatch release,
-                        java.util.concurrent.CountDownLatch observed) {
+                        java.util.concurrent.CountDownLatch observed) { this(late, executor, entered, release, observed, false); }
+                MineReceiptFixture(boolean late, java.util.concurrent.Executor executor,
+                        java.util.concurrent.CountDownLatch entered, java.util.concurrent.CountDownLatch release,
+                        java.util.concurrent.CountDownLatch observed, boolean nested) {
                     var registry = new AcxRegistry();
                     NumenTool tool = new NumenTool() {
                         public String name() { return "mine"; }
@@ -964,14 +1015,19 @@ class AcxCompanionBridgeConsumerTest {
                             new AcxStep("body", "mine", Map.of("block_ids", List.of("minecraft:coal_ore"), "count", 4,
                                     "ignore_failure", true)),
                             new AcxStep("next", "mine_next", Map.of("gathered", "$prev.gathered"))), "", "");
-                    plugin.sessions = new AcxSessionManager(AcxRunner.builder().tools(registry).events(event -> {
+                    var child = new AcxDefinition("nested_mine", "1", "", List.of(), def.steps(), "", "");
+                    var parent = new AcxDefinition("binding", "1", "", List.of(),
+                            List.of(new AcxStep("child", "nested_mine", Map.of())), "", "");
+                    var chosen = nested ? parent : def;
+                    plugin.sessions = new AcxSessionManager(AcxRunner.builder().tools(registry)
+                            .catalog(AcxCatalog.of(Map.of("nested_mine", child))).events(event -> {
                         synchronized (events) { events.add(event); }
                         if (observed != null && event.kind() == AcxEvent.Kind.STEP_SUCCEEDED
                                 && "observe_fixture".equals(event.acName())) observed.countDown();
                     }).build(), executor != null ? executor : plugin.queue::add);
                     var observeDef = new AcxDefinition("observe_fixture", "1", "", List.of(),
                             List.of(new AcxStep("observe", "observe_fixture", Map.of())), "", "");
-                    plugin.facade = new AcxFacade(plugin.sessions, name -> "observe_fixture".equals(name) ? observeDef : def, registry, null);
+                    plugin.facade = new AcxFacade(plugin.sessions, name -> "observe_fixture".equals(name) ? observeDef : chosen, registry, null);
                 }
                 void expectPause(String reason, String evidence) {
                     var current = record(this);
