@@ -1,69 +1,115 @@
 package com.dwinovo.numen.plugins.worldstate.focus;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * 单进程焦点表：挂在现有观测服务生命周期里，按 (companion, world, session) 归属；
- * 不落盘、不新观测缓存；到期/换世界/换会话自动失效。上限 4（038 建议 2+4，这里取显式焦点 4）。
- * <p><b>复用语义（2026-11-06 实机确认）</b>：同 companion+dimension+topic 再 pin 返回**原条目**且
- * **不续期**（expiresAt 不变）；需要延长请在到期后重新 pin（本批不实现自动续期）。
- */
+/** Process-local focus leases; not an authorization or durable adoption record. */
 public final class FocusPinStore {
-
     public static final int MAX_PINS_PER_COMPANION = 4;
-    /** 技术默认（非主人决定）：120s 见 038 §3.1 的短期焦点，上限 4 取自其“2 自动+4 显式”建议；2026-11-06。 */
-    public static final long DEFAULT_TTL_MS = 120_000L;
-    public static final long MIN_TTL_MS = 1_000L;
-    public static final long MAX_TTL_MS = 600_000L;
-
+    /** Technical bound: at most 64 holders per physical focus, not a product quota. */
+    public static final int MAX_OWNERS_PER_PIN = 64;
+    public static final long DEFAULT_TTL_MS = 120_000L, MIN_TTL_MS = 1_000L, MAX_TTL_MS = 600_000L;
     private final AtomicLong seq = new AtomicLong();
-    private final Map<UUID, List<FocusPin>> pins = new LinkedHashMap<>();
+    private final Map<UUID,List<FocusPin>> pins = new LinkedHashMap<>();
+    private final Map<String,Holder> holders = new LinkedHashMap<>();
+    private static final class Holder {
+        final String version; boolean legacy; String legacyHandle;
+        final Map<String,String> owners = new LinkedHashMap<>();
+        Holder(String version, boolean legacy) { this.version=version; this.legacy=legacy; }
+    }
+    /** Opaque handle is not a credential; trusted server host must supply owner. */
+    public record Lease(String leaseId, FocusPin pin) {}
 
-    public synchronized FocusPin pin(UUID companion, String worldId, String sessionId, String dimension,
-                                     String topic, long nowMs, long ttlMs, long maxAgeMs, int limit, int maxItems) {
-        if (companion == null) return null;
-        pruneExpired(companion, nowMs);
-        // 2026-11-06（038）：换世界/换会话/换主体维度时真清理旧焦点，而不是只在查询时过滤。
-        List<FocusPin> existing = pins.get(companion);
-        if (existing != null) {
-            existing.removeIf(p -> !p.worldId().equals(worldId) || !p.sessionId().equals(sessionId));
+    public synchronized FocusPin pin(UUID c,String w,String s,String d,String topic,long now,long ttl,long age,int limit,int items) {
+        if(c==null) return null;
+        prepare(c,w,s,now);
+        List<FocusPin> list=pins.computeIfAbsent(c,k->new ArrayList<>());
+        for(FocusPin p:list) if(p.topic().equals(topic)&&p.dimension().equals(d) && holders.get(p.id()).legacy) return legacyView(p, holders.get(p.id()));
+        // A legacy handle can share an unversioned owner focus only with identical observation parameters.
+        for(FocusPin p:list) if(p.topic().equals(topic)&&p.dimension().equals(d)
+                && holders.get(p.id()).version.isEmpty() && p.maxAgeMs()==age && p.limit()==limit && p.maxItems()==items) {
+            Holder h=holders.get(p.id()); h.legacy=true; h.legacyHandle=newLegacyHandle(); return legacyView(p,h);
         }
-        List<FocusPin> list = pins.computeIfAbsent(companion, k -> new ArrayList<>());
-        if (list.stream().anyMatch(p -> p.topic().equals(topic) && p.dimension().equals(dimension))) {
-            return list.stream().filter(p -> p.topic().equals(topic) && p.dimension().equals(dimension)).findFirst().orElse(null);
+        if(list.size()>=MAX_PINS_PER_COMPANION) return null;
+        FocusPin p=create(c,w,s,d,topic,now,ttl,age,limit,items);
+        list.add(p); Holder h=new Holder("",true); h.legacyHandle=p.id(); holders.put(p.id(),h); return p;
+    }
+    /** Internal building block only: no model-facing schema or learned package connection.
+     * Shared holders inherit the existing physical pin expiry; acquiring never renews it.
+     * Observation parameters are isolation keys only; existing projector does not yet consume them.
+     * Caller must serialize world/session transitions and supply trusted owner; this store is not an auth boundary. */
+    public synchronized Lease acquire(UUID c,String w,String s,String d,String topic,String version,String owner,
+                                      long now,long ttl,long age,int limit,int items) {
+        if(c==null || owner==null || owner.isBlank() || version==null || w==null || s==null || d==null || topic==null) return null;
+        prepare(c,w,s,now);
+        List<FocusPin> list=pins.computeIfAbsent(c,k->new ArrayList<>());
+        FocusPin match=null;
+        for(FocusPin p:list) {
+            Holder h=holders.get(p.id());
+            if(p.dimension().equals(d)&&p.topic().equals(topic)&&h.version.equals(version)
+                    &&p.maxAgeMs()==age&&p.limit()==limit&&p.maxItems()==items) {match=p;break;}
         }
-        if (list.size() >= MAX_PINS_PER_COMPANION) return null;
-        long ttl = Math.max(MIN_TTL_MS, Math.min(MAX_TTL_MS, ttlMs <= 0 ? DEFAULT_TTL_MS : ttlMs));
-        FocusPin p = new FocusPin("pin-" + seq.incrementAndGet(), companion.toString(), worldId, sessionId,
-                dimension, topic, nowMs, nowMs + ttl, maxAgeMs, limit, maxItems);
-        list.add(p);
-        return p;
+        if(match==null) {
+            if(list.size()>=MAX_PINS_PER_COMPANION) return null;
+            match=create(c,w,s,d,topic,now,ttl,age,limit,items); list.add(match); holders.put(match.id(),new Holder(version,false));
+        }
+        Holder h=holders.get(match.id());
+        String lease=h.owners.get(owner);
+        if(lease==null) {
+            if(h.owners.size()>=MAX_OWNERS_PER_PIN) return null;
+            lease=UUID.randomUUID().toString(); h.owners.put(owner,lease);
+        }
+        return new Lease(lease,match);
     }
-
-    public synchronized boolean unpin(UUID companion, String pinId) {
-        if (companion == null || pinId == null) return false;
-        List<FocusPin> list = pins.get(companion);
-        return list != null && list.removeIf(p -> p.id().equals(pinId));
+    public synchronized boolean release(UUID c,String owner,String leaseId) {
+        if(c==null||owner==null||leaseId==null) return false;
+        List<FocusPin> list=pins.get(c); if(list==null) return false;
+        for(Iterator<FocusPin> it=list.iterator();it.hasNext();) {
+            FocusPin p=it.next(); Holder h=holders.get(p.id());
+            if(leaseId.equals(h.owners.get(owner))) {
+                h.owners.remove(owner); if(!h.legacy&&h.owners.isEmpty()){it.remove();holders.remove(p.id());}
+                if(list.isEmpty()) pins.remove(c); return true;
+            }
+        }
+        return false;
     }
-
-    /** 当前有效焦点；世界/会话/主体不符或过期的都剔除。 */
-    public synchronized List<FocusPin> active(UUID companion, String worldId, String sessionId, long nowMs) {
-        pruneExpired(companion, nowMs);
-        return pins.getOrDefault(companion, List.of()).stream()
-                .filter(p -> p.worldId().equals(worldId) && p.sessionId().equals(sessionId))
-                .toList();
+    public synchronized boolean unpin(UUID c,String id) {
+        if(c==null||id==null) return false;
+        List<FocusPin> list=pins.get(c); if(list==null) return false;
+        for(Iterator<FocusPin> it=list.iterator();it.hasNext();) {
+            FocusPin p=it.next(); Holder h=holders.get(p.id());
+            if(!h.legacy || !id.equals(h.legacyHandle)) continue;
+            h.legacy=false; h.legacyHandle=null; if(h.owners.isEmpty()){it.remove();holders.remove(p.id());}
+            if(list.isEmpty()) pins.remove(c); return true;
+        }
+        return false;
     }
-
-    /** 只清过期；世界/会话不符的只是不返回（换世界后它们自然过期，避免一次误查就删掉焦点）。 */
-    private void pruneExpired(UUID companion, long nowMs) {
-        List<FocusPin> list = pins.get(companion);
-        if (list == null) return;
-        list.removeIf(p -> !p.alive(nowMs));
-        if (list.isEmpty()) pins.remove(companion);
+    public synchronized List<FocusPin> active(UUID c,String w,String s,long now) {
+        pruneExpired(c,now);
+        return pins.getOrDefault(c,List.of()).stream().filter(p->p.worldId().equals(w)&&p.sessionId().equals(s)).toList();
+    }
+    private String newLegacyHandle() { return "pin-"+seq.incrementAndGet(); }
+    private static FocusPin legacyView(FocusPin p,Holder h) {
+        return new FocusPin(h.legacyHandle,p.companionId(),p.worldId(),p.sessionId(),p.dimension(),p.topic(),
+                p.createdAtMs(),p.expiresAtMs(),p.maxAgeMs(),p.limit(),p.maxItems());
+    }
+    private FocusPin create(UUID c,String w,String s,String d,String topic,long now,long ttl,long age,int limit,int items) {
+        long duration=Math.max(MIN_TTL_MS,Math.min(MAX_TTL_MS,ttl<=0?DEFAULT_TTL_MS:ttl));
+        long expiry=now>Long.MAX_VALUE-duration?Long.MAX_VALUE:now+duration;
+        return new FocusPin("pin-"+seq.incrementAndGet(),c.toString(),w,s,d,topic,now,expiry,age,limit,items);
+    }
+    private void prepare(UUID c,String w,String s,long now) {
+        pruneExpired(c,now); List<FocusPin> list=pins.get(c); if(list==null) return;
+        list.removeIf(p->{boolean remove=!p.worldId().equals(w)||!p.sessionId().equals(s);if(remove) holders.remove(p.id());return remove;});
+        if(list.isEmpty()) pins.remove(c);
+    }
+    /** Called by a trusted service lifecycle; does not start a background thread. */
+    public synchronized void sweepExpired(long now) {
+        for(UUID c : new ArrayList<>(pins.keySet())) pruneExpired(c,now);
+    }
+    private void pruneExpired(UUID c,long now) {
+        List<FocusPin> list=pins.get(c); if(list==null) return;
+        list.removeIf(p->{boolean remove=!p.alive(now);if(remove) holders.remove(p.id());return remove;});
+        if(list.isEmpty()) pins.remove(c);
     }
 }
