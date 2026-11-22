@@ -410,7 +410,14 @@ public final class AcxSessionManager {
                 Session retired = it.next().getValue();
                 if (isEvictable(retired)) {
                     // The session lock excludes resume while the inactive run is permanently retired.
-                    runner.discardRunReceipts(retired.runId);
+                    try {
+                        runner.discardRunReceipts(retired.runId);
+                    } catch (RuntimeException cleanupFailed) {
+                        // Retain the owner for retry; maintenance must not orphan an unrelated new start.
+                        LOG.warning("acx receipt retirement deferred for " + retired.runId
+                                + ": " + cleanupFailed.getClass().getSimpleName());
+                        return;
+                    }
                     it.remove();
                     finished--;
                     break;
