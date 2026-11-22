@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class LearnerSyncPayloadBridgeTest {
     @TempDir Path dir;
     @Test void success() throws Exception { run("ok"); }
+    @Test void samePayloadReceiptReachesHostInputGateAndActualCompletion() throws Exception { run("complete"); }
     @Test void wrongOwner() throws Exception { run("non_owner"); }
     @Test void wrongToolThenCorrect() throws Exception { run("wrong_tool"); }
     @Test void ordinaryNoSelection() throws Exception { run("ordinary"); }
@@ -40,8 +41,66 @@ class LearnerSyncPayloadBridgeTest {
         sources.put("net.minecraft.server.MinecraftServer", "package net.minecraft.server; public class MinecraftServer {}");
         sources.put("com.dwinovo.numen.network.payload.Fixture", "package com.dwinovo.numen.network.payload; public class Fixture { public static String mode=\"\"; public static java.util.List<String> logs=new java.util.ArrayList<>(),loop=new java.util.ArrayList<>(),journal=new java.util.ArrayList<>(),toolArgs=new java.util.ArrayList<>(); public static String response=\"{}\"; public static java.util.List<TaskResultPayload> replies=new java.util.ArrayList<>(); }");
         sources.put("com.dwinovo.numen.api.NumenPlugins", "package com.dwinovo.numen.api; public class NumenPlugins { public static Object correlation; public static <T> T capability(Class<T> c) { if(c==SyncSkillCorrelation.class) return c.cast(correlation); if(c==ServerIdentityProvider.class) return c.cast((ServerIdentityProvider)(s -> new ServerIdentityProvider.Snapshot(\"world\",\"session\"))); return null; } }");
-        sources.put("com.dwinovo.numen.plugins.learner.Bridge", "package com.dwinovo.numen.plugins.learner;\nimport java.nio.file.*; import java.util.*; import java.util.concurrent.atomic.AtomicReference; import com.google.gson.*; import com.dwinovo.numen.api.*; import com.dwinovo.numen.task.TaskRecord; import com.dwinovo.numen.plugins.learner.core.*; import com.dwinovo.numen.plugins.learner.skills.*; import com.dwinovo.numen.plugins.learner.contract.*;\npublic class Bridge {\n public static void run(Path dir, String mode) {\n UUID owner=new UUID(0,1), companion=new UUID(0,2); com.dwinovo.numen.network.payload.Fixture.replies.clear(); WorldContextStamp.set(\"world\",\"session\"); var token=WorldContextStamp.capture();\n String body=\"exact original steps for synchronous craft\"; String ref=SkillBodyStore.write(dir,\"sk-1\",1,Integer.toHexString(body.hashCode()),body);\n var artifact=new ArtifactDraft(ArtifactKind.EXPERIENCE,\"craft steps\",\"craft safely\",body,List.of(\"craft\"),List.of(),List.of(),\"LOW\",List.of(),List.of(\"memo-1\"),\"EXECUTOR\");\n System.out.println(\"REG \"+SkillRegistrar.registryFor(dir).register(artifact,\"sk-1\",ref,true)); var ledger=new UsageLedger(dir);\n LearnerUsageTool.TaskAccess host=new LearnerUsageTool.TaskAccess(){public UUID ownerId(){return owner;} public UUID companionId(){return companion;} public WorldContextStamp.Token identity(){return token;} public TaskRecord current(){return null;} public TaskRecord finished(String s){return null;}};\n var tool=new LearnerUsageTool(dir,ledger,host); var args=JsonParser.parseString(\"{\\\"action\\\":\\\"adopt_sync_skill\\\",\\\"skill_ref\\\":\\\"skill:sk-1\\\",\\\"version\\\":\\\"v1\\\",\\\"target_tool\\\":\\\"craft\\\"}\").getAsJsonObject(); AtomicReference<String> reply=new AtomicReference<>(); tool.onServerCall(\"selection\",args,null,reply::set); System.out.println(\"SELECT \"+reply.get());\n String id=JsonParser.parseString(reply.get()).getAsJsonObject().getAsJsonObject(\"data\").get(\"selection_id\").getAsString(); NumenPlugins.correlation=SyncSkillFeedback.INSTANCE; com.dwinovo.numen.network.payload.Fixture.mode=mode;\n if(mode.equals(\"stale_epoch\")){ WorldContextStamp.set(\"world\",\"session\"); var current=WorldContextStamp.capture(); if(!current.identity().equals(token.identity()) || current.epoch()!=token.epoch()+1) throw new AssertionError(\"epoch did not advance with same identity\"); }\n var wireArgs=new JsonObject(); wireArgs.addProperty(\"selection_id\",id); if(mode.equals(\"ordinary\")) wireArgs.remove(\"selection_id\"); if(mode.equals(\"wrong_tool\")){ var bad=new com.dwinovo.numen.network.payload.ExecuteToolPayload(companion,\"bad\",\"other\",wireArgs.toString()); com.dwinovo.numen.network.payload.ExecuteToolPayload.handle(bad,new net.minecraft.server.level.ServerPlayer()); if(!ledger.all().isEmpty()) throw new AssertionError(\"wrong tool recorded\"); com.dwinovo.numen.network.payload.Fixture.replies.clear(); } var payload=new com.dwinovo.numen.network.payload.ExecuteToolPayload(companion,\"wire\",\"craft\",wireArgs.toString()); com.dwinovo.numen.network.payload.ExecuteToolPayload.handle(payload,new net.minecraft.server.level.ServerPlayer()); System.out.println(\"ROWS \"+ledger.all()); if(mode.equals(\"stale_epoch\")){ if(!ledger.all().isEmpty() || !ledger.associationCandidates().isEmpty()) throw new AssertionError(\"stale epoch recorded\"); if(com.dwinovo.numen.network.payload.Fixture.toolArgs.size()!=1 || !com.dwinovo.numen.network.payload.Fixture.toolArgs.get(0).equals(\"{}\")) throw new AssertionError(\"normal tool did not execute\"); if(com.dwinovo.numen.network.payload.Fixture.replies.size()!=1 || !com.dwinovo.numen.network.payload.Fixture.replies.get(0).resultJson().equals(\"{\\\"success\\\":true}\")) throw new AssertionError(\"changed reply\"); if(SyncSkillFeedback.INSTANCE.bind(id,owner,companion,token,\"probe\",\"craft\")!=SyncSkillCorrelation.Binding.BOUND) throw new AssertionError(\"stale payload associated selection\"); } else if(mode.equals(\"non_owner\") || mode.equals(\"ordinary\")){if(!ledger.all().isEmpty())throw new AssertionError(\"unexpected ledger\");} else {var rows=ledger.all();if(rows.size()!=1 || rows.get(0).outcome()!=UsageLedger.Outcome.SUCCESS || rows.get(0).evidence()!=UsageLedger.EvidenceLevel.NONE || ledger.associationCandidates().size()!=1) throw new AssertionError(\"bad receipt \"+rows); if(com.dwinovo.numen.network.payload.Fixture.replies.size()!=1)throw new AssertionError(\"missing original reply\"); if(!com.dwinovo.numen.network.payload.Fixture.replies.get(0).resultJson().equals(\"{\\\"success\\\":true}\"))throw new AssertionError(\"changed reply\");} }\n}");
+        sources.put("com.dwinovo.numen.plugins.learner.Bridge", "package com.dwinovo.numen.plugins.learner;\n" +
+                "import java.nio.file.*; import java.util.*; import java.util.concurrent.atomic.AtomicReference; import com.google.gson.*; import com.dwinovo.numen.api.*; import com.dwinovo.numen.task.TaskRecord; import com.dwinovo.numen.plugins.learner.core.*; import com.dwinovo.numen.plugins.learner.skills.*; import com.dwinovo.numen.plugins.learner.contract.*;\n" +
+                "public class Bridge {\n" +
+                " public static void run(Path dir, String mode) {\n" +
+                " UUID owner=new UUID(0,1), companion=new UUID(0,2); com.dwinovo.numen.network.payload.Fixture.replies.clear(); WorldContextStamp.set(\"world\",\"session\"); var token=WorldContextStamp.capture();\n" +
+                " String body=\"exact original steps for synchronous craft\"; String ref=SkillBodyStore.write(dir,\"sk-1\",1,Integer.toHexString(body.hashCode()),body);\n" +
+                " var artifact=new ArtifactDraft(ArtifactKind.EXPERIENCE,\"craft steps\",\"craft safely\",body,List.of(\"craft\"),List.of(),List.of(),\"LOW\",List.of(),List.of(\"memo-1\"),\"EXECUTOR\");\n" +
+                " System.out.println(\"REG \"+SkillRegistrar.registryFor(dir).register(artifact,\"sk-1\",ref,true)); var ledger=new UsageLedger(dir);\n" +
+                " LearnerUsageTool.TaskAccess host=new LearnerUsageTool.TaskAccess(){public UUID ownerId(){return owner;} public UUID companionId(){return companion;} public WorldContextStamp.Token identity(){return token;} public TaskRecord current(){return null;} public TaskRecord finished(String s){return null;}};\n" +
+                " var tool=new LearnerUsageTool(dir,ledger,host); var args=JsonParser.parseString(\"{\\\"action\\\":\\\"adopt_sync_skill\\\",\\\"skill_ref\\\":\\\"skill:sk-1\\\",\\\"version\\\":\\\"v1\\\",\\\"target_tool\\\":\\\"craft\\\"}\").getAsJsonObject(); AtomicReference<String> reply=new AtomicReference<>(); tool.onServerCall(\"selection\",args,null,reply::set); System.out.println(\"SELECT \"+reply.get());\n" +
+                " String id=JsonParser.parseString(reply.get()).getAsJsonObject().getAsJsonObject(\"data\").get(\"selection_id\").getAsString(); NumenPlugins.correlation=SyncSkillFeedback.INSTANCE; com.dwinovo.numen.network.payload.Fixture.mode=mode;\n" +
+                " if(mode.equals(\"stale_epoch\")){ WorldContextStamp.set(\"world\",\"session\"); var current=WorldContextStamp.capture(); if(!current.identity().equals(token.identity()) || current.epoch()!=token.epoch()+1) throw new AssertionError(\"epoch did not advance with same identity\"); }\n" +
+                " var wireArgs=new JsonObject(); wireArgs.addProperty(\"selection_id\",id);\n" +
+                "if(mode.equals(\"ordinary\")) wireArgs.remove(\"selection_id\");\n" +
+                "if(mode.equals(\"wrong_tool\")){ var bad=new com.dwinovo.numen.network.payload.ExecuteToolPayload(companion,\"bad\",\"other\",wireArgs.toString()); com.dwinovo.numen.network.payload.ExecuteToolPayload.handle(bad,new net.minecraft.server.level.ServerPlayer()); if(!ledger.all().isEmpty()) throw new AssertionError(\"wrong tool recorded\"); com.dwinovo.numen.network.payload.Fixture.replies.clear(); } var payload=new com.dwinovo.numen.network.payload.ExecuteToolPayload(companion,\"wire\",\"craft\",wireArgs.toString()); com.dwinovo.numen.network.payload.ExecuteToolPayload.handle(payload,new net.minecraft.server.level.ServerPlayer()); System.out.println(\"ROWS \"+ledger.all());\n" +
+                "if(mode.equals(\"stale_epoch\")){ if(!ledger.all().isEmpty() || !ledger.associationCandidates().isEmpty()) throw new AssertionError(\"stale epoch recorded\");\n" +
+                "if(com.dwinovo.numen.network.payload.Fixture.toolArgs.size()!=1 || !com.dwinovo.numen.network.payload.Fixture.toolArgs.get(0).equals(\"{}\")) throw new AssertionError(\"normal tool did not execute\");\n" +
+                "if(com.dwinovo.numen.network.payload.Fixture.replies.size()!=1 || !com.dwinovo.numen.network.payload.Fixture.replies.get(0).resultJson().equals(\"{\\\"success\\\":true}\")) throw new AssertionError(\"changed reply\"); if(SyncSkillFeedback.INSTANCE.bind(id,owner,companion,token,\"probe\",\"craft\")!=SyncSkillCorrelation.Binding.BOUND) throw new AssertionError(\"stale payload associated selection\"); } else if(mode.equals(\"non_owner\") || mode.equals(\"ordinary\")){if(!ledger.all().isEmpty())throw new AssertionError(\"unexpected ledger\");} else {var rows=ledger.all();if(rows.size()!=1 || rows.get(0).outcome()!=UsageLedger.Outcome.SUCCESS || rows.get(0).evidence()!=UsageLedger.EvidenceLevel.NONE || ledger.associationCandidates().size()!=1) throw new AssertionError(\"bad receipt \"+rows);\n" +
+                "if(com.dwinovo.numen.network.payload.Fixture.replies.size()!=1)throw new AssertionError(\"missing original reply\"); if(!com.dwinovo.numen.network.payload.Fixture.replies.get(0).resultJson().equals(\"{\\\"success\\\":true}\"))throw new AssertionError(\"changed reply\");} }\n" +
+                "}");
         sources.put("com.dwinovo.numen.network.payload.ExecuteToolPayload", Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/network/payload/ExecuteToolPayload.java")));
+        sources.put("com.dwinovo.numen.plugins.learner.CompleteBridge", """
+                package com.dwinovo.numen.plugins.learner;
+                import java.nio.file.*;
+                import java.util.*;
+                import com.dwinovo.numen.api.WorldContextStamp;
+                import com.dwinovo.numen.plugins.learner.core.*;
+                public class CompleteBridge {
+                    static void set(String name,Object value) throws Exception {
+                        var field=LearnerAutoIntake.class.getDeclaredField(name); field.setAccessible(true); field.set(null,value);
+                    }
+                    public static void run(Path dir) throws Exception {
+                        UUID companion=new UUID(0,2);
+                        UsageLedger ledger=new UsageLedger(dir);
+                        var row=ledger.readSnapshot().rows().getFirst();
+                        if(!ledger.containsSyncReceipt(row)) throw new AssertionError("payload receipt must be durable typed source");
+                        MemoQueue queue=new MemoQueue(dir.resolve("same-payload-memos.json"));
+                        set("configDirCache",dir); set("enabled",true);
+                        LearnerAutoIntake.installQueueResolverForTest(id -> {if(!id.equals(companion)) throw new AssertionError("wrong companion"); return queue;});
+                        LearnerAutoIntake.installDeliveryLedgerReaderForTest(ledger::readSnapshot);
+                        var scope=new LearnerAutoIntake.DeliveryScope("world","session",WorldContextStamp.capture().epoch());
+                        if(LearnerAutoIntake.scanOnce(() -> scope)!=1) throw new AssertionError("same payload receipt not admitted by host");
+                        Memo memo=queue.all().getFirst();
+                        var snapshot=SkillDeliveryIntake.syncEntryFromSnapshot(memo.snapshot());
+                        if(!row.equals(snapshot)) throw new AssertionError("host replaced payload receipt");
+                        String input=TrajectorySlices.forMemo(dir,companion,memo);
+                        if(!input.contains("wire_id=wire") || !input.contains("receipt=SUCCESS") || !input.contains("exact original steps for synchronous craft") || !input.contains("evidence=NONE")) throw new AssertionError("missing exact payload review input: "+input);
+                        var stable=WorldContextStamp.capture();
+                        var batch=queue.drain(3);
+                        var completion=new ReviewCompletion(batch,m -> ReviewTargetGate.check(dir,companion,m,stable,stable));
+                        if(!completion.permits(memo.id())) throw new AssertionError("current gate refused original receipt");
+                        String registry=Files.readString(dir.resolve("skills.jsonl"));
+                        var verdict=new Verdict(memo.id(),List.of(Verdict.Action.NO_ACTION),.8,"receipt only, not world effect",null,"","","",List.of(),List.of());
+                        var consumed=completion.consume(dir,queue,batch,List.of(verdict),(kind,data)->{});
+                        if(consumed.settlement().committed()!=1 || !consumed.judged().equals(Set.of(memo.id())) || consumed.verdicts().size()!=1 || new MemoQueue(queue.file()).size()!=0) throw new AssertionError("actual completion did not commit original memo");
+                        if(!registry.equals(Files.readString(dir.resolve("skills.jsonl"))) || ledger.all().getFirst().evidence()!=UsageLedger.EvidenceLevel.NONE) throw new AssertionError("NO_ACTION promoted skill effectiveness");
+                        if(LearnerAutoIntake.scanOnce(() -> scope)!=0 || new MemoQueue(queue.file()).size()!=0) throw new AssertionError("completed receipt replayed");
+                    }
+                }
+                """);
         var cp = new LinkedHashSet<String>();
         for (Class<?> c : List.of(LearnerUsageTool.class, com.dwinovo.numen.api.WorldContextStamp.class, com.dwinovo.numen.agent.provider.IToolSpec.class, com.google.gson.JsonObject.class))
             cp.add(Path.of(c.getProtectionDomain().getCodeSource().getLocation().toURI()).toString());
@@ -56,7 +115,15 @@ class LearnerSyncPayloadBridgeTest {
             assertSame(loader,loader.loadClass("com.dwinovo.numen.plugins.learner.SyncSkillFeedback").getClassLoader());
             assertSame(loader,loader.loadClass("com.dwinovo.numen.api.SyncSkillCorrelation").getClassLoader());
             assertSame(loader,loader.loadClass("com.dwinovo.numen.network.payload.ExecuteToolPayload").getClassLoader());
-            try { bridge.getMethod("run",Path.class,String.class).invoke(null,dir.resolve("data"),mode); }
+            try {
+                bridge.getMethod("run",Path.class,String.class).invoke(null,dir.resolve("data"),mode);
+                if ("complete".equals(mode)) {
+                    var complete = loader.loadClass("com.dwinovo.numen.plugins.learner.CompleteBridge");
+                    assertSame(loader, complete.getClassLoader());
+                    assertSame(loader, loader.loadClass("com.dwinovo.numen.plugins.learner.ReviewCompletion").getClassLoader());
+                    complete.getMethod("run",Path.class).invoke(null,dir.resolve("data"));
+                }
+            }
             catch(java.lang.reflect.InvocationTargetException e) { throw new AssertionError("bridge case " + mode,e.getCause()); }
         }
     }
