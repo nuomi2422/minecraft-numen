@@ -31,12 +31,16 @@ import static org.junit.jupiter.api.Assertions.*;
 class LearnerSyncSkillFeedbackTest {
     @TempDir Path dir;
     private static final UUID COMPANION = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    private static final UUID OWNER = UUID.fromString("00000000-0000-0000-0000-000000000002");
 
     // Same host-boundary fixture as LearnerSkillTaskFeedbackTest; no body task exists.
     private static final class Tasks implements LearnerUsageTool.TaskAccess {
+        UUID owner = OWNER;
+        WorldContextStamp.Token token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
+        public UUID ownerId() { return owner; }
         public UUID companionId() { return COMPANION; }
         public WorldContextStamp.Token identity() {
-            return new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
+            return token;
         }
         public TaskRecord current() { return null; }
         public TaskRecord finished(String id) { return null; }
@@ -75,5 +79,58 @@ class LearnerSyncSkillFeedbackTest {
         assertEquals(body, data.get("body").getAsString());
         assertNull(tasks.current());
         assertTrue(ledger.all().isEmpty(), "selection alone is not a result or effectiveness fact");
+        String id = data.get("selection_id").getAsString();
+        var svc = SyncSkillFeedback.INSTANCE;
+        var token = tasks.identity();
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.NONE, svc.bind(null, OWNER, COMPANION, token, "wire", "craft"));
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.REJECTED, svc.bind(id, OWNER, COMPANION, token, "wire", "other"));
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.REJECTED, svc.bind(id, UUID.randomUUID(), COMPANION, token, "wire", "craft"));
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.REJECTED, svc.bind(id, OWNER, COMPANION, new WorldContextStamp.Token(token.identity(), 8), "wire", "craft"));
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.BOUND, svc.bind(id, OWNER, COMPANION, token, "wire", "craft"));
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.DUPLICATE, svc.bind(id, OWNER, COMPANION, token, "wire", "craft"));
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.REJECTED, svc.bind(id, OWNER, COMPANION, token, "other-wire", "craft"));
+        svc.receipt(id, OWNER, COMPANION, token, "wire", "craft", com.dwinovo.numen.api.SyncSkillCorrelation.Receipt.UNKNOWN);
+        svc.receipt(id, OWNER, COMPANION, token, "wire", "craft", com.dwinovo.numen.api.SyncSkillCorrelation.Receipt.SUCCESS);
+        var rows = new UsageLedger(dir).all();
+        assertEquals(1, rows.size());
+        assertEquals(UsageLedger.Outcome.UNKNOWN, rows.get(0).outcome());
+        assertEquals(UsageLedger.EvidenceLevel.NONE, rows.get(0).evidence());
+        assertTrue(new UsageLedger(dir).associationCandidates().isEmpty());
+        AtomicReference<String> secondReply = new AtomicReference<>();
+        tool.onServerCall("selection-2", args, null, responseText -> {
+            secondReply.set(responseText);
+            String reserved = JsonParser.parseString(responseText).getAsJsonObject().getAsJsonObject("data").get("selection_id").getAsString();
+            assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.REJECTED,
+                    svc.bind(reserved, OWNER, COMPANION, token, "premature", "craft"));
+        });
+        String secondId = JsonParser.parseString(secondReply.get()).getAsJsonObject().getAsJsonObject("data").get("selection_id").getAsString();
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.BOUND, svc.bind(secondId, OWNER, COMPANION, token, "wire-success", "craft"));
+        svc.receipt(secondId, OWNER, COMPANION, token, "wrong-wire", "craft", com.dwinovo.numen.api.SyncSkillCorrelation.Receipt.SUCCESS);
+        assertEquals(1, new UsageLedger(dir).all().size());
+        svc.receipt(secondId, OWNER, COMPANION, token, "wire-success", "craft", com.dwinovo.numen.api.SyncSkillCorrelation.Receipt.SUCCESS);
+        assertEquals(1, new UsageLedger(dir).associationCandidates().size());
+        assertEquals(UsageLedger.EvidenceLevel.NONE, new UsageLedger(dir).associationCandidates().get(0).evidence());
+        for (var row : new UsageLedger(dir).all()) {
+            assertFalse(row.artifactId().contains(id));
+            assertFalse(row.detail().contains(id));
+            assertFalse(row.source().contains(id));
+            assertFalse(row.artifactId().contains(secondId));
+            assertFalse(row.detail().contains(secondId));
+            assertFalse(row.source().contains(secondId));
+        }
+        AtomicReference<String> failedId = new AtomicReference<>();
+        tool.onServerCall("throwing-reply", args, null, responseText -> {
+            failedId.set(JsonParser.parseString(responseText).getAsJsonObject().getAsJsonObject("data").get("selection_id").getAsString());
+            throw new IllegalStateException("transport failed");
+        });
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.REJECTED,
+                svc.bind(failedId.get(), OWNER, COMPANION, token, "wire2", "craft"));
+        AtomicReference<String> staleId = new AtomicReference<>();
+        tool.onServerCall("stale-owner", args, null, responseText -> {
+            staleId.set(JsonParser.parseString(responseText).getAsJsonObject().getAsJsonObject("data").get("selection_id").getAsString());
+            tasks.owner = UUID.randomUUID();
+        });
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.REJECTED,
+                svc.bind(staleId.get(), OWNER, COMPANION, token, "wire3", "craft"));
     }
 }
