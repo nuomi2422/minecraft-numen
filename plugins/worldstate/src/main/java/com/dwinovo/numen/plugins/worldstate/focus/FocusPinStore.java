@@ -13,7 +13,7 @@ public final class FocusPinStore {
     private final Map<UUID,List<FocusPin>> pins = new LinkedHashMap<>();
     private final Map<String,Holder> holders = new LinkedHashMap<>();
     private static final class Holder {
-        final String version; boolean legacy;
+        final String version; boolean legacy; String legacyHandle;
         final Map<String,String> owners = new LinkedHashMap<>();
         Holder(String version, boolean legacy) { this.version=version; this.legacy=legacy; }
     }
@@ -24,15 +24,15 @@ public final class FocusPinStore {
         if(c==null) return null;
         prepare(c,w,s,now);
         List<FocusPin> list=pins.computeIfAbsent(c,k->new ArrayList<>());
-        for(FocusPin p:list) if(p.topic().equals(topic)&&p.dimension().equals(d) && holders.get(p.id()).legacy) return p;
+        for(FocusPin p:list) if(p.topic().equals(topic)&&p.dimension().equals(d) && holders.get(p.id()).legacy) return legacyView(p, holders.get(p.id()));
         // A legacy handle can share an unversioned owner focus only with identical observation parameters.
         for(FocusPin p:list) if(p.topic().equals(topic)&&p.dimension().equals(d)
                 && holders.get(p.id()).version.isEmpty() && p.maxAgeMs()==age && p.limit()==limit && p.maxItems()==items) {
-            holders.get(p.id()).legacy=true; return p;
+            Holder h=holders.get(p.id()); h.legacy=true; h.legacyHandle=newLegacyHandle(); return legacyView(p,h);
         }
         if(list.size()>=MAX_PINS_PER_COMPANION) return null;
         FocusPin p=create(c,w,s,d,topic,now,ttl,age,limit,items);
-        list.add(p); holders.put(p.id(),new Holder("",true)); return p;
+        list.add(p); Holder h=new Holder("",true); h.legacyHandle=p.id(); holders.put(p.id(),h); return p;
     }
     /** Internal building block only: no model-facing schema or learned package connection.
      * Shared holders inherit the existing physical pin expiry; acquiring never renews it.
@@ -77,9 +77,9 @@ public final class FocusPinStore {
         if(c==null||id==null) return false;
         List<FocusPin> list=pins.get(c); if(list==null) return false;
         for(Iterator<FocusPin> it=list.iterator();it.hasNext();) {
-            FocusPin p=it.next(); if(!p.id().equals(id)) continue;
-            Holder h=holders.get(id); if(!h.legacy) return false;
-            h.legacy=false; if(h.owners.isEmpty()){it.remove();holders.remove(id);}
+            FocusPin p=it.next(); Holder h=holders.get(p.id());
+            if(!h.legacy || !id.equals(h.legacyHandle)) continue;
+            h.legacy=false; h.legacyHandle=null; if(h.owners.isEmpty()){it.remove();holders.remove(p.id());}
             if(list.isEmpty()) pins.remove(c); return true;
         }
         return false;
@@ -87,6 +87,11 @@ public final class FocusPinStore {
     public synchronized List<FocusPin> active(UUID c,String w,String s,long now) {
         pruneExpired(c,now);
         return pins.getOrDefault(c,List.of()).stream().filter(p->p.worldId().equals(w)&&p.sessionId().equals(s)).toList();
+    }
+    private String newLegacyHandle() { return "pin-"+seq.incrementAndGet(); }
+    private static FocusPin legacyView(FocusPin p,Holder h) {
+        return new FocusPin(h.legacyHandle,p.companionId(),p.worldId(),p.sessionId(),p.dimension(),p.topic(),
+                p.createdAtMs(),p.expiresAtMs(),p.maxAgeMs(),p.limit(),p.maxItems());
     }
     private FocusPin create(UUID c,String w,String s,String d,String topic,long now,long ttl,long age,int limit,int items) {
         long duration=Math.max(MIN_TTL_MS,Math.min(MAX_TTL_MS,ttl<=0?DEFAULT_TTL_MS:ttl));

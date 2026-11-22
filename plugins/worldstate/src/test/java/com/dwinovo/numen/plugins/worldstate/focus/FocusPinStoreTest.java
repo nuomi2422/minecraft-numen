@@ -90,6 +90,9 @@ class FocusPinStoreTest {
         assertEquals(first.id(),other.pin().id());
         assertTrue(st.unpin(c,first.id()));
         var renewed=st.pin(c,W,S,D,"environment",1100,60000,0,0,0);
+        assertNotEquals(first.id(),renewed.id(),"reacquired legacy handle uses a new generation");
+        assertEquals(renewed.id(),st.pin(c,W,S,D,"environment",1150,60000,0,0,0).id(),"duplicate active legacy pin remains idempotent");
+        assertEquals(first.expiresAtMs(),renewed.expiresAtMs(),"physical TTL is not renewed");
         assertFalse(st.unpin(c,first.id()),"stale handle must not release newer legacy holder");
         assertEquals(1,st.active(c,W,S,1200).size(),"other owner survives stale legacy unpin");
         assertTrue(st.release(c,"package",other.leaseId()));
