@@ -732,12 +732,17 @@ class SkillsAggregateConsumerTest {
         var temp=dir.resolve("skills.jsonl.tmp"); java.nio.file.Files.createDirectory(temp);
         java.nio.file.Files.writeString(temp.resolve("block"),"fixture");
         var decision=registry.register(withdrawn,id,bodyRef,true);
-        assertFalse(decision.outcome()==SkillRegistry.Outcome.REVISE,"failed persistent withdrawal must not report success");
-        org.junit.jupiter.api.Assertions.assertArrayEquals(before,java.nio.file.Files.readAllBytes(file));
-        assertEquals(1,registry.get(id).orElseThrow().version());
+        var after=java.nio.file.Files.readAllBytes(file);
+        int memoryVersion=registry.get(id).orElseThrow().version();
         var resolver=new LearnedSkillBodyResolverImpl(dir);
-        assertTrue(resolver.resolveFocusDeclaration(COMPANION,"skill:"+id+"@v1",LearnedSkillBodyResolver.View.EXECUTOR).available());
-        assertEquals(SkillRegistry.Outcome.REUSE,registry.register(declared,id,bodyRef,true).outcome());
+        boolean diskDeclaration=resolver.resolveFocusDeclaration(COMPANION,"skill:"+id+"@v1",LearnedSkillBodyResolver.View.EXECUTOR).available();
+        var repeated=registry.register(declared,id,bodyRef,true);
+        org.junit.jupiter.api.Assertions.assertAll(
+                () -> assertFalse(decision.outcome()==SkillRegistry.Outcome.REVISE,"failed persistent withdrawal must not report success"),
+                () -> org.junit.jupiter.api.Assertions.assertArrayEquals(before,after,"original bytes preserved"),
+                () -> assertEquals(1,memoryVersion,"memory must not publish unwritten version"),
+                () -> assertTrue(diskDeclaration,"fresh resolver sees original version"),
+                () -> assertEquals(SkillRegistry.Outcome.REUSE,repeated.outcome(),"unchanged old registration remains reuse"));
     }
 
     @Test void normalRegistrationRevisesOnFocusDeclarationAdditionAndRemoval() throws Exception {
