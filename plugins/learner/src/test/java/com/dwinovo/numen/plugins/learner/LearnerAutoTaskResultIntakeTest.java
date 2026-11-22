@@ -218,6 +218,11 @@ class LearnerAutoTaskResultIntakeTest {
     }
 
     @Test void realSyncReceiptsForTwoCompanionsShareOneHostReadAndReplayWithoutDuplicates() throws Exception {
+        Map<UUID, MemoQueue> queues = syncHostBatch();
+        assertEquals(4, queues.values().stream().mapToInt(MemoQueue::size).sum());
+    }
+
+    private Map<UUID, MemoQueue> syncHostBatch() throws Exception {
         register("sync-host");
         UUID second = UUID.fromString("00000000-0000-0000-0000-000000000032");
         var diskReads = new AtomicInteger();
@@ -266,6 +271,33 @@ class LearnerAutoTaskResultIntakeTest {
         assertEquals(0, scan(), "same production journal must suppress replay");
         assertEquals(1, reads.get()); assertEquals(1, diskReads.get());
         assertEquals(4, queues.values().stream().mapToInt(MemoQueue::size).sum());
+        return queues;
+    }
+
+    @Test void realSyncHostIntakeContinuesThroughActualCompletionForBothCompanions() throws Exception {
+        Map<UUID, MemoQueue> queues = syncHostBatch();
+        String registryBefore = registryBytes();
+        for (var item : queues.entrySet()) {
+            MemoQueue durableQueue = new MemoQueue(item.getValue().file());
+            List<Memo> batch = durableQueue.drain(3);
+            assertEquals(2, batch.size());
+            var stable = token(CURRENT);
+            var completion = new ReviewCompletion(batch, memo -> ReviewTargetGate.check(dir, item.getKey(), memo, stable, stable));
+            List<Verdict> verdicts = batch.stream().map(memo -> new Verdict(memo.id(),
+                    List.of(Verdict.Action.NO_ACTION), .8, "receipt only, no world effectiveness claim",
+                    null, "", "", "", List.<Map<String, Object>>of(), List.<String>of())).toList();
+            var consumed = completion.consume(dir, durableQueue, batch, verdicts, (kind, data) -> {});
+            assertEquals(2, consumed.settlement().committed());
+            assertEquals(0, consumed.settlement().restored());
+            assertEquals(0, consumed.settlement().terminalSkipped());
+            assertEquals(batch.stream().map(Memo::id).collect(java.util.stream.Collectors.toSet()), consumed.judged());
+            assertEquals(2, consumed.verdicts().size());
+            assertEquals(0, new MemoQueue(durableQueue.file()).size());
+        }
+        assertEquals(registryBefore, registryBytes(), "NO_ACTION must not register or revise a skill");
+        for (UsageLedger.Entry row : ledger.all()) assertEquals(UsageLedger.EvidenceLevel.NONE, row.evidence());
+        assertEquals(0, scan(), "completed historical receipts must not be re-enqueued by the host journal");
+        for (MemoQueue q : queues.values()) assertEquals(0, new MemoQueue(q.file()).size());
     }
 
     @Test void realResultEntersHostWithFullSnapshotDespiteOldSdAndReplaysAfterReload() throws Exception {
