@@ -32,7 +32,7 @@ class RddPlannerSelfDerivedConsumerTest {
         add(src,args,"com/dwinovo/numen/rdd/api/PrimarySpec.java","package com.dwinovo.numen.rdd.api; public class PrimarySpec {} ");
         add(src,args,"com/dwinovo/numen/rdd/core/PlanningAssetSnapshot.java","package com.dwinovo.numen.rdd.core; public class PlanningAssetSnapshot { public java.util.Map<String,Integer> availableCounts(){return java.util.Map.of();} public boolean hasInventoryScanTime(){return false;} }");
         add(src,args,"com/dwinovo/numen/rdd/core/RddChainFactory.java","package com.dwinovo.numen.rdd.core; public class RddChainFactory { public static int MAX_STAGES=12; }");
-        for (String name : List.of("ObservationMetadata", "WorldObservationService", "SelfInventoryQuery"))
+        for (String name : List.of("ObservationMetadata", "WorldObservationService", "SelfInventoryQuery", "ObservationBatch", "ObservationBatchReader", "ChangesQuery", "ChangesV2Response", "Readiness", "WorldTime"))
             add(src,args,"com/dwinovo/numen/api/observation/"+name+".java", Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/api/observation/"+name+".java")));
         add(src,args,"com/dwinovo/numen/api/NumenPlugins.java", "package com.dwinovo.numen.api; public class NumenPlugins { public static <T> T capability(Class<T> type){return type.cast(com.dwinovo.numen.plugins.rdd.Probe.service);} }");
         add(src,args,"com/dwinovo/numen/plugins/rdd/RddPlannerFacts.java",facts);
