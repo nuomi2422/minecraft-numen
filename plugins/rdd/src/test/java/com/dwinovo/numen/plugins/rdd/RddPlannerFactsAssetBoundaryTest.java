@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Compiles the unmodified planner; MC and asset/container boundaries are test doubles.
@@ -55,6 +56,14 @@ class RddPlannerFactsAssetBoundaryTest {
     }
 
     private String run(String storage, String catalog) throws Exception {
+        return run(storage, catalog, null, false);
+    }
+
+    String offlineFacts(Map<String, Integer> held, boolean observed) throws Exception {
+        return run("", "", held, observed);
+    }
+
+    private String run(String storage, String catalog, Map<String, Integer> held, boolean observed) throws Exception {
         Path root = Path.of("").toAbsolutePath();
         while (root != null && !Files.isRegularFile(root.resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddPlannerFacts.java"))) root = root.getParent();
         assertNotNull(root, "SETUP ERROR: planner source not found");
@@ -73,6 +82,9 @@ class RddPlannerFactsAssetBoundaryTest {
                 class RddPlugin { static Object assets(java.util.UUID id){return new Object();} }
                 class RddAssetContext { static String value; static String renderForPlanner(Object assets,int max){return value;} }
                 public class Fixture {
+                    public static String offline(java.util.Map<String,Integer> held, boolean observed) {
+                        return RddPlannerFacts.block(held, observed);
+                    }
                     public static String run(String storage,String world) {
                         RddContainerMemory.value=storage; RddAssetContext.value=world;
                         return RddPlannerFacts.block(new net.minecraft.server.level.ServerPlayer(),java.util.UUID.randomUUID());
@@ -85,6 +97,7 @@ class RddPlannerFactsAssetBoundaryTest {
         try (var loader = new URLClassLoader(new URL[]{tmp.toUri().toURL()}, ClassLoader.getPlatformClassLoader())) {
             Class<?> fixture = loader.loadClass("com.dwinovo.numen.plugins.rdd.Fixture");
             assertEquals(tmp.toUri().toURL(), loader.loadClass("com.dwinovo.numen.plugins.rdd.RddPlannerFacts").getProtectionDomain().getCodeSource().getLocation());
+            if (held != null) return (String) fixture.getMethod("offline", Map.class, boolean.class).invoke(null, held, observed);
             return (String) fixture.getMethod("run", String.class, String.class).invoke(null, storage, catalog);
         }
     }

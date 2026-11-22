@@ -47,14 +47,16 @@ class RddSubmissionRationaleHandoffTest {
     void cleanup() { RationaleContext.clear(id); }
 
     @Test
-    void offlinePlannerMustNotTreatUnscannedInventoryAsEmpty() {
+    void offlinePlannerMustNotTreatUnscannedInventoryAsEmpty(@TempDir Path fixtureDir) throws Exception {
         var unscanned = PlanningAssetSnapshot.from(Map.of(), null, null);
         var scannedEmpty = PlanningAssetSnapshot.from(Map.of(), 123L, null);
         var scannedItem = PlanningAssetSnapshot.from(Map.of("minecraft:bread", 2), 123L, null);
         List<String> sent = new ArrayList<>();
+        var fixture = new RddPlannerFactsAssetBoundaryTest();
+        fixture.tmp = fixtureDir;
         for (var snapshot : List.of(unscanned, scannedEmpty, scannedItem)) {
-            // Mirrors planStages' no-player branch; dispatchStages is the real final-send path.
-            String facts = RddPlannerFacts.block(snapshot.availableCounts(), snapshot.hasInventoryScanTime());
+            // Full production facts class is compiled with MC doubles; final dispatch is real.
+            String facts = fixture.offlineFacts(snapshot.availableCounts(), snapshot.hasInventoryScanTime());
             RddStagePlanner.dispatchStages(id, OBJECTIVE, null, snapshot, facts,
                     (companion, objective, stage, failures) -> "", () -> "", sent::add);
         }
