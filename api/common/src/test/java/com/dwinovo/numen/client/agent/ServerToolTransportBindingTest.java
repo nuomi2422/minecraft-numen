@@ -40,7 +40,9 @@ class ServerToolTransportBindingTest {
                 "api/common/src/main/java/com/dwinovo/numen/agent/tool/LocalToolCallLog.java",
                 "api/common/src/main/java/com/dwinovo/numen/agent/tool/ToolCall.java",
                 "api/common/src/main/java/com/dwinovo/numen/agent/tool/ToolAnchor.java",
-                "api/common/src/main/java/com/dwinovo/numen/task/TaskResult.java")) {
+                "api/common/src/main/java/com/dwinovo/numen/task/TaskResult.java",
+                "api/common/src/main/java/com/dwinovo/numen/agent/tool/ToolInvocation.java",
+                "api/common/src/client/java/com/dwinovo/numen/client/agent/ToolDispatcher.java")) {
             String source = Files.readString(root.resolve(relative));
             String pkg = source.substring(source.indexOf("package ")+8, source.indexOf(';')).trim();
             sources.put(pkg+"."+Path.of(relative).getFileName().toString().replace(".java",""), source);
@@ -50,7 +52,14 @@ class ServerToolTransportBindingTest {
         int end=resultSource.indexOf("\n    private static String truncate",start); assertTrue(start>=0 && end>start);
         sources.put("com.dwinovo.numen.network.payload.TaskResultPayload","package com.dwinovo.numen.network.payload; import java.util.*; import com.dwinovo.numen.Constants; import com.dwinovo.numen.agent.tool.ServerToolTransport; public record TaskResultPayload(UUID entityUuid,String toolCallId,String resultJson){"+resultSource.substring(start,end)+" static String truncate(String s,int n){return s;} }");
         sources.put("com.dwinovo.numen.Constants",
-                "package com.dwinovo.numen; public class Constants {public static final Log LOG=new Log(); public static class Log {public static final java.util.List<String> entries=new java.util.ArrayList<>(); public void debug(String s,Object...a){entries.add(java.util.Arrays.toString(a));}}}");
+                "package com.dwinovo.numen; public class Constants {public static final Log LOG=new Log(); public static class Log {public static final java.util.List<String> entries=new java.util.ArrayList<>(); public void debug(String s,Object...a){entries.add(java.util.Arrays.toString(a));} public void info(String s,Object...a){entries.add(java.util.Arrays.toString(a));} public void warn(String s,Object...a){entries.add(java.util.Arrays.toString(a));}}}");
+        sources.put("net.minecraft.client.player.AbstractClientPlayer","package net.minecraft.client.player; public class AbstractClientPlayer {}");
+        sources.put("com.dwinovo.numen.agent.tool.ClientToolContext","package com.dwinovo.numen.agent.tool; public record ClientToolContext(net.minecraft.client.player.AbstractClientPlayer entity,java.util.UUID entityUuid) implements ToolAnchor {}");
+        sources.put("com.dwinovo.numen.agent.tool.ToolRegistry","package com.dwinovo.numen.agent.tool; public class ToolRegistry {public static NumenTool resolve(String s){return ()->s;}}");
+        sources.put("com.dwinovo.numen.agent.tool.ToolAliases","package com.dwinovo.numen.agent.tool; public class ToolAliases {public static String resolve(String s){return s;}}");
+        sources.put("com.dwinovo.numen.agent.tool.ToolDisclosure","package com.dwinovo.numen.agent.tool; public class ToolDisclosure {public static String notExpanded(String s){return s;}}");
+        sources.put("com.dwinovo.numen.api.CompanionEvent","package com.dwinovo.numen.api; public enum CompanionEvent {ABORT}");
+        sources.put("com.dwinovo.numen.entity.CompanionEvents","package com.dwinovo.numen.entity; public class CompanionEvents {public static void fire(Object a,Object b){}}");
         sources.put("com.dwinovo.numen.agent.tool.NumenTool",
                 "package com.dwinovo.numen.agent.tool; public interface NumenTool {String name(); default void invoke(ToolCall c){ServerToolTransport.ship(c);}}");
         sources.put("com.dwinovo.numen.network.payload.ExecuteToolPayload",
@@ -137,6 +146,14 @@ class ServerToolTransportBindingTest {
                     setup(); UUID a=UUID.randomUUID();actors.add(a); com.dwinovo.numen.Constants.Log.entries.clear();
                     TaskResultPayload.handle(new TaskResultPayload(a,"ordinary-wire-id","signed-ticket-secret"));
                     return Map.of("log",com.dwinovo.numen.Constants.Log.entries.toString());
+                  }
+                  public static Map<String,Object> dispatcherBatch() {
+                    setup();UUID a=UUID.randomUUID();actors.add(a);List<String> results=new ArrayList<>();
+                    ToolDispatcher dispatcher=new ToolDispatcher(a,new ToolDispatcher.Sink(){public void onResult(ToolInvocation i,String s){results.add(i.id()+":"+s);}public void onAllSettled(){}public net.minecraft.client.player.AbstractClientPlayer entity(){return null;}});
+                    dispatcher.dispatch(List.of(new ToolInvocation("same","rdd_report_yield","{}")),Set.of("rdd_report_yield"),"host-old");
+                    dispatcher.dispatch(List.of(new ToolInvocation("same","rdd_report_yield","{}")),Set.of("rdd_report_yield"),"host-new");
+                    var first=sends().get(0);reply(first,"ok-old");var second=sends().get(1);reply(second,"ok-new");
+                    return Map.of("first",first.argumentsJson(),"second",second.argumentsJson(),"results",results);
                   }
                   public static Map<String,Object> yieldBatchWire() {
                     setup(); UUID a=UUID.randomUUID();actors.add(a);List<String> responses=new ArrayList<>();
@@ -244,6 +261,10 @@ class ServerToolTransportBindingTest {
     }
     @Test void ticketReplyWithNonInternalIdMustNotLeakToLog() throws Exception {
         assertFalse(run("unclassifiedTicketReply").get("log").toString().contains("signed-ticket-secret"));
+    }
+    @Test void realDispatcherKeepsTicketPerQueuedBatch() throws Exception {
+        var r=run("dispatcherBatch");assertTrue(r.get("first").toString().contains("host-old"));
+        assertTrue(r.get("second").toString().contains("host-new"));assertEquals(List.of("same:ok-old","same:ok-new"),r.get("results"));
     }
     @Test void sameModelIdUsesItsOwnFrozenYieldTicketAndMissingFails() throws Exception {
         var r=run("yieldBatchWire");var packets=(List<?>)r.get("packets");
