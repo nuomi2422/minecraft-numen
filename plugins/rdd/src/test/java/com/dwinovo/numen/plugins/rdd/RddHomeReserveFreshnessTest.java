@@ -157,14 +157,20 @@ class RddHomeReserveFreshnessTest {
     @Test void producerShapedBaseWithoutWorldIdentityIsNotKnownCurrent() {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - MINUTE, fullReserve());
-        assertFalse(RddHomeFacts.reserveKnown(registry, now), "missing world and session cannot prove current reserve");
+        var entry = registry.get("world_base//372/68/715").orElseThrow();
+        var old = entry.observation();
+        Map<String, Object> value = new LinkedHashMap<>(old.value());
+        value.remove("world_id"); value.remove("server_session");
+        registry.apply(new Observation(old.observationId(), old.type(), old.source(), old.environmentId(), old.observedAt(), value),
+                entry.assetId(), AssetScope.GLOBAL, null);
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known(), "missing world and session cannot prove current reserve");
     }
 
     @Test void failedBedRecheckDoesNotTurnOldReserveIntoCurrentEvidence() {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - MINUTE, fullReserve());
         // Real observer returns without writing when inspectBase returns null; the old entry remains.
-        assertFalse(RddHomeFacts.reserveKnown(registry, now), "old entry after missing bed is not current confirmation");
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known(), "old entry after missing bed is not current confirmation");
     }
 
     @Test void explicitlyIdentifiedFreshBaseRemainsKnownPositiveControl() {
