@@ -19,7 +19,7 @@ class ScopedSleepCycleConsumerTest {
         boolean supported();void start(boolean overnight);void observe(long tick,long dayTime,boolean sleeping);
         void evaluate();boolean active();int completed();int resumed();String status();String data();
         void bind();void stale(String kind);void clearOld();void pollOld();void recreate();void clearCurrent();void observeBareWake();
-        boolean hasCycle();void removeCurrent();void removeOld();
+        boolean hasCycle();void removeCurrent();void removeOld();void invalidPoll(String kind);
     }
     @TempDir static Path tmp;static Class<?> host;static URLClassLoader loader;
     static String method(String s,String prefix){int a=s.indexOf(prefix);if(a<0)return "";int b=s.indexOf("\n    }",s.indexOf('{',a));return s.substring(a,b+6);}
@@ -31,16 +31,18 @@ class ScopedSleepCycleConsumerTest {
         String hostSource=Files.readString(production.resolve("SideTaskHost.java"));
         String reader=method(hostSource,"    static com.dwinovo.numen.rdd.side.SleepCycleEvidence readSleepCycle(");
         String cleanup=method(hostSource,"    static void clearTerminalSleepCycle(");
-        if(cleanup.isEmpty()){int a=hostSource.indexOf("            if (\"sleep\".equals(data.get(\"typeId\"))");
-            int b=hostSource.indexOf("            if ((\"side_task_completed\".equals(event)",a);
-            assertTrue(a>=0&&b>a,"SETUP actual terminal cleanup block");
-            cleanup="static void clearTerminalSleepCycle(String event,Map<String,Object> data){"+hostSource.substring(a,b)+"}";}
+        assertFalse(cleanup.isEmpty(),"SETUP actual terminal cleanup method");
+        String plugin=Files.readString(production.resolve("RddPlugin.java"));
+        int removeAt=plugin.indexOf("        numen.on(CompanionEvent.REMOVE, body -> {");
+        int clearAt=plugin.indexOf("            SleepWakeWatcher.clearBody(body);",removeAt);
+        assertTrue(removeAt>=0&&clearAt>removeAt,"SETUP actual REMOVE cleanup statement");
+        String remove=plugin.substring(clearAt,plugin.indexOf('\n',clearAt));
         if(reader.isEmpty())reader="static Object readSleepCycle(NumenPlayer ap,SideTask task){return null;}";
         List<String> args=new ArrayList<>(List.of("-encoding","UTF-8","-proc:none","-classpath",System.getProperty("java.class.path")+File.pathSeparator
             +Path.of(Driver.class.getProtectionDomain().getCodeSource().getLocation().toURI())+File.pathSeparator
             +Path.of(TaskChain.class.getProtectionDomain().getCodeSource().getLocation().toURI())+File.pathSeparator
             +Path.of(Gson.class.getProtectionDomain().getCodeSource().getLocation().toURI()),"-d",tmp.toString()));
-        source(args,"com.dwinovo.numen.plugins.rdd.SleepCycleHost",hostCode.replace("// @HOST_READ@",reader).replace("// @TERMINAL_CLEAR@",cleanup));
+        source(args,"com.dwinovo.numen.plugins.rdd.SleepCycleHost",hostCode.replace("// @HOST_READ@",reader).replace("// @TERMINAL_CLEAR@",cleanup).replace("// @REMOVE_CLEAR@",remove));
         args.add(production.resolve("SleepWakeWatcher.java").toString());
         source(args,"net.minecraft.server.level.ServerPlayer","package net.minecraft.server.level; public class ServerPlayer {}");
         source(args,"net.minecraft.server.MinecraftServer","""
@@ -53,8 +55,8 @@ class ScopedSleepCycleConsumerTest {
         source(args,"com.dwinovo.numen.api.WorldContextStamp","""
             package com.dwinovo.numen.api;import java.util.*;import net.minecraft.server.MinecraftServer;
             public class WorldContextStamp{public record Token(Map<String,String> identity,long epoch){}
-                public static Token token=new Token(Map.of("world_id","fixture-world","server_session","one"),1);
-                public static Token capture(MinecraftServer server){return token;}}
+                public static Token token=new Token(Map.of("world_id","fixture-world","server_session","one"),1);public static boolean fail;
+                public static Token capture(MinecraftServer server){if(fail)throw new IllegalStateException("fixture unavailable");return token;}}
             """);
         source(args,"com.dwinovo.numen.entity.NumenPlayer",Files.readString(root.resolve("plugins/rdd/src/test/resources/sleep-cycle/SleepCyclePlayer.java.in")));
         var compiler=ToolProvider.getSystemJavaCompiler();assertNotNull(compiler);
@@ -72,7 +74,8 @@ class ScopedSleepCycleConsumerTest {
     @Test void actualNightEntryThenDayWakeCompletesExactlyTheSameOwner()throws Exception{
         Driver f=fixture();supported(f);f.start(true);f.observe(13000,13000,false);f.evaluate();
         f.observe(13001,13001,true);assertEquals("OBSERVED_SLEEP",f.status());f.evaluate();assertTrue(f.active());assertEquals(0,f.completed());
-        f.observe(13002,24000,false);f.evaluate();assertFalse(f.active());assertEquals(1,f.completed());assertEquals(1,f.resumed());
+        for(long tick=13002;tick<13020;tick++)f.observe(tick,13000+(tick-13000),true);
+        f.observe(13020,24000,false);f.evaluate();assertFalse(f.active());assertEquals(1,f.completed());assertEquals(1,f.resumed());
         assertTrue(f.data().contains("13001"));assertTrue(f.data().contains("24000"));f.evaluate();assertEquals(1,f.completed());
     }
     @Test void bindingAndBareWakeDoNotFinishExplicitOvernightButLegacyBindingStillWorks()throws Exception{
@@ -91,7 +94,7 @@ class ScopedSleepCycleConsumerTest {
     @Test void stalePendingDuplicateReadAndLateCleanupCannotCompleteOrClearANewOwner()throws Exception{
         Driver f=fixture();supported(f);f.start(true);f.observe(13000,13000,false);f.observe(13001,13001,true);f.observe(13002,24000,false);
         assertEquals("DAYBREAK",f.status());assertEquals("UNKNOWN",f.status(),"terminal evidence consumed at most once");
-        f.recreate();f.clearOld();f.observe(13003,37000,false);f.observe(13004,37001,true);f.observe(13005,48000,false);f.evaluate();assertEquals(1,f.completed());
+        f.recreate();f.observe(13003,37000,false);f.observe(13004,37001,true);f.clearOld();f.observe(13005,48000,false);f.evaluate();assertEquals(1,f.completed());
     }
     @Test void staleOwnerPollCannotEraseANewerCycleOnTheSameBody()throws Exception{
         Driver f=fixture();supported(f);f.start(true);f.observe(13000,13000,false);f.recreate();
@@ -104,6 +107,15 @@ class ScopedSleepCycleConsumerTest {
         f=fixture();f.start(true);f.observe(13000,13000,false);f.observe(13001,13001,true);f.stale("body");
         f.observe(13002,13002,false);f.observe(13003,13003,true);f.removeOld();assertTrue(f.hasCycle());
         f.observe(13004,24000,false);f.evaluate();assertEquals(1,f.completed());assertFalse(f.hasCycle(),"production terminal cleanup releases consumed cycle");
+    }
+    @Test void transientPollScopeChangesAndReadFailureInvalidateTheCapturedTrue()throws Exception{
+        for(String kind:List.of("world","throw")){
+            Driver f=fixture();supported(f);f.start(true);f.observe(13000,13000,false);f.observe(13001,13001,true);
+            f.invalidPoll(kind);assertFalse(f.hasCycle(),kind);
+            f.observe(13002,24000,false);f.evaluate();assertEquals(0,f.completed(),kind);
+            f.observe(13003,37000,false);f.observe(13004,37001,true);f.observe(13005,48000,false);f.evaluate();
+            assertEquals(1,f.completed(),"fresh observed cycle may continue after unavailable evidence: "+kind);
+        }
     }
     @Test void interruptedAndExpiredCyclesNeverEmitSuccessfulOvernight()throws Exception{
         Driver f=fixture();supported(f);f.start(true);f.observe(13000,13000,false);f.observe(13001,13001,true);f.observe(13002,13002,false);f.evaluate();assertEquals(0,f.completed());

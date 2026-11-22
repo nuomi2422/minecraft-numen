@@ -910,15 +910,19 @@ final class SideTaskHost {
 
     // ---- 事件 + 落盘 ----
 
+    static void clearTerminalSleepCycle(String event, Map<String, Object> data) {
+        if ("sleep".equals(data.get("typeId")) && ("side_task_completed".equals(event)
+                || "side_task_skipped".equals(event) || "side_task_cancelled".equals(event)
+                || "side_task_declined".equals(event))) {
+            UUID id = UUID.fromString(String.valueOf(data.get("companionId")));
+            SleepWakeWatcher.clear(id, String.valueOf(data.get("instanceId")),
+                ((Number)data.get("generation")).longValue(), RddCompanionBody.get(id));
+        }
+    }
+
     private static void publish(String event, Map<String, Object> data) {
         try {
-            if ("sleep".equals(data.get("typeId")) && ("side_task_completed".equals(event)
-                    || "side_task_skipped".equals(event) || "side_task_cancelled".equals(event)
-                    || "side_task_declined".equals(event))) {
-                UUID id = UUID.fromString(String.valueOf(data.get("companionId")));
-                SleepWakeWatcher.clear(id, String.valueOf(data.get("instanceId")),
-                        ((Number)data.get("generation")).longValue(), RddCompanionBody.get(id));
-            }
+            clearTerminalSleepCycle(event, data);
             if (("side_task_completed".equals(event) || "side_task_skipped".equals(event)
                     || "side_task_cancelled".equals(event) || "side_task_declined".equals(event))
                     && DeathRecoverySideTaskTrigger.TYPE_ID.equals(String.valueOf(data.get("typeId")))) {

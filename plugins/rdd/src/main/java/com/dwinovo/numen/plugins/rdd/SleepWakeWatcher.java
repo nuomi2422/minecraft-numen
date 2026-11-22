@@ -97,16 +97,22 @@ final class SleepWakeWatcher {
     }
     private static void sampleCycle(NumenPlayer body, net.minecraft.server.MinecraftServer server) {
         UUID id = body.getUUID();
+        Cycle captured = CYCLES.get(id);
+        long capturedSequence = captured == null ? -1 : captured.sequence;
         try {
             var owner = SideTaskHost.activeSleepOwner(id);
             CycleScope scope = scope(body, owner);
-            if (scope == null || scope.server() != server) { clearBody(body); return; }
+            if (scope == null || scope.server() != server) {
+                if (captured != null && captured.scope.body() == body) invalidate(id, captured, capturedSequence);
+                return;
+            }
             long tick = body.level().getGameTime(), day = body.level().getDayTime();
             boolean sleeping = body.isSleeping();
             Cycle cycle = CYCLES.get(id);
             if (cycle == null || !cycle.scope.equals(scope) || tick < cycle.lastTick
                     || tick - cycle.lastTick > 2 || day < cycle.lastDayTime) {
-                CYCLES.put(id, new Cycle(scope, sleeping, tick, day));
+                var replacement = new Cycle(scope, sleeping, tick, day);
+                if (cycle == null) CYCLES.putIfAbsent(id, replacement); else CYCLES.replace(id, cycle, replacement);
                 return; // First observation (even true) cannot establish a start.
             }
             if (tick == cycle.lastTick) return;
@@ -126,7 +132,9 @@ final class SleepWakeWatcher {
             cycle.sleeping = sleeping;
             cycle.lastTick = tick;
             cycle.lastDayTime = day;
-        } catch (RuntimeException unavailable) { clearBody(body); }
+        } catch (RuntimeException unavailable) {
+            if (captured != null && captured.scope.body() == body) invalidate(id, captured, capturedSequence);
+        }
     }
     private static com.dwinovo.numen.rdd.side.SleepCycleEvidence evidence(Cycle cycle,
             com.dwinovo.numen.rdd.side.SleepCycleEvidence.Status status, long tick, long day) {
@@ -137,19 +145,42 @@ final class SleepWakeWatcher {
     }
     static com.dwinovo.numen.rdd.side.SleepCycleEvidence poll(NumenPlayer body, com.dwinovo.numen.rdd.side.SideTask expected) {
         var unknown = com.dwinovo.numen.rdd.side.SleepCycleEvidence.UNKNOWN;
-        CycleScope scope = scope(body, expected);
-        if (scope == null) { if (body != null) clearBody(body); return unknown; }
-        Cycle cycle = CYCLES.get(body.getUUID());
-        if (cycle == null || !cycle.scope.equals(scope)) return unknown;
-        long tick = body.level().getGameTime();
-        if (tick < cycle.lastTick || tick - cycle.lastTick > 2) { CYCLES.remove(body.getUUID(), cycle); return unknown; }
-        if (cycle.terminal != null) {
-            var result = cycle.terminal; cycle.terminal = null;
-            return result.matches(expected) ? result : unknown;
+        if (body == null || expected == null || !body.getUUID().equals(expected.companionId())) return unknown;
+        UUID id = body.getUUID();
+        Cycle cycle = CYCLES.get(id);
+        long sequence = cycle == null ? -1 : cycle.sequence;
+        // A stale reader has no cleanup authority over the current owner's state.
+        if (cycle == null || cycle.scope.body() != body
+                || !cycle.scope.instanceId().equals(expected.instanceId())
+                || cycle.scope.generation() != expected.generation()) return unknown;
+        try {
+            var owner = SideTaskHost.activeSleepOwner(id);
+            if (owner == null || !owner.instanceId().equals(expected.instanceId())
+                    || owner.generation() != expected.generation()) return unknown;
+            CycleScope current = scope(body, expected);
+            long tick = body.level().getGameTime();
+            long day = body.level().getDayTime();
+            if (current == null || !cycle.scope.equals(current) || tick < cycle.lastTick
+                    || tick - cycle.lastTick > 2 || day < cycle.lastDayTime) {
+                invalidate(id, cycle, sequence);
+                return unknown;
+            }
+            if (CYCLES.get(id) != cycle || cycle.sequence != sequence) return unknown;
+            if (cycle.terminal != null) {
+                var result = cycle.terminal; cycle.terminal = null;
+                return result.matches(expected) ? result : unknown;
+            }
+            return cycle.sleeping && cycle.startedTick >= 0
+                    ? evidence(cycle, com.dwinovo.numen.rdd.side.SleepCycleEvidence.Status.OBSERVED_SLEEP, tick, day)
+                    : unknown;
+        } catch (RuntimeException unavailable) {
+            invalidate(id, cycle, sequence);
+            return unknown;
         }
-        return cycle.sleeping && cycle.startedTick >= 0
-                ? evidence(cycle, com.dwinovo.numen.rdd.side.SleepCycleEvidence.Status.OBSERVED_SLEEP,
-                        tick, body.level().getDayTime()) : unknown;
+    }
+    private static void invalidate(UUID id, Cycle captured, long sequence) {
+        if (captured == null) return;
+        CYCLES.computeIfPresent(id, (key, current) -> current == captured && current.sequence == sequence ? null : current);
     }
     /** Exact scope cleanup: late old-owner/body cleanup never clears a newer cycle. */
     static void clear(NumenPlayer body, com.dwinovo.numen.rdd.side.SideTask expected) {
@@ -159,12 +190,12 @@ final class SleepWakeWatcher {
     static void clear(UUID id, String instance, long generation, NumenPlayer body) {
         Cycle cycle = CYCLES.get(id);
         if (cycle != null && cycle.scope.body() == body && cycle.scope.instanceId().equals(instance)
-                && cycle.scope.generation() == generation) CYCLES.remove(id, cycle);
+                && cycle.scope.generation() == generation) invalidate(id, cycle, cycle.sequence);
     }
     static void clearBody(NumenPlayer body) {
         if (body == null) return;
         Cycle cycle = CYCLES.get(body.getUUID());
-        if (cycle != null && cycle.scope.body() == body) CYCLES.remove(body.getUUID(), cycle);
+        if (cycle != null && cycle.scope.body() == body) invalidate(body.getUUID(), cycle, cycle.sequence);
     }
 
     static void clearAll() {
