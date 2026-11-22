@@ -20,7 +20,7 @@ public class StageBAssetHost implements Driver {
     final MinecraftServer mc=new MinecraftServer();NumenPlayer body=new NumenPlayer(mc);TaskChain liveChain;RddRuntime runtime;String mutateOnRead;NumenPlayer removedBody;
     final RddCallbackGuard callbacks=new RddCallbackGuard();
     TaskChain chain=new TaskChain(new Goal("g","fixture",List.of(new PrimaryGoal("p","fixture",List.of(Subtask.hardCoded("s","fixture",Map.of("minimum",1)))))));
-    final List<List<ConvoState.Msg>> requests=new ArrayList<>();final ArrayDeque<Runnable> server=new ArrayDeque<>();
+    final List<List<ConvoState.Msg>> requests=new ArrayList<>();final ArrayDeque<Runnable> client=new ArrayDeque<>();boolean queueClient;
     CompletableFuture<Reply> pending;List<String> tools=List.of();List<SubtaskSpec> specs=List.of();
     int readCount,done,budget=2;boolean current=true;String system;
     public StageBAssetHost(){live=this;System.setProperty("stageb.fixture.id",id.toString());liveChain=chain;runtime=new RddRuntime(chain,registry);RddPlugin.CALLBACKS=callbacks;ServerLifecycleHooks.current=mc;
@@ -30,6 +30,7 @@ public class StageBAssetHost implements Driver {
     public void start(){mc.same=true;RddDecomposer.decomposeSpecsWithHint(id,chain,chain.planRevision(),"bread",0,List.of(),"",s->{done++;specs=s;});mc.same=false;}
     public void startLazy(){chain=new TaskChain(new Goal("lazy","bread",List.of(PrimaryGoal.unexpanded("p","bread",List.of()))));liveChain=chain;runtime=new RddRuntime(chain,registry);
         mc.same=true;RddGoalDriver.needExpansion(id);mc.same=false;}
+    public void startLazyQueued(){queueClient=true;startLazy();}
     public void removeAndRespawn(){removedBody=body;removedBody.removed=true;notifyRemoved(removedBody);body=new NumenPlayer(mc);}
     public void lateRemove(){notifyRemoved(removedBody);}
     private void notifyRemoved(NumenPlayer removed){try{var m=RddGoalDriver.class.getDeclaredMethod("bodyRemoved",NumenPlayer.class);m.setAccessible(true);m.invoke(null,removed);}
@@ -51,7 +52,7 @@ public class StageBAssetHost implements Driver {
         case "world" -> WorldContextStamp.token=new WorldContextStamp.Token(Map.of("world_id","other","server_session","two"),2);
         case "registry" -> registry=new AssetRegistry();case "death" -> body.alive=false;default -> throw new AssertionError(kind);}}
     public void budget(int allowed){budget=allowed;}
-    public void drain(){mc.same=true;while(!mc.queue.isEmpty())mc.queue.remove().run();mc.same=false;}
+    public void drain(){mc.same=true;while(!mc.queue.isEmpty()||!client.isEmpty()){while(!client.isEmpty())client.remove().run();while(!mc.queue.isEmpty())mc.queue.remove().run();}mc.same=false;}
 }
 record Reply(AssistantTurn turn) {}
 class RddDecomposer {
@@ -59,7 +60,7 @@ class RddDecomposer {
     static String situationBlock(UUID id){return "facts";}
     static <T> void withPlannerEndpoint(UUID id,String stage,Function<LlmEndpoint,CompletableFuture<T>> send,Consumer<T> done,Runnable fail){
         RddPlannerTransport.withPlannerEndpoint(id,stage,owner->{if(!owner.equals(StageBAssetHost.live.id))throw new AssertionError("wrong endpoint owner");return CompletableFuture.completedFuture(new LlmEndpoint("fixture","fixture-model","fixture-key","http://invalid.test",null,"auto"));},
-            Runnable::run,()->WorldContextStamp.token.epoch(),(phase,estimate)->StageBAssetHost.live.budget-->0,send,done,fail);}
+            action->{if(StageBAssetHost.live.queueClient)StageBAssetHost.live.client.add(action);else action.run();},()->WorldContextStamp.token.epoch(),(phase,estimate)->StageBAssetHost.live.budget-->0,send,done,fail);}
     static void dispatchStageB(UUID id,String theme,TaskChain owner,long revision,int attempt,List<String> completed,String hint,
         PlanningAssetSnapshot snapshot,List<String> failures,Object knowledge,Supplier<TaskChain> current,Consumer<String> send){send.accept("bounded catalog base; "+theme);}
     static List<SubtaskSpec> stageBPublished(RddStageBSpecParser.Parsed parsed,RddPlanGuard.Filtered guarded,String theme){return guarded.allowed();}

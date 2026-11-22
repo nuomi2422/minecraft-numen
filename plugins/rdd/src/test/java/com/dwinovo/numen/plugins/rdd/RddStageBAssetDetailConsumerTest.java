@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * A controlled model asks for detail, then produces the real parsed specification. Not live LLM/MC. */
 class RddStageBAssetDetailConsumerTest {
     public interface Driver {
-        void start(); void respond(String name,String id,String args); void respondMultiple(); void addLarge(); void staleAfterRead(String kind); void startLazy(); void removeAndRespawn(); boolean inFlight(); void retryLazy(); void lateRemove();
+        void start(); void respond(String name,String id,String args); void respondMultiple(); void addLarge(); void staleAfterRead(String kind); void startLazy(); void startLazyQueued(); void removeAndRespawn(); boolean inFlight(); void retryLazy(); void lateRemove();
         int requests(); int reads(); int completions(); List<?> specs(); List<ConvoState.Msg> messages();
         List<String> offered(); String system(); void stale(String kind); void budget(int allowed); void drain();
     }
@@ -157,7 +157,7 @@ class RddStageBAssetDetailConsumerTest {
         assertEquals(0,f.completions());
     }
     @Test void removingBeforeTheFirstModelSendDoesNotLeaveAnUnfinishedWaiter()throws Exception {
-        Driver f=fixture();f.startLazy();f.removeAndRespawn();f.drain();
+        Driver f=fixture();f.startLazyQueued();f.removeAndRespawn();f.drain();
         assertEquals(0,f.requests());assertFalse(f.inFlight());
         f.retryLazy();f.drain();assertEquals(1,f.requests());assertTrue(f.inFlight());
     }

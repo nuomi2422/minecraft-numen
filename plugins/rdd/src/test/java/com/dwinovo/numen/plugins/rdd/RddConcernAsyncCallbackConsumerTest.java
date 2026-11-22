@@ -76,7 +76,7 @@ public class RddConcernAsyncCallbackConsumerTest {
                 .replace("// @REQUEST@", request)
                 .replace("// @REVISION@", method(plugin,"    private static int nextPlanRevision(")
                         + "\n" + methods(plugin,"    private static RddCallbackGuard.Ticket replacePlanningTicket("))
-                .replace("// @ON_SERVER@", method(plugin,"    static void onServer(MinecraftServer server,"))
+                .replace("// @ON_SERVER@", methods(plugin,"    static void onServer(MinecraftServer server,"))
                 .replace("// @ACCEPT_PLAN@", method(source(src,"RddGoalDriver"),"    static void acceptPlan(PrimaryGoal owner,"));
         List<String> javac = new ArrayList<>(List.of("-encoding", "UTF-8", "-proc:none", "-classpath",
                 location(TaskChain.class) + File.pathSeparator + location(Gson.class) + File.pathSeparator
