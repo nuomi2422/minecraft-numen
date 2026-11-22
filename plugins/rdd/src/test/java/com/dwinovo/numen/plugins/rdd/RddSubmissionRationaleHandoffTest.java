@@ -60,6 +60,7 @@ class RddSubmissionRationaleHandoffTest {
         }
         assertAll(
                 () -> assertTrue(sent.get(0).contains("手上：未观测"), sent.get(0)),
+                () -> assertFalse(sent.get(0).contains("按空背包规划"), sent.get(0)),
                 () -> assertTrue(sent.get(1).contains("手上：空"), sent.get(1)),
                 () -> assertTrue(sent.get(2).contains("bread×2"), sent.get(2)));
     }
