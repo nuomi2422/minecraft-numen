@@ -12,7 +12,7 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Exact tool call/schema methods -> actual autoMine methods -> entire production record.
- * Gson parsing replaces ToolArgs coercion (array inputs only); MC registry, ctx and dispatch are ports.
+ * Entire production ToolArgs handles coercion; MC registry, ctx and dispatch are ports.
  * This does not prove schema delivery, model adoption, route confinement or actual game execution. */
 class MinePublicTargetBoundsConsumerTest {
     @TempDir static Path temp;static URLClassLoader loader;static Class<?> fixture;
@@ -34,6 +34,15 @@ class MinePublicTargetBoundsConsumerTest {
         Path src=temp.resolve("src"),out=temp.resolve("classes");Files.createDirectories(out);List<String> args=new ArrayList<>(List.of("-encoding","UTF-8","-proc:none","-d",out.toString()));
         add(src,args,"fixture/PublicMine.java",BOUNDARIES.replace("TOOL_METHODS",methods).replace("OPS_METHODS",ops));add(src,args,"fixture/MineBlockTaskRecord.java",record);
         add(src,args,"fixture/Schema.java",Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/agent/tool/Schema.java")).replace("package com.dwinovo.numen.agent.tool;","package fixture;"));
+        String toolArgs=Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/agent/tool/ToolArgs.java"))
+            .replace("package com.dwinovo.numen.agent.tool;","package fixture;")
+            .replace("import net.minecraft.core.BlockPos;", "")
+            .replace("import net.minecraft.core.registries.BuiltInRegistries;", "")
+            .replace("import net.minecraft.resources.ResourceLocation;", "")
+            .replace("import net.minecraft.world.item.Item;", "")
+            .replace("import net.minecraft.world.item.Items;", "");
+        add(src,args,"fixture/ToolArgs.java",toolArgs);
+        add(src,args,"fixture/Item.java","package fixture; class Item {} class Items {static final Item AIR=new Item();} class ResourceLocation {static ResourceLocation tryParse(String s){throw new AssertionError(\"unused registry boundary\");}} class BuiltInRegistries {static final Registry ITEM=new Registry();static class Registry {Item get(ResourceLocation r){throw new AssertionError(\"unused registry boundary\");}boolean containsKey(ResourceLocation r){throw new AssertionError(\"unused registry boundary\");}}}");
         URL gson=com.google.gson.Gson.class.getProtectionDomain().getCodeSource().getLocation();args.addAll(List.of("-classpath",Path.of(gson.toURI()).toString()));
         ByteArrayOutputStream errors=new ByteArrayOutputStream();assertEquals(0,ToolProvider.getSystemJavaCompiler().run(null,errors,errors,args.toArray(String[]::new)),"SETUP: "+errors);
         loader=new URLClassLoader(new URL[]{out.toUri().toURL(),gson},ClassLoader.getPlatformClassLoader());fixture=loader.loadClass("fixture.PublicMine");
@@ -42,6 +51,9 @@ class MinePublicTargetBoundsConsumerTest {
     @AfterAll static void close()throws Exception{if(loader!=null)loader.close();}
     @SuppressWarnings("unchecked") static Map<String,Object> run(String bounds)throws Exception{return (Map<String,Object>)fixture.getMethod("run",String.class).invoke(null,bounds);}
     @Test void validTargetBoundsReachActualCreatedRecord()throws Exception{var r=run("valid");assertEquals(1,r.get("dispatch"));assertEquals(true,r.get("inside"));assertEquals(false,r.get("outside"));assertEquals(4,r.get("count"));}
+    @ParameterizedTest @ValueSource(strings={"scalar","encodedArray"})
+    void realToolArgsCoercionPreservesBoundsAndCallerInput(String s)throws Exception{var r=run(s);assertEquals(1,r.get("dispatch"));assertEquals(false,r.get("outside"));assertEquals(true,r.get("callerUnchanged"));}
+    @Test void malformedScalarContainerFailsWithoutDispatch()throws Exception{var r=run("badScalar");assertEquals(0,r.get("dispatch"));assertFalse(((String)r.get("error")).isBlank());}
     @Test void legacyInputKeepsUnboundedTask()throws Exception{var r=run("absent");assertEquals(1,r.get("dispatch"));assertEquals(true,r.get("outside"));}
     @Test void nullBoundsKeepUnboundedTask()throws Exception{var r=run("null");assertEquals(1,r.get("dispatch"));assertEquals(true,r.get("outside"));}
     @Test void publishedSchemaDescribesOptionalOreBounds()throws Exception{var r=run("valid");assertEquals(true,r.get("schemaBounds"));assertEquals(false,r.get("schemaRequired"));}
@@ -65,7 +77,6 @@ class MinePublicTargetBoundsConsumerTest {
         public class PublicMine{
             static class Level{int minY=-64,maxY=320;boolean isInWorldBounds(BlockPos p){return p.x()>=-30000000&&p.x()<30000000&&p.z()>=-30000000&&p.z()<30000000&&p.y()>=minY&&p.y()<maxY;}}
             static class NumenPlayer{Level level=new Level();Level level(){return level;}}
-            static class ToolArgs{static <T>T fromJson(JsonObject a,Class<T> t){return new Gson().fromJson(a,t);}}
             BlockActionOps impl=new BlockActionOps();MineBlockTaskRecord captured;int dispatch;
             ToolContext ctx(String id,NumenPlayer p){return new ToolContext();}
             void setTask(NumenPlayer p,TaskRecord r,JsonObject args,Consumer<String> reply){dispatch++;captured=(MineBlockTaskRecord)r;}
@@ -92,16 +103,20 @@ class MinePublicTargetBoundsConsumerTest {
                     case "extra" -> bounds.addProperty("radius",3);
                     case "memberNull" -> bounds.add("x1",JsonNull.INSTANCE);
                     case "heightEdges" -> {bounds.addProperty("y1",-64);bounds.addProperty("y2",319);}
+                    case "scalar" -> a.addProperty("block_ids","minecraft:iron_ore");
+                    case "encodedArray" -> a.addProperty("block_ids",ids.toString());
+                    case "badScalar" -> a.addProperty("block_ids","[not-closed");
                     case "array","valid","mutation" -> {}
                     default -> throw new IllegalArgumentException(scenario);
                 }
                 if(!scenario.equals("absent")&&!scenario.equals("null"))a.add("target_bounds",scenario.equals("array")?new JsonArray():bounds);
+                String callerBefore=a.toString();
                 PublicMine tool=new PublicMine();NumenPlayer player=new NumenPlayer();if(scenario.equals("shortDimension")){player.level.minY=0;player.level.maxY=128;}String error="";try{tool.onServerCall("call",a,player,s->{});}catch(IllegalArgumentException e){error=e.getMessage();}
                 if(scenario.equals("mutation")){bounds.addProperty("x2",100);bounds.addProperty("y2",100);bounds.addProperty("z2",100);}
                 Map<String,Object> schema=tool.parameterSchema();Map<?,?> properties=(Map<?,?>)schema.get("properties");
                 return Map.of("dispatch",tool.dispatch,"inside",tool.captured!=null&&tool.captured.containsTarget(new BlockPos(1,1,1)),
                     "outside",tool.captured!=null&&tool.captured.containsTarget(new BlockPos(9,9,9)),"count",tool.captured==null?0:tool.captured.count,"error",error,
-                    "schemaBounds",properties.containsKey("target_bounds"),"schemaRequired",((List<?>)schema.get("required")).contains("target_bounds"));
+                    "callerUnchanged",callerBefore.equals(a.toString()),"schemaBounds",properties.containsKey("target_bounds"),"schemaRequired",((List<?>)schema.get("required")).contains("target_bounds"));
             }
         }
         """;
