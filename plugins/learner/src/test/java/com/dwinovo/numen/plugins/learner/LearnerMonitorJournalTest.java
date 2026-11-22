@@ -317,7 +317,7 @@ class LearnerMonitorJournalTest {
         } finally { com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.resetForTest(); }
     }
 
-    @Test void reusedInMemoryTrialWithoutPersistedRecordIsUnknownNotSuccess(@TempDir Path dir) throws Exception {
+    @Test void failedRegistrationPublishesNoMemoryOrDiskEntryAndCannotBePromoted(@TempDir Path dir) throws Exception {
         try (Fixture f = new Fixture(dir)) {
             var registry = com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.registryFor(dir);
             String body = "valid but registration cannot persist";
@@ -328,7 +328,13 @@ class LearnerMonitorJournalTest {
                     com.dwinovo.numen.plugins.learner.contract.ArtifactKind.EXPERIENCE,
                     "unpersisted", "purpose", body, List.of("night"), List.of(), List.of(), "LOW",
                     List.of(), List.of("memo"), "PLANNER");
-            assertEquals("TRIAL", registry.register(artifact, "unpersisted", ref, true).entry().status().name());
+            var before = registry.declarationSnapshot();
+            var registration = registry.register(artifact, "unpersisted", ref, true);
+            assertEquals(com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.CONFLICT, registration.outcome());
+            assertFalse(registration.stored());
+            assertNull(registration.entry(), "failed initial registration cannot publish an uncommitted entry");
+            assertTrue(registry.get("unpersisted").isEmpty());
+            assertSame(before, registry.declarationSnapshot(), "failed write cannot publish a new revision");
             assertTrue(com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(dir.resolve("skills.jsonl"))
                     .get("unpersisted").isEmpty(), "fault injection must leave disk without entry");
             JsonObject args = new JsonObject(); args.addProperty("action", "promote");
@@ -336,7 +342,11 @@ class LearnerMonitorJournalTest {
             AtomicReference<String> response = new AtomicReference<>();
             new LearnerAdminTool().onServerCall("admin-call", args, null, response::set);
             assertFalse(JsonParser.parseString(response.get()).getAsJsonObject().get("success").getAsBoolean(),
-                    "REUSE of memory-only entry cannot claim persistent success");
+                    "a failed registration cannot be promoted as if it existed");
+            assertTrue(registry.get("unpersisted").isEmpty());
+            f.barrier();
+            Path journal = dir.resolve("monitor/learner.jsonl");
+            if (Files.exists(journal)) assertTrue(Files.readAllLines(journal).stream().noneMatch(s -> s.contains("learner_promoted")));
         } finally { com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.resetForTest(); }
     }
 
