@@ -104,17 +104,24 @@ public final class FocusPinStore {
         if(list.isEmpty()) pins.remove(c);
     }
     /** Bounded round robin; returns subjects examined, not pins removed. No thread is started. */
-    public synchronized int sweepBatch(long now, int maxSubjects) {
+    public synchronized int sweepBatch(long now, int maxSubjects) { return sweepBatchStats(now,maxSubjects).checked(); }
+    public record SweepStats(int checked,int removed) {}
+    public synchronized SweepStats sweepBatchStats(long now, int maxSubjects) {
+        int removed = 0;
         int count = Math.min(Math.max(0, maxSubjects), pins.size());
         for (int i=0; i<count; i++) {
             UUID subject = pins.keySet().iterator().next();
+            int before = pins.get(subject).size();
             pruneExpired(subject, now);
             List<FocusPin> remaining = pins.remove(subject);
+            removed += before - (remaining == null ? 0 : remaining.size());
             if (remaining != null) pins.put(subject, remaining);
         }
-        return count;
+        return new SweepStats(count,removed);
     }
-    /** Stop only this store instance; all in-memory focus holders are invalidated. */
+    /** Counts and clears atomically without pruning or identifying subjects. */
+    public record ClearStats(int subjectsBefore,int pinsBefore,int subjectsAfter,int pinsAfter) {}
+    public synchronized ClearStats clearWithStats() { int subjects=pins.size(), count=holders.size(); pins.clear(); holders.clear(); return new ClearStats(subjects,count,pins.size(),holders.size()); }
     public synchronized void clear() { pins.clear(); holders.clear(); }
     /** Legacy full scan; callers needing bounded work use sweepBatch. */
     public synchronized void sweepExpired(long now) {
