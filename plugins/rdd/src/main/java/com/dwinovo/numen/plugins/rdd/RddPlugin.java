@@ -146,7 +146,9 @@ public final class RddPlugin implements NumenPlugin {
     /** 内存资产历史（uuid→history）；磁盘为真身，清世界状态只清内存。 */
     private static final Map<UUID, AssetHistory> HISTORY = new ConcurrentHashMap<>();
 
-    record BodyState(String subtaskId, int submitCount) {}
+    record BodyState(String subtaskId, int submitCount, Object yieldBinding, String yieldResult) {
+        BodyState(String subtaskId, int submitCount) { this(subtaskId, submitCount, null, ""); }
+    }
 
     /**
      * F4a：判定「同一点连死」的窗口与半径。
@@ -2661,6 +2663,11 @@ private static String safeDeathAttacker(NumenPlayer body) {
         if (companionId != null && subtaskId != null) {
             BODY.put(companionId, new BodyState(subtaskId, submitCount));
         }
+    }
+
+    static void rememberYieldBody(UUID companionId, String subtaskId, Object binding, String result) {
+        if (companionId != null && subtaskId != null)
+            BODY.put(companionId, new BodyState(subtaskId, 1, binding, result == null ? "UNKNOWN" : result));
     }
 
     public static void clearBody(UUID companionId) {
