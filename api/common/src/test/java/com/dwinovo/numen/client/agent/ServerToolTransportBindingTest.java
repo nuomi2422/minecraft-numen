@@ -44,8 +44,12 @@ class ServerToolTransportBindingTest {
             String pkg = source.substring(source.indexOf("package ")+8, source.indexOf(';')).trim();
             sources.put(pkg+"."+Path.of(relative).getFileName().toString().replace(".java",""), source);
         }
+        String resultSource=Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/network/payload/TaskResultPayload.java"));
+        int start=resultSource.indexOf("    public static void handle(TaskResultPayload p) {");
+        int end=resultSource.indexOf("\n    private static String truncate",start); assertTrue(start>=0 && end>start);
+        sources.put("com.dwinovo.numen.network.payload.TaskResultPayload","package com.dwinovo.numen.network.payload; import java.util.*; import com.dwinovo.numen.Constants; import com.dwinovo.numen.agent.tool.ServerToolTransport; public record TaskResultPayload(UUID entityUuid,String toolCallId,String resultJson){"+resultSource.substring(start,end)+" static String truncate(String s,int n){return s;} }");
         sources.put("com.dwinovo.numen.Constants",
-                "package com.dwinovo.numen; public class Constants {public static final Log LOG=new Log(); public static class Log {public void debug(String s,Object...a){}}}");
+                "package com.dwinovo.numen; public class Constants {public static final Log LOG=new Log(); public static class Log {public static final java.util.List<String> entries=new java.util.ArrayList<>(); public void debug(String s,Object...a){entries.add(java.util.Arrays.toString(a));}}}");
         sources.put("com.dwinovo.numen.agent.tool.NumenTool",
                 "package com.dwinovo.numen.agent.tool; public interface NumenTool {String name(); default void invoke(ToolCall c){ServerToolTransport.ship(c);}}");
         sources.put("com.google.gson.JsonElement",
@@ -114,16 +118,17 @@ class ServerToolTransportBindingTest {
                     setup(); UUID a=UUID.randomUUID(), b=UUID.randomUUID(); actors.add(a); actors.add(b);
                     List<String> received=new ArrayList<>();
                     String id=ServerToolTransport.requestYieldTicket(a,received::add);
-                    boolean wrong=ServerToolTransport.deliverInternalTicket(b,id,"secret-wrong");
-                    boolean good=ServerToolTransport.deliverInternalTicket(a,id,"secret-good");
-                    boolean late=ServerToolTransport.deliverInternalTicket(a,id,"secret-late");
+                    com.dwinovo.numen.Constants.Log.entries.clear();
+                    TaskResultPayload.handle(new TaskResultPayload(b,id,"secret-wrong")); boolean wrong=received.isEmpty();
+                    TaskResultPayload.handle(new TaskResultPayload(a,id,"secret-good")); boolean good=received.equals(List.of("secret-good"));
+                    TaskResultPayload.handle(new TaskResultPayload(a,id,"secret-late")); boolean late=received.size()==1;
                     String cancelled=ServerToolTransport.requestYieldTicket(a,received::add);
                     ServerToolTransport.cancelYieldTicket(cancelled);
                     boolean afterCancel=ServerToolTransport.deliverInternalTicket(a,cancelled,"secret-cancel");
                     String logout=ServerToolTransport.requestYieldTicket(a,received::add);
                     ServerToolTransport.forget(a);
                     boolean afterLogout=ServerToolTransport.deliverInternalTicket(a,logout,"secret-logout");
-                    return Map.of("wrong",wrong,"good",good,"late",late,"cancel",afterCancel,"logout",afterLogout,"received",List.copyOf(received),"events",MonitoringJournal.events.size(),"packet",sends().get(0).toolName());
+                    return Map.of("wrong",wrong,"good",good,"late",late,"cancel",afterCancel,"logout",afterLogout,"received",List.copyOf(received),"events",MonitoringJournal.events.size(),"packet",sends().get(0).toolName(),"clientLog",com.dwinovo.numen.Constants.Log.entries.toString());
                   }
                   public static Map<String,Object> ticketCapacityAndExpiry() throws Exception {
                     setup(); UUID actor=UUID.randomUUID(); actors.add(actor); List<String> responses=new ArrayList<>();
@@ -228,6 +233,7 @@ class ServerToolTransportBindingTest {
         assertEquals(List.of("secret-good"),r.get("received"));
         for (String key:List.of("wrong","good","late","cancel","logout")) assertEquals(true,r.get(key));
         assertEquals(0,r.get("events"));assertEquals("_rdd_yield_ticket",r.get("packet"));
+        assertFalse(r.get("clientLog").toString().contains("secret-"));
     }
 
     @Test void originalModelResultIdsSurviveIndependentSameIdNetworkReplies() throws Exception {
