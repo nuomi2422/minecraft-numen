@@ -91,6 +91,17 @@ class TaskChainRaiseMinimumTest {
     }
 
     @Test
+    void yieldRejectsAiAssistedConditionEvenWithMatchingAsset() {
+        var s = new Subtask("s", "s", com.dwinovo.numen.rdd.api.DetectionMode.AI_ASSISTED,
+                Map.of("asset_key", "minecraft:bread", "minimum", 1), 10, 2, false);
+        TaskChain c = new TaskChain(new Goal("g", "g", List.of(new PrimaryGoal("p", "p", List.of(s)))));
+        c.startCurrent(); long before = c.stateVersion();
+        assertThrows(IllegalStateException.class, () -> c.raiseCurrentMinimumForAsset("s", "minecraft:bread", 9));
+        assertEquals(before, c.stateVersion());
+        assertEquals(1, c.currentMinimum("s"));
+    }
+
+    @Test
     void checkedAcquireDoesNotRetakeBaseline() {
         TaskChain c = new TaskChain(new Goal("g", "g", List.of(new PrimaryGoal("p", "p",
                 List.of(Subtask.hardCoded("s", "s", Map.of("asset_key", "minecraft:oak_log", "minimum", 3, "mode", "acquire")))))));

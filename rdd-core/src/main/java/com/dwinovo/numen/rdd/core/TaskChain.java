@@ -1157,6 +1157,8 @@ public final class TaskChain {
         requireCurrent(subtaskId);
         if (currentSubtaskStatus() != SubtaskStatus.RUNNING)
             throw new IllegalStateException("only a RUNNING subtask can report yield");
+        if (currentSubtask().detectionMode() != DetectionMode.HARD_CODED)
+            throw new IllegalStateException("yield adjustment requires a hard-coded inventory condition");
         Map<String, Object> condition = currentSubtask().condition();
         Object asset = condition.get("asset_key");
         Object group = condition.get("group");
