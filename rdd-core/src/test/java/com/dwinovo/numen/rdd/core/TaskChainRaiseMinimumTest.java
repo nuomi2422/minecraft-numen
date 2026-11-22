@@ -91,6 +91,14 @@ class TaskChainRaiseMinimumTest {
     }
 
     @Test
+    void persistedNullConditionFieldIsRejectedByRecordConstructor() {
+        TaskChain c = chain();
+        String json = c.toJson().replace("\"asset_key\":\"minecraft:hay_block\"", "\"asset_key\":\"minecraft:hay_block\",\"type\":null");
+        assertTrue(json.contains("\"type\":null"));
+        assertThrows(RuntimeException.class, () -> TaskChain.fromJson(json));
+    }
+
+    @Test
     void yieldRejectsAiAssistedConditionEvenWithMatchingAsset() {
         var s = new Subtask("s", "s", com.dwinovo.numen.rdd.api.DetectionMode.AI_ASSISTED,
                 Map.of("asset_key", "minecraft:bread", "minimum", 1), 10, 2, false);
