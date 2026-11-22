@@ -27,9 +27,12 @@ class InteractGolemSafetyConsumerTest {
   assertEquals(0,ToolProvider.getSystemJavaCompiler().run(null,null,null,"-proc:none","-d",dir.toString(),file.toString()),"SETUP ERROR");
   try(var loader=new URLClassLoader(new URL[]{dir.toUri().toURL()},null)){
    var c=loader.loadClass("Fixture");var m=c.getMethod("run",String.class,String.class);
-   assertEquals("FAILED:0:0",m.invoke(null,"golem","left"),"golem left must refuse before attack");
-   assertEquals("SUCCESS:1:0",m.invoke(null,"enemy","left"));
-   assertEquals("SUCCESS:0:1",m.invoke(null,"golem","right"));
+   assertAll(
+    () -> assertEquals("FAILED:0:0",m.invoke(null,"golem","left"),"golem left must refuse before attack"),
+    () -> assertEquals("SUCCESS:1:0",m.invoke(null,"enemy","left"),"enemy left remains available"),
+    () -> assertEquals("SUCCESS:0:1",m.invoke(null,"golem","right"),"golem right remains available"),
+    () -> assertEquals("FAILED:0:0",m.invoke(null,"changed","left"),"target changed before action is rechecked")
+   );
   }
  }
  static final String HEADER="""
@@ -43,7 +46,7 @@ public class Fixture {
  static class PressReceipt {static Object before(Object a,Object b){return null;}} static class PlayerInv {static int findSlot(Object a,Object b){return 0;}} static class InteractAtTaskRecord {static String bodyBoundReason(Object a){return null;}}
  static class Record {MouseButton button;Object item;int holdTicks;} Record r=new Record(); NumenPlayer player=new NumenPlayer(); Entity entity;Interaction interaction;long holdUntil=-1;boolean acted;String successMsg; Object receipt;
  void fail(String s,FailureType t){} String targetName(){return "target";} String describeDone(){return "done";}String settle(){return "";}
- public static String run(String target,String key){Fixture f=new Fixture();f.entity=target.equals("golem")?new IronGolem():new Enemy();f.player.target=f.entity;f.r.button=key.equals("left")?MouseButton.LEFT:MouseButton.RIGHT;TaskState result=f.act();return result+":"+f.player.attacks+":"+f.player.uses;}
+ public static String run(String target,String key){Fixture f=new Fixture();f.entity=target.equals("golem")||target.equals("changed")?new IronGolem():new Enemy();f.player.target=f.entity;f.r.button=key.equals("left")?MouseButton.LEFT:MouseButton.RIGHT;TaskState result=f.act();return result+":"+f.player.attacks+":"+f.player.uses;}
 """;
  static final String IHEADER="""
 enum InteractionHand {MAIN_HAND}
