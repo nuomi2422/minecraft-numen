@@ -69,7 +69,9 @@ public final class ServerToolTransport {
     public static boolean deliverInternalTicket(UUID entity, String id, String json) {
         if (id == null || !id.startsWith(TICKET_PREFIX)) return false;
         TicketWait wait = TICKET_WAIT.get(id);
-        if (wait != null && wait.entity().equals(entity) && TICKET_WAIT.remove(id, wait)) wait.reply().accept(json);
+        if (wait != null && wait.entity().equals(entity) && TICKET_WAIT.remove(id, wait)) {
+            wait.reply().accept(System.nanoTime() - wait.expiresAt() >= 0 ? null : json);
+        }
         return true;
     }
 
