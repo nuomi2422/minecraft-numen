@@ -115,6 +115,12 @@ public final class SkillDeliveryIntake {
         return execute(classify(rows, scope, true), scope, queue, journal, admission, now, budget);
     }
 
+    /** Production historical intake: retains original budget/admission/queue transaction. */
+    public static Scan runWithTaskResults(UsageLedger ledger, List<UsageLedger.Entry> rows, Scope scope, MemoQueue queue,
+                                          EnqueuedJournal journal, Admission admission, long now, int budget) {
+        return execute(classify(rows, scope, true, ledger), scope, queue, journal, admission, now, budget);
+    }
+
     private static Scan execute(Selection selection, Scope scope, MemoQueue queue, EnqueuedJournal journal,
                                 Admission admission, long now, int budget) {
         int enqueued = 0, duplicate = 0, suppressed = 0, failed = 0, physicalAdded = 0;
@@ -317,6 +323,10 @@ public final class SkillDeliveryIntake {
     private record Selection(List<Candidate> due, int foreignScope, int resultChannel) {}
 
     private static Selection classify(List<UsageLedger.Entry> rows, Scope scope, boolean includeResults) {
+        return classify(rows, scope, includeResults, null);
+    }
+
+    private static Selection classify(List<UsageLedger.Entry> rows, Scope scope, boolean includeResults, UsageLedger ledger) {
         if (scope == null || !scope.complete() || rows == null) return new Selection(List.of(), 0, 0);
         Map<LedgerKey, UsageLedger.Entry> latest = new LinkedHashMap<>();
         for (UsageLedger.Entry row : rows) {
@@ -357,11 +367,11 @@ public final class SkillDeliveryIntake {
                 continue;
             }
             if (!includeResults) continue;
-            var sync = SyncSkillFeedback.INSTANCE.confirm(row);
+            var sync = ledger == null ? SyncSkillFeedback.INSTANCE.confirm(row) : SyncSkillFeedback.INSTANCE.confirm(ledger, row);
             if (sync != null) {
                 try {
                     Scope actual = rowScope(JsonParser.parseString(row.detail()).getAsJsonObject(), row.companionId());
-                    if (!scope.equals(actual)) foreign++;
+                    if (!scope.worldId().equals(actual.worldId()) || !scope.companionId().equals(actual.companionId())) foreign++;
                     else due.add(new SyncCandidate(row, sync));
                 } catch (RuntimeException malformed) { /* never infer missing scope */ }
                 continue;

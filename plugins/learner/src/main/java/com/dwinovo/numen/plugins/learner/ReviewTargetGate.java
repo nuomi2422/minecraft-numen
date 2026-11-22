@@ -35,6 +35,14 @@ public final class ReviewTargetGate {
         if (companion == null || !complete(reviewStart) || !complete(current))
             return new Check(false, "REVIEW_CONTEXT_UNKNOWN");
         if (!reviewStart.equals(current)) return new Check(false, "REVIEW_CONTEXT_CHANGED");
+        if ("skill_sync_receipt".equals(memo.stage())) {
+            try {
+                var row = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.syncEntryFromSnapshot(memo.snapshot());
+                var detail = JsonParser.parseString(row.detail()).getAsJsonObject();
+                if (!current.identity().get("world_id").equals(text(detail, "world_id")))
+                    return new Check(false, "SKILL_WORLD_MISMATCH");
+            } catch (RuntimeException malformed) { return new Check(false, "SKILL_SYNC_SOURCE_UNKNOWN"); }
+        }
         return skillTarget(configDir, companion, memo);
     }
 
@@ -46,7 +54,7 @@ public final class ReviewTargetGate {
         try {
             if ("skill_sync_receipt".equals(memo.stage())) {
                 var row = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.syncEntryFromSnapshot(memo.snapshot());
-                var fact = SyncSkillFeedback.INSTANCE.confirm(row);
+                var fact = SyncSkillFeedback.INSTANCE.confirm(dir == null ? null : new com.dwinovo.numen.plugins.learner.core.UsageLedger(dir), row);
                 if (fact == null) return new Check(false, "SKILL_SYNC_SOURCE_UNKNOWN");
                 if (row == null || !companion.toString().equals(row.companionId()))
                     return new Check(false, "SKILL_COMPANION_MISMATCH");

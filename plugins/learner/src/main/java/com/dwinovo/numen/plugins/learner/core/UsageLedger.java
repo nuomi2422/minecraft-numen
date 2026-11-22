@@ -183,6 +183,8 @@ public final class UsageLedger {
     public synchronized Entry append(String artifactId, String kind, String name,
                                      Phase phase, Outcome outcome, String detail, String source,
                                      String companionId) {
+        if (source != null && source.startsWith("sync-skill:"))
+            throw new IllegalArgumentException("sync receipt provenance is reserved for the receipt service");
         if (artifactId == null || artifactId.isBlank()) {
             throw new IllegalArgumentException("artifact_id 不能为空：账本条目必须能追到具体产物");
         }
@@ -297,10 +299,7 @@ public final class UsageLedger {
                 Phase phase = Phase.of(str(o, "phase"));
                 if (phase == null) { malformed++; continue; }
                 try {
-                    out.add(new Entry(str(o, "artifact_id"), str(o, "kind"), str(o, "name"), phase,
-                            outcomeOf(str(o, "outcome")), str(o, "detail"), str(o, "source"),
-                            str(o, "at"), o.has("validity_claim") && o.get("validity_claim").getAsBoolean(),
-                            str(o, "companion_id"), parseEvidence(o, source0(o))));
+                    out.add(parseEntry(o));
                 } catch (RuntimeException ex) {
                     if (!diagnostic) throw ex; // 保留旧 all() 对坏字段类型的异常语义。
                     malformed++; // 新诊断口显式标坏行，不把丢失事实当成不存在。
@@ -400,8 +399,43 @@ public final class UsageLedger {
         return sb.toString();
     }
 
-    private void writeLine(Entry e, String extra) {
+    /** Only the receipt service can construct this input; ordinary append cannot mint provenance. */
+    public synchronized Entry appendSyncReceipt(com.dwinovo.numen.plugins.learner.SyncSkillFeedback.ReceiptFact fact) {
+        Entry row = java.util.Objects.requireNonNull(fact).entry();
+        writeLine(row, "", true);
+        return row;
+    }
+
+    /** Resolve against this host ledger, never against caller-supplied detail/source strings alone.
+     * Host filesystem writers remain inside the trust boundary; this is not a signature scheme. */
+    public synchronized boolean containsSyncReceipt(Entry expected) {
+        if (expected == null) return false;
+        boolean found = false;
+        try {
+            for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+                if (line.isBlank()) continue;
+                JsonObject object = JsonParser.parseString(line).getAsJsonObject();
+                Entry row = parseEntry(object);
+                if (row.phase() == null) return false; // Do not authenticate a partial malformed ledger.
+                if (object.has("sync_receipt_fact") && object.get("sync_receipt_fact").getAsBoolean()
+                        && expected.equals(row)) found = true;
+            }
+        } catch (IOException | RuntimeException unavailable) { return false; }
+        return found;
+    }
+
+    private static Entry parseEntry(JsonObject o) {
+        return new Entry(str(o, "artifact_id"), str(o, "kind"), str(o, "name"), Phase.of(str(o, "phase")),
+                outcomeOf(str(o, "outcome")), str(o, "detail"), str(o, "source"), str(o, "at"),
+                o.has("validity_claim") && o.get("validity_claim").getAsBoolean(),
+                str(o, "companion_id"), parseEvidence(o, source0(o)));
+    }
+
+    private void writeLine(Entry e, String extra) { writeLine(e, extra, false); }
+
+    private void writeLine(Entry e, String extra, boolean syncReceipt) {
         JsonObject o = new JsonObject();
+        if (syncReceipt) o.addProperty("sync_receipt_fact", true);
         o.addProperty("artifact_id", e.artifactId());
         o.addProperty("kind", e.kind());
         o.addProperty("name", e.name());

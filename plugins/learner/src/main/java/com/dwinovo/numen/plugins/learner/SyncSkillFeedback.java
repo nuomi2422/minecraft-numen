@@ -20,8 +20,11 @@ public final class SyncSkillFeedback implements SyncSkillCorrelation {
     public static final SyncSkillFeedback INSTANCE = new SyncSkillFeedback();
     private static final int MAX = 256;
     private static final long TTL_NANOS = 120_000_000_000L;
+    private final java.util.function.LongSupplier clock;
+    public SyncSkillFeedback() { this(System::nanoTime); }
+    SyncSkillFeedback(java.util.function.LongSupplier clock) { this.clock = clock; }
     private final Map<String, Selection> selections = new LinkedHashMap<>();
-    private static final class Selection {
+    private final class Selection {
         final UUID owner, companion;
         final WorldContextStamp.Token token;
         final String ref, version, bodyRef, bodyDigest, tool, kind, name;
@@ -35,7 +38,7 @@ public final class SyncSkillFeedback implements SyncSkillCorrelation {
                   String bodyRef, String bodyDigest, String tool, String kind, String name, UsageLedger ledger) {
             this.owner=owner; this.companion=companion; this.token=token; this.ref=ref; this.version=version;
             this.bodyRef=bodyRef; this.bodyDigest=bodyDigest; this.tool=tool; this.kind=kind; this.name=name;
-            this.ledger=ledger; this.expires=System.nanoTime()+TTL_NANOS;
+            this.ledger=ledger; this.expires=clock.getAsLong()+TTL_NANOS;
         }
     }
     void adopt(JsonObject args, Path dir, UsageLedger ledger, LearnerUsageTool.TaskAccess host, Consumer<String> reply) {
@@ -79,7 +82,7 @@ public final class SyncSkillFeedback implements SyncSkillCorrelation {
             } finally {
                 synchronized (this) {
                     if (selections.get(id) == choice) {
-                        if (activate && System.nanoTime() - choice.expires < 0) choice.active = true;
+                        if (activate && clock.getAsLong() - choice.expires < 0) choice.active = true;
                         else selections.remove(id);
                     }
                 }
@@ -88,7 +91,25 @@ public final class SyncSkillFeedback implements SyncSkillCorrelation {
             try { reply.accept(TaskResult.fail("adopt_sync_skill 拒绝: "+e.getMessage()).toJson()); } catch (RuntimeException ignored) { }
         }
     }
-    /** Only the live service can confirm a ledger row against its bound selection and receipt. */
+    /** Unforgeable through ordinary ledger APIs: only this service creates a receipt fact. */
+    public static final class ReceiptFact {
+        private final UsageLedger.Entry entry;
+        private ReceiptFact(UsageLedger.Entry entry) { this.entry = entry; }
+        public UsageLedger.Entry entry() { return entry; }
+    }
+
+    /** Historical lookup requires the host's ledger, not a memo's self-reported provenance. */
+    public Confirmed confirm(UsageLedger ledger, UsageLedger.Entry row) {
+        if (ledger == null || !ledger.containsSyncReceipt(row)) return null;
+        try {
+            JsonObject d = com.google.gson.JsonParser.parseString(row.detail()).getAsJsonObject();
+            return new Confirmed("", required(d,"wire_id"), required(d,"target_tool"),
+                    required(d,"skill_ref"), required(d,"version"), required(d,"body_ref"),
+                    required(d,"body_digest"), Receipt.valueOf(required(d,"receipt")));
+        } catch (RuntimeException malformed) { return null; }
+    }
+
+    /** Legacy live-only lookup; production historical consumers pass their host ledger. */
     public record Confirmed(String selectionId, String wire, String tool, String ref, String version,
                             String bodyRef, String bodyDigest, Receipt receipt) {}
     public synchronized Confirmed confirm(UsageLedger.Entry row) {
@@ -107,7 +128,7 @@ public final class SyncSkillFeedback implements SyncSkillCorrelation {
         if (args==null || !args.has(key) || !args.get(key).isJsonPrimitive() || !args.getAsJsonPrimitive(key).isString() || args.get(key).getAsString().isBlank()) throw new IllegalArgumentException("需要 "+key);
         return args.get(key).getAsString();
     }
-    private void purge() { long now=System.nanoTime(); selections.values().removeIf(s -> now-s.expires>=0); }
+    private void purge() { long now=clock.getAsLong(); selections.values().removeIf(s -> now-s.expires>=0); }
     private boolean matches(Selection s, UUID owner, UUID companion, WorldContextStamp.Token token, String tool) {
         return s!=null && s.active && s.owner.equals(owner) && s.companion.equals(companion) && s.token.equals(token) && s.tool.equals(tool);
     }
@@ -134,7 +155,10 @@ public final class SyncSkillFeedback implements SyncSkillCorrelation {
         detail.addProperty("skill_ref",s.ref); detail.addProperty("version",s.version); detail.addProperty("body_ref",s.bodyRef); detail.addProperty("body_digest",s.bodyDigest);
         detail.addProperty("receipt",actual.name()); detail.addProperty("meaning","真实回执待审；UNKNOWN不是效果，非有效性证据");
         UsageLedger.Outcome outcome=switch(actual) { case SUCCESS -> UsageLedger.Outcome.SUCCESS; case FAIL -> UsageLedger.Outcome.FAIL; case CANCELED -> UsageLedger.Outcome.CANCELED; case UNKNOWN -> UsageLedger.Outcome.UNKNOWN; };
-        s.confirmed = s.ledger.append(s.ref+"@"+s.version+"#sync="+key,s.kind,s.name,UsageLedger.Phase.RESULT,outcome,detail.toString(),"sync-skill:"+key,companion.toString());
+        s.confirmed = s.ledger.appendSyncReceipt(new ReceiptFact(new UsageLedger.Entry(
+                s.ref+"@"+s.version+"#sync="+key,s.kind,s.name,UsageLedger.Phase.RESULT,outcome,
+                detail.toString(),"sync-skill:"+key,java.time.Instant.now().toString(),false,
+                companion.toString(),UsageLedger.EvidenceLevel.NONE)));
         s.actualReceipt=actual;
         s.recorded=true;
     }
