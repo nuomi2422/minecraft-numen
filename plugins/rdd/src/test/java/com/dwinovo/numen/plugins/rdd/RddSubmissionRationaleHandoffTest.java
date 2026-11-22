@@ -47,6 +47,17 @@ class RddSubmissionRationaleHandoffTest {
     void cleanup() { RationaleContext.clear(id); }
 
     @Test
+    void stageADispatchPreservesACompleteBoundedFactsBlock() {
+        String facts = "<situation>\n位置：fixture\n世界里：<known_world_assets>\n"
+                + "historical; not current; re-check.\n- asset_id=base label=home\n</known_world_assets>\n</situation>";
+        List<String> sent = new ArrayList<>();
+        RddStagePlanner.dispatchStages(id, OBJECTIVE, null, snapshot(), facts,
+                (companion, objective, stage, failures) -> "", () -> "", sent::add);
+        assertEquals(1, sent.size());
+        assertTrue(sent.getFirst().contains(facts), "actual dispatch must preserve the complete supplied facts block");
+    }
+
+    @Test
     void submittedReasonReachesStageAAndTheSameAcceptedCallback() {
         RationaleContext.Entry why = submitter();
         pending.put(id, why);

@@ -77,19 +77,24 @@ final class RddPlannerFacts {
         // ③ 世界里有什么（自己造过/登记过的世界资产）
         String world = "";
         try {
-            if (companionId != null) world = RddAssetContext.render(RddPlugin.assets(companionId), 160);
+            if (companionId != null) world = RddAssetContext.renderForPlanner(RddPlugin.assets(companionId), 160);
         } catch (RuntimeException ignored) {
             world = "";
         }
-        if (!world.isEmpty()) {
-            sb.append("世界里：").append(world).append('\n');
+        String suffix = (world.isEmpty() ? "" : "世界里：" + world + "\n") + "</situation>";
+        String marker = "…（前文已截断）\n";
+        int room = MAX_CHARS - suffix.length();
+        if (room < marker.length()) {
+            suffix = "世界里：未投递\n</situation>";
+            room = MAX_CHARS - suffix.length();
         }
-        sb.append("</situation>");
-        String out = sb.toString();
-        if (out.length() > MAX_CHARS) {
-            out = out.substring(0, MAX_CHARS - 12) + "…（已截断）</situation>";
+        if (sb.length() > room) {
+            int end = room - marker.length();
+            if (end > 0 && Character.isHighSurrogate(sb.charAt(end - 1))) end--;
+            sb.setLength(end);
+            sb.append(marker);
         }
-        return out;
+        return sb.append(suffix).toString();
     }
 
     /** 没有玩家对象时的退化版本（例如规划发生在离线恢复）。 */
