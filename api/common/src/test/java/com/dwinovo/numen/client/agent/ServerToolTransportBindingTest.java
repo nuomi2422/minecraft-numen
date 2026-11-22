@@ -110,6 +110,21 @@ class ServerToolTransportBindingTest {
                   static void reply(ExecuteToolPayload request,String text) {
                     ServerToolTransport.deliver(request.toolCallId(),text);
                   }
+                  public static Map<String,Object> internalTicket() {
+                    setup(); UUID a=UUID.randomUUID(), b=UUID.randomUUID(); actors.add(a); actors.add(b);
+                    List<String> received=new ArrayList<>();
+                    String id=ServerToolTransport.requestYieldTicket(a,received::add);
+                    boolean wrong=ServerToolTransport.deliverInternalTicket(b,id,"secret-wrong");
+                    boolean good=ServerToolTransport.deliverInternalTicket(a,id,"secret-good");
+                    boolean late=ServerToolTransport.deliverInternalTicket(a,id,"secret-late");
+                    String cancelled=ServerToolTransport.requestYieldTicket(a,received::add);
+                    ServerToolTransport.cancelYieldTicket(cancelled);
+                    boolean afterCancel=ServerToolTransport.deliverInternalTicket(a,cancelled,"secret-cancel");
+                    String logout=ServerToolTransport.requestYieldTicket(a,received::add);
+                    ServerToolTransport.forget(a);
+                    boolean afterLogout=ServerToolTransport.deliverInternalTicket(a,logout,"secret-logout");
+                    return Map.of("wrong",wrong,"good",good,"late",late,"cancel",afterCancel,"logout",afterLogout,"received",List.copyOf(received),"events",MonitoringJournal.events.size(),"packet",sends().get(0).toolName());
+                  }
                   public static Map<String,Object> unique() {
                     setup(); UUID a=UUID.randomUUID(), b=UUID.randomUUID();
                     String model="p".repeat(128); List<String> results=new ArrayList<>();
@@ -191,6 +206,13 @@ class ServerToolTransportBindingTest {
                 "companion_id",r.get("b"),"tool","craft","journaled_by","client-transport"),second.get("data"));
         assertEquals(true,r.get("entity")); assertEquals("mine",r.get("tool"));
         assertEquals("{\"probe\":1}",r.get("args"));
+    }
+
+    @Test void internalTicketReplyIsOwnerScopedAndNeverEntersToolJournal() throws Exception {
+        var r=run("internalTicket");
+        assertEquals(List.of("secret-good"),r.get("received"));
+        for (String key:List.of("wrong","good","late","cancel","logout")) assertEquals(true,r.get(key));
+        assertEquals(0,r.get("events"));assertEquals("_rdd_yield_ticket",r.get("packet"));
     }
 
     @Test void originalModelResultIdsSurviveIndependentSameIdNetworkReplies() throws Exception {
