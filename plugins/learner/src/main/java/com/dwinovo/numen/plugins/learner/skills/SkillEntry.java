@@ -89,6 +89,9 @@ public record SkillEntry(
 
     /** 修订：同 id、版本 +1、旧版本进 supersedes。 */
     public SkillEntry revise(String newBodyRef, List<String> newFoundingSamples) {
+        return revise(newBodyRef,newFoundingSamples,preconditions);
+    }
+    public SkillEntry revise(String newBodyRef, List<String> newFoundingSamples, List<String> newPreconditions) {
         List<String> nextSupersedes = new java.util.ArrayList<>(supersedes);
         nextSupersedes.add(skillId + "@v" + version);
         List<String> samples = new java.util.ArrayList<>(foundingSamples);
@@ -100,7 +103,7 @@ public record SkillEntry(
             }
         }
         return new SkillEntry(skillId, version + 1, kind, name, purpose, audience,
-                triggerConditions, excludeConditions, preconditions, risk, evidenceLevel,
+                triggerConditions, excludeConditions, newPreconditions, risk, evidenceLevel,
                 status, newBodyRef == null ? bodyRef : newBodyRef, validationSignals,
                 samples, nextSupersedes, conflicts);
     }

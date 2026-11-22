@@ -717,6 +717,79 @@ class SkillsAggregateConsumerTest {
         assertFalse(invokeRealLoader(packageArgs(PACK_REF,STEP_REF)).get("success").getAsBoolean());
     }
 
+    @Test void failedDeclarationWithdrawalDoesNotPublishMemoryOrSuccess() throws Exception {
+        String id="focus-write-fail", body="stable declaration body";
+        String bodyRef=SkillBodyStore.write(dir,id,1,"fixture-write-fail",body);
+        var registry=SkillRegistry.open(dir.resolve("skills.jsonl"));
+        java.util.function.Function<List<String>,ArtifactDraft> draft=pre->new ArtifactDraft(ArtifactKind.EXPERIENCE,"failure package","failure package purpose",body,
+                List.of("overnight"),List.of(),pre,"UNKNOWN",List.of(),List.of("fixture"),"EXECUTOR");
+        var declared=draft.apply(List.of("scene:overnight:package","focus:environment@v1"));
+        var withdrawn=draft.apply(List.of("scene:overnight:package"));
+        assertEquals(SkillRegistry.Outcome.REGISTERED,registry.register(declared,id,bodyRef,true).outcome());
+        assertEquals(SkillRegistry.Outcome.REUSE,registry.register(declared,id,bodyRef,true).outcome());
+        var file=dir.resolve("skills.jsonl"); var before=java.nio.file.Files.readAllBytes(file);
+        // Occupy the exact temporary file as a non-empty directory: original registry remains readable.
+        var temp=dir.resolve("skills.jsonl.tmp"); java.nio.file.Files.createDirectory(temp);
+        java.nio.file.Files.writeString(temp.resolve("block"),"fixture");
+        var decision=registry.register(withdrawn,id,bodyRef,true);
+        var after=java.nio.file.Files.readAllBytes(file);
+        int memoryVersion=registry.get(id).orElseThrow().version();
+        var resolver=new LearnedSkillBodyResolverImpl(dir);
+        boolean diskDeclaration=resolver.resolveFocusDeclaration(COMPANION,"skill:"+id+"@v1",LearnedSkillBodyResolver.View.EXECUTOR).available();
+        var repeated=registry.register(declared,id,bodyRef,true);
+        org.junit.jupiter.api.Assertions.assertAll(
+                () -> assertFalse(decision.outcome()==SkillRegistry.Outcome.REVISE,"failed persistent withdrawal must not report success"),
+                () -> org.junit.jupiter.api.Assertions.assertArrayEquals(before,after,"original bytes preserved"),
+                () -> assertEquals(1,memoryVersion,"memory must not publish unwritten version"),
+                () -> assertTrue(diskDeclaration,"fresh resolver sees original version"),
+                () -> assertEquals(SkillRegistry.Outcome.REUSE,repeated.outcome(),"unchanged old registration remains reuse"));
+    }
+
+    @Test void normalRegistrationRevisesOnFocusDeclarationAdditionAndRemoval() throws Exception {
+        String id="focus-revision"; String body="stable focus body";
+        String bodyRef=SkillBodyStore.write(dir,id,1,"fixture-focus-revision",body);
+        var registry=SkillRegistry.open(dir.resolve("skills.jsonl"));
+        java.util.function.Function<List<String>,ArtifactDraft> draft = pre -> new ArtifactDraft(ArtifactKind.EXPERIENCE,"focus revision","focus revision purpose",body,
+                List.of("overnight"),List.of(),pre,"UNKNOWN",List.of(),List.of("fixture"),"EXECUTOR");
+        var initial=draft.apply(List.of("scene:overnight:package"));
+        assertEquals(SkillRegistry.Outcome.REGISTERED,registry.register(initial,id,bodyRef,true).outcome());
+        assertEquals(SkillRegistry.Outcome.REUSE,registry.register(initial,id,bodyRef,true).outcome());
+        var added=draft.apply(List.of("scene:overnight:package","focus:environment@v1"));
+        var changed=registry.register(added,id,bodyRef,true);
+        assertEquals(SkillRegistry.Outcome.REVISE,changed.outcome(),"adding declaration must create a new version");
+        assertEquals(2,changed.entry().version()); assertTrue(changed.entry().preconditions().contains("focus:environment@v1"));
+        var resolver=new LearnedSkillBodyResolverImpl(dir);
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-revision@v1",LearnedSkillBodyResolver.View.EXECUTOR).available(),"old package identity cannot silently become v2");
+        assertTrue(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-revision@v2",LearnedSkillBodyResolver.View.EXECUTOR).available());
+        var removed=registry.register(initial,id,bodyRef,true);
+        assertEquals(SkillRegistry.Outcome.REVISE,removed.outcome()); assertEquals(3,removed.entry().version());
+        assertFalse(removed.entry().preconditions().contains("focus:environment@v1"));
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-revision@v2",LearnedSkillBodyResolver.View.EXECUTOR).available());
+        assertEquals("focus-not-declared",resolver.resolveFocusDeclaration(COMPANION,"skill:focus-revision@v3",LearnedSkillBodyResolver.View.EXECUTOR).gap());
+        assertEquals(SkillRegistry.Outcome.REUSE,registry.register(initial,id,bodyRef,true).outcome());
+    }
+
+    @Test void malformedFocusDeclarationCannotAppearAvailable() {
+        assertFalse(new LearnedSkillBodyResolver.FocusDeclaration(null,"environment","v1","").available());
+        assertFalse(new LearnedSkillBodyResolver.FocusDeclaration("skill:focus@v1","environment",null,"").available());
+        assertFalse(new LearnedSkillBodyResolver.FocusDeclaration("not-ref","environment","v1","").available());
+    }
+
+    @Test void focusDeclarationRequiresEligibleExactPackageAndSupportedTopicVersion() throws Exception {
+        register("focus-good","good","focus good purpose",PACK_BODY,List.of("scene:overnight:package","focus:environment@v1"));
+        register("focus-absent","absent","focus absent purpose",PACK_BODY,List.of("scene:overnight:package"));
+        register("focus-invalid","invalid","focus invalid purpose",PACK_BODY,List.of("scene:overnight:package","focus:entities@v1"));
+        register("focus-wrong-version","wrong version","focus wrong version purpose",PACK_BODY,List.of("scene:overnight:package","focus:environment@v2"));
+        var resolver=new LearnedSkillBodyResolverImpl(dir); var view=LearnedSkillBodyResolver.View.EXECUTOR;
+        var good=resolver.resolveFocusDeclaration(COMPANION,"skill:focus-good@v1",view);
+        assertTrue(good.available()); assertEquals("environment",good.topic()); assertEquals("v1",good.contractVersion());
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-good@v2",view).available());
+        assertEquals("focus-not-declared",resolver.resolveFocusDeclaration(COMPANION,"skill:focus-absent@v1",view).gap());
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-invalid@v1",view).available());
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-wrong-version@v1",view).available());
+        assertTrue(resolver.resolve(COMPANION,"skill:focus-absent@v1",view).available(),"legacy explicit read unaffected");
+    }
+
     @Test void realToolRejectsPlannerOnlyLegalComponentSpecificallyForAudience() throws Exception {
         var base=catalogFixture("private-legal",SkillStatus.TRIAL,"PLANNER","private body","private", "private purpose");
         var marked=new SkillEntry(base.skillId(),base.version(),base.kind(),base.name(),base.purpose(),base.audience(),base.triggerConditions(),base.excludeConditions(),List.of("scene:overnight:component"),base.risk(),base.evidenceLevel(),base.status(),base.bodyRef(),base.validationSignals(),base.foundingSamples(),base.supersedes(),base.conflicts());

@@ -74,6 +74,28 @@ public final class LearnedSkillBodyResolverImpl implements LearnedSkillBodyResol
         }
     }
 
+    /** Only a declared, current, eligible package can name the initial supported topic. */
+    @Override
+    public FocusDeclaration resolveFocusDeclaration(UUID companion,String packageRef,View view) {
+        Resolution packageBody=resolve(companion,packageRef,view);
+        if (!packageBody.available()) return new FocusDeclaration(packageRef,"","",packageBody.gap());
+        try {
+            Reference requested=Reference.parse(packageRef);
+            var entry=SkillRegistry.open(configDir.resolve("skills.jsonl")).get(requested.skillId()).orElse(null);
+            if(entry==null || entry.version()!=requested.version() || !entry.status().retrievable()
+                    || !new SkillsKnowledgeContributor(configDir,view.name(),0).audienceMatches(entry.audience())
+                    || !"package".equals(SceneSkillCatalog.kind(entry)))
+                return new FocusDeclaration(packageRef,"","","package-changed-or-invalid");
+            var declarations=entry.preconditions().stream().filter(v->v.startsWith("focus:")).toList();
+            if(declarations.isEmpty()) return new FocusDeclaration(packageRef,"","","focus-not-declared");
+            if(declarations.size()!=1 || !declarations.getFirst().equals("focus:environment@v1"))
+                return new FocusDeclaration(packageRef,"","","focus-unsupported");
+            return new FocusDeclaration(packageRef,"environment","v1","");
+        } catch (IOException | RuntimeException ex) {
+            return new FocusDeclaration(packageRef,"","","focus-declaration-invalid");
+        }
+    }
+
     @Override
     public Resolution resolve(UUID companion, String exactRef, View consumerView) {
         if (companion == null) return Resolution.refused(exactRef, "companion-missing");
