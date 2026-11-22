@@ -6,6 +6,8 @@ import com.dwinovo.numen.agent.tool.ToolRegistry;
 import com.dwinovo.numen.task.TaskResult;
 import com.dwinovo.numen.monitor.MonitoringJournal;
 import com.dwinovo.numen.api.WorldContextStamp;
+import com.dwinovo.numen.api.NumenPlugins;
+import com.dwinovo.numen.api.SyncSkillCorrelation;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.minecraft.core.UUIDUtil;
@@ -151,11 +153,30 @@ public record ExecuteToolPayload(UUID entityUuid,
                     ? "invalid yield arguments JSON" : "invalid arguments JSON");
             return;
         }
+        // Correlation is observation only, never permission or action deduplication.
+        var selection = args.remove("selection_id");
+        String selectionId = selection != null && selection.isJsonPrimitive()
+                && selection.getAsJsonPrimitive().isString() ? selection.getAsString() : null;
+        var correlation = NumenPlugins.capability(SyncSkillCorrelation.class);
+        UUID owner = companion.getOwnerUuid();
+        UUID companionId = companion.getUUID();
+        boolean bound = false;
+        if (correlation != null && selectionId != null) {
+            try {
+                bound = correlation.bind(selectionId, owner, companionId, identityToken,
+                        p.toolCallId(), p.toolName()) == SyncSkillCorrelation.Binding.BOUND;
+            } catch (RuntimeException ignored) { /* observation must not block the tool */ }
+        }
+        // All of this runs on the server thread; late callbacks do not extend the binding lifetime.
+        String[] synchronousReply = {null};
+        boolean[] inCall = {true};
+        Thread serverThread = Thread.currentThread();
         // Run the tool against the live companion: a query replies now, a world action
         // enqueues/dispatches and its result returns via the task lifecycle.
         // onServerCall 是 NumenTool 的接口默认方法——非身体工具的默认实现
         // 兜底出一条清晰失败,这里无需再分岔。
         java.util.function.Consumer<String> reply = json -> {
+            if (Thread.currentThread() == serverThread && inCall[0] && synchronousReply[0] == null) synchronousReply[0] = json;
             // 2026-11-02（F9）：这是服务端 onServerCall 的成功回执，必须自报写者。
             // 原来没写 journaled_by，学习线只能记成 unknown、证据引用不放行；
             // 补成 server（事实，不是猜），让写入者标签从源头成立。
@@ -168,6 +189,7 @@ public record ExecuteToolPayload(UUID entityUuid,
             com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
                     new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
         };
+        boolean failed = false;
         try {
             if (yieldTicketRequest && tool instanceof com.dwinovo.numen.agent.tool.OwnerAuthenticatedTool protectedTool)
                 protectedTool.onOwnerTicketRequest(companion, player, reply);
@@ -175,9 +197,37 @@ public record ExecuteToolPayload(UUID entityUuid,
                 protectedTool.onOwnerCall(p.toolCallId(), args, companion, player, reply);
             else tool.onServerCall(p.toolCallId(), args, companion, reply);
         } catch (RuntimeException ex) {
+            failed = true;
             replyError(player, p, "rdd_report_yield".equals(p.toolName())
                     ? "invalid yield arguments" : "invalid arguments (" + ex.getClass().getSimpleName() + ")");
+        } finally {
+            inCall[0] = false;
+            if (bound) {
+                try {
+                    correlation.receipt(selectionId, owner, companionId, identityToken, p.toolCallId(),
+                            p.toolName(), failed ? SyncSkillCorrelation.Receipt.UNKNOWN : classifyReceipt(synchronousReply[0]));
+                } catch (RuntimeException ignored) { /* observation must not change dispatch */ }
+            }
         }
+    }
+
+    private static SyncSkillCorrelation.Receipt classifyReceipt(String json) {
+        try {
+            var root = JsonParser.parseString(json).getAsJsonObject();
+            if (root.has("data") && root.get("data").isJsonObject()) {
+                var async = root.getAsJsonObject("data").get("async");
+                if (async != null && (!async.isJsonPrimitive() || !async.getAsJsonPrimitive().isBoolean()
+                        || async.getAsBoolean())) return SyncSkillCorrelation.Receipt.UNKNOWN;
+            }
+            var success = root.get("success");
+            if (success == null || !success.isJsonPrimitive() || !success.getAsJsonPrimitive().isBoolean())
+                return SyncSkillCorrelation.Receipt.UNKNOWN;
+            var interrupted = root.get("interrupted");
+            if (interrupted != null && (!interrupted.isJsonPrimitive() || !interrupted.getAsJsonPrimitive().isBoolean()))
+                return SyncSkillCorrelation.Receipt.UNKNOWN;
+            if (interrupted != null && interrupted.getAsBoolean()) return SyncSkillCorrelation.Receipt.CANCELED;
+            return success.getAsBoolean() ? SyncSkillCorrelation.Receipt.SUCCESS : SyncSkillCorrelation.Receipt.FAIL;
+        } catch (RuntimeException ignored) { return SyncSkillCorrelation.Receipt.UNKNOWN; }
     }
 
     /**
@@ -211,8 +261,7 @@ public record ExecuteToolPayload(UUID entityUuid,
             return "[invalid diagnostic JSON]";
         try {
             var args = JsonParser.parseString(p.argumentsJson());
-            if (!args.isJsonObject() || args.getAsJsonObject().has("selection_id")
-                    || args.getAsJsonObject().has("_yield_ticket")) return "[invalid diagnostic JSON]";
+            if (!args.isJsonObject() || hasSensitiveKey(args)) return "[invalid diagnostic JSON]";
         } catch (RuntimeException malformed) { return "[invalid diagnostic JSON]"; }
         return json;
     }
@@ -223,11 +272,32 @@ public record ExecuteToolPayload(UUID entityUuid,
             var element = JsonParser.parseString(json);
             if (!element.isJsonObject()) return "[invalid diagnostic JSON]";
             var copy = element.getAsJsonObject().deepCopy();
-            copy.remove("selection_id");
-            copy.remove("_yield_ticket");
+            redactDiagnostic(copy);
             return copy.toString();
         } catch (RuntimeException malformed) {
             return "[invalid diagnostic JSON]";
+        }
+    }
+
+    private static boolean hasSensitiveKey(com.google.gson.JsonElement value) {
+        if (value.isJsonObject()) {
+            var object = value.getAsJsonObject();
+            if (object.has("selection_id") || object.has("_yield_ticket")) return true;
+            for (var entry : object.entrySet()) if (hasSensitiveKey(entry.getValue())) return true;
+        } else if (value.isJsonArray()) {
+            for (var child : value.getAsJsonArray()) if (hasSensitiveKey(child)) return true;
+        }
+        return false;
+    }
+
+    private static void redactDiagnostic(com.google.gson.JsonElement value) {
+        if (value.isJsonObject()) {
+            var object = value.getAsJsonObject();
+            object.remove("selection_id");
+            object.remove("_yield_ticket");
+            for (var entry : object.entrySet()) redactDiagnostic(entry.getValue());
+        } else if (value.isJsonArray()) {
+            for (var child : value.getAsJsonArray()) redactDiagnostic(child);
         }
     }
 
@@ -270,6 +340,30 @@ public record ExecuteToolPayload(UUID entityUuid,
      * <p>边界：发给 AI 的 {@code TaskResultPayload} 一直是全文，这里只影响观测日志；
      * 超过上限仍截断，避免单条日志无界膨胀。
      */
+    /** Diagnostic copy only. Invalid JSON is not safe to echo; sent replies remain unchanged. */
+    private static String safeDiagnosticJson(String json) {
+        try {
+            var element = JsonParser.parseString(json);
+            if (!element.isJsonObject()) return "[invalid diagnostic JSON]";
+            var copy = element.getAsJsonObject().deepCopy();
+            redactDiagnostic(copy);
+            return copy.toString();
+        } catch (RuntimeException malformed) {
+            return "[invalid diagnostic JSON]";
+        }
+    }
+
+    private static void redactDiagnostic(com.google.gson.JsonElement value) {
+        if (value.isJsonObject()) {
+            var object = value.getAsJsonObject();
+            object.remove("selection_id");
+            object.remove("_yield_ticket");
+            for (var entry : object.entrySet()) redactDiagnostic(entry.getValue());
+        } else if (value.isJsonArray()) {
+            for (var child : value.getAsJsonArray()) redactDiagnostic(child);
+        }
+    }
+
     private static final int RESULT_LOG_LIMIT = 2000;
 
     private static String truncate(String s) {

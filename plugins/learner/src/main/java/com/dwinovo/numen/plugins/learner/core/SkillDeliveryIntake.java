@@ -1,5 +1,6 @@
 package com.dwinovo.numen.plugins.learner.core;
 
+import com.dwinovo.numen.plugins.learner.SyncSkillFeedback;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -268,6 +269,21 @@ public final class SkillDeliveryIntake {
         }
     }
 
+    private record SyncCandidate(UsageLedger.Entry row, SyncSkillFeedback.Confirmed fact) implements Candidate {
+        public String id() { return "ss-" + sha256(row.artifactId()); }
+        public String fingerprint() { return "skill_sync_receipt:" + row.artifactId(); }
+        public Memo memo(long now) {
+            return new Memo(id(), "同步工具回执待审：" + fact.ref() + "@" + fact.version(),
+                    "skill_sync_receipt", "真实绑定的回执候选；非任务结果、采用或有效性证明。",
+                    entrySnapshot(row), now);
+        }
+    }
+
+    public static UsageLedger.Entry syncEntryFromSnapshot(String snapshot) {
+        try { return entryFromSnapshot(JsonParser.parseString(snapshot).getAsJsonObject()); }
+        catch (RuntimeException malformed) { return null; }
+    }
+
     private record ResultCandidate(UsageLedger.Entry row, TaskResultFact fact) implements Candidate {
         public String id() { return resultMemoIdOf(row); }
         public String fingerprint() { return "skill_task_result:" + row.artifactId(); }
@@ -341,6 +357,15 @@ public final class SkillDeliveryIntake {
                 continue;
             }
             if (!includeResults) continue;
+            var sync = SyncSkillFeedback.INSTANCE.confirm(row);
+            if (sync != null) {
+                try {
+                    Scope actual = rowScope(JsonParser.parseString(row.detail()).getAsJsonObject(), row.companionId());
+                    if (!scope.equals(actual)) foreign++;
+                    else due.add(new SyncCandidate(row, sync));
+                } catch (RuntimeException malformed) { /* never infer missing scope */ }
+                continue;
+            }
             TaskResultFact fact = taskResultOf(row);
             if (fact == null) continue;
             if (!scope.equals(fact.scope())) { foreign++; continue; }

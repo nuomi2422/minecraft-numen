@@ -44,7 +44,16 @@ public final class ReviewTargetGate {
     private static Check skillTarget(Path dir, UUID companion, Memo memo) {
         String ref, version, bodyRef = "", bodyDigest = "";
         try {
-            if ("skill_task_result".equals(memo.stage())) {
+            if ("skill_sync_receipt".equals(memo.stage())) {
+                var row = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.syncEntryFromSnapshot(memo.snapshot());
+                var fact = SyncSkillFeedback.INSTANCE.confirm(row);
+                if (fact == null) return new Check(false, "SKILL_SYNC_SOURCE_UNKNOWN");
+                if (row == null || !companion.toString().equals(row.companionId()))
+                    return new Check(false, "SKILL_COMPANION_MISMATCH");
+                ref = fact.ref(); version = fact.version();
+                bodyRef = fact.bodyRef(); bodyDigest = fact.bodyDigest();
+                if (bodyRef.isBlank() || bodyDigest.isBlank()) return new Check(false, "SKILL_BODY_UNKNOWN");
+            } else if ("skill_task_result".equals(memo.stage())) {
                 var fact = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.taskResultFromSnapshot(memo.snapshot());
                 if (fact == null) return new Check(false, "SKILL_SNAPSHOT_UNKNOWN");
                 if (!companion.toString().equals(fact.scope().companionId()))
@@ -77,7 +86,7 @@ public final class ReviewTargetGate {
             if (!skill.status().retrievable()) return new Check(false, "SKILL_NOT_RETRIEVABLE");
             String body = com.dwinovo.numen.plugins.learner.skills.SkillBodyStore.read(dir, skill.bodyRef());
             if (body == null || body.isBlank()) return new Check(false, "SKILL_BODY_UNKNOWN");
-            if ("skill_task_result".equals(memo.stage()) && (!bodyRef.equals(skill.bodyRef())
+            if (("skill_task_result".equals(memo.stage()) || "skill_sync_receipt".equals(memo.stage())) && (!bodyRef.equals(skill.bodyRef())
                     || !bodyDigest.equals(java.util.HexFormat.of().formatHex(
                             java.security.MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8))))))
                 return new Check(false, "SKILL_BODY_MISMATCH");
@@ -96,7 +105,8 @@ public final class ReviewTargetGate {
     }
 
     private static boolean skillReview(Memo memo) {
-        return memo != null && ("skill_delivery".equals(memo.stage()) || "skill_task_result".equals(memo.stage()));
+        return memo != null && ("skill_delivery".equals(memo.stage()) || "skill_task_result".equals(memo.stage())
+                || "skill_sync_receipt".equals(memo.stage()));
     }
 
     private static boolean complete(com.dwinovo.numen.api.WorldContextStamp.Token token) {

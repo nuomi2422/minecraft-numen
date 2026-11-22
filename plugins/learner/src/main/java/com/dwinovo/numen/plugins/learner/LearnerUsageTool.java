@@ -31,6 +31,7 @@ final class LearnerUsageTool implements NumenTool {
      * Production resolves the live companion and exact server, never a global identity snapshot. */
     interface TaskAccess {
         java.util.UUID companionId();
+        default java.util.UUID ownerId() { return null; }
         com.dwinovo.numen.api.WorldContextStamp.Token identity();
         com.dwinovo.numen.task.TaskRecord current();
         com.dwinovo.numen.task.TaskRecord finished(String taskId);
@@ -75,8 +76,9 @@ final class LearnerUsageTool implements NumenTool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .optionalEnum("action",
-                        "record | report | claim_validity | reflect | by_memo | adopt_skill | report_skill",
-                        "record", "report", "claim_validity", "reflect", "by_memo", "adopt_skill", "report_skill")
+                        "record | report | claim_validity | reflect | by_memo | adopt_skill | report_skill | adopt_sync_skill",
+                        "record", "report", "claim_validity", "reflect", "by_memo", "adopt_skill", "report_skill", "adopt_sync_skill")
+                .optionalString("target_tool", "Required for adopt_sync_skill: exact target tool name.")
                 .optionalString("task_id", "Required for adopt_skill/report_skill: exact original task public id.")
                 .optionalString("skill_ref", "Required for adopt_skill/report_skill: canonical skill:<id>.")
                 .optionalString("version", "Required for adopt_skill/report_skill: exact version, e.g. v1.")
@@ -104,11 +106,12 @@ final class LearnerUsageTool implements NumenTool {
                 reply.accept(TaskResult.fail("使用账本未初始化（插件 setup 没跑完？）").toJson());
                 return;
             }
-            if (action.equals("ADOPT_SKILL") || action.equals("REPORT_SKILL")) {
+            if (action.equals("ADOPT_SKILL") || action.equals("REPORT_SKILL") || action.equals("ADOPT_SYNC_SKILL")) {
                 TaskAccess tasks = taskOverride;
                 if (tasks == null && companion != null) {
                     tasks = new TaskAccess() {
                         public java.util.UUID companionId() { return companion.getUUID(); }
+                        public java.util.UUID ownerId() { return companion.getOwnerUuid(); }
                         public com.dwinovo.numen.api.WorldContextStamp.Token identity() {
                             return com.dwinovo.numen.api.WorldContextStamp.capture(companion.level().getServer());
                         }
@@ -120,8 +123,12 @@ final class LearnerUsageTool implements NumenTool {
                         }
                     };
                 }
-                SkillTaskFeedback.handle(action, toolCallId, args,
-                        configOverride == null ? LearnerPlugin.configDir() : configOverride, ul, tasks, reply);
+                if (action.equals("ADOPT_SYNC_SKILL")) {
+                    SyncSkillFeedback.INSTANCE.adopt(args, configOverride == null ? LearnerPlugin.configDir() : configOverride, ul, tasks, reply);
+                } else {
+                    SkillTaskFeedback.handle(action, toolCallId, args,
+                            configOverride == null ? LearnerPlugin.configDir() : configOverride, ul, tasks, reply);
+                }
                 return;
             }
             Map<String, Object> data = new LinkedHashMap<>();
