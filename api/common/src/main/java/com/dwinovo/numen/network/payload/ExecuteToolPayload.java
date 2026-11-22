@@ -196,7 +196,9 @@ public record ExecuteToolPayload(UUID entityUuid,
     }
 
     static String diagnosticArgs(ExecuteToolPayload p) {
-        return safeDiagnosticJson(p.argumentsJson());
+        String safe = safeDiagnosticJson(p.argumentsJson());
+        return "rdd_report_yield".equals(p.toolName()) && "[invalid diagnostic JSON]".equals(safe)
+                ? "[invalid yield arguments]" : safe;
     }
 
     /** Preserve ordinary text results; association-bearing calls fail closed on non-object results. */

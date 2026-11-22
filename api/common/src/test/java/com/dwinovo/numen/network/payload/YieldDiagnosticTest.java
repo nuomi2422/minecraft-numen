@@ -13,6 +13,9 @@ class YieldDiagnosticTest {
   var malformed=new ExecuteToolPayload(p.entityUuid(),"wire","rdd_report_yield", "{\"_yield_ticket\":\""+secret);
   assertEquals("[invalid yield arguments]",ExecuteToolPayload.diagnosticArgs(malformed));
   var ordinary=new ExecuteToolPayload(p.entityUuid(),"wire","other",p.argumentsJson());
-  assertEquals(p.argumentsJson(),ExecuteToolPayload.diagnosticArgs(ordinary));
+  assertFalse(ExecuteToolPayload.diagnosticArgs(ordinary).contains(secret));
+  assertTrue(ExecuteToolPayload.diagnosticArgs(ordinary).contains("minecraft:hay_block"));
+  var ordinarySafe=new ExecuteToolPayload(p.entityUuid(),"wire","other","{\"item\":\"stone\"}");
+  assertEquals(ordinarySafe.argumentsJson(),ExecuteToolPayload.diagnosticArgs(ordinarySafe));
  }
 }
