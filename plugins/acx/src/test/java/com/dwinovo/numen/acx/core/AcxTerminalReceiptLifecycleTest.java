@@ -7,6 +7,10 @@ import com.dwinovo.numen.acx.api.AcxRunRecord;
 import com.dwinovo.numen.acx.api.AcxStatus;
 import com.dwinovo.numen.acx.api.AcxTool.AcxCallContext;
 import com.dwinovo.numen.acx.api.AcxToolPort;
+import com.dwinovo.numen.acx.api.AcxTool;
+import com.dwinovo.numen.acx.api.AcxToolSchema;
+import com.dwinovo.numen.acx.api.AcxStepOutcome;
+import java.util.concurrent.atomic.AtomicReference;
 import com.dwinovo.numen.plugins.acx.AcxRegistry;
 import org.junit.jupiter.api.Test;
 
@@ -130,7 +134,75 @@ class AcxTerminalReceiptLifecycleTest {
         assertEquals(0, f.adapter.pendingCount());
     }
 
+    @Test
+    void evictionCleanupFailureCannotOrphanTheNextStartedSession() {
+        Fixture f = new Fixture(1);
+        String oldRun = f.failAfterRealTruncatedSnapshot();
+        AcxSessionManager.Session oldSession = f.sessions.session(oldRun);
+        CleanupFault fault = new CleanupFault();
+        f.registry.register(fault);
+
+        // A second terminal run reaches the real eviction boundary and leaves the old owner
+        // retained when its tool cleanup fails. Do not manufacture a terminal record or table state.
+        String triggerRun = f.sessions.start(f.setOnly, Map.of());
+        assertNotNull(triggerRun);
+        assertSame(oldSession, f.sessions.session(oldRun));
+        assertTrue(fault.failures > 0, "the real cleanup hook must have thrown");
+        assertEquals(2, f.sessions.finishedCount(), "failed maintenance leaves a terminal backlog");
+        assertFalse(f.runner.isRunning(oldRun));
+        int scheduledBefore = f.scheduled;
+        AtomicReference<String> nextRun = new AtomicReference<>();
+        AtomicReference<Throwable> startFailure = new AtomicReference<>();
+        try {
+            nextRun.set(f.sessions.start(f.setOnly, Map.of()));
+        } catch (RuntimeException failedStart) {
+            startFailure.set(failedStart);
+        }
+
+        assertAll("old receipt maintenance must not create an unscheduled in-flight session",
+                () -> assertNull(startFailure.get(), "cleanup failure must not escape a new start"),
+                () -> assertNotNull(nextRun.get(), "caller must receive its new run id"),
+                () -> assertEquals(scheduledBefore + 1, f.scheduled, "the new run must reach the executor"),
+                () -> assertEquals(0, f.sessions.runningCount(), "direct executor leaves no orphan RUNNING entry"),
+                () -> assertSame(oldSession, f.sessions.session(oldRun), "failed cleanup must retain its old owner"),
+                () -> {
+                    if (nextRun.get() != null) f.record(nextRun.get(), AcxStatus.SUCCESS);
+                    assertEquals(1, f.host.dispatched.size(), "maintenance never re-invokes an accepted action");
+                    assertTrue(f.host.probed.isEmpty());
+                });
+    }
+
+    @Test
+    void explicitPurgeCleanupFailureKeepsTheOwnerAndReportsFailure() {
+        Fixture f = new Fixture(32);
+        String oldRun = f.failAfterRealTruncatedSnapshot();
+        AcxSessionManager.Session oldSession = f.sessions.session(oldRun);
+        CleanupFault fault = new CleanupFault();
+        f.registry.register(fault);
+        assertThrows(IllegalStateException.class, f.sessions::purgeFinished);
+        assertSame(oldSession, f.sessions.session(oldRun), "explicit purge cannot claim successful retirement");
+        assertFalse(f.runner.isRunning(oldRun));
+        assertEquals(0, f.sessions.runningCount());
+        assertEquals(1, f.host.dispatched.size());
+        assertTrue(f.host.probed.isEmpty());
+    }
+
+    private static final class CleanupFault implements AcxTool {
+        int failures;
+        @Override public String name() { return "cleanup_fault"; }
+        @Override public AcxToolSchema schema() { return AcxToolSchema.builder().build(); }
+        @Override public AcxStepOutcome execute(Map<String, Object> params, AcxCallContext ctx) {
+            throw new AssertionError("cleanup-only fixture is never dispatched");
+        }
+        @Override public void discardRunReceipts(String runId) {
+            failures++;
+            throw new IllegalStateException("fixture receipt cleanup failure");
+        }
+    }
+
     private static final class Fixture {
+        final AcxRegistry registry = new AcxRegistry();
+        int scheduled;
         final ControlledHost host = new ControlledHost();
         final PortToolAdapter adapter = PortToolAdapter.builder(host).probe(host).build();
         final AcxRunner runner;
@@ -139,12 +211,11 @@ class AcxTerminalReceiptLifecycleTest {
         final AcxDefinition setOnly;
 
         Fixture(int maxFinished) {
-            AcxRegistry registry = new AcxRegistry();
             registry.register(adapter);
             loop = AcxLoader.parseJson(LOOP_JSON, registry);
             setOnly = AcxLoader.parseJson(SET_JSON, registry);
             runner = AcxRunner.builder().tools(registry).build();
-            sessions = new AcxSessionManager(runner, Runnable::run, maxFinished);
+            sessions = new AcxSessionManager(runner, task -> { scheduled++; task.run(); }, maxFinished);
         }
 
         String startPaused(int itemCount) {
