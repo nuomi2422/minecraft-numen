@@ -140,7 +140,7 @@ class ServerToolTransportBindingTest {
                   }
                   public static Map<String,Object> yieldBatchWire() {
                     setup(); UUID a=UUID.randomUUID();actors.add(a);List<String> responses=new ArrayList<>();
-                    String args="{\"_yield_ticket\":\"model-forged\",\"take\":1}";
+                    String args=new com.google.gson.JsonObject() {{ addProperty("_yield_ticket","model-forged"); addProperty("take",1); }}.toString();
                     ServerToolTransport.ship(new ToolCall("same","rdd_report_yield",args,()->a,"host-old",responses::add));
                     ServerToolTransport.ship(new ToolCall("same","rdd_report_yield",args,()->a,"host-new",responses::add));
                     ServerToolTransport.ship(new ToolCall("missing","rdd_report_yield",args,()->a,null,responses::add));
