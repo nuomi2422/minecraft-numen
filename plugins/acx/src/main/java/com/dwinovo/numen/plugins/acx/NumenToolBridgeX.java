@@ -185,9 +185,11 @@ public final class NumenToolBridgeX implements AcxToolPort {
                     return AcxStepOutcome.paused("宿主等待已结束，未派发工具", Map.of());
                 }
                 try {
-                    TaskDispatch.withCallerOwnedRecovery(companion, callId,
-                            () -> tool.onServerCall(callId, args, companion,
-                                    json -> done.complete(new HostReply(json, null))));
+                    TaskDispatch.withCallerOwnedRecovery(companion, callId, () -> {
+                        if ("rdd_report_yield".equals(name()) && tool instanceof com.dwinovo.numen.agent.tool.TrustedYieldTool y)
+                            y.onTrustedHostCall(callId, args, companion, session.yieldBinding(), json -> done.complete(new HostReply(json, null)));
+                        else tool.onServerCall(callId, args, companion, json -> done.complete(new HostReply(json, null)));
+                    });
                 } catch (TaskDispatch.BodyBusyException busy) {
                     // Complete the original future even if the worker already timed out.
                     done.complete(new HostReply(null, Result.bodyBusy(busy.blockingTaskId(), busy.getMessage())));

@@ -180,6 +180,9 @@ final class RddFailureRecovery {
         if (state == null || !state.subtaskId().equals(current.id())) {
             return; // 没给这个二级派过身体
         }
+        // Yield is a synchronous mutation: an empty body slot does not establish non-execution.
+        // Preserve the original body state for explicit inspection; never silently resubmit it.
+        if ("rdd_report_yield".equals(current.body().taskType())) return;
         // 身体任务还占着当前槽 = 还在跑，不判。
         if (CompanionTickDispatcher.currentTaskFor(ap.getUUID()) != null) {
             return;

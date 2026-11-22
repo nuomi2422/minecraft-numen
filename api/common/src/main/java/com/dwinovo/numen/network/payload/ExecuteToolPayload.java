@@ -87,11 +87,12 @@ public record ExecuteToolPayload(UUID entityUuid,
         String who = player.getName().getString();
         Constants.LOG.debug("[numen-net] ← execute_tool from {} entity={} tool={} id={} args_chars={}",
                 who, p.entityUuid(), p.toolName(), p.toolCallId(), p.argumentsJson().length());
-        MonitoringJournal.get().publish("tools", "tool_call", Map.of(
+        if (!"_rdd_yield_ticket".equals(p.toolName())) MonitoringJournal.get().publish("tools", "tool_call", Map.of(
                 "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
                 "tool", p.toolName(), "args_chars", p.argumentsJson().length()));
         // H3（108 号）：旁路观察者（重复查询运行时感知）。只读，不改回执；没人注册时零开销。
-        com.dwinovo.numen.agent.tool.ToolCallObserver.fire(p.entityUuid(), p.toolCallId(), p.toolName(), p.argumentsJson().length());
+        if (!"_rdd_yield_ticket".equals(p.toolName()))
+            com.dwinovo.numen.agent.tool.ToolCallObserver.fire(p.entityUuid(), p.toolCallId(), p.toolName(), p.argumentsJson().length());
 
         // -- 0. companion player body (the new architecture). Resolve it (or
         //       respawn it from the registry on a cold start) and run the tool
@@ -131,7 +132,13 @@ public record ExecuteToolPayload(UUID entityUuid,
             replyError(player, p, "not the owner");
             return;
         }
-        NumenTool tool = ToolRegistry.get(p.toolName());
+        boolean yieldTicketRequest = "_rdd_yield_ticket".equals(p.toolName());
+        // This is routing format, not caller authentication; ownership was checked above.
+        if (yieldTicketRequest && !validYieldTicketReplyId(p.toolCallId())) {
+            replyError(player, p, "invalid internal ticket reply route");
+            return;
+        }
+        NumenTool tool = ToolRegistry.get(yieldTicketRequest ? "rdd_report_yield" : p.toolName());
         if (tool == null) {
             replyError(player, p, "unknown tool: " + p.toolName());
             return;
@@ -140,7 +147,8 @@ public record ExecuteToolPayload(UUID entityUuid,
         try {
             args = JsonParser.parseString(p.argumentsJson()).getAsJsonObject();
         } catch (RuntimeException ex) {
-            replyError(player, p, "invalid arguments JSON: " + ex.getMessage());
+            replyError(player, p, "rdd_report_yield".equals(p.toolName())
+                    ? "invalid yield arguments JSON" : "invalid arguments JSON: " + ex.getMessage());
             return;
         }
         // Run the tool against the live companion: a query replies now, a world action
@@ -151,17 +159,24 @@ public record ExecuteToolPayload(UUID entityUuid,
             // 2026-11-02（F9）：这是服务端 onServerCall 的成功回执，必须自报写者。
             // 原来没写 journaled_by，学习线只能记成 unknown、证据引用不放行；
             // 补成 server（事实，不是猜），让写入者标签从源头成立。
-            MonitoringJournal.get().publish("tools", "tool_result", Map.of(
-                    "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
-                    "tool", p.toolName(), "journaled_by", "server", "result", truncate(json)), identityToken);
-            com.dwinovo.numen.agent.tool.ToolCallLoopWatch.onSucceeded(p.entityUuid(), p.toolName());
+            if (!yieldTicketRequest) {
+                MonitoringJournal.get().publish("tools", "tool_result", Map.of(
+                        "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
+                        "tool", p.toolName(), "journaled_by", "server", "result", truncate(json)), identityToken);
+                com.dwinovo.numen.agent.tool.ToolCallLoopWatch.onSucceeded(p.entityUuid(), p.toolName());
+            }
             com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
                     new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
         };
         try {
-            tool.onServerCall(p.toolCallId(), args, companion, reply);
+            if (yieldTicketRequest && tool instanceof com.dwinovo.numen.agent.tool.OwnerAuthenticatedTool protectedTool)
+                protectedTool.onOwnerTicketRequest(companion, player, reply);
+            else if (tool instanceof com.dwinovo.numen.agent.tool.OwnerAuthenticatedTool protectedTool)
+                protectedTool.onOwnerCall(p.toolCallId(), args, companion, player, reply);
+            else tool.onServerCall(p.toolCallId(), args, companion, reply);
         } catch (RuntimeException ex) {
-            replyError(player, p, "invalid arguments: " + ex.getMessage());
+            replyError(player, p, "rdd_report_yield".equals(p.toolName())
+                    ? "invalid yield arguments" : "invalid arguments: " + ex.getMessage());
         }
     }
 
@@ -173,14 +188,38 @@ public record ExecuteToolPayload(UUID entityUuid,
      * 这里:知道被拒了二十二次,却没法从日志还原是哪一条 op 写错——只能靠错误
      * 信息倒推。失败是稀有事件,把这一条打全不会淹没日志。
      */
+    static boolean validYieldTicketReplyId(String id) {
+        if (id == null || !id.startsWith("yield-ticket-")) return false;
+        String nonce = id.substring("yield-ticket-".length());
+        try { return java.util.UUID.fromString(nonce).toString().equals(nonce); }
+        catch (IllegalArgumentException invalid) { return false; }
+    }
+
+    static String diagnosticArgs(ExecuteToolPayload p) {
+        if (!"rdd_report_yield".equals(p.toolName())) return p.argumentsJson();
+        try {
+            JsonObject safe = JsonParser.parseString(p.argumentsJson()).getAsJsonObject().deepCopy();
+            safe.remove("_yield_ticket");
+            return safe.toString();
+        } catch (RuntimeException malformed) {
+            return "[invalid yield arguments]";
+        }
+    }
+
     public static void replyError(ServerPlayer player, ExecuteToolPayload p, String message) {
+        if ("_rdd_yield_ticket".equals(p.toolName())) {
+            com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
+                    new TaskResultPayload(p.entityUuid(), p.toolCallId(), TaskResult.fail("yield ticket unavailable").toJson()));
+            return;
+        }
+        String diagnosticArgs = diagnosticArgs(p);
         // 同一工具同一种错误反复失败 → 除了埋点,还要把「你已经这样失败 N 次了」塞进回复里。
         // 模型看不见自己的失败计数,不给这句话它就会逐字重发同一个坏 payload(实测连拒 4 次)。
         String loopAdvice = com.dwinovo.numen.agent.tool.ToolCallLoopWatch.onRejected(
-                p.entityUuid(), p.toolName(), message, p.argumentsJson());
+                p.entityUuid(), p.toolName(), message, diagnosticArgs);
         Constants.LOG.warn("[numen-net] ✗ execute_tool rejected from {}: tool={} id={} reason={} args={}",
                 player.getName().getString(), p.toolName(), p.toolCallId(), message,
-                p.argumentsJson());
+                diagnosticArgs);
         MonitoringJournal.get().publish("tools", "tool_rejected", Map.of(
                 "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
                 "tool", p.toolName(), "reason", message));

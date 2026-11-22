@@ -559,7 +559,9 @@ public final class AcxPlugin implements NumenPlugin {
 
     static com.dwinovo.numen.acx.api.AcxRunBinding bindingFor(NumenPlayer player) {
         if (player == null) throw new IllegalArgumentException("ACX 请求缺少同伴");
-        return new com.dwinovo.numen.acx.api.AcxRunBinding(player.getUUID().toString(), player);
+        var tool = com.dwinovo.numen.agent.tool.ToolRegistry.get("rdd_report_yield");
+        Object yieldBinding = tool instanceof com.dwinovo.numen.agent.tool.TrustedYieldTool y ? y.captureHostBinding(player) : null;
+        return new com.dwinovo.numen.acx.api.AcxRunBinding(player.getUUID().toString(), player, yieldBinding);
     }
 
     public AcxHostGate gate() {

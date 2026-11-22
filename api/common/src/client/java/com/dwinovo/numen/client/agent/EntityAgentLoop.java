@@ -710,6 +710,7 @@ public final class EntityAgentLoop {
 
     /** Driven once per client tick (see {@code AgentLoopRegistry.tickAll}) — backstop timeout. */
     public void clientTick() {
+        com.dwinovo.numen.agent.tool.ServerToolTransport.expireYieldTickets();
         dispatcher.tick();
         presenter.tick();
         // G4c S102：预算窗口到点**自己**再试一次，不等主人来叫。
@@ -2223,13 +2224,13 @@ public final class EntityAgentLoop {
         presenter.clearPartial();
         // 头顶挂思考气泡:从发出请求到回应落地的整个空窗都有反馈
         NumenLlmClient llm = client();
-        llm.chatStreaming(snapshot, tools, systemPrompt,
+        requestBatchTicket(gen, ticket -> llm.chatStreaming(snapshot, tools, systemPrompt,
                         presenter.tapForUi(gen, vt.sink(), llm.provider()::extractReasoningDelta),
                         executionObservation)
                 .whenComplete((res, err) -> {
                     vt.finish().run();
-                    bounceBackToMain(gen, res, err);
-                });
+                    bounceBackToMain(gen, ticket, res, err);
+                }));
         return true;
     }
 
@@ -3303,12 +3304,26 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
         tryStartTurn();
     }
 
-    private void bounceBackToMain(int gen, NumenLlmClient.ChatResult res, Throwable err) {
-        Minecraft mc = Minecraft.getInstance();
-        mc.execute(() -> handleResponse(gen, res, err));
+    private void requestBatchTicket(int gen, java.util.function.Consumer<String> start) {
+        com.dwinovo.numen.agent.tool.ServerToolTransport.requestYieldTicket(entityUuid, raw -> {
+            String ticket = null;
+            try {
+                var result = com.google.gson.JsonParser.parseString(raw).getAsJsonObject();
+                if (result.get("success").getAsBoolean()) ticket = result.getAsJsonObject("data").get("ticket").getAsString();
+            } catch (RuntimeException ignored) { }
+            final String frozen = ticket;
+            Minecraft.getInstance().execute(() -> {
+                if (gen == turnGeneration && Minecraft.getInstance().getConnection() != null) start.accept(frozen);
+            });
+        });
     }
 
-    private void handleResponse(int gen, NumenLlmClient.ChatResult res, Throwable err) {
+    private void bounceBackToMain(int gen, String ticket, NumenLlmClient.ChatResult res, Throwable err) {
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> handleResponse(gen, ticket, res, err));
+    }
+
+    private void handleResponse(int gen, String ticket, NumenLlmClient.ChatResult res, Throwable err) {
         // Owner interrupted this turn while the call was in flight: abort()
         // already settled the conversation (and, if a newer turn has since
         // started, awaitingLlmResponse belongs to *that* call). Discard wholesale
@@ -3376,13 +3391,13 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                 var retryToken = captureDeliveryToken();
                 var retryObservation = observeExecutionRequest("execution_retry", retryToken, retryDelivery);
                 publishPendingRuntimeState(retryObservation, retryToken, retryDelivery);
-                llm2.chatStreaming(retrySnapshot, retryTools, retrySystem,
+                requestBatchTicket(gen2, ticket2 -> llm2.chatStreaming(retrySnapshot, retryTools, retrySystem,
                                 presenter.tapForUi(gen2, vt2.sink(), llm2.provider()::extractReasoningDelta),
                                 retryObservation)
                         .whenComplete((r2, e2) -> {
                             vt2.finish().run();
-                            bounceBackToMain(gen2, r2, e2);
-                        });
+                            bounceBackToMain(gen2, ticket2, r2, e2);
+                        }));
                 return;
             }
             // ★ 2026-10-06：这一回合已经用掉重试额度 ⇒ 真的失败了。
@@ -3487,7 +3502,7 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
         // 看见了什么",存起来就会在下一批变成陈账。
         dispatcher.dispatch(turn.toolCalls().stream()
                 .map(tc -> new ToolInvocation(tc.id(), tc.name(), tc.arguments()))
-                .toList(), callableTools());
+                .toList(), callableTools(), ticket);
     }
 
     /**

@@ -701,7 +701,7 @@ final class RddDetector {
             // assist 协助模式下暂停自动工具提交(防双驾驶):工具执行交还 NUMEN 内置 AI,
             // RDD 只保留资产检测 / 目标完成判定 / 异常提醒。
             if (RddPlugin.supervisionEnabled() && RddPlugin.bodySubmissionEnabled()) {
-                RddBodyDispatcher.maybeSubmit(ap, current);
+                RddBodyDispatcher.maybeSubmit(ap, current, chain);
             }
             if (conditionMatches(ap, current, counts)) {
                 completeSubtask(ap, rt, current);

@@ -4,6 +4,7 @@ import com.dwinovo.numen.agent.tool.ToolCall;
 import com.dwinovo.numen.network.payload.CancelTasksPayload;
 import com.dwinovo.numen.network.payload.ExecuteToolPayload;
 import com.dwinovo.numen.platform.Services;
+import com.dwinovo.numen.task.TaskResult;
 
 import java.util.Map;
 import java.util.UUID;
@@ -27,12 +28,33 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ServerToolTransport {
 
     private static final Map<String, ToolCall> IN_FLIGHT = new ConcurrentHashMap<>();
+    private record TicketWait(UUID entity, java.util.function.Consumer<String> reply, long expiresAt) {}
+    private static final Map<String, TicketWait> TICKET_WAIT = new ConcurrentHashMap<>();
+    private static final int MAX_TICKET_WAITS = 256;
+    private static final long TICKET_WAIT_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+    private static final String TICKET_PREFIX = "yield-ticket-";
 
     private ServerToolTransport() {}
 
     /** Ship a body-bound tool under a fresh wire key while retaining its model call. */
     public static void ship(ToolCall call) {
         UUID entity = call.ctx().entityUuid();
+        String wireArgs = call.rawArgs();
+        if ("rdd_report_yield".equals(call.toolName())) {
+            try {
+                var args = com.google.gson.JsonParser.parseString(wireArgs).getAsJsonObject();
+                args.remove("_yield_ticket");
+                if (call.frozenYieldTicket() == null || call.frozenYieldTicket().isBlank()) {
+                    rejectBeforeSend(entity, call, "yield ticket unavailable; refresh the current task and retry");
+                    return;
+                }
+                args.addProperty("_yield_ticket", call.frozenYieldTicket());
+                wireArgs = args.toString();
+            } catch (RuntimeException invalid) {
+                rejectBeforeSend(entity, call, "invalid yield arguments JSON");
+                return;
+            }
+        }
         // Preserve the existing external routing namespace; this is not authentication.
         String prefix = call.id() != null && call.id().startsWith("mcp-") ? "mcp-wire-" : "wire-";
         String wireId;
@@ -42,7 +64,49 @@ public final class ServerToolTransport {
         // Client association only: neither server acceptance nor a durable-log acknowledgement.
         LocalToolCallLog.publishTransportBinding(entity, call.id(), wireId, call.toolName());
         Services.NETWORK.sendToServer(
-                new ExecuteToolPayload(entity, wireId, call.toolName(), call.rawArgs()));
+                new ExecuteToolPayload(entity, wireId, call.toolName(), wireArgs));
+    }
+
+    /** A deterministic client refusal before any wire ID or server side effect exists. */
+    private static void rejectBeforeSend(UUID entity, ToolCall call, String message) {
+        String result = TaskResult.fail(message).toJson();
+        LocalToolCallLog.publishSynthetic(entity, call.id(), call.toolName(), result);
+        call.complete(result);
+    }
+
+    /** Start one internal ticket request; its response never enters the model tool queue. */
+    public static String requestYieldTicket(UUID entity, java.util.function.Consumer<String> reply) {
+        String id = TICKET_PREFIX + UUID.randomUUID();
+        synchronized (TICKET_WAIT) {
+            if (entity == null || reply == null || TICKET_WAIT.size() >= MAX_TICKET_WAITS) {
+                if (reply != null) reply.accept(null);
+                return id;
+            }
+            TICKET_WAIT.put(id, new TicketWait(entity, reply, System.nanoTime() + TICKET_WAIT_NANOS));
+        }
+        try { Services.NETWORK.sendToServer(new ExecuteToolPayload(entity, id, "_rdd_yield_ticket", "{}")); }
+        catch (RuntimeException ex) { TICKET_WAIT.remove(id); reply.accept(null); }
+        return id;
+    }
+
+    /** Suppress all internal-ticket IDs, including late/unknown replies, before logging. */
+    public static boolean deliverInternalTicket(UUID entity, String id, String json) {
+        if (id == null || !id.startsWith(TICKET_PREFIX)) return false;
+        TicketWait wait = TICKET_WAIT.get(id);
+        if (wait != null && wait.entity().equals(entity) && TICKET_WAIT.remove(id, wait)) {
+            wait.reply().accept(System.nanoTime() - wait.expiresAt() >= 0 ? null : json);
+        }
+        return true;
+    }
+
+    public static void cancelYieldTicket(String id) { if (id != null) TICKET_WAIT.remove(id); }
+
+    /** Called by the existing client tick: timeout is failure, never a replay. */
+    public static void expireYieldTickets() { expireYieldTickets(System.nanoTime()); }
+    static void expireYieldTickets(long now) {
+        TICKET_WAIT.forEach((id, wait) -> {
+            if (now - wait.expiresAt() >= 0 && TICKET_WAIT.remove(id, wait)) wait.reply().accept(null);
+        });
     }
 
     /** A result echoes the wire key; only its original parked call can complete. */
@@ -65,5 +129,6 @@ public final class ServerToolTransport {
      */
     public static void forget(UUID companionUuid) {
         IN_FLIGHT.values().removeIf(c -> companionUuid.equals(c.ctx().entityUuid()));
+        TICKET_WAIT.entrySet().removeIf(e -> companionUuid.equals(e.getValue().entity()));
     }
 }
