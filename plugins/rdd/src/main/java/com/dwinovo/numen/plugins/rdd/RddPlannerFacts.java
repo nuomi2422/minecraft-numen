@@ -84,11 +84,33 @@ final class RddPlannerFacts {
         } catch (RuntimeException ignored) {
             world = "";
         }
-        String suffix = (world.isEmpty() ? "" : "世界里：" + world + "\n") + "</situation>";
+        String food = "可食储备 未知";
+        if (player != null && companionId != null) {
+            try {
+                var server = player.getServer();
+                var before = com.dwinovo.numen.api.WorldContextStamp.capture(server);
+                var service = com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.observation.WorldObservationService.class);
+                if (server != null && before != null && before.identity() != null && before.epoch() > 0 && service != null) {
+                    var response = service.readSelf("rdd-planner", companionId, 3_000L);
+                    long now = System.currentTimeMillis();
+                    var after = com.dwinovo.numen.api.WorldContextStamp.capture(server);
+                    if (before.equals(after) && response != null && response.metadata() != null
+                            && companionId.toString().equals(response.metadata().subjectId())
+                            && player.level().dimension().location().toString().equals(response.metadata().dimension())
+                            && java.util.Objects.equals(before.identity().get("world_id"), response.metadata().worldId())
+                            && java.util.Objects.equals(before.identity().get("server_session"), response.metadata().serverSession())
+                            && now - response.metadata().observedAtMs() <= 3_000L) {
+                        var derived = com.dwinovo.numen.api.observation.SelfInventoryQuery.read(response, now);
+                        if (derived.foodKnown()) food = "可食储备 " + derived.foodCount() + "件";
+                    }
+                }
+            } catch (RuntimeException | LinkageError unavailable) { /* preserve UNKNOWN */ }
+        }
+        String suffix = food + "\n" + (world.isEmpty() ? "" : "世界里：" + world + "\n") + "</situation>";
         String marker = "…（前文已截断）\n";
         int room = MAX_CHARS - suffix.length();
         if (room < marker.length()) {
-            suffix = "世界里：未投递\n</situation>";
+            suffix = food + "\n世界里：未投递\n</situation>";
             room = MAX_CHARS - suffix.length();
         }
         if (sb.length() > room) {
