@@ -80,6 +80,27 @@ class RddCompletedMoveAssetTest {
         assertTrue(detail.contains("start_to_end_only") && detail.contains("route_proven") && detail.contains("false"), detail);
         assertTrue(detail.contains("not a continuous track") && detail.contains("world_id"), detail);
     }
+    @Test void plannerReceivesDirectedEndpointsOrExplicitUndelivered() {
+        UUID id = UUID.randomUUID(); var token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
+        var record = new Record(); record.bindIdentity(token); record.setState(TaskState.SUCCESS);
+        record.setResult(TaskResult.ok("done", Map.of("completed_move", fact())));
+        var registry = new AssetRegistry();
+        assertTrue(RddCompletedMoveAsset.project(id, record.publicId(), record, token, "overworld", registry, 100));
+        String summary = RddAssetContext.renderForPlanner(registry, 160);
+        assertTrue(summary.length() <= 160, summary);
+        List<String> sent = new ArrayList<>();
+        var snapshot = com.dwinovo.numen.rdd.core.PlanningAssetSnapshot.from(Map.of(), 100L, registry);
+        RddStagePlanner.dispatchStages(id, "fixture objective", null, snapshot, summary,
+                (companion, objective, stage, failures) -> "", () -> "", sent::add);
+        assertEquals(1, sent.size());
+        assertTrue(sent.getFirst().contains(summary), sent.getFirst());
+        assertAll(
+                () -> assertTrue(summary.contains("1.0,64.0,2.0") && summary.contains("5.0,64.0,2.0"), summary),
+                () -> assertTrue(summary.contains("→") && summary.contains("非通路证明"), summary));
+        String tiny = RddAssetContext.renderForPlanner(registry, 4);
+        assertTrue(tiny.equals("未投递") || tiny.isEmpty(), tiny);
+    }
+
     @Test void burstWithoutObserverKeepsMoveBoundAndOtherAssets() {
         UUID id = UUID.randomUUID(); var token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
         var registry = new AssetRegistry();
