@@ -231,6 +231,31 @@ class RddHomeReserveFreshnessTest {
         assertTrue(com.dwinovo.numen.rdd.policy.HomeGate.enforce(otherwiseAllowed, view.stage()).allowed());
     }
 
+    @Test void currentAnchorBeatsNewerOtherBaseAndMissingAnchorIsUnknown() {
+        long now = 1_700_000_000_000L;
+        AssetRegistry registry = baseRegistry(now - 2 * MINUTE, Map.of());
+        Map<String, Object> newer = new LinkedHashMap<>();
+        newer.put("kind", "base"); newer.put("world_id", "world-A"); newer.put("server_session", "session-A");
+        newer.put("dimension", "minecraft:overworld"); newer.put("x", 500); newer.put("y", 68); newer.put("z", 715);
+        newer.put("facilities", List.of("core_house")); newer.put("important_items", fullReserve());
+        registry.apply(new Observation("other", "world_base", "test", "minecraft:overworld", now - MINUTE, newer),
+                "other-base", AssetScope.GLOBAL, null);
+        try {
+            RddHomeFacts.RESPX.set(372); RddHomeFacts.RESPY.set(68); RddHomeFacts.RESPZ.set(715);
+            var anchored = RddHomeFacts.HomeView.of(registry, now, ID);
+            assertEquals("world_base//372/68/715", anchored.base().assetId());
+            assertFalse(anchored.reserve().sufficient());
+            RddHomeFacts.RESPX.remove(); RddHomeFacts.RESPY.remove(); RddHomeFacts.RESPZ.remove();
+            var missing = RddHomeFacts.HomeView.of(registry, now, ID);
+            assertFalse(missing.reserve().known(), "no current anchor must not pick newer unrelated base");
+            var otherwiseAllowed = new com.dwinovo.numen.rdd.policy.RiskGate.Verdict(true,
+                    com.dwinovo.numen.rdd.policy.RiskLevel.NETHER, List.of(), List.of());
+            assertFalse(com.dwinovo.numen.rdd.policy.HomeGate.enforce(otherwiseAllowed, missing.stage()).allowed());
+        } finally {
+            RddHomeFacts.RESPX.remove(); RddHomeFacts.RESPY.remove(); RddHomeFacts.RESPZ.remove();
+        }
+    }
+
     private static Map<String, Integer> fullReserve() {
         Map<String, Integer> m = new LinkedHashMap<>();
         m.put("minecraft:iron_pickaxe", 1);

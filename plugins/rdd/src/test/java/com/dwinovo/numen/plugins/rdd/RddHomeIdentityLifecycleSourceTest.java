@@ -89,7 +89,8 @@ class RddHomeIdentityLifecycleSourceTest {
             final class RddWorldAssetObserver {
             """ + method(observer, "static Result observe(") + """
             record Result(int bases, int structures, int machines, int entityGroups) {}
-            static int observeBase(NumenPlayer b, AssetRegistry r, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot i) { RddPlugin.captureHomeIdentity(b, i); return 1; }
+            static boolean failBase;
+            static int observeBase(NumenPlayer b, AssetRegistry r, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot i) { if (failBase) throw new RuntimeException("fixture scan failure"); RddPlugin.captureHomeIdentity(b, i); return 1; }
             static int observeStructures(NumenPlayer b, AssetRegistry r) { return 0; }
             static int observeVillages(NumenPlayer b, AssetRegistry r) { return 0; }
             static int observeMachines(NumenPlayer b, AssetRegistry r) { return 0; }
@@ -106,7 +107,7 @@ class RddHomeIdentityLifecycleSourceTest {
         try (var loader = new URLClassLoader(new URL[]{temp.toUri().toURL()}, ClassLoader.getPlatformClassLoader())) {
             var result = (List<?>) loader.loadClass("com.dwinovo.numen.plugins.rdd.LifecycleFixture")
                     .getMethod("run").invoke(null);
-            assertEquals(List.of(true, true, true, true, true, true, true, true, true, true, true, true), result);
+            assertEquals(List.of(true, true, true, true, true, true, true, true, true, true, true, true, true), result);
         }
     }
 
@@ -161,6 +162,12 @@ class RddHomeIdentityLifecycleSourceTest {
                 RddWorldAssetObserver.observe(bodyA, registry);
                 checks.add(seen.equals(List.of(server)));
                 checks.add(snapshot.equals(RddPlugin.cachedHomeIdentity(a)));
+                RddWorldAssetObserver.failBase = true;
+                try { RddWorldAssetObserver.observe(bodyA, registry); } catch (RuntimeException expected) { /* detector boundary */ }
+                checks.add(RddPlugin.cachedHomeIdentity(a) == null);
+                RddWorldAssetObserver.failBase = false;
+                RddWorldAssetObserver.observe(bodyA, registry);
+                seen.clear(); seen.add(server);
                 checks.add(RddPlugin.cachedHomeIdentity(b) == null);
                 RddWorldAssetObserver.observe(bodyB, registry);
                 checks.add(seen.equals(List.of(server, otherServer)) && snapshot.equals(RddPlugin.cachedHomeIdentity(b)));
