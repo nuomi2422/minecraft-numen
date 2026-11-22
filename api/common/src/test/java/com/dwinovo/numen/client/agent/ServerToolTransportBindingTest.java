@@ -154,6 +154,19 @@ class ServerToolTransportBindingTest {
                     dispatcher.dispatch(List.of(new ToolInvocation("missing","rdd_report_yield","{}")),Set.of("rdd_report_yield"),null);
                     return Map.of("results",results,"events",MonitoringJournal.events.toString(),"packets",sends().size());
                   }
+                  public static Map<String,Object> preSendAuditControls() {
+                    setup();UUID a=UUID.randomUUID();actors.add(a);List<String> results=new ArrayList<>();
+                    ToolDispatcher dispatcher=new ToolDispatcher(a,new ToolDispatcher.Sink(){public void onResult(ToolInvocation i,String s){results.add(s);}public void onAllSettled(){}public net.minecraft.client.player.AbstractClientPlayer entity(){return null;}});
+                    MonitoringJournal.failure="runtime";
+                    dispatcher.dispatch(List.of(new ToolInvocation("missing-exception","rdd_report_yield","{}")),Set.of("rdd_report_yield"),null);
+                    boolean exceptionDelivered=results.size()==1&&results.get(0).contains("yield ticket unavailable");
+                    MonitoringJournal.failure="";MonitoringJournal.events.clear();results.clear();
+                    dispatcher.dispatch(List.of(new ToolInvocation("bad-json","rdd_report_yield","bad-json-secret")),Set.of("rdd_report_yield"),"host-ticket-secret");
+                    boolean malformedDelivered=results.size()==1&&results.get(0).contains("invalid yield arguments JSON");String malformedEvents=MonitoringJournal.events.toString();
+                    MonitoringJournal.events.clear();results.clear();dispatcher.dispatch(List.of(new ToolInvocation("normal","ordinary_tool","{}")),Set.of("ordinary_tool"),null);
+                    var wire=sends().get(0);reply(wire,"normal-ok");String normalEvents=MonitoringJournal.events.toString();
+                    return Map.of("exceptionDelivered",exceptionDelivered,"malformedDelivered",malformedDelivered,"malformedEvents",malformedEvents,"normalResults",results.toString(),"normalEvents",normalEvents,"packets",sends().size());
+                  }
                   public static Map<String,Object> dispatcherBatch() {
                     setup();UUID a=UUID.randomUUID();actors.add(a);List<String> results=new ArrayList<>();
                     ToolDispatcher dispatcher=new ToolDispatcher(a,new ToolDispatcher.Sink(){public void onResult(ToolInvocation i,String s){results.add(i.id()+":"+s);}public void onAllSettled(){}public net.minecraft.client.player.AbstractClientPlayer entity(){return null;}});
@@ -273,6 +286,11 @@ class ServerToolTransportBindingTest {
         var r=run("dispatcherMissingTicketAudit");assertEquals(0,r.get("packets"));
         assertTrue(r.get("results").toString().contains("yield ticket unavailable"));
         assertTrue(r.get("events").toString().contains("tool_result"),"client-side rejection must be auditable");
+    }
+    @Test void preSendAuditFailureAndOrdinaryToolStayIsolated() throws Exception {
+        var r=run("preSendAuditControls");assertEquals(true,r.get("exceptionDelivered"));assertEquals(true,r.get("malformedDelivered"));
+        assertTrue(r.get("malformedEvents").toString().contains("tool_result"));assertFalse(r.get("malformedEvents").toString().contains("bad-json-secret"));assertFalse(r.get("malformedEvents").toString().contains("host-ticket-secret"));
+        assertEquals(1,r.get("packets"));assertTrue(r.get("normalResults").toString().contains("normal-ok"));assertFalse(r.get("normalEvents").toString().contains("tool_result"));
     }
     @Test void realDispatcherKeepsTicketPerQueuedBatch() throws Exception {
         var r=run("dispatcherBatch");assertTrue(r.get("first").toString().contains("host-old"));
