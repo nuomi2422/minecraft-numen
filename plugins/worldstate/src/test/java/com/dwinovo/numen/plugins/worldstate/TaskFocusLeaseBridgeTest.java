@@ -103,7 +103,7 @@ class TaskFocusLeaseBridgeTest {
                     var storeHost=new WorldStateService(); var bridge=new TaskFocusLeaseBridge(storeHost);
                     var task=new TaskRecord(); task.stamp=newStamp; task.selection=new TaskRecord.Selection(id.toString(),"skill:demo","v1",digest,newStamp);
                     WorldStateMod.active=newServer; WorldContextStamp.current=newStamp;
-                    NumenPlugins.resolver=(c,r,v)->new LearnedSkillBodyResolver.Resolution(r,text,"");
+                    NumenPlugins.resolver=(LearnedSkillBodyResolver)(c,r,v)->new LearnedSkillBodyResolver.Resolution(r,text,"");
                     check(bridge.acquire(body,task,"unknown-owner")==null,"default unmanaged resolver must not gain a lease");
                     NumenPlugins.resolver=resolver;
                     var lease=bridge.acquire(body,task,"owner"); check(lease!=null,"valid declaration must acquire");
