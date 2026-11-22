@@ -506,7 +506,18 @@ class WorldStateSessionWiringTest {
             assertEquals("focus_stop",end.get("event")); assertEquals(sweep.get("instance"),end.get("instance"));
             assertEquals(1,end.get("subjects_before")); assertEquals(1,end.get("pins_before"));
             assertEquals(0,end.get("subjects_after")); assertEquals(0,end.get("pins_after"));
-        } finally { if(prior==null) System.clearProperty(key); else System.setProperty(key,prior); events.clear(); }
+            events.clear(); pin.invoke(pins,c,"private-world","private-session","d","environment",1000L,1000L,0L,0,0);
+            pin.invoke(pins,c,"private-world","private-session","d","entities",1000L,1000L,0L,0,0);
+            assertEquals(1,tick.invoke(host,2000L,2_000_000_100L));
+            assertEquals(1,events.getFirst().get("checked_subjects")); assertEquals(2,events.getFirst().get("removed_pins"));
+            monitor.getField("fail").setBoolean(null,true);
+            pin.invoke(pins,c,"w","s","d","environment",2000L,1000L,0L,0,0);
+            assertEquals(1,tick.invoke(host,3000L,3_000_000_100L));
+            pin.invoke(pins,c,"w","s","d","environment",3000L,60000L,0L,0,0);
+            stop.invoke(host);
+            var active=pins.getClass().getMethod("active",UUID.class,String.class,String.class,long.class);
+            assertTrue(((List<?>)active.invoke(pins,c,"w","s",0L)).isEmpty());
+        } finally { monitor.getField("fail").setBoolean(null,false); if(prior==null) System.clearProperty(key); else System.setProperty(key,prior); events.clear(); }
     }
 
     @Test void registeredPostAndStopCallbacksDriveRealServiceFocusWithoutRefresher() throws Exception {
@@ -663,7 +674,7 @@ class WorldStateSessionWiringTest {
                 public class LoggerFactory { public static Logger getLogger(String name) { return new Logger() {}; } }
                 """);
         sources.put(PKG + "WorldStateMonitor", "package " + PKG.substring(0, PKG.length() - 1)
-                + "; public class WorldStateMonitor { public static final java.util.List<java.util.Map<String,Object>> events=new java.util.ArrayList<>(); public static void publish(String event, java.util.Map<String, Object> values) { var copy=new java.util.HashMap<String,Object>(values); copy.put(\"event\",event); events.add(copy); } }");
+                + "; public class WorldStateMonitor { public static final java.util.List<java.util.Map<String,Object>> events=new java.util.ArrayList<>(); public static boolean fail; public static void publish(String event, java.util.Map<String, Object> values) { if(fail) throw new RuntimeException(); var copy=new java.util.HashMap<String,Object>(values); copy.put(\"event\",event); events.add(copy); } }");
         for (var entry : Map.of("Environment", "ENVIRONMENT", "EntityCount", "ENTITIES",
                 "BlockCount", "BLOCKS", "Container", "CONTAINERS", "Self", "SELF").entrySet()) {
             String name = entry.getKey() + "WorldProvider";
