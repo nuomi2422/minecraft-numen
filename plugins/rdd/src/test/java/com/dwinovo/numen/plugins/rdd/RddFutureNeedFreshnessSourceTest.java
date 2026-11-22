@@ -3,7 +3,7 @@ package com.dwinovo.numen.plugins.rdd;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.api.io.TempDir.CleanupMode;
+import org.junit.jupiter.api.io.CleanupMode;
 import javax.tools.ToolProvider;
 import java.net.URL;
 import java.net.URLClassLoader;
