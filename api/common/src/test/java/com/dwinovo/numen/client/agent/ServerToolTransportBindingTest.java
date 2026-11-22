@@ -125,6 +125,15 @@ class ServerToolTransportBindingTest {
                     boolean afterLogout=ServerToolTransport.deliverInternalTicket(a,logout,"secret-logout");
                     return Map.of("wrong",wrong,"good",good,"late",late,"cancel",afterCancel,"logout",afterLogout,"received",List.copyOf(received),"events",MonitoringJournal.events.size(),"packet",sends().get(0).toolName());
                   }
+                  public static Map<String,Object> ticketCapacityAndExpiry() throws Exception {
+                    setup(); UUID actor=UUID.randomUUID(); actors.add(actor); List<String> responses=new ArrayList<>();
+                    for(int i=0;i<256;i++) ServerToolTransport.requestYieldTicket(actor,responses::add);
+                    int before=sends().size(); ServerToolTransport.requestYieldTicket(actor,responses::add);
+                    int refused=responses.size(); var m=ServerToolTransport.class.getDeclaredMethod("expireYieldTickets",long.class);m.setAccessible(true);m.invoke(null,Long.MAX_VALUE);
+                    int expired=responses.size(); ServerToolTransport.requestYieldTicket(actor,responses::add);
+                    int after=sends().size(); ServerToolTransport.forget(actor);
+                    return Map.of("before",before,"refused",refused,"expired",expired,"after",after);
+                  }
                   public static Map<String,Object> unique() {
                     setup(); UUID a=UUID.randomUUID(), b=UUID.randomUUID();
                     String model="p".repeat(128); List<String> results=new ArrayList<>();
@@ -206,6 +215,12 @@ class ServerToolTransportBindingTest {
                 "companion_id",r.get("b"),"tool","craft","journaled_by","client-transport"),second.get("data"));
         assertEquals(true,r.get("entity")); assertEquals("mine",r.get("tool"));
         assertEquals("{\"probe\":1}",r.get("args"));
+    }
+
+    @Test void ticketPendingCapacityAndActualExpiryAreBounded() throws Exception {
+        var r=run("ticketCapacityAndExpiry");
+        assertEquals(256,r.get("before"));assertEquals(1,r.get("refused"));
+        assertEquals(257,r.get("expired"));assertEquals(257,r.get("after"));
     }
 
     @Test void internalTicketReplyIsOwnerScopedAndNeverEntersToolJournal() throws Exception {
