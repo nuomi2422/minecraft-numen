@@ -24,13 +24,16 @@ final class RddVillageFacts {
         if (all.isEmpty()) return "";
         List<VillageRank.Candidate> ordered = VillageRank.order(all);
         StringBuilder sb = new StringBuilder("<village_candidates>\n");
-        sb.append("按「村民>箱子>作物>铁傀儡>书架」打分排序；这只是候选顺序，不是准入。\n");
+        sb.append("历史候选，不代表当前数量或准入；使用前到场重查。coverage=UNKNOWN。按「村民>箱子>作物>铁傀儡>书架」打分排序；这只是候选顺序，不是准入。\n");
         int n = 0;
         for (VillageRank.Candidate c : ordered) {
             if (n++ >= MAX_CANDIDATES) break;
             sb.append("- id=").append(c.id())
                     .append(" dim=").append(c.dimension())
                     .append(" pos=").append(c.x()).append(',').append(c.y()).append(',').append(c.z())
+                    .append(" observed_at=").append(c.observedAtMillis() > 0 ? c.observedAtMillis() : "UNKNOWN")
+                    .append(" world=").append(worldFor(registry, c))
+                    .append(" source=").append(sourceFor(registry, c))
                     .append(" score=").append(VillageRank.score(c))
                     .append(" villagers=").append(num(c, "villagers"))
                     .append(" chests=").append(num(c, "chests"))
@@ -40,6 +43,45 @@ final class RddVillageFacts {
         }
         sb.append("</village_candidates>");
         return sb.toString();
+    }
+
+    private static String sourceFor(AssetRegistry registry, VillageRank.Candidate c) {
+        String source = null;
+        int matches = 0;
+        for (var e : RddAssetContext.worldAssets(registry)) {
+            var v = e.observation().value();
+            if (!"village".equals(String.valueOf(v.get("kind")))) continue;
+            String id = String.valueOf(v.getOrDefault("structure", e.assetId()));
+            if (!id.equals(c.id()) || e.observation().observedAt() != c.observedAtMillis()) continue;
+            int x = v.get("x") instanceof Number n ? n.intValue() : 0;
+            int y = v.get("y") instanceof Number n ? n.intValue() : 0;
+            int z = v.get("z") instanceof Number n ? n.intValue() : 0;
+            if (x != c.x() || y != c.y() || z != c.z() || !String.valueOf(v.getOrDefault("dimension", "unknown")).equals(c.dimension())) continue;
+            matches++;
+            String raw = e.observation().source();
+            source = raw == null || raw.isBlank() ? "UNKNOWN" : raw.replaceAll("[\r\n<>]", "_");
+        }
+        return matches == 1 ? source : "UNKNOWN";
+    }
+
+    private static String worldFor(AssetRegistry registry, VillageRank.Candidate c) {
+        // A structure name can be shared by many records: only a unique exact candidate is safe.
+        String world = null;
+        int matches = 0;
+        for (var e : RddAssetContext.worldAssets(registry)) {
+            var v = e.observation().value();
+            if (!"village".equals(String.valueOf(v.get("kind")))) continue;
+            String id = String.valueOf(v.getOrDefault("structure", e.assetId()));
+            if (!id.equals(c.id()) || e.observation().observedAt() != c.observedAtMillis()) continue;
+            int x = v.get("x") instanceof Number n ? n.intValue() : 0;
+            int y = v.get("y") instanceof Number n ? n.intValue() : 0;
+            int z = v.get("z") instanceof Number n ? n.intValue() : 0;
+            if (x != c.x() || y != c.y() || z != c.z() || !String.valueOf(v.getOrDefault("dimension", "unknown")).equals(c.dimension())) continue;
+            matches++;
+            Object raw = v.get("world_id");
+            world = raw instanceof String s && !s.isBlank() ? s.replaceAll("[\\r\\n<>]", "_") : "UNKNOWN";
+        }
+        return matches == 1 ? world : "UNKNOWN";
     }
 
     private static int num(VillageRank.Candidate c, String key) {

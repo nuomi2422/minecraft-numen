@@ -22,9 +22,11 @@ class RddVillageHistoryConsumerTest {
         String text = RddVillageFacts.blockFor(registry);
         assertTrue(text.contains("village-old") && text.contains("village-new"), text);
         assertTrue(text.indexOf("village-old") < text.indexOf("village-new"), "historical rank still deterministic: " + text);
-        assertTrue(text.contains("历史") && text.contains("重查"), text);
-        assertTrue(text.contains("observed_at=10") && text.contains("observed_at=20"), text);
-        assertTrue(text.contains("world=world-A") && text.contains("coverage=UNKNOWN"), text);
+        assertAll(
+                () -> assertTrue(text.contains("历史") && text.contains("重查"), text),
+                () -> assertTrue(text.contains("observed_at=10") && text.contains("observed_at=20"), text),
+                () -> assertTrue(text.contains("world=world-A") && text.contains("coverage=UNKNOWN"), text),
+                () -> assertTrue(text.contains("source=rdd_world_observer"), text));
         assertTrue(text.contains("</village_candidates>"), text);
     }
 }
