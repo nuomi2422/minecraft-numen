@@ -322,7 +322,10 @@ public final class AcxSessionManager {
             int removed = 0;
             Iterator<Map.Entry<String, Session>> it = sessions.entrySet().iterator();
             while (it.hasNext()) {
-                if (isEvictable(it.next().getValue())) {
+                Session retired = it.next().getValue();
+                if (isEvictable(retired)) {
+                    // Keep the owner until exact-run receipt cleanup succeeds; this does not stop a body task.
+                    runner.discardRunReceipts(retired.runId);
                     it.remove();
                     removed++;
                 }
@@ -404,7 +407,10 @@ public final class AcxSessionManager {
         while (finished > maxFinished) {
             Iterator<Map.Entry<String, Session>> it = sessions.entrySet().iterator();
             while (it.hasNext()) {
-                if (isEvictable(it.next().getValue())) {
+                Session retired = it.next().getValue();
+                if (isEvictable(retired)) {
+                    // The session lock excludes resume while the inactive run is permanently retired.
+                    runner.discardRunReceipts(retired.runId);
                     it.remove();
                     finished--;
                     break;
