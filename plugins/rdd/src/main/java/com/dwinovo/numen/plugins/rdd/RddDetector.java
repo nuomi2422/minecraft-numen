@@ -778,7 +778,8 @@ final class RddDetector {
     }
 
     private boolean tickNegotiation(NumenPlayer ap, RddRuntime rt, TaskChain chain) {
-        com.dwinovo.numen.rdd.fail.TaskNegotiation n = RddNegotiationInbox.peek(ap.getUUID());
+        RddNegotiationInbox.Entry entry = RddNegotiationInbox.peek(ap.getUUID());
+        com.dwinovo.numen.rdd.fail.TaskNegotiation n = entry == null ? null : entry.message();
         if (n == null || (!n.needsSupervisorAction() && !n.isPauseRequest())) {
             return false;
         }
@@ -791,12 +792,17 @@ final class RddDetector {
                 && chain.currentSubtaskStatus() != SubtaskStatus.PAUSED) {
             return false;   // 只在当前二级活跃/卡住/暂停时处理协商
         }
+        // Old execution reports remain reviewable but may not stop or replan a new attempt.
+        if (!RddNegotiationInbox.applicable(entry, chain)) {
+            RddNegotiationInbox.deferStale(ap.getUUID(), entry, chain);
+            return false;
+        }
         // 2026-09-30 codex 复审 P1-3：**主人暂停是命令，不是建议。**
         // 士兵在主人暂停期间上报的 COUNTER/REJECT 不能把它推翻成"重规划 → 继续跑"，
         // 否则"原地待命"这个明确指令会被执行层的建议悄悄作废。
         // 处理：明确丢弃并留事件，让主人知道"士兵有话想说，但要你先解除暂停"。
         if (chain.currentSubtaskStatus() == SubtaskStatus.PAUSED && isOwnerPause(chain, chain.currentSubtask())) {
-            RddNegotiationInbox.takePending(ap.getUUID());
+            RddNegotiationInbox.takePending(ap.getUUID(), entry);
             RddMonitor.publish("negotiation_deferred_to_owner", Map.of(
                     "companionId", ap.getUUID().toString(),
                     "kind", n.kind().name(), "reason", n.reason(),
@@ -811,7 +817,7 @@ final class RddDetector {
         // 消费侧再核一次，是最后一道闸：不匹配就丢弃并留事件，不让它改单。
         Subtask currentNow = chain.currentSubtask();
         if (!n.taskId().isBlank() && (currentNow == null || !currentNow.id().equals(n.taskId()))) {
-            RddNegotiationInbox.takePending(ap.getUUID());   // 明确丢弃
+            RddNegotiationInbox.takePending(ap.getUUID(), entry);   // 明确丢弃
             RddMonitor.publish("negotiation_discarded", Map.of(
                     "companionId", ap.getUUID().toString(),
                     "reason", "stale subtask id; the plan moved on",
@@ -821,7 +827,7 @@ final class RddDetector {
             return false;
         }
         Subtask current = chain.currentSubtask();
-        RddNegotiationInbox.takePending(ap.getUUID());   // 消费
+        if (!RddNegotiationInbox.takePending(ap.getUUID(), entry)) return false; // never consume a newer entry
 
         // 「先放着」：不重规划、不换计划，直接把当前二级按住。留在这里等条件变了再开。
         //

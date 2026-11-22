@@ -36,7 +36,9 @@ final class RddConcernTool implements NumenTool {
 
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .string("kind", "ACCEPT / REJECT / COUNTER / PAUSE / SURVIVAL")
+                .string("kind", "ACCEPT / REJECT / COUNTER / PAUSE / SURVIVAL / REVIEW")
+                .string("concern_ref", "REVIEW only: exact pending concern_ref shown by rdd_status.")
+                .string("review_evidence", "REVIEW only: relevant new observation or explicit owner action; unchanged retries are refused.")
                 .string("expected_subtask_id", "Current subtask ID from rdd_status.")
                 .string("reason", "为什么这样回执（REJECT/COUNTER/PAUSE 必填）。")
                 .string("suggestion", "COUNTER 时的替代方案（人话）。")
@@ -56,6 +58,16 @@ final class RddConcernTool implements NumenTool {
                         "SURVIVAL recorded; food supply side task requested").toJson());
                 return;
             }
+            if ("REVIEW".equalsIgnoreCase(kind.trim())) {
+                boolean accepted = RddPlugin.requestConcernReview(companion.getUUID(),
+                        get(args, "concern_ref"), get(args, "review_evidence"));
+                reply.accept((accepted ? com.dwinovo.numen.task.TaskResult.ok(
+                        "bounded concern review requested; not a verified fix", Map.of("reviewRequested", true))
+                        : com.dwinovo.numen.task.TaskResult.fail(
+                                "review_pending or review deferred: inspect rdd_status; provide a current owner and relevant new evidence"))
+                        .toJson());
+                return;
+            }
             TaskNegotiation n = TaskNegotiation.parse(kind, taskId, reason, suggestion);
             // 校验：回执必须针对当前二级（防张冠李戴）
             RddRuntime rt = RddPlugin.runtime(companion.getUUID());
@@ -67,7 +79,21 @@ final class RddConcernTool implements NumenTool {
                     return;
                 }
             }
-            RddNegotiationInbox.accept(companion.getUUID(), n);
+            RddNegotiationInbox.Admission admission;
+            if (rt == null) admission = RddNegotiationInbox.Admission.NO_ATTEMPT;
+            else synchronized (rt.chain()) {
+                Subtask current = rt.chain().currentSubtask();
+                admission = RddPlugin.runtime(companion.getUUID()) != rt || current == null
+                        || !taskId.isBlank() && !taskId.equals(current.id())
+                        ? RddNegotiationInbox.Admission.NO_ATTEMPT
+                        : RddNegotiationInbox.accept(companion.getUUID(), n, rt.chain());
+            }
+            if (admission != RddNegotiationInbox.Admission.RECORDED) {
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail(admission == RddNegotiationInbox.Admission.REVIEW_PENDING
+                        ? "review_pending: outstanding concern retained; retry after current owner handles it"
+                        : "concern rejected: no current server-owned attempt").toJson());
+                return;
+            }
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("kind", n.kind().name());
             data.put("needsSupervisorAction", n.needsSupervisorAction());

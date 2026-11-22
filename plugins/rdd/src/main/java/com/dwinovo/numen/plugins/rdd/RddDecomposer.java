@@ -90,6 +90,24 @@ final class RddDecomposer {
         }, onFail);
     }
 
+    /** Concern replies are correlated host requests, never generic first-tool arguments. */
+    static void llmAskConcern(UUID companionId, String userContent,
+                              Consumer<String> onArguments, Runnable onFail) {
+        String content = situationBlock(companionId) + userContent;
+        var tool = RddDecomposerPrompt.DECOMPOSE_TOOL;
+        withPlannerEndpoint(companionId, "stage_b", endpoint -> {
+            RddPlugin.publishPlanningContext(companionId, "stage_b", content, RddDecomposerPrompt.SYSTEM_PROMPT, tool);
+            return NumenLlmClient.forEndpoint(endpoint).chatStreaming(List.of(new ConvoState.Msg.User(content)),
+                    List.of(tool), RddDecomposerPrompt.SYSTEM_PROMPT, null,
+                    new LlmObservation("supervisor", companionId.toString(), "stage_b", RddMonitor::publish));
+        }, result -> {
+            AssistantTurn turn = result == null ? null : result.turn();
+            if (turn == null || !turn.hasToolCalls() || turn.toolCalls().size() != 1
+                    || !tool.name().equals(turn.toolCalls().get(0).name())) { onFail.run(); return; }
+            onArguments.accept(turn.toolCalls().get(0).arguments());
+        }, onFail);
+    }
+
     private static <T> void withPlannerEndpoint(UUID companionId, String stage,
             java.util.function.Function<LlmEndpoint, java.util.concurrent.CompletableFuture<T>> send,
             Consumer<T> onResult, Runnable onFail) {
@@ -400,6 +418,32 @@ final class RddDecomposer {
                     });
                 },
                 () -> done.accept(List.of())));
+    }
+
+    record ConcernPlan(List<SubtaskSpec> specs, RddStageBSpecParser.ConcernProposal proposal) {}
+
+    /** Same Stage-B prompt, knowledge, endpoint and publication guards; old list callers stay unchanged. */
+    static void decomposeConcernSpecs(UUID companionId, TaskChain owner, long ownerRevision,
+                                     String theme, int attempt, List<String> completed, String hint,
+                                     String concernRef, Consumer<ConcernPlan> done) {
+        PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
+        var miningContext = RddMiningCapabilityCheck.capture(companionId);
+        String reviewHint = hint + "\n\nConcern review ref=" + concernRef
+                + "\nReturn concern_review with this exact ref, a proposal, reason and basis. "
+                + "A proposal is not host verification. If evidence is missing use DEFERRED and an actionable resume_condition.";
+        dispatchStageB(companionId, theme, owner, ownerRevision, attempt, completed, reviewHint,
+                snapshot, new java.util.ArrayList<>(RddDeathSpotFacts.knownFailuresFor(companionId)), RddPlanningKnowledge.HOST,
+                () -> { var runtime = RddPlugin.runtime(companionId); return runtime == null ? null : runtime.chain(); },
+                content -> llmAskConcern(companionId, content, arguments -> {
+                    var parsed = RddStageBSpecParser.parseDetailed(arguments);
+                    var proposal = RddStageBSpecParser.parseConcernProposal(arguments, concernRef);
+                    RddMiningCapabilityCheck.filter(miningContext, RddPlanGuard.normalizeConditions(parsed.specs()),
+                            theme, snapshot.availableCounts(), guarded -> {
+                        RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
+                                RddPlanningPolicy.appliedRules(theme, "stage_b"), guarded.dropped(), guarded.reused());
+                        done.accept(new ConcernPlan(stageBPublished(parsed, guarded, theme), proposal));
+                    });
+                }, () -> done.accept(new ConcernPlan(List.of(), null))));
     }
 
     /**

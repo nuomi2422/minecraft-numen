@@ -859,6 +859,7 @@ public final class RddPlugin implements NumenPlugin {
             return withAssets(uuid, "<rdd><enabled>true</enabled><active>true</active>"
                     + "<primary_status>" + chain.primaryStatus() + "</primary_status>"
                     + retrievalTaskFields(chain)
+                    + "<concern_review>" + escape(new com.google.gson.Gson().toJson(RddNegotiationInbox.reviewSnapshot(uuid))) + "</concern_review>"
                     + "<subtask>" + escape(current.id()) + "</subtask>"
                     + "<current_task>" + escape(current.description()) + "</current_task>"
                     + "<done_when>" + escape(String.valueOf(current.condition())) + "</done_when>"
@@ -1486,6 +1487,34 @@ private static String withAssets(UUID companionId, String rddContext) {
      * 是的话走 {@link #insertRecoveryNode}：在当前一级**追加一个恢复节点**（PENDING，末尾），
      * 其余节点原样保留；取回后再回到主线。只有插入失败才回落到原来的整段重写。
      */
+    /** Explicit current-owner review action. Merely observing a stale message never calls this. */
+    static boolean requestConcernReview(UUID companionId, String ref, String evidence) {
+        RddRuntime runtime = runtime(companionId);
+        if (runtime == null) return false;
+        TaskChain chain = runtime.chain();
+        RddNegotiationInbox.ReviewTicket review;
+        synchronized (chain) {
+            if (runtime(companionId) != runtime) return false;
+            review = RddNegotiationInbox.beginReview(companionId, ref, evidence, chain);
+        }
+        if (review == null) return false;
+        try {
+            String hint = RddNegotiationInbox.negotiationHint(review.entry().message(), chain.currentSubtask())
+                    + "\nCurrent owner evidence/action: " + evidence;
+            boolean accepted = requestReplan(companionId, "concern review: " + review.entry().reason(),
+                    RddReplanTransition.Trigger.NEGOTIATION, hint, true, null, null, null, review);
+            if (!accepted) RddNegotiationInbox.deferReview(companionId, review, null,
+                    "review admission refused (owner state or bounded budget)",
+                    "current owner supplies new evidence after the admission dependency or budget changes");
+            return accepted;
+        } catch (RuntimeException failed) {
+            if (chain.primaryStatus() == PrimaryGoalStatus.REPLANNING) chain.resumeFromReplanning();
+            RddNegotiationInbox.deferReview(companionId, review, null, "review request failed: " + failed.getClass().getSimpleName(),
+                    "current owner resolves the request dependency and explicitly submits new evidence");
+            return false;
+        }
+    }
+
     static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation, String soldierHint) {
         return requestReplan(companionId, reason, fromNegotiation, soldierHint, false);
     }
@@ -1517,6 +1546,14 @@ private static String withAssets(UUID companionId, String rddContext) {
                                          String soldierHint, boolean skipRecoverySideTask,
                                          Runnable acceptedSideEffect,
                                          RddSurvivalGate.Decision survivalDecision, Object survivalToken) {
+        return requestReplan(companionId, reason, trigger, soldierHint, skipRecoverySideTask,
+                acceptedSideEffect, survivalDecision, survivalToken, null);
+    }
+
+    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,
+                                         String soldierHint, boolean skipRecoverySideTask, Runnable acceptedSideEffect,
+                                         RddSurvivalGate.Decision survivalDecision, Object survivalToken,
+                                         RddNegotiationInbox.ReviewTicket concernReview) {
         boolean fromNegotiation = trigger == RddReplanTransition.Trigger.NEGOTIATION;
         // 只有普通失败驱动才可能走“缺失型恢复”路由；SURVIVAL 的 skip=true 保证它一定进 REPLANNING，
         // 不会被恢复支线/插节点提前 return（否则 Detector 会把“已点名恢复”误签成“已抢占”）。
@@ -1543,6 +1580,8 @@ private static String withAssets(UUID companionId, String rddContext) {
         RddRuntime rt = RUNTIMES.get(companionId);
         if (rt == null) return false;
         TaskChain chain = rt.chain();
+        if (concernReview != null && !RddNegotiationInbox.current(concernReview, chain)) return false;
+        var concernScope = RddNegotiationInbox.Scope.capture(chain);
         // 死亡恢复结算可能落在"链已走完/没有当前一级"的时刻：currentPrimary() 为空时
         // 下一行会 NPE，被外层 catch 吞成一句 warn，看起来像"重规划没发生"。
         if (chain.currentPrimary() == null) return false;
@@ -1602,6 +1641,8 @@ private static String withAssets(UUID companionId, String rddContext) {
             if (survival ? !RddReplanTransition.requirePlanningServer(companionId, survivalToken, chain, server)
                     : server == null) {
                 if (!survival) chain.resumeFromReplanning();
+                if (concernReview != null) RddNegotiationInbox.deferReview(companionId, concernReview, null,
+                        "planning server unavailable", "current owner re-establishes server identity and supplies new evidence");
                 return true;
             }
             var snap = planningSnapshot(companionId);
@@ -1671,8 +1712,7 @@ private static String withAssets(UUID companionId, String rddContext) {
             // 2026-11-13：不能再按 fromNegotiation 三元判断 —— SURVIVAL 走事实变化入口但不是协商。
             int planningAttempt = RddReplanTransition.planningAttempt(trigger);
             // completedStages 也不能丢（重规划与懒展开在这一项上曾不一致）。
-            RddDecomposer.decomposeSpecsWithHint(companionId, chain, ownerRevision, theme, planningAttempt,
-                    new java.util.ArrayList<>(chain.satisfiedStages()), hint,
+            java.util.function.Consumer<java.util.List<com.dwinovo.numen.rdd.api.SubtaskSpec>> applyPlan =
                     specs -> onServer(server, ticket, () -> {
                         try {
                             java.util.function.Supplier<java.util.List<Subtask>> replace = () -> {
@@ -1687,7 +1727,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                                 return subs;
                             };
                             java.util.function.Consumer<java.util.List<Subtask>> afterApplied = subs -> {
-                                RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废
+                                RddNegotiationInbox.retireScope(companionId, chain, concernScope); // never erase a newer control or its pending premise
                                 saveRuntimes();
                                 publishTaskSnapshot(companionId, "replanned", observationToken);
                                 RddMonitor.publish("replanned", Map.of("companionId", companionId.toString(),
@@ -1713,7 +1753,31 @@ private static String withAssets(UUID companionId, String rddContext) {
                                 try { chain.resumeFromReplanning(); } catch (RuntimeException ignore) { }
                             }
                         }
-                    }));
+                    });
+            if (concernReview == null) {
+                RddDecomposer.decomposeSpecsWithHint(companionId, chain, ownerRevision, theme, planningAttempt,
+                        new java.util.ArrayList<>(chain.satisfiedStages()), hint, applyPlan);
+            } else {
+                RddDecomposer.decomposeConcernSpecs(companionId, chain, ownerRevision, theme, planningAttempt,
+                        new java.util.ArrayList<>(chain.satisfiedStages()), hint, concernReview.entry().ref(), result ->
+                            onServer(server, ticket, () -> {
+                                if (!RddNegotiationInbox.current(concernReview, chain)) {
+                                    RddNegotiationInbox.deferReview(companionId, concernReview, null,
+                                            "review owner no longer current", "current owner explicitly reassesses with new evidence");
+                                    return;
+                                }
+                                RddNegotiationInbox.deferReview(companionId, concernReview, result.proposal(),
+                                        result.proposal() == null ? "empty or uncorrelated planner review; no host evidence"
+                                                : "planner proposal received, but no typed host verifier for this premise",
+                                        result.proposal() != null && !result.proposal().resumeCondition().isBlank()
+                                                ? result.proposal().resumeCondition()
+                                                : "current owner obtains a verifiable task/world premise and explicitly requests review");
+                                // An unverified premise never authorizes a new plan. Reuse the original bounded fallback.
+                                if (chain.primaryStatus() == PrimaryGoalStatus.REPLANNING) chain.resumeFromReplanning();
+                                saveRuntimes();
+                                publishTaskSnapshot(companionId, "concern_review_deferred", observationToken);
+                            }));
+            }
             return true;
         } catch (RuntimeException ex) {
             // 组装/发起规划同步失败也是已知失败；无回调的在飞请求仍保留 UNKNOWN。

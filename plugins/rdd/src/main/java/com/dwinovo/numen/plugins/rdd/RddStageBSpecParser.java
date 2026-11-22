@@ -42,6 +42,35 @@ final class RddStageBSpecParser {
 
     record Parsed(List<SubtaskSpec> specs, List<Skipped> skippedRequired) {}
 
+    enum ConcernProposalKind { FIXED, NOT_APPLICABLE, DEFERRED }
+    record ConcernProposal(String ref, ConcernProposalKind proposal, String reason, String basis, String resumeCondition) {
+        Map<String,Object> data() {
+            return Map.of("concern_ref", ref, "proposal", proposal.name(), "reason", reason,
+                    "basis", basis, "resume_condition", resumeCondition);
+        }
+    }
+    /** Optional proposal only. Existing plan decoding and callers are deliberately unchanged. */
+    static ConcernProposal parseConcernProposal(String argumentsJson, String expectedRef) {
+        if (expectedRef == null || expectedRef.isBlank()) return null;
+        try {
+            JsonObject root = GSON.fromJson(argumentsJson, JsonObject.class);
+            if (root == null || !root.has("concern_review") || !root.get("concern_review").isJsonObject()) return null;
+            JsonObject review = root.getAsJsonObject("concern_review");
+            String ref = reviewString(review, "concern_ref"), kind = reviewString(review, "proposal");
+            String reason = reviewString(review, "reason"), basis = reviewString(review, "basis");
+            String resume = reviewString(review, "resume_condition");
+            if (!expectedRef.equals(ref) || reason.isBlank() || basis.isBlank()) return null;
+            ConcernProposalKind proposal = ConcernProposalKind.valueOf(kind);
+            if (proposal == ConcernProposalKind.DEFERRED && resume.isBlank()) return null;
+            return new ConcernProposal(ref, proposal, reason, basis, resume);
+        } catch (RuntimeException invalid) { return null; }
+    }
+    private static String reviewString(JsonObject object, String name) {
+        if (!object.has(name) || !object.get(name).isJsonPrimitive() || !object.getAsJsonPrimitive(name).isString()) return "";
+        String value = object.get(name).getAsString().strip();
+        return value.length() > 1024 ? "" : value;
+    }
+
     static Parsed parseDetailed(String argumentsJson) {
         List<SubtaskSpec> out = new ArrayList<>();
         List<Skipped> skippedRequired = new ArrayList<>();

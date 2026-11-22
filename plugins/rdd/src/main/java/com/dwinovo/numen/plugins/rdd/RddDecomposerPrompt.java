@@ -365,7 +365,13 @@ final class RddDecomposerPrompt {
                     "properties", Map.of(
                             "subtasks", Map.of(
                                     "type", "array",
-                                    "items", subtaskItem)),
+                                    "items", subtaskItem),
+                            "concern_review", Map.of("type", "object", "properties", Map.of(
+                                    "concern_ref", Map.of("type", "string"),
+                                    "proposal", Map.of("type", "string", "enum", List.of("FIXED", "NOT_APPLICABLE", "DEFERRED")),
+                                    "reason", Map.of("type", "string"), "basis", Map.of("type", "string"),
+                                    "resume_condition", Map.of("type", "string")),
+                                    "required", List.of("concern_ref", "proposal", "reason", "basis"))),
                     "required", List.of("subtasks"));
         }
     };
