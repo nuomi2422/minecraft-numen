@@ -80,6 +80,20 @@ class RddCompletedMoveAssetTest {
         assertTrue(detail.contains("start_to_end_only") && detail.contains("route_proven") && detail.contains("false"), detail);
         assertTrue(detail.contains("not a continuous track") && detail.contains("world_id"), detail);
     }
+    @Test void burstWithoutObserverKeepsMoveBoundAndOtherAssets() {
+        UUID id = UUID.randomUUID(); var token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
+        var registry = new AssetRegistry();
+        registry.apply(new com.dwinovo.numen.rdd.api.Observation("base", "world_base", "fixture", "overworld", 1, Map.of("kind", "base")), "base", com.dwinovo.numen.rdd.api.AssetScope.GLOBAL, null);
+        registry.apply(new com.dwinovo.numen.rdd.api.Observation("other", "world_machine", "fixture", "overworld", 1, Map.of("kind", "machine")), "other", com.dwinovo.numen.rdd.api.AssetScope.GLOBAL, null);
+        for (int i = 0; i < 34; i++) {
+            var record = new Record(); record.bindIdentity(token); record.setState(TaskState.SUCCESS);
+            record.setResult(TaskResult.ok("done", Map.of("completed_move", fact())));
+            assertTrue(RddCompletedMoveAsset.project(id, record.publicId(), record, token, "overworld", registry, 100 + i));
+        }
+        assertEquals(32, registry.snapshot().stream().filter(e -> e.observation().type().equals("world_completed_move")).count());
+        assertTrue(registry.get("base").isPresent()); assertTrue(registry.get("other").isPresent());
+    }
+
     @Test void failedUnknownWrongIdentityAndNonfiniteNeverProject() {
         UUID id = UUID.randomUUID(); var token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
         var record = new Record(); record.bindIdentity(token); record.setState(TaskState.SUCCESS);
