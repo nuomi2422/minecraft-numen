@@ -137,6 +137,10 @@ final class RddNegotiationInbox {
             return ticket;
         }
     }
+    static synchronized ReviewTicket requestedReview(UUID id) {
+        Slots slots = PENDING.get(id);
+        return slots == null || slots.review == null ? null : slots.review.request();
+    }
     static boolean current(ReviewTicket ticket, TaskChain chain) {
         Scope scope = Scope.capture(chain);
         synchronized (RddNegotiationInbox.class) {

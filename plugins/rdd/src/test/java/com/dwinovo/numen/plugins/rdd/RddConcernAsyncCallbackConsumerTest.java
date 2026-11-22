@@ -35,6 +35,9 @@ public class RddConcernAsyncCallbackConsumerTest {
         String reviewPrompt();
         void completeReview(String json);
         void exhaustBudget();
+        void invalidateForDeath();
+        void planningTimeout();
+        int bodyClears();
         List<String> snapshots();
         List<String> reasons(String event);
     }
@@ -71,7 +74,8 @@ public class RddConcernAsyncCallbackConsumerTest {
                 .replace("// @LIMITS@", declaration(plugin,"    private static final int MAX_REPLAN_PER_PRIMARY =")
                         + "\n" + declaration(plugin,"    private static final int MAX_NEGOTIATION_REPLANS_PER_PRIMARY ="))
                 .replace("// @REQUEST@", request)
-                .replace("// @REVISION@", method(plugin,"    private static int nextPlanRevision("))
+                .replace("// @REVISION@", method(plugin,"    private static int nextPlanRevision(")
+                        + "\n" + methods(plugin,"    private static RddCallbackGuard.Ticket replacePlanningTicket("))
                 .replace("// @ON_SERVER@", method(plugin,"    static void onServer(MinecraftServer server,"))
                 .replace("// @ACCEPT_PLAN@", method(source(src,"RddGoalDriver"),"    static void acceptPlan(PrimaryGoal owner,"));
         List<String> javac = new ArrayList<>(List.of("-encoding", "UTF-8", "-proc:none", "-classpath",
@@ -95,7 +99,7 @@ public class RddConcernAsyncCallbackConsumerTest {
                 public record NumenPlayer(UUID id) { public UUID getUUID(){return id;}
                     public Level level(){return new Level();} public static class Level { public long getGameTime(){return 100;} } }
                 """);
-        for (String type : List.of("RddConcernTool", "RddNegotiationInbox", "RddReplanTransition", "RddSurvivalGate", "RddCallbackGuard", "RddStageBSpecParser", "RddKeys"))
+        for (String type : List.of("RddConcernTool", "RddNegotiationInbox", "RddReplanTransition", "RddSurvivalGate", "RddCallbackGuard", "RddStageBSpecParser", "RddKeys", "RddMainlineAdmission"))
             javac.add(src.resolve(type + ".java").toString());
         javac.add(root.resolve("api/common/src/main/java/com/dwinovo/numen/task/TaskResult.java").toString());
         var compiler = ToolProvider.getSystemJavaCompiler();
@@ -114,6 +118,12 @@ public class RddConcernAsyncCallbackConsumerTest {
     private static String declaration(String s, String prefix) {
         int a = start(s, prefix);
         return s.substring(a, s.indexOf(';', a) + 1);
+    }
+    private static String methods(String s, String signature) {
+        StringBuilder result=new StringBuilder();int from=0;
+        while(true){int at=s.indexOf(signature,from);if(at<0)return result.toString();
+            int end=s.indexOf("\n    }",s.indexOf('{',at));if(end<at)throw new AssertionError("SETUP: method end");
+            result.append(s,at,end+6).append('\n');from=end+6;}
     }
     private static String method(String s, String signature) {
         int a = start(s, signature), b = s.indexOf("\n    }", s.indexOf('{', a));
@@ -201,7 +211,9 @@ public class RddConcernAsyncCallbackConsumerTest {
 
     @Test void inFlightPauseMustNotDirectlyParkRetriedAttempt() {
         retrySameStep();
+        int clearedBefore=host.bodyClears();
         host.negotiate();
+        assertEquals(clearedBefore,host.bodyClears(),"stale concern cannot clear the new body owner");
         assertNoSecondPlan();
         assertEquals(SubtaskStatus.RUNNING, chain.currentSubtaskStatus(),
                 () -> "old PAUSE directly parked the new attempt: " + chain.pauseReason("s") + "; pause events=" + host.reasons("subtask_paused"));
@@ -252,6 +264,30 @@ public class RddConcernAsyncCallbackConsumerTest {
         host.negotiate(); assertEquals(SubtaskStatus.PAUSED,chain.currentSubtaskStatus());
         assertEquals(List.of(FRESH),host.reasons("subtask_paused"));
         assertEquals(OLD,host.review().get("reason_reported"));
+    }
+    @Test void deathInvalidatesPendingReviewWithoutPermanentlyOccupyingItsSlot() {
+        retrySameStep();host.negotiate();String ref=(String)host.review().get("concern_ref");
+        assertTrue(JsonParser.parseString(host.requestReview(ref,"before-death evidence")).getAsJsonObject().get("success").getAsBoolean());
+        host.completeReview("{\"subtasks\":[]}");assertEquals(1,host.queued());
+        host.invalidateForDeath();
+        assertEquals("DEFERRED",host.review().get("premise_disposition"));
+        assertEquals(OLD,host.review().get("reason_reported"));
+        assertTrue(host.review().get("host_reason").toString().contains("invalidated"));
+        activate();report("PAUSE",FRESH,"");
+        host.runNext();assertEquals(FRESH,host.pendingReason());
+        assertTrue(JsonParser.parseString(host.requestReview(ref,"after-death explicit current observation")).getAsJsonObject().get("success").getAsBoolean());
+        assertEquals(3,host.plannerCalls());
+    }
+    @Test void originalPlanningTimeoutDefersLostReviewAndAllowsExplicitNewEvidence() {
+        retrySameStep();host.negotiate();String ref=(String)host.review().get("concern_ref");
+        assertTrue(JsonParser.parseString(host.requestReview(ref,"before-timeout evidence")).getAsJsonObject().get("success").getAsBoolean());
+        host.planningTimeout();
+        assertEquals(PrimaryGoalStatus.PENDING,chain.primaryStatus());
+        assertEquals("DEFERRED",host.review().get("premise_disposition"));
+        assertEquals(OLD,host.review().get("reason_reported"));
+        activate();
+        assertTrue(JsonParser.parseString(host.requestReview(ref,"after-timeout new owner observation")).getAsJsonObject().get("success").getAsBoolean());
+        assertEquals(3,host.plannerCalls());
     }
     @Test void emptyReviewAndBudgetRefusalKeepActionableDeferredEntry() {
         retrySameStep(); host.negotiate(); String ref = (String)host.review().get("concern_ref");

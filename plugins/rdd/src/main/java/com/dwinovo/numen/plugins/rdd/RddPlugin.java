@@ -283,7 +283,7 @@ public final class RddPlugin implements NumenPlugin {
             }
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
             if (server == null) return false;
-            RddCallbackGuard.Ticket ticket = CALLBACKS.replace(uuid);
+            RddCallbackGuard.Ticket ticket = replacePlanningTicket(uuid);
             onServer(server, ticket, () -> beginPlanning(server, ticket, objective));
             return true;
         });
@@ -697,7 +697,7 @@ public final class RddPlugin implements NumenPlugin {
                     "registered", sinkOk, "source", source));
         }
         if (!plannedBySink) {
-            RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+            RddCallbackGuard.Ticket ticket = replacePlanningTicket(companionId);
             onServer(server, ticket, () -> beginPlanning(server, ticket, objective, source));
         }
         return "objective accepted by the supervisor (Stage-A planning started)";
@@ -748,7 +748,7 @@ public final class RddPlugin implements NumenPlugin {
         // 与并发 /goal 抢同一个 UUID pending，且只能靠目标文本判断"这条规划是不是重启"。
         // 现在直接把 requestId 带进本次 beginPlanning 的闭包，pending 用 remove(key,value) 原子认领；
         // 普通目标（requestId=0）会清掉遗留请求。代价：不写引擎 GoalState，面板以 rdd_status 为准。
-        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+        RddCallbackGuard.Ticket ticket = replacePlanningTicket(companionId);
         onServer(server, ticket, () -> beginPlanning(server, ticket, obj, "rdd_restart_mainline", requestId));
         return "mainline restart accepted: old chain discarded, new objective is being planned from scratch";
     }
@@ -1275,7 +1275,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (companionId == null || goal == null) throw new IllegalArgumentException("companion and goal required");
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
         if (server == null || !server.isSameThread()) throw new IllegalStateException("RDD bind requires server thread");
-        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+        RddCallbackGuard.Ticket ticket = replacePlanningTicket(companionId);
         onServer(server, ticket, () -> bindCurrent(companionId, goal));
     }
 
@@ -1707,7 +1707,7 @@ private static String withAssets(UUID companionId, String rddContext) {
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 重规划事实块生成失败 {}: {}", companionId, ex.toString());
             }
-            RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+            RddCallbackGuard.Ticket ticket = replacePlanningTicket(companionId, concernReview);
             // attempt：只有失败驱动才表示"上一版被判不可执行"（1）；协商与生存抢占是事实变化（0）。
             // 2026-11-13：不能再按 fromNegotiation 三元判断 —— SURVIVAL 走事实变化入口但不是协商。
             int planningAttempt = RddReplanTransition.planningAttempt(trigger);
@@ -1956,7 +1956,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 死亡失效不靠持久 chainId 猜身体代次；先撤本次在飞生存计划，再走原死亡恢复。
         RddRuntime survivalRuntime = RUNTIMES.get(companionId);
         RddReplanTransition.onDeath(companionId, survivalRuntime == null ? null : survivalRuntime.chain(),
-                () -> CALLBACKS.replace(companionId));
+                () -> replacePlanningTicket(companionId));
         // F2：任何写台账之前先恢复磁盘上的旧账（顺序反了会用旧账覆盖本次记录）
         ensureLedgerLoaded(companionId);
         try {
@@ -2896,7 +2896,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
         var stop = com.dwinovo.numen.agent.tool.ToolRegistry.get("task_stop");
         if (stop == null) throw new IllegalStateException("body stop unavailable; reset refused");
         stop.onServerCall("external-reset-" + id, new com.google.gson.JsonObject(), body, r -> { });
-        CALLBACKS.replace(id); // invalidate old asynchronous planner callbacks before clearing
+        replacePlanningTicket(id); // invalidate old asynchronous planner callbacks before clearing
         removeCurrent(id);
         if (RUNTIMES.containsKey(id) || java.nio.file.Files.exists(tasksDir.resolve(id + ".json")))
             throw new IllegalStateException("task removal incomplete; reset stopped");
@@ -2935,7 +2935,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
 
     public static void remove(UUID companionId) {
         if (companionId == null) return;
-        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+        RddCallbackGuard.Ticket ticket = replacePlanningTicket(companionId);
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
         if (server != null) onServer(server, ticket, () -> removeCurrent(companionId));
     }
@@ -2971,6 +2971,22 @@ private static String safeDeathAttacker(NumenPlayer body) {
                     "companionId", companionId.toString(), "reason", ex.toString(),
                     "memoryRetained", true));
         }
+    }
+
+    /** Invalidation must settle the captured pending review even when its guarded callback is dropped. */
+    private static RddCallbackGuard.Ticket replacePlanningTicket(UUID companionId) {
+        return replacePlanningTicket(companionId, null);
+    }
+    private static RddCallbackGuard.Ticket replacePlanningTicket(UUID companionId,
+                                                                 RddNegotiationInbox.ReviewTicket keepReview) {
+        var expected = RddNegotiationInbox.requestedReview(companionId);
+        var next = CALLBACKS.replace(companionId);
+        if (expected != null && expected != keepReview) {
+            RddNegotiationInbox.deferReview(companionId, expected, null,
+                    "planning callback invalidated before review could settle",
+                    "current owner re-observes after lifecycle change and explicitly requests with new evidence");
+        }
+        return next;
     }
 
     static RddCallbackGuard.Ticket planningTicket(UUID companionId) {

@@ -63,6 +63,20 @@ public final class ConcernAsyncHost implements RddConcernAsyncCallbackConsumerTe
         RddDecomposer.reviewPending=null;
         callback.accept(new RddDecomposer.ConcernPlan(List.of(),RddStageBSpecParser.parseConcernProposal(json,RddDecomposer.reviewRef)));
     }
+    public int bodyClears() { return RddPlugin.clearedBodies; }
+    public void planningTimeout() {
+        UUID id=player.getUUID();Map<UUID,Long> entered=new HashMap<>();entered.put(id,0L);
+        // Simulate no planner response. Real admission owns timeout and settlement, not this harness.
+        RddDecomposer.reviewPending=null;
+        RddMainlineAdmission.stopAfterObservation(id,rt.chain(),PrimaryGoalStatus.REPLANNING,entered,()->300_001L,
+            new RddMainlineAdmission.Host() {
+                public boolean sideActive(){return false;} public void activeProposal(){} public boolean negotiate(){return false;}
+                public void watchParked(){throw new AssertionError("timeout should recover");} public void recovering(){}
+                public void timeoutResumed(long waited){if(waited!=300_001L)throw new AssertionError(waited);}
+                public void timeoutFailed(long waited,RuntimeException failure){throw new AssertionError(failure);}
+            });
+    }
+    public void invalidateForDeath() { RddPlugin.invalidateForDeath(player.getUUID(),rt.chain()); }
     public void exhaustBudget() { RddPlugin.REPLAN_COUNTS.put(player.getUUID()+"|"+rt.chain().currentPrimary().id()+"|nego", 999); }
     public List<String> snapshots() { return List.copyOf(RddPlugin.snapshots); }
     public List<String> reasons(String event) { return List.copyOf(RddMonitor.reasons.getOrDefault(event, List.of())); }
@@ -90,10 +104,11 @@ final class RddPlugin {
     private static final Log LOG = new Log();
     static RddRuntime runtime(UUID id) { return RUNTIMES.get(id); }
     static boolean pauseEnabled() { return true; }
-    static void clearBody(UUID id) {}
+    static int clearedBodies;
+    static void clearBody(UUID id) { clearedBodies++; }
     static final class BodyState {}
     private static BodyState bodyState(UUID id) { return null; }
-    private static void clearBodyIfSame(UUID id, BodyState prior) {}
+    private static void clearBodyIfSame(UUID id, BodyState prior) { clearedBodies++; }
     private static boolean isMissingAssetCause(UUID id, String reason) { throw new AssertionError("not a failure replan"); }
     private static String describeMissing(UUID id) { throw new AssertionError(); }
     private static boolean insertRecoveryNode(UUID id, String what, String why) { throw new AssertionError(); }
@@ -104,6 +119,9 @@ final class RddPlugin {
     }
     private static void publishTaskSnapshot(UUID id, String why, Object token) { snapshots.add(why); }
     private static void saveRuntimes() {}
+    static void invalidateForDeath(UUID id,TaskChain chain) {
+        RddReplanTransition.onDeath(id,chain,()->replacePlanningTicket(id));
+    }
     // @REQUEST@
     // @REVISION@
     // @ON_SERVER@
