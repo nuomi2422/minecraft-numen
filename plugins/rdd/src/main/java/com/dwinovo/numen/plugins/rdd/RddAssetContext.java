@@ -76,7 +76,8 @@ final class RddAssetContext {
                     + (entry.observation().observedAt() > 0 ? entry.observation().observedAt() : "UNKNOWN")
                     + " 状态=" + entry.status() + " 世界=" + knownText(v.get("world_id"))
                     + " 来源=" + knownText(entry.observation().source()) + " 范围=UNKNOWN";
-            if (line.length() <= maxChars) return line;
+            String suffix = assets.size() > 1 ? "；其余未展示" : "";
+            if (line.length() + suffix.length() <= maxChars) return line + suffix;
         }
         return omitted.length() <= maxChars ? omitted : "";
     }

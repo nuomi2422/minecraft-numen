@@ -214,7 +214,8 @@ class RddAssetStoreTest {
                         "x", 1, "y", 64, "z", 2)), "base-B", AssetScope.GLOBAL, null);
         String facts = RddAssetContext.renderForPlanner(registry, 160);
         assertTrue(facts.length() <= 160);
-        assertTrue(facts.equals("未投递") || (facts.contains("world-B") && facts.contains("source-B")), facts);
+        assertTrue(facts.contains("world-B") && facts.contains("source-B"), facts);
+        assertTrue(facts.contains("其余未展示"), facts);
         assertFalse(facts.contains("当前世界"), facts);
     }
 
@@ -224,7 +225,18 @@ class RddAssetStoreTest {
                 Map.of("kind", "base", "label", "home", "dimension", "overworld", "x", 1, "y", 64, "z", 2)),
                 "base", AssetScope.GLOBAL, null);
         String facts = RddAssetContext.renderForPlanner(registry, 160);
-        assertTrue(facts.equals("未投递") || (facts.contains("世界=UNKNOWN") && facts.contains("legacy-source")), facts);
+        assertTrue(facts.contains("世界=UNKNOWN") && facts.contains("legacy-source"), facts);
+    }
+
+    @Test void plannerDisclosesSkippedLongLatestRecord() {
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(new Observation("short", "world_base", "source-A", "overworld", 100L,
+                Map.of("kind", "base", "label", "home", "world_id", "world-A")), "a", AssetScope.GLOBAL, null);
+        registry.apply(new Observation("long", "world_base", "source-B", "overworld", 200L,
+                Map.of("kind", "base", "label", "L".repeat(300), "world_id", "world-B")), "b", AssetScope.GLOBAL, null);
+        String facts = RddAssetContext.renderForPlanner(registry, 160);
+        assertTrue(facts.length() <= 160);
+        assertTrue(facts.contains("其余未展示") || facts.equals("未投递"), facts);
     }
 
     private static Observation observation(String type, Map<String, Object> value) {
