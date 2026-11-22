@@ -102,6 +102,11 @@ public final class AcxSessionManager {
             return current == null ? null : current.bodyToken();
         }
 
+        public Object yieldBinding() {
+            AcxRunBinding current = binding;
+            return current == null ? null : current.yieldBinding();
+        }
+
         public boolean isBodyInvalidated() {
             return binding == null;
         }

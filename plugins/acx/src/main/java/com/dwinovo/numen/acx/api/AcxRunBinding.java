@@ -1,7 +1,8 @@
 package com.dwinovo.numen.acx.api;
 
 /** Immutable session owner. The host token is opaque to the pure JVM engine. */
-public record AcxRunBinding(String ownerId, Object bodyToken) {
+public record AcxRunBinding(String ownerId, Object bodyToken, Object yieldBinding) {
+    public AcxRunBinding(String ownerId, Object bodyToken) { this(ownerId, bodyToken, null); }
     public AcxRunBinding {
         ownerId = ownerId == null ? "" : ownerId;
     }
