@@ -232,7 +232,7 @@ final class RddStagePlanner {
                     .map(e -> "- " + e.getKey() + " ×" + e.getValue())
                     .collect(Collectors.joining("\n"));
             sb.append("【最近一次扫描的背包线索，当前需核实】：\n").append(items).append("\n\n")
-                    .append("核实仍持有后再复用装备和材料，不要把历史线索当作当前持有。\n\n");
+                    .append("规划前优先核对这份已观测库存；确认仍持有后不要重复获取，不要把历史线索当作当前持有。\n\n");
         } else {
             // 【C-补】空背包也要显式告知，避免"没块"与"空背包"无法区分（正是难查的根因）。
             if (snap != null && snap.hasInventoryScanTime())
