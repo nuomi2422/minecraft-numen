@@ -48,6 +48,8 @@ public final class LearnedSkillBodyResolverImpl implements LearnedSkillBodyResol
                 if (!required && !optional) continue;
                 String ref = condition.substring(required ? "requires:".length() : "optional:".length());
                 if (ref.equals(componentRef)) selected = true;
+                // A package cannot establish its own required dependency by reading itself.
+                if (required && ref.equals(packageRef)) { missingRequired = true; continue; }
                 Resolution dependency = read.apply(ref);
                 if (!dependency.available()) {
                     if (required) missingRequired = true;
