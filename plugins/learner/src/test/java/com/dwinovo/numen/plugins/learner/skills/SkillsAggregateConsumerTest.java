@@ -700,18 +700,18 @@ class SkillsAggregateConsumerTest {
         assertEquals(STEP_REF,member.get("ref").getAsString());
         assertFalse(invokeRealLoader(packageArgs(PACK_REF,"skill:other@v1")).get("success").getAsBoolean());
         assertFalse(invokeRealLoader(packageArgs(PACK_REF,"skill:"+STEP+"@v2")).get("success").getAsBoolean());
-        register("need-missing", "missing", "purpose", "body", List.of("scene:overnight:package","requires:"+STEP_REF,"requires:skill:missing@v1"));
+        register("need-missing", "missing", "need missing purpose", "body", List.of("scene:overnight:package","requires:"+STEP_REF,"requires:skill:missing@v1"));
         assertFalse(invokeRealLoader(packageArgs("skill:need-missing@v1",STEP_REF)).get("success").getAsBoolean());
-        register("optional-missing", "optional", "purpose", "body", List.of("scene:overnight:package","requires:"+STEP_REF,"optional:skill:missing@v1"));
+        register("optional-missing", "optional", "optional missing purpose", "body", List.of("scene:overnight:package","requires:"+STEP_REF,"optional:skill:missing@v1"));
         var degraded=invokeRealLoader(packageArgs("skill:optional-missing@v1",STEP_REF));
         assertTrue(degraded.get("success").getAsBoolean()); assertEquals("degraded",degraded.get("availability").getAsString());
-        register("trade-component", "trade", "purpose", "trade body", List.of("scene:trading:component"));
-        register("cross-pack", "cross", "purpose", "body", List.of("scene:overnight:package","requires:skill:trade-component@v1"));
+        register("trade-component", "trade", "trade component purpose", "trade body", List.of("scene:trading:component"));
+        register("cross-pack", "cross", "cross package purpose", "body", List.of("scene:overnight:package","requires:skill:trade-component@v1"));
         var cross=invokeRealLoader(packageArgs("skill:cross-pack@v1","skill:trade-component@v1"));
         assertTrue(cross.get("success").getAsBoolean()); assertEquals("trade body",cross.get("body").getAsString());
-        register("self-pack", "self", "purpose", "body", List.of("scene:overnight:package","requires:skill:self-pack@v1"));
+        register("self-pack", "self", "self package purpose", "body", List.of("scene:overnight:package","requires:skill:self-pack@v1"));
         assertFalse(invokeRealLoader(packageArgs("skill:self-pack@v1","skill:self-pack@v1")).get("success").getAsBoolean());
-        register("outer-pack", "outer", "purpose", "body", List.of("scene:overnight:package","requires:"+PACK_REF));
+        register("outer-pack", "outer", "outer package purpose", "body", List.of("scene:overnight:package","requires:"+PACK_REF));
         assertFalse(invokeRealLoader(packageArgs("skill:outer-pack@v1",PACK_REF)).get("success").getAsBoolean());
         SkillRegistry.open(dir.resolve("skills.jsonl")).retire(STEP,"negative control");
         assertFalse(invokeRealLoader(packageArgs(PACK_REF,STEP_REF)).get("success").getAsBoolean());
@@ -738,7 +738,7 @@ class SkillsAggregateConsumerTest {
 
     @Test
     void packageComponentReadDegradesOnlyForMissingOptionalAndNeverFollowsNestedReferences() throws Exception {
-        register(STEP, "component", "purpose", STEP_BODY,
+        register(STEP, "component", "component distinct purpose", STEP_BODY,
                 List.of("scene:overnight:component", "requires:skill:nested-missing@v1"));
         register(PACK, "package", "purpose", PACK_BODY,
                 List.of("scene:overnight:package", "requires:" + STEP_REF, "requires:" + STEP_REF,
@@ -748,7 +748,7 @@ class SkillsAggregateConsumerTest {
         assertTrue(result.available());
         assertEquals("degraded", result.availability());
         assertEquals(STEP_BODY, result.body());
-        register("missing-required-pack", "other", "purpose", "body", List.of("scene:overnight:package",
+        register("missing-required-pack", "other", "missing required purpose", "body", List.of("scene:overnight:package",
                 "requires:" + STEP_REF, "requires:skill:missing@v1"));
         var denied = resolver.resolveComponent(COMPANION, "skill:missing-required-pack@v1", STEP_REF,
                 LearnedSkillBodyResolver.View.EXECUTOR);
