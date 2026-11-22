@@ -47,6 +47,24 @@ class RddSubmissionRationaleHandoffTest {
     void cleanup() { RationaleContext.clear(id); }
 
     @Test
+    void offlinePlannerMustNotTreatUnscannedInventoryAsEmpty() {
+        var unscanned = PlanningAssetSnapshot.from(Map.of(), null, null);
+        var scannedEmpty = PlanningAssetSnapshot.from(Map.of(), 123L, null);
+        var scannedItem = PlanningAssetSnapshot.from(Map.of("minecraft:bread", 2), 123L, null);
+        List<String> sent = new ArrayList<>();
+        for (var snapshot : List.of(unscanned, scannedEmpty, scannedItem)) {
+            // Mirrors planStages' no-player branch; dispatchStages is the real final-send path.
+            String facts = RddPlannerFacts.block(snapshot.availableCounts());
+            RddStagePlanner.dispatchStages(id, OBJECTIVE, null, snapshot, facts,
+                    (companion, objective, stage, failures) -> "", () -> "", sent::add);
+        }
+        assertAll(
+                () -> assertTrue(sent.get(0).contains("手上：未观测"), sent.get(0)),
+                () -> assertTrue(sent.get(1).contains("手上：空"), sent.get(1)),
+                () -> assertTrue(sent.get(2).contains("bread×2"), sent.get(2)));
+    }
+
+    @Test
     void stageADispatchPreservesACompleteBoundedFactsBlock() {
         String facts = "<situation>\n位置：fixture\n世界里：<known_world_assets>\n"
                 + "historical; not current; re-check.\n- asset_id=base label=home\n</known_world_assets>\n</situation>";
