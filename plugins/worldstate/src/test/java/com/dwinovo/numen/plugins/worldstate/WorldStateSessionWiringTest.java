@@ -524,6 +524,7 @@ class WorldStateSessionWiringTest {
         Class<?> modType=loader.loadClass(PKG+"WorldStateMod");
         Class<?> busType=loader.loadClass("net.neoforged.neoforge.common.NeoForge");
         Object bus=busType.getField("EVENT_BUS").get(null);
+        ((java.util.List<?>)bus.getClass().getField("listeners").get(bus)).clear();
         modType.getConstructor().newInstance();
         Object host=host(config.resolve("focus-event"));
         var bind=modType.getDeclaredMethod("bindService",serviceType); bind.setAccessible(true); bind.invoke(null,host);
@@ -550,6 +551,7 @@ class WorldStateSessionWiringTest {
     @Test void oldServerStopDoesNotClearNewServerFocus() throws Exception {
         Class<?> modType=loader.loadClass(PKG+"WorldStateMod");
         Object bus=loader.loadClass("net.neoforged.neoforge.common.NeoForge").getField("EVENT_BUS").get(null);
+        ((java.util.List<?>)bus.getClass().getField("listeners").get(bus)).clear();
         modType.getConstructor().newInstance(); Object host=host(config.resolve("old-stop"));
         var bind=modType.getDeclaredMethod("bindService",serviceType); bind.setAccessible(true); bind.invoke(null,host);
         Object oldServer=server(config.resolve("old"),true,false), newServer=server(config.resolve("new"),true,false);
