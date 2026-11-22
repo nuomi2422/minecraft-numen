@@ -26,9 +26,17 @@ class RddYieldConsumerTest {
   files.put("com/dwinovo/numen/plugins/rdd/RddReportYieldTool.java",Files.readString(root.resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddReportYieldTool.java")));
   files.put("com/dwinovo/numen/agent/tool/NumenTool.java","package com.dwinovo.numen.agent.tool; import java.util.*; import java.util.function.*; import com.google.gson.JsonObject; import com.dwinovo.numen.entity.NumenPlayer; public interface NumenTool {String name();String description();Map<String,Object> parameterSchema();void onServerCall(String id,JsonObject a,NumenPlayer p,Consumer<String> reply);}");
   files.put("com/dwinovo/numen/agent/tool/Schema.java","package com.dwinovo.numen.agent.tool; import java.util.*; public class Schema { public static Schema object(){return new Schema();} public Schema string(String a,String b){return this;} public Schema integer(String a,String b,int c,int d){return this;} public Map<String,Object> build(){return Map.of();} }");
-  files.put("com/dwinovo/numen/entity/NumenPlayer.java","package com.dwinovo.numen.entity; import java.util.*; public class NumenPlayer { public UUID getUUID(){return new UUID(0,1);} }");
+  files.put("net/minecraft/server/MinecraftServer.java","package net.minecraft.server; public class MinecraftServer { public boolean isSameThread(){return true;} }");
+  files.put("net/minecraft/server/level/ServerPlayer.java","package net.minecraft.server.level; import java.util.*; public class ServerPlayer {public UUID id; public ServerPlayer(UUID id){this.id=id;} public UUID getUUID(){return id;} }");
+  files.put("com/dwinovo/numen/entity/NumenPlayer.java","package com.dwinovo.numen.entity; import java.util.*; import net.minecraft.server.MinecraftServer; public class NumenPlayer { public UUID getUUID(){return new UUID(0,1);} public boolean isOwnedByPlayer(UUID u){return new UUID(0,2).equals(u);} public MinecraftServer getServer(){return new MinecraftServer();} }");
+  files.put("com/dwinovo/numen/api/ServerIdentityProvider.java","package com.dwinovo.numen.api; import net.minecraft.server.MinecraftServer; public interface ServerIdentityProvider {record Snapshot(String worldId,String serverSession){} Snapshot snapshot(MinecraftServer s);}");
+  files.put("com/dwinovo/numen/api/NumenPlugins.java","package com.dwinovo.numen.api; public class NumenPlugins {public static <T> T capability(Class<T> c){return c.cast((ServerIdentityProvider)(s->new ServerIdentityProvider.Snapshot(\"world\",\"server\")));}}");
+  files.put("com/dwinovo/numen/agent/tool/OwnerAuthenticatedTool.java",Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/agent/tool/OwnerAuthenticatedTool.java")));
   files.put("com/dwinovo/numen/task/TaskResult.java","package com.dwinovo.numen.task; import java.util.*; import com.google.gson.Gson; public record TaskResult(boolean success,String message,Map<String,Object> data) { public static TaskResult fail(String m){return new TaskResult(false,m,Map.of());} public static TaskResult ok(String m,Map<String,Object>d){return new TaskResult(true,m,d);} public String toJson(){return new Gson().toJson(this);} }");
-  files.put("com/dwinovo/numen/plugins/rdd/RddPlugin.java","package com.dwinovo.numen.plugins.rdd; import java.util.*;import com.dwinovo.numen.rdd.core.*; public class RddPlugin {public static RddRuntime rt; static RddRuntime runtime(UUID id){return rt;} static void saveRuntimes(){} static void publishTaskSnapshot(UUID id,String why){} }");
+  String plugin=Files.readString(root.resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddPlugin.java"));
+  int ps=plugin.indexOf("    private static com.dwinovo.numen.rdd.core.YieldOwnerBinding yieldTickets");
+  int pe=plugin.indexOf("    /** Disk handoffs survive",ps); assertTrue(ps>=0 && pe>ps);
+  files.put("com/dwinovo/numen/plugins/rdd/RddPlugin.java","package com.dwinovo.numen.plugins.rdd; import java.util.*;import com.dwinovo.numen.rdd.core.*; import com.dwinovo.numen.entity.NumenPlayer; import net.minecraft.server.level.ServerPlayer; public class RddPlugin {public static RddRuntime rt; static RddRuntime runtime(UUID id){return rt;} static void saveRuntimes(){} static void publishTaskSnapshot(UUID id,String why){} "+plugin.substring(ps,pe)+" }");
   String host=Files.readString(root.resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/SideTaskHost.java"));
   String signature="    static SideTask activeYieldOwner(UUID companionId) {";
   int at=host.indexOf(signature); assertTrue(at>=0, "production owner method missing");
@@ -37,14 +45,14 @@ class RddYieldConsumerTest {
   files.put("com/dwinovo/numen/plugins/rdd/SideTaskHost.java", "package com.dwinovo.numen.plugins.rdd; import java.util.*; import com.dwinovo.numen.rdd.side.*; class SideTaskHost { static final SideTaskEngine ENGINE=new SideTaskEngine(null,null); "+realMethod+" }");
   files.put("com/dwinovo/numen/plugins/rdd/RddMonitor.java","package com.dwinovo.numen.plugins.rdd; import java.util.*; class RddMonitor {static void publish(String s,Map<String,Object> d){} }");
   files.put("com/dwinovo/numen/plugins/rdd/YieldHarness.java","""
-package com.dwinovo.numen.plugins.rdd; import com.google.gson.*;import com.dwinovo.numen.rdd.core.*;import com.dwinovo.numen.entity.NumenPlayer; public class YieldHarness { public static String call(RddRuntime rt,String id,String asset,int observed,int take){RddPlugin.rt=rt;SideTaskHost.ENGINE.runtime().remove(new java.util.UUID(0,1)); if(asset.startsWith("SIDE:")) { SideTaskHost.ENGINE.runtime().activate(new com.dwinovo.numen.rdd.side.SideTask(new java.util.UUID(0,1),"side-42","sleep",42,0,0,100,null,"",java.util.Map.of(),null)); asset=asset.substring(5); }JsonObject a=new JsonObject();a.addProperty("expected_subtask_id",id);a.addProperty("asset_key",asset);a.addProperty("observed",observed);a.addProperty("take",take);String[] result={null};new RddReportYieldTool().onServerCall("wire",a,new NumenPlayer(),v->result[0]=v);return result[0];} }
+package com.dwinovo.numen.plugins.rdd; import com.google.gson.*;import com.dwinovo.numen.rdd.core.*;import com.dwinovo.numen.entity.NumenPlayer; import net.minecraft.server.level.ServerPlayer; import java.util.*; public class YieldHarness { static final NumenPlayer body=new NumenPlayer(); static ServerPlayer player(boolean owner){return new ServerPlayer(new UUID(0,owner?2:3));} public static String issue(RddRuntime rt){RddPlugin.rt=rt;return RddPlugin.issueYieldTicket(player(true),body,System.currentTimeMillis());} public static String call(RddRuntime rt,String id,String asset,int observed,int take,String ticket,boolean owner,boolean direct){RddPlugin.rt=rt;SideTaskHost.ENGINE.runtime().remove(new UUID(0,1)); if(asset.startsWith("SIDE:")){SideTaskHost.ENGINE.runtime().activate(new com.dwinovo.numen.rdd.side.SideTask(new UUID(0,1),"side-42","sleep",42,0,0,100,null,"",Map.of(),null));asset=asset.substring(5);}JsonObject a=new JsonObject();a.addProperty("expected_subtask_id",id);a.addProperty("asset_key",asset);a.addProperty("observed",observed);a.addProperty("take",take);a.addProperty("_yield_ticket",ticket);String[] result={null};if(direct)new RddReportYieldTool().onServerCall("wire",a,body,v->result[0]=v);else new RddReportYieldTool().onOwnerCall("wire",a,body,player(owner),v->result[0]=v);return result[0];} }
 """);
   var args=new ArrayList<String>(List.of("-encoding","UTF-8","-proc:none","-classpath",System.getProperty("java.class.path")+File.pathSeparator+Path.of(TaskChain.class.getProtectionDomain().getCodeSource().getLocation().toURI())+File.pathSeparator+Path.of(Gson.class.getProtectionDomain().getCodeSource().getLocation().toURI()),"-d",tmp.toString()));
   for(var e:files.entrySet()){Path p=tmp.resolve(e.getKey());Files.createDirectories(p.getParent());Files.writeString(p,e.getValue(),StandardCharsets.UTF_8);args.add(p.toString());}
   assertEquals(0,ToolProvider.getSystemJavaCompiler().run(null,null,null,args.toArray(String[]::new)));
   loader=new URLClassLoader(new URL[]{tmp.toUri().toURL()},RddYieldConsumerTest.class.getClassLoader()) {
    @Override protected synchronized Class<?> loadClass(String n, boolean resolve) throws ClassNotFoundException {
-    if(n.startsWith("com.dwinovo.numen.plugins.rdd.") || n.startsWith("com.dwinovo.numen.entity.NumenPlayer")
+    if(n.startsWith("com.dwinovo.numen.plugins.rdd.") || n.startsWith("net.minecraft.server.") || n.equals("com.dwinovo.numen.api.NumenPlugins") || n.startsWith("com.dwinovo.numen.api.ServerIdentityProvider") || n.startsWith("com.dwinovo.numen.entity.NumenPlayer")
        || n.startsWith("com.dwinovo.numen.agent.tool.") || n.equals("com.dwinovo.numen.task.TaskResult")) {
       Class<?> c=findLoadedClass(n); if(c==null)c=findClass(n); if(resolve)resolveClass(c); return c;
     }
@@ -52,16 +60,34 @@ package com.dwinovo.numen.plugins.rdd; import com.google.gson.*;import com.dwino
    }
   };harness=loader.loadClass("com.dwinovo.numen.plugins.rdd.YieldHarness");
  }
+ @Test void oldSameIdRequestMustNotMutateReplacementChain() throws Exception {
+  var goal = new Goal("g","goal",List.of(new PrimaryGoal("p","p",List.of(Subtask.hardCoded("s","s",Map.of("asset_key","minecraft:iron_pickaxe","minimum",1))))));
+  TaskChain oldChain=new TaskChain(goal); oldChain.startCurrent();
+  TaskChain replacement=new TaskChain(goal); replacement.startCurrent();
+  assertNotEquals(oldChain.chainInstanceId(),replacement.chainInstanceId());
+  long before=replacement.stateVersion();
+  var call=harness.getMethod("call",RddRuntime.class,String.class,String.class,int.class,int.class,String.class,boolean.class,boolean.class);
+  String ticket=(String)harness.getMethod("issue",RddRuntime.class).invoke(null,new RddRuntime(oldChain,new AssetRegistry()));
+  JsonObject late=JsonParser.parseString((String)call.invoke(null,new RddRuntime(replacement,new AssetRegistry()),"s","minecraft:iron_pickaxe",9,9,ticket,true,false)).getAsJsonObject();
+  assertFalse(late.get("success").getAsBoolean(),"old request with same id must be rejected");
+  assertEquals(1,replacement.currentMinimum("s")); assertEquals(before,replacement.stateVersion());
+ }
+
  @Test void toolRejectsMismatchedAssetAndPreservesValidPaths() throws Exception {
   TaskChain c=new TaskChain(new Goal("g","goal",List.of(new PrimaryGoal("p","p",List.of(Subtask.hardCoded("s","s",Map.of("asset_key","minecraft:iron_pickaxe","minimum",1))))))); c.startCurrent();
-  RddRuntime rt=new RddRuntime(c,new AssetRegistry()); var call=harness.getMethod("call",RddRuntime.class,String.class,String.class,int.class,int.class);
-  JsonObject denied=JsonParser.parseString((String)call.invoke(null,rt,"s","minecraft:hay_block",9,9)).getAsJsonObject();
+  RddRuntime rt=new RddRuntime(c,new AssetRegistry()); var call=harness.getMethod("call",RddRuntime.class,String.class,String.class,int.class,int.class,String.class,boolean.class,boolean.class);
+  var issue=harness.getMethod("issue",RddRuntime.class);
+  JsonObject denied=JsonParser.parseString((String)call.invoke(null,rt,"s","minecraft:hay_block",9,9,issue.invoke(null,rt),true,false)).getAsJsonObject();
   assertFalse(denied.get("success").getAsBoolean());assertEquals(1,c.currentMinimum("s"));
   long version=c.stateVersion();
-  JsonObject side=JsonParser.parseString((String)call.invoke(null,rt,"s","SIDE:minecraft:iron_pickaxe",9,9)).getAsJsonObject();
+  JsonObject side=JsonParser.parseString((String)call.invoke(null,rt,"s","SIDE:minecraft:iron_pickaxe",9,9,issue.invoke(null,rt),true,false)).getAsJsonObject();
   assertFalse(side.get("success").getAsBoolean()); assertEquals(1,c.currentMinimum("s")); assertEquals(version,c.stateVersion());
-  assertTrue(side.get("message").getAsString().contains("side-42"));
-  JsonObject ok=JsonParser.parseString((String)call.invoke(null,rt,"s","minecraft:iron_pickaxe",9,9)).getAsJsonObject();
+  String ticket=(String)issue.invoke(null,rt);
+  JsonObject unauthorized=JsonParser.parseString((String)call.invoke(null,rt,"s","minecraft:iron_pickaxe",9,9,ticket,false,false)).getAsJsonObject();
+  assertFalse(unauthorized.get("success").getAsBoolean());
+  JsonObject direct=JsonParser.parseString((String)call.invoke(null,rt,"s","minecraft:iron_pickaxe",9,9,ticket,true,true)).getAsJsonObject();
+  assertFalse(direct.get("success").getAsBoolean());
+  JsonObject ok=JsonParser.parseString((String)call.invoke(null,rt,"s","minecraft:iron_pickaxe",9,9,ticket,true,false)).getAsJsonObject();
   assertTrue(ok.get("success").getAsBoolean());assertEquals(9,c.currentMinimum("s"));
  }
 }

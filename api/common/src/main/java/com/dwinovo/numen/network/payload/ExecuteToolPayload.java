@@ -159,7 +159,9 @@ public record ExecuteToolPayload(UUID entityUuid,
                     new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
         };
         try {
-            tool.onServerCall(p.toolCallId(), args, companion, reply);
+            if (tool instanceof com.dwinovo.numen.agent.tool.OwnerAuthenticatedTool protectedTool)
+                protectedTool.onOwnerCall(p.toolCallId(), args, companion, player, reply);
+            else tool.onServerCall(p.toolCallId(), args, companion, reply);
         } catch (RuntimeException ex) {
             replyError(player, p, "invalid arguments: " + ex.getMessage());
         }

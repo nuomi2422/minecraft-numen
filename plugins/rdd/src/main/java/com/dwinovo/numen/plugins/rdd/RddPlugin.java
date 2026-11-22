@@ -434,9 +434,43 @@ public final class RddPlugin implements NumenPlugin {
 
     private static final Map<UUID, String> LAST_CONTEXT = new java.util.concurrent.ConcurrentHashMap<>();
 
+    private static com.dwinovo.numen.rdd.core.YieldOwnerBinding yieldTickets =
+            new com.dwinovo.numen.rdd.core.YieldOwnerBinding(1024, 120_000L);
+
+    /** Server-thread snapshot, never reconstructed from model arguments. */
+    static com.dwinovo.numen.rdd.core.YieldOwnerBinding.Identity yieldIdentity(NumenPlayer body) {
+        if (body == null || body.getServer() == null || !body.getServer().isSameThread()) return null;
+        var provider = com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.ServerIdentityProvider.class);
+        var server = provider == null ? null : provider.snapshot(body.getServer());
+        var rt = runtime(body.getUUID());
+        if (server == null || server.worldId() == null || server.worldId().isBlank()
+                || server.serverSession() == null || server.serverSession().isBlank() || rt == null) return null;
+        var chain = rt.chain();
+        var task = chain.currentSubtask();
+        if (task == null) return null;
+        var side = SideTaskHost.activeYieldOwner(body.getUUID());
+        return new com.dwinovo.numen.rdd.core.YieldOwnerBinding.Identity(body.getUUID(), server.serverSession(),
+                chain.chainInstanceId(), chain.planRevision(), task.id(), side == null ? "MAINLINE" : "SIDE",
+                side == null ? "" : side.instanceId(), side == null ? 0 : side.generation());
+    }
+
+    /** Caller identity is checked before ticket creation or consumption. */
+    static String issueYieldTicket(ServerPlayer caller, NumenPlayer body, long now) {
+        if (caller == null || body == null || !body.isOwnedByPlayer(caller.getUUID())) return null;
+        var identity = yieldIdentity(body);
+        return identity == null ? null : yieldTickets.issue(identity, now);
+    }
+
+    static boolean consumeYieldTicket(ServerPlayer caller, NumenPlayer body, String ticket, long now) {
+        if (caller == null || body == null || !body.isOwnedByPlayer(caller.getUUID())) return false;
+        var identity = yieldIdentity(body);
+        return identity != null && yieldTickets.valid(ticket, identity, now);
+    }
+
     /** Disk handoffs survive; in-flight planning and cached world observations do not. */
     private static void clearWorldState() {
         CALLBACKS.clear(() -> {
+            yieldTickets = new com.dwinovo.numen.rdd.core.YieldOwnerBinding(1024, 120_000L);
             RddReplanTransition.clearAll();
             RddDeferredDeathReplan.clearAll();
             DECOMPOSING.clear();

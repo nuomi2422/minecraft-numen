@@ -28,7 +28,7 @@ import java.util.function.Consumer;
  * 见 {@code TaskChain.raiseCurrentMinimum}：下调会让硬判据当场变真（假完成）。
  * 所以这里收到比当前目标更小的数时，只记录、不改判据，并明确回执"目标未变"。
  */
-final class RddReportYieldTool implements NumenTool {
+final class RddReportYieldTool implements NumenTool, com.dwinovo.numen.agent.tool.OwnerAuthenticatedTool {
 
     @Override
     public String name() {
@@ -57,6 +57,15 @@ final class RddReportYieldTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
+        reply.accept(com.dwinovo.numen.task.TaskResult.fail("yield requires authenticated owner context; refresh task and retry").toJson());
+    }
+
+    @Override
+    public void onOwnerCall(String toolCallId, JsonObject args, NumenPlayer companion, net.minecraft.server.level.ServerPlayer caller, Consumer<String> reply) {
+        if (!RddPlugin.consumeYieldTicket(caller, companion, str(args, "_yield_ticket"), System.currentTimeMillis())) {
+            reply.accept(com.dwinovo.numen.task.TaskResult.fail("yield identity expired or unavailable; refresh task before retry").toJson());
+            return;
+        }
         try {
             RddRuntime rt = RddPlugin.runtime(companion.getUUID());
             if (rt == null) {
