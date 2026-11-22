@@ -169,8 +169,10 @@ class RddHomeReserveFreshnessTest {
     @Test void failedBedRecheckDoesNotTurnOldReserveIntoCurrentEvidence() {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - MINUTE, fullReserve());
-        // Real observer returns without writing when inspectBase returns null; the old entry remains.
-        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known(), "old entry after missing bed is not current confirmation");
+        // Simulate UNKNOWN result applied to the existing current entry; the observation remains retained.
+        registry.markUnknown("world_base//372/68/715");
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known(), "unknown recheck is not current confirmation");
+        assertTrue(registry.get("world_base//372/68/715").isPresent());
     }
 
     @Test void explicitlyIdentifiedFreshBaseRemainsKnownPositiveControl() {

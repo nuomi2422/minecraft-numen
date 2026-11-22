@@ -94,12 +94,12 @@ class RddBaseFactsConsumerTest {
         String owner = Files.readString(plugin().resolve("RddBaseFacts.java"));
         String observer = Files.readString(plugin().resolve("RddWorldAssetObserver.java"));
         assertTrue(method(world, "static BaseSnapshot inspectBase(").contains("return RddBaseFacts.inspectBase(ap, condition);"));
-        assertTrue(observer.contains("RddWorldFacts.inspectBase(companion, Map.of())"));
+        assertTrue(observer.contains("RddBaseFacts.inspectBaseResult(companion, Map.of())"));
         assertTrue(world.contains("record BaseSnapshot(String dimension, BlockPos spawn, boolean complete,"));
         for (String name : List.of("shelterAround", "stockedAround", "litAround")) {
             assertTrue(method(world, "private static boolean " + name + "(").contains("return RddBaseFacts." + name + "(ap, condition);"));
         }
-        String inspect = method(owner, "static BaseSnapshot inspectBase(");
+        String inspect = method(owner, "static BaseInspection inspectBaseResult(");
         int dimension = inspect.indexOf("getLevel(ap.getRespawnDimension())");
         int preflight = inspect.indexOf("getChunkNow(x, z)");
         int bed = inspect.indexOf("getBlockState(spawn)");

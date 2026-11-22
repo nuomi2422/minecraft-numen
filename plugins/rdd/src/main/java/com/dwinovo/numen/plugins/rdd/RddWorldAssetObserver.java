@@ -63,8 +63,12 @@ final class RddWorldAssetObserver {
 
     private static int observeBase(NumenPlayer companion, AssetRegistry registry,
                                    com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
-        RddWorldFacts.BaseSnapshot base = RddWorldFacts.inspectBase(companion, Map.of());
-        if (base == null) return 0;
+        RddBaseFacts.BaseInspection inspection = RddBaseFacts.inspectBaseResult(companion, Map.of());
+        RddWorldFacts.BaseSnapshot base = inspection.snapshot();
+        if (base == null) {
+            markBaseRecheck(registry, identity, inspection);
+            return 0;
+        }
         BlockPos pos = base.spawn();
         Map<String, Object> value = common("base", "个人重生基地", base.dimension(), pos, "LAZY");
         if (identity != null) {
@@ -79,6 +83,27 @@ final class RddWorldAssetObserver {
                 + "; completion=" + base.complete());
         apply(companion.getUUID(), registry, "base|" + base.dimension() + "|" + pos.asLong(), "world_base", base.dimension(), value);
         return 1;
+    }
+
+    private static void markBaseRecheck(AssetRegistry registry,
+                                        com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity,
+                                        RddBaseFacts.BaseInspection inspection) {
+        if (identity == null || identity.worldId() == null || identity.worldId().isBlank()
+                || identity.worldId().equalsIgnoreCase("unknown") || identity.worldId().startsWith("unknown-")
+                || identity.serverSession() == null || identity.serverSession().isBlank()
+                || identity.serverSession().equalsIgnoreCase("unknown")) return;
+        for (var entry : RddAssetContext.worldAssets(registry)) {
+            var v = entry.observation().value();
+            if (!"base".equals(v.get("kind")) || !identity.worldId().equals(v.get("world_id"))
+                    || !identity.serverSession().equals(v.get("server_session"))) continue;
+            boolean exact = inspection.spawn() != null && !inspection.spawn().equals(BlockPos.ZERO)
+                    && inspection.dimension().equals(v.get("dimension"))
+                    && v.get("x") instanceof Number x && x.intValue() == inspection.spawn().getX()
+                    && v.get("y") instanceof Number y && y.intValue() == inspection.spawn().getY()
+                    && v.get("z") instanceof Number z && z.intValue() == inspection.spawn().getZ();
+            if (exact && inspection.status() == RddBaseFacts.BaseStatus.ABSENT) registry.invalidate(entry.assetId());
+            else if (entry.status() == com.dwinovo.numen.rdd.api.AssetStatus.OBSERVED) registry.markUnknown(entry.assetId());
+        }
     }
 
     private static int observeStructures(NumenPlayer companion, AssetRegistry registry) {
