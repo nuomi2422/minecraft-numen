@@ -93,6 +93,63 @@ class SyncReceiptCompletionTest {
         assertEquals(registry, Files.readString(dir.resolve("skills.jsonl")));
         assertEquals(UsageLedger.EvidenceLevel.NONE, f.ledger().all().getFirst().evidence());
     }
+    @Test void malformedLedgerRestoresThenSameHistoricalMemoCommitsAfterExactRepair() throws Exception {
+        Fixture f = fixture();
+        String originalLedger = Files.readString(f.ledger().file());
+        String originalRegistry = Files.readString(dir.resolve("skills.jsonl"));
+        var batch = f.queue().drain(3);
+        var completion = start(batch, new AtomicReference<>(CURRENT));
+        assertTrue(completion.permits(f.memo().id()));
+        Files.writeString(f.ledger().file(), originalLedger + "{bad-json\n");
+        assertEquals(UsageLedger.ReadStatus.MALFORMED, f.ledger().readSnapshot().status());
+        assertEquals(1, f.ledger().all().size(), "partial diagnostic row is not trusted provenance");
+        assertRetry(f, consume(completion, f, batch));
+        assertEquals("SKILL_SYNC_SOURCE_UNKNOWN", completion.target(f.memo().id()).reason());
+        Files.writeString(f.ledger().file(), originalLedger);
+        var retryQueue = new MemoQueue(f.queue().file());
+        var retryBatch = retryQueue.drain(3);
+        assertEquals(List.of(f.memo()), retryBatch);
+        var repaired = new Fixture(new UsageLedger(dir), retryQueue, f.memo());
+        var done = consume(start(retryBatch, new AtomicReference<>(CURRENT)), repaired, retryBatch);
+        assertEquals(1, done.settlement().committed());
+        assertEquals(0, new MemoQueue(retryQueue.file()).size());
+        assertEquals(originalLedger, Files.readString(f.ledger().file()), "no tool re-dispatch or replacement receipt");
+        assertEquals(originalRegistry, Files.readString(dir.resolve("skills.jsonl")));
+        assertEquals(UsageLedger.EvidenceLevel.NONE, repaired.ledger().all().getFirst().evidence());
+    }
+
+    @Test void revisedCurrentSkillKeepsHistoricalBodyButCannotCommitOldReceipt() throws Exception {
+        Fixture f = fixture();
+        var batch = f.queue().drain(3);
+        var completion = start(batch, new AtomicReference<>(CURRENT));
+        assertTrue(completion.permits(f.memo().id()));
+        String replacement = "replacement synchronous method";
+        String ref = SkillBodyStore.write(dir, "sync-consume", 2, Integer.toHexString(replacement.hashCode()), replacement);
+        var revisedDraft = new ArtifactDraft(ArtifactKind.EXPERIENCE, "craft", "craft safely", replacement,
+                List.of("craft"), List.of(), List.of(), "LOW", List.of(), List.of("revision"), "EXECUTOR");
+        var revised = SkillRegistrar.registryFor(dir).register(revisedDraft, "sync-consume", ref, true);
+        assertEquals(SkillRegistry.Outcome.REVISE, revised.outcome());
+        assertEquals(2, revised.entry().version());
+        String historical = TrajectorySlices.forMemo(dir, COMPANION, f.memo());
+        assertTrue(historical.contains("original synchronous craft method"));
+        assertFalse(historical.contains(replacement));
+        assertRetry(f, consume(completion, f, batch));
+        assertEquals("SKILL_VERSION_CHANGED", completion.target(f.memo().id()).reason());
+        assertNotNull(new SyncSkillFeedback().confirm(new UsageLedger(dir), f.ledger().all().getFirst()));
+    }
+
+    @Test void revokedCurrentSkillKeepsReceiptHistoryButRejectsActualCommit() throws Exception {
+        Fixture f = fixture();
+        var batch = f.queue().drain(3);
+        var completion = start(batch, new AtomicReference<>(CURRENT));
+        assertTrue(completion.permits(f.memo().id()));
+        SkillRegistrar.registryFor(dir).retire("sync-consume", "test-only lifecycle intervention");
+        assertRetry(f, consume(completion, f, batch));
+        assertEquals("SKILL_REVOKED", completion.target(f.memo().id()).reason());
+        assertTrue(TrajectorySlices.forMemo(dir, COMPANION, f.memo()).contains("original synchronous craft method"));
+        assertEquals(UsageLedger.EvidenceLevel.NONE, f.ledger().all().getFirst().evidence());
+    }
+
     @Test void ledgerLossAfterInitialCheckRestoresOriginalEvenWithContractOff() throws Exception {
         Fixture f = fixture();
         Files.writeString(dir.resolve(ReviewContractGate.FILE_NAME), "{\"mode\":\"off\"}");
