@@ -37,8 +37,7 @@ class MineEffectsConsumerTest {
                 "    private List<BlockPos> droppedItems() {", "    private boolean nearKnownOre(BlockPos p) {",
                 "    private void noteProgress() {", "    private TaskState stalledOut() {",
                 "    protected Map<String, Object> resultData() {")) {
-            methods += MineHarvestRecoveryConsumerTest.method(source, signature) + "
-";
+            methods += MineHarvestRecoveryConsumerTest.method(source, signature) + "\n";
         }
         Path src = temp.resolve("src"), out = temp.resolve("classes");
         Files.createDirectories(out);
