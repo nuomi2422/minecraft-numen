@@ -10,10 +10,12 @@ import java.util.*;
 /** Offline integration compiles the real brain, bridge and store with boundary stubs.
  * Calls reconcile and rememberFinished directly; does not test Minecraft scheduling or TaskSlot callbacks. */
 class TaskFocusBrainBridgeIntegrationTest {
-    @Test void brainToRealStore() throws Exception { runFixture(); }
-    public static void main(String[] args) throws Exception { runFixture(); }
+    @Test void brainToRealStore() throws Exception { runFixture(false); }
+    @Test void managedRetirementReachesFocusProjection() throws Exception { runFixture(true); }
+    public static void main(String[] args) throws Exception { runFixture(false); }
 
-    static void runFixture() throws Exception {
+    static void runFixture() throws Exception { runFixture(false); }
+    static void runFixture(boolean managed) throws Exception {
         Path root = Path.of("").toAbsolutePath();
         while (root != null && !Files.exists(root.resolve("plugins/worldstate/src/main/java/com/dwinovo/numen/plugins/worldstate/TaskFocusLeaseBridge.java"))) root = root.getParent();
         if (root == null) throw new IllegalStateException("repository root not found");
@@ -121,9 +123,31 @@ class TaskFocusBrainBridgeIntegrationTest {
                   }
                 }
                 """);
+            if (managed) {
+                String fixture=sources.get("com.dwinovo.numen.plugins.worldstate.Fixture");
+                int start=fixture.indexOf("    class Resolver implements LearnedSkillBodyResolver");
+                int end=fixture.indexOf("    var storeHost=new WorldStateService();",start);
+                if(start<0 || end<0) throw new AssertionError("SETUP: resolver fixture boundaries");
+                fixture=fixture.substring(0,start)+"""
+                    var dir=java.nio.file.Files.createTempDirectory("managed-focus-");
+                    var registry=com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.registryFor(dir);
+                    var artifact=new com.dwinovo.numen.plugins.learner.contract.ArtifactDraft(com.dwinovo.numen.plugins.learner.contract.ArtifactKind.EXPERIENCE,"focus","purpose",text,List.of("test"),List.of(),List.of("scene:test:package","focus:environment@v1"),"LOW",List.of(),List.of("sample"),"EXECUTOR");
+                    var ref=com.dwinovo.numen.plugins.learner.skills.SkillBodyStore.write(dir,"demo",1,Integer.toHexString(text.hashCode()),text);
+                    check(registry.register(artifact,"demo",ref,true).stored(),"managed registration succeeds");
+                    var resolver=new com.dwinovo.numen.plugins.learner.skills.LearnedSkillBodyResolverImpl(dir); NumenPlugins.resolver=resolver;
+                    """+fixture.substring(end);
+                fixture=fixture.replace(" check(resolver.resolutions==1,\"reconcile must acquire only once\");", "");
+                int stableStart=fixture.indexOf("    int stableReads=resolver.snapshotReads;");
+                int stableEnd=fixture.indexOf("    var other=pins.acquire",stableStart);
+                if(stableStart<0 || stableEnd<0) throw new AssertionError("SETUP: stable probe boundaries");
+                fixture=fixture.substring(0,stableStart)+fixture.substring(stableEnd);
+                fixture=fixture.replace("resolver.withdrawn=true;", "check(registry.retire(\"demo\",\"test\").stored(),\"real managed retirement succeeds\");");
+                sources.put("com.dwinovo.numen.plugins.worldstate.Fixture",fixture);
+            }
             sources.put("net.neoforged.neoforge.server.ServerLifecycleHooks", "package net.neoforged.neoforge.server; public class ServerLifecycleHooks { public static net.minecraft.server.MinecraftServer getCurrentServer(){return null;} }");
             addBrainStubs(sources);
-            List<String> args = new ArrayList<>(List.of("-encoding","UTF-8","-proc:none","-d",tmp.toString()));
+            String cp=System.getProperty("java.class.path");
+            List<String> args = new ArrayList<>(List.of("-encoding","UTF-8","-proc:none","-classpath",cp,"-d",tmp.toString()));
             for (var entry : sources.entrySet()) {
                 Path file=tmp.resolve(entry.getKey().replace('.', '/')+".java"); Files.createDirectories(file.getParent()); Files.writeString(file,entry.getValue()); args.add(file.toString());
             }
@@ -136,7 +160,9 @@ class TaskFocusBrainBridgeIntegrationTest {
             if (compiler==null) throw new AssertionError("JDK compiler required");
             if (compiler.run(null,null,null,args.toArray(String[]::new))!=0) throw new AssertionError("fixture compilation failed");
             // Isolate all tested classes so existing build outputs cannot shadow fresh sources.
-            try (var loader=new URLClassLoader(new URL[]{tmp.toUri().toURL()},ClassLoader.getPlatformClassLoader())) {
+            var urls=new ArrayList<URL>(); urls.add(tmp.toUri().toURL());
+            if (managed) for(String part:cp.split(java.util.regex.Pattern.quote(java.io.File.pathSeparator))) if(!part.isBlank()) urls.add(Path.of(part).toUri().toURL());
+            try (var loader=new URLClassLoader(urls.toArray(URL[]::new),ClassLoader.getPlatformClassLoader())) {
                 Class<?> fixture=loader.loadClass("com.dwinovo.numen.plugins.worldstate.Fixture");
                 fixture.getMethod("run").invoke(null);
             }
