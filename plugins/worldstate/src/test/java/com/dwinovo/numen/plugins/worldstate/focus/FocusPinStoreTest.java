@@ -128,6 +128,31 @@ class FocusPinStoreTest {
         assertEquals(0,st.sweepBatch(2000,1));
     }
 
+    @Test void liveSubjectsRotateFairlyAndBudgetDoesNotRevisitWithinPass() {
+        FocusPinStore st=new FocusPinStore(); UUID a=UUID.randomUUID(),b=UUID.randomUUID(),c=UUID.randomUUID();
+        var aa=st.acquire(a,W,S,D,"environment","v1","o",1000,60000,0,0,0);
+        var bb=st.acquire(b,W,S,D,"environment","v1","o",1000,60000,0,0,0);
+        var cc=st.acquire(c,W,S,D,"environment","v1","o",1000,60000,0,0,0);
+        assertEquals(3,st.sweepBatch(1500,100),"one pass examines each existing subject once");
+        assertEquals(1,st.sweepBatch(1500,1)); // a rotates behind b,c
+        assertTrue(st.release(a,"o",aa.leaseId()));
+        assertEquals(1,st.sweepBatch(61000,1)); // b expires at exact deadline
+        assertFalse(st.release(b,"o",bb.leaseId()));
+        assertEquals(1,st.sweepBatch(61000,1)); // c follows b
+        assertFalse(st.release(c,"o",cc.leaseId()));
+        assertEquals(0,st.sweepBatch(61000,1));
+    }
+    @Test void partialExpiryRemovesOnlyExpiredHolderAndKeepsLivePin() {
+        FocusPinStore st=new FocusPinStore(); UUID c=UUID.randomUUID();
+        var old=st.acquire(c,W,S,D,"environment","v1","old",1000,1000,0,0,0);
+        var live=st.acquire(c,W,S,D,"entities","v1","live",1000,60000,0,0,0);
+        assertEquals(1,st.sweepBatch(2000,1));
+        assertFalse(st.release(c,"old",old.leaseId()));
+        var remaining=st.active(c,W,S,2000);
+        assertEquals(1,remaining.size()); assertEquals(live.pin().id(),remaining.getFirst().id());
+        assertTrue(st.release(c,"live",live.leaseId()));
+    }
+
     @Test void pinSurvivesTwoRoundsThenExpires() {
         FocusPinStore st = new FocusPinStore();
         UUID c = UUID.randomUUID();
