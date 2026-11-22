@@ -75,7 +75,8 @@ final class RddRiskAdmission {
             // 167 §B6：把基地备用接进门。只收紧不放松——基地达标时与 checkWithRecovery 完全一致。
             var baseRegistry = RddPlugin.assets(ap.getUUID());
             // 2026-11-04（TC-RESERVE-01）：known / 缺口 / 阶段从**同一份**基地视图派生，共用一个 now。
-            var home = RddHomeFacts.HomeView.of(baseRegistry, System.currentTimeMillis());
+            var home = RddHomeFacts.HomeView.of(baseRegistry, System.currentTimeMillis(),
+                    RddPlugin.cachedHomeIdentity(ap.getUUID()));
             var verdict = com.dwinovo.numen.rdd.policy.RiskGate.checkWithBase(lv, inv, hasRecovery,
                     home.reserve().known(), home.reserve().shortfall());
             // 167 §B3：基地阶段是高风险动作的硬依赖（只收紧）。物资齐了但家里没底，同样不许进。

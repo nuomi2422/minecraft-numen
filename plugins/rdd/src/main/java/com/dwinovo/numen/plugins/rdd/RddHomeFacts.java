@@ -42,8 +42,13 @@ final class RddHomeFacts {
     }
 
     static String blockFor(AssetRegistry registry, Map<String, Integer> inventory, long nowMillis) {
-        // TC-RESERVE-01：选家与新鲜度只做一次，下面每一行都从这一份视图派生。
-        HomeView view = HomeView.of(registry, nowMillis);
+        return blockFor(registry, inventory, nowMillis, null);
+    }
+
+    static String blockFor(AssetRegistry registry, Map<String, Integer> inventory, long nowMillis,
+                           com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
+        // TC-RESERVE-01: all consumers derive from the same identity-checked view.
+        HomeView view = HomeView.of(registry, nowMillis, identity);
         if (view.base() == null) {
             // 没观测到基地不等于没有基地：只报 NO_HOME，并明确 reserve 未知（不写 0）。
             return HomeSummary.block(HomeSummary.lines(HomeStage.NO_HOME, null, null, null, null,
@@ -147,7 +152,11 @@ final class RddHomeFacts {
                     boolean houseUsable, HomeReserve reserve, HomeStage stage) {
 
         static HomeView of(AssetRegistry registry, long nowMillis) {
-            AssetRegistry.AssetEntry base = freshestBase(registry);
+            return of(registry, nowMillis, null);
+        }
+
+        static HomeView of(AssetRegistry registry, long nowMillis, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
+            AssetRegistry.AssetEntry base = freshestBase(registry, identity);
             if (base == null) {
                 return new HomeView(null, Map.of(), 0L, false, HomeReserve.unobserved(), HomeStage.NO_HOME);
             }
@@ -187,11 +196,15 @@ final class RddHomeFacts {
      * 原来按「最新一条」取，经常拿到别的床旁边那个空箱子 → 上下文一直显示没有备用，
      * 而 1554 条观测里其实有铁镐。改成优先按**当前重生点**挑（{@link BaseSelector}）。
      */
-    private static AssetRegistry.AssetEntry freshestBase(AssetRegistry registry) {
-        if (registry == null) return null;
+    private static AssetRegistry.AssetEntry freshestBase(AssetRegistry registry, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
+        if (registry == null || identity == null || !knownIdentity(identity.worldId()) || !knownIdentity(identity.serverSession())) return null;
         java.util.List<AssetRegistry.AssetEntry> bases = new java.util.ArrayList<>();
         for (var e : RddAssetContext.worldAssets(registry)) {
             if (!"base".equals(String.valueOf(e.observation().value().get("kind")))) continue;
+            var v = e.observation().value();
+            if (e.status() != com.dwinovo.numen.rdd.api.AssetStatus.OBSERVED
+                    || !identity.worldId().equals(v.get("world_id"))
+                    || !identity.serverSession().equals(v.get("server_session"))) continue;
             bases.add(e);
         }
         if (bases.isEmpty()) return null;
@@ -203,6 +216,10 @@ final class RddHomeFacts {
         }
         int idx = com.dwinovo.numen.rdd.core.BaseSelector.pick(cands, RESPX.get(), RESPY.get(), RESPZ.get());
         return idx < 0 ? null : bases.get(idx);
+    }
+
+    private static boolean knownIdentity(String s) {
+        return s != null && !s.isBlank() && !s.equalsIgnoreCase("unknown") && !s.startsWith("unknown-");
     }
 
     /**

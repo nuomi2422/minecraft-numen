@@ -28,17 +28,19 @@ class RddHomeReserveFreshnessTest {
 
     private static final long MINUTE = 60_000L;
     private static final long TTL = HomeSummary.DEFAULT_STALE_AFTER_MS;
+    private static final com.dwinovo.numen.api.ServerIdentityProvider.Snapshot ID =
+            new com.dwinovo.numen.api.ServerIdentityProvider.Snapshot("world-A", "session-A");
 
     @Test
     void staleButFullReserveMustNotCountAsStocked() {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - TTL - 1, fullReserve());
 
-        assertFalse(RddHomeFacts.reserveKnown(registry, now), "过期读数不算 known");
-        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.stageOf(registry, now), "过期足量不得进 STOCKED");
-        assertEquals(List.of(), RddHomeFacts.reserveShortfall(registry, now), "未知沿用空列表协议");
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known(), "过期读数不算 known");
+        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID).stage(), "过期足量不得进 STOCKED");
+        assertEquals(List.of(), RddHomeFacts.HomeView.of(registry, now, ID).reserve().shortfall(), "未知沿用空列表协议");
 
-        String block = RddHomeFacts.blockFor(registry, null, now);
+        String block = RddHomeFacts.blockFor(registry, null, now, ID);
         assertTrue(block.contains("reserve=UNKNOWN"), block);
         assertTrue(block.contains("blocking=reserve_unobserved"), block);
         assertTrue(block.contains("next=scan_reserve_containers"), block);
@@ -50,13 +52,13 @@ class RddHomeReserveFreshnessTest {
         AssetRegistry atTtl = baseRegistry(now - TTL, fullReserve());
         AssetRegistry overTtl = baseRegistry(now - TTL - 1, fullReserve());
 
-        assertTrue(RddHomeFacts.reserveKnown(atTtl, now), "age=TTL 仍可用");
-        assertEquals(HomeStage.STOCKED, RddHomeFacts.stageOf(atTtl, now));
-        assertTrue(RddHomeFacts.blockFor(atTtl, null, now).contains("home_stage=STOCKED"));
+        assertTrue(RddHomeFacts.HomeView.of(atTtl, now, ID).reserve().known(), "age=TTL 仍可用");
+        assertEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(atTtl, now, ID).stage());
+        assertTrue(RddHomeFacts.blockFor(atTtl, null, now, ID).contains("home_stage=STOCKED"));
 
-        assertFalse(RddHomeFacts.reserveKnown(overTtl, now), "age=TTL+1 不可用");
-        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.stageOf(overTtl, now));
-        assertTrue(RddHomeFacts.blockFor(overTtl, null, now).contains("home_stage=RESPAWN_BOUND"));
+        assertFalse(RddHomeFacts.HomeView.of(overTtl, now, ID).reserve().known(), "age=TTL+1 不可用");
+        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(overTtl, now, ID).stage());
+        assertTrue(RddHomeFacts.blockFor(overTtl, null, now, ID).contains("home_stage=RESPAWN_BOUND"));
     }
 
     @Test
@@ -64,9 +66,9 @@ class RddHomeReserveFreshnessTest {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now + MINUTE, fullReserve());
 
-        assertFalse(RddHomeFacts.reserveKnown(registry, now), "时间戳在未来不可信");
-        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.stageOf(registry, now));
-        String block = RddHomeFacts.blockFor(registry, null, now);
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known(), "时间戳在未来不可信");
+        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID).stage());
+        String block = RddHomeFacts.blockFor(registry, null, now, ID);
         assertTrue(block.contains("reserve=UNKNOWN"), block);
     }
 
@@ -75,11 +77,11 @@ class RddHomeReserveFreshnessTest {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - MINUTE, Map.of());
 
-        assertTrue(RddHomeFacts.reserveKnown(registry, now), "新鲜空 Map 是已知，不是未知");
-        assertFalse(RddHomeFacts.reserveShortfall(registry, now).isEmpty(), "已知空要报真实缺口");
-        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.stageOf(registry, now));
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known(), "新鲜空 Map 是已知，不是未知");
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().shortfall().isEmpty(), "已知空要报真实缺口");
+        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID).stage());
 
-        String block = RddHomeFacts.blockFor(registry, null, now);
+        String block = RddHomeFacts.blockFor(registry, null, now, ID);
         assertTrue(block.contains("reserve=KNOWN but no critical items"), block);
         assertTrue(block.contains("blocking=reserve_short:") || block.contains("blocking=reserve_missing"), block);
     }
@@ -92,12 +94,12 @@ class RddHomeReserveFreshnessTest {
         partial.put("minecraft:cooked_beef", 3);
         AssetRegistry registry = baseRegistry(now - MINUTE, partial);
 
-        assertTrue(RddHomeFacts.reserveKnown(registry, now));
-        List<String> gap = RddHomeFacts.reserveShortfall(registry, now);
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known());
+        List<String> gap = RddHomeFacts.HomeView.of(registry, now, ID).reserve().shortfall();
         assertTrue(gap.contains("cooked_beef 3/8"), gap.toString());
         assertTrue(gap.contains("torch 0/8"), gap.toString());
-        assertEquals(HomeStage.RESPAWN_BOUND, RddHomeFacts.stageOf(registry, now));
-        assertTrue(RddHomeFacts.blockFor(registry, null, now).contains("next=stock_reserve_box"));
+        assertEquals(HomeStage.RESPAWN_BOUND, RddHomeFacts.HomeView.of(registry, now, ID).stage());
+        assertTrue(RddHomeFacts.blockFor(registry, null, now, ID).contains("next=stock_reserve_box"));
     }
 
     @Test
@@ -105,10 +107,10 @@ class RddHomeReserveFreshnessTest {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - MINUTE, fullReserve());
 
-        assertTrue(RddHomeFacts.reserveKnown(registry, now));
-        assertEquals(List.of(), RddHomeFacts.reserveShortfall(registry, now));
-        assertEquals(HomeStage.STOCKED, RddHomeFacts.stageOf(registry, now), "新鲜达标的结果与改前一致");
-        String block = RddHomeFacts.blockFor(registry, null, now);
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known());
+        assertEquals(List.of(), RddHomeFacts.HomeView.of(registry, now, ID).reserve().shortfall());
+        assertEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID).stage(), "新鲜达标的结果与改前一致");
+        String block = RddHomeFacts.blockFor(registry, null, now, ID);
         assertTrue(block.contains("home_stage=STOCKED"), block);
         assertTrue(block.contains("reserve=OK"), block);
     }
@@ -118,10 +120,10 @@ class RddHomeReserveFreshnessTest {
         long now = 1_700_000_000_000L;
         AssetRegistry empty = new AssetRegistry();
 
-        assertEquals(HomeStage.NO_HOME, RddHomeFacts.stageOf(empty, now));
-        assertFalse(RddHomeFacts.reserveKnown(empty, now));
-        assertEquals(List.of(), RddHomeFacts.reserveShortfall(empty, now));
-        String block = RddHomeFacts.blockFor(empty, null, now);
+        assertEquals(HomeStage.NO_HOME, RddHomeFacts.HomeView.of(empty, now, ID).stage());
+        assertFalse(RddHomeFacts.HomeView.of(empty, now, ID).reserve().known());
+        assertEquals(List.of(), RddHomeFacts.HomeView.of(empty, now, ID).reserve().shortfall());
+        String block = RddHomeFacts.blockFor(empty, null, now, ID);
         assertTrue(block.contains("home_stage=NO_HOME"), block);
         assertTrue(block.contains("reserve=UNKNOWN"), block);
         assertFalse(block.contains("reserve=0"), "未知不能写成 0: " + block);
@@ -131,12 +133,12 @@ class RddHomeReserveFreshnessTest {
     void newFreshObservationRecoversWithoutPermanentLock() {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - TTL - MINUTE, fullReserve());
-        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.stageOf(registry, now));
+        assertNotEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID).stage());
 
         observeBase(registry, now, fullReserve());   // 重新扫一次箱子
-        assertTrue(RddHomeFacts.reserveKnown(registry, now));
-        assertEquals(HomeStage.STOCKED, RddHomeFacts.stageOf(registry, now));
-        assertTrue(RddHomeFacts.blockFor(registry, null, now).contains("reserve=OK"));
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known());
+        assertEquals(HomeStage.STOCKED, RddHomeFacts.HomeView.of(registry, now, ID).stage());
+        assertTrue(RddHomeFacts.blockFor(registry, null, now, ID).contains("reserve=OK"));
     }
 
     @Test
@@ -144,9 +146,9 @@ class RddHomeReserveFreshnessTest {
         long now = 1_700_000_000_000L;
         for (long age : new long[]{0L, MINUTE, TTL - 1, TTL, TTL + 1, TTL + 30 * MINUTE}) {
             AssetRegistry registry = baseRegistry(now - age, fullReserve());
-            boolean known = RddHomeFacts.reserveKnown(registry, now);
-            boolean renderedUnknown = RddHomeFacts.blockFor(registry, null, now).contains("reserve=UNKNOWN");
-            boolean stocked = RddHomeFacts.stageOf(registry, now) == HomeStage.STOCKED;
+            boolean known = RddHomeFacts.HomeView.of(registry, now, ID).reserve().known();
+            boolean renderedUnknown = RddHomeFacts.blockFor(registry, null, now, ID).contains("reserve=UNKNOWN");
+            boolean stocked = RddHomeFacts.HomeView.of(registry, now, ID).stage() == HomeStage.STOCKED;
             assertEquals(!known, renderedUnknown, "age=" + age + " 展示与判定必须同口径");
             assertEquals(known, stocked, "age=" + age + " 阶段必须与 known 同口径");
         }
@@ -175,14 +177,24 @@ class RddHomeReserveFreshnessTest {
         value.put("facilities", List.of("core_house")); value.put("important_items", fullReserve());
         registry.apply(new Observation("obs-base", "world_base", "rdd_world_observer", "minecraft:overworld",
                 now - MINUTE, value), "world_base//372/68/715", AssetScope.GLOBAL, null);
-        assertTrue(RddHomeFacts.reserveKnown(registry, now));
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known());
+    }
+
+    @Test void mismatchedWorldOrSessionIsUnknown() {
+        long now = 1_700_000_000_000L;
+        var registry = baseRegistry(now - MINUTE, fullReserve());
+        assertFalse(RddHomeFacts.HomeView.of(registry, now,
+                new com.dwinovo.numen.api.ServerIdentityProvider.Snapshot("world-B", "session-A")).reserve().known());
+        assertFalse(RddHomeFacts.HomeView.of(registry, now,
+                new com.dwinovo.numen.api.ServerIdentityProvider.Snapshot("world-A", "session-B")).reserve().known());
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known());
     }
 
     @Test void invalidBaseIsNotKnownEvenWithinTtl() {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - MINUTE, fullReserve());
         registry.invalidate("world_base//372/68/715"); // defensive case, not claimed as existing producer path
-        assertFalse(RddHomeFacts.reserveKnown(registry, now));
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID).reserve().known());
     }
 
     @Test void unidentifiedReserveMustNotPermitHighRiskThroughRealHomeGate() {
@@ -205,7 +217,7 @@ class RddHomeReserveFreshnessTest {
         value.put("facilities", List.of("core_house")); value.put("important_items", fullReserve());
         registry.apply(new Observation("fresh", "world_base", "rdd_world_observer", "minecraft:overworld",
                 now - MINUTE, value), "base", AssetScope.GLOBAL, null);
-        var view = RddHomeFacts.HomeView.of(registry, now);
+        var view = RddHomeFacts.HomeView.of(registry, now, ID);
         var otherwiseAllowed = new com.dwinovo.numen.rdd.policy.RiskGate.Verdict(true,
                 com.dwinovo.numen.rdd.policy.RiskLevel.NETHER, List.of(), List.of());
         assertTrue(com.dwinovo.numen.rdd.policy.HomeGate.enforce(otherwiseAllowed, view.stage()).allowed());
@@ -228,6 +240,7 @@ class RddHomeReserveFreshnessTest {
     private static void observeBase(AssetRegistry registry, long observedAt, Map<String, Integer> items) {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("kind", "base");
+        value.put("world_id", "world-A"); value.put("server_session", "session-A");
         value.put("label", "home_house_01");
         value.put("dimension", "minecraft:overworld");
         value.put("x", 372);

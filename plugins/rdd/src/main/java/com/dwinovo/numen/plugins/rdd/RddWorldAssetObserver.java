@@ -47,7 +47,12 @@ final class RddWorldAssetObserver {
     static Result observe(NumenPlayer companion, AssetRegistry registry) {
         if (companion == null || registry == null || companion.getServer() == null
                 || !companion.getServer().isSameThread()) return new Result(0, 0, 0, 0);
-        int bases = observeBase(companion, registry);
+        var identityProvider = com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.ServerIdentityProvider.class);
+        com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity = null;
+        try { if (identityProvider != null) identity = identityProvider.snapshot(companion.getServer()); }
+        catch (RuntimeException unavailable) { /* unknown identity */ }
+        RddPlugin.captureHomeIdentity(companion, identity);
+        int bases = observeBase(companion, registry, identity);
         int structures = observeStructures(companion, registry);
         observeVillages(companion, registry);   // P2.3：村庄资源节点（供规划查“这村庄有啥”）
         int machines = observeMachines(companion, registry);
@@ -56,11 +61,16 @@ final class RddWorldAssetObserver {
         return new Result(bases, structures, machines, entities);
     }
 
-    private static int observeBase(NumenPlayer companion, AssetRegistry registry) {
+    private static int observeBase(NumenPlayer companion, AssetRegistry registry,
+                                   com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
         RddWorldFacts.BaseSnapshot base = RddWorldFacts.inspectBase(companion, Map.of());
         if (base == null) return 0;
         BlockPos pos = base.spawn();
         Map<String, Object> value = common("base", "个人重生基地", base.dimension(), pos, "LAZY");
+        if (identity != null) {
+            if (identity.worldId() != null && !identity.worldId().isBlank()) value.put("world_id", identity.worldId());
+            if (identity.serverSession() != null && !identity.serverSession().isBlank()) value.put("server_session", identity.serverSession());
+        }
         value.put("complete", base.complete());
         value.put("facilities", base.facilities());
         value.put("important_items", topCounts(base.storedItems(), 24));
