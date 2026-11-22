@@ -162,7 +162,7 @@ public record ExecuteToolPayload(UUID entityUuid,
             if (!yieldTicketRequest) {
                 MonitoringJournal.get().publish("tools", "tool_result", Map.of(
                         "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
-                        "tool", p.toolName(), "journaled_by", "server", "result", truncate(safeDiagnosticJson(json))), identityToken);
+                        "tool", p.toolName(), "journaled_by", "server", "result", truncate(safeResultDiagnostic(p, json))), identityToken);
                 com.dwinovo.numen.agent.tool.ToolCallLoopWatch.onSucceeded(p.entityUuid(), p.toolName());
             }
             com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
@@ -197,6 +197,22 @@ public record ExecuteToolPayload(UUID entityUuid,
 
     static String diagnosticArgs(ExecuteToolPayload p) {
         return safeDiagnosticJson(p.argumentsJson());
+    }
+
+    /** Preserve ordinary text results; association-bearing calls fail closed on non-object results. */
+    private static String safeResultDiagnostic(ExecuteToolPayload p, String json) {
+        try {
+            var result = JsonParser.parseString(json);
+            if (result.isJsonObject()) return safeDiagnosticJson(json);
+        } catch (RuntimeException ignored) { /* ordinary text is not necessarily JSON */ }
+        if ("learner_usage".equals(p.toolName()) || "rdd_report_yield".equals(p.toolName()))
+            return "[invalid diagnostic JSON]";
+        try {
+            var args = JsonParser.parseString(p.argumentsJson());
+            if (!args.isJsonObject() || args.getAsJsonObject().has("selection_id")
+                    || args.getAsJsonObject().has("_yield_ticket")) return "[invalid diagnostic JSON]";
+        } catch (RuntimeException malformed) { return "[invalid diagnostic JSON]"; }
+        return json;
     }
 
     /** Diagnostic copy only; network replies are not modified. */

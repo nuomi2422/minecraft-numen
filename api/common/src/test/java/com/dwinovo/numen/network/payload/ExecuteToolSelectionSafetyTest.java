@@ -46,8 +46,9 @@ class ExecuteToolSelectionSafetyTest {
                 public class Fixture {
                   public static String mode; public static String response; public static final List<String> logs=new ArrayList<>(), loop=new ArrayList<>(), journal=new ArrayList<>();
                   public static final List<TaskResultPayload> replies=new ArrayList<>();
-                  public static Map<String,Object> run(String m,String args) {
-                    mode=m; response=args; logs.clear(); loop.clear(); journal.clear(); replies.clear();
+                  public static Map<String,Object> run(String m,String args) { return runResponse(m,args,args); }
+                  public static Map<String,Object> runResponse(String m,String args,String result) {
+                    mode=m; response=result; logs.clear(); loop.clear(); journal.clear(); replies.clear();
                     UUID id=new UUID(0,2); ExecuteToolPayload.handle(new ExecuteToolPayload(id,"call-1","tool",args),new net.minecraft.server.level.ServerPlayer());
                     return Map.of("logs",List.copyOf(logs),"loop",List.copyOf(loop),"journal",List.copyOf(journal),"replies",replies.stream().map(r->r.entityUuid()+"|"+r.toolCallId()+"|"+r.resultJson()).toList());
                   }
@@ -89,6 +90,22 @@ class ExecuteToolSelectionSafetyTest {
         String json="{\"block\":\"stone\"}"; var r=run("success",json);
         assertTrue(r.get("replies").toString().contains(json));
         assertTrue(r.get("journal").toString().contains(json));
+    }
+    @Test void ordinaryTextResultRemainsVisible() throws Exception {
+        var r=(Map<?,?>)fixture.getMethod("runResponse",String.class,String.class,String.class).invoke(null,"success","{ \"block\": \"stone\" }","ordinary text result");
+        assertTrue(r.get("replies").toString().contains("ordinary text result"));
+        assertTrue(r.get("journal").toString().contains("ordinary text result"));
+    }
+    @Test void bothSensitiveKeysAreRemovedFromDiagnosticsOnly() throws Exception {
+        String json="{\"selection_id\":\"secret-selection-42\",\"_yield_ticket\":\"secret-yield-42\",\"block\":\"stone\"}";
+        var r=run("success",json);
+        assertTrue(r.get("replies").toString().contains(json));
+        assertFalse(r.get("journal").toString().contains("secret-selection-42"));
+        assertFalse(r.get("journal").toString().contains("secret-yield-42"));
+        var rejected=run("unknown_tool",json);
+        assertFalse(rejected.get("logs").toString().contains("secret-selection-42"));
+        assertFalse(rejected.get("logs").toString().contains("secret-yield-42"));
+        assertTrue(rejected.get("logs").toString().contains("stone"));
     }
     @Test void ordinaryArgumentsRemainDiagnostic() throws Exception {
         var r=run("unknown_tool","{\"block\":\"stone\"}");
