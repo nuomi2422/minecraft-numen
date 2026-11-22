@@ -403,7 +403,7 @@ class MineHarvestRecoveryConsumerTest {
                             case "break" -> t.mineProgress(t.knownOres.get(0));
                             case "occluder" -> {t.digger.next=Digger.Result.BROKE_OCCLUDER;t.mineProgress(t.knownOres.get(0));}
                             case "pickup" -> {t.pickup=1;t.onTick();t.pickup=0;t.r.setMined(0);}
-                            case "pause" -> {t.nav=new PlayerNav("warm plan");t.stop(t.player,StopReason.PREEMPTED);}
+                            case "pause" -> {t.nav=new PlayerNav("warm plan");t.latchedMineTarget=t.knownOres.get(0);t.stop(t.player,StopReason.PREEMPTED);}
                             case "pauseMoved" -> {t.stop(t.player,StopReason.PREEMPTED);t.player.feet=new BlockPos(1,64,0);t.onTick();t.player.feet=t.lastProgressPos;}
                             case "arrive" -> {t.nav=new PlayerNav("old");t.nav.state=NavState.ARRIVED;t.reachable=new BlockPos(4,64,0);}
                             case "partial" -> t.r.setMined(2);
@@ -420,7 +420,7 @@ class MineHarvestRecoveryConsumerTest {
                         out.put("message",t.terminal==null ? "" : t.terminal.message());
                         out.put("type",t.terminal==null ? "" : t.terminal.type().name());
                         out.put("stops",t.player.halts);out.put("navPreserved",t.nav!=null);out.put("shifting",t.player.shifting);
-                        out.put("progressTick",t.lastProgressTick);
+                        out.put("progressTick",t.lastProgressTick);out.put("targetLatchCleared",t.latchedMineTarget==null);
                         return out;
                     }
                 }
@@ -462,6 +462,7 @@ class MineHarvestRecoveryConsumerTest {
         var pause=runNavigation("pause");
         assertEquals(1,pause.get("stops"));assertEquals(true,pause.get("navPreserved"));assertEquals(false,pause.get("shifting"));
         assertFalse(((String)pause.get("message")).contains("Earlier navigation attempt failed"));
+        assertEquals(true,pause.get("targetLatchCleared"));
     }
 
     @Test void partialSuccessAndPlanningWaitRetainTheirOriginalSemantics() throws Exception {
