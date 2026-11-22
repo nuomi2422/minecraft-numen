@@ -16,6 +16,56 @@ class RddCompletedMoveAssetTest {
                 "dimension", "overworld", "direction", "start_to_end_only", "route_proven", false,
                 "start", Map.of("x", 1.0, "y", 64.0, "z", 2.0), "end", Map.of("x", 5.0, "y", 64.0, "z", 2.0));
     }
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path temp;
+
+    @Test void actualMoveProducerMethodsReachRegistryAndDetail() throws Exception {
+        java.nio.file.Path root = java.nio.file.Path.of("").toAbsolutePath();
+        while (root != null && !java.nio.file.Files.isRegularFile(root.resolve("core/common/src/test/java/com/dwinovo/numen/core/task/move/MoveCompletedFactTest.java"))) root = root.getParent();
+        assertNotNull(root);
+        String fixture = java.nio.file.Files.readString(root.resolve("core/common/src/test/java/com/dwinovo/numen/core/task/move/MoveCompletedFactTest.java"));
+        String source = java.nio.file.Files.readString(root.resolve("core/common/src/main/java/com/dwinovo/numen/core/task/move/MoveToCompanionTask.java"));
+        String stamp = java.nio.file.Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/api/WorldContextStamp.java"));
+        String start = "add(src,args,\"fixture/Probe.java\", \"\"\"";
+        int a = fixture.indexOf(start), b = fixture.indexOf("        var compiler=", a);
+        assertTrue(a >= 0 && b > a, "SETUP: producer fixture missing");
+        // The fixture itself uses the original production method slices; execute it in an isolated loader.
+        java.nio.file.Path src = temp.resolve("src"), out = temp.resolve("out"); java.nio.file.Files.createDirectories(out);
+        List<String> args = new ArrayList<>(List.of("-d", out.toString(), "-proc:none"));
+        add(src,args,"net/minecraft/server/MinecraftServer.java", "package net.minecraft.server; public class MinecraftServer {} ");
+        add(src,args,"com/dwinovo/numen/api/ServerIdentityProvider.java", "package com.dwinovo.numen.api; import net.minecraft.server.MinecraftServer; public interface ServerIdentityProvider { record Snapshot(String worldId,String serverSession) {} Snapshot snapshot(MinecraftServer s); }");
+        add(src,args,"com/dwinovo/numen/api/NumenPlugins.java", "package com.dwinovo.numen.api; public class NumenPlugins { public static ServerIdentityProvider provider; public static <T> T capability(Class<T> c) { return c.cast(provider); } }");
+        add(src,args,"com/dwinovo/numen/api/WorldContextStamp.java",stamp);
+        String javaCode = fixture.substring(a, b);
+        // Generate probe via the checked-in source fixture, preserving its literal prelude and scenarios.
+        String prefix = javaCode.substring(javaCode.indexOf("\"\"\"") + 3, javaCode.indexOf("\"\"\" + member"));
+        String suffix = javaCode.substring(javaCode.indexOf("+ \"\"\"", javaCode.indexOf("resultData(TaskState state)")) + 7, javaCode.lastIndexOf("\"\"\""));
+        add(src,args,"fixture/Probe.java", prefix + member(source,"    protected Map<String, Object> resultData()") + "\n"
+                + member(source,"    private void captureMoveStart()") + "\n" + member(source,"    protected Map<String, Object> resultData(TaskState state)") + "\n" + suffix);
+        assertEquals(0, javax.tools.ToolProvider.getSystemJavaCompiler().run(null,null,null,args.toArray(String[]::new)), "SETUP: producer slice compile");
+        try (var loader = new java.net.URLClassLoader(new java.net.URL[]{out.toUri().toURL()}, ClassLoader.getPlatformClassLoader())) {
+            var run = loader.loadClass("fixture.Probe").getMethod("run", String.class);
+            @SuppressWarnings("unchecked") var result = (Map<String,Object>)run.invoke(null, "ok");
+            @SuppressWarnings("unchecked") var produced = (Map<String,Object>)result.get("completed_move");
+            assertNotNull(produced);
+            var token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), ((Number)produced.get("epoch")).longValue());
+            var record = new Record(); record.bindIdentity(token); record.setState(TaskState.SUCCESS); record.setResult(TaskResult.ok("done", result));
+            var registry = new AssetRegistry(); assertTrue(RddCompletedMoveAsset.project(UUID.randomUUID(), record.publicId(), record, token, "overworld", registry, 100));
+            var query = new JsonObject(); query.addProperty("action", "detail"); query.addProperty("asset_id", registry.snapshot().getFirst().assetId());
+            String detail = RddAssetsTool.dispatch(query, registry);
+            assertTrue(detail.contains("start_to_end_only") && detail.contains("route_proven") && detail.contains("false"), detail);
+            @SuppressWarnings("unchecked") var failed = (Map<String,Object>)run.invoke(null, "failed");
+            assertFalse(failed.containsKey("completed_move"));
+        }
+    }
+    private static String member(String source, String signature) {
+        int a = source.indexOf(signature), b = source.indexOf("\n    }", a);
+        if (a < 0 || b < 0) throw new IllegalStateException("missing member " + signature);
+        return source.substring(a, b + 6);
+    }
+    private static void add(java.nio.file.Path root, List<String> args, String name, String text) throws Exception {
+        var file = root.resolve(name); java.nio.file.Files.createDirectories(file.getParent()); java.nio.file.Files.writeString(file, text); args.add(file.toString());
+    }
+
     @Test void successProjectsOnceAndDetailRemainsHistoricalEndpoints() {
         UUID id = UUID.randomUUID(); var token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
         var record = new Record(); record.bindIdentity(token); record.setState(TaskState.SUCCESS);
