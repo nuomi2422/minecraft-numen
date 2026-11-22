@@ -133,6 +133,11 @@ public record ExecuteToolPayload(UUID entityUuid,
             return;
         }
         boolean yieldTicketRequest = "_rdd_yield_ticket".equals(p.toolName());
+        // This is routing format, not caller authentication; ownership was checked above.
+        if (yieldTicketRequest && !validYieldTicketReplyId(p.toolCallId())) {
+            replyError(player, p, "invalid internal ticket reply route");
+            return;
+        }
         NumenTool tool = ToolRegistry.get(yieldTicketRequest ? "rdd_report_yield" : p.toolName());
         if (tool == null) {
             replyError(player, p, "unknown tool: " + p.toolName());
@@ -183,6 +188,13 @@ public record ExecuteToolPayload(UUID entityUuid,
      * 这里:知道被拒了二十二次,却没法从日志还原是哪一条 op 写错——只能靠错误
      * 信息倒推。失败是稀有事件,把这一条打全不会淹没日志。
      */
+    static boolean validYieldTicketReplyId(String id) {
+        if (id == null || !id.startsWith("yield-ticket-")) return false;
+        String nonce = id.substring("yield-ticket-".length());
+        try { return java.util.UUID.fromString(nonce).toString().equals(nonce); }
+        catch (IllegalArgumentException invalid) { return false; }
+    }
+
     static String diagnosticArgs(ExecuteToolPayload p) {
         if (!"rdd_report_yield".equals(p.toolName())) return p.argumentsJson();
         try {
