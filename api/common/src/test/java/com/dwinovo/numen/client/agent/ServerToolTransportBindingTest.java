@@ -148,6 +148,12 @@ class ServerToolTransportBindingTest {
                     TaskResultPayload.handle(new TaskResultPayload(a,"ordinary-wire-id","signed-ticket-secret"));
                     return Map.of("log",com.dwinovo.numen.Constants.Log.entries.toString());
                   }
+                  public static Map<String,Object> dispatcherMissingTicketAudit() {
+                    setup();UUID a=UUID.randomUUID();actors.add(a);List<String> results=new ArrayList<>();
+                    ToolDispatcher dispatcher=new ToolDispatcher(a,new ToolDispatcher.Sink(){public void onResult(ToolInvocation i,String s){results.add(s);}public void onAllSettled(){}public net.minecraft.client.player.AbstractClientPlayer entity(){return null;}});
+                    dispatcher.dispatch(List.of(new ToolInvocation("missing","rdd_report_yield","{}")),Set.of("rdd_report_yield"),null);
+                    return Map.of("results",results,"events",MonitoringJournal.events.toString(),"packets",sends().size());
+                  }
                   public static Map<String,Object> dispatcherBatch() {
                     setup();UUID a=UUID.randomUUID();actors.add(a);List<String> results=new ArrayList<>();
                     ToolDispatcher dispatcher=new ToolDispatcher(a,new ToolDispatcher.Sink(){public void onResult(ToolInvocation i,String s){results.add(i.id()+":"+s);}public void onAllSettled(){}public net.minecraft.client.player.AbstractClientPlayer entity(){return null;}});
@@ -262,6 +268,11 @@ class ServerToolTransportBindingTest {
     }
     @Test void ticketReplyWithNonInternalIdMustNotLeakToLog() throws Exception {
         assertFalse(run("unclassifiedTicketReply").get("log").toString().contains("signed-ticket-secret"));
+    }
+    @Test void missingTicketFailureMustReachUserAndAudit() throws Exception {
+        var r=run("dispatcherMissingTicketAudit");assertEquals(0,r.get("packets"));
+        assertTrue(r.get("results").toString().contains("yield ticket unavailable"));
+        assertTrue(r.get("events").toString().contains("tool_result"),"client-side rejection must be auditable");
     }
     @Test void realDispatcherKeepsTicketPerQueuedBatch() throws Exception {
         var r=run("dispatcherBatch");assertTrue(r.get("first").toString().contains("host-old"));
