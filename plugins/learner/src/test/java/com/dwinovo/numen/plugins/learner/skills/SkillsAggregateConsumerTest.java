@@ -705,6 +705,10 @@ class SkillsAggregateConsumerTest {
         register("optional-missing", "optional", "purpose", "body", List.of("scene:overnight:package","requires:"+STEP_REF,"optional:skill:missing@v1"));
         var degraded=invokeRealLoader(packageArgs("skill:optional-missing@v1",STEP_REF));
         assertTrue(degraded.get("success").getAsBoolean()); assertEquals("degraded",degraded.get("availability").getAsString());
+        register("trade-component", "trade", "purpose", "trade body", List.of("scene:trading:component"));
+        register("cross-pack", "cross", "purpose", "body", List.of("scene:overnight:package","requires:skill:trade-component@v1"));
+        var cross=invokeRealLoader(packageArgs("skill:cross-pack@v1","skill:trade-component@v1"));
+        assertTrue(cross.get("success").getAsBoolean()); assertEquals("trade body",cross.get("body").getAsString());
         register("self-pack", "self", "purpose", "body", List.of("scene:overnight:package","requires:skill:self-pack@v1"));
         assertFalse(invokeRealLoader(packageArgs("skill:self-pack@v1","skill:self-pack@v1")).get("success").getAsBoolean());
         register("outer-pack", "outer", "purpose", "body", List.of("scene:overnight:package","requires:"+PACK_REF));
