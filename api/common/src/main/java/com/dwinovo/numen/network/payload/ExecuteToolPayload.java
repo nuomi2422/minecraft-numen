@@ -148,7 +148,7 @@ public record ExecuteToolPayload(UUID entityUuid,
             args = JsonParser.parseString(p.argumentsJson()).getAsJsonObject();
         } catch (RuntimeException ex) {
             replyError(player, p, "rdd_report_yield".equals(p.toolName())
-                    ? "invalid yield arguments JSON" : "invalid arguments JSON: " + ex.getMessage());
+                    ? "invalid yield arguments JSON" : "invalid arguments JSON");
             return;
         }
         // Run the tool against the live companion: a query replies now, a world action
@@ -162,7 +162,7 @@ public record ExecuteToolPayload(UUID entityUuid,
             if (!yieldTicketRequest) {
                 MonitoringJournal.get().publish("tools", "tool_result", Map.of(
                         "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
-                        "tool", p.toolName(), "journaled_by", "server", "result", truncate(json)), identityToken);
+                        "tool", p.toolName(), "journaled_by", "server", "result", truncate(safeDiagnosticJson(json))), identityToken);
                 com.dwinovo.numen.agent.tool.ToolCallLoopWatch.onSucceeded(p.entityUuid(), p.toolName());
             }
             com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
@@ -176,7 +176,7 @@ public record ExecuteToolPayload(UUID entityUuid,
             else tool.onServerCall(p.toolCallId(), args, companion, reply);
         } catch (RuntimeException ex) {
             replyError(player, p, "rdd_report_yield".equals(p.toolName())
-                    ? "invalid yield arguments" : "invalid arguments: " + ex.getMessage());
+                    ? "invalid yield arguments" : "invalid arguments (" + ex.getClass().getSimpleName() + ")");
         }
     }
 
@@ -196,13 +196,20 @@ public record ExecuteToolPayload(UUID entityUuid,
     }
 
     static String diagnosticArgs(ExecuteToolPayload p) {
-        if (!"rdd_report_yield".equals(p.toolName())) return p.argumentsJson();
+        return safeDiagnosticJson(p.argumentsJson());
+    }
+
+    /** Diagnostic copy only; network replies are not modified. */
+    private static String safeDiagnosticJson(String json) {
         try {
-            JsonObject safe = JsonParser.parseString(p.argumentsJson()).getAsJsonObject().deepCopy();
-            safe.remove("_yield_ticket");
-            return safe.toString();
+            var element = JsonParser.parseString(json);
+            if (!element.isJsonObject()) return "[invalid diagnostic JSON]";
+            var copy = element.getAsJsonObject().deepCopy();
+            copy.remove("selection_id");
+            copy.remove("_yield_ticket");
+            return copy.toString();
         } catch (RuntimeException malformed) {
-            return "[invalid yield arguments]";
+            return "[invalid diagnostic JSON]";
         }
     }
 
