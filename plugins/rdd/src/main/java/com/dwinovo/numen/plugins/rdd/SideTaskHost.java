@@ -46,7 +46,7 @@ import java.util.concurrent.ConcurrentHashMap;
 final class SideTaskHost {
 
     private static final Logger LOG = LoggerFactory.getLogger(SideTaskHost.class);
-    private static final SleepSideTaskType SLEEP_TYPE = new SleepSideTaskType();
+    private static final SleepSideTaskType SLEEP_TYPE = new SleepSideTaskType(SleepSideTaskType.Goal.OVERNIGHT);
     private static final DeathRecoverySideTaskType DEATH_RECOVERY_TYPE = new DeathRecoverySideTaskType();
     private static final SideTaskEngine ENGINE =
             new SideTaskEngine(SideTaskHost::publish, SideTaskHost::validateMainline);

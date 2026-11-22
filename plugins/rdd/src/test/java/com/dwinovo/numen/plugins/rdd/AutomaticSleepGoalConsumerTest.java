@@ -5,8 +5,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Characterizes the actual Host's automatic registration and same-token resume permission.
- * No automatic production migration and no BodyInstruction execution are claimed. */
+/** Tests actual Host automatic new-task selection and same-token resume permission.
+ * Existing unmarked tasks stay legacy. BodyInstruction execution is not claimed. */
 class AutomaticSleepGoalConsumerTest {
     public interface Driver extends ScopedSleepCycleConsumerTest.Driver {
         void autoTick();void busy(boolean busy,String risk);boolean overnight();void selectExplicitForNewTasks();
@@ -54,13 +54,15 @@ class AutomaticSleepGoalConsumerTest {
     }
     private static String nested(String source,String prefix){int a=source.indexOf(prefix),b=source.indexOf("\n        }",source.indexOf('{',a));assertTrue(a>=0&&b>a);return source.substring(a,b+10);}
     Driver fixture()throws Exception{return (Driver)host.getConstructor().newInstance();}
-    @Test void actualAutomaticRegistrationCreatesLegacyAndBindingResumesBeforeAnyWake()throws Exception{
-        Driver f=fixture();f.autoTick();assertTrue(f.active());assertFalse(f.overnight());
-        f.evaluate();f.bind();f.autoTick();assertEquals(1,f.completed());assertEquals(1,f.resumed());
-        f.observe(13001,24000,false);f.autoTick();assertEquals(1,f.completed());assertEquals(1,f.resumed());
+    @Test void actualAutomaticRegistrationWaitsForMatchedNightCycleBeforeOneResumePermission()throws Exception{
+        Driver f=fixture();f.autoTick();assertTrue(f.active());assertTrue(f.overnight());
+        f.observe(13000,13000,false);f.bind();f.autoTick();assertEquals(0,f.completed());assertEquals(0,f.resumed());
+        f.observe(13001,13001,true);f.autoTick();assertTrue(f.active());assertEquals(0,f.completed());assertEquals(0,f.resumed());
+        f.observe(13002,24000,false);f.autoTick();assertFalse(f.active());assertEquals(1,f.completed());assertEquals(1,f.resumed());
+        f.autoTick();assertEquals(1,f.completed());assertEquals(1,f.resumed());
     }
     @Test void changingRegistrationAffectsOnlyNewCreationNotAnExistingOrRestoredLegacyTask()throws Exception{
-        Driver f=fixture();f.autoTick();f.restoreCurrentWithExplicitRegistration();assertFalse(f.overnight());f.bind();f.evaluate();
+        Driver f=fixture();f.start(false);f.restoreCurrentWithExplicitRegistration();assertFalse(f.overnight());f.bind();f.evaluate();
         // First evaluation snapshots bound=true; no artificial old->new binding is inferred after restore.
         assertTrue(f.active());f.observe(13001,13001,true);f.evaluate();assertEquals(1,f.completed());
         Driver fresh=fixture();fresh.selectExplicitForNewTasks();fresh.autoTick();assertTrue(fresh.overnight());
