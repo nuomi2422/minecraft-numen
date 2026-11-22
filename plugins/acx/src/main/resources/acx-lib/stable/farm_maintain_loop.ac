@@ -1,6 +1,6 @@
 {
   "name": "farm_maintain_loop",
-  "version": "2",
+  "version": "4",
   "description": "种田维护：先 farm_nearby 把成熟作物收割并原地留苗，再 sow_nearby 把空地耕地补种（消耗背包种子），最后 collect_items 捡起零星掉落；一次调用走完全链，不需要逐株寻路。",
   "tags": [
     "farming",
@@ -23,6 +23,13 @@
     {
       "id": "harvest",
       "block": "farm_nearby",
+      "params": {
+        "radius": 24
+      }
+    },
+    {
+      "id": "sow",
+      "block": "sow_nearby",
       "params": {
         "radius": 24
       }

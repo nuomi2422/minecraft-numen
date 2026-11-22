@@ -150,6 +150,8 @@ class SowBridgeRegistrationConsumerTest {
                         var declaration=com.google.gson.JsonParser.parseString(shippedJson).getAsJsonObject();
                         require(declaration.get("description").getAsString().contains("sow_nearby"),"actual shipped resource must promise sowing");
                         var definition=AcxLoader.parseJson(shippedJson,registry);
+                        var blocks=definition.steps().stream().map(step->step.block()).toList();
+                        require(blocks.equals(List.of("get_self_status", "farm_nearby", "sow_nearby", "collect_items", "get_self_status")), "SHIPPED_ORDER_OR_REQUIRED_STEP_MISMATCH: " + blocks);
                         var sowSteps=definition.steps().stream().flatMap(step->step.flattenSelfAndDescendants().stream()).filter(step->"sow_nearby".equals(step.block())).toList();
                         require(!sowSteps.isEmpty(),"SHIPPED_SCENE_OMITS_SOW: declaration promises sowing but parsed steps omit it");
                         for(var step:sowSteps){
