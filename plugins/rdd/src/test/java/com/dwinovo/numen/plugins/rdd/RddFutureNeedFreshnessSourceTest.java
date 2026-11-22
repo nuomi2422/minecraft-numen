@@ -86,7 +86,7 @@ class RddFutureNeedFreshnessSourceTest {
                 static class Logger { void warn(String s,Object... x){} void info(String s,Object... x){} }
             """);
         for (String declaration : List.of("private record Context(", "static record NearbySnapshot(", "private record Published(", "private record Scan(", "private record ContainerRead(")) m.append(method(memory, declaration).replace("private record ContainerRead(", "static record ContainerRead("));
-        for (String sig : List.of("private static boolean knownIdentity(", "private static boolean sameContext(", "static synchronized void refresh(", "static NearbySnapshot cachedSnapshot(", "static boolean isCurrent(", "private static Scan scan(", "private static String scanDirectAttr(")) m.append(method(memory, sig));
+        for (String sig : List.of("private static boolean knownIdentity(", "private static boolean sameContext(", "static synchronized void refresh(", "static NearbySnapshot cachedSnapshot(", "static boolean isCurrent(", "private static Scan scan(NumenPlayer body", "private static String scanDirectAttr(")) m.append(method(memory, sig));
         m.append("""
                 static final Map<Integer,ContainerRead> reads=new HashMap<>();
                 static boolean pollContainerChanges(UUID id){return false;}
@@ -128,6 +128,9 @@ class RddFutureNeedFreshnessSourceTest {
     @Test void epochSwitchInvalidates() throws Exception {gone("epoch");}
     @Test void dimensionSwitchInvalidatesAfterRefresh() throws Exception {gone("dimension");}
     @Test void alreadyGeneratedBlockExpiresWithoutAnotherTick() throws Exception {gone("block");}
+    @Test void equivalentRescanKeepsNearbyBeforeExpiry() throws Exception {
+        assertTrue(scenario("equivalent").contains("minecraft:obsidian ×10/10（够）［附近容器］"));
+    }
     @Test void realInventoryInputAndFreshNearbyAreReported() throws Exception {
         String text=scenario("fresh");
         assertTrue(text.contains("minecraft:obsidian ×10/10（够）［附近容器］"),text);
@@ -157,10 +160,11 @@ class RddFutureNeedFreshnessSourceTest {
                 var next=new PrimaryGoal("p2","later",List.of(new AssetRequirement("minecraft:obsidian",10),new AssetRequirement("minecraft:bread",3),new AssetRequirement("minecraft:diamond",1)));
                 var chain=new TaskChain(new TaskChain.Goal(List.of(current,next)),current);
                 RddContainerMemory.reads.put(0,new RddContainerMemory.ContainerRead(Map.of("minecraft:obsidian",10),false,10100));
-                if(kind.equals("multiple")) RddContainerMemory.reads.put(1,new RddContainerMemory.ContainerRead(Map.of("minecraft:stone",1),false,10500));
+                RddContainerMemory.reads.put(1,new RddContainerMemory.ContainerRead(kind.equals("multiple") ? Map.of("minecraft:stone",1) : Map.of(),false,10500));
                 RddContainerMemory.refresh(body,0); RddFutureNeeds.tick(id,chain,Map.of("minecraft:bread",2));
                 if(!RddFutureNeeds.block(id).contains("minecraft:obsidian")) throw new AssertionError("fresh setup failed");
                 if(kind.equals("fresh")) return RddFutureNeeds.block(id);
+                if(kind.equals("equivalent")) { System.now=10050; RddContainerMemory.refresh(body,40); return RddFutureNeeds.block(id); }
                 if(kind.equals("world")) WorldContextStamp.current=token("B","S",1);
                 if(kind.equals("session")) WorldContextStamp.current=token("A","T",1);
                 if(kind.equals("epoch")) WorldContextStamp.current=token("A","S",2);
