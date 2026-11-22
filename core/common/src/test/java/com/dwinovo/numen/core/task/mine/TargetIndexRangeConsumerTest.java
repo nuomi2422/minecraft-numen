@@ -69,11 +69,13 @@ class TargetIndexRangeConsumerTest {
                 }else{
                     e.hits.put(ore,SATURATED);collect(e,section,0,0,0,List.of(ore),1,out);
                 }
+                int collectionReads=section.reads;
+                boolean laterMatch=section.get(1,0,0).getBlock()==ore;
                 int accepted=(int)out.stream().filter(p->p.x()==1).count();
                 SearchGeometry.NearestBound raw=new SearchGeometry.NearestBound(1),filtered=new SearchGeometry.NearestBound(1);
                 for(BlockPos p:out){raw.offer(0);if(p.x()==1)filtered.offer(0);}
-                return Map.of("positions",out.stream().map(Object::toString).toList(),"reads",section.reads,
-                    "afterFilter",accepted,"laterMatchExists",true,
+                return Map.of("positions",out.stream().map(Object::toString).toList(),"reads",collectionReads,
+                    "afterFilter",accepted,"laterMatchExists",laterMatch,
                     "rawCanStop",SearchGeometry.canStop(0,raw),"filteredCanStop",SearchGeometry.canStop(0,filtered));
             }
         }
