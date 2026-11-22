@@ -57,6 +57,24 @@ class SelfInventoryQueryTest {
         var wrong=new WorldObservationService.Item(Map.of("companionUUID","someone","dimension","dim"),Set.of(),Set.of());
         assertFalse(SelfInventoryQuery.query(meta(1,"a",4000),wrong,1100,Set.of()).known());
     }
+    @Test void serializedParametersDistinguishFilteredAndWholeInventory() {
+        var m=meta(1,"s",4000); var source=item(3,true,Set.of());
+        var all=SelfInventoryQuery.query(m,source,1100,Set.of()).data();
+        var onlyMeal=SelfInventoryQuery.query(m,source,1100,Set.of("mod:meal")).data();
+        assertEquals(Map.of("selection","ALL","ids",List.of()),all.get("parameters"));
+        assertEquals(Map.of("selection","EXACT_IDS","ids",List.of("mod:meal")),onlyMeal.get("parameters"));
+        var both=SelfInventoryQuery.query(m,source,1100,new LinkedHashSet<>(List.of("mod:meal","minecraft:wheat"))).data();
+        assertEquals(Map.of("selection","EXACT_IDS","ids",List.of("minecraft:wheat","mod:meal")),both.get("parameters"));
+        assertNotEquals(all.get("parameters"),onlyMeal.get("parameters"));
+        var wire=new com.google.gson.Gson().toJsonTree(onlyMeal).getAsJsonObject();
+        assertEquals("EXACT_IDS",wire.getAsJsonObject("parameters").get("selection").getAsString());
+        assertEquals("mod:meal",wire.getAsJsonObject("parameters").getAsJsonArray("ids").get(0).getAsString());
+        assertEquals(all.get("input"),onlyMeal.get("input"));
+        var expired=SelfInventoryQuery.query(m,source,4000,Set.of("mod:meal")).data();
+        assertEquals(onlyMeal.get("parameters"),expired.get("parameters"));
+        assertEquals("UNKNOWN",expired.get("state"));
+        assertFalse(expired.containsKey("total"));
+    }
     @Test void missingSourceCannotReusePreviouslyKnownAnswer() {
         assertFalse(SelfInventoryQuery.read(null,1100).known());
         assertFalse(SelfInventoryQuery.read(WorldObservationService.Response.error("self","unavailable"),1100).known());

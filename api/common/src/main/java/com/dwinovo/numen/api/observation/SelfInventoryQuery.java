@@ -15,13 +15,19 @@ public final class SelfInventoryQuery {
     private SelfInventoryQuery() {}
 
     public record Result(Map<String, Long> counts, Long total, Long foodCount,
-                         String reason, String foodReason, ObservationMetadata input) {
-        public Result { counts = Map.copyOf(counts); }
+                         String reason, String foodReason, ObservationMetadata input, Set<String> filterIds) {
+        public Result { counts = Map.copyOf(counts); filterIds = Set.copyOf(filterIds); }
+        public Result(Map<String, Long> counts, Long total, Long foodCount,
+                      String reason, String foodReason, ObservationMetadata input) {
+            this(counts, total, foodCount, reason, foodReason, input, Set.of());
+        }
         public boolean known() { return reason == null; }
         public boolean foodKnown() { return known() && foodReason == null; }
         public Map<String,Object> data() {
             var out = new LinkedHashMap<String,Object>();
             out.put("algorithm", ALGORITHM); out.put("scope", SCOPE); out.put("unit", "items");
+            out.put("parameters", Map.of("selection", filterIds.isEmpty() ? "ALL" : "EXACT_IDS",
+                    "ids", filterIds.stream().sorted().toList()));
             out.put("state", known() ? "KNOWN" : "UNKNOWN");
             out.put("foodState", foodKnown() ? "KNOWN" : "UNKNOWN");
             if (known()) { out.put("counts", counts); out.put("total", total); }
@@ -54,6 +60,12 @@ public final class SelfInventoryQuery {
     }
     /** Empty ids selects all main36 items; a nonempty immutable set is an exact-ID filter. */
     public static Result query(ObservationMetadata meta, WorldObservationService.Item item, long now, Set<String> ids) {
+        Set<String> filter = ids == null ? Set.of() : Set.copyOf(ids);
+        Result result = queryInput(meta, item, now, filter);
+        return result.filterIds().equals(filter) ? result : new Result(result.counts(), result.total(), result.foodCount(),
+                result.reason(), result.foodReason(), result.input(), filter);
+    }
+    private static Result queryInput(ObservationMetadata meta, WorldObservationService.Item item, long now, Set<String> filter) {
         if (meta == null || !meta.identified() || meta.subjectId().isEmpty() || item == null
                 || meta.freshness() != ObservationMetadata.Freshness.CURRENT
                 || meta.observedAtMs() > now || meta.validUntilMs() <= now)
@@ -70,14 +82,15 @@ public final class SelfInventoryQuery {
         var normalized = new ArrayList<Slot>(36);
         for (Slot slot : slots) normalized.add(new Slot(slot.index(), slot.id(), slot.count(),
                 masked(item, "main["+slot.index()+"].edible") ? null : slot.edible()));
-        Set<String> filter = ids == null ? Set.of() : Set.copyOf(ids);
         if (filter.size() > 36) return unknown("filter_budget", meta);
         Key key = new Key(meta, ALGORITHM, SCOPE, filter, List.copyOf(normalized));
         synchronized (CACHE) {
             CACHE.entrySet().removeIf(e -> e.getKey().input().validUntilMs() <= now);
             Result cached = CACHE.get(key);
             if (cached != null) return cached;
-            Result result = aggregate(normalized, filter, meta);
+            Result computed = aggregate(normalized, filter, meta);
+            Result result = new Result(computed.counts(), computed.total(), computed.foodCount(),
+                    computed.reason(), computed.foodReason(), computed.input(), filter);
             // No unknown numeric value is made reusable. Re-reading recovered input recomputes it.
             if (result.known() && result.foodKnown()) {
                 CACHE.put(key, result);

@@ -159,7 +159,7 @@ final class RddEnvBlock {
         if (mainInventory != null && mainInventory.known()) {
             int remaining = 390 - out.length() - "\n</env>".length();
             String key = RddKeyItems.line(mainInventory, Math.max(0, remaining));
-            if (key != null && remaining > 0) out.append(key).append('\n');
+            if (key != null && remaining > 0 && key.length() <= remaining) out.append(key).append('\n');
         }
         out.append("</env>");
         return out.toString();
