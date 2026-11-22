@@ -3,6 +3,7 @@ package com.dwinovo.numen.plugins.rdd;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.io.TempDir.CleanupMode;
 import javax.tools.ToolProvider;
 import java.net.URL;
 import java.net.URLClassLoader;
@@ -15,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * In particular readContainer is a double: observation metadata validation itself is not tested.
  */
 class RddFutureNeedFreshnessSourceTest {
-    @TempDir Path temp;
+    @TempDir(cleanup = CleanupMode.NEVER) Path temp;
     Class<?> fixture;
 
     @BeforeEach void compile() throws Exception {
@@ -86,7 +87,7 @@ class RddFutureNeedFreshnessSourceTest {
                 static class Logger { void warn(String s,Object... x){} void info(String s,Object... x){} }
             """);
         for (String declaration : List.of("private record Context(", "static record NearbySnapshot(", "private record Published(", "private record Scan(", "private record ContainerRead(")) m.append(method(memory, declaration).replace("private record ContainerRead(", "static record ContainerRead("));
-        for (String sig : List.of("private static boolean knownIdentity(", "private static boolean sameContext(", "static synchronized void refresh(", "static NearbySnapshot cachedSnapshot(", "static boolean isCurrent(", "private static Scan scan(NumenPlayer body", "private static String scanDirectAttr(")) m.append(method(memory, sig));
+        for (String sig : List.of("private static boolean knownIdentity(", "private static boolean sameContext(", "static synchronized void refresh(", "static NearbySnapshot cachedSnapshot(", "static boolean isCurrent(", "private static Scan scan(NumenPlayer body")) m.append(method(memory, sig));
         m.append("""
                 static final Map<Integer,ContainerRead> reads=new HashMap<>();
                 static boolean pollContainerChanges(UUID id){return false;}
