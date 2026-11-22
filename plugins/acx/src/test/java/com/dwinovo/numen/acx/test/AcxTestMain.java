@@ -4037,14 +4037,25 @@ private static void takeDiag() {
                 AcxRunner runner = AcxRunner.builder().tools(reg).store(store).build();
                 AcxFacade facade = new AcxFacade(new AcxSessionManager(runner, Runnable::run), name -> d, reg, null);
                 String run = String.valueOf(castData(facade.execute(Map.of("ac_name", "bounded"))).get("run_id"));
+                eq("PAUSED", castData(facade.status(Map.of("run_id", run))).get("state"), "首轮必须真实暂停");
                 int before = Fake.calls.count("mine");
                 facade.resume(Map.of("run_id", run));
                 Map<String,Object> status = castData(facade.status(Map.of("run_id", run)));
                 eq("FAIL", status.get("state"), "状态查询不得报成功");
                 T.isTrue(String.valueOf(status.get("error_message")).contains("64/65"), "状态可见截断原因");
                 eq(before, Fake.calls.count("mine"), "门面续跑不得重发");
-                String durable = Files.readString(path);
-                T.isTrue(durable.contains("64/65") && durable.contains(run) && durable.contains("FAIL"), "失败原因持久记录");
+                var lines = Files.readAllLines(path);
+                com.google.gson.JsonObject last = null;
+                for (String line : lines) {
+                    var row = com.google.gson.JsonParser.parseString(line).getAsJsonObject();
+                    if (row.has("run_id") && run.equals(row.get("run_id").getAsString())) last = row;
+                }
+                T.notNull(last, "同run记录必须存在");
+                eq("FAIL", last.get("status").getAsString(), "同run最后记录失败");
+                T.isTrue(last.get("error_message").getAsString().contains("64/65"), "同run失败原因明确");
+                var vars = last.getAsJsonObject("vars");
+                T.notNull(vars, "保留恢复变量与标记");
+                T.isTrue(vars.keySet().stream().anyMatch(k -> k.startsWith("_snapshot_truncated_")), "保留截断标记");
             } catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
         });
         T.test("子帧已结束其截断标记不误挡父后续暂停", () -> {
