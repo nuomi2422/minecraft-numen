@@ -74,6 +74,11 @@ class MineEffectsConsumerTest {
         assertEquals(400L,r.get("progressTick"),"unchanged inventory must not keep refreshing the stall timer");
         assertEquals("RUNNING",r.get("state"));
     }
+    @Test void unchangedPickupEventuallyExhaustsOriginalBudget() throws Exception {
+        var r=run("exhaustedPickup"); assertEquals("SUCCESS",r.get("state"));
+        assertEquals(1,r.get("gathered")); assertEquals(true,r.get("partial"));
+        assertEquals(400L,r.get("progressTick"));
+    }
     @Test void harvestableOreAndFailedRouteNeverBecomeProduce() throws Exception {
         var r=run("unreachable"); assertEquals("FAILED",r.get("state")); assertEquals(0,r.get("gathered"));
         assertEquals("NO_PATH",r.get("failure")); assertEquals(0,r.get("digCalls"));
@@ -179,7 +184,7 @@ class MineEffectsConsumerTest {
                     f.player.inv.items.add(new ItemStack(new Item("raw_iron"),10));
                     f.player.world.time=400;
                     switch(scenario) {
-                        case "freshPickup", "repeatPickup" -> f.player.inv.items.set(0,new ItemStack(new Item("raw_iron"),11));
+                        case "freshPickup", "repeatPickup", "exhaustedPickup" -> f.player.inv.items.set(0,new ItemStack(new Item("raw_iron"),11));
                         case "unreachable" -> f.nav.state=PlayerNav.State.FAILED;
                         case "broken" -> { f.reachable=ore; f.digger.result=Digger.Result.BROKE_TARGET; }
                         case "full" -> {
@@ -201,6 +206,7 @@ class MineEffectsConsumerTest {
                     TaskState state=f.onTick();
                     if(scenario.equals("broken")){f.reachable=null;f.player.world.time++;state=f.onTick();}
                     if(scenario.equals("repeatPickup")){f.player.world.time++;state=f.onTick();}
+                    if(scenario.equals("exhaustedPickup")){f.player.world.time=800;state=f.onTick();}
                     Map<String,Object> result=f.resultData(); result.put("state",state.name());
                     result.put("progressTick",f.lastProgressTick);result.put("broken",f.brokenTargets);
                     result.put("dropGoals",f.drops.size());result.put("anticipated",f.anticipatedDrops.size());
