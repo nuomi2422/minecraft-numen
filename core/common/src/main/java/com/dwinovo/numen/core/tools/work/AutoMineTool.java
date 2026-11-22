@@ -54,6 +54,14 @@ public final class AutoMineTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
+        // These constraints are not wired through scan, path and digging yet. Never silently
+        // discard one and start an unconstrained task. JSON null means no constraint.
+        for (String key : List.of("x1", "y1", "z1", "x2", "y2", "z2", "min_y", "max_y", "path_bounds")) {
+            if (args.has(key) && !args.get(key).isJsonNull()) {
+                throw new IllegalArgumentException("mine does not support " + key
+                        + " yet; no mining task was started. Do not rely on this constraint being applied.");
+            }
+        }
         Args a = ToolArgs.fromJson(args, Args.class);
         setTask(companion, impl.autoMine(a.block_ids(), a.count(),
                 ctx(toolCallId, companion)), args, reply);
