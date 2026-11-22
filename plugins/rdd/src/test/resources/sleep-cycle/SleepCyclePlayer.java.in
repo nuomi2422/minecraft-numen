@@ -1,0 +1,12 @@
+package com.dwinovo.numen.entity;
+import net.minecraft.server.MinecraftServer;import net.minecraft.server.level.ServerPlayer;
+import java.util.*;
+public class NumenPlayer extends ServerPlayer {
+    public final UUID id;public MinecraftServer server;public boolean sleeping,alive=true,removed;public final Level world=new Level();
+    public NumenPlayer(UUID id,MinecraftServer server){this.id=id;this.server=server;}
+    public UUID getUUID(){return id;}public MinecraftServer getServer(){return server;}public boolean isSleeping(){return sleeping;}
+    public boolean isAlive(){return alive;}public boolean isRemoved(){return removed;}public Level level(){return world;}
+    public static class Level{public long game,day;public String dim="minecraft:overworld";public long getGameTime(){return game;}
+        public long getDayTime(){return day;}public boolean isDay(){return Math.floorMod(day,24000)<13000||Math.floorMod(day,24000)>=23000;}
+        public Key dimension(){return new Key(dim);}public record Key(String value){public Key location(){return this;}public String toString(){return value;}}}
+}
