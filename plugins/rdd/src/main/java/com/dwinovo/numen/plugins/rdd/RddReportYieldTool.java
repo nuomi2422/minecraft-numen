@@ -82,6 +82,12 @@ final class RddReportYieldTool implements NumenTool {
             if (observed < 0) {
                 throw new IllegalArgumentException("observed must be >= 0");
             }
+            var side = SideTaskHost.activeYieldOwner(companion.getUUID());
+            if (side != null) {
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail("yield refused: current scope=SIDE instance="
+                        + side.instanceId() + " generation=" + side.generation()).toJson());
+                return;
+            }
             int before = chain.raiseCurrentMinimumForAsset(current.id(), assetKey, take);
             boolean raised = take > before;
             int applied = raised ? take : before;

@@ -306,6 +306,11 @@ final class SideTaskHost {
         return SIDE_CONTEXT.render(companionId, currentWorldId, currentSession);
     }
 
+    /** Current live side owner, not the independently cached model context. */
+    static SideTask activeYieldOwner(UUID companionId) {
+        return companionId == null ? null : ENGINE.current(companionId).filter(task -> !task.terminal()).orElse(null);
+    }
+
     /** 当前支线类型 id（无支线 → null）：给"拒绝"工具做旧回执校验（防拒错一条）。 */
     static String currentTypeId(UUID companionId) {
         if (companionId == null) {
