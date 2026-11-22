@@ -4045,7 +4045,7 @@ private static void takeDiag() {
                 eq(before, Fake.calls.count("mine"), "门面续跑不得重发");
                 String durable = Files.readString(path);
                 T.isTrue(durable.contains("64/65") && durable.contains(run) && durable.contains("FAIL"), "失败原因持久记录");
-            }
+            } catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
         });
         T.test("子帧已结束其截断标记不误挡父后续暂停", () -> {
             List<Object> big = new ArrayList<>();
