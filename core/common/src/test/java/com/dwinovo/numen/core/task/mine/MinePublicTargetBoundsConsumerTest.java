@@ -45,7 +45,7 @@ class MinePublicTargetBoundsConsumerTest {
     @Test void legacyInputKeepsUnboundedTask()throws Exception{var r=run("absent");assertEquals(1,r.get("dispatch"));assertEquals(true,r.get("outside"));}
     @Test void nullBoundsKeepUnboundedTask()throws Exception{var r=run("null");assertEquals(1,r.get("dispatch"));assertEquals(true,r.get("outside"));}
     @Test void publishedSchemaDescribesOptionalOreBounds()throws Exception{var r=run("valid");assertEquals(true,r.get("schemaBounds"));assertEquals(false,r.get("schemaRequired"));}
-    @ParameterizedTest @ValueSource(strings={"missing","fraction","string","boolean","overflow","extra","array","memberNull"})
+    @ParameterizedTest @ValueSource(strings={"missing","fraction","string","boolean","overflow","extra","array","memberNull","reversed","empty","horizontal","vertical"})
     void malformedBoundsNeverDispatch(String s)throws Exception{var r=run(s);assertEquals(0,r.get("dispatch"),s);assertFalse(((String)r.get("error")).isBlank(),s);}
     static final String BOUNDARIES="""
         package fixture;
@@ -74,6 +74,10 @@ class MinePublicTargetBoundsConsumerTest {
                     case "absent" -> {}
                     case "null" -> a.add("target_bounds",JsonNull.INSTANCE);
                     case "missing" -> bounds.remove("z2");
+                    case "reversed" -> bounds.addProperty("x1",3);
+                    case "empty" -> bounds=new JsonObject();
+                    case "horizontal" -> bounds.addProperty("x2",30000001);
+                    case "vertical" -> bounds.addProperty("y2",2049);
                     case "fraction" -> bounds.addProperty("x1",0.5);
                     case "string" -> bounds.addProperty("x1","0");
                     case "boolean" -> bounds.addProperty("x1",true);
