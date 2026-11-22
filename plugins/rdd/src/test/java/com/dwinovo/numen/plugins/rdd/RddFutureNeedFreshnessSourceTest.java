@@ -132,6 +132,8 @@ class RddFutureNeedFreshnessSourceTest {
     @Test void equivalentRescanKeepsNearbyBeforeExpiry() throws Exception {
         assertTrue(scenario("equivalent").contains("minecraft:obsidian ×10/10（够）［附近容器］"));
     }
+    @Test void changedRescanCannotReviveOldCount() throws Exception { gone("changed"); }
+    @Test void dimensionChangedRescanCannotReviveOldNearby() throws Exception { gone("moved"); }
     @Test void realInventoryInputAndFreshNearbyAreReported() throws Exception {
         String text=scenario("fresh");
         assertTrue(text.contains("minecraft:obsidian ×10/10（够）［附近容器］"),text);
@@ -165,7 +167,12 @@ class RddFutureNeedFreshnessSourceTest {
                 RddContainerMemory.refresh(body,0); RddFutureNeeds.tick(id,chain,Map.of("minecraft:bread",2));
                 if(!RddFutureNeeds.block(id).contains("minecraft:obsidian")) throw new AssertionError("fresh setup failed");
                 if(kind.equals("fresh")) return RddFutureNeeds.block(id);
-                if(kind.equals("equivalent")) { System.now=10050; RddContainerMemory.refresh(body,40); return RddFutureNeeds.block(id); }
+                if(kind.equals("equivalent") || kind.equals("changed")) {
+                    System.now=10050;
+                    if(kind.equals("changed")) RddContainerMemory.reads.put(0,new RddContainerMemory.ContainerRead(Map.of("minecraft:obsidian",1),false,10100));
+                    RddContainerMemory.refresh(body,40); return RddFutureNeeds.block(id);
+                }
+                if(kind.equals("moved")) { body.level.dim="nether"; RddContainerMemory.refresh(body,40); return RddFutureNeeds.block(id); }
                 if(kind.equals("world")) WorldContextStamp.current=token("B","S",1);
                 if(kind.equals("session")) WorldContextStamp.current=token("A","T",1);
                 if(kind.equals("epoch")) WorldContextStamp.current=token("A","S",2);

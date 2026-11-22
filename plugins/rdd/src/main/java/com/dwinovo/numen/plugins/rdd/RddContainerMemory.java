@@ -251,7 +251,18 @@ final class RddContainerMemory {
     }
 
     static boolean isCurrent(UUID companionId, NearbySnapshot snapshot) {
-        return snapshot != null && cachedSnapshot(companionId) == snapshot;
+        if (snapshot == null) return false;
+        NearbySnapshot current = cachedSnapshot(companionId);
+        if (current == null || System.currentTimeMillis() >= snapshot.deadlineMillis()) return false;
+        return current.serverIdentity() == snapshot.serverIdentity()
+                && current.worldIdentity() == snapshot.worldIdentity()
+                && current.bodyIdentity() == snapshot.bodyIdentity()
+                && current.bodyId().equals(snapshot.bodyId())
+                && current.dimension().equals(snapshot.dimension()) && current.token().equals(snapshot.token())
+                && current.originX() == snapshot.originX() && current.originY() == snapshot.originY()
+                && current.originZ() == snapshot.originZ() && current.radius() == snapshot.radius()
+                && current.direct() == snapshot.direct() && current.observed() == snapshot.observed()
+                && current.partial() == snapshot.partial() && current.counts().equals(snapshot.counts());
     }
 
     static synchronized void clear(UUID companionId) {
