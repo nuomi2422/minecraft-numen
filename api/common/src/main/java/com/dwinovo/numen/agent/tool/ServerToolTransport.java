@@ -29,6 +29,7 @@ public final class ServerToolTransport {
     private static final Map<String, ToolCall> IN_FLIGHT = new ConcurrentHashMap<>();
     private record TicketWait(UUID entity, java.util.function.Consumer<String> reply) {}
     private static final Map<String, TicketWait> TICKET_WAIT = new ConcurrentHashMap<>();
+    private static final int MAX_TICKET_WAITS = 256;
     private static final String TICKET_PREFIX = "yield-ticket-";
 
     private ServerToolTransport() {}
@@ -51,7 +52,13 @@ public final class ServerToolTransport {
     /** Start one internal ticket request; its response never enters the model tool queue. */
     public static String requestYieldTicket(UUID entity, java.util.function.Consumer<String> reply) {
         String id = TICKET_PREFIX + UUID.randomUUID();
-        TICKET_WAIT.put(id, new TicketWait(entity, reply));
+        synchronized (TICKET_WAIT) {
+            if (entity == null || reply == null || TICKET_WAIT.size() >= MAX_TICKET_WAITS) {
+                if (reply != null) reply.accept(null);
+                return id;
+            }
+            TICKET_WAIT.put(id, new TicketWait(entity, reply));
+        }
         try { Services.NETWORK.sendToServer(new ExecuteToolPayload(entity, id, "_rdd_yield_ticket", "{}")); }
         catch (RuntimeException ex) { TICKET_WAIT.remove(id); reply.accept(null); }
         return id;
