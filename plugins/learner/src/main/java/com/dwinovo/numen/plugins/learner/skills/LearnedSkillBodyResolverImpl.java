@@ -86,6 +86,8 @@ public final class LearnedSkillBodyResolverImpl implements LearnedSkillBodyResol
                     || !new SkillsKnowledgeContributor(configDir,view.name(),0).audienceMatches(entry.audience())
                     || !"package".equals(SceneSkillCatalog.kind(entry)))
                 return new FocusDeclaration(packageRef,"","","package-changed-or-invalid");
+            if (SceneSkillCatalog.missingRequired(entry, this, companion, view))
+                return new FocusDeclaration(packageRef,"","","missing-required-component");
             var declarations=entry.preconditions().stream().filter(v->v.startsWith("focus:")).toList();
             if(declarations.isEmpty()) return new FocusDeclaration(packageRef,"","","focus-not-declared");
             if(declarations.size()!=1 || !declarations.getFirst().equals("focus:environment@v1"))

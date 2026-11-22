@@ -276,6 +276,29 @@ class LearnerSkillTaskFeedbackTest {
         tasks.finish(TaskState.SUCCESS);
         rejected(call(args("report_skill"))); noRows();
     }
+    @Test void sceneRequiredWithdrawalRefusesNewFocusButPreservesTaskFact() {
+        String componentBody="overnight method";
+        String componentRef=SkillBodyStore.write(dir,"scene-step",1,"fixture-scene-step",componentBody);
+        var component=new ArtifactDraft(ArtifactKind.EXPERIENCE,"overnight step","prepare shelter",componentBody,
+                List.of("overnight"),List.of(),List.of("scene:overnight:component"),"LOW",List.of(),List.of("step-memo"),"EXECUTOR");
+        assertEquals(SkillRegistry.Outcome.REGISTERED,registry.register(component,"scene-step",componentRef,true).outcome());
+        String packageBody="overnight package";
+        String packageRef=SkillBodyStore.write(dir,"scene-pack",1,"fixture-scene-pack",packageBody);
+        var pack=new ArtifactDraft(ArtifactKind.EXPERIENCE,"overnight package","prepare night",packageBody,
+                List.of("overnight"),List.of(),List.of("scene:overnight:package","requires:skill:scene-step@v1","focus:environment@v1"),"LOW",List.of(),List.of("pack-memo"),"EXECUTOR");
+        assertEquals(SkillRegistry.Outcome.REGISTERED,registry.register(pack,"scene-pack",packageRef,true).outcome());
+        JsonObject select=args("adopt_skill"); select.addProperty("skill_ref","skill:scene-pack");
+        var resolver=new com.dwinovo.numen.plugins.learner.skills.LearnedSkillBodyResolverImpl(dir);
+        var view=com.dwinovo.numen.api.LearnedSkillBodyResolver.View.EXECUTOR;
+        assertTrue(resolver.resolveFocusDeclaration(C,"skill:scene-pack@v1",view).available(),"complete package may declare focus");
+        ok(call(select)); assertEquals("skill:scene-pack",task.skillSelection().skillRef());
+        registry.retire("scene-step","required component withdrawn");
+        assertTrue(resolver.resolve(C,"skill:scene-pack@v1",view).available(),"explicit package read remains independent of execution eligibility");
+        tasks.finish(TaskState.SUCCESS); JsonObject report=args("report_skill"); report.addProperty("skill_ref","skill:scene-pack");
+        ok(call(report)); assertEquals(1,rows().size()); assertTrue(rows().getFirst().detail().contains("待审候选"));
+        assertFalse(resolver.resolveFocusDeclaration(C,"skill:scene-pack@v1",view).available(),"required withdrawal must prevent new focus mount");
+    }
+
     @Test void revokedSkillCannotSelectOrReport() {
         adopt(); registry.retire("sk-1", "withdrawn");
         rejected(call(args("adopt_skill")));
