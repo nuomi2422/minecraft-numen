@@ -72,6 +72,9 @@ public final class InteractEntityCompanionTask extends GoToThenDoTask<InteractEn
                                     FailureType.TARGET_LOST)
                             : null;
                 },
+                () -> r.button == MouseButton.LEFT && entity instanceof net.minecraft.world.entity.animal.IronGolem
+                        ? new Precondition.Failure("refusing to attack an iron golem without a trusted owner authorization", FailureType.UNKNOWN)
+                        : null,
                 () -> r.item == null || PlayerInv.count(player.getInventory(), r.item) > 0 ? null
                         : new Precondition.Failure("don't have "
                                 + BuiltInRegistries.ITEM.getKey(r.item).getPath() + " to use on it",
@@ -107,6 +110,13 @@ public final class InteractEntityCompanionTask extends GoToThenDoTask<InteractEn
                 return TaskState.SUCCESS;
             }
             fail("the target entity is gone before I could reach it", FailureType.TARGET_LOST);
+            return TaskState.FAILED;
+        }
+
+        // Recheck at the actual press boundary: target state can change after navigation.
+        if (r.button == MouseButton.LEFT && entity instanceof net.minecraft.world.entity.animal.IronGolem) {
+            if (interaction != null) interaction.stop();
+            fail("refusing to attack an iron golem without a trusted owner authorization", FailureType.UNKNOWN);
             return TaskState.FAILED;
         }
 

@@ -20,7 +20,8 @@ class InteractGolemSafetyConsumerTest {
   String tick=method(interaction,"    public Status tick() {","    // ---- ATTACK + block");
   String discrete=method(interaction,"    private Status discrete() {","    private boolean fireAttackEntity()");
   String attack=method(interaction,"    private boolean fireAttackEntity() {","    private boolean fireUseBlock()").replace("InputDriver.","Fixture.InputDriver.").replace("entity instanceof net.minecraft.world.entity.LivingEntity living", "entity instanceof Fixture.LivingEntity living").replace("com.dwinovo.numen.core.combat.Swing.","Fixture.Swing.");
-  act=act.replace("com.dwinovo.numen.core.act.PressReceipt.before", "PressReceipt.before");
+  act=act.replace("com.dwinovo.numen.core.act.PressReceipt.before", "PressReceipt.before")
+         .replace("net.minecraft.world.entity.animal.IronGolem", "IronGolem");
   String code=HEADER+act+button+"}\n"+IHEADER+factory+attackFactory+tick+discrete+attack+"}\n";
   Path dir=Files.createTempDirectory("golem-consumer-");Path file=dir.resolve("Fixture.java");Files.writeString(file,code);
   assertEquals(0,ToolProvider.getSystemJavaCompiler().run(null,null,null,"-proc:none","-d",dir.toString(),file.toString()),"SETUP ERROR");
