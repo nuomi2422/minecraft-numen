@@ -39,7 +39,18 @@ public record LlmToolCall(String id, String name, String arguments) {
     public static final String NO_ARGS = "{}";
 
     public LlmToolCall {
-        arguments = asObjectText(arguments);
+        if ("rdd_report_yield".equals(name)) {
+            try {
+                JsonObject safe = JsonParser.parseString(arguments).getAsJsonObject();
+                safe.remove("_yield_ticket");
+                arguments = safe.toString();
+            } catch (RuntimeException malformed) {
+                // Never put malformed yield text, including a possible secret, into logs or history.
+                arguments = NO_ARGS;
+            }
+        } else {
+            arguments = asObjectText(arguments);
+        }
     }
 
     /**
