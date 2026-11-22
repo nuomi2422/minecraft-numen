@@ -73,6 +73,8 @@ class RddCompletedMoveAssetTest {
         var registry = new AssetRegistry();
         assertTrue(RddCompletedMoveAsset.project(id, record.publicId(), record, token, "overworld", registry, 100));
         assertFalse(RddCompletedMoveAsset.project(id, record.publicId(), record, token, "overworld", registry, 200));
+        assertEquals(RddCompletedMoveAsset.Outcome.EXISTING, RddCompletedMoveAsset.projectOutcome(id, record.publicId(), record, token, "overworld", registry, 200));
+        assertEquals(100, registry.snapshot().getFirst().observation().observedAt());
         assertEquals(1, registry.snapshot().size());
         var args = new JsonObject(); args.addProperty("action", "detail"); args.addProperty("asset_id", registry.snapshot().getFirst().assetId());
         String detail = RddAssetsTool.dispatch(args, registry);
@@ -111,7 +113,8 @@ class RddCompletedMoveAssetTest {
         assertTrue(RddCompletedMoveAsset.project(id, record.publicId(), record, token, "overworld", registry, 100));
         assertThrows(java.io.IOException.class, () -> RddAssetStore.save(notDirectory, id, registry));
         var recoveredDirectory = temp.resolve("recovered");
-        if (RddCompletedMoveAsset.project(id, record.publicId(), record, token, "overworld", registry, 101))
+        if (RddCompletedMoveAsset.projectOutcome(id, record.publicId(), record, token, "overworld", registry, 101)
+                != RddCompletedMoveAsset.Outcome.REJECTED)
             RddAssetStore.save(recoveredDirectory, id, registry);
         var restored = RddAssetStore.load(recoveredDirectory, id);
         assertEquals(1, restored.snapshot().size(), "same terminal event after a failed save must be recoverable");

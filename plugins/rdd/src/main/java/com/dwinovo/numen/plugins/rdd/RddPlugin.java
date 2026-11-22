@@ -317,9 +317,10 @@ public final class RddPlugin implements NumenPlugin {
             var body = com.dwinovo.numen.entity.NumenPlayer.findByUuid(server, finished.companionId());
             if (body == null || body.getServer() != server) return;
             var record = com.dwinovo.numen.task.CompanionTickDispatcher.finishedTaskFor(finished.companionId(), finished.taskId());
-            if (RddCompletedMoveAsset.project(finished.companionId(), finished.taskId(), record,
+            if (RddCompletedMoveAsset.projectOutcome(finished.companionId(), finished.taskId(), record,
                     com.dwinovo.numen.api.WorldContextStamp.capture(server),
-                    body.level().dimension().location().toString(), assets(finished.companionId()), System.currentTimeMillis()))
+                    body.level().dimension().location().toString(), assets(finished.companionId()), System.currentTimeMillis())
+                    != RddCompletedMoveAsset.Outcome.REJECTED)
                 saveAssets(finished.companionId());
         });
         numen.on(CompanionEvent.DEATH, body -> onCompanionDeath(body));

@@ -16,27 +16,44 @@ final class RddCompletedMoveAsset {
     private static final int MAX_COMPLETED_MOVES = 32;
     private RddCompletedMoveAsset() {}
 
+    enum Outcome { ADDED, EXISTING, REJECTED }
+
     static boolean project(UUID companion, String taskId, TaskRecord record, WorldContextStamp.Token current,
+                           String dimension, AssetRegistry registry, long now) {
+        return projectOutcome(companion, taskId, record, current, dimension, registry, now) == Outcome.ADDED;
+    }
+
+    static Outcome projectOutcome(UUID companion, String taskId, TaskRecord record, WorldContextStamp.Token current,
                            String dimension, AssetRegistry registry, long now) {
         if (companion == null || taskId == null || taskId.isBlank() || record == null || registry == null
                 || record.getState() != TaskState.SUCCESS || record.getResult() == null
                 || !record.getResult().success() || !taskId.equals(record.publicId())
                 || !"goto".equals(record.getToolName()) || current == null || current.identity() == null
                 || current.epoch() <= 0 || !current.equals(record.identityToken()) || dimension == null
-                || record.getResult().data() == null) return false;
+                || record.getResult().data() == null) return Outcome.REJECTED;
         Object raw = record.getResult().data().get("completed_move");
-        if (!(raw instanceof Map<?, ?> fact)) return false;
+        if (!(raw instanceof Map<?, ?> fact)) return Outcome.REJECTED;
         String world = current.identity().get("world_id"), session = current.identity().get("server_session");
         if (!known(world) || !known(session) || !known(dimension)
                 || !world.equals(fact.get("world_id")) || !session.equals(fact.get("server_session"))
                 || !(fact.get("epoch") instanceof Number epoch) || !exactEpoch(epoch, current.epoch())
                 || !dimension.equals(fact.get("dimension")) || !Boolean.FALSE.equals(fact.get("route_proven"))
-                || !"start_to_end_only".equals(fact.get("direction"))) return false;
+                || !"start_to_end_only".equals(fact.get("direction"))) return Outcome.REJECTED;
         Map<String, Double> start = point(fact.get("start")), end = point(fact.get("end"));
-        if (start == null || end == null || start.equals(end)) return false;
+        if (start == null || end == null || start.equals(end)) return Outcome.REJECTED;
         String key = "move|" + UUID.nameUUIDFromBytes((world + "\0" + companion + "\0" + session + "\0" + current.epoch() + "\0" + taskId).getBytes(StandardCharsets.UTF_8));
         synchronized (registry) {
-            if (registry.get(key).isPresent()) return false;
+            var previous = registry.get(key).orElse(null);
+            if (previous != null) {
+                var old = previous.observation().value();
+                return "world_completed_move".equals(previous.observation().type())
+                        && world.equals(old.get("world_id")) && session.equals(old.get("server_session"))
+                        && dimension.equals(old.get("dimension")) && companion.toString().equals(old.get("companion_id"))
+                        && taskId.equals(old.get("task_id")) && old.get("epoch") instanceof Number n && exactEpoch(n, current.epoch())
+                        && start.equals(point(old.get("start"))) && end.equals(point(old.get("end")))
+                        && Boolean.FALSE.equals(old.get("route_proven")) && "start_to_end_only".equals(old.get("direction"))
+                        ? Outcome.EXISTING : Outcome.REJECTED;
+            }
             Map<String, Object> value = new LinkedHashMap<>();
             value.put("kind", "completed_move"); value.put("label", "historical completed movement endpoints");
             value.put("world_id", world); value.put("server_session", session); value.put("epoch", current.epoch());
@@ -50,7 +67,7 @@ final class RddCompletedMoveAsset {
                             .thenComparing(AssetRegistry.AssetEntry::assetId))
                     .toList();
             for (int i = 0; i < moves.size() - MAX_COMPLETED_MOVES; i++) registry.forget(moves.get(i).assetId());
-            return true;
+            return Outcome.ADDED;
         }
     }
 
