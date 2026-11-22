@@ -51,5 +51,20 @@ public interface LearnedSkillBodyResolver {
         }
     }
 
+    /** One explicitly selected package component; a read is not execution or adoption. */
+    record PackageComponentResolution(String packageRef, String componentRef, String body, String availability, String gap) {
+        public PackageComponentResolution {
+            packageRef=packageRef==null?"":packageRef; componentRef=componentRef==null?"":componentRef;
+            body=body==null?"":body; availability=availability==null?"":availability; gap=gap==null?"":gap;
+            if (!gap.isEmpty() && !body.isEmpty()) throw new IllegalArgumentException("a refused read cannot carry a body");
+        }
+        public boolean available() { return gap.isEmpty() && !body.isBlank(); }
+        public static PackageComponentResolution refused(String pack,String component,String reason) {
+            return new PackageComponentResolution(pack,component,"","",reason);
+        }
+    }
+    default PackageComponentResolution resolveComponent(UUID companion,String packageRef,String componentRef,View consumerView) {
+        return PackageComponentResolution.refused(packageRef,componentRef,"package-component-unavailable");
+    }
     Resolution resolve(UUID companion, String exactRef, View consumerView);
 }
