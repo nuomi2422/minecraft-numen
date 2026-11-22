@@ -36,7 +36,15 @@ package com.dwinovo.numen.plugins.rdd; import com.google.gson.*;import com.dwino
   var args=new ArrayList<String>(List.of("-encoding","UTF-8","-proc:none","-classpath",System.getProperty("java.class.path")+File.pathSeparator+Path.of(TaskChain.class.getProtectionDomain().getCodeSource().getLocation().toURI())+File.pathSeparator+Path.of(Gson.class.getProtectionDomain().getCodeSource().getLocation().toURI()),"-d",tmp.toString()));
   for(var e:files.entrySet()){Path p=tmp.resolve(e.getKey());Files.createDirectories(p.getParent());Files.writeString(p,e.getValue(),StandardCharsets.UTF_8);args.add(p.toString());}
   assertEquals(0,ToolProvider.getSystemJavaCompiler().run(null,null,null,args.toArray(String[]::new)));
-  loader=new URLClassLoader(new URL[]{tmp.toUri().toURL()},RddYieldConsumerTest.class.getClassLoader());harness=loader.loadClass("com.dwinovo.numen.plugins.rdd.YieldHarness");
+  loader=new URLClassLoader(new URL[]{tmp.toUri().toURL()},RddYieldConsumerTest.class.getClassLoader()) {
+   @Override protected synchronized Class<?> loadClass(String n, boolean resolve) throws ClassNotFoundException {
+    if(n.startsWith("com.dwinovo.numen.plugins.rdd.") || n.startsWith("com.dwinovo.numen.entity.NumenPlayer")
+       || n.startsWith("com.dwinovo.numen.agent.tool.") || n.equals("com.dwinovo.numen.task.TaskResult")) {
+      Class<?> c=findLoadedClass(n); if(c==null)c=findClass(n); if(resolve)resolveClass(c); return c;
+    }
+    return super.loadClass(n,resolve);
+   }
+  };harness=loader.loadClass("com.dwinovo.numen.plugins.rdd.YieldHarness");
  }
  @Test void toolRejectsMismatchedAssetAndPreservesValidPaths() throws Exception {
   TaskChain c=new TaskChain(new Goal("g","goal",List.of(new PrimaryGoal("p","p",List.of(Subtask.hardCoded("s","s",Map.of("asset_key","minecraft:iron_pickaxe","minimum",1))))))); c.startCurrent();
