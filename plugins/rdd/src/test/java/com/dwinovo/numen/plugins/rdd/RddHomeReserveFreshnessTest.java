@@ -185,6 +185,32 @@ class RddHomeReserveFreshnessTest {
         assertFalse(RddHomeFacts.reserveKnown(registry, now));
     }
 
+    @Test void unidentifiedReserveMustNotPermitHighRiskThroughRealHomeGate() {
+        long now = 1_700_000_000_000L;
+        AssetRegistry registry = baseRegistry(now - MINUTE, fullReserve());
+        var view = RddHomeFacts.HomeView.of(registry, now);
+        var otherwiseAllowed = new com.dwinovo.numen.rdd.policy.RiskGate.Verdict(true,
+                com.dwinovo.numen.rdd.policy.RiskLevel.NETHER, List.of(), List.of());
+        var verdict = com.dwinovo.numen.rdd.policy.HomeGate.enforce(otherwiseAllowed, view.stage());
+        assertFalse(verdict.allowed(), "unidentified historical base must not satisfy high-risk home gate");
+    }
+
+    @Test void identifiedFreshReserveKeepsHighRiskHomeGatePositiveControl() {
+        long now = 1_700_000_000_000L;
+        AssetRegistry registry = new AssetRegistry();
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("kind", "base"); value.put("label", "home"); value.put("dimension", "minecraft:overworld");
+        value.put("world_id", "world-A"); value.put("server_session", "session-A");
+        value.put("x", 372); value.put("y", 68); value.put("z", 715);
+        value.put("facilities", List.of("core_house")); value.put("important_items", fullReserve());
+        registry.apply(new Observation("fresh", "world_base", "rdd_world_observer", "minecraft:overworld",
+                now - MINUTE, value), "base", AssetScope.GLOBAL, null);
+        var view = RddHomeFacts.HomeView.of(registry, now);
+        var otherwiseAllowed = new com.dwinovo.numen.rdd.policy.RiskGate.Verdict(true,
+                com.dwinovo.numen.rdd.policy.RiskLevel.NETHER, List.of(), List.of());
+        assertTrue(com.dwinovo.numen.rdd.policy.HomeGate.enforce(otherwiseAllowed, view.stage()).allowed());
+    }
+
     private static Map<String, Integer> fullReserve() {
         Map<String, Integer> m = new LinkedHashMap<>();
         m.put("minecraft:iron_pickaxe", 1);
