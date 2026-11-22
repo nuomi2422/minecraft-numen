@@ -87,7 +87,7 @@ class RddFutureNeedFreshnessSourceTest {
                 static final Map<UUID,Object> POLLERS=new ConcurrentHashMap<>();
                 static final Map<UUID,String> CHANGE_EPOCH=new ConcurrentHashMap<>();
                 static final Logger LOG=new Logger();
-                static class Logger { void warn(String s,Object... x){} void info(String s,Object... x){} }
+                static class Logger { void warn(String s,Object... x){} void info(String s,Object... x){} void debug(String s,Object... x){} }
             """);
         for (String declaration : List.of("private record Context(", "static record NearbySnapshot(", "private record Published(", "private record Scan(", "private record ContainerRead(")) m.append(method(memory, declaration).replace("private record ContainerRead(", "static record ContainerRead("));
         for (String sig : List.of("private static boolean knownIdentity(", "private static boolean sameContext(", "static synchronized void refresh(", "static NearbySnapshot cachedSnapshot(", "static boolean isCurrent(", "private static boolean sameEvidence(", "static synchronized void clear(", "private static Scan scan(NumenPlayer body")) m.append(method(memory, sig));
