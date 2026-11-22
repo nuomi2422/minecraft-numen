@@ -74,7 +74,8 @@ final class RddAssetContext {
                     + " " + text(v.get("dimension")) + " (" + text(v.get("x")) + "," + text(v.get("y"))
                     + "," + text(v.get("z")) + ") 时间="
                     + (entry.observation().observedAt() > 0 ? entry.observation().observedAt() : "UNKNOWN")
-                    + " 状态=" + entry.status() + " 范围=UNKNOWN";
+                    + " 状态=" + entry.status() + " 世界=" + knownText(v.get("world_id"))
+                    + " 来源=" + knownText(entry.observation().source()) + " 范围=UNKNOWN";
             if (line.length() <= maxChars) return line;
         }
         return omitted.length() <= maxChars ? omitted : "";
@@ -85,6 +86,11 @@ final class RddAssetContext {
         Object contents = value.get("important_items");
         if (summary == null && contents == null) return "";
         return " details=" + text(summary != null ? summary : contents);
+    }
+
+    private static String knownText(Object value) {
+        if (!(value instanceof String s) || s.isBlank() || "unknown".equalsIgnoreCase(s)) return "UNKNOWN";
+        return text(s);
     }
 
     private static String text(Object value) {

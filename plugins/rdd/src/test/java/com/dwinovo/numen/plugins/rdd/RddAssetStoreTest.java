@@ -204,6 +204,29 @@ class RddAssetStoreTest {
         assertFalse(facts.contains("rdd_assets"));
     }
 
+    @Test void plannerHistoricalLeadMustDiscloseRecordedWorldAndSource() {
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(new Observation("old-a", "world_base", "source-A", "overworld", 100L,
+                Map.of("kind", "base", "label", "home", "dimension", "overworld", "world_id", "world-A",
+                        "x", 1, "y", 64, "z", 2)), "base-A", AssetScope.GLOBAL, null);
+        registry.apply(new Observation("old-b", "world_base", "source-B", "overworld", 200L,
+                Map.of("kind", "base", "label", "home", "dimension", "overworld", "world_id", "world-B",
+                        "x", 1, "y", 64, "z", 2)), "base-B", AssetScope.GLOBAL, null);
+        String facts = RddAssetContext.renderForPlanner(registry, 160);
+        assertTrue(facts.length() <= 160);
+        assertTrue(facts.equals("未投递") || (facts.contains("world-B") && facts.contains("source-B")), facts);
+        assertFalse(facts.contains("当前世界"), facts);
+    }
+
+    @Test void plannerUnknownWorldRemainsUnknownWithTraceableSource() {
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(new Observation("old", "world_base", "legacy-source", "overworld", 100L,
+                Map.of("kind", "base", "label", "home", "dimension", "overworld", "x", 1, "y", 64, "z", 2)),
+                "base", AssetScope.GLOBAL, null);
+        String facts = RddAssetContext.renderForPlanner(registry, 160);
+        assertTrue(facts.equals("未投递") || (facts.contains("世界=UNKNOWN") && facts.contains("legacy-source")), facts);
+    }
+
     private static Observation observation(String type, Map<String, Object> value) {
         return new Observation("obs-" + type, type, "test", "minecraft:overworld", 1L, value);
     }
