@@ -70,11 +70,13 @@ public final class NumenToolCatalog {
                     .build()),
 
             new ToolSpec("mine",
-                "按方块 id 列表挖到指定数量。异步任务。",
+                "按方块 id 列表采集到指定数量；可选target_bounds只筛选矿目标，范围外仍可能移动、处理遮挡和拾物，不是路径/地形边界。异步任务，可能合法部分完成。",
                 s().param("block_ids", AcxPortSchema.Param.req(AcxPortSchema.Type.STRING_ARRAY)
                         .desc("目标方块 id 列表（含 deepslate 变体）"))
                     .param("count", AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).range(1, 256)
                         .desc("目标数量"))
+                    .param("target_bounds", AcxPortSchema.Param.opt(AcxPortSchema.Type.OBJECT).nullable()
+                        .desc("只限制矿目标位置：完整六整数x1/y1/z1/x2/y2/z2，min<=max，当前维度合法坐标；嵌套参数由真实mine工具严格校验。缺省/null不限，不约束移动/遮挡/拾物。"))
                     .output("target", "requested", "gathered", "partial", "shortfall", "note", "task_id")
                     .build()),
 
