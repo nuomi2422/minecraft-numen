@@ -19,11 +19,11 @@ public final class LoadSkillTool implements NumenTool {
         this(new AgentOps());
     }
 
-    LoadSkillTool(AgentOps impl) {
+    public LoadSkillTool(AgentOps impl) {
         this.impl = java.util.Objects.requireNonNull(impl);
     }
 
-    private record Args(String name, String file, String ref) {}
+    private record Args(String name, String file, String ref, String package_ref, String component_ref) {}
 
     @Override
     public String name() {
@@ -47,7 +47,7 @@ public final class LoadSkillTool implements NumenTool {
 
                 A skill body may reference supporting files by relative path (e.g. references/roofs.md). Call this tool again with the same name plus `file` to read one — only when the body points you there.
 
-                To read an explicitly referenced learned component, pass only `ref` as skill:id@vN. This returns that exact eligible body, without adopting, executing, or recursively loading its references.""";
+                To read an explicitly referenced learned component, pass only `ref` as skill:id@vN. To inspect one component through a package, supply exact `package_ref` and `component_ref`. Neither read adopts, executes, mounts, or recursively loads references.""";
     }
 
     @Override
@@ -56,6 +56,8 @@ public final class LoadSkillTool implements NumenTool {
                 .optionalString("name", "Directory skill name; required unless ref is supplied.")
                 .optionalString("file", "Optional relative supporting file, with name; mutually exclusive with ref.")
                 .optionalString("ref", "Exact learned component skill:id@vN; use without name or file.")
+                .optionalString("package_ref", "Exact package skill:id@vN; pair with component_ref.")
+                .optionalString("component_ref", "Exact declared package component skill:id@vN.")
                 .build();
     }
 
@@ -64,7 +66,10 @@ public final class LoadSkillTool implements NumenTool {
         try {
             var args = call.args();
             Args a = GSON.fromJson(args, Args.class);
-            if (args.has("ref")) {
+            if (args.has("package_ref") || args.has("component_ref")) {
+                if(args.has("ref") || args.has("name") || args.has("file")) throw new IllegalArgumentException("package component mode cannot be mixed");
+                call.complete(impl.loadPackageComponent(call.ctx() == null ? null : call.ctx().entityUuid(), a.name(), a.file(), a.package_ref(), a.component_ref()));
+            } else if (args.has("ref")) {
                 call.complete(impl.loadSkill(call.ctx() == null ? null : call.ctx().entityUuid(),
                         a.name(), a.file(), a.ref()));
             } else {

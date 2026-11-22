@@ -681,6 +681,90 @@ class SkillsAggregateConsumerTest {
         assertFalse(forged.text().contains("world_hint=LATE_DAY"));
     }
 
+    private com.google.gson.JsonObject invokeRealLoader(String json) {
+        var resolver=new LearnedSkillBodyResolverImpl(dir);
+        var tool=new com.dwinovo.numen.core.tools.agent.LoadSkillTool(new com.dwinovo.numen.core.tools.AgentOps(() -> resolver));
+        var reply=new java.util.concurrent.atomic.AtomicReference<String>();
+        tool.invoke(new com.dwinovo.numen.agent.tool.ToolCall("scene-read","load_skill",json,()->COMPANION,reply::set));
+        return com.google.gson.JsonParser.parseString(reply.get()).getAsJsonObject();
+    }
+    private static String packageArgs(String pack,String component) {
+        var obj=new com.google.gson.JsonObject(); obj.addProperty("package_ref",pack); obj.addProperty("component_ref",component); return obj.toString();
+    }
+    @Test void realToolToLearnerResolverEnforcesPackageReferences() throws Exception {
+        seed();
+        var single=new com.google.gson.JsonObject(); single.addProperty("ref",STEP_REF);
+        var standalone=invokeRealLoader(single.toString()); var member=invokeRealLoader(packageArgs(PACK_REF,STEP_REF));
+        assertTrue(standalone.get("success").getAsBoolean()); assertTrue(member.get("success").getAsBoolean());
+        assertEquals(STEP_BODY,standalone.get("body").getAsString()); assertEquals(STEP_BODY,member.get("body").getAsString());
+        assertEquals(STEP_REF,member.get("ref").getAsString());
+        assertFalse(invokeRealLoader(packageArgs(PACK_REF,"skill:other@v1")).get("success").getAsBoolean());
+        assertFalse(invokeRealLoader(packageArgs(PACK_REF,"skill:"+STEP+"@v2")).get("success").getAsBoolean());
+        register("need-missing", "missing", "purpose", "body", List.of("scene:overnight:package","requires:"+STEP_REF,"requires:skill:missing@v1"));
+        assertFalse(invokeRealLoader(packageArgs("skill:need-missing@v1",STEP_REF)).get("success").getAsBoolean());
+        register("optional-missing", "optional", "purpose", "body", List.of("scene:overnight:package","requires:"+STEP_REF,"optional:skill:missing@v1"));
+        var degraded=invokeRealLoader(packageArgs("skill:optional-missing@v1",STEP_REF));
+        assertTrue(degraded.get("success").getAsBoolean()); assertEquals("degraded",degraded.get("availability").getAsString());
+        register("self-pack", "self", "purpose", "body", List.of("scene:overnight:package","requires:skill:self-pack@v1"));
+        assertFalse(invokeRealLoader(packageArgs("skill:self-pack@v1","skill:self-pack@v1")).get("success").getAsBoolean());
+        register("outer-pack", "outer", "purpose", "body", List.of("scene:overnight:package","requires:"+PACK_REF));
+        assertFalse(invokeRealLoader(packageArgs("skill:outer-pack@v1",PACK_REF)).get("success").getAsBoolean());
+        SkillRegistry.open(dir.resolve("skills.jsonl")).retire(STEP,"negative control");
+        assertFalse(invokeRealLoader(packageArgs(PACK_REF,STEP_REF)).get("success").getAsBoolean());
+    }
+
+    @Test
+    void packageComponentReadRequiresExplicitMembershipAndCurrentEligibility() throws Exception {
+        seed();
+        var resolver = new LearnedSkillBodyResolverImpl(dir);
+        var view = LearnedSkillBodyResolver.View.EXECUTOR;
+        var good = resolver.resolveComponent(COMPANION, PACK_REF, STEP_REF, view);
+        assertTrue(good.available());
+        assertEquals(STEP_BODY, good.body());
+        assertEquals("ready", good.availability());
+        assertFalse(resolver.resolveComponent(COMPANION, PACK_REF, "skill:other@v1", view).available());
+        assertFalse(resolver.resolveComponent(COMPANION, PACK_REF, "skill:" + STEP + "@v2", view).available());
+        assertFalse(resolver.resolveComponent(COMPANION, STEP_REF, STEP_REF, view).available());
+        assertFalse(resolver.resolveComponent(COMPANION, "skill:" + PACK + "@v2", STEP_REF, view).available());
+        SkillRegistry.open(dir.resolve("skills.jsonl")).retire(STEP, "component no longer eligible");
+        var refused = resolver.resolveComponent(COMPANION, PACK_REF, STEP_REF, view);
+        assertFalse(refused.available());
+        assertTrue(refused.body().isEmpty());
+    }
+
+    @Test
+    void packageComponentReadDegradesOnlyForMissingOptionalAndNeverFollowsNestedReferences() throws Exception {
+        register(STEP, "component", "purpose", STEP_BODY,
+                List.of("scene:overnight:component", "requires:skill:nested-missing@v1"));
+        register(PACK, "package", "purpose", PACK_BODY,
+                List.of("scene:overnight:package", "requires:" + STEP_REF, "requires:" + STEP_REF,
+                        "optional:skill:missing@v1"));
+        var resolver = new LearnedSkillBodyResolverImpl(dir);
+        var result = resolver.resolveComponent(COMPANION, PACK_REF, STEP_REF, LearnedSkillBodyResolver.View.EXECUTOR);
+        assertTrue(result.available());
+        assertEquals("degraded", result.availability());
+        assertEquals(STEP_BODY, result.body());
+        register("missing-required-pack", "other", "purpose", "body", List.of("scene:overnight:package",
+                "requires:" + STEP_REF, "requires:skill:missing@v1"));
+        var denied = resolver.resolveComponent(COMPANION, "skill:missing-required-pack@v1", STEP_REF,
+                LearnedSkillBodyResolver.View.EXECUTOR);
+        assertFalse(denied.available());
+        assertEquals("missing-required-component", denied.gap());
+        assertTrue(denied.body().isEmpty());
+    }
+
+    @Test
+    void packageComponentReadRejectsWrongAudienceAndMissingOptionalSelection() throws Exception {
+        catalogFixture("private-step", SkillStatus.TRIAL, "PLANNER", "private", "private", "purpose");
+        register(PACK, "package", "purpose", PACK_BODY, List.of("scene:overnight:package",
+                "optional:skill:private-step@v7", "optional:skill:absent@v1"));
+        var resolver = new LearnedSkillBodyResolverImpl(dir);
+        var view = LearnedSkillBodyResolver.View.EXECUTOR;
+        assertFalse(resolver.resolveComponent(COMPANION, PACK_REF, "skill:private-step@v7", view).available());
+        assertFalse(resolver.resolveComponent(COMPANION, PACK_REF, "skill:absent@v1", view).available());
+        assertFalse(resolver.resolveComponent(COMPANION, PACK_REF, "skill:absent", view).available());
+    }
+
     @Test
     void exactReadsAreIndependentAndComponentRetirementRefusesOldPackage() throws Exception {
         seed();
