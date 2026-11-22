@@ -25,6 +25,7 @@ public final class WorldStatePlugin implements NumenPlugin {
         WorldStateService service = new WorldStateService(numen.configDir());
         WorldStateMod.bindService(service);
         numen.capability(com.dwinovo.numen.api.ServerIdentityProvider.class, service::identitySnapshot);
+        numen.capability(com.dwinovo.numen.api.TaskFocusLeaseService.class, new TaskFocusLeaseBridge(service));
         // 2026-11-06：常驻环境块靠周期刷新保持 CURRENT（详见 EnvironmentRefresher 的取值理由）。
         WorldStateMod.bindRefresher(new EnvironmentRefresher(service));
         // 039/B1: tool and plugins share this one adapter, not parallel policy instances.
