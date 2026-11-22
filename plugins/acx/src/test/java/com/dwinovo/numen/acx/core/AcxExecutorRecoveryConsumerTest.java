@@ -75,6 +75,36 @@ class AcxExecutorRecoveryConsumerTest {
                 () -> assertEquals(List.of(4, 3, 1, 2, 1, 0), f.counts()),
                 () -> f.consumedOnce());
     }
+    @Test
+    void aNewExecutorRejectionRemainsVisibleAfterAnEarlierNormalPauseRecovered() {
+        Fixture f = new Fixture();
+        f.startAndReject();
+        f.host.running = true;
+        f.resume();
+        AcxRunRecord recovered = f.session.record();
+        assertAll("the first recovered pause is a normal record",
+                () -> f.record(recovered, AcxStatus.PAUSED, 0),
+                () -> assertNull(f.session.error()),
+                () -> f.query(f.status(), recovered),
+                () -> assertEquals(List.of(3, 2, 1, 1, 0, 1), f.counts()));
+
+        f.executor.rejectNext = true;
+        f.resume();
+        assertAll("a later rejection must not be hidden by the earlier recovery",
+                () -> assertSame(recovered, f.session.record()),
+                () -> assertSame(f.executor.rejection, f.session.error()),
+                () -> assertEquals(Boolean.FALSE, f.status().get("success")),
+                () -> assertEquals(List.of(4, 2, 1, 1, 0, 1), f.counts()));
+
+        f.host.running = false;
+        f.resume();
+        assertAll("the original receipt still completes exactly once after the second rejection",
+                () -> f.record(f.session.record(), AcxStatus.SUCCESS, 2),
+                () -> assertNull(f.session.error()),
+                () -> f.query(f.status(), f.session.record()),
+                () -> assertEquals(List.of(5, 3, 1, 2, 1, 0), f.counts()),
+                () -> f.consumedOnce());
+    }
     private static final class Fixture {
         final AcxRegistry registry = new AcxRegistry();
         final ControlledExecutor executor = new ControlledExecutor();

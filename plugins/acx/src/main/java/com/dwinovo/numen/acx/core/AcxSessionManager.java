@@ -370,6 +370,8 @@ public final class AcxSessionManager {
     private void finishWithRecord(Session s, AcxRunRecord r) {
         synchronized (sessions) {
             s.record = r;
+            // A returned record supersedes an earlier attempt's host/executor error.
+            s.error = null;
             s.inFlight = false;
             s.cancelRequested = false;
             discardInvalidatedReceipts(s);
