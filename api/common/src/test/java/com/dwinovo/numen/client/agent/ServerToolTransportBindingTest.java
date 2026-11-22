@@ -130,6 +130,21 @@ class ServerToolTransportBindingTest {
                     boolean afterLogout=ServerToolTransport.deliverInternalTicket(a,logout,"secret-logout");
                     return Map.of("wrong",wrong,"good",good,"late",late,"cancel",afterCancel,"logout",afterLogout,"received",List.copyOf(received),"events",MonitoringJournal.events.size(),"packet",sends().get(0).toolName(),"clientLog",com.dwinovo.numen.Constants.Log.entries.toString());
                   }
+                  public static Map<String,Object> expiredReplyWithoutSweep() throws Exception {
+                    setup(); UUID a=UUID.randomUUID(); actors.add(a); List<String> received=new ArrayList<>();
+                    String id=ServerToolTransport.requestYieldTicket(a,received::add);
+                    var f=ServerToolTransport.class.getDeclaredField("TICKET_WAIT"); f.setAccessible(true);
+                    var waits=(Map<String,Object>)f.get(null); Object old=waits.get(id);
+                    var ctor=old.getClass().getDeclaredConstructors()[0]; ctor.setAccessible(true);
+                    waits.put(id,ctor.newInstance(a,(java.util.function.Consumer<String>)received::add,System.nanoTime()-1));
+                    TaskResultPayload.handle(new TaskResultPayload(a,id,"expired-secret"));
+                    return Map.of("received",List.copyOf(received));
+                  }
+                  public static Map<String,Object> unclassifiedTicketReply() {
+                    setup(); UUID a=UUID.randomUUID();actors.add(a); com.dwinovo.numen.Constants.Log.entries.clear();
+                    TaskResultPayload.handle(new TaskResultPayload(a,"ordinary-wire-id","signed-ticket-secret"));
+                    return Map.of("log",com.dwinovo.numen.Constants.Log.entries.toString());
+                  }
                   public static Map<String,Object> ticketCapacityAndExpiry() throws Exception {
                     setup(); UUID actor=UUID.randomUUID(); actors.add(actor); List<String> responses=new ArrayList<>();
                     for(int i=0;i<256;i++) ServerToolTransport.requestYieldTicket(actor,responses::add);
@@ -222,6 +237,12 @@ class ServerToolTransportBindingTest {
         assertEquals("{\"probe\":1}",r.get("args"));
     }
 
+    @Test void expiredReplyBeforeSweepMustNotReachPending() throws Exception {
+        assertEquals(List.of(),run("expiredReplyWithoutSweep").get("received"));
+    }
+    @Test void ticketReplyWithNonInternalIdMustNotLeakToLog() throws Exception {
+        assertFalse(run("unclassifiedTicketReply").get("log").toString().contains("signed-ticket-secret"));
+    }
     @Test void ticketPendingCapacityAndActualExpiryAreBounded() throws Exception {
         var r=run("ticketCapacityAndExpiry");
         assertEquals(256,r.get("before"));assertEquals(1,r.get("refused"));
