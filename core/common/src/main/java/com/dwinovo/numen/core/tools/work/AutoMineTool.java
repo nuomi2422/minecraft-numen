@@ -35,8 +35,11 @@ public final class AutoMineTool implements NumenTool {
                 + "deepslate_iron_ore). Only mines what its tools actually harvest, and stops naming the "
                 + "needed tier if nothing qualifies (to destroy blocks regardless of drops, use "
                 + "break_block). BACKGROUND: a successful call is already running; do not call mine/goto "
-                + "again while <current_task> exists and do not poll. task_finished status=done means the "
-                + "requested count is complete; only timeout permits resending the same arguments.";
+                + "again while <current_task> exists and do not poll. task_finished status=done means the task "
+                + "ended, not necessarily that the requested count was reached: partial collection can also end "
+                + "normally. Check the gathered/requested summary and, when present, partial/shortfall in the "
+                + "result. If fewer items were gathered, observe the remaining targets and inventory before "
+                + "deciding what to do next; do not blindly resend the same arguments.";
     }
 
 
