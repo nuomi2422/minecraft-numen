@@ -157,7 +157,10 @@ final class RddInstrumentation {
     static final String LOOP_DETECTED = "loop", RECOVERY_FAILED = "recovery";
     static long currentGameTimeTicks() { return 100; }
     static boolean recentDeath(UUID id, long t) { return false; }
-    static void publishAt(String event, Map<String,Object> data, long t) { throw new AssertionError(event); }
+    static void publishAt(String event, Map<String,Object> data, long t) {
+        if (!LOOP_DETECTED.equals(event)) throw new AssertionError(event);
+        if (!data.toString().contains("negotiation")) throw new AssertionError("unexpected budget source: " + data);
+    }
 }
 final class RddCapabilityBrief { static String block(UUID id) { return ""; } }
 final class RddFactContext { static String replanBlock(UUID id) { return ""; } }
