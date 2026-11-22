@@ -9,6 +9,35 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Real registry and village rendering; not a final model request or Minecraft scan. */
 class RddVillageHistoryConsumerTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path temp;
+
+    @Test void restoredMissingVillageFieldsStayUnknown() throws Exception {
+        var id = java.util.UUID.randomUUID();
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(new Observation("missing", "world_village", "legacy", "minecraft:overworld", 10L,
+                Map.of("kind", "village", "dimension", "minecraft:overworld", "world_id", "world-A")),
+                "missing", AssetScope.GLOBAL, null);
+        RddAssetStore.save(temp, id, registry);
+        String text = RddVillageFacts.blockFor(RddAssetStore.load(temp, id));
+        assertAll(
+                () -> assertTrue(text.contains("pos=UNKNOWN"), text),
+                () -> assertTrue(text.contains("villagers=UNKNOWN"), text),
+                () -> assertFalse(text.contains("pos=0,0,0"), text),
+                () -> assertFalse(text.contains("villagers=0"), text));
+    }
+
+    @Test void restoredCompleteVillageKeepsKnownValues() throws Exception {
+        var id = java.util.UUID.randomUUID();
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(new Observation("complete", "world_village", "legacy", "minecraft:overworld", 20L,
+                Map.of("kind", "village", "dimension", "minecraft:overworld", "world_id", "world-A",
+                        "x", 0, "y", 64, "z", 0, "resources", Map.of("villagers", 0))),
+                "complete", AssetScope.GLOBAL, null);
+        RddAssetStore.save(temp, id, registry);
+        String text = RddVillageFacts.blockFor(RddAssetStore.load(temp, id));
+        assertTrue(text.contains("pos=0,64,0") && text.contains("villagers=0"), text);
+    }
+
     @Test void candidatesRemainDistinctAndDiscloseHistoricalScope() {
         AssetRegistry registry = new AssetRegistry();
         registry.apply(new Observation("old", "world_village", "rdd_world_observer", "minecraft:overworld", 10L,
