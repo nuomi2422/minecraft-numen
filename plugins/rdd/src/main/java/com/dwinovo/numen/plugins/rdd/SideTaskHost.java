@@ -306,6 +306,17 @@ final class SideTaskHost {
         return SIDE_CONTEXT.render(companionId, currentWorldId, currentSession);
     }
 
+    static SideTask activeSleepOwner(UUID companionId) {
+        return ENGINE.current(companionId).filter(com.dwinovo.numen.rdd.side.sleep.SleepSideTaskType::isOvernight)
+                .filter(task -> !task.terminal()).orElse(null);
+    }
+    static com.dwinovo.numen.rdd.side.SleepCycleEvidence readSleepCycle(NumenPlayer ap, SideTask expected) {
+        if (ap == null || expected == null || !ap.getUUID().equals(expected.companionId())
+                || RddCompanionBody.get(ap.getUUID()) != ap)
+            return com.dwinovo.numen.rdd.side.SleepCycleEvidence.UNKNOWN;
+        return SleepWakeWatcher.poll(ap, expected);
+    }
+
     /** Current live side owner, not the independently cached model context. */
     static SideTask activeYieldOwner(UUID companionId) {
         return companionId == null ? null : ENGINE.current(companionId).filter(task -> !task.terminal()).orElse(null);
@@ -648,6 +659,9 @@ final class SideTaskHost {
             } catch (RuntimeException e) { return -1; }
         }
         @Override public Wake pollWake(UUID companionId) { return SleepWakeWatcher.poll(companionId); }
+        @Override public com.dwinovo.numen.rdd.side.SleepCycleEvidence pollSleepCycle(SideTask expected) {
+            return readSleepCycle(ap, expected);
+        }
         @Override public int countItem(UUID companionId, String itemId) {
             // 2026-10-23 恢复支线：按物品 id 数背包（只读）。解析失败/未知 id → 0。
             try {
@@ -898,6 +912,13 @@ final class SideTaskHost {
 
     private static void publish(String event, Map<String, Object> data) {
         try {
+            if ("sleep".equals(data.get("typeId")) && ("side_task_completed".equals(event)
+                    || "side_task_skipped".equals(event) || "side_task_cancelled".equals(event)
+                    || "side_task_declined".equals(event))) {
+                UUID id = UUID.fromString(String.valueOf(data.get("companionId")));
+                SleepWakeWatcher.clear(id, String.valueOf(data.get("instanceId")),
+                        ((Number)data.get("generation")).longValue(), RddCompanionBody.get(id));
+            }
             if (("side_task_completed".equals(event) || "side_task_skipped".equals(event)
                     || "side_task_cancelled".equals(event) || "side_task_declined".equals(event))
                     && DeathRecoverySideTaskTrigger.TYPE_ID.equals(String.valueOf(data.get("typeId")))) {

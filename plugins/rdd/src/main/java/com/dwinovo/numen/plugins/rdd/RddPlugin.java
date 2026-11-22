@@ -328,6 +328,7 @@ public final class RddPlugin implements NumenPlugin {
         numen.on(CompanionEvent.DEATH, body -> onCompanionDeath(body));
         numen.on(CompanionEvent.REMOVE, body -> {
             RddGoalDriver.bodyRemoved(body);
+            SleepWakeWatcher.clearBody(body);
             LAST_INVENTORY.remove(body.getUUID());
             LAST_INVENTORY_AT.remove(body.getUUID());
             // 38号v3.6 B24：携带器缓存与 LAST_INVENTORY 同生命周期，不清就是泄漏
