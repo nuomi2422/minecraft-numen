@@ -185,7 +185,7 @@ class MineEffectsConsumerTest {
                     f.player.world.time=400;
                     switch(scenario) {
                         case "freshPickup", "repeatPickup", "exhaustedPickup" -> f.player.inv.items.set(0,new ItemStack(new Item("raw_iron"),11));
-                        case "unreachable" -> f.nav.state=PlayerNav.State.FAILED;
+                        case "unreachable" -> { f.nav.state=PlayerNav.State.FAILED; f.player.world.time=1; }
                         case "broken" -> { f.reachable=ore; f.digger.result=Digger.Result.BROKE_TARGET; }
                         case "full" -> {
                             for(int i=1;i<36;i++) f.player.inv.items.add(new ItemStack(new Item("stone"),64));
@@ -205,6 +205,7 @@ class MineEffectsConsumerTest {
                     }
                     TaskState state=f.onTick();
                     if(scenario.equals("broken")){f.reachable=null;f.player.world.time++;state=f.onTick();}
+                    if(scenario.equals("unreachable")){f.player.world.time=400;state=f.onTick();}
                     if(scenario.equals("repeatPickup")){f.player.world.time++;state=f.onTick();}
                     if(scenario.equals("exhaustedPickup")){f.player.world.time=800;state=f.onTick();}
                     Map<String,Object> result=f.resultData(); result.put("state",state.name());
