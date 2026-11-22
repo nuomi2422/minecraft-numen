@@ -27,6 +27,9 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ServerToolTransport {
 
     private static final Map<String, ToolCall> IN_FLIGHT = new ConcurrentHashMap<>();
+    private record TicketWait(UUID entity, java.util.function.Consumer<String> reply) {}
+    private static final Map<String, TicketWait> TICKET_WAIT = new ConcurrentHashMap<>();
+    private static final String TICKET_PREFIX = "yield-ticket-";
 
     private ServerToolTransport() {}
 
@@ -44,6 +47,25 @@ public final class ServerToolTransport {
         Services.NETWORK.sendToServer(
                 new ExecuteToolPayload(entity, wireId, call.toolName(), call.rawArgs()));
     }
+
+    /** Start one internal ticket request; its response never enters the model tool queue. */
+    public static String requestYieldTicket(UUID entity, java.util.function.Consumer<String> reply) {
+        String id = TICKET_PREFIX + UUID.randomUUID();
+        TICKET_WAIT.put(id, new TicketWait(entity, reply));
+        try { Services.NETWORK.sendToServer(new ExecuteToolPayload(entity, id, "_rdd_yield_ticket", "{}")); }
+        catch (RuntimeException ex) { TICKET_WAIT.remove(id); reply.accept(null); }
+        return id;
+    }
+
+    /** Suppress all internal-ticket IDs, including late/unknown replies, before logging. */
+    public static boolean deliverInternalTicket(UUID entity, String id, String json) {
+        if (id == null || !id.startsWith(TICKET_PREFIX)) return false;
+        TicketWait wait = TICKET_WAIT.get(id);
+        if (wait != null && wait.entity().equals(entity) && TICKET_WAIT.remove(id, wait)) wait.reply().accept(json);
+        return true;
+    }
+
+    public static void cancelYieldTicket(String id) { if (id != null) TICKET_WAIT.remove(id); }
 
     /** A result echoes the wire key; only its original parked call can complete. */
     public static void deliver(String toolCallId, String resultJson) {
@@ -65,5 +87,6 @@ public final class ServerToolTransport {
      */
     public static void forget(UUID companionUuid) {
         IN_FLIGHT.values().removeIf(c -> companionUuid.equals(c.ctx().entityUuid()));
+        TICKET_WAIT.entrySet().removeIf(e -> companionUuid.equals(e.getValue().entity()));
     }
 }
