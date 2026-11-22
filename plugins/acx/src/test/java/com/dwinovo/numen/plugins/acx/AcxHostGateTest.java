@@ -71,24 +71,33 @@ class AcxHostGateTest {
                 Thread t = new Thread(() -> { task.run(); }, "fake-server");
                 t.setDaemon(true);
                 t.start();
+                try {
+                    if (!started.await(5, TimeUnit.SECONDS)) throw new AssertionError("fake server did not start the step");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("interrupted while waiting for fake server start", e);
+                }
             }
         };
         AcxHostGate gate = new AcxHostGate(80, () -> inlineHost);
 
-        TimeoutException ex = assertThrows(TimeoutException.class, () -> gate.call(() -> {
-            calls.incrementAndGet();
-            started.countDown();
-            try {
-                release.await(2, TimeUnit.SECONDS);
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
-            return AcxStepOutcome.success(java.util.Map.of());
-        }));
-        assertTrue(ex.getMessage().contains("already started"), ex.getMessage());
-        assertTrue(ex.getMessage().contains("outcome unknown"), ex.getMessage());
-        assertEquals(1, calls.get(), "已经开跑的步骤确实跑过一次（不许说成被撤销）");
-        release.countDown();
+        try {
+            TimeoutException ex = assertThrows(TimeoutException.class, () -> gate.call(() -> {
+                calls.incrementAndGet();
+                started.countDown();
+                try {
+                    release.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+                return AcxStepOutcome.success(java.util.Map.of());
+            }));
+            assertTrue(ex.getMessage().contains("already started"), ex.getMessage());
+            assertTrue(ex.getMessage().contains("outcome unknown"), ex.getMessage());
+            assertEquals(1, calls.get(), "已经开跑的步骤确实跑过一次（不许说成被撤销）");
+        } finally {
+            release.countDown();
+        }
     }
 
     @Test
