@@ -86,8 +86,15 @@ class AcxTerminalReceiptLifecycleTest {
                     assertTrue(f.host.probed.isEmpty(), "eviction must not probe either task");
                     f.host.completed.add("task-2");
                     assertTrue(f.sessions.resume(freshRun, null));
-                    AcxRunRecord done = f.record(freshRun, AcxStatus.SUCCESS);
+                    // Its successful finish may evict this older inserted session at maxFinished=1.
+                    // Inspect the original session, not a retention guarantee the manager never made.
+                    assertFalse(freshSession.isRunning());
+                    assertNull(freshSession.error());
+                    AcxRunRecord done = freshSession.record();
+                    assertNotNull(done);
+                    assertEquals(AcxStatus.SUCCESS, done.status(), done.errorMessage());
                     assertEquals(freshRun, done.runId());
+                    assertNull(f.sessions.session(freshRun), "the retention limit may retire the newly finished run");
                     assertEquals(2, f.host.dispatched.size(), "accepted fresh action is not re-invoked");
                     assertEquals(List.of(new Probe("task-2", freshRun)), f.host.probed);
                     assertEquals(0, f.adapter.pendingCount(),
