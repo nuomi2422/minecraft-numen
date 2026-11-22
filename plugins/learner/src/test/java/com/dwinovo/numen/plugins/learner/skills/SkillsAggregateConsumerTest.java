@@ -717,6 +717,25 @@ class SkillsAggregateConsumerTest {
         assertFalse(invokeRealLoader(packageArgs(PACK_REF,STEP_REF)).get("success").getAsBoolean());
     }
 
+    @Test void normalRegistrationRevisesOnFocusDeclarationAdditionAndRemoval() throws Exception {
+        String id="focus-revision"; String body="stable focus body";
+        String bodyRef=SkillBodyStore.write(dir,id,1,"fixture-focus-revision",body);
+        var registry=SkillRegistry.open(dir.resolve("skills.jsonl"));
+        java.util.function.Function<List<String>,ArtifactDraft> draft = pre -> new ArtifactDraft(ArtifactKind.EXPERIENCE,"focus revision","focus revision purpose",body,
+                List.of("overnight"),List.of(),pre,"UNKNOWN",List.of(),List.of("fixture"),"EXECUTOR");
+        var initial=draft.apply(List.of("scene:overnight:package"));
+        assertEquals(SkillRegistry.Outcome.REGISTERED,registry.register(initial,id,bodyRef,true).outcome());
+        assertEquals(SkillRegistry.Outcome.REUSE,registry.register(initial,id,bodyRef,true).outcome());
+        var added=draft.apply(List.of("scene:overnight:package","focus:environment@v1"));
+        var changed=registry.register(added,id,bodyRef,true);
+        assertEquals(SkillRegistry.Outcome.REVISE,changed.outcome(),"adding declaration must create a new version");
+        assertEquals(2,changed.entry().version()); assertTrue(changed.entry().preconditions().contains("focus:environment@v1"));
+        var removed=registry.register(initial,id,bodyRef,true);
+        assertEquals(SkillRegistry.Outcome.REVISE,removed.outcome()); assertEquals(3,removed.entry().version());
+        assertFalse(removed.entry().preconditions().contains("focus:environment@v1"));
+        assertEquals(SkillRegistry.Outcome.REUSE,registry.register(initial,id,bodyRef,true).outcome());
+    }
+
     @Test void focusDeclarationRequiresEligibleExactPackageAndSupportedTopicVersion() throws Exception {
         register("focus-good","good","focus good purpose",PACK_BODY,List.of("scene:overnight:package","focus:environment@v1"));
         register("focus-absent","absent","focus absent purpose",PACK_BODY,List.of("scene:overnight:package"));
