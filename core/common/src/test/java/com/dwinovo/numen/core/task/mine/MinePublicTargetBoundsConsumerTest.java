@@ -61,7 +61,8 @@ class MinePublicTargetBoundsConsumerTest {
         OPS_METHODS
         }
         public class PublicMine{
-            static class NumenPlayer{}
+            static class Level{int minY=-64,maxY=320;boolean isInWorldBounds(BlockPos p){return p.x()>=-30000000&&p.x()<30000000&&p.z()>=-30000000&&p.z()<30000000&&p.y()>=minY&&p.y()<maxY;}}
+            static class NumenPlayer{Level level=new Level();Level level(){return level;}}
             static class ToolArgs{static <T>T fromJson(JsonObject a,Class<T> t){return new Gson().fromJson(a,t);}}
             BlockActionOps impl=new BlockActionOps();MineBlockTaskRecord captured;int dispatch;
             ToolContext ctx(String id,NumenPlayer p){return new ToolContext();}

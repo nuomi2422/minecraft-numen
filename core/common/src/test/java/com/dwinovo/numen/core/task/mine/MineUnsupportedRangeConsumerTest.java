@@ -29,7 +29,9 @@ class MineUnsupportedRangeConsumerTest {
         String argsDeclaration=source.substring(start,end);
         Path src=temp.resolve("src"),out=temp.resolve("classes");Files.createDirectories(out);
         List<String> compilerArgs=new ArrayList<>(List.of("-encoding","UTF-8","-proc:none","-d",out.toString()));
-        MineHarvestRecoveryConsumerTest.add(src,compilerArgs,"fixture/RangeConsumer.java",BOUNDARIES.replace("ARGS_DECLARATION",argsDeclaration).replace("CALL_METHOD",method));
+        String helpers="";
+        for(String prefix:List.of("    private static BlockPos[] parseTargetBounds(","    private static int targetCoordinate(")){int at=source.indexOf(prefix);if(at>=0){int finish=source.indexOf("\n    }",at);helpers+=source.substring(at,finish+6);}}
+        MineHarvestRecoveryConsumerTest.add(src,compilerArgs,"fixture/RangeConsumer.java",BOUNDARIES.replace("ARGS_DECLARATION",argsDeclaration).replace("CALL_METHOD",method+helpers));
         URL gson=com.google.gson.Gson.class.getProtectionDomain().getCodeSource().getLocation();
         compilerArgs.addAll(List.of("-classpath",Path.of(gson.toURI()).toString()));
         ByteArrayOutputStream diagnostics=new ByteArrayOutputStream();
@@ -68,11 +70,14 @@ class MineUnsupportedRangeConsumerTest {
         import java.util.*;import java.util.function.Consumer;import com.google.gson.*;
         public class RangeConsumer {
             ARGS_DECLARATION
-            static class NumenPlayer {}
+            record BlockPos(int x,int y,int z){}
+            static class Level{boolean isInWorldBounds(BlockPos p){return true;}}
+            static class NumenPlayer {Level level(){return new Level();}}
             static class ToolArgs {static <T>T fromJson(JsonObject a,Class<T> t){return new Gson().fromJson(a,t);}}
             static class BlockActionOps {
                 int calls,count;
                 Object autoMine(List<String> ids,int n,Object ctx){calls++;count=n;return new Object();}
+                Object autoMine(List<String> ids,int n,Object ctx,BlockPos first,BlockPos second){return autoMine(ids,n,ctx);}
             }
             final BlockActionOps impl=new BlockActionOps();int dispatched;
             Object ctx(String id,NumenPlayer p){return new Object();}
