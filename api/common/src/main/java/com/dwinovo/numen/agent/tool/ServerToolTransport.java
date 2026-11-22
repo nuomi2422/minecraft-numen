@@ -45,13 +45,13 @@ public final class ServerToolTransport {
                 var args = com.google.gson.JsonParser.parseString(wireArgs).getAsJsonObject();
                 args.remove("_yield_ticket");
                 if (call.frozenYieldTicket() == null || call.frozenYieldTicket().isBlank()) {
-                    call.complete(TaskResult.fail("yield ticket unavailable; refresh the current task and retry").toJson());
+                    rejectBeforeSend(entity, call, "yield ticket unavailable; refresh the current task and retry");
                     return;
                 }
                 args.addProperty("_yield_ticket", call.frozenYieldTicket());
                 wireArgs = args.toString();
             } catch (RuntimeException invalid) {
-                call.complete(TaskResult.fail("invalid yield arguments JSON").toJson());
+                rejectBeforeSend(entity, call, "invalid yield arguments JSON");
                 return;
             }
         }
@@ -65,6 +65,13 @@ public final class ServerToolTransport {
         LocalToolCallLog.publishTransportBinding(entity, call.id(), wireId, call.toolName());
         Services.NETWORK.sendToServer(
                 new ExecuteToolPayload(entity, wireId, call.toolName(), wireArgs));
+    }
+
+    /** A deterministic client refusal before any wire ID or server side effect exists. */
+    private static void rejectBeforeSend(UUID entity, ToolCall call, String message) {
+        String result = TaskResult.fail(message).toJson();
+        LocalToolCallLog.publishSynthetic(entity, call.id(), call.toolName(), result);
+        call.complete(result);
     }
 
     /** Start one internal ticket request; its response never enters the model tool queue. */
