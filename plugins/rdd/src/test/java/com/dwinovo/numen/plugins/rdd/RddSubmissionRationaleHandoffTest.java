@@ -47,6 +47,30 @@ class RddSubmissionRationaleHandoffTest {
     void cleanup() { RationaleContext.clear(id); }
 
     @Test
+    void offlinePlannerMustNotTreatUnscannedInventoryAsEmpty(@TempDir Path fixtureDir) throws Exception {
+        var unscanned = PlanningAssetSnapshot.from(Map.of(), null, null);
+        var scannedEmpty = PlanningAssetSnapshot.from(Map.of(), 123L, null);
+        var scannedItem = PlanningAssetSnapshot.from(Map.of("minecraft:bread", 2), 123L, null);
+        List<String> sent = new ArrayList<>();
+        var fixture = new RddPlannerFactsAssetBoundaryTest();
+        fixture.tmp = fixtureDir;
+        for (var snapshot : List.of(unscanned, scannedEmpty, scannedItem)) {
+            // Full production facts class is compiled with MC doubles; final dispatch is real.
+            String facts = fixture.offlineFacts(snapshot.availableCounts(), snapshot.hasInventoryScanTime());
+            RddStagePlanner.dispatchStages(id, OBJECTIVE, null, snapshot, facts,
+                    (companion, objective, stage, failures) -> "", () -> "", sent::add);
+        }
+        assertAll(
+                () -> assertTrue(sent.get(0).contains("手上：未观测"), sent.get(0)),
+                () -> assertFalse(sent.get(0).contains("按空背包规划"), sent.get(0)),
+                () -> assertTrue(sent.get(1).contains("最近一次扫描为空") && !sent.get(1).contains("手上：空"), sent.get(1)),
+                () -> assertTrue(sent.get(2).contains("最近一次扫描") && sent.get(2).contains("当前需核实") && sent.get(2).contains("确认仍持有后不要重复获取") && !sent.get(2).contains("当前已真实持有"), sent.get(2)),
+                () -> assertTrue(sent.get(1).contains("当前需核实"), sent.get(1)),
+                () -> assertTrue(source("RddStagePlanner").contains("RddPlannerFacts.block(snapshot.availableCounts(), snapshot.hasInventoryScanTime())")),
+                () -> assertTrue(sent.get(2).contains("bread×2"), sent.get(2)));
+    }
+
+    @Test
     void stageADispatchPreservesACompleteBoundedFactsBlock() {
         String facts = "<situation>\n位置：fixture\n世界里：<known_world_assets>\n"
                 + "historical; not current; re-check.\n- asset_id=base label=home\n</known_world_assets>\n</situation>";
