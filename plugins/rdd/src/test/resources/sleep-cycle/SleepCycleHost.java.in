@@ -8,7 +8,7 @@ public class SleepCycleHost implements ScopedSleepCycleConsumerTest.Driver {
     final List<Map<String,Object>> completed=new ArrayList<>();int resumed;boolean bound;SideTask original;Object lastEvidence;
     final TaskChain chain=new TaskChain(new Goal("g","fixture",List.of(new PrimaryGoal("p","fixture",List.of(Subtask.hardCoded("s","fixture",Map.of("minimum",1)))))));
     final MainlineResumeToken token=new MainlineResumeToken(id,chain.chainInstanceId(),chain.goal().id(),"p","s",chain.planRevision(),chain.planRevision());
-    final SideTaskEngine engine=new SideTaskEngine((name,data)->{if(name.equals("side_task_completed"))completed.add(Map.copyOf(data));if(name.equals("side_task_resumed_mainline")&&Boolean.TRUE.equals(data.get("mainlineResumed")))resumed++;},t->t!=null&&t.matches(chain.chainInstanceId(),"g","p","s",chain.planRevision())?t:null);
+    final SideTaskEngine engine=new SideTaskEngine((name,data)->{if(name.equals("side_task_completed"))completed.add(Map.copyOf(data));SideTaskHost.clearTerminalSleepCycle(name,data);if(name.equals("side_task_resumed_mainline")&&Boolean.TRUE.equals(data.get("mainlineResumed")))resumed++;},t->t!=null&&t.matches(chain.chainInstanceId(),"g","p","s",chain.planRevision())?t:null);
     public SleepCycleHost(){live=this;SleepWakeWatcher.clearAll();WorldContextStamp.token=new WorldContextStamp.Token(Map.of("world_id","fixture-world","server_session","one"),1);body=new NumenPlayer(id,server);body.world.game=13000;body.world.day=13000;server.players.add(body);engine.registerTrigger(new SleepSideTaskTrigger());}
     public boolean supported(){try{Class.forName("com.dwinovo.numen.rdd.side.sleep.SleepSideTaskType$Goal");SideTaskWorldPort.class.getMethod("pollSleepCycle",SideTask.class);return true;}catch(Exception absent){return false;}}
     SideTaskType type(boolean overnight){if(!overnight)return new SleepSideTaskType();try{Class<?> goal=Class.forName("com.dwinovo.numen.rdd.side.sleep.SleepSideTaskType$Goal");Object mode=Enum.valueOf((Class)goal,"OVERNIGHT");return (SideTaskType)SleepSideTaskType.class.getConstructor(goal).newInstance(mode);}catch(Exception failure){throw new AssertionError(failure);}}
@@ -26,11 +26,16 @@ public class SleepCycleHost implements ScopedSleepCycleConsumerTest.Driver {
     public String data(){return String.valueOf(lastEvidence);}public void bind(){bound=true;}public void observeBareWake(){try{var f=SleepWakeWatcher.class.getDeclaredField("PENDING");f.setAccessible(true);((Map)f.get(null)).put(id,SideTaskWorldPort.Wake.DAYBREAK);}catch(Exception e){throw new AssertionError(e);}}
     public void stale(String kind){switch(kind){case "world"->WorldContextStamp.token=new WorldContextStamp.Token(Map.of("world_id","other","server_session","one"),1);case "session"->WorldContextStamp.token=new WorldContextStamp.Token(Map.of("world_id","fixture-world","server_session","other"),1);case "unknown"->WorldContextStamp.token=new WorldContextStamp.Token(null,1);case "dimension"->body.world.dim="minecraft:other";case "body"->{oldBody=body;body=new NumenPlayer(id,server);server.players.clear();server.players.add(body);}case "server"->{server=new MinecraftServer();body.server=server;server.players.add(body);}case "owner"->recreate();default->throw new AssertionError(kind);}}
     public void recreate(){engine.cancel(id,"fixture replacement");SideTaskType t=type(true);engine.registerType(t);engine.startNow(t,id,world,token,Map.of());}
+    public void pollOld(){SideTaskHost.readSleepCycle(body,original);}
+    public boolean hasCycle(){try{var f=SleepWakeWatcher.class.getDeclaredField("CYCLES");f.setAccessible(true);return ((Map)f.get(null)).containsKey(id);}catch(Exception failure){throw new AssertionError(failure);}}
+    public void removeCurrent(){SleepWakeWatcher.clearBody(body);}
+    public void removeOld(){SleepWakeWatcher.clearBody(oldBody);}
     public void clearOld(){clear(body,original);}public void clearCurrent(){clear(body,engine.current(id).orElse(null));}
     void clear(NumenPlayer player,SideTask task){try{var m=SleepWakeWatcher.class.getDeclaredMethod("clear",NumenPlayer.class,SideTask.class);m.setAccessible(true);m.invoke(null,player,task);}catch(NoSuchMethodException legacy){}catch(Exception failure){throw new AssertionError(failure);}}
 }
 class SideTaskHost {
     static SideTask activeSleepOwner(UUID id){return SleepCycleHost.live.engine.current(id).orElse(null);}
     // @HOST_READ@
+    // @TERMINAL_CLEAR@
 }
 class RddCompanionBody {static NumenPlayer get(UUID id){return SleepCycleHost.live.body;}}
