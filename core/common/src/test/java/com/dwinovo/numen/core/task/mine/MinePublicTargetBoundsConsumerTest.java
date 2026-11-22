@@ -45,7 +45,9 @@ class MinePublicTargetBoundsConsumerTest {
     @Test void legacyInputKeepsUnboundedTask()throws Exception{var r=run("absent");assertEquals(1,r.get("dispatch"));assertEquals(true,r.get("outside"));}
     @Test void nullBoundsKeepUnboundedTask()throws Exception{var r=run("null");assertEquals(1,r.get("dispatch"));assertEquals(true,r.get("outside"));}
     @Test void publishedSchemaDescribesOptionalOreBounds()throws Exception{var r=run("valid");assertEquals(true,r.get("schemaBounds"));assertEquals(false,r.get("schemaRequired"));}
-    @ParameterizedTest @ValueSource(strings={"missing","fraction","string","boolean","overflow","extra","array","memberNull","reversed","empty","horizontal","vertical"})
+    @Test void closedLowerAndOpenUpperWorldHeightEdgesAreRespected()throws Exception{var r=run("heightEdges");assertEquals(1,r.get("dispatch"));}
+    @Test void callerJsonMutationCannotChangeCapturedRecordScope()throws Exception{var r=run("mutation");assertEquals(false,r.get("outside"));}
+    @ParameterizedTest @ValueSource(strings={"missing","fraction","string","boolean","overflow","extra","array","memberNull","reversed","empty","horizontal","vertical","belowHeight","aboveHeight","horizontalEdge","shortDimension"})
     void malformedBoundsNeverDispatch(String s)throws Exception{var r=run(s);assertEquals(0,r.get("dispatch"),s);assertFalse(((String)r.get("error")).isBlank(),s);}
     static final String BOUNDARIES="""
         package fixture;
@@ -79,17 +81,23 @@ class MinePublicTargetBoundsConsumerTest {
                     case "empty" -> bounds=new JsonObject();
                     case "horizontal" -> bounds.addProperty("x2",30000001);
                     case "vertical" -> bounds.addProperty("y2",2147483648L);
+                    case "belowHeight" -> bounds.addProperty("y1",-65);
+                    case "aboveHeight" -> bounds.addProperty("y2",320);
+                    case "horizontalEdge" -> bounds.addProperty("x2",30000000);
+                    case "shortDimension" -> bounds.addProperty("y2",128);
                     case "fraction" -> bounds.addProperty("x1",0.5);
                     case "string" -> bounds.addProperty("x1","0");
                     case "boolean" -> bounds.addProperty("x1",true);
                     case "overflow" -> bounds.addProperty("x1",2147483648L);
                     case "extra" -> bounds.addProperty("radius",3);
                     case "memberNull" -> bounds.add("x1",JsonNull.INSTANCE);
-                    case "array","valid" -> {}
+                    case "heightEdges" -> {bounds.addProperty("y1",-64);bounds.addProperty("y2",319);}
+                    case "array","valid","mutation" -> {}
                     default -> throw new IllegalArgumentException(scenario);
                 }
                 if(!scenario.equals("absent")&&!scenario.equals("null"))a.add("target_bounds",scenario.equals("array")?new JsonArray():bounds);
-                PublicMine tool=new PublicMine();String error="";try{tool.onServerCall("call",a,new NumenPlayer(),s->{});}catch(IllegalArgumentException e){error=e.getMessage();}
+                PublicMine tool=new PublicMine();NumenPlayer player=new NumenPlayer();if(scenario.equals("shortDimension")){player.level.minY=0;player.level.maxY=128;}String error="";try{tool.onServerCall("call",a,player,s->{});}catch(IllegalArgumentException e){error=e.getMessage();}
+                if(scenario.equals("mutation")){bounds.addProperty("x2",100);bounds.addProperty("y2",100);bounds.addProperty("z2",100);}
                 Map<String,Object> schema=tool.parameterSchema();Map<?,?> properties=(Map<?,?>)schema.get("properties");
                 return Map.of("dispatch",tool.dispatch,"inside",tool.captured!=null&&tool.captured.containsTarget(new BlockPos(1,1,1)),
                     "outside",tool.captured!=null&&tool.captured.containsTarget(new BlockPos(9,9,9)),"count",tool.captured==null?0:tool.captured.count,"error",error,
