@@ -72,10 +72,18 @@ class RddYieldConsumerTest {
   files.put("com/dwinovo/numen/network/payload/TaskResultPayload.java","package com.dwinovo.numen.network.payload; import java.util.*; public record TaskResultPayload(UUID id,String call,String json){}");
   files.put("com/dwinovo/numen/platform/Services.java","package com.dwinovo.numen.platform; import com.dwinovo.numen.network.payload.*; public class Services {public static final Net NETWORK=new Net(); public static class Net {public String result; public ExecuteToolPayload sent; public void sendToServer(ExecuteToolPayload p){sent=p;} public void sendToServer(CancelTasksPayload p){} public void sendToPlayer(Object p,TaskResultPayload r){result=r.json();}}}");
   files.put("com/dwinovo/numen/plugins/rdd/RddMonitor.java","package com.dwinovo.numen.plugins.rdd; import java.util.*; class RddMonitor {static void publish(String s,Map<String,Object> d){} }");
+  String loop=Files.readString(root.resolve("api/common/src/client/java/com/dwinovo/numen/client/agent/EntityAgentLoop.java"));
+  int pre=loop.indexOf("    private void requestBatchTicket("), post=loop.indexOf("    private void bounceBackToMain(",pre); assertTrue(pre>=0&&post>pre);
+  String preflight=loop.substring(pre,post).replace("Minecraft.getInstance()","FakeMinecraft.getInstance()");
   files.put("com/dwinovo/numen/plugins/rdd/YieldHarness.java","""
-package com.dwinovo.numen.plugins.rdd; import com.google.gson.*;import com.dwinovo.numen.rdd.core.*;import com.dwinovo.numen.entity.NumenPlayer; import net.minecraft.server.level.ServerPlayer; import java.util.*; public class YieldHarness { public static String joinedOld(RddRuntime oldRt,RddRuntime newRt){
+package com.dwinovo.numen.plugins.rdd; import com.google.gson.*;import com.dwinovo.numen.rdd.core.*;import com.dwinovo.numen.entity.NumenPlayer; import net.minecraft.server.level.ServerPlayer; import java.util.*; public class YieldHarness { UUID entityUuid=new UUID(0,1);int turnGeneration=1;static class FakeMinecraft {static final FakeMinecraft I=new FakeMinecraft();static FakeMinecraft getInstance(){return I;}void execute(Runnable r){r.run();}Object getConnection(){return this;}}
+"""+preflight+"""
+ public static String joinedOld(RddRuntime oldRt,RddRuntime newRt){
  RddPlugin.rt=oldRt;RddPlugin.body=null;com.dwinovo.numen.agent.tool.ToolRegistry.tool=new RddReportYieldTool();
- String ticket=RddPlugin.issueYieldTicket(player(true),body,System.currentTimeMillis());RddPlugin.rt=newRt;
+ List<String> frozen=new ArrayList<>();new YieldHarness().requestBatchTicket(1,frozen::add);
+ var request=com.dwinovo.numen.platform.Services.NETWORK.sent;com.dwinovo.numen.network.payload.ExecuteToolPayload.handleCompanion(request,player(true),body,null);
+ com.dwinovo.numen.agent.tool.ServerToolTransport.deliverInternalTicket(body.getUUID(),request.toolCallId(),com.dwinovo.numen.platform.Services.NETWORK.result);
+ String ticket=frozen.get(0);RddPlugin.rt=newRt;
  List<String> result=new ArrayList<>();var dispatcher=new com.dwinovo.numen.client.agent.ToolDispatcher(body.getUUID(),new com.dwinovo.numen.client.agent.ToolDispatcher.Sink(){public void onResult(com.dwinovo.numen.agent.tool.ToolInvocation i,String j){result.add(j);}public void onAllSettled(){}public net.minecraft.client.player.AbstractClientPlayer entity(){return null;}});
  JsonObject args=new JsonObject();args.addProperty("expected_subtask_id","s");args.addProperty("asset_key","minecraft:iron_pickaxe");args.addProperty("observed",9);args.addProperty("take",9);args.addProperty("_yield_ticket","forged");
  dispatcher.dispatch(List.of(new com.dwinovo.numen.agent.tool.ToolInvocation("same","rdd_report_yield",args.toString())),Set.of("rdd_report_yield"),ticket);
