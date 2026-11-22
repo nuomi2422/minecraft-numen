@@ -52,6 +52,9 @@ final class RddBodyDispatcher {
     }
 
     private static void submitYield(NumenPlayer ap, Subtask current, com.dwinovo.numen.rdd.core.TaskChain capturedChain) {
+        int capturedAttempt = capturedChain.attempts(current.id());
+        int capturedRevision = capturedChain.planRevision();
+        String capturedExecution = capturedChain.activeExecutionId();
         var tool = ToolRegistry.resolve("rdd_report_yield");
         Object binding = tool instanceof com.dwinovo.numen.agent.tool.TrustedYieldTool y ? y.captureHostBinding(ap) : null;
         String[] reply = {null};
@@ -69,7 +72,12 @@ final class RddBodyDispatcher {
             reply[0] = "UNKNOWN: yield dispatch threw";
         }
         var active = RddPlugin.runtime(ap.getUUID());
-        if (active != null && active.chain() == capturedChain && capturedChain.currentSubtask() == current)
+        if (active != null && active.chain() == capturedChain && binding != null
+                && binding.equals(RddPlugin.yieldIdentity(ap))
+                && capturedAttempt > 0 && capturedAttempt == capturedChain.attempts(current.id())
+                && capturedRevision == capturedChain.planRevision()
+                && java.util.Objects.equals(capturedExecution, capturedChain.activeExecutionId())
+                && capturedChain.currentSubtask() != null && current.id().equals(capturedChain.currentSubtask().id()))
             RddPlugin.rememberYieldBody(ap.getUUID(), current.id(), capturedChain, binding, reply[0]);
     }
 
