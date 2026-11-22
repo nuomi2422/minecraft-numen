@@ -23,7 +23,7 @@ class MineOccluderContinuationConsumerTest {
             .replace("static class Level {", "static class Level { BlockPos removed,nonOre;")
             .replace("return new BlockState();", "return new BlockState(){ boolean isAir(){return p.equals(removed);} Object getBlock(){return p.equals(nonOre)?\"stone\":\"ore\";} };")
             .replace("BlockPos current; Result result=Result.PROGRESSING; int calls;", "BlockPos current,ore=new BlockPos(8,64,0),occluder=new BlockPos(7,64,0); Result result=Result.PROGRESSING; int calls; List<BlockPos> intents=new ArrayList<>();")
-            .replace("Result digStep(BlockPos p){calls++;return result;}","Result digStep(BlockPos p){calls++;intents.add(p);if(calls==1){current=occluder;return Result.PROGRESSING;}current=null;return p.equals(ore)?Result.BROKE_OCCLUDER:Result.BROKE_TARGET;}");
+            .replace("Result digStep(BlockPos p){calls++;return result;}","Result digStep(BlockPos p){calls++;intents.add(p);if(p.x()==9){current=p;return Result.PROGRESSING;}if(calls==1){current=occluder;return Result.PROGRESSING;}current=null;return p.equals(ore)?Result.BROKE_OCCLUDER:Result.BROKE_TARGET;}");
         Path src=temp.resolve("src"),out=temp.resolve("classes");Files.createDirectories(out);
         List<String> args=new ArrayList<>(List.of("-encoding","UTF-8","-proc:none","-d",out.toString()));
         MineHarvestRecoveryConsumerTest.add(src,args,"fixture/Effects.java",boundaries);
