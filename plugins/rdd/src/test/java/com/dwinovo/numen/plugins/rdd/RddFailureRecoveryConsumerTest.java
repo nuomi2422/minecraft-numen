@@ -136,6 +136,15 @@ class RddFailureRecoveryConsumerTest {
         assertEquals(4, f.count("inventory"), "repeated parking only rechecks optional eligibility");
     }
 
+    @Test void unknownYieldMustNotRedispatchWhenBodySlotIsEmpty() throws Exception {
+        Fixture f = new Fixture(false, "rdd_report_yield");
+        String chainId=f.chain.chainInstanceId(); int revision=f.chain.planRevision();
+        f.set("body", 1); f.call("bodyFailure");
+        assertEquals(0, f.count("resubmit"), "empty slot does not prove yield did not run");
+        assertEquals(chainId, f.chain.chainInstanceId()); assertEquals(revision, f.chain.planRevision());
+        assertEquals("s0", f.chain.currentSubtask().id());
+    }
+
     @Test void bodyBudgetIsThreeSubmissionsNotTheLevelTwoBudget() throws Exception {
         Fixture f = fixture(false);
         f.set("body", 1);
@@ -229,10 +238,11 @@ class RddFailureRecoveryConsumerTest {
         final TaskChain chain;
         final RddRuntime rt;
         final Object host;
-        Fixture(boolean optional) throws Exception {
+        Fixture(boolean optional) throws Exception { this(optional, "collect_items"); }
+        Fixture(boolean optional, String bodyTool) throws Exception {
             Subtask first = Subtask.hardCoded("s0", "collect supplies",
                     Map.of("asset_key", optional ? "minecraft:bread" : "minecraft:iron_ingot",
-                            "minimum", 4, "optional", optional), new BodyInstruction("collect_items", Map.of()));
+                            "minimum", 4, "optional", optional), new BodyInstruction(bodyTool, Map.of()));
             chain = new TaskChain(new Goal("g", "test goal", List.of(new PrimaryGoal("p", "test phase",
                     List.of(first, Subtask.hardCoded("s1", "next step", Map.of("asset_key", "minecraft:stone", "minimum", 1)))))));
             rt = new RddRuntime(chain, new AssetRegistry());
