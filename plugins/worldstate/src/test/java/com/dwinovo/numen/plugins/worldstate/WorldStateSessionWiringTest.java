@@ -62,7 +62,7 @@ class WorldStateSessionWiringTest {
             Files.writeString(target, source.getValue(), StandardCharsets.UTF_8);
             arguments.add(target.toString());
         }
-        for (String name : List.of("WorldStateService", "McCollectionContext", "SelfSampleBridge",
+        for (String name : List.of("WorldStateService", "WorldStateMod", "McCollectionContext", "SelfSampleBridge",
                 "EnvironmentRefresher", "SelfSampleReader", "SelfObservationProjection",
                 "ObservationResponses", "ObservationMap", "focus/FocusPin", "focus/FocusPinStore")) {
             arguments.add(plugin.resolve(name + ".java").toString());
@@ -73,7 +73,7 @@ class WorldStateSessionWiringTest {
         // 2026-11-05：父加载器可能有插件/MC 类；用本次完整源码编译物，不能误测父类路径旧产物。
         loader = new URLClassLoader(new URL[]{compiled.toUri().toURL()}, WorldStateSessionWiringTest.class.getClassLoader()) {
             @Override protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-                if (name.startsWith(PKG) || name.startsWith("net.minecraft.") || name.startsWith("com.dwinovo.numen.entity.") || name.startsWith("org.slf4j.")) {
+                if (name.startsWith(PKG) || name.startsWith("net.minecraft.") || name.startsWith("net.neoforged.") || name.startsWith("com.dwinovo.numen.entity.") || name.startsWith("org.slf4j.")) {
                     synchronized (getClassLoadingLock(name)) {
                         Class<?> found = findLoadedClass(name);
                         if (found == null) found = findClass(name);
@@ -455,6 +455,31 @@ class WorldStateSessionWiringTest {
         assertEquals(3, calls());
     }
 
+    @Test void registeredPostAndStopCallbacksDriveRealServiceFocusWithoutRefresher() throws Exception {
+        Class<?> modType=loader.loadClass(PKG+"WorldStateMod");
+        Class<?> busType=loader.loadClass("net.neoforged.neoforge.common.NeoForge");
+        Object bus=busType.getField("EVENT_BUS").get(null);
+        modType.getConstructor().newInstance();
+        Object host=host(config.resolve("focus-event"));
+        var bind=modType.getDeclaredMethod("bindService",serviceType); bind.setAccessible(true); bind.invoke(null,host);
+        Object server=server(config.resolve("save"),true,false);
+        Object pins=serviceType.getMethod("focusPins").invoke(host);
+        UUID c=UUID.randomUUID();
+        pins.getClass().getMethod("pin",UUID.class,String.class,String.class,String.class,String.class,long.class,long.class,long.class,int.class,int.class)
+                .invoke(pins,c,"w","s","d","environment",System.currentTimeMillis()-10000,1000L,0L,0,0);
+        Class<?> post=loader.loadClass("net.neoforged.neoforge.event.tick.ServerTickEvent$Post");
+        Object event=post.getConstructor(serverType).newInstance(server);
+        bus.getClass().getMethod("fire",int.class,Object.class).invoke(bus,2,event);
+        var release=pins.getClass().getMethod("active",UUID.class,String.class,String.class,long.class);
+        // Verify callback worked, not active() lazy cleanup: use old time before expiry.
+        assertTrue(((java.util.List<?>)release.invoke(pins,c,"w","s",0L)).isEmpty());
+        pins.getClass().getMethod("pin",UUID.class,String.class,String.class,String.class,String.class,long.class,long.class,long.class,int.class,int.class)
+                .invoke(pins,c,"w","s","d","environment",System.currentTimeMillis(),60000L,0L,0,0);
+        Class<?> stopped=loader.loadClass("net.neoforged.neoforge.event.server.ServerStoppedEvent");
+        bus.getClass().getMethod("fire",int.class,Object.class).invoke(bus,1,stopped.getConstructor(serverType).newInstance(server));
+        assertTrue(((java.util.List<?>)release.invoke(pins,c,"w","s",0L)).isEmpty());
+    }
+
     private static String location(Class<?> type) throws Exception {
         return Path.of(type.getProtectionDomain().getCodeSource().getLocation().toURI()).toString();
     }
@@ -468,6 +493,22 @@ class WorldStateSessionWiringTest {
 
     private static Map<String, String> stubs() {
         Map<String, String> sources = new java.util.LinkedHashMap<>();
+        sources.put("net.neoforged.fml.common.Mod", "package net.neoforged.fml.common; public @interface Mod { String value(); }");
+        sources.put("net.neoforged.neoforge.common.NeoForge", """
+                package net.neoforged.neoforge.common;
+                public class NeoForge {
+                    public static final Bus EVENT_BUS = new Bus();
+                    public static class Bus {
+                        public java.util.List<java.util.function.Consumer<Object>> listeners = new java.util.ArrayList<>();
+                        @SuppressWarnings("unchecked") public <T> void addListener(java.util.function.Consumer<T> c) { listeners.add((java.util.function.Consumer<Object>)(Object)c); }
+                        public void fire(int index, Object event) { listeners.get(index).accept(event); }
+                    }
+                }
+                """);
+        sources.put("net.neoforged.neoforge.event.server.ServerStartedEvent", "package net.neoforged.neoforge.event.server; public record ServerStartedEvent(net.minecraft.server.MinecraftServer server) { public net.minecraft.server.MinecraftServer getServer(){return server;} }");
+        sources.put("net.neoforged.neoforge.event.server.ServerStoppedEvent", "package net.neoforged.neoforge.event.server; public record ServerStoppedEvent(net.minecraft.server.MinecraftServer server) { public net.minecraft.server.MinecraftServer getServer(){return server;} }");
+        sources.put("net.neoforged.neoforge.event.tick.ServerTickEvent", "package net.neoforged.neoforge.event.tick; public class ServerTickEvent { public record Post(net.minecraft.server.MinecraftServer server) { public net.minecraft.server.MinecraftServer getServer(){return server;} } }");
+        sources.put(PKG + "WorldStatePlugin", "package com.dwinovo.numen.plugins.worldstate; public class WorldStatePlugin implements com.dwinovo.numen.api.NumenPlugin { public void setup(com.dwinovo.numen.api.NumenApi api){} }");
         sources.put("net.minecraft.server.MinecraftServer", """
                 package net.minecraft.server;
                 import java.nio.file.Path;

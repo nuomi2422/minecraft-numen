@@ -34,13 +34,16 @@ public final class WorldStateMod {
         });
         NeoForge.EVENT_BUS.addListener((ServerStoppedEvent event) -> {
             WorldStateService service = SERVICE;
-            if (service != null) service.invalidateAllSelf();
+            if (service != null) { service.stopFocusSweep(); service.invalidateAllSelf(); }
             WorldContextStamp.clear();
         });
         // 常驻环境块的周期刷新：每 tick 只做一次时间比较，到点才去刷（不每 tick 刷）。
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.tick.ServerTickEvent.Post event) -> {
+            long wallMillis = System.currentTimeMillis();
+            WorldStateService service = SERVICE;
+            if (service != null) service.tickFocusSweep(wallMillis, System.nanoTime());
             EnvironmentRefresher refresher = REFRESHER;
-            if (refresher != null) refresher.tick(event.getServer(), System.currentTimeMillis());
+            if (refresher != null) refresher.tick(event.getServer(), wallMillis);
         });
     }
 

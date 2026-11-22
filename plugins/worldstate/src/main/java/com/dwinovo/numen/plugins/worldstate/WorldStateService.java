@@ -60,6 +60,22 @@ public final class WorldStateService {
             new com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore();
 
     public com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore focusPins() { return focusPins; }
+    // Technical defaults, not a real-time guarantee: at most 16 subjects per second.
+    static final int FOCUS_SWEEP_BUDGET = 16;
+    static final long FOCUS_SWEEP_INTERVAL_NANOS = 1_000_000_000L;
+    private boolean focusSweepStarted;
+    private long lastFocusSweepNanos;
+    synchronized int tickFocusSweep(long wallMillis, long monotonicNanos) {
+        if (focusSweepStarted && monotonicNanos - lastFocusSweepNanos < FOCUS_SWEEP_INTERVAL_NANOS) return 0;
+        focusSweepStarted = true;
+        lastFocusSweepNanos = monotonicNanos;
+        return focusPins.sweepBatch(wallMillis, FOCUS_SWEEP_BUDGET);
+    }
+    synchronized void stopFocusSweep() {
+        focusPins.clear();
+        focusSweepStarted = false;
+        lastFocusSweepNanos = 0;
+    }
     private final com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog changeLog =
             new com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog();
     private final InMemoryObservationStore store;

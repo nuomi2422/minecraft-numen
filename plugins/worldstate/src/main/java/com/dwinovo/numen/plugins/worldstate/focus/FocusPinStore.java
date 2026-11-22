@@ -114,6 +114,8 @@ public final class FocusPinStore {
         }
         return count;
     }
+    /** Stop only this store instance; all in-memory focus holders are invalidated. */
+    public synchronized void clear() { pins.clear(); holders.clear(); }
     /** Legacy full scan; callers needing bounded work use sweepBatch. */
     public synchronized void sweepExpired(long now) {
         for(UUID c : new ArrayList<>(pins.keySet())) pruneExpired(c,now);
