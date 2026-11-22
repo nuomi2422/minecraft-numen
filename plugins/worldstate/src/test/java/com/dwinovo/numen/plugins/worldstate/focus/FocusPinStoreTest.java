@@ -101,6 +101,33 @@ class FocusPinStoreTest {
         assertTrue(st.active(c,W,S,1400).isEmpty());
     }
 
+    @Test void boundedSweepProcessesAtMostBudgetAndEventuallyReachesAllSubjects() {
+        FocusPinStore st=new FocusPinStore(); UUID a=UUID.randomUUID(), b=UUID.randomUUID(), c=UUID.randomUUID();
+        var la=st.acquire(a,W,S,D,"environment","v1","owner",1000,1000,0,0,0);
+        var lb=st.acquire(b,W,S,D,"environment","v1","owner",1000,1000,0,0,0);
+        var live=st.acquire(c,W,S,D,"environment","v1","owner",1000,60000,0,0,0);
+        assertEquals(0,st.sweepBatch(2000,0));
+        assertEquals(1,st.sweepBatch(2000,1));
+        assertEquals(1,st.sweepBatch(2000,1));
+        assertTrue(st.sweepBatch(2000,5)<=1);
+        assertFalse(st.release(a,"owner",la.leaseId()));
+        assertFalse(st.release(b,"owner",lb.leaseId()));
+        assertTrue(st.release(c,"owner",live.leaseId()));
+        assertEquals(0,st.sweepBatch(2000,1));
+    }
+    @Test void sweepCursorSurvivesSubjectRemovalAndNewSubjects() {
+        FocusPinStore st=new FocusPinStore(); UUID a=UUID.randomUUID(), b=UUID.randomUUID(), c=UUID.randomUUID();
+        var first=st.acquire(a,W,S,D,"environment","v1","o",1000,60000,0,0,0);
+        st.acquire(b,W,S,D,"environment","v1","o",1000,1000,0,0,0);
+        assertEquals(1,st.sweepBatch(1500,1));
+        assertTrue(st.release(a,"o",first.leaseId()));
+        var late=st.acquire(c,W,S,D,"environment","v1","o",1000,1000,0,0,0);
+        assertEquals(1,st.sweepBatch(2000,1));
+        assertEquals(1,st.sweepBatch(2000,1));
+        assertFalse(st.release(c,"o",late.leaseId()));
+        assertEquals(0,st.sweepBatch(2000,1));
+    }
+
     @Test void pinSurvivesTwoRoundsThenExpires() {
         FocusPinStore st = new FocusPinStore();
         UUID c = UUID.randomUUID();
