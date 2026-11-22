@@ -94,6 +94,38 @@ class RddEnvBlockTest {
         v.put("main",slots); String s=render(v);
         assertTrue(s.contains("背包 未知"));assertTrue(s.contains("血量7.5"));assertFalse(s.contains("-2件"));
     }
+    @Test void malformedMainSlotsCannotProduceKnownKeyItemsInEitherView() {
+        for (String bad : List.of("missing", "fractional", "overflow", "duplicate")) {
+            var v=values(); var slots=new ArrayList<Map<String,Object>>();
+            for(int i=0;i<36;i++) slots.add(slot(i,"",0));
+            slots.set(0, switch(bad) {
+                case "missing" -> Map.of("slot",0,"id","minecraft:bread");
+                case "fractional" -> Map.of("slot",0,"id","minecraft:bread","count",new BigDecimal("1.5"));
+                case "overflow" -> Map.of("slot",0,"id","minecraft:bread","count",Long.MAX_VALUE);
+                default -> Map.of("slot",1,"id","minecraft:bread","count",2);
+            });
+            if (bad.equals("overflow")) slots.set(1, Map.of("slot",1,"id","minecraft:bread","count",1));
+            v.put("main",slots);
+            String full=render(v), execution=render(v,false);
+            assertTrue(full.contains("背包 未知"), bad+": "+full);
+            assertFalse(full.contains("关键物品"), bad+": "+full);
+            assertFalse(execution.contains("关键物品"), bad+": "+execution);
+        }
+    }
+
+    @Test void validMainAggregationAndEmptyRemainCorrect() {
+        var v=values(); var slots=new ArrayList<Map<String,Object>>();
+        for(int i=0;i<36;i++) slots.add(slot(i,"",0));
+        slots.set(0,slot(0,"minecraft:bread",2)); slots.set(1,slot(1,"minecraft:bread",3));
+        v.put("main",slots); String full=render(v), execution=render(v,false);
+        assertTrue(full.contains("背包 1种 5件"),full);
+        assertTrue(full.contains("关键物品 bread×5"),full);
+        assertTrue(execution.contains("关键物品 bread×5"),execution);
+        slots.set(0,slot(0,"",0)); slots.set(1,slot(1,"",0));
+        assertTrue(render(v).contains("背包 0种 0件"));
+        assertFalse(render(v).contains("关键物品"));
+    }
+
     @Test void weatherRequiresSameWorldSessionAndUnexpiredSample() {
         var self=response(values(),ObservationMetadata.Freshness.CURRENT,NOW-100,NOW+100,ID.toString()).metadata();
         var m=new ObservationMetadata("world","session","minecraft:overworld","","environment","env-key",1,
