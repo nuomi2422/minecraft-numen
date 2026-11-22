@@ -22,6 +22,7 @@ class RddVillageHistoryConsumerTest {
         assertAll(
                 () -> assertTrue(text.contains("pos=UNKNOWN"), text),
                 () -> assertTrue(text.contains("villagers=UNKNOWN"), text),
+                () -> assertTrue(text.contains("score=UNKNOWN（不可完整比较）"), text),
                 () -> assertFalse(text.contains("pos=0,0,0"), text),
                 () -> assertFalse(text.contains("villagers=0"), text));
     }
@@ -36,6 +37,7 @@ class RddVillageHistoryConsumerTest {
         RddAssetStore.save(temp, id, registry);
         String text = RddVillageFacts.blockFor(RddAssetStore.load(temp, id));
         assertTrue(text.contains("pos=0,64,0") && text.contains("villagers=0"), text);
+        assertTrue(text.contains("score=UNKNOWN（不可完整比较）"), text);
     }
 
     @Test void candidatesRemainDistinctAndDiscloseHistoricalScope() {

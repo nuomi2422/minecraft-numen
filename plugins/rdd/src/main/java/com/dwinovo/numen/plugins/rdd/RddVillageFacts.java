@@ -38,15 +38,15 @@ final class RddVillageFacts {
             var c = row.candidate(); var e = row.entry();
             sb.append("- id=").append(c.id())
                     .append(" dim=").append(c.dimension())
-                    .append(" pos=").append(c.x()).append(',').append(c.y()).append(',').append(c.z())
+                    .append(" pos=").append(position(e.observation().value()))
                     .append(" observed_at=").append(c.observedAtMillis() > 0 ? c.observedAtMillis() : "UNKNOWN")
                     .append(" world=").append(safe(e.observation().value().get("world_id")))
                     .append(" source=").append(safe(e.observation().source()))
-                    .append(" score=").append(VillageRank.score(c))
-                    .append(" villagers=").append(num(c, "villagers"))
-                    .append(" chests=").append(num(c, "chests"))
-                    .append(" crops=").append(num(c, "crops"))
-                    .append(" golems=").append(num(c, "iron_golem"))
+                    .append(" score=").append(completeResources(e.observation().value()) ? Integer.toString(VillageRank.score(c)) : "UNKNOWN（不可完整比较）")
+                    .append(" villagers=").append(resource(e.observation().value(), "villagers"))
+                    .append(" chests=").append(resource(e.observation().value(), "chests"))
+                    .append(" crops=").append(resource(e.observation().value(), "crops"))
+                    .append(" golems=").append(resource(e.observation().value(), "iron_golem"))
                     .append('\n');
         }
         return sb.append("</village_candidates>").toString();
@@ -56,11 +56,29 @@ final class RddVillageFacts {
         return raw instanceof String s && !s.isBlank() ? s.replaceAll("[\\r\\n<>]", "_") : "UNKNOWN";
     }
 
-    private static int num(VillageRank.Candidate c, String key) {
-        Map<String, Integer> r = c.resources();
-        if (r == null) return 0;
-        Integer v = r.get(key);
-        return v == null ? 0 : v;
+    private static Integer exactInt(Object raw, boolean nonnegative) {
+        if (!(raw instanceof Number n)) return null;
+        try {
+            int value = new java.math.BigDecimal(n.toString()).intValueExact();
+            return nonnegative && value < 0 ? null : value;
+        } catch (NumberFormatException | ArithmeticException bad) { return null; }
+    }
+
+    private static String position(Map<String, Object> value) {
+        Integer x = exactInt(value.get("x"), false), y = exactInt(value.get("y"), false), z = exactInt(value.get("z"), false);
+        return x == null || y == null || z == null ? "UNKNOWN" : x + "," + y + "," + z;
+    }
+
+    private static String resource(Map<String, Object> value, String key) {
+        if (!(value.get("resources") instanceof Map<?, ?> resources)) return "UNKNOWN";
+        Integer n = exactInt(resources.get(key), true);
+        return n == null ? "UNKNOWN" : n.toString();
+    }
+
+    private static boolean completeResources(Map<String, Object> value) {
+        for (String key : List.of("villagers", "chests", "crops", "iron_golem", "bookshelves"))
+            if ("UNKNOWN".equals(resource(value, key))) return false;
+        return true;
     }
 
     static List<VillageRank.Candidate> candidates(AssetRegistry registry) {
@@ -78,7 +96,8 @@ final class RddVillageFacts {
         Map<String, Integer> res = new java.util.LinkedHashMap<>();
         if (v.get("resources") instanceof Map<?, ?> m) {
             for (var x : m.entrySet()) {
-                if (x.getValue() instanceof Number n) res.put(String.valueOf(x.getKey()), n.intValue());
+                Integer n = exactInt(x.getValue(), true);
+                if (n != null) res.put(String.valueOf(x.getKey()), n);
             }
         }
         int x = v.get("x") instanceof Number nx ? nx.intValue() : 0;
