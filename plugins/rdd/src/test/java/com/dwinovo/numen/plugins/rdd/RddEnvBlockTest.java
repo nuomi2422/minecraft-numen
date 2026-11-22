@@ -94,8 +94,11 @@ class RddEnvBlockTest {
         v.put("main",slots); String s=render(v);
         assertTrue(s.contains("背包 未知"));assertTrue(s.contains("血量7.5"));assertFalse(s.contains("-2件"));
     }
-    @Test void malformedMainSlotsCannotProduceKnownKeyItemsInEitherView() {
-        for (String bad : List.of("missing", "fractional", "overflow", "duplicate")) {
+    @Test void missingCountIsUnknownInBothViews() { checkMalformed("missing"); }
+    @Test void fractionalCountIsUnknownInBothViews() { checkMalformed("fractional"); }
+    @Test void overflowIsUnknownInBothViews() { checkMalformed("overflow"); }
+    @Test void duplicateSlotIsUnknownInBothViews() { checkMalformed("duplicate"); }
+    private void checkMalformed(String bad) {
             var v=values(); var slots=new ArrayList<Map<String,Object>>();
             for(int i=0;i<36;i++) slots.add(slot(i,"",0));
             slots.set(0, switch(bad) {
@@ -110,7 +113,6 @@ class RddEnvBlockTest {
             assertTrue(full.contains("背包 未知"), bad+": "+full);
             assertFalse(full.contains("关键物品"), bad+": "+full);
             assertFalse(execution.contains("关键物品"), bad+": "+execution);
-        }
     }
 
     @Test void validMainAggregationAndEmptyRemainCorrect() {

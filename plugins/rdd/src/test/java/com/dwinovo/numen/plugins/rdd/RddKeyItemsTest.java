@@ -11,8 +11,14 @@ import static org.junit.jupiter.api.Assertions.*;
 class RddKeyItemsTest {
     private static List<Object> slots(Object... entries) {
         List<Object> out = new ArrayList<>();
-        for (int i = 0; i < 36; i++) out.add(null);
-        for (int i = 0; i < entries.length && i < 36; i++) out.set(i, entries[i]);
+        for (int i = 0; i < 36; i++) out.add(Map.of("slot", i, "id", "", "count", 0));
+        for (int i = 0; i < entries.length && i < 36; i++) {
+            if (entries[i] instanceof Map<?, ?> entry) {
+                Map<String, Object> value = new LinkedHashMap<>();
+                entry.forEach((k, v) -> value.put(String.valueOf(k), v));
+                value.put("slot", i); out.set(i, value);
+            } else out.set(i, entries[i]);
+        }
         return out;
     }
     private static Map<String, Object> item(String id, int n) {
