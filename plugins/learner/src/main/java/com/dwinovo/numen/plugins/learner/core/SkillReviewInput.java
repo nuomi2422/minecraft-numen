@@ -60,7 +60,7 @@ final class SkillReviewInput {
         if (fact == null || companion == null || !companion.toString().equals(row.companionId()))
             return "技能复盘输入: source_status=UNKNOWN evidence=NONE（绑定已不可核，非效果证明）";
         StringBuilder out = new StringBuilder("技能复盘输入: source_status=LIVE_SYNC_RECEIPT evidence=NONE；非任务结果、采用或效果证明\n");
-        out.append("selection_id=").append(fact.selectionId()).append(" wire_id=").append(fact.wire())
+        out.append("wire_id=").append(fact.wire())
                 .append(" target_tool=").append(fact.tool()).append(" receipt=").append(fact.receipt())
                 .append(" ref=").append(fact.ref()).append('@').append(fact.version()).append('\n');
         String body = originalBody(dir, fact.bodyRef(), fact.bodyDigest(), limit);
