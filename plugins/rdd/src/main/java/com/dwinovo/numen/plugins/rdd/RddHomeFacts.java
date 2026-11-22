@@ -61,7 +61,7 @@ final class RddHomeFacts {
         }
         Map<String, Object> v = view.value();
         long asOf = view.asOf();
-        String dimension = String.valueOf(v.getOrDefault("dimension", "unknown"));
+        String observedDimension = String.valueOf(v.getOrDefault("dimension", "unknown"));
         String pos = v.get("x") + " " + v.get("y") + " " + v.get("z");
 
         HomeReserve reserve = view.reserve();
@@ -102,7 +102,7 @@ final class RddHomeFacts {
         }
         List<String> lines = new java.util.ArrayList<>(HomeSummary.lines(stage,
                 String.valueOf(v.getOrDefault("label", view.base().assetId())),
-                dimension, pos, asOf,
+                observedDimension, pos, asOf,
                 shown,
                 blocking, next, nowMillis));
         // 2026-11-01：把「箱子里缺什么」和「背包里有什么」合起来给一句可执行建议——
