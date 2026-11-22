@@ -107,6 +107,22 @@ class RddEnvBlockTest {
         w=new WorldObservationService.Response(w.status(),w.topic(),w.snapshotId(),w.observedTick(),w.coverage(),null,w.items(),0,other);
         assertEquals("时间/天气 未观测",RddEnvBlock.weather(self,w,NOW));
     }
+    @Test void weatherUsesDayTickBoundariesWithoutChangingObservationGates() {
+        var self=response(values(),ObservationMetadata.Freshness.CURRENT,NOW-100,NOW+100,ID.toString()).metadata();
+        var meta=new ObservationMetadata("world","session","minecraft:overworld","","environment","env-key",1,
+                NOW-100,ObservationMetadata.Freshness.CURRENT,"SERVER_LOADED",NOW+100);
+        long[] ticks={11999,12000,13000,23000,37000,-1};
+        String[] phases={"白天","傍晚","夜晚","黎明","夜晚","黎明"};
+        for(int i=0;i<ticks.length;i++) {
+            var w=new WorldObservationService.Response(WorldObservationService.Status.OK,"environment","env",10,
+                    WorldObservationService.Coverage.FULL,null,List.of(WorldObservationService.Item.of(Map.of("day_time",ticks[i],"weather","clear"))),0,meta);
+            assertEquals("时间 "+phases[i]+" · 天气 clear",RddEnvBlock.weather(self,w,NOW));
+        }
+        var missing=new WorldObservationService.Response(WorldObservationService.Status.OK,"environment","env",10,
+                WorldObservationService.Coverage.FULL,null,List.of(WorldObservationService.Item.of(Map.of("weather","clear"))),0,meta);
+        assertEquals("时间 未知 · 天气 clear",RddEnvBlock.weather(self,missing,NOW));
+    }
+
     @Test void expiryIsCheckedAfterProviderReturns() {
         var clock=new java.util.concurrent.atomic.AtomicLong(NOW);
         WorldObservationService service=new WorldObservationService(){

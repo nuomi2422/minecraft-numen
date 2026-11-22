@@ -32,7 +32,7 @@ public final class TimeProbe implements WorldProbe {
             return ProbeResult.failed("DIMENSION_MISSING", "dimension not loaded: " + ctx.dimension());
         }
         long dayTime = level.getDayTime();
-        long timeOfDay = Math.floorMod(dayTime, 24000L);
+        long timeOfDay = com.dwinovo.numen.api.observation.WorldTime.inDay(dayTime);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("day", Math.floorDiv(dayTime, 24000L));
         out.put("time_of_day", timeOfDay);
