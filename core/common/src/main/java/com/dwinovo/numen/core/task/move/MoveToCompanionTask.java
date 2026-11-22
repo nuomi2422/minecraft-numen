@@ -129,6 +129,11 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
     private final int bz;
     private final BlockPos blockTarget;   // only meaningful for BLOCK kind
 
+    private net.minecraft.server.MinecraftServer moveStartServer;
+    private com.dwinovo.numen.api.WorldContextStamp.Token moveStartToken;
+    private String moveStartDimension;
+    private double moveStartX, moveStartY, moveStartZ;
+
     private double bestDist = Double.MAX_VALUE;   // closest we've gotten to the goal
     private int settleTicks = 0;                  // ticks of no progress after the planner gave up
     /** The one near-retry recovery rung has been consumed (ladder state — survives suspend). */
@@ -152,6 +157,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
 
     @Override
     protected void onStart() {
+        captureMoveStart();
         // 载具处置:坐在船上且有明确去处,先驾船——船腿走到离目标最近的水格,
         // 靠岸后接步行(见 tickBoatLeg)。其余情况(矿车没有舵、马的寻路仍按步行
         // 物理算、FIND 要先扫描)直接走步行段;下座驾是步行导航自己的事(PlayerNav)。
@@ -575,6 +581,66 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         data.put("final_y", player.getY());
         data.put("final_z", player.getZ());
         data.put("ground_y", gy);
+        return data;
+    }
+
+    /** Snapshot only this body's concrete server; missing context never becomes evidence. */
+    private void captureMoveStart() {
+        moveStartServer = player.getServer();
+        moveStartToken = null;
+        moveStartDimension = null;
+        if (moveStartServer == null) return;
+        try {
+            moveStartToken = com.dwinovo.numen.api.WorldContextStamp.capture(moveStartServer);
+            moveStartDimension = player.level().dimension().location().toString();
+            moveStartX = player.getX();
+            moveStartY = player.getY();
+            moveStartZ = player.getZ();
+        } catch (RuntimeException unavailable) {
+            // The movement may proceed, but unknown world context cannot prove a fact.
+            moveStartToken = null;
+        }
+    }
+
+    @Override
+    protected Map<String, Object> resultData(TaskState state) {
+        Map<String, Object> data = resultData();
+        if (state != TaskState.SUCCESS || moveStartServer == null || player.getServer() != moveStartServer
+                || moveStartToken == null || moveStartDimension == null) return data;
+        try {
+            var endToken = com.dwinovo.numen.api.WorldContextStamp.capture(moveStartServer);
+            var identity = moveStartToken.identity();
+            if (identity == null || identity.get("world_id") == null || identity.get("world_id").isBlank()
+                    || identity.get("world_id").equalsIgnoreCase("unknown")
+                    || identity.get("world_id").toLowerCase(java.util.Locale.ROOT).startsWith("unknown-")
+                    || identity.get("server_session") == null || identity.get("server_session").isBlank()
+                    || identity.get("server_session").equalsIgnoreCase("unknown") || moveStartToken.epoch() <= 0
+                    || !moveStartToken.equals(endToken)
+                    || !moveStartDimension.equals(player.level().dimension().location().toString())) return data;
+            double x = player.getX(), y = player.getY(), z = player.getZ();
+            if (!Double.isFinite(moveStartX) || !Double.isFinite(moveStartY) || !Double.isFinite(moveStartZ)
+                    || !Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)
+                    || (x == moveStartX && y == moveStartY && z == moveStartZ)) return data;
+            Map<String, Object> fact = new HashMap<>();
+            fact.put("world_id", identity.get("world_id"));
+            fact.put("server_session", identity.get("server_session"));
+            fact.put("epoch", moveStartToken.epoch());
+            fact.put("dimension", moveStartDimension);
+            fact.put("start", Map.of("x", moveStartX, "y", moveStartY, "z", moveStartZ));
+            fact.put("end", Map.of("x", x, "y", y, "z", z));
+            fact.put("direction", "start_to_end_only");
+            fact.put("route_proven", false);
+            fact.put("target_kind", r.kind.name());
+            fact.put("target_tolerance", switch (r.kind) {
+                case BLOCK -> "exact cell or horizontal radius 3 blocks and feet Y within 2";
+                case COLUMN -> "target column or horizontal radius 3 blocks; resolved surface Y within 2 when known";
+                case YLEVEL -> "target feet Y or within 1 block";
+                case FIND -> "within reach of the found block";
+            });
+            data.put("completed_move", fact);
+        } catch (RuntimeException unavailable) {
+            // No evidence if the current world context cannot be read.
+        }
         return data;
     }
 
