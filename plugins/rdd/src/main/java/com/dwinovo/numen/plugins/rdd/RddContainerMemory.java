@@ -45,6 +45,7 @@ final class RddContainerMemory {
     private static final long REFRESH_TICKS = 40L;
     // 文本、计数和当前服务端上下文作为一份状态发布，避免读到两次扫描的混合结果。
     private static final Map<UUID, Published> PUBLISHED = new ConcurrentHashMap<>();
+    private static final java.util.concurrent.atomic.AtomicLong NEARBY_GENERATION = new java.util.concurrent.atomic.AtomicLong();
 
     private record Context(Object server, Object world, Object body, UUID bodyId,
                            String dimension, com.dwinovo.numen.api.WorldContextStamp.Token token) {}
@@ -53,7 +54,7 @@ final class RddContainerMemory {
     static record NearbySnapshot(Map<String, Integer> counts, Object serverIdentity, Object worldIdentity,
                                  Object bodyIdentity, UUID bodyId, String dimension, com.dwinovo.numen.api.WorldContextStamp.Token token,
                                  int originX, int originY, int originZ, int radius,
-                                 boolean direct, boolean observed, boolean partial, long deadlineMillis) {
+                                 boolean direct, boolean observed, boolean partial, long deadlineMillis, long generation) {
         NearbySnapshot { counts = Map.copyOf(counts); }
     }
 
@@ -112,7 +113,14 @@ final class RddContainerMemory {
             NearbySnapshot snapshot = new NearbySnapshot(scan.counts(),
                     context.server(), context.world(), context.body(), id, context.dimension(), context.token(),
                     scan.origin().getX(), scan.origin().getY(), scan.origin().getZ(), RADIUS,
-                    scan.anyDirect(), scan.anyObserved(), true, Math.min(now + STALE_AFTER_MS, scan.deadlineMillis()));
+                    scan.anyDirect(), scan.anyObserved(), true, Math.min(now + STALE_AFTER_MS, scan.deadlineMillis()), 0);
+            NearbySnapshot prior = previous == null ? null : previous.snapshot();
+            long generation = prior != null && now < prior.deadlineMillis() && now < snapshot.deadlineMillis()
+                    && sameEvidence(prior, snapshot) ? prior.generation() : NEARBY_GENERATION.incrementAndGet();
+            snapshot = new NearbySnapshot(snapshot.counts(), snapshot.serverIdentity(), snapshot.worldIdentity(),
+                    snapshot.bodyIdentity(), snapshot.bodyId(), snapshot.dimension(), snapshot.token(),
+                    snapshot.originX(), snapshot.originY(), snapshot.originZ(), snapshot.radius(), snapshot.direct(),
+                    snapshot.observed(), snapshot.partial(), snapshot.deadlineMillis(), generation);
             PUBLISHED.put(id, new Published(scan.text(), scan.counts(), now, context, snapshot));
         } catch (RuntimeException | LinkageError ex) {
             // 无法确认当前上下文时撤销旧值，不能把旧世界数据当作当前值。
@@ -254,6 +262,10 @@ final class RddContainerMemory {
         if (snapshot == null) return false;
         NearbySnapshot current = cachedSnapshot(companionId);
         if (current == null || System.currentTimeMillis() >= snapshot.deadlineMillis()) return false;
+        return current.generation() == snapshot.generation() && sameEvidence(current, snapshot);
+    }
+
+    private static boolean sameEvidence(NearbySnapshot current, NearbySnapshot snapshot) {
         return current.serverIdentity() == snapshot.serverIdentity()
                 && current.worldIdentity() == snapshot.worldIdentity()
                 && current.bodyIdentity() == snapshot.bodyIdentity()

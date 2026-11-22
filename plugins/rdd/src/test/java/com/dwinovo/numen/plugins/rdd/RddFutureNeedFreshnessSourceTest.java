@@ -82,6 +82,7 @@ class RddFutureNeedFreshnessSourceTest {
                 static final int RADIUS=8, MAX_CONTAINERS=3, MAX_TYPES=10;
                 static final long REFRESH_TICKS=40L, STALE_AFTER_MS=1000L;
                 static final Map<UUID,Published> PUBLISHED=new ConcurrentHashMap<>();
+                static final java.util.concurrent.atomic.AtomicLong NEARBY_GENERATION=new java.util.concurrent.atomic.AtomicLong();
                 static final Map<UUID,Long> LAST_REFRESH=new ConcurrentHashMap<>();
                 static final Map<UUID,Object> POLLERS=new ConcurrentHashMap<>();
                 static final Map<UUID,String> CHANGE_EPOCH=new ConcurrentHashMap<>();
@@ -89,7 +90,7 @@ class RddFutureNeedFreshnessSourceTest {
                 static class Logger { void warn(String s,Object... x){} void info(String s,Object... x){} }
             """);
         for (String declaration : List.of("private record Context(", "static record NearbySnapshot(", "private record Published(", "private record Scan(", "private record ContainerRead(")) m.append(method(memory, declaration).replace("private record ContainerRead(", "static record ContainerRead("));
-        for (String sig : List.of("private static boolean knownIdentity(", "private static boolean sameContext(", "static synchronized void refresh(", "static NearbySnapshot cachedSnapshot(", "static boolean isCurrent(", "static synchronized void clear(", "private static Scan scan(NumenPlayer body")) m.append(method(memory, sig));
+        for (String sig : List.of("private static boolean knownIdentity(", "private static boolean sameContext(", "static synchronized void refresh(", "static NearbySnapshot cachedSnapshot(", "static boolean isCurrent(", "private static boolean sameEvidence(", "static synchronized void clear(", "private static Scan scan(NumenPlayer body")) m.append(method(memory, sig));
         m.append("""
                 static final Map<Integer,ContainerRead> reads=new HashMap<>();
                 static boolean pollContainerChanges(UUID id){return false;}
