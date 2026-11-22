@@ -730,10 +730,21 @@ class SkillsAggregateConsumerTest {
         var changed=registry.register(added,id,bodyRef,true);
         assertEquals(SkillRegistry.Outcome.REVISE,changed.outcome(),"adding declaration must create a new version");
         assertEquals(2,changed.entry().version()); assertTrue(changed.entry().preconditions().contains("focus:environment@v1"));
+        var resolver=new LearnedSkillBodyResolverImpl(dir);
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-revision@v1",LearnedSkillBodyResolver.View.EXECUTOR).available(),"old package identity cannot silently become v2");
+        assertTrue(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-revision@v2",LearnedSkillBodyResolver.View.EXECUTOR).available());
         var removed=registry.register(initial,id,bodyRef,true);
         assertEquals(SkillRegistry.Outcome.REVISE,removed.outcome()); assertEquals(3,removed.entry().version());
         assertFalse(removed.entry().preconditions().contains("focus:environment@v1"));
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-revision@v2",LearnedSkillBodyResolver.View.EXECUTOR).available());
+        assertEquals("focus-not-declared",resolver.resolveFocusDeclaration(COMPANION,"skill:focus-revision@v3",LearnedSkillBodyResolver.View.EXECUTOR).gap());
         assertEquals(SkillRegistry.Outcome.REUSE,registry.register(initial,id,bodyRef,true).outcome());
+    }
+
+    @Test void malformedFocusDeclarationCannotAppearAvailable() {
+        assertFalse(new LearnedSkillBodyResolver.FocusDeclaration(null,"environment","v1","").available());
+        assertFalse(new LearnedSkillBodyResolver.FocusDeclaration("skill:focus@v1","environment",null,"").available());
+        assertFalse(new LearnedSkillBodyResolver.FocusDeclaration("not-ref","environment","v1","").available());
     }
 
     @Test void focusDeclarationRequiresEligibleExactPackageAndSupportedTopicVersion() throws Exception {

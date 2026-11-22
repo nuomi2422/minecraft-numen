@@ -185,7 +185,7 @@ public final class SkillRegistry {
         String existingId = byFingerprint.get(fp);
         if (existingId != null) {
             SkillEntry existing = byId.get(existingId);
-            if (existing.bodyRef().equals(candidate.bodyRef())) {
+            if (existing.bodyRef().equals(candidate.bodyRef()) && existing.preconditions().equals(candidate.preconditions())) {
                 // 同指纹同正文：复用，不新增版本（否则每次复盘都会涨版本号）。
                 return new Decision(Outcome.REUSE, existing,
                         (trial && !bodyReadable ? "body-unreadable: reuse keeps existing state; " : "")
@@ -197,10 +197,10 @@ public final class SkillRegistry {
                 return new Decision(Outcome.CONFLICT, existing,
                         "body-unreadable: revision rejected; keeping " + existing.skillId() + "@v" + existing.version());
             }
-            SkillEntry revised = existing.revise(candidate.bodyRef(), candidate.foundingSamples());
+            SkillEntry revised = existing.revise(candidate.bodyRef(), candidate.foundingSamples(), candidate.preconditions());
             store(revised);
             return new Decision(Outcome.REVISE, revised,
-                    "同指纹不同正文，修订为 v" + revised.version()
+                    "同指纹正文或前置条件变化，修订为 v" + revised.version()
                             + "（旧版 " + existing.skillId() + "@v" + existing.version() + " 进 supersedes）");
         }
 

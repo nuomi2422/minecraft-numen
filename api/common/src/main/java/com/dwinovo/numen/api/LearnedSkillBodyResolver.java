@@ -68,7 +68,10 @@ public interface LearnedSkillBodyResolver {
     }
     /** Server-side declaration lookup, not a mount or execution credential. */
     record FocusDeclaration(String packageRef, String topic, String contractVersion, String gap) {
-        public boolean available() { return gap != null && gap.isEmpty() && topic != null && !topic.isBlank(); }
+        public boolean available() {
+            if (gap == null || !gap.isEmpty() || topic == null || topic.isBlank() || contractVersion == null || contractVersion.isBlank()) return false;
+            try { Reference.parse(packageRef); return true; } catch (IllegalArgumentException ex) { return false; }
+        }
     }
     default FocusDeclaration resolveFocusDeclaration(UUID companion,String packageRef,View view) {
         return new FocusDeclaration(packageRef,"","","focus-declaration-unavailable");
