@@ -21,6 +21,7 @@ dependencies {
     // —— 重复声明一旦与约定分叉，就会出现「约定说 compileOnly、模块说 implementation」的静默偏差
     //（037/T8a，2026-11-04）。
 
+    testImplementation 'com.google.code.gson:gson:2.10.1' // real TaskResult and tool JSON in isolated consumer test
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
