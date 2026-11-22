@@ -717,6 +717,21 @@ class SkillsAggregateConsumerTest {
         assertFalse(invokeRealLoader(packageArgs(PACK_REF,STEP_REF)).get("success").getAsBoolean());
     }
 
+    @Test void focusDeclarationRequiresEligibleExactPackageAndSupportedTopicVersion() throws Exception {
+        register("focus-good","good","focus good purpose",PACK_BODY,List.of("scene:overnight:package","focus:environment@v1"));
+        register("focus-absent","absent","focus absent purpose",PACK_BODY,List.of("scene:overnight:package"));
+        register("focus-invalid","invalid","focus invalid purpose",PACK_BODY,List.of("scene:overnight:package","focus:entities@v1"));
+        register("focus-wrong-version","wrong version","focus wrong version purpose",PACK_BODY,List.of("scene:overnight:package","focus:environment@v2"));
+        var resolver=new LearnedSkillBodyResolverImpl(dir); var view=LearnedSkillBodyResolver.View.EXECUTOR;
+        var good=resolver.resolveFocusDeclaration(COMPANION,"skill:focus-good@v1",view);
+        assertTrue(good.available()); assertEquals("environment",good.topic()); assertEquals("v1",good.contractVersion());
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-good@v2",view).available());
+        assertEquals("focus-not-declared",resolver.resolveFocusDeclaration(COMPANION,"skill:focus-absent@v1",view).gap());
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-invalid@v1",view).available());
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-wrong-version@v1",view).available());
+        assertTrue(resolver.resolve(COMPANION,"skill:focus-absent@v1",view).available(),"legacy explicit read unaffected");
+    }
+
     @Test void realToolRejectsPlannerOnlyLegalComponentSpecificallyForAudience() throws Exception {
         var base=catalogFixture("private-legal",SkillStatus.TRIAL,"PLANNER","private body","private", "private purpose");
         var marked=new SkillEntry(base.skillId(),base.version(),base.kind(),base.name(),base.purpose(),base.audience(),base.triggerConditions(),base.excludeConditions(),List.of("scene:overnight:component"),base.risk(),base.evidenceLevel(),base.status(),base.bodyRef(),base.validationSignals(),base.foundingSamples(),base.supersedes(),base.conflicts());
