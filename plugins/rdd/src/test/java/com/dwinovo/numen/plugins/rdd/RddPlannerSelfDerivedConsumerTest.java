@@ -61,7 +61,7 @@ class RddPlannerSelfDerivedConsumerTest {
                 var response=new com.dwinovo.numen.api.observation.WorldObservationService.Response(com.dwinovo.numen.api.observation.WorldObservationService.Status.OK,"self","fixture",1,com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL,"",List.of(item),1,meta);
                 reads=0; service=new com.dwinovo.numen.api.observation.WorldObservationService(){
                   public com.dwinovo.numen.api.observation.WorldObservationService.Response read(com.dwinovo.numen.api.observation.WorldObservationService.Request request){throw new AssertionError("unexpected generic read");}
-                  public com.dwinovo.numen.api.observation.WorldObservationService.Response readSelf(String consumer,UUID subject,long maxAge){if(!id.equals(subject)||maxAge!=3000L)throw new AssertionError("wrong SELF selector"); reads++;return response;}
+                  public com.dwinovo.numen.api.observation.WorldObservationService.Response readSelf(String consumer,UUID subject,long maxAge){if(!"rdd-planner".equals(consumer)||!id.equals(subject)||maxAge!=3000L)throw new AssertionError("wrong SELF selector"); reads++;return response;}
                 };
                 var derived=com.dwinovo.numen.api.observation.SelfInventoryQuery.read(response,now);
                 if(missingFood ? derived.foodKnown() : (!derived.foodKnown() || derived.foodCount()!=3)) throw new AssertionError("fixture SELF query mismatch");
