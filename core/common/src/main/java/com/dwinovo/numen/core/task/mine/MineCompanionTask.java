@@ -305,7 +305,9 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         int gathered = WorkProfile.of(player).dropsLoot()
                 ? Math.max(0, inventoryMatch() - baseline)
                 : brokenTargets;
-        if (gathered > r.getMined()) navigationFailure = null;
+        // Matching items newly picked up are progress too; do not expire the old stall clock
+        // on the same tick. Unchanged inventory must not keep extending that clock.
+        if (gathered > r.getMined()) noteProgress();
         r.setMined(gathered);
         if (gathered >= r.count) {
             progressNote = "gathered all requested";
