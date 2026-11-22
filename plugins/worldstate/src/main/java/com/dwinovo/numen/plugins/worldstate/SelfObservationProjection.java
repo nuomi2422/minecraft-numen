@@ -26,10 +26,13 @@ public final class SelfObservationProjection {
     }
 
     public static Map<String, Object> toolData(com.dwinovo.numen.api.observation.WorldObservationService.Response response) {
-        return Map.of("status", response.status().name(), "topic", response.topic(),
+        Map<String,Object> data = new LinkedHashMap<>(Map.of("status", response.status().name(), "topic", response.topic(),
                 "snapshotId", response.snapshotId(), "observedTick", response.observedTick(),
                 "coverage", response.coverage().name(), "reason", response.reason() == null ? "" : response.reason(),
-                "items", response.items(), "metadata", JSON.fromJson(JSON.toJsonTree(response.metadata()), Map.class), "watermark", response.watermark());
+                "items", response.items(), "metadata", JSON.fromJson(JSON.toJsonTree(response.metadata()), Map.class), "watermark", response.watermark()));
+        if ("self".equals(response.topic()))
+            data.put("derived", com.dwinovo.numen.api.observation.SelfInventoryQuery.read(response, System.currentTimeMillis()).data());
+        return Collections.unmodifiableMap(data);
     }
 
     /** Exact explicit SELF action path used by WorldStateTool; transport success is not task completion. */

@@ -30,7 +30,7 @@ class SelfWiringContractTest {
         List<Slot> main = new ArrayList<>(), armor = new ArrayList<>();
         for(int i=0;i<36;i++) main.add(Slot.empty(i));
         for(int i=36;i<40;i++) armor.add(Slot.empty(i));
-        main.set(0,new Slot(0,"minecraft:iron_sword",1,7,250,true));
+        main.set(0,new Slot(0,"minecraft:iron_sword",1,7,250,true,false));
         return new SelfPayload(DIM,UUID_SELF,main,armor,Slot.empty(40),0,20f,20f,20,5f,
                 List.of(new Effect("minecraft:speed",0,100,false,200L),new Effect("minecraft:night_vision",0,null,true,null)),
                 new Vehicle("",null),new BodyTask("","","",false,0L),new Rest(3,64,-2,false,true));

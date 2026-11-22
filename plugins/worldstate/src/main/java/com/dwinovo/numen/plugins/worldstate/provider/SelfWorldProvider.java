@@ -63,6 +63,7 @@ public final class SelfWorldProvider implements WorldProvider {
         if (stack == null) throw new ProviderException(FailReason.PROVIDER_ERROR, "missing inventory slot");
         if (stack.isEmpty()) return Slot.empty(index);
         return new Slot(index, BuiltInRegistries.ITEM.getKey(stack.getItem()).toString(), stack.getCount(),
-                stack.getDamageValue(), stack.getMaxDamage(), stack.isDamageableItem());
+                stack.getDamageValue(), stack.getMaxDamage(), stack.isDamageableItem(),
+                stack.get(net.minecraft.core.component.DataComponents.FOOD) != null);
     }
 }
