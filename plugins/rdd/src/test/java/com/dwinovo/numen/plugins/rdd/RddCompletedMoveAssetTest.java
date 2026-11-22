@@ -101,6 +101,22 @@ class RddCompletedMoveAssetTest {
         assertTrue(tiny.equals("未投递") || tiny.isEmpty(), tiny);
     }
 
+    @Test void failedSaveThenDuplicateEventMustBeRecoverable() throws Exception {
+        UUID id = UUID.randomUUID(); var token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
+        var record = new Record(); record.bindIdentity(token); record.setState(TaskState.SUCCESS);
+        record.setResult(TaskResult.ok("done", Map.of("completed_move", fact())));
+        var registry = new AssetRegistry();
+        // Mirror the production callback's project-then-save branch; storage calls are real.
+        var notDirectory = temp.resolve("not-a-directory"); java.nio.file.Files.writeString(notDirectory, "file");
+        assertTrue(RddCompletedMoveAsset.project(id, record.publicId(), record, token, "overworld", registry, 100));
+        assertThrows(java.io.IOException.class, () -> RddAssetStore.save(notDirectory, id, registry));
+        var recoveredDirectory = temp.resolve("recovered");
+        if (RddCompletedMoveAsset.project(id, record.publicId(), record, token, "overworld", registry, 101))
+            RddAssetStore.save(recoveredDirectory, id, registry);
+        var restored = RddAssetStore.load(recoveredDirectory, id);
+        assertEquals(1, restored.snapshot().size(), "same terminal event after a failed save must be recoverable");
+    }
+
     @Test void burstWithoutObserverKeepsMoveBoundAndOtherAssets() {
         UUID id = UUID.randomUUID(); var token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
         var registry = new AssetRegistry();
