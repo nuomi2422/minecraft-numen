@@ -27,6 +27,15 @@ final class RddAssetReadView {
             }
             if (!List.of("catalog","legacy").contains(action)) return fail("invalid_action",Map.of());
             boolean catalog = action.equals("catalog");
+            if (catalog) {
+                String world = args.has("world_id") ? string(args,"world_id") : null;
+                String dimension = args.has("dimension") ? string(args,"dimension") : null;
+                if ((world != null && (world.isBlank() || "UNKNOWN".equalsIgnoreCase(world)))
+                        || (dimension != null && (dimension.isBlank() || "UNKNOWN".equalsIgnoreCase(dimension))))
+                    throw new IllegalArgumentException("unknown filter");
+                all.removeIf(e -> !matches(e.observation().value().get("world_id"), world)
+                        || !matches(e.observation().value().get("dimension"), dimension));
+            }
             int offset = catalog ? integer(args,"offset",0,0,Integer.MAX_VALUE) : 0;
             int limit = catalog ? integer(args,"limit",20,1,40) : 40;
             List<Object> shown = new ArrayList<>();
@@ -52,7 +61,7 @@ final class RddAssetReadView {
         data.put("count",total); data.put("shown",rows.size()); data.put("offset",offset);
         data.put("next_offset",next<total?next:-1); data.put("truncated",next<total);
         data.put("assets",rows);data.put("view",catalog?"catalog":"legacy");
-        data.put("note","Historical observations, not proof of current availability. Pages may change if the registry changes.");
+        data.put("note","Historical observations, not proof of current availability; no matches are not proof of exploration or absence. Pages may change if the registry changes.");
         return ok(data);
     }
     private static Map<String,Object> identity(AssetRegistry.AssetEntry entry) {
@@ -60,9 +69,13 @@ final class RddAssetReadView {
         row.put("asset_id",entry.assetId());row.put("kind",fact(v,"kind"));row.put("label",fact(v,"label"));
         row.put("dimension",fact(v,"dimension"));row.put("status",entry.status().name());
         row.put("observed_at",o.observedAt()>0?o.observedAt():"UNKNOWN");
-        row.put("source",o.source()); row.put("scope","UNKNOWN"); row.put("coverage","UNKNOWN");
+        row.put("source",o.source()); row.put("scope","UNKNOWN"); row.put("coverage","UNKNOWN"); row.put("region","UNKNOWN");
         row.put("world_id",fact(v,"world_id"));row.put("server_session",fact(v,"server_session"));
         return row;
+    }
+    private static boolean matches(Object recorded, String filter) {
+        if (filter == null) return true;
+        return recorded instanceof String s && !s.isBlank() && !"UNKNOWN".equalsIgnoreCase(s) && s.equals(filter);
     }
     private static Object fact(Map<String,Object> value,String key) {
         Object v=value.get(key);return v==null || v.toString().isBlank()?"UNKNOWN":v;

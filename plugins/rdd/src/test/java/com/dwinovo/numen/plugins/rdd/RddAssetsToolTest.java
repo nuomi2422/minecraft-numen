@@ -40,11 +40,13 @@ class RddAssetsToolTest {
         asset(r,"b",18,Map.of("kind","machine","world_id","B","dimension","overworld"));
         asset(r,"unknown",17,Map.of("kind","machine","dimension","overworld"));
         var first=call(r,"{\"action\":\"catalog\",\"world_id\":\"A\",\"dimension\":\"overworld\",\"limit\":1}").getAsJsonObject("data");
-        assertEquals(2,first.get("count").getAsInt());
-        assertEquals("a1",first.getAsJsonArray("assets").get(0).getAsJsonObject().get("asset_id").getAsString());
-        assertEquals("UNKNOWN",first.getAsJsonArray("assets").get(0).getAsJsonObject().get("region").getAsString());
+        assertAll(
+                () -> assertEquals(2,first.get("count").getAsInt()),
+                () -> assertEquals("a1",first.getAsJsonArray("assets").get(0).getAsJsonObject().get("asset_id").getAsString()),
+                () -> assertEquals("UNKNOWN",first.getAsJsonArray("assets").get(0).getAsJsonObject().get("region").getAsString()));
         var second=call(r,"{\"action\":\"catalog\",\"world_id\":\"A\",\"dimension\":\"overworld\",\"limit\":1,\"offset\":1}").getAsJsonObject("data");
         assertEquals("a2",second.getAsJsonArray("assets").get(0).getAsJsonObject().get("asset_id").getAsString());
+        assertEquals(-1,second.get("next_offset").getAsInt());
         var empty=call(r,"{\"action\":\"catalog\",\"world_id\":\"missing\"}").getAsJsonObject("data");
         assertEquals(0,empty.get("count").getAsInt());
         assertTrue(empty.get("note").getAsString().contains("not proof of exploration"));

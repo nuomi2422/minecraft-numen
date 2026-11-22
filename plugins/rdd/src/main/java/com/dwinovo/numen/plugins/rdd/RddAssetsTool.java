@@ -16,12 +16,14 @@ final class RddAssetsTool implements NumenTool {
     @Override public String description() {
         return "Read RDD reusable world assets: bases, structures/locations, machines and notable entity sightings. "
                 + "LAZY sightings are historical leads and must be rechecked before use. "
-                + "Omit arguments for legacy newest entries; catalog supports offset/limit, detail requires exact asset_id. "
+                + "Omit arguments for legacy newest entries; catalog supports exact world_id/dimension and offset/limit, detail requires exact asset_id. "
                 + "No refresh or cross-world search. Oversized details fail too_large; nested field paging is not supported.";
     }
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object().optionalEnum("action", "Omit for legacy newest view; catalog pages; detail exact ID", "catalog", "detail")
                 .optionalString("asset_id", "Exact world asset ID for detail; only this companion registry")
+                .optionalString("world_id", "Exact recorded world ID; unknown never matches")
+                .optionalString("dimension", "Exact recorded dimension; unknown never matches")
                 .optionalInteger("offset", "Catalog offset; pages reflect current snapshot", 0, Integer.MAX_VALUE)
                 .optionalInteger("limit", "Catalog page size", 1, 40).build();
     }
