@@ -277,6 +277,19 @@ class RddHomeReserveFreshnessTest {
         }
     }
 
+    @Test void differentDimensionAtSameCoordinatesCannotBeCurrentBase() {
+        long now = 1_700_000_000_000L;
+        AssetRegistry registry = new AssetRegistry();
+        Map<String, Object> other = new LinkedHashMap<>();
+        other.put("kind", "base"); other.put("world_id", "world-A"); other.put("server_session", "session-A");
+        other.put("dimension", "minecraft:the_nether"); other.put("x", 372); other.put("y", 68); other.put("z", 715);
+        other.put("facilities", List.of("core_house")); other.put("important_items", fullReserve());
+        registry.apply(new Observation("other-dim", "world_base", "test", "minecraft:the_nether", now - MINUTE, other),
+                "base-nether", AssetScope.GLOBAL, null);
+        var view = RddHomeFacts.HomeView.of(registry, now, ID, 372, 68, 715);
+        assertFalse(view.reserve().known(), "current overworld anchor must not use nether observation at same coordinates");
+    }
+
     private static Map<String, Integer> fullReserve() {
         Map<String, Integer> m = new LinkedHashMap<>();
         m.put("minecraft:iron_pickaxe", 1);

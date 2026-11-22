@@ -64,6 +64,7 @@ class RddHomeIdentityLifecycleSourceTest {
             import net.minecraft.server.MinecraftServer;
             public class NumenPlayer {
                 private final UUID id; private final MinecraftServer server;
+                public int respawnX = 1;
                 public NumenPlayer(UUID id, MinecraftServer server) { this.id=id; this.server=server; }
                 public UUID getUUID() { return id; }
                 public MinecraftServer getServer() { return server; }
@@ -108,7 +109,7 @@ class RddHomeIdentityLifecycleSourceTest {
         try (var loader = new URLClassLoader(new URL[]{temp.toUri().toURL()}, ClassLoader.getPlatformClassLoader())) {
             var result = (List<?>) loader.loadClass("com.dwinovo.numen.plugins.rdd.LifecycleFixture")
                     .getMethod("run").invoke(null);
-            assertEquals(List.of(true, true, true, true, true, true, true, true, true, true, true, true, true), result);
+            assertEquals(List.of(true, true, true, true, true, true, true, true, true, true, true, true, true, true, true), result);
         }
     }
 
@@ -163,6 +164,11 @@ class RddHomeIdentityLifecycleSourceTest {
                 RddWorldAssetObserver.observe(bodyA, registry);
                 checks.add(seen.equals(List.of(server)));
                 checks.add(RddPlugin.cachedHomeIdentity(a) != null && snapshot.equals(RddPlugin.cachedHomeIdentity(a).identity()));
+                bodyA.respawnX = 20; // server-side rebinding, before next observation
+                checks.add(RddPlugin.cachedHomeIdentity(a) == null);
+                bodyA.respawnX = 0; // unbound, before next observation
+                checks.add(RddPlugin.cachedHomeIdentity(a) == null);
+                bodyA.respawnX = 1;
                 RddWorldAssetObserver.failBase = true;
                 try { RddWorldAssetObserver.observe(bodyA, registry); } catch (RuntimeException expected) { /* detector boundary */ }
                 checks.add(RddPlugin.cachedHomeIdentity(a) == null);
