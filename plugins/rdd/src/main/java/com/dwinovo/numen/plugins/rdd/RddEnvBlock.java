@@ -106,7 +106,7 @@ final class RddEnvBlock {
         var item=response.items().get(0);
         Long day=masked(item,"day_time") ? null : integer(item.values().get("day_time"));
         String time="未知";
-        if(day!=null) { long part=Math.floorMod(day,24000L); time=part<12000?"白天":part<13000?"傍晚":part<23000?"夜晚":"黎明"; }
+        if(day!=null) { long part=com.dwinovo.numen.api.observation.WorldTime.inDay(day); time=part<12000?"白天":part<13000?"傍晚":part<23000?"夜晚":"黎明"; }
         Object w=masked(item,"weather") ? null : item.values().get("weather");
         return "时间 "+time+" · 天气 "+(w instanceof String s ? shortText(s,24) : "未知");
     }
