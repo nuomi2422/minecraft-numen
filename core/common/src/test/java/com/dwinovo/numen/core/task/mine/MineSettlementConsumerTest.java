@@ -91,14 +91,14 @@ class MineSettlementConsumerTest {
         Journey journey=new Journey(); void crashed(String where,RuntimeException e){throw e;}
         void cleanup(){cleanups++;stopNav();}
         interface Task {TaskState tick(NumenPlayer p);TaskResult result(TaskState state);}
-        static class Slot {
+        static class TaskSlot {
             TaskRecord record; Task task; int ticksRun; java.util.function.Consumer<TaskRecord> outbox,onSettled;
         SLOT_METHODS
         }
         public static Map<String,Object> settlement(String scenario){
             Effects f=new Effects();f.knownOres.add(new BlockPos(8,64,0));f.player.inv.items.add(new ItemStack(new Item("raw_iron"),scenario.equals("partial")?11:14));
             f.player.world.time=400;if(scenario.equals("deadline"))f.r.deadline=400;if(scenario.equals("beforeDeadline"))f.r.deadline=401;
-            Slot slot=new Slot();slot.record=f.r;slot.task=new Task(){public TaskState tick(NumenPlayer p){f.taskTicks++;return f.tick(p);}public TaskResult result(TaskState s){return f.result(s);}};
+            TaskSlot slot=new TaskSlot();slot.record=f.r;slot.task=new Task(){public TaskState tick(NumenPlayer p){f.taskTicks++;return f.tick(p);}public TaskResult result(TaskState s){return f.result(s);}};
             List<TaskRecord> out=new ArrayList<>();int[] notices={0};slot.outbox=out::add;slot.onSettled=r->notices[0]++;
             slot.tick(f.player);int first=out.size();if(scenario.equals("partial")){f.player.world.time=800;slot.tick(f.player);}
             slot.tick(f.player);slot.settleIfTerminal();slot.tick(f.player);
