@@ -83,11 +83,13 @@ class RddFutureNeedFreshnessSourceTest {
                 static final long REFRESH_TICKS=40L, STALE_AFTER_MS=1000L;
                 static final Map<UUID,Published> PUBLISHED=new ConcurrentHashMap<>();
                 static final Map<UUID,Long> LAST_REFRESH=new ConcurrentHashMap<>();
+                static final Map<UUID,Object> POLLERS=new ConcurrentHashMap<>();
+                static final Map<UUID,String> CHANGE_EPOCH=new ConcurrentHashMap<>();
                 static final Logger LOG=new Logger();
                 static class Logger { void warn(String s,Object... x){} void info(String s,Object... x){} }
             """);
         for (String declaration : List.of("private record Context(", "static record NearbySnapshot(", "private record Published(", "private record Scan(", "private record ContainerRead(")) m.append(method(memory, declaration).replace("private record ContainerRead(", "static record ContainerRead("));
-        for (String sig : List.of("private static boolean knownIdentity(", "private static boolean sameContext(", "static synchronized void refresh(", "static NearbySnapshot cachedSnapshot(", "static boolean isCurrent(", "private static Scan scan(NumenPlayer body")) m.append(method(memory, sig));
+        for (String sig : List.of("private static boolean knownIdentity(", "private static boolean sameContext(", "static synchronized void refresh(", "static NearbySnapshot cachedSnapshot(", "static boolean isCurrent(", "static synchronized void clear(", "private static Scan scan(NumenPlayer body")) m.append(method(memory, sig));
         m.append("""
                 static final Map<Integer,ContainerRead> reads=new HashMap<>();
                 static boolean pollContainerChanges(UUID id){return false;}
@@ -133,6 +135,9 @@ class RddFutureNeedFreshnessSourceTest {
         assertTrue(scenario("equivalent").contains("minecraft:obsidian ×10/10（够）［附近容器］"));
     }
     @Test void changedRescanCannotReviveOldCount() throws Exception { gone("changed"); }
+    @Test void equalRescanCannotExtendOriginalDeadline() throws Exception { gone("equal-expired"); }
+    @Test void changedThenRestoredCannotReviveOldHint() throws Exception { gone("aba"); }
+    @Test void clearedThenRestoredCannotReviveOldHint() throws Exception { gone("clear-aba"); }
     @Test void dimensionChangedRescanCannotReviveOldNearby() throws Exception { gone("moved"); }
     @Test void realInventoryInputAndFreshNearbyAreReported() throws Exception {
         String text=scenario("fresh");
@@ -167,6 +172,19 @@ class RddFutureNeedFreshnessSourceTest {
                 RddContainerMemory.refresh(body,0); RddFutureNeeds.tick(id,chain,Map.of("minecraft:bread",2));
                 if(!RddFutureNeeds.block(id).contains("minecraft:obsidian")) throw new AssertionError("fresh setup failed");
                 if(kind.equals("fresh")) return RddFutureNeeds.block(id);
+                if(kind.equals("aba") || kind.equals("clear-aba")) {
+                    System.now=10020;
+                    if(kind.equals("clear-aba")) RddContainerMemory.clear(id);
+                    else { RddContainerMemory.reads.put(0,new RddContainerMemory.ContainerRead(Map.of("minecraft:obsidian",1),false,10100)); RddContainerMemory.refresh(body,40); }
+                    System.now=10040; RddContainerMemory.reads.put(0,new RddContainerMemory.ContainerRead(Map.of("minecraft:obsidian",10),false,10100));
+                    RddContainerMemory.refresh(body,80); return RddFutureNeeds.block(id);
+                }
+                if(kind.equals("equal-expired")) {
+                    System.now=10050; RddContainerMemory.reads.put(0,new RddContainerMemory.ContainerRead(Map.of("minecraft:obsidian",10),false,11000));
+                    RddContainerMemory.refresh(body,40); System.now=10099;
+                    if(!RddFutureNeeds.block(id).contains("minecraft:obsidian")) throw new AssertionError("equal rescan hid before original expiry");
+                    System.now=10100; return RddFutureNeeds.block(id);
+                }
                 if(kind.equals("equivalent") || kind.equals("changed")) {
                     System.now=10050;
                     if(kind.equals("changed")) RddContainerMemory.reads.put(0,new RddContainerMemory.ContainerRead(Map.of("minecraft:obsidian",1),false,10100));
