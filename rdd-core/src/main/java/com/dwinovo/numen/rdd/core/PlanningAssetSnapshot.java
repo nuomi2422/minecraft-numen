@@ -79,6 +79,9 @@ public final class PlanningAssetSnapshot {
         return new PlanningAssetSnapshot(available, lost, unknown, scanAtMillis);
     }
 
+    /** 是否留有扫描时刻；只表明曾扫描，不证明当前仍新鲜。 */
+    public boolean hasInventoryScanTime() { return scanAtMillis != null; }
+
     /** 规划可用背包计数（不可变、按 key 排序）。 */
     public Map<String, Integer> availableCounts() {
         return available;

@@ -42,7 +42,7 @@ final class RddStagePlanner {
         try {
             var srv = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
             var self = srv == null ? null : srv.getPlayerList().getPlayer(companionId);
-            facts = self == null ? RddPlannerFacts.block(snapshot.availableCounts())
+            facts = self == null ? RddPlannerFacts.block(snapshot.availableCounts(), snapshot.hasInventoryScanTime())
                     : RddPlannerFacts.block(self, companionId);
         } catch (RuntimeException ex) {
             org.slf4j.LoggerFactory.getLogger(RddStagePlanner.class)
@@ -237,7 +237,10 @@ final class RddStagePlanner {
                     .append("只有后续会被消耗掉的东西（食物、合成/烧炼原料）才按需要规划补量。\n\n");
         } else {
             // 【C-补】空背包也要显式告知，避免"没块"与"空背包"无法区分（正是难查的根因）。
-            sb.append("【你当前已真实持有（背包扫描）：】（背包为空或尚未观测到——按空背包规划）\n\n");
+            if (snap != null && snap.hasInventoryScanTime())
+                sb.append("【背包扫描】：最近一次扫描为空（当前状态需核实）。\n\n");
+            else
+                sb.append("【背包扫描】：未观测，持有情况未知，请先核实。\n\n");
         }
         if (snap != null && !snap.lostIds().isEmpty()) {
             sb.append("【已失去（死亡/掉落判定失效，绝不要假设还持有，需要就重新获取）：】")

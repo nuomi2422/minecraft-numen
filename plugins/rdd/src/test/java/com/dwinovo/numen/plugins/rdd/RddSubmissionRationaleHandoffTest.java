@@ -54,14 +54,15 @@ class RddSubmissionRationaleHandoffTest {
         List<String> sent = new ArrayList<>();
         for (var snapshot : List.of(unscanned, scannedEmpty, scannedItem)) {
             // Mirrors planStages' no-player branch; dispatchStages is the real final-send path.
-            String facts = RddPlannerFacts.block(snapshot.availableCounts());
+            String facts = RddPlannerFacts.block(snapshot.availableCounts(), snapshot.hasInventoryScanTime());
             RddStagePlanner.dispatchStages(id, OBJECTIVE, null, snapshot, facts,
                     (companion, objective, stage, failures) -> "", () -> "", sent::add);
         }
         assertAll(
                 () -> assertTrue(sent.get(0).contains("手上：未观测"), sent.get(0)),
                 () -> assertFalse(sent.get(0).contains("按空背包规划"), sent.get(0)),
-                () -> assertTrue(sent.get(1).contains("手上：空"), sent.get(1)),
+                () -> assertTrue(sent.get(1).contains("手上：空") && sent.get(1).contains("最近一次扫描为空"), sent.get(1)),
+                () -> assertTrue(source("RddStagePlanner").contains("RddPlannerFacts.block(snapshot.availableCounts(), snapshot.hasInventoryScanTime())")),
                 () -> assertTrue(sent.get(2).contains("bread×2"), sent.get(2)));
     }
 

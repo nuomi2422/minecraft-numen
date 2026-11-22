@@ -99,6 +99,10 @@ final class RddPlannerFacts {
 
     /** 没有玩家对象时的退化版本（例如规划发生在离线恢复）。 */
     static String block(Map<String, Integer> held) {
+        return block(held, false);
+    }
+
+    static String block(Map<String, Integer> held, boolean observed) {
         String hand = "";
         if (held != null && !held.isEmpty()) {
             StringBuilder h = new StringBuilder();
@@ -111,7 +115,7 @@ final class RddPlannerFacts {
             hand = h.toString();
         }
         return "<situation>\n位置：未观测（规划时没有玩家对象）\n"
-                + "手上：" + (hand.isEmpty() ? "空" : hand) + "\n"
+                + "手上：" + (hand.isEmpty() ? (observed ? "空" : "未观测") : hand) + "\n"
                 + "箱子里/世界里：未观测\n</situation>";
     }
 
