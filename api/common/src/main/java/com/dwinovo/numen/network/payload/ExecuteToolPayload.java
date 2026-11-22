@@ -140,7 +140,8 @@ public record ExecuteToolPayload(UUID entityUuid,
         try {
             args = JsonParser.parseString(p.argumentsJson()).getAsJsonObject();
         } catch (RuntimeException ex) {
-            replyError(player, p, "invalid arguments JSON: " + ex.getMessage());
+            replyError(player, p, "rdd_report_yield".equals(p.toolName())
+                    ? "invalid yield arguments JSON" : "invalid arguments JSON: " + ex.getMessage());
             return;
         }
         // Run the tool against the live companion: a query replies now, a world action
@@ -163,7 +164,8 @@ public record ExecuteToolPayload(UUID entityUuid,
                 protectedTool.onOwnerCall(p.toolCallId(), args, companion, player, reply);
             else tool.onServerCall(p.toolCallId(), args, companion, reply);
         } catch (RuntimeException ex) {
-            replyError(player, p, "invalid arguments: " + ex.getMessage());
+            replyError(player, p, "rdd_report_yield".equals(p.toolName())
+                    ? "invalid yield arguments" : "invalid arguments: " + ex.getMessage());
         }
     }
 
@@ -175,14 +177,26 @@ public record ExecuteToolPayload(UUID entityUuid,
      * 这里:知道被拒了二十二次,却没法从日志还原是哪一条 op 写错——只能靠错误
      * 信息倒推。失败是稀有事件,把这一条打全不会淹没日志。
      */
+    static String diagnosticArgs(ExecuteToolPayload p) {
+        if (!"rdd_report_yield".equals(p.toolName())) return p.argumentsJson();
+        try {
+            JsonObject safe = JsonParser.parseString(p.argumentsJson()).getAsJsonObject().deepCopy();
+            safe.remove("_yield_ticket");
+            return safe.toString();
+        } catch (RuntimeException malformed) {
+            return "[invalid yield arguments]";
+        }
+    }
+
     public static void replyError(ServerPlayer player, ExecuteToolPayload p, String message) {
+        String diagnosticArgs = diagnosticArgs(p);
         // 同一工具同一种错误反复失败 → 除了埋点,还要把「你已经这样失败 N 次了」塞进回复里。
         // 模型看不见自己的失败计数,不给这句话它就会逐字重发同一个坏 payload(实测连拒 4 次)。
         String loopAdvice = com.dwinovo.numen.agent.tool.ToolCallLoopWatch.onRejected(
-                p.entityUuid(), p.toolName(), message, p.argumentsJson());
+                p.entityUuid(), p.toolName(), message, diagnosticArgs);
         Constants.LOG.warn("[numen-net] ✗ execute_tool rejected from {}: tool={} id={} reason={} args={}",
                 player.getName().getString(), p.toolName(), p.toolCallId(), message,
-                p.argumentsJson());
+                diagnosticArgs);
         MonitoringJournal.get().publish("tools", "tool_rejected", Map.of(
                 "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
                 "tool", p.toolName(), "reason", message));
