@@ -36,9 +36,10 @@ class SyncReceiptIntakeTest {
     // Same host-boundary fixture as LearnerSkillTaskFeedbackTest; no body task exists.
     private static final class Tasks implements LearnerUsageTool.TaskAccess {
         UUID owner = OWNER;
+        UUID companion = COMPANION;
         WorldContextStamp.Token token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
         public UUID ownerId() { return owner; }
-        public UUID companionId() { return COMPANION; }
+        public UUID companionId() { return companion; }
         public WorldContextStamp.Token identity() {
             return token;
         }
@@ -48,13 +49,14 @@ class SyncReceiptIntakeTest {
 
     @AfterEach void reset() { SkillRegistrar.resetForTest(); }
 
-    @Test void receiptBatchReadsHostLedgerOnceRegardlessOfRowsOrBudget() throws Exception {
+    private final java.util.concurrent.atomic.AtomicInteger batchReads = new java.util.concurrent.atomic.AtomicInteger();
+    private UsageLedger batchFixture() throws Exception {
         String body = "batch original steps";
         String ref = SkillBodyStore.write(dir, "batch", 1, Integer.toHexString(body.hashCode()), body);
         var draft = new ArtifactDraft(ArtifactKind.EXPERIENCE, "craft", "craft safely", body,
                 List.of("craft"), List.of(), List.of(), "LOW", List.of(), List.of("memo"), "EXECUTOR");
         assertTrue(SkillRegistrar.registryFor(dir).register(draft, "batch", ref, true).stored());
-        var reads = new java.util.concurrent.atomic.AtomicInteger();
+        var reads = batchReads;
         var constructor = UsageLedger.class.getDeclaredConstructor(Path.class, java.util.function.Consumer.class);
         constructor.setAccessible(true);
         UsageLedger ledger = constructor.newInstance(dir, (java.util.function.Consumer<Path>) path -> reads.incrementAndGet());
@@ -73,9 +75,18 @@ class SyncReceiptIntakeTest {
             ledger.append("ordinary-" + i, "ordinary", "ordinary", UsageLedger.Phase.RESULT,
                     UsageLedger.Outcome.UNKNOWN, "{}", "learner_usage", COMPANION.toString());
         }
+        return ledger;
+    }
+
+    @Test void receiptBatchReadsHostLedgerOnceRegardlessOfRowsOrBudget() throws Exception { checkBatch(16); }
+    @Test void zeroBudgetDoesNotReadHostLedger() throws Exception { checkBatch(0); }
+
+    private void checkBatch(int budget) throws Exception {
+        UsageLedger ledger = batchFixture();
         var rows = ledger.readSnapshot().rows();
         var scope = new com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.Scope("world", "new-session", 8, COMPANION.toString());
-        for (int budget : List.of(0, 16)) {
+        var reads = batchReads;
+        {
             reads.set(0);
             var queue = new com.dwinovo.numen.plugins.learner.core.MemoQueue(dir.resolve("batch-" + budget + ".json"));
             var seen = new java.util.HashSet<String>();
@@ -86,8 +97,61 @@ class SyncReceiptIntakeTest {
             var scan = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(
                     ledger, rows, scope, queue, journal, (c, f, n, once) -> once.getAsBoolean(), 1, budget);
             assertEquals(budget == 0 ? 0 : 4, scan.enqueued());
-            assertTrue(reads.get() <= 1, "one intake batch must not reread the complete host ledger per candidate; actual=" + reads.get());
+            assertEquals(budget == 0 ? 0 : 1, reads.get(), "whole-ledger reads per batch");
         }
+    }
+
+    private com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.Scan scanSnapshot(
+            UsageLedger.ReadSnapshot snapshot, UUID companion, String queueName) {
+        var queue = new com.dwinovo.numen.plugins.learner.core.MemoQueue(dir.resolve(queueName));
+        var seen = new java.util.HashSet<String>();
+        var journal = new com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.EnqueuedJournal() {
+            public boolean contains(String key) { return seen.contains(key); }
+            public void remember(String key) { seen.add(key); }
+        };
+        var scope = new com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.Scope("world", "new-session", 8, companion.toString());
+        return com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(
+                snapshot, snapshot.rows(), scope, queue, journal, (c, f, n, once) -> once.getAsBoolean(), 1, 16);
+    }
+
+    @Test void sameBatchSnapshotReusedAcrossOwnersWithoutMoreReads() throws Exception {
+        UsageLedger ledger = batchFixture();
+        Tasks second = new Tasks(); second.companion = OWNER;
+        JsonObject args = new JsonObject();
+        args.addProperty("skill_ref", "skill:batch"); args.addProperty("version", "v1"); args.addProperty("target_tool", "craft");
+        var service = new SyncSkillFeedback();
+        AtomicReference<String> response = new AtomicReference<>();
+        service.adopt(args, dir, ledger, second, response::set);
+        String id = JsonParser.parseString(response.get()).getAsJsonObject().getAsJsonObject("data").get("selection_id").getAsString();
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.BOUND,
+                service.bind(id, OWNER, OWNER, second.identity(), "second-owner-wire", "craft"));
+        service.receipt(id, OWNER, OWNER, second.identity(), "second-owner-wire", "craft", com.dwinovo.numen.api.SyncSkillCorrelation.Receipt.SUCCESS);
+        batchReads.set(0);
+        var snapshot = ledger.readSnapshot();
+        assertEquals(4, scanSnapshot(snapshot, COMPANION, "owner-one.json").enqueued());
+        assertEquals(1, scanSnapshot(snapshot, OWNER, "owner-two.json").enqueued());
+        assertEquals(1, batchReads.get());
+    }
+
+    @Test void publicSnapshotConstructionCannotMintTrustedReceiptSource() throws Exception {
+        UsageLedger ledger = batchFixture();
+        var real = ledger.readSnapshot();
+        var invented = new UsageLedger.ReadSnapshot(real.rows(), UsageLedger.ReadStatus.READY, 0);
+        assertEquals(0, scanSnapshot(invented, COMPANION, "untrusted.json").enqueued());
+        assertEquals(4, scanSnapshot(real, COMPANION, "trusted.json").enqueued());
+    }
+
+    @Test void gateReReadsCurrentHostLedgerRatherThanTrustingOldScanSnapshot() throws Exception {
+        UsageLedger ledger = batchFixture();
+        var snapshot = ledger.readSnapshot();
+        assertEquals(4, scanSnapshot(snapshot, COMPANION, "gate-batch.json").enqueued());
+        var queue = new com.dwinovo.numen.plugins.learner.core.MemoQueue(dir.resolve("gate-batch.json"));
+        var memo = queue.all().getFirst();
+        var stable = new Tasks().identity();
+        assertTrue(ReviewTargetGate.check(dir, COMPANION, memo, stable, stable).ok());
+        java.nio.file.Files.writeString(ledger.file(), "");
+        assertFalse(ReviewTargetGate.check(dir, COMPANION, memo, stable, stable).ok());
+        assertTrue(com.dwinovo.numen.plugins.learner.core.TrajectorySlices.forMemo(dir, COMPANION, memo).contains("source_status=UNKNOWN"));
     }
 
     @Test void durableReceiptSurvivesTtlAndRestartThroughOriginalIntakeAndReview() throws Exception {

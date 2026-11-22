@@ -118,7 +118,16 @@ public final class SkillDeliveryIntake {
     /** Production historical intake: retains original budget/admission/queue transaction. */
     public static Scan runWithTaskResults(UsageLedger ledger, List<UsageLedger.Entry> rows, Scope scope, MemoQueue queue,
                                           EnqueuedJournal journal, Admission admission, long now, int budget) {
-        return execute(classify(rows, scope, true, ledger), scope, queue, journal, admission, now, budget);
+        UsageLedger.ReadSnapshot snapshot = ledger == null || budget <= 0 ? null : ledger.readSnapshot();
+        return runWithTaskResults(snapshot, rows, scope, queue, journal, admission, now, budget);
+    }
+
+    /** One host read is shared across every owner in this intake batch, never held for submission. */
+    public static Scan runWithTaskResults(UsageLedger.ReadSnapshot snapshot, List<UsageLedger.Entry> rows,
+                                          Scope scope, MemoQueue queue, EnqueuedJournal journal,
+                                          Admission admission, long now, int budget) {
+        if (budget <= 0) return new Scan(0, 0, 0, 0, 0, 0, 0);
+        return execute(classify(rows, scope, true, snapshot), scope, queue, journal, admission, now, budget);
     }
 
     private static Scan execute(Selection selection, Scope scope, MemoQueue queue, EnqueuedJournal journal,
@@ -326,7 +335,7 @@ public final class SkillDeliveryIntake {
         return classify(rows, scope, includeResults, null);
     }
 
-    private static Selection classify(List<UsageLedger.Entry> rows, Scope scope, boolean includeResults, UsageLedger ledger) {
+    private static Selection classify(List<UsageLedger.Entry> rows, Scope scope, boolean includeResults, UsageLedger.ReadSnapshot snapshot) {
         if (scope == null || !scope.complete() || rows == null) return new Selection(List.of(), 0, 0);
         Map<LedgerKey, UsageLedger.Entry> latest = new LinkedHashMap<>();
         for (UsageLedger.Entry row : rows) {
@@ -367,7 +376,7 @@ public final class SkillDeliveryIntake {
                 continue;
             }
             if (!includeResults) continue;
-            var sync = ledger == null ? SyncSkillFeedback.INSTANCE.confirm(row) : SyncSkillFeedback.INSTANCE.confirm(ledger, row);
+            var sync = snapshot == null ? SyncSkillFeedback.INSTANCE.confirm(row) : SyncSkillFeedback.INSTANCE.confirm(snapshot, row);
             if (sync != null) {
                 try {
                     Scope actual = rowScope(JsonParser.parseString(row.detail()).getAsJsonObject(), row.companionId());
