@@ -4023,6 +4023,30 @@ private static void takeDiag() {
             eq(3, Fake.calls.count("mine"), "★ 总共正好 3 次（游标避免了重跑）");
         });
 
+        T.test("截断续跑失败经状态门面与记录可见", () -> {
+            Fake.resetCalls();
+            List<Object> items = new ArrayList<>();
+            for (int i = 0; i < 65; i++) items.add(Fake.params("x", i));
+            Fake.Registry reg = new Fake.Registry().add(Fake.fixed("scan_blocks", Fake.params("matches", items)))
+                    .add(Fake.fixed("mine", Fake.params("mined", 1)))
+                    .add(Fake.pauserOnce("mark", new Fake.PauseOnce(), "checkpoint"));
+            AcxDefinition d = defN("bounded", step("scan", "scan_blocks", Map.of()), ctrl("each", "for",
+                    Fake.params("list", "$scan.matches", "as", "m"), step("dig", "mine", Map.of()), step("mark", "mark", Map.of())));
+            Path path = tmpDir().resolve("truncation-records.jsonl");
+            try (JsonlRecordStore store = new JsonlRecordStore(path)) {
+                AcxRunner runner = AcxRunner.builder().tools(reg).store(store).build();
+                AcxFacade facade = new AcxFacade(new AcxSessionManager(runner, Runnable::run), name -> d, reg, null);
+                String run = String.valueOf(castData(facade.execute(Map.of("ac_name", "bounded"))).get("run_id"));
+                int before = Fake.calls.count("mine");
+                facade.resume(Map.of("run_id", run));
+                Map<String,Object> status = castData(facade.status(Map.of("run_id", run)));
+                eq("FAIL", status.get("state"), "状态查询不得报成功");
+                T.isTrue(String.valueOf(status.get("error_message")).contains("64/65"), "状态可见截断原因");
+                eq(before, Fake.calls.count("mine"), "门面续跑不得重发");
+                String durable = Files.readString(path);
+                T.isTrue(durable.contains("64/65") && durable.contains(run) && durable.contains("FAIL"), "失败原因持久记录");
+            }
+        });
         T.test("子帧已结束其截断标记不误挡父后续暂停", () -> {
             List<Object> big = new ArrayList<>();
             for (int i = 0; i < 65; i++) big.add(Fake.params("x", i));
