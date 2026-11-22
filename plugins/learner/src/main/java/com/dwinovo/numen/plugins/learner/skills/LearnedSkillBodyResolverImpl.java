@@ -99,6 +99,43 @@ public final class LearnedSkillBodyResolverImpl implements LearnedSkillBodyResol
     }
 
     @Override
+    public long managedRevision() {
+        return SkillRegistrar.peekManaged(configDir).map(r -> r.declarationSnapshot().revision()).orElse(-1L);
+    }
+
+    @Override
+    public ManagedFocusEligibility managedFocusEligibility(UUID companion, String packageRef, View view) {
+        var registry=SkillRegistrar.peekManaged(configDir).orElse(null);
+        if (registry==null) return new ManagedFocusEligibility(-1L,new FocusDeclaration(packageRef,"","","managed-snapshot-unknown"));
+        var snapshot=registry.declarationSnapshot();
+        String gap="managed-snapshot-unknown";
+        if (snapshot.complete() && companion!=null && view!=null) {
+            try {
+                var identity=Reference.parse(packageRef);
+                var pack=snapshot.entries().get(identity.skillId());
+                var audience=new SkillsKnowledgeContributor(configDir,view.name(),0);
+                if (pack!=null && pack.version()==identity.version() && pack.status().retrievable()
+                        && audience.audienceMatches(pack.audience()) && snapshot.availableBodies().contains(pack.skillId())
+                        && "package".equals(SceneSkillCatalog.kind(pack))) {
+                    boolean required=true;
+                    for (String condition:pack.preconditions()) if (condition.startsWith("requires:")) {
+                        String ref=condition.substring("requires:".length());
+                        var dep=Reference.parse(ref); var entry=snapshot.entries().get(dep.skillId());
+                        if (ref.equals(packageRef) || entry==null || entry.version()!=dep.version()
+                                || !entry.status().retrievable() || !audience.audienceMatches(entry.audience())
+                                || !snapshot.availableBodies().contains(entry.skillId())) { required=false; break; }
+                    }
+                    var focuses=pack.preconditions().stream().filter(v->v.startsWith("focus:")).toList();
+                    if (required && focuses.equals(java.util.List.of("focus:environment@v1")))
+                        return new ManagedFocusEligibility(snapshot.revision(),new FocusDeclaration(packageRef,"environment","v1",""));
+                }
+                gap="managed-declaration-withdrawn-or-invalid";
+            } catch (RuntimeException malformed) { gap="managed-declaration-invalid"; }
+        }
+        return new ManagedFocusEligibility(snapshot.revision(),new FocusDeclaration(packageRef,"","",gap));
+    }
+
+    @Override
     public Resolution resolve(UUID companion, String exactRef, View consumerView) {
         if (companion == null) return Resolution.refused(exactRef, "companion-missing");
         if (consumerView == null) return Resolution.refused(exactRef, "consumer-view-missing");

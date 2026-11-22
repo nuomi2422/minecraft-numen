@@ -76,5 +76,12 @@ public interface LearnedSkillBodyResolver {
     default FocusDeclaration resolveFocusDeclaration(UUID companion,String packageRef,View view) {
         return new FocusDeclaration(packageRef,"","","focus-declaration-unavailable");
     }
+    /** In-memory managed snapshot revision; -1 means unavailable, never a fresh disk read. */
+    default long managedRevision() { return -1L; }
+    /** Declaration and revision are from one immutable snapshot; unavailable defaults to UNKNOWN. */
+    record ManagedFocusEligibility(long revision, FocusDeclaration declaration) { }
+    default ManagedFocusEligibility managedFocusEligibility(UUID companion, String packageRef, View view) {
+        return new ManagedFocusEligibility(-1L, new FocusDeclaration(packageRef, "", "", "managed-snapshot-unknown"));
+    }
     Resolution resolve(UUID companion, String exactRef, View consumerView);
 }

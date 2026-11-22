@@ -93,7 +93,17 @@ final class CompanionBrain {
     }
 
     void reconcileTaskFocus(NumenPlayer companion, TaskRecord record) {
-        if (record == null || record.getState() != TaskState.RUNNING || record.skillSelection() == null || taskFocusAttempted.contains(record)) return;
+        if (record == null || record.getState() != TaskState.RUNNING) return;
+        var existing=taskFocus.get(record);
+        if (existing != null) {
+            var ownerService=taskFocusServices.get(record);
+            boolean eligible=false;
+            try { eligible=ownerService != null && ownerService.stillEligible(companion,record,existing); }
+            catch (RuntimeException | LinkageError unavailable) { /* UNKNOWN: drop only this owner */ }
+            if (!eligible) { releaseTaskFocus(record); taskFocusAttempted.add(record); }
+            return;
+        }
+        if (record.skillSelection() == null || taskFocusAttempted.contains(record)) return;
         var service=com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.TaskFocusLeaseService.class);
         if (service == null) return;
         taskFocusAttempted.add(record); // one bounded acquisition; physical TTL is not silently extended

@@ -328,6 +328,8 @@ public final class LearnerPlugin implements NumenPlugin {
         LearnerAutoIntake.installDefaultQueueResolver();
         // E1 shadow：学习角色的预算策略（与客户端同一份文件，幂等）。
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
+        // Initialize the managed snapshot once during plugin setup, never from the task tick.
+        com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.registryFor(configDir);
         numen.capability(com.dwinovo.numen.api.LearnedSkillBodyResolver.class,
                 new com.dwinovo.numen.plugins.learner.skills.LearnedSkillBodyResolverImpl(configDir));
         numen.capability(com.dwinovo.numen.api.SyncSkillCorrelation.class, SyncSkillFeedback.INSTANCE);

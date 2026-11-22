@@ -14,6 +14,8 @@ import java.util.HexFormat;
 /** Internal server-thread bridge. A pin is observation context, not an action grant. */
 final class TaskFocusLeaseBridge implements TaskFocusLeaseService {
     private final WorldStateService world;
+    private record Validation(long revision, String ref, boolean eligible) {}
+    private final java.util.concurrent.ConcurrentMap<String,Validation> validations = new java.util.concurrent.ConcurrentHashMap<>();
     TaskFocusLeaseBridge(WorldStateService world) { this.world=world; }
     @Override public Lease acquire(NumenPlayer companion, TaskRecord task, String owner) {
         if (companion==null || task==null || task.getState()!=TaskState.RUNNING || owner==null || owner.isBlank()) return null;
@@ -36,10 +38,43 @@ final class TaskFocusLeaseBridge implements TaskFocusLeaseService {
         String dim=companion.serverLevel().dimension().location().toString();
         var pin=world.focusPins().acquire(companion.getUUID(),stamp.identity().get("world_id"),stamp.identity().get("server_session"),dim,
                 "environment","v1",owner,System.currentTimeMillis(),0,0,0,0);
-        return pin==null ? null : new Lease(companion.getUUID(),owner,pin.leaseId(),pin.pin().expiresAtMs());
+        if (pin==null) return null;
+        var lease=new Lease(companion.getUUID(),owner,pin.leaseId(),pin.pin().expiresAtMs());
+        try {
+            var eligibility=resolver.managedFocusEligibility(companion.getUUID(),ref,LearnedSkillBodyResolver.View.EXECUTOR);
+            if (valid(eligibility,ref) && resolver.managedRevision()==eligibility.revision()) {
+                validations.put(lease.leaseId(),new Validation(eligibility.revision(),ref,true));
+                return lease;
+            }
+        } catch (RuntimeException | LinkageError unavailable) { /* UNKNOWN: undo only our acquisition */ }
+        world.focusPins().release(lease.companionId(),lease.owner(),lease.leaseId());
+        return null;
+    }
+    @Override public boolean stillEligible(NumenPlayer companion, TaskRecord task, Lease lease) {
+        if (companion==null || task==null || lease==null || !companion.getUUID().equals(lease.companionId()) || task.skillSelection()==null) return false;
+        String ref=task.skillSelection().skillRef()+"@"+task.skillSelection().version();
+        var prior=validations.get(lease.leaseId());
+        var resolver=NumenPlugins.capability(LearnedSkillBodyResolver.class);
+        if (prior==null || resolver==null || !prior.ref().equals(ref)) return false;
+        var server=companion.level().getServer(); var stamp=WorldContextStamp.capture(server);
+        if (!WorldStateMod.isActiveServer(server) || !server.isSameThread() || !TaskRecord.completeIdentity(stamp)
+                || !stamp.equals(WorldContextStamp.capture()) || !stamp.equals(task.identityToken())
+                || !stamp.equals(task.skillSelection().token())) return false;
+        long revision=resolver.managedRevision();
+        if (revision < 0) return false;
+        if (revision==prior.revision() && resolver.managedRevision()==revision) return prior.eligible();
+        var current=resolver.managedFocusEligibility(companion.getUUID(),ref,LearnedSkillBodyResolver.View.EXECUTOR);
+        boolean ok=valid(current,ref) && resolver.managedRevision()==current.revision();
+        if (!ok) org.slf4j.LoggerFactory.getLogger(TaskFocusLeaseBridge.class).info("[focus] managed declaration unavailable: {}", current == null || current.declaration() == null ? "unknown" : current.declaration().gap());
+        if (current != null) validations.put(lease.leaseId(),new Validation(current.revision(),ref,ok));
+        return ok;
+    }
+    private static boolean valid(LearnedSkillBodyResolver.ManagedFocusEligibility value,String ref) {
+        if (value==null || value.revision()<0 || value.declaration()==null) return false;
+        var d=value.declaration(); return d.available() && ref.equals(d.packageRef()) && "environment".equals(d.topic()) && "v1".equals(d.contractVersion());
     }
     @Override public void release(Lease lease) {
-        if (lease!=null) world.focusPins().release(lease.companionId(),lease.owner(),lease.leaseId());
+        if (lease!=null) { validations.remove(lease.leaseId()); world.focusPins().release(lease.companionId(),lease.owner(),lease.leaseId()); }
     }
     private static String sha256(String body) {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8))); }

@@ -67,7 +67,7 @@ class TaskFocusBrainBridgeIntegrationTest {
             sources.put("com.dwinovo.numen.plugins.worldstate.WorldStateService", """
                 package com.dwinovo.numen.plugins.worldstate;
                 public class WorldStateService { private final com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore pins=new com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore();
-                  public com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore focusPins(){return pins;} }
+                  public com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore focusPins(){return pins;} public static String worldId(net.minecraft.server.MinecraftServer s){return "world";} public String sessionId(net.minecraft.server.MinecraftServer s){return "new";} }
                 """);
             sources.put("com.dwinovo.numen.plugins.worldstate.WorldStateMod", """
                 package com.dwinovo.numen.plugins.worldstate;
@@ -93,9 +93,11 @@ class TaskFocusBrainBridgeIntegrationTest {
                     var oldBody=new NumenPlayer(id,oldServer); var body=new NumenPlayer(id,newServer);
                     String text="approved body"; String digest=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)));
                     class Resolver implements LearnedSkillBodyResolver {
-                      String bodyRef="skill:demo@v1", version="v1"; int resolutions;
+                      String bodyRef="skill:demo@v1", version="v1"; int resolutions, snapshotReads; boolean withdrawn;
                       public Resolution resolve(UUID c,String r,View v){check(c.equals(id)&&v==View.EXECUTOR,"body lookup identity/view"); resolutions++; return new Resolution(bodyRef,text,"");}
-                      public FocusDeclaration resolveFocusDeclaration(UUID c,String r,View v){check(c.equals(id)&&v==View.EXECUTOR,"declaration identity/view"); return new FocusDeclaration(r,"environment",version,"");}
+                      public FocusDeclaration resolveFocusDeclaration(UUID c,String r,View v){check(c.equals(id)&&v==View.EXECUTOR,"declaration identity/view"); return withdrawn ? new FocusDeclaration(r,"","","withdrawn") : new FocusDeclaration(r,"environment",version,"");}
+                      public long managedRevision(){return withdrawn?2:1;}
+                      public ManagedFocusEligibility managedFocusEligibility(UUID c,String r,View v){snapshotReads++; return new ManagedFocusEligibility(managedRevision(),resolveFocusDeclaration(c,r,v));}
                     }
                     var resolver=new Resolver(); NumenPlugins.resolver=resolver;
                     var storeHost=new WorldStateService(); var bridge=new TaskFocusLeaseBridge(storeHost);
@@ -103,19 +105,32 @@ class TaskFocusBrainBridgeIntegrationTest {
                     WorldStateMod.active=newServer; WorldContextStamp.current=newStamp;
                     NumenPlugins.leaseService=bridge; task.selection=null; com.dwinovo.numen.task.BrainFixture.start(id,body,task); check(storeHost.focusPins().active(id,"world","new",System.currentTimeMillis()).isEmpty(),"no early pin"); task.selection=new TaskRecord.Selection(id.toString(),"skill:demo","v1",digest,newStamp); com.dwinovo.numen.task.BrainFixture.reconcile(body,task);
                     var pins=storeHost.focusPins(); check(pins.active(id,"world","new",System.currentTimeMillis()).size()==1,"real store must contain pin"); check(resolver.resolutions==1,"reconcile must acquire only once");
+                    com.dwinovo.numen.api.observation.WorldObservationService obs=request->{ long now=System.currentTimeMillis(); var meta=new com.dwinovo.numen.api.observation.ObservationMetadata("world","new","minecraft:overworld",id.toString(),"fixture",request.topic(),1,now,com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT,"INTERNAL",now+60000); return new com.dwinovo.numen.api.observation.WorldObservationService.Response(com.dwinovo.numen.api.observation.WorldObservationService.Status.OK,request.topic(),"snap",1,com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL,"",java.util.List.of(com.dwinovo.numen.api.observation.WorldObservationService.Item.of(java.util.Map.of("marker","live"))),0,meta); };
+                    check(WorldFocusProjector.render(pins,obs,id,"world","new",System.currentTimeMillis()).contains("environment="),"mounted focus reaches actual projector");
+                    int stableReads=resolver.snapshotReads; for(int i=0;i<50;i++) com.dwinovo.numen.task.BrainFixture.reconcile(body,task);
+                    check(resolver.snapshotReads==stableReads && resolver.resolutions==1,"unchanged tick must not re-read declaration or body");
+                    var other=pins.acquire(id,"world","new","minecraft:overworld","environment","v1","other",System.currentTimeMillis(),60000,0,0,0);
+                    check(other!=null,"other owner mounted"); resolver.withdrawn=true; com.dwinovo.numen.task.BrainFixture.reconcile(body,task);
+                    check(pins.active(id,"world","new",System.currentTimeMillis()).size()==1,"withdrawal cannot remove another owner");
+                    check(WorldFocusProjector.render(pins,obs,id,"world","new",System.currentTimeMillis()).contains("environment="),"other owner remains projected");
+                    check(pins.release(id,"other",other.leaseId()),"other owner still valid");
+                    check(pins.active(id,"world","new",System.currentTimeMillis()).isEmpty(),"withdrawn owner must have released its own lease");
+                    check(WorldFocusProjector.render(pins,obs,id,"world","new",System.currentTimeMillis()).isEmpty(),"last release removes focus projection");
+                    com.dwinovo.numen.task.BrainFixture.reconcile(body,task); check(pins.active(id,"world","new",System.currentTimeMillis()).isEmpty(),"withdrawn task cannot silently reacquire");
                     task.state=com.dwinovo.numen.task.TaskState.SUCCESS; com.dwinovo.numen.task.BrainFixture.finish(task); check(pins.active(id,"world","new",System.currentTimeMillis()).isEmpty(),"brain finish releases real pin");
                   }
                 }
                 """);
+            sources.put("net.neoforged.neoforge.server.ServerLifecycleHooks", "package net.neoforged.neoforge.server; public class ServerLifecycleHooks { public static net.minecraft.server.MinecraftServer getCurrentServer(){return null;} }");
             addBrainStubs(sources);
             List<String> args = new ArrayList<>(List.of("-encoding","UTF-8","-proc:none","-d",tmp.toString()));
             for (var entry : sources.entrySet()) {
                 Path file=tmp.resolve(entry.getKey().replace('.', '/')+".java"); Files.createDirectories(file.getParent()); Files.writeString(file,entry.getValue()); args.add(file.toString());
             }
             Path plugin=root.resolve("plugins/worldstate/src/main/java/com/dwinovo/numen/plugins/worldstate");
-            for (String source : List.of("TaskFocusLeaseBridge.java","focus/FocusPin.java","focus/FocusPinStore.java")) args.add(plugin.resolve(source).toString());
+            for (String source : List.of("TaskFocusLeaseBridge.java","WorldFocusProjector.java","focus/FocusPin.java","focus/FocusPinStore.java")) args.add(plugin.resolve(source).toString());
             Path api=root.resolve("api/common/src/main/java/com/dwinovo/numen/api");
-            for (String source : List.of("TaskFocusLeaseService.java","LearnedSkillBodyResolver.java")) args.add(api.resolve(source).toString());
+            for (String source : List.of("TaskFocusLeaseService.java","LearnedSkillBodyResolver.java","PlanningQuery.java","observation/WorldObservationService.java","observation/ObservationMetadata.java","observation/ObservationBatch.java","observation/ObservationBatchReader.java","observation/ChangesQuery.java","observation/ChangesV2Response.java","observation/Readiness.java","observation/WorldTime.java")) args.add(api.resolve(source).toString());
             args.add(root.resolve("api/common/src/main/java/com/dwinovo/numen/task/CompanionBrain.java").toString());
             var compiler=ToolProvider.getSystemJavaCompiler();
             if (compiler==null) throw new AssertionError("JDK compiler required");
