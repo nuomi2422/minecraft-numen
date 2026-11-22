@@ -340,30 +340,6 @@ public record ExecuteToolPayload(UUID entityUuid,
      * <p>边界：发给 AI 的 {@code TaskResultPayload} 一直是全文，这里只影响观测日志；
      * 超过上限仍截断，避免单条日志无界膨胀。
      */
-    /** Diagnostic copy only. Invalid JSON is not safe to echo; sent replies remain unchanged. */
-    private static String safeDiagnosticJson(String json) {
-        try {
-            var element = JsonParser.parseString(json);
-            if (!element.isJsonObject()) return "[invalid diagnostic JSON]";
-            var copy = element.getAsJsonObject().deepCopy();
-            redactDiagnostic(copy);
-            return copy.toString();
-        } catch (RuntimeException malformed) {
-            return "[invalid diagnostic JSON]";
-        }
-    }
-
-    private static void redactDiagnostic(com.google.gson.JsonElement value) {
-        if (value.isJsonObject()) {
-            var object = value.getAsJsonObject();
-            object.remove("selection_id");
-            object.remove("_yield_ticket");
-            for (var entry : object.entrySet()) redactDiagnostic(entry.getValue());
-        } else if (value.isJsonArray()) {
-            for (var child : value.getAsJsonArray()) redactDiagnostic(child);
-        }
-    }
-
     private static final int RESULT_LOG_LIMIT = 2000;
 
     private static String truncate(String s) {
