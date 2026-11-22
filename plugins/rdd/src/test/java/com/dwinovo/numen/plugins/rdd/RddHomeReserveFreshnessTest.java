@@ -152,6 +152,39 @@ class RddHomeReserveFreshnessTest {
         }
     }
 
+    @Test void producerShapedBaseWithoutWorldIdentityIsNotKnownCurrent() {
+        long now = 1_700_000_000_000L;
+        AssetRegistry registry = baseRegistry(now - MINUTE, fullReserve());
+        assertFalse(RddHomeFacts.reserveKnown(registry, now), "missing world and session cannot prove current reserve");
+    }
+
+    @Test void failedBedRecheckDoesNotTurnOldReserveIntoCurrentEvidence() {
+        long now = 1_700_000_000_000L;
+        AssetRegistry registry = baseRegistry(now - MINUTE, fullReserve());
+        // Real observer returns without writing when inspectBase returns null; the old entry remains.
+        assertFalse(RddHomeFacts.reserveKnown(registry, now), "old entry after missing bed is not current confirmation");
+    }
+
+    @Test void explicitlyIdentifiedFreshBaseRemainsKnownPositiveControl() {
+        long now = 1_700_000_000_000L;
+        AssetRegistry registry = new AssetRegistry();
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("kind", "base"); value.put("label", "home_house_01");
+        value.put("dimension", "minecraft:overworld"); value.put("world_id", "world-A");
+        value.put("server_session", "session-A"); value.put("x", 372); value.put("y", 68); value.put("z", 715);
+        value.put("facilities", List.of("core_house")); value.put("important_items", fullReserve());
+        registry.apply(new Observation("obs-base", "world_base", "rdd_world_observer", "minecraft:overworld",
+                now - MINUTE, value), "world_base//372/68/715", AssetScope.GLOBAL, null);
+        assertTrue(RddHomeFacts.reserveKnown(registry, now));
+    }
+
+    @Test void invalidBaseIsNotKnownEvenWithinTtl() {
+        long now = 1_700_000_000_000L;
+        AssetRegistry registry = baseRegistry(now - MINUTE, fullReserve());
+        registry.invalidate("world_base//372/68/715"); // defensive case, not claimed as existing producer path
+        assertFalse(RddHomeFacts.reserveKnown(registry, now));
+    }
+
     private static Map<String, Integer> fullReserve() {
         Map<String, Integer> m = new LinkedHashMap<>();
         m.put("minecraft:iron_pickaxe", 1);
