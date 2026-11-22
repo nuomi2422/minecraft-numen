@@ -38,10 +38,18 @@ public final class ToolCall {
     private final String toolName;
     private final String rawArgs;
     private final ToolAnchor ctx;
+    private final String frozenYieldTicket;
     private final Consumer<String> completion;   // the single "done" sink
 
     public ToolCall(String id, String toolName, String rawArgs, ToolAnchor ctx,
                     Consumer<String> completion) {
+        this(id, toolName, rawArgs, ctx, null, completion);
+    }
+
+    /** Host-supplied batch capability; never read from model arguments. */
+    public ToolCall(String id, String toolName, String rawArgs, ToolAnchor ctx,
+                    String frozenYieldTicket, Consumer<String> completion) {
+        this.frozenYieldTicket = frozenYieldTicket;
         this.id = id;
         this.toolName = toolName;
         this.rawArgs = rawArgs;
@@ -53,6 +61,9 @@ public final class ToolCall {
     public String id() { return id; }
 
     public String toolName() { return toolName; }
+
+    /** Internal transport-only capability frozen before the model request. */
+    public String frozenYieldTicket() { return frozenYieldTicket; }
 
     /** 调用锚点:服务端只读 UUID;客户端实现另携带实体(可能已卸载为 null)。 */
     public ToolAnchor ctx() { return ctx; }
