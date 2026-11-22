@@ -70,6 +70,15 @@ final class RddAssetContext {
         String head = "历史线索非当前；需重查：", omitted = "未投递";
         for (var entry : assets) {
             var v = entry.observation().value();
+            if ("completed_move".equals(v.get("kind"))) {
+                String start = movePoint(v.get("start")), end = movePoint(v.get("end"));
+                String move = head + text(v.get("dimension")) + " " + start + "→" + end
+                        + " 非通路证明 时间=" + (entry.observation().observedAt() > 0 ? entry.observation().observedAt() : "UNKNOWN");
+                String suffix = assets.size() > 1 ? "；其余未展示" : "";
+                if (!"UNKNOWN".equals(start) && !"UNKNOWN".equals(end) && move.length() + suffix.length() <= maxChars)
+                    return move + suffix;
+                continue;
+            }
             String line = head + text(v.get("kind")) + " " + text(v.getOrDefault("label", entry.assetId()))
                     + " " + text(v.get("dimension")) + " (" + text(v.get("x")) + "," + text(v.get("y"))
                     + "," + text(v.get("z")) + ") 时间="
@@ -80,6 +89,13 @@ final class RddAssetContext {
             if (line.length() + suffix.length() <= maxChars) return line + suffix;
         }
         return omitted.length() <= maxChars ? omitted : "";
+    }
+
+    private static String movePoint(Object raw) {
+        if (!(raw instanceof Map<?, ?> point)) return "UNKNOWN";
+        for (String key : List.of("x", "y", "z"))
+            if (!(point.get(key) instanceof Number n) || !Double.isFinite(n.doubleValue())) return "UNKNOWN";
+        return point.get("x") + "," + point.get("y") + "," + point.get("z");
     }
 
     private static String details(Map<String, Object> value) {

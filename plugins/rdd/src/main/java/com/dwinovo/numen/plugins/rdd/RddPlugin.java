@@ -312,6 +312,19 @@ public final class RddPlugin implements NumenPlugin {
         });
         // P1 资产真相层：同伴死亡/掉装备 → 背包类资产立即失效（不再拿旧装备当"还持有"），
         // 规划输入 LAST_INVENTORY 同步清空；世界资产（基地/结构）不受影响，重新观测会恢复 OBSERVED。
+        numen.on(CompanionEvent.TASK_FINISHED, finished -> {
+            if (finished == null || !finished.success() || !"SUCCESS".equals(finished.status())) return;
+            var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
+            if (server == null || !server.isSameThread()) return;
+            var body = com.dwinovo.numen.entity.NumenPlayer.findByUuid(server, finished.companionId());
+            if (body == null || body.getServer() != server) return;
+            var record = com.dwinovo.numen.task.CompanionTickDispatcher.finishedTaskFor(finished.companionId(), finished.taskId());
+            if (RddCompletedMoveAsset.projectOutcome(finished.companionId(), finished.taskId(), record,
+                    com.dwinovo.numen.api.WorldContextStamp.capture(server),
+                    body.level().dimension().location().toString(), assets(finished.companionId()), System.currentTimeMillis())
+                    != RddCompletedMoveAsset.Outcome.REJECTED)
+                saveAssets(finished.companionId());
+        });
         numen.on(CompanionEvent.DEATH, body -> onCompanionDeath(body));
         numen.on(CompanionEvent.REMOVE, body -> {
             LAST_INVENTORY.remove(body.getUUID());
