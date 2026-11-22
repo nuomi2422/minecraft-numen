@@ -133,6 +133,7 @@ final class RddDetector {
         // 代价：29us × 4/s ≈ 0.12ms/s，可忽略；收益：保命信号延迟从 1 秒回到 0.25 秒。
         for (ServerPlayer p : server.getPlayerList().getPlayers()) {
             if (p instanceof NumenPlayer ap) {
+                RddPlugin.recheckHomeBinding(ap);
                 RddDangerFacts.sampleOnTick(ap);
             }
         }

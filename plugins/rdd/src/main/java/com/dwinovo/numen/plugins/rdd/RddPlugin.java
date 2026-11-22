@@ -433,6 +433,56 @@ public final class RddPlugin implements NumenPlugin {
     }
 
     private static final Map<UUID, String> LAST_CONTEXT = new java.util.concurrent.ConcurrentHashMap<>();
+    record HomeIdentity(com.dwinovo.numen.entity.NumenPlayer body,
+                        com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity, long epoch,
+                        Integer x, Integer y, Integer z, String dimension) {}
+    private static final Map<UUID, HomeIdentity> HOME_IDENTITIES = new java.util.concurrent.ConcurrentHashMap<>();
+
+    static void captureHomeIdentity(com.dwinovo.numen.entity.NumenPlayer body,
+                                    com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity,
+                                    net.minecraft.core.BlockPos anchor, String dimension) {
+        if (body == null) return;
+        var stamp = com.dwinovo.numen.api.WorldContextStamp.capture();
+        if (identity == null || anchor == null || dimension == null || dimension.isBlank() || stamp.identity() == null
+                || !java.util.Objects.equals(stamp.identity().get("world_id"), identity.worldId())
+                || !java.util.Objects.equals(stamp.identity().get("server_session"), identity.serverSession())) {
+            HOME_IDENTITIES.remove(body.getUUID()); return;
+        }
+        HOME_IDENTITIES.put(body.getUUID(), new HomeIdentity(body, identity, stamp.epoch(),
+                anchor.getX(), anchor.getY(), anchor.getZ(), dimension));
+    }
+
+    /** Called only from server tick with the current bound respawn point. */
+    static void recheckHomeBinding(com.dwinovo.numen.entity.NumenPlayer body) {
+        if (body == null) return;
+        var cached = HOME_IDENTITIES.get(body.getUUID());
+        if (cached == null) return;
+        try {
+            var anchor = body.getRespawnPosition();
+            var dim = body.getRespawnDimension();
+            if (anchor == null || anchor.equals(net.minecraft.core.BlockPos.ZERO) || dim == null
+                    || !java.util.Objects.equals(cached.dimension(), dim.location().toString())
+                    || !java.util.Objects.equals(cached.x(), anchor.getX())
+                    || !java.util.Objects.equals(cached.y(), anchor.getY())
+                    || !java.util.Objects.equals(cached.z(), anchor.getZ())) {
+                HOME_IDENTITIES.remove(body.getUUID(), cached);
+            }
+        } catch (RuntimeException unavailable) {
+            HOME_IDENTITIES.remove(body.getUUID(), cached);
+        }
+    }
+
+    static HomeIdentity cachedHomeIdentity(UUID id) {
+        var cached = id == null ? null : HOME_IDENTITIES.get(id);
+        if (cached == null || RddCompanionBody.get(id) != cached.body()
+                || cached.epoch() != com.dwinovo.numen.api.WorldContextStamp.epoch()) return null;
+        var token = com.dwinovo.numen.api.WorldContextStamp.capture();
+        var stamp = token.identity();
+        if (token.epoch() != cached.epoch() || stamp == null
+                || !java.util.Objects.equals(stamp.get("world_id"), cached.identity().worldId())
+                || !java.util.Objects.equals(stamp.get("server_session"), cached.identity().serverSession())) return null;
+        return cached;
+    }
 
     /** Disk handoffs survive; in-flight planning and cached world observations do not. */
     private static void clearWorldState() {
@@ -445,6 +495,7 @@ public final class RddPlugin implements NumenPlugin {
             BODY.clear();
             RUNTIMES.clear();
             ASSETS.clear();
+            HOME_IDENTITIES.clear();
             FACTS.clear();
             LAST_CONTEXT.clear();
             LAST_INVENTORY.clear();
@@ -999,7 +1050,11 @@ private static String withAssets(UUID companionId, String rddContext) {
                 RddHomeFacts.RESPY.remove();
                 RddHomeFacts.RESPZ.remove();
             }
-            homeBlock = RddHomeFacts.blockFor(assets(companionId), lastInventory(companionId));
+            var homeIdentity = cachedHomeIdentity(companionId);
+            homeBlock = RddHomeFacts.blockFor(assets(companionId), lastInventory(companionId), System.currentTimeMillis(),
+                    homeIdentity == null ? null : homeIdentity.identity(), homeIdentity == null ? null : homeIdentity.x(),
+                    homeIdentity == null ? null : homeIdentity.y(), homeIdentity == null ? null : homeIdentity.z(),
+                    homeIdentity == null ? null : homeIdentity.dimension());
             // 167 §B1：把建家路线作为**一条带依赖的路线**发布一次，便于运行期核对它确实存在
             // （本轮还不塞进常驻提示词：先让它可观测，再谈怎么消费）。
             try {
