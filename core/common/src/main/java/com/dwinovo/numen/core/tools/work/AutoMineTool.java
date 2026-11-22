@@ -8,6 +8,7 @@ import com.dwinovo.numen.agent.tool.Schema;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.google.gson.JsonObject;
+import net.minecraft.core.BlockPos;
 
 import java.util.List;
 import java.util.Map;
@@ -32,7 +33,9 @@ public final class AutoMineTool implements NumenTool {
                 + "buried ores, pillars up cliffs, bridges gaps), mines, and repeats until `count` NEW items "
                 + "are gained or none remain nearby. No coordinates or goto needed. count is items, not "
                 + "blocks (redstone_ore drops ~4). Include all variants in block_ids (iron_ore AND "
-                + "deepslate_iron_ore). Only mines what its tools actually harvest, and stops naming the "
+                + "deepslate_iron_ore). Optional target_bounds limits only ore target positions; movement, "
+                + "occluder handling and item pickup may still occur outside those bounds. It is not a route "
+                + "or terrain-modification boundary. Only mines what its tools actually harvest, and stops naming the "
                 + "needed tier if nothing qualifies (to destroy blocks regardless of drops, use "
                 + "break_block). BACKGROUND: a successful call is already running; do not call mine/goto "
                 + "again while <current_task> exists and do not poll. task_finished status=done means the task "
@@ -45,12 +48,59 @@ public final class AutoMineTool implements NumenTool {
 
     @Override
     public Map<String, Object> parameterSchema() {
-        return Schema.object()
+        Map<String, Object> schema = Schema.object()
                 .stringArray("block_ids", "Namespaced block id(s) to gather; include all variants.", 1)
                 .integer("count", "How many ITEMS to gather (not blocks) — a block may drop several, and it "
                         + "counts only items gained on top of what you already hold.", 1, 256)
                 .build();
+        Map<String, Object> coordinates = new java.util.LinkedHashMap<>();
+        for (String key : List.of("x1", "y1", "z1", "x2", "y2", "z2")) {
+            Map<String, Object> coordinate = new java.util.LinkedHashMap<>();
+            coordinate.put("type", "integer");
+            if (key.startsWith("x") || key.startsWith("z")) {
+                coordinate.put("minimum", -30000000);
+                coordinate.put("maximum", 29999999);
+            }
+            coordinates.put(key, coordinate);
+        }
+        Map<String, Object> bounds = new java.util.LinkedHashMap<>();
+        bounds.put("type", List.of("object", "null"));
+        bounds.put("properties", coordinates);
+        bounds.put("required", List.of("x1", "y1", "z1", "x2", "y2", "z2"));
+        bounds.put("additionalProperties", false);
+        bounds.put("description", "Optional inclusive ore target bounds, min <= max; Y must be legal in the current dimension. "
+                + "Movement, occluder handling and item pickup may occur outside. Not a path or terrain boundary.");
+        @SuppressWarnings("unchecked") Map<String, Object> properties = (Map<String, Object>) schema.get("properties");
+        properties.put("target_bounds", bounds);
+        return schema;
     }
+
+    private static BlockPos[] parseTargetBounds(JsonObject args) {
+        var raw = args.get("target_bounds");
+        if (raw == null || raw.isJsonNull()) return null;
+        if (!raw.isJsonObject()) throw new IllegalArgumentException("target_bounds must be an object or null");
+        JsonObject bounds = raw.getAsJsonObject();
+        java.util.Set<String> keys = java.util.Set.of("x1", "y1", "z1", "x2", "y2", "z2");
+        if (!bounds.keySet().equals(keys))
+            throw new IllegalArgumentException("target_bounds requires exactly x1,y1,z1,x2,y2,z2");
+        int x1 = targetCoordinate(bounds, "x1"), y1 = targetCoordinate(bounds, "y1"), z1 = targetCoordinate(bounds, "z1");
+        int x2 = targetCoordinate(bounds, "x2"), y2 = targetCoordinate(bounds, "y2"), z2 = targetCoordinate(bounds, "z2");
+        if (x1 > x2 || y1 > y2 || z1 > z2)
+            throw new IllegalArgumentException("target_bounds minimum coordinates must not exceed maximum coordinates");
+        return new BlockPos[]{new BlockPos(x1,y1,z1), new BlockPos(x2,y2,z2)};
+    }
+
+    private static int targetCoordinate(JsonObject bounds, String key) {
+        var value = bounds.get(key);
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber())
+            throw new IllegalArgumentException("target_bounds." + key + " must be an integer JSON number");
+        try {
+            return value.getAsBigDecimal().intValueExact();
+        } catch (ArithmeticException | NumberFormatException invalid) {
+            throw new IllegalArgumentException("target_bounds." + key + " must be a finite integer in the supported coordinate range");
+        }
+    }
+
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
@@ -62,8 +112,12 @@ public final class AutoMineTool implements NumenTool {
                         + " yet; no mining task was started. Do not rely on this constraint being applied.");
             }
         }
+        BlockPos[] bounds = parseTargetBounds(args);
+        if (bounds != null && (!companion.level().isInWorldBounds(bounds[0])
+                || !companion.level().isInWorldBounds(bounds[1])))
+            throw new IllegalArgumentException("target_bounds corners must be within this dimension's legal block coordinates");
         Args a = ToolArgs.fromJson(args, Args.class);
         setTask(companion, impl.autoMine(a.block_ids(), a.count(),
-                ctx(toolCallId, companion)), args, reply);
+                ctx(toolCallId, companion), bounds == null ? null : bounds[0], bounds == null ? null : bounds[1]), args, reply);
     }
 }

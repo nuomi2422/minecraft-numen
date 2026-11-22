@@ -35,6 +35,12 @@ public final class BlockActionOps {
     private static final long INTERACT_ENTITY_TIMEOUT_TICKS = 60 * 20;
 
     public TaskRecord autoMine(List<String> block_ids, int count, ToolContext ctx) {
+        return autoMine(block_ids, count, ctx, null, null);
+    }
+
+    /** Optional ore target bounds; navigation and terrain permissions are unchanged. */
+    public TaskRecord autoMine(List<String> block_ids, int count, ToolContext ctx,
+                               BlockPos first, BlockPos second) {
         Set<Block> targets = ToolParse.parseBlocks(block_ids);
         if (targets.isEmpty()) {
             throw new IllegalArgumentException("block_ids contained no valid block ids");
@@ -43,7 +49,7 @@ public final class BlockActionOps {
         String label = labelFor(targets);
         long timeout = Math.max(MIN_TIMEOUT_TICKS, (long) clampedCount * TICKS_PER_BLOCK);
         long deadline = ctx.deadline(timeout);
-        return new MineBlockTaskRecord(ctx.toolCallId(), deadline, targets, clampedCount, label);
+        return new MineBlockTaskRecord(ctx.toolCallId(), deadline, targets, clampedCount, label, first, second);
     }
 
     /** Short label for messages: the first target's path (e.g. "iron_ore"), "+N" if more. */
