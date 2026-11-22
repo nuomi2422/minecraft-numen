@@ -64,7 +64,11 @@ public record SelfPayload(String dimension, UUID companionUUID, List<Slot> main,
     }
 
     /** id is a registry id; empty known slot = empty id/count 0. Null fields remain unknown. */
-    public record Slot(Integer slot, String id, Integer count, Integer damage, Integer maxDamage, Boolean isDamageable) {
+    public record Slot(Integer slot, String id, Integer count, Integer damage, Integer maxDamage, Boolean isDamageable, Boolean edible) {
+        /** Legacy observations have no FOOD-component evidence; do not infer it from the item ID. */
+        public Slot(Integer slot, String id, Integer count, Integer damage, Integer maxDamage, Boolean isDamageable) {
+            this(slot, id, count, damage, maxDamage, isDamageable, null);
+        }
         public Slot {
             if (slot == null || slot < 0 || slot > 40) throw new IllegalArgumentException("slot must be 0..40");
             if (count != null && count < 0 || damage != null && damage < 0 || maxDamage != null && maxDamage < 0)
@@ -72,7 +76,7 @@ public record SelfPayload(String dimension, UUID companionUUID, List<Slot> main,
             if (id != null && id.isEmpty() && count != null && count != 0)
                 throw new IllegalArgumentException("empty stack has nonzero count");
         }
-        public static Slot empty(int slot) { return new Slot(slot, "", 0, 0, 0, false); }
+        public static Slot empty(int slot) { return new Slot(slot, "", 0, 0, 0, false, false); }
     }
 
     /** Duration is ticks AT observation, not a ticking cache. Infinite has no finite expiry. */

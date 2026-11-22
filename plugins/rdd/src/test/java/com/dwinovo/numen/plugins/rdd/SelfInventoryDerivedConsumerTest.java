@@ -11,7 +11,7 @@ class SelfInventoryDerivedConsumerTest {
     private static final long NOW = 100_000;
     private static WorldObservationService.Response sample(int bread, long revision, Set<String> unknown) {
         var slots = new ArrayList<Map<String,Object>>();
-        for (int i=0; i<36; i++) slots.add(Map.of("slot",i,"id",i==0?"minecraft:bread":i==1?"minecraft:wheat":"", "count",i==0?bread:i==1?99:0));
+        for (int i=0; i<36; i++) slots.add(Map.of("slot",i,"id",i==0?"minecraft:bread":i==1?"minecraft:wheat":"", "count",i==0?bread:i==1?99:0,"edible",i==0));
         var values = Map.<String,Object>of("main",slots,"mainHand",slots.get(0),"offhand",Map.of("slot",40,"id","minecraft:bread","count",64),
                 "companionUUID",ID.toString(),"dimension","minecraft:overworld","hp",20,"food",6);
         var meta = new ObservationMetadata("world","session","minecraft:overworld",ID.toString(),"self-provider","self-key",revision,NOW-100,

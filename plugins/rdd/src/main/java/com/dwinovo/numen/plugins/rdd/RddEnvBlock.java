@@ -76,7 +76,7 @@ final class RddEnvBlock {
             String candidate = rest != null && !masked(selfItem, "rest.bedWorks")
                     && Boolean.TRUE.equals(rest.get("bedWorks")) ? bedsFact.candidate() : "";
             String env = render(self.metadata(), selfItem, includeBackpackCount,
-                    weather + "\n" + overnight(selfItem, bedsFact.summary()), candidate);
+                    weather + "\n" + overnight(selfItem, bedsFact.summary()), candidate, now);
             try { env = appendFact(env, rememberedHome(subject, self.metadata().dimension())); }
             catch (RuntimeException | LinkageError optionalUnavailable) { /* Keep SELF; memory is optional. */ }
             return env;
@@ -115,7 +115,7 @@ final class RddEnvBlock {
     }
     static String render(UUID subject, WorldObservationService.Response response, long nowMs, boolean includeBackpackCount) {
         var item = currentSelf(subject, response, nowMs);
-        return item == null ? unknown() : render(response.metadata(), item, includeBackpackCount, "", "");
+        return item == null ? unknown() : render(response.metadata(), item, includeBackpackCount, "", "", nowMs);
     }
     private static WorldObservationService.Item currentSelf(UUID subject, WorldObservationService.Response response, long nowMs) {
         if (response == null || !"self".equals(response.topic()) || response.items().size() != 1
@@ -129,13 +129,15 @@ final class RddEnvBlock {
                 && meta.dimension().equals(item.values().get("dimension")) ? item : null;
     }
     private static String render(ObservationMetadata meta, WorldObservationService.Item item,
-                                 boolean includeBackpackCount, String overnight, String bedCandidate) {
+                                 boolean includeBackpackCount, String overnight, String bedCandidate, long now) {
         var values = item.values();
         String main = stackMasked(item,"mainHand") ? "未知" : slot(values.get("mainHand"));
         String off = stackMasked(item,"offhand") ? "未知" : slot(values.get("offhand"));
         boolean inventoryUnknown=masked(item,"main");
         for(int i=0;i<36&&!inventoryUnknown;i++) inventoryUnknown=stackMasked(item,"main["+i+"]");
-        RddMainInventory.Result mainInventory = inventoryUnknown ? null : RddMainInventory.aggregate(values.get("main"));
+        var derived = com.dwinovo.numen.api.observation.SelfInventoryQuery.query(meta, item, now, Set.of());
+        RddMainInventory.Result mainInventory = inventoryUnknown ? null
+                : new RddMainInventory.Result(derived.counts(), derived.total(), derived.reason());
         String inventory = mainInventory == null || !mainInventory.known() ? "未知"
                 : mainInventory.counts().size() + "种 " + mainInventory.total() + "件（主包36槽，手持不另加）";
         String dimension = meta.dimension().replace("minecraft:", "");
@@ -143,6 +145,8 @@ final class RddEnvBlock {
         out.append("维度 ").append(shortText(dimension, 64)).append("（采样）\n");
         out.append("手上 ").append(main).append(" · 副手 ").append(off).append('\n');
         if (includeBackpackCount) out.append("背包 ").append(inventory).append('\n');
+        out.append("可食储备 ").append(derived.foodKnown() ? derived.foodCount() + "件" : "未知")
+                .append("〔主包36槽/FOOD组件，非恢复值〕\n");
         out.append("身体 血量").append(number(masked(item,"hp") ? null : values.get("hp")))
                 .append(" · 饥饿").append(number(masked(item,"food") ? null : values.get("food"))).append('\n');
         // A low HP value alone is NOT evidence of ongoing damage. No unsafe geometry fallback.
