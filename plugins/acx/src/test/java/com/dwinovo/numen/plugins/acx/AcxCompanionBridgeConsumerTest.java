@@ -58,6 +58,7 @@ class AcxCompanionBridgeConsumerTest {
         bindings.append(method(plugin, "    static ExecutorService newRunExecutor("));
         add(args,PREFIX+"plugins.acx.AcxPlugin",PLUGIN_HEADER+bindings+"}");
         AcxTaskReplayFixture.addConsumers(args, root);
+        add(args,PREFIX+"agent.tool.TrustedYieldTool",Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/agent/tool/TrustedYieldTool.java")));
         for(var e:IO.entrySet())add(args,e.getKey(),e.getValue());
         for(var e:AcxTaskReplayFixture.IO.entrySet())add(args,e.getKey(),e.getValue());
         for(var e:STOP_IO.entrySet())add(args,e.getKey(),e.getValue());
