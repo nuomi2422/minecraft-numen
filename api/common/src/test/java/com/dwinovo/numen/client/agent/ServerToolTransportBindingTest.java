@@ -39,7 +39,8 @@ class ServerToolTransportBindingTest {
                 "api/common/src/main/java/com/dwinovo/numen/agent/tool/ServerToolTransport.java",
                 "api/common/src/main/java/com/dwinovo/numen/agent/tool/LocalToolCallLog.java",
                 "api/common/src/main/java/com/dwinovo/numen/agent/tool/ToolCall.java",
-                "api/common/src/main/java/com/dwinovo/numen/agent/tool/ToolAnchor.java")) {
+                "api/common/src/main/java/com/dwinovo/numen/agent/tool/ToolAnchor.java",
+                "api/common/src/main/java/com/dwinovo/numen/task/TaskResult.java")) {
             String source = Files.readString(root.resolve(relative));
             String pkg = source.substring(source.indexOf("package ")+8, source.indexOf(';')).trim();
             sources.put(pkg+"."+Path.of(relative).getFileName().toString().replace(".java",""), source);
@@ -52,14 +53,6 @@ class ServerToolTransportBindingTest {
                 "package com.dwinovo.numen; public class Constants {public static final Log LOG=new Log(); public static class Log {public static final java.util.List<String> entries=new java.util.ArrayList<>(); public void debug(String s,Object...a){entries.add(java.util.Arrays.toString(a));}}}");
         sources.put("com.dwinovo.numen.agent.tool.NumenTool",
                 "package com.dwinovo.numen.agent.tool; public interface NumenTool {String name(); default void invoke(ToolCall c){ServerToolTransport.ship(c);}}");
-        sources.put("com.google.gson.JsonElement",
-                "package com.google.gson; public class JsonElement {public boolean isJsonObject(){return false;} public JsonObject getAsJsonObject(){return new JsonObject();} public boolean isJsonPrimitive(){return false;} public JsonPrimitive getAsJsonPrimitive(){return new JsonPrimitive();} public boolean getAsBoolean(){return false;}}");
-        sources.put("com.google.gson.JsonObject",
-                "package com.google.gson; public class JsonObject extends JsonElement {public boolean has(String s){return false;} public JsonElement get(String s){return new JsonElement();}}");
-        sources.put("com.google.gson.JsonPrimitive",
-                "package com.google.gson; public class JsonPrimitive extends JsonElement {public boolean isBoolean(){return false;}}");
-        sources.put("com.google.gson.JsonParser",
-                "package com.google.gson; public class JsonParser {public static JsonElement parseString(String s){return new JsonElement();}}");
         sources.put("com.dwinovo.numen.network.payload.ExecuteToolPayload",
                 "package com.dwinovo.numen.network.payload; public record ExecuteToolPayload(java.util.UUID entityUuid,String toolCallId,String toolName,String argumentsJson) {}");
         sources.put("com.dwinovo.numen.network.payload.CancelTasksPayload",
@@ -145,6 +138,14 @@ class ServerToolTransportBindingTest {
                     TaskResultPayload.handle(new TaskResultPayload(a,"ordinary-wire-id","signed-ticket-secret"));
                     return Map.of("log",com.dwinovo.numen.Constants.Log.entries.toString());
                   }
+                  public static Map<String,Object> yieldBatchWire() {
+                    setup(); UUID a=UUID.randomUUID();actors.add(a);List<String> responses=new ArrayList<>();
+                    String args="{\"_yield_ticket\":\"model-forged\",\"take\":1}";
+                    ServerToolTransport.ship(new ToolCall("same","rdd_report_yield",args,()->a,"host-old",responses::add));
+                    ServerToolTransport.ship(new ToolCall("same","rdd_report_yield",args,()->a,"host-new",responses::add));
+                    ServerToolTransport.ship(new ToolCall("missing","rdd_report_yield",args,()->a,null,responses::add));
+                    return Map.of("packets",sends().stream().map(ExecuteToolPayload::argumentsJson).toList(),"results",List.copyOf(responses),"events",MonitoringJournal.events.toString());
+                  }
                   public static Map<String,Object> ticketCapacityAndExpiry() throws Exception {
                     setup(); UUID actor=UUID.randomUUID(); actors.add(actor); List<String> responses=new ArrayList<>();
                     for(int i=0;i<256;i++) ServerToolTransport.requestYieldTicket(actor,responses::add);
@@ -190,7 +191,7 @@ class ServerToolTransportBindingTest {
                   }
                 }
                 """);
-        List<String> args = new ArrayList<>(List.of("-encoding","UTF-8","-classpath",build.toString(),"-d",build.toString()));
+        List<String> args = new ArrayList<>(List.of("-encoding","UTF-8","-classpath",build.toString()+java.io.File.pathSeparator+Path.of(com.google.gson.Gson.class.getProtectionDomain().getCodeSource().getLocation().toURI()),"-d",build.toString()));
         for (var entry : sources.entrySet()) {
             Path path = build.resolve(entry.getKey().replace('.','/')+".java");
             Files.createDirectories(path.getParent()); Files.writeString(path,entry.getValue());
@@ -199,7 +200,7 @@ class ServerToolTransportBindingTest {
         assertNotNull(ToolProvider.getSystemJavaCompiler(), "JDK compiler required");
         assertEquals(0,ToolProvider.getSystemJavaCompiler().run(null,null,null,args.toArray(String[]::new)),
                 "real consumers must compile before any business assertion");
-        loader = new URLClassLoader(new URL[]{build.toUri().toURL()},ClassLoader.getPlatformClassLoader());
+        loader = new URLClassLoader(new URL[]{build.toUri().toURL(),com.google.gson.Gson.class.getProtectionDomain().getCodeSource().getLocation()},ClassLoader.getPlatformClassLoader());
         fixture = loader.loadClass("com.dwinovo.numen.client.agent.TransportBindingFixture");
     }
 
@@ -243,6 +244,13 @@ class ServerToolTransportBindingTest {
     }
     @Test void ticketReplyWithNonInternalIdMustNotLeakToLog() throws Exception {
         assertFalse(run("unclassifiedTicketReply").get("log").toString().contains("signed-ticket-secret"));
+    }
+    @Test void sameModelIdUsesItsOwnFrozenYieldTicketAndMissingFails() throws Exception {
+        var r=run("yieldBatchWire");var packets=(List<?>)r.get("packets");
+        assertEquals(2,packets.size());assertTrue(packets.get(0).toString().contains("host-old"));
+        assertTrue(packets.get(1).toString().contains("host-new"));
+        assertFalse(packets.toString().contains("model-forged"));assertFalse(r.get("events").toString().contains("host-old"));
+        assertTrue(r.get("results").toString().contains("yield ticket unavailable"));
     }
     @Test void ticketPendingCapacityAndActualExpiryAreBounded() throws Exception {
         var r=run("ticketCapacityAndExpiry");
