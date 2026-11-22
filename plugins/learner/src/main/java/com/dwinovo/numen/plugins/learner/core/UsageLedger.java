@@ -153,9 +153,19 @@ public final class UsageLedger {
     }
 
     private final Path file;
+    private final java.util.function.Consumer<Path> beforeRead;
 
-    public UsageLedger(Path configDir) {
+    public UsageLedger(Path configDir) { this(configDir, path -> {}); }
+
+    // Package-local I/O observation seam: observes real reads, never supplies ledger content.
+    UsageLedger(Path configDir, java.util.function.Consumer<Path> beforeRead) {
         this.file = configDir.resolve("usage-ledger.jsonl");
+        this.beforeRead = java.util.Objects.requireNonNull(beforeRead);
+    }
+
+    private List<String> readLines() throws IOException {
+        beforeRead.accept(file);
+        return Files.readAllLines(file, StandardCharsets.UTF_8);
     }
 
     public Path file() {
@@ -286,7 +296,7 @@ public final class UsageLedger {
         if (!diagnostic && !Files.isRegularFile(file))
             return new ReadSnapshot(out, ReadStatus.MISSING, 0);
         try {
-            for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+            for (String line : readLines()) {
                 String s = line.trim();
                 if (s.isEmpty()) continue;
                 JsonObject o;
@@ -412,7 +422,7 @@ public final class UsageLedger {
         if (expected == null) return false;
         boolean found = false;
         try {
-            for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+            for (String line : readLines()) {
                 if (line.isBlank()) continue;
                 JsonObject object = JsonParser.parseString(line).getAsJsonObject();
                 Entry row = parseEntry(object);

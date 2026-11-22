@@ -48,6 +48,48 @@ class SyncReceiptIntakeTest {
 
     @AfterEach void reset() { SkillRegistrar.resetForTest(); }
 
+    @Test void receiptBatchReadsHostLedgerOnceRegardlessOfRowsOrBudget() throws Exception {
+        String body = "batch original steps";
+        String ref = SkillBodyStore.write(dir, "batch", 1, Integer.toHexString(body.hashCode()), body);
+        var draft = new ArtifactDraft(ArtifactKind.EXPERIENCE, "craft", "craft safely", body,
+                List.of("craft"), List.of(), List.of(), "LOW", List.of(), List.of("memo"), "EXECUTOR");
+        assertTrue(SkillRegistrar.registryFor(dir).register(draft, "batch", ref, true).stored());
+        var reads = new java.util.concurrent.atomic.AtomicInteger();
+        var constructor = UsageLedger.class.getDeclaredConstructor(Path.class, java.util.function.Consumer.class);
+        constructor.setAccessible(true);
+        UsageLedger ledger = constructor.newInstance(dir, (java.util.function.Consumer<Path>) path -> reads.incrementAndGet());
+        Tasks host = new Tasks();
+        var service = new SyncSkillFeedback();
+        JsonObject args = new JsonObject();
+        args.addProperty("skill_ref", "skill:batch"); args.addProperty("version", "v1"); args.addProperty("target_tool", "craft");
+        for (int i = 0; i < 4; i++) {
+            AtomicReference<String> response = new AtomicReference<>();
+            service.adopt(args, dir, ledger, host, response::set);
+            String id = JsonParser.parseString(response.get()).getAsJsonObject().getAsJsonObject("data").get("selection_id").getAsString();
+            String wire = "batch-" + i;
+            assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.BOUND,
+                    service.bind(id, OWNER, COMPANION, host.identity(), wire, "craft"));
+            service.receipt(id, OWNER, COMPANION, host.identity(), wire, "craft", com.dwinovo.numen.api.SyncSkillCorrelation.Receipt.SUCCESS);
+            ledger.append("ordinary-" + i, "ordinary", "ordinary", UsageLedger.Phase.RESULT,
+                    UsageLedger.Outcome.UNKNOWN, "{}", "learner_usage", COMPANION.toString());
+        }
+        var rows = ledger.readSnapshot().rows();
+        var scope = new com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.Scope("world", "new-session", 8, COMPANION.toString());
+        for (int budget : List.of(0, 16)) {
+            reads.set(0);
+            var queue = new com.dwinovo.numen.plugins.learner.core.MemoQueue(dir.resolve("batch-" + budget + ".json"));
+            var seen = new java.util.HashSet<String>();
+            var journal = new com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.EnqueuedJournal() {
+                public boolean contains(String key) { return seen.contains(key); }
+                public void remember(String key) { seen.add(key); }
+            };
+            var scan = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(
+                    ledger, rows, scope, queue, journal, (c, f, n, once) -> once.getAsBoolean(), 1, budget);
+            assertEquals(budget == 0 ? 0 : 4, scan.enqueued());
+            assertTrue(reads.get() <= 1, "one intake batch must not reread the complete host ledger per candidate; actual=" + reads.get());
+        }
+    }
+
     @Test void durableReceiptSurvivesTtlAndRestartThroughOriginalIntakeAndReview() throws Exception {
         String body = "original sync steps";
         String ref = SkillBodyStore.write(dir, "sk-1", 1, Integer.toHexString(body.hashCode()), body);
