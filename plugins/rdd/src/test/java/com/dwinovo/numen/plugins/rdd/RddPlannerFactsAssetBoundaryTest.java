@@ -35,6 +35,18 @@ class RddPlannerFactsAssetBoundaryTest {
                         "asset directory must be whole or explicitly undelivered: " + out));
     }
 
+    @Test void emptyStorageCacheIsUnknownNotAbsence() throws Exception {
+        String out = run("", CATALOG);
+        assertTrue(out.contains("附近容器未观测") || out.contains("附近容器未知"), out);
+        assertFalse(out.contains("身边 8 格内没有装东西的容器"), out);
+    }
+
+    @Test void historicalStorageKeepsItsQualifier() throws Exception {
+        String out = run("[历史/当前不可确认] <storage>iron x 2</storage>", CATALOG);
+        assertTrue(out.contains("历史/当前不可确认"), out);
+        assertTrue(out.contains("iron x 2"), out);
+    }
+
     @Test void excessiveDirectoryIsExplicitlyUndelivered() throws Exception {
         String out = run("iron x 2", "W".repeat(500));
         assertTrue(out.length() <= 420, out);
