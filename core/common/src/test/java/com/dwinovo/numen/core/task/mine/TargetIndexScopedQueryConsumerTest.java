@@ -96,7 +96,8 @@ class TargetIndexScopedQueryConsumerTest {
                 ServerLevel getChunkSource(){return this;}LevelChunk getChunkNow(int x,int z){return chunks.get(x+","+z);}
             }
             static final short[] SATURATED={-1};
-            static class SectionEntry {int version=1;Map<Block,short[]> hits=new HashMap<>();}
+            static class SectionEntry {int version=1;Map<Block,short[]> hits=new HashMap<>();
+                SectionEntry(){} SectionEntry(int v){version=v;}}
             static class LevelIndex {int version=1;Map<Long,SectionEntry> sections=new HashMap<>();}
             static Map<Object,LevelIndex> INDEXES=new HashMap<>();static int builds;
             public record Result(List<BlockPos> hits,boolean complete){}
