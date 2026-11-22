@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -234,6 +235,13 @@ class RddHomeReserveFreshnessTest {
         var otherwiseAllowed = new com.dwinovo.numen.rdd.policy.RiskGate.Verdict(true,
                 com.dwinovo.numen.rdd.policy.RiskLevel.NETHER, List.of(), List.of());
         assertTrue(com.dwinovo.numen.rdd.policy.HomeGate.enforce(otherwiseAllowed, view.stage()).allowed());
+    }
+
+    @Test void existingFourBlockRadiusBoundaryIsInclusive() {
+        long now = 1_700_000_000_000L;
+        var registry = baseRegistry(now - MINUTE, fullReserve());
+        assertTrue(RddHomeFacts.HomeView.of(registry, now, ID, 376, 68, 715).reserve().known());
+        assertFalse(RddHomeFacts.HomeView.of(registry, now, ID, 377, 68, 715).reserve().known());
     }
 
     @Test void explicitOutOfRangeAnchorIsUnknown() {
