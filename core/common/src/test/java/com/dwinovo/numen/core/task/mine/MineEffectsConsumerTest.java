@@ -127,7 +127,7 @@ class MineEffectsConsumerTest {
                 static class Inventory { List<ItemStack> items=new ArrayList<>(); }
                 record ItemEntity(BlockPos pos,ItemStack item) { ItemStack getItem(){return item;} BlockPos blockPosition(){return pos;} }
                 static class AABB { AABB(BlockPos p){} AABB inflate(int r){return this;} }
-                static class BlockState { boolean isAir(){return false;} }
+                static class BlockState { boolean isAir(){return false;} Object getBlock(){return "ore";} }
                 static class Level {
                     long time; List<ItemEntity> entities=new ArrayList<>();
                     long getGameTime(){return time;} BlockState getBlockState(BlockPos p){return new BlockState();}
@@ -161,6 +161,7 @@ class MineEffectsConsumerTest {
                 }
                 static class Record {
                     int count=4,mined; String label="iron_ore"; long deadline;
+                    Set<Object> targets=Set.of("ore"); boolean containsTarget(BlockPos p){return true;}
                     int getMined(){return mined;} void setMined(int n){mined=n;}
                     long getDeadlineGameTime(){return deadline;} void extendDeadlineTo(long n){deadline=n;}
                 }
@@ -171,7 +172,7 @@ class MineEffectsConsumerTest {
                 Set<Item> dropItems=Set.of(new Item("raw_iron")); Map<BlockPos,Long> anticipatedDrops=new HashMap<>();
                 int baseline=10,brokenTargets,branchTicks,branchY,navReplanCooldown,noShotTicks;
                 boolean navIsBranch,lastQueryComplete=true; BlockPos branchPoint,noShotPos,lastProgressPos=new BlockPos(0,64,0),reachable;
-                long lastProgressTick; Object navigationFailure; String progressNote="done",failure="";
+                BlockPos latchedMineTarget; long lastProgressTick; Object navigationFailure; String progressNote="done",failure="";
                 void prune(){} void maybeQuery(){} void invalidateNavigationFailure(){}
                 boolean reachable(BlockPos p){return true;} BlockPos reachableTarget(){return reachable;}
                 void stopNav(){nav=null;navIsBranch=false;} Object oreFieldCompiled(){return new Object();}

@@ -20,6 +20,8 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Predicate;
 
 /**
  * 服务端目标方块索引:回答"离这里最近的 X 方块在哪"而【不做周期性全量扫描】。
@@ -219,6 +221,17 @@ public final class TargetIndex {
      */
     public static Result query(ServerLevel level, BlockPos center, Collection<Block> targets,
                                int want, int maxChunkRadius, int buildBudget) {
+        return query(level, center, targets, want, maxChunkRadius, buildBudget, pos -> true);
+    }
+
+    /**
+     * Filter candidates before quota/early-stop without changing the shared index.
+     * The caller supplies a frozen, side-effect-free scope predicate: no world reads
+     * or index mutations. Predicate failures propagate; they are not complete empty results.
+     */
+    public static Result query(ServerLevel level, BlockPos center, Collection<Block> targets,
+                               int want, int maxChunkRadius, int buildBudget, Predicate<BlockPos> accepted) {
+        Objects.requireNonNull(accepted, "accepted");
         LevelIndex idx = INDEXES.get(level.dimension());
         if (idx == null) {
             return new Result(List.of(), true);
@@ -272,7 +285,7 @@ public final class TargetIndex {
                                 idx.sections.put(key, e);
                             }
                         }
-                        collect(e, secs[si], cx, sy, cz, targets, want, out);
+                        collect(e, secs[si], cx, sy, cz, targets, want, out, accepted);
                         while (fed < out.size()) {
                             bound.offer(Math.sqrt(out.get(fed++).distSqr(center)));
                         }
@@ -343,6 +356,12 @@ public final class TargetIndex {
     private static void collect(SectionEntry e, LevelChunkSection section,
                                 int cx, int sy, int cz, Collection<Block> targets,
                                 int want, List<BlockPos> out) {
+        collect(e, section, cx, sy, cz, targets, want, out, pos -> true);
+    }
+
+    private static void collect(SectionEntry e, LevelChunkSection section,
+                                int cx, int sy, int cz, Collection<Block> targets,
+                                int want, List<BlockPos> out, Predicate<BlockPos> accepted) {
         if (e.hits.isEmpty()) {
             return;
         }
@@ -361,7 +380,8 @@ public final class TargetIndex {
                     for (int z = 0; z < 16 && out.size() < want; z++) {
                         for (int x = 0; x < 16 && out.size() < want; x++) {
                             if (states.get(x, y, z).getBlock() == b) {
-                                out.add(new BlockPos(baseX | x, baseY + y, baseZ | z));
+                                BlockPos pos = new BlockPos(baseX | x, baseY + y, baseZ | z);
+                                if (accepted.test(pos)) out.add(pos);
                             }
                         }
                     }
@@ -369,7 +389,8 @@ public final class TargetIndex {
                 continue;
             }
             for (short p : arr) {
-                out.add(new BlockPos(baseX | (p & 15), baseY + (p >> 8 & 15), baseZ | (p >> 4 & 15)));
+                BlockPos pos = new BlockPos(baseX | (p & 15), baseY + (p >> 8 & 15), baseZ | (p >> 4 & 15));
+                if (accepted.test(pos)) out.add(pos);
             }
         }
     }

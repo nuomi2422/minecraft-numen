@@ -2,6 +2,7 @@ package com.dwinovo.numen.core.task.mine;
 
 import com.dwinovo.numen.task.TaskRecord;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.core.BlockPos;
 
 import java.util.Set;
 
@@ -27,6 +28,8 @@ public final class MineBlockTaskRecord extends TaskRecord {
     public final int count;
     /** Human-readable target label for messages / debug overlay (e.g. "iron_ore"). */
     public final String label;
+    private final BlockPos targetMin;
+    private final BlockPos targetMax;
 
     /** Live progress = matching ITEMS gathered since the task started (counted in the inventory,
      *  not blocks broken — multi-drop ores like redstone yield several items per block). Set each tick
@@ -35,10 +38,30 @@ public final class MineBlockTaskRecord extends TaskRecord {
 
     public MineBlockTaskRecord(String toolCallId, long deadlineGameTime,
                                Set<Block> targets, int count, String label) {
+        this(toolCallId, deadlineGameTime, targets, count, label, null, null);
+    }
+
+    /** Ore target bounds only; not a route or terrain-modification boundary. */
+    public MineBlockTaskRecord(String toolCallId, long deadlineGameTime,
+                               Set<Block> targets, int count, String label,
+                               BlockPos first, BlockPos second) {
         super(TOOL_NAME, toolCallId, deadlineGameTime);
+        if ((first == null) != (second == null))
+            throw new IllegalArgumentException("target bounds require both corners");
+        targetMin = first == null ? null : new BlockPos(Math.min(first.getX(), second.getX()),
+                Math.min(first.getY(), second.getY()), Math.min(first.getZ(), second.getZ()));
+        targetMax = first == null ? null : new BlockPos(Math.max(first.getX(), second.getX()),
+                Math.max(first.getY(), second.getY()), Math.max(first.getZ(), second.getZ()));
         this.targets = Set.copyOf(targets);
         this.count = count;
         this.label = label;
+    }
+
+    /** Pure, immutable candidate filter; does not inspect the body or the world. */
+    public boolean containsTarget(BlockPos pos) {
+        return targetMin == null || (pos.getX() >= targetMin.getX() && pos.getX() <= targetMax.getX()
+                && pos.getY() >= targetMin.getY() && pos.getY() <= targetMax.getY()
+                && pos.getZ() >= targetMin.getZ() && pos.getZ() <= targetMax.getZ());
     }
 
     public int getMined() {
