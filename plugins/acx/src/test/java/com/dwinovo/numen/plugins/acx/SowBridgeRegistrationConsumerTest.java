@@ -64,6 +64,12 @@ class SowBridgeRegistrationConsumerTest {
                 package com.dwinovo.numen.entity;
                 public class NumenPlayer {
                     public final net.minecraft.server.level.ServerLevel world=new net.minecraft.server.level.ServerLevel();
+                    private static NumenPlayer body;
+                    private final net.minecraft.server.MinecraftServer server=new net.minecraft.server.MinecraftServer();
+                    public NumenPlayer(){body=this;}
+                    public net.minecraft.server.MinecraftServer getServer(){return server;}
+                    public boolean isRemoved(){return false;} public boolean isAlive(){return true;}
+                    public static NumenPlayer findByUuid(net.minecraft.server.MinecraftServer server,java.util.UUID id){return body != null && body.server==server && body.getUUID().equals(id) ? body : null;}
                     public int levelCalls;
                     public net.minecraft.world.level.Level level(){levelCalls++;return world;}
                     public java.util.UUID getUUID(){return new java.util.UUID(0,1);}
@@ -74,7 +80,12 @@ class SowBridgeRegistrationConsumerTest {
                 """);
         fixtures.put("com.dwinovo.numen.agent.tool.ToolCall", "package com.dwinovo.numen.agent.tool; public class ToolCall {}");
         fixtures.put("com.dwinovo.numen.agent.tool.ServerToolTransport", "package com.dwinovo.numen.agent.tool; public class ServerToolTransport { public static void ship(ToolCall call){throw new AssertionError();} }");
-        fixtures.put("com.dwinovo.numen.task.TaskRecord", "package com.dwinovo.numen.task; public class TaskRecord { public String publicId(){return java.util.UUID.randomUUID().toString();} public State getState(){return State.SUCCESS;} public enum State {SUCCESS} }");
+        // Host task/session edges are inert fixtures; they do not model admission or task outcomes.
+        fixtures.put("com.dwinovo.numen.api.WorldContextStamp", "package com.dwinovo.numen.api; public class WorldContextStamp { public record Token(java.util.Map<String,String> identity,long epoch) {} public static Token capture(net.minecraft.server.MinecraftServer s){return null;} }");
+        fixtures.put("com.dwinovo.numen.task.TaskState", "package com.dwinovo.numen.task; public enum TaskState { RUNNING, SUCCESS; public boolean isTerminal(){return this==SUCCESS;} }");
+        fixtures.put("com.dwinovo.numen.task.TaskRecord", "package com.dwinovo.numen.task; public class TaskRecord { public String publicId(){return null;} public TaskState getState(){return null;} public TaskResult getResult(){return null;} public String getToolCallId(){return null;} public String getToolName(){return null;} public com.dwinovo.numen.api.WorldContextStamp.Token identityToken(){return null;} }");
+        fixtures.put("com.dwinovo.numen.task.TaskDispatch", "package com.dwinovo.numen.task; public class TaskDispatch { public static void withCallerOwnedRecovery(com.dwinovo.numen.entity.NumenPlayer p,String id,Runnable action){action.run();} public static class BodyBusyException extends RuntimeException { public String blockingTaskId(){return null;} } }");
+        fixtures.put("com.dwinovo.numen.acx.core.AcxSessionManager", "package com.dwinovo.numen.acx.core; public class AcxSessionManager { public static class Session { private final Object body; public Session(Object body){this.body=body;} public Object bodyToken(){return body;} public String runId(){return \"fixture-run\";} public String ownerId(){return ((com.dwinovo.numen.entity.NumenPlayer)body).getUUID().toString();} public boolean isCancelRequested(){return false;} public boolean isRunning(){return true;} public boolean isBodyInvalidated(){return false;} public long attemptId(){return 1;} public boolean ownsTask(String id){return false;} public void noteAcceptedTask(String id){throw new AssertionError(\"unexpected asynchronous task\");} public Object yieldBinding(){return null;} } }");
         fixtures.put("com.dwinovo.numen.task.CompanionTickDispatcher", "package com.dwinovo.numen.task; public class CompanionTickDispatcher { public static TaskRecord currentTaskFor(java.util.UUID id){return null;} public static TaskRecord lastFinishedTaskFor(java.util.UUID id){return null;} public static TaskRecord finishedTaskFor(java.util.UUID id,String task){return null;} }");
         fixtures.put("net.minecraft.server.MinecraftServer", "package net.minecraft.server; public class MinecraftServer { public boolean isSameThread(){return true;} public void execute(Runnable job){job.run();} }");
         fixtures.put("net.neoforged.neoforge.server.ServerLifecycleHooks", "package net.neoforged.neoforge.server; public class ServerLifecycleHooks { public static net.minecraft.server.MinecraftServer getCurrentServer(){return null;} }");
@@ -83,6 +94,8 @@ class SowBridgeRegistrationConsumerTest {
                 public class AcxPlugin {
                     public final com.dwinovo.numen.entity.NumenPlayer self=new com.dwinovo.numen.entity.NumenPlayer();
                     public com.dwinovo.numen.entity.NumenPlayer currentCompanion(){return self;}
+                    private final com.dwinovo.numen.acx.core.AcxSessionManager.Session session=new com.dwinovo.numen.acx.core.AcxSessionManager.Session(self);
+                    public com.dwinovo.numen.acx.core.AcxSessionManager.Session sessionFor(com.dwinovo.numen.acx.api.AcxTool.AcxCallContext ctx){return ctx != null && session.runId().equals(ctx.runId()) ? session : null;}
                     public AcxHostGate gate(){return new AcxHostGate(100);}
                 }
                 """);
@@ -98,6 +111,7 @@ class SowBridgeRegistrationConsumerTest {
         for (String file : List.of(
                 "api/common/src/main/java/com/dwinovo/numen/agent/tool/Schema.java",
                 "api/common/src/main/java/com/dwinovo/numen/agent/tool/NumenTool.java",
+                "api/common/src/main/java/com/dwinovo/numen/agent/tool/TrustedYieldTool.java",
                 "ai/src/main/java/com/dwinovo/numen/agent/provider/IToolSpec.java",
                 "api/common/src/main/java/com/dwinovo/numen/task/TaskResult.java",
                 "plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/SowRules.java",
@@ -124,6 +138,11 @@ class SowBridgeRegistrationConsumerTest {
             import com.dwinovo.numen.agent.tool.NumenTool;
             public class SowFixture {
                 static void require(boolean ok,String message){if(!ok)throw new AssertionError(message);}
+                // Fixed live run/body binding, not a simulation of session lifecycle.
+                static final AcxTool.AcxCallContext CONTEXT=new AcxTool.AcxCallContext(){
+                    public String runId(){return "fixture-run";} public String stepId(){return "sow";}
+                    public boolean isCancelRequested(){return false;} public void emitDetail(String key,Object value){}
+                };
                 static class Registry implements AcxToolRegistry {
                     Map<String,AcxTool> tools=new LinkedHashMap<>();
                     public Optional<AcxTool> find(String n){return Optional.ofNullable(tools.get(n));}
@@ -158,7 +177,7 @@ class SowBridgeRegistrationConsumerTest {
                             var registered=registry.find(step.block()).orElseThrow();
                             require(registered==adapter,"shipped step must resolve to registered real sow adapter");
                             int before=plugin.self.levelCalls;
-                            var result=registered.execute(step.params(),null);
+                            var result=registered.execute(step.params(),CONTEXT);
                             require(plugin.self.levelCalls==before+1 && plugin.self.world.reads>0,"shipped radius must pass actual adapter validation");
                             require(result.status()==AcxStatus.FAIL && result.message().contains("WORLD_BOUNDARY_NOT_SIMULATED"),"do not fabricate shipped sow success");
                             require(plugin.self.world.writes==0,"no world writes");
@@ -174,7 +193,7 @@ class SowBridgeRegistrationConsumerTest {
                         var step=def.steps().getFirst();
                         var tool=registry.find(step.block()).orElseThrow();
                         int before=plugin.self.levelCalls;
-                        var result=tool.execute(step.params(),null);
+                        var result=tool.execute(step.params(),CONTEXT);
                         if(mode.equals("invalid")){
                             require(result.status()==AcxStatus.FAIL && result.message().contains("参数校验失败"),"invalid args not rejected by adapter: "+result);
                             require(plugin.self.levelCalls==before && plugin.self.world.reads==0,"invalid args reached real Sow tool");
