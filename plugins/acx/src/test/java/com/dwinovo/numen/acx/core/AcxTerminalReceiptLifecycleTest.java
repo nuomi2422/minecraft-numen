@@ -187,16 +187,64 @@ class AcxTerminalReceiptLifecycleTest {
         assertTrue(f.host.probed.isEmpty());
     }
 
+    @Test
+    void laterMaintenanceRetriesTheRetainedOwnerAfterCleanupRecovers() {
+        Fixture f = new Fixture(1);
+        String oldRun = f.failAfterRealTruncatedSnapshot();
+        AcxSessionManager.Session oldSession = f.sessions.session(oldRun);
+        String freshRun = f.startPaused(1);
+        AcxSessionManager.Session freshSession = f.sessions.session(freshRun);
+        CleanupFault fault = new CleanupFault();
+        f.registry.register(fault);
+
+        String triggerRun = f.sessions.start(f.setOnly, Map.of());
+        f.record(triggerRun, AcxStatus.SUCCESS);
+        assertSame(oldSession, f.sessions.session(oldRun));
+        assertTrue(fault.failures > 0);
+        assertTrue(fault.attemptedRuns.contains(oldRun));
+        assertEquals(0, f.sessions.runningCount());
+        assertSame(freshSession, f.sessions.session(freshRun));
+
+        fault.fail = false;
+        String recoveredRun = f.sessions.start(f.setOnly, Map.of());
+        f.record(recoveredRun, AcxStatus.SUCCESS);
+        assertNull(f.sessions.session(oldRun), "the next existing maintenance boundary retries the retained owner");
+        assertFalse(f.sessions.resume(oldRun, null));
+        assertTrue(fault.succeededRuns.contains(oldRun));
+        assertTrue(fault.attemptedRuns.stream().filter(oldRun::equals).count() >= 2);
+        assertEquals(1, f.adapter.pendingCount(), "recovered cleanup must retain only the fresh paused receipt");
+        assertSame(freshSession, f.sessions.session(freshRun));
+        assertEquals(AcxStatus.PAUSED, freshSession.record().status());
+        assertEquals(2, f.host.dispatched.size());
+        assertTrue(f.host.probed.isEmpty(), "retrying receipt maintenance is not a task completion probe");
+
+        f.host.completed.add("task-2");
+        assertTrue(f.sessions.resume(freshRun, null));
+        assertNotNull(freshSession.record());
+        assertNull(freshSession.error());
+        assertEquals(AcxStatus.SUCCESS, freshSession.record().status());
+        assertEquals(List.of(new Probe("task-2", freshRun)), f.host.probed);
+        assertEquals(2, f.host.dispatched.size(), "successful retry never re-dispatches either accepted action");
+        assertEquals(0, f.adapter.pendingCount());
+    }
+
     private static final class CleanupFault implements AcxTool {
         int failures;
+        boolean fail = true;
+        final List<String> attemptedRuns = new ArrayList<>();
+        final List<String> succeededRuns = new ArrayList<>();
         @Override public String name() { return "cleanup_fault"; }
         @Override public AcxToolSchema schema() { return AcxToolSchema.builder().build(); }
         @Override public AcxStepOutcome execute(Map<String, Object> params, AcxCallContext ctx) {
             throw new AssertionError("cleanup-only fixture is never dispatched");
         }
         @Override public void discardRunReceipts(String runId) {
-            failures++;
-            throw new IllegalStateException("fixture receipt cleanup failure");
+            attemptedRuns.add(runId);
+            if (fail) {
+                failures++;
+                throw new IllegalStateException("fixture receipt cleanup failure");
+            }
+            succeededRuns.add(runId);
         }
     }
 
