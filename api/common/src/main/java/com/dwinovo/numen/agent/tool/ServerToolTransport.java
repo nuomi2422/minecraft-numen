@@ -27,9 +27,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ServerToolTransport {
 
     private static final Map<String, ToolCall> IN_FLIGHT = new ConcurrentHashMap<>();
-    private record TicketWait(UUID entity, java.util.function.Consumer<String> reply) {}
+    private record TicketWait(UUID entity, java.util.function.Consumer<String> reply, long expiresAt) {}
     private static final Map<String, TicketWait> TICKET_WAIT = new ConcurrentHashMap<>();
     private static final int MAX_TICKET_WAITS = 256;
+    private static final long TICKET_WAIT_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
     private static final String TICKET_PREFIX = "yield-ticket-";
 
     private ServerToolTransport() {}
@@ -57,7 +58,7 @@ public final class ServerToolTransport {
                 if (reply != null) reply.accept(null);
                 return id;
             }
-            TICKET_WAIT.put(id, new TicketWait(entity, reply));
+            TICKET_WAIT.put(id, new TicketWait(entity, reply, System.nanoTime() + TICKET_WAIT_NANOS));
         }
         try { Services.NETWORK.sendToServer(new ExecuteToolPayload(entity, id, "_rdd_yield_ticket", "{}")); }
         catch (RuntimeException ex) { TICKET_WAIT.remove(id); reply.accept(null); }
@@ -73,6 +74,14 @@ public final class ServerToolTransport {
     }
 
     public static void cancelYieldTicket(String id) { if (id != null) TICKET_WAIT.remove(id); }
+
+    /** Called by the existing client tick: timeout is failure, never a replay. */
+    public static void expireYieldTickets() { expireYieldTickets(System.nanoTime()); }
+    static void expireYieldTickets(long now) {
+        TICKET_WAIT.forEach((id, wait) -> {
+            if (now - wait.expiresAt() >= 0 && TICKET_WAIT.remove(id, wait)) wait.reply().accept(null);
+        });
+    }
 
     /** A result echoes the wire key; only its original parked call can complete. */
     public static void deliver(String toolCallId, String resultJson) {

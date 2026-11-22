@@ -710,6 +710,7 @@ public final class EntityAgentLoop {
 
     /** Driven once per client tick (see {@code AgentLoopRegistry.tickAll}) — backstop timeout. */
     public void clientTick() {
+        com.dwinovo.numen.agent.tool.ServerToolTransport.expireYieldTickets();
         dispatcher.tick();
         presenter.tick();
         // G4c S102：预算窗口到点**自己**再试一次，不等主人来叫。
