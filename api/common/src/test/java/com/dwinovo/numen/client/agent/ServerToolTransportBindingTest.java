@@ -138,7 +138,7 @@ class ServerToolTransportBindingTest {
                     var ctor=old.getClass().getDeclaredConstructors()[0]; ctor.setAccessible(true);
                     waits.put(id,ctor.newInstance(a,(java.util.function.Consumer<String>)received::add,System.nanoTime()-1));
                     TaskResultPayload.handle(new TaskResultPayload(a,id,"expired-secret"));
-                    return Map.of("received",List.copyOf(received));
+                    return Map.of("count",received.size(),"failed",received.size()==1 && received.get(0)==null);
                   }
                   public static Map<String,Object> unclassifiedTicketReply() {
                     setup(); UUID a=UUID.randomUUID();actors.add(a); com.dwinovo.numen.Constants.Log.entries.clear();
@@ -238,7 +238,8 @@ class ServerToolTransportBindingTest {
     }
 
     @Test void expiredReplyBeforeSweepMustNotReachPending() throws Exception {
-        assertEquals(List.of(),run("expiredReplyWithoutSweep").get("received"));
+        var r=run("expiredReplyWithoutSweep");
+        assertEquals(1,r.get("count"));assertEquals(true,r.get("failed"),"expired reply reports failure and never hands out ticket");
     }
     @Test void ticketReplyWithNonInternalIdMustNotLeakToLog() throws Exception {
         assertFalse(run("unclassifiedTicketReply").get("log").toString().contains("signed-ticket-secret"));

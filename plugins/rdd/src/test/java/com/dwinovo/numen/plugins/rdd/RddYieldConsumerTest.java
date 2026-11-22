@@ -82,11 +82,15 @@ package com.dwinovo.numen.plugins.rdd; import com.google.gson.*;import com.dwino
   var chain=new TaskChain(goal);chain.startCurrent();var rt=new RddRuntime(chain,new AssetRegistry());
   var method=harness.getMethod("issueNetwork",RddRuntime.class,boolean.class);
   assertEquals("not the owner",method.invoke(null,rt,false));
-  String bad=(String)harness.getMethod("issueBadId",RddRuntime.class).invoke(null,rt);
-  assertFalse(bad.contains("ticket\":\""),"invalid reply ID must not receive a ticket");
   String raw=(String)method.invoke(null,rt,true);var json=JsonParser.parseString(raw).getAsJsonObject();
   assertTrue(json.get("success").getAsBoolean());assertFalse(json.getAsJsonObject("data").get("ticket").getAsString().isBlank());
   assertEquals(0,harness.getMethod("journalCount").invoke(null));
+ }
+ @Test void ownerWithNonInternalIdMustNotReceiveTicket() throws Exception {
+  var goal=new Goal("g","goal",List.of(new PrimaryGoal("p","p",List.of(Subtask.hardCoded("s","s",Map.of("asset_key","minecraft:iron_pickaxe","minimum",1))))));
+  var chain=new TaskChain(goal);chain.startCurrent();var rt=new RddRuntime(chain,new AssetRegistry());
+  String bad=(String)harness.getMethod("issueBadId",RddRuntime.class).invoke(null,rt);
+  assertFalse(bad.contains("ticket\":\""),"invalid reply ID must not receive a ticket");
  }
  @Test void unknownBodyYieldRetainsOriginalBindingWithoutReplay() throws Exception {
   var goal=new Goal("g","goal",List.of(new PrimaryGoal("p","p",List.of(Subtask.hardCoded("s","s",Map.of("asset_key","minecraft:iron_pickaxe","minimum",1),new BodyInstruction("rdd_report_yield",Map.of()))))));
