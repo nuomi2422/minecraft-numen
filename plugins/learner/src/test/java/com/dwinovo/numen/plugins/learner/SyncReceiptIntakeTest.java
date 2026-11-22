@@ -48,7 +48,7 @@ class SyncReceiptIntakeTest {
 
     @AfterEach void reset() { SkillRegistrar.resetForTest(); }
 
-    @Test void liveReceiptFlowsThroughOriginalIntakeAndReview() {
+    @Test void durableReceiptSurvivesTtlAndRestartThroughOriginalIntakeAndReview() throws Exception {
         String body = "original sync steps";
         String ref = SkillBodyStore.write(dir, "sk-1", 1, Integer.toHexString(body.hashCode()), body);
         var draft = new ArtifactDraft(ArtifactKind.EXPERIENCE, "craft", "craft safely", body,
@@ -59,13 +59,42 @@ class SyncReceiptIntakeTest {
         JsonObject args = new JsonObject();
         args.addProperty("skill_ref", "skill:sk-1"); args.addProperty("version", "v1"); args.addProperty("target_tool", "craft");
         AtomicReference<String> reply = new AtomicReference<>();
-        SyncSkillFeedback.INSTANCE.adopt(args, dir, ledger, host, reply::set);
+        var nanos = new java.util.concurrent.atomic.AtomicLong();
+        var svc = new SyncSkillFeedback(nanos::get);
+        svc.adopt(args, dir, ledger, host, reply::set);
         String id = JsonParser.parseString(reply.get()).getAsJsonObject().getAsJsonObject("data").get("selection_id").getAsString();
-        var svc = SyncSkillFeedback.INSTANCE;
         assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.BOUND, svc.bind(id, OWNER, COMPANION, host.identity(), "wire-exact", "craft"));
         svc.receipt(id, OWNER, COMPANION, host.identity(), "wire-exact", "craft", com.dwinovo.numen.api.SyncSkillCorrelation.Receipt.SUCCESS);
         var row = ledger.all().get(0);
         assertNotNull(svc.confirm(row));
+        AtomicReference<String> pendingReply = new AtomicReference<>();
+        svc.adopt(args, dir, ledger, host, pendingReply::set);
+        String pending = JsonParser.parseString(pendingReply.get()).getAsJsonObject().getAsJsonObject("data").get("selection_id").getAsString();
+        nanos.set(121_000_000_000L);
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.REJECTED,
+                svc.bind(pending, OWNER, COMPANION, host.identity(), "expired", "craft"));
+        assertNull(svc.confirm(row), "live correlation still expires");
+        var restarted = new SyncSkillFeedback();
+        assertNotNull(restarted.confirm(new UsageLedger(dir), row), "durable receipt survives service and ledger recreation");
+        assertEquals("", restarted.confirm(ledger, row).selectionId());
+        assertThrows(IllegalArgumentException.class, () -> ledger.append(row.artifactId(), row.kind(), row.name(),
+                row.phase(), row.outcome(), row.detail(), row.source(), row.companionId()));
+        var usage = new LearnerUsageTool(dir, ledger, host);
+        for (String action : List.of("record", "claim_validity")) {
+            JsonObject forgedArgs = new JsonObject();
+            forgedArgs.addProperty("action", action); forgedArgs.addProperty("artifact_id", row.artifactId());
+            forgedArgs.addProperty("phase", "RESULT"); forgedArgs.addProperty("outcome", "SUCCESS");
+            forgedArgs.addProperty("detail", row.detail()); forgedArgs.addProperty("reason", "model says verified");
+            forgedArgs.addProperty("sync_receipt_fact", true);
+            usage.onServerCall("forged-" + action, forgedArgs, null, reply::set);
+            assertFalse(JsonParser.parseString(reply.get()).getAsJsonObject().get("success").getAsBoolean());
+        }
+        assertEquals(1, ledger.all().size(), "model tool cannot rewrite trusted receipt");
+        var ordinary = new UsageLedger(dir.resolve("ordinary"));
+        var forgedRow = ordinary.append(row.artifactId(), row.kind(), row.name(), row.phase(), row.outcome(),
+                row.detail(), "learner_usage", row.companionId());
+        assertNull(restarted.confirm(ordinary, forgedRow));
+        assertNull(restarted.confirm(ordinary, row));
         var fake = new UsageLedger.Entry(row.artifactId(), row.kind(), row.name(), row.phase(), row.outcome(),
                 row.detail().replace("wire-exact", "wire-fake"), row.source(), row.at(), false, row.companionId(), row.evidence());
         assertNull(svc.confirm(fake));
@@ -75,10 +104,15 @@ class SyncReceiptIntakeTest {
             public boolean contains(String key) { return seen.contains(key); }
             public void remember(String key) { seen.add(key); }
         };
-        var scope = new com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.Scope("world", "session", 7, COMPANION.toString());
-        var scan = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(List.of(fake), scope, queue, journal, (c, f, n, once) -> once.getAsBoolean(), 1, 1);
+        var scope = new com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.Scope("world", "restarted-session", 11, COMPANION.toString());
+        var scan = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(new UsageLedger(dir), List.of(fake), scope, queue, journal, (c, f, n, once) -> once.getAsBoolean(), 1, 1);
         assertEquals(0, scan.enqueued());
-        scan = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(List.of(row), scope, queue, journal, (c, f, n, once) -> once.getAsBoolean(), 1, 1);
+        assertEquals(0, com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(new UsageLedger(dir), List.of(row), scope, queue, journal, (c, f, n, once) -> once.getAsBoolean(), 1, 0).physicalAdded());
+        assertEquals(0, com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(new UsageLedger(dir), List.of(row), scope, queue, journal, (c, f, n, once) -> false, 1, 1).physicalAdded());
+        assertTrue(queue.all().isEmpty(), "deferred historical fact is not lost or force-enqueued");
+        var foreignScope = new com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.Scope("other", "session", 7, COMPANION.toString());
+        assertEquals(1, com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(new UsageLedger(dir), List.of(row), foreignScope, queue, journal, (c, f, n, once) -> once.getAsBoolean(), 1, 1).foreignScope());
+        scan = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(new UsageLedger(dir), List.of(row), scope, queue, journal, (c, f, n, once) -> once.getAsBoolean(), 1, 1);
         assertEquals(1, scan.enqueued());
         var memo = queue.all().get(0);
         assertTrue(ReviewTargetGate.check(dir, COMPANION, memo, host.identity(), host.identity()).ok());
@@ -92,7 +126,25 @@ class SyncReceiptIntakeTest {
         assertTrue(review.contains("evidence=NONE")); assertTrue(review.contains(body));
         assertFalse(review.contains(id), "review input must not expose raw correlation id");
         assertTrue(com.dwinovo.numen.plugins.learner.core.TrajectorySlices.forMemo(dir, OWNER, queue.all().get(0)).contains("UNKNOWN"));
-        assertEquals(0, com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(List.of(row), scope, queue, journal, (c, f, n, once) -> once.getAsBoolean(), 1, 1).enqueued());
+        assertEquals(0, com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.runWithTaskResults(new UsageLedger(dir), List.of(row), scope, queue, journal, (c, f, n, once) -> once.getAsBoolean(), 1, 1).enqueued());
+        var foreign = new WorldContextStamp.Token(Map.of("world_id", "other-world", "server_session", "new"), 11);
+        assertFalse(ReviewTargetGate.check(dir, COMPANION, memo, foreign, foreign).ok());
+        ledger.claimValidity(row.artifactId(), "model self report", "model");
+        assertNotNull(restarted.confirm(ledger, row), "original historical fact remains readable");
+        assertNull(restarted.confirm(ledger, ledger.latestOf(row.artifactId())), "claim cannot re-mark trusted receipt");
+        var failedLedger = new UsageLedger(dir.resolve("persist-failure"));
+        java.nio.file.Files.createDirectories(failedLedger.file()); // Real filesystem failure: ledger path is a directory.
+        AtomicReference<String> failedReply = new AtomicReference<>();
+        restarted.adopt(args, dir, failedLedger, host, failedReply::set);
+        String failedId = JsonParser.parseString(failedReply.get()).getAsJsonObject().getAsJsonObject("data").get("selection_id").getAsString();
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.BOUND,
+                restarted.bind(failedId, OWNER, COMPANION, host.identity(), "persist-failed", "craft"));
+        assertThrows(IllegalStateException.class, () -> restarted.receipt(failedId, OWNER, COMPANION,
+                host.identity(), "persist-failed", "craft", com.dwinovo.numen.api.SyncSkillCorrelation.Receipt.SUCCESS));
+        assertNull(restarted.confirm(failedLedger, row), "failed write cannot claim historical provenance");
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.DUPLICATE,
+                restarted.bind(failedId, OWNER, COMPANION, host.identity(), "persist-failed", "craft"),
+                "persistence failure does not authorize another tool execution");
         SkillRegistrar.registryFor(dir).retire("sk-1", "test retirement");
         assertFalse(ReviewTargetGate.check(dir, COMPANION, memo, host.identity(), host.identity()).ok());
     }
