@@ -74,6 +74,14 @@ final class RddReportYieldTool implements NumenTool, com.dwinovo.numen.agent.too
     }
 
     @Override
+    public void onOwnerTicketRequest(NumenPlayer companion, net.minecraft.server.level.ServerPlayer caller, Consumer<String> reply) {
+        String ticket = RddPlugin.issueYieldTicket(caller, companion, System.currentTimeMillis());
+        reply.accept(ticket == null
+                ? com.dwinovo.numen.task.TaskResult.fail("yield identity unavailable; refresh task").toJson()
+                : com.dwinovo.numen.task.TaskResult.ok("yield ticket issued", java.util.Map.of("ticket", ticket)).toJson());
+    }
+
+    @Override
     public void onOwnerCall(String toolCallId, JsonObject args, NumenPlayer companion, net.minecraft.server.level.ServerPlayer caller, Consumer<String> reply) {
         if (!RddPlugin.consumeYieldTicket(caller, companion, str(args, "_yield_ticket"), System.currentTimeMillis())) {
             reply.accept(com.dwinovo.numen.task.TaskResult.fail("yield identity expired or unavailable; refresh task before retry").toJson());

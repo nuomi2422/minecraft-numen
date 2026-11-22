@@ -131,7 +131,8 @@ public record ExecuteToolPayload(UUID entityUuid,
             replyError(player, p, "not the owner");
             return;
         }
-        NumenTool tool = ToolRegistry.get(p.toolName());
+        boolean yieldTicketRequest = "_rdd_yield_ticket".equals(p.toolName());
+        NumenTool tool = ToolRegistry.get(yieldTicketRequest ? "rdd_report_yield" : p.toolName());
         if (tool == null) {
             replyError(player, p, "unknown tool: " + p.toolName());
             return;
@@ -160,7 +161,9 @@ public record ExecuteToolPayload(UUID entityUuid,
                     new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
         };
         try {
-            if (tool instanceof com.dwinovo.numen.agent.tool.OwnerAuthenticatedTool protectedTool)
+            if (yieldTicketRequest && tool instanceof com.dwinovo.numen.agent.tool.OwnerAuthenticatedTool protectedTool)
+                protectedTool.onOwnerTicketRequest(companion, player, reply);
+            else if (tool instanceof com.dwinovo.numen.agent.tool.OwnerAuthenticatedTool protectedTool)
                 protectedTool.onOwnerCall(p.toolCallId(), args, companion, player, reply);
             else tool.onServerCall(p.toolCallId(), args, companion, reply);
         } catch (RuntimeException ex) {
