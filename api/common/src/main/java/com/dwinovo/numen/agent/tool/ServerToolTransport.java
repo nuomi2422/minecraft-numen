@@ -4,6 +4,7 @@ import com.dwinovo.numen.agent.tool.ToolCall;
 import com.dwinovo.numen.network.payload.CancelTasksPayload;
 import com.dwinovo.numen.network.payload.ExecuteToolPayload;
 import com.dwinovo.numen.platform.Services;
+import com.dwinovo.numen.task.TaskResult;
 
 import java.util.Map;
 import java.util.UUID;
