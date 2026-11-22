@@ -140,6 +140,9 @@ class AcxCompanionBridgeConsumerTest {
     @Test void replacementBodyAtGateDoesNotReceiveOldRun()throws Exception{
         assertEquals(0,call("replaceAtGate"));
     }
+    @Test void trustedYieldStaysWithOriginalRunAndSnapshot() throws Exception {
+        assertEquals("COMPLETED,FAILED,FAILED", call("yieldOriginalRunBinding"));
+    }
     @Test void actualAdapterKeepsQueuedDispatchWithOriginalCompanion()throws Exception{
         assertEquals("A",call("adapterStatusInterleave"));
     }
@@ -493,6 +496,26 @@ class AcxCompanionBridgeConsumerTest {
             static String request(NumenTool tool,JsonObject args,NumenPlayer body){String[] response={null};tool.onServerCall("fixture",args,body,r->response[0]=r);return response[0];}
             static AcxTool.AcxCallContext ctx(String run){return new AcxTool.AcxCallContext(){
                 public String runId(){return run;}public String stepId(){return "body";}public boolean isCancelRequested(){return false;}public void emitDetail(String k,Object v){}};}
+            public static String yieldOriginalRunBinding() {
+                Fixture f=new Fixture();
+                class Yield implements NumenTool, com.dwinovo.numen.agent.tool.TrustedYieldTool {
+                    String current="chain-a";
+                    public String name(){return "rdd_report_yield";}
+                    public Object captureHostBinding(NumenPlayer p){return p.name+":"+current;}
+                    public void onServerCall(String id,JsonObject args,NumenPlayer p,Consumer<String> reply){reply.accept(new Gson().toJson(Map.of("success",false,"message","untrusted")));}
+                    public void onTrustedHostCall(String id,JsonObject args,NumenPlayer p,Object bound,Consumer<String> reply){reply.accept(new Gson().toJson(Map.of("success",Objects.equals(bound,p.name+":"+current),"data",Map.of())));}
+                }
+                Yield y=new Yield(); ToolRegistry.register(y);
+                try {
+                    f.start(); request(new AcxFacadeTools.Status(f.plugin),f.status(),f.b);
+                    var port=new NumenToolBridgeX(y,f.plugin,100);
+                    var good=port.invoke(Map.of(),ctx(f.run)).outcome();
+                    y.current="chain-b";var stale=port.invoke(Map.of(),ctx(f.run)).outcome();
+                    f.plugin.before=()->new NumenPlayer("A");
+                    var replacement=port.invoke(Map.of(),ctx(f.run)).outcome();
+                    return good+","+stale+","+replacement;
+                } finally {ToolRegistry.remove(y.name());}
+            }
             // REPLAY_SCENARIOS
             public static String statusInterleave(){Fixture f=new Fixture();f.start();request(new AcxFacadeTools.Status(f.plugin),f.status(),f.b);f.drain();return f.body();}
             public static String libraryInterleave(){Fixture f=new Fixture();f.start();request(new AcxFacadeTools.Library(f.plugin),new JsonObject(),f.b);f.drain();return f.body();}
