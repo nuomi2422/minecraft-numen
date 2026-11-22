@@ -217,6 +217,57 @@ class LearnerAutoTaskResultIntakeTest {
         assertFalse(row.validityClaimed()); assertEquals(UsageLedger.EvidenceLevel.NONE, row.evidence());
     }
 
+    @Test void realSyncReceiptsForTwoCompanionsShareOneHostReadAndReplayWithoutDuplicates() throws Exception {
+        register("sync-host");
+        UUID second = UUID.fromString("00000000-0000-0000-0000-000000000032");
+        var diskReads = new AtomicInteger();
+        var constructor = UsageLedger.class.getDeclaredConstructor(Path.class, java.util.function.Consumer.class);
+        constructor.setAccessible(true);
+        ledger = constructor.newInstance(dir, (java.util.function.Consumer<Path>) path -> diskReads.incrementAndGet());
+        var service = new SyncSkillFeedback();
+        for (UUID companion : List.of(OWNER, second)) {
+            LearnerUsageTool.TaskAccess host = new LearnerUsageTool.TaskAccess() {
+                public UUID ownerId() { return OWNER; }
+                public UUID companionId() { return companion; }
+                public WorldContextStamp.Token identity() { return token(CURRENT); }
+                public TaskRecord current() { return null; }
+                public TaskRecord finished(String id) { return null; }
+            };
+            for (int index = 0; index < 2; index++) {
+                JsonObject args = new JsonObject();
+                args.addProperty("skill_ref", "skill:sync-host"); args.addProperty("version", "v1"); args.addProperty("target_tool", "craft");
+                AtomicReference<String> response = new AtomicReference<>();
+                service.adopt(args, dir, ledger, host, response::set);
+                String id = JsonParser.parseString(response.get()).getAsJsonObject().getAsJsonObject("data").get("selection_id").getAsString();
+                String wire = companion + "-sync-" + index;
+                assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.BOUND,
+                        service.bind(id, OWNER, companion, host.identity(), wire, "craft"));
+                service.receipt(id, OWNER, companion, host.identity(), wire, "craft", com.dwinovo.numen.api.SyncSkillCorrelation.Receipt.SUCCESS);
+                ledger.append("ordinary-" + wire, "ordinary", "ordinary", UsageLedger.Phase.RESULT,
+                        UsageLedger.Outcome.UNKNOWN, "{}", "learner_usage", companion.toString());
+            }
+        }
+        Map<UUID, MemoQueue> queues = Map.of(OWNER, queue, second, new MemoQueue(dir.resolve("sync-second.json")));
+        LearnerAutoIntake.installQueueResolverForTest(queues::get);
+        diskReads.set(0); reads.set(0);
+        assertEquals(4, scan(), "real scanOnce must admit both companions' historical receipts");
+        assertEquals(1, reads.get(), "one host reader invocation");
+        assertEquals(1, diskReads.get(), "one actual complete-ledger read across both owner loops");
+        for (var item : queues.entrySet()) {
+            assertEquals(2, item.getValue().all().size());
+            for (Memo memo : item.getValue().all()) {
+                assertEquals("skill_sync_receipt", memo.stage());
+                var row = SkillDeliveryIntake.syncEntryFromSnapshot(memo.snapshot());
+                assertEquals(item.getKey().toString(), row.companionId());
+                assertEquals(UsageLedger.EvidenceLevel.NONE, row.evidence());
+            }
+        }
+        diskReads.set(0); reads.set(0);
+        assertEquals(0, scan(), "same production journal must suppress replay");
+        assertEquals(1, reads.get()); assertEquals(1, diskReads.get());
+        assertEquals(4, queues.values().stream().mapToInt(MemoQueue::size).sum());
+    }
+
     @Test void realResultEntersHostWithFullSnapshotDespiteOldSdAndReplaysAfterReload() throws Exception {
         Work work = adopt("sk-host-original", "original-action");
         var presented = delivery("sk-host-original", "original-delivery", work);
