@@ -29,6 +29,8 @@ public final class SyncSkillFeedback implements SyncSkillCorrelation {
         final long expires;
         String wire;
         boolean active, recorded;
+        UsageLedger.Entry confirmed;
+        Receipt actualReceipt;
         Selection(UUID owner, UUID companion, WorldContextStamp.Token token, String ref, String version,
                   String bodyRef, String bodyDigest, String tool, String kind, String name, UsageLedger ledger) {
             this.owner=owner; this.companion=companion; this.token=token; this.ref=ref; this.version=version;
@@ -86,6 +88,21 @@ public final class SyncSkillFeedback implements SyncSkillCorrelation {
             try { reply.accept(TaskResult.fail("adopt_sync_skill 拒绝: "+e.getMessage()).toJson()); } catch (RuntimeException ignored) { }
         }
     }
+    /** Only the live service can confirm a ledger row against its bound selection and receipt. */
+    public record Confirmed(String selectionId, String wire, String tool, String ref, String version,
+                            String bodyRef, String bodyDigest, Receipt receipt) {}
+    public synchronized Confirmed confirm(UsageLedger.Entry row) {
+        if (row == null) return null;
+        purge();
+        for (var item : selections.entrySet()) {
+            Selection s = item.getValue();
+            if (s.active && s.recorded && s.wire != null && row.equals(s.confirmed)) {
+                return new Confirmed(item.getKey(), s.wire, s.tool, s.ref, s.version,
+                        s.bodyRef, s.bodyDigest, s.actualReceipt);
+            }
+        }
+        return null;
+    }
     private static String required(JsonObject args,String key) {
         if (args==null || !args.has(key) || !args.get(key).isJsonPrimitive() || !args.getAsJsonPrimitive(key).isString() || args.get(key).getAsString().isBlank()) throw new IllegalArgumentException("需要 "+key);
         return args.get(key).getAsString();
@@ -117,7 +134,8 @@ public final class SyncSkillFeedback implements SyncSkillCorrelation {
         detail.addProperty("skill_ref",s.ref); detail.addProperty("version",s.version); detail.addProperty("body_ref",s.bodyRef); detail.addProperty("body_digest",s.bodyDigest);
         detail.addProperty("receipt",actual.name()); detail.addProperty("meaning","真实回执待审；UNKNOWN不是效果，非有效性证据");
         UsageLedger.Outcome outcome=switch(actual) { case SUCCESS -> UsageLedger.Outcome.SUCCESS; case FAIL -> UsageLedger.Outcome.FAIL; case CANCELED -> UsageLedger.Outcome.CANCELED; case UNKNOWN -> UsageLedger.Outcome.UNKNOWN; };
-        s.ledger.append(s.ref+"@"+s.version+"#sync="+key,s.kind,s.name,UsageLedger.Phase.RESULT,outcome,detail.toString(),"sync-skill:"+key,companion.toString());
+        s.confirmed = s.ledger.append(s.ref+"@"+s.version+"#sync="+key,s.kind,s.name,UsageLedger.Phase.RESULT,outcome,detail.toString(),"sync-skill:"+key,companion.toString());
+        s.actualReceipt=actual;
         s.recorded=true;
     }
 }

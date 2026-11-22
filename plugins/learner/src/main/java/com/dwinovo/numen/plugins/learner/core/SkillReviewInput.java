@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.learner.core;
 
 import com.dwinovo.numen.plugins.learner.skills.SkillBodyStore;
+import com.dwinovo.numen.plugins.learner.SyncSkillFeedback;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -24,6 +25,7 @@ final class SkillReviewInput {
     private SkillReviewInput() {}
 
     static String forMemo(Path dir, UUID companion, Memo memo, int limit) {
+        if ("skill_sync_receipt".equals(memo.stage())) return syncInput(dir, companion, memo, limit);
         if ("skill_delivery".equals(memo.stage()))
             return "技能复盘输入: body_status=NOT_AVAILABLE trace_status=NOT_AVAILABLE（原交付样本无历史正文摘要或原任务回执，不猜补）";
         var fact = SkillDeliveryIntake.taskResultFromSnapshot(memo.snapshot());
@@ -52,11 +54,29 @@ final class SkillReviewInput {
         return out.toString();
     }
 
+    private static String syncInput(Path dir, UUID companion, Memo memo, int limit) {
+        var row = SkillDeliveryIntake.syncEntryFromSnapshot(memo.snapshot());
+        var fact = SyncSkillFeedback.INSTANCE.confirm(row);
+        if (fact == null || companion == null || !companion.toString().equals(row.companionId()))
+            return "技能复盘输入: source_status=UNKNOWN evidence=NONE（绑定已不可核，非效果证明）";
+        StringBuilder out = new StringBuilder("技能复盘输入: source_status=LIVE_SYNC_RECEIPT evidence=NONE；非任务结果、采用或效果证明\n");
+        out.append("selection_id=").append(fact.selectionId()).append(" wire_id=").append(fact.wire())
+                .append(" target_tool=").append(fact.tool()).append(" receipt=").append(fact.receipt())
+                .append(" ref=").append(fact.ref()).append('@').append(fact.version()).append('\n');
+        String body = originalBody(dir, fact.bodyRef(), fact.bodyDigest(), limit);
+        if (body == null) out.append("body_status=UNKNOWN（原正文缺失或摘要不符）");
+        else if (out.length() + body.length() + 60 > limit) out.append("body_status=UNKNOWN_LIMIT");
+        else out.append("body_status=COMPLETE\n<original-skill-body>\n").append(body).append("\n</original-skill-body>");
+        return out.toString();
+    }
+
     private static String originalBody(Path dir, SkillDeliveryIntake.TaskResultFact fact, int limit) {
-        String ref = fact.bodyRef();
+        return originalBody(dir, fact.bodyRef(), fact.bodyDigest(), limit);
+    }
+    private static String originalBody(Path dir, String ref, String bodyDigest, int limit) {
         // BodyStore is the existing integrity reader. Do not let a historical ref escape its original store.
         if (!ref.matches("skill-body:[A-Za-z0-9_-]+@v[1-9][0-9]*-[A-Za-z0-9_-]+[.]md")
-                || !fact.bodyDigest().matches("[0-9a-f]{64}")) return null;
+                || !bodyDigest.matches("[0-9a-f]{64}")) return null;
         try {
             Path file = dir.resolve("skill-bodies").resolve(ref.substring("skill-body:".length()));
             if (!Files.isRegularFile(file) || Files.size(file) > 4L * limit) return null;
@@ -64,7 +84,7 @@ final class SkillReviewInput {
             if (body == null || body.isBlank()) return null;
             String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                     .digest(body.getBytes(StandardCharsets.UTF_8)));
-            return fact.bodyDigest().equals(digest) ? body : null;
+            return bodyDigest.equals(digest) ? body : null;
         } catch (IOException | NoSuchAlgorithmException | RuntimeException unavailable) {
             return null;
         }
