@@ -24,10 +24,11 @@ class ScopedSleepCycleConsumerTest {
     @TempDir static Path tmp;static Class<?> host;static URLClassLoader loader;
     static String method(String s,String prefix){int a=s.indexOf(prefix);if(a<0)return "";int b=s.indexOf("\n    }",s.indexOf('{',a));return s.substring(a,b+6);}
     static void source(List<String> args,String type,String text)throws Exception{Path p=tmp.resolve(type.replace('.','/')+".java");Files.createDirectories(p.getParent());Files.writeString(p,text);args.add(p.toString());}
-    @BeforeAll static void compile()throws Exception{
+    @BeforeAll static void compile()throws Exception{ compileFixture(null); }
+    static void compileFixture(String suppliedHost)throws Exception{
         Path root=Path.of("").toAbsolutePath();while(root!=null&&!Files.isDirectory(root.resolve("plugins/rdd/src/main/java")))root=root.getParent();assertNotNull(root);
         Path production=root.resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd");
-        String hostCode=Files.readString(root.resolve("plugins/rdd/src/test/resources/sleep-cycle/SleepCycleHost.java.in"));
+        String hostCode=suppliedHost==null?Files.readString(root.resolve("plugins/rdd/src/test/resources/sleep-cycle/SleepCycleHost.java.in")):suppliedHost;
         String hostSource=Files.readString(production.resolve("SideTaskHost.java"));
         String reader=method(hostSource,"    static com.dwinovo.numen.rdd.side.SleepCycleEvidence readSleepCycle(");
         String cleanup=method(hostSource,"    static void clearTerminalSleepCycle(");
