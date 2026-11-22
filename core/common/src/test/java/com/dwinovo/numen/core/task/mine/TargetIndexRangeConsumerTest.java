@@ -21,7 +21,12 @@ class TargetIndexRangeConsumerTest {
         while(root!=null&&!Files.isDirectory(root.resolve("core/common/src/main/java")))root=root.getParent();
         assertNotNull(root);
         Path main=root.resolve("core/common/src/main/java/com/dwinovo/numen/core/scan");
-        String collect=MineHarvestRecoveryConsumerTest.method(Files.readString(main.resolve("TargetIndex.java")),"    private static void collect(SectionEntry e, LevelChunkSection section,");
+        String source=Files.readString(main.resolve("TargetIndex.java")),collect="";
+        int at=0;
+        while((at=source.indexOf("    private static void collect(",at))>=0){
+            int end=source.indexOf("\n    }",at);assertTrue(end>at);
+            collect+=source.substring(at,end+6)+"\n";at=end+6;
+        }
         Path src=temp.resolve("src"),out=temp.resolve("classes");Files.createDirectories(out);
         List<String> args=new ArrayList<>(List.of("-encoding","UTF-8","-proc:none","-d",out.toString()));
         MineHarvestRecoveryConsumerTest.add(src,args,"fixture/Index.java",BOUNDARIES.replace("COLLECT_METHOD",collect));
@@ -47,7 +52,7 @@ class TargetIndexRangeConsumerTest {
     }
     static final String BOUNDARIES="""
         package fixture;
-        import java.util.*;
+        import java.util.*;import java.util.function.Predicate;
         public class Index {
             record BlockPos(int x,int y,int z){public String toString(){return x+","+y+","+z;}}
             static class SectionPos {static int sectionToBlockCoord(int n){return n*16;}}
