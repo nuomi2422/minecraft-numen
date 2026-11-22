@@ -123,6 +123,64 @@ class RddAssetStoreTest {
         assertTrue(context.contains("truncated=YES"), "bounded output must explicitly disclose omitted leads");
     }
 
+    @Test void everySmallBudgetIsRespectedAndOmissionIsExplicit() {
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(observation("world_machine", Map.of("kind", "machine", "label", "furnace",
+                "dimension", "overworld", "x", 3, "y", 65, "z", 4, "summary", "fixture")),
+                "machine", AssetScope.GLOBAL, null);
+        for (int budget : new int[]{-1, 0, 63, 64, 100, 120, 140, 159, 160, 600}) {
+            String result = RddAssetContext.render(registry, budget);
+            assertTrue(result.length() <= Math.max(0, budget), "budget=" + budget + " length=" + result.length());
+            if (!result.isEmpty() && !result.contains("asset_id=machine"))
+                assertTrue(result.contains("not_delivered=YES"), "nondelivery must be visible at budget=" + budget);
+        }
+    }
+
+    @Test void plannerBudgetOffersWholeEntryOrExplicitNondelivery() {
+        AssetRegistry empty = new AssetRegistry();
+        assertEquals("", RddAssetContext.render(empty, 160));
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(observation("world_machine", Map.of("kind", "machine", "label", "furnace",
+                "dimension", "overworld", "x", 3, "y", 65, "z", 4, "summary", "fixture")),
+                "machine", AssetScope.GLOBAL, null);
+        String planner = RddAssetContext.render(registry, 160);
+        assertTrue(planner.length() <= 160);
+        assertTrue(planner.contains("asset_id=machine") || planner.contains("not_delivered=YES"), planner);
+        for (int budget : new int[]{64,160,600,1200}) {
+            String result = RddAssetContext.render(registry, budget);
+            assertTrue(result.length() <= budget, "budget=" + budget + " actual=" + result.length());
+        }
+        AssetRegistry longField = new AssetRegistry();
+        longField.apply(observation("world_machine", Map.of("kind", "machine", "label", "x".repeat(2000))),
+                "id-" + "x".repeat(2000), AssetScope.GLOBAL, null);
+        for (int budget : new int[]{64,160,600,1200}) {
+            String result = RddAssetContext.render(longField, budget);
+            assertTrue(result.length() <= budget);
+            assertTrue(result.contains("not_delivered=YES") || result.contains("truncated=YES"));
+        }
+    }
+
+    @Test void plannerShortEntryCanBeExpandedThroughActualAssetTool() {
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(new Observation("fixture", "world_machine", "source-fixture", "overworld", 1000L,
+                Map.of("kind", "machine", "label", "furnace", "dimension", "overworld", "world_id", "world-A",
+                        "x", 3, "y", 65, "z", 4, "summary", "local scan")),
+                "machine", AssetScope.GLOBAL, null);
+        String planner = RddAssetContext.render(registry, 160);
+        assertTrue(planner.contains("rdd_assets detail asset_id=machine"), planner);
+        var args = new com.google.gson.JsonObject(); args.addProperty("action", "detail"); args.addProperty("asset_id", "machine");
+        var result = com.google.gson.JsonParser.parseString(RddAssetsTool.dispatch(args, registry)).getAsJsonObject();
+        assertTrue(result.get("success").getAsBoolean());
+        var data = result.getAsJsonObject("data");
+        var identity = data.getAsJsonObject("identity");
+        assertEquals("world-A", identity.get("world_id").getAsString());
+        assertEquals("source-fixture", identity.get("source").getAsString());
+        assertEquals(1000L, identity.get("observed_at").getAsLong());
+        assertEquals("UNKNOWN", identity.get("scope").getAsString());
+        assertEquals("UNKNOWN", identity.get("coverage").getAsString());
+        assertTrue(data.getAsJsonObject("asset").toString().contains("local scan"));
+    }
+
     private static Observation observation(String type, Map<String, Object> value) {
         return new Observation("obs-" + type, type, "test", "minecraft:overworld", 1L, value);
     }

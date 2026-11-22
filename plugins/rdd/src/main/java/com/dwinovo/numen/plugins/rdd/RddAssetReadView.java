@@ -60,6 +60,7 @@ final class RddAssetReadView {
         row.put("asset_id",entry.assetId());row.put("kind",fact(v,"kind"));row.put("label",fact(v,"label"));
         row.put("dimension",fact(v,"dimension"));row.put("status",entry.status().name());
         row.put("observed_at",o.observedAt()>0?o.observedAt():"UNKNOWN");
+        row.put("source",o.source()); row.put("scope","UNKNOWN"); row.put("coverage","UNKNOWN");
         row.put("world_id",fact(v,"world_id"));row.put("server_session",fact(v,"server_session"));
         return row;
     }

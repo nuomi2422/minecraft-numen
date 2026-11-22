@@ -33,34 +33,34 @@ final class RddAssetContext {
         if (maxChars < 64) return "";
         List<AssetRegistry.AssetEntry> assets = worldAssets(registry);
         if (assets.isEmpty()) return "";
-        Map<String, com.dwinovo.numen.rdd.core.AssetClaim> claims =
-                com.dwinovo.numen.rdd.core.PlanningAssetSnapshot.worldClaims(registry);
-        StringBuilder out = new StringBuilder("<known_world_assets>\n");
-        out.append("Last observed reusable world assets. LAZY entries are leads; re-check before relying on them.\n");
-        boolean truncated = false;
+        String open = "<known_world_assets>\n", close = "</known_world_assets>";
+        String warning = "LAZY: re-check.\n", missing = "not_delivered=YES\n", truncated = "truncated=YES\n";
+        if (open.length() + warning.length() + missing.length() + close.length() > maxChars)
+            return missing.trim();
+        StringBuilder out = new StringBuilder(open).append(warning);
+        int shown = 0;
+        boolean omitted = false;
         for (var entry : assets) {
             Map<String, Object> value = entry.observation().value();
-            com.dwinovo.numen.rdd.core.AssetClaim claim = claims.get(entry.assetId());
-            String claimMeta = claim == null ? ""
-                    : " source=" + claim.source() + " verified_at=" + claim.verifiedAtMillis();
-            String line = "- kind=" + text(value.get("kind"))
+            String compact = "- rdd_assets detail asset_id=" + text(entry.assetId()) + " label="
+                    + text(value.getOrDefault("label", entry.assetId())) + "\n";
+            String full = "- rdd_assets detail asset_id=" + text(entry.assetId()) + " kind=" + text(value.get("kind"))
                     + " label=" + text(value.getOrDefault("label", entry.assetId()))
                     + " world=" + text(value.get("world_id"))
                     + " observed_at=" + (entry.observation().observedAt() > 0 ? entry.observation().observedAt() : "UNKNOWN")
-                    + " source=" + text(entry.observation().source())
-                    + " scope=UNKNOWN coverage=UNKNOWN"
+                    + " source=" + text(entry.observation().source()) + " scope=UNKNOWN coverage=UNKNOWN"
                     + " dimension=" + text(value.get("dimension"))
                     + " pos=" + text(value.get("x")) + "," + text(value.get("y")) + "," + text(value.get("z"))
                     + " refresh=" + text(value.getOrDefault("refresh_policy", "LAZY"))
-                    + " status=" + entry.status()
-                    + claimMeta
-                    + details(value) + "\n";
-            if (out.length() + line.length() + 37 > maxChars) { truncated = true; break; }
+                    + " status=" + entry.status() + details(value) + "\n";
+            int reserve = missing.length() + close.length();
+            String line = out.length() + full.length() + reserve <= maxChars ? full : compact;
+            if (out.length() + line.length() + reserve > maxChars) { omitted = true; continue; }
             out.append(line);
+            shown++;
         }
-        if (truncated) out.append("truncated=YES\n");
-        out.append("</known_world_assets>");
-        return out.toString();
+        if (omitted) out.append(shown == 0 ? missing : truncated);
+        return out.append(close).toString();
     }
 
     private static String details(Map<String, Object> value) {
