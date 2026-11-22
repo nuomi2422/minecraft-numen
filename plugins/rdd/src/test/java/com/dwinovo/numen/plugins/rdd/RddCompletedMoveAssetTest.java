@@ -103,6 +103,22 @@ class RddCompletedMoveAssetTest {
         assertTrue(tiny.equals("未投递") || tiny.isEmpty(), tiny);
     }
 
+    @Test void sameIdentityDifferentEndpointsCannotOverwriteExistingFact() {
+        UUID id = UUID.randomUUID(); var token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
+        var record = new Record(); record.bindIdentity(token); record.setState(TaskState.SUCCESS);
+        record.setResult(TaskResult.ok("done", Map.of("completed_move", fact())));
+        var registry = new AssetRegistry();
+        assertEquals(RddCompletedMoveAsset.Outcome.ADDED,
+                RddCompletedMoveAsset.projectOutcome(id, record.publicId(), record, token, "overworld", registry, 100));
+        var original = registry.snapshot().getFirst();
+        var changed = new HashMap<>(fact()); changed.put("end", Map.of("x", 99.0, "y", 64.0, "z", 2.0));
+        record.setResult(TaskResult.ok("done", Map.of("completed_move", changed)));
+        assertEquals(RddCompletedMoveAsset.Outcome.REJECTED,
+                RddCompletedMoveAsset.projectOutcome(id, record.publicId(), record, token, "overworld", registry, 200));
+        assertEquals(List.of(original), registry.snapshot());
+        assertEquals(100, registry.snapshot().getFirst().observation().observedAt());
+    }
+
     @Test void failedSaveThenDuplicateEventMustBeRecoverable() throws Exception {
         UUID id = UUID.randomUUID(); var token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
         var record = new Record(); record.bindIdentity(token); record.setState(TaskState.SUCCESS);
