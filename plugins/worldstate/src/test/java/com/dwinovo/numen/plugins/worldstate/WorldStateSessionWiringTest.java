@@ -62,7 +62,7 @@ class WorldStateSessionWiringTest {
             Files.writeString(target, source.getValue(), StandardCharsets.UTF_8);
             arguments.add(target.toString());
         }
-        for (String name : List.of("WorldStateService", "McCollectionContext", "SelfSampleBridge",
+        for (String name : List.of("WorldStateService", "WorldStateMod", "McCollectionContext", "SelfSampleBridge",
                 "EnvironmentRefresher", "SelfSampleReader", "SelfObservationProjection",
                 "ObservationResponses", "ObservationMap", "focus/FocusPin", "focus/FocusPinStore")) {
             arguments.add(plugin.resolve(name + ".java").toString());
@@ -73,7 +73,7 @@ class WorldStateSessionWiringTest {
         // 2026-11-05：父加载器可能有插件/MC 类；用本次完整源码编译物，不能误测父类路径旧产物。
         loader = new URLClassLoader(new URL[]{compiled.toUri().toURL()}, WorldStateSessionWiringTest.class.getClassLoader()) {
             @Override protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-                if (name.startsWith(PKG) || name.startsWith("net.minecraft.") || name.startsWith("com.dwinovo.numen.entity.") || name.startsWith("org.slf4j.")) {
+                if (name.equals("com.dwinovo.numen.api.NumenPlugins") || name.startsWith(PKG) || name.startsWith("net.minecraft.") || name.startsWith("net.neoforged.") || name.startsWith("com.dwinovo.numen.entity.") || name.startsWith("org.slf4j.")) {
                     synchronized (getClassLoadingLock(name)) {
                         Class<?> found = findLoadedClass(name);
                         if (found == null) found = findClass(name);
@@ -455,6 +455,58 @@ class WorldStateSessionWiringTest {
         assertEquals(3, calls());
     }
 
+    @Test void realServiceBoundedCadenceClockAndStopAreIsolated() throws Exception {
+        Object host=host(config.resolve("one")), other=host(config.resolve("two"));
+        Object pins=serviceType.getMethod("focusPins").invoke(host), otherPins=serviceType.getMethod("focusPins").invoke(other);
+        var pin=pins.getClass().getMethod("pin",UUID.class,String.class,String.class,String.class,String.class,long.class,long.class,long.class,int.class,int.class);
+        for(int i=0;i<20;i++) assertNotNull(pin.invoke(pins,new UUID(0,i+1),"w","s","d","environment",1000L,1000L,0L,0,0));
+        UUID live=UUID.randomUUID(), otherId=UUID.randomUUID();
+        pin.invoke(pins,live,"w","s","d","environment",1000L,60000L,0L,0,0);
+        pin.invoke(otherPins,otherId,"w","s","d","environment",1000L,60000L,0L,0,0);
+        var tick=serviceType.getDeclaredMethod("tickFocusSweep",long.class,long.class); tick.setAccessible(true);
+        var stop=serviceType.getDeclaredMethod("stopFocusSweep"); stop.setAccessible(true);
+        var active=pins.getClass().getMethod("active",UUID.class,String.class,String.class,long.class);
+        assertEquals(16,tick.invoke(host,2000L,100L));
+        assertEquals(0,tick.invoke(host,3000L,999_999_999L));
+        assertEquals(5,tick.invoke(host,1000L,1_000_000_100L));
+        assertEquals(1,((List<?>)active.invoke(pins,live,"w","s",1000L)).size());
+        stop.invoke(host);
+        assertTrue(((List<?>)active.invoke(pins,live,"w","s",0L)).isEmpty());
+        assertEquals(1,((List<?>)active.invoke(otherPins,otherId,"w","s",1000L)).size());
+        assertEquals(0,tick.invoke(host,3000L,1_000_000_101L));
+        UUID clockId=UUID.randomUUID(); pin.invoke(pins,clockId,"w","s","d","environment",1000L,1000L,0L,0,0);
+        assertEquals(0,tick.invoke(host,3000L,1_000_000_102L));
+        assertEquals(1,tick.invoke(host,1000L,2_000_000_101L));
+        assertEquals(1,((List<?>)active.invoke(pins,clockId,"w","s",1000L)).size());
+        assertEquals(1,tick.invoke(host,3000L,3_000_000_101L));
+        assertTrue(((List<?>)active.invoke(pins,clockId,"w","s",0L)).isEmpty());
+    }
+
+    @Test void registeredPostAndStopCallbacksDriveRealServiceFocusWithoutRefresher() throws Exception {
+        Class<?> modType=loader.loadClass(PKG+"WorldStateMod");
+        Class<?> busType=loader.loadClass("net.neoforged.neoforge.common.NeoForge");
+        Object bus=busType.getField("EVENT_BUS").get(null);
+        modType.getConstructor().newInstance();
+        Object host=host(config.resolve("focus-event"));
+        var bind=modType.getDeclaredMethod("bindService",serviceType); bind.setAccessible(true); bind.invoke(null,host);
+        Object server=server(config.resolve("save"),true,false);
+        Object pins=serviceType.getMethod("focusPins").invoke(host);
+        UUID c=UUID.randomUUID();
+        pins.getClass().getMethod("pin",UUID.class,String.class,String.class,String.class,String.class,long.class,long.class,long.class,int.class,int.class)
+                .invoke(pins,c,"w","s","d","environment",System.currentTimeMillis()-10000,1000L,0L,0,0);
+        Class<?> post=loader.loadClass("net.neoforged.neoforge.event.tick.ServerTickEvent$Post");
+        Object event=post.getConstructor(java.util.function.BooleanSupplier.class,serverType).newInstance((java.util.function.BooleanSupplier) () -> true,server);
+        bus.getClass().getMethod("fire",Object.class).invoke(bus,event);
+        var release=pins.getClass().getMethod("active",UUID.class,String.class,String.class,long.class);
+        // Verify callback worked, not active() lazy cleanup: use old time before expiry.
+        assertTrue(((java.util.List<?>)release.invoke(pins,c,"w","s",0L)).isEmpty());
+        pins.getClass().getMethod("pin",UUID.class,String.class,String.class,String.class,String.class,long.class,long.class,long.class,int.class,int.class)
+                .invoke(pins,c,"w","s","d","environment",System.currentTimeMillis(),60000L,0L,0,0);
+        Class<?> stopped=loader.loadClass("net.neoforged.neoforge.event.server.ServerStoppedEvent");
+        bus.getClass().getMethod("fire",Object.class).invoke(bus,stopped.getConstructor(serverType).newInstance(server));
+        assertTrue(((java.util.List<?>)release.invoke(pins,c,"w","s",0L)).isEmpty());
+    }
+
     private static String location(Class<?> type) throws Exception {
         return Path.of(type.getProtectionDomain().getCodeSource().getLocation().toURI()).toString();
     }
@@ -468,6 +520,24 @@ class WorldStateSessionWiringTest {
 
     private static Map<String, String> stubs() {
         Map<String, String> sources = new java.util.LinkedHashMap<>();
+        sources.put("net.neoforged.fml.common.Mod", "package net.neoforged.fml.common; public @interface Mod { String value(); }");
+        sources.put("net.neoforged.neoforge.common.NeoForge", """
+                package net.neoforged.neoforge.common;
+                public class NeoForge {
+                    public static final Bus EVENT_BUS = new Bus();
+                    public static class Bus {
+                        public java.util.List<java.util.function.Consumer<Object>> listeners = new java.util.ArrayList<>();
+                        @SuppressWarnings("unchecked") public <T> void addListener(java.util.function.Consumer<T> c) { listeners.add((java.util.function.Consumer<Object>)(Object)c); }
+                        // Test boundary: drive only compatible typed callbacks; not NeoForge bus implementation.
+                        public void fire(Object event) { int delivered=0; for(var listener:listeners) { try { listener.accept(event); delivered++; } catch(ClassCastException wrongEventType) { /* unrelated typed lambda */ } } if(delivered!=1) throw new AssertionError("expected one typed callback, got "+delivered); }
+                    }
+                }
+                """);
+        sources.put("net.neoforged.neoforge.event.server.ServerStartedEvent", "package net.neoforged.neoforge.event.server; public record ServerStartedEvent(net.minecraft.server.MinecraftServer server) { public net.minecraft.server.MinecraftServer getServer(){return server;} }");
+        sources.put("net.neoforged.neoforge.event.server.ServerStoppedEvent", "package net.neoforged.neoforge.event.server; public record ServerStoppedEvent(net.minecraft.server.MinecraftServer server) { public net.minecraft.server.MinecraftServer getServer(){return server;} }");
+        sources.put("net.neoforged.neoforge.event.tick.ServerTickEvent", "package net.neoforged.neoforge.event.tick; public class ServerTickEvent { public record Post(java.util.function.BooleanSupplier hasTime, net.minecraft.server.MinecraftServer server) { public net.minecraft.server.MinecraftServer getServer(){return server;} } }");
+        sources.put("com.dwinovo.numen.api.NumenPlugins", "package com.dwinovo.numen.api; public class NumenPlugins { public static void register(NumenPlugin p){} }");
+        sources.put(PKG + "WorldStatePlugin", "package com.dwinovo.numen.plugins.worldstate; public class WorldStatePlugin implements com.dwinovo.numen.api.NumenPlugin { public void setup(com.dwinovo.numen.api.NumenApi api){} }");
         sources.put("net.minecraft.server.MinecraftServer", """
                 package net.minecraft.server;
                 import java.nio.file.Path;

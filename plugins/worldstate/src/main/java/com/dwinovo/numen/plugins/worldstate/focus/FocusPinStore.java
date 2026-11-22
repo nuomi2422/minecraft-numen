@@ -103,7 +103,20 @@ public final class FocusPinStore {
         list.removeIf(p->{boolean remove=!p.worldId().equals(w)||!p.sessionId().equals(s);if(remove) holders.remove(p.id());return remove;});
         if(list.isEmpty()) pins.remove(c);
     }
-    /** Called by a trusted service lifecycle; does not start a background thread. */
+    /** Bounded round robin; returns subjects examined, not pins removed. No thread is started. */
+    public synchronized int sweepBatch(long now, int maxSubjects) {
+        int count = Math.min(Math.max(0, maxSubjects), pins.size());
+        for (int i=0; i<count; i++) {
+            UUID subject = pins.keySet().iterator().next();
+            pruneExpired(subject, now);
+            List<FocusPin> remaining = pins.remove(subject);
+            if (remaining != null) pins.put(subject, remaining);
+        }
+        return count;
+    }
+    /** Stop only this store instance; all in-memory focus holders are invalidated. */
+    public synchronized void clear() { pins.clear(); holders.clear(); }
+    /** Legacy full scan; callers needing bounded work use sweepBatch. */
     public synchronized void sweepExpired(long now) {
         for(UUID c : new ArrayList<>(pins.keySet())) pruneExpired(c,now);
     }
