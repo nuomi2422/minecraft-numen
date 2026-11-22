@@ -188,6 +188,7 @@ class MineEffectsConsumerTest {
                         case "unreachable" -> { f.nav.state=PlayerNav.State.FAILED; f.player.world.time=1; }
                         case "broken" -> { f.reachable=ore; f.digger.result=Digger.Result.BROKE_TARGET; }
                         case "full" -> {
+                            f.baseline=64; f.player.inv.items.set(0,new ItemStack(new Item("raw_iron"),64));
                             for(int i=1;i<36;i++) f.player.inv.items.add(new ItemStack(new Item("stone"),64));
                             f.player.world.entities.add(new ItemEntity(new BlockPos(20,64,0),new ItemStack(new Item("raw_iron"),1)));
                         }
