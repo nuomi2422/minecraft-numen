@@ -149,6 +149,18 @@ class RddStageBAssetDetailConsumerTest {
         f.retryLazy();f.drain();assertEquals(2,f.requests(),"same unexpanded owner can retry after the cancellation cooldown");
         assertTrue(f.inFlight());f.lateRemove();assertTrue(f.inFlight(),"late old-body removal cannot clear the new request");
     }
+    @Test void queuedOldReplyAndOldDiscardCannotClearTheFreshLazyRequest()throws Exception {
+        Driver f=fixture();f.startLazy();f.drain();f.respond("decompose_goal","old-plan",PLAN);
+        f.removeAndRespawn();assertFalse(f.inFlight());
+        f.retryLazy();f.lateRemove();f.drain();
+        assertEquals(2,f.requests());assertTrue(f.inFlight(),"queued stale discard CAS cannot cancel the newer request");
+        assertEquals(0,f.completions());
+    }
+    @Test void removingBeforeTheFirstModelSendDoesNotLeaveAnUnfinishedWaiter()throws Exception {
+        Driver f=fixture();f.startLazy();f.removeAndRespawn();f.drain();
+        assertEquals(0,f.requests());assertFalse(f.inFlight());
+        f.retryLazy();f.drain();assertEquals(1,f.requests());assertTrue(f.inFlight());
+    }
     @Test void directPlanKeepsOneRequestAndNeverReadsRegistry()throws Exception {
         Driver f=fixture();f.start();f.drain();f.respond("decompose_goal","direct",PLAN);f.drain();
         assertEquals(1,f.requests());assertEquals(0,f.reads());assertEquals(1,f.completions());assertEquals(1,f.specs().size());
