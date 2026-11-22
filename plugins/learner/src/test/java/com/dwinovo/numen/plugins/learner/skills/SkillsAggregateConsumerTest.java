@@ -775,6 +775,14 @@ class SkillsAggregateConsumerTest {
         assertFalse(new LearnedSkillBodyResolver.FocusDeclaration("not-ref","environment","v1","").available());
     }
 
+    @Test void selfRequiredPackageCannotGrantFocusDeclaration() throws Exception {
+        register("self-focus","self focus","self focus purpose","body",List.of("scene:overnight:package",
+                "requires:skill:self-focus@v1","focus:environment@v1"));
+        var resolver=new LearnedSkillBodyResolverImpl(dir); var view=LearnedSkillBodyResolver.View.EXECUTOR;
+        assertTrue(resolver.resolve(COMPANION,"skill:self-focus@v1",view).available(),"direct package read remains available");
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:self-focus@v1",view).available(),"self reference cannot satisfy a required capability");
+    }
+
     @Test void focusDeclarationRequiresEligibleExactPackageAndSupportedTopicVersion() throws Exception {
         register("focus-good","good","focus good purpose",PACK_BODY,List.of("scene:overnight:package","focus:environment@v1"));
         register("focus-absent","absent","focus absent purpose",PACK_BODY,List.of("scene:overnight:package"));
