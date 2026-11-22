@@ -69,7 +69,8 @@ public final class ToolDispatcher {
     private final Sink sink;
 
     /** This turn's remaining calls, drained one at a time. */
-    private final Deque<ToolInvocation> queue = new ArrayDeque<>();
+    private record QueuedCall(ToolInvocation invocation, String frozenYieldTicket) {}
+    private final Deque<QueuedCall> queue = new ArrayDeque<>();
     /** The single in-flight call (id → invocation); ≤1 under the serial model. */
     private final Map<String, ToolInvocation> inFlight = new HashMap<>();
     /** 在飞调用的开始时刻（墙钟毫秒）；结果事件里的 duration_ms 由它算出。 */
@@ -96,8 +97,8 @@ public final class ToolDispatcher {
         for (ToolInvocation inv : inFlight.values()) {
             return inv.name();
         }
-        ToolInvocation next = queue.peek();
-        return next == null ? null : next.name();
+        QueuedCall next = queue.peek();
+        return next == null ? null : next.invocation().name();
     }
 
     /** Run this turn's tool calls, serially. */
@@ -107,8 +108,12 @@ public final class ToolDispatcher {
      * 而不是存成字段:它描述的是一个瞬间,存起来下一批就是陈账。
      */
     public void dispatch(List<ToolInvocation> calls, java.util.Set<String> callable) {
+        dispatch(calls, callable, null);
+    }
+
+    public void dispatch(List<ToolInvocation> calls, java.util.Set<String> callable, String frozenYieldTicket) {
         this.callable = callable == null ? java.util.Set.of() : callable;
-        queue.addAll(calls);
+        for (ToolInvocation call : calls) queue.add(new QueuedCall(call, frozenYieldTicket));
         drainNext();
     }
 
@@ -147,7 +152,7 @@ public final class ToolDispatcher {
      */
     public List<String> cancelAndDrain(boolean stopBody) {
         List<String> ids = new ArrayList<>(inFlight.keySet());
-        for (ToolInvocation inv : queue) ids.add(inv.id());
+        for (QueuedCall queued : queue) ids.add(queued.invocation().id());
         inFlight.clear();
         startedAtMillis.clear();
         queue.clear();
@@ -175,11 +180,12 @@ public final class ToolDispatcher {
         advancing = true;
         try {
             while (inFlight.isEmpty()) {
-                ToolInvocation inv = queue.poll();
-                if (inv == null) {
+                QueuedCall queued = queue.poll();
+                if (queued == null) {
                     sink.onAllSettled();
                     return;
                 }
+                ToolInvocation inv = queued.invocation();
                 // 2026-11-05：9 次 `unknown tool: todo`（真名 todowrite）。只映射实测出现过的短名，不做模糊匹配。
                 NumenTool tool = ToolRegistry.resolve(
                         com.dwinovo.numen.agent.tool.ToolAliases.resolve(inv.name()));
@@ -210,7 +216,7 @@ public final class ToolDispatcher {
                 startedAtMillis.put(inv.id(), System.currentTimeMillis());
                 deadlineMillis = System.currentTimeMillis() + TOOL_BACKSTOP_MILLIS;
                 ToolCall call = new ToolCall(inv.id(), inv.name(), inv.argsJson(),
-                        new ClientToolContext(sink.entity(), entityUuid),
+                        new ClientToolContext(sink.entity(), entityUuid), queued.frozenYieldTicket(),
                         json -> complete(inv, json));
                 Constants.LOG.info("[numen-dispatch#{}] dispatch tool={} id={} args={}",
                         entityUuid, inv.name(), inv.id(), truncate(inv.argsJson()));
