@@ -70,7 +70,7 @@ final class RddPlannerFacts {
                 String plain = storage.replaceAll("<[^>]+>", "").trim();
                 sb.append("箱子里：").append(plain).append('\n');
             } else {
-                sb.append("箱子里：身边 8 格内没有装东西的容器（别据此断定没存货，远处箱子没扫）\n");
+                sb.append("箱子里：附近容器未观测或未知（不能据此断定没有存货）\n");
             }
         }
 
