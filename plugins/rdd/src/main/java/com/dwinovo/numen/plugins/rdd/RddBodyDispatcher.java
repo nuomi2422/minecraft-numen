@@ -39,7 +39,8 @@ final class RddBodyDispatcher {
             return;
         }
         var state = RddPlugin.bodyState(ap.getUUID());
-        if (state != null && state.subtaskId().equals(current.id())) {
+        if (state != null && state.subtaskId().equals(current.id())
+                && (!"rdd_report_yield".equals(body.taskType()) || state.yieldChain() == capturedChain)) {
             return;
         }
         if ("rdd_report_yield".equals(body.taskType())) {
@@ -67,7 +68,9 @@ final class RddBodyDispatcher {
         } catch (RuntimeException failure) {
             reply[0] = "UNKNOWN: yield dispatch threw";
         }
-        RddPlugin.rememberYieldBody(ap.getUUID(), current.id(), binding, reply[0]);
+        var active = RddPlugin.runtime(ap.getUUID());
+        if (active != null && active.chain() == capturedChain && capturedChain.currentSubtask() == current)
+            RddPlugin.rememberYieldBody(ap.getUUID(), current.id(), capturedChain, binding, reply[0]);
     }
 
     /** 重试路径：绕过"已提交过"判断，强制重派一次（submitCount 由调用方维护）。 */

@@ -146,8 +146,8 @@ public final class RddPlugin implements NumenPlugin {
     /** 内存资产历史（uuid→history）；磁盘为真身，清世界状态只清内存。 */
     private static final Map<UUID, AssetHistory> HISTORY = new ConcurrentHashMap<>();
 
-    record BodyState(String subtaskId, int submitCount, Object yieldBinding, String yieldResult) {
-        BodyState(String subtaskId, int submitCount) { this(subtaskId, submitCount, null, ""); }
+    record BodyState(String subtaskId, int submitCount, TaskChain yieldChain, Object yieldBinding, String yieldResult) {
+        BodyState(String subtaskId, int submitCount) { this(subtaskId, submitCount, null, null, ""); }
     }
 
     /**
@@ -2665,9 +2665,9 @@ private static String safeDeathAttacker(NumenPlayer body) {
         }
     }
 
-    static void rememberYieldBody(UUID companionId, String subtaskId, Object binding, String result) {
+    static void rememberYieldBody(UUID companionId, String subtaskId, TaskChain chain, Object binding, String result) {
         if (companionId != null && subtaskId != null)
-            BODY.put(companionId, new BodyState(subtaskId, 1, binding, result == null ? "UNKNOWN" : result));
+            BODY.put(companionId, new BodyState(subtaskId, 1, chain, binding, result == null ? "UNKNOWN" : result));
     }
 
     public static void clearBody(UUID companionId) {
