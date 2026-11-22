@@ -10,7 +10,7 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Entire production record -> exact task runQuery/merge/prune/reachableTarget/mineProgress.
- * Index query, harvest/reach and dig are boundary ports; no actual A*/MC/drop provenance claim.
+ * Index query, harvest/reach and dig are boundary ports; no actual A-star, MC or drop provenance claim.
  * The index port applies only the predicate supplied by the production task, never test scope logic. */
 class MineTargetScopeTaskConsumerTest {
     @TempDir static Path temp;static URLClassLoader loader;static Class<?> fixture;
