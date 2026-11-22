@@ -38,6 +38,22 @@ public final class ServerToolTransport {
     /** Ship a body-bound tool under a fresh wire key while retaining its model call. */
     public static void ship(ToolCall call) {
         UUID entity = call.ctx().entityUuid();
+        String wireArgs = call.rawArgs();
+        if ("rdd_report_yield".equals(call.toolName())) {
+            try {
+                var args = com.google.gson.JsonParser.parseString(wireArgs).getAsJsonObject();
+                args.remove("_yield_ticket");
+                if (call.frozenYieldTicket() == null || call.frozenYieldTicket().isBlank()) {
+                    call.complete(TaskResult.fail("yield ticket unavailable; refresh the current task and retry").toJson());
+                    return;
+                }
+                args.addProperty("_yield_ticket", call.frozenYieldTicket());
+                wireArgs = args.toString();
+            } catch (RuntimeException invalid) {
+                call.complete(TaskResult.fail("invalid yield arguments JSON").toJson());
+                return;
+            }
+        }
         // Preserve the existing external routing namespace; this is not authentication.
         String prefix = call.id() != null && call.id().startsWith("mcp-") ? "mcp-wire-" : "wire-";
         String wireId;
@@ -47,7 +63,7 @@ public final class ServerToolTransport {
         // Client association only: neither server acceptance nor a durable-log acknowledgement.
         LocalToolCallLog.publishTransportBinding(entity, call.id(), wireId, call.toolName());
         Services.NETWORK.sendToServer(
-                new ExecuteToolPayload(entity, wireId, call.toolName(), call.rawArgs()));
+                new ExecuteToolPayload(entity, wireId, call.toolName(), wireArgs));
     }
 
     /** Start one internal ticket request; its response never enters the model tool queue. */
