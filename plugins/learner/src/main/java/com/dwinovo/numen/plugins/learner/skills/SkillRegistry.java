@@ -198,7 +198,12 @@ public final class SkillRegistry {
                         "body-unreadable: revision rejected; keeping " + existing.skillId() + "@v" + existing.version());
             }
             SkillEntry revised = existing.revise(candidate.bodyRef(), candidate.foundingSamples(), candidate.preconditions());
-            store(revised);
+            // Declaration changes must be durable before becoming visible to a fresh resolver.
+            if (!existing.preconditions().equals(candidate.preconditions())) {
+                if (!storeTransition(revised)) return new Decision(Outcome.CONFLICT, existing, "preconditions-persist-failed");
+            } else {
+                store(revised);
+            }
             return new Decision(Outcome.REVISE, revised,
                     "同指纹正文或前置条件变化，修订为 v" + revised.version()
                             + "（旧版 " + existing.skillId() + "@v" + existing.version() + " 进 supersedes）");
