@@ -34,7 +34,7 @@ final class RddAssetContext {
         List<AssetRegistry.AssetEntry> assets = worldAssets(registry);
         if (assets.isEmpty()) return "";
         String open = "<known_world_assets>\n", close = "</known_world_assets>";
-        String warning = "LAZY: re-check.\n", missing = "not_delivered=YES\n", truncated = "truncated=YES\n";
+        String warning = "historical; not current; re-check.\n", missing = "not_delivered=YES\n", truncated = "truncated=YES\n";
         if (open.length() + warning.length() + missing.length() + close.length() > maxChars)
             return missing.trim();
         StringBuilder out = new StringBuilder(open).append(warning);
@@ -61,6 +61,23 @@ final class RddAssetContext {
         }
         if (omitted) out.append(shown == 0 ? missing : truncated);
         return out.append(close).toString();
+    }
+
+    /** Planner has no rdd_assets tool: provide a bounded historical fact, not an unusable ref. */
+    static String renderForPlanner(AssetRegistry registry, int maxChars) {
+        List<AssetRegistry.AssetEntry> assets = worldAssets(registry);
+        if (assets.isEmpty()) return "";
+        String head = "历史线索非当前；需重查：", omitted = "未投递";
+        for (var entry : assets) {
+            var v = entry.observation().value();
+            String line = head + text(v.get("kind")) + " " + text(v.getOrDefault("label", entry.assetId()))
+                    + " " + text(v.get("dimension")) + " (" + text(v.get("x")) + "," + text(v.get("y"))
+                    + "," + text(v.get("z")) + ") 时间="
+                    + (entry.observation().observedAt() > 0 ? entry.observation().observedAt() : "UNKNOWN")
+                    + " 状态=" + entry.status() + " 范围=UNKNOWN";
+            if (line.length() <= maxChars) return line;
+        }
+        return omitted.length() <= maxChars ? omitted : "";
     }
 
     private static String details(Map<String, Object> value) {

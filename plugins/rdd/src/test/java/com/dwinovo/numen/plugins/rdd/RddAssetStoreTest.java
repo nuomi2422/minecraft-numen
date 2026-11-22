@@ -181,6 +181,29 @@ class RddAssetStoreTest {
         assertTrue(data.getAsJsonObject("asset").toString().contains("local scan"));
     }
 
+    @Test void staticHistoricalLeadIsNeverPresentedAsCurrentAvailability() {
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(new Observation("old", "world_base", "test", "overworld", 1L,
+                Map.of("kind", "base", "label", "home", "world_id", "old-world", "refresh_policy", "STATIC")),
+                "base|minecraft:overworld|824633737281", AssetScope.GLOBAL, null);
+        registry.invalidate("base|minecraft:overworld|824633737281");
+        String rendered = RddAssetContext.render(registry, 160);
+        assertTrue(rendered.contains("not_delivered=YES") ||
+                (rendered.contains("historical") && rendered.contains("not current")), rendered);
+    }
+
+    @Test void plannerReceivesHistoricalLocationWithoutUnavailableDetailTool() {
+        AssetRegistry registry = new AssetRegistry();
+        registry.apply(new Observation("old", "world_base", "test", "overworld", 123L,
+                Map.of("kind", "base", "label", "home", "dimension", "overworld", "x", 1, "y", 64, "z", 2)),
+                "base|minecraft:overworld|824633737281", AssetScope.GLOBAL, null);
+        String facts = RddAssetContext.renderForPlanner(registry, 160);
+        assertTrue(facts.length() <= 160);
+        assertTrue(facts.contains("历史") && facts.contains("非当前") && facts.contains("重查"));
+        assertTrue(facts.contains("home") && facts.contains("1,64,2") && facts.contains("123"));
+        assertFalse(facts.contains("rdd_assets"));
+    }
+
     private static Observation observation(String type, Map<String, Object> value) {
         return new Observation("obs-" + type, type, "test", "minecraft:overworld", 1L, value);
     }
