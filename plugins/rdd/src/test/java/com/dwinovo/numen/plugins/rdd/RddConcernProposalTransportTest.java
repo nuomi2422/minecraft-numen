@@ -57,6 +57,29 @@ class RddConcernProposalTransportTest {
             assertEquals(List.of("decompose_goal","fail"),run.invoke(null,2));
         }
     }
+    @Test void reviewOnlyFieldsDoNotBecomeRequiredForLegacyConcernCalls() throws Exception {
+        Path root=Path.of("").toAbsolutePath();
+        while(root!=null&&!Files.isRegularFile(root.resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddConcernTool.java"))) root=root.getParent();
+        assertNotNull(root);
+        String tool=Files.readString(root.resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddConcernTool.java"));
+        int at=tool.indexOf("    @Override public Map<String, Object> parameterSchema()"),end=tool.indexOf("\n    }",at);
+        assertTrue(at>=0&&end>at);
+        Path source=temp.resolve("SchemaProbe.java"),out=temp.resolve("schema-out");Files.createDirectories(out);
+        Files.writeString(source,"import java.util.*; import com.dwinovo.numen.agent.tool.Schema; "
+                + "public class SchemaProbe {" + tool.substring(at,end+6).replace("@Override ","") + "}");
+        assertEquals(0,ToolProvider.getSystemJavaCompiler().run(null,null,null,"-encoding","UTF-8","-proc:none","-d",out.toString(),
+                source.toString(),root.resolve("api/common/src/main/java/com/dwinovo/numen/agent/tool/Schema.java").toString()),"SETUP: actual Schema builder compiles");
+        try(var loader=new URLClassLoader(new java.net.URL[]{out.toUri().toURL()},ClassLoader.getPlatformClassLoader())) {
+            Class<?> probe=loader.loadClass("SchemaProbe");
+            var schema=(Map<?,?>)probe.getMethod("parameterSchema").invoke(probe.getConstructor().newInstance());
+            var required=(List<?>)schema.get("required");
+            assertFalse(required.contains("concern_ref"),"ordinary ACCEPT/PAUSE must not require a review reference");
+            assertFalse(required.contains("review_evidence"),"ordinary calls must not require review-only evidence");
+            assertTrue(((Map<?,?>)schema.get("properties")).containsKey("concern_ref"));
+            assertTrue(((Map<?,?>)schema.get("properties")).containsKey("review_evidence"));
+            assertTrue(required.containsAll(List.of("kind","expected_subtask_id","reason","suggestion")),"existing required fields stay unchanged");
+        }
+    }
     @Test void proposalRefAndEvidenceAreRequiredButNeverVerifiedByTheParser() {
         String base="{\"subtasks\":[{\"description\":\"keep legacy plan\",\"condition\":{\"asset_key\":\"minecraft:bread\",\"minimum\":1}}]";
         String review=",\"concern_review\":{\"concern_ref\":\"ref\",\"proposal\":\"FIXED\",\"reason\":\"claimed\",\"basis\":\"model text\"}}";
