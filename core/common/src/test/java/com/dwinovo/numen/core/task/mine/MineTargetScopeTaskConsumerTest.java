@@ -70,7 +70,7 @@ class MineTargetScopeTaskConsumerTest {
             static final int MAX_ORES=64,QUERY_MAX_CHUNK_RADIUS=32,QUERY_BUILD_BUDGET=48,QUERY_HEARTBEAT_TICKS=100,QUERY_MIN_GAP_TICKS=20,MAX_NO_SHOT_TICKS=20,DROP_LOITER_TICKS=5;
             static final double IN_PLACE_FILTER_SQR=49;
             Player player=new Player();MineBlockTaskRecord r;List<BlockPos> knownOres=new ArrayList<>();Set<BlockPos> unworkable=new HashSet<>(),unharvestable=new HashSet<>();Map<BlockPos,Long> anticipatedDrops=new HashMap<>();
-            long lastQueryChunk,lastProgressTick;BlockPos lastProgressPos,noShotPos;int heartbeatTimer,queryCooldown,coldMapFails,brokenTargets,noShotTicks;boolean lastQueryComplete;Object navigationFailure;
+            long lastQueryChunk,lastProgressTick;BlockPos lastProgressPos,noShotPos,latchedMineTarget;int heartbeatTimer,queryCooldown,coldMapFails,brokenTargets,noShotTicks;boolean lastQueryComplete;Object navigationFailure;
             static class Digger{enum Result{BROKE_TARGET,NO_SHOT,BROKE_OCCLUDER,PROGRESSING}int calls;Result digStep(BlockPos p){calls++;return Result.PROGRESSING;}void cancel(){}}
             Digger digger=new Digger();boolean reachable(BlockPos p){return true;}boolean plausibleToBreak(CalculationContext c,BlockPos p,BlockState s){return true;}
         TASK_METHODS

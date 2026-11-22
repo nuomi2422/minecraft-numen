@@ -333,7 +333,7 @@ class MineHarvestRecoveryConsumerTest {
                         String toShortString(){return x+", "+y+", "+z;} BlockPos immutable(){return this;} int getY(){return y;}
                     }
                     static class Level { long now; BlockState getBlockState(BlockPos p){return new BlockState();} long getGameTime(){return now;} }
-                    static class BlockState { boolean isAir(){return false;} }
+                    static class BlockState { boolean isAir(){return false;} Object getBlock(){return "ore";} }
                     static class NumenPlayer { BlockPos feet=new BlockPos(0,64,0); Level level=new Level(); int halts; boolean shifting=true;
                         Level level(){return level;} BlockPos blockPosition(){return feet;} void setShiftKeyDown(boolean b){shifting=b;} }
                     static class InputDriver { static void halt(NumenPlayer p){p.halts++;} }
@@ -355,6 +355,7 @@ class MineHarvestRecoveryConsumerTest {
                     static class WorkProfile { static WorkProfile of(NumenPlayer p){return new WorkProfile();} boolean dropsLoot(){return true;} }
                     static class Request {
                         int count=5,mined; String label="stone+4"; long deadline=3000;
+                        Set<Object> targets=Set.of("ore"); boolean containsTarget(BlockPos p){return true;}
                         int getMined(){return mined;} void setMined(int n){mined=n;}
                         long getDeadlineGameTime(){return deadline;} void extendDeadlineTo(long n){deadline=n;}
                     }
@@ -369,7 +370,7 @@ class MineHarvestRecoveryConsumerTest {
                     List<BlockPos> drops=List.of(), observedDrops=List.of(); PlayerNav nav;
                     boolean lastQueryComplete=true,navIsBranch; int coldMapFails,queryCooldown,navReplanCooldown;
                     int baseline,brokenTargets,branchTicks,branchY,noShotTicks,pickup; long lastProgressTick;
-                    BlockPos lastProgressPos=player.feet,branchPoint,noShotPos,reachable;
+                    BlockPos lastProgressPos=player.feet,branchPoint,noShotPos,reachable,latchedMineTarget;
                     String progressNote="done"; Precondition.Failure terminal;
                     static final int STALL_TICKS=400,NAV_REPLAN_MIN_GAP_TICKS=20,MAX_NO_SHOT_TICKS=20,MAX_BRANCH_TICKS=600,DROP_LOITER_TICKS=5;
                     static final double STALL_MOVE=2.0,MINE_SPEED=1.0; static final boolean EXPLORE_FOR_BLOCKS=false;
