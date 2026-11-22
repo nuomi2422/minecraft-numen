@@ -717,6 +717,32 @@ class SkillsAggregateConsumerTest {
         assertFalse(invokeRealLoader(packageArgs(PACK_REF,STEP_REF)).get("success").getAsBoolean());
     }
 
+    @Test void realToolRejectsPlannerOnlyLegalComponentSpecificallyForAudience() throws Exception {
+        var base=catalogFixture("private-legal",SkillStatus.TRIAL,"PLANNER","private body","private", "private purpose");
+        var marked=new SkillEntry(base.skillId(),base.version(),base.kind(),base.name(),base.purpose(),base.audience(),base.triggerConditions(),base.excludeConditions(),List.of("scene:overnight:component"),base.risk(),base.evidenceLevel(),base.status(),base.bodyRef(),base.validationSignals(),base.foundingSamples(),base.supersedes(),base.conflicts());
+        java.nio.file.Files.writeString(dir.resolve("skills.jsonl"),SkillRegistry.toJson(marked)+"\n",java.nio.file.StandardOpenOption.APPEND);
+        register("private-package","private package","private package purpose",PACK_BODY,List.of("scene:overnight:package","optional:skill:private-legal@v7"));
+        var response=invokeRealLoader(packageArgs("skill:private-package@v1","skill:private-legal@v7"));
+        assertFalse(response.get("success").getAsBoolean()); assertTrue(response.toString().contains("audience-mismatch"));
+        var direct=new LearnedSkillBodyResolverImpl(dir).resolve(COMPANION,"skill:private-legal@v7",LearnedSkillBodyResolver.View.PLANNER);
+        assertTrue(direct.available(),"component is otherwise eligible to planner");
+    }
+
+    @Test void realToolRejectsSelfRequiredEvenWhenSelectedComponentIsValid() throws Exception {
+        register(STEP,"component","self dependency component",STEP_BODY,List.of("scene:overnight:component"));
+        register("self-required","self required","self dependency package",PACK_BODY,List.of("scene:overnight:package",
+                "requires:"+STEP_REF,"requires:skill:self-required@v1"));
+        var result=invokeRealLoader(packageArgs("skill:self-required@v1",STEP_REF));
+        assertFalse(result.get("success").getAsBoolean(),"self-reference is not an independently available required dependency");
+    }
+    @Test void realToolPermitsNonSceneReadableRequiredSkill() throws Exception {
+        register(STEP,"component","mixed dependency component",STEP_BODY,List.of("scene:overnight:component"));
+        register("plain-method","method","mixed dependency plain method","body",List.of());
+        register("mixed-pack","mixed","mixed dependency package",PACK_BODY,List.of("scene:overnight:package",
+                "requires:"+STEP_REF,"requires:skill:plain-method@v1"));
+        assertTrue(invokeRealLoader(packageArgs("skill:mixed-pack@v1",STEP_REF)).get("success").getAsBoolean());
+    }
+
     @Test
     void packageComponentReadRequiresExplicitMembershipAndCurrentEligibility() throws Exception {
         seed();
