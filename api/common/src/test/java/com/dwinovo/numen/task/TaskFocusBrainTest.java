@@ -22,6 +22,7 @@ class TaskFocusBrainTest {
         var current=new java.util.HashSet<String>(); var count=new int[1];
         TaskFocusLeaseService fake=new TaskFocusLeaseService() {
             public Lease acquire(NumenPlayer c,TaskRecord task,String owner) { count[0]++; current.add(owner); return new Lease(id,owner,"lease-"+owner,Long.MAX_VALUE); }
+            public boolean stillEligible(NumenPlayer c,TaskRecord task,Lease lease) { return true; }
             public void release(Lease l) { current.remove(l.owner()); }
         };
         var field=NumenPlugins.class.getDeclaredField("CAPABILITIES"); field.setAccessible(true);

@@ -96,11 +96,16 @@ class TaskFocusLeaseBridgeTest {
                       String bodyRef="skill:demo@v1", version="v1";
                       public Resolution resolve(UUID c,String r,View v){check(c.equals(id)&&v==View.EXECUTOR,"body lookup identity/view"); return new Resolution(bodyRef,text,"");}
                       public FocusDeclaration resolveFocusDeclaration(UUID c,String r,View v){check(c.equals(id)&&v==View.EXECUTOR,"declaration identity/view"); return new FocusDeclaration(r,"environment",version,"");}
+                      public long managedRevision(){return 1L;}
+                      public ManagedFocusEligibility managedFocusEligibility(UUID c,String r,View v){return new ManagedFocusEligibility(1L,resolveFocusDeclaration(c,r,v));}
                     }
                     var resolver=new Resolver(); NumenPlugins.resolver=resolver;
                     var storeHost=new WorldStateService(); var bridge=new TaskFocusLeaseBridge(storeHost);
                     var task=new TaskRecord(); task.stamp=newStamp; task.selection=new TaskRecord.Selection(id.toString(),"skill:demo","v1",digest,newStamp);
                     WorldStateMod.active=newServer; WorldContextStamp.current=newStamp;
+                    NumenPlugins.resolver=(c,r,v)->new LearnedSkillBodyResolver.Resolution(r,text,"");
+                    check(bridge.acquire(body,task,"unknown-owner")==null,"default unmanaged resolver must not gain a lease");
+                    NumenPlugins.resolver=resolver;
                     var lease=bridge.acquire(body,task,"owner"); check(lease!=null,"valid declaration must acquire");
                     var pins=storeHost.focusPins(); check(pins.active(id,"world","new",System.currentTimeMillis()).size()==1,"real store must contain pin");
                     task.selection=new TaskRecord.Selection(id.toString(),"skill:demo","v1","bad-digest",newStamp);

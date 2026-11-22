@@ -96,6 +96,8 @@ class TaskFocusSlotIntegrationTest {
                       String bodyRef="skill:demo@v1", version="v1"; int resolutions;
                       public Resolution resolve(UUID c,String r,View v){check(c.equals(id)&&v==View.EXECUTOR,"body lookup identity/view"); resolutions++; return new Resolution(bodyRef,text,"");}
                       public FocusDeclaration resolveFocusDeclaration(UUID c,String r,View v){check(c.equals(id)&&v==View.EXECUTOR,"declaration identity/view"); return new FocusDeclaration(r,"environment",version,"");}
+                      public long managedRevision(){return 1L;}
+                      public ManagedFocusEligibility managedFocusEligibility(UUID c,String r,View v){return new ManagedFocusEligibility(1L,resolveFocusDeclaration(c,r,v));}
                     }
                     var resolver=new Resolver(); NumenPlugins.resolver=resolver;
                     var storeHost=new WorldStateService(); var bridge=new TaskFocusLeaseBridge(storeHost);
