@@ -38,6 +38,9 @@ final class RddPlannerFacts {
 
     /** 组装事实包；comapnion 不在线时返回带「未观测」的短块（不抛、不空）。 */
     static String block(ServerPlayer player, java.util.UUID companionId) {
+        return block(player, companionId, null);
+    }
+    static String block(ServerPlayer player, java.util.UUID companionId, String objective) {
         StringBuilder sb = new StringBuilder();
         sb.append("<situation>\n");
 
@@ -77,7 +80,7 @@ final class RddPlannerFacts {
         // ③ 世界里有什么（自己造过/登记过的世界资产）
         String world = "";
         try {
-            if (companionId != null) world = RddAssetContext.renderForPlanner(RddPlugin.assets(companionId), 160);
+            if (companionId != null) world = RddAssetContext.renderForPlanner(RddPlugin.assets(companionId), 160, objective);
         } catch (RuntimeException ignored) {
             world = "";
         }

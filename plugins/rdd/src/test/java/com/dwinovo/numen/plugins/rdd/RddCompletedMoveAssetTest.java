@@ -91,7 +91,7 @@ class RddCompletedMoveAssetTest {
                 Map.of("kind", "entity", "label", "cow", "dimension", "overworld", "world_id", "world", "x", 9, "y", 64, "z", 2)),
                 "cow", com.dwinovo.numen.rdd.api.AssetScope.GLOBAL, null);
         String objective = "use furnace to smelt iron";
-        String facts = RddAssetContext.renderForPlanner(registry, 160);
+        String facts = RddAssetContext.renderForPlanner(registry, 160, objective);
         var sent = new ArrayList<String>(); var id = UUID.randomUUID();
         var snapshot = com.dwinovo.numen.rdd.core.PlanningAssetSnapshot.from(Map.of(), 100L, registry);
         RddStagePlanner.dispatchStages(id, objective, null, snapshot, facts,
@@ -100,6 +100,10 @@ class RddCompletedMoveAssetTest {
         assertTrue(sent.getFirst().contains("历史线索非当前"));
         assertTrue(sent.getFirst().contains("machine furnace"), sent.getFirst());
         assertTrue(sent.getFirst().contains("其余未展示"), sent.getFirst());
+        assertTrue(RddAssetContext.renderForPlanner(registry, 160, null).contains("entity cow"));
+        assertTrue(RddAssetContext.renderForPlanner(registry, 160, "find diamonds").contains("entity cow"));
+        assertEquals("未投递", RddAssetContext.renderForPlanner(registry, 4, objective));
+        assertTrue(RddAssetContext.renderForPlanner(registry, 160, objective).contains("世界=world"));
     }
 
     @Test void plannerReceivesDirectedEndpointsOrExplicitUndelivered() {
