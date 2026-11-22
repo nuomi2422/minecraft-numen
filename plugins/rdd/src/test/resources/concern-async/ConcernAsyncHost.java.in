@@ -1,0 +1,169 @@
+package com.dwinovo.numen.plugins.rdd;
+
+import com.dwinovo.numen.entity.NumenPlayer;
+import com.dwinovo.numen.rdd.api.*;
+import com.dwinovo.numen.rdd.core.*;
+import com.dwinovo.numen.rdd.fail.*;
+import com.dwinovo.numen.rdd.policy.*;
+import com.dwinovo.numen.rdd.replan.ReplanContextBuilder;
+import com.google.gson.JsonObject;
+import java.util.*;
+import java.util.function.Consumer;
+
+// Each test gets a fresh loader: one runtime, one inbox, one guarded destination executor.
+public final class ConcernAsyncHost implements RddConcernAsyncCallbackConsumerTest.Driver {
+    private final NumenPlayer player;
+    private final RddRuntime rt;
+    private final Detector detector = new Detector();
+
+    public ConcernAsyncHost(UUID id, RddRuntime rt) {
+        this.rt = rt;
+        this.player = new NumenPlayer(id);
+        RddPlugin.RUNTIMES.put(id, rt);
+    }
+
+    public String report(String kind, String subtask, String reason, String suggestion) {
+        JsonObject args = new JsonObject();
+        args.addProperty("kind", kind);
+        args.addProperty("expected_subtask_id", subtask);
+        args.addProperty("reason", reason);
+        args.addProperty("suggestion", suggestion);
+        List<String> replies = new ArrayList<>();
+        new RddConcernTool().onServerCall(UUID.randomUUID().toString(), args, player, replies::add);
+        if (replies.size() != 1) throw new AssertionError("tool replies: " + replies);
+        return replies.get(0);
+    }
+    public int plannerCalls() { return RddDecomposer.calls; }
+    public int negotiationBudgetUsed() {
+        return RddPlugin.REPLAN_COUNTS.getOrDefault(player.getUUID() + "|" + rt.chain().currentPrimary().id() + "|nego", 0);
+    }
+    public void complete(List<SubtaskSpec> specs) {
+        var callback = Objects.requireNonNull(RddDecomposer.pending, "planner callback not captured");
+        RddDecomposer.pending = null;
+        callback.accept(specs); // not the server-side application: that must enter the original onServer/guard
+    }
+    public int queued() { return ServerLifecycleHooks.SERVER.queue.size(); }
+    public void runNext() { ServerLifecycleHooks.SERVER.queue.removeFirst().run(); }
+    public void negotiate() { detector.tickNegotiation(player, rt, rt.chain()); }
+    public String pendingReason() {
+        var n = RddNegotiationInbox.peek(player.getUUID());
+        return n == null ? null : n.reason();
+    }
+    public Map<String,Object> review() { return RddNegotiationInbox.reviewSnapshot(player.getUUID()); }
+    public String requestReview(String ref, String evidence) {
+        JsonObject args = new JsonObject(); args.addProperty("kind","REVIEW");
+        args.addProperty("concern_ref",ref); args.addProperty("review_evidence",evidence);
+        List<String> replies=new ArrayList<>();
+        new RddConcernTool().onServerCall("review-request",args,player,replies::add);
+        return replies.get(0);
+    }
+    public String reviewPrompt() { return RddDecomposer.reviewHint; }
+    public void completeReview(String json) {
+        var callback=Objects.requireNonNull(RddDecomposer.reviewPending);
+        RddDecomposer.reviewPending=null;
+        callback.accept(new RddDecomposer.ConcernPlan(List.of(),RddStageBSpecParser.parseConcernProposal(json,RddDecomposer.reviewRef)));
+    }
+    public void exhaustBudget() { RddPlugin.REPLAN_COUNTS.put(player.getUUID()+"|"+rt.chain().currentPrimary().id()+"|nego", 999); }
+    public List<String> snapshots() { return List.copyOf(RddPlugin.snapshots); }
+    public List<String> reasons(String event) { return List.copyOf(RddMonitor.reasons.getOrDefault(event, List.of())); }
+
+    private static final class Detector {
+        private final Watch parkedWatcher = new Watch();
+        private static final class Watch {
+            void watch(NumenPlayer p, RddRuntime rt, Subtask sub) { throw new AssertionError("unexpected park"); }
+        }
+        // @DETECTOR@
+    }
+}
+
+// Only the host methods under test come from source. IO, body and prompt-only lookups are shell seams.
+final class RddPlugin {
+    static final Map<UUID,RddRuntime> RUNTIMES = new HashMap<>();
+    static final Map<String,Integer> REPLAN_COUNTS = new HashMap<>();
+    static final List<String> snapshots = new ArrayList<>();
+    private static final RddCallbackGuard CALLBACKS = new RddCallbackGuard();
+    // @LIMITS@
+    static final class Log {
+        void info(String s, Object... args) {}
+        void warn(String s, Object... args) { if (!s.contains("重规划预算耗尽")) throw new AssertionError("unexpected replan warning: " + s + " " + Arrays.toString(args)); }
+    }
+    private static final Log LOG = new Log();
+    static RddRuntime runtime(UUID id) { return RUNTIMES.get(id); }
+    static boolean pauseEnabled() { return true; }
+    static void clearBody(UUID id) {}
+    static final class BodyState {}
+    private static BodyState bodyState(UUID id) { return null; }
+    private static void clearBodyIfSame(UUID id, BodyState prior) {}
+    private static boolean isMissingAssetCause(UUID id, String reason) { throw new AssertionError("not a failure replan"); }
+    private static String describeMissing(UUID id) { throw new AssertionError(); }
+    private static boolean insertRecoveryNode(UUID id, String what, String why) { throw new AssertionError(); }
+    private static Object captureObservationToken(MinecraftServer server) { return server; }
+    private static String replanSituation(UUID id) { return ""; }
+    private static PlanningAssetSnapshot planningSnapshot(UUID id) {
+        return PlanningAssetSnapshot.from(Map.of(), runtime(id).assets());
+    }
+    private static void publishTaskSnapshot(UUID id, String why, Object token) { snapshots.add(why); }
+    private static void saveRuntimes() {}
+    // @REQUEST@
+    // @REVISION@
+    // @ON_SERVER@
+}
+
+final class RddGoalDriver {
+    // @ACCEPT_PLAN@
+}
+final class RddDecomposer {
+    static int calls;
+    static Consumer<List<SubtaskSpec>> pending;
+    record ConcernPlan(List<SubtaskSpec> specs,RddStageBSpecParser.ConcernProposal proposal) {}
+    static Consumer<ConcernPlan> reviewPending;
+    static String reviewHint,reviewRef;
+    static void decomposeConcernSpecs(UUID id,TaskChain owner,long revision,String theme,int attempt,
+            List<String> completed,String hint,String ref,Consumer<ConcernPlan> done) {
+        if (reviewPending!=null || RddPlugin.runtime(id).chain()!=owner || owner.planRevision()!=revision)
+            throw new AssertionError("wrong concern review owner");
+        calls++; reviewHint=hint+ref; reviewRef=ref; reviewPending=done;
+    }
+    static void decomposeSpecsWithHint(UUID id, TaskChain owner, long revision, String theme, int attempt,
+            List<String> completed, String hint, Consumer<List<SubtaskSpec>> done) {
+        if (pending != null || RddPlugin.runtime(id).chain() != owner || owner.planRevision() != revision)
+            throw new AssertionError("overlapping request or wrong planner owner");
+        calls++;
+        pending = done;
+    }
+}
+final class MinecraftServer {
+    final Deque<Runnable> queue = new ArrayDeque<>();
+    boolean isSameThread() { return false; } // planner completion is deliberately off the server executor
+    void execute(Runnable work) { queue.addLast(work); }
+}
+final class ServerLifecycleHooks {
+    static final MinecraftServer SERVER = new MinecraftServer();
+    static MinecraftServer getCurrentServer() { return SERVER; }
+}
+final class SideTaskHost {
+    static void requestFoodSupply(NumenPlayer p, String reason) { throw new AssertionError("unexpected SURVIVAL"); }
+    static void registerDailyCandidates(TaskChain chain, List<Subtask> subs) {
+        if (subs.stream().anyMatch(s -> s.nodeType() != NodeType.MAIN)) throw new AssertionError("not MAIN-only");
+    }
+}
+final class RddMonitor {
+    static final Map<String,List<String>> reasons = new HashMap<>();
+    static void publish(String event, Map<String,Object> data, Object... token) {
+        reasons.computeIfAbsent(event, k -> new ArrayList<>()).add(Objects.toString(data.get("reason"), ""));
+    }
+}
+final class RddInstrumentation {
+    static final String LOOP_DETECTED = "loop", RECOVERY_FAILED = "recovery";
+    static long currentGameTimeTicks() { return 100; }
+    static boolean recentDeath(UUID id, long t) { return false; }
+    static void publishAt(String event, Map<String,Object> data, long t) { throw new AssertionError(event); }
+}
+final class RddCapabilityBrief { static String block(UUID id) { return ""; } }
+final class RddFactContext { static String replanBlock(UUID id) { return ""; } }
+// Only prompt decoration (the real request still carries the original builder, reason and soldier hint).
+final class RddReplanPlanRenderer {
+    static String renderPreviousPlanForReplan(TaskChain chain) { return ""; }
+    static String renderRemainingPlanForReplan(TaskChain chain) { return ""; }
+    static String renderDoneForReplan(TaskChain chain) { return ""; }
+}
