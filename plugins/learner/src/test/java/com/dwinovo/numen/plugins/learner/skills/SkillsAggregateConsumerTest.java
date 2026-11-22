@@ -717,6 +717,29 @@ class SkillsAggregateConsumerTest {
         assertFalse(invokeRealLoader(packageArgs(PACK_REF,STEP_REF)).get("success").getAsBoolean());
     }
 
+    @Test void failedDeclarationWithdrawalDoesNotPublishMemoryOrSuccess() throws Exception {
+        String id="focus-write-fail", body="stable declaration body";
+        String bodyRef=SkillBodyStore.write(dir,id,1,"fixture-write-fail",body);
+        var registry=SkillRegistry.open(dir.resolve("skills.jsonl"));
+        java.util.function.Function<List<String>,ArtifactDraft> draft=pre->new ArtifactDraft(ArtifactKind.EXPERIENCE,"failure package","failure package purpose",body,
+                List.of("overnight"),List.of(),pre,"UNKNOWN",List.of(),List.of("fixture"),"EXECUTOR");
+        var declared=draft.apply(List.of("scene:overnight:package","focus:environment@v1"));
+        var withdrawn=draft.apply(List.of("scene:overnight:package"));
+        assertEquals(SkillRegistry.Outcome.REGISTERED,registry.register(declared,id,bodyRef,true).outcome());
+        assertEquals(SkillRegistry.Outcome.REUSE,registry.register(declared,id,bodyRef,true).outcome());
+        var file=dir.resolve("skills.jsonl"); var before=java.nio.file.Files.readAllBytes(file);
+        // Occupy the exact temporary file as a non-empty directory: original registry remains readable.
+        var temp=dir.resolve("skills.jsonl.tmp"); java.nio.file.Files.createDirectory(temp);
+        java.nio.file.Files.writeString(temp.resolve("block"),"fixture");
+        var decision=registry.register(withdrawn,id,bodyRef,true);
+        assertFalse(decision.outcome()==SkillRegistry.Outcome.REVISE,"failed persistent withdrawal must not report success");
+        org.junit.jupiter.api.Assertions.assertArrayEquals(before,java.nio.file.Files.readAllBytes(file));
+        assertEquals(1,registry.get(id).orElseThrow().version());
+        var resolver=new LearnedSkillBodyResolverImpl(dir);
+        assertTrue(resolver.resolveFocusDeclaration(COMPANION,"skill:"+id+"@v1",LearnedSkillBodyResolver.View.EXECUTOR).available());
+        assertEquals(SkillRegistry.Outcome.REUSE,registry.register(declared,id,bodyRef,true).outcome());
+    }
+
     @Test void normalRegistrationRevisesOnFocusDeclarationAdditionAndRemoval() throws Exception {
         String id="focus-revision"; String body="stable focus body";
         String bodyRef=SkillBodyStore.write(dir,id,1,"fixture-focus-revision",body);
