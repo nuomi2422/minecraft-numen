@@ -47,8 +47,13 @@ final class RddHomeFacts {
 
     static String blockFor(AssetRegistry registry, Map<String, Integer> inventory, long nowMillis,
                            com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
+        return blockFor(registry, inventory, nowMillis, identity, RESPX.get(), RESPY.get(), RESPZ.get());
+    }
+
+    static String blockFor(AssetRegistry registry, Map<String, Integer> inventory, long nowMillis,
+                           com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity, Integer x, Integer y, Integer z) {
         // TC-RESERVE-01: all consumers derive from the same identity-checked view.
-        HomeView view = HomeView.of(registry, nowMillis, identity);
+        HomeView view = HomeView.of(registry, nowMillis, identity, x, y, z);
         if (view.base() == null) {
             // 没观测到基地不等于没有基地：只报 NO_HOME，并明确 reserve 未知（不写 0）。
             return HomeSummary.block(HomeSummary.lines(HomeStage.NO_HOME, null, null, null, null,
@@ -156,7 +161,11 @@ final class RddHomeFacts {
         }
 
         static HomeView of(AssetRegistry registry, long nowMillis, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
-            AssetRegistry.AssetEntry base = freshestBase(registry, identity);
+            return of(registry, nowMillis, identity, RESPX.get(), RESPY.get(), RESPZ.get());
+        }
+
+        static HomeView of(AssetRegistry registry, long nowMillis, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity, Integer x, Integer y, Integer z) {
+            AssetRegistry.AssetEntry base = freshestBase(registry, identity, x, y, z);
             if (base == null) {
                 return new HomeView(null, Map.of(), 0L, false, HomeReserve.unobserved(), HomeStage.NO_HOME);
             }
@@ -196,8 +205,9 @@ final class RddHomeFacts {
      * 原来按「最新一条」取，经常拿到别的床旁边那个空箱子 → 上下文一直显示没有备用，
      * 而 1554 条观测里其实有铁镐。改成优先按**当前重生点**挑（{@link BaseSelector}）。
      */
-    private static AssetRegistry.AssetEntry freshestBase(AssetRegistry registry, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
-        if (registry == null || identity == null || !knownIdentity(identity.worldId()) || !knownIdentity(identity.serverSession())) return null;
+    private static AssetRegistry.AssetEntry freshestBase(AssetRegistry registry, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity, Integer x, Integer y, Integer z) {
+        if (registry == null || identity == null || !knownIdentity(identity.worldId()) || !knownIdentity(identity.serverSession())
+                || x == null || y == null || z == null) return null;
         java.util.List<AssetRegistry.AssetEntry> bases = new java.util.ArrayList<>();
         for (var e : RddAssetContext.worldAssets(registry)) {
             if (!"base".equals(String.valueOf(e.observation().value().get("kind")))) continue;
@@ -214,8 +224,12 @@ final class RddHomeFacts {
             cands.add(new com.dwinovo.numen.rdd.core.BaseSelector.Candidate(
                     num(v.get("x")), num(v.get("y")), num(v.get("z")), e.observation().observedAt()));
         }
-        int idx = com.dwinovo.numen.rdd.core.BaseSelector.pick(cands, RESPX.get(), RESPY.get(), RESPZ.get());
-        return idx < 0 ? null : bases.get(idx);
+        int idx = com.dwinovo.numen.rdd.core.BaseSelector.pick(cands, x, y, z);
+        if (idx < 0) return null;
+        var chosen = cands.get(idx);
+        long dx = (long) chosen.x() - x, dy = (long) chosen.y() - y, dz = (long) chosen.z() - z;
+        double radius = com.dwinovo.numen.rdd.core.BaseSelector.DEFAULT_RADIUS;
+        return dx * (double) dx + dy * (double) dy + dz * (double) dz <= radius * radius ? bases.get(idx) : null;
     }
 
     private static boolean knownIdentity(String s) {

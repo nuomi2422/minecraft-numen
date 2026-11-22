@@ -51,7 +51,13 @@ final class RddWorldAssetObserver {
         com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity = null;
         try { if (identityProvider != null) identity = identityProvider.snapshot(companion.getServer()); }
         catch (RuntimeException unavailable) { /* unknown identity */ }
-        int bases = observeBase(companion, registry, identity);
+        int bases;
+        try {
+            bases = observeBase(companion, registry, identity);
+        } catch (RuntimeException failure) {
+            RddPlugin.captureHomeIdentity(companion, null, null);
+            throw failure;
+        }
         int structures = observeStructures(companion, registry);
         observeVillages(companion, registry);   // P2.3：村庄资源节点（供规划查“这村庄有啥”）
         int machines = observeMachines(companion, registry);
@@ -64,7 +70,7 @@ final class RddWorldAssetObserver {
                                    com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
         RddBaseFacts.BaseInspection inspection = RddBaseFacts.inspectBaseResult(companion, Map.of());
         RddWorldFacts.BaseSnapshot base = inspection.snapshot();
-        RddPlugin.captureHomeIdentity(companion, base == null ? null : identity);
+        RddPlugin.captureHomeIdentity(companion, base == null ? null : identity, base == null ? null : base.spawn());
         if (base == null) {
             markBaseRecheck(registry, identity, inspection);
             return 0;

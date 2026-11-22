@@ -7,6 +7,8 @@ import com.dwinovo.numen.rdd.policy.HomeStage;
 import com.dwinovo.numen.rdd.policy.HomeSummary;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -30,6 +32,9 @@ class RddHomeReserveFreshnessTest {
     private static final long TTL = HomeSummary.DEFAULT_STALE_AFTER_MS;
     private static final com.dwinovo.numen.api.ServerIdentityProvider.Snapshot ID =
             new com.dwinovo.numen.api.ServerIdentityProvider.Snapshot("world-A", "session-A");
+
+    @BeforeEach void setAnchor() { RddHomeFacts.RESPX.set(372); RddHomeFacts.RESPY.set(68); RddHomeFacts.RESPZ.set(715); }
+    @AfterEach void clearAnchor() { RddHomeFacts.RESPX.remove(); RddHomeFacts.RESPY.remove(); RddHomeFacts.RESPZ.remove(); }
 
     @Test
     void staleButFullReserveMustNotCountAsStocked() {
@@ -231,6 +236,13 @@ class RddHomeReserveFreshnessTest {
         assertTrue(com.dwinovo.numen.rdd.policy.HomeGate.enforce(otherwiseAllowed, view.stage()).allowed());
     }
 
+    @Test void explicitOutOfRangeAnchorIsUnknown() {
+        long now = 1_700_000_000_000L;
+        var registry = baseRegistry(now - MINUTE, fullReserve());
+        var view = RddHomeFacts.HomeView.of(registry, now, ID, 900, 68, 900);
+        assertFalse(view.reserve().known());
+    }
+
     @Test void currentAnchorBeatsNewerOtherBaseAndMissingAnchorIsUnknown() {
         long now = 1_700_000_000_000L;
         AssetRegistry registry = baseRegistry(now - 2 * MINUTE, Map.of());
@@ -247,10 +259,11 @@ class RddHomeReserveFreshnessTest {
             assertFalse(anchored.reserve().sufficient());
             RddHomeFacts.RESPX.remove(); RddHomeFacts.RESPY.remove(); RddHomeFacts.RESPZ.remove();
             var missing = RddHomeFacts.HomeView.of(registry, now, ID);
-            assertFalse(missing.reserve().known(), "no current anchor must not pick newer unrelated base");
-            var otherwiseAllowed = new com.dwinovo.numen.rdd.policy.RiskGate.Verdict(true,
-                    com.dwinovo.numen.rdd.policy.RiskLevel.NETHER, List.of(), List.of());
-            assertFalse(com.dwinovo.numen.rdd.policy.HomeGate.enforce(otherwiseAllowed, missing.stage()).allowed());
+            assertAll(
+                    () -> assertFalse(missing.reserve().known(), "no current anchor must not pick newer unrelated base"),
+                    () -> { var allowed = new com.dwinovo.numen.rdd.policy.RiskGate.Verdict(true,
+                            com.dwinovo.numen.rdd.policy.RiskLevel.NETHER, List.of(), List.of());
+                        assertFalse(com.dwinovo.numen.rdd.policy.HomeGate.enforce(allowed, missing.stage()).allowed()); });
         } finally {
             RddHomeFacts.RESPX.remove(); RddHomeFacts.RESPY.remove(); RddHomeFacts.RESPZ.remove();
         }

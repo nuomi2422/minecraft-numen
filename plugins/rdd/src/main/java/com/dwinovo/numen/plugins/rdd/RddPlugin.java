@@ -433,23 +433,26 @@ public final class RddPlugin implements NumenPlugin {
     }
 
     private static final Map<UUID, String> LAST_CONTEXT = new java.util.concurrent.ConcurrentHashMap<>();
-    private record HomeIdentity(com.dwinovo.numen.entity.NumenPlayer body,
-                                com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity, long epoch) {}
+    record HomeIdentity(com.dwinovo.numen.entity.NumenPlayer body,
+                        com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity, long epoch,
+                        Integer x, Integer y, Integer z) {}
     private static final Map<UUID, HomeIdentity> HOME_IDENTITIES = new java.util.concurrent.ConcurrentHashMap<>();
 
     static void captureHomeIdentity(com.dwinovo.numen.entity.NumenPlayer body,
-                                    com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
+                                    com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity,
+                                    net.minecraft.core.BlockPos anchor) {
         if (body == null) return;
         var stamp = com.dwinovo.numen.api.WorldContextStamp.capture();
-        if (identity == null || stamp.identity() == null
+        if (identity == null || anchor == null || stamp.identity() == null
                 || !java.util.Objects.equals(stamp.identity().get("world_id"), identity.worldId())
                 || !java.util.Objects.equals(stamp.identity().get("server_session"), identity.serverSession())) {
             HOME_IDENTITIES.remove(body.getUUID()); return;
         }
-        HOME_IDENTITIES.put(body.getUUID(), new HomeIdentity(body, identity, stamp.epoch()));
+        HOME_IDENTITIES.put(body.getUUID(), new HomeIdentity(body, identity, stamp.epoch(),
+                anchor.getX(), anchor.getY(), anchor.getZ()));
     }
 
-    static com.dwinovo.numen.api.ServerIdentityProvider.Snapshot cachedHomeIdentity(UUID id) {
+    static HomeIdentity cachedHomeIdentity(UUID id) {
         var cached = id == null ? null : HOME_IDENTITIES.get(id);
         if (cached == null || RddCompanionBody.get(id) != cached.body()
                 || cached.epoch() != com.dwinovo.numen.api.WorldContextStamp.epoch()) return null;
@@ -458,7 +461,7 @@ public final class RddPlugin implements NumenPlugin {
         if (token.epoch() != cached.epoch() || stamp == null
                 || !java.util.Objects.equals(stamp.get("world_id"), cached.identity().worldId())
                 || !java.util.Objects.equals(stamp.get("server_session"), cached.identity().serverSession())) return null;
-        return cached.identity();
+        return cached;
     }
 
     /** Disk handoffs survive; in-flight planning and cached world observations do not. */
@@ -1027,7 +1030,10 @@ private static String withAssets(UUID companionId, String rddContext) {
                 RddHomeFacts.RESPY.remove();
                 RddHomeFacts.RESPZ.remove();
             }
-            homeBlock = RddHomeFacts.blockFor(assets(companionId), lastInventory(companionId), System.currentTimeMillis(), cachedHomeIdentity(companionId));
+            var homeIdentity = cachedHomeIdentity(companionId);
+            homeBlock = RddHomeFacts.blockFor(assets(companionId), lastInventory(companionId), System.currentTimeMillis(),
+                    homeIdentity == null ? null : homeIdentity.identity(), homeIdentity == null ? null : homeIdentity.x(),
+                    homeIdentity == null ? null : homeIdentity.y(), homeIdentity == null ? null : homeIdentity.z());
             // 167 §B1：把建家路线作为**一条带依赖的路线**发布一次，便于运行期核对它确实存在
             // （本轮还不塞进常驻提示词：先让它可观测，再谈怎么消费）。
             try {
