@@ -53,6 +53,20 @@ class FocusToolWiringTest {
         assertEquals(0,refreshes.get());
     }
 
+    @Test void legacyToolHandleRoundTripsAfterSharedReacquire() {
+        UUID c=UUID.randomUUID(); FocusPinStore store=new FocusPinStore(); long now=1000L;
+        var first=FocusTools.pin(store,c,"world","session","minecraft:overworld","environment",now,60000,0);
+        var owner=store.acquire(c,"world","session","minecraft:overworld","environment","","package",now,60000,0,0,0);
+        assertTrue(FocusTools.unpin(store,c,first.id()));
+        var next=FocusTools.pin(store,c,"world","session","minecraft:overworld","environment",now+1,60000,0);
+        assertNotEquals(first.id(),next.id());
+        assertFalse(FocusTools.unpin(store,c,first.id()));
+        assertTrue(FocusTools.unpin(store,c,next.id()));
+        assertEquals(1,store.active(c,"world","session",now+2).size());
+        assertTrue(store.release(c,"package",owner.leaseId()));
+        assertTrue(store.active(c,"world","session",now+3).isEmpty());
+    }
+
     @Test void pinTwiceProjectTwiceThenUnpin() {
         UUID c = UUID.randomUUID();
         FocusPinStore store = new FocusPinStore();
