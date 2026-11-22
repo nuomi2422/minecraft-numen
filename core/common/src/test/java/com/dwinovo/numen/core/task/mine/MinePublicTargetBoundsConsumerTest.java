@@ -77,7 +77,7 @@ class MinePublicTargetBoundsConsumerTest {
                     case "reversed" -> bounds.addProperty("x1",3);
                     case "empty" -> bounds=new JsonObject();
                     case "horizontal" -> bounds.addProperty("x2",30000001);
-                    case "vertical" -> bounds.addProperty("y2",2049);
+                    case "vertical" -> bounds.addProperty("y2",2147483648L);
                     case "fraction" -> bounds.addProperty("x1",0.5);
                     case "string" -> bounds.addProperty("x1","0");
                     case "boolean" -> bounds.addProperty("x1",true);
