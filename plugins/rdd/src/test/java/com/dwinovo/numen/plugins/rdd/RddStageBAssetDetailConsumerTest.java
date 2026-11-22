@@ -18,9 +18,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * A controlled model asks for detail, then produces the real parsed specification. Not live LLM/MC. */
 class RddStageBAssetDetailConsumerTest {
     public interface Driver {
-        void start(); void respond(String name,String id,String args); void respondMultiple(); void addLarge(); void staleAfterRead(String kind);
+        void start(); void respond(String name,String id,String args); void respondMultiple(); void addLarge(); void staleAfterRead(String kind); void startLazy(); void removeAndRespawn(); boolean inFlight(); void retryLazy(); void lateRemove();
         int requests(); int reads(); int completions(); List<?> specs(); List<ConvoState.Msg> messages();
-        List<String> offered(); void stale(String kind); void budget(int allowed); void drain();
+        List<String> offered(); String system(); void stale(String kind); void budget(int allowed); void drain();
     }
     @TempDir static Path temp;
     static Class<?> host; static URLClassLoader loader;
@@ -32,7 +32,8 @@ class RddStageBAssetDetailConsumerTest {
         Path root=Path.of("").toAbsolutePath();while(root!=null&&!Files.isDirectory(root.resolve("plugins/rdd/src/main/java")))root=root.getParent();assertNotNull(root);
         Path src=root.resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd");
         String dc=Files.readString(src.resolve("RddDecomposer.java"));
-        String methods=method(dc,"    static void decomposeSpecsWithHint(UUID companionId, TaskChain owner,")
+        String methods=method(dc,"    static void decomposeSpecs(UUID companionId, TaskChain owner,")
+            +method(dc,"    static void decomposeSpecsWithHint(UUID companionId, TaskChain owner,")
             +method(dc,"    static void llmAsk(UUID companionId,")
             +optionalMethods(dc,"    static void llmAskOwnedStageB(")
             +optionalMethods(dc,"    private static void stageBAssetRound(");
@@ -43,8 +44,9 @@ class RddStageBAssetDetailConsumerTest {
             +Path.of(Gson.class.getProtectionDomain().getCodeSource().getLocation().toURI())+File.pathSeparator
             +Path.of(TaskChain.class.getProtectionDomain().getCodeSource().getLocation().toURI())+File.pathSeparator
             +Path.of(ConvoState.class.getProtectionDomain().getCodeSource().getLocation().toURI())+File.pathSeparator
-            +Path.of(Driver.class.getProtectionDomain().getCodeSource().getLocation().toURI()),"-d",out.toString(),generated.toString()));
-        for(String type:List.of("RddAssetReadView","RddAssetContext","RddAssetStore","RddStageBSpecParser","RddKeys","RddCallbackGuard","RddPlannerTransport"))args.add(src.resolve(type+".java").toString());
+            +Path.of(Driver.class.getProtectionDomain().getCodeSource().getLocation().toURI())+File.pathSeparator
+            +Path.of(org.slf4j.LoggerFactory.class.getProtectionDomain().getCodeSource().getLocation().toURI()),"-d",out.toString(),generated.toString()));
+        for(String type:List.of("RddAssetReadView","RddAssetContext","RddAssetStore","RddStageBSpecParser","RddKeys","RddCallbackGuard","RddPlannerTransport","RddDecomposerPrompt","RddGoalDriver","RddExpansionPolicy"))args.add(src.resolve(type+".java").toString());
         args.add(src.resolve("RddStageBAssetHost.java").toString());
         String plugin=Files.readString(src.resolve("RddPlugin.java"));
         Files.writeString(generated,Files.readString(generated).replace("// @ON_SERVER@",method(plugin,"    static void onServer(MinecraftServer server,")));
@@ -61,7 +63,8 @@ class RddStageBAssetDetailConsumerTest {
             package com.dwinovo.numen.entity; import net.minecraft.server.MinecraftServer;
             public class NumenPlayer {public final MinecraftServer server;public boolean alive=true,removed;
                 public NumenPlayer(MinecraftServer server){this.server=server;}public MinecraftServer getServer(){return server;}
-                public boolean isAlive(){return alive;}public boolean isRemoved(){return removed;}}
+                public boolean isAlive(){return alive;}public boolean isRemoved(){return removed;}
+                public java.util.UUID getUUID(){return java.util.UUID.fromString(System.getProperty("stageb.fixture.id"));}}
             """);
         source(args,"com.dwinovo.numen.api.WorldContextStamp","""
             package com.dwinovo.numen.api; import java.util.*; import net.minecraft.server.MinecraftServer;
@@ -86,10 +89,13 @@ class RddStageBAssetDetailConsumerTest {
     private static final String PLAN="{\"subtasks\":[{\"description\":\"use verified fixture clue\",\"condition\":{\"asset_key\":\"minecraft:bread\",\"minimum\":1}}]}";
     @Test void exactRegistryDetailReachesNextModelRequestAndActualSpecs()throws Exception {
         Driver f=fixture();f.start();f.drain();assertTrue(f.offered().contains("rdd_assets"));
+        assertTrue(f.system().contains("可先调用一次 rdd_assets 精确detail"));
+        assertFalse(f.system().contains("只输出 decompose_goal 工具调用，不要写多余文字。"));
         f.respond("rdd_assets","detail-1","{\"action\":\"detail\",\"asset_id\":\"base\"}");f.drain();
         assertEquals(2,f.requests(),"detail is a tool result, not a plan; allow exactly one followup");assertEquals(1,f.reads());assertEquals(0,f.completions());
         var reply=(ConvoState.Msg.Tool)f.messages().getLast();assertEquals("detail-1",reply.toolCallId());
         assertTrue(reply.content().contains("fixture-hidden-entry"));assertTrue(reply.content().length()<=8000);
+        assertTrue(f.system().contains("只输出 decompose_goal 工具调用"),"followup is plan-only");
         assertTrue(f.messages().get(f.messages().size()-2) instanceof ConvoState.Msg.Assistant);
         f.respond("decompose_goal","plan-1",PLAN);f.drain();assertEquals(1,f.completions());assertEquals(1,f.specs().size());
     }
@@ -136,6 +142,12 @@ class RddStageBAssetDetailConsumerTest {
     @Test void scopeChangedByRegistryReadCannotForwardItsResult()throws Exception {
         Driver f=fixture();f.start();f.drain();f.staleAfterRead("ticket");f.respond("rdd_assets","detail-1","{\"action\":\"detail\",\"asset_id\":\"base\"}");f.drain();
         assertEquals(1,f.reads());assertEquals(1,f.requests());assertEquals(0,f.completions());
+    }
+    @Test void removingBodyCancelsOnlyTheOriginalLazyExpansionRequest()throws Exception {
+        Driver f=fixture();f.startLazy();f.drain();assertEquals(1,f.requests());assertTrue(f.inFlight());
+        f.removeAndRespawn();assertFalse(f.inFlight(),"original lazy request must not remain in flight after body removal");
+        f.retryLazy();f.drain();assertEquals(2,f.requests(),"same unexpanded owner can retry after the cancellation cooldown");
+        assertTrue(f.inFlight());f.lateRemove();assertTrue(f.inFlight(),"late old-body removal cannot clear the new request");
     }
     @Test void directPlanKeepsOneRequestAndNeverReadsRegistry()throws Exception {
         Driver f=fixture();f.start();f.drain();f.respond("decompose_goal","direct",PLAN);f.drain();

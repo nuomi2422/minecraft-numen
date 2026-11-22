@@ -17,22 +17,32 @@ import com.dwinovo.numen.plugins.rdd.RddStageBAssetDetailConsumerTest.Driver;
 public class StageBAssetHost implements Driver {
     static StageBAssetHost live;
     final UUID id=UUID.randomUUID(); AssetRegistry registry=new AssetRegistry();
-    final MinecraftServer mc=new MinecraftServer();NumenPlayer body=new NumenPlayer(mc);TaskChain liveChain;String mutateOnRead;
+    final MinecraftServer mc=new MinecraftServer();NumenPlayer body=new NumenPlayer(mc);TaskChain liveChain;RddRuntime runtime;String mutateOnRead;NumenPlayer removedBody;
     final RddCallbackGuard callbacks=new RddCallbackGuard();
-    final TaskChain chain=new TaskChain(new Goal("g","fixture",List.of(new PrimaryGoal("p","fixture",List.of(Subtask.hardCoded("s","fixture",Map.of("minimum",1)))))));
+    TaskChain chain=new TaskChain(new Goal("g","fixture",List.of(new PrimaryGoal("p","fixture",List.of(Subtask.hardCoded("s","fixture",Map.of("minimum",1)))))));
     final List<List<ConvoState.Msg>> requests=new ArrayList<>();final ArrayDeque<Runnable> server=new ArrayDeque<>();
     CompletableFuture<Reply> pending;List<String> tools=List.of();List<SubtaskSpec> specs=List.of();
-    int readCount,done,budget=2;boolean current=true;
-    public StageBAssetHost(){live=this;liveChain=chain;RddPlugin.CALLBACKS=callbacks;ServerLifecycleHooks.current=mc;
+    int readCount,done,budget=2;boolean current=true;String system;
+    public StageBAssetHost(){live=this;System.setProperty("stageb.fixture.id",id.toString());liveChain=chain;runtime=new RddRuntime(chain,registry);RddPlugin.CALLBACKS=callbacks;ServerLifecycleHooks.current=mc;
         WorldContextStamp.token=new WorldContextStamp.Token(Map.of("world_id","fixture","server_session","one"),1);
         registry.apply(new Observation("o","world_location","fixture","overworld",1,
         Map.of("label","fixture-hidden-entry","world_id","world","dimension","overworld")),"base",AssetScope.GLOBAL,null);}
     public void start(){mc.same=true;RddDecomposer.decomposeSpecsWithHint(id,chain,chain.planRevision(),"bread",0,List.of(),"",s->{done++;specs=s;});mc.same=false;}
+    public void startLazy(){chain=new TaskChain(new Goal("lazy","bread",List.of(PrimaryGoal.unexpanded("p","bread",List.of()))));liveChain=chain;runtime=new RddRuntime(chain,registry);
+        mc.same=true;RddGoalDriver.needExpansion(id);mc.same=false;}
+    public void removeAndRespawn(){removedBody=body;removedBody.removed=true;notifyRemoved(removedBody);body=new NumenPlayer(mc);}
+    public void lateRemove(){notifyRemoved(removedBody);}
+    private void notifyRemoved(NumenPlayer removed){try{var m=RddGoalDriver.class.getDeclaredMethod("bodyRemoved",NumenPlayer.class);m.setAccessible(true);m.invoke(null,removed);}
+        catch(NoSuchMethodException oldProduction){}catch(Exception failure){throw new AssertionError(failure);}}
+    private Object state(){try{var f=RddGoalDriver.class.getDeclaredField("STATES");f.setAccessible(true);return ((Map<?,?>)f.get(null)).get(id);}catch(Exception e){throw new AssertionError(e);}}
+    public boolean inFlight(){try{var f=state().getClass().getDeclaredField("inFlight");f.setAccessible(true);return f.getBoolean(state());}catch(Exception e){throw new AssertionError(e);}}
+    public void retryLazy(){try{var f=state().getClass().getDeclaredField("cooldownUntil");f.setAccessible(true);f.setLong(state(),0L);}catch(Exception e){throw new AssertionError(e);}
+        mc.same=true;RddGoalDriver.needExpansion(id);mc.same=false;}
     public void respond(String name,String id,String args){var p=Objects.requireNonNull(pending);pending=null;p.complete(new Reply(new AssistantTurn("",List.of(new LlmToolCall(id,name,args)),new JsonObject())));}
     public void respondMultiple(){var p=Objects.requireNonNull(pending);pending=null;p.complete(new Reply(new AssistantTurn("",List.of(new LlmToolCall("a","decompose_goal","{}"),new LlmToolCall("b","decompose_goal","{}")),new JsonObject())));}
     public void addLarge(){registry.apply(new Observation("large","world_location","fixture","overworld",1,Map.of("body","x".repeat(9000))),"large",AssetScope.GLOBAL,null);}
     public int requests(){return requests.size();} public int reads(){return readCount;} public int completions(){return done;}
-    public List<?> specs(){return specs;} public List<ConvoState.Msg> messages(){return requests.getLast();}public List<String> offered(){return tools;}
+    public List<?> specs(){return specs;} public List<ConvoState.Msg> messages(){return requests.getLast();}public List<String> offered(){return tools;} public String system(){return system;}
     public void staleAfterRead(String kind){mutateOnRead=kind;}
     public void stale(String kind){switch(kind){
         case "server" -> ServerLifecycleHooks.current=new MinecraftServer();case "body" -> body=new NumenPlayer(mc);
@@ -58,19 +68,22 @@ class RddDecomposer {
 class NumenLlmClient {
     static NumenLlmClient forEndpoint(Object endpoint){return new NumenLlmClient();}
     CompletableFuture<Reply> chatStreaming(List<ConvoState.Msg> messages,List<IToolSpec> tools,String system,Object chunk,LlmObservation obs){
-        var f=StageBAssetHost.live;f.requests.add(List.copyOf(messages));f.tools=tools.stream().map(IToolSpec::name).toList();f.pending=new CompletableFuture<>();return f.pending;}
+        var f=StageBAssetHost.live;f.system=system;f.requests.add(List.copyOf(messages));f.tools=tools.stream().map(IToolSpec::name).toList();f.pending=new CompletableFuture<>();return f.pending;}
 }
 class LlmObservation { LlmObservation(String role,String id,String stage,java.util.function.BiConsumer<String,Map<String,Object>> sink){} }
 class RddPlugin {
     static void publishPlanningContext(Object... args){}
+    static boolean decomposing(UUID id){return false;}static void publishTaskSnapshot(UUID id,String reason){}static void saveRuntimes(){}
     static RddCallbackGuard CALLBACKS;
     static RddCallbackGuard.Ticket planningTicket(UUID id){return StageBAssetHost.live.callbacks.current(id);}
     static AssetRegistry assets(UUID id){return StageBAssetHost.live.registry;}
     // @ON_SERVER@
-    static RddRuntime runtime(UUID id){return new RddRuntime(StageBAssetHost.live.liveChain,StageBAssetHost.live.registry);}
+    static RddRuntime runtime(UUID id){var f=StageBAssetHost.live;return f.runtime.chain()==f.liveChain?f.runtime:new RddRuntime(f.liveChain,f.registry);}
     static PlanningAssetSnapshot planningSnapshot(UUID id){return PlanningAssetSnapshot.from(Map.of(),StageBAssetHost.live.registry);}
 }
 class RddCompanionBody {static NumenPlayer get(UUID id){return StageBAssetHost.live.body;}}
+class RddRationale {static void expand(UUID id,TaskChain owner,Supplier<TaskChain> live,Runnable action){action.run();}}
+class SideTaskHost {static void registerDailyCandidates(TaskChain owner,List<Subtask> subs){}}
 class RddMonitor { static void publish(String name,Map<String,Object> data){} }
 class RddDeathSpotFacts { static List<String> knownFailuresFor(UUID id){return List.of();} }
 class RddPlanningKnowledge {static final Object HOST=new Object();static void publishPolicy(Object...args){} }
@@ -87,8 +100,4 @@ class RddAssetsTool implements IToolSpec {
     public String name(){return "rdd_assets";}public String description(){return "detail";}public Map<String,Object> parameterSchema(){return Map.of();}
     static String dispatch(JsonObject args,AssetRegistry registry){var f=StageBAssetHost.live;f.readCount++;String result=RddAssetReadView.dispatch(args,registry);
         if(f.mutateOnRead!=null){String kind=f.mutateOnRead;f.mutateOnRead=null;f.stale(kind);}return result;}
-}
-class RddDecomposerPrompt {
-    static final String SYSTEM_PROMPT="system";
-    static final IToolSpec DECOMPOSE_TOOL=new IToolSpec(){public String name(){return "decompose_goal";}public String description(){return "plan";}public Map<String,Object> parameterSchema(){return Map.of();}};
 }

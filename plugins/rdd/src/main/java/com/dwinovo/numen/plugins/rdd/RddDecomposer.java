@@ -117,11 +117,13 @@ final class RddDecomposer {
                                         Consumer<String> complete, Runnable fail) {
         var plan = RddDecomposerPrompt.DECOMPOSE_TOOL;
         List<IToolSpec> tools = detailCallId.isEmpty() ? List.of(plan, new RddAssetsTool()) : List.of(plan);
+        String system = detailCallId.isEmpty()
+                ? RddDecomposerPrompt.SYSTEM_PROMPT.replace("只输出 decompose_goal 工具调用，不要写多余文字。",
+                        "可先调用一次 rdd_assets 精确detail；收到工具结果后只输出 decompose_goal。每轮恰一个调用，不写多余文字。")
+                : RddDecomposerPrompt.SYSTEM_PROMPT;
         withPlannerEndpoint(companionId, "stage_b", endpoint -> RddStageBAssetHost.send(scope, () -> {
-            RddPlugin.publishPlanningContext(companionId, "stage_b", GSON.toJson(messages),
-                    RddDecomposerPrompt.SYSTEM_PROMPT, plan);
-            return NumenLlmClient.forEndpoint(endpoint).chatStreaming(messages, tools,
-                    RddDecomposerPrompt.SYSTEM_PROMPT, null,
+            RddPlugin.publishPlanningContext(companionId, "stage_b", GSON.toJson(messages), system, plan);
+            return NumenLlmClient.forEndpoint(endpoint).chatStreaming(messages, tools, system, null,
                     new LlmObservation("supervisor", companionId.toString(), "stage_b", RddMonitor::publish));
         }), result -> RddStageBAssetHost.dispatch(scope, () -> {
             AssistantTurn turn = result == null ? null : result.turn();
