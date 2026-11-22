@@ -39,6 +39,7 @@ class RddPlannerSelfDerivedConsumerTest {
         String source="""
             package com.dwinovo.numen.plugins.rdd;
             import java.util.*; import java.util.function.*; import com.dwinovo.numen.rdd.api.PrimarySpec; import com.dwinovo.numen.rdd.core.*;
+            class RddStagePlanner {}
             class RddContainerMemory { static String cached(UUID id){return \"\";} }
             class RddPlugin { static Object assets(UUID id){return null;} static PlanningAssetSnapshot planningSnapshot(UUID id){return new PlanningAssetSnapshot();} }
             class RddAssetContext { static String renderForPlanner(Object x,int n,String goal){return \"历史世界线索\";} }
