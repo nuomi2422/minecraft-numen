@@ -90,8 +90,10 @@ class RddCompletedMoveAssetTest {
             record.setResult(TaskResult.ok("done", Map.of("completed_move", fact())));
             assertTrue(RddCompletedMoveAsset.project(id, record.publicId(), record, token, "overworld", registry, 100 + i));
         }
-        assertEquals(32, registry.snapshot().stream().filter(e -> e.observation().type().equals("world_completed_move")).count());
-        assertTrue(registry.get("base").isPresent()); assertTrue(registry.get("other").isPresent());
+        assertAll(
+                () -> assertEquals(32, registry.snapshot().stream().filter(e -> e.observation().type().equals("world_completed_move")).count()),
+                () -> assertTrue(registry.get("base").isPresent()),
+                () -> assertTrue(registry.get("other").isPresent()));
     }
 
     @Test void failedUnknownWrongIdentityAndNonfiniteNeverProject() {

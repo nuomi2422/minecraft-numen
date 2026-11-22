@@ -13,6 +13,7 @@ import java.util.UUID;
 
 /** Historical completed endpoints, not a navigable route or continuous track. */
 final class RddCompletedMoveAsset {
+    private static final int MAX_COMPLETED_MOVES = 32;
     private RddCompletedMoveAsset() {}
 
     static boolean project(UUID companion, String taskId, TaskRecord record, WorldContextStamp.Token current,
@@ -43,6 +44,12 @@ final class RddCompletedMoveAsset {
             value.put("start", start); value.put("end", end); value.put("direction", "start_to_end_only");
             value.put("route_proven", false); value.put("summary", "Historical single movement endpoints; not a continuous track or proof of route passability.");
             registry.apply(new Observation("obs-" + key, "world_completed_move", "task_finished", dimension, now, value), key, AssetScope.GLOBAL, null);
+            var moves = registry.snapshot().stream()
+                    .filter(e -> "world_completed_move".equals(e.observation().type()))
+                    .sorted(java.util.Comparator.comparingLong((AssetRegistry.AssetEntry e) -> e.observation().observedAt())
+                            .thenComparing(AssetRegistry.AssetEntry::assetId))
+                    .toList();
+            for (int i = 0; i < moves.size() - MAX_COMPLETED_MOVES; i++) registry.forget(moves.get(i).assetId());
             return true;
         }
     }
