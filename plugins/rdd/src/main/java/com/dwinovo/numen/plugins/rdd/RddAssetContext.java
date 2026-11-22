@@ -65,7 +65,15 @@ final class RddAssetContext {
 
     /** Planner has no rdd_assets tool: provide a bounded historical fact, not an unusable ref. */
     static String renderForPlanner(AssetRegistry registry, int maxChars) {
-        List<AssetRegistry.AssetEntry> assets = worldAssets(registry);
+        return renderForPlanner(registry, maxChars, null);
+    }
+    static String renderForPlanner(AssetRegistry registry, int maxChars, String objective) {
+        List<AssetRegistry.AssetEntry> assets = new ArrayList<>(worldAssets(registry));
+        if (objective != null && !objective.isBlank()) {
+            String goal = objective.toLowerCase(java.util.Locale.ROOT);
+            // Stable sort keeps the existing newest-first fallback and does not assert availability.
+            assets.sort(Comparator.comparing((AssetRegistry.AssetEntry e) -> !goalMentionsLabel(goal, e)));
+        }
         if (assets.isEmpty()) return "";
         String head = "历史线索非当前；需重查：", omitted = "未投递";
         for (var entry : assets) {
@@ -89,6 +97,16 @@ final class RddAssetContext {
             if (line.length() + suffix.length() <= maxChars) return line + suffix;
         }
         return omitted.length() <= maxChars ? omitted : "";
+    }
+
+    private static boolean goalMentionsLabel(String goal, AssetRegistry.AssetEntry entry) {
+        Object label = entry.observation().value().get("label");
+        if (!(label instanceof String s) || s.isBlank() || "unknown".equalsIgnoreCase(s)) return false;
+        String lower = s.toLowerCase(java.util.Locale.ROOT);
+        String name = lower.contains(":") ? lower.substring(lower.lastIndexOf(':') + 1) : lower;
+        if (name.length() < 3) return false;
+        return java.util.regex.Pattern.compile("(?<![\\p{L}\\p{N}_])" + java.util.regex.Pattern.quote(name)
+                + "(?![\\p{L}\\p{N}_])").matcher(goal).find();
     }
 
     private static String movePoint(Object raw) {

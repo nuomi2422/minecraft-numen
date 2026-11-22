@@ -80,7 +80,7 @@ class RddPlannerFactsAssetBoundaryTest {
                 package com.dwinovo.numen.plugins.rdd;
                 class RddContainerMemory { static String value; static String cached(java.util.UUID id){return value;} }
                 class RddPlugin { static Object assets(java.util.UUID id){return new Object();} }
-                class RddAssetContext { static String value; static String renderForPlanner(Object assets,int max){return value;} }
+                class RddAssetContext { static String value; static String renderForPlanner(Object assets,int max,String objective){return value;} }
                 public class Fixture {
                     public static String offline(java.util.Map<String,Integer> held, boolean observed) {
                         return RddPlannerFacts.block(held, observed);

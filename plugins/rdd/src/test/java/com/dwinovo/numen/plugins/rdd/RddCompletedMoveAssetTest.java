@@ -82,6 +82,30 @@ class RddCompletedMoveAssetTest {
         assertTrue(detail.contains("start_to_end_only") && detail.contains("route_proven") && detail.contains("false"), detail);
         assertTrue(detail.contains("not a continuous track") && detail.contains("world_id"), detail);
     }
+    @Test void plannerFinalRequestPrefersGoalRelevantHistoricalAsset() {
+        var registry = new AssetRegistry();
+        registry.apply(new com.dwinovo.numen.rdd.api.Observation("old-furnace", "world_machine", "observer", "overworld", 100,
+                Map.of("kind", "machine", "label", "furnace", "dimension", "overworld", "world_id", "world", "x", 1, "y", 64, "z", 2)),
+                "furnace", com.dwinovo.numen.rdd.api.AssetScope.GLOBAL, null);
+        registry.apply(new com.dwinovo.numen.rdd.api.Observation("new-cow", "world_entity", "observer", "overworld", 200,
+                Map.of("kind", "entity", "label", "cow", "dimension", "overworld", "world_id", "world", "x", 9, "y", 64, "z", 2)),
+                "cow", com.dwinovo.numen.rdd.api.AssetScope.GLOBAL, null);
+        String objective = "use furnace to smelt iron";
+        String facts = RddAssetContext.renderForPlanner(registry, 160, objective);
+        var sent = new ArrayList<String>(); var id = UUID.randomUUID();
+        var snapshot = com.dwinovo.numen.rdd.core.PlanningAssetSnapshot.from(Map.of(), 100L, registry);
+        RddStagePlanner.dispatchStages(id, objective, null, snapshot, facts,
+                (companion, goal, stage, failures) -> "", () -> "", sent::add);
+        assertEquals(1, sent.size());
+        assertTrue(sent.getFirst().contains("历史线索非当前"));
+        assertTrue(sent.getFirst().contains("machine furnace"), sent.getFirst());
+        assertTrue(sent.getFirst().contains("其余未展示"), sent.getFirst());
+        assertTrue(RddAssetContext.renderForPlanner(registry, 160, null).contains("entity cow"));
+        assertTrue(RddAssetContext.renderForPlanner(registry, 160, "find diamonds").contains("entity cow"));
+        assertEquals("未投递", RddAssetContext.renderForPlanner(registry, 4, objective));
+        assertTrue(RddAssetContext.renderForPlanner(registry, 160, objective).contains("世界=world"));
+    }
+
     @Test void plannerReceivesDirectedEndpointsOrExplicitUndelivered() {
         UUID id = UUID.randomUUID(); var token = new WorldContextStamp.Token(Map.of("world_id", "world", "server_session", "session"), 7);
         var record = new Record(); record.bindIdentity(token); record.setState(TaskState.SUCCESS);

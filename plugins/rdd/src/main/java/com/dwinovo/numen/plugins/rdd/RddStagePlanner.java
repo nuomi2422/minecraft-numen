@@ -43,7 +43,7 @@ final class RddStagePlanner {
             var srv = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
             var self = srv == null ? null : srv.getPlayerList().getPlayer(companionId);
             facts = self == null ? RddPlannerFacts.block(snapshot.availableCounts(), snapshot.hasInventoryScanTime())
-                    : RddPlannerFacts.block(self, companionId);
+                    : RddPlannerFacts.block(self, companionId, objective);
         } catch (RuntimeException ex) {
             org.slf4j.LoggerFactory.getLogger(RddStagePlanner.class)
                     .warn("[rdd-facts] 事实包生成失败：{}", ex.toString());
