@@ -9,7 +9,7 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Compiles the complete production payload unchanged; only external boundaries are fakes.
- * This checks admission and emissions, not Minecraft networking or the real Gson parser. */
+ * Uses the runtime Gson library; Minecraft, logging and networking remain isolated fakes. */
 class ExecuteToolSelectionSafetyTest {
     @TempDir static Path dir;
     static URLClassLoader loader;
@@ -36,8 +36,6 @@ class ExecuteToolSelectionSafetyTest {
         s.put("com.dwinovo.numen.agent.tool.ToolRegistry", "package com.dwinovo.numen.agent.tool; public class ToolRegistry {public static NumenTool get(String n){return com.dwinovo.numen.network.payload.Fixture.mode.equals(\"unknown_tool\")?null:(id,a,p,r)->r.accept(com.dwinovo.numen.network.payload.Fixture.response);}} ");
         s.put("com.dwinovo.numen.agent.tool.ToolCallObserver", "package com.dwinovo.numen.agent.tool; public class ToolCallObserver {public static void fire(java.util.UUID u,String i,String n,int l){}} ");
         s.put("com.dwinovo.numen.agent.tool.ToolCallLoopWatch", "package com.dwinovo.numen.agent.tool; public class ToolCallLoopWatch {public static String onRejected(java.util.UUID u,String t,String m,String a){com.dwinovo.numen.network.payload.Fixture.loop.add(m+\"|\"+a);return null;} public static void onSucceeded(java.util.UUID u,String t){}} ");
-        s.put("com.google.gson.JsonObject", "package com.google.gson; public class JsonObject {public JsonObject getAsJsonObject(){return this;}} ");
-        s.put("com.google.gson.JsonParser", "package com.google.gson; public class JsonParser {public static JsonObject parseString(String s){if(com.dwinovo.numen.network.payload.Fixture.mode.equals(\"bad_json\")) throw new IllegalStateException(\"bad JSON near \"+s); return new JsonObject();}} ");
         s.put("com.dwinovo.numen.task.TaskResult", "package com.dwinovo.numen.task; public record TaskResult(String message) {public static TaskResult fail(String s){return new TaskResult(s);} public String toJson(){return \"{success:false,message:\"+message+\"}\";}} ");
         s.put("com.dwinovo.numen.network.payload.TaskResultPayload", "package com.dwinovo.numen.network.payload; public record TaskResultPayload(java.util.UUID entityUuid,String toolCallId,String resultJson) {} ");
         s.put("com.dwinovo.numen.platform.Services", "package com.dwinovo.numen.platform; public class Services {public static final Network NETWORK=new Network(); public static class Network {public void sendToPlayer(net.minecraft.server.level.ServerPlayer p,com.dwinovo.numen.network.payload.TaskResultPayload v){com.dwinovo.numen.network.payload.Fixture.replies.add(v);}}} ");
@@ -55,11 +53,13 @@ class ExecuteToolSelectionSafetyTest {
                   }
                 }
                 """);
-        List<String> args=new ArrayList<>(List.of("-encoding","UTF-8","-classpath",dir.toString(),"-d",dir.toString()));
+        URL gson = com.google.gson.JsonParser.class.getProtectionDomain().getCodeSource().getLocation();
+        String classpath = dir + java.io.File.pathSeparator + Path.of(gson.toURI());
+        List<String> args=new ArrayList<>(List.of("-encoding","UTF-8","-classpath",classpath,"-d",dir.toString()));
         for(var e:s.entrySet()){Path f=dir.resolve(e.getKey().replace('.','/')+".java");Files.createDirectories(f.getParent());Files.writeString(f,e.getValue());args.add(f.toString());}
         assertNotNull(ToolProvider.getSystemJavaCompiler());
         assertEquals(0,ToolProvider.getSystemJavaCompiler().run(null,null,null,args.toArray(String[]::new)),"complete production class must compile");
-        loader=new URLClassLoader(new URL[]{dir.toUri().toURL()},ClassLoader.getPlatformClassLoader());
+        loader=new URLClassLoader(new URL[]{dir.toUri().toURL(),gson},ClassLoader.getPlatformClassLoader());
         fixture=loader.loadClass("com.dwinovo.numen.network.payload.Fixture");
     }
     @AfterAll static void close() throws Exception {if(loader!=null) loader.close();}
@@ -68,6 +68,7 @@ class ExecuteToolSelectionSafetyTest {
         var r=run(mode,args); var replies=(List<?>)r.get("replies");
         assertEquals(1,replies.size(),"rejection must be delivered");
         assertTrue(replies.get(0).toString().contains("call-1|{success:false"));
+        if (mode.equals("bad_json")) assertTrue(replies.toString().contains("invalid arguments JSON"), "real Gson must take parse-error branch");
         List<String> leaks=new ArrayList<>();
         for(String surface:List.of("logs","loop","journal","replies"))
             if(r.get(surface).toString().contains("secret-selection-42")) leaks.add(surface);

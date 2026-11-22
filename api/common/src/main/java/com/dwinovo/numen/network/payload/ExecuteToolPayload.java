@@ -140,7 +140,7 @@ public record ExecuteToolPayload(UUID entityUuid,
         try {
             args = JsonParser.parseString(p.argumentsJson()).getAsJsonObject();
         } catch (RuntimeException ex) {
-            replyError(player, p, "invalid arguments JSON: " + ex.getMessage());
+            replyError(player, p, "invalid arguments JSON");
             return;
         }
         // Run the tool against the live companion: a query replies now, a world action
@@ -153,7 +153,7 @@ public record ExecuteToolPayload(UUID entityUuid,
             // 补成 server（事实，不是猜），让写入者标签从源头成立。
             MonitoringJournal.get().publish("tools", "tool_result", Map.of(
                     "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
-                    "tool", p.toolName(), "journaled_by", "server", "result", truncate(json)), identityToken);
+                    "tool", p.toolName(), "journaled_by", "server", "result", truncate(safeDiagnosticJson(json))), identityToken);
             com.dwinovo.numen.agent.tool.ToolCallLoopWatch.onSucceeded(p.entityUuid(), p.toolName());
             com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(player,
                     new TaskResultPayload(p.entityUuid(), p.toolCallId(), json));
@@ -161,7 +161,7 @@ public record ExecuteToolPayload(UUID entityUuid,
         try {
             tool.onServerCall(p.toolCallId(), args, companion, reply);
         } catch (RuntimeException ex) {
-            replyError(player, p, "invalid arguments: " + ex.getMessage());
+            replyError(player, p, "invalid arguments (" + ex.getClass().getSimpleName() + ")");
         }
     }
 
@@ -176,11 +176,12 @@ public record ExecuteToolPayload(UUID entityUuid,
     public static void replyError(ServerPlayer player, ExecuteToolPayload p, String message) {
         // 同一工具同一种错误反复失败 → 除了埋点,还要把「你已经这样失败 N 次了」塞进回复里。
         // 模型看不见自己的失败计数,不给这句话它就会逐字重发同一个坏 payload(实测连拒 4 次)。
+        String safeArgs = safeDiagnosticJson(p.argumentsJson());
         String loopAdvice = com.dwinovo.numen.agent.tool.ToolCallLoopWatch.onRejected(
-                p.entityUuid(), p.toolName(), message, p.argumentsJson());
+                p.entityUuid(), p.toolName(), message, safeArgs);
         Constants.LOG.warn("[numen-net] ✗ execute_tool rejected from {}: tool={} id={} reason={} args={}",
                 player.getName().getString(), p.toolName(), p.toolCallId(), message,
-                p.argumentsJson());
+                safeArgs);
         MonitoringJournal.get().publish("tools", "tool_rejected", Map.of(
                 "companion_id", p.entityUuid().toString(), "tool_call_id", p.toolCallId(),
                 "tool", p.toolName(), "reason", message));
@@ -206,6 +207,20 @@ public record ExecuteToolPayload(UUID entityUuid,
      * <p>边界：发给 AI 的 {@code TaskResultPayload} 一直是全文，这里只影响观测日志；
      * 超过上限仍截断，避免单条日志无界膨胀。
      */
+    /** Diagnostic copy only. Invalid JSON is not safe to echo; sent replies remain unchanged. */
+    private static String safeDiagnosticJson(String json) {
+        try {
+            var element = JsonParser.parseString(json);
+            if (!element.isJsonObject()) return "[invalid diagnostic JSON]";
+            var copy = element.getAsJsonObject().deepCopy();
+            copy.remove("selection_id");
+            copy.remove("_yield_ticket");
+            return copy.toString();
+        } catch (RuntimeException malformed) {
+            return "[invalid diagnostic JSON]";
+        }
+    }
+
     private static final int RESULT_LOG_LIMIT = 2000;
 
     private static String truncate(String s) {
