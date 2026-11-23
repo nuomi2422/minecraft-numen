@@ -3,6 +3,7 @@ package com.dwinovo.numen.core.task.collect;
 import com.dwinovo.numen.task.TaskState;
 
 import com.dwinovo.numen.entity.NumenPlayer;
+import com.dwinovo.numen.entity.InputDriver;
 import com.dwinovo.numen.core.pathing.execute.PlayerNav;
 import com.dwinovo.numen.core.task.base.AbstractCompanionTask;
 import com.dwinovo.numen.core.task.base.TargetSet;
@@ -55,8 +56,8 @@ public final class CollectItemsCompanionTask extends AbstractCompanionTask<Colle
     private enum Phase { SCAN, APPROACH, SETTLE }
 
     private static final double WALK_SPEED = 1.0;
-    /** Close enough that vanilla auto-pickup should have absorbed the item (≈1.2 blocks). */
-    private static final double PICKUP_REACH_SQR = 1.5;
+    /** Per original target, at most ten active seconds after first arrival; never reset on ARRIVED. */
+    private static final int PICKUP_WAIT_TICKS = 200;
     /**
      * 东西消失后给背包落账的宽限刻数。原版拾取与 {@code isRemoved()} 不保证同刻结算,
      * 当场读背包会差一格,正好把"拿到了"误判成"消失了"——那就等于没修。
@@ -69,6 +70,7 @@ public final class CollectItemsCompanionTask extends AbstractCompanionTask<Colle
     private Item pendingItem;
     private int pendingBaseline;
     private int settleTicks;
+    private int pickupWaitTicks = -1;
     /** 收尾时只报一次,免得每轮 sweep 都在日志里喊同一件事。 */
     private boolean shortfallNoted;
 
@@ -113,6 +115,7 @@ public final class CollectItemsCompanionTask extends AbstractCompanionTask<Colle
         pendingItem = best.getItem().getItem();
         pendingBaseline = held(pendingItem);
         settleTicks = SETTLE_TICKS;
+        pickupWaitTicks = -1;
         nav = new PlayerNav(player, this::targetCell, WALK_SPEED, this::picked);
         phase = Phase.APPROACH;
         return TaskState.RUNNING;
@@ -130,19 +133,22 @@ public final class CollectItemsCompanionTask extends AbstractCompanionTask<Colle
             phase = Phase.SETTLE;
             return TaskState.RUNNING;
         }
+        if (pickupWaitTicks >= 0 && --pickupWaitTicks <= 0) {
+            skipped.skip(target);
+            r.noteLeftBehind();
+            target = null;
+            stopNav();
+            phase = Phase.SCAN;
+            return TaskState.RUNNING;
+        }
         switch (nav.tick()) {
             case RUNNING -> { /* walking to it */ }
             case ARRIVED -> {
-                // Reached the spot and it is still lying there: vanilla auto-pickup did not
-                // take it (pickup delay, or a spot we can stand next to but not absorb from).
-                // Skip it so SCAN can't spin on the same drop — and say so in the books.
-                if (!target.isRemoved()) {
-                    skipped.skip(target);
-                    r.noteLeftBehind();
-                    target = null;
-                    stopNav();
-                    phase = Phase.SCAN;
-                }
+                // Native pickup may still have a delay or be waiting for the next player tick.
+                // Arrival is not absorption: retain this original target and its inventory baseline.
+                // A full backpack/owner restriction cannot make this wait restart forever.
+                InputDriver.halt(player);
+                if (pickupWaitTicks < 0) pickupWaitTicks = PICKUP_WAIT_TICKS;
             }
             case FAILED -> {                 // can't route to it — abandon, and record why
                 if (target != null) {
@@ -181,10 +187,9 @@ public final class CollectItemsCompanionTask extends AbstractCompanionTask<Colle
         return (target != null && !target.isRemoved()) ? target.blockPosition() : null;
     }
 
-    /** Reached = absorbed, or close enough that auto-pickup should have fired. */
+    /** Only disappearance can end approach early; otherwise navigate into the actual target cell. */
     private boolean picked() {
-        return target == null || target.isRemoved()
-                || player.distanceToSqr(target) <= PICKUP_REACH_SQR;
+        return target == null || target.isRemoved();
     }
 
     private ItemEntity nearestItem() {
