@@ -170,6 +170,10 @@ class RddPlanGuardTest {
                 "required world outcome must not become an empty-plan fallback");
         assertEquals("minecraft:furnace", spec.condition().get("block"));
         assertEquals(description, spec.description(), "guard must not silently rewrite the planner's instruction");
+        var wrongOutcome = new SubtaskSpec(description, Map.of(
+                "type", "block_nearby", "block", "minecraft:crafting_table", "radius", 8), null);
+        assertFalse(RddPlanGuard.predicateGaps(wrongOutcome).isEmpty(),
+                "a different world object must not borrow the furnace prerequisite exception");
     }
 
     @Test
@@ -179,6 +183,10 @@ class RddPlanGuardTest {
         assertFalse(RddPlanGuard.predicateGaps(mixed).isEmpty(),
                 "an explicit extra carried quota must still be checked independently of the placed furnace");
         assertTrue(RddPlanGuard.filterSubtasks(List.of(mixed), "准备基地熔炉", Map.of()).allowed().isEmpty());
+        var mixedShortage = new SubtaskSpec("做一台熔炉并放在床边；现有背包圆石只有1，不够就另外随身备齐并补挖7个圆石。",
+                mixed.condition(), null);
+        assertFalse(RddPlanGuard.predicateGaps(mixedShortage).isEmpty(),
+                "an additional carried obligation inside the shortage clause must not be omitted");
     }
 
     @Test

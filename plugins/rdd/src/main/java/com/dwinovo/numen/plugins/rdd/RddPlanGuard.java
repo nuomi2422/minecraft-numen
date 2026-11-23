@@ -67,7 +67,7 @@ final class RddPlanGuard {
     static List<String> predicateGaps(com.dwinovo.numen.rdd.api.SubtaskSpec s) {
         List<String> gaps = new ArrayList<>();
         if (s == null) return gaps;
-        String d = s.description() == null ? "" : s.description();
+        String d = predicateRequirements(s);
         Map<String, Object> c = s.condition();
         boolean blockCondition = c.containsKey("group") && String.valueOf(c.get("group")).contains("blocks");
         boolean assetIsBlock = c.get("asset_key") instanceof String k && PLACE_MATERIALS.contains(k);
@@ -98,6 +98,32 @@ final class RddPlanGuard {
             gaps.add("item_used 只证右键使用次数，不证种子实际种下；改用 block_nearby 作物或 container_at 收获物");
         }
         return gaps;
+    }
+
+    /** The placed furnace consumes its shortage materials; those are not a second held quota.
+     * Only omit a whole, explicit shortage clause for this known outcome. Any extra carrying
+     * obligation stays in the original gap checks, as do all other world/inventory predicates. */
+    private static String predicateRequirements(SubtaskSpec spec) {
+        String d = spec.description() == null ? "" : spec.description();
+        if (!"block_nearby".equals(spec.condition().get("type"))
+                || !"minecraft:furnace".equals(spec.condition().get("block"))) return d;
+        String[] clauses = d.split("[。；;\\n]", -1);
+        boolean placedFurnace = false;
+        for (String clause : clauses) {
+            if (clause.matches(".*(?:做|制作|合成)一台熔炉并放[^。；;]*")
+                    && !clause.matches(".*(?:不要|不必|无需|不用|禁止|另外|额外|同时|仍需|保留|随身备|垫脚).*")) {
+                placedFurnace = true;
+            }
+        }
+        if (!placedFurnace) return d;
+        List<String> requirements = new ArrayList<>();
+        for (String clause : clauses) {
+            String plain = clause.strip();
+            boolean shortage = plain.matches("现有背包圆石只有\\s*[0-9]+[，,]不够就[^。；;]*补挖\\s*[0-9]+\\s*(?:个|块)圆石(?:（[^（）]*）)?")
+                    && !plain.matches(".*(?:另外|额外|同时|仍需|保留|备齐|携带|随身|垫脚|至少|≥).*");
+            if (!shortage) requirements.add(clause);
+        }
+        return String.join("；", requirements);
     }
 
     private static boolean isPlantableSeed(String itemId) {
