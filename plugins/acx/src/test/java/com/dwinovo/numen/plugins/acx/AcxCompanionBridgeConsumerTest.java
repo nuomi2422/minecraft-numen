@@ -535,10 +535,10 @@ class AcxCompanionBridgeConsumerTest {
             public static String syncTerminalWithoutCallback(){return syncTerminal(false);}
             public static String foreignSyncTerminalWithoutCallback(){return syncTerminal(true);}
             static String syncTerminal(boolean foreign){
-                Fixture f=new Fixture();f.start();f.drain();
-                var session=f.plugin.sessions.session(f.run);
-                // Keep a real original session attempt alive while the host action settles.
-                Fixture waiting=new Fixture(true,true);waiting.start();waiting.drain();
+                // A queued real session owns this host call; it remains inFlight during invocation.
+                Fixture waiting=new Fixture();waiting.start();
+                waiting.plugin.gate=new AcxHostGate(100,()->new AcxHostGate.HostThread(){
+                    public boolean onServerThread(){return true;} public void execute(Runnable r){r.run();}});
                 int[] calls={0};
                 NumenTool sync=new NumenTool(){public String name(){return "interact_at";}
                     public void onServerCall(String id,JsonObject args,NumenPlayer body,Consumer<String> ignored){
@@ -554,7 +554,7 @@ class AcxCompanionBridgeConsumerTest {
                     catch(AcxToolPort.ReplyPendingAfterDispatchException pending){
                         var value=pending.receipt().poll();return (value.isPresent()?value.get().outcome().name():"PENDING")+":"+calls[0];
                     }
-                }finally {waiting.heldReply.accept(new Gson().toJson(Map.of("success",true,"data",Map.of())));}
+                }finally {CompanionTickDispatcher.finished.remove(waiting.a.getUUID()+"/latest");}
             }
             // REPLAY_SCENARIOS
             public static String statusInterleave(){Fixture f=new Fixture();f.start();request(new AcxFacadeTools.Status(f.plugin),f.status(),f.b);f.drain();return f.body();}
