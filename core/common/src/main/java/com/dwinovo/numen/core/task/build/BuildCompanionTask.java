@@ -329,6 +329,19 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
      * 目的只是不让一单从第一步起就注定要挖穿自己脚下的空腔。
      */
     private Precondition.Failure checkClearSafety() {
+        // 未加载的目标必须单独拒:peek 把它们当空气,既可能漏掉“要清”,也可能把
+        // “未知”当成“已达标”。安全预检不做这种乐观补全——先遍加载检测,不加载就
+        // 整单拒绝并说清原因,而不是拿空批次报通过。
+        for (BuildTaskRecord.Target target : r.targets) {
+            BlockPos pos = target.pos();
+            if (!player.level().isLoaded(pos)) {
+                return new Precondition.Failure(
+                        "cannot check clearing safety at " + pos.toShortString()
+                                + ": that chunk is not loaded yet. Move closer so the site stays"
+                                + " loaded, then send the SAME call again — nothing was placed.",
+                        FailureType.TARGET_LOST);
+            }
+        }
         LongOpenHashSet batch = computeWillClear();
         if (batch.isEmpty()) {
             return null;
@@ -364,7 +377,10 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         LongOpenHashSet out = new LongOpenHashSet();
         for (BuildTaskRecord.Target target : r.targets) {
             BlockPos pos = target.pos();
-            BlockState current = rules.peek(pos);
+            if (!player.level().isLoaded(pos)) {
+                continue;   // 这一遍读不到;预检已把“启动时未加载”整单拦下
+            }
+            BlockState current = player.level().getBlockState(pos);
             if (target.matches(current)) {
                 continue;
             }
@@ -898,8 +914,23 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
             clearRefusals.remove(pos.asLong());
             return BuildClearSafety.Verdict.allow();
         }
-        // 掉落要跑战利品表,方块实体必须在写掉之前抓住
+        // 掉落要跑战利品表:必须在方块还在时算好(战利品条件可能问世界),但先不生成。
+        // 写成功才落地;写失败就当没挖,不能凭空掉东西,也不能暗改原战利品语义。
         var blockEntity = level.getBlockEntity(pos);
+        var server = level instanceof net.minecraft.server.level.ServerLevel s ? s : null;
+        List<ItemStack> drops = List.of();
+        if (r.consumeMaterials && server != null) {
+            try {
+                drops = net.minecraft.world.level.block.Block.getDrops(
+                        state, server, pos, blockEntity, player, player.getMainHandItem());
+            } catch (RuntimeException e) {
+                // 掉落要跑战利品表,而战利品表是数据包能改的东西——模组或整合包的一张
+                // 坏表不该让整栋楼停在这一格。清障本身照做:少掉一件东西是遗憾,清不掉
+                // 就永远建不下去。
+                com.dwinovo.numen.core.Constants.LOG.warn(
+                        "[numen-build] {} 的掉落结算失败,方块照清", state, e);
+            }
+        }
         // 写入以世界真实返回为准:没写成就没清成,不能按“清了”记账
         if (!level.setBlock(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), PLACE_FLAGS)) {
             clearRefusals.put(pos.asLong(), "the world refused the clear at " + pos.toShortString());
@@ -908,17 +939,15 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
             return BuildClearSafety.Verdict.refuse("world refused the clear");
         }
         clearRefusals.remove(pos.asLong());
-        if (r.consumeMaterials) {
+        if (server != null) {
+            for (ItemStack drop : drops) {
+                net.minecraft.world.level.block.Block.popResource(level, pos, drop);
+            }
             try {
-                net.minecraft.world.level.block.Block.dropResources(
-                        state, level, pos, blockEntity, player,
-                        player.getMainHandItem());
+                state.spawnAfterBreak(server, pos, player.getMainHandItem(), true);
             } catch (RuntimeException e) {
-                // 掉落要跑战利品表,而战利品表是数据包能改的东西——模组或整合包的一张
-                // 坏表不该让整栋楼停在这一格。清障本身照做:少掉一件东西是遗憾,清不掉
-                // 就永远建不下去。
                 com.dwinovo.numen.core.Constants.LOG.warn(
-                        "[numen-build] {} 的掉落结算失败,方块照清", state, e);
+                        "[numen-build] {} 的破块附加结算失败,方块照清", state, e);
             }
         }
         level.levelEvent(2001, pos, net.minecraft.world.level.block.Block.getId(state));
