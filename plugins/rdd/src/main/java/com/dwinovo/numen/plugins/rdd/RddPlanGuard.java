@@ -110,7 +110,7 @@ final class RddPlanGuard {
         String[] clauses = d.split("[。；;\\n]", -1);
         boolean placedFurnace = false;
         for (String clause : clauses) {
-            if (clause.matches(".*(?:做|制作|合成)一台熔炉并放[^。；;]*")
+            if (clause.matches(".*用(?:现有\\s*)?8\\s*(?:块|个)?圆石\\s*(?:做|制作|合成)一台熔炉并放[^。；;]*")
                     && !clause.matches(".*(?:不要|不必|无需|不用|禁止|另外|额外|同时|仍需|保留|随身备|垫脚).*")) {
                 placedFurnace = true;
             }
@@ -119,9 +119,13 @@ final class RddPlanGuard {
         List<String> requirements = new ArrayList<>();
         for (String clause : clauses) {
             String plain = clause.strip();
-            boolean shortage = plain.matches("现有背包圆石只有\\s*[0-9]+[，,]不够就[^。；;]*补挖\\s*[0-9]+\\s*(?:个|块)圆石(?:（[^（）]*）)?")
+            var shortage = java.util.regex.Pattern.compile(
+                    "现有背包圆石只有\\s*([0-7])[，,]不够就[^。；;]*补挖\\s*([1-8])\\s*(?:个|块)圆石(?:（[^（）]*）)?")
+                    .matcher(plain);
+            boolean consumedInput = shortage.matches()
+                    && Integer.parseInt(shortage.group(1)) + Integer.parseInt(shortage.group(2)) == 8
                     && !plain.matches(".*(?:另外|额外|同时|仍需|保留|备齐|携带|随身|垫脚|至少|≥).*");
-            if (!shortage) requirements.add(clause);
+            if (!consumedInput) requirements.add(clause);
         }
         return String.join("；", requirements);
     }
