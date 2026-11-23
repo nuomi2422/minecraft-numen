@@ -535,6 +535,7 @@ class AcxCompanionBridgeConsumerTest {
             public static String syncTerminalWithoutCallback(){return syncTerminal(false);}
             public static String foreignSyncTerminalWithoutCallback(){return syncTerminal(true);}
             static String syncTerminal(boolean foreign){
+                long beforeEpoch=WorldContextStamp.epoch;WorldContextStamp.epoch=1;
                 // A queued real session owns this host call; it remains inFlight during invocation.
                 Fixture waiting=new Fixture();waiting.start();
                 waiting.plugin.gate=new AcxHostGate(100,()->new AcxHostGate.HostThread(){
@@ -554,7 +555,7 @@ class AcxCompanionBridgeConsumerTest {
                     catch(AcxToolPort.ReplyPendingAfterDispatchException pending){
                         var value=pending.receipt().poll();return (value.isPresent()?value.get().outcome().name():"PENDING")+":"+calls[0];
                     }
-                }finally {CompanionTickDispatcher.finished.remove(waiting.a.getUUID()+"/latest");}
+                }finally {CompanionTickDispatcher.finished.remove(waiting.a.getUUID()+"/latest");WorldContextStamp.epoch=beforeEpoch;}
             }
             // REPLAY_SCENARIOS
             public static String statusInterleave(){Fixture f=new Fixture();f.start();request(new AcxFacadeTools.Status(f.plugin),f.status(),f.b);f.drain();return f.body();}
