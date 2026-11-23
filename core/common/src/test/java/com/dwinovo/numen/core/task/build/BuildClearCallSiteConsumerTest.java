@@ -1,5 +1,6 @@
 package com.dwinovo.numen.core.task.build;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -16,19 +17,22 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Dynamic consumer of the REAL clearing call site, not a source-contains check.
- * Extracts verbatim (a) BuildCompanionTask.clear(BlockPos) and (b) the occupied-cell
- * block of processCell, then runs them against a recording stub world together with the
- * verbatim BuildClearSafety + real ChunkLoadedTest. Proves: a safety refusal causes zero
- * setBlock, zero drops, zero broke and no markObserved; a world-refused setBlock is not
- * counted as cleared and still does not mark the cell done; drops are computed before the
- * write and spawned only after it. BlockHelper stays a state-identity fixture boundary.
+ * Dynamic consumer of the REAL clearing call site and the REAL precheck, not a
+ * source-contains check. Extracts verbatim from BuildCompanionTask: clear(BlockPos),
+ * the occupied-cell block of processCell, checkClearSafety(), computeWillClear() and
+ * loadedTest(), then runs them against a recording stub world together with the verbatim
+ * BuildClearSafety + real ChunkLoadedTest.
+ *
+ * <p>Each case performs exactly ONE dispatch: the call-site block is called once and it
+ * calls clear() once. The report keeps guard/precheck and the actual write result in
+ * separate fields (result=written|refused|none, refusal=reason), so a refused write is
+ * never reported as ALLOW. BlockHelper stays a state-identity fixture boundary.
  * SETUP failures (extraction, javac, load) are setup errors, not business reds.
  */
 class BuildClearCallSiteConsumerTest {
 
     @TempDir static Path temp;
-    static ClassLoader loader;
+    static URLClassLoader loader;
     static Method runCase;
 
     @BeforeAll static void compileCallSite() throws Exception {
@@ -46,12 +50,19 @@ class BuildClearCallSiteConsumerTest {
         String task = Files.readString(main.resolve("task/build/BuildCompanionTask.java"))
                 .replace("\r\n", "\n");
         String clear = member(task, "    private BuildClearSafety.Verdict clear(BlockPos pos)");
+        String precheck = member(task, "    private Precondition.Failure checkClearSafety()");
+        String willClear = member(task, "    private LongOpenHashSet computeWillClear()");
+        String loaded = member(task, "    private ChunkLoadedTest loadedTest()");
         int site = task.indexOf("        if (occupied) {");
         int after = task.indexOf("        if (BuildCellRules.isAirTarget(target)) {\n"
                 + "            markObserved(target, true);\n            return null;", site);
         if (site < 0 || after < 0) throw new IllegalStateException("SETUP ERROR: call site not found");
         String callSite = task.substring(site, after);
-        String probe = PROBE.replace("<CLEAR>", clear).replace("<CALLSITE>", callSite);
+        String probe = PROBE.replace("<CLEAR>", clear)
+                .replace("<CALLSITE>", callSite)
+                .replace("<CHECK>", precheck)
+                .replace("<WILLCLEAR>", willClear)
+                .replace("<LOADED>", loaded);
 
         add(src, args, "com/dwinovo/numen/core/task/build/BuildClearSafety.java",
                 Files.readString(main.resolve("task/build/BuildClearSafety.java")));
@@ -65,6 +76,29 @@ class BuildClearCallSiteConsumerTest {
                     public static final class Log { public void warn(String s, Object... a) { } }
                 }
                 """);
+        add(src, args, "com/dwinovo/numen/core/FailureType.java", """
+                package com.dwinovo.numen.core;
+                public enum FailureType { NO_MATERIAL, NO_PATH, TARGET_LOST }
+                """);
+        add(src, args, "com/dwinovo/numen/core/task/base/Precondition.java", """
+                package com.dwinovo.numen.core.task.base;
+                import com.dwinovo.numen.core.FailureType;
+                public final class Precondition {
+                    public record Failure(String reason, FailureType type) { }
+                }
+                """);
+        add(src, args, "it/unimi/dsi/fastutil/longs/LongOpenHashSet.java", """
+                package it.unimi.dsi.fastutil.longs;
+                import java.util.*;
+                public class LongOpenHashSet implements Iterable<Long> {
+                    private final List<Long> keys = new ArrayList<>();
+                    public boolean add(long k){ if (keys.contains(k)) return false; keys.add(k); return true; }
+                    public boolean contains(long k){ return keys.contains(k); }
+                    public boolean isEmpty(){ return keys.isEmpty(); }
+                    public int size(){ return keys.size(); }
+                    public Iterator<Long> iterator(){ return keys.iterator(); }
+                }
+                """);
         add(src, args, "net/minecraft/core/BlockPos.java", """
                 package net.minecraft.core;
                 public final class BlockPos {
@@ -73,6 +107,9 @@ class BuildClearCallSiteConsumerTest {
                     public int getX(){return x;} public int getY(){return y;} public int getZ(){return z;}
                     public BlockPos above(){return new BlockPos(x,y+1,z);}
                     public long asLong(){return ((long)x & 0x3FFFFFFL) << 38 | ((long)z & 0x3FFFFFFL) << 12 | (y & 0xFFFL);}
+                    public static BlockPos of(long packed){
+                        int x=(int)(packed >> 38); int y=(int)(packed << 52 >> 52); int z=(int)(packed << 26 >> 38);
+                        return new BlockPos(x,y,z);}
                     public String toShortString(){return x+","+y+","+z;}
                 }
                 """);
@@ -150,6 +187,10 @@ class BuildClearCallSiteConsumerTest {
                 package net.minecraft.world.level.block;
                 public class FallingBlock extends Block { }
                 """);
+        add(src, args, "net/minecraft/world/level/block/LiquidBlock.java", """
+                package net.minecraft.world.level.block;
+                public class LiquidBlock extends Block { }
+                """);
         add(src, args, "net/minecraft/world/level/block/state/BlockState.java", """
                 package net.minecraft.world.level.block.state;
                 import net.minecraft.core.BlockPos;
@@ -181,6 +222,10 @@ class BuildClearCallSiteConsumerTest {
                 BuildClearCallSiteConsumerTest.class.getClassLoader());
         Class<?> probeClass = loader.loadClass("com.dwinovo.numen.core.task.build.Probe");
         runCase = probeClass.getMethod("run", String.class);
+    }
+
+    @AfterAll static void closeLoader() throws Exception {
+        if (loader != null) loader.close();
     }
 
     static void add(Path src, List<String> args, String rel, String body) throws Exception {
@@ -221,9 +266,17 @@ class BuildClearCallSiteConsumerTest {
         throw new AssertionError("missing " + key + " in " + out);
     }
 
-    @Test void safetyRefusalDoesNothingAndDoesNotMark() {
+    static String text(String out, String key) {
+        for (String part : out.split("\\|")) {
+            if (part.startsWith(key + "=")) return part.substring(key.length() + 1);
+        }
+        throw new AssertionError("missing " + key + " in " + out);
+    }
+
+    @Test void safetyRefusalDoesOneDispatchAndNoSideEffect() {
         String r = run("refused");
-        assertTrue(r.startsWith("REFUSE"), r);
+        assertEquals("refused", text(r, "result"), r);
+        assertTrue(text(r, "refusal").contains("falling block"), r);
         assertEquals(0, field(r, "set"));
         assertEquals(0, field(r, "drops"));
         assertEquals(0, field(r, "spawned"));
@@ -232,26 +285,46 @@ class BuildClearCallSiteConsumerTest {
         assertTrue(r.endsWith("produced=false"), r);
     }
 
-    @Test void allowedClearWritesThenDropsAndMarks() {
+    @Test void allowedClearWritesOnceWithDropsAfterWrite() {
         String r = run("allowed");
-        assertTrue(r.startsWith("ALLOW"), r);
+        assertEquals("written", text(r, "result"), r);
         assertEquals(1, field(r, "set"));
         assertEquals(1, field(r, "drops"));
         assertEquals(1, field(r, "spawned"));
         assertEquals(1, field(r, "broke"));
         assertEquals(1, field(r, "marked"));
+        assertEquals(1, field(r, "setInCalls"), r);
         assertTrue(r.endsWith("produced=true"), r);
         assertTrue(r.contains("calls=drops>set>spawn"), r);
     }
 
-    @Test void worldRefusedWriteIsNotCountedClearedAndDoesNotMark() {
+    @Test void worldRefusedWriteIsOneAttemptWithoutSpawnOrBroke() {
         String r = run("writeRefused");
-        assertTrue(r.startsWith("ALLOW"), r);
+        assertEquals("refused", text(r, "result"), r);
+        assertTrue(text(r, "refusal").contains("refused the clear"), r);
+        assertEquals(1, field(r, "set"));
+        assertEquals(1, field(r, "drops"));
         assertEquals(0, field(r, "spawned"));
         assertEquals(0, field(r, "broke"));
         assertEquals(0, field(r, "marked"));
-        assertEquals(1, field(r, "refused"));
         assertTrue(r.endsWith("produced=false"), r);
+    }
+
+    @Test void unknownPrecheckRejectsInsteadOfEmptySuccess() {
+        String r = run("precheckUnknown");
+        assertTrue(r.startsWith("precheck=fail"), r);
+        assertTrue(r.contains("not loaded yet"), r);
+    }
+
+    @Test void safePrecheckPasses() {
+        String r = run("precheckSafe");
+        assertTrue(r.startsWith("precheck=pass"), r);
+    }
+
+    @Test void sandAbovePrecheckRejects() {
+        String r = run("precheckSand");
+        assertTrue(r.startsWith("precheck=fail"), r);
+        assertTrue(r.contains("falling block"), r);
     }
 
     private static final String STUB_BLOCK_HELPER = """
@@ -272,7 +345,10 @@ class BuildClearCallSiteConsumerTest {
 
     private static final String PROBE = """
             package com.dwinovo.numen.core.task.build;
+            import com.dwinovo.numen.core.FailureType;
             import com.dwinovo.numen.core.pathing.moves.ChunkLoadedTest;
+            import com.dwinovo.numen.core.task.base.Precondition;
+            import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
             import net.minecraft.core.BlockPos;
             import net.minecraft.server.level.ServerLevel;
             import net.minecraft.world.item.ItemStack;
@@ -280,6 +356,7 @@ class BuildClearCallSiteConsumerTest {
             import net.minecraft.world.level.block.Block;
             import net.minecraft.world.level.block.Blocks;
             import net.minecraft.world.level.block.FallingBlock;
+            import net.minecraft.world.level.block.LiquidBlock;
             import net.minecraft.world.level.block.state.BlockState;
             import net.minecraft.world.phys.AABB;
             import net.minecraft.world.phys.shapes.VoxelShape;
@@ -291,10 +368,13 @@ class BuildClearCallSiteConsumerTest {
                         VoxelShape.of(new AABB(0,0,0,1,1,1)));
                 static final BlockState SAND = new BlockState(new FallingBlock(), false, false,
                         VoxelShape.of(new AABB(0,0,0,1,1,1)));
+                static final BlockState TARGET = new BlockState(new Block(), false, false,
+                        VoxelShape.of(new AABB(0,0,0,1,1,1)));
 
                 final World world = new World();
                 final Player player = new Player(world);
                 final Rec r = new Rec();
+                final Rules rules = new Rules();
                 final Map<Long, String> clearRefusals = new LinkedHashMap<>();
                 final ClearSet willClear = new ClearSet();
                 int marked, broke;
@@ -316,23 +396,45 @@ class BuildClearCallSiteConsumerTest {
                             world.blocks.put(new BlockPos(0,3,0).asLong(), SOLID);
                             if (name.equals("writeRefused")) world.writable = false;
                         }
+                        case "precheckUnknown" -> {
+                            r.targets.add(new Target(pos, TARGET));
+                            world.blocks.put(pos.asLong(), SOLID);
+                            world.unloaded.add(pos.asLong());
+                        }
+                        case "precheckSafe" -> {
+                            r.targets.add(new Target(pos, TARGET));
+                            world.blocks.put(pos.asLong(), SOLID);
+                            world.blocks.put(new BlockPos(0,3,0).asLong(), SOLID);
+                        }
+                        case "precheckSand" -> {
+                            r.targets.add(new Target(pos, TARGET));
+                            world.blocks.put(pos.asLong(), SOLID);
+                            world.blocks.put(new BlockPos(0,5,0).asLong(), SAND);
+                        }
                         default -> throw new IllegalArgumentException("unknown case " + name);
                     }
-                    BuildClearSafety.Verdict verdict = clear(pos);
-                    BlockState produced = callSite(pos, true, BlockState.AIR, new Target(BlockState.AIR));
-                    return verdict.admission().name()
+                    if (name.startsWith("precheck")) {
+                        Precondition.Failure failure = checkClearSafety();
+                        return failure == null ? "precheck=pass"
+                                : "precheck=fail|reason=" + failure.reason();
+                    }
+                    BlockState produced = callSite(pos, true, BlockState.AIR, new Target(pos, BlockState.AIR));
+                    String result = !clearRefusals.isEmpty() ? "refused"
+                            : (world.setBlockCalls == 1 && world.blocks.getOrDefault(pos.asLong(), SOLID).isAir()
+                                    ? "written" : "none");
+                    String refusal = clearRefusals.isEmpty() ? "none" : clearRefusals.values().iterator().next();
+                    int setInCalls = 0;
+                    for (String c : Block.CALLS) if (c.equals("set")) setInCalls++;
+                    return "result=" + result
+                            + "|refusal=" + refusal
                             + "|set=" + world.setBlockCalls
                             + "|drops=" + Block.DROPS
                             + "|spawned=" + Block.DROPPED
                             + "|broke=" + broke
                             + "|marked=" + marked
-                            + "|refused=" + clearRefusals.size()
+                            + "|setInCalls=" + setInCalls
                             + "|calls=" + String.join(">", Block.CALLS)
                             + "|produced=" + (produced != null);
-                }
-
-                private ChunkLoadedTest loadedTest() {
-                    return (x, z) -> world.hasChunk(x >> 4, z >> 4);
                 }
 
                 void markObserved(Target target, boolean done) {
@@ -341,7 +443,17 @@ class BuildClearCallSiteConsumerTest {
 
                 final class Rec {
                     boolean consumeMaterials = true;
+                    final List<Target> targets = new ArrayList<>();
                     void brokeOne() { broke++; }
+                }
+
+                final class Rules {
+                    boolean mode, hopeless;
+                    BlockState peek(BlockPos pos) {
+                        return world.blocks.getOrDefault(pos.asLong(), BlockState.AIR);
+                    }
+                    boolean blockedByMode(Target target) { return mode; }
+                    boolean hopeless(Target target) { return hopeless; }
                 }
 
                 static final class ClearSet {
@@ -350,9 +462,14 @@ class BuildClearCallSiteConsumerTest {
                 }
 
                 static final class Target {
+                    final BlockPos pos;
                     final BlockState desired;
-                    Target(BlockState desired) { this.desired = desired; }
+                    Target(BlockPos pos, BlockState desired) { this.pos = pos; this.desired = desired; }
+                    BlockPos pos() { return pos; }
                     BlockState desiredState() { return desired; }
+                    boolean matches(BlockState state) {
+                        return state == desired || (state.isAir() && desired.isAir());
+                    }
                 }
 
                 static final class BuildCellRules {
@@ -361,12 +478,13 @@ class BuildClearCallSiteConsumerTest {
 
                 static final class World extends ServerLevel implements BlockGetter {
                     final Map<Long, BlockState> blocks = new HashMap<>();
+                    final Set<Long> unloaded = new HashSet<>();
                     boolean writable = true;
                     int setBlockCalls, levelEvents;
                     public BlockState getBlockState(BlockPos pos) {
                         return blocks.getOrDefault(pos.asLong(), BlockState.AIR);
                     }
-                    boolean isLoaded(BlockPos pos) { return true; }
+                    boolean isLoaded(BlockPos pos) { return !unloaded.contains(pos.asLong()); }
                     boolean hasChunk(int chunkX, int chunkZ) { return true; }
                     Object getBlockEntity(BlockPos pos) { return null; }
                     boolean setBlock(BlockPos pos, BlockState state, int flags) {
@@ -395,6 +513,13 @@ class BuildClearCallSiteConsumerTest {
             <CALLSITE>
                     return null;
                 }
+
+                // ==== verbatim precheck / batch / loaded seam (production) ====
+            <CHECK>
+
+            <WILLCLEAR>
+
+            <LOADED>
             }
             """;
 }

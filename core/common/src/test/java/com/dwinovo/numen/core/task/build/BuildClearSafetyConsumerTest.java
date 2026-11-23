@@ -1,5 +1,6 @@
 package com.dwinovo.numen.core.task.build;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -152,6 +153,10 @@ class BuildClearSafetyConsumerTest {
         Object instance = fixture.getDeclaredConstructor().newInstance();
         runCase = fixture.getMethod("run", String.class);
         runCase.setAccessible(true);
+    }
+
+    @AfterAll static void closeLoader() throws Exception {
+        if (loader instanceof URLClassLoader closable) closable.close();
     }
 
     private static void add(Path src, List<String> args, String rel, String body) throws Exception {
