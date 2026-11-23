@@ -45,7 +45,8 @@ class RddPausedSubtaskInstructionConsumerTest {
               static final Map<UUID,RddRuntime> RUNTIMES = new HashMap<>();
               static final Set<UUID> DECOMPOSING = new HashSet<>();
               static String render(UUID id){ return renderStateContext(id); }
-              static String sideContextFor(UUID id){ return null; } // boundary: side store not under test
+              static String SIDE=null;
+              static String sideContextFor(UUID id){ return SIDE; } // boundary: side store not under test
               static String withAssets(UUID id,String text){ return text; } // boundary: assets/carry/env
               static String registeredDailyContext(UUID id, TaskChain chain){ return ""; } // boundary: daily
             """
@@ -56,6 +57,8 @@ class RddPausedSubtaskInstructionConsumerTest {
             // Green contract: the extracted instruction helper must be the one the renderer uses.
             + (plugin.contains("private static String currentSubtaskInstruction(")
                     ? method(plugin, "    private static String currentSubtaskInstruction(") : "")
+            + (plugin.contains("static String renderOwnerPause(")
+                    ? method(plugin, "    static String renderOwnerPause(") : "")
             + "}");
         units.put(P + "RddRationale.java",
             "package com.dwinovo.numen.plugins.rdd; class RddRationale {"
@@ -69,7 +72,7 @@ class RddPausedSubtaskInstructionConsumerTest {
             public class PausedScenario {
               public static String request(String kind){
                 UUID id=new UUID(0,1);
-                RddPlugin.RUNTIMES.clear(); RddPlugin.DECOMPOSING.clear();
+                RddPlugin.RUNTIMES.clear(); RddPlugin.DECOMPOSING.clear(); RddPlugin.SIDE=null;
                 PrimaryGoal primary=PrimaryGoal.unexpanded("P1","phase one",List.of());
                 TaskChain chain=new TaskChain(new Goal("G1","objective",List.of(primary)));
                 Subtask sub=new Subtask("S1","mine iron",DetectionMode.HARD_CODED,
@@ -91,6 +94,25 @@ class RddPausedSubtaskInstructionConsumerTest {
                 String rendered=RddPlugin.render(id);
                 if(!before.equals(chain.toJson())) throw new AssertionError("SETUP: render changed task state");
                 return rendered+"|STATUS="+chain.currentSubtaskStatus()+"|PRIMARY="+chain.primaryStatus();
+              }
+              public static String sideRequest(String kind){
+                UUID id=new UUID(0,1);
+                RddPlugin.RUNTIMES.clear(); RddPlugin.DECOMPOSING.clear(); RddPlugin.SIDE=null;
+                PrimaryGoal primary=PrimaryGoal.unexpanded("P1","phase one",List.of());
+                TaskChain chain=new TaskChain(new Goal("G1","objective",List.of(primary)));
+                Subtask sub=new Subtask("S1","mine iron",DetectionMode.HARD_CODED,
+                    Map.of("asset_key","minecraft:iron_ingot","minimum",7),0,0,false);
+                chain.expandCurrentPrimary(List.of(sub));
+                if(!chain.activateCurrent(Map.of())) throw new AssertionError("SETUP: activation");
+                if(kind.equals("paused-owner")) chain.pauseSubtask("S1",TaskChain.OWNER_PAUSE_REASON);
+                else if(kind.equals("paused-soldier")) chain.pauseSubtask("S1","wait until daylight");
+                else throw new AssertionError("SETUP: unknown side kind "+kind);
+                RddPlugin.RUNTIMES.put(id,new RddRuntime(chain,new AssetRegistry()));
+                RddPlugin.SIDE="<rdd><enabled>true</enabled><active>true</active><side_task type='sleep' instance='side-identity-"+kind+"'>overnight sleep</side_task><side_context_status>CURRENT</side_context_status></rdd>";
+                String before=chain.toJson();
+                String rendered=RddPlugin.render(id);
+                if(!before.equals(chain.toJson())) throw new AssertionError("SETUP: side render changed task state");
+                return rendered+"|STATUS="+chain.currentSubtaskStatus();
               }
             }
             """);
@@ -171,6 +193,32 @@ class RddPausedSubtaskInstructionConsumerTest {
         assertFalse(user.contains("必须执行"), user);
         assertTrue(user.contains("复评"), "stalled stays on the host wait/recheck path: " + user);
         assertFalse(user.contains("永久"), "stalled must not be declared permanently unusable: " + user);
+    }
+
+    @Test void sideCurrentKeepsOwnerPauseMainlineButLeavesSurvivalOpen() throws Exception {
+        String user = sideRequest("paused-owner");
+        assertTrue(user.contains("STATUS=PAUSED"), user);
+        assertTrue(user.contains("owner_pause"), "owner pause must be raised into the same rdd fragment: " + user);
+        assertTrue(user.contains(TaskChain.OWNER_PAUSE_REASON), "owner reason must stay visible: " + user);
+        assertTrue(user.contains("只有主人"), "owner standby must say only the owner releases it: " + user);
+        assertTrue(user.contains("side-identity-paused-owner"), "side owner must remain the current body: " + user);
+        assertFalse(user.contains("必须执行"), "paused mainline under a current side must not be ordered: " + user);
+    }
+
+    @Test void sideCurrentSoldierPauseDoesNotFakeOwnerSeal() throws Exception {
+        String user = sideRequest("paused-soldier");
+        assertTrue(user.contains("STATUS=PAUSED"), user);
+        assertFalse(user.contains("owner_pause"), "a soldier pause is not an owner seal: " + user);
+        assertFalse(user.contains("只有主人"), "soldier pause must not claim owner authority: " + user);
+        assertTrue(user.contains("wait until daylight"), user);
+        assertTrue(user.contains("side-identity-paused-soldier"), user);
+    }
+
+    static String sideRequest(String kind) throws Exception {
+        try { return (String) scenario.getMethod("sideRequest", String.class).invoke(null, kind); }
+        catch (java.lang.reflect.InvocationTargetException e) {
+            throw new AssertionError("SETUP/sideRequest failed before business assertions", e.getCause());
+        }
     }
 
     static String request(String kind) throws Exception {
