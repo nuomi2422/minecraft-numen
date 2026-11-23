@@ -79,7 +79,7 @@ class ServerToolTransportReplyIsolationTest {
         sources.put("com.dwinovo.numen.agent.tool.ClientToolContext",
                 "package com.dwinovo.numen.agent.tool; public record ClientToolContext(net.minecraft.client.player.AbstractClientPlayer entity,java.util.UUID entityUuid) implements ToolAnchor {}");
         sources.put("com.dwinovo.numen.agent.tool.NumenTool",
-                "package com.dwinovo.numen.agent.tool; public interface NumenTool {String name(); void invoke(ToolCall call);}");
+                "package com.dwinovo.numen.agent.tool; public interface NumenTool {String name(); void invoke(ToolCall call); default boolean externalOnly(){return false;}}");
         sources.put("com.dwinovo.numen.agent.tool.ToolRegistry",
                 "package com.dwinovo.numen.agent.tool; public class ToolRegistry {public static NumenTool tool; public static NumenTool resolve(String name){return tool;}}");
         sources.put("com.dwinovo.numen.agent.tool.ToolAliases",

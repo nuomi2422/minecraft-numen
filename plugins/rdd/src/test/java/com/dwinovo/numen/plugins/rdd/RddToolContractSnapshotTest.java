@@ -329,6 +329,15 @@ class RddToolContractSnapshotTest {
                         + "如果同伴自己觉得可以用，主人就失去了「按住它」的能力。当前全文：" + d);
     }
 
+    @Test
+    void standbyToolDeclaresExternalOnlyAtSource() {
+        String body = read("RddStandbyTool.java");
+        assertTrue(body.contains("public boolean externalOnly()"),
+                "★ rdd_standby 必须在源码里覆写 externalOnly()，不能只靠 description 写 Owner-only。");
+        assertTrue(body.contains("return true;"),
+                "★ externalOnly() 必须返回 true；否则内脑仍能把它当普通工具调。");
+    }
+
     // ── ④ 机制自检 ─────────────────────────────────────────────────
 
     @Test

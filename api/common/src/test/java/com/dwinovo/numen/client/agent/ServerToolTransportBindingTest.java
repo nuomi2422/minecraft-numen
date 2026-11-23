@@ -62,7 +62,7 @@ class ServerToolTransportBindingTest {
         sources.put("com.dwinovo.numen.api.CompanionEvent","package com.dwinovo.numen.api; public enum CompanionEvent {ABORT}");
         sources.put("com.dwinovo.numen.entity.CompanionEvents","package com.dwinovo.numen.entity; public class CompanionEvents {public static void fire(Object a,Object b){}}");
         sources.put("com.dwinovo.numen.agent.tool.NumenTool",
-                "package com.dwinovo.numen.agent.tool; public interface NumenTool {String name(); default void invoke(ToolCall c){ServerToolTransport.ship(c);}}");
+                "package com.dwinovo.numen.agent.tool; public interface NumenTool {String name(); default void invoke(ToolCall c){ServerToolTransport.ship(c);} default boolean externalOnly(){return false;}}");
         sources.put("com.dwinovo.numen.network.payload.ExecuteToolPayload",
                 "package com.dwinovo.numen.network.payload; public record ExecuteToolPayload(java.util.UUID entityUuid,String toolCallId,String toolName,String argumentsJson) {}");
         sources.put("com.dwinovo.numen.network.payload.CancelTasksPayload",

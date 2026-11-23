@@ -189,6 +189,18 @@ public final class ToolDispatcher {
                 // 2026-11-05：9 次 `unknown tool: todo`（真名 todowrite）。只映射实测出现过的短名，不做模糊匹配。
                 NumenTool tool = ToolRegistry.resolve(
                         com.dwinovo.numen.agent.tool.ToolAliases.resolve(inv.name()));
+                // 2026-11-23: externalOnly is a capability contract, not an ID/prefix guess.
+                // The inner-brain dispatcher is the known model entry; reject before inFlight/invoke.
+                if (tool != null && tool.externalOnly()) {
+                    Constants.LOG.warn("[numen-dispatch#{}] external-only tool '{}' refused (id={})",
+                            entityUuid, inv.name(), inv.id());
+                    String externalOnlyJson = TaskResult.fail(
+                            "tool '" + tool.name() + "' is external-only (owner/MCP) and cannot be called by the companion").toJson();
+                    LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), externalOnlyJson);
+                    sink.onResult(inv, externalOnlyJson);
+                    LocalToolCallLog.publishRejected(tool, entityUuid, inv.id(), "external-only tool refused");
+                    continue;
+                }
                 if (tool != null && !callable.contains(tool.name())) {
                     // 定义没在她眼前,参数只能是猜的——挡下来并告诉她怎么补,
                     // 比让一次瞎填的调用真的动身体便宜。
