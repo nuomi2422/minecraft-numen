@@ -915,14 +915,58 @@ public final class RddPlugin implements NumenPlugin {
                     + "<done_when>" + escape(String.valueOf(current.condition())) + "</done_when>"
                     + resourceUseContext(current)
                     + "<subtask_status>" + chain.currentSubtaskStatus() + "</subtask_status>"
-                    + "<instruction>current_task 是你必须执行的当前目标（优先于自由活动）；"
-                    + "若你认为它不合理/不可达/与目标冲突，用 report_task_concern 上报（REJECT/COUNTER+建议），"
-                    + "指挥官会据此改单或重规划；不要默默无视。</instruction>"
+                    + currentSubtaskInstruction(chain, current)
                     + registeredDailyContext(uuid, chain)
                     // 38号v3.6 B24：携带器提醒由 withAssets 统一挂（它是全部分支的共同出口）。
                     // ⚠️ 2026-10-01 实机请求体抓到重复：这里加一次、withAssets 又 replace 一次，
                     //    <carry> 在 <rdd> 里出现两遍（白送 ~130 token/请求）。故此处不再加。
                     + "</rdd>");
+    }
+
+    /**
+     * 当前节点能不能推进，由链上的<b>真实状态</b>决定，不由「current_task 存在」假定。
+     *
+     * <p>2026-11-24（055 暂停投影）：owner 待命（{@link RddStandbyTool}）把当前二级置 PAUSED 后
+     * {@code currentSubtask()} 仍非空，原实现照发「必须执行」，模型会把停下的事又做一遍；
+     * 最后一个二级完成后链处于 AWAITING_SUPERVISOR（primary 尚未 COMPLETED），也会被当成可执行。
+     *
+     * <p>边界：暂停只停<b>这个节点</b>，不禁止安全观察/避险/进食等维持生存的必要动作，
+     * 也不自动 resume；STALLED/COOLDOWN 仍按宿主现有等待/复评规则，不在这里宣告永久不可用。
+     * <p>只读：这里只读 chain，不改状态（渲染每回合都会跑）。
+     */
+    private static String currentSubtaskInstruction(TaskChain chain, Subtask current) {
+        SubtaskStatus status = chain.currentSubtaskStatus();
+        if (status == SubtaskStatus.PAUSED) {
+            boolean owner = chain.isOwnerPause(current.id());
+            String reason = chain.pauseReason(current.id());
+            return (reason == null || reason.isBlank() ? ""
+                        : "<pause_reason>" + escape(reason) + "</pause_reason>")
+                    + "<instruction>current_task 已暂停，不要推进它，也不要自行恢复；"
+                    + (owner
+                        ? "这是主人下的待命，只有主人说继续才能解除。"
+                        : "等暂停条件解除或规划器/主人改单后再推进。")
+                    + "暂停只停这个节点：安全观察、避险、进食等维持生存的必要动作仍可做，"
+                    + "不要开始新的施工，也不要把停下的节点当成已完成。</instruction>";
+        }
+        if (status == SubtaskStatus.COMPLETED) {
+            return "<instruction>current_task 已完成，不要再执行它；"
+                    + "等宿主/监督推进到下一个节点或主人给出新目标。"
+                    + "可做安全观察与生存必要动作，但不要把它当成未完成的事重做。</instruction>";
+        }
+        if (status == SubtaskStatus.FAILED || status == SubtaskStatus.SKIPPED
+                || status == SubtaskStatus.INVALIDATED) {
+            return "<instruction>current_task 当前不可推进（状态 " + status + "），不要执行它，"
+                    + "也不要当成已完成；按宿主的失败重试/重规划/跳过规则等待处理，"
+                    + "可做安全观察与生存必要动作。</instruction>";
+        }
+        if (status == SubtaskStatus.STALLED || status == SubtaskStatus.COOLDOWN) {
+            return "<instruction>current_task 正在等待监督复评或拍醒（状态 " + status + "），"
+                    + "不要重复开工，也不要当成已完成；按宿主现行规则等待结果，"
+                    + "可做安全观察与生存必要动作。</instruction>";
+        }
+        return "<instruction>current_task 是你必须执行的当前目标（优先于自由活动）；"
+                + "若你认为它不合理/不可达/与目标冲突，用 report_task_concern 上报（REJECT/COUNTER+建议），"
+                + "指挥官会据此改单或重规划；不要默默无视。</instruction>";
     }
 
     /**
