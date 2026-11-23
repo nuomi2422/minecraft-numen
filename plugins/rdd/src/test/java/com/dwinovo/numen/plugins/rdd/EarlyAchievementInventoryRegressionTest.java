@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -116,6 +117,20 @@ class EarlyAchievementInventoryRegressionTest {
         var item = Map.<String, Object>of("type", "item", "item", "minecraft:bread", "minimum", 8);
         assertTrue(evaluate(method, item, Map.of("minecraft:bread", 8)));
         assertFalse(evaluate(method, item, Map.of("minecraft:wheat", 100)));
+    }
+
+    @Test
+    void actualCompletionMethodRequiresIndependentRetainEvenWhenOutputIsHeld() throws Exception {
+        Method method=compileDetectorMethod();
+        var task=new Subtask("resource-use-test","output held but retained stock required",
+                com.dwinovo.numen.rdd.api.DetectionMode.HARD_CODED,
+                Map.of("type","item","item","minecraft:furnace","minimum",1),0,0,false,null,
+                com.dwinovo.numen.rdd.api.NodeType.MAIN,null,List.of(
+                        new com.dwinovo.numen.rdd.api.ResourceUse("minecraft:cobblestone",8,com.dwinovo.numen.rdd.api.ResourceUse.Kind.CONSUME),
+                        new com.dwinovo.numen.rdd.api.ResourceUse("minecraft:cobblestone",7,com.dwinovo.numen.rdd.api.ResourceUse.Kind.RETAIN)));
+        assertFalse((boolean)method.invoke(null,task,Map.of("minecraft:furnace",1,"minecraft:cobblestone",6)));
+        assertTrue((boolean)method.invoke(null,task,Map.of("minecraft:furnace",1,"minecraft:cobblestone",7)));
+        assertFalse((boolean)method.invoke(null,task,null));
     }
 
     @Test

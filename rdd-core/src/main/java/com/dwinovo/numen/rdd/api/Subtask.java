@@ -1,6 +1,7 @@
 package com.dwinovo.numen.rdd.api;
 
 import java.util.Map;
+import java.util.List;
 
 public record Subtask(
         String id,
@@ -12,7 +13,15 @@ public record Subtask(
         boolean recheckOnUnchanged,
         BodyInstruction body,
         NodeType nodeType,
-        RecurrenceSpec recurrence) {
+        RecurrenceSpec recurrence,
+        List<ResourceUse> resourceUses) {
+    /** Legacy complete constructor; old plans declare no resource-use evidence. */
+    public Subtask(String id, String description, DetectionMode detectionMode, Map<String, Object> condition,
+                   long detectionIntervalSeconds, int maxAiChecks, boolean recheckOnUnchanged,
+                   BodyInstruction body, NodeType nodeType, RecurrenceSpec recurrence) {
+        this(id, description, detectionMode, condition, detectionIntervalSeconds, maxAiChecks,
+                recheckOnUnchanged, body, nodeType, recurrence, List.of());
+    }
     public Subtask {
         if (id == null || id.isBlank()) throw new IllegalArgumentException("subtask id required");
         if (description == null || description.isBlank()) throw new IllegalArgumentException("subtask description required");
@@ -25,6 +34,7 @@ public record Subtask(
             throw new IllegalArgumentException("AI-assisted subtask interval and max checks must be positive");
         }
         nodeType = nodeType == null ? NodeType.MAIN : nodeType;
+        resourceUses = ResourceUse.validate(resourceUses, condition);
     }
 
     /** 旧 8 参构造（含 body）：默认 MAIN、无周期，旧测试/调用语义不变。 */
@@ -69,6 +79,6 @@ public record Subtask(
      */
     public Subtask withCondition(Map<String, Object> nextCondition) {
         return new Subtask(id, description, detectionMode, nextCondition,
-                detectionIntervalSeconds, maxAiChecks, recheckOnUnchanged, body, nodeType, recurrence);
+                detectionIntervalSeconds, maxAiChecks, recheckOnUnchanged, body, nodeType, recurrence, resourceUses);
     }
 }

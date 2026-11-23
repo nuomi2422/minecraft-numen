@@ -86,6 +86,7 @@ class RddConcurrentTaskRequestConsumerTest {
               public static void register(){ var numen = new com.dwinovo.numen.api.NumenPlugins.Registration();
             """ + between(plugin, "        numen.contributeState(\"rdd\", \"runtime\"", "\n    }\n\n    /** Model-requested")
             + "}\n" + method(plugin, "    private static String renderStateContext(")
+            + method(plugin, "    private static String resourceUseContext(")
             + method(plugin, "    private static String registeredDailyContext(")
             + method(plugin, "    private static boolean registrationSampleCurrent(")
             + method(plugin, "    private static boolean registrationFieldUnknown(")
@@ -145,6 +146,18 @@ class RddConcurrentTaskRequestConsumerTest {
     }
 
     @AfterAll static void close() throws Exception { if(loader != null) loader.close(); }
+
+    @Test void declaredResourceUsesReachCurrentAndRelatedCandidateFinalUserWithoutBecomingEvidence() throws Exception {
+        for(String kind:List.of("resource","resource-side")) {
+            String user=request(kind,false);
+            assertTrue(user.contains("MAIN_IRON_73"));
+            assertTrue(user.contains("DECLARED_INTENT_NOT_EVIDENCE"),user);
+            assertTrue(user.contains("CONSUME"),user);
+            assertTrue(user.contains("RETAIN"),user);
+            assertTrue(user.contains("minecraft:cobblestone"),user);
+            assertFalse(user.contains("consumptionConfirmed"));
+        }
+    }
 
     @Test void mainOnlyPositiveControlReachesAttachedUser() throws Exception {
         String user = request("main", false);
@@ -300,7 +313,9 @@ class RddConcurrentTaskRequestConsumerTest {
                 TaskChain chain=new TaskChain(new Goal("g","iron expedition",List.of(PrimaryGoal.unexpanded("p","prepare iron",List.of()))));
                 var subs=RddGoalDriver.buildInjection("p",1,List.of(
                   new SubtaskSpec("DAILY_WHEAT_91",Map.of("asset_key","minecraft:wheat","minimum",4),null,NodeType.DAILY,RecurrenceSpec.daily(false)),
-                  new SubtaskSpec("MAIN_IRON_73",Map.of("asset_key","minecraft:iron_ingot","minimum",7),null,NodeType.MAIN,null)));
+                  new SubtaskSpec("MAIN_IRON_73",Map.of("asset_key","minecraft:iron_ingot","minimum",7),null,NodeType.MAIN,null,
+                    kind.startsWith("resource") ? List.of(new ResourceUse("minecraft:cobblestone",8,ResourceUse.Kind.CONSUME),
+                      new ResourceUse("minecraft:cobblestone",7,ResourceUse.Kind.RETAIN)) : List.of())));
                 SideTaskEngine engine=new SideTaskEngine(null,null);
                 SideTaskHost.ENGINE=engine;
                 engine.registerType(new DailyMaintenanceSideTaskType()); engine.registerType(new FoodSupplySideTaskType());
@@ -327,7 +342,7 @@ class RddConcurrentTaskRequestConsumerTest {
                   public int hunger(UUID u){return 3;} public int health(UUID u){return 5;} public int edibleCount(UUID u){return 0;}
                 };
                 if(kind.equals("finished-side")) chain.applyHardCodedResult(chain.currentSubtask().id(),true);
-                if(kind.equals("side") || kind.equals("daily") || kind.equals("finished-side") || kind.equals("decomposing-side") || kind.startsWith("why-side")) {
+                if(kind.equals("side") || kind.equals("daily") || kind.equals("finished-side") || kind.equals("decomposing-side") || kind.startsWith("why-side") || kind.equals("resource-side")) {
                   SideTaskType type=kind.equals("daily")?new DailyMaintenanceSideTaskType():new FoodSupplySideTaskType();
                   // Payload comes from the REAL registration, never a rendered prompt or store.put.
                   if(!engine.startNow(type,id,world,null,kind.equals("daily")?daily.data():Map.of())) throw new AssertionError("SETUP: side activation");

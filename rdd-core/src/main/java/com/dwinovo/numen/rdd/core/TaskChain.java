@@ -1642,6 +1642,7 @@ public final class TaskChain {
                 if (pauseReasons.containsKey(subtask.id())) item.put("pauseReason", pauseReasons.get(subtask.id()));
                 item.put("detectionMode", subtask.detectionMode().name());
                 item.put("condition", subtask.condition());
+                if (!subtask.resourceUses().isEmpty()) item.put("resourceUses", subtask.resourceUses());
                 item.put("current", p == primaryIndex && s == subtaskIndex
                         && NodeTypePolicy.countsTowardMainline(subtask.nodeType()));
                 // G3b：尝试次数进快照（G3a 的债：此前只能读持久化文件核对 IC03）
@@ -1787,6 +1788,27 @@ public final class TaskChain {
             JsonObject pg = el.getAsJsonObject();
             if (!pg.has("unexpanded")) {
                 pg.addProperty("unexpanded", false);
+            }
+            // Validate explicit new numeric declarations before Gson can coerce an int.
+            if (pg.has("subtasks") && pg.get("subtasks").isJsonArray()) {
+                for (JsonElement rawTask : pg.getAsJsonArray("subtasks")) {
+                    JsonObject task = rawTask.getAsJsonObject();
+                    if (!task.has("resourceUses")) continue; // legacy unspecified intent
+                    JsonElement uses = task.get("resourceUses");
+                    if (!uses.isJsonArray() || uses.getAsJsonArray().size() > ResourceUse.MAX_USES)
+                        throw new IllegalArgumentException("invalid persisted resource uses");
+                    for (JsonElement rawUse : uses.getAsJsonArray()) {
+                        if (!rawUse.isJsonObject()) throw new IllegalArgumentException("invalid persisted resource use");
+                        JsonObject use = rawUse.getAsJsonObject();
+                        if (!use.keySet().equals(Set.of("assetKey", "quantity", "kind"))
+                                || !use.get("assetKey").isJsonPrimitive() || !use.get("assetKey").getAsJsonPrimitive().isString()
+                                || !use.get("kind").isJsonPrimitive() || !use.get("kind").getAsJsonPrimitive().isString()
+                                || !use.get("quantity").isJsonPrimitive() || !use.get("quantity").getAsJsonPrimitive().isNumber())
+                            throw new IllegalArgumentException("invalid persisted resource-use fields");
+                        try { use.get("quantity").getAsBigDecimal().intValueExact(); }
+                        catch (ArithmeticException invalid) { throw new IllegalArgumentException("invalid persisted resource quantity", invalid); }
+                    }
+                }
             }
         }
         Goal goal = GSON.fromJson(goalObj, Goal.class);

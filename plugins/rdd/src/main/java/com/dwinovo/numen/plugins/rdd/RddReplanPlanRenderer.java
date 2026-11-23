@@ -53,6 +53,8 @@ final class RddReplanPlanRenderer {
                 if (cond != null && !cond.isEmpty()) {
                     sb.append("  [条件 ").append(cond.keySet()).append("]");
                 }
+                if (!s.resourceUses().isEmpty()) sb.append(" [resource_uses declaration=")
+                        .append(com.dwinovo.numen.rdd.api.ResourceUse.declarations(s.resourceUses())).append("]");
                 sb.append('\n');
                 shown++;
             }

@@ -853,7 +853,8 @@ public final class RddPlugin implements NumenPlugin {
                                         .append("</scope><subtask>").append(escape(candidate.id()))
                                         .append("</subtask><description>").append(escape(candidate.description()))
                                         .append("</description><done_when>").append(escape(String.valueOf(candidate.condition())))
-                                        .append("</done_when><status>").append(status)
+                                        .append("</done_when>").append(resourceUseContext(candidate))
+                                        .append("<status>").append(status)
                                         .append("</status><availability>").append(daily ? "PLANNED_TEMPLATE_REGISTRATION_AND_DUE_UNKNOWN" : "WAIT_FOR_SIDE_RELEASE")
                                         .append("</availability>");
                                 if (daily && candidate.recurrence() != null) candidates.append("<recurrence>")
@@ -912,6 +913,7 @@ public final class RddPlugin implements NumenPlugin {
                     + "<subtask>" + escape(current.id()) + "</subtask>"
                     + "<current_task>" + escape(current.description()) + "</current_task>"
                     + "<done_when>" + escape(String.valueOf(current.condition())) + "</done_when>"
+                    + resourceUseContext(current)
                     + "<subtask_status>" + chain.currentSubtaskStatus() + "</subtask_status>"
                     + "<instruction>current_task 是你必须执行的当前目标（优先于自由活动）；"
                     + "若你认为它不合理/不可达/与目标冲突，用 report_task_concern 上报（REJECT/COUNTER+建议），"
@@ -930,6 +932,14 @@ public final class RddPlugin implements NumenPlugin {
      * <p>缺快照时返回空串 → {@code <carry>} 整块不出现（B21：缺失就缺失，不写空标签）。
      */
     /** Only cached observations establish this request's clock/dimension; never refresh or read MC here. */
+    private static String resourceUseContext(Subtask task) {
+        if (task.resourceUses().isEmpty()) return "";
+        return "<resource_uses status=\"DECLARED_INTENT_NOT_EVIDENCE\">"
+                + escape(new com.google.gson.Gson().toJson(
+                        com.dwinovo.numen.rdd.api.ResourceUse.declarations(task.resourceUses())))
+                + "</resource_uses>";
+    }
+
     private static String registeredDailyContext(UUID id, TaskChain chain) {
         try {
             var service = com.dwinovo.numen.api.NumenPlugins.capability(

@@ -1120,6 +1120,7 @@ final class RddDetector {
     }
 
     static boolean conditionMatches(NumenPlayer ap, Subtask task, Map<String, Integer> counts) {
+        if (!com.dwinovo.numen.rdd.api.ResourceUse.retainedSatisfied(task.resourceUses(), counts)) return false;
         if (task.condition().containsKey("type") && !"inventory".equals(task.condition().get("type"))) {
             // 2026-11-03 实机：item_crafted bread>=1 用终身统计，历史面包把 r3-3 假完成。
             // 统计类条件必须按「进入本步后的增量」判，而不是终身累计。

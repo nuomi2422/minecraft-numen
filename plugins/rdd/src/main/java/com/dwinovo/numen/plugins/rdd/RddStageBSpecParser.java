@@ -3,6 +3,7 @@ package com.dwinovo.numen.plugins.rdd;
 import com.dwinovo.numen.rdd.api.NodeType;
 import com.dwinovo.numen.rdd.api.RecurrenceSpec;
 import com.dwinovo.numen.rdd.api.SubtaskSpec;
+import com.dwinovo.numen.rdd.api.ResourceUse;
 import com.dwinovo.numen.rdd.core.RddChainFactory;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -159,11 +160,14 @@ final class RddStageBSpecParser {
         if (nodeType == null) return null;
         RecurrenceSpec recurrence = parseRecurrence(o);
         if (o.has("recurrence") && recurrence == null) return null;
+        List<ResourceUse> resourceUses;
+        try { resourceUses = parseResourceUses(o, cond); }
+        catch (IllegalArgumentException malformed) { return null; }
         if (cond.has("type") && !"inventory".equals(cond.get("type").getAsString())) {
             Map<String, Object> fact = new LinkedHashMap<>();
             for (var entry : cond.entrySet()) fact.put(entry.getKey(), toPlain(entry.getValue()));
             return com.dwinovo.numen.rdd.core.WorldFactConditions.valid(fact)
-                    ? new SubtaskSpec(description, fact, null, nodeType, recurrence) : null;
+                    ? new SubtaskSpec(description, fact, null, nodeType, recurrence, resourceUses) : null;
         }
         String assetKey = cond.has("asset_key") ? cond.get("asset_key").getAsString() : null;
         // 资产键形状不可执行(裸键/占位如 goal/大写) 永不匹配背包键 -> 判不可用丢弃，
@@ -195,7 +199,7 @@ final class RddStageBSpecParser {
         if (cond.has("optional") && cond.get("optional").isJsonPrimitive()
                 && cond.getAsJsonPrimitive("optional").isBoolean())
             condition.put("optional", cond.get("optional").getAsBoolean());
-        return new SubtaskSpec(description, condition, null, nodeType, recurrence);
+        return new SubtaskSpec(description, condition, null, nodeType, recurrence, resourceUses);
     }
 
     /** Optional node_type; null = invalid (caller drops), missing = MAIN. */
@@ -207,6 +211,33 @@ final class RddStageBSpecParser {
     }
 
     /** Optional recurrence object; null when absent or invalid. */
+    /** Declared purposes only; malformed explicit fields must not silently become legacy plans. */
+    private static List<ResourceUse> parseResourceUses(JsonObject step, JsonObject condition) {
+        if (!step.has("resource_uses")) return List.of();
+        JsonElement raw = step.get("resource_uses");
+        if (!raw.isJsonArray() || raw.getAsJsonArray().size() > ResourceUse.MAX_USES)
+            throw new IllegalArgumentException("resource_uses must be a bounded array");
+        List<ResourceUse> uses = new ArrayList<>();
+        for (JsonElement element : raw.getAsJsonArray()) {
+            if (!element.isJsonObject()) throw new IllegalArgumentException("resource use must be an object");
+            JsonObject item = element.getAsJsonObject();
+            if (!item.keySet().equals(java.util.Set.of("asset_key", "quantity", "kind")))
+                throw new IllegalArgumentException("resource use fields invalid");
+            if (!item.get("asset_key").isJsonPrimitive() || !item.get("asset_key").getAsJsonPrimitive().isString()
+                    || !item.get("kind").isJsonPrimitive() || !item.get("kind").getAsJsonPrimitive().isString()
+                    || !item.get("quantity").isJsonPrimitive() || !item.get("quantity").getAsJsonPrimitive().isNumber())
+                throw new IllegalArgumentException("resource use types invalid");
+            int quantity;
+            try { quantity = item.get("quantity").getAsBigDecimal().intValueExact(); }
+            catch (ArithmeticException invalid) { throw new IllegalArgumentException("resource quantity must be integral", invalid); }
+            uses.add(new ResourceUse(item.get("asset_key").getAsString(), quantity,
+                    ResourceUse.Kind.valueOf(item.get("kind").getAsString())));
+        }
+        Map<String, Object> fact = new LinkedHashMap<>();
+        for (var entry : condition.entrySet()) fact.put(entry.getKey(), toPlain(entry.getValue()));
+        return ResourceUse.validate(uses, fact);
+    }
+
     private static RecurrenceSpec parseRecurrence(JsonObject o) {
         if (!o.has("recurrence") || o.get("recurrence").isJsonNull()) return null;
         if (!o.get("recurrence").isJsonObject()) return null;

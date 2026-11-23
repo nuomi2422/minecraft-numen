@@ -67,7 +67,10 @@ final class RddPlanGuard {
     static List<String> predicateGaps(com.dwinovo.numen.rdd.api.SubtaskSpec s) {
         List<String> gaps = new ArrayList<>();
         if (s == null) return gaps;
-        String d = predicateRequirements(s);
+        String d = s.description() == null ? "" : s.description();
+        // Explicit purposes replace prose inference only, never the real result predicate.
+        // All independent final inventory obligations must be declared RETAIN.
+        boolean declaredPurposes = !s.resourceUses().isEmpty();
         Map<String, Object> c = s.condition();
         boolean blockCondition = c.containsKey("group") && String.valueOf(c.get("group")).contains("blocks");
         boolean assetIsBlock = c.get("asset_key") instanceof String k && PLACE_MATERIALS.contains(k);
@@ -78,11 +81,11 @@ final class RddPlanGuard {
                 || d.contains("手上") || d.contains("清点");
         boolean worldCondition = c.containsKey("block")
                 || (c.get("type") instanceof String t && t.contains("block"));
-        if (inventoryIntent && worldCondition) {
+        if (!declaredPurposes && inventoryIntent && worldCondition) {
             gaps.add("背包物品（判据却在验世界方块）");
         }
         java.util.regex.Matcher m = BLOCK_COUNT.matcher(d);
-        while (m.find()) {
+        while (!declaredPurposes && m.find()) {
             int n = Integer.parseInt(m.group(1));
             if (n <= 0) continue;
             if (!blockCondition && !assetIsBlock) {
@@ -98,36 +101,6 @@ final class RddPlanGuard {
             gaps.add("item_used 只证右键使用次数，不证种子实际种下；改用 block_nearby 作物或 container_at 收获物");
         }
         return gaps;
-    }
-
-    /** The placed furnace consumes its shortage materials; those are not a second held quota.
-     * Only omit a whole, explicit shortage clause for this known outcome. Any extra carrying
-     * obligation stays in the original gap checks, as do all other world/inventory predicates. */
-    private static String predicateRequirements(SubtaskSpec spec) {
-        String d = spec.description() == null ? "" : spec.description();
-        if (!"block_nearby".equals(spec.condition().get("type"))
-                || !"minecraft:furnace".equals(spec.condition().get("block"))) return d;
-        String[] clauses = d.split("[。；;\\n]", -1);
-        boolean placedFurnace = false;
-        for (String clause : clauses) {
-            if (clause.matches(".*用(?:现有\\s*)?8\\s*(?:块|个)?圆石\\s*(?:做|制作|合成)一台熔炉并放[^。；;]*")
-                    && !clause.matches(".*(?:不要|不必|无需|不用|禁止|另外|额外|同时|仍需|保留|随身备|垫脚).*")) {
-                placedFurnace = true;
-            }
-        }
-        if (!placedFurnace) return d;
-        List<String> requirements = new ArrayList<>();
-        for (String clause : clauses) {
-            String plain = clause.strip();
-            var shortage = java.util.regex.Pattern.compile(
-                    "现有背包圆石只有\\s*([0-7])[，,]不够就[^。；;]*补挖\\s*([1-8])\\s*(?:个|块)圆石(?:（[^（）]*）)?")
-                    .matcher(plain);
-            boolean consumedInput = shortage.matches()
-                    && Integer.parseInt(shortage.group(1)) + Integer.parseInt(shortage.group(2)) == 8
-                    && !plain.matches(".*(?:另外|额外|同时|仍需|保留|备齐|携带|随身|垫脚|至少|≥).*");
-            if (!consumedInput) requirements.add(clause);
-        }
-        return String.join("；", requirements);
     }
 
     private static boolean isPlantableSeed(String itemId) {
@@ -306,7 +279,7 @@ final class RddPlanGuard {
                 && !purpose.contains("染色") && !explicitColour) {
             Map<String, Object> cond = new java.util.LinkedHashMap<>(s.condition());
             cond.put("asset_key", "minecraft:bed"); // existing inventory family alias
-            return new SubtaskSpec(s.description(), cond, s.body(), s.nodeType(), s.recurrence());
+            return new SubtaskSpec(s.description(), cond, s.body(), s.nodeType(), s.recurrence(), s.resourceUses());
         }
         boolean multi = d.contains("都行") || d.contains("任意") || d.contains("任选") || d.contains("或");
         boolean placing = d.contains("垫") || d.contains("铺") || d.contains("落脚台") || d.contains("搭") || d.contains("放");
@@ -325,7 +298,7 @@ final class RddPlanGuard {
             // 但至少要让语义原样到达判定层，而不是悄悄降成 hold。
             if (s.condition().containsKey("mode")) cond.put("mode", s.condition().get("mode"));
             if (s.condition().containsKey("optional")) cond.put("optional", s.condition().get("optional"));
-            return new SubtaskSpec(s.description(), cond, s.body(), s.nodeType(), s.recurrence());
+            return new SubtaskSpec(s.description(), cond, s.body(), s.nodeType(), s.recurrence(), s.resourceUses());
         }
         return s;
     }
@@ -398,7 +371,8 @@ final class RddPlanGuard {
                 dropped.add("可选升级未获要求：" + assetKey);
                 continue;
             }
-            if (alreadyHeld(spec, held)) {
+            if (alreadyHeld(spec, held)
+                    && com.dwinovo.numen.rdd.api.ResourceUse.retainedSatisfied(spec.resourceUses(), held)) {
                 reused.add(assetKey);
                 heldOnes.add(spec);
                 producedToolIds(spec.description()).forEach(id -> effectiveHeld.merge(id, 1, Math::max));
@@ -423,7 +397,7 @@ final class RddPlanGuard {
                         "reason", "maintenance/wait/growth step must not block mainline",
                         "description", spec.description() == null ? "" : spec.description()));
                 normalized.add(new SubtaskSpec(spec.description(), spec.condition(), spec.body(),
-                        NodeType.DAILY, RecurrenceSpec.daily(farmObjective)));
+                        NodeType.DAILY, RecurrenceSpec.daily(farmObjective), spec.resourceUses()));
             } else {
                 normalized.add(spec);
             }

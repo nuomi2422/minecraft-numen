@@ -156,11 +156,13 @@ class RddPlanGuardTest {
         String json = new com.google.gson.Gson().toJson(Map.of("subtasks", List.of(Map.of(
                 "description", description, "condition", Map.of(
                         "type", "block_nearby", "block", "minecraft:furnace", "radius", 8),
-                "node_type", "MAIN"))));
+                "node_type", "MAIN", "resource_uses", List.of(Map.of(
+                        "asset_key", "minecraft:cobblestone", "quantity", 8, "kind", "CONSUME"))))));
         var parsed = RddStageBSpecParser.parseDetailed(json);
         assertEquals(1, parsed.specs().size(), "SETUP: recorded furnace predicate is structurally valid");
         assertTrue(parsed.skippedRequired().isEmpty());
         var spec = parsed.specs().get(0);
+        assertEquals(8, spec.resourceUses().get(0).quantity());
         assertTrue(RddPlanGuard.predicateGaps(spec).isEmpty(),
                 "consumed recipe inputs are not an independent final backpack quota: " + RddPlanGuard.predicateGaps(spec));
         var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()),
