@@ -45,7 +45,8 @@ final class SkillReviewInput {
         String status = trace.limited() ? "UNKNOWN_LIMIT" : trace.rows().isEmpty() ? "NOT_AVAILABLE" : "EXACT_CALL";
         int reserve = 100;
         List<String> included = new ArrayList<>();
-        for (String row : trace.rows()) {
+        for (ToolResultRef factRow : trace.rows()) {
+            String row = factRow.display();
             if (out.length() + reserve + row.length() + 1 > limit) { status = "UNKNOWN_LIMIT"; break; }
             included.add(row); reserve += row.length() + 1;
         }
@@ -90,11 +91,34 @@ final class SkillReviewInput {
         }
     }
 
-    private record Trace(List<String> rows, boolean limited) {}
+    private record ToolResultRef(String eventId, String display, String writer, String status, String taskId) {
+        boolean terminal() {
+            return "server-async".equals(writer) && switch (status) {
+                case "done", "failed", "timeout", "stopped", "external-done", "external-failed", "external-timeout", "external-stopped" -> true;
+                default -> false;
+            };
+        }
+    }
+    private record Trace(List<ToolResultRef> rows, boolean limited) {}
+
+    /** Re-read original scoped terminal facts; never treat caller evidence or display text as authority. */
+    static Memo withTaskResultEvidence(Path dir, UUID companion, Memo source) {
+        if (source == null || !"skill_task_result".equals(source.stage())) return source;
+        var fact = SkillDeliveryIntake.taskResultFromSnapshot(source.snapshot());
+        List<String> ids = List.of();
+        if (dir != null && fact != null && companion != null && companion.toString().equals(fact.scope().companionId())) {
+            Trace found = trace(dir, fact);
+            // Incomplete tail/parse means UNKNOWN: do not turn a partial observation into evidence permission.
+            if (!found.limited()) ids = Memo.normalizeEvidence(found.rows().stream()
+                    .filter(row -> row.terminal() && !row.taskId().isBlank() && fact.taskId().equals(row.taskId())).map(ToolResultRef::eventId).toList());
+        }
+        return new Memo(source.id(), source.problem(), source.stage(), source.tried(), source.snapshot(),
+                source.createdAt(), source.category(), ids);
+    }
     private static Trace trace(Path dir, SkillDeliveryIntake.TaskResultFact fact) {
         Path file = dir.resolve("monitor/tools.jsonl");
         if (!Files.isRegularFile(file)) return new Trace(List.of(), false);
-        List<String> rows = new ArrayList<>();
+        List<ToolResultRef> rows = new ArrayList<>();
         boolean limited = false;
         try (var channel = Files.newByteChannel(file)) {
             long size = channel.size(), start = Math.max(0, size - TRACE_BYTES);
@@ -134,11 +158,12 @@ final class SkillReviewInput {
                     String asyncStatus = str(data, "async_status");
                     if (writer.equals("server") && isAsyncAcceptance(result)) kind = "ACCEPTANCE_ONLY";
                     if (writer.equals("server-async") && asyncStatus.isBlank()) kind = "ASYNC_STATUS_UNKNOWN";
+                    if (writer.equals("server-async") && str(data, "task_id").isBlank()) kind = "TASK_UNKNOWN";
                     if (event.length() > 100 || tool.length() > 80 || result.length() > 180 || asyncStatus.length() > 80) limited = true;
-                    rows.add("event:" + clip(event, 100) + " tool=" + clip(tool, 80)
+                    rows.add(new ToolResultRef(event, "event:" + clip(event, 100) + " tool=" + clip(tool, 80)
                             + " writer=" + writer + " kind=" + kind
                             + (asyncStatus.isBlank() ? "" : " async_status=" + clip(asyncStatus, 80))
-                            + " result=" + clip(result, 180));
+                            + " result=" + clip(result, 180), writer, asyncStatus, str(data, "task_id")));
                     if (rows.size() > TRACE_ROWS) { rows.remove(0); limited = true; }
                 } catch (RuntimeException malformed) { limited = true; }
             }

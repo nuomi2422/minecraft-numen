@@ -115,9 +115,10 @@ class LearnerAutoTaskResultIntakeTest {
     }
     private static final class Tasks implements LearnerUsageTool.TaskAccess {
         WorldContextStamp.Token stamp = token(CURRENT);
+        UUID companion = OWNER;
         TaskRecord active;
         final Map<String, TaskRecord> done = new HashMap<>();
-        public UUID companionId() { return OWNER; }
+        public UUID companionId() { return companion; }
         public WorldContextStamp.Token identity() { return stamp; }
         public TaskRecord current() { return active; }
         public TaskRecord finished(String id) { return done.get(id); }
@@ -126,6 +127,454 @@ class LearnerAutoTaskResultIntakeTest {
             active.setResult(state == TaskState.SUCCESS ? TaskResult.ok("arrived") : TaskResult.fail("ended"));
             done.put(active.publicId(), active); active = null;
         }
+    }
+
+    private static final String LEARNING_EVENT = "tools-async-learning-1";
+    private record Learned(String skill, String version, String body, Memo source) {}
+
+    /** Produce the artifact through the actual completion contract, never by synthesizing RESULT. */
+    private Learned learnForBodyTask() throws Exception {
+        Files.writeString(dir.resolve("monitor/tools.jsonl"),
+                "{\"event_id\":\"" + LEARNING_EVENT + "\",\"event\":\"tool_result\"}\n");
+        Memo source = new Memo("async-original-learning", "learn a safe method", "learning", "review", "", 1L,
+                "learning", List.of(LEARNING_EVENT));
+        MemoQueue learning = new MemoQueue(dir.resolve("source-learning.json"));
+        assertTrue(learning.append(source));
+        var batch = learning.drain(3);
+        Experience experience = new Experience("async learned method", "task is active", "old attempt failed",
+                "observed task result", "follow original learned steps", "avoid the failed attempt",
+                LEARNING_EVENT, "FAILURE", List.of("EXECUTOR"));
+        Verdict verdict = new Verdict(source.id(), List.of(Verdict.Action.WRITE_EXPERIENCE), .8,
+                "derive a candidate method from the original event", experience, "", "", "", "", List.of(), List.of(),
+                new RetrievalDecision(List.of(), RetrievalDecision.Kind.NEW, "no existing matching skill"));
+        var stamp = token(CURRENT);
+        var completion = new ReviewCompletion(batch, memo -> ReviewTargetGate.check(dir, OWNER, memo, stamp, stamp));
+        var consumed = completion.consume(dir, learning, batch, List.of(verdict), (kind, data) -> {});
+        assertEquals(1, consumed.settlement().committed());
+        var submission = com.dwinovo.numen.plugins.learner.contract.ReviewContractAdapter.toSubmission(verdict,
+                source.id(), com.dwinovo.numen.plugins.learner.contract.Submission.Mode.INTERNAL, "", List.of(LEARNING_EVENT));
+        String skill = SkillRegistrar.skillIdOf(submission.artifacts().getFirst());
+        var entry = registry.get(skill).orElseThrow();
+        assertTrue(entry.foundingSamples().contains(source.id()));
+        assertEquals(com.dwinovo.numen.plugins.learner.skills.SkillStatus.DRAFT, entry.status(),
+                "new EXPERIENCE uses the existing DRAFT publication policy, not automatic adoption permission");
+        Work unpublishedTask = new Work("draft-must-not-adopt");
+        unpublishedTask.bindIdentity(tasks.stamp); unpublishedTask.setState(TaskState.RUNNING); tasks.active = unpublishedTask;
+        var unpublished = new Learned(skill, "v" + entry.version(), SkillBodyStore.read(dir, entry.bodyRef()), source);
+        JsonObject denied = taskUsage("adopt_skill", unpublished, unpublishedTask);
+        assertFalse(denied.get("success").getAsBoolean(), "DRAFT must not acquire an async task binding");
+        assertNull(unpublishedTask.skillSelection());
+        assertTrue(ledger.all().isEmpty());
+        tasks.active = null;
+        var publication = registry.promote(skill, "controlled test publication after actual learning output");
+        assertTrue(publication.stored(), publication.reason());
+        entry = registry.get(skill).orElseThrow();
+        assertTrue(entry.status().retrievable());
+        return new Learned(skill, "v" + entry.version(), SkillBodyStore.read(dir, entry.bodyRef()), source);
+    }
+
+    private JsonObject taskUsage(String action, Learned learned, Work task) {
+        JsonObject args = new JsonObject();
+        args.addProperty("action", action); args.addProperty("task_id", task.publicId());
+        args.addProperty("skill_ref", "skill:" + learned.skill()); args.addProperty("version", learned.version());
+        AtomicReference<String> reply = new AtomicReference<>();
+        tool.onServerCall(action + "-" + task.getToolCallId(), args, null, reply::set);
+        return JsonParser.parseString(reply.get()).getAsJsonObject();
+    }
+    private Work selectLearned(Learned learned, String call) {
+        Work work = new Work(call); work.bindIdentity(tasks.stamp); work.setState(TaskState.RUNNING); tasks.active = work;
+        JsonObject response = taskUsage("adopt_skill", learned, work);
+        assertTrue(response.get("success").getAsBoolean(), response.toString());
+        assertEquals(learned.body(), response.getAsJsonObject("data").get("body").getAsString());
+        assertNotNull(work.skillSelection());
+        assertEquals("skill:" + learned.skill(), work.skillSelection().skillRef());
+        return work;
+    }
+    private Memo finishAndCollect(Learned learned, Work work) {
+        tasks.finish(TaskState.SUCCESS);
+        JsonObject result = taskUsage("report_skill", learned, work);
+        assertTrue(result.get("success").getAsBoolean(), result.toString());
+        assertEquals(1, ledger.all().size());
+        var row = ledger.all().getFirst();
+        assertEquals(UsageLedger.EvidenceLevel.NONE, row.evidence());
+        assertFalse(row.validityClaimed());
+        assertEquals(1, scan());
+        Memo memo = queue.all().getFirst();
+        assertEquals("skill_task_result", memo.stage());
+        var fact = SkillDeliveryIntake.taskResultOf(row);
+        assertNotNull(fact); assertEquals(work.publicId(), fact.taskId());
+        assertEquals(work.getToolCallId(), fact.taskCall());
+        assertEquals(fact, SkillDeliveryIntake.taskResultFromSnapshot(memo.snapshot()), "host must preserve the exact producer fact");
+        assertEquals(UsageLedger.Outcome.SUCCESS, row.outcome());
+        assertEquals(OWNER.toString(), row.companionId());
+        assertEquals("skill:" + learned.skill(), fact.ref());
+        assertEquals(learned.version(), fact.version());
+        String input = TrajectorySlices.forMemo(dir, OWNER, memo);
+        assertTrue(input.contains(learned.body())); assertTrue(input.contains(work.publicId()));
+        return memo;
+    }
+    private ReviewCompletion.Consumption consumeReturned(Memo memo, boolean revoke, Learned learned) {
+        var batch = queue.drain(3); assertEquals(List.of(memo), batch);
+        var stable = token(CURRENT);
+        var completion = new ReviewCompletion(batch, sample -> ReviewTargetGate.check(dir, OWNER, sample, stable, stable));
+        assertTrue(completion.permits(memo.id()));
+        if (revoke) assertTrue(registry.retire(learned.skill(), "controlled withdrawal after candidate intake").stored());
+        Verdict verdict = new Verdict(memo.id(), List.of(Verdict.Action.NO_ACTION), .8,
+                "original task terminal result only, not world effectiveness", null, "", "", "", List.of(), List.of());
+        return completion.consume(dir, queue, batch, List.of(verdict), (kind, data) -> {});
+    }
+
+    @Test void originalAsyncResultCanReviseItsOwnLearnedArtifactWithoutPromotingEvidence() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work work = selectLearned(learned, "mcp-async-relearn-original-call");
+        work.markAsync();
+        tasks.finish(TaskState.SUCCESS);
+        try (AsyncJournalFixture journal = new AsyncJournalFixture(dir)) {
+            OriginalAsyncJournalProducer.publish(OWNER, work); journal.barrier();
+            assertTrue(taskUsage("report_skill", learned, work).get("success").getAsBoolean());
+            assertEquals(1, scan());
+        }
+        Memo returned = queue.all().getFirst();
+        assertEquals(1, returned.evidence().size());
+        Files.writeString(dir.resolve(com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.FILE_NAME), "{\"mode\":\"enforce\"}");
+        var batch = queue.drain(3);
+        var stable = token(CURRENT);
+        var completion = new ReviewCompletion(batch, sample -> ReviewTargetGate.check(dir, OWNER, sample, stable, stable));
+        assertTrue(completion.permits(returned.id()));
+        // Keep existing metadata/fingerprint. The new text is a candidate interpretation, not a world-effect assertion.
+        Experience interpretation = new Experience("async learned method", "task is active", "old attempt failed",
+                "observed task result", "follow original learned steps; task completion alone is not world verification",
+                "avoid the failed attempt", "", "FAILURE", List.of("EXECUTOR"));
+        Verdict revision = new Verdict(returned.id(), List.of(Verdict.Action.WRITE_EXPERIENCE), .8,
+                "revise candidate instructions while retaining uncertainty about world effectiveness", interpretation,
+                "", "", "", "", List.of(), List.of(), new RetrievalDecision(
+                List.of(new RetrievalDecision.Hit("skill:" + learned.skill(), "observed task result", "same original method", true, "TRIAL")),
+                RetrievalDecision.Kind.REVISE, "same learned method; retain original task identity"));
+        var consumed = completion.consume(dir, queue, batch, List.of(revision), (kind, data) -> {});
+        assertEquals(1, consumed.settlement().committed());
+        var updated = registry.get(learned.skill()).orElseThrow();
+        assertEquals(Integer.parseInt(learned.version().substring(1)) + 1, updated.version());
+        assertTrue(updated.foundingSamples().contains(learned.source().id()));
+        assertTrue(updated.foundingSamples().contains(returned.id()));
+        assertEquals(UsageLedger.EvidenceLevel.NONE, ledger.all().getFirst().evidence());
+        assertEquals(1, ledger.all().size(), "revision cannot manufacture another task result");
+        assertTrue(TrajectorySlices.forMemo(dir, OWNER, returned).contains(learned.body()), "history keeps the selected original body, not the replacement revision body");
+        assertFalse(ReviewTargetGate.check(dir, OWNER, returned, stable, stable).ok(), "old sample no longer grants current replacement-version permission");
+        assertEquals(0, new MemoQueue(queue.file()).size());
+    }
+
+    @Test void originalJournalWithoutTaskIdentityRemainsDiagnosticAndCannotAuthorizeEvidence() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work work = selectLearned(learned, "mcp-original-legacy-task-id");
+        work.markAsync(); tasks.finish(TaskState.SUCCESS);
+        try (AsyncJournalFixture journal = new AsyncJournalFixture(dir)) {
+            OriginalAsyncJournalProducer.publish(OWNER, work); journal.barrier();
+            Path log = dir.resolve("monitor/tools.jsonl");
+            String original = Files.readString(log);
+            var legacy = new StringBuilder();
+            for (String line : original.lines().toList()) {
+                var envelope = JsonParser.parseString(line).getAsJsonObject();
+                if (envelope.has("data")) envelope.getAsJsonObject("data").remove("task_id");
+                legacy.append(envelope).append('\n');
+            }
+            Files.writeString(log, legacy.toString()); // remove only the field from a real original event: exact legacy record shape
+            assertTrue(taskUsage("report_skill", learned, work).get("success").getAsBoolean());
+            assertEquals(1, scan());
+            Memo memo = queue.all().getFirst();
+            assertTrue(memo.evidence().isEmpty());
+            assertTrue(TrajectorySlices.forMemo(dir, OWNER, memo).contains("TASK_UNKNOWN"));
+            Files.writeString(log, original); // restore exact producer bytes; never manufacture a task id
+            Memo restored = SkillDeliveryIntake.withTaskResultEvidence(dir, OWNER, memo);
+            assertEquals(1, restored.evidence().size());
+            assertEquals(memo.id(), restored.id()); assertEquals(memo.snapshot(), restored.snapshot());
+            assertEquals(UsageLedger.EvidenceLevel.NONE, ledger.all().getFirst().evidence());
+        }
+    }
+
+    @Test void sameScopeDifferentCallCannotSupplySelectedTaskEvidence() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work selected = selectLearned(learned, "mcp-original-distinct-call");
+        selected.markAsync(); tasks.finish(TaskState.SUCCESS);
+        Work other = new Work("mcp-foreign-distinct-call");
+        other.markAsync(); other.bindIdentity(selected.identityToken());
+        other.setState(TaskState.SUCCESS); other.setResult(TaskResult.ok("other call finished"));
+        try (AsyncJournalFixture journal = new AsyncJournalFixture(dir)) {
+            OriginalAsyncJournalProducer.publish(OWNER, other); journal.barrier();
+            var events = Files.readAllLines(dir.resolve("monitor/tools.jsonl")).stream()
+                    .map(line -> JsonParser.parseString(line).getAsJsonObject())
+                    .filter(row -> row.has("type") && "tool_result".equals(row.get("type").getAsString())).toList();
+            assertEquals(1, events.size());
+            assertEquals(other.publicId(), events.getFirst().getAsJsonObject("data").get("task_id").getAsString());
+            assertTrue(taskUsage("report_skill", learned, selected).get("success").getAsBoolean());
+            assertEquals(1, scan());
+            Memo memo = queue.all().getFirst();
+            assertTrue(memo.evidence().isEmpty());
+            assertFalse(TrajectorySlices.forMemo(dir, OWNER, memo).contains("event:" + events.getFirst().get("event_id").getAsString()));
+            assertEquals(UsageLedger.EvidenceLevel.NONE, ledger.all().getFirst().evidence());
+        }
+    }
+
+    @Test void sameScopeCallFromDifferentTaskCannotSupplySelectedTaskEvidence() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work selected = selectLearned(learned, "mcp-reused-call-different-task");
+        selected.markAsync(); tasks.finish(TaskState.SUCCESS);
+        Work other = new Work(selected.getToolCallId());
+        other.markAsync(); other.bindIdentity(selected.identityToken());
+        other.setState(TaskState.SUCCESS); other.setResult(TaskResult.ok("another task ended"));
+        assertNotEquals(selected.publicId(), other.publicId());
+        try (AsyncJournalFixture journal = new AsyncJournalFixture(dir)) {
+            OriginalAsyncJournalProducer.publish(OWNER, other); journal.barrier();
+            var originalRows = Files.readAllLines(dir.resolve("monitor/tools.jsonl")).stream()
+                    .map(line -> JsonParser.parseString(line).getAsJsonObject())
+                    .filter(row -> row.has("type") && "tool_result".equals(row.get("type").getAsString()))
+                    .filter(row -> selected.getToolCallId().equals(row.getAsJsonObject("data").get("tool_call_id").getAsString())).toList();
+            assertEquals(1, originalRows.size(), "different-task producer must really persist before testing isolation");
+            var originalEvent = originalRows.getFirst();
+            assertEquals(CURRENT.worldId(), originalEvent.get("world_id").getAsString());
+            assertEquals(CURRENT.serverSession(), originalEvent.get("server_session").getAsString());
+            assertEquals(CURRENT.epoch(), originalEvent.get("world_epoch").getAsLong());
+            assertEquals("another task ended", originalEvent.getAsJsonObject("data").get("result").getAsString());
+            assertTrue(EvidenceJournal.unresolved(dir.resolve("monitor"),
+                    List.of(originalEvent.get("event_id").getAsString())).isEmpty());
+            assertTrue(taskUsage("report_skill", learned, selected).get("success").getAsBoolean());
+            assertEquals(1, scan());
+            Memo memo = queue.all().getFirst();
+            assertTrue(memo.evidence().isEmpty(), "same scope and call cannot substitute a different original TaskRecord");
+            assertEquals(UsageLedger.EvidenceLevel.NONE, ledger.all().getFirst().evidence());
+        }
+    }
+
+    @Test void disappearedOriginalJournalCannotAuthorizeSubmissionFromOldMemoEvidence() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work work = selectLearned(learned, "mcp-disappeared-original-evidence");
+        work.markAsync(); tasks.finish(TaskState.SUCCESS);
+        try (AsyncJournalFixture journal = new AsyncJournalFixture(dir)) {
+            OriginalAsyncJournalProducer.publish(OWNER, work); journal.barrier();
+            assertTrue(taskUsage("report_skill", learned, work).get("success").getAsBoolean());
+            assertEquals(1, scan());
+            Memo memo = queue.all().getFirst();
+            assertFalse(memo.evidence().isEmpty());
+            var batch = queue.drain(3);
+            var stable = token(CURRENT);
+            var completion = new ReviewCompletion(batch, sample -> ReviewTargetGate.check(dir, OWNER, sample, stable, stable));
+            assertTrue(completion.permits(memo.id()));
+            String before = registryBytes();
+            Files.writeString(dir.resolve(com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.FILE_NAME), "{\"mode\":\"enforce\"}");
+            Files.writeString(dir.resolve("monitor/tools.jsonl"), ""); // controlled original-log loss, not fabricated evidence
+            var noAction = new Verdict(memo.id(), List.of(Verdict.Action.NO_ACTION), .8,
+                    "old memo evidence is not permanent permission", null, "", "", "", List.of(), List.of());
+            var rejected = completion.consume(dir, queue, batch, List.of(noAction), (kind, data) -> {});
+            assertEquals(0, rejected.settlement().committed()); assertEquals(1, rejected.settlement().restored());
+            assertTrue(rejected.retrievalRejected().stream().anyMatch(reason -> reason.contains("claim_without_evidence")));
+            assertEquals(before, registryBytes());
+            assertEquals(List.of(memo.id()), queue.all().stream().map(Memo::id).toList());
+            assertEquals(UsageLedger.EvidenceLevel.NONE, ledger.all().getFirst().evidence());
+        }
+    }
+
+    @Test void lateOriginalTaskJournalCanSupportSameMemoWithoutAnotherIntake() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work work = selectLearned(learned, "mcp-late-original-evidence");
+        work.markAsync(); tasks.finish(TaskState.SUCCESS);
+        assertTrue(taskUsage("report_skill", learned, work).get("success").getAsBoolean());
+        assertEquals(1, scan());
+        Memo pending = queue.all().getFirst();
+        assertTrue(pending.evidence().isEmpty());
+        var journalBefore = journalLines();
+        Files.writeString(dir.resolve(com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.FILE_NAME), "{\"mode\":\"enforce\"}");
+        var stable = token(CURRENT);
+        var noAction = new Verdict(pending.id(), List.of(Verdict.Action.NO_ACTION), .8,
+                "only the original task terminal observation, not world effectiveness", null, "", "", "", List.of(), List.of());
+        var first = queue.drain(3);
+        var withoutEvidence = new ReviewCompletion(first, sample -> ReviewTargetGate.check(dir, OWNER, sample, stable, stable))
+                .consume(dir, queue, first, List.of(noAction), (kind, data) -> {});
+        assertEquals(0, withoutEvidence.settlement().committed());
+        assertEquals(1, withoutEvidence.settlement().restored());
+        try (AsyncJournalFixture journal = new AsyncJournalFixture(dir)) {
+            OriginalAsyncJournalProducer.publish(OWNER, work);
+            journal.barrier();
+            assertEquals(0, scan(), "late evidence cannot manufacture another intake or ENQUEUED identity");
+            assertEquals(journalBefore, journalLines());
+            assertEquals(List.of(pending.id()), queue.all().stream().map(Memo::id).toList());
+            var retry = queue.drain(3);
+            var completion = new ReviewCompletion(retry, sample -> ReviewTargetGate.check(dir, OWNER, sample, stable, stable));
+            String before = registryBytes();
+            var withOriginalEvidence = completion.consume(dir, queue, retry, List.of(noAction), (kind, data) -> {});
+            assertEquals(1, withOriginalEvidence.settlement().committed(),
+                    "late persisted original task evidence must be rechecked at consumption, not frozen absent at intake");
+            assertEquals(before, registryBytes());
+            assertEquals(1, ledger.all().size());
+            assertEquals(UsageLedger.EvidenceLevel.NONE, ledger.all().getFirst().evidence());
+        }
+    }
+
+    @Test void originalJournalEventFromAnotherSessionCannotSupplyThisTaskEvidence() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work selected = selectLearned(learned, "mcp-same-call-foreign-session");
+        selected.markAsync(); tasks.finish(TaskState.SUCCESS);
+        Work foreign = new Work(selected.getToolCallId());
+        foreign.markAsync(); foreign.bindIdentity(token(new LearnerAutoIntake.DeliveryScope("world", "foreign-session", 88)));
+        foreign.setState(TaskState.SUCCESS); foreign.setResult(TaskResult.ok("foreign task completed"));
+        try (AsyncJournalFixture journal = new AsyncJournalFixture(dir)) {
+            OriginalAsyncJournalProducer.publish(OWNER, foreign);
+            journal.barrier();
+            var event = Files.readAllLines(dir.resolve("monitor/tools.jsonl")).stream()
+                    .map(line -> JsonParser.parseString(line).getAsJsonObject())
+                    .filter(row -> row.has("type") && "tool_result".equals(row.get("type").getAsString()))
+                    .findFirst().orElseThrow().get("event_id").getAsString();
+            assertTrue(EvidenceJournal.unresolved(dir.resolve("monitor"), List.of(event)).isEmpty(),
+                    "event existence alone does not establish the selected task scope");
+            assertTrue(taskUsage("report_skill", learned, selected).get("success").getAsBoolean());
+            assertEquals(1, scan());
+            Memo memo = queue.all().getFirst();
+            assertTrue(memo.evidence().isEmpty());
+            assertFalse(TrajectorySlices.forMemo(dir, OWNER, memo).contains("event:" + event),
+                    "same call and companion cannot borrow another server-session event");
+            assertEquals(UsageLedger.EvidenceLevel.NONE, ledger.all().getFirst().evidence());
+        }
+    }
+
+    @Test void originalTaskJournalReferenceReachesItsOwnMemoEvidence() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work work = selectLearned(learned, "mcp-async-evidence-source");
+        work.markAsync();
+        tasks.finish(TaskState.SUCCESS);
+        try (AsyncJournalFixture journal = new AsyncJournalFixture(dir)) {
+            OriginalAsyncJournalProducer.publish(OWNER, work);
+            journal.barrier();
+            var rows = Files.readAllLines(dir.resolve("monitor/tools.jsonl")).stream()
+                    .filter(line -> !line.isBlank()).map(line -> JsonParser.parseString(line).getAsJsonObject())
+                    .filter(row -> row.has("type") && "tool_result".equals(row.get("type").getAsString()))
+                    .filter(row -> row.has("data") && row.getAsJsonObject("data").has("tool_call_id")
+                            && work.getToolCallId().equals(row.getAsJsonObject("data").get("tool_call_id").getAsString())).toList();
+            assertEquals(1, rows.size(), "the original producer must reach the real journal writer");
+            var envelope = rows.getFirst();
+            String event = envelope.get("event_id").getAsString();
+            assertEquals(work.publicId(), envelope.getAsJsonObject("data").get("task_id").getAsString());
+            assertFalse(event.isBlank());
+            assertEquals(CURRENT.worldId(), envelope.get("world_id").getAsString());
+            assertEquals(CURRENT.serverSession(), envelope.get("server_session").getAsString());
+            assertEquals(CURRENT.epoch(), envelope.get("world_epoch").getAsLong());
+            assertEquals("server-async", envelope.getAsJsonObject("data").get("journaled_by").getAsString());
+            assertEquals("external-done", envelope.getAsJsonObject("data").get("async_status").getAsString());
+            assertEquals(OWNER.toString(), envelope.getAsJsonObject("data").get("companion_id").getAsString());
+            assertTrue(EvidenceJournal.unresolved(dir.resolve("monitor"), List.of(event)).isEmpty());
+            assertTrue(taskUsage("report_skill", learned, work).get("success").getAsBoolean());
+            assertEquals(1, scan());
+            Memo memo = queue.all().getFirst();
+            assertTrue(TrajectorySlices.forMemo(dir, OWNER, memo).contains("event:" + event),
+                    "original input already sees the exact task event through its scoped reader");
+            assertEquals(List.of(event), memo.evidence(), "exact original task journal reference must reach this memo evidence, not only display text");
+            assertEquals(UsageLedger.EvidenceLevel.NONE, ledger.all().getFirst().evidence());
+        }
+    }
+
+    @Test void taskResultWithoutWorldEvidenceCannotReviseSkillUnderEnforcedContract() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work work = selectLearned(learned, "async-no-evidence");
+        Memo memo = finishAndCollect(learned, work);
+        assertTrue(memo.evidence().isEmpty());
+        Files.writeString(dir.resolve(com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.FILE_NAME), "{\"mode\":\"enforce\"}");
+        String before = registryBytes();
+        var batch = queue.drain(3);
+        var stable = token(CURRENT);
+        var completion = new ReviewCompletion(batch, sample -> ReviewTargetGate.check(dir, OWNER, sample, stable, stable));
+        Experience candidate = new Experience("async learned method", "task is active", "old attempt failed",
+                "observed task result", "candidate changed interpretation", "avoid the failed attempt", "", "FAILURE", List.of("EXECUTOR"));
+        Verdict revision = new Verdict(memo.id(), List.of(Verdict.Action.WRITE_EXPERIENCE), .8,
+                "a task terminal state is not world evidence", candidate, "", "", "", "", List.of(), List.of(),
+                new RetrievalDecision(List.of(new RetrievalDecision.Hit("skill:" + learned.skill(),
+                        "observed task result", "same learned artifact", true, "TRIAL")), RetrievalDecision.Kind.REVISE, "same method"));
+        var refused = completion.consume(dir, queue, batch, List.of(revision), (kind, data) -> {});
+        assertEquals(0, refused.settlement().committed());
+        assertEquals(1, refused.settlement().restored());
+        assertTrue(refused.verdicts().isEmpty());
+        assertTrue(refused.retrievalRejected().stream().anyMatch(reason -> reason.contains("contract:")));
+        assertEquals(before, registryBytes());
+        assertEquals(UsageLedger.EvidenceLevel.NONE, ledger.all().getFirst().evidence());
+        assertFalse(ledger.all().getFirst().validityClaimed());
+        var retry = queue.drain(3);
+        var noAction = new Verdict(memo.id(), List.of(Verdict.Action.NO_ACTION), .8,
+                "retain uncertainty; no artifact write", null, "", "", "", List.of(), List.of());
+        var completed = new ReviewCompletion(retry, sample -> ReviewTargetGate.check(dir, OWNER, sample, stable, stable))
+                .consume(dir, queue, retry, List.of(noAction), (kind, data) -> {});
+        assertEquals(0, completed.settlement().committed(), "ENFORCE requires evidence for the reasoning claim even with NO_ACTION");
+        assertEquals(1, completed.settlement().restored());
+        assertTrue(completed.retrievalRejected().stream().anyMatch(reason -> reason.contains("claim_without_evidence")));
+        assertEquals(before, registryBytes());
+        Files.writeString(dir.resolve(com.dwinovo.numen.plugins.learner.contract.ReviewContractGate.FILE_NAME), "{\"mode\":\"shadow\"}");
+        var shadowBatch = queue.drain(3);
+        var shadow = new ReviewCompletion(shadowBatch, sample -> ReviewTargetGate.check(dir, OWNER, sample, stable, stable))
+                .consume(dir, queue, shadowBatch, List.of(noAction), (kind, data) -> {});
+        assertEquals(1, shadow.settlement().committed(), "existing SHADOW policy may settle uncertainty without writing an artifact");
+        assertEquals(before, registryBytes());
+    }
+
+    @Test void learnedArtifactBodyTaskResultReturnsThroughHostInputAndActualCompletion() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work work = selectLearned(learned, "async-original-call");
+        Memo returned = finishAndCollect(learned, work);
+        String registryBefore = registryBytes();
+        var done = consumeReturned(returned, false, learned);
+        assertEquals(1, done.settlement().committed());
+        assertEquals(0, new MemoQueue(queue.file()).size());
+        assertEquals(Set.of(returned.id()), done.judged());
+        assertEquals(registryBefore, registryBytes());
+        assertEquals(UsageLedger.EvidenceLevel.NONE, ledger.all().getFirst().evidence());
+        assertEquals(0, scan());
+    }
+    @Test void learnedAsyncHistorySurvivesWithdrawalButOldVersionCannotCommit() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work work = selectLearned(learned, "async-withdraw-call");
+        Memo returned = finishAndCollect(learned, work);
+        var done = consumeReturned(returned, true, learned);
+        assertEquals(0, done.settlement().committed());
+        assertEquals(1, done.settlement().restored());
+        assertTrue(done.verdicts().isEmpty());
+        assertEquals(List.of(returned), new MemoQueue(queue.file()).all());
+        assertTrue(TrajectorySlices.forMemo(dir, OWNER, returned).contains(learned.body()));
+        assertEquals(1, ledger.all().size());
+        assertEquals(UsageLedger.EvidenceLevel.NONE, ledger.all().getFirst().evidence());
+    }
+    @Test void restoredTaskResultCannotCrossServerSessionWhileOriginalScopeRemainsReplayable() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work original = selectLearned(learned, "async-before-session-change");
+        tasks.finish(TaskState.SUCCESS);
+        WorldContextStamp.Token originalScope = tasks.stamp;
+        tasks.stamp = token(new LearnerAutoIntake.DeliveryScope("world", "replacement-session", 8));
+        assertFalse(taskUsage("report_skill", learned, original).get("success").getAsBoolean());
+        assertTrue(ledger.all().isEmpty(), "same recovered task object is not permission in a new server scope");
+        assertEquals(originalScope, original.skillSelection().token());
+        tasks.stamp = originalScope; // controlled restoration of the exact original fixture identity, not a real restart
+        assertTrue(taskUsage("report_skill", learned, original).get("success").getAsBoolean());
+        assertTrue(taskUsage("report_skill", learned, original).get("success").getAsBoolean());
+        assertEquals(1, ledger.all().size(), "original-scope report replay must be idempotent");
+        var fact = SkillDeliveryIntake.taskResultOf(ledger.all().getFirst());
+        assertNotNull(fact); assertEquals(original.publicId(), fact.taskId());
+        assertEquals(CURRENT.serverSession(), fact.scope().serverSession());
+        assertEquals(CURRENT.epoch(), fact.scope().epoch());
+        assertEquals(1, scan());
+        assertEquals(0, scan());
+        assertEquals(UsageLedger.EvidenceLevel.NONE, ledger.all().getFirst().evidence());
+    }
+
+    @Test void replacementTaskAndCompanionCannotRebindOldLearnedTaskResult() throws Exception {
+        Learned learned = learnForBodyTask();
+        Work original = selectLearned(learned, "async-before-replacement");
+        tasks.finish(TaskState.SUCCESS);
+        Work replacement = new Work("async-replacement"); replacement.bindIdentity(tasks.stamp);
+        replacement.setState(TaskState.RUNNING); tasks.active = replacement;
+        tasks.companion = UUID.fromString("00000000-0000-0000-0000-000000000099");
+        assertFalse(taskUsage("report_skill", learned, original).get("success").getAsBoolean());
+        assertTrue(ledger.all().isEmpty()); assertNull(replacement.skillSelection());
+        tasks.companion = OWNER;
+        assertTrue(taskUsage("report_skill", learned, original).get("success").getAsBoolean());
+        assertEquals(1, ledger.all().size());
+        var fact = SkillDeliveryIntake.taskResultOf(ledger.all().getFirst());
+        assertNotNull(fact); assertEquals(original.publicId(), fact.taskId());
+        assertNotEquals(replacement.publicId(), fact.taskId()); assertNull(replacement.skillSelection());
+        assertEquals(1, scan());
+        assertTrue(TrajectorySlices.forMemo(dir, OWNER, queue.all().getFirst()).contains(original.publicId()));
     }
 
     private void register(String skill) {

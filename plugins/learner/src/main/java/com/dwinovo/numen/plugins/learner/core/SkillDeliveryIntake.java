@@ -150,6 +150,8 @@ public final class SkillDeliveryIntake {
                         return false;
                     }
                     Memo memo = candidate.memo(now);
+                    if (candidate instanceof ResultCandidate) memo = withTaskResultEvidence(
+                            queue.file().toAbsolutePath().getParent(), java.util.UUID.fromString(scope.companionId()), memo);
                     boolean appended;
                     unconfirmed[0] = true;
                     try {
@@ -212,6 +214,11 @@ public final class SkillDeliveryIntake {
         } catch (RuntimeException malformed) {
             return null;
         }
+    }
+
+    /** Original scoped reader shared by intake, prompt batch and submission. No queue or ledger mutation. */
+    public static Memo withTaskResultEvidence(java.nio.file.Path dir, java.util.UUID companion, Memo source) {
+        return SkillReviewInput.withTaskResultEvidence(dir, companion, source);
     }
 
     /** Entry -> snapshot JSON; detail is the parsed object, never a re-escaped or hand-built string. */

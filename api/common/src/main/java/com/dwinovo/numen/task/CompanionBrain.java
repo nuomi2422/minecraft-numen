@@ -457,6 +457,7 @@ final class CompanionBrain {
     private void journalTaskOutcome(NumenPlayer companion, TaskRecord rec, String status, String msg, TaskResult result) {
         try {
             java.util.Map<String, Object> jd = new java.util.LinkedHashMap<>();
+            jd.put("task_id", rec.publicId());
             jd.put("companion_id", String.valueOf(companion.getUUID()));
             jd.put("tool_call_id", rec.getToolCallId() == null ? "" : rec.getToolCallId());
             jd.put("tool", rec.getToolName() == null ? "" : rec.getToolName());

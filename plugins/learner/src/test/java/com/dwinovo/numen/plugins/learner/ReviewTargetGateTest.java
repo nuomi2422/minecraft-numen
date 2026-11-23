@@ -273,7 +273,8 @@ class ReviewTargetGateTest {
         Path bodyFile() {
             return dir.resolve("skill-bodies").resolve(registry.get(skill).orElseThrow().bodyRef().substring("skill-body:".length()));
         }
-        Memo sample(String stage) throws Exception {
+        Memo sample(String stage) throws Exception { return sample(stage, false); }
+        Memo sample(String stage, boolean external) throws Exception {
             String version = "v" + registry.get(skill).orElseThrow().version();
             if (stage.equals("skill_delivery")) {
                 var r = SkillDeliveryEvidence.record(new SkillDeliveryEvidence.Context("request-" + ++sequence,
@@ -281,7 +282,8 @@ class ReviewTargetGateTest {
                         List.of(new SkillDeliveryEvidence.Ref("skill:" + skill, version))), ledger);
                 assertEquals(1, r.written());
             } else {
-                active = new TaskRecord("goto", "original-call-" + ++sequence, 1000) {};
+                active = new TaskRecord("goto", (external ? "mcp-" : "") + "original-call-" + ++sequence, 1000) {};
+                if (external) active.markAsync();
                 active.bindIdentity(token);
                 active.setState(TaskState.RUNNING);
                 invoke("adopt_skill", version);

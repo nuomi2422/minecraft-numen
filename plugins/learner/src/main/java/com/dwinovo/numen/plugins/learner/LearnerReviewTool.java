@@ -208,7 +208,9 @@ final class LearnerReviewTool implements NumenTool {
 
         // 2026-11-13: keep this review's identity across async work; historical memo identity is separate.
         final com.dwinovo.numen.api.WorldContextStamp.Token reviewStart = captureReviewContext(capturedServer);
-        final List<Memo> batch = taken;
+        final List<Memo> batch = taken.stream().map(memo ->
+                com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.withTaskResultEvidence(
+                        LearnerPlugin.configDir(), id, memo)).toList();
         final String reviewId = "rev-" + System.currentTimeMillis() + "-" + Math.abs(batch.get(0).id().hashCode() % 1000);
         final ReviewObservation observation = LearnerPlugin.beginReview(reviewId, id, "RUNNING", batch.size(),
                 capturedServer == ServerLifecycleHooks.getCurrentServer() ? reviewStart : null);
