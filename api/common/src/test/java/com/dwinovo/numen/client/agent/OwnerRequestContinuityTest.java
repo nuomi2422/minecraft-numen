@@ -140,14 +140,40 @@ class OwnerRequestContinuityTest {
                 + File.pathSeparator + System.getProperty("java.class.path");
         Path classes = temp.resolve("classes");
         Files.createDirectories(classes);
+        // 同包真实生产类必须编译进本 harness 单元。它们是 package-private,若只靠
+        // -sourcepath/classpath,javac 可能用父 loader 已编译的副本,运行时就成了
+        // "同名包、不同 loader",AnchorHarness 访问时会 IllegalAccess。
+        var javacArgs = new java.util.ArrayList<>(List.of(
+                "-encoding", "UTF-8", "-proc:none",
+                "-sourcepath", temp.resolve("harness").toString(),
+                "-classpath", cp, "-d", classes.toString()));
+        javacArgs.add(client.resolve("com/dwinovo/numen/client/agent/OwnerRequestAnchor.java").toString());
+        javacArgs.add(client.resolve("com/dwinovo/numen/client/agent/AgentRequestContext.java").toString());
+        javacArgs.add(file.toString());
         var diagnostics = new ByteArrayOutputStream();
         int rc = ToolProvider.getSystemJavaCompiler().run(null, diagnostics, diagnostics,
-                "-encoding", "UTF-8", "-proc:none",
-                "-sourcepath", client + File.pathSeparator + temp.resolve("harness"),
-                "-classpath", cp, "-d", classes.toString(), file.toString());
+                javacArgs.toArray(String[]::new));
         assertEquals(0, rc, "SETUP: harness compile failed:\n" + diagnostics);
+        // 只有本包走 child-first:AnchorHarness / OwnerRequestAnchor / AgentRequestContext
+        // 必须同一个 loader,包私有访问才合法;其余类仍交父 loader。
         harnessLoader = new URLClassLoader(new URL[]{classes.toUri().toURL()},
-                OwnerRequestContinuityTest.class.getClassLoader());
+                OwnerRequestContinuityTest.class.getClassLoader()) {
+            @Override protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+                synchronized (getClassLoadingLock(name)) {
+                    Class<?> loaded = findLoadedClass(name);
+                    if (loaded == null && name.startsWith("com.dwinovo.numen.client.agent.")) {
+                        try {
+                            loaded = findClass(name);
+                        } catch (ClassNotFoundException notInHarness) {
+                            loaded = null;   // 本单元没编的同类包类,仍按父 loader 解析
+                        }
+                    }
+                    if (loaded == null) loaded = super.loadClass(name, false);
+                    if (resolve) resolveClass(loaded);
+                    return loaded;
+                }
+            }
+        };
         harness = harnessLoader.loadClass("com.dwinovo.numen.client.agent.AnchorHarness");
     }
 
