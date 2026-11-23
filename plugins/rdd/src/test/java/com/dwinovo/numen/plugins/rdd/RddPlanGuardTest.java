@@ -147,6 +147,64 @@ class RddPlanGuardTest {
                 RddPlanGuard.predicateGaps(r27).toString());
     }
 
+    // ---------- 2026-11-24（live 747056 首次 Stage-B 失败）：世界侦察 vs 背包清单 ----------
+
+    private static SubtaskSpec worldScout(String description, String type, String key, int radius) {
+        return new SubtaskSpec(description,
+                Map.of("type", type, "block", key, "radius", radius), null);
+    }
+
+    @Test
+    void 清点村里现成资源是世界侦察不是背包意图() {
+        SubtaskSpec s = worldScout(
+                "清点村里可用的现成资源：干草块、村民农田作物、可当基地的较大房屋。"
+                        + "完成条件是附近确实存在干草块方块（这是前期粮储的关键）",
+                "block_nearby", "minecraft:hay_block", 16);
+        assertTrue(RddPlanGuard.predicateGaps(s).isEmpty(), RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void 清点村内资源清单里的床不误判背包意图() {
+        SubtaskSpec s = worldScout(
+                "清点村内现成可用资源清单：床、干草块、房屋/门、箱子。"
+                        + "先在落脚区 16 格内确认确实有床可用（村内现成或已有羊毛木板可做白色的床）",
+                "block_nearby", "#minecraft:beds", 8);
+        assertTrue(RddPlanGuard.predicateGaps(s).isEmpty(), RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void 确认现成床位置按世界判据通过() {
+        SubtaskSpec s = worldScout("在村里找到现成的床，看到就记下位置，不挖村民唯一的床",
+                "block_nearby", "#minecraft:beds", 8);
+        assertTrue(RddPlanGuard.predicateGaps(s).isEmpty(), RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void 清点背包里的具体物品仍按背包意图拒世界方块判据() {
+        SubtaskSpec s = worldScout("清点背包里的干草块与木棍，确认还能做火把",
+                "block_nearby", "minecraft:hay_block", 16);
+        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("背包物品")),
+                RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void 采集并收进背包配世界判据仍拒() {
+        SubtaskSpec s = worldScout("采集圆石并收进背包，至少 8 块用于垫脚",
+                "block_nearby", "minecraft:stone", 4);
+        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("背包物品")),
+                RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void 背包持有判断配背包条件不误报世界错配() {
+        SubtaskSpec s = new SubtaskSpec("清点背包里的干草块，确认留存数量",
+                Map.of("asset_key", "minecraft:hay_block", "minimum", 1), null,
+                com.dwinovo.numen.rdd.api.NodeType.MAIN, null,
+                List.of(new com.dwinovo.numen.rdd.api.ResourceUse("minecraft:hay_block", 1,
+                        com.dwinovo.numen.rdd.api.ResourceUse.Kind.RETAIN)));
+        assertTrue(RddPlanGuard.predicateGaps(s).isEmpty(), RddPlanGuard.predicateGaps(s).toString());
+    }
+
     @Test
     void placedFurnaceOutcomeDoesNotRequireConsumedRecipeInputsToRemainHeld() {
         // Actual63be concern response c34565fa, source rdd1052; do not approve its other steps here.
