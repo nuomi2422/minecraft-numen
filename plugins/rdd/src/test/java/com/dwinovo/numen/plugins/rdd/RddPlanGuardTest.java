@@ -187,6 +187,10 @@ class RddPlanGuardTest {
                 mixed.condition(), null);
         assertFalse(RddPlanGuard.predicateGaps(mixedShortage).isEmpty(),
                 "an additional carried obligation inside the shortage clause must not be omitted");
+        var overRecipe = new SubtaskSpec("用现有8圆石做一台熔炉并放在床边；现有背包圆石只有1，不够就补挖70个圆石。",
+                mixed.condition(), null);
+        assertFalse(RddPlanGuard.predicateGaps(overRecipe).isEmpty(),
+                "only the proven eight-cobblestone recipe shortage may be omitted, not seventy extra blocks");
     }
 
     @Test
