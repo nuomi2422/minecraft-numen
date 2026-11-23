@@ -40,7 +40,7 @@ class RddRegisteredDailyRequestConsumerTest {
         assertNotNull(ToolProvider.getSystemJavaCompiler(), "SETUP: full JDK required");
         String original = source("plugins/rdd/src/test/java/" + P + "RddConcurrentTaskRequestConsumerTest.java");
         String shell = original.replace("RddConcurrentTaskRequestConsumerTest", "RegisteredDailyBootstrap");
-        int tests = shell.indexOf("    @Test void mainOnlyPositiveControl");
+        int tests = shell.indexOf("    @Test void ");
         int utilities = shell.indexOf("    static String source(", tests);
         assertTrue(tests >= 0 && utilities > tests, "SETUP: reusable compiler shell changed");
         shell = shell.substring(0, tests) + shell.substring(utilities);
