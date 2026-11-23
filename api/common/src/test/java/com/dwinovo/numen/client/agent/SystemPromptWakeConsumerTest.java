@@ -149,6 +149,16 @@ class SystemPromptWakeConsumerTest {
                   public static String evaluatorSystem(){return "system";}
                 }
                 """);
+        // 抽取到的 clientTick 会调 ServerToolTransport.expireYieldTickets()（055 yield 合入后新增）。
+        // 平台父 loader 看不到 ai 模块,必须在本 fixture 里显式给一个边界桩;
+        // 只让抽取代码编译/运行,不代签 yield 的服务器行为。
+        sources.put("com.dwinovo.numen.agent.tool.ServerToolTransport", """
+                package com.dwinovo.numen.agent.tool;
+                public class ServerToolTransport {
+                  public static void expireYieldTickets() {}
+                  public static void requestYieldTicket(java.util.UUID id, java.util.function.Consumer<String> callback) {}
+                }
+                """);
         sources.put("com.dwinovo.numen.client.agent.WakeFixture", """
                 package com.dwinovo.numen.client.agent;
                 import java.util.*;

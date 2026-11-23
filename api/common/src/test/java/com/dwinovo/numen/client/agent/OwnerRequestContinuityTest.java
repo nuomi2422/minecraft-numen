@@ -79,7 +79,8 @@ class OwnerRequestContinuityTest {
                     void toolPair(int i, int pad) {
                         convo.addAssistant(new com.dwinovo.numen.agent.provider.AssistantTurn("call",
                                 List.of(new com.dwinovo.numen.agent.provider.LlmToolCall("tc-" + i, "read", "{}")), null));
-                        convo.addToolResult("tc-" + i, "{\"pad\":\"" + "x".repeat(pad) + "\"}");
+                        // 纯文本工具结果:夹具不需要 JSON,别让文本块里的转义再被吞一层。
+                        convo.addToolResult("tc-" + i, "pad-" + i + ":" + "x".repeat(pad));
                     }
                     void adoptQuery(String wire) {
                         ownerRequestAnchor = OwnerRequestAnchor.adopt(ownerRequestAnchor,
