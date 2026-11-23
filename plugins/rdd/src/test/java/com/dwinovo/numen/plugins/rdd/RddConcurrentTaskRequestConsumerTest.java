@@ -94,7 +94,12 @@ class RddConcurrentTaskRequestConsumerTest {
             + method(plugin, "    static String retrievalTaskFields(")
             + method(plugin, "    private static String renderExecutionReasons(")
             + method(plugin, "    private static String renderBasePlaybook(")
-            + method(plugin, "    private static String escape(") + "}");
+            + method(plugin, "    private static String escape(")
+            // 2026-11-24: the paused-projection helper is part of renderStateContext's real body;
+            // extract it when present so this probe compiles the current production shape, not a frozen one.
+            + (plugin.contains("private static String currentSubtaskInstruction(")
+                    ? method(plugin, "    private static String currentSubtaskInstruction(") : "")
+            + "}");
         units.put(A + "NumenPlugins.java", """
             package com.dwinovo.numen.api; import java.util.*; import java.util.function.*;
             import com.dwinovo.numen.Constants;
