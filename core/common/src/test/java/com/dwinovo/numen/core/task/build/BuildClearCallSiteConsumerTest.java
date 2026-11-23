@@ -209,6 +209,7 @@ class BuildClearCallSiteConsumerTest {
                             boolean dropXp){ Block.CALLS.add("afterBreak"); }
                 }
                 """);
+        add(src, args, "com/dwinovo/numen/core/task/build/BuildTaskRecord.java", STUB_TASK_RECORD);
         add(src, args, "com/dwinovo/numen/core/task/build/Probe.java", probe);
         var compiler = ToolProvider.getSystemJavaCompiler();
         if (compiler == null) throw new IllegalStateException("SETUP ERROR: no system java compiler");
@@ -324,6 +325,24 @@ class BuildClearCallSiteConsumerTest {
         assertTrue(r.contains("falling block"), r);
     }
 
+    private static final String STUB_TASK_RECORD = """
+            package com.dwinovo.numen.core.task.build;
+            import net.minecraft.core.BlockPos;
+            import net.minecraft.world.level.block.state.BlockState;
+            public final class BuildTaskRecord {
+                public static final class Target {
+                    private final BlockPos pos;
+                    private final BlockState desired;
+                    public Target(BlockPos pos, BlockState desired) { this.pos = pos; this.desired = desired; }
+                    public BlockPos pos() { return pos; }
+                    public BlockState desiredState() { return desired; }
+                    public boolean matches(BlockState state) {
+                        return state == desired || (state.isAir() && desired.isAir());
+                    }
+                }
+            }
+            """;
+
     private static final String STUB_BLOCK_HELPER = """
             package com.dwinovo.numen.core.pathing.util;
             import net.minecraft.core.BlockPos;
@@ -394,17 +413,17 @@ class BuildClearCallSiteConsumerTest {
                             if (name.equals("writeRefused")) world.writable = false;
                         }
                         case "precheckUnknown" -> {
-                            r.targets.add(new Target(pos, TARGET));
+                            r.targets.add(new BuildTaskRecord.Target(pos, TARGET));
                             world.blocks.put(pos.asLong(), SOLID);
                             world.unloaded.add(pos.asLong());
                         }
                         case "precheckSafe" -> {
-                            r.targets.add(new Target(pos, TARGET));
+                            r.targets.add(new BuildTaskRecord.Target(pos, TARGET));
                             world.blocks.put(pos.asLong(), SOLID);
                             world.blocks.put(new BlockPos(0,3,0).asLong(), SOLID);
                         }
                         case "precheckSand" -> {
-                            r.targets.add(new Target(pos, TARGET));
+                            r.targets.add(new BuildTaskRecord.Target(pos, TARGET));
                             world.blocks.put(pos.asLong(), SOLID);
                             world.blocks.put(new BlockPos(0,5,0).asLong(), SAND);
                         }
@@ -415,7 +434,7 @@ class BuildClearCallSiteConsumerTest {
                         return failure == null ? "precheck=pass"
                                 : "precheck=fail|reason=" + failure.reason();
                     }
-                    BlockState produced = callSite(pos, true, BlockState.AIR, new Target(pos, BlockState.AIR));
+                    BlockState produced = callSite(pos, true, BlockState.AIR, new BuildTaskRecord.Target(pos, BlockState.AIR));
                     String result = !clearRefusals.isEmpty() ? "refused"
                             : (world.setBlockCalls == 1 && world.blocks.getOrDefault(pos.asLong(), SOLID).isAir()
                                     ? "written" : "none");
@@ -434,13 +453,13 @@ class BuildClearCallSiteConsumerTest {
                             + "|produced=" + (produced != null);
                 }
 
-                void markObserved(Target target, boolean done) {
+                void markObserved(BuildTaskRecord.Target target, boolean done) {
                     marked++;
                 }
 
                 final class Rec {
                     boolean consumeMaterials = true;
-                    final List<Target> targets = new ArrayList<>();
+                    final List<BuildTaskRecord.Target> targets = new ArrayList<>();
                     void brokeOne() { broke++; }
                 }
 
@@ -449,8 +468,8 @@ class BuildClearCallSiteConsumerTest {
                     BlockState peek(BlockPos pos) {
                         return world.blocks.getOrDefault(pos.asLong(), BlockState.AIR);
                     }
-                    boolean blockedByMode(Target target) { return mode; }
-                    boolean hopeless(Target target) { return hopeless; }
+                    boolean blockedByMode(BuildTaskRecord.Target target) { return mode; }
+                    boolean hopeless(BuildTaskRecord.Target target) { return hopeless; }
                 }
 
                 static final class ClearSet {
@@ -458,19 +477,8 @@ class BuildClearCallSiteConsumerTest {
                     boolean contains(long key) { return keys.contains(key); }
                 }
 
-                static final class Target {
-                    final BlockPos pos;
-                    final BlockState desired;
-                    Target(BlockPos pos, BlockState desired) { this.pos = pos; this.desired = desired; }
-                    BlockPos pos() { return pos; }
-                    BlockState desiredState() { return desired; }
-                    boolean matches(BlockState state) {
-                        return state == desired || (state.isAir() && desired.isAir());
-                    }
-                }
-
                 static final class BuildCellRules {
-                    static boolean isAirTarget(Target target) { return target.desiredState().isAir(); }
+                    static boolean isAirTarget(BuildTaskRecord.Target target) { return target.desiredState().isAir(); }
                 }
 
                 static final class World extends ServerLevel implements BlockGetter {
@@ -506,7 +514,7 @@ class BuildClearCallSiteConsumerTest {
                 <CLEAR>
 
                 // ==== verbatim occupied-cell block from processCell (production) ====
-                BlockState callSite(BlockPos pos, boolean occupied, BlockState desired, Target target) {
+                BlockState callSite(BlockPos pos, boolean occupied, BlockState desired, BuildTaskRecord.Target target) {
             <CALLSITE>
                     return null;
                 }

@@ -328,9 +328,11 @@ class BuildClearSafetyConsumerTest {
                             }
                         }
                         case "unloaded" -> {
-                            body = new AABB(0.0,5.0,0.0,0.6,6.8,0.6);
+                            // 真实横向足迹跨“已加载列0 / 未加载列1”边界;同一列内不制造
+                            // “上层加载、下层未知”的假世界。
+                            body = new AABB(0.7,5.0,0.0,1.3,6.8,0.6);
                             solid(0,4,0); solid(0,3,0);
-                            unloaded.add("0,5");
+                            unloaded.add("1,0");
                             pos = new BlockPos(0,4,0);
                         }
                         case "sideDig" -> {
