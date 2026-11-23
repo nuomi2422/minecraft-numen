@@ -238,8 +238,9 @@ class ServerToolTransportReplyIsolationTest {
             args.add(file.toString());
         }
         assertNotNull(ToolProvider.getSystemJavaCompiler(), "JDK compiler required for production consumers");
-        assertEquals(0, ToolProvider.getSystemJavaCompiler().run(null, null, null, args.toArray(String[]::new)),
-                "fixture compilation must succeed before a behavioral red is counted");
+        var compileDiagnostics = new java.io.ByteArrayOutputStream();
+        assertEquals(0, ToolProvider.getSystemJavaCompiler().run(null, compileDiagnostics, compileDiagnostics, args.toArray(String[]::new)),
+                "fixture compilation must succeed before a behavioral red is counted:\n" + compileDiagnostics);
         loader = new URLClassLoader(new URL[]{build.toUri().toURL()}, ClassLoader.getPlatformClassLoader());
         fixture = loader.loadClass("com.dwinovo.numen.client.agent.TransportReplyFixture");
     }
