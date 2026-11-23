@@ -253,8 +253,11 @@ public final class NumenToolBridgeX implements AcxToolPort {
                 var server = original.getServer();
                 if (!issued.equals(WorldContextStamp.capture(server))) return AcxStepOutcome.success(Map.of());
                 TaskRecord terminal = CompanionTickDispatcher.lastFinishedTaskFor(original.getUUID());
+                // runSync settles through TaskResultPayload and never calls the callback; every
+                // real terminal (SUCCESS/FAILED/TIMEOUT/CANCELLED) is the original receipt. A missing
+                // result stays UNKNOWN and must not complete the future.
                 if (terminal != null && callId.equals(terminal.getToolCallId()) && name().equals(terminal.getToolName())
-                        && issued.equals(terminal.identityToken()) && terminal.getState() == TaskState.SUCCESS
+                        && issued.equals(terminal.identityToken()) && terminal.getState().isTerminal()
                         && terminal.getResult() != null) result.set(terminal.getResult().toJson());
                 return AcxStepOutcome.success(Map.of());
             });
