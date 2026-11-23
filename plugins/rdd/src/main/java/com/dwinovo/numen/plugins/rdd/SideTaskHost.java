@@ -447,7 +447,7 @@ final class SideTaskHost {
             if (wasActive && "food_supply".equals(wasType) && !nowActive) {
                 LAST_FOOD_DONE_MS.put(companionId, System.currentTimeMillis());
             }
-            refreshContext(companionId, port);
+            refreshContext(ap.level().getServer() == server ? server : null, companionId, port);
             nudgeIfNeeded(companionId, port, wasActive, nowActive);
             persist();
         } catch (RuntimeException ex) {
@@ -881,6 +881,64 @@ final class SideTaskHost {
     // ---- 上下文缓存 ----
 
     private static void refreshContext(UUID companionId, SideTaskWorldPort port) {
+        refreshContext(companionId, port, com.dwinovo.numen.api.WorldContextStamp.snapshot());
+    }
+
+    /** Server-tick capture only. Request construction never enumerates the engine or reads the world. */
+    private static void refreshContext(MinecraftServer server, UUID companionId, SideTaskWorldPort port) {
+        // A failed refresh must not keep yesterday's registration facts current.
+        SIDE_CONTEXT.removeRegistrations(companionId);
+        if (server == null || !server.isSameThread()) return;
+        com.dwinovo.numen.api.ServerIdentityProvider provider =
+                com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.ServerIdentityProvider.class);
+        var identity = provider == null ? null : provider.snapshot(server);
+        boolean knownIdentity = identity != null && identity.worldId() != null && !identity.worldId().isBlank()
+                && identity.serverSession() != null && !identity.serverSession().isBlank();
+        Map<String, String> stamp = !knownIdentity ? Map.of()
+                : Map.of("world_id", identity.worldId(), "server_session", identity.serverSession());
+        refreshContext(companionId, port, stamp);
+        MainlineResumeToken owner = validateMainline(currentMainlineToken(companionId));
+        if (identity == null || identity.worldId() == null || identity.worldId().isBlank()
+                || identity.serverSession() == null || identity.serverSession().isBlank()
+                || owner == null || !companionId.equals(owner.companionId())
+                || owner.goalId() == null || owner.goalId().isBlank()) {
+            SIDE_CONTEXT.removeRegistrations(companionId);
+            return;
+        }
+        String prefix = "daily:" + owner.goalId() + ":";
+        var registered = ENGINE.recurringSpecsSnapshot().stream()
+                .filter(spec -> spec.scheduleId().startsWith(prefix)
+                        && spec.scheduleId().lastIndexOf(':') == prefix.length() - 1
+                        && spec.scheduleId().length() > prefix.length())
+                .toList();
+        SIDE_CONTEXT.putRegistrations(companionId, new SideContextStore.Ticket(identity.worldId(),
+                identity.serverSession(), port.worldId(), owner, port.gameDay()), registered);
+    }
+
+    /** Cached registration facts, not action admission. Caller supplies its already captured identity. */
+    static String registrationContextFor(UUID companionId, SideContextStore.Ticket current) {
+        var specs = SIDE_CONTEXT.registrationsFor(companionId, current);
+        if (specs == null) return "<daily_registrations status=\"UNKNOWN\"/>";
+        StringBuilder out = new StringBuilder("<daily_registrations status=\"CURRENT\">");
+        for (var spec : specs) {
+            out.append("<registration><schedule_id>").append(contextXml(spec.scheduleId()))
+                    .append("</schedule_id><template_id>").append(contextXml(spec.templateId()))
+                    .append("</template_id><sampled_game_day>").append(current.gameDay())
+                    .append("</sampled_game_day><calendar_due>").append(spec.dueOn(current.gameDay()))
+                    .append("</calendar_due><enabled>").append(spec.enabled())
+                    .append("</enabled><prompt_only>").append(spec.promptOnly())
+                    .append("</prompt_only><data>").append(contextXml(String.valueOf(spec.data())))
+                    .append("</data><admission>UNKNOWN</admission></registration>");
+        }
+        return out.append("</daily_registrations>").toString();
+    }
+
+    private static String contextXml(String value) {
+        return value == null ? "" : value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\"", "&quot;");
+    }
+
+    private static void refreshContext(UUID companionId, SideTaskWorldPort port, Map<String, String> stamp) {
         Optional<SideTask> current = ENGINE.current(companionId);
         if (current.isEmpty() || current.get().terminal()) {
             SIDE_CONTEXT.remove(companionId);
@@ -901,7 +959,6 @@ final class SideTaskHost {
                 + "用 rdd_decline_side 说明理由即可放弃 —— 拒绝会记成 DECLINED（不是失败）。</instruction>"
                 + type.renderContext(task, port)
                 + "</rdd>";
-        Map<String, String> stamp = com.dwinovo.numen.api.WorldContextStamp.snapshot();
         SIDE_CONTEXT.put(companionId, block,
                 stamp == null ? "" : stamp.getOrDefault("world_id", ""),
                 stamp == null ? "" : stamp.getOrDefault("server_session", ""),

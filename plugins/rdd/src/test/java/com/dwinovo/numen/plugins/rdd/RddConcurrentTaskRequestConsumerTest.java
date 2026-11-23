@@ -61,8 +61,11 @@ class RddConcurrentTaskRequestConsumerTest {
               static SideTaskEngine ENGINE;
               static final SideContextStore SIDE_CONTEXT = new SideContextStore();
             """ + between(host, "    static final class DailyRegistration {", "\n    static boolean isActive(")
-                + method(host, "    private static void refreshContext(")
-                + method(host, "    static String contextFor(UUID companionId, String") + "}");
+                + method(host, "    private static void refreshContext(UUID companionId, SideTaskWorldPort port) {")
+                + method(host, "    private static void refreshContext(UUID companionId, SideTaskWorldPort port, Map<String, String> stamp)")
+                + method(host, "    static String contextFor(UUID companionId, String")
+                + method(host, "    static String registrationContextFor(")
+                + method(host, "    private static String contextXml(") + "}");
         String driver = source("plugins/rdd/src/main/java/" + P + "RddGoalDriver.java");
         units.put(P + "RddGoalDriver.java", "package com.dwinovo.numen.plugins.rdd; import java.util.*; import com.dwinovo.numen.rdd.api.*; class RddGoalDriver {"
             + method(driver, "    static List<Subtask> buildInjection(")
@@ -83,6 +86,9 @@ class RddConcurrentTaskRequestConsumerTest {
               public static void register(){ var numen = new com.dwinovo.numen.api.NumenPlugins.Registration();
             """ + between(plugin, "        numen.contributeState(\"rdd\", \"runtime\"", "\n    }\n\n    /** Model-requested")
             + "}\n" + method(plugin, "    private static String renderStateContext(")
+            + method(plugin, "    private static String registeredDailyContext(")
+            + method(plugin, "    private static boolean registrationSampleCurrent(")
+            + method(plugin, "    private static boolean registrationFieldUnknown(")
             + method(plugin, "    private static String sideContextFor(")
             + method(plugin, "    static String retrievalTaskFields(")
             + method(plugin, "    private static String renderExecutionReasons(")
@@ -97,7 +103,7 @@ class RddConcurrentTaskRequestConsumerTest {
             """ + method(np, "        public void contributeState(String owner") + "}\n"
             + between(np, "    public static List<StateFragment> stateFragmentEntries(", "\n    private static final List<Runnable> PENDING")
             + """
-              public static <T> T capability(Class<T> c){ return c.cast((ServerIdentityProvider)(s -> new ServerIdentityProvider.Snapshot("world", Identity.session))); }
+              public static <T> T capability(Class<T> c){ return c == ServerIdentityProvider.class ? c.cast((ServerIdentityProvider)(s -> new ServerIdentityProvider.Snapshot("world", Identity.session))) : null; }
               public static List<Object> executorContributors(){ return List.of(); }
               public record KnowledgeFragment(String text,List<Object> refs){}
               public static KnowledgeFragment aggregateExecutorKnowledgeFragment(List<Object> c,UUID u,String q){ return new KnowledgeFragment("",List.of()); }

@@ -263,6 +263,7 @@ class SideTaskFoodDeclineConsumerTest {
     private static final String HOST_IO="""
         static void persist() {}
         static void refreshContext(UUID id,SideTaskWorldPort p){if(ENGINE.isActive(id))SIDE_CONTEXT.put(id,"active");else SIDE_CONTEXT.remove(id);}
+        static void refreshContext(MinecraftServer server,UUID id,SideTaskWorldPort p){refreshContext(id,p);}
         static void nudgeIfNeeded(UUID id,SideTaskWorldPort p,boolean was,boolean now){}
         static MainlineResumeToken currentMainlineToken(UUID id){return new MainlineResumeToken(id,"chain","goal","primary","step",1,1);}
         static MainlineResumeToken validateMainline(MainlineResumeToken t){return t;}
@@ -312,7 +313,7 @@ class SideTaskFoodDeclineConsumerTest {
                 public final UUID id;public int hunger,hp,edible,hurtTime;public long time=1000;public String world="minecraft:overworld";public boolean available=true;
                 public NumenPlayer(UUID id){this.id=id;}public UUID getUUID(){return id;}
                 public boolean isSleeping(){return false;}public Level level(){return available?new Level():null;}
-                public class Level {public Dimension dimension(){return new Dimension();}public long getDayTime(){return time;}}
+                public class Level {public Dimension dimension(){return new Dimension();}public long getDayTime(){return time;}public net.minecraft.server.MinecraftServer getServer(){return null;}}
                 public class Dimension {public String location(){return world;}}
             }
             """),

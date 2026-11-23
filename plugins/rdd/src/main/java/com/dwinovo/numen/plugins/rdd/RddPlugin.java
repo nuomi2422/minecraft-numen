@@ -863,6 +863,7 @@ public final class RddPlugin implements NumenPlugin {
                             candidates.append(com.dwinovo.numen.api.RationaleContext.renderApplicable(uuid,
                                     related.planRevision(), related.chainInstanceId()));
                             candidates.append("</related_tasks>");
+                            candidates.append(registeredDailyContext(uuid, related));
                             int close = sideContext.lastIndexOf("</rdd>");
                             if (close >= 0) sideContext = sideContext.substring(0, close) + candidates
                                     + sideContext.substring(close);
@@ -915,6 +916,7 @@ public final class RddPlugin implements NumenPlugin {
                     + "<instruction>current_task 是你必须执行的当前目标（优先于自由活动）；"
                     + "若你认为它不合理/不可达/与目标冲突，用 report_task_concern 上报（REJECT/COUNTER+建议），"
                     + "指挥官会据此改单或重规划；不要默默无视。</instruction>"
+                    + registeredDailyContext(uuid, chain)
                     // 38号v3.6 B24：携带器提醒由 withAssets 统一挂（它是全部分支的共同出口）。
                     // ⚠️ 2026-10-01 实机请求体抓到重复：这里加一次、withAssets 又 replace 一次，
                     //    <carry> 在 <rdd> 里出现两遍（白送 ~130 token/请求）。故此处不再加。
@@ -927,6 +929,74 @@ public final class RddPlugin implements NumenPlugin {
      *
      * <p>缺快照时返回空串 → {@code <carry>} 整块不出现（B21：缺失就缺失，不写空标签）。
      */
+    /** Only cached observations establish this request's clock/dimension; never refresh or read MC here. */
+    private static String registeredDailyContext(UUID id, TaskChain chain) {
+        try {
+            var service = com.dwinovo.numen.api.NumenPlugins.capability(
+                    com.dwinovo.numen.api.observation.WorldObservationService.class);
+            if (service == null) return SideTaskHost.registrationContextFor(id, null);
+            var self = service.readSelf("rdd-daily-request", id, 3_000L);
+            if (self == null || !"self".equals(self.topic()) || self.items().size() != 1
+                    || self.coverage() != com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL
+                    || (self.status() != com.dwinovo.numen.api.observation.WorldObservationService.Status.OK
+                        && self.status() != com.dwinovo.numen.api.observation.WorldObservationService.Status.PARTIAL))
+                return SideTaskHost.registrationContextFor(id, null);
+            var identity = self.metadata();
+            var item = self.items().get(0);
+            if (registrationFieldUnknown(item, "companionUUID") || registrationFieldUnknown(item, "dimension")
+                    || !id.toString().equals(item.values().get("companionUUID"))
+                    || !identity.dimension().equals(item.values().get("dimension")))
+                return SideTaskHost.registrationContextFor(id, null);
+            var environment = service.read(new com.dwinovo.numen.api.observation.WorldObservationService.Request(
+                    "rdd-daily-request", identity.dimension(), "environment", Map.of(), 3_000L, 1, 50));
+            long now = System.currentTimeMillis();
+            if (!registrationSampleCurrent(identity, now) || !id.toString().equals(identity.subjectId())
+                    || environment == null || !"environment".equals(environment.topic())
+                    || environment.items().size() != 1
+                    || environment.coverage() != com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL
+                    || (environment.status() != com.dwinovo.numen.api.observation.WorldObservationService.Status.OK
+                        && environment.status() != com.dwinovo.numen.api.observation.WorldObservationService.Status.PARTIAL))
+                return SideTaskHost.registrationContextFor(id, null);
+            var clock = environment.metadata();
+            var time = environment.items().get(0);
+            if (!registrationSampleCurrent(clock, now) || !identity.worldId().equals(clock.worldId())
+                    || !identity.serverSession().equals(clock.serverSession())
+                    || !identity.dimension().equals(clock.dimension())
+                    || registrationFieldUnknown(time, "day_time") || registrationFieldUnknown(time, "dimension")
+                    || !identity.dimension().equals(time.values().get("dimension"))
+                    || !(time.values().get("day_time") instanceof Number day))
+                return SideTaskHost.registrationContextFor(id, null);
+            long ticks = new java.math.BigDecimal(day.toString()).longValueExact();
+            if (ticks < 0) return SideTaskHost.registrationContextFor(id, null);
+            synchronized (chain) {
+                RddRuntime live = RUNTIMES.get(id);
+                if (live == null || live.chain() != chain || chain.primaryStatus() != PrimaryGoalStatus.ACTIVE
+                        || DECOMPOSING.contains(id)
+                        || !com.dwinovo.numen.rdd.side.death.DeathPreparation.pausedContext(chain).isBlank())
+                    return SideTaskHost.registrationContextFor(id, null);
+                var current = chain.currentSubtask();
+                var owner = new com.dwinovo.numen.rdd.side.MainlineResumeToken(id, chain.chainInstanceId(),
+                        chain.goal().id(), chain.currentPrimary() == null ? null : chain.currentPrimary().id(),
+                        current == null ? null : current.id(), chain.planRevision(), chain.planRevision());
+                return SideTaskHost.registrationContextFor(id, new SideContextStore.Ticket(identity.worldId(),
+                        identity.serverSession(), identity.dimension(), owner, Math.floorDiv(ticks, 24_000L)));
+            }
+        } catch (RuntimeException | LinkageError unavailable) {
+            return SideTaskHost.registrationContextFor(id, null);
+        }
+    }
+
+    private static boolean registrationSampleCurrent(com.dwinovo.numen.api.observation.ObservationMetadata meta, long now) {
+        return meta != null && meta.identified()
+                && meta.freshness() == com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT
+                && meta.observedAtMs() <= now && now - meta.observedAtMs() <= 3_000L && meta.validUntilMs() > now;
+    }
+
+    private static boolean registrationFieldUnknown(com.dwinovo.numen.api.observation.WorldObservationService.Item item, String field) {
+        return java.util.stream.Stream.concat(item.unknownFields().stream(), item.staleFields().stream())
+                .anyMatch(path -> path.isEmpty() || field.equals(path) || field.startsWith(path + "."));
+    }
+
     private static String carryHint(UUID companionId) {
         try {
             String hint = RddCarryHint.current(companionId);

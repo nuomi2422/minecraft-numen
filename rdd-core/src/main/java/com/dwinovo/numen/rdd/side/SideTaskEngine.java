@@ -115,6 +115,11 @@ public final class SideTaskEngine {
         return recurringSpecs.get(scheduleId);
     }
 
+    /** Server-thread snapshot of actual registrations; no scheduling or handled-state changes. */
+    public List<RecurringSideTaskSpec> recurringSpecsSnapshot() {
+        return List.copyOf(recurringSpecs.values());
+    }
+
     public SideTaskType typeOf(String typeId) {
         return types.get(typeId);
     }
