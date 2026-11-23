@@ -579,7 +579,7 @@ class AcxCompanionBridgeConsumerTest {
                     }};
                 try{
                     var port=new NumenToolBridgeX(sync,waiting.plugin,10);
-                    try{var reply=port.invoke(Map.of(),ctx(waiting.run));return format(reply.outcome().name(),calls[0],null);}
+                    try{var reply=port.invoke(Map.of(),ctx(waiting.run));return format(reply.outcome().name(),calls[0],withMessage?reply.message():null);}
                     catch(AcxToolPort.ReplyPendingAfterDispatchException pending){
                         var value=pending.receipt().poll();
                         String outcome=value.isPresent()?value.get().outcome().name():"PENDING";
