@@ -247,13 +247,19 @@ public final class AcxRunner {
     public AcxRunRecord resume(AcxDefinition def, AcxRunRecord prior, Map<String, Object> newInput) {
         try {
             int at = checkResumable(def, prior);
-            emitDetached(AcxEvent.Kind.RESUME_STARTED, def.name(), at);
+            emit(events, AcxEvent.Kind.RESUME_STARTED, prior.runId(), def.name(), null, null,
+                    Map.of("start_index", at));
             // 复用原 runId：会话层的 status/cancel 靠一个稳定 id 串起整条续跑链
             // ★ AC-B9：变量从记录恢复 → 跨断点仍能读 $var.*（真机限制 L-06 就靠这条解掉）
         return runFrom(def, newInput, at, limits, prior.runId(), prior.vars(), true);
         } catch (RuntimeException e) {
-            emitDetached(AcxEvent.Kind.RESUME_REJECTED, def.name(), -1,
-                    Map.of("reason", String.valueOf(e.getMessage())));
+            if (prior == null) {
+                emitDetached(AcxEvent.Kind.RESUME_REJECTED, def.name(), -1,
+                        Map.of("reason", String.valueOf(e.getMessage())));
+            } else {
+                emit(events, AcxEvent.Kind.RESUME_REJECTED, prior.runId(), def.name(), null, null,
+                        Map.of("reason", String.valueOf(e.getMessage())));
+            }
             throw e;
         }
     }

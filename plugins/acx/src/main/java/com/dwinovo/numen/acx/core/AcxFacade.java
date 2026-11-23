@@ -224,15 +224,25 @@ public final class AcxFacade {
             return err("只有 PAUSED 可以续跑，当前: " + (r == null ? "无记录" : r.status()));
         }
         int resumedFrom = r.completedStepIndex();
-        // ★ TODO AC-B22 修复（2026-10-06）：续跑前按名字重新查一次「当前生效定义」。
-        //   不查的话校验用的是 start() 时的旧对象，名/版本/指纹三道门怎么比都相等（恒真），
-        //   暂停期间被改过（没升版本）的脚本会静默按旧定义跑完 —— 改动对这条会话永不生效。
-        //   查不到（内联 ac_json 执行的会话、库未挂/未上线）时保持旧行为：找不到 ≠ 定义变了。
         AcxDefinition current = null;
         try {
-            current = lookupActive.apply(r.acName());
-        } catch (RuntimeException ignored) {
-            // 解析异常按「查不到」处理；后续校验链仍会兜底
+            if (library != null && library.hasAnyVersion(r.acName())) {
+                // An active pointer selects fresh runs; a paused run keeps its original eligible version.
+                if (library.status(r.acName(), r.acVersion()) != com.dwinovo.numen.acx.api.AcxLifecycleState.STABLE) {
+                    return err("续跑被拒绝: 原版本不是 STABLE: " + r.acName() + "@" + r.acVersion());
+                }
+                current = library.version(r.acName(), r.acVersion());
+                if (current == null) return err("续跑被拒绝: 原版本不可得: " + r.acName() + "@" + r.acVersion());
+            } else {
+                // Preserve AC-B22 for loader/inline definitions without a published library entry.
+                try {
+                    current = lookupActive.apply(r.acName());
+                } catch (RuntimeException ignored) {
+                    // Missing inline/startup definitions keep the existing compatibility behavior.
+                }
+            }
+        } catch (RuntimeException e) {
+            return err("续跑被拒绝: 原版本不可得: " + e.getMessage());
         }
         try {
             if (!sessions.resume(runId, asMap(req.get("input")), current)) {
