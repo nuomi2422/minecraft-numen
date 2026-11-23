@@ -185,6 +185,8 @@ public final class AcxRunner {
 
         if (outcome.isSuccess()) {
             c.vars.keySet().removeIf(key -> key.startsWith(CHILD_BINDING_PREFIX));
+            c.vars.remove("_cursor_");
+            c.vars.remove("_snapshot_truncated__cursor_");
         }
         c.rec.status(outcome.status())
                 .completedStepIndex(c.completedStepIndex)
@@ -343,9 +345,24 @@ public final class AcxRunner {
         Map<String, Object> lastOutput = new LinkedHashMap<>();
         Map<String, Map<String, Object>> allOutputs = new LinkedHashMap<>();
         String frameCursorKey = "_cursor_" + framePath;
-        // Child progress belongs to this frame until its parent's top-level checkpoint commits.
-        if (!topLevel && c.vars.get(frameCursorKey) instanceof Map<?, ?> position) {
-            startIndex = Math.max(0, AcxValueResolver.toInt(position.get("step"), 0));
+        // At root-frame entry this flag still carries the explicit resume argument.
+        boolean restoreRoot = topLevel && c.resumeInFlightCheckPending;
+        // A root output snapshot and its published checkpoint must describe the same position.
+        if (topLevel && c.vars.containsKey(frameCursorKey)) {
+            if (!restoreRoot) {
+                throw new IncompleteSnapshotException("顶层输出快照仅可显式恢复；不把旧快照混入新执行");
+            }
+            Object saved = c.vars.get(frameCursorKey);
+            if (!(saved instanceof Map<?, ?> position) || !(position.get("step") instanceof Number next)
+                    || next.doubleValue() != c.completedStepIndex
+                    || !(position.get("output") instanceof Map<?, ?>)
+                    || !(position.get("outputs") instanceof Map<?, ?>)) {
+                throw new IncompleteSnapshotException("顶层输出快照与已提交断点不一致；不跳步或重放已完成动作，需核实后重规划");
+            }
+        }
+        // Older paused records without a root snapshot retain the existing compatibility behavior.
+        if ((!topLevel || restoreRoot) && c.vars.get(frameCursorKey) instanceof Map<?, ?> position) {
+            if (!topLevel) startIndex = Math.max(0, AcxValueResolver.toInt(position.get("step"), 0));
             if (position.get("output") instanceof Map<?, ?>) lastOutput = castMap(position.get("output"));
             if (position.get("outputs") instanceof Map<?, ?> outputs) {
                 for (Map.Entry<?, ?> entry : outputs.entrySet()) {
@@ -394,7 +411,7 @@ public final class AcxRunner {
                         return AcxStepOutcome.paused(pauseMessage(def, step, r.output()), r.output());
                     }
                     if (topLevel) {
-                        if (!markStepCompleted(c, i)) return cancelled(c);
+                        if (!markStepCompleted(c, def, i, lastOutput, allOutputs)) return cancelled(c);
                         commitCheckpoint(c, step, path);
                     } else {
                         if (!saveFramePosition(c, frameCursorKey, i + 1, lastOutput, allOutputs)) return cancelled(c);
@@ -417,7 +434,7 @@ public final class AcxRunner {
                     lastOutput = r.output();
                     Map<String, Object> progress = progressUpdate(c, r.output());
                     if (topLevel) {
-                        if (!markStepCompleted(c, i)) return cancelled(c);
+                        if (!markStepCompleted(c, def, i, lastOutput, allOutputs)) return cancelled(c);
                         commitCheckpoint(c, step, path);
                     } else {
                         if (!saveFramePosition(c, frameCursorKey, i + 1, lastOutput, allOutputs)) return cancelled(c);
@@ -438,7 +455,7 @@ public final class AcxRunner {
                     lastOutput = withFailureDiag(lastOutput, step, r.message());
                     allOutputs.put(step.id(), lastOutput);
                     if (topLevel) {
-                        if (!markStepCompleted(c, i)) return cancelled(c);
+                        if (!markStepCompleted(c, def, i, lastOutput, allOutputs)) return cancelled(c);
                         commitCheckpoint(c, step, path);
                     } else {
                         if (!saveFramePosition(c, frameCursorKey, i + 1, lastOutput, allOutputs)) return cancelled(c);
@@ -1198,8 +1215,31 @@ public final class AcxRunner {
         return AcxStepOutcome.paused("已被宿主取消（断点保留，可 resume）", out);
     }
 
-    private static boolean markStepCompleted(Ctx c, int topIndex) {
-        return commitUnlessCancelled(c, () -> c.completedStepIndex = topIndex + 1);
+    private static boolean markStepCompleted(Ctx c, AcxDefinition def, int topIndex, Map<String, Object> output,
+                                             Map<String, Map<String, Object>> outputs) {
+        return commitUnlessCancelled(c, () -> {
+            Map<String, Map<String, Object>> retained = new LinkedHashMap<>();
+            outputs.forEach((id, data) -> {
+                boolean needed = def.steps().subList(topIndex + 1, def.steps().size()).stream()
+                        .flatMap(step -> step.flattenSelfAndDescendants().stream())
+                        .anyMatch(step -> referencesOutput(step.params(), id));
+                if (needed) retained.put(id, data);
+            });
+            String key = "_cursor_";
+            // Rebuild only this root marker; child/control evidence keeps its own lifetime.
+            c.vars.remove("_snapshot_truncated_" + key);
+            Map<String, Object> position = Map.of("step", topIndex + 1, "output", snapshotParams(c, key, output),
+                    "outputs", snapshotOutputs(c, key, retained));
+            c.vars.put(key, position);
+            c.completedStepIndex = topIndex + 1;
+        });
+    }
+
+    private static boolean referencesOutput(Object value, String outputId) {
+        if (value instanceof String text) return text.contains("$" + outputId + ".");
+        if (value instanceof Map<?, ?> map) return map.values().stream().anyMatch(item -> referencesOutput(item, outputId));
+        if (value instanceof List<?> list) return list.stream().anyMatch(item -> referencesOutput(item, outputId));
+        return false;
     }
 
     // Serialize cancellation with publication of recovery position and its truncation marks.
