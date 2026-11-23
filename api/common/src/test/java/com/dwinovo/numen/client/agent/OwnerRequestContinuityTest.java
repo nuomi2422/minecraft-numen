@@ -1,5 +1,6 @@
 package com.dwinovo.numen.client.agent;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -33,6 +34,7 @@ class OwnerRequestContinuityTest {
 
     @TempDir static Path temp;
     private static Class<?> harness;
+    private static URLClassLoader harnessLoader;
     private static Path root;
 
     @BeforeAll static void compileHarness() throws Exception {
@@ -51,7 +53,7 @@ class OwnerRequestContinuityTest {
                 import java.util.*;
                 import com.dwinovo.numen.agent.llm.*;
                 import com.dwinovo.numen.event.*;
-                class AnchorHarness {
+                public class AnchorHarness {
                     static final boolean SEGMENT_ENABLED = true;
                     static final int SEGMENT_TURNS = 60;
                     static final int SEGMENT_KEEP_MSGS = 24;
@@ -96,6 +98,15 @@ class OwnerRequestContinuityTest {
                     boolean anchorPresent() { return ownerRequestAnchor.present(); }
                     void retire() { retireOwnerRequest(); }
                     List<ConvoState.Msg> wire() { return modelContextSnapshot(false, "execution", 1); }
+                    int historySize() { return convo.snapshot().size(); }
+                    int historyUserHits(String needle) {
+                        int hits = 0;
+                        for (ConvoState.Msg m : convo.snapshot()) {
+                            if (m instanceof ConvoState.Msg.User u && u.content().contains(needle)) hits++;
+                        }
+                        return hits;
+                    }
+                    void windowTokenLimit(int n) { windowTokens = n; }
 
                     String sectionXml() { return ownerRequestAnchor.section().text(); }
                     boolean sectionMandatory() { return ownerRequestAnchor.section().mandatory(); }
@@ -135,22 +146,31 @@ class OwnerRequestContinuityTest {
                 "-sourcepath", client + File.pathSeparator + temp.resolve("harness"),
                 "-classpath", cp, "-d", classes.toString(), file.toString());
         assertEquals(0, rc, "SETUP: harness compile failed:\n" + diagnostics);
-        harness = new URLClassLoader(new URL[]{classes.toUri().toURL()},
-                OwnerRequestContinuityTest.class.getClassLoader()).loadClass("com.dwinovo.numen.client.agent.AnchorHarness");
+        harnessLoader = new URLClassLoader(new URL[]{classes.toUri().toURL()},
+                OwnerRequestContinuityTest.class.getClassLoader());
+        harness = harnessLoader.loadClass("com.dwinovo.numen.client.agent.AnchorHarness");
     }
 
     @Test void segmentPlusReplayStillCarryTheOwnerRequestExactlyOnce() throws Exception {
         Object h = harness.getDeclaredConstructor().newInstance();
         call(h, "user", WIRE);
         call(h, "assistant", "好的，只读。");
-        for (int i = 0; i < 6; i++) call(h, "toolPair", i, 400);
-        call(h, "turns", 60);          // 触发真实 maybeSegmentSession
+        for (int i = 0; i < 20; i++) call(h, "toolPair", i, 400);   // 2+40=42 条，QUERY 必被末 24 条挤出
+        call(h, "turns", 60);            // 触发真实 maybeSegmentSession
+        call(h, "windowTokenLimit", 200); // replay 只需留最后一对工具消息
         call(h, "adoptQuery", WIRE);
 
-        List<?> wire = (List<?>) call(h, "wire");
-        assertTrue(texts(wire).contains("不移动"), "segment+replay 之后最终 wire 里必须还看得见当前主人请求");
+        List<?> wire = (List<?>) call(h, "wire");   // 真跑 maybeSegmentSession + replayWindow
+        assertEquals(25, call(h, "historySize"), "分段后 = 1 条边界说明 + 末 24 条原文");
+        assertEquals(0, call(h, "historyUserHits", "不移动"),
+                "前提：分段后 QUERY 必须真的从 convo 消失（否则测不到补注入）");
+        assertTrue(wire.size() <= 4, "replay 只该留下最后一对工具消息，实际 " + wire.size() + " 条");
         assertEquals(1, occurrences(wire, "不移动"), "只出现一次，不重复注入");
         assertFalse(wire.get(0).getClass().getSimpleName().equals("Tool"), "保留段不得以孤立工具结果开头");
+    }
+
+    @AfterAll static void closeHarnessLoader() throws IOException {
+        if (harnessLoader != null) harnessLoader.close();
     }
 
     @Test void wireAlreadyCarryingItGetsNoSecondCopy() throws Exception {
