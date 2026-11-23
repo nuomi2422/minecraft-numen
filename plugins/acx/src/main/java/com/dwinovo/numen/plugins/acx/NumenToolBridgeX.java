@@ -138,7 +138,10 @@ public final class NumenToolBridgeX implements AcxToolPort {
         // First migrated producer; other ports retain their existing completion contract.
         boolean watchBody = "mine".equals(name());
         AtomicReference<WorldContextStamp.Token> issuedIn = new AtomicReference<>();
-        ReplyReceipt receipt = () -> Optional.ofNullable(done.getNow(null))
+        ReplyReceipt receipt = () -> {
+            if (!done.isDone()) confirmOriginalSyncTerminal(session, companion, ctx, callId, issuedIn.get())
+                    .ifPresent(json -> done.complete(new HostReply(json, null)));
+            return Optional.ofNullable(done.getNow(null))
                 .flatMap(reply -> reply.result(name())).map(result -> {
             if (result.isAccepted()) {
                 session.noteAcceptedTask(result.taskId());
@@ -148,6 +151,7 @@ public final class NumenToolBridgeX implements AcxToolPort {
             }
             return result;
         });
+        };
         // The host may have entered the gate without yet entering the tool. The worker
         // can prove no dispatch only by closing the same boundary the host must claim.
         AtomicBoolean dispatchDecided = new AtomicBoolean();
@@ -168,12 +172,9 @@ public final class NumenToolBridgeX implements AcxToolPort {
                 }
                 // Capture on the host thread before claiming dispatch; if the wait ends
                 // during observation, the same CAS still prevents late tool entry.
+                try { issuedIn.set(WorldContextStamp.capture(companion.getServer())); }
+                catch (RuntimeException unavailable) { /* Missing identity cannot confirm a sync result. */ }
                 if (watchBody) {
-                    try {
-                        issuedIn.set(WorldContextStamp.capture(companion.getServer()));
-                    } catch (RuntimeException unavailable) {
-                        // An unavailable stamp is UNKNOWN, not an alternate dispatch path.
-                    }
                     if (session.isCancelRequested()) {
                         return AcxStepOutcome.paused("运行已取消，未派发工具", Map.of());
                     }
@@ -218,7 +219,12 @@ public final class NumenToolBridgeX implements AcxToolPort {
         }
 
         try {
-            done.get(timeoutMs, TimeUnit.MILLISECONDS);
+            long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+            while (!done.isDone() && !ctx.isCancelRequested()) {
+                if (receipt.poll().isPresent()) break;
+                if (System.nanoTime() >= until) throw new TimeoutException("original host reply pending");
+                Thread.sleep(50L);
+            }
         } catch (TimeoutException e) {
             throw new ReplyPendingAfterDispatchException("等待原工具回执超时: " + name(), receipt);
         } catch (InterruptedException e) {
@@ -230,6 +236,30 @@ public final class NumenToolBridgeX implements AcxToolPort {
         }
         return receipt.poll().orElseThrow(() ->
                 new ReplyPendingAfterDispatchException("原工具回执未能确认结果: " + name(), receipt));
+    }
+
+    /** runSync settles through TaskResultPayload, not the supplied callback. Read only its
+     * exact original terminal on the host thread; an idle slot or another call proves nothing. */
+    private Optional<String> confirmOriginalSyncTerminal(AcxSessionManager.Session session,
+            NumenPlayer original, AcxTool.AcxCallContext ctx, String callId, WorldContextStamp.Token issued) {
+        if (issued == null || ctx.isCancelRequested()) return Optional.empty();
+        AtomicReference<String> result = new AtomicReference<>();
+        try {
+            AcxBoundHostCall.call(plugin.gate(), session, ctx, () -> {
+                var server = original.getServer();
+                return session.bodyToken() == original && server != null && original.isAlive() && !original.isRemoved()
+                        && NumenPlayer.findByUuid(server, original.getUUID()) == original;
+            }, () -> {
+                var server = original.getServer();
+                if (!issued.equals(WorldContextStamp.capture(server))) return AcxStepOutcome.success(Map.of());
+                TaskRecord terminal = CompanionTickDispatcher.lastFinishedTaskFor(original.getUUID());
+                if (terminal != null && callId.equals(terminal.getToolCallId()) && name().equals(terminal.getToolName())
+                        && issued.equals(terminal.identityToken()) && terminal.getState() == TaskState.SUCCESS
+                        && terminal.getResult() != null) result.set(terminal.getResult().toJson());
+                return AcxStepOutcome.success(Map.of());
+            });
+        } catch (Exception unavailable) { /* Keep the original receipt UNKNOWN; never redispatch. */ }
+        return Optional.ofNullable(result.get());
     }
 
     /** Map a confirmed callback. Missing, malformed or unidentifiable replies prove no outcome. */
