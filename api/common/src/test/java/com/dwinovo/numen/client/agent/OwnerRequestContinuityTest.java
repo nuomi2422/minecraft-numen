@@ -164,7 +164,7 @@ class OwnerRequestContinuityTest {
 
     @Test void retireAndNewQueryFollowTheToolChainLifecycle() throws Exception {
         Object h = harness.getDeclaredConstructor().newInstance();
-        call(h, "user", WIRE);
+        // 刻意不放历史：只靠 anchor 注入，才能测"收尾后不再重放"。
         call(h, "adoptQuery", WIRE);
         assertTrue(texts((List<?>) call(h, "wire")).contains("不移动"));
 
