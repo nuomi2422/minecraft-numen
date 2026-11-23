@@ -148,7 +148,7 @@ class BuildClearSafetyConsumerTest {
         int code = ToolProvider.getSystemJavaCompiler().run(null, null, null, args.toArray(String[]::new));
         assertEquals(0, code, "SETUP ERROR: production consumer compile failed");
         loader = new URLClassLoader(new URL[]{out.toUri().toURL()},
-                BuildClearSafetyConsumerTest.class.getClassLoader());
+                ClassLoader.getPlatformClassLoader());
         Class<?> fixture = loader.loadClass("com.dwinovo.numen.core.task.build.Fixture");
         Object instance = fixture.getDeclaredConstructor().newInstance();
         runCase = fixture.getMethod("run", String.class);

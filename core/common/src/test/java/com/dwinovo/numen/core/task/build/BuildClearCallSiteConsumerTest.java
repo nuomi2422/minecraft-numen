@@ -53,11 +53,8 @@ class BuildClearCallSiteConsumerTest {
         String precheck = member(task, "    private Precondition.Failure checkClearSafety()");
         String willClear = member(task, "    private LongOpenHashSet computeWillClear()");
         String loaded = member(task, "    private ChunkLoadedTest loadedTest()");
-        int site = task.indexOf("        if (occupied) {");
-        int after = task.indexOf("        if (BuildCellRules.isAirTarget(target)) {\n"
-                + "            markObserved(target, true);\n            return null;", site);
-        if (site < 0 || after < 0) throw new IllegalStateException("SETUP ERROR: call site not found");
-        String callSite = task.substring(site, after);
+        String processCell = member(task, "    private BlockState processCell(");
+        String callSite = member(processCell, "        if (occupied) {");
         String probe = PROBE.replace("<CLEAR>", clear)
                 .replace("<CALLSITE>", callSite)
                 .replace("<CHECK>", precheck)
@@ -219,7 +216,7 @@ class BuildClearCallSiteConsumerTest {
             throw new IllegalStateException("SETUP ERROR: call-site consumers did not compile");
         }
         loader = new URLClassLoader(new URL[]{out.toUri().toURL()},
-                BuildClearCallSiteConsumerTest.class.getClassLoader());
+                ClassLoader.getPlatformClassLoader());
         Class<?> probeClass = loader.loadClass("com.dwinovo.numen.core.task.build.Probe");
         runCase = probeClass.getMethod("run", String.class);
     }
