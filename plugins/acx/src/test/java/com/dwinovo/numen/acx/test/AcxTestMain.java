@@ -178,7 +178,7 @@ private static void realAcLib() {
             eq(0, rep.errors().size(), "错误: " + rep.errors());
         });
 
-        T.test("真实积木清单：未知 block（sow_nearby）strict 必须 FAIL", () -> {
+        T.test("真实积木清单：未注册 block（sow_nearby）strict 必须 FAIL", () -> {
             Path d = tmpDir().resolve("badlib");
             try {
                 Files.createDirectories(d.resolve("stable"));
@@ -187,7 +187,8 @@ private static void realAcLib() {
             } catch (Exception e) {
                 throw new AssertionError(e);
             }
-            var rep2 = AcxLoader.loadAll(d, numenRegistry(), false, true);
+            // Keep the missing-registration negative control even though the full fixture now includes Sow.
+            var rep2 = AcxLoader.loadAll(d, numenRegistryExcept("sow_nearby"), false, true);
             T.isTrue(rep2.registered().isEmpty(), "未知积木不得注册");
             contains(rep2.errors().toString(), "sow_nearby", "错误要点名未知 block");
         });
@@ -3256,6 +3257,13 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             if (!excluded.contains(spec.name())) {
                 reg.add(portStub(spec));
             }
+        }
+        // Test-only declaration from SowNearbyTool.parameterSchema and its actual result fields.
+        if (!excluded.contains("sow_nearby")) {
+            reg.add(portStub(new NumenToolCatalog.ToolSpec("sow_nearby", "Offline Sow declaration",
+                    AcxPortSchema.builder().param("radius",
+                            AcxPortSchema.Param.req(AcxPortSchema.Type.INTEGER).range(1, 32))
+                            .output("sown", "seeds_left", "empty_cells").allowUnknown(false).build())));
         }
         return reg;
     }
