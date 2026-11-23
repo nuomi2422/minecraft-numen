@@ -10,6 +10,43 @@ import static org.junit.jupiter.api.Assertions.*;
 class ExecutorBudgetAggregationTest {
     private static final NumenPlugins.DeliveredRef R1 = new NumenPlugins.DeliveredRef("r1", "v1", false);
 
+    @Test void focusMustBeWholeAndLeaveRoomForLaterShortCorrection() {
+        NumenPlugins.KnowledgeContributor prefix=(id,obj)->NumenPlugins.KnowledgeFragment.ofText("K".repeat(3972));
+        NumenPlugins.KnowledgeContributor focus=(id,obj)->NumenPlugins.KnowledgeFragment.ofText("<focus>environment=controlled focus observation</focus>");
+        NumenPlugins.KnowledgeContributor correction=(id,obj)->NumenPlugins.KnowledgeFragment.ofText("CORRECTION");
+        var out=agg(List.of(prefix,focus,correction));
+        assertAll(
+                ()->assertFalse(out.text().contains("<focus>"),"oversized focus must be rejected whole"),
+                ()->assertTrue(out.text().contains("CORRECTION"),"rejected optional focus cannot starve later short correction"),
+                ()->assertTrue(out.text().length()<=NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS));
+    }
+
+    @Test void focusThatFitsKeepsExactOriginalBytes() {
+        String focus="  <focus topic=\"environment\">unchanged</focus>";
+        var alone=agg(List.of((id,obj)->NumenPlugins.KnowledgeFragment.ofText(focus)));
+        assertEquals(focus,alone.text());
+        String prefix="K".repeat(NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS-focus.length()-NumenPlugins.PLANNING_KNOWLEDGE_SEPARATOR.length());
+        var exact=agg(List.of((id,obj)->NumenPlugins.KnowledgeFragment.ofText(prefix),
+                (id,obj)->NumenPlugins.KnowledgeFragment.ofText(focus)));
+        assertEquals(prefix+NumenPlugins.PLANNING_KNOWLEDGE_SEPARATOR+focus,exact.text());
+    }
+
+    @Test void onlyExactFocusRootGetsWholeFragmentBudgetTreatment() {
+        for(String root:List.of("<focus>environment=sample</focus>","  <focus topic=\"environment\">sample</focus>")) {
+            var out=agg(List.of((id,obj)->NumenPlugins.KnowledgeFragment.ofText("K".repeat(3972)),
+                    (id,obj)->NumenPlugins.KnowledgeFragment.ofText(root),
+                    (id,obj)->NumenPlugins.KnowledgeFragment.ofText("OK")));
+            assertFalse(out.text().contains("<focus")); assertTrue(out.text().endsWith("OK"));
+        }
+        for(String legacy:List.of("ordinary mention <focus> is legacy text", "<focused>legacy prefix remains")) {
+            var out=agg(List.of((id,obj)->NumenPlugins.KnowledgeFragment.ofText("K".repeat(3972)),
+                    (id,obj)->NumenPlugins.KnowledgeFragment.ofText(legacy),
+                    (id,obj)->NumenPlugins.KnowledgeFragment.ofText("UNREACHED")));
+            assertEquals(NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS,out.text().length());
+            assertFalse(out.text().contains("UNREACHED"));
+        }
+    }
+
     @Test void noBudgetBothDelivered() {
         var out = agg(List.of(c("a", 10), c("b", 10)));
         assertTrue(out.text().contains("aaaaaaaaaa"));

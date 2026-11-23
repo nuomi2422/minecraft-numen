@@ -532,6 +532,10 @@ public final class NumenPlugins {
             String piece = sb.length() == 0 ? f.text() : PLANNING_KNOWLEDGE_SEPARATOR + f.text();
             int room = MAX_EXECUTOR_KNOWLEDGE_CHARS - sb.length();
             if (piece.length() > room) {
+                if (isFocusRoot(piece)) {
+                    publishKnowledgeGap(companion, ci, "budget-rejected", "focus-whole-fragment");
+                    continue; // retain room for later short contributors
+                }
                 if (room > 0) {
                     truncated++;
                     String assembled = assembledStructuredPiece(piece, room);
@@ -609,6 +613,17 @@ public final class NumenPlugins {
      * @return {@code null} = 不是完整结构包装；{@code ""} = 是完整包装但连首条都装不下（不输出残骸）；
      *         否则为可直接追加的装配结果（长度 ≤ room）。
      */
+    /** Recognize only a focus root, never a mention inside ordinary legacy text. */
+    private static boolean isFocusRoot(String piece) {
+        if (piece == null) return false;
+        String root = piece.startsWith(PLANNING_KNOWLEDGE_SEPARATOR)
+                ? piece.substring(PLANNING_KNOWLEDGE_SEPARATOR.length()) : piece;
+        root = root.stripLeading();
+        String name = "<focus";
+        return root.startsWith(name) && root.length() > name.length()
+                && (root.charAt(name.length()) == '>' || Character.isWhitespace(root.charAt(name.length())));
+    }
+
     private static boolean isStructuredKnowledge(String text) {
         if (text == null) return false;
         String s = text.stripLeading();

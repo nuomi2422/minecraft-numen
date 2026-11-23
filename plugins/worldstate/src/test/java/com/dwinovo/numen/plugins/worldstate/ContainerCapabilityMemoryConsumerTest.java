@@ -94,7 +94,7 @@ class ContainerCapabilityMemoryConsumerTest {
               public net.minecraft.server.level.ServerLevel levelOf(String d){return com.dwinovo.numen.plugins.rdd.CapabilityMemoryHarness.body.level;}
               public net.minecraft.server.MinecraftServer server(){return com.dwinovo.numen.plugins.rdd.CapabilityMemoryHarness.body.getServer();}
               public String worldId(){return "world";}public String serverSession(){return com.dwinovo.numen.api.WorldContextStamp.current.identity().get("server_session");}
-              public long gameTick(){return 20;}public long nowMs(){return java.lang.System.currentTimeMillis();}}
+              public long gameTick(){return 20;}public long nowMs(){return java.lang.System.currentTimeMillis()-com.dwinovo.numen.plugins.rdd.CapabilityMemoryHarness.sampleAge;}}
             """);
         sources.put(WS + "WorldStateService", HOST);
         sources.put(RDD + "CapabilityMemoryHarness", HARNESS);
@@ -140,6 +140,8 @@ class ContainerCapabilityMemoryConsumerTest {
     @Test void unknownReaderCreatesNoEmptyObservationOrCurrentSnapshot() throws Exception { assertEquals(List.of(false, Map.of(), false, false), run("unknown")); }
     @Test void changedSessionDoesNotTreatOldObservationAsCurrent() throws Exception { assertEquals(List.of(false, Map.of(), false, false), run("session")); }
 
+    @Test void expiredProviderObservationCannotBecomeCurrentPublishedStock() throws Exception { assertEquals(List.of(false, Map.of(), false, false), run("expired")); }
+
     private static final String HOST = """
         package com.dwinovo.numen.plugins.worldstate;
         import com.dwinovo.numen.worldstate.core.provider.*;
@@ -165,7 +167,10 @@ class ContainerCapabilityMemoryConsumerTest {
           public ChangeLog changeLog(){return log;}public InMemoryChangeFeed changeFeedV2(){return feed;}
           public static String worldId(MinecraftServer s){return "world";}
           public ReadResult read(MinecraftServer s,ObservationRequest r){return query.read(worldId(s),new McCollectionContext().serverSession(),r);}
-          public RefreshResult refresh(MinecraftServer s,ObservationRequest r){return query.refresh(new McCollectionContext(),r);}
+          public RefreshResult refresh(MinecraftServer s,ObservationRequest r){
+            com.dwinovo.numen.plugins.rdd.CapabilityMemoryHarness.collecting=true;
+            try{return query.refresh(new McCollectionContext(),r);}
+            finally{com.dwinovo.numen.plugins.rdd.CapabilityMemoryHarness.collecting=false;}}
           public com.dwinovo.numen.api.observation.WorldObservationService.Response readSelf(MinecraftServer s,String c,java.util.UUID u,long age,long wm){throw new AssertionError("SELF outside fixture");}
         }
         """;
@@ -175,22 +180,47 @@ class ContainerCapabilityMemoryConsumerTest {
         import com.dwinovo.numen.api.observation.*;import com.dwinovo.numen.plugins.worldstate.*;
         public class CapabilityMemoryHarness {
           public static com.dwinovo.numen.entity.NumenPlayer body;
-          static String mode;static int reads;
+          static String mode;static int reads;public static long sampleAge;
+          public static boolean collecting;static int providerReads,directReads;static String refreshResult="not_called";static final List<String> trace=new ArrayList<>();
           static final WorldObservationService.Request REQUEST=new WorldObservationService.Request("rdd-storage","minecraft:overworld","containers",Map.of("container","block:0,0,0"),0,64,1000);
           static void require(boolean b,String why){if(!b)throw new AssertionError(why);}
           public static List<Object> run(String scenario){
             body=new com.dwinovo.numen.entity.NumenPlayer();mode=scenario.equals("empty")?"empty":scenario.equals("unknown")?"unknown":"stock";
             com.dwinovo.numen.platform.Services.CONTAINERS=(l,p)->{
               require(l==body.level&&p.getX()==0&&p.getY()==0&&p.getZ()==0,"wrong reader target");reads++;
+              if(collecting)providerReads++;else directReads++;
+              trace.add((collecting?"provider":"direct")+"@"+java.lang.System.currentTimeMillis());
               return mode.equals("unknown")?ContainerReader.Result.unknown("unreadable"):ContainerReader.Result.known(mode.equals("empty")?Map.of():Map.of("minecraft:iron_ingot",5));};
-            var host=new WorldStateService();var capability=new ObservationCapability(host,()->body.getServer());NumenPlugins.service=capability;
+            // Warm the real provider/core/capability path, then discard every warm-up fact and counter.
+            // The production default 50ms deadline and all measured-path assertions stay unchanged.
+            var warmHost=new WorldStateService();var warmCapability=new ObservationCapability(warmHost,()->body.getServer());
+            warmCapability.refresh(REQUEST);
+            RddContainerMemory.clear(body.id);reads=0;providerReads=0;directReads=0;trace.clear();
+            var host=new WorldStateService();var capability=new ObservationCapability(host,()->body.getServer());
+            NumenPlugins.service=new WorldObservationService(){
+              public Response read(Request r){return capability.read(r);}
+              public Response refresh(Request r){var response=capability.refresh(r);refreshResult=response.status()+"/"+response.reason();return response;}
+              public ChangesV2Response changes(ChangesQuery q){return capability.changes(q);}
+              public ChangesResponse changes(long a,List<String> topics,int limit){return capability.changes(a,topics,limit);}
+            };
+            if(scenario.equals("expired")){
+              sampleAge=host.topicTtlMs(com.dwinovo.numen.worldstate.core.model.Topic.CONTAINERS)+1000;
+              var stale=capability.refresh(REQUEST);
+              require(host.store.size()==1,"real provider must write old sample");
+              require(stale.status()==WorldObservationService.Status.PARTIAL&&stale.metadata().freshness()==ObservationMetadata.Freshness.STALE,"expired sample not mapped stale");
+              require(stale.metadata().validUntilMs()<=java.lang.System.currentTimeMillis(),"expired deadline renewed");
+              mode="unknown";RddContainerMemory.refresh(body,1000);
+              require(capability.read(REQUEST).metadata().freshness()==ObservationMetadata.Freshness.STALE,"failed refresh promoted expired sample");
+              var expiredSnapshot=RddContainerMemory.cachedSnapshot(body.id);
+              return List.of(expiredSnapshot!=null,RddContainerMemory.cachedCounts(body.id),expiredSnapshot!=null&&expiredSnapshot.observed(),expiredSnapshot!=null&&expiredSnapshot.direct());
+            }
             RddContainerMemory.refresh(body,1000);
             if(scenario.equals("unknown")){
               require(reads>=2,"provider and direct fallback must both see unknown");
               require(host.store.size()==0&&capability.read(REQUEST).status()==WorldObservationService.Status.PENDING,"unknown became observation");
             }else{
               var first=capability.read(REQUEST);require(first.status()==WorldObservationService.Status.OK&&first.coverage()==WorldObservationService.Coverage.FULL,"initial real response not ready");
-              require(reads==1,"observed scan must not direct-read");
+              require(reads==1&&directReads==0,"observed scan must not direct-read: total="+reads+",provider="+providerReads+",direct="+directReads+",trace="+trace+",originalRefresh="+refreshResult+",response="+first.status()+",reason="+first.reason()+",freshness="+first.metadata().freshness()+",observedAt="+first.metadata().observedAtMs()+",validUntil="+first.metadata().validUntilMs()+",now="+java.lang.System.currentTimeMillis());
               require(RddContainerMemory.cachedCounts(body.id).equals(scenario.equals("empty")?Map.of():Map.of("minecraft:iron_ingot",5)),"initial counts missing");
               var previous=host.store.all().getFirst();
               if(scenario.equals("change-empty")){
