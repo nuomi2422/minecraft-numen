@@ -298,8 +298,10 @@ final class RddGoalDriver {
                 && target.equals(sub.condition().get("slots")))) {
             throw new IllegalArgumentException("plan must cover owner equipmentTarget in one non-optional MAIN equipment slots condition");
         }
-        registerDaily.accept(subs);
         installMainline.run();
+        // A rejected proposal is not a registration snapshot. Both production callers
+        // now observe the chain only after its original owner commit succeeded.
+        registerDaily.accept(subs);
     }
 
     /** Package-private runtime injection seam: fixed specs in, Subtask list out (must keep DAILY). */

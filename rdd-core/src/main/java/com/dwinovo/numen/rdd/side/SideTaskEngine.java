@@ -83,6 +83,22 @@ public final class SideTaskEngine {
         recurringTypes.keySet().removeIf(id -> id.startsWith(prefix));
     }
 
+    /** Retire only absent registrations in a committed goal snapshot. Keep original
+     * bodies, handled occurrences, payloads and other goals; enabled already persists. */
+    public void reconcileRecurringForGoal(String goalId, java.util.Set<String> acceptedIds) {
+        if (goalId == null || goalId.isBlank() || acceptedIds == null) return;
+        String prefix = "daily:" + goalId + ":";
+        if (acceptedIds.stream().anyMatch(id -> id == null || !id.startsWith(prefix)
+                || id.lastIndexOf(':') != prefix.length() - 1 || id.length() == prefix.length()))
+            throw new IllegalArgumentException("recurring snapshot contains a foreign schedule");
+        recurringSpecs.replaceAll((id, spec) -> {
+            if (!id.startsWith(prefix) || id.lastIndexOf(':') != prefix.length() - 1
+                    || acceptedIds.contains(id) || !spec.enabled()) return spec;
+            return new RecurringSideTaskSpec(spec.scheduleId(), spec.templateId(), spec.intervalGameDays(),
+                    spec.anchorGameDay(), spec.missedPolicy(), false, spec.promptOnly(), spec.data());
+        });
+    }
+
     /** 2026-11-08: SURVIVAL report forces a task even when thresholds are not met; idempotent. */
     public boolean startNow(SideTaskType type, UUID companionId, SideTaskWorldPort world,
                             MainlineResumeToken token, Map<String, String> data) {
