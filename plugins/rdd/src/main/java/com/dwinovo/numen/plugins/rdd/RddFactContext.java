@@ -153,17 +153,24 @@ final class RddFactContext {
      * 两处口径必须一致否则清单与上下文块互相矛盾）。group 需求恒 NORMAL。
      */
     static List<Need> needsOf(PrimaryGoal primary) {
+        return needsOf(primary, Map.of());
+    }
+
+    static List<Need> needsOf(PrimaryGoal primary, Map<String, com.dwinovo.numen.rdd.api.SubtaskStatus> statuses) {
         Map<String, Need> out = new LinkedHashMap<>();
         if (primary == null) {
             return List.of();
         }
+        RddResourceUseProjection.Projection purposes = RddResourceUseProjection.of(primary, statuses);
         for (AssetRequirement w : primary.waitFor()) {
-            if (w != null && w.assetKey() != null && !w.assetKey().isBlank()) {
+            if (w != null && w.assetKey() != null && !w.assetKey().isBlank()
+                    && !purposes.delegatedWaitFor().contains(w.assetKey())) {
                 mergeNeed(out, w.assetKey(), w.minimum(), false,
                         com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.CRITICAL);
             }
         }
         for (Subtask s : primary.subtasks()) {
+            if (purposes.replacedAcquisitions().contains(s.id())) continue;
             Map<String, Object> c = s.condition();
             if (c == null || c.isEmpty()) {
                 continue;
@@ -177,6 +184,13 @@ final class RddFactContext {
             } else if (group instanceof String gs && InventoryGroups.known(gs)) {
                 mergeNeed(out, gs, min, true, com.dwinovo.numen.rdd.policy.RequirementManifest.Importance.NORMAL);
             }
+        }
+        for (String key : purposes.declaredKeys()) {
+            int required = purposes.required(key);
+            if (required <= 0) continue;
+            var importance = primary.waitFor().stream().anyMatch(w -> key.equals(w.assetKey()))
+                    ? RequirementManifest.Importance.CRITICAL : RequirementManifest.Importance.NORMAL;
+            mergeNeed(out, key, required, false, importance);
         }
         return List.copyOf(out.values());
     }
@@ -283,6 +297,23 @@ final class RddFactContext {
                 if (itemId == null) continue;
                 int have = have(n, held);
                 if (have >= n.minimum()) continue;
+                RddRuntime runtime = RddPlugin.runtime(companionId);
+                if (runtime != null && RddResourceUseProjection.pendingMaterialOnly(
+                        primary, runtime.chain().subtaskStatuses(), n.key(), have)) {
+                    // A planned input may be in use/in transit. A shortage is not confirmed loss.
+                    if (RECOVERY_NAMED_AT.get(key) == null || nowMs - RECOVERY_NAMED_AT.get(key) >= 5 * 60_000L) {
+                        RddMonitor.publish("resource_input_shortfall_unverified", Map.of(
+                                "companionId", companionId.toString(), "primary", primary.id(),
+                                "chainInstanceId", runtime.chain().chainInstanceId(),
+                                "planRevision", runtime.chain().planRevision(), "item", n.key(),
+                                "have", have, "need", n.minimum(), "cause", "UNKNOWN"));
+                        if (RddPlugin.nudge(companionId, "计划材料 " + n.key() + " 当前有 " + have
+                                + "/" + n.minimum() + "，消费/转存结果尚未核实；这不是永久丢失证明。"
+                                + "请核当前动作、相应世界结果/指定容器，再决定继续、补料或协商。"))
+                            RECOVERY_NAMED_AT.put(key, nowMs);
+                    }
+                    continue;
+                }
                 // 2026-10-23（主人底线）：**只有重要度 NORMAL/CRITICAL 的丢失才允许打断主线**。
                 // 这里把 LossImpactAnalyzer / AssetSemantics 这个孤岛接进生产判定：
                 //   1) 声明为 OPPORTUNISTIC 的需求 → 明确判定「放弃回收」，直接继续主线；
@@ -360,12 +391,12 @@ final class RddFactContext {
             RequirementManifest.Manifest manifest =
                     new RequirementManifest.Manifest(primary.id(), java.util.List.copyOf(reqs));
             com.dwinovo.numen.rdd.policy.LossImpactAnalyzer.LossImpact impact = com.dwinovo.numen.rdd.policy.LossImpactAnalyzer.analyze(
-                    lostItems, held, java.util.List.of(manifest), semantics, true);
+                    lostItems, held, java.util.List.of(manifest), semantics, false); // Current shortfall, not proved loss.
             if (impact.backupSufficient()) {
                 return new RecoveryVerdict(false, "backup_or_alternative_covers_it");
             }
             // NORMAL/CRITICAL 且确实打穿需求 → 值得打断
-            return new RecoveryVerdict(true, "important_loss:" + imp);
+            return new RecoveryVerdict(true, "current_required_capability_shortfall:" + imp);
         } catch (RuntimeException ex) {
             // 判定失败时**保守放行**（宁可多跑一趟，也不要漏掉真正重要的东西）——但记原因
             return new RecoveryVerdict(true, "judge_failed:" + ex.getClass().getSimpleName());
@@ -508,8 +539,8 @@ final class RddFactContext {
      * 事实接线失败不许拖垮检测 tick。
      */
     static void tick(UUID companionId, String dimensionId, RddRuntime rt, Map<String, Integer> counts) {
-        if (companionId == null || rt == null) {
-            return;
+        if (companionId == null || rt == null || counts == null) {
+            return; // Missing inventory is UNKNOWN; do not manufacture a zero-stock transition.
         }
         try {
             PrimaryGoal primary = rt.chain().currentPrimary();
@@ -523,7 +554,7 @@ final class RddFactContext {
                     RddPlugin.facts(companionId), rt.assets(), null, now, SNAPSHOT_TTL_MILLIS);
             LATEST.put(companionId, snapshot);
 
-            List<Need> needs = needsOf(primary);
+            List<Need> needs = needsOf(primary, rt.chain().subtaskStatuses());
             Set<String> unmet = Collections.unmodifiableSet(unmetKeys(needs, counts));
             Watch prev = WATCH.get(companionId);
             Set<String> needKeys = new java.util.LinkedHashSet<>();
@@ -590,14 +621,19 @@ final class RddFactContext {
     static RequirementManifest.Manifest ensureManifest(UUID companionId, PrimaryGoal primary, String goalId) {
         String gid = goalId == null || goalId.isBlank() ? primary.id() : goalId;
         boolean expanded = primary != null && !primary.unexpanded();
+        RddRuntime runtime = RddPlugin.runtime(companionId);
+        Map<String, com.dwinovo.numen.rdd.api.SubtaskStatus> statuses = runtime == null
+                ? Map.of() : runtime.chain().subtaskStatuses();
         String fingerprint = subtaskFingerprint(primary);
+        if (primary != null && primary.subtasks().stream().anyMatch(s -> !s.resourceUses().isEmpty()))
+            fingerprint += "|purposes:" + statuses;
         Cached cached = MANIFESTS.get(companionId);
         if (cached != null && primary != null && primary.id().equals(cached.primaryId())
                 && gid.equals(cached.goalId())
                 && expanded == cached.expanded() && fingerprint.equals(cached.subtaskFingerprint())) {
             return cached.manifest();
         }
-        RequirementManifest.Manifest manifest = RddRequirementDetector.forPrimary(primary, gid);
+        RequirementManifest.Manifest manifest = RddRequirementDetector.forPrimary(primary, gid, statuses);
         MANIFESTS.put(companionId, new Cached(primary == null ? "" : primary.id(), gid,
                 expanded, fingerprint, manifest));
         publishManifestEvent(companionId, primary, manifest);   // G1b：bind 之外第二个出口同字段
@@ -862,7 +898,7 @@ final class RddFactContext {
             if (RddPlugin.lastInventoryAtMillis(companionId) == null) {
                 return "";
             }
-            List<Need> needs = needsOf(primary);
+            List<Need> needs = needsOf(primary, rt.chain().subtaskStatuses());
             Map<String, Integer> held = RddPlugin.lastInventory(companionId);
             Set<String> satisfied = new LinkedHashSet<>(rt.chain().satisfiedNeedKeys());
             int attempt = rt.chain().currentSubtask() == null ? 0 : rt.chain().attempts(rt.chain().currentSubtask().id());
@@ -873,17 +909,20 @@ final class RddFactContext {
                     satisfied.add(key);
                 }
             }
+            // Typed purposes are current obligations: historical possession cannot hide RETAIN/input gaps.
+            Set<String> purposeKeys = RddResourceUseProjection.of(primary, rt.chain().subtaskStatuses()).declaredKeys();
             // Sticky keys are scoped by revision/attempt; convert to display form for rendering.
             Set<String> stickyDisplay = new LinkedHashSet<>();
             for (Need need : needs) {
                 String key = stickyKey(primary.id(), rt.chain().planRevision(), attempt, need);
                 if (satisfied.contains(key)) stickyDisplay.add(displayKey(need));
             }
+            stickyDisplay.removeAll(purposeKeys);
             for (Need need : needs) {
                 if (stickyDisplay.contains(displayKey(need)) && have(need, held) < need.minimum()) {
                     String dedupe = companionId + "|" + displayKey(need);
                     if (SPENT_LOGGED.add(dedupe)) {
-                        RddMonitor.publish("need_consumed_after_satisfied", Map.of(
+                        RddMonitor.publish("need_decreased_after_satisfied", Map.of(
                                 "companionId", companionId.toString(),
                                 "need", displayKey(need),
                                 "held", have(need, held),
@@ -894,7 +933,8 @@ final class RddFactContext {
             }
             return renderNeedsBlock(needs, held,
                     reservedFor(companionId, primary.id()),
-                    transformNotes(companionId, System.currentTimeMillis()), stickyDisplay);
+                    transformNotes(companionId, System.currentTimeMillis()), stickyDisplay)
+                    + RddResourceUseProjection.describe(primary, rt.chain().subtaskStatuses());
         } catch (RuntimeException ex) {
             return "";   // 增强块，绝不能拖崩上下文构建
         }
@@ -925,15 +965,13 @@ final class RddFactContext {
             }
             String dimensionId = ap.level().dimension().location().toString();
             String goalId = rt.chain().goal() == null ? null : rt.chain().goal().id();
-            Cached cached = MANIFESTS.get(companionId);
-            RequirementManifest.Manifest manifest =
-                    cached != null && primary.id().equals(cached.primaryId())
-                            ? cached.manifest()
-                            : RddRequirementDetector.forPrimary(primary, goalId);
+            RequirementManifest.Manifest manifest = RddRequirementDetector.forPrimary(
+                    primary, goalId, rt.chain().subtaskStatuses());
             long now = System.currentTimeMillis();
             FactSnapshot snapshot = FactSnapshot.capture(companionId, dimensionId,
                     RddPlugin.facts(companionId), rt.assets(), null, now, SNAPSHOT_TTL_MILLIS);
-            return renderReplanBlock(manifest, RddPlugin.facts(companionId), rt.assets(), snapshot, now);
+            return renderReplanBlock(manifest, RddPlugin.facts(companionId), rt.assets(), snapshot, now)
+                    + RddResourceUseProjection.describe(primary, rt.chain().subtaskStatuses());
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 重规划事实块生成失败 {}: {}", companionId, ex.toString());
             return "";
