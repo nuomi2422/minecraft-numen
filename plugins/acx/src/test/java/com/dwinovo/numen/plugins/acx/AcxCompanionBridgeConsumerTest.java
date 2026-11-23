@@ -62,7 +62,10 @@ class AcxCompanionBridgeConsumerTest {
         for(var e:IO.entrySet())add(args,e.getKey(),e.getValue());
         for(var e:AcxTaskReplayFixture.IO.entrySet())add(args,e.getKey(),
                 e.getKey().equals(PREFIX+"api.WorldContextStamp")
-                        ? e.getValue().replace("server == null || epoch <= 0 ? null :", "server == null || epoch <= 0 ? new Token(null, 0) :")
+                        ? e.getValue().replace("server == null || epoch <= 0 ? null :",
+                                "epoch == -1 ? new Token(Map.of(\"server_session\",\"fixture-session\"),1) : "
+                                + "epoch == -2 ? new Token(Map.of(\"world_id\",\"fixture-world\"),1) : "
+                                + "server == null || epoch <= 0 ? new Token(null, 0) :")
                         : e.getValue());
         for(var e:STOP_IO.entrySet())add(args,e.getKey(),e.getValue());
         add(args,PREFIX+"plugins.acx.BindingHarness",HARNESS.replace("// REPLAY_SCENARIOS", AcxTaskReplayFixture.SCENARIOS));
@@ -93,6 +96,8 @@ class AcxCompanionBridgeConsumerTest {
     @Test void foreignSyncTerminalNeverCompletesOrRedispatchesOriginalCall() throws Exception {
         assertEquals("PENDING:1", call("foreignSyncTerminalWithoutCallback"));
         assertEquals("PENDING:1", call("unknownIdentitySyncTerminalWithoutCallback"));
+        assertEquals("PENDING:1", call("missingWorldSyncTerminalWithoutCallback"));
+        assertEquals("PENDING:1", call("missingServerSyncTerminalWithoutCallback"));
     }
 
     @Test void waitingRunDoesNotBlockIndependentComputation() throws Exception {
@@ -538,10 +543,12 @@ class AcxCompanionBridgeConsumerTest {
             }
             public static String syncTerminalWithoutCallback(){return syncTerminal(false);}
             public static String foreignSyncTerminalWithoutCallback(){return syncTerminal(true);}
-            public static String unknownIdentitySyncTerminalWithoutCallback(){return syncTerminal(false,true);}
-            static String syncTerminal(boolean foreign){return syncTerminal(foreign,false);}
-            static String syncTerminal(boolean foreign,boolean unknown){
-                long beforeEpoch=WorldContextStamp.epoch;WorldContextStamp.epoch=unknown?0:1;
+            public static String unknownIdentitySyncTerminalWithoutCallback(){return syncTerminal(false,0);}
+            public static String missingWorldSyncTerminalWithoutCallback(){return syncTerminal(false,-1);}
+            public static String missingServerSyncTerminalWithoutCallback(){return syncTerminal(false,-2);}
+            static String syncTerminal(boolean foreign){return syncTerminal(foreign,1);}
+            static String syncTerminal(boolean foreign,long epoch){
+                long beforeEpoch=WorldContextStamp.epoch;WorldContextStamp.epoch=epoch;
                 // A queued real session owns this host call; it remains inFlight during invocation.
                 Fixture waiting=new Fixture();waiting.start();
                 waiting.plugin.gate=new AcxHostGate(100,()->new AcxHostGate.HostThread(){
