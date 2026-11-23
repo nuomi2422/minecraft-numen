@@ -169,6 +169,16 @@ class SystemPromptWakeConsumerTest {
                   Object pendingRuntimeStatePlan=new Object();
                   List<Object> pendingDeliveredRefs=new ArrayList<>(List.of("ref"));
                   int pendingRuntimeAttempt=1; boolean denyContext,retryingTurn; int voiceFinished;
+                  // 标清边界桩:只为让抽取的 drainInbox 编译/运行。本测试走 owner=false 路径,
+                  // 不断言也不代签锚点行为(anchor 语义由 OwnerRequestContinuityTest 负责)。
+                  OwnerRequestAnchor ownerRequestAnchor=OwnerRequestAnchor.none();
+                  static class OwnerRequestAnchor {
+                    static OwnerRequestAnchor none(){return new OwnerRequestAnchor();}
+                    static OwnerRequestAnchor adopt(OwnerRequestAnchor previous,List<EventQueue.Entry> taken){return previous;}
+                    boolean present(){return false;}
+                    String text(){return "";}
+                    String xml(){return "";}
+                  }
                   class RetryVoice {Runnable finish(){return () -> voiceFinished++;}}
                   Result res=new Result(new AssistantTurn("",List.of(),null));
                   EventQueue queue=new EventQueue(EventQueue.Journal.NONE);

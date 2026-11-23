@@ -71,10 +71,12 @@ class WorldFocusFinalRequestConsumerTest {
             """);
         String loop=Files.readString(root.resolve("api/common/src/client/java/com/dwinovo/numen/client/agent/EntityAgentLoop.java"));
         StringBuilder methods=new StringBuilder();
-        for(String signature:List.of("private List<ContextBudget.Section> runtimeStateSections(","private String runtimeStateXml(","private static ContextBudget.Section runtimeSection(","static ContextBudget.Section rationaleSection(","private static int estimateTokensOfText(","private List<ConvoState.Msg> modelContextSnapshot(")) methods.append(method(loop,signature)).append((char)10);
+        // 055 owner anchor: each slice has one real body now (no delegator); extract that body and
+        // keep the real anchor class in this same loader so empty-anchor behaviour is unchanged.
+        for(String signature:List.of("private List<ContextBudget.Section> runtimeStateSections(String ownerSection)","private String runtimeStateXml(boolean publish, String origin, int attempt, String ownerSection)","private static ContextBudget.Section runtimeSection(","static ContextBudget.Section rationaleSection(","private static int estimateTokensOfText(","private List<ConvoState.Msg> modelContextSnapshot(")) methods.append(method(loop,signature)).append((char)10);
         int constants=loop.indexOf("    private static final String SECTION_CURRENT_TASK");
         int constantsEnd=loop.indexOf(String.valueOf((char)10).repeat(2),constants);
-        String priorities=loop.substring(loop.indexOf("    private static final int PRIORITY_CURRENT_TASK"),loop.indexOf("    /** 044 §0.7: extractable rationale"));
+        String priorities=loop.substring(loop.indexOf("    private static final int PRIORITY_OWNER_REQUEST"),loop.indexOf("    /** 044 §0.7: extractable rationale"));
         sources.put("com.dwinovo.numen.agent.llm.BudgetPolicy","package com.dwinovo.numen.agent.llm; public class BudgetPolicy { public static com.dwinovo.numen.agent.context.ContextBudget budget=com.dwinovo.numen.agent.context.ContextBudget.unlimited(); public static com.dwinovo.numen.agent.context.ContextBudget contextBudget(){return budget;} }");
         sources.put("com.dwinovo.numen.client.agent.RequestProbe", """
             package com.dwinovo.numen.client.agent;
@@ -83,6 +85,9 @@ class WorldFocusFinalRequestConsumerTest {
             import com.dwinovo.numen.agent.llm.*;
             public class RequestProbe {
               UUID entityUuid; Goal goal=null; Task currentTask=null;
+              // Real anchor, same package/loader; empty here so this consumer test's assertions are
+              // unchanged. Anchor behaviour itself is asserted by OwnerRequestContinuityTest.
+              OwnerRequestAnchor ownerRequestAnchor=OwnerRequestAnchor.none();
               record Goal(String objective){} record Task(String describe){}
               List<com.dwinovo.numen.api.NumenPlugins.DeliveredRef> pendingDeliveredRefs;
               String pendingRuntimeStateXml,pendingDeliveryTaskId,renderedDeliveryTaskId,pendingRuntimeOrigin;
@@ -150,7 +155,7 @@ class WorldFocusFinalRequestConsumerTest {
         String cp=System.getProperty("java.class.path");
         var args=new ArrayList<>(List.of("-encoding","UTF-8","-proc:none","-classpath",cp,"-d",temp.toString()));
         for(var entry:sources.entrySet()){var path=temp.resolve(entry.getKey().replace('.','/')+".java");Files.createDirectories(path.getParent());Files.writeString(path,entry.getValue());args.add(path.toString());}
-        for(String path:List.of("plugins/worldstate/src/main/java/com/dwinovo/numen/plugins/worldstate/WorldFocusProjector.java","plugins/worldstate/src/main/java/com/dwinovo/numen/plugins/worldstate/focus/FocusPin.java","plugins/worldstate/src/main/java/com/dwinovo/numen/plugins/worldstate/focus/FocusPinStore.java","api/common/src/client/java/com/dwinovo/numen/client/agent/AgentRequestContext.java")) args.add(root.resolve(path).toString());
+        for(String path:List.of("plugins/worldstate/src/main/java/com/dwinovo/numen/plugins/worldstate/WorldFocusProjector.java","plugins/worldstate/src/main/java/com/dwinovo/numen/plugins/worldstate/focus/FocusPin.java","plugins/worldstate/src/main/java/com/dwinovo/numen/plugins/worldstate/focus/FocusPinStore.java","api/common/src/client/java/com/dwinovo/numen/client/agent/AgentRequestContext.java","api/common/src/client/java/com/dwinovo/numen/client/agent/OwnerRequestAnchor.java")) args.add(root.resolve(path).toString());
         var diagnostics=new java.io.ByteArrayOutputStream();
         int compileExit=ToolProvider.getSystemJavaCompiler().run(null,diagnostics,diagnostics,args.toArray(String[]::new));
         assertEquals(0,compileExit,()->"SETUP: production request slices compile: "+diagnostics.toString(java.nio.charset.StandardCharsets.UTF_8));

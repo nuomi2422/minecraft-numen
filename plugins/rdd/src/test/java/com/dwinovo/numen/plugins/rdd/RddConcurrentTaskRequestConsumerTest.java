@@ -46,6 +46,9 @@ class RddConcurrentTaskRequestConsumerTest {
         for (String name : List.of("StateFragment", "StateFragmentRegistry", "ExecutorRetrievalInput", "RationaleContext"))
             copy(units, A + name + ".java", "api/common/src/main/java/");
         copy(units, C + "AgentRequestContext.java", "api/common/src/client/java/");
+        // 055 owner anchor: real class in the same unit/loader as the probe loop (no stub, no
+        // cross-loader package access); empty anchor leaves these consumer assertions unchanged.
+        copy(units, C + "OwnerRequestAnchor.java", "api/common/src/client/java/");
         copy(units, "com/dwinovo/numen/agent/llm/ConvoState.java", "ai/src/main/java/");
         copy(units, "com/dwinovo/numen/agent/llm/CompactSplit.java", "ai/src/main/java/");
         copy(units, "com/dwinovo/numen/agent/context/ContextBudget.java", "ai/src/main/java/");
@@ -121,6 +124,7 @@ class RddConcurrentTaskRequestConsumerTest {
             import com.dwinovo.numen.agent.llm.*;
             public class EntityAgentLoop {
               UUID entityUuid = new UUID(0,1);
+              OwnerRequestAnchor ownerRequestAnchor = OwnerRequestAnchor.none();
               String pendingRuntimeStateXml,pendingDeliveryTaskId,renderedDeliveryTaskId,pendingRuntimeOrigin;
               int pendingRuntimeAttempt; ContextBudget.Allocation pendingRuntimeStatePlan; List<Object> pendingDeliveredRefs;
               record Goal(String objective){} Goal goal; interface Body {String describe();} Body currentTask;
@@ -128,7 +132,7 @@ class RddConcurrentTaskRequestConsumerTest {
               String currentTaskXml(){return "";} String inventoryXml(){return "";} String effectsXml(){return "";} String ridingXml(){return "";}
               public String finalUser(){ var out = modelContextSnapshot(false,"execution",1); if(out.size()!=1 || !(out.get(0) instanceof ConvoState.Msg.User)) throw new AssertionError("SETUP: attach did not produce user"); return ((ConvoState.Msg.User)out.get(0)).content(); }
             """ + method(loop, "    private List<ConvoState.Msg> modelContextSnapshot(")
-            + method(loop, "    private String runtimeStateXml(")
+            + method(loop, "    private String runtimeStateXml(boolean publish, String origin, int attempt, String ownerSection)")
             + between(loop, "    private static final String SECTION_CURRENT_TASK", "\n    /**\n     * 上下文预算闸")
             + method(loop, "    private static int estimateTokensOfText(") + "}");
         boundaryUnits(units);
