@@ -148,6 +148,40 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void placedFurnaceOutcomeDoesNotRequireConsumedRecipeInputsToRemainHeld() {
+        // Actual63be concern response c34565fa, source rdd1052; do not approve its other steps here.
+        String description = "先在基地屋内（重生床 21373,69,22126 附近）用现有 8 圆石做一台熔炉并放在床边；"
+                + "现有背包圆石只有 1，不够就用石镐在村庄地表/近处浅层补挖 7 个圆石（不下深层）。"
+                + "这步是把烧铁和烤肉的前置设施建在基地里，后面每步都要用到它。";
+        String json = new com.google.gson.Gson().toJson(Map.of("subtasks", List.of(Map.of(
+                "description", description, "condition", Map.of(
+                        "type", "block_nearby", "block", "minecraft:furnace", "radius", 8),
+                "node_type", "MAIN"))));
+        var parsed = RddStageBSpecParser.parseDetailed(json);
+        assertEquals(1, parsed.specs().size(), "SETUP: recorded furnace predicate is structurally valid");
+        assertTrue(parsed.skippedRequired().isEmpty());
+        var spec = parsed.specs().get(0);
+        assertTrue(RddPlanGuard.predicateGaps(spec).isEmpty(),
+                "consumed recipe inputs are not an independent final backpack quota: " + RddPlanGuard.predicateGaps(spec));
+        var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()),
+                "准备基地熔炉", Map.of("minecraft:cobblestone", 1, "minecraft:stone_pickaxe", 1));
+        assertTrue(filtered.dropped().isEmpty(), filtered.dropped().toString());
+        assertEquals(List.of(spec), RddDecomposer.stageBPublished(parsed, filtered, "准备基地熔炉"),
+                "required world outcome must not become an empty-plan fallback");
+        assertEquals("minecraft:furnace", spec.condition().get("block"));
+        assertEquals(description, spec.description(), "guard must not silently rewrite the planner's instruction");
+    }
+
+    @Test
+    void placedFurnaceDoesNotProveAnAdditionalCarriedBlockQuota() {
+        var mixed = new SubtaskSpec("用8圆石做一台熔炉并放在床边；另外随身备齐 7 个圆石用于下一段垫脚。",
+                Map.of("type", "block_nearby", "block", "minecraft:furnace", "radius", 8), null);
+        assertFalse(RddPlanGuard.predicateGaps(mixed).isEmpty(),
+                "an explicit extra carried quota must still be checked independently of the placed furnace");
+        assertTrue(RddPlanGuard.filterSubtasks(List.of(mixed), "准备基地熔炉", Map.of()).allowed().isEmpty());
+    }
+
+    @Test
     void 判据是方块组时不算Gap() {
         SubtaskSpec ok = new SubtaskSpec("在脚下铺 3x3 落脚台，先备 8 块方块",
                 Map.of("group", "blocks", "minimum", 8), null);
