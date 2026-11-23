@@ -823,6 +823,52 @@ public final class RddPlugin implements NumenPlugin {
             // 2026-10-08 支线接管：支线 active 时当前目标投影为睡觉支线，主线上下文让位。
             String sideContext = sideContextFor(uuid);
             if (sideContext != null) {
+                // Keep the actual side owner as current. Related plans are visibility, not dispatch.
+                RddRuntime relatedRuntime = RUNTIMES.get(uuid);
+                if (sideContext.contains("<side_context_status>CURRENT</side_context_status>")
+                        && relatedRuntime != null) {
+                    TaskChain related = relatedRuntime.chain();
+                    synchronized (related) {
+                        RddRationale.refreshContext(uuid, related);
+                        // Do not resurrect completed plans or bypass recovery/expansion admission.
+                        if (!DECOMPOSING.contains(uuid) && related.primaryStatus() == PrimaryGoalStatus.ACTIVE
+                                && related.currentPrimary() != null && !related.currentPrimary().unexpanded()
+                                && com.dwinovo.numen.rdd.side.death.DeathPreparation.pausedContext(related).isBlank()) {
+                            StringBuilder candidates = new StringBuilder("<related_tasks>");
+                            candidates.append("<chain_instance>").append(escape(related.chainInstanceId()))
+                                    .append("</chain_instance><plan_revision>").append(related.planRevision())
+                                    .append("</plan_revision><state_version>").append(related.stateVersion())
+                                    .append("</state_version><instruction>只读关联待办，不是行动命令。当前支线仍占当前执行位置；主线待恢复，不可据此抢占身体。日常模板不表示已登记或已到期，按原宿主条件重评。</instruction>");
+                            Map<String, SubtaskStatus> statuses = related.subtaskStatuses();
+                            for (Subtask candidate : related.currentPrimary().subtasks()) {
+                                boolean daily = candidate.nodeType() == com.dwinovo.numen.rdd.api.NodeType.DAILY;
+                                if (!daily && candidate != related.currentSubtask()) continue;
+                                SubtaskStatus status = statuses.get(candidate.id());
+                                boolean delegatedDaily = daily && status == SubtaskStatus.SKIPPED
+                                        && "DAILY delegated to recurring side tasks; not mainline completion"
+                                                .equals(related.skipReason(candidate.id()));
+                                if (status == SubtaskStatus.COMPLETED || (status == SubtaskStatus.SKIPPED && !delegatedDaily)
+                                        || status == SubtaskStatus.INVALIDATED || status == SubtaskStatus.FAILED) continue;
+                                candidates.append("<candidate><source>plan</source><scope>").append(daily ? "DAILY" : "MAIN")
+                                        .append("</scope><subtask>").append(escape(candidate.id()))
+                                        .append("</subtask><description>").append(escape(candidate.description()))
+                                        .append("</description><done_when>").append(escape(String.valueOf(candidate.condition())))
+                                        .append("</done_when><status>").append(status)
+                                        .append("</status><availability>").append(daily ? "PLANNED_TEMPLATE_REGISTRATION_AND_DUE_UNKNOWN" : "WAIT_FOR_SIDE_RELEASE")
+                                        .append("</availability>");
+                                if (daily && candidate.recurrence() != null) candidates.append("<recurrence>")
+                                        .append(escape(String.valueOf(candidate.recurrence()))).append("</recurrence>");
+                                candidates.append("</candidate>");
+                            }
+                            candidates.append(com.dwinovo.numen.api.RationaleContext.renderApplicable(uuid,
+                                    related.planRevision(), related.chainInstanceId()));
+                            candidates.append("</related_tasks>");
+                            int close = sideContext.lastIndexOf("</rdd>");
+                            if (close >= 0) sideContext = sideContext.substring(0, close) + candidates
+                                    + sideContext.substring(close);
+                        }
+                    }
+                }
                 return withAssets(uuid, sideContext);
             }
             if (DECOMPOSING.contains(uuid)) {
