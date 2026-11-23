@@ -870,6 +870,11 @@ public final class RddPlugin implements NumenPlugin {
                                     + sideContext.substring(close);
                         }
                     }
+                    String ownerPause = renderOwnerPause(related);
+                    if (!ownerPause.isEmpty()) {
+                        int close = sideContext.lastIndexOf("</rdd>");
+                        if (close >= 0) sideContext = sideContext.substring(0, close) + ownerPause + sideContext.substring(close);
+                    }
                 }
                 return withAssets(uuid, sideContext);
             }
@@ -967,6 +972,29 @@ public final class RddPlugin implements NumenPlugin {
         return "<instruction>current_task 是你必须执行的当前目标（优先于自由活动）；"
                 + "若你认为它不合理/不可达/与目标冲突，用 report_task_concern 上报（REJECT/COUNTER+建议），"
                 + "指挥官会据此改单或重规划；不要默默无视。</instruction>";
+    }
+
+    /**
+     * 支线 CURRENT 仍占当前执行位置时，把主线 owner-pause 事实抬到同一顶层 rdd 片段。
+     * 只读 TaskChain 事实（isOwnerPause），不新存 pause 账，不从 QUERY 文本猜授权；
+     * 非 owner-pause 返回空串，不假封；不 global 禁 sleep/FC。
+     */
+    static String renderOwnerPause(TaskChain related) {
+        Subtask current = related.currentSubtask();
+        if (current == null || related.currentSubtaskStatus() != SubtaskStatus.PAUSED
+                || !related.isOwnerPause(current.id())) {
+            return "";
+        }
+        String reason = related.pauseReason(current.id());
+        return "<owner_pause scope=\"MAIN\">"
+                + "<chain_instance>" + escape(related.chainInstanceId()) + "</chain_instance>"
+                + "<subtask>" + escape(current.id()) + "</subtask>"
+                + (reason == null || reason.isBlank() ? ""
+                        : "<pause_reason>" + escape(reason) + "</pause_reason>")
+                + "<instruction>当前主线是主人待命（owner pause）：旧 timer 或旧建议不得推进这个 PAUSED mainline；"
+                + "只有主人解除待命后才能继续。暂停只停这条主线节点，"
+                + "不禁止安全观察、避险、进食、sleep/FC 等生存动作；不要自行 resume。</instruction>"
+                + "</owner_pause>";
     }
 
     /**
