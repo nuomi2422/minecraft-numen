@@ -84,6 +84,13 @@ class AcxCompanionBridgeConsumerTest {
         try{return harness.getMethod(name).invoke(null);}
         catch(java.lang.reflect.InvocationTargetException e){throw new RuntimeException(e.getCause());}
     }
+    @Test void syncTaskWithoutCallbackUsesOnlyItsExactTerminalRecord() throws Exception {
+        assertEquals("COMPLETED:1", call("syncTerminalWithoutCallback"));
+    }
+    @Test void foreignSyncTerminalNeverCompletesOrRedispatchesOriginalCall() throws Exception {
+        assertEquals("PENDING:1", call("foreignSyncTerminalWithoutCallback"));
+    }
+
     @Test void waitingRunDoesNotBlockIndependentComputation() throws Exception {
         assertTrue((Boolean) call("independentRunsProgress"), "computation must finish while another run is waiting");
     }
@@ -372,6 +379,7 @@ class AcxCompanionBridgeConsumerTest {
                 static boolean currentFreshlyAccepted(NumenPlayer body) {
                     var slot = slots.get(body.getUUID()); return slot != null && slot.freshlyAccepted(body);
                 }
+                public static TaskRecord lastFinishedTaskFor(UUID id) { return finished.get(id+"/latest"); }
                 public static TaskRecord finishedTaskFor(UUID id, String task) { return finished.get(id+"/"+task); }
                 public static void settle(NumenPlayer body, TaskRecord record, TaskState state) {
                     var slot = slots.get(body.getUUID());
@@ -523,6 +531,30 @@ class AcxCompanionBridgeConsumerTest {
                     var replacement=port.invoke(Map.of(),ctx(f.run)).outcome();
                     return good+","+stale+","+replacement;
                 } finally {ToolRegistry.remove(y.name());}
+            }
+            public static String syncTerminalWithoutCallback(){return syncTerminal(false);}
+            public static String foreignSyncTerminalWithoutCallback(){return syncTerminal(true);}
+            static String syncTerminal(boolean foreign){
+                Fixture f=new Fixture();f.start();f.drain();
+                var session=f.plugin.sessions.session(f.run);
+                // Keep a real original session attempt alive while the host action settles.
+                Fixture waiting=new Fixture(true,true);waiting.start();waiting.drain();
+                int[] calls={0};
+                NumenTool sync=new NumenTool(){public String name(){return "interact_at";}
+                    public void onServerCall(String id,JsonObject args,NumenPlayer body,Consumer<String> ignored){
+                        calls[0]++;var rec=new TaskRecord("sync-record","interact_at",foreign?"another-call":id,1000);
+                        rec.bindIdentity(WorldContextStamp.capture(body.getServer()));rec.setState(TaskState.SUCCESS);
+                        rec.setResult(TaskResult.ok("real sync terminal",Map.of("changed",true)));
+                        CompanionTickDispatcher.finished.put(body.getUUID()+"/latest",rec);
+                        // TaskDispatch.runSync deliberately does NOT invoke the supplied callback.
+                    }};
+                try{
+                    var port=new NumenToolBridgeX(sync,waiting.plugin,10);
+                    try{var result=port.invoke(Map.of(),ctx(waiting.run));return result.outcome().name()+":"+calls[0];}
+                    catch(AcxToolPort.ReplyPendingAfterDispatchException pending){
+                        var value=pending.receipt().poll();return (value.isPresent()?value.get().outcome().name():"PENDING")+":"+calls[0];
+                    }
+                }finally {waiting.heldReply.accept(new Gson().toJson(Map.of("success",true,"data",Map.of())));}
             }
             // REPLAY_SCENARIOS
             public static String statusInterleave(){Fixture f=new Fixture();f.start();request(new AcxFacadeTools.Status(f.plugin),f.status(),f.b);f.drain();return f.body();}

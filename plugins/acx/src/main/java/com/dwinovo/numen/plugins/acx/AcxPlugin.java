@@ -309,7 +309,7 @@ public final class AcxPlugin implements NumenPlugin {
                 ports.add(new NumenToolBridgeX(tool, this));
             }
             AcxHostBridge.Report bridge = AcxHostBridge.registerAll(
-                    registry, ports, NumenToolBridgeX.probeFor(this));
+                    registry, ports, NumenToolBridgeX.probeFor(this), true);
 
             // ★ 2026-10-06：把「真的注册了哪些积木」写成文件，供跨插件的 AI 照抄。
             //

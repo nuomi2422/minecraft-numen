@@ -41,6 +41,7 @@ public final class PortToolAdapter implements AcxTool {
     private final AcxCompletionProbe probe;
     private final AcxToolSchema toolSchema;
     private final LongSupplier clock;
+    private final boolean awaitAccepted;
     private final Map<CallKey, Acceptance> pendingByStep = new ConcurrentHashMap<>();
     private final Map<String, AcxToolPort.Result> pushedByTask = new ConcurrentHashMap<>();
     /** 每个挂账键首次 UNKNOWN 的时刻；只用于「不能判断」的宽限计时。 */
@@ -97,11 +98,12 @@ public final class PortToolAdapter implements AcxTool {
         });
     }
 
-    private PortToolAdapter(AcxToolPort port, AcxCompletionProbe probe, LongSupplier clock) {
+    private PortToolAdapter(AcxToolPort port, AcxCompletionProbe probe, LongSupplier clock, boolean awaitAccepted) {
         this.port = port;
         this.probe = probe;
         this.toolSchema = toToolSchema(port.schema());
         this.clock = clock == null ? System::currentTimeMillis : clock;
+        this.awaitAccepted = awaitAccepted;
     }
 
     public static Builder builder(AcxToolPort port) {
@@ -129,6 +131,35 @@ public final class PortToolAdapter implements AcxTool {
 
     @Override
     public AcxStepOutcome execute(Map<String, Object> params, AcxCallContext ctx) {
+        AcxStepOutcome outcome = executeOnce(params, ctx);
+        if (!awaitAccepted || ctx == null) return outcome;
+        // This is the original run worker, not a server-thread loop or another resume attempt.
+        // Only read the original receipt. Guard, body-busy, standing and unknown are not waits.
+        CallKey key = callKey(ctx);
+        while (outcome != null && outcome.status() == AcxStatus.PAUSED
+                && java.util.Set.of("async_accepted", "host_reply_pending", "body_active")
+                        .contains(outcome.output().get("_pause_reason"))) {
+            if (ctx.isCancelRequested()) return AcxStepOutcome.paused(
+                    "原运行取消或预算已到，保留原受理回执且不重发", Map.of("_pause_reason", "await_cancelled", "_accepted", true));
+            Acceptance original = pendingByStep.get(key);
+            if (original == null) return outcome; // a retired owner cannot recreate a dispatch
+            if (original.standing() || (original.reply() == null && original.taskId().isEmpty())) return outcome;
+            if (original.reply() == null && original.bodyAction() == null && probe == null
+                    && !pushedByTask.containsKey(original.taskId())) return outcome;
+            try { Thread.sleep(50L); }
+            catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return AcxStepOutcome.paused("原异步等待被中断，保留回执", Map.of("_pause_reason", "await_interrupted"));
+            }
+            if (ctx.isCancelRequested()) continue;
+            if (pendingByStep.get(key) != original) return AcxStepOutcome.paused(
+                    "原受理身份已变，不自动续接", Map.of("_pause_reason", "receipt_identity_changed"));
+            outcome = resolvePending(key, original, ctx.defersReceiptConsumption(), ctx);
+        }
+        return outcome;
+    }
+
+    private AcxStepOutcome executeOnce(Map<String, Object> params, AcxCallContext ctx) {
         Map<String, Object> clean = stripControlKeys(params);
 
         if (ctx != null && ctx.isCancelRequested()) {
@@ -452,6 +483,7 @@ public final class PortToolAdapter implements AcxTool {
         private final AcxToolPort port;
         private AcxCompletionProbe probe;
         private LongSupplier clock = System::currentTimeMillis;
+        private boolean awaitAccepted;
 
         private Builder(AcxToolPort port) {
             if (port == null) {
@@ -471,8 +503,11 @@ public final class PortToolAdapter implements AcxTool {
             return this;
         }
 
+        /** Hosted runs await their own confirmed receipts; direct legacy adapters stay manual. */
+        public Builder awaitAccepted(boolean enabled) { this.awaitAccepted = enabled; return this; }
+
         public PortToolAdapter build() {
-            return new PortToolAdapter(port, probe, clock);
+            return new PortToolAdapter(port, probe, clock, awaitAccepted);
         }
     }
 }

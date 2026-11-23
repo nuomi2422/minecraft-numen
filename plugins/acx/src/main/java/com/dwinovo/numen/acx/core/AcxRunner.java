@@ -761,6 +761,8 @@ public final class AcxRunner {
                     Map.of("reason", String.valueOf(r.message())));
             return r;
         }
+        AcxStepOutcome afterHostWait = checkCircuit(c, def, 0);
+        if (afterHostWait != null) return afterHostWait;
         if (out == null) {
             AcxStepOutcome r = AcxStepOutcome.failed(step.id() + " 返回 null outcome（积木契约违规）");
             emit(c, AcxEvent.Kind.STEP_FAILED, step.id(), AcxStatus.FAIL,

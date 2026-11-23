@@ -42,6 +42,11 @@ public final class AcxHostBridge {
     public static Report registerAll(AcxToolRegistry registry,
                                      List<AcxToolPort> ports,
                                      AcxCompletionProbe probe) {
+        return registerAll(registry, ports, probe, false);
+    }
+
+    public static Report registerAll(AcxToolRegistry registry, List<AcxToolPort> ports,
+                                     AcxCompletionProbe probe, boolean awaitAccepted) {
         List<String> registered = new ArrayList<>();
         List<String> aliasNames = new ArrayList<>();
         List<String> skipped = new ArrayList<>();
@@ -71,7 +76,7 @@ public final class AcxHostBridge {
                     skipped.add(name + "（注册表已有同名积木，不覆盖）");
                     continue;
                 }
-                PortToolAdapter adapter = PortToolAdapter.builder(port).probe(probe).build();
+                PortToolAdapter adapter = PortToolAdapter.builder(port).probe(probe).awaitAccepted(awaitAccepted).build();
                 registry.register(adapter);
                 byName.put(name, adapter);
                 registered.add(name);
