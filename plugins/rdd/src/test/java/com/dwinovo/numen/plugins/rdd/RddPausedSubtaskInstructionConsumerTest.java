@@ -199,7 +199,7 @@ class RddPausedSubtaskInstructionConsumerTest {
         String user = sideRequest("paused-owner");
         assertTrue(user.contains("STATUS=PAUSED"), user);
         assertTrue(user.contains("owner_pause"), "owner pause must be raised into the same rdd fragment: " + user);
-        assertTrue(user.contains("<owner_pause scope=\"MAIN\""><chain_instance>"),
+        assertTrue(user.contains("<owner_pause scope=\"MAIN\"><chain_instance>"),
                 "owner pause must be scoped to the mainline and bound to the related chain: " + user);
         assertTrue(user.contains("sleep/FC") && user.contains("不禁止"),
                 "owner pause must keep survival side actions open, not a global ban: " + user);
