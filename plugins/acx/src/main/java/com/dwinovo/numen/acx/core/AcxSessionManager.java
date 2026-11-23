@@ -273,14 +273,17 @@ public final class AcxSessionManager {
 
     private void invalidateBodies(Object exactBody) {
         synchronized (sessions) {
+            java.util.List<Session> retired = new java.util.ArrayList<>();
             for (Session s : sessions.values()) {
                 Object body = exactBody == null ? s.bodyToken() : exactBody;
-                if (body == null || !s.invalidateBody(body)) continue;
-                if (s.inFlight) {
-                    runner.cancel(s.runId);
-                } else {
-                    runner.discardRunReceipts(s.runId);
-                }
+                if (body != null && s.invalidateBody(body)) retired.add(s);
+            }
+            // Close every matching identity before invoking any receipt cleanup callback.
+            for (Session s : retired) {
+                if (s.inFlight) runner.cancel(s.runId);
+            }
+            for (Session s : retired) {
+                if (!s.inFlight) runner.discardRunReceipts(s.runId);
             }
             evictFinishedLocked();
         }
