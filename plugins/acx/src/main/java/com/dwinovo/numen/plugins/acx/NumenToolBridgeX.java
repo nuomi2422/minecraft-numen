@@ -239,7 +239,10 @@ public final class NumenToolBridgeX implements AcxToolPort {
      * exact original terminal on the host thread; an idle slot or another call proves nothing. */
     private Optional<String> confirmOriginalSyncTerminal(AcxSessionManager.Session session,
             NumenPlayer original, AcxTool.AcxCallContext ctx, String callId, WorldContextStamp.Token issued) {
-        if (issued == null || ctx.isCancelRequested()) return Optional.empty();
+        if (issued == null || issued.epoch() <= 0 || issued.identity() == null
+                || issued.identity().getOrDefault("world_id", "").isBlank()
+                || issued.identity().getOrDefault("server_session", "").isBlank()
+                || ctx.isCancelRequested()) return Optional.empty();
         AtomicReference<String> result = new AtomicReference<>();
         try {
             AcxBoundHostCall.call(plugin.gate(), session, ctx, () -> {
