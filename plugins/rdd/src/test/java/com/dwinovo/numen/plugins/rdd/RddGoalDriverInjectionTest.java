@@ -72,7 +72,7 @@ class RddGoalDriverInjectionTest {
         RddGoalDriver.acceptPlan(all,ignored->SideTaskHost.DailyRegistration.registerChain(chain,engine),()->chain.expandCurrentPrimary(all));
         assertEquals(2,engine.recurringSpecsSnapshot().stream().filter(RecurringSideTaskSpec::enabled).count());
         engine.tick(id,world,mainlineToken(chain,id),false);String first=engine.current(id).orElseThrow().instanceId();
-        engine.decline(id,"current reason",world);engine.tick(id,world,mainlineToken(chain,id),false);
+        engine.decline(id,"current reason",world.worldId(),world.day);engine.tick(id,world,mainlineToken(chain,id),false);
         assertTrue(engine.current(id).isPresent(),"different valid DAILY still has its own occurrence");assertNotEquals(first,engine.current(id).orElseThrow().instanceId());
         String wheat="daily:g:"+Integer.toHexString("daily wheat".hashCode());assertEquals(Boolean.TRUE,engine.handledToday(id,world.worldId(),wheat,world.day));
         SideTaskHost.DailyRegistration.restoreChain(TaskChain.fromJson(chain.toJson()),engine);assertEquals(1,engine.recurringSpec(wheat).anchorGameDay());
