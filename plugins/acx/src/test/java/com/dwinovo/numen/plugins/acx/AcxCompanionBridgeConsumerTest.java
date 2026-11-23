@@ -562,7 +562,7 @@ class AcxCompanionBridgeConsumerTest {
             public static String missingServerSyncTerminalWithoutCallback(){return syncTerminal(false,-2);}
             static String syncTerminal(boolean foreign){return syncTerminal(foreign,1);}
             static String syncTerminal(boolean foreign,long epoch){return syncTerminal(foreign,epoch,TaskState.SUCCESS,TaskResult.ok("real sync terminal",Map.of("changed",true)),false);}
-            static String syncTerminal(boolean foreign,long epoch,TaskState state,TaskResult result,boolean withMessage){
+            static String syncTerminal(boolean foreign,long epoch,TaskState state,TaskResult terminalResult,boolean withMessage){
                 long beforeEpoch=WorldContextStamp.epoch;WorldContextStamp.epoch=epoch;
                 // A queued real session owns this host call; it remains inFlight during invocation.
                 Fixture waiting=new Fixture();waiting.start();
@@ -573,21 +573,22 @@ class AcxCompanionBridgeConsumerTest {
                     public void onServerCall(String id,JsonObject args,NumenPlayer body,Consumer<String> ignored){
                         calls[0]++;var rec=new TaskRecord("sync-record","interact_at",foreign?"another-call":id,1000);
                         rec.bindIdentity(WorldContextStamp.capture(body.getServer()));rec.setState(state);
-                        rec.setResult(result);
+                        rec.setResult(terminalResult);
                         CompanionTickDispatcher.finished.put(body.getUUID()+"/latest",rec);
                         // TaskDispatch.runSync deliberately does NOT invoke the supplied callback.
                     }};
                 try{
                     var port=new NumenToolBridgeX(sync,waiting.plugin,10);
-                    try{var result=port.invoke(Map.of(),ctx(waiting.run));return result.outcome().name()+":"+calls[0];}
+                    try{var reply=port.invoke(Map.of(),ctx(waiting.run));return format(reply.outcome().name(),calls[0],null);}
                     catch(AcxToolPort.ReplyPendingAfterDispatchException pending){
                         var value=pending.receipt().poll();
-                        String got=value.isPresent()?value.get().outcome().name():"PENDING";
-                        if(value.isPresent()&&withMessage)got+=":"+value.get().message();
-                        return got+":"+calls[0];
+                        String outcome=value.isPresent()?value.get().outcome().name():"PENDING";
+                        String message=value.isPresent()?value.get().message():null;
+                        return format(outcome,calls[0],withMessage?message:null);
                     }
                 }finally {CompanionTickDispatcher.finished.remove(waiting.a.getUUID()+"/latest");WorldContextStamp.epoch=beforeEpoch;}
             }
+            static String format(String outcome,int calls,String message){return outcome+":"+calls+(message==null?"":":"+message);}
             // REPLAY_SCENARIOS
             public static String statusInterleave(){Fixture f=new Fixture();f.start();request(new AcxFacadeTools.Status(f.plugin),f.status(),f.b);f.drain();return f.body();}
             public static String libraryInterleave(){Fixture f=new Fixture();f.start();request(new AcxFacadeTools.Library(f.plugin),new JsonObject(),f.b);f.drain();return f.body();}
