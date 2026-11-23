@@ -183,8 +183,13 @@ final class RddHomeFacts {
         if (!(rawItems instanceof Map<?, ?> m)) return null;
         Map<String, Integer> out = new LinkedHashMap<>();
         for (var e : m.entrySet()) {
-            if (!(e.getValue() instanceof Number n)) continue;
-            out.put(String.valueOf(e.getKey()), n.intValue());
+            // A partial decode is not evidence of an empty or partially stocked box.
+            if (!(e.getKey() instanceof String key) || key.isBlank()
+                    || !(e.getValue() instanceof Number n)) return null;
+            double count = n.doubleValue();
+            if (!Double.isFinite(count) || count < 0 || count > Integer.MAX_VALUE
+                    || count != Math.rint(count)) return null;
+            out.put(key, (int) count);
         }
         return out;
     }
