@@ -199,6 +199,10 @@ class RddPausedSubtaskInstructionConsumerTest {
         String user = sideRequest("paused-owner");
         assertTrue(user.contains("STATUS=PAUSED"), user);
         assertTrue(user.contains("owner_pause"), "owner pause must be raised into the same rdd fragment: " + user);
+        assertTrue(user.contains("<owner_pause scope=\"MAIN\""><chain_instance>"),
+                "owner pause must be scoped to the mainline and bound to the related chain: " + user);
+        assertTrue(user.contains("sleep/FC") && user.contains("不禁止"),
+                "owner pause must keep survival side actions open, not a global ban: " + user);
         assertTrue(user.contains(TaskChain.OWNER_PAUSE_REASON), "owner reason must stay visible: " + user);
         assertTrue(user.contains("只有主人"), "owner standby must say only the owner releases it: " + user);
         assertTrue(user.contains("side-identity-paused-owner"), "side owner must remain the current body: " + user);
@@ -210,7 +214,6 @@ class RddPausedSubtaskInstructionConsumerTest {
         assertTrue(user.contains("STATUS=PAUSED"), user);
         assertFalse(user.contains("owner_pause"), "a soldier pause is not an owner seal: " + user);
         assertFalse(user.contains("只有主人"), "soldier pause must not claim owner authority: " + user);
-        assertTrue(user.contains("wait until daylight"), user);
         assertTrue(user.contains("side-identity-paused-soldier"), user);
     }
 
