@@ -768,7 +768,7 @@ class RddGoalDriverInjectionTest {
                     if (replace) owner.replaceCurrentSubtasks(candidates);
                     else owner.expandCurrentPrimary(candidates);
                 });
-                assertEquals(List.of("daily", "install"), order);
+                assertEquals(List.of("install", "daily"), order, "only a successful owner install authorizes registration");
                 owner.startCurrent();
                 chain = TaskChain.fromJson(owner.toJson());
                 assertEquals(target, chain.currentPrimary().equipmentTarget());
