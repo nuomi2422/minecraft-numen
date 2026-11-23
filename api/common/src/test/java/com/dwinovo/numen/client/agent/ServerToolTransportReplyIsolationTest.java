@@ -72,8 +72,12 @@ class ServerToolTransportReplyIsolationTest {
                 "package com.dwinovo.numen; public class Constants {public static final Log LOG=new Log(); public static class Log {public void info(String s,Object...a){} public void warn(String s,Object...a){}}}");
         sources.put("net.minecraft.client.player.AbstractClientPlayer",
                 "package net.minecraft.client.player; public class AbstractClientPlayer {}");
+        sources.put("com.google.gson.JsonElement",
+                "package com.google.gson; public class JsonElement {}");
         sources.put("com.google.gson.JsonObject",
-                "package com.google.gson; public class JsonObject {}");
+                "package com.google.gson; public class JsonObject {"
+                + " public JsonElement remove(String key){return null;}"
+                + " public JsonObject addProperty(String key,String value){return this;} }");
         sources.put("com.google.gson.JsonParser",
                 "package com.google.gson; public class JsonParser {public static JsonParser parseString(String s){return new JsonParser();} public JsonObject getAsJsonObject(){return new JsonObject();}}");
         sources.put("com.dwinovo.numen.agent.tool.ClientToolContext",
