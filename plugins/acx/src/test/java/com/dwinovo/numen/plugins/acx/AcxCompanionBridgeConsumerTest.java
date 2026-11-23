@@ -93,6 +93,16 @@ class AcxCompanionBridgeConsumerTest {
     @Test void syncTaskWithoutCallbackUsesOnlyItsExactTerminalRecord() throws Exception {
         assertEquals("COMPLETED:1", call("syncTerminalWithoutCallback"));
     }
+    @Test void failedSyncTerminalCarriesItsOriginalOccludedResult() throws Exception {
+        assertEquals("FAILED:1:aim 21417,51,22143 is blocked from here — the crosshair lands on stone at 21415,52,22145 instead. break_block that blocker, or goto the target's open side, then retry.",
+                call("failedSyncTerminalWithoutCallback"));
+    }
+    @Test void cancelledSyncTerminalCarriesItsOriginalResult() throws Exception {
+        assertEquals("FAILED:1:宿主任务被中断: owner stopped it", call("cancelledSyncTerminalWithoutCallback"));
+    }
+    @Test void timeoutSyncTerminalCarriesItsOriginalResult() throws Exception {
+        assertEquals("FAILED:1:宿主任务超时: deadline", call("timeoutSyncTerminalWithoutCallback"));
+    }
     @Test void foreignSyncTerminalNeverCompletesOrRedispatchesOriginalCall() throws Exception {
         assertEquals("PENDING:1", call("foreignSyncTerminalWithoutCallback"));
         assertEquals("PENDING:1", call("unknownIdentitySyncTerminalWithoutCallback"));
@@ -542,12 +552,17 @@ class AcxCompanionBridgeConsumerTest {
                 } finally {ToolRegistry.remove(y.name());}
             }
             public static String syncTerminalWithoutCallback(){return syncTerminal(false);}
+            public static String failedSyncTerminalWithoutCallback(){return syncTerminal(false,1,TaskState.FAILED,
+                    TaskResult.fail("aim 21417,51,22143 is blocked from here — the crosshair lands on stone at 21415,52,22145 instead. break_block that blocker, or goto the target's open side, then retry.",Map.of("button","left")),true);}
+            public static String cancelledSyncTerminalWithoutCallback(){return syncTerminal(false,1,TaskState.CANCELLED,TaskResult.cancelled("owner stopped it"),true);}
+            public static String timeoutSyncTerminalWithoutCallback(){return syncTerminal(false,1,TaskState.TIMEOUT,TaskResult.timeout("deadline"),true);}
             public static String foreignSyncTerminalWithoutCallback(){return syncTerminal(true);}
             public static String unknownIdentitySyncTerminalWithoutCallback(){return syncTerminal(false,0);}
             public static String missingWorldSyncTerminalWithoutCallback(){return syncTerminal(false,-1);}
             public static String missingServerSyncTerminalWithoutCallback(){return syncTerminal(false,-2);}
             static String syncTerminal(boolean foreign){return syncTerminal(foreign,1);}
-            static String syncTerminal(boolean foreign,long epoch){
+            static String syncTerminal(boolean foreign,long epoch){return syncTerminal(foreign,epoch,TaskState.SUCCESS,TaskResult.ok("real sync terminal",Map.of("changed",true)),false);}
+            static String syncTerminal(boolean foreign,long epoch,TaskState state,TaskResult result,boolean withMessage){
                 long beforeEpoch=WorldContextStamp.epoch;WorldContextStamp.epoch=epoch;
                 // A queued real session owns this host call; it remains inFlight during invocation.
                 Fixture waiting=new Fixture();waiting.start();
@@ -557,8 +572,8 @@ class AcxCompanionBridgeConsumerTest {
                 NumenTool sync=new NumenTool(){public String name(){return "interact_at";}
                     public void onServerCall(String id,JsonObject args,NumenPlayer body,Consumer<String> ignored){
                         calls[0]++;var rec=new TaskRecord("sync-record","interact_at",foreign?"another-call":id,1000);
-                        rec.bindIdentity(WorldContextStamp.capture(body.getServer()));rec.setState(TaskState.SUCCESS);
-                        rec.setResult(TaskResult.ok("real sync terminal",Map.of("changed",true)));
+                        rec.bindIdentity(WorldContextStamp.capture(body.getServer()));rec.setState(state);
+                        rec.setResult(result);
                         CompanionTickDispatcher.finished.put(body.getUUID()+"/latest",rec);
                         // TaskDispatch.runSync deliberately does NOT invoke the supplied callback.
                     }};
@@ -566,7 +581,10 @@ class AcxCompanionBridgeConsumerTest {
                     var port=new NumenToolBridgeX(sync,waiting.plugin,10);
                     try{var result=port.invoke(Map.of(),ctx(waiting.run));return result.outcome().name()+":"+calls[0];}
                     catch(AcxToolPort.ReplyPendingAfterDispatchException pending){
-                        var value=pending.receipt().poll();return (value.isPresent()?value.get().outcome().name():"PENDING")+":"+calls[0];
+                        var value=pending.receipt().poll();
+                        String got=value.isPresent()?value.get().outcome().name():"PENDING";
+                        if(value.isPresent()&&withMessage)got+=":"+value.get().message();
+                        return got+":"+calls[0];
                     }
                 }finally {CompanionTickDispatcher.finished.remove(waiting.a.getUUID()+"/latest");WorldContextStamp.epoch=beforeEpoch;}
             }
