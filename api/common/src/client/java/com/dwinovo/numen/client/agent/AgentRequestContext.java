@@ -46,6 +46,32 @@ final class AgentRequestContext {
         return List.copyOf(out);
     }
 
+    /**
+     * 最终窗口里是否已经带着这条主人请求。分段/replay 可能已经把它裁掉；
+     * 只有为 false 时才补一次（同一请求绝不重复注入）。
+     */
+    static boolean carriesOwnerRequest(List<ConvoState.Msg> messages, String ownerText) {
+        if (messages == null || ownerText == null || ownerText.isBlank()) return false;
+        String needle = normalize(ownerText);
+        if (needle.isEmpty()) return false;
+        for (ConvoState.Msg message : messages) {
+            if (message instanceof ConvoState.Msg.User user && normalize(user.content()).contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 历史里的 User 是队列渲染后的 wire（{@code <query>echo</query>} 紧跟展开正文）；
+     * 锚点文本是剥壳后的 {@code echo + 展开}。去掉这三个标记再压空白，两条边才可比。
+     */
+    private static String normalize(String text) {
+        if (text == null) return "";
+        return text.replace("<query>", " ").replace("</query>", " ")
+                .replaceAll("\\s+", " ").strip();
+    }
+
     /** Remove generated current-task blocks persisted by older builds, request-locally only. */
     private static List<ConvoState.Msg> withoutLegacyCurrentTask(List<ConvoState.Msg> messages) {
         if (messages == null || messages.isEmpty()) return List.of();
