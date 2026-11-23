@@ -230,9 +230,6 @@ public final class NumenToolBridgeX implements AcxToolPort {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ReplyPendingAfterDispatchException("等待原工具回执被中断: " + name(), receipt);
-        } catch (ExecutionException e) {
-            // Reply and admission refusal both complete the future normally.
-            throw new IllegalStateException("原工具回执意外失败", e);
         }
         return receipt.poll().orElseThrow(() ->
                 new ReplyPendingAfterDispatchException("原工具回执未能确认结果: " + name(), receipt));
