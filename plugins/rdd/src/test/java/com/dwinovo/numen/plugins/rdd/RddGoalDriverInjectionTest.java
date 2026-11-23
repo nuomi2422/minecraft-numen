@@ -207,6 +207,77 @@ class RddGoalDriverInjectionTest {
         assertTrue(chain.satisfiedStages().isEmpty());
     }
 
+    // 2026-11-24: only cursor-prior stages that are NOT chain-local waivers may be called achieved.
+    private static TaskChain threeStageChain() {
+        return new TaskChain(new Goal("g", "three stages", List.of(
+                PrimaryGoal.unexpanded("p1", "stage one", List.of()),
+                PrimaryGoal.unexpanded("p2", "stage two", List.of()),
+                PrimaryGoal.unexpanded("p3", "stage three", List.of()))));
+    }
+
+    @Test void completedStagesBeforeKeepsVerifiedCompletion() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "world facts verified", true);
+        assertEquals(List.of("stage one"), RddGoalDriver.completedStagesBefore(chain));
+    }
+
+    @Test void completedStagesBeforeExcludesChainWaiver() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "planner says unnecessary", false);
+        assertTrue(chain.waivedStages().contains("p1"));
+        assertTrue(RddGoalDriver.completedStagesBefore(chain).isEmpty(),
+                RddGoalDriver.completedStagesBefore(chain).toString());
+    }
+
+    @Test void mixedCompletedKeepsOnlyVerifiedPriorStages() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "verified", true);
+        chain.settlePrimaryByFact("p2", "waived", false);
+        assertEquals(List.of("stage one"), RddGoalDriver.completedStagesBefore(chain));
+    }
+
+    @Test void historicalWaiverStillExcludedAfterRevisionBump() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "waived", false);
+        chain.nextPlanRevision();
+        assertTrue(chain.hasStageWaiver("p1"), "history provenance survives revision");
+        assertTrue(chain.satisfiedStages().isEmpty(), "waiver must not become a completion fact");
+        assertTrue(RddGoalDriver.completedStagesBefore(chain).isEmpty(),
+                RddGoalDriver.completedStagesBefore(chain).toString());
+    }
+
+    @Test void verifiedCompletionAfterHistoricalWaiverWinsOverStaleWaiver() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "waived earlier", false);
+        chain.resetForRestart("restart keeps history");
+        chain.settlePrimaryByFact("p1", "verified later by world facts", true);
+        assertTrue(chain.hasStageWaiver("p1"), "old waiver provenance remains readable");
+        assertFalse(chain.satisfiedStages().isEmpty(), "verified completion is a real fact");
+        assertEquals(List.of("stage one"), RddGoalDriver.completedStagesBefore(chain),
+                "real completion must not be hidden by a stale waiver");
+    }
+
+    @Test void currentAndFutureStagesAreNeverReported() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "verified", true);
+        List<String> out = RddGoalDriver.completedStagesBefore(chain);
+        assertEquals(List.of("stage one"), out);
+        assertFalse(out.contains("stage two"));
+        assertFalse(out.contains("stage three"));
+    }
+
+    @Test void waivedStageNeverAppearsInCompletedPromptBlock() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "waived", false);
+        chain.settlePrimaryByFact("p2", "verified", true);
+        List<String> completed = RddGoalDriver.completedStagesBefore(chain);
+        assertEquals(List.of("stage two"), completed);
+        String prompt = RddDecomposerPrompt.decompositionPrompt("objective", Map.of(), completed);
+        assertTrue(prompt.contains("【已达成的前置阶段】"), prompt);
+        assertTrue(prompt.contains("stage two"), prompt);
+        assertFalse(prompt.contains("stage one"), "the completed block must not carry a waived stage: " + prompt);
+    }
+
     private static TaskChain emptyChain() {
         return new TaskChain(new Goal("g", "iron equipment",
                 List.of(PrimaryGoal.unexpanded("p", "prepare", List.of()))));

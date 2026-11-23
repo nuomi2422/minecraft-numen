@@ -132,7 +132,7 @@ final class RddGoalDriver {
     }
 
     /** 线性推进：当前一级之前的所有一级都已完成 → 取其描述作 Stage-B 上下文（防倒退重规划）。 */
-    private static List<String> completedStagesBefore(TaskChain chain) {
+    static List<String> completedStagesBefore(TaskChain chain) {
         try {
             List<PrimaryGoal> primaries = chain.goal().primaryGoals();
             PrimaryGoal cur = chain.currentPrimary();
