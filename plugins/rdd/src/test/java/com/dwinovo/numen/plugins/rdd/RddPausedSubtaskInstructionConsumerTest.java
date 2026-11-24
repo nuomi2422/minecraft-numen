@@ -46,7 +46,9 @@ class RddPausedSubtaskInstructionConsumerTest {
               static final Set<UUID> DECOMPOSING = new HashSet<>();
               static String render(UUID id){ return renderStateContext(id); }
               static String SIDE=null;
+              static String ADV_WORLD=null, ADV_SESSION=null;
               static String sideContextFor(UUID id){ return SIDE; } // boundary: side store not under test
+              static String advisoryContextFor(UUID id){ return SideTaskHost.advisoryContextFor(id, ADV_WORLD, ADV_SESSION); }
               static String withAssets(UUID id,String text){ return text; } // boundary: assets/carry/env
               static String registeredDailyContext(UUID id, TaskChain chain){ return ""; } // boundary: daily
             """
@@ -59,8 +61,6 @@ class RddPausedSubtaskInstructionConsumerTest {
                     ? method(plugin, "    private static String currentSubtaskInstruction(") : "")
             + (plugin.contains("static String renderOwnerPause(")
                     ? method(plugin, "    static String renderOwnerPause(") : "")
-            + (plugin.contains("private static String advisoryContextFor(")
-                    ? method(plugin, "    private static String advisoryContextFor(") : "")
             + "}");
         units.put(P + "RddRationale.java",
             "package com.dwinovo.numen.plugins.rdd; class RddRationale {"
@@ -105,9 +105,10 @@ class RddPausedSubtaskInstructionConsumerTest {
                 if(!before.equals(chain.toJson())) throw new AssertionError("SETUP: render changed task state");
                 return rendered+"|STATUS="+chain.currentSubtaskStatus()+"|PRIMARY="+chain.primaryStatus();
               }
-              public static String adviceRequest(String kind){
+              public static String adviceRequest(String kind,String world,String session){
                 UUID id=new UUID(0,1);
                 RddPlugin.RUNTIMES.clear(); RddPlugin.DECOMPOSING.clear(); RddPlugin.SIDE=null;
+                RddPlugin.ADV_WORLD=world; RddPlugin.ADV_SESSION=session;
                 SideTaskHost.CALLS=0; SideTaskHost.WORLD=null; SideTaskHost.SESSION=null;
                 PrimaryGoal primary=PrimaryGoal.unexpanded("P1","phase one",List.of());
                 TaskChain chain=new TaskChain(new Goal("G1","objective",List.of(primary)));
@@ -116,13 +117,17 @@ class RddPausedSubtaskInstructionConsumerTest {
                 chain.expandCurrentPrimary(List.of(sub));
                 if(!chain.activateCurrent(Map.of())) throw new AssertionError("SETUP: activation");
                 if(kind.equals("paused-owner")) chain.pauseSubtask("S1",TaskChain.OWNER_PAUSE_REASON);
+                else if(kind.equals("completed")){
+                  if(!chain.applyHardCodedResult("S1",true)) throw new AssertionError("SETUP: completion");
+                }
                 else if(!kind.equals("running")) throw new AssertionError("SETUP: unknown advice kind "+kind);
                 RddPlugin.RUNTIMES.put(id,new RddRuntime(chain,new AssetRegistry()));
                 SideTaskHost.ADVISORY="<advisory type='equipment' scope='B'><fact>iron chestplate missing</fact><reason>incoming damage</reason><cost>death loses gear</cost><alternatives>retreat or eat</alternatives><recheck>after threat clears</recheck><instruction>建议，不是命令；你可以自行选择、暂缓或拒绝。</instruction></advisory><advisory type='sleep' scope='B'><fact>night in 55s</fact><reason>bed available</reason><cost>night mobs</cost><alternatives>dig three fill one</alternatives><recheck>in 30s</recheck><instruction>建议，不是命令；你可以自行选择、暂缓或拒绝。</instruction></advisory>";
                 String before=chain.toJson();
                 String rendered=RddPlugin.render(id);
                 if(!before.equals(chain.toJson())) throw new AssertionError("SETUP: advice render changed task state");
-                return rendered+"|STATUS="+chain.currentSubtaskStatus()+"|ADVICE_CALLS="+SideTaskHost.CALLS;
+                return rendered+"|STATUS="+chain.currentSubtaskStatus()+"|PRIMARY="+chain.primaryStatus()
+                    +"|ADVICE_CALLS="+SideTaskHost.CALLS+"|HOST_WORLD="+SideTaskHost.WORLD+"|HOST_SESSION="+SideTaskHost.SESSION;
               }
               public static String sideRequest(String kind){
                 UUID id=new UUID(0,1);
@@ -271,8 +276,28 @@ class RddPausedSubtaskInstructionConsumerTest {
         assertFalse(user.contains("SIDE_TASK"), user);
     }
 
-    static String advice(String kind) throws Exception {
-        try { return (String) scenario.getMethod("adviceRequest", String.class).invoke(null, kind); }
+    @Test void advisoryUsesCurrentRequestIdentityNotAGlobalStamp() throws Exception {
+        String a = advice("running", "world-A", "session-A");
+        assertTrue(a.contains("|HOST_WORLD=world-A") && a.contains("|HOST_SESSION=session-A"), a);
+        String b = advice("running", "world-B", "session-B");
+        assertTrue(b.contains("|HOST_WORLD=world-B") && b.contains("|HOST_SESSION=session-B"), b);
+        assertFalse(a.contains("world-B") && b.contains("world-A"), "identity must follow the current request");
+        String empty = advice("running", null, null);
+        assertTrue(empty.contains("|HOST_WORLD=null") && empty.contains("|HOST_SESSION=null"), empty);
+    }
+
+    @Test void terminalCompletedChainDoesNotGetAdvisory() throws Exception {
+        String user = advice("completed");
+        assertTrue(user.contains("STATUS=COMPLETED"), user);
+        assertTrue(user.contains("PRIMARY=AWAITING_SUPERVISOR"), user);
+        assertFalse(user.contains("<advisory"), "terminal must not be woken by B: " + user);
+    }
+
+    static String advice(String kind) throws Exception { return advice(kind, null, null); }
+
+    static String advice(String kind, String world, String session) throws Exception {
+        try { return (String) scenario.getMethod("adviceRequest", String.class, String.class, String.class)
+                .invoke(null, kind, world, session); }
         catch (java.lang.reflect.InvocationTargetException e) {
             throw new AssertionError("SETUP/adviceRequest failed before business assertions", e.getCause());
         }
