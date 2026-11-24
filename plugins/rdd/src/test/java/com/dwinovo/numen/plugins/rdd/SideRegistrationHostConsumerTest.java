@@ -176,6 +176,12 @@ class SideRegistrationHostConsumerTest {
                         case "worldId" -> "minecraft:overworld";
                         case "gameDay" -> 10L;
                         case "gameTime", "dayTime" -> 240000L;
+                        // Real server-tick advisory sample reads these too; known standard values only.
+                        // Any other read still throws: misread detection stays on.
+                        case "hasDayNightCycle" -> true;
+                        case "hunger", "health" -> 17;
+                        case "edibleCount" -> 3;
+                        case "isSleeping", "isSpawnBound", "bodyBusy" -> false;
                         default -> throw new AssertionError("unexpected world read: " + m.getName());
                     };
                 });
