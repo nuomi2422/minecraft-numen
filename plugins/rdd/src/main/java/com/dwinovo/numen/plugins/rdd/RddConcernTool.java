@@ -93,9 +93,12 @@ final class RddConcernTool implements NumenTool {
                         : RddNegotiationInbox.accept(companion.getUUID(), n, rt.chain());
             }
             if (admission != RddNegotiationInbox.Admission.RECORDED) {
-                reply.accept(com.dwinovo.numen.task.TaskResult.fail(admission == RddNegotiationInbox.Admission.REVIEW_PENDING
+                String refusal = admission == RddNegotiationInbox.Admission.REVIEW_PENDING
                         ? "review_pending: outstanding concern retained; retry after current owner handles it"
-                        : "concern rejected: no current server-owned attempt").toJson());
+                        : admission == RddNegotiationInbox.Admission.REVIEW_FULL
+                        ? "review_pending: bounded review queue full (max 4); retained refs were not dropped; this concern was not recorded"
+                        : "concern rejected: no current server-owned attempt";
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail(refusal).toJson());
                 return;
             }
             Map<String, Object> data = new LinkedHashMap<>();
