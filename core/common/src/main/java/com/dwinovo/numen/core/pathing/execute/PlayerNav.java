@@ -571,21 +571,20 @@ public final class PlayerNav {
 
     /**
      * 空搜索结果的教学式验尸——直接喂给模型的人话:离目标多远、有无
-     * 搭路耗材、还有什么可解锁的手段。搜索器统计面未随异步句柄暴露,
-     * 此处按可得素材给结构化结论。
-     */
-    /**
+     * 搭路耗材、还有什么可解锁的手段。原因走 searchReason（真实搜索出口），
+     * 拿不到就 UNKNOWN，不用固定文案冒充。
+     *
      * @param qualifier 紧跟 "no path to target" 之后的限定语(地形许可的说明),可为空串
-     * @param stopReason 搜索真实出口原因;没有携带就 UNKNOWN,不再用固定文案冒充原因
+     * @param stopReason 搜索真实出口原因;没有携带就 UNKNOWN
      */
     private String noPathAutopsy(NavGoal goal, String qualifier, PathCalcResult.StopReason stopReason) {
         BlockPos feet = PathExecutor.playerFeet(player);
         BlockPos center = goal.center();
-        PathCalcResult.StopReason reason = stopReason == null
+        PathCalcResult.StopReason searchReason = stopReason == null
                 ? PathCalcResult.StopReason.UNKNOWN : stopReason;
         StringBuilder r = new StringBuilder("no path to target").append(qualifier);
-        r.append(String.format(" (%s; %s)",
-                NavGoalDiagnostics.approachGeometry(goal, feet), reason.describe()));
+        r.append(String.format(" (%s; %s",
+                NavGoalDiagnostics.approachGeometry(goal, feet), searchReason.describe()));
         if (lastSearchContext != null && !lastSearchContext.hasThrowaway) {
             // hasThrowaway=false does NOT mean she is carrying nothing. It is equally false when
             // placement was never permitted this call (may_alter_terrain unset), and then not a
