@@ -418,10 +418,12 @@ final class SideTaskHost {
             String raw = Files.readString(file, StandardCharsets.UTF_8);
             StringBuilder out = new StringBuilder();
             var defs = com.google.gson.JsonParser.parseString(raw).getAsJsonObject().getAsJsonObject("defs");
+            final String prefix = "；可用脚本（活动版本，建议非命令）：";
+            final int budget = 240;
             int shown = 0;
             if (defs != null) {
                 for (var e : defs.entrySet()) {
-                    if (shown >= 2 || out.length() > 180) break;
+                    if (shown >= 2) break;
                     var def = e.getValue().getAsJsonObject();
                     if (def == null || !def.has("active_version") || !def.get("active_version").isJsonPrimitive()) continue;
                     String active = def.get("active_version").getAsString();
@@ -447,14 +449,18 @@ final class SideTaskHost {
                     int cut = desc.indexOf('。');
                     if (cut > 0) desc = desc.substring(0, cut);
                     if (desc.length() > 40) desc = desc.substring(0, 40);
-                    if (out.length() > 0) out.append("；");
-                    out.append(name).append(" v").append(active);
-                    if (!desc.isBlank()) out.append(" — ").append(desc.trim());
-                    out.append("：acx_execute ac_name=").append(name);
+                    // 整条预算：放不下就整条跳过，绝不截断 ac_name（半名字不可执行，会误导）。
+                    StringBuilder entry = new StringBuilder();
+                    entry.append(name).append(" v").append(active);
+                    if (!desc.isBlank()) entry.append(" — ").append(desc.trim());
+                    entry.append("：acx_execute ac_name=").append(name);
+                    String sep = out.length() == 0 ? "" : "；";
+                    if (prefix.length() + out.length() + sep.length() + entry.length() > budget) continue;
+                    out.append(sep).append(entry);
                     shown++;
                 }
             }
-            String built = shown == 0 ? "" : "；可用脚本（活动版本，建议非命令）：" + out;
+            String built = shown == 0 ? "" : prefix + out;
             ACX_HINT_MTIME = mtime;
             ACX_HINT_SIZE = size;
             ACX_HINT_CACHE = built;
