@@ -1,7 +1,10 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import com.dwinovo.numen.rdd.api.Goal;
+import com.dwinovo.numen.rdd.api.PrimaryGoal;
 import com.dwinovo.numen.rdd.api.Subtask;
 import com.dwinovo.numen.rdd.core.HardCodedEvaluator;
+import com.dwinovo.numen.rdd.core.TaskChain;
 import com.dwinovo.numen.rdd.policy.AssetDerivation;
 import org.junit.jupiter.api.Test;
 
@@ -27,8 +30,14 @@ class EarlyAchievementInventoryRegressionTest {
         var test = new EarlyAchievementInventoryRegressionTest();
         test.wheatAndInsufficientBreadNeverSatisfyBreadHold();
         test.realInventoryStillSatisfiesHold();
+        test.actualCompletionMethodRequiresIndependentRetainEvenWhenOutputIsHeld();
         test.strategicDerivationRemainsAvailableOutsideCompletion();
-        System.out.println("EarlyAchievementInventoryRegressionTest: 3 passed, 0 failed");
+        test.statQueryDoesNotCaptureLateBaseline();
+        test.entryBaselineAllowsFirstCraftDelta();
+        test.unknownStatReadDoesNotBecomeZeroBaseline();
+        test.lateOldAttemptBaselineIsNotOverwritten();
+        test.statEntryWiringIsPresentAtAllFiveStartSites();
+        System.out.println("EarlyAchievementInventoryRegressionTest: 9 passed, 0 failed");
     }
 
     private static Path detectorSource() {
@@ -137,5 +146,140 @@ class EarlyAchievementInventoryRegressionTest {
     void strategicDerivationRemainsAvailableOutsideCompletion() {
         assertEquals(8, AssetDerivation.equivalentCount("minecraft:bread",
                 Map.of("minecraft:bread", 2, "minecraft:wheat", 6)));
+    }
+
+    @Test
+    void statQueryDoesNotCaptureLateBaseline() throws Exception {
+        Method method = compileStatDeltaMethod();
+        TaskChain chain = statChain();
+        Subtask task = chain.currentSubtask();
+        chain.startCurrent();
+        assertNull(chain.statBaseline(task.id()));
+        assertFalse(evaluateStat(method, chain, task, 1));
+        assertNull(chain.statBaseline(task.id()), "status/query read must not initialize a baseline");
+        assertFalse(evaluateStat(method, chain, task, 2),
+                "without an entry baseline the first craft must not silently become the baseline");
+    }
+
+    @Test
+    void entryBaselineAllowsFirstCraftDelta() throws Exception {
+        Method method = compileStatDeltaMethod();
+        TaskChain chain = statChain();
+        Subtask task = chain.currentSubtask();
+        chain.startCurrent();
+        chain.captureStatBaseline(task.id(), 0); // what the real start hook does before the AI acts
+        assertTrue(evaluateStat(method, chain, task, 1), "first craft after entry must satisfy minimum=1");
+    }
+
+    @Test
+    void unknownStatReadDoesNotBecomeZeroBaseline() throws Exception {
+        Method method = compileStatDeltaMethod();
+        TaskChain chain = statChain();
+        Subtask task = chain.currentSubtask();
+        chain.startCurrent();
+        assertFalse(evaluateStat(method, chain, task, -1), "UNKNOWN stat is not a legal zero");
+        assertNull(chain.statBaseline(task.id()), "UNKNOWN must not be frozen into a baseline");
+    }
+
+    @Test
+    void lateOldAttemptBaselineIsNotOverwritten() throws Exception {
+        Method method = compileStatDeltaMethod();
+        TaskChain chain = statChain();
+        Subtask task = chain.currentSubtask();
+        chain.startCurrent();
+        chain.captureStatBaseline(task.id(), 1);
+        assertTrue(evaluateStat(method, chain, task, 2), "an old attempt baseline still permits later deltas");
+        chain.captureStatBaseline(task.id(), 99);
+        assertEquals(Integer.valueOf(1), chain.statBaseline(task.id()).get("value"),
+                "capture must be putIfAbsent, never move an existing attempt baseline");
+    }
+
+    @Test
+    void statEntryWiringIsPresentAtAllFiveStartSites() throws Exception {
+        String detector = Files.readString(detectorSource(), StandardCharsets.UTF_8);
+        assertEquals(2, count(detector, "captureStatBaselineAtStart(ap,"),
+                "both detector mainline start sites must lock the baseline");
+        assertFalse(methodBody(detector, "private static boolean statDeltaSatisfied(")
+                        .contains("captureStatBaseline"), "condition/status evaluation must stay read-only");
+        assertEquals(1, count(readSibling("RddFailureRecovery.java"),
+                "RddDetector.captureStatBaselineAtStart("), "retry start site missing");
+        assertEquals(1, count(readSibling("RddPlugin.java"),
+                "RddDetector.captureStatBaselineAtStart("), "Stage-A fallback start site missing");
+        assertEquals(1, count(readSibling("RddSubmitTool.java"),
+                "RddDetector.captureStatBaselineAtStart("), "rdd_submit start site missing");
+    }
+
+    private static TaskChain statChain() {
+        Subtask task = Subtask.hardCoded("stat-baseline", "craft one wooden pickaxe",
+                Map.of("type", "item_crafted", "item", "minecraft:wooden_pickaxe", "minimum", 1));
+        return new TaskChain(new Goal("stat-goal", "stat baseline regression",
+                List.of(new PrimaryGoal("stat-primary", "stat baseline", List.of(task)))));
+    }
+
+    private static boolean evaluateStat(Method method, TaskChain chain, Subtask task, int count)
+            throws Exception {
+        return (boolean) method.invoke(null, chain, task, count);
+    }
+
+    private static Method compileStatDeltaMethod() throws Exception {
+        String source = Files.readString(detectorSource(), StandardCharsets.UTF_8);
+        int start = source.indexOf("    private static boolean statDeltaSatisfied(");
+        int end = source.indexOf("    private static Map<String, Integer> acquireBaselineFor(", start);
+        assertTrue(start >= 0 && end > start, "statDeltaSatisfied boundaries missing");
+        String method = source.substring(start, end);
+        String probe = """
+                import java.util.*;
+                import com.dwinovo.numen.rdd.api.Subtask;
+                import com.dwinovo.numen.rdd.api.SubtaskStatus;
+                import com.dwinovo.numen.rdd.core.TaskChain;
+                public class StatDeltaProbe {
+                    static TaskChain chain;
+                    static int count;
+                    static final RddRuntime RUNTIME = new RddRuntime();
+                    static final class RddRuntime { TaskChain chain() { return chain; } }
+                    static final class RddPlugin { static RddRuntime runtime(java.util.UUID id) { return RUNTIME; } }
+                    static final class NumenPlayer { java.util.UUID getUUID() { return new java.util.UUID(0L, 0L); } }
+                    static final class RddWorldFacts {
+                        static int statCount(NumenPlayer ap, Map<String, Object> condition) { return count; }
+                        static boolean matches(NumenPlayer ap, Map<String, Object> condition) {
+                            throw new AssertionError("world facts are outside this test");
+                        }
+                    }
+                """ + method + """
+                    public static boolean evaluate(TaskChain c, Subtask task, int n) {
+                        chain = c; count = n;
+                        return statDeltaSatisfied(new NumenPlayer(), task, Map.of());
+                    }
+                }
+                """;
+        Path dir = Files.createTempDirectory("rdd-stat-regression-");
+        Path javaFile = dir.resolve("StatDeltaProbe.java");
+        Files.writeString(javaFile, probe, StandardCharsets.UTF_8);
+        String coreClasses = Path.of(HardCodedEvaluator.class.getProtectionDomain().getCodeSource()
+                .getLocation().toURI()).toString();
+        var compiler = ToolProvider.getSystemJavaCompiler();
+        assertNotNull(compiler, "a JDK is required for this source-isolated test");
+        int result = compiler.run(null, null, null, "-encoding", "UTF-8", "-classpath", coreClasses,
+                "-d", dir.toString(), javaFile.toString());
+        assertEquals(0, result, "could not compile the real statDeltaSatisfied method");
+        var loader = new URLClassLoader(new java.net.URL[]{dir.toUri().toURL()},
+                EarlyAchievementInventoryRegressionTest.class.getClassLoader());
+        return loader.loadClass("StatDeltaProbe").getMethod("evaluate", TaskChain.class, Subtask.class, int.class);
+    }
+
+    private static String readSibling(String name) throws Exception {
+        return Files.readString(detectorSource().resolveSibling(name), StandardCharsets.UTF_8);
+    }
+
+    private static String methodBody(String source, String signature) {
+        int start = source.indexOf(signature);
+        assertTrue(start >= 0, "missing method " + signature);
+        int end = source.indexOf("\n    }", source.indexOf('{', start));
+        assertTrue(end > start, "missing closing boundary for " + signature);
+        return source.substring(start, end + 6);
+    }
+
+    private static int count(String text, String needle) {
+        return text.split(java.util.regex.Pattern.quote(needle), -1).length - 1;
     }
 }
