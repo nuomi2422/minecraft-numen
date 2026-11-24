@@ -103,6 +103,13 @@ class AcxCompanionBridgeConsumerTest {
     @Test void timeoutSyncTerminalCarriesItsOriginalResult() throws Exception {
         assertEquals("FAILED:1:宿主任务超时: deadline", call("timeoutSyncTerminalWithoutCallback"));
     }
+    // 2026-11-25: 异步受理后的终态也必须带原 result.message —— 同步路径（上一项）一直带，
+    // 异步路径只报"终态 FAILED"，内脑看不到具体拒绝原因，只会盲重试。
+    @Test void failedAsyncTerminalCarriesItsOriginalResultToResume() throws Exception {
+        assertEquals("PAUSED:FAIL:1:true:binding_body 失败: 任务终态是 FAILED（不是成功，按失败处理）: "
+                        + "1 cleared-cell(s) refused for safety (12,64,-30 — breaking 12,63,-30 releases a falling block sitting above it)",
+                call("failedAsyncTerminalWithoutCallback"));
+    }
     @Test void foreignSyncTerminalNeverCompletesOrRedispatchesOriginalCall() throws Exception {
         assertEquals("PENDING:1", call("foreignSyncTerminalWithoutCallback"));
         assertEquals("PENDING:1", call("unknownIdentitySyncTerminalWithoutCallback"));
@@ -589,6 +596,26 @@ class AcxCompanionBridgeConsumerTest {
                 }finally {CompanionTickDispatcher.finished.remove(waiting.a.getUUID()+"/latest");WorldContextStamp.epoch=beforeEpoch;}
             }
             static String format(String outcome,int calls,String message){return outcome+":"+calls+(message==null?"":":"+message);}
+            // Same original body + same task id: only this companion's terminal record may answer,
+            // and its own TaskResult.message must reach the resumed failure unchanged.
+            public static String failedAsyncTerminalWithoutCallback(){
+                Fixture f=new Fixture(true);f.async=true;f.start();f.drain();
+                String first=f.plugin.sessions.session(f.run).record().status().name();
+                CompanionTickDispatcher.finished.put(f.a.getUUID()+"/t1",new TaskRecord("t1","FAILED",
+                    TaskResult.fail("1 cleared-cell(s) refused for safety (12,64,-30 — breaking 12,63,-30 releases a falling block sitting above it)",Map.of("refused",1))));
+                // A different companion holding the same task id must never supply this run's reason.
+                CompanionTickDispatcher.finished.put(f.b.getUUID()+"/t1",new TaskRecord("t1","FAILED",
+                    TaskResult.fail("other companion's refusal must not leak")));
+                String resumed=request(new AcxFacadeTools.Resume(f.plugin),f.status(),f.a);
+                if(!JsonParser.parseString(resumed).getAsJsonObject().get("success").getAsBoolean())throw new AssertionError(resumed);
+                f.drain();
+                AcxRunRecord r=f.plugin.sessions.session(f.run).record();
+                if(r.errorMessage()!=null && r.errorMessage().contains("must not leak"))throw new AssertionError("foreign reason leaked: "+r.errorMessage());
+                // acx_status is what the model reads back; the same reason must be visible there too.
+                String status=request(new AcxFacadeTools.Status(f.plugin),f.status(),f.a);
+                return first+":"+r.status().name()+":"+f.invoked.size()+":"
+                    +status.contains("releases a falling block sitting above it")+":"+r.errorMessage();
+            }
             // REPLAY_SCENARIOS
             public static String statusInterleave(){Fixture f=new Fixture();f.start();request(new AcxFacadeTools.Status(f.plugin),f.status(),f.b);f.drain();return f.body();}
             public static String libraryInterleave(){Fixture f=new Fixture();f.start();request(new AcxFacadeTools.Library(f.plugin),new JsonObject(),f.b);f.drain();return f.body();}
