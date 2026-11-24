@@ -574,7 +574,7 @@ class RddMainlineWiringPinTest {
     @Test
     void ordinaryPeriodicTickDoesNotEnterLegacySurvivalPreempt() throws Exception {
         String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
-        String tickBody = methodBody(src, "tick", "tickRuntime");
+        String tickBody = methodBody(src, "tick", "completionPending");
         assertContains(tickBody, "survivalPreempt(ap, tick)",
                 "the original periodic entry stays; its ordinary branch is reduced");
         assertContains(tickBody, "SideTaskHost.tick(server, ap)",
@@ -599,10 +599,15 @@ class RddMainlineWiringPinTest {
     void pendingSurvivalUsesFirstExpansionWithoutFailureBudget() throws Exception {
         String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
         String body = methodBody(src, "survivalPreempt", "RddGoalDriver.needExpansion");
-        assertOrder(body, "PrimaryGoalStatus.PENDING", "RddGoalDriver.needExpansion", "SideTaskHost.isActive", "SURVIVAL_PREEMPT_AT.get", "RddPlugin.requestReplan");
+        assertOrder(body, "PrimaryGoalStatus.PENDING", "RddGoalDriver.needExpansion",
+                "SideTaskHost.blocksMainline");
         assertContains(body, "chain.currentPrimary().unexpanded()", "only lazy pending stages expand");
-        assertContains(body, "chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return", "non-active execution never enters stuck replan");
-        assertContains(body, "RddPlugin.requestReplan", "active survival handling remains wired");
+        assertContains(body, "chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return",
+                "non-active execution never enters the ordinary branch");
+        assertNotContains(body, "RddPlugin.requestReplan",
+                "ordinary low hunger/HP must not enter typed replan");
+        assertNotContains(body, "SURVIVAL_PREEMPT_AT",
+                "ordinary path must not spend the legacy 60s budget");
     }
 
     /**
@@ -626,10 +631,16 @@ class RddMainlineWiringPinTest {
         assertContains(plugin, "stopActive(body, \"survival preempt\")",
                 "停体只发生在接受回调里");
         String body = methodBody(detector(), "survivalPreempt", "RddGoalDriver.needExpansion");
-        assertOrder(body, "RddPlugin.requestReplanForSurvival", "if (!accepted)", "SURVIVAL_PREEMPT_AT.put");
-        assertContains(body, "生存抢占未进入重规划", "拒绝时不发抢占观测");
+        assertContains(body, "RddReplanTransition.observeSafe",
+                "safe observation must still clear old survival intent/cooldown");
+        assertContains(body, "RddGoalDriver.needExpansion",
+                "PENDING unexpanded lazy expansion must remain");
+        assertNotContains(body, "RddPlugin.requestReplanForSurvival",
+                "ordinary Detector tick must not call typed survival replan");
+        assertNotContains(body, "SURVIVAL_PREEMPT_AT",
+                "ordinary Detector tick must not spend the legacy budget");
         assertFalse(body.contains("ToolRegistry.get(\"task_stop\")"),
-                "生存抢占不得用全局 task_stop：拒绝时会误停、接受后可能停掉替换动作");
+                "ordinary Detector tick must not use global task_stop");
     }
 
     @Test
