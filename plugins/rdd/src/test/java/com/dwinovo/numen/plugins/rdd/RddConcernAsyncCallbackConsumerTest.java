@@ -244,7 +244,7 @@ public class RddConcernAsyncCallbackConsumerTest {
         assertFalse(JsonParser.parseString(host.requestReview(ref, "new owner checked route; needs planner judgment")).getAsJsonObject().get("success").getAsBoolean());
         assertEquals(2, host.plannerCalls()); assertEquals(2, host.negotiationBudgetUsed());
     }
-    @Test void occupiedReviewRejectsOverwriteAndFreshControlStillPauses() {
+    @Test void freshControlStillPausesWhileOldReviewRetained() {
         retrySameStep(); host.negotiate();
         String ref = (String)host.review().get("concern_ref");
         report("PAUSE", FRESH, ""); host.negotiate();
@@ -252,11 +252,11 @@ public class RddConcernAsyncCallbackConsumerTest {
         assertEquals(ref, host.review().get("concern_ref"));
         assertEquals(OLD, host.review().get("reason_reported"));
     }
-    @Test void lateReviewCannotEraseFreshControlAndOccupiedReviewReportsRetry() {
+    @Test void lateReviewCannotEraseFreshControl() {
         retrySameStep(); host.negotiate(); String ref = (String)host.review().get("concern_ref");
         assertTrue(JsonParser.parseString(host.requestReview(ref,"new evidence for current owner")).getAsJsonObject().get("success").getAsBoolean());
-        JsonObject refused = JsonParser.parseString(host.report("PAUSE",chain.currentSubtask().id(),"another in-flight concern","")).getAsJsonObject();
-        assertFalse(refused.get("success").getAsBoolean()); assertTrue(refused.toString().contains("review_pending"));
+        JsonObject accepted = JsonParser.parseString(host.report("PAUSE",chain.currentSubtask().id(),"another in-flight concern","")).getAsJsonObject();
+        assertTrue(accepted.get("success").getAsBoolean(), accepted::toString);
         assertEquals(OLD,host.review().get("reason_reported"));
         host.completeReview("{\"subtasks\":[]}");
         chain.resumeFromReplanning(); activate();
@@ -321,5 +321,44 @@ public class RddConcernAsyncCallbackConsumerTest {
         assertEquals(SubtaskStatus.RUNNING, chain.currentSubtaskStatus());
         assertTrue(host.reasons("subtask_paused").isEmpty());
         assertNoSecondPlan();
+    }
+    @Test void oldReviewAndCrossScopeControlDoNotBlockCurrentCounter() {
+        retrySameStep(); host.negotiate();
+        String ref = (String)host.review().get("concern_ref");
+        assertTrue(JsonParser.parseString(host.report("COUNTER",chain.currentSubtask().id(),"second route problem","use bridge")).getAsJsonObject().get("success").getAsBoolean());
+        applyQueued(List.of(), "replan_fallback_resume"); activate();
+        JsonObject now = JsonParser.parseString(host.report("COUNTER",chain.currentSubtask().id(),"current attempt objection","reroute")).getAsJsonObject();
+        assertTrue(now.get("success").getAsBoolean(), now::toString);
+        assertEquals("current attempt objection", host.pendingReason());
+        assertEquals(ref, host.review().get("concern_ref"));
+        assertEquals(OLD, host.review().get("reason_reported"));
+    }
+    @Test void retainedReviewReasonsRemainVisibleAndUnfixed() {
+        retrySameStep(); host.negotiate();
+        String ref = (String)host.review().get("concern_ref");
+        assertTrue(JsonParser.parseString(host.report("COUNTER",chain.currentSubtask().id(),"second route problem","use bridge")).getAsJsonObject().get("success").getAsBoolean());
+        applyQueued(List.of(), "replan_fallback_resume"); activate(); host.negotiate();
+        List<?> reviews = (List<?>)host.review().get("reviews");
+        assertNotNull(reviews, "all retained refs must be visible");
+        assertEquals(2, reviews.size());
+        Map<?,?> oldest = (Map<?,?>)reviews.get(0);
+        assertEquals(ref, oldest.get("concern_ref"));
+        assertEquals(OLD, oldest.get("reason_reported"));
+        assertEquals("DEFERRED", oldest.get("premise_disposition"));
+        assertFalse(oldest.toString().contains("FIXED"));
+    }
+    @Test void reviewQueueFullRejectsExplicitlyWithoutDropping() {
+        retrySameStep(); host.negotiate();
+        for(int i=0;i<3;i++){
+            report("COUNTER","filler "+i,"alt");
+            applyQueued(List.of(), "replan_fallback_resume"); activate(); host.negotiate();
+        }
+        assertEquals(4, ((List<?>)host.review().get("reviews")).size());
+        report("COUNTER","overflow","alt");
+        applyQueued(List.of(), "replan_fallback_resume"); activate();
+        JsonObject full = JsonParser.parseString(host.report("COUNTER",chain.currentSubtask().id(),"overflow current","alt2")).getAsJsonObject();
+        assertFalse(full.get("success").getAsBoolean(), full::toString);
+        assertTrue(full.toString().contains("queue full"), full::toString);
+        assertEquals(4, ((List<?>)host.review().get("reviews")).size());
     }
 }
