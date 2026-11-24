@@ -25,7 +25,9 @@ class SleepSideTaskSpawnBindTest {
 
     private SideTaskEngine engine(RecordingEvents events) {
         SideTaskEngine engine = new SideTaskEngine(events, token -> token);
-        engine.registerType(new SleepSideTaskType());
+        // Explicit hard fixture: this file pins the legacy bind/enter hard mechanics, not the
+        // ordinary auto-reminder (which is advisory and covered by AdvisorySideTaskConsumerTest).
+        engine.registerType(new SleepSideTaskType(SleepSideTaskType.Goal.LEGACY_BIND_OR_ENTER, false));
         engine.registerTrigger(new SleepSideTaskTrigger());
         return engine;
     }
