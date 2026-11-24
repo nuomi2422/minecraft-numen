@@ -46,7 +46,7 @@ import java.util.concurrent.ConcurrentHashMap;
 final class SideTaskHost {
 
     private static final Logger LOG = LoggerFactory.getLogger(SideTaskHost.class);
-    private static final SleepSideTaskType SLEEP_TYPE = new SleepSideTaskType(SleepSideTaskType.Goal.OVERNIGHT);
+    private static final SleepSideTaskType SLEEP_TYPE = new SleepSideTaskType(SleepSideTaskType.Goal.OVERNIGHT, true);
     private static final DeathRecoverySideTaskType DEATH_RECOVERY_TYPE = new DeathRecoverySideTaskType();
     private static final SideTaskEngine ENGINE =
             new SideTaskEngine(SideTaskHost::publish, SideTaskHost::validateMainline);
@@ -394,7 +394,7 @@ final class SideTaskHost {
                 + "\" sampled_game_time=\"" + sampledGameTime + "\"><fact>" + contextXml(fact)
                 + "</fact><reason>" + contextXml(reason) + "</reason><cost>" + contextXml(cost)
                 + "</cost><alternatives>" + contextXml(alternatives) + "</alternatives><recheck>"
-                + contextXml(recheck) + "</recheck><instruction>建议，不是命令；可自行选择/暂缓/拒绝</instruction></advisory>";
+                + contextXml(recheck) + "</recheck><instruction>建议，不是命令；可自行选择/暂缓/拒绝。无需调用 rdd_decline_side；该工具只适用当前 ACTIVE 的硬支线。</instruction></advisory>";
     }
 
     static SideTask activeSleepOwner(UUID companionId) {

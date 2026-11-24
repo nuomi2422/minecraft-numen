@@ -31,8 +31,14 @@ public final class SleepSideTaskType implements SideTaskType {
     public enum Goal { LEGACY_BIND_OR_ENTER, OVERNIGHT }
     public static final String KEY_GOAL = "sleep_goal";
     private final Goal goal;
+    /** Default/no-arg construction is the ordinary auto reminder (B); explicit overnight stays hard. */
+    private final boolean advisory;
     public SleepSideTaskType() { this(Goal.LEGACY_BIND_OR_ENTER); }
-    public SleepSideTaskType(Goal goal) { this.goal = java.util.Objects.requireNonNull(goal); }
+    public SleepSideTaskType(Goal goal) { this(goal, goal == Goal.LEGACY_BIND_OR_ENTER); }
+    public SleepSideTaskType(Goal goal, boolean advisory) {
+        this.goal = java.util.Objects.requireNonNull(goal);
+        this.advisory = advisory;
+    }
     public static boolean isOvernight(SideTask task) {
         return task != null && TYPE_ID.equals(task.typeId()) && Goal.OVERNIGHT.name().equals(task.data().get(KEY_GOAL));
     }
@@ -73,7 +79,7 @@ public final class SleepSideTaskType implements SideTaskType {
         return TYPE_ID;
     }
 
-    @Override public boolean advisoryOnly() { return true; }
+    @Override public boolean advisoryOnly() { return advisory; }
 
     @Override
     public long deadlineTicks() {
