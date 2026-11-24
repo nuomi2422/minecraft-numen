@@ -539,6 +539,7 @@ final class SideTaskHost {
                 LAST_FOOD_DONE_MS.put(companionId, System.currentTimeMillis());
             }
             refreshContext(ap.level().getServer() == server ? server : null, companionId, port);
+            refreshAdvisorySnapshot(server, companionId, port);
             nudgeIfNeeded(companionId, port, wasActive, blocksMainline(companionId));
             persist();
         } catch (RuntimeException ex) {
@@ -1016,6 +1017,25 @@ final class SideTaskHost {
         return Map.of("world_id", identity.worldId(), "server_session", identity.serverSession());
     }
 
+    /** Separate server-tick B sampling; registration refresh stays world-read-free. */
+    private static void refreshAdvisorySnapshot(MinecraftServer server, UUID companionId, SideTaskWorldPort port) {
+        if (companionId == null || server == null || !server.isSameThread()) {
+            SIDE_CONTEXT.removeAdvisory(companionId);
+            return;
+        }
+        Map<String, String> identity = serverIdentity(server);
+        if (identity.isEmpty()) {
+            SIDE_CONTEXT.removeAdvisory(companionId);
+            return;
+        }
+        SIDE_CONTEXT.putAdvisory(companionId, new SideContextStore.Advisory(
+                identity.get("world_id"), identity.get("server_session"), port.worldId(),
+                Math.floorMod(port.dayTime(), 24_000L), port.hasDayNightCycle(),
+                port.hunger(companionId), port.health(companionId), port.edibleCount(companionId),
+                port.isSleeping(companionId), port.isSpawnBound(companionId), port.bodyBusy(companionId),
+                port.gameTime()));
+    }
+
     /** Server-tick capture only. Request construction never enumerates the engine or reads the world. */
     private static void refreshContext(MinecraftServer server, UUID companionId, SideTaskWorldPort port) {
         // A failed refresh must not keep yesterday's registration/advisory facts current.
@@ -1030,15 +1050,6 @@ final class SideTaskHost {
         Map<String, String> stamp = !knownIdentity ? Map.of()
                 : Map.of("world_id", identity.worldId(), "server_session", identity.serverSession());
         refreshContext(companionId, port, stamp);
-        if (knownIdentity) {
-            // Only this server tick samples the body; the model thread reads the ticket below.
-            SIDE_CONTEXT.putAdvisory(companionId, new SideContextStore.Advisory(
-                    identity.worldId(), identity.serverSession(), port.worldId(),
-                    Math.floorMod(port.dayTime(), 24_000L), port.hasDayNightCycle(),
-                    port.hunger(companionId), port.health(companionId), port.edibleCount(companionId),
-                    port.isSleeping(companionId), port.isSpawnBound(companionId), port.bodyBusy(companionId),
-                    port.gameTime()));
-        }
         MainlineResumeToken owner = validateMainline(currentMainlineToken(companionId));
         if (identity == null || identity.worldId() == null || identity.worldId().isBlank()
                 || identity.serverSession() == null || identity.serverSession().isBlank()

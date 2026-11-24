@@ -108,9 +108,9 @@ public final class SideTaskEngine {
         long now = world.gameTime();
         long day = world.gameDay();
         long generation = runtime.nextGeneration();
-        SideTask task = type.create(new SideTaskType.CreationContext(
+        SideTask task = markSource(type.create(new SideTaskType.CreationContext(
                 companionId, type.typeId() + "-" + generation + "-" + shortId(companionId), generation,
-                day, now, now + type.deadlineTicks(), token, data));
+                day, now, now + type.deadlineTicks(), token, data)), type);
         if (!runtime.activate(task)) return false;
         events.publish("side_task_created", base(task));
         events.publish("side_task_activated", base(task));
@@ -315,9 +315,9 @@ public final class SideTaskEngine {
             MainlineResumeToken token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
             long generation = runtime.nextGeneration();
             String instanceId = trigger.typeId() + "-" + generation + "-" + shortId(companionId);
-            SideTask task = type.create(new SideTaskType.CreationContext(
+            SideTask task = markSource(type.create(new SideTaskType.CreationContext(
                     companionId, instanceId, generation, day, now,
-                    now + type.deadlineTicks(), token, Map.of()));
+                    now + type.deadlineTicks(), token, Map.of())), type);
             if (runtime.activate(task)) {
                 if (oncePerDay) {
                     handledGameDay.put(key, day);
@@ -365,6 +365,13 @@ public final class SideTaskEngine {
             case SKIP -> finish(task.withData(verdict.data()), SideTaskState.SKIPPED_TIMEOUT, verdict.evidence());
             case CANCEL -> finish(task.withData(verdict.data()), SideTaskState.CANCELLED, verdict.evidence());
         }
+    }
+
+    /** Persist the producer source so a restored task is not reclassified by a newer type flag. */
+    private static SideTask markSource(SideTask task, SideTaskType type) {
+        Map<String, String> data = new LinkedHashMap<>(task.data());
+        data.put("advisory_source", Boolean.toString(type.advisoryOnly()));
+        return task.withData(data);
     }
 
     /** Old ordinary ACTIVE instance: keep the recorded data, free the admission slot, no body/mainline action. */
@@ -537,9 +544,9 @@ public final class SideTaskEngine {
             System.out.println("[rdd] recurring create spec=" + spec.scheduleId() + " dataKeys=" + spec.data().keySet());
             if (!plannerDaily) token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
             long generation = runtime.nextGeneration();
-            SideTask task = type.create(new SideTaskType.CreationContext(
+            SideTask task = markSource(type.create(new SideTaskType.CreationContext(
                     companionId, typeId + "-" + generation + "-" + shortId(companionId), generation,
-                    day, now, now + type.deadlineTicks(), token, spec.data()));
+                    day, now, now + type.deadlineTicks(), token, spec.data())), type);
             if (runtime.activate(task)) {
                 recurringHandled.put(key, day);
                 Map<String, Object> due = base(task);

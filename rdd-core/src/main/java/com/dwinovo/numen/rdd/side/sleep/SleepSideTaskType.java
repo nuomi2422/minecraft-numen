@@ -83,9 +83,11 @@ public final class SleepSideTaskType implements SideTaskType {
 
     @Override public boolean advisoryOnly(SideTask task) {
         if (task == null || task.data() == null) return advisory;
-        // Legacy unmarked tasks: explicit overnight goal stays hard; legacy bind/enter is ordinary B.
-        // New auto tasks never activate, so this only governs persisted/legacy instances.
-        return !Goal.OVERNIGHT.name().equals(task.data().get(KEY_GOAL)) && advisory;
+        String source = task.data().get("advisory_source");
+        if (source != null) return Boolean.parseBoolean(source);
+        // Old persisted Host sleep was the only production source (auto OVERNIGHT).  Without a
+        // source marker it is ordinary B, not an assumed human explicit overnight target.
+        return true;
     }
 
     @Override
