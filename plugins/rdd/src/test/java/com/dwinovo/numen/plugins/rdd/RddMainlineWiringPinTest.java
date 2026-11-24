@@ -564,10 +564,10 @@ class RddMainlineWiringPinTest {
     @Test
     void homeAnchorStoreIsInitialisedBeforeResetSideEffects() {
         String src = plugin();
-        assertContains(methodBody(src, "setup", "factsDir"), "RddHomeAnchor.DIR = factsDir",
+        assertContains(methodBody(src, "setup", "factsDir"), "RddHomeAnchor.bind(factsDir)",
                 "家锚点目录必须随插件初始化接上，不能等一次模型上下文渲染");
         String reset = methodBody(src, "resetCurrentWorld", "RddHomeAnchor.clear");
-        assertOrder(reset, "RddHomeAnchor.DIR", "removeCurrent(");
+        assertOrder(reset, "RddHomeAnchor.bind(", "removeCurrent(");
     }
 
     @Test
