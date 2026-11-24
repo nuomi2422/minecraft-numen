@@ -961,7 +961,9 @@ public final class RddPlugin implements NumenPlugin {
                         ? "这是主人下的待命，只有主人说继续才能解除。"
                         : "等暂停条件解除或规划器/主人改单后再推进。")
                     + "暂停只停这个节点：安全观察、避险、进食等维持生存的必要动作仍可做，"
-                    + "不要开始新的施工，也不要把停下的节点当成已完成。</instruction>";
+                    + "不要开始新的施工，也不要把停下的节点当成已完成；"
+                    + "暂停期间若发现原步骤前提已失效，可以如实上报这条事实（当前 ID+事实+可行建议），"
+                    + "但不要借此要求重规划，也不要自行恢复——它不构成解除待命的理由。</instruction>";
         }
         if (status == SubtaskStatus.COMPLETED) {
             return "<instruction>current_task 已完成，不要再执行它；"
@@ -980,8 +982,12 @@ public final class RddPlugin implements NumenPlugin {
                     + "可做安全观察与生存必要动作。</instruction>";
         }
         return "<instruction>current_task 是你必须执行的当前目标（优先于自由活动）；"
-                + "若你认为它不合理/不可达/与目标冲突，用 report_task_concern 上报（REJECT/COUNTER+建议），"
-                + "指挥官会据此改单或重规划；不要默默无视。</instruction>";
+                + "动手前先按新鲜事实核当前前提（工具/护甲/食物/材料），别凭记忆；"
+                + "前提只是暂时缺、且能安全就地少量补上（补一把镐、取附近食物）就先补再继续；"
+                + "若前提已失效或原步骤确实做不到，用 report_task_concern 上报："
+                + "expected_subtask_id 填当前 ID，reason 写观察到的事实，suggestion 写可行替代；"
+                + "指挥官会据此改单或重规划；不要只说没有/做不到，不要无效重试或泛泛待命，也不要默默无视；"
+                + "与当前任务无关的日常建议可先放着。</instruction>";
     }
 
     /**
