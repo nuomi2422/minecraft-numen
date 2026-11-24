@@ -99,7 +99,7 @@ public abstract class AbstractNodeCostSearch {
                 return new PathCalcResult(PathCalcResult.Type.CANCELLATION);
             }
             if (path == null) {
-                return new PathCalcResult(PathCalcResult.Type.FAILURE);
+                return new PathCalcResult(PathCalcResult.Type.FAILURE, null, stopReason());
             }
             path = path.cutoffAtLoadedChunks(context.loadedTest);
             path = path.staticCutoff(goal);
@@ -116,6 +116,14 @@ public abstract class AbstractNodeCostSearch {
             isFinished = true;
             com.dwinovo.numen.core.pathing.util.NavProfiler.recordSearch(tSearch);
         }
+    }
+
+    /**
+     * 真实终止原因：具体搜索器在循环出口记录，失败结果经 {@link #calculate} 带出去。
+     * 默认 UNKNOWN——没有记录就不冒充原因。
+     */
+    protected PathCalcResult.StopReason stopReason() {
+        return PathCalcResult.StopReason.UNKNOWN;
     }
 
     protected abstract Optional<NavPath> calculate0(long primaryTimeout, long failureTimeout);
