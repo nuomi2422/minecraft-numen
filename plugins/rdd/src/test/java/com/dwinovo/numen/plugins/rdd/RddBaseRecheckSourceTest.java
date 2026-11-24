@@ -54,17 +54,36 @@ class RddBaseRecheckSourceTest {
             run.invoke(null, registry, "UNKNOWN", "world-A", "session-A");
             assertEquals(AssetStatus.OBSERVED, registry.get("other-base").orElseThrow().status());
             assertEquals(AssetStatus.UNKNOWN, registry.get(id).orElseThrow().status());
-            assertNull(loader.loadClass("fixture.recheck.Fixture").getMethod("captured").invoke(null), "failed base recheck must clear current identity");
+            var fixture = loader.loadClass("fixture.recheck.Fixture");
+            // 床区本次未加载时服务端 raw spawn 仍是真绑定：身份不能被清掉（2026-11-25 false UNBOUND 的入口）。
+            assertNotNull(fixture.getMethod("captured").invoke(null), "unloaded bed area must keep the raw bound identity, not clear it");
+            assertEquals(1, fixture.getMethod("capturedX").invoke(null));
+            assertEquals(64, fixture.getMethod("capturedY").invoke(null));
+            assertEquals(2, fixture.getMethod("capturedZ").invoke(null));
+            assertEquals("overworld", fixture.getMethod("capturedDimension").invoke(null));
+            // 真消费：把观测器留下的原坐标交给生产摘要，不能渲染成 UNBOUND/NO_HOME。
+            String facts = RddHomeFacts.blockFor(new AssetRegistry(), null, 1_700_000_000_000L,
+                    new com.dwinovo.numen.api.ServerIdentityProvider.Snapshot("world-A", "session-A"),
+                    (Integer) fixture.getMethod("capturedX").invoke(null),
+                    (Integer) fixture.getMethod("capturedY").invoke(null),
+                    (Integer) fixture.getMethod("capturedZ").invoke(null), "overworld");
+            assertAll(
+                    () -> assertTrue(facts.contains("respawn=BOUND overworld 1 64 2"), facts),
+                    () -> assertTrue(facts.contains("base_usability=UNKNOWN"), facts),
+                    () -> assertTrue(facts.contains("reserve=UNKNOWN"), facts),
+                    () -> assertFalse(facts.contains("respawn=UNBOUND"), facts),
+                    () -> assertFalse(facts.contains("home_stage=NO_HOME"), facts));
             assertFalse(PlanningAssetSnapshot.worldClaims(registry).containsKey(id));
             assertEquals(AssetStatus.OBSERVED, registry.get("other-world").orElseThrow().status());
             assertTrue(registry.history().contains(original));
             run.invoke(null, registry, "ABSENT", "world-A", "session-A");
             assertEquals(AssetStatus.INVALID, registry.get(id).orElseThrow().status());
+            assertNull(fixture.getMethod("captured").invoke(null), "observed missing bed must clear the stale bound identity");
             assertFalse(PlanningAssetSnapshot.worldClaims(registry).containsKey(id));
             assertTrue(registry.history().contains(original));
             assertEquals(AssetStatus.OBSERVED, registry.get("other-world").orElseThrow().status());
             run.invoke(null, registry, "OBSERVED", "world-A", "session-A");
-            assertNotNull(loader.loadClass("fixture.recheck.Fixture").getMethod("captured").invoke(null), "successful recheck must restore identity");
+            assertNotNull(fixture.getMethod("captured").invoke(null), "successful recheck must restore identity");
             assertEquals(AssetStatus.OBSERVED, registry.get(id).orElseThrow().status());
             assertTrue(PlanningAssetSnapshot.worldClaims(registry).containsKey(id));
             assertTrue(registry.history().contains(original));
@@ -93,6 +112,10 @@ class RddBaseRecheckSourceTest {
                 RddBaseFacts.next = RddBaseFacts.BaseStatus.valueOf(status);
                 observeBase(new NumenPlayer(), registry, new Identity(world, session));
             }
+            public static Object capturedX() { return RddPlugin.anchor == null ? null : RddPlugin.anchor.getX(); }
+            public static Object capturedY() { return RddPlugin.anchor == null ? null : RddPlugin.anchor.getY(); }
+            public static Object capturedZ() { return RddPlugin.anchor == null ? null : RddPlugin.anchor.getZ(); }
+            public static String capturedDimension() { return RddPlugin.dim; }
         """;
     private static final String DOUBLES = """
         record Identity(String worldId, String serverSession) {}
@@ -105,7 +128,12 @@ class RddBaseRecheckSourceTest {
             public int hashCode(){return Objects.hash(x,y,z);}
         }
         class NumenPlayer { UUID getUUID(){return null;} }
-        class RddPlugin { static Identity current; static void captureHomeIdentity(NumenPlayer body, Identity identity, BlockPos anchor, String dimension) { current = identity; } }
+        class RddPlugin {
+            static Identity current; static BlockPos anchor; static String dim;
+            static void captureHomeIdentity(NumenPlayer body, Identity identity, BlockPos anchor, String dimension) {
+                current = identity; RddPlugin.anchor = anchor; RddPlugin.dim = dimension;
+            }
+        }
         class RddInstrumentation { static long currentGameTimeTicks(){return 0;} }
         class RddWorldFacts {
             record BaseSnapshot(String dimension, BlockPos spawn, boolean complete, List<String> facilities, Map<String,Integer> storedItems) {}

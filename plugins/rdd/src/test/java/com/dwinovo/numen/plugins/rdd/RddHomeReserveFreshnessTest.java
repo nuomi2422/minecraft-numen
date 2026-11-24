@@ -122,17 +122,39 @@ class RddHomeReserveFreshnessTest {
     }
 
     @Test
-    void noBaseIsUnknownNotEmpty() {
+    void boundRespawnWithoutObservedBaseIsBoundButUnverified() {
         long now = 1_700_000_000_000L;
         AssetRegistry empty = new AssetRegistry();
 
+        // 2026-11-25 实机：07:22 真睡绑定、服务端 spawn 一直 bound，摘要却报 NO_HOME/UNBOUND。
+        // HomeView 只回答"当前有没有可用的 world_base 观测"，不等于重生点没绑定。
         assertEquals(HomeStage.NO_HOME, RddHomeFacts.HomeView.of(empty, now, ID, 372, 68, 715, "minecraft:overworld").stage());
         assertFalse(RddHomeFacts.HomeView.of(empty, now, ID, 372, 68, 715, "minecraft:overworld").reserve().known());
         assertEquals(List.of(), RddHomeFacts.HomeView.of(empty, now, ID, 372, 68, 715, "minecraft:overworld").reserve().shortfall());
         String block = RddHomeFacts.blockFor(empty, null, now, ID, 372, 68, 715, "minecraft:overworld");
-        assertTrue(block.contains("home_stage=NO_HOME"), block);
-        assertTrue(block.contains("reserve=UNKNOWN"), block);
-        assertFalse(block.contains("reserve=0"), "未知不能写成 0: " + block);
+        assertAll(
+                () -> assertTrue(block.contains("home_stage=RESPAWN_BOUND"), block),
+                () -> assertTrue(block.contains("respawn=BOUND minecraft:overworld 372 68 715"), block),
+                () -> assertTrue(block.contains("base_usability=UNKNOWN"), block),
+                () -> assertTrue(block.contains("reserve=UNKNOWN"), block),
+                () -> assertFalse(block.contains("respawn=UNBOUND"), "raw 绑定不能被渲染成未绑定: " + block),
+                () -> assertFalse(block.contains("home_stage=NO_HOME"), "没有 base 观测不等于没有家: " + block),
+                () -> assertFalse(block.contains("reserve=0"), "未知不能写成 0: " + block));
+    }
+
+    @Test
+    void identityMissingBindingIsUnknownNotUnbound() {
+        long now = 1_700_000_000_000L;
+        // 没有通过世界/会话戳校验的捕获：既不能写 UNBOUND（那是确认未绑定），也不能写 NO_HOME。
+        for (com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity : new com.dwinovo.numen.api.ServerIdentityProvider.Snapshot[]{null, ID}) {
+            String block = RddHomeFacts.blockFor(new AssetRegistry(), null, now, identity, null, null, null, null);
+            assertAll(
+                    () -> assertTrue(block.contains("home_stage=UNKNOWN"), block),
+                    () -> assertTrue(block.contains("respawn=UNKNOWN"), block),
+                    () -> assertTrue(block.contains("reserve=UNKNOWN"), block),
+                    () -> assertFalse(block.contains("respawn=UNBOUND"), "没观测到绑定不等于确认未绑定: " + block),
+                    () -> assertFalse(block.contains("home_stage=NO_HOME"), block));
+        }
     }
 
     @Test
