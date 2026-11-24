@@ -95,6 +95,13 @@ public final class AttackPlan {
         // 判据只回答两件事:<b>还打不打得过</b>(打不过就跑),以及<b>用弓还是走位</b>。
         Foe foe = pick(b, last);
         if (foe != null) {
+            // 自卫不追远射:有弓就站定射(不等命中),没弓就撤。点名狩猎(selfDefense=false)、
+            // 近身还击、爬行者/受困退化都保持原语义。
+            if (b.selfDefense() && !b.cornered() && foe.ranged() && foe.distance() > b.meleeReach()) {
+                return b.hasRanged()
+                        ? new Move(Action.BOW, foe.id())
+                        : new Move(Action.DISENGAGE, NO_FOE);
+            }
             return new Move(actionAgainst(b, foe), foe.id());
         }
         // 挑不出目标,但还有东西在追她 —— <b>这不是"打不过"</b>。她照样走位:环退化成

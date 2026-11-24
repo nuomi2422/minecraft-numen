@@ -252,6 +252,8 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
             boolean engaging = mob.getTarget() == player || mob == player.getLastHurtByMob()
                     || (r.indiscriminate && retreatingFrom.contains(mob));
             boolean authorized = r.indiscriminate ? engaging : r.entityIds.contains(mob.getId());
+            boolean ranged = authorized && Menace.rangedWithinEscapeRange(mob, player)
+                    && Menace.rangedThreat(mob, player);
             if (r.terminal(mob.getId())) {
                 // 打完了、丢了、或者走不到又射不到的:<b>整只移出局面</b>。留着当"还有东西在
                 // 追我"的话,判据会永远喊走位 —— 一只在悬崖对面射她的骷髅就能把任务钉死。
@@ -265,6 +267,7 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                     Menace.armed(mob),
                     engaging,
                     reachable(mob.getId()),
+                    ranged,
                     authorized));
         }
         // 点名模式还可能被要求打不敌对的东西(一只鸡、一个末影水晶),它们不在敌对扫描里。
@@ -277,7 +280,7 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                 if (e != null) {
                     foes.add(new Battlefield.Foe(id, player.distanceTo(e),
                             Menace.explodes(e), Menace.armed(e),
-                            false, reachable(id), true));
+                            false, reachable(id), false, true));
                 }
             }
         }
@@ -290,7 +293,7 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                 Menace.effectiveHealth(player),
                 reachToTarget(),
                 loadout.hasMelee(), loadout.hasRanged(),
-                retreatFailures >= MAX_RETREAT_FAILURES, foes);
+                retreatFailures >= MAX_RETREAT_FAILURES, r.indiscriminate, foes);
     }
 
     /** Continue an existing retreat through brief loss of sight, never authorize a new fight. */

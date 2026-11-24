@@ -16,6 +16,8 @@ import java.util.List;
  * @param meleeReach      她这一刻够得着多远
  * @param hasMelee        背包里有近战武器(拳头不算——赤手对上会还手的东西不是一条出路)
  * @param hasRanged       有能立刻用的弓弩(带箭,或已上弦的弩)
+ * @param selfDefense     这次战斗由自卫来源（FC 反射或无点名的 attack）发起；点名狩猎为 false。
+ *                        自卫不主动追远射，点名意图保持原语义。
  * @param cornered        <b>退不掉</b>:退避的寻路连续失败。与 {@code Foe.reachable} 对称
  *                        ——一个说"走得到吗"(决定该不该走过去打),一个说"退得掉吗"
  *                        (决定该不该退)。退不掉时站着挨打是确定的死,背水一战至少有机会。
@@ -26,7 +28,14 @@ public record Battlefield(double effectiveHealth,
                           boolean hasMelee,
                           boolean hasRanged,
                           boolean cornered,
+                          boolean selfDefense,
                           List<Foe> foes) {
+
+    /** 兼容旧构造：没有防御来源标记的局面按点名/非自卫处理。 */
+    public Battlefield(double effectiveHealth, double meleeReach, boolean hasMelee, boolean hasRanged,
+                       boolean cornered, List<Foe> foes) {
+        this(effectiveHealth, meleeReach, hasMelee, hasRanged, cornered, false, foes);
+    }
 
     /**
      * 场上的一个。
@@ -38,7 +47,8 @@ public record Battlefield(double effectiveHealth,
      * @param engaging   正在针对她(锁定了她,或刚打了她)
      * @param reachable  <b>上一段寻路搜得出路</b>。够不着是拓扑性质、不是距离性质,只有
      *                   寻路自己说得清 —— 悬崖对面三格的骷髅离得很近却没有路
-     * @param authorized 允许打它。点名模式下是模型给的那份清单,无差别模式下就是"在追我的"
+     * @param ranged     已知的远程攻击者（Menace.rangedWithinEscapeRange 且当前实际接敌/授权）；未知不猜 true
+ * @param authorized 允许打它。点名模式下是模型给的那份清单,无差别模式下就是"在追我的"
      */
     public record Foe(int id,
                       double distance,
@@ -46,8 +56,13 @@ public record Battlefield(double effectiveHealth,
                       boolean armed,
                       boolean engaging,
                       boolean reachable,
+                      boolean ranged,
                       boolean authorized) {
 
+        /** 兼容旧构造：未知远程能力按 false（不新增猜测）。 */
+        public Foe(int id, double distance, boolean explosive, boolean armed,
+                   boolean engaging, boolean reachable, boolean authorized) {
+            this(id, distance, explosive, armed, engaging, reachable, false, authorized);
         }
 
     public Foe byId(int id) {

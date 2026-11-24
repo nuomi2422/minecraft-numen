@@ -70,6 +70,46 @@ class AttackPlanTest {
         assertEquals(Action.SKIRMISH, AttackPlan.decide(field(true, false, far), null).action());
     }
 
+    // ==================== 自卫 vs 点名 ====================
+
+    private static Foe shooter(int id, double distance) {
+        return new Foe(id, distance, false, false, true, true, true, true);
+    }
+
+    private static Battlefield defensive(boolean melee, boolean ranged, boolean cornered, Foe... foes) {
+        return new Battlefield(HEALTHY, REACH, melee, ranged, cornered, true, List.of(foes));
+    }
+
+    @Test
+    void selfDefenseWithoutBowLeavesADistantShooterInsteadOfCharging() {
+        Move m = AttackPlan.decide(defensive(true, false, false, shooter(1, 15.0)), null);
+        assertEquals(Action.DISENGAGE, m.action());
+        assertEquals(AttackPlan.NO_FOE, m.foeId(), "whole-field action, not the distant foe");
+    }
+
+    @Test
+    void pointedHuntStillClosesOnTheSameDistantShooter() {
+        Battlefield b = new Battlefield(HEALTHY, REACH, true, false, false, false, List.of(shooter(1, 15.0)));
+        Move m = AttackPlan.decide(b, null);
+        assertEquals(Action.SKIRMISH, m.action());
+        assertEquals(1, m.foeId());
+    }
+
+    @Test
+    void selfDefenseWithBowShootsWithoutWaitingForAHit() {
+        assertEquals(Action.BOW, AttackPlan.decide(defensive(true, true, false, shooter(1, 15.0)), null).action());
+    }
+
+    @Test
+    void nearShooterStillGetsSwungAt() {
+        assertEquals(Action.SKIRMISH, AttackPlan.decide(defensive(true, false, false, shooter(1, 3.0)), null).action());
+    }
+
+    @Test
+    void corneredKeepsTheExistingDegradedCharge() {
+        assertEquals(Action.SKIRMISH, AttackPlan.decide(defensive(true, false, true, shooter(1, 15.0)), null).action());
+    }
+
     // ==================== 全局的危险 ====================
 
     /** 它退到安全线外了,就该回去接着打原来那只。 */

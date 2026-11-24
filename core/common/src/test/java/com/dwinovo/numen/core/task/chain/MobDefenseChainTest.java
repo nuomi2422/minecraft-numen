@@ -393,7 +393,8 @@ class MobDefenseChainTest {
     @Test void realSurveyAndAttackPlanConsumeDistantCandidateWithoutForcingACharge() throws Exception {
         for (String scenario : List.of("remoteLowHealth", "remoteUnarmed", "remote20", "remoteBow")) {
             var r=run(scenario); assertEquals(true,r.get("selected")); assertEquals(1,events(r,"survey:1"));
-            String action=scenario.equals("remote20") ? "SKIRMISH" : scenario.equals("remoteBow") ? "BOW" : "DISENGAGE";
+            // 2026-11-24 D2: self-defense no longer charges a distant shooter with only melee.
+            String action=scenario.equals("remote20") ? "DISENGAGE" : scenario.equals("remoteBow") ? "BOW" : "DISENGAGE";
             assertEquals(1,events(r,"action:"+action),scenario);
         }
     }
