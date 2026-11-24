@@ -101,7 +101,17 @@ final class SideTaskHost {
     private SideTaskHost() {
     }
 
+    /** 夜B的只读 AC 投影：setup 记目录；缺文件/读失败/未知一律不报可用。 */
+    private static volatile Path HOST_CONFIG_DIR;
+    private static volatile String ACX_HINT_CACHE = "";
+    private static volatile long ACX_HINT_MTIME = -1L;
+    private static volatile long ACX_HINT_SIZE = -1L;
+
     static void setup(Path configDir) {
+        HOST_CONFIG_DIR = configDir;
+        ACX_HINT_CACHE = "";
+        ACX_HINT_MTIME = -1L;
+        ACX_HINT_SIZE = -1L;
         sideDir = configDir == null ? null : configDir.resolve("rdd-side");
         // ★ 可逆开关（2026-10-26）：config/numen/side-tasks.json 的 "sleep": false 可暂停睡觉支线。
         //   缺文件/坏文件 = 保持默认开（不因读不到就悄悄改行为）。
@@ -383,9 +393,75 @@ final class SideTaskHost {
                             + " sleep_risk=UNKNOWN(not sampled in this server-tick snapshot)",
                     "夜前约 60 秒是准备窗口；夜里在野外/低光/无床会放大敌对与死亡风险。",
                     "找床/回床/挖三填一会暂停当前任务；不做则夜里继续暴露。",
-                    "继续主线 / 就近找床 / 回已有床 / 有条件安全挖三填一 / 拒绝", "dayTime、床、风险或当前任务变化后重评"));
+                    "继续主线 / 就近找床 / 回已有床 / 有条件安全挖三填一 / 拒绝" + acxShelterHint(),
+                    "dayTime、床、风险或当前任务变化后重评"));
         }
         return out.toString();
+    }
+
+    /**
+     * 夜B只读脚本投影（2026-11-24，按019「任务宿主用只读能力取活动版本」）：
+     * 只读 {@code config/numen/acx/library.json} 的 defs shape（同 LearnerSideTaskLoader 文件投影方式），
+     * 只列 active+STABLE 且 tags 含 shelter/emergency 的脚本；撤回/离线没有 active 指针，自然不出现。
+     * 不 import acx、不硬编码名字、不自动执行；缺文件/坏文件/未知返回空串。
+     * 有界：mtime+size 不变复用上次结果；最多 2 条、总长 ≤ 240；只在渲染夜间B建议时调用。
+     */
+    private static String acxShelterHint() {
+        Path dir = HOST_CONFIG_DIR;
+        if (dir == null) return "";
+        Path file = dir.resolve("acx").resolve("library.json");
+        try {
+            if (!Files.isRegularFile(file)) return "";
+            long mtime = Files.getLastModifiedTime(file).toMillis();
+            long size = Files.size(file);
+            if (mtime == ACX_HINT_MTIME && size == ACX_HINT_SIZE) return ACX_HINT_CACHE;
+            String raw = Files.readString(file, StandardCharsets.UTF_8);
+            StringBuilder out = new StringBuilder();
+            var defs = com.google.gson.JsonParser.parseString(raw).getAsJsonObject().getAsJsonObject("defs");
+            int shown = 0;
+            if (defs != null) {
+                for (var e : defs.entrySet()) {
+                    if (shown >= 2 || out.length() > 180) break;
+                    var def = e.getValue().getAsJsonObject();
+                    if (def == null || !def.has("active_version") || !def.get("active_version").isJsonPrimitive()) continue;
+                    String active = def.get("active_version").getAsString();
+                    var versions = def.getAsJsonObject("versions");
+                    var ver = versions == null ? null : versions.getAsJsonObject(active);
+                    if (ver == null) continue;
+                    String status = ver.has("status") && ver.get("status").isJsonPrimitive()
+                            ? ver.get("status").getAsString() : "STABLE";   // 旧库缺省=STABLE（FileAcxLibrary 兼容口径）
+                    if (!"STABLE".equalsIgnoreCase(status)) continue;
+                    var d = ver.getAsJsonObject("definition");
+                    if (d == null) continue;
+                    boolean shelter = false;
+                    if (d.has("tags") && d.get("tags").isJsonArray()) {
+                        for (var tag : d.getAsJsonArray("tags")) {
+                            if (!tag.isJsonPrimitive()) continue;
+                            String s = tag.getAsString().toLowerCase(java.util.Locale.ROOT);
+                            if (s.equals("shelter") || s.equals("emergency")) { shelter = true; break; }
+                        }
+                    }
+                    if (!shelter) continue;
+                    String name = d.has("name") && d.get("name").isJsonPrimitive() ? d.get("name").getAsString() : e.getKey();
+                    String desc = d.has("description") && d.get("description").isJsonPrimitive() ? d.get("description").getAsString() : "";
+                    int cut = desc.indexOf('。');
+                    if (cut > 0) desc = desc.substring(0, cut);
+                    if (desc.length() > 40) desc = desc.substring(0, 40);
+                    if (out.length() > 0) out.append("；");
+                    out.append(name).append(" v").append(active);
+                    if (!desc.isBlank()) out.append(" — ").append(desc.trim());
+                    out.append("：acx_execute ac_name=").append(name);
+                    shown++;
+                }
+            }
+            String built = shown == 0 ? "" : "；可用脚本（活动版本，建议非命令）：" + out;
+            ACX_HINT_MTIME = mtime;
+            ACX_HINT_SIZE = size;
+            ACX_HINT_CACHE = built;
+            return built;
+        } catch (Exception unknown) {
+            return "";   // 读不到 ≠ 没有：不报可用，也不缓存成“无”
+        }
     }
 
     private static String advisory(String type, String world, String session, String dimension,
