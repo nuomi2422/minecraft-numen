@@ -275,10 +275,10 @@ class MobDefenseChainTest {
                     public static class Shooter extends Hostile implements RangedAttackMob { }
                     public static Map<String,Object> run(String scenario) {
                         NumenPlayer p=new NumenPlayer(); Object owner=p.explicitOwner;
-                        Mob m=scenario.equals("explosive") ? new Creeper() :
+                        Mob m=scenario.equals("explosive") || scenario.equals("budgetHandbackArmed") ? new Creeper() :
                             scenario.equals("neutral") ? new Mob() : scenario.startsWith("remote") ? new Shooter() : new Hostile();
                         m.world=p.world; m.x=p.x+2; m.z=p.z; m.target=p;
-                        if(m instanceof Creeper c) { c.ignited=true; m.x=p.x+6; }
+                        if(m instanceof Creeper c && !scenario.equals("budgetHandbackArmed")) { c.ignited=true; m.x=p.x+6; }
                         if(scenario.startsWith("remote")) m.x=p.x+20;
                         if(scenario.equals("remote8")) m.x=p.x+8;
                         if(scenario.equals("remote32")) m.x=p.x+32;
@@ -413,6 +413,14 @@ class MobDefenseChainTest {
                             second.x=p.x+2; second.z=p.z; second.target=p;
                             p.world.mobs.add(second);
                             r.put("newEnemyImmediate",chain.canRun(p));
+                        } else if(scenario.equals("budgetHandbackArmed")) {
+                            // Same creeper id, HP20, no fresh hurt: only unarmed->armed changes.
+                            // Creeper state is a boundary fact; no explosion physics here.
+                            p.world.time+=MobDefenseChain.MAX_REFLEX_FIGHT_TICKS-1;
+                            r.put("beforeBudget",chain.canRun(p)); chain.tick(p);
+                            p.world.time++; r.put("atBudget",chain.canRun(p));
+                            if(m instanceof Creeper c) c.ignited=true;
+                            r.put("sameCreeperArmedReeval",chain.canRun(p));
                         } else if(scenario.equals("cancelled")) {
                             AttackCompanionTask.next=TaskState.CANCELLED; chain.tick(p);
                             r.put("resumed",chain.canRun(p)); chain.tick(p);
@@ -573,6 +581,13 @@ class MobDefenseChainTest {
         var r=run("budgetHandbackNewEnemyImmediate");
         assertEquals(true,r.get("beforeBudget")); assertEquals(false,r.get("atBudget"));
         assertEquals(true,r.get("newEnemyImmediate"));
+        assertEquals(true,r.get("ownerPreserved"));
+    }
+
+    @Test void budgetHandbackSameCreeperUnarmedToArmedReevaluatesWithoutNewIdOrHurt() throws Exception {
+        var r=run("budgetHandbackArmed");
+        assertEquals(true,r.get("beforeBudget")); assertEquals(false,r.get("atBudget"));
+        assertEquals(true,r.get("sameCreeperArmedReeval"));
         assertEquals(true,r.get("ownerPreserved"));
     }
 
