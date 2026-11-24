@@ -554,6 +554,12 @@ final class SideTaskHost {
      * {@link RddPlugin#nudge} 自身还有 3 分钟全局节流兜底，这里再加一层 4 分钟间隔防刷屏。
      */
     private static void nudgeIfNeeded(UUID companionId, SideTaskWorldPort port, boolean wasActive, boolean nowOwner) {
+        if (!nowOwner) {
+            // Ordinary B has no active owner: leave its shared repeat clock intact.  Only a hard
+            // owner that just ended releases its own clock at this original transition point.
+            if (wasActive) LAST_NUDGE_GAME_TIME.remove(companionId);
+            return;
+        }
         NudgeDelivery.sendIfNeeded(companionId, LAST_NUDGE_GAME_TIME, wasActive, nowOwner,
                 nowOwner ? port.gameTime() : 0L, () -> {
                     String type = currentTypeId(companionId);
@@ -607,8 +613,7 @@ final class SideTaskHost {
                                     boolean wasActive, boolean nowActive, long now,
                                     java.util.function.BooleanSupplier send) {
             if (!nowActive) {
-                // Do not clear the shared clock: the same map gates ordinary B advisories.
-                // A later hard owner sends immediately because wasActive is false.
+                lastNudgeGameTime.remove(companionId);
                 return false;
             }
             Long last = lastNudgeGameTime.get(companionId);
