@@ -39,6 +39,14 @@ public interface SideTaskType {
         return false;
     }
 
+    /**
+     * Per-instance/source-aware variant for already-created tasks.  The default keeps the
+     * type-level policy; types whose hard and advisory producers share a TYPE_ID override this.
+     */
+    default boolean advisoryOnly(SideTask task) {
+        return advisoryOnly();
+    }
+
     /** 渲染注入执行 AI 的上下文（{@code <side_task>…</side_task>} 形状）。 */
     String renderContext(SideTask task, SideTaskWorldPort world);
 

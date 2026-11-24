@@ -81,6 +81,13 @@ public final class SleepSideTaskType implements SideTaskType {
 
     @Override public boolean advisoryOnly() { return advisory; }
 
+    @Override public boolean advisoryOnly(SideTask task) {
+        if (task == null || task.data() == null) return advisory;
+        // Legacy unmarked tasks: explicit overnight goal stays hard; legacy bind/enter is ordinary B.
+        // New auto tasks never activate, so this only governs persisted/legacy instances.
+        return !Goal.OVERNIGHT.name().equals(task.data().get(KEY_GOAL)) && advisory;
+    }
+
     @Override
     public long deadlineTicks() {
         return DEADLINE_TICKS;

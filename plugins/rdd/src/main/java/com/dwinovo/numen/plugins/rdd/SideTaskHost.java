@@ -286,7 +286,7 @@ final class SideTaskHost {
         if (companionId == null) return false;
         return ENGINE.current(companionId).filter(task -> !task.terminal()).map(task -> {
             com.dwinovo.numen.rdd.side.SideTaskType type = ENGINE.typeOf(task.typeId());
-            return type == null || !type.advisoryOnly();
+            return type == null || !type.advisoryOnly(task);
         }).orElse(false);
     }
 
@@ -414,7 +414,7 @@ final class SideTaskHost {
                 .filter(task -> !task.terminal())
                 .filter(task -> {
                     com.dwinovo.numen.rdd.side.SideTaskType type = ENGINE.typeOf(task.typeId());
-                    return type == null || !type.advisoryOnly();
+                    return type == null || !type.advisoryOnly(task);
                 }).orElse(null);
     }
 
@@ -568,6 +568,30 @@ final class SideTaskHost {
      * Record the existing repeat clock only after the send port accepts the reminder.
      * No alternate RddPlugin throttle, Minecraft body, clock or state registry is introduced.
      */
+    /**
+     * Route one published B occurrence through the existing nudge clock.  Identity and gameTime
+     * come from the event envelope; stale/missing identity is rejected, not borrowed from a global.
+     * Returns true only when the send port accepted the reminder (then and only then is time recorded).
+     */
+    static boolean nudgeAdvisoryEvent(String event, Map<String, Object> data,
+                                      Map<UUID, Long> lastNudgeGameTime,
+                                      String currentWorldId, String currentSession,
+                                      java.util.function.BooleanSupplier send) {
+        if (!"side_task_advisory".equals(event) || data == null || lastNudgeGameTime == null || send == null) return false;
+        if (currentWorldId == null || currentWorldId.isBlank()
+                || currentSession == null || currentSession.isBlank()) return false;
+        if (!currentWorldId.equals(String.valueOf(data.get("world_id")))
+                || !currentSession.equals(String.valueOf(data.get("server_session")))) return false;
+        UUID id;
+        try { id = UUID.fromString(String.valueOf(data.get("companionId"))); }
+        catch (RuntimeException invalid) { return false; }
+        Object raw = data.get("gameTime");
+        if (!(raw instanceof Number now)) return false;
+        // Reuse the shared LAST_NUDGE table and its NUDGE_REPEAT_TICKS gate; no second clock.
+        boolean seen = lastNudgeGameTime.containsKey(id);
+        return NudgeDelivery.sendIfNeeded(id, lastNudgeGameTime, seen, true, now.longValue(), send);
+    }
+
     static final class NudgeDelivery {
         private NudgeDelivery() {}
 
@@ -1039,7 +1063,7 @@ final class SideTaskHost {
         }
         SideTask task = current.get();
         SideTaskType type = ENGINE.typeOf(task.typeId());
-        if (type == null || type.advisoryOnly()) {
+        if (type == null || type.advisoryOnly(task)) {
             // 普通 B 只走 advisoryContextFor；旧 ACTIVE 实例保留 history，但不再占 SIDE 硬 owner 槽。
             SIDE_CONTEXT.remove(companionId);
             return;
@@ -1074,6 +1098,30 @@ final class SideTaskHost {
     private static void publish(String event, Map<String, Object> data) {
         try {
             clearTerminalSleepCycle(event, data);
+            if ("side_task_advisory".equals(event)) {
+                // One B occurrence may wake an idle model, but only through the existing nudge
+                // throttle and never by stopping/clearing the current body action.
+                Map<String, Object> enriched = new java.util.LinkedHashMap<>(data);
+                Map<String, String> identity = com.dwinovo.numen.api.WorldContextStamp.snapshot();
+                String world = identity.getOrDefault("world_id", "");
+                String session = identity.getOrDefault("server_session", "");
+                enriched.put("world_id", world);
+                enriched.put("server_session", session);
+                nudgeAdvisoryEvent(event, enriched, LAST_NUDGE_GAME_TIME, world, session, () -> {
+                    UUID id;
+                    try { id = UUID.fromString(String.valueOf(enriched.get("companionId"))); }
+                    catch (RuntimeException invalid) { return false; }
+                    // A B reminder must never replace or interrupt a real body action; nudgeAllowed
+                    // only covers supervision/throttle, so check the live action here as well.
+                    if (blocksMainline(id)
+                            || com.dwinovo.numen.task.CompanionTickDispatcher.isExecutingAction(id)) return false;
+                    String type = String.valueOf(enriched.getOrDefault("typeId", "side"));
+                    return RddPlugin.nudgeAllowed(id) && RddPlugin.nudge(id,
+                            "[支线·建议] " + type + " 有新提醒；主线仍可继续。请按当前事实自行选择、暂缓或拒绝，"
+                                    + "无需调用 rdd_decline_side；该工具只适用当前 ACTIVE 的硬支线。");
+                });
+                data = enriched;
+            }
             if (("side_task_completed".equals(event) || "side_task_skipped".equals(event)
                     || "side_task_cancelled".equals(event) || "side_task_declined".equals(event))
                     && DeathRecoverySideTaskTrigger.TYPE_ID.equals(String.valueOf(data.get("typeId")))) {

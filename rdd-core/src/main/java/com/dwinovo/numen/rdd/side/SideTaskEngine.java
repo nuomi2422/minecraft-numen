@@ -211,7 +211,7 @@ public final class SideTaskEngine {
                 return;
             }
             SideTaskType runningType = types.get(running.typeId());
-            if (runningType != null && runningType.advisoryOnly()) {
+            if (runningType != null && runningType.advisoryOnly(running)) {
                 // Legacy ordinary ACTIVE: preserve its data in a terminal record, release the only
                 // runtime slot, and never touch the body/mainline (no resume callback).
                 retireLegacyAdvisory(running);
@@ -232,8 +232,11 @@ public final class SideTaskEngine {
         long day = world.gameDay();
         // One tick only: the DAILY probe and original trigger loop share even a false result.
         Map<SideTaskTrigger, Boolean> foodTriggerResults = new IdentityHashMap<>();
-        if (!deathSideTaskOccupying && !world.bodyBusy(companionId)) {
-            if (tickRecurring(companionId, world, mainlineToken, day, now, foodTriggerResults, deferPlannerDaily)) {
+        if (!deathSideTaskOccupying) {
+            // Ordinary advisory DAILY may report due while the body is busy; hard recurring admission
+            // still waits inside tickRecurring so a reminder cannot replace the current mainline action.
+            if (tickRecurring(companionId, world, mainlineToken, day, now, foodTriggerResults,
+                    deferPlannerDaily, world.bodyBusy(companionId))) {
                 return;
             }
         }
@@ -298,8 +301,15 @@ public final class SideTaskEngine {
             if (type.advisoryOnly()) {
                 // 普通 B 型：只报“建议可见”，不 runtime.activate、不占身体、不锁当日。
                 if (oncePerDay) deferredUntil.put(key, now + ADVISORY_REFRESH_TICKS);
-                publishOccurrence(companionId, "side_task_advisory", trigger.typeId(), day,
-                        "advisory_only", ADVISORY_REFRESH_TICKS);
+                Map<String, Object> advice = new LinkedHashMap<>();
+                advice.put("companionId", companionId.toString());
+                advice.put("scope", TaskScope.SIDE.name());
+                advice.put("typeId", trigger.typeId());
+                advice.put("gameDay", day);
+                advice.put("reason", "advisory_only");
+                advice.put("retryTicks", ADVISORY_REFRESH_TICKS);
+                advice.put("gameTime", now);
+                events.publish("side_task_advisory", advice);
                 continue;
             }
             MainlineResumeToken token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
@@ -448,7 +458,8 @@ public final class SideTaskEngine {
 
     private boolean tickRecurring(UUID companionId, SideTaskWorldPort world,
                                   MainlineResumeToken mainlineToken, long day, long now,
-                                  Map<SideTaskTrigger, Boolean> foodTriggerResults, boolean deferPlannerDaily) {
+                                  Map<SideTaskTrigger, Boolean> foodTriggerResults, boolean deferPlannerDaily,
+                                  boolean bodyBusy) {
         for (var e : recurringSpecs.entrySet()) {
             RecurringSideTaskSpec spec = e.getValue();
             String typeId = recurringTypes.get(e.getKey());
@@ -500,10 +511,13 @@ public final class SideTaskEngine {
                 due.put("gameDay", day);
                 due.put("promptOnly", true);
                 due.put("advisoryOnly", true);
+                due.put("gameTime", now);
                 events.publish("side_task_due", due);
                 events.publish("side_task_advisory", due);
                 continue;
             }
+            // Hard recurring tasks keep the original rule: never admit while the body is busy.
+            if (bodyBusy) continue;
             if (plannerDaily) {
                 // V24: awaiting survival planning is not bodyBusy. Keep this occurrence unspent;
                 // prompt-only reminders above and the original sleep/death/food trigger loop remain live.
