@@ -59,6 +59,8 @@ class RddPausedSubtaskInstructionConsumerTest {
                     ? method(plugin, "    private static String currentSubtaskInstruction(") : "")
             + (plugin.contains("static String renderOwnerPause(")
                     ? method(plugin, "    static String renderOwnerPause(") : "")
+            + (plugin.contains("private static String advisoryContextFor(")
+                    ? method(plugin, "    private static String advisoryContextFor(") : "")
             + "}");
         units.put(P + "RddRationale.java",
             "package com.dwinovo.numen.plugins.rdd; class RddRationale {"
@@ -66,13 +68,21 @@ class RddPausedSubtaskInstructionConsumerTest {
         units.put(P + "RddNegotiationInbox.java",
             "package com.dwinovo.numen.plugins.rdd; class RddNegotiationInbox {"
             + " static Object reviewSnapshot(java.util.UUID id){ return java.util.List.of(); } }");
+        units.put(P + "SideTaskHost.java", """
+            package com.dwinovo.numen.plugins.rdd;
+            import java.util.UUID;
+            public class SideTaskHost {
+              public static String ADVISORY=""; public static int CALLS=0; public static String WORLD=null,SESSION=null;
+              public static String advisoryContextFor(UUID id,String world,String session){ CALLS++; WORLD=world; SESSION=session; return ADVISORY; }
+            }
+            """);
         units.put(P + "PausedScenario.java", """
             package com.dwinovo.numen.plugins.rdd;
             import java.util.*; import com.dwinovo.numen.rdd.api.*; import com.dwinovo.numen.rdd.core.*;
             public class PausedScenario {
               public static String request(String kind){
                 UUID id=new UUID(0,1);
-                RddPlugin.RUNTIMES.clear(); RddPlugin.DECOMPOSING.clear(); RddPlugin.SIDE=null;
+                RddPlugin.RUNTIMES.clear(); RddPlugin.DECOMPOSING.clear(); RddPlugin.SIDE=null; SideTaskHost.ADVISORY=""; SideTaskHost.CALLS=0;
                 PrimaryGoal primary=PrimaryGoal.unexpanded("P1","phase one",List.of());
                 TaskChain chain=new TaskChain(new Goal("G1","objective",List.of(primary)));
                 Subtask sub=new Subtask("S1","mine iron",DetectionMode.HARD_CODED,
@@ -95,9 +105,28 @@ class RddPausedSubtaskInstructionConsumerTest {
                 if(!before.equals(chain.toJson())) throw new AssertionError("SETUP: render changed task state");
                 return rendered+"|STATUS="+chain.currentSubtaskStatus()+"|PRIMARY="+chain.primaryStatus();
               }
-              public static String sideRequest(String kind){
+              public static String adviceRequest(String kind){
                 UUID id=new UUID(0,1);
                 RddPlugin.RUNTIMES.clear(); RddPlugin.DECOMPOSING.clear(); RddPlugin.SIDE=null;
+                SideTaskHost.CALLS=0; SideTaskHost.WORLD=null; SideTaskHost.SESSION=null;
+                PrimaryGoal primary=PrimaryGoal.unexpanded("P1","phase one",List.of());
+                TaskChain chain=new TaskChain(new Goal("G1","objective",List.of(primary)));
+                Subtask sub=new Subtask("S1","mine iron",DetectionMode.HARD_CODED,
+                    Map.of("asset_key","minecraft:iron_ingot","minimum",7),0,0,false);
+                chain.expandCurrentPrimary(List.of(sub));
+                if(!chain.activateCurrent(Map.of())) throw new AssertionError("SETUP: activation");
+                if(kind.equals("paused-owner")) chain.pauseSubtask("S1",TaskChain.OWNER_PAUSE_REASON);
+                else if(!kind.equals("running")) throw new AssertionError("SETUP: unknown advice kind "+kind);
+                RddPlugin.RUNTIMES.put(id,new RddRuntime(chain,new AssetRegistry()));
+                SideTaskHost.ADVISORY="<advisory type='equipment' scope='B'><fact>iron chestplate missing</fact><reason>incoming damage</reason><cost>death loses gear</cost><alternatives>retreat or eat</alternatives><recheck>after threat clears</recheck><instruction>建议，不是命令；你可以自行选择、暂缓或拒绝。</instruction></advisory><advisory type='sleep' scope='B'><fact>night in 55s</fact><reason>bed available</reason><cost>night mobs</cost><alternatives>dig three fill one</alternatives><recheck>in 30s</recheck><instruction>建议，不是命令；你可以自行选择、暂缓或拒绝。</instruction></advisory>";
+                String before=chain.toJson();
+                String rendered=RddPlugin.render(id);
+                if(!before.equals(chain.toJson())) throw new AssertionError("SETUP: advice render changed task state");
+                return rendered+"|STATUS="+chain.currentSubtaskStatus()+"|ADVICE_CALLS="+SideTaskHost.CALLS;
+              }
+              public static String sideRequest(String kind){
+                UUID id=new UUID(0,1);
+                RddPlugin.RUNTIMES.clear(); RddPlugin.DECOMPOSING.clear(); RddPlugin.SIDE=null; SideTaskHost.ADVISORY=""; SideTaskHost.CALLS=0;
                 PrimaryGoal primary=PrimaryGoal.unexpanded("P1","phase one",List.of());
                 TaskChain chain=new TaskChain(new Goal("G1","objective",List.of(primary)));
                 Subtask sub=new Subtask("S1","mine iron",DetectionMode.HARD_CODED,
@@ -215,6 +244,38 @@ class RddPausedSubtaskInstructionConsumerTest {
         assertFalse(user.contains("owner_pause"), "a soldier pause is not an owner seal: " + user);
         assertFalse(user.contains("只有主人"), "soldier pause must not claim owner authority: " + user);
         assertTrue(user.contains("side-identity-paused-soldier"), user);
+    }
+
+    @Test void mainlineRunningKeepsExecutionOrderAndAppendsAdvisory() throws Exception {
+        String user = advice("running");
+        assertTrue(user.contains("STATUS=RUNNING"), user);
+        assertTrue(user.contains("<current_task>"), "MAIN current_task must stay: " + user);
+        assertTrue(user.contains("<subtask_status>RUNNING</subtask_status>"), user);
+        assertTrue(user.contains("必须执行"), "MAIN RUNNING keeps the original execution order: " + user);
+        assertTrue(user.contains("|ADVICE_CALLS=1"), "the real request consumer must call the host advisory seam once: " + user);
+        assertTrue(user.contains("<advisory type='equipment'"), user);
+        assertTrue(user.contains("<advisory type='sleep'"), user);
+        assertTrue(user.contains("<reason>") && user.contains("<cost>")
+                && user.contains("<alternatives>") && user.contains("<recheck>"), user);
+        assertTrue(user.contains("建议") && (user.contains("可拒") || user.contains("自行选择")), user);
+        assertFalse(user.contains("SIDE_TASK"), user);
+        assertFalse(user.contains("主线已临时冻结"), user);
+    }
+
+    @Test void ownerPausedMainlineKeepsOwnerSealAndAdvisoryDoesNotWakeIt() throws Exception {
+        String user = advice("paused-owner");
+        assertTrue(user.contains("STATUS=PAUSED"), user);
+        assertTrue(user.contains("只有主人"), user);
+        assertFalse(user.contains("必须执行"), "owner standby must not be ordered: " + user);
+        assertTrue(user.contains("<advisory type='equipment'"), user);
+        assertFalse(user.contains("SIDE_TASK"), user);
+    }
+
+    static String advice(String kind) throws Exception {
+        try { return (String) scenario.getMethod("adviceRequest", String.class).invoke(null, kind); }
+        catch (java.lang.reflect.InvocationTargetException e) {
+            throw new AssertionError("SETUP/adviceRequest failed before business assertions", e.getCause());
+        }
     }
 
     static String sideRequest(String kind) throws Exception {
