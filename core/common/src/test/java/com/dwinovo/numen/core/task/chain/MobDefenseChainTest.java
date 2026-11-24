@@ -398,6 +398,18 @@ class MobDefenseChainTest {
         }
     }
 
+    /**
+     * D2 death80：反射自卫只有石镐（hasMelee=true、hasRanged=false），骷髅在20格瞄她；
+     * 现有 AttackPlan 会 SKIRMISH 冲近。期望反射不主动追远射，改 DISENGAGE；
+     * 显式狩猎的独立意图由 reflex/explicit 区分保留（产品后继另测，不在本红例里假装）。
+     */
+    @Test void reflexDoesNotChargeDistantShooterWithOnlyMeleeTool() throws Exception {
+        var r = run("remote20");
+        assertEquals(true, r.get("selected"));
+        assertEquals(1, events(r, "survey:1"));
+        assertEquals(1, events(r, "action:DISENGAGE"),
+                "reflex self-defense must not charge a 20-block shooter with only a melee tool");
+    }
     @Test void distantShooterNeedsCurrentEngagementAndAValidLivingNonAlliedCandidate() throws Exception {
         for (String scenario : List.of("remoteWall", "remoteNoOwner", "remoteOtherOwner", "remoteBeyond",
                 "remoteAllied", "remoteSelfAllied", "remoteRemoved", "remoteDead", "remoteOtherLevel",
