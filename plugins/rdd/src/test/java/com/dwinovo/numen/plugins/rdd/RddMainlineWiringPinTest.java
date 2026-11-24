@@ -563,6 +563,40 @@ class RddMainlineWiringPinTest {
         assertContains(body, "condition.containsKey(\"properties\")", "old callers retain presence-only semantics");
     }
 
+    /**
+     * 060 B：普通周期入口不得再走旧 survivalPreempt。
+     *
+     * <p>2026-11-24 17:27 实机原行（rdd-1795513283523.jsonl:1539/1570/1590）：
+     * 09:28:17.780 / 09:28:47.080 / 09:29:13.817 三次 type=survival_preempt，
+     * hunger=9 hp=20 free=36 SEEK_FOOD_FIRST；非真实紧急伤害却触发重规划/停体风险。
+     * 本测试只锁 Detector 普通周期入口与普通消费体，不证明 MC 实跑。
+     */
+    @Test
+    void ordinaryPeriodicTickDoesNotEnterLegacySurvivalPreempt() throws Exception {
+        String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
+        String tickBody = methodBody(src, "tick", "tickRuntime");
+        assertFalse(tickBody.contains("survivalPreempt(ap, tick)"),
+                "ordinary periodic tick must not call legacy survivalPreempt");
+        assertContains(tickBody, "ordinarySurvivalWatch(ap, tick)",
+                "ordinary periodic tick must use the reduced observer");
+        assertContains(tickBody, "SideTaskHost.tick(server, ap)",
+                "B cache sampling stays before the ordinary Detector branch");
+
+        String body = methodBody(src, "ordinarySurvivalWatch", "needExpansion");
+        assertContains(body, "RddReplanTransition.observeSafe(ap.getUUID())",
+                "safe observation must still clear old survival intent/cooldown");
+        assertContains(body, "RddGoalDriver.needExpansion(ap.getUUID())",
+                "pending unexpanded primary must retain lazy expansion");
+        assertNotContains(body, "RddSurvivalGate.evaluate",
+                "ordinary periodic observer must not classify/decide survival");
+        assertNotContains(body, "requestReplanForSurvival",
+                "ordinary periodic observer must not request replan");
+        assertNotContains(body, "stopPreemptedOwner",
+                "ordinary periodic observer must not stop the body");
+        assertNotContains(body, "SURVIVAL_PREEMPT_AT",
+                "ordinary periodic observer must not spend the old 60s budget");
+    }
+
     @Test
     void pendingSurvivalUsesFirstExpansionWithoutFailureBudget() throws Exception {
         String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
