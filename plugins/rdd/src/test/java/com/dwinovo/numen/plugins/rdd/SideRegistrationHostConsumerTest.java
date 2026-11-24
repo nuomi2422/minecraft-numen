@@ -51,6 +51,9 @@ class SideRegistrationHostConsumerTest {
         StringBuilder extracted = new StringBuilder("""
                 package com.dwinovo.numen.plugins.rdd;
                 import java.util.*;
+                import java.nio.charset.StandardCharsets;
+                import java.nio.file.*;
+                import com.google.gson.*;
                 import com.dwinovo.numen.rdd.api.*;
                 import com.dwinovo.numen.rdd.core.*;
                 import com.dwinovo.numen.rdd.side.*;
@@ -59,6 +62,10 @@ class SideRegistrationHostConsumerTest {
                     // Mutable only in this fixture: cutting the engine proves getter cache-only behavior.
                     static SideTaskEngine ENGINE = new SideTaskEngine(null, SideTaskHost::validateMainline);
                     static final SideContextStore SIDE_CONTEXT = new SideContextStore();
+                    // 060-D: the night-B AC projection reads this directory + one bounded mtime cache.
+                    static java.nio.file.Path CONFIG_DIR;
+                    static volatile String ACX_HINT_CACHE = "";
+                    static volatile long ACX_HINT_MTIME = -1L, ACX_HINT_SIZE = -1L;
                 """);
         for (String signature : List.of(
                 "    private static void refreshContext(MinecraftServer server, UUID companionId, SideTaskWorldPort port)",
@@ -70,6 +77,10 @@ class SideRegistrationHostConsumerTest {
                 "    private static String advisory(String type, String world, String session, String dimension",
                 "    private static String contextXml(String value)")) {
             extracted.append(method(raw, signature)).append('\n');
+        }
+        // 060-D: red phase has no reader; the product adds it and the same consumer must compile it.
+        if (raw.contains("private static String acxShelterHint(")) {
+            extracted.append(method(raw, "    private static String acxShelterHint()"));
         }
         add(args, "com/dwinovo/numen/plugins/rdd/SideTaskHost.java", extracted.append("}\n").toString());
         System.out.println("CONSUMER_SOURCE SideTaskHost.java sha256=" + sha(raw));
@@ -316,6 +327,45 @@ class SideRegistrationHostConsumerTest {
         assertTrue(xml.contains("food_reserve"));
         assertEquals(reads, portReads, "advisory must not read the world port: " + xml);
         assertEquals(0, plugins.getField("snapshots").get(null), "advisory must not refresh identity: " + xml);
+    }
+
+    /**
+     * 060-D：夜B建议只列「当前 active+STABLE 且 tags 含 shelter/emergency」的现成脚本；
+     * 撤回/非庇护/缺库都不报可用，只是建议、不读世界/身体、不自动执行。
+     */
+    @Test void nightAdvisoryShowsOnlyActiveShelterScriptsAndNeverOwnsTheBody() throws Exception {
+        set(plugins, "available", false);
+        Path cfg = temp.resolve("acx-cfg-" + System.nanoTime());
+        Path acx = cfg.resolve("acx");
+        Files.createDirectories(acx);
+        Files.writeString(acx.resolve("library.json"), """
+                {"defs":{
+                  "dig3_seal1_emergency":{"active_version":"1","versions":{"1":{"status":"STABLE","definition":{"name":"dig3_seal1_emergency","description":"临时急用：挖三格落地再封顶。","tags":["shelter","emergency"]}}}},
+                  "old_withdrawn":{"active_version":"0","versions":{"0":{"status":"WITHDRAWN","definition":{"name":"old_withdrawn","description":"撤回的旧脚本。","tags":["shelter"]}}}},
+                  "farm_loop":{"active_version":"3","versions":{"3":{"status":"STABLE","definition":{"name":"farm_loop","description":"农活。","tags":["farm"]}}}}
+                }}""");
+        set(host, "CONFIG_DIR", cfg);
+        putAdvisory("world", "session", "minecraft:overworld", 11_800L, true, 17, 17, 3, false, false, false, 240_000L);
+        int reads = portReads;
+        String xml = advisory(SELF, "world", "session");
+        assertTrue(xml.contains("<advisory type=\"sleep\""), xml);
+        assertTrue(xml.contains("dig3_seal1_emergency"), "active shelter script must be visible: " + xml);
+        assertTrue(xml.contains("acx_execute ac_name=dig3_seal1_emergency"), xml);
+        assertFalse(xml.contains("old_withdrawn"), "withdrawn script must not reappear: " + xml);
+        assertFalse(xml.contains("farm_loop"), "non-shelter scripts are not offered here: " + xml);
+        assertTrue(xml.contains("建议，不是命令"), "the hint stays advice, never auto-execution: " + xml);
+        assertEquals(reads, portReads, "the AC projection must not read the body/world port: " + xml);
+
+        putAdvisory("world", "session", "minecraft:overworld", 0L, true, 17, 17, 3, false, false, false, 240_000L);
+        String day = advisory(SELF, "world", "session");
+        assertFalse(day.contains("<advisory type=\"sleep\""), day);
+        assertFalse(day.contains("dig3_seal1_emergency"), "no night window, no sleep advice: " + day);
+
+        set(host, "CONFIG_DIR", temp.resolve("missing-" + System.nanoTime()));
+        putAdvisory("world", "session", "minecraft:overworld", 11_800L, true, 17, 17, 3, false, false, false, 240_000L);
+        String missing = advisory(SELF, "world", "session");
+        assertTrue(missing.contains("<advisory type=\"sleep\""), missing);
+        assertFalse(missing.contains("acx_execute"), "missing library must not claim an active script: " + missing);
     }
 
     private void putAdvisory(String world, String session, String dim, long dayTime, boolean cycle,
