@@ -40,6 +40,7 @@ public class RddConcernAsyncCallbackConsumerTest {
         int bodyClears();
         List<String> snapshots();
         List<String> reasons(String event);
+        boolean seedReview(String reason);
     }
 
     private static final String PKG = "com.dwinovo.numen.plugins.rdd.";
@@ -365,10 +366,7 @@ public class RddConcernAsyncCallbackConsumerTest {
     }
     @Test void reviewQueueFullRejectsExplicitlyWithoutDropping() {
         retrySameStep(); host.negotiate();
-        for(int i=0;i<3;i++){
-            report("COUNTER","filler "+i,"alt");
-            applyQueued(List.of(), "replan_fallback_resume"); activate(); host.negotiate();
-        }
+        for(int i=0;i<3;i++) assertTrue(host.seedReview("filler "+i), "seed retained concern");
         assertEquals(4, ((List<?>)host.review().get("reviews")).size());
         JsonObject full = JsonParser.parseString(host.report("COUNTER",chain.currentSubtask().id(),"overflow current","alt2")).getAsJsonObject();
         assertFalse(full.get("success").getAsBoolean(), full::toString);

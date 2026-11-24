@@ -80,6 +80,17 @@ public final class ConcernAsyncHost implements RddConcernAsyncCallbackConsumerTe
     public void exhaustBudget() { RddPlugin.REPLAN_COUNTS.put(player.getUUID()+"|"+rt.chain().currentPrimary().id()+"|nego", 999); }
     public List<String> snapshots() { return List.copyOf(RddPlugin.snapshots); }
     public List<String> reasons(String event) { return List.copyOf(RddMonitor.reasons.getOrDefault(event, List.of())); }
+    /** Test-only seam: real admission + retire path, no planner budget consumed. */
+    public boolean seedReview(String reason) {
+        UUID id = player.getUUID(); TaskChain c = rt.chain();
+        TaskNegotiation n = TaskNegotiation.parse("COUNTER", c.currentSubtask().id(), reason, "alt");
+        if (RddNegotiationInbox.accept(id, n, c) != RddNegotiationInbox.Admission.RECORDED) return false;
+        RddNegotiationInbox.Scope scope = RddNegotiationInbox.Scope.capture(c);
+        var entry = RddNegotiationInbox.peek(id);
+        if (scope == null || entry == null) return false;
+        RddNegotiationInbox.retireScope(id, c, scope);
+        return RddNegotiationInbox.peek(id) == null;
+    }
 
     private static final class Detector {
         private final Watch parkedWatcher = new Watch();
