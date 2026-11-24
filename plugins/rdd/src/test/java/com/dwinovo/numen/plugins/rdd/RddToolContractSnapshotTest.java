@@ -319,6 +319,10 @@ class RddToolContractSnapshotTest {
                     "report_task_concern 的 description 必须列出 " + kind
                             + " 的含义。少写一种 = 模型只能靠猜（深审 R05 的根因就是「不认识的枚举值被静默降级」）");
         }
+        // 060-C：装备/前置失效时先核查、少量就地补救，再按事实+建议上报（不是只报"没有"）。
+        assertTrue(d.contains("新鲜背包/世界事实"), "concern description must ask for a fresh check first: " + d);
+        assertTrue(d.contains("少量补救"), "small local remediation must be stated: " + d);
+        assertTrue(d.contains("可行替代"), "suggestion must be a feasible alternative: " + d);
     }
 
     @Test

@@ -189,6 +189,13 @@ class RddPausedSubtaskInstructionConsumerTest {
         String user = request("running");
         assertTrue(user.contains("STATUS=RUNNING"), user);
         assertTrue(user.contains("必须执行"), user);
+        // 060-C：前提失效/要放弃之前的明确行为指引（不是恢复旧自动抢占）。
+        assertTrue(user.contains("新鲜事实"), "active order must ask for a fresh prerequisite check: " + user);
+        assertTrue(user.contains("少量补"), "small local remediation must be allowed before giving up: " + user);
+        assertTrue(user.contains("expected_subtask_id"), "concern must carry the current subtask id: " + user);
+        assertTrue(user.contains("写观察到的事实"), "concern reason must be a concrete fact, not a bare refusal: " + user);
+        assertTrue(user.contains("不要只说没有"), "a bare 'missing/unavailable' must be refused: " + user);
+        assertTrue(user.contains("日常建议可先放着"), "unrelated daily advice must be deferrable: " + user);
     }
 
     @Test void ownerPausedNodeMustNotBeOrderedAndOnlyOwnerReleases() throws Exception {
@@ -198,6 +205,10 @@ class RddPausedSubtaskInstructionConsumerTest {
         assertTrue(user.contains("已暂停"), user);
         assertTrue(user.contains(TaskChain.OWNER_PAUSE_REASON), "owner reason must stay visible: " + user);
         assertTrue(user.contains("只有主人"), "owner standby must say only the owner releases it: " + user);
+        // 060-C：待命中可以报事实，但绝不能借此自行恢复或反向请求重规划。
+        assertTrue(user.contains("可以如实上报"), "owner standby may still report unexecutable facts: " + user);
+        assertTrue(user.contains("不要借此要求重规划"), "reporting must not become a replan request: " + user);
+        assertTrue(user.contains("不构成解除待命的理由"), "reporting must not dissolve owner pause: " + user);
     }
 
     @Test void soldierPausedNodeMustNotBeOrderedAndMustNotClaimOwnerAuthority() throws Exception {
