@@ -327,7 +327,16 @@ final class RddDetector {
         }
     }
 
-    /** 生存抢占（2026-11-06）：与计划前闸同一判据；先 task_stop 当前身体任务，再重规划，60s 冷却防刷屏。 */
+    /**
+     * 普通周期入口（2026-11-24 060 B 收窄）：只清旧生存意图、只驱动 PENDING 惰性展开，
+     * <b>不</b>按 hunger/HP 分类、不请求重规划、不停身体、不花旧 60 秒预算。
+     *
+     * <p>为什么收窄：2026-11-24 实机三次 {@code survival_preempt}（hunger=9 hp=20 free=36）
+     * 都不是真实紧急伤害，却触发停任务 + 重规划；而饥饿/低血事实已由
+     * {@code SideTaskHost.tick} 先采样进上下文，普通周期再发第二道指令只会和 AI 自己的判断打架。
+     * 真紧急的硬控制不来自这个日常分支：Numen 原紧急 FC 不动，
+     * {@code RddPlugin.requestReplanForSurvival}（typed SURVIVAL）留给未来的硬 side。
+     */
     private static void survivalPreempt(com.dwinovo.numen.entity.NumenPlayer ap, long tick) {
         try {
             // 2026-11-11: hunger while first expansion is pending is not a failed execution.
@@ -335,64 +344,27 @@ final class RddDetector {
             RddRuntime runtime = RddPlugin.runtime(ap.getUUID());
             if (runtime == null) return;
             TaskChain chain = runtime.chain();
-            // 安全观测必须在 unexpanded/side/status/cooldown 早退之前：短暂 hunger>=10 也要能释放上一轮
-            // 生存意图与冷却，否则再跌回 9 会被旧 marker/冷却吞掉（V04 之后的设计要求）。
+            // 安全观测必须在所有早退之前：风险消退要释放上一轮生存意图与冷却，
+            // 否则再跌回 9 会被旧 marker/冷却吞掉（V04 之后的设计要求）。
             int hunger = ap.getFoodData().getFoodLevel();
             double hp = ap.getHealth();
-            boolean safe = hunger >= 10 && hp >= 8.0;
-            if (safe) {
+            if (hunger >= 10 && hp >= 8.0) {
                 // 风险消退释放意图和同一份冷却，不代表完成供食承诺。
                 RddReplanTransition.observeSafe(ap.getUUID());
             }
+            // PENDING 未展开：沿用原惰性展开，不花失败预算。
             if (chain.primaryStatus() == PrimaryGoalStatus.PENDING
                     && chain.currentPrimary().unexpanded()) {
                 RddGoalDriver.needExpansion(ap.getUUID());
                 return;
             }
-            // Side ownership only delays the mainline; never spend its failure budget.
+            // 支线占身体时主线冻结；非 ACTIVE 也不在这个普通分支里做任何事。
             if (SideTaskHost.blocksMainline(ap.getUUID())
                     || chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return;
-            if (safe) return;
-            long now = System.currentTimeMillis();
-            Long last = SURVIVAL_PREEMPT_AT.get(ap.getUUID());
-            if (last != null && now - last < 60_000L) return;
-            int free = 0;
-            int size = Math.min(36, ap.getInventory().getContainerSize());
-            for (int i = 0; i < size; i++) {
-                if (ap.getInventory().getItem(i).isEmpty()) free++;
-            }
-            // 2026-11-06 21:44 实机：hunger 6、包里只有小麦和种子（没有能吃的）时，闸每分钟插一次“去吃”，
-            // 却永远吃不上 ⇒ 必须区分“去吃”和“先弄到吃的”。
-            boolean hasFood = RddSurvivalGate.hasEdibleFood(countInventory(ap));
-            var decision = RddSurvivalGate.evaluate(hunger, hp, free, false, hasFood);
-            if (decision == RddSurvivalGate.Decision.NONE) return;
-            // 2026-11-13（接受后才记抢占）：捕获进入前的身体 owner，传给宿主；只有真的进了
-            // REPLANNING 才在同线程同步回调里停“这一个”任务、才记 60s 冷却、才发抢占观测。
-            // 拒绝时不停身体、不记冷却，避免 V03 那种“身体停了、链还在 ACTIVE、没有新任务”。
-            var observationToken = RddPlugin.captureObservationToken(ap.getServer());
-            var expectedAction = com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(ap.getUUID());
-            boolean accepted = RddPlugin.requestReplanForSurvival(ap.getUUID(), decision, hunger, hp, free,
-                    expectedAction, ap);
-            if (!accepted) {
-                LOG.info("[rdd] 生存抢占未进入重规划（拒绝不记冷却、不停身体） {} hunger={} hp={} free={}",
-                        decision, hunger, hp, free);
-                return;
-            }
-            // 同步无 server/空回/启动异常可能已经释放；不能在返回后复活旧冷却。
-            if (RddReplanTransition.hasSurvivalIntent(ap.getUUID())) {
-                SURVIVAL_PREEMPT_AT.put(ap.getUUID(), now);
-            }
-            RddMonitor.publish("survival_preempt", java.util.Map.of(
-                    "companionId", ap.getUUID().toString(),
-                    "decision", decision.name(), "hunger", hunger, "hp", hp, "free_slots", free), observationToken);
-            LOG.info("[rdd] 生存抢占 {} hunger={} hp={} free={}", decision, hunger, hp, free);
         } catch (RuntimeException ex) {
-            LOG.warn("[rdd] 生存抢占失败: {}", ex.toString());
+            LOG.warn("[rdd] 普通周期生存观测失败: {}", ex.toString());
         }
     }
-
-    // 仍是原60秒冷却，唯一实例迁到意图消费者，失效事件/安全观测一并清。
-    private static final java.util.Map<java.util.UUID, Long> SURVIVAL_PREEMPT_AT = RddReplanTransition.SURVIVAL_PREEMPT_AT;
 
     private void tickRuntime(NumenPlayer ap, RddRuntime rt) {
         try {
