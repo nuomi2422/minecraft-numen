@@ -3,6 +3,7 @@ package com.dwinovo.numen.plugins.rdd;
 import com.dwinovo.numen.rdd.api.Goal;
 import com.dwinovo.numen.rdd.api.PrimaryGoal;
 import com.dwinovo.numen.rdd.api.Subtask;
+import com.dwinovo.numen.rdd.api.SubtaskStatus;
 import com.dwinovo.numen.rdd.core.HardCodedEvaluator;
 import com.dwinovo.numen.rdd.core.TaskChain;
 import com.dwinovo.numen.rdd.policy.AssetDerivation;
@@ -41,8 +42,9 @@ class EarlyAchievementInventoryRegressionTest {
         test.entryHelperKeepsExistingAttemptBaseline();
         test.entryHelperDoesNotLockLifetimeScope();
         test.entryHelperIgnoresNonStatCurrentTask();
-        test.statEntryWiringIsPresentAtAllFiveStartSites();
-        System.out.println("EarlyAchievementInventoryRegressionTest: 14 passed, 0 failed");
+        test.entryHelperAfterRealActivationLocksFirstCraft();
+        test.statEntryWiringIsPresentAtAllSevenRunStartSites();
+        System.out.println("EarlyAchievementInventoryRegressionTest: 15 passed, 0 failed");
     }
 
     private static Path detectorSource() {
@@ -260,12 +262,36 @@ class EarlyAchievementInventoryRegressionTest {
         assertNull(chain.statBaseline(nonStat.id()), "non-stat current must not create a baseline");
     }
 
-    /** Source wiring only: counts the five start call sites; helper behavior above owns consumption. */
     @Test
-    void statEntryWiringIsPresentAtAllFiveStartSites() throws Exception {
+    void entryHelperAfterRealActivationLocksFirstCraft() throws Exception {
+        Class<?> probe = compileStatCaptureProbe();
+        TaskChain chain = statChain();
+        assertTrue(chain.activateCurrentWithSnapshot(null),
+                "real activation must start the first stat subtask");
+        assertEquals(SubtaskStatus.RUNNING, chain.currentSubtaskStatus());
+        Subtask task = chain.currentSubtask();
+        captureWithProbe(probe, chain, 0);
+        assertEquals(Integer.valueOf(0), chain.statBaseline(task.id()).get("value"),
+                "activation listener must lock the pre-action stat");
+        assertTrue(evaluateStat(compileStatDeltaMethod(), chain, task, 1),
+                "first craft after real activation must satisfy minimum=1");
+    }
+
+    /** Source wiring only: counts the seven run-start/activation call sites; helper behavior above owns consumption. */
+    @Test
+    void statEntryWiringIsPresentAtAllSevenRunStartSites() throws Exception {
         String detector = Files.readString(detectorSource(), StandardCharsets.UTF_8);
-        assertEquals(2, count(detector, "captureStatBaselineAtStart(ap,"),
-                "both detector mainline start sites must lock the baseline");
+        assertEquals(4, count(detector, "captureStatBaselineAtStart(ap,"),
+                "two startCurrent + two activation sites must lock the baseline");
+        int firstActivate = detector.indexOf("if (!rt.activateCurrentFromSnapshot(");
+        int secondActivate = detector.indexOf("if (rt.activateCurrentFromSnapshot(", firstActivate);
+        assertTrue(firstActivate >= 0 && secondActivate > firstActivate, "two activation sites missing");
+        for (int at : List.of(firstActivate, secondActivate)) {
+            int publish = detector.indexOf("RddMonitor.publish(\"dependency_met\"", at);
+            assertTrue(publish > at, "activation publish boundary missing");
+            assertTrue(detector.substring(at, publish).contains("captureStatBaselineAtStart(ap,"),
+                    "activation success must lock baseline before publish/body");
+        }
         assertFalse(methodBody(detector, "private static boolean statDeltaSatisfied(")
                         .contains("captureStatBaseline"), "condition/status evaluation must stay read-only");
         assertEquals(1, count(readSibling("RddFailureRecovery.java"),

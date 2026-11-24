@@ -512,6 +512,7 @@ final class RddDetector {
                     watchParkedIfStuck(ap, rt, chain); // 监督扩面：依赖门长时间没过也催工
                     return;
                 }
+                captureStatBaselineAtStart(ap, rt);
                 RddMonitor.publish("dependency_met", Map.of("primary", chain.currentPrimary().id()));
             }
             if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) {
@@ -630,6 +631,7 @@ final class RddDetector {
                         break;
                     }
                     if (rt.activateCurrentFromSnapshot(RddPlugin.planningSnapshot(ap.getUUID()))) {
+                        captureStatBaselineAtStart(ap, rt);
                         RddMonitor.publish("dependency_met", Map.of("primary", chain.currentPrimary().id()));
                     } else {
                         RddMonitor.publish("primary_waiting", Map.of(
