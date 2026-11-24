@@ -5,6 +5,28 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.*;
 
 class RddExternalResetWiringTest {
+    /**
+     * 2026-11-24 迁移实机：reset 唯一失败是 IOException home store unavailable。
+     * 行为面证据：无 facts 目录绑定 → clear 必须失败关闭；经生产初始化绑定后同一调用必须能清。
+     */
+    @Test void homeAnchorClearWorksAfterTheFactsStoreInitAndFailsClosedBeforeIt(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        java.util.UUID id = java.util.UUID.randomUUID();
+        java.nio.file.Path file = dir.resolve("home-anchor-" + id + ".json");
+        Files.writeString(file, "{}");
+        RddPlugin.useFactsDirForTest(null);
+        assertThrows(java.io.IOException.class, () -> RddHomeAnchor.clear(id),
+                "no bound store must fail closed instead of silently succeeding");
+        RddPlugin.useFactsDirForTest(dir);
+        try {
+            assertDoesNotThrow(() -> RddHomeAnchor.clear(id),
+                    "the host facts init must bind the home store before any reset side effect");
+            assertFalse(Files.exists(file), "clear must delete the same companion's home anchor file");
+        } finally {
+            RddPlugin.useFactsDirForTest(null);
+        }
+    }
+
     @Test void resetFailsClosedAndClearsAllInventoryOnlyAfterChainAndDisk() throws Exception {
         String s = Files.readString(Path.of("src/main/java/com/dwinovo/numen/plugins/rdd/RddPlugin.java"));
         String body = s.substring(s.indexOf("private static Map<String, Object> resetCurrentWorld"), s.indexOf("public static void remove(UUID companionId)"));
