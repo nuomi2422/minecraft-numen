@@ -170,6 +170,10 @@ public final class RddPlugin implements NumenPlugin {
         tasksDir = numen.configDir().resolve("rdd-tasks");
         assetsDir = numen.configDir().resolve("rdd-assets");
         factsDir = numen.configDir().resolve("rdd-facts");
+        // 2026-11-24 迁移实机：home 锚点与完成事实同目录；它过去只在 renderStateContext 里懒赋值，
+        // 于是没有模型请求窗口时的外部 reset 会在删掉链之后才抛 "home store unavailable"（partial cleanup）。
+        // 落盘目录随宿主 setup 初始化，reset 只消费它，不在销毁途中才找目录。
+        RddHomeAnchor.DIR = factsDir;
         completionCommit = new StageCompletionCommit(tasksDir, factsDir);
         historyDir = numen.configDir().resolve("rdd-history");
         ledgerDir = numen.configDir().resolve("rdd-ledger");
@@ -2816,6 +2820,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
      */
     static void useFactsDirForTest(Path directory) {
         factsDir = directory;
+        RddHomeAnchor.DIR = directory;   // 同一个 facts 目录：家锚点必须在任何 clear() 之前绑定
         FACTS.clear();
     }
 
@@ -3108,6 +3113,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
         if (tasksDir == null || assetsDir == null || factsDir == null)
             throw new IllegalStateException("reset stores unavailable");
         Files.createDirectories(factsDir); // Check the boundary store before clearing the body.
+        if (RddHomeAnchor.DIR == null) RddHomeAnchor.DIR = factsDir; // precondition before any side effect
         CompletedFactStore completedFacts = facts(id);
         var stop = com.dwinovo.numen.agent.tool.ToolRegistry.get("task_stop");
         if (stop == null) throw new IllegalStateException("body stop unavailable; reset refused");
