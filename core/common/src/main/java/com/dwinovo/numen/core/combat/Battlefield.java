@@ -64,6 +64,7 @@ public record Battlefield(double effectiveHealth,
                    boolean engaging, boolean reachable, boolean authorized) {
             this(id, distance, explosive, armed, engaging, reachable, false, authorized);
         }
+    }
 
     public Foe byId(int id) {
         for (Foe f : foes) {
