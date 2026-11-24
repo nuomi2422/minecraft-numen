@@ -14,16 +14,16 @@ class RddExternalResetWiringTest {
         java.util.UUID id = java.util.UUID.randomUUID();
         java.nio.file.Path file = dir.resolve("home-anchor-" + id + ".json");
         Files.writeString(file, "{}");
-        RddPlugin.useFactsDirForTest(null);
+        RddHomeAnchor.bind(null);
         assertThrows(java.io.IOException.class, () -> RddHomeAnchor.clear(id),
                 "no bound store must fail closed instead of silently succeeding");
-        RddPlugin.useFactsDirForTest(dir);
+        RddHomeAnchor.bind(dir);
         try {
             assertDoesNotThrow(() -> RddHomeAnchor.clear(id),
                     "the host facts init must bind the home store before any reset side effect");
             assertFalse(Files.exists(file), "clear must delete the same companion's home anchor file");
         } finally {
-            RddPlugin.useFactsDirForTest(null);
+            RddHomeAnchor.bind(null);
         }
     }
 
