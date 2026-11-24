@@ -426,8 +426,13 @@ public final class NumenToolBridgeX implements AcxToolPort {
                     return AcxCompletionProbe.Snapshot.unknown(
                             "槽被 " + current.publicId() + " 占用，本任务终态未知（保留挂账等待重试）");
                 }
+                // 2026-11-25: the terminal record already knows why it failed (TaskResult.message,
+                // e.g. BuildClearSafety's falling-block refusal). Pass it to the failed snapshot so the
+                // model sees the real reason instead of blind-retrying; identity checks inside map()
+                // still run before any message is included, and SUCCESS/CANCELLED keep their own branches.
                 var snapshot = AcxFinishedTask.map(taskId, terminal == null ? null : terminal.publicId(),
-                        terminal == null || terminal.getState() == null ? null : terminal.getState().name());
+                        terminal == null || terminal.getState() == null ? null : terminal.getState().name(),
+                        terminal == null || terminal.getResult() == null ? null : terminal.getResult().message());
                 if (snapshot.state() != AcxCompletionProbe.State.DONE) return snapshot;
                 var result = terminal.getResult();
                 return result == null ? snapshot : AcxCompletionProbe.Snapshot.done(result.data(), snapshot.message());

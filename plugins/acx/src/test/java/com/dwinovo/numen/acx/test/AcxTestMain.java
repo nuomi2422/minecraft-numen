@@ -2071,6 +2071,33 @@ T.test("do_while：条件源在 body 里才产生 → 第 1 轮也照跑", () ->
             T.isTrue(s.message().contains("FAILED"), "消息里要带终态: " + s.message());
         });
 
+        // 2026-11-25（fix/acx-terminal-reason）：终态记录自带的原因要一起带出；
+        // 否则内脑只看到"终态 FAILED"，同一次失败盲重试。
+        T.test("mapTerminal：FAILED 带原 result.message → failed 且带出真因", () -> {
+            var s = com.dwinovo.numen.acx.core.AcxFinishedTask.map("t1", "t1", "FAILED",
+                    "breaking 12,63,-30 releases a falling block sitting above it");
+            eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.FAILED, s.state(),
+                    "失败终态仍是 failed: " + s.message());
+            T.isTrue(s.message().contains("falling block"), "真因必须出现在失败消息里: " + s.message());
+        });
+
+        T.test("mapTerminal：FAILED 空/空白 reason → 回原泛因（不追加空分隔）", () -> {
+            var blank = com.dwinovo.numen.acx.core.AcxFinishedTask.map("t1", "t1", "FAILED", "   ");
+            var none = com.dwinovo.numen.acx.core.AcxFinishedTask.map("t1", "t1", "FAILED");
+            eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.FAILED, blank.state(),
+                    "空原因仍是失败: " + blank.message());
+            T.isTrue(blank.message().equals(none.message()), "空白原因不许改变消息: " + blank.message());
+            T.isTrue(!blank.message().contains(": "), "空白原因不许留下空分隔: " + blank.message());
+        });
+
+        T.test("mapTerminal：CANCELLED 带 message → 仍 unknown，且不带出该原因（取消不是结论）", () -> {
+            var s = com.dwinovo.numen.acx.core.AcxFinishedTask.map("t1", "t1", "CANCELLED", "owner stopped it");
+            eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.UNKNOWN, s.state(),
+                    "取消要保留挂账: " + s.message());
+            T.isTrue(!s.message().contains("owner stopped it"),
+                    "取消的 message 不能当成结论带出: " + s.message());
+        });
+
         T.test("mapTerminal：没有终态记录 → unknown（不知道成败不许当成功，也不许立刻删账）", () -> {
             var s = com.dwinovo.numen.acx.core.AcxFinishedTask.map("t1", null, null);
             eq(com.dwinovo.numen.acx.api.AcxCompletionProbe.State.UNKNOWN, s.state(),
