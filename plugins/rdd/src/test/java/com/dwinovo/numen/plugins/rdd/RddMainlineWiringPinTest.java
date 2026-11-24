@@ -575,26 +575,24 @@ class RddMainlineWiringPinTest {
     void ordinaryPeriodicTickDoesNotEnterLegacySurvivalPreempt() throws Exception {
         String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
         String tickBody = methodBody(src, "tick", "tickRuntime");
-        assertFalse(tickBody.contains("survivalPreempt(ap, tick)"),
-                "ordinary periodic tick must not call legacy survivalPreempt");
-        assertContains(tickBody, "ordinarySurvivalWatch(ap, tick)",
-                "ordinary periodic tick must use the reduced observer");
+        assertContains(tickBody, "survivalPreempt(ap, tick)",
+                "the original periodic entry stays; its ordinary branch is reduced");
         assertContains(tickBody, "SideTaskHost.tick(server, ap)",
                 "B cache sampling stays before the ordinary Detector branch");
 
-        String body = methodBody(src, "ordinarySurvivalWatch", "needExpansion");
+        String body = methodBody(src, "survivalPreempt", "needExpansion");
         assertContains(body, "RddReplanTransition.observeSafe(ap.getUUID())",
                 "safe observation must still clear old survival intent/cooldown");
         assertContains(body, "RddGoalDriver.needExpansion(ap.getUUID())",
                 "pending unexpanded primary must retain lazy expansion");
         assertNotContains(body, "RddSurvivalGate.evaluate",
-                "ordinary periodic observer must not classify/decide survival");
+                "ordinary periodic path must not classify/decide survival");
         assertNotContains(body, "requestReplanForSurvival",
-                "ordinary periodic observer must not request replan");
+                "ordinary periodic path must not request replan");
         assertNotContains(body, "stopPreemptedOwner",
-                "ordinary periodic observer must not stop the body");
+                "ordinary periodic path must not stop the body");
         assertNotContains(body, "SURVIVAL_PREEMPT_AT",
-                "ordinary periodic observer must not spend the old 60s budget");
+                "ordinary periodic path must not spend the old 60s budget");
     }
 
     @Test
