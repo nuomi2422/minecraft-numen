@@ -790,6 +790,15 @@ public final class RddPlugin implements NumenPlugin {
         return SideTaskHost.contextFor(uuid, snap == null ? null : snap.worldId(), snap == null ? null : snap.serverSession());
     }
 
+    /** B-only advice: the live request body's world/session, never a global stamp; innerXML appended to MAIN. */
+    private static String advisoryContextFor(UUID uuid) {
+        ServerPlayer body = RddCompanionBody.get(uuid);
+        if (body == null || body.level().getServer() == null) return SideTaskHost.advisoryContextFor(uuid, null, null);
+        var provider = com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.ServerIdentityProvider.class);
+        var snap = provider == null ? null : provider.snapshot(body.level().getServer());
+        return SideTaskHost.advisoryContextFor(uuid, snap == null ? null : snap.worldId(), snap == null ? null : snap.serverSession());
+    }
+
     /** Read-only planner notice; current request-server identity comes from the body, never a global stamp. */
     private static String earlyProposalNoticeFor(UUID uuid) {
         try {
@@ -922,6 +931,7 @@ public final class RddPlugin implements NumenPlugin {
                     + "<subtask_status>" + chain.currentSubtaskStatus() + "</subtask_status>"
                     + currentSubtaskInstruction(chain, current)
                     + registeredDailyContext(uuid, chain)
+                    + advisoryContextFor(uuid)
                     // 38号v3.6 B24：携带器提醒由 withAssets 统一挂（它是全部分支的共同出口）。
                     // ⚠️ 2026-10-01 实机请求体抓到重复：这里加一次、withAssets 又 replace 一次，
                     //    <carry> 在 <rdd> 里出现两遍（白送 ~130 token/请求）。故此处不再加。
