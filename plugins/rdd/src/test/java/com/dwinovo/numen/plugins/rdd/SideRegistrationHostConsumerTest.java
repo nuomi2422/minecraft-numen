@@ -30,7 +30,7 @@ class SideRegistrationHostConsumerTest {
     private static final String PKG = "com.dwinovo.numen.plugins.rdd.";
     private static final UUID SELF = UUID.fromString("00000000-0000-0000-0000-000000000071");
     private static URLClassLoader loader;
-    private static Class<?> host, serverClass, ticketClass, plugins;
+    private static Class<?> host, serverClass, ticketClass, advisoryClass, plugins;
     private Object server;
     private SideTaskWorldPort port;
     private TaskChain chain;
@@ -66,6 +66,8 @@ class SideRegistrationHostConsumerTest {
                 "    private static MainlineResumeToken currentMainlineToken(UUID companionId)",
                 "    private static MainlineResumeToken validateMainline(MainlineResumeToken token)",
                 "    static String registrationContextFor(UUID companionId, SideContextStore.Ticket current)",
+                "    static String advisoryContextFor(UUID companionId, String currentWorldId, String currentSession)",
+                "    private static String advisory(String type, String world, String session, String dimension",
                 "    private static String contextXml(String value)")) {
             extracted.append(method(raw, signature)).append('\n');
         }
@@ -104,6 +106,17 @@ class SideRegistrationHostConsumerTest {
                     }
                 }
                 """);
+        // Equipment sample is a seam: null -> the real Host must say UNKNOWN, not "no armor".
+        add(args, "com/dwinovo/numen/plugins/rdd/RddDeathEquipment.java", """
+                package com.dwinovo.numen.plugins.rdd;
+                import com.dwinovo.numen.api.observation.WorldObservationService;
+                import java.util.*;
+                final class RddDeathEquipment {
+                    record Sample(List<String> armor, String mainhand, String offhand) { }
+                    static Sample cached(WorldObservationService service, UUID id, String dimension,
+                                         Map<String, String> stamp, long now) { return null; }
+                }
+                """);
         add(args, "com/dwinovo/numen/plugins/rdd/RddPlugin.java", """
                 package com.dwinovo.numen.plugins.rdd;
                 import java.util.UUID;
@@ -133,6 +146,7 @@ class SideRegistrationHostConsumerTest {
         };
         host = loader.loadClass(PKG + "SideTaskHost");
         ticketClass = loader.loadClass(PKG + "SideContextStore$Ticket");
+        advisoryClass = loader.loadClass(PKG + "SideContextStore$Advisory");
         serverClass = loader.loadClass("net.minecraft.server.MinecraftServer");
         plugins = loader.loadClass("com.dwinovo.numen.api.NumenPlugins");
         for (Class<?> real : List.of(SideTaskEngine.class, TaskChain.class, RddRuntime.class))
@@ -239,6 +253,89 @@ class SideRegistrationHostConsumerTest {
         assertEquals(UNKNOWN, render(current), "real validateMainline must reject recovery-paused owner");
     }
 
+    // ---- B advisory: real Host.advisoryContextFor over real Store.Advisory ----
+
+    @Test void advisoryFourFactsReachTheExecutingMain() throws Exception {
+        set(plugins, "available", false); // equipment seam unavailable -> the fact must stay UNKNOWN
+        putAdvisory("world", "session", "minecraft:overworld", 11_800L, true, 17, 17, 3, false, true, false, 240_000L);
+        String xml = advisory(SELF, "world", "session");
+        assertTrue(xml.contains("<advisory type=\"equipment\" scope=\"B\""), xml);
+        assertTrue(xml.contains("UNKNOWN: current worn equipment observation unavailable"),
+                "missing sample must not read as no armor: " + xml);
+        assertTrue(xml.contains("<advisory type=\"hp_eat\""), xml);
+        assertTrue(xml.contains("hp=17/20 hunger=17/20 edible=3"), xml);
+        assertTrue(xml.contains("<advisory type=\"food_reserve\""), xml);
+        assertTrue(xml.contains("edible=3 hunger=17/20 health=17/20"), xml);
+        assertTrue(xml.contains("enough_for_trip=UNKNOWN (no declared route/reserve requirement)"), xml);
+        assertTrue(xml.contains("<advisory type=\"sleep\""), xml);
+        assertTrue(xml.contains("dayTime=11800"), "11800 is the existing night window: " + xml);
+        assertFalse(xml.contains("<rdd>"), "advisory is inner XML only: " + xml);
+    }
+
+    @Test void foodReserveStaysVisibleWhenNotCriticalAndUnknownEdibleIsUnknown() throws Exception {
+        set(plugins, "available", false);
+        putAdvisory("world", "session", "minecraft:overworld", 0L, true, 20, 20, -1, false, false, false, 240_000L);
+        String xml = advisory(SELF, "world", "session");
+        assertFalse(xml.contains("<advisory type=\"hp_eat\""), "20/20 is not an eat prompt: " + xml);
+        assertTrue(xml.contains("<advisory type=\"food_reserve\""), "reserve is advisory even when not critical: " + xml);
+        assertTrue(xml.contains("edible=UNKNOWN"), xml);
+        assertFalse(xml.contains("edible=0"), "unknown must not become zero: " + xml);
+        assertFalse(xml.contains("armor="), "no invented worn gear: " + xml);
+    }
+
+    @Test void fixedDayTimeWithoutNightWindowDoesNotInventSleep() throws Exception {
+        set(plugins, "available", false);
+        putAdvisory("world", "session", "minecraft:overworld", 0L, true, 17, 17, 3, false, false, false, 240_000L);
+        String xml = advisory(SELF, "world", "session");
+        assertFalse(xml.contains("<advisory type=\"sleep\""), "fixed dayTime 0 is outside 11800..23000: " + xml);
+        assertTrue(xml.contains("<advisory type=\"hp_eat\""), xml);
+        assertTrue(xml.contains("<advisory type=\"food_reserve\""), xml);
+    }
+
+    @Test void staleWorldOrSessionAndMissingIdentityDoNotBorrowTheSnapshot() throws Exception {
+        set(plugins, "available", false);
+        putAdvisory("world", "session", "minecraft:overworld", 11_800L, true, 17, 17, 3, false, false, false, 240_000L);
+        assertTrue(advisory(SELF, "world", "session").contains("food_reserve"));
+        assertEquals("", advisory(SELF, "world", "other-session"));
+        assertEquals("", advisory(SELF, "other-world", "session"));
+        assertEquals("", advisory(SELF, null, "session"));
+        assertEquals("", advisory(null, "world", "session"));
+    }
+
+    @Test void advisoryReadsNoWorldOrBody() throws Exception {
+        set(plugins, "available", false);
+        putAdvisory("world", "session", "minecraft:overworld", 11_800L, true, 17, 17, 3, false, false, false, 240_000L);
+        int reads = portReads;
+        String xml = advisory(SELF, "world", "session");
+        assertTrue(xml.contains("food_reserve"));
+        assertEquals(reads, portReads, "advisory must not read the world port: " + xml);
+        assertEquals(0, plugins.getField("snapshots").get(null), "advisory must not refresh identity: " + xml);
+    }
+
+    private void putAdvisory(String world, String session, String dim, long dayTime, boolean cycle,
+                             int hunger, int health, int edible,
+                             boolean sleeping, boolean spawnBound, boolean bodyBusy, long sampled) throws Exception {
+        var ctor = advisoryClass.getDeclaredConstructor(String.class, String.class, String.class, long.class,
+                boolean.class, int.class, int.class, int.class, boolean.class, boolean.class, boolean.class, long.class);
+        ctor.setAccessible(true);
+        Object advisory = ctor.newInstance(world, session, dim, dayTime, cycle, hunger, health, edible,
+                sleeping, spawnBound, bodyBusy, sampled);
+        Field field = host.getDeclaredField("SIDE_CONTEXT"); field.setAccessible(true);
+        Object store = field.get(null);
+        Method put = store.getClass().getDeclaredMethod("putAdvisory", UUID.class, advisoryClass);
+        put.setAccessible(true);
+        put.invoke(store, SELF, advisory);
+    }
+
+    private String advisory(UUID id, String world, String session) throws Exception {
+        Method m = host.getDeclaredMethod("advisoryContextFor", UUID.class, String.class, String.class);
+        m.setAccessible(true);
+        try {
+            return (String) m.invoke(null, id, world, session);
+        } catch (InvocationTargetException e) {
+            throw new AssertionError("consumer threw: advisoryContextFor", e.getCause());
+        }
+    }
     private void register(String id, String template, boolean enabled, boolean promptOnly) {
         engine.registerRecurring(new RecurringSideTaskSpec(id, template, 2, 0,
                 RecurringSideTaskSpec.MissedPolicy.SKIP, enabled, promptOnly,
