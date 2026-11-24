@@ -9,7 +9,10 @@ import com.dwinovo.numen.rdd.side.FoodSupplyPolicy;
 import com.dwinovo.numen.rdd.side.FoodSupplySideTaskTrigger;
 import com.dwinovo.numen.rdd.side.FoodSupplySideTaskType;
 import com.dwinovo.numen.rdd.side.MainlineResumeToken;
+import com.dwinovo.numen.rdd.side.SideTask;
 import com.dwinovo.numen.rdd.side.SideTaskEngine;
+import com.dwinovo.numen.rdd.side.SideTaskType;
+import com.dwinovo.numen.rdd.side.SideTaskVerdict;
 import com.dwinovo.numen.rdd.side.SideTaskWorldPort;
 import com.dwinovo.numen.rdd.side.death.DeathRecoverySideTaskTrigger;
 import com.dwinovo.numen.rdd.side.death.DeathRecoverySideTaskType;
@@ -190,7 +193,7 @@ class RddSurvivalPreemptReplanHostTest {
         var world = new PendingDailyWorld();
         var events = new java.util.ArrayList<String>();
         var engine = new SideTaskEngine((event, data) -> events.add(event), token -> token);
-        engine.registerType(new DailyMaintenanceSideTaskType());
+        engine.registerType(new HardDailyType());
         engine.registerType(new FoodSupplySideTaskType());
         engine.registerTrigger(new FoodSupplySideTaskTrigger(ctx -> !FoodSupplyPolicy.cooldownBlocks(
                 true, ctx.hunger(), ctx.health(), ctx.edibleCount())));
@@ -233,6 +236,40 @@ class RddSurvivalPreemptReplanHostTest {
                     "after explicit callback release, the same due DAILY is admitted by original rules");
             assertEquals(Boolean.TRUE, engine.handledToday(f.id, world.worldId(), specId, world.gameDay()));
             assertEquals(1, java.util.Collections.frequency(events, "side_task_activated"));
+        } finally {
+            RddReplanTransition.invalidate(f.id);
+        }
+    }
+
+    /**
+     * 060-B：普通 DAILY 是 B 型建议——生存 planner pending 期间 due 仍可见，但永不 activate、
+     * 不占身体、不改主线版本。硬源的正控留在上一条（{@link HardDailyType}）。
+     */
+    @Test
+    void ordinaryDailyDueIsAdvisoryWithoutActivationWhilePlannerPending() {
+        Fixture f = new Fixture();
+        Object ticket = new Object();
+        var world = new PendingDailyWorld();
+        var events = new java.util.ArrayList<String>();
+        var engine = new SideTaskEngine((event, data) -> events.add(event), token -> token);
+        engine.registerType(new DailyMaintenanceSideTaskType());
+        var daily = RddGoalDriver.buildInjection(f.chain.currentPrimary().id(), f.chain.planRevision(),
+                List.of(new SubtaskSpec("收掉成熟小麦并补种", Map.of("asset_key", "minecraft:wheat", "minimum", 1),
+                        null, NodeType.DAILY, RecurrenceSpec.daily(false))));
+        SideTaskHost.DailyRegistration.register(f.chain, daily, engine);
+        try {
+            assertTrue(RddReplanTransition.requestSurvival(f.id, f.chain, RddSurvivalGate.Decision.EAT_FIRST,
+                    "survival EAT_FIRST hunger=6 hp=16 edible=1", f.counts, f.key(), LIMIT,
+                    f.callbacks::incrementAndGet, ticket).accepted());
+            long version = f.chain.stateVersion();
+            SideTaskHost.SleepSafety.tick(engine, f.id, world, sideOwner(f), false, () -> false);
+            assertAll("ordinary DAILY is advisory: visible but never owns the body",
+                    () -> assertTrue(engine.current(f.id).isEmpty(), "advisory must not activate"),
+                    () -> assertTrue(events.contains("side_task_due"), "due must stay visible"),
+                    () -> assertTrue(events.contains("side_task_advisory"), "ordinary due is an advisory"),
+                    () -> assertFalse(events.contains("side_task_created"), "no hard instance is created"),
+                    () -> assertFalse(events.contains("side_task_activated"), "no activation"),
+                    () -> assertEquals(version, f.chain.stateVersion(), "advisory does not rewrite the mainline"));
         } finally {
             RddReplanTransition.invalidate(f.id);
         }
@@ -300,7 +337,7 @@ class RddSurvivalPreemptReplanHostTest {
         var world = new PendingDailyWorld();
         var owner = sideOwner(f);
         var engine = dueDailyEngine(f);
-        engine.registerType(new SleepSideTaskType());
+        engine.registerType(new SleepSideTaskType(SleepSideTaskType.Goal.LEGACY_BIND_OR_ENTER, false));
         engine.registerTrigger(new SleepSideTaskTrigger());
         engine.registerType(new DeathRecoverySideTaskType());
         engine.registerTrigger(new DeathRecoverySideTaskTrigger());
@@ -399,7 +436,7 @@ class RddSurvivalPreemptReplanHostTest {
 
     private static SideTaskEngine dueDailyEngine(Fixture f) {
         var engine = new SideTaskEngine(null, token -> token);
-        engine.registerType(new DailyMaintenanceSideTaskType());
+        engine.registerType(new HardDailyType());
         var daily = RddGoalDriver.buildInjection(f.chain.currentPrimary().id(), f.chain.planRevision(),
                 List.of(new SubtaskSpec("收掉成熟小麦并补种", Map.of("asset_key", "minecraft:wheat", "minimum", 1),
                         null, NodeType.DAILY, RecurrenceSpec.daily(false))));
@@ -422,6 +459,27 @@ class RddSurvivalPreemptReplanHostTest {
         public int health(UUID id) { return 16; }
         public int edibleCount(UUID id) { return 1; }
         public boolean bodyBusy(UUID id) { return false; }
+    }
+
+    /**
+     * 老机械题要的“硬占”来源：同一 DAILY TYPE_ID，但显式 advisory=false。
+     *
+     * <p>2026-11-24 060-B 之后，普通 DAILY 是 B 型建议（advisoryOnly=true：只报 due、不占体）；
+     * 这些从 044/E2 起就在验「生存 planner pending 时硬支线先让路」的案例，需要一条真硬源，
+     * 而不是把产品默认 DAILY 改回硬来救测试。所以只在 fixture 里显式返回 false。
+     */
+    private static final class HardDailyType implements SideTaskType {
+        private final DailyMaintenanceSideTaskType delegate = new DailyMaintenanceSideTaskType();
+        @Override public String typeId() { return DailyMaintenanceSideTaskType.TYPE_ID; }
+        @Override public long deadlineTicks() { return delegate.deadlineTicks(); }
+        @Override public boolean advisoryOnly() { return false; }
+        @Override public SideTask create(SideTaskType.CreationContext ctx) { return delegate.create(ctx); }
+        @Override public SideTaskVerdict evaluate(SideTask task, SideTaskWorldPort world) {
+            return delegate.evaluate(task, world);
+        }
+        @Override public String renderContext(SideTask task, SideTaskWorldPort world) {
+            return delegate.renderContext(task, world);
+        }
     }
 
     /** 真 TaskChain + 真预算表；触发源显式传入，不靠 reason 文本。 */

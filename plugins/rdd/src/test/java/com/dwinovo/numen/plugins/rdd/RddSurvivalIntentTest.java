@@ -10,7 +10,10 @@ import com.dwinovo.numen.rdd.core.TaskChain;
 import com.dwinovo.numen.rdd.api.SubtaskStatus;
 import com.dwinovo.numen.rdd.side.DailyMaintenanceSideTaskType;
 import com.dwinovo.numen.rdd.side.MainlineResumeToken;
+import com.dwinovo.numen.rdd.side.SideTask;
 import com.dwinovo.numen.rdd.side.SideTaskEngine;
+import com.dwinovo.numen.rdd.side.SideTaskType;
+import com.dwinovo.numen.rdd.side.SideTaskVerdict;
 import com.dwinovo.numen.rdd.side.SideTaskWorldPort;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
@@ -616,7 +619,7 @@ class RddSurvivalIntentTest {
             @Override public boolean isDay() { return true; }
             @Override public Wake pollWake(UUID id) { return Wake.NONE; }
         };
-        var daily = new DailyMaintenanceSideTaskType();
+        var daily = new HardDailyType();
         var token = new MainlineResumeToken(f.id, identity, f.chain.goal().id(),
                 f.chain.currentPrimary().id(), subtaskId, revision, 1L);
         SideTaskEngine beforeStop = new SideTaskEngine(null, candidate -> candidate);
@@ -789,6 +792,26 @@ class RddSurvivalIntentTest {
             chain.replaceCurrentSubtasks(List.of(
                     Subtask.hardCoded("s3", "外部换的计划", Map.of("group", "food"))));
             assertTrue(chain.activateCurrent(Map.of()));
+        }
+    }
+
+    /**
+     * 老机械题要的“硬占”来源：同一 DAILY TYPE_ID，但显式 advisory=false。
+     *
+     * <p>2026-11-24 060-B 之后普通 DAILY 是 B 型建议（只报 due、不占体）；这条从 V05/V06
+     * 起验的是「恢复后的硬支线先返、到 deadline 才释放」，需要真硬源。产品默认 DAILY 不改。
+     */
+    private static final class HardDailyType implements SideTaskType {
+        private final DailyMaintenanceSideTaskType delegate = new DailyMaintenanceSideTaskType();
+        @Override public String typeId() { return DailyMaintenanceSideTaskType.TYPE_ID; }
+        @Override public long deadlineTicks() { return delegate.deadlineTicks(); }
+        @Override public boolean advisoryOnly() { return false; }
+        @Override public SideTask create(SideTaskType.CreationContext ctx) { return delegate.create(ctx); }
+        @Override public SideTaskVerdict evaluate(SideTask task, SideTaskWorldPort world) {
+            return delegate.evaluate(task, world);
+        }
+        @Override public String renderContext(SideTask task, SideTaskWorldPort world) {
+            return delegate.renderContext(task, world);
         }
     }
 }
