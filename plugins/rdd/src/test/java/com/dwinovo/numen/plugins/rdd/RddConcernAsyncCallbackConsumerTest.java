@@ -182,13 +182,15 @@ public class RddConcernAsyncCallbackConsumerTest {
         return reply;
     }
     private void applyQueued(List<SubtaskSpec> specs, String snapshot) {
+        int before = host.snapshots().size();
         host.complete(specs);
         assertEquals(1, host.queued(), "SETUP: completion must wait on the server executor");
         assertEquals(PrimaryGoalStatus.REPLANNING, chain.primaryStatus());
-        assertTrue(host.snapshots().isEmpty(), "no inline application allowed");
+        assertEquals(before, host.snapshots().size(), "no inline application allowed");
         host.runNext();
         assertEquals(0, host.queued());
-        assertEquals(List.of(snapshot), host.snapshots(), "original callback must apply once, on the same captured server");
+        assertEquals(before + 1, host.snapshots().size(), "original callback must apply once, on the same captured server");
+        assertEquals(snapshot, host.snapshots().get(before));
         assertEquals(PrimaryGoalStatus.PENDING, chain.primaryStatus());
         assertEquals(SubtaskStatus.PENDING, chain.currentSubtaskStatus());
     }
