@@ -555,6 +555,21 @@ class RddMainlineWiringPinTest {
         assertContains(save, "completionCommit().saveRuntime(", "ordinary save must share the pending-aware consumer");
     }
 
+    /**
+     * 060-D（2026-11-24 迁移实机）：外部 reset 在 removeCurrent 之后才 clear 家锚点；
+     * 而 RddHomeAnchor.DIR 只在 renderStateContext 里赋值 → 没有模型请求窗口的 reset 抛
+     * home store unavailable，此时链/资产已被清掉 = partial cleanup。
+     * 初始化必须前移到插件 setup，且在 reset 的任何副作用之前再确认一次。
+     */
+    @Test
+    void homeAnchorStoreIsInitialisedBeforeResetSideEffects() {
+        String src = plugin();
+        assertContains(methodBody(src, "setup", "factsDir"), "RddHomeAnchor.DIR = factsDir",
+                "家锚点目录必须随插件初始化接上，不能等一次模型上下文渲染");
+        String reset = methodBody(src, "resetCurrentWorld", "RddHomeAnchor.clear");
+        assertOrder(reset, "RddHomeAnchor.DIR", "removeCurrent(");
+    }
+
     @Test
     void blockPropertyFilterIsAppliedBeforeAnyBlockCanMatch() throws Exception {
         String src = Files.readString(pluginSourceDir().resolve("RddWorldFacts.java"));
