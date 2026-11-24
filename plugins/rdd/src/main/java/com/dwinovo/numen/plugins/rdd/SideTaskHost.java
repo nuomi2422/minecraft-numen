@@ -55,6 +55,8 @@ final class SideTaskHost {
     /** 支线拍醒的重复间隔（tick，约 4 分钟）：支线 active 期间至少这么久再补一次提醒。 */
     private static final long NUDGE_REPEAT_TICKS = 4L * 60L * 20L;
     private static final Map<UUID, Long> LAST_NUDGE_GAME_TIME = new ConcurrentHashMap<>();
+    /** Explicit server-tick identity for callbacks published during this tick; never a global stamp. */
+    private static final ThreadLocal<Map<String, String>> TICK_IDENTITY = ThreadLocal.withInitial(Map::of);
     /** 2026-11-08: after a food task settles, do not rebuild for 5 real minutes. */
     private static final Map<UUID, Long> LAST_FOOD_DONE_MS = new ConcurrentHashMap<>();
     private static final long FOOD_COOLDOWN_MS = 5L * 60L * 1000L;
@@ -506,6 +508,9 @@ final class SideTaskHost {
             MainlineResumeToken token = currentMainlineToken(companionId);
             boolean deathOccupying = RddRepairDispatch.lastRepair(companionId) != null;
             // Preserve death preparation before the single arbitration tick; sleep only adds its handoff.
+            Map<String, String> priorIdentity = TICK_IDENTITY.get();
+            TICK_IDENTITY.set(serverIdentity(server));
+            try {
             tickDeathPreparation(ap, port);
             SleepSafety.tick(ENGINE, companionId, port, token, deathOccupying, () -> {
                 // Same server thread: stop ONLY the action whose owner was admitted, not a replacement.
@@ -526,6 +531,9 @@ final class SideTaskHost {
                         "taskId", stopped.publicId(), "tool", stopped.getToolName(), "reason", "current nearby hostiles"));
                 return true;
             });
+            } finally {
+                TICK_IDENTITY.set(priorIdentity);
+            }
             boolean nowActive = ENGINE.isActive(companionId);
             if (wasActive && "food_supply".equals(wasType) && !nowActive) {
                 LAST_FOOD_DONE_MS.put(companionId, System.currentTimeMillis());
@@ -595,20 +603,20 @@ final class SideTaskHost {
     static final class NudgeDelivery {
         private NudgeDelivery() {}
 
-        static void sendIfNeeded(UUID companionId, Map<UUID, Long> lastNudgeGameTime,
-                                 boolean wasActive, boolean nowActive, long now,
-                                 java.util.function.BooleanSupplier send) {
+        static boolean sendIfNeeded(UUID companionId, Map<UUID, Long> lastNudgeGameTime,
+                                    boolean wasActive, boolean nowActive, long now,
+                                    java.util.function.BooleanSupplier send) {
             if (!nowActive) {
                 lastNudgeGameTime.remove(companionId);
-                return;
+                return false;
             }
             Long last = lastNudgeGameTime.get(companionId);
             if (wasActive && last != null && now - last < NUDGE_REPEAT_TICKS) {
-                return;
+                return false;
             }
-            if (send.getAsBoolean()) {
-                lastNudgeGameTime.put(companionId, now);
-            }
+            if (!send.getAsBoolean()) return false;
+            lastNudgeGameTime.put(companionId, now);
+            return true;
         }
     }
 
@@ -991,6 +999,17 @@ final class SideTaskHost {
         refreshContext(companionId, port, com.dwinovo.numen.api.WorldContextStamp.snapshot());
     }
 
+    /** Explicit server-tick identity; failure is an empty map, never the global stamp. */
+    private static Map<String, String> serverIdentity(MinecraftServer server) {
+        if (server == null || !server.isSameThread()) return Map.of();
+        com.dwinovo.numen.api.ServerIdentityProvider provider =
+                com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.ServerIdentityProvider.class);
+        var identity = provider == null ? null : provider.snapshot(server);
+        if (identity == null || identity.worldId() == null || identity.worldId().isBlank()
+                || identity.serverSession() == null || identity.serverSession().isBlank()) return Map.of();
+        return Map.of("world_id", identity.worldId(), "server_session", identity.serverSession());
+    }
+
     /** Server-tick capture only. Request construction never enumerates the engine or reads the world. */
     private static void refreshContext(MinecraftServer server, UUID companionId, SideTaskWorldPort port) {
         // A failed refresh must not keep yesterday's registration/advisory facts current.
@@ -1102,9 +1121,10 @@ final class SideTaskHost {
                 // One B occurrence may wake an idle model, but only through the existing nudge
                 // throttle and never by stopping/clearing the current body action.
                 Map<String, Object> enriched = new java.util.LinkedHashMap<>(data);
-                Map<String, String> identity = com.dwinovo.numen.api.WorldContextStamp.snapshot();
+                Map<String, String> identity = TICK_IDENTITY.get();
                 String world = identity.getOrDefault("world_id", "");
                 String session = identity.getOrDefault("server_session", "");
+                if (!world.isBlank() && !session.isBlank()) {
                 enriched.put("world_id", world);
                 enriched.put("server_session", session);
                 nudgeAdvisoryEvent(event, enriched, LAST_NUDGE_GAME_TIME, world, session, () -> {
@@ -1120,6 +1140,7 @@ final class SideTaskHost {
                             "[支线·建议] " + type + " 有新提醒；主线仍可继续。请按当前事实自行选择、暂缓或拒绝，"
                                     + "无需调用 rdd_decline_side；该工具只适用当前 ACTIVE 的硬支线。");
                 });
+                }
                 data = enriched;
             }
             if (("side_task_completed".equals(event) || "side_task_skipped".equals(event)
