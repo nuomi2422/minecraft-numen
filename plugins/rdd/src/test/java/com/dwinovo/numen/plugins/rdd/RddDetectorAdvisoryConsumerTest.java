@@ -72,6 +72,11 @@ class RddDetectorAdvisoryConsumerTest {
               public static int expansionCalls(){ return RddGoalDriver.EXPANSION_CALLS; }
             }
             """);
+        // 真实闸源码也编进子 loader:RddSurvivalGate 是 package-private,而 Java 运行时包 = 包名 + classloader。
+        // 从父 loader 拿同名包类型,evaluate/Decision 就是 IllegalAccessError,拿不到真实 RED。
+        // 原样读源码,不复制算法、不改断言。
+        units.put(P + "RddSurvivalGate.java", Files.readString(root.resolve(
+                "plugins/rdd/src/main/java/" + P + "RddSurvivalGate.java")));
         units.put(P + "RddPlugin.java", """
             package com.dwinovo.numen.plugins.rdd;
             import java.util.*;
