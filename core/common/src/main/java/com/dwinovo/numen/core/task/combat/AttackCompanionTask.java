@@ -253,7 +253,7 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                     || (r.indiscriminate && retreatingFrom.contains(mob));
             boolean authorized = r.indiscriminate ? engaging : r.entityIds.contains(mob.getId());
             boolean ranged = authorized && Menace.rangedWithinEscapeRange(mob, player)
-                    && Menace.rangedThreat(mob, player);
+                    && (Menace.rangedThreat(mob, player) || retreatingFrom.contains(mob));
             if (r.terminal(mob.getId())) {
                 // 打完了、丢了、或者走不到又射不到的:<b>整只移出局面</b>。留着当"还有东西在
                 // 追我"的话,判据会永远喊走位 —— 一只在悬崖对面射她的骷髅就能把任务钉死。
