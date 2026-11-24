@@ -35,7 +35,7 @@ final class RddConcernTool implements NumenTool {
                 "rdd_status 的 concern_review 表示未核前提；只有当前负责人取得相关新观察或明确动作后, " +
                 "才用 kind=REVIEW、concern_ref 和 review_evidence 申请一次有界复核；模型建议不等已修正。" +
                 "执行前提失效（缺镐/护甲/食物/材料）时：先按新鲜背包/世界事实核对，能安全就地少量补救就先补；" +
-                "仍做不到再上报，reason 写事实、suggestion 写可行替代，不能只写"没有/做不到"。";
+                "仍做不到再上报，reason 写事实、suggestion 写可行替代，不能只写「没有/做不到」。";
     }
 
     @Override public Map<String, Object> parameterSchema() {
