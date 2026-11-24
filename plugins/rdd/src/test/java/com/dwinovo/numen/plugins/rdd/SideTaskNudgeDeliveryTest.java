@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -161,5 +162,82 @@ class SideTaskNudgeDeliveryTest {
         });
         assertEquals(3, sends.get());
         assertEquals(Long.valueOf(1040L), last.get(A));
+    }
+
+    // 2026-11-24: B advisory wake route. The real SideTaskHost helper is called by reflection
+    // so this test compiles before the host-side helper lands; it is RED until then.
+    @Test
+    void advisoryEventUsesTheSharedRepeatWindowWithAValidServerIdentity() throws Exception {
+        Map<UUID, Long> last = new HashMap<>();
+        AtomicInteger sends = new AtomicInteger();
+        assertTrue(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 1000L), last, "world-A", "session-A",
+                () -> { sends.incrementAndGet(); return true; }), "first B advisory must wake once");
+        assertEquals(1, sends.get());
+        assertEquals(Long.valueOf(1000L), last.get(A));
+
+        assertFalse(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 5799L), last, "world-A", "session-A",
+                () -> { sends.incrementAndGet(); return true; }), "same repeat window must suppress the next B wake");
+        assertEquals(1, sends.get());
+
+        assertTrue(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 5800L), last, "world-A", "session-A",
+                () -> { sends.incrementAndGet(); return true; }), "after the window a new B advisory may wake again");
+        assertEquals(2, sends.get());
+        assertEquals(Long.valueOf(5800L), last.get(A));
+    }
+
+    @Test
+    void advisoryRejectedDeliveryDoesNotConsumeTheWindow() throws Exception {
+        Map<UUID, Long> last = new HashMap<>();
+        assertFalse(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 2000L), last, "world-A", "session-A",
+                () -> false), "a rejected send must report false");
+        assertTrue(last.isEmpty(), "a rejected B send must not record a successful-reminder time");
+
+        AtomicInteger sends = new AtomicInteger();
+        assertTrue(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 2001L), last, "world-A", "session-A",
+                () -> { sends.incrementAndGet(); return true; }), "a later accepted B send still wakes");
+        assertEquals(1, sends.get());
+    }
+
+    @Test
+    void advisoryRoutingRejectsOtherEventsMissingIdentityAndCrossServer() throws Exception {
+        Map<UUID, Long> last = new HashMap<>();
+        AtomicInteger sends = new AtomicInteger();
+        BooleanSupplier send = () -> { sends.incrementAndGet(); return true; };
+
+        assertFalse(nudgeAdvisory("side_task_deferred", data(A, "world-A", "session-A", 3000L), last, "world-A", "session-A", send));
+        assertFalse(nudgeAdvisory("side_task_advisory", data(null, "world-A", "session-A", 3000L), last, "world-A", "session-A", send));
+        assertFalse(nudgeAdvisory("side_task_advisory", data(A, "world-B", "session-A", 3000L), last, "world-A", "session-A", send));
+        assertFalse(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-B", 3000L), last, "world-A", "session-A", send));
+        assertFalse(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 3000L), last, "world-A", "", send));
+        assertEquals(0, sends.get(), "only a same-server side_task_advisory may route to the B wake");
+        assertTrue(last.isEmpty());
+    }
+
+    @Test
+    void advisoryRouteHasNoBodyStopOrClearPort() throws Exception {
+        // The helper's only interaction is the BooleanSupplier receipt + the shared clock.
+        // There is no stopActive/clearBody/clearNudgeThrottle port to call here by construction.
+        Map<UUID, Long> last = new HashMap<>();
+        assertTrue(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 4000L), last, "world-A", "session-A",
+                () -> true));
+        assertEquals(Map.of(A, 4000L), last, "the route records only the shared successful-reminder clock");
+    }
+
+    private static Map<String, Object> data(UUID id, String world, String session, long gameTime) {
+        Map<String, Object> data = new HashMap<>();
+        if (id != null) data.put("companionId", id.toString());
+        data.put("world_id", world);
+        data.put("server_session", session);
+        data.put("gameTime", gameTime);
+        data.put("typeId", "sleep");
+        return data;
+    }
+
+    private static boolean nudgeAdvisory(String event, Map<String, Object> data, Map<UUID, Long> last,
+                                         String currentWorld, String currentSession, BooleanSupplier send) throws Exception {
+        var m = SideTaskHost.class.getDeclaredMethod("nudgeAdvisoryEvent", String.class, Map.class, Map.class,
+                String.class, String.class, BooleanSupplier.class);
+        m.setAccessible(true);
+        return (Boolean) m.invoke(null, event, data, last, currentWorld, currentSession, send);
     }
 }
