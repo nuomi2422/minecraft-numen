@@ -607,7 +607,8 @@ final class SideTaskHost {
                                     boolean wasActive, boolean nowActive, long now,
                                     java.util.function.BooleanSupplier send) {
             if (!nowActive) {
-                lastNudgeGameTime.remove(companionId);
+                // Do not clear the shared clock: the same map gates ordinary B advisories.
+                // A later hard owner sends immediately because wasActive is false.
                 return false;
             }
             Long last = lastNudgeGameTime.get(companionId);
