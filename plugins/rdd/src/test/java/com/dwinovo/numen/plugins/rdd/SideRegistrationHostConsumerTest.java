@@ -63,7 +63,7 @@ class SideRegistrationHostConsumerTest {
                     static SideTaskEngine ENGINE = new SideTaskEngine(null, SideTaskHost::validateMainline);
                     static final SideContextStore SIDE_CONTEXT = new SideContextStore();
                     // 060-D: the night-B AC projection reads this directory + one bounded mtime cache.
-                    static java.nio.file.Path CONFIG_DIR;
+                    static java.nio.file.Path HOST_CONFIG_DIR;
                     static volatile String ACX_HINT_CACHE = "";
                     static volatile long ACX_HINT_MTIME = -1L, ACX_HINT_SIZE = -1L;
                 """);
@@ -342,9 +342,10 @@ class SideRegistrationHostConsumerTest {
                 {"defs":{
                   "dig3_seal1_emergency":{"active_version":"1","versions":{"1":{"status":"STABLE","definition":{"name":"dig3_seal1_emergency","description":"临时急用：挖三格落地再封顶。","tags":["shelter","emergency"]}}}},
                   "old_withdrawn":{"active_version":"0","versions":{"0":{"status":"WITHDRAWN","definition":{"name":"old_withdrawn","description":"撤回的旧脚本。","tags":["shelter"]}}}},
-                  "farm_loop":{"active_version":"3","versions":{"3":{"status":"STABLE","definition":{"name":"farm_loop","description":"农活。","tags":["farm"]}}}}
+                  "farm_loop":{"active_version":"3","versions":{"3":{"status":"STABLE","definition":{"name":"farm_loop","description":"农活。","tags":["farm"]}}}},
+                  "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz":{"active_version":"1234567890","versions":{"1234567890":{"status":"STABLE","definition":{"name":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","description":"一个名字特别长的庇护脚本，用来验证预算。","tags":["shelter"]}}}}
                 }}""");
-        set(host, "CONFIG_DIR", cfg);
+        set(host, "HOST_CONFIG_DIR", cfg);
         putAdvisory("world", "session", "minecraft:overworld", 11_800L, true, 17, 17, 3, false, false, false, 240_000L);
         int reads = portReads;
         String xml = advisory(SELF, "world", "session");
@@ -354,6 +355,10 @@ class SideRegistrationHostConsumerTest {
         assertFalse(xml.contains("old_withdrawn"), "withdrawn script must not reappear: " + xml);
         assertFalse(xml.contains("farm_loop"), "non-shelter scripts are not offered here: " + xml);
         assertTrue(xml.contains("建议，不是命令"), "the hint stays advice, never auto-execution: " + xml);
+        int start = xml.indexOf("可用脚本");
+        String hint = start < 0 ? "" : xml.substring(start, xml.indexOf("</alternatives>", start));
+        assertTrue(hint.length() <= 240, "whole hint stays within the 240-char budget: " + hint);
+        assertFalse(hint.contains("zzzzzzzzzzzz"), "an entry that cannot fit is skipped whole; never a half ac_name");
         assertEquals(reads, portReads, "the AC projection must not read the body/world port: " + xml);
 
         putAdvisory("world", "session", "minecraft:overworld", 0L, true, 17, 17, 3, false, false, false, 240_000L);
@@ -361,7 +366,7 @@ class SideRegistrationHostConsumerTest {
         assertFalse(day.contains("<advisory type=\"sleep\""), day);
         assertFalse(day.contains("dig3_seal1_emergency"), "no night window, no sleep advice: " + day);
 
-        set(host, "CONFIG_DIR", temp.resolve("missing-" + System.nanoTime()));
+        set(host, "HOST_CONFIG_DIR", temp.resolve("missing-" + System.nanoTime()));
         putAdvisory("world", "session", "minecraft:overworld", 11_800L, true, 17, 17, 3, false, false, false, 240_000L);
         String missing = advisory(SELF, "world", "session");
         assertTrue(missing.contains("<advisory type=\"sleep\""), missing);
