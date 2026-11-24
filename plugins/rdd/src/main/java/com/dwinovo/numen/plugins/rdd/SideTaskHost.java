@@ -58,8 +58,6 @@ final class SideTaskHost {
     /** 2026-11-08: after a food task settles, do not rebuild for 5 real minutes. */
     private static final Map<UUID, Long> LAST_FOOD_DONE_MS = new ConcurrentHashMap<>();
     private static final long FOOD_COOLDOWN_MS = 5L * 60L * 1000L;
-    /** SURVIVAL report forces one food task even if thresholds are not otherwise met. */
-    private static final java.util.Set<UUID> FORCED_FOOD = ConcurrentHashMap.newKeySet();
 
     /** Called by report_task_concern(kind=SURVIVAL): request a food side task now. */
     static void requestFoodSupply(com.dwinovo.numen.entity.NumenPlayer ap, String reason) {
@@ -73,16 +71,9 @@ final class SideTaskHost {
                         nowMs, LAST_FOOD_DONE_MS.getOrDefault(id, 0L)),
                 port.hunger(id), port.health(id), port.edibleCount(id))) return;
         LAST_FOOD_DONE_MS.put(id, nowMs); // claim the slot before the async report can race
-        com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(ap,
-                "SURVIVAL report: " + (reason == null ? "" : reason));
+        // Ordinary HP/hunger/food advice is B: publish the request, never stop or replace the body.
         RddMonitor.publish("survival_food_requested", java.util.Map.of(
                 "companionId", id.toString(), "reason", reason == null ? "" : reason));
-        if (ENGINE.isActive(id)) {
-            ENGINE.cancel(id, "SURVIVAL food supply takes precedence");
-        }
-        boolean started = ENGINE.startNow(new com.dwinovo.numen.rdd.side.FoodSupplySideTaskType(), id, port,
-                currentMainlineToken(id), java.util.Map.of("reason", reason == null ? "" : reason));
-        if (!started) FORCED_FOOD.add(id);
     }
     private static volatile Path sideDir;
 
@@ -287,6 +278,18 @@ final class SideTaskHost {
         return companionId != null && ENGINE.isActive(companionId);
     }
 
+    /**
+     * 是否真的占住 MAIN。普通 B 建议的 advisoryOnly 不算；未知/未来硬类型默认算，
+     * 避免新增类型被静默当成可忽略建议。
+     */
+    static boolean blocksMainline(UUID companionId) {
+        if (companionId == null) return false;
+        return ENGINE.current(companionId).filter(task -> !task.terminal()).map(task -> {
+            com.dwinovo.numen.rdd.side.SideTaskType type = ENGINE.typeOf(task.typeId());
+            return type == null || !type.advisoryOnly();
+        }).orElse(false);
+    }
+
     static boolean isDeathRecoveryActive(UUID companionId) {
         return companionId != null
                 && DeathRecoverySideTaskTrigger.TYPE_ID.equals(currentTypeId(companionId));
@@ -317,6 +320,83 @@ final class SideTaskHost {
         return SIDE_CONTEXT.render(companionId, currentWorldId, currentSession);
     }
 
+    /**
+     * 只读 B 型建议：inner XML only，不含 {@code <rdd>}，不写 SIDE_CONTEXT，不占身体。
+     * 调用方只在自己正常 MAIN 的 {@code <rdd>} 内 append；同一轮可多条。
+     */
+    static String advisoryContextFor(UUID companionId, String currentWorldId, String currentSession) {
+        if (companionId == null) return "";
+        // Server tick wrote this ticket; the request identity must match it, never a global stamp.
+        SideContextStore.Advisory cached = SIDE_CONTEXT.advisoryFor(companionId, currentWorldId, currentSession);
+        if (cached == null) return "";
+        String world = cached.worldId();
+        String session = cached.serverSession();
+        long dayTime = cached.dayTime();
+        int hunger = cached.hunger();
+        int health = cached.health();
+        int edible = cached.edible();
+        StringBuilder out = new StringBuilder();
+
+        // 装备/穿戴：没有新鲜 SELF 样本时明确 UNKNOWN，不把“背包有”冒充“身穿好”。
+        var service = com.dwinovo.numen.api.NumenPlugins.capability(
+                com.dwinovo.numen.api.observation.WorldObservationService.class);
+        Map<String, String> stamp = Map.of("world_id", world, "server_session", session);
+        var sample = RddDeathEquipment.cached(service, companionId, cached.dimension(), stamp, System.currentTimeMillis());
+        String gearFact = sample == null ? "UNKNOWN: current worn equipment observation unavailable"
+                : "armor=" + sample.armor() + " mainhand=" + sample.mainhand() + " offhand=" + sample.offhand();
+        out.append(advisory("equipment", world, session, cached.dimension(), cached.sampledGameTime(), gearFact,
+                "更好/更合适的装备能降低死亡和返程风险；背包里有不等于已穿好。",
+                "换装会花时间，并可能打断当前动作。",
+                "继续当前装备 / 现在换 / 先核对耐久与六槽", "装备、耐久或背包变化后重评"));
+
+        // HP/饱食：普通 B 建议，不触发 forced food，也不 stop 当前动作。
+        if (health >= 0 && health < 20 || hunger >= 0 && hunger < 20) {
+            out.append(advisory("hp_eat", world, session, cached.dimension(), cached.sampledGameTime(),
+                    "hp=" + health + "/20 hunger=" + hunger + "/20 edible=" + edible,
+                    "血/饱食未满会影响持续作业和逃生余量；进食/回血有前提，不是提醒即回满。",
+                    "停下来吃或用掉一份食物会占时间；不做则继续带着余量风险。",
+                    "继续 / 现在吃 / 先补食物 / 暂缓并观察", "hp、hunger、可食物变化后重评"));
+        }
+
+        // 备用食物：报真实持有数；是否够取决于行程与储备需求（未声明=UNKNOWN），不把 2 件当通用门槛。
+        String edibleFact = edible < 0 ? "edible=UNKNOWN" : "edible=" + edible;
+        String hungerFact = hunger < 0 ? "hunger=UNKNOWN" : "hunger=" + hunger + "/20";
+        String healthFact = health < 0 ? "health=UNKNOWN" : "health=" + health + "/20";
+        out.append(advisory("food_reserve", world, session, cached.dimension(), cached.sampledGameTime(),
+                edibleFact + " " + hungerFact + " " + healthFact
+                        + "; enough_for_trip=UNKNOWN (no declared route/reserve requirement)",
+                "出远门、夜间或低血路线需要预留食物；当前是否够用取决于行程长度、退路和能否取到补给。",
+                "补粮会占行程；不补则遇到饥饿/受伤时选择更少。",
+                "继续 / 就近补粮 / 换路线 / 推迟外出", "可食物、行程或血量变化后重评"));
+
+        // 夜前约 60s：复用既有 SleepSideTaskTrigger 窗口，不另造计时器；无昼夜维度不误报。
+        if (com.dwinovo.numen.rdd.side.sleep.SleepSideTaskTrigger.enabled()
+                && cached.hasDayNightCycle()
+                && dayTime >= com.dwinovo.numen.rdd.side.sleep.SleepSideTaskTrigger.TRIGGER_DAY_TIME
+                && dayTime < com.dwinovo.numen.rdd.side.sleep.SleepSideTaskTrigger.WINDOW_END_DAY_TIME) {
+            out.append(advisory("sleep", world, session, cached.dimension(), cached.sampledGameTime(),
+                    "dayTime=" + dayTime + " body_busy=" + cached.bodyBusy()
+                            + " sleeping=" + cached.sleeping()
+                            + " spawn_bound=" + cached.spawnBound()
+                            + " sleep_risk=UNKNOWN(not sampled in this server-tick snapshot)",
+                    "夜前约 60 秒是准备窗口；夜里在野外/低光/无床会放大敌对与死亡风险。",
+                    "找床/回床/挖三填一会暂停当前任务；不做则夜里继续暴露。",
+                    "继续主线 / 就近找床 / 回已有床 / 有条件安全挖三填一 / 拒绝", "dayTime、床、风险或当前任务变化后重评"));
+        }
+        return out.toString();
+    }
+
+    private static String advisory(String type, String world, String session, String dimension,
+                                   long sampledGameTime, String fact, String reason,
+                                   String cost, String alternatives, String recheck) {
+        return "<advisory type=\"" + contextXml(type) + "\" scope=\"B\" world_id=\"" + contextXml(world)
+                + "\" server_session=\"" + contextXml(session) + "\" dimension=\"" + contextXml(dimension)
+                + "\" sampled_game_time=\"" + sampledGameTime + "\"><fact>" + contextXml(fact)
+                + "</fact><reason>" + contextXml(reason) + "</reason><cost>" + contextXml(cost)
+                + "</cost><alternatives>" + contextXml(alternatives) + "</alternatives><recheck>"
+                + contextXml(recheck) + "</recheck><instruction>建议，不是命令；可自行选择/暂缓/拒绝</instruction></advisory>";
+    }
+
     static SideTask activeSleepOwner(UUID companionId) {
         return ENGINE.current(companionId).filter(com.dwinovo.numen.rdd.side.sleep.SleepSideTaskType::isOvernight)
                 .filter(task -> !task.terminal()).orElse(null);
@@ -330,7 +410,12 @@ final class SideTaskHost {
 
     /** Current live side owner, not the independently cached model context. */
     static SideTask activeYieldOwner(UUID companionId) {
-        return companionId == null ? null : ENGINE.current(companionId).filter(task -> !task.terminal()).orElse(null);
+        return companionId == null ? null : ENGINE.current(companionId)
+                .filter(task -> !task.terminal())
+                .filter(task -> {
+                    com.dwinovo.numen.rdd.side.SideTaskType type = ENGINE.typeOf(task.typeId());
+                    return type == null || !type.advisoryOnly();
+                }).orElse(null);
     }
 
     /** 当前支线类型 id（无支线 → null）：给"拒绝"工具做旧回执校验（防拒错一条）。 */
@@ -415,16 +500,6 @@ final class SideTaskHost {
             HostWorldPort port = new HostWorldPort(ap);
             boolean wasActive = ENGINE.isActive(companionId);
             String wasType = currentTypeId(companionId);
-            boolean foodCooldown = com.dwinovo.numen.rdd.side.FoodSupplyPolicy.cooldownBlocks(
-                    com.dwinovo.numen.rdd.side.FoodSupplyPolicy.cooldownActive(
-                            System.currentTimeMillis(), LAST_FOOD_DONE_MS.getOrDefault(companionId, 0L)),
-                    port.hunger(companionId), port.health(companionId), port.edibleCount(companionId));
-            boolean foodCritical = !foodCooldown && !ENGINE.isActive(companionId)
-                    && (FORCED_FOOD.contains(companionId) || foodCritical(port, companionId));
-            if (foodCritical) {
-                com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(ap,
-                        "survival food supply preempts mainline");
-            }
             if (!wasActive) {
                 port.pollWake(companionId); // 无支线时排空陈旧醒来边沿，避免泄漏到下一晚
             }
@@ -452,14 +527,11 @@ final class SideTaskHost {
                 return true;
             });
             boolean nowActive = ENGINE.isActive(companionId);
-            if (FORCED_FOOD.contains(companionId) && "food_supply".equals(currentTypeId(companionId))) {
-                FORCED_FOOD.remove(companionId);
-            }
             if (wasActive && "food_supply".equals(wasType) && !nowActive) {
                 LAST_FOOD_DONE_MS.put(companionId, System.currentTimeMillis());
             }
             refreshContext(ap.level().getServer() == server ? server : null, companionId, port);
-            nudgeIfNeeded(companionId, port, wasActive, nowActive);
+            nudgeIfNeeded(companionId, port, wasActive, blocksMainline(companionId));
             persist();
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 支线 tick 异常 {}: {}", companionId, ex.toString());
@@ -473,9 +545,9 @@ final class SideTaskHost {
      * （2026-10-08 用户实测：夜前/夜里都触发了，但同伴毫无反应）。这正是"监督要跟着支线走"。
      * {@link RddPlugin#nudge} 自身还有 3 分钟全局节流兜底，这里再加一层 4 分钟间隔防刷屏。
      */
-    private static void nudgeIfNeeded(UUID companionId, SideTaskWorldPort port, boolean wasActive, boolean nowActive) {
-        NudgeDelivery.sendIfNeeded(companionId, LAST_NUDGE_GAME_TIME, wasActive, nowActive,
-                nowActive ? port.gameTime() : 0L, () -> {
+    private static void nudgeIfNeeded(UUID companionId, SideTaskWorldPort port, boolean wasActive, boolean nowOwner) {
+        NudgeDelivery.sendIfNeeded(companionId, LAST_NUDGE_GAME_TIME, wasActive, nowOwner,
+                nowOwner ? port.gameTime() : 0L, () -> {
                     String type = currentTypeId(companionId);
                     // A new sleep owner must not inherit a mainline reminder cooldown.
                     // Like kickoff, reset only this companion on admission; nudge still checks pause/API.
@@ -897,8 +969,9 @@ final class SideTaskHost {
 
     /** Server-tick capture only. Request construction never enumerates the engine or reads the world. */
     private static void refreshContext(MinecraftServer server, UUID companionId, SideTaskWorldPort port) {
-        // A failed refresh must not keep yesterday's registration facts current.
+        // A failed refresh must not keep yesterday's registration/advisory facts current.
         SIDE_CONTEXT.removeRegistrations(companionId);
+        SIDE_CONTEXT.removeAdvisory(companionId);
         if (server == null || !server.isSameThread()) return;
         com.dwinovo.numen.api.ServerIdentityProvider provider =
                 com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.ServerIdentityProvider.class);
@@ -908,6 +981,15 @@ final class SideTaskHost {
         Map<String, String> stamp = !knownIdentity ? Map.of()
                 : Map.of("world_id", identity.worldId(), "server_session", identity.serverSession());
         refreshContext(companionId, port, stamp);
+        if (knownIdentity) {
+            // Only this server tick samples the body; the model thread reads the ticket below.
+            SIDE_CONTEXT.putAdvisory(companionId, new SideContextStore.Advisory(
+                    identity.worldId(), identity.serverSession(), port.worldId(),
+                    Math.floorMod(port.dayTime(), 24_000L), port.hasDayNightCycle(),
+                    port.hunger(companionId), port.health(companionId), port.edibleCount(companionId),
+                    port.isSleeping(companionId), port.isSpawnBound(companionId), port.bodyBusy(companionId),
+                    port.gameTime()));
+        }
         MainlineResumeToken owner = validateMainline(currentMainlineToken(companionId));
         if (identity == null || identity.worldId() == null || identity.worldId().isBlank()
                 || identity.serverSession() == null || identity.serverSession().isBlank()
@@ -957,7 +1039,8 @@ final class SideTaskHost {
         }
         SideTask task = current.get();
         SideTaskType type = ENGINE.typeOf(task.typeId());
-        if (type == null) {
+        if (type == null || type.advisoryOnly()) {
+            // 普通 B 只走 advisoryContextFor；旧 ACTIVE 实例保留 history，但不再占 SIDE 硬 owner 槽。
             SIDE_CONTEXT.remove(companionId);
             return;
         }
@@ -1053,9 +1136,4 @@ final class SideTaskHost {
         }
     }
 
-    /** Idempotent critical check; UNKNOWN values never trigger. */
-    private static boolean foodCritical(HostWorldPort port, UUID companionId) {
-        return com.dwinovo.numen.rdd.side.FoodSupplyPolicy.needsSupply(
-                port.hunger(companionId), port.health(companionId), port.edibleCount(companionId));
-    }
 }

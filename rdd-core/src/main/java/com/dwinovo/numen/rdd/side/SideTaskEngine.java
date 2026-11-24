@@ -43,6 +43,8 @@ public final class SideTaskEngine {
     private final Map<String, Long> recurringHandled = new HashMap<>();
     /** 宿主约每 20 tick 调一次 tick；推迟冷却不得小于一拍，否则每拍都会重新决策。 */
     private static final int MIN_DEFER_TICKS = 20;
+    /** 普通 B 建议的重复可见间隔（约 20s）；不占体，也不锁当日。 */
+    private static final long ADVISORY_REFRESH_TICKS = 400L;
     private final SideTaskEvents events;
     private final MainlineValidator mainlineValidator;
 
@@ -208,6 +210,13 @@ public final class SideTaskEngine {
                 cancel(companionId, "world has no day-night cycle (" + world.worldId() + "); side task can never finish");
                 return;
             }
+            SideTaskType runningType = types.get(running.typeId());
+            if (runningType != null && runningType.advisoryOnly()) {
+                // Legacy ordinary ACTIVE: preserve its data in a terminal record, release the only
+                // runtime slot, and never touch the body/mainline (no resume callback).
+                retireLegacyAdvisory(running);
+                return;
+            }
             if (world.bodyBusy(companionId) && "daily_maintenance".equals(running.typeId())) {
                 finish(running, SideTaskState.CANCELLED, "mainline needs body; daily yields");
                 return;
@@ -286,6 +295,13 @@ public final class SideTaskEngine {
             if (oncePerDay) {
                 deferredUntil.remove(key);
             }
+            if (type.advisoryOnly()) {
+                // 普通 B 型：只报“建议可见”，不 runtime.activate、不占身体、不锁当日。
+                if (oncePerDay) deferredUntil.put(key, now + ADVISORY_REFRESH_TICKS);
+                publishOccurrence(companionId, "side_task_advisory", trigger.typeId(), day,
+                        "advisory_only", ADVISORY_REFRESH_TICKS);
+                continue;
+            }
             MainlineResumeToken token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
             long generation = runtime.nextGeneration();
             String instanceId = trigger.typeId() + "-" + generation + "-" + shortId(companionId);
@@ -339,6 +355,16 @@ public final class SideTaskEngine {
             case SKIP -> finish(task.withData(verdict.data()), SideTaskState.SKIPPED_TIMEOUT, verdict.evidence());
             case CANCEL -> finish(task.withData(verdict.data()), SideTaskState.CANCELLED, verdict.evidence());
         }
+    }
+
+    /** Old ordinary ACTIVE instance: keep the recorded data, free the admission slot, no body/mainline action. */
+    private void retireLegacyAdvisory(SideTask task) {
+        runtime.remove(task.companionId());
+        Map<String, Object> data = base(task);
+        data.put("state", SideTaskState.CANCELLED.name());
+        data.put("reason", "advisory migration: runtime slot released; body and mainline unchanged");
+        data.put("preservedData", task.data());
+        events.publish("side_task_cancelled", data);
     }
 
     private void finish(SideTask task, SideTaskState state, String reason) {
@@ -464,6 +490,20 @@ public final class SideTaskEngine {
             }
             SideTaskType type = typeId == null ? null : types.get(typeId);
             if (type == null) continue;
+            if (type.advisoryOnly()) {
+                // 普通 DAILY：calendar due 只是可见提醒，不 activate、不占体、不锁主线。
+                recurringHandled.put(key, day);
+                Map<String, Object> due = new LinkedHashMap<>();
+                due.put("companionId", companionId.toString());
+                due.put("specId", spec.scheduleId());
+                due.put("typeId", typeId);
+                due.put("gameDay", day);
+                due.put("promptOnly", true);
+                due.put("advisoryOnly", true);
+                events.publish("side_task_due", due);
+                events.publish("side_task_advisory", due);
+                continue;
+            }
             if (plannerDaily) {
                 // V24: awaiting survival planning is not bodyBusy. Keep this occurrence unspent;
                 // prompt-only reminders above and the original sleep/death/food trigger loop remain live.

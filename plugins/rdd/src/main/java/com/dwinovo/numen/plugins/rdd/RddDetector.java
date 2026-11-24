@@ -350,7 +350,7 @@ final class RddDetector {
                 return;
             }
             // Side ownership only delays the mainline; never spend its failure budget.
-            if (SideTaskHost.isActive(ap.getUUID())
+            if (SideTaskHost.blocksMainline(ap.getUUID())
                     || chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return;
             if (safe) return;
             long now = System.currentTimeMillis();
@@ -408,7 +408,7 @@ final class RddDetector {
             // 否则"卡住"这种最该被看到的状态会被早退挡掉（#238 的同一教训）。
             // 2026-11-05：只把「有活在推进」算作可能停滞；链已完成时站着不动不是停滞。
             boolean busyNow = ps == PrimaryGoalStatus.ACTIVE
-                    || SideTaskHost.isActive(ap.getUUID());
+                    || SideTaskHost.blocksMainline(ap.getUUID());
             RddSituationFacts.tick(ap, busyNow);
             // D20-C1：先跑超时结账 —— 过期支线清掉后，下面的 lastRepair 才不会对死支线空转。
             // tickTimeout 不落盘（单测环境 RddPlugin 类链炸）；这里在游戏环境补 saveLedger。
@@ -460,7 +460,7 @@ final class RddDetector {
             if (RddMainlineAdmission.stopAfterObservation(ap.getUUID(), chain, ps,
                     replanEnteredAt, System::currentTimeMillis, new RddMainlineAdmission.Host() {
                         @Override public boolean sideActive() {
-                            return SideTaskHost.isActive(ap.getUUID());
+                            return SideTaskHost.blocksMainline(ap.getUUID());
                         }
                         @Override public void activeProposal() {
                             RddEarlyProposalPublisher.publish(ap, chain, countsAtAdmission);

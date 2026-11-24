@@ -73,6 +73,8 @@ public final class SleepSideTaskType implements SideTaskType {
         return TYPE_ID;
     }
 
+    @Override public boolean advisoryOnly() { return true; }
+
     @Override
     public long deadlineTicks() {
         return DEADLINE_TICKS;
@@ -92,6 +94,9 @@ public final class SleepSideTaskType implements SideTaskType {
      */
     @Override
     public SideTaskDecision decide(UUID companionId, SideTaskWorldPort world) {
+        if (!world.hasDayNightCycle()) {
+            return SideTaskDecision.skip("fixed_time_dimension_no_sleep");
+        }
         // 2026-10-24（主人指出）：睡眠只在夜里成立 —— 白天根本睡不着（原版直接拒绝），
         // 开一条白天执行的睡觉支线＝白占主线 10 分钟。**按时间窗判定，而不是只靠 deadline**。
         //
