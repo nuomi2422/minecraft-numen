@@ -1,12 +1,23 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 
+import javax.tools.ToolProvider;
+import java.io.ByteArrayOutputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -18,6 +29,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * These tests do not prove global 180-second admission, side-state priority, or game delivery.
  */
 class SideTaskNudgeDeliveryTest {
+    private static Method isolatedNudgeMethod;
+    private static URLClassLoader isolatedLoader;
+
     private static final UUID A = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private static final UUID B = UUID.fromString("00000000-0000-0000-0000-000000000002");
 
@@ -164,8 +178,9 @@ class SideTaskNudgeDeliveryTest {
         assertEquals(Long.valueOf(1040L), last.get(A));
     }
 
-    // 2026-11-24: B advisory wake route. The real SideTaskHost helper is called by reflection
-    // so this test compiles before the host-side helper lands; it is RED until then.
+    // 2026-11-24: B advisory wake route. The real helper and nested NudgeDelivery are extracted
+    // from SideTaskHost source into an isolated consumer, so the MC-laden host class is never
+    // loaded; the route is RED until the helper lands.
     @Test
     void advisoryEventUsesTheSharedRepeatWindowWithAValidServerIdentity() throws Exception {
         Map<UUID, Long> last = new HashMap<>();
@@ -235,9 +250,68 @@ class SideTaskNudgeDeliveryTest {
 
     private static boolean nudgeAdvisory(String event, Map<String, Object> data, Map<UUID, Long> last,
                                          String currentWorld, String currentSession, BooleanSupplier send) throws Exception {
-        var m = SideTaskHost.class.getDeclaredMethod("nudgeAdvisoryEvent", String.class, Map.class, Map.class,
+        try {
+            return (Boolean) isolatedNudge().invoke(null, event, data, last, currentWorld, currentSession, send);
+        } catch (InvocationTargetException e) {
+            throw new AssertionError("SETUP: isolated real nudge route failed before business assertions", e.getCause());
+        }
+    }
+
+    private static synchronized Method isolatedNudge() throws Exception {
+        if (isolatedNudgeMethod != null) return isolatedNudgeMethod;
+        Path root = Path.of("").toAbsolutePath();
+        while (root != null && !Files.isDirectory(root.resolve("plugins/rdd/src/main/java"))) root = root.getParent();
+        assertNotNull(root, "SETUP: repository root not found");
+        String source = Files.readString(root.resolve(
+                "plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/SideTaskHost.java"));
+        String helper = isolatedMember(source, "nudgeAdvisoryEvent(");
+        String delivery = isolatedMember(source, "final class NudgeDelivery {");
+        Matcher repeat = Pattern.compile(
+                "(?m)^\\s*(?:private|public|protected)?\\s*static\\s+final\\s+long\\s+NUDGE_REPEAT_TICKS\\s*=\\s*([^;]+);\\s*$")
+                .matcher(source);
+        assertTrue(repeat.find(), "SETUP: NUDGE_REPEAT_TICKS declaration missing");
+        String unit = "package com.dwinovo.numen.plugins.rdd;\n"
+                + "import java.util.*;\n"
+                + "public final class SideTaskHostNudgeRoute {\n"
+                + "    static final long NUDGE_REPEAT_TICKS = " + repeat.group(1) + ";\n"
+                + helper
+                + delivery
+                + "}\n";
+        Path out = Files.createTempDirectory("rdd-nudge-route-");
+        Path sourceFile = out.resolve("com/dwinovo/numen/plugins/rdd/SideTaskHostNudgeRoute.java");
+        Files.createDirectories(sourceFile.getParent());
+        Files.writeString(sourceFile, unit);
+        var diagnostics = new ByteArrayOutputStream();
+        var compiler = ToolProvider.getSystemJavaCompiler();
+        assertNotNull(compiler, "SETUP: full JDK required");
+        int status = compiler.run(null, diagnostics, diagnostics,
+                "-encoding", "UTF-8", "-proc:none",
+                "-classpath", System.getProperty("java.class.path"),
+                "-d", out.toString(), sourceFile.toString());
+        assertEquals(0, status, "SETUP: isolated real NudgeDelivery compilation failed:" + diagnostics);
+        isolatedLoader = new URLClassLoader(new URL[]{out.toUri().toURL()},
+                SideTaskNudgeDeliveryTest.class.getClassLoader());
+        Class<?> route = isolatedLoader.loadClass("com.dwinovo.numen.plugins.rdd.SideTaskHostNudgeRoute");
+        isolatedNudgeMethod = route.getDeclaredMethod("nudgeAdvisoryEvent", String.class, Map.class, Map.class,
                 String.class, String.class, BooleanSupplier.class);
-        m.setAccessible(true);
-        return (Boolean) m.invoke(null, event, data, last, currentWorld, currentSession, send);
+        isolatedNudgeMethod.setAccessible(true);
+        return isolatedNudgeMethod;
+    }
+
+    /** Extract one real member (method or nested class) from the production source, never a copy. */
+    private static String isolatedMember(String source, String marker) {
+        int hit = source.indexOf(marker);
+        assertTrue(hit >= 0, "SETUP: production member missing: " + marker);
+        int start = source.lastIndexOf('\n', hit) + 1;
+        int indent = 0;
+        while (start + indent < source.length() && source.charAt(start + indent) == ' ') indent++;
+        String close = "\n" + " ".repeat(indent) + "}";
+        int end = source.indexOf(close, hit);
+        assertTrue(end > hit, "SETUP: production member end missing: " + marker);
+        return source.substring(start, end + close.length()) + "\n";
+    }
+
+    @AfterAll static void closeIsolatedLoader() throws Exception {
+        if (isolatedLoader != null) isolatedLoader.close();
     }
 }

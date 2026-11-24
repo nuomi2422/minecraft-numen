@@ -117,8 +117,10 @@ class RddPausedSubtaskInstructionConsumerTest {
                 chain.expandCurrentPrimary(List.of(sub));
                 if(!chain.activateCurrent(Map.of())) throw new AssertionError("SETUP: activation");
                 if(kind.equals("paused-owner")) chain.pauseSubtask("S1",TaskChain.OWNER_PAUSE_REASON);
-                else if(kind.equals("completed")){
+                else if(kind.equals("completed") || kind.equals("terminal")){
                   if(!chain.applyHardCodedResult("S1",true)) throw new AssertionError("SETUP: completion");
+                  if(kind.equals("terminal"))
+                    chain.applySupervisorDecision(new SupervisorDecision(SupervisorDecisionType.CONFIRM, "P1", "owner confirms completion"));
                 }
                 else if(!kind.equals("running")) throw new AssertionError("SETUP: unknown advice kind "+kind);
                 RddPlugin.RUNTIMES.put(id,new RddRuntime(chain,new AssetRegistry()));
@@ -287,10 +289,23 @@ class RddPausedSubtaskInstructionConsumerTest {
     }
 
     @Test void terminalCompletedChainDoesNotGetAdvisory() throws Exception {
+        String user = advice("terminal");
+        assertTrue(user.contains("STATUS=COMPLETED"), user);
+        assertTrue(user.contains("PRIMARY=COMPLETED"), user);
+        assertTrue(user.contains("<state>chain_completed</state>"), user);
+        assertTrue(user.contains("ADVICE_CALLS=0"), "a completed chain has no live request to wake: " + user);
+        assertFalse(user.contains("<advisory"), "terminal must not be woken by B: " + user);
+    }
+
+    @Test void awaitingSupervisorCompletedNodeKeepsSurvivalAdvisoryButNotExecutionOrder() throws Exception {
         String user = advice("completed");
         assertTrue(user.contains("STATUS=COMPLETED"), user);
         assertTrue(user.contains("PRIMARY=AWAITING_SUPERVISOR"), user);
-        assertFalse(user.contains("<advisory"), "terminal must not be woken by B: " + user);
+        assertTrue(user.contains("<subtask_status>COMPLETED</subtask_status>"), user);
+        assertTrue(user.contains("ADVICE_CALLS=1"), "a completed current node still carries survival B advice: " + user);
+        assertTrue(user.contains("<advisory type='equipment'"), user);
+        assertFalse(user.contains("必须执行"), "completed current node must not be ordered: " + user);
+        assertTrue(user.contains("已完成"), user);
     }
 
     static String advice(String kind) throws Exception { return advice(kind, null, null); }
