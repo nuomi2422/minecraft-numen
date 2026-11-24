@@ -1478,6 +1478,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                 RddRuntime runtime = runtime(uuid);
                 if (runtime != null) {
                     runtime.startCurrent();
+                    RddDetector.captureStatBaselineAtStart(NumenPlayer.findByUuid(server, uuid), runtime);
                     publishTaskSnapshot(uuid, "goal_decomposed", observationToken);
                     kickoffNudge(uuid, runtime.chain(), observationToken);
                 }

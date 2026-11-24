@@ -36,8 +36,13 @@ class EarlyAchievementInventoryRegressionTest {
         test.entryBaselineAllowsFirstCraftDelta();
         test.unknownStatReadDoesNotBecomeZeroBaseline();
         test.lateOldAttemptBaselineIsNotOverwritten();
+        test.entryHelperLocksZeroThenFirstCraftDelta();
+        test.entryHelperUnknownDoesNotLock();
+        test.entryHelperKeepsExistingAttemptBaseline();
+        test.entryHelperDoesNotLockLifetimeScope();
+        test.entryHelperIgnoresNonStatCurrentTask();
         test.statEntryWiringIsPresentAtAllFiveStartSites();
-        System.out.println("EarlyAchievementInventoryRegressionTest: 9 passed, 0 failed");
+        System.out.println("EarlyAchievementInventoryRegressionTest: 14 passed, 0 failed");
     }
 
     private static Path detectorSource() {
@@ -195,6 +200,68 @@ class EarlyAchievementInventoryRegressionTest {
     }
 
     @Test
+    void entryHelperLocksZeroThenFirstCraftDelta() throws Exception {
+        Class<?> probe = compileStatCaptureProbe();
+        TaskChain chain = statChain();
+        Subtask task = chain.currentSubtask();
+        chain.startCurrent();
+        captureWithProbe(probe, chain, 0);
+        assertEquals(Integer.valueOf(0), chain.statBaseline(task.id()).get("value"),
+                "helper must lock the pre-action stat once");
+        assertTrue(evaluateStat(compileStatDeltaMethod(), chain, task, 1),
+                "first craft after the entry lock must satisfy minimum=1");
+    }
+
+    @Test
+    void entryHelperUnknownDoesNotLock() throws Exception {
+        Class<?> probe = compileStatCaptureProbe();
+        TaskChain chain = statChain();
+        Subtask task = chain.currentSubtask();
+        chain.startCurrent();
+        captureWithProbe(probe, chain, -1);
+        assertNull(chain.statBaseline(task.id()), "UNKNOWN stat read must not create a baseline");
+    }
+
+    @Test
+    void entryHelperKeepsExistingAttemptBaseline() throws Exception {
+        Class<?> probe = compileStatCaptureProbe();
+        TaskChain chain = statChain();
+        Subtask task = chain.currentSubtask();
+        chain.startCurrent();
+        chain.captureStatBaseline(task.id(), 1);
+        captureWithProbe(probe, chain, 5);
+        assertEquals(Integer.valueOf(1), chain.statBaseline(task.id()).get("value"),
+                "a retry start must not move the original attempt baseline");
+        assertTrue(evaluateStat(compileStatDeltaMethod(), chain, task, 2));
+    }
+
+    @Test
+    void entryHelperDoesNotLockLifetimeScope() throws Exception {
+        Class<?> probe = compileStatCaptureProbe();
+        TaskChain chain = statChain(Map.of("type", "item_crafted",
+                "item", "minecraft:wooden_pickaxe", "minimum", 1, "scope", "lifetime"));
+        Subtask task = chain.currentSubtask();
+        chain.startCurrent();
+        captureWithProbe(probe, chain, 0);
+        assertNull(chain.statBaseline(task.id()), "explicit lifetime scope must not use a delta baseline");
+    }
+
+    @Test
+    void entryHelperIgnoresNonStatCurrentTask() throws Exception {
+        Class<?> probe = compileStatCaptureProbe();
+        Subtask stat = statTask();
+        Subtask nonStat = Subtask.hardCoded("non-stat", "no stat condition",
+                Map.of("type", "inventory", "asset_key", "minecraft:dirt", "minimum", 1));
+        TaskChain chain = new TaskChain(new Goal("stat-goal", "wrong current task",
+                List.of(new PrimaryGoal("stat-primary", "wrong current task", List.of(nonStat, stat)))));
+        chain.startCurrent();
+        captureWithProbe(probe, chain, 0);
+        assertNull(chain.statBaseline(stat.id()), "helper must only lock the current subtask");
+        assertNull(chain.statBaseline(nonStat.id()), "non-stat current must not create a baseline");
+    }
+
+    /** Source wiring only: counts the five start call sites; helper behavior above owns consumption. */
+    @Test
     void statEntryWiringIsPresentAtAllFiveStartSites() throws Exception {
         String detector = Files.readString(detectorSource(), StandardCharsets.UTF_8);
         assertEquals(2, count(detector, "captureStatBaselineAtStart(ap,"),
@@ -210,10 +277,22 @@ class EarlyAchievementInventoryRegressionTest {
     }
 
     private static TaskChain statChain() {
-        Subtask task = Subtask.hardCoded("stat-baseline", "craft one wooden pickaxe",
-                Map.of("type", "item_crafted", "item", "minecraft:wooden_pickaxe", "minimum", 1));
+        return statChain(Map.of("type", "item_crafted",
+                "item", "minecraft:wooden_pickaxe", "minimum", 1));
+    }
+
+    private static TaskChain statChain(Map<String, Object> condition) {
         return new TaskChain(new Goal("stat-goal", "stat baseline regression",
-                List.of(new PrimaryGoal("stat-primary", "stat baseline", List.of(task)))));
+                List.of(new PrimaryGoal("stat-primary", "stat baseline", List.of(statTask(condition))))));
+    }
+
+    private static Subtask statTask() {
+        return statTask(Map.of("type", "item_crafted",
+                "item", "minecraft:wooden_pickaxe", "minimum", 1));
+    }
+
+    private static Subtask statTask(Map<String, Object> condition) {
+        return Subtask.hardCoded("stat-baseline", "craft one wooden pickaxe", condition);
     }
 
     private static boolean evaluateStat(Method method, TaskChain chain, Subtask task, int count)
@@ -223,9 +302,9 @@ class EarlyAchievementInventoryRegressionTest {
 
     private static Method compileStatDeltaMethod() throws Exception {
         String source = Files.readString(detectorSource(), StandardCharsets.UTF_8);
-        int start = source.indexOf("    private static boolean statDeltaSatisfied(");
+        int start = source.indexOf("    private static boolean isStatCondition(");
         int end = source.indexOf("    private static Map<String, Integer> acquireBaselineFor(", start);
-        assertTrue(start >= 0 && end > start, "statDeltaSatisfied boundaries missing");
+        assertTrue(start >= 0 && end > start, "stat methods boundaries missing");
         String method = source.substring(start, end);
         String probe = """
                 import java.util.*;
@@ -265,6 +344,55 @@ class EarlyAchievementInventoryRegressionTest {
         var loader = new URLClassLoader(new java.net.URL[]{dir.toUri().toURL()},
                 EarlyAchievementInventoryRegressionTest.class.getClassLoader());
         return loader.loadClass("StatDeltaProbe").getMethod("evaluate", TaskChain.class, Subtask.class, int.class);
+    }
+
+    private static Class<?> compileStatCaptureProbe() throws Exception {
+        String source = Files.readString(detectorSource(), StandardCharsets.UTF_8);
+        int start = source.indexOf("    private static boolean isStatCondition(");
+        int end = source.indexOf("    private static boolean statDeltaSatisfied(", start);
+        assertTrue(start >= 0 && end > start, "stat capture boundaries missing");
+        String methods = source.substring(start, end);
+        String probe = """
+                import java.util.*;
+                import com.dwinovo.numen.rdd.api.Subtask;
+                import com.dwinovo.numen.rdd.api.SubtaskStatus;
+                import com.dwinovo.numen.rdd.core.TaskChain;
+                public class StatCaptureProbe {
+                    static TaskChain chain;
+                    static int stat;
+                    static final RddRuntime RUNTIME = new RddRuntime();
+                    static final class RddRuntime { TaskChain chain() { return chain; } }
+                    static final class NumenPlayer { java.util.UUID getUUID() { return new java.util.UUID(0L, 0L); } }
+                    static final class RddWorldFacts {
+                        static int statCount(NumenPlayer ap, Map<String, Object> condition) { return stat; }
+                        static boolean matches(NumenPlayer ap, Map<String, Object> condition) {
+                            throw new AssertionError("world facts are outside this test");
+                        }
+                    }
+                """ + methods + """
+                    public static void capture(TaskChain c, int n) {
+                        chain = c; stat = n;
+                        captureStatBaselineAtStart(new NumenPlayer(), RUNTIME);
+                    }
+                }
+                """;
+        Path dir = Files.createTempDirectory("rdd-stat-capture-");
+        Path javaFile = dir.resolve("StatCaptureProbe.java");
+        Files.writeString(javaFile, probe, StandardCharsets.UTF_8);
+        String coreClasses = Path.of(HardCodedEvaluator.class.getProtectionDomain().getCodeSource()
+                .getLocation().toURI()).toString();
+        var compiler = ToolProvider.getSystemJavaCompiler();
+        assertNotNull(compiler, "a JDK is required for this source-isolated test");
+        int result = compiler.run(null, null, null, "-encoding", "UTF-8", "-classpath", coreClasses,
+                "-d", dir.toString(), javaFile.toString());
+        assertEquals(0, result, "could not compile the real captureStatBaselineAtStart method");
+        var loader = new URLClassLoader(new java.net.URL[]{dir.toUri().toURL()},
+                EarlyAchievementInventoryRegressionTest.class.getClassLoader());
+        return loader.loadClass("StatCaptureProbe");
+    }
+
+    private static void captureWithProbe(Class<?> probe, TaskChain chain, int count) throws Exception {
+        probe.getMethod("capture", TaskChain.class, int.class).invoke(null, chain, count);
     }
 
     private static String readSibling(String name) throws Exception {

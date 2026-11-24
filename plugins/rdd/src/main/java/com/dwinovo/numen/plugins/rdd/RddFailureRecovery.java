@@ -142,6 +142,7 @@ final class RddFailureRecovery {
         retries.put(ap.getUUID(), new RetryState(current.id(), n + 1));
         rt.chain().retrySubtask(current.id());
         rt.startCurrent();
+        RddDetector.captureStatBaselineAtStart(ap, rt);
         RddPlugin.nudge(ap.getUUID(), "这个目标（" + current.description() + "）失败了，再试一次。换个策略：检查材料、换工具、或换位置。");
         RddMonitor.publish("subtask_retry", Map.of("subtask", current.id(), "retry", n + 1, "max", MAX_SUBTASK_RETRIES));
     }

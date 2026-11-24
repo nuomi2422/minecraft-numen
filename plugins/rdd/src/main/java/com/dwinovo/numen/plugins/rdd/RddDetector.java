@@ -523,6 +523,7 @@ final class RddDetector {
             // 自动启动当前二级（首个由 sink 启动，推进后由这里继续；AI_ASSISTED 也在内）。
             if (chain.currentSubtaskStatus() == SubtaskStatus.PENDING) {
                 rt.startCurrent();
+                captureStatBaselineAtStart(ap, rt);
             }
             SubtaskStatus status = chain.currentSubtaskStatus();
             // PAUSED = 士兵说"这个现在做不了，先放着"（2026-09-30 两次实战触发）。
@@ -603,6 +604,7 @@ final class RddDetector {
                         break;
                     }
                     rt.startCurrent();
+                    captureStatBaselineAtStart(ap, rt);
                 }
                 if (chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) {
                     break;
@@ -1139,31 +1141,45 @@ final class RddDetector {
     }
 
     /**
-     * 统计类条件的增量判定：首次看到该二级时拍当前累计值为基线并返回 false（宁可晚一拍，不许假完成）；
-     * 之后只要 (current - baseline) >= minimum 才算达成。基线随链持久化（TaskChain.acquireBaselines 同表）。
+     * 2026-11-25: 真实主/支线 PENDING→RUNNING 入口在身体/工具执行前调用一次。
+     * 只锁当前 RUNNING 的统计条件；查询/状态路径绝不调用。
+     * UNKNOWN(-1) 不拍，缺基线仍判 false，不把失读折成 0。
+     */
+    static void captureStatBaselineAtStart(NumenPlayer ap, RddRuntime rt) {
+        if (ap == null || rt == null) return;
+        TaskChain chain = rt.chain();
+        Subtask task = chain.currentSubtask();
+        if (task == null || chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) return;
+        if (!isStatCondition(task.condition()) || !statDeltaApplies(rt, task)) return;
+        int current = RddWorldFacts.statCount(ap, task.condition());
+        if (current < 0) return;
+        chain.captureStatBaseline(task.id(), current);
+    }
+
+    /** 统计条件是否走“进入本步后的增量”；显式 lifetime 优先，显式 delta 不被旧链开关覆盖。 */
+    private static boolean statDeltaApplies(RddRuntime rt, Subtask task) {
+        Map<String, Object> condition = task.condition();
+        boolean explicitLifetime = com.dwinovo.numen.rdd.core.WorldFactConditions.lifetimeScope(condition);
+        boolean explicitDelta = "delta".equals(condition.get("scope"));
+        return !explicitLifetime && (explicitDelta || rt.chain().statDeltaEnabled());
+    }
+
+    /**
+     * 统计类条件的增量判定。基线只由启动入口 captureStatBaselineAtStart 锁；
+     * 本方法纯判定：status/查询调用不会初始化或改写基线。
+     * 基线缺失（含 restore UNKNOWN 未捕获）→ false；不猜 0，不用终身统计兜底。
      */
     private static boolean statDeltaSatisfied(NumenPlayer ap, Subtask task, Map<String, Integer> counts) {
         RddRuntime rt = RddPlugin.runtime(ap.getUUID());
         if (rt == null) return false;
-        // 旧链（无 statDeltaEnabled 字段）默认 lifetime；但**显式 scope=lifetime/delta 优先**：
-        // 旧链里显式写 delta 的条件不能被链开关覆盖成 lifetime（2026-11-03 审计指出）。
-        boolean explicitLifetime = com.dwinovo.numen.rdd.core.WorldFactConditions.lifetimeScope(task.condition());
-        boolean explicitDelta = "delta".equals(task.condition().get("scope"));
-        if (explicitLifetime || (!explicitDelta && !rt.chain().statDeltaEnabled())) {
+        if (!statDeltaApplies(rt, task)) {
             return com.dwinovo.numen.rdd.core.WorldFactConditions.valid(task.condition())
                     && RddWorldFacts.matches(ap, task.condition());
         }
-        // 只对真正在跑的子步拍基线：rdd_status 等纯查询也会调用 conditionMatches，
-        // 若在那里拍，会在动作开始前把基线提前固定，污染增量。PENDING/WAITING 一律只读不拍。
-        boolean running = rt.chain().subtaskStatuses().get(task.id()) == SubtaskStatus.RUNNING;
         int current = RddWorldFacts.statCount(ap, task.condition());
         if (current < 0) return false;
         Map<String, Integer> baseline = rt.chain().statBaseline(task.id());
-        if (baseline == null) {
-            if (!running) return false;
-            rt.chain().captureStatBaseline(task.id(), current);
-            return false;
-        }
+        if (baseline == null) return false;
         int base = baseline.getOrDefault("value", current);
         Object rawMin = task.condition().get("minimum");
         int minimum = rawMin instanceof Number n && n.intValue() > 0 ? n.intValue() : 1;
