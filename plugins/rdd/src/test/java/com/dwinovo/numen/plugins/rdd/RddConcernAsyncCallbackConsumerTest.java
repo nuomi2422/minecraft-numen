@@ -356,11 +356,10 @@ public class RddConcernAsyncCallbackConsumerTest {
             applyQueued(List.of(), "replan_fallback_resume"); activate(); host.negotiate();
         }
         assertEquals(4, ((List<?>)host.review().get("reviews")).size());
-        report("COUNTER","overflow","alt");
-        applyQueued(List.of(), "replan_fallback_resume"); activate();
         JsonObject full = JsonParser.parseString(host.report("COUNTER",chain.currentSubtask().id(),"overflow current","alt2")).getAsJsonObject();
         assertFalse(full.get("success").getAsBoolean(), full::toString);
         assertTrue(full.toString().contains("queue full"), full::toString);
         assertEquals(4, ((List<?>)host.review().get("reviews")).size());
+        assertNull(host.pendingReason(), "full queue must not silently record an unretainable control");
     }
 }
