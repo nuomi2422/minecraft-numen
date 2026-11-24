@@ -85,9 +85,9 @@ public final class SleepSideTaskType implements SideTaskType {
         if (task == null || task.data() == null) return advisory;
         String source = task.data().get("advisory_source");
         if (source != null) return Boolean.parseBoolean(source);
-        // Old persisted Host sleep was the only production source (auto OVERNIGHT).  Without a
-        // source marker it is ordinary B, not an assumed human explicit overnight target.
-        return true;
+        // Unmarked legacy tasks follow the registered producer: old Host auto registration is B;
+        // an explicit hard fixture/registration stays hard.
+        return advisory;
     }
 
     @Override
