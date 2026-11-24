@@ -143,7 +143,7 @@ class MobDefenseChainTest {
         add(src, args, "com/dwinovo/numen/event/NumenEvents.java", """
                 package com.dwinovo.numen.event;
                 public class NumenEvents {
-                    public static void body(com.dwinovo.numen.entity.NumenPlayer p,String s) { p.events.add("body"); }
+                    public static void body(com.dwinovo.numen.entity.NumenPlayer p,String s) { p.events.add("body:"+s); }
                 }
                 """);
         for (String name : List.of("Battlefield", "AttackPlan")) {
@@ -307,7 +307,7 @@ class MobDefenseChainTest {
                         Mob idle=new Shooter(); idle.world=p.world; idle.id=8; idle.x=p.x+10; idle.z=p.z;
                         if(scenario.equals("remoteRetreatBystander")) p.world.mobs.add(idle);
                         p.paused=scenario.equals("paused") || scenario.equals("outmatched");
-                        p.outmatched=scenario.equals("outmatched");
+                        p.outmatched=scenario.equals("outmatched") || scenario.equals("budgetHandback");
                         MobDefenseChain chain=new MobDefenseChain();
                         AttackCompanionTask.next=TaskState.RUNNING;
                         Map<String,Object> r=new LinkedHashMap<>();
@@ -344,6 +344,75 @@ class MobDefenseChainTest {
                             r.put("sameDanger",chain.canRun(p));
                             p.world.mobs.clear(); chain.canRun(p);
                             p.world.mobs.add(m); r.put("newDanger",chain.canRun(p)); chain.tick(p);
+                        } else if(scenario.equals("budgetHandback")) {
+                            // Consumer sequence: FC owns 400t, hands the body back, the
+                            // mainline actually ticks for the grace window, then the same
+                            // still-lethal threat / a new attacker must be re-evaluated.
+                            p.world.time+=MobDefenseChain.MAX_REFLEX_FIGHT_TICKS-1;
+                            r.put("beforeBudget",chain.canRun(p)); chain.tick(p);
+                            p.world.time++; r.put("atBudget",chain.canRun(p));
+                            int bodyFreeTicks=0;
+                            for(int i=0;i<40;i++) {
+                                p.world.time++;
+                                // Selector-visible body window only; the real TaskSlot
+                                // consumer is NOT exercised by this fixture.
+                                if(!chain.canRun(p)) bodyFreeTicks++;
+                            }
+                            r.put("bodyFreeTicks",bodyFreeTicks);
+                            r.put("sameLethalReeval",chain.canRun(p));
+                            if(Boolean.TRUE.equals(r.get("sameLethalReeval"))) chain.tick(p);
+                            p.world.time+=MobDefenseChain.MAX_REFLEX_FIGHT_TICKS-1;
+                            r.put("secondBeforeBudget",chain.canRun(p));
+                            if(Boolean.TRUE.equals(r.get("sameLethalReeval"))) chain.tick(p);
+                            p.world.time++; r.put("secondAtBudget",chain.canRun(p));
+                            // A genuinely new attacker arrives while the body is handed back.
+                            Mob second=new Hostile(); second.world=p.world; second.id=9;
+                            second.x=p.x+2; second.z=p.z; second.target=p;
+                            p.world.mobs.add(second);
+                            r.put("newAttackerReeval",chain.canRun(p));
+                            if(Boolean.TRUE.equals(r.get("newAttackerReeval"))) chain.tick(p);
+                            p.world.time+=MobDefenseChain.MAX_REFLEX_FIGHT_TICKS-1;
+                            r.put("thirdBeforeBudget",chain.canRun(p));
+                            if(Boolean.TRUE.equals(r.get("newAttackerReeval"))) chain.tick(p);
+                            p.world.time++; r.put("thirdAtBudget",chain.canRun(p));
+                            r.put("unresolvedNotified",p.events.stream().anyMatch(e->e.startsWith("body:")));
+                        } else if(scenario.equals("budgetHandbackSafe")) {
+                            // Same non-lethal danger must not re-arm on every grace window.
+                            p.world.time+=MobDefenseChain.MAX_REFLEX_FIGHT_TICKS-1;
+                            r.put("beforeBudget",chain.canRun(p)); chain.tick(p);
+                            p.world.time++; r.put("atBudget",chain.canRun(p));
+                            int bodyFreeTicks=0;
+                            for(int i=0;i<40;i++) {
+                                p.world.time++;
+                                if(!chain.canRun(p)) bodyFreeTicks++;
+                            }
+                            r.put("bodyFreeTicks",bodyFreeTicks);
+                            r.put("sameSafeReeval",chain.canRun(p));
+                            r.put("unresolvedNotified",p.events.stream().anyMatch(e->e.startsWith("body:")));
+                        } else if(scenario.equals("budgetHandbackHurt")) {
+                            // Same threat set, but a fresh hurt is new evidence.
+                            p.world.time+=MobDefenseChain.MAX_REFLEX_FIGHT_TICKS-1;
+                            r.put("beforeBudget",chain.canRun(p)); chain.tick(p);
+                            p.world.time++; r.put("atBudget",chain.canRun(p));
+                            for(int i=0;i<40;i++) p.world.time++;
+                            p.tickCount++; p.attacker=m; p.hurtTimestamp=p.tickCount;
+                            r.put("newHurtReeval",chain.canRun(p));
+                        } else if(scenario.equals("budgetHandbackHurtImmediate")) {
+                            // A fresh hit must re-evaluate without waiting a fixed grace.
+                            p.world.time+=MobDefenseChain.MAX_REFLEX_FIGHT_TICKS-1;
+                            r.put("beforeBudget",chain.canRun(p)); chain.tick(p);
+                            p.world.time++; r.put("atBudget",chain.canRun(p));
+                            p.tickCount++; p.attacker=m; p.hurtTimestamp=p.tickCount;
+                            r.put("newHurtImmediate",chain.canRun(p));
+                        } else if(scenario.equals("budgetHandbackNewEnemyImmediate")) {
+                            // A newly close enemy is new evidence even while handed back.
+                            p.world.time+=MobDefenseChain.MAX_REFLEX_FIGHT_TICKS-1;
+                            r.put("beforeBudget",chain.canRun(p)); chain.tick(p);
+                            p.world.time++; r.put("atBudget",chain.canRun(p));
+                            Mob second=new Hostile(); second.world=p.world; second.id=9;
+                            second.x=p.x+2; second.z=p.z; second.target=p;
+                            p.world.mobs.add(second);
+                            r.put("newEnemyImmediate",chain.canRun(p));
                         } else if(scenario.equals("cancelled")) {
                             AttackCompanionTask.next=TaskState.CANCELLED; chain.tick(p);
                             r.put("resumed",chain.canRun(p)); chain.tick(p);
@@ -459,6 +528,52 @@ class MobDefenseChainTest {
         assertEquals(1,events(r,"result:CANCELLED"));
         assertEquals(2,events(r,"construct:")); assertEquals(2,events(r,"start"));
         assertEquals(1,events(r,"halt")); assertEquals(false,r.get("shift")); assertEquals(true,r.get("ownerPreserved"));
+    }
+
+    @Test void budgetHandsBodyBackThenReevaluatesLethalAndNewAttackerAndNotifiesUnresolved() throws Exception {
+        var r=run("budgetHandback");
+        assertEquals(true,r.get("beforeBudget"));
+        assertEquals(false,r.get("atBudget"));
+        // Consumer boundary: canRun/tick exposes a body-free selector window.
+        // The real TaskSlot/mainline executor is NOT exercised here (fixture boundary).
+        assertTrue(((Integer)r.get("bodyFreeTicks")) >= 39);
+        // Same threat is still lethal: must re-evaluate, not stay handed back forever.
+        assertEquals(true,r.get("sameLethalReeval"));
+        // A new attacker is new evidence even before the old danger clears.
+        assertEquals(true,r.get("newAttackerReeval"));
+        // Repeatedly unable to escape must be explicitly notified, not silently false.
+        assertEquals(true,r.get("unresolvedNotified"));
+        assertEquals(true,r.get("ownerPreserved"));
+    }
+
+    @Test void budgetHandbackSameSafeDangerDoesNotRearmOnEveryGraceWindow() throws Exception {
+        var r=run("budgetHandbackSafe");
+        assertEquals(true,r.get("beforeBudget")); assertEquals(false,r.get("atBudget"));
+        assertTrue(((Integer)r.get("bodyFreeTicks")) >= 39);
+        assertEquals(false,r.get("sameSafeReeval"));
+        assertEquals(false,r.get("unresolvedNotified"));
+        assertEquals(true,r.get("ownerPreserved"));
+    }
+
+    @Test void budgetHandbackFreshHurtReevaluatesEvenWhenDangerSetIsUnchanged() throws Exception {
+        var r=run("budgetHandbackHurt");
+        assertEquals(true,r.get("beforeBudget")); assertEquals(false,r.get("atBudget"));
+        assertEquals(true,r.get("newHurtReeval"));
+        assertEquals(true,r.get("ownerPreserved"));
+    }
+
+    @Test void budgetHandbackFreshHurtImmediateReevaluatesWithoutFixedGrace() throws Exception {
+        var r=run("budgetHandbackHurtImmediate");
+        assertEquals(true,r.get("beforeBudget")); assertEquals(false,r.get("atBudget"));
+        assertEquals(true,r.get("newHurtImmediate"));
+        assertEquals(true,r.get("ownerPreserved"));
+    }
+
+    @Test void budgetHandbackNewCloseEnemyImmediateReevaluatesWhileOldDangerPersists() throws Exception {
+        var r=run("budgetHandbackNewEnemyImmediate");
+        assertEquals(true,r.get("beforeBudget")); assertEquals(false,r.get("atBudget"));
+        assertEquals(true,r.get("newEnemyImmediate"));
+        assertEquals(true,r.get("ownerPreserved"));
     }
 
     @Test void cancelledFightEndsAndNextThreatCanStartFreshWithoutReplacingOwner() throws Exception {
