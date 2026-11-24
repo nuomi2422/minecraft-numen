@@ -80,6 +80,8 @@ public final class MobDefenseChain implements Task, Reflex {
     private int yieldedHurtTimestamp = -1;
     /** 交还瞬间已经在场的危险 id；新 id 不等待宽限。 */
     private final Set<Integer> yieldedDangerIds = new HashSet<>();
+    /** 交还瞬间已经 armed 的危险 id；同一 id 后变 armed 是新的爆炸事实。 */
+    private final Set<Integer> yieldedArmedDangerIds = new HashSet<>();
     /** 连续未能脱离危险的交还次数；用于向消费者发明确通知。 */
     private int handbackCount;
     /** 最后一刻还看得见危险的游戏时间。 */
@@ -225,7 +227,11 @@ public final class MobDefenseChain implements Task, Reflex {
         yieldedAtTick = now;
         yieldedHurtTimestamp = companion.getLastHurtByMobTimestamp();
         yieldedDangerIds.clear();
-        for (Mob m : dangers) yieldedDangerIds.add(m.getId());
+        yieldedArmedDangerIds.clear();
+        for (Mob m : dangers) {
+            yieldedDangerIds.add(m.getId());
+            if (Menace.armed(m)) yieldedArmedDangerIds.add(m.getId());
+        }
         handbackCount++;
         InputDriver.halt(companion);
         companion.setShiftKeyDown(false);
@@ -244,6 +250,8 @@ public final class MobDefenseChain implements Task, Reflex {
         if (companion.getLastHurtByMobTimestamp() > yieldedHurtTimestamp) return true;
         for (Mob m : dangers) {
             if (!yieldedDangerIds.contains(m.getId())) return true;
+            // Same id turning armed is a fresh explosion fact, not a new risk formula.
+            if (Menace.armed(m) && !yieldedArmedDangerIds.contains(m.getId())) return true;
         }
         return false;
     }
@@ -254,6 +262,7 @@ public final class MobDefenseChain implements Task, Reflex {
         yieldedAtTick = NEVER;
         yieldedHurtTimestamp = -1;
         yieldedDangerIds.clear();
+        yieldedArmedDangerIds.clear();
         handbackCount = 0;
     }
 
