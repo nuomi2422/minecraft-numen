@@ -574,7 +574,7 @@ class RddMainlineWiringPinTest {
     @Test
     void ordinaryPeriodicTickDoesNotEnterLegacySurvivalPreempt() throws Exception {
         String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
-        String tickBody = methodBody(src, "tick", "completionPending");
+        String tickBody = methodBody(src, "onServerTick", "completionPending");
         assertContains(tickBody, "survivalPreempt(ap, tick)",
                 "the original periodic entry stays; its ordinary branch is reduced");
         assertContains(tickBody, "SideTaskHost.tick(server, ap)",
