@@ -14,7 +14,9 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 危险来了就<b>自动开一场战斗</b>——然后把打法完全交给 {@code attack}。
@@ -70,8 +72,16 @@ public final class MobDefenseChain implements Task, Reflex {
     static final long MAX_REFLEX_FIGHT_TICKS = 20L * 20L;
     /** 这一场反射战斗的起点。 */
     private long fightStartedTick = NEVER;
-    /** 预算用尽后，同一批危险没消失前不再次抢占身体。 */
+    /** 预算用尽后的有界交还窗口；不是“危险不清空就永不接管”。 */
     private boolean yieldedForCurrentDanger;
+    /** 本轮交还开始的游戏时间；用于 CALM_GRACE 后的同危重评。 */
+    private long yieldedAtTick = NEVER;
+    /** 交还瞬间的受击时间戳；之后的新受击不等待宽限。 */
+    private int yieldedHurtTimestamp = -1;
+    /** 交还瞬间已经在场的危险 id；新 id 不等待宽限。 */
+    private final Set<Integer> yieldedDangerIds = new HashSet<>();
+    /** 连续未能脱离危险的交还次数；用于向消费者发明确通知。 */
+    private int handbackCount;
     /** 最后一刻还看得见危险的游戏时间。 */
     private long dangerLastSeenTick = NEVER;
 
@@ -92,15 +102,25 @@ public final class MobDefenseChain implements Task, Reflex {
             return false;
         }
         long now = companion.level().getGameTime();
-        boolean threat = !dangersNear(companion).isEmpty();
+        List<Mob> dangers = dangersNear(companion);
+        boolean threat = !dangers.isEmpty();
         if (!threat) {
-            yieldedForCurrentDanger = false;
+            clearHandback();
         }
         if (yieldedForCurrentDanger) {
-            return false;
+            // Hand back only for a bounded window. New hurt/new attacker re-arms
+            // immediately; otherwise a still-lethal same danger is re-evaluated
+            // after the existing grace, never held false until the field is empty.
+            boolean freshEvidence = hasFreshHandbackEvidence(companion, dangers);
+            boolean lethalAfterGrace = Menace.outmatched(companion)
+                    && now - yieldedAtTick >= CALM_GRACE_TICKS;
+            if (!freshEvidence && !lethalAfterGrace) {
+                return false;
+            }
+            yieldedForCurrentDanger = false;
         }
         if (fight != null && reflexFightBudgetExhausted(fightStartedTick, now)) {
-            yieldFight(companion, now);
+            yieldFight(companion, now, dangers);
             return false;
         }
         // 有人正在替这条本能干活(模型派的 attack),就别抢 —— 除非她已经扛不住,
@@ -190,8 +210,8 @@ public final class MobDefenseChain implements Task, Reflex {
         companion.setShiftKeyDown(false);
     }
 
-    /** 反射战斗到预算仍未收场时的单向让位，防止无限占住 goto/mine/build。 */
-    private void yieldFight(NumenPlayer companion, long now) {
+    /** 反射战斗到预算仍未收场时的有界让位，防止无限占住 goto/mine/build。 */
+    private void yieldFight(NumenPlayer companion, long now, List<Mob> dangers) {
         if (fight != null) {
             fight.stop(companion, StopReason.PREEMPTED);
             // stop() deliberately preserves navigation for ordinary preemption;
@@ -202,11 +222,39 @@ public final class MobDefenseChain implements Task, Reflex {
         fightStartedTick = NEVER;
         dangerLastSeenTick = now;
         yieldedForCurrentDanger = true;
+        yieldedAtTick = now;
+        yieldedHurtTimestamp = companion.getLastHurtByMobTimestamp();
+        yieldedDangerIds.clear();
+        for (Mob m : dangers) yieldedDangerIds.add(m.getId());
+        handbackCount++;
         InputDriver.halt(companion);
         companion.setShiftKeyDown(false);
         com.dwinovo.numen.Constants.LOG.warn(
-                "[numen-defense] 反射战斗达到 {} tick 预算，让位给显式任务；危险解除前不重复抢占",
-                MAX_REFLEX_FIGHT_TICKS);
+                "[numen-defense] 反射战斗达到 {} tick 预算，让位给显式任务；{} 后重评同危/新伤",
+                MAX_REFLEX_FIGHT_TICKS, CALM_GRACE_TICKS);
+        if (handbackCount >= 2) {
+            com.dwinovo.numen.event.NumenEvents.body(companion,
+                    "defense handed back while danger remains (handback " + handbackCount
+                            + "); mainline owns the body, FC will re-evaluate new hurt/attacker");
+        }
+    }
+
+    /** 新受击或新近身危险：不等待固定宽限。 */
+    private boolean hasFreshHandbackEvidence(NumenPlayer companion, List<Mob> dangers) {
+        if (companion.getLastHurtByMobTimestamp() > yieldedHurtTimestamp) return true;
+        for (Mob m : dangers) {
+            if (!yieldedDangerIds.contains(m.getId())) return true;
+        }
+        return false;
+    }
+
+    /** 危险真正清空后才允许下一次新危险从干净状态开始。 */
+    private void clearHandback() {
+        yieldedForCurrentDanger = false;
+        yieldedAtTick = NEVER;
+        yieldedHurtTimestamp = -1;
+        yieldedDangerIds.clear();
+        handbackCount = 0;
     }
 
     /** Pure boundary used by tests: an unstarted reflex can never time out. */
