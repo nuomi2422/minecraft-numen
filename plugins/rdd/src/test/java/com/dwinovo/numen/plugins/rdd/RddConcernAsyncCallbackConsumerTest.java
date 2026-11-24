@@ -348,6 +348,20 @@ public class RddConcernAsyncCallbackConsumerTest {
         assertEquals(OLD, oldest.get("reason_reported"));
         assertEquals("DEFERRED", oldest.get("premise_disposition"));
         assertFalse(oldest.toString().contains("FIXED"));
+        String secondRef = (String)((Map<?,?>)reviews.get(1)).get("concern_ref");
+        assertTrue(JsonParser.parseString(host.requestReview(ref,"oldest ref fresh evidence")).getAsJsonObject().get("success").getAsBoolean());
+        assertFalse(JsonParser.parseString(host.requestReview(secondRef,"second ref evidence")).getAsJsonObject().get("success").getAsBoolean(),
+                "only one review may be in flight");
+        host.completeReview("{\"subtasks\":[],\"concern_review\":{\"concern_ref\":\"" + ref
+                + "\",\"proposal\":\"FIXED\",\"reason\":\"model claim\",\"basis\":\"unverified text\"}}");
+        host.runNext();
+        List<?> after = (List<?>)host.review().get("reviews");
+        Map<?,?> first = (Map<?,?>)after.get(0), second = (Map<?,?>)after.get(1);
+        assertEquals("DEFERRED", first.get("premise_disposition"));
+        assertEquals("DEFERRED", second.get("premise_disposition"));
+        assertEquals(OLD, first.get("reason_reported"));
+        assertEquals("second route problem", second.get("reason_reported"));
+        assertFalse(second.containsKey("untrusted_planner_proposal"), "callback must update only its own ref");
     }
     @Test void reviewQueueFullRejectsExplicitlyWithoutDropping() {
         retrySameStep(); host.negotiate();
