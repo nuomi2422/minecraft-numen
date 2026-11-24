@@ -298,7 +298,8 @@ class MobDefenseChainTest {
                         }
                         if(scenario.equals("dead")) m.alive=false;
                         if(scenario.equals("bystander")) m.target=new LivingEntity();
-                        if(scenario.startsWith("remoteRetreat")) { p.melee=false; m.sight=false; p.attacker=m; p.hurtTimestamp=p.tickCount-100; }
+                        if(scenario.equals("remoteRetreatMeleeLostSight")) { m.sight=true; m.target=p; }
+                        else if(scenario.startsWith("remoteRetreat")) { p.melee=false; m.sight=false; p.attacker=m; p.hurtTimestamp=p.tickCount-100; }
                         if(scenario.equals("remoteLowHealth")) p.health=6;
                         if(scenario.equals("remoteUnarmed")) p.melee=false;
                         if(scenario.equals("remoteBow")) { p.melee=false; p.ranged=true; }
@@ -320,7 +321,8 @@ class MobDefenseChainTest {
                             // Direct observation probes survey authorization even after the selector declines the chain.
                             chain.tick(p); r.put("lastSurveyEmpty",p.events.get(p.events.size()-2).equals("survey:0"));
                         } else if(scenario.startsWith("remoteRetreat")) {
-                            p.tickCount++; p.world.time++; m.target=null; // same attacker, evidence now age 101
+                            p.tickCount++; p.world.time++; m.target=null;
+                            if(scenario.equals("remoteRetreatMeleeLostSight")) m.sight=false; // shooter breaks LOS
                             r.put("continued",chain.canRun(p)); chain.tick(p);
                             r.put("retreatTicks",Collections.frequency(p.events,"action:DISENGAGE"));
                             if(scenario.equals("remoteRetreatDead")) m.alive=false;
@@ -390,6 +392,13 @@ class MobDefenseChainTest {
         }
     }
 
+    /** D2 follow-up: once self-defense retreats from a shooter, one tick of lost LOS must not flip back to chasing. */
+    @Test void selfDefenseMeleeRetreatDoesNotChargeBackWhenShooterBreaksLine() throws Exception {
+        var r = run("remoteRetreatMeleeLostSight");
+        assertEquals(true, r.get("selected"));
+        assertEquals(2, r.get("retreatTicks"), "initial DISENGAGE and next tick must both stay retreating");
+        assertEquals(true, r.get("continued"), "same known shooter keeps the chain committed");
+    }
     @Test void realSurveyAndAttackPlanConsumeDistantCandidateWithoutForcingACharge() throws Exception {
         for (String scenario : List.of("remoteLowHealth", "remoteUnarmed", "remote20", "remoteBow")) {
             var r=run(scenario); assertEquals(true,r.get("selected")); assertEquals(1,events(r,"survey:1"));
