@@ -196,6 +196,7 @@ class MobDefenseChainTest {
                     public static AttackTaskRecord latestRecord;
                     private AttackPlan.Move lastMove;
                     public static AttackPlan.Move lastObserved;
+                    public static List<Integer> lastFoeIds=List.of();
                     private final AttackTaskRecord r;
                     private final NumenPlayer player;
                     private boolean reachable(int id) { return true; }
@@ -206,7 +207,7 @@ class MobDefenseChainTest {
                         p.events.add("construct:"+r.indiscriminate+":"+r.entityIds.size()+":"+r.toolCallId+":"+r.deadlineGameTime);
                     }
                     private void observe(NumenPlayer p) {
-                        Battlefield field=surveyField(); lastMove=AttackPlan.decide(field,lastMove); lastObserved=lastMove;
+                        Battlefield field=surveyField(); lastFoeIds=field.foes().stream().map(Battlefield.Foe::id).toList(); lastMove=AttackPlan.decide(field,lastMove); lastObserved=lastMove;
                         p.events.add("survey:"+field.foes().size()); p.events.add("action:"+lastMove.action());
                     }
                     public void start(NumenPlayer p) { p.events.add("start"); observe(p); }
@@ -496,6 +497,7 @@ class MobDefenseChainTest {
                         Map<String,Object> r=new LinkedHashMap<>();
                         r.put("action", AttackCompanionTask.lastObserved.action().name());
                         r.put("foeId", AttackCompanionTask.lastObserved.foeId());
+                        r.put("foeIds", AttackCompanionTask.lastFoeIds);
                         r.put("events", List.copyOf(p.events));
                         return r;
                     }
@@ -778,5 +780,22 @@ class MobDefenseChainTest {
         var r=runHunt("huntHealthyCowWolf");
         assertEquals("SKIRMISH", r.get("action"), r.toString());
         assertEquals(11, r.get("foeId"), r.toString());
+    }
+
+    /**
+     * Safety review: a bystander may veto the low-HP exemption, but it must not become a weapon
+     * victim. tickWeapon iterates every Foe without checking authorized, so field.foes must stay
+     * exactly the named prey; the scene veto folds into that prey's harmlessPrey=false instead.
+     */
+    @Test void sceneBlockerStaysOutOfFieldFoesAndKeepsLowHpVeto() throws Exception {
+        for(String scenario : List.of("huntCowWolf", "huntCowTerminalEnemy", "huntCowNearbyPreyTargeting")) {
+            var r=runHunt(scenario);
+            assertEquals("DISENGAGE", r.get("action"), scenario+" -> "+r);
+            assertEquals(List.of(11), r.get("foeIds"), scenario+" must not add the bystander to field.foes: "+r);
+        }
+        var healthy=runHunt("huntHealthyCowWolf");
+        assertEquals("SKIRMISH", healthy.get("action"), healthy.toString());
+        assertEquals(11, healthy.get("foeId"), healthy.toString());
+        assertEquals(List.of(11), healthy.get("foeIds"), healthy.toString());
     }
 }
