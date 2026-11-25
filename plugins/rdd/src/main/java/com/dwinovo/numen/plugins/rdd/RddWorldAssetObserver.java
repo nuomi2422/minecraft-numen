@@ -70,8 +70,15 @@ final class RddWorldAssetObserver {
                                    com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
         RddBaseFacts.BaseInspection inspection = RddBaseFacts.inspectBaseResult(companion, Map.of());
         RddWorldFacts.BaseSnapshot base = inspection.snapshot();
-        RddPlugin.captureHomeIdentity(companion, base == null ? null : identity, base == null ? null : base.spawn(),
-                base == null ? null : base.dimension());
+        // 2026-11-25（实机 false UNBOUND）：raw 重生点来自服务端原 getRespawnPosition/Dimension，
+        // 与「床区这次是否加载、床还在不在」是两件事。原来只在 base snapshot 成功时才 capture，
+        // 床区未加载就把已校验身份清掉 → 摘要把真绑定渲染成 UNBOUND，planner 去造新床。
+        // 这里只投影 raw 绑定坐标，不签床可用、不签基地完成；ABSENT（确认床没了）仍清身份，避免留旧 BOUND。
+        net.minecraft.core.BlockPos rawSpawn = inspection.spawn();
+        boolean rawBound = rawSpawn != null && !rawSpawn.equals(net.minecraft.core.BlockPos.ZERO)
+                && inspection.status() != RddBaseFacts.BaseStatus.ABSENT;
+        RddPlugin.captureHomeIdentity(companion, rawBound ? identity : null,
+                rawBound ? rawSpawn : null, rawBound ? inspection.dimension() : null);
         if (base == null) {
             markBaseRecheck(registry, identity, inspection);
             return 0;

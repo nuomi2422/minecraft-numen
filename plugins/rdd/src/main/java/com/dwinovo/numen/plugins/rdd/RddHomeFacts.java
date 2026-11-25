@@ -55,9 +55,7 @@ final class RddHomeFacts {
         // TC-RESERVE-01: all consumers derive from the same identity-checked view.
         HomeView view = HomeView.of(registry, nowMillis, identity, x, y, z, dimension);
         if (view.base() == null) {
-            // 没观测到基地不等于没有基地：只报 NO_HOME，并明确 reserve 未知（不写 0）。
-            return HomeSummary.block(HomeSummary.lines(HomeStage.NO_HOME, null, null, null, null,
-                    HomeReserve.unobserved(), null, null, nowMillis));
+            return unobservedBaseBlock(nowMillis, identity, x, y, z, dimension);
         }
         Map<String, Object> v = view.value();
         long asOf = view.asOf();
@@ -115,6 +113,36 @@ final class RddHomeFacts {
             String stale = staleBaseLine(registry, v, asOf, nowMillis);
             if (!stale.isBlank()) lines.add(stale);
         }
+        return HomeSummary.block(lines);
+    }
+
+    /**
+     * 没有可归因的 {@code world_base} 观测时的摘要（2026-11-25 实机 false UNBOUND）。
+     *
+     * <p>原来这里固定写 {@code HomeSummary.lines(NO_HOME, null, null, ...)}，把「没观测到基地」
+     * 直接渲染成 {@code home_stage=NO_HOME + respawn=UNBOUND}。实机 07:22 真睡绑定、服务端
+     * {@code getRespawnPosition} 一直是 bound，模型/规划因此去造新床。现在只按已有事实分两种：
+     * <ul><li>身份校验通过且带当前 raw 绑定坐标：声明绑定（RESPAWN_BOUND），但床区可用性与备用
+     * 都写 UNKNOWN——raw 绑定不等于床还可用；</li>
+     * <li>没有可归因的 raw 绑定：写 UNKNOWN。无法区分「真没绑」和「没观测到」时，不推断成 UNBOUND。</li></ul>
+     */
+    private static String unobservedBaseBlock(long nowMillis,
+                                              com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity,
+                                              Integer x, Integer y, Integer z, String dimension) {
+        boolean captured = x != null && y != null && z != null && identity != null
+                && knownIdentity(identity.worldId()) && knownIdentity(identity.serverSession())
+                && knownIdentity(dimension);
+        if (!captured) {
+            List<String> lines = new java.util.ArrayList<>(4);
+            lines.add("home_stage=UNKNOWN");
+            lines.add("home_facility=UNKNOWN");
+            lines.add("respawn=UNKNOWN");
+            lines.add(HomeStage.describe(Map.of(), false));
+            return HomeSummary.block(lines);
+        }
+        List<String> lines = new java.util.ArrayList<>(HomeSummary.lines(HomeStage.RESPAWN_BOUND, null,
+                dimension, x + " " + y + " " + z, null, HomeReserve.unobserved(), null, null, nowMillis));
+        lines.add("base_usability=UNKNOWN");
         return HomeSummary.block(lines);
     }
 
