@@ -78,7 +78,10 @@ class RddBaseRecheckSourceTest {
             assertTrue(registry.history().contains(original));
             run.invoke(null, registry, "ABSENT", "world-A", "session-A");
             assertEquals(AssetStatus.INVALID, registry.get(id).orElseThrow().status());
-            assertNull(fixture.getMethod("captured").invoke(null), "observed missing bed must clear the stale bound identity");
+            // raw 绑定与床可用性是两件事：床被毁只是不 usable，不能把服务端仍在的绑定清成"没绑过"。
+            assertNotNull(fixture.getMethod("captured").invoke(null), "destroyed bed keeps the raw bound identity; usability is typed elsewhere");
+            assertEquals(1, fixture.getMethod("capturedX").invoke(null));
+            assertEquals("overworld", fixture.getMethod("capturedDimension").invoke(null));
             assertFalse(PlanningAssetSnapshot.worldClaims(registry).containsKey(id));
             assertTrue(registry.history().contains(original));
             assertEquals(AssetStatus.OBSERVED, registry.get("other-world").orElseThrow().status());
