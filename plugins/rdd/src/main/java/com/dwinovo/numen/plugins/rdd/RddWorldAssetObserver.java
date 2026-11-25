@@ -76,8 +76,8 @@ final class RddWorldAssetObserver {
         // 这里只投影 raw 绑定坐标，不签床可用、不签基地完成：ABSENT（床方块没了）仍保留 raw 绑定，
         // 床位不可用由 typed base asset 置 INVALID / 摘要 base_usability=UNKNOWN 表达；
         // 只有服务端 raw 绑定真的变空/换点，或世界会话世代失效，才清掉身份。
-        net.minecraft.core.BlockPos rawSpawn = inspection.spawn();
-        boolean rawBound = rawSpawn != null && !rawSpawn.equals(net.minecraft.core.BlockPos.ZERO);
+        BlockPos rawSpawn = inspection.spawn();
+        boolean rawBound = rawSpawn != null && !rawSpawn.equals(BlockPos.ZERO);
         RddPlugin.captureHomeIdentity(companion, rawBound ? identity : null,
                 rawBound ? rawSpawn : null, rawBound ? inspection.dimension() : null);
         if (base == null) {
