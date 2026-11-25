@@ -77,7 +77,12 @@ public final class AttackPlan {
      */
     public static Move decide(Battlefield b, Move last) {
         // ① 扛不住 —— 一切"怎么打"的讨论都以她还站得住为前提。
-        if (outmatched(b.effectiveHealth()) && !b.cornered()) {
+        //
+        //    唯一例外:点名狩猎(selfDefense=false)且全场每个敌人都被明确分类为"可食被动
+        //    猎物、被打也不还手"。那正是"低血还该去宰一只鸡/牛吃"——全场没有任何真实威胁。
+        //    自卫永不享此豁免,未知/会反击/爆炸/未点火爬行者/杀手兔一律退回原血线门。
+        if (outmatched(b.effectiveHealth()) && !b.cornered()
+                && !(!b.selfDefense() && allFoesHarmlessPrey(b))) {
             return new Move(Action.DISENGAGE, NO_FOE);
         }
         // 「会炸的贴太近了」也不在这儿判。点着的爬行者<b>危险半径就是它的爆炸波及范围</b>
