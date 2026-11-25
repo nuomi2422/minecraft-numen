@@ -405,4 +405,34 @@ class AttackPlanTest {
         assertEquals(Action.SKIRMISH,
                 AttackPlan.decide(field(true, false, mob(1, 2.0)), null).action());
     }
+    /** 显式无害猎物：不炸、不引信、不接敌、非远程、可走、已授权。 */
+    private static Foe prey(int id, double distance) {
+        return new Foe(id, distance, false, false, false, true, false, true, true);
+    }
+
+    private static Battlefield fieldLow(boolean melee, boolean ranged, Foe... foes) {
+        return new Battlefield(7.0, REACH, melee, ranged, false, false, List.of(foes));
+    }
+
+    /** 低血点名狩猎一只显式无害猎物：仍允许打（当前 decide 还没接 harmlessPrey，红）。 */
+    @Test
+    void lowHealthHuntingHarmlessPreyIsStillAllowedToFight() {
+        assertEquals(Action.SKIRMISH,
+                AttackPlan.decide(fieldLow(true, false, prey(1, 3.0)), null).action());
+    }
+
+    /** 场上有任意一只非无害猎物（会反击/Enemy/爆炸…）就退回原血线门。 */
+    @Test
+    void lowHealthStillDisengagesWhenAnyFoeIsNotHarmlessPrey() {
+        assertEquals(Action.DISENGAGE,
+                AttackPlan.decide(fieldLow(true, false, prey(1, 3.0), mob(2, 5.0)), null).action());
+    }
+
+    /** 自卫永不使用猎物豁免。 */
+    @Test
+    void lowHealthSelfDefenseNeverUsesThePreyExemption() {
+        assertEquals(Action.DISENGAGE,
+                AttackPlan.decide(new Battlefield(7.0, REACH, true, false, false, true,
+                        List.of(prey(1, 3.0))), null).action());
+    }
 }

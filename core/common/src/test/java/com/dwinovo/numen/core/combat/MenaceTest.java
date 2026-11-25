@@ -1,12 +1,29 @@
 package com.dwinovo.numen.core.combat;
 
+import net.minecraft.world.entity.EntityType;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 危险半径那把尺子。这里只钉不需要实体的那几条。 */
+@Tag("mc")
 class MenaceTest {
+
+    /** {@code EntityType.*} 常量要注册表 bootstrap 后才立得住,同 {@code SleepOpsTest}。 */
+    @BeforeAll
+    static void boot() {
+        try {
+            net.minecraft.SharedConstants.tryDetectVersion();
+            net.minecraft.server.Bootstrap.bootStrap();
+        } catch (Throwable ignored) {
+            // 环境 bootstrap 失败时,下面用 EntityType 的用例自然报错,不在这里硬吞。
+        }
+    }
 
     /** 原版 {@code Mob.DEFAULT_ATTACK_REACH}。 */
     private static final double ATTACK_REACH = Math.sqrt(2.04) - 0.6;
@@ -53,6 +70,23 @@ class MenaceTest {
             double danger = strikeRange(width, 0.6) + slack;
             assertTrue(reach > danger,
                     "宽 " + width + " 的怪没留出窗口:够到 " + reach + ",危险 " + danger);
+        }
+    }
+
+    /** 真实白名单：可食被动猎物 true，会反击中立/Enemy/爆炸 false。 */
+    @Test
+    void harmlessPreyTypeIsAnExactWhitelist() {
+        for (EntityType<?> prey : new EntityType<?>[]{
+                EntityType.COW, EntityType.PIG, EntityType.SHEEP, EntityType.CHICKEN,
+                EntityType.COD, EntityType.SALMON}) {
+            assertTrue(Menace.harmlessPreyType(prey), prey::toString);
+        }
+        // 杀手兔与普通兔同一个 RABBIT 类型，类型白名单接不住 → 整类排除。
+        assertFalse(Menace.harmlessPreyType(EntityType.RABBIT), "killer rabbit shares RABBIT type");
+        for (EntityType<?> threat : new EntityType<?>[]{
+                EntityType.WOLF, EntityType.GOAT, EntityType.LLAMA, EntityType.PIGLIN,
+                EntityType.ZOMBIE, EntityType.CREEPER, EntityType.ENDERMAN}) {
+            assertFalse(Menace.harmlessPreyType(threat), threat::toString);
         }
     }
 }

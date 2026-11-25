@@ -2,6 +2,8 @@ package com.dwinovo.numen.core.combat;
 
 import com.dwinovo.numen.core.combat.Battlefield.Foe;
 
+import java.util.List;
+
 /**
  * 这一刻该做什么、对谁做。<b>本能派的仗与模型派的 {@code attack} 问的是同一个函数</b>
  * ——爬行者该退多远,不该在反射里写一遍、在工具里再写一遍。
@@ -75,7 +77,12 @@ public final class AttackPlan {
      */
     public static Move decide(Battlefield b, Move last) {
         // ① 扛不住 —— 一切"怎么打"的讨论都以她还站得住为前提。
-        if (outmatched(b.effectiveHealth()) && !b.cornered()) {
+        //
+        //    唯一例外:点名狩猎(selfDefense=false)且全场每个敌人都被明确分类为"可食被动
+        //    猎物、被打也不还手"。那正是"低血还该去宰一只鸡/牛吃"——全场没有任何真实威胁。
+        //    自卫永不享此豁免,未知/会反击/爆炸/未点火爬行者/杀手兔一律退回原血线门。
+        if (outmatched(b.effectiveHealth()) && !b.cornered()
+                && !(!b.selfDefense() && allFoesHarmlessPrey(b))) {
             return new Move(Action.DISENGAGE, NO_FOE);
         }
         // 「会炸的贴太近了」也不在这儿判。点着的爬行者<b>危险半径就是它的爆炸波及范围</b>
@@ -180,5 +187,19 @@ public final class AttackPlan {
 
     private static boolean anyEngaging(Battlefield b) {
         return b.foes().stream().anyMatch(Foe::engaging);
+    }
+
+    /**
+     * 全场是否<b>每个</b>敌人都被明确分类为"可食被动猎物、这一刻绝无威胁"。
+     *
+     * <p>空场不算(谈不上点名狩猎,退回原血线门);逐条件而不是单看 {@code harmlessPrey} 一个旗:
+     * 只有<b>已授权</b>且<b>无害分类</b>且<b>不接敌、不炸、不引信、非远程</b>才算。未知/会反击/
+     * 会炸/未点火爬行者/杀手兔,任一条不满足就整体 false —— 默认 false 的口径,不靠一个旗凑数。
+     */
+    private static boolean allFoesHarmlessPrey(Battlefield b) {
+        List<Foe> foes = b.foes();
+        return !foes.isEmpty() && foes.stream().allMatch(f ->
+                f.authorized() && f.harmlessPrey()
+                        && !f.engaging() && !f.explosive() && !f.armed() && !f.ranged());
     }
 }

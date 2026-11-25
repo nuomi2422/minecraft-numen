@@ -48,6 +48,7 @@ public record Battlefield(double effectiveHealth,
      * @param reachable  <b>上一段寻路搜得出路</b>。够不着是拓扑性质、不是距离性质,只有
      *                   寻路自己说得清 —— 悬崖对面三格的骷髅离得很近却没有路
      * @param ranged     已知的远程攻击者（Menace.rangedWithinEscapeRange 且当前实际接敌/授权）；未知不猜 true
+     * @param harmlessPrey 显式分类的“可食被动猎物、被打也不还手”，只由 Menace.harmlessPrey 事实分类；未知一律 false
  * @param authorized 允许打它。点名模式下是模型给的那份清单,无差别模式下就是"在追我的"
      */
     public record Foe(int id,
@@ -57,12 +58,19 @@ public record Battlefield(double effectiveHealth,
                       boolean engaging,
                       boolean reachable,
                       boolean ranged,
+                      boolean harmlessPrey,
                       boolean authorized) {
 
-        /** 兼容旧构造：未知远程能力按 false（不新增猜测）。 */
+        /** 兼容旧构造：未知远程能力按 false（不新增猜测），无害猎物默认 false。 */
         public Foe(int id, double distance, boolean explosive, boolean armed,
                    boolean engaging, boolean reachable, boolean authorized) {
-            this(id, distance, explosive, armed, engaging, reachable, false, authorized);
+            this(id, distance, explosive, armed, engaging, reachable, false, false, authorized);
+        }
+
+        /** 兼容旧构造：无害猎物默认 false。 */
+        public Foe(int id, double distance, boolean explosive, boolean armed,
+                   boolean engaging, boolean reachable, boolean ranged, boolean authorized) {
+            this(id, distance, explosive, armed, engaging, reachable, ranged, false, authorized);
         }
     }
 

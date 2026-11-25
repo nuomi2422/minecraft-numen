@@ -78,6 +78,13 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
     private static final double FIELD_RADIUS = 12.0;
 
     /**
+     * 点名狩猎的"全场安全"观察半径:低血豁免只在该半径内<b>没有任何非猎物 Mob</b> 时成立。
+     * 会反击的中立狼、未知非 Enemy 都拦在这——它们不进 {@link Menace#hostilesAround} 的 Enemy
+     * 扫描,却是真威胁。取与 {@link #FIELD_RADIUS} 一致,不另开更大的世界扫描。
+     */
+    private static final double HUNT_SAFE_RADIUS = 12.0;
+
+    /**
      * 逃跑时扫多远。必须<b>大于</b> {@link Menace#FLEE_DISTANCE},否则她一边跑一边有新的怪
      * 进入视野,目标每几刻换一次,等于没有目标。
      */
@@ -268,6 +275,7 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                     engaging,
                     reachable(mob.getId()),
                     ranged,
+                    false,   // 敌对被扫描进来的永远是威胁，不给无害猎物豁免
                     authorized));
         }
         // 点名模式还可能被要求打不敌对的东西(一只鸡、一个末影水晶),它们不在敌对扫描里。
@@ -280,8 +288,33 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                 if (e != null) {
                     foes.add(new Battlefield.Foe(id, player.distanceTo(e),
                             Menace.explodes(e), Menace.armed(e),
-                            false, reachable(id), false, true));
+                            false, reachable(id), false,
+                            Menace.harmlessPrey(e) && !Menace.threatens(e, player)
+                                    && !Menace.explodes(e) && !Menace.armed(e),
+                            true));
                 }
+            }
+            // 低血豁免只认"全场没有任何真实威胁"。点名的猎物之外,附近还可能站着不打她、
+            // 但会反击的中立狼或未知非 Enemy —— 它们不进 hostilesAround 的 Enemy 扫描,却会在她
+            // 打牛时被激怒。把它们以 authorized=false / harmless=false 拦进局面,让
+            // AttackPlan.allFoesHarmlessPrey 判 false,退回原血线门;不授权、不接敌、不当作敌人。
+            for (Mob m : player.level().getEntitiesOfClass(Mob.class,
+                    player.getBoundingBox().inflate(HUNT_SAFE_RADIUS))) {
+                // terminal 只是"这个目标的任务处理有了结果"(NO_PATH/取消),不证明它还活着就不
+                // 危险 —— 活着的 Enemy/unknown 照样能反击,必须拦住。只有已死/已移除才不拦。
+                if (!m.isAlive() || m.isRemoved() || containsId(foes, m.getId())) {
+                    continue;
+                }
+                // 与点名行共用同一安全判:只有"可食被动猎物、不威胁、不炸、不引信"才不算威胁。
+                // 被激怒(cow 的 target==她)、会反击的中立狼、未知非 Enemy 都拦进局面,
+                // 让 AttackPlan.allFoesHarmlessPrey 判 false,退回原血线门;authorized=false,不当敌人。
+                if (Menace.harmlessPrey(m) && !Menace.threatens(m, player)
+                        && !Menace.explodes(m) && !Menace.armed(m)) {
+                    continue;
+                }
+                foes.add(new Battlefield.Foe(m.getId(), player.distanceTo(m),
+                        Menace.explodes(m), Menace.armed(m),
+                        false, true, false, false, false));
             }
         }
         knownRangedEngagements = foes.stream().filter(f -> f.engaging() && f.authorized())

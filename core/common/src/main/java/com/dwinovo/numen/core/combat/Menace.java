@@ -6,6 +6,7 @@ import net.minecraft.core.Holder;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.damagesource.CombatRules;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.Attributes;
@@ -110,6 +111,27 @@ public final class Menace {
             return true;
         }
         return foe instanceof Mob mob && mob.getTarget() == self;
+    }
+
+    /**
+     * 可食被动猎物：被打也不还手的已知动物。用原版 {@code EntityType} 精确白名单，不走基类
+     * {@code instanceof}（会放模组子类进来）。这是“低血仍允许点名狩猎”的保守事实，未知一律 false。
+     */
+    public static boolean harmlessPrey(Entity foe) {
+        return harmlessPreyType(foe.getType());
+    }
+
+    /**
+     * 纯类型白名单（供事实分类与真实单测同源）。
+     *
+     * <p>{@code RABBIT} 不进白名单：原版“杀手兔”(killer rabbit, variant 99)与普通兔同一个
+     * {@code EntityType.RABBIT}，类型无法区分，且它主动咬人 —— 精确类型白名单接不住它，
+     * 未知一律 false 的口径下只能整类排除。
+     */
+    public static boolean harmlessPreyType(EntityType<?> t) {
+        return t == EntityType.COW || t == EntityType.PIG || t == EntityType.SHEEP
+                || t == EntityType.CHICKEN
+                || t == EntityType.COD || t == EntityType.SALMON;
     }
 
     /** 引信正在涨——它已经在倒计时,不是"可能会炸"。 */
