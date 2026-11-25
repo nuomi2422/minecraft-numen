@@ -73,10 +73,11 @@ final class RddWorldAssetObserver {
         // 2026-11-25（实机 false UNBOUND）：raw 重生点来自服务端原 getRespawnPosition/Dimension，
         // 与「床区这次是否加载、床还在不在」是两件事。原来只在 base snapshot 成功时才 capture，
         // 床区未加载就把已校验身份清掉 → 摘要把真绑定渲染成 UNBOUND，planner 去造新床。
-        // 这里只投影 raw 绑定坐标，不签床可用、不签基地完成；ABSENT（确认床没了）仍清身份，避免留旧 BOUND。
+        // 这里只投影 raw 绑定坐标，不签床可用、不签基地完成：ABSENT（床方块没了）仍保留 raw 绑定，
+        // 床位不可用由 typed base asset 置 INVALID / 摘要 base_usability=UNKNOWN 表达；
+        // 只有服务端 raw 绑定真的变空/换点，或世界会话世代失效，才清掉身份。
         net.minecraft.core.BlockPos rawSpawn = inspection.spawn();
-        boolean rawBound = rawSpawn != null && !rawSpawn.equals(net.minecraft.core.BlockPos.ZERO)
-                && inspection.status() != RddBaseFacts.BaseStatus.ABSENT;
+        boolean rawBound = rawSpawn != null && !rawSpawn.equals(net.minecraft.core.BlockPos.ZERO);
         RddPlugin.captureHomeIdentity(companion, rawBound ? identity : null,
                 rawBound ? rawSpawn : null, rawBound ? inspection.dimension() : null);
         if (base == null) {
