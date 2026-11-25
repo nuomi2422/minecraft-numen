@@ -66,6 +66,8 @@ class MobDefenseChainTest {
                     public boolean isAlliedTo(Entity e) { return allied; }
                     public Level world;
                     public int id=7; public int getId() { return id; }
+                    public EntityType<?> type=EntityType.UNKNOWN;
+                    public EntityType<?> getType() { return type; }
                     public float distanceTo(Entity e) { return (float)Math.sqrt(distanceToSqr(e)); }
                     public double getX() { return x; } public double getZ() { return z; }
                     public int getBlockX() { return (int)Math.floor(x); } public int getBlockZ() { return (int)Math.floor(z); }
@@ -80,6 +82,23 @@ class MobDefenseChainTest {
                         public long getGameTime() { return time; }
                         public java.util.List<Mob> getEntitiesOfClass(Class<Mob> type, Box box) { return mobs; }
                     }
+                }
+                """);
+        add(src, args, "net/minecraft/world/entity/EntityType.java", """
+                package net.minecraft.world.entity;
+                public class EntityType<T> {
+                    private final String id;
+                    public EntityType(String id) { this.id=id; }
+                    public String toString() { return id; }
+                    public static final EntityType<?> COW=new EntityType<>("cow");
+                    public static final EntityType<?> PIG=new EntityType<>("pig");
+                    public static final EntityType<?> SHEEP=new EntityType<>("sheep");
+                    public static final EntityType<?> CHICKEN=new EntityType<>("chicken");
+                    public static final EntityType<?> COD=new EntityType<>("cod");
+                    public static final EntityType<?> SALMON=new EntityType<>("salmon");
+                    public static final EntityType<?> RABBIT=new EntityType<>("rabbit");
+                    public static final EntityType<?> WOLF=new EntityType<>("wolf");
+                    public static final EntityType<?> UNKNOWN=new EntityType<>("unknown");
                 }
                 """);
         add(src, args, "net/minecraft/world/entity/LivingEntity.java", """
@@ -169,12 +188,14 @@ class MobDefenseChainTest {
                 public class AttackCompanionTask {
                     public static TaskState next=TaskState.RUNNING;
                     private static final double FIELD_RADIUS=12;
+                    private static final double HUNT_SAFE_RADIUS=12;   // same value as production; boundary constant only
                     private static final int MAX_RETREAT_FAILURES=3;
                     private int retreatFailures;
                     private List<Mob> hostiles=List.of();
                     private Set<Integer> knownRangedEngagements=Set.of();
                     public static AttackTaskRecord latestRecord;
                     private AttackPlan.Move lastMove;
+                    public static AttackPlan.Move lastObserved;
                     private final AttackTaskRecord r;
                     private final NumenPlayer player;
                     private boolean reachable(int id) { return true; }
@@ -185,7 +206,7 @@ class MobDefenseChainTest {
                         p.events.add("construct:"+r.indiscriminate+":"+r.entityIds.size()+":"+r.toolCallId+":"+r.deadlineGameTime);
                     }
                     private void observe(NumenPlayer p) {
-                        Battlefield field=surveyField(); lastMove=AttackPlan.decide(field,lastMove);
+                        Battlefield field=surveyField(); lastMove=AttackPlan.decide(field,lastMove); lastObserved=lastMove;
                         p.events.add("survey:"+field.foes().size()); p.events.add("action:"+lastMove.action());
                     }
                     public void start(NumenPlayer p) { p.events.add("start"); observe(p); }
@@ -215,6 +236,7 @@ class MobDefenseChainTest {
             proximity.append(menace, menace.lastIndexOf('\n', at) + 1, menace.indexOf(';', at) + 1).append('\n');
         }
         for (String method : List.of("boolean explodes(", "boolean armed(", "boolean threatens(", "boolean fusing(",
+                "boolean harmlessPrey(", "boolean harmlessPreyType(",
                 "double dangerRadius(", "double rawDangerRadius(", "double strikeRangeOf(", "double blastSpanOf(",
                 "boolean hostile(", "List<Mob> hostilesAround(", "boolean tooClose(")) {
             proximity.append(member(menace, "    public static " + method)).append('\n');
@@ -266,6 +288,7 @@ class MobDefenseChainTest {
                 import java.util.*;
                 import com.dwinovo.numen.entity.NumenPlayer;
                 import com.dwinovo.numen.task.*;
+                import com.dwinovo.numen.core.task.combat.AttackTaskRecord;
                 import com.dwinovo.numen.core.task.combat.AttackCompanionTask;
                 import net.minecraft.world.entity.*;
                 import net.minecraft.world.entity.monster.*;
@@ -274,6 +297,7 @@ class MobDefenseChainTest {
                     public static class Hostile extends Mob implements Enemy { }
                     public static class Shooter extends Hostile implements RangedAttackMob { }
                     public static Map<String,Object> run(String scenario) {
+                        if (scenario.startsWith("hunt")) return hunt(scenario);
                         NumenPlayer p=new NumenPlayer(); Object owner=p.explicitOwner;
                         Mob m=scenario.equals("explosive") || scenario.equals("budgetHandbackArmed") ? new Creeper() :
                             scenario.equals("neutral") ? new Mob() : scenario.startsWith("remote") ? new Shooter() : new Hostile();
@@ -431,6 +455,50 @@ class MobDefenseChainTest {
                         r.put("ownerPreserved",owner==p.explicitOwner);
                         r.put("shift",p.shift); r.put("events",List.copyOf(p.events)); return r;
                     }
+
+                    private static Mob prey(NumenPlayer p, EntityType<?> type, int id) {
+                        Mob m=new Mob(); m.type=type; m.world=p.world; m.id=id; m.x=p.x+2; m.z=p.z; return m;
+                    }
+
+                    /** Real named-hunt entry: real AttackTaskRecord -> real surveyField -> real AttackPlan. */
+                    public static Map<String,Object> hunt(String scenario) {
+                        NumenPlayer p=new NumenPlayer();
+                        p.health=scenario.equals("huntHealthyCowWolf")?20:7; p.melee=true; p.ranged=false;
+                        Mob cow=prey(p, EntityType.COW, 11);
+                        p.world.mobs.add(cow);
+                        if(scenario.equals("huntCowTargeting")) cow.target=p;
+                        if(scenario.equals("huntRabbit")) cow.type=EntityType.RABBIT;
+                        if(scenario.equals("huntCowWolf")) p.world.mobs.add(prey(p, EntityType.WOLF, 12));
+                        if(scenario.equals("huntCowUnknown")) p.world.mobs.add(prey(p, EntityType.UNKNOWN, 12));
+                        if(scenario.equals("huntCowNearbyPreyTargeting")) {
+                            Mob other=prey(p, EntityType.COW, 12); other.target=p; p.world.mobs.add(other);
+                        }
+                        if(scenario.equals("huntCowUnlitCreeper")) {
+                            Creeper c=new Creeper(); c.world=p.world; c.id=13; c.x=p.x+4; c.z=p.z; c.swell=0; p.world.mobs.add(c);
+                        }
+                        if(scenario.equals("huntCowEnemy")) {
+                            Hostile h=new Hostile(); h.world=p.world; h.id=14; h.x=p.x+5; h.z=p.z; p.world.mobs.add(h);
+                        }
+                        if(scenario.equals("huntCowRanged")) {
+                            Shooter s=new Shooter(); s.world=p.world; s.id=15; s.x=p.x+6; s.z=p.z; p.world.mobs.add(s);
+                        }
+                        if(scenario.equals("huntCowDeadEnemy")) {
+                            Hostile d=new Hostile(); d.world=p.world; d.id=16; d.x=p.x+4; d.z=p.z; d.alive=false; p.world.mobs.add(d);
+                        }
+                        if(scenario.equals("huntCowTerminalEnemy")) {
+                            Hostile st=new Hostile(); st.world=p.world; st.id=17; st.x=p.x+5; st.z=p.z; p.world.mobs.add(st);
+                        }
+                        boolean self=scenario.equals("huntSelfDefense");
+                        AttackTaskRecord rec=new AttackTaskRecord("hunt-"+scenario, 0L, self?List.of():List.of(cow.id), self);
+                        if(scenario.equals("huntCowTerminalEnemy")) rec.unreachable(17);
+                        AttackCompanionTask task=new AttackCompanionTask(p, rec);
+                        task.start(p);
+                        Map<String,Object> r=new LinkedHashMap<>();
+                        r.put("action", AttackCompanionTask.lastObserved.action().name());
+                        r.put("foeId", AttackCompanionTask.lastObserved.foeId());
+                        r.put("events", List.copyOf(p.events));
+                        return r;
+                    }
                 }
                 """;
     }
@@ -438,6 +506,11 @@ class MobDefenseChainTest {
     @SuppressWarnings("unchecked")
     private static Map<String,Object> run(String scenario) throws Exception {
         return (Map<String,Object>) probe.getMethod("run", String.class).invoke(null, scenario);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String,Object> runHunt(String scenario) throws Exception {
+        return (Map<String,Object>) probe.getMethod("hunt", String.class).invoke(null, scenario);
     }
 
     private static long events(Map<String,Object> r, String prefix) {
@@ -648,5 +721,62 @@ class MobDefenseChainTest {
     void unstartedOrFutureFightNeverTimesOut() {
         assertFalse(MobDefenseChain.reflexFightBudgetExhausted(Long.MIN_VALUE, 10_000L));
         assertFalse(MobDefenseChain.reflexFightBudgetExhausted(10_000L, 9_999L));
+    }
+
+    // ==================== 061 harmless prey: low-HP named hunt through the real adapter ====================
+
+    /**
+     * Named hunt of an explicitly classified harmless prey at low health must act, not retreat.
+     * EntityType -> Menace.harmlessPrey -> real surveyField -> real AttackPlan; no hand-filled flag.
+     * On the pre-exemption baseline this is the business red (DISENGAGE), never a SETUP error.
+     */
+    @Test void namedHuntOfHarmlessPreyAtLowHealthActs() throws Exception {
+        var r=runHunt("huntCow");
+        assertEquals("SKIRMISH", r.get("action"), r.toString());
+        assertEquals(11, r.get("foeId"), r.toString());
+    }
+
+    /** Every unknown / neutral / explosive / engaging / ranged fellow keeps the original 8-HP line. */
+    @Test void anyThreatOrUnclassifiedBystanderKeepsTheEightHealthLine() throws Exception {
+        for(String scenario : List.of("huntCowWolf", "huntCowUnknown", "huntCowUnlitCreeper",
+                "huntCowEnemy", "huntCowRanged", "huntCowTargeting", "huntCowNearbyPreyTargeting")) {
+            var r=runHunt(scenario);
+            assertEquals("DISENGAGE", r.get("action"), scenario+" -> "+r);
+        }
+    }
+
+    /**
+     * A nearby living Enemy marked terminal (NO_PATH) is still alive and can hit her while she
+     * hunts the cow. The original survey removes terminal targets, but the blocker scan must not
+     * inherit that skip: terminal is "not worth chasing", not "safe".
+     */
+    @Test void terminalLivingBystanderStillBlocksTheHarmlessHunt() throws Exception {
+        var r=runHunt("huntCowTerminalEnemy");
+        assertEquals("DISENGAGE", r.get("action"), r.toString());
+    }
+
+    /** A dead bystander is not a live threat; it must not block the harmless hunt. */
+    @Test void deadBystanderDoesNotBlockTheHarmlessHunt() throws Exception {
+        var r=runHunt("huntCowDeadEnemy");
+        assertEquals("SKIRMISH", r.get("action"), r.toString());
+    }
+
+    /** Rabbit stays out of the exact prey whitelist (killer rabbit shares the same EntityType). */
+    @Test void rabbitTypeIsNotAHarmlessPrey() throws Exception {
+        var r=runHunt("huntRabbit");
+        assertEquals("DISENGAGE", r.get("action"), r.toString());
+    }
+
+    /** Self-defense (indiscriminate) never receives the named-hunt exemption. */
+    @Test void selfDefenseNeverGetsThePreyExemption() throws Exception {
+        var r=runHunt("huntSelfDefense");
+        assertEquals("DISENGAGE", r.get("action"), r.toString());
+    }
+
+    /** Unauthorized bystanders must not rewrite the selected target when health is fine. */
+    @Test void unauthorizedBystanderDoesNotChangeTargetSelectionWhenHealthy() throws Exception {
+        var r=runHunt("huntHealthyCowWolf");
+        assertEquals("SKIRMISH", r.get("action"), r.toString());
+        assertEquals(11, r.get("foeId"), r.toString());
     }
 }
