@@ -280,6 +280,23 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
         }
         // 点名模式还可能被要求打不敌对的东西(一只鸡、一个末影水晶),它们不在敌对扫描里。
         if (!r.indiscriminate) {
+            // 场景是否干净:12 格内没有"非猎物"活体(同一安全判),只产一个局部布尔。
+            // <b>不把这些旁物追加进 foes</b> —— tickWeapon 遍历 field.foes() 攻击所有够得着者、
+            // 且不看 authorized,追加中立狼/村民会被无授权挥击。存活 terminal 按事实算威胁,
+            // dead/removed 不算威胁。旁物只让本次点名猎物的豁免失效,不改集合与选靶。
+            boolean safeHuntScene = true;
+            for (Mob m : player.level().getEntitiesOfClass(Mob.class,
+                    player.getBoundingBox().inflate(HUNT_SAFE_RADIUS))) {
+                if (!m.isAlive() || m.isRemoved()) {
+                    continue;
+                }
+                if (Menace.harmlessPrey(m) && !Menace.threatens(m, player)
+                        && !Menace.explodes(m) && !Menace.armed(m)) {
+                    continue;
+                }
+                safeHuntScene = false;
+                break;
+            }
             for (int id : r.entityIds) {
                 if (r.terminal(id) || containsId(foes, id)) {
                     continue;
@@ -290,31 +307,10 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                             Menace.explodes(e), Menace.armed(e),
                             false, reachable(id), false,
                             Menace.harmlessPrey(e) && !Menace.threatens(e, player)
-                                    && !Menace.explodes(e) && !Menace.armed(e),
+                                    && !Menace.explodes(e) && !Menace.armed(e)
+                                    && safeHuntScene,
                             true));
                 }
-            }
-            // 低血豁免只认"全场没有任何真实威胁"。点名的猎物之外,附近还可能站着不打她、
-            // 但会反击的中立狼或未知非 Enemy —— 它们不进 hostilesAround 的 Enemy 扫描,却会在她
-            // 打牛时被激怒。把它们以 authorized=false / harmless=false 拦进局面,让
-            // AttackPlan.allFoesHarmlessPrey 判 false,退回原血线门;不授权、不接敌、不当作敌人。
-            for (Mob m : player.level().getEntitiesOfClass(Mob.class,
-                    player.getBoundingBox().inflate(HUNT_SAFE_RADIUS))) {
-                // terminal 只是"这个目标的任务处理有了结果"(NO_PATH/取消),不证明它还活着就不
-                // 危险 —— 活着的 Enemy/unknown 照样能反击,必须拦住。只有已死/已移除才不拦。
-                if (!m.isAlive() || m.isRemoved() || containsId(foes, m.getId())) {
-                    continue;
-                }
-                // 与点名行共用同一安全判:只有"可食被动猎物、不威胁、不炸、不引信"才不算威胁。
-                // 被激怒(cow 的 target==她)、会反击的中立狼、未知非 Enemy 都拦进局面,
-                // 让 AttackPlan.allFoesHarmlessPrey 判 false,退回原血线门;authorized=false,不当敌人。
-                if (Menace.harmlessPrey(m) && !Menace.threatens(m, player)
-                        && !Menace.explodes(m) && !Menace.armed(m)) {
-                    continue;
-                }
-                foes.add(new Battlefield.Foe(m.getId(), player.distanceTo(m),
-                        Menace.explodes(m), Menace.armed(m),
-                        false, true, false, false, false));
             }
         }
         knownRangedEngagements = foes.stream().filter(f -> f.engaging() && f.authorized())
