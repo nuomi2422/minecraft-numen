@@ -13,47 +13,8 @@ import java.util.regex.Pattern;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * T11 · RL-7 死亡支线顺序 —— 钉死「先捡包后取备用 + 传死亡坐标 + 不误 5 分钟窗口」。
- *
- * <h2>为什么必须是读源码测试</h2>
- *
- * <p>{@code RddRepairDispatch} 依赖 {@code LocalRepairTask}（rdd-core），而 rdd-core 对
- * {@code plugins/rdd} 是 {@code compileOnly}（{@code numen-plugin.gradle:42}）——
- * <b>测试运行期没有它</b>，类初始化就会 {@code NoClassDefFoundError}，反射/行为测试都做不了。
- * 这与 {@code RddMainlineWiringPinTest} 同因，故走 L1-c 读源码范式。
- *
- * <h2>RL-7 的三条失败形态（清单 {@code 30} 第 43 行 / {@code 41} 第 64 行）</h2>
- * <pre>
- *   漏传死亡坐标        —— 她不知道去哪捡
- *   错过 5 分钟掉落窗口 —— 顺序倒过来就必然踩：掉落物约 5 分钟 despawn，
- *                           「先回基地取备用」很容易把这段时间耗光
- *                           （2026-09-29 用户实测原话：「剪了，只剪了一部分，过 5 分钟有些就没了」）
- * </pre>
- *
- * <h2>注意：这个顺序是<b>文案与步骤串里的顺序</b>，不是代码语句顺序</h2>
- *
- * <p>RL-7 的载体是 {@code DEFAULT_STEPS} / {@code DEFAULT_GOAL} / 两条 nudge 的<b>措辞先后</b>。
- * 删掉「先捡后取」这件事在字节码层面<b>没有任何行为差异</b>：编译照过、单测全绿，
- * 只有实机才看得出她先去取了备用、回来时东西已经没了。
- * 所以本类直接断言<b>字面量里的先后位置</b>，这是唯一能抓住它的机器判据。
- *
- * <h2>RL-16 是本条的分支（不是替代）</h2>
- * 同点连死时顺序<b>刻意反转</b>为「先撤离补给 → 再回来捡」，且倒计时必须仍在眼前（R07）。
- * 两条分支都要钉：只钉一条 = 有人把另一条改回去不会红。
- *
- * <h2>写本类时我写错的两处（都是测试错，不是生产代码错）——留给下一个人</h2>
- * <ol>
- *   <li>我按「{@code DEFAULT_STEPS.replace} 在前」写断言，红了。实际源码是三元
- *       {@code repeatDeath ? REPEAT_DEATH_STEPS... : DEFAULT_STEPS...}，<b>REPEAT 天然在前</b>。
- *       教训：三元里两个分支的<b>书写顺序不是语义</b>，别拿它当契约。</li>
- *   <li>我断言「全方法体里 {@code + at + } 出现 2 次」，红了，实际 <b>3 次</b> ——
- *       普通死亡那条 nudge 把坐标说了两遍（「掉落物在 X 附近」+「先立刻回 X 捡」）。
- *       我第二版改成「总数 3」来迁就，<b>那更糟</b>：断言总数会让「删掉一处重复」也变红，
- *       而重复不是红线。改成按块断言（每条 nudge 至少带一次坐标 + 普通那条带两次）。
- *       教训：<b>断言总数是最容易造出假红线的写法</b>，要断就断「每块各有什么」。</li>
- * </ol>
- *
- * <p><b>零生产改动、零构建改动、零 Minecraft。</b>
+ * 死亡恢复顺序契约：备份优先，再评估距离、遮挡、威胁与剩余窗口，安全才回收。
+ * rdd-core 在测试运行期不可用，因此直接断言生产源码中的步骤串与 nudge 措辞。
  */
 class RddRepairDispatchPinTest {
 
@@ -163,13 +124,16 @@ class RddRepairDispatchPinTest {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  RL-7 主条 · 普通死亡：先捡包 → 后取备用
+    // 普通死亡：先备份，再评估，安全才回收
     // ═══════════════════════════════════════════════════════════════
 
     @Test
-    void normalDeathPicksUpDropsBeforeFetchingSpareGear() {
-        assertOrder(lit("DEFAULT_STEPS"), "非重复死亡的支线步骤", "捡回掉落物", "再取备用装备");
-        assertOrder(lit("DEFAULT_GOAL"), "非重复死亡的支线目标", "先捡后取备用");
+    void normalDeathFetchesBackupBeforeAssessingAndRecovering() {
+        assertOrder(lit("DEFAULT_STEPS"), "非重复死亡的支线步骤",
+                "先回基地取齐", "再评估死亡点", "仅安全可达才回收");
+        assertOrder(lit("DEFAULT_GOAL"), "非重复死亡的支线目标", "备份优先", "再评估安全回收");
+        assertHas(dispatch(), "\"fetch_backup_gear\", \"assess_recovery\", \"recover_drops_if_safe\"",
+                "机读步骤必须按备份、评估、安全回收排序");
     }
 
     @Test
@@ -178,7 +142,10 @@ class RddRepairDispatchPinTest {
         int tail = body.indexOf("你刚死一次");
         assertTrue(tail >= 0, "★ 找不到普通死亡那条 nudge（它必须把顺序讲给 AI 听，"
                 + "而不是只写在常量里 —— 常量是给规划器看的，nudge 是给她看的）");
-        assertOrder(body.substring(tail), "普通死亡的 nudge 措辞", "把掉落物捡回来", "再去取备用装备");
+        assertOrder(body.substring(tail), "普通死亡的 nudge 措辞",
+                "先回基地取齐", "再评估", "仅安全可达才回收");
+        assertHas(body.substring(tail), "夜间或危险先睡觉/等到白天",
+                "夜间或危险必须先等待，不能盲冲回收");
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -212,8 +179,8 @@ class RddRepairDispatchPinTest {
                 "★ 重复死亡那条 nudge 必须带死亡坐标（它的重点是「先离开」，最容易把「去哪」漏掉）");
         assertHas(normal, "+ at +", "★ 普通死亡那条 nudge 必须带死亡坐标");
         assertEquals(2, countOf(normal, "+ at +"),
-                "普通死亡那条 nudge 应把坐标说两遍：先「掉落物在 X 附近」、再「先立刻回 X 捡」。"
-                        + "两遍是给她自己定位用的（东西在她哪 vs 她要去哪），只剩一处她会分不清");
+                "普通死亡那条 nudge 应把坐标说两遍：先说明掉落位置，再说明要评估的死亡点。"
+                        + "两遍是给她自己定位用的（东西在哪 vs 要去哪），只剩一处她会分不清");
     }
 
     @Test
@@ -234,16 +201,18 @@ class RddRepairDispatchPinTest {
     // ═══════════════════════════════════════════════════════════════
 
     @Test
-    void repeatDeathReversesTheOrderButKeepsTheCountdown() {
-        assertOrder(lit("REPEAT_DEATH_STEPS"), "重复死亡的支线步骤", "立刻离开", "回基地补血", "捡掉落物");
-        assertHas(lit("REPEAT_DEATH_STEPS"), "限时",
+    void repeatDeathLeavesAndResuppliesBeforeAssessingRecovery() {
+        assertOrder(lit("REPEAT_DEATH_STEPS"), "重复死亡的支线步骤",
+                "立刻离开", "回基地补血", "评估距离", "仅安全可达才回收");
+        assertHas(lit("REPEAT_DEATH_STEPS"), "窗口",
                 "★ 反转顺序不等于取消倒计时（R07 已冻结：剩余秒数必须在它眼前）");
-        assertOrder(lit("REPEAT_DEATH_GOAL"), "重复死亡的支线目标", "先撤离并补给", "再限时回收掉落物");
+        assertOrder(lit("REPEAT_DEATH_GOAL"), "重复死亡的支线目标", "先撤离、补给并评估", "再安全回收掉落物");
 
         String body = onDeath();
         int head = body.indexOf("回去拿掉落物不是现在该做的事");
         assertTrue(head >= 0, "★ 找不到重复死亡那条 nudge");
-        assertOrder(body.substring(head), "重复死亡的 nudge 措辞", "立刻离开", "再回来捡掉落物");
+        assertOrder(body.substring(head), "重复死亡的 nudge 措辞",
+                "立刻离开", "取齐穿好备用", "评估死亡点", "仅安全可达才回去捡");
         assertHas(body.substring(head), "+ timeline",
                 "★ 重复死亡也必须带上 dropTimeline 台账（连死两次时更要看得见上一批还剩多少秒）");
         // 两条分支都由同一个 flag 选择，不许某条被写死成某一种
