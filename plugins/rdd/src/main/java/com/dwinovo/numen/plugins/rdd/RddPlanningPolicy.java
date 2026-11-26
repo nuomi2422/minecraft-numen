@@ -62,7 +62,7 @@ final class RddPlanningPolicy {
     private static final Pattern PRIMARY_SUBTASK_LIMIT = Pattern.compile(
             "每个一级(?:目标)?(?:最多|至多|不超过)\\s*(\\d+)\\s*个二级(?:步骤|子步骤|任务)?");
     private static final Pattern FIRST_PRIMARY_SUBTASK_COUNT = Pattern.compile(
-            "一级0只能(?:且必须)?生成\\s*(\\d+)\\s*个二级步骤");
+            "一级\\s*0\\s*(?:(?:只能|必须)(?:且必须)?\\s*)?(?:生成\\s*)?(?:恰好\\s*)?(?:(?:只有|有)\\s*)?(\\d+)\\s*个二级(?:步骤|子步骤|任务)?");
 
     private RddPlanningPolicy() {}
 

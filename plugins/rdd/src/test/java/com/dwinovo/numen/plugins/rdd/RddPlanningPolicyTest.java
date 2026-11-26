@@ -137,6 +137,15 @@ class RddPlanningPolicyTest {
     }
 
     @Test
+    void 一级0数量硬门识别实机常用的必须恰好只有措辞() {
+        String objective = "一级0必须恰好只有1个二级：就地确认村庄结构并检查床、箱子和食物";
+        assertEquals(1, RddPlanningPolicy.firstPrimarySubtaskCount(objective));
+        assertTrue(RddPlanningPolicy.block(objective, "stage_b").contains("恰好 1 个二级步骤"));
+        assertEquals(1, RddPlanningPolicy.firstPrimarySubtaskCount("一级 0 只能有 1 个二级步骤"));
+        assertEquals(1, RddPlanningPolicy.firstPrimarySubtaskCount("一级0必须只有1个二级任务"));
+    }
+
+    @Test
     void stage_a最终请求含策略约束() {
         String base = RddStagePlanner.planningPrompt("通关MC", Map.of("minecraft:iron_pickaxe", 1));
 
