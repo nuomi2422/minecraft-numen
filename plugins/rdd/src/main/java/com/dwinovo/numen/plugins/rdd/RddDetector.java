@@ -1162,6 +1162,10 @@ final class RddDetector {
         int current = RddWorldFacts.statCount(ap, task.condition());
         if (current < 0) return;
         chain.captureStatBaseline(task.id(), current);
+        if ("item_picked_up".equals(task.condition().get("type"))
+                && task.condition().get("item") instanceof String item && !item.startsWith("#")) {
+            chain.captureAcquireBaseline(task.id(), countInventory(ap));
+        }
     }
 
     /** 统计条件是否走“进入本步后的增量”；显式 lifetime 优先，显式 delta 不被旧链开关覆盖。 */

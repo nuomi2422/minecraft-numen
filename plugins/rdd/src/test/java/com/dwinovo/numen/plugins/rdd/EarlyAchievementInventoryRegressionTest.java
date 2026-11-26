@@ -36,6 +36,7 @@ class EarlyAchievementInventoryRegressionTest {
         test.statQueryDoesNotCaptureLateBaseline();
         test.entryBaselineAllowsFirstCraftDelta();
         test.pickupStatFallsBackToEntryInventoryDelta();
+        test.entryHelperCapturesPickupInventoryWithoutAcquireMode();
         test.unknownStatReadDoesNotBecomeZeroBaseline();
         test.lateOldAttemptBaselineIsNotOverwritten();
         test.entryHelperLocksZeroThenFirstCraftDelta();
@@ -45,7 +46,7 @@ class EarlyAchievementInventoryRegressionTest {
         test.entryHelperIgnoresNonStatCurrentTask();
         test.entryHelperAfterRealActivationLocksFirstCraft();
         test.statEntryWiringIsPresentAtAllSevenRunStartSites();
-        System.out.println("EarlyAchievementInventoryRegressionTest: 16 passed, 0 failed");
+        System.out.println("EarlyAchievementInventoryRegressionTest: 17 passed, 0 failed");
     }
 
     private static Path detectorSource() {
@@ -202,6 +203,21 @@ class EarlyAchievementInventoryRegressionTest {
         preexisting.captureStatBaseline(existing.id(), 0);
         assertFalse(evaluateStatInventory(method, preexisting, existing, 0, Map.of("minecraft:coal", 5)),
                 "preexisting inventory must not become a fake pickup delta");
+    }
+
+    @Test
+    void entryHelperCapturesPickupInventoryWithoutAcquireMode() throws Exception {
+        Class<?> probe = compileStatCaptureProbe();
+        TaskChain chain = statChain(Map.of("type", "item_picked_up",
+                "item", "minecraft:iron_ingot", "minimum", 1));
+        Subtask task = chain.currentSubtask();
+        chain.startCurrent();
+        captureInventoryWithProbe(probe, chain, 0, Map.of("minecraft:iron_ingot", 0));
+        assertEquals(Map.of("minecraft:iron_ingot", 0), chain.acquireBaseline(task.id()),
+                "plain pickup predicates still need a pre-action inventory baseline");
+        assertTrue(evaluateStatInventory(compileStatDeltaMethod(), chain, task, 0,
+                        Map.of("minecraft:iron_ingot", 3)),
+                "the captured entry baseline enables the real inventory fallback");
     }
 
     @Test
@@ -375,6 +391,7 @@ class EarlyAchievementInventoryRegressionTest {
                     static final class RddRuntime { TaskChain chain() { return chain; } }
                     static final class RddPlugin { static RddRuntime runtime(java.util.UUID id) { return RUNTIME; } }
                     static final class NumenPlayer { java.util.UUID getUUID() { return new java.util.UUID(0L, 0L); } }
+                    static Map<String, Integer> countInventory(NumenPlayer ap) { return Map.of(); }
                     static final class RddWorldFacts {
                         static int statCount(NumenPlayer ap, Map<String, Object> condition) { return count; }
                         static boolean matches(NumenPlayer ap, Map<String, Object> condition) {
@@ -418,9 +435,11 @@ class EarlyAchievementInventoryRegressionTest {
                 public class StatCaptureProbe {
                     static TaskChain chain;
                     static int stat;
+                    static Map<String, Integer> inventory = Map.of();
                     static final RddRuntime RUNTIME = new RddRuntime();
                     static final class RddRuntime { TaskChain chain() { return chain; } }
                     static final class NumenPlayer { java.util.UUID getUUID() { return new java.util.UUID(0L, 0L); } }
+                    static Map<String, Integer> countInventory(NumenPlayer ap) { return inventory; }
                     static final class RddWorldFacts {
                         static int statCount(NumenPlayer ap, Map<String, Object> condition) { return stat; }
                         static boolean matches(NumenPlayer ap, Map<String, Object> condition) {
@@ -429,7 +448,10 @@ class EarlyAchievementInventoryRegressionTest {
                     }
                 """ + methods + """
                     public static void capture(TaskChain c, int n) {
-                        chain = c; stat = n;
+                        capture(c, n, Map.of());
+                    }
+                    public static void capture(TaskChain c, int n, Map<String, Integer> counts) {
+                        chain = c; stat = n; inventory = counts;
                         captureStatBaselineAtStart(new NumenPlayer(), RUNTIME);
                     }
                 }
@@ -451,6 +473,11 @@ class EarlyAchievementInventoryRegressionTest {
 
     private static void captureWithProbe(Class<?> probe, TaskChain chain, int count) throws Exception {
         probe.getMethod("capture", TaskChain.class, int.class).invoke(null, chain, count);
+    }
+
+    private static void captureInventoryWithProbe(Class<?> probe, TaskChain chain, int count,
+                                                  Map<String, Integer> inventory) throws Exception {
+        probe.getMethod("capture", TaskChain.class, int.class, Map.class).invoke(null, chain, count, inventory);
     }
 
     private static String readSibling(String name) throws Exception {
