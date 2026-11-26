@@ -20,6 +20,7 @@ class DeathRecoverySideTaskTypeTest {
     private static final class Port implements SideTaskWorldPort {
         long time = 1000L;
         DeathRecoveryFacts facts = DeathRecoveryFacts.unknown("not observed");
+        PreparationFacts preparation = PreparationFacts.unknown("not observed");
 
         @Override public long gameTime() { return time; }
         @Override public long dayTime() { return 1000L; }
@@ -30,6 +31,7 @@ class DeathRecoverySideTaskTypeTest {
         @Override public boolean isDay() { return true; }
         @Override public Wake pollWake(UUID companionId) { return Wake.NONE; }
         @Override public DeathRecoveryFacts deathRecoveryFacts(UUID companionId, SideTask task) { return facts; }
+        @Override public PreparationFacts deathPreparationFacts(UUID companionId, SideTask task) { return preparation; }
     }
 
     private static SideTask task() {
@@ -94,6 +96,30 @@ class DeathRecoverySideTaskTypeTest {
         assertTrue(context.contains("备用"));
         assertTrue(context.contains("rdd_decline_side"));
         assertTrue(context.contains("区块未加载"));
+    }
+
+    @Test
+    void fetchedBackupKeepsRecoveryOpenUntilDropsAreTerminal() {
+        Port port = new Port();
+        port.preparation = new SideTaskWorldPort.PreparationFacts(
+                SideTaskWorldPort.PreparationState.READY, "all required slots equipped", Map.of(), Map.of());
+        SideTask recovering = new SideTask(C, "death_recovery-backup", DeathRecoverySideTaskType.TYPE_ID,
+                1L, 0L, 1000L, 1000L + DeathRecoverySideTaskType.DEADLINE_TICKS,
+                SideTaskState.ACTIVE, DeathRecoverySideTaskType.PHASE_REEQUIP,
+                Map.of("death_seq", "7", "dimension", "minecraft:overworld",
+                        "death_at", "10,64,20", "lost_items", "minecraft:iron_sword=1",
+                        DeathRecoverySideTaskType.KEY_DECISION, "FETCH_BACKUP_THEN_CONTINUE"), null);
+        DeathRecoverySideTaskType type = new DeathRecoverySideTaskType();
+        SideTaskVerdict verdict = type.evaluate(recovering, port);
+        assertEquals(SideTaskVerdict.Kind.CONTINUE, verdict.kind(),
+                "备用穿齐不能提前结束死亡恢复；还要评估并处理掉落");
+        assertEquals(DeathRecoverySideTaskType.PHASE_RECOVER, verdict.nextPhase());
+        assertEquals("assess_and_recover_drops", verdict.data().get("next_action"));
+        assertTrue(type.renderContext(recovering.withData(verdict.data()), port).contains("备用装备已核验"));
+
+        port.facts = new SideTaskWorldPort.DeathRecoveryFacts(
+                SideTaskWorldPort.DeathDropState.RECOVERED, false, true, true, "all tracked items observed");
+        assertEquals(SideTaskVerdict.Kind.COMPLETE, type.evaluate(recovering.withData(verdict.data()), port).kind());
     }
 
     @Test

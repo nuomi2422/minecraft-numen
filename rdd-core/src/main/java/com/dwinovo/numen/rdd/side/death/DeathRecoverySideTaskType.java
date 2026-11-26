@@ -107,17 +107,29 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
             data.put("terminal_reason", data.getOrDefault("drop_terminal", ""));
             boolean ready = preparation.state() == SideTaskWorldPort.PreparationState.READY;
             data.put("prepare_verified", Boolean.toString(ready));
-            if (ready) return SideTaskVerdict.complete("当前装备槽与明确备用需求已核验；恢复原主线", data);
-            if (task.pastDeadline(world.gameTime())) {
-                data.put("prepare_reason", "recovery_not_verified: " + incomplete);
-                data.put("prepare_retry_at", String.valueOf(world.gameTime() + 1200L));
-                return SideTaskVerdict.skip("装备整备未核验，保护线到期；不冒充完成或物理丢失", data);
+            if (ready) {
+                if (facts.dropState() == SideTaskWorldPort.DeathDropState.RECOVERED) {
+                    data.put("terminal_reason", "drops_recovered");
+                    return SideTaskVerdict.complete("备用装备与死亡批次掉落均已核验；恢复原主线", data);
+                }
+                if (facts.dropState() == SideTaskWorldPort.DeathDropState.DROPS_ABSENT) {
+                    data.put("terminal_reason", "drops_absent_with_world_evidence");
+                    return SideTaskVerdict.skip("备用装备已核验且掉落实体不可回收；交给损失影响分析", data);
+                }
+                data.remove("prepare_required");
+                data.put("next_action", "assess_and_recover_drops");
+            } else {
+                if (task.pastDeadline(world.gameTime())) {
+                    data.put("prepare_reason", "recovery_not_verified: " + incomplete);
+                    data.put("prepare_retry_at", String.valueOf(world.gameTime() + 1200L));
+                    return SideTaskVerdict.skip("装备整备未核验，保护线到期；不冒充完成或物理丢失", data);
+                }
+                if ("REJECTED".equals(data.get("prepare_plan_state"))) {
+                    data.put("prepare_retry_at", String.valueOf(world.gameTime() + 1200L));
+                    return SideTaskVerdict.skip("装备恢复计划不可用；未核验并暂停原步骤，不伪造完成", data);
+                }
+                return SideTaskVerdict.keep(PHASE_REEQUIP, data);
             }
-            if ("REJECTED".equals(data.get("prepare_plan_state"))) {
-                data.put("prepare_retry_at", String.valueOf(world.gameTime() + 1200L));
-                return SideTaskVerdict.skip("装备恢复计划不可用；未核验并暂停原步骤，不伪造完成", data);
-            }
-            return SideTaskVerdict.keep(PHASE_REEQUIP, data);
         }
         if (decision == DeathRecoveryDecision.ABANDON_RECOVERY) {
             data.put("terminal_reason", "executor_declined_recovery");
@@ -179,13 +191,16 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
                 + ("UNKNOWN".equals(itemState)
                     ? "逐项损失未知：不得把空表解释为无损失或永久丢失；先核当前能力并选择恢复/重规划。"
                     : "")
-                + ("true".equals(task.data().get("prepare_required")) || DeathPreparation.prepares(
+                + ("true".equals(task.data().get("prepare_verified"))
+                    && DeathRecoveryDecision.parse(task.data().get("decision")) == DeathRecoveryDecision.FETCH_BACKUP_THEN_CONTINUE
+                    ? "备用装备已核验；现在评估死亡点的距离、遮挡、威胁、昼夜与剩余窗口，安全才回收并逐项核数，否则明确上报。"
+                    : ("true".equals(task.data().get("prepare_required")) || DeathPreparation.prepares(
                         DeathRecoveryDecision.parse(task.data().get("decision")))
                     ? "当前先整备装备，不继续原交易步骤。下一恢复步骤：" + esc(DeathPreparation.context(task))
                         + "；准入条件=" + esc(task.data().getOrDefault(DeathPreparation.TARGETS, "[]"))
                         + "；未完成原因=" + esc(task.data().getOrDefault("prepare_reason", "unknown"))
                         + "。掉落不存在不能当作装备齐备；背包里有甲但未穿也不完成。"
-                    : "")
+                    : ""))
                 + (DeathPreparation.reviewPending(task) ? "待复评装备=" + esc(task.data().getOrDefault("prepare_review_candidates", "{}"))
                     + "；阶段曾被放弃不代表当前穿戴，也不自动重造。调用原rdd_choose_death_recovery，review为候选id到RECHECK或CANCELLED的JSON，"
                     + "并带review_instance=" + esc(task.instanceId()) + "、review_generation=" + task.generation() + "、review_death_seq=" + esc(seq) + "。" : "")
