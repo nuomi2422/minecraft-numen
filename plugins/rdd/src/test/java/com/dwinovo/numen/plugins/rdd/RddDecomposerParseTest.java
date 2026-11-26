@@ -603,6 +603,32 @@ class RddDecomposerParseTest {
                 "the live wording must reach the publication gate and reject four steps");
     }
 
+    @Test void earlyRouteBoundRejectsOldBaseCoordinatesButAllowsLaterBackupBase() {
+        String objective = "路线硬约束：一级0至一级2只允许坐标20784,9904周围96格；不得引用范围外坐标或历史基地。";
+        String json = """
+                {"subtasks":[{"description":"阶段2起步准备：返回主世界重生基地(10728,64,9500)，历史观测含熟牛肉189与铁装",
+                "condition":{"type":"container_nearby","item":"minecraft:cooked_beef","minimum":1,"radius":8}}]}
+                """;
+        var parsed = RddStageBSpecParser.parseDetailed(json);
+        var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()),
+                objective, java.util.Map.of());
+        assertTrue(RddDecomposer.stageBPublished(parsed, filtered, objective, 4, 0, 1).isEmpty(),
+                "early stage must reject the stale distant base");
+        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered, objective, 4, 0, 6).size(),
+                "later backup-base stage may name a distant coordinate");
+    }
+
+    @Test void earlyRouteBoundRejectsConditionCoordinatesOutsideVillage() {
+        String objective = "路线硬约束：一级0至一级2只允许坐标20784,9904周围96格";
+        String json = """
+                {"subtasks":[{"description":"检查现有补给","condition":{"type":"container_at","x":10728,"y":64,"z":9500,"item":"minecraft:cooked_beef","minimum":1}}]}
+                """;
+        var parsed = RddStageBSpecParser.parseDetailed(json);
+        var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()),
+                objective, java.util.Map.of());
+        assertTrue(RddDecomposer.stageBPublished(parsed, filtered, objective, 4, 0, 2).isEmpty());
+    }
+
     // ---------- 2026-11-17 V02：必需丢弃后走真实共享空恢复，不装木材前缀 ----------
 
     private static final String V02_SIX_STEP_JSON = "{\"subtasks\": [{\"description\": \"徒手砍针叶林附近的树，攒够原木（起步 3 个即可推进；看到就多砍几棵，够做木镐+石镐+石斧共约 5~6 个原木就停）\", \"condition\": {\"type\": \"inventory\", \"group\": \"wood\", \"minimum\": 6}, \"node_type\": \"MAIN\"}, {\"description\": \"把原木在 2x2 手搓成木板，再把木板竖排 2 个搓木棍（需工作台时才放工作台）\", \"condition\": {\"type\": \"item_crafted\", \"asset_key\": \"minecraft:stick\", \"minimum\": 4}, \"node_type\": \"MAIN\"}, {\"description\": \"用木板 3 + 木棍 2 在工作台 3x3 里合成木镐\", \"condition\": {\"type\": \"item_crafted\", \"asset_key\": \"minecraft:wooden_pickaxe\", \"minimum\": 1}, \"node_type\": \"MAIN\"}, {\"description\": \"用木镐在附近地表/裸露岩面挖 6 个圆石（正好够石镐+石斧，不多挖）\", \"condition\": {\"type\": \"block_mined\", \"block\": \"minecraft:stone\", \"minimum\": 6}, \"node_type\": \"MAIN\"}, {\"description\": \"圆石 3 + 木棍 2 合成石镐\", \"condition\": {\"type\": \"item_crafted\", \"asset_key\": \"minecraft:stone_pickaxe\", \"minimum\": 1}, \"node_type\": \"MAIN\"}, {\"description\": \"圆石 3 + 木棍 2 合成石斧；石镐石斧一到手即停手，不再砍树挖石，下一步立刻出发找村庄\", \"condition\": {\"type\": \"item_crafted\", \"asset_key\": \"minecraft:stone_axe\", \"minimum\": 1}, \"node_type\": \"MAIN\"}]}";

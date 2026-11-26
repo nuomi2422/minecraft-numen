@@ -8,6 +8,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -143,6 +144,28 @@ class RddPlanningPolicyTest {
         assertTrue(RddPlanningPolicy.block(objective, "stage_b").contains("恰好 1 个二级步骤"));
         assertEquals(1, RddPlanningPolicy.firstPrimarySubtaskCount("一级 0 只能有 1 个二级步骤"));
         assertEquals(1, RddPlanningPolicy.firstPrimarySubtaskCount("一级0必须只有1个二级任务"));
+    }
+
+    @Test
+    void 显式早期路线锚点进入提示与确定性范围校验() {
+        String objective = "路线硬约束：一级0至一级2只允许坐标20784,9904周围96格；不得引用范围外坐标或历史基地。";
+        var route = RddPlanningPolicy.routeConstraint(objective);
+        assertNotNull(route);
+        assertEquals(2, route.lastPrimaryIndex());
+        assertEquals(20784, route.x());
+        assertEquals(9904, route.z());
+        assertEquals(96, route.radius());
+        assertTrue(RddPlanningPolicy.block(objective, "stage_b").contains("早期路线硬约束"));
+        assertTrue(RddPlanningPolicy.appliedRules(objective, "stage_b")
+                .contains("early-route-bound:0-2:20784,9904:96"));
+
+        var nearby = new com.dwinovo.numen.rdd.api.SubtaskSpec("检查村庄箱子",
+                java.util.Map.of("type", "container_nearby", "radius", 8), null);
+        var stale = new com.dwinovo.numen.rdd.api.SubtaskSpec("返回旧基地(10728,64,9500)",
+                java.util.Map.of("type", "container_nearby", "radius", 8), null);
+        assertTrue(RddPlanningPolicy.routeAllowed(List.of(nearby), objective, 1));
+        assertFalse(RddPlanningPolicy.routeAllowed(List.of(stale), objective, 1));
+        assertTrue(RddPlanningPolicy.routeAllowed(List.of(stale), objective, 6));
     }
 
     @Test

@@ -1,5 +1,7 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import com.dwinovo.numen.rdd.api.SubtaskSpec;
+
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -63,6 +65,14 @@ final class RddPlanningPolicy {
             "每个一级(?:目标)?(?:最多|至多|不超过)\\s*(\\d+)\\s*个二级(?:步骤|子步骤|任务)?");
     private static final Pattern FIRST_PRIMARY_SUBTASK_COUNT = Pattern.compile(
             "一级\\s*0\\s*(?:(?:只能|必须)(?:且必须)?\\s*)?(?:生成\\s*)?(?:恰好\\s*)?(?:(?:只有|有)\\s*)?(\\d+)\\s*个二级(?:步骤|子步骤|任务)?");
+    private static final Pattern ROUTE_STAGE_RANGE = Pattern.compile(
+            "一级\\s*0\\s*(?:至|到)\\s*一级\\s*(\\d+)");
+    private static final Pattern ROUTE_ANCHOR = Pattern.compile(
+            "(?:坐标|中心)\\s*(-?\\d{1,7})\\s*[,，]\\s*(-?\\d{1,7})\\s*(?:周围|半径)\\s*(\\d{1,4})\\s*格");
+    private static final Pattern DESCRIPTION_COORDINATES = Pattern.compile(
+            "(-?\\d{3,7})\\s*[,，]\\s*(-?\\d{3,7})");
+
+    record RouteConstraint(int lastPrimaryIndex, int x, int z, int radius) {}
 
     private RddPlanningPolicy() {}
 
@@ -94,6 +104,59 @@ final class RddPlanningPolicy {
         } catch (NumberFormatException ex) {
             return 0;
         }
+    }
+
+    static RouteConstraint routeConstraint(String objective) {
+        if (objective == null || objective.isBlank()) return null;
+        Matcher stages = ROUTE_STAGE_RANGE.matcher(objective);
+        Matcher anchor = ROUTE_ANCHOR.matcher(objective);
+        if (!stages.find() || !anchor.find()) return null;
+        try {
+            int last = Math.clamp(Integer.parseInt(stages.group(1)), 0, MAX_SUBTASKS_PER_PRIMARY - 1);
+            int radius = Math.clamp(Integer.parseInt(anchor.group(3)), 1, 1024);
+            return new RouteConstraint(last, Integer.parseInt(anchor.group(1)),
+                    Integer.parseInt(anchor.group(2)), radius);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    static String routeInstruction(String objective) {
+        RouteConstraint route = routeConstraint(objective);
+        if (route == null) return "";
+        return "- 早期路线硬约束：一级0至一级" + route.lastPrimaryIndex()
+                + "只能使用坐标 " + route.x() + "," + route.z() + " 周围 " + route.radius()
+                + " 格；不得引用范围外坐标、旧基地或历史基地，违规整批拒绝。\n";
+    }
+
+    static boolean routeAllowed(List<SubtaskSpec> specs, String objective, int primaryIndex) {
+        RouteConstraint route = routeConstraint(objective);
+        if (route == null || primaryIndex < 0 || primaryIndex > route.lastPrimaryIndex()) return true;
+        for (SubtaskSpec spec : specs) {
+            String description = spec.description();
+            if (description.contains("旧基地") || description.contains("历史基地") || description.contains("历史观测")) {
+                return false;
+            }
+            Matcher coordinates = DESCRIPTION_COORDINATES.matcher(description);
+            while (coordinates.find()) {
+                if (!withinRoute(route, Integer.parseInt(coordinates.group(1)), Integer.parseInt(coordinates.group(2)))) {
+                    return false;
+                }
+            }
+            Object x = spec.condition().get("x");
+            Object z = spec.condition().get("z");
+            if (x instanceof Number xNumber && z instanceof Number zNumber
+                    && !withinRoute(route, xNumber.intValue(), zNumber.intValue())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean withinRoute(RouteConstraint route, int x, int z) {
+        long dx = (long) x - route.x();
+        long dz = (long) z - route.z();
+        return dx * dx + dz * dz <= (long) route.radius() * route.radius();
     }
 
     static String firstPrimarySubtaskInstruction(String objective) {
@@ -218,6 +281,7 @@ final class RddPlanningPolicy {
                 .append("禁止把\"找村庄/四处探索/变强一些\"当作可验收终点，不得为凑完整而无限拆分。\n");
         sb.append(subtaskLimitInstruction(objective));
         sb.append(firstPrimarySubtaskInstruction(objective));
+        sb.append(routeInstruction(objective));
 
         // 4) 高风险
         List<String> risks = riskKinds(objective, stage);
@@ -256,6 +320,10 @@ final class RddPlanningPolicy {
         int firstPrimaryCount = firstPrimarySubtaskCount(objective);
         if (firstPrimaryCount > 0) {
             rules.add("first-primary-subtask-count:" + firstPrimaryCount);
+        }
+        RouteConstraint route = routeConstraint(objective);
+        if (route != null) {
+            rules.add("early-route-bound:0-" + route.lastPrimaryIndex() + ":" + route.x() + "," + route.z() + ":" + route.radius());
         }
         for (String risk : riskKinds(objective, stage)) {
             rules.add("risk:" + risk);
