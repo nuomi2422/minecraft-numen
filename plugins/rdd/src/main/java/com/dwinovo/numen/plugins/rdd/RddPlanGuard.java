@@ -80,6 +80,13 @@ final class RddPlanGuard {
         boolean inventoryIntent = backpackIntent(d);
         boolean worldCondition = c.containsKey("block")
                 || (c.get("type") instanceof String t && t.contains("block"));
+        boolean acquireIntent = d.matches(".*(?:取得|采集|收集|获得|拿到).*")
+                && !d.matches(".*(?:确认|检查|记录).*(?:可取|存在|位置).*");
+        boolean existenceOnly = "block_nearby".equals(String.valueOf(c.get("type")))
+                || "container_nearby".equals(String.valueOf(c.get("type")));
+        if (!declaredPurposes && acquireIntent && existenceOnly) {
+            gaps.add("取得物品（判据只证附近方块或容器存在，未证实际入包）");
+        }
         // 2026-11-24（live 747056 首次 Stage-B）：世界侦察句也常以「清点村里…」开头，
         // 旧实现把「清点」一律当背包意图，整批必需 MAIN 被拒。背包/身上/随身/手上仍是强意图；
         // 「清点」只看直接宾语是不是背包容器词；resource_uses 既有豁免机制不动（滥用另记边界）。

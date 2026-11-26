@@ -196,6 +196,17 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void 取得木料不能由附近有树提前完成() {
+        SubtaskSpec s = worldScout("当前材料耗尽，先在村庄范围内取得制作火把的最低材料：采原木或木板",
+                "block_nearby", "#minecraft:logs", 16);
+        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("未证实际入包")),
+                RddPlanGuard.predicateGaps(s).toString());
+        SubtaskSpec check = worldScout("检查村庄附近是否存在可取木料，只记录位置",
+                "block_nearby", "#minecraft:logs", 16);
+        assertTrue(RddPlanGuard.predicateGaps(check).isEmpty(), RddPlanGuard.predicateGaps(check).toString());
+    }
+
+    @Test
     void 背包持有判断配背包条件不误报世界错配() {
         SubtaskSpec s = new SubtaskSpec("清点背包里的干草块，确认留存数量",
                 Map.of("asset_key", "minecraft:hay_block", "minimum", 1), null,
