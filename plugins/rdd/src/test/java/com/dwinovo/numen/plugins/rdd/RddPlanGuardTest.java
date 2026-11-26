@@ -306,6 +306,25 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void 否定句不把主副手食物当成装备判据缺口() {
+        SubtaskSpec s = new SubtaskSpec("只核验四槽铁盔甲是否同时实穿；不检查主手、副手、食物、背包库存或制作动作",
+                Map.of("type", "equipment", "slots", Map.of(
+                        "feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                        "chest", "minecraft:iron_chestplate", "head", "minecraft:iron_helmet")), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).isEmpty(), RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void 同句后半段正向主手要求仍报缺口() {
+        SubtaskSpec s = new SubtaskSpec("只核验四槽铁盔甲，不检查背包库存；同时主手必须为铁剑",
+                Map.of("type", "equipment", "slots", Map.of(
+                        "feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                        "chest", "minecraft:iron_chestplate", "head", "minecraft:iron_helmet")), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("装备外要求")),
+                RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
     void positionAt可证明真实到达() {
         SubtaskSpec s = new SubtaskSpec("沿安全路线前往远处候选点并到达坐标",
                 Map.of("type", "position_at", "x", 21100, "y", 64, "z", 10100, "radius", 4), null);

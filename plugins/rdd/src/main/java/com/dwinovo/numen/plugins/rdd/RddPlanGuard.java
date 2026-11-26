@@ -101,19 +101,19 @@ final class RddPlanGuard {
         if (stateOnlyPredicate(conditionType) && mutationIntent(d) && !exactTransfer) {
             gaps.add("执行动作（当前状态判据可能在开工前已满足，不能证明本步制作/迁移/建造/附魔/存入）");
         }
-        if ("stocked".equals(conditionType) && SPECIFIC_STORED_ITEM.matcher(d).find()) {
+        if ("stocked".equals(conditionType) && positiveMatch(d, SPECIFIC_STORED_ITEM)) {
             gaps.add("具体库存（stocked只证容器总件数，不证铁甲/剑盾/工具等指定物品与套数）");
         }
-        if ("lit".equals(conditionType) && FACILITY_ITEM.matcher(d).find()) {
+        if ("lit".equals(conditionType) && positiveMatch(d, FACILITY_ITEM)) {
             gaps.add("据点设施（lit只证光源，不证床/箱/工作台/熔炉/食物）");
         }
-        if ("shelter".equals(conditionType) && FACILITY_ITEM.matcher(d).find()) {
+        if ("shelter".equals(conditionType) && positiveMatch(d, FACILITY_ITEM)) {
             gaps.add("据点设施（shelter只证墙顶遮蔽，不证床/箱/工作台/熔炉/食物）");
         }
-        if ("equipment".equals(conditionType) && EQUIPMENT_EXTRA.matcher(d).find()) {
+        if ("equipment".equals(conditionType) && positiveMatch(d, EQUIPMENT_EXTRA)) {
             gaps.add("装备外要求（equipment只证护甲槽，不证主手/副手/食物；必须拆步）");
         }
-        if ("dimension".equals(conditionType) && TRAVEL_INTENT.matcher(d).find()) {
+        if ("dimension".equals(conditionType) && positiveMatch(d, TRAVEL_INTENT)) {
             gaps.add("迁移（dimension只证当前维度，不能证明前往远处或建立新基地）");
         }
         // 2026-11-24（live 747056 首次 Stage-B）：世界侦察句也常以「清点村里…」开头，
@@ -147,7 +147,25 @@ final class RddPlanGuard {
     }
 
     private static boolean mutationIntent(String description) {
-        return description.matches(".*(?:制作|合成|打造|采集|收集|获得|拿到|存入|放入|补充|补做|建立|搭建|扩建|迁移|前往|附魔|烧炼|烤熟|播种|种下|击杀|攻击|挖掘|开采).*");
+        return positiveMatch(description, MUTATION_ACTION);
+    }
+
+    private static final java.util.regex.Pattern MUTATION_ACTION =
+            java.util.regex.Pattern.compile("(?:制作|合成|打造|采集|收集|获得|拿到|存入|放入|补充|补做|建立|搭建|扩建|迁移|前往|附魔|烧炼|烤熟|播种|种下|击杀|攻击|挖掘|开采)");
+    private static final java.util.regex.Pattern NEGATED_CLAUSE =
+            java.util.regex.Pattern.compile("(?:不检查|不验证|不要求|无需|不必|不得|禁止|不要|不包括|不制作|不合成|不打造|不采集|不收集|不存入|不放入|不补充|不补做|不建立|不搭建|不扩建|不迁移|不前往|不附魔|不烧炼|不烤熟|不播种|不种下|不击杀|不攻击|不挖掘|不开采)");
+
+    private static boolean positiveMatch(String description, java.util.regex.Pattern pattern) {
+        var matcher = pattern.matcher(description);
+        while (matcher.find()) {
+            int clauseStart = Math.max(description.lastIndexOf("，", matcher.start()),
+                    Math.max(description.lastIndexOf("。", matcher.start()),
+                            Math.max(description.lastIndexOf("；", matcher.start()),
+                                    Math.max(description.lastIndexOf(",", matcher.start()),
+                                            description.lastIndexOf("\n", matcher.start())))));
+            if (!NEGATED_CLAUSE.matcher(description.substring(clauseStart + 1, matcher.start())).find()) return true;
+        }
+        return false;
     }
 
     private static final java.util.regex.Pattern SPECIFIC_STORED_ITEM =
