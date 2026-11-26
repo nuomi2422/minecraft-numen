@@ -180,6 +180,22 @@ class RddDecomposerParseTest {
         assertEquals(3, specs.get(1).condition().get("minimum"));
     }
 
+    @Test void invalidTransferDeclarationDoesNotEraseExecutableStockedStep() {
+        String json = "{\"subtasks\":[{\"description\":\"store food\",\"condition\":{\"type\":\"stocked\",\"minimum\":10,\"radius\":8},\"resource_uses\":[{\"asset_key\":\"minecraft:bread\",\"quantity\":3,\"kind\":\"TRANSFER\"}]}]}";
+        var specs = RddDecomposer.parse(json);
+        assertEquals(1, specs.size());
+        assertTrue(specs.getFirst().resourceUses().isEmpty());
+    }
+
+    @Test void exactContainerTransferRemainsARealDeclaration() {
+        String json = "{\"subtasks\":[{\"description\":\"deliver food\",\"condition\":{\"type\":\"container_at\",\"item\":\"minecraft:bread\",\"minimum\":3,\"dimension\":\"minecraft:overworld\",\"x\":1,\"y\":64,\"z\":2},\"resource_uses\":[{\"asset_key\":\"minecraft:bread\",\"quantity\":3,\"kind\":\"TRANSFER\"}]}]}";
+        var specs = RddDecomposer.parse(json);
+        assertEquals(1, specs.size());
+        assertEquals(1, specs.getFirst().resourceUses().size());
+        assertEquals(com.dwinovo.numen.rdd.api.ResourceUse.Kind.TRANSFER,
+                specs.getFirst().resourceUses().getFirst().kind());
+    }
+
     @Test void malformedOrEmptyYieldsEmpty() {
         assertTrue(RddDecomposer.parse("not json {{{").isEmpty());
         assertTrue(RddDecomposer.parse("").isEmpty());

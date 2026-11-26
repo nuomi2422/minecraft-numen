@@ -235,7 +235,18 @@ final class RddStageBSpecParser {
         }
         Map<String, Object> fact = new LinkedHashMap<>();
         for (var entry : condition.entrySet()) fact.put(entry.getKey(), toPlain(entry.getValue()));
-        return ResourceUse.validate(uses, fact);
+        try {
+            return ResourceUse.validate(uses, fact);
+        } catch (IllegalArgumentException invalidTransfer) {
+            // TRANSFER is only a purpose declaration; a wrong container shape must not erase an
+            // otherwise executable step. Exact container_at transfers still validate normally.
+            List<ResourceUse> withoutTransfer = uses.stream()
+                    .filter(use -> use.kind() != ResourceUse.Kind.TRANSFER)
+                    .toList();
+            if (withoutTransfer.size() == uses.size()) throw invalidTransfer;
+            LOG.warn("[rdd] 丢弃不匹配精确容器条件的 TRANSFER 用途声明，保留可执行步骤");
+            return ResourceUse.validate(withoutTransfer, fact);
+        }
     }
 
     private static RecurrenceSpec parseRecurrence(JsonObject o) {

@@ -168,7 +168,7 @@ final class RddDecomposerPrompt {
                 + heldBlock
                 + "请用 decompose_goal 工具给出子步骤。每个子步骤包含：\n"
                 + "- description：这一步要做什么\n"
-                + "- resource_uses（可选）：[{asset_key,quantity,kind:CONSUME|RETAIN|TRANSFER}]。这是当前子步的用途声明，不是事实：CONSUME是为本步结果可使用的输入，不要求完成时仍持有；RETAIN是完成时仍须真实持有的独立数量；TRANSFER只用于精确container_at且item/minimum/dimension/xyz对应的交付。用途不能证明已消耗、已转移或已丢失；缺观测是UNKNOWN。不要把历史采集结果当永久库存。所有独立终态携带要求必须列RETAIN。\n"
+                + "- resource_uses（可选）：[{asset_key,quantity,kind:CONSUME|RETAIN|TRANSFER}]。这是当前子步的用途声明，不是事实：CONSUME是为本步结果可使用的输入，不要求完成时仍持有；RETAIN是完成时仍须真实持有的独立数量；TRANSFER只用于精确container_at且item/minimum/dimension/xyz对应的交付。 stocked/lit/base/block_nearby 等非精确容器条件一律禁止 TRANSFER；不确定就省略 resource_uses。用途不能证明已消耗、已转移或已丢失；缺观测是UNKNOWN。不要把历史采集结果当永久库存。所有独立终态携带要求必须列RETAIN。\n"
                 + "- condition：{asset_key: 物品命名空间ID, minimum: 需要数量}\n"
                 + "  或 {group: food|wood|blocks, minimum: 组内最低总数}；不要强求食物品种齐全。\n"
                 + "  床/羊毛/木板这类有颜色或树种变体的物品，写具体 ID（如 minecraft:white_bed）；"
