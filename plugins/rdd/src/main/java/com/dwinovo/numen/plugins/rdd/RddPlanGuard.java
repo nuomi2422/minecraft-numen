@@ -95,6 +95,30 @@ final class RddPlanGuard {
         if (!declaredPurposes && smeltIntent && "item_crafted".equals(String.valueOf(c.get("type")))) {
             gaps.add("烧炼物品（item_crafted只证合成，不证熔炉产物）");
         }
+        String conditionType = String.valueOf(c.get("type"));
+        boolean exactTransfer = "container_at".equals(conditionType) && s.resourceUses().stream()
+                .anyMatch(use -> "TRANSFER".equals(String.valueOf(use.kind())));
+        if (stateOnlyPredicate(conditionType) && mutationIntent(d) && !exactTransfer) {
+            gaps.add("执行动作（当前状态判据可能在开工前已满足，不能证明本步制作/迁移/建造/附魔/存入）");
+        }
+        if ("stocked".equals(conditionType) && SPECIFIC_STORED_ITEM.matcher(d).find()) {
+            gaps.add("具体库存（stocked只证容器总件数，不证铁甲/剑盾/工具等指定物品与套数）");
+        }
+        if ("lit".equals(conditionType) && FACILITY_ITEM.matcher(d).find()) {
+            gaps.add("据点设施（lit只证光源，不证床/箱/工作台/熔炉/食物）");
+        }
+        if ("shelter".equals(conditionType) && FACILITY_ITEM.matcher(d).find()) {
+            gaps.add("据点设施（shelter只证墙顶遮蔽，不证床/箱/工作台/熔炉/食物）");
+        }
+        if ("equipment".equals(conditionType) && EQUIPMENT_EXTRA.matcher(d).find()) {
+            gaps.add("装备外要求（equipment只证护甲槽，不证主手/副手/食物；必须拆步）");
+        }
+        if ("base".equals(conditionType) && DISTANT_BASE.matcher(d).find()) {
+            gaps.add("远处基地（base只证当前床边基地，不能冒充新地点备用基地）");
+        }
+        if ("dimension".equals(conditionType) && TRAVEL_INTENT.matcher(d).find()) {
+            gaps.add("迁移（dimension只证当前维度，不能证明前往远处或建立新基地）");
+        }
         // 2026-11-24（live 747056 首次 Stage-B）：世界侦察句也常以「清点村里…」开头，
         // 旧实现把「清点」一律当背包意图，整批必需 MAIN 被拒。背包/身上/随身/手上仍是强意图；
         // 「清点」只看直接宾语是不是背包容器词；resource_uses 既有豁免机制不动（滥用另记边界）。
@@ -119,6 +143,26 @@ final class RddPlanGuard {
         }
         return gaps;
     }
+
+    private static boolean stateOnlyPredicate(String type) {
+        return java.util.Set.of("equipment", "base", "dimension", "stocked", "lit", "shelter",
+                "container_at", "container_nearby", "position_at").contains(type);
+    }
+
+    private static boolean mutationIntent(String description) {
+        return description.matches(".*(?:制作|合成|打造|采集|收集|获得|拿到|存入|放入|补充|补做|建立|搭建|扩建|迁移|前往|附魔|烧炼|烤熟|播种|种下|击杀|攻击|挖掘|开采).*");
+    }
+
+    private static final java.util.regex.Pattern SPECIFIC_STORED_ITEM =
+            java.util.regex.Pattern.compile("(?:铁甲|铁剑|铁镐|盾|熟食|食物|煤炭|煤|木|黑曜石|minecraft:)");
+    private static final java.util.regex.Pattern FACILITY_ITEM =
+            java.util.regex.Pattern.compile("(?:床|箱|工作台|熔炉|食物|熟食)");
+    private static final java.util.regex.Pattern EQUIPMENT_EXTRA =
+            java.util.regex.Pattern.compile("(?:主手|副手|食物|熟食|可食)");
+    private static final java.util.regex.Pattern DISTANT_BASE =
+            java.util.regex.Pattern.compile("(?:远处|新地点|备用基地|迁移)");
+    private static final java.util.regex.Pattern TRAVEL_INTENT =
+            java.util.regex.Pattern.compile("(?:迁移|前往|远处|新地点|\\d{2,4}\\s*格)");
 
     /** Backpack wording only: strong nouns stay unconditional; 清点 counts only with a backpack object. */
     private static boolean backpackIntent(String d) {

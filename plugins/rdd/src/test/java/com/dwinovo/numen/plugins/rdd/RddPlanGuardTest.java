@@ -232,6 +232,87 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void stocked总数不能冒充两套备用装备() {
+        SubtaskSpec s = new SubtaskSpec("补做并存入床边箱两套完整备用铁甲、两把铁剑、两把铁镐和两面盾",
+                Map.of("type", "stocked", "minimum", 20, "radius", 8), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("具体库存")),
+                RddPlanGuard.predicateGaps(s).toString());
+        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("执行动作")),
+                RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void 普通铁甲判据不能冒充ProtectionI附魔() {
+        SubtaskSpec s = new SubtaskSpec("用经验给现有四槽铁甲附魔Protection I并保持实穿",
+                Map.of("type", "equipment", "slots", Map.of(
+                        "feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                        "chest", "minecraft:iron_chestplate", "head", "minecraft:iron_helmet")), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("执行动作")),
+                RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void dimension不能冒充远处迁移与备用基地() {
+        SubtaskSpec travel = new SubtaskSpec("沿安全路线向约300格外迁移并校准位置",
+                Map.of("type", "dimension", "dimension", "minecraft:overworld"), null);
+        assertTrue(RddPlanGuard.predicateGaps(travel).stream().anyMatch(g -> g.contains("迁移")),
+                RddPlanGuard.predicateGaps(travel).toString());
+        SubtaskSpec build = new SubtaskSpec("在远处新地点建立备用基地并放入床箱工作台熔炉",
+                Map.of("type", "base"), null);
+        assertTrue(RddPlanGuard.predicateGaps(build).stream().anyMatch(g -> g.contains("远处基地")),
+                RddPlanGuard.predicateGaps(build).toString());
+    }
+
+    @Test
+    void lit与shelter不能冒充完整据点设施() {
+        SubtaskSpec lit = new SubtaskSpec("核验床边木屋、床、箱子、工作台、熔炉与至少4处光源",
+                Map.of("type", "lit", "minimum", 4, "radius", 16), null);
+        assertTrue(RddPlanGuard.predicateGaps(lit).stream().anyMatch(g -> g.contains("据点设施")),
+                RddPlanGuard.predicateGaps(lit).toString());
+        SubtaskSpec shelter = new SubtaskSpec("核验床周围遮蔽与食物箱、工作台、熔炉",
+                Map.of("type", "shelter", "minimum", 20, "radius", 8), null);
+        assertTrue(RddPlanGuard.predicateGaps(shelter).stream().anyMatch(g -> g.contains("据点设施")),
+                RddPlanGuard.predicateGaps(shelter).toString());
+    }
+
+    @Test
+    void equipment不能冒充主手副手与食物要求() {
+        SubtaskSpec s = new SubtaskSpec("完成出门配置：穿齐四槽铁甲，主手铁剑、副手盾，并随身带至少16份熟食",
+                Map.of("type", "equipment", "slots", Map.of(
+                        "feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                        "chest", "minecraft:iron_chestplate", "head", "minecraft:iron_helmet")), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("装备外要求")),
+                RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void 纯装备状态核验仍合法() {
+        SubtaskSpec s = new SubtaskSpec("核验当前四槽铁甲是否同时实穿，已穿齐则复用",
+                Map.of("type", "equipment", "slots", Map.of(
+                        "feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                        "chest", "minecraft:iron_chestplate", "head", "minecraft:iron_helmet")), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).isEmpty(), RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void 精确容器交付可证明存入动作() {
+        SubtaskSpec s = new SubtaskSpec("把备用铁剑存入床边箱并核对交付",
+                Map.of("type", "container_at", "x", 20826, "y", 64, "z", 9891,
+                        "dimension", "minecraft:overworld", "item", "minecraft:iron_sword", "minimum", 1), null,
+                com.dwinovo.numen.rdd.api.NodeType.MAIN, null,
+                List.of(new com.dwinovo.numen.rdd.api.ResourceUse("minecraft:iron_sword", 1,
+                        com.dwinovo.numen.rdd.api.ResourceUse.Kind.TRANSFER)));
+        assertTrue(RddPlanGuard.predicateGaps(s).isEmpty(), RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void stocked通用总数仍合法() {
+        SubtaskSpec s = new SubtaskSpec("核验床周围容器内物品总件数是否达到20",
+                Map.of("type", "stocked", "minimum", 20, "radius", 8), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).isEmpty(), RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
     void 背包持有判断配背包条件不误报世界错配() {
         SubtaskSpec s = new SubtaskSpec("清点背包里的干草块，确认留存数量",
                 Map.of("asset_key", "minecraft:hay_block", "minimum", 1), null,
