@@ -710,6 +710,7 @@ public final class EntityAgentLoop {
 
     /** Driven once per client tick (see {@code AgentLoopRegistry.tickAll}) — backstop timeout. */
     public void clientTick() {
+        com.dwinovo.numen.agent.tool.ServerToolTransport.expireYieldTickets();
         dispatcher.tick();
         presenter.tick();
         // G4c S102：预算窗口到点**自己**再试一次，不等主人来叫。
@@ -881,6 +882,8 @@ public final class EntityAgentLoop {
      *             聊天里有个气泡——他打了字就该看见自己打了什么,跟 {@code /build} 一个待遇
      */
     public void setGoal(com.dwinovo.numen.agent.goal.GoalState next, String echo) {
+        // 新目标取代旧指令：上一轮「只读/不移动」不得跨目标继续钉住（steerToGoal 的 progress 不走这里）。
+        retireOwnerRequest();
         this.goal = next;
         CompanionHome.setGoal(entityUuid, next);
         if (next == null || paused()) {
@@ -994,7 +997,28 @@ public final class EntityAgentLoop {
      */
     private void judgeGoal() {
         var target = goal;
-        String facts = runtimeStateXml();
+        String facts = runtimeStateXml(false, "goal_judging", 1);
+        String contextProblem = contextBudgetProblem();
+        if (contextProblem != null) {
+            pendingRuntimeStateXml = null;
+            pendingRuntimeStatePlan = null;
+            pendingDeliveredRefs = new ArrayList<>();
+            pendingDeliveryTaskId = "";
+            pendingRuntimeOrigin = "execution";
+            pendingRuntimeAttempt = 1;
+            long now = System.currentTimeMillis();
+            if (now - contextBudgetNoticeAtMs >= CONTEXT_BUDGET_NOTICE_COOLDOWN_MS) {
+                contextBudgetNoticeAtMs = now;
+                Constants.LOG.warn("[numen-entity#{}] 上下文预算拦截: {}", entityUuid, contextProblem);
+                com.dwinovo.numen.client.chat.ChatLines.notice(presenter.speakerName(), truncate(contextProblem, 160));
+            }
+            com.dwinovo.numen.client.hud.SpeechBubbles.clear(entityUuid);
+            return;
+        }
+        var delivery = new java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext>();
+        var deliveryToken = captureDeliveryToken();
+        var observation = observeExecutionRequest("goal_judging", deliveryToken, delivery);
+        publishPendingRuntimeState(observation, deliveryToken, delivery);
         String since = sinceGoalForJudge();
         goalJudging = true;
         final int gen = turnGeneration;
@@ -1004,7 +1028,7 @@ public final class EntityAgentLoop {
                                         target, facts, since))),
                         List.of(),
                         com.dwinovo.numen.agent.goal.GoalPrompts.evaluatorSystem(),
-                        null, observeRequest("goal_judging"))
+                        null, observation)
                 .whenComplete((res, err) -> Minecraft.getInstance().execute(
                         () -> finishJudging(gen, target, res, err)));
     }
@@ -1128,6 +1152,7 @@ public final class EntityAgentLoop {
      */
     private void performClear() {
         log.appendClearBoundary();
+        retireOwnerRequest();   // 主人说清空上下文：约束一起清，不跨链复活
         convo.replaceAll(List.of());
         display.add(new ConvoState.Msg.User(ConvoLog.CLEAR_DIVIDER));
         lastPromptTokens = 0;
@@ -1272,6 +1297,7 @@ public final class EntityAgentLoop {
     }
 
     private void abort(boolean stopBody) {
+        retireOwnerRequest();   // 主人按停止：停就是最新指令，旧请求不再重放
         // 主人按停止 = 不要她接着跑了。目标跟着收工,否则这一轮刚断下一轮又自己续上,
         // 停止键就成了摆设。想接着做再说一次 /goal,成本就是一句话。
         //
@@ -1782,6 +1808,18 @@ public final class EntityAgentLoop {
      *  空排空的接续轮为 false;beginVoiceTurn 据此选硬停或句界衔接。 */
     private boolean ownerSpokeThisTurn;
 
+    /**
+     * 当前工具链的主人 typed 请求锚点（055 约束连续性）。
+     * <p>只活一条链：主人开口时认领，normal final 收尾/clear/new goal/主人 abort 清；
+     * 失败重试保。请求组装时若 replay/segment 已把它裁掉，以必知区补一次全文。
+     */
+    private OwnerRequestAnchor ownerRequestAnchor = OwnerRequestAnchor.none();
+
+    /** 一条工具链收尾（normal final / clear / new goal / owner abort）时统一退役。失败重试不调用。 */
+    private void retireOwnerRequest() {
+        ownerRequestAnchor = OwnerRequestAnchor.none();
+    }
+
     private boolean drainInbox() {
         if (queue.isEmpty()) {
             ownerSpokeThisTurn = false;   // 接续轮:她接自己的话,不硬停
@@ -1809,6 +1847,8 @@ public final class EntityAgentLoop {
             return true;
         }
         ownerSpokeThisTurn = text.stream().anyMatch(e -> EventTypes.QUERY.equals(e.type()));
+        // 只认 QUERY 这一种类型（系统事件/工具注入不经过 enqueueOwnerWords）；最新一条整体替换。
+        if (ownerSpokeThisTurn) ownerRequestAnchor = OwnerRequestAnchor.adopt(ownerRequestAnchor, text);
         List<String> parts = new ArrayList<>();
         // current_task is live runtime state. It is attached request-locally by
         // modelContextSnapshot(), never written into conversation history or JSONL.
@@ -2202,13 +2242,13 @@ public final class EntityAgentLoop {
         presenter.clearPartial();
         // 头顶挂思考气泡:从发出请求到回应落地的整个空窗都有反馈
         NumenLlmClient llm = client();
-        llm.chatStreaming(snapshot, tools, systemPrompt,
+        requestBatchTicket(gen, ticket -> llm.chatStreaming(snapshot, tools, systemPrompt,
                         presenter.tapForUi(gen, vt.sink(), llm.provider()::extractReasoningDelta),
                         executionObservation)
                 .whenComplete((res, err) -> {
                     vt.finish().run();
-                    bounceBackToMain(gen, res, err);
-                });
+                    bounceBackToMain(gen, ticket, res, err);
+                }));
         return true;
     }
 
@@ -2420,7 +2460,11 @@ public final class EntityAgentLoop {
      */
     private List<ConvoState.Msg> modelContextSnapshot(boolean publish, String origin, int attempt) {
         maybeSegmentSession();
-        return AgentRequestContext.attach(replayWindow(publish), runtimeStateXml(publish, origin, attempt));
+        List<ConvoState.Msg> window = replayWindow(publish);
+        // 同一工具链只补一次：分段/replay 没裁掉它就绝不重复注入。
+        String ownerSection = AgentRequestContext.carriesOwnerRequest(window, ownerRequestAnchor.text())
+                ? "" : ownerRequestAnchor.xml();
+        return AgentRequestContext.attach(window, runtimeStateXml(publish, origin, attempt, ownerSection));
     }
 
     /**
@@ -2695,10 +2739,6 @@ public final class EntityAgentLoop {
      * 装得下则输出与接入前<b>逐字节相同</b>（没有则不写任何属性）。
      * 必知区（{@code <current_task>}）永不裁——裁了就是改语义。
      */
-    private String runtimeStateXml() {
-        return runtimeStateXml(true, "goal_judging", 1);
-    }
-
     /**
      * @param publish true = 立即发布（goal_judging 等独立请求）；
      *                false = 只构建 + 暂存，主轮等到所有闸通过、incrementTurn 之后由
@@ -2707,8 +2747,13 @@ public final class EntityAgentLoop {
      * @param attempt 1 = 首发，2 = 重试
      */
     private String runtimeStateXml(boolean publish, String origin, int attempt) {
+        return runtimeStateXml(publish, origin, attempt, "");
+    }
+
+    /** @param ownerSection 已判定"窗口里没有"的主人请求全文；空 = 不补（绝不重复注入）。 */
+    private String runtimeStateXml(boolean publish, String origin, int attempt, String ownerSection) {
         ContextBudget budget = BudgetPolicy.contextBudget();
-        List<ContextBudget.Section> sections = runtimeStateSections();
+        List<ContextBudget.Section> sections = runtimeStateSections(ownerSection);
         ContextBudget.Allocation plan = ContextBudget.allocate(budget, sections);
         String attributes = "";
         if (plan.denied()) {
@@ -2727,9 +2772,7 @@ public final class EntityAgentLoop {
         }
         String xml = body.isEmpty() ? "" : "<runtime_state" + attributes + ">" + body + "</runtime_state>";
         if (publish) {
-            if (plan.denied() || plan.truncated()) publishContextBudget(plan);
-            deliverKnowledgeRefs(plan);
-            publishRuntimeState(xml, origin, attempt);
+            throw new IllegalStateException("runtime state requires request-bound dispatch");
         } else {
             // A-M2：先只暂存。被预算/上下文/压缩闸拦下的轮次永远不会走到发布点，
             // 于是不会留下「她看见了什么」的假记录，turn 也不会滞后一轮。
@@ -2776,10 +2819,6 @@ public final class EntityAgentLoop {
      * <p>观测旁路：requestDelivered 内部逐 sink try/catch，账本挂了不挡请求。
      * 账本本身是会话内的（ExposureLedger），经验插件侧还会发 monitor 事件留审计。
      */
-    private void deliverKnowledgeRefs(ContextBudget.Allocation plan) {
-        deliverKnowledgeRefs(plan, null, null, null, "");
-    }
-
     private void deliverKnowledgeRefs(ContextBudget.Allocation plan,
             com.dwinovo.numen.agent.llm.LlmObservation observation,
             com.dwinovo.numen.api.WorldContextStamp.Token token,
@@ -2790,15 +2829,16 @@ public final class EntityAgentLoop {
         if (refs == null || refs.isEmpty()) {
             return;
         }
-        boolean kept = plan != null && plan.keptNames().contains(SECTION_EXECUTOR_KNOWLEDGE);
+        boolean kept = plan != null && !plan.denied() && plan.keptNames().contains(SECTION_EXECUTOR_KNOWLEDGE);
         // A5（97 号）：最终裁剪账本——per-ref kept/dropped + 原因。只观测，不改裁剪与预算数字。
         publishBudgetDecision(refs, kept, plan);
         if (!kept) {
             return; // 段被裁：不记（先裁后记）
         }
-        if (observation == null || delivery == null) {
-            // Legacy callers have no original request identity; never manufacture one.
-            com.dwinovo.numen.api.NumenPlugins.requestDelivered(entityUuid, refs);
+        if (observation == null || delivery == null || token == null || token.identity() == null
+                || token.identity().getOrDefault("world_id", "").isBlank()
+                || token.identity().getOrDefault("server_session", "").isBlank() || token.epoch() <= 0) {
+            // No trustworthy original request/world identity: do not create a delivery.
             return;
         }
         String taskId = "", taskCallId = "";
@@ -2808,6 +2848,7 @@ public final class EntityAgentLoop {
                 task == null ? "" : task.publicId(), token, task == null ? null : task.identityToken())) {
             // A replaced/ended/old-world task is not an idle episode. Never attach task B
             // to a body about A, nor turn stale task identity into a new-world candidate.
+            if ("goal_judging".equals(observation.phase())) return;
             evidenceToken = null;
         } else if (task != null) {
             taskId = task.publicId();
@@ -2914,6 +2955,11 @@ public final class EntityAgentLoop {
      * ②插件片段一度被我当成可选、优先级最高——实测仍会输给「装得下的背包」，故改判必知区。
      */
     private List<ContextBudget.Section> runtimeStateSections() {
+        return runtimeStateSections("");
+    }
+
+    /** @param ownerSection 非空时作为必知区加入：装不下整轮 DENIED，绝不静默截断。 */
+    private List<ContextBudget.Section> runtimeStateSections(String ownerSection) {
         // 一次算出正文再量 token：同一个方法调两次会拿到不同的 elapsed_s，
         // 「称重的东西」和「放进去的东西」必须是同一份字节。
         String currentTask = currentTaskXml();
@@ -2938,7 +2984,12 @@ public final class EntityAgentLoop {
                         com.dwinovo.numen.api.NumenPlugins.executorContributors(), entityUuid, objectiveForRetrieval);
         pendingDeliveredRefs = new ArrayList<>(executorFragment.refs());
         String executorKnowledge = executorFragment.text();
-        List<ContextBudget.Section> sections = new ArrayList<>(6);
+        List<ContextBudget.Section> sections = new ArrayList<>(7);
+        if (ownerSection != null && !ownerSection.isBlank()) {
+            sections.add(new ContextBudget.Section(OwnerRequestAnchor.SECTION, ownerSection, true,
+                    CompactSplit.estimateTokens(List.<ConvoState.Msg>of(new ConvoState.Msg.User(ownerSection))),
+                    PRIORITY_OWNER_REQUEST));
+        }
         sections.add(new ContextBudget.Section(SECTION_CURRENT_TASK, currentTask, true,
                 estimateTokensOfText(currentTask), PRIORITY_CURRENT_TASK));
         sections.add(runtimeSection(SECTION_INVENTORY, inventory, PRIORITY_INVENTORY));
@@ -2966,6 +3017,7 @@ public final class EntityAgentLoop {
         return sections;
     }
 
+    private static final int PRIORITY_OWNER_REQUEST = 110;  // 必知区：本轮主人原话，最高
     private static final int PRIORITY_CURRENT_TASK = 100;   // 必知区，优先级只作记录
     private static final int PRIORITY_PLUGINS = 40;         // 必知区（任务链镜像 / 需求缺口），优先级只作记录
     private static final int PRIORITY_RATIONALE = 34;   // 044 §0.7: structured why, optional
@@ -3001,7 +3053,8 @@ public final class EntityAgentLoop {
         // 是同一份，不再二次 runtimeStateSections()（那会让 elapsed_s 等字段漂移）。
         ContextBudget.Allocation plan = pendingRuntimeStatePlan;
         if (plan == null) {
-            plan = ContextBudget.allocate(budget, runtimeStateSections());
+            plan = ContextBudget.allocate(budget, runtimeStateSections(
+                    ownerRequestAnchor.present() ? ownerRequestAnchor.xml() : ""));
         }
         if (!plan.denied()) return null;
         publishContextBudget(plan);
@@ -3290,12 +3343,26 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
         tryStartTurn();
     }
 
-    private void bounceBackToMain(int gen, NumenLlmClient.ChatResult res, Throwable err) {
-        Minecraft mc = Minecraft.getInstance();
-        mc.execute(() -> handleResponse(gen, res, err));
+    private void requestBatchTicket(int gen, java.util.function.Consumer<String> start) {
+        com.dwinovo.numen.agent.tool.ServerToolTransport.requestYieldTicket(entityUuid, raw -> {
+            String ticket = null;
+            try {
+                var result = com.google.gson.JsonParser.parseString(raw).getAsJsonObject();
+                if (result.get("success").getAsBoolean()) ticket = result.getAsJsonObject("data").get("ticket").getAsString();
+            } catch (RuntimeException ignored) { }
+            final String frozen = ticket;
+            Minecraft.getInstance().execute(() -> {
+                if (gen == turnGeneration && Minecraft.getInstance().getConnection() != null) start.accept(frozen);
+            });
+        });
     }
 
-    private void handleResponse(int gen, NumenLlmClient.ChatResult res, Throwable err) {
+    private void bounceBackToMain(int gen, String ticket, NumenLlmClient.ChatResult res, Throwable err) {
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> handleResponse(gen, ticket, res, err));
+    }
+
+    private void handleResponse(int gen, String ticket, NumenLlmClient.ChatResult res, Throwable err) {
         // Owner interrupted this turn while the call was in flight: abort()
         // already settled the conversation (and, if a newer turn has since
         // started, awaitingLlmResponse belongs to *that* call). Discard wholesale
@@ -3337,6 +3404,21 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                 presenter.clearPartial();                 // 失败那次的半截文字同理作废
                 NumenLlmClient llm2 = client();
                 var retrySnapshot = modelContextSnapshot(false, "execution", 2);
+                String retryContextProblem = contextBudgetProblem();
+                if (retryContextProblem != null) {
+                    pendingRuntimeStateXml = null;
+                    pendingRuntimeStatePlan = null;
+                    pendingDeliveredRefs = new ArrayList<>();
+                    pendingDeliveryTaskId = "";
+                    pendingRuntimeOrigin = "execution";
+                    pendingRuntimeAttempt = 1;
+                    awaitingLlmResponse = false;
+                    retryingTurn = false;
+                    vt2.finish().run();
+                    lastTurnError = retryContextProblem;
+                    failTurnKeepQueue();
+                    return;
+                }
                 var retryTools = new java.util.ArrayList<>(com.dwinovo.numen.agent.tool.ToolVisibility.forExecutor(ToolRegistry.all()));   // 同上：重跑同样走白名单
                 if (com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(entityUuid) != null) {
                     retryTools.removeIf(t -> "task_status".equals(t.name()));   // 任务运行中同样不发（见 V-20261031-38）
@@ -3348,13 +3430,13 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                 var retryToken = captureDeliveryToken();
                 var retryObservation = observeExecutionRequest("execution_retry", retryToken, retryDelivery);
                 publishPendingRuntimeState(retryObservation, retryToken, retryDelivery);
-                llm2.chatStreaming(retrySnapshot, retryTools, retrySystem,
+                requestBatchTicket(gen2, ticket2 -> llm2.chatStreaming(retrySnapshot, retryTools, retrySystem,
                                 presenter.tapForUi(gen2, vt2.sink(), llm2.provider()::extractReasoningDelta),
                                 retryObservation)
                         .whenComplete((r2, e2) -> {
                             vt2.finish().run();
-                            bounceBackToMain(gen2, r2, e2);
-                        });
+                            bounceBackToMain(gen2, ticket2, r2, e2);
+                        }));
                 return;
             }
             // ★ 2026-10-06：这一回合已经用掉重试额度 ⇒ 真的失败了。
@@ -3431,6 +3513,7 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
                 com.dwinovo.numen.client.hud.TalkHint.flash(
                         presenter.speakerName() + " 想了想,什么也没说——再问一句试试", 3500);
             }
+            retireOwnerRequest();   // 本工具链正常收尾：不再重放已完成的主人请求
             convo.resetTurnCount();
             // A prompt that arrived during this final turn was buffered; now that
             // the chain has settled, start a fresh turn to answer it.
@@ -3459,7 +3542,7 @@ static String renderInventory(ClientNumenState.Snapshot snapshot) {
         // 看见了什么",存起来就会在下一批变成陈账。
         dispatcher.dispatch(turn.toolCalls().stream()
                 .map(tc -> new ToolInvocation(tc.id(), tc.name(), tc.arguments()))
-                .toList(), callableTools());
+                .toList(), callableTools(), ticket);
     }
 
     /**

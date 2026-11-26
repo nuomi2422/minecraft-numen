@@ -63,9 +63,13 @@ final class RddMainlineAdmission {
         if (now - since < REPLAN_TIMEOUT_MS) return false;
         replanEnteredAt.remove(companionId);
         var pending = RddReplanTransition.pendingSurvival(companionId, chain);
+        var pendingConcern = RddNegotiationInbox.requestedReview(companionId);
         try {
             chain.resumeFromReplanning();
             RddReplanTransition.releaseTimedOutSurvival(companionId, chain, pending);
+            if (pendingConcern != null) RddNegotiationInbox.deferReview(companionId, pendingConcern, null,
+                    "original bounded planning timeout elapsed before review settled",
+                    "current owner observes the dependency after timeout and explicitly submits new evidence");
             host.timeoutResumed(now - since);
         } catch (RuntimeException ex) {
             host.timeoutFailed(now - since, ex);

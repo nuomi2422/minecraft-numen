@@ -135,6 +135,34 @@ class RefreshServiceTest {
     }
 
     @Test
+    void concurrentDifferentSessionsNeverShareAResult() {
+        var queue = new java.util.ArrayList<Runnable>();
+        var registry = new ProviderRegistry();
+        registry.register(new TestSupport.FakeEntitiesProvider());
+        var service = new RefreshService(registry, store, queue::add);
+        var first = service.submit(session("old"), sheepBox(), 0);
+        var same = service.submit(session("old"), sheepBox(), 0);
+        var second = service.submit(session("new"), sheepBox(), 0);
+        assertSame(first, same);
+        org.junit.jupiter.api.Assertions.assertNotSame(first, second);
+        assertEquals(2, queue.size());
+        queue.get(1).run(); // new session completes first
+        queue.get(0).run(); // old result arrives late and must not return new session
+        assertTrue(second.join().success());
+        assertEquals("new", second.join().observation().serverSession());
+        assertEquals(FailReason.SUPERSEDED, first.join().reason());
+    }
+
+    private static com.dwinovo.numen.worldstate.core.provider.CollectionContext session(String id) {
+        return new com.dwinovo.numen.worldstate.core.provider.CollectionContext() {
+            public String worldId() { return "live"; }
+            public String serverSession() { return id; }
+            public long gameTick() { return 42; }
+            public long nowMs() { return 1000; }
+        };
+    }
+
+    @Test
     void timeoutYieldsTimedOut() throws Exception {
         TestSupport.FakeEntitiesProvider provider = new TestSupport.FakeEntitiesProvider();
         provider.sleepMillis = 500L;

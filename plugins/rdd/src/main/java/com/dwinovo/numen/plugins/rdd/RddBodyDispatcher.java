@@ -33,17 +33,52 @@ final class RddBodyDispatcher {
     private static final Gson GSON = new Gson();
 
     /** 当前二级带 body 且还没提交过 → 提交一次。 */
-    static void maybeSubmit(NumenPlayer ap, Subtask current) {
+    static void maybeSubmit(NumenPlayer ap, Subtask current, com.dwinovo.numen.rdd.core.TaskChain capturedChain) {
         BodyInstruction body = current.body();
         if (body == null) {
             return;
         }
         var state = RddPlugin.bodyState(ap.getUUID());
-        if (state != null && state.subtaskId().equals(current.id())) {
+        if (state != null && state.subtaskId().equals(current.id())
+                && (!"rdd_report_yield".equals(body.taskType()) || state.yieldChain() == capturedChain)) {
+            return;
+        }
+        if ("rdd_report_yield".equals(body.taskType())) {
+            submitYield(ap, current, capturedChain);
             return;
         }
         submit(ap, current);
         RddPlugin.rememberBody(ap.getUUID(), current.id(), 1);
+    }
+
+    private static void submitYield(NumenPlayer ap, Subtask current, com.dwinovo.numen.rdd.core.TaskChain capturedChain) {
+        int capturedAttempt = capturedChain.attempts(current.id());
+        int capturedRevision = capturedChain.planRevision();
+        String capturedExecution = capturedChain.activeExecutionId();
+        var tool = ToolRegistry.resolve("rdd_report_yield");
+        Object binding = tool instanceof com.dwinovo.numen.agent.tool.TrustedYieldTool y ? y.captureHostBinding(ap) : null;
+        String[] reply = {null};
+        String callId = RddPlugin.nextBodyCallId();
+        try {
+            var rt = RddPlugin.runtime(ap.getUUID());
+            if (binding == null || rt == null || rt.chain() != capturedChain || capturedChain.currentSubtask() != current)
+                reply[0] = "REJECTED: stale or unavailable original task";
+            else {
+                JsonObject args = new JsonObject();
+                current.body().args().forEach((k, v) -> args.add(k, GSON.toJsonTree(v)));
+                ((com.dwinovo.numen.agent.tool.TrustedYieldTool) tool).onTrustedHostCall(callId, args, ap, binding, value -> reply[0] = value);
+            }
+        } catch (RuntimeException failure) {
+            reply[0] = "UNKNOWN: yield dispatch threw";
+        }
+        var active = RddPlugin.runtime(ap.getUUID());
+        if (active != null && active.chain() == capturedChain && binding != null
+                && binding.equals(RddPlugin.yieldIdentity(ap))
+                && capturedAttempt > 0 && capturedAttempt == capturedChain.attempts(current.id())
+                && capturedRevision == capturedChain.planRevision()
+                && java.util.Objects.equals(capturedExecution, capturedChain.activeExecutionId())
+                && capturedChain.currentSubtask() != null && current.id().equals(capturedChain.currentSubtask().id()))
+            RddPlugin.rememberYieldBody(ap.getUUID(), current.id(), capturedChain, binding, reply[0]);
     }
 
     /** 重试路径：绕过"已提交过"判断，强制重派一次（submitCount 由调用方维护）。 */

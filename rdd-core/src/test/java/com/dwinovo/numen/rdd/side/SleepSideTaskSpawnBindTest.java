@@ -25,7 +25,9 @@ class SleepSideTaskSpawnBindTest {
 
     private SideTaskEngine engine(RecordingEvents events) {
         SideTaskEngine engine = new SideTaskEngine(events, token -> token);
-        engine.registerType(new SleepSideTaskType());
+        // Explicit hard fixture: this file pins the legacy bind/enter hard mechanics, not the
+        // ordinary auto-reminder (which is advisory and covered by AdvisorySideTaskConsumerTest).
+        engine.registerType(new SleepSideTaskType(SleepSideTaskType.Goal.LEGACY_BIND_OR_ENTER, false));
         engine.registerTrigger(new SleepSideTaskTrigger());
         return engine;
     }
@@ -202,9 +204,13 @@ class SleepSideTaskSpawnBindTest {
         SideTaskEngine engine = engine(events);
         FakeWorldPort port = new FakeWorldPort().at(13_000L, 0L).spawnBound(true);
         engine.tick(C, port, null, false);
+        Map<String, String> legacyData = new java.util.LinkedHashMap<>(engine.current(C).orElseThrow().data());
+        legacyData.put(SleepSideTaskType.KEY_SPAWN_BOUND_AT_START, "true");
+        legacyData.put(SleepSideTaskType.KEY_EVER_SLEPT, "true");
+        legacyData.put("sleeping", "true");
+        legacyData.put("advisory_source", "false");
         SideTask legacy = engine.current(C).orElseThrow().withPhase(SleepSideTaskType.PHASE_SLEEPING)
-                .withData(Map.of(SleepSideTaskType.KEY_SPAWN_BOUND_AT_START, "true",
-                        SleepSideTaskType.KEY_EVER_SLEPT, "true", "sleeping", "true"));
+                .withData(legacyData);
         engine.runtime().replace(legacy);
 
         RecordingEvents restoredEvents = new RecordingEvents();
@@ -225,9 +231,13 @@ class SleepSideTaskSpawnBindTest {
         SideTaskEngine engine = engine(events);
         FakeWorldPort port = new FakeWorldPort().at(13_000L, 0L).spawnBound(true);
         engine.tick(C, port, null, false);
+        Map<String, String> legacyData = new java.util.LinkedHashMap<>(engine.current(C).orElseThrow().data());
+        legacyData.put(SleepSideTaskType.KEY_SPAWN_BOUND_AT_START, "true");
+        legacyData.put(SleepSideTaskType.KEY_EVER_SLEPT, "true");
+        legacyData.put("sleeping", "true");
+        legacyData.put("advisory_source", "false");
         SideTask legacy = engine.current(C).orElseThrow().withPhase(SleepSideTaskType.PHASE_SLEEPING)
-                .withData(Map.of(SleepSideTaskType.KEY_SPAWN_BOUND_AT_START, "true",
-                        SleepSideTaskType.KEY_EVER_SLEPT, "true", "sleeping", "true"));
+                .withData(legacyData);
         engine.runtime().replace(legacy);
         port.asleep(C, false).wake(C, SideTaskWorldPort.Wake.INTERRUPTED);
 

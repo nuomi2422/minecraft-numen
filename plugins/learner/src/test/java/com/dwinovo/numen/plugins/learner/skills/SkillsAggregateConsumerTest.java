@@ -1,6 +1,8 @@
 package com.dwinovo.numen.plugins.learner.skills;
 
 import com.dwinovo.numen.api.NumenPlugins;
+import com.dwinovo.numen.api.PlanningQuery;
+import com.dwinovo.numen.api.LearnedSkillBodyResolver;
 import com.dwinovo.numen.plugins.learner.contract.ArtifactDraft;
 import com.dwinovo.numen.plugins.learner.contract.ArtifactKind;
 import org.junit.jupiter.api.Test;
@@ -13,6 +15,9 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /** 2026-11-09（046-A）：真实统一检索聚合消费者接收 skills 条目并逐条记账。 */
 class SkillsAggregateConsumerTest {
@@ -44,16 +49,14 @@ class SkillsAggregateConsumerTest {
         }
         SkillsKnowledgeContributor skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
         var frag = NumenPlugins.aggregateExecutorKnowledgeFragment(
-                List.of((NumenPlugins.KnowledgeContributor) skills::contribute), UUID.randomUUID(), "objective");
+                List.of((NumenPlugins.KnowledgeContributor) skills::contributeCatalog), UUID.randomUUID(), "objective");
 
-        org.junit.jupiter.api.Assertions.assertEquals("v7", frag.refs().get(0).version());
-        assertTrue(frag.text().contains(body), "preserve the original body, including its unrelated version=1");
-        assertFalse(frag.refs().get(0).truncated());
+        assertTrue(frag.refs().isEmpty());
         String content = finalProviderContent(frag.text(), frag.text().length());
-        assertTrue(content.contains("<entry ref=\"skill:sk-version\">@v7 "),
-                "the final provider JSON must expose the exact version required by adopt_skill/report_skill");
-        assertTrue(content.contains(body), "ref, registry version and original body must survive together");
-        assertFalse(content.contains("@v1 "), "never infer registry version from body JSON");
+        assertTrue(content.contains("<entry ref=\"skill:sk-version@v7\""),
+                "the final provider JSON must expose the exact version required by load_skill");
+        assertFalse(content.contains(body), "catalog never exposes the original body");
+        assertFalse(content.contains("skill:sk-version@v1\""), "never infer registry version from body JSON");
     }
 
     /** Pure production seams only: character budget and provider serialization; never invokes a model. */
@@ -80,20 +83,19 @@ class SkillsAggregateConsumerTest {
         SkillRegistry.open(dir.resolve("skills.jsonl")).register(draft, id, bodyRef, true);
         SkillsKnowledgeContributor skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
         var frag = NumenPlugins.aggregateExecutorKnowledgeFragment(
-                List.of((NumenPlugins.KnowledgeContributor) skills::contribute), UUID.randomUUID(), "objective");
+                List.of((NumenPlugins.KnowledgeContributor) skills::contributeCatalog), UUID.randomUUID(), "objective");
 
-        assertTrue(frag.refs().get(0).truncated(), "a visible version header is not complete body delivery");
-        assertFalse(frag.text().contains("</entry>"), "fixture must actually cross the shared budget cut");
+        assertTrue(frag.refs().isEmpty());
+        assertTrue(frag.text().contains("</entry>"), "small catalog metadata remains whole");
         String content = finalProviderContent(frag.text(), frag.text().length());
-        assertTrue(content.contains("<entry ref=\"skill:sk-long\">@v1 "));
+        assertTrue(content.contains("<entry ref=\"skill:sk-long@v1\""));
         assertFalse(content.contains(body));
-        assertFalse(content.contains("</entry>"));
     }
 
     @Test
     void droppedKnowledgeHasNoVersionOrBodyInFinalProviderJson() throws IOException {
         register("sk-drop");
-        var frag = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contribute(UUID.randomUUID(), "objective");
+        var frag = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contributeCatalog(UUID.randomUUID(), "objective");
         String content = finalProviderContent(frag.text(), frag.text().length() - 1);
         assertTrue(content.isEmpty(), "optional knowledge is dropped whole, not a version-only delivery");
     }
@@ -104,14 +106,12 @@ class SkillsAggregateConsumerTest {
         register("sk-b");
         SkillsKnowledgeContributor skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
         var frag = NumenPlugins.aggregateExecutorKnowledgeFragment(
-                List.of((com.dwinovo.numen.api.NumenPlugins.KnowledgeContributor) (c, o) -> skills.contribute(c, o)),
+                List.of((com.dwinovo.numen.api.NumenPlugins.KnowledgeContributor) (c, o) -> skills.contributeCatalog(c, o)),
                 UUID.randomUUID(), "objective");
 
-        assertTrue(frag.text().contains("<entry ref=\"skill:sk-a\">"), "条目边界必须保留");
-        assertTrue(frag.text().contains("正文-sk-b"), "正文要经真实聚合进片段");
-        assertFalse(frag.refs().isEmpty(), "逐条 refs 要记账");
-        assertTrue(frag.refs().stream().noneMatch(NumenPlugins.DeliveredRef::truncated),
-                "未截断时不得标记 truncated");
+        assertTrue(frag.text().contains("<entry ref=\"skill:sk-a@v1\""), "目录精确引用边界必须保留");
+        assertFalse(frag.text().contains("正文-sk-b"), "正文不能经目录直接注入");
+        assertTrue(frag.refs().isEmpty(), "目录发现不记正文送达");
     }
 
     private SkillEntry catalogFixture(String id, SkillStatus status, String audience, String body,
@@ -140,6 +140,73 @@ class SkillsAggregateConsumerTest {
     }
 
     @Test
+    void includedUnknownConditionsAreNotCountedAsRejectedGap() throws Exception {
+        catalogFixture("included-unknown", SkillStatus.TRIAL, "EXECUTOR", "body", "safe", "simple purpose");
+        catalogFixture("rejected-long", SkillStatus.TRIAL, "EXECUTOR", "body2", "long", "x".repeat(500));
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contributeCatalog(UUID.randomUUID(), "objective");
+        assertTrue(fragment.text().contains("skill:included-unknown@v7"));
+        assertTrue(fragment.text().contains("conditions=\"UNKNOWN\""));
+        assertFalse(fragment.text().contains("skill:rejected-long@v7"));
+        assertEquals(1, fragment.gapCounts().get("over-limit"));
+        assertFalse(fragment.gapCounts().containsKey("condition-unknown"), "included item is not a rejected gap");
+        assertTrue(fragment.refs().isEmpty(), "catalog is not body delivery");
+    }
+
+    @Test
+    void compactCatalogHasBoundedCompleteEntriesAndNeverPretendsOmittedConditionsAreKnown() throws Exception {
+        var source = catalogFixture("compact-safe", SkillStatus.TRIAL, "EXECUTOR", "BODY_ONLY_BY_REF",
+                "安全过夜", "天黑先确认居所");
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(UUID.randomUUID(), "过夜");
+        assertNotNull(fragment);
+        var document = parseCatalog(fragment.text());
+        var entries = document.getElementsByTagName("entry");
+        assertEquals(1, entries.getLength());
+        var node = (org.w3c.dom.Element) entries.item(0);
+        assertEquals("skill:compact-safe@v7", node.getAttribute("ref"));
+        assertEquals(source.name(), node.getElementsByTagName("name").item(0).getTextContent());
+        assertEquals(source.purpose(), node.getElementsByTagName("purpose").item(0).getTextContent());
+        String oneEntry = fragment.text().substring(fragment.text().indexOf("<entry "),
+                fragment.text().indexOf("</entry>") + "</entry>".length());
+        assertTrue(oneEntry.length() <= 320, "entry must fit without truncating author fields");
+        assertFalse(fragment.text().contains("BODY_ONLY_BY_REF"));
+        assertTrue(fragment.refs().isEmpty());
+        boolean allConditionsPresent = oneEntry.contains("stock low") && oneEntry.contains("stock sufficient")
+                && oneEntry.contains("observed workbench") && oneEntry.contains("author risk");
+        assertTrue(allConditionsPresent || oneEntry.contains("UNKNOWN"),
+                "omitted metadata must be explicitly UNKNOWN; body cannot promise metadata");
+        assertFalse(oneEntry.contains("conditions 见 ref 正文"));
+    }
+
+    @Test
+    void compactCatalogRejectsUnsafeRawScriptAsPurposeRatherThanTruncatingOrInventing() throws Exception {
+        String rawPurpose = "{\"name\":\"old-ac\",\"steps\":[{\"block\":\"goto\"}]}";
+        catalogFixture("unsafe-raw", SkillStatus.TRIAL, "EXECUTOR", "ORIGINAL_BODY",
+                "legacy AC", rawPurpose);
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(UUID.randomUUID(), "任务");
+        assertNotNull(fragment, "rejected candidate must leave an observable gap");
+        assertFalse(fragment.text().contains("skill:unsafe-raw@v7"), "raw script is not a safe purpose");
+        assertFalse(fragment.gapCounts().isEmpty(), "do not turn an unsafe candidate into empty library");
+    }
+
+    @Test
+    void compactCatalogRejectsRealAcKindScriptPurposeWithoutInventingSummary() throws Exception {
+        String body = "{\"name\":\"old-ac\",\"steps\":[{\"block\":\"observe\"}]}";
+        String bodyRef = SkillBodyStore.write(dir, "real-ac", 1, Integer.toHexString(body.hashCode()), body);
+        assertNotNull(bodyRef);
+        var entry = new SkillEntry("real-ac", 1, ArtifactKind.ACX_REQUEST, "AC from fixture", body,
+                "EXECUTOR", List.of("night"), List.of(), List.of(), "UNKNOWN", "UNKNOWN",
+                SkillStatus.TRIAL, bodyRef, List.of(), List.of("offline-fixture"), List.of(), List.of());
+        java.nio.file.Files.writeString(dir.resolve("skills.jsonl"), SkillRegistry.toJson(entry) + "\n",
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contributeCatalog(UUID.randomUUID(), "夜间");
+        assertNotNull(fragment);
+        assertFalse(fragment.text().contains("skill:real-ac@v1"), "script is not a safe human-readable purpose");
+        assertFalse(fragment.gapCounts().isEmpty(), "unsafe source must produce gap, not silent absence");
+    }
+
+    @Test
     void catalogReachesProviderWithoutBodyReceiptAndExactRefReadsOriginalBody() throws Exception {
         String body = "ORIGINAL_BODY_ONLY_AFTER_EXPLICIT_READ";
         var entry = catalogFixture("sk-catalog", SkillStatus.TRIAL, "EXECUTOR,PLANNER", body,
@@ -151,16 +218,16 @@ class SkillsAggregateConsumerTest {
         var document = parseCatalog(content);
         var node = (org.w3c.dom.Element) document.getElementsByTagName("entry").item(0);
         org.junit.jupiter.api.Assertions.assertEquals("skill:sk-catalog@v7", node.getAttribute("ref"));
-        org.junit.jupiter.api.Assertions.assertEquals(entry.kind().name(), node.getAttribute("kind"));
         org.junit.jupiter.api.Assertions.assertEquals(entry.status().name(), node.getAttribute("status"));
         org.junit.jupiter.api.Assertions.assertEquals(entry.name(), node.getElementsByTagName("name").item(0).getTextContent());
         org.junit.jupiter.api.Assertions.assertEquals(entry.purpose(), node.getElementsByTagName("purpose").item(0).getTextContent());
-        assertTrue(content.contains("<trigger><item>stock low</item><item>at night</item></trigger>"));
-        assertTrue(content.contains("<exclude><item>stock sufficient</item></exclude>"));
-        assertTrue(content.contains("<preconditions><item>observed workbench</item></preconditions>"));
-        assertTrue(content.contains("<risk>" + entry.risk() + "</risk>"));
-        assertTrue(content.contains("load_skill with only ref"));
-        assertTrue(content.contains("unverified clues"));
+        assertEquals("UNKNOWN", node.getAttribute("conditions"));
+        assertFalse(content.contains("stock low"));
+        assertFalse(content.contains("author risk"));
+        assertTrue(content.contains("按 ref 展开"));
+        assertTrue(content.contains("执行前须以当前观测复核"));
+        assertFalse(content.contains("ready"));
+        assertFalse(content.contains("authorized"));
         assertFalse(content.contains(body));
         assertFalse(content.contains(entry.bodyRef()));
         assertFalse(content.contains(dir.toString()));
@@ -174,9 +241,8 @@ class SkillsAggregateConsumerTest {
                 com.dwinovo.numen.api.LearnedSkillBodyResolver.View.EXECUTOR).available());
 
         var planner = new SkillsKnowledgeContributor(dir, "PLANNER", 0).contribute(UUID.randomUUID(), "objective");
-        assertTrue(planner.text().contains(body), "original planner entry retains its whole body");
+        assertTrue(planner.text().contains(body), "planner retains its existing body delivery");
         org.junit.jupiter.api.Assertions.assertEquals(1, planner.refs().size());
-        org.junit.jupiter.api.Assertions.assertEquals("v7", planner.refs().get(0).version());
         org.junit.jupiter.api.Assertions.assertArrayEquals(registryBefore,
                 java.nio.file.Files.readAllBytes(dir.resolve("skills.jsonl")));
     }
@@ -234,9 +300,9 @@ class SkillsAggregateConsumerTest {
         org.junit.jupiter.api.Assertions.assertEquals("skill:" + entry.skillId() + "@v7", node.getAttribute("ref"));
         org.junit.jupiter.api.Assertions.assertEquals(author, node.getElementsByTagName("name").item(0).getTextContent());
         org.junit.jupiter.api.Assertions.assertEquals(author, node.getElementsByTagName("purpose").item(0).getTextContent());
-        for (String tag : List.of("trigger", "exclude", "preconditions", "risk")) {
-            org.junit.jupiter.api.Assertions.assertEquals(author, node.getElementsByTagName(tag).item(0).getTextContent());
-        }
+        for (String tag : List.of("trigger", "exclude", "preconditions", "risk"))
+            assertEquals(0, node.getElementsByTagName(tag).getLength());
+        assertEquals("UNKNOWN", node.getAttribute("conditions"));
         assertTrue(content.contains("&amp;"));
         assertTrue(content.contains("&lt;entry"));
         assertTrue(content.contains("&quot;"));
@@ -251,7 +317,8 @@ class SkillsAggregateConsumerTest {
                 "large", "full-author-purpose-".repeat(400));
         var source = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
                 .contributeCatalog(UUID.randomUUID(), "objective");
-        assertTrue(source.text().contains("full-author-purpose-".repeat(400)), "author fields are never shortened");
+        assertFalse(source.text().contains("sk-oversize"), "oversized author fields are rejected, never shortened");
+        assertTrue(source.gapCounts().get("over-limit") > 0);
         var fragment = aggregateCatalog();
         assertTrue(fragment.text().contains("skill:sk-small@v7"));
         assertFalse(fragment.text().contains("sk-oversize"), "shared budget must drop a whole entry");
@@ -261,8 +328,23 @@ class SkillsAggregateConsumerTest {
         assertTrue(finalProviderContent(fragment.text(), fragment.text().length() - 1).isEmpty(),
                 "ContextBudget must drop the optional catalog as a whole");
         assertFalse(fragment.text().contains("PRIVATE_BODY"));
-        org.junit.jupiter.api.Assertions.assertNull(new SkillsKnowledgeContributor(dir, "EXECUTOR", 1)
-                .contributeCatalog(UUID.randomUUID(), "objective"), "no partial entry or empty wrapper when nothing fits");
+        var rejected = new SkillsKnowledgeContributor(dir, "EXECUTOR", 1)
+                .contributeCatalog(UUID.randomUUID(), "objective");
+        assertTrue(rejected.text().isEmpty(), "no partial entry or empty wrapper when nothing fits");
+        assertTrue(rejected.gapCounts().get("over-budget") > 0, "budget rejection is observable");
+    }
+
+    @Test
+    void localBudgetSkipsOversizedEntryAndRetainsLaterCompleteEntry() throws Exception {
+        catalogFixture("oversized-first", SkillStatus.TRIAL, "EXECUTOR", "body one", "large", "long ".repeat(500));
+        catalogFixture("small-later", SkillStatus.TRIAL, "EXECUTOR", "body two", "small", "brief");
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 1000)
+                .contributeCatalog(UUID.randomUUID(), "unrelated objective");
+        assertNotNull(fragment, "later complete entry fits the existing budget");
+        assertTrue(fragment.text().contains("skill:small-later@v7"));
+        assertFalse(fragment.text().contains("skill:oversized-first@v7"));
+        assertEquals(1, fragment.gapCounts().get("over-limit"));
+        assertEquals(1, parseCatalog(fragment.text()).getElementsByTagName("entry").getLength());
     }
 
     @Test
@@ -373,5 +455,443 @@ class SkillsAggregateConsumerTest {
         assertTrue(fragment.refs().isEmpty());
         org.junit.jupiter.api.Assertions.assertArrayEquals(original, java.nio.file.Files.readAllBytes(registry),
                 "reading a legacy trial must not migrate its body or change its status");
+    }
+    private static final UUID COMPANION = UUID.randomUUID();
+    private static final String PACK = "scene-overnight-pack";
+    private static final String STEP = "scene-sleep-check";
+    private static final String PACK_REF = "skill:" + PACK + "@v1";
+    private static final String STEP_REF = "skill:" + STEP + "@v1";
+    private static final String PACK_BODY = "PACK_BODY_REQUIRES_EXPLICIT_READ";
+    private static final String STEP_BODY = "STEP_BODY_REQUIRES_EXPLICIT_READ";
+
+    private void register(String id, String name, String purpose, String body,
+                          List<String> preconditions) throws Exception {
+        String bodyRef = SkillBodyStore.write(dir, id, 1, "fixture-" + id, body);
+        var draft = new ArtifactDraft(ArtifactKind.EXPERIENCE, name, purpose, body,
+                List.of("过夜", "overnight"), List.of(), preconditions, "UNKNOWN",
+                List.of(), List.of("offline-055-scene-fixture"), "PLANNER,EXECUTOR");
+        var decision = SkillRegistry.open(dir.resolve("skills.jsonl"))
+                .register(draft, id, bodyRef, true);
+        assertEquals(SkillRegistry.Outcome.REGISTERED, decision.outcome());
+    }
+
+    private void seed() throws Exception {
+        register(PACK, "安家过夜路线", "保主线并安排安全睡眠",
+                PACK_BODY, List.of("scene:overnight:package", "requires:" + STEP_REF));
+        register(STEP, "检查床与入睡条件", "只按当前事实检查，不发身体命令",
+                STEP_BODY, List.of("scene:overnight:component"));
+    }
+
+    @Test
+    void plannerReceivesExactRefCatalogInsteadOfFullBodies() throws Exception {
+        register("planner-catalog", "准备路线", "给规划看的用途", "PLANNER_PRIVATE_BODY", List.of());
+        var skills = new SkillsKnowledgeContributor(dir, "PLANNER", 0);
+        String out = NumenPlugins.aggregatePlanningKnowledge(List.of(query -> {
+            var fragment = skills.contribute(query.companion(), query.objective());
+            return fragment == null ? "" : fragment.text();
+        }), PlanningQuery.of(COMPANION, "准备路线", "stage", List.of()));
+        assertTrue(out.contains("skill:planner-catalog"));
+        assertTrue(out.contains("给规划看的用途"));
+        assertTrue(out.contains("PLANNER_PRIVATE_BODY"));
+    }
+
+    @Test
+    void goalDiscoversPackageAndIndependentComponentOnceWithoutOpeningBodies() throws Exception {
+        seed();
+        var skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
+        var fragment = skills.contributeCatalog(COMPANION, "今晚在村边安家过夜");
+        assertNotNull(fragment);
+        assertEquals(1, fragment.text().split("ref=\"" + PACK_REF + "\"", -1).length - 1);
+        assertEquals(1, fragment.text().split("ref=\"" + STEP_REF + "\"", -1).length - 1);
+        assertFalse(fragment.text().contains("requires:" + STEP_REF), "conditions are not shown as verified facts");
+        assertTrue(fragment.text().contains("conditions=\"UNKNOWN\""));
+        assertTrue(fragment.text().contains("availability=\"available\""));
+        assertEquals(2, parseCatalog(fragment.text()).getElementsByTagName("entry").getLength());
+        assertFalse(fragment.text().contains(PACK_BODY));
+        assertFalse(fragment.text().contains(STEP_BODY));
+        assertTrue(fragment.refs().isEmpty(), "discovery is not body delivery or adoption");
+    }
+
+    @Test
+    void missingRequiredComponentRefusesPackageButMissingOptionalCanDegrade() throws Exception {
+        register("required-missing", "缺必需件", "不能执行",
+                "REQUIRED_PRIVATE", List.of("scene:overnight:package",
+                        "requires:skill:not-present@v1"));
+        register("optional-missing", "缺可选件", "可以降级",
+                "OPTIONAL_PRIVATE", List.of("scene:overnight:package",
+                        "optional:skill:not-present@v1"));
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(COMPANION, "今晚安家过夜");
+        assertNotNull(fragment);
+        assertFalse(fragment.text().contains("skill:required-missing@v1"));
+        var explicit = new LearnedSkillBodyResolverImpl(dir).resolve(COMPANION, "skill:required-missing@v1", LearnedSkillBodyResolver.View.EXECUTOR);
+        assertTrue(explicit.available(), "explicit inspection is not execution; this records the existing gap");
+        assertEquals("REQUIRED_PRIVATE", explicit.body());
+        assertTrue(fragment.text().contains("skill:optional-missing@v1"));
+        assertTrue(fragment.text().contains("degraded"));
+        assertTrue(fragment.gapCounts().containsKey("missing-required-component"));
+    }
+
+    @Test
+    void historicalOvernightComponentRecallsByGoalAndKeepsExactBodyChecks() throws Exception {
+        register("sk-357b28399f37", "安家过夜：睡前留断点",
+                "主世界安家过夜时保存主线断点，先核身位、床和风险再尝试睡眠",
+                "原候选正文只准精确展开", List.of("scene:overnight:component"));
+        var row = SkillRegistry.open(dir.resolve("skills.jsonl"));
+        var old = row.get("sk-357b28399f37").orElseThrow();
+        java.nio.file.Files.writeString(dir.resolve("skills.jsonl"), SkillRegistry.toJson(
+                new SkillEntry(old.skillId(), 2, old.kind(), old.name(), old.purpose(), "EXECUTOR",
+                        old.triggerConditions(), old.excludeConditions(), old.preconditions(), old.risk(),
+                        old.evidenceLevel(), old.status(), old.bodyRef(), old.validationSignals(),
+                        old.foundingSamples(), List.of(old.skillId() + "@v1"), old.conflicts())) + "\n",
+                java.nio.file.StandardOpenOption.APPEND);
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(COMPANION, "主世界安家过夜，保留主任务断点");
+        assertNotNull(fragment);
+        assertTrue(fragment.text().contains("skill:sk-357b28399f37@v2"));
+        assertFalse(fragment.text().contains("原候选正文只准精确展开"));
+        var resolver = new LearnedSkillBodyResolverImpl(dir);
+        assertEquals("原候选正文只准精确展开", resolver.resolve(COMPANION,
+                "skill:sk-357b28399f37@v2", LearnedSkillBodyResolver.View.EXECUTOR).body());
+        assertEquals("version-mismatch", resolver.resolve(COMPANION,
+                "skill:sk-357b28399f37@v1", LearnedSkillBodyResolver.View.EXECUTOR).gap());
+        assertEquals("audience-mismatch", resolver.resolve(COMPANION,
+                "skill:sk-357b28399f37@v2", LearnedSkillBodyResolver.View.PLANNER).gap());
+    }
+
+    @Test
+    void packageMustNotAdvertiseRequiredBodyUnavailableToExecutor() throws Exception {
+        var hidden = catalogFixture("sk-hidden-dep", SkillStatus.TRIAL, "PLANNER", "private body", "hidden", "hidden purpose");
+        var corrupt = catalogFixture("sk-corrupt-dep", SkillStatus.TRIAL, "EXECUTOR", "original body", "corrupt", "corrupt purpose");
+        java.nio.file.Files.writeString(dir.resolve("skill-bodies").resolve(corrupt.bodyRef().substring("skill-body:".length())), "tampered");
+        register("pack-hidden", "hidden package", "overnight", "package body", List.of("scene:overnight:package", "requires:skill:sk-hidden-dep@v7"));
+        var pack = catalogFixture("pack-corrupt", SkillStatus.TRIAL, "EXECUTOR", "second package body", "corrupt package", "corrupt package purpose");
+        var marked = new SkillEntry(pack.skillId(), pack.version(), pack.kind(), pack.name(), pack.purpose(), pack.audience(), pack.triggerConditions(), pack.excludeConditions(), List.of("scene:overnight:package", "requires:skill:sk-corrupt-dep@v7"), pack.risk(), pack.evidenceLevel(), pack.status(), pack.bodyRef(), pack.validationSignals(), pack.foundingSamples(), pack.supersedes(), pack.conflicts());
+        java.nio.file.Files.writeString(dir.resolve("skills.jsonl"), SkillRegistry.toJson(marked) + "\n", java.nio.file.StandardOpenOption.APPEND);
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0).contributeCatalog(COMPANION, "安家过夜");
+        assertNotNull(fragment);
+        assertFalse(fragment.text().contains("skill:pack-hidden@v1"));
+        assertFalse(fragment.text().contains("skill:pack-corrupt@v7"));
+        assertEquals(2, fragment.gapCounts().get("missing-required-component"));
+    }
+
+    @Test
+    void freshWorldCueSurfacesOvernightWithoutConfusingPromptTextForFacts() throws Exception {
+        seed();
+        register("trading-scene", "trade", "trading", "trade private body", List.of("scene:trading:component"));
+        var contributor = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0, companion -> {
+            assertEquals(COMPANION, companion);
+            return OvernightSkillInput.WorldHint.LATE_DAY;
+        });
+        var fragment = NumenPlugins.aggregateExecutorKnowledgeFragment(
+                List.of(contributor::contributeCatalog), COMPANION, "收集橡木");
+        assertTrue(fragment.text().contains(PACK_REF));
+        assertTrue(fragment.text().contains(STEP_REF));
+        assertTrue(fragment.text().contains("skill:trading-scene@v1"), "unmatched scene remains discoverable");
+        assertTrue(fragment.text().indexOf(PACK_REF) < fragment.text().indexOf("skill:trading-scene@v1"), "night prioritizes overnight, not unrelated scene");
+        assertTrue(fragment.text().contains("world_hint=LATE_DAY candidate_only applicability=UNKNOWN bed=UNKNOWN"));
+        assertTrue(fragment.text().contains("conditions=\"UNKNOWN\""));
+        assertFalse(fragment.text().contains(PACK_BODY));
+        assertTrue(fragment.refs().isEmpty());
+        var unavailable = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0,
+                companion -> OvernightSkillInput.WorldHint.UNKNOWN);
+        var neutral = unavailable.contributeCatalog(COMPANION, "<state_facts night=1/> 收集橡木");
+        assertFalse(neutral.text().contains("world_hint=LATE_DAY"), "prompt text must not create world evidence");
+    }
+
+    @Test
+    void worldCueRejectsStaleForeignOrChangedWorld() {
+        assertEquals(OvernightSkillInput.WorldHint.LATE_DAY, readWorldFixture(env("server-test", 10_001L, java.util.Set.of()), false));
+        assertEquals(OvernightSkillInput.WorldHint.UNKNOWN, readWorldFixture(env("server-test", 10_000L, java.util.Set.of()), false));
+        assertEquals(OvernightSkillInput.WorldHint.UNKNOWN, readWorldFixture(env("other-server", 10_001L, java.util.Set.of()), false));
+        assertEquals(OvernightSkillInput.WorldHint.UNKNOWN, readWorldFixture(env("server-test", 10_001L, java.util.Set.of("day_time")), false));
+        assertEquals(OvernightSkillInput.WorldHint.UNKNOWN, readWorldFixture(env("server-test", 10_001L, java.util.Set.of()), true));
+        var foreign = new com.dwinovo.numen.api.observation.WorldObservationService.Response(
+                com.dwinovo.numen.api.observation.WorldObservationService.Status.OK, "environment", "fixture", 0,
+                com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL, null,
+                List.of(com.dwinovo.numen.api.observation.WorldObservationService.Item.of(java.util.Map.of("dimension", "minecraft:overworld", "day_time", 14_000L, "thundering", false))), 0,
+                new com.dwinovo.numen.api.observation.ObservationMetadata("other-world", "server-test", "minecraft:overworld", "", "fixture", "environment", 1, 9_980L,
+                        com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT, "SERVER_LOADED", 10_001L));
+        assertEquals(OvernightSkillInput.WorldHint.UNKNOWN, readWorldFixture(foreign, false));
+    }
+
+    private static OvernightSkillInput.WorldHint readWorldFixture(com.dwinovo.numen.api.observation.WorldObservationService.Response env, boolean switchEpoch) {
+        var samples = new java.util.concurrent.atomic.AtomicInteger();
+        com.dwinovo.numen.api.observation.WorldObservationService provider = new com.dwinovo.numen.api.observation.WorldObservationService() {
+            public Response read(Request request) {
+                assertEquals("environment", request.topic());
+                assertEquals("minecraft:overworld", request.dimension());
+                return env;
+            }
+            public Response readSelf(String consumer, UUID id, long maxAgeMs) {
+                assertEquals(COMPANION, id);
+                return sample("self", COMPANION.toString(), "server-test", 10_000L + 1, Item.of(java.util.Map.of()));
+            }
+        };
+        return OvernightSkillInput.read(provider, COMPANION,
+                () -> samples.incrementAndGet() == 1 || !switchEpoch
+                        ? new com.dwinovo.numen.api.WorldContextStamp.Token(java.util.Map.of("world_id", "world-test", "server_session", "server-test"), 1L) : new com.dwinovo.numen.api.WorldContextStamp.Token(new com.dwinovo.numen.api.WorldContextStamp.Token(java.util.Map.of("world_id", "world-test", "server_session", "server-test"), 1L).identity(), 2L), () -> 10_000L);
+    }
+
+    private static com.dwinovo.numen.api.observation.WorldObservationService.Response env(String server, long expiry, java.util.Set<String> stale) {
+        return sample("environment", "", server, expiry, new com.dwinovo.numen.api.observation.WorldObservationService.Item(
+                java.util.Map.of("dimension", "minecraft:overworld", "day_time", 14_000L, "thundering", false), java.util.Set.of(), stale));
+    }
+
+    private static com.dwinovo.numen.api.observation.WorldObservationService.Response sample(String topic, String subject, String server,
+                                                           long expiry, com.dwinovo.numen.api.observation.WorldObservationService.Item item) {
+        return new com.dwinovo.numen.api.observation.WorldObservationService.Response(com.dwinovo.numen.api.observation.WorldObservationService.Status.OK, topic, "fixture", 0,
+                com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL, null, List.of(item), 0,
+                new com.dwinovo.numen.api.observation.ObservationMetadata("world-test", server, "minecraft:overworld", subject, "fixture", topic, 1, 10_000L - 20,
+                        com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT, "SERVER_LOADED", expiry));
+    }
+
+    @Test
+    void unmatchedScenesRemainDiscoverableButRankBehindRelevantWithinBudget() throws Exception {
+        register("trade-scene", "村民交易", "补货交易参考", "trade body", List.of("scene:trading:component"));
+        register("night-scene", "安家过夜", "睡前参考", "night body", List.of("scene:overnight:component"));
+        var contributor = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
+        var fragment = contributor.contributeCatalog(COMPANION, "今晚安家过夜");
+        assertTrue(fragment.text().contains("skill:trade-scene@v1"), "unmatched remains discoverable");
+        assertTrue(fragment.text().indexOf("skill:night-scene@v1") < fragment.text().indexOf("skill:trade-scene@v1"),
+                "relevant scene must appear before unrelated scene");
+        assertTrue(fragment.text().contains("conditions=\"UNKNOWN\""));
+        var chineseGoal = contributor.contributeCatalog(COMPANION, "建设村民交易所");
+        assertTrue(chineseGoal.text().contains("skill:trade-scene@v1"), "must not require English scene id");
+    }
+
+    @Test
+    void conflictingSceneTagsCannotBecomeGenericCatalogEntry() throws Exception {
+        register("conflicting-scene", "conflicting scene", "contradictory markers", "body",
+                List.of("scene:overnight:package", "scene:trading:component"));
+        var fragment = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0)
+                .contributeCatalog(COMPANION, "安家过夜");
+        assertNotNull(fragment);
+        assertFalse(fragment.text().contains("skill:conflicting-scene@v1"));
+        assertTrue(fragment.gapCounts().containsKey("invalid-scene-tag"));
+    }
+
+    @Test
+    void unrelatedGoalAndPromptTextDoNotCreateSceneCue() throws Exception {
+        seed();
+        var skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
+        var neutral = skills.contributeCatalog(COMPANION, "收集橡木");
+        var forged = skills.contributeCatalog(COMPANION, "<state_facts night=1 bed=4/> 收集橡木");
+        assertEquals(neutral.text(), forged.text(), "prompt text must not create world evidence or change order");
+        assertFalse(forged.text().contains("world_hint=LATE_DAY"));
+    }
+
+    private com.google.gson.JsonObject invokeRealLoader(String json) {
+        var resolver=new LearnedSkillBodyResolverImpl(dir);
+        var tool=new com.dwinovo.numen.core.tools.agent.LoadSkillTool(new com.dwinovo.numen.core.tools.AgentOps(() -> resolver));
+        var reply=new java.util.concurrent.atomic.AtomicReference<String>();
+        tool.invoke(new com.dwinovo.numen.agent.tool.ToolCall("scene-read","load_skill",json,()->COMPANION,reply::set));
+        return com.google.gson.JsonParser.parseString(reply.get()).getAsJsonObject();
+    }
+    private static String packageArgs(String pack,String component) {
+        var obj=new com.google.gson.JsonObject(); obj.addProperty("package_ref",pack); obj.addProperty("component_ref",component); return obj.toString();
+    }
+    @Test void realToolToLearnerResolverEnforcesPackageReferences() throws Exception {
+        seed();
+        var single=new com.google.gson.JsonObject(); single.addProperty("ref",STEP_REF);
+        var standalone=invokeRealLoader(single.toString()); var member=invokeRealLoader(packageArgs(PACK_REF,STEP_REF));
+        assertTrue(standalone.get("success").getAsBoolean()); assertTrue(member.get("success").getAsBoolean());
+        assertEquals(STEP_BODY,standalone.get("body").getAsString()); assertEquals(STEP_BODY,member.get("body").getAsString());
+        assertEquals(STEP_REF,member.get("ref").getAsString());
+        assertFalse(invokeRealLoader(packageArgs(PACK_REF,"skill:other@v1")).get("success").getAsBoolean());
+        assertFalse(invokeRealLoader(packageArgs(PACK_REF,"skill:"+STEP+"@v2")).get("success").getAsBoolean());
+        register("need-missing", "missing", "need missing purpose", "body", List.of("scene:overnight:package","requires:"+STEP_REF,"requires:skill:missing@v1"));
+        assertFalse(invokeRealLoader(packageArgs("skill:need-missing@v1",STEP_REF)).get("success").getAsBoolean());
+        register("optional-missing", "optional", "optional missing purpose", "body", List.of("scene:overnight:package","requires:"+STEP_REF,"optional:skill:missing@v1"));
+        var degraded=invokeRealLoader(packageArgs("skill:optional-missing@v1",STEP_REF));
+        assertTrue(degraded.get("success").getAsBoolean()); assertEquals("degraded",degraded.get("availability").getAsString());
+        register("trade-component", "trade", "trade component purpose", "trade body", List.of("scene:trading:component"));
+        register("cross-pack", "cross", "cross package purpose", "body", List.of("scene:overnight:package","requires:skill:trade-component@v1"));
+        var cross=invokeRealLoader(packageArgs("skill:cross-pack@v1","skill:trade-component@v1"));
+        assertTrue(cross.get("success").getAsBoolean()); assertEquals("trade body",cross.get("body").getAsString());
+        register("self-pack", "self", "self package purpose", "body", List.of("scene:overnight:package","requires:skill:self-pack@v1"));
+        assertFalse(invokeRealLoader(packageArgs("skill:self-pack@v1","skill:self-pack@v1")).get("success").getAsBoolean());
+        register("outer-pack", "outer", "outer package purpose", "body", List.of("scene:overnight:package","requires:"+PACK_REF));
+        assertFalse(invokeRealLoader(packageArgs("skill:outer-pack@v1",PACK_REF)).get("success").getAsBoolean());
+        SkillRegistry.open(dir.resolve("skills.jsonl")).retire(STEP,"negative control");
+        assertFalse(invokeRealLoader(packageArgs(PACK_REF,STEP_REF)).get("success").getAsBoolean());
+    }
+
+    @Test void failedDeclarationWithdrawalDoesNotPublishMemoryOrSuccess() throws Exception {
+        String id="focus-write-fail", body="stable declaration body";
+        String bodyRef=SkillBodyStore.write(dir,id,1,"fixture-write-fail",body);
+        var registry=SkillRegistry.open(dir.resolve("skills.jsonl"));
+        java.util.function.Function<List<String>,ArtifactDraft> draft=pre->new ArtifactDraft(ArtifactKind.EXPERIENCE,"failure package","failure package purpose",body,
+                List.of("overnight"),List.of(),pre,"UNKNOWN",List.of(),List.of("fixture"),"EXECUTOR");
+        var declared=draft.apply(List.of("scene:overnight:package","focus:environment@v1"));
+        var withdrawn=draft.apply(List.of("scene:overnight:package"));
+        assertEquals(SkillRegistry.Outcome.REGISTERED,registry.register(declared,id,bodyRef,true).outcome());
+        assertEquals(SkillRegistry.Outcome.REUSE,registry.register(declared,id,bodyRef,true).outcome());
+        var file=dir.resolve("skills.jsonl"); var before=java.nio.file.Files.readAllBytes(file);
+        // Occupy the exact temporary file as a non-empty directory: original registry remains readable.
+        var temp=dir.resolve("skills.jsonl.tmp"); java.nio.file.Files.createDirectory(temp);
+        java.nio.file.Files.writeString(temp.resolve("block"),"fixture");
+        var decision=registry.register(withdrawn,id,bodyRef,true);
+        var after=java.nio.file.Files.readAllBytes(file);
+        int memoryVersion=registry.get(id).orElseThrow().version();
+        var resolver=new LearnedSkillBodyResolverImpl(dir);
+        boolean diskDeclaration=resolver.resolveFocusDeclaration(COMPANION,"skill:"+id+"@v1",LearnedSkillBodyResolver.View.EXECUTOR).available();
+        var repeated=registry.register(declared,id,bodyRef,true);
+        org.junit.jupiter.api.Assertions.assertAll(
+                () -> assertFalse(decision.outcome()==SkillRegistry.Outcome.REVISE,"failed persistent withdrawal must not report success"),
+                () -> org.junit.jupiter.api.Assertions.assertArrayEquals(before,after,"original bytes preserved"),
+                () -> assertEquals(1,memoryVersion,"memory must not publish unwritten version"),
+                () -> assertTrue(diskDeclaration,"fresh resolver sees original version"),
+                () -> assertEquals(SkillRegistry.Outcome.REUSE,repeated.outcome(),"unchanged old registration remains reuse"));
+    }
+
+    @Test void normalRegistrationRevisesOnFocusDeclarationAdditionAndRemoval() throws Exception {
+        String id="focus-revision"; String body="stable focus body";
+        String bodyRef=SkillBodyStore.write(dir,id,1,"fixture-focus-revision",body);
+        var registry=SkillRegistry.open(dir.resolve("skills.jsonl"));
+        java.util.function.Function<List<String>,ArtifactDraft> draft = pre -> new ArtifactDraft(ArtifactKind.EXPERIENCE,"focus revision","focus revision purpose",body,
+                List.of("overnight"),List.of(),pre,"UNKNOWN",List.of(),List.of("fixture"),"EXECUTOR");
+        var initial=draft.apply(List.of("scene:overnight:package"));
+        assertEquals(SkillRegistry.Outcome.REGISTERED,registry.register(initial,id,bodyRef,true).outcome());
+        assertEquals(SkillRegistry.Outcome.REUSE,registry.register(initial,id,bodyRef,true).outcome());
+        var added=draft.apply(List.of("scene:overnight:package","focus:environment@v1"));
+        var changed=registry.register(added,id,bodyRef,true);
+        assertEquals(SkillRegistry.Outcome.REVISE,changed.outcome(),"adding declaration must create a new version");
+        assertEquals(2,changed.entry().version()); assertTrue(changed.entry().preconditions().contains("focus:environment@v1"));
+        var resolver=new LearnedSkillBodyResolverImpl(dir);
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-revision@v1",LearnedSkillBodyResolver.View.EXECUTOR).available(),"old package identity cannot silently become v2");
+        assertTrue(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-revision@v2",LearnedSkillBodyResolver.View.EXECUTOR).available());
+        var removed=registry.register(initial,id,bodyRef,true);
+        assertEquals(SkillRegistry.Outcome.REVISE,removed.outcome()); assertEquals(3,removed.entry().version());
+        assertFalse(removed.entry().preconditions().contains("focus:environment@v1"));
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-revision@v2",LearnedSkillBodyResolver.View.EXECUTOR).available());
+        assertEquals("focus-not-declared",resolver.resolveFocusDeclaration(COMPANION,"skill:focus-revision@v3",LearnedSkillBodyResolver.View.EXECUTOR).gap());
+        assertEquals(SkillRegistry.Outcome.REUSE,registry.register(initial,id,bodyRef,true).outcome());
+    }
+
+    @Test void malformedFocusDeclarationCannotAppearAvailable() {
+        assertFalse(new LearnedSkillBodyResolver.FocusDeclaration(null,"environment","v1","").available());
+        assertFalse(new LearnedSkillBodyResolver.FocusDeclaration("skill:focus@v1","environment",null,"").available());
+        assertFalse(new LearnedSkillBodyResolver.FocusDeclaration("not-ref","environment","v1","").available());
+    }
+
+    @Test void selfRequiredPackageCannotGrantFocusDeclaration() throws Exception {
+        register("self-focus","self focus","self focus purpose","body",List.of("scene:overnight:package",
+                "requires:skill:self-focus@v1","focus:environment@v1"));
+        var resolver=new LearnedSkillBodyResolverImpl(dir); var view=LearnedSkillBodyResolver.View.EXECUTOR;
+        assertTrue(resolver.resolve(COMPANION,"skill:self-focus@v1",view).available(),"direct package read remains available");
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:self-focus@v1",view).available(),"self reference cannot satisfy a required capability");
+    }
+
+    @Test void focusDeclarationRequiresEligibleExactPackageAndSupportedTopicVersion() throws Exception {
+        register("focus-good","good","focus good purpose",PACK_BODY,List.of("scene:overnight:package","focus:environment@v1"));
+        register("focus-absent","absent","focus absent purpose",PACK_BODY,List.of("scene:overnight:package"));
+        register("focus-invalid","invalid","focus invalid purpose",PACK_BODY,List.of("scene:overnight:package","focus:entities@v1"));
+        register("focus-wrong-version","wrong version","focus wrong version purpose",PACK_BODY,List.of("scene:overnight:package","focus:environment@v2"));
+        var resolver=new LearnedSkillBodyResolverImpl(dir); var view=LearnedSkillBodyResolver.View.EXECUTOR;
+        var good=resolver.resolveFocusDeclaration(COMPANION,"skill:focus-good@v1",view);
+        assertTrue(good.available()); assertEquals("environment",good.topic()); assertEquals("v1",good.contractVersion());
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-good@v2",view).available());
+        assertEquals("focus-not-declared",resolver.resolveFocusDeclaration(COMPANION,"skill:focus-absent@v1",view).gap());
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-invalid@v1",view).available());
+        assertFalse(resolver.resolveFocusDeclaration(COMPANION,"skill:focus-wrong-version@v1",view).available());
+        assertTrue(resolver.resolve(COMPANION,"skill:focus-absent@v1",view).available(),"legacy explicit read unaffected");
+    }
+
+    @Test void realToolRejectsPlannerOnlyLegalComponentSpecificallyForAudience() throws Exception {
+        var base=catalogFixture("private-legal",SkillStatus.TRIAL,"PLANNER","private body","private", "private purpose");
+        var marked=new SkillEntry(base.skillId(),base.version(),base.kind(),base.name(),base.purpose(),base.audience(),base.triggerConditions(),base.excludeConditions(),List.of("scene:overnight:component"),base.risk(),base.evidenceLevel(),base.status(),base.bodyRef(),base.validationSignals(),base.foundingSamples(),base.supersedes(),base.conflicts());
+        java.nio.file.Files.writeString(dir.resolve("skills.jsonl"),SkillRegistry.toJson(marked)+"\n",java.nio.file.StandardOpenOption.APPEND);
+        register("private-package","private package","private package purpose",PACK_BODY,List.of("scene:overnight:package","optional:skill:private-legal@v7"));
+        var response=invokeRealLoader(packageArgs("skill:private-package@v1","skill:private-legal@v7"));
+        assertFalse(response.get("success").getAsBoolean()); assertTrue(response.toString().contains("audience-mismatch"));
+        var direct=new LearnedSkillBodyResolverImpl(dir).resolve(COMPANION,"skill:private-legal@v7",LearnedSkillBodyResolver.View.PLANNER);
+        assertTrue(direct.available(),"component is otherwise eligible to planner");
+    }
+
+    @Test void realToolRejectsSelfRequiredEvenWhenSelectedComponentIsValid() throws Exception {
+        register(STEP,"component","self dependency component",STEP_BODY,List.of("scene:overnight:component"));
+        register("self-required","self required","self dependency package",PACK_BODY,List.of("scene:overnight:package",
+                "requires:"+STEP_REF,"requires:skill:self-required@v1"));
+        var result=invokeRealLoader(packageArgs("skill:self-required@v1",STEP_REF));
+        assertFalse(result.get("success").getAsBoolean(),"self-reference is not an independently available required dependency");
+    }
+    @Test void realToolPermitsNonSceneReadableRequiredSkill() throws Exception {
+        register(STEP,"component","mixed dependency component",STEP_BODY,List.of("scene:overnight:component"));
+        register("plain-method","method","mixed dependency plain method","body",List.of());
+        register("mixed-pack","mixed","mixed dependency package",PACK_BODY,List.of("scene:overnight:package",
+                "requires:"+STEP_REF,"requires:skill:plain-method@v1"));
+        assertTrue(invokeRealLoader(packageArgs("skill:mixed-pack@v1",STEP_REF)).get("success").getAsBoolean());
+    }
+
+    @Test
+    void packageComponentReadRequiresExplicitMembershipAndCurrentEligibility() throws Exception {
+        seed();
+        var resolver = new LearnedSkillBodyResolverImpl(dir);
+        var view = LearnedSkillBodyResolver.View.EXECUTOR;
+        var good = resolver.resolveComponent(COMPANION, PACK_REF, STEP_REF, view);
+        assertTrue(good.available());
+        assertEquals(STEP_BODY, good.body());
+        assertEquals("ready", good.availability());
+        assertFalse(resolver.resolveComponent(COMPANION, PACK_REF, "skill:other@v1", view).available());
+        assertFalse(resolver.resolveComponent(COMPANION, PACK_REF, "skill:" + STEP + "@v2", view).available());
+        assertFalse(resolver.resolveComponent(COMPANION, STEP_REF, STEP_REF, view).available());
+        assertFalse(resolver.resolveComponent(COMPANION, "skill:" + PACK + "@v2", STEP_REF, view).available());
+        SkillRegistry.open(dir.resolve("skills.jsonl")).retire(STEP, "component no longer eligible");
+        var refused = resolver.resolveComponent(COMPANION, PACK_REF, STEP_REF, view);
+        assertFalse(refused.available());
+        assertTrue(refused.body().isEmpty());
+    }
+
+    @Test
+    void packageComponentReadDegradesOnlyForMissingOptionalAndNeverFollowsNestedReferences() throws Exception {
+        register(STEP, "component", "component distinct purpose", STEP_BODY,
+                List.of("scene:overnight:component", "requires:skill:nested-missing@v1"));
+        register(PACK, "package", "purpose", PACK_BODY,
+                List.of("scene:overnight:package", "requires:" + STEP_REF, "requires:" + STEP_REF,
+                        "optional:skill:missing@v1"));
+        var resolver = new LearnedSkillBodyResolverImpl(dir);
+        var result = resolver.resolveComponent(COMPANION, PACK_REF, STEP_REF, LearnedSkillBodyResolver.View.EXECUTOR);
+        assertTrue(result.available());
+        assertEquals("degraded", result.availability());
+        assertEquals(STEP_BODY, result.body());
+        register("missing-required-pack", "other", "missing required purpose", "body", List.of("scene:overnight:package",
+                "requires:" + STEP_REF, "requires:skill:missing@v1"));
+        var denied = resolver.resolveComponent(COMPANION, "skill:missing-required-pack@v1", STEP_REF,
+                LearnedSkillBodyResolver.View.EXECUTOR);
+        assertFalse(denied.available());
+        assertEquals("missing-required-component", denied.gap());
+        assertTrue(denied.body().isEmpty());
+    }
+
+    @Test
+    void packageComponentReadRejectsWrongAudienceAndMissingOptionalSelection() throws Exception {
+        catalogFixture("private-step", SkillStatus.TRIAL, "PLANNER", "private", "private", "purpose");
+        register(PACK, "package", "purpose", PACK_BODY, List.of("scene:overnight:package",
+                "optional:skill:private-step@v7", "optional:skill:absent@v1"));
+        var resolver = new LearnedSkillBodyResolverImpl(dir);
+        var view = LearnedSkillBodyResolver.View.EXECUTOR;
+        assertFalse(resolver.resolveComponent(COMPANION, PACK_REF, "skill:private-step@v7", view).available());
+        assertFalse(resolver.resolveComponent(COMPANION, PACK_REF, "skill:absent@v1", view).available());
+        assertFalse(resolver.resolveComponent(COMPANION, PACK_REF, "skill:absent", view).available());
+    }
+
+    @Test
+    void exactReadsAreIndependentAndComponentRetirementRefusesOldPackage() throws Exception {
+        seed();
+        var skills = new SkillsKnowledgeContributor(dir, "EXECUTOR", 0);
+        assertNotNull(skills.contributeCatalog(COMPANION, "今晚安家过夜"));
+        var resolver = new LearnedSkillBodyResolverImpl(dir);
+        assertEquals(PACK_BODY, resolver.resolve(COMPANION, PACK_REF,
+                LearnedSkillBodyResolver.View.EXECUTOR).body());
+        assertEquals(STEP_BODY, resolver.resolve(COMPANION, STEP_REF,
+                LearnedSkillBodyResolver.View.EXECUTOR).body());
+        assertFalse(resolver.resolve(COMPANION, "skill:" + STEP + "@v2",
+                LearnedSkillBodyResolver.View.EXECUTOR).available());
+        SkillRegistry.open(dir.resolve("skills.jsonl")).retire(STEP, "055 negative control");
+        assertFalse(resolver.resolve(COMPANION, STEP_REF,
+                LearnedSkillBodyResolver.View.EXECUTOR).available());
+        var after = skills.contributeCatalog(COMPANION, "今晚安家过夜");
+        assertTrue(after == null || !after.text().contains(PACK_REF));
     }
 }

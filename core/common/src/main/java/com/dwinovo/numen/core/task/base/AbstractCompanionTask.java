@@ -175,10 +175,10 @@ public abstract class AbstractCompanionTask<R extends TaskRecord>
         // 路上真动过的地形跟着每一种收场走:成功也好失败也罢,拆了什么就说什么
         String enRoute = journey.isEmpty() ? "" : " En route I had to " + journey.describe() + ".";
         return switch (finalState) {
-            case SUCCESS   -> TaskResult.ok(successMessage() + enRoute, resultData());
-            case TIMEOUT   -> new TaskResult(false, timeoutMessage() + enRoute, true, false, resultData());
-            case CANCELLED -> new TaskResult(false, cancelledMessage() + enRoute, false, true, resultData());
-            default        -> TaskResult.fail(doneReason + enRoute, resultData());   // FAILED and any stray state
+            case SUCCESS   -> TaskResult.ok(successMessage() + enRoute, resultData(finalState));
+            case TIMEOUT   -> new TaskResult(false, timeoutMessage() + enRoute, true, false, resultData(finalState));
+            case CANCELLED -> new TaskResult(false, cancelledMessage() + enRoute, false, true, resultData(finalState));
+            default        -> TaskResult.fail(doneReason + enRoute, resultData(finalState));   // FAILED and any stray state
         };
     }
 
@@ -200,6 +200,11 @@ public abstract class AbstractCompanionTask<R extends TaskRecord>
     /** Release physical resources on termination. Default: stop nav + clear the path overlay. */
     protected void cleanup() {
         stopNav();
+    }
+
+    /** Structured payload for the given final state; preserves legacy no-argument overrides. */
+    protected Map<String, Object> resultData(TaskState finalState) {
+        return resultData();
     }
 
     /** Structured payload for the result envelope. Default: a fresh empty (mutable) map. */

@@ -10,6 +10,43 @@ import static org.junit.jupiter.api.Assertions.*;
 class ExecutorBudgetAggregationTest {
     private static final NumenPlugins.DeliveredRef R1 = new NumenPlugins.DeliveredRef("r1", "v1", false);
 
+    @Test void focusMustBeWholeAndLeaveRoomForLaterShortCorrection() {
+        NumenPlugins.KnowledgeContributor prefix=(id,obj)->NumenPlugins.KnowledgeFragment.ofText("K".repeat(3972));
+        NumenPlugins.KnowledgeContributor focus=(id,obj)->NumenPlugins.KnowledgeFragment.ofText("<focus>environment=controlled focus observation</focus>");
+        NumenPlugins.KnowledgeContributor correction=(id,obj)->NumenPlugins.KnowledgeFragment.ofText("CORRECTION");
+        var out=agg(List.of(prefix,focus,correction));
+        assertAll(
+                ()->assertFalse(out.text().contains("<focus>"),"oversized focus must be rejected whole"),
+                ()->assertTrue(out.text().contains("CORRECTION"),"rejected optional focus cannot starve later short correction"),
+                ()->assertTrue(out.text().length()<=NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS));
+    }
+
+    @Test void focusThatFitsKeepsExactOriginalBytes() {
+        String focus="  <focus topic=\"environment\">unchanged</focus>";
+        var alone=agg(List.of((id,obj)->NumenPlugins.KnowledgeFragment.ofText(focus)));
+        assertEquals(focus,alone.text());
+        String prefix="K".repeat(NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS-focus.length()-NumenPlugins.PLANNING_KNOWLEDGE_SEPARATOR.length());
+        var exact=agg(List.of((id,obj)->NumenPlugins.KnowledgeFragment.ofText(prefix),
+                (id,obj)->NumenPlugins.KnowledgeFragment.ofText(focus)));
+        assertEquals(prefix+NumenPlugins.PLANNING_KNOWLEDGE_SEPARATOR+focus,exact.text());
+    }
+
+    @Test void onlyExactFocusRootGetsWholeFragmentBudgetTreatment() {
+        for(String root:List.of("<focus>environment=sample</focus>","  <focus topic=\"environment\">sample</focus>")) {
+            var out=agg(List.of((id,obj)->NumenPlugins.KnowledgeFragment.ofText("K".repeat(3972)),
+                    (id,obj)->NumenPlugins.KnowledgeFragment.ofText(root),
+                    (id,obj)->NumenPlugins.KnowledgeFragment.ofText("OK")));
+            assertFalse(out.text().contains("<focus")); assertTrue(out.text().endsWith("OK"));
+        }
+        for(String legacy:List.of("ordinary mention <focus> is legacy text", "<focused>legacy prefix remains")) {
+            var out=agg(List.of((id,obj)->NumenPlugins.KnowledgeFragment.ofText("K".repeat(3972)),
+                    (id,obj)->NumenPlugins.KnowledgeFragment.ofText(legacy),
+                    (id,obj)->NumenPlugins.KnowledgeFragment.ofText("UNREACHED")));
+            assertEquals(NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS,out.text().length());
+            assertFalse(out.text().contains("UNREACHED"));
+        }
+    }
+
     @Test void noBudgetBothDelivered() {
         var out = agg(List.of(c("a", 10), c("b", 10)));
         assertTrue(out.text().contains("aaaaaaaaaa"));
@@ -115,7 +152,67 @@ class ExecutorBudgetAggregationTest {
         assertTrue(refOf(out, refs.get(4)).truncated(), "第 5 条装不下必须记截断");
     }
 
-    @Test void wrapperWithTrailingTextFallsBackToRawCut() {
+    @Test void realExperienceWithRawComparisonAndCatalogKeepsWholeEntries() throws Exception {
+        String actual;
+        try (var input = getClass().getResourceAsStream("/experience-20261121-fixture.txt")) {
+            assertNotNull(input);
+            actual = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        assertEquals(3357, actual.length());
+        assertTrue(actual.contains("blockLight<=0"));
+        String exp = actual + "\n<entry ref=\"exp:extra\">" + "x".repeat(800) + "</entry>";
+        exp = exp.replace("</retrieved_knowledge>\n<entry ref=\"exp:extra\">", "<entry ref=\"exp:extra\">") + "</retrieved_knowledge>";
+        String catalog = "<retrieved_knowledge><note>按 ref 展开；条件未知，执行前须以当前观测复核</note>"
+                + "<entry ref=\"skill:a@v1\">" + "a".repeat(150) + "</entry>"
+                + "<entry ref=\"skill:b@v1\">" + "b".repeat(150) + "</entry>"
+                + "<entry ref=\"skill:c@v1\">" + "c".repeat(150) + "</entry></retrieved_knowledge>";
+        String source = exp;
+        var out = agg(List.of((id,obj)->NumenPlugins.KnowledgeFragment.ofText(source),
+                (id,obj)->NumenPlugins.KnowledgeFragment.ofText(catalog)));
+        assertTrue(out.text().contains("blockLight<=0"));
+        assertTrue(out.text().contains("ref=\"exp:"));
+        assertTrue(out.text().contains("ref=\"skill:a@v1\""));
+        assertEquals(count(out.text(), "<entry "), count(out.text(), "</entry>"));
+        assertEquals(2, count(out.text(), "</retrieved_knowledge>"));
+        assertTrue(out.text().length() <= 4000);
+    }
+
+    @Test void directoryNoteAndThreeEntriesAreNeverCutMidXml() {
+        String head = "<retrieved_knowledge><note>按 ref 展开；条件未知，执行前须以当前观测复核</note>";
+        String first = "<entry ref=\"a\">" + "a".repeat(230) + "</entry>";
+        String second = "<entry ref=\"b\">" + "b".repeat(220) + "</entry>";
+        String third = "<entry ref=\"c\">" + "c".repeat(190) + "</entry>";
+        String block = head + first + second + third + "</retrieved_knowledge>";
+        var out = agg(List.of(c("p", 3569), (id,obj) -> NumenPlugins.KnowledgeFragment.ofText(block)));
+        assertTrue(out.text().contains(first));
+        assertFalse(out.text().contains(second));
+        assertTrue(out.text().endsWith("</retrieved_knowledge>"));
+        var tiny = agg(List.of(c("p", 3900), (id,obj) -> NumenPlugins.KnowledgeFragment.ofText(block)));
+        assertFalse(tiny.text().contains("<retrieved_knowledge>"));
+    }
+
+    @Test void fullFragmentPreservesAlreadyTruncatedRef() {
+        var result = agg(List.of((id,obj) -> new NumenPlugins.KnowledgeFragment("short", List.of(
+                new NumenPlugins.DeliveredRef("earlier-cut", "v1", true)))));
+        assertTrue(refOf(result, "earlier-cut").truncated());
+    }
+
+    @Test void nestedEntriesCannotProduceBrokenWrapper() {
+        String block = "<retrieved_knowledge><entry ref=\"a\"><entry ref=\"b\">x</entry><entry ref=\"c\">" + "x".repeat(4100) + "</entry></retrieved_knowledge>";
+        var result = agg(List.of((id,obj) -> new NumenPlugins.KnowledgeFragment(block, List.of(
+                new NumenPlugins.DeliveredRef("a","v1",false), new NumenPlugins.DeliveredRef("b","v1",false)))));
+        assertTrue(result.text().isEmpty());
+        assertTrue(result.refs().stream().allMatch(NumenPlugins.DeliveredRef::truncated));
+    }
+
+    @Test void similarPlainPrefixRetainsLegacyRawCut() {
+        String plain = "<retrieved_knowledgeable " + "x".repeat(4500);
+        var result = agg(List.of((id,obj) -> NumenPlugins.KnowledgeFragment.ofText(plain)));
+        assertEquals(4000, result.text().length());
+        assertTrue(plain.startsWith(result.text()));
+    }
+
+    @Test void wrapperWithTrailingTextIsRejectedWithoutPartialXml() {
         List<String> refs = List.of("exp:failure|t1", "exp:failure|t2", "exp:failure|t3");
         String block = wrapperBlock(refs, 1500) + "\n尾巴文本";
         assertTrue(block.length() > NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS, "夹具必须真的超预算");
@@ -124,13 +221,8 @@ class ExecutorBudgetAggregationTest {
 
         var out = agg(List.of((id, obj) -> new NumenPlugins.KnowledgeFragment(block, delivered)));
 
-        // close 之后还有正文 → 不认结构，走旧 raw 前缀硬切。
-        assertTrue(out.text().length() <= NumenPlugins.MAX_EXECUTOR_KNOWLEDGE_CHARS);
-        assertTrue(block.startsWith(out.text()), "raw 行为：保前缀");
-        assertFalse(out.text().contains("</retrieved_knowledge>"), "尾部杂文本时不得补闭合");
-        assertFalse(refOf(out, refs.get(0)).truncated(), "raw 前缀里完整的条目仍记完整");
-        assertFalse(refOf(out, refs.get(1)).truncated());
-        assertTrue(refOf(out, refs.get(2)).truncated(), "被 raw 切断的条目记截断");
+        assertTrue(out.text().isEmpty(), "unknown structured suffix must fail closed, never raw-cut");
+        for (String ref : refs) assertTrue(refOf(out, ref).truncated());
     }
 
     @Test void structuredWrapperWithNoRoomEmitsNoRemnantAndMarksAllTruncated() {

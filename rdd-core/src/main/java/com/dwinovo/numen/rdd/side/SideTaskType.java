@@ -31,6 +31,22 @@ public interface SideTaskType {
         return SideTaskDecision.EXECUTE;
     }
 
+    /**
+     * 普通 B 型建议：可见、可拒绝，但不调用 {@code runtime.activate}，不成为身体 owner。
+     * 默认 false 保留所有既有/未来硬机制的占体语义；未知类型不得被静默降级。
+     */
+    default boolean advisoryOnly() {
+        return false;
+    }
+
+    /**
+     * Per-instance/source-aware variant for already-created tasks.  The default keeps the
+     * type-level policy; types whose hard and advisory producers share a TYPE_ID override this.
+     */
+    default boolean advisoryOnly(SideTask task) {
+        return advisoryOnly();
+    }
+
     /** 渲染注入执行 AI 的上下文（{@code <side_task>…</side_task>} 形状）。 */
     String renderContext(SideTask task, SideTaskWorldPort world);
 

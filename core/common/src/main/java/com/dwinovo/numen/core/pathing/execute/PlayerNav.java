@@ -413,7 +413,8 @@ public final class PlayerNav {
                 return Status.RUNNING;
             }
             return fail(FailureType.NO_PATH, noPathAutopsy(navGoal,
-                    contextProvider.permit() == TerrainPermit.PRESERVE ? " without altering terrain" : ""));
+                    contextProvider.permit() == TerrainPermit.PRESERVE ? " without altering terrain" : "",
+                    core.calcFailedStopReason()));
         }
 
         // 执行失败(段被取消,状态机已自动重搜):做放弃判定的记账
@@ -549,7 +550,8 @@ public final class PlayerNav {
             // 连可改地形都搜不出路(或搜出的路根本不动地形——那就是清洁搜索自己的预算问题):
             // 如实说没路,别把"挖"当万能解
             return fail(FailureType.NO_PATH, noPathAutopsy(goal,
-                    path == null ? ", not even by digging or bridging" : ""));
+                    path == null ? ", not even by digging or bridging" : "",
+                    result.getStopReason()));
         }
         BlockPos feet = PathExecutor.playerFeet(player);
         BlockPos center = goal.center();
@@ -569,17 +571,20 @@ public final class PlayerNav {
 
     /**
      * 空搜索结果的教学式验尸——直接喂给模型的人话:离目标多远、有无
-     * 搭路耗材、还有什么可解锁的手段。搜索器统计面未随异步句柄暴露,
-     * 此处按可得素材给结构化结论。
+     * 搭路耗材、还有什么可解锁的手段。原因走 searchReason（真实搜索出口），
+     * 拿不到就 UNKNOWN，不用固定文案冒充。
+     *
+     * @param qualifier 紧跟 "no path to target" 之后的限定语(地形许可的说明),可为空串
+     * @param stopReason 搜索真实出口原因;没有携带就 UNKNOWN
      */
-    /** @param qualifier 紧跟 "no path to target" 之后的限定语(地形许可的说明),可为空串 */
-    private String noPathAutopsy(NavGoal goal, String qualifier) {
+    private String noPathAutopsy(NavGoal goal, String qualifier, PathCalcResult.StopReason stopReason) {
         BlockPos feet = PathExecutor.playerFeet(player);
         BlockPos center = goal.center();
+        PathCalcResult.StopReason searchReason = stopReason == null
+                ? PathCalcResult.StopReason.UNKNOWN : stopReason;
         StringBuilder r = new StringBuilder("no path to target").append(qualifier);
-        r.append(String.format(" (%s;"
-                        + " the search burned its whole budget without finding a route",
-                NavGoalDiagnostics.approachGeometry(goal, feet)));
+        r.append(String.format(" (%s; %s",
+                NavGoalDiagnostics.approachGeometry(goal, feet), searchReason.describe()));
         if (lastSearchContext != null && !lastSearchContext.hasThrowaway) {
             // hasThrowaway=false does NOT mean she is carrying nothing. It is equally false when
             // placement was never permitted this call (may_alter_terrain unset), and then not a

@@ -11,6 +11,74 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** 2026-11-08: runtime injection seam (not factory-only) must write DAILY+recurrence into the chain. */
 class RddGoalDriverInjectionTest {
+    @Test void acceptedCurrentSnapshotRetiresOldDescriptionsButPreservesHistoryAndOtherGoals() {
+        TaskChain chain=emptyChain();SideTaskEngine engine=engine();
+        var other=new RecurringSideTaskSpec("daily:other-goal:keep","daily_maintenance",1,1,
+                RecurringSideTaskSpec.MissedPolicy.SKIP,true,false,Map.of("description","other goal"));
+        engine.registerRecurring(other,"daily_maintenance");
+        for(int i=0;i<67;i++)engine.registerRecurring(new RecurringSideTaskSpec("daily:g:old"+i,"daily_maintenance",1,1,
+                RecurringSideTaskSpec.MissedPolicy.SKIP,true,false,Map.of("description","old description "+i)),"daily_maintenance");
+        var accepted=RddGoalDriver.buildInjection("p",chain.nextPlanRevision(),List.of(
+                new SubtaskSpec("current daily wheat",Map.of("asset_key","minecraft:wheat","minimum",1),null,NodeType.DAILY,RecurrenceSpec.daily(false)),
+                new SubtaskSpec("main iron",Map.of("asset_key","minecraft:iron_ingot","minimum",1),null)));
+        RddGoalDriver.acceptPlan(accepted,ignored->SideTaskHost.DailyRegistration.registerChain(chain,engine),()->chain.expandCurrentPrimary(accepted));
+        assertEquals(69,engine.recurringSpecsSnapshot().size(),"retirement retains original specs, not deletion");
+        assertEquals(2,engine.recurringSpecsSnapshot().stream().filter(RecurringSideTaskSpec::enabled).count(),"only accepted own daily plus other goal may stay active");
+        assertFalse(engine.recurringSpec("daily:g:old0").enabled());assertEquals("old description 0",engine.recurringSpec("daily:g:old0").data().get("description"));
+        assertEquals(other,engine.recurringSpec(other.scheduleId()));
+    }
+
+    @Test void failedInstallationCannotRegisterProposalOrRetireCommittedSpecs() {
+        TaskChain chain=emptyChain();SideTaskEngine engine=engine();
+        var old=new RecurringSideTaskSpec("daily:g:committed","daily_maintenance",2,1,
+                RecurringSideTaskSpec.MissedPolicy.SKIP,true,false,Map.of("description","committed"));engine.registerRecurring(old,"daily_maintenance");
+        var candidates=dailyCandidates(chain);String before=engine.toJson();var calls=new java.util.concurrent.atomic.AtomicInteger();
+        assertThrows(IllegalArgumentException.class,()->RddGoalDriver.acceptPlan(candidates,subs->{calls.incrementAndGet();SideTaskHost.DailyRegistration.register(chain,subs,engine);},()->chain.expandCurrentPrimary(candidates)));
+        assertEquals(0,calls.get(),"registration belongs after successful mainline install, never a rejected proposal");
+        assertEquals(before,engine.toJson());
+    }
+
+    @Test void acceptedEmptyDailySetRetiresWithoutCancellingOriginalInstanceAndSurvivesRestore() {
+        TaskChain chain=emptyChain();SideTaskEngine engine=engine();var candidates=dailyCandidates(chain);
+        SideTaskHost.DailyRegistration.register(chain,candidates,engine);UUID id=UUID.randomUUID();World world=new World();engine.tick(id,world,mainlineToken(chain,id),false);
+        String instance=engine.current(id).orElseThrow().instanceId();String specId="daily:g:"+Integer.toHexString(candidates.get(0).description().hashCode());
+        var main=List.of(Subtask.hardCoded("main","main iron",Map.of("asset_key","minecraft:iron_ingot","minimum",1)));
+        RddGoalDriver.acceptPlan(main,ignored->SideTaskHost.DailyRegistration.registerChain(chain,engine),()->chain.expandCurrentPrimary(main));
+        assertFalse(engine.recurringSpec(specId).enabled(),"an accepted main-only plan is an explicit empty DAILY snapshot");
+        assertEquals(instance,engine.current(id).orElseThrow().instanceId(),"registration is not physical cancellation");
+        assertEquals(Boolean.TRUE,engine.handledToday(id,world.worldId(),specId,world.day));
+        SideTaskEngine restored=engine();restored.restore(engine.toJson());SideTaskHost.DailyRegistration.restoreChain(TaskChain.fromJson(chain.toJson()),restored);
+        assertFalse(restored.recurringSpec(specId).enabled());assertEquals(instance,restored.current(id).orElseThrow().instanceId());
+        assertEquals(Boolean.TRUE,restored.handledToday(id,world.worldId(),specId,world.day));
+    }
+
+    @Test void completeRestoredChainCanRetireLegacyExtrasButIncompleteRestoreCannot() {
+        var main=Subtask.hardCoded("main","main iron",Map.of("asset_key","minecraft:iron_ingot","minimum",1));
+        TaskChain installed=new TaskChain(new Goal("g","current",List.of(new PrimaryGoal("p","main",List.of(main)))));
+        SideTaskEngine engine=engine();var old=new RecurringSideTaskSpec("daily:g:obsolete","daily_maintenance",1,1,
+                RecurringSideTaskSpec.MissedPolicy.SKIP,true,false,Map.of("description","obsolete"));engine.registerRecurring(old,"daily_maintenance");
+        SideTaskHost.DailyRegistration.restoreChain(emptyChain(),engine);assertTrue(engine.recurringSpec(old.scheduleId()).enabled(),"unexpanded is UNKNOWN, not an empty accepted snapshot");
+        SideTaskHost.DailyRegistration.restoreChain(TaskChain.fromJson(installed.toJson()),engine);
+        assertFalse(engine.recurringSpec(old.scheduleId()).enabled(),"complete restored current plan must retire old live registration");
+        SideTaskHost.DailyRegistration.restoreChain(emptyChain(),engine);assertFalse(engine.recurringSpec(old.scheduleId()).enabled());
+    }
+
+    @Test void authoritativeSnapshotKeepsDistinctDailySchedulesIndependentWithOriginalAnchorAndHandled() {
+        TaskChain chain=emptyChain();SideTaskEngine engine=engine();UUID id=UUID.randomUUID();World world=new World();
+        var all=RddGoalDriver.buildInjection("p",chain.nextPlanRevision(),List.of(
+                new SubtaskSpec("daily wheat",Map.of("asset_key","minecraft:wheat","minimum",1),null,NodeType.DAILY,RecurrenceSpec.daily(false)),
+                new SubtaskSpec("daily carrot",Map.of("asset_key","minecraft:carrot","minimum",1),null,NodeType.DAILY,RecurrenceSpec.daily(false)),
+                new SubtaskSpec("main iron",Map.of("asset_key","minecraft:iron_ingot","minimum",1),null)));
+        RddGoalDriver.acceptPlan(all,ignored->SideTaskHost.DailyRegistration.registerChain(chain,engine),()->chain.expandCurrentPrimary(all));
+        assertEquals(2,engine.recurringSpecsSnapshot().stream().filter(RecurringSideTaskSpec::enabled).count());
+        engine.tick(id,world,mainlineToken(chain,id),false);String first=engine.current(id).orElseThrow().instanceId();
+        engine.decline(id,"current reason",world.worldId(),world.day);engine.tick(id,world,mainlineToken(chain,id),false);
+        assertTrue(engine.current(id).isPresent(),"different valid DAILY still has its own occurrence");assertNotEquals(first,engine.current(id).orElseThrow().instanceId());
+        String wheat="daily:g:"+Integer.toHexString("daily wheat".hashCode());assertEquals(Boolean.TRUE,engine.handledToday(id,world.worldId(),wheat,world.day));
+        SideTaskHost.DailyRegistration.restoreChain(TaskChain.fromJson(chain.toJson()),engine);assertEquals(1,engine.recurringSpec(wheat).anchorGameDay());
+        assertEquals(Boolean.TRUE,engine.handledToday(id,world.worldId(),wheat,world.day));
+    }
+
     @Test void injectedDailyReachesChainWithRecurrence() {
         TaskChain chain = new TaskChain(new Goal("g", "维护农田",
                 List.of(new PrimaryGoal("p", "维护农田", List.of(), List.of(), true))));
@@ -139,6 +207,77 @@ class RddGoalDriverInjectionTest {
         assertTrue(chain.satisfiedStages().isEmpty());
     }
 
+    // 2026-11-24: only cursor-prior stages that are NOT chain-local waivers may be called achieved.
+    private static TaskChain threeStageChain() {
+        return new TaskChain(new Goal("g", "three stages", List.of(
+                PrimaryGoal.unexpanded("p1", "stage one", List.of()),
+                PrimaryGoal.unexpanded("p2", "stage two", List.of()),
+                PrimaryGoal.unexpanded("p3", "stage three", List.of()))));
+    }
+
+    @Test void completedStagesBeforeKeepsVerifiedCompletion() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "world facts verified", true);
+        assertEquals(List.of("stage one"), RddGoalDriver.completedStagesBefore(chain));
+    }
+
+    @Test void completedStagesBeforeExcludesChainWaiver() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "planner says unnecessary", false);
+        assertTrue(chain.waivedStages().contains("p1"));
+        assertTrue(RddGoalDriver.completedStagesBefore(chain).isEmpty(),
+                RddGoalDriver.completedStagesBefore(chain).toString());
+    }
+
+    @Test void mixedCompletedKeepsOnlyVerifiedPriorStages() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "verified", true);
+        chain.settlePrimaryByFact("p2", "waived", false);
+        assertEquals(List.of("stage one"), RddGoalDriver.completedStagesBefore(chain));
+    }
+
+    @Test void historicalWaiverStillExcludedAfterRevisionBump() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "waived", false);
+        chain.nextPlanRevision();
+        assertTrue(chain.hasStageWaiver("p1"), "history provenance survives revision");
+        assertTrue(chain.satisfiedStages().isEmpty(), "waiver must not become a completion fact");
+        assertTrue(RddGoalDriver.completedStagesBefore(chain).isEmpty(),
+                RddGoalDriver.completedStagesBefore(chain).toString());
+    }
+
+    @Test void verifiedCompletionAfterHistoricalWaiverWinsOverStaleWaiver() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "waived earlier", false);
+        chain.resetForRestart("restart keeps history");
+        chain.settlePrimaryByFact("p1", "verified later by world facts", true);
+        assertTrue(chain.hasStageWaiver("p1"), "old waiver provenance remains readable");
+        assertFalse(chain.satisfiedStages().isEmpty(), "verified completion is a real fact");
+        assertEquals(List.of("stage one"), RddGoalDriver.completedStagesBefore(chain),
+                "real completion must not be hidden by a stale waiver");
+    }
+
+    @Test void currentAndFutureStagesAreNeverReported() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "verified", true);
+        List<String> out = RddGoalDriver.completedStagesBefore(chain);
+        assertEquals(List.of("stage one"), out);
+        assertFalse(out.contains("stage two"));
+        assertFalse(out.contains("stage three"));
+    }
+
+    @Test void waivedStageNeverAppearsInCompletedPromptBlock() {
+        TaskChain chain = threeStageChain();
+        chain.settlePrimaryByFact("p1", "waived", false);
+        chain.settlePrimaryByFact("p2", "verified", true);
+        List<String> completed = RddGoalDriver.completedStagesBefore(chain);
+        assertEquals(List.of("stage two"), completed);
+        String prompt = RddDecomposerPrompt.decompositionPrompt("objective", Map.of(), completed);
+        assertTrue(prompt.contains("【已达成的前置阶段】"), prompt);
+        assertTrue(prompt.contains("stage two"), prompt);
+        assertFalse(prompt.contains("stage one"), "the completed block must not carry a waived stage: " + prompt);
+    }
+
     private static TaskChain emptyChain() {
         return new TaskChain(new Goal("g", "iron equipment",
                 List.of(PrimaryGoal.unexpanded("p", "prepare", List.of()))));
@@ -189,7 +328,7 @@ class RddGoalDriverInjectionTest {
         }
     }
 
-    @Test void rejectedAllDailyExpansionStillRegistersExecutableDaily() {
+    @Test void rejectedAllDailyExpansionDoesNotRegisterAnUnacceptedProposal() {
         TaskChain chain = emptyChain();
         SideTaskEngine engine = engine();
         List<Subtask> candidates = dailyCandidates(chain);
@@ -200,7 +339,8 @@ class RddGoalDriverInjectionTest {
         assertTrue(chain.satisfiedStages().isEmpty());
         UUID id = UUID.randomUUID();
         engine.tick(id, new World(), mainlineToken(chain, id), false);
-        assertEquals(DailyMaintenanceSideTaskType.TYPE_ID, engine.runtime().current(id).orElseThrow().typeId());
+        assertTrue(engine.runtime().current(id).isEmpty(), "a rejected all-DAILY proposal is not a committed registration");
+        assertTrue(engine.recurringSpecsSnapshot().isEmpty());
     }
 
     @Test void hostRegisteredDailyDoesNotRunForAnotherGoalsCurrentToken() {
@@ -265,7 +405,7 @@ class RddGoalDriverInjectionTest {
         assertEquals(Boolean.TRUE, engine.handledToday(id, world.worldId(), specId, world.day));
     }
 
-    @Test void rejectedAllDailyReplacementStillRegistersCandidateAndKeepsOldMain() {
+    @Test void rejectedAllDailyReplacementKeepsOldMainAndDoesNotRegisterCandidate() {
         TaskChain chain = new TaskChain(new Goal("g", "iron equipment", List.of(
                 new PrimaryGoal("p", "prepare", List.of(Subtask.hardCoded("old", "iron",
                         Map.of("asset_key", "minecraft:iron_ingot", "minimum", 1)))))));
@@ -281,7 +421,8 @@ class RddGoalDriverInjectionTest {
         assertTrue(chain.satisfiedStages().isEmpty());
         UUID id = UUID.randomUUID();
         engine.tick(id, new World(), mainlineToken(chain, id), false);
-        assertTrue(engine.runtime().current(id).isPresent());
+        assertTrue(engine.runtime().current(id).isEmpty());
+        assertTrue(engine.recurringSpecsSnapshot().isEmpty(), "failed replacement cannot change recurring registration");
     }
 
     @Test void rejectedAllDailyCannotCommitVerifiedStage(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) {
@@ -358,7 +499,7 @@ class RddGoalDriverInjectionTest {
         assertEquals("new-main", restored.currentSubtask().id());
     }
 
-    @Test void rejectedDailyCandidateSurvivesExistingFileAndFreshEngineWithOriginalDueAnchor(
+    @Test void rejectedDailyCandidateLeavesCommittedFileAndOriginalDueAnchorUnchanged(
             @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
         TaskChain chain = emptyChain();
         SideTaskEngine source = engine();
@@ -368,13 +509,16 @@ class RddGoalDriverInjectionTest {
                 RecurringSideTaskSpec.MissedPolicy.CATCH_UP, false, true, Map.of("note", "keep other goal"));
         source.registerRecurring(other, "other_type");
         java.nio.file.Path file = dir.resolve("side-tasks.json");
+        SideTaskHost.DailyRegistration.register(chain, candidates, source); // existing committed registration boundary
+        java.nio.file.Files.writeString(file, source.toJson());
+        String committed = java.nio.file.Files.readString(file);
         assertThrows(IllegalArgumentException.class, () -> RddGoalDriver.acceptPlan(candidates, subs -> {
             SideTaskHost.DailyRegistration.register(chain, subs, source);
             try { java.nio.file.Files.writeString(file, source.toJson()); }
             catch (java.io.IOException ex) { throw new java.io.UncheckedIOException(ex); }
         }, () -> chain.expandCurrentPrimary(candidates)));
         assertTrue(chain.currentPrimary().unexpanded(), "the source cannot be recovered from this rejected main plan");
-        assertTrue(java.nio.file.Files.isRegularFile(file));
+        assertEquals(committed, java.nio.file.Files.readString(file), "rejected callback cannot rewrite committed registration");
         SideTaskEngine restored = engine();
         restored.restore(java.nio.file.Files.readString(file));
         assertEquals(1, restored.recurringSpec(specId).anchorGameDay());
@@ -448,12 +592,14 @@ class RddGoalDriverInjectionTest {
                 new SubtaskSpec("daily wheat", Map.of("asset_key", "minecraft:wheat", "minimum", 2),
                         null, NodeType.DAILY, new RecurrenceSpec(3, RecurrenceSpec.MissedPolicy.SKIP, false))));
         java.nio.file.Path sideFile = dir.resolve("side-tasks.json");
-        assertThrows(IllegalArgumentException.class, () -> RddGoalDriver.acceptPlan(candidates, subs -> {
+        var updatedPlan = new java.util.ArrayList<>(candidates);
+        updatedPlan.add(Subtask.hardCoded("new-main", "main iron", Map.of("asset_key", "minecraft:iron_ingot", "minimum", 1)));
+        RddGoalDriver.acceptPlan(updatedPlan, subs -> {
             SideTaskHost.DailyRegistration.register(chain, subs, source);
             try { java.nio.file.Files.writeString(sideFile, source.toJson()); }
             catch (java.io.IOException ex) { throw new java.io.UncheckedIOException(ex); }
-        }, () -> chain.replaceCurrentSubtasks(candidates)));
-        assertEquals(mixed, chain.currentPrimary().subtasks());
+        }, () -> chain.replaceCurrentSubtasks(updatedPlan));
+        assertEquals(updatedPlan, chain.currentPrimary().subtasks(), "the newer registration must come from an accepted plan");
         TaskChain oldChain = TaskChain.fromJson(java.nio.file.Files.readString(chainFile));
         SideTaskEngine restored = engine();
         restored.restore(java.nio.file.Files.readString(sideFile));
@@ -693,7 +839,7 @@ class RddGoalDriverInjectionTest {
                     if (replace) owner.replaceCurrentSubtasks(candidates);
                     else owner.expandCurrentPrimary(candidates);
                 });
-                assertEquals(List.of("daily", "install"), order);
+                assertEquals(List.of("install", "daily"), order, "only a successful owner install authorizes registration");
                 owner.startCurrent();
                 chain = TaskChain.fromJson(owner.toJson());
                 assertEquals(target, chain.currentPrimary().equipmentTarget());

@@ -88,6 +88,51 @@ class InMemoryObservationStoreInvalidateTest {
     }
 
     @Test
+    void noInvalidationProducesNoNewChange() {
+        var now = new java.util.concurrent.atomic.AtomicLong(EPOCH);
+        var v2 = new InMemoryChangeFeed("epoch-1", 64, 60_000L, now::get);
+        var store = new InMemoryObservationStore(16, null, v2);
+        assertTrue(store.put(self(DIM, 1)));
+        long cursor = v2.query(0, "epoch-1", null, 0).nextCursor();
+        var page = v2.query(cursor, "epoch-1", null, 0);
+        assertFalse(page.resetRequired());
+        assertTrue(page.events().isEmpty());
+    }
+
+    @Test
+    void oldSampleInvalidationIsDeliveredOrForcesReset() {
+        var now = new java.util.concurrent.atomic.AtomicLong(EPOCH);
+        var v2 = new InMemoryChangeFeed("epoch-1", 64, 60_000L, now::get);
+        var store = new InMemoryObservationStore(16, null, v2);
+        Observation old = self(DIM, 1);
+        assertTrue(store.put(old));
+        long cursor = v2.query(0, "epoch-1", null, 0).nextCursor();
+        now.addAndGet(60_001L);
+        assertTrue(store.invalidate(old.key()));
+        var page = v2.query(cursor, "epoch-1", null, 0);
+        assertTrue(page.resetRequired() || page.events().stream().anyMatch(e -> e.kind() == ChangeEvent.Kind.INVALIDATE
+                && e.key().equals(old.key().canonical())), "new invalidation must be delivered or signal reset");
+    }
+
+    @Test
+    void invalidationBehindNewerEventCannotDisappearSilently() {
+        var now = new java.util.concurrent.atomic.AtomicLong(EPOCH);
+        var v2 = new InMemoryChangeFeed("epoch-1", 64, 60_000L, now::get);
+        var store = new InMemoryObservationStore(16, null, v2);
+        Observation old = self(DIM, 1);
+        assertTrue(store.put(old));
+        long cursor = v2.query(0, "epoch-1", null, 0).nextCursor();
+        now.addAndGet(60_001L);
+        var fresh = new Observation(environment(2).key(), environment(2).payload(), "env", Origin.DIRECT,
+                8L, now.get(), Coverage.COMPLETE, Freshness.CURRENT, 2, 1, SESSION);
+        assertTrue(store.put(fresh));
+        assertTrue(store.invalidate(old.key()));
+        var page = v2.query(cursor, "epoch-1", null, 0);
+        assertTrue(page.resetRequired() || page.events().stream().anyMatch(e -> e.kind() == ChangeEvent.Kind.INVALIDATE
+                && e.key().equals(old.key().canonical())), "out-of-order timestamps must not silently hide invalidation");
+    }
+
+    @Test
     void invalidateDoesNotFireForAbsentOrNullKey() {
         InMemoryChangeLog v1 = new InMemoryChangeLog(64, 60_000L, () -> 5_000L);
         InMemoryChangeFeed v2 = new InMemoryChangeFeed("epoch-1", 64, 60_000L, () -> 5_000L);

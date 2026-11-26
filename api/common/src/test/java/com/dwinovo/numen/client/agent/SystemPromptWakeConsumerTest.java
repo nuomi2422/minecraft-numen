@@ -66,14 +66,20 @@ class SystemPromptWakeConsumerTest {
                 "        // 上下文预算闸");
         String context = between(start, "        String contextProblem = contextBudgetProblem();",
                 "        // Auto-compaction gate:");
+        String goal = method(loop, "private void judgeGoal(");
+        String goalBudget = between(goal, "        String contextProblem = contextBudgetProblem();", "        var delivery =");
         String response = method(loop, "private void handleResponse(");
+        String retryBudget = between(response, "                String retryContextProblem = contextBudgetProblem();", "                var retryTools =");
         String responseGuard = between(response, "        // Owner interrupted this turn",
                 "        if (err != null) {");
         String emptyResponse = between(response, "        AssistantTurn turn = res.turn();",
                 "        // True context size");
+        methods.append(goal).append('\n');
         methods.append("private boolean tryStartTurn() {\n").append(startGuards)
                 .append("long requestTokens = 1L;\n").append(budget).append(context)
                 .append("requests++; awaitingLlmResponse = true; return true;\n}\n")
+                .append("void goalBudgetGate() {\n").append(goalBudget).append("requests++;\n}\n")
+                .append("void retryBudgetGate() {\nvar vt2=new RetryVoice();\n").append(retryBudget).append("requests++;\n}\n")
                 .append("void emptyReply() {\n").append(responseGuard)
                 .append(emptyResponse).append("\n}\n");
 
@@ -94,6 +100,7 @@ class SystemPromptWakeConsumerTest {
                   public static boolean connected=true;
                   public static Minecraft getInstance(){return new Minecraft();}
                   public Object getConnection(){return connected?this:null;}
+                  public void execute(Runnable r){r.run();}
                 }
                 """);
         sources.put("com.dwinovo.numen.api.NumenApi", """
@@ -131,6 +138,27 @@ class SystemPromptWakeConsumerTest {
                 package net.minecraft.client.player;
                 public class AbstractClientPlayer {public Object level(){return null;}}
                 """);
+        sources.put("com.dwinovo.numen.api.NumenPlugins", """
+                package com.dwinovo.numen.api;
+                public class NumenPlugins { public static class DeliveredContext {} }
+                """);
+        sources.put("com.dwinovo.numen.agent.goal.GoalPrompts", """
+                package com.dwinovo.numen.agent.goal;
+                public class GoalPrompts {
+                  public static String evaluatorQuery(Object goal,String facts,String since){return facts;}
+                  public static String evaluatorSystem(){return "system";}
+                }
+                """);
+        // 抽取到的 clientTick 会调 ServerToolTransport.expireYieldTickets()（055 yield 合入后新增）。
+        // 平台父 loader 看不到 ai 模块,必须在本 fixture 里显式给一个边界桩;
+        // 只让抽取代码编译/运行,不代签 yield 的服务器行为。
+        sources.put("com.dwinovo.numen.agent.tool.ServerToolTransport", """
+                package com.dwinovo.numen.agent.tool;
+                public class ServerToolTransport {
+                  public static void expireYieldTickets() {}
+                  public static void requestYieldTicket(java.util.UUID id, java.util.function.Consumer<String> callback) {}
+                }
+                """);
         sources.put("com.dwinovo.numen.client.agent.WakeFixture", """
                 package com.dwinovo.numen.client.agent;
                 import java.util.*;
@@ -147,6 +175,21 @@ class SystemPromptWakeConsumerTest {
                   static final long CONTEXT_BUDGET_NOTICE_COOLDOWN_MS=1000;
                   static final int EXTERNAL_TAP_CAP=64;
                   String lastTurnError,budgetBlockedRole;
+                  String pendingRuntimeStateXml="candidate",pendingDeliveryTaskId="task",pendingRuntimeOrigin="goal_judging";
+                  Object pendingRuntimeStatePlan=new Object();
+                  List<Object> pendingDeliveredRefs=new ArrayList<>(List.of("ref"));
+                  int pendingRuntimeAttempt=1; boolean denyContext,retryingTurn; int voiceFinished;
+                  // 标清边界桩:只为让抽取的 drainInbox 编译/运行。本测试走 owner=false 路径,
+                  // 不断言也不代签锚点行为(anchor 语义由 OwnerRequestContinuityTest 负责)。
+                  OwnerRequestAnchor ownerRequestAnchor=OwnerRequestAnchor.none();
+                  static class OwnerRequestAnchor {
+                    static OwnerRequestAnchor none(){return new OwnerRequestAnchor();}
+                    static OwnerRequestAnchor adopt(OwnerRequestAnchor previous,List<EventQueue.Entry> taken){return previous;}
+                    boolean present(){return false;}
+                    String text(){return "";}
+                    String xml(){return "";}
+                  }
+                  class RetryVoice {Runnable finish(){return () -> voiceFinished++;}}
                   Result res=new Result(new AssistantTurn("",List.of(),null));
                   EventQueue queue=new EventQueue(EventQueue.Journal.NONE);
                   ArrayDeque<EventQueue.Entry> externalTap=new ArrayDeque<>();
@@ -162,7 +205,7 @@ class SystemPromptWakeConsumerTest {
                   }
                   record Result(AssistantTurn turn){}
                   static class ConvoState {
-                    static class Msg {static class User extends Msg {}}
+                    static class Msg {static class User extends Msg {User(){} User(String s){}}}
                     List<Msg> messages=new ArrayList<>();List<String> texts=new ArrayList<>();
                     List<Msg> snapshot(){return messages;}
                     Msg lastMessage(){return messages.isEmpty()?null:messages.get(messages.size()-1);}
@@ -191,7 +234,33 @@ class SystemPromptWakeConsumerTest {
                   void performClear(){throw new AssertionError("not a clear control");}
                   void startCompaction(boolean automatic){throw new AssertionError("not a compact control");}
                   AbstractClientPlayer resolveEntity(){return null;}
-                  String contextBudgetProblem(){return null;}
+                  Object goal=new Object(); boolean goalJudging,throwBuild; int booked; String mode="none";
+                  java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext> goalPending;
+                  static class Observation {final String id="goal-request";}
+                  String runtimeStateXml(boolean publish,String origin,int attempt){if(throwBuild)throw new IllegalStateException("build failed");return "facts";}
+                  Object captureDeliveryToken(){return new Object();}
+                  Observation observeExecutionRequest(String phase,Object token,java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext> pending){goalPending=pending;return new Observation();}
+                  void publishPendingRuntimeState(Observation obs,Object token,java.util.concurrent.atomic.AtomicReference<com.dwinovo.numen.api.NumenPlugins.DeliveredContext> pending){pending.set(new com.dwinovo.numen.api.NumenPlugins.DeliveredContext());}
+                  String sinceGoalForJudge(){return "";}
+                  class Client {java.util.concurrent.CompletableFuture<Object> chatStreaming(List<?> m,List<?> t,String s,Object chunk,Observation o){
+                    requests++; if(mode.equals("dispatch")||mode.equals("retry")){dispatch(o.id); if(mode.equals("retry"))dispatch(o.id);} else if(mode.equals("wrong"))dispatch("other");
+                    return new java.util.concurrent.CompletableFuture<>();}}
+                  Client client(){return new Client();}
+                  void dispatch(String id){if("goal-request".equals(id)&&goalPending.getAndSet(null)!=null)booked++;}
+                  void finishJudging(int gen,Object target,Object result,Throwable error){}
+                  public static Map<String,Object> runGoal(String mode){WakeFixture f=new WakeFixture();f.mode=mode;f.denyContext=mode.equals("denied");f.throwBuild=mode.equals("build-fail");
+                    try{f.judgeGoal();}catch(IllegalStateException expected){} return Map.of("requests",f.requests,"booked",f.booked,"refs",f.pendingDeliveredRefs.size());}
+                  String contextBudgetProblem(){return denyContext ? "DENIED" : null;}
+                  public static Map<String,Object> runRetryBudget(boolean denied) {
+                    WakeFixture f=new WakeFixture(); f.denyContext=denied; f.awaitingLlmResponse=true; f.retryingTurn=true; f.retryBudgetGate();
+                    return Map.of("requests",f.requests,"refs",f.pendingDeliveredRefs.size(),"voiceFinished",f.voiceFinished,
+                        "awaiting",f.awaitingLlmResponse,"retrying",f.retryingTurn);
+                  }
+                  public static Map<String,Object> runGoalBudget(boolean denied) {
+                    WakeFixture f=new WakeFixture(); f.denyContext=denied; f.goalBudgetGate();
+                    return Map.of("requests",f.requests,"refs",f.pendingDeliveredRefs.size(),
+                        "planCleared",f.pendingRuntimeStatePlan==null,"xmlCleared",f.pendingRuntimeStateXml==null);
+                  }
                   String describeWindowReset(String role){return "later";}
                   METHODS
                   public static Map<String,Object> run(String scenario) {
@@ -268,6 +337,34 @@ class SystemPromptWakeConsumerTest {
     @SuppressWarnings("unchecked")
     static Map<String, Object> run(String scenario) throws Exception {
         return (Map<String, Object>) fixture.getMethod("run", String.class).invoke(null, scenario);
+    }
+
+    @Test void realGoalMethodOnlyBooksAfterMatchingDispatch() throws Exception {
+        for (String scenario : List.of("none", "wrong", "build-fail", "denied", "dispatch", "retry")) {
+            @SuppressWarnings("unchecked") var result=(Map<String,Object>) fixture.getMethod("runGoal",String.class).invoke(null,scenario);
+            assertEquals(scenario.equals("denied") || scenario.equals("build-fail") ? 0 : 1,result.get("requests"),scenario);
+            assertEquals(scenario.equals("dispatch") || scenario.equals("retry") ? 1 : 0,result.get("booked"),scenario);
+            if (scenario.equals("denied")) assertEquals(0,result.get("refs"));
+        }
+    }
+
+    @Test void retryBudgetDenialDoesNotDispatchAndClearsState() throws Exception {
+        @SuppressWarnings("unchecked") var denied=(Map<String,Object>) fixture.getMethod("runRetryBudget",boolean.class).invoke(null,true);
+        @SuppressWarnings("unchecked") var ok=(Map<String,Object>) fixture.getMethod("runRetryBudget",boolean.class).invoke(null,false);
+        assertEquals(0,denied.get("requests")); assertEquals(0,denied.get("refs"));
+        assertEquals(1,denied.get("voiceFinished")); assertEquals(false,denied.get("awaiting")); assertEquals(false,denied.get("retrying"));
+        assertEquals(1,ok.get("requests")); assertEquals(1,ok.get("refs"));
+    }
+
+    @Test void goalBudgetUsesProductionGuardAndClearsDeniedCandidate() throws Exception {
+        @SuppressWarnings("unchecked") var denied = (Map<String,Object>) fixture.getMethod("runGoalBudget", boolean.class).invoke(null, true);
+        @SuppressWarnings("unchecked") var ok = (Map<String,Object>) fixture.getMethod("runGoalBudget", boolean.class).invoke(null, false);
+        assertEquals(0, denied.get("requests"));
+        assertEquals(0, denied.get("refs"));
+        assertEquals(true, denied.get("planCleared"));
+        assertEquals(true, denied.get("xmlCleared"));
+        assertEquals(1, ok.get("requests"));
+        assertEquals(1, ok.get("refs"));
     }
 
     @Test void systemSupervisionResumesEmptyTurnFailure() throws Exception {

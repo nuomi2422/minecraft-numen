@@ -33,8 +33,11 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 final class RddFutureNeeds {
 
-    /** 每个同伴渲染好的 {@code <future_need>} 块（只读缓存，上下文构建可能在非主线程）。 */
-    private static final Map<UUID, String> BLOCK = new ConcurrentHashMap<>();
+    /** 保留真实扫描结果及其对应箱快照；上下文读取可能在非主线程。 */
+    private record ScanResult(List<FutureNeedScanner.Sighting> hits,
+                              RddContainerMemory.NearbySnapshot nearby) {}
+
+    private static final Map<UUID, ScanResult> BLOCK = new ConcurrentHashMap<>();
     /** 上一次发事件时的集合签名：只有"看见的东西变了"才发事件，避免 30 秒一条洪水。 */
     private static final Map<UUID, String> SIGNATURE = new ConcurrentHashMap<>();
 
@@ -59,14 +62,17 @@ final class RddFutureNeeds {
             // 2026-11-04（037/T14）：直接读扫描产出的结构化计数。
             // 老做法是从缓存的人读文本里用正则抠数字，而文本用的是 '×'、正则要 ASCII 'x' ——
             // 那条链一直得到空表，等于"箱子里的存货对未来规划不可见"。
-            Map<String, Integer> nearby = RddContainerMemory.cachedCounts(companionId);
+            RddContainerMemory.NearbySnapshot snapshot = RddContainerMemory.cachedSnapshot(companionId);
+            if (snapshot != null && !RddContainerMemory.isCurrent(companionId, snapshot)) snapshot = null;
+            // 缺失或部分覆盖只是没看见；扫描器只报告正观察，不断言缺项为零。
+            Map<String, Integer> nearby = snapshot == null ? Map.of() : snapshot.counts();
             List<FutureNeedScanner.Sighting> hits = FutureNeedScanner.scan(future, inventory, nearby);
             if (hits.isEmpty()) {
                 BLOCK.remove(companionId);
                 SIGNATURE.remove(companionId);
                 return;
             }
-            BLOCK.put(companionId, render(hits));
+            BLOCK.put(companionId, new ScanResult(List.copyOf(hits), snapshot));
             String sig = signature(hits);
             if (!sig.equals(SIGNATURE.put(companionId, sig))) {
                 publish(companionId, hits);
@@ -78,7 +84,15 @@ final class RddFutureNeeds {
 
     /** 执行侧上下文块；没有"看见"时返回空串（不写空标签）。 */
     static String block(UUID companionId) {
-        return companionId == null ? "" : BLOCK.getOrDefault(companionId, "");
+        if (companionId == null) return "";
+        ScanResult result = BLOCK.get(companionId);
+        if (result == null) return "";
+        List<FutureNeedScanner.Sighting> hits = result.hits();
+        // 箱快照被替换或过期后，不能继续显示旧的附近条目；背包条目仍可用。
+        if (result.nearby() == null || !RddContainerMemory.isCurrent(companionId, result.nearby())) {
+            hits = hits.stream().filter(h -> h.where() != FutureNeedScanner.Where.NEARBY).toList();
+        }
+        return hits.isEmpty() ? "" : render(hits);
     }
 
     static void clear(UUID companionId) {

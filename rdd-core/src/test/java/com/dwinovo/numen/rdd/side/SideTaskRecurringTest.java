@@ -94,7 +94,7 @@ class SideTaskRecurringTest {
         assertEquals(1, ev.count("side_task_due"));
     }
 
-    @Test void dailyTypeCreatesExecutableSideTaskAndCompletes() {
+    @Test void dailyTypeDueIsAdvisoryWithoutActivationOrCompletion() {
         RecordingEvents ev = new RecordingEvents();
         SideTaskEngine e = new SideTaskEngine(ev, token -> token);
         e.registerType(new DailyMaintenanceSideTaskType());
@@ -104,24 +104,23 @@ class SideTaskRecurringTest {
                 DailyMaintenanceSideTaskType.TYPE_ID);
         FakeWorldPort w = new FakeWorldPort().at(100, 0);
         e.tick(C, w, null, false);
-        assertTrue(e.isActive(C), "daily 必须真的创建 active 支线");
-        assertTrue(ev.saw("side_task_created"));
-        assertTrue(ev.saw("side_task_activated"));
-        w.item("minecraft:wheat", 1);
-        e.tick(C, w, null, false);
-        assertFalse(e.isActive(C));
-        assertTrue(ev.saw("side_task_completed"));
-        assertTrue(ev.saw("side_task_resumed_mainline"));
+        assertFalse(e.isActive(C), "ordinary daily is B: due is visible but never owns the body");
+        assertTrue(ev.saw("side_task_due"));
+        assertTrue(ev.saw("side_task_advisory"));
+        assertEquals(0, ev.count("side_task_created"));
+        assertEquals(0, ev.count("side_task_activated"));
+        assertEquals(0, ev.count("side_task_completed"));
     }
 
-    @Test void dailyTypeTtlExpiresSilently() {
+    @Test void hardRecurringTtlExpiresSilently() {
         RecordingEvents ev = new RecordingEvents();
         SideTaskEngine e = new SideTaskEngine(ev, token -> token);
-        e.registerType(new DailyMaintenanceSideTaskType());
-        e.registerRecurring(new RecurringSideTaskSpec("d2", DailyMaintenanceSideTaskType.TYPE_ID, 1, 0,
+        var type = new DailyType(false, 20L * 60L * 10L);
+        e.registerType(type);
+        e.registerRecurring(new RecurringSideTaskSpec("d2", type.typeId(), 1, 0,
                 RecurringSideTaskSpec.MissedPolicy.SKIP, true, false,
                 Map.of("description", "x", "asset_key", "minecraft:wheat", "minimum", "9")),
-                DailyMaintenanceSideTaskType.TYPE_ID);
+                type.typeId());
         FakeWorldPort w = new FakeWorldPort().at(100, 0);
         e.tick(C, w, null, false);
         assertTrue(e.isActive(C));
@@ -131,7 +130,7 @@ class SideTaskRecurringTest {
         assertTrue(ev.saw("side_task_skipped"));
     }
 
-    @Test void activeDailyYieldsWhenMainlineNeedsBody() {
+    @Test void advisoryDailyDueWhileBodyBusyStillReportsWithoutActivation() {
         RecordingEvents ev = new RecordingEvents();
         SideTaskEngine e = new SideTaskEngine(ev, token -> token);
         e.registerType(new DailyMaintenanceSideTaskType());
@@ -139,17 +138,16 @@ class SideTaskRecurringTest {
                 RecurringSideTaskSpec.MissedPolicy.SKIP, true, false,
                 Map.of("description", "x", "asset_key", "minecraft:wheat", "minimum", "9")),
                 DailyMaintenanceSideTaskType.TYPE_ID);
-        FakeWorldPort w = new FakeWorldPort().at(100, 0);
+        FakeWorldPort w = new FakeWorldPort().at(100, 0).bodyBusy(true);
         e.tick(C, w, null, false);
-        assertTrue(e.isActive(C));
-        w.bodyBusy(true);
-        e.tick(C, w, null, false);
-        assertFalse(e.isActive(C), "主线要身体时 daily 必须让位");
-        assertTrue(ev.saw("side_task_cancelled"));
-        assertTrue(ev.saw("side_task_resumed_mainline"));
+        assertFalse(e.isActive(C), "busy mainline keeps the body; ordinary daily must not take over");
+        assertTrue(ev.saw("side_task_due"));
+        assertTrue(ev.saw("side_task_advisory"));
+        assertEquals(0, ev.count("side_task_created"));
+        assertEquals(0, ev.count("side_task_activated"));
     }
 
-    @Test void specDataReachesSideTask() {
+    @Test void specDataStaysOnRegistrationForAdvisory() {
         RecordingEvents ev = new RecordingEvents();
         SideTaskEngine e = new SideTaskEngine(ev, token -> token);
         e.registerType(new DailyMaintenanceSideTaskType());
@@ -158,13 +156,12 @@ class SideTaskRecurringTest {
                 RecurringSideTaskSpec.MissedPolicy.SKIP, true, false, data),
                 DailyMaintenanceSideTaskType.TYPE_ID);
         e.tick(C, new FakeWorldPort().at(100, 0), null, false);
-        assertTrue(e.isActive(C));
-        assertEquals("minecraft:wheat", e.current(C).orElseThrow().data().get("asset_key"),
-                "spec.data -> CreationContext.data -> SideTask.data 不得丢");
-        assertEquals("1", e.current(C).orElseThrow().data().get("minimum"));
+        assertFalse(e.isActive(C));
+        assertEquals("minecraft:wheat", e.recurringSpec("d3").data().get("asset_key"));
+        assertEquals("1", e.recurringSpec("d3").data().get("minimum"));
     }
 
-    @Test void specDataSurvivesRuntimeSnapshot() {
+    @Test void specDataSurvivesSnapshotWithoutActivating() {
         RecordingEvents ev = new RecordingEvents();
         SideTaskEngine e = new SideTaskEngine(ev, token -> token);
         e.registerType(new DailyMaintenanceSideTaskType());
@@ -177,7 +174,8 @@ class SideTaskRecurringTest {
         SideTaskEngine restored = new SideTaskEngine(ev, token -> token);
         restored.registerType(new DailyMaintenanceSideTaskType());
         restored.restore(json);
-        assertEquals("minecraft:wheat", restored.current(C).orElseThrow().data().get("asset_key"));
+        assertFalse(restored.isActive(C));
+        assertEquals("minecraft:wheat", restored.recurringSpec("d4").data().get("asset_key"));
     }
 
     @Test void handledTodayReadsMemoryAndPersists() {
@@ -215,19 +213,12 @@ class SideTaskRecurringTest {
     }
 
     @Test void dailyContinueKeepsConditionData() {
-        RecordingEvents ev = new RecordingEvents();
-        SideTaskEngine e = new SideTaskEngine(ev, token -> token);
-        e.registerType(new DailyMaintenanceSideTaskType());
-        e.registerRecurring(new RecurringSideTaskSpec("dk", DailyMaintenanceSideTaskType.TYPE_ID, 1, 0,
-                RecurringSideTaskSpec.MissedPolicy.SKIP, true, false,
-                Map.of("description", "x", "asset_key", "minecraft:wheat", "minimum", "9")),
-                DailyMaintenanceSideTaskType.TYPE_ID);
-        FakeWorldPort w = new FakeWorldPort().at(100, 0);
-        e.tick(C, w, null, false);
-        e.tick(C, w, null, false); // CONTINUE must not wipe data
-        assertTrue(e.isActive(C));
-        assertEquals("minecraft:wheat", e.current(C).orElseThrow().data().get("asset_key"),
-                "CONTINUE 后 data 被 verdict.data 覆盖为空 = 下一拍 missing asset_key");
+        DailyWorldPort w = new DailyWorldPort(0, null);
+        SideTask before = dailyWithCondition(null);
+        SideTaskVerdict verdict = new DailyMaintenanceSideTaskType().evaluate(before, w);
+        assertEquals(SideTaskVerdict.Kind.CONTINUE, verdict.kind());
+        assertEquals("minecraft:wheat", verdict.data().get("asset_key"),
+                "CONTINUE must not wipe the condition data");
     }
 
     @Test void typedWorldTrueCompletesWithZeroStock() {

@@ -34,6 +34,15 @@ final class RddCallbackGuard {
         cleanup.run();
     }
 
+    /** Optional local cancellation: never execute a stale result to release its original waiter. */
+    void dispatch(Ticket ticket, Executor executor, Runnable callback, Runnable discarded) {
+        executor.execute(() -> {
+            synchronized (this) {
+                if (isCurrent(ticket)) callback.run(); else discarded.run();
+            }
+        });
+    }
+
     /** Check inside the destination executor, never merely before enqueueing. */
     void dispatch(Ticket ticket, Executor executor, Runnable callback) {
         executor.execute(() -> {

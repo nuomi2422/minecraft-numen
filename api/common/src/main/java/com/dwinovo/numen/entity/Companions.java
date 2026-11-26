@@ -3,6 +3,7 @@ package com.dwinovo.numen.entity;
 import com.dwinovo.numen.api.CompanionEvent;
 import com.dwinovo.numen.network.payload.NumenDeathPayload;
 import com.dwinovo.numen.network.payload.NumenRespawnPayload;
+import com.dwinovo.numen.network.payload.RequestStatePayload;
 import com.dwinovo.numen.network.payload.CompanionListPayload;
 import com.dwinovo.numen.platform.Services;
 import net.minecraft.server.MinecraftServer;
@@ -410,8 +411,28 @@ public final class Companions {
                 respawnAttrs,
                 "你在 " + respawnAttrs.get("dimension") + " 重生了。", false);
         syncRosterToOwner(server, owner);
-        Services.NETWORK.sendToPlayer(owner, new NumenRespawnPayload(uuid, entry.deathCause()));
+        sendRespawnThaw(owner, body, uuid, entry.deathCause());
         return true;
+    }
+
+    /**
+     * 055 第二片：解冻(thaw)前先把"新身体此刻的样子"送到客户端，再发 thaw。
+     *
+     * <p><b>为什么顺序不能反</b>：客户端 {@code ClientPayloadHandlers.handleRespawn} →
+     * {@code EntityAgentLoop.onRespawned} 会<b>同步</b> push 死亡急件 → {@code maybeDrain} → 组请求，
+     * {@code inventoryXml} 直接读 {@code ClientNumenState}。thaw 先到，复活首轮就会把死亡前/尸体
+     * 那份快照当成"她现在带着什么"。自定义包同连接同序：state 帧排在 thaw 前，首请求必读新身体。
+     *
+     * <p><b>为什么复用 snapshot</b>：面板请求({@code RequestStatePayload.handle})与
+     * {@code CompanionStateWatch} 主动推送已共用 {@code snapshot()}→{@code CompanionBodySample}
+     * 共享帧；复活这条路必须用同一份，不另造协议/第二个真源。也不清缓存、不加 TTL——库存不变
+     * 本来就可以合法长存，问题只是新旧身体的配对。
+     *
+     * <p>调用点：{@link #respawnDead} 的 SPAWN/插件 RESPAWN 重定位之后、原 thaw 行。
+     */
+    static void sendRespawnThaw(ServerPlayer owner, NumenPlayer body, UUID uuid, String cause) {
+        Services.NETWORK.sendToPlayer(owner, RequestStatePayload.snapshot(body));
+        Services.NETWORK.sendToPlayer(owner, new NumenRespawnPayload(uuid, cause));
     }
 
     /**

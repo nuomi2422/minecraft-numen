@@ -174,6 +174,7 @@ final class RddSubmitTool implements NumenTool {
             }
             try {
                 runtime.startCurrentWithCounts(baselineCounts);
+                RddDetector.captureStatBaselineAtStart(companion, runtime);
             } catch (IllegalStateException startEx) {
                 // 2026-10-25：这条错误夜里撞了三次。真相是 TaskChain 构造时按
                 // "已达成阶段"把 primary 直接标成 COMPLETED（P0 的跳过已达成特性），

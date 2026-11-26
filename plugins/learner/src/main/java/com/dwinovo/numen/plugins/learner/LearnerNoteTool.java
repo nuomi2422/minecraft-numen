@@ -121,6 +121,10 @@ final class LearnerNoteTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
+        if (!LearnerSwitch.enabled()) {
+            reply.accept(TaskResult.fail(LearnerSwitch.disabledMessage("learner_note")).toJson());
+            return;
+        }
         // 读世界状态必须在服务端主线程（框架用 dispatchAsync 触发，不保证在主线程）。
         // 解析入参不碰世界，可以先做；采集与入队整体放进主线程。
         Input in;

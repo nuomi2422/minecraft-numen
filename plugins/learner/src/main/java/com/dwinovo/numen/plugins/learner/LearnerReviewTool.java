@@ -113,6 +113,10 @@ final class LearnerReviewTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
+        if (!LearnerSwitch.enabled()) {
+            reply.accept(TaskResult.fail(LearnerSwitch.disabledMessage("learner_review")).toJson());
+            return;
+        }
         final UUID id;
         try {
             id = companion.getUUID();
@@ -204,7 +208,9 @@ final class LearnerReviewTool implements NumenTool {
 
         // 2026-11-13: keep this review's identity across async work; historical memo identity is separate.
         final com.dwinovo.numen.api.WorldContextStamp.Token reviewStart = captureReviewContext(capturedServer);
-        final List<Memo> batch = taken;
+        final List<Memo> batch = taken.stream().map(memo ->
+                com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.withTaskResultEvidence(
+                        LearnerPlugin.configDir(), id, memo)).toList();
         final String reviewId = "rev-" + System.currentTimeMillis() + "-" + Math.abs(batch.get(0).id().hashCode() % 1000);
         final ReviewObservation observation = LearnerPlugin.beginReview(reviewId, id, "RUNNING", batch.size(),
                 capturedServer == ServerLifecycleHooks.getCurrentServer() ? reviewStart : null);
@@ -245,6 +251,15 @@ final class LearnerReviewTool implements NumenTool {
 
         // 后台线程做 LLM 复盘（阻塞等待只发生在这里，不在服务器主线程）
         Thread.ofVirtual().name("learner-review-" + reviewId).start(() -> {
+            // 2026-11-22（主人止损）：入口到线程启动之间被关闸 → 不启动 LLM，批次回滚并如实标记。
+            if (!LearnerSwitch.enabled()) {
+                queue.restore(batch);
+                LearnerPlugin.finishReview(reviewId, "DISABLED", 0);
+                observation.publish("review_skipped", Map.of("review_id", reviewId,
+                        "companion", id.toString(), "reason", "learner_disabled", "restored", batch.size()),
+                        observationCurrent(capturedServer));
+                return;
+            }
             // ★ 拒收回喂（2026-10-05 实机教训）：投递箱读得到吗？读不到就传 null，
             //   RejectionFeedback 会**明说「读不到」**，不假装「没有拒收」。
             var ob = LearnerPlugin.outbox();

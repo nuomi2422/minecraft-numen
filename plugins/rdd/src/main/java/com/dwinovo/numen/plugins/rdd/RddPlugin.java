@@ -146,7 +146,9 @@ public final class RddPlugin implements NumenPlugin {
     /** 内存资产历史（uuid→history）；磁盘为真身，清世界状态只清内存。 */
     private static final Map<UUID, AssetHistory> HISTORY = new ConcurrentHashMap<>();
 
-    record BodyState(String subtaskId, int submitCount) {}
+    record BodyState(String subtaskId, int submitCount, TaskChain yieldChain, Object yieldBinding, String yieldResult) {
+        BodyState(String subtaskId, int submitCount) { this(subtaskId, submitCount, null, null, ""); }
+    }
 
     /**
      * F4a：判定「同一点连死」的窗口与半径。
@@ -168,6 +170,10 @@ public final class RddPlugin implements NumenPlugin {
         tasksDir = numen.configDir().resolve("rdd-tasks");
         assetsDir = numen.configDir().resolve("rdd-assets");
         factsDir = numen.configDir().resolve("rdd-facts");
+        // 2026-11-24 迁移实机：home 锚点与完成事实同目录；它过去只在 renderStateContext 里懒赋值，
+        // 于是没有模型请求窗口时的外部 reset 会在删掉链之后才抛 "home store unavailable"（partial cleanup）。
+        // 落盘目录随宿主 setup 初始化，reset 只消费它，不在销毁途中才找目录。
+        RddHomeAnchor.bind(factsDir);
         completionCommit = new StageCompletionCommit(tasksDir, factsDir);
         historyDir = numen.configDir().resolve("rdd-history");
         ledgerDir = numen.configDir().resolve("rdd-ledger");
@@ -281,7 +287,7 @@ public final class RddPlugin implements NumenPlugin {
             }
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
             if (server == null) return false;
-            RddCallbackGuard.Ticket ticket = CALLBACKS.replace(uuid);
+            RddCallbackGuard.Ticket ticket = replacePlanningTicket(uuid);
             onServer(server, ticket, () -> beginPlanning(server, ticket, objective));
             return true;
         });
@@ -310,8 +316,23 @@ public final class RddPlugin implements NumenPlugin {
         });
         // P1 资产真相层：同伴死亡/掉装备 → 背包类资产立即失效（不再拿旧装备当"还持有"），
         // 规划输入 LAST_INVENTORY 同步清空；世界资产（基地/结构）不受影响，重新观测会恢复 OBSERVED。
+        numen.on(CompanionEvent.TASK_FINISHED, finished -> {
+            if (finished == null || !finished.success() || !"SUCCESS".equals(finished.status())) return;
+            var server = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
+            if (server == null || !server.isSameThread()) return;
+            var body = com.dwinovo.numen.entity.NumenPlayer.findByUuid(server, finished.companionId());
+            if (body == null || body.getServer() != server) return;
+            var record = com.dwinovo.numen.task.CompanionTickDispatcher.finishedTaskFor(finished.companionId(), finished.taskId());
+            if (RddCompletedMoveAsset.projectOutcome(finished.companionId(), finished.taskId(), record,
+                    com.dwinovo.numen.api.WorldContextStamp.capture(server),
+                    body.level().dimension().location().toString(), assets(finished.companionId()), System.currentTimeMillis())
+                    != RddCompletedMoveAsset.Outcome.REJECTED)
+                saveAssets(finished.companionId());
+        });
         numen.on(CompanionEvent.DEATH, body -> onCompanionDeath(body));
         numen.on(CompanionEvent.REMOVE, body -> {
+            RddGoalDriver.bodyRemoved(body);
+            SleepWakeWatcher.clearBody(body);
             LAST_INVENTORY.remove(body.getUUID());
             LAST_INVENTORY_AT.remove(body.getUUID());
             // 38号v3.6 B24：携带器缓存与 LAST_INVENTORY 同生命周期，不清就是泄漏
@@ -433,10 +454,94 @@ public final class RddPlugin implements NumenPlugin {
     }
 
     private static final Map<UUID, String> LAST_CONTEXT = new java.util.concurrent.ConcurrentHashMap<>();
+    record HomeIdentity(com.dwinovo.numen.entity.NumenPlayer body,
+                        com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity, long epoch,
+                        Integer x, Integer y, Integer z, String dimension) {}
+    private static final Map<UUID, HomeIdentity> HOME_IDENTITIES = new java.util.concurrent.ConcurrentHashMap<>();
+
+    static void captureHomeIdentity(com.dwinovo.numen.entity.NumenPlayer body,
+                                    com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity,
+                                    net.minecraft.core.BlockPos anchor, String dimension) {
+        if (body == null) return;
+        var stamp = com.dwinovo.numen.api.WorldContextStamp.capture();
+        if (identity == null || anchor == null || dimension == null || dimension.isBlank() || stamp.identity() == null
+                || !java.util.Objects.equals(stamp.identity().get("world_id"), identity.worldId())
+                || !java.util.Objects.equals(stamp.identity().get("server_session"), identity.serverSession())) {
+            HOME_IDENTITIES.remove(body.getUUID()); return;
+        }
+        HOME_IDENTITIES.put(body.getUUID(), new HomeIdentity(body, identity, stamp.epoch(),
+                anchor.getX(), anchor.getY(), anchor.getZ(), dimension));
+    }
+
+    /** Called only from server tick with the current bound respawn point. */
+    static void recheckHomeBinding(com.dwinovo.numen.entity.NumenPlayer body) {
+        if (body == null) return;
+        var cached = HOME_IDENTITIES.get(body.getUUID());
+        if (cached == null) return;
+        try {
+            var anchor = body.getRespawnPosition();
+            var dim = body.getRespawnDimension();
+            if (anchor == null || anchor.equals(net.minecraft.core.BlockPos.ZERO) || dim == null
+                    || !java.util.Objects.equals(cached.dimension(), dim.location().toString())
+                    || !java.util.Objects.equals(cached.x(), anchor.getX())
+                    || !java.util.Objects.equals(cached.y(), anchor.getY())
+                    || !java.util.Objects.equals(cached.z(), anchor.getZ())) {
+                HOME_IDENTITIES.remove(body.getUUID(), cached);
+            }
+        } catch (RuntimeException unavailable) {
+            HOME_IDENTITIES.remove(body.getUUID(), cached);
+        }
+    }
+
+    static HomeIdentity cachedHomeIdentity(UUID id) {
+        var cached = id == null ? null : HOME_IDENTITIES.get(id);
+        if (cached == null || RddCompanionBody.get(id) != cached.body()
+                || cached.epoch() != com.dwinovo.numen.api.WorldContextStamp.epoch()) return null;
+        var token = com.dwinovo.numen.api.WorldContextStamp.capture();
+        var stamp = token.identity();
+        if (token.epoch() != cached.epoch() || stamp == null
+                || !java.util.Objects.equals(stamp.get("world_id"), cached.identity().worldId())
+                || !java.util.Objects.equals(stamp.get("server_session"), cached.identity().serverSession())) return null;
+        return cached;
+    }
+
+    private static com.dwinovo.numen.rdd.core.YieldOwnerBinding yieldTickets =
+            new com.dwinovo.numen.rdd.core.YieldOwnerBinding(1024, 120_000L);
+
+    /** Server-thread snapshot, never reconstructed from model arguments. */
+    static com.dwinovo.numen.rdd.core.YieldOwnerBinding.Identity yieldIdentity(NumenPlayer body) {
+        if (body == null || body.getServer() == null || !body.getServer().isSameThread()) return null;
+        var provider = com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.ServerIdentityProvider.class);
+        var server = provider == null ? null : provider.snapshot(body.getServer());
+        var rt = runtime(body.getUUID());
+        if (server == null || server.worldId() == null || server.worldId().isBlank()
+                || server.serverSession() == null || server.serverSession().isBlank() || rt == null) return null;
+        var chain = rt.chain();
+        var task = chain.currentSubtask();
+        if (task == null) return null;
+        var side = SideTaskHost.activeYieldOwner(body.getUUID());
+        return new com.dwinovo.numen.rdd.core.YieldOwnerBinding.Identity(body.getUUID(), server.serverSession(),
+                chain.chainInstanceId(), chain.planRevision(), task.id(), side == null ? "MAINLINE" : "SIDE",
+                side == null ? "" : side.instanceId(), side == null ? 0 : side.generation());
+    }
+
+    /** Caller identity is checked before ticket creation or consumption. */
+    static String issueYieldTicket(ServerPlayer caller, NumenPlayer body, long now) {
+        if (caller == null || body == null || !body.isOwnedByPlayer(caller.getUUID())) return null;
+        var identity = yieldIdentity(body);
+        return identity == null ? null : yieldTickets.issue(identity, now);
+    }
+
+    static boolean consumeYieldTicket(ServerPlayer caller, NumenPlayer body, String ticket, long now) {
+        if (caller == null || body == null || !body.isOwnedByPlayer(caller.getUUID())) return false;
+        var identity = yieldIdentity(body);
+        return identity != null && yieldTickets.valid(ticket, identity, now);
+    }
 
     /** Disk handoffs survive; in-flight planning and cached world observations do not. */
     private static void clearWorldState() {
         CALLBACKS.clear(() -> {
+            yieldTickets = new com.dwinovo.numen.rdd.core.YieldOwnerBinding(1024, 120_000L);
             RddReplanTransition.clearAll();
             RddDeferredDeathReplan.clearAll();
             DECOMPOSING.clear();
@@ -445,6 +550,7 @@ public final class RddPlugin implements NumenPlugin {
             BODY.clear();
             RUNTIMES.clear();
             ASSETS.clear();
+            HOME_IDENTITIES.clear();
             FACTS.clear();
             LAST_CONTEXT.clear();
             LAST_INVENTORY.clear();
@@ -597,7 +703,7 @@ public final class RddPlugin implements NumenPlugin {
                     "registered", sinkOk, "source", source));
         }
         if (!plannedBySink) {
-            RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+            RddCallbackGuard.Ticket ticket = replacePlanningTicket(companionId);
             onServer(server, ticket, () -> beginPlanning(server, ticket, objective, source));
         }
         return "objective accepted by the supervisor (Stage-A planning started)";
@@ -648,7 +754,7 @@ public final class RddPlugin implements NumenPlugin {
         // 与并发 /goal 抢同一个 UUID pending，且只能靠目标文本判断"这条规划是不是重启"。
         // 现在直接把 requestId 带进本次 beginPlanning 的闭包，pending 用 remove(key,value) 原子认领；
         // 普通目标（requestId=0）会清掉遗留请求。代价：不写引擎 GoalState，面板以 rdd_status 为准。
-        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+        RddCallbackGuard.Ticket ticket = replacePlanningTicket(companionId);
         onServer(server, ticket, () -> beginPlanning(server, ticket, obj, "rdd_restart_mainline", requestId));
         return "mainline restart accepted: old chain discarded, new objective is being planned from scratch";
     }
@@ -688,6 +794,15 @@ public final class RddPlugin implements NumenPlugin {
         return SideTaskHost.contextFor(uuid, snap == null ? null : snap.worldId(), snap == null ? null : snap.serverSession());
     }
 
+    /** B-only advice: the live request body's world/session, never a global stamp; innerXML appended to MAIN. */
+    private static String advisoryContextFor(UUID uuid) {
+        ServerPlayer body = RddCompanionBody.get(uuid);
+        if (body == null || body.level().getServer() == null) return SideTaskHost.advisoryContextFor(uuid, null, null);
+        var provider = com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.ServerIdentityProvider.class);
+        var snap = provider == null ? null : provider.snapshot(body.level().getServer());
+        return SideTaskHost.advisoryContextFor(uuid, snap == null ? null : snap.worldId(), snap == null ? null : snap.serverSession());
+    }
+
     /** Read-only planner notice; current request-server identity comes from the body, never a global stamp. */
     private static String earlyProposalNoticeFor(UUID uuid) {
         try {
@@ -721,6 +836,59 @@ public final class RddPlugin implements NumenPlugin {
             // 2026-10-08 支线接管：支线 active 时当前目标投影为睡觉支线，主线上下文让位。
             String sideContext = sideContextFor(uuid);
             if (sideContext != null) {
+                // Keep the actual side owner as current. Related plans are visibility, not dispatch.
+                RddRuntime relatedRuntime = RUNTIMES.get(uuid);
+                if (sideContext.contains("<side_context_status>CURRENT</side_context_status>")
+                        && relatedRuntime != null) {
+                    TaskChain related = relatedRuntime.chain();
+                    synchronized (related) {
+                        RddRationale.refreshContext(uuid, related);
+                        // Do not resurrect completed plans or bypass recovery/expansion admission.
+                        if (!DECOMPOSING.contains(uuid) && related.primaryStatus() == PrimaryGoalStatus.ACTIVE
+                                && related.currentPrimary() != null && !related.currentPrimary().unexpanded()
+                                && com.dwinovo.numen.rdd.side.death.DeathPreparation.pausedContext(related).isBlank()) {
+                            StringBuilder candidates = new StringBuilder("<related_tasks>");
+                            candidates.append("<chain_instance>").append(escape(related.chainInstanceId()))
+                                    .append("</chain_instance><plan_revision>").append(related.planRevision())
+                                    .append("</plan_revision><state_version>").append(related.stateVersion())
+                                    .append("</state_version><instruction>只读关联待办，不是行动命令。当前支线仍占当前执行位置；主线待恢复，不可据此抢占身体。日常模板不表示已登记或已到期，按原宿主条件重评。</instruction>");
+                            Map<String, SubtaskStatus> statuses = related.subtaskStatuses();
+                            for (Subtask candidate : related.currentPrimary().subtasks()) {
+                                boolean daily = candidate.nodeType() == com.dwinovo.numen.rdd.api.NodeType.DAILY;
+                                if (!daily && candidate != related.currentSubtask()) continue;
+                                SubtaskStatus status = statuses.get(candidate.id());
+                                boolean delegatedDaily = daily && status == SubtaskStatus.SKIPPED
+                                        && "DAILY delegated to recurring side tasks; not mainline completion"
+                                                .equals(related.skipReason(candidate.id()));
+                                if (status == SubtaskStatus.COMPLETED || (status == SubtaskStatus.SKIPPED && !delegatedDaily)
+                                        || status == SubtaskStatus.INVALIDATED || status == SubtaskStatus.FAILED) continue;
+                                candidates.append("<candidate><source>plan</source><scope>").append(daily ? "DAILY" : "MAIN")
+                                        .append("</scope><subtask>").append(escape(candidate.id()))
+                                        .append("</subtask><description>").append(escape(candidate.description()))
+                                        .append("</description><done_when>").append(escape(String.valueOf(candidate.condition())))
+                                        .append("</done_when>").append(resourceUseContext(candidate))
+                                        .append("<status>").append(status)
+                                        .append("</status><availability>").append(daily ? "PLANNED_TEMPLATE_REGISTRATION_AND_DUE_UNKNOWN" : "WAIT_FOR_SIDE_RELEASE")
+                                        .append("</availability>");
+                                if (daily && candidate.recurrence() != null) candidates.append("<recurrence>")
+                                        .append(escape(String.valueOf(candidate.recurrence()))).append("</recurrence>");
+                                candidates.append("</candidate>");
+                            }
+                            candidates.append(com.dwinovo.numen.api.RationaleContext.renderApplicable(uuid,
+                                    related.planRevision(), related.chainInstanceId()));
+                            candidates.append("</related_tasks>");
+                            candidates.append(registeredDailyContext(uuid, related));
+                            int close = sideContext.lastIndexOf("</rdd>");
+                            if (close >= 0) sideContext = sideContext.substring(0, close) + candidates
+                                    + sideContext.substring(close);
+                        }
+                    }
+                    String ownerPause = renderOwnerPause(related);
+                    if (!ownerPause.isEmpty()) {
+                        int close = sideContext.lastIndexOf("</rdd>");
+                        if (close >= 0) sideContext = sideContext.substring(0, close) + ownerPause + sideContext.substring(close);
+                    }
+                }
                 return withAssets(uuid, sideContext);
             }
             if (DECOMPOSING.contains(uuid)) {
@@ -759,17 +927,94 @@ public final class RddPlugin implements NumenPlugin {
             return withAssets(uuid, "<rdd><enabled>true</enabled><active>true</active>"
                     + "<primary_status>" + chain.primaryStatus() + "</primary_status>"
                     + retrievalTaskFields(chain)
+                    + "<concern_review>" + escape(new com.google.gson.Gson().toJson(RddNegotiationInbox.reviewSnapshot(uuid))) + "</concern_review>"
                     + "<subtask>" + escape(current.id()) + "</subtask>"
                     + "<current_task>" + escape(current.description()) + "</current_task>"
                     + "<done_when>" + escape(String.valueOf(current.condition())) + "</done_when>"
+                    + resourceUseContext(current)
                     + "<subtask_status>" + chain.currentSubtaskStatus() + "</subtask_status>"
-                    + "<instruction>current_task 是你必须执行的当前目标（优先于自由活动）；"
-                    + "若你认为它不合理/不可达/与目标冲突，用 report_task_concern 上报（REJECT/COUNTER+建议），"
-                    + "指挥官会据此改单或重规划；不要默默无视。</instruction>"
+                    + currentSubtaskInstruction(chain, current)
+                    + registeredDailyContext(uuid, chain)
+                    + advisoryContextFor(uuid)
                     // 38号v3.6 B24：携带器提醒由 withAssets 统一挂（它是全部分支的共同出口）。
                     // ⚠️ 2026-10-01 实机请求体抓到重复：这里加一次、withAssets 又 replace 一次，
                     //    <carry> 在 <rdd> 里出现两遍（白送 ~130 token/请求）。故此处不再加。
                     + "</rdd>");
+    }
+
+    /**
+     * 当前节点能不能推进，由链上的<b>真实状态</b>决定，不由「current_task 存在」假定。
+     *
+     * <p>2026-11-24（055 暂停投影）：owner 待命（{@link RddStandbyTool}）把当前二级置 PAUSED 后
+     * {@code currentSubtask()} 仍非空，原实现照发「必须执行」，模型会把停下的事又做一遍；
+     * 最后一个二级完成后链处于 AWAITING_SUPERVISOR（primary 尚未 COMPLETED），也会被当成可执行。
+     *
+     * <p>边界：暂停只停<b>这个节点</b>，不禁止安全观察/避险/进食等维持生存的必要动作，
+     * 也不自动 resume；STALLED/COOLDOWN 仍按宿主现有等待/复评规则，不在这里宣告永久不可用。
+     * <p>只读：这里只读 chain，不改状态（渲染每回合都会跑）。
+     */
+    private static String currentSubtaskInstruction(TaskChain chain, Subtask current) {
+        SubtaskStatus status = chain.currentSubtaskStatus();
+        if (status == SubtaskStatus.PAUSED) {
+            boolean owner = chain.isOwnerPause(current.id());
+            String reason = chain.pauseReason(current.id());
+            return (reason == null || reason.isBlank() ? ""
+                        : "<pause_reason>" + escape(reason) + "</pause_reason>")
+                    + "<instruction>current_task 已暂停，不要推进它，也不要自行恢复；"
+                    + (owner
+                        ? "这是主人下的待命，只有主人说继续才能解除。"
+                        : "等暂停条件解除或规划器/主人改单后再推进。")
+                    + "暂停只停这个节点：安全观察、避险、进食等维持生存的必要动作仍可做，"
+                    + "不要开始新的施工，也不要把停下的节点当成已完成；"
+                    + "暂停期间若发现原步骤前提已失效，可以如实上报这条事实（当前 ID+事实+可行建议），"
+                    + "但不要借此要求重规划，也不要自行恢复——它不构成解除待命的理由。</instruction>";
+        }
+        if (status == SubtaskStatus.COMPLETED) {
+            return "<instruction>current_task 已完成，不要再执行它；"
+                    + "等宿主/监督推进到下一个节点或主人给出新目标。"
+                    + "可做安全观察与生存必要动作，但不要把它当成未完成的事重做。</instruction>";
+        }
+        if (status == SubtaskStatus.FAILED || status == SubtaskStatus.SKIPPED
+                || status == SubtaskStatus.INVALIDATED) {
+            return "<instruction>current_task 当前不可推进（状态 " + status + "），不要执行它，"
+                    + "也不要当成已完成；按宿主的失败重试/重规划/跳过规则等待处理，"
+                    + "可做安全观察与生存必要动作。</instruction>";
+        }
+        if (status == SubtaskStatus.STALLED || status == SubtaskStatus.COOLDOWN) {
+            return "<instruction>current_task 正在等待监督复评或拍醒（状态 " + status + "），"
+                    + "不要重复开工，也不要当成已完成；按宿主现行规则等待结果，"
+                    + "可做安全观察与生存必要动作。</instruction>";
+        }
+        return "<instruction>current_task 是你必须执行的当前目标（优先于自由活动）；"
+                + "动手前先按新鲜事实核当前前提（工具/护甲/食物/材料），别凭记忆；"
+                + "前提只是暂时缺、且能安全就地少量补上（补一把镐、取附近食物）就先补再继续；"
+                + "若前提已失效或原步骤确实做不到，用 report_task_concern 上报："
+                + "expected_subtask_id 填当前 ID，reason 写观察到的事实，suggestion 写可行替代；"
+                + "指挥官会据此改单或重规划；不要只说没有/做不到，不要无效重试或泛泛待命，也不要默默无视；"
+                + "与当前任务无关的日常建议可先放着。</instruction>";
+    }
+
+    /**
+     * 支线 CURRENT 仍占当前执行位置时，把主线 owner-pause 事实抬到同一顶层 rdd 片段。
+     * 只读 TaskChain 事实（isOwnerPause），不新存 pause 账，不从 QUERY 文本猜授权；
+     * 非 owner-pause 返回空串，不假封；不 global 禁 sleep/FC。
+     */
+    static String renderOwnerPause(TaskChain related) {
+        Subtask current = related.currentSubtask();
+        if (current == null || related.currentSubtaskStatus() != SubtaskStatus.PAUSED
+                || !related.isOwnerPause(current.id())) {
+            return "";
+        }
+        String reason = related.pauseReason(current.id());
+        return "<owner_pause scope=\"MAIN\">"
+                + "<chain_instance>" + escape(related.chainInstanceId()) + "</chain_instance>"
+                + "<subtask>" + escape(current.id()) + "</subtask>"
+                + (reason == null || reason.isBlank() ? ""
+                        : "<pause_reason>" + escape(reason) + "</pause_reason>")
+                + "<instruction>当前主线是主人待命（owner pause）：旧 timer 或旧建议不得推进这个 PAUSED mainline；"
+                + "只有主人解除待命后才能继续。暂停只停这条主线节点，"
+                + "不禁止安全观察、避险、进食、sleep/FC 等生存动作；不要自行 resume。</instruction>"
+                + "</owner_pause>";
     }
 
     /**
@@ -778,6 +1023,82 @@ public final class RddPlugin implements NumenPlugin {
      *
      * <p>缺快照时返回空串 → {@code <carry>} 整块不出现（B21：缺失就缺失，不写空标签）。
      */
+    /** Only cached observations establish this request's clock/dimension; never refresh or read MC here. */
+    private static String resourceUseContext(Subtask task) {
+        if (task.resourceUses().isEmpty()) return "";
+        return "<resource_uses status=\"DECLARED_INTENT_NOT_EVIDENCE\">"
+                + escape(new com.google.gson.Gson().toJson(
+                        com.dwinovo.numen.rdd.api.ResourceUse.declarations(task.resourceUses())))
+                + "</resource_uses>";
+    }
+
+    private static String registeredDailyContext(UUID id, TaskChain chain) {
+        try {
+            var service = com.dwinovo.numen.api.NumenPlugins.capability(
+                    com.dwinovo.numen.api.observation.WorldObservationService.class);
+            if (service == null) return SideTaskHost.registrationContextFor(id, null);
+            var self = service.readSelf("rdd-daily-request", id, 3_000L);
+            if (self == null || !"self".equals(self.topic()) || self.items().size() != 1
+                    || self.coverage() != com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL
+                    || (self.status() != com.dwinovo.numen.api.observation.WorldObservationService.Status.OK
+                        && self.status() != com.dwinovo.numen.api.observation.WorldObservationService.Status.PARTIAL))
+                return SideTaskHost.registrationContextFor(id, null);
+            var identity = self.metadata();
+            var item = self.items().get(0);
+            if (registrationFieldUnknown(item, "companionUUID") || registrationFieldUnknown(item, "dimension")
+                    || !id.toString().equals(item.values().get("companionUUID"))
+                    || !identity.dimension().equals(item.values().get("dimension")))
+                return SideTaskHost.registrationContextFor(id, null);
+            var environment = service.read(new com.dwinovo.numen.api.observation.WorldObservationService.Request(
+                    "rdd-daily-request", identity.dimension(), "environment", Map.of(), 3_000L, 1, 50));
+            long now = System.currentTimeMillis();
+            if (!registrationSampleCurrent(identity, now) || !id.toString().equals(identity.subjectId())
+                    || environment == null || !"environment".equals(environment.topic())
+                    || environment.items().size() != 1
+                    || environment.coverage() != com.dwinovo.numen.api.observation.WorldObservationService.Coverage.FULL
+                    || (environment.status() != com.dwinovo.numen.api.observation.WorldObservationService.Status.OK
+                        && environment.status() != com.dwinovo.numen.api.observation.WorldObservationService.Status.PARTIAL))
+                return SideTaskHost.registrationContextFor(id, null);
+            var clock = environment.metadata();
+            var time = environment.items().get(0);
+            if (!registrationSampleCurrent(clock, now) || !identity.worldId().equals(clock.worldId())
+                    || !identity.serverSession().equals(clock.serverSession())
+                    || !identity.dimension().equals(clock.dimension())
+                    || registrationFieldUnknown(time, "day_time") || registrationFieldUnknown(time, "dimension")
+                    || !identity.dimension().equals(time.values().get("dimension"))
+                    || !(time.values().get("day_time") instanceof Number day))
+                return SideTaskHost.registrationContextFor(id, null);
+            long ticks = new java.math.BigDecimal(day.toString()).longValueExact();
+            if (ticks < 0) return SideTaskHost.registrationContextFor(id, null);
+            synchronized (chain) {
+                RddRuntime live = RUNTIMES.get(id);
+                if (live == null || live.chain() != chain || chain.primaryStatus() != PrimaryGoalStatus.ACTIVE
+                        || DECOMPOSING.contains(id)
+                        || !com.dwinovo.numen.rdd.side.death.DeathPreparation.pausedContext(chain).isBlank())
+                    return SideTaskHost.registrationContextFor(id, null);
+                var current = chain.currentSubtask();
+                var owner = new com.dwinovo.numen.rdd.side.MainlineResumeToken(id, chain.chainInstanceId(),
+                        chain.goal().id(), chain.currentPrimary() == null ? null : chain.currentPrimary().id(),
+                        current == null ? null : current.id(), chain.planRevision(), chain.planRevision());
+                return SideTaskHost.registrationContextFor(id, new SideContextStore.Ticket(identity.worldId(),
+                        identity.serverSession(), identity.dimension(), owner, Math.floorDiv(ticks, 24_000L)));
+            }
+        } catch (RuntimeException | LinkageError unavailable) {
+            return SideTaskHost.registrationContextFor(id, null);
+        }
+    }
+
+    private static boolean registrationSampleCurrent(com.dwinovo.numen.api.observation.ObservationMetadata meta, long now) {
+        return meta != null && meta.identified()
+                && meta.freshness() == com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT
+                && meta.observedAtMs() <= now && now - meta.observedAtMs() <= 3_000L && meta.validUntilMs() > now;
+    }
+
+    private static boolean registrationFieldUnknown(com.dwinovo.numen.api.observation.WorldObservationService.Item item, String field) {
+        return java.util.stream.Stream.concat(item.unknownFields().stream(), item.staleFields().stream())
+                .anyMatch(path -> path.isEmpty() || field.equals(path) || field.startsWith(path + "."));
+    }
+
     private static String carryHint(UUID companionId) {
         try {
             String hint = RddCarryHint.current(companionId);
@@ -999,7 +1320,11 @@ private static String withAssets(UUID companionId, String rddContext) {
                 RddHomeFacts.RESPY.remove();
                 RddHomeFacts.RESPZ.remove();
             }
-            homeBlock = RddHomeFacts.blockFor(assets(companionId), lastInventory(companionId));
+            var homeIdentity = cachedHomeIdentity(companionId);
+            homeBlock = RddHomeFacts.blockFor(assets(companionId), lastInventory(companionId), System.currentTimeMillis(),
+                    homeIdentity == null ? null : homeIdentity.identity(), homeIdentity == null ? null : homeIdentity.x(),
+                    homeIdentity == null ? null : homeIdentity.y(), homeIdentity == null ? null : homeIdentity.z(),
+                    homeIdentity == null ? null : homeIdentity.dimension());
             // 167 §B1：把建家路线作为**一条带依赖的路线**发布一次，便于运行期核对它确实存在
             // （本轮还不塞进常驻提示词：先让它可观测，再谈怎么消费）。
             try {
@@ -1153,6 +1478,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                 RddRuntime runtime = runtime(uuid);
                 if (runtime != null) {
                     runtime.startCurrent();
+                    RddDetector.captureStatBaselineAtStart(NumenPlayer.findByUuid(server, uuid), runtime);
                     publishTaskSnapshot(uuid, "goal_decomposed", observationToken);
                     kickoffNudge(uuid, runtime.chain(), observationToken);
                 }
@@ -1170,7 +1496,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (companionId == null || goal == null) throw new IllegalArgumentException("companion and goal required");
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
         if (server == null || !server.isSameThread()) throw new IllegalStateException("RDD bind requires server thread");
-        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+        RddCallbackGuard.Ticket ticket = replacePlanningTicket(companionId);
         onServer(server, ticket, () -> bindCurrent(companionId, goal));
     }
 
@@ -1382,6 +1708,34 @@ private static String withAssets(UUID companionId, String rddContext) {
      * 是的话走 {@link #insertRecoveryNode}：在当前一级**追加一个恢复节点**（PENDING，末尾），
      * 其余节点原样保留；取回后再回到主线。只有插入失败才回落到原来的整段重写。
      */
+    /** Explicit current-owner review action. Merely observing a stale message never calls this. */
+    static boolean requestConcernReview(UUID companionId, String ref, String evidence) {
+        RddRuntime runtime = runtime(companionId);
+        if (runtime == null) return false;
+        TaskChain chain = runtime.chain();
+        RddNegotiationInbox.ReviewTicket review;
+        synchronized (chain) {
+            if (runtime(companionId) != runtime) return false;
+            review = RddNegotiationInbox.beginReview(companionId, ref, evidence, chain);
+        }
+        if (review == null) return false;
+        try {
+            String hint = RddNegotiationInbox.negotiationHint(review.entry().message(), chain.currentSubtask())
+                    + "\nCurrent owner evidence/action: " + evidence;
+            boolean accepted = requestReplan(companionId, "concern review: " + review.entry().reason(),
+                    RddReplanTransition.Trigger.NEGOTIATION, hint, true, null, null, null, review);
+            if (!accepted) RddNegotiationInbox.deferReview(companionId, review, null,
+                    "review admission refused (owner state or bounded budget)",
+                    "current owner supplies new evidence after the admission dependency or budget changes");
+            return accepted;
+        } catch (RuntimeException failed) {
+            if (chain.primaryStatus() == PrimaryGoalStatus.REPLANNING) chain.resumeFromReplanning();
+            RddNegotiationInbox.deferReview(companionId, review, null, "review request failed: " + failed.getClass().getSimpleName(),
+                    "current owner resolves the request dependency and explicitly submits new evidence");
+            return false;
+        }
+    }
+
     static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation, String soldierHint) {
         return requestReplan(companionId, reason, fromNegotiation, soldierHint, false);
     }
@@ -1413,6 +1767,14 @@ private static String withAssets(UUID companionId, String rddContext) {
                                          String soldierHint, boolean skipRecoverySideTask,
                                          Runnable acceptedSideEffect,
                                          RddSurvivalGate.Decision survivalDecision, Object survivalToken) {
+        return requestReplan(companionId, reason, trigger, soldierHint, skipRecoverySideTask,
+                acceptedSideEffect, survivalDecision, survivalToken, null);
+    }
+
+    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,
+                                         String soldierHint, boolean skipRecoverySideTask, Runnable acceptedSideEffect,
+                                         RddSurvivalGate.Decision survivalDecision, Object survivalToken,
+                                         RddNegotiationInbox.ReviewTicket concernReview) {
         boolean fromNegotiation = trigger == RddReplanTransition.Trigger.NEGOTIATION;
         // 只有普通失败驱动才可能走“缺失型恢复”路由；SURVIVAL 的 skip=true 保证它一定进 REPLANNING，
         // 不会被恢复支线/插节点提前 return（否则 Detector 会把“已点名恢复”误签成“已抢占”）。
@@ -1439,6 +1801,8 @@ private static String withAssets(UUID companionId, String rddContext) {
         RddRuntime rt = RUNTIMES.get(companionId);
         if (rt == null) return false;
         TaskChain chain = rt.chain();
+        if (concernReview != null && !RddNegotiationInbox.current(concernReview, chain)) return false;
+        var concernScope = RddNegotiationInbox.Scope.capture(chain);
         // 死亡恢复结算可能落在"链已走完/没有当前一级"的时刻：currentPrimary() 为空时
         // 下一行会 NPE，被外层 catch 吞成一句 warn，看起来像"重规划没发生"。
         if (chain.currentPrimary() == null) return false;
@@ -1498,6 +1862,8 @@ private static String withAssets(UUID companionId, String rddContext) {
             if (survival ? !RddReplanTransition.requirePlanningServer(companionId, survivalToken, chain, server)
                     : server == null) {
                 if (!survival) chain.resumeFromReplanning();
+                if (concernReview != null) RddNegotiationInbox.deferReview(companionId, concernReview, null,
+                        "planning server unavailable", "current owner re-establishes server identity and supplies new evidence");
                 return true;
             }
             var snap = planningSnapshot(companionId);
@@ -1562,13 +1928,12 @@ private static String withAssets(UUID companionId, String rddContext) {
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 重规划事实块生成失败 {}: {}", companionId, ex.toString());
             }
-            RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+            RddCallbackGuard.Ticket ticket = replacePlanningTicket(companionId, concernReview);
             // attempt：只有失败驱动才表示"上一版被判不可执行"（1）；协商与生存抢占是事实变化（0）。
             // 2026-11-13：不能再按 fromNegotiation 三元判断 —— SURVIVAL 走事实变化入口但不是协商。
             int planningAttempt = RddReplanTransition.planningAttempt(trigger);
             // completedStages 也不能丢（重规划与懒展开在这一项上曾不一致）。
-            RddDecomposer.decomposeSpecsWithHint(companionId, chain, ownerRevision, theme, planningAttempt,
-                    new java.util.ArrayList<>(chain.satisfiedStages()), hint,
+            java.util.function.Consumer<java.util.List<com.dwinovo.numen.rdd.api.SubtaskSpec>> applyPlan =
                     specs -> onServer(server, ticket, () -> {
                         try {
                             java.util.function.Supplier<java.util.List<Subtask>> replace = () -> {
@@ -1583,7 +1948,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                                 return subs;
                             };
                             java.util.function.Consumer<java.util.List<Subtask>> afterApplied = subs -> {
-                                RddNegotiationInbox.clear(companionId);   // 旧计划的回执一律作废
+                                RddNegotiationInbox.retireScope(companionId, chain, concernScope); // never erase a newer control or its pending premise
                                 saveRuntimes();
                                 publishTaskSnapshot(companionId, "replanned", observationToken);
                                 RddMonitor.publish("replanned", Map.of("companionId", companionId.toString(),
@@ -1609,7 +1974,31 @@ private static String withAssets(UUID companionId, String rddContext) {
                                 try { chain.resumeFromReplanning(); } catch (RuntimeException ignore) { }
                             }
                         }
-                    }));
+                    });
+            if (concernReview == null) {
+                RddDecomposer.decomposeSpecsWithHint(companionId, chain, ownerRevision, theme, planningAttempt,
+                        new java.util.ArrayList<>(chain.satisfiedStages()), hint, applyPlan);
+            } else {
+                RddDecomposer.decomposeConcernSpecs(companionId, chain, ownerRevision, theme, planningAttempt,
+                        new java.util.ArrayList<>(chain.satisfiedStages()), hint, concernReview.entry().ref(), result ->
+                            onServer(server, ticket, () -> {
+                                if (!RddNegotiationInbox.current(concernReview, chain)) {
+                                    RddNegotiationInbox.deferReview(companionId, concernReview, null,
+                                            "review owner no longer current", "current owner explicitly reassesses with new evidence");
+                                    return;
+                                }
+                                RddNegotiationInbox.deferReview(companionId, concernReview, result.proposal(),
+                                        result.proposal() == null ? "empty or uncorrelated planner review; no host evidence"
+                                                : "planner proposal received, but no typed host verifier for this premise",
+                                        result.proposal() != null && !result.proposal().resumeCondition().isBlank()
+                                                ? result.proposal().resumeCondition()
+                                                : "current owner obtains a verifiable task/world premise and explicitly requests review");
+                                // An unverified premise never authorizes a new plan. Reuse the original bounded fallback.
+                                if (chain.primaryStatus() == PrimaryGoalStatus.REPLANNING) chain.resumeFromReplanning();
+                                saveRuntimes();
+                                publishTaskSnapshot(companionId, "concern_review_deferred", observationToken);
+                            }));
+            }
             return true;
         } catch (RuntimeException ex) {
             // 组装/发起规划同步失败也是已知失败；无回调的在飞请求仍保留 UNKNOWN。
@@ -1788,7 +2177,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         // 死亡失效不靠持久 chainId 猜身体代次；先撤本次在飞生存计划，再走原死亡恢复。
         RddRuntime survivalRuntime = RUNTIMES.get(companionId);
         RddReplanTransition.onDeath(companionId, survivalRuntime == null ? null : survivalRuntime.chain(),
-                () -> CALLBACKS.replace(companionId));
+                () -> replacePlanningTicket(companionId));
         // F2：任何写台账之前先恢复磁盘上的旧账（顺序反了会用旧账覆盖本次记录）
         ensureLedgerLoaded(companionId);
         try {
@@ -2432,6 +2821,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
      */
     static void useFactsDirForTest(Path directory) {
         factsDir = directory;
+        RddHomeAnchor.bind(directory);   // 同一个 facts 目录：家锚点必须在任何 clear() 之前绑定
         FACTS.clear();
     }
 
@@ -2629,6 +3019,11 @@ private static String safeDeathAttacker(NumenPlayer body) {
         }
     }
 
+    static void rememberYieldBody(UUID companionId, String subtaskId, TaskChain chain, Object binding, String result) {
+        if (companionId != null && subtaskId != null)
+            BODY.put(companionId, new BodyState(subtaskId, 1, chain, binding, result == null ? "UNKNOWN" : result));
+    }
+
     public static void clearBody(UUID companionId) {
         if (companionId != null) BODY.remove(companionId);
     }
@@ -2719,11 +3114,12 @@ private static String safeDeathAttacker(NumenPlayer body) {
         if (tasksDir == null || assetsDir == null || factsDir == null)
             throw new IllegalStateException("reset stores unavailable");
         Files.createDirectories(factsDir); // Check the boundary store before clearing the body.
+        if (RddHomeAnchor.DIR == null) RddHomeAnchor.bind(factsDir); // precondition before any side effect
         CompletedFactStore completedFacts = facts(id);
         var stop = com.dwinovo.numen.agent.tool.ToolRegistry.get("task_stop");
         if (stop == null) throw new IllegalStateException("body stop unavailable; reset refused");
         stop.onServerCall("external-reset-" + id, new com.google.gson.JsonObject(), body, r -> { });
-        CALLBACKS.replace(id); // invalidate old asynchronous planner callbacks before clearing
+        replacePlanningTicket(id); // invalidate old asynchronous planner callbacks before clearing
         removeCurrent(id);
         if (RUNTIMES.containsKey(id) || java.nio.file.Files.exists(tasksDir.resolve(id + ".json")))
             throw new IllegalStateException("task removal incomplete; reset stopped");
@@ -2762,7 +3158,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
 
     public static void remove(UUID companionId) {
         if (companionId == null) return;
-        RddCallbackGuard.Ticket ticket = CALLBACKS.replace(companionId);
+        RddCallbackGuard.Ticket ticket = replacePlanningTicket(companionId);
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
         if (server != null) onServer(server, ticket, () -> removeCurrent(companionId));
     }
@@ -2800,6 +3196,22 @@ private static String safeDeathAttacker(NumenPlayer body) {
         }
     }
 
+    /** Invalidation must settle the captured pending review even when its guarded callback is dropped. */
+    private static RddCallbackGuard.Ticket replacePlanningTicket(UUID companionId) {
+        return replacePlanningTicket(companionId, null);
+    }
+    private static RddCallbackGuard.Ticket replacePlanningTicket(UUID companionId,
+                                                                 RddNegotiationInbox.ReviewTicket keepReview) {
+        var expected = RddNegotiationInbox.requestedReview(companionId);
+        var next = CALLBACKS.replace(companionId);
+        if (expected != null && expected != keepReview) {
+            RddNegotiationInbox.deferReview(companionId, expected, null,
+                    "planning callback invalidated before review could settle",
+                    "current owner re-observes after lifecycle change and explicitly requests with new evidence");
+        }
+        return next;
+    }
+
     static RddCallbackGuard.Ticket planningTicket(UUID companionId) {
         return CALLBACKS.current(companionId);
     }
@@ -2821,6 +3233,15 @@ private static String safeDeathAttacker(NumenPlayer body) {
         } catch (RuntimeException e) {
             return "";
         }
+    }
+
+    static void onServer(MinecraftServer server, RddCallbackGuard.Ticket ticket,
+                         Runnable callback, Runnable discarded) {
+        CALLBACKS.dispatch(ticket, action -> {
+            if (server.isSameThread()) action.run(); else server.execute(action);
+        }, () -> {
+            if (ServerLifecycleHooks.getCurrentServer() == server) callback.run(); else discarded.run();
+        }, discarded);
     }
 
     /** Revalidate on the original server: an old world's completion never enters a new world. */

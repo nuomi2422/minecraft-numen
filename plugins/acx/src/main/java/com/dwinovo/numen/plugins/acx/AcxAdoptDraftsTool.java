@@ -53,7 +53,6 @@ final class AcxAdoptDraftsTool implements NumenTool {
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion,
                              Consumer<String> reply) {
-        plugin.bindCompanion(companion);
         try {
             // 强制初始化：采纳口是 ensureReady 里建的，没 ready 就等于没有采纳口。
             // 失败在这里如实回执，不静默返回「0 条」。

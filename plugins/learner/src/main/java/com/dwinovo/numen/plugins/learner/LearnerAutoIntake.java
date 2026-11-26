@@ -308,6 +308,9 @@ final class LearnerAutoIntake {
     static void onServerTick(long gameTimeTicks, java.util.function.Supplier<DeliveryScope> currentScope) {
         try {
             if (configDirCache == null || !maybeReloadToggle()) return;
+            // 2026-11-22：总闸关 → 自动入队/复盘提醒/兜底复盘全停（省 LLM 钱）。
+            LearnerSwitch.reloadIfDue(configDirCache);
+            if (!LearnerSwitch.enabled()) return;
             if (!enabled) return;
             if (gameTimeTicks <= 0 || gameTimeTicks % SCAN_INTERVAL_TICKS != 0) return;
             scanOnce(currentScope);
@@ -551,7 +554,7 @@ final class LearnerAutoIntake {
                 int remaining = MAX_ENQUEUE_PER_SCAN - enqueuedBy.getOrDefault(owner, 0);
                 if (remaining <= 0) continue;
                 try {
-                    SkillDeliveryIntake.Scan result = SkillDeliveryIntake.runWithTaskResults(snapshot.rows(), current.forOwner(owner),
+                    SkillDeliveryIntake.Scan result = SkillDeliveryIntake.runWithTaskResults(snapshot, snapshot.rows(), current.forOwner(owner),
                             queueResolver.apply(owner), journal, StormGuard::admitIfEnqueued,
                             System.currentTimeMillis(), remaining);
                     // 每 owner 在末段只 run 一次；核按物理新增限额，宿主成功数仍只计持久成功。

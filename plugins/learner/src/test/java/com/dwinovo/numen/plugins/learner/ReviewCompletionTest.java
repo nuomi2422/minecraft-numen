@@ -452,9 +452,16 @@ class ReviewCompletionTest {
     private static Memo ordinaryWithEvidence(String id) {
         return new Memo(id, "body revision", "learning", "revised derivation only", "", 1L, "learning", List.of(EVENT));
     }
-    private static Memo withEvidence(Memo original) {
-        return new Memo(original.id(), original.problem(), original.stage(), original.tried(), original.snapshot(),
-                original.createdAt(), original.category(), List.of(EVENT));
+    private static Memo withOriginalTaskEvidence(ReviewTargetGateTest.SkillFixture fixture) throws Exception {
+        Memo sample = fixture.sample("skill_task_result", true);
+        try (AsyncJournalFixture journal = new AsyncJournalFixture(fixture.dir)) {
+            OriginalAsyncJournalProducer.publish(fixture.owner, fixture.finished);
+            journal.barrier();
+            Memo original = SkillDeliveryIntake.withTaskResultEvidence(fixture.dir, fixture.owner, sample);
+            assertEquals(1, original.evidence().size(), "self-revision requires the original task's persisted event");
+            assertTrue(EvidenceJournal.unresolved(fixture.dir.resolve("monitor"), original.evidence()).isEmpty());
+            return original;
+        }
     }
     private static MemoQueue pending(Path dir, Memo... memos) {
         MemoQueue q = new MemoQueue(dir.resolve("sequential-review.json"));
@@ -522,9 +529,67 @@ class ReviewCompletionTest {
                 () -> assertTrue(done.judged().isEmpty()), () -> assertTrue(done.verdicts().isEmpty()),
                 () -> assertEquals(0, done.settlement().committed()), () -> restoredOriginal(q, sample));
     }
+    @Test void revisedSkillFromActualCompletionCanBeSelectedAndReturnsItsOwnReceiptForReview(@TempDir Path dir) throws Exception {
+        var fixture = seeded(dir, "adoption return path");
+        Memo original = ordinaryWithEvidence("original-learning-memo");
+        MemoQueue originalQueue = pending(dir, original);
+        var batch = originalQueue.drain(3);
+        var completed = consume(current(dir, batch), dir, originalQueue, batch,
+                write(original.id(), "adoption return path", "new derivation adopted later"));
+        assertEquals(1, completed.settlement().committed());
+        var selected = SkillRegistry.open(dir.resolve("skills.jsonl")).get(fixture.skill).orElseThrow();
+        assertEquals(2, selected.version());
+        assertTrue(selected.foundingSamples().contains(original.id()), "new artifact retains its original learning memo");
+        String originalBody = SkillBodyStore.read(dir, selected.bodyRef());
+        UsageLedger ledger = new UsageLedger(dir);
+        LearnerUsageTool.TaskAccess host = new LearnerUsageTool.TaskAccess() {
+            public UUID ownerId() { return B; }
+            public UUID companionId() { return A; }
+            public WorldContextStamp.Token identity() { return STABLE; }
+            public com.dwinovo.numen.task.TaskRecord current() { return null; }
+            public com.dwinovo.numen.task.TaskRecord finished(String id) { return null; }
+        };
+        var tool = new LearnerUsageTool(dir, ledger, host);
+        var args = new com.google.gson.JsonObject();
+        args.addProperty("action", "adopt_sync_skill"); args.addProperty("skill_ref", "skill:" + selected.skillId());
+        args.addProperty("version", "v2"); args.addProperty("target_tool", "craft");
+        AtomicReference<String> reply = new AtomicReference<>();
+        tool.onServerCall("actual-revised-adoption", args, null, reply::set);
+        var response = com.google.gson.JsonParser.parseString(reply.get()).getAsJsonObject();
+        assertTrue(response.get("success").getAsBoolean(), response.toString());
+        assertEquals(originalBody, response.getAsJsonObject("data").get("body").getAsString());
+        String id = response.getAsJsonObject("data").get("selection_id").getAsString();
+        var correlation = SyncSkillFeedback.INSTANCE;
+        assertEquals(com.dwinovo.numen.api.SyncSkillCorrelation.Binding.BOUND,
+                correlation.bind(id, B, A, STABLE, "adopted-revision-wire", "craft"));
+        correlation.receipt(id, B, A, STABLE, "adopted-revision-wire", "craft", com.dwinovo.numen.api.SyncSkillCorrelation.Receipt.SUCCESS);
+        assertEquals(1, ledger.all().size());
+        var receipt = ledger.all().getFirst();
+        assertEquals(UsageLedger.EvidenceLevel.NONE, receipt.evidence());
+        var fact = new SyncSkillFeedback().confirm(new UsageLedger(dir), receipt);
+        assertNotNull(fact);
+        assertEquals("v2", fact.version()); assertEquals(selected.bodyRef(), fact.bodyRef());
+        MemoQueue reviewQueue = new MemoQueue(dir.resolve("adopted-revision-review.json"));
+        Set<String> seen = new HashSet<>();
+        var journal = new SkillDeliveryIntake.EnqueuedJournal() {
+            public boolean contains(String key) { return seen.contains(key); }
+            public void remember(String key) { seen.add(key); }
+        };
+        var scope = new SkillDeliveryIntake.Scope(STABLE.identity().get("world_id"), "later-review", 10, A.toString());
+        assertEquals(1, SkillDeliveryIntake.runWithTaskResults(ledger, ledger.all(), scope, reviewQueue, journal,
+                (c, f, n, once) -> once.getAsBoolean(), 1, 16).enqueued());
+        Memo returned = reviewQueue.all().getFirst();
+        assertEquals(receipt, SkillDeliveryIntake.syncEntryFromSnapshot(returned.snapshot()));
+        String input = TrajectorySlices.forMemo(dir, A, returned);
+        assertTrue(input.contains(originalBody)); assertTrue(input.contains("adopted-revision-wire"));
+        assertTrue(input.contains("evidence=NONE"));
+        assertTrue(ReviewTargetGate.check(dir, A, returned, STABLE, STABLE).ok());
+        assertTrue(SkillRegistry.open(dir.resolve("skills.jsonl")).get(selected.skillId()).orElseThrow().foundingSamples().contains(original.id()));
+    }
+
     @Test void aCurrentSampleMayLegallyReviseItsOwnTargetExactlyOnce(@TempDir Path dir) throws Exception {
         var f = seeded(dir, "self revision");
-        Memo sample = withEvidence(f.sample("skill_task_result"));
+        Memo sample = withOriginalTaskEvidence(f);
         MemoQueue q = pending(dir, sample); var batch = q.drain(2); var c = current(dir, batch);
         var done = consume(c, dir, q, batch, write(sample.id(), "self revision", "own legal body B"));
         assertRevision(f, 2, "own legal body B");
@@ -576,7 +641,7 @@ class ReviewCompletionTest {
                 () -> assertEquals(1, SkillRegistry.open(dir.resolve("skills.jsonl")).get(f.skill).orElseThrow().version()));
     }
     @Test void duplicateVerdictCannotReplayOrInvalidateTheFirstSuccessfulSelfRevision(@TempDir Path dir) throws Exception {
-        var f = seeded(dir, "duplicate target"); Memo sample = withEvidence(f.sample("skill_task_result"));
+        var f = seeded(dir, "duplicate target"); Memo sample = withOriginalTaskEvidence(f);
         MemoQueue q = pending(dir, sample); var batch = q.drain(2); var c = current(dir, batch);
         Verdict v = write(sample.id(), "duplicate target", "single body B");
         var done = consume(c, dir, q, batch, v, v);

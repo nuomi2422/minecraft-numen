@@ -42,16 +42,24 @@ final class RddHomeFacts {
     }
 
     static String blockFor(AssetRegistry registry, Map<String, Integer> inventory, long nowMillis) {
-        // TC-RESERVE-01：选家与新鲜度只做一次，下面每一行都从这一份视图派生。
-        HomeView view = HomeView.of(registry, nowMillis);
+        return blockFor(registry, inventory, nowMillis, null);
+    }
+
+    static String blockFor(AssetRegistry registry, Map<String, Integer> inventory, long nowMillis,
+                           com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
+        return blockFor(registry, inventory, nowMillis, identity, RESPX.get(), RESPY.get(), RESPZ.get(), null);
+    }
+
+    static String blockFor(AssetRegistry registry, Map<String, Integer> inventory, long nowMillis,
+                           com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity, Integer x, Integer y, Integer z, String dimension) {
+        // TC-RESERVE-01: all consumers derive from the same identity-checked view.
+        HomeView view = HomeView.of(registry, nowMillis, identity, x, y, z, dimension);
         if (view.base() == null) {
-            // 没观测到基地不等于没有基地：只报 NO_HOME，并明确 reserve 未知（不写 0）。
-            return HomeSummary.block(HomeSummary.lines(HomeStage.NO_HOME, null, null, null, null,
-                    HomeReserve.unobserved(), null, null, nowMillis));
+            return unobservedBaseBlock(nowMillis, identity, x, y, z, dimension);
         }
         Map<String, Object> v = view.value();
         long asOf = view.asOf();
-        String dimension = String.valueOf(v.getOrDefault("dimension", "unknown"));
+        String observedDimension = String.valueOf(v.getOrDefault("dimension", "unknown"));
         String pos = v.get("x") + " " + v.get("y") + " " + v.get("z");
 
         HomeReserve reserve = view.reserve();
@@ -92,7 +100,7 @@ final class RddHomeFacts {
         }
         List<String> lines = new java.util.ArrayList<>(HomeSummary.lines(stage,
                 String.valueOf(v.getOrDefault("label", view.base().assetId())),
-                dimension, pos, asOf,
+                observedDimension, pos, asOf,
                 shown,
                 blocking, next, nowMillis));
         // 2026-11-01：把「箱子里缺什么」和「背包里有什么」合起来给一句可执行建议——
@@ -105,6 +113,36 @@ final class RddHomeFacts {
             String stale = staleBaseLine(registry, v, asOf, nowMillis);
             if (!stale.isBlank()) lines.add(stale);
         }
+        return HomeSummary.block(lines);
+    }
+
+    /**
+     * 没有可归因的 {@code world_base} 观测时的摘要（2026-11-25 实机 false UNBOUND）。
+     *
+     * <p>原来这里固定写 {@code HomeSummary.lines(NO_HOME, null, null, ...)}，把「没观测到基地」
+     * 直接渲染成 {@code home_stage=NO_HOME + respawn=UNBOUND}。实机 07:22 真睡绑定、服务端
+     * {@code getRespawnPosition} 一直是 bound，模型/规划因此去造新床。现在只按已有事实分两种：
+     * <ul><li>身份校验通过且带当前 raw 绑定坐标：声明绑定（RESPAWN_BOUND），但床区可用性与备用
+     * 都写 UNKNOWN——raw 绑定不等于床还可用；</li>
+     * <li>没有可归因的 raw 绑定：写 UNKNOWN。无法区分「真没绑」和「没观测到」时，不推断成 UNBOUND。</li></ul>
+     */
+    private static String unobservedBaseBlock(long nowMillis,
+                                              com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity,
+                                              Integer x, Integer y, Integer z, String dimension) {
+        boolean captured = x != null && y != null && z != null && identity != null
+                && knownIdentity(identity.worldId()) && knownIdentity(identity.serverSession())
+                && knownIdentity(dimension);
+        if (!captured) {
+            List<String> lines = new java.util.ArrayList<>(4);
+            lines.add("home_stage=UNKNOWN");
+            lines.add("home_facility=UNKNOWN");
+            lines.add("respawn=UNKNOWN");
+            lines.add(HomeStage.describe(Map.of(), false));
+            return HomeSummary.block(lines);
+        }
+        List<String> lines = new java.util.ArrayList<>(HomeSummary.lines(HomeStage.RESPAWN_BOUND, null,
+                dimension, x + " " + y + " " + z, null, HomeReserve.unobserved(), null, null, nowMillis));
+        lines.add("base_usability=UNKNOWN");
         return HomeSummary.block(lines);
     }
 
@@ -147,7 +185,15 @@ final class RddHomeFacts {
                     boolean houseUsable, HomeReserve reserve, HomeStage stage) {
 
         static HomeView of(AssetRegistry registry, long nowMillis) {
-            AssetRegistry.AssetEntry base = freshestBase(registry);
+            return of(registry, nowMillis, null);
+        }
+
+        static HomeView of(AssetRegistry registry, long nowMillis, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
+            return of(registry, nowMillis, identity, RESPX.get(), RESPY.get(), RESPZ.get(), null);
+        }
+
+        static HomeView of(AssetRegistry registry, long nowMillis, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity, Integer x, Integer y, Integer z, String dimension) {
+            AssetRegistry.AssetEntry base = freshestBase(registry, identity, x, y, z, dimension);
             if (base == null) {
                 return new HomeView(null, Map.of(), 0L, false, HomeReserve.unobserved(), HomeStage.NO_HOME);
             }
@@ -165,8 +211,13 @@ final class RddHomeFacts {
         if (!(rawItems instanceof Map<?, ?> m)) return null;
         Map<String, Integer> out = new LinkedHashMap<>();
         for (var e : m.entrySet()) {
-            if (!(e.getValue() instanceof Number n)) continue;
-            out.put(String.valueOf(e.getKey()), n.intValue());
+            // A partial decode is not evidence of an empty or partially stocked box.
+            if (!(e.getKey() instanceof String key) || key.isBlank()
+                    || !(e.getValue() instanceof Number n)) return null;
+            double count = n.doubleValue();
+            if (!Double.isFinite(count) || count < 0 || count > Integer.MAX_VALUE
+                    || count != Math.rint(count)) return null;
+            out.put(key, (int) count);
         }
         return out;
     }
@@ -187,11 +238,17 @@ final class RddHomeFacts {
      * 原来按「最新一条」取，经常拿到别的床旁边那个空箱子 → 上下文一直显示没有备用，
      * 而 1554 条观测里其实有铁镐。改成优先按**当前重生点**挑（{@link BaseSelector}）。
      */
-    private static AssetRegistry.AssetEntry freshestBase(AssetRegistry registry) {
-        if (registry == null) return null;
+    private static AssetRegistry.AssetEntry freshestBase(AssetRegistry registry, com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity, Integer x, Integer y, Integer z, String dimension) {
+        if (registry == null || identity == null || !knownIdentity(identity.worldId()) || !knownIdentity(identity.serverSession())
+                || x == null || y == null || z == null || !knownIdentity(dimension)) return null;
         java.util.List<AssetRegistry.AssetEntry> bases = new java.util.ArrayList<>();
         for (var e : RddAssetContext.worldAssets(registry)) {
             if (!"base".equals(String.valueOf(e.observation().value().get("kind")))) continue;
+            var v = e.observation().value();
+            if (e.status() != com.dwinovo.numen.rdd.api.AssetStatus.OBSERVED
+                    || !identity.worldId().equals(v.get("world_id"))
+                    || !identity.serverSession().equals(v.get("server_session"))
+                    || !dimension.equals(v.get("dimension"))) continue;
             bases.add(e);
         }
         if (bases.isEmpty()) return null;
@@ -201,8 +258,16 @@ final class RddHomeFacts {
             cands.add(new com.dwinovo.numen.rdd.core.BaseSelector.Candidate(
                     num(v.get("x")), num(v.get("y")), num(v.get("z")), e.observation().observedAt()));
         }
-        int idx = com.dwinovo.numen.rdd.core.BaseSelector.pick(cands, RESPX.get(), RESPY.get(), RESPZ.get());
-        return idx < 0 ? null : bases.get(idx);
+        int idx = com.dwinovo.numen.rdd.core.BaseSelector.pick(cands, x, y, z);
+        if (idx < 0) return null;
+        var chosen = cands.get(idx);
+        long dx = (long) chosen.x() - x, dy = (long) chosen.y() - y, dz = (long) chosen.z() - z;
+        double radius = com.dwinovo.numen.rdd.core.BaseSelector.DEFAULT_RADIUS;
+        return dx * (double) dx + dy * (double) dy + dz * (double) dz <= radius * radius ? bases.get(idx) : null;
+    }
+
+    private static boolean knownIdentity(String s) {
+        return s != null && !s.isBlank() && !s.equalsIgnoreCase("unknown") && !s.startsWith("unknown-");
     }
 
     /**

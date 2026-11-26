@@ -10,6 +10,7 @@ import net.minecraft.core.BlockPos;
 
 import static com.dwinovo.numen.core.pathing.astar.AstarTestSupport.NEVER_GOAL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -19,13 +20,25 @@ class BestSoFarSelectionTest {
     /** calculate0 空转的测试搜索器,直接摆弄七档数组。 */
     private static final class TestSearch extends AbstractNodeCostSearch {
 
+        private final PathCalcResult.StopReason reason;
+
         TestSearch(int startX, int startY, int startZ, Goal goal) {
+            this(startX, startY, startZ, goal, PathCalcResult.StopReason.UNKNOWN);
+        }
+
+        TestSearch(int startX, int startY, int startZ, Goal goal, PathCalcResult.StopReason reason) {
             super(new BlockPos(startX, startY, startZ), startX, startY, startZ, goal, null);
+            this.reason = reason;
         }
 
         @Override
         protected Optional<NavPath> calculate0(long primaryTimeout, long failureTimeout) {
             return Optional.empty();
+        }
+
+        @Override
+        protected PathCalcResult.StopReason stopReason() {
+            return reason;
         }
     }
 
@@ -117,6 +130,44 @@ class BestSoFarSelectionTest {
             }
         };
         assertThrows(IllegalStateException.class, () -> new PathNode(0, 64, 0, nanGoal));
+    }
+
+    @Test
+    void failedCalculateCarriesTheRealStopReason() {
+        TestSearch search = new TestSearch(0, 64, 0, NEVER_GOAL, PathCalcResult.StopReason.TIMEOUT);
+        PathCalcResult result = search.calculate(100, 200);
+        assertEquals(PathCalcResult.Type.FAILURE, result.getType());
+        assertEquals(PathCalcResult.StopReason.TIMEOUT, result.getStopReason());
+    }
+
+    @Test
+    void stopReasonDefaultsToUnknownAndDoesNotLeakBetweenSearches() {
+        TestSearch timedOut = new TestSearch(0, 64, 0, NEVER_GOAL, PathCalcResult.StopReason.TIMEOUT);
+        TestSearch fresh = new TestSearch(0, 64, 0, NEVER_GOAL);
+        assertEquals(PathCalcResult.StopReason.TIMEOUT, timedOut.calculate(100, 200).getStopReason());
+        assertEquals(PathCalcResult.StopReason.UNKNOWN, fresh.calculate(100, 200).getStopReason());
+    }
+
+    @Test
+    void classifyStopMatchesTheRealLoopExits() {
+        assertEquals(PathCalcResult.StopReason.NODE_CAP,
+                AStarPathFinder.classifyStop(false, 10, 10, 0, 50, false));
+        assertEquals(PathCalcResult.StopReason.CHUNK_BORDER,
+                AStarPathFinder.classifyStop(false, 9, 10, 50, 50, false));
+        assertEquals(PathCalcResult.StopReason.EXHAUSTED,
+                AStarPathFinder.classifyStop(false, 9, 10, 0, 50, true));
+        assertEquals(PathCalcResult.StopReason.TIMEOUT,
+                AStarPathFinder.classifyStop(false, 9, 10, 0, 50, false));
+        assertEquals(PathCalcResult.StopReason.UNKNOWN,
+                AStarPathFinder.classifyStop(true, 9, 10, 0, 50, false));
+    }
+
+    @Test
+    void unknownIsHonestInsteadOfTheOldBudgetSentence() {
+        String unknown = PathCalcResult.StopReason.UNKNOWN.describe().toLowerCase();
+        assertFalse(unknown.contains("burned"));
+        assertTrue(unknown.contains("unknown"));
+        assertTrue(PathCalcResult.StopReason.TIMEOUT.describe().toLowerCase().contains("time"));
     }
 
     @Test

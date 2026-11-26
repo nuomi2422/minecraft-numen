@@ -6,8 +6,10 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 
+import com.dwinovo.numen.acx.api.AcxBodyAction;
 import com.dwinovo.numen.acx.api.AcxCompletionProbe;
 import com.dwinovo.numen.acx.api.AcxPortSchema;
+import com.dwinovo.numen.acx.api.AcxStatus;
 import com.dwinovo.numen.acx.api.AcxStepOutcome;
 import com.dwinovo.numen.acx.api.AcxTool;
 import com.dwinovo.numen.acx.api.AcxToolPort;
@@ -17,10 +19,10 @@ import com.dwinovo.numen.acx.api.AcxToolSchema;
  * 把 {@link AcxToolPort} 适配成引擎积木。
  *
  * <p><b>受理账本</b>：ACCEPTED 不是 SUCCESS，而是 PAUSED + 挂账。
- * 挂账键 = {@code 顶层AC名|stepId} —— <b>不能拿 runId 当键</b>：
- * resume 每次 {@code runFrom} 都会生成新 runId，用 runId 会永远对不上，
- * 于是 resume 变成「重发一遍命令」。params 变了就丢旧账重新发起
- * （同一 AC 同一 step 换了目标，旧任务与新目标无关）。</p>
+ * 挂账按 runId、定义指纹和结构调用位置隔离；显式 resume 保留同一身份。
+ * 已派发但未确认回包时，同一槽先查原回包句柄；没有真实 taskId，不能查完成探针。
+ * 已确认的成功或将被忽略的迟到失败保留在原挂账中，直到执行器提交恢复位置。
+ * 旧直接调用未启用延后消费时仍按原契约即时销账。</p>
  *
  * <p><b>完成两条路</b>：拉（{@link AcxCompletionProbe} 每次 resume 查一次）/
  * 推（宿主收 task_finished 后调 {@link #markCompleted} / {@link #markFailed}）。</p>
@@ -39,19 +41,69 @@ public final class PortToolAdapter implements AcxTool {
     private final AcxCompletionProbe probe;
     private final AcxToolSchema toolSchema;
     private final LongSupplier clock;
-    private final Map<String, Acceptance> pendingByStep = new ConcurrentHashMap<>();
+    private final boolean awaitAccepted;
+    private final Map<CallKey, Acceptance> pendingByStep = new ConcurrentHashMap<>();
     private final Map<String, AcxToolPort.Result> pushedByTask = new ConcurrentHashMap<>();
     /** 每个挂账键首次 UNKNOWN 的时刻；只用于「不能判断」的宽限计时。 */
-    private final Map<String, Long> unknownSince = new ConcurrentHashMap<>();
+    private final Map<CallKey, Long> unknownSince = new ConcurrentHashMap<>();
+
+    private record CallKey(String runId, String fingerprint, String acName, String path) { }
 
     private record Acceptance(String taskId, boolean standing, String paramsSignature,
-                              Map<String, Object> data) { }
+                              Map<String, Object> data, AcxStepOutcome terminal,
+                              AcxToolPort.ReplyReceipt reply, AcxBodyAction.Ref bodyAction) {
+        Acceptance withTerminal(AcxStepOutcome result) {
+            return new Acceptance(taskId, standing, paramsSignature, data, result, null, bodyAction);
+        }
+    }
 
-    private PortToolAdapter(AcxToolPort port, AcxCompletionProbe probe, LongSupplier clock) {
+    private static CallKey callKey(AcxCallContext ctx) {
+        if (ctx == null) return new CallKey("", "", "", "");
+        String path = ctx.invocationPath();
+        if (path.isEmpty()) path = ctx.stepId() + "|" + ctx.loopIter();
+        return new CallKey(ctx.runId(), ctx.definitionFingerprint(), ctx.acName(), path);
+    }
+
+    @Override
+    public void checkpointCommitted(AcxCallContext ctx) {
+        consumeCompletedScope(ctx);
+    }
+
+    @Override
+    public void recoveryPositionCommitted(AcxCallContext ctx) {
+        consumeCompletedScope(ctx);
+    }
+
+    private void consumeCompletedScope(AcxCallContext ctx) {
+        CallKey scope = callKey(ctx);
+        pendingByStep.entrySet().removeIf(entry -> {
+            CallKey key = entry.getKey();
+            boolean consumed = key.runId().equals(scope.runId())
+                    && key.fingerprint().equals(scope.fingerprint())
+                    && key.acName().equals(scope.acName())
+                    && key.path().startsWith(scope.path()) && entry.getValue().terminal() != null;
+            if (consumed) unknownSince.remove(key);
+            return consumed;
+        });
+    }
+
+    @Override
+    public void discardRunReceipts(String runId) {
+        pendingByStep.entrySet().removeIf(entry -> {
+            CallKey key = entry.getKey();
+            if (!key.runId().equals(runId)) return false;
+            unknownSince.remove(key);
+            pushedByTask.remove(entry.getValue().taskId());
+            return true;
+        });
+    }
+
+    private PortToolAdapter(AcxToolPort port, AcxCompletionProbe probe, LongSupplier clock, boolean awaitAccepted) {
         this.port = port;
         this.probe = probe;
         this.toolSchema = toToolSchema(port.schema());
         this.clock = clock == null ? System::currentTimeMillis : clock;
+        this.awaitAccepted = awaitAccepted;
     }
 
     public static Builder builder(AcxToolPort port) {
@@ -72,13 +124,56 @@ public final class PortToolAdapter implements AcxTool {
         return toolSchema;
     }
 
+    private AcxStepOutcome cancelledBeforeDispatch() {
+        return AcxStepOutcome.paused(name() + " 看到取消请求，未发起调用",
+                Map.of("_accepted", false, "_pause_reason", "cancel_requested"));
+    }
+
     @Override
     public AcxStepOutcome execute(Map<String, Object> params, AcxCallContext ctx) {
+        AcxStepOutcome outcome = executeOnce(params, ctx);
+        if (!awaitAccepted || ctx == null) return outcome;
+        // This is the original run worker, not a server-thread loop or another resume attempt.
+        // Only read the original receipt. Guard, body-busy, standing and unknown are not waits.
+        CallKey key = callKey(ctx);
+        while (outcome != null && outcome.status() == AcxStatus.PAUSED
+                && java.util.Set.of("async_accepted", "host_reply_pending", "body_active")
+                        .contains(outcome.output().get("_pause_reason"))) {
+            if (ctx.isCancelRequested()) return AcxStepOutcome.paused(
+                    "原运行取消或预算已到，保留原受理回执且不重发", Map.of("_pause_reason", "await_cancelled", "_accepted", true));
+            Acceptance original = pendingByStep.get(key);
+            if (original == null) return outcome; // a retired owner cannot recreate a dispatch
+            if (original.standing() || (original.reply() == null && original.taskId().isEmpty())) return outcome;
+            if (original.reply() == null && original.bodyAction() == null && probe == null
+                    && !pushedByTask.containsKey(original.taskId())) return outcome;
+            try { Thread.sleep(50L); }
+            catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return AcxStepOutcome.paused("原异步等待被中断，保留回执", Map.of("_pause_reason", "await_interrupted"));
+            }
+            if (ctx.isCancelRequested()) continue;
+            if (pendingByStep.get(key) != original) return AcxStepOutcome.paused(
+                    "原受理身份已变，不自动续接", Map.of("_pause_reason", "receipt_identity_changed"));
+            outcome = resolvePending(key, original, ctx.defersReceiptConsumption(), ctx);
+        }
+        return outcome;
+    }
+
+    private AcxStepOutcome executeOnce(Map<String, Object> params, AcxCallContext ctx) {
         Map<String, Object> clean = stripControlKeys(params);
 
         if (ctx != null && ctx.isCancelRequested()) {
-            return AcxStepOutcome.paused(name() + " 看到取消请求，未发起调用",
-                    Map.of("_accepted", false, "_pause_reason", "cancel_requested"));
+            return cancelledBeforeDispatch();
+        }
+
+        CallKey key = callKey(ctx);
+        boolean defer = ctx != null && ctx.defersReceiptConsumption();
+        Acceptance acc = pendingByStep.get(key);
+        // Resolve an original reply/body before validating arguments: this does not dispatch.
+        // On resume the old $prev value may no longer be visible at the checkpoint.
+        if (acc != null && (acc.reply() != null || acc.bodyAction() != null
+                || (ctx != null && ctx.isResuming()))) {
+            return resolvePending(key, acc, defer, ctx);
         }
 
         List<String> errors = port.schema().validate(clean);
@@ -86,43 +181,49 @@ public final class PortToolAdapter implements AcxTool {
             return AcxStepOutcome.failed(name() + " 参数校验失败: " + String.join("; ", errors));
         }
 
-        // ═══ AC-B12b（2026-10-21）：挂账键**必须带迭代号** ═══
-        // 修前键 = `AC名|stepId`。for 体里的异步步每轮都是同一个 stepId、不同参数 → 同键；
-        // 再叠加「resume 时跳过参数签名校验」，第 2 轮就命中了第 1 轮的账 → 不发任务却 settle 成
-        // SUCCESS → AC 报成功而身体没动（V-20261021-09）。迭代号把「同一步骤的第几轮」分开，
-        // 而「同一步骤换参数（不在循环里）」仍交给下面的签名校验处理。
         String signature = String.valueOf(clean);
-        String key = (ctx == null ? "" : ctx.acName()) + "|" + (ctx == null ? "" : ctx.stepId())
-                + "|" + (ctx == null ? 0 : ctx.loopIter());
-        Acceptance acc = pendingByStep.get(key);
-        boolean resuming = ctx != null && ctx.isResuming();
-        if (acc != null && !acc.paramsSignature().equals(signature) && !resuming) {
+        if (acc != null && !acc.paramsSignature().equals(signature)) {
             // 同一 AC 同一步骤（同一迭代）换了参数 = 换目标：旧任务的账不能算在新目标头上。
-            // resume 例外保留：断点续跑时 $prev 引用解析不出来（保留字面串），这不代表换了目标。
             pendingByStep.remove(key);
             unknownSince.remove(key);
             acc = null;
         }
         if (acc != null) {
-            return resolvePending(key, acc);
+            return resolvePending(key, acc, defer, ctx);
         }
 
         AcxToolPort.Result r;
         try {
-            r = port.invoke(clean);
+            r = port.invoke(clean, ctx);
+        } catch (AcxToolPort.CancelledBeforeDispatchException e) {
+            return cancelledBeforeDispatch();
+        } catch (AcxToolPort.ReplyPendingAfterDispatchException e) {
+            pendingByStep.put(key, new Acceptance("", false, signature, Map.of(), null, e.receipt(), null));
+            return waitingForReply();
         } catch (Throwable t) {
             return AcxStepOutcome.failed(name() + " 执行异常: " + t);
         }
         if (r == null) {
             return AcxStepOutcome.failed(name() + " 返回 null（端口契约违规）");
         }
+        return applyDispatchResult(key, signature, r, defer);
+    }
+
+    private AcxStepOutcome applyDispatchResult(CallKey key, String signature, AcxToolPort.Result r, boolean defer) {
         switch (r.outcome()) {
-            case COMPLETED:
-                return AcxStepOutcome.success(r.data(), r.message());
+            case COMPLETED: {
+                AcxStepOutcome done = AcxStepOutcome.success(r.data(), r.message());
+                if (defer) pendingByStep.put(key,
+                        new Acceptance("", false, signature, r.data(), done, null, null));
+                return done;
+            }
+            case BODY_BUSY:
+                return AcxStepOutcome.paused(r.message(), Map.of("_pause_reason", "body_busy",
+                        "_accepted", false, "blocking_task_id", String.valueOf(r.data().getOrDefault("blocking_task_id", ""))));
             case FAILED:
                 return AcxStepOutcome.failed(name() + " 失败: " + r.message());
             case ACCEPTED: {
-                Acceptance fresh = new Acceptance(r.taskId(), r.standing(), signature, r.data());
+                Acceptance fresh = new Acceptance(r.taskId(), r.standing(), signature, r.data(), null, null, r.bodyAction());
                 pendingByStep.put(key, fresh);
                 unknownSince.remove(key);
                 return AcxStepOutcome.paused(acceptMessage(r), acceptedOutput(fresh, r.standing()));
@@ -132,13 +233,40 @@ public final class PortToolAdapter implements AcxTool {
         }
     }
 
-    private AcxStepOutcome resolvePending(String key, Acceptance acc) {
+    private AcxStepOutcome waitingForReply() {
+        return AcxStepOutcome.paused(name() + " 已离开派发等待，原工具回包尚未确认",
+                Map.of("_pause_reason", "host_reply_pending", "_completed", false));
+    }
+
+    private AcxStepOutcome resolvePending(CallKey key, Acceptance acc, boolean defer, AcxCallContext ctx) {
+        if (acc.reply() != null) {
+            AcxToolPort.Result reply;
+            try {
+                reply = acc.reply().poll().orElse(null);
+            } catch (RuntimeException e) {
+                return waitingForReply(); // A lookup error cannot establish that the tool failed.
+            }
+            if (reply == null) return waitingForReply();
+            boolean retainFailure = reply.isFailed() && defer && ctx.defersIgnoredFailureReceiptConsumption();
+            if (reply.outcome() == AcxToolPort.Outcome.BODY_BUSY
+                    || (reply.isFailed() && !retainFailure) || (reply.isCompleted() && !defer)) {
+                pendingByStep.remove(key, acc);
+            }
+            AcxStepOutcome outcome = applyDispatchResult(key, acc.paramsSignature(), reply, defer);
+            if (retainFailure) pendingByStep.replace(key, acc, acc.withTerminal(outcome));
+            return outcome;
+        }
+        if (acc.terminal() != null) {
+            if (!defer && acc.terminal().status() != AcxStatus.PAUSED) {
+                pendingByStep.remove(key, acc);
+            }
+            return acc.terminal();
+        }
+        if (acc.bodyAction() != null) return resolveBodyAction(key, acc, defer, ctx);
         if (!acc.taskId().isEmpty()) {
             AcxToolPort.Result pushed = pushedByTask.remove(acc.taskId());
             if (pushed != null) {
-                pendingByStep.remove(key);
-                unknownSince.remove(key);
-                return settle(acc, pushed);
+                return settled(key, acc, pushed, defer, ctx);
             }
         }
         if (acc.standing()) {
@@ -158,7 +286,7 @@ public final class PortToolAdapter implements AcxTool {
         }
         AcxCompletionProbe.Snapshot s;
         try {
-            s = probe.probe(acc.taskId());
+            s = probe.probe(acc.taskId(), ctx);
         } catch (Throwable t) {
             return AcxStepOutcome.paused(name() + " 完成探针异常（保留挂账，等待重试）",
                     acceptedOutput(acc, false));
@@ -172,19 +300,21 @@ public final class PortToolAdapter implements AcxTool {
                 return AcxStepOutcome.paused(name() + " 异步任务进行中: " + s.message(),
                         acceptedOutput(acc, false));
             case DONE:
-                pendingByStep.remove(key);
-                unknownSince.remove(key);
-                return settle(acc, AcxToolPort.Result.completed(s.data(), s.message()));
+                return settled(key, acc, AcxToolPort.Result.completed(s.data(), s.message()), defer, ctx);
             case FAILED:
-                pendingByStep.remove(key);
-                unknownSince.remove(key);
-                return AcxStepOutcome.failed(name() + " 异步任务失败: " + s.message());
+                return settled(key, acc, AcxToolPort.Result.failed(s.message()), defer, ctx);
             case UNKNOWN: {
                 // B-M2：探针说「不知道」——保留挂账，给 30 秒宽限等宿主补终态；
                 // 超过宽限才按失败删账（避免永久挂起，也避免刚查不到就重发物理动作）。
                 long now = clock.getAsLong();
                 long first = unknownSince.computeIfAbsent(key, k -> now);
                 if (now - first >= COMPLETION_UNKNOWN_TIMEOUT_MS) {
+                    // An unknown terminal is not an ignorable tool failure. Stay behind the
+                    // original receipt until the host confirms what actually happened.
+                    if (defer && ctx.defersIgnoredFailureReceiptConsumption()) {
+                        return AcxStepOutcome.paused(name() + " 完成探针超过宽限仍无法判定（保留原回执）: " + s.message(),
+                                unknownPauseOutput(acc));
+                    }
                     pendingByStep.remove(key);
                     unknownSince.remove(key);
                     return AcxStepOutcome.failed(name() + " 完成探针连续 " + (now - first)
@@ -197,6 +327,51 @@ public final class PortToolAdapter implements AcxTool {
             default:
                 throw new IllegalStateException("未覆盖的探针状态: " + s.state());
         }
+    }
+
+    private AcxStepOutcome resolveBodyAction(CallKey key, Acceptance acc, boolean defer, AcxCallContext ctx) {
+        AcxBodyAction.Snapshot found = null;
+        if (probe != null && acc.taskId().equals(acc.bodyAction().taskId())) {
+            try {
+                found = probe.bodyAction(acc.bodyAction(), ctx);
+            } catch (RuntimeException unavailable) {
+                // Missing evidence stays unknown; the legacy timeout cannot prove release.
+            }
+        }
+        if (found == null || !found.matches(acc.bodyAction())) found = AcxBodyAction.Snapshot.unknown();
+        Map<String, Object> details = new LinkedHashMap<>(acceptedOutput(acc, false));
+        details.put("body_action", found.output());
+        return switch (found.state()) {
+            case DONE -> {
+                Map<String, Object> result = new LinkedHashMap<>(found.data());
+                result.put("body_action", found.output());
+                yield settled(key, acc, AcxToolPort.Result.completed(result, "原身体任务已结算"), defer, ctx);
+            }
+            case FAILED, TIMEOUT -> {
+                details.put("_pause_reason", "body_terminal_reobserve");
+                AcxStepOutcome reobserve = AcxStepOutcome.paused("原身体任务已结算，先重新观察再选动作", details);
+                // Re-entering this checkpoint cannot re-dispatch the original body call.
+                pendingByStep.replace(key, acc, acc.withTerminal(reobserve));
+                yield reobserve;
+            }
+            case UNKNOWN, ACTIVE -> {
+                details.put("_pause_reason", found.state() == AcxBodyAction.State.UNKNOWN
+                        ? "body_terminal_unknown" : "body_active");
+                yield AcxStepOutcome.paused("等待原身体任务终态；进展、路径按原证据回报", details);
+            }
+        };
+    }
+
+    private AcxStepOutcome settled(CallKey key, Acceptance acc, AcxToolPort.Result result,
+                                   boolean defer, AcxCallContext ctx) {
+        unknownSince.remove(key);
+        AcxStepOutcome outcome = settle(acc, result);
+        if (defer && (outcome.isSuccess() || ctx.defersIgnoredFailureReceiptConsumption())) {
+            pendingByStep.replace(key, acc, acc.withTerminal(outcome));
+        } else {
+            pendingByStep.remove(key, acc);
+        }
+        return outcome;
     }
 
     private AcxStepOutcome settle(Acceptance acc, AcxToolPort.Result r) {
@@ -217,6 +392,7 @@ public final class PortToolAdapter implements AcxTool {
         Map<String, Object> out = new LinkedHashMap<>(acc.data());
         out.put("_accepted", true);
         out.put("_completed", false);
+        if (acc.bodyAction() != null) out.put("body_action", AcxBodyAction.Snapshot.unknown().output());
         if (!acc.taskId().isEmpty()) {
             out.put("task_id", acc.taskId());
         }
@@ -243,7 +419,7 @@ public final class PortToolAdapter implements AcxTool {
         return name() + " 已受理，后台执行中: taskId=" + r.taskId();
     }
 
-    /** 宿主收 task_finished(done) 后回调：把受理账销掉。 */
+    /** 宿主收 task_finished(done) 后回调：提供终态，断点提交后再销账。 */
     public void markCompleted(String taskId, Map<String, Object> data) {
         if (taskId != null && !taskId.isBlank()) {
             pushedByTask.put(taskId, AcxToolPort.Result.completed(data, "task_finished: done"));
@@ -307,6 +483,7 @@ public final class PortToolAdapter implements AcxTool {
         private final AcxToolPort port;
         private AcxCompletionProbe probe;
         private LongSupplier clock = System::currentTimeMillis;
+        private boolean awaitAccepted;
 
         private Builder(AcxToolPort port) {
             if (port == null) {
@@ -326,8 +503,11 @@ public final class PortToolAdapter implements AcxTool {
             return this;
         }
 
+        /** Hosted runs await their own confirmed receipts; direct legacy adapters stay manual. */
+        public Builder awaitAccepted(boolean enabled) { this.awaitAccepted = enabled; return this; }
+
         public PortToolAdapter build() {
-            return new PortToolAdapter(port, probe, clock);
+            return new PortToolAdapter(port, probe, clock, awaitAccepted);
         }
     }
 }

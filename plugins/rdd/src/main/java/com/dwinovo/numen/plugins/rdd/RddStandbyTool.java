@@ -27,6 +27,9 @@ final class RddStandbyTool implements NumenTool {
 
     @Override public String name() { return "rdd_standby"; }
 
+    /** 主人/外脑专用：内脑只能看到说明，不能自己调。 */
+    @Override public boolean externalOnly() { return true; }
+
     @Override public String description() {
         return "Owner-only: make the companion stand by (stop where it is) or release it."
                 + " action='pause' = it stays put and will NOT be pushed by the supervisor,"

@@ -1,5 +1,6 @@
 package com.dwinovo.numen.plugins.learner.core;
 
+import com.dwinovo.numen.plugins.learner.SyncSkillFeedback;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -114,6 +115,21 @@ public final class SkillDeliveryIntake {
         return execute(classify(rows, scope, true), scope, queue, journal, admission, now, budget);
     }
 
+    /** Production historical intake: retains original budget/admission/queue transaction. */
+    public static Scan runWithTaskResults(UsageLedger ledger, List<UsageLedger.Entry> rows, Scope scope, MemoQueue queue,
+                                          EnqueuedJournal journal, Admission admission, long now, int budget) {
+        UsageLedger.ReadSnapshot snapshot = ledger == null || budget <= 0 ? null : ledger.readSnapshot();
+        return runWithTaskResults(snapshot, rows, scope, queue, journal, admission, now, budget);
+    }
+
+    /** One host read is shared across every owner in this intake batch, never held for submission. */
+    public static Scan runWithTaskResults(UsageLedger.ReadSnapshot snapshot, List<UsageLedger.Entry> rows,
+                                          Scope scope, MemoQueue queue, EnqueuedJournal journal,
+                                          Admission admission, long now, int budget) {
+        if (budget <= 0) return new Scan(0, 0, 0, 0, 0, 0, 0);
+        return execute(classify(rows, scope, true, snapshot), scope, queue, journal, admission, now, budget);
+    }
+
     private static Scan execute(Selection selection, Scope scope, MemoQueue queue, EnqueuedJournal journal,
                                 Admission admission, long now, int budget) {
         int enqueued = 0, duplicate = 0, suppressed = 0, failed = 0, physicalAdded = 0;
@@ -134,6 +150,8 @@ public final class SkillDeliveryIntake {
                         return false;
                     }
                     Memo memo = candidate.memo(now);
+                    if (candidate instanceof ResultCandidate) memo = withTaskResultEvidence(
+                            queue.file().toAbsolutePath().getParent(), java.util.UUID.fromString(scope.companionId()), memo);
                     boolean appended;
                     unconfirmed[0] = true;
                     try {
@@ -196,6 +214,11 @@ public final class SkillDeliveryIntake {
         } catch (RuntimeException malformed) {
             return null;
         }
+    }
+
+    /** Original scoped reader shared by intake, prompt batch and submission. No queue or ledger mutation. */
+    public static Memo withTaskResultEvidence(java.nio.file.Path dir, java.util.UUID companion, Memo source) {
+        return SkillReviewInput.withTaskResultEvidence(dir, companion, source);
     }
 
     /** Entry -> snapshot JSON; detail is the parsed object, never a re-escaped or hand-built string. */
@@ -268,6 +291,21 @@ public final class SkillDeliveryIntake {
         }
     }
 
+    private record SyncCandidate(UsageLedger.Entry row, SyncSkillFeedback.Confirmed fact) implements Candidate {
+        public String id() { return "ss-" + sha256(row.artifactId()); }
+        public String fingerprint() { return "skill_sync_receipt:" + row.artifactId(); }
+        public Memo memo(long now) {
+            return new Memo(id(), "同步工具回执待审：" + fact.ref() + "@" + fact.version(),
+                    "skill_sync_receipt", "真实绑定的回执候选；非任务结果、采用或有效性证明。",
+                    entrySnapshot(row), now);
+        }
+    }
+
+    public static UsageLedger.Entry syncEntryFromSnapshot(String snapshot) {
+        try { return entryFromSnapshot(JsonParser.parseString(snapshot).getAsJsonObject()); }
+        catch (RuntimeException malformed) { return null; }
+    }
+
     private record ResultCandidate(UsageLedger.Entry row, TaskResultFact fact) implements Candidate {
         public String id() { return resultMemoIdOf(row); }
         public String fingerprint() { return "skill_task_result:" + row.artifactId(); }
@@ -301,6 +339,10 @@ public final class SkillDeliveryIntake {
     private record Selection(List<Candidate> due, int foreignScope, int resultChannel) {}
 
     private static Selection classify(List<UsageLedger.Entry> rows, Scope scope, boolean includeResults) {
+        return classify(rows, scope, includeResults, null);
+    }
+
+    private static Selection classify(List<UsageLedger.Entry> rows, Scope scope, boolean includeResults, UsageLedger.ReadSnapshot snapshot) {
         if (scope == null || !scope.complete() || rows == null) return new Selection(List.of(), 0, 0);
         Map<LedgerKey, UsageLedger.Entry> latest = new LinkedHashMap<>();
         for (UsageLedger.Entry row : rows) {
@@ -341,6 +383,15 @@ public final class SkillDeliveryIntake {
                 continue;
             }
             if (!includeResults) continue;
+            var sync = snapshot == null ? SyncSkillFeedback.INSTANCE.confirm(row) : SyncSkillFeedback.INSTANCE.confirm(snapshot, row);
+            if (sync != null) {
+                try {
+                    Scope actual = rowScope(JsonParser.parseString(row.detail()).getAsJsonObject(), row.companionId());
+                    if (!scope.worldId().equals(actual.worldId()) || !scope.companionId().equals(actual.companionId())) foreign++;
+                    else due.add(new SyncCandidate(row, sync));
+                } catch (RuntimeException malformed) { /* never infer missing scope */ }
+                continue;
+            }
             TaskResultFact fact = taskResultOf(row);
             if (fact == null) continue;
             if (!scope.equals(fact.scope())) { foreign++; continue; }

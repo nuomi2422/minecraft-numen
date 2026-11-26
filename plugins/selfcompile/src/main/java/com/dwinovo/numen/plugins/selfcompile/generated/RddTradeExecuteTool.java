@@ -81,6 +81,18 @@ public final class RddTradeExecuteTool implements NumenTool {
             return;
         }
         MerchantOffer offer = offers.get(index);
+        // 2026-11-19: 售罄（含"报价是早先读的、此刻已售罄"）在任何扣除/给货/notifyTrade 之前拒绝。
+        // 用原版 MerchantOffer.isOutOfStock()（uses >= maxUses），不新增 helper、不改读端。
+        if (offer.isOutOfStock()) {
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("entity_id", entityId);
+            data.put("offer_index", index);
+            data.put("uses", offer.getUses());
+            data.put("max_uses", offer.getMaxUses());
+            reply.accept(TaskResult.fail("这笔报价已售罄（" + offer.getUses() + "/" + offer.getMaxUses()
+                    + "），未交易、未扣物品、未增加使用次数", data).toJson());
+            return;
+        }
         ItemStack costA = offer.getCostA().copy();
         ItemStack costB = offer.getCostB().copy();
         ItemStack result = offer.getResult().copy();

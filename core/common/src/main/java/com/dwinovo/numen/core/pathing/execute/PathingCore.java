@@ -69,6 +69,8 @@ public final class PathingCore {
     private boolean safeToCancel = true;
     private boolean cancelRequested;
     private boolean calcFailedLastTick;
+    /** 上一次首段失败的真实终止原因；每条新搜索/每 tick 重置 UNKNOWN，绝不带上次。 */
+    private PathCalcResult.StopReason lastFailedStopReason = PathCalcResult.StopReason.UNKNOWN;
 
     public PathingCore(NumenPlayer player, SearchDispatcher dispatcher,
                        Supplier<CalculationContext> searchContextFactory,
@@ -117,6 +119,7 @@ public final class PathingCore {
             return false;
         }
         expectedSegmentStart = pathStart();
+        lastFailedStopReason = PathCalcResult.StopReason.UNKNOWN;
         startSearch(expectedSegmentStart);
         return true;
     }
@@ -165,6 +168,11 @@ public final class PathingCore {
     /** 上一 tick 是否有一次首段计算以失败告终。 */
     public boolean calcFailedLastTick() {
         return calcFailedLastTick;
+    }
+
+    /** 上次首段失败的真实搜索终止原因；没携带就 UNKNOWN。 */
+    public PathCalcResult.StopReason calcFailedStopReason() {
+        return lastFailedStopReason;
     }
 
     public Goal getGoal() {
@@ -220,6 +228,7 @@ public final class PathingCore {
         LIVE.put(player.getUUID(), this);
         expectedSegmentStart = pathStart();
         calcFailedLastTick = false;
+        lastFailedStopReason = PathCalcResult.StopReason.UNKNOWN;
         tickPath();
         harness.commitIfDirty();
         if (current != null) {
@@ -438,6 +447,7 @@ public final class PathingCore {
                         && result.getType() != PathCalcResult.Type.EXCEPTION) {
                     Constants.LOG.debug("首段计算失败");
                     orphanDiscards = 0;
+                    lastFailedStopReason = result.getStopReason();
                     calcFailedLastTick = true;
                 }
             }

@@ -78,6 +78,13 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
     private static final double FIELD_RADIUS = 12.0;
 
     /**
+     * 点名狩猎的"全场安全"观察半径:低血豁免只在该半径内<b>没有任何非猎物 Mob</b> 时成立。
+     * 会反击的中立狼、未知非 Enemy 都拦在这——它们不进 {@link Menace#hostilesAround} 的 Enemy
+     * 扫描,却是真威胁。取与 {@link #FIELD_RADIUS} 一致,不另开更大的世界扫描。
+     */
+    private static final double HUNT_SAFE_RADIUS = 12.0;
+
+    /**
      * 逃跑时扫多远。必须<b>大于</b> {@link Menace#FLEE_DISTANCE},否则她一边跑一边有新的怪
      * 进入视野,目标每几刻换一次,等于没有目标。
      */
@@ -252,6 +259,8 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
             boolean engaging = mob.getTarget() == player || mob == player.getLastHurtByMob()
                     || (r.indiscriminate && retreatingFrom.contains(mob));
             boolean authorized = r.indiscriminate ? engaging : r.entityIds.contains(mob.getId());
+            boolean ranged = authorized && Menace.rangedWithinEscapeRange(mob, player)
+                    && (Menace.rangedThreat(mob, player) || retreatingFrom.contains(mob));
             if (r.terminal(mob.getId())) {
                 // 打完了、丢了、或者走不到又射不到的:<b>整只移出局面</b>。留着当"还有东西在
                 // 追我"的话,判据会永远喊走位 —— 一只在悬崖对面射她的骷髅就能把任务钉死。
@@ -265,10 +274,29 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                     Menace.armed(mob),
                     engaging,
                     reachable(mob.getId()),
+                    ranged,
+                    false,   // 敌对被扫描进来的永远是威胁，不给无害猎物豁免
                     authorized));
         }
         // 点名模式还可能被要求打不敌对的东西(一只鸡、一个末影水晶),它们不在敌对扫描里。
         if (!r.indiscriminate) {
+            // 场景是否干净:12 格内没有"非猎物"活体(同一安全判),只产一个局部布尔。
+            // <b>不把这些旁物追加进 foes</b> —— tickWeapon 遍历 field.foes() 攻击所有够得着者、
+            // 且不看 authorized,追加中立狼/村民会被无授权挥击。存活 terminal 按事实算威胁,
+            // dead/removed 不算威胁。旁物只让本次点名猎物的豁免失效,不改集合与选靶。
+            boolean safeHuntScene = true;
+            for (Mob m : player.level().getEntitiesOfClass(Mob.class,
+                    player.getBoundingBox().inflate(HUNT_SAFE_RADIUS))) {
+                if (!m.isAlive() || m.isRemoved()) {
+                    continue;
+                }
+                if (Menace.harmlessPrey(m) && !Menace.threatens(m, player)
+                        && !Menace.explodes(m) && !Menace.armed(m)) {
+                    continue;
+                }
+                safeHuntScene = false;
+                break;
+            }
             for (int id : r.entityIds) {
                 if (r.terminal(id) || containsId(foes, id)) {
                     continue;
@@ -277,7 +305,11 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                 if (e != null) {
                     foes.add(new Battlefield.Foe(id, player.distanceTo(e),
                             Menace.explodes(e), Menace.armed(e),
-                            false, reachable(id), true));
+                            false, reachable(id), false,
+                            Menace.harmlessPrey(e) && !Menace.threatens(e, player)
+                                    && !Menace.explodes(e) && !Menace.armed(e)
+                                    && safeHuntScene,
+                            true));
                 }
             }
         }
@@ -290,7 +322,7 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                 Menace.effectiveHealth(player),
                 reachToTarget(),
                 loadout.hasMelee(), loadout.hasRanged(),
-                retreatFailures >= MAX_RETREAT_FAILURES, foes);
+                retreatFailures >= MAX_RETREAT_FAILURES, r.indiscriminate, foes);
     }
 
     /** Continue an existing retreat through brief loss of sight, never authorize a new fight. */

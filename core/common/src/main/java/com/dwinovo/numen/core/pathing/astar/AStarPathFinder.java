@@ -23,11 +23,40 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
     private final Favoring favoring;
     private final CalculationContext calcContext;
 
+    /** 本实例真实循环出口的终止原因；一次性搜索器，初始 UNKNOWN。 */
+    private PathCalcResult.StopReason lastStopReason = PathCalcResult.StopReason.UNKNOWN;
+
     /** 世界边界快照(构造时取样,worker 线程只读)。 */
     private final double borderMinX;
     private final double borderMaxX;
     private final double borderMinZ;
     private final double borderMaxZ;
+
+    /**
+     * 真实循环出口 -> 终止原因。取消不算任何 final 原因（UNKNOWN）；
+     * 节点上限/未加载边界/候选集抽空/时间预算按实际停止条件区分。
+     */
+    static PathCalcResult.StopReason classifyStop(boolean cancelled, int numNodes, int maxNodes,
+                                                  int numEmptyChunk, int maxChunkFetch, boolean openSetEmpty) {
+        if (cancelled) {
+            return PathCalcResult.StopReason.UNKNOWN;
+        }
+        if (numNodes >= maxNodes) {
+            return PathCalcResult.StopReason.NODE_CAP;
+        }
+        if (numEmptyChunk >= maxChunkFetch) {
+            return PathCalcResult.StopReason.CHUNK_BORDER;
+        }
+        if (openSetEmpty) {
+            return PathCalcResult.StopReason.EXHAUSTED;
+        }
+        return PathCalcResult.StopReason.TIMEOUT;
+    }
+
+    @Override
+    protected PathCalcResult.StopReason stopReason() {
+        return lastStopReason;
+    }
 
     public AStarPathFinder(BlockPos realStart, int startX, int startY, int startZ,
                            Goal goal, Favoring favoring, CalculationContext context) {
@@ -166,17 +195,14 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
         if (cancelRequested) {
             return Optional.empty();
         }
+        // 真实出口判据：与旧 profile 日志同一套表达式，但每次都记进结果，
+        // 不再只在 profile 打开时打一行就丢。
+        lastStopReason = classifyStop(false, numNodes, maxNodes, numEmptyChunk,
+                pathingMaxChunkBorderFetch, openSet.isEmpty());
         if (NavSettings.get().profile) {
-            // Why did the loop stop? nodeCap = hit maxNodesPerSearch (gave up early — cap may be too low
-            // for this terrain); exhausted = openSet emptied (genuinely no reachable path); timeout = time
-            // budget; chunkBorder = ran into unloaded chunks. failing=true means no usable partial found
-            // (this returns a FAILURE); failing=false means a best partial segment is returned.
-            String reason = numNodes >= maxNodes ? "nodeCap"
-                    : numEmptyChunk >= pathingMaxChunkBorderFetch ? "chunkBorder"
-                    : openSet.isEmpty() ? "exhausted"
-                    : "timeout";
             Constants.LOG.info("[nav-search] stop reason={} nodes={}/{} failing={} goal={}",
-                    reason, numNodes, maxNodes, failing, goal);
+                    lastStopReason.name().toLowerCase(java.util.Locale.ROOT),
+                    numNodes, maxNodes, failing, goal);
         }
         return bestSoFar(true, numNodes);
     }

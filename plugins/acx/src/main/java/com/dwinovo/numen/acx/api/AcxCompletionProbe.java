@@ -21,6 +21,16 @@ public interface AcxCompletionProbe {
 
     Snapshot probe(String taskId);
 
+    /** Query only the task belonging to this original run/host context. */
+    default Snapshot probe(String taskId, AcxTool.AcxCallContext ctx) {
+        return probe(taskId);
+    }
+
+    /** A tagged body call must never fall back to a task-id-only probe. */
+    default AcxBodyAction.Snapshot bodyAction(AcxBodyAction.Ref wanted, AcxTool.AcxCallContext ctx) {
+        return AcxBodyAction.Snapshot.unknown();
+    }
+
     enum State {
         RUNNING,
         DONE,

@@ -1,0 +1,50 @@
+package com.dwinovo.numen.plugins.rdd;
+import com.dwinovo.numen.rdd.side.*;import com.dwinovo.numen.rdd.side.sleep.*;import com.dwinovo.numen.rdd.core.*;import com.dwinovo.numen.rdd.api.*;
+import com.dwinovo.numen.entity.NumenPlayer;import com.dwinovo.numen.api.WorldContextStamp;
+import net.minecraft.server.MinecraftServer;import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import java.util.*;import java.lang.reflect.*;
+public class SleepCycleHost implements ScopedSleepCycleConsumerTest.Driver {
+    static SleepCycleHost live;final UUID id=UUID.randomUUID();MinecraftServer server=new MinecraftServer();NumenPlayer body,oldBody;
+    final List<Map<String,Object>> completed=new ArrayList<>();int resumed;boolean bound;SideTask original;Object lastEvidence;
+    final TaskChain chain=new TaskChain(new Goal("g","fixture",List.of(new PrimaryGoal("p","fixture",List.of(Subtask.hardCoded("s","fixture",Map.of("minimum",1)))))));
+    final MainlineResumeToken token=new MainlineResumeToken(id,chain.chainInstanceId(),chain.goal().id(),"p","s",chain.planRevision(),chain.planRevision());
+    final SideTaskEngine engine=new SideTaskEngine((name,data)->{if(name.equals("side_task_completed"))completed.add(Map.copyOf(data));SideTaskHost.clearTerminalSleepCycle(name,data);if(name.equals("side_task_resumed_mainline")&&Boolean.TRUE.equals(data.get("mainlineResumed")))resumed++;},t->t!=null&&t.matches(chain.chainInstanceId(),"g","p","s",chain.planRevision())?t:null);
+    public SleepCycleHost(){live=this;SleepWakeWatcher.clearAll();WorldContextStamp.fail=false;WorldContextStamp.token=new WorldContextStamp.Token(Map.of("world_id","fixture-world","server_session","one"),1);body=new NumenPlayer(id,server);body.world.game=13000;body.world.day=13000;server.players.add(body);engine.registerTrigger(new SleepSideTaskTrigger());}
+    public boolean supported(){try{Class.forName("com.dwinovo.numen.rdd.side.sleep.SleepSideTaskType$Goal");SideTaskWorldPort.class.getMethod("pollSleepCycle",SideTask.class);return true;}catch(Exception absent){return false;}}
+    SideTaskType type(boolean overnight){if(!overnight)return new SleepSideTaskType();try{Class<?> goal=Class.forName("com.dwinovo.numen.rdd.side.sleep.SleepSideTaskType$Goal");Object mode=Enum.valueOf((Class)goal,"OVERNIGHT");return (SideTaskType)SleepSideTaskType.class.getConstructor(goal).newInstance(mode);}catch(Exception failure){throw new AssertionError(failure);}}
+    final SideTaskWorldPort world=(SideTaskWorldPort)Proxy.newProxyInstance(SideTaskWorldPort.class.getClassLoader(),new Class[]{SideTaskWorldPort.class},(p,m,a)->switch(m.getName()){
+        case "gameTime"->body.world.game;case "dayTime"->body.world.day;case "gameDay"->Math.floorDiv(body.world.day,24000);case "hasDayNightCycle"->true;
+        case "worldId"->body.world.dim;case "isSleeping"->body.sleeping;case "isDay"->body.world.isDay();case "isSpawnBound"->bound;
+        case "pollWake"->SleepWakeWatcher.poll(id);case "pollSleepCycle"->{lastEvidence=SideTaskHost.readSleepCycle(body,(SideTask)a[0]);yield lastEvidence;}
+        case "bodyBusy","inCombat"->false;case "sleepMayInterrupt"->true;case "sleepRisk"->SideTaskWorldPort.SleepRisk.CLEAR;case "mainlineObjective"->"fixture";
+        default->m.getReturnType()==boolean.class?false:m.getReturnType()==int.class?0:m.getReturnType()==long.class?0L:m.getReturnType()==String.class?"":null;});
+    public void start(boolean overnight){SideTaskType t=type(overnight);engine.registerType(t);if(!engine.startNow(t,id,world,token,Map.of()))throw new AssertionError("start");original=engine.current(id).orElseThrow();}
+    public void observe(long tick,long dayTime,boolean sleeping){body.world.game=tick;body.world.day=dayTime;body.sleeping=sleeping;try{var m=SleepWakeWatcher.class.getDeclaredMethod("onServerTick",ServerTickEvent.Pre.class);m.setAccessible(true);m.invoke(null,new ServerTickEvent.Pre(server));}catch(Exception failure){throw new AssertionError(failure);}}
+    public void evaluate(){engine.tick(id,world,token,false);}
+    public boolean active(){return engine.isActive(id);}public int completed(){return completed.size();}public int resumed(){return resumed;}
+    public String status(){Object evidence=SideTaskHost.readSleepCycle(body,engine.current(id).orElse(null));if(evidence==null)return "UNKNOWN";try{return evidence.getClass().getMethod("status").invoke(evidence).toString();}catch(Exception failure){throw new AssertionError(failure);}}
+    public String data(){return String.valueOf(lastEvidence);}public void bind(){bound=true;}public void observeBareWake(){try{var f=SleepWakeWatcher.class.getDeclaredField("PENDING");f.setAccessible(true);((Map)f.get(null)).put(id,SideTaskWorldPort.Wake.DAYBREAK);}catch(Exception e){throw new AssertionError(e);}}
+    public void stale(String kind){switch(kind){case "world"->WorldContextStamp.token=new WorldContextStamp.Token(Map.of("world_id","other","server_session","one"),1);case "session"->WorldContextStamp.token=new WorldContextStamp.Token(Map.of("world_id","fixture-world","server_session","other"),1);case "unknown"->WorldContextStamp.token=new WorldContextStamp.Token(null,1);case "dimension"->body.world.dim="minecraft:other";case "body"->{oldBody=body;body=new NumenPlayer(id,server);server.players.clear();server.players.add(body);}case "server"->{server=new MinecraftServer();body.server=server;server.players.add(body);}case "owner"->recreate();default->throw new AssertionError(kind);}}
+    public void recreate(){engine.cancel(id,"fixture replacement");SideTaskType t=type(true);engine.registerType(t);engine.startNow(t,id,world,token,Map.of());}
+    public void pollOld(){SideTaskHost.readSleepCycle(body,original);}
+    public boolean hasCycle(){try{var f=SleepWakeWatcher.class.getDeclaredField("CYCLES");f.setAccessible(true);return ((Map)f.get(null)).containsKey(id);}catch(Exception failure){throw new AssertionError(failure);}}
+    public void removeCurrent(){removeBody(body);}
+    public void removeOld(){removeBody(oldBody);}
+    private void removeBody(NumenPlayer body){
+        // @REMOVE_CLEAR@
+    }
+    public void invalidPoll(String kind){var prior=WorldContextStamp.token;
+        if(kind.equals("world"))WorldContextStamp.token=new WorldContextStamp.Token(Map.of("world_id","temporary","server_session","one"),1);
+        else WorldContextStamp.fail=true;
+        try{if(!status().equals("UNKNOWN"))throw new AssertionError("invalid read must be unknown");}
+        finally{WorldContextStamp.token=prior;WorldContextStamp.fail=false;}
+    }
+    public void clearOld(){clear(body,original);}public void clearCurrent(){clear(body,engine.current(id).orElse(null));}
+    void clear(NumenPlayer player,SideTask task){try{var m=SleepWakeWatcher.class.getDeclaredMethod("clear",NumenPlayer.class,SideTask.class);m.setAccessible(true);m.invoke(null,player,task);}catch(NoSuchMethodException legacy){}catch(Exception failure){throw new AssertionError(failure);}}
+}
+class SideTaskHost {
+    static SideTask activeSleepOwner(UUID id){return SleepCycleHost.live.engine.current(id).orElse(null);}
+    // @HOST_READ@
+    // @TERMINAL_CLEAR@
+}
+class RddCompanionBody {static NumenPlayer get(UUID id){return SleepCycleHost.live.body;}}

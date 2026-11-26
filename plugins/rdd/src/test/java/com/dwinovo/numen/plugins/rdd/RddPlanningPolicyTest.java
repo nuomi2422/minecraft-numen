@@ -35,9 +35,11 @@ class RddPlanningPolicyTest {
         List<String> deferred = RddPlanningPolicy.deferredOptional("通关MC");
         assertTrue(deferred.stream().anyMatch(s -> s.contains("书架")), "书架必须默认延后");
         assertTrue(deferred.stream().anyMatch(s -> s.contains("满级")), "满级附魔台必须默认延后");
-        // 2026-10-29 主人裁决（推翻 2026-10-07 那条）：村民交易体系 / 生电大工程**重新默认延后**，
-        //   只有 objective 里明确点名时才做，且按最小可用实现（原话：「不搭大工程，够用即止」）。
-        assertTrue(deferred.stream().anyMatch(s -> s.contains("村民")), "村民交易体系必须默认延后");
+        // 2026-11-11（主人否决旧的「裸词=大工程」判定）：村民/基本交易/装备准备不再算可选大工程，
+        //   否则村庄供食、安家、交易阶段会被误删。断言改为「不再延后」+ 策略块说明句仍在。
+        assertFalse(deferred.stream().anyMatch(s -> s.contains("村民")), "村民交易体系不再默认延后（2026-11-11 变更）");
+        assertTrue(RddPlanningPolicy.block("通关MC", "stage_a").contains("不因提到村民"),
+                "策略块必须说明「不因提到村民或全套装备就当可选大工程」");
         assertTrue(deferred.stream().anyMatch(s -> s.contains("自动化")), "自动化农场必须默认延后");
         assertTrue(deferred.stream().anyMatch(s -> s.contains("生电")), "生电大工程必须默认延后");
     }

@@ -114,7 +114,13 @@ final class ReviewCompletion {
                     : "";
             // 2026-11-06（监督者实测）：提交侧带来的结构化证据优先，且**必须能在日志里查到**。
             // 形状合法但不存在的事件 id 一样能过契约校验 ⇒ 那会把"有证据"变成假象。
-            java.util.List<String> memoEvidence = srcMemo == null ? java.util.List.of() : srcMemo.evidence();
+            Memo evidenceMemo = srcMemo;
+            if (srcMemo != null && "skill_task_result".equals(srcMemo.stage())) {
+                var original = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.taskResultFromSnapshot(srcMemo.snapshot());
+                evidenceMemo = com.dwinovo.numen.plugins.learner.core.SkillDeliveryIntake.withTaskResultEvidence(configDir,
+                        original == null ? null : java.util.UUID.fromString(original.scope().companionId()), srcMemo);
+            }
+            java.util.List<String> memoEvidence = evidenceMemo == null ? java.util.List.of() : evidenceMemo.evidence();
             java.util.List<String> unresolved = com.dwinovo.numen.plugins.learner.core.EvidenceJournal
                     .unresolved(configDir.resolve("monitor"), memoEvidence);
             java.util.List<String> verifiedEvidence = new java.util.ArrayList<>(memoEvidence);

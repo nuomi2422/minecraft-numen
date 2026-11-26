@@ -43,6 +43,8 @@ public final class SideTaskEngine {
     private final Map<String, Long> recurringHandled = new HashMap<>();
     /** 宿主约每 20 tick 调一次 tick；推迟冷却不得小于一拍，否则每拍都会重新决策。 */
     private static final int MIN_DEFER_TICKS = 20;
+    /** 普通 B 建议的重复可见间隔（约 20s）；不占体，也不锁当日。 */
+    private static final long ADVISORY_REFRESH_TICKS = 400L;
     private final SideTaskEvents events;
     private final MainlineValidator mainlineValidator;
 
@@ -83,6 +85,22 @@ public final class SideTaskEngine {
         recurringTypes.keySet().removeIf(id -> id.startsWith(prefix));
     }
 
+    /** Retire only absent registrations in a committed goal snapshot. Keep original
+     * bodies, handled occurrences, payloads and other goals; enabled already persists. */
+    public void reconcileRecurringForGoal(String goalId, java.util.Set<String> acceptedIds) {
+        if (goalId == null || goalId.isBlank() || acceptedIds == null) return;
+        String prefix = "daily:" + goalId + ":";
+        if (acceptedIds.stream().anyMatch(id -> id == null || !id.startsWith(prefix)
+                || id.lastIndexOf(':') != prefix.length() - 1 || id.length() == prefix.length()))
+            throw new IllegalArgumentException("recurring snapshot contains a foreign schedule");
+        recurringSpecs.replaceAll((id, spec) -> {
+            if (!id.startsWith(prefix) || id.lastIndexOf(':') != prefix.length() - 1
+                    || acceptedIds.contains(id) || !spec.enabled()) return spec;
+            return new RecurringSideTaskSpec(spec.scheduleId(), spec.templateId(), spec.intervalGameDays(),
+                    spec.anchorGameDay(), spec.missedPolicy(), false, spec.promptOnly(), spec.data());
+        });
+    }
+
     /** 2026-11-08: SURVIVAL report forces a task even when thresholds are not met; idempotent. */
     public boolean startNow(SideTaskType type, UUID companionId, SideTaskWorldPort world,
                             MainlineResumeToken token, Map<String, String> data) {
@@ -90,9 +108,9 @@ public final class SideTaskEngine {
         long now = world.gameTime();
         long day = world.gameDay();
         long generation = runtime.nextGeneration();
-        SideTask task = type.create(new SideTaskType.CreationContext(
+        SideTask task = markSource(type.create(new SideTaskType.CreationContext(
                 companionId, type.typeId() + "-" + generation + "-" + shortId(companionId), generation,
-                day, now, now + type.deadlineTicks(), token, data));
+                day, now, now + type.deadlineTicks(), token, data)), type);
         if (!runtime.activate(task)) return false;
         events.publish("side_task_created", base(task));
         events.publish("side_task_activated", base(task));
@@ -113,6 +131,11 @@ public final class SideTaskEngine {
     /** 2026-11-12: immutable schedule probe; UNKNOWN is null, never a reconstructed schedule. */
     public RecurringSideTaskSpec recurringSpec(String scheduleId) {
         return recurringSpecs.get(scheduleId);
+    }
+
+    /** Server-thread snapshot of actual registrations; no scheduling or handled-state changes. */
+    public List<RecurringSideTaskSpec> recurringSpecsSnapshot() {
+        return List.copyOf(recurringSpecs.values());
     }
 
     public SideTaskType typeOf(String typeId) {
@@ -187,6 +210,13 @@ public final class SideTaskEngine {
                 cancel(companionId, "world has no day-night cycle (" + world.worldId() + "); side task can never finish");
                 return;
             }
+            SideTaskType runningType = types.get(running.typeId());
+            if (runningType != null && runningType.advisoryOnly(running)) {
+                // Legacy ordinary ACTIVE: preserve its data in a terminal record, release the only
+                // runtime slot, and never touch the body/mainline (no resume callback).
+                retireLegacyAdvisory(running);
+                return;
+            }
             if (world.bodyBusy(companionId) && "daily_maintenance".equals(running.typeId())) {
                 finish(running, SideTaskState.CANCELLED, "mainline needs body; daily yields");
                 return;
@@ -202,8 +232,11 @@ public final class SideTaskEngine {
         long day = world.gameDay();
         // One tick only: the DAILY probe and original trigger loop share even a false result.
         Map<SideTaskTrigger, Boolean> foodTriggerResults = new IdentityHashMap<>();
-        if (!deathSideTaskOccupying && !world.bodyBusy(companionId)) {
-            if (tickRecurring(companionId, world, mainlineToken, day, now, foodTriggerResults, deferPlannerDaily)) {
+        if (!deathSideTaskOccupying) {
+            // Ordinary advisory DAILY may report due while the body is busy; hard recurring admission
+            // still waits inside tickRecurring so a reminder cannot replace the current mainline action.
+            if (tickRecurring(companionId, world, mainlineToken, day, now, foodTriggerResults,
+                    deferPlannerDaily, world.bodyBusy(companionId))) {
                 return;
             }
         }
@@ -265,12 +298,26 @@ public final class SideTaskEngine {
             if (oncePerDay) {
                 deferredUntil.remove(key);
             }
+            if (type.advisoryOnly()) {
+                // 普通 B 型：只报“建议可见”，不 runtime.activate、不占身体、不锁当日。
+                if (oncePerDay) deferredUntil.put(key, now + ADVISORY_REFRESH_TICKS);
+                Map<String, Object> advice = new LinkedHashMap<>();
+                advice.put("companionId", companionId.toString());
+                advice.put("scope", TaskScope.SIDE.name());
+                advice.put("typeId", trigger.typeId());
+                advice.put("gameDay", day);
+                advice.put("reason", "advisory_only");
+                advice.put("retryTicks", ADVISORY_REFRESH_TICKS);
+                advice.put("gameTime", now);
+                events.publish("side_task_advisory", advice);
+                continue;
+            }
             MainlineResumeToken token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
             long generation = runtime.nextGeneration();
             String instanceId = trigger.typeId() + "-" + generation + "-" + shortId(companionId);
-            SideTask task = type.create(new SideTaskType.CreationContext(
+            SideTask task = markSource(type.create(new SideTaskType.CreationContext(
                     companionId, instanceId, generation, day, now,
-                    now + type.deadlineTicks(), token, Map.of()));
+                    now + type.deadlineTicks(), token, Map.of())), type);
             if (runtime.activate(task)) {
                 if (oncePerDay) {
                     handledGameDay.put(key, day);
@@ -318,6 +365,23 @@ public final class SideTaskEngine {
             case SKIP -> finish(task.withData(verdict.data()), SideTaskState.SKIPPED_TIMEOUT, verdict.evidence());
             case CANCEL -> finish(task.withData(verdict.data()), SideTaskState.CANCELLED, verdict.evidence());
         }
+    }
+
+    /** Persist the producer source so a restored task is not reclassified by a newer type flag. */
+    private static SideTask markSource(SideTask task, SideTaskType type) {
+        Map<String, String> data = new LinkedHashMap<>(task.data());
+        data.put("advisory_source", Boolean.toString(type.advisoryOnly()));
+        return task.withData(data);
+    }
+
+    /** Old ordinary ACTIVE instance: keep the recorded data, free the admission slot, no body/mainline action. */
+    private void retireLegacyAdvisory(SideTask task) {
+        runtime.remove(task.companionId());
+        Map<String, Object> data = base(task);
+        data.put("state", SideTaskState.CANCELLED.name());
+        data.put("reason", "advisory migration: runtime slot released; body and mainline unchanged");
+        data.put("preservedData", task.data());
+        events.publish("side_task_cancelled", data);
     }
 
     private void finish(SideTask task, SideTaskState state, String reason) {
@@ -401,7 +465,8 @@ public final class SideTaskEngine {
 
     private boolean tickRecurring(UUID companionId, SideTaskWorldPort world,
                                   MainlineResumeToken mainlineToken, long day, long now,
-                                  Map<SideTaskTrigger, Boolean> foodTriggerResults, boolean deferPlannerDaily) {
+                                  Map<SideTaskTrigger, Boolean> foodTriggerResults, boolean deferPlannerDaily,
+                                  boolean bodyBusy) {
         for (var e : recurringSpecs.entrySet()) {
             RecurringSideTaskSpec spec = e.getValue();
             String typeId = recurringTypes.get(e.getKey());
@@ -443,6 +508,23 @@ public final class SideTaskEngine {
             }
             SideTaskType type = typeId == null ? null : types.get(typeId);
             if (type == null) continue;
+            if (type.advisoryOnly()) {
+                // 普通 DAILY：calendar due 只是可见提醒，不 activate、不占体、不锁主线。
+                recurringHandled.put(key, day);
+                Map<String, Object> due = new LinkedHashMap<>();
+                due.put("companionId", companionId.toString());
+                due.put("specId", spec.scheduleId());
+                due.put("typeId", typeId);
+                due.put("gameDay", day);
+                due.put("promptOnly", true);
+                due.put("advisoryOnly", true);
+                due.put("gameTime", now);
+                events.publish("side_task_due", due);
+                events.publish("side_task_advisory", due);
+                continue;
+            }
+            // Hard recurring tasks keep the original rule: never admit while the body is busy.
+            if (bodyBusy) continue;
             if (plannerDaily) {
                 // V24: awaiting survival planning is not bodyBusy. Keep this occurrence unspent;
                 // prompt-only reminders above and the original sleep/death/food trigger loop remain live.
@@ -462,9 +544,9 @@ public final class SideTaskEngine {
             System.out.println("[rdd] recurring create spec=" + spec.scheduleId() + " dataKeys=" + spec.data().keySet());
             if (!plannerDaily) token = mainlineValidator == null ? null : mainlineValidator.validate(mainlineToken);
             long generation = runtime.nextGeneration();
-            SideTask task = type.create(new SideTaskType.CreationContext(
+            SideTask task = markSource(type.create(new SideTaskType.CreationContext(
                     companionId, typeId + "-" + generation + "-" + shortId(companionId), generation,
-                    day, now, now + type.deadlineTicks(), token, spec.data()));
+                    day, now, now + type.deadlineTicks(), token, spec.data())), type);
             if (runtime.activate(task)) {
                 recurringHandled.put(key, day);
                 Map<String, Object> due = base(task);

@@ -1,5 +1,9 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import com.dwinovo.numen.rdd.side.MainlineResumeToken;
+import com.dwinovo.numen.rdd.side.RecurringSideTaskSpec;
+
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -12,8 +16,93 @@ final class SideContextStore {
     void put(UUID id, String block, String worldId, String serverSession, String dimension, long sampledGameTime) {
         if (id != null && block != null) cache.put(id, new Cached(block, worldId, serverSession, dimension, sampledGameTime));
     }
-    void remove(UUID id) { if (id != null) cache.remove(id); }
-    void clear() { cache.clear(); }
+    /** Sampling validity only: specs do not record registration-time chain/revision ownership. */
+    record Ticket(String worldId, String serverSession, String dimension,
+                  MainlineResumeToken owner, long gameDay) {}
+    private record Registrations(Ticket ticket, List<RecurringSideTaskSpec> specs) {}
+    private final Map<UUID, Registrations> registrations = new ConcurrentHashMap<>();
+
+    /**
+     * 2026-11-24: server-tick snapshot for the B advisory block.  The model-contribution
+     * thread may only read this ticket-matched snapshot; it never reaches back into the body.
+     */
+    record Advisory(String worldId, String serverSession, String dimension,
+                    long dayTime, boolean hasDayNightCycle,
+                    int hunger, int health, int edible,
+                    boolean sleeping, boolean spawnBound, boolean bodyBusy,
+                    long sampledGameTime) {}
+    private final Map<UUID, Advisory> advisories = new ConcurrentHashMap<>();
+
+    void putAdvisory(UUID id, Advisory advisory) {
+        if (id == null || advisory == null || !known(advisory.worldId())
+                || !known(advisory.serverSession()) || !known(advisory.dimension())) {
+            removeAdvisory(id);
+            return;
+        }
+        advisories.put(id, advisory);
+    }
+
+    /** null = no same-request snapshot; null/blank request identity never borrows a cached global stamp. */
+    Advisory advisoryFor(UUID id, String currentWorldId, String currentSession) {
+        if (id == null || !known(currentWorldId) || !known(currentSession)) return null;
+        Advisory cached = advisories.get(id);
+        return cached != null && cached.worldId().equals(currentWorldId)
+                && cached.serverSession().equals(currentSession) ? cached : null;
+    }
+
+    void removeAdvisory(UUID id) { if (id != null) advisories.remove(id); }
+
+    void putRegistrations(UUID id, Ticket sampled, List<RecurringSideTaskSpec> specs) {
+        if (!valid(id, sampled) || specs == null) {
+            removeRegistrations(id);
+            return;
+        }
+        registrations.put(id, new Registrations(sampled, List.copyOf(specs)));
+    }
+
+    /** null = UNKNOWN; an authenticated empty snapshot is a known empty list. */
+    List<RecurringSideTaskSpec> registrationsFor(UUID id, Ticket current) {
+        if (!valid(id, current)) return null;
+        Registrations cached = registrations.get(id);
+        if (cached == null || !sameOwner(cached.ticket(), current)) return null;
+        return cached.specs();
+    }
+
+    private static boolean valid(UUID id, Ticket ticket) {
+        return id != null && ticket != null && known(ticket.worldId())
+                && known(ticket.serverSession()) && known(ticket.dimension())
+                && ticket.owner() != null && id.equals(ticket.owner().companionId())
+                && known(ticket.owner().chainInstanceId()) && known(ticket.owner().goalId())
+                && ticket.owner().planRevision() >= 0 && ticket.gameDay() >= 0;
+    }
+
+    private static boolean known(String value) { return value != null && !value.isBlank(); }
+
+    private static boolean sameOwner(Ticket sampled, Ticket current) {
+        MainlineResumeToken a = sampled.owner(), b = current.owner();
+        // Primary/subtask cursors and resume generation are not registration owners.
+        return sampled.worldId().equals(current.worldId())
+                && sampled.serverSession().equals(current.serverSession())
+                && sampled.dimension().equals(current.dimension())
+                && sampled.gameDay() == current.gameDay()
+                && a.companionId().equals(b.companionId())
+                && a.chainInstanceId().equals(b.chainInstanceId())
+                && a.goalId().equals(b.goalId()) && a.planRevision() == b.planRevision();
+    }
+
+    void removeRegistrations(UUID id) { if (id != null) registrations.remove(id); }
+    void remove(UUID id) {
+        if (id != null) {
+            cache.remove(id);
+            advisories.remove(id);
+        }
+        removeRegistrations(id);
+    }
+    void clear() {
+        cache.clear();
+        registrations.clear();
+        advisories.clear();
+    }
     String render(UUID id, String currentWorldId, String currentSession) {
         Cached c = id == null ? null : cache.get(id);
         if (c == null) return null;

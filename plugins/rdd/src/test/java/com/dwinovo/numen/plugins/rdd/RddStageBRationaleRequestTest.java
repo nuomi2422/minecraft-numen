@@ -336,7 +336,7 @@ class RddStageBRationaleRequestTest {
         assertTrue(plugin.contains("RddDecomposer.decomposeSpecsWithHint(companionId, chain, ownerRevision, theme"));
         String decomposer = source("RddDecomposer");
         assertTrue(decomposer.contains("dispatchStageB(companionId, themeObjective, owner, ownerRevision"));
-        assertTrue(decomposer.contains("userContent -> RddDecomposer.llmAsk(companionId, \"stage_b\", userContent"));
+        assertTrue(decomposer.contains("userContent -> RddDecomposer.llmAskOwnedStageB(companionId, owner, ownerRevision, userContent"));
         assertTrue(decomposer.contains("send.accept(stageBRequestContent(userContent, rationale));"));
         assertFalse(decomposer.contains("RddStagePlanner.freshRationale(companionId)"),
                 "no alternate Stage-B dispatch may silently reread an unrelated runtime");

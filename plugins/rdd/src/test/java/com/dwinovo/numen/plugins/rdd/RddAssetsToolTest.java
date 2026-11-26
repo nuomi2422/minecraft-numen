@@ -32,6 +32,27 @@ class RddAssetsToolTest {
         assertEquals(85,ids.size());assertTrue(ids.contains("id-0"));
         assertEquals("id-0",call(r,"{\"action\":\"detail\",\"asset_id\":\"id-0\"}").getAsJsonObject("data").getAsJsonObject("asset").get("assetId").getAsString());
     }
+    @Test void catalogFiltersWorldAndDimensionWithoutInferringCoverage() {
+        AssetRegistry r = new AssetRegistry();
+        asset(r,"a1",30,Map.of("kind","machine","world_id","A","dimension","overworld"));
+        asset(r,"a2",20,Map.of("kind","machine","world_id","A","dimension","overworld"));
+        asset(r,"nether",19,Map.of("kind","machine","world_id","A","dimension","nether"));
+        asset(r,"b",18,Map.of("kind","machine","world_id","B","dimension","overworld"));
+        asset(r,"unknown",17,Map.of("kind","machine","dimension","overworld"));
+        var first=call(r,"{\"action\":\"catalog\",\"world_id\":\"A\",\"dimension\":\"overworld\",\"limit\":1}").getAsJsonObject("data");
+        assertAll(
+                () -> assertEquals(2,first.get("count").getAsInt()),
+                () -> assertEquals("a1",first.getAsJsonArray("assets").get(0).getAsJsonObject().get("asset_id").getAsString()),
+                () -> assertEquals("UNKNOWN",first.getAsJsonArray("assets").get(0).getAsJsonObject().get("region").getAsString()));
+        var second=call(r,"{\"action\":\"catalog\",\"world_id\":\"A\",\"dimension\":\"overworld\",\"limit\":1,\"offset\":1}").getAsJsonObject("data");
+        assertEquals("a2",second.getAsJsonArray("assets").get(0).getAsJsonObject().get("asset_id").getAsString());
+        assertEquals(-1,second.get("next_offset").getAsInt());
+        var empty=call(r,"{\"action\":\"catalog\",\"world_id\":\"missing\"}").getAsJsonObject("data");
+        assertEquals(0,empty.get("count").getAsInt());
+        assertTrue(empty.get("note").getAsString().contains("not proof of exploration"));
+        assertTrue(call(r,"{\"action\":\"detail\",\"asset_id\":\"b\"}").get("success").getAsBoolean());
+    }
+
     @Test void unknownInvalidAndMissingMetadataStayVisibleNotUsable() {
         AssetRegistry r=new AssetRegistry();asset(r,"unknown",0,Map.of());asset(r,"invalid",2,Map.of());r.markUnknown("unknown");r.invalidate("invalid");
         String result=call(r,"{\"action\":\"catalog\"}").toString();

@@ -16,5 +16,7 @@ public enum FailReason {
     /** 请求参数非法。 */
     INVALID_REQUEST,
     TIMED_OUT,
-    CANCELLED
+    CANCELLED,
+    /** 本次采集迟到，存储里已有不旧于它的观测被接受；本次结果不得当当前值返回。 */
+    SUPERSEDED
 }

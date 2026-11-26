@@ -1,11 +1,23 @@
 package com.dwinovo.numen.plugins.rdd;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 
+import javax.tools.ToolProvider;
+import java.io.ByteArrayOutputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -17,6 +29,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * These tests do not prove global 180-second admission, side-state priority, or game delivery.
  */
 class SideTaskNudgeDeliveryTest {
+    private static Method isolatedNudgeMethod;
+    private static URLClassLoader isolatedLoader;
+
     private static final UUID A = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private static final UUID B = UUID.fromString("00000000-0000-0000-0000-000000000002");
 
@@ -161,5 +176,142 @@ class SideTaskNudgeDeliveryTest {
         });
         assertEquals(3, sends.get());
         assertEquals(Long.valueOf(1040L), last.get(A));
+    }
+
+    // 2026-11-24: B advisory wake route. The real helper and nested NudgeDelivery are extracted
+    // from SideTaskHost source into an isolated consumer, so the MC-laden host class is never
+    // loaded; the route is RED until the helper lands.
+    @Test
+    void advisoryEventUsesTheSharedRepeatWindowWithAValidServerIdentity() throws Exception {
+        Map<UUID, Long> last = new HashMap<>();
+        AtomicInteger sends = new AtomicInteger();
+        assertTrue(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 1000L), last, "world-A", "session-A",
+                () -> { sends.incrementAndGet(); return true; }), "first B advisory must wake once");
+        assertEquals(1, sends.get());
+        assertEquals(Long.valueOf(1000L), last.get(A));
+
+        assertFalse(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 5799L), last, "world-A", "session-A",
+                () -> { sends.incrementAndGet(); return true; }), "same repeat window must suppress the next B wake");
+        assertEquals(1, sends.get());
+
+        assertTrue(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 5800L), last, "world-A", "session-A",
+                () -> { sends.incrementAndGet(); return true; }), "after the window a new B advisory may wake again");
+        assertEquals(2, sends.get());
+        assertEquals(Long.valueOf(5800L), last.get(A));
+    }
+
+    @Test
+    void advisoryRejectedDeliveryDoesNotConsumeTheWindow() throws Exception {
+        Map<UUID, Long> last = new HashMap<>();
+        assertFalse(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 2000L), last, "world-A", "session-A",
+                () -> false), "a rejected send must report false");
+        assertTrue(last.isEmpty(), "a rejected B send must not record a successful-reminder time");
+
+        AtomicInteger sends = new AtomicInteger();
+        assertTrue(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 2001L), last, "world-A", "session-A",
+                () -> { sends.incrementAndGet(); return true; }), "a later accepted B send still wakes");
+        assertEquals(1, sends.get());
+    }
+
+    @Test
+    void advisoryRoutingRejectsOtherEventsMissingIdentityAndCrossServer() throws Exception {
+        Map<UUID, Long> last = new HashMap<>();
+        AtomicInteger sends = new AtomicInteger();
+        BooleanSupplier send = () -> { sends.incrementAndGet(); return true; };
+
+        assertFalse(nudgeAdvisory("side_task_deferred", data(A, "world-A", "session-A", 3000L), last, "world-A", "session-A", send));
+        assertFalse(nudgeAdvisory("side_task_advisory", data(null, "world-A", "session-A", 3000L), last, "world-A", "session-A", send));
+        assertFalse(nudgeAdvisory("side_task_advisory", data(A, "world-B", "session-A", 3000L), last, "world-A", "session-A", send));
+        assertFalse(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-B", 3000L), last, "world-A", "session-A", send));
+        assertFalse(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 3000L), last, "world-A", "", send));
+        assertEquals(0, sends.get(), "only a same-server side_task_advisory may route to the B wake");
+        assertTrue(last.isEmpty());
+    }
+
+    @Test
+    void advisoryRouteHasNoBodyStopOrClearPort() throws Exception {
+        // The helper's only interaction is the BooleanSupplier receipt + the shared clock.
+        // There is no stopActive/clearBody/clearNudgeThrottle port to call here by construction.
+        Map<UUID, Long> last = new HashMap<>();
+        assertTrue(nudgeAdvisory("side_task_advisory", data(A, "world-A", "session-A", 4000L), last, "world-A", "session-A",
+                () -> true));
+        assertEquals(Map.of(A, 4000L), last, "the route records only the shared successful-reminder clock");
+    }
+
+    private static Map<String, Object> data(UUID id, String world, String session, long gameTime) {
+        Map<String, Object> data = new HashMap<>();
+        if (id != null) data.put("companionId", id.toString());
+        data.put("world_id", world);
+        data.put("server_session", session);
+        data.put("gameTime", gameTime);
+        data.put("typeId", "sleep");
+        return data;
+    }
+
+    private static boolean nudgeAdvisory(String event, Map<String, Object> data, Map<UUID, Long> last,
+                                         String currentWorld, String currentSession, BooleanSupplier send) throws Exception {
+        try {
+            return (Boolean) isolatedNudge().invoke(null, event, data, last, currentWorld, currentSession, send);
+        } catch (InvocationTargetException e) {
+            throw new AssertionError("SETUP: isolated real nudge route failed before business assertions", e.getCause());
+        }
+    }
+
+    private static synchronized Method isolatedNudge() throws Exception {
+        if (isolatedNudgeMethod != null) return isolatedNudgeMethod;
+        Path root = Path.of("").toAbsolutePath();
+        while (root != null && !Files.isDirectory(root.resolve("plugins/rdd/src/main/java"))) root = root.getParent();
+        assertNotNull(root, "SETUP: repository root not found");
+        String source = Files.readString(root.resolve(
+                "plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/SideTaskHost.java"));
+        String helper = isolatedMember(source, "nudgeAdvisoryEvent(");
+        String delivery = isolatedMember(source, "final class NudgeDelivery {");
+        Matcher repeat = Pattern.compile(
+                "(?m)^\\s*(?:private|public|protected)?\\s*static\\s+final\\s+long\\s+NUDGE_REPEAT_TICKS\\s*=\\s*([^;]+);\\s*$")
+                .matcher(source);
+        assertTrue(repeat.find(), "SETUP: NUDGE_REPEAT_TICKS declaration missing");
+        String unit = "package com.dwinovo.numen.plugins.rdd;\n"
+                + "import java.util.*;\n"
+                + "public final class SideTaskHostNudgeRoute {\n"
+                + "    static final long NUDGE_REPEAT_TICKS = " + repeat.group(1) + ";\n"
+                + helper
+                + delivery
+                + "}\n";
+        Path out = Files.createTempDirectory("rdd-nudge-route-");
+        Path sourceFile = out.resolve("com/dwinovo/numen/plugins/rdd/SideTaskHostNudgeRoute.java");
+        Files.createDirectories(sourceFile.getParent());
+        Files.writeString(sourceFile, unit);
+        var diagnostics = new ByteArrayOutputStream();
+        var compiler = ToolProvider.getSystemJavaCompiler();
+        assertNotNull(compiler, "SETUP: full JDK required");
+        int status = compiler.run(null, diagnostics, diagnostics,
+                "-encoding", "UTF-8", "-proc:none",
+                "-classpath", System.getProperty("java.class.path"),
+                "-d", out.toString(), sourceFile.toString());
+        assertEquals(0, status, "SETUP: isolated real NudgeDelivery compilation failed:" + diagnostics);
+        isolatedLoader = new URLClassLoader(new URL[]{out.toUri().toURL()},
+                SideTaskNudgeDeliveryTest.class.getClassLoader());
+        Class<?> route = isolatedLoader.loadClass("com.dwinovo.numen.plugins.rdd.SideTaskHostNudgeRoute");
+        isolatedNudgeMethod = route.getDeclaredMethod("nudgeAdvisoryEvent", String.class, Map.class, Map.class,
+                String.class, String.class, BooleanSupplier.class);
+        isolatedNudgeMethod.setAccessible(true);
+        return isolatedNudgeMethod;
+    }
+
+    /** Extract one real member (method or nested class) from the production source, never a copy. */
+    private static String isolatedMember(String source, String marker) {
+        int hit = source.indexOf(marker);
+        assertTrue(hit >= 0, "SETUP: production member missing: " + marker);
+        int start = source.lastIndexOf('\n', hit) + 1;
+        int indent = 0;
+        while (start + indent < source.length() && source.charAt(start + indent) == ' ') indent++;
+        String close = "\n" + " ".repeat(indent) + "}";
+        int end = source.indexOf(close, hit);
+        assertTrue(end > hit, "SETUP: production member end missing: " + marker);
+        return source.substring(start, end + close.length()) + "\n";
+    }
+
+    @AfterAll static void closeIsolatedLoader() throws Exception {
+        if (isolatedLoader != null) isolatedLoader.close();
     }
 }

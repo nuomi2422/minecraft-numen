@@ -84,6 +84,53 @@ public final class SkillRegistry {
     /** 落盘文件；{@code null} 表示纯内存（单测/预览用）。 */
     private final Path file;
     private int skippedLines;
+    public record DeclarationSnapshot(long revision, boolean complete, Map<String, SkillEntry> entries,
+                                      Set<String> availableBodies) {
+        public DeclarationSnapshot {
+            entries = Map.copyOf(entries); availableBodies = Set.copyOf(availableBodies);
+        }
+    }
+    private volatile DeclarationSnapshot declarations = new DeclarationSnapshot(0, true, Map.of(), Set.of());
+
+    /** No disk access, no mutable map escape; one coherent managed commit for all dependencies. */
+    public DeclarationSnapshot declarationSnapshot() { return declarations; }
+    private void publishDeclarations() {
+        declarations = new DeclarationSnapshot(declarations.revision() + 1, skippedLines == 0,
+                byId, verifiedBodies());
+    }
+
+    private Set<String> verifiedBodies() {
+        Set<String> available = new LinkedHashSet<>();
+        if (file == null || skippedLines > 0) return available;
+        Path dir = file.toAbsolutePath().getParent();
+        for (SkillEntry entry : byId.values()) {
+            String body = SkillBodyStore.read(dir, entry.bodyRef());
+            if (body != null && !body.isBlank()
+                    && com.dwinovo.numen.plugins.learner.core.LearnedLocationBinding.problem(body).isEmpty())
+                available.add(entry.skillId());
+        }
+        return available;
+    }
+
+    private void publishRefreshFailure() {
+        // Observation revision is not a content commit. Last complete entries are diagnostic only.
+        declarations = new DeclarationSnapshot(declarations.revision() + 1, false, byId, Set.of());
+    }
+
+    /** Explicit external-file refresh only; no watcher and no automatic filesystem consistency claim. */
+    public synchronized boolean refresh() {
+        if (file == null) return false;
+        try {
+            if (!Files.isRegularFile(file)) { publishRefreshFailure(); return false; }
+            SkillRegistry loaded = open(file);
+            if (loaded.skippedLines > 0) { publishRefreshFailure(); return false; }
+            byId.clear(); byFingerprint.clear(); byName.clear(); bySample.clear();
+            for (SkillEntry entry : loaded.byId.values()) index(entry);
+            skippedLines = 0;
+            declarations = new DeclarationSnapshot(declarations.revision() + 1, true, byId, loaded.declarations.availableBodies());
+            return true;
+        } catch (IOException | RuntimeException unavailable) { publishRefreshFailure(); return false; }
+    }
 
     /** 纯内存目录。 */
     public SkillRegistry() {
@@ -92,6 +139,13 @@ public final class SkillRegistry {
 
     private SkillRegistry(Path file) {
         this.file = file;
+    }
+
+    static SkillRegistry unavailable(Path file) {
+        SkillRegistry registry = new SkillRegistry(file);
+        registry.skippedLines = 1; // unresolved load, not an empty authoritative registry
+        registry.declarations = new DeclarationSnapshot(0, false, Map.of(), Set.of());
+        return registry;
     }
 
     /**
@@ -116,20 +170,22 @@ public final class SkillRegistry {
                 }
             }
         }
+        reg.declarations = new DeclarationSnapshot(0, reg.skippedLines == 0, reg.byId, reg.verifiedBodies());
         return reg;
     }
 
     /** 加载时跳过的坏行数（诚实计数）。 */
-    public int skippedLines() {
+    public synchronized int skippedLines() {
         return skippedLines;
     }
 
     /** 测试隔离 / 空库。 */
-    public void clear() {
+    public synchronized void clear() {
         byId.clear();
         byFingerprint.clear();
         byName.clear();
         bySample.clear();
+        publishDeclarations();
     }
 
     /**
@@ -137,7 +193,7 @@ public final class SkillRegistry {
      *
      * @param bodyRef 正文引用（正文不入目录，目录只给标题层）
      */
-    public Decision register(ArtifactDraft artifact, String skillId, String bodyRef) {
+    public synchronized Decision register(ArtifactDraft artifact, String skillId, String bodyRef) {
         return register(artifact, skillId, bodyRef, false);
     }
 
@@ -147,7 +203,7 @@ public final class SkillRegistry {
      * @param trial 权限矩阵判成 `TRIAL_ONLY` 时传 true；正文可读才记 {@link SkillStatus#TRIAL}，
      *              缺正文的新条目留 DRAFT 并在 Decision.reason 说明（2026-11-12 046-P）
      */
-    public Decision register(ArtifactDraft artifact, String skillId, String bodyRef, boolean trial) {
+    public synchronized Decision register(ArtifactDraft artifact, String skillId, String bodyRef, boolean trial) {
         if (artifact != null) {
             String duplicateOf = duplicateOf(artifact);
             if (duplicateOf != null && !duplicateOf.equals(skillId)) {
@@ -185,7 +241,7 @@ public final class SkillRegistry {
         String existingId = byFingerprint.get(fp);
         if (existingId != null) {
             SkillEntry existing = byId.get(existingId);
-            if (existing.bodyRef().equals(candidate.bodyRef())) {
+            if (existing.bodyRef().equals(candidate.bodyRef()) && existing.preconditions().equals(candidate.preconditions())) {
                 // 同指纹同正文：复用，不新增版本（否则每次复盘都会涨版本号）。
                 return new Decision(Outcome.REUSE, existing,
                         (trial && !bodyReadable ? "body-unreadable: reuse keeps existing state; " : "")
@@ -197,10 +253,15 @@ public final class SkillRegistry {
                 return new Decision(Outcome.CONFLICT, existing,
                         "body-unreadable: revision rejected; keeping " + existing.skillId() + "@v" + existing.version());
             }
-            SkillEntry revised = existing.revise(candidate.bodyRef(), candidate.foundingSamples());
-            store(revised);
+            SkillEntry revised = existing.revise(candidate.bodyRef(), candidate.foundingSamples(), candidate.preconditions());
+            // Declaration changes must be durable before becoming visible to a fresh resolver.
+            if (!existing.preconditions().equals(candidate.preconditions())) {
+                if (!storeTransition(revised)) return new Decision(Outcome.CONFLICT, existing, "preconditions-persist-failed");
+            } else {
+                if (!store(revised)) return new Decision(Outcome.CONFLICT, existing, "persist-failed: revision not committed");
+            }
             return new Decision(Outcome.REVISE, revised,
-                    "同指纹不同正文，修订为 v" + revised.version()
+                    "同指纹正文或前置条件变化，修订为 v" + revised.version()
                             + "（旧版 " + existing.skillId() + "@v" + existing.version() + " 进 supersedes）");
         }
 
@@ -212,7 +273,7 @@ public final class SkillRegistry {
                             + "），不能自动合并，需人工定夺");
         }
 
-        store(candidate);
+        if (!store(candidate)) return new Decision(Outcome.CONFLICT, null, "persist-failed: registration not committed");
         return new Decision(Outcome.REGISTERED, candidate, bodyNote + "新条目 " + candidate.skillId() + "@v1");
     }
 
@@ -222,7 +283,7 @@ public final class SkillRegistry {
      *
      * <p>为什么不给同伴工具：技能一撤就少一条经验，必须由外部/主人侧发起，避免 AI 自撤。
      */
-    public Decision retire(String skillId, String reason) {
+    public synchronized Decision retire(String skillId, String reason) {
         SkillEntry current = skillId == null ? null : byId.get(skillId);
         if (current == null) {
             return new Decision(Outcome.CONFLICT, null, "unknown skillId: " + skillId);
@@ -237,7 +298,7 @@ public final class SkillRegistry {
                 current.excludeConditions(), current.preconditions(), current.risk(),
                 current.evidenceLevel(), SkillStatus.REVOKED, current.bodyRef(),
                 current.validationSignals(), current.foundingSamples(), nextSupersedes, current.conflicts());
-        store(revoked);
+        if (!storeTransition(revoked)) return new Decision(Outcome.CONFLICT, current, "persist-failed: retirement not committed");
         return new Decision(Outcome.REVISE, revoked, "retired: " + (reason == null ? "" : reason));
     }
 
@@ -251,7 +312,7 @@ public final class SkillRegistry {
      * <p>语义与 retire 对称：追加同 id 新版本、版本+1、旧版进 supersedes，**不删历史**；
      * 已经是 TRIAL/PUBLISHED 的不重复升格（幂等）。
      */
-    public Decision promote(String skillId, String reason) {
+    public synchronized Decision promote(String skillId, String reason) {
         SkillEntry current = skillId == null ? null : byId.get(skillId);
         if (current == null) {
             return new Decision(Outcome.CONFLICT, null, "unknown skillId: " + skillId);
@@ -273,7 +334,7 @@ public final class SkillRegistry {
                 current.excludeConditions(), current.preconditions(), current.risk(),
                 current.evidenceLevel(), SkillStatus.TRIAL, current.bodyRef(),
                 current.validationSignals(), current.foundingSamples(), nextSupersedes, current.conflicts());
-        store(promoted);
+        if (!storeTransition(promoted)) return new Decision(Outcome.CONFLICT, current, "persist-failed: promotion not committed");
         return new Decision(Outcome.REVISE, promoted, "promoted: " + (reason == null ? "" : reason));
     }
 
@@ -301,7 +362,7 @@ public final class SkillRegistry {
     }
 
     /** true when candidate duplicates existingId by structured family or text near-duplicate. */
-    public boolean isDuplicate(ArtifactDraft candidate, String existingId) {
+    public synchronized boolean isDuplicate(ArtifactDraft candidate, String existingId) {
         if (candidate == null || existingId == null) return false;
         SkillEntry existing = byId.get(existingId);
         if (existing == null) return false;
@@ -311,14 +372,14 @@ public final class SkillRegistry {
     }
 
     /** First existing id in the same structured family, or null. */
-    public String duplicateOf(ArtifactDraft candidate) {
+    public synchronized String duplicateOf(ArtifactDraft candidate) {
         String f = family(candidate);
         if (f == null) return null;
         for (SkillEntry e : byId.values()) if (f.equals(family(e))) return e.skillId();
         return null;
     }
 
-    public java.util.List<NearDuplicate> nearDuplicates(ArtifactDraft candidate, double threshold) {
+    public synchronized java.util.List<NearDuplicate> nearDuplicates(ArtifactDraft candidate, double threshold) {
         java.util.List<NearDuplicate> out = new java.util.ArrayList<>();
         if (candidate == null) return out;
         java.util.Set<String> candTrigrams = trigrams(candidate.name() + " " + candidate.purpose() + " " + candidate.triggerConditions());
@@ -374,24 +435,49 @@ public final class SkillRegistry {
         return body != null && !body.isBlank();
     }
 
-    private void store(SkillEntry e) {
-        index(e);
-        if (file != null) {
-            try {
-                persist();
-            } catch (IOException ignored) {
-                // 落盘失败不许炸复盘：目录在内存里仍然可用，下次写入会再试。
+    /** Persist a management status transition before changing the live index.
+     * This is a serial in-process boundary, not a cross-process transaction or fsync guarantee. */
+    private boolean storeTransition(SkillEntry replacement) {
+        if (file == null) { index(replacement); publishDeclarations(); return true; } // preserve explicit memory-only registry behavior
+        if (skippedLines > 0 || !declarations.complete()) return false; // avoid rewriting a partially decoded registry
+        try {
+            Path parent = file.toAbsolutePath().getParent();
+            if (parent != null) Files.createDirectories(parent);
+            StringBuilder sb = new StringBuilder();
+            for (SkillEntry entry : byId.values()) {
+                SkillEntry out = entry.skillId().equals(replacement.skillId()) ? replacement : entry;
+                sb.append(toJson(out).toString()).append('\n');
             }
-        }
+            Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+            Files.writeString(tmp, sb.toString(), StandardCharsets.UTF_8);
+            try { Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); }
+            catch (AtomicMoveNotSupportedException e) { Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING); }
+            index(replacement);
+            publishDeclarations();
+            return true;
+        } catch (IOException | RuntimeException failure) { return false; }
     }
 
-    private void persist() throws IOException {
+    private boolean store(SkillEntry e) {
+        if (file != null) {
+            if (skippedLines > 0 || !declarations.complete()) return false;
+            Map<String, SkillEntry> candidate = new LinkedHashMap<>(byId);
+            candidate.put(e.skillId(), e);
+            try { persist(candidate); }
+            catch (IOException | RuntimeException failed) { return false; }
+        }
+        index(e);
+        publishDeclarations();
+        return true;
+    }
+
+    private void persist(Map<String, SkillEntry> entries) throws IOException {
         Path parent = file.toAbsolutePath().getParent();
         if (parent != null) {
             Files.createDirectories(parent);
         }
         StringBuilder sb = new StringBuilder();
-        for (SkillEntry e : byId.values()) {
+        for (SkillEntry e : entries.values()) {
             sb.append(toJson(e).toString()).append('\n');
         }
         Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
@@ -412,27 +498,27 @@ public final class SkillRegistry {
         }
     }
 
-    public Optional<SkillEntry> get(String skillId) {
+    public synchronized Optional<SkillEntry> get(String skillId) {
         return Optional.ofNullable(skillId == null ? null : byId.get(skillId));
     }
 
-    public int size() {
+    public synchronized int size() {
         return byId.size();
     }
 
     /** 全部条目（只读视图，给面板统计用；不暴露内部 map）。 */
-    public List<SkillEntry> all() {
+    public synchronized List<SkillEntry> all() {
         return List.copyOf(byId.values());
     }
 
     /** 样本 → 它派生出的 Skill（双向回链的另一半）。 */
-    public List<String> skillsOfSample(String sampleId) {
+    public synchronized List<String> skillsOfSample(String sampleId) {
         Set<String> ids = bySample.get(sampleId);
         return ids == null ? List.of() : List.copyOf(ids);
     }
 
     /** 只列可检索的条目（DRAFT/SUSPENDED/REVOKED 不参与检索）。 */
-    public List<SkillEntry> retrievable() {
+    public synchronized List<SkillEntry> retrievable() {
         List<SkillEntry> out = new ArrayList<>();
         for (SkillEntry e : byId.values()) {
             if (e.status().retrievable()) {

@@ -44,6 +44,9 @@ public interface SideTaskWorldPort {
     /** 消费一次"睡着→醒"边沿；返回 {@link Wake#NONE} 表示没有。每次调用只返回一次。 */
     Wake pollWake(UUID companionId);
 
+    /** Optional scoped producer. A bare Wake enum is never sufficient evidence for this contract. */
+    default SleepCycleEvidence pollSleepCycle(SideTask expected) { return SleepCycleEvidence.UNKNOWN; }
+
     // ---- 决策用事实（默认无此概念，宿主按需实现） ----
 
     /** Current nearby-hostile evidence only; CLEAR is not a promise of global safety. */

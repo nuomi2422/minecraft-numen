@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.learner.core;
 
 import com.dwinovo.numen.plugins.learner.skills.SkillBodyStore;
+import com.dwinovo.numen.plugins.learner.SyncSkillFeedback;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -24,6 +25,7 @@ final class SkillReviewInput {
     private SkillReviewInput() {}
 
     static String forMemo(Path dir, UUID companion, Memo memo, int limit) {
+        if ("skill_sync_receipt".equals(memo.stage())) return syncInput(dir, companion, memo, limit);
         if ("skill_delivery".equals(memo.stage()))
             return "技能复盘输入: body_status=NOT_AVAILABLE trace_status=NOT_AVAILABLE（原交付样本无历史正文摘要或原任务回执，不猜补）";
         var fact = SkillDeliveryIntake.taskResultFromSnapshot(memo.snapshot());
@@ -43,7 +45,8 @@ final class SkillReviewInput {
         String status = trace.limited() ? "UNKNOWN_LIMIT" : trace.rows().isEmpty() ? "NOT_AVAILABLE" : "EXACT_CALL";
         int reserve = 100;
         List<String> included = new ArrayList<>();
-        for (String row : trace.rows()) {
+        for (ToolResultRef factRow : trace.rows()) {
+            String row = factRow.display();
             if (out.length() + reserve + row.length() + 1 > limit) { status = "UNKNOWN_LIMIT"; break; }
             included.add(row); reserve += row.length() + 1;
         }
@@ -52,11 +55,29 @@ final class SkillReviewInput {
         return out.toString();
     }
 
+    private static String syncInput(Path dir, UUID companion, Memo memo, int limit) {
+        var row = SkillDeliveryIntake.syncEntryFromSnapshot(memo.snapshot());
+        var fact = SyncSkillFeedback.INSTANCE.confirm(dir == null ? null : new com.dwinovo.numen.plugins.learner.core.UsageLedger(dir), row);
+        if (fact == null || companion == null || !companion.toString().equals(row.companionId()))
+            return "技能复盘输入: source_status=UNKNOWN evidence=NONE（绑定已不可核，非效果证明）";
+        StringBuilder out = new StringBuilder("技能复盘输入: source_status=HISTORICAL_SYNC_RECEIPT evidence=NONE；非任务结果、采用或效果证明\n");
+        out.append("wire_id=").append(fact.wire())
+                .append(" target_tool=").append(fact.tool()).append(" receipt=").append(fact.receipt())
+                .append(" ref=").append(fact.ref()).append('@').append(fact.version()).append('\n');
+        String body = originalBody(dir, fact.bodyRef(), fact.bodyDigest(), limit);
+        if (body == null) out.append("body_status=UNKNOWN（原正文缺失或摘要不符）");
+        else if (out.length() + body.length() + 60 > limit) out.append("body_status=UNKNOWN_LIMIT");
+        else out.append("body_status=COMPLETE\n<original-skill-body>\n").append(body).append("\n</original-skill-body>");
+        return out.toString();
+    }
+
     private static String originalBody(Path dir, SkillDeliveryIntake.TaskResultFact fact, int limit) {
-        String ref = fact.bodyRef();
+        return originalBody(dir, fact.bodyRef(), fact.bodyDigest(), limit);
+    }
+    private static String originalBody(Path dir, String ref, String bodyDigest, int limit) {
         // BodyStore is the existing integrity reader. Do not let a historical ref escape its original store.
         if (!ref.matches("skill-body:[A-Za-z0-9_-]+@v[1-9][0-9]*-[A-Za-z0-9_-]+[.]md")
-                || !fact.bodyDigest().matches("[0-9a-f]{64}")) return null;
+                || !bodyDigest.matches("[0-9a-f]{64}")) return null;
         try {
             Path file = dir.resolve("skill-bodies").resolve(ref.substring("skill-body:".length()));
             if (!Files.isRegularFile(file) || Files.size(file) > 4L * limit) return null;
@@ -64,17 +85,40 @@ final class SkillReviewInput {
             if (body == null || body.isBlank()) return null;
             String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                     .digest(body.getBytes(StandardCharsets.UTF_8)));
-            return fact.bodyDigest().equals(digest) ? body : null;
+            return bodyDigest.equals(digest) ? body : null;
         } catch (IOException | NoSuchAlgorithmException | RuntimeException unavailable) {
             return null;
         }
     }
 
-    private record Trace(List<String> rows, boolean limited) {}
+    private record ToolResultRef(String eventId, String display, String writer, String status, String taskId) {
+        boolean terminal() {
+            return "server-async".equals(writer) && switch (status) {
+                case "done", "failed", "timeout", "stopped", "external-done", "external-failed", "external-timeout", "external-stopped" -> true;
+                default -> false;
+            };
+        }
+    }
+    private record Trace(List<ToolResultRef> rows, boolean limited) {}
+
+    /** Re-read original scoped terminal facts; never treat caller evidence or display text as authority. */
+    static Memo withTaskResultEvidence(Path dir, UUID companion, Memo source) {
+        if (source == null || !"skill_task_result".equals(source.stage())) return source;
+        var fact = SkillDeliveryIntake.taskResultFromSnapshot(source.snapshot());
+        List<String> ids = List.of();
+        if (dir != null && fact != null && companion != null && companion.toString().equals(fact.scope().companionId())) {
+            Trace found = trace(dir, fact);
+            // Incomplete tail/parse means UNKNOWN: do not turn a partial observation into evidence permission.
+            if (!found.limited()) ids = Memo.normalizeEvidence(found.rows().stream()
+                    .filter(row -> row.terminal() && !row.taskId().isBlank() && fact.taskId().equals(row.taskId())).map(ToolResultRef::eventId).toList());
+        }
+        return new Memo(source.id(), source.problem(), source.stage(), source.tried(), source.snapshot(),
+                source.createdAt(), source.category(), ids);
+    }
     private static Trace trace(Path dir, SkillDeliveryIntake.TaskResultFact fact) {
         Path file = dir.resolve("monitor/tools.jsonl");
         if (!Files.isRegularFile(file)) return new Trace(List.of(), false);
-        List<String> rows = new ArrayList<>();
+        List<ToolResultRef> rows = new ArrayList<>();
         boolean limited = false;
         try (var channel = Files.newByteChannel(file)) {
             long size = channel.size(), start = Math.max(0, size - TRACE_BYTES);
@@ -106,15 +150,34 @@ final class SkillReviewInput {
                     String event = str(envelope, "event_id");
                     if (event.isBlank()) continue; // no fabricated trace/event identity
                     if (data.has("task_id") && !fact.taskId().equals(str(data, "task_id"))) continue;
+                    String writer = str(data, "journaled_by");
+                    if (!writer.equals("server") && !writer.equals("server-sync") && !writer.equals("server-async")) continue;
                     String tool = str(data, "tool"), result = str(data, "result");
-                    if (event.length() > 100 || tool.length() > 80 || result.length() > 180) limited = true;
-                    rows.add("event:" + clip(event, 100) + " tool=" + clip(tool, 80)
-                            + " result=" + clip(result, 180));
+                    String kind = writer.equals("server-sync") ? "SYNC_TERMINAL"
+                            : writer.equals("server-async") ? "ASYNC_TERMINAL" : "SERVER_REPLY_UNKNOWN";
+                    String asyncStatus = str(data, "async_status");
+                    if (writer.equals("server") && isAsyncAcceptance(result)) kind = "ACCEPTANCE_ONLY";
+                    if (writer.equals("server-async") && asyncStatus.isBlank()) kind = "ASYNC_STATUS_UNKNOWN";
+                    if (writer.equals("server-async") && str(data, "task_id").isBlank()) kind = "TASK_UNKNOWN";
+                    if (event.length() > 100 || tool.length() > 80 || result.length() > 180 || asyncStatus.length() > 80) limited = true;
+                    rows.add(new ToolResultRef(event, "event:" + clip(event, 100) + " tool=" + clip(tool, 80)
+                            + " writer=" + writer + " kind=" + kind
+                            + (asyncStatus.isBlank() ? "" : " async_status=" + clip(asyncStatus, 80))
+                            + " result=" + clip(result, 180), writer, asyncStatus, str(data, "task_id")));
                     if (rows.size() > TRACE_ROWS) { rows.remove(0); limited = true; }
                 } catch (RuntimeException malformed) { limited = true; }
             }
         } catch (IOException | RuntimeException unavailable) { return new Trace(List.of(), true); }
         return new Trace(List.copyOf(rows), limited);
+    }
+
+    private static boolean isAsyncAcceptance(String result) {
+        try {
+            JsonObject root = JsonParser.parseString(result).getAsJsonObject();
+            JsonObject data = root.getAsJsonObject("data");
+            return data != null && data.has("async") && data.get("async").isJsonPrimitive()
+                    && data.getAsJsonPrimitive("async").isBoolean() && data.get("async").getAsBoolean();
+        } catch (RuntimeException unavailable) { return false; }
     }
 
     private static String str(JsonObject object, String key) {

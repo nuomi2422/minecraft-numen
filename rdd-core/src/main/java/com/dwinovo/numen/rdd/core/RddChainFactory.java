@@ -141,7 +141,7 @@ public final class RddChainFactory {
                     spec.description(),
                     DetectionMode.HARD_CODED,
                     spec.condition(), 0, 0, false, spec.body(),
-                    spec.nodeType(), spec.recurrence()));
+                    spec.nodeType(), spec.recurrence(), spec.resourceUses()));
         }
         return new Goal("goal-" + suffix, obj,
                 List.of(new PrimaryGoal("primary-" + suffix, obj, subtasks)));
@@ -157,7 +157,7 @@ public final class RddChainFactory {
             validateCondition(sp.condition(), i);
             out.add(new Subtask(primaryId + "-r" + revision + "-" + i, sp.description(),
                     DetectionMode.HARD_CODED, sp.condition(), 0, 0, false, sp.body(),
-                    sp.nodeType(), sp.recurrence()));
+                    sp.nodeType(), sp.recurrence(), sp.resourceUses()));
         }
         return out;
     }

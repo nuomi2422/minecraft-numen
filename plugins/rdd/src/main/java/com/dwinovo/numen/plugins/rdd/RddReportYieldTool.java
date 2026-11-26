@@ -28,7 +28,7 @@ import java.util.function.Consumer;
  * 见 {@code TaskChain.raiseCurrentMinimum}：下调会让硬判据当场变真（假完成）。
  * 所以这里收到比当前目标更小的数时，只记录、不改判据，并明确回执"目标未变"。
  */
-final class RddReportYieldTool implements NumenTool {
+final class RddReportYieldTool implements NumenTool, com.dwinovo.numen.agent.tool.OwnerAuthenticatedTool, com.dwinovo.numen.agent.tool.TrustedYieldTool {
 
     @Override
     public String name() {
@@ -49,7 +49,7 @@ final class RddReportYieldTool implements NumenTool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .string("expected_subtask_id", "Current subtask ID from rdd_status.")
-                .string("asset_key", "The item you counted (real namespaced id), for the record.")
+                .string("asset_key", "The counted item (namespaced id); must match the current inventory condition.")
                 .integer("observed", "How many of this item you actually see here.", Integer.MIN_VALUE, Integer.MAX_VALUE)
                 .integer("take", "How many you will collect; defaults to observed.", Integer.MIN_VALUE, Integer.MAX_VALUE)
                 .build();
@@ -57,6 +57,40 @@ final class RddReportYieldTool implements NumenTool {
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
+        reply.accept(com.dwinovo.numen.task.TaskResult.fail("yield requires authenticated owner context; refresh task and retry").toJson());
+    }
+
+    @Override
+    public Object captureHostBinding(NumenPlayer companion) { return RddPlugin.yieldIdentity(companion); }
+
+    @Override
+    public void onTrustedHostCall(String id, JsonObject args, NumenPlayer companion, Object binding, Consumer<String> reply) {
+        var current = RddPlugin.yieldIdentity(companion);
+        if (current == null || !(binding instanceof com.dwinovo.numen.rdd.core.YieldOwnerBinding.Identity captured) || !captured.equals(current)) {
+            reply.accept(com.dwinovo.numen.task.TaskResult.fail("yield host identity changed; refresh task before retry").toJson());
+            return;
+        }
+        performYield(id, args, companion, reply);
+    }
+
+    @Override
+    public void onOwnerTicketRequest(NumenPlayer companion, net.minecraft.server.level.ServerPlayer caller, Consumer<String> reply) {
+        String ticket = RddPlugin.issueYieldTicket(caller, companion, System.currentTimeMillis());
+        reply.accept(ticket == null
+                ? com.dwinovo.numen.task.TaskResult.fail("yield identity unavailable; refresh task").toJson()
+                : com.dwinovo.numen.task.TaskResult.ok("yield ticket issued", java.util.Map.of("ticket", ticket)).toJson());
+    }
+
+    @Override
+    public void onOwnerCall(String toolCallId, JsonObject args, NumenPlayer companion, net.minecraft.server.level.ServerPlayer caller, Consumer<String> reply) {
+        if (!RddPlugin.consumeYieldTicket(caller, companion, str(args, "_yield_ticket"), System.currentTimeMillis())) {
+            reply.accept(com.dwinovo.numen.task.TaskResult.fail("yield identity expired or unavailable; refresh task before retry").toJson());
+            return;
+        }
+        performYield(toolCallId, args, companion, reply);
+    }
+
+    private void performYield(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
         try {
             RddRuntime rt = RddPlugin.runtime(companion.getUUID());
             if (rt == null) {
@@ -82,13 +116,17 @@ final class RddReportYieldTool implements NumenTool {
             if (observed < 0) {
                 throw new IllegalArgumentException("observed must be >= 0");
             }
-            int before = chain.currentMinimum(current.id());
-            boolean raised = false;
-            int applied = before;
-            if (take > before) {
-                int old = chain.raiseCurrentMinimum(current.id(), take);
-                raised = true;
-                applied = take;
+            var side = SideTaskHost.activeYieldOwner(companion.getUUID());
+            if (side != null) {
+                reply.accept(com.dwinovo.numen.task.TaskResult.fail("yield refused: current scope=SIDE instance="
+                        + side.instanceId() + " generation=" + side.generation()).toJson());
+                return;
+            }
+            int before = chain.raiseCurrentMinimumForAsset(current.id(), assetKey, take);
+            boolean raised = take > before;
+            int applied = raised ? take : before;
+            if (raised) {
+                int old = before;
                 RddMonitor.publish("yield_target_raised", data(companion, current.id(), assetKey, observed, old, take));
                 RddPlugin.saveRuntimes();
                 RddPlugin.publishTaskSnapshot(companion.getUUID(), "yield_target_raised");

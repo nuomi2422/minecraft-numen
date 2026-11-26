@@ -9,6 +9,8 @@ public final class FoodSupplySideTaskType implements SideTaskType {
 
     @Override public String typeId() { return TYPE_ID; }
 
+    @Override public boolean advisoryOnly() { return true; }
+
     @Override public long deadlineTicks() { return 20L * 60L * 10L; } // 10 min
 
     @Override public SideTask create(CreationContext ctx) {

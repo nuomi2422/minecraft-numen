@@ -555,6 +555,21 @@ class RddMainlineWiringPinTest {
         assertContains(save, "completionCommit().saveRuntime(", "ordinary save must share the pending-aware consumer");
     }
 
+    /**
+     * 060-D（2026-11-24 迁移实机）：外部 reset 在 removeCurrent 之后才 clear 家锚点；
+     * 而 RddHomeAnchor.DIR 只在 renderStateContext 里赋值 → 没有模型请求窗口的 reset 抛
+     * home store unavailable，此时链/资产已被清掉 = partial cleanup。
+     * 初始化必须前移到插件 setup，且在 reset 的任何副作用之前再确认一次。
+     */
+    @Test
+    void homeAnchorStoreIsInitialisedBeforeResetSideEffects() {
+        String src = plugin();
+        assertContains(methodBody(src, "setup", "factsDir"), "RddHomeAnchor.bind(factsDir)",
+                "家锚点目录必须随插件初始化接上，不能等一次模型上下文渲染");
+        String reset = methodBody(src, "resetCurrentWorld", "RddHomeAnchor.clear");
+        assertOrder(reset, "RddHomeAnchor.bind(", "removeCurrent(");
+    }
+
     @Test
     void blockPropertyFilterIsAppliedBeforeAnyBlockCanMatch() throws Exception {
         String src = Files.readString(pluginSourceDir().resolve("RddWorldFacts.java"));
@@ -563,14 +578,51 @@ class RddMainlineWiringPinTest {
         assertContains(body, "condition.containsKey(\"properties\")", "old callers retain presence-only semantics");
     }
 
+    /**
+     * 060 B：普通周期入口不得再走旧 survivalPreempt。
+     *
+     * <p>2026-11-24 17:27 实机原行（rdd-1795513283523.jsonl:1539/1570/1590）：
+     * 09:28:17.780 / 09:28:47.080 / 09:29:13.817 三次 type=survival_preempt，
+     * hunger=9 hp=20 free=36 SEEK_FOOD_FIRST；非真实紧急伤害却触发重规划/停体风险。
+     * 本测试只锁 Detector 普通周期入口与普通消费体，不证明 MC 实跑。
+     */
+    @Test
+    void ordinaryPeriodicTickDoesNotEnterLegacySurvivalPreempt() throws Exception {
+        String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
+        String tickBody = methodBody(src, "onServerTick", "completionPending");
+        assertContains(tickBody, "survivalPreempt(ap, tick)",
+                "the original periodic entry stays; its ordinary branch is reduced");
+        assertContains(tickBody, "SideTaskHost.tick(server, ap)",
+                "B cache sampling stays before the ordinary Detector branch");
+
+        String body = methodBody(src, "survivalPreempt", "needExpansion");
+        assertContains(body, "RddReplanTransition.observeSafe(ap.getUUID())",
+                "safe observation must still clear old survival intent/cooldown");
+        assertContains(body, "RddGoalDriver.needExpansion(ap.getUUID())",
+                "pending unexpanded primary must retain lazy expansion");
+        assertNotContains(body, "RddSurvivalGate.evaluate",
+                "ordinary periodic path must not classify/decide survival");
+        assertNotContains(body, "requestReplanForSurvival",
+                "ordinary periodic path must not request replan");
+        assertNotContains(body, "stopPreemptedOwner",
+                "ordinary periodic path must not stop the body");
+        assertNotContains(body, "SURVIVAL_PREEMPT_AT",
+                "ordinary periodic path must not spend the old 60s budget");
+    }
+
     @Test
     void pendingSurvivalUsesFirstExpansionWithoutFailureBudget() throws Exception {
         String src = Files.readString(pluginSourceDir().resolve("RddDetector.java"));
         String body = methodBody(src, "survivalPreempt", "RddGoalDriver.needExpansion");
-        assertOrder(body, "PrimaryGoalStatus.PENDING", "RddGoalDriver.needExpansion", "SideTaskHost.isActive", "SURVIVAL_PREEMPT_AT.get", "RddPlugin.requestReplan");
+        assertOrder(body, "PrimaryGoalStatus.PENDING", "RddGoalDriver.needExpansion",
+                "SideTaskHost.blocksMainline");
         assertContains(body, "chain.currentPrimary().unexpanded()", "only lazy pending stages expand");
-        assertContains(body, "chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return", "non-active execution never enters stuck replan");
-        assertContains(body, "RddPlugin.requestReplan", "active survival handling remains wired");
+        assertContains(body, "chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return",
+                "non-active execution never enters the ordinary branch");
+        assertNotContains(body, "RddPlugin.requestReplan",
+                "ordinary low hunger/HP must not enter typed replan");
+        assertNotContains(body, "SURVIVAL_PREEMPT_AT",
+                "ordinary path must not spend the legacy 60s budget");
     }
 
     /**
@@ -594,10 +646,16 @@ class RddMainlineWiringPinTest {
         assertContains(plugin, "stopActive(body, \"survival preempt\")",
                 "停体只发生在接受回调里");
         String body = methodBody(detector(), "survivalPreempt", "RddGoalDriver.needExpansion");
-        assertOrder(body, "RddPlugin.requestReplanForSurvival", "if (!accepted)", "SURVIVAL_PREEMPT_AT.put");
-        assertContains(body, "生存抢占未进入重规划", "拒绝时不发抢占观测");
+        assertContains(body, "RddReplanTransition.observeSafe",
+                "safe observation must still clear old survival intent/cooldown");
+        assertContains(body, "RddGoalDriver.needExpansion",
+                "PENDING unexpanded lazy expansion must remain");
+        assertNotContains(body, "RddPlugin.requestReplanForSurvival",
+                "ordinary Detector tick must not call typed survival replan");
+        assertNotContains(body, "SURVIVAL_PREEMPT_AT",
+                "ordinary Detector tick must not spend the legacy budget");
         assertFalse(body.contains("ToolRegistry.get(\"task_stop\")"),
-                "生存抢占不得用全局 task_stop：拒绝时会误停、接受后可能停掉替换动作");
+                "ordinary Detector tick must not use global task_stop");
     }
 
     @Test

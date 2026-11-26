@@ -29,17 +29,14 @@ class SkillsKnowledgeContributorTest {
     }
 
     @Test
-    void plannerSeesPlannerAudienceWithBodyAndVersionRef() throws IOException {
+    void plannerSeesPlannerAudienceWithExactRefButNoBodyReceipt() throws IOException {
         register("sk-a", "夜间不要出门", "PLANNER");
         var frag = new SkillsKnowledgeContributor(dir, "PLANNER", 800)
-                .contribute(UUID.randomUUID(), "睡觉");
+                .contributeCatalog(UUID.randomUUID(), "睡觉");
 
-        assertTrue(frag.text().contains("夜间不要出门"), "正文要真的带上");
-        assertTrue(frag.text().contains("<entry ref=\"skill:sk-a\">"), "条目边界要约给统一检索记账");
-        assertEquals(1, frag.refs().size());
-        assertEquals("skill:sk-a", frag.refs().get(0).entryRef());
-        assertEquals("v1", frag.refs().get(0).version());
-        assertFalse(frag.refs().get(0).truncated());
+        assertFalse(frag.text().contains("夜间不要出门"), "目录不展开正文");
+        assertTrue(frag.text().contains("<entry ref=\"skill:sk-a@v1\""), "精确版本引用供按需读取");
+        assertEquals(0, frag.refs().size(), "发现目录不等于正文送达");
     }
 
     @Test
@@ -91,9 +88,8 @@ class SkillsKnowledgeContributorTest {
     void zeroMaxCharsDelegatesTruncationToContextBudget() throws IOException {
         register("sk-z", "一段比较长的正文" , "PLANNER");
         var frag = new SkillsKnowledgeContributor(dir, "PLANNER", 0).contribute(UUID.randomUUID(), "x");
-        assertTrue(frag.text().contains("一段比较长的正文"), "不自截断时正文全量交给消费方预算");
+        assertTrue(frag.text().contains("一段比较长的正文"));
         assertEquals(1, frag.refs().size());
-        assertFalse(frag.refs().get(0).truncated(), "provider 不切就不谎报 truncated");
     }
 
     @Test

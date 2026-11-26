@@ -75,6 +75,23 @@ public final class AgentOps {
         return response.toString();
     }
 
+    /** Explicitly inspect one package member, never mount, adopt or execute it. */
+    public String loadPackageComponent(UUID companion,String name,String file,String packageRef,String componentRef) {
+        if(name!=null || file!=null) throw new IllegalArgumentException("package component cannot be combined with name or file");
+        LearnedSkillBodyResolver.Reference.parse(packageRef);
+        LearnedSkillBodyResolver.Reference.parse(componentRef);
+        if(companion==null) throw new IllegalArgumentException("learned skill context missing");
+        var resolver=learnedSkills.get();
+        if(resolver==null) throw new IllegalStateException("learned-skill-resolver-unavailable");
+        var result=resolver.resolveComponent(companion,packageRef,componentRef,LearnedSkillBodyResolver.View.EXECUTOR);
+        if(result==null || !packageRef.equals(result.packageRef()) || !componentRef.equals(result.componentRef()))
+            throw new IllegalStateException("learned skill resolver identity mismatch");
+        if(!result.available()) throw new IllegalArgumentException("learned skill unavailable: "+result.gap());
+        JsonObject response=new JsonObject(); response.addProperty("success",true); response.addProperty("ref",componentRef);
+        response.addProperty("package_ref",packageRef); response.addProperty("body",result.body());
+        response.addProperty("availability",result.availability()); return response.toString();
+    }
+
     private static String quote(String s) {
         return "\"" + escapeJson(s) + "\"";
     }

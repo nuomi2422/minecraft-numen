@@ -70,6 +70,46 @@ class AttackPlanTest {
         assertEquals(Action.SKIRMISH, AttackPlan.decide(field(true, false, far), null).action());
     }
 
+    // ==================== 自卫 vs 点名 ====================
+
+    private static Foe shooter(int id, double distance) {
+        return new Foe(id, distance, false, false, true, true, true, true);
+    }
+
+    private static Battlefield defensive(boolean melee, boolean ranged, boolean cornered, Foe... foes) {
+        return new Battlefield(HEALTHY, REACH, melee, ranged, cornered, true, List.of(foes));
+    }
+
+    @Test
+    void selfDefenseWithoutBowLeavesADistantShooterInsteadOfCharging() {
+        Move m = AttackPlan.decide(defensive(true, false, false, shooter(1, 15.0)), null);
+        assertEquals(Action.DISENGAGE, m.action());
+        assertEquals(AttackPlan.NO_FOE, m.foeId(), "whole-field action, not the distant foe");
+    }
+
+    @Test
+    void pointedHuntStillClosesOnTheSameDistantShooter() {
+        Battlefield b = new Battlefield(HEALTHY, REACH, true, false, false, false, List.of(shooter(1, 15.0)));
+        Move m = AttackPlan.decide(b, null);
+        assertEquals(Action.SKIRMISH, m.action());
+        assertEquals(1, m.foeId());
+    }
+
+    @Test
+    void selfDefenseWithBowShootsWithoutWaitingForAHit() {
+        assertEquals(Action.BOW, AttackPlan.decide(defensive(true, true, false, shooter(1, 15.0)), null).action());
+    }
+
+    @Test
+    void nearShooterStillGetsSwungAt() {
+        assertEquals(Action.SKIRMISH, AttackPlan.decide(defensive(true, false, false, shooter(1, 3.0)), null).action());
+    }
+
+    @Test
+    void corneredKeepsTheExistingDegradedCharge() {
+        assertEquals(Action.SKIRMISH, AttackPlan.decide(defensive(true, false, true, shooter(1, 15.0)), null).action());
+    }
+
     // ==================== 全局的危险 ====================
 
     /** 它退到安全线外了,就该回去接着打原来那只。 */
@@ -364,5 +404,35 @@ class AttackPlanTest {
     void armedInsideTheRadiusIsAReposition() {
         assertEquals(Action.SKIRMISH,
                 AttackPlan.decide(field(true, false, mob(1, 2.0)), null).action());
+    }
+    /** 显式无害猎物：不炸、不引信、不接敌、非远程、可走、已授权。 */
+    private static Foe prey(int id, double distance) {
+        return new Foe(id, distance, false, false, false, true, false, true, true);
+    }
+
+    private static Battlefield fieldLow(boolean melee, boolean ranged, Foe... foes) {
+        return new Battlefield(7.0, REACH, melee, ranged, false, false, List.of(foes));
+    }
+
+    /** 低血点名狩猎一只显式无害猎物：仍允许打（当前 decide 还没接 harmlessPrey，红）。 */
+    @Test
+    void lowHealthHuntingHarmlessPreyIsStillAllowedToFight() {
+        assertEquals(Action.SKIRMISH,
+                AttackPlan.decide(fieldLow(true, false, prey(1, 3.0)), null).action());
+    }
+
+    /** 场上有任意一只非无害猎物（会反击/Enemy/爆炸…）就退回原血线门。 */
+    @Test
+    void lowHealthStillDisengagesWhenAnyFoeIsNotHarmlessPrey() {
+        assertEquals(Action.DISENGAGE,
+                AttackPlan.decide(fieldLow(true, false, prey(1, 3.0), mob(2, 5.0)), null).action());
+    }
+
+    /** 自卫永不使用猎物豁免。 */
+    @Test
+    void lowHealthSelfDefenseNeverUsesThePreyExemption() {
+        assertEquals(Action.DISENGAGE,
+                AttackPlan.decide(new Battlefield(7.0, REACH, true, false, false, true,
+                        List.of(prey(1, 3.0))), null).action());
     }
 }

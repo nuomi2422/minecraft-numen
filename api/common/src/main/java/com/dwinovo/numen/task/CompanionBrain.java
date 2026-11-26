@@ -44,6 +44,9 @@ final class CompanionBrain {
 
     /** 最近一次走到终态的任务（含终态与结果）。acx 完成探针用它区分「完成」与「失败」。 */
     private volatile TaskRecord lastFinished;
+    private final java.util.IdentityHashMap<TaskRecord, com.dwinovo.numen.api.TaskFocusLeaseService.Lease> taskFocus = new java.util.IdentityHashMap<>();
+    private final java.util.IdentityHashMap<TaskRecord, com.dwinovo.numen.api.TaskFocusLeaseService> taskFocusServices = new java.util.IdentityHashMap<>();
+    private final java.util.Set<TaskRecord> taskFocusAttempted = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
     /**
      * 最近若干条终态，按任务号索引。AC-B12b 复审（2026-10-21）：单槽 {@link #lastFinished}
@@ -67,8 +70,9 @@ final class CompanionBrain {
     }
 
     /** 终态落账：单槽保留「最近一次」兼容旧调用方，按 id 表（UUID 独立）给探针精确查询。 */
-    private void rememberFinished(TaskRecord record) {
+    void rememberFinished(TaskRecord record) {
         if (record == null) return;
+        releaseTaskFocus(record);
         lastFinished = record;
         TaskTerminalRegistry.remember(companionId, record);
         // 诊断（G6a-ledger）：确认取消/正常收尾到底有没有走到这里
@@ -86,6 +90,32 @@ final class CompanionBrain {
             // 广播失败不许影响任务结算本身
             com.dwinovo.numen.Constants.LOG.warn("[numen] TASK_FINISHED 广播失败: {}", t.toString());
         }
+    }
+
+    void reconcileTaskFocus(NumenPlayer companion, TaskRecord record) {
+        if (record == null || record.getState() != TaskState.RUNNING) return;
+        var existing=taskFocus.get(record);
+        if (existing != null) {
+            var ownerService=taskFocusServices.get(record);
+            boolean eligible=false;
+            try { eligible=ownerService != null && ownerService.stillEligible(companion,record,existing); }
+            catch (RuntimeException | LinkageError unavailable) { /* UNKNOWN: drop only this owner */ }
+            if (!eligible) { releaseTaskFocus(record); taskFocusAttempted.add(record); }
+            return;
+        }
+        if (record.skillSelection() == null || taskFocusAttempted.contains(record)) return;
+        var service=com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.TaskFocusLeaseService.class);
+        if (service == null) return;
+        taskFocusAttempted.add(record); // one bounded acquisition; physical TTL is not silently extended
+        try {
+            var lease=service.acquire(companion,record,java.util.UUID.randomUUID().toString());
+            if (lease != null) { taskFocus.put(record,lease); taskFocusServices.put(record,service); }
+        } catch (RuntimeException ignored) { /* optional observation cannot interrupt a task */ }
+    }
+    void releaseTaskFocus(TaskRecord record) {
+        taskFocusAttempted.remove(record);
+        var lease=taskFocus.remove(record); var service=taskFocusServices.remove(record);
+        if (lease != null && service != null) try { service.release(lease); } catch (RuntimeException ignored) { }
     }
 
     /** 最近一次终态任务（可能为 null）。只读快照，调用方不许改它。 */
@@ -155,6 +185,8 @@ final class CompanionBrain {
 
     void tick(NumenPlayer companion) {
         body = companion;
+        reconcileTaskFocus(companion, sync.record());
+        reconcileTaskFocus(companion, current.record());
         // 任务结束边沿(宪法 §5):两个槽都空过了宽限窗口,显式占用的会话就结束了,
         // 手还给反射。护甲的占用不动(它的生命是 §5 的四个自然终点),只有主手是任务作用域的。
         if (handPinRelease.tick(!sync.isEmpty() || !current.isEmpty())) {
@@ -425,6 +457,7 @@ final class CompanionBrain {
     private void journalTaskOutcome(NumenPlayer companion, TaskRecord rec, String status, String msg, TaskResult result) {
         try {
             java.util.Map<String, Object> jd = new java.util.LinkedHashMap<>();
+            jd.put("task_id", rec.publicId());
             jd.put("companion_id", String.valueOf(companion.getUUID()));
             jd.put("tool_call_id", rec.getToolCallId() == null ? "" : rec.getToolCallId());
             jd.put("tool", rec.getToolName() == null ? "" : rec.getToolName());

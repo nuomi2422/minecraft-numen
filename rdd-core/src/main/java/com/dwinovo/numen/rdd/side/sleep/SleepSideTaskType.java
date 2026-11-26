@@ -28,6 +28,20 @@ import java.util.UUID;
 public final class SleepSideTaskType implements SideTaskType {
 
     public static final String TYPE_ID = "sleep";
+    public enum Goal { LEGACY_BIND_OR_ENTER, OVERNIGHT }
+    public static final String KEY_GOAL = "sleep_goal";
+    private final Goal goal;
+    /** Default/no-arg construction is the ordinary auto reminder (B); explicit overnight stays hard. */
+    private final boolean advisory;
+    public SleepSideTaskType() { this(Goal.LEGACY_BIND_OR_ENTER); }
+    public SleepSideTaskType(Goal goal) { this(goal, goal == Goal.LEGACY_BIND_OR_ENTER); }
+    public SleepSideTaskType(Goal goal, boolean advisory) {
+        this.goal = java.util.Objects.requireNonNull(goal);
+        this.advisory = advisory;
+    }
+    public static boolean isOvernight(SideTask task) {
+        return task != null && TYPE_ID.equals(task.typeId()) && Goal.OVERNIGHT.name().equals(task.data().get(KEY_GOAL));
+    }
     public static final String PHASE_SEEKING = "SEEKING_BED";
     /** 兼容持久化的旧支线；新支线观察到睡眠时直接完成。 */
     public static final String PHASE_SLEEPING = "SLEEPING";
@@ -65,6 +79,17 @@ public final class SleepSideTaskType implements SideTaskType {
         return TYPE_ID;
     }
 
+    @Override public boolean advisoryOnly() { return advisory; }
+
+    @Override public boolean advisoryOnly(SideTask task) {
+        if (task == null || task.data() == null) return advisory;
+        String source = task.data().get("advisory_source");
+        if (source != null) return Boolean.parseBoolean(source);
+        // Unmarked legacy tasks follow the registered producer: old Host auto registration is B;
+        // an explicit hard fixture/registration stays hard.
+        return advisory;
+    }
+
     @Override
     public long deadlineTicks() {
         return DEADLINE_TICKS;
@@ -74,7 +99,8 @@ public final class SleepSideTaskType implements SideTaskType {
     public SideTask create(CreationContext ctx) {
         return new SideTask(ctx.companionId(), ctx.instanceId(), TYPE_ID, ctx.generation(),
                 ctx.scheduledGameDay(), ctx.gameTime(), ctx.deadlineGameTime(),
-                SideTaskState.ACTIVE, PHASE_SEEKING, Map.of(), ctx.mainlineToken());
+                SideTaskState.ACTIVE, PHASE_SEEKING, goal == Goal.OVERNIGHT
+                        ? Map.of(KEY_GOAL, Goal.OVERNIGHT.name()) : Map.of(), ctx.mainlineToken());
     }
 
     /**
@@ -83,6 +109,9 @@ public final class SleepSideTaskType implements SideTaskType {
      */
     @Override
     public SideTaskDecision decide(UUID companionId, SideTaskWorldPort world) {
+        if (!world.hasDayNightCycle()) {
+            return SideTaskDecision.skip("fixed_time_dimension_no_sleep");
+        }
         // 2026-10-24（主人指出）：睡眠只在夜里成立 —— 白天根本睡不着（原版直接拒绝），
         // 开一条白天执行的睡觉支线＝白占主线 10 分钟。**按时间窗判定，而不是只靠 deadline**。
         //
@@ -125,6 +154,9 @@ public final class SleepSideTaskType implements SideTaskType {
 
     @Override
     public SideTaskVerdict evaluate(SideTask task, SideTaskWorldPort world) {
+        if (task.data().containsKey(KEY_GOAL) && !isOvernight(task))
+            return SideTaskVerdict.cancel("unknown explicit sleep goal");
+        if (isOvernight(task)) return evaluateOvernight(task, world);
         UUID companionId = task.companionId();
         if (task.pastDeadline(world.gameTime())) {
             return SideTaskVerdict.skip("sleep deadline passed before a completed night");
@@ -175,8 +207,40 @@ public final class SleepSideTaskType implements SideTaskType {
         return SideTaskVerdict.keep(PHASE_SEEKING, data);
     }
 
+    private static SideTaskVerdict evaluateOvernight(SideTask task, SideTaskWorldPort world) {
+        Map<String,String> data = new LinkedHashMap<>(task.data());
+        data.put("overnight_success", "false");
+        if (task.pastDeadline(world.gameTime())) return SideTaskVerdict.skip("overnight deadline without matched cycle", data);
+        var evidence = world.pollSleepCycle(task);
+        if (evidence == null || !evidence.matches(task)) {
+            if (world.gameTime() - task.createdAtGameTime() >= SEEK_WINDOW_TICKS)
+                return SideTaskVerdict.skip("no current scoped sleep-cycle evidence within seek window", data);
+            return SideTaskVerdict.keep(PHASE_SEEKING, data);
+        }
+        data.put("sleep_sequence", Long.toString(evidence.sequence()));
+        data.put("sleep_started_tick", Long.toString(evidence.startedGameTick()));
+        data.put("sleep_observed_tick", Long.toString(evidence.observedGameTick()));
+        data.put("sleep_started_day_time", Long.toString(evidence.startedDayTime()));
+        data.put("sleep_observed_day_time", Long.toString(evidence.observedDayTime()));
+        if (evidence.status() == com.dwinovo.numen.rdd.side.SleepCycleEvidence.Status.DAYBREAK) {
+            if (evidence.observedDayTime() < evidence.startedDayTime()
+                    || (Math.floorMod(evidence.observedDayTime(), 24_000L) >= 13_000L
+                        && Math.floorMod(evidence.observedDayTime(), 24_000L) < 23_000L))
+                return SideTaskVerdict.keep(PHASE_SEEKING, data);
+            data.put("overnight_success", "true");
+            return SideTaskVerdict.complete("matched scoped night sleep followed by daytime wake; natural cause not asserted", data);
+        }
+        if (evidence.status() == com.dwinovo.numen.rdd.side.SleepCycleEvidence.Status.INTERRUPTED)
+            return SideTaskVerdict.skip("scoped sleep interrupted; no overnight success", data);
+        return SideTaskVerdict.keep(PHASE_SLEEPING, data);
+    }
+
     @Override
     public String renderContext(SideTask task, SideTaskWorldPort world) {
+        if (isOvernight(task)) return "<side_task scope=\"SIDE\" type=\"sleep\" goal=\"OVERNIGHT\" instance=\""
+                + esc(task.instanceId()) + "\" generation=\"" + task.generation() + "\">"
+                + "本次显式目标：同一世界会话与任务内夜间进入睡眠，随后白天醒来。绑定成功或刚睡着不算本目标完成；"
+                + "不宣称自然跳夜原因。可拒绝或超时退出，不要为了等睡眠反复抢占正常动作。</side_task>";
         long remaining = Math.max(0L, task.deadlineGameTime() - world.gameTime());
         long remainingSeconds = remaining / 20L;
         Map<String, String> attrs = new LinkedHashMap<>();

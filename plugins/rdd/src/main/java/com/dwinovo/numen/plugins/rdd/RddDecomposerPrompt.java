@@ -168,6 +168,7 @@ final class RddDecomposerPrompt {
                 + heldBlock
                 + "请用 decompose_goal 工具给出子步骤。每个子步骤包含：\n"
                 + "- description：这一步要做什么\n"
+                + "- resource_uses（可选）：[{asset_key,quantity,kind:CONSUME|RETAIN|TRANSFER}]。这是当前子步的用途声明，不是事实：CONSUME是为本步结果可使用的输入，不要求完成时仍持有；RETAIN是完成时仍须真实持有的独立数量；TRANSFER只用于精确container_at且item/minimum/dimension/xyz对应的交付。用途不能证明已消耗、已转移或已丢失；缺观测是UNKNOWN。不要把历史采集结果当永久库存。所有独立终态携带要求必须列RETAIN。\n"
                 + "- condition：{asset_key: 物品命名空间ID, minimum: 需要数量}\n"
                 + "  或 {group: food|wood|blocks, minimum: 组内最低总数}；不要强求食物品种齐全。\n"
                 + "  床/羊毛/木板这类有颜色或树种变体的物品，写具体 ID（如 minecraft:white_bed）；"
@@ -346,6 +347,14 @@ final class RddDecomposerPrompt {
                     "type", "object",
                     "properties", Map.of(
                             "description", Map.of("type", "string", "description", "这一步做什么（给主人的可读说明）"),
+                            "resource_uses", Map.of("type", "array", "maxItems", 8,
+                                    "description", "Local planned uses, not observed consumption/transfer or proof of loss. Omit for legacy unspecified intent. Declare all independent final carried quantities as RETAIN.",
+                                    "items", Map.of("type", "object", "additionalProperties", false,
+                                            "properties", Map.of(
+                                                    "asset_key", Map.of("type", "string"),
+                                                    "quantity", Map.of("type", "integer", "minimum", 1),
+                                                    "kind", Map.of("type", "string", "enum", List.of("CONSUME", "RETAIN", "TRANSFER"))),
+                                            "required", List.of("asset_key", "quantity", "kind"))),
                             "condition", Map.of(
                                     "type", "object",
                                     "description", "确定性完成条件",
@@ -365,7 +374,13 @@ final class RddDecomposerPrompt {
                     "properties", Map.of(
                             "subtasks", Map.of(
                                     "type", "array",
-                                    "items", subtaskItem)),
+                                    "items", subtaskItem),
+                            "concern_review", Map.of("type", "object", "properties", Map.of(
+                                    "concern_ref", Map.of("type", "string"),
+                                    "proposal", Map.of("type", "string", "enum", List.of("FIXED", "NOT_APPLICABLE", "DEFERRED")),
+                                    "reason", Map.of("type", "string"), "basis", Map.of("type", "string"),
+                                    "resume_condition", Map.of("type", "string")),
+                                    "required", List.of("concern_ref", "proposal", "reason", "basis"))),
                     "required", List.of("subtasks"));
         }
     };

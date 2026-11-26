@@ -126,6 +126,22 @@ class RddSupervisionNotificationsTest {
         assertTrue(trace().contains("event:nudge_throttled:null"));
         assertEquals(1L,trace().stream().filter(s->s.startsWith("enqueueSystem:")).count());
     }
+    @Test void rejectedSystemDeliveryDoesNotClaimOrThrottleAndCanRetry() throws Exception {
+        UUID id=UUID.randomUUID(); bind(id,chain("a",true)); mode("enqueue_rejected");
+        sideNudge(id, 3000L, false, true);
+        assertFalse(sideClocks().containsKey(id), "rejected delivery cannot record side reminder");
+        assertTrue(allowed(id), "rejected delivery cannot spend global throttle");
+        assertFalse(trace().contains("event:supervisor_output:null"), "rejected is not sent");
+        mode("normal"); sideNudge(id, 3001L, true, true);
+        assertEquals(Long.valueOf(3001L), sideClocks().get(id));
+        assertTrue(trace().contains("event:supervisor_output:null"));
+    }
+    @Test void nullDeliveryIsUnknownAndDoesNotSpend() throws Exception {
+        UUID id=UUID.randomUUID(); bind(id,chain("a",true)); mode("enqueue_null");
+        assertFalse(send(id,"work")); assertTrue(allowed(id));
+        assertFalse(trace().contains("event:supervisor_output:null"));
+        mode("normal"); assertTrue(send(id,"work"));
+    }
     @Test void pauseNullApiAndInvalidMessageNeverQueueOrSpend() throws Exception {
         UUID id=UUID.randomUUID(); bind(id,chain("a",true)); mode("pause");
         assertFalse(send(id,"work")); assertFalse(allowed(id));
@@ -294,8 +310,8 @@ class RddSupervisionNotificationsTest {
             static final Map<UUID,RddRuntime> runtimes=new HashMap<>();
             static FakeNumenApi api=new FakeNumenApi();
             static class FakeNumenApi {
-                boolean fails;
-                void enqueueSystem(UUID id,String message) { if(fails) throw new IllegalStateException("queue"); trace.add("enqueueSystem:"+message); }
+                boolean fails, rejected, unknown;
+                com.dwinovo.numen.api.Delivery enqueueSystem(UUID id,String message) { if(fails) throw new IllegalStateException("queue"); trace.add("enqueueSystem:"+message); return unknown ? null : rejected ? com.dwinovo.numen.api.Delivery.REJECTED : com.dwinovo.numen.api.Delivery.QUEUED; }
             }
             static FakeNumenApi notificationApi(){return api;}
             static boolean supervisionEnabled(){return supervision;}
@@ -303,7 +319,7 @@ class RddSupervisionNotificationsTest {
             static RddRuntime runtime(UUID id){return runtimes.get(id);}
             static Map<String,Object> observationData(UUID id){if(observationFails)throw new IllegalStateException("observation"); return new LinkedHashMap<>();}
             static void bindFixture(UUID id,TaskChain chain){runtimes.put(id,new RddRuntime(chain));}
-            static void mode(String m){supervision=!m.equals("pause");body=m.equals("body");observationFails=m.equals("observation_throw");api=m.equals("no_api")?null:new FakeNumenApi();if(api!=null)api.fails=m.equals("enqueue_throw");}
+            static void mode(String m){supervision=!m.equals("pause");body=m.equals("body");observationFails=m.equals("observation_throw");api=m.equals("no_api")?null:new FakeNumenApi();if(api!=null){api.fails=m.equals("enqueue_throw");api.rejected=m.equals("enqueue_rejected");api.unknown=m.equals("enqueue_null");}}
             static void reset() throws Exception {
                 trace.clear();runtimes.clear();mode("normal");
                 for(String name:List.of("LAST_NUDGE_AT","KICKOFF_SENT","KICKOFF_SKIP_LOGGED")){

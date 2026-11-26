@@ -119,7 +119,30 @@ public final class LearnerPlugin implements NumenPlugin {
                 out.put("error", "revoked skill cannot be promoted: " + skillId);
                 return out;
             }
+            String body = com.dwinovo.numen.plugins.learner.skills.SkillBodyStore.read(configDir, before.bodyRef());
+            if (body == null || body.isBlank()) {
+                out.put("outcome", "CONFLICT");
+                out.put("error", "body-unreadable: skill cannot be delivered: " + skillId);
+                return out;
+            }
             var decision = registry.promote(skillId, reason);
+            out.put("outcome", decision.outcome().name());
+            out.put("decisionReason", decision.reason());
+            if (decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.CONFLICT
+                    || decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.LIMIT) {
+                out.put("error", decision.reason());
+                return out;
+            }
+            if (decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.REUSE) {
+                var disk = com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(configDir.resolve("skills.jsonl"));
+                if (disk.skippedLines() != 0 || !disk.get(skillId).filter(before::equals).isPresent()) {
+                    out.put("error", "UNKNOWN: in-memory skill does not match readable persisted registry");
+                    return out;
+                }
+                out.put("skillId", skillId); out.put("prevVersion", before.version());
+                out.put("newVersion", before.version()); out.put("status", before.status().name());
+                return out; // healthy idempotent no-op; never emit a new promotion event
+            }
             java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
             ev.put("skillId", skillId);
             ev.put("reason", reason == null ? "" : reason);
@@ -149,6 +172,23 @@ public final class LearnerPlugin implements NumenPlugin {
                 return out;
             }
             var decision = registry.retire(skillId, reason);
+            out.put("outcome", decision.outcome().name());
+            out.put("decisionReason", decision.reason());
+            if (decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.CONFLICT
+                    || decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.LIMIT) {
+                out.put("error", decision.reason());
+                return out;
+            }
+            if (decision.outcome() == com.dwinovo.numen.plugins.learner.skills.SkillRegistry.Outcome.REUSE) {
+                var disk = com.dwinovo.numen.plugins.learner.skills.SkillRegistry.open(configDir.resolve("skills.jsonl"));
+                if (disk.skippedLines() != 0 || !disk.get(skillId).filter(before::equals).isPresent()) {
+                    out.put("error", "UNKNOWN: in-memory skill does not match readable persisted registry");
+                    return out;
+                }
+                out.put("skillId", skillId); out.put("prevVersion", before.version());
+                out.put("newVersion", before.version()); out.put("supersedes", before.supersedes());
+                return out; // already retired; no second retirement event
+            }
             java.util.Map<String, Object> ev = new java.util.LinkedHashMap<>();
             ev.put("skillId", skillId);
             ev.put("reason", reason == null ? "" : reason);
@@ -276,6 +316,8 @@ public final class LearnerPlugin implements NumenPlugin {
     @Override
     public void setup(NumenApi numen) {
         configDir = numen.configDir();
+        // 2026-11-22（主人止损）：内置学习者总开关，默认关；见 LearnerSwitch。
+        LearnerSwitch.reload(configDir);
         loadReviewState(configDir);   // 2026-11-05：last_review_at 以前只在内存里，重启即空，容易误判「复盘没跑」
         // 2026-11-03（外部学习者 #508/#516）：上一进程若死在复盘飞行中，哨兵还在 —— 如实记一条再清。
         //   已经两次实机（20:37、20:49）出现「复盘在飞 + 世界重启」：那次复盘在任何账本里都没有痕迹。
@@ -286,10 +328,15 @@ public final class LearnerPlugin implements NumenPlugin {
         LearnerAutoIntake.installDefaultQueueResolver();
         // E1 shadow：学习角色的预算策略（与客户端同一份文件，幂等）。
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
+        // Initialize the managed snapshot once during plugin setup, never from the task tick.
+        com.dwinovo.numen.plugins.learner.skills.SkillRegistrar.registryFor(configDir);
         numen.capability(com.dwinovo.numen.api.LearnedSkillBodyResolver.class,
                 new com.dwinovo.numen.plugins.learner.skills.LearnedSkillBodyResolverImpl(configDir));
-        SkillsKnowledgeContributor plannerSkills = new SkillsKnowledgeContributor(configDir, "PLANNER", 0);
-        SkillsKnowledgeContributor executorSkills = new SkillsKnowledgeContributor(configDir, "EXECUTOR", 0);
+        numen.capability(com.dwinovo.numen.api.SyncSkillCorrelation.class, SyncSkillFeedback.INSTANCE);
+        java.util.function.Supplier<com.dwinovo.numen.api.observation.WorldObservationService> observations =
+                () -> com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.observation.WorldObservationService.class);
+        SkillsKnowledgeContributor plannerSkills = new SkillsKnowledgeContributor(configDir, "PLANNER", 0, observations);
+        SkillsKnowledgeContributor executorSkills = new SkillsKnowledgeContributor(configDir, "EXECUTOR", 0, observations);
         numen.contributePlanningKnowledge(query -> {
             var f = plannerSkills.contribute(query.companion(), query.objective());
             return f == null ? "" : f.text();

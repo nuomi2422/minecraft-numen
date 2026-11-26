@@ -1,6 +1,7 @@
 package com.dwinovo.numen.rdd.api;
 
 import java.util.Map;
+import java.util.List;
 
 /**
  * 分解器产出的单个二级目标规格（纯 JVM，可单测）。
@@ -9,7 +10,12 @@ import java.util.Map;
  * 由 {@code RddChainFactory.fromSpec} 做完整校验。{@code body} 可空——空表示「只检测、不驱动身体」。
  */
 public record SubtaskSpec(String description, Map<String, Object> condition, BodyInstruction body,
-                          NodeType nodeType, RecurrenceSpec recurrence) {
+                          NodeType nodeType, RecurrenceSpec recurrence, List<ResourceUse> resourceUses) {
+    /** Legacy five-argument source/binary constructor: unspecified resource intent. */
+    public SubtaskSpec(String description, Map<String, Object> condition, BodyInstruction body,
+                       NodeType nodeType, RecurrenceSpec recurrence) {
+        this(description, condition, body, nodeType, recurrence, List.of());
+    }
     /** 旧构造：默认 MAIN、无周期（旧 JSON/旧调用语义不变）。 */
     public SubtaskSpec(String description, Map<String, Object> condition, BodyInstruction body) {
         this(description, condition, body, NodeType.MAIN, null);
@@ -23,5 +29,6 @@ public record SubtaskSpec(String description, Map<String, Object> condition, Bod
         }
         condition = Map.copyOf(condition);
         nodeType = nodeType == null ? NodeType.MAIN : nodeType;
+        resourceUses = ResourceUse.validate(resourceUses, condition);
     }
 }

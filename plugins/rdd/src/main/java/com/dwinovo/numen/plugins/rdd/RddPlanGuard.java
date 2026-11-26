@@ -68,21 +68,26 @@ final class RddPlanGuard {
         List<String> gaps = new ArrayList<>();
         if (s == null) return gaps;
         String d = s.description() == null ? "" : s.description();
+        // Explicit purposes replace prose inference only, never the real result predicate.
+        // All independent final inventory obligations must be declared RETAIN.
+        boolean declaredPurposes = !s.resourceUses().isEmpty();
         Map<String, Object> c = s.condition();
         boolean blockCondition = c.containsKey("group") && String.valueOf(c.get("group")).contains("blocks");
         boolean assetIsBlock = c.get("asset_key") instanceof String k && PLACE_MATERIALS.contains(k);
         // 2026-11-02（实机 r27-0）：描述是「清点背包（烈焰棒/下界疣/瓶子）」，判据却是
         // {type:block_nearby, block:nether_wart} —— 用「身边 1 格有疣方块」冒充「背包里有疣」，
         // 主世界基地永远不满足。背包意图 + 世界方块判据 = 不覆盖。
-        boolean inventoryIntent = d.contains("背包") || d.contains("身上") || d.contains("随身")
-                || d.contains("手上") || d.contains("清点");
+        boolean inventoryIntent = backpackIntent(d);
         boolean worldCondition = c.containsKey("block")
                 || (c.get("type") instanceof String t && t.contains("block"));
-        if (inventoryIntent && worldCondition) {
+        // 2026-11-24（live 747056 首次 Stage-B）：世界侦察句也常以「清点村里…」开头，
+        // 旧实现把「清点」一律当背包意图，整批必需 MAIN 被拒。背包/身上/随身/手上仍是强意图；
+        // 「清点」只看直接宾语是不是背包容器词；resource_uses 既有豁免机制不动（滥用另记边界）。
+        if (!declaredPurposes && inventoryIntent && worldCondition) {
             gaps.add("背包物品（判据却在验世界方块）");
         }
         java.util.regex.Matcher m = BLOCK_COUNT.matcher(d);
-        while (m.find()) {
+        while (!declaredPurposes && m.find()) {
             int n = Integer.parseInt(m.group(1));
             if (n <= 0) continue;
             if (!blockCondition && !assetIsBlock) {
@@ -98,6 +103,15 @@ final class RddPlanGuard {
             gaps.add("item_used 只证右键使用次数，不证种子实际种下；改用 block_nearby 作物或 container_at 收获物");
         }
         return gaps;
+    }
+
+    /** Backpack wording only: strong nouns stay unconditional; 清点 counts only with a backpack object. */
+    private static boolean backpackIntent(String d) {
+        if (d.contains("背包") || d.contains("身上") || d.contains("随身") || d.contains("手上")) {
+            return true;
+        }
+        // 「清点村里/附近/现成资源」是世界侦察；只有直接清点背包容器才算背包意图。
+        return d.contains("清点物品") || d.contains("清点库存");
     }
 
     private static boolean isPlantableSeed(String itemId) {
@@ -276,7 +290,7 @@ final class RddPlanGuard {
                 && !purpose.contains("染色") && !explicitColour) {
             Map<String, Object> cond = new java.util.LinkedHashMap<>(s.condition());
             cond.put("asset_key", "minecraft:bed"); // existing inventory family alias
-            return new SubtaskSpec(s.description(), cond, s.body(), s.nodeType(), s.recurrence());
+            return new SubtaskSpec(s.description(), cond, s.body(), s.nodeType(), s.recurrence(), s.resourceUses());
         }
         boolean multi = d.contains("都行") || d.contains("任意") || d.contains("任选") || d.contains("或");
         boolean placing = d.contains("垫") || d.contains("铺") || d.contains("落脚台") || d.contains("搭") || d.contains("放");
@@ -295,7 +309,7 @@ final class RddPlanGuard {
             // 但至少要让语义原样到达判定层，而不是悄悄降成 hold。
             if (s.condition().containsKey("mode")) cond.put("mode", s.condition().get("mode"));
             if (s.condition().containsKey("optional")) cond.put("optional", s.condition().get("optional"));
-            return new SubtaskSpec(s.description(), cond, s.body(), s.nodeType(), s.recurrence());
+            return new SubtaskSpec(s.description(), cond, s.body(), s.nodeType(), s.recurrence(), s.resourceUses());
         }
         return s;
     }
@@ -368,7 +382,8 @@ final class RddPlanGuard {
                 dropped.add("可选升级未获要求：" + assetKey);
                 continue;
             }
-            if (alreadyHeld(spec, held)) {
+            if (alreadyHeld(spec, held)
+                    && com.dwinovo.numen.rdd.api.ResourceUse.retainedSatisfied(spec.resourceUses(), held)) {
                 reused.add(assetKey);
                 heldOnes.add(spec);
                 producedToolIds(spec.description()).forEach(id -> effectiveHeld.merge(id, 1, Math::max));
@@ -393,7 +408,7 @@ final class RddPlanGuard {
                         "reason", "maintenance/wait/growth step must not block mainline",
                         "description", spec.description() == null ? "" : spec.description()));
                 normalized.add(new SubtaskSpec(spec.description(), spec.condition(), spec.body(),
-                        NodeType.DAILY, RecurrenceSpec.daily(farmObjective)));
+                        NodeType.DAILY, RecurrenceSpec.daily(farmObjective), spec.resourceUses()));
             } else {
                 normalized.add(spec);
             }

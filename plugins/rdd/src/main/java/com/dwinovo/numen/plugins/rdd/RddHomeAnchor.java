@@ -51,6 +51,14 @@ final class RddHomeAnchor {
     /** 与其它缓存同目录（由 RddPlugin 在初始化时写入 FACTS_DIR）。 */
     static volatile Path DIR;
 
+    /**
+     * 绑定家锚点目录。宿主 setup、测试 facts 目录、以及外部 reset 的前置检查都走这一个入口；
+     * 不在销毁途中才懒找目录（2026-11-24 迁移实机：reset 先删链后才发现 DIR 未绑定）。
+     */
+    static void bind(Path factsDir) {
+        DIR = factsDir;
+    }
+
     /** Explicit current-world reset, unlike best-effort context persistence. */
     static void clear(UUID id) throws java.io.IOException {
         if (id == null || DIR == null) throw new java.io.IOException("home store unavailable");

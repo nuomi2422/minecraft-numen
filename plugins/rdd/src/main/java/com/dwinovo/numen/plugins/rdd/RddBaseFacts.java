@@ -30,32 +30,41 @@ import static com.dwinovo.numen.plugins.rdd.RddWorldFacts.BASELOG;
 final class RddBaseFacts {
     private RddBaseFacts() {}
 
+    enum BaseStatus { OBSERVED, UNKNOWN, ABSENT }
+    record BaseInspection(BaseStatus status, BaseSnapshot snapshot, String dimension, BlockPos spawn) {}
+
     static BaseSnapshot inspectBase(NumenPlayer ap, Map<String, Object> condition) {
+        return inspectBaseResult(ap, condition).snapshot();
+    }
+
+    static BaseInspection inspectBaseResult(NumenPlayer ap, Map<String, Object> condition) {
         BlockPos spawn = ap.getRespawnPosition();
+        String dimensionId = ap.getRespawnDimension().location().toString();
         BASELOG.info("[rdd-base] 检查：spawn={} dim={} 当前维度={}", spawn,
                 ap.getRespawnDimension(), ap.level().dimension().location());
         // 未绑床时 getRespawnPosition() 可能返回 BlockPos.ZERO（哨兵）而非 null——
         // 必须显式挡掉，否则会拿 (0,0,0) 当"重生床"去查（语义错，且恰好在原点有床时会误判成功）。
         if (spawn == null || spawn.equals(BlockPos.ZERO)) {
             BASELOG.info("[rdd-base] 失败：未绑床（spawn=null/ZERO）");
-            return null;
+            return new BaseInspection(BaseStatus.UNKNOWN, null, dimensionId, spawn);
         }
         ServerLevel level = ap.getServer().getLevel(ap.getRespawnDimension());
         if (level == null || !dimension(level, condition) || !BedBlock.canSetSpawn(level)) {
             BASELOG.info("[rdd-base] 失败：level={} dimensionOk={} canSetSpawn={}", level,
                     level != null && dimension(level, condition), level != null && BedBlock.canSetSpawn(level));
-            return null;
+            return new BaseInspection(BaseStatus.UNKNOWN, null, dimensionId, spawn);
         }
         // A tiny bounded area, preflighted before any block/collision query. No chunk generation.
         for (int x = (spawn.getX() - 8) >> 4; x <= (spawn.getX() + 8) >> 4; x++) {
             for (int z = (spawn.getZ() - 8) >> 4; z <= (spawn.getZ() + 8) >> 4; z++) {
-                if (level.getChunkSource().getChunkNow(x, z) == null) return null;
+                if (level.getChunkSource().getChunkNow(x, z) == null)
+                    return new BaseInspection(BaseStatus.UNKNOWN, null, dimensionId, spawn);
             }
         }
         var bed = level.getBlockState(spawn);
         if (!(bed.getBlock() instanceof BedBlock)) {
             BASELOG.info("[rdd-base] 失败：spawn 处不是床，实际={}", bed.getBlock());
-            return null;
+            return new BaseInspection(BaseStatus.ABSENT, null, dimensionId, spawn);
         }
         var facing = bed.getValue(BedBlock.FACING);
         BlockPos otherPos = spawn.relative(bed.getValue(BedBlock.PART) == BedPart.HEAD
@@ -63,7 +72,7 @@ final class RddBaseFacts {
         var other = level.getBlockState(otherPos);
         if (!other.is(bed.getBlock()) || other.getValue(BedBlock.PART) == bed.getValue(BedBlock.PART)
                 || other.getValue(BedBlock.FACING) != facing) {
-            return null;
+            return new BaseInspection(BaseStatus.UNKNOWN, null, dimensionId, spawn);
         }
         // 2026-10-25（主人）：**点一下床就算安家**。这里原来还要求
         //   BedBlock.findStandUpPosition(...).isEmpty() == false（床旁边得有地方站起来），
@@ -115,8 +124,9 @@ final class RddBaseFacts {
             facilities.add("(missing) " + missing);
         }
         boolean complete = true;
-        return new BaseSnapshot(level.dimension().location().toString(), spawn.immutable(),
+        var result = new BaseSnapshot(level.dimension().location().toString(), spawn.immutable(),
                 complete, List.copyOf(facilities), Map.copyOf(storedItems));
+        return new BaseInspection(BaseStatus.OBSERVED, result, dimensionId, spawn);
     }
 
     // ──────────────────────────────────────────────────────────────────────

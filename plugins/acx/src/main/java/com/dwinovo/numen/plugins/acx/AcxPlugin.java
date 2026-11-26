@@ -5,6 +5,7 @@ import com.dwinovo.numen.acx.api.AcxToolPort;
 import com.dwinovo.numen.acx.core.AcxAliases;
 import com.dwinovo.numen.acx.core.AcxArtifactAdopter;
 import com.dwinovo.numen.acx.core.AcxBlockCatalog;
+import com.dwinovo.numen.acx.core.AcxCatalog;
 import com.dwinovo.numen.acx.core.AcxFacade;
 import com.dwinovo.numen.acx.core.AcxHostBridge;
 import com.dwinovo.numen.acx.core.AcxLoader;
@@ -14,6 +15,7 @@ import com.dwinovo.numen.acx.core.FileAcxLibrary;
 import com.dwinovo.numen.acx.core.JsonlRecordStore;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.ToolRegistry;
+import com.dwinovo.numen.api.CompanionEvent;
 import com.dwinovo.numen.api.NumenApi;
 import com.dwinovo.numen.api.NumenPlugin;
 import com.dwinovo.numen.entity.NumenPlayer;
@@ -30,8 +32,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * ACX 插件的 NUMEN 宿主适配层。
@@ -230,7 +234,6 @@ public final class AcxPlugin implements NumenPlugin {
     private AcxFacade facade;
     private JsonlRecordStore store;
     private ExecutorService executor;
-    private volatile NumenPlayer companion;
     private volatile boolean ready;
     private String readySummary = "尚未初始化";
     /** B6/S2：学习者 AC 草稿的采纳口（只 publish 成 GENERATED，永不 approve）。 */
@@ -249,6 +252,8 @@ public final class AcxPlugin implements NumenPlugin {
     public void setup(NumenApi numen) {
         this.api = numen;
         this.gate = new AcxHostGate();
+        numen.on(CompanionEvent.DEATH, this::invalidateCompanionBody);
+        numen.on(CompanionEvent.REMOVE, this::invalidateCompanionBody);
         numen.registerTool(new AcxFacadeTools.Execute(this));
         numen.registerTool(new AcxFacadeTools.Status(this));
         numen.registerTool(new AcxFacadeTools.Resume(this));
@@ -265,6 +270,15 @@ public final class AcxPlugin implements NumenPlugin {
         // 这里给「立刻问出草稿有没有被接住」的口子 —— 否则「投递了但没被接」没有观测面。
         numen.registerTool(new AcxAdoptDraftsTool(this));
         LOG.info("[acx] 9 个门面 + acx_adopt_drafts 已注册（惰性初始化：首次调用时桥接工具并加载脚本）");
+    }
+
+    /** Independent runs can progress while one waits at the host; body authority stays on the host thread. */
+    static ExecutorService newRunExecutor() {
+        return new ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(32), work -> {
+            Thread worker = new Thread(work, "numen-acx-runner");
+            worker.setDaemon(true);
+            return worker;
+        });
     }
 
     /** 幂等惰性初始化；失败会抛出，由门面壳转成失败回执。 */
@@ -295,7 +309,7 @@ public final class AcxPlugin implements NumenPlugin {
                 ports.add(new NumenToolBridgeX(tool, this));
             }
             AcxHostBridge.Report bridge = AcxHostBridge.registerAll(
-                    registry, ports, NumenToolBridgeX.probeFor(this::currentCompanion));
+                    registry, ports, NumenToolBridgeX.probeFor(this), true);
 
             // ★ 2026-10-06：把「真的注册了哪些积木」写成文件，供跨插件的 AI 照抄。
             //
@@ -345,15 +359,11 @@ public final class AcxPlugin implements NumenPlugin {
                     .tools(registry)
                     // ★ 子 AC 委托靠它：没有 catalog，step.block 写成别的 AC 名就会「找不到积木或 AC」。
                     //   真机实测踩过（subac_nesting FAIL），loader 那时明明已经加载成功了。
-                    .catalog(load.catalog())
+                    .catalog(AcxCatalog.withLibrary(library, load.catalog()))
                     .events(AcxMonitor::publish)
                     .store(store)
                     .build();
-            executor = Executors.newSingleThreadExecutor(r -> {
-                Thread t = new Thread(r, "numen-acx-runner");
-                t.setDaemon(true);
-                return t;
-            });
+            executor = newRunExecutor();
             sessions = new AcxSessionManager(runner, executor);
             facade = new AcxFacade(sessions, library::active, library::version, registry, library,
                     // ★ 单一真源：acx_blocks 与 blocks.txt 用**同一段文本**（学习者读文件、
@@ -532,15 +542,26 @@ public final class AcxPlugin implements NumenPlugin {
         return adopter.adoptAll().toMap();
     }
 
-    /** 每个 acx_* 调用入口先绑一次当前同伴（桥接派发要用）。 */
-    public void bindCompanion(NumenPlayer player) {
-        if (player != null) {
-            this.companion = player;
-        }
+    void onServerStopped() {
+        if (ready) sessions.invalidateHostedBodies();
     }
 
-    public NumenPlayer currentCompanion() {
-        return companion;
+    private void invalidateCompanionBody(NumenPlayer body) {
+        AcxSessionManager current = sessions;
+        if (current != null) current.invalidateBody(body);
+    }
+
+    /** Resolve the original session, never the companion of a later facade request. */
+    AcxSessionManager.Session sessionFor(com.dwinovo.numen.acx.api.AcxTool.AcxCallContext ctx) {
+        AcxSessionManager current = sessions;
+        return current == null || ctx == null ? null : current.session(ctx.runId());
+    }
+
+    static com.dwinovo.numen.acx.api.AcxRunBinding bindingFor(NumenPlayer player) {
+        if (player == null) throw new IllegalArgumentException("ACX 请求缺少同伴");
+        var tool = com.dwinovo.numen.agent.tool.ToolRegistry.get("rdd_report_yield");
+        Object yieldBinding = tool instanceof com.dwinovo.numen.agent.tool.TrustedYieldTool y ? y.captureHostBinding(player) : null;
+        return new com.dwinovo.numen.acx.api.AcxRunBinding(player.getUUID().toString(), player, yieldBinding);
     }
 
     public AcxHostGate gate() {

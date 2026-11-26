@@ -6,6 +6,7 @@ import com.dwinovo.numen.core.pathing.cache.LoadedOnlyView;
 import com.dwinovo.numen.core.pathing.calc.NavGoal;
 import com.dwinovo.numen.core.pathing.goal.GoalCompiler;
 import com.dwinovo.numen.core.pathing.moves.CalculationContext;
+import com.dwinovo.numen.core.pathing.moves.ChunkLoadedTest;
 import com.dwinovo.numen.core.pathing.moves.MovementHelper;
 import com.dwinovo.numen.core.pathing.moves.movements.BuildPlacementRegistry;
 import com.dwinovo.numen.core.pathing.execute.PlayerNav;
@@ -23,6 +24,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
@@ -150,6 +152,14 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     private LongOpenHashSet skippedPos = new LongOpenHashSet();
     /** {@code skippedPos.size()} 的缓存——判完工在热路径上,不必每次问集合。 */
     private int skippedCells;
+    /**
+     * 本批真正会执行 clear() 的格:{@link #computeWillClear()} 算出,预检与逐格复核共用。
+     * 只装“会真的挖掉一个实方块”的格——保留格、已经匹配的格、把料直接盖上去的格都不装,
+     * 否则下落路径会凭空多出并不存在的坑。
+     */
+    private LongOpenHashSet willClear = new LongOpenHashSet();
+    /** 动手前复核拒绝的格 → 真实原因;留分母、不 markObserved、不计 broke,收尾单列。 */
+    private final Map<Long, String> clearRefusals = new LinkedHashMap<>();
     private int passStartCompleted;
     private int barrenPasses;
     /**
@@ -255,7 +265,8 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
 
     @Override
     protected List<Precondition> preconditions() {
-        return r.autoLight != null ? List.of() : List.of(this::checkExistingBlocks, this::checkMaterials);
+        return r.autoLight != null ? List.of()
+                : List.of(this::checkExistingBlocks, this::checkMaterials, this::checkClearSafety);
     }
 
     /**
@@ -308,6 +319,83 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
             }
         }
         return null;
+    }
+
+    /**
+     * 整批预检:本批要清的格会不会放出落沙/液体,或把身体脚下的承重面挖穿。
+     *
+     * <p>和盘料同一个口径——<b>整单原子拒绝,一格不动</b>。身体在施工中会走开,
+     * 所以真正动手前 {@link #clear(BlockPos)} 还会拿当时的 AABB 再核一次;这里的
+     * 目的只是不让一单从第一步起就注定要挖穿自己脚下的空腔。
+     */
+    private Precondition.Failure checkClearSafety() {
+        // 未加载的目标必须单独拒:peek 把它们当空气,既可能漏掉“要清”,也可能把
+        // “未知”当成“已达标”。安全预检不做这种乐观补全——先遍加载检测,不加载就
+        // 整单拒绝并说清原因,而不是拿空批次报通过。
+        for (BuildTaskRecord.Target target : r.targets) {
+            BlockPos pos = target.pos();
+            if (!player.level().isLoaded(pos)) {
+                return new Precondition.Failure(
+                        "cannot check clearing safety at " + pos.toShortString()
+                                + ": that chunk is not loaded yet. Move closer so the site stays"
+                                + " loaded, then send the SAME call again — nothing was placed.",
+                        FailureType.TARGET_LOST);
+            }
+        }
+        LongOpenHashSet batch = computeWillClear();
+        if (batch.isEmpty()) {
+            return null;
+        }
+        AABB body = player.getBoundingBox();
+        for (long key : batch) {
+            BlockPos pos = BlockPos.of(key);
+            BuildClearSafety.Verdict verdict =
+                    BuildClearSafety.check(player.level(), loadedTest(), pos, body, batch::contains);
+            if (!verdict.allowed()) {
+                return new Precondition.Failure(
+                        "clearing " + pos.toShortString() + " is not safe yet — "
+                                + verdict.reason()
+                                + ". Nothing was placed; move off the unsupported spot or clear"
+                                + " that block yourself first.",
+                        FailureType.TARGET_LOST);
+            }
+        }
+        return null;
+    }
+
+    /** 施工期只碰已加载区块:`LoadedOnlyView` 把未加载当空气是本任务的已知口径,
+     *  安全判定不能沿用——未加载的落点/上方一律 UNKNOWN,不当“没有危险”。 */
+    private ChunkLoadedTest loadedTest() {
+        return (x, z) -> player.level().hasChunk(x >> 4, z >> 4);
+    }
+
+    /**
+     * 本批真正会执行 {@code clear()} 的格:air 目标(要清空)、或占着实方块且不在保护档的格。
+     * 已经匹配的格、保留格、把料直接盖上去的格都不算——下落路径不能按“整批图纸”算。
+     */
+    private LongOpenHashSet computeWillClear() {
+        LongOpenHashSet out = new LongOpenHashSet();
+        for (BuildTaskRecord.Target target : r.targets) {
+            BlockPos pos = target.pos();
+            if (!player.level().isLoaded(pos)) {
+                continue;   // 这一遍读不到;预检已把“启动时未加载”整单拦下
+            }
+            BlockState current = player.level().getBlockState(pos);
+            if (target.matches(current)) {
+                continue;
+            }
+            BlockState desired = target.desiredState();
+            if (desired != null && desired.getBlock() instanceof LiquidBlock) {
+                continue;   // 流体不承接,processCell 也不动手
+            }
+            if (rules.blockedByMode(target) || rules.hopeless(target)) {
+                continue;
+            }
+            if (!current.isAir() && !(current.getBlock() instanceof LiquidBlock)) {
+                out.add(pos.asLong());
+            }
+        }
+        return out;
     }
 
     @Override
@@ -626,7 +714,10 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         }
 
         if (occupied) {
-            clear(pos);
+            BuildClearSafety.Verdict verdict = clear(pos);
+            if (!verdict.allowed()) {
+                return null;   // 本遍不动它;真实原因记在 clearRefusals,收尾诊断会交代
+            }
             if (BuildCellRules.isAirTarget(target)) {
                 markObserved(target, true);
                 return desired;
@@ -801,22 +892,37 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     /**
      * 清掉挡路的方块:生存掉落物品(她清出来的木头该归玩家),免耗材不掉。
      *
+     * <p>动手前先过 {@link BuildClearSafety}:正上方落沙/液体,或“这一格是身体足迹下方的
+     * 承重面且挖掉会掉超过 3 格”的清除一律拒绝。拒绝不写世界、不掉落、不计 broke,
+     * 也不 markObserved——真实原因进 {@link #clearRefusals},由收尾诊断交代。
+     *
      * <p>掉落按主手物品结算,而主手此刻拿的是<b>正在砌的那个方块</b>(演出需要),
      * 不是镐。所以石头与矿石这一类清了不掉东西——"归玩家"只在不需要工具的方块上
      * 成立。要让它全成立就得在清障前临时换成镐,那会和演出打架,故此处照实记下。
      * 破坏特效走原版 levelEvent,音效与碎屑与玩家自己挖一模一样。
      */
-    private void clear(BlockPos pos) {
+    private BuildClearSafety.Verdict clear(BlockPos pos) {
         var level = player.level();
+        BuildClearSafety.Verdict verdict = BuildClearSafety.check(
+                level, loadedTest(), pos, player.getBoundingBox(), willClear::contains);
+        if (!verdict.allowed()) {
+            clearRefusals.put(pos.asLong(), verdict.reason());
+            return verdict;
+        }
         BlockState state = level.getBlockState(pos);
         if (state.isAir()) {
-            return;
+            clearRefusals.remove(pos.asLong());
+            return BuildClearSafety.Verdict.allow();
         }
-        if (r.consumeMaterials) {
+        // 掉落要跑战利品表:必须在方块还在时算好(战利品条件可能问世界),但先不生成。
+        // 写成功才落地;写失败就当没挖,不能凭空掉东西,也不能暗改原战利品语义。
+        var blockEntity = level.getBlockEntity(pos);
+        var server = level instanceof net.minecraft.server.level.ServerLevel s ? s : null;
+        List<ItemStack> drops = List.of();
+        if (r.consumeMaterials && server != null) {
             try {
-                net.minecraft.world.level.block.Block.dropResources(
-                        state, level, pos, level.getBlockEntity(pos), player,
-                        player.getMainHandItem());
+                drops = net.minecraft.world.level.block.Block.getDrops(
+                        state, server, pos, blockEntity, player, player.getMainHandItem());
             } catch (RuntimeException e) {
                 // 掉落要跑战利品表,而战利品表是数据包能改的东西——模组或整合包的一张
                 // 坏表不该让整栋楼停在这一格。清障本身照做:少掉一件东西是遗憾,清不掉
@@ -825,9 +931,28 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
                         "[numen-build] {} 的掉落结算失败,方块照清", state, e);
             }
         }
+        // 写入以世界真实返回为准:没写成就没清成,不能按“清了”记账
+        if (!level.setBlock(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), PLACE_FLAGS)) {
+            clearRefusals.put(pos.asLong(), "the world refused the clear at " + pos.toShortString());
+            com.dwinovo.numen.core.Constants.LOG.warn(
+                    "[numen-build] {} 写入空气失败,本遍不清算也不计 broke", pos.toShortString());
+            return BuildClearSafety.Verdict.refuse("world refused the clear");
+        }
+        clearRefusals.remove(pos.asLong());
+        if (server != null) {
+            for (ItemStack drop : drops) {
+                net.minecraft.world.level.block.Block.popResource(level, pos, drop);
+            }
+            try {
+                state.spawnAfterBreak(server, pos, player.getMainHandItem(), true);
+            } catch (RuntimeException e) {
+                com.dwinovo.numen.core.Constants.LOG.warn(
+                        "[numen-build] {} 的破块附加结算失败,方块照清", state, e);
+            }
+        }
         level.levelEvent(2001, pos, net.minecraft.world.level.block.Block.getId(state));
-        level.setBlock(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), PLACE_FLAGS);
         r.brokeOne();
+        return BuildClearSafety.Verdict.allow();
     }
 
     /**
@@ -936,6 +1061,8 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         int occupied = 0;
         int unsupported = 0;
         int broke = 0;
+        int refused = 0;
+        String refusalSample = null;
         BlockPos sample = null;
         for (BuildTaskRecord.Target target : r.targets) {
             BlockPos pos = target.pos();
@@ -947,6 +1074,14 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
             // 而它们从头到尾没被建过。这正是上一轮要修掉的那个误归因换了张报文。
             if (skippedPos.contains(pos.asLong())) {
                 continue;
+            }
+            String refusal = clearRefusals.get(pos.asLong());
+            if (refusal != null) {
+                refused++;
+                if (refusalSample == null) {
+                    refusalSample = target.shortPos() + " — " + refusal;
+                }
+                continue;   // 没挖成:既不是“站不住”,也不是“世界拒收”
             }
             if (sample == null) {
                 sample = pos;
@@ -963,6 +1098,9 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         // 分母里已经不含跳过的格,这里也不能含——否则数值虚高,玩家去找一批不存在的坑
         int missing = r.targets.size() - r.completed() - skippedCells;
         List<String> parts = new ArrayList<>();
+        if (refused > 0) {
+            parts.add(refused + " cleared-cell(s) refused for safety (" + refusalSample + ")");
+        }
         if (occupied > 0) {
             parts.add(occupied + " blocked by someone standing there — ask them to step aside");
         }
@@ -1218,6 +1356,7 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         }
         pending.sort(BuildOrder.BUILD_ORDER);
         order = pending;
+        willClear = computeWillClear();
         resetLayerWindow();
     }
 

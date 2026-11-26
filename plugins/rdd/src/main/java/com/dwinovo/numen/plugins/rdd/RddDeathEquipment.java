@@ -19,6 +19,16 @@ final class RddDeathEquipment {
     private RddDeathEquipment() {}
     record Sample(Map<String, Integer> held, List<String> armor, String mainhand, String offhand, String dimension) {}
 
+    /** Read-only path for model-thread advisory: reuse an existing SELF snapshot, never refresh it. */
+    static Sample cached(WorldObservationService service, UUID id, String dimension, Map<String, String> stamp, long now) {
+        if (service == null) return null;
+        try {
+            var request = new WorldObservationService.Request("rdd-death-prepare", dimension, "self",
+                    Map.of("target", "player:" + id), 3000, 1, 50);
+            return sample(service.read(request), id, dimension, stamp, now);
+        } catch (RuntimeException | LinkageError unavailable) { return null; }
+    }
+
     static Sample read(WorldObservationService service, UUID id, String dimension, Map<String, String> stamp, long now) {
         if (service == null) return null;
         try {

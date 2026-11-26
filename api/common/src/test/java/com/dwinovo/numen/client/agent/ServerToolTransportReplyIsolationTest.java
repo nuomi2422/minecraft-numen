@@ -72,14 +72,18 @@ class ServerToolTransportReplyIsolationTest {
                 "package com.dwinovo.numen; public class Constants {public static final Log LOG=new Log(); public static class Log {public void info(String s,Object...a){} public void warn(String s,Object...a){}}}");
         sources.put("net.minecraft.client.player.AbstractClientPlayer",
                 "package net.minecraft.client.player; public class AbstractClientPlayer {}");
+        sources.put("com.google.gson.JsonElement",
+                "package com.google.gson; public class JsonElement {}");
         sources.put("com.google.gson.JsonObject",
-                "package com.google.gson; public class JsonObject {}");
+                "package com.google.gson; public class JsonObject {"
+                + " public JsonElement remove(String key){return null;}"
+                + " public JsonObject addProperty(String key,String value){return this;} }");
         sources.put("com.google.gson.JsonParser",
                 "package com.google.gson; public class JsonParser {public static JsonParser parseString(String s){return new JsonParser();} public JsonObject getAsJsonObject(){return new JsonObject();}}");
         sources.put("com.dwinovo.numen.agent.tool.ClientToolContext",
                 "package com.dwinovo.numen.agent.tool; public record ClientToolContext(net.minecraft.client.player.AbstractClientPlayer entity,java.util.UUID entityUuid) implements ToolAnchor {}");
         sources.put("com.dwinovo.numen.agent.tool.NumenTool",
-                "package com.dwinovo.numen.agent.tool; public interface NumenTool {String name(); void invoke(ToolCall call);}");
+                "package com.dwinovo.numen.agent.tool; public interface NumenTool {String name(); void invoke(ToolCall call); default boolean externalOnly(){return false;}}");
         sources.put("com.dwinovo.numen.agent.tool.ToolRegistry",
                 "package com.dwinovo.numen.agent.tool; public class ToolRegistry {public static NumenTool tool; public static NumenTool resolve(String name){return tool;}}");
         sources.put("com.dwinovo.numen.agent.tool.ToolAliases",
@@ -238,8 +242,9 @@ class ServerToolTransportReplyIsolationTest {
             args.add(file.toString());
         }
         assertNotNull(ToolProvider.getSystemJavaCompiler(), "JDK compiler required for production consumers");
-        assertEquals(0, ToolProvider.getSystemJavaCompiler().run(null, null, null, args.toArray(String[]::new)),
-                "fixture compilation must succeed before a behavioral red is counted");
+        var compileDiagnostics = new java.io.ByteArrayOutputStream();
+        assertEquals(0, ToolProvider.getSystemJavaCompiler().run(null, compileDiagnostics, compileDiagnostics, args.toArray(String[]::new)),
+                "fixture compilation must succeed before a behavioral red is counted:\n" + compileDiagnostics);
         loader = new URLClassLoader(new URL[]{build.toUri().toURL()}, ClassLoader.getPlatformClassLoader());
         fixture = loader.loadClass("com.dwinovo.numen.client.agent.TransportReplyFixture");
     }

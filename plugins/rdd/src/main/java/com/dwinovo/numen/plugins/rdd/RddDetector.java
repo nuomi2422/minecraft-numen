@@ -133,6 +133,7 @@ final class RddDetector {
         // 代价：29us × 4/s ≈ 0.12ms/s，可忽略；收益：保命信号延迟从 1 秒回到 0.25 秒。
         for (ServerPlayer p : server.getPlayerList().getPlayers()) {
             if (p instanceof NumenPlayer ap) {
+                RddPlugin.recheckHomeBinding(ap);
                 RddDangerFacts.sampleOnTick(ap);
             }
         }
@@ -326,7 +327,16 @@ final class RddDetector {
         }
     }
 
-    /** 生存抢占（2026-11-06）：与计划前闸同一判据；先 task_stop 当前身体任务，再重规划，60s 冷却防刷屏。 */
+    /**
+     * 普通周期入口（2026-11-24 060 B 收窄）：只清旧生存意图、只驱动 PENDING 惰性展开，
+     * <b>不</b>按 hunger/HP 分类、不请求重规划、不停身体、不花旧 60 秒预算。
+     *
+     * <p>为什么收窄：2026-11-24 实机三次 {@code survival_preempt}（hunger=9 hp=20 free=36）
+     * 都不是真实紧急伤害，却触发停任务 + 重规划；而饥饿/低血事实已由
+     * {@code SideTaskHost.tick} 先采样进上下文，普通周期再发第二道指令只会和 AI 自己的判断打架。
+     * 真紧急的硬控制不来自这个日常分支：Numen 原紧急 FC 不动，
+     * {@code RddPlugin.requestReplanForSurvival}（typed SURVIVAL）留给未来的硬 side。
+     */
     private static void survivalPreempt(com.dwinovo.numen.entity.NumenPlayer ap, long tick) {
         try {
             // 2026-11-11: hunger while first expansion is pending is not a failed execution.
@@ -334,64 +344,27 @@ final class RddDetector {
             RddRuntime runtime = RddPlugin.runtime(ap.getUUID());
             if (runtime == null) return;
             TaskChain chain = runtime.chain();
-            // 安全观测必须在 unexpanded/side/status/cooldown 早退之前：短暂 hunger>=10 也要能释放上一轮
-            // 生存意图与冷却，否则再跌回 9 会被旧 marker/冷却吞掉（V04 之后的设计要求）。
+            // 安全观测必须在所有早退之前：风险消退要释放上一轮生存意图与冷却，
+            // 否则再跌回 9 会被旧 marker/冷却吞掉（V04 之后的设计要求）。
             int hunger = ap.getFoodData().getFoodLevel();
             double hp = ap.getHealth();
-            boolean safe = hunger >= 10 && hp >= 8.0;
-            if (safe) {
+            if (hunger >= 10 && hp >= 8.0) {
                 // 风险消退释放意图和同一份冷却，不代表完成供食承诺。
                 RddReplanTransition.observeSafe(ap.getUUID());
             }
+            // PENDING 未展开：沿用原惰性展开，不花失败预算。
             if (chain.primaryStatus() == PrimaryGoalStatus.PENDING
                     && chain.currentPrimary().unexpanded()) {
                 RddGoalDriver.needExpansion(ap.getUUID());
                 return;
             }
-            // Side ownership only delays the mainline; never spend its failure budget.
-            if (SideTaskHost.isActive(ap.getUUID())
+            // 支线占身体时主线冻结；非 ACTIVE 也不在这个普通分支里做任何事。
+            if (SideTaskHost.blocksMainline(ap.getUUID())
                     || chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return;
-            if (safe) return;
-            long now = System.currentTimeMillis();
-            Long last = SURVIVAL_PREEMPT_AT.get(ap.getUUID());
-            if (last != null && now - last < 60_000L) return;
-            int free = 0;
-            int size = Math.min(36, ap.getInventory().getContainerSize());
-            for (int i = 0; i < size; i++) {
-                if (ap.getInventory().getItem(i).isEmpty()) free++;
-            }
-            // 2026-11-06 21:44 实机：hunger 6、包里只有小麦和种子（没有能吃的）时，闸每分钟插一次“去吃”，
-            // 却永远吃不上 ⇒ 必须区分“去吃”和“先弄到吃的”。
-            boolean hasFood = RddSurvivalGate.hasEdibleFood(countInventory(ap));
-            var decision = RddSurvivalGate.evaluate(hunger, hp, free, false, hasFood);
-            if (decision == RddSurvivalGate.Decision.NONE) return;
-            // 2026-11-13（接受后才记抢占）：捕获进入前的身体 owner，传给宿主；只有真的进了
-            // REPLANNING 才在同线程同步回调里停“这一个”任务、才记 60s 冷却、才发抢占观测。
-            // 拒绝时不停身体、不记冷却，避免 V03 那种“身体停了、链还在 ACTIVE、没有新任务”。
-            var observationToken = RddPlugin.captureObservationToken(ap.getServer());
-            var expectedAction = com.dwinovo.numen.task.CompanionTickDispatcher.currentTaskFor(ap.getUUID());
-            boolean accepted = RddPlugin.requestReplanForSurvival(ap.getUUID(), decision, hunger, hp, free,
-                    expectedAction, ap);
-            if (!accepted) {
-                LOG.info("[rdd] 生存抢占未进入重规划（拒绝不记冷却、不停身体） {} hunger={} hp={} free={}",
-                        decision, hunger, hp, free);
-                return;
-            }
-            // 同步无 server/空回/启动异常可能已经释放；不能在返回后复活旧冷却。
-            if (RddReplanTransition.hasSurvivalIntent(ap.getUUID())) {
-                SURVIVAL_PREEMPT_AT.put(ap.getUUID(), now);
-            }
-            RddMonitor.publish("survival_preempt", java.util.Map.of(
-                    "companionId", ap.getUUID().toString(),
-                    "decision", decision.name(), "hunger", hunger, "hp", hp, "free_slots", free), observationToken);
-            LOG.info("[rdd] 生存抢占 {} hunger={} hp={} free={}", decision, hunger, hp, free);
         } catch (RuntimeException ex) {
-            LOG.warn("[rdd] 生存抢占失败: {}", ex.toString());
+            LOG.warn("[rdd] 普通周期生存观测失败: {}", ex.toString());
         }
     }
-
-    // 仍是原60秒冷却，唯一实例迁到意图消费者，失效事件/安全观测一并清。
-    private static final java.util.Map<java.util.UUID, Long> SURVIVAL_PREEMPT_AT = RddReplanTransition.SURVIVAL_PREEMPT_AT;
 
     private void tickRuntime(NumenPlayer ap, RddRuntime rt) {
         try {
@@ -407,7 +380,7 @@ final class RddDetector {
             // 否则"卡住"这种最该被看到的状态会被早退挡掉（#238 的同一教训）。
             // 2026-11-05：只把「有活在推进」算作可能停滞；链已完成时站着不动不是停滞。
             boolean busyNow = ps == PrimaryGoalStatus.ACTIVE
-                    || SideTaskHost.isActive(ap.getUUID());
+                    || SideTaskHost.blocksMainline(ap.getUUID());
             RddSituationFacts.tick(ap, busyNow);
             // D20-C1：先跑超时结账 —— 过期支线清掉后，下面的 lastRepair 才不会对死支线空转。
             // tickTimeout 不落盘（单测环境 RddPlugin 类链炸）；这里在游戏环境补 saveLedger。
@@ -459,7 +432,7 @@ final class RddDetector {
             if (RddMainlineAdmission.stopAfterObservation(ap.getUUID(), chain, ps,
                     replanEnteredAt, System::currentTimeMillis, new RddMainlineAdmission.Host() {
                         @Override public boolean sideActive() {
-                            return SideTaskHost.isActive(ap.getUUID());
+                            return SideTaskHost.blocksMainline(ap.getUUID());
                         }
                         @Override public void activeProposal() {
                             RddEarlyProposalPublisher.publish(ap, chain, countsAtAdmission);
@@ -539,6 +512,7 @@ final class RddDetector {
                     watchParkedIfStuck(ap, rt, chain); // 监督扩面：依赖门长时间没过也催工
                     return;
                 }
+                captureStatBaselineAtStart(ap, rt);
                 RddMonitor.publish("dependency_met", Map.of("primary", chain.currentPrimary().id()));
             }
             if (chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) {
@@ -550,6 +524,7 @@ final class RddDetector {
             // 自动启动当前二级（首个由 sink 启动，推进后由这里继续；AI_ASSISTED 也在内）。
             if (chain.currentSubtaskStatus() == SubtaskStatus.PENDING) {
                 rt.startCurrent();
+                captureStatBaselineAtStart(ap, rt);
             }
             SubtaskStatus status = chain.currentSubtaskStatus();
             // PAUSED = 士兵说"这个现在做不了，先放着"（2026-09-30 两次实战触发）。
@@ -630,6 +605,7 @@ final class RddDetector {
                         break;
                     }
                     rt.startCurrent();
+                    captureStatBaselineAtStart(ap, rt);
                 }
                 if (chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) {
                     break;
@@ -655,6 +631,7 @@ final class RddDetector {
                         break;
                     }
                     if (rt.activateCurrentFromSnapshot(RddPlugin.planningSnapshot(ap.getUUID()))) {
+                        captureStatBaselineAtStart(ap, rt);
                         RddMonitor.publish("dependency_met", Map.of("primary", chain.currentPrimary().id()));
                     } else {
                         RddMonitor.publish("primary_waiting", Map.of(
@@ -700,7 +677,7 @@ final class RddDetector {
             // assist 协助模式下暂停自动工具提交(防双驾驶):工具执行交还 NUMEN 内置 AI,
             // RDD 只保留资产检测 / 目标完成判定 / 异常提醒。
             if (RddPlugin.supervisionEnabled() && RddPlugin.bodySubmissionEnabled()) {
-                RddBodyDispatcher.maybeSubmit(ap, current);
+                RddBodyDispatcher.maybeSubmit(ap, current, chain);
             }
             if (conditionMatches(ap, current, counts)) {
                 completeSubtask(ap, rt, current);
@@ -777,7 +754,8 @@ final class RddDetector {
     }
 
     private boolean tickNegotiation(NumenPlayer ap, RddRuntime rt, TaskChain chain) {
-        com.dwinovo.numen.rdd.fail.TaskNegotiation n = RddNegotiationInbox.peek(ap.getUUID());
+        RddNegotiationInbox.Entry entry = RddNegotiationInbox.peek(ap.getUUID());
+        com.dwinovo.numen.rdd.fail.TaskNegotiation n = entry == null ? null : entry.message();
         if (n == null || (!n.needsSupervisorAction() && !n.isPauseRequest())) {
             return false;
         }
@@ -790,12 +768,17 @@ final class RddDetector {
                 && chain.currentSubtaskStatus() != SubtaskStatus.PAUSED) {
             return false;   // 只在当前二级活跃/卡住/暂停时处理协商
         }
+        // Old execution reports remain reviewable but may not stop or replan a new attempt.
+        if (!RddNegotiationInbox.applicable(entry, chain)) {
+            RddNegotiationInbox.deferStale(ap.getUUID(), entry, chain);
+            return false;
+        }
         // 2026-09-30 codex 复审 P1-3：**主人暂停是命令，不是建议。**
         // 士兵在主人暂停期间上报的 COUNTER/REJECT 不能把它推翻成"重规划 → 继续跑"，
         // 否则"原地待命"这个明确指令会被执行层的建议悄悄作废。
         // 处理：明确丢弃并留事件，让主人知道"士兵有话想说，但要你先解除暂停"。
         if (chain.currentSubtaskStatus() == SubtaskStatus.PAUSED && isOwnerPause(chain, chain.currentSubtask())) {
-            RddNegotiationInbox.takePending(ap.getUUID());
+            RddNegotiationInbox.takePending(ap.getUUID(), entry);
             RddMonitor.publish("negotiation_deferred_to_owner", Map.of(
                     "companionId", ap.getUUID().toString(),
                     "kind", n.kind().name(), "reason", n.reason(),
@@ -810,7 +793,7 @@ final class RddDetector {
         // 消费侧再核一次，是最后一道闸：不匹配就丢弃并留事件，不让它改单。
         Subtask currentNow = chain.currentSubtask();
         if (!n.taskId().isBlank() && (currentNow == null || !currentNow.id().equals(n.taskId()))) {
-            RddNegotiationInbox.takePending(ap.getUUID());   // 明确丢弃
+            RddNegotiationInbox.takePending(ap.getUUID(), entry);   // 明确丢弃
             RddMonitor.publish("negotiation_discarded", Map.of(
                     "companionId", ap.getUUID().toString(),
                     "reason", "stale subtask id; the plan moved on",
@@ -820,7 +803,7 @@ final class RddDetector {
             return false;
         }
         Subtask current = chain.currentSubtask();
-        RddNegotiationInbox.takePending(ap.getUUID());   // 消费
+        if (!RddNegotiationInbox.takePending(ap.getUUID(), entry)) return false; // never consume a newer entry
 
         // 「先放着」：不重规划、不换计划，直接把当前二级按住。留在这里等条件变了再开。
         //
@@ -1113,6 +1096,7 @@ final class RddDetector {
     }
 
     static boolean conditionMatches(NumenPlayer ap, Subtask task, Map<String, Integer> counts) {
+        if (!com.dwinovo.numen.rdd.api.ResourceUse.retainedSatisfied(task.resourceUses(), counts)) return false;
         if (task.condition().containsKey("type") && !"inventory".equals(task.condition().get("type"))) {
             // 2026-11-03 实机：item_crafted bread>=1 用终身统计，历史面包把 r3-3 假完成。
             // 统计类条件必须按「进入本步后的增量」判，而不是终身累计。
@@ -1159,31 +1143,45 @@ final class RddDetector {
     }
 
     /**
-     * 统计类条件的增量判定：首次看到该二级时拍当前累计值为基线并返回 false（宁可晚一拍，不许假完成）；
-     * 之后只要 (current - baseline) >= minimum 才算达成。基线随链持久化（TaskChain.acquireBaselines 同表）。
+     * 2026-11-25: 真实主/支线 PENDING→RUNNING 入口在身体/工具执行前调用一次。
+     * 只锁当前 RUNNING 的统计条件；查询/状态路径绝不调用。
+     * UNKNOWN(-1) 不拍，缺基线仍判 false，不把失读折成 0。
+     */
+    static void captureStatBaselineAtStart(NumenPlayer ap, RddRuntime rt) {
+        if (ap == null || rt == null) return;
+        TaskChain chain = rt.chain();
+        Subtask task = chain.currentSubtask();
+        if (task == null || chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) return;
+        if (!isStatCondition(task.condition()) || !statDeltaApplies(rt, task)) return;
+        int current = RddWorldFacts.statCount(ap, task.condition());
+        if (current < 0) return;
+        chain.captureStatBaseline(task.id(), current);
+    }
+
+    /** 统计条件是否走“进入本步后的增量”；显式 lifetime 优先，显式 delta 不被旧链开关覆盖。 */
+    private static boolean statDeltaApplies(RddRuntime rt, Subtask task) {
+        Map<String, Object> condition = task.condition();
+        boolean explicitLifetime = com.dwinovo.numen.rdd.core.WorldFactConditions.lifetimeScope(condition);
+        boolean explicitDelta = "delta".equals(condition.get("scope"));
+        return !explicitLifetime && (explicitDelta || rt.chain().statDeltaEnabled());
+    }
+
+    /**
+     * 统计类条件的增量判定。基线只由启动入口 captureStatBaselineAtStart 锁；
+     * 本方法纯判定：status/查询调用不会初始化或改写基线。
+     * 基线缺失（含 restore UNKNOWN 未捕获）→ false；不猜 0，不用终身统计兜底。
      */
     private static boolean statDeltaSatisfied(NumenPlayer ap, Subtask task, Map<String, Integer> counts) {
         RddRuntime rt = RddPlugin.runtime(ap.getUUID());
         if (rt == null) return false;
-        // 旧链（无 statDeltaEnabled 字段）默认 lifetime；但**显式 scope=lifetime/delta 优先**：
-        // 旧链里显式写 delta 的条件不能被链开关覆盖成 lifetime（2026-11-03 审计指出）。
-        boolean explicitLifetime = com.dwinovo.numen.rdd.core.WorldFactConditions.lifetimeScope(task.condition());
-        boolean explicitDelta = "delta".equals(task.condition().get("scope"));
-        if (explicitLifetime || (!explicitDelta && !rt.chain().statDeltaEnabled())) {
+        if (!statDeltaApplies(rt, task)) {
             return com.dwinovo.numen.rdd.core.WorldFactConditions.valid(task.condition())
                     && RddWorldFacts.matches(ap, task.condition());
         }
-        // 只对真正在跑的子步拍基线：rdd_status 等纯查询也会调用 conditionMatches，
-        // 若在那里拍，会在动作开始前把基线提前固定，污染增量。PENDING/WAITING 一律只读不拍。
-        boolean running = rt.chain().subtaskStatuses().get(task.id()) == SubtaskStatus.RUNNING;
         int current = RddWorldFacts.statCount(ap, task.condition());
         if (current < 0) return false;
         Map<String, Integer> baseline = rt.chain().statBaseline(task.id());
-        if (baseline == null) {
-            if (!running) return false;
-            rt.chain().captureStatBaseline(task.id(), current);
-            return false;
-        }
+        if (baseline == null) return false;
         int base = baseline.getOrDefault("value", current);
         Object rawMin = task.condition().get("minimum");
         int minimum = rawMin instanceof Number n && n.intValue() > 0 ? n.intValue() : 1;

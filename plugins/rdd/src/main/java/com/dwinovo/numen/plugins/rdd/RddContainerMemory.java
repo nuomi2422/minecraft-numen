@@ -43,12 +43,34 @@ final class RddContainerMemory {
     private static final int MAX_TYPES = 10;
     /** 两次扫描的最小间隔（tick）——约 2 秒。 */
     private static final long REFRESH_TICKS = 40L;
-    private static final Map<UUID, String> CACHE = new ConcurrentHashMap<>();
-    /** 同一份扫描的结构化计数（037/T14）：上下文要文字，规划要数字，两边不许走不同的解析路。 */
-    private static final Map<UUID, Map<String, Integer>> COUNTS = new ConcurrentHashMap<>();
+    // 文本、计数和当前服务端上下文作为一份状态发布，避免读到两次扫描的混合结果。
+    private static final Map<UUID, Published> PUBLISHED = new ConcurrentHashMap<>();
+    private static final java.util.concurrent.atomic.AtomicLong NEARBY_GENERATION = new java.util.concurrent.atomic.AtomicLong();
+
+    private record Context(Object server, Object world, Object body, UUID bodyId,
+                           String dimension, com.dwinovo.numen.api.WorldContextStamp.Token token) {}
+
+    /** 局部扫描的已见计数；缺项是未知，不是确认零，也不代表多个箱子共享 revision。 */
+    static record NearbySnapshot(Map<String, Integer> counts, Object serverIdentity, Object worldIdentity,
+                                 Object bodyIdentity, UUID bodyId, String dimension, com.dwinovo.numen.api.WorldContextStamp.Token token,
+                                 int originX, int originY, int originZ, int radius,
+                                 boolean direct, boolean observed, boolean partial, long deadlineMillis, long generation) {
+        NearbySnapshot { counts = Map.copyOf(counts); }
+    }
+
+    private record Published(String text, Map<String, Integer> counts, long scannedAtMillis,
+                             Context context, NearbySnapshot snapshot) {}
+
+    private static boolean knownIdentity(String value) {
+        return value != null && !value.isBlank() && !value.toLowerCase(java.util.Locale.ROOT).startsWith("unknown");
+    }
+
+    private static boolean sameContext(Context a, Context b) {
+        return a != null && b != null && a.server() == b.server() && a.world() == b.world()
+                && a.body() == b.body() && a.bodyId().equals(b.bodyId())
+                && a.dimension().equals(b.dimension()) && a.token().equals(b.token());
+    }
     private static final Map<UUID, Long> LAST_REFRESH = new ConcurrentHashMap<>();
-    /** 上次**扫描成功**的墙钟毫秒：缓存可能是旧的，旧到什么程度要说得出来（R2：旧数据只能标历史）。 */
-    private static final Map<UUID, Long> LAST_OK = new ConcurrentHashMap<>();
     /** 标记规则在纯类里（R2）：本类一加载就碰 Minecraft 类型，纯 JVM 单测测不了。 */
     static final long STALE_AFTER_MS = RddStorageStaleness.STALE_AFTER_MS;
     /** 每只同伴上次看到的 streamEpoch（v2 游标必须与 epoch 成对，缺了服务端会判 reset）。 */
@@ -60,7 +82,7 @@ final class RddContainerMemory {
     private RddContainerMemory() {}
 
     /** 服务端 tick（主线程）调用：扫描并写缓存。 */
-    static void refresh(NumenPlayer body, long tick) {
+    static synchronized void refresh(NumenPlayer body, long tick) {
         if (body == null) return;
         UUID id = body.getUUID();
         Long last = LAST_REFRESH.get(id);
@@ -68,15 +90,41 @@ final class RddContainerMemory {
         // 041 U4c：只要容器观测**有过变化**就立刻重扫，等于把"别人刷新过"这件事当成信号；
         // 没有变化时仍按 2 秒节奏扫（世界变化只能靠扫发现，变化日志只知道"观测被写过"）。
         boolean changed = pollContainerChanges(id);
-        if (!due && !changed) return;
-        LAST_REFRESH.put(id, tick);
         try {
+            ServerLevel level = body.serverLevel();
+            var token = com.dwinovo.numen.api.WorldContextStamp.capture(level.getServer());
+            var identity = token == null ? null : token.identity();
+            boolean identified = identity != null && token.epoch() > 0
+                    && knownIdentity(identity.get("world_id")) && knownIdentity(identity.get("server_session"));
+            Context context = !identified ? null : new Context(level.getServer(), level, body, id,
+                    level.dimension().location().toString(), token);
+            Published previous = PUBLISHED.get(id);
+            boolean contextChanged = previous == null || !sameContext(previous.context(), context);
+            if (contextChanged && previous != null) {
+                // 即便扫描失败，也先撤销旧世界/机体的数据。
+                PUBLISHED.put(id, new Published("", Map.of(), 0L, context, null));
+            }
+            if (!due && !changed && !contextChanged) return;
+            LAST_REFRESH.put(id, tick);
             Scan scan = scan(body, tick);
-            CACHE.put(id, scan.text());
-            COUNTS.put(id, scan.counts());
-            LAST_OK.put(id, System.currentTimeMillis());
+            long now = System.currentTimeMillis();
+            var after = com.dwinovo.numen.api.WorldContextStamp.capture(level.getServer());
+            if (context == null || !context.token().equals(after)) { PUBLISHED.remove(id); return; }
+            NearbySnapshot snapshot = new NearbySnapshot(scan.counts(),
+                    context.server(), context.world(), context.body(), id, context.dimension(), context.token(),
+                    scan.origin().getX(), scan.origin().getY(), scan.origin().getZ(), RADIUS,
+                    scan.anyDirect(), scan.anyObserved(), true, Math.min(now + STALE_AFTER_MS, scan.deadlineMillis()), 0);
+            NearbySnapshot prior = previous == null ? null : previous.snapshot();
+            long generation = prior != null && now < prior.deadlineMillis() && now < snapshot.deadlineMillis()
+                    && sameEvidence(prior, snapshot) ? prior.generation() : NEARBY_GENERATION.incrementAndGet();
+            snapshot = new NearbySnapshot(snapshot.counts(), snapshot.serverIdentity(), snapshot.worldIdentity(),
+                    snapshot.bodyIdentity(), snapshot.bodyId(), snapshot.dimension(), snapshot.token(),
+                    snapshot.originX(), snapshot.originY(), snapshot.originZ(), snapshot.radius(), snapshot.direct(),
+                    snapshot.observed(), snapshot.partial(), snapshot.deadlineMillis(), generation);
+            PUBLISHED.put(id, new Published(scan.text(), scan.counts(), now, context, snapshot));
         } catch (RuntimeException | LinkageError ex) {
-            // 读世界失败不影响主链路；保留上一次缓存（宁可旧一点，也不要突然说"没有"）
+            // 无法确认当前上下文时撤销旧值，不能把旧世界数据当作当前值。
+            PUBLISHED.remove(id);
             LOG.warn("[rdd-storage] 扫描失败 {}: {}", id, ex.toString());
         }
     }
@@ -121,6 +169,7 @@ final class RddContainerMemory {
                     return null;      // 拿不到增量 → 调用方退回节奏扫描
                 }
                 String prevEpoch = CHANGE_EPOCH.get(id);
+                if (v2.streamEpoch() == null || v2.streamEpoch().isBlank()) return null;
                 CHANGE_EPOCH.put(id, v2.streamEpoch());
                 LOG_CHANGE.maybe(id, "增量(v2) cursor=" + cursor + " next=" + v2.nextCursor()
                         + " reset=" + v2.resetRequired() + " n=" + v2.events().size()
@@ -174,11 +223,11 @@ final class RddContainerMemory {
     /** 上下文构建（可能在非主线程）调用：只读缓存。 */
     static String cached(UUID companionId) {
         if (companionId == null) return "";
-        String s = CACHE.get(companionId);
-        if (s == null || s.isEmpty()) return "";
-        Long ok = LAST_OK.get(companionId);
-        if (ok == null) return s;
-        return RddStorageStaleness.markStale(s, System.currentTimeMillis() - ok, STALE_AFTER_MS);
+        Published published = PUBLISHED.get(companionId);
+        if (published == null || published.text().isEmpty()) return "";
+        String text = RddStorageStaleness.markStale(published.text(),
+                System.currentTimeMillis() - published.scannedAtMillis(), STALE_AFTER_MS);
+        return cachedSnapshot(companionId) == null ? "[历史/当前不可确认] " + text : text;
     }
 
 
@@ -187,26 +236,62 @@ final class RddContainerMemory {
      * 没有缓存时返回空表（调用方按"没看见"处理，不要当"确认没有"）。
      */
     static Map<String, Integer> cachedCounts(UUID companionId) {
-        if (companionId == null) return Map.of();
-        Map<String, Integer> counts = COUNTS.get(companionId);
-        return counts == null ? Map.of() : counts;
+        NearbySnapshot snapshot = cachedSnapshot(companionId);
+        return snapshot == null ? Map.of() : snapshot.counts();
     }
 
-    static void clear(UUID companionId) {
+    /** 只看服务端已发布状态，不在调用线程访问 Minecraft。 */
+    static NearbySnapshot cachedSnapshot(UUID companionId) {
+        if (companionId == null) return null;
+        Published published = PUBLISHED.get(companionId);
+        if (published == null || published.snapshot() == null) return null;
+        NearbySnapshot snapshot = published.snapshot();
+        long now = System.currentTimeMillis();
+        if (now < published.scannedAtMillis() || now >= snapshot.deadlineMillis()) return null;
+        Context context = published.context();
+        if (context == null || context.server() != snapshot.serverIdentity()
+                || context.world() != snapshot.worldIdentity() || context.body() != snapshot.bodyIdentity()
+                || !context.bodyId().equals(snapshot.bodyId())
+                || !context.dimension().equals(snapshot.dimension()) || !context.token().equals(snapshot.token())) return null;
+        var current = com.dwinovo.numen.api.WorldContextStamp.capture();
+        if (!context.token().equals(current)) return null;
+        return snapshot;
+    }
+
+    static boolean isCurrent(UUID companionId, NearbySnapshot snapshot) {
+        if (snapshot == null) return false;
+        NearbySnapshot current = cachedSnapshot(companionId);
+        if (current == null || System.currentTimeMillis() >= snapshot.deadlineMillis()) return false;
+        return current.generation() == snapshot.generation() && sameEvidence(current, snapshot);
+    }
+
+    private static boolean sameEvidence(NearbySnapshot current, NearbySnapshot snapshot) {
+        return current.serverIdentity() == snapshot.serverIdentity()
+                && current.worldIdentity() == snapshot.worldIdentity()
+                && current.bodyIdentity() == snapshot.bodyIdentity()
+                && current.bodyId().equals(snapshot.bodyId())
+                && current.dimension().equals(snapshot.dimension()) && current.token().equals(snapshot.token())
+                && current.originX() == snapshot.originX() && current.originY() == snapshot.originY()
+                && current.originZ() == snapshot.originZ() && current.radius() == snapshot.radius()
+                && current.direct() == snapshot.direct() && current.observed() == snapshot.observed()
+                && current.partial() == snapshot.partial() && current.counts().equals(snapshot.counts());
+    }
+
+    static synchronized void clear(UUID companionId) {
         if (companionId == null) return;
-        CACHE.remove(companionId);
-        COUNTS.remove(companionId);
+        PUBLISHED.remove(companionId);
         LAST_REFRESH.remove(companionId);
-        LAST_OK.remove(companionId);
         POLLERS.remove(companionId);
+        CHANGE_EPOCH.remove(companionId);
     }
 
     /** 一次扫描的产物：给人看的文字 + 给规划用的计数 + **这批数字有没有来自直读兜底**。 */
-    private record Scan(String text, Map<String, Integer> counts, boolean anyDirect) {
+    private record Scan(String text, Map<String, Integer> counts, boolean anyDirect,
+                        boolean anyObserved, BlockPos origin, long deadlineMillis) {
     }
 
     /** 一个容器的读结果：计数 + 出处（观测 / 直读兜底）。 */
-    private record ContainerRead(Map<String, Integer> counts, boolean direct) {
+    private record ContainerRead(Map<String, Integer> counts, boolean direct, long deadlineMillis) {
     }
 
     /** 真正扫世界（**只在主线程调**）。 */
@@ -215,6 +300,8 @@ final class RddContainerMemory {
         List<String> lines = new ArrayList<>();
         Map<String, Integer> totals = new LinkedHashMap<>();
         boolean anyDirect = false;
+        boolean anyObserved = false;
+        long deadlineMillis = Long.MAX_VALUE;
         BlockPos origin = body.blockPosition();
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
         int hits = 0;
@@ -231,10 +318,13 @@ final class RddContainerMemory {
                     // 039 U3：内容优先走统一观测的 containers 主题；观测缺席/过期就显式 refresh，
                     // 两条路都不通才回退直读。发现（往哪看）仍然靠这里的本地扫描——观测不负责"找"。
                     ContainerRead read = readContainer(body, level, cursor.immutable(), tick);
-                    if (read == null || read.counts().isEmpty()) continue;
-                    if (read.direct()) anyDirect = true;      // 042 R2：直读兜底要留出处
+                    if (read == null) { deadlineMillis = 0; continue; }
+                    deadlineMillis = Math.min(deadlineMillis, read.deadlineMillis());
+                    if (read.direct()) anyDirect = true;
+                    else anyObserved = true;
+                    if (read.counts().isEmpty()) continue;
                     Map<String, Integer> counts = read.counts();
-                    counts.forEach((item, n) -> totals.merge(item, n, Integer::sum));
+                    counts.forEach((item, n) -> totals.merge(item, n, Math::addExact));
                     StringBuilder sb = new StringBuilder();
                     int listed = 0;
                     for (Map.Entry<String, Integer> e : counts.entrySet()) {
@@ -247,8 +337,9 @@ final class RddContainerMemory {
                 }
             }
         }
-        LOG.info("[rdd-storage] 扫描 原点={} 箱子命中={} 成行={}", origin, hits, lines.size());
-        if (lines.isEmpty()) return new Scan("", Map.of(), anyDirect);
+        // 保留原组合的低噪声日志与近箱快照完整时效信息。
+        LOG.debug("[rdd-storage] 扫描 原点={} 箱子命中={} 成行={}", origin, hits, lines.size());
+        if (lines.isEmpty()) return new Scan("", Map.of(), anyDirect, anyObserved, origin, deadlineMillis);
         StringBuilder out = new StringBuilder("<storage nearby=\"").append(lines.size()).append('"')
                 .append(scanDirectAttr(anyDirect)).append('>')
                 .append("你身边的容器里放着：");
@@ -257,7 +348,7 @@ final class RddContainerMemory {
             out.append(lines.get(i));
         }
         out.append("。这些**不在背包里**，要用得先走过去取；别重复去造/挖已有的存货。</storage>");
-        return new Scan(out.toString(), Map.copyOf(totals), anyDirect);
+        return new Scan(out.toString(), Map.copyOf(totals), anyDirect, anyObserved, origin, deadlineMillis);
     }
 
     /** 出处属性：直读兜底时在 <storage> 上标出来源，让上下文知道"这不是观测数据"。 */
@@ -279,11 +370,11 @@ final class RddContainerMemory {
      */
     private static ContainerRead readContainer(NumenPlayer body, ServerLevel level,
                                                BlockPos pos, long tick) {
-        Map<String, Integer> observed = readViaObservation(body, pos, tick);
-        if (observed != null) return new ContainerRead(observed, false);
+        ContainerRead observed = readViaObservation(body, pos, tick);
+        if (observed != null) return observed;
         Map<String, Integer> direct = readDirect(level, pos);
         // 直读是**当前值**（比旧观测新），不能降级成"历史"；但必须留出处，让调用方知道它不是观测来的。
-        return direct == null ? null : new ContainerRead(direct, true);
+        return direct == null ? null : new ContainerRead(direct, true, System.currentTimeMillis() + STALE_AFTER_MS);
     }
 
     /**
@@ -333,7 +424,7 @@ final class RddContainerMemory {
         }
     }
 
-    private static Map<String, Integer> readViaObservation(NumenPlayer body, BlockPos pos, long tick) {
+    private static ContainerRead readViaObservation(NumenPlayer body, BlockPos pos, long tick) {
         try {
             com.dwinovo.numen.api.observation.WorldObservationService svc =
                     com.dwinovo.numen.api.NumenPlugins.capability(
@@ -365,15 +456,24 @@ final class RddContainerMemory {
             if (!RddContainerObservationGate.canTrustEmpty(resp.status(), resp.coverage())) {
                 return null;
             }
+            var meta = resp.metadata();
+            var token = com.dwinovo.numen.api.WorldContextStamp.capture(body.getServer());
+            long now = System.currentTimeMillis();
+            if (meta == null || !meta.identified() || token == null || token.identity() == null
+                    || !java.util.Objects.equals(meta.worldId(), token.identity().get("world_id"))
+                    || !java.util.Objects.equals(meta.serverSession(), token.identity().get("server_session"))
+                    || !dim.equals(meta.dimension()) || meta.freshness() != com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.CURRENT
+                    || meta.observedAtMs() > now || meta.validUntilMs() <= now) return null;
             Map<String, Integer> out = new LinkedHashMap<>();
             for (var item : resp.items()) {
+                if (!item.unknownFields().isEmpty() || !item.staleFields().isEmpty()) return null;
                 Object idObj = item.values().get("item");
                 Object countObj = item.values().get("count");
                 if (idObj instanceof String id && countObj instanceof Number n && n.intValue() > 0) {
                     out.merge(id, n.intValue(), Integer::sum);
                 }
             }
-            return out;
+            return new ContainerRead(Map.copyOf(out), false, meta.validUntilMs());
         } catch (RuntimeException | LinkageError ignored) {
             return null;
         }

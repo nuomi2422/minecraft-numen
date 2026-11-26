@@ -78,8 +78,10 @@ public record TaskResultPayload(UUID entityUuid,
 
     /** Client-side handler. Runs on client main thread (network layer arranges that). */
     public static void handle(TaskResultPayload p) {
-        Constants.LOG.debug("[numen-net] task_result entity={} tool_call_id={} → {}",
-                p.entityUuid(), p.toolCallId(), truncate(p.resultJson(), 200));
+        if (ServerToolTransport.deliverInternalTicket(p.entityUuid(), p.toolCallId(), p.resultJson())) return;
+        // 2026-11-24: ticket/result bodies are sensitive; diagnostics carry identity + size only.
+        Constants.LOG.debug("[numen-net] task_result entity={} tool_call_id={} resultLen={}",
+                p.entityUuid(), p.toolCallId(), p.resultJson() == null ? 0 : p.resultJson().length());
         ServerToolTransport.deliver(p.toolCallId(), p.resultJson());
     }
 

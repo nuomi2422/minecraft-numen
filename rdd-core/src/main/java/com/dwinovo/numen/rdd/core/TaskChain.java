@@ -1151,6 +1151,31 @@ public final class TaskChain {
      * @param newMinimum 新目标数量，必须<b>严格大于</b>当前值
      * @return 被替换掉的旧目标数量（调用方拿来回执"3 → 12"）
      */
+    /** Validate the reported item and mutate under the same chain lock. */
+    public synchronized int raiseCurrentMinimumForAsset(String subtaskId, String assetKey, int newMinimum) {
+        requireNoOutstandingSafePoint("raise target");
+        requireCurrent(subtaskId);
+        if (currentSubtaskStatus() != SubtaskStatus.RUNNING)
+            throw new IllegalStateException("only a RUNNING subtask can report yield");
+        if (currentSubtask().detectionMode() != DetectionMode.HARD_CODED)
+            throw new IllegalStateException("yield adjustment requires a hard-coded inventory condition");
+        Map<String, Object> condition = currentSubtask().condition();
+        Object asset = condition.get("asset_key");
+        Object group = condition.get("group");
+        Object type = condition.get("type");
+        boolean inventoryType = type == null || "inventory".equals(type);
+        String mode = HardCodedEvaluator.modeOf(condition);
+        boolean matches = inventoryType && assetKey != null && !assetKey.isBlank() &&
+                (asset instanceof String key && !key.isBlank() && group == null && key.equals(assetKey)
+                    && (HardCodedEvaluator.MODE_HOLD.equals(mode) || HardCodedEvaluator.MODE_ACQUIRE.equals(mode))
+                 || asset == null && group instanceof String g && InventoryGroups.known(g) && InventoryGroups.contains(g, assetKey)
+                    && HardCodedEvaluator.MODE_HOLD.equals(mode));
+        if (!matches) throw new IllegalArgumentException("yield asset does not match current inventory condition");
+        int before = HardCodedEvaluator.minimumOf(condition);
+        if (before < 0) throw new IllegalStateException("current subtask has a malformed minimum");
+        return newMinimum > before ? raiseCurrentMinimum(subtaskId, newMinimum) : before;
+    }
+
     public synchronized int raiseCurrentMinimum(String subtaskId, int newMinimum) {
         requireNoOutstandingSafePoint("raise target");
         requireCurrent(subtaskId);
@@ -1617,6 +1642,7 @@ public final class TaskChain {
                 if (pauseReasons.containsKey(subtask.id())) item.put("pauseReason", pauseReasons.get(subtask.id()));
                 item.put("detectionMode", subtask.detectionMode().name());
                 item.put("condition", subtask.condition());
+                if (!subtask.resourceUses().isEmpty()) item.put("resourceUses", subtask.resourceUses());
                 item.put("current", p == primaryIndex && s == subtaskIndex
                         && NodeTypePolicy.countsTowardMainline(subtask.nodeType()));
                 // G3b：尝试次数进快照（G3a 的债：此前只能读持久化文件核对 IC03）
@@ -1762,6 +1788,27 @@ public final class TaskChain {
             JsonObject pg = el.getAsJsonObject();
             if (!pg.has("unexpanded")) {
                 pg.addProperty("unexpanded", false);
+            }
+            // Validate explicit new numeric declarations before Gson can coerce an int.
+            if (pg.has("subtasks") && pg.get("subtasks").isJsonArray()) {
+                for (JsonElement rawTask : pg.getAsJsonArray("subtasks")) {
+                    JsonObject task = rawTask.getAsJsonObject();
+                    if (!task.has("resourceUses")) continue; // legacy unspecified intent
+                    JsonElement uses = task.get("resourceUses");
+                    if (!uses.isJsonArray() || uses.getAsJsonArray().size() > ResourceUse.MAX_USES)
+                        throw new IllegalArgumentException("invalid persisted resource uses");
+                    for (JsonElement rawUse : uses.getAsJsonArray()) {
+                        if (!rawUse.isJsonObject()) throw new IllegalArgumentException("invalid persisted resource use");
+                        JsonObject use = rawUse.getAsJsonObject();
+                        if (!use.keySet().equals(Set.of("assetKey", "quantity", "kind"))
+                                || !use.get("assetKey").isJsonPrimitive() || !use.get("assetKey").getAsJsonPrimitive().isString()
+                                || !use.get("kind").isJsonPrimitive() || !use.get("kind").getAsJsonPrimitive().isString()
+                                || !use.get("quantity").isJsonPrimitive() || !use.get("quantity").getAsJsonPrimitive().isNumber())
+                            throw new IllegalArgumentException("invalid persisted resource-use fields");
+                        try { use.get("quantity").getAsBigDecimal().intValueExact(); }
+                        catch (ArithmeticException invalid) { throw new IllegalArgumentException("invalid persisted resource quantity", invalid); }
+                    }
+                }
             }
         }
         Goal goal = GSON.fromJson(goalObj, Goal.class);

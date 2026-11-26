@@ -25,12 +25,20 @@ dependencies {
 
     // 纯函数测试要用公开读口的枚举；主源集经 numen-plugin 约定拿到 api，测试源集要显式声明。
     testImplementation project(':api:common')
+    testImplementation project(':plugins:learner') // test-only real managed declaration integration
+    testImplementation project(':ai') // actual ContextBudget / request message types
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-test { useJUnitPlatform() }
+test {
+    useJUnitPlatform()
+    // Managed test-only attempts require their own fresh XML directory.
+    if (System.getenv('RDD_TEST_REPORT_DIR')) {
+        reports.junitXml.outputLocation = file(System.getenv('RDD_TEST_REPORT_DIR'))
+    }
+}
 
 tasks.named('jar', Jar) {
     dependsOn(':world-state-core:jar')

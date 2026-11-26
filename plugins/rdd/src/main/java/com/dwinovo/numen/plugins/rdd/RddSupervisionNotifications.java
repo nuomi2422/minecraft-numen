@@ -67,7 +67,10 @@ final class RddSupervisionNotifications {
         try {
             // G4c S107b：拍醒是**系统事件**，不是主人的话 —— 走 enqueueSystem 而不是 enqueue。
             // 否则「卡死 → 重推」这个循环会被当成主人回合、绕过预算（2026-10-21 实机暴露）。
-            RddPlugin.notificationApi().enqueueSystem(companionId, message);
+            var delivery = RddPlugin.notificationApi().enqueueSystem(companionId, message);
+            if (delivery == null || delivery == com.dwinovo.numen.api.Delivery.REJECTED) {
+                return false; // no confirmed handoff: do not consume either reminder clock
+            }
             LAST_NUDGE_AT.put(nudgeBucket(companionId), now);
             Map<String, Object> data = RddPlugin.observationData(companionId);
             data.put("outputId", UUID.randomUUID().toString());

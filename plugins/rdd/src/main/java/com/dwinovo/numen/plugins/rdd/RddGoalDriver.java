@@ -41,6 +41,9 @@ final class RddGoalDriver {
         boolean inFlight;
         boolean escalated;
         Object request;
+        RddRuntime owner;
+        long revision;
+        com.dwinovo.numen.entity.NumenPlayer body;
     }
 
     private RddGoalDriver() {}
@@ -71,8 +74,9 @@ final class RddGoalDriver {
             Object request;
             synchronized (st) {
                 String pid = cur.id();
-                if (!pid.equals(st.primaryId)) { // 换到新一级 → 重置预算/冷却/在途
+                if (!pid.equals(st.primaryId) || st.owner != rt) { // 换到新一级 → 重置预算/冷却/在途
                     st.primaryId = pid;
+                    st.owner = rt;
                     st.attempts = 0;
                     st.cooldownUntil = 0;
                     st.inFlight = false;
@@ -85,6 +89,8 @@ final class RddGoalDriver {
                     attempt = st.attempts;
                     st.inFlight = true;
                     st.request = new Object();
+                    st.revision = ownerRevision;
+                    st.body = RddCompanionBody.get(companionId);
                 } else {
                     attempt = 0;
                 }
@@ -125,15 +131,27 @@ final class RddGoalDriver {
         }
     }
 
-    /** 线性推进：当前一级之前的所有一级都已完成 → 取其描述作 Stage-B 上下文（防倒退重规划）。 */
-    private static List<String> completedStagesBefore(TaskChain chain) {
+    /**
+     * 线性推进：当前一级之前、且不是"本链未核验放弃"的一级描述，作为 Stage-B 上下文。
+     *
+     * <p>2026-11-24：游标前移只证明"已经走到这里"，不证明每一级都有世界事实。
+     * {@code settlePrimaryByFact(..., false)} 的放弃只进 {@code waivedStageKeys}（本链、按 revision），
+     * 历史快照里能查，但绝不能当成"已达成"喂给下一次规划。只有真完成（{@code satisfiedStages}
+     * 命中归一主题键）才保原；否则 waived 一级从上下文中剔除。已验证完成优先于旧 waiver。
+     */
+    static List<String> completedStagesBefore(TaskChain chain) {
         try {
             List<PrimaryGoal> primaries = chain.goal().primaryGoals();
             PrimaryGoal cur = chain.currentPrimary();
             List<String> out = new ArrayList<>();
             for (PrimaryGoal p : primaries) {
-                if (p == cur) {
-                    break; // 从前往后扫到当前级为止：之前的都已达成
+                if (p.id().equals(cur.id())) {
+                    break; // 从前往后扫到当前级为止：之后的还没发生
+                }
+                boolean verified = chain.satisfiedStages().contains(
+                        com.dwinovo.numen.rdd.fact.StageKeyNormalizer.normalize(p.description()));
+                if (chain.hasStageWaiver(p.id()) && !verified) {
+                    continue; // 未核验放弃不得伪装成已达成；真完成（含旧 waiver 后补核验）保原
                 }
                 out.add(p.description());
             }
@@ -218,6 +236,51 @@ final class RddGoalDriver {
         }
     }
 
+    /** Captures the actual lazy request only; ordinary replans have no expansion state to cancel. */
+    static Runnable cancellationFor(UUID id, TaskChain owner, long revision,
+                                    com.dwinovo.numen.entity.NumenPlayer body) {
+        State state = STATES.get(id);
+        if (state == null) return () -> {};
+        synchronized (state) {
+            if (!state.inFlight || state.owner == null || state.owner.chain() != owner
+                    || state.revision != revision || state.body != body) return () -> {};
+            RddRuntime runtime = state.owner;
+            Object request = state.request;
+            String primary = state.primaryId;
+            return () -> cancelExpansion(id, runtime, state, primary, request, revision, body);
+        }
+    }
+    private static void cancelExpansion(UUID id, RddRuntime owner, State state, String primary,
+                                        Object request, long revision, com.dwinovo.numen.entity.NumenPlayer body) {
+        synchronized (state) {
+            if (STATES.get(id) != state || RddPlugin.runtime(id) != owner || state.owner != owner
+                    || !state.inFlight || state.request != request || state.body != body
+                    || state.revision != revision || !state.primaryId.equals(primary)) return;
+            state.inFlight = false;
+            state.request = null;
+            state.body = null;
+            // Cancellation is not installation or success. Keep the admitted attempt bounded.
+            state.attempts++;
+            state.escalated = RddExpansionPolicy.budgetExhausted(state.attempts);
+            state.cooldownUntil = System.currentTimeMillis() + RddExpansionPolicy.EXPAND_COOLDOWN_MS;
+        }
+        RddMonitor.publish("expansion_cancelled", Map.of("companionId", id.toString(), "primary", primary,
+                "reason", "original planning body or scope invalidated"));
+    }
+    /** REMOVE may arrive without any model callback. An old body's REMOVE cannot cancel a new request. */
+    static void bodyRemoved(com.dwinovo.numen.entity.NumenPlayer body) {
+        if (body == null) return;
+        UUID id = body.getUUID();
+        State state = STATES.get(id);
+        if (state == null) return;
+        Runnable cancel;
+        synchronized (state) {
+            if (state.owner == null || state.body != body) return;
+            cancel = cancellationFor(id, state.owner.chain(), state.revision, body);
+        }
+        cancel.run();
+    }
+
     /** 清除 per-同伴展开状态（目标被清/重绑时调用）。 */
     static void clear(UUID companionId) {
         if (companionId != null) {
@@ -247,8 +310,10 @@ final class RddGoalDriver {
                 && target.equals(sub.condition().get("slots")))) {
             throw new IllegalArgumentException("plan must cover owner equipmentTarget in one non-optional MAIN equipment slots condition");
         }
-        registerDaily.accept(subs);
         installMainline.run();
+        // A rejected proposal is not a registration snapshot. Both production callers
+        // now observe the chain only after its original owner commit succeeded.
+        registerDaily.accept(subs);
     }
 
     /** Package-private runtime injection seam: fixed specs in, Subtask list out (must keep DAILY). */

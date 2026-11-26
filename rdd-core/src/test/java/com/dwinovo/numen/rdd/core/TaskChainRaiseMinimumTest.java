@@ -36,6 +36,90 @@ class TaskChainRaiseMinimumTest {
     }
 
     @Test
+    void yieldAssetMustBeCheckedInsideTheAtomicChainMutation() throws Exception {
+        TaskChain c = chain();
+        c.startCurrent();
+        var method = TaskChain.class.getMethod("raiseCurrentMinimumForAsset", String.class, String.class, int.class);
+        var ex = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> method.invoke(c, "p1-0", "minecraft:iron_pickaxe", 9));
+        assertTrue(ex.getCause() instanceof IllegalArgumentException);
+        assertEquals(3, c.currentMinimum("p1-0"));
+        long before = c.stateVersion();
+        int attempts = c.attempts("p1-0");
+        assertEquals(3, method.invoke(c, "p1-0", "minecraft:hay_block", 2));
+        assertEquals(before, c.stateVersion());
+        assertEquals(3, method.invoke(c, "p1-0", "minecraft:hay_block", 9));
+        assertEquals(9, c.currentMinimum("p1-0"));
+        assertEquals(attempts, c.attempts("p1-0"));
+        assertEquals(before + 1, c.stateVersion());
+        assertThrows(java.lang.reflect.InvocationTargetException.class, () -> method.invoke(c, "stale", "minecraft:hay_block", 10));
+    }
+
+    @Test
+    void yieldGroupOnlyAcceptsKnownMembers() {
+        TaskChain c = new TaskChain(new Goal("g", "food", List.of(new PrimaryGoal("p", "food", List.of(
+                Subtask.hardCoded("s", "food", Map.of("group", "food", "minimum", 1)))))));
+        c.startCurrent();
+        assertThrows(IllegalArgumentException.class, () -> c.raiseCurrentMinimumForAsset("s", "minecraft:hay_block", 9));
+        assertEquals(1, c.currentMinimum("s"));
+        assertEquals(1, c.raiseCurrentMinimumForAsset("s", "minecraft:bread", 3));
+        assertEquals(3, c.currentMinimum("s"));
+    }
+
+    private static TaskChain chainWithCondition(Map<String, Object> condition) {
+        TaskChain c = new TaskChain(new Goal("g", "goal", List.of(new PrimaryGoal("p", "p",
+                List.of(Subtask.hardCoded("s", "s", condition))))));
+        c.startCurrent();
+        return c;
+    }
+
+    @Test
+    void yieldRefusesAmbiguousOrUnsupportedConditions() {
+        for (Map<String, Object> bad : List.<Map<String, Object>>of(
+                Map.of("asset_key", "minecraft:bread", "group", "food", "minimum", 1),
+                Map.of("asset_key", "minecraft:bread", "type", "world", "minimum", 1),
+                Map.of("asset_key", "minecraft:bread", "minimum", "bad"),
+                Map.of("asset_key", "minecraft:bread", "mode", "invented", "minimum", 1),
+                Map.of("group", "food", "mode", "acquire", "minimum", 1),
+                Map.of("group", "unknown", "minimum", 1))) {
+            TaskChain c = chainWithCondition(bad);
+            long before = c.stateVersion();
+            assertThrows(RuntimeException.class, () -> c.raiseCurrentMinimumForAsset("s", "minecraft:bread", 9));
+            assertEquals(before, c.stateVersion());
+            assertEquals(bad, c.currentSubtask().condition());
+        }
+    }
+
+    @Test
+    void persistedNullConditionFieldIsRejectedByRecordConstructor() {
+        TaskChain c = chain();
+        String json = c.toJson().replace("\"asset_key\":\"minecraft:hay_block\"", "\"asset_key\":\"minecraft:hay_block\",\"type\":null");
+        assertTrue(json.contains("\"type\":null"));
+        assertThrows(RuntimeException.class, () -> TaskChain.fromJson(json));
+    }
+
+    @Test
+    void yieldRejectsAiAssistedConditionEvenWithMatchingAsset() {
+        var s = new Subtask("s", "s", com.dwinovo.numen.rdd.api.DetectionMode.AI_ASSISTED,
+                Map.of("asset_key", "minecraft:bread", "minimum", 1), 10, 2, false);
+        TaskChain c = new TaskChain(new Goal("g", "g", List.of(new PrimaryGoal("p", "p", List.of(s)))));
+        c.startCurrent(); long before = c.stateVersion();
+        assertThrows(IllegalStateException.class, () -> c.raiseCurrentMinimumForAsset("s", "minecraft:bread", 9));
+        assertEquals(before, c.stateVersion());
+        assertEquals(1, c.currentMinimum("s"));
+    }
+
+    @Test
+    void checkedAcquireDoesNotRetakeBaseline() {
+        TaskChain c = new TaskChain(new Goal("g", "g", List.of(new PrimaryGoal("p", "p",
+                List.of(Subtask.hardCoded("s", "s", Map.of("asset_key", "minecraft:oak_log", "minimum", 3, "mode", "acquire")))))));
+        c.startCurrentWithCounts(Map.of("minecraft:oak_log", 5));
+        c.raiseCurrentMinimumForAsset("s", "minecraft:oak_log", 8);
+        assertEquals(Map.of("minecraft:oak_log", 5), c.acquireBaseline("s"));
+        assertEquals(1, c.attempts("s"));
+    }
+
+    @Test
     void raisingTargetOnTheSpotIsAllowedAndKeepsAttemptsAndBaseline() {
         TaskChain c = chain();
         c.startCurrent();                    // p1-0: PENDING → RUNNING

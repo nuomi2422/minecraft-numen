@@ -1,6 +1,7 @@
 package com.dwinovo.numen.acx.core;
 
 import com.dwinovo.numen.acx.api.AcxDefinition;
+import com.dwinovo.numen.acx.api.AcxRunBinding;
 import com.dwinovo.numen.acx.api.AcxRunRecord;
 import com.dwinovo.numen.acx.api.AcxStatus;
 import com.dwinovo.numen.acx.api.AcxToolRegistry;
@@ -121,10 +122,18 @@ public final class AcxFacade {
      * <p>立刻回执 RUNNING + run_id（对齐 Numen「已受理 ≠ 已完成」），终态用 status 查。</p>
      */
     public Map<String, Object> execute(Map<String, Object> req) {
+        return execute(req, "");
+    }
+
+    public Map<String, Object> execute(Map<String, Object> req, String ownerId) {
+        return executeBound(req, AcxRunBinding.named(ownerId));
+    }
+
+    public Map<String, Object> executeBound(Map<String, Object> req, AcxRunBinding binding) {
         try {
             AcxDefinition def = resolve(req);
             Map<String, Object> input = asMap(req.get("input"));
-            String runId = sessions.start(def, input);
+            String runId = sessions.startBound(def, input, binding);
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("run_id", runId);
             data.put("ac_name", def.name());
@@ -139,6 +148,14 @@ public final class AcxFacade {
 
     /** 查一次执行。参数：{@code run_id}。查询成功时 {@code data.status} 才是 AC 终态。 */
     public Map<String, Object> status(Map<String, Object> req) {
+        return status(req, "");
+    }
+
+    public Map<String, Object> status(Map<String, Object> req, String ownerId) {
+        return statusBound(req, AcxRunBinding.named(ownerId));
+    }
+
+    public Map<String, Object> statusBound(Map<String, Object> req, AcxRunBinding binding) {
         String runId = str(req.get("run_id"));
         if (runId == null) {
             return err("缺少 run_id");
@@ -146,6 +163,9 @@ public final class AcxFacade {
         AcxSessionManager.Session s = sessions.session(runId);
         if (s == null) {
             return err("未知 run_id: " + runId);
+        }
+        if (!s.matchesBinding(binding)) {
+            return err("run_id 不属于本同伴: " + runId);
         }
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("run_id", runId);
@@ -177,6 +197,14 @@ public final class AcxFacade {
      * 只有 PAUSED 能续；版本/指纹不符会被<b>同步拒绝</b>。
      */
     public Map<String, Object> resume(Map<String, Object> req) {
+        return resume(req, "");
+    }
+
+    public Map<String, Object> resume(Map<String, Object> req, String ownerId) {
+        return resumeBound(req, AcxRunBinding.named(ownerId));
+    }
+
+    public Map<String, Object> resumeBound(Map<String, Object> req, AcxRunBinding binding) {
         String runId = str(req.get("run_id"));
         if (runId == null) {
             return err("缺少 run_id");
@@ -184,6 +212,9 @@ public final class AcxFacade {
         AcxSessionManager.Session s = sessions.session(runId);
         if (s == null) {
             return err("未知 run_id: " + runId);
+        }
+        if (!s.matchesBinding(binding)) {
+            return err("run_id 不属于本同伴: " + runId);
         }
         if (s.isRunning()) {
             return err("仍在执行，不能续跑: " + runId);
@@ -193,15 +224,25 @@ public final class AcxFacade {
             return err("只有 PAUSED 可以续跑，当前: " + (r == null ? "无记录" : r.status()));
         }
         int resumedFrom = r.completedStepIndex();
-        // ★ TODO AC-B22 修复（2026-10-06）：续跑前按名字重新查一次「当前生效定义」。
-        //   不查的话校验用的是 start() 时的旧对象，名/版本/指纹三道门怎么比都相等（恒真），
-        //   暂停期间被改过（没升版本）的脚本会静默按旧定义跑完 —— 改动对这条会话永不生效。
-        //   查不到（内联 ac_json 执行的会话、库未挂/未上线）时保持旧行为：找不到 ≠ 定义变了。
         AcxDefinition current = null;
         try {
-            current = lookupActive.apply(r.acName());
-        } catch (RuntimeException ignored) {
-            // 解析异常按「查不到」处理；后续校验链仍会兜底
+            if (library != null && library.hasAnyVersion(r.acName())) {
+                // An active pointer selects fresh runs; a paused run keeps its original eligible version.
+                if (library.status(r.acName(), r.acVersion()) != com.dwinovo.numen.acx.api.AcxLifecycleState.STABLE) {
+                    return err("续跑被拒绝: 原版本不是 STABLE: " + r.acName() + "@" + r.acVersion());
+                }
+                current = library.version(r.acName(), r.acVersion());
+                if (current == null) return err("续跑被拒绝: 原版本不可得: " + r.acName() + "@" + r.acVersion());
+            } else {
+                // Preserve AC-B22 for loader/inline definitions without a published library entry.
+                try {
+                    current = lookupActive.apply(r.acName());
+                } catch (RuntimeException ignored) {
+                    // Missing inline/startup definitions keep the existing compatibility behavior.
+                }
+            }
+        } catch (RuntimeException e) {
+            return err("续跑被拒绝: 原版本不可得: " + e.getMessage());
         }
         try {
             if (!sessions.resume(runId, asMap(req.get("input")), current)) {
@@ -220,6 +261,14 @@ public final class AcxFacade {
 
     /** 协作式取消。参数：{@code run_id}。 */
     public Map<String, Object> cancel(Map<String, Object> req) {
+        return cancel(req, "");
+    }
+
+    public Map<String, Object> cancel(Map<String, Object> req, String ownerId) {
+        return cancelBound(req, AcxRunBinding.named(ownerId));
+    }
+
+    public Map<String, Object> cancelBound(Map<String, Object> req, AcxRunBinding binding) {
         String runId = str(req.get("run_id"));
         if (runId == null) {
             return err("缺少 run_id");
@@ -227,6 +276,9 @@ public final class AcxFacade {
         AcxSessionManager.Session s = sessions.session(runId);
         if (s == null) {
             return err("未知 run_id: " + runId);
+        }
+        if (!s.matchesBinding(binding)) {
+            return err("run_id 不属于本同伴: " + runId);
         }
         if (!s.isRunning()) {
             return err("已结束，无需取消: " + runId);

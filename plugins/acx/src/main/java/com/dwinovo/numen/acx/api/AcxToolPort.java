@@ -3,6 +3,8 @@ package com.dwinovo.numen.acx.api;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 
 /**
  * ═══ INTERFACE CONTRACT: ACX-N1 宿主工具端口 ═══
@@ -33,15 +35,54 @@ public interface AcxToolPort {
 
     /**
      * 执行一次。实现方负责把宿主返回的信封翻译成 {@link Result}。
-     * 抛异常由适配层兜住并记 FAIL，不算契约违规。
+     * 普通异常由适配层记 FAIL；已派发但未确认回包用 {@link ReplyPendingAfterDispatchException}。
      */
     Result invoke(Map<String, Object> params);
+
+    /**
+     * Invoke with the original run context, including its immutable host owner.
+     * Stateless legacy ports keep their existing implementation; host ports must
+     * override this entry point rather than consult mutable request state.
+     */
+    default Result invoke(Map<String, Object> params, AcxTool.AcxCallContext ctx) {
+        return invoke(params);
+    }
+
+    /** The host guarantees cancellation was observed before the tool was called. */
+    final class CancelledBeforeDispatchException extends java.util.concurrent.CancellationException {
+        public CancelledBeforeDispatchException(String message) {
+            super(message);
+        }
+    }
+
+    /** Read only the reply to an already dispatched call; never dispatch or wait here. */
+    @FunctionalInterface
+    interface ReplyReceipt {
+        /** Empty until a confirmed reply is available. Never invent a task ID. */
+        Optional<Result> poll();
+    }
+
+    /** The original tool may have run, but its reply is not yet confirmed. */
+    final class ReplyPendingAfterDispatchException extends RuntimeException {
+        private final ReplyReceipt receipt;
+
+        public ReplyPendingAfterDispatchException(String message, ReplyReceipt receipt) {
+            super(message);
+            this.receipt = Objects.requireNonNull(receipt, "receipt");
+        }
+
+        public ReplyReceipt receipt() {
+            return receipt;
+        }
+    }
 
     enum Outcome {
         /** 动作已做完，{@code data} 是真实结果。 */
         COMPLETED,
         /** 已受理，后台执行中；真正完成靠 probe / task_finished。 */
         ACCEPTED,
+        /** The host did not install a task because the body's existing slot is occupied. */
+        BODY_BUSY,
         /** 明确失败。 */
         FAILED
     }
@@ -53,7 +94,15 @@ public interface AcxToolPort {
      * @param standing 常驻任务（如 follow）：永远没有完成终点，resume 不可自动续跑
      */
     record Result(Outcome outcome, Map<String, Object> data, String message,
-                  String taskId, boolean standing) {
+                  String taskId, boolean standing, AcxBodyAction.Ref bodyAction) {
+
+        public Result(Outcome outcome, Map<String, Object> data, String message, String taskId, boolean standing) {
+            this(outcome, data, message, taskId, standing, null);
+        }
+
+        public Result withBodyAction(AcxBodyAction.Ref identity) {
+            return new Result(outcome, data, message, taskId, standing, identity);
+        }
 
         public Result {
             if (outcome == null) {
@@ -80,6 +129,10 @@ public interface AcxToolPort {
 
         public static Result acceptedStanding(String taskId, Map<String, Object> acceptance, String message) {
             return new Result(Outcome.ACCEPTED, acceptance, message, taskId, true);
+        }
+
+        public static Result bodyBusy(String blockingTaskId, String message) {
+            return new Result(Outcome.BODY_BUSY, Map.of("blocking_task_id", blockingTaskId), message, "", false);
         }
 
         public static Result failed(String message) {

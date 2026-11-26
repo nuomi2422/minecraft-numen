@@ -1,0 +1,95 @@
+package com.dwinovo.numen.plugins.rdd;
+import java.util.*;import java.util.concurrent.atomic.AtomicLong;
+import com.dwinovo.numen.entity.NumenPlayer;import com.dwinovo.numen.rdd.core.*;import com.dwinovo.numen.rdd.api.*;
+import com.dwinovo.numen.rdd.side.*;import com.dwinovo.numen.rdd.side.sleep.*;
+import com.dwinovo.numen.task.*;import com.dwinovo.numen.agent.tool.*;import com.google.gson.*;
+public class RddBodyResumeAdmissionHost {
+    final Map<UUID,Long> replanEnteredAt=new HashMap<>();static final int MAX_INSTANT_PASS=16;
+    final Watcher parkedWatcher=new Watcher(),stallWatcher=new Watcher();
+    static class Watcher{void watch(Object...a){}void handleStalled(Object...a){}boolean track(Object...a){return false;}}
+    void tickRuntime(NumenPlayer ap,RddRuntime rt){TaskChain chain=rt.chain();PrimaryGoalStatus ps=chain.primaryStatus();Map<String,Integer> counts=Map.of();
+        // @DETECTOR_REGION@
+    }
+    boolean tickNegotiation(Object...a){return false;}void tryAcceptSatisfiedWhileParked(Object...a){}void handlePaused(Object...a){throw new AssertionError("unexpected paused");}
+    boolean riskGateAllows(Object...a){return true;}void publishWaitingOnce(Object...a){}boolean shouldPublishGatedSnapshot(Object...a){return false;}
+    void watchParkedIfStuck(Object...a){}void parkRejectedDeathReplan(Object...a){}boolean conditionMatches(Object...a){return false;}
+    boolean completeSubtask(Object...a){throw new AssertionError("unexpected completion");}void handleSubtaskFailure(Object...a){throw new AssertionError("unexpected failure");}
+    void applyAdvancementPolicy(Object...a){}Map<String,Integer> countInventory(Object...a){return Map.of();}
+    static void observe(NumenPlayer body,long tick,long day,boolean sleeping){body.world.game=tick;body.world.day=day;body.sleeping=sleeping;try{var m=SleepWakeWatcher.class.getDeclaredMethod("onServerTick",net.neoforged.neoforge.event.tick.ServerTickEvent.Pre.class);m.setAccessible(true);m.invoke(null,new net.neoforged.neoforge.event.tick.ServerTickEvent.Pre(body.getServer()));}catch(Exception failure){throw new AssertionError(failure);}}
+    static TaskChain chain(){return new TaskChain(new Goal("g","controlled",List.of(new PrimaryGoal("p","controlled",List.of(Subtask.hardCoded("s","controlled",Map.of("minimum",1),new BodyInstruction("resume_fixture",Map.of())))))));}
+    public static Map<String,Object> run(String scenario){
+        CompanionTickDispatcher.clear();TaskFactory.starts=0;RddPlugin.BODY.clear();RddPlugin.BODY_CALLS.set(0);RddPlugin.enabled=!scenario.equals("off");SideTaskHost.active=scenario.equals("side");SideTaskHost.ENGINE=null;
+        TaskChain chain=chain();RddRuntime rt=new RddRuntime(chain,new AssetRegistry());chain.activateCurrent(Map.of());chain.bindExecution("s","controlled-host-execution");RddPlugin.rt=rt;
+        NumenPlayer body=new NumenPlayer(UUID.randomUUID(),new net.minecraft.server.MinecraftServer());body.world.game=13000;body.world.day=13000;
+        final TaskRecord[] created={null};final boolean[] accepted={false};
+        ToolRegistry.tool=(id,args,p,reply)->{TaskRecord record=new TaskRecord("mine",id,100000){public String describe(){return "controlled inert task";}};created[0]=record;
+            TaskDispatch.setTask(p,record,args,raw->{accepted[0]=JsonParser.parseString(raw).getAsJsonObject().get("success").getAsBoolean();reply.accept(raw);});};
+        var originalInstance=chain.chainInstanceId();int originalRevision=chain.planRevision(),originalAttempt=chain.attempts("s");String originalExecution=chain.activeExecutionId();
+        int before=0,completed=0,resumed=0;boolean stableOwner=true,replacementParked=false;
+        var consumer=new RddBodyResumeAdmissionHost();
+        boolean handoff=Set.of("handoff","lateSlot","lateState","clearRisk").contains(scenario);TaskRecord old=null,replacementRecord=null;RddPlugin.BodyState newerBody=null;boolean callback=false;int stopped=0;boolean bodyCleared=false;
+        if(handoff){consumer.tickRuntime(body,rt);old=CompanionTickDispatcher.currentTaskFor(body.getUUID());if(old==null)throw new AssertionError("old slot not accepted");}
+        if(handoff||Set.of("cycle","unmatched","replacement").contains(scenario)){
+            SideTaskHost.active=false;SideTaskHost.body=body;SleepWakeWatcher.clearAll();body.getServer().players.add(body);
+            SideTaskHost.completed=0;SideTaskHost.resumed=0;SideTaskHost.bound=true;
+            SideTaskHost.ENGINE=new SideTaskEngine((event,data)->{SideTaskHost.clearTerminalSleepCycle(event,data);if(event.equals("side_task_completed"))SideTaskHost.completed++;if(event.equals("side_task_resumed_mainline")&&Boolean.TRUE.equals(data.get("mainlineResumed")))SideTaskHost.resumed++;},SideTaskHost::validateMainline);
+            com.dwinovo.numen.platform.Services.onSend=()->{};
+            SideTaskType type=new SleepSideTaskType(SleepSideTaskType.Goal.OVERNIGHT);SideTaskHost.ENGINE.registerType(type);
+            MainlineResumeToken token=SideTaskHost.currentMainlineToken(body.getUUID());
+            var instance=chain.chainInstanceId();int revision=chain.planRevision(),attempt=chain.attempts("s");String execution=chain.activeExecutionId();
+            SideTaskWorldPort world=(SideTaskWorldPort)java.lang.reflect.Proxy.newProxyInstance(SideTaskWorldPort.class.getClassLoader(),new Class[]{SideTaskWorldPort.class},(proxy,m,a)->switch(m.getName()){
+                case "gameTime"->body.world.game;case "dayTime"->body.world.day;case "gameDay"->Math.floorDiv(body.world.day,24000);case "hasDayNightCycle"->true;case "worldId"->body.world.dim;
+                case "isSleeping"->body.sleeping;case "isDay"->body.world.isDay();case "isSpawnBound"->SideTaskHost.bound;case "pollSleepCycle"->SideTaskHost.readSleepCycle(body,(SideTask)a[0]);
+                case "pollWake"->SleepWakeWatcher.poll(body.getUUID());case "bodyBusy"->handoff&&CompanionTickDispatcher.currentTaskFor(body.getUUID())!=null;case "inCombat"->false;case "sleepMayInterrupt"->true;case "sleepRisk"->scenario.equals("clearRisk")?SideTaskWorldPort.SleepRisk.CLEAR:handoff?SideTaskWorldPort.SleepRisk.HOSTILES:SideTaskWorldPort.SleepRisk.CLEAR;case "mainlineObjective"->"controlled";
+                default->m.getReturnType()==boolean.class?false:m.getReturnType()==int.class?0:m.getReturnType()==long.class?0L:m.getReturnType()==String.class?"":null;});
+            if(handoff){
+                var port=new SideTaskHost.InterruptPort();port.sleepAction=old;
+                java.util.function.BooleanSupplier pending=SideTaskHost.callback(body,port,token);
+                if(scenario.equals("lateSlot")){body.world.game+=21;ToolRegistry.tool.onServerCall("rdd-replacement",new JsonObject(),body,r->{});replacementRecord=CompanionTickDispatcher.currentTaskFor(body.getUUID());RddPlugin.rememberBody(body.getUUID(),"new-owner",1);newerBody=RddPlugin.bodyState(body.getUUID());callback=pending.getAsBoolean();}
+                else if(scenario.equals("lateState")){final RddPlugin.BodyState[] replacement={null};com.dwinovo.numen.platform.Services.onSend=()->{RddPlugin.rememberBody(body.getUUID(),"s",1);replacement[0]=RddPlugin.bodyState(body.getUUID());};callback=pending.getAsBoolean();newerBody=replacement[0];}
+                else{SideTaskHost.ENGINE.registerTrigger(new SleepSideTaskTrigger());SideTaskHost.SleepSafety.tick(SideTaskHost.ENGINE,body.getUUID(),world,token,false,()->pending.getAsBoolean());callback=old.getState()==TaskState.CANCELLED;}
+                stopped=old.getState()==TaskState.CANCELLED?1:0;bodyCleared=RddPlugin.bodyState(body.getUUID())==null;
+                if(!scenario.equals("handoff"))return Map.of("callback",callback,"stopped",stopped,"replacementKept",CompanionTickDispatcher.currentTaskFor(body.getUUID())==(replacementRecord==null?old:replacementRecord),"newBodyKept",newerBody!=null&&newerBody==RddPlugin.bodyState(body.getUUID()));
+            }
+            if(!handoff&&!SideTaskHost.ENGINE.startNow(type,body.getUUID(),world,token,Map.of()))throw new AssertionError("sleep start");
+            observe(body,13000,13000,false);SideTaskHost.ENGINE.tick(body.getUUID(),world,token,false);consumer.tickRuntime(body,rt);
+            observe(body,13001,13001,true);SideTaskHost.ENGINE.tick(body.getUUID(),world,token,false);consumer.tickRuntime(body,rt);before=TaskFactory.starts;
+            if(scenario.equals("replacement")){TaskChain replacement=chain();replacement.activateCurrent(Map.of());replacement.enterReplanningFromNegotiation("new owner waiting");RddPlugin.rt=new RddRuntime(replacement,new AssetRegistry());}
+            if(!scenario.equals("unmatched")){observe(body,13002,24000,false);SideTaskHost.ENGINE.tick(body.getUUID(),world,SideTaskHost.currentMainlineToken(body.getUUID()),false);}
+            completed=SideTaskHost.completed;resumed=SideTaskHost.resumed;rt=RddPlugin.rt;
+            stableOwner=execution!=null&&!execution.isBlank()&&instance.equals(rt.chain().chainInstanceId())&&revision==rt.chain().planRevision()&&attempt==rt.chain().attempts("s")&&Objects.equals(execution,rt.chain().activeExecutionId());
+            replacementParked=rt.chain()!=chain&&rt.chain().primaryStatus()==PrimaryGoalStatus.REPLANNING;
+        }
+        consumer.tickRuntime(body,rt);TaskRecord first=CompanionTickDispatcher.currentTaskFor(body.getUUID());consumer.tickRuntime(body,rt);
+        stableOwner=stableOwner&&originalInstance.equals(rt.chain().chainInstanceId())&&originalRevision==rt.chain().planRevision()&&originalAttempt==rt.chain().attempts("s")&&Objects.equals(originalExecution,rt.chain().activeExecutionId());
+        if(handoff)return Map.of("before",before,"completed",completed,"resumed",resumed,"stopped",stopped,"bodyCleared",bodyCleared,"order",CompanionTickDispatcher.trace.indexOf("invalidate")>=0&&CompanionTickDispatcher.trace.indexOf("invalidate")<CompanionTickDispatcher.trace.indexOf("settle"),"oldToNew",old!=null&&first!=old&&first==created[0],"starts",TaskFactory.starts,"stableOwner",stableOwner);
+        return Map.of("before",before,"completed",completed,"resumed",resumed,"stableOwner",stableOwner,"replacementParked",replacementParked,"starts",TaskFactory.starts,"sameRecord",created[0]!=null&&first==created[0]&&first==CompanionTickDispatcher.currentTaskFor(body.getUUID()),
+            "identity",first!=null&&first.identityToken()!=null,"reply",accepted[0],"callId",first!=null&&first.getToolCallId().startsWith("rdd-"));
+    }
+}
+class SideTaskHost{static boolean active,bound;static int completed,resumed;static NumenPlayer body;static SideTaskEngine ENGINE;
+    static boolean isActive(UUID id){return active||(ENGINE!=null&&ENGINE.isActive(id));}
+    static class InterruptPort{TaskRecord sleepAction;}
+    static java.util.function.BooleanSupplier callback(NumenPlayer ap,InterruptPort port,MainlineResumeToken token){UUID companionId=ap.getUUID();return ()->{
+        // @INTERRUPT_CALLBACK@
+    };}
+    static final class SleepSafety{
+        // @SLEEP_SAFETY@
+    }
+    // @SIDE_METHODS@
+}
+class RddCompanionBody{static NumenPlayer get(UUID id){return SideTaskHost.body;}}
+class RddPlugin{
+    static RddRuntime rt;static boolean enabled;static final Map<UUID,BodyState> BODY=new HashMap<>();static final AtomicLong BODY_CALLS=new AtomicLong();
+    // @BODY_STATE@
+    static RddRuntime runtime(UUID id){return rt;}static Object yieldIdentity(Object p){return null;}static void publishTaskSnapshot(Object...a){}
+    static PlanningAssetSnapshot planningSnapshot(Object...a){return null;}static void reportExpansionNeeded(Object...a){}
+    static boolean consumeDeferredDeathReplan(UUID id,TaskChain chain,Runnable parked){return false;}
+    static void kickoffNudge(Object...a){}static Object captureObservationToken(Object...a){return null;}
+    static boolean supervisionEnabled(){return true;}static boolean bodySubmissionEnabled(){return enabled;}
+}
+class RddEarlyProposalPublisher{static void publish(Object...a){}}
+class RddMonitor{static void publish(Object...a){}}
+class RddGoalDriver{static void needExpansion(Object...a){}}
+class RddReplanTransition{static boolean deferPlannerDaily(Object...a){return false;}static Object pendingSurvival(Object...a){return null;}static void releaseTimedOutSurvival(Object...a){}}
+class RddNegotiationInbox{static Object requestedReview(Object...a){return null;}static void deferReview(Object...a){}}

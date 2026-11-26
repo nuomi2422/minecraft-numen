@@ -86,6 +86,18 @@ class SelfSampleReaderTest {
         return new Observation(key, payload, base.source(), base.origin(), base.gameTick(), base.epochMs(),
                 coverage, base.freshness(), base.revision(), base.dataVersion(), base.serverSession());
     }
+    @Test void selfAndGenericReadAgreeOnExpiryInstant() {
+        var atExpiry = sample("world", "session", ID, DIM, NOW - 3000, Freshness.CURRENT);
+        var rr = com.dwinovo.numen.worldstate.core.query.ReadResult.present(atExpiry,
+                TopicFreshnessPolicy.defaults().classify(atExpiry, NOW), 3000, atExpiry.coverage(), "sample");
+        var request = new Request("test", DIM, "self", java.util.Map.of("target", "player:" + ID), 0, 1, 0);
+        var generic = ObservationResponses.map(rr, request, List.of(), 0, NOW, atExpiry.key(), 3000);
+        var self = read(List.of(atExpiry), 0);
+        assertEquals(generic.metadata().freshness(), self.metadata().freshness());
+        assertEquals(com.dwinovo.numen.api.observation.ObservationMetadata.Freshness.STALE, generic.metadata().freshness());
+        assertEquals(Status.PARTIAL, generic.status());
+        unavailable(self);
+    }
     @Test void exactTopicAndCallerExpiryAreUnavailable() {
         unavailable(read(List.of(sample("world", "session", ID, DIM, NOW - 3000, Freshness.CURRENT)), 0));
         unavailable(read(List.of(current(DIM)), 100));

@@ -58,7 +58,7 @@ class LoadSkillToolReferenceTest {
     void schemaAllowsRefOnlyAndDoesNotExposeCallerIdentityOrView() {
         var schema = tool.parameterSchema();
         var props = (Map<String, Object>) schema.get("properties");
-        assertEquals(java.util.Set.of("name", "file", "ref"), props.keySet());
+        assertEquals(java.util.Set.of("name", "file", "ref", "package_ref", "component_ref"), props.keySet());
         assertEquals(List.of(), schema.get("required"));
         assertEquals(false, schema.get("additionalProperties"));
     }
@@ -79,6 +79,22 @@ class LoadSkillToolReferenceTest {
         assertEquals(REF, response.get("ref").getAsString());
         assertEquals(original, response.get("body").getAsString());
         assertEquals(1, calls.get());
+    }
+
+    @Test void realToolExplicitPackageComponentUsesAnchorAndReturnsOneBody() {
+        String pack="skill:sk-pack@v1"; AtomicInteger count=new AtomicInteger();
+        reader(new LearnedSkillBodyResolver() {
+            public Resolution resolve(UUID c,String ref,View view) { fail("single branch must not run"); return null; }
+            public PackageComponentResolution resolveComponent(UUID c,String p,String ref,View view) {
+                assertEquals(COMPANION,c); assertEquals(pack,p); assertEquals(REF,ref); assertEquals(View.EXECUTOR,view); count.incrementAndGet();
+                return new PackageComponentResolution(p,ref,"shared component body","degraded","");
+            }
+        });
+        var response=JsonParser.parseString(invoke("{\"package_ref\":\""+pack+"\",\"component_ref\":\""+REF+"\"}",()->COMPANION)).getAsJsonObject();
+        assertTrue(response.get("success").getAsBoolean()); assertEquals(REF,response.get("ref").getAsString());
+        assertEquals(pack,response.get("package_ref").getAsString()); assertEquals("shared component body",response.get("body").getAsString());
+        assertEquals("degraded",response.get("availability").getAsString()); assertEquals(1,count.get());
+        assertFalse(JsonParser.parseString(invoke("{\"package_ref\":\""+pack+"\",\"component_ref\":\""+REF+"\",\"ref\":\""+REF+"\"}",()->COMPANION)).getAsJsonObject().get("success").getAsBoolean());
     }
 
     @Test

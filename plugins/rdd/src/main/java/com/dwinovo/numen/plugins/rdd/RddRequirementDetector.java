@@ -46,24 +46,15 @@ final class RddRequirementDetector {
      *               （回落只为不崩，调用方应总是给真 id —— 否则对账列会静默失配）
      */
     static RequirementManifest.Manifest forPrimary(PrimaryGoal primary, String goalId) {
+        return forPrimary(primary, goalId, Map.of());
+    }
+
+    /** Current plan purposes retire only verified result inputs, never fabricate asset changes. */
+    static RequirementManifest.Manifest forPrimary(PrimaryGoal primary, String goalId,
+            Map<String, com.dwinovo.numen.rdd.api.SubtaskStatus> statuses) {
         Map<String, RequirementManifest.Requirement> byKey = new LinkedHashMap<>();
-        if (primary != null) {
-            for (AssetRequirement w : primary.waitFor()) {
-                if (w != null && w.assetKey() != null && !w.assetKey().isBlank()) {
-                    merge(byKey, w.assetKey(), w.minimum(),
-                            RequirementManifest.Importance.CRITICAL);
-                }
-            }
-            for (Subtask s : primary.subtasks()) {
-                Map<String, Object> c = s.condition();
-                Object key = c == null ? null : c.get("asset_key");
-                if (key instanceof String ks && !ks.isBlank()) {
-                    int min = 1;
-                    Object m = c.get("minimum");
-                    if (m instanceof Number n) min = Math.max(0, n.intValue());
-                    merge(byKey, ks, min, RequirementManifest.Importance.NORMAL);
-                }
-            }
+        for (RddFactContext.Need need : RddFactContext.needsOf(primary, statuses)) {
+            if (!need.group()) merge(byKey, need.key(), need.minimum(), need.importance());
         }
         String gid = goalId == null || goalId.isBlank()
                 ? (primary == null ? "unknown" : primary.id())

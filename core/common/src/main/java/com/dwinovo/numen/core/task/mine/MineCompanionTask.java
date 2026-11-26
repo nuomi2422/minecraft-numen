@@ -200,6 +200,8 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
     // Progressive dig (blocks break tick-by-tick at legitimate player speed, not
     // instabreak) — shared with the path executor so all breaking reads the same.
     private final BlockDigger digger;
+    /** Requested ore, distinct from the digger's effective occluding block. */
+    private BlockPos latchedMineTarget;
 
     public MineCompanionTask(NumenPlayer player, MineBlockTaskRecord record) {
         super(player, record);
@@ -305,7 +307,9 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         int gathered = WorkProfile.of(player).dropsLoot()
                 ? Math.max(0, inventoryMatch() - baseline)
                 : brokenTargets;
-        if (gathered > r.getMined()) navigationFailure = null;
+        // Matching items newly picked up are progress too; do not expire the old stall clock
+        // on the same tick. Unchanged inventory must not keep extending that clock.
+        if (gathered > r.getMined()) noteProgress();
         r.setMined(gathered);
         if (gathered >= r.count) {
             progressNote = "gathered all requested";
@@ -327,10 +331,14 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
 
         // 0) Continue an in-progress dig, locked onto its block (no re-selection)
         //    until it breaks or drifts out of reach.
-        BlockPos digging = digger.current();
-        if (digging != null) {
-            if (level.getBlockState(digging).isAir() || !reachable(digging)) {
+        BlockPos effectiveDig = digger.current();
+        BlockPos digging = latchedMineTarget != null ? latchedMineTarget : effectiveDig;
+        if (effectiveDig != null) {
+            if (digging == null || !r.containsTarget(digging)
+                    || !r.targets.contains(level.getBlockState(digging).getBlock())
+                    || level.getBlockState(digging).isAir() || !reachable(digging)) {
                 digger.cancel();
+                latchedMineTarget = null;
             } else {
                 if (nav != null) {
                     nav.pause();   // stand still for the dig; goal/path/in-flight search stay warm
@@ -340,6 +348,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
             }
         }
 
+        if (digger.current() == null) latchedMineTarget = null;
         long tDrops = NavProfiler.begin();
         drops = droppedItems();
         invalidateNavigationFailure();
@@ -631,7 +640,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
             if (ore.distSqr(feet) > IN_PLACE_FILTER_SQR) {
                 break;   // sorted nearest-first — everything after this is farther still
             }
-            if (ore.equals(support) || level.getBlockState(ore).isAir()) {
+            if (!r.containsTarget(ore) || ore.equals(support) || level.getBlockState(ore).isAir()) {
                 continue;
             }
             double d = ore.distSqr(feet.above());
@@ -708,8 +717,11 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
      *  而不是永远等一个不会来的射线。<b>记的是这一格,不是猜一格</b> —— 这是唯一一处
      *  按格记账的地方,因为它是唯一一件关于那一格的可复现事实。 */
     private void mineProgress(BlockPos pos) {
+        if (!r.containsTarget(pos) || !r.targets.contains(player.level().getBlockState(pos).getBlock())) return;
+        latchedMineTarget = pos.immutable();
         switch (digger.digStep(pos)) {
             case BROKE_TARGET -> {
+                latchedMineTarget = null;
                 knownOres.remove(pos);
                 brokenTargets++;
                 noteProgress();
@@ -728,6 +740,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
                         unworkable.add(pos.immutable());
                         knownOres.remove(pos);
                         digger.cancel();   // release the in-progress-dig latch on this ore
+                        latchedMineTarget = null;
                         clearNoShot();
                     }
                 } else {
@@ -833,7 +846,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         heartbeatTimer = QUERY_HEARTBEAT_TICKS;
         queryCooldown = QUERY_MIN_GAP_TICKS;
         TargetIndex.Result res = TargetIndex.query(sl, player.blockPosition(), r.targets,
-                MAX_ORES, QUERY_MAX_CHUNK_RADIUS, QUERY_BUILD_BUDGET);
+                MAX_ORES, QUERY_MAX_CHUNK_RADIUS, QUERY_BUILD_BUDGET, r::containsTarget);
         lastQueryComplete = res.complete();
         if (!lastQueryComplete) navigationFailure = null;
         if (lastQueryComplete) {
@@ -855,7 +868,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         Set<BlockPos> seen = new HashSet<>(knownOres);
         for (BlockPos hit : hits) {
             BlockPos p = hit.immutable();
-            if (unworkable.contains(p) || !seen.add(p)) continue;
+            if (!r.containsTarget(p) || unworkable.contains(p) || !seen.add(p)) continue;
             knownOres.add(p);
         }
         prune();
@@ -869,7 +882,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
                 com.dwinovo.numen.core.pathing.moves.TerrainPermit.TERRAFORM);
         knownOres.removeIf(p -> {
             var state = level.getBlockState(p);
-            if (state.isAir() || !r.targets.contains(state.getBlock()) || unworkable.contains(p)
+            if (!r.containsTarget(p) || state.isAir() || !r.targets.contains(state.getBlock()) || unworkable.contains(p)
                     || !plausibleToBreak(ctx, p, state)) {
                 return true;
             }
@@ -1001,6 +1014,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
     /** Forget the old diagnostic on preemption; leave the base's warm plan and inputs unchanged. */
     @Override
     public void stop(NumenPlayer companion, StopReason why) {
+        latchedMineTarget = null;
         navigationFailure = null;
         super.stop(companion, why);
     }
@@ -1018,6 +1032,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         // so a task that finished while shaft-mining (nav == null) still
         // clears its lingering goal boxes. Then release the dig + the index registration.
         super.cleanup();
+        latchedMineTarget = null;
         digger.cancel();
         if (player.level() instanceof ServerLevel sl) {
             TargetIndex.unregister(sl, r.targets);

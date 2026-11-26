@@ -83,9 +83,11 @@ class RddToolContractSnapshotTest {
         String src = read(fileName);
         Matcher open = Pattern.compile("String\\s+description\\(\\)\\s*\\{").matcher(src);
         assertTrue(open.find(), fileName + " 里找不到 description() 方法");
-        int start = open.end();
+        // 2026-11-22（指挥官修测试自身 off-by-one）：braceEnd 从 '{' 起扫，open.end() 已在 '{' 之后；
+        // 旧写法对任何 description 里不含花括号的工具都会扫到负深度而误报「括号没配平」。
+        int start = open.end() - 1;
         int end = braceEnd(src, start);
-        String body = src.substring(start, end);
+        String body = src.substring(start + 1, end);
         Matcher lit = Pattern.compile("\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(body);
         StringBuilder joined = new StringBuilder();
         while (lit.find()) joined.append(lit.group(1));
@@ -97,9 +99,11 @@ class RddToolContractSnapshotTest {
         String src = read(fileName);
         Matcher open = Pattern.compile("String\\s+description\\(\\)\\s*\\{").matcher(src);
         assertTrue(open.find(), fileName + " 里找不到 description() 方法");
-        int start = open.end();
+        // 2026-11-22（指挥官修测试自身 off-by-one）：braceEnd 从 '{' 起扫，open.end() 已在 '{' 之后；
+        // 旧写法对任何 description 里不含花括号的工具都会扫到负深度而误报「括号没配平」。
+        int start = open.end() - 1;
         int end = braceEnd(src, start);
-        String body = src.substring(start, end);
+        String body = src.substring(start + 1, end);
         Matcher lit = Pattern.compile("\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(body);
         StringBuilder joined = new StringBuilder();
         while (lit.find()) joined.append(lit.group(1));
@@ -315,6 +319,10 @@ class RddToolContractSnapshotTest {
                     "report_task_concern 的 description 必须列出 " + kind
                             + " 的含义。少写一种 = 模型只能靠猜（深审 R05 的根因就是「不认识的枚举值被静默降级」）");
         }
+        // 060-C：装备/前置失效时先核查、少量就地补救，再按事实+建议上报（不是只报"没有"）。
+        assertTrue(d.contains("新鲜背包/世界事实"), "concern description must ask for a fresh check first: " + d);
+        assertTrue(d.contains("少量补救"), "small local remediation must be stated: " + d);
+        assertTrue(d.contains("可行替代"), "suggestion must be a feasible alternative: " + d);
     }
 
     @Test
@@ -323,6 +331,15 @@ class RddToolContractSnapshotTest {
         assertTrue(d.contains("Owner-only"),
                 "★ rdd_standby 必须继续标明「仅主人」。它是一个会直接改变同伴行为（停在原地）的工具，"
                         + "如果同伴自己觉得可以用，主人就失去了「按住它」的能力。当前全文：" + d);
+    }
+
+    @Test
+    void standbyToolDeclaresExternalOnlyAtSource() {
+        String body = read("RddStandbyTool.java");
+        assertTrue(body.contains("public boolean externalOnly()"),
+                "★ rdd_standby 必须在源码里覆写 externalOnly()，不能只靠 description 写 Owner-only。");
+        assertTrue(body.contains("return true;"),
+                "★ externalOnly() 必须返回 true；否则内脑仍能把它当普通工具调。");
     }
 
     // ── ④ 机制自检 ─────────────────────────────────────────────────

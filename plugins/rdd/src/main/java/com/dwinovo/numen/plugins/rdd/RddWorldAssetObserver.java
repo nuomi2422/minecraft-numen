@@ -47,7 +47,17 @@ final class RddWorldAssetObserver {
     static Result observe(NumenPlayer companion, AssetRegistry registry) {
         if (companion == null || registry == null || companion.getServer() == null
                 || !companion.getServer().isSameThread()) return new Result(0, 0, 0, 0);
-        int bases = observeBase(companion, registry);
+        var identityProvider = com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.ServerIdentityProvider.class);
+        com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity = null;
+        try { if (identityProvider != null) identity = identityProvider.snapshot(companion.getServer()); }
+        catch (RuntimeException unavailable) { /* unknown identity */ }
+        int bases;
+        try {
+            bases = observeBase(companion, registry, identity);
+        } catch (RuntimeException failure) {
+            RddPlugin.captureHomeIdentity(companion, null, null, null);
+            throw failure;
+        }
         int structures = observeStructures(companion, registry);
         observeVillages(companion, registry);   // P2.3：村庄资源节点（供规划查“这村庄有啥”）
         int machines = observeMachines(companion, registry);
@@ -56,11 +66,30 @@ final class RddWorldAssetObserver {
         return new Result(bases, structures, machines, entities);
     }
 
-    private static int observeBase(NumenPlayer companion, AssetRegistry registry) {
-        RddWorldFacts.BaseSnapshot base = RddWorldFacts.inspectBase(companion, Map.of());
-        if (base == null) return 0;
+    private static int observeBase(NumenPlayer companion, AssetRegistry registry,
+                                   com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity) {
+        RddBaseFacts.BaseInspection inspection = RddBaseFacts.inspectBaseResult(companion, Map.of());
+        RddWorldFacts.BaseSnapshot base = inspection.snapshot();
+        // 2026-11-25（实机 false UNBOUND）：raw 重生点来自服务端原 getRespawnPosition/Dimension，
+        // 与「床区这次是否加载、床还在不在」是两件事。原来只在 base snapshot 成功时才 capture，
+        // 床区未加载就把已校验身份清掉 → 摘要把真绑定渲染成 UNBOUND，planner 去造新床。
+        // 这里只投影 raw 绑定坐标，不签床可用、不签基地完成：ABSENT（床方块没了）仍保留 raw 绑定，
+        // 床位不可用由 typed base asset 置 INVALID / 摘要 base_usability=UNKNOWN 表达；
+        // 只有服务端 raw 绑定真的变空/换点，或世界会话世代失效，才清掉身份。
+        BlockPos rawSpawn = inspection.spawn();
+        boolean rawBound = rawSpawn != null && !rawSpawn.equals(BlockPos.ZERO);
+        RddPlugin.captureHomeIdentity(companion, rawBound ? identity : null,
+                rawBound ? rawSpawn : null, rawBound ? inspection.dimension() : null);
+        if (base == null) {
+            markBaseRecheck(registry, identity, inspection);
+            return 0;
+        }
         BlockPos pos = base.spawn();
         Map<String, Object> value = common("base", "个人重生基地", base.dimension(), pos, "LAZY");
+        if (identity != null) {
+            if (identity.worldId() != null && !identity.worldId().isBlank()) value.put("world_id", identity.worldId());
+            if (identity.serverSession() != null && !identity.serverSession().isBlank()) value.put("server_session", identity.serverSession());
+        }
         value.put("complete", base.complete());
         value.put("facilities", base.facilities());
         value.put("important_items", topCounts(base.storedItems(), 24));
@@ -69,6 +98,28 @@ final class RddWorldAssetObserver {
                 + "; completion=" + base.complete());
         apply(companion.getUUID(), registry, "base|" + base.dimension() + "|" + pos.asLong(), "world_base", base.dimension(), value);
         return 1;
+    }
+
+    private static void markBaseRecheck(AssetRegistry registry,
+                                        com.dwinovo.numen.api.ServerIdentityProvider.Snapshot identity,
+                                        RddBaseFacts.BaseInspection inspection) {
+        if (identity == null || identity.worldId() == null || identity.worldId().isBlank()
+                || identity.worldId().equalsIgnoreCase("unknown") || identity.worldId().startsWith("unknown-")
+                || identity.serverSession() == null || identity.serverSession().isBlank()
+                || identity.serverSession().equalsIgnoreCase("unknown")) return;
+        for (var entry : RddAssetContext.worldAssets(registry)) {
+            var v = entry.observation().value();
+            if (!"base".equals(v.get("kind")) || !identity.worldId().equals(v.get("world_id"))
+                    || !identity.serverSession().equals(v.get("server_session"))) continue;
+            boolean exact = inspection.spawn() != null && !inspection.spawn().equals(BlockPos.ZERO)
+                    && inspection.dimension().equals(v.get("dimension"))
+                    && v.get("x") instanceof Number x && x.intValue() == inspection.spawn().getX()
+                    && v.get("y") instanceof Number y && y.intValue() == inspection.spawn().getY()
+                    && v.get("z") instanceof Number z && z.intValue() == inspection.spawn().getZ();
+            if (!exact) continue;
+            if (inspection.status() == RddBaseFacts.BaseStatus.ABSENT) registry.invalidate(entry.assetId());
+            else if (entry.status() == com.dwinovo.numen.rdd.api.AssetStatus.OBSERVED) registry.markUnknown(entry.assetId());
+        }
     }
 
     private static int observeStructures(NumenPlayer companion, AssetRegistry registry) {

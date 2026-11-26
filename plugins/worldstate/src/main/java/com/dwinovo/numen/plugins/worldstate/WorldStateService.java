@@ -60,6 +60,41 @@ public final class WorldStateService {
             new com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore();
 
     public com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore focusPins() { return focusPins; }
+    // Technical defaults, not a real-time guarantee: at most 16 subjects per second.
+    static final int FOCUS_SWEEP_BUDGET = 16;
+    static final long FOCUS_SWEEP_INTERVAL_NANOS = 1_000_000_000L;
+    private boolean focusSweepStarted;
+    private long lastFocusSweepNanos;
+    private final String focusDiagnosticInstance = java.util.UUID.randomUUID().toString();
+    private static boolean focusDiagnosticsEnabled() {
+        try { return Boolean.getBoolean("numen.worldstate.focus.diagnostics"); }
+        catch (SecurityException denied) { return false; }
+    }
+    private void focusDiagnostic(String event, java.util.Map<String,Object> data) {
+        try { WorldStateMonitor.publish(event,data); } catch (RuntimeException | LinkageError ignored) { }
+    }
+    int tickFocusSweep(long wallMillis, long monotonicNanos) {
+        boolean diag=focusDiagnosticsEnabled();
+        com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore.SweepStats stats;
+        synchronized (this) {
+            if (focusSweepStarted && monotonicNanos - lastFocusSweepNanos < FOCUS_SWEEP_INTERVAL_NANOS) return 0;
+            focusSweepStarted = true;
+            lastFocusSweepNanos = monotonicNanos;
+            stats = focusPins.sweepBatchStats(wallMillis, FOCUS_SWEEP_BUDGET);
+        }
+        if (diag) { try { focusDiagnostic("focus_sweep", java.util.Map.of("instance",focusDiagnosticInstance,"checked_subjects",stats.checked(),"removed_pins",stats.removed())); } catch (RuntimeException | LinkageError ignored) { } }
+        return stats.checked();
+    }
+    void stopFocusSweep() {
+        boolean diag=focusDiagnosticsEnabled();
+        com.dwinovo.numen.plugins.worldstate.focus.FocusPinStore.ClearStats stats;
+        synchronized (this) {
+            stats=focusPins.clearWithStats();
+            focusSweepStarted = false;
+            lastFocusSweepNanos = 0;
+        }
+        if (diag) { try { focusDiagnostic("focus_stop", java.util.Map.of("instance",focusDiagnosticInstance,"subjects_before",stats.subjectsBefore(),"pins_before",stats.pinsBefore(),"subjects_after",stats.subjectsAfter(),"pins_after",stats.pinsAfter())); } catch (RuntimeException | LinkageError ignored) { } }
+    }
     private final com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog changeLog =
             new com.dwinovo.numen.worldstate.core.changes.InMemoryChangeLog();
     private final InMemoryObservationStore store;

@@ -53,6 +53,16 @@ public final class SkillRegistrar {
         return REGISTRIES.computeIfAbsent(configDir, d -> openQuietly(d.resolve("skills.jsonl")));
     }
 
+    /** Tick-safe lookup: never initializes a registry or performs filesystem IO. */
+    public static java.util.Optional<SkillRegistry> peekManaged(Path configDir) {
+        return configDir == null ? java.util.Optional.empty() : java.util.Optional.ofNullable(REGISTRIES.get(configDir));
+    }
+
+    /** Explicit refresh publishes content on success, or a new UNKNOWN observation revision on failure. */
+    public static boolean refreshManaged(Path configDir) {
+        return registryFor(configDir).refresh();
+    }
+
     /** 登记结果。 */
     public record Report(int registered, int reused, int revised, int conflicted, String error) {
         public Report {
@@ -147,9 +157,9 @@ public final class SkillRegistrar {
     private static SkillRegistry openQuietly(Path file) {
         try {
             return SkillRegistry.open(file);
-        } catch (IOException e) {
-            // 目录读不出来就从空目录开始（后面写盘会重建），但要留痕。
-            return new SkillRegistry();
+        } catch (IOException | RuntimeException e) {
+            // Keep the managed path and UNKNOWN health; explicit refresh may recover this same instance.
+            return SkillRegistry.unavailable(file);
         }
     }
 }

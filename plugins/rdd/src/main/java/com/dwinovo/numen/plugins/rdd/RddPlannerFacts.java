@@ -38,6 +38,9 @@ final class RddPlannerFacts {
 
     /** 组装事实包；comapnion 不在线时返回带「未观测」的短块（不抛、不空）。 */
     static String block(ServerPlayer player, java.util.UUID companionId) {
+        return block(player, companionId, null);
+    }
+    static String block(ServerPlayer player, java.util.UUID companionId, String objective) {
         StringBuilder sb = new StringBuilder();
         sb.append("<situation>\n");
 
@@ -70,30 +73,61 @@ final class RddPlannerFacts {
                 String plain = storage.replaceAll("<[^>]+>", "").trim();
                 sb.append("箱子里：").append(plain).append('\n');
             } else {
-                sb.append("箱子里：身边 8 格内没有装东西的容器（别据此断定没存货，远处箱子没扫）\n");
+                sb.append("箱子里：附近容器未观测或未知（不能据此断定没有存货）\n");
             }
         }
 
         // ③ 世界里有什么（自己造过/登记过的世界资产）
         String world = "";
         try {
-            if (companionId != null) world = RddAssetContext.render(RddPlugin.assets(companionId), 160);
+            if (companionId != null) world = RddAssetContext.renderForPlanner(RddPlugin.assets(companionId), 160, objective);
         } catch (RuntimeException ignored) {
             world = "";
         }
-        if (!world.isEmpty()) {
-            sb.append("世界里：").append(world).append('\n');
+        String food = "可食储备 未知";
+        if (player != null && companionId != null) {
+            try {
+                var server = player.getServer();
+                var before = com.dwinovo.numen.api.WorldContextStamp.capture(server);
+                var service = com.dwinovo.numen.api.NumenPlugins.capability(com.dwinovo.numen.api.observation.WorldObservationService.class);
+                if (server != null && before != null && before.identity() != null && before.epoch() > 0 && service != null) {
+                    var response = service.readSelf("rdd-planner", companionId, 3_000L);
+                    long now = System.currentTimeMillis();
+                    var after = com.dwinovo.numen.api.WorldContextStamp.capture(server);
+                    if (before.equals(after) && response != null && response.metadata() != null
+                            && companionId.toString().equals(response.metadata().subjectId())
+                            && player.level().dimension().location().toString().equals(response.metadata().dimension())
+                            && java.util.Objects.equals(before.identity().get("world_id"), response.metadata().worldId())
+                            && java.util.Objects.equals(before.identity().get("server_session"), response.metadata().serverSession())
+                            && now - response.metadata().observedAtMs() <= 3_000L) {
+                        var derived = com.dwinovo.numen.api.observation.SelfInventoryQuery.read(response, now);
+                        if (derived.foodKnown()) food = "可食储备 " + derived.foodCount() + "件";
+                    }
+                }
+            } catch (RuntimeException | LinkageError unavailable) { /* preserve UNKNOWN */ }
         }
-        sb.append("</situation>");
-        String out = sb.toString();
-        if (out.length() > MAX_CHARS) {
-            out = out.substring(0, MAX_CHARS - 12) + "…（已截断）</situation>";
+        String suffix = food + "\n" + (world.isEmpty() ? "" : "世界里：" + world + "\n") + "</situation>";
+        String marker = "…（前文已截断）\n";
+        int room = MAX_CHARS - suffix.length();
+        if (room < marker.length()) {
+            suffix = food + "\n世界里：未投递\n</situation>";
+            room = MAX_CHARS - suffix.length();
         }
-        return out;
+        if (sb.length() > room) {
+            int end = room - marker.length();
+            if (end > 0 && Character.isHighSurrogate(sb.charAt(end - 1))) end--;
+            sb.setLength(end);
+            sb.append(marker);
+        }
+        return sb.append(suffix).toString();
     }
 
     /** 没有玩家对象时的退化版本（例如规划发生在离线恢复）。 */
     static String block(Map<String, Integer> held) {
+        return block(held, false);
+    }
+
+    static String block(Map<String, Integer> held, boolean observed) {
         String hand = "";
         if (held != null && !held.isEmpty()) {
             StringBuilder h = new StringBuilder();
@@ -106,7 +140,8 @@ final class RddPlannerFacts {
             hand = h.toString();
         }
         return "<situation>\n位置：未观测（规划时没有玩家对象）\n"
-                + "手上：" + (hand.isEmpty() ? "空" : hand) + "\n"
+                + (hand.isEmpty() ? (observed ? "手上：最近一次扫描为空，当前需核实" : "手上：未观测")
+                        : "手上：最近一次扫描 " + hand + "，当前需核实") + "\n"
                 + "箱子里/世界里：未观测\n</situation>";
     }
 

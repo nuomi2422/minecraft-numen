@@ -64,6 +64,7 @@ final class RddStatusTool implements NumenTool {
         }
         Map<String, Object> out = new java.util.LinkedHashMap<>(projection.data());
         out.put("condition_groups", groups);
+        out.put("concern_review", RddNegotiationInbox.reviewSnapshot(uuid));
         out.put("condition", current.condition());
         if ("advancement".equals(current.condition().get("type"))) {
             var state = RddWorldFacts.advancementResult(companion, current.condition());
